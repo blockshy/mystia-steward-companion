@@ -1,0 +1,16 @@
+[package]
+name = "mystia-steward-companion"
+version = "0.1.0"
+description = "Mystia Steward companion window"
+authors = ["Mystia Steward contributors"]
+edition = "2021"
+
+[[bin]]
+name = "mystia-steward-companion"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }

@@ -1,0 +1,195 @@
+# 夜雀掌柜 BepInEx Mod 开发说明
+
+本文档面向开发者，记录本 Mod 的本地开发、构建、运行时读取和调试方式。用户安装和使用说明见 [README.md](README.md)。
+
+## 项目结构
+
+- `src/Core/`：推荐算法、数据模型和排序规则。
+- `src/Save/`：运行时反射读取、兼容探测和推荐状态构造。
+- `src/Ui/`：旧游戏内 IMGUI 回退面板、伴随窗口控制器和快照缓存。
+- `src/Plugin/`：BepInEx 入口、配置和伴随窗口启动逻辑。
+- `src/LocalApi/`：本地回环 API，供 Tauri 伴随窗口读取实时状态。
+- `Data/`：打包进 Mod 的料理、酒水、食材、普客、稀客和 tag 数据。
+- `References/`：本机编译引用 DLL，不提交到仓库。
+- `tools/`：前置检查、数据同步、构建和打包脚本。
+
+运行时读取说明见 [docs/RUNTIME_PROVIDER_NOTES.md](docs/RUNTIME_PROVIDER_NOTES.md)。
+
+## 开发环境
+
+Windows 上通常需要：
+
+- .NET 6 SDK 或更新版本。
+- Node.js 20+，并通过 Corepack 使用仓库固定的 `pnpm@10.10.0`。
+- Rust stable、Microsoft C++ Build Tools 2022 或 Visual Studio “使用 C++ 的桌面开发”组件。
+- Microsoft Edge WebView2 Runtime。
+- 已安装并启动过一次 BepInEx Unity IL2CPP 的游戏目录。
+
+推荐初始化命令：
+
+```powershell
+corepack enable
+corepack prepare pnpm@10.10.0 --activate
+winget install Rustlang.Rustup
+```
+
+Linux 验证 Tauri 构建时还需要：
+
+```bash
+sudo apt-get install -y pkg-config libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libxdo-dev
+```
+
+## 构建引用
+
+本项目不提交 BepInEx 和 Unity DLL。构建前只需要把 BepInEx、Il2CppInterop 和 Unity 引用复制到 `References/`，不需要也不应该复制 `Assembly-CSharp.dll`：
+
+```text
+mods/mystia-steward-bepinex/
+  References/
+    BepInEx.Core.dll
+    BepInEx.Unity.IL2CPP.dll
+    0Harmony.dll
+    Il2CppInterop.Runtime.dll
+    Il2Cppmscorlib.dll
+    UnityEngine.CoreModule.dll
+    UnityEngine.IMGUIModule.dll
+    UnityEngine.InputLegacyModule.dll
+```
+
+常见来源：
+
+- `游戏根目录/BepInEx/core/`
+- `游戏根目录/BepInEx/interop/`
+
+复制完成后运行前置检查：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File mods\mystia-steward-bepinex\tools\preflight.ps1
+```
+
+Git Bash 可运行：
+
+```bash
+bash mods/mystia-steward-bepinex/tools/preflight.sh
+```
+
+## 一键构建
+
+Windows PowerShell 从仓库根目录执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File mods\mystia-steward-bepinex\tools\build-release.ps1
+```
+
+该脚本会依次执行 `pnpm install --frozen-lockfile`、`preflight.ps1`、数据同步、伴随窗口前端构建、Tauri 伴随窗口构建、Mod DLL 构建和安装包生成。
+
+常用增量构建：
+
+```powershell
+# 跳过依赖安装
+powershell -ExecutionPolicy Bypass -File mods\mystia-steward-bepinex\tools\build-release.ps1 -SkipInstall
+
+# 只改 C# Mod，不重建伴随窗口前端和 Tauri 程序
+powershell -ExecutionPolicy Bypass -File mods\mystia-steward-bepinex\tools\build-release.ps1 -SkipInstall -SkipFrontendBuild -SkipTauriBuild
+```
+
+如果修改了 `src/companion/` 或 Tauri 窗口相关代码，不要使用 `-SkipTauriBuild`，否则安装包中的伴随窗口仍会使用旧产物。
+
+## 拆分构建
+
+需要拆分排查时，可从仓库根目录手动运行：
+
+```bash
+pnpm install
+pnpm build
+pnpm tauri:build
+dotnet build mods/mystia-steward-bepinex/MystiaSteward.BepInEx.csproj -c Release
+```
+
+仅重新生成安装包：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File mods\mystia-steward-bepinex\tools\package-release.ps1
+```
+
+Linux 或 Git Bash：
+
+```bash
+bash mods/mystia-steward-bepinex/tools/package-release.sh
+```
+
+常见产物：
+
+```text
+dist/
+src-tauri/target/release/mystia-steward-companion(.exe)
+src-tauri/target/release/bundle/nsis/*.exe
+mods/mystia-steward-bepinex/bin/Release/MystiaSteward.BepInEx.dll
+mods/mystia-steward-bepinex/dist/MystiaSteward-BepInEx.zip
+```
+
+PowerShell 脚本固定生成 `.zip`；bash 脚本在系统没有 `zip` 时会改为生成 `.tar.gz`。打包脚本会在检测到 `src-tauri/target/release/mystia-steward-companion(.exe)` 时自动复制到安装包的 `companion/` 子目录。
+
+## 数据同步
+
+结构化数据位于仓库根目录 `src/data/`。修改 JSON 数据后需要同步到 Mod：
+
+```bash
+bash mods/mystia-steward-bepinex/tools/sync-data.sh
+```
+
+`build-release.ps1` 会默认执行同等同步逻辑。
+
+## 运行时刷新行为
+
+Mod 会定期检查当前页面和游戏运行时状态。进入游戏并加载进度后，推荐状态来自当前内存中的运行时对象，不读取 `.memory` 存档文件。
+
+夜间经营中，`经营中 / Service` 页会读取 `GuestsManager`、稀客队列、`OrderController`、HUD、服务面板和桌位控制器中的稀客与订单。稀客进场、排队或入座后会先显示当前稀客；稀客点单后，工作台会按桌号列出稀客、料理词条和酒水词条，并复用稀客推荐算法计算候选料理、加料和酒水。
+
+若 IL2CPP getter 无法读取订单列表，Mod 会继续尝试 `AllOrdersData` 和 `PeekOrders()`；若 tag ID 读取失败，会从稀客控制器的订单文本方法读取中文词条。
+
+稀客推荐结果会按角色、点单词条、库存状态和加料上限缓存。自动刷新没有检测到库存变化时，不会在每个刷新周期重复枚举加料组合。
+
+如果没有检测到运行时数据，普客和稀客推荐页只显示运行时数据不可用，不会回退到“全内容可用”状态，避免误以为库存和解锁内容已经同步。
+
+## 本地 API 与伴随窗口
+
+Mod 默认监听：
+
+```text
+http://127.0.0.1:32145
+```
+
+端点：
+
+- `GET /health`：检查本地 API 是否启动。
+- `GET /snapshot`：读取最新运行态快照。快照由 Unity 主线程按自动刷新节奏生成，网络线程只返回缓存 JSON。
+- `GET /logs`：读取 `BepInEx/LogOutput.log` 尾部日志，供独立窗口日志页显示。
+
+Tauri 伴随窗口会显示实时 Mod 工作台，包含 `设置`、`普客`、`稀客`、`经营中`、`日志` 五个页签。它通过原生后端读取本地 API，不依赖浏览器或前端开发服务器。
+
+代理工具注意事项：
+
+- 默认使用 `127.0.0.1`，不要改成 `localhost`。
+- 若代理扩展或系统代理拦截本地请求，将 `127.0.0.1`、`localhost` 和回环地址加入直连/绕过列表。
+- 若伴随窗口无法连接，先确认日志中出现 `Local API listening at http://127.0.0.1:32145`，再检查端口占用。
+
+## 输入处理
+
+旧游戏内 IMGUI 面板默认关闭。启用后，面板脚本会释放锁定光标、消费 IMGUI 鼠标/键盘事件，并调用 `Input.ResetInputAxes()`，减少点击同时传递给游戏的情况。
+
+如果游戏逻辑在更早阶段直接读取鼠标输入，后续需要通过 Harmony Hook 游戏输入逻辑才能完全拦截。
+
+## 调试建议
+
+- `preflight.ps1` 报 DLL 缺失：先启动一次已安装 BepInEx 的游戏，再从 `BepInEx/core` 和 `BepInEx/interop` 复制所需引用。
+- 构建报 `Il2Cppmscorlib` 缺失：从 `游戏根目录/BepInEx/interop/Il2Cppmscorlib.dll` 复制到 `References/`。
+- PowerShell 执行 `bash ...` 报 WSL `/bin/bash` 不存在：在 Windows 下改用对应 `.ps1` 脚本。
+- 运行时数据不可用：查看设置页场景名、扫描状态和 `BepInEx/LogOutput.log`。
+- `经营中` 没有稀客或点单：查看 `经营扫描 / Scan status`；如果 `manager=missing`，需要核对夜间经营管理器字段；如果 `guests>0` 但 `orders=0`，提供 `Generated Special Guest Order` 日志和扫描状态。
+
+## 已知限制
+
+- 构建依赖本机 `References/` 中的 BepInEx、Il2CppInterop 和 Unity DLL；这些 DLL 不提交到仓库。
+- 运行时反射依赖游戏版本中的类型和字段名；如果游戏更新导致字段变化，需要根据导出的 `Assembly-CSharp` 项目调整 provider。
+- 旧游戏内 UI 使用 Unity IMGUI，仅保留回退用途；主要交互应放在 Tauri 独立伴随窗口中。

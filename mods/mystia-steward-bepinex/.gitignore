@@ -1,0 +1,8 @@
+bin/
+obj/
+dist/
+References/*.dll
+References/*.dll.config
+References/*.xml
+References/*.pdb
+References/*.mdb

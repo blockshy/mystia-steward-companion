@@ -1,0 +1,241 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+use std::io::{Read, Write};
+use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::thread;
+use std::time::{Duration, Instant};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{Manager, WindowEvent};
+
+const DEFAULT_API_ENDPOINT: &str = "http://127.0.0.1:32145";
+const CONTROL_PORT: u16 = 32146;
+const CONTROL_MESSAGE: &[u8] = b"mystia-steward-companion:show\n";
+
+#[tauri::command]
+fn fetch_snapshot(endpoint: String) -> Result<String, String> {
+    request_local_api(&endpoint, None)
+}
+
+fn request_local_api(endpoint: &str, path_override: Option<&str>) -> Result<String, String> {
+    let target = LocalApiTarget::parse(&endpoint)?;
+    let path = path_override.unwrap_or(&target.path);
+    let address = SocketAddr::from((Ipv4Addr::LOCALHOST, target.port));
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_millis(1800))
+        .map_err(|error| format!("connect failed: {error}"))?;
+
+    stream
+        .set_read_timeout(Some(Duration::from_millis(1800)))
+        .map_err(|error| format!("set read timeout failed: {error}"))?;
+    stream
+        .set_write_timeout(Some(Duration::from_millis(1200)))
+        .map_err(|error| format!("set write timeout failed: {error}"))?;
+
+    let request = format!(
+        "GET {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n",
+        path, target.port
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|error| format!("request failed: {error}"))?;
+
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .map_err(|error| format!("response failed: {error}"))?;
+
+    parse_http_body(&response)
+}
+
+#[tauri::command]
+fn launch_api_endpoint() -> Option<String> {
+    std::env::args()
+        .find_map(|arg| arg.strip_prefix("--api=").map(|value| value.to_string()))
+}
+
+struct LocalApiTarget {
+    port: u16,
+    path: String,
+}
+
+impl LocalApiTarget {
+    fn parse(input: &str) -> Result<Self, String> {
+        let trimmed = input.trim().trim_end_matches('/');
+        let without_scheme = trimmed
+            .strip_prefix("http://")
+            .or_else(|| trimmed.strip_prefix("https://"))
+            .unwrap_or(trimmed);
+        let (authority, path) = if let Some((host, rest)) = without_scheme.split_once('/') {
+            let normalized_path = if rest.is_empty() {
+                "/snapshot".to_string()
+            } else {
+                format!("/{rest}")
+            };
+            (host, normalized_path)
+        } else {
+            (without_scheme, "/snapshot".to_string())
+        };
+
+        let (host, port) = parse_authority(authority)?;
+        if host != "127.0.0.1" && host != "localhost" {
+            return Err("only 127.0.0.1 loopback endpoints are allowed".to_string());
+        }
+
+        Ok(Self {
+            port,
+            path: if path == "/" {
+                "/snapshot".to_string()
+            } else {
+                path
+            },
+        })
+    }
+}
+
+fn parse_authority(authority: &str) -> Result<(&str, u16), String> {
+    let (host, port_text) = authority
+        .rsplit_once(':')
+        .ok_or_else(|| "missing local API port".to_string())?;
+    let port = port_text
+        .parse::<u16>()
+        .map_err(|_| "invalid local API port".to_string())?;
+    Ok((host, port))
+}
+
+fn parse_http_body(response: &str) -> Result<String, String> {
+    let (head, body) = response
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| "invalid HTTP response".to_string())?;
+    let status = head.lines().next().unwrap_or_default();
+    if !status.contains(" 200 ") {
+        return Err(status.to_string());
+    }
+
+    Ok(body.to_string())
+}
+
+fn notify_existing_instance() -> bool {
+    let address = SocketAddr::from((Ipv4Addr::LOCALHOST, CONTROL_PORT));
+    let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(250)) else {
+        return false;
+    };
+
+    stream.write_all(CONTROL_MESSAGE).is_ok()
+}
+
+fn start_instance_control_server(app: tauri::AppHandle) {
+    thread::spawn(move || {
+        let address = SocketAddr::from((Ipv4Addr::LOCALHOST, CONTROL_PORT));
+        let Ok(listener) = TcpListener::bind(address) else {
+            return;
+        };
+
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else {
+                continue;
+            };
+            let mut buffer = [0u8; 64];
+            let Ok(size) = stream.read(&mut buffer) else {
+                continue;
+            };
+            if buffer[..size].starts_with(CONTROL_MESSAGE) {
+                show_main_window(&app);
+            }
+        }
+    });
+}
+
+fn start_game_shutdown_monitor(app: tauri::AppHandle, endpoint: String) {
+    thread::spawn(move || {
+        let mut connected_once = false;
+        let mut missing_since: Option<Instant> = None;
+
+        loop {
+            thread::sleep(Duration::from_secs(3));
+            if request_local_api(&endpoint, Some("/health")).is_ok() {
+                connected_once = true;
+                missing_since = None;
+                continue;
+            }
+
+            if !connected_once {
+                continue;
+            }
+
+            let missing_at = missing_since.get_or_insert_with(Instant::now);
+            if missing_at.elapsed() >= Duration::from_secs(8) {
+                app.exit(0);
+                break;
+            }
+        }
+    });
+}
+
+fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
+    let show = MenuItem::with_id(app, "show", "显示夜雀掌柜", true, None::<&str>)?;
+    let reconnect = MenuItem::with_id(app, "reconnect", "重连游戏", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &reconnect, &quit])?;
+
+    let mut tray = TrayIconBuilder::new()
+        .tooltip("夜雀掌柜")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "show" | "reconnect" => show_main_window(app),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        });
+
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+
+    tray.build(app)?;
+    Ok(())
+}
+
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+fn main() {
+    if notify_existing_instance() {
+        return;
+    }
+
+    tauri::Builder::default()
+        .setup(|app| {
+            setup_tray(app)?;
+            let app_handle = app.handle().clone();
+            start_instance_control_server(app_handle.clone());
+            start_game_shutdown_monitor(
+                app_handle,
+                launch_api_endpoint().unwrap_or_else(|| DEFAULT_API_ENDPOINT.to_string()),
+            );
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
+        .invoke_handler(tauri::generate_handler![fetch_snapshot, launch_api_endpoint])
+        .run(tauri::generate_context!())
+        .expect("failed to run Mystia Steward companion");
+}
