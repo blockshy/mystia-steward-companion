@@ -655,7 +655,7 @@ function ModRarePanel({
                 <div className="mb-1 text-xs text-muted-foreground">稀客</div>
                 <Select value={String(selectedCustomer.id)} onValueChange={(value) => onRareCustomerChange(Number(value))}>
                   <SelectTrigger className="w-full">
-                    <SelectValue />
+                    <SelectValue>{selectedCustomer.name}</SelectValue>
                   </SelectTrigger>
                   <SelectContent>
                     {customers.map((customer) => (
@@ -1424,7 +1424,7 @@ function buildLowStockEntries(
         qty,
       };
     })
-    .filter((item) => Number.isFinite(item.id))
+    .filter((item) => Number.isFinite(item.id) && item.qty >= 0)
     .sort((a, b) => a.qty - b.qty || a.id - b.id)
     .slice(0, limit);
 }
