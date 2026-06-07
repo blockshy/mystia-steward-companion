@@ -7,6 +7,7 @@ namespace MystiaStewardCompanion.Save;
 internal sealed class RuntimeMappedGuestCatalog
 {
     private const string DataBaseCharacterTypeName = "GameData.Core.Collections.CharacterUtility.DataBaseCharacter";
+    private const string DataBaseLanguageTypeName = "GameData.CoreLanguage.Collections.DataBaseLanguage";
     private static readonly TimeSpan RetryInterval = TimeSpan.FromSeconds(5);
     private static readonly object SyncRoot = new();
     private static RuntimeMappedGuestCatalogSnapshot _snapshot = RuntimeMappedGuestCatalogSnapshot.Empty("not loaded");
@@ -14,10 +15,18 @@ internal sealed class RuntimeMappedGuestCatalog
     private static bool _loaded;
 
     private readonly RareCustomerIdentityResolver _identityResolver;
+    private readonly IReadOnlyDictionary<int, RareCustomer> _localRareCustomersById;
+    private readonly IReadOnlyDictionary<string, RareCustomer> _uniqueLocalRareCustomersByName;
 
     public RuntimeMappedGuestCatalog(DataRepository repository)
     {
         _identityResolver = repository.RareCustomerIdentities;
+        _localRareCustomersById = repository.RareCustomersById;
+        _uniqueLocalRareCustomersByName = repository.RareCustomers
+            .Where(customer => !string.IsNullOrWhiteSpace(customer.Name))
+            .GroupBy(customer => customer.Name.Trim(), StringComparer.Ordinal)
+            .Where(group => group.Count() == 1)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
     }
 
     public RuntimeMappedGuestCatalogSnapshot Snapshot()
@@ -76,17 +85,15 @@ internal sealed class RuntimeMappedGuestCatalog
         {
             return RuntimeMappedGuestCatalogSnapshot.Empty("DataBaseCharacter type not found");
         }
+        var languageType = FindType(DataBaseLanguageTypeName);
 
         var mappedGuests = InvokeStaticMethod(dataBaseCharacterType, "GetAllMappedGuests");
-        if (mappedGuests == null)
-        {
-            return RuntimeMappedGuestCatalogSnapshot.Empty("GetAllMappedGuests returned null");
-        }
-
         var entries = new List<RuntimeMappedGuestEntry>();
+        var mappedCount = 0;
         foreach (var mappedGuest in EnumerateObjects(mappedGuests))
         {
             if (mappedGuest == null) continue;
+            mappedCount++;
 
             var runtimeId = ToNullableInt(GetMemberValue(mappedGuest, "ID") ?? GetMemberValue(mappedGuest, "Id"));
             var runtimeStringId = GetMemberValue(mappedGuest, "StrID")?.ToString()
@@ -101,8 +108,8 @@ internal sealed class RuntimeMappedGuestCatalog
             var sourceDisplayName = GetMemberValue(sourceGuest, "Name")?.ToString()
                 ?? GetMemberValue(sourceGuest, "DisplayName")?.ToString()
                 ?? GetMemberValue(sourceGuest, "CharacterName")?.ToString();
-            var identity = _identityResolver.Resolve(sourceGuestId, sourceStringId)
-                ?? _identityResolver.Resolve(sourceGuestId, sourceDisplayName);
+            sourceDisplayName = ResolveLanguageName(languageType, "GetSpecialGuestLang", sourceGuestId, sourceDisplayName);
+            var resolved = ResolveRuntimeIdentity(sourceGuestId, sourceStringId, sourceDisplayName);
 
             entries.Add(new RuntimeMappedGuestEntry
             {
@@ -111,21 +118,118 @@ internal sealed class RuntimeMappedGuestCatalog
                 SourceGuestId = sourceGuestId,
                 SourceStringId = sourceStringId?.Trim() ?? "",
                 SourceDisplayName = sourceDisplayName?.Trim() ?? "",
-                LocalRareCustomerId = identity?.Id,
-                LocalRareCustomerName = identity?.Name ?? "",
+                LocalRareCustomerId = resolved.Identity?.Id,
+                LocalRareCustomerName = resolved.Identity?.Name ?? "",
                 OverrideDestination = overrideDestination,
+                AliasSource = resolved.Source == "unresolved" ? "mapped-unresolved" : $"mapped-{resolved.Source}",
                 RuntimeTypeName = mappedGuest.GetType().FullName ?? mappedGuest.GetType().Name,
             });
         }
 
+        var runtimeGuests = InvokeStaticMethod(dataBaseCharacterType, "GetSpecialGuestsAndMappedGuests");
+        var runtimeGuestCount = 0;
+        foreach (var runtimeGuest in EnumerateObjects(runtimeGuests))
+        {
+            if (runtimeGuest == null) continue;
+            runtimeGuestCount++;
+
+            var runtimeId = ToNullableInt(GetMemberValue(runtimeGuest, "ID") ?? GetMemberValue(runtimeGuest, "Id"));
+            var runtimeStringId = GetMemberValue(runtimeGuest, "StringId")?.ToString()
+                ?? GetMemberValue(runtimeGuest, "StrID")?.ToString()
+                ?? "";
+            var memberDisplayName = GetMemberValue(runtimeGuest, "Name")?.ToString()
+                ?? GetMemberValue(runtimeGuest, "DisplayName")?.ToString()
+                ?? GetMemberValue(runtimeGuest, "CharacterName")?.ToString();
+            var runtimeDisplayName = ResolveLanguageName(languageType, "GetSpecialGuestLang", runtimeId, memberDisplayName);
+            var resolved = ResolveRuntimeIdentity(runtimeId, runtimeStringId, runtimeDisplayName);
+
+            entries.Add(new RuntimeMappedGuestEntry
+            {
+                RuntimeId = runtimeId,
+                RuntimeStringId = runtimeStringId.Trim(),
+                SourceGuestId = runtimeId,
+                SourceStringId = runtimeStringId.Trim(),
+                SourceDisplayName = runtimeDisplayName.Trim(),
+                LocalRareCustomerId = resolved.Identity?.Id,
+                LocalRareCustomerName = resolved.Identity?.Name ?? "",
+                OverrideDestination = "",
+                AliasSource = resolved.Source == "unresolved" ? "runtime-unresolved" : $"runtime-{resolved.Source}",
+                RuntimeTypeName = runtimeGuest.GetType().FullName ?? runtimeGuest.GetType().Name,
+            });
+        }
+
         var orderedEntries = entries
+            .GroupBy(BuildEntryKey, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group
+                .OrderByDescending(entry => entry.LocalRareCustomerId.HasValue)
+                .ThenBy(entry => AliasSourcePriority(entry.AliasSource))
+                .First())
             .OrderBy(entry => entry.RuntimeId ?? int.MaxValue)
             .ThenBy(entry => entry.RuntimeStringId, StringComparer.Ordinal)
             .ToList();
         return new RuntimeMappedGuestCatalogSnapshot(
             DateTime.UtcNow,
             orderedEntries,
-            $"loaded: {orderedEntries.Count}");
+            $"loaded: entries={orderedEntries.Count}; mapped={mappedCount}; runtimeGuests={runtimeGuestCount}; resolved={orderedEntries.Count(entry => entry.LocalRareCustomerId.HasValue)}");
+    }
+
+    private ResolvedRuntimeIdentity ResolveRuntimeIdentity(int? runtimeId, string? runtimeStringId, string? runtimeDisplayName)
+    {
+        if (runtimeId.HasValue && _localRareCustomersById.TryGetValue(runtimeId.Value, out var localById))
+        {
+            return new ResolvedRuntimeIdentity(new RareCustomerIdentity(localById.Id, localById.Name), "local-id");
+        }
+
+        if (TryResolveByUniqueLocalName(runtimeDisplayName, out var localByDisplayName))
+        {
+            return new ResolvedRuntimeIdentity(new RareCustomerIdentity(localByDisplayName.Id, localByDisplayName.Name), "name");
+        }
+
+        var manualIdentity = _identityResolver.Resolve(runtimeId, runtimeStringId)
+            ?? _identityResolver.Resolve(runtimeId, runtimeDisplayName);
+        return manualIdentity == null
+            ? new ResolvedRuntimeIdentity(null, "unresolved")
+            : new ResolvedRuntimeIdentity(manualIdentity, "manual-alias");
+    }
+
+    private bool TryResolveByUniqueLocalName(string? runtimeDisplayName, out RareCustomer customer)
+    {
+        customer = null!;
+        if (!IsUsableAliasName(runtimeDisplayName)) return false;
+        return _uniqueLocalRareCustomersByName.TryGetValue(runtimeDisplayName!.Trim(), out customer!);
+    }
+
+    private static bool IsUsableAliasName(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        var name = value.Trim();
+        if (name.Contains("?", StringComparison.Ordinal)) return false;
+        if (name.StartsWith("#", StringComparison.Ordinal)) return false;
+        if (name.Equals("Null", StringComparison.OrdinalIgnoreCase)) return false;
+        return true;
+    }
+
+    private static string BuildEntryKey(RuntimeMappedGuestEntry entry)
+    {
+        if (entry.RuntimeId.HasValue) return $"id:{entry.RuntimeId.Value}";
+        if (!string.IsNullOrWhiteSpace(entry.RuntimeStringId)) return $"str:{entry.RuntimeStringId}";
+        return $"type:{entry.RuntimeTypeName}:{entry.SourceDisplayName}";
+    }
+
+    private static int AliasSourcePriority(string aliasSource)
+    {
+        return aliasSource switch
+        {
+            "mapped-local-id" => 0,
+            "runtime-local-id" => 1,
+            "mapped-name" => 2,
+            "runtime-name" => 3,
+            "mapped-manual-alias" => 4,
+            "runtime-manual-alias" => 5,
+            "mapped-unresolved" => 6,
+            "runtime-unresolved" => 7,
+            _ => 10,
+        };
     }
 
     private static Type? FindType(string fullName)
@@ -149,8 +253,9 @@ internal sealed class RuntimeMappedGuestCatalog
         return null;
     }
 
-    private static object? InvokeStaticMethod(Type type, string name, params object?[] args)
+    private static object? InvokeStaticMethod(Type? type, string name, params object?[] args)
     {
+        if (type == null) return null;
         var method = type
             .GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
             .FirstOrDefault(candidate => candidate.Name == name && candidate.GetParameters().Length == args.Length);
@@ -163,6 +268,54 @@ internal sealed class RuntimeMappedGuestCatalog
         catch
         {
             return null;
+        }
+    }
+
+    private static string ResolveLanguageName(Type? languageType, string methodName, int? id, string? fallback)
+    {
+        if (languageType != null && id.HasValue)
+        {
+            var value = InvokeStaticMethod(languageType, methodName, id.Value);
+            var text = CleanText(value);
+            if (!string.IsNullOrWhiteSpace(text)) return text;
+        }
+
+        return string.IsNullOrWhiteSpace(fallback) ? "" : fallback.Trim();
+    }
+
+    private static string CleanText(object? value)
+    {
+        if (value == null) return "";
+        if (value is string text) return text.Trim();
+
+        foreach (var memberName in new[]
+                 {
+                     "Name",
+                     "DisplayName",
+                     "Title",
+                     "Label",
+                     "Text",
+                     "name",
+                     "title",
+                     "text",
+                 })
+        {
+            var memberValue = GetMemberValue(value, memberName);
+            if (memberValue == null || ReferenceEquals(memberValue, value)) continue;
+            var memberText = memberValue.ToString()?.Trim();
+            if (!string.IsNullOrWhiteSpace(memberText)) return memberText;
+        }
+
+        try
+        {
+            var objectText = value.ToString()?.Trim() ?? "";
+            return objectText.StartsWith(value.GetType().FullName ?? "", StringComparison.Ordinal)
+                ? ""
+                : objectText;
+        }
+        catch
+        {
+            return "";
         }
     }
 
@@ -340,5 +493,8 @@ internal sealed class RuntimeMappedGuestEntry
     public int? LocalRareCustomerId { get; init; }
     public string LocalRareCustomerName { get; init; } = "";
     public string OverrideDestination { get; init; } = "";
+    public string AliasSource { get; init; } = "";
     public string RuntimeTypeName { get; init; } = "";
 }
+
+internal sealed record ResolvedRuntimeIdentity(RareCustomerIdentity? Identity, string Source);

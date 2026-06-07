@@ -198,7 +198,7 @@ internal sealed class RuntimeStaticDataCatalog
         AppendRuntimeTable(
             lines,
             "Ingredients",
-            ReadIds(coreType, "GetAllIngredients", errors),
+            ReadIds(coreType, "GetAllIngredients", "Ingredients", errors),
             id =>
             {
                 var ingredient = InvokeStaticMethod(coreType, "RefIngredient", id);
@@ -209,7 +209,7 @@ internal sealed class RuntimeStaticDataCatalog
         AppendRuntimeTable(
             lines,
             "Beverages",
-            ReadIds(coreType, "GetAllBeverages", errors),
+            ReadIds(coreType, "GetAllBeverages", "Beverages", errors),
             id =>
             {
                 var beverage = InvokeStaticMethod(coreType, "RefBeverage", id);
@@ -220,7 +220,7 @@ internal sealed class RuntimeStaticDataCatalog
         AppendRuntimeTable(
             lines,
             "Foods",
-            ReadIds(coreType, "GetAllFoods", errors),
+            ReadIds(coreType, "GetAllFoods", "Foods", errors),
             id =>
             {
                 var food = InvokeStaticMethod(coreType, "RefFood", id);
@@ -231,7 +231,7 @@ internal sealed class RuntimeStaticDataCatalog
         AppendRuntimeTable(
             lines,
             "Recipes",
-            ReadIds(coreType, "GetAllRecipes", errors),
+            ReadIds(coreType, "GetAllRecipes", "Recipes", errors),
             id =>
             {
                 var recipe = InvokeStaticMethod(coreType, "RefRecipe", id);
@@ -279,8 +279,12 @@ internal sealed class RuntimeStaticDataCatalog
             guest =>
             {
                 var id = ToNullableInt(GetMemberValue(guest, "Id") ?? GetMemberValue(guest, "ID"));
+                var stringId = GetMemberValue(guest, "StringId")?.ToString()
+                    ?? GetMemberValue(guest, "StrID")?.ToString()
+                    ?? "";
                 RareCustomer? local = null;
                 if (id.HasValue) _localRareCustomersById.TryGetValue(id.Value, out local);
+                local ??= ResolveMappedLocalCustomer(mappedGuestSnapshot, id, stringId);
                 return FormatSpecialGuestLine(guest, id, local, languageType, foodTags, beverageTags);
             },
             errors);
@@ -297,7 +301,7 @@ internal sealed class RuntimeStaticDataCatalog
                     (id.HasValue && entry.RuntimeId == id.Value)
                     || (!string.IsNullOrWhiteSpace(stringId)
                         && string.Equals(entry.RuntimeStringId, stringId, StringComparison.OrdinalIgnoreCase)));
-                return $"id={FormatNullable(id)}; stringId={stringId}; name={ResolveLanguageName(languageType, "GetSpecialGuestLang", id, mappedEntry?.LocalRareCustomerName)}; mappedSourceId={FormatNullable(mappedEntry?.SourceGuestId)}; mappedSourceName={mappedEntry?.SourceDisplayName ?? ""}; localId={FormatNullable(mappedEntry?.LocalRareCustomerId)}; localName={mappedEntry?.LocalRareCustomerName ?? ""}; overrideDestination={mappedEntry?.OverrideDestination ?? ""}";
+                return $"id={FormatNullable(id)}; stringId={stringId}; name={ResolveLanguageName(languageType, "GetSpecialGuestLang", id, mappedEntry?.LocalRareCustomerName)}; mappedSourceId={FormatNullable(mappedEntry?.SourceGuestId)}; mappedSourceName={mappedEntry?.SourceDisplayName ?? ""}; localId={FormatNullable(mappedEntry?.LocalRareCustomerId)}; localName={mappedEntry?.LocalRareCustomerName ?? ""}; aliasSource={mappedEntry?.AliasSource ?? ""}; overrideDestination={mappedEntry?.OverrideDestination ?? ""}";
             },
             errors);
 
@@ -332,7 +336,7 @@ internal sealed class RuntimeStaticDataCatalog
         AppendRuntimeTable(
             lines,
             "Izakayas",
-            ReadIds(coreType, "GetAllIzakayas", errors),
+            ReadIds(coreType, "GetAllIzakayas", "Izakayas", errors),
             id =>
             {
                 var izakaya = InvokeStaticMethod(coreType, "RefIzakaya", id);
@@ -353,16 +357,33 @@ internal sealed class RuntimeStaticDataCatalog
         var stringId = GetMemberValue(guest, "StringId")?.ToString()
             ?? GetMemberValue(guest, "StrID")?.ToString()
             ?? "";
-        return $"id={FormatNullable(id)}; stringId={stringId}; name={ResolveLanguageName(languageType, "GetSpecialGuestLang", id, local?.Name)}; local={FormatLocalName(local?.Name)}; likeFood={FormatTagCollection(GetMemberValue(guest, "LikeFoodTag"), foodTags)}; likeFoodOriginal={FormatTagCollection(GetMemberValue(guest, "LikeFoodTagOriginal"), foodTags)}; likeFoodUnfolded={FormatTagCollection(GetMemberValue(guest, "LikeFoodTagUnfolded"), foodTags)}; hateFood={FormatTagCollection(GetMemberValue(guest, "HateFoodTag"), foodTags)}; hateFoodOriginal={FormatTagCollection(GetMemberValue(guest, "HateFoodTagOriginal"), foodTags)}; likeBev={FormatTagCollection(GetMemberValue(guest, "LikeBevTag"), beverageTags)}; likeBevOriginal={FormatTagCollection(GetMemberValue(guest, "LikeBevTagOriginal"), beverageTags)}; likeBevUnfolded={FormatTagCollection(GetMemberValue(guest, "LikeBevTagUnfolded"), beverageTags)}; specialFoodText={ResolveLanguageName(languageType, "GetSpecialFoodTagLang", id, null)}; specialBevText={ResolveLanguageName(languageType, "GetSpecialBevTagLang", id, null)}; spawnType={FormatMember(guest, "SpawnType")}; destination={FormatMember(guest, "Destination")}; doNotShow={FormatMember(guest, "DoNotShowInNotebook")}; easter={FormatEasterData(GetMemberValue(guest, "GuestFoodEasterEggData"))}; localPlaces={FormatStringCollection(local?.Places)}; localPositive={FormatStringCollection(local?.PositiveTags)}; localNegative={FormatStringCollection(local?.NegativeTags)}; localBev={FormatStringCollection(local?.BeverageTags)}";
+        return $"id={FormatNullable(id)}; stringId={stringId}; name={ResolveLanguageName(languageType, "GetSpecialGuestLang", id, local?.Name)}; local={FormatLocalName(local?.Name)}; likeFood={FormatTagCollection(GetMemberValue(guest, "LikeFoodTag"), foodTags)}; likeFoodOriginal={FormatTagCollection(GetMemberValue(guest, "LikeFoodTagOriginal"), foodTags)}; likeFoodUnfolded={FormatTagCollection(GetMemberValue(guest, "LikeFoodTagUnfolded"), foodTags)}; hateFood={FormatTagCollection(GetMemberValue(guest, "HateFoodTag"), foodTags)}; hateFoodOriginal={FormatTagCollection(GetMemberValue(guest, "HateFoodTagOriginal"), foodTags)}; likeBev={FormatTagCollection(GetMemberValue(guest, "LikeBevTag"), beverageTags)}; likeBevOriginal={FormatTagCollection(GetMemberValue(guest, "LikeBevTagOriginal"), beverageTags)}; likeBevUnfolded={FormatTagCollection(GetMemberValue(guest, "LikeBevTagUnfolded"), beverageTags)}; specialFoodText={ResolveLanguageDictionary(languageType, "GetSpecialFoodTagLang", id, foodTags)}; specialBevText={ResolveLanguageDictionary(languageType, "GetSpecialBevTagLang", id, beverageTags)}; spawnType={FormatMember(guest, "SpawnType")}; destination={FormatMember(guest, "Destination")}; doNotShow={FormatMember(guest, "DoNotShowInNotebook")}; easter={FormatEasterData(GetMemberValue(guest, "GuestFoodEasterEggData"))}; localPlaces={FormatStringCollection(local?.Places)}; localPositive={FormatStringCollection(local?.PositiveTags)}; localNegative={FormatStringCollection(local?.NegativeTags)}; localBev={FormatStringCollection(local?.BeverageTags)}";
     }
 
-    private static void AppendRuntimeTable(List<string> lines, string title, IReadOnlyList<int> ids, Func<int, string> formatter)
+    private RareCustomer? ResolveMappedLocalCustomer(RuntimeMappedGuestCatalogSnapshot mappedGuestSnapshot, int? id, string? stringId)
+    {
+        var mappedEntry = mappedGuestSnapshot.Entries.FirstOrDefault(entry =>
+            (id.HasValue && entry.RuntimeId == id.Value)
+            || (!string.IsNullOrWhiteSpace(stringId)
+                && string.Equals(entry.RuntimeStringId, stringId.Trim(), StringComparison.OrdinalIgnoreCase)));
+        if (mappedEntry == null || !mappedEntry.LocalRareCustomerId.HasValue) return null;
+        var localId = mappedEntry.LocalRareCustomerId.Value;
+        return _localRareCustomersById.TryGetValue(localId, out var local)
+            ? local
+            : null;
+    }
+
+    private static void AppendRuntimeTable(List<string> lines, string title, RuntimeIdReadResult readResult, Func<int, string> formatter)
     {
         lines.Add("");
         lines.Add($"[{title}]");
-        lines.Add($"count={ids.Count}");
+        lines.Add($"count={readResult.Ids.Count}");
+        foreach (var diagnostic in readResult.Diagnostics)
+        {
+            lines.Add($"read={diagnostic}");
+        }
 
-        foreach (var id in ids.OrderBy(id => id))
+        foreach (var id in readResult.Ids.OrderBy(id => id))
         {
             string formatted;
             try
@@ -404,23 +425,47 @@ internal sealed class RuntimeStaticDataCatalog
         }
     }
 
-    private IReadOnlyList<int> ReadIds(Type coreType, string methodName, List<string> errors)
+    private RuntimeIdReadResult ReadIds(Type coreType, string methodName, string fallbackMemberName, List<string> errors)
     {
+        var diagnostics = new List<string>();
         try
         {
-            return EnumerateObjects(InvokeStaticMethod(coreType, methodName))
+            var methodValue = InvokeStaticMethod(coreType, methodName);
+            var methodIds = EnumerateIds(methodValue);
+            diagnostics.Add($"method={methodName}; type={FormatTypeName(methodValue)}; count={methodIds.Count}");
+            if (methodIds.Count > 0)
+            {
+                return new RuntimeIdReadResult(methodIds, diagnostics);
+            }
+
+            var fallbackValue = GetStaticMemberValue(coreType, fallbackMemberName);
+            var fallbackIds = EnumerateKeyValuePairs(fallbackValue)
+                .Select(pair => ToNullableInt(pair.Key))
+                .Where(id => id.HasValue)
+                .Select(id => id!.Value)
+                .Distinct()
+                .OrderBy(id => id)
+                .ToList();
+            diagnostics.Add($"fallbackMember={fallbackMemberName}; type={FormatTypeName(fallbackValue)}; keyCount={fallbackIds.Count}");
+            return new RuntimeIdReadResult(fallbackIds, diagnostics);
+        }
+        catch (Exception ex)
+        {
+            errors.Add($"{methodName}/{fallbackMemberName}: {ex.Message}");
+            diagnostics.Add($"error={ex.GetType().Name}: {ex.Message}");
+            return new RuntimeIdReadResult(Array.Empty<int>(), diagnostics);
+        }
+    }
+
+    private static IReadOnlyList<int> EnumerateIds(object? value)
+    {
+        return EnumerateObjects(value)
                 .Select(ToNullableInt)
                 .Where(id => id.HasValue)
                 .Select(id => id!.Value)
                 .Distinct()
                 .OrderBy(id => id)
                 .ToList();
-        }
-        catch (Exception ex)
-        {
-            errors.Add($"{methodName}: {ex.Message}");
-            return Array.Empty<int>();
-        }
     }
 
     private static IReadOnlyDictionary<int, string> ReadTagDictionary(
@@ -462,6 +507,26 @@ internal sealed class RuntimeStaticDataCatalog
         }
 
         return string.IsNullOrWhiteSpace(fallback) ? "" : fallback.Trim();
+    }
+
+    private static string ResolveLanguageDictionary(
+        Type? languageType,
+        string methodName,
+        int? id,
+        IReadOnlyDictionary<int, string> tagNames)
+    {
+        if (languageType == null || !id.HasValue) return "[]";
+
+        var parts = EnumerateKeyValuePairs(InvokeStaticMethod(languageType, methodName, id.Value))
+            .Select(pair =>
+            {
+                var key = FormatTagKey(pair.Key, tagNames);
+                var value = CleanText(pair.Value);
+                return string.IsNullOrWhiteSpace(value) ? key : $"{key}={value}";
+            })
+            .Where(part => !string.IsNullOrWhiteSpace(part))
+            .ToList();
+        return parts.Count == 0 ? "[]" : $"[{string.Join(", ", parts)}]";
     }
 
     private static string FormatMember(object? instance, string memberName)
@@ -671,6 +736,11 @@ internal sealed class RuntimeStaticDataCatalog
 
             type = type.BaseType!;
         }
+    }
+
+    private static string FormatTypeName(object? value)
+    {
+        return value == null ? "null" : value.GetType().FullName ?? value.GetType().Name;
     }
 
     private static string CleanText(object? value)
@@ -986,3 +1056,5 @@ internal sealed class RuntimeStaticDataSnapshot
         };
     }
 }
+
+internal sealed record RuntimeIdReadResult(IReadOnlyList<int> Ids, IReadOnlyList<string> Diagnostics);

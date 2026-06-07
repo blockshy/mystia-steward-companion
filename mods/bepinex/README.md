@@ -113,9 +113,9 @@ BepInEx/config/com.tyukki.mystia-steward-companion.cfg
 
 开启经营诊断后，除 `night-business-diagnostics.log` 外，还会写入运行时固定数据快照：
 
-- `runtime-static-data.log`：稀客事件变体映射表。
+- `runtime-static-data.log`：稀客事件变体映射表和运行时同名别名归一化来源。
 - `runtime-tags.log`：料理/酒水标签文本和 TagRule。
-- `runtime-database-diff.log`：食材、酒水、料理、菜品运行时数据与本地数据对照。
+- `runtime-database-diff.log`：食材、酒水、料理、菜品运行时数据与本地数据对照，并记录运行时表读取方式。
 - `runtime-guests.log`：普客、稀客、映射稀客和特殊料理规则。
 - `runtime-izakayas.log`：经营场景、场景标签和客人池。
 

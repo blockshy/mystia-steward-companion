@@ -29,7 +29,7 @@
 9. 如果 `GuestGroupController.AllOrders` 读不到订单，则继续读取 `AllOrdersData`，并用 `PeekOrders()` 读取栈顶订单兜底。
 10. 默认不依赖 BepInEx/Unity 日志识别点单。运行时捕获会将 IL2CPP 暴露的 `OrderBase` 通过 `TryCast<SpecialOrder>()` 重新包装为真实特殊订单，再读取 `SpecialOrder.ToString()`、`RequestFoodTag` / `RequestBeverageTag`、必要的 `SpecialGuestsController.GetOrderBevText(...)` 和当前桌位稀客补齐信息。`0` 是有效料理 tag（`肉`），但只有确认属性读取成功时才能按 0 映射；酒水 tag 不要复用料理 tag 映射，负数酒水 tag id 视为未识别而不是显示为 `#-1`。特殊订单文本可能返回稀客台词而不是标准标签，因此 provider 会优先用料理 tag id 映射，并从本地料理/酒水候选标签中抽取标准词条。同一订单被多个 hook 捕获时会合并保留更完整的料理/酒水 tag，避免 `OrderAdd` 用缺失字段覆盖 `PostGenerateOrder` 的有效文本。不要用基类 `foodRequest` / `beverageRequest` 作为特殊订单兜底，这两个字段在 `SpecialOrder` 上可能对应普通食物或酒水请求，容易把 `肉/高酒精` 读成 `素` 等错误词条。
 11. 订单删除不再根据 `OrderController.GetShowInUIOrders()` 的空列表全量清空；HUD 订单列表会在点单、服务或刷新期间短暂为空。运行时捕获只在 `RemoveFromOrder`、`PartnerManager` 的 `OrderRemove`，或 `FoodDelivered` / `BeverageDelivered` 后订单已 `IsFullfilled` 时删除对应订单。
-12. 运行时稀客身份会归一化到本地 `customer_rare.json`。Provider 会读取游戏固定数据 `GameData.Core.Collections.CharacterUtility.DataBaseCharacter.GetAllMappedGuests()`，用 `MappedSpecialGuest.ID` / `StrID` 映射到 `SourceGuestID`，再落到本地稀客 ID 和名称；读取不到时再回退到 `StringId` / 名称别名和已知事件变体。当前手工兜底变体包括 `Tewi_HardSell -> 因幡帝`、`Remilia -> 蕾米莉亚`。归一化后订单和活跃稀客都使用本地 ID，伴随窗口才能复用本地喜好与推荐规则。
+12. 运行时稀客身份会归一化到本地 `customer_rare.json`。Provider 会同时读取 `GameData.Core.Collections.CharacterUtility.DataBaseCharacter.GetAllMappedGuests()` 和 `GetSpecialGuestsAndMappedGuests()`：固定映射优先使用 `MappedSpecialGuest.ID` / `StrID` 落到 `SourceGuestID`，完整运行时稀客表会按游戏语言名称与本地唯一同名稀客建立别名。读取不到时再回退到 `StringId` / 名称别名和少量手工兜底。归一化后订单和活跃稀客都使用本地 ID，伴随窗口才能复用本地喜好与推荐规则。
 13. 带具体桌号的运行时捕获订单只能匹配同一桌活跃稀客；未入座或排队状态的 `desk=-1` 稀客不能保活旧订单，避免同一稀客再次出现时复活上一次经营的历史点单。
 14. 从 `GameData.RunTime.NightSceneUtility.IzakayaConfigure.IzakayaData` 尝试识别当前经营场景。
 15. 游戏内部 `DeskCode` 从 0 开始；数据层保留原值用于去重，UI 显示时统一加 1。
@@ -38,7 +38,7 @@
 
 运行时捕获订单维护 `SpecialOrderRuntimeCapture.ChangeVersion`。当订单新增、合并或移除时，UI 控制器会在 Unity 主线程等待 0.2 秒防抖后强制刷新经营数据并发布本地 API 快照；基础运行时库存仍按 `AutoRefreshSeconds` 慢刷新，避免恢复高频反射扫描导致掉帧。伴随窗口在 `经营中` 和稀客专注模式下以 750ms 轮询缓存快照，其他页面保持 2 秒。
 
-启用经营诊断后，`GetAllMappedGuests()` 的固定映射表会写入独立日志 `runtime-static-data.log`，默认路径为 `BepInEx/config/MystiaStewardCompanion/runtime-static-data.log`。如果用户配置了自定义经营诊断日志路径，则该静态日志写入同一目录。日志只在映射表内容变化时追加，便于排查事件稀客别名而不污染逐帧经营诊断。
+启用经营诊断后，稀客别名快照会写入独立日志 `runtime-static-data.log`，默认路径为 `BepInEx/config/MystiaStewardCompanion/runtime-static-data.log`。如果用户配置了自定义经营诊断日志路径，则该静态日志写入同一目录。日志会标记 `aliasSource`，用于区分固定映射、运行时同名归一化、直接本地 ID 和手工兜底；内容只在快照变化时追加，便于排查事件稀客别名而不污染逐帧经营诊断。
 
 ## 回退行为
 

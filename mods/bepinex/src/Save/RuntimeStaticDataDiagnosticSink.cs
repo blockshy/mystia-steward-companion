@@ -182,15 +182,15 @@ internal static class RuntimeStaticDataDiagnosticSink
         var builder = new StringBuilder();
         builder.AppendLine("==== mystia-steward-companion Runtime Static Data ====");
         builder.AppendLine($"Utc: {DateTime.UtcNow:O}");
-        builder.AppendLine("Source: DataBaseCharacter.GetAllMappedGuests()");
+        builder.AppendLine("Source: DataBaseCharacter.GetAllMappedGuests() + GetSpecialGuestsAndMappedGuests()");
         builder.AppendLine($"ReadAtUtc: {snapshot.CapturedAtUtc:O}");
         builder.AppendLine($"Status: {snapshot.Status}");
-        builder.AppendLine($"MappedGuests: {snapshot.Entries.Count}");
+        builder.AppendLine($"RuntimeGuestAliases: {snapshot.Entries.Count}");
         builder.AppendLine($"ResolvedLocalGuests: {snapshot.ResolvedCount}");
         foreach (var entry in snapshot.Entries)
         {
             builder.AppendLine(
-                $"  - runtimeId={FormatNullable(entry.RuntimeId)}; strId={entry.RuntimeStringId}; sourceGuestId={FormatNullable(entry.SourceGuestId)}; sourceStringId={entry.SourceStringId}; sourceName={entry.SourceDisplayName}; localId={FormatNullable(entry.LocalRareCustomerId)}; localName={entry.LocalRareCustomerName}; overrideDestination={entry.OverrideDestination}; type={entry.RuntimeTypeName}");
+                $"  - runtimeId={FormatNullable(entry.RuntimeId)}; strId={entry.RuntimeStringId}; sourceGuestId={FormatNullable(entry.SourceGuestId)}; sourceStringId={entry.SourceStringId}; sourceName={entry.SourceDisplayName}; localId={FormatNullable(entry.LocalRareCustomerId)}; localName={entry.LocalRareCustomerName}; aliasSource={entry.AliasSource}; overrideDestination={entry.OverrideDestination}; type={entry.RuntimeTypeName}");
         }
 
         builder.AppendLine();
