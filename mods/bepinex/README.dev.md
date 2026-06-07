@@ -138,6 +138,7 @@ mods/bepinex/dist/mystia-steward-companion-bepinex.zip
 PowerShell 7 脚本固定生成 `.zip`；bash 脚本在系统没有 `zip` 时会改为生成 `.tar.gz`。打包脚本会在检测到 `apps/companion/src-tauri/target/release/mystia-steward-companion(.exe)` 时自动复制到安装包的 `companion/` 子目录。
 
 本地发布方案见仓库根目录的 `docs/local-release.md`。仓库不使用 GitHub Actions 自动构建 Release；版本发布需要在 Windows 本机构建完整产物后通过 GitHub CLI 上传。
+GitHub Release 只上传 `mystia-steward-companion-bepinex.zip` 和 `checksums.txt`，不上传 Tauri setup 安装器。
 
 一键构建并发布：
 

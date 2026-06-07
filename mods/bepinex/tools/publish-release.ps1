@@ -21,7 +21,6 @@ $RepoRoot = (Resolve-Path (Join-Path $RootDir "../..")).Path
 $BuildScript = Join-Path $ToolDir "build-release.ps1"
 $DistRoot = Join-Path $RootDir "dist"
 $ModZip = Join-Path $DistRoot "mystia-steward-companion-bepinex.zip"
-$InstallerDir = Join-Path $RepoRoot "apps\companion\src-tauri\target\release\bundle\nsis"
 $ChecksumPath = Join-Path $DistRoot "checksums.txt"
 
 function Invoke-Checked {
@@ -94,16 +93,7 @@ try {
         throw "Missing Mod package: $ModZip"
     }
 
-    if (-not (Test-Path -LiteralPath $InstallerDir -PathType Container)) {
-        throw "Missing Tauri NSIS installer directory: $InstallerDir"
-    }
-
-    $InstallerFiles = @(Get-ChildItem -LiteralPath $InstallerDir -Filter "*.exe" -File)
-    if ($InstallerFiles.Count -eq 0) {
-        throw "Missing Tauri NSIS installer (*.exe) in: $InstallerDir"
-    }
-
-    $AssetPaths = @($ModZip) + @($InstallerFiles | ForEach-Object { $_.FullName })
+    $AssetPaths = @($ModZip)
 
     New-Item -ItemType Directory -Force -Path $DistRoot | Out-Null
     $ChecksumLines = foreach ($Asset in $AssetPaths) {
