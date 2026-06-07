@@ -17,6 +17,8 @@ public sealed class NightBusinessReflectionProvider
     private const string OrderingElementTypeName = "NightScene.UI.GuestManagementUtility.OrderingElement";
     private const string WorkSceneServePannelTypeName = "NightScene.UI.GuestManagementUtility.WorkSceneServePannel";
     private const string IzakayaConfigureTypeName = "GameData.RunTime.NightSceneUtility.IzakayaConfigure";
+    private const string DataBaseCharacterTypeName = "GameData.Core.Collections.CharacterUtility.DataBaseCharacter";
+    private const int MaxCandidateDiagnostics = 80;
     private static readonly (string MemberName, string Source)[] ManagerControllerSources =
     {
         ("AllPresentedGuestGroupController", "Presented"),
@@ -32,6 +34,7 @@ public sealed class NightBusinessReflectionProvider
     private readonly bool _useLogFallback;
     private IReadOnlyList<string>? _foodTagCandidates;
     private IReadOnlyList<string>? _beverageTagCandidates;
+    private List<NightBusinessCandidateDiagnostic>? _candidateDiagnostics;
 
     public NightBusinessReflectionProvider(
         DataRepository repository,
@@ -51,6 +54,7 @@ public sealed class NightBusinessReflectionProvider
         var orders = new List<NightBusinessOrder>();
         var errors = new List<string>();
         var sourceStats = new List<string>();
+        _candidateDiagnostics = _diagnostics == null ? null : new List<NightBusinessCandidateDiagnostic>();
 
         try
         {
@@ -162,6 +166,9 @@ public sealed class NightBusinessReflectionProvider
         var activeOrders = DeduplicateOrders(orders);
         var place = ReadCurrentPlace();
         var placeLabel = ReadCurrentPlaceLabel();
+        var recentRuntimeParseFailures = _diagnostics == null
+            ? Array.Empty<string>()
+            : SpecialOrderRuntimeCapture.RecentParseFailuresSnapshot(TimeSpan.FromMinutes(5));
         WriteDiagnostics(
             managerStatus,
             queueStatus,
@@ -173,8 +180,11 @@ public sealed class NightBusinessReflectionProvider
             acceptedCapturedOrders,
             activeGuests,
             activeOrders,
+            _candidateDiagnostics ?? new List<NightBusinessCandidateDiagnostic>(),
+            recentRuntimeParseFailures,
             place,
             placeLabel);
+        _candidateDiagnostics = null;
 
         return new NightBusinessContext
         {
@@ -198,6 +208,8 @@ public sealed class NightBusinessReflectionProvider
         IReadOnlyList<NightBusinessOrder> acceptedLogOrders,
         IReadOnlyList<NightBusinessGuest> activeGuests,
         IReadOnlyList<NightBusinessOrder> finalOrders,
+        IReadOnlyList<NightBusinessCandidateDiagnostic> candidates,
+        IReadOnlyList<string> recentRuntimeParseFailures,
         string? place,
         string? placeLabel)
     {
@@ -221,6 +233,8 @@ public sealed class NightBusinessReflectionProvider
                 AcceptedLogOrders = acceptedLogOrders.ToList(),
                 ActiveGuests = activeGuests.ToList(),
                 FinalOrders = finalOrders.ToList(),
+                Candidates = candidates.ToList(),
+                RecentRuntimeParseFailures = recentRuntimeParseFailures.ToList(),
             });
         }
         catch
@@ -325,7 +339,13 @@ public sealed class NightBusinessReflectionProvider
     {
         foreach (var controller in controllers)
         {
-            if (!IsRareGuestController(controller)) continue;
+            if (!IsRareGuestController(controller))
+            {
+                RecordCandidate("Controller", source, accepted: false, "not recognized as rare guest controller", DescribeControllerCandidate(controller));
+                continue;
+            }
+
+            RecordCandidate("Controller", source, accepted: true, "rare guest controller", DescribeControllerCandidate(controller));
 
             foreach (var order in EnumerateControllerOrders(controller))
             {
@@ -364,19 +384,28 @@ public sealed class NightBusinessReflectionProvider
 
     private NightBusinessGuest? ReadRareGuest(object? controller, string source)
     {
-        if (controller == null) return null;
+        if (controller == null)
+        {
+            RecordCandidate("GuestController", source, accepted: false, "controller is null", "");
+            return null;
+        }
 
         var specialGuest = GetMemberValue(controller, "SpecialGuest");
         var guest = specialGuest ?? GetMemberValue(controller, "OrderingGuest");
-        if (guest == null) return null;
+        if (guest == null)
+        {
+            RecordCandidate("GuestController", source, accepted: false, "SpecialGuest and OrderingGuest are null", DescribeControllerCandidate(controller));
+            return null;
+        }
 
         var guestId = ToNullableInt(GetMemberValue(guest, "Id"));
         if (specialGuest == null && (!guestId.HasValue || !_repository.RareCustomersById.ContainsKey(guestId.Value)))
         {
+            RecordCandidate("GuestController", source, accepted: false, "OrderingGuest id is not in local rare customer data", DescribeControllerCandidate(controller));
             return null;
         }
 
-        return new NightBusinessGuest
+        var result = new NightBusinessGuest
         {
             DeskCode = ToInt(GetMemberValue(controller, "DeskCode")),
             GuestId = guestId,
@@ -385,6 +414,8 @@ public sealed class NightBusinessReflectionProvider
                 : ReadGuestName(guest, guestId),
             Source = source,
         };
+        RecordCandidate("GuestController", source, accepted: true, "accepted rare guest", DescribeControllerCandidate(controller));
+        return result;
     }
 
     private NightBusinessGuest? ReadRareGuestFromOrder(object? order, object? controller, string source)
@@ -392,10 +423,14 @@ public sealed class NightBusinessReflectionProvider
         if (order == null) return null;
 
         var specialGuest = GetMemberValue(order, "SpecialGuests") ?? GetMemberValue(controller, "SpecialGuest");
-        if (specialGuest == null) return null;
+        if (specialGuest == null)
+        {
+            RecordCandidate("GuestFromOrder", source, accepted: false, "SpecialGuests missing on order and controller", DescribeOrderCandidate(order, controller));
+            return null;
+        }
 
         var guestId = ToNullableInt(GetMemberValue(specialGuest, "Id"));
-        return new NightBusinessGuest
+        var result = new NightBusinessGuest
         {
             DeskCode = ToInt(GetMemberValue(order, "DeskCode") ?? GetMemberValue(controller, "DeskCode")),
             GuestId = guestId,
@@ -404,18 +439,34 @@ public sealed class NightBusinessReflectionProvider
                 : ReadGuestName(specialGuest, guestId),
             Source = source,
         };
+        RecordCandidate("GuestFromOrder", source, accepted: true, "accepted rare guest from order", DescribeOrderCandidate(order, controller));
+        return result;
     }
 
     private NightBusinessOrder? ReadOrder(object? order, object? controller, string source)
     {
-        if (order == null) return null;
-        if (!IsSpecialOrder(order)) return null;
+        if (order == null)
+        {
+            RecordCandidate("Order", source, accepted: false, "order is null", DescribeControllerCandidate(controller));
+            return null;
+        }
+
+        if (!IsSpecialOrder(order))
+        {
+            RecordCandidate("Order", source, accepted: false, "not a special order by current rules", DescribeOrderCandidate(order, controller));
+            return null;
+        }
+
         var now = DateTime.UtcNow;
 
         var specialGuest = GetMemberValue(order, "SpecialGuests")
             ?? GetMemberValue(controller, "SpecialGuest")
             ?? GetMemberValue(controller, "OrderingGuest");
-        if (specialGuest == null) return null;
+        if (specialGuest == null)
+        {
+            RecordCandidate("Order", source, accepted: false, "SpecialGuests/SpecialGuest/OrderingGuest missing", DescribeOrderCandidate(order, controller));
+            return null;
+        }
 
         var guestId = ToNullableInt(GetMemberValue(specialGuest, "Id"));
         var foodTag = ResolveOrderTagText(order, controller, specialGuest, "GetOrderFoodText", "GetFoodTagText", "RequestFoodTag", "ReqFoodTag", useFoodTagMap: true);
@@ -424,6 +475,7 @@ public sealed class NightBusinessReflectionProvider
         var beverageTagId = ResolveTagId(beverageTag, GetMemberValue(order, "RequestBeverageTag"), useFoodTagMap: false);
         if (foodTagId == 0 && beverageTagId == 0 && string.IsNullOrWhiteSpace(foodTag) && string.IsNullOrWhiteSpace(beverageTag))
         {
+            RecordCandidate("Order", source, accepted: false, "empty food and beverage tag", DescribeOrderCandidate(order, controller));
             return null;
         }
 
@@ -432,7 +484,7 @@ public sealed class NightBusinessReflectionProvider
             ? rareCustomer.Name
             : ReadGuestName(specialGuest, guestId);
 
-        return new NightBusinessOrder
+        var result = new NightBusinessOrder
         {
             DeskCode = deskCode,
             GuestId = guestId,
@@ -445,6 +497,8 @@ public sealed class NightBusinessReflectionProvider
             FirstSeenAtUtc = now,
             LastSeenAtUtc = now,
         };
+        RecordCandidate("Order", source, accepted: true, "accepted special order", DescribeOrderCandidate(order, controller));
+        return result;
     }
 
     private string? ReadCurrentPlace()
@@ -746,6 +800,168 @@ public sealed class NightBusinessReflectionProvider
         var guest = GetMemberValue(controller, "OrderingGuest");
         var guestId = ToNullableInt(GetMemberValue(guest, "Id"));
         return guestId.HasValue && _repository.RareCustomersById.ContainsKey(guestId.Value);
+    }
+
+    private void RecordCandidate(string kind, string source, bool accepted, string reason, string details)
+    {
+        if (_candidateDiagnostics == null) return;
+        if (_candidateDiagnostics.Count >= MaxCandidateDiagnostics) return;
+
+        _candidateDiagnostics.Add(new NightBusinessCandidateDiagnostic
+        {
+            Kind = kind,
+            Source = source,
+            Accepted = accepted,
+            Reason = reason,
+            Details = TrimDiagnostic(details, 1200),
+        });
+    }
+
+    private string DescribeControllerCandidate(object? controller)
+    {
+        if (controller == null) return "controller=null";
+
+        var specialGuest = GetMemberValue(controller, "SpecialGuest");
+        var orderingGuest = GetMemberValue(controller, "OrderingGuest");
+        var parts = new List<string>
+        {
+            $"controllerType={ShortType(controller)}",
+            $"desk={ShortValue(GetMemberValue(controller, "DeskCode"))}",
+            $"spawnType={ShortValue(GetMemberValue(controller, "GuestControllerSpawnType"))}",
+            $"isHerself={ShortValue(GetMemberValue(controller, "IsHerself"))}",
+            $"isControlled={ShortValue(GetMemberValue(controller, "IsControlled"))}",
+            $"specialGuest=[{DescribeGuestObject(specialGuest)}]",
+            $"orderingGuest=[{DescribeGuestObject(orderingGuest)}]",
+            $"allOrders={SafeCount(GetMemberValue(controller, "AllOrders"))}",
+            $"allOrdersData={SafeCount(GetMemberValue(controller, "AllOrdersData"))}",
+        };
+
+        return string.Join("; ", parts);
+    }
+
+    private string DescribeOrderCandidate(object? order, object? controller)
+    {
+        if (order == null) return $"order=null; controller=[{DescribeControllerCandidate(controller)}]";
+
+        var specialGuest = GetMemberValue(order, "SpecialGuests")
+            ?? GetMemberValue(controller, "SpecialGuest")
+            ?? GetMemberValue(controller, "OrderingGuest");
+        var parts = new List<string>
+        {
+            $"orderType={ShortType(order)}",
+            $"orderEnumType={ShortValue(GetMemberValue(order, "Type"))}",
+            $"desk={ShortValue(GetMemberValue(order, "DeskCode") ?? GetMemberValue(controller, "DeskCode"))}",
+            $"requestFoodTag={ShortValue(GetMemberValue(order, "RequestFoodTag"))}",
+            $"requestBeverageTag={ShortValue(GetMemberValue(order, "RequestBeverageTag"))}",
+            $"foodRequest={ShortValue(GetMemberValue(order, "foodRequest"))}",
+            $"specialGuest=[{DescribeGuestObject(specialGuest)}]",
+            $"controller=[{DescribeControllerCandidate(controller)}]",
+            $"text={TrimDiagnostic(SafeToString(order) ?? "", 260)}",
+        };
+
+        return string.Join("; ", parts);
+    }
+
+    private string DescribeGuestObject(object? guest, bool includeMapping = true)
+    {
+        if (guest == null) return "null";
+
+        var id = ToNullableInt(GetMemberValue(guest, "Id") ?? GetMemberValue(guest, "ID"));
+        var stringId = GetMemberValue(guest, "StringId")?.ToString()
+            ?? GetMemberValue(guest, "StrID")?.ToString();
+        var sourceGuestId = ToNullableInt(GetMemberValue(guest, "SourceGuestID") ?? GetMemberValue(guest, "SourceGuestId"));
+        var knownName = id.HasValue && _repository.RareCustomersById.TryGetValue(id.Value, out var rareCustomer)
+            ? rareCustomer.Name
+            : "";
+
+        var parts = new List<string>
+        {
+            $"type={ShortType(guest)}",
+            $"id={id?.ToString() ?? ""}",
+            $"known={knownName}",
+            $"stringId={TrimDiagnostic(stringId ?? "", 80)}",
+            $"sourceGuestId={sourceGuestId?.ToString() ?? ""}",
+        };
+
+        if (includeMapping && id.HasValue)
+        {
+            parts.Add($"mapping=[{DescribeSpecialGuestMapping(id.Value)}]");
+        }
+
+        return string.Join(",", parts);
+    }
+
+    private string DescribeSpecialGuestMapping(int id)
+    {
+        var dataBaseCharacterType = FindType(DataBaseCharacterTypeName);
+        if (dataBaseCharacterType == null) return "DataBaseCharacter not found";
+
+        var isMapped = InvokeStaticMethod(dataBaseCharacterType, "IsSpecialGuestMapped", id);
+        var specialExists = InvokeStaticMethod(dataBaseCharacterType, "SpecialGuestExists", id);
+        var targetId = ToBool(isMapped) ? InvokeStaticMethod(dataBaseCharacterType, "MappedID2TargetID", id) : null;
+        var refGuestId = ToNullableInt(targetId) ?? id;
+        var refGuest = (ToBool(specialExists) || ToNullableInt(targetId).HasValue)
+            ? InvokeStaticMethod(dataBaseCharacterType, "RefSGuest", refGuestId)
+            : null;
+        return string.Join(",",
+            $"isMapped={ShortValue(isMapped)}",
+            $"specialExists={ShortValue(specialExists)}",
+            $"targetId={ShortValue(targetId)}",
+            $"refGuest=[{DescribeGuestObject(refGuest, includeMapping: false)}]");
+    }
+
+    private static int SafeCount(object? value)
+    {
+        try
+        {
+            return CountObjects(value);
+        }
+        catch
+        {
+            return -1;
+        }
+    }
+
+    private static string ShortType(object? value)
+    {
+        return value?.GetType().FullName ?? "null";
+    }
+
+    private static string ShortValue(object? value)
+    {
+        return TrimDiagnostic(FormatDiagnosticValue(value), 100);
+    }
+
+    private static string FormatDiagnosticValue(object? value)
+    {
+        if (value == null) return "null";
+        if (value is string stringValue) return stringValue;
+
+        var type = value.GetType();
+        if (type.IsEnum || type.IsPrimitive || value is decimal) return value.ToString() ?? "";
+
+        try
+        {
+            if (value is IConvertible convertible) return convertible.ToInt32(null).ToString();
+        }
+        catch
+        {
+            // Fall through to the type name.
+        }
+
+        return type.FullName ?? type.Name;
+    }
+
+    private static string TrimDiagnostic(string value, int maxLength)
+    {
+        if (value.Length <= maxLength) return value;
+        return value[..Math.Max(0, maxLength - 3)] + "...";
+    }
+
+    private static bool ToBool(object? value)
+    {
+        if (value is bool boolValue) return boolValue;
+        return string.Equals(value?.ToString(), "true", StringComparison.OrdinalIgnoreCase);
     }
 
     private string ResolveTagText(object specialGuest, string methodName, int tagId, bool useFoodTagMap)
@@ -1103,14 +1319,16 @@ public sealed class NightBusinessReflectionProvider
         return null;
     }
 
-    private static object? InvokeStaticMethod(Type type, string name)
+    private static object? InvokeStaticMethod(Type type, string name, params object?[] args)
     {
-        var method = FindMethod(type, name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+        var method = FindMethod(type, name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static, args)
+            ?? FindMethod(type, name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static, args.Length)
+            ?? FindMethod(type, name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
         if (method == null) return null;
 
         try
         {
-            return method.Invoke(null, Array.Empty<object?>());
+            return method.Invoke(null, args);
         }
         catch
         {
@@ -1280,6 +1498,37 @@ public sealed class NightBusinessReflectionProvider
         return type
             .GetMethods(flags)
             .FirstOrDefault(method => method.Name == name && method.GetParameters().Length == parameterCount);
+    }
+
+    private static MethodInfo? FindMethod(Type type, string name, BindingFlags flags, object?[] args)
+    {
+        return type
+            .GetMethods(flags)
+            .FirstOrDefault(method => method.Name == name && AreParametersCompatible(method.GetParameters(), args));
+    }
+
+    private static bool AreParametersCompatible(IReadOnlyList<ParameterInfo> parameters, IReadOnlyList<object?> args)
+    {
+        if (parameters.Count != args.Count) return false;
+
+        for (var i = 0; i < parameters.Count; i++)
+        {
+            if (!IsParameterCompatible(parameters[i].ParameterType, args[i])) return false;
+        }
+
+        return true;
+    }
+
+    private static bool IsParameterCompatible(Type parameterType, object? arg)
+    {
+        if (arg == null) return !parameterType.IsValueType || Nullable.GetUnderlyingType(parameterType) != null;
+
+        var argType = arg.GetType();
+        if (parameterType.IsAssignableFrom(argType)) return true;
+        if (parameterType.IsEnum) return argType == typeof(int) || argType == typeof(short) || argType == typeof(long);
+        if (parameterType == typeof(int)) return argType == typeof(short) || argType == typeof(long);
+        if (parameterType == typeof(long)) return argType == typeof(int) || argType == typeof(short);
+        return false;
     }
 
     private static bool TryReadProperty(object? instance, PropertyInfo? property, out object? value)

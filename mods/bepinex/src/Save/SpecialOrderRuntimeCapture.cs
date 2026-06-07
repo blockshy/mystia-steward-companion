@@ -17,6 +17,7 @@ public static class SpecialOrderRuntimeCapture
 
     private static readonly object SyncRoot = new();
     private static readonly List<CapturedRuntimeSpecialOrder> Orders = new();
+    private static readonly List<RuntimeParseFailureDiagnostic> RecentParseFailures = new();
     private static readonly HashSet<string> PatchedMethods = new(StringComparer.Ordinal);
     private static readonly TimeSpan RetryInterval = TimeSpan.FromSeconds(5);
     private static Harmony? _harmony;
@@ -60,6 +61,20 @@ public static class SpecialOrderRuntimeCapture
             return Orders
                 .OrderBy(order => order.FirstCapturedAt)
                 .ThenBy(order => order.CapturedAt)
+                .ToList();
+        }
+    }
+
+    public static IReadOnlyList<string> RecentParseFailuresSnapshot(TimeSpan maxAge, int limit = 16)
+    {
+        var now = DateTime.UtcNow;
+        lock (SyncRoot)
+        {
+            PruneRecentParseFailuresLocked(now, maxAge);
+            return RecentParseFailures
+                .OrderByDescending(failure => failure.CapturedAtUtc)
+                .Take(limit)
+                .Select(failure => $"{failure.CapturedAtUtc:O}; {failure.Message}")
                 .ToList();
         }
     }
@@ -610,13 +625,32 @@ public static class SpecialOrderRuntimeCapture
 
     private static void NoteParseFailure(string source, string reason, object? order = null, ParsedOrderText? textParts = null)
     {
+        var shape = DescribeOrderShape(order, textParts);
         lock (SyncRoot)
         {
             _parseFailures++;
             _lastParseFailure = $"{source}: {reason}";
-            _lastOrderShape = DescribeOrderShape(order, textParts);
+            _lastOrderShape = shape;
+            AddRecentParseFailureLocked(source, reason, shape);
             _status = BuildStatusLocked();
         }
+    }
+
+    private static void AddRecentParseFailureLocked(string source, string reason, string shape)
+    {
+        RecentParseFailures.Add(new RuntimeParseFailureDiagnostic(
+            DateTime.UtcNow,
+            TrimStatus($"{source}: {reason}; {shape}", 900)));
+        PruneRecentParseFailuresLocked(DateTime.UtcNow, TimeSpan.FromMinutes(5));
+        if (RecentParseFailures.Count > 40)
+        {
+            RecentParseFailures.RemoveRange(0, RecentParseFailures.Count - 40);
+        }
+    }
+
+    private static void PruneRecentParseFailuresLocked(DateTime nowUtc, TimeSpan maxAge)
+    {
+        RecentParseFailures.RemoveAll(failure => nowUtc - failure.CapturedAtUtc > maxAge);
     }
 
     private static string BuildStatusLocked()
@@ -908,3 +942,7 @@ public sealed record CapturedRuntimeSpecialOrder(
     DateTime CapturedAt,
     string RuntimeKey,
     string CaptureSource);
+
+internal sealed record RuntimeParseFailureDiagnostic(
+    DateTime CapturedAtUtc,
+    string Message);

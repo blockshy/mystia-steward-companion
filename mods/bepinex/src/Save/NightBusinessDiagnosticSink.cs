@@ -81,6 +81,8 @@ public sealed class NightBusinessDiagnosticSink
         AppendOrders(builder, "AcceptedLogOrders", snapshot.AcceptedLogOrders);
         AppendGuests(builder, "ActiveGuests", snapshot.ActiveGuests);
         AppendOrders(builder, "FinalOrders", snapshot.FinalOrders);
+        AppendCandidates(builder, "Candidates", snapshot.Candidates);
+        AppendStrings(builder, "RecentRuntimeParseFailures", snapshot.RecentRuntimeParseFailures);
         builder.AppendLine();
         return builder.ToString();
     }
@@ -102,6 +104,25 @@ public sealed class NightBusinessDiagnosticSink
         {
             builder.AppendLine(
                 $"  - source={order.Source}; desk={order.DeskCode}; guestId={FormatNullable(order.GuestId)}; guest={order.GuestName}; food={order.FoodTag}({order.FoodTagId}); beverage={order.BeverageTag}({order.BeverageTagId})");
+        }
+    }
+
+    private static void AppendCandidates(StringBuilder builder, string title, IReadOnlyList<NightBusinessCandidateDiagnostic> candidates)
+    {
+        builder.AppendLine($"{title}: {candidates.Count}");
+        foreach (var candidate in candidates.Take(64))
+        {
+            builder.AppendLine(
+                $"  - kind={candidate.Kind}; source={candidate.Source}; accepted={candidate.Accepted}; reason={candidate.Reason}; {candidate.Details}");
+        }
+    }
+
+    private static void AppendStrings(StringBuilder builder, string title, IReadOnlyList<string> values)
+    {
+        builder.AppendLine($"{title}: {values.Count}");
+        foreach (var value in values.Take(24))
+        {
+            builder.AppendLine($"  - {value}");
         }
     }
 
@@ -127,4 +148,15 @@ public sealed class NightBusinessDiagnosticSnapshot
     public IReadOnlyList<NightBusinessOrder> AcceptedLogOrders { get; init; } = Array.Empty<NightBusinessOrder>();
     public IReadOnlyList<NightBusinessGuest> ActiveGuests { get; init; } = Array.Empty<NightBusinessGuest>();
     public IReadOnlyList<NightBusinessOrder> FinalOrders { get; init; } = Array.Empty<NightBusinessOrder>();
+    public IReadOnlyList<NightBusinessCandidateDiagnostic> Candidates { get; init; } = Array.Empty<NightBusinessCandidateDiagnostic>();
+    public IReadOnlyList<string> RecentRuntimeParseFailures { get; init; } = Array.Empty<string>();
+}
+
+public sealed class NightBusinessCandidateDiagnostic
+{
+    public string Kind { get; init; } = "";
+    public string Source { get; init; } = "";
+    public bool Accepted { get; init; }
+    public string Reason { get; init; } = "";
+    public string Details { get; init; } = "";
 }
