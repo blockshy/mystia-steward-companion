@@ -130,6 +130,8 @@ public sealed class NightBusinessOrder
     public int BeverageTagId { get; init; }
     public string BeverageTag { get; init; } = "";
     public string Source { get; init; } = "";
+    public DateTime? FirstSeenAtUtc { get; init; }
+    public DateTime? LastSeenAtUtc { get; init; }
 }
 
 public sealed class NightBusinessGuest

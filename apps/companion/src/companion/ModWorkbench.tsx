@@ -92,6 +92,8 @@ interface NightBusinessOrder {
   beverageTagId: number;
   beverageTag: string;
   source: string;
+  firstSeenAtUtc?: string | null;
+  lastSeenAtUtc?: string | null;
 }
 
 interface NightBusinessContext {
@@ -179,6 +181,7 @@ export function ModWorkbench() {
   const [apiToken, setApiToken] = useState(() => localStorage.getItem(TOKEN_STORAGE_KEY) ?? '');
   const [tab, setTab] = useState<ModTab>(() => readStoredTab());
   const [serviceFocusMode, setServiceFocusMode] = useState(false);
+  const [serviceFocusCompact, setServiceFocusCompact] = useState(false);
   const [snapshot, setSnapshot] = useState<LocalApiSnapshot | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -269,6 +272,8 @@ export function ModWorkbench() {
         recommendations={orderRecommendations.recommendations}
         recommendationIssues={orderRecommendations.recommendationIssues}
         runtimeSets={runtimeSets}
+        compact={serviceFocusCompact}
+        onCompactChange={setServiceFocusCompact}
         onExit={() => setServiceFocusMode(false)}
       />
     );
@@ -801,7 +806,7 @@ function ModServicePanel({
   onEnterFocusMode: () => void;
 }) {
   const activeGuests = night?.activeRareGuests ?? [];
-  const orders = night?.orders ?? [];
+  const orders = useMemo(() => sortNightOrders(night?.orders ?? []), [night?.orders]);
 
   return (
     <div className="space-y-4">
@@ -863,11 +868,15 @@ function ServiceFocusPage({
   recommendations,
   recommendationIssues,
   runtimeSets,
+  compact,
+  onCompactChange,
   onExit,
 }: {
   recommendations: OrderRecommendation[];
   recommendationIssues: RecommendationIssue[];
   runtimeSets: RuntimeSets | null;
+  compact: boolean;
+  onCompactChange: (value: boolean) => void;
   onExit: () => void;
 }) {
   const hasOrders = recommendations.length > 0 || recommendationIssues.length > 0;
@@ -879,7 +888,12 @@ function ServiceFocusPage({
           <h1 className="text-xl font-semibold text-foreground">稀客订单专注模式</h1>
           <p className="mt-1 text-sm text-muted-foreground">只显示当前稀客点单推荐。</p>
         </div>
-        <Button size="sm" variant="outline" onClick={onExit}>退出专注模式</Button>
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant={compact ? 'default' : 'outline'} onClick={() => onCompactChange(!compact)}>
+            {compact ? '常规模式' : '精简模式'}
+          </Button>
+          <Button size="sm" variant="outline" onClick={onExit}>退出专注模式</Button>
+        </div>
       </div>
 
       {hasOrders ? (
@@ -887,6 +901,7 @@ function ServiceFocusPage({
           recommendations={recommendations}
           recommendationIssues={recommendationIssues}
           runtimeSets={runtimeSets}
+          compact={compact}
         />
       ) : (
         <EmptyState text="暂无当前稀客点单。检测到稀客点单后，这里会自动显示推荐料理和酒水。" />
@@ -899,27 +914,47 @@ function CurrentOrderRecommendations({
   recommendations,
   recommendationIssues,
   runtimeSets,
+  compact = false,
 }: {
   recommendations: OrderRecommendation[];
   recommendationIssues: RecommendationIssue[];
   runtimeSets: RuntimeSets | null;
+  compact?: boolean;
 }) {
+  const rows = useMemo(
+    () => [
+      ...recommendationIssues.map((issue) => ({ kind: 'issue' as const, order: issue.order, issue })),
+      ...recommendations.map((item) => ({ kind: 'recommendation' as const, order: item.order, item })),
+    ].sort((left, right) => compareNightOrders(left.order, right.order)),
+    [recommendationIssues, recommendations],
+  );
+
   return (
     <ListPanel title="当前点单推荐">
-      <div className="space-y-4">
-        {recommendationIssues.map((issue) => (
-          <div key={`${issue.order.deskCode}-${issue.order.guestId}-issue`} className="rounded-md border border-border p-3 text-sm">
-            <div className="font-medium">{issue.order.guestName} · 桌 {formatDesk(issue.order.deskCode)}</div>
-            <div className="mt-1 text-xs text-muted-foreground">{issue.message}</div>
-          </div>
-        ))}
-        {recommendations.map((item) => (
-          <OrderRecommendationPanel
-            key={`${item.order.deskCode}-${item.order.guestId}-${item.order.foodTagId}-${item.order.beverageTagId}`}
-            item={item}
-            runtimeSets={runtimeSets}
-          />
-        ))}
+      <div className={compact ? 'space-y-2' : 'space-y-4'}>
+        {rows.map((row) => {
+          if (row.kind === 'issue') {
+            const issue = row.issue;
+            return (
+              <div
+                key={`${issue.order.deskCode}-${issue.order.guestId}-issue`}
+                className={compact ? 'rounded-md border border-border p-2 text-xs' : 'rounded-md border border-border p-3 text-sm'}
+              >
+                <div className="font-medium">{issue.order.guestName} · 桌 {formatDesk(issue.order.deskCode)}</div>
+                <div className="mt-1 text-xs text-muted-foreground">{issue.message}</div>
+              </div>
+            );
+          }
+
+          return (
+            <OrderRecommendationPanel
+              key={`${row.item.order.deskCode}-${row.item.order.guestId}-${row.item.order.foodTagId}-${row.item.order.beverageTagId}`}
+              item={row.item}
+              runtimeSets={runtimeSets}
+              compact={compact}
+            />
+          );
+        })}
       </div>
     </ListPanel>
   );
@@ -1454,12 +1489,14 @@ function NormalBeverageRow({
 function OrderRecommendationPanel({
   item,
   runtimeSets,
+  compact = false,
 }: {
   item: OrderRecommendation;
   runtimeSets: RuntimeSets | null;
+  compact?: boolean;
 }) {
   return (
-    <div className="rounded-md border border-border p-3">
+    <div className={compact ? 'rounded-md border border-border p-2' : 'rounded-md border border-border p-3'}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <div className="text-sm font-semibold">{item.customer.name} · 桌 {formatDesk(item.order.deskCode)}</div>
@@ -1471,32 +1508,34 @@ function OrderRecommendationPanel({
         </div>
       </div>
 
-      <div className="mt-3 grid gap-4 lg:grid-cols-2">
+      <div className={compact ? 'mt-2 grid gap-2 lg:grid-cols-2' : 'mt-3 grid gap-4 lg:grid-cols-2'}>
         <div>
-          <h3 className="mb-2 text-sm font-semibold">推荐料理</h3>
+          <h3 className={compact ? 'mb-1 text-xs font-semibold' : 'mb-2 text-sm font-semibold'}>推荐料理</h3>
           {item.recipes.length === 0 && <EmptyRow text="暂无可推荐料理" />}
-          <div className="space-y-2">
+          <div className={compact ? 'space-y-1.5' : 'space-y-2'}>
             {item.recipes.map((recipe, index) => (
               <RecipeRecommendationRow
                 key={`${recipe.recipe.id}-${index}`}
                 recipe={recipe}
                 index={index}
                 ownedIngredientQty={runtimeSets?.ownedIngredientQty ?? {}}
+                compact={compact}
               />
             ))}
           </div>
         </div>
 
         <div>
-          <h3 className="mb-2 text-sm font-semibold">推荐酒水</h3>
+          <h3 className={compact ? 'mb-1 text-xs font-semibold' : 'mb-2 text-sm font-semibold'}>推荐酒水</h3>
           {item.beverages.length === 0 && <EmptyRow text="暂无可推荐酒水" />}
-          <div className="space-y-2">
+          <div className={compact ? 'space-y-1.5' : 'space-y-2'}>
             {item.beverages.map((beverage, index) => (
               <BeverageRecommendationRow
                 key={beverage.beverage.id}
                 beverage={beverage}
                 index={index}
                 ownedBeverageQty={runtimeSets?.ownedBeverageQty ?? {}}
+                compact={compact}
               />
             ))}
           </div>
@@ -1510,10 +1549,12 @@ function RecipeRecommendationRow({
   recipe,
   index,
   ownedIngredientQty,
+  compact = false,
 }: {
   recipe: IRareRecipeResult;
   index: number;
   ownedIngredientQty: Record<number, number>;
+  compact?: boolean;
 }) {
   const totalCost = recipe.baseCost + recipe.extraCost;
   const extras = recipe.extraIngredients.length === 0
@@ -1521,7 +1562,7 @@ function RecipeRecommendationRow({
     : recipe.extraIngredients.map((ingredient) => `+${formatIngredientWithQty(ingredient.name, ownedIngredientQty)}`).join(', ');
 
   return (
-    <div className="rounded-md border border-border/80 p-2 text-sm">
+    <div className={compact ? 'rounded-md border border-border/80 p-1.5 text-xs' : 'rounded-md border border-border/80 p-2 text-sm'}>
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="text-xs text-muted-foreground">#{index + 1}</span>
         <span className="font-medium">{recipe.recipe.name}</span>
@@ -1533,7 +1574,7 @@ function RecipeRecommendationRow({
       <div className="mt-1 text-xs text-muted-foreground">
         厨具: {recipe.recipe.cooker || '未知'} · 基础配方: {formatIngredientNamesWithQty(recipe.recipe.ingredients, ownedIngredientQty) || '无'}
       </div>
-      <TagSummary tags={recipe.allTags} cancelledTags={recipe.cancelledTags} />
+      {!compact && <TagSummary tags={recipe.allTags} cancelledTags={recipe.cancelledTags} />}
     </div>
   );
 }
@@ -1542,13 +1583,15 @@ function BeverageRecommendationRow({
   beverage,
   index,
   ownedBeverageQty,
+  compact = false,
 }: {
   beverage: IRareBeverageResult;
   index: number;
   ownedBeverageQty: Record<number, number>;
+  compact?: boolean;
 }) {
   return (
-    <div className="rounded-md border border-border/80 p-2 text-sm">
+    <div className={compact ? 'rounded-md border border-border/80 p-1.5 text-xs' : 'rounded-md border border-border/80 p-2 text-sm'}>
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="text-xs text-muted-foreground">#{index + 1}</span>
         <span className="font-medium">
@@ -1558,7 +1601,7 @@ function BeverageRecommendationRow({
       </div>
       <div className="mt-1 text-xs text-muted-foreground">
         分数 {beverage.bevScore} · 价格 {beverage.beverage.price}
-        {beverage.matchedTags.length > 0 ? ` · Tag: ${beverage.matchedTags.join(', ')}` : ''}
+        {!compact && beverage.matchedTags.length > 0 ? ` · Tag: ${beverage.matchedTags.join(', ')}` : ''}
       </div>
     </div>
   );
@@ -1660,6 +1703,25 @@ function buildRuntimeSets(runtime: RecommendationStateSnapshot | null): RuntimeS
   };
 }
 
+function sortNightOrders(orders: NightBusinessOrder[]): NightBusinessOrder[] {
+  return [...orders].sort(compareNightOrders);
+}
+
+function compareNightOrders(left: NightBusinessOrder, right: NightBusinessOrder): number {
+  const leftSeenAt = getOrderSeenTime(left);
+  const rightSeenAt = getOrderSeenTime(right);
+  if (leftSeenAt !== rightSeenAt) return leftSeenAt - rightSeenAt;
+  if (left.deskCode !== right.deskCode) return left.deskCode - right.deskCode;
+  return left.guestName.localeCompare(right.guestName, 'zh-Hans-CN');
+}
+
+function getOrderSeenTime(order: NightBusinessOrder): number {
+  const value = order.firstSeenAtUtc ?? order.lastSeenAtUtc;
+  if (!value) return Number.MAX_SAFE_INTEGER;
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? time : Number.MAX_SAFE_INTEGER;
+}
+
 function filterInventoryItems<TItem extends IIngredient | IBeverage>(items: TItem[], normalizedSearch: string): TItem[] {
   const rows = normalizedSearch
     ? items.filter((item) => item.name.toLowerCase().includes(normalizedSearch) || String(item.id).includes(normalizedSearch))
@@ -1685,10 +1747,11 @@ function buildOrderRecommendations(
   cache: Map<string, CachedRecommendation>,
 ): { recommendations: OrderRecommendation[]; recommendationIssues: RecommendationIssue[] } {
   if (orders.length === 0) return { recommendations: [], recommendationIssues: [] };
+  const sortedOrders = sortNightOrders(orders);
   if (!runtime) {
     return {
       recommendations: [],
-      recommendationIssues: orders.map((order) => ({ order, message: '运行时推荐数据暂不可用。' })),
+      recommendationIssues: sortedOrders.map((order) => ({ order, message: '运行时推荐数据暂不可用。' })),
     };
   }
 
@@ -1699,7 +1762,7 @@ function buildOrderRecommendations(
   const recommendations: OrderRecommendation[] = [];
   const recommendationIssues: RecommendationIssue[] = [];
 
-  for (const order of orders) {
+  for (const order of sortedOrders) {
     const customer = findRareCustomer(order, rareCustomersById);
     const foodTag = order.foodTag.trim();
     const beverageTag = order.beverageTag.trim();

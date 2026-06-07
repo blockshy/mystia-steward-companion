@@ -9,7 +9,7 @@ public sealed class NightBusinessReflectionProvider
 {
     private static readonly TimeSpan CapturedOrderMaxAge = TimeSpan.FromMinutes(3);
     private static readonly TimeSpan UnmatchedCapturedOrderGrace = TimeSpan.FromSeconds(8);
-    private static readonly TimeSpan RuntimeCapturedOrderMaxAge = TimeSpan.FromMinutes(3);
+    private static readonly TimeSpan RuntimeCapturedOrderMaxAge = TimeSpan.FromHours(6);
 
     private const string GuestGroupControllerTypeName = "NightScene.GuestManagementUtility.GuestGroupController";
     private const string GuestsManagerTypeName = "NightScene.GuestManagementUtility.GuestsManager";
@@ -410,6 +410,7 @@ public sealed class NightBusinessReflectionProvider
     {
         if (order == null) return null;
         if (!IsSpecialOrder(order)) return null;
+        var now = DateTime.UtcNow;
 
         var specialGuest = GetMemberValue(order, "SpecialGuests")
             ?? GetMemberValue(controller, "SpecialGuest")
@@ -441,6 +442,8 @@ public sealed class NightBusinessReflectionProvider
             BeverageTagId = beverageTagId,
             BeverageTag = beverageTag,
             Source = source,
+            FirstSeenAtUtc = now,
+            LastSeenAtUtc = now,
         };
     }
 
@@ -524,6 +527,8 @@ public sealed class NightBusinessReflectionProvider
                 BeverageTagId = ResolveTagId(beverageTag, captured.HasBeverageTagId ? captured.BeverageTagId : null, useFoodTagMap: false),
                 BeverageTag = beverageTag,
                 Source = string.IsNullOrWhiteSpace(captured.CaptureSource) ? "RuntimeCapture" : $"RuntimeCapture:{captured.CaptureSource}",
+                FirstSeenAtUtc = captured.FirstCapturedAt,
+                LastSeenAtUtc = captured.CapturedAt,
             };
 
             if (ShouldKeepCapturedOrder(order, captured.CapturedAt, activeGuests, now))
@@ -583,6 +588,8 @@ public sealed class NightBusinessReflectionProvider
                 BeverageTagId = ResolveTagId(beverageTag, null, useFoodTagMap: false),
                 BeverageTag = beverageTag,
                 Source = "OrderLog",
+                FirstSeenAtUtc = captured.CapturedAt,
+                LastSeenAtUtc = captured.CapturedAt,
             };
 
             if (ShouldKeepCapturedOrder(order, captured.CapturedAt, activeGuests, now))
@@ -636,20 +643,61 @@ public sealed class NightBusinessReflectionProvider
 
     private static List<NightBusinessOrder> DeduplicateOrders(IEnumerable<NightBusinessOrder> orders)
     {
-        var result = new List<NightBusinessOrder>();
-        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var bySlot = new Dictionary<string, NightBusinessOrder>(StringComparer.Ordinal);
 
-        foreach (var order in orders.OrderByDescending(GetOrderCompletenessScore))
+        foreach (var order in orders)
         {
             var key = $"{order.DeskCode}:{order.GuestId}";
-            if (!seen.Add(key)) continue;
-            result.Add(order);
+            if (!bySlot.TryGetValue(key, out var existing))
+            {
+                bySlot[key] = order;
+                continue;
+            }
+
+            var selected = GetOrderCompletenessScore(order) > GetOrderCompletenessScore(existing) ? order : existing;
+            bySlot[key] = CopyOrderWithSeenTimes(
+                selected,
+                MinSeenAt(existing.FirstSeenAtUtc, order.FirstSeenAtUtc),
+                MaxSeenAt(existing.LastSeenAtUtc, order.LastSeenAtUtc));
         }
 
-        return result
-            .OrderBy(order => order.DeskCode)
+        return bySlot.Values
+            .OrderBy(order => order.FirstSeenAtUtc ?? DateTime.MaxValue)
+            .ThenBy(order => order.LastSeenAtUtc ?? DateTime.MaxValue)
+            .ThenBy(order => order.DeskCode)
             .ThenBy(order => order.GuestName)
             .ToList();
+    }
+
+    private static NightBusinessOrder CopyOrderWithSeenTimes(NightBusinessOrder order, DateTime? firstSeenAtUtc, DateTime? lastSeenAtUtc)
+    {
+        return new NightBusinessOrder
+        {
+            DeskCode = order.DeskCode,
+            GuestId = order.GuestId,
+            GuestName = order.GuestName,
+            FoodTagId = order.FoodTagId,
+            FoodTag = order.FoodTag,
+            BeverageTagId = order.BeverageTagId,
+            BeverageTag = order.BeverageTag,
+            Source = order.Source,
+            FirstSeenAtUtc = firstSeenAtUtc,
+            LastSeenAtUtc = lastSeenAtUtc,
+        };
+    }
+
+    private static DateTime? MinSeenAt(DateTime? left, DateTime? right)
+    {
+        if (!left.HasValue) return right;
+        if (!right.HasValue) return left;
+        return left.Value <= right.Value ? left : right;
+    }
+
+    private static DateTime? MaxSeenAt(DateTime? left, DateTime? right)
+    {
+        if (!left.HasValue) return right;
+        if (!right.HasValue) return left;
+        return left.Value >= right.Value ? left : right;
     }
 
     private static int GetOrderCompletenessScore(NightBusinessOrder order)

@@ -58,7 +58,8 @@ public static class SpecialOrderRuntimeCapture
         {
             Orders.RemoveAll(order => now - order.CapturedAt > maxAge);
             return Orders
-                .OrderByDescending(order => order.CapturedAt)
+                .OrderBy(order => order.FirstCapturedAt)
+                .ThenBy(order => order.CapturedAt)
                 .ToList();
         }
     }
@@ -359,6 +360,7 @@ public static class SpecialOrderRuntimeCapture
             return null;
         }
 
+        var capturedAt = DateTime.UtcNow;
         return new CapturedRuntimeSpecialOrder(
             deskCode,
             guestId,
@@ -370,7 +372,8 @@ public static class SpecialOrderRuntimeCapture
             beverageTagId.HasValue,
             beverageTag,
             IsOrderFulfilled(order),
-            DateTime.UtcNow,
+            capturedAt,
+            capturedAt,
             GetRuntimeObjectKey(order),
             source);
     }
@@ -428,6 +431,7 @@ public static class SpecialOrderRuntimeCapture
             HasBeverageTagId = beverage.HasTagId,
             BeverageTag = beverage.Tag,
             IsFulfilled = incoming.IsFulfilled || existing.IsFulfilled,
+            FirstCapturedAt = existing.FirstCapturedAt < incoming.FirstCapturedAt ? existing.FirstCapturedAt : incoming.FirstCapturedAt,
             RuntimeKey = string.IsNullOrWhiteSpace(incoming.RuntimeKey) ? existing.RuntimeKey : incoming.RuntimeKey,
             CaptureSource = MergeCaptureSource(existing.CaptureSource, incoming.CaptureSource),
         };
@@ -900,6 +904,7 @@ public sealed record CapturedRuntimeSpecialOrder(
     bool HasBeverageTagId,
     string BeverageTag,
     bool IsFulfilled,
+    DateTime FirstCapturedAt,
     DateTime CapturedAt,
     string RuntimeKey,
     string CaptureSource);
