@@ -17,9 +17,15 @@ function resolveGitCommitTime() {
 const appVersion = resolveGitCommitTime()
 
 export default defineConfig({
+  root: __dirname,
   plugins: [react(), tailwindcss()],
   define: {
     __APP_COMMIT_HASH__: JSON.stringify(appVersion),
+  },
+  publicDir: path.resolve(__dirname, './public'),
+  build: {
+    outDir: path.resolve(__dirname, './dist'),
+    emptyOutDir: true,
   },
   resolve: {
     alias: {

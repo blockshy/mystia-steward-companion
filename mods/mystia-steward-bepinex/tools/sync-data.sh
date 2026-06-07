@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd "$ROOT_DIR/../.." && pwd)"
-SOURCE_DIR="$REPO_ROOT/src/data"
+SOURCE_DIR="$REPO_ROOT/apps/companion/src/data"
 TARGET_DIR="$ROOT_DIR/Data"
 
 mkdir -p "$TARGET_DIR"

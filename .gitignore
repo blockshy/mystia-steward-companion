@@ -10,6 +10,7 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+apps/companion/src-tauri/target/
 src-tauri/target/
 .game
 *.local

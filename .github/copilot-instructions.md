@@ -12,18 +12,18 @@
 - Use strict TypeScript and avoid `any` unless there is no practical typed alternative.
 - Use function components and hooks for React code.
 - Import `src` modules through the `@/` alias.
-- Prefer existing primitives in `src/components/ui` before adding new controls.
-- Do not hard-code balancing values in components; update `src/data` and consume it through typed logic.
+- Prefer existing primitives in `apps/companion/src/components/ui` before adding new controls.
+- Do not hard-code balancing values in components; update `apps/companion/src/data` and consume it through typed logic.
 
 ## Architecture
 
 - This repository only maintains the BepInEx Mod and Tauri companion window.
-- Companion frontend entry: `src/companion/ModWorkbench.tsx`.
+- Companion frontend entry: `apps/companion/src/companion/ModWorkbench.tsx`.
 - Recommendation logic:
-  - Normal customers: `src/lib/normal-recommend.ts`
-  - Rare customers: `src/lib/rare-recommend.ts`
-  - Tag conflict and scoring rules: `src/lib/tags.ts`
-- Structured game data lives in `src/data/*.json` and is synchronized into `mods/mystia-steward-bepinex/Data/`.
+  - Normal customers: `apps/companion/src/lib/normal-recommend.ts`
+  - Rare customers: `apps/companion/src/lib/rare-recommend.ts`
+  - Tag conflict and scoring rules: `apps/companion/src/lib/tags.ts`
+- Structured game data lives in `apps/companion/src/data/*.json` and is synchronized into `mods/mystia-steward-bepinex/Data/`.
 - C# Mod code must not import TypeScript modules. Shared data crosses the boundary as JSON only.
 - The Mod reads live runtime data from the game. Do not reintroduce `.memory` save import pages.
 

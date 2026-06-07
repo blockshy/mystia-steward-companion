@@ -5,9 +5,9 @@
 ## 代码边界
 
 - 仓库只维护 BepInEx Mod 与 Tauri 伴随窗口，不再维护独立网站和存档导入页面。
-- 伴随窗口入口为 `src/companion/ModWorkbench.tsx`，顶层挂载在 `src/App.tsx`。
-- 推荐算法集中在 `src/lib/normal-recommend.ts`、`src/lib/rare-recommend.ts` 和 `src/lib/tags.ts`。
-- 结构化数据以 `src/data/*.json` 为源头，构建时同步到 `mods/mystia-steward-bepinex/Data/`。
+- 伴随窗口入口为 `apps/companion/src/companion/ModWorkbench.tsx`，顶层挂载在 `apps/companion/src/App.tsx`。
+- 推荐算法集中在 `apps/companion/src/lib/normal-recommend.ts`、`apps/companion/src/lib/rare-recommend.ts` 和 `apps/companion/src/lib/tags.ts`。
+- 结构化数据以 `apps/companion/src/data/*.json` 为源头，构建时同步到 `mods/mystia-steward-bepinex/Data/`。
 - C# Mod 不引用 TypeScript 模块；共享数据只通过 JSON 同步。
 
 ## 编码规范

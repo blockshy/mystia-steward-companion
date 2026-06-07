@@ -75,7 +75,7 @@ function Invoke-Pnpm {
 function Sync-ModData {
     Write-Step "Sync Mod data"
 
-    $SourceDir = Join-Path $RepoRoot "src/data"
+    $SourceDir = Join-Path $RepoRoot "apps/companion/src/data"
     $TargetDir = Join-Path $RootDir "Data"
     $Files = @(
         "recipes.json",

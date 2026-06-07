@@ -117,7 +117,7 @@
 
 当映射被重新核实后，必须同步更新：
 
-- `src/data/food-tag-id-map.json` 或对应结构化数据
+- `apps/companion/src/data/food-tag-id-map.json` 或对应结构化数据
 - `mods/mystia-steward-bepinex/src/Save/` 中的运行时解析逻辑
 - `docs/tmi-cooking-mechanics-knowledge-base.md`
 - 相关 README 或运行时说明文档

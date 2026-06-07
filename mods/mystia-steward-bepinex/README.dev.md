@@ -93,7 +93,7 @@ powershell -ExecutionPolicy Bypass -File mods\mystia-steward-bepinex\tools\build
 powershell -ExecutionPolicy Bypass -File mods\mystia-steward-bepinex\tools\build-release.ps1 -SkipInstall -SkipFrontendBuild -SkipTauriBuild
 ```
 
-如果修改了 `src/companion/` 或 Tauri 窗口相关代码，不要使用 `-SkipTauriBuild`，否则安装包中的伴随窗口仍会使用旧产物。
+如果修改了 `apps/companion/src/` 或 Tauri 窗口相关代码，不要使用 `-SkipTauriBuild`，否则安装包中的伴随窗口仍会使用旧产物。
 
 ## 拆分构建
 
@@ -121,18 +121,18 @@ bash mods/mystia-steward-bepinex/tools/package-release.sh
 常见产物：
 
 ```text
-dist/
-src-tauri/target/release/mystia-steward-companion(.exe)
-src-tauri/target/release/bundle/nsis/*.exe
+apps/companion/dist/
+apps/companion/src-tauri/target/release/mystia-steward-companion(.exe)
+apps/companion/src-tauri/target/release/bundle/nsis/*.exe
 mods/mystia-steward-bepinex/bin/Release/MystiaSteward.BepInEx.dll
 mods/mystia-steward-bepinex/dist/MystiaSteward-BepInEx.zip
 ```
 
-PowerShell 脚本固定生成 `.zip`；bash 脚本在系统没有 `zip` 时会改为生成 `.tar.gz`。打包脚本会在检测到 `src-tauri/target/release/mystia-steward-companion(.exe)` 时自动复制到安装包的 `companion/` 子目录。
+PowerShell 脚本固定生成 `.zip`；bash 脚本在系统没有 `zip` 时会改为生成 `.tar.gz`。打包脚本会在检测到 `apps/companion/src-tauri/target/release/mystia-steward-companion(.exe)` 时自动复制到安装包的 `companion/` 子目录。
 
 ## 数据同步
 
-结构化数据位于仓库根目录 `src/data/`。修改 JSON 数据后需要同步到 Mod：
+结构化数据位于 `apps/companion/src/data/`。修改 JSON 数据后需要同步到 Mod：
 
 ```bash
 bash mods/mystia-steward-bepinex/tools/sync-data.sh

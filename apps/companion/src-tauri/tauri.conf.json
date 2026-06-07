@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.tyukki.mystia-steward.companion",
   "build": {
-    "beforeDevCommand": "corepack pnpm dev -- --host 127.0.0.1",
+    "beforeDevCommand": "corepack pnpm --dir ../.. dev -- --host 127.0.0.1",
     "devUrl": "http://127.0.0.1:5173/",
-    "beforeBuildCommand": "corepack pnpm build",
+    "beforeBuildCommand": "corepack pnpm --dir ../.. build",
     "frontendDist": "../dist"
   },
   "app": {

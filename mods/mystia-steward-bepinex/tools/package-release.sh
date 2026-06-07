@@ -22,10 +22,10 @@ cp "$DLL_PATH" "$DIST_DIR/"
 cp -R "$ROOT_DIR/Data" "$DIST_DIR/Data"
 
 for companion_path in \
-  "$REPO_ROOT/src-tauri/target/release/mystia-steward-companion.exe" \
-  "$REPO_ROOT/src-tauri/target/release/MystiaSteward.Companion.exe" \
-  "$REPO_ROOT/src-tauri/target/release/Mystia Steward Companion.exe" \
-  "$REPO_ROOT/src-tauri/target/release/mystia-steward-companion"; do
+  "$REPO_ROOT/apps/companion/src-tauri/target/release/mystia-steward-companion.exe" \
+  "$REPO_ROOT/apps/companion/src-tauri/target/release/MystiaSteward.Companion.exe" \
+  "$REPO_ROOT/apps/companion/src-tauri/target/release/Mystia Steward Companion.exe" \
+  "$REPO_ROOT/apps/companion/src-tauri/target/release/mystia-steward-companion"; do
   if [[ -f "$companion_path" ]]; then
     mkdir -p "$DIST_DIR/companion"
     cp "$companion_path" "$DIST_DIR/companion/$(basename "$companion_path")"

@@ -7,8 +7,8 @@
 ## 项目边界
 
 - Mod 根目录：`mods/mystia-steward-bepinex/`。
-- 伴随窗口前端：`src/companion/`。
-- 静态数据源：`src/data/`，发布前同步到 Mod `Data/`。
+- 伴随窗口前端：`apps/companion/src/companion/`。
+- 静态数据源：`apps/companion/src/data/`，发布前同步到 Mod `Data/`。
 - C# 插件不引用 TypeScript 模块，也不编译引用 `Assembly-CSharp.dll`。
 
 ## 技术路线

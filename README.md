@@ -17,12 +17,10 @@
 ## 目录结构
 
 ```text
+apps/companion/                Tauri 伴随窗口应用
+apps/companion/src/            React 工作台、推荐算法、UI 组件和结构化数据
+apps/companion/src-tauri/      桌面伴随窗口壳
 mods/mystia-steward-bepinex/   BepInEx 插件、运行时读取、本地 API、打包脚本
-src/companion/                 Tauri 伴随窗口的 React 工作台
-src/components/                伴随窗口复用 UI 组件
-src/lib/                       推荐算法、tag 规则和类型定义
-src/data/                      结构化游戏数据，作为前端与 Mod 数据源
-src-tauri/                     桌面伴随窗口壳
 docs/                          Mod 开发约定、机制知识库和运行时说明
 ```
 
@@ -102,9 +100,9 @@ dotnet build mods/mystia-steward-bepinex/MystiaSteward.BepInEx.csproj -c Release
 常见产物：
 
 ```text
-dist/                                                   # 伴随窗口前端产物
-src-tauri/target/release/mystia-steward-companion.exe   # Windows 伴随窗口
-src-tauri/target/release/bundle/nsis/*.exe              # Windows 安装包
+apps/companion/dist/                                                   # 伴随窗口前端产物
+apps/companion/src-tauri/target/release/mystia-steward-companion.exe   # Windows 伴随窗口
+apps/companion/src-tauri/target/release/bundle/nsis/*.exe              # Windows 安装包
 mods/mystia-steward-bepinex/bin/Release/MystiaSteward.BepInEx.dll
 mods/mystia-steward-bepinex/dist/MystiaSteward-BepInEx.zip
 ```

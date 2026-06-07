@@ -25,10 +25,10 @@ Copy-Item -LiteralPath $DllPath -Destination $DistDir
 Copy-Item -LiteralPath (Join-Path $RootDir "Data") -Destination (Join-Path $DistDir "Data") -Recurse
 
 $CompanionCandidates = @(
-    "src-tauri/target/release/mystia-steward-companion.exe",
-    "src-tauri/target/release/MystiaSteward.Companion.exe",
-    "src-tauri/target/release/Mystia Steward Companion.exe",
-    "src-tauri/target/release/mystia-steward-companion"
+    "apps/companion/src-tauri/target/release/mystia-steward-companion.exe",
+    "apps/companion/src-tauri/target/release/MystiaSteward.Companion.exe",
+    "apps/companion/src-tauri/target/release/Mystia Steward Companion.exe",
+    "apps/companion/src-tauri/target/release/mystia-steward-companion"
 )
 
 foreach ($RelativePath in $CompanionCandidates) {

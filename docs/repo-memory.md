@@ -7,16 +7,14 @@
 ## 关键目录
 
 - `mods/mystia-steward-bepinex/`：插件源码、本地 API、运行时读取、构建脚本和 Mod 文档。
-- `src/companion/`：伴随窗口 React 工作台。
-- `src/lib/`：推荐算法、tag 规则和类型。
-- `src/data/`：结构化游戏数据。
-- `src-tauri/`：桌面伴随窗口壳。
+- `apps/companion/src/`：伴随窗口 React 工作台、推荐算法、tag 规则、类型和结构化数据。
+- `apps/companion/src-tauri/`：桌面伴随窗口壳。
 
 ## 开发事实
 
 - Mod 不编译引用 `Assembly-CSharp.dll`，运行时通过反射读取游戏已加载的 IL2CPP interop 类型。
 - `References/` 只放本机编译 DLL，不提交仓库。
-- `tools/sync-data.sh` 和 `build-release.ps1` 会把 `src/data` 同步到 Mod `Data/`。
+- `tools/sync-data.sh` 和 `build-release.ps1` 会把 `apps/companion/src/data` 同步到 Mod `Data/`。
 - 独立伴随窗口通过 `127.0.0.1:32145` 读取 `/snapshot` 和 `/logs`。
 - 旧游戏内 IMGUI 面板默认关闭，仅作为回退方案。
 
