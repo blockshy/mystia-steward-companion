@@ -137,21 +137,110 @@ mods/bepinex/dist/mystia-steward-companion-bepinex.zip
 
 PowerShell 7 脚本固定生成 `.zip`；bash 脚本在系统没有 `zip` 时会改为生成 `.tar.gz`。打包脚本会在检测到 `apps/companion/src-tauri/target/release/mystia-steward-companion(.exe)` 时自动复制到安装包的 `companion/` 子目录。
 
-本地发布方案见仓库根目录的 `docs/local-release.md`。仓库不使用 GitHub Actions 自动构建 Release；版本发布需要在 Windows 本机构建完整产物后通过 GitHub CLI 上传。
-GitHub Release 只上传 `mystia-steward-companion-bepinex.zip` 和 `checksums.txt`，不上传 Tauri setup 安装器。
+## 本地发布
 
-一键构建并发布：
+本地发布方案见仓库根目录的 `docs/local-release.md`。仓库不使用 GitHub Actions 自动构建 Release；版本发布需要在 Windows 本机构建完整产物后通过 GitHub CLI 上传。
+
+GitHub Release 只上传以下资产：
+
+- `mystia-steward-companion-bepinex.zip`
+- `checksums.txt`
+
+不上传 Tauri setup 安装器，避免用户误以为只安装桌面程序即可使用 Mod。
+
+发布前检查：
+
+- `gh auth status` 能正常显示已登录账号。
+- `mods\bepinex\References` 中 8 个编译引用 DLL 齐全。
+- `package.json`、`apps\companion\src-tauri\tauri.conf.json`、`apps\companion\src-tauri\Cargo.toml`、`MystiaStewardCompanionPlugin.PluginVersion` 版本一致。
+- 若发布新版本，先提交版本号变更并创建或移动对应 tag，例如 `v1.0.1`。
+
+### 发布新版本
+
+以 `v1.0.1` 为例：
 
 ```powershell
-pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 -Tag v1.0.0
+git pull --ff-only origin main
+git fetch --tags --force origin
+
+pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
+  -Tag v1.0.1 `
+  -Title "v1.0.1" `
+  -Notes "版本更新说明"
 ```
 
-如果引用 DLL 不在 `mods\bepinex\References`，发布时同样传入 `-ReferenceDir`：
+脚本会先执行完整构建，再用 `gh release create` 创建 Release 并上传 zip 与 checksums。
+
+如果引用 DLL 不在 `mods\bepinex\References`，传入 `-ReferenceDir`：
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
+  -Tag v1.0.1 `
+  -Title "v1.0.1" `
+  -Notes "版本更新说明" `
+  -ReferenceDir "D:\path\to\mystia-steward-companion-references"
+```
+
+### 更新已有版本资产
+
+如果只需要修改已有 Release 的标题或发布说明，不需要重新构建：
+
+```powershell
+gh release edit v1.0.0 `
+  --repo blockshy/mystia-steward-companion `
+  --title "v1.0.0" `
+  --notes "修正后的发布说明"
+```
+
+如果 Release 已存在，只想替换同名 zip 和 checksums，使用 `-Clobber`：
 
 ```powershell
 pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
   -Tag v1.0.0 `
-  -ReferenceDir "D:\path\to\mystia-steward-companion-references"
+  -Title "v1.0.0" `
+  -Notes "首个正式版本" `
+  -Clobber
+```
+
+如果已经运行过 `build-release.ps1`，只重新上传已有产物：
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
+  -Tag v1.0.0 `
+  -SkipBuild `
+  -Clobber
+```
+
+### 清理旧安装器资产
+
+如果历史 Release 里已经上传过 setup 安装器，需要手动删除一次：
+
+```powershell
+gh release delete-asset v1.0.0 mystia-steward-companion_1.0.0_x64-setup.exe `
+  --repo blockshy/mystia-steward-companion `
+  --yes
+
+gh release delete-asset v1.0.0 Mystia.Steward.Companion_0.1.0_x64-setup.exe `
+  --repo blockshy/mystia-steward-companion `
+  --yes
+```
+
+之后重新运行发布脚本不会再上传 setup。
+
+### 版本 tag
+
+发布脚本不会自动创建或移动 Git tag。新版本发布前应显式处理 tag：
+
+```powershell
+git tag -a v1.0.1 -m "v1.0.1"
+git push origin v1.0.1
+```
+
+如果需要修正尚未正式发布的 tag 指向：
+
+```powershell
+git tag -f -a v1.0.1 -m "v1.0.1"
+git push --force origin v1.0.1
 ```
 
 ## 数据同步
