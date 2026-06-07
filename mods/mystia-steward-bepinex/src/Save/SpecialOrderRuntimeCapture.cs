@@ -203,10 +203,13 @@ public static class SpecialOrderRuntimeCapture
 
         lock (SyncRoot)
         {
-            Orders.RemoveAll(existing => IsSameOrderSlot(existing, order));
-            Orders.Add(order);
+            var existing = Orders.Where(current => IsSameOrderSlot(current, order)).ToList();
+            Orders.RemoveAll(current => IsSameOrderSlot(current, order));
+
+            var next = existing.Aggregate(order, MergeCapturedOrder);
+            Orders.Add(next);
             _capturedOrders++;
-            _lastCapture = $"{order.CaptureSource}: desk={order.DeskCode}, guestId={order.GuestId?.ToString() ?? ""}, food={order.FoodTag}({order.FoodTagId}), bev={order.BeverageTag}({order.BeverageTagId})";
+            _lastCapture = $"{next.CaptureSource}: desk={next.DeskCode}, guestId={next.GuestId?.ToString() ?? ""}, food={next.FoodTag}({next.FoodTagId}), bev={next.BeverageTag}({next.BeverageTagId})";
             _status = BuildStatusLocked();
             if (Orders.Count > MaxOrders)
             {
@@ -278,7 +281,7 @@ public static class SpecialOrderRuntimeCapture
             ?? GetMemberValue(controller, "SpecialGuest")
             ?? GetMemberValue(controller, "OrderingGuest");
         var foodTagId = ToNullableInt(GetMemberValue(readableOrder, "RequestFoodTag"));
-        var beverageTagId = ToNullableInt(GetMemberValue(readableOrder, "RequestBeverageTag"));
+        var beverageTagId = NormalizeBeverageTagId(ToNullableInt(GetMemberValue(readableOrder, "RequestBeverageTag")));
         var deskCode = ToNullableInt(GetMemberValue(readableOrder, "DeskCode"))
             ?? ToNullableInt(GetMemberValue(controller, "DeskCode"))
             ?? textParts.DeskCode
@@ -384,6 +387,126 @@ public static class SpecialOrderRuntimeCapture
         if (left.DeskCode >= 0 && right.DeskCode >= 0 && left.DeskCode != right.DeskCode) return false;
         if (left.GuestId.HasValue && right.GuestId.HasValue) return left.GuestId.Value == right.GuestId.Value;
         return string.Equals(left.GuestName, right.GuestName, StringComparison.Ordinal);
+    }
+
+    private static CapturedRuntimeSpecialOrder MergeCapturedOrder(
+        CapturedRuntimeSpecialOrder incoming,
+        CapturedRuntimeSpecialOrder existing)
+    {
+        if (!CanMergeCapturedOrderDetails(incoming, existing))
+        {
+            return GetCapturedOrderCompletenessScore(incoming) >= GetCapturedOrderCompletenessScore(existing)
+                ? incoming
+                : existing with { CapturedAt = incoming.CapturedAt };
+        }
+
+        var food = SelectTagParts(
+            incoming.FoodTagId,
+            incoming.HasFoodTagId,
+            incoming.FoodTag,
+            existing.FoodTagId,
+            existing.HasFoodTagId,
+            existing.FoodTag);
+        var beverage = SelectTagParts(
+            incoming.BeverageTagId,
+            incoming.HasBeverageTagId,
+            incoming.BeverageTag,
+            existing.BeverageTagId,
+            existing.HasBeverageTagId,
+            existing.BeverageTag);
+
+        return incoming with
+        {
+            GuestId = incoming.GuestId ?? existing.GuestId,
+            GuestName = string.IsNullOrWhiteSpace(incoming.GuestName) || string.Equals(incoming.GuestName, "Special guest", StringComparison.Ordinal)
+                ? existing.GuestName
+                : incoming.GuestName,
+            FoodTagId = food.TagId,
+            HasFoodTagId = food.HasTagId,
+            FoodTag = food.Tag,
+            BeverageTagId = beverage.TagId,
+            HasBeverageTagId = beverage.HasTagId,
+            BeverageTag = beverage.Tag,
+            IsFulfilled = incoming.IsFulfilled || existing.IsFulfilled,
+            RuntimeKey = string.IsNullOrWhiteSpace(incoming.RuntimeKey) ? existing.RuntimeKey : incoming.RuntimeKey,
+            CaptureSource = MergeCaptureSource(existing.CaptureSource, incoming.CaptureSource),
+        };
+    }
+
+    private static bool CanMergeCapturedOrderDetails(CapturedRuntimeSpecialOrder left, CapturedRuntimeSpecialOrder right)
+    {
+        if (!string.IsNullOrWhiteSpace(left.RuntimeKey)
+            && !string.IsNullOrWhiteSpace(right.RuntimeKey)
+            && string.Equals(left.RuntimeKey, right.RuntimeKey, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (HaveConflictingTags(left.FoodTag, left.HasFoodTagId, left.FoodTagId, right.FoodTag, right.HasFoodTagId, right.FoodTagId))
+        {
+            return false;
+        }
+
+        if (HaveConflictingTags(left.BeverageTag, left.HasBeverageTagId, left.BeverageTagId, right.BeverageTag, right.HasBeverageTagId, right.BeverageTagId))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool HaveConflictingTags(
+        string leftTag,
+        bool leftHasTagId,
+        int leftTagId,
+        string rightTag,
+        bool rightHasTagId,
+        int rightTagId)
+    {
+        if (!string.IsNullOrWhiteSpace(leftTag)
+            && !string.IsNullOrWhiteSpace(rightTag)
+            && !string.Equals(leftTag, rightTag, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return leftHasTagId && rightHasTagId && leftTagId != rightTagId;
+    }
+
+    private static (int TagId, bool HasTagId, string Tag) SelectTagParts(
+        int incomingTagId,
+        bool incomingHasTagId,
+        string incomingTag,
+        int existingTagId,
+        bool existingHasTagId,
+        string existingTag)
+    {
+        var incomingScore = GetTagCompletenessScore(incomingHasTagId, incomingTag);
+        var existingScore = GetTagCompletenessScore(existingHasTagId, existingTag);
+        return incomingScore >= existingScore
+            ? (incomingTagId, incomingHasTagId, incomingTag)
+            : (existingTagId, existingHasTagId, existingTag);
+    }
+
+    private static int GetCapturedOrderCompletenessScore(CapturedRuntimeSpecialOrder order)
+    {
+        return GetTagCompletenessScore(order.HasFoodTagId, order.FoodTag)
+            + GetTagCompletenessScore(order.HasBeverageTagId, order.BeverageTag)
+            + (order.GuestId.HasValue ? 2 : 0)
+            + (order.DeskCode >= 0 ? 1 : 0);
+    }
+
+    private static int GetTagCompletenessScore(bool hasTagId, string tag)
+    {
+        return (!string.IsNullOrWhiteSpace(tag) ? 8 : 0) + (hasTagId ? 2 : 0);
+    }
+
+    private static string MergeCaptureSource(string existing, string incoming)
+    {
+        if (string.IsNullOrWhiteSpace(existing)) return incoming;
+        if (string.IsNullOrWhiteSpace(incoming)) return existing;
+        if (string.Equals(existing, incoming, StringComparison.Ordinal)) return incoming;
+        return $"{existing}+{incoming}";
     }
 
     private static bool IsOrderFulfilled(object? order)
@@ -739,6 +862,11 @@ public static class SpecialOrderRuntimeCapture
     private static int ToInt(object? value)
     {
         return ToNullableInt(value) ?? 0;
+    }
+
+    private static int? NormalizeBeverageTagId(int? value)
+    {
+        return value.HasValue && value.Value >= 0 ? value : null;
     }
 }
 

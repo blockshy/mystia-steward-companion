@@ -419,8 +419,8 @@ public sealed class NightBusinessReflectionProvider
         var guestId = ToNullableInt(GetMemberValue(specialGuest, "Id"));
         var foodTag = ResolveOrderTagText(order, controller, specialGuest, "GetOrderFoodText", "GetFoodTagText", "RequestFoodTag", "ReqFoodTag", useFoodTagMap: true);
         var beverageTag = ResolveOrderTagText(order, controller, specialGuest, "GetOrderBevText", "GetBevTagText", "RequestBeverageTag", "ReqBevTag", useFoodTagMap: false);
-        var foodTagId = ResolveTagId(foodTag, GetMemberValue(order, "RequestFoodTag"));
-        var beverageTagId = ResolveTagId(beverageTag, GetMemberValue(order, "RequestBeverageTag"));
+        var foodTagId = ResolveTagId(foodTag, GetMemberValue(order, "RequestFoodTag"), useFoodTagMap: true);
+        var beverageTagId = ResolveTagId(beverageTag, GetMemberValue(order, "RequestBeverageTag"), useFoodTagMap: false);
         if (foodTagId == 0 && beverageTagId == 0 && string.IsNullOrWhiteSpace(foodTag) && string.IsNullOrWhiteSpace(beverageTag))
         {
             return null;
@@ -519,9 +519,9 @@ public sealed class NightBusinessReflectionProvider
                 DeskCode = captured.DeskCode,
                 GuestId = guestId,
                 GuestName = ResolveRareGuestName(guestId, fallbackGuestName),
-                FoodTagId = captured.HasFoodTagId ? captured.FoodTagId : ResolveTagId(foodTag, null),
+                FoodTagId = ResolveTagId(foodTag, captured.HasFoodTagId ? captured.FoodTagId : null, useFoodTagMap: true),
                 FoodTag = foodTag,
-                BeverageTagId = captured.HasBeverageTagId ? captured.BeverageTagId : ResolveTagId(beverageTag, null),
+                BeverageTagId = ResolveTagId(beverageTag, captured.HasBeverageTagId ? captured.BeverageTagId : null, useFoodTagMap: false),
                 BeverageTag = beverageTag,
                 Source = string.IsNullOrWhiteSpace(captured.CaptureSource) ? "RuntimeCapture" : $"RuntimeCapture:{captured.CaptureSource}",
             };
@@ -578,9 +578,9 @@ public sealed class NightBusinessReflectionProvider
                 DeskCode = captured.DeskCode,
                 GuestId = rareCustomer?.Id,
                 GuestName = rareCustomer?.Name ?? captured.GuestName,
-                FoodTagId = ResolveTagId(foodTag, null),
+                FoodTagId = ResolveTagId(foodTag, null, useFoodTagMap: true),
                 FoodTag = foodTag,
-                BeverageTagId = ResolveTagId(beverageTag, null),
+                BeverageTagId = ResolveTagId(beverageTag, null, useFoodTagMap: false),
                 BeverageTag = beverageTag,
                 Source = "OrderLog",
             };
@@ -739,6 +739,7 @@ public sealed class NightBusinessReflectionProvider
     {
         if (TryResolveTagTextFromMap(tagId, useFoodTagMap, out var mapped)) return mapped;
 
+        if (tagId < 0) return "";
         if (tagId == 0) return "";
         return $"#{tagId}";
     }
@@ -936,7 +937,7 @@ public sealed class NightBusinessReflectionProvider
             .ToList();
     }
 
-    private int ResolveTagId(string tagText, object? fallbackValue)
+    private int ResolveTagId(string tagText, object? fallbackValue, bool useFoodTagMap)
     {
         if (!string.IsNullOrWhiteSpace(tagText))
         {
@@ -950,7 +951,10 @@ public sealed class NightBusinessReflectionProvider
             }
         }
 
-        return ToInt(fallbackValue);
+        var fallbackId = ToNullableInt(fallbackValue);
+        if (!fallbackId.HasValue) return 0;
+        if (fallbackId.Value < 0 && !TryResolveTagTextFromMap(fallbackId.Value, useFoodTagMap, out _)) return 0;
+        return fallbackId.Value;
     }
 
     private static string ReadGuestName(object specialGuest, int? guestId)
