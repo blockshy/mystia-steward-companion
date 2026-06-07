@@ -43,6 +43,23 @@ function Get-GhCommand {
     return $Gh.Source
 }
 
+function New-StringList {
+    return ,(New-Object "System.Collections.Generic.List[string]")
+}
+
+function Add-StringListItems {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Collections.Generic.List[string]]$List,
+        [Parameter(Mandatory = $true)]
+        [string[]]$Items
+    )
+
+    foreach ($Item in $Items) {
+        [void]$List.Add($Item)
+    }
+}
+
 Push-Location $RepoRoot
 try {
     if (-not $SkipBuild) {
@@ -82,39 +99,34 @@ try {
     $ReleaseExists = $LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($ExistingRelease)
 
     if ($ReleaseExists) {
-        $UploadArgs = @("release", "upload", $Tag) + $AssetPaths + @("--repo", $Repo)
+        $UploadArgs = New-StringList
+        Add-StringListItems -List $UploadArgs -Items @("release", "upload", $Tag)
+        Add-StringListItems -List $UploadArgs -Items $AssetPaths
+        Add-StringListItems -List $UploadArgs -Items @("--repo", $Repo)
         if ($Clobber) {
-            $UploadArgs += "--clobber"
+            [void]$UploadArgs.Add("--clobber")
         }
 
-        Invoke-Checked -FilePath $Gh -Arguments $UploadArgs
+        Invoke-Checked -FilePath $Gh -Arguments $UploadArgs.ToArray()
     }
     else {
         if ([string]::IsNullOrWhiteSpace($Title)) {
             $Title = $Tag
         }
         if ([string]::IsNullOrWhiteSpace($Notes)) {
-            $Notes = "本版本由本机构建后通过 GitHub CLI 上传。"
+            $Notes = "Built locally and uploaded with GitHub CLI."
         }
 
-        $CreateArgs = @(
-            "release",
-            "create",
-            $Tag
-        ) + $AssetPaths + @(
-            "--repo",
-            $Repo,
-            "--title",
-            $Title,
-            "--notes",
-            $Notes
-        )
+        $CreateArgs = New-StringList
+        Add-StringListItems -List $CreateArgs -Items @("release", "create", $Tag)
+        Add-StringListItems -List $CreateArgs -Items $AssetPaths
+        Add-StringListItems -List $CreateArgs -Items @("--repo", $Repo, "--title", $Title, "--notes", $Notes)
 
         if ($Prerelease) {
-            $CreateArgs += "--prerelease"
+            [void]$CreateArgs.Add("--prerelease")
         }
 
-        Invoke-Checked -FilePath $Gh -Arguments $CreateArgs
+        Invoke-Checked -FilePath $Gh -Arguments $CreateArgs.ToArray()
     }
 }
 finally {
