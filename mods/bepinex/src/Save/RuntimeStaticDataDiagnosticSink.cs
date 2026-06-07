@@ -5,22 +5,27 @@ namespace MystiaStewardCompanion.Save;
 
 internal static class RuntimeStaticDataDiagnosticSink
 {
-    private const long MaxLogBytes = 256 * 1024;
+    private const long MaxLogBytes = 2 * 1024 * 1024;
     private static readonly object SyncRoot = new();
     private static readonly Dictionary<string, string> LastSignatureByPath = new(StringComparer.OrdinalIgnoreCase);
 
     public static string ResolvePath(string? diagnosticsPath)
+    {
+        return ResolvePath(diagnosticsPath, "runtime-static-data.log");
+    }
+
+    public static string ResolvePath(string? diagnosticsPath, string fileName)
     {
         if (!string.IsNullOrWhiteSpace(diagnosticsPath))
         {
             var directory = System.IO.Path.GetDirectoryName(diagnosticsPath.Trim());
             if (!string.IsNullOrWhiteSpace(directory))
             {
-                return System.IO.Path.Combine(directory, "runtime-static-data.log");
+                return System.IO.Path.Combine(directory, fileName);
             }
         }
 
-        return System.IO.Path.Combine(Paths.ConfigPath, "MystiaStewardCompanion", "runtime-static-data.log");
+        return System.IO.Path.Combine(Paths.ConfigPath, "MystiaStewardCompanion", fileName);
     }
 
     public static void WriteMappedSpecialGuests(string path, RuntimeMappedGuestCatalogSnapshot snapshot)
@@ -39,6 +44,58 @@ internal static class RuntimeStaticDataDiagnosticSink
             if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
             RotateIfNeeded(path);
             File.AppendAllText(path, FormatMappedSpecialGuests(snapshot), Encoding.UTF8);
+        }
+    }
+
+    public static void WriteStaticData(string? diagnosticsPath, RuntimeStaticDataSnapshot snapshot)
+    {
+        WriteSection(
+            ResolvePath(diagnosticsPath, "runtime-tags.log"),
+            "Runtime Tags",
+            "DataBaseLanguage tag tables and DataBaseCore TagRules",
+            snapshot,
+            snapshot.TagLines);
+        WriteSection(
+            ResolvePath(diagnosticsPath, "runtime-database-diff.log"),
+            "Runtime Core Database",
+            "DataBaseCore ingredients, beverages, foods, and recipes with local-data comparison",
+            snapshot,
+            snapshot.CoreLines);
+        WriteSection(
+            ResolvePath(diagnosticsPath, "runtime-guests.log"),
+            "Runtime Guests",
+            "DataBaseCharacter normal guests, special guests, mapped guests, and guest easter data",
+            snapshot,
+            snapshot.GuestLines);
+        WriteSection(
+            ResolvePath(diagnosticsPath, "runtime-izakayas.log"),
+            "Runtime Izakayas",
+            "DataBaseCore izakaya scene pools and labels",
+            snapshot,
+            snapshot.IzakayaLines);
+    }
+
+    private static void WriteSection(
+        string path,
+        string title,
+        string source,
+        RuntimeStaticDataSnapshot snapshot,
+        IReadOnlyList<string> lines)
+    {
+        var signature = BuildSignature(snapshot, lines);
+        lock (SyncRoot)
+        {
+            if (LastSignatureByPath.TryGetValue(path, out var lastSignature)
+                && string.Equals(lastSignature, signature, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            LastSignatureByPath[path] = signature;
+            var directory = System.IO.Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
+            RotateIfNeeded(path);
+            File.AppendAllText(path, FormatSection(title, source, snapshot, lines), Encoding.UTF8);
         }
     }
 
@@ -69,6 +126,54 @@ internal static class RuntimeStaticDataDiagnosticSink
                 .Append(';');
         }
 
+        return builder.ToString();
+    }
+
+    private static string BuildSignature(RuntimeStaticDataSnapshot snapshot, IReadOnlyList<string> lines)
+    {
+        var builder = new StringBuilder();
+        builder.Append(snapshot.Status).Append('|');
+        foreach (var error in snapshot.ErrorLines)
+        {
+            builder.Append("err:").Append(error).Append(';');
+        }
+
+        foreach (var line in lines)
+        {
+            builder.Append(line).Append('\n');
+        }
+
+        return builder.ToString();
+    }
+
+    private static string FormatSection(
+        string title,
+        string source,
+        RuntimeStaticDataSnapshot snapshot,
+        IReadOnlyList<string> lines)
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine($"==== mystia-steward-companion {title} ====");
+        builder.AppendLine($"Utc: {DateTime.UtcNow:O}");
+        builder.AppendLine($"Source: {source}");
+        builder.AppendLine($"ReadAtUtc: {snapshot.CapturedAtUtc:O}");
+        builder.AppendLine($"Status: {snapshot.Status}");
+        builder.AppendLine($"Complete: {snapshot.IsComplete}");
+        if (snapshot.ErrorLines.Count > 0)
+        {
+            builder.AppendLine("Errors:");
+            foreach (var error in snapshot.ErrorLines)
+            {
+                builder.AppendLine($"  - {error}");
+            }
+        }
+
+        foreach (var line in lines)
+        {
+            builder.AppendLine(line);
+        }
+
+        builder.AppendLine();
         return builder.ToString();
     }
 

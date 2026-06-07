@@ -31,6 +31,7 @@ public sealed class NightBusinessReflectionProvider
     private readonly DataRepository _repository;
     private readonly RareCustomerIdentityResolver _rareIdentityResolver;
     private readonly RuntimeMappedGuestCatalog _mappedGuestCatalog;
+    private readonly RuntimeStaticDataCatalog _staticDataCatalog;
     private readonly NightBusinessDiagnosticSink? _diagnostics;
     private readonly string _sceneName;
     private readonly bool _useLogFallback;
@@ -47,6 +48,7 @@ public sealed class NightBusinessReflectionProvider
         _repository = repository;
         _rareIdentityResolver = repository.RareCustomerIdentities;
         _mappedGuestCatalog = new RuntimeMappedGuestCatalog(repository);
+        _staticDataCatalog = new RuntimeStaticDataCatalog(repository);
         _diagnostics = diagnostics;
         _sceneName = sceneName;
         _useLogFallback = useLogFallback;
@@ -60,8 +62,10 @@ public sealed class NightBusinessReflectionProvider
         var sourceStats = new List<string>();
         _candidateDiagnostics = _diagnostics == null ? null : new List<NightBusinessCandidateDiagnostic>();
         var mappedGuestSnapshot = _mappedGuestCatalog.Snapshot();
+        var staticDataSnapshot = _staticDataCatalog.Snapshot(mappedGuestSnapshot);
         sourceStats.Add($"MappedGuests={mappedGuestSnapshot.ResolvedCount}/{mappedGuestSnapshot.Entries.Count}; {mappedGuestSnapshot.Status}");
-        WriteRuntimeStaticDataDiagnostics(mappedGuestSnapshot);
+        sourceStats.Add($"StaticData={staticDataSnapshot.Status}");
+        WriteRuntimeStaticDataDiagnostics(mappedGuestSnapshot, staticDataSnapshot);
 
         try
         {
@@ -204,7 +208,9 @@ public sealed class NightBusinessReflectionProvider
         };
     }
 
-    private void WriteRuntimeStaticDataDiagnostics(RuntimeMappedGuestCatalogSnapshot snapshot)
+    private void WriteRuntimeStaticDataDiagnostics(
+        RuntimeMappedGuestCatalogSnapshot mappedGuestSnapshot,
+        RuntimeStaticDataSnapshot staticDataSnapshot)
     {
         if (_diagnostics == null) return;
 
@@ -212,7 +218,8 @@ public sealed class NightBusinessReflectionProvider
         {
             RuntimeStaticDataDiagnosticSink.WriteMappedSpecialGuests(
                 RuntimeStaticDataDiagnosticSink.ResolvePath(_diagnostics.Path),
-                snapshot);
+                mappedGuestSnapshot);
+            RuntimeStaticDataDiagnosticSink.WriteStaticData(_diagnostics.Path, staticDataSnapshot);
         }
         catch
         {

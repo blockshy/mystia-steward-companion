@@ -111,6 +111,16 @@ BepInEx/config/com.tyukki.mystia-steward-companion.cfg
 - `SetConsoleUtf8`：加载 Mod 后尝试将 Windows 控制台切换到 UTF-8，默认开启。
 - `EnableInGameOverlay`：是否启用旧游戏内 IMGUI 面板，默认关闭。
 
+开启经营诊断后，除 `night-business-diagnostics.log` 外，还会写入运行时固定数据快照：
+
+- `runtime-static-data.log`：稀客事件变体映射表。
+- `runtime-tags.log`：料理/酒水标签文本和 TagRule。
+- `runtime-database-diff.log`：食材、酒水、料理、菜品运行时数据与本地数据对照。
+- `runtime-guests.log`：普客、稀客、映射稀客和特殊料理规则。
+- `runtime-izakayas.log`：经营场景、场景标签和客人池。
+
+这些文件不是游戏启动瞬间立即生成，而是在诊断开启且运行时经营数据扫描触发时读取；若游戏数据库尚未初始化，Mod 会每 5 秒重试。日志顶部 `Complete: True` 且 `Status` 中各项计数大于 0，表示本次固定数据读取成功。
+
 ## 故障排查
 
 - `F8` 无法打开独立窗口：确认 `mystia-steward-companion.exe` 位于 `BepInEx/plugins/mystia-steward-companion/companion/`，或在 `Companion.ExecutablePath` 中填写绝对路径。若窗口已打开，`F8` 会在游戏和独立窗口之间切换。
