@@ -31,7 +31,7 @@ docs/                          Mod 开发约定、机制知识库和运行时说
 - 用户安装、快捷键和故障排查：[mods/bepinex/README.md](mods/bepinex/README.md)
 - 开发环境、构建和打包：[mods/bepinex/README.dev.md](mods/bepinex/README.dev.md)
 - 开发约定：[docs/development-conventions.md](docs/development-conventions.md)
-- GitHub Actions 发布方案：[docs/github-actions-release.md](docs/github-actions-release.md)
+- 本地构建与发布方案：[docs/local-release.md](docs/local-release.md)
 - 仓库状态：[docs/repo-memory.md](docs/repo-memory.md)
 - 料理机制：[docs/tmi-cooking-mechanics-knowledge-base.md](docs/tmi-cooking-mechanics-knowledge-base.md)
 - Addressables 映射：[docs/addressables-tag-mapping-playbook.md](docs/addressables-tag-mapping-playbook.md)

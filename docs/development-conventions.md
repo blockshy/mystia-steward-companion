@@ -54,12 +54,12 @@ powershell -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 
 该命令会生成发布包；除非用户明确要求，不要运行。
 
-## GitHub Actions
+## GitHub Actions 与发布
 
 - `.github/workflows/ci.yml` 仅支持手动触发，用于前端 lint 和 build 检查。
-- `.github/workflows/release.yml` 仅在 `v*` tag 或手动 dispatch 时运行。
-- 不要主动创建 tag 或触发 Release workflow；版本构建必须等待用户明确指令。
-- Release workflow 依赖 self-hosted Windows runner 和 `MYSTIA_REFERENCE_DIR` 仓库变量，详细说明见 `docs/github-actions-release.md`。
+- 仓库不使用 GitHub Actions 自动构建 Release；不要新增 tag 自动构建 workflow。
+- 版本发布采用本机 Windows 构建后通过 `gh` 上传，详细说明见 `docs/local-release.md`。
+- 不要主动创建 tag 或发布 Release；版本构建必须等待用户明确指令。
 
 ## 运行时约束
 
