@@ -29,6 +29,7 @@ public sealed class NightBusinessReflectionProvider
     };
 
     private readonly DataRepository _repository;
+    private readonly RareCustomerIdentityResolver _rareIdentityResolver;
     private readonly NightBusinessDiagnosticSink? _diagnostics;
     private readonly string _sceneName;
     private readonly bool _useLogFallback;
@@ -43,6 +44,7 @@ public sealed class NightBusinessReflectionProvider
         bool useLogFallback = false)
     {
         _repository = repository;
+        _rareIdentityResolver = repository.RareCustomerIdentities;
         _diagnostics = diagnostics;
         _sceneName = sceneName;
         _useLogFallback = useLogFallback;
@@ -398,8 +400,9 @@ public sealed class NightBusinessReflectionProvider
             return null;
         }
 
-        var guestId = ToNullableInt(GetMemberValue(guest, "Id"));
-        if (specialGuest == null && (!guestId.HasValue || !_repository.RareCustomersById.ContainsKey(guestId.Value)))
+        var guestId = ReadGuestId(guest);
+        var identity = ResolveRareCustomerIdentity(guest);
+        if (specialGuest == null && identity == null)
         {
             RecordCandidate("GuestController", source, accepted: false, "OrderingGuest id is not in local rare customer data", DescribeControllerCandidate(controller));
             return null;
@@ -408,10 +411,8 @@ public sealed class NightBusinessReflectionProvider
         var result = new NightBusinessGuest
         {
             DeskCode = ToInt(GetMemberValue(controller, "DeskCode")),
-            GuestId = guestId,
-            GuestName = guestId.HasValue && _repository.RareCustomersById.TryGetValue(guestId.Value, out var rareCustomer)
-                ? rareCustomer.Name
-                : ReadGuestName(guest, guestId),
+            GuestId = identity?.Id ?? guestId,
+            GuestName = identity?.Name ?? ReadGuestName(guest, guestId),
             Source = source,
         };
         RecordCandidate("GuestController", source, accepted: true, "accepted rare guest", DescribeControllerCandidate(controller));
@@ -429,14 +430,13 @@ public sealed class NightBusinessReflectionProvider
             return null;
         }
 
-        var guestId = ToNullableInt(GetMemberValue(specialGuest, "Id"));
+        var guestId = ReadGuestId(specialGuest);
+        var identity = ResolveRareCustomerIdentity(specialGuest);
         var result = new NightBusinessGuest
         {
             DeskCode = ToInt(GetMemberValue(order, "DeskCode") ?? GetMemberValue(controller, "DeskCode")),
-            GuestId = guestId,
-            GuestName = guestId.HasValue && _repository.RareCustomersById.TryGetValue(guestId.Value, out var rareCustomer)
-                ? rareCustomer.Name
-                : ReadGuestName(specialGuest, guestId),
+            GuestId = identity?.Id ?? guestId,
+            GuestName = identity?.Name ?? ReadGuestName(specialGuest, guestId),
             Source = source,
         };
         RecordCandidate("GuestFromOrder", source, accepted: true, "accepted rare guest from order", DescribeOrderCandidate(order, controller));
@@ -468,7 +468,8 @@ public sealed class NightBusinessReflectionProvider
             return null;
         }
 
-        var guestId = ToNullableInt(GetMemberValue(specialGuest, "Id"));
+        var guestId = ReadGuestId(specialGuest);
+        var identity = ResolveRareCustomerIdentity(specialGuest);
         var foodTag = ResolveOrderTagText(order, controller, specialGuest, "GetOrderFoodText", "GetFoodTagText", "RequestFoodTag", "ReqFoodTag", useFoodTagMap: true);
         var beverageTag = ResolveOrderTagText(order, controller, specialGuest, "GetOrderBevText", "GetBevTagText", "RequestBeverageTag", "ReqBevTag", useFoodTagMap: false);
         var foodTagId = ResolveTagId(foodTag, GetMemberValue(order, "RequestFoodTag"), useFoodTagMap: true);
@@ -480,15 +481,11 @@ public sealed class NightBusinessReflectionProvider
         }
 
         var deskCode = ToInt(GetMemberValue(order, "DeskCode") ?? GetMemberValue(controller, "DeskCode"));
-        var guestName = guestId.HasValue && _repository.RareCustomersById.TryGetValue(guestId.Value, out var rareCustomer)
-            ? rareCustomer.Name
-            : ReadGuestName(specialGuest, guestId);
-
         var result = new NightBusinessOrder
         {
             DeskCode = deskCode,
-            GuestId = guestId,
-            GuestName = guestName,
+            GuestId = identity?.Id ?? guestId,
+            GuestName = identity?.Name ?? ReadGuestName(specialGuest, guestId),
             FoodTagId = foodTagId,
             FoodTag = foodTag,
             BeverageTagId = beverageTagId,
@@ -559,7 +556,8 @@ public sealed class NightBusinessReflectionProvider
         foreach (var captured in capturedOrders)
         {
             var activeGuest = FindActiveGuestForCapturedOrder(captured, activeGuests);
-            var guestId = captured.GuestId ?? activeGuest?.GuestId;
+            var identity = _rareIdentityResolver.Resolve(captured.GuestId, captured.GuestName);
+            var guestId = identity?.Id ?? captured.GuestId ?? activeGuest?.GuestId;
             var fallbackGuestName = !string.IsNullOrWhiteSpace(captured.GuestName)
                 ? captured.GuestName
                 : activeGuest?.GuestName ?? "";
@@ -575,7 +573,7 @@ public sealed class NightBusinessReflectionProvider
             {
                 DeskCode = captured.DeskCode,
                 GuestId = guestId,
-                GuestName = ResolveRareGuestName(guestId, fallbackGuestName),
+                GuestName = identity?.Name ?? ResolveRareGuestName(guestId, fallbackGuestName),
                 FoodTagId = ResolveTagId(foodTag, captured.HasFoodTagId ? captured.FoodTagId : null, useFoodTagMap: true),
                 FoodTag = foodTag,
                 BeverageTagId = ResolveTagId(beverageTag, captured.HasBeverageTagId ? captured.BeverageTagId : null, useFoodTagMap: false),
@@ -592,13 +590,27 @@ public sealed class NightBusinessReflectionProvider
         }
     }
 
-    private static NightBusinessGuest? FindActiveGuestForCapturedOrder(
+    private NightBusinessGuest? FindActiveGuestForCapturedOrder(
         CapturedRuntimeSpecialOrder captured,
         IReadOnlyList<NightBusinessGuest> activeGuests)
     {
+        var capturedIdentity = _rareIdentityResolver.Resolve(captured.GuestId, captured.GuestName);
         foreach (var guest in activeGuests)
         {
+            if (!IsCompatibleDesk(captured.DeskCode, guest.DeskCode)) continue;
+
+            if (capturedIdentity != null && guest.GuestId.HasValue && capturedIdentity.Id == guest.GuestId.Value)
+            {
+                return guest;
+            }
+
             if (captured.GuestId.HasValue && guest.GuestId.HasValue && captured.GuestId.Value == guest.GuestId.Value)
+            {
+                return guest;
+            }
+
+            if (capturedIdentity != null
+                && string.Equals(capturedIdentity.Name, guest.GuestName, StringComparison.Ordinal))
             {
                 return guest;
             }
@@ -628,15 +640,14 @@ public sealed class NightBusinessReflectionProvider
         var now = DateTime.UtcNow;
         foreach (var captured in capturedOrders)
         {
-            var rareCustomer = _repository.RareCustomers.FirstOrDefault(customer =>
-                string.Equals(customer.Name, captured.GuestName, StringComparison.Ordinal));
+            var identity = _rareIdentityResolver.Resolve(null, captured.GuestName);
             var foodTag = CanonicalizeTagText(captured.FoodTag, useFoodTagMap: true);
             var beverageTag = CanonicalizeTagText(captured.BeverageTag, useFoodTagMap: false);
             var order = new NightBusinessOrder
             {
                 DeskCode = captured.DeskCode,
-                GuestId = rareCustomer?.Id,
-                GuestName = rareCustomer?.Name ?? captured.GuestName,
+                GuestId = identity?.Id,
+                GuestName = identity?.Name ?? captured.GuestName,
                 FoodTagId = ResolveTagId(foodTag, null, useFoodTagMap: true),
                 FoodTag = foodTag,
                 BeverageTagId = ResolveTagId(beverageTag, null, useFoodTagMap: false),
@@ -655,9 +666,7 @@ public sealed class NightBusinessReflectionProvider
 
     private string ResolveRareGuestName(int? guestId, string fallback)
     {
-        return guestId.HasValue && _repository.RareCustomersById.TryGetValue(guestId.Value, out var rareCustomer)
-            ? rareCustomer.Name
-            : fallback;
+        return _rareIdentityResolver.Resolve(guestId, fallback)?.Name ?? fallback;
     }
 
     private string ResolveCapturedTagText(string tagText, int? tagId, bool useFoodTagMap)
@@ -683,7 +692,8 @@ public sealed class NightBusinessReflectionProvider
     {
         foreach (var guest in activeGuests)
         {
-            if (order.DeskCode >= 0 && guest.DeskCode >= 0 && order.DeskCode != guest.DeskCode) continue;
+            if (!IsCompatibleDesk(order.DeskCode, guest.DeskCode)) continue;
+
             if (order.GuestId.HasValue && guest.GuestId.HasValue && order.GuestId.Value == guest.GuestId.Value) return true;
             if (!string.IsNullOrWhiteSpace(order.GuestName)
                 && string.Equals(order.GuestName, guest.GuestName, StringComparison.Ordinal))
@@ -693,6 +703,12 @@ public sealed class NightBusinessReflectionProvider
         }
 
         return false;
+    }
+
+    private static bool IsCompatibleDesk(int orderDeskCode, int guestDeskCode)
+    {
+        if (orderDeskCode < 0) return true;
+        return guestDeskCode >= 0 && orderDeskCode == guestDeskCode;
     }
 
     private static List<NightBusinessOrder> DeduplicateOrders(IEnumerable<NightBusinessOrder> orders)
@@ -798,8 +814,72 @@ public sealed class NightBusinessReflectionProvider
         if (GetMemberValue(controller, "SpecialGuest") != null) return true;
 
         var guest = GetMemberValue(controller, "OrderingGuest");
-        var guestId = ToNullableInt(GetMemberValue(guest, "Id"));
-        return guestId.HasValue && _repository.RareCustomersById.ContainsKey(guestId.Value);
+        return ResolveRareCustomerIdentity(guest) != null;
+    }
+
+    private RareCustomerIdentity? ResolveRareCustomerIdentity(object? guest)
+    {
+        if (guest == null) return null;
+
+        var identity = ResolveRareCustomerIdentityFromFields(guest);
+        if (identity != null) return identity;
+
+        var guestId = ReadGuestId(guest);
+        if (!guestId.HasValue) return null;
+
+        return ResolveRareCustomerIdentityFromFields(ReadMappedSpecialGuest(guestId.Value));
+    }
+
+    private RareCustomerIdentity? ResolveRareCustomerIdentityFromFields(object? guest)
+    {
+        if (guest == null) return null;
+
+        var guestId = ReadGuestId(guest);
+        var stringId = ReadGuestStringId(guest);
+        var name = ReadGuestDisplayName(guest);
+        var sourceGuestId = ReadSourceGuestId(guest);
+
+        return _rareIdentityResolver.Resolve(guestId, stringId)
+            ?? _rareIdentityResolver.Resolve(guestId, name)
+            ?? _rareIdentityResolver.Resolve(sourceGuestId, stringId)
+            ?? _rareIdentityResolver.Resolve(sourceGuestId, name);
+    }
+
+    private static int? ReadGuestId(object? guest)
+    {
+        return ToNullableInt(GetMemberValue(guest, "Id") ?? GetMemberValue(guest, "ID"));
+    }
+
+    private static string? ReadGuestStringId(object? guest)
+    {
+        return GetMemberValue(guest, "StringId")?.ToString()
+            ?? GetMemberValue(guest, "StrID")?.ToString();
+    }
+
+    private static string? ReadGuestDisplayName(object? guest)
+    {
+        return GetMemberValue(guest, "Name")?.ToString()
+            ?? GetMemberValue(guest, "DisplayName")?.ToString()
+            ?? GetMemberValue(guest, "CharacterName")?.ToString();
+    }
+
+    private static int? ReadSourceGuestId(object? guest)
+    {
+        return ToNullableInt(GetMemberValue(guest, "SourceGuestID") ?? GetMemberValue(guest, "SourceGuestId"));
+    }
+
+    private static object? ReadMappedSpecialGuest(int id)
+    {
+        var dataBaseCharacterType = FindType(DataBaseCharacterTypeName);
+        if (dataBaseCharacterType == null) return null;
+
+        var isMapped = InvokeStaticMethod(dataBaseCharacterType, "IsSpecialGuestMapped", id);
+        var targetId = ToBool(isMapped) ? ToNullableInt(InvokeStaticMethod(dataBaseCharacterType, "MappedID2TargetID", id)) : null;
+        var refGuestId = targetId ?? id;
+        var specialExists = InvokeStaticMethod(dataBaseCharacterType, "SpecialGuestExists", refGuestId);
+        if (!ToBool(specialExists) && !targetId.HasValue) return null;
+
+        return InvokeStaticMethod(dataBaseCharacterType, "RefSGuest", refGuestId);
     }
 
     private void RecordCandidate(string kind, string source, bool accepted, string reason, string details)
@@ -866,13 +946,11 @@ public sealed class NightBusinessReflectionProvider
     {
         if (guest == null) return "null";
 
-        var id = ToNullableInt(GetMemberValue(guest, "Id") ?? GetMemberValue(guest, "ID"));
-        var stringId = GetMemberValue(guest, "StringId")?.ToString()
-            ?? GetMemberValue(guest, "StrID")?.ToString();
-        var sourceGuestId = ToNullableInt(GetMemberValue(guest, "SourceGuestID") ?? GetMemberValue(guest, "SourceGuestId"));
-        var knownName = id.HasValue && _repository.RareCustomersById.TryGetValue(id.Value, out var rareCustomer)
-            ? rareCustomer.Name
-            : "";
+        var id = ReadGuestId(guest);
+        var stringId = ReadGuestStringId(guest);
+        var sourceGuestId = ReadSourceGuestId(guest);
+        var identity = ResolveRareCustomerIdentity(guest);
+        var knownName = identity?.Name ?? "";
 
         var parts = new List<string>
         {

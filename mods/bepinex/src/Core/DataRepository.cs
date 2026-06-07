@@ -31,6 +31,7 @@ public sealed class DataRepository
         IngredientsById = ingredients.ToDictionary(i => i.Id, i => i);
         RecipeIdToId = recipes.ToDictionary(r => r.RecipeId, r => r.Id);
         RareCustomersById = rareCustomers.ToDictionary(c => c.Id, c => c);
+        RareCustomerIdentities = new RareCustomerIdentityResolver(RareCustomersById, rareCustomers);
     }
 
     public string DataDirectory { get; }
@@ -44,6 +45,7 @@ public sealed class DataRepository
     public IReadOnlyDictionary<int, Ingredient> IngredientsById { get; }
     public IReadOnlyDictionary<int, int> RecipeIdToId { get; }
     public IReadOnlyDictionary<int, RareCustomer> RareCustomersById { get; }
+    public RareCustomerIdentityResolver RareCustomerIdentities { get; }
 
     public static DataRepository Load(string dataDirectory)
     {
