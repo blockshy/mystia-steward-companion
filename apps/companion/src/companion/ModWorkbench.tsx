@@ -48,6 +48,7 @@ const ENDPOINT_STORAGE_KEY = 'mystia-steward-mod-api-endpoint';
 const TOKEN_STORAGE_KEY = 'mystia-steward-mod-api-token';
 const TAB_STORAGE_KEY = 'mystia-steward-mod-tab';
 const MAX_RECOMMENDATION_ROWS = 8;
+const MAX_LOG_LINES_IN_VIEW = 400;
 const NON_ORDERABLE_RARE_FOOD_TAGS = new Set(['流行喜爱', '流行厌恶']);
 const INGREDIENTS = allIngredients as IIngredient[];
 const INGREDIENT_ID_BY_NAME = new Map(INGREDIENTS.map((ingredient) => [ingredient.name, ingredient.id]));
@@ -146,6 +147,8 @@ interface LocalApiLogs {
   path: string;
   exists: boolean;
   enabled: boolean;
+  maxLines?: number;
+  maxBytes?: number;
   lines: string[];
   error: string | null;
 }
@@ -154,6 +157,8 @@ interface LocalApiLogSettings {
   logAccessEnabled: boolean;
   logOutputPath: string;
   logOutputDirectory: string;
+  maxLogLines?: number;
+  maxLogBytes?: number;
   nightBusinessDiagnosticsEnabled: boolean;
   nightBusinessDiagnosticsPath: string;
   nightBusinessDiagnosticsDirectory: string;
@@ -1210,6 +1215,17 @@ function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToken: stri
     }
   }, [apiToken, endpoint]);
 
+  const visibleLogLines = useMemo(
+    () => (logs?.lines ?? []).slice(-MAX_LOG_LINES_IN_VIEW),
+    [logs?.lines],
+  );
+  const configuredLogLimit = settings
+    ? `${settings.maxLogLines ?? MAX_LOG_LINES_IN_VIEW} 行 / ${formatBytes(settings.maxLogBytes ?? 0)}`
+    : '未知';
+  const responseLogLimit = logs
+    ? `${logs.maxLines ?? settings?.maxLogLines ?? MAX_LOG_LINES_IN_VIEW} 行 / ${formatBytes(logs.maxBytes ?? settings?.maxLogBytes ?? 0)}`
+    : configuredLogLimit;
+
   useEffect(() => {
     refreshLogs();
     const timer = window.setInterval(refreshLogs, 2000);
@@ -1265,6 +1281,8 @@ function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToken: stri
         <CardContent className="grid gap-3 p-4 text-sm md:grid-cols-2">
           <InfoLine label="本地 API 授权" value={apiToken ? '已通过启动参数接收' : '未收到 token，请从游戏内按 F8 重新唤起窗口'} />
           <InfoLine label="日志读取" value={settings?.logAccessEnabled ? '开启' : '关闭'} />
+          <InfoLine label="读取上限" value={responseLogLimit} />
+          <InfoLine label="窗口缓存" value={`最多显示 ${MAX_LOG_LINES_IN_VIEW} 行`} />
           <InfoLine label="经营诊断" value={settings?.nightBusinessDiagnosticsEnabled ? '开启' : '关闭'} />
           <InfoLine label="诊断日志目录" value={settings?.nightBusinessDiagnosticsDirectory || '未知'} mono />
         </CardContent>
@@ -1277,7 +1295,7 @@ function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToken: stri
               || logs?.error
               || (!settings?.logAccessEnabled ? '日志读取已关闭。需要排查时点击“开启日志读取”，结束后建议关闭。' : null)
               || (logs?.exists === false ? '未找到 BepInEx/LogOutput.log。' : null)
-              || (logs?.lines.length ? logs.lines.join('\n') : '暂无日志内容。')}
+              || (visibleLogLines.length ? visibleLogLines.join('\n') : '暂无日志内容。')}
           </pre>
         </CardContent>
       </Card>
@@ -1929,6 +1947,12 @@ function readStoredTab(): ModTab {
 
 function formatTime(date: Date) {
   return date.toLocaleTimeString('zh-CN', { hour12: false });
+}
+
+function formatBytes(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return '未知';
+  if (value >= 1024 * 1024) return `${Math.round(value / 1024 / 1024)} MiB`;
+  return `${Math.round(value / 1024)} KiB`;
 }
 
 function formatDesk(deskCode: number) {

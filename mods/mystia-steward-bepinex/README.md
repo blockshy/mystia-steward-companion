@@ -65,7 +65,7 @@ MystiaSteward-BepInEx.zip
 - `经营中`：按订单出现顺序查看当前稀客、桌位、点单词条、推荐料理、推荐加料和推荐酒水。
 - `稀客订单专注模式`：只显示当前点单推荐；可切换精简模式以减少 Tag 和行距，没有点单时显示等待提示。
 - `修改`：修改当前运行时材料和酒水库存数量；修改后需要在游戏内保存才会持久化。
-- `日志`：按需开启日志读取、经营诊断，并可打开日志文件夹；排查结束后建议关闭日志读取。
+- `日志`：读取 `BepInEx/LogOutput.log` 尾部内容、按需开启经营诊断，并可打开日志文件夹；日志读取有行数和字节上限，不会在窗口内无限累积。
 
 如果游戏还停留在标题、菜单或加载页面，伴随窗口会提示运行时数据不可用。进入游戏并加载进度后，Mod 会自动读取当前游戏状态，不需要选择存档文件。
 
@@ -100,7 +100,11 @@ BepInEx/config/com.tyukki.mystia-steward.cfg
 - `Companion.AutoLaunch`：是否自动启动独立伴随窗口，默认开启。
 - `Companion.ExecutablePath`：伴随窗口可执行文件路径；留空时自动从 Mod 目录和 `companion/` 子目录查找。
 - `LocalApi.Port`：本地 API 端口，默认 `32145`。
-- `LocalApi.ExposeLogs`：是否允许伴随窗口读取 `BepInEx/LogOutput.log`，默认关闭，可在 `日志` 页切换。
+- `LocalApi.ExposeLogs`：是否允许伴随窗口读取 `BepInEx/LogOutput.log`，默认开启，可在 `日志` 页切换。
+- `LocalApi.MaxLogLines`：日志页每次最多返回的日志行数，默认 `300`。
+- `LocalApi.MaxLogBytes`：日志页每次最多扫描的日志尾部字节数，默认 `262144`。
+- `BepInEx.DisableConsoleLogWindow`：启动后写入 `BepInEx/config/BepInEx.cfg`，将 BepInEx 控制台日志窗口设为下次启动关闭，默认开启。
+- `BepInEx.HideConsoleWindow`：Mod 加载后尝试隐藏当前 Windows 控制台窗口，默认开启。
 - `Diagnostics.EnableNightBusinessDiagnostics`：是否写入夜间经营诊断日志，默认关闭，可在 `日志` 页切换。
 - `SetConsoleUtf8`：加载 Mod 后尝试将 Windows 控制台切换到 UTF-8，默认开启。
 - `EnableInGameOverlay`：是否启用旧游戏内 IMGUI 面板，默认关闭。
@@ -110,7 +114,8 @@ BepInEx/config/com.tyukki.mystia-steward.cfg
 - `F8` 无法打开独立窗口：确认 `mystia-steward-companion.exe` 位于 `BepInEx/plugins/MystiaSteward/companion/`，或在 `Companion.ExecutablePath` 中填写绝对路径。
 - 一直显示运行时数据不可用：先确认已经进入游戏并加载进度；再到 `日志` 页临时开启日志读取。
 - `经营中` 没有稀客或稀客点单：进入 `日志` 页开启经营诊断并查看扫描状态，确认游戏内确实处于夜间经营流程。
-- 控制台早期中文乱码：Mod 只能在自身加载后切换 UTF-8，不能修复 BepInEx preloader 已经输出的日志。需要启动阶段也正常显示时，可先在控制台执行 `chcp 65001` 再启动游戏。
+- 启动时仍短暂出现控制台：Mod 加载时控制台已经由 BepInEx 创建，本次启动只能尝试隐藏；`BepInEx.DisableConsoleLogWindow=true` 写入的配置会在下一次启动生效。
+- 控制台早期中文乱码：Mod 只能在自身加载后切换 UTF-8，不能修复 BepInEx preloader 已经输出的日志。日常建议关闭控制台并在伴随窗口 `日志` 页查看 `LogOutput.log`。
 - 需要旧游戏内面板：设置 `Ui.EnableInGameOverlay=true` 后重启游戏。
 
 排查运行时识别问题时，请在 `日志` 页开启日志读取和经营诊断，然后提供 `BepInEx/LogOutput.log`、诊断日志和伴随窗口 `日志` 页内容。

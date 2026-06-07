@@ -27,9 +27,13 @@ public sealed class StewardPluginConfig
         ConfigEntry<int> localApiPort,
         ConfigEntry<string> localApiToken,
         ConfigEntry<bool> exposeLocalApiLogs,
+        ConfigEntry<int> localApiMaxLogLines,
+        ConfigEntry<int> localApiMaxLogBytes,
         ConfigEntry<bool> companionAutoLaunch,
         ConfigEntry<string> companionExecutablePath,
         ConfigEntry<bool> setConsoleUtf8,
+        ConfigEntry<bool> disableBepInExConsoleLog,
+        ConfigEntry<bool> hideBepInExConsoleWindow,
         ConfigEntry<bool> enableNightBusinessDiagnostics,
         ConfigEntry<string> nightBusinessDiagnosticsPath,
         ConfigEntry<float> nightBusinessDiagnosticsIntervalSeconds,
@@ -62,9 +66,13 @@ public sealed class StewardPluginConfig
         LocalApiPort = localApiPort;
         LocalApiToken = localApiToken;
         ExposeLocalApiLogs = exposeLocalApiLogs;
+        LocalApiMaxLogLines = localApiMaxLogLines;
+        LocalApiMaxLogBytes = localApiMaxLogBytes;
         CompanionAutoLaunch = companionAutoLaunch;
         CompanionExecutablePath = companionExecutablePath;
         SetConsoleUtf8 = setConsoleUtf8;
+        DisableBepInExConsoleLog = disableBepInExConsoleLog;
+        HideBepInExConsoleWindow = hideBepInExConsoleWindow;
         EnableNightBusinessDiagnostics = enableNightBusinessDiagnostics;
         NightBusinessDiagnosticsPath = nightBusinessDiagnosticsPath;
         NightBusinessDiagnosticsIntervalSeconds = nightBusinessDiagnosticsIntervalSeconds;
@@ -98,9 +106,13 @@ public sealed class StewardPluginConfig
     public ConfigEntry<int> LocalApiPort { get; }
     public ConfigEntry<string> LocalApiToken { get; }
     public ConfigEntry<bool> ExposeLocalApiLogs { get; }
+    public ConfigEntry<int> LocalApiMaxLogLines { get; }
+    public ConfigEntry<int> LocalApiMaxLogBytes { get; }
     public ConfigEntry<bool> CompanionAutoLaunch { get; }
     public ConfigEntry<string> CompanionExecutablePath { get; }
     public ConfigEntry<bool> SetConsoleUtf8 { get; }
+    public ConfigEntry<bool> DisableBepInExConsoleLog { get; }
+    public ConfigEntry<bool> HideBepInExConsoleWindow { get; }
     public ConfigEntry<bool> EnableNightBusinessDiagnostics { get; }
     public ConfigEntry<string> NightBusinessDiagnosticsPath { get; }
     public ConfigEntry<float> NightBusinessDiagnosticsIntervalSeconds { get; }
@@ -136,10 +148,14 @@ public sealed class StewardPluginConfig
             config.Bind("LocalApi", "Host", "127.0.0.1", "Loopback bind host. Keep 127.0.0.1 to avoid proxy, localhost, and IPv6 issues."),
             config.Bind("LocalApi", "Port", 32145, "Loopback local API port for the external companion UI."),
             config.Bind("LocalApi", "Token", "", "Internal local API token. Empty lets the plugin generate one on next launch."),
-            config.Bind("LocalApi", "ExposeLogs", false, "Allow the companion window to read BepInEx/LogOutput.log through the token-protected local API."),
+            config.Bind("LocalApi", "ExposeLogs", true, "Allow the companion window to read BepInEx/LogOutput.log through the token-protected local API."),
+            config.Bind("LocalApi", "MaxLogLines", 300, "Maximum LogOutput.log lines returned to the companion window."),
+            config.Bind("LocalApi", "MaxLogBytes", 262144, "Maximum LogOutput.log bytes scanned from the end of the file."),
             config.Bind("Companion", "AutoLaunch", true, "Launch the external companion window when the plugin loads if the executable exists."),
             config.Bind("Companion", "ExecutablePath", "", "Optional companion executable path. Empty searches beside the plugin DLL."),
             config.Bind("Ui", "SetConsoleUtf8", true, "Set the Windows console code page and .NET console encoding to UTF-8 after the plugin loads."),
+            config.Bind("BepInEx", "DisableConsoleLogWindow", true, "Set BepInEx Logging.Console.Enabled=false for the next game launch."),
+            config.Bind("BepInEx", "HideConsoleWindow", true, "Hide the current Windows console window after the plugin loads."),
             config.Bind("Diagnostics", "EnableNightBusinessDiagnostics", false, "Write night-business detection snapshots to an external file for debugging."),
             config.Bind("Diagnostics", "NightBusinessDiagnosticsPath", "", "Optional diagnostics log path. Empty uses BepInEx/config/MystiaSteward/night-business-diagnostics.log."),
             config.Bind("Diagnostics", "NightBusinessDiagnosticsIntervalSeconds", 2f, "Minimum seconds between diagnostics snapshots."),

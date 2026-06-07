@@ -167,7 +167,7 @@ http://127.0.0.1:32145
 - `GET /logs/settings`：读取日志读取和经营诊断开关状态。
 - `GET /logs/config?logAccess=true|false&diagnostics=true|false`：由伴随窗口回写日志和诊断开关。
 - `GET /logs/open-folder?target=log|diagnostics`：打开对应日志目录。
-- `GET /logs`：在 `LocalApi.ExposeLogs=true` 时读取 `BepInEx/LogOutput.log` 尾部日志。
+- `GET /logs`：在 `LocalApi.ExposeLogs=true` 时读取 `BepInEx/LogOutput.log` 尾部日志，按 `LocalApi.MaxLogLines` 和 `LocalApi.MaxLogBytes` 裁剪。
 - `GET /inventory/set?type=ingredient|beverage&id=ID&qty=数量`：在 Unity 主线程修改当前运行时材料或酒水库存。
 
 除 `/health` 外，端点都需要 `X-Mystia-Steward-Token`。Token 由插件生成并保存在 BepInEx 配置中，启动伴随窗口时通过 `--token=` 参数传入 Tauri 后端。Tauri 伴随窗口会显示实时 Mod 工作台，包含 `概览`、`普客`、`稀客`、`经营中`、`修改`、`日志` 六个页签。它通过原生后端读取本地 API，不依赖浏览器或前端开发服务器。

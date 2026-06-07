@@ -207,23 +207,33 @@ internal sealed class LocalApiServer : IDisposable
         var logPath = string.IsNullOrWhiteSpace(settings.LogOutputPath) ? _logOutputPath : settings.LogOutputPath;
         if (!settings.LogAccessEnabled)
         {
+            var maxLogBytes = Math.Clamp(settings.MaxLogBytes, 16 * 1024, 2 * 1024 * 1024);
+            var maxLogLines = Math.Clamp(settings.MaxLogLines, 50, 2000);
             return "{\"capturedAtUtc\":\""
                 + DateTime.UtcNow.ToString("O")
                 + "\",\"path\":\""
                 + EscapeJson(logPath)
-                + "\",\"exists\":false,\"enabled\":false,\"lines\":[],\"error\":\"log access is disabled\"}";
+                + "\",\"exists\":false,\"enabled\":false,\"maxLines\":"
+                + maxLogLines
+                + ",\"maxBytes\":"
+                + maxLogBytes
+                + ",\"lines\":[],\"error\":\"log access is disabled\"}";
         }
 
         try
         {
+            var maxLogBytes = Math.Clamp(settings.MaxLogBytes, 16 * 1024, 2 * 1024 * 1024);
+            var maxLogLines = Math.Clamp(settings.MaxLogLines, 50, 2000);
             var exists = File.Exists(logPath);
-            var lines = exists ? ReadLogTail(logPath) : new List<string>();
+            var lines = exists ? ReadLogTail(logPath, maxLogBytes, maxLogLines) : new List<string>();
             var builder = new StringBuilder();
             builder.Append('{');
             builder.Append("\"capturedAtUtc\":\"").Append(DateTime.UtcNow.ToString("O")).Append("\",");
             builder.Append("\"path\":\"").Append(EscapeJson(logPath)).Append("\",");
             builder.Append("\"exists\":").Append(exists ? "true" : "false").Append(',');
             builder.Append("\"enabled\":true,");
+            builder.Append("\"maxLines\":").Append(maxLogLines).Append(',');
+            builder.Append("\"maxBytes\":").Append(maxLogBytes).Append(',');
             builder.Append("\"lines\":[");
             for (var i = 0; i < lines.Count; i++)
             {
@@ -253,6 +263,8 @@ internal sealed class LocalApiServer : IDisposable
             .Append("\"logAccessEnabled\":").Append(settings.LogAccessEnabled ? "true" : "false").Append(',')
             .Append("\"logOutputPath\":\"").Append(EscapeJson(settings.LogOutputPath)).Append("\",")
             .Append("\"logOutputDirectory\":\"").Append(EscapeJson(GetDirectory(settings.LogOutputPath))).Append("\",")
+            .Append("\"maxLogLines\":").Append(Math.Clamp(settings.MaxLogLines, 50, 2000)).Append(',')
+            .Append("\"maxLogBytes\":").Append(Math.Clamp(settings.MaxLogBytes, 16 * 1024, 2 * 1024 * 1024)).Append(',')
             .Append("\"nightBusinessDiagnosticsEnabled\":").Append(settings.NightBusinessDiagnosticsEnabled ? "true" : "false").Append(',')
             .Append("\"nightBusinessDiagnosticsPath\":\"").Append(EscapeJson(settings.NightBusinessDiagnosticsPath)).Append("\",")
             .Append("\"nightBusinessDiagnosticsDirectory\":\"").Append(EscapeJson(GetDirectory(settings.NightBusinessDiagnosticsPath))).Append("\"")
@@ -305,11 +317,8 @@ internal sealed class LocalApiServer : IDisposable
         }
     }
 
-    private static List<string> ReadLogTail(string path)
+    private static List<string> ReadLogTail(string path, int maxBytes, int maxLines)
     {
-        const int maxBytes = 256 * 1024;
-        const int maxLines = 300;
-
         var info = new FileInfo(path);
         var start = Math.Max(0, info.Length - maxBytes);
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
@@ -497,6 +506,8 @@ internal sealed class LocalApiLogSettings
 {
     public bool LogAccessEnabled { get; init; }
     public string LogOutputPath { get; init; } = "";
+    public int MaxLogLines { get; init; } = 300;
+    public int MaxLogBytes { get; init; } = 256 * 1024;
     public bool NightBusinessDiagnosticsEnabled { get; init; }
     public string NightBusinessDiagnosticsPath { get; init; } = "";
 }

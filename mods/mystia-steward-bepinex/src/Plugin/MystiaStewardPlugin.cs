@@ -13,7 +13,7 @@ public sealed class MystiaStewardPlugin : BasePlugin
 {
     public const string PluginGuid = "com.tyukki.mystia-steward";
     public const string PluginName = "Mystia Steward";
-    public const string PluginVersion = "0.1.28";
+    public const string PluginVersion = "0.1.29";
 
     public override void Load()
     {
@@ -22,6 +22,11 @@ public sealed class MystiaStewardPlugin : BasePlugin
         {
             ConsoleEncodingHelper.TryUseUtf8(Log);
         }
+
+        BepInExConsoleHelper.Apply(
+            settings.DisableBepInExConsoleLog.Value,
+            settings.HideBepInExConsoleWindow.Value,
+            Log);
 
         SpecialOrderRuntimeCapture.Attach(Log);
         if (settings.EnableSpecialOrderLogFallback.Value)

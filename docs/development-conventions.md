@@ -53,7 +53,8 @@ powershell -ExecutionPolicy Bypass -File mods\mystia-steward-bepinex\tools\build
 - 已捕获且仍能匹配当前稀客的订单不得使用短时间缓存过期清理；只应在明确移除、确认上菜完成、稀客离场或长时间硬上限后消失。
 - 本地 API 监听 `127.0.0.1`，避免代理工具干扰 `localhost`；除 `/health` 外，接口必须通过伴随窗口传入的 token 访问。
 - 运行时库存修改必须排队到 Unity 主线程执行，避免本地 API 网络线程直接写游戏对象。
-- `BepInEx/LogOutput.log` 读取和夜间经营诊断默认关闭，需要排障时在伴随窗口 `日志` 页开启。
+- `BepInEx/LogOutput.log` 通过伴随窗口 `日志` 页读取，必须保留后端读取上限和前端显示上限，避免无限累积日志。
+- BepInEx 控制台窗口由 Mod 写入 `BepInEx.cfg` 在下次启动关闭；当前启动只能在 Windows 上隐藏已创建的控制台窗口。
 - 旧游戏内 IMGUI 面板仅保留回退用途；主要交互应放在独立伴随窗口。
 
 ## 文档维护

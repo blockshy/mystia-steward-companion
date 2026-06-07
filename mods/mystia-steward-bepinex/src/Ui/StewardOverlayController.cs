@@ -1127,6 +1127,8 @@ internal sealed class StewardOverlayController
             return new LocalApiLogSettings
             {
                 LogOutputPath = LocalApiServer.ResolveLogOutputPath(),
+                MaxLogLines = 300,
+                MaxLogBytes = 256 * 1024,
                 NightBusinessDiagnosticsPath = NightBusinessDiagnosticSink.ResolvePath(""),
             };
         }
@@ -1135,6 +1137,8 @@ internal sealed class StewardOverlayController
         {
             LogAccessEnabled = _config.ExposeLocalApiLogs.Value,
             LogOutputPath = LocalApiServer.ResolveLogOutputPath(),
+            MaxLogLines = _config.LocalApiMaxLogLines.Value,
+            MaxLogBytes = _config.LocalApiMaxLogBytes.Value,
             NightBusinessDiagnosticsEnabled = _config.EnableNightBusinessDiagnostics.Value,
             NightBusinessDiagnosticsPath = NightBusinessDiagnosticSink.ResolvePath(_config.NightBusinessDiagnosticsPath.Value),
         };
@@ -1248,6 +1252,9 @@ internal sealed class StewardOverlayController
             _mutedStyle ?? GUI.skin.label);
         GUILayout.Label(
             $"{L("BepInEx 日志路径", "BepInEx log path")}: {LocalApiServer.ResolveLogOutputPath()}",
+            _mutedStyle ?? GUI.skin.label);
+        GUILayout.Label(
+            $"{L("日志读取上限", "Log read limit")}: {Math.Clamp(_config.LocalApiMaxLogLines.Value, 50, 2000)} lines / {Math.Clamp(_config.LocalApiMaxLogBytes.Value, 16 * 1024, 2 * 1024 * 1024) / 1024} KiB",
             _mutedStyle ?? GUI.skin.label);
         GUILayout.BeginHorizontal();
         try
