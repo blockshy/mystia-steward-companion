@@ -13,7 +13,7 @@ public sealed class MystiaStewardPlugin : BasePlugin
 {
     public const string PluginGuid = "com.tyukki.mystia-steward";
     public const string PluginName = "Mystia Steward";
-    public const string PluginVersion = "0.1.30";
+    public const string PluginVersion = "0.1.32";
 
     public override void Load()
     {

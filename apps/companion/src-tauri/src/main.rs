@@ -16,6 +16,7 @@ const CONTROL_TOGGLE: &[u8] = b"mystia-steward-companion:toggle";
 const CONTROL_EXIT: &[u8] = b"mystia-steward-companion:exit";
 
 struct GamePidState(Arc<Mutex<Option<u32>>>);
+struct WindowSwitchState(Arc<Mutex<Option<Instant>>>);
 
 #[tauri::command]
 fn fetch_snapshot(endpoint: String, token: String) -> Result<String, String> {
@@ -91,7 +92,14 @@ fn launch_api_token() -> Option<String> {
 }
 
 #[tauri::command]
-fn toggle_companion_focus(app: tauri::AppHandle, game_pid_state: tauri::State<'_, GamePidState>) {
+fn toggle_companion_focus(
+    app: tauri::AppHandle,
+    game_pid_state: tauri::State<'_, GamePidState>,
+    switch_state: tauri::State<'_, WindowSwitchState>,
+) {
+    if !try_begin_window_switch(&switch_state.0) {
+        return;
+    }
     toggle_main_window(&app, current_game_pid(&game_pid_state.0));
 }
 
@@ -121,6 +129,20 @@ fn update_game_pid(game_pid: &Arc<Mutex<Option<u32>>>, next: Option<u32>) {
 
 fn current_game_pid(game_pid: &Arc<Mutex<Option<u32>>>) -> Option<u32> {
     game_pid.lock().ok().and_then(|current| *current)
+}
+
+fn try_begin_window_switch(switch_state: &Arc<Mutex<Option<Instant>>>) -> bool {
+    let Ok(mut last_switch) = switch_state.lock() else {
+        return true;
+    };
+    let now = Instant::now();
+    if last_switch
+        .is_some_and(|previous| now.duration_since(previous) < Duration::from_millis(1200))
+    {
+        return false;
+    }
+    *last_switch = Some(now);
+    true
 }
 
 struct LocalApiTarget {
@@ -201,7 +223,11 @@ fn notify_existing_instance() -> bool {
     stream.write_all(CONTROL_SHOW).is_ok()
 }
 
-fn start_instance_control_server(app: tauri::AppHandle, game_pid: Arc<Mutex<Option<u32>>>) {
+fn start_instance_control_server(
+    app: tauri::AppHandle,
+    game_pid: Arc<Mutex<Option<u32>>>,
+    switch_state: Arc<Mutex<Option<Instant>>>,
+) {
     thread::spawn(move || {
         let address = SocketAddr::from((Ipv4Addr::LOCALHOST, CONTROL_PORT));
         let Ok(listener) = TcpListener::bind(address) else {
@@ -221,6 +247,9 @@ fn start_instance_control_server(app: tauri::AppHandle, game_pid: Arc<Mutex<Opti
             if message.starts_with(CONTROL_SHOW) {
                 show_main_window(&app);
             } else if message.starts_with(CONTROL_TOGGLE) {
+                if !try_begin_window_switch(&switch_state) {
+                    continue;
+                }
                 toggle_main_window(&app, current_game_pid(&game_pid));
             } else if message.starts_with(CONTROL_EXIT) {
                 app.exit(0);
@@ -326,11 +355,13 @@ fn main() {
 
     tauri::Builder::default()
         .manage(GamePidState(Arc::new(Mutex::new(launch_game_pid()))))
+        .manage(WindowSwitchState(Arc::new(Mutex::new(None))))
         .setup(|app| {
             setup_tray(app)?;
             let app_handle = app.handle().clone();
             let game_pid = app.state::<GamePidState>().0.clone();
-            start_instance_control_server(app_handle.clone(), game_pid);
+            let switch_state = app.state::<WindowSwitchState>().0.clone();
+            start_instance_control_server(app_handle.clone(), game_pid, switch_state);
             start_game_shutdown_monitor(
                 app_handle,
                 launch_api_endpoint().unwrap_or_else(|| DEFAULT_API_ENDPOINT.to_string()),

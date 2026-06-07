@@ -272,13 +272,26 @@ export function ModWorkbench() {
     let disposed = false;
     let animationFrame = 0;
     let rightStickPressed = false;
+    let gamepadToggleArmed = false;
     let lastToggleAt = 0;
 
     const requestToggle = () => {
       const now = Date.now();
-      if (now - lastToggleAt < 800) return;
+      if (now - lastToggleAt < 1200) return;
       lastToggleAt = now;
       void toggleCompanionFocus();
+    };
+
+    const isRightStickPressed = () => {
+      const gamepads = navigator.getGamepads?.() ?? [];
+      return Array.from(gamepads).some(
+        (gamepad) => gamepad?.connected && gamepad.buttons[RIGHT_STICK_GAMEPAD_BUTTON_INDEX]?.pressed,
+      );
+    };
+
+    const resetGamepadLatch = () => {
+      rightStickPressed = isRightStickPressed();
+      gamepadToggleArmed = !rightStickPressed;
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -290,24 +303,30 @@ export function ModWorkbench() {
     const watchGamepads = () => {
       if (disposed) return;
 
-      const gamepads = navigator.getGamepads?.() ?? [];
-      const nextRightStickPressed = Array.from(gamepads).some(
-        (gamepad) => gamepad?.connected && gamepad.buttons[RIGHT_STICK_GAMEPAD_BUTTON_INDEX]?.pressed,
-      );
+      const nextRightStickPressed = isRightStickPressed();
 
-      if (nextRightStickPressed && !rightStickPressed) {
+      if (!nextRightStickPressed) {
+        gamepadToggleArmed = true;
+      } else if (gamepadToggleArmed && !rightStickPressed && document.hasFocus()) {
         requestToggle();
+        gamepadToggleArmed = false;
       }
+
       rightStickPressed = nextRightStickPressed;
       animationFrame = window.requestAnimationFrame(watchGamepads);
     };
 
+    resetGamepadLatch();
     window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('focus', resetGamepadLatch);
+    document.addEventListener('visibilitychange', resetGamepadLatch);
     animationFrame = window.requestAnimationFrame(watchGamepads);
 
     return () => {
       disposed = true;
       window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('focus', resetGamepadLatch);
+      document.removeEventListener('visibilitychange', resetGamepadLatch);
       if (animationFrame) window.cancelAnimationFrame(animationFrame);
     };
   }, []);
@@ -807,7 +826,7 @@ function ModRarePanel({
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <ListPanel title={`料理推荐 (${recipes.length})`}>
-              {recipes.length === 0 && <EmptyRow text="暂无可推荐料理" />}
+              {recipes.length === 0 && <EmptyRow text="暂无满足点单的料理" />}
               <div className="space-y-2">
                 {recipes.map((recipe, index) => (
                   <RecipeRecommendationRow
@@ -821,7 +840,7 @@ function ModRarePanel({
             </ListPanel>
 
             <ListPanel title={`酒水推荐 (${beverages.length})`}>
-              {beverages.length === 0 && <EmptyRow text="暂无可推荐酒水" />}
+              {beverages.length === 0 && <EmptyRow text="暂无满足点单的酒水" />}
               <div className="space-y-2">
                 {beverages.map((beverage, index) => (
                   <BeverageRecommendationRow
@@ -1576,7 +1595,7 @@ function OrderRecommendationPanel({
       <div className={compact ? 'mt-2 grid gap-2 lg:grid-cols-2' : 'mt-3 grid gap-4 lg:grid-cols-2'}>
         <div>
           <h3 className={compact ? 'mb-1 text-xs font-semibold' : 'mb-2 text-sm font-semibold'}>推荐料理</h3>
-          {item.recipes.length === 0 && <EmptyRow text="暂无可推荐料理" />}
+          {item.recipes.length === 0 && <EmptyRow text="暂无满足点单的料理" />}
           <div className={compact ? 'space-y-1.5' : 'space-y-2'}>
             {item.recipes.map((recipe, index) => (
               <RecipeRecommendationRow
@@ -1592,7 +1611,7 @@ function OrderRecommendationPanel({
 
         <div>
           <h3 className={compact ? 'mb-1 text-xs font-semibold' : 'mb-2 text-sm font-semibold'}>推荐酒水</h3>
-          {item.beverages.length === 0 && <EmptyRow text="暂无可推荐酒水" />}
+          {item.beverages.length === 0 && <EmptyRow text="暂无满足点单的酒水" />}
           <div className={compact ? 'space-y-1.5' : 'space-y-2'}>
             {item.beverages.map((beverage, index) => (
               <BeverageRecommendationRow
@@ -1897,6 +1916,7 @@ function compareNormalBeveragesForMod(a: INormalBeverageResult, b: INormalBevera
 }
 
 function compareRareRecipesForService(a: IRareRecipeResult, b: IRareRecipeResult) {
+  if (a.meetsRequiredFood !== b.meetsRequiredFood) return a.meetsRequiredFood ? -1 : 1;
   if (a.foodScore !== b.foodScore) return b.foodScore - a.foodScore;
   const aCost = a.baseCost + a.extraCost;
   const bCost = b.baseCost + b.extraCost;
@@ -1905,6 +1925,7 @@ function compareRareRecipesForService(a: IRareRecipeResult, b: IRareRecipeResult
 }
 
 function compareRareBeveragesForService(a: IRareBeverageResult, b: IRareBeverageResult) {
+  if (a.meetsRequiredBev !== b.meetsRequiredBev) return a.meetsRequiredBev ? -1 : 1;
   if (a.bevScore !== b.bevScore) return b.bevScore - a.bevScore;
   if (a.beverage.price !== b.beverage.price) return b.beverage.price - a.beverage.price;
   return a.beverage.id - b.beverage.id;

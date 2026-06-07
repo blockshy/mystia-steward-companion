@@ -67,6 +67,8 @@ internal sealed class StewardOverlayController
     private bool _stylesInitialized;
     private bool _localApiSnapshotErrorLogged;
     private bool _disposed;
+    private bool _controllerToggleLatched;
+    private float _nextControllerToggleAt;
     private GUIStyle? _titleStyle;
     private GUIStyle? _labelStyle;
     private GUIStyle? _mutedStyle;
@@ -165,11 +167,35 @@ internal sealed class StewardOverlayController
     {
         if (_config == null) return false;
         if (Input.GetKeyDown(_config.ToggleKey.Value)) return true;
-        if (Input.GetKeyDown(_config.ControllerToggleKey.Value)) return true;
-        return _config.ControllerToggleKey.Value == KeyCode.JoystickButton9 && IsInputSystemRightStickPressed();
+
+        var controllerHeld = IsControllerToggleHeld(_config.ControllerToggleKey.Value);
+        if (!controllerHeld)
+        {
+            _controllerToggleLatched = false;
+            return false;
+        }
+
+        if (_controllerToggleLatched || Time.realtimeSinceStartup < _nextControllerToggleAt) return false;
+        if (!IsControllerTogglePressedThisFrame(_config.ControllerToggleKey.Value)) return false;
+
+        _controllerToggleLatched = true;
+        _nextControllerToggleAt = Time.realtimeSinceStartup + 1.2f;
+        return true;
     }
 
-    private static bool IsInputSystemRightStickPressed()
+    private static bool IsControllerTogglePressedThisFrame(KeyCode key)
+    {
+        if (Input.GetKeyDown(key)) return true;
+        return key == KeyCode.JoystickButton9 && IsInputSystemRightStickWasPressed();
+    }
+
+    private static bool IsControllerToggleHeld(KeyCode key)
+    {
+        if (Input.GetKey(key)) return true;
+        return key == KeyCode.JoystickButton9 && IsInputSystemRightStickHeld();
+    }
+
+    private static bool IsInputSystemRightStickWasPressed()
     {
         try
         {
@@ -177,6 +203,22 @@ internal sealed class StewardOverlayController
             var current = gamepadType?.GetProperty("current")?.GetValue(null);
             var rightStickButton = current?.GetType().GetProperty("rightStickButton")?.GetValue(current);
             var pressed = rightStickButton?.GetType().GetProperty("wasPressedThisFrame")?.GetValue(rightStickButton);
+            return pressed is bool isPressed && isPressed;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool IsInputSystemRightStickHeld()
+    {
+        try
+        {
+            var gamepadType = Type.GetType("UnityEngine.InputSystem.Gamepad, Unity.InputSystem");
+            var current = gamepadType?.GetProperty("current")?.GetValue(null);
+            var rightStickButton = current?.GetType().GetProperty("rightStickButton")?.GetValue(current);
+            var pressed = rightStickButton?.GetType().GetProperty("isPressed")?.GetValue(rightStickButton);
             return pressed is bool isPressed && isPressed;
         }
         catch
@@ -579,13 +621,17 @@ internal sealed class StewardOverlayController
         var cache = GetRareRecommendationCache(customer, requiredFoodTag, requiredBeverageTag, state);
 
         var recipeRows = cache.Recipes
-            .OrderByDescending(row => row.FoodScore)
+            .Where(row => row.MeetsRequiredFood)
+            .OrderByDescending(row => row.MeetsRequiredFood)
+            .ThenByDescending(row => row.FoodScore)
             .ThenByDescending(row => row.BaseCost + row.ExtraCost)
             .ThenBy(row => row.Recipe.Id)
             .Take(Math.Max(1, _config.MaxRareRows.Value));
 
         var beverageRows = cache.Beverages
-            .OrderByDescending(row => row.BevScore)
+            .Where(row => row.MeetsRequiredBev)
+            .OrderByDescending(row => row.MeetsRequiredBev)
+            .ThenByDescending(row => row.BevScore)
             .ThenByDescending(row => row.Beverage.Price)
             .ThenBy(row => row.Beverage.Id)
             .Take(Math.Max(1, _config.MaxRareRows.Value));

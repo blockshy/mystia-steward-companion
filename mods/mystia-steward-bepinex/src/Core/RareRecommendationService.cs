@@ -225,6 +225,8 @@ public sealed class RareRecommendationService
                     AssumedBeverageMeets);
             }
 
+            if (!finalEval.MeetsRequiredFood) continue;
+
             var baseCost = recipe.Ingredients.Sum(name =>
                 _repository.IngredientsByName.TryGetValue(name, out var ingredient) ? ingredient.Price : 0);
 
@@ -278,6 +280,7 @@ public sealed class RareRecommendationService
                     MatchedTags = matchedTags,
                 };
             })
+            .Where(result => result.MeetsRequiredBev)
             .OrderByDescending(result => result.MeetsRequiredBev)
             .ThenByDescending(result => result.Beverage.Price)
             .ToList();

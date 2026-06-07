@@ -688,6 +688,8 @@ export function rankRecipesForRare(
       rating = getRating(finalFoodScore, ASSUMED_BEV_SCORE, finalMeetsRequiredFood, ASSUMED_BEV_MEETS);
     }
 
+    if (!finalMeetsRequiredFood) continue;
+
     const easterHighlightExtraIngredientIds = selectedIngredients
       .filter((ingredient) => bestEasterEffect.ingredientHighlightIds.includes(ingredient.id))
       .map((ingredient) => ingredient.id);
@@ -746,6 +748,8 @@ export function rankBeveragesForRare(
     );
     const bevScore = matchedTags.length;
     const meetsRequiredBev = bev.tags.includes(requiredBevTag);
+
+    if (!meetsRequiredBev) continue;
 
     results.push({ beverage: bev, bevScore, meetsRequiredBev, matchedTags });
   }
