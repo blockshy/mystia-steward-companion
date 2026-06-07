@@ -30,6 +30,7 @@ public sealed class NightBusinessReflectionProvider
 
     private readonly DataRepository _repository;
     private readonly RareCustomerIdentityResolver _rareIdentityResolver;
+    private readonly RuntimeMappedGuestCatalog _mappedGuestCatalog;
     private readonly NightBusinessDiagnosticSink? _diagnostics;
     private readonly string _sceneName;
     private readonly bool _useLogFallback;
@@ -45,6 +46,7 @@ public sealed class NightBusinessReflectionProvider
     {
         _repository = repository;
         _rareIdentityResolver = repository.RareCustomerIdentities;
+        _mappedGuestCatalog = new RuntimeMappedGuestCatalog(repository);
         _diagnostics = diagnostics;
         _sceneName = sceneName;
         _useLogFallback = useLogFallback;
@@ -57,6 +59,9 @@ public sealed class NightBusinessReflectionProvider
         var errors = new List<string>();
         var sourceStats = new List<string>();
         _candidateDiagnostics = _diagnostics == null ? null : new List<NightBusinessCandidateDiagnostic>();
+        var mappedGuestSnapshot = _mappedGuestCatalog.Snapshot();
+        sourceStats.Add($"MappedGuests={mappedGuestSnapshot.ResolvedCount}/{mappedGuestSnapshot.Entries.Count}; {mappedGuestSnapshot.Status}");
+        WriteRuntimeStaticDataDiagnostics(mappedGuestSnapshot);
 
         try
         {
@@ -197,6 +202,22 @@ public sealed class NightBusinessReflectionProvider
             Source = $"Night scene live orders; {managerStatus}; {queueStatus}; {string.Join("; ", sourceStats)}; guests={activeGuests.Count}; orders={activeOrders.Count}",
             Error = errors.Count == 0 ? null : string.Join("; ", errors),
         };
+    }
+
+    private void WriteRuntimeStaticDataDiagnostics(RuntimeMappedGuestCatalogSnapshot snapshot)
+    {
+        if (_diagnostics == null) return;
+
+        try
+        {
+            RuntimeStaticDataDiagnosticSink.WriteMappedSpecialGuests(
+                RuntimeStaticDataDiagnosticSink.ResolvePath(_diagnostics.Path),
+                snapshot);
+        }
+        catch
+        {
+            // Static-data diagnostics must never affect runtime reads.
+        }
     }
 
     private void WriteDiagnostics(
@@ -556,7 +577,7 @@ public sealed class NightBusinessReflectionProvider
         foreach (var captured in capturedOrders)
         {
             var activeGuest = FindActiveGuestForCapturedOrder(captured, activeGuests);
-            var identity = _rareIdentityResolver.Resolve(captured.GuestId, captured.GuestName);
+            var identity = ResolveRareCustomerIdentity(captured.GuestId, captured.GuestName);
             var guestId = identity?.Id ?? captured.GuestId ?? activeGuest?.GuestId;
             var fallbackGuestName = !string.IsNullOrWhiteSpace(captured.GuestName)
                 ? captured.GuestName
@@ -594,7 +615,7 @@ public sealed class NightBusinessReflectionProvider
         CapturedRuntimeSpecialOrder captured,
         IReadOnlyList<NightBusinessGuest> activeGuests)
     {
-        var capturedIdentity = _rareIdentityResolver.Resolve(captured.GuestId, captured.GuestName);
+        var capturedIdentity = ResolveRareCustomerIdentity(captured.GuestId, captured.GuestName);
         foreach (var guest in activeGuests)
         {
             if (!IsCompatibleDesk(captured.DeskCode, guest.DeskCode)) continue;
@@ -640,7 +661,7 @@ public sealed class NightBusinessReflectionProvider
         var now = DateTime.UtcNow;
         foreach (var captured in capturedOrders)
         {
-            var identity = _rareIdentityResolver.Resolve(null, captured.GuestName);
+            var identity = ResolveRareCustomerIdentity(null, captured.GuestName);
             var foodTag = CanonicalizeTagText(captured.FoodTag, useFoodTagMap: true);
             var beverageTag = CanonicalizeTagText(captured.BeverageTag, useFoodTagMap: false);
             var order = new NightBusinessOrder
@@ -666,7 +687,7 @@ public sealed class NightBusinessReflectionProvider
 
     private string ResolveRareGuestName(int? guestId, string fallback)
     {
-        return _rareIdentityResolver.Resolve(guestId, fallback)?.Name ?? fallback;
+        return ResolveRareCustomerIdentity(guestId, fallback)?.Name ?? fallback;
     }
 
     private string ResolveCapturedTagText(string tagText, int? tagId, bool useFoodTagMap)
@@ -830,6 +851,12 @@ public sealed class NightBusinessReflectionProvider
         return ResolveRareCustomerIdentityFromFields(ReadMappedSpecialGuest(guestId.Value));
     }
 
+    private RareCustomerIdentity? ResolveRareCustomerIdentity(int? guestId, string? runtimeNameOrStringId)
+    {
+        return _mappedGuestCatalog.Resolve(guestId, runtimeNameOrStringId)
+            ?? _rareIdentityResolver.Resolve(guestId, runtimeNameOrStringId);
+    }
+
     private RareCustomerIdentity? ResolveRareCustomerIdentityFromFields(object? guest)
     {
         if (guest == null) return null;
@@ -839,10 +866,10 @@ public sealed class NightBusinessReflectionProvider
         var name = ReadGuestDisplayName(guest);
         var sourceGuestId = ReadSourceGuestId(guest);
 
-        return _rareIdentityResolver.Resolve(guestId, stringId)
-            ?? _rareIdentityResolver.Resolve(guestId, name)
-            ?? _rareIdentityResolver.Resolve(sourceGuestId, stringId)
-            ?? _rareIdentityResolver.Resolve(sourceGuestId, name);
+        return ResolveRareCustomerIdentity(guestId, stringId)
+            ?? ResolveRareCustomerIdentity(guestId, name)
+            ?? ResolveRareCustomerIdentity(sourceGuestId, stringId)
+            ?? ResolveRareCustomerIdentity(sourceGuestId, name);
     }
 
     private static int? ReadGuestId(object? guest)

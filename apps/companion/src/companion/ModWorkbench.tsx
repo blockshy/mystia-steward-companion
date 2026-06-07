@@ -219,6 +219,7 @@ export function ModWorkbench() {
     () => buildOrderRecommendations(night?.orders ?? [], runtime, rareCustomersById, recommendationCacheRef.current),
     [night?.orders, runtime, rareCustomersById],
   );
+  const snapshotRefreshIntervalMs = tab === 'service' || serviceFocusMode ? 750 : 2000;
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -342,9 +343,9 @@ export function ModWorkbench() {
 
   useEffect(() => {
     refresh();
-    const timer = window.setInterval(refresh, 2000);
+    const timer = window.setInterval(refresh, snapshotRefreshIntervalMs);
     return () => window.clearInterval(timer);
-  }, [refresh]);
+  }, [refresh, snapshotRefreshIntervalMs]);
 
   if (serviceFocusMode) {
     return (

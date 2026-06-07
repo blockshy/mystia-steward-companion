@@ -18,6 +18,7 @@ internal sealed class StewardOverlayController
     private const float WindowMargin = 12f;
     private const float WindowHeaderHeight = 52f;
     private const float ResizeHandleSize = 24f;
+    private const float SpecialOrderRefreshDebounceSeconds = 0.2f;
     private static readonly JsonSerializerOptions LocalApiJsonOptions = new(JsonSerializerDefaults.Web);
 
     private StewardPluginConfig? _config;
@@ -51,6 +52,7 @@ internal sealed class StewardOverlayController
     private int _businessOrderIndex;
     private int _recommendationCacheVersion;
     private int _mainThreadId;
+    private long _lastSpecialOrderChangeVersion;
     private string _openDropdownId = "";
     private string _runtimeSource = "";
     private string _activeSceneName = "";
@@ -68,7 +70,9 @@ internal sealed class StewardOverlayController
     private bool _localApiSnapshotErrorLogged;
     private bool _disposed;
     private bool _controllerToggleLatched;
+    private bool _specialOrderRefreshPending;
     private float _nextControllerToggleAt;
+    private float _nextSpecialOrderRefreshAt;
     private GUIStyle? _titleStyle;
     private GUIStyle? _labelStyle;
     private GUIStyle? _mutedStyle;
@@ -127,6 +131,7 @@ internal sealed class StewardOverlayController
     {
         if (_disposed || _config == null) return;
         ProcessPendingInventoryEdits();
+        RefreshBusinessContextOnSpecialOrderChange();
 
         if (IsTogglePressed())
         {
@@ -161,6 +166,24 @@ internal sealed class StewardOverlayController
         _nextAutoRefreshAt = Time.realtimeSinceStartup + Math.Max(1f, _config.AutoRefreshSeconds.Value);
         RefreshRuntimeState(false);
         RefreshBusinessContext(false);
+    }
+
+    private void RefreshBusinessContextOnSpecialOrderChange()
+    {
+        if (_config == null || !_config.AutoRefreshRuntime.Value) return;
+
+        var version = SpecialOrderRuntimeCapture.ChangeVersion;
+        if (version != _lastSpecialOrderChangeVersion)
+        {
+            _lastSpecialOrderChangeVersion = version;
+            _specialOrderRefreshPending = true;
+            _nextSpecialOrderRefreshAt = Time.realtimeSinceStartup + SpecialOrderRefreshDebounceSeconds;
+        }
+
+        if (!_specialOrderRefreshPending || Time.realtimeSinceStartup < _nextSpecialOrderRefreshAt) return;
+
+        _specialOrderRefreshPending = false;
+        RefreshBusinessContext(false, force: true);
     }
 
     private bool IsTogglePressed()
@@ -1038,10 +1061,10 @@ internal sealed class StewardOverlayController
         }
     }
 
-    private void RefreshBusinessContext(bool manual)
+    private void RefreshBusinessContext(bool manual, bool force = false)
     {
         if (_repository == null || _config == null) return;
-        if (!manual && _businessContext != null && Time.realtimeSinceStartup < _nextBusinessRefreshAt) return;
+        if (!manual && !force && _businessContext != null && Time.realtimeSinceStartup < _nextBusinessRefreshAt) return;
 
         _nextBusinessRefreshAt = Time.realtimeSinceStartup + Math.Max(1f, _config.AutoRefreshSeconds.Value);
 

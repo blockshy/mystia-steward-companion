@@ -30,9 +30,21 @@ public static class SpecialOrderRuntimeCapture
     private static int _statusCallbacks;
     private static int _capturedOrders;
     private static int _parseFailures;
+    private static long _changeVersion;
     private static string _lastCapture = "";
     private static string _lastParseFailure = "";
     private static string _lastOrderShape = "";
+
+    public static long ChangeVersion
+    {
+        get
+        {
+            lock (SyncRoot)
+            {
+                return _changeVersion;
+            }
+        }
+    }
 
     public static string Status
     {
@@ -226,6 +238,7 @@ public static class SpecialOrderRuntimeCapture
             Orders.Add(next);
             _capturedOrders++;
             _lastCapture = $"{next.CaptureSource}: desk={next.DeskCode}, guestId={next.GuestId?.ToString() ?? ""}, food={next.FoodTag}({next.FoodTagId}), bev={next.BeverageTag}({next.BeverageTagId})";
+            _changeVersion++;
             _status = BuildStatusLocked();
             if (Orders.Count > MaxOrders)
             {
@@ -240,8 +253,9 @@ public static class SpecialOrderRuntimeCapture
 
         lock (SyncRoot)
         {
-            Orders.RemoveAll(existing => IsSameOrderSlot(existing, order));
+            var removed = Orders.RemoveAll(existing => IsSameOrderSlot(existing, order));
             _lastCapture = $"removed: desk={order.DeskCode}, guestId={order.GuestId?.ToString() ?? ""}";
+            if (removed > 0) _changeVersion++;
             _status = BuildStatusLocked();
         }
     }
@@ -655,7 +669,7 @@ public static class SpecialOrderRuntimeCapture
 
     private static string BuildStatusLocked()
     {
-        return $"patched={PatchedMethods.Count}; callbacks=add:{_addCallbacks},remove:{_removeCallbacks},generated:{_generatedCallbacks},statusUpdate:{_statusCallbacks}; captured={_capturedOrders}; parseFailures={_parseFailures}; lastCapture={_lastCapture}; lastParseFailure={_lastParseFailure}; lastOrderShape={_lastOrderShape}";
+        return $"patched={PatchedMethods.Count}; version={_changeVersion}; callbacks=add:{_addCallbacks},remove:{_removeCallbacks},generated:{_generatedCallbacks},statusUpdate:{_statusCallbacks}; captured={_capturedOrders}; parseFailures={_parseFailures}; lastCapture={_lastCapture}; lastParseFailure={_lastParseFailure}; lastOrderShape={_lastOrderShape}";
     }
 
     private static ParsedOrderText ParseOrderText(string? text)

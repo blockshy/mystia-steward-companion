@@ -25,7 +25,9 @@
 - GitHub Actions 的发布工作流只在 `v*` tag 或手动 dispatch 时运行；版本构建等待用户明确指令。
 - 默认热键 `F8` 和 `RS Click` 的主语义是游戏与伴随窗口焦点切换；伴随窗口聚焦时由 Tauri 前端处理热键并切回游戏。手柄切换需要释放锁存和 1.2 秒后端防抖，防止同一次长按连续 toggle。
 - 经营中稀客订单按首次捕获时间稳定排序；运行时捕获订单保留到明确移除、稀客离场或 6 小时硬上限，避免长时间未上菜时从伴随窗口消失。
-- 运行时稀客 ID 会先归一化为本地 `customer_rare.json` 身份；已知事件变体包括 `Tewi_HardSell -> 因幡帝`、`Remilia -> 蕾米莉亚`。带具体桌号的捕获订单只允许匹配同一桌活跃稀客，未入座 `desk=-1` 稀客不能保活旧订单。
+- 运行时捕获订单维护 `ChangeVersion`；UI 控制器在版本变化后延迟 0.2 秒强制刷新经营数据并发布本地 API 快照。伴随窗口在 `经营中` 和稀客专注模式下以 750ms 轮询快照，其他页面保持 2 秒。
+- 运行时稀客 ID 会先归一化为本地 `customer_rare.json` 身份；优先读取游戏 `DataBaseCharacter.GetAllMappedGuests()` 的固定映射表，再回退到已知事件变体 `Tewi_HardSell -> 因幡帝`、`Remilia -> 蕾米莉亚`。带具体桌号的捕获订单只允许匹配同一桌活跃稀客，未入座 `desk=-1` 稀客不能保活旧订单。
+- 诊断开启时，`GetAllMappedGuests()` 读取到的固定映射表会单独写入 `BepInEx/config/MystiaStewardCompanion/runtime-static-data.log`；如自定义经营诊断日志路径，则写到同目录下的 `runtime-static-data.log`。
 - 稀客订单专注模式支持精简模式，精简模式隐藏推荐料理 Tag 并压缩推荐面板间距。
 
 ## 推荐排序口径
