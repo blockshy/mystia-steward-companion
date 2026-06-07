@@ -59,8 +59,8 @@ Release workflow 会生成并上传：
 推荐使用 tag：
 
 ```bash
-git tag v0.1.33
-git push origin v0.1.33
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
 也可以在 GitHub Actions 页面手动运行 Release workflow，并填写 `tag` 输入。除非明确准备发布，不要触发 Release workflow。

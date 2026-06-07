@@ -14,6 +14,7 @@ apps/companion/src-tauri/target/
 src-tauri/target/
 .game
 *.local
+AGENTS.md
 dev/
 .playwright-cli/
 mods/bepinex/References/*.dll
