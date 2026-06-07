@@ -35,24 +35,42 @@ UnityEngine.IMGUIModule.dll
 UnityEngine.InputLegacyModule.dll
 ```
 
+## 同步版本号
+
+发布前先同步项目内版本号。脚本会同时修改 `package.json`、`tauri.conf.json`、`Cargo.toml`、`Cargo.lock` 和 Mod 的 `PluginVersion`：
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\set-version.ps1 -Version 1.0.1
+```
+
+版本号同步后需要提交并推送，再执行发布：
+
+```powershell
+git add package.json apps\companion\src-tauri\Cargo.toml apps\companion\src-tauri\Cargo.lock apps\companion\src-tauri\tauri.conf.json mods\bepinex\src\Plugin\MystiaStewardCompanionPlugin.cs
+git commit -m "chore(release): bump version to 1.0.1"
+git push origin main
+```
+
+`publish-release.ps1` 会根据 `-Tag` 校验代码版本。如果代码仍是旧版本，脚本会失败并提示先运行 `set-version.ps1`。
+
 ## 一键构建并发布
 
 从仓库根目录执行：
 
 ```powershell
 pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
-  -Tag v1.0.0 `
-  -Title "v1.0.0" `
-  -Notes "首个正式版本"
+  -Tag v1.0.1 `
+  -Title "v1.0.1" `
+  -Notes "版本更新说明"
 ```
 
 如果引用 DLL 不在 `mods\bepinex\References`，传入同一个目录：
 
 ```powershell
 pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
-  -Tag v1.0.0 `
-  -Title "v1.0.0" `
-  -Notes "首个正式版本" `
+  -Tag v1.0.1 `
+  -Title "v1.0.1" `
+  -Notes "版本更新说明" `
   -ReferenceDir "D:\path\to\mystia-steward-companion-references"
 ```
 
@@ -80,4 +98,4 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
 
 - 不要直接推送 tag 期待 GitHub 自动构建；仓库没有 Release 构建 workflow。
 - 构建引用 DLL 只留在本机 `References/`，不要提交。
-- 发布前确认 `package.json`、`tauri.conf.json`、`Cargo.toml` 和 `PluginVersion` 版本一致。
+- 发布前运行 `set-version.ps1` 并提交版本号变更；发布脚本会自动校验版本一致性。

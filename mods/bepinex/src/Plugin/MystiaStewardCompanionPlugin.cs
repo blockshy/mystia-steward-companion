@@ -15,7 +15,7 @@ public sealed class MystiaStewardCompanionPlugin : BasePlugin
 
     public const string PluginGuid = "com.tyukki.mystia-steward-companion";
     public const string PluginName = "mystia-steward-companion";
-    public const string PluginVersion = "1.0.0";
+    public const string PluginVersion = "1.0.1";
 
     public override void Load()
     {

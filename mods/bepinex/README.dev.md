@@ -152,8 +152,22 @@ GitHub Release 只上传以下资产：
 
 - `gh auth status` 能正常显示已登录账号。
 - `mods\bepinex\References` 中 8 个编译引用 DLL 齐全。
-- `package.json`、`apps\companion\src-tauri\tauri.conf.json`、`apps\companion\src-tauri\Cargo.toml`、`MystiaStewardCompanionPlugin.PluginVersion` 版本一致。
+- 已运行 `mods\bepinex\tools\set-version.ps1` 并提交版本号变更。
 - 若发布新版本，先提交版本号变更并创建或移动对应 tag，例如 `v1.0.1`。
+
+### 同步版本号
+
+以 `1.0.1` 为例：
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\set-version.ps1 -Version 1.0.1
+
+git add package.json apps\companion\src-tauri\Cargo.toml apps\companion\src-tauri\Cargo.lock apps\companion\src-tauri\tauri.conf.json mods\bepinex\src\Plugin\MystiaStewardCompanionPlugin.cs
+git commit -m "chore(release): bump version to 1.0.1"
+git push origin main
+```
+
+发布脚本会根据 `-Tag` 校验 `package.json`、`tauri.conf.json`、`Cargo.toml`、`Cargo.lock` 和 `PluginVersion`。如果版本不一致，脚本会失败并提示先同步版本。
 
 ### 发布新版本
 

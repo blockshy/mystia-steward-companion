@@ -7,6 +7,7 @@ param(
     [string]$Notes = "",
     [switch]$Prerelease,
     [switch]$SkipBuild,
+    [switch]$SkipVersionCheck,
     [switch]$Clobber,
     [string]$ReferenceDir = "",
     [string]$Repo = "blockshy/mystia-steward-companion"
@@ -54,6 +55,90 @@ function Get-PwshCommand {
     return $Pwsh.Source
 }
 
+function Get-VersionFromTag {
+    param([Parameter(Mandatory = $true)][string]$Tag)
+
+    $Version = $Tag.Trim()
+    if ($Version.StartsWith("v", [StringComparison]::OrdinalIgnoreCase)) {
+        $Version = $Version.Substring(1)
+    }
+
+    if ($Version -notmatch '^\d+\.\d+\.\d+([\-+][0-9A-Za-z.-]+)?$') {
+        throw "Release tag must be SemVer-like, for example v1.0.1. Actual: $Tag"
+    }
+
+    return $Version
+}
+
+function Get-FirstMatch {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Pattern,
+        [int]$Group = 1
+    )
+
+    $Content = Get-Content -Raw -LiteralPath $Path
+    $Match = [regex]::Match($Content, $Pattern, [System.Text.RegularExpressions.RegexOptions]::Multiline)
+    if (-not $Match.Success) {
+        throw "Version pattern not found in $Path"
+    }
+
+    return $Match.Groups[$Group].Value
+}
+
+function Assert-ProjectVersion {
+    param([Parameter(Mandatory = $true)][string]$ExpectedVersion)
+
+    $PackageJson = Join-Path $RepoRoot "package.json"
+    $TauriConfig = Join-Path $RepoRoot "apps/companion/src-tauri/tauri.conf.json"
+    $CargoToml = Join-Path $RepoRoot "apps/companion/src-tauri/Cargo.toml"
+    $CargoLock = Join-Path $RepoRoot "apps/companion/src-tauri/Cargo.lock"
+    $PluginSource = Join-Path $RepoRoot "mods/bepinex/src/Plugin/MystiaStewardCompanionPlugin.cs"
+
+    $VersionSources = @(
+        @{
+            Name = "package.json"
+            Path = $PackageJson
+            Version = (Get-FirstMatch -Path $PackageJson -Pattern '"version"\s*:\s*"([^"]+)"')
+        },
+        @{
+            Name = "tauri.conf.json"
+            Path = $TauriConfig
+            Version = (Get-FirstMatch -Path $TauriConfig -Pattern '"version"\s*:\s*"([^"]+)"')
+        },
+        @{
+            Name = "Cargo.toml"
+            Path = $CargoToml
+            Version = (Get-FirstMatch -Path $CargoToml -Pattern '^version = "([^"]+)"')
+        },
+        @{
+            Name = "Cargo.lock"
+            Path = $CargoLock
+            Version = (Get-FirstMatch -Path $CargoLock -Pattern '(?s)name = "mystia-steward-companion"\s+version = "([^"]+)"')
+        },
+        @{
+            Name = "PluginVersion"
+            Path = $PluginSource
+            Version = (Get-FirstMatch -Path $PluginSource -Pattern 'public const string PluginVersion = "([^"]+)";')
+        }
+    )
+
+    $Mismatched = @($VersionSources | Where-Object { $_.Version -ne $ExpectedVersion })
+    if ($Mismatched.Count -gt 0) {
+        $Details = ($Mismatched | ForEach-Object { "  - $($_.Name): $($_.Version) ($($_.Path))" }) -join [Environment]::NewLine
+        $SetVersionScript = Join-Path $ToolDir "set-version.ps1"
+        throw @(
+            "Project version does not match release tag $Tag.",
+            "Expected version: $ExpectedVersion",
+            "Mismatched files:",
+            $Details,
+            "Run before publishing:",
+            "  pwsh -ExecutionPolicy Bypass -File $SetVersionScript -Version $ExpectedVersion",
+            "Then commit and push the version bump."
+        ) -join [Environment]::NewLine
+    }
+}
+
 function Test-GhReleaseExists {
     param(
         [Parameter(Mandatory = $true)][string]$Gh,
@@ -72,6 +157,11 @@ function Test-GhReleaseExists {
 
 Push-Location $RepoRoot
 try {
+    $ExpectedVersion = Get-VersionFromTag -Tag $Tag
+    if (-not $SkipVersionCheck) {
+        Assert-ProjectVersion -ExpectedVersion $ExpectedVersion
+    }
+
     if (-not $SkipBuild) {
         [string[]]$BuildArgs = @(
             "-ExecutionPolicy",
