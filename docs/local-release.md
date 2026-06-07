@@ -45,6 +45,16 @@ powershell -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 
   -Notes "首个正式版本"
 ```
 
+如果引用 DLL 不在 `mods\bepinex\References`，传入同一个目录：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
+  -Tag v1.0.0 `
+  -Title "v1.0.0" `
+  -Notes "首个正式版本" `
+  -ReferenceDir "D:\path\to\mystia-steward-companion-references"
+```
+
 脚本会先运行 `build-release.ps1`，生成：
 
 - `mods/bepinex/dist/mystia-steward-companion-bepinex.zip`

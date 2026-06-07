@@ -6,6 +6,7 @@ param(
     [switch]$Prerelease,
     [switch]$SkipBuild,
     [switch]$Clobber,
+    [string]$ReferenceDir = "",
     [string]$Repo = "blockshy/mystia-steward-companion"
 )
 
@@ -63,12 +64,19 @@ function Add-StringListItems {
 Push-Location $RepoRoot
 try {
     if (-not $SkipBuild) {
-        Invoke-Checked -FilePath "powershell" -Arguments @(
+        $BuildArgs = New-StringList
+        Add-StringListItems -List $BuildArgs -Items @(
             "-ExecutionPolicy",
             "Bypass",
             "-File",
             $BuildScript
         )
+
+        if (-not [string]::IsNullOrWhiteSpace($ReferenceDir)) {
+            Add-StringListItems -List $BuildArgs -Items @("-ReferenceDir", $ReferenceDir)
+        }
+
+        Invoke-Checked -FilePath "powershell" -Arguments $BuildArgs.ToArray()
     }
 
     if (-not (Test-Path -LiteralPath $ModZip -PathType Leaf)) {

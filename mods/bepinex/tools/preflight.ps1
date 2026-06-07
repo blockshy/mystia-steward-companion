@@ -1,7 +1,16 @@
+param(
+    [string]$ReferenceDir = ""
+)
+
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $RootDir = Resolve-Path (Join-Path $PSScriptRoot "..")
+$EffectiveReferenceDir = if ([string]::IsNullOrWhiteSpace($ReferenceDir)) {
+    Join-Path $RootDir "References"
+} else {
+    $ReferenceDir
+}
 $Failed = $false
 
 function Test-RequiredFile {
@@ -33,20 +42,19 @@ Test-RequiredFile (Join-Path $RootDir "Data/customer_rare.json")
 Test-RequiredFile (Join-Path $RootDir "Data/food-tag-id-map.json")
 
 Write-Host ""
-Write-Host "Checking build references"
-Test-RequiredFile (Join-Path $RootDir "References/BepInEx.Core.dll")
-Test-RequiredFile (Join-Path $RootDir "References/BepInEx.Unity.IL2CPP.dll")
-Test-RequiredFile (Join-Path $RootDir "References/0Harmony.dll")
-Test-RequiredFile (Join-Path $RootDir "References/Il2CppInterop.Runtime.dll")
-Test-RequiredFile (Join-Path $RootDir "References/Il2Cppmscorlib.dll")
-Test-RequiredFile (Join-Path $RootDir "References/UnityEngine.CoreModule.dll")
-Test-RequiredFile (Join-Path $RootDir "References/UnityEngine.IMGUIModule.dll")
-Test-RequiredFile (Join-Path $RootDir "References/UnityEngine.InputLegacyModule.dll")
+Write-Host "Checking build references: $EffectiveReferenceDir"
+Test-RequiredFile (Join-Path $EffectiveReferenceDir "BepInEx.Core.dll")
+Test-RequiredFile (Join-Path $EffectiveReferenceDir "BepInEx.Unity.IL2CPP.dll")
+Test-RequiredFile (Join-Path $EffectiveReferenceDir "0Harmony.dll")
+Test-RequiredFile (Join-Path $EffectiveReferenceDir "Il2CppInterop.Runtime.dll")
+Test-RequiredFile (Join-Path $EffectiveReferenceDir "Il2Cppmscorlib.dll")
+Test-RequiredFile (Join-Path $EffectiveReferenceDir "UnityEngine.CoreModule.dll")
+Test-RequiredFile (Join-Path $EffectiveReferenceDir "UnityEngine.IMGUIModule.dll")
+Test-RequiredFile (Join-Path $EffectiveReferenceDir "UnityEngine.InputLegacyModule.dll")
 
 if ($Failed) {
     Write-Host ""
-    Write-Host "Preflight failed. See References/README.md and README.md for setup steps."
-    exit 1
+    throw "Preflight failed. Copy the missing DLLs into mods/bepinex/References, or pass -ReferenceDir to a directory containing them."
 }
 
 Write-Host ""

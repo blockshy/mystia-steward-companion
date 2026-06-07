@@ -20,6 +20,21 @@ $RepoRoot = (Resolve-Path (Join-Path $RootDir "../..")).Path
 $ProjectPath = Join-Path $RootDir "MystiaStewardCompanion.BepInEx.csproj"
 $PreflightScript = Join-Path $ToolDir "preflight.ps1"
 $PackageScript = Join-Path $ToolDir "package-release.ps1"
+$EffectiveReferenceDir = if ([string]::IsNullOrWhiteSpace($ReferenceDir)) {
+    Join-Path $RootDir "References"
+} else {
+    $ReferenceDir
+}
+$RequiredReferenceFiles = @(
+    "BepInEx.Core.dll",
+    "BepInEx.Unity.IL2CPP.dll",
+    "0Harmony.dll",
+    "Il2CppInterop.Runtime.dll",
+    "Il2Cppmscorlib.dll",
+    "UnityEngine.CoreModule.dll",
+    "UnityEngine.IMGUIModule.dll",
+    "UnityEngine.InputLegacyModule.dll"
+)
 
 function Write-Step {
     param([Parameter(Mandatory = $true)][string]$Title)
@@ -73,6 +88,38 @@ function Invoke-Pnpm {
     Invoke-Checked -Title $Title -FilePath $Command.FilePath -Arguments @($Command.Prefix + $Arguments)
 }
 
+function Assert-BuildReferences {
+    Write-Step "Validate BepInEx build references"
+    Write-Host "    $EffectiveReferenceDir"
+
+    $Missing = @()
+    foreach ($File in $RequiredReferenceFiles) {
+        $Path = Join-Path $EffectiveReferenceDir $File
+        if (Test-Path -LiteralPath $Path -PathType Leaf) {
+            Write-Host "    OK   $File"
+        }
+        else {
+            Write-Host "    MISS $File"
+            $Missing += $Path
+        }
+    }
+
+    if ($Missing.Count -gt 0) {
+        $Message = @(
+            "Missing BepInEx build references.",
+            "Copy the required DLLs into: $EffectiveReferenceDir",
+            "Common sources:",
+            "  - GameRoot\BepInEx\core",
+            "  - GameRoot\BepInEx\interop",
+            "Or run this script with: -ReferenceDir `"C:\path\to\reference-dlls`"",
+            "Missing files:",
+            ($Missing | ForEach-Object { "  - $_" })
+        ) -join [Environment]::NewLine
+
+        throw $Message
+    }
+}
+
 function Sync-ModData {
     Write-Step "Sync Mod data"
 
@@ -102,6 +149,8 @@ function Sync-ModData {
 
 Push-Location $RepoRoot
 try {
+    Assert-BuildReferences
+
     if (-not $SkipInstall) {
         $InstallArgs = @("install")
         if (-not $NoFrozenLockfile) {
@@ -113,7 +162,7 @@ try {
 
     if (-not $SkipPreflight) {
         Write-Step "Run Mod preflight"
-        & $PreflightScript
+        & $PreflightScript -ReferenceDir $EffectiveReferenceDir
     }
 
     if (-not $SkipDataSync) {
@@ -133,10 +182,7 @@ try {
         throw "dotnet was not found. Install .NET 6 SDK or newer."
     }
 
-    $DotnetBuildArgs = @("build", $ProjectPath, "-c", $Configuration)
-    if (-not [string]::IsNullOrWhiteSpace($ReferenceDir)) {
-        $DotnetBuildArgs += "/p:ReferenceDir=$ReferenceDir"
-    }
+    $DotnetBuildArgs = @("build", $ProjectPath, "-c", $Configuration, "/p:ReferenceDir=$EffectiveReferenceDir")
 
     Invoke-Checked `
         -Title "Build BepInEx plugin" `
