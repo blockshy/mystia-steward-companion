@@ -24,7 +24,7 @@
 4. 从 `NightScene.UI.GuestManagementUtility.WorkSceneServePannel` 的 `OpenContext`、`operatingOrder` 和 `currentGuestController` 读取当前上菜服务面板。
 5. 从 `NightScene.GuestManagementUtility.GuestsManager` 读取稀客控制器集合，包括 `AllPresentedGuestGroupController`、`AllGuestInDeskController`、`AllGuestsControllersInDesk`、`CanPlayerRepellGuest` 和 `ManualDesksDic`。
 6. 从 `NightScene.GuestManagementUtility.GuestGroupController.QueuedGuestControllers` 补充读取排队中的稀客。
-7. 对稀客控制器读取 `SpecialGuest` 或 `OrderingGuest`，优先用本地 `customer_rare.json` 校验稀客 ID；若本地数据缺失但运行时稀客表提供有效名称与喜好 Tag，则合成为临时运行时稀客继续参与推荐。
+7. 对稀客控制器优先读取 `SpecialGuest`。只有当 `OrderingGuest` 本身是 `SpecialGuest`，或带有明确的稀客 `StringId` / `SourceGuestID` 时，才把它作为稀客兜底；普通 `GuestBase` 的数字 ID 不参与稀客识别，避免普通客 ID 与稀客 ID 重叠导致幽灵稀客。若本地数据缺失但运行时稀客表提供有效名称与喜好 Tag，则合成为临时运行时稀客继续参与推荐。
 8. 对 `SpecialOrder` 读取 `RequestFoodTag`、`RequestBeverageTag`、`DeskCode` 和 `SpecialGuests`。
 9. 如果 `GuestGroupController.AllOrders` 读不到订单，则继续读取 `AllOrdersData`，并用 `PeekOrders()` 读取栈顶订单兜底。
 10. 默认不依赖 BepInEx/Unity 日志识别点单。运行时捕获会将 IL2CPP 暴露的 `OrderBase` 通过 `TryCast<SpecialOrder>()` 重新包装为真实特殊订单，再读取 `SpecialOrder.ToString()`、`RequestFoodTag` / `RequestBeverageTag`、必要的 `SpecialGuestsController.GetOrderBevText(...)` 和当前桌位稀客补齐信息。`0` 是有效料理 tag（`肉`），但只有确认属性读取成功时才能按 0 映射；酒水 tag 不要复用料理 tag 映射，负数酒水 tag id 视为未识别而不是显示为 `#-1`。特殊订单文本可能返回稀客台词而不是标准标签，因此 provider 会优先用料理 tag id 映射，并从本地料理/酒水候选标签中抽取标准词条。同一订单被多个 hook 捕获时会合并保留更完整的料理/酒水 tag，避免 `OrderAdd` 用缺失字段覆盖 `PostGenerateOrder` 的有效文本。不要用基类 `foodRequest` / `beverageRequest` 作为特殊订单兜底，这两个字段在 `SpecialOrder` 上可能对应普通食物或酒水请求，容易把 `肉/高酒精` 读成 `素` 等错误词条。
