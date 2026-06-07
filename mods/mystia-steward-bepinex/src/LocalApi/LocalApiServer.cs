@@ -3,6 +3,7 @@ using System.Net.Sockets;
 using System.Text;
 using BepInEx;
 using BepInEx.Logging;
+using MystiaSteward.Save;
 
 namespace MystiaSteward.LocalApi;
 
@@ -18,6 +19,7 @@ internal sealed class LocalApiServer : IDisposable
     private readonly Func<LocalApiLogSettings> _getLogSettings;
     private readonly Action<bool?, bool?> _updateLogSettings;
     private readonly Func<string, string> _openLogFolder;
+    private readonly Func<string, int, int, RuntimeInventoryEditResult> _editInventory;
     private TcpListener? _listener;
     private Thread? _thread;
     private bool _running;
@@ -31,6 +33,7 @@ internal sealed class LocalApiServer : IDisposable
         Func<LocalApiLogSettings> getLogSettings,
         Action<bool?, bool?> updateLogSettings,
         Func<string, string> openLogFolder,
+        Func<string, int, int, RuntimeInventoryEditResult> editInventory,
         ManualLogSource log)
     {
         BindAddress = ResolveLoopbackAddress(configuredHost, log);
@@ -40,6 +43,7 @@ internal sealed class LocalApiServer : IDisposable
         _getLogSettings = getLogSettings;
         _updateLogSettings = updateLogSettings;
         _openLogFolder = openLogFolder;
+        _editInventory = editInventory;
         _logOutputPath = ResolveLogOutputPath();
         _healthJson = $"{{\"ok\":true,\"pluginVersion\":\"{EscapeJson(pluginVersion)}\",\"bindAddress\":\"{BindAddress}\",\"port\":{Port},\"authRequired\":true}}";
     }
@@ -174,6 +178,9 @@ internal sealed class LocalApiServer : IDisposable
                     case "/logs/open-folder":
                         WriteResponse(stream, 200, "OK", OpenLogFolderJson(ReadStringQuery(query, "target")));
                         break;
+                    case "/inventory/set":
+                        WriteResponse(stream, 200, "OK", BuildInventoryEditJson(query));
+                        break;
                     default:
                         WriteResponse(stream, 404, "Not Found", "{\"error\":\"not found\"}");
                         break;
@@ -263,6 +270,38 @@ internal sealed class LocalApiServer : IDisposable
         catch (Exception ex)
         {
             return "{\"ok\":false,\"directory\":\"\",\"error\":\"" + EscapeJson(ex.Message) + "\"}";
+        }
+    }
+
+    private string BuildInventoryEditJson(string query)
+    {
+        var itemType = ReadStringQuery(query, "type");
+        if (!int.TryParse(ReadStringQuery(query, "id"), out var itemId)
+            || !int.TryParse(ReadStringQuery(query, "qty"), out var quantity))
+        {
+            return "{\"ok\":false,\"error\":\"invalid inventory edit parameters\"}";
+        }
+
+        try
+        {
+            var result = _editInventory(itemType, itemId, quantity);
+            var ok = string.IsNullOrWhiteSpace(result.Error);
+            return new StringBuilder()
+                .Append('{')
+                .Append("\"ok\":").Append(ok ? "true" : "false").Append(',')
+                .Append("\"type\":\"").Append(EscapeJson(result.ItemType)).Append("\",")
+                .Append("\"id\":").Append(result.ItemId).Append(',')
+                .Append("\"requestedQuantity\":").Append(result.RequestedQuantity).Append(',')
+                .Append("\"previousQuantity\":").Append(result.PreviousQuantity).Append(',')
+                .Append("\"quantity\":").Append(result.Quantity).Append(',')
+                .Append("\"changed\":").Append(result.Changed ? "true" : "false").Append(',')
+                .Append("\"error\":").Append(ok ? "null" : $"\"{EscapeJson(result.Error ?? "")}\"")
+                .Append('}')
+                .ToString();
+        }
+        catch (Exception ex)
+        {
+            return "{\"ok\":false,\"error\":\"" + EscapeJson(ex.Message) + "\"}";
         }
     }
 

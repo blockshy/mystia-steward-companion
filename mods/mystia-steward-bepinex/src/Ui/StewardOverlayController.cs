@@ -31,6 +31,8 @@ internal sealed class StewardOverlayController
     private NormalRecommendationService? _normalService;
     private RareRecommendationService? _rareService;
     private Rect _windowRect = new(48, 48, 980, 680);
+    private readonly object _inventoryEditLock = new();
+    private readonly Queue<PendingInventoryEdit> _pendingInventoryEdits = new();
     private Vector2 _scroll;
     private bool _visible;
     private bool _runtimeLoaded;
@@ -48,6 +50,7 @@ internal sealed class StewardOverlayController
     private int _rareCustomerIndex;
     private int _businessOrderIndex;
     private int _recommendationCacheVersion;
+    private int _mainThreadId;
     private string _openDropdownId = "";
     private string _runtimeSource = "";
     private string _activeSceneName = "";
@@ -70,6 +73,16 @@ internal sealed class StewardOverlayController
     private GUIStyle? _buttonStyle;
     private GUIStyle? _buttonActiveStyle;
 
+    private sealed class PendingInventoryEdit
+    {
+        public string ItemType { get; init; } = "";
+        public int ItemId { get; init; }
+        public int Quantity { get; init; }
+        public ManualResetEventSlim Completion { get; } = new(false);
+        public RuntimeInventoryEditResult? Result { get; set; }
+        public Exception? Error { get; set; }
+    }
+
     private sealed class RareRecommendationCache
     {
         public int Version { get; init; }
@@ -86,6 +99,7 @@ internal sealed class StewardOverlayController
     {
         _config = config;
         _log = log;
+        _mainThreadId = Thread.CurrentThread.ManagedThreadId;
         _windowRect = new Rect(
             config.WindowX.Value,
             config.WindowY.Value,
@@ -109,6 +123,7 @@ internal sealed class StewardOverlayController
     public void Update()
     {
         if (_config == null) return;
+        ProcessPendingInventoryEdits();
 
         if (IsTogglePressed())
         {
@@ -1043,6 +1058,7 @@ internal sealed class StewardOverlayController
                 GetLocalApiLogSettings,
                 UpdateLocalApiLogSettings,
                 OpenLocalApiLogFolder,
+                EditInventoryFromLocalApi,
                 _log);
             _localApiServer.Start();
         }
@@ -1146,6 +1162,74 @@ internal sealed class StewardOverlayController
         Directory.CreateDirectory(directory);
         OpenDirectory(directory);
         return directory;
+    }
+
+    private RuntimeInventoryEditResult EditInventoryFromLocalApi(string itemType, int itemId, int quantity)
+    {
+        if (Thread.CurrentThread.ManagedThreadId == _mainThreadId)
+        {
+            return ApplyInventoryEdit(itemType, itemId, quantity);
+        }
+
+        var pending = new PendingInventoryEdit
+        {
+            ItemType = itemType,
+            ItemId = itemId,
+            Quantity = quantity,
+        };
+        lock (_inventoryEditLock)
+        {
+            _pendingInventoryEdits.Enqueue(pending);
+        }
+
+        if (!pending.Completion.Wait(TimeSpan.FromSeconds(2.5)))
+        {
+            throw new TimeoutException("Inventory edit timed out waiting for Unity main thread.");
+        }
+
+        if (pending.Error != null) throw pending.Error;
+        return pending.Result ?? throw new InvalidOperationException("Inventory edit did not produce a result.");
+    }
+
+    private void ProcessPendingInventoryEdits()
+    {
+        while (true)
+        {
+            PendingInventoryEdit? pending;
+            lock (_inventoryEditLock)
+            {
+                pending = _pendingInventoryEdits.Count == 0 ? null : _pendingInventoryEdits.Dequeue();
+            }
+
+            if (pending == null) return;
+
+            try
+            {
+                pending.Result = ApplyInventoryEdit(pending.ItemType, pending.ItemId, pending.Quantity);
+            }
+            catch (Exception ex)
+            {
+                pending.Error = ex;
+            }
+            finally
+            {
+                pending.Completion.Set();
+            }
+        }
+    }
+
+    private RuntimeInventoryEditResult ApplyInventoryEdit(string itemType, int itemId, int quantity)
+    {
+        var result = RuntimeInventoryEditor.SetQuantity(itemType, itemId, quantity);
+        _status = result.Error == null
+            ? L(
+                $"库存已修改：{result.ItemType} #{result.ItemId} {result.PreviousQuantity} -> {result.Quantity}",
+                $"Inventory changed: {result.ItemType} #{result.ItemId} {result.PreviousQuantity} -> {result.Quantity}")
+            : L($"库存修改失败：{result.Error}", $"Inventory edit failed: {result.Error}");
+        RefreshRuntimeState(false);
+        RefreshBusinessContext(false);
+        PublishLocalApiSnapshot();
+        return result;
     }
 
     private void DrawNightBusinessDiagnosticsSettings()

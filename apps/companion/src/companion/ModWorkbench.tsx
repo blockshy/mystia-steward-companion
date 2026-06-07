@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
+import type { ReactNode, SetStateAction } from 'react';
 import { FolderOpen, Power, RefreshCw } from 'lucide-react';
 import { CustomerScoreBadges } from '@/components/ScoreBadge';
 import { RegionSelector } from '@/components/RegionSelector';
@@ -55,7 +55,7 @@ const INGREDIENT_NAME_BY_ID = new Map(INGREDIENTS.map((ingredient) => [ingredien
 const BEVERAGES = allBeverages as IBeverage[];
 const BEVERAGE_NAME_BY_ID = new Map(BEVERAGES.map((beverage) => [beverage.id, beverage.name]));
 
-type ModTab = 'overview' | 'normal' | 'rare' | 'service' | 'logs';
+type ModTab = 'overview' | 'normal' | 'rare' | 'service' | 'inventory' | 'logs';
 
 const RATING_LABELS: Record<TRating, string> = {
   ExGood: '完美',
@@ -160,6 +160,17 @@ interface LocalApiLogSettings {
 interface LocalApiFolderResponse {
   ok: boolean;
   directory: string;
+  error: string | null;
+}
+
+interface InventoryEditResponse {
+  ok: boolean;
+  type: 'ingredient' | 'beverage';
+  id: number;
+  requestedQuantity: number;
+  previousQuantity: number;
+  quantity: number;
+  changed: boolean;
   error: string | null;
 }
 
@@ -321,6 +332,9 @@ export function ModWorkbench() {
           <TabsTrigger value="service" className="min-w-0 flex-1">
             经营中
           </TabsTrigger>
+          <TabsTrigger value="inventory" className="min-w-0 flex-1">
+            修改
+          </TabsTrigger>
           <TabsTrigger value="logs" className="min-w-0 flex-1">
             日志
           </TabsTrigger>
@@ -388,6 +402,16 @@ export function ModWorkbench() {
             recommendationIssues={orderRecommendations.recommendationIssues}
             runtimeSets={runtimeSets}
             onEnterFocusMode={() => setServiceFocusMode(true)}
+          />
+        </TabsContent>
+
+        <TabsContent value="inventory">
+          <ModInventoryPanel
+            endpoint={normalizedEndpoint}
+            apiToken={apiToken}
+            runtimeSets={runtimeSets}
+            runtimeLoaded={snapshot?.runtimeLoaded ?? false}
+            onRefresh={refresh}
           />
         </TabsContent>
 
@@ -901,6 +925,192 @@ function CurrentOrderRecommendations({
   );
 }
 
+function ModInventoryPanel({
+  endpoint,
+  apiToken,
+  runtimeSets,
+  runtimeLoaded,
+  onRefresh,
+}: {
+  endpoint: string;
+  apiToken: string;
+  runtimeSets: RuntimeSets | null;
+  runtimeLoaded: boolean;
+  onRefresh: () => Promise<void>;
+}) {
+  const [search, setSearch] = useState('');
+  const [draftQuantities, setDraftQuantities] = useState<Record<string, string>>({});
+  const [busyKey, setBusyKey] = useState('');
+  const [message, setMessage] = useState('');
+
+  const normalizedSearch = search.trim().toLowerCase();
+  const ingredientRows = useMemo(
+    () => filterInventoryItems(INGREDIENTS, normalizedSearch),
+    [normalizedSearch],
+  );
+  const beverageRows = useMemo(
+    () => filterInventoryItems(BEVERAGES.filter((beverage) => beverage.id >= 0), normalizedSearch),
+    [normalizedSearch],
+  );
+
+  const applyQuantity = useCallback(async (kind: 'ingredient' | 'beverage', id: number, quantity: number) => {
+    const key = inventoryDraftKey(kind, id);
+    const targetQuantity = normalizeEditableQuantity(quantity);
+    setBusyKey(key);
+    setMessage('');
+
+    try {
+      const result = await writeInventoryQuantity(endpoint, apiToken, kind, id, targetQuantity);
+      if (!result.ok) throw new Error(result.error || '库存修改失败');
+      setDraftQuantities((current) => ({ ...current, [key]: String(result.quantity) }));
+      setMessage(`${kind === 'ingredient' ? '材料' : '酒水'} #${id}: ${result.previousQuantity} -> ${result.quantity}`);
+      await onRefresh();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyKey('');
+    }
+  }, [apiToken, endpoint, onRefresh]);
+
+  if (!runtimeLoaded || !runtimeSets) {
+    return <RuntimeUnavailable />;
+  }
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardContent className="grid gap-3 p-4 text-sm lg:grid-cols-[1fr_auto]">
+          <div>
+            <div className="font-semibold">库存数量修改</div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              修改会写入当前游戏运行时库存；请在游戏内保存后再退出。经营中修改可能会和实时消耗同时发生。
+            </div>
+          </div>
+          <div className="flex min-w-0 items-center gap-2">
+            <Input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="搜索名称或 ID"
+              className="w-56"
+            />
+            <Button size="sm" variant="outline" onClick={onRefresh}>
+              <RefreshCw className="size-4" />
+              刷新
+            </Button>
+          </div>
+          {message && (
+            <div className="lg:col-span-2 text-xs text-muted-foreground">
+              {message}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <InventoryEditColumn
+          title="材料"
+          kind="ingredient"
+          items={ingredientRows}
+          ownedQty={runtimeSets.ownedIngredientQty}
+          draftQuantities={draftQuantities}
+          busyKey={busyKey}
+          apiToken={apiToken}
+          onDraftChange={setDraftQuantities}
+          onApply={applyQuantity}
+        />
+        <InventoryEditColumn
+          title="酒水"
+          kind="beverage"
+          items={beverageRows}
+          ownedQty={runtimeSets.ownedBeverageQty}
+          draftQuantities={draftQuantities}
+          busyKey={busyKey}
+          apiToken={apiToken}
+          onDraftChange={setDraftQuantities}
+          onApply={applyQuantity}
+        />
+      </div>
+    </div>
+  );
+}
+
+function InventoryEditColumn<TItem extends IIngredient | IBeverage>({
+  title,
+  kind,
+  items,
+  ownedQty,
+  draftQuantities,
+  busyKey,
+  apiToken,
+  onDraftChange,
+  onApply,
+}: {
+  title: string;
+  kind: 'ingredient' | 'beverage';
+  items: TItem[];
+  ownedQty: Record<number, number>;
+  draftQuantities: Record<string, string>;
+  busyKey: string;
+  apiToken: string;
+  onDraftChange: (next: SetStateAction<Record<string, string>>) => void;
+  onApply: (kind: 'ingredient' | 'beverage', id: number, quantity: number) => Promise<void>;
+}) {
+  return (
+    <ListPanel title={`${title} (${items.length})`}>
+      <div className="space-y-2">
+        {items.length === 0 && <EmptyRow text="没有匹配项目" />}
+        {items.map((item) => {
+          const key = inventoryDraftKey(kind, item.id);
+          const quantity = ownedQty[item.id] ?? 0;
+          const editable = Boolean(apiToken) && item.id >= 0 && quantity >= 0;
+          const draftValue = draftQuantities[key] ?? String(quantity);
+          const draftQuantity = normalizeEditableQuantity(Number(draftValue));
+          const busy = busyKey === key;
+
+          return (
+            <div key={key} className="rounded-md border border-border/80 p-2 text-sm">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="truncate font-medium" title={item.name}>{item.name}</div>
+                  <div className="mt-0.5 text-xs text-muted-foreground">
+                    ID {item.id} · 当前 {quantity < 0 ? '无限' : quantity} · 单价 {item.price}
+                  </div>
+                </div>
+                <Input
+                  type="number"
+                  min={0}
+                  max={9999}
+                  value={draftValue}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    onDraftChange((current) => ({ ...current, [key]: value }));
+                  }}
+                  disabled={!editable || busy}
+                  className="h-8 w-24"
+                />
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                <Button size="sm" variant="outline" disabled={!editable || busy} onClick={() => onApply(kind, item.id, quantity + 1)}>
+                  +1
+                </Button>
+                <Button size="sm" variant="outline" disabled={!editable || busy} onClick={() => onApply(kind, item.id, quantity + 10)}>
+                  +10
+                </Button>
+                <Button size="sm" variant="outline" disabled={!editable || busy} onClick={() => onApply(kind, item.id, 99)}>
+                  99
+                </Button>
+                <Button size="sm" disabled={!editable || busy} onClick={() => onApply(kind, item.id, draftQuantity)}>
+                  {busy ? '修改中' : '应用'}
+                </Button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </ListPanel>
+  );
+}
+
 function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToken: string }) {
   const [settings, setSettings] = useState<LocalApiLogSettings | null>(null);
   const [logs, setLogs] = useState<LocalApiLogs | null>(null);
@@ -1387,6 +1597,33 @@ async function openLogFolder(
   return readLocalApiJson<LocalApiFolderResponse>(endpoint, apiToken, `/logs/open-folder?target=${target}`, signal);
 }
 
+async function writeInventoryQuantity(
+  endpoint: string,
+  apiToken: string,
+  itemType: 'ingredient' | 'beverage',
+  itemId: number,
+  quantity: number,
+): Promise<InventoryEditResponse> {
+  const params = new URLSearchParams({
+    type: itemType,
+    id: String(itemId),
+    qty: String(normalizeEditableQuantity(quantity)),
+  });
+  const abortController = new AbortController();
+  const timeoutId = window.setTimeout(() => abortController.abort(), 3200);
+
+  try {
+    return await readLocalApiJson<InventoryEditResponse>(
+      endpoint,
+      apiToken,
+      `/inventory/set?${params.toString()}`,
+      abortController.signal,
+    );
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
 async function readLocalApiJson<T>(endpoint: string, apiToken: string, path: string, signal: AbortSignal): Promise<T> {
   const targetEndpoint = `${endpoint}${path}`;
   if (isTauriRuntime()) {
@@ -1421,6 +1658,24 @@ function buildRuntimeSets(runtime: RecommendationStateSnapshot | null): RuntimeS
     ownedIngredientQty: normalizeOwnedIngredientQty(runtime.ownedIngredientQty),
     ownedBeverageQty: normalizeOwnedIngredientQty(runtime.ownedBeverageQty ?? {}),
   };
+}
+
+function filterInventoryItems<TItem extends IIngredient | IBeverage>(items: TItem[], normalizedSearch: string): TItem[] {
+  const rows = normalizedSearch
+    ? items.filter((item) => item.name.toLowerCase().includes(normalizedSearch) || String(item.id).includes(normalizedSearch))
+    : items;
+  return rows
+    .filter((item) => item.id >= 0)
+    .sort((a, b) => a.id - b.id);
+}
+
+function inventoryDraftKey(kind: 'ingredient' | 'beverage', itemId: number) {
+  return `${kind}:${itemId}`;
+}
+
+function normalizeEditableQuantity(value: number) {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(9999, Math.trunc(value)));
 }
 
 function buildOrderRecommendations(
@@ -1604,7 +1859,7 @@ function isOrderableRareFoodTag(tag: string): boolean {
 function readStoredTab(): ModTab {
   const value = localStorage.getItem(TAB_STORAGE_KEY);
   if (value === 'settings') return 'overview';
-  return value === 'overview' || value === 'normal' || value === 'rare' || value === 'service' || value === 'logs'
+  return value === 'overview' || value === 'normal' || value === 'rare' || value === 'service' || value === 'inventory' || value === 'logs'
     ? value
     : 'service';
 }

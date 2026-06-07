@@ -16,6 +16,7 @@
 - `References/` 只放本机编译 DLL，不提交仓库。
 - `tools/sync-data.sh` 和 `build-release.ps1` 会把 `apps/companion/src/data` 同步到 Mod `Data/`。
 - 独立伴随窗口通过 `127.0.0.1:32145` 读取运行态；除 `/health` 外，本地 API 使用 `X-Mystia-Steward-Token` 授权。
+- `修改` 页通过 `/inventory/set` 在 Unity 主线程写入当前运行时材料和酒水库存；用户仍需在游戏内保存才能持久化。
 - `BepInEx/LogOutput.log` 读取和夜间经营诊断默认关闭，由伴随窗口 `日志` 页按需开启。
 - 旧游戏内 IMGUI 面板默认关闭，仅作为回退方案。
 
