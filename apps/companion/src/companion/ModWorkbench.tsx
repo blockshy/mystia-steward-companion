@@ -485,6 +485,45 @@ export function ModWorkbench() {
     }
   }, [apiToken, companionPreferences, favorites, normalizedEndpoint, orderRecommendations.recommendations, refresh]);
 
+  const completeFirstOrder = useCallback(async () => {
+    setAutoPrepMessage('');
+    if (!apiToken) {
+      setAutoPrepMessage('本地 API Token 不可用，无法执行完成第一单。');
+      return;
+    }
+
+    const completePreferences = {
+      ...companionPreferences,
+      autoPrepTakeBeverage: true,
+      autoPrepStartCooking: true,
+    };
+    const selection = selectNextOrderPreparation(orderRecommendations.recommendations, favorites, completePreferences);
+    if (!selection.ok) {
+      setAutoPrepMessage(selection.message);
+      return;
+    }
+
+    setAutoPrepBusy(true);
+    try {
+      const response = await completeFirstRareOrder(
+        normalizedEndpoint,
+        apiToken,
+        selection.item,
+        selection.recipe,
+        selection.beverage,
+        selection.recipeFavorite,
+        selection.beverageFavorite,
+        completePreferences,
+      );
+      setAutoPrepMessage(formatOrderPreparationResponse(response));
+      await refresh();
+    } catch (err) {
+      setAutoPrepMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAutoPrepBusy(false);
+    }
+  }, [apiToken, companionPreferences, favorites, normalizedEndpoint, orderRecommendations.recommendations, refresh]);
+
   useEffect(() => {
     localStorage.setItem(ENDPOINT_STORAGE_KEY, normalizedEndpoint);
   }, [normalizedEndpoint]);
@@ -598,6 +637,7 @@ export function ModWorkbench() {
         recipeLimit={serviceFocusRecipeLimit}
         beverageLimit={serviceFocusBeverageLimit}
         onPrepareNextOrder={prepareNextOrder}
+        onCompleteFirstOrder={completeFirstOrder}
         onCompactChange={setServiceFocusCompact}
         onRecipeLimitChange={setServiceFocusRecipeLimit}
         onBeverageLimitChange={setServiceFocusBeverageLimit}
@@ -756,6 +796,7 @@ export function ModWorkbench() {
             onToggleRecipeFavorite={toggleRecipeFavorite}
             onToggleBeverageFavorite={toggleBeverageFavorite}
             onPrepareNextOrder={prepareNextOrder}
+            onCompleteFirstOrder={completeFirstOrder}
             onEnterFocusMode={() => setServiceFocusMode(true)}
           />
         </TabsContent>
@@ -1201,6 +1242,7 @@ function ModServicePanel({
   onToggleRecipeFavorite,
   onToggleBeverageFavorite,
   onPrepareNextOrder,
+  onCompleteFirstOrder,
   onEnterFocusMode,
 }: {
   runtime: RecommendationStateSnapshot | null;
@@ -1218,6 +1260,7 @@ function ModServicePanel({
   onToggleRecipeFavorite: ToggleRecipeFavorite;
   onToggleBeverageFavorite: ToggleBeverageFavorite;
   onPrepareNextOrder: () => Promise<void>;
+  onCompleteFirstOrder: () => Promise<void>;
   onEnterFocusMode: () => void;
 }) {
   const activeGuests = night?.activeRareGuests ?? [];
@@ -1228,6 +1271,9 @@ function ModServicePanel({
       <div className="flex flex-wrap justify-end gap-2">
         <Button size="sm" variant="secondary" onClick={onPrepareNextOrder} disabled={autoPrepBusy || recommendations.length === 0}>
           {autoPrepBusy ? '准备中...' : '准备下一单'}
+        </Button>
+        <Button size="sm" variant="secondary" onClick={onCompleteFirstOrder} disabled={autoPrepBusy || recommendations.length === 0}>
+          {autoPrepBusy ? '处理中...' : '完成第一单'}
         </Button>
         <Button size="sm" onClick={onEnterFocusMode}>
           稀客订单专注模式
@@ -1303,6 +1349,7 @@ function ServiceFocusPage({
   recipeLimit,
   beverageLimit,
   onPrepareNextOrder,
+  onCompleteFirstOrder,
   onCompactChange,
   onRecipeLimitChange,
   onBeverageLimitChange,
@@ -1323,6 +1370,7 @@ function ServiceFocusPage({
   recipeLimit: number;
   beverageLimit: number;
   onPrepareNextOrder: () => Promise<void>;
+  onCompleteFirstOrder: () => Promise<void>;
   onCompactChange: (value: boolean) => void;
   onRecipeLimitChange: (value: number) => void;
   onBeverageLimitChange: (value: number) => void;
@@ -1342,6 +1390,9 @@ function ServiceFocusPage({
         <div className="flex flex-wrap items-center justify-end gap-3">
           <Button size="sm" variant="secondary" onClick={onPrepareNextOrder} disabled={autoPrepBusy || recommendations.length === 0}>
             {autoPrepBusy ? '准备中...' : '准备下一单'}
+          </Button>
+          <Button size="sm" variant="secondary" onClick={onCompleteFirstOrder} disabled={autoPrepBusy || recommendations.length === 0}>
+            {autoPrepBusy ? '处理中...' : '完成第一单'}
           </Button>
           <SwitchControl
             label="精简模式"
@@ -1926,7 +1977,7 @@ function ModSettingsPanel({
             onCheckedChange={(autoPrepStopOnError) => onPreferenceChange({ autoPrepStopOnError })}
           />
           <div className="text-xs text-muted-foreground">
-            “准备下一单”只处理当前排序第一笔稀客订单；未找到稳定游戏入口的步骤会显示失败原因，不会伪造扣库存。
+            “准备下一单”和“完成第一单”都只处理当前排序第一笔稀客订单；未找到稳定游戏入口的步骤会显示失败原因，不会伪造扣库存。
           </div>
         </div>
       </ListPanel>
@@ -1945,7 +1996,7 @@ function AutoPrepStatus({
 
   return (
     <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
-      <div className="font-medium text-foreground">准备下一单</div>
+      <div className="font-medium text-foreground">一键订单</div>
       <div className="mt-1 whitespace-pre-line text-muted-foreground">{message}</div>
       <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
         <Badge variant={preferences.autoPrepTakeBeverage ? 'secondary' : 'outline'}>取酒 {preferences.autoPrepTakeBeverage ? '开' : '关'}</Badge>
@@ -2612,6 +2663,53 @@ async function prepareNextRareOrder(
   beverageFavorite: FavoriteBeverageEntry | null,
   preferences: CompanionPreferences,
 ): Promise<OrderPreparationResponse> {
+  return rareOrderAction(
+    endpoint,
+    apiToken,
+    '/orders/prepare-next',
+    item,
+    recipe,
+    beverage,
+    recipeFavorite,
+    beverageFavorite,
+    preferences,
+  );
+}
+
+async function completeFirstRareOrder(
+  endpoint: string,
+  apiToken: string,
+  item: OrderRecommendation,
+  recipe: IRareRecipeResult | null,
+  beverage: IRareBeverageResult | null,
+  recipeFavorite: FavoriteRecipeEntry | null,
+  beverageFavorite: FavoriteBeverageEntry | null,
+  preferences: CompanionPreferences,
+): Promise<OrderPreparationResponse> {
+  return rareOrderAction(
+    endpoint,
+    apiToken,
+    '/orders/complete-first',
+    item,
+    recipe,
+    beverage,
+    recipeFavorite,
+    beverageFavorite,
+    preferences,
+  );
+}
+
+async function rareOrderAction(
+  endpoint: string,
+  apiToken: string,
+  path: string,
+  item: OrderRecommendation,
+  recipe: IRareRecipeResult | null,
+  beverage: IRareBeverageResult | null,
+  recipeFavorite: FavoriteRecipeEntry | null,
+  beverageFavorite: FavoriteBeverageEntry | null,
+  preferences: CompanionPreferences,
+): Promise<OrderPreparationResponse> {
   const params = new URLSearchParams({
     deskCode: String(item.order.deskCode),
     guestId: item.order.guestId == null ? '' : String(item.order.guestId),
@@ -2638,7 +2736,7 @@ async function prepareNextRareOrder(
     return await readLocalApiJson<OrderPreparationResponse>(
       endpoint,
       apiToken,
-      `/orders/prepare-next?${params.toString()}`,
+      `${path}?${params.toString()}`,
       abortController.signal,
     );
   } finally {

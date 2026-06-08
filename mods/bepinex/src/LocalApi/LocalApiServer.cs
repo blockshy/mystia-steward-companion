@@ -22,6 +22,7 @@ internal sealed class LocalApiServer : IDisposable
     private readonly Func<string, string> _openLogFolder;
     private readonly Func<string, int, int, RuntimeInventoryEditResult> _editInventory;
     private readonly Func<OrderPreparationRequest, OrderPreparationResult> _prepareOrder;
+    private readonly Func<OrderPreparationRequest, OrderPreparationResult> _completeOrder;
     private readonly FavoriteStore _favoriteStore;
     private TcpListener? _listener;
     private Thread? _thread;
@@ -38,6 +39,7 @@ internal sealed class LocalApiServer : IDisposable
         Func<string, string> openLogFolder,
         Func<string, int, int, RuntimeInventoryEditResult> editInventory,
         Func<OrderPreparationRequest, OrderPreparationResult> prepareOrder,
+        Func<OrderPreparationRequest, OrderPreparationResult> completeOrder,
         FavoriteStore favoriteStore,
         ManualLogSource log)
     {
@@ -50,6 +52,7 @@ internal sealed class LocalApiServer : IDisposable
         _openLogFolder = openLogFolder;
         _editInventory = editInventory;
         _prepareOrder = prepareOrder;
+        _completeOrder = completeOrder;
         _favoriteStore = favoriteStore;
         _logOutputPath = ResolveLogOutputPath();
         _healthJson = $"{{\"ok\":true,\"pluginVersion\":\"{EscapeJson(pluginVersion)}\",\"bindAddress\":\"{BindAddress}\",\"port\":{Port},\"authRequired\":true}}";
@@ -189,7 +192,10 @@ internal sealed class LocalApiServer : IDisposable
                         WriteResponse(stream, 200, "OK", BuildInventoryEditJson(query));
                         break;
                     case "/orders/prepare-next":
-                        WriteResponse(stream, 200, "OK", BuildOrderPreparationJson(query));
+                        WriteResponse(stream, 200, "OK", BuildOrderActionJson(query, _prepareOrder));
+                        break;
+                    case "/orders/complete-first":
+                        WriteResponse(stream, 200, "OK", BuildOrderActionJson(query, _completeOrder));
                         break;
                     case "/favorites":
                         WriteResponse(stream, 200, "OK", _favoriteStore.GetJson());
@@ -342,7 +348,7 @@ internal sealed class LocalApiServer : IDisposable
         }
     }
 
-    private string BuildOrderPreparationJson(string query)
+    private string BuildOrderActionJson(string query, Func<OrderPreparationRequest, OrderPreparationResult> action)
     {
         try
         {
@@ -367,7 +373,7 @@ internal sealed class LocalApiServer : IDisposable
                 BeverageFavorite = ReadBoolQuery(query, "beverageFavorite") ?? false,
             };
 
-            var result = _prepareOrder(request);
+            var result = action(request);
             return JsonSerializer.Serialize(result, new JsonSerializerOptions
             {
                 PropertyNamingPolicy = JsonNamingPolicy.CamelCase,

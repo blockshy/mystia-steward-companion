@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using Il2CppInterop.Runtime.InteropTypes.Arrays;
 using MystiaStewardCompanion.LocalApi;
 
@@ -12,6 +13,7 @@ internal static class RuntimeOrderPreparationService
     private const string RuntimeStorageTypeName = "GameData.RunTime.Common.RunTimeStorage";
     private const string PartnerManagerTypeName = "NightScene.PartnerUtility.PartnerManager";
     private const string CookSystemManagerTypeName = "NightScene.CookingUtility.CookSystemManager";
+    private const string GuestsManagerTypeName = "NightScene.GuestManagementUtility.GuestsManager";
     private const string MatchedCookComboTypeName = "NightScene.UI.CookingUtility.WorkSceneCookingSelectionPannel+MatchedCookCombo";
     private static readonly object PendingCookingLock = new();
     private static readonly List<PendingCookingCollection> PendingCookingCollections = new();
@@ -125,6 +127,130 @@ internal static class RuntimeOrderPreparationService
         {
             AddSkipped(result, "自动收取料理", "设置已关闭。");
         }
+
+        return Finish(result);
+    }
+
+    public static OrderPreparationResult CompleteFirst(OrderPreparationRequest request)
+    {
+        var result = new OrderPreparationResult
+        {
+            Order = new OrderPreparationOrder
+            {
+                DeskCode = request.DeskCode,
+                GuestId = request.GuestId,
+                GuestName = request.GuestName,
+                FoodTag = request.FoodTag,
+                BeverageTag = request.BeverageTag,
+            },
+            RecipeId = request.RecipeId,
+            RecipeName = request.RecipeName,
+            BeverageId = request.BeverageId,
+            BeverageName = request.BeverageName,
+        };
+
+        result.Steps.Add(new OrderPreparationStep
+        {
+            Name = "选择订单",
+            Ok = true,
+            Message = $"桌 {request.DeskCode + 1} · {request.GuestName} · 料理 {request.FoodTag} · 酒水 {request.BeverageTag}",
+        });
+
+        if (request.RecipeId < 0)
+        {
+            AddFailure(result, "匹配料理", "当前第一笔订单没有可用的推荐料理。");
+            return Finish(result);
+        }
+
+        if (request.BeverageId < 0)
+        {
+            AddFailure(result, "匹配酒水", "当前第一笔订单没有可用的推荐酒水。");
+            return Finish(result);
+        }
+
+        var recipe = InvokeStatic(DataBaseCoreTypeName, "RefRecipe", new object?[] { request.RecipeId });
+        if (recipe == null)
+        {
+            AddFailure(result, "匹配料理", $"无法从游戏数据库读取料理配方：{request.RecipeName} #{request.RecipeId}。");
+            return Finish(result);
+        }
+
+        var expectedFoodId = ToInt(ReadMember(recipe, "foodID"));
+        if (expectedFoodId < 0)
+        {
+            AddFailure(result, "匹配料理", $"配方 {request.RecipeName} 未读取到有效成品料理 ID。");
+            return Finish(result);
+        }
+
+        var tray = GetSingletonInstance(IzakayaTrayTypeName);
+        if (tray == null)
+        {
+            AddFailure(result, "匹配送餐盘", "当前送餐盘对象不可用，请确认已进入夜晚经营页面。");
+            return Finish(result);
+        }
+
+        var trayItems = ReadTrayItems(tray).ToList();
+        var food = trayItems.FirstOrDefault(item => IsSellable(item, sellableType: 0, expectedFoodId));
+        if (food == null)
+        {
+            AddFailure(result, "匹配送餐盘料理", $"送餐盘中没有找到 {request.RecipeName} 的成品料理（料理 #{expectedFoodId}）。");
+            return Finish(result);
+        }
+
+        var beverage = trayItems.FirstOrDefault(item => IsSellable(item, sellableType: 1, request.BeverageId));
+        if (beverage == null)
+        {
+            AddFailure(result, "匹配送餐盘酒水", $"送餐盘中没有找到 {request.BeverageName}（酒水 #{request.BeverageId}）。");
+            return Finish(result);
+        }
+
+        result.Steps.Add(new OrderPreparationStep
+        {
+            Name = "匹配送餐盘",
+            Ok = true,
+            Message = $"已找到料理 {request.RecipeName} 和酒水 {request.BeverageName}。",
+        });
+
+        var runtimeOrder = FindRuntimeOrder(request);
+        if (runtimeOrder.Order == null || runtimeOrder.Controller == null || runtimeOrder.Manager == null)
+        {
+            AddFailure(result, "匹配运行时订单", "未找到当前第一笔稀客订单对象，可能订单已完成、客人已离场或经营状态刚刷新。");
+            return Finish(result);
+        }
+
+        result.Steps.Add(new OrderPreparationStep
+        {
+            Name = "匹配运行时订单",
+            Ok = true,
+            Message = $"已匹配桌 {request.DeskCode + 1} · {request.GuestName} 的订单对象。",
+        });
+
+        WriteMember(runtimeOrder.Order, "ServFood", food);
+        WriteMember(runtimeOrder.Order, "ServBeverage", beverage);
+        if (!ReadBool(InvokeInstance(runtimeOrder.Order, "get_IsFullfilled", Array.Empty<object?>())))
+        {
+            WriteMember(runtimeOrder.Order, "ServFood", null);
+            WriteMember(runtimeOrder.Order, "ServBeverage", null);
+            AddFailure(result, "写入订单", "料理和酒水已匹配，但游戏判定订单未满足；本次未从送餐盘移除物品。");
+            return Finish(result);
+        }
+
+        InvokeInstance(tray, "Deliver", new object?[] { food });
+        InvokeInstance(tray, "Deliver", new object?[] { beverage });
+        result.Steps.Add(new OrderPreparationStep
+        {
+            Name = "写入订单",
+            Ok = true,
+            Message = "已将送餐盘中的料理和酒水写入订单。",
+        });
+
+        InvokeInstance(runtimeOrder.Manager, "EvaluateOrder", new object?[] { runtimeOrder.Controller, false, null });
+        result.Steps.Add(new OrderPreparationStep
+        {
+            Name = "触发上菜评价",
+            Ok = true,
+            Message = "已调用游戏评价流程完成当前订单。",
+        });
 
         return Finish(result);
     }
@@ -627,37 +753,228 @@ internal static class RuntimeOrderPreparationService
         return array;
     }
 
+    private static IEnumerable<object> ReadTrayItems(object tray)
+    {
+        return ReadObjectEnumerable(InvokeInstance(tray, "get_Tray", Array.Empty<object?>()));
+    }
+
+    private static bool IsSellable(object item, int sellableType, int id)
+    {
+        return ReadSellableType(item) == sellableType && ReadSellableId(item) == id;
+    }
+
+    private static int ReadSellableType(object item)
+    {
+        var value = TryInvokeInstanceValue(item, "get_Type") ?? ReadMember(item, "Type");
+        return ToInt(value);
+    }
+
+    private static int ReadSellableId(object item)
+    {
+        var value = TryInvokeInstanceValue(item, "get_id")
+            ?? TryInvokeInstanceValue(item, "get_Id")
+            ?? ReadMember(item, "id")
+            ?? ReadMember(item, "Id");
+        return ToInt(value);
+    }
+
+    private static RuntimeOrderMatch FindRuntimeOrder(OrderPreparationRequest request)
+    {
+        var manager = GetSingletonInstance(GuestsManagerTypeName);
+        if (manager == null) return new RuntimeOrderMatch();
+
+        foreach (var controller in EnumerateGuestControllers(manager))
+        {
+            if (controller == null) continue;
+            foreach (var order in EnumerateControllerOrders(controller))
+            {
+                try
+                {
+                    if (!IsMatchingSpecialOrder(order, controller, request)) continue;
+                }
+                catch
+                {
+                    continue;
+                }
+
+                return new RuntimeOrderMatch
+                {
+                    Manager = manager,
+                    Controller = controller,
+                    Order = order,
+                };
+            }
+        }
+
+        return new RuntimeOrderMatch();
+    }
+
+    private static IEnumerable<object> EnumerateGuestControllers(object manager)
+    {
+        var seen = new HashSet<nint>();
+        foreach (var name in new[]
+                 {
+                     "AllPresentedGuestGroupController",
+                     "AllGuestInDeskController",
+                     "AllGuestsControllersInDesk",
+                     "CanPlayerRepellGuest",
+                     "ManualDesksDic",
+                 })
+        {
+            foreach (var item in ReadObjectEnumerable(ReadMember(manager, name)))
+            {
+                object? controller;
+                nint pointer;
+                try
+                {
+                    controller = NormalizeDictionaryItem(item);
+                    if (controller == null) continue;
+                    pointer = ReadObjectPointer(controller);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                if (!seen.Add(pointer)) continue;
+                yield return controller;
+            }
+        }
+    }
+
+    private static IEnumerable<object> EnumerateControllerOrders(object controller)
+    {
+        var seen = new HashSet<nint>();
+        foreach (var name in new[] { "AllOrders", "AllOrdersData", "PeekOrders" })
+        {
+            foreach (var order in ReadObjectEnumerable(ReadMember(controller, name)))
+            {
+                nint pointer;
+                try
+                {
+                    pointer = ReadObjectPointer(order);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                if (!seen.Add(pointer)) continue;
+                yield return order;
+            }
+        }
+    }
+
+    private static object? NormalizeDictionaryItem(object item)
+    {
+        return ReadMember(item, "Value") ?? item;
+    }
+
+    private static bool IsMatchingSpecialOrder(object order, object controller, OrderPreparationRequest request)
+    {
+        if (ToInt(ReadMember(order, "DeskCode") ?? TryInvokeInstanceValue(order, "get_DeskCode")) != request.DeskCode)
+        {
+            return false;
+        }
+
+        if (!IsSpecialOrder(order))
+        {
+            return false;
+        }
+
+        if (request.GuestId.HasValue)
+        {
+            var orderGuestId = ReadGuestId(ReadMember(order, "SpecialGuests") ?? TryInvokeInstanceValue(order, "get_SpecialGuests"));
+            var controllerGuestId = ReadGuestId(ReadMember(controller, "SpecialGuest") ?? TryInvokeInstanceValue(controller, "get_SpecialGuest"));
+            if (orderGuestId != request.GuestId.Value && controllerGuestId != request.GuestId.Value)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsSpecialOrder(object order)
+    {
+        if ((ReadMember(order, "SpecialGuests") ?? TryInvokeInstanceValue(order, "get_SpecialGuests")) != null)
+        {
+            return true;
+        }
+
+        var type = ReadMember(order, "Type") ?? TryInvokeInstanceValue(order, "get_Type");
+        return type?.ToString()?.Contains("Special", StringComparison.OrdinalIgnoreCase) == true || ToInt(type) == 1;
+    }
+
+    private static int ReadGuestId(object? guest)
+    {
+        if (guest == null) return -1;
+        return ToInt(TryInvokeInstanceValue(guest, "get_id")
+            ?? TryInvokeInstanceValue(guest, "get_Id")
+            ?? TryInvokeInstanceValue(guest, "get_CharacterID")
+            ?? ReadMember(guest, "id")
+            ?? ReadMember(guest, "Id")
+            ?? ReadMember(guest, "CharacterID"));
+    }
+
+    private static object? TryInvokeInstanceValue(object target, string methodName)
+    {
+        try
+        {
+            return InvokeInstance(target, methodName, Array.Empty<object?>());
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static nint ReadObjectPointer(object target)
+    {
+        var pointer = ReadMember(target, "Pointer") ?? ReadMember(target, "NativePointer") ?? ReadMember(target, "m_CachedPtr");
+        if (pointer is IntPtr intPtr) return intPtr;
+        if (pointer is nint native) return native;
+        if (pointer is IConvertible convertible) return new IntPtr(convertible.ToInt64(null));
+        return new IntPtr(RuntimeHelpers.GetHashCode(target));
+    }
+
     private static object? ReadMember(object target, string name)
     {
-        var type = target.GetType();
-        var property = type.GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-        if (property != null) return property.GetValue(target);
+        for (var type = target.GetType(); type != null; type = type.BaseType)
+        {
+            var property = type.GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly);
+            if (property != null) return property.GetValue(target);
 
-        var field = type.GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-        if (field != null) return field.GetValue(target);
+            var field = type.GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly);
+            if (field != null) return field.GetValue(target);
 
-        var generatedField = type.GetField($"<{name}>k__BackingField", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-        if (generatedField != null) return generatedField.GetValue(target);
+            var generatedField = type.GetField($"<{name}>k__BackingField", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly);
+            if (generatedField != null) return generatedField.GetValue(target);
+        }
 
         return null;
     }
 
     private static bool WriteMember(object target, string name, object? value)
     {
-        var type = target.GetType();
-        var property = type.GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-        if (property?.SetMethod != null)
+        for (var type = target.GetType(); type != null; type = type.BaseType)
         {
-            property.SetValue(target, value);
+            var property = type.GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly);
+            if (property?.SetMethod != null)
+            {
+                property.SetValue(target, value);
+                return true;
+            }
+
+            var field = type.GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+                ?? type.GetField($"<{name}>k__BackingField", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly);
+            if (field == null) continue;
+
+            field.SetValue(target, value);
             return true;
         }
 
-        var field = type.GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-            ?? type.GetField($"<{name}>k__BackingField", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-        if (field == null) return false;
-
-        field.SetValue(target, value);
-        return true;
+        return false;
     }
 
     private static IEnumerable<int> ReadIntEnumerable(object? value)
@@ -860,5 +1177,12 @@ internal static class RuntimeOrderPreparationService
         public object CookController { get; init; } = new();
         public string RecipeName { get; init; } = "";
         public DateTime CreatedAtUtc { get; init; }
+    }
+
+    private sealed class RuntimeOrderMatch
+    {
+        public object? Manager { get; init; }
+        public object? Controller { get; init; }
+        public object? Order { get; init; }
     }
 }

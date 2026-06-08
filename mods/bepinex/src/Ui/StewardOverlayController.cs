@@ -95,6 +95,7 @@ internal sealed class StewardOverlayController
     private sealed class PendingOrderPreparation
     {
         public OrderPreparationRequest Request { get; init; } = new();
+        public bool CompleteOrder { get; init; }
         public ManualResetEventSlim Completion { get; } = new(false);
         public OrderPreparationResult? Result { get; set; }
         public Exception? Error { get; set; }
@@ -1187,6 +1188,7 @@ internal sealed class StewardOverlayController
                 OpenLocalApiLogFolder,
                 EditInventoryFromLocalApi,
                 PrepareOrderFromLocalApi,
+                CompleteOrderFromLocalApi,
                 new FavoriteStore(FavoriteStore.ResolvePath(), _log),
                 _log);
             _localApiServer.Start();
@@ -1329,11 +1331,22 @@ internal sealed class StewardOverlayController
 
     private OrderPreparationResult PrepareOrderFromLocalApi(OrderPreparationRequest request)
     {
+        return RunOrderActionFromLocalApi(request, completeOrder: false);
+    }
+
+    private OrderPreparationResult CompleteOrderFromLocalApi(OrderPreparationRequest request)
+    {
+        return RunOrderActionFromLocalApi(request, completeOrder: true);
+    }
+
+    private OrderPreparationResult RunOrderActionFromLocalApi(OrderPreparationRequest request, bool completeOrder)
+    {
         if (Thread.CurrentThread.ManagedThreadId != _mainThreadId)
         {
             var pending = new PendingOrderPreparation
             {
                 Request = request,
+                CompleteOrder = completeOrder,
             };
             lock (_orderPreparationLock)
             {
@@ -1349,7 +1362,7 @@ internal sealed class StewardOverlayController
             return pending.Result ?? throw new InvalidOperationException("Order preparation did not produce a result.");
         }
 
-        return ApplyOrderPreparation(request);
+        return completeOrder ? ApplyOrderCompletion(request) : ApplyOrderPreparation(request);
     }
 
     private OrderPreparationResult ApplyOrderPreparation(OrderPreparationRequest request)
@@ -1358,6 +1371,17 @@ internal sealed class StewardOverlayController
         _status = result.Ok
             ? L("已准备下一笔稀客订单。", "Next rare-customer order prepared.")
             : L($"准备下一笔稀客订单未完成：{result.Error}", $"Preparing next rare-customer order did not finish: {result.Error}");
+        PublishLocalApiSnapshot();
+        return result;
+    }
+
+    private OrderPreparationResult ApplyOrderCompletion(OrderPreparationRequest request)
+    {
+        var result = RuntimeOrderPreparationService.CompleteFirst(request);
+        _status = result.Ok
+            ? L("已完成当前第一笔稀客订单。", "First rare-customer order completed.")
+            : L($"完成当前第一笔稀客订单失败：{result.Error}", $"Completing first rare-customer order failed: {result.Error}");
+        RefreshBusinessContext(false, force: true);
         PublishLocalApiSnapshot();
         return result;
     }
@@ -1376,7 +1400,9 @@ internal sealed class StewardOverlayController
 
             try
             {
-                pending.Result = ApplyOrderPreparation(pending.Request);
+                pending.Result = pending.CompleteOrder
+                    ? ApplyOrderCompletion(pending.Request)
+                    : ApplyOrderPreparation(pending.Request);
             }
             catch (Exception ex)
             {
