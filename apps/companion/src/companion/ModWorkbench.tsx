@@ -29,6 +29,8 @@ import {
   rankRecipesForRare,
 } from '@/lib/rare-recommend';
 import { isTauriRuntime } from '@/lib/tauri-runtime';
+import { useThemeMode } from '@/lib/theme';
+import type { ThemeMode } from '@/lib/theme';
 import type {
   IBeverage,
   ICustomerRare,
@@ -53,12 +55,18 @@ const TAB_STORAGE_KEY = `${STORAGE_PREFIX}-mod-tab`;
 const FOCUS_COMPACT_STORAGE_KEY = `${STORAGE_PREFIX}-service-focus-compact`;
 const FOCUS_RECIPE_LIMIT_STORAGE_KEY = `${STORAGE_PREFIX}-service-focus-recipe-limit`;
 const FOCUS_BEVERAGE_LIMIT_STORAGE_KEY = `${STORAGE_PREFIX}-service-focus-beverage-limit`;
+const WINDOW_OPACITY_STORAGE_KEY = `${STORAGE_PREFIX}-window-opacity`;
+const FOCUS_SWITCH_BEHAVIOR_STORAGE_KEY = `${STORAGE_PREFIX}-focus-switch-behavior`;
+const ALWAYS_ON_TOP_STORAGE_KEY = `${STORAGE_PREFIX}-always-on-top`;
+const GAMEPAD_NAVIGATION_STORAGE_KEY = `${STORAGE_PREFIX}-gamepad-navigation`;
 const LEGACY_ENDPOINT_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-api-endpoint`;
 const LEGACY_TOKEN_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-api-token`;
 const LEGACY_TAB_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-tab`;
 const MAX_RECOMMENDATION_ROWS = 8;
 const MAX_FOCUS_RECOMMENDATION_ROWS = 20;
 const DEFAULT_FOCUS_RECOMMENDATION_ROWS = 8;
+const DEFAULT_WINDOW_OPACITY = 0.96;
+const MIN_WINDOW_OPACITY = 0.6;
 const MAX_LOG_LINES_IN_VIEW = 400;
 const NON_ORDERABLE_RARE_FOOD_TAGS = new Set(['流行喜爱', '流行厌恶']);
 const INGREDIENTS = allIngredients as IIngredient[];
@@ -76,8 +84,9 @@ const DENSE_FOUR_COLUMN_GRID = 'grid grid-cols-4 gap-3';
 const DENSE_CARD_HEADER_GRID = 'grid grid-cols-[minmax(0,1fr)_auto] gap-3';
 const DENSE_ITEM_GRID = 'grid grid-cols-[repeat(auto-fit,minmax(11rem,1fr))] gap-2';
 
-type ModTab = 'overview' | 'normal' | 'rare' | 'service' | 'inventory' | 'logs';
-const MOD_TABS: ModTab[] = ['overview', 'normal', 'rare', 'service', 'inventory', 'logs'];
+type ModTab = 'overview' | 'normal' | 'rare' | 'service' | 'inventory' | 'logs' | 'settings';
+const MOD_TABS: ModTab[] = ['overview', 'normal', 'rare', 'service', 'inventory', 'logs', 'settings'];
+type FocusSwitchBehavior = 'hide' | 'keep-visible';
 
 const RATING_LABELS: Record<TRating, string> = {
   ExGood: '完美',
@@ -247,10 +256,18 @@ interface FavoriteMutationResponse {
   error: string | null;
 }
 
+interface CompanionPreferences {
+  windowOpacity: number;
+  focusSwitchBehavior: FocusSwitchBehavior;
+  alwaysOnTop: boolean;
+  gamepadNavigationEnabled: boolean;
+}
+
 type ToggleRecipeFavorite = (customer: ICustomerRare, foodTag: string, recipe: IRareRecipeResult) => Promise<void>;
 type ToggleBeverageFavorite = (customer: ICustomerRare, beverageTag: string, beverage: IRareBeverageResult) => Promise<void>;
 
 export function ModWorkbench() {
+  const { mode: themeMode, setMode: setThemeMode } = useThemeMode();
   const [endpoint, setEndpoint] = useState(() =>
     readMigratedStorage(ENDPOINT_STORAGE_KEY, LEGACY_ENDPOINT_STORAGE_KEY, DEFAULT_ENDPOINT),
   );
@@ -268,6 +285,9 @@ export function ModWorkbench() {
   const [serviceFocusBeverageLimit, setServiceFocusBeverageLimit] = useState(() =>
     readStoredFocusLimit(FOCUS_BEVERAGE_LIMIT_STORAGE_KEY),
   );
+  const [companionPreferences, setCompanionPreferences] = useState<CompanionPreferences>(() =>
+    readStoredCompanionPreferences(),
+  );
   const [snapshot, setSnapshot] = useState<LocalApiSnapshot | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -281,6 +301,10 @@ export function ModWorkbench() {
   const [favoriteBusyKey, setFavoriteBusyKey] = useState('');
   const recommendationCacheRef = useRef(new Map<string, CachedRecommendation>());
   const refreshInFlightRef = useRef(false);
+
+  const updateCompanionPreferences = useCallback((next: Partial<CompanionPreferences>) => {
+    setCompanionPreferences((current) => normalizeCompanionPreferences({ ...current, ...next }));
+  }, []);
 
   const normalizedEndpoint = useMemo(() => normalizeEndpoint(endpoint), [endpoint]);
   const runtime = snapshot?.recommendationState ?? null;
@@ -409,6 +433,18 @@ export function ModWorkbench() {
   }, [serviceFocusBeverageLimit]);
 
   useEffect(() => {
+    persistCompanionPreferences(companionPreferences);
+    applyCompanionVisualPreferences(companionPreferences);
+  }, [companionPreferences]);
+
+  useEffect(() => {
+    void applyCompanionPreferencesToTauri(
+      companionPreferences.focusSwitchBehavior,
+      companionPreferences.alwaysOnTop,
+    );
+  }, [companionPreferences.alwaysOnTop, companionPreferences.focusSwitchBehavior]);
+
+  useEffect(() => {
     if (!isTauriRuntime()) return;
 
     let disposed = false;
@@ -434,12 +470,13 @@ export function ModWorkbench() {
   }, []);
 
   useGamepadNavigation({
+    enabled: companionPreferences.gamepadNavigationEnabled,
     activeTab: tab,
     tabs: MOD_TABS,
     focusMode: serviceFocusMode,
     onTabChange: setTab,
     onToggleWindow: () => {
-      void toggleCompanionFocus();
+      void toggleCompanionFocus(companionPreferences.focusSwitchBehavior);
     },
     onEnterFocusMode: () => {
       setTab('service');
@@ -545,6 +582,9 @@ export function ModWorkbench() {
           <TabsTrigger value="logs" className="min-w-0 flex-1">
             日志
           </TabsTrigger>
+          <TabsTrigger value="settings" className="min-w-0 flex-1">
+            设置
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview">
@@ -635,6 +675,21 @@ export function ModWorkbench() {
 
         <TabsContent value="logs">
           <ModLogsPanel endpoint={normalizedEndpoint} apiToken={apiToken} />
+        </TabsContent>
+
+        <TabsContent value="settings">
+          <ModSettingsPanel
+            preferences={companionPreferences}
+            themeMode={themeMode}
+            serviceFocusCompact={serviceFocusCompact}
+            serviceFocusRecipeLimit={serviceFocusRecipeLimit}
+            serviceFocusBeverageLimit={serviceFocusBeverageLimit}
+            onPreferenceChange={updateCompanionPreferences}
+            onThemeModeChange={setThemeMode}
+            onServiceFocusCompactChange={setServiceFocusCompact}
+            onServiceFocusRecipeLimitChange={setServiceFocusRecipeLimit}
+            onServiceFocusBeverageLimitChange={setServiceFocusBeverageLimit}
+          />
         </TabsContent>
       </Tabs>
     </div>
@@ -1620,6 +1675,105 @@ function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToken: stri
   );
 }
 
+function ModSettingsPanel({
+  preferences,
+  themeMode,
+  serviceFocusCompact,
+  serviceFocusRecipeLimit,
+  serviceFocusBeverageLimit,
+  onPreferenceChange,
+  onThemeModeChange,
+  onServiceFocusCompactChange,
+  onServiceFocusRecipeLimitChange,
+  onServiceFocusBeverageLimitChange,
+}: {
+  preferences: CompanionPreferences;
+  themeMode: ThemeMode;
+  serviceFocusCompact: boolean;
+  serviceFocusRecipeLimit: number;
+  serviceFocusBeverageLimit: number;
+  onPreferenceChange: (next: Partial<CompanionPreferences>) => void;
+  onThemeModeChange: (mode: ThemeMode) => void;
+  onServiceFocusCompactChange: (value: boolean) => void;
+  onServiceFocusRecipeLimitChange: (value: number) => void;
+  onServiceFocusBeverageLimitChange: (value: number) => void;
+}) {
+  return (
+    <div className={DENSE_TWO_COLUMN_GRID}>
+      <ListPanel title="窗口">
+        <div className="space-y-4">
+          <OpacitySlider
+            value={preferences.windowOpacity}
+            onChange={(windowOpacity) => onPreferenceChange({ windowOpacity })}
+          />
+          <SettingChoice
+            label="焦点切换"
+            value={preferences.focusSwitchBehavior}
+            options={[
+              { value: 'hide', label: '隐藏窗口', description: '切回游戏时隐藏伴随窗口。' },
+              { value: 'keep-visible', label: '保持悬浮', description: '只切回游戏焦点，窗口继续置顶显示。' },
+            ]}
+            onChange={(focusSwitchBehavior) => onPreferenceChange({ focusSwitchBehavior })}
+          />
+          <SwitchControl
+            label="始终置顶"
+            checked={preferences.alwaysOnTop}
+            onCheckedChange={(alwaysOnTop) => onPreferenceChange({ alwaysOnTop })}
+          />
+        </div>
+      </ListPanel>
+
+      <ListPanel title="显示">
+        <div className="space-y-4">
+          <SettingChoice
+            label="主题"
+            value={themeMode}
+            options={[
+              { value: 'system', label: '跟随系统', description: '使用系统浅色或深色主题。' },
+              { value: 'light', label: '浅色', description: '固定使用浅色主题。' },
+              { value: 'dark', label: '深色', description: '固定使用深色主题。' },
+            ]}
+            onChange={onThemeModeChange}
+          />
+          <SwitchControl
+            label="手柄导航"
+            checked={preferences.gamepadNavigationEnabled}
+            onCheckedChange={(gamepadNavigationEnabled) => onPreferenceChange({ gamepadNavigationEnabled })}
+          />
+          <div className="text-xs text-muted-foreground">
+            关闭手柄导航只影响伴随窗口内的手柄操作；F8 仍可在伴随窗口聚焦时切回游戏。
+          </div>
+        </div>
+      </ListPanel>
+
+      <ListPanel title="稀客专注模式">
+        <div className="space-y-4">
+          <SwitchControl
+            label="默认精简模式"
+            checked={serviceFocusCompact}
+            onCheckedChange={onServiceFocusCompactChange}
+          />
+          <div className="grid grid-cols-2 gap-3">
+            <FocusLimitInput
+              label="料理显示数"
+              value={serviceFocusRecipeLimit}
+              onChange={onServiceFocusRecipeLimitChange}
+            />
+            <FocusLimitInput
+              label="酒水显示数"
+              value={serviceFocusBeverageLimit}
+              onChange={onServiceFocusBeverageLimitChange}
+            />
+          </div>
+          <div className="text-xs text-muted-foreground">
+            显示数量包含收藏项；收藏项仍会优先出现在推荐列表前面。
+          </div>
+        </div>
+      </ListPanel>
+    </div>
+  );
+}
+
 function StatusCard({
   label,
   value,
@@ -1787,6 +1941,72 @@ function FocusLimitInput({
         className="h-8 w-16"
       />
     </label>
+  );
+}
+
+function OpacitySlider({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  const percent = Math.round(normalizeWindowOpacity(value) * 100);
+
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between gap-3 text-sm">
+        <span className="font-medium">窗口透明度</span>
+        <span className="text-muted-foreground">{percent}%</span>
+      </div>
+      <input
+        type="range"
+        min={Math.round(MIN_WINDOW_OPACITY * 100)}
+        max={100}
+        step={1}
+        value={percent}
+        onChange={(event) => onChange(normalizeWindowOpacity(Number(event.target.value) / 100))}
+        className="h-2 w-full accent-primary"
+      />
+      <div className="mt-1 text-xs text-muted-foreground">
+        仅调整窗口和面板背景，文字、按钮和标签不会整体变淡。
+      </div>
+    </div>
+  );
+}
+
+function SettingChoice<TValue extends string>({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: TValue;
+  options: { value: TValue; label: string; description: string }[];
+  onChange: (value: TValue) => void;
+}) {
+  return (
+    <div>
+      <div className="mb-2 text-sm font-medium">{label}</div>
+      <div className={`grid gap-2 ${options.length > 2 ? 'grid-cols-3' : 'grid-cols-2'}`}>
+        {options.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            onClick={() => onChange(option.value)}
+            className={`rounded-lg border p-2 text-left transition-colors ${
+              value === option.value
+                ? 'border-primary bg-primary/10 text-foreground'
+                : 'border-border bg-background/50 text-foreground hover:bg-muted'
+            }`}
+          >
+            <div className="text-sm font-medium">{option.label}</div>
+            <div className="mt-1 text-xs text-muted-foreground">{option.description}</div>
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -2750,8 +2970,13 @@ function isOrderableRareFoodTag(tag: string): boolean {
 
 function readStoredTab(): ModTab {
   const value = readMigratedStorage(TAB_STORAGE_KEY, LEGACY_TAB_STORAGE_KEY, '');
-  if (value === 'settings') return 'overview';
-  return value === 'overview' || value === 'normal' || value === 'rare' || value === 'service' || value === 'inventory' || value === 'logs'
+  return value === 'overview'
+    || value === 'normal'
+    || value === 'rare'
+    || value === 'service'
+    || value === 'inventory'
+    || value === 'logs'
+    || value === 'settings'
     ? value
     : 'service';
 }
@@ -2766,6 +2991,66 @@ function readStoredFocusLimit(key: string) {
   return normalizeFocusRecommendationLimit(Number(localStorage.getItem(key) ?? DEFAULT_FOCUS_RECOMMENDATION_ROWS));
 }
 
+function readStoredCompanionPreferences(): CompanionPreferences {
+  return normalizeCompanionPreferences({
+    windowOpacity: Number(localStorage.getItem(WINDOW_OPACITY_STORAGE_KEY) ?? DEFAULT_WINDOW_OPACITY),
+    focusSwitchBehavior: readStoredFocusSwitchBehavior(),
+    alwaysOnTop: readStoredBoolean(ALWAYS_ON_TOP_STORAGE_KEY, true),
+    gamepadNavigationEnabled: readStoredBoolean(GAMEPAD_NAVIGATION_STORAGE_KEY, true),
+  });
+}
+
+function readStoredFocusSwitchBehavior(): FocusSwitchBehavior {
+  const value = localStorage.getItem(FOCUS_SWITCH_BEHAVIOR_STORAGE_KEY);
+  return value === 'keep-visible' ? 'keep-visible' : 'hide';
+}
+
+function normalizeCompanionPreferences(value: CompanionPreferences): CompanionPreferences {
+  return {
+    windowOpacity: normalizeWindowOpacity(value.windowOpacity),
+    focusSwitchBehavior: value.focusSwitchBehavior === 'keep-visible' ? 'keep-visible' : 'hide',
+    alwaysOnTop: Boolean(value.alwaysOnTop),
+    gamepadNavigationEnabled: Boolean(value.gamepadNavigationEnabled),
+  };
+}
+
+function normalizeWindowOpacity(value: number) {
+  if (!Number.isFinite(value)) return DEFAULT_WINDOW_OPACITY;
+  return Math.max(MIN_WINDOW_OPACITY, Math.min(1, value));
+}
+
+function persistCompanionPreferences(preferences: CompanionPreferences) {
+  const normalized = normalizeCompanionPreferences(preferences);
+  localStorage.setItem(WINDOW_OPACITY_STORAGE_KEY, String(normalized.windowOpacity));
+  localStorage.setItem(FOCUS_SWITCH_BEHAVIOR_STORAGE_KEY, normalized.focusSwitchBehavior);
+  localStorage.setItem(ALWAYS_ON_TOP_STORAGE_KEY, normalized.alwaysOnTop ? '1' : '0');
+  localStorage.setItem(GAMEPAD_NAVIGATION_STORAGE_KEY, normalized.gamepadNavigationEnabled ? '1' : '0');
+}
+
+function applyCompanionVisualPreferences(preferences: CompanionPreferences) {
+  const opacity = normalizeWindowOpacity(preferences.windowOpacity);
+  const percent = `${Math.round(opacity * 100)}%`;
+  document.documentElement.style.setProperty('--companion-window-opacity', String(opacity));
+  document.documentElement.style.setProperty('--companion-window-opacity-percent', percent);
+}
+
+async function applyCompanionPreferencesToTauri(
+  focusSwitchBehavior: FocusSwitchBehavior,
+  alwaysOnTop: boolean,
+) {
+  if (!isTauriRuntime()) return;
+
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('apply_companion_preferences', {
+      keepVisibleWhenFocused: focusSwitchBehavior === 'keep-visible',
+      alwaysOnTop,
+    });
+  } catch {
+    // Browser mode and older companion builds do not expose this command.
+  }
+}
+
 function readMigratedStorage(key: string, legacyKey: string, fallback: string) {
   const value = localStorage.getItem(key);
   if (value !== null) return value;
@@ -2778,12 +3063,14 @@ function readMigratedStorage(key: string, legacyKey: string, fallback: string) {
   return legacyValue;
 }
 
-async function toggleCompanionFocus() {
+async function toggleCompanionFocus(focusSwitchBehavior: FocusSwitchBehavior) {
   if (!isTauriRuntime()) return;
 
   try {
     const { invoke } = await import('@tauri-apps/api/core');
-    await invoke('toggle_companion_focus');
+    await invoke('toggle_companion_focus', {
+      keepVisibleWhenFocused: focusSwitchBehavior === 'keep-visible',
+    });
   } catch {
     // Browser mode and older companion builds do not expose this command.
   }

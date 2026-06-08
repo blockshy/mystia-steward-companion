@@ -98,8 +98,6 @@ export function useGamepadNavigation<TTab extends string>({
   ]);
 
   useEffect(() => {
-    if (!enabled) return;
-
     let disposed = false;
     let animationFrame = 0;
     let lastToggleAt = 0;
@@ -224,7 +222,7 @@ export function useGamepadNavigation<TTab extends string>({
       if (disposed) return;
 
       const gamepad = getPrimaryGamepad();
-      if (gamepad && document.hasFocus()) {
+      if (enabled && gamepad && document.hasFocus()) {
         const now = performance.now();
         const horizontal = normalizeAxis(gamepad.axes[0] ?? 0);
         const vertical = normalizeAxis(gamepad.axes[1] ?? 0);

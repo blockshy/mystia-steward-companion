@@ -25,6 +25,20 @@ const MIN_WINDOW_HEIGHT: u32 = 520;
 
 struct GamePidState(Arc<Mutex<Option<u32>>>);
 struct WindowSwitchState(Arc<Mutex<Option<Instant>>>);
+struct CompanionPreferenceState(Arc<Mutex<CompanionPreferences>>);
+
+#[derive(Clone, Copy)]
+struct CompanionPreferences {
+    keep_visible_when_focused: bool,
+}
+
+impl Default for CompanionPreferences {
+    fn default() -> Self {
+        Self {
+            keep_visible_when_focused: false,
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 struct PersistedWindowState {
@@ -114,11 +128,36 @@ fn toggle_companion_focus(
     app: tauri::AppHandle,
     game_pid_state: tauri::State<'_, GamePidState>,
     switch_state: tauri::State<'_, WindowSwitchState>,
+    preference_state: tauri::State<'_, CompanionPreferenceState>,
+    keep_visible_when_focused: Option<bool>,
 ) {
     if !try_begin_window_switch(&switch_state.0) {
         return;
     }
-    toggle_main_window(&app, current_game_pid(&game_pid_state.0));
+    let preferences = current_companion_preferences(&preference_state.0);
+    toggle_main_window(
+        &app,
+        current_game_pid(&game_pid_state.0),
+        keep_visible_when_focused.unwrap_or(preferences.keep_visible_when_focused),
+    );
+}
+
+#[tauri::command]
+fn apply_companion_preferences(
+    app: tauri::AppHandle,
+    preference_state: tauri::State<'_, CompanionPreferenceState>,
+    keep_visible_when_focused: bool,
+    always_on_top: bool,
+) {
+    if let Ok(mut preferences) = preference_state.0.lock() {
+        *preferences = CompanionPreferences {
+            keep_visible_when_focused,
+        };
+    }
+
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_always_on_top(always_on_top);
+    }
 }
 
 fn launch_game_pid() -> Option<u32> {
@@ -147,6 +186,15 @@ fn update_game_pid(game_pid: &Arc<Mutex<Option<u32>>>, next: Option<u32>) {
 
 fn current_game_pid(game_pid: &Arc<Mutex<Option<u32>>>) -> Option<u32> {
     game_pid.lock().ok().and_then(|current| *current)
+}
+
+fn current_companion_preferences(
+    preferences: &Arc<Mutex<CompanionPreferences>>,
+) -> CompanionPreferences {
+    preferences
+        .lock()
+        .map(|current| *current)
+        .unwrap_or_default()
 }
 
 fn try_begin_window_switch(switch_state: &Arc<Mutex<Option<Instant>>>) -> bool {
@@ -245,6 +293,7 @@ fn start_instance_control_server(
     app: tauri::AppHandle,
     game_pid: Arc<Mutex<Option<u32>>>,
     switch_state: Arc<Mutex<Option<Instant>>>,
+    preferences: Arc<Mutex<CompanionPreferences>>,
 ) {
     thread::spawn(move || {
         let address = SocketAddr::from((Ipv4Addr::LOCALHOST, CONTROL_PORT));
@@ -268,7 +317,11 @@ fn start_instance_control_server(
                 if !try_begin_window_switch(&switch_state) {
                     continue;
                 }
-                toggle_main_window(&app, current_game_pid(&game_pid));
+                toggle_main_window(
+                    &app,
+                    current_game_pid(&game_pid),
+                    current_companion_preferences(&preferences).keep_visible_when_focused,
+                );
             } else if message.starts_with(CONTROL_EXIT) {
                 app.exit(0);
                 break;
@@ -495,11 +548,17 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
-fn toggle_main_window(app: &tauri::AppHandle, game_pid: Option<u32>) {
+fn toggle_main_window(
+    app: &tauri::AppHandle,
+    game_pid: Option<u32>,
+    keep_visible_when_focused: bool,
+) {
     if let Some(window) = app.get_webview_window("main") {
         if window.is_focused().unwrap_or(false) {
             save_webview_window_state(&window);
-            let _ = window.hide();
+            if !keep_visible_when_focused {
+                let _ = window.hide();
+            }
             focus_game_window(game_pid);
             return;
         }
@@ -516,6 +575,9 @@ fn main() {
     tauri::Builder::default()
         .manage(GamePidState(Arc::new(Mutex::new(launch_game_pid()))))
         .manage(WindowSwitchState(Arc::new(Mutex::new(None))))
+        .manage(CompanionPreferenceState(Arc::new(Mutex::new(
+            CompanionPreferences::default(),
+        ))))
         .setup(|app| {
             setup_tray(app)?;
             if let Some(window) = app.get_webview_window("main") {
@@ -524,7 +586,8 @@ fn main() {
             let app_handle = app.handle().clone();
             let game_pid = app.state::<GamePidState>().0.clone();
             let switch_state = app.state::<WindowSwitchState>().0.clone();
-            start_instance_control_server(app_handle.clone(), game_pid, switch_state);
+            let preferences = app.state::<CompanionPreferenceState>().0.clone();
+            start_instance_control_server(app_handle.clone(), game_pid, switch_state, preferences);
             start_game_shutdown_monitor(
                 app_handle,
                 launch_api_endpoint().unwrap_or_else(|| DEFAULT_API_ENDPOINT.to_string()),
@@ -547,7 +610,8 @@ fn main() {
             fetch_snapshot,
             launch_api_endpoint,
             launch_api_token,
-            toggle_companion_focus
+            toggle_companion_focus,
+            apply_companion_preferences
         ])
         .run(tauri::generate_context!())
         .expect("failed to run mystia-steward-companion");

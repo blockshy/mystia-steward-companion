@@ -46,6 +46,8 @@
 
 :root {
   --radius: 0.625rem;
+  --companion-window-opacity: 1;
+  --companion-window-opacity-percent: 100%;
   --background: #fbf8f3;
   --foreground: #3d2e1f;
   --card: #fff9f0;
@@ -123,7 +125,8 @@
   }
 
   body {
-    @apply bg-background text-foreground;
+    @apply text-foreground;
+    background: transparent;
     margin: 0;
   }
 
@@ -136,4 +139,17 @@
   body[data-gamepad-navigation='active'] [data-gamepad-focus='true'] {
     box-shadow: 0 0 0 4px color-mix(in srgb, var(--ring) 20%, transparent);
   }
+}
+
+.companion-shell {
+  background-color: color-mix(in srgb, var(--background) var(--companion-window-opacity-percent), transparent);
+}
+
+.companion-shell [data-slot='card'],
+.companion-shell [data-slot='tabs-list'] {
+  background-color: color-mix(in srgb, var(--card) var(--companion-window-opacity-percent), transparent);
+}
+
+.companion-shell [data-slot='select-content'] {
+  background-color: color-mix(in srgb, var(--popover) var(--companion-window-opacity-percent), transparent);
 }

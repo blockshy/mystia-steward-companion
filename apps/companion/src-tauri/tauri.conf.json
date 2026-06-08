@@ -21,6 +21,7 @@
         "minHeight": 520,
         "resizable": true,
         "fullscreen": false,
+        "transparent": true,
         "alwaysOnTop": true
       }
     ],
