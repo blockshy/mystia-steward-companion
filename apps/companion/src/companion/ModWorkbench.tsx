@@ -310,6 +310,7 @@ interface CompanionPreferences {
 interface AutoFirstOrderState {
   orderKey: string;
   prepared: boolean;
+  beverageHandled: boolean;
   paused: boolean;
 }
 
@@ -351,7 +352,7 @@ export function ModWorkbench() {
   const [favoriteBusyKey, setFavoriteBusyKey] = useState('');
   const [autoPrepBusy, setAutoPrepBusy] = useState(false);
   const [autoPrepMessage, setAutoPrepMessage] = useState('');
-  const autoFirstOrderStateRef = useRef<AutoFirstOrderState>({ orderKey: '', prepared: false, paused: false });
+  const autoFirstOrderStateRef = useRef<AutoFirstOrderState>({ orderKey: '', prepared: false, beverageHandled: false, paused: false });
   const autoFirstOrderBusyRef = useRef(false);
   const lastAutoFirstOrderAtRef = useRef(0);
   const recommendationCacheRef = useRef(new Map<string, CachedRecommendation>());
@@ -548,7 +549,7 @@ export function ModWorkbench() {
     const completePreferences = buildCompleteOrderPreferences(companionPreferences);
     const selection = selectNextOrderPreparation(orderRecommendations.recommendations, favorites, completePreferences);
     if (!selection.ok) {
-      autoFirstOrderStateRef.current = { orderKey: '', prepared: false, paused: false };
+      autoFirstOrderStateRef.current = emptyAutoFirstOrderState();
       setAutoPrepMessage(`自动处理第一单\n${selection.message}`);
       return;
     }
@@ -556,7 +557,7 @@ export function ModWorkbench() {
     const orderKey = buildAutoOrderKey(selection.item);
     const currentState = autoFirstOrderStateRef.current;
     if (currentState.orderKey !== orderKey) {
-      autoFirstOrderStateRef.current = { orderKey, prepared: false, paused: false };
+      autoFirstOrderStateRef.current = { orderKey, prepared: false, beverageHandled: false, paused: false };
     } else if (currentState.paused) {
       return;
     }
@@ -577,16 +578,17 @@ export function ModWorkbench() {
       );
 
       if (completeResponse.ok) {
-        autoFirstOrderStateRef.current = { orderKey: '', prepared: false, paused: false };
+        autoFirstOrderStateRef.current = emptyAutoFirstOrderState();
         setAutoPrepMessage(`自动处理第一单\n${formatOrderPreparationResponse(completeResponse)}`);
         await refresh();
         return;
       }
 
-      if (!isTrayMissingCompletion(completeResponse)) {
+      const missingTrayPart = getMissingTrayPart(completeResponse);
+      if (!missingTrayPart) {
         const message = `自动处理第一单\n${formatOrderPreparationResponse(completeResponse)}`;
         if (companionPreferences.autoPrepStopOnError) {
-          autoFirstOrderStateRef.current = { orderKey, prepared: autoFirstOrderStateRef.current.prepared, paused: true };
+          autoFirstOrderStateRef.current = { ...autoFirstOrderStateRef.current, orderKey, paused: true };
           setAutoPrepMessage(`${message}\n自动处理已暂停，订单变化或重新开启后会继续。`);
         } else {
           setAutoPrepMessage(message);
@@ -595,7 +597,7 @@ export function ModWorkbench() {
         return;
       }
 
-      if (autoFirstOrderStateRef.current.prepared) {
+      if (missingTrayPart === 'food' && autoFirstOrderStateRef.current.prepared) {
         setAutoPrepMessage(
           `自动处理第一单\n${formatOrderPreparationResponse(completeResponse)}\n已准备过当前订单，等待料理完成或送餐盘更新。`,
         );
@@ -603,40 +605,45 @@ export function ModWorkbench() {
         return;
       }
 
+      const shouldPrepareFood = missingTrayPart === 'food';
+      const shouldPrepareBeverage = missingTrayPart === 'beverage'
+        || (missingTrayPart === 'food' && !autoFirstOrderStateRef.current.beverageHandled);
       const preparePreferences = {
         ...companionPreferences,
+        autoPrepTakeBeverage: companionPreferences.autoPrepTakeBeverage && shouldPrepareBeverage,
+        autoPrepStartCooking: companionPreferences.autoPrepStartCooking && shouldPrepareFood,
         autoPrepCollectCooking: true,
       };
-      const prepareSelection = selectNextOrderPreparation(orderRecommendations.recommendations, favorites, preparePreferences);
-      if (!prepareSelection.ok) {
-        const message = `自动处理第一单\n${prepareSelection.message}`;
-        if (companionPreferences.autoPrepStopOnError) {
-          autoFirstOrderStateRef.current = { orderKey, prepared: false, paused: true };
-          setAutoPrepMessage(`${message}\n自动处理已暂停，订单变化或重新开启后会继续。`);
-        } else {
-          setAutoPrepMessage(message);
-        }
-        await refresh();
-        return;
-      }
 
       const prepareResponse = await prepareNextRareOrder(
         normalizedEndpoint,
         apiToken,
-        prepareSelection.item,
-        prepareSelection.recipe,
-        prepareSelection.beverage,
-        prepareSelection.recipeFavorite,
-        prepareSelection.beverageFavorite,
+        selection.item,
+        shouldPrepareFood ? selection.recipe : null,
+        shouldPrepareBeverage ? selection.beverage : null,
+        shouldPrepareFood ? selection.recipeFavorite : null,
+        shouldPrepareBeverage ? selection.beverageFavorite : null,
         preparePreferences,
       );
 
+      const nextPrepared = autoFirstOrderStateRef.current.prepared
+        || didCompleteStep(prepareResponse, '自动开始料理');
+      const nextBeverageHandled = autoFirstOrderStateRef.current.beverageHandled
+        || !preparePreferences.autoPrepTakeBeverage
+        || didCompleteStep(prepareResponse, '自动取酒');
+      const transientFailure = !prepareResponse.ok && isTransientAutoPreparationFailure(prepareResponse);
       autoFirstOrderStateRef.current = {
         orderKey,
-        prepared: prepareResponse.ok,
-        paused: !prepareResponse.ok && companionPreferences.autoPrepStopOnError,
+        prepared: nextPrepared,
+        beverageHandled: nextBeverageHandled,
+        paused: !prepareResponse.ok && !transientFailure && companionPreferences.autoPrepStopOnError,
       };
-      setAutoPrepMessage(`自动处理第一单\n${formatOrderPreparationResponse(prepareResponse)}${autoFirstOrderStateRef.current.paused ? '\n自动处理已暂停，订单变化或重新开启后会继续。' : ''}`);
+      const suffix = autoFirstOrderStateRef.current.paused
+        ? '\n自动处理已暂停，订单变化或重新开启后会继续。'
+        : transientFailure
+          ? '\n当前条件暂不可执行，将继续等待并自动重试。'
+          : '';
+      setAutoPrepMessage(`自动处理第一单\n${formatOrderPreparationResponse(prepareResponse)}${suffix}`);
       await refresh();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -694,7 +701,7 @@ export function ModWorkbench() {
 
   useEffect(() => {
     if (!companionPreferences.autoProcessFirstOrder) {
-      autoFirstOrderStateRef.current = { orderKey: '', prepared: false, paused: false };
+      autoFirstOrderStateRef.current = emptyAutoFirstOrderState();
       lastAutoFirstOrderAtRef.current = 0;
       return undefined;
     }
@@ -3252,13 +3259,38 @@ function buildAutoOrderKey(item: OrderRecommendation): string {
   ].join('|');
 }
 
-function isTrayMissingCompletion(response: OrderPreparationResponse): boolean {
-  if (response.ok) return false;
+function emptyAutoFirstOrderState(): AutoFirstOrderState {
+  return {
+    orderKey: '',
+    prepared: false,
+    beverageHandled: false,
+    paused: false,
+  };
+}
+
+function getMissingTrayPart(response: OrderPreparationResponse): 'food' | 'beverage' | null {
+  if (response.ok) return null;
+  const failedStep = response.steps.find((step) => !step.ok && !step.skipped);
+  if (failedStep?.name.includes('匹配送餐盘料理')) return 'food';
+  if (failedStep?.name.includes('匹配送餐盘酒水')) return 'beverage';
+  return null;
+}
+
+function didCompleteStep(response: OrderPreparationResponse, name: string): boolean {
+  return response.steps.some((step) => step.name === name && step.ok && !step.skipped);
+}
+
+function isTransientAutoPreparationFailure(response: OrderPreparationResponse): boolean {
   const text = [
     response.error ?? '',
     ...response.steps.map((step) => `${step.name} ${step.message}`),
   ].join('\n');
-  return text.includes('匹配送餐盘') || text.includes('送餐盘中没有找到');
+  return text.includes('当前没有空闲厨具')
+    || text.includes('没有符合配方厨具类型')
+    || text.includes('厨具被占用')
+    || text.includes('送餐盘已满')
+    || text.includes('送餐盘对象不可用')
+    || text.includes('厨具管理器不可用');
 }
 
 function pickRecipeForPreparation(

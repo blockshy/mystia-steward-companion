@@ -292,28 +292,33 @@ internal static class RuntimeOrderPreparationService
 
     private static (bool Ok, string Message) TryTakeBeverageToTray(int beverageId, string beverageName)
     {
-        var currentQuantity = GetBeverageQuantity(beverageId);
-        if (currentQuantity == 0)
-        {
-            return (false, $"{beverageName} 当前库存为 0，无法放入送餐盘。");
-        }
-
-        var sellable = InvokeStatic(DataBaseCoreTypeName, "AsNewBeverage", new object?[] { beverageId });
-        if (sellable == null)
-        {
-            return (false, $"无法从游戏数据库创建酒水对象：{beverageName} #{beverageId}。");
-        }
-
         var tray = GetSingletonInstance(IzakayaTrayTypeName);
         if (tray == null)
         {
             return (false, "当前送餐盘对象不可用，请确认已进入夜晚经营页面。");
         }
 
+        if (ReadTrayItems(tray).Any(item => IsSellable(item, sellableType: 1, id: beverageId)))
+        {
+            return (true, $"{beverageName} 已在送餐盘中，本次不重复取酒。");
+        }
+
+        var currentQuantity = GetBeverageQuantity(beverageId);
+        if (currentQuantity == 0)
+        {
+            return (false, $"{beverageName} 当前库存为 0，无法放入送餐盘。");
+        }
+
         var isFull = InvokeInstance(tray, "get_IsTrayFull", Array.Empty<object?>());
         if (isFull is bool isTrayFull && isTrayFull)
         {
             return (false, "送餐盘已满，无法继续取酒。");
+        }
+
+        var sellable = InvokeStatic(DataBaseCoreTypeName, "AsNewBeverage", new object?[] { beverageId });
+        if (sellable == null)
+        {
+            return (false, $"无法从游戏数据库创建酒水对象：{beverageName} #{beverageId}。");
         }
 
         InvokeInstance(tray, "Receive", new[] { sellable });
