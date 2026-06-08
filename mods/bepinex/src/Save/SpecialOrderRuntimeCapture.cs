@@ -404,7 +404,11 @@ public static class SpecialOrderRuntimeCapture
             capturedAt,
             capturedAt,
             GetRuntimeObjectKey(order),
-            source);
+            source)
+        {
+            OrderObject = order,
+            ControllerObject = controller,
+        };
     }
 
     private static bool IsSameOrderSlot(CapturedRuntimeSpecialOrder left, CapturedRuntimeSpecialOrder right)
@@ -494,6 +498,8 @@ public static class SpecialOrderRuntimeCapture
             FirstCapturedAt = existing.FirstCapturedAt < incoming.FirstCapturedAt ? existing.FirstCapturedAt : incoming.FirstCapturedAt,
             RuntimeKey = string.IsNullOrWhiteSpace(incoming.RuntimeKey) ? existing.RuntimeKey : incoming.RuntimeKey,
             CaptureSource = MergeCaptureSource(existing.CaptureSource, incoming.CaptureSource),
+            OrderObject = incoming.OrderObject ?? existing.OrderObject,
+            ControllerObject = incoming.ControllerObject ?? existing.ControllerObject,
         };
     }
 
@@ -986,7 +992,11 @@ public sealed record CapturedRuntimeSpecialOrder(
     DateTime FirstCapturedAt,
     DateTime CapturedAt,
     string RuntimeKey,
-    string CaptureSource);
+    string CaptureSource)
+{
+    internal object? OrderObject { get; init; }
+    internal object? ControllerObject { get; init; }
+}
 
 internal sealed record RuntimeParseFailureDiagnostic(
     DateTime CapturedAtUtc,

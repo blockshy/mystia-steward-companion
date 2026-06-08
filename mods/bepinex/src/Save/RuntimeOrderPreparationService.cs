@@ -856,6 +856,12 @@ internal static class RuntimeOrderPreparationService
         var manager = GetSingletonInstance(GuestsManagerTypeName);
         if (manager == null) return new RuntimeOrderMatch();
 
+        var captured = FindCapturedRuntimeOrder(request, manager);
+        if (captured.Order != null && captured.Controller != null)
+        {
+            return captured;
+        }
+
         var scannedControllers = 0;
         var scannedOrders = 0;
         foreach (var controller in EnumerateGuestControllers(manager))
@@ -885,8 +891,62 @@ internal static class RuntimeOrderPreparationService
 
         return new RuntimeOrderMatch
         {
-            Diagnostic = $"scannedControllers={scannedControllers}, scannedOrders={scannedOrders}",
+            Diagnostic = $"captured={captured.Diagnostic}, scannedControllers={scannedControllers}, scannedOrders={scannedOrders}",
         };
+    }
+
+    private static RuntimeOrderMatch FindCapturedRuntimeOrder(OrderPreparationRequest request, object manager)
+    {
+        var capturedOrders = SpecialOrderRuntimeCapture.Snapshot(TimeSpan.FromHours(6));
+        var candidates = 0;
+        foreach (var captured in capturedOrders.OrderBy(order => order.FirstCapturedAt).ThenBy(order => order.CapturedAt))
+        {
+            if (!IsMatchingCapturedOrder(captured, request)) continue;
+            candidates++;
+            if (captured.OrderObject == null || captured.ControllerObject == null) continue;
+
+            return new RuntimeOrderMatch
+            {
+                Manager = manager,
+                Controller = captured.ControllerObject,
+                Order = captured.OrderObject,
+                Diagnostic = $"capturedCandidates={candidates}, source={captured.CaptureSource}",
+            };
+        }
+
+        return new RuntimeOrderMatch
+        {
+            Diagnostic = $"capturedCandidates={candidates}, capturedTotal={capturedOrders.Count}",
+        };
+    }
+
+    private static bool IsMatchingCapturedOrder(CapturedRuntimeSpecialOrder captured, OrderPreparationRequest request)
+    {
+        if (captured.DeskCode >= 0 && request.DeskCode >= 0 && captured.DeskCode != request.DeskCode) return false;
+        if (request.GuestId.HasValue && captured.GuestId.HasValue && captured.GuestId.Value != request.GuestId.Value) return false;
+        if (!request.GuestId.HasValue
+            && !string.IsNullOrWhiteSpace(request.GuestName)
+            && !string.IsNullOrWhiteSpace(captured.GuestName)
+            && !string.Equals(captured.GuestName, request.GuestName, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.FoodTag)
+            && !string.IsNullOrWhiteSpace(captured.FoodTag)
+            && !string.Equals(captured.FoodTag, request.FoodTag, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.BeverageTag)
+            && !string.IsNullOrWhiteSpace(captured.BeverageTag)
+            && !string.Equals(captured.BeverageTag, request.BeverageTag, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return true;
     }
 
     private static IEnumerable<object> EnumerateGuestControllers(object manager)
@@ -1040,14 +1100,21 @@ internal static class RuntimeOrderPreparationService
     {
         for (var type = target.GetType(); type != null; type = type.BaseType)
         {
+            foreach (var fieldName in BuildFieldNameCandidates(name))
+            {
+                var field = type.GetField(fieldName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly);
+                if (field != null) return field.GetValue(target);
+            }
+
             var property = type.GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly);
             if (property != null) return property.GetValue(target);
 
-            var field = type.GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly);
-            if (field != null) return field.GetValue(target);
-
-            var generatedField = type.GetField($"<{name}>k__BackingField", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly);
-            if (generatedField != null) return generatedField.GetValue(target);
+            var pascalName = char.ToUpperInvariant(name[0]) + name[1..];
+            if (!string.Equals(pascalName, name, StringComparison.Ordinal))
+            {
+                property = type.GetProperty(pascalName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly);
+                if (property != null) return property.GetValue(target);
+            }
         }
 
         return null;
@@ -1064,15 +1131,36 @@ internal static class RuntimeOrderPreparationService
                 return true;
             }
 
-            var field = type.GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)
-                ?? type.GetField($"<{name}>k__BackingField", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly);
-            if (field == null) continue;
+            foreach (var fieldName in BuildFieldNameCandidates(name))
+            {
+                var field = type.GetField(fieldName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly);
+                if (field == null) continue;
 
-            field.SetValue(target, value);
-            return true;
+                field.SetValue(target, value);
+                return true;
+            }
         }
 
         return false;
+    }
+
+    private static IEnumerable<string> BuildFieldNameCandidates(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) yield break;
+
+        yield return name;
+        yield return $"<{name}>k__BackingField";
+        yield return $"m_{name}";
+        yield return $"_{name}";
+
+        var camelName = char.ToLowerInvariant(name[0]) + name[1..];
+        if (!string.Equals(camelName, name, StringComparison.Ordinal))
+        {
+            yield return camelName;
+            yield return $"<{camelName}>k__BackingField";
+            yield return $"m_{camelName}";
+            yield return $"_{camelName}";
+        }
     }
 
     private static IEnumerable<int> ReadIntEnumerable(object? value)
