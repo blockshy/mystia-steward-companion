@@ -65,6 +65,7 @@ const AUTO_PREP_START_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-start-c
 const AUTO_PREP_COLLECT_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-collect-cooking`;
 const AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-favorites-only`;
 const AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-stop-on-error`;
+const AUTO_PROCESS_FIRST_ORDER_STORAGE_KEY = `${STORAGE_PREFIX}-auto-process-first-order`;
 const LEGACY_ENDPOINT_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-api-endpoint`;
 const LEGACY_TOKEN_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-api-token`;
 const LEGACY_TAB_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-tab`;
@@ -77,6 +78,7 @@ const DEFAULT_FOCUS_SWITCH_COOLDOWN_MS = 800;
 const MIN_FOCUS_SWITCH_COOLDOWN_MS = 250;
 const MAX_FOCUS_SWITCH_COOLDOWN_MS = 2000;
 const MAX_LOG_LINES_IN_VIEW = 400;
+const AUTO_FIRST_ORDER_TICK_MS = 1500;
 const NON_ORDERABLE_RARE_FOOD_TAGS = new Set(['流行喜爱', '流行厌恶']);
 const INGREDIENTS = allIngredients as IIngredient[];
 const INGREDIENT_BY_NAME = new Map(INGREDIENTS.map((ingredient) => [ingredient.name, ingredient]));
@@ -302,6 +304,13 @@ interface CompanionPreferences {
   autoPrepCollectCooking: boolean;
   autoPrepFavoritesOnly: boolean;
   autoPrepStopOnError: boolean;
+  autoProcessFirstOrder: boolean;
+}
+
+interface AutoFirstOrderState {
+  orderKey: string;
+  prepared: boolean;
+  paused: boolean;
 }
 
 type ToggleRecipeFavorite = (customer: ICustomerRare, foodTag: string, recipe: IRareRecipeResult) => Promise<void>;
@@ -342,6 +351,9 @@ export function ModWorkbench() {
   const [favoriteBusyKey, setFavoriteBusyKey] = useState('');
   const [autoPrepBusy, setAutoPrepBusy] = useState(false);
   const [autoPrepMessage, setAutoPrepMessage] = useState('');
+  const autoFirstOrderStateRef = useRef<AutoFirstOrderState>({ orderKey: '', prepared: false, paused: false });
+  const autoFirstOrderBusyRef = useRef(false);
+  const lastAutoFirstOrderAtRef = useRef(0);
   const recommendationCacheRef = useRef(new Map<string, CachedRecommendation>());
   const refreshInFlightRef = useRef(false);
 
@@ -524,6 +536,133 @@ export function ModWorkbench() {
     }
   }, [apiToken, companionPreferences, favorites, normalizedEndpoint, orderRecommendations.recommendations, refresh]);
 
+  const runAutoFirstOrder = useCallback(async () => {
+    if (!companionPreferences.autoProcessFirstOrder || autoFirstOrderBusyRef.current || autoPrepBusy) return;
+    const now = Date.now();
+    if (now - lastAutoFirstOrderAtRef.current < AUTO_FIRST_ORDER_TICK_MS) return;
+    if (!apiToken) {
+      setAutoPrepMessage('自动处理第一单已开启，但本地 API Token 不可用。');
+      return;
+    }
+
+    const completePreferences = buildCompleteOrderPreferences(companionPreferences);
+    const selection = selectNextOrderPreparation(orderRecommendations.recommendations, favorites, completePreferences);
+    if (!selection.ok) {
+      autoFirstOrderStateRef.current = { orderKey: '', prepared: false, paused: false };
+      setAutoPrepMessage(`自动处理第一单\n${selection.message}`);
+      return;
+    }
+
+    const orderKey = buildAutoOrderKey(selection.item);
+    const currentState = autoFirstOrderStateRef.current;
+    if (currentState.orderKey !== orderKey) {
+      autoFirstOrderStateRef.current = { orderKey, prepared: false, paused: false };
+    } else if (currentState.paused) {
+      return;
+    }
+
+    autoFirstOrderBusyRef.current = true;
+    lastAutoFirstOrderAtRef.current = now;
+    setAutoPrepBusy(true);
+    try {
+      const completeResponse = await completeFirstRareOrder(
+        normalizedEndpoint,
+        apiToken,
+        selection.item,
+        selection.recipe,
+        selection.beverage,
+        selection.recipeFavorite,
+        selection.beverageFavorite,
+        completePreferences,
+      );
+
+      if (completeResponse.ok) {
+        autoFirstOrderStateRef.current = { orderKey: '', prepared: false, paused: false };
+        setAutoPrepMessage(`自动处理第一单\n${formatOrderPreparationResponse(completeResponse)}`);
+        await refresh();
+        return;
+      }
+
+      if (!isTrayMissingCompletion(completeResponse)) {
+        const message = `自动处理第一单\n${formatOrderPreparationResponse(completeResponse)}`;
+        if (companionPreferences.autoPrepStopOnError) {
+          autoFirstOrderStateRef.current = { orderKey, prepared: autoFirstOrderStateRef.current.prepared, paused: true };
+          setAutoPrepMessage(`${message}\n自动处理已暂停，订单变化或重新开启后会继续。`);
+        } else {
+          setAutoPrepMessage(message);
+        }
+        await refresh();
+        return;
+      }
+
+      if (autoFirstOrderStateRef.current.prepared) {
+        setAutoPrepMessage(
+          `自动处理第一单\n${formatOrderPreparationResponse(completeResponse)}\n已准备过当前订单，等待料理完成或送餐盘更新。`,
+        );
+        await refresh();
+        return;
+      }
+
+      const preparePreferences = {
+        ...companionPreferences,
+        autoPrepCollectCooking: true,
+      };
+      const prepareSelection = selectNextOrderPreparation(orderRecommendations.recommendations, favorites, preparePreferences);
+      if (!prepareSelection.ok) {
+        const message = `自动处理第一单\n${prepareSelection.message}`;
+        if (companionPreferences.autoPrepStopOnError) {
+          autoFirstOrderStateRef.current = { orderKey, prepared: false, paused: true };
+          setAutoPrepMessage(`${message}\n自动处理已暂停，订单变化或重新开启后会继续。`);
+        } else {
+          setAutoPrepMessage(message);
+        }
+        await refresh();
+        return;
+      }
+
+      const prepareResponse = await prepareNextRareOrder(
+        normalizedEndpoint,
+        apiToken,
+        prepareSelection.item,
+        prepareSelection.recipe,
+        prepareSelection.beverage,
+        prepareSelection.recipeFavorite,
+        prepareSelection.beverageFavorite,
+        preparePreferences,
+      );
+
+      autoFirstOrderStateRef.current = {
+        orderKey,
+        prepared: prepareResponse.ok,
+        paused: !prepareResponse.ok && companionPreferences.autoPrepStopOnError,
+      };
+      setAutoPrepMessage(`自动处理第一单\n${formatOrderPreparationResponse(prepareResponse)}${autoFirstOrderStateRef.current.paused ? '\n自动处理已暂停，订单变化或重新开启后会继续。' : ''}`);
+      await refresh();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (companionPreferences.autoPrepStopOnError) {
+        autoFirstOrderStateRef.current = {
+          ...autoFirstOrderStateRef.current,
+          paused: true,
+        };
+        setAutoPrepMessage(`自动处理第一单\n${message}\n自动处理已暂停，订单变化或重新开启后会继续。`);
+      } else {
+        setAutoPrepMessage(`自动处理第一单\n${message}`);
+      }
+    } finally {
+      autoFirstOrderBusyRef.current = false;
+      setAutoPrepBusy(false);
+    }
+  }, [
+    apiToken,
+    autoPrepBusy,
+    companionPreferences,
+    favorites,
+    normalizedEndpoint,
+    orderRecommendations.recommendations,
+    refresh,
+  ]);
+
   useEffect(() => {
     localStorage.setItem(ENDPOINT_STORAGE_KEY, normalizedEndpoint);
   }, [normalizedEndpoint]);
@@ -552,6 +691,20 @@ export function ModWorkbench() {
     persistCompanionPreferences(companionPreferences);
     applyCompanionVisualPreferences(companionPreferences);
   }, [companionPreferences]);
+
+  useEffect(() => {
+    if (!companionPreferences.autoProcessFirstOrder) {
+      autoFirstOrderStateRef.current = { orderKey: '', prepared: false, paused: false };
+      lastAutoFirstOrderAtRef.current = 0;
+      return undefined;
+    }
+
+    void runAutoFirstOrder();
+    const timer = window.setInterval(() => {
+      void runAutoFirstOrder();
+    }, AUTO_FIRST_ORDER_TICK_MS);
+    return () => window.clearInterval(timer);
+  }, [companionPreferences.autoProcessFirstOrder, runAutoFirstOrder]);
 
   useEffect(() => {
     void applyCompanionPreferencesToTauri(
@@ -1952,6 +2105,11 @@ function ModSettingsPanel({
       <ListPanel title="一键准备">
         <div className="space-y-4">
           <SwitchControl
+            label="自动处理第一单"
+            checked={preferences.autoProcessFirstOrder}
+            onCheckedChange={(autoProcessFirstOrder) => onPreferenceChange({ autoProcessFirstOrder })}
+          />
+          <SwitchControl
             label="自动取酒"
             checked={preferences.autoPrepTakeBeverage}
             onCheckedChange={(autoPrepTakeBeverage) => onPreferenceChange({ autoPrepTakeBeverage })}
@@ -1977,7 +2135,7 @@ function ModSettingsPanel({
             onCheckedChange={(autoPrepStopOnError) => onPreferenceChange({ autoPrepStopOnError })}
           />
           <div className="text-xs text-muted-foreground">
-            “准备下一单”和“完成第一单”都只处理当前排序第一笔稀客订单；未找到稳定游戏入口的步骤会显示失败原因，不会伪造扣库存。
+            自动处理只接管当前排序第一笔稀客订单；同一订单只会自动准备一次，之后等待送餐盘满足后再完成。
           </div>
         </div>
       </ListPanel>
@@ -1999,6 +2157,7 @@ function AutoPrepStatus({
       <div className="font-medium text-foreground">一键订单</div>
       <div className="mt-1 whitespace-pre-line text-muted-foreground">{message}</div>
       <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
+        <Badge variant={preferences.autoProcessFirstOrder ? 'secondary' : 'outline'}>自动 {preferences.autoProcessFirstOrder ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepTakeBeverage ? 'secondary' : 'outline'}>取酒 {preferences.autoPrepTakeBeverage ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepStartCooking ? 'secondary' : 'outline'}>料理 {preferences.autoPrepStartCooking ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepCollectCooking ? 'secondary' : 'outline'}>收取 {preferences.autoPrepCollectCooking ? '开' : '关'}</Badge>
@@ -3073,6 +3232,35 @@ function selectNextOrderPreparation(
   };
 }
 
+function buildCompleteOrderPreferences(preferences: CompanionPreferences): CompanionPreferences {
+  return {
+    ...preferences,
+    autoPrepTakeBeverage: true,
+    autoPrepStartCooking: true,
+    autoPrepCollectCooking: true,
+  };
+}
+
+function buildAutoOrderKey(item: OrderRecommendation): string {
+  const order = item.order;
+  return [
+    order.firstSeenAtUtc ?? order.lastSeenAtUtc ?? '',
+    order.deskCode,
+    order.guestId ?? order.guestName,
+    order.foodTag,
+    order.beverageTag,
+  ].join('|');
+}
+
+function isTrayMissingCompletion(response: OrderPreparationResponse): boolean {
+  if (response.ok) return false;
+  const text = [
+    response.error ?? '',
+    ...response.steps.map((step) => `${step.name} ${step.message}`),
+  ].join('\n');
+  return text.includes('匹配送餐盘') || text.includes('送餐盘中没有找到');
+}
+
 function pickRecipeForPreparation(
   item: OrderRecommendation,
   favorites: FavoriteData,
@@ -3463,6 +3651,7 @@ function readStoredCompanionPreferences(): CompanionPreferences {
     autoPrepCollectCooking: readStoredBoolean(AUTO_PREP_COLLECT_COOKING_STORAGE_KEY, false),
     autoPrepFavoritesOnly: readStoredBoolean(AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY, false),
     autoPrepStopOnError: readStoredBoolean(AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY, true),
+    autoProcessFirstOrder: readStoredBoolean(AUTO_PROCESS_FIRST_ORDER_STORAGE_KEY, false),
   });
 }
 
@@ -3483,6 +3672,7 @@ function normalizeCompanionPreferences(value: CompanionPreferences): CompanionPr
     autoPrepCollectCooking: Boolean(value.autoPrepCollectCooking),
     autoPrepFavoritesOnly: Boolean(value.autoPrepFavoritesOnly),
     autoPrepStopOnError: Boolean(value.autoPrepStopOnError),
+    autoProcessFirstOrder: Boolean(value.autoProcessFirstOrder),
   };
 }
 
@@ -3511,6 +3701,7 @@ function persistCompanionPreferences(preferences: CompanionPreferences) {
   localStorage.setItem(AUTO_PREP_COLLECT_COOKING_STORAGE_KEY, normalized.autoPrepCollectCooking ? '1' : '0');
   localStorage.setItem(AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY, normalized.autoPrepFavoritesOnly ? '1' : '0');
   localStorage.setItem(AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY, normalized.autoPrepStopOnError ? '1' : '0');
+  localStorage.setItem(AUTO_PROCESS_FIRST_ORDER_STORAGE_KEY, normalized.autoProcessFirstOrder ? '1' : '0');
 }
 
 function applyCompanionVisualPreferences(preferences: CompanionPreferences) {
