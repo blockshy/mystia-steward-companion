@@ -1174,6 +1174,7 @@ internal sealed class StewardOverlayController
                 UpdateLocalApiLogSettings,
                 OpenLocalApiLogFolder,
                 EditInventoryFromLocalApi,
+                new FavoriteStore(FavoriteStore.ResolvePath(), _log),
                 _log);
             _localApiServer.Start();
         }

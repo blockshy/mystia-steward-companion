@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode, SetStateAction } from 'react';
-import { FolderOpen, Power, RefreshCw } from 'lucide-react';
+import { FolderOpen, Power, RefreshCw, Star } from 'lucide-react';
 import { CustomerScoreBadges } from '@/components/ScoreBadge';
 import { RegionSelector } from '@/components/RegionSelector';
 import { TagBadge } from '@/components/TagBadge';
@@ -202,6 +202,42 @@ interface InventoryEditResponse {
   error: string | null;
 }
 
+interface FavoriteData {
+  version: number;
+  recipes: FavoriteRecipeEntry[];
+  beverages: FavoriteBeverageEntry[];
+}
+
+interface FavoriteRecipeEntry {
+  id: string;
+  customerId: number;
+  customerName: string;
+  foodTag: string;
+  recipeId: number;
+  extraIngredientIds: number[];
+  createdAtUtc: string;
+  updatedAtUtc: string;
+}
+
+interface FavoriteBeverageEntry {
+  id: string;
+  customerId: number;
+  customerName: string;
+  beverageTag: string;
+  beverageId: number;
+  createdAtUtc: string;
+  updatedAtUtc: string;
+}
+
+interface FavoriteMutationResponse {
+  ok: boolean;
+  favorites: FavoriteData;
+  error: string | null;
+}
+
+type ToggleRecipeFavorite = (customer: ICustomerRare, foodTag: string, recipe: IRareRecipeResult) => Promise<void>;
+type ToggleBeverageFavorite = (customer: ICustomerRare, beverageTag: string, beverage: IRareBeverageResult) => Promise<void>;
+
 export function ModWorkbench() {
   const [endpoint, setEndpoint] = useState(() =>
     readMigratedStorage(ENDPOINT_STORAGE_KEY, LEGACY_ENDPOINT_STORAGE_KEY, DEFAULT_ENDPOINT),
@@ -220,6 +256,9 @@ export function ModWorkbench() {
   const [rareCustomerId, setRareCustomerId] = useState<number | null>(null);
   const [requiredFoodTag, setRequiredFoodTag] = useState('');
   const [requiredBeverageTag, setRequiredBeverageTag] = useState('');
+  const [favorites, setFavorites] = useState<FavoriteData>(() => emptyFavoriteData());
+  const [favoriteError, setFavoriteError] = useState('');
+  const [favoriteBusyKey, setFavoriteBusyKey] = useState('');
   const recommendationCacheRef = useRef(new Map<string, CachedRecommendation>());
   const refreshInFlightRef = useRef(false);
 
@@ -239,8 +278,8 @@ export function ModWorkbench() {
 
   const runtimeSets = useMemo(() => buildRuntimeSets(runtime), [runtime]);
   const orderRecommendations = useMemo(
-    () => buildOrderRecommendations(night?.orders ?? [], runtime, rareCustomersById, recommendationCacheRef.current),
-    [night?.orders, runtime, rareCustomersById],
+    () => buildOrderRecommendations(night?.orders ?? [], runtime, rareCustomersById, recommendationCacheRef.current, favorites),
+    [night?.orders, runtime, rareCustomersById, favorites],
   );
   const snapshotRefreshIntervalMs = tab === 'service' || serviceFocusMode ? 750 : 2000;
 
@@ -264,6 +303,66 @@ export function ModWorkbench() {
       setLoading(false);
     }
   }, [apiToken, normalizedEndpoint]);
+
+  const refreshFavorites = useCallback(async () => {
+    if (!apiToken) {
+      setFavorites(emptyFavoriteData());
+      return;
+    }
+
+    const abortController = new AbortController();
+    const timeoutId = window.setTimeout(() => abortController.abort(), 2800);
+
+    try {
+      const data = await readFavorites(normalizedEndpoint, apiToken, abortController.signal);
+      setFavorites(normalizeFavoriteData(data));
+      setFavoriteError('');
+    } catch (err) {
+      setFavoriteError(err instanceof Error ? err.message : String(err));
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+  }, [apiToken, normalizedEndpoint]);
+
+  const toggleRecipeFavorite = useCallback<ToggleRecipeFavorite>(async (customer, foodTag, recipe) => {
+    if (!apiToken || !foodTag) return;
+    const existing = findRecipeFavorite(favorites, customer.id, foodTag, recipe);
+    const busyKey = existing?.id ?? recipeFavoriteKey(customer.id, foodTag, recipe);
+    setFavoriteBusyKey(busyKey);
+    setFavoriteError('');
+
+    try {
+      const response = existing
+        ? await removeRecipeFavorite(normalizedEndpoint, apiToken, existing.id)
+        : await addRecipeFavorite(normalizedEndpoint, apiToken, customer, foodTag, recipe);
+      if (!response.ok) throw new Error(response.error || '收藏更新失败');
+      setFavorites(normalizeFavoriteData(response.favorites));
+    } catch (err) {
+      setFavoriteError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setFavoriteBusyKey('');
+    }
+  }, [apiToken, favorites, normalizedEndpoint]);
+
+  const toggleBeverageFavorite = useCallback<ToggleBeverageFavorite>(async (customer, beverageTag, beverage) => {
+    if (!apiToken || !beverageTag) return;
+    const existing = findBeverageFavorite(favorites, customer.id, beverageTag, beverage);
+    const busyKey = existing?.id ?? beverageFavoriteKey(customer.id, beverageTag, beverage);
+    setFavoriteBusyKey(busyKey);
+    setFavoriteError('');
+
+    try {
+      const response = existing
+        ? await removeBeverageFavorite(normalizedEndpoint, apiToken, existing.id)
+        : await addBeverageFavorite(normalizedEndpoint, apiToken, customer, beverageTag, beverage);
+      if (!response.ok) throw new Error(response.error || '收藏更新失败');
+      setFavorites(normalizeFavoriteData(response.favorites));
+    } catch (err) {
+      setFavoriteError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setFavoriteBusyKey('');
+    }
+  }, [apiToken, favorites, normalizedEndpoint]);
 
   useEffect(() => {
     localStorage.setItem(ENDPOINT_STORAGE_KEY, normalizedEndpoint);
@@ -373,14 +472,23 @@ export function ModWorkbench() {
     return () => window.clearInterval(timer);
   }, [refresh, snapshotRefreshIntervalMs]);
 
+  useEffect(() => {
+    refreshFavorites();
+  }, [refreshFavorites]);
+
   if (serviceFocusMode) {
     return (
       <ServiceFocusPage
         recommendations={orderRecommendations.recommendations}
         recommendationIssues={orderRecommendations.recommendationIssues}
         runtimeSets={runtimeSets}
+        favorites={favorites}
+        favoriteBusyKey={favoriteBusyKey}
+        favoriteError={favoriteError}
         compact={serviceFocusCompact}
         onCompactChange={setServiceFocusCompact}
+        onToggleRecipeFavorite={toggleRecipeFavorite}
+        onToggleBeverageFavorite={toggleBeverageFavorite}
         onExit={() => setServiceFocusMode(false)}
       />
     );
@@ -484,6 +592,9 @@ export function ModWorkbench() {
             rareCustomerId={rareCustomerId}
             requiredFoodTag={requiredFoodTag}
             requiredBeverageTag={requiredBeverageTag}
+            favorites={favorites}
+            favoriteBusyKey={favoriteBusyKey}
+            favoriteError={favoriteError}
             onPlaceChange={(place) => {
               setManualPlace(place);
               setRareCustomerId(null);
@@ -503,6 +614,8 @@ export function ModWorkbench() {
             }}
             onFoodTagChange={setRequiredFoodTag}
             onBeverageTagChange={setRequiredBeverageTag}
+            onToggleRecipeFavorite={toggleRecipeFavorite}
+            onToggleBeverageFavorite={toggleBeverageFavorite}
           />
         </TabsContent>
 
@@ -514,6 +627,11 @@ export function ModWorkbench() {
             recommendations={orderRecommendations.recommendations}
             recommendationIssues={orderRecommendations.recommendationIssues}
             runtimeSets={runtimeSets}
+            favorites={favorites}
+            favoriteBusyKey={favoriteBusyKey}
+            favoriteError={favoriteError}
+            onToggleRecipeFavorite={toggleRecipeFavorite}
+            onToggleBeverageFavorite={toggleBeverageFavorite}
             onEnterFocusMode={() => setServiceFocusMode(true)}
           />
         </TabsContent>
@@ -726,11 +844,16 @@ function ModRarePanel({
   rareCustomerId,
   requiredFoodTag,
   requiredBeverageTag,
+  favorites,
+  favoriteBusyKey,
+  favoriteError,
   onPlaceChange,
   onFollowDetectedPlace,
   onRareCustomerChange,
   onFoodTagChange,
   onBeverageTagChange,
+  onToggleRecipeFavorite,
+  onToggleBeverageFavorite,
 }: {
   runtime: RecommendationStateSnapshot | null;
   runtimeSets: RuntimeSets | null;
@@ -740,11 +863,16 @@ function ModRarePanel({
   rareCustomerId: number | null;
   requiredFoodTag: string;
   requiredBeverageTag: string;
+  favorites: FavoriteData;
+  favoriteBusyKey: string;
+  favoriteError: string;
   onPlaceChange: (place: TPlace) => void;
   onFollowDetectedPlace: () => void;
   onRareCustomerChange: (customerId: number | null) => void;
   onFoodTagChange: (tag: string) => void;
   onBeverageTagChange: (tag: string) => void;
+  onToggleRecipeFavorite: ToggleRecipeFavorite;
+  onToggleBeverageFavorite: ToggleBeverageFavorite;
 }) {
   const customers = useMemo(() => {
     if (!selectedPlace) return [];
@@ -793,15 +921,17 @@ function ModRarePanel({
       runtime.famousShopEnabled,
     )
       .sort((a, b) => compareRareRecipesForService(a, b, runtimeSets.ownedIngredientQty))
+      .sort((a, b) => compareFavoriteRecipeResults(a, b, favorites, selectedCustomer.id, foodTag))
       .slice(0, MAX_RECOMMENDATION_ROWS);
-  }, [beverageTag, foodTag, runtime, runtimeSets, selectedCustomer]);
+  }, [beverageTag, favorites, foodTag, runtime, runtimeSets, selectedCustomer]);
 
   const beverages = useMemo(() => {
     if (!runtimeSets || !selectedCustomer || !beverageTag) return [];
     return rankBeveragesForRare(selectedCustomer, beverageTag, runtimeSets.beverageIds)
       .sort(compareRareBeveragesForService)
+      .sort((a, b) => compareFavoriteBeverageResults(a, b, favorites, selectedCustomer.id, beverageTag))
       .slice(0, MAX_RECOMMENDATION_ROWS);
-  }, [beverageTag, runtimeSets, selectedCustomer]);
+  }, [beverageTag, favorites, runtimeSets, selectedCustomer]);
 
   if (!runtime || !runtimeSets) return <RuntimeUnavailable />;
 
@@ -865,6 +995,11 @@ function ModRarePanel({
               </div>
             </CardContent>
           </Card>
+          {favoriteError && (
+            <div className="rounded-md border border-destructive/30 px-3 py-2 text-sm text-destructive">
+              {favoriteError}
+            </div>
+          )}
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <ListPanel title={`料理推荐 (${recipes.length})`}>
@@ -876,6 +1011,10 @@ function ModRarePanel({
                     recipe={recipe}
                     index={index}
                     ownedIngredientQty={runtimeSets.ownedIngredientQty}
+                    favorite={findRecipeFavorite(favorites, selectedCustomer.id, foodTag, recipe)}
+                    favoriteKey={recipeFavoriteKey(selectedCustomer.id, foodTag, recipe)}
+                    favoriteBusyKey={favoriteBusyKey}
+                    onToggleFavorite={() => onToggleRecipeFavorite(selectedCustomer, foodTag, recipe)}
                   />
                 ))}
               </div>
@@ -890,6 +1029,10 @@ function ModRarePanel({
                     beverage={beverage}
                     index={index}
                     ownedBeverageQty={runtimeSets.ownedBeverageQty}
+                    favorite={findBeverageFavorite(favorites, selectedCustomer.id, beverageTag, beverage)}
+                    favoriteKey={beverageFavoriteKey(selectedCustomer.id, beverageTag, beverage)}
+                    favoriteBusyKey={favoriteBusyKey}
+                    onToggleFavorite={() => onToggleBeverageFavorite(selectedCustomer, beverageTag, beverage)}
                   />
                 ))}
               </div>
@@ -908,6 +1051,11 @@ function ModServicePanel({
   recommendations,
   recommendationIssues,
   runtimeSets,
+  favorites,
+  favoriteBusyKey,
+  favoriteError,
+  onToggleRecipeFavorite,
+  onToggleBeverageFavorite,
   onEnterFocusMode,
 }: {
   runtime: RecommendationStateSnapshot | null;
@@ -916,6 +1064,11 @@ function ModServicePanel({
   recommendations: OrderRecommendation[];
   recommendationIssues: RecommendationIssue[];
   runtimeSets: RuntimeSets | null;
+  favorites: FavoriteData;
+  favoriteBusyKey: string;
+  favoriteError: string;
+  onToggleRecipeFavorite: ToggleRecipeFavorite;
+  onToggleBeverageFavorite: ToggleBeverageFavorite;
   onEnterFocusMode: () => void;
 }) {
   const activeGuests = night?.activeRareGuests ?? [];
@@ -971,6 +1124,11 @@ function ModServicePanel({
           recommendations={recommendations}
           recommendationIssues={recommendationIssues}
           runtimeSets={runtimeSets}
+          favorites={favorites}
+          favoriteBusyKey={favoriteBusyKey}
+          favoriteError={favoriteError}
+          onToggleRecipeFavorite={onToggleRecipeFavorite}
+          onToggleBeverageFavorite={onToggleBeverageFavorite}
         />
       )}
     </div>
@@ -981,15 +1139,25 @@ function ServiceFocusPage({
   recommendations,
   recommendationIssues,
   runtimeSets,
+  favorites,
+  favoriteBusyKey,
+  favoriteError,
   compact,
   onCompactChange,
+  onToggleRecipeFavorite,
+  onToggleBeverageFavorite,
   onExit,
 }: {
   recommendations: OrderRecommendation[];
   recommendationIssues: RecommendationIssue[];
   runtimeSets: RuntimeSets | null;
+  favorites: FavoriteData;
+  favoriteBusyKey: string;
+  favoriteError: string;
   compact: boolean;
   onCompactChange: (value: boolean) => void;
+  onToggleRecipeFavorite: ToggleRecipeFavorite;
+  onToggleBeverageFavorite: ToggleBeverageFavorite;
   onExit: () => void;
 }) {
   const hasOrders = recommendations.length > 0 || recommendationIssues.length > 0;
@@ -1014,7 +1182,12 @@ function ServiceFocusPage({
           recommendations={recommendations}
           recommendationIssues={recommendationIssues}
           runtimeSets={runtimeSets}
+          favorites={favorites}
+          favoriteBusyKey={favoriteBusyKey}
+          favoriteError={favoriteError}
           compact={compact}
+          onToggleRecipeFavorite={onToggleRecipeFavorite}
+          onToggleBeverageFavorite={onToggleBeverageFavorite}
         />
       ) : (
         <EmptyState text="暂无当前稀客点单。检测到稀客点单后，这里会自动显示推荐料理和酒水。" />
@@ -1027,12 +1200,22 @@ function CurrentOrderRecommendations({
   recommendations,
   recommendationIssues,
   runtimeSets,
+  favorites,
+  favoriteBusyKey,
+  favoriteError,
   compact = false,
+  onToggleRecipeFavorite,
+  onToggleBeverageFavorite,
 }: {
   recommendations: OrderRecommendation[];
   recommendationIssues: RecommendationIssue[];
   runtimeSets: RuntimeSets | null;
+  favorites: FavoriteData;
+  favoriteBusyKey: string;
+  favoriteError: string;
   compact?: boolean;
+  onToggleRecipeFavorite: ToggleRecipeFavorite;
+  onToggleBeverageFavorite: ToggleBeverageFavorite;
 }) {
   const rows = useMemo(
     () => [
@@ -1044,6 +1227,11 @@ function CurrentOrderRecommendations({
 
   return (
     <ListPanel title="当前点单推荐">
+      {favoriteError && (
+        <div className="mb-2 rounded-md border border-destructive/30 px-3 py-2 text-sm text-destructive">
+          {favoriteError}
+        </div>
+      )}
       <div className={compact ? 'space-y-2' : 'space-y-4'}>
         {rows.map((row) => {
           if (row.kind === 'issue') {
@@ -1064,7 +1252,11 @@ function CurrentOrderRecommendations({
               key={`${row.item.order.deskCode}-${row.item.order.guestId}-${row.item.order.foodTagId}-${row.item.order.beverageTagId}`}
               item={row.item}
               runtimeSets={runtimeSets}
+              favorites={favorites}
+              favoriteBusyKey={favoriteBusyKey}
               compact={compact}
+              onToggleRecipeFavorite={onToggleRecipeFavorite}
+              onToggleBeverageFavorite={onToggleBeverageFavorite}
             />
           );
         })}
@@ -1615,11 +1807,19 @@ function NormalBeverageRow({
 function OrderRecommendationPanel({
   item,
   runtimeSets,
+  favorites,
+  favoriteBusyKey,
   compact = false,
+  onToggleRecipeFavorite,
+  onToggleBeverageFavorite,
 }: {
   item: OrderRecommendation;
   runtimeSets: RuntimeSets | null;
+  favorites: FavoriteData;
+  favoriteBusyKey: string;
   compact?: boolean;
+  onToggleRecipeFavorite: ToggleRecipeFavorite;
+  onToggleBeverageFavorite: ToggleBeverageFavorite;
 }) {
   return (
     <div className={compact ? 'rounded-md border border-border p-2' : 'rounded-md border border-border p-3'}>
@@ -1645,7 +1845,11 @@ function OrderRecommendationPanel({
                 recipe={recipe}
                 index={index}
                 ownedIngredientQty={runtimeSets?.ownedIngredientQty ?? {}}
+                favorite={findRecipeFavorite(favorites, item.customer.id, item.order.foodTag, recipe)}
+                favoriteKey={recipeFavoriteKey(item.customer.id, item.order.foodTag, recipe)}
+                favoriteBusyKey={favoriteBusyKey}
                 compact={compact}
+                onToggleFavorite={() => onToggleRecipeFavorite(item.customer, item.order.foodTag, recipe)}
               />
             ))}
           </div>
@@ -1661,7 +1865,11 @@ function OrderRecommendationPanel({
                 beverage={beverage}
                 index={index}
                 ownedBeverageQty={runtimeSets?.ownedBeverageQty ?? {}}
+                favorite={findBeverageFavorite(favorites, item.customer.id, item.order.beverageTag, beverage)}
+                favoriteKey={beverageFavoriteKey(item.customer.id, item.order.beverageTag, beverage)}
+                favoriteBusyKey={favoriteBusyKey}
                 compact={compact}
+                onToggleFavorite={() => onToggleBeverageFavorite(item.customer, item.order.beverageTag, beverage)}
               />
             ))}
           </div>
@@ -1675,24 +1883,49 @@ function RecipeRecommendationRow({
   recipe,
   index,
   ownedIngredientQty,
+  favorite,
+  favoriteKey = '',
+  favoriteBusyKey = '',
   compact = false,
+  onToggleFavorite,
 }: {
   recipe: IRareRecipeResult;
   index: number;
   ownedIngredientQty: Record<number, number>;
+  favorite?: FavoriteRecipeEntry | null;
+  favoriteKey?: string;
+  favoriteBusyKey?: string;
   compact?: boolean;
+  onToggleFavorite?: () => void;
 }) {
   const totalCost = recipe.baseCost + recipe.extraCost;
   const extras = recipe.extraIngredients.length === 0
     ? '不加料'
     : recipe.extraIngredients.map((ingredient) => `+${formatIngredientWithQty(ingredient.name, ownedIngredientQty)}`).join(', ');
+  const busy = favoriteBusyKey === (favorite?.id ?? favoriteKey);
 
   return (
     <div className={compact ? 'rounded-md border border-border/80 p-1.5 text-xs' : 'rounded-md border border-border/80 p-2 text-sm'}>
-      <div className="flex flex-wrap items-center gap-1.5">
-        <span className="text-xs text-muted-foreground">#{index + 1}</span>
-        <span className="font-medium">{recipe.recipe.name}</span>
-        <Badge variant="secondary">{RATING_LABELS[recipe.rating]}</Badge>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-xs text-muted-foreground">#{index + 1}</span>
+          <span className="font-medium">{recipe.recipe.name}</span>
+          <Badge variant="secondary">{RATING_LABELS[recipe.rating]}</Badge>
+          {favorite && <Badge variant="outline">已收藏</Badge>}
+        </div>
+        {onToggleFavorite && (
+          <Button
+            type="button"
+            size={compact ? 'icon-xs' : 'xs'}
+            variant={favorite ? 'default' : 'outline'}
+            disabled={busy}
+            title={favorite ? '取消收藏该料理方案' : '收藏该料理方案'}
+            onClick={onToggleFavorite}
+          >
+            <Star className={favorite ? 'size-3 fill-current' : 'size-3'} />
+            {!compact && <span>{favorite ? '取消收藏' : '收藏'}</span>}
+          </Button>
+        )}
       </div>
       <div className="mt-1 text-xs text-muted-foreground">
         分数 {recipe.foodScore} · 成本 {totalCost} · {extras}
@@ -1709,21 +1942,47 @@ function BeverageRecommendationRow({
   beverage,
   index,
   ownedBeverageQty,
+  favorite,
+  favoriteKey = '',
+  favoriteBusyKey = '',
   compact = false,
+  onToggleFavorite,
 }: {
   beverage: IRareBeverageResult;
   index: number;
   ownedBeverageQty: Record<number, number>;
+  favorite?: FavoriteBeverageEntry | null;
+  favoriteKey?: string;
+  favoriteBusyKey?: string;
   compact?: boolean;
+  onToggleFavorite?: () => void;
 }) {
+  const busy = favoriteBusyKey === (favorite?.id ?? favoriteKey);
+
   return (
     <div className={compact ? 'rounded-md border border-border/80 p-1.5 text-xs' : 'rounded-md border border-border/80 p-2 text-sm'}>
-      <div className="flex flex-wrap items-center gap-1.5">
-        <span className="text-xs text-muted-foreground">#{index + 1}</span>
-        <span className="font-medium">
-          {beverage.beverage.name}{formatQtySuffix(ownedBeverageQty[beverage.beverage.id])}
-        </span>
-        {beverage.meetsRequiredBev && <Badge variant="secondary">满足点单</Badge>}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-xs text-muted-foreground">#{index + 1}</span>
+          <span className="font-medium">
+            {beverage.beverage.name}{formatQtySuffix(ownedBeverageQty[beverage.beverage.id])}
+          </span>
+          {beverage.meetsRequiredBev && <Badge variant="secondary">满足点单</Badge>}
+          {favorite && <Badge variant="outline">已收藏</Badge>}
+        </div>
+        {onToggleFavorite && (
+          <Button
+            type="button"
+            size={compact ? 'icon-xs' : 'xs'}
+            variant={favorite ? 'default' : 'outline'}
+            disabled={busy}
+            title={favorite ? '取消收藏该酒水' : '收藏该酒水'}
+            onClick={onToggleFavorite}
+          >
+            <Star className={favorite ? 'size-3 fill-current' : 'size-3'} />
+            {!compact && <span>{favorite ? '取消收藏' : '收藏'}</span>}
+          </Button>
+        )}
       </div>
       <div className="mt-1 text-xs text-muted-foreground">
         分数 {beverage.bevScore} · 价格 {beverage.beverage.price}
@@ -1788,6 +2047,76 @@ async function writeInventoryQuantity(
       `/inventory/set?${params.toString()}`,
       abortController.signal,
     );
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
+async function readFavorites(endpoint: string, apiToken: string, signal: AbortSignal): Promise<FavoriteData> {
+  return readLocalApiJson<FavoriteData>(endpoint, apiToken, '/favorites', signal);
+}
+
+async function addRecipeFavorite(
+  endpoint: string,
+  apiToken: string,
+  customer: ICustomerRare,
+  foodTag: string,
+  recipe: IRareRecipeResult,
+): Promise<FavoriteMutationResponse> {
+  const params = new URLSearchParams({
+    customerId: String(customer.id),
+    customerName: customer.name,
+    foodTag,
+    recipeId: String(recipe.recipe.id),
+    extraIngredientIds: recipe.extraIngredients.map((ingredient) => ingredient.id).join(','),
+  });
+  return mutateFavorite(endpoint, apiToken, `/favorites/add-recipe?${params.toString()}`);
+}
+
+async function removeRecipeFavorite(
+  endpoint: string,
+  apiToken: string,
+  id: string,
+): Promise<FavoriteMutationResponse> {
+  const params = new URLSearchParams({ id });
+  return mutateFavorite(endpoint, apiToken, `/favorites/remove-recipe?${params.toString()}`);
+}
+
+async function addBeverageFavorite(
+  endpoint: string,
+  apiToken: string,
+  customer: ICustomerRare,
+  beverageTag: string,
+  beverage: IRareBeverageResult,
+): Promise<FavoriteMutationResponse> {
+  const params = new URLSearchParams({
+    customerId: String(customer.id),
+    customerName: customer.name,
+    beverageTag,
+    beverageId: String(beverage.beverage.id),
+  });
+  return mutateFavorite(endpoint, apiToken, `/favorites/add-beverage?${params.toString()}`);
+}
+
+async function removeBeverageFavorite(
+  endpoint: string,
+  apiToken: string,
+  id: string,
+): Promise<FavoriteMutationResponse> {
+  const params = new URLSearchParams({ id });
+  return mutateFavorite(endpoint, apiToken, `/favorites/remove-beverage?${params.toString()}`);
+}
+
+async function mutateFavorite(
+  endpoint: string,
+  apiToken: string,
+  path: string,
+): Promise<FavoriteMutationResponse> {
+  const abortController = new AbortController();
+  const timeoutId = window.setTimeout(() => abortController.abort(), 3200);
+
+  try {
+    return await readLocalApiJson<FavoriteMutationResponse>(endpoint, apiToken, path, abortController.signal);
   } finally {
     window.clearTimeout(timeoutId);
   }
@@ -1924,6 +2253,7 @@ function buildOrderRecommendations(
   runtime: RecommendationStateSnapshot | null | undefined,
   rareCustomersById: Map<number, ICustomerRare>,
   cache: Map<string, CachedRecommendation>,
+  favorites: FavoriteData,
 ): { recommendations: OrderRecommendation[]; recommendationIssues: RecommendationIssue[] } {
   if (orders.length === 0) return { recommendations: [], recommendationIssues: [] };
   const sortedOrders = sortNightOrders(orders);
@@ -1971,19 +2301,22 @@ function buildOrderRecommendations(
         runtimeSets.ownedIngredientQty,
         runtime.famousShopEnabled,
       )
-        .sort((a, b) => compareRareRecipesForService(a, b, runtimeSets.ownedIngredientQty))
-        .slice(0, MAX_RECOMMENDATION_ROWS);
+        .sort((a, b) => compareRareRecipesForService(a, b, runtimeSets.ownedIngredientQty));
 
       const beverages = rankBeveragesForRare(customer, beverageTag, runtimeSets.beverageIds)
-        .sort(compareRareBeveragesForService)
-        .slice(0, MAX_RECOMMENDATION_ROWS);
+        .sort(compareRareBeveragesForService);
 
       cached = { customer, recipes, beverages };
       cache.set(cacheKey, cached);
       trimRecommendationCache(cache);
     }
 
-    recommendations.push({ order, ...cached });
+    recommendations.push({
+      order,
+      customer: cached.customer,
+      recipes: promoteFavoriteRecipes(cached.recipes, favorites, customer.id, foodTag).slice(0, MAX_RECOMMENDATION_ROWS),
+      beverages: promoteFavoriteBeverages(cached.beverages, favorites, customer.id, beverageTag).slice(0, MAX_RECOMMENDATION_ROWS),
+    });
   }
 
   return { recommendations, recommendationIssues };
@@ -1996,6 +2329,160 @@ function findRareCustomer(order: NightBusinessOrder, rareCustomersById: Map<numb
   }
 
   return [...rareCustomersById.values()].find((customer) => customer.name === order.guestName) ?? null;
+}
+
+function promoteFavoriteRecipes(
+  rows: IRareRecipeResult[],
+  favorites: FavoriteData,
+  customerId: number,
+  foodTag: string,
+): IRareRecipeResult[] {
+  const matchingFavorites = favorites.recipes
+    .filter((favorite) => favorite.customerId === customerId && favorite.foodTag === foodTag)
+    .sort(compareFavoriteUpdatedDesc);
+  if (matchingFavorites.length === 0) return rows;
+
+  const used = new Set<string>();
+  const promoted: IRareRecipeResult[] = [];
+  for (const favorite of matchingFavorites) {
+    const row = rows.find((candidate) => isRecipeFavoriteMatch(favorite, candidate));
+    if (!row) continue;
+    const key = recipeResultKey(row);
+    if (used.has(key)) continue;
+    used.add(key);
+    promoted.push(row);
+  }
+
+  if (promoted.length === 0) return rows;
+  return [...promoted, ...rows.filter((row) => !used.has(recipeResultKey(row)))];
+}
+
+function promoteFavoriteBeverages(
+  rows: IRareBeverageResult[],
+  favorites: FavoriteData,
+  customerId: number,
+  beverageTag: string,
+): IRareBeverageResult[] {
+  const matchingFavorites = favorites.beverages
+    .filter((favorite) => favorite.customerId === customerId && favorite.beverageTag === beverageTag)
+    .sort(compareFavoriteUpdatedDesc);
+  if (matchingFavorites.length === 0) return rows;
+
+  const used = new Set<number>();
+  const promoted: IRareBeverageResult[] = [];
+  for (const favorite of matchingFavorites) {
+    const row = rows.find((candidate) => candidate.beverage.id === favorite.beverageId);
+    if (!row || used.has(row.beverage.id)) continue;
+    used.add(row.beverage.id);
+    promoted.push(row);
+  }
+
+  if (promoted.length === 0) return rows;
+  return [...promoted, ...rows.filter((row) => !used.has(row.beverage.id))];
+}
+
+function compareFavoriteRecipeResults(
+  left: IRareRecipeResult,
+  right: IRareRecipeResult,
+  favorites: FavoriteData,
+  customerId: number,
+  foodTag: string,
+): number {
+  const leftFavorite = findRecipeFavorite(favorites, customerId, foodTag, left);
+  const rightFavorite = findRecipeFavorite(favorites, customerId, foodTag, right);
+  if (!leftFavorite && !rightFavorite) return 0;
+  if (leftFavorite && !rightFavorite) return -1;
+  if (!leftFavorite && rightFavorite) return 1;
+  if (!leftFavorite || !rightFavorite) return 0;
+  return compareFavoriteUpdatedDesc(leftFavorite, rightFavorite);
+}
+
+function compareFavoriteBeverageResults(
+  left: IRareBeverageResult,
+  right: IRareBeverageResult,
+  favorites: FavoriteData,
+  customerId: number,
+  beverageTag: string,
+): number {
+  const leftFavorite = findBeverageFavorite(favorites, customerId, beverageTag, left);
+  const rightFavorite = findBeverageFavorite(favorites, customerId, beverageTag, right);
+  if (!leftFavorite && !rightFavorite) return 0;
+  if (leftFavorite && !rightFavorite) return -1;
+  if (!leftFavorite && rightFavorite) return 1;
+  if (!leftFavorite || !rightFavorite) return 0;
+  return compareFavoriteUpdatedDesc(leftFavorite, rightFavorite);
+}
+
+function findRecipeFavorite(
+  favorites: FavoriteData,
+  customerId: number,
+  foodTag: string,
+  recipe: IRareRecipeResult,
+): FavoriteRecipeEntry | null {
+  return favorites.recipes.find((favorite) =>
+    favorite.customerId === customerId
+    && favorite.foodTag === foodTag
+    && isRecipeFavoriteMatch(favorite, recipe)
+  ) ?? null;
+}
+
+function findBeverageFavorite(
+  favorites: FavoriteData,
+  customerId: number,
+  beverageTag: string,
+  beverage: IRareBeverageResult,
+): FavoriteBeverageEntry | null {
+  return favorites.beverages.find((favorite) =>
+    favorite.customerId === customerId
+    && favorite.beverageTag === beverageTag
+    && favorite.beverageId === beverage.beverage.id
+  ) ?? null;
+}
+
+function isRecipeFavoriteMatch(favorite: FavoriteRecipeEntry, recipe: IRareRecipeResult): boolean {
+  return favorite.recipeId === recipe.recipe.id
+    && normalizeIdList(favorite.extraIngredientIds).join(',') === normalizeIdList(recipe.extraIngredients.map((ingredient) => ingredient.id)).join(',');
+}
+
+function recipeFavoriteKey(customerId: number, foodTag: string, recipe: IRareRecipeResult) {
+  return `recipe:${customerId}:${foodTag}:${recipeResultKey(recipe)}`;
+}
+
+function beverageFavoriteKey(customerId: number, beverageTag: string, beverage: IRareBeverageResult) {
+  return `beverage:${customerId}:${beverageTag}:${beverage.beverage.id}`;
+}
+
+function recipeResultKey(recipe: IRareRecipeResult) {
+  return `${recipe.recipe.id}:${normalizeIdList(recipe.extraIngredients.map((ingredient) => ingredient.id)).join(',')}`;
+}
+
+function compareFavoriteUpdatedDesc<T extends { updatedAtUtc: string }>(left: T, right: T): number {
+  const leftTime = Date.parse(left.updatedAtUtc || '');
+  const rightTime = Date.parse(right.updatedAtUtc || '');
+  return (Number.isFinite(rightTime) ? rightTime : 0) - (Number.isFinite(leftTime) ? leftTime : 0);
+}
+
+function emptyFavoriteData(): FavoriteData {
+  return {
+    version: 1,
+    recipes: [],
+    beverages: [],
+  };
+}
+
+function normalizeFavoriteData(data: FavoriteData | null | undefined): FavoriteData {
+  return {
+    version: Math.max(1, data?.version ?? 1),
+    recipes: (data?.recipes ?? []).map((entry) => ({
+      ...entry,
+      extraIngredientIds: normalizeIdList(entry.extraIngredientIds ?? []),
+    })),
+    beverages: data?.beverages ?? [],
+  };
+}
+
+function normalizeIdList(ids: number[]): number[] {
+  return [...new Set(ids.filter((id) => Number.isFinite(id) && id >= 0).map((id) => Math.trunc(id)))].sort((a, b) => a - b);
 }
 
 function compareNormalRecipesForMod(a: INormalRecipeResult, b: INormalRecipeResult) {
