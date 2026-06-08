@@ -1,5 +1,7 @@
-using MystiaStewardCompanion.LocalApi;
+using System.Collections;
 using System.Reflection;
+using Il2CppInterop.Runtime.InteropTypes.Arrays;
+using MystiaStewardCompanion.LocalApi;
 
 namespace MystiaStewardCompanion.Save;
 
@@ -8,6 +10,9 @@ internal static class RuntimeOrderPreparationService
     private const string DataBaseCoreTypeName = "GameData.Core.Collections.DataBaseCore";
     private const string IzakayaTrayTypeName = "GameData.RunTime.NightSceneUtility.IzakayaTray";
     private const string RuntimeStorageTypeName = "GameData.RunTime.Common.RunTimeStorage";
+    private const string PartnerManagerTypeName = "NightScene.PartnerUtility.PartnerManager";
+    private const string CookSystemManagerTypeName = "NightScene.CookingUtility.CookSystemManager";
+    private const string MatchedCookComboTypeName = "NightScene.UI.CookingUtility.WorkSceneCookingSelectionPannel+MatchedCookCombo";
 
     public static OrderPreparationResult Prepare(OrderPreparationRequest request)
     {
@@ -87,14 +92,21 @@ internal static class RuntimeOrderPreparationService
             }
             else
             {
-                var extras = request.ExtraIngredientIds.Count == 0
-                    ? "不加料"
-                    : string.Join(",", request.ExtraIngredientIds);
-                AddFailure(
-                    result,
-                    "自动开始料理",
-                    $"已选择 {request.RecipeName}（加料：{extras}），但尚未找到稳定的厨具启动入口。");
-                if (request.StopOnError) return Finish(result);
+                var cookingResult = TryStartCooking(request.RecipeId, request.RecipeName, request.ExtraIngredientIds);
+                if (cookingResult.Ok)
+                {
+                    result.Steps.Add(new OrderPreparationStep
+                    {
+                        Name = "自动开始料理",
+                        Ok = true,
+                        Message = cookingResult.Message,
+                    });
+                }
+                else
+                {
+                    AddFailure(result, "自动开始料理", cookingResult.Message);
+                    if (request.StopOnError) return Finish(result);
+                }
             }
         }
         else
@@ -104,7 +116,7 @@ internal static class RuntimeOrderPreparationService
 
         if (request.AutoCollectCooking)
         {
-            AddFailure(result, "自动收取料理", "料理启动入口尚未接入，无法安全收取到送餐盘。");
+            AddSkipped(result, "自动收取料理", "料理已进入厨具制作流程，完成后请从厨具取出；自动收取将在后续版本单独接入。");
             if (request.StopOnError) return Finish(result);
         }
         else
@@ -151,6 +163,58 @@ internal static class RuntimeOrderPreparationService
         return (true, $"{beverageName} 已放入送餐盘（{quantityText}）。");
     }
 
+    private static (bool Ok, string Message) TryStartCooking(int recipeId, string recipeName, IReadOnlyList<int> extraIngredientIds)
+    {
+        var recipe = InvokeStatic(DataBaseCoreTypeName, "RefRecipe", new object?[] { recipeId });
+        if (recipe == null)
+        {
+            return (false, $"无法从游戏数据库读取料理配方：{recipeName} #{recipeId}。");
+        }
+
+        var baseFood = CreateFoodFromRecipe(recipe);
+        if (baseFood == null)
+        {
+            return (false, $"无法从配方创建料理对象：{recipeName} #{recipeId}。");
+        }
+
+        var cookerSelection = TryGetCookerForOrder(baseFood);
+        if (!cookerSelection.Ok || cookerSelection.CookController == null)
+        {
+            return (false, cookerSelection.Message);
+        }
+
+        var cookController = cookerSelection.CookController;
+        var cooker = InvokeInstance(cookController, "get_Cooker", Array.Empty<object?>());
+        if (cooker == null)
+        {
+            return (false, "已找到可用厨具控制器，但无法读取厨具数据。");
+        }
+
+        var finalFood = CreateCookResult(recipe, extraIngredientIds, cooker) ?? baseFood;
+        var ingredientIds = ReadRecipeIngredientIds(recipe).Concat(extraIngredientIds).ToArray();
+        if (!HasEnoughIngredients(ingredientIds, out var missingIngredientId))
+        {
+            return (false, $"材料不足，缺少材料 #{missingIngredientId}。");
+        }
+
+        if (ingredientIds.Length > 0)
+        {
+            InvokeRuntimeStorageOutRange("IngredientOutRange", ingredientIds);
+        }
+
+        InvokeInstance(cookController, "SetCook", new object?[] { finalFood, recipe, true });
+        InvokeInstance(cookController, "StartCookCountDown", new object?[] { 1f, false });
+
+        var cookSystem = GetSingletonInstance(CookSystemManagerTypeName);
+        if (cookSystem != null)
+        {
+            TryInvokeInstance(cookSystem, "CallCookerStartCallback", new object?[] { finalFood, recipe });
+        }
+
+        var extraText = extraIngredientIds.Count == 0 ? "不加料" : string.Join(",", extraIngredientIds);
+        return (true, $"{recipeName} 已开始制作（加料：{extraText}）。");
+    }
+
     private static int GetBeverageQuantity(int beverageId)
     {
         var value = InvokeStatic(RuntimeStorageTypeName, "GetBeverageCountById", new object?[] { beverageId });
@@ -179,6 +243,213 @@ internal static class RuntimeOrderPreparationService
         }
 
         method.Invoke(null, args);
+    }
+
+    private static void InvokeRuntimeStorageOutRange(string methodName, IReadOnlyList<int> itemIds)
+    {
+        var type = FindType(RuntimeStorageTypeName)
+            ?? throw new InvalidOperationException("RunTimeStorage type is not loaded.");
+        var methods = type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+            .Where(candidate => string.Equals(candidate.Name, methodName, StringComparison.Ordinal))
+            .OrderBy(candidate => candidate.GetParameters().Length);
+
+        foreach (var method in methods)
+        {
+            var parameters = method.GetParameters();
+            if (parameters.Length is < 1 or > 2) continue;
+
+            foreach (var ids in BuildIntArrayArgumentCandidates(parameters[0].ParameterType, itemIds))
+            {
+                var args = parameters.Length == 1
+                    ? new object?[] { ids }
+                    : new object?[] { ids, GetDefaultValue(parameters[1].ParameterType) };
+                if (!CanUseParameters(parameters, args)) continue;
+
+                method.Invoke(null, args);
+                return;
+            }
+        }
+
+        throw new MissingMethodException(RuntimeStorageTypeName, methodName);
+    }
+
+    private static object? CreateFoodFromRecipe(object recipe)
+    {
+        var foodId = ToInt(ReadMember(recipe, "foodID"));
+        if (foodId < 0) return null;
+        return InvokeStatic(DataBaseCoreTypeName, "AsNewFood", new object?[] { foodId });
+    }
+
+    private static object? CreateCookResult(object recipe, IReadOnlyList<int> extraIngredientIds, object cooker)
+    {
+        var combo = CreateMatchedCookCombo(recipe, extraIngredientIds);
+        return combo == null ? null : InvokeInstance(combo, "GetResult", new[] { cooker });
+    }
+
+    private static object? CreateMatchedCookCombo(object recipe, IReadOnlyList<int> extraIngredientIds)
+    {
+        var type = FindType(MatchedCookComboTypeName);
+        if (type == null) return null;
+
+        foreach (var constructor in type.GetConstructors(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+        {
+            var parameters = constructor.GetParameters();
+            if (parameters.Length != 2) continue;
+            if (!parameters[0].ParameterType.IsInstanceOfType(recipe)) continue;
+
+            foreach (var modifiers in BuildIntArrayArgumentCandidates(parameters[1].ParameterType, extraIngredientIds))
+            {
+                var args = new object?[] { recipe, modifiers };
+                if (!CanUseParameters(parameters, args)) continue;
+                return constructor.Invoke(args);
+            }
+        }
+
+        return null;
+    }
+
+    private static (bool Ok, object? CookController, string Message) TryGetCookerForOrder(object baseFood)
+    {
+        var partnerManager = GetSingletonInstance(PartnerManagerTypeName);
+        if (partnerManager == null)
+        {
+            return (false, null, "当前经营伙伴管理器不可用，请确认已进入夜晚经营页面。");
+        }
+
+        var method = partnerManager.GetType().GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+            .FirstOrDefault(candidate =>
+            {
+                if (!string.Equals(candidate.Name, "TryGetCookerForOrder", StringComparison.Ordinal)) return false;
+                var parameters = candidate.GetParameters();
+                return parameters.Length == 4
+                    && !parameters[0].ParameterType.IsByRef
+                    && parameters[1].ParameterType.IsByRef
+                    && parameters[2].ParameterType.IsByRef;
+            });
+        if (method == null)
+        {
+            return (false, null, "未找到游戏厨具选择入口 TryGetCookerForOrder。");
+        }
+
+        foreach (var canUsedCooker in BuildIntArrayArgumentCandidates(method.GetParameters()[3].ParameterType, Array.Empty<int>()))
+        {
+            var args = new object?[] { baseFood, null, null, canUsedCooker };
+            try
+            {
+                var status = ToInt(method.Invoke(partnerManager, args));
+                if (status == 3 && args[1] != null)
+                {
+                    return (true, args[1], "已找到空闲可用厨具。");
+                }
+
+                return (false, null, status switch
+                {
+                    0 => "当前没有空闲厨具。",
+                    1 => "当前经营环境无法制作该料理。",
+                    2 => "游戏未匹配到该料理的可用配方。",
+                    _ => $"厨具选择失败，游戏返回状态 {status}。",
+                });
+            }
+            catch
+            {
+                // Try the next array representation.
+            }
+        }
+
+        return (false, null, "调用厨具选择入口失败。");
+    }
+
+    private static int[] ReadRecipeIngredientIds(object recipe)
+    {
+        var ingredients = ReadMember(recipe, "ingredients");
+        return ReadIntEnumerable(ingredients).ToArray();
+    }
+
+    private static bool HasEnoughIngredients(IEnumerable<int> ingredientIds, out int missingIngredientId)
+    {
+        var required = ingredientIds
+            .Where(id => id >= 0)
+            .GroupBy(id => id)
+            .ToDictionary(group => group.Key, group => group.Count());
+
+        foreach (var (ingredientId, count) in required)
+        {
+            var current = GetIngredientQuantity(ingredientId);
+            if (current >= 0 && current < count)
+            {
+                missingIngredientId = ingredientId;
+                return false;
+            }
+        }
+
+        missingIngredientId = -1;
+        return true;
+    }
+
+    private static int GetIngredientQuantity(int ingredientId)
+    {
+        var value = InvokeStatic(RuntimeStorageTypeName, "GetIngredientCountById", new object?[] { ingredientId });
+        return ToInt(value);
+    }
+
+    private static IEnumerable<object> BuildIntArrayArgumentCandidates(Type parameterType, IReadOnlyList<int> ids)
+    {
+        if (parameterType.IsArray && parameterType.GetElementType() == typeof(int))
+        {
+            yield return ids.ToArray();
+            yield break;
+        }
+
+        if (parameterType == typeof(Il2CppStructArray<int>) || parameterType.FullName?.Contains("Il2CppStructArray") == true)
+        {
+            yield return BuildIl2CppIntArray(ids);
+            yield break;
+        }
+
+        if (typeof(IEnumerable).IsAssignableFrom(parameterType))
+        {
+            yield return ids.ToArray();
+            yield return BuildIl2CppIntArray(ids);
+        }
+    }
+
+    private static Il2CppStructArray<int> BuildIl2CppIntArray(IReadOnlyList<int> ids)
+    {
+        var array = new Il2CppStructArray<int>(ids.Count);
+        for (var i = 0; i < ids.Count; i++)
+        {
+            array[i] = ids[i];
+        }
+
+        return array;
+    }
+
+    private static object? ReadMember(object target, string name)
+    {
+        var type = target.GetType();
+        var property = type.GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+        if (property != null) return property.GetValue(target);
+
+        var field = type.GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+        if (field != null) return field.GetValue(target);
+
+        var generatedField = type.GetField($"<{name}>k__BackingField", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+        if (generatedField != null) return generatedField.GetValue(target);
+
+        return null;
+    }
+
+    private static IEnumerable<int> ReadIntEnumerable(object? value)
+    {
+        if (value == null) yield break;
+        if (value is string) yield break;
+        if (value is IEnumerable enumerable)
+        {
+            foreach (var item in enumerable)
+            {
+                yield return ToInt(item);
+            }
+        }
     }
 
     private static object? GetSingletonInstance(string typeName)
@@ -212,8 +483,29 @@ internal static class RuntimeOrderPreparationService
         return method.Invoke(target, args);
     }
 
+    private static bool TryInvokeInstance(object target, string methodName, object?[] args)
+    {
+        var method = target.GetType().GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+            .FirstOrDefault(candidate => string.Equals(candidate.Name, methodName, StringComparison.Ordinal)
+                && CanUseParameters(candidate.GetParameters(), args));
+        if (method == null) return false;
+
+        try
+        {
+            method.Invoke(target, args);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private static Type? FindType(string fullName)
     {
+        var direct = Type.GetType(fullName, false);
+        if (direct != null) return direct;
+
         foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
         {
             Type? type;
@@ -238,8 +530,22 @@ internal static class RuntimeOrderPreparationService
         for (var i = 0; i < parameters.Length; i++)
         {
             var arg = args[i];
-            if (arg == null) continue;
-            if (!parameters[i].ParameterType.IsInstanceOfType(arg)) return false;
+            var parameterType = parameters[i].ParameterType;
+            if (parameterType.IsByRef)
+            {
+                parameterType = parameterType.GetElementType() ?? parameterType;
+            }
+
+            if (arg == null)
+            {
+                if (parameterType.IsValueType) return false;
+                continue;
+            }
+
+            var argType = arg.GetType();
+            if (parameterType.IsAssignableFrom(argType)) continue;
+            if (parameterType.IsPrimitive && arg is IConvertible) continue;
+            return false;
         }
 
         return true;
@@ -247,6 +553,8 @@ internal static class RuntimeOrderPreparationService
 
     private static object? GetDefaultValue(Type type)
     {
+        if (type == typeof(bool)) return false;
+        if (type == typeof(int)) return 0;
         return type.IsValueType ? Activator.CreateInstance(type) : null;
     }
 
