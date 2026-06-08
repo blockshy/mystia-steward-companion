@@ -4,6 +4,7 @@ import { FolderOpen, Power, RefreshCw, Star } from 'lucide-react';
 import { CustomerScoreBadges } from '@/components/ScoreBadge';
 import { RegionSelector } from '@/components/RegionSelector';
 import { TagBadge } from '@/components/TagBadge';
+import { useGamepadNavigation } from '@/companion/use-gamepad-navigation';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -66,7 +67,6 @@ const INGREDIENT_ID_BY_NAME = new Map(INGREDIENTS.map((ingredient) => [ingredien
 const INGREDIENT_NAME_BY_ID = new Map(INGREDIENTS.map((ingredient) => [ingredient.id, ingredient.name]));
 const BEVERAGES = allBeverages as IBeverage[];
 const BEVERAGE_NAME_BY_ID = new Map(BEVERAGES.map((beverage) => [beverage.id, beverage.name]));
-const RIGHT_STICK_GAMEPAD_BUTTON_INDEX = 11;
 const LOW_STOCK_RESOURCE_THRESHOLD = 5;
 const EXTRA_INGREDIENT_RESOURCE_WEIGHT = 2;
 const DENSE_TWO_COLUMN_GRID = 'grid grid-cols-2 gap-4';
@@ -77,6 +77,7 @@ const DENSE_CARD_HEADER_GRID = 'grid grid-cols-[minmax(0,1fr)_auto] gap-3';
 const DENSE_ITEM_GRID = 'grid grid-cols-[repeat(auto-fit,minmax(11rem,1fr))] gap-2';
 
 type ModTab = 'overview' | 'normal' | 'rare' | 'service' | 'inventory' | 'logs';
+const MOD_TABS: ModTab[] = ['overview', 'normal', 'rare', 'service', 'inventory', 'logs'];
 
 const RATING_LABELS: Record<TRating, string> = {
   ExGood: '完美',
@@ -432,70 +433,21 @@ export function ModWorkbench() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!isTauriRuntime()) return;
-
-    let disposed = false;
-    let animationFrame = 0;
-    let rightStickPressed = false;
-    let gamepadToggleArmed = false;
-    let lastToggleAt = 0;
-
-    const requestToggle = () => {
-      const now = Date.now();
-      if (now - lastToggleAt < 1200) return;
-      lastToggleAt = now;
+  useGamepadNavigation({
+    activeTab: tab,
+    tabs: MOD_TABS,
+    focusMode: serviceFocusMode,
+    onTabChange: setTab,
+    onToggleWindow: () => {
       void toggleCompanionFocus();
-    };
-
-    const isRightStickPressed = () => {
-      const gamepads = navigator.getGamepads?.() ?? [];
-      return Array.from(gamepads).some(
-        (gamepad) => gamepad?.connected && gamepad.buttons[RIGHT_STICK_GAMEPAD_BUTTON_INDEX]?.pressed,
-      );
-    };
-
-    const resetGamepadLatch = () => {
-      rightStickPressed = isRightStickPressed();
-      gamepadToggleArmed = !rightStickPressed;
-    };
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'F8' || event.repeat) return;
-      event.preventDefault();
-      requestToggle();
-    };
-
-    const watchGamepads = () => {
-      if (disposed) return;
-
-      const nextRightStickPressed = isRightStickPressed();
-
-      if (!nextRightStickPressed) {
-        gamepadToggleArmed = true;
-      } else if (gamepadToggleArmed && !rightStickPressed && document.hasFocus()) {
-        requestToggle();
-        gamepadToggleArmed = false;
-      }
-
-      rightStickPressed = nextRightStickPressed;
-      animationFrame = window.requestAnimationFrame(watchGamepads);
-    };
-
-    resetGamepadLatch();
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('focus', resetGamepadLatch);
-    document.addEventListener('visibilitychange', resetGamepadLatch);
-    animationFrame = window.requestAnimationFrame(watchGamepads);
-
-    return () => {
-      disposed = true;
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('focus', resetGamepadLatch);
-      document.removeEventListener('visibilitychange', resetGamepadLatch);
-      if (animationFrame) window.cancelAnimationFrame(animationFrame);
-    };
-  }, []);
+    },
+    onEnterFocusMode: () => {
+      setTab('service');
+      setServiceFocusMode(true);
+    },
+    onExitFocusMode: () => setServiceFocusMode(false),
+    onToggleCompactMode: () => setServiceFocusCompact((current) => !current),
+  });
 
   useEffect(() => {
     refresh();
@@ -742,6 +694,8 @@ function ModOverviewPanel({
           <div className="grid gap-2 text-sm">
             <InfoLine label="F8" value="在游戏与独立窗口之间切换；若启用旧游戏内面板，则打开或关闭游戏内面板" />
             <InfoLine label="RS Click" value="手柄默认在游戏与独立窗口之间切换" />
+            <InfoLine label="手柄导航" value="左摇杆/十字键移动，A 确认，B 返回，LB/RB 切换页面，LT/RT 滚动" />
+            <InfoLine label="专注模式" value="Y 进入专注模式或切换精简模式，X 收藏当前推荐项" />
             <InfoLine label="F9" value="刷新游戏运行时数据检测" />
             <InfoLine label="窗口关闭" value="关闭按钮会隐藏到托盘；托盘菜单可重新显示或退出" />
           </div>
@@ -2031,7 +1985,13 @@ function RecipeRecommendationRow({
   const busy = favoriteBusyKey === (favorite?.id ?? favoriteKey);
 
   return (
-    <div className={compact ? 'rounded-md border border-border/80 p-1.5 text-xs' : 'rounded-md border border-border/80 p-2 text-sm'}>
+    <div
+      className={compact ? 'rounded-md border border-border/80 p-1.5 text-xs' : 'rounded-md border border-border/80 p-2 text-sm'}
+      data-gamepad-focusable={onToggleFavorite ? 'true' : undefined}
+      data-gamepad-favorite-scope={onToggleFavorite ? 'true' : undefined}
+      data-gamepad-row={onToggleFavorite ? 'true' : undefined}
+      tabIndex={onToggleFavorite ? 0 : undefined}
+    >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
           <span className="text-xs text-muted-foreground">#{index + 1}</span>
@@ -2049,6 +2009,7 @@ function RecipeRecommendationRow({
             size={compact ? 'icon-xs' : 'xs'}
             variant={favorite ? 'default' : 'outline'}
             disabled={busy}
+            data-gamepad-favorite="true"
             title={favorite ? '取消收藏该料理方案' : '收藏该料理方案'}
             onClick={onToggleFavorite}
           >
@@ -2111,7 +2072,13 @@ function BeverageRecommendationRow({
   const busy = favoriteBusyKey === (favorite?.id ?? favoriteKey);
 
   return (
-    <div className={compact ? 'rounded-md border border-border/80 p-1.5 text-xs' : 'rounded-md border border-border/80 p-2 text-sm'}>
+    <div
+      className={compact ? 'rounded-md border border-border/80 p-1.5 text-xs' : 'rounded-md border border-border/80 p-2 text-sm'}
+      data-gamepad-focusable={onToggleFavorite ? 'true' : undefined}
+      data-gamepad-favorite-scope={onToggleFavorite ? 'true' : undefined}
+      data-gamepad-row={onToggleFavorite ? 'true' : undefined}
+      tabIndex={onToggleFavorite ? 0 : undefined}
+    >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="text-xs text-muted-foreground">#{index + 1}</span>
@@ -2127,6 +2094,7 @@ function BeverageRecommendationRow({
             size={compact ? 'icon-xs' : 'xs'}
             variant={favorite ? 'default' : 'outline'}
             disabled={busy}
+            data-gamepad-favorite="true"
             title={favorite ? '取消收藏该酒水' : '收藏该酒水'}
             onClick={onToggleFavorite}
           >

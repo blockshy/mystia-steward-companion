@@ -126,4 +126,14 @@
     @apply bg-background text-foreground;
     margin: 0;
   }
+
+  body[data-gamepad-navigation='active'] [data-gamepad-focus='true'],
+  body[data-gamepad-navigation='active'] :focus {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  body[data-gamepad-navigation='active'] [data-gamepad-focus='true'] {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--ring) 20%, transparent);
+  }
 }
