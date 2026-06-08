@@ -18,6 +18,7 @@
 - `tools/sync-data.sh` 和 `build-release.ps1` 会把 `apps/companion/src/data` 同步到 Mod `Data/`。
 - 独立伴随窗口通过 `127.0.0.1:32145` 读取运行态；除 `/health` 外，本地 API 使用 `X-Mystia-Steward-Companion-Token` 授权。
 - 伴随窗口控制端口固定为 `127.0.0.1:32146`，支持 `show`、`toggle`、`exit` 消息；Mod 热键应先通知已有窗口，控制端口不可达时才启动新进程。
+- 伴随窗口会在 Tauri app data 目录保存 `window-state.txt`，记录外框位置和内框尺寸；启动时恢复大小和仍在显示器范围内的位置，防止换显示器后窗口离屏。
 - 伴随窗口退出跟随不只依赖本地 API `/health` 失联，还会监控启动参数中的 `--game-pid`。游戏窗口 X、游戏内退出按钮、或 Unity 退出阶段未及时发送 `exit` 控制消息时，都应由 PID 监控兜底关闭伴随窗口。
 - `修改` 页通过 `/inventory/set` 在 Unity 主线程写入当前运行时材料和酒水库存；用户仍需在游戏内保存才能持久化。
 - `BepInEx/LogOutput.log` 通过伴随窗口 `日志` 页读取，接口按 `LocalApi.MaxLogLines` 和 `LocalApi.MaxLogBytes` 裁剪尾部内容，前端也只保留有限行数显示。
@@ -29,12 +30,13 @@
 - 运行时捕获订单维护 `ChangeVersion`；UI 控制器在版本变化后延迟 0.2 秒强制刷新经营数据并发布本地 API 快照。伴随窗口在 `经营中` 和稀客专注模式下以 750ms 轮询快照，其他页面保持 2 秒。
 - 运行时稀客 ID 会先归一化为本地 `customer_rare.json` 身份；优先读取游戏 `DataBaseCharacter.GetAllMappedGuests()` 固定映射和 `GetSpecialGuestsAndMappedGuests()` 完整运行时稀客表，运行时表按游戏语言名称匹配本地唯一同名稀客，手工事件变体只作为兜底。本地缺失但运行时具备有效喜好 Tag 的稀客会合成为临时 `RuntimeRareCustomer`，供经营中订单推荐和伴随窗口稀客页使用；剧情 Intro/Parallel/Current、问号占位、隐藏图鉴、NeverCome、无喜好数据的角色不合成。带具体桌号的捕获订单只允许匹配同一桌活跃稀客，未入座 `desk=-1` 稀客不能保活旧订单。
 - 诊断开启且经营数据扫描触发时，运行时固定数据会按主题写到诊断目录：`runtime-static-data.log` 映射稀客与 `aliasSource`、`runtime-tags.log` 标签和 TagRule、`runtime-database-diff.log` 核心食材/酒水/料理表对照与读取方式、`runtime-guests.log` 普客/稀客/事件变体、`runtime-izakayas.log` 场景和客人池。游戏数据库未初始化时每 5 秒重试，日志头部 `Complete: True` 表示读取成功。
-- 稀客订单专注模式支持精简模式，精简模式隐藏推荐料理 Tag 并压缩推荐面板间距。
+- 稀客订单专注模式支持精简模式和料理/酒水显示数量配置；精简模式隐藏推荐料理 Tag 并压缩推荐面板间距，显示数量包含收藏置顶项。
 
 ## 推荐排序口径
 
-- 经营中料理推荐：分数降序 -> 总成本降序 -> 料理 ID 升序。
-- 经营中酒水推荐：分数降序 -> 总成本降序 -> 酒水 ID 升序。
+- 经营中/稀客料理推荐：满足点单 Tag -> 分数降序 -> 加料种类数升序 -> 资源压力升序 -> 料理售价降序 -> 加料成本升序 -> 料理 ID 升序。资源压力优先惩罚低库存材料，并对额外加料加权；不要再使用“总成本越高越靠前”作为收益判断。
+- 经营中酒水推荐：分数降序 -> 酒水售价降序 -> 酒水 ID 升序。
 - 稀客和经营中主推荐列表只展示满足当前点单料理 Tag / 酒水 Tag 的结果；未满足点单的 fallback 不得混入正式推荐。料理推荐优先 3 分以上候选，但低于 3 分且满足点单的料理仍要作为兜底显示。
+- 稀客收藏保存在 `BepInEx/config/MystiaStewardCompanion/favorites.json`，按 `customerId + foodTag` 收藏料理方案（含加料 ID），按 `customerId + beverageTag` 收藏酒水。收藏只置顶当前仍在推荐候选中的结果，不绕过解锁、库存和点单 Tag 校验。
 - 经营中订单显示顺序：首次出现时间升序；新订单不应插到已有订单前面。
-- 推荐行需要显示库存数量；料理行需要显示厨具和基础配方。
+- 推荐行需要显示库存数量；料理行需要显示厨具、基础配方和加料，并对这些定位信息做高亮。

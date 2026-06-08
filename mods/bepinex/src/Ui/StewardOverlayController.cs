@@ -659,7 +659,10 @@ internal sealed class StewardOverlayController
             .Where(row => row.MeetsRequiredFood)
             .OrderByDescending(row => row.MeetsRequiredFood)
             .ThenByDescending(row => row.FoodScore)
-            .ThenByDescending(row => row.BaseCost + row.ExtraCost)
+            .ThenBy(row => row.ExtraIngredients.Count)
+            .ThenBy(row => GetRareRecipeResourcePressure(row, state))
+            .ThenByDescending(row => row.Recipe.Price)
+            .ThenBy(row => row.ExtraCost)
             .ThenBy(row => row.Recipe.Id)
             .Take(Math.Max(1, _config.MaxRareRows.Value));
 
@@ -676,6 +679,32 @@ internal sealed class StewardOverlayController
             () => DrawRareRecipeRows(recipeRows),
             L("酒水推荐", "Beverage recommendations"),
             () => DrawRareBeverageRows(beverageRows));
+    }
+
+    private int GetRareRecipeResourcePressure(RareRecipeResult row, RecommendationState state)
+    {
+        if (_repository == null) return row.BaseCost + row.ExtraCost;
+
+        var basePressure = row.Recipe.Ingredients.Sum(name =>
+            _repository.IngredientsByName.TryGetValue(name, out var ingredient)
+                ? GetIngredientResourcePressure(ingredient, state)
+                : 0);
+        var extraPressure = row.ExtraIngredients.Sum(ingredient => GetIngredientResourcePressure(ingredient, state));
+
+        return basePressure + extraPressure * 2;
+    }
+
+    private static int GetIngredientResourcePressure(Ingredient ingredient, RecommendationState state)
+    {
+        const int lowStockThreshold = 5;
+        var qty = state.OwnedIngredientQty.TryGetValue(ingredient.Id, out var ownedQty)
+            ? Math.Max(0, ownedQty)
+            : 0;
+        var stockPenalty = qty <= 0
+            ? (lowStockThreshold + 1) * 100
+            : Math.Max(0, lowStockThreshold + 1 - qty) * 100;
+
+        return stockPenalty + ingredient.Price;
     }
 
     private void DrawRecommendationColumns(string leftTitle, Action drawLeft, string rightTitle, Action drawRight)
@@ -1145,6 +1174,7 @@ internal sealed class StewardOverlayController
                 UpdateLocalApiLogSettings,
                 OpenLocalApiLogFolder,
                 EditInventoryFromLocalApi,
+                new FavoriteStore(FavoriteStore.ResolvePath(), _log),
                 _log);
             _localApiServer.Start();
         }

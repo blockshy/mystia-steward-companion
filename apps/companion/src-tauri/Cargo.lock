@@ -1775,7 +1775,7 @@ dependencies = [
 
 [[package]]
 name = "mystia-steward-companion"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "tauri",
  "tauri-build",

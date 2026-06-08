@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode, SetStateAction } from 'react';
-import { FolderOpen, Power, RefreshCw } from 'lucide-react';
+import { FolderOpen, Power, RefreshCw, Star } from 'lucide-react';
 import { CustomerScoreBadges } from '@/components/ScoreBadge';
 import { RegionSelector } from '@/components/RegionSelector';
 import { TagBadge } from '@/components/TagBadge';
@@ -49,18 +49,32 @@ const LEGACY_STORAGE_PREFIX = 'mystia-steward';
 const ENDPOINT_STORAGE_KEY = `${STORAGE_PREFIX}-mod-api-endpoint`;
 const TOKEN_STORAGE_KEY = `${STORAGE_PREFIX}-mod-api-token`;
 const TAB_STORAGE_KEY = `${STORAGE_PREFIX}-mod-tab`;
+const FOCUS_COMPACT_STORAGE_KEY = `${STORAGE_PREFIX}-service-focus-compact`;
+const FOCUS_RECIPE_LIMIT_STORAGE_KEY = `${STORAGE_PREFIX}-service-focus-recipe-limit`;
+const FOCUS_BEVERAGE_LIMIT_STORAGE_KEY = `${STORAGE_PREFIX}-service-focus-beverage-limit`;
 const LEGACY_ENDPOINT_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-api-endpoint`;
 const LEGACY_TOKEN_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-api-token`;
 const LEGACY_TAB_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-tab`;
 const MAX_RECOMMENDATION_ROWS = 8;
+const MAX_FOCUS_RECOMMENDATION_ROWS = 20;
+const DEFAULT_FOCUS_RECOMMENDATION_ROWS = 8;
 const MAX_LOG_LINES_IN_VIEW = 400;
 const NON_ORDERABLE_RARE_FOOD_TAGS = new Set(['流行喜爱', '流行厌恶']);
 const INGREDIENTS = allIngredients as IIngredient[];
+const INGREDIENT_BY_NAME = new Map(INGREDIENTS.map((ingredient) => [ingredient.name, ingredient]));
 const INGREDIENT_ID_BY_NAME = new Map(INGREDIENTS.map((ingredient) => [ingredient.name, ingredient.id]));
 const INGREDIENT_NAME_BY_ID = new Map(INGREDIENTS.map((ingredient) => [ingredient.id, ingredient.name]));
 const BEVERAGES = allBeverages as IBeverage[];
 const BEVERAGE_NAME_BY_ID = new Map(BEVERAGES.map((beverage) => [beverage.id, beverage.name]));
 const RIGHT_STICK_GAMEPAD_BUTTON_INDEX = 11;
+const LOW_STOCK_RESOURCE_THRESHOLD = 5;
+const EXTRA_INGREDIENT_RESOURCE_WEIGHT = 2;
+const DENSE_TWO_COLUMN_GRID = 'grid grid-cols-2 gap-4';
+const DENSE_TWO_COLUMN_GRID_TIGHT = 'grid grid-cols-2 gap-2';
+const DENSE_THREE_COLUMN_GRID = 'grid grid-cols-3 gap-3';
+const DENSE_FOUR_COLUMN_GRID = 'grid grid-cols-4 gap-3';
+const DENSE_CARD_HEADER_GRID = 'grid grid-cols-[minmax(0,1fr)_auto] gap-3';
+const DENSE_ITEM_GRID = 'grid grid-cols-[repeat(auto-fit,minmax(11rem,1fr))] gap-2';
 
 type ModTab = 'overview' | 'normal' | 'rare' | 'service' | 'inventory' | 'logs';
 
@@ -199,6 +213,42 @@ interface InventoryEditResponse {
   error: string | null;
 }
 
+interface FavoriteData {
+  version: number;
+  recipes: FavoriteRecipeEntry[];
+  beverages: FavoriteBeverageEntry[];
+}
+
+interface FavoriteRecipeEntry {
+  id: string;
+  customerId: number;
+  customerName: string;
+  foodTag: string;
+  recipeId: number;
+  extraIngredientIds: number[];
+  createdAtUtc: string;
+  updatedAtUtc: string;
+}
+
+interface FavoriteBeverageEntry {
+  id: string;
+  customerId: number;
+  customerName: string;
+  beverageTag: string;
+  beverageId: number;
+  createdAtUtc: string;
+  updatedAtUtc: string;
+}
+
+interface FavoriteMutationResponse {
+  ok: boolean;
+  favorites: FavoriteData;
+  error: string | null;
+}
+
+type ToggleRecipeFavorite = (customer: ICustomerRare, foodTag: string, recipe: IRareRecipeResult) => Promise<void>;
+type ToggleBeverageFavorite = (customer: ICustomerRare, beverageTag: string, beverage: IRareBeverageResult) => Promise<void>;
+
 export function ModWorkbench() {
   const [endpoint, setEndpoint] = useState(() =>
     readMigratedStorage(ENDPOINT_STORAGE_KEY, LEGACY_ENDPOINT_STORAGE_KEY, DEFAULT_ENDPOINT),
@@ -208,7 +258,15 @@ export function ModWorkbench() {
   );
   const [tab, setTab] = useState<ModTab>(() => readStoredTab());
   const [serviceFocusMode, setServiceFocusMode] = useState(false);
-  const [serviceFocusCompact, setServiceFocusCompact] = useState(false);
+  const [serviceFocusCompact, setServiceFocusCompact] = useState(() =>
+    readStoredBoolean(FOCUS_COMPACT_STORAGE_KEY, false),
+  );
+  const [serviceFocusRecipeLimit, setServiceFocusRecipeLimit] = useState(() =>
+    readStoredFocusLimit(FOCUS_RECIPE_LIMIT_STORAGE_KEY),
+  );
+  const [serviceFocusBeverageLimit, setServiceFocusBeverageLimit] = useState(() =>
+    readStoredFocusLimit(FOCUS_BEVERAGE_LIMIT_STORAGE_KEY),
+  );
   const [snapshot, setSnapshot] = useState<LocalApiSnapshot | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -217,6 +275,9 @@ export function ModWorkbench() {
   const [rareCustomerId, setRareCustomerId] = useState<number | null>(null);
   const [requiredFoodTag, setRequiredFoodTag] = useState('');
   const [requiredBeverageTag, setRequiredBeverageTag] = useState('');
+  const [favorites, setFavorites] = useState<FavoriteData>(() => emptyFavoriteData());
+  const [favoriteError, setFavoriteError] = useState('');
+  const [favoriteBusyKey, setFavoriteBusyKey] = useState('');
   const recommendationCacheRef = useRef(new Map<string, CachedRecommendation>());
   const refreshInFlightRef = useRef(false);
 
@@ -236,8 +297,8 @@ export function ModWorkbench() {
 
   const runtimeSets = useMemo(() => buildRuntimeSets(runtime), [runtime]);
   const orderRecommendations = useMemo(
-    () => buildOrderRecommendations(night?.orders ?? [], runtime, rareCustomersById, recommendationCacheRef.current),
-    [night?.orders, runtime, rareCustomersById],
+    () => buildOrderRecommendations(night?.orders ?? [], runtime, rareCustomersById, recommendationCacheRef.current, favorites),
+    [night?.orders, runtime, rareCustomersById, favorites],
   );
   const snapshotRefreshIntervalMs = tab === 'service' || serviceFocusMode ? 750 : 2000;
 
@@ -262,6 +323,66 @@ export function ModWorkbench() {
     }
   }, [apiToken, normalizedEndpoint]);
 
+  const refreshFavorites = useCallback(async () => {
+    if (!apiToken) {
+      setFavorites(emptyFavoriteData());
+      return;
+    }
+
+    const abortController = new AbortController();
+    const timeoutId = window.setTimeout(() => abortController.abort(), 2800);
+
+    try {
+      const data = await readFavorites(normalizedEndpoint, apiToken, abortController.signal);
+      setFavorites(normalizeFavoriteData(data));
+      setFavoriteError('');
+    } catch (err) {
+      setFavoriteError(err instanceof Error ? err.message : String(err));
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+  }, [apiToken, normalizedEndpoint]);
+
+  const toggleRecipeFavorite = useCallback<ToggleRecipeFavorite>(async (customer, foodTag, recipe) => {
+    if (!apiToken || !foodTag) return;
+    const existing = findRecipeFavorite(favorites, customer.id, foodTag, recipe);
+    const busyKey = existing?.id ?? recipeFavoriteKey(customer.id, foodTag, recipe);
+    setFavoriteBusyKey(busyKey);
+    setFavoriteError('');
+
+    try {
+      const response = existing
+        ? await removeRecipeFavorite(normalizedEndpoint, apiToken, existing.id)
+        : await addRecipeFavorite(normalizedEndpoint, apiToken, customer, foodTag, recipe);
+      if (!response.ok) throw new Error(response.error || '收藏更新失败');
+      setFavorites(normalizeFavoriteData(response.favorites));
+    } catch (err) {
+      setFavoriteError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setFavoriteBusyKey('');
+    }
+  }, [apiToken, favorites, normalizedEndpoint]);
+
+  const toggleBeverageFavorite = useCallback<ToggleBeverageFavorite>(async (customer, beverageTag, beverage) => {
+    if (!apiToken || !beverageTag) return;
+    const existing = findBeverageFavorite(favorites, customer.id, beverageTag, beverage);
+    const busyKey = existing?.id ?? beverageFavoriteKey(customer.id, beverageTag, beverage);
+    setFavoriteBusyKey(busyKey);
+    setFavoriteError('');
+
+    try {
+      const response = existing
+        ? await removeBeverageFavorite(normalizedEndpoint, apiToken, existing.id)
+        : await addBeverageFavorite(normalizedEndpoint, apiToken, customer, beverageTag, beverage);
+      if (!response.ok) throw new Error(response.error || '收藏更新失败');
+      setFavorites(normalizeFavoriteData(response.favorites));
+    } catch (err) {
+      setFavoriteError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setFavoriteBusyKey('');
+    }
+  }, [apiToken, favorites, normalizedEndpoint]);
+
   useEffect(() => {
     localStorage.setItem(ENDPOINT_STORAGE_KEY, normalizedEndpoint);
   }, [normalizedEndpoint]);
@@ -273,6 +394,18 @@ export function ModWorkbench() {
   useEffect(() => {
     localStorage.setItem(TAB_STORAGE_KEY, tab);
   }, [tab]);
+
+  useEffect(() => {
+    localStorage.setItem(FOCUS_COMPACT_STORAGE_KEY, serviceFocusCompact ? '1' : '0');
+  }, [serviceFocusCompact]);
+
+  useEffect(() => {
+    localStorage.setItem(FOCUS_RECIPE_LIMIT_STORAGE_KEY, String(serviceFocusRecipeLimit));
+  }, [serviceFocusRecipeLimit]);
+
+  useEffect(() => {
+    localStorage.setItem(FOCUS_BEVERAGE_LIMIT_STORAGE_KEY, String(serviceFocusBeverageLimit));
+  }, [serviceFocusBeverageLimit]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -370,14 +503,27 @@ export function ModWorkbench() {
     return () => window.clearInterval(timer);
   }, [refresh, snapshotRefreshIntervalMs]);
 
+  useEffect(() => {
+    refreshFavorites();
+  }, [refreshFavorites]);
+
   if (serviceFocusMode) {
     return (
       <ServiceFocusPage
         recommendations={orderRecommendations.recommendations}
         recommendationIssues={orderRecommendations.recommendationIssues}
         runtimeSets={runtimeSets}
+        favorites={favorites}
+        favoriteBusyKey={favoriteBusyKey}
+        favoriteError={favoriteError}
         compact={serviceFocusCompact}
+        recipeLimit={serviceFocusRecipeLimit}
+        beverageLimit={serviceFocusBeverageLimit}
         onCompactChange={setServiceFocusCompact}
+        onRecipeLimitChange={setServiceFocusRecipeLimit}
+        onBeverageLimitChange={setServiceFocusBeverageLimit}
+        onToggleRecipeFavorite={toggleRecipeFavorite}
+        onToggleBeverageFavorite={toggleBeverageFavorite}
         onExit={() => setServiceFocusMode(false)}
       />
     );
@@ -406,7 +552,7 @@ export function ModWorkbench() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+      <div className={DENSE_THREE_COLUMN_GRID}>
         <StatusCard
           label="连接状态"
           value={error ? '未连接' : snapshot ? '已连接' : '连接中'}
@@ -481,6 +627,9 @@ export function ModWorkbench() {
             rareCustomerId={rareCustomerId}
             requiredFoodTag={requiredFoodTag}
             requiredBeverageTag={requiredBeverageTag}
+            favorites={favorites}
+            favoriteBusyKey={favoriteBusyKey}
+            favoriteError={favoriteError}
             onPlaceChange={(place) => {
               setManualPlace(place);
               setRareCustomerId(null);
@@ -500,6 +649,8 @@ export function ModWorkbench() {
             }}
             onFoodTagChange={setRequiredFoodTag}
             onBeverageTagChange={setRequiredBeverageTag}
+            onToggleRecipeFavorite={toggleRecipeFavorite}
+            onToggleBeverageFavorite={toggleBeverageFavorite}
           />
         </TabsContent>
 
@@ -511,6 +662,11 @@ export function ModWorkbench() {
             recommendations={orderRecommendations.recommendations}
             recommendationIssues={orderRecommendations.recommendationIssues}
             runtimeSets={runtimeSets}
+            favorites={favorites}
+            favoriteBusyKey={favoriteBusyKey}
+            favoriteError={favoriteError}
+            onToggleRecipeFavorite={toggleRecipeFavorite}
+            onToggleBeverageFavorite={toggleBeverageFavorite}
             onEnterFocusMode={() => setServiceFocusMode(true)}
           />
         </TabsContent>
@@ -560,7 +716,7 @@ function ModOverviewPanel({
   return (
     <div className="space-y-4">
       <Card>
-        <CardContent className="grid gap-3 p-4 text-sm md:grid-cols-2">
+        <CardContent className={`${DENSE_TWO_COLUMN_GRID_TIGHT} p-4 text-sm`}>
           <InfoLine label="数据来源" value="游戏实时 API，不读取 .memory 存档" />
           <InfoLine label="API 地址" value={endpoint} mono />
           <InfoLine label="连接状态" value={error ? `未连接: ${error}` : snapshot ? '已连接' : '连接中'} />
@@ -573,7 +729,7 @@ function ModOverviewPanel({
       </Card>
 
       <Card>
-        <CardContent className="grid gap-3 p-4 text-sm md:grid-cols-4">
+        <CardContent className={`${DENSE_FOUR_COLUMN_GRID} p-4 text-sm`}>
           <Metric label="可用料理" value={runtime?.availableRecipeIds.length ?? 0} />
           <Metric label="可用酒水" value={runtime?.availableBeverageIds.length ?? 0} />
           <Metric label="可用食材" value={runtime?.availableIngredientIds.length ?? 0} />
@@ -581,7 +737,7 @@ function ModOverviewPanel({
         </CardContent>
       </Card>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <div className={DENSE_TWO_COLUMN_GRID}>
         <ListPanel title="快捷键">
           <div className="grid gap-2 text-sm">
             <InfoLine label="F8" value="在游戏与独立窗口之间切换；若启用旧游戏内面板，则打开或关闭游戏内面板" />
@@ -599,7 +755,7 @@ function ModOverviewPanel({
         </ListPanel>
 
         <ListPanel title="低库存概览">
-          <div className="grid gap-4 md:grid-cols-2">
+          <div className={DENSE_TWO_COLUMN_GRID}>
             <LowStockColumn title="材料" entries={ownedIngredientEntries} />
             <LowStockColumn title="酒水" entries={ownedBeverageEntries} />
           </div>
@@ -664,7 +820,7 @@ function ModNormalPanel({
       {!selectedPlace && <EmptyState text="请选择地区后查看普客推荐" />}
 
       {selectedPlace && (
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <div className={DENSE_TWO_COLUMN_GRID}>
           <ListPanel title={`料理推荐 (${recipes.length})`}>
             {recipes.length === 0 && <EmptyRow text="暂无可推荐料理" />}
             <div className="space-y-2">
@@ -697,7 +853,7 @@ function ModNormalPanel({
 
       {selectedPlace && (
         <ListPanel title={`地区普客 (${customers.length})`}>
-          <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
+          <div className={DENSE_ITEM_GRID}>
             {customers.map((customer) => (
               <div key={customer.id} className="rounded-md border border-border/80 p-2 text-sm">
                 <div className="font-medium">{customer.name}</div>
@@ -723,11 +879,16 @@ function ModRarePanel({
   rareCustomerId,
   requiredFoodTag,
   requiredBeverageTag,
+  favorites,
+  favoriteBusyKey,
+  favoriteError,
   onPlaceChange,
   onFollowDetectedPlace,
   onRareCustomerChange,
   onFoodTagChange,
   onBeverageTagChange,
+  onToggleRecipeFavorite,
+  onToggleBeverageFavorite,
 }: {
   runtime: RecommendationStateSnapshot | null;
   runtimeSets: RuntimeSets | null;
@@ -737,11 +898,16 @@ function ModRarePanel({
   rareCustomerId: number | null;
   requiredFoodTag: string;
   requiredBeverageTag: string;
+  favorites: FavoriteData;
+  favoriteBusyKey: string;
+  favoriteError: string;
   onPlaceChange: (place: TPlace) => void;
   onFollowDetectedPlace: () => void;
   onRareCustomerChange: (customerId: number | null) => void;
   onFoodTagChange: (tag: string) => void;
   onBeverageTagChange: (tag: string) => void;
+  onToggleRecipeFavorite: ToggleRecipeFavorite;
+  onToggleBeverageFavorite: ToggleBeverageFavorite;
 }) {
   const customers = useMemo(() => {
     if (!selectedPlace) return [];
@@ -789,16 +955,18 @@ function ModRarePanel({
       runtimeSets.ownedIngredientQty,
       runtime.famousShopEnabled,
     )
-      .sort(compareRareRecipesForService)
+      .sort((a, b) => compareRareRecipesForService(a, b, runtimeSets.ownedIngredientQty))
+      .sort((a, b) => compareFavoriteRecipeResults(a, b, favorites, selectedCustomer.id, foodTag))
       .slice(0, MAX_RECOMMENDATION_ROWS);
-  }, [beverageTag, foodTag, runtime, runtimeSets, selectedCustomer]);
+  }, [beverageTag, favorites, foodTag, runtime, runtimeSets, selectedCustomer]);
 
   const beverages = useMemo(() => {
     if (!runtimeSets || !selectedCustomer || !beverageTag) return [];
     return rankBeveragesForRare(selectedCustomer, beverageTag, runtimeSets.beverageIds)
       .sort(compareRareBeveragesForService)
+      .sort((a, b) => compareFavoriteBeverageResults(a, b, favorites, selectedCustomer.id, beverageTag))
       .slice(0, MAX_RECOMMENDATION_ROWS);
-  }, [beverageTag, runtimeSets, selectedCustomer]);
+  }, [beverageTag, favorites, runtimeSets, selectedCustomer]);
 
   if (!runtime || !runtimeSets) return <RuntimeUnavailable />;
 
@@ -818,7 +986,7 @@ function ModRarePanel({
       {selectedPlace && selectedCustomer && (
         <>
           <Card>
-            <CardContent className="grid gap-3 p-4 text-sm lg:grid-cols-3">
+            <CardContent className={`${DENSE_THREE_COLUMN_GRID} p-4 text-sm`}>
               <div>
                 <div className="mb-1 text-xs text-muted-foreground">稀客</div>
                 <Select value={String(selectedCustomer.id)} onValueChange={(value) => onRareCustomerChange(Number(value))}>
@@ -862,8 +1030,13 @@ function ModRarePanel({
               </div>
             </CardContent>
           </Card>
+          {favoriteError && (
+            <div className="rounded-md border border-destructive/30 px-3 py-2 text-sm text-destructive">
+              {favoriteError}
+            </div>
+          )}
 
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <div className={DENSE_TWO_COLUMN_GRID}>
             <ListPanel title={`料理推荐 (${recipes.length})`}>
               {recipes.length === 0 && <EmptyRow text="暂无满足点单的料理" />}
               <div className="space-y-2">
@@ -873,6 +1046,10 @@ function ModRarePanel({
                     recipe={recipe}
                     index={index}
                     ownedIngredientQty={runtimeSets.ownedIngredientQty}
+                    favorite={findRecipeFavorite(favorites, selectedCustomer.id, foodTag, recipe)}
+                    favoriteKey={recipeFavoriteKey(selectedCustomer.id, foodTag, recipe)}
+                    favoriteBusyKey={favoriteBusyKey}
+                    onToggleFavorite={() => onToggleRecipeFavorite(selectedCustomer, foodTag, recipe)}
                   />
                 ))}
               </div>
@@ -887,6 +1064,10 @@ function ModRarePanel({
                     beverage={beverage}
                     index={index}
                     ownedBeverageQty={runtimeSets.ownedBeverageQty}
+                    favorite={findBeverageFavorite(favorites, selectedCustomer.id, beverageTag, beverage)}
+                    favoriteKey={beverageFavoriteKey(selectedCustomer.id, beverageTag, beverage)}
+                    favoriteBusyKey={favoriteBusyKey}
+                    onToggleFavorite={() => onToggleBeverageFavorite(selectedCustomer, beverageTag, beverage)}
                   />
                 ))}
               </div>
@@ -905,6 +1086,11 @@ function ModServicePanel({
   recommendations,
   recommendationIssues,
   runtimeSets,
+  favorites,
+  favoriteBusyKey,
+  favoriteError,
+  onToggleRecipeFavorite,
+  onToggleBeverageFavorite,
   onEnterFocusMode,
 }: {
   runtime: RecommendationStateSnapshot | null;
@@ -913,6 +1099,11 @@ function ModServicePanel({
   recommendations: OrderRecommendation[];
   recommendationIssues: RecommendationIssue[];
   runtimeSets: RuntimeSets | null;
+  favorites: FavoriteData;
+  favoriteBusyKey: string;
+  favoriteError: string;
+  onToggleRecipeFavorite: ToggleRecipeFavorite;
+  onToggleBeverageFavorite: ToggleBeverageFavorite;
   onEnterFocusMode: () => void;
 }) {
   const activeGuests = night?.activeRareGuests ?? [];
@@ -927,14 +1118,14 @@ function ModServicePanel({
       </div>
 
       <Card>
-        <CardContent className="grid gap-3 p-4 text-sm md:grid-cols-3">
+        <CardContent className={`${DENSE_THREE_COLUMN_GRID} p-4 text-sm`}>
           <InfoLine label="经营场景" value={detectedPlace ?? night?.placeLabel ?? '无经营场景'} />
           <InfoLine label="扫描状态" value={night?.source || '暂无'} />
           <InfoLine label="推荐数据" value={runtime ? '已就绪' : '暂不可用'} />
         </CardContent>
       </Card>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <div className={DENSE_TWO_COLUMN_GRID}>
         <ListPanel title="当前稀客">
           {activeGuests.length === 0 && <EmptyRow text="暂无稀客" />}
           {activeGuests.map((guest) => (
@@ -968,6 +1159,11 @@ function ModServicePanel({
           recommendations={recommendations}
           recommendationIssues={recommendationIssues}
           runtimeSets={runtimeSets}
+          favorites={favorites}
+          favoriteBusyKey={favoriteBusyKey}
+          favoriteError={favoriteError}
+          onToggleRecipeFavorite={onToggleRecipeFavorite}
+          onToggleBeverageFavorite={onToggleBeverageFavorite}
         />
       )}
     </div>
@@ -978,15 +1174,33 @@ function ServiceFocusPage({
   recommendations,
   recommendationIssues,
   runtimeSets,
+  favorites,
+  favoriteBusyKey,
+  favoriteError,
   compact,
+  recipeLimit,
+  beverageLimit,
   onCompactChange,
+  onRecipeLimitChange,
+  onBeverageLimitChange,
+  onToggleRecipeFavorite,
+  onToggleBeverageFavorite,
   onExit,
 }: {
   recommendations: OrderRecommendation[];
   recommendationIssues: RecommendationIssue[];
   runtimeSets: RuntimeSets | null;
+  favorites: FavoriteData;
+  favoriteBusyKey: string;
+  favoriteError: string;
   compact: boolean;
+  recipeLimit: number;
+  beverageLimit: number;
   onCompactChange: (value: boolean) => void;
+  onRecipeLimitChange: (value: number) => void;
+  onBeverageLimitChange: (value: number) => void;
+  onToggleRecipeFavorite: ToggleRecipeFavorite;
+  onToggleBeverageFavorite: ToggleBeverageFavorite;
   onExit: () => void;
 }) {
   const hasOrders = recommendations.length > 0 || recommendationIssues.length > 0;
@@ -998,10 +1212,22 @@ function ServiceFocusPage({
           <h1 className="text-xl font-semibold text-foreground">稀客订单专注模式</h1>
           <p className="mt-1 text-sm text-muted-foreground">只显示当前稀客点单推荐。</p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant={compact ? 'default' : 'outline'} onClick={() => onCompactChange(!compact)}>
-            {compact ? '常规模式' : '精简模式'}
-          </Button>
+        <div className="flex flex-wrap items-center justify-end gap-3">
+          <SwitchControl
+            label="精简模式"
+            checked={compact}
+            onCheckedChange={onCompactChange}
+          />
+          <FocusLimitInput
+            label="料理"
+            value={recipeLimit}
+            onChange={onRecipeLimitChange}
+          />
+          <FocusLimitInput
+            label="酒水"
+            value={beverageLimit}
+            onChange={onBeverageLimitChange}
+          />
           <Button size="sm" variant="outline" onClick={onExit}>退出专注模式</Button>
         </div>
       </div>
@@ -1011,7 +1237,14 @@ function ServiceFocusPage({
           recommendations={recommendations}
           recommendationIssues={recommendationIssues}
           runtimeSets={runtimeSets}
+          favorites={favorites}
+          favoriteBusyKey={favoriteBusyKey}
+          favoriteError={favoriteError}
           compact={compact}
+          recipeLimit={recipeLimit}
+          beverageLimit={beverageLimit}
+          onToggleRecipeFavorite={onToggleRecipeFavorite}
+          onToggleBeverageFavorite={onToggleBeverageFavorite}
         />
       ) : (
         <EmptyState text="暂无当前稀客点单。检测到稀客点单后，这里会自动显示推荐料理和酒水。" />
@@ -1024,12 +1257,26 @@ function CurrentOrderRecommendations({
   recommendations,
   recommendationIssues,
   runtimeSets,
+  favorites,
+  favoriteBusyKey,
+  favoriteError,
   compact = false,
+  recipeLimit = MAX_RECOMMENDATION_ROWS,
+  beverageLimit = MAX_RECOMMENDATION_ROWS,
+  onToggleRecipeFavorite,
+  onToggleBeverageFavorite,
 }: {
   recommendations: OrderRecommendation[];
   recommendationIssues: RecommendationIssue[];
   runtimeSets: RuntimeSets | null;
+  favorites: FavoriteData;
+  favoriteBusyKey: string;
+  favoriteError: string;
   compact?: boolean;
+  recipeLimit?: number;
+  beverageLimit?: number;
+  onToggleRecipeFavorite: ToggleRecipeFavorite;
+  onToggleBeverageFavorite: ToggleBeverageFavorite;
 }) {
   const rows = useMemo(
     () => [
@@ -1041,6 +1288,11 @@ function CurrentOrderRecommendations({
 
   return (
     <ListPanel title="当前点单推荐">
+      {favoriteError && (
+        <div className="mb-2 rounded-md border border-destructive/30 px-3 py-2 text-sm text-destructive">
+          {favoriteError}
+        </div>
+      )}
       <div className={compact ? 'space-y-2' : 'space-y-4'}>
         {rows.map((row) => {
           if (row.kind === 'issue') {
@@ -1061,7 +1313,13 @@ function CurrentOrderRecommendations({
               key={`${row.item.order.deskCode}-${row.item.order.guestId}-${row.item.order.foodTagId}-${row.item.order.beverageTagId}`}
               item={row.item}
               runtimeSets={runtimeSets}
+              favorites={favorites}
+              favoriteBusyKey={favoriteBusyKey}
               compact={compact}
+              recipeLimit={recipeLimit}
+              beverageLimit={beverageLimit}
+              onToggleRecipeFavorite={onToggleRecipeFavorite}
+              onToggleBeverageFavorite={onToggleBeverageFavorite}
             />
           );
         })}
@@ -1124,7 +1382,7 @@ function ModInventoryPanel({
   return (
     <div className="space-y-4">
       <Card>
-        <CardContent className="grid gap-3 p-4 text-sm lg:grid-cols-[1fr_auto]">
+        <CardContent className={`${DENSE_CARD_HEADER_GRID} p-4 text-sm`}>
           <div>
             <div className="font-semibold">库存数量修改</div>
             <div className="mt-1 text-xs text-muted-foreground">
@@ -1151,7 +1409,7 @@ function ModInventoryPanel({
         </CardContent>
       </Card>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <div className={DENSE_TWO_COLUMN_GRID}>
         <InventoryEditColumn
           title="材料"
           kind="ingredient"
@@ -1383,7 +1641,7 @@ function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToken: stri
       </Card>
 
       <Card>
-        <CardContent className="grid gap-3 p-4 text-sm md:grid-cols-2">
+        <CardContent className={`${DENSE_TWO_COLUMN_GRID_TIGHT} p-4 text-sm`}>
           <InfoLine label="本地 API 授权" value={apiToken ? '已通过启动参数接收' : '未收到 token，请从游戏内按 F8 重新显示窗口'} />
           <InfoLine label="日志读取" value={settings?.logAccessEnabled ? '开启' : '关闭'} />
           <InfoLine label="读取上限" value={responseLogLimit} />
@@ -1523,6 +1781,61 @@ function RuntimeUnavailable() {
   return <EmptyState text="尚未读取到游戏实时数据。请确认游戏已加载存档，且 Mod 本地 API 已连接。" />;
 }
 
+function SwitchControl({
+  label,
+  checked,
+  onCheckedChange,
+}: {
+  label: string;
+  checked: boolean;
+  onCheckedChange: (value: boolean) => void;
+}) {
+  return (
+    <label className="flex items-center gap-2 text-sm">
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        onClick={() => onCheckedChange(!checked)}
+        className={`relative h-5 w-9 shrink-0 rounded-full border transition-colors ${
+          checked ? 'border-primary bg-primary' : 'border-border bg-muted'
+        }`}
+      >
+        <span
+          className={`absolute left-0 top-1/2 size-4 -translate-y-1/2 rounded-full bg-background shadow-sm transition-transform ${
+            checked ? 'translate-x-4' : 'translate-x-0.5'
+          }`}
+        />
+      </button>
+      <span className="whitespace-nowrap">{label}</span>
+    </label>
+  );
+}
+
+function FocusLimitInput({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label className="flex items-center gap-1.5 text-sm">
+      <span className="whitespace-nowrap text-muted-foreground">{label}</span>
+      <Input
+        type="number"
+        min={1}
+        max={MAX_FOCUS_RECOMMENDATION_ROWS}
+        value={value}
+        onChange={(event) => onChange(normalizeFocusRecommendationLimit(Number(event.target.value)))}
+        className="h-8 w-16"
+      />
+    </label>
+  );
+}
+
 function PlaceToolbar({
   selectedPlace,
   detectedPlace,
@@ -1612,12 +1925,27 @@ function NormalBeverageRow({
 function OrderRecommendationPanel({
   item,
   runtimeSets,
+  favorites,
+  favoriteBusyKey,
   compact = false,
+  recipeLimit = MAX_RECOMMENDATION_ROWS,
+  beverageLimit = MAX_RECOMMENDATION_ROWS,
+  onToggleRecipeFavorite,
+  onToggleBeverageFavorite,
 }: {
   item: OrderRecommendation;
   runtimeSets: RuntimeSets | null;
+  favorites: FavoriteData;
+  favoriteBusyKey: string;
   compact?: boolean;
+  recipeLimit?: number;
+  beverageLimit?: number;
+  onToggleRecipeFavorite: ToggleRecipeFavorite;
+  onToggleBeverageFavorite: ToggleBeverageFavorite;
 }) {
+  const visibleRecipes = item.recipes.slice(0, normalizeFocusRecommendationLimit(recipeLimit));
+  const visibleBeverages = item.beverages.slice(0, normalizeFocusRecommendationLimit(beverageLimit));
+
   return (
     <div className={compact ? 'rounded-md border border-border p-2' : 'rounded-md border border-border p-3'}>
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1631,18 +1959,22 @@ function OrderRecommendationPanel({
         </div>
       </div>
 
-      <div className={compact ? 'mt-2 grid gap-2 lg:grid-cols-2' : 'mt-3 grid gap-4 lg:grid-cols-2'}>
+      <div className={compact ? `mt-2 ${DENSE_TWO_COLUMN_GRID_TIGHT}` : `mt-3 ${DENSE_TWO_COLUMN_GRID}`}>
         <div>
           <h3 className={compact ? 'mb-1 text-xs font-semibold' : 'mb-2 text-sm font-semibold'}>推荐料理</h3>
-          {item.recipes.length === 0 && <EmptyRow text="暂无满足点单的料理" />}
+          {visibleRecipes.length === 0 && <EmptyRow text="暂无满足点单的料理" />}
           <div className={compact ? 'space-y-1.5' : 'space-y-2'}>
-            {item.recipes.map((recipe, index) => (
+            {visibleRecipes.map((recipe, index) => (
               <RecipeRecommendationRow
                 key={`${recipe.recipe.id}-${index}`}
                 recipe={recipe}
                 index={index}
                 ownedIngredientQty={runtimeSets?.ownedIngredientQty ?? {}}
+                favorite={findRecipeFavorite(favorites, item.customer.id, item.order.foodTag, recipe)}
+                favoriteKey={recipeFavoriteKey(item.customer.id, item.order.foodTag, recipe)}
+                favoriteBusyKey={favoriteBusyKey}
                 compact={compact}
+                onToggleFavorite={() => onToggleRecipeFavorite(item.customer, item.order.foodTag, recipe)}
               />
             ))}
           </div>
@@ -1650,15 +1982,19 @@ function OrderRecommendationPanel({
 
         <div>
           <h3 className={compact ? 'mb-1 text-xs font-semibold' : 'mb-2 text-sm font-semibold'}>推荐酒水</h3>
-          {item.beverages.length === 0 && <EmptyRow text="暂无满足点单的酒水" />}
+          {visibleBeverages.length === 0 && <EmptyRow text="暂无满足点单的酒水" />}
           <div className={compact ? 'space-y-1.5' : 'space-y-2'}>
-            {item.beverages.map((beverage, index) => (
+            {visibleBeverages.map((beverage, index) => (
               <BeverageRecommendationRow
                 key={beverage.beverage.id}
                 beverage={beverage}
                 index={index}
                 ownedBeverageQty={runtimeSets?.ownedBeverageQty ?? {}}
+                favorite={findBeverageFavorite(favorites, item.customer.id, item.order.beverageTag, beverage)}
+                favoriteKey={beverageFavoriteKey(item.customer.id, item.order.beverageTag, beverage)}
+                favoriteBusyKey={favoriteBusyKey}
                 compact={compact}
+                onToggleFavorite={() => onToggleBeverageFavorite(item.customer, item.order.beverageTag, beverage)}
               />
             ))}
           </div>
@@ -1672,33 +2008,84 @@ function RecipeRecommendationRow({
   recipe,
   index,
   ownedIngredientQty,
+  favorite,
+  favoriteKey = '',
+  favoriteBusyKey = '',
   compact = false,
+  onToggleFavorite,
 }: {
   recipe: IRareRecipeResult;
   index: number;
   ownedIngredientQty: Record<number, number>;
+  favorite?: FavoriteRecipeEntry | null;
+  favoriteKey?: string;
+  favoriteBusyKey?: string;
   compact?: boolean;
+  onToggleFavorite?: () => void;
 }) {
   const totalCost = recipe.baseCost + recipe.extraCost;
   const extras = recipe.extraIngredients.length === 0
     ? '不加料'
-    : recipe.extraIngredients.map((ingredient) => `+${formatIngredientWithQty(ingredient.name, ownedIngredientQty)}`).join(', ');
+    : recipe.extraIngredients.map((ingredient) => formatIngredientWithQty(ingredient.name, ownedIngredientQty)).join(', ');
+  const baseRecipe = formatIngredientNamesWithQty(recipe.recipe.ingredients, ownedIngredientQty) || '无';
+  const busy = favoriteBusyKey === (favorite?.id ?? favoriteKey);
 
   return (
     <div className={compact ? 'rounded-md border border-border/80 p-1.5 text-xs' : 'rounded-md border border-border/80 p-2 text-sm'}>
-      <div className="flex flex-wrap items-center gap-1.5">
-        <span className="text-xs text-muted-foreground">#{index + 1}</span>
-        <span className="font-medium">{recipe.recipe.name}</span>
-        <Badge variant="secondary">{RATING_LABELS[recipe.rating]}</Badge>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+          <span className="text-xs text-muted-foreground">#{index + 1}</span>
+          <span className="font-medium">{recipe.recipe.name}</span>
+          <Badge variant="secondary">{RATING_LABELS[recipe.rating]}</Badge>
+          <span className="text-xs text-muted-foreground">
+            分数 {recipe.foodScore} · 成本 {totalCost}
+          </span>
+          <RecipeMetaHighlight label="厨具" value={recipe.recipe.cooker || '未知'} tone="cooker" />
+          {favorite && <Badge variant="outline">已收藏</Badge>}
+        </div>
+        {onToggleFavorite && (
+          <Button
+            type="button"
+            size={compact ? 'icon-xs' : 'xs'}
+            variant={favorite ? 'default' : 'outline'}
+            disabled={busy}
+            title={favorite ? '取消收藏该料理方案' : '收藏该料理方案'}
+            onClick={onToggleFavorite}
+          >
+            <Star className={favorite ? 'size-3 fill-current' : 'size-3'} />
+            {!compact && <span>{favorite ? '取消收藏' : '收藏'}</span>}
+          </Button>
+        )}
       </div>
-      <div className="mt-1 text-xs text-muted-foreground">
-        分数 {recipe.foodScore} · 成本 {totalCost} · {extras}
-      </div>
-      <div className="mt-1 text-xs text-muted-foreground">
-        厨具: {recipe.recipe.cooker || '未知'} · 基础配方: {formatIngredientNamesWithQty(recipe.recipe.ingredients, ownedIngredientQty) || '无'}
+      <div className="mt-1 flex flex-wrap gap-1.5">
+        <RecipeMetaHighlight label="基础配方" value={baseRecipe} tone="base" />
+        <RecipeMetaHighlight label="加料" value={extras} tone="extra" />
       </div>
       {!compact && <TagSummary tags={recipe.allTags} cancelledTags={recipe.cancelledTags} />}
     </div>
+  );
+}
+
+function RecipeMetaHighlight({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone: 'cooker' | 'base' | 'extra';
+}) {
+  const toneClass = tone === 'cooker'
+    ? 'border-amber-300/70 bg-amber-50 text-amber-950 dark:border-amber-400/30 dark:bg-amber-400/10 dark:text-amber-100'
+    : tone === 'base'
+      ? 'border-emerald-300/70 bg-emerald-50 text-emerald-950 dark:border-emerald-400/30 dark:bg-emerald-400/10 dark:text-emerald-100'
+      : 'border-sky-300/70 bg-sky-50 text-sky-950 dark:border-sky-400/30 dark:bg-sky-400/10 dark:text-sky-100';
+
+  return (
+    <span className={`inline-flex max-w-full items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs ${toneClass}`}>
+      <span className="shrink-0 font-medium">{label}</span>
+      <span className="min-w-0 truncate" title={value}>{value}</span>
+    </span>
   );
 }
 
@@ -1706,21 +2093,47 @@ function BeverageRecommendationRow({
   beverage,
   index,
   ownedBeverageQty,
+  favorite,
+  favoriteKey = '',
+  favoriteBusyKey = '',
   compact = false,
+  onToggleFavorite,
 }: {
   beverage: IRareBeverageResult;
   index: number;
   ownedBeverageQty: Record<number, number>;
+  favorite?: FavoriteBeverageEntry | null;
+  favoriteKey?: string;
+  favoriteBusyKey?: string;
   compact?: boolean;
+  onToggleFavorite?: () => void;
 }) {
+  const busy = favoriteBusyKey === (favorite?.id ?? favoriteKey);
+
   return (
     <div className={compact ? 'rounded-md border border-border/80 p-1.5 text-xs' : 'rounded-md border border-border/80 p-2 text-sm'}>
-      <div className="flex flex-wrap items-center gap-1.5">
-        <span className="text-xs text-muted-foreground">#{index + 1}</span>
-        <span className="font-medium">
-          {beverage.beverage.name}{formatQtySuffix(ownedBeverageQty[beverage.beverage.id])}
-        </span>
-        {beverage.meetsRequiredBev && <Badge variant="secondary">满足点单</Badge>}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-xs text-muted-foreground">#{index + 1}</span>
+          <span className="font-medium">
+            {beverage.beverage.name}{formatQtySuffix(ownedBeverageQty[beverage.beverage.id])}
+          </span>
+          {beverage.meetsRequiredBev && <Badge variant="secondary">满足点单</Badge>}
+          {favorite && <Badge variant="outline">已收藏</Badge>}
+        </div>
+        {onToggleFavorite && (
+          <Button
+            type="button"
+            size={compact ? 'icon-xs' : 'xs'}
+            variant={favorite ? 'default' : 'outline'}
+            disabled={busy}
+            title={favorite ? '取消收藏该酒水' : '收藏该酒水'}
+            onClick={onToggleFavorite}
+          >
+            <Star className={favorite ? 'size-3 fill-current' : 'size-3'} />
+            {!compact && <span>{favorite ? '取消收藏' : '收藏'}</span>}
+          </Button>
+        )}
       </div>
       <div className="mt-1 text-xs text-muted-foreground">
         分数 {beverage.bevScore} · 价格 {beverage.beverage.price}
@@ -1785,6 +2198,76 @@ async function writeInventoryQuantity(
       `/inventory/set?${params.toString()}`,
       abortController.signal,
     );
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
+async function readFavorites(endpoint: string, apiToken: string, signal: AbortSignal): Promise<FavoriteData> {
+  return readLocalApiJson<FavoriteData>(endpoint, apiToken, '/favorites', signal);
+}
+
+async function addRecipeFavorite(
+  endpoint: string,
+  apiToken: string,
+  customer: ICustomerRare,
+  foodTag: string,
+  recipe: IRareRecipeResult,
+): Promise<FavoriteMutationResponse> {
+  const params = new URLSearchParams({
+    customerId: String(customer.id),
+    customerName: customer.name,
+    foodTag,
+    recipeId: String(recipe.recipe.id),
+    extraIngredientIds: recipe.extraIngredients.map((ingredient) => ingredient.id).join(','),
+  });
+  return mutateFavorite(endpoint, apiToken, `/favorites/add-recipe?${params.toString()}`);
+}
+
+async function removeRecipeFavorite(
+  endpoint: string,
+  apiToken: string,
+  id: string,
+): Promise<FavoriteMutationResponse> {
+  const params = new URLSearchParams({ id });
+  return mutateFavorite(endpoint, apiToken, `/favorites/remove-recipe?${params.toString()}`);
+}
+
+async function addBeverageFavorite(
+  endpoint: string,
+  apiToken: string,
+  customer: ICustomerRare,
+  beverageTag: string,
+  beverage: IRareBeverageResult,
+): Promise<FavoriteMutationResponse> {
+  const params = new URLSearchParams({
+    customerId: String(customer.id),
+    customerName: customer.name,
+    beverageTag,
+    beverageId: String(beverage.beverage.id),
+  });
+  return mutateFavorite(endpoint, apiToken, `/favorites/add-beverage?${params.toString()}`);
+}
+
+async function removeBeverageFavorite(
+  endpoint: string,
+  apiToken: string,
+  id: string,
+): Promise<FavoriteMutationResponse> {
+  const params = new URLSearchParams({ id });
+  return mutateFavorite(endpoint, apiToken, `/favorites/remove-beverage?${params.toString()}`);
+}
+
+async function mutateFavorite(
+  endpoint: string,
+  apiToken: string,
+  path: string,
+): Promise<FavoriteMutationResponse> {
+  const abortController = new AbortController();
+  const timeoutId = window.setTimeout(() => abortController.abort(), 3200);
+
+  try {
+    return await readLocalApiJson<FavoriteMutationResponse>(endpoint, apiToken, path, abortController.signal);
   } finally {
     window.clearTimeout(timeoutId);
   }
@@ -1916,11 +2399,17 @@ function normalizeEditableQuantity(value: number) {
   return Math.max(0, Math.min(9999, Math.trunc(value)));
 }
 
+function normalizeFocusRecommendationLimit(value: number) {
+  if (!Number.isFinite(value)) return DEFAULT_FOCUS_RECOMMENDATION_ROWS;
+  return Math.max(1, Math.min(MAX_FOCUS_RECOMMENDATION_ROWS, Math.trunc(value)));
+}
+
 function buildOrderRecommendations(
   orders: NightBusinessOrder[],
   runtime: RecommendationStateSnapshot | null | undefined,
   rareCustomersById: Map<number, ICustomerRare>,
   cache: Map<string, CachedRecommendation>,
+  favorites: FavoriteData,
 ): { recommendations: OrderRecommendation[]; recommendationIssues: RecommendationIssue[] } {
   if (orders.length === 0) return { recommendations: [], recommendationIssues: [] };
   const sortedOrders = sortNightOrders(orders);
@@ -1968,19 +2457,22 @@ function buildOrderRecommendations(
         runtimeSets.ownedIngredientQty,
         runtime.famousShopEnabled,
       )
-        .sort(compareRareRecipesForService)
-        .slice(0, MAX_RECOMMENDATION_ROWS);
+        .sort((a, b) => compareRareRecipesForService(a, b, runtimeSets.ownedIngredientQty));
 
       const beverages = rankBeveragesForRare(customer, beverageTag, runtimeSets.beverageIds)
-        .sort(compareRareBeveragesForService)
-        .slice(0, MAX_RECOMMENDATION_ROWS);
+        .sort(compareRareBeveragesForService);
 
       cached = { customer, recipes, beverages };
       cache.set(cacheKey, cached);
       trimRecommendationCache(cache);
     }
 
-    recommendations.push({ order, ...cached });
+    recommendations.push({
+      order,
+      customer: cached.customer,
+      recipes: promoteFavoriteRecipes(cached.recipes, favorites, customer.id, foodTag).slice(0, MAX_FOCUS_RECOMMENDATION_ROWS),
+      beverages: promoteFavoriteBeverages(cached.beverages, favorites, customer.id, beverageTag).slice(0, MAX_FOCUS_RECOMMENDATION_ROWS),
+    });
   }
 
   return { recommendations, recommendationIssues };
@@ -1995,6 +2487,160 @@ function findRareCustomer(order: NightBusinessOrder, rareCustomersById: Map<numb
   return [...rareCustomersById.values()].find((customer) => customer.name === order.guestName) ?? null;
 }
 
+function promoteFavoriteRecipes(
+  rows: IRareRecipeResult[],
+  favorites: FavoriteData,
+  customerId: number,
+  foodTag: string,
+): IRareRecipeResult[] {
+  const matchingFavorites = favorites.recipes
+    .filter((favorite) => favorite.customerId === customerId && favorite.foodTag === foodTag)
+    .sort(compareFavoriteUpdatedDesc);
+  if (matchingFavorites.length === 0) return rows;
+
+  const used = new Set<string>();
+  const promoted: IRareRecipeResult[] = [];
+  for (const favorite of matchingFavorites) {
+    const row = rows.find((candidate) => isRecipeFavoriteMatch(favorite, candidate));
+    if (!row) continue;
+    const key = recipeResultKey(row);
+    if (used.has(key)) continue;
+    used.add(key);
+    promoted.push(row);
+  }
+
+  if (promoted.length === 0) return rows;
+  return [...promoted, ...rows.filter((row) => !used.has(recipeResultKey(row)))];
+}
+
+function promoteFavoriteBeverages(
+  rows: IRareBeverageResult[],
+  favorites: FavoriteData,
+  customerId: number,
+  beverageTag: string,
+): IRareBeverageResult[] {
+  const matchingFavorites = favorites.beverages
+    .filter((favorite) => favorite.customerId === customerId && favorite.beverageTag === beverageTag)
+    .sort(compareFavoriteUpdatedDesc);
+  if (matchingFavorites.length === 0) return rows;
+
+  const used = new Set<number>();
+  const promoted: IRareBeverageResult[] = [];
+  for (const favorite of matchingFavorites) {
+    const row = rows.find((candidate) => candidate.beverage.id === favorite.beverageId);
+    if (!row || used.has(row.beverage.id)) continue;
+    used.add(row.beverage.id);
+    promoted.push(row);
+  }
+
+  if (promoted.length === 0) return rows;
+  return [...promoted, ...rows.filter((row) => !used.has(row.beverage.id))];
+}
+
+function compareFavoriteRecipeResults(
+  left: IRareRecipeResult,
+  right: IRareRecipeResult,
+  favorites: FavoriteData,
+  customerId: number,
+  foodTag: string,
+): number {
+  const leftFavorite = findRecipeFavorite(favorites, customerId, foodTag, left);
+  const rightFavorite = findRecipeFavorite(favorites, customerId, foodTag, right);
+  if (!leftFavorite && !rightFavorite) return 0;
+  if (leftFavorite && !rightFavorite) return -1;
+  if (!leftFavorite && rightFavorite) return 1;
+  if (!leftFavorite || !rightFavorite) return 0;
+  return compareFavoriteUpdatedDesc(leftFavorite, rightFavorite);
+}
+
+function compareFavoriteBeverageResults(
+  left: IRareBeverageResult,
+  right: IRareBeverageResult,
+  favorites: FavoriteData,
+  customerId: number,
+  beverageTag: string,
+): number {
+  const leftFavorite = findBeverageFavorite(favorites, customerId, beverageTag, left);
+  const rightFavorite = findBeverageFavorite(favorites, customerId, beverageTag, right);
+  if (!leftFavorite && !rightFavorite) return 0;
+  if (leftFavorite && !rightFavorite) return -1;
+  if (!leftFavorite && rightFavorite) return 1;
+  if (!leftFavorite || !rightFavorite) return 0;
+  return compareFavoriteUpdatedDesc(leftFavorite, rightFavorite);
+}
+
+function findRecipeFavorite(
+  favorites: FavoriteData,
+  customerId: number,
+  foodTag: string,
+  recipe: IRareRecipeResult,
+): FavoriteRecipeEntry | null {
+  return favorites.recipes.find((favorite) =>
+    favorite.customerId === customerId
+    && favorite.foodTag === foodTag
+    && isRecipeFavoriteMatch(favorite, recipe)
+  ) ?? null;
+}
+
+function findBeverageFavorite(
+  favorites: FavoriteData,
+  customerId: number,
+  beverageTag: string,
+  beverage: IRareBeverageResult,
+): FavoriteBeverageEntry | null {
+  return favorites.beverages.find((favorite) =>
+    favorite.customerId === customerId
+    && favorite.beverageTag === beverageTag
+    && favorite.beverageId === beverage.beverage.id
+  ) ?? null;
+}
+
+function isRecipeFavoriteMatch(favorite: FavoriteRecipeEntry, recipe: IRareRecipeResult): boolean {
+  return favorite.recipeId === recipe.recipe.id
+    && normalizeIdList(favorite.extraIngredientIds).join(',') === normalizeIdList(recipe.extraIngredients.map((ingredient) => ingredient.id)).join(',');
+}
+
+function recipeFavoriteKey(customerId: number, foodTag: string, recipe: IRareRecipeResult) {
+  return `recipe:${customerId}:${foodTag}:${recipeResultKey(recipe)}`;
+}
+
+function beverageFavoriteKey(customerId: number, beverageTag: string, beverage: IRareBeverageResult) {
+  return `beverage:${customerId}:${beverageTag}:${beverage.beverage.id}`;
+}
+
+function recipeResultKey(recipe: IRareRecipeResult) {
+  return `${recipe.recipe.id}:${normalizeIdList(recipe.extraIngredients.map((ingredient) => ingredient.id)).join(',')}`;
+}
+
+function compareFavoriteUpdatedDesc<T extends { updatedAtUtc: string }>(left: T, right: T): number {
+  const leftTime = Date.parse(left.updatedAtUtc || '');
+  const rightTime = Date.parse(right.updatedAtUtc || '');
+  return (Number.isFinite(rightTime) ? rightTime : 0) - (Number.isFinite(leftTime) ? leftTime : 0);
+}
+
+function emptyFavoriteData(): FavoriteData {
+  return {
+    version: 1,
+    recipes: [],
+    beverages: [],
+  };
+}
+
+function normalizeFavoriteData(data: FavoriteData | null | undefined): FavoriteData {
+  return {
+    version: Math.max(1, data?.version ?? 1),
+    recipes: (data?.recipes ?? []).map((entry) => ({
+      ...entry,
+      extraIngredientIds: normalizeIdList(entry.extraIngredientIds ?? []),
+    })),
+    beverages: data?.beverages ?? [],
+  };
+}
+
+function normalizeIdList(ids: number[]): number[] {
+  return [...new Set(ids.filter((id) => Number.isFinite(id) && id >= 0).map((id) => Math.trunc(id)))].sort((a, b) => a - b);
+}
+
 function compareNormalRecipesForMod(a: INormalRecipeResult, b: INormalRecipeResult) {
   if (a.totalCoverage !== b.totalCoverage) return b.totalCoverage - a.totalCoverage;
   if (a.ingredientCost !== b.ingredientCost) return b.ingredientCost - a.ingredientCost;
@@ -2007,13 +2653,50 @@ function compareNormalBeveragesForMod(a: INormalBeverageResult, b: INormalBevera
   return a.beverage.id - b.beverage.id;
 }
 
-function compareRareRecipesForService(a: IRareRecipeResult, b: IRareRecipeResult) {
+function compareRareRecipesForService(
+  a: IRareRecipeResult,
+  b: IRareRecipeResult,
+  ownedIngredientQty: Record<number, number> = {},
+) {
   if (a.meetsRequiredFood !== b.meetsRequiredFood) return a.meetsRequiredFood ? -1 : 1;
   if (a.foodScore !== b.foodScore) return b.foodScore - a.foodScore;
-  const aCost = a.baseCost + a.extraCost;
-  const bCost = b.baseCost + b.extraCost;
-  if (aCost !== bCost) return bCost - aCost;
+  if (a.extraIngredients.length !== b.extraIngredients.length) {
+    return a.extraIngredients.length - b.extraIngredients.length;
+  }
+  const aPressure = getRareRecipeResourcePressure(a, ownedIngredientQty);
+  const bPressure = getRareRecipeResourcePressure(b, ownedIngredientQty);
+  if (aPressure !== bPressure) return aPressure - bPressure;
+  if (a.recipe.price !== b.recipe.price) return b.recipe.price - a.recipe.price;
+  if (a.extraCost !== b.extraCost) return a.extraCost - b.extraCost;
   return a.recipe.id - b.recipe.id;
+}
+
+function getRareRecipeResourcePressure(
+  result: IRareRecipeResult,
+  ownedIngredientQty: Record<number, number>,
+): number {
+  const basePressure = result.recipe.ingredients.reduce((sum, ingredientName) => {
+    const ingredient = INGREDIENT_BY_NAME.get(ingredientName);
+    return sum + (ingredient ? getIngredientResourcePressure(ingredient, ownedIngredientQty) : 0);
+  }, 0);
+
+  const extraPressure = result.extraIngredients.reduce(
+    (sum, ingredient) => sum + getIngredientResourcePressure(ingredient, ownedIngredientQty),
+    0,
+  );
+
+  return basePressure + extraPressure * EXTRA_INGREDIENT_RESOURCE_WEIGHT;
+}
+
+function getIngredientResourcePressure(
+  ingredient: IIngredient,
+  ownedIngredientQty: Record<number, number>,
+): number {
+  const qty = Math.max(0, Math.trunc(ownedIngredientQty[ingredient.id] ?? 0));
+  const stockPenalty = qty <= 0
+    ? (LOW_STOCK_RESOURCE_THRESHOLD + 1) * 100
+    : Math.max(0, LOW_STOCK_RESOURCE_THRESHOLD + 1 - qty) * 100;
+  return stockPenalty + ingredient.price;
 }
 
 function compareRareBeveragesForService(a: IRareBeverageResult, b: IRareBeverageResult) {
@@ -2103,6 +2786,16 @@ function readStoredTab(): ModTab {
   return value === 'overview' || value === 'normal' || value === 'rare' || value === 'service' || value === 'inventory' || value === 'logs'
     ? value
     : 'service';
+}
+
+function readStoredBoolean(key: string, fallback: boolean) {
+  const value = localStorage.getItem(key);
+  if (value === null) return fallback;
+  return value === '1' || value === 'true';
+}
+
+function readStoredFocusLimit(key: string) {
+  return normalizeFocusRecommendationLimit(Number(localStorage.getItem(key) ?? DEFAULT_FOCUS_RECOMMENDATION_ROWS));
 }
 
 function readMigratedStorage(key: string, legacyKey: string, fallback: string) {

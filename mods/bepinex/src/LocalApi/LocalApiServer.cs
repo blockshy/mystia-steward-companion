@@ -20,6 +20,7 @@ internal sealed class LocalApiServer : IDisposable
     private readonly Action<bool?, bool?> _updateLogSettings;
     private readonly Func<string, string> _openLogFolder;
     private readonly Func<string, int, int, RuntimeInventoryEditResult> _editInventory;
+    private readonly FavoriteStore _favoriteStore;
     private TcpListener? _listener;
     private Thread? _thread;
     private bool _running;
@@ -34,6 +35,7 @@ internal sealed class LocalApiServer : IDisposable
         Action<bool?, bool?> updateLogSettings,
         Func<string, string> openLogFolder,
         Func<string, int, int, RuntimeInventoryEditResult> editInventory,
+        FavoriteStore favoriteStore,
         ManualLogSource log)
     {
         BindAddress = ResolveLoopbackAddress(configuredHost, log);
@@ -44,6 +46,7 @@ internal sealed class LocalApiServer : IDisposable
         _updateLogSettings = updateLogSettings;
         _openLogFolder = openLogFolder;
         _editInventory = editInventory;
+        _favoriteStore = favoriteStore;
         _logOutputPath = ResolveLogOutputPath();
         _healthJson = $"{{\"ok\":true,\"pluginVersion\":\"{EscapeJson(pluginVersion)}\",\"bindAddress\":\"{BindAddress}\",\"port\":{Port},\"authRequired\":true}}";
     }
@@ -181,6 +184,21 @@ internal sealed class LocalApiServer : IDisposable
                     case "/inventory/set":
                         WriteResponse(stream, 200, "OK", BuildInventoryEditJson(query));
                         break;
+                    case "/favorites":
+                        WriteResponse(stream, 200, "OK", _favoriteStore.GetJson());
+                        break;
+                    case "/favorites/add-recipe":
+                        WriteResponse(stream, 200, "OK", AddRecipeFavoriteJson(query));
+                        break;
+                    case "/favorites/remove-recipe":
+                        WriteResponse(stream, 200, "OK", _favoriteStore.RemoveRecipe(ReadStringQuery(query, "id")));
+                        break;
+                    case "/favorites/add-beverage":
+                        WriteResponse(stream, 200, "OK", AddBeverageFavoriteJson(query));
+                        break;
+                    case "/favorites/remove-beverage":
+                        WriteResponse(stream, 200, "OK", _favoriteStore.RemoveBeverage(ReadStringQuery(query, "id")));
+                        break;
                     default:
                         WriteResponse(stream, 404, "Not Found", "{\"error\":\"not found\"}");
                         break;
@@ -314,6 +332,51 @@ internal sealed class LocalApiServer : IDisposable
         catch (Exception ex)
         {
             return "{\"ok\":false,\"error\":\"" + EscapeJson(ex.Message) + "\"}";
+        }
+    }
+
+    private string AddRecipeFavoriteJson(string query)
+    {
+        if (!int.TryParse(ReadStringQuery(query, "customerId"), out var customerId)
+            || !int.TryParse(ReadStringQuery(query, "recipeId"), out var recipeId))
+        {
+            return "{\"ok\":false,\"favorites\":{\"version\":1,\"recipes\":[],\"beverages\":[]},\"error\":\"invalid favorite recipe parameters\"}";
+        }
+
+        try
+        {
+            return _favoriteStore.AddRecipe(
+                customerId,
+                ReadStringQuery(query, "customerName"),
+                ReadStringQuery(query, "foodTag"),
+                recipeId,
+                ReadIntListQuery(query, "extraIngredientIds"));
+        }
+        catch (Exception ex)
+        {
+            return "{\"ok\":false,\"favorites\":{\"version\":1,\"recipes\":[],\"beverages\":[]},\"error\":\"" + EscapeJson(ex.Message) + "\"}";
+        }
+    }
+
+    private string AddBeverageFavoriteJson(string query)
+    {
+        if (!int.TryParse(ReadStringQuery(query, "customerId"), out var customerId)
+            || !int.TryParse(ReadStringQuery(query, "beverageId"), out var beverageId))
+        {
+            return "{\"ok\":false,\"favorites\":{\"version\":1,\"recipes\":[],\"beverages\":[]},\"error\":\"invalid favorite beverage parameters\"}";
+        }
+
+        try
+        {
+            return _favoriteStore.AddBeverage(
+                customerId,
+                ReadStringQuery(query, "customerName"),
+                ReadStringQuery(query, "beverageTag"),
+                beverageId);
+        }
+        catch (Exception ex)
+        {
+            return "{\"ok\":false,\"favorites\":{\"version\":1,\"recipes\":[],\"beverages\":[]},\"error\":\"" + EscapeJson(ex.Message) + "\"}";
         }
     }
 
@@ -494,6 +557,20 @@ internal sealed class LocalApiServer : IDisposable
         }
 
         return "";
+    }
+
+    private static List<int> ReadIntListQuery(string query, string key)
+    {
+        var value = ReadStringQuery(query, key);
+        if (string.IsNullOrWhiteSpace(value)) return new List<int>();
+
+        return value
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(part => int.TryParse(part, out var id) ? id : -1)
+            .Where(id => id >= 0)
+            .Distinct()
+            .OrderBy(id => id)
+            .ToList();
     }
 
     private static string GetDirectory(string path)
