@@ -199,7 +199,10 @@ internal static class RuntimeOrderPreparationService
 
         if (ingredientIds.Length > 0)
         {
-            InvokeRuntimeStorageOutRange("IngredientOutRange", ingredientIds);
+            foreach (var ingredientId in ingredientIds)
+            {
+                InvokeRuntimeStorageOut("IngredientOut", ingredientId);
+            }
         }
 
         InvokeInstance(cookController, "SetCook", new object?[] { finalFood, recipe, true });
@@ -243,34 +246,6 @@ internal static class RuntimeOrderPreparationService
         }
 
         method.Invoke(null, args);
-    }
-
-    private static void InvokeRuntimeStorageOutRange(string methodName, IReadOnlyList<int> itemIds)
-    {
-        var type = FindType(RuntimeStorageTypeName)
-            ?? throw new InvalidOperationException("RunTimeStorage type is not loaded.");
-        var methods = type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
-            .Where(candidate => string.Equals(candidate.Name, methodName, StringComparison.Ordinal))
-            .OrderBy(candidate => candidate.GetParameters().Length);
-
-        foreach (var method in methods)
-        {
-            var parameters = method.GetParameters();
-            if (parameters.Length is < 1 or > 2) continue;
-
-            foreach (var ids in BuildIntArrayArgumentCandidates(parameters[0].ParameterType, itemIds))
-            {
-                var args = parameters.Length == 1
-                    ? new object?[] { ids }
-                    : new object?[] { ids, GetDefaultValue(parameters[1].ParameterType) };
-                if (!CanUseParameters(parameters, args)) continue;
-
-                method.Invoke(null, args);
-                return;
-            }
-        }
-
-        throw new MissingMethodException(RuntimeStorageTypeName, methodName);
     }
 
     private static object? CreateFoodFromRecipe(object recipe)
