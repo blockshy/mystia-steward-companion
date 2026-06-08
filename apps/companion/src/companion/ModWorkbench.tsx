@@ -64,6 +64,12 @@ const BEVERAGE_NAME_BY_ID = new Map(BEVERAGES.map((beverage) => [beverage.id, be
 const RIGHT_STICK_GAMEPAD_BUTTON_INDEX = 11;
 const LOW_STOCK_RESOURCE_THRESHOLD = 5;
 const EXTRA_INGREDIENT_RESOURCE_WEIGHT = 2;
+const DENSE_TWO_COLUMN_GRID = 'grid grid-cols-2 gap-4';
+const DENSE_TWO_COLUMN_GRID_TIGHT = 'grid grid-cols-2 gap-2';
+const DENSE_THREE_COLUMN_GRID = 'grid grid-cols-3 gap-3';
+const DENSE_FOUR_COLUMN_GRID = 'grid grid-cols-4 gap-3';
+const DENSE_CARD_HEADER_GRID = 'grid grid-cols-[minmax(0,1fr)_auto] gap-3';
+const DENSE_ITEM_GRID = 'grid grid-cols-[repeat(auto-fit,minmax(11rem,1fr))] gap-2';
 
 type ModTab = 'overview' | 'normal' | 'rare' | 'service' | 'inventory' | 'logs';
 
@@ -517,7 +523,7 @@ export function ModWorkbench() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+      <div className={DENSE_THREE_COLUMN_GRID}>
         <StatusCard
           label="连接状态"
           value={error ? '未连接' : snapshot ? '已连接' : '连接中'}
@@ -681,7 +687,7 @@ function ModOverviewPanel({
   return (
     <div className="space-y-4">
       <Card>
-        <CardContent className="grid gap-3 p-4 text-sm md:grid-cols-2">
+        <CardContent className={`${DENSE_TWO_COLUMN_GRID_TIGHT} p-4 text-sm`}>
           <InfoLine label="数据来源" value="游戏实时 API，不读取 .memory 存档" />
           <InfoLine label="API 地址" value={endpoint} mono />
           <InfoLine label="连接状态" value={error ? `未连接: ${error}` : snapshot ? '已连接' : '连接中'} />
@@ -694,7 +700,7 @@ function ModOverviewPanel({
       </Card>
 
       <Card>
-        <CardContent className="grid gap-3 p-4 text-sm md:grid-cols-4">
+        <CardContent className={`${DENSE_FOUR_COLUMN_GRID} p-4 text-sm`}>
           <Metric label="可用料理" value={runtime?.availableRecipeIds.length ?? 0} />
           <Metric label="可用酒水" value={runtime?.availableBeverageIds.length ?? 0} />
           <Metric label="可用食材" value={runtime?.availableIngredientIds.length ?? 0} />
@@ -702,7 +708,7 @@ function ModOverviewPanel({
         </CardContent>
       </Card>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <div className={DENSE_TWO_COLUMN_GRID}>
         <ListPanel title="快捷键">
           <div className="grid gap-2 text-sm">
             <InfoLine label="F8" value="在游戏与独立窗口之间切换；若启用旧游戏内面板，则打开或关闭游戏内面板" />
@@ -720,7 +726,7 @@ function ModOverviewPanel({
         </ListPanel>
 
         <ListPanel title="低库存概览">
-          <div className="grid gap-4 md:grid-cols-2">
+          <div className={DENSE_TWO_COLUMN_GRID}>
             <LowStockColumn title="材料" entries={ownedIngredientEntries} />
             <LowStockColumn title="酒水" entries={ownedBeverageEntries} />
           </div>
@@ -785,7 +791,7 @@ function ModNormalPanel({
       {!selectedPlace && <EmptyState text="请选择地区后查看普客推荐" />}
 
       {selectedPlace && (
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <div className={DENSE_TWO_COLUMN_GRID}>
           <ListPanel title={`料理推荐 (${recipes.length})`}>
             {recipes.length === 0 && <EmptyRow text="暂无可推荐料理" />}
             <div className="space-y-2">
@@ -818,7 +824,7 @@ function ModNormalPanel({
 
       {selectedPlace && (
         <ListPanel title={`地区普客 (${customers.length})`}>
-          <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
+          <div className={DENSE_ITEM_GRID}>
             {customers.map((customer) => (
               <div key={customer.id} className="rounded-md border border-border/80 p-2 text-sm">
                 <div className="font-medium">{customer.name}</div>
@@ -951,7 +957,7 @@ function ModRarePanel({
       {selectedPlace && selectedCustomer && (
         <>
           <Card>
-            <CardContent className="grid gap-3 p-4 text-sm lg:grid-cols-3">
+            <CardContent className={`${DENSE_THREE_COLUMN_GRID} p-4 text-sm`}>
               <div>
                 <div className="mb-1 text-xs text-muted-foreground">稀客</div>
                 <Select value={String(selectedCustomer.id)} onValueChange={(value) => onRareCustomerChange(Number(value))}>
@@ -1001,7 +1007,7 @@ function ModRarePanel({
             </div>
           )}
 
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <div className={DENSE_TWO_COLUMN_GRID}>
             <ListPanel title={`料理推荐 (${recipes.length})`}>
               {recipes.length === 0 && <EmptyRow text="暂无满足点单的料理" />}
               <div className="space-y-2">
@@ -1083,14 +1089,14 @@ function ModServicePanel({
       </div>
 
       <Card>
-        <CardContent className="grid gap-3 p-4 text-sm md:grid-cols-3">
+        <CardContent className={`${DENSE_THREE_COLUMN_GRID} p-4 text-sm`}>
           <InfoLine label="经营场景" value={detectedPlace ?? night?.placeLabel ?? '无经营场景'} />
           <InfoLine label="扫描状态" value={night?.source || '暂无'} />
           <InfoLine label="推荐数据" value={runtime ? '已就绪' : '暂不可用'} />
         </CardContent>
       </Card>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <div className={DENSE_TWO_COLUMN_GRID}>
         <ListPanel title="当前稀客">
           {activeGuests.length === 0 && <EmptyRow text="暂无稀客" />}
           {activeGuests.map((guest) => (
@@ -1319,7 +1325,7 @@ function ModInventoryPanel({
   return (
     <div className="space-y-4">
       <Card>
-        <CardContent className="grid gap-3 p-4 text-sm lg:grid-cols-[1fr_auto]">
+        <CardContent className={`${DENSE_CARD_HEADER_GRID} p-4 text-sm`}>
           <div>
             <div className="font-semibold">库存数量修改</div>
             <div className="mt-1 text-xs text-muted-foreground">
@@ -1346,7 +1352,7 @@ function ModInventoryPanel({
         </CardContent>
       </Card>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <div className={DENSE_TWO_COLUMN_GRID}>
         <InventoryEditColumn
           title="材料"
           kind="ingredient"
@@ -1578,7 +1584,7 @@ function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToken: stri
       </Card>
 
       <Card>
-        <CardContent className="grid gap-3 p-4 text-sm md:grid-cols-2">
+        <CardContent className={`${DENSE_TWO_COLUMN_GRID_TIGHT} p-4 text-sm`}>
           <InfoLine label="本地 API 授权" value={apiToken ? '已通过启动参数接收' : '未收到 token，请从游戏内按 F8 重新显示窗口'} />
           <InfoLine label="日志读取" value={settings?.logAccessEnabled ? '开启' : '关闭'} />
           <InfoLine label="读取上限" value={responseLogLimit} />
@@ -1834,7 +1840,7 @@ function OrderRecommendationPanel({
         </div>
       </div>
 
-      <div className={compact ? 'mt-2 grid gap-2 lg:grid-cols-2' : 'mt-3 grid gap-4 lg:grid-cols-2'}>
+      <div className={compact ? `mt-2 ${DENSE_TWO_COLUMN_GRID_TIGHT}` : `mt-3 ${DENSE_TWO_COLUMN_GRID}`}>
         <div>
           <h3 className={compact ? 'mb-1 text-xs font-semibold' : 'mb-2 text-sm font-semibold'}>推荐料理</h3>
           {item.recipes.length === 0 && <EmptyRow text="暂无满足点单的料理" />}
