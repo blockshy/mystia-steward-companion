@@ -13,6 +13,8 @@ internal static class RuntimeOrderPreparationService
     private const string PartnerManagerTypeName = "NightScene.PartnerUtility.PartnerManager";
     private const string CookSystemManagerTypeName = "NightScene.CookingUtility.CookSystemManager";
     private const string MatchedCookComboTypeName = "NightScene.UI.CookingUtility.WorkSceneCookingSelectionPannel+MatchedCookCombo";
+    private static readonly object PendingCookingLock = new();
+    private static readonly List<PendingCookingCollection> PendingCookingCollections = new();
 
     public static OrderPreparationResult Prepare(OrderPreparationRequest request)
     {
@@ -92,7 +94,7 @@ internal static class RuntimeOrderPreparationService
             }
             else
             {
-                var cookingResult = TryStartCooking(request.RecipeId, request.RecipeName, request.ExtraIngredientIds);
+                var cookingResult = TryStartCooking(request.RecipeId, request.RecipeName, request.ExtraIngredientIds, request.AutoCollectCooking);
                 if (cookingResult.Ok)
                 {
                     result.Steps.Add(new OrderPreparationStep
@@ -116,7 +118,7 @@ internal static class RuntimeOrderPreparationService
 
         if (request.AutoCollectCooking)
         {
-            AddSkipped(result, "自动收取料理", "料理已进入厨具制作流程，完成后请从厨具取出；自动收取将在后续版本单独接入。");
+            AddSkipped(result, "自动收取料理", "料理完成后会自动尝试收入送餐盘。");
             if (request.StopOnError) return Finish(result);
         }
         else
@@ -125,6 +127,39 @@ internal static class RuntimeOrderPreparationService
         }
 
         return Finish(result);
+    }
+
+    public static IReadOnlyList<string> ProcessPendingCookingCollections()
+    {
+        var messages = new List<string>();
+        lock (PendingCookingLock)
+        {
+            for (var i = PendingCookingCollections.Count - 1; i >= 0; i--)
+            {
+                var pending = PendingCookingCollections[i];
+                (bool Remove, string Message) result;
+                try
+                {
+                    result = TryCollectCookedFood(pending);
+                }
+                catch (Exception ex)
+                {
+                    result = (true, $"{pending.RecipeName} 自动收取已停止：{ex.Message}");
+                }
+
+                if (!string.IsNullOrWhiteSpace(result.Message))
+                {
+                    messages.Add(result.Message);
+                }
+
+                if (result.Remove)
+                {
+                    PendingCookingCollections.RemoveAt(i);
+                }
+            }
+        }
+
+        return messages;
     }
 
     private static (bool Ok, string Message) TryTakeBeverageToTray(int beverageId, string beverageName)
@@ -163,7 +198,11 @@ internal static class RuntimeOrderPreparationService
         return (true, $"{beverageName} 已放入送餐盘（{quantityText}）。");
     }
 
-    private static (bool Ok, string Message) TryStartCooking(int recipeId, string recipeName, IReadOnlyList<int> extraIngredientIds)
+    private static (bool Ok, string Message) TryStartCooking(
+        int recipeId,
+        string recipeName,
+        IReadOnlyList<int> extraIngredientIds,
+        bool autoCollect)
     {
         var recipe = InvokeStatic(DataBaseCoreTypeName, "RefRecipe", new object?[] { recipeId });
         if (recipe == null)
@@ -214,8 +253,113 @@ internal static class RuntimeOrderPreparationService
             TryInvokeInstance(cookSystem, "CallCookerStartCallback", new object?[] { finalFood, recipe });
         }
 
+        if (autoCollect)
+        {
+            RegisterPendingCookingCollection(cookController, recipeName);
+        }
+
         var extraText = extraIngredientIds.Count == 0 ? "不加料" : string.Join(",", extraIngredientIds);
         return (true, $"{recipeName} 已开始制作（加料：{extraText}）。");
+    }
+
+    private static void RegisterPendingCookingCollection(object cookController, string recipeName)
+    {
+        lock (PendingCookingLock)
+        {
+            PendingCookingCollections.RemoveAll(pending => ReferenceEquals(pending.CookController, cookController));
+            PendingCookingCollections.Add(new PendingCookingCollection
+            {
+                CookController = cookController,
+                RecipeName = recipeName,
+                CreatedAtUtc = DateTime.UtcNow,
+            });
+        }
+    }
+
+    private static (bool Remove, string Message) TryCollectCookedFood(PendingCookingCollection pending)
+    {
+        var phase = ToInt(InvokeInstance(pending.CookController, "get_Phase", Array.Empty<object?>()));
+        if (phase == 0)
+        {
+            return (true, "");
+        }
+
+        if (phase != 3)
+        {
+            return (false, "");
+        }
+
+        var tray = GetSingletonInstance(IzakayaTrayTypeName);
+        if (tray == null)
+        {
+            return (false, "");
+        }
+
+        var isFull = InvokeInstance(tray, "get_IsTrayFull", Array.Empty<object?>());
+        if (ReadBool(isFull))
+        {
+            return (false, "");
+        }
+
+        if (TryExtractWithGameMethod(pending.CookController))
+        {
+            return (true, $"{pending.RecipeName} 已自动收入送餐盘。");
+        }
+
+        var cookedFood = InvokeInstance(pending.CookController, "get_Result", Array.Empty<object?>());
+        if (cookedFood == null)
+        {
+            return (true, $"{pending.RecipeName} 已完成，但未读取到成品对象，已停止自动收取。");
+        }
+
+        InvokeInstance(tray, "Receive", new[] { cookedFood });
+        TryInvokeInstance(pending.CookController, "AfterPlayerExtract", Array.Empty<object?>());
+        TryInvokeInstance(pending.CookController, "CloseCookingVisual", Array.Empty<object?>());
+        TryClearCookController(pending.CookController, cookedFood);
+        return (true, $"{pending.RecipeName} 已自动收入送餐盘。");
+    }
+
+    private static bool TryExtractWithGameMethod(object cookController)
+    {
+        var method = cookController.GetType().GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+            .FirstOrDefault(candidate => string.Equals(candidate.Name, "Extract", StringComparison.Ordinal)
+                && candidate.GetParameters().Length == 1);
+        if (method == null) return false;
+
+        var parameterType = method.GetParameters()[0].ParameterType;
+        if (!typeof(Delegate).IsAssignableFrom(parameterType)) return false;
+
+        try
+        {
+            var callback = CreateTrayReceiveDelegate(parameterType);
+            if (callback == null) return false;
+            method.Invoke(cookController, new object?[] { callback });
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static Delegate? CreateTrayReceiveDelegate(Type delegateType)
+    {
+        var invoke = delegateType.GetMethod("Invoke");
+        var parameter = invoke?.GetParameters().FirstOrDefault();
+        if (parameter == null) return null;
+
+        var method = typeof(RuntimeOrderPreparationService)
+            .GetMethod(nameof(ReceiveCookedFoodGeneric), BindingFlags.NonPublic | BindingFlags.Static)
+            ?.MakeGenericMethod(parameter.ParameterType);
+        return method == null ? null : Delegate.CreateDelegate(delegateType, method);
+    }
+
+    private static void ReceiveCookedFoodGeneric<T>(T sellable)
+    {
+        if (sellable == null) return;
+        var tray = GetSingletonInstance(IzakayaTrayTypeName);
+        if (tray == null) return;
+        InvokeInstance(tray, "Receive", new object?[] { sellable });
     }
 
     private static int GetBeverageQuantity(int beverageId)
@@ -398,6 +542,26 @@ internal static class RuntimeOrderPreparationService
         return ReadIntEnumerable(cookerTypes).Contains(recipeCookerType);
     }
 
+    private static void TryClearCookController(object cookController, object cookedFood)
+    {
+        try
+        {
+            WriteMember(cookController, "LastResult", cookedFood);
+            WriteMember(cookController, "Result", null);
+            WriteMember(cookController, "ChosenRecipe", null);
+
+            var phaseProperty = cookController.GetType().GetProperty("Phase", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            var phaseType = phaseProperty?.PropertyType
+                ?? cookController.GetType().GetField("<Phase>k__BackingField", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)?.FieldType;
+            var idleValue = phaseType?.IsEnum == true ? Enum.ToObject(phaseType, 0) : 0;
+            WriteMember(cookController, "Phase", idleValue);
+        }
+        catch
+        {
+            // The preferred Extract path performs cleanup. This fallback should not fail the collection.
+        }
+    }
+
     private static int[] ReadRecipeIngredientIds(object recipe)
     {
         var ingredients = ReadMember(recipe, "ingredients");
@@ -476,6 +640,24 @@ internal static class RuntimeOrderPreparationService
         if (generatedField != null) return generatedField.GetValue(target);
 
         return null;
+    }
+
+    private static bool WriteMember(object target, string name, object? value)
+    {
+        var type = target.GetType();
+        var property = type.GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+        if (property?.SetMethod != null)
+        {
+            property.SetValue(target, value);
+            return true;
+        }
+
+        var field = type.GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? type.GetField($"<{name}>k__BackingField", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+        if (field == null) return false;
+
+        field.SetValue(target, value);
+        return true;
     }
 
     private static IEnumerable<int> ReadIntEnumerable(object? value)
@@ -671,5 +853,12 @@ internal static class RuntimeOrderPreparationService
             Skipped = true,
             Message = message,
         });
+    }
+
+    private sealed class PendingCookingCollection
+    {
+        public object CookController { get; init; } = new();
+        public string RecipeName { get; init; } = "";
+        public DateTime CreatedAtUtc { get; init; }
     }
 }

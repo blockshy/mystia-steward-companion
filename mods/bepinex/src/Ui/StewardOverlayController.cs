@@ -142,6 +142,7 @@ internal sealed class StewardOverlayController
         if (_disposed || _config == null) return;
         ProcessPendingInventoryEdits();
         ProcessPendingOrderPreparations();
+        ProcessPendingCookingCollections();
         RefreshBusinessContextOnSpecialOrderChange();
 
         if (IsTogglePressed())
@@ -1385,6 +1386,16 @@ internal sealed class StewardOverlayController
             {
                 pending.Completion.Set();
             }
+        }
+    }
+
+    private void ProcessPendingCookingCollections()
+    {
+        foreach (var message in RuntimeOrderPreparationService.ProcessPendingCookingCollections())
+        {
+            _status = message;
+            _log?.LogInfo(message);
+            PublishLocalApiSnapshot();
         }
     }
 
