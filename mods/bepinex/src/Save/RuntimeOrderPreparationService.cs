@@ -208,13 +208,13 @@ internal static class RuntimeOrderPreparationService
         var serveItems = SelectTrayServeItems(runtimeOrder.Order, trayItems, expectedFoodId, request.BeverageId);
         if (serveItems.Food == null)
         {
-            AddFailure(result, "匹配送餐盘料理", $"送餐盘中没有找到可满足订单的 {request.RecipeName}（目标料理 #{expectedFoodId}）。{FormatTraySummary(trayItems)}");
+            AddFailure(result, "匹配送餐盘料理", $"送餐盘中没有找到目标料理 {request.RecipeName}（料理 #{expectedFoodId}）。{FormatTraySummary(trayItems)}");
             return Finish(result);
         }
 
         if (serveItems.Beverage == null)
         {
-            AddFailure(result, "匹配送餐盘酒水", $"送餐盘中没有找到可满足订单的 {request.BeverageName}（目标酒水 #{request.BeverageId}）。{FormatTraySummary(trayItems)}");
+            AddFailure(result, "匹配送餐盘酒水", $"送餐盘中没有找到目标酒水 {request.BeverageName}（酒水 #{request.BeverageId}）。{FormatTraySummary(trayItems)}");
             return Finish(result);
         }
 
@@ -222,7 +222,7 @@ internal static class RuntimeOrderPreparationService
         {
             Name = "匹配送餐盘",
             Ok = true,
-            Message = $"已找到可满足订单的料理 {request.RecipeName} 和酒水 {request.BeverageName}。",
+            Message = $"已找到目标料理 {request.RecipeName} 和目标酒水 {request.BeverageName}。",
         });
 
         var food = serveItems.Food;
@@ -836,53 +836,24 @@ internal static class RuntimeOrderPreparationService
         var originalBeverage = ReadMember(order, "ServBeverage") ?? TryInvokeInstanceValue(order, "get_ServBeverage");
         try
         {
-            var foodCandidates = BuildServeCandidates(trayItems, sellableType: 0, preferredId: expectedFoodId).ToList();
-            var beverageCandidates = BuildServeCandidates(trayItems, sellableType: 1, preferredId: expectedBeverageId).ToList();
-            foreach (var food in foodCandidates)
+            var food = trayItems.FirstOrDefault(item => IsSellable(item, sellableType: 0, id: expectedFoodId));
+            var beverage = trayItems.FirstOrDefault(item => IsSellable(item, sellableType: 1, id: expectedBeverageId));
+            if (food == null || beverage == null) return new ServeItemSelection();
+
+            WriteMember(order, "ServFood", food);
+            WriteMember(order, "ServBeverage", beverage);
+            if (!ReadBool(InvokeInstance(order, "get_IsFullfilled", Array.Empty<object?>()))) return new ServeItemSelection();
+
+            return new ServeItemSelection
             {
-                foreach (var beverage in beverageCandidates)
-                {
-                    if (ReferenceEquals(food, beverage)) continue;
-                    WriteMember(order, "ServFood", food);
-                    WriteMember(order, "ServBeverage", beverage);
-                    if (!ReadBool(InvokeInstance(order, "get_IsFullfilled", Array.Empty<object?>()))) continue;
-
-                    return new ServeItemSelection
-                    {
-                        Food = food,
-                        Beverage = beverage,
-                    };
-                }
-            }
-
-            return new ServeItemSelection();
+                Food = food,
+                Beverage = beverage,
+            };
         }
         finally
         {
             WriteMember(order, "ServFood", originalFood);
             WriteMember(order, "ServBeverage", originalBeverage);
-        }
-    }
-
-    private static IEnumerable<object> BuildServeCandidates(IReadOnlyList<object> trayItems, int sellableType, int preferredId)
-    {
-        var yielded = new HashSet<nint>();
-        foreach (var item in trayItems.Where(item => IsSellable(item, sellableType, preferredId)))
-        {
-            if (!yielded.Add(ReadObjectPointer(item))) continue;
-            yield return item;
-        }
-
-        foreach (var item in trayItems.Where(item => ReadSellableType(item) == sellableType))
-        {
-            if (!yielded.Add(ReadObjectPointer(item))) continue;
-            yield return item;
-        }
-
-        foreach (var item in trayItems)
-        {
-            if (!yielded.Add(ReadObjectPointer(item))) continue;
-            yield return item;
         }
     }
 
