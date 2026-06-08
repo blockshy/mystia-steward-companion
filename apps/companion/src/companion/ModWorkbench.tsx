@@ -1797,12 +1797,12 @@ function SwitchControl({
         role="switch"
         aria-checked={checked}
         onClick={() => onCheckedChange(!checked)}
-        className={`relative h-5 w-9 rounded-full border transition-colors ${
+        className={`relative h-5 w-9 shrink-0 rounded-full border transition-colors ${
           checked ? 'border-primary bg-primary' : 'border-border bg-muted'
         }`}
       >
         <span
-          className={`absolute left-0 top-0.5 size-4 rounded-full bg-background shadow-sm transition-transform ${
+          className={`absolute left-0 top-1/2 size-4 -translate-y-1/2 rounded-full bg-background shadow-sm transition-transform ${
             checked ? 'translate-x-4' : 'translate-x-0.5'
           }`}
         />
@@ -2033,10 +2033,14 @@ function RecipeRecommendationRow({
   return (
     <div className={compact ? 'rounded-md border border-border/80 p-1.5 text-xs' : 'rounded-md border border-border/80 p-2 text-sm'}>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap items-center gap-1.5">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
           <span className="text-xs text-muted-foreground">#{index + 1}</span>
           <span className="font-medium">{recipe.recipe.name}</span>
           <Badge variant="secondary">{RATING_LABELS[recipe.rating]}</Badge>
+          <span className="text-xs text-muted-foreground">
+            分数 {recipe.foodScore} · 成本 {totalCost}
+          </span>
+          <RecipeMetaHighlight label="厨具" value={recipe.recipe.cooker || '未知'} tone="cooker" />
           {favorite && <Badge variant="outline">已收藏</Badge>}
         </div>
         {onToggleFavorite && (
@@ -2053,11 +2057,7 @@ function RecipeRecommendationRow({
           </Button>
         )}
       </div>
-      <div className="mt-1 text-xs text-muted-foreground">
-        分数 {recipe.foodScore} · 成本 {totalCost}
-      </div>
       <div className="mt-1 flex flex-wrap gap-1.5">
-        <RecipeMetaHighlight label="厨具" value={recipe.recipe.cooker || '未知'} tone="cooker" />
         <RecipeMetaHighlight label="基础配方" value={baseRecipe} tone="base" />
         <RecipeMetaHighlight label="加料" value={extras} tone="extra" />
       </div>
