@@ -757,7 +757,67 @@ internal static class RuntimeOrderPreparationService
 
     private static IEnumerable<object> ReadTrayItems(object tray)
     {
-        return ReadObjectEnumerable(InvokeInstance(tray, "get_Tray", Array.Empty<object?>()));
+        var trayList = InvokeInstance(tray, "get_Tray", Array.Empty<object?>());
+        if (trayList == null) yield break;
+
+        var seen = new HashSet<nint>();
+        var slotCount = ToInt(TryInvokeInstanceValue(tray, "get_TrayMaxNum"));
+        if (slotCount <= 0)
+        {
+            slotCount = ReadFixedListCapacity(trayList);
+        }
+
+        if (slotCount <= 0)
+        {
+            slotCount = ToInt(TryInvokeInstanceValue(trayList, "Count"));
+        }
+
+        for (var index = 0; index < Math.Min(slotCount, 32); index++)
+        {
+            var item = TryInvokeInstanceValue(trayList, "get_Item", new object?[] { index });
+            if (item == null) continue;
+
+            nint pointer;
+            try
+            {
+                pointer = ReadObjectPointer(item);
+            }
+            catch
+            {
+                pointer = new IntPtr(RuntimeHelpers.GetHashCode(item));
+            }
+
+            if (!seen.Add(pointer)) continue;
+            yield return item;
+        }
+
+        foreach (var item in ReadObjectEnumerable(trayList))
+        {
+            nint pointer;
+            try
+            {
+                pointer = ReadObjectPointer(item);
+            }
+            catch
+            {
+                pointer = new IntPtr(RuntimeHelpers.GetHashCode(item));
+            }
+
+            if (!seen.Add(pointer)) continue;
+            yield return item;
+        }
+    }
+
+    private static int ReadFixedListCapacity(object fixedList)
+    {
+        var elements = ReadMember(fixedList, "elements");
+        if (elements is Array array) return array.Length;
+
+        var length = ReadMember(elements ?? fixedList, "Length")
+            ?? ReadMember(elements ?? fixedList, "Count")
+            ?? ReadMember(elements ?? fixedList, "max_length")
+            ?? ReadMember(elements ?? fixedList, "maxLength");
+        return ToInt(length);
     }
 
     private static bool IsSellable(object item, int sellableType, int id)
@@ -1110,9 +1170,14 @@ internal static class RuntimeOrderPreparationService
 
     private static object? TryInvokeInstanceValue(object target, string methodName)
     {
+        return TryInvokeInstanceValue(target, methodName, Array.Empty<object?>());
+    }
+
+    private static object? TryInvokeInstanceValue(object target, string methodName, object?[] args)
+    {
         try
         {
-            return InvokeInstance(target, methodName, Array.Empty<object?>());
+            return InvokeInstance(target, methodName, args);
         }
         catch
         {
