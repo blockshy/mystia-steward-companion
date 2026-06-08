@@ -56,11 +56,14 @@ const MAX_RECOMMENDATION_ROWS = 8;
 const MAX_LOG_LINES_IN_VIEW = 400;
 const NON_ORDERABLE_RARE_FOOD_TAGS = new Set(['流行喜爱', '流行厌恶']);
 const INGREDIENTS = allIngredients as IIngredient[];
+const INGREDIENT_BY_NAME = new Map(INGREDIENTS.map((ingredient) => [ingredient.name, ingredient]));
 const INGREDIENT_ID_BY_NAME = new Map(INGREDIENTS.map((ingredient) => [ingredient.name, ingredient.id]));
 const INGREDIENT_NAME_BY_ID = new Map(INGREDIENTS.map((ingredient) => [ingredient.id, ingredient.name]));
 const BEVERAGES = allBeverages as IBeverage[];
 const BEVERAGE_NAME_BY_ID = new Map(BEVERAGES.map((beverage) => [beverage.id, beverage.name]));
 const RIGHT_STICK_GAMEPAD_BUTTON_INDEX = 11;
+const LOW_STOCK_RESOURCE_THRESHOLD = 5;
+const EXTRA_INGREDIENT_RESOURCE_WEIGHT = 2;
 
 type ModTab = 'overview' | 'normal' | 'rare' | 'service' | 'inventory' | 'logs';
 
@@ -789,7 +792,7 @@ function ModRarePanel({
       runtimeSets.ownedIngredientQty,
       runtime.famousShopEnabled,
     )
-      .sort(compareRareRecipesForService)
+      .sort((a, b) => compareRareRecipesForService(a, b, runtimeSets.ownedIngredientQty))
       .slice(0, MAX_RECOMMENDATION_ROWS);
   }, [beverageTag, foodTag, runtime, runtimeSets, selectedCustomer]);
 
@@ -1968,7 +1971,7 @@ function buildOrderRecommendations(
         runtimeSets.ownedIngredientQty,
         runtime.famousShopEnabled,
       )
-        .sort(compareRareRecipesForService)
+        .sort((a, b) => compareRareRecipesForService(a, b, runtimeSets.ownedIngredientQty))
         .slice(0, MAX_RECOMMENDATION_ROWS);
 
       const beverages = rankBeveragesForRare(customer, beverageTag, runtimeSets.beverageIds)
@@ -2007,13 +2010,50 @@ function compareNormalBeveragesForMod(a: INormalBeverageResult, b: INormalBevera
   return a.beverage.id - b.beverage.id;
 }
 
-function compareRareRecipesForService(a: IRareRecipeResult, b: IRareRecipeResult) {
+function compareRareRecipesForService(
+  a: IRareRecipeResult,
+  b: IRareRecipeResult,
+  ownedIngredientQty: Record<number, number> = {},
+) {
   if (a.meetsRequiredFood !== b.meetsRequiredFood) return a.meetsRequiredFood ? -1 : 1;
   if (a.foodScore !== b.foodScore) return b.foodScore - a.foodScore;
-  const aCost = a.baseCost + a.extraCost;
-  const bCost = b.baseCost + b.extraCost;
-  if (aCost !== bCost) return bCost - aCost;
+  if (a.extraIngredients.length !== b.extraIngredients.length) {
+    return a.extraIngredients.length - b.extraIngredients.length;
+  }
+  const aPressure = getRareRecipeResourcePressure(a, ownedIngredientQty);
+  const bPressure = getRareRecipeResourcePressure(b, ownedIngredientQty);
+  if (aPressure !== bPressure) return aPressure - bPressure;
+  if (a.recipe.price !== b.recipe.price) return b.recipe.price - a.recipe.price;
+  if (a.extraCost !== b.extraCost) return a.extraCost - b.extraCost;
   return a.recipe.id - b.recipe.id;
+}
+
+function getRareRecipeResourcePressure(
+  result: IRareRecipeResult,
+  ownedIngredientQty: Record<number, number>,
+): number {
+  const basePressure = result.recipe.ingredients.reduce((sum, ingredientName) => {
+    const ingredient = INGREDIENT_BY_NAME.get(ingredientName);
+    return sum + (ingredient ? getIngredientResourcePressure(ingredient, ownedIngredientQty) : 0);
+  }, 0);
+
+  const extraPressure = result.extraIngredients.reduce(
+    (sum, ingredient) => sum + getIngredientResourcePressure(ingredient, ownedIngredientQty),
+    0,
+  );
+
+  return basePressure + extraPressure * EXTRA_INGREDIENT_RESOURCE_WEIGHT;
+}
+
+function getIngredientResourcePressure(
+  ingredient: IIngredient,
+  ownedIngredientQty: Record<number, number>,
+): number {
+  const qty = Math.max(0, Math.trunc(ownedIngredientQty[ingredient.id] ?? 0));
+  const stockPenalty = qty <= 0
+    ? (LOW_STOCK_RESOURCE_THRESHOLD + 1) * 100
+    : Math.max(0, LOW_STOCK_RESOURCE_THRESHOLD + 1 - qty) * 100;
+  return stockPenalty + ingredient.price;
 }
 
 function compareRareBeveragesForService(a: IRareBeverageResult, b: IRareBeverageResult) {

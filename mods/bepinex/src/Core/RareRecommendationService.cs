@@ -274,8 +274,13 @@ public sealed class RareRecommendationService
         }
 
         return results
-            .OrderBy(r => r.Rating == Rating.ExGood ? 0 : 1)
+            .OrderByDescending(r => r.MeetsRequiredFood)
+            .ThenByDescending(r => r.FoodScore)
+            .ThenBy(r => r.ExtraIngredients.Count)
+            .ThenBy(r => GetRecipeResourcePressure(r, state))
             .ThenByDescending(r => r.Recipe.Price)
+            .ThenBy(r => r.ExtraCost)
+            .ThenBy(r => r.Recipe.Id)
             .ToList();
     }
 
@@ -378,6 +383,30 @@ public sealed class RareRecommendationService
     private static int GetIngredientOwnedQty(int ingredientId, IReadOnlyDictionary<int, int> ownedIngredientQty)
     {
         return ownedIngredientQty.TryGetValue(ingredientId, out var qty) ? qty : 0;
+    }
+
+    private int GetRecipeResourcePressure(RareRecipeResult result, RecommendationState state)
+    {
+        var basePressure = result.Recipe.Ingredients.Sum(name =>
+            _repository.IngredientsByName.TryGetValue(name, out var ingredient)
+                ? GetIngredientResourcePressure(ingredient, state)
+                : 0);
+        var extraPressure = result.ExtraIngredients.Sum(ingredient => GetIngredientResourcePressure(ingredient, state));
+
+        return basePressure + extraPressure * 2;
+    }
+
+    private static int GetIngredientResourcePressure(Ingredient ingredient, RecommendationState state)
+    {
+        const int lowStockThreshold = 5;
+        var qty = state.OwnedIngredientQty.TryGetValue(ingredient.Id, out var ownedQty)
+            ? Math.Max(0, ownedQty)
+            : 0;
+        var stockPenalty = qty <= 0
+            ? (lowStockThreshold + 1) * 100
+            : Math.Max(0, lowStockThreshold + 1 - qty) * 100;
+
+        return stockPenalty + ingredient.Price;
     }
 
     private static bool IsReasonDataPreferred(
