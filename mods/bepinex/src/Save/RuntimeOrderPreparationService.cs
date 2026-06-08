@@ -189,28 +189,6 @@ internal static class RuntimeOrderPreparationService
             return Finish(result);
         }
 
-        var trayItems = ReadTrayItems(tray).ToList();
-        var food = trayItems.FirstOrDefault(item => IsSellable(item, sellableType: 0, expectedFoodId));
-        if (food == null)
-        {
-            AddFailure(result, "匹配送餐盘料理", $"送餐盘中没有找到 {request.RecipeName} 的成品料理（料理 #{expectedFoodId}）。");
-            return Finish(result);
-        }
-
-        var beverage = trayItems.FirstOrDefault(item => IsSellable(item, sellableType: 1, request.BeverageId));
-        if (beverage == null)
-        {
-            AddFailure(result, "匹配送餐盘酒水", $"送餐盘中没有找到 {request.BeverageName}（酒水 #{request.BeverageId}）。");
-            return Finish(result);
-        }
-
-        result.Steps.Add(new OrderPreparationStep
-        {
-            Name = "匹配送餐盘",
-            Ok = true,
-            Message = $"已找到料理 {request.RecipeName} 和酒水 {request.BeverageName}。",
-        });
-
         var runtimeOrder = FindRuntimeOrder(request);
         if (runtimeOrder.Order == null || runtimeOrder.Controller == null || runtimeOrder.Manager == null)
         {
@@ -225,6 +203,29 @@ internal static class RuntimeOrderPreparationService
             Message = $"已匹配桌 {request.DeskCode + 1} · {request.GuestName} 的订单对象。",
         });
 
+        var trayItems = ReadTrayItems(tray).ToList();
+        var serveItems = SelectTrayServeItems(runtimeOrder.Order, trayItems, expectedFoodId, request.BeverageId);
+        if (serveItems.Food == null)
+        {
+            AddFailure(result, "匹配送餐盘料理", $"送餐盘中没有找到可满足订单的 {request.RecipeName}（目标料理 #{expectedFoodId}）。{FormatTraySummary(trayItems)}");
+            return Finish(result);
+        }
+
+        if (serveItems.Beverage == null)
+        {
+            AddFailure(result, "匹配送餐盘酒水", $"送餐盘中没有找到可满足订单的 {request.BeverageName}（目标酒水 #{request.BeverageId}）。{FormatTraySummary(trayItems)}");
+            return Finish(result);
+        }
+
+        result.Steps.Add(new OrderPreparationStep
+        {
+            Name = "匹配送餐盘",
+            Ok = true,
+            Message = $"已找到可满足订单的料理 {request.RecipeName} 和酒水 {request.BeverageName}。",
+        });
+
+        var food = serveItems.Food;
+        var beverage = serveItems.Beverage;
         WriteMember(runtimeOrder.Order, "ServFood", food);
         WriteMember(runtimeOrder.Order, "ServBeverage", beverage);
         if (!ReadBool(InvokeInstance(runtimeOrder.Order, "get_IsFullfilled", Array.Empty<object?>())))
@@ -763,6 +764,77 @@ internal static class RuntimeOrderPreparationService
         return ReadSellableType(item) == sellableType && ReadSellableId(item) == id;
     }
 
+    private static ServeItemSelection SelectTrayServeItems(object order, IReadOnlyList<object> trayItems, int expectedFoodId, int expectedBeverageId)
+    {
+        var originalFood = ReadMember(order, "ServFood") ?? TryInvokeInstanceValue(order, "get_ServFood");
+        var originalBeverage = ReadMember(order, "ServBeverage") ?? TryInvokeInstanceValue(order, "get_ServBeverage");
+        try
+        {
+            var foodCandidates = BuildServeCandidates(trayItems, sellableType: 0, preferredId: expectedFoodId).ToList();
+            var beverageCandidates = BuildServeCandidates(trayItems, sellableType: 1, preferredId: expectedBeverageId).ToList();
+            foreach (var food in foodCandidates)
+            {
+                foreach (var beverage in beverageCandidates)
+                {
+                    if (ReferenceEquals(food, beverage)) continue;
+                    WriteMember(order, "ServFood", food);
+                    WriteMember(order, "ServBeverage", beverage);
+                    if (!ReadBool(InvokeInstance(order, "get_IsFullfilled", Array.Empty<object?>()))) continue;
+
+                    return new ServeItemSelection
+                    {
+                        Food = food,
+                        Beverage = beverage,
+                    };
+                }
+            }
+
+            return new ServeItemSelection();
+        }
+        finally
+        {
+            WriteMember(order, "ServFood", originalFood);
+            WriteMember(order, "ServBeverage", originalBeverage);
+        }
+    }
+
+    private static IEnumerable<object> BuildServeCandidates(IReadOnlyList<object> trayItems, int sellableType, int preferredId)
+    {
+        var yielded = new HashSet<nint>();
+        foreach (var item in trayItems.Where(item => IsSellable(item, sellableType, preferredId)))
+        {
+            if (!yielded.Add(ReadObjectPointer(item))) continue;
+            yield return item;
+        }
+
+        foreach (var item in trayItems.Where(item => ReadSellableType(item) == sellableType))
+        {
+            if (!yielded.Add(ReadObjectPointer(item))) continue;
+            yield return item;
+        }
+
+        foreach (var item in trayItems)
+        {
+            if (!yielded.Add(ReadObjectPointer(item))) continue;
+            yield return item;
+        }
+    }
+
+    private static string FormatTraySummary(IReadOnlyList<object> trayItems)
+    {
+        if (trayItems.Count == 0)
+        {
+            return "当前读取到的送餐盘为空。";
+        }
+
+        var items = trayItems
+            .Take(8)
+            .Select(item => $"type={ReadSellableType(item)},id={ReadSellableId(item)}")
+            .ToArray();
+        var suffix = trayItems.Count > items.Length ? $" 等 {trayItems.Count} 个" : "";
+        return $"当前读取到的送餐盘：{string.Join("; ", items)}{suffix}。";
+    }
+
     private static int ReadSellableType(object item)
     {
         var value = TryInvokeInstanceValue(item, "get_Type") ?? ReadMember(item, "Type");
@@ -1184,5 +1256,11 @@ internal static class RuntimeOrderPreparationService
         public object? Manager { get; init; }
         public object? Controller { get; init; }
         public object? Order { get; init; }
+    }
+
+    private sealed class ServeItemSelection
+    {
+        public object? Food { get; init; }
+        public object? Beverage { get; init; }
     }
 }
