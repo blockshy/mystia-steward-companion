@@ -898,11 +898,21 @@ internal static class RuntimeOrderPreparationService
     private static RuntimeOrderMatch FindCapturedRuntimeOrder(OrderPreparationRequest request, object manager)
     {
         var capturedOrders = SpecialOrderRuntimeCapture.Snapshot(TimeSpan.FromHours(6));
-        var candidates = 0;
-        foreach (var captured in capturedOrders.OrderBy(order => order.FirstCapturedAt).ThenBy(order => order.CapturedAt))
+        var candidates = capturedOrders
+            .Select(captured => new
+            {
+                Order = captured,
+                Score = ScoreCapturedOrder(captured, request),
+            })
+            .Where(candidate => candidate.Score > 0)
+            .OrderByDescending(candidate => candidate.Score)
+            .ThenBy(candidate => candidate.Order.FirstCapturedAt)
+            .ThenBy(candidate => candidate.Order.CapturedAt)
+            .ToList();
+
+        foreach (var candidate in candidates)
         {
-            if (!IsMatchingCapturedOrder(captured, request)) continue;
-            candidates++;
+            var captured = candidate.Order;
             if (captured.OrderObject == null || captured.ControllerObject == null) continue;
 
             return new RuntimeOrderMatch
@@ -910,43 +920,66 @@ internal static class RuntimeOrderPreparationService
                 Manager = manager,
                 Controller = captured.ControllerObject,
                 Order = captured.OrderObject,
-                Diagnostic = $"capturedCandidates={candidates}, source={captured.CaptureSource}",
+                Diagnostic = $"capturedCandidates={candidates.Count}, score={candidate.Score}, source={captured.CaptureSource}",
             };
         }
 
         return new RuntimeOrderMatch
         {
-            Diagnostic = $"capturedCandidates={candidates}, capturedTotal={capturedOrders.Count}",
+            Diagnostic = $"capturedCandidates={candidates.Count}, capturedTotal={capturedOrders.Count}, captured=[{FormatCapturedOrderSummary(capturedOrders)}]",
         };
     }
 
-    private static bool IsMatchingCapturedOrder(CapturedRuntimeSpecialOrder captured, OrderPreparationRequest request)
+    private static int ScoreCapturedOrder(CapturedRuntimeSpecialOrder captured, OrderPreparationRequest request)
     {
-        if (captured.DeskCode >= 0 && request.DeskCode >= 0 && captured.DeskCode != request.DeskCode) return false;
-        if (request.GuestId.HasValue && captured.GuestId.HasValue && captured.GuestId.Value != request.GuestId.Value) return false;
-        if (!request.GuestId.HasValue
-            && !string.IsNullOrWhiteSpace(request.GuestName)
-            && !string.IsNullOrWhiteSpace(captured.GuestName)
-            && !string.Equals(captured.GuestName, request.GuestName, StringComparison.Ordinal))
+        if (captured.OrderObject == null || captured.ControllerObject == null) return 0;
+
+        var score = 0;
+        if (captured.DeskCode >= 0 && request.DeskCode >= 0)
         {
-            return false;
+            if (captured.DeskCode == request.DeskCode)
+            {
+                score += 10;
+            }
+            else
+            {
+                score -= 3;
+            }
         }
 
-        if (!string.IsNullOrWhiteSpace(request.FoodTag)
-            && !string.IsNullOrWhiteSpace(captured.FoodTag)
-            && !string.Equals(captured.FoodTag, request.FoodTag, StringComparison.Ordinal))
+        if (request.GuestId.HasValue && captured.GuestId.HasValue)
         {
-            return false;
+            score += request.GuestId.Value == captured.GuestId.Value ? 8 : -6;
         }
 
-        if (!string.IsNullOrWhiteSpace(request.BeverageTag)
-            && !string.IsNullOrWhiteSpace(captured.BeverageTag)
-            && !string.Equals(captured.BeverageTag, request.BeverageTag, StringComparison.Ordinal))
+        if (!string.IsNullOrWhiteSpace(request.GuestName) && !string.IsNullOrWhiteSpace(captured.GuestName))
         {
-            return false;
+            score += string.Equals(captured.GuestName, request.GuestName, StringComparison.Ordinal) ? 6 : 0;
         }
 
-        return true;
+        if (!string.IsNullOrWhiteSpace(request.FoodTag) && !string.IsNullOrWhiteSpace(captured.FoodTag))
+        {
+            score += string.Equals(captured.FoodTag, request.FoodTag, StringComparison.Ordinal) ? 3 : -1;
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.BeverageTag) && !string.IsNullOrWhiteSpace(captured.BeverageTag))
+        {
+            score += string.Equals(captured.BeverageTag, request.BeverageTag, StringComparison.Ordinal) ? 3 : -1;
+        }
+
+        return score >= 7 ? score : 0;
+    }
+
+    private static string FormatCapturedOrderSummary(IReadOnlyList<CapturedRuntimeSpecialOrder> capturedOrders)
+    {
+        if (capturedOrders.Count == 0) return "";
+
+        var items = capturedOrders
+            .Take(4)
+            .Select(order => $"desk={order.DeskCode + 1},guest={order.GuestName}/{order.GuestId?.ToString() ?? ""},food={order.FoodTag},bev={order.BeverageTag},source={order.CaptureSource},obj={(order.OrderObject == null ? "no" : "yes")}/{(order.ControllerObject == null ? "no" : "yes")}")
+            .ToArray();
+        var suffix = capturedOrders.Count > items.Length ? $" ... total={capturedOrders.Count}" : "";
+        return string.Join("; ", items) + suffix;
     }
 
     private static IEnumerable<object> EnumerateGuestControllers(object manager)
