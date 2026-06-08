@@ -1,22 +1,38 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::fs;
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Manager, WindowEvent};
+use tauri::{
+    Manager, Monitor, PhysicalPosition, PhysicalSize, Position, Size, WebviewWindow, Window,
+    WindowEvent,
+};
 
 const DEFAULT_API_ENDPOINT: &str = "http://127.0.0.1:32145";
 const CONTROL_PORT: u16 = 32146;
 const CONTROL_SHOW: &[u8] = b"mystia-steward-companion:show";
 const CONTROL_TOGGLE: &[u8] = b"mystia-steward-companion:toggle";
 const CONTROL_EXIT: &[u8] = b"mystia-steward-companion:exit";
+const WINDOW_STATE_FILE: &str = "window-state.txt";
+const MIN_WINDOW_WIDTH: u32 = 720;
+const MIN_WINDOW_HEIGHT: u32 = 520;
 
 struct GamePidState(Arc<Mutex<Option<u32>>>);
 struct WindowSwitchState(Arc<Mutex<Option<Instant>>>);
+
+#[derive(Clone, Copy)]
+struct PersistedWindowState {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
 
 #[tauri::command]
 fn fetch_snapshot(endpoint: String, token: String) -> Result<String, String> {
@@ -308,6 +324,129 @@ fn start_game_shutdown_monitor(
     });
 }
 
+fn window_state_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    app.path()
+        .app_data_dir()
+        .ok()
+        .map(|directory| directory.join(WINDOW_STATE_FILE))
+}
+
+fn restore_window_state(window: &WebviewWindow) {
+    let Some(path) = window_state_path(window.app_handle()) else {
+        return;
+    };
+    let Ok(content) = fs::read_to_string(path) else {
+        return;
+    };
+    let Some(state) = parse_window_state(&content) else {
+        return;
+    };
+
+    let width = state.width.max(MIN_WINDOW_WIDTH);
+    let height = state.height.max(MIN_WINDOW_HEIGHT);
+    let _ = window.set_size(Size::Physical(PhysicalSize::new(width, height)));
+
+    if is_window_state_on_screen(window, state) {
+        let _ = window.set_position(Position::Physical(PhysicalPosition::new(state.x, state.y)));
+    }
+}
+
+fn save_webview_window_state(window: &WebviewWindow) {
+    let Ok(position) = window.outer_position() else {
+        return;
+    };
+    let Ok(size) = window.inner_size() else {
+        return;
+    };
+    save_window_state_from_parts(window.app_handle(), position, size);
+}
+
+fn save_window_state(window: &Window) {
+    let Ok(position) = window.outer_position() else {
+        return;
+    };
+    let Ok(size) = window.inner_size() else {
+        return;
+    };
+    save_window_state_from_parts(window.app_handle(), position, size);
+}
+
+fn save_window_state_from_parts(
+    app: &tauri::AppHandle,
+    position: PhysicalPosition<i32>,
+    size: PhysicalSize<u32>,
+) {
+    if size.width < MIN_WINDOW_WIDTH || size.height < MIN_WINDOW_HEIGHT {
+        return;
+    }
+
+    let Some(path) = window_state_path(app) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    let content = format!(
+        "x={}\ny={}\nwidth={}\nheight={}\n",
+        position.x, position.y, size.width, size.height
+    );
+    let _ = fs::write(path, content);
+}
+
+fn parse_window_state(content: &str) -> Option<PersistedWindowState> {
+    let mut x = None;
+    let mut y = None;
+    let mut width = None;
+    let mut height = None;
+
+    for line in content.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        match key.trim() {
+            "x" => x = value.trim().parse::<i32>().ok(),
+            "y" => y = value.trim().parse::<i32>().ok(),
+            "width" => width = value.trim().parse::<u32>().ok(),
+            "height" => height = value.trim().parse::<u32>().ok(),
+            _ => {}
+        }
+    }
+
+    Some(PersistedWindowState {
+        x: x?,
+        y: y?,
+        width: width?,
+        height: height?,
+    })
+}
+
+fn is_window_state_on_screen(window: &WebviewWindow, state: PersistedWindowState) -> bool {
+    let Ok(monitors) = window.available_monitors() else {
+        return true;
+    };
+    if monitors.is_empty() {
+        return true;
+    }
+
+    is_state_inside_monitors(state, &monitors)
+}
+
+fn is_state_inside_monitors(state: PersistedWindowState, monitors: &[Monitor]) -> bool {
+    let center_x = i64::from(state.x) + i64::from(state.width / 2);
+    let center_y = i64::from(state.y) + i64::from(state.height / 2);
+
+    monitors.iter().any(|monitor| {
+        let position = monitor.position();
+        let size = monitor.size();
+        let left = i64::from(position.x);
+        let top = i64::from(position.y);
+        let right = left + i64::from(size.width);
+        let bottom = top + i64::from(size.height);
+        center_x >= left && center_x <= right && center_y >= top && center_y <= bottom
+    })
+}
+
 fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
     let show = MenuItem::with_id(
         app,
@@ -359,6 +498,7 @@ fn show_main_window(app: &tauri::AppHandle) {
 fn toggle_main_window(app: &tauri::AppHandle, game_pid: Option<u32>) {
     if let Some(window) = app.get_webview_window("main") {
         if window.is_focused().unwrap_or(false) {
+            save_webview_window_state(&window);
             let _ = window.hide();
             focus_game_window(game_pid);
             return;
@@ -378,6 +518,9 @@ fn main() {
         .manage(WindowSwitchState(Arc::new(Mutex::new(None))))
         .setup(|app| {
             setup_tray(app)?;
+            if let Some(window) = app.get_webview_window("main") {
+                restore_window_state(&window);
+            }
             let app_handle = app.handle().clone();
             let game_pid = app.state::<GamePidState>().0.clone();
             let switch_state = app.state::<WindowSwitchState>().0.clone();
@@ -390,9 +533,14 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+            match event {
+                WindowEvent::Moved(_) | WindowEvent::Resized(_) => save_window_state(window),
+                WindowEvent::CloseRequested { api, .. } => {
+                    api.prevent_close();
+                    save_window_state(window);
+                    let _ = window.hide();
+                }
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![
