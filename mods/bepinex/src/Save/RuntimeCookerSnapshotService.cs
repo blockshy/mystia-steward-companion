@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Runtime.CompilerServices;
 using System.Reflection;
+using Il2CppInterop.Runtime.InteropTypes;
 using MystiaStewardCompanion.Core;
 
 namespace MystiaStewardCompanion.Save;
@@ -249,6 +250,11 @@ internal static class RuntimeCookerSnapshotService
 
     private static IEnumerable<object?> EnumerateByEnumerator(object value)
     {
+        foreach (var item in EnumerateByIl2CppEnumerator(value))
+        {
+            yield return item;
+        }
+
         object? enumerator;
         try
         {
@@ -264,6 +270,60 @@ internal static class RuntimeCookerSnapshotService
         while (ReadBool(TryInvokeInstanceValue(enumerator, "MoveNext")))
         {
             yield return ReadMember(enumerator, "Current") ?? TryInvokeInstanceValue(enumerator, "get_Current");
+        }
+    }
+
+    private static IEnumerable<object?> EnumerateByIl2CppEnumerator(object value)
+    {
+        if (value is not Il2CppObjectBase il2CppObject) yield break;
+
+        Il2CppSystem.Collections.IEnumerable? enumerable;
+        try
+        {
+            enumerable = il2CppObject.TryCast<Il2CppSystem.Collections.IEnumerable>();
+        }
+        catch
+        {
+            yield break;
+        }
+
+        if (enumerable == null) yield break;
+
+        Il2CppSystem.Collections.IEnumerator? enumerator;
+        try
+        {
+            enumerator = enumerable.GetEnumerator();
+        }
+        catch
+        {
+            yield break;
+        }
+
+        while (true)
+        {
+            bool hasNext;
+            try
+            {
+                hasNext = enumerator.MoveNext();
+            }
+            catch
+            {
+                yield break;
+            }
+
+            if (!hasNext) yield break;
+
+            object? current;
+            try
+            {
+                current = enumerator.Current;
+            }
+            catch
+            {
+                current = null;
+            }
+
+            yield return current;
         }
     }
 

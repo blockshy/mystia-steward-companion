@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using System.Reflection;
 using BepInEx.Logging;
 using HarmonyLib;
+using Il2CppInterop.Runtime.InteropTypes;
 
 namespace MystiaStewardCompanion.Save;
 
@@ -10,6 +11,7 @@ internal static class RuntimeUiPinningService
 {
     private const string CookingSelectionPanelTypeName = "NightScene.UI.CookingUtility.WorkSceneCookingSelectionPannel";
     private const string StoragePanelTypeName = "NightScene.UI.CookingUtility.WorkSceneStoragePannel";
+    private const string RunTimePlayerDataTypeName = "GameData.RunTime.Common.RunTimePlayerData";
 
     private static readonly object SyncRoot = new();
     private static readonly HashSet<string> PatchedMethods = new(StringComparer.Ordinal);
@@ -49,6 +51,7 @@ internal static class RuntimeUiPinningService
             PatchMethod(_harmony, CookingSelectionPanelTypeName, "UpdateRecipeField", 0, nameof(OnRecipeFieldUpdated), patchedNow, missing);
             PatchMethod(_harmony, CookingSelectionPanelTypeName, "UpdateIngField", 0, nameof(OnIngredientFieldUpdated), patchedNow, missing);
             PatchMethod(_harmony, StoragePanelTypeName, "UpdateBevField", 0, nameof(OnBeverageFieldUpdated), patchedNow, missing);
+            PatchMethod(_harmony, RunTimePlayerDataTypeName, "CheckPinned", 2, nameof(OnCheckPinned), patchedNow, missing);
 
             lock (SyncRoot)
             {
@@ -113,7 +116,7 @@ internal static class RuntimeUiPinningService
         }
 
         var type = FindType(typeName);
-        var target = type?.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+        var target = type?.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static)
             .FirstOrDefault(method => method.Name == methodName && method.GetParameters().Length == parameterCount);
         var postfix = typeof(RuntimeUiPinningService).GetMethod(postfixName, BindingFlags.NonPublic | BindingFlags.Static);
         if (target == null || postfix == null)
@@ -160,6 +163,31 @@ internal static class RuntimeUiPinningService
         if (!ReadTarget(out _, out var beverageId, out _, out _, out _)) return;
         if (beverageId < 0) return;
         TryMoveFirst(__instance, "Beverages", item => ReadObjectId(ReadPairKey(item) ?? item) == beverageId, "beverage");
+    }
+
+    private static void OnCheckPinned(int pinnedType, int pinnedID, ref bool __result)
+    {
+        if (!ReadTarget(out var recipeId, out var beverageId, out var ingredientIds, out _, out _)) return;
+        if (pinnedType == 1 && recipeId >= 0 && pinnedID == recipeId)
+        {
+            __result = true;
+            NoteAction($"checkPinned recipe hit: {pinnedID}");
+            return;
+        }
+
+        if (pinnedType == 2 && beverageId >= 0 && pinnedID == beverageId)
+        {
+            __result = true;
+            NoteAction($"checkPinned beverage hit: {pinnedID}");
+            return;
+        }
+
+        if ((pinnedType == 0 || pinnedType == 4 || pinnedType == 5 || pinnedType == 6)
+            && ingredientIds.Contains(pinnedID))
+        {
+            __result = true;
+            NoteAction($"checkPinned ingredient hit: {pinnedType}/{pinnedID}");
+        }
     }
 
     private static bool ReadTarget(
@@ -359,12 +387,71 @@ internal static class RuntimeUiPinningService
 
     private static IEnumerable<object?> EnumerateByEnumerator(object value)
     {
+        foreach (var item in EnumerateByIl2CppEnumerator(value))
+        {
+            yield return item;
+        }
+
         var enumerator = TryInvokeInstanceValue(value, "GetEnumerator");
         if (enumerator == null) yield break;
 
         while (ReadBool(TryInvokeInstanceValue(enumerator, "MoveNext")))
         {
             yield return ReadMember(enumerator, "Current") ?? TryInvokeInstanceValue(enumerator, "get_Current");
+        }
+    }
+
+    private static IEnumerable<object?> EnumerateByIl2CppEnumerator(object value)
+    {
+        if (value is not Il2CppObjectBase il2CppObject) yield break;
+
+        Il2CppSystem.Collections.IEnumerable? enumerable;
+        try
+        {
+            enumerable = il2CppObject.TryCast<Il2CppSystem.Collections.IEnumerable>();
+        }
+        catch
+        {
+            yield break;
+        }
+
+        if (enumerable == null) yield break;
+
+        Il2CppSystem.Collections.IEnumerator? enumerator;
+        try
+        {
+            enumerator = enumerable.GetEnumerator();
+        }
+        catch
+        {
+            yield break;
+        }
+
+        while (true)
+        {
+            bool hasNext;
+            try
+            {
+                hasNext = enumerator.MoveNext();
+            }
+            catch
+            {
+                yield break;
+            }
+
+            if (!hasNext) yield break;
+
+            object? current;
+            try
+            {
+                current = enumerator.Current;
+            }
+            catch
+            {
+                current = null;
+            }
+
+            yield return current;
         }
     }
 

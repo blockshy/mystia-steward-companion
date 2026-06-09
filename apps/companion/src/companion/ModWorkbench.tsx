@@ -3450,7 +3450,7 @@ function buildGameUiPinningTarget(recommendations: OrderRecommendation[]): GameU
     ...baseIngredientIds,
     ...(recipe?.extraIngredients.map((ingredient) => ingredient.id) ?? []),
   ]);
-  const recipeId = recipe?.recipe.recipeId ?? recipe?.recipe.id ?? -1;
+  const recipeId = recipe?.recipe.id ?? -1;
   const beverageId = beverage?.beverage.id ?? -1;
 
   return {
