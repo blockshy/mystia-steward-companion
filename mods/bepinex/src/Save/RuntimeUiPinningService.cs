@@ -3,7 +3,6 @@ using System.Runtime.CompilerServices;
 using System.Reflection;
 using BepInEx.Logging;
 using HarmonyLib;
-using Il2CppInterop.Runtime.InteropTypes;
 
 namespace MystiaStewardCompanion.Save;
 
@@ -296,7 +295,7 @@ internal static class RuntimeUiPinningService
         if (value == null || value is string) yield break;
 
         var seen = new HashSet<nint>();
-        foreach (var item in EnumerateManaged(value).Concat(EnumerateByEnumerator(value)).Concat(EnumerateByIndexer(value)))
+        foreach (var item in EnumerateManaged(value).Concat(EnumerateByIndexer(value)))
         {
             if (item == null) continue;
             if (!seen.Add(ReadObjectPointer(item))) continue;
@@ -377,6 +376,7 @@ internal static class RuntimeUiPinningService
 
     private static IEnumerable<object?> EnumerateManaged(object value)
     {
+        if (LooksLikeIl2CppObject(value)) yield break;
         if (value is not IEnumerable enumerable) yield break;
 
         foreach (var item in enumerable)
@@ -385,80 +385,11 @@ internal static class RuntimeUiPinningService
         }
     }
 
-    private static IEnumerable<object?> EnumerateByEnumerator(object value)
-    {
-        foreach (var item in EnumerateByIl2CppEnumerator(value))
-        {
-            yield return item;
-        }
-
-        var enumerator = TryInvokeInstanceValue(value, "GetEnumerator");
-        if (enumerator == null) yield break;
-
-        while (ReadBool(TryInvokeInstanceValue(enumerator, "MoveNext")))
-        {
-            yield return ReadMember(enumerator, "Current") ?? TryInvokeInstanceValue(enumerator, "get_Current");
-        }
-    }
-
-    private static IEnumerable<object?> EnumerateByIl2CppEnumerator(object value)
-    {
-        if (value is not Il2CppObjectBase il2CppObject) yield break;
-
-        Il2CppSystem.Collections.IEnumerable? enumerable;
-        try
-        {
-            enumerable = il2CppObject.TryCast<Il2CppSystem.Collections.IEnumerable>();
-        }
-        catch
-        {
-            yield break;
-        }
-
-        if (enumerable == null) yield break;
-
-        Il2CppSystem.Collections.IEnumerator? enumerator;
-        try
-        {
-            enumerator = enumerable.GetEnumerator();
-        }
-        catch
-        {
-            yield break;
-        }
-
-        while (true)
-        {
-            bool hasNext;
-            try
-            {
-                hasNext = enumerator.MoveNext();
-            }
-            catch
-            {
-                yield break;
-            }
-
-            if (!hasNext) yield break;
-
-            object? current;
-            try
-            {
-                current = enumerator.Current;
-            }
-            catch
-            {
-                current = null;
-            }
-
-            yield return current;
-        }
-    }
-
     private static IEnumerable<object?> EnumerateByIndexer(object value)
     {
         var count = ToInt(TryInvokeInstanceValue(value, "get_Count")
             ?? ReadMember(value, "Count")
+            ?? ReadMember(value, "Length")
             ?? ReadMember(value, "_size"));
         if (count <= 0) yield break;
 
@@ -466,6 +397,16 @@ internal static class RuntimeUiPinningService
         {
             yield return TryInvokeInstanceValue(value, "get_Item", new object?[] { index });
         }
+    }
+
+    private static bool LooksLikeIl2CppObject(object value)
+    {
+        var type = value.GetType();
+        var fullName = type.FullName ?? "";
+        if (fullName.StartsWith("Il2Cpp", StringComparison.Ordinal)) return true;
+        if (fullName.StartsWith("NightScene.", StringComparison.Ordinal)) return true;
+        if (fullName.StartsWith("GameData.", StringComparison.Ordinal)) return true;
+        return type.Assembly.GetName().Name?.Contains("Il2Cpp", StringComparison.OrdinalIgnoreCase) == true;
     }
 
     private static bool TryInvokeInstance(object target, string methodName, object?[] args)

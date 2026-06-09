@@ -1,7 +1,6 @@
 using System.Collections;
 using System.Runtime.CompilerServices;
 using System.Reflection;
-using Il2CppInterop.Runtime.InteropTypes;
 using MystiaStewardCompanion.Core;
 
 namespace MystiaStewardCompanion.Save;
@@ -68,18 +67,22 @@ internal static class RuntimeCookerSnapshotService
             return result;
         }
 
-        object? controllers;
-        try
+        var allCookers = ReadMember(cookSystem, "AllCookers");
+        object? controllers = null;
+        if (allCookers == null)
         {
-            controllers = InvokeInstance(cookSystem, "get_AllCookerControllers", Array.Empty<object?>());
-        }
-        catch (Exception ex)
-        {
-            SetStatus($"controllers error: {ex.Message}");
-            return result;
+            try
+            {
+                controllers = InvokeInstance(cookSystem, "get_AllCookerControllers", Array.Empty<object?>());
+            }
+            catch (Exception ex)
+            {
+                SetStatus($"controllers error: {ex.Message}");
+                return result;
+            }
         }
 
-        var controllerItems = ReadObjectEnumerable(controllers).ToList();
+        var controllerItems = ReadCookerControllers(allCookers, controllers).ToList();
         var index = 0;
         foreach (var controller in controllerItems)
         {
@@ -120,22 +123,37 @@ internal static class RuntimeCookerSnapshotService
             .Distinct()
             .ToArray();
         SetStatus(result.Count == 0
-            ? $"empty; controllers={controllerItems.Count}; controllersType={controllers?.GetType().FullName ?? "null"}"
+            ? $"empty; controllers={controllerItems.Count}; allCookersType={allCookers?.GetType().FullName ?? "null"}; controllersType={controllers?.GetType().FullName ?? "null"}"
             : $"ok; controllers={controllerItems.Count}; cookers={result.Count}; types={string.Join("/", typeSummary)}");
         return result;
+    }
+
+    private static IEnumerable<object> ReadCookerControllers(object? allCookers, object? controllers)
+    {
+        var dictionaryValues = ReadDictionaryValues(allCookers).Where(value => value != null).Cast<object>().ToList();
+        var seen = new HashSet<nint>();
+        foreach (var controller in dictionaryValues.Count > 0 ? dictionaryValues : ReadObjectEnumerable(controllers))
+        {
+            if (controller == null) continue;
+            if (!seen.Add(ReadObjectPointer(controller))) continue;
+            yield return controller;
+        }
     }
 
     private static List<int> ReadCookerTypeIds(object cooker)
     {
         try
         {
-            var cookerTypes = InvokeInstance(cooker, "get_AllAvailableCookerType", Array.Empty<object?>());
-            return ReadIntEnumerable(cookerTypes).Where(id => id >= 0).ToList();
+            var directType = ToInt(ReadMember(cooker, "type"));
+            if (directType >= 0) return new List<int> { directType };
         }
         catch
         {
-            return new List<int>();
+            // Fall back to the public enumerable below only if the direct serialized type is unavailable.
         }
+
+        var cookerTypes = TryInvokeInstanceValue(cooker, "get_AllAvailableCookerType");
+        return ReadIntEnumerable(cookerTypes).Where(id => id >= 0).ToList();
     }
 
     private static string ResolveCookerTypeName(int typeId)
@@ -220,7 +238,7 @@ internal static class RuntimeCookerSnapshotService
         if (value == null || value is string) yield break;
 
         var seen = new HashSet<nint>();
-        foreach (var item in EnumerateManaged(value).Concat(EnumerateByEnumerator(value)).Concat(EnumerateByIndexer(value)))
+        foreach (var item in EnumerateManaged(value).Concat(EnumerateByIndexer(value)))
         {
             if (item == null) continue;
             if (!seen.Add(ReadObjectPointer(item))) continue;
@@ -232,14 +250,59 @@ internal static class RuntimeCookerSnapshotService
     {
         if (value == null || value is string) yield break;
 
-        foreach (var item in EnumerateManaged(value).Concat(EnumerateByEnumerator(value)).Concat(EnumerateByIndexer(value)))
+        foreach (var item in EnumerateManaged(value).Concat(EnumerateByIndexer(value)))
         {
             yield return ToInt(item);
         }
     }
 
+    private static IEnumerable<object?> ReadDictionaryValues(object? dictionary)
+    {
+        if (dictionary == null || dictionary is string) yield break;
+
+        if (dictionary is IDictionary managedDictionary)
+        {
+            foreach (DictionaryEntry entry in managedDictionary)
+            {
+                yield return entry.Value;
+            }
+
+            yield break;
+        }
+
+        var entries = ReadMember(dictionary, "entries")
+            ?? ReadMember(dictionary, "_entries")
+            ?? ReadMember(dictionary, "m_Entries");
+        var count = ToInt(ReadMember(dictionary, "count")
+            ?? ReadMember(dictionary, "_count")
+            ?? ReadMember(dictionary, "Count"));
+        if (entries == null || count <= 0) yield break;
+
+        var entryIndex = 0;
+        foreach (var entry in EnumerateByIndexer(entries))
+        {
+            if (entryIndex++ >= Math.Min(count, 256)) yield break;
+            if (entry == null) continue;
+
+            var hashCode = ToInt(ReadMember(entry, "hashCode") ?? ReadMember(entry, "_hashCode"));
+            if (hashCode < 0) continue;
+
+            var value = ReadMember(entry, "value")
+                ?? ReadMember(entry, "Value")
+                ?? ReadMember(entry, "_value");
+            if (value != null) yield return value;
+        }
+
+        foreach (var item in ReadObjectEnumerable(dictionary))
+        {
+            var value = NormalizeDictionaryItem(item);
+            if (value != null) yield return value;
+        }
+    }
+
     private static IEnumerable<object?> EnumerateManaged(object value)
     {
+        if (LooksLikeIl2CppObject(value)) yield break;
         if (value is not IEnumerable enumerable) yield break;
 
         foreach (var item in enumerable)
@@ -248,89 +311,11 @@ internal static class RuntimeCookerSnapshotService
         }
     }
 
-    private static IEnumerable<object?> EnumerateByEnumerator(object value)
-    {
-        foreach (var item in EnumerateByIl2CppEnumerator(value))
-        {
-            yield return item;
-        }
-
-        object? enumerator;
-        try
-        {
-            enumerator = TryInvokeInstanceValue(value, "GetEnumerator");
-        }
-        catch
-        {
-            yield break;
-        }
-
-        if (enumerator == null) yield break;
-
-        while (ReadBool(TryInvokeInstanceValue(enumerator, "MoveNext")))
-        {
-            yield return ReadMember(enumerator, "Current") ?? TryInvokeInstanceValue(enumerator, "get_Current");
-        }
-    }
-
-    private static IEnumerable<object?> EnumerateByIl2CppEnumerator(object value)
-    {
-        if (value is not Il2CppObjectBase il2CppObject) yield break;
-
-        Il2CppSystem.Collections.IEnumerable? enumerable;
-        try
-        {
-            enumerable = il2CppObject.TryCast<Il2CppSystem.Collections.IEnumerable>();
-        }
-        catch
-        {
-            yield break;
-        }
-
-        if (enumerable == null) yield break;
-
-        Il2CppSystem.Collections.IEnumerator? enumerator;
-        try
-        {
-            enumerator = enumerable.GetEnumerator();
-        }
-        catch
-        {
-            yield break;
-        }
-
-        while (true)
-        {
-            bool hasNext;
-            try
-            {
-                hasNext = enumerator.MoveNext();
-            }
-            catch
-            {
-                yield break;
-            }
-
-            if (!hasNext) yield break;
-
-            object? current;
-            try
-            {
-                current = enumerator.Current;
-            }
-            catch
-            {
-                current = null;
-            }
-
-            yield return current;
-        }
-    }
-
     private static IEnumerable<object?> EnumerateByIndexer(object value)
     {
         var count = ToInt(TryInvokeInstanceValue(value, "get_Count")
             ?? ReadMember(value, "Count")
+            ?? ReadMember(value, "Length")
             ?? ReadMember(value, "_size"));
         if (count <= 0) yield break;
 
@@ -338,6 +323,16 @@ internal static class RuntimeCookerSnapshotService
         {
             yield return TryInvokeInstanceValue(value, "get_Item", new object?[] { index });
         }
+    }
+
+    private static bool LooksLikeIl2CppObject(object value)
+    {
+        var type = value.GetType();
+        var fullName = type.FullName ?? "";
+        if (fullName.StartsWith("Il2Cpp", StringComparison.Ordinal)) return true;
+        if (fullName.StartsWith("NightScene.", StringComparison.Ordinal)) return true;
+        if (fullName.StartsWith("GameData.", StringComparison.Ordinal)) return true;
+        return type.Assembly.GetName().Name?.Contains("Il2Cpp", StringComparison.OrdinalIgnoreCase) == true;
     }
 
     private static object? NormalizeDictionaryItem(object item)
