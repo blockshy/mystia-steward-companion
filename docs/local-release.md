@@ -43,21 +43,48 @@ UnityEngine.InputLegacyModule.dll
 pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\set-version.ps1 -Version 1.0.1
 ```
 
-版本号同步后需要提交并推送，再执行发布：
+Linux 开发环境可使用等价脚本：
+
+```bash
+bash mods/bepinex/tools/set-version.sh 1.0.1
+```
+
+版本号同步后先提交到 `dev`：
 
 ```powershell
 git add package.json apps\companion\src-tauri\Cargo.toml apps\companion\src-tauri\Cargo.lock apps\companion\src-tauri\tauri.conf.json mods\bepinex\src\Plugin\MystiaStewardCompanionPlugin.cs
 git commit -m "chore(release): bump version to 1.0.1"
-git push origin main
+git push origin dev
 ```
 
+确认版本可发布后，再合并到 `main`，并在 `main` 上执行发布脚本。
+
 `publish-release.ps1` 会根据 `-Tag` 校验代码版本。如果代码仍是旧版本，脚本会失败并提示先运行 `set-version.ps1`。
+
+## Release Note 规则
+
+发布说明只描述从上一个版本到当前版本的用户可见变化：
+
+- 新增功能。
+- 体验或性能优化。
+- BUG 修复。
+
+不要写内部重构、文档、构建脚本、版本号变更或 Git 流程调整。如果某个优化或 BUG 修复只是本版本新增功能带来的二次调整，不单独列入 Note，只在新增功能描述中体现最终交付能力。
+
+整理 Note 前先查看上一版本 tag 到当前分支的提交记录，例如：
+
+```powershell
+git log --oneline v1.0.2..HEAD
+```
 
 ## 一键构建并发布
 
 从仓库根目录执行：
 
 ```powershell
+git checkout main
+git pull --ff-only origin main
+
 pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
   -Tag v1.0.1 `
   -Title "v1.0.1" `

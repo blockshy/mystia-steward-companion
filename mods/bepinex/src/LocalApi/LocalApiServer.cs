@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.Text.Json;
 using BepInEx;
 using BepInEx.Logging;
 using MystiaStewardCompanion.Save;
@@ -20,6 +21,8 @@ internal sealed class LocalApiServer : IDisposable
     private readonly Action<bool?, bool?> _updateLogSettings;
     private readonly Func<string, string> _openLogFolder;
     private readonly Func<string, int, int, RuntimeInventoryEditResult> _editInventory;
+    private readonly Func<OrderPreparationRequest, OrderPreparationResult> _prepareOrder;
+    private readonly Func<OrderPreparationRequest, OrderPreparationResult> _completeOrder;
     private readonly FavoriteStore _favoriteStore;
     private TcpListener? _listener;
     private Thread? _thread;
@@ -35,6 +38,8 @@ internal sealed class LocalApiServer : IDisposable
         Action<bool?, bool?> updateLogSettings,
         Func<string, string> openLogFolder,
         Func<string, int, int, RuntimeInventoryEditResult> editInventory,
+        Func<OrderPreparationRequest, OrderPreparationResult> prepareOrder,
+        Func<OrderPreparationRequest, OrderPreparationResult> completeOrder,
         FavoriteStore favoriteStore,
         ManualLogSource log)
     {
@@ -46,6 +51,8 @@ internal sealed class LocalApiServer : IDisposable
         _updateLogSettings = updateLogSettings;
         _openLogFolder = openLogFolder;
         _editInventory = editInventory;
+        _prepareOrder = prepareOrder;
+        _completeOrder = completeOrder;
         _favoriteStore = favoriteStore;
         _logOutputPath = ResolveLogOutputPath();
         _healthJson = $"{{\"ok\":true,\"pluginVersion\":\"{EscapeJson(pluginVersion)}\",\"bindAddress\":\"{BindAddress}\",\"port\":{Port},\"authRequired\":true}}";
@@ -183,6 +190,12 @@ internal sealed class LocalApiServer : IDisposable
                         break;
                     case "/inventory/set":
                         WriteResponse(stream, 200, "OK", BuildInventoryEditJson(query));
+                        break;
+                    case "/orders/prepare-next":
+                        WriteResponse(stream, 200, "OK", BuildOrderActionJson(query, _prepareOrder));
+                        break;
+                    case "/orders/complete-first":
+                        WriteResponse(stream, 200, "OK", BuildOrderActionJson(query, _completeOrder));
                         break;
                     case "/favorites":
                         WriteResponse(stream, 200, "OK", _favoriteStore.GetJson());
@@ -332,6 +345,43 @@ internal sealed class LocalApiServer : IDisposable
         catch (Exception ex)
         {
             return "{\"ok\":false,\"error\":\"" + EscapeJson(ex.Message) + "\"}";
+        }
+    }
+
+    private string BuildOrderActionJson(string query, Func<OrderPreparationRequest, OrderPreparationResult> action)
+    {
+        try
+        {
+            var request = new OrderPreparationRequest
+            {
+                DeskCode = ReadIntQuery(query, "deskCode", -1),
+                GuestId = ReadNullableIntQuery(query, "guestId"),
+                GuestName = ReadStringQuery(query, "guestName"),
+                FoodTag = ReadStringQuery(query, "foodTag"),
+                BeverageTag = ReadStringQuery(query, "beverageTag"),
+                RecipeId = ReadIntQuery(query, "recipeId", -1),
+                RecipeName = ReadStringQuery(query, "recipeName"),
+                ExtraIngredientIds = ReadIntListQuery(query, "extraIngredientIds"),
+                BeverageId = ReadIntQuery(query, "beverageId", -1),
+                BeverageName = ReadStringQuery(query, "beverageName"),
+                AutoTakeBeverage = ReadBoolQuery(query, "autoTakeBeverage") ?? false,
+                AutoStartCooking = ReadBoolQuery(query, "autoStartCooking") ?? false,
+                AutoCollectCooking = ReadBoolQuery(query, "autoCollectCooking") ?? false,
+                FavoritesOnly = ReadBoolQuery(query, "favoritesOnly") ?? false,
+                StopOnError = ReadBoolQuery(query, "stopOnError") ?? true,
+                RecipeFavorite = ReadBoolQuery(query, "recipeFavorite") ?? false,
+                BeverageFavorite = ReadBoolQuery(query, "beverageFavorite") ?? false,
+            };
+
+            var result = action(request);
+            return JsonSerializer.Serialize(result, new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            });
+        }
+        catch (Exception ex)
+        {
+            return "{\"ok\":false,\"prepared\":false,\"error\":\"" + EscapeJson(ex.Message) + "\",\"order\":{\"deskCode\":-1,\"guestId\":null,\"guestName\":\"\",\"foodTag\":\"\",\"beverageTag\":\"\"},\"recipeId\":-1,\"recipeName\":\"\",\"beverageId\":-1,\"beverageName\":\"\",\"steps\":[]}";
         }
     }
 
@@ -540,6 +590,16 @@ internal sealed class LocalApiServer : IDisposable
         if (string.Equals(value, "true", StringComparison.OrdinalIgnoreCase) || value == "1") return true;
         if (string.Equals(value, "false", StringComparison.OrdinalIgnoreCase) || value == "0") return false;
         return null;
+    }
+
+    private static int ReadIntQuery(string query, string key, int fallback)
+    {
+        return int.TryParse(ReadStringQuery(query, key), out var value) ? value : fallback;
+    }
+
+    private static int? ReadNullableIntQuery(string query, string key)
+    {
+        return int.TryParse(ReadStringQuery(query, key), out var value) ? value : null;
     }
 
     private static string ReadStringQuery(string query, string key)

@@ -153,7 +153,10 @@ GitHub Release 只上传以下资产：
 - `gh auth status` 能正常显示已登录账号。
 - `mods\bepinex\References` 中 8 个编译引用 DLL 齐全。
 - 已运行 `mods\bepinex\tools\set-version.ps1` 并提交版本号变更。
+- 用户可见功能和开发约束已同步到 README 或 `docs/`。
 - 若发布新版本，先提交版本号变更并创建或移动对应 tag，例如 `v1.0.1`。
+
+Release Note 只写从上一个版本到当前版本新增的用户可见功能、优化和 BUG 修复。内部重构、文档、构建脚本、版本号变更不写入 Note；如果某个优化或修复只是本版本新增功能的二次调整，不单独列出，只在新增功能描述中体现最终能力。
 
 ### 同步版本号
 
@@ -164,7 +167,15 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\set-version.ps1 -Version 1
 
 git add package.json apps\companion\src-tauri\Cargo.toml apps\companion\src-tauri\Cargo.lock apps\companion\src-tauri\tauri.conf.json mods\bepinex\src\Plugin\MystiaStewardCompanionPlugin.cs
 git commit -m "chore(release): bump version to 1.0.1"
-git push origin main
+git push origin dev
+```
+
+版本号变更先进入 `dev`；确认版本可发布后，再合并到 `main`，并在 `main` 上执行发布脚本。
+
+Linux 开发环境可使用：
+
+```bash
+bash mods/bepinex/tools/set-version.sh 1.0.1
 ```
 
 发布脚本会根据 `-Tag` 校验 `package.json`、`tauri.conf.json`、`Cargo.toml`、`Cargo.lock` 和 `PluginVersion`。如果版本不一致，脚本会失败并提示先同步版本。
@@ -174,6 +185,7 @@ git push origin main
 以 `v1.0.1` 为例：
 
 ```powershell
+git checkout main
 git pull --ff-only origin main
 git fetch --tags --force origin
 
@@ -310,8 +322,12 @@ http://127.0.0.1:32145
 - `GET /logs/open-folder?target=log|diagnostics`：打开对应日志目录。
 - `GET /logs`：在 `LocalApi.ExposeLogs=true` 时读取 `BepInEx/LogOutput.log` 尾部日志，按 `LocalApi.MaxLogLines` 和 `LocalApi.MaxLogBytes` 裁剪。
 - `GET /inventory/set?type=ingredient|beverage&id=ID&qty=数量`：在 Unity 主线程修改当前运行时材料或酒水库存。
+- `GET /orders/prepare-next?...`：按伴随窗口选择的当前第一笔稀客订单执行准备步骤，可组合取酒、开始料理、收取料理和收藏限定。
+- `GET /orders/complete-first?...`：按伴随窗口选择的当前第一笔稀客订单匹配送餐盘内容并尝试完成订单。
 
 除 `/health` 外，端点都需要 `X-Mystia-Steward-Companion-Token`。Token 由插件生成并保存在 BepInEx 配置中，启动伴随窗口时通过 `--token=` 参数传入 Tauri 后端。Tauri 伴随窗口会显示实时 Mod 工作台，包含 `概览`、`普客`、`稀客`、`经营中`、`修改`、`日志` 六个页签。它通过原生后端读取本地 API，不依赖浏览器或前端开发服务器。
+
+伴随窗口的自动化能力只在前端 `设置` 页总开关开启后运行，且只处理当前排序第一笔稀客订单。子选项默认关闭并单独记忆：自动完成订单、自动取酒、自动开始料理、自动收取料理、只处理收藏配方和出错暂停。临时失败例如厨具占用、送餐盘缺少目标成品、运行时对象暂不可读，应保持可重试，不应永久停止自动任务；非临时错误在 `出错时暂停` 开启时才暂停当前订单。
 
 代理工具注意事项：
 

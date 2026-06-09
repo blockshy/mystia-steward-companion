@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Reflection;
+using Il2CppInterop.Runtime.InteropTypes.Arrays;
 
 namespace MystiaStewardCompanion.Save;
 
@@ -85,7 +86,6 @@ public static class RuntimeInventoryEditor
     {
         if (delta == 0) return;
 
-        var ids = Enumerable.Repeat(itemId, Math.Abs(delta)).ToArray();
         var methodName = itemType switch
         {
             "ingredient" when delta > 0 => "IngredientInRange",
@@ -94,13 +94,68 @@ public static class RuntimeInventoryEditor
             _ => "BeverageOutRange",
         };
 
-        var method = FindRuntimeStorageMethod(methodName)
+        var method = FindUsableRuntimeStorageRangeMethod(methodName, itemId, Math.Abs(delta))
             ?? throw new MissingMethodException(RuntimeStorageTypeName, methodName);
-        var parameters = method.GetParameters();
-        var args = parameters.Length == 1
-            ? new object?[] { ids }
-            : new object?[] { ids, false };
-        InvokeMethod(method, null, args);
+        InvokeMethod(method.Method, null, method.Args);
+    }
+
+    private static RuntimeStorageInvocation? FindUsableRuntimeStorageRangeMethod(string name, int itemId, int count)
+    {
+        var type = FindType(RuntimeStorageTypeName);
+        if (type == null) return null;
+
+        foreach (var method in type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+                     .Where(method => method.Name == name)
+                     .OrderBy(method => method.GetParameters().Length))
+        {
+            var parameters = method.GetParameters();
+            if (parameters.Length is < 1 or > 2) continue;
+
+            foreach (var ids in BuildRepeatedIdArgumentCandidates(parameters[0].ParameterType, itemId, count))
+            {
+                var args = parameters.Length == 1
+                    ? new object?[] { ids }
+                    : new object?[] { ids, GetDefaultValue(parameters[1].ParameterType) };
+                if (CanUseParameters(parameters, args))
+                {
+                    return new RuntimeStorageInvocation(method, args);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<object> BuildRepeatedIdArgumentCandidates(Type parameterType, int itemId, int count)
+    {
+        if (parameterType.IsArray && parameterType.GetElementType() == typeof(int))
+        {
+            yield return Enumerable.Repeat(itemId, count).ToArray();
+            yield break;
+        }
+
+        if (parameterType == typeof(Il2CppStructArray<int>) || parameterType.FullName?.Contains("Il2CppStructArray") == true)
+        {
+            yield return BuildIl2CppIntArray(itemId, count);
+            yield break;
+        }
+
+        if (typeof(IEnumerable).IsAssignableFrom(parameterType))
+        {
+            yield return Enumerable.Repeat(itemId, count).ToArray();
+            yield return BuildIl2CppIntArray(itemId, count);
+        }
+    }
+
+    private static Il2CppStructArray<int> BuildIl2CppIntArray(int itemId, int count)
+    {
+        var array = new Il2CppStructArray<int>(count);
+        for (var i = 0; i < count; i++)
+        {
+            array[i] = itemId;
+        }
+
+        return array;
     }
 
     private static void SetRawQuantity(string itemType, int itemId, int quantity)
@@ -194,6 +249,13 @@ public static class RuntimeInventoryEditor
         return true;
     }
 
+    private static object? GetDefaultValue(Type type)
+    {
+        if (type == typeof(bool)) return false;
+        if (type == typeof(int)) return 0;
+        return type.IsValueType ? Activator.CreateInstance(type) : null;
+    }
+
     private static Type? FindType(string fullName)
     {
         var direct = Type.GetType(fullName, false);
@@ -238,6 +300,18 @@ public static class RuntimeInventoryEditor
         if (value is IDictionary dictionary && dictionary.Count == 0) return 0;
         return value is IConvertible convertible ? Convert.ToInt32(convertible) : 0;
     }
+}
+
+internal sealed class RuntimeStorageInvocation
+{
+    public RuntimeStorageInvocation(MethodInfo method, object?[] args)
+    {
+        Method = method;
+        Args = args;
+    }
+
+    public MethodInfo Method { get; }
+    public object?[] Args { get; }
 }
 
 public sealed class RuntimeInventoryEditResult

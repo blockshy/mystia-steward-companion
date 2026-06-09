@@ -46,6 +46,8 @@
 
 :root {
   --radius: 0.625rem;
+  --companion-window-opacity: 1;
+  --companion-window-opacity-percent: 100%;
   --background: #fbf8f3;
   --foreground: #3d2e1f;
   --card: #fff9f0;
@@ -120,10 +122,82 @@
 
   html {
     @apply font-sans;
+    overflow-y: scroll;
+    scrollbar-gutter: stable;
+    scrollbar-color: color-mix(in srgb, var(--border) var(--companion-window-opacity-percent), transparent) transparent;
+    scrollbar-width: thin;
   }
 
   body {
-    @apply bg-background text-foreground;
+    @apply text-foreground;
+    background: transparent;
     margin: 0;
   }
+
+  body[data-gamepad-navigation='active'] [data-gamepad-focus='true'],
+  body[data-gamepad-navigation='active'] :focus {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  body[data-gamepad-navigation='active'] [data-gamepad-focus='true'] {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--ring) 20%, transparent);
+  }
+}
+
+.companion-shell {
+  background-color: color-mix(in srgb, var(--background) var(--companion-window-opacity-percent), transparent);
+  scrollbar-color: color-mix(in srgb, var(--primary) var(--companion-window-opacity-percent), transparent)
+    color-mix(in srgb, var(--card) var(--companion-window-opacity-percent), transparent);
+  scrollbar-width: thin;
+}
+
+.companion-shell [data-slot='select-content'],
+.companion-shell pre {
+  scrollbar-color: color-mix(in srgb, var(--primary) var(--companion-window-opacity-percent), transparent)
+    color-mix(in srgb, var(--card) var(--companion-window-opacity-percent), transparent);
+  scrollbar-width: thin;
+}
+
+html::-webkit-scrollbar,
+.companion-shell::-webkit-scrollbar,
+.companion-shell [data-slot='select-content']::-webkit-scrollbar,
+.companion-shell pre::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+html::-webkit-scrollbar-track,
+.companion-shell::-webkit-scrollbar-track,
+.companion-shell [data-slot='select-content']::-webkit-scrollbar-track,
+.companion-shell pre::-webkit-scrollbar-track {
+  background: color-mix(in srgb, var(--card) var(--companion-window-opacity-percent), transparent);
+  border-radius: 999px;
+}
+
+html::-webkit-scrollbar-thumb,
+.companion-shell::-webkit-scrollbar-thumb,
+.companion-shell [data-slot='select-content']::-webkit-scrollbar-thumb,
+.companion-shell pre::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--primary) var(--companion-window-opacity-percent), transparent);
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+}
+
+html::-webkit-scrollbar-thumb:hover,
+.companion-shell::-webkit-scrollbar-thumb:hover,
+.companion-shell [data-slot='select-content']::-webkit-scrollbar-thumb:hover,
+.companion-shell pre::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--ring) var(--companion-window-opacity-percent), transparent);
+  background-clip: content-box;
+}
+
+.companion-shell [data-slot='card'],
+.companion-shell [data-slot='tabs-list'] {
+  background-color: color-mix(in srgb, var(--card) var(--companion-window-opacity-percent), transparent);
+}
+
+.companion-shell [data-slot='select-content'] {
+  background-color: color-mix(in srgb, var(--popover) var(--companion-window-opacity-percent), transparent);
 }

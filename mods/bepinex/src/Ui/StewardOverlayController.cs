@@ -34,6 +34,8 @@ internal sealed class StewardOverlayController
     private Rect _windowRect = new(48, 48, 980, 680);
     private readonly object _inventoryEditLock = new();
     private readonly Queue<PendingInventoryEdit> _pendingInventoryEdits = new();
+    private readonly object _orderPreparationLock = new();
+    private readonly Queue<PendingOrderPreparation> _pendingOrderPreparations = new();
     private Vector2 _scroll;
     private bool _visible;
     private bool _runtimeLoaded;
@@ -90,6 +92,15 @@ internal sealed class StewardOverlayController
         public Exception? Error { get; set; }
     }
 
+    private sealed class PendingOrderPreparation
+    {
+        public OrderPreparationRequest Request { get; init; } = new();
+        public bool CompleteOrder { get; init; }
+        public ManualResetEventSlim Completion { get; } = new(false);
+        public OrderPreparationResult? Result { get; set; }
+        public Exception? Error { get; set; }
+    }
+
     private sealed class RareRecommendationCache
     {
         public int Version { get; init; }
@@ -131,6 +142,8 @@ internal sealed class StewardOverlayController
     {
         if (_disposed || _config == null) return;
         ProcessPendingInventoryEdits();
+        ProcessPendingOrderPreparations();
+        ProcessPendingCookingCollections();
         RefreshBusinessContextOnSpecialOrderChange();
 
         if (IsTogglePressed())
@@ -1174,6 +1187,8 @@ internal sealed class StewardOverlayController
                 UpdateLocalApiLogSettings,
                 OpenLocalApiLogFolder,
                 EditInventoryFromLocalApi,
+                PrepareOrderFromLocalApi,
+                CompleteOrderFromLocalApi,
                 new FavoriteStore(FavoriteStore.ResolvePath(), _log),
                 _log);
             _localApiServer.Start();
@@ -1312,6 +1327,102 @@ internal sealed class StewardOverlayController
 
         if (pending.Error != null) throw pending.Error;
         return pending.Result ?? throw new InvalidOperationException("Inventory edit did not produce a result.");
+    }
+
+    private OrderPreparationResult PrepareOrderFromLocalApi(OrderPreparationRequest request)
+    {
+        return RunOrderActionFromLocalApi(request, completeOrder: false);
+    }
+
+    private OrderPreparationResult CompleteOrderFromLocalApi(OrderPreparationRequest request)
+    {
+        return RunOrderActionFromLocalApi(request, completeOrder: true);
+    }
+
+    private OrderPreparationResult RunOrderActionFromLocalApi(OrderPreparationRequest request, bool completeOrder)
+    {
+        if (Thread.CurrentThread.ManagedThreadId != _mainThreadId)
+        {
+            var pending = new PendingOrderPreparation
+            {
+                Request = request,
+                CompleteOrder = completeOrder,
+            };
+            lock (_orderPreparationLock)
+            {
+                _pendingOrderPreparations.Enqueue(pending);
+            }
+
+            if (!pending.Completion.Wait(TimeSpan.FromSeconds(3.5)))
+            {
+                throw new TimeoutException("Order preparation timed out waiting for Unity main thread.");
+            }
+
+            if (pending.Error != null) throw pending.Error;
+            return pending.Result ?? throw new InvalidOperationException("Order preparation did not produce a result.");
+        }
+
+        return completeOrder ? ApplyOrderCompletion(request) : ApplyOrderPreparation(request);
+    }
+
+    private OrderPreparationResult ApplyOrderPreparation(OrderPreparationRequest request)
+    {
+        var result = RuntimeOrderPreparationService.Prepare(request);
+        _status = result.Ok
+            ? L("已准备下一笔稀客订单。", "Next rare-customer order prepared.")
+            : L($"准备下一笔稀客订单未完成：{result.Error}", $"Preparing next rare-customer order did not finish: {result.Error}");
+        PublishLocalApiSnapshot();
+        return result;
+    }
+
+    private OrderPreparationResult ApplyOrderCompletion(OrderPreparationRequest request)
+    {
+        var result = RuntimeOrderPreparationService.CompleteFirst(request);
+        _status = result.Ok
+            ? L("已完成当前第一笔稀客订单。", "First rare-customer order completed.")
+            : L($"完成当前第一笔稀客订单失败：{result.Error}", $"Completing first rare-customer order failed: {result.Error}");
+        RefreshBusinessContext(false, force: true);
+        PublishLocalApiSnapshot();
+        return result;
+    }
+
+    private void ProcessPendingOrderPreparations()
+    {
+        while (true)
+        {
+            PendingOrderPreparation? pending;
+            lock (_orderPreparationLock)
+            {
+                pending = _pendingOrderPreparations.Count == 0 ? null : _pendingOrderPreparations.Dequeue();
+            }
+
+            if (pending == null) return;
+
+            try
+            {
+                pending.Result = pending.CompleteOrder
+                    ? ApplyOrderCompletion(pending.Request)
+                    : ApplyOrderPreparation(pending.Request);
+            }
+            catch (Exception ex)
+            {
+                pending.Error = ex;
+            }
+            finally
+            {
+                pending.Completion.Set();
+            }
+        }
+    }
+
+    private void ProcessPendingCookingCollections()
+    {
+        foreach (var message in RuntimeOrderPreparationService.ProcessPendingCookingCollections())
+        {
+            _status = message;
+            _log?.LogInfo(message);
+            PublishLocalApiSnapshot();
+        }
     }
 
     private void ProcessPendingInventoryEdits()
