@@ -60,12 +60,13 @@ const FOCUS_SWITCH_BEHAVIOR_STORAGE_KEY = `${STORAGE_PREFIX}-focus-switch-behavi
 const FOCUS_SWITCH_COOLDOWN_STORAGE_KEY = `${STORAGE_PREFIX}-focus-switch-cooldown-ms`;
 const ALWAYS_ON_TOP_STORAGE_KEY = `${STORAGE_PREFIX}-always-on-top`;
 const GAMEPAD_NAVIGATION_STORAGE_KEY = `${STORAGE_PREFIX}-gamepad-navigation`;
+const AUTOMATION_ENABLED_STORAGE_KEY = `${STORAGE_PREFIX}-automation-enabled`;
+const AUTO_PREP_COMPLETE_ORDER_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-complete-order`;
 const AUTO_PREP_TAKE_BEVERAGE_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-take-beverage`;
 const AUTO_PREP_START_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-start-cooking`;
 const AUTO_PREP_COLLECT_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-collect-cooking`;
 const AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-favorites-only`;
 const AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-stop-on-error`;
-const AUTO_PROCESS_FIRST_ORDER_STORAGE_KEY = `${STORAGE_PREFIX}-auto-process-first-order`;
 const LEGACY_ENDPOINT_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-api-endpoint`;
 const LEGACY_TOKEN_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-api-token`;
 const LEGACY_TAB_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-tab`;
@@ -299,12 +300,13 @@ interface CompanionPreferences {
   focusSwitchCooldownMs: number;
   alwaysOnTop: boolean;
   gamepadNavigationEnabled: boolean;
+  automationEnabled: boolean;
+  autoPrepCompleteOrder: boolean;
   autoPrepTakeBeverage: boolean;
   autoPrepStartCooking: boolean;
   autoPrepCollectCooking: boolean;
   autoPrepFavoritesOnly: boolean;
   autoPrepStopOnError: boolean;
-  autoProcessFirstOrder: boolean;
 }
 
 interface AutoFirstOrderState {
@@ -464,93 +466,28 @@ export function ModWorkbench() {
     }
   }, [apiToken, favorites, normalizedEndpoint]);
 
-  const prepareNextOrder = useCallback(async () => {
-    setAutoPrepMessage('');
-    if (!apiToken) {
-      setAutoPrepMessage('本地 API Token 不可用，无法执行准备下一单。');
-      return;
-    }
-
-    const selection = selectNextOrderPreparation(orderRecommendations.recommendations, favorites, companionPreferences);
-    if (!selection.ok) {
-      setAutoPrepMessage(selection.message);
-      return;
-    }
-
-    setAutoPrepBusy(true);
-    try {
-      const response = await prepareNextRareOrder(
-        normalizedEndpoint,
-        apiToken,
-        selection.item,
-        selection.recipe,
-        selection.beverage,
-        selection.recipeFavorite,
-        selection.beverageFavorite,
-        companionPreferences,
-      );
-      setAutoPrepMessage(formatOrderPreparationResponse(response));
-      await refresh();
-    } catch (err) {
-      setAutoPrepMessage(err instanceof Error ? err.message : String(err));
-    } finally {
-      setAutoPrepBusy(false);
-    }
-  }, [apiToken, companionPreferences, favorites, normalizedEndpoint, orderRecommendations.recommendations, refresh]);
-
-  const completeFirstOrder = useCallback(async () => {
-    setAutoPrepMessage('');
-    if (!apiToken) {
-      setAutoPrepMessage('本地 API Token 不可用，无法执行完成第一单。');
-      return;
-    }
-
-    const completePreferences = {
-      ...companionPreferences,
-      autoPrepTakeBeverage: true,
-      autoPrepStartCooking: true,
-    };
-    const selection = selectNextOrderPreparation(orderRecommendations.recommendations, favorites, completePreferences);
-    if (!selection.ok) {
-      setAutoPrepMessage(selection.message);
-      return;
-    }
-
-    setAutoPrepBusy(true);
-    try {
-      const response = await completeFirstRareOrder(
-        normalizedEndpoint,
-        apiToken,
-        selection.item,
-        selection.recipe,
-        selection.beverage,
-        selection.recipeFavorite,
-        selection.beverageFavorite,
-        completePreferences,
-      );
-      setAutoPrepMessage(formatOrderPreparationResponse(response));
-      await refresh();
-    } catch (err) {
-      setAutoPrepMessage(err instanceof Error ? err.message : String(err));
-    } finally {
-      setAutoPrepBusy(false);
-    }
-  }, [apiToken, companionPreferences, favorites, normalizedEndpoint, orderRecommendations.recommendations, refresh]);
-
   const runAutoFirstOrder = useCallback(async () => {
-    if (!companionPreferences.autoProcessFirstOrder || autoFirstOrderBusyRef.current || autoPrepBusy) return;
+    if (!companionPreferences.automationEnabled || autoFirstOrderBusyRef.current || autoPrepBusy) return;
     const now = Date.now();
     if (now - lastAutoFirstOrderAtRef.current < AUTO_FIRST_ORDER_TICK_MS) return;
     if (!apiToken) {
-      setAutoPrepMessage('自动处理第一单已开启，但本地 API Token 不可用。');
+      setAutoPrepMessage('自动化已开启，但本地 API Token 不可用。');
       return;
     }
 
-    const completePreferences = buildCompleteOrderPreferences(companionPreferences);
-    const selection = selectNextOrderPreparation(orderRecommendations.recommendations, favorites, completePreferences);
+    if (!hasAutomationActionEnabled(companionPreferences)) {
+      autoFirstOrderStateRef.current = emptyAutoFirstOrderState();
+      setAutoPrepMessage('自动化已开启，请在经营中页面启用至少一个子选项。');
+      return;
+    }
+
+    const selectionPreferences = companionPreferences.autoPrepCompleteOrder
+      ? buildCompleteOrderPreferences(companionPreferences)
+      : companionPreferences;
+    const selection = selectNextOrderPreparation(orderRecommendations.recommendations, favorites, selectionPreferences);
     if (!selection.ok) {
       autoFirstOrderStateRef.current = emptyAutoFirstOrderState();
-      setAutoPrepMessage(`自动处理第一单\n${selection.message}`);
+      setAutoPrepMessage(`自动化\n${selection.message}`);
       return;
     }
 
@@ -566,52 +503,69 @@ export function ModWorkbench() {
     lastAutoFirstOrderAtRef.current = now;
     setAutoPrepBusy(true);
     try {
-      const completeResponse = await completeFirstRareOrder(
-        normalizedEndpoint,
-        apiToken,
-        selection.item,
-        selection.recipe,
-        selection.beverage,
-        selection.recipeFavorite,
-        selection.beverageFavorite,
-        completePreferences,
-      );
+      let missingTrayPart: 'food' | 'beverage' | null = null;
+      if (companionPreferences.autoPrepCompleteOrder) {
+        const completeResponse = await completeFirstRareOrder(
+          normalizedEndpoint,
+          apiToken,
+          selection.item,
+          selection.recipe,
+          selection.beverage,
+          selection.recipeFavorite,
+          selection.beverageFavorite,
+          buildCompleteOrderPreferences(companionPreferences),
+        );
 
-      if (completeResponse.ok) {
-        autoFirstOrderStateRef.current = emptyAutoFirstOrderState();
-        setAutoPrepMessage(`自动处理第一单\n${formatOrderPreparationResponse(completeResponse)}`);
-        await refresh();
-        return;
-      }
-
-      const missingTrayPart = getMissingTrayPart(completeResponse);
-      if (!missingTrayPart) {
-        const message = `自动处理第一单\n${formatOrderPreparationResponse(completeResponse)}`;
-        if (companionPreferences.autoPrepStopOnError) {
-          autoFirstOrderStateRef.current = { ...autoFirstOrderStateRef.current, orderKey, paused: true };
-          setAutoPrepMessage(`${message}\n自动处理已暂停，订单变化或重新开启后会继续。`);
-        } else {
-          setAutoPrepMessage(message);
+        if (completeResponse.ok) {
+          autoFirstOrderStateRef.current = emptyAutoFirstOrderState();
+          setAutoPrepMessage(`自动化\n${formatOrderPreparationResponse(completeResponse)}`);
+          await refresh();
+          return;
         }
-        await refresh();
-        return;
+
+        missingTrayPart = getMissingTrayPart(completeResponse);
+        if (!missingTrayPart) {
+          const message = `自动化\n${formatOrderPreparationResponse(completeResponse)}`;
+          if (companionPreferences.autoPrepStopOnError) {
+            autoFirstOrderStateRef.current = { ...autoFirstOrderStateRef.current, orderKey, paused: true };
+            setAutoPrepMessage(`${message}\n自动化已暂停，订单变化或重新开启后会继续。`);
+          } else {
+            setAutoPrepMessage(message);
+          }
+          await refresh();
+          return;
+        }
+
+        if (missingTrayPart === 'food' && autoFirstOrderStateRef.current.prepared) {
+          setAutoPrepMessage(
+            `自动化\n${formatOrderPreparationResponse(completeResponse)}\n已准备过当前订单，等待料理完成或送餐盘更新。`,
+          );
+          await refresh();
+          return;
+        }
       }
 
-      if (missingTrayPart === 'food' && autoFirstOrderStateRef.current.prepared) {
+      const shouldPrepareFood = companionPreferences.autoPrepStartCooking
+        && (companionPreferences.autoPrepCompleteOrder ? missingTrayPart === 'food' : !autoFirstOrderStateRef.current.prepared);
+      const shouldPrepareBeverage = companionPreferences.autoPrepTakeBeverage
+        && (companionPreferences.autoPrepCompleteOrder
+          ? missingTrayPart === 'beverage' || (missingTrayPart === 'food' && !autoFirstOrderStateRef.current.beverageHandled)
+          : !autoFirstOrderStateRef.current.beverageHandled);
+
+      if (!shouldPrepareFood && !shouldPrepareBeverage) {
         setAutoPrepMessage(
-          `自动处理第一单\n${formatOrderPreparationResponse(completeResponse)}\n已准备过当前订单，等待料理完成或送餐盘更新。`,
+          companionPreferences.autoPrepCompleteOrder
+            ? '自动化\n等待送餐盘出现目标料理或酒水。'
+            : '自动化\n已按当前设置完成可执行步骤；自动完成订单未开启。',
         );
         await refresh();
         return;
       }
 
-      const shouldPrepareFood = missingTrayPart === 'food';
-      const shouldPrepareBeverage = missingTrayPart === 'beverage'
-        || (missingTrayPart === 'food' && !autoFirstOrderStateRef.current.beverageHandled);
       const preparePreferences = {
         ...companionPreferences,
-        autoPrepTakeBeverage: companionPreferences.autoPrepTakeBeverage && shouldPrepareBeverage,
-        autoPrepStartCooking: companionPreferences.autoPrepStartCooking && shouldPrepareFood,
+        autoPrepTakeBeverage: shouldPrepareBeverage,
+        autoPrepStartCooking: shouldPrepareFood,
         autoPrepCollectCooking: true,
       };
 
@@ -629,7 +583,6 @@ export function ModWorkbench() {
       const nextPrepared = autoFirstOrderStateRef.current.prepared
         || didCompleteStep(prepareResponse, '自动开始料理');
       const nextBeverageHandled = autoFirstOrderStateRef.current.beverageHandled
-        || !preparePreferences.autoPrepTakeBeverage
         || didCompleteStep(prepareResponse, '自动取酒');
       const transientFailure = !prepareResponse.ok && isTransientAutoPreparationFailure(prepareResponse);
       autoFirstOrderStateRef.current = {
@@ -639,11 +592,11 @@ export function ModWorkbench() {
         paused: !prepareResponse.ok && !transientFailure && companionPreferences.autoPrepStopOnError,
       };
       const suffix = autoFirstOrderStateRef.current.paused
-        ? '\n自动处理已暂停，订单变化或重新开启后会继续。'
+        ? '\n自动化已暂停，订单变化或重新开启后会继续。'
         : transientFailure
           ? '\n当前条件暂不可执行，将继续等待并自动重试。'
           : '';
-      setAutoPrepMessage(`自动处理第一单\n${formatOrderPreparationResponse(prepareResponse)}${suffix}`);
+      setAutoPrepMessage(`自动化\n${formatOrderPreparationResponse(prepareResponse)}${suffix}`);
       await refresh();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -652,9 +605,9 @@ export function ModWorkbench() {
           ...autoFirstOrderStateRef.current,
           paused: true,
         };
-        setAutoPrepMessage(`自动处理第一单\n${message}\n自动处理已暂停，订单变化或重新开启后会继续。`);
+        setAutoPrepMessage(`自动化\n${message}\n自动化已暂停，订单变化或重新开启后会继续。`);
       } else {
-        setAutoPrepMessage(`自动处理第一单\n${message}`);
+        setAutoPrepMessage(`自动化\n${message}`);
       }
     } finally {
       autoFirstOrderBusyRef.current = false;
@@ -700,7 +653,7 @@ export function ModWorkbench() {
   }, [companionPreferences]);
 
   useEffect(() => {
-    if (!companionPreferences.autoProcessFirstOrder) {
+    if (!companionPreferences.automationEnabled) {
       autoFirstOrderStateRef.current = emptyAutoFirstOrderState();
       lastAutoFirstOrderAtRef.current = 0;
       return undefined;
@@ -711,7 +664,7 @@ export function ModWorkbench() {
       void runAutoFirstOrder();
     }, AUTO_FIRST_ORDER_TICK_MS);
     return () => window.clearInterval(timer);
-  }, [companionPreferences.autoProcessFirstOrder, runAutoFirstOrder]);
+  }, [companionPreferences.automationEnabled, runAutoFirstOrder]);
 
   useEffect(() => {
     void applyCompanionPreferencesToTauri(
@@ -790,14 +743,9 @@ export function ModWorkbench() {
         favorites={favorites}
         favoriteBusyKey={favoriteBusyKey}
         favoriteError={favoriteError}
-        autoPrepBusy={autoPrepBusy}
-        autoPrepMessage={autoPrepMessage}
-        autoPrepPreferences={companionPreferences}
         compact={serviceFocusCompact}
         recipeLimit={serviceFocusRecipeLimit}
         beverageLimit={serviceFocusBeverageLimit}
-        onPrepareNextOrder={prepareNextOrder}
-        onCompleteFirstOrder={completeFirstOrder}
         onCompactChange={setServiceFocusCompact}
         onRecipeLimitChange={setServiceFocusRecipeLimit}
         onBeverageLimitChange={setServiceFocusBeverageLimit}
@@ -953,10 +901,9 @@ export function ModWorkbench() {
             autoPrepBusy={autoPrepBusy}
             autoPrepMessage={autoPrepMessage}
             autoPrepPreferences={companionPreferences}
+            onPreferenceChange={updateCompanionPreferences}
             onToggleRecipeFavorite={toggleRecipeFavorite}
             onToggleBeverageFavorite={toggleBeverageFavorite}
-            onPrepareNextOrder={prepareNextOrder}
-            onCompleteFirstOrder={completeFirstOrder}
             onEnterFocusMode={() => setServiceFocusMode(true)}
           />
         </TabsContent>
@@ -1399,10 +1346,9 @@ function ModServicePanel({
   autoPrepBusy,
   autoPrepMessage,
   autoPrepPreferences,
+  onPreferenceChange,
   onToggleRecipeFavorite,
   onToggleBeverageFavorite,
-  onPrepareNextOrder,
-  onCompleteFirstOrder,
   onEnterFocusMode,
 }: {
   runtime: RecommendationStateSnapshot | null;
@@ -1417,10 +1363,9 @@ function ModServicePanel({
   autoPrepBusy: boolean;
   autoPrepMessage: string;
   autoPrepPreferences: CompanionPreferences;
+  onPreferenceChange: (next: Partial<CompanionPreferences>) => void;
   onToggleRecipeFavorite: ToggleRecipeFavorite;
   onToggleBeverageFavorite: ToggleBeverageFavorite;
-  onPrepareNextOrder: () => Promise<void>;
-  onCompleteFirstOrder: () => Promise<void>;
   onEnterFocusMode: () => void;
 }) {
   const activeGuests = night?.activeRareGuests ?? [];
@@ -1429,18 +1374,19 @@ function ModServicePanel({
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap justify-end gap-2">
-        <Button size="sm" variant="secondary" onClick={onPrepareNextOrder} disabled={autoPrepBusy || recommendations.length === 0}>
-          {autoPrepBusy ? '准备中...' : '准备下一单'}
-        </Button>
-        <Button size="sm" variant="secondary" onClick={onCompleteFirstOrder} disabled={autoPrepBusy || recommendations.length === 0}>
-          {autoPrepBusy ? '处理中...' : '完成第一单'}
-        </Button>
         <Button size="sm" onClick={onEnterFocusMode}>
           稀客订单专注模式
         </Button>
       </div>
 
-      <AutoPrepStatus message={autoPrepMessage} preferences={autoPrepPreferences} />
+      {autoPrepPreferences.automationEnabled && (
+        <ServiceAutomationPanel
+          preferences={autoPrepPreferences}
+          busy={autoPrepBusy}
+          message={autoPrepMessage}
+          onPreferenceChange={onPreferenceChange}
+        />
+      )}
 
       <Card>
         <CardContent className={`${DENSE_THREE_COLUMN_GRID} p-4 text-sm`}>
@@ -1502,14 +1448,9 @@ function ServiceFocusPage({
   favorites,
   favoriteBusyKey,
   favoriteError,
-  autoPrepBusy,
-  autoPrepMessage,
-  autoPrepPreferences,
   compact,
   recipeLimit,
   beverageLimit,
-  onPrepareNextOrder,
-  onCompleteFirstOrder,
   onCompactChange,
   onRecipeLimitChange,
   onBeverageLimitChange,
@@ -1523,14 +1464,9 @@ function ServiceFocusPage({
   favorites: FavoriteData;
   favoriteBusyKey: string;
   favoriteError: string;
-  autoPrepBusy: boolean;
-  autoPrepMessage: string;
-  autoPrepPreferences: CompanionPreferences;
   compact: boolean;
   recipeLimit: number;
   beverageLimit: number;
-  onPrepareNextOrder: () => Promise<void>;
-  onCompleteFirstOrder: () => Promise<void>;
   onCompactChange: (value: boolean) => void;
   onRecipeLimitChange: (value: number) => void;
   onBeverageLimitChange: (value: number) => void;
@@ -1548,12 +1484,6 @@ function ServiceFocusPage({
           <p className="mt-1 text-sm text-muted-foreground">只显示当前稀客点单推荐。</p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-3">
-          <Button size="sm" variant="secondary" onClick={onPrepareNextOrder} disabled={autoPrepBusy || recommendations.length === 0}>
-            {autoPrepBusy ? '准备中...' : '准备下一单'}
-          </Button>
-          <Button size="sm" variant="secondary" onClick={onCompleteFirstOrder} disabled={autoPrepBusy || recommendations.length === 0}>
-            {autoPrepBusy ? '处理中...' : '完成第一单'}
-          </Button>
           <SwitchControl
             label="精简模式"
             checked={compact}
@@ -1572,8 +1502,6 @@ function ServiceFocusPage({
           <Button size="sm" variant="outline" onClick={onExit}>退出专注模式</Button>
         </div>
       </div>
-
-      <AutoPrepStatus message={autoPrepMessage} preferences={autoPrepPreferences} />
 
       {hasOrders ? (
         <CurrentOrderRecommendations
@@ -2109,40 +2037,15 @@ function ModSettingsPanel({
         </div>
       </ListPanel>
 
-      <ListPanel title="一键准备">
+      <ListPanel title="自动化">
         <div className="space-y-4">
           <SwitchControl
-            label="自动处理第一单"
-            checked={preferences.autoProcessFirstOrder}
-            onCheckedChange={(autoProcessFirstOrder) => onPreferenceChange({ autoProcessFirstOrder })}
-          />
-          <SwitchControl
-            label="自动取酒"
-            checked={preferences.autoPrepTakeBeverage}
-            onCheckedChange={(autoPrepTakeBeverage) => onPreferenceChange({ autoPrepTakeBeverage })}
-          />
-          <SwitchControl
-            label="自动开始料理"
-            checked={preferences.autoPrepStartCooking}
-            onCheckedChange={(autoPrepStartCooking) => onPreferenceChange({ autoPrepStartCooking })}
-          />
-          <SwitchControl
-            label="自动收取料理"
-            checked={preferences.autoPrepCollectCooking}
-            onCheckedChange={(autoPrepCollectCooking) => onPreferenceChange({ autoPrepCollectCooking })}
-          />
-          <SwitchControl
-            label="只处理收藏配方"
-            checked={preferences.autoPrepFavoritesOnly}
-            onCheckedChange={(autoPrepFavoritesOnly) => onPreferenceChange({ autoPrepFavoritesOnly })}
-          />
-          <SwitchControl
-            label="出错时暂停"
-            checked={preferences.autoPrepStopOnError}
-            onCheckedChange={(autoPrepStopOnError) => onPreferenceChange({ autoPrepStopOnError })}
+            label="启用自动化（实验性）"
+            checked={preferences.automationEnabled}
+            onCheckedChange={(automationEnabled) => onPreferenceChange({ automationEnabled })}
           />
           <div className="text-xs text-muted-foreground">
-            自动处理只接管当前排序第一笔稀客订单；同一订单只会自动准备一次，之后等待送餐盘满足后再完成。
+            关闭时不会显示或执行任何自动化动作；开启后可在“经营中”页面配置具体子功能。
           </div>
         </div>
       </ListPanel>
@@ -2150,21 +2053,76 @@ function ModSettingsPanel({
   );
 }
 
+function ServiceAutomationPanel({
+  preferences,
+  busy,
+  message,
+  onPreferenceChange,
+}: {
+  preferences: CompanionPreferences;
+  busy: boolean;
+  message: string;
+  onPreferenceChange: (next: Partial<CompanionPreferences>) => void;
+}) {
+  return (
+    <ListPanel title="自动化（实验性）">
+      <div className={DENSE_TWO_COLUMN_GRID_TIGHT}>
+        <SwitchControl
+          label="自动完成订单"
+          checked={preferences.autoPrepCompleteOrder}
+          onCheckedChange={(autoPrepCompleteOrder) => onPreferenceChange({ autoPrepCompleteOrder })}
+        />
+        <SwitchControl
+          label="自动取酒"
+          checked={preferences.autoPrepTakeBeverage}
+          onCheckedChange={(autoPrepTakeBeverage) => onPreferenceChange({ autoPrepTakeBeverage })}
+        />
+        <SwitchControl
+          label="自动开始料理"
+          checked={preferences.autoPrepStartCooking}
+          onCheckedChange={(autoPrepStartCooking) => onPreferenceChange({ autoPrepStartCooking })}
+        />
+        <SwitchControl
+          label="自动收取料理"
+          checked={preferences.autoPrepCollectCooking}
+          onCheckedChange={(autoPrepCollectCooking) => onPreferenceChange({ autoPrepCollectCooking })}
+        />
+        <SwitchControl
+          label="只处理收藏配方"
+          checked={preferences.autoPrepFavoritesOnly}
+          onCheckedChange={(autoPrepFavoritesOnly) => onPreferenceChange({ autoPrepFavoritesOnly })}
+        />
+        <SwitchControl
+          label="出错时暂停"
+          checked={preferences.autoPrepStopOnError}
+          onCheckedChange={(autoPrepStopOnError) => onPreferenceChange({ autoPrepStopOnError })}
+        />
+      </div>
+      <div className="mt-3 text-xs text-muted-foreground">
+        自动化只处理当前排序第一笔稀客订单；子选项关闭时不会执行对应动作。
+      </div>
+      <AutoPrepStatus busy={busy} message={message} preferences={preferences} />
+    </ListPanel>
+  );
+}
+
 function AutoPrepStatus({
+  busy,
   message,
   preferences,
 }: {
+  busy: boolean;
   message: string;
   preferences: CompanionPreferences;
 }) {
   if (!message) return null;
 
   return (
-    <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
-      <div className="font-medium text-foreground">一键订单</div>
+    <div className="mt-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
+      <div className="font-medium text-foreground">自动化{busy ? '处理中' : '状态'}</div>
       <div className="mt-1 whitespace-pre-line text-muted-foreground">{message}</div>
       <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
-        <Badge variant={preferences.autoProcessFirstOrder ? 'secondary' : 'outline'}>自动 {preferences.autoProcessFirstOrder ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoPrepCompleteOrder ? 'secondary' : 'outline'}>完成 {preferences.autoPrepCompleteOrder ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepTakeBeverage ? 'secondary' : 'outline'}>取酒 {preferences.autoPrepTakeBeverage ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepStartCooking ? 'secondary' : 'outline'}>料理 {preferences.autoPrepStartCooking ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepCollectCooking ? 'secondary' : 'outline'}>收取 {preferences.autoPrepCollectCooking ? '开' : '关'}</Badge>
@@ -3242,10 +3200,18 @@ function selectNextOrderPreparation(
 function buildCompleteOrderPreferences(preferences: CompanionPreferences): CompanionPreferences {
   return {
     ...preferences,
+    autoPrepCompleteOrder: true,
     autoPrepTakeBeverage: true,
     autoPrepStartCooking: true,
     autoPrepCollectCooking: true,
   };
+}
+
+function hasAutomationActionEnabled(preferences: CompanionPreferences): boolean {
+  return preferences.autoPrepCompleteOrder
+    || preferences.autoPrepTakeBeverage
+    || preferences.autoPrepStartCooking
+    || preferences.autoPrepCollectCooking;
 }
 
 function buildAutoOrderKey(item: OrderRecommendation): string {
@@ -3678,12 +3644,13 @@ function readStoredCompanionPreferences(): CompanionPreferences {
     ),
     alwaysOnTop: readStoredBoolean(ALWAYS_ON_TOP_STORAGE_KEY, true),
     gamepadNavigationEnabled: readStoredBoolean(GAMEPAD_NAVIGATION_STORAGE_KEY, true),
-    autoPrepTakeBeverage: readStoredBoolean(AUTO_PREP_TAKE_BEVERAGE_STORAGE_KEY, true),
-    autoPrepStartCooking: readStoredBoolean(AUTO_PREP_START_COOKING_STORAGE_KEY, true),
+    automationEnabled: readStoredBoolean(AUTOMATION_ENABLED_STORAGE_KEY, false),
+    autoPrepCompleteOrder: readStoredBoolean(AUTO_PREP_COMPLETE_ORDER_STORAGE_KEY, false),
+    autoPrepTakeBeverage: readStoredBoolean(AUTO_PREP_TAKE_BEVERAGE_STORAGE_KEY, false),
+    autoPrepStartCooking: readStoredBoolean(AUTO_PREP_START_COOKING_STORAGE_KEY, false),
     autoPrepCollectCooking: readStoredBoolean(AUTO_PREP_COLLECT_COOKING_STORAGE_KEY, false),
     autoPrepFavoritesOnly: readStoredBoolean(AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY, false),
-    autoPrepStopOnError: readStoredBoolean(AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY, true),
-    autoProcessFirstOrder: readStoredBoolean(AUTO_PROCESS_FIRST_ORDER_STORAGE_KEY, false),
+    autoPrepStopOnError: readStoredBoolean(AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY, false),
   });
 }
 
@@ -3699,12 +3666,13 @@ function normalizeCompanionPreferences(value: CompanionPreferences): CompanionPr
     focusSwitchCooldownMs: normalizeFocusSwitchCooldownMs(value.focusSwitchCooldownMs),
     alwaysOnTop: Boolean(value.alwaysOnTop),
     gamepadNavigationEnabled: Boolean(value.gamepadNavigationEnabled),
+    automationEnabled: Boolean(value.automationEnabled),
+    autoPrepCompleteOrder: Boolean(value.autoPrepCompleteOrder),
     autoPrepTakeBeverage: Boolean(value.autoPrepTakeBeverage),
     autoPrepStartCooking: Boolean(value.autoPrepStartCooking),
     autoPrepCollectCooking: Boolean(value.autoPrepCollectCooking),
     autoPrepFavoritesOnly: Boolean(value.autoPrepFavoritesOnly),
     autoPrepStopOnError: Boolean(value.autoPrepStopOnError),
-    autoProcessFirstOrder: Boolean(value.autoProcessFirstOrder),
   };
 }
 
@@ -3728,12 +3696,13 @@ function persistCompanionPreferences(preferences: CompanionPreferences) {
   localStorage.setItem(FOCUS_SWITCH_COOLDOWN_STORAGE_KEY, String(normalized.focusSwitchCooldownMs));
   localStorage.setItem(ALWAYS_ON_TOP_STORAGE_KEY, normalized.alwaysOnTop ? '1' : '0');
   localStorage.setItem(GAMEPAD_NAVIGATION_STORAGE_KEY, normalized.gamepadNavigationEnabled ? '1' : '0');
+  localStorage.setItem(AUTOMATION_ENABLED_STORAGE_KEY, normalized.automationEnabled ? '1' : '0');
+  localStorage.setItem(AUTO_PREP_COMPLETE_ORDER_STORAGE_KEY, normalized.autoPrepCompleteOrder ? '1' : '0');
   localStorage.setItem(AUTO_PREP_TAKE_BEVERAGE_STORAGE_KEY, normalized.autoPrepTakeBeverage ? '1' : '0');
   localStorage.setItem(AUTO_PREP_START_COOKING_STORAGE_KEY, normalized.autoPrepStartCooking ? '1' : '0');
   localStorage.setItem(AUTO_PREP_COLLECT_COOKING_STORAGE_KEY, normalized.autoPrepCollectCooking ? '1' : '0');
   localStorage.setItem(AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY, normalized.autoPrepFavoritesOnly ? '1' : '0');
   localStorage.setItem(AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY, normalized.autoPrepStopOnError ? '1' : '0');
-  localStorage.setItem(AUTO_PROCESS_FIRST_ORDER_STORAGE_KEY, normalized.autoProcessFirstOrder ? '1' : '0');
 }
 
 function applyCompanionVisualPreferences(preferences: CompanionPreferences) {
