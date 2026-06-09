@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ReactNode, SetStateAction } from 'react';
+import type { ReactNode } from 'react';
 import { FolderOpen, Power, RefreshCw, Star } from 'lucide-react';
 import { CustomerScoreBadges } from '@/components/ScoreBadge';
 import { RegionSelector } from '@/components/RegionSelector';
@@ -1613,7 +1613,6 @@ function ModInventoryPanel({
   onRefresh: () => Promise<void>;
 }) {
   const [search, setSearch] = useState('');
-  const [draftQuantities, setDraftQuantities] = useState<Record<string, string>>({});
   const [busyKey, setBusyKey] = useState('');
   const [message, setMessage] = useState('');
 
@@ -1636,7 +1635,6 @@ function ModInventoryPanel({
     try {
       const result = await writeInventoryQuantity(endpoint, apiToken, kind, id, targetQuantity);
       if (!result.ok) throw new Error(result.error || '库存修改失败');
-      setDraftQuantities((current) => ({ ...current, [key]: String(result.quantity) }));
       setMessage(`${kind === 'ingredient' ? '材料' : '酒水'} #${id}: ${result.previousQuantity} -> ${result.quantity}`);
       await onRefresh();
     } catch (err) {
@@ -1686,10 +1684,8 @@ function ModInventoryPanel({
           kind="ingredient"
           items={ingredientRows}
           ownedQty={runtimeSets.ownedIngredientQty}
-          draftQuantities={draftQuantities}
           busyKey={busyKey}
           apiToken={apiToken}
-          onDraftChange={setDraftQuantities}
           onApply={applyQuantity}
         />
         <InventoryEditColumn
@@ -1697,10 +1693,8 @@ function ModInventoryPanel({
           kind="beverage"
           items={beverageRows}
           ownedQty={runtimeSets.ownedBeverageQty}
-          draftQuantities={draftQuantities}
           busyKey={busyKey}
           apiToken={apiToken}
-          onDraftChange={setDraftQuantities}
           onApply={applyQuantity}
         />
       </div>
@@ -1713,20 +1707,16 @@ function InventoryEditColumn<TItem extends IIngredient | IBeverage>({
   kind,
   items,
   ownedQty,
-  draftQuantities,
   busyKey,
   apiToken,
-  onDraftChange,
   onApply,
 }: {
   title: string;
   kind: 'ingredient' | 'beverage';
   items: TItem[];
   ownedQty: Record<number, number>;
-  draftQuantities: Record<string, string>;
   busyKey: string;
   apiToken: string;
-  onDraftChange: (next: SetStateAction<Record<string, string>>) => void;
   onApply: (kind: 'ingredient' | 'beverage', id: number, quantity: number) => Promise<void>;
 }) {
   return (
@@ -1737,45 +1727,42 @@ function InventoryEditColumn<TItem extends IIngredient | IBeverage>({
           const key = inventoryDraftKey(kind, item.id);
           const quantity = ownedQty[item.id] ?? 0;
           const editable = Boolean(apiToken) && item.id >= 0 && quantity >= 0;
-          const draftValue = draftQuantities[key] ?? String(quantity);
-          const draftQuantity = normalizeEditableQuantity(Number(draftValue));
           const busy = busyKey === key;
 
           return (
-            <div key={key} className="rounded-md border border-border/80 p-2 text-sm">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="min-w-0">
+            <div
+              key={key}
+              className="rounded-md border border-border/80 px-2 py-1.5 text-sm"
+              data-gamepad-row="true"
+              data-gamepad-row-key={`inventory:${key}`}
+            >
+              <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
+                <div className="min-w-0 pr-1">
                   <div className="truncate font-medium" title={item.name}>{item.name}</div>
                   <div className="mt-0.5 text-xs text-muted-foreground">
                     ID {item.id} · 当前 {quantity < 0 ? '无限' : quantity} · 单价 {item.price}
                   </div>
                 </div>
-                <Input
-                  type="number"
-                  min={0}
-                  max={9999}
-                  value={draftValue}
-                  onChange={(event) => {
-                    const value = event.target.value;
-                    onDraftChange((current) => ({ ...current, [key]: value }));
-                  }}
-                  disabled={!editable || busy}
-                  className="h-8 w-24"
-                />
-              </div>
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                <Button size="sm" variant="outline" disabled={!editable || busy} onClick={() => onApply(kind, item.id, quantity + 1)}>
-                  +1
-                </Button>
-                <Button size="sm" variant="outline" disabled={!editable || busy} onClick={() => onApply(kind, item.id, quantity + 10)}>
-                  +10
-                </Button>
-                <Button size="sm" variant="outline" disabled={!editable || busy} onClick={() => onApply(kind, item.id, 99)}>
-                  99
-                </Button>
-                <Button size="sm" disabled={!editable || busy} onClick={() => onApply(kind, item.id, draftQuantity)}>
-                  {busy ? '修改中' : '应用'}
-                </Button>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={!editable || busy}
+                    data-gamepad-focus-key={`inventory:${key}:add10`}
+                    onClick={() => onApply(kind, item.id, quantity + 10)}
+                  >
+                    +10
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={!editable || busy}
+                    data-gamepad-focus-key={`inventory:${key}:set99`}
+                    onClick={() => onApply(kind, item.id, 99)}
+                  >
+                    99
+                  </Button>
+                </div>
               </div>
             </div>
           );
@@ -2351,6 +2338,9 @@ function OpacitySlider({
         max={100}
         step={1}
         value={percent}
+        aria-label="窗口透明度"
+        data-gamepad-slider="true"
+        data-gamepad-step="1"
         onChange={(event) => onChange(normalizeWindowOpacity(Number(event.target.value) / 100))}
         className="h-2 w-full accent-primary"
       />
@@ -2596,6 +2586,7 @@ function RecipeRecommendationRow({
       data-gamepad-focusable={onToggleFavorite ? 'true' : undefined}
       data-gamepad-favorite-scope={onToggleFavorite ? 'true' : undefined}
       data-gamepad-row={onToggleFavorite ? 'true' : undefined}
+      data-gamepad-row-key={onToggleFavorite ? `recipe:${favoriteKey}` : undefined}
       tabIndex={onToggleFavorite ? 0 : undefined}
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -2607,20 +2598,20 @@ function RecipeRecommendationRow({
             分数 {recipe.foodScore} · 成本 {totalCost}
           </span>
           <RecipeMetaHighlight label="厨具" value={recipe.recipe.cooker || '未知'} tone="cooker" />
-          {favorite && <Badge variant="outline">已收藏</Badge>}
         </div>
         {onToggleFavorite && (
           <Button
             type="button"
-            size={compact ? 'icon-xs' : 'xs'}
+            size="icon-xs"
             variant={favorite ? 'default' : 'outline'}
             disabled={busy}
+            aria-label={favorite ? '取消收藏该料理方案' : '收藏该料理方案'}
             data-gamepad-favorite="true"
+            data-gamepad-focus-key={`recipe-favorite:${favoriteKey}`}
             title={favorite ? '取消收藏该料理方案' : '收藏该料理方案'}
             onClick={onToggleFavorite}
           >
             <Star className={favorite ? 'size-3 fill-current' : 'size-3'} />
-            {!compact && <span>{favorite ? '取消收藏' : '收藏'}</span>}
           </Button>
         )}
       </div>
@@ -2683,6 +2674,7 @@ function BeverageRecommendationRow({
       data-gamepad-focusable={onToggleFavorite ? 'true' : undefined}
       data-gamepad-favorite-scope={onToggleFavorite ? 'true' : undefined}
       data-gamepad-row={onToggleFavorite ? 'true' : undefined}
+      data-gamepad-row-key={onToggleFavorite ? `beverage:${favoriteKey}` : undefined}
       tabIndex={onToggleFavorite ? 0 : undefined}
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -2692,20 +2684,20 @@ function BeverageRecommendationRow({
             {beverage.beverage.name}{formatQtySuffix(ownedBeverageQty[beverage.beverage.id])}
           </span>
           {beverage.meetsRequiredBev && <Badge variant="secondary">满足点单</Badge>}
-          {favorite && <Badge variant="outline">已收藏</Badge>}
         </div>
         {onToggleFavorite && (
           <Button
             type="button"
-            size={compact ? 'icon-xs' : 'xs'}
+            size="icon-xs"
             variant={favorite ? 'default' : 'outline'}
             disabled={busy}
+            aria-label={favorite ? '取消收藏该酒水' : '收藏该酒水'}
             data-gamepad-favorite="true"
+            data-gamepad-focus-key={`beverage-favorite:${favoriteKey}`}
             title={favorite ? '取消收藏该酒水' : '收藏该酒水'}
             onClick={onToggleFavorite}
           >
             <Star className={favorite ? 'size-3 fill-current' : 'size-3'} />
-            {!compact && <span>{favorite ? '取消收藏' : '收藏'}</span>}
           </Button>
         )}
       </div>

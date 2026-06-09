@@ -33,6 +33,8 @@ const FOCUSABLE_SELECTOR = [
   '[data-gamepad-focusable="true"]',
 ].join(',');
 const GAMEPAD_SCOPE_SELECTOR = '[data-gamepad-scope]';
+const GAMEPAD_ROW_SELECTOR = '[data-gamepad-row="true"]';
+const GAMEPAD_SLIDER_SELECTOR = '[data-gamepad-slider="true"]';
 const SELECT_CONTENT_SELECTOR = '[data-slot="select-content"]';
 const SELECT_ITEM_SELECTOR = '[data-slot="select-item"]:not([data-disabled])';
 const TAB_SELECTOR = '[data-gamepad-tab="true"]';
@@ -145,7 +147,7 @@ export function useGamepadNavigation<TTab extends string>({
           activateFocusedElement(focusElement);
           return;
         case 'favorite':
-          activateFavoriteAction();
+          activateFavoriteAction(focusElement);
           return;
         case 'back':
           if (optionsRef.current.focusMode) {
@@ -347,6 +349,7 @@ function moveFocus(direction: GamepadDirection, focusElement: (element: HTMLElem
     return;
   }
 
+  if (adjustGamepadSlider(active, direction)) return;
   if (moveWithinOpenSelect(active, direction, focusElement)) return;
   if (moveFromTabs(active, direction, focusElement)) return;
   if (moveWithinContent(active, direction, focusElement)) return;
@@ -413,12 +416,58 @@ function moveWithinContent(
   const scope = getScopeRoot(active);
   if (!scope || scope.dataset.gamepadScope !== 'content') return false;
 
+  if (moveWithinGamepadRow(active, direction, focusElement)) return true;
+
   const scopedElements = getFocusableElementsWithin(scope);
   if (moveGeometrically(active, direction, scopedElements, focusElement)) return true;
 
   if (direction === 'up') return focusActiveTab(focusElement);
 
   scrollActiveContainer(direction === 'left' ? -SCROLL_STEP : SCROLL_STEP);
+  return true;
+}
+
+function adjustGamepadSlider(active: HTMLElement, direction: GamepadDirection): boolean {
+  if (direction !== 'left' && direction !== 'right') return false;
+  if (!(active instanceof HTMLInputElement) || active.type !== 'range' || !active.matches(GAMEPAD_SLIDER_SELECTOR)) {
+    return false;
+  }
+
+  const current = Number(active.value);
+  const min = Number(active.min || 0);
+  const max = Number(active.max || 100);
+  const rawStep = Number(active.dataset.gamepadStep || active.step || 1);
+  const step = Number.isFinite(rawStep) && rawStep > 0 ? rawStep : 1;
+  const next = direction === 'left' ? current - step : current + step;
+  active.value = String(Math.max(min, Math.min(max, next)));
+  active.dispatchEvent(new Event('input', { bubbles: true }));
+  active.dispatchEvent(new Event('change', { bubbles: true }));
+  return true;
+}
+
+function moveWithinGamepadRow(
+  active: HTMLElement,
+  direction: GamepadDirection,
+  focusElement: (element: HTMLElement) => void,
+): boolean {
+  if (direction !== 'left' && direction !== 'right') return false;
+
+  const row = active.closest<HTMLElement>(GAMEPAD_ROW_SELECTOR);
+  if (!row) return false;
+
+  const rowElements = getFocusableElementsWithin(row)
+    .filter((element) => element.closest<HTMLElement>(GAMEPAD_ROW_SELECTOR) === row);
+  if (rowElements.length < 2) return false;
+
+  const currentIndex = rowElements.indexOf(active);
+  if (currentIndex < 0) return false;
+
+  const nextIndex = direction === 'left'
+    ? Math.max(0, currentIndex - 1)
+    : Math.min(rowElements.length - 1, currentIndex + 1);
+  const next = rowElements[nextIndex];
+  if (!next || next === active) return true;
+  focusElement(next);
   return true;
 }
 
@@ -538,17 +587,63 @@ function activateFocusedElement(focusElement: (element: HTMLElement) => void) {
     ? active.querySelector<HTMLElement>('[data-gamepad-favorite="true"]:not([disabled])')
     : null;
 
-  (favoriteButton ?? active).click();
+  const target = favoriteButton ?? active;
+  restoreFocusAfterAction(target, focusElement);
+  target.click();
 }
 
-function activateFavoriteAction() {
+function activateFavoriteAction(focusElement?: (element: HTMLElement) => void) {
   const active = getActiveHTMLElement();
   const favoriteButton = active?.matches('[data-gamepad-favorite="true"]')
     ? active
-    : active?.closest('[data-gamepad-row="true"]')?.querySelector<HTMLElement>('[data-gamepad-favorite="true"]:not([disabled])')
+    : active?.closest(GAMEPAD_ROW_SELECTOR)?.querySelector<HTMLElement>('[data-gamepad-favorite="true"]:not([disabled])')
       ?? active?.closest('[data-gamepad-favorite-scope="true"]')?.querySelector<HTMLElement>('[data-gamepad-favorite="true"]:not([disabled])');
 
-  favoriteButton?.click();
+  if (!favoriteButton) return;
+  if (focusElement) restoreFocusAfterAction(favoriteButton, focusElement);
+  favoriteButton.click();
+}
+
+function restoreFocusAfterAction(target: HTMLElement, focusElement: (element: HTMLElement) => void) {
+  const focusKey = target.dataset.gamepadFocusKey;
+  const rowKey = target.closest<HTMLElement>(GAMEPAD_ROW_SELECTOR)?.dataset.gamepadRowKey;
+  if (!focusKey && !rowKey) return;
+
+  const tryRestore = () => {
+    const next = findRestorableElement(focusKey, rowKey);
+    if (!next) return false;
+    focusElement(next);
+    return true;
+  };
+
+  window.setTimeout(tryRestore, 0);
+  window.setTimeout(tryRestore, 120);
+  window.setTimeout(tryRestore, 320);
+}
+
+function findRestorableElement(focusKey?: string, rowKey?: string): HTMLElement | null {
+  if (focusKey) {
+    const byKey = document.querySelector<HTMLElement>(
+      `[data-gamepad-focus-key="${escapeCssAttributeValue(focusKey)}"]:not([disabled])`,
+    );
+    if (byKey && isElementVisible(byKey) && !isElementDisabled(byKey)) return byKey;
+  }
+
+  if (!rowKey) return null;
+  const row = document.querySelector<HTMLElement>(
+    `${GAMEPAD_ROW_SELECTOR}[data-gamepad-row-key="${escapeCssAttributeValue(rowKey)}"]`,
+  );
+  if (!row || !isElementVisible(row) || isElementDisabled(row)) return null;
+
+  const favorite = row.querySelector<HTMLElement>('[data-gamepad-favorite="true"]:not([disabled])');
+  if (favorite && isElementVisible(favorite) && !isElementDisabled(favorite)) return favorite;
+  return row;
+}
+
+function escapeCssAttributeValue(value: string): string {
+  return typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+    ? CSS.escape(value)
+    : value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
 function dispatchEscape() {
