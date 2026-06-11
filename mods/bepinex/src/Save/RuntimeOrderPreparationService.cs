@@ -1482,12 +1482,30 @@ internal static class RuntimeOrderPreparationService
     private static bool IsMatchingNormalOrder(object order, OrderPreparationRequest request)
     {
         if (!IsNormalOrder(order)) return false;
+        if (!string.IsNullOrWhiteSpace(request.OrderKey)
+            && !string.Equals(BuildRuntimeOrderKey(order), request.OrderKey, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
         var deskCode = ToInt(ReadMember(order, "DeskCode") ?? TryInvokeInstanceValue(order, "get_DeskCode"), -999);
         if (request.DeskCode >= 0 && deskCode != request.DeskCode) return false;
 
         if (request.FoodId >= 0 && ReadNormalFoodId(order) != request.FoodId) return false;
         if (request.BeverageId >= 0 && ReadNormalBeverageId(order) != request.BeverageId) return false;
         return true;
+    }
+
+    private static string BuildRuntimeOrderKey(object order)
+    {
+        try
+        {
+            return $"ptr:{ReadObjectPointer(order):x}";
+        }
+        catch
+        {
+            return $"hash:{RuntimeHelpers.GetHashCode(order)}";
+        }
     }
 
     private static bool IsNormalOrder(object order)

@@ -213,6 +213,7 @@ public sealed class RuntimeMissionContext
 
 public sealed class NormalBusinessOrder
 {
+    public string OrderKey { get; init; } = "";
     public int DeskCode { get; init; }
     public string GuestName { get; init; } = "";
     public int FoodId { get; init; }

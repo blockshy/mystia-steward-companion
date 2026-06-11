@@ -275,6 +275,7 @@ interface RuntimeMissionContext {
 }
 
 interface NormalBusinessOrder {
+  orderKey?: string;
   deskCode: number;
   guestName: string;
   foodId: number;
@@ -908,7 +909,11 @@ export function ModWorkbench() {
     }
 
     const runnableOrders = orders
-      .filter((order) => !normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order))?.paused)
+      .filter((order) => {
+        const state = normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order));
+        if (state?.paused) return false;
+        return hasRunnableNormalOrderAction(state, companionPreferences);
+      })
       .slice(0, MAX_NORMAL_AUTO_ORDERS_PER_TICK);
     const pausedCount = orders.filter((order) => normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order))?.paused).length;
     setNormalOrderPausedCount(pausedCount);
@@ -3767,6 +3772,7 @@ async function completeFirstNormalOrder(
     ?? RECIPES.find((item) => item.recipeId === order.foodId)
     ?? null;
   const params = new URLSearchParams({
+    orderKey: order.orderKey ?? '',
     deskCode: String(order.deskCode),
     guestName: order.guestName || '普客',
     foodId: String(order.foodId),
@@ -4428,6 +4434,7 @@ function buildAutoOrderKey(item: OrderRecommendation): string {
 }
 
 function buildNormalAutoOrderKey(order: NormalBusinessOrder): string {
+  if (order.orderKey) return order.orderKey;
   return [
     order.firstSeenAtUtc ?? '',
     order.deskCode,
@@ -4435,6 +4442,14 @@ function buildNormalAutoOrderKey(order: NormalBusinessOrder): string {
     order.foodId,
     order.beverageId,
   ].join('|');
+}
+
+function hasRunnableNormalOrderAction(
+  state: NormalAutoOrderState | undefined,
+  preferences: CompanionPreferences,
+): boolean {
+  if (!preferences.autoNormalStartCooking) return false;
+  return !state?.prepared;
 }
 
 function emptyAutoFirstOrderState(): AutoFirstOrderState {

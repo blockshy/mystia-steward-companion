@@ -363,6 +363,7 @@ internal sealed class LocalApiServer : IDisposable
         {
             var request = new OrderPreparationRequest
             {
+                OrderKey = ReadStringQuery(query, "orderKey"),
                 DeskCode = ReadIntQuery(query, "deskCode", -1),
                 GuestId = ReadNullableIntQuery(query, "guestId"),
                 GuestName = ReadStringQuery(query, "guestName"),

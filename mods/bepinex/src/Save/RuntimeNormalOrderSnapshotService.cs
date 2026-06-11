@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using MystiaStewardCompanion.Core;
 
 namespace MystiaStewardCompanion.Save;
@@ -139,6 +140,7 @@ public sealed class RuntimeNormalOrderSnapshotService
 
     private static string BuildOrderKey(NormalBusinessOrder order)
     {
+        if (!string.IsNullOrWhiteSpace(order.OrderKey)) return order.OrderKey;
         return $"{order.DeskCode}|{order.FoodId}|{order.BeverageId}";
     }
 
@@ -148,6 +150,7 @@ public sealed class RuntimeNormalOrderSnapshotService
         var first = orders.First();
         return new NormalBusinessOrder
         {
+            OrderKey = first.OrderKey,
             DeskCode = first.DeskCode,
             GuestName = first.GuestName,
             FoodId = first.FoodId,
@@ -166,6 +169,7 @@ public sealed class RuntimeNormalOrderSnapshotService
     {
         return new NormalBusinessOrder
         {
+            OrderKey = order.OrderKey,
             DeskCode = order.DeskCode,
             GuestName = order.GuestName,
             FoodId = order.FoodId,
@@ -301,6 +305,7 @@ public sealed class RuntimeNormalOrderSnapshotService
 
         return new NormalBusinessOrder
         {
+            OrderKey = BuildRuntimeOrderKey(order),
             DeskCode = RuntimeReflectionUtility.ToInt(SafeGet(order, "DeskCode"), -1),
             GuestName = ReadTextLikeValue(SafeGet(order, "Guest"))
                 ?? ReadTextLikeValue(SafeGet(controller, "OrderingGuest"))
@@ -323,6 +328,29 @@ public sealed class RuntimeNormalOrderSnapshotService
         if (typeName.IndexOf("NormalOrder", StringComparison.OrdinalIgnoreCase) >= 0) return true;
         var orderType = SafeGet(order, "Type")?.ToString();
         return string.Equals(orderType, "Normal", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BuildRuntimeOrderKey(object order)
+    {
+        try
+        {
+            return $"ptr:{ReadObjectPointer(order):x}";
+        }
+        catch
+        {
+            return $"hash:{RuntimeHelpers.GetHashCode(order)}";
+        }
+    }
+
+    private static nint ReadObjectPointer(object target)
+    {
+        var pointer = SafeGet(target, "Pointer")
+            ?? SafeGet(target, "NativePointer")
+            ?? SafeGet(target, "m_CachedPtr");
+        if (pointer is IntPtr intPtr) return intPtr;
+        if (pointer is nint native) return native;
+        if (pointer is IConvertible convertible) return new IntPtr(convertible.ToInt64(null));
+        return new IntPtr(RuntimeHelpers.GetHashCode(target));
     }
 
     private static int ReadSellableId(object? sellable, object? fallback)
