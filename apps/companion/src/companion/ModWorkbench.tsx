@@ -1737,21 +1737,6 @@ function ModServicePanel({
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap justify-end gap-2">
-        <Button size="sm" onClick={onEnterFocusMode}>
-          稀客订单专注模式
-        </Button>
-      </div>
-
-      {autoPrepPreferences.automationEnabled && (
-        <ServiceAutomationPanel
-          preferences={autoPrepPreferences}
-          busy={autoPrepBusy}
-          message={autoPrepMessage}
-          onPreferenceChange={onPreferenceChange}
-        />
-      )}
-
       <Card>
         <CardContent className={`${DENSE_THREE_COLUMN_GRID} p-4 text-sm`}>
           <InfoLine label="经营场景" value={detectedPlace ?? night?.placeLabel ?? '无经营场景'} />
@@ -1768,104 +1753,143 @@ function ModServicePanel({
         </CardContent>
       </Card>
 
-      <div className={DENSE_TWO_COLUMN_GRID}>
-        <ListPanel title="当前稀客">
-          {activeGuests.length === 0 && <EmptyRow text="暂无稀客" />}
-          {activeGuests.map((guest) => {
-            const fund = formatGuestFund(guest);
-            return (
-              <div key={`${guest.deskCode}-${guest.guestId}-${guest.source}`} className="flex items-center justify-between border-b py-2 text-sm last:border-b-0">
-                <span className="min-w-0 font-medium">
-                  <span>{guest.guestName}</span>
-                  {fund && <span className="ml-1 text-muted-foreground">· 金钱 {fund}</span>}
+      <Tabs defaultValue="rare" className="space-y-4">
+        <TabsList className="grid h-9 w-full grid-cols-2">
+          <TabsTrigger value="rare" className={MOD_TAB_TRIGGER_CLASS}>
+            稀客
+          </TabsTrigger>
+          <TabsTrigger value="normal" className={MOD_TAB_TRIGGER_CLASS}>
+            普客
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="rare" className="space-y-4">
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button size="sm" onClick={onEnterFocusMode}>
+              稀客订单专注模式
+            </Button>
+          </div>
+
+          {autoPrepPreferences.automationEnabled && (
+            <RareServiceAutomationPanel
+              preferences={autoPrepPreferences}
+              busy={autoPrepBusy}
+              message={autoPrepMessage}
+              onPreferenceChange={onPreferenceChange}
+            />
+          )}
+
+          <div className={DENSE_TWO_COLUMN_GRID}>
+            <ListPanel title="当前稀客">
+              {activeGuests.length === 0 && <EmptyRow text="暂无稀客" />}
+              {activeGuests.map((guest) => {
+                const fund = formatGuestFund(guest);
+                return (
+                  <div key={`${guest.deskCode}-${guest.guestId}-${guest.source}`} className="flex items-center justify-between border-b py-2 text-sm last:border-b-0">
+                    <span className="min-w-0 font-medium">
+                      <span>{guest.guestName}</span>
+                      {fund && <span className="ml-1 text-muted-foreground">· 金钱 {fund}</span>}
+                    </span>
+                    <span className="text-muted-foreground">桌 {formatDesk(guest.deskCode)} · {guest.source}</span>
+                  </div>
+                );
+              })}
+            </ListPanel>
+
+            <ListPanel title="当前稀客点单">
+              {orders.length === 0 && <EmptyRow text={night?.error || '暂无点单'} />}
+              {orders.map((order) => (
+                <div key={`${order.deskCode}-${order.guestId}-${order.foodTagId}-${order.beverageTagId}`} className="border-b py-2 text-sm last:border-b-0">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="font-medium">{order.guestName}</span>
+                    <span className="text-muted-foreground">桌 {formatDesk(order.deskCode)}</span>
+                  </div>
+                  <div className="mt-1 flex flex-wrap gap-1.5">
+                    <Badge variant="outline">料理 {order.foodTag || '无'} ({order.foodTagId})</Badge>
+                    <Badge variant="outline">酒水 {order.beverageTag || '无'} ({order.beverageTagId})</Badge>
+                    <Badge variant="secondary">{order.source}</Badge>
+                  </div>
+                </div>
+              ))}
+            </ListPanel>
+          </div>
+
+          {(recommendations.length > 0 || recommendationIssues.length > 0) && (
+            <CurrentOrderRecommendations
+              recommendations={recommendations}
+              recommendationIssues={recommendationIssues}
+              runtimeSets={runtimeSets}
+              orderSortMode={autoPrepPreferences.serviceOrderSortMode}
+              favorites={favorites}
+              favoriteBusyKey={favoriteBusyKey}
+              favoriteError={favoriteError}
+              onToggleRecipeFavorite={onToggleRecipeFavorite}
+              onToggleBeverageFavorite={onToggleBeverageFavorite}
+            />
+          )}
+        </TabsContent>
+
+        <TabsContent value="normal" className="space-y-4">
+          {autoPrepPreferences.automationEnabled && (
+            <NormalServiceAutomationPanel
+              preferences={autoPrepPreferences}
+              busy={normalOrderBusy}
+              message={normalOrderMessage}
+              onPreferenceChange={onPreferenceChange}
+            />
+          )}
+
+          <ListPanel title={`普客订单诊断 (${normalBusiness?.orders.length ?? 0})`}>
+            {autoPrepPreferences.automationEnabled && autoPrepPreferences.autoNormalOrderEnabled ? (
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm">
+                <span className="text-muted-foreground">
+                  普客自动化会自动处理最早出现且未满足的普客订单。
                 </span>
-                <span className="text-muted-foreground">桌 {formatDesk(guest.deskCode)} · {guest.source}</span>
+                {normalOrderBusy && <Badge variant="secondary">处理中</Badge>}
               </div>
-            );
-          })}
-        </ListPanel>
-
-        <ListPanel title="当前稀客点单">
-          {orders.length === 0 && <EmptyRow text={night?.error || '暂无点单'} />}
-          {orders.map((order) => (
-            <div key={`${order.deskCode}-${order.guestId}-${order.foodTagId}-${order.beverageTagId}`} className="border-b py-2 text-sm last:border-b-0">
-              <div className="flex items-center justify-between gap-3">
-                <span className="font-medium">{order.guestName}</span>
-                <span className="text-muted-foreground">桌 {formatDesk(order.deskCode)}</span>
+            ) : autoPrepPreferences.automationEnabled ? (
+              <div className="mb-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+                开启“启用普客处理”后，会自动处理最早一笔未满足普客订单。
               </div>
-              <div className="mt-1 flex flex-wrap gap-1.5">
-                <Badge variant="outline">料理 {order.foodTag || '无'} ({order.foodTagId})</Badge>
-                <Badge variant="outline">酒水 {order.beverageTag || '无'} ({order.beverageTagId})</Badge>
-                <Badge variant="secondary">{order.source}</Badge>
+            ) : (
+              <div className="mb-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+                设置页开启“启用自动化（实验性）”后，可启用普客订单自动处理。
               </div>
-            </div>
-          ))}
-        </ListPanel>
-      </div>
-
-      <ListPanel title={`普客订单诊断 (${normalBusiness?.orders.length ?? 0})`}>
-        {autoPrepPreferences.automationEnabled && autoPrepPreferences.autoNormalOrderEnabled ? (
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm">
-            <span className="text-muted-foreground">
-              普客自动化会自动处理最早出现且未满足的普客订单。
-            </span>
-            {normalOrderBusy && <Badge variant="secondary">处理中</Badge>}
-          </div>
-        ) : autoPrepPreferences.automationEnabled ? (
-          <div className="mb-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
-            在自动化面板开启“启用普客处理”后，会自动处理最早一笔未满足普客订单。
-          </div>
-        ) : (
-          <div className="mb-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
-            设置页开启“启用自动化（实验性）”后，可启用普客订单自动处理。
-          </div>
-        )}
-        {normalOrderMessage && (
-          <div className="mb-3 whitespace-pre-line rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
-            {normalOrderMessage}
-          </div>
-        )}
-        {!normalBusiness && <EmptyRow text="普客订单只在经营场景中读取" />}
-        {normalBusiness?.error && <EmptyRow text={normalBusiness.error} />}
-        {normalBusiness?.orders.length === 0 && !normalBusiness.error && (
-          <EmptyRow text={normalBusiness.source || '暂无普客订单'} />
-        )}
-        {sortNormalOrders(normalBusiness?.orders ?? []).map((order) => (
-          <div
-            key={`${order.deskCode}-${order.guestName}-${order.foodId}-${order.beverageId}-${order.source}`}
-            className="border-b py-2 text-sm last:border-b-0"
-          >
-            <div className="flex items-center justify-between gap-3">
-              <span className="min-w-0 truncate font-medium" title={order.guestName || '普客'}>
-                {order.guestName || '普客'}
-              </span>
-              <span className="shrink-0 text-muted-foreground">桌 {formatDesk(order.deskCode)}</span>
-            </div>
-            <div className="mt-1 flex flex-wrap gap-1.5">
-              <Badge variant="outline">料理 {order.foodName || `#${order.foodId}`}</Badge>
-              <Badge variant="outline">酒水 {order.beverageName || `#${order.beverageId}`}</Badge>
-              {order.hasServedFood && <Badge variant="secondary">已有料理</Badge>}
-              {order.hasServedBeverage && <Badge variant="secondary">已有酒水</Badge>}
-              {order.isFulfilled && <Badge variant="secondary">已满足</Badge>}
-              <Badge variant="secondary">{order.source}</Badge>
-            </div>
-          </div>
-        ))}
-      </ListPanel>
-
-      {(recommendations.length > 0 || recommendationIssues.length > 0) && (
-        <CurrentOrderRecommendations
-          recommendations={recommendations}
-          recommendationIssues={recommendationIssues}
-          runtimeSets={runtimeSets}
-          orderSortMode={autoPrepPreferences.serviceOrderSortMode}
-          favorites={favorites}
-          favoriteBusyKey={favoriteBusyKey}
-          favoriteError={favoriteError}
-          onToggleRecipeFavorite={onToggleRecipeFavorite}
-          onToggleBeverageFavorite={onToggleBeverageFavorite}
-        />
-      )}
+            )}
+            {normalOrderMessage && !autoPrepPreferences.automationEnabled && (
+              <div className="mb-3 whitespace-pre-line rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+                {normalOrderMessage}
+              </div>
+            )}
+            {!normalBusiness && <EmptyRow text="普客订单只在经营场景中读取" />}
+            {normalBusiness?.error && <EmptyRow text={normalBusiness.error} />}
+            {normalBusiness?.orders.length === 0 && !normalBusiness.error && (
+              <EmptyRow text={normalBusiness.source || '暂无普客订单'} />
+            )}
+            {sortNormalOrders(normalBusiness?.orders ?? []).map((order) => (
+              <div
+                key={`${order.deskCode}-${order.guestName}-${order.foodId}-${order.beverageId}-${order.source}`}
+                className="border-b py-2 text-sm last:border-b-0"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className="min-w-0 truncate font-medium" title={order.guestName || '普客'}>
+                    {order.guestName || '普客'}
+                  </span>
+                  <span className="shrink-0 text-muted-foreground">桌 {formatDesk(order.deskCode)}</span>
+                </div>
+                <div className="mt-1 flex flex-wrap gap-1.5">
+                  <Badge variant="outline">料理 {order.foodName || `#${order.foodId}`}</Badge>
+                  <Badge variant="outline">酒水 {order.beverageName || `#${order.beverageId}`}</Badge>
+                  {order.hasServedFood && <Badge variant="secondary">已有料理</Badge>}
+                  {order.hasServedBeverage && <Badge variant="secondary">已有酒水</Badge>}
+                  {order.isFulfilled && <Badge variant="secondary">已满足</Badge>}
+                  <Badge variant="secondary">{order.source}</Badge>
+                </div>
+              </div>
+            ))}
+          </ListPanel>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
@@ -2601,7 +2625,7 @@ function ModSettingsPanel({
   );
 }
 
-function ServiceAutomationPanel({
+function RareServiceAutomationPanel({
   preferences,
   busy,
   message,
@@ -2613,116 +2637,122 @@ function ServiceAutomationPanel({
   onPreferenceChange: (next: Partial<CompanionPreferences>) => void;
 }) {
   return (
-    <ListPanel title="自动化（实验性）">
-      <div className="grid min-w-0 gap-3 md:grid-cols-2">
-        <div className="rounded-md border border-border bg-muted/20 p-3">
-          <div className="mb-3 text-sm font-medium text-foreground">稀客订单</div>
-          <div className="space-y-2">
-            <SwitchControl
-              label="自动完成订单"
-              checked={preferences.autoPrepCompleteOrder}
-              onCheckedChange={(autoPrepCompleteOrder) => onPreferenceChange({ autoPrepCompleteOrder })}
-            />
-            <SwitchControl
-              label="自动取酒"
-              checked={preferences.autoPrepTakeBeverage}
-              onCheckedChange={(autoPrepTakeBeverage) => onPreferenceChange({ autoPrepTakeBeverage })}
-            />
-            <SwitchControl
-              label="自动开始料理"
-              checked={preferences.autoPrepStartCooking}
-              onCheckedChange={(autoPrepStartCooking) => onPreferenceChange({ autoPrepStartCooking })}
-            />
-            <SwitchControl
-              label="自动收取料理"
-              checked={preferences.autoPrepCollectCooking}
-              onCheckedChange={(autoPrepCollectCooking) => onPreferenceChange({ autoPrepCollectCooking })}
-            />
-            <SwitchControl
-              label="只处理收藏配方"
-              checked={preferences.autoPrepFavoritesOnly}
-              onCheckedChange={(autoPrepFavoritesOnly) => onPreferenceChange({ autoPrepFavoritesOnly })}
-            />
-            <SwitchControl
-              label="出错时暂停"
-              checked={preferences.autoPrepStopOnError}
-              onCheckedChange={(autoPrepStopOnError) => onPreferenceChange({ autoPrepStopOnError })}
-            />
-          </div>
-          {preferences.autoPrepStartCooking && (
-            <div className="mt-3 rounded-md border border-border bg-background/35 p-3">
-              <SwitchControl
-                label="自动完成原生 QTE"
-                checked={preferences.autoPrepCompleteQte}
-                onCheckedChange={(autoPrepCompleteQte) => onPreferenceChange({ autoPrepCompleteQte })}
-              />
-              <div className="mt-2 text-xs text-muted-foreground">
-                {preferences.autoPrepCompleteQte
-                  ? '不会打开音游面板，会直接尝试完成原生 QTE 奖励结算，并继续开始料理。'
-                  : '跳过原生 QTE 会保持当前自动料理速度，但不会累计音游数值或触发对应 Buff。'}
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="rounded-md border border-border bg-muted/20 p-3">
-          <div className="mb-3 text-sm font-medium text-foreground">普客订单</div>
-          <div className="space-y-2">
-            <SwitchControl
-              label="启用普客处理"
-              checked={preferences.autoNormalOrderEnabled}
-              onCheckedChange={(autoNormalOrderEnabled) => onPreferenceChange({ autoNormalOrderEnabled })}
-            />
-            {preferences.autoNormalOrderEnabled && (
-              <>
-                <SwitchControl
-                  label="直送酒水"
-                  checked={preferences.autoNormalTakeBeverage}
-                  onCheckedChange={(autoNormalTakeBeverage) => onPreferenceChange({ autoNormalTakeBeverage })}
-                />
-                <SwitchControl
-                  label="自动开始料理"
-                  checked={preferences.autoNormalStartCooking}
-                  onCheckedChange={(autoNormalStartCooking) => onPreferenceChange({ autoNormalStartCooking })}
-                />
-                <SwitchControl
-                  label="自动收取料理"
-                  checked={preferences.autoNormalCollectCooking}
-                  onCheckedChange={(autoNormalCollectCooking) => onPreferenceChange({ autoNormalCollectCooking })}
-                />
-                <SwitchControl
-                  label="出错时暂停"
-                  checked={preferences.autoNormalStopOnError}
-                  onCheckedChange={(autoNormalStopOnError) => onPreferenceChange({ autoNormalStopOnError })}
-                />
-              </>
-            )}
-          </div>
-          {preferences.autoNormalOrderEnabled && preferences.autoNormalStartCooking && (
-            <div className="mt-3 rounded-md border border-border bg-background/35 p-3">
-              <SwitchControl
-                label="自动完成原生 QTE"
-                checked={preferences.autoNormalCompleteQte}
-                onCheckedChange={(autoNormalCompleteQte) => onPreferenceChange({ autoNormalCompleteQte })}
-              />
-              <div className="mt-2 text-xs text-muted-foreground">
-                {preferences.autoNormalCompleteQte
-                  ? '普客料理会尝试完成原生 QTE 奖励结算。'
-                  : '普客料理会跳过原生 QTE，只保留自动制作流程。'}
-              </div>
-            </div>
-          )}
-        </div>
+    <ListPanel title="稀客自动化（实验性）">
+      <div className="space-y-2">
+        <SwitchControl
+          label="自动完成订单"
+          checked={preferences.autoPrepCompleteOrder}
+          onCheckedChange={(autoPrepCompleteOrder) => onPreferenceChange({ autoPrepCompleteOrder })}
+        />
+        <SwitchControl
+          label="自动取酒"
+          checked={preferences.autoPrepTakeBeverage}
+          onCheckedChange={(autoPrepTakeBeverage) => onPreferenceChange({ autoPrepTakeBeverage })}
+        />
+        <SwitchControl
+          label="自动开始料理"
+          checked={preferences.autoPrepStartCooking}
+          onCheckedChange={(autoPrepStartCooking) => onPreferenceChange({ autoPrepStartCooking })}
+        />
+        <SwitchControl
+          label="自动收取料理"
+          checked={preferences.autoPrepCollectCooking}
+          onCheckedChange={(autoPrepCollectCooking) => onPreferenceChange({ autoPrepCollectCooking })}
+        />
+        <SwitchControl
+          label="只处理收藏配方"
+          checked={preferences.autoPrepFavoritesOnly}
+          onCheckedChange={(autoPrepFavoritesOnly) => onPreferenceChange({ autoPrepFavoritesOnly })}
+        />
+        <SwitchControl
+          label="出错时暂停"
+          checked={preferences.autoPrepStopOnError}
+          onCheckedChange={(autoPrepStopOnError) => onPreferenceChange({ autoPrepStopOnError })}
+        />
       </div>
-      <div className="mt-3 text-xs text-muted-foreground">
-        稀客和普客的阶段开关互不影响；两类流程都只处理当前排序下的第一笔可处理订单。
-      </div>
-      <AutoPrepStatus busy={busy} message={message} preferences={preferences} />
+      {preferences.autoPrepStartCooking && (
+        <div className="mt-3 rounded-md border border-border bg-muted/20 p-3">
+          <SwitchControl
+            label="自动完成原生 QTE"
+            checked={preferences.autoPrepCompleteQte}
+            onCheckedChange={(autoPrepCompleteQte) => onPreferenceChange({ autoPrepCompleteQte })}
+          />
+          <div className="mt-2 text-xs text-muted-foreground">
+            {preferences.autoPrepCompleteQte
+              ? '不会打开音游面板，会直接尝试完成原生 QTE 奖励结算，并继续开始料理。'
+              : '跳过原生 QTE 会保持当前自动料理速度，但不会累计音游数值或触发对应 Buff。'}
+          </div>
+        </div>
+      )}
+      <RareAutoPrepStatus busy={busy} message={message} preferences={preferences} />
     </ListPanel>
   );
 }
 
-function AutoPrepStatus({
+function NormalServiceAutomationPanel({
+  preferences,
+  busy,
+  message,
+  onPreferenceChange,
+}: {
+  preferences: CompanionPreferences;
+  busy: boolean;
+  message: string;
+  onPreferenceChange: (next: Partial<CompanionPreferences>) => void;
+}) {
+  return (
+    <ListPanel title="普客自动化（实验性）">
+      <div className="space-y-2">
+        <SwitchControl
+          label="启用普客处理"
+          checked={preferences.autoNormalOrderEnabled}
+          onCheckedChange={(autoNormalOrderEnabled) => onPreferenceChange({ autoNormalOrderEnabled })}
+        />
+        {preferences.autoNormalOrderEnabled && (
+          <>
+            <SwitchControl
+              label="直送酒水"
+              checked={preferences.autoNormalTakeBeverage}
+              onCheckedChange={(autoNormalTakeBeverage) => onPreferenceChange({ autoNormalTakeBeverage })}
+            />
+            <SwitchControl
+              label="自动开始料理"
+              checked={preferences.autoNormalStartCooking}
+              onCheckedChange={(autoNormalStartCooking) => onPreferenceChange({ autoNormalStartCooking })}
+            />
+            <SwitchControl
+              label="自动收取料理"
+              checked={preferences.autoNormalCollectCooking}
+              onCheckedChange={(autoNormalCollectCooking) => onPreferenceChange({ autoNormalCollectCooking })}
+            />
+            <SwitchControl
+              label="出错时暂停"
+              checked={preferences.autoNormalStopOnError}
+              onCheckedChange={(autoNormalStopOnError) => onPreferenceChange({ autoNormalStopOnError })}
+            />
+          </>
+        )}
+      </div>
+      {preferences.autoNormalOrderEnabled && preferences.autoNormalStartCooking && (
+        <div className="mt-3 rounded-md border border-border bg-muted/20 p-3">
+          <SwitchControl
+            label="自动完成原生 QTE"
+            checked={preferences.autoNormalCompleteQte}
+            onCheckedChange={(autoNormalCompleteQte) => onPreferenceChange({ autoNormalCompleteQte })}
+          />
+          <div className="mt-2 text-xs text-muted-foreground">
+            {preferences.autoNormalCompleteQte
+              ? '普客料理会尝试完成原生 QTE 奖励结算。'
+              : '普客料理会跳过原生 QTE，只保留自动制作流程。'}
+          </div>
+        </div>
+      )}
+      <NormalAutoPrepStatus busy={busy} message={message} preferences={preferences} />
+    </ListPanel>
+  );
+}
+
+function RareAutoPrepStatus({
   busy,
   message,
   preferences,
@@ -2735,28 +2765,49 @@ function AutoPrepStatus({
 
   return (
     <div className="mt-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
-      <div className="font-medium text-foreground">自动化{busy ? '处理中' : '状态'}</div>
+      <div className="font-medium text-foreground">稀客自动化{busy ? '处理中' : '状态'}</div>
       <div className="mt-1 whitespace-pre-line text-muted-foreground">{message}</div>
       <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
-        <Badge variant={preferences.autoPrepCompleteOrder ? 'secondary' : 'outline'}>稀客完成 {preferences.autoPrepCompleteOrder ? '开' : '关'}</Badge>
-        <Badge variant={preferences.autoPrepTakeBeverage ? 'secondary' : 'outline'}>稀客取酒 {preferences.autoPrepTakeBeverage ? '开' : '关'}</Badge>
-        <Badge variant={preferences.autoPrepStartCooking ? 'secondary' : 'outline'}>稀客料理 {preferences.autoPrepStartCooking ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoPrepCompleteOrder ? 'secondary' : 'outline'}>完成 {preferences.autoPrepCompleteOrder ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoPrepTakeBeverage ? 'secondary' : 'outline'}>取酒 {preferences.autoPrepTakeBeverage ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoPrepStartCooking ? 'secondary' : 'outline'}>料理 {preferences.autoPrepStartCooking ? '开' : '关'}</Badge>
         {preferences.autoPrepStartCooking && (
           <Badge variant={preferences.autoPrepCompleteQte ? 'secondary' : 'outline'}>
-            稀客 QTE {preferences.autoPrepCompleteQte ? '自动完成' : '跳过'}
+            QTE {preferences.autoPrepCompleteQte ? '自动完成' : '跳过'}
           </Badge>
         )}
-        <Badge variant={preferences.autoPrepCollectCooking ? 'secondary' : 'outline'}>稀客收取 {preferences.autoPrepCollectCooking ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoPrepCollectCooking ? 'secondary' : 'outline'}>收取 {preferences.autoPrepCollectCooking ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepFavoritesOnly ? 'secondary' : 'outline'}>收藏限定 {preferences.autoPrepFavoritesOnly ? '开' : '关'}</Badge>
-        <Badge variant={preferences.autoNormalOrderEnabled ? 'secondary' : 'outline'}>普客 {preferences.autoNormalOrderEnabled ? '开' : '关'}</Badge>
-        <Badge variant={preferences.autoNormalTakeBeverage ? 'secondary' : 'outline'}>普客酒水 {preferences.autoNormalTakeBeverage ? '开' : '关'}</Badge>
-        <Badge variant={preferences.autoNormalStartCooking ? 'secondary' : 'outline'}>普客料理 {preferences.autoNormalStartCooking ? '开' : '关'}</Badge>
+      </div>
+    </div>
+  );
+}
+
+function NormalAutoPrepStatus({
+  busy,
+  message,
+  preferences,
+}: {
+  busy: boolean;
+  message: string;
+  preferences: CompanionPreferences;
+}) {
+  if (!message) return null;
+
+  return (
+    <div className="mt-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
+      <div className="font-medium text-foreground">普客自动化{busy ? '处理中' : '状态'}</div>
+      <div className="mt-1 whitespace-pre-line text-muted-foreground">{message}</div>
+      <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
+        <Badge variant={preferences.autoNormalOrderEnabled ? 'secondary' : 'outline'}>启用 {preferences.autoNormalOrderEnabled ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoNormalTakeBeverage ? 'secondary' : 'outline'}>酒水 {preferences.autoNormalTakeBeverage ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoNormalStartCooking ? 'secondary' : 'outline'}>料理 {preferences.autoNormalStartCooking ? '开' : '关'}</Badge>
         {preferences.autoNormalStartCooking && (
           <Badge variant={preferences.autoNormalCompleteQte ? 'secondary' : 'outline'}>
-            普客 QTE {preferences.autoNormalCompleteQte ? '自动完成' : '跳过'}
+            QTE {preferences.autoNormalCompleteQte ? '自动完成' : '跳过'}
           </Badge>
         )}
-        <Badge variant={preferences.autoNormalCollectCooking ? 'secondary' : 'outline'}>普客收取 {preferences.autoNormalCollectCooking ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoNormalCollectCooking ? 'secondary' : 'outline'}>收取 {preferences.autoNormalCollectCooking ? '开' : '关'}</Badge>
       </div>
     </div>
   );

@@ -139,7 +139,7 @@ public sealed class RuntimeNormalOrderSnapshotService
 
     private static string BuildOrderKey(NormalBusinessOrder order)
     {
-        return $"{order.DeskCode}|{order.GuestName}|{order.FoodId}|{order.BeverageId}";
+        return $"{order.DeskCode}|{order.FoodId}|{order.BeverageId}";
     }
 
     private static NormalBusinessOrder MergeOrderGroup(IEnumerable<NormalBusinessOrder> group)
@@ -304,7 +304,6 @@ public sealed class RuntimeNormalOrderSnapshotService
             DeskCode = RuntimeReflectionUtility.ToInt(SafeGet(order, "DeskCode"), -1),
             GuestName = ReadTextLikeValue(SafeGet(order, "Guest"))
                 ?? ReadTextLikeValue(SafeGet(controller, "OrderingGuest"))
-                ?? ReadTextLikeValue(SafeGet(controller, "NormalGuestsGroups"))
                 ?? "",
             FoodId = foodId,
             FoodName = recipe?.Name ?? ReadTextLikeValue(requestFood) ?? "",
@@ -359,17 +358,13 @@ public sealed class RuntimeNormalOrderSnapshotService
         foreach (var member in new[] { "Name", "name", "DisplayName", "displayName", "StringId", "stringId", "Text", "text", "Value", "value", "Title", "title" })
         {
             var memberValue = SafeGet(value, member);
-            var text = memberValue?.ToString();
-            if (!string.IsNullOrWhiteSpace(text)) return text;
+            var text = NormalizeText(memberValue);
+            if (text != null) return text;
         }
 
         try
         {
-            var text = value.ToString();
-            if (!string.IsNullOrWhiteSpace(text) && !text.StartsWith(value.GetType().FullName ?? value.GetType().Name, StringComparison.Ordinal))
-            {
-                return text;
-            }
+            return NormalizeText(value);
         }
         catch
         {
@@ -377,5 +372,38 @@ public sealed class RuntimeNormalOrderSnapshotService
         }
 
         return null;
+    }
+
+    private static string? NormalizeText(object? value)
+    {
+        if (value == null) return null;
+
+        string? text;
+        try
+        {
+            text = value.ToString();
+        }
+        catch
+        {
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(text)) return null;
+
+        text = text.Trim();
+        if (LooksLikeRuntimeTypeName(text, value.GetType())) return null;
+        return text;
+    }
+
+    private static bool LooksLikeRuntimeTypeName(string text, Type valueType)
+    {
+        var typeName = valueType.Name;
+        var fullName = valueType.FullName;
+        if (!string.IsNullOrWhiteSpace(fullName) && text.StartsWith(fullName, StringComparison.Ordinal)) return true;
+        if (!string.IsNullOrWhiteSpace(typeName) && string.Equals(text, typeName, StringComparison.Ordinal)) return true;
+        if (text.Contains("GameData.CoreLanguage.LanguageBase", StringComparison.Ordinal)) return true;
+        if (string.Equals(text, "LanguageBase", StringComparison.Ordinal)) return true;
+        if (text.StartsWith("Il2Cpp", StringComparison.Ordinal)) return true;
+        return text.Contains('.') && text.IndexOf("GameData.", StringComparison.Ordinal) >= 0;
     }
 }
