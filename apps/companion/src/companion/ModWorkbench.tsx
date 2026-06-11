@@ -97,7 +97,8 @@ const CONNECTION_RETRY_DELAYS_MS = [2000, 5000, 10000, 30000];
 const AUTO_FIRST_ORDER_TICK_MS = 1500;
 const MAX_RARE_AUTO_ORDERS_PER_TICK = 2;
 const MAX_NORMAL_AUTO_ORDERS_PER_TICK = 3;
-const NORMAL_AUTO_PREPARED_RETRY_MS = 15000;
+const NORMAL_AUTO_PREPARED_RETRY_MS = 45000;
+const NORMAL_AUTO_RECOVERABLE_PAUSE_RETRY_MS = 10000;
 const AUTO_STEP_ROLLBACK_MS = 30000;
 const AUTO_JOB_STALL_MS = 90000;
 const MAX_AUTO_STEP_RETRIES = 3;
@@ -1069,13 +1070,17 @@ export function ModWorkbench() {
           preparePreferences,
         );
 
+        const pendingRareCooking = didOrderCookingStillPending(prepareResponse, '自动开始料理');
+        const startedRareCooking = didCompleteStep(prepareResponse, '自动开始料理');
         const nextPrepared = currentState.prepared
-          || didCompleteStep(prepareResponse, '自动开始料理');
+          || startedRareCooking
+          || pendingRareCooking;
         const nextBeverageHandled = currentState.beverageHandled
           || didCompleteStep(prepareResponse, '自动取酒');
         const transientFailure = !prepareResponse.ok && isTransientAutoPreparationFailure(prepareResponse);
-        const preparedAtMs = nextPrepared && !currentState.prepared ? now : currentState.preparedAtMs;
+        const preparedAtMs = startedRareCooking || pendingRareCooking || (nextPrepared && !currentState.prepared) ? now : currentState.preparedAtMs;
         const beverageHandledAtMs = nextBeverageHandled && !currentState.beverageHandled ? now : currentState.beverageHandledAtMs;
+        const rollbackCount = startedRareCooking || pendingRareCooking ? 0 : currentState.rollbackCount;
         const nextState = updateAutomationAfterResponse(
           {
             ...currentState,
@@ -1084,6 +1089,7 @@ export function ModWorkbench() {
             preparedAtMs,
             beverageHandled: nextBeverageHandled,
             beverageHandledAtMs,
+            rollbackCount,
           },
           prepareResponse,
           now,
@@ -1178,17 +1184,21 @@ export function ModWorkbench() {
     const runnableOrders: NormalBusinessOrder[] = [];
     for (const order of orders) {
       const state = normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order));
-      if (!shouldAttemptNormalCooking(order, state, companionPreferences, now)) continue;
+      const needsCooking = shouldAttemptNormalCooking(order, state, companionPreferences, now);
+      const needsCollectionCheck = shouldConfirmNormalCollection(order, state, companionPreferences, now);
+      if (!needsCooking && !needsCollectionCheck) continue;
 
-      const reservation = reserveAutomationCookerSlot(
-        cookerCycle,
-        getNormalCookerRequirement(order),
-        `普客 桌 ${formatDesk(order.deskCode)} · ${order.foodName || `#${order.foodId}`}`,
-        cookerCapacity,
-      );
-      if (!reservation.ok) {
-        schedulerMessages.push(`桌 ${formatDesk(order.deskCode)} · ${order.foodName || `#${order.foodId}`}\n${reservation.message}`);
-        continue;
+      if (needsCooking) {
+        const reservation = reserveAutomationCookerSlot(
+          cookerCycle,
+          getNormalCookerRequirement(order),
+          `普客 桌 ${formatDesk(order.deskCode)} · ${order.foodName || `#${order.foodId}`}`,
+          cookerCapacity,
+        );
+        if (!reservation.ok) {
+          schedulerMessages.push(`桌 ${formatDesk(order.deskCode)} · ${order.foodName || `#${order.foodId}`}\n${reservation.message}`);
+          continue;
+        }
       }
 
       runnableOrders.push(order);
@@ -1220,23 +1230,25 @@ export function ModWorkbench() {
       const messages: string[] = [];
       for (const order of runnableOrders) {
         const orderKey = buildNormalAutoOrderKey(order);
-        const currentState = normalOrderStatesRef.current.get(orderKey) ?? emptyNormalAutoOrderState(orderKey, now);
+        const storedState = normalOrderStatesRef.current.get(orderKey) ?? emptyNormalAutoOrderState(orderKey, now);
+        const currentState = isRecoverableNormalPausedState(storedState, now)
+          ? {
+            ...storedState,
+            paused: false,
+            step: 'wait-food-stored' as const,
+            stepStartedAtMs: now,
+            lastProgressAtMs: now,
+            retryCount: 0,
+            rollbackCount: 0,
+            lastError: '等待普客暂存容器超时后已自动恢复，继续确认料理制作状态。',
+          }
+          : storedState;
         const shouldRetryPrepared = isNormalOrderPreparedStale(currentState, now);
-        if (shouldRetryPrepared && currentState.rollbackCount >= MAX_AUTO_ROLLBACKS) {
-          const pausedState = pauseAutomationState(
-            currentState,
-            now,
-            `目标料理长时间未进入普客暂存容器，已达到回退上限 ${MAX_AUTO_ROLLBACKS} 次。`,
-          );
-          normalOrderStatesRef.current.set(orderKey, pausedState);
-          messages.push(`桌 ${formatDesk(order.deskCode)} · ${order.foodName || `#${order.foodId}`}\n${formatAutomationState(pausedState)}\n普客自动化已暂停该订单，订单变化或重新开启后会继续。`);
-          continue;
-        }
 
         const requestPreferences = {
           ...companionPreferences,
           autoNormalStartCooking: companionPreferences.autoNormalStartCooking
-            && (!currentState.prepared || shouldRetryPrepared),
+            && shouldAttemptNormalCooking(order, currentState, companionPreferences, now),
           autoNormalCollectCooking: companionPreferences.autoNormalCollectCooking && !currentState.collected,
         };
 
@@ -1252,11 +1264,17 @@ export function ModWorkbench() {
           requestPreferences,
         );
         const transientFailure = !response.ok && isTransientAutoPreparationFailure(response);
-        const acknowledgedStart = didAcknowledgeStep(response, '普客开始料理')
+        const pendingCooking = didNormalOrderCookingStillPending(response);
+        const startedCooking = didCompleteStep(response, '普客开始料理');
+        const acknowledgedStart = startedCooking
+          || pendingCooking
           || didAcknowledgeStep(response, '普客料理')
           || didNormalOrderCollectToWarmer(response);
         const collected = currentState.collected || didNormalOrderCollectToWarmer(response);
         const prepared = currentState.prepared || acknowledgedStart;
+        const rollbackCount = collected || pendingCooking || startedCooking
+          ? 0
+          : currentState.rollbackCount;
         const nextState = updateAutomationAfterResponse(
           {
             ...currentState,
@@ -1267,7 +1285,7 @@ export function ModWorkbench() {
               : currentState.preparedAtMs,
             collected,
             step: collected ? 'done' : prepared ? 'wait-food-stored' : 'ensure-cooking',
-            rollbackCount: shouldRetryPrepared && !collected ? currentState.rollbackCount + 1 : currentState.rollbackCount,
+            rollbackCount,
           },
           response,
           now,
@@ -4494,8 +4512,22 @@ function shouldAttemptNormalCooking(
 ): boolean {
   if (!preferences.autoNormalStartCooking) return false;
   if (order.hasServedFood || order.foodId < 0) return false;
-  if (state?.paused || state?.collected) return false;
+  if (state?.collected) return false;
+  if (state?.paused && !isRecoverableNormalPausedState(state, now)) return false;
   return !state?.prepared || isNormalOrderPreparedStale(state, now);
+}
+
+function shouldConfirmNormalCollection(
+  order: NormalBusinessOrder,
+  state: NormalAutoOrderState | undefined,
+  preferences: CompanionPreferences,
+  now: number,
+): boolean {
+  if (!preferences.autoNormalCollectCooking) return false;
+  if (order.hasServedFood || order.foodId < 0) return false;
+  if (!state?.prepared || state.collected) return false;
+  if (state.paused && !isRecoverableNormalPausedState(state, now)) return false;
+  return isNormalOrderPreparedStale(state, now);
 }
 
 function reserveAutomationCookerSlot(
@@ -5068,8 +5100,15 @@ function buildNormalAutoOrderKey(order: NormalBusinessOrder): string {
 }
 
 function isNormalOrderPreparedStale(state: NormalAutoOrderState | undefined, now: number): boolean {
-  if (!state?.prepared || state.collected || state.paused) return false;
+  if (!state?.prepared || state.collected) return false;
+  if (state.paused && !isRecoverableNormalPausedState(state, now)) return false;
   return state.preparedAtMs > 0 && now - state.preparedAtMs >= NORMAL_AUTO_PREPARED_RETRY_MS;
+}
+
+function isRecoverableNormalPausedState(state: NormalAutoOrderState | undefined, now: number): boolean {
+  if (!state?.paused) return false;
+  if (!state.lastError.includes('目标料理长时间未进入普客暂存容器')) return false;
+  return state.stepStartedAtMs <= 0 || now - state.stepStartedAtMs >= NORMAL_AUTO_RECOVERABLE_PAUSE_RETRY_MS;
 }
 
 function emptyAutoFirstOrderState(orderKey = '', now = 0): AutoFirstOrderState {
@@ -5151,7 +5190,7 @@ function updateAutomationAfterResponse<T extends AutoFirstOrderState | NormalAut
   const stalled = failed && state.lastProgressAtMs > 0 && now - state.lastProgressAtMs >= AUTO_JOB_STALL_MS;
   const shouldPause = failed
     && stopOnError
-    && (hardFailure || stalled || (!transientFailure && nextRetryCount >= MAX_AUTO_STEP_RETRIES));
+    && (hardFailure || (!transientFailure && (stalled || nextRetryCount >= MAX_AUTO_STEP_RETRIES)));
   const progressed = response.ok || response.steps.some(isMeaningfulAutomationProgressStep);
   const nextStep = response.ok
     ? step
@@ -5250,6 +5289,19 @@ function didNormalOrderCollectToWarmer(response: OrderPreparationResponse): bool
       || step.message.includes('已自动收至普客保温箱')
       || step.message.includes('该订单已经送达料理')
       || step.message.includes('目标普客订单已有料理')));
+}
+
+function didNormalOrderCookingStillPending(response: OrderPreparationResponse): boolean {
+  return didOrderCookingStillPending(response, '普客开始料理');
+}
+
+function didOrderCookingStillPending(response: OrderPreparationResponse, stepName: string): boolean {
+  return response.steps.some((step) => step.name === stepName
+    && step.ok
+    && step.skipped
+    && (step.message.includes('已在制作中')
+      || step.message.includes('等待完成后会自动收至普客保温箱')
+      || step.message.includes('等待完成后会自动收入送餐盘')));
 }
 
 function isInactiveSkippedStep(step: OrderPreparationStep): boolean {
