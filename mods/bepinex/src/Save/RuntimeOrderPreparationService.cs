@@ -1013,9 +1013,16 @@ internal static class RuntimeOrderPreparationService
                     try
                     {
                         var status = ToInt(method.Invoke(partnerManager, args));
-                        if (status == 3 && args[1] != null)
+                        var selectedController = args[1];
+                        if (status == 3 && selectedController != null)
                         {
-                            return (true, args[1], "已通过伙伴厨具入口找到空闲可用厨具。");
+                            if (!IsCookControllerReserved(selectedController))
+                            {
+                                return (true, selectedController, "已通过伙伴厨具入口找到空闲可用厨具。");
+                            }
+
+                            partnerMessage = "伙伴厨具入口返回的厨具已有待收取任务。";
+                            break;
                         }
 
                         partnerMessage = status switch
@@ -1069,6 +1076,11 @@ internal static class RuntimeOrderPreparationService
         foreach (var cookController in ReadObjectEnumerable(controllers))
         {
             totalCount++;
+            if (IsCookControllerReserved(cookController))
+            {
+                continue;
+            }
+
             if (!ReadBool(InvokeInstance(cookController, "get_CouldCookerOpen", Array.Empty<object?>())))
             {
                 continue;
@@ -1096,6 +1108,16 @@ internal static class RuntimeOrderPreparationService
         }
 
         return (false, null, $"当前有 {openCount} 个空闲厨具，但没有符合配方厨具类型 {recipeCookerType} 的厨具。");
+    }
+
+    private static bool IsCookControllerReserved(object cookController)
+    {
+        lock (PendingCookingLock)
+        {
+            return PendingCookingCollections.Any(pending =>
+                ReferenceEquals(pending.CookController, cookController)
+                || IsSameObject(pending.CookController, cookController));
+        }
     }
 
     private static bool CookerSupportsRecipe(object cooker, int recipeCookerType)
@@ -1597,39 +1619,51 @@ internal static class RuntimeOrderPreparationService
         if (captured.OrderObject == null || captured.ControllerObject == null) return 0;
 
         var score = 0;
+        var deskMatched = false;
         if (captured.DeskCode >= 0 && request.DeskCode >= 0)
         {
             if (captured.DeskCode == request.DeskCode)
             {
-                score += 10;
+                score += 12;
+                deskMatched = true;
             }
             else
             {
-                score -= 3;
+                score -= 8;
             }
         }
 
         if (request.GuestId.HasValue && captured.GuestId.HasValue)
         {
-            score += request.GuestId.Value == captured.GuestId.Value ? 8 : -6;
+            score += request.GuestId.Value == captured.GuestId.Value ? 8 : -2;
         }
 
         if (!string.IsNullOrWhiteSpace(request.GuestName) && !string.IsNullOrWhiteSpace(captured.GuestName))
         {
-            score += string.Equals(captured.GuestName, request.GuestName, StringComparison.Ordinal) ? 6 : 0;
+            score += TextMatches(captured.GuestName, request.GuestName) ? 6 : 0;
         }
 
         if (!string.IsNullOrWhiteSpace(request.FoodTag) && !string.IsNullOrWhiteSpace(captured.FoodTag))
         {
-            score += string.Equals(captured.FoodTag, request.FoodTag, StringComparison.Ordinal) ? 3 : -1;
+            score += TextMatches(captured.FoodTag, request.FoodTag) ? 3 : -2;
         }
 
         if (!string.IsNullOrWhiteSpace(request.BeverageTag) && !string.IsNullOrWhiteSpace(captured.BeverageTag))
         {
-            score += string.Equals(captured.BeverageTag, request.BeverageTag, StringComparison.Ordinal) ? 3 : -1;
+            score += TextMatches(captured.BeverageTag, request.BeverageTag) ? 3 : -2;
         }
 
-        return score >= 7 ? score : 0;
+        return score >= (deskMatched ? 8 : 12) ? score : 0;
+    }
+
+    private static bool TextMatches(string left, string right)
+    {
+        left = left.Trim();
+        right = right.Trim();
+        if (left.Length == 0 || right.Length == 0) return false;
+        return string.Equals(left, right, StringComparison.Ordinal)
+            || left.Contains(right, StringComparison.Ordinal)
+            || right.Contains(left, StringComparison.Ordinal);
     }
 
     private static string FormatCapturedOrderSummary(IReadOnlyList<CapturedRuntimeSpecialOrder> capturedOrders)
