@@ -535,7 +535,10 @@ export function ModWorkbench() {
   const [normalOrderMessage, setNormalOrderMessage] = useState('');
   const autoFirstOrderStateRef = useRef<AutoFirstOrderState>({ orderKey: '', prepared: false, beverageHandled: false, paused: false });
   const autoFirstOrderBusyRef = useRef(false);
+  const normalOrderStateRef = useRef<AutoFirstOrderState>(emptyAutoFirstOrderState());
+  const normalOrderBusyRef = useRef(false);
   const lastAutoFirstOrderAtRef = useRef(0);
+  const lastAutoNormalOrderAtRef = useRef(0);
   const recommendationCacheRef = useRef(new Map<string, CachedRecommendation>());
   const refreshInFlightRef = useRef(false);
   const lastUiPinningSignatureRef = useRef('');
@@ -706,7 +709,11 @@ export function ModWorkbench() {
 
     if (!hasAutomationActionEnabled(companionPreferences)) {
       autoFirstOrderStateRef.current = emptyAutoFirstOrderState();
-      setAutoPrepMessage('自动化已开启，请在经营中页面启用至少一个子选项。');
+      if (!companionPreferences.autoNormalOrderEnabled || !hasNormalOrderActionEnabled(companionPreferences)) {
+        setAutoPrepMessage('自动化已开启，请在经营中页面启用至少一个子选项。');
+      } else {
+        setAutoPrepMessage('');
+      }
       return;
     }
 
@@ -852,30 +859,40 @@ export function ModWorkbench() {
     refresh,
   ]);
 
-  const handleFirstNormalOrder = useCallback(async () => {
-    if (normalOrderBusy) return;
-    if (!companionPreferences.automationEnabled || !companionPreferences.autoNormalOrderEnabled) {
-      setNormalOrderMessage('需要先在“经营中”的自动化面板开启普通客订单处理。');
-      return;
-    }
+  const runAutoNormalOrder = useCallback(async () => {
+    if (!companionPreferences.automationEnabled || !companionPreferences.autoNormalOrderEnabled || normalOrderBusyRef.current) return;
+    const now = Date.now();
+    if (now - lastAutoNormalOrderAtRef.current < AUTO_FIRST_ORDER_TICK_MS) return;
     if (!hasNormalOrderActionEnabled(companionPreferences)) {
-      setNormalOrderMessage('需要至少开启一个普通客处理阶段：直送酒水、自动开始料理或自动收取料理。');
+      normalOrderStateRef.current = emptyAutoFirstOrderState();
+      setNormalOrderMessage('普客自动化已开启，请至少启用一个处理阶段：直送酒水、自动开始料理或自动收取料理。');
       return;
     }
 
     if (!apiToken) {
-      setNormalOrderMessage('普通客自动化需要本地 API Token。');
+      setNormalOrderMessage('普客自动化已开启，但本地 API Token 不可用。');
       return;
     }
 
     const order = sortNormalOrders(snapshot?.normalBusiness?.orders ?? []).filter((item) => !item.isFulfilled)[0];
     if (!order) {
-      setNormalOrderMessage('当前没有可处理的普通客订单。');
+      normalOrderStateRef.current = emptyAutoFirstOrderState();
+      setNormalOrderMessage('普客自动化\n当前没有可处理的普客订单。');
+      lastAutoNormalOrderAtRef.current = now;
       return;
     }
 
+    const orderKey = buildNormalAutoOrderKey(order);
+    const currentState = normalOrderStateRef.current;
+    if (currentState.orderKey !== orderKey) {
+      normalOrderStateRef.current = { orderKey, prepared: false, beverageHandled: false, paused: false };
+    } else if (currentState.paused) {
+      return;
+    }
+
+    normalOrderBusyRef.current = true;
+    lastAutoNormalOrderAtRef.current = now;
     setNormalOrderBusy(true);
-    setNormalOrderMessage('');
     try {
       const response = await completeFirstNormalOrder(
         normalizedEndpoint,
@@ -883,17 +900,37 @@ export function ModWorkbench() {
         order,
         companionPreferences,
       );
-      setNormalOrderMessage(formatOrderPreparationResponse(response));
+      const transientFailure = !response.ok && isTransientAutoPreparationFailure(response);
+      normalOrderStateRef.current = {
+        ...normalOrderStateRef.current,
+        orderKey,
+        paused: !response.ok && !transientFailure && companionPreferences.autoNormalStopOnError,
+      };
+      const suffix = normalOrderStateRef.current.paused
+        ? '\n普客自动化已暂停，订单变化或重新开启后会继续。'
+        : transientFailure
+          ? '\n当前条件暂不可执行，将继续等待并自动重试。'
+          : '';
+      setNormalOrderMessage(`普客自动化\n${formatOrderPreparationResponse(response)}${suffix}`);
       await refresh();
     } catch (err) {
-      setNormalOrderMessage(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      if (companionPreferences.autoNormalStopOnError) {
+        normalOrderStateRef.current = {
+          ...normalOrderStateRef.current,
+          paused: true,
+        };
+        setNormalOrderMessage(`普客自动化\n${message}\n普客自动化已暂停，订单变化或重新开启后会继续。`);
+      } else {
+        setNormalOrderMessage(`普客自动化\n${message}`);
+      }
     } finally {
+      normalOrderBusyRef.current = false;
       setNormalOrderBusy(false);
     }
   }, [
     apiToken,
     companionPreferences,
-    normalOrderBusy,
     normalizedEndpoint,
     refresh,
     snapshot?.normalBusiness?.orders,
@@ -931,16 +968,27 @@ export function ModWorkbench() {
   useEffect(() => {
     if (!companionPreferences.automationEnabled) {
       autoFirstOrderStateRef.current = emptyAutoFirstOrderState();
+      normalOrderStateRef.current = emptyAutoFirstOrderState();
       lastAutoFirstOrderAtRef.current = 0;
+      lastAutoNormalOrderAtRef.current = 0;
       return undefined;
     }
 
     void runAutoFirstOrder();
+    void runAutoNormalOrder();
     const timer = window.setInterval(() => {
       void runAutoFirstOrder();
+      void runAutoNormalOrder();
     }, AUTO_FIRST_ORDER_TICK_MS);
     return () => window.clearInterval(timer);
-  }, [companionPreferences.automationEnabled, runAutoFirstOrder]);
+  }, [companionPreferences.automationEnabled, runAutoFirstOrder, runAutoNormalOrder]);
+
+  useEffect(() => {
+    if (companionPreferences.automationEnabled && companionPreferences.autoNormalOrderEnabled) return;
+    normalOrderStateRef.current = emptyAutoFirstOrderState();
+    lastAutoNormalOrderAtRef.current = 0;
+    setNormalOrderMessage('');
+  }, [companionPreferences.automationEnabled, companionPreferences.autoNormalOrderEnabled]);
 
   useEffect(() => {
     void applyCompanionPreferencesToTauri(
@@ -1189,7 +1237,6 @@ export function ModWorkbench() {
             onPreferenceChange={updateCompanionPreferences}
             onToggleRecipeFavorite={toggleRecipeFavorite}
             onToggleBeverageFavorite={toggleBeverageFavorite}
-            onCompleteNormalOrder={handleFirstNormalOrder}
             onEnterFocusMode={() => setServiceFocusMode(true)}
             normalBusiness={snapshot?.normalBusiness ?? null}
           />
@@ -1658,7 +1705,6 @@ function ModServicePanel({
   onPreferenceChange,
   onToggleRecipeFavorite,
   onToggleBeverageFavorite,
-  onCompleteNormalOrder,
   onEnterFocusMode,
 }: {
   runtime: RecommendationStateSnapshot | null;
@@ -1681,7 +1727,6 @@ function ModServicePanel({
   onPreferenceChange: (next: Partial<CompanionPreferences>) => void;
   onToggleRecipeFavorite: ToggleRecipeFavorite;
   onToggleBeverageFavorite: ToggleBeverageFavorite;
-  onCompleteNormalOrder: () => Promise<void>;
   onEnterFocusMode: () => void;
 }) {
   const activeGuests = night?.activeRareGuests ?? [];
@@ -1758,27 +1803,21 @@ function ModServicePanel({
         </ListPanel>
       </div>
 
-      <ListPanel title={`普通客订单诊断 (${normalBusiness?.orders.length ?? 0})`}>
+      <ListPanel title={`普客订单诊断 (${normalBusiness?.orders.length ?? 0})`}>
         {autoPrepPreferences.automationEnabled && autoPrepPreferences.autoNormalOrderEnabled ? (
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm">
             <span className="text-muted-foreground">
-              普通客自动化会处理最早出现且未满足的普通客订单。
+              普客自动化会自动处理最早出现且未满足的普客订单。
             </span>
-            <Button
-              size="sm"
-              onClick={() => void onCompleteNormalOrder()}
-              disabled={normalOrderBusy || !normalBusiness || normalBusiness.orders.length === 0}
-            >
-              {normalOrderBusy ? '处理中' : '处理第一笔普通客订单'}
-            </Button>
+            {normalOrderBusy && <Badge variant="secondary">处理中</Badge>}
           </div>
         ) : autoPrepPreferences.automationEnabled ? (
           <div className="mb-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
-            在自动化面板开启“普通客订单处理”后，可在这里处理第一笔普通客订单。
+            在自动化面板开启“启用普客处理”后，会自动处理最早一笔未满足普客订单。
           </div>
         ) : (
           <div className="mb-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
-            设置页开启“启用自动化（实验性）”后，可在这里处理第一笔普通客订单。
+            设置页开启“启用自动化（实验性）”后，可启用普客订单自动处理。
           </div>
         )}
         {normalOrderMessage && (
@@ -1786,10 +1825,10 @@ function ModServicePanel({
             {normalOrderMessage}
           </div>
         )}
-        {!normalBusiness && <EmptyRow text="普通客订单只在经营场景中读取" />}
+        {!normalBusiness && <EmptyRow text="普客订单只在经营场景中读取" />}
         {normalBusiness?.error && <EmptyRow text={normalBusiness.error} />}
         {normalBusiness?.orders.length === 0 && !normalBusiness.error && (
-          <EmptyRow text={normalBusiness.source || '暂无普通客订单'} />
+          <EmptyRow text={normalBusiness.source || '暂无普客订单'} />
         )}
         {sortNormalOrders(normalBusiness?.orders ?? []).map((order) => (
           <div
@@ -1797,8 +1836,8 @@ function ModServicePanel({
             className="border-b py-2 text-sm last:border-b-0"
           >
             <div className="flex items-center justify-between gap-3">
-              <span className="min-w-0 truncate font-medium" title={order.guestName || '普通客'}>
-                {order.guestName || '普通客'}
+              <span className="min-w-0 truncate font-medium" title={order.guestName || '普客'}>
+                {order.guestName || '普客'}
               </span>
               <span className="shrink-0 text-muted-foreground">桌 {formatDesk(order.deskCode)}</span>
             </div>
@@ -2627,10 +2666,10 @@ function ServiceAutomationPanel({
         </div>
 
         <div className="rounded-md border border-border bg-muted/20 p-3">
-          <div className="mb-3 text-sm font-medium text-foreground">普通客订单</div>
+          <div className="mb-3 text-sm font-medium text-foreground">普客订单</div>
           <div className="space-y-2">
             <SwitchControl
-              label="启用普通客处理"
+              label="启用普客处理"
               checked={preferences.autoNormalOrderEnabled}
               onCheckedChange={(autoNormalOrderEnabled) => onPreferenceChange({ autoNormalOrderEnabled })}
             />
@@ -2668,15 +2707,15 @@ function ServiceAutomationPanel({
               />
               <div className="mt-2 text-xs text-muted-foreground">
                 {preferences.autoNormalCompleteQte
-                  ? '普通客料理会尝试完成原生 QTE 奖励结算。'
-                  : '普通客料理会跳过原生 QTE，只保留自动制作流程。'}
+                  ? '普客料理会尝试完成原生 QTE 奖励结算。'
+                  : '普客料理会跳过原生 QTE，只保留自动制作流程。'}
               </div>
             </div>
           )}
         </div>
       </div>
       <div className="mt-3 text-xs text-muted-foreground">
-        稀客和普通客的阶段开关互不影响；两类流程都只处理当前排序下的第一笔可处理订单。
+        稀客和普客的阶段开关互不影响；两类流程都只处理当前排序下的第一笔可处理订单。
       </div>
       <AutoPrepStatus busy={busy} message={message} preferences={preferences} />
     </ListPanel>
@@ -2709,15 +2748,15 @@ function AutoPrepStatus({
         )}
         <Badge variant={preferences.autoPrepCollectCooking ? 'secondary' : 'outline'}>稀客收取 {preferences.autoPrepCollectCooking ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepFavoritesOnly ? 'secondary' : 'outline'}>收藏限定 {preferences.autoPrepFavoritesOnly ? '开' : '关'}</Badge>
-        <Badge variant={preferences.autoNormalOrderEnabled ? 'secondary' : 'outline'}>普通客 {preferences.autoNormalOrderEnabled ? '开' : '关'}</Badge>
-        <Badge variant={preferences.autoNormalTakeBeverage ? 'secondary' : 'outline'}>普通酒水 {preferences.autoNormalTakeBeverage ? '开' : '关'}</Badge>
-        <Badge variant={preferences.autoNormalStartCooking ? 'secondary' : 'outline'}>普通料理 {preferences.autoNormalStartCooking ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoNormalOrderEnabled ? 'secondary' : 'outline'}>普客 {preferences.autoNormalOrderEnabled ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoNormalTakeBeverage ? 'secondary' : 'outline'}>普客酒水 {preferences.autoNormalTakeBeverage ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoNormalStartCooking ? 'secondary' : 'outline'}>普客料理 {preferences.autoNormalStartCooking ? '开' : '关'}</Badge>
         {preferences.autoNormalStartCooking && (
           <Badge variant={preferences.autoNormalCompleteQte ? 'secondary' : 'outline'}>
-            普通 QTE {preferences.autoNormalCompleteQte ? '自动完成' : '跳过'}
+            普客 QTE {preferences.autoNormalCompleteQte ? '自动完成' : '跳过'}
           </Badge>
         )}
-        <Badge variant={preferences.autoNormalCollectCooking ? 'secondary' : 'outline'}>普通收取 {preferences.autoNormalCollectCooking ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoNormalCollectCooking ? 'secondary' : 'outline'}>普客收取 {preferences.autoNormalCollectCooking ? '开' : '关'}</Badge>
       </div>
     </div>
   );
@@ -3612,7 +3651,7 @@ async function completeFirstNormalOrder(
     ?? null;
   const params = new URLSearchParams({
     deskCode: String(order.deskCode),
-    guestName: order.guestName || '普通客',
+    guestName: order.guestName || '普客',
     foodId: String(order.foodId),
     recipeId: recipe ? String(recipe.recipeId) : '-1',
     recipeName: order.foodName || recipe?.name || '',
@@ -4270,6 +4309,16 @@ function buildAutoOrderKey(item: OrderRecommendation): string {
     order.guestId ?? order.guestName,
     order.foodTag,
     order.beverageTag,
+  ].join('|');
+}
+
+function buildNormalAutoOrderKey(order: NormalBusinessOrder): string {
+  return [
+    order.firstSeenAtUtc ?? '',
+    order.deskCode,
+    order.guestName,
+    order.foodId,
+    order.beverageId,
   ].join('|');
 }
 

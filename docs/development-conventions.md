@@ -79,12 +79,12 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 - 伴随窗口根滚动区域必须预留稳定纵向滚动条槽位，避免页面内容因滚动条出现或消失产生横向跳动。
 - 伴随窗口滚动条样式必须跟随主题和窗口透明度；不要使用全局 `*::-webkit-scrollbar` 覆盖会刻意隐藏滚动条的导航栏。
 - 伴随窗口内手柄导航应优先处理同一行内的左右移动；range 滑杆获得焦点时，左右方向应调节数值而不是跳到其他按钮。收藏按钮等点击后会改变 UI 状态的控件，应使用稳定 `data-gamepad-focus-key` 恢复焦点。
-- Unity 场景切换后必须留出稳定窗口再读取 DayScene/NightScene 运行时对象；不要在切场景后的 Awake/Panel 初始化阶段发布任务、经营或运行时深度快照。任务页读取尤其不能在 DayScene UI 初始化期间扫描场景对象。
+- Unity 场景切换后不要再用固定秒数等待来规避加载问题；运行时、经营、任务和普客扫描应立即尝试读取。读取代码必须避开不稳定的 IL2CPP 托管枚举路径，尤其不要直接依赖 `IEnumerator.Current`；优先使用 Count/indexer、字段、静态快照或可空单例。读取失败应降级为状态提示并等待下一轮刷新。
 - 运行时库存修改必须排队到 Unity 主线程执行，避免本地 API 网络线程直接写游戏对象。
 - 运行时库存修改页只保留快捷操作，当前为 `-10`、`+10` 和 `99`；不要恢复自定义数量输入、`+1` 或单独“应用”按钮，除非用户明确要求。
 - `任务` 页读取当前进度可接或正在推进的交互任务。NPC 交谈任务优先使用 `RunTimeScheduler.GetAvailableInteractMissionForCharacter()`，候选角色来源包括 `DataBaseDay.GetAllNPCKeys()`、`RunTimeDayScene.trackedNPCs`、`DaySceneMap.allCharacters` 和当前场景 `CharacterConditionComponent`。场景调查任务读取 `RunTimeDayScene.trackedInteradctables` 与 `MissionInteractConditionComponent`，再只读匹配 `RunTimeScheduler.trackingMissions` 中 `MissionNode.FinishCondition.ConditionType.InspectInteractable` 的任务。若场景定位来源为空，但 `trackingMissions` 有数据，则用未完成条件推断状态：第一个未完成条件是交谈/调查时显示未接取，否则显示已开始。NPC 所在场景优先从 `RunTimeDayScene.trackedNPCs` 的 mapLabel 反查，并用 `DaySceneLanguage.RefDaySceneName()` 显示本地化名称。不要再用 `HaveMissionStarted()` 过滤这些任务，因为它本身就是检查任务是否在 `trackingMissions` 中。不得调用 `TryTrigger...` 类会改变游戏状态的方法。读取失败必须显示分来源诊断信息，不得回退到静态全任务列表误导用户。
-- 普通客订单自动化必须建立在只读诊断可识别订单的前提下。经营中页诊断和执行路径都需要复用健壮的 IL2CPP 枚举与单例查找逻辑，至少读取 `OrderController.GetShowInUIOrders()`、HUD `OrderingElement.ActiveOrder`、`GuestsManager` 的 Presented/Desk/DeskMap/Repellable/ManualDesk 控制器以及 Queue 控制器中的 `AllOrders`/`AllOrdersData`/`PeekOrders()`。当前普通客执行入口只处理最早出现且未满足的订单：酒水可直接写入订单并扣库存，料理完成后走普通客保温/送达路径并绑定到当时的目标订单，不得收入玩家送餐盘；订单满足后才调用 `EvaluateOrder`。
-- 自动化能力是实验性功能，必须由设置页总开关控制；总开关关闭时经营中页不显示自动化配置，也不执行任何自动化动作。稀客自动化只处理当前排序第一笔稀客订单；普通客订单处理必须额外由经营中自动化面板的“启用普通客处理”子开关启用。稀客阶段配置使用 `autoPrep*`，普通客阶段配置使用 `autoNormal*`，取酒、开始料理、收取、QTE 和出错暂停不得互相复用。子选项默认关闭但记忆用户上次配置。
+- 普客订单自动化必须建立在只读诊断可识别订单的前提下。经营中页诊断和执行路径都需要复用健壮的 IL2CPP 枚举与单例查找逻辑，至少读取 `OrderController.GetShowInUIOrders()`、HUD `OrderingElement.ActiveOrder`、`GuestsManager` 的 Presented/Desk/DeskMap/Repellable/ManualDesk 控制器以及 Queue 控制器中的 `AllOrders`/`AllOrdersData`/`PeekOrders()`。当前普客执行入口自动处理最早出现且未满足的订单：酒水可直接写入订单并扣库存，料理完成后走普客保温/送达路径并绑定到当时的目标订单，不得收入玩家送餐盘；订单满足后才调用 `EvaluateOrder`。
+- 自动化能力是实验性功能，必须由设置页总开关控制；总开关关闭时经营中页不显示自动化配置，也不执行任何自动化动作。稀客自动化只处理当前排序第一笔稀客订单；普客订单处理必须额外由经营中自动化面板的“启用普客处理”子开关启用，开启后不保留手动处理按钮，由伴随窗口轮询自动执行。稀客阶段配置使用 `autoPrep*`，普客阶段配置使用 `autoNormal*`，取酒、开始料理、收取、QTE 或出错暂停开关不得互相复用。子选项默认关闭但记忆用户上次配置。
 - 自动化遇到厨具占用、目标成品未进入送餐盘、运行时订单或厨具对象短暂不可读等临时状态时，应保持可重试；不得因为一次失败永久停止。`出错时暂停` 只用于非临时错误。
 - 自动开始料理默认跳过原生 QTE，保持原自动化速度但不累计音游数值或 Buff；`自动完成原生 QTE` 是唯一的 QTE 自动化开关，只在 `自动开始料理` 开启时暴露。该功能不打开游戏音游面板，只尝试调用游戏 QTE 成功奖励入口；运行时失败时返回诊断信息并回退为跳过 QTE，不应中断已开始的料理。
 - 游戏内料理/酒水列表置顶是实验性功能，只允许重排已生成的 UI 列表，不得自动点击或绕过游戏自身筛选；本地 API 更新置顶目标失败时必须静默降级。

@@ -16,6 +16,12 @@ public static class RuntimeMissionSnapshotService
     private static RuntimeMissionContext? _cachedContext;
     private static DateTime _cachedAtUtc;
 
+    public static void ClearCache()
+    {
+        _cachedContext = null;
+        _cachedAtUtc = DateTime.MinValue;
+    }
+
     public static RuntimeMissionContext Load()
     {
         var now = DateTime.UtcNow;

@@ -19,7 +19,6 @@ internal sealed class StewardOverlayController
     private const float WindowHeaderHeight = 52f;
     private const float ResizeHandleSize = 24f;
     private const float SpecialOrderRefreshDebounceSeconds = 0.2f;
-    private const float MissionSnapshotSceneSettleSeconds = 5f;
     private static readonly JsonSerializerOptions LocalApiJsonOptions = new(JsonSerializerDefaults.Web);
 
     private StewardPluginConfig? _config;
@@ -69,7 +68,6 @@ internal sealed class StewardOverlayController
     private DateTime _lastRuntimeReadUtc = DateTime.MinValue;
     private float _nextAutoRefreshAt;
     private float _nextBusinessRefreshAt;
-    private float _missionSnapshotSafeAt;
     private bool _stylesInitialized;
     private bool _localApiSnapshotErrorLogged;
     private bool _disposed;
@@ -134,7 +132,6 @@ internal sealed class StewardOverlayController
             config.WindowHeight.Value);
         _placeIndex = Math.Max(0, Array.IndexOf(PlaceNames.All, config.DefaultPlace.Value));
         _activeSceneName = GetActiveSceneName();
-        _missionSnapshotSafeAt = Time.realtimeSinceStartup + MissionSnapshotSceneSettleSeconds;
         EnsureWindowInsideScreen();
         LoadRepository();
         _localApiToken = EnsureLocalApiToken(config);
@@ -218,10 +215,10 @@ internal sealed class StewardOverlayController
         if (string.Equals(sceneName, _activeSceneName, StringComparison.Ordinal)) return;
 
         _activeSceneName = sceneName;
-        _missionSnapshotSafeAt = Time.realtimeSinceStartup + MissionSnapshotSceneSettleSeconds;
-        _nextAutoRefreshAt = _missionSnapshotSafeAt;
-        _nextBusinessRefreshAt = _missionSnapshotSafeAt;
+        _nextAutoRefreshAt = 0f;
+        _nextBusinessRefreshAt = 0f;
         _businessFallbackState = null;
+        RuntimeMissionSnapshotService.ClearCache();
 
         if (IsNonGameplayScene(sceneName))
         {
@@ -233,8 +230,8 @@ internal sealed class StewardOverlayController
         }
 
         _status = L(
-            "已切换场景，等待游戏场景初始化完成后刷新数据。",
-            "Scene changed. Waiting for game scene initialization before refreshing data.");
+            "已切换场景，正在刷新游戏数据。",
+            "Scene changed. Refreshing game data.");
         PublishLocalApiSnapshot();
     }
 
@@ -1313,15 +1310,6 @@ internal sealed class StewardOverlayController
             };
         }
 
-        var remainingSettleSeconds = _missionSnapshotSafeAt - Time.realtimeSinceStartup;
-        if (remainingSettleSeconds > 0f)
-        {
-            return new RuntimeMissionContext
-            {
-                Source = $"任务数据等待场景稳定：{Math.Ceiling(remainingSettleSeconds):0} 秒后读取。",
-            };
-        }
-
         try
         {
             return RuntimeMissionSnapshotService.Load();
@@ -1510,8 +1498,8 @@ internal sealed class StewardOverlayController
     {
         var result = RuntimeOrderPreparationService.CompleteNormalFirst(request);
         _status = result.Ok
-            ? L("已处理当前第一笔普通客订单。", "First normal-customer order handled.")
-            : L($"处理当前第一笔普通客订单未完成：{result.Error}", $"Handling first normal-customer order did not finish: {result.Error}");
+            ? L("已处理当前第一笔普客订单。", "First normal-customer order handled.")
+            : L($"处理当前第一笔普客订单未完成：{result.Error}", $"Handling first normal-customer order did not finish: {result.Error}");
         RefreshBusinessContext(false, force: true);
         PublishLocalApiSnapshot();
         return result;

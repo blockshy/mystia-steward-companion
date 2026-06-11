@@ -282,9 +282,9 @@ internal static class RuntimeOrderPreparationService
             Order = new OrderPreparationOrder
             {
                 DeskCode = request.DeskCode,
-                GuestName = string.IsNullOrWhiteSpace(request.GuestName) ? "普通客" : request.GuestName,
-                FoodTag = "普通客",
-                BeverageTag = "普通客",
+                GuestName = string.IsNullOrWhiteSpace(request.GuestName) ? "普客" : request.GuestName,
+                FoodTag = "普客",
+                BeverageTag = "普客",
             },
             RecipeId = request.RecipeId,
             RecipeName = request.RecipeName,
@@ -294,7 +294,7 @@ internal static class RuntimeOrderPreparationService
 
         result.Steps.Add(new OrderPreparationStep
         {
-            Name = "选择普通客订单",
+            Name = "选择普客订单",
             Ok = true,
             Message = $"桌 {request.DeskCode + 1} · {result.Order.GuestName} · 料理 {request.RecipeName} · 酒水 {request.BeverageName}",
         });
@@ -303,22 +303,22 @@ internal static class RuntimeOrderPreparationService
         if (runtimeOrder.Order == null || runtimeOrder.Manager == null)
         {
             var diagnostic = string.IsNullOrWhiteSpace(runtimeOrder.Diagnostic) ? "" : $"（{runtimeOrder.Diagnostic}）";
-            AddFailure(result, "匹配普通客订单", $"未找到当前第一笔普通客订单对象，可能订单已完成、客人已离场或经营状态刚刷新。{diagnostic}");
+            AddFailure(result, "匹配普客订单", $"未找到当前第一笔普客订单对象，可能订单已完成、客人已离场或经营状态刚刷新。{diagnostic}");
             return Finish(result);
         }
 
         result.Steps.Add(new OrderPreparationStep
         {
-            Name = "匹配普通客订单",
+            Name = "匹配普客订单",
             Ok = true,
-            Message = $"已匹配桌 {request.DeskCode + 1} 的普通客订单对象。",
+            Message = $"已匹配桌 {request.DeskCode + 1} 的普客订单对象。",
         });
 
         if (request.AutoTakeBeverage)
         {
             if (request.BeverageId < 0)
             {
-                AddFailure(result, "普通客直送酒水", "订单没有有效的酒水 ID。");
+                AddFailure(result, "普客直送酒水", "订单没有有效的酒水 ID。");
                 if (request.StopOnError) return Finish(result);
             }
             else
@@ -328,7 +328,7 @@ internal static class RuntimeOrderPreparationService
                 {
                     result.Steps.Add(new OrderPreparationStep
                     {
-                        Name = "普通客直送酒水",
+                        Name = "普客直送酒水",
                         Ok = true,
                         Skipped = beverageResult.Skipped,
                         Message = beverageResult.Message,
@@ -336,25 +336,25 @@ internal static class RuntimeOrderPreparationService
                 }
                 else
                 {
-                    AddFailure(result, "普通客直送酒水", beverageResult.Message);
+                    AddFailure(result, "普客直送酒水", beverageResult.Message);
                     if (request.StopOnError) return Finish(result);
                 }
             }
         }
         else
         {
-            AddSkipped(result, "普通客直送酒水", "设置已关闭。");
+            AddSkipped(result, "普客直送酒水", "设置已关闭。");
         }
 
         var expectedFoodId = request.FoodId >= 0 ? request.FoodId : ResolveFoodIdFromRecipeId(request.RecipeId);
         var foodAlreadyServed = ReadMember(runtimeOrder.Order, "ServFood") != null;
         if (foodAlreadyServed)
         {
-            AddSkipped(result, "普通客料理", "该订单已经写入料理。");
+            AddSkipped(result, "普客料理", "该订单已经写入料理。");
         }
         else if (expectedFoodId < 0)
         {
-            AddFailure(result, "普通客料理", "订单没有有效的料理 ID。");
+            AddFailure(result, "普客料理", "订单没有有效的料理 ID。");
             if (request.StopOnError) return Finish(result);
         }
         else
@@ -364,14 +364,14 @@ internal static class RuntimeOrderPreparationService
             {
                 result.Steps.Add(new OrderPreparationStep
                 {
-                    Name = "普通客送达料理",
+                    Name = "普客送达料理",
                     Ok = true,
                     Message = inAirResult.Message,
                 });
             }
             else if (inAirResult.Blocked)
             {
-                AddFailure(result, "普通客送达料理", inAirResult.Message);
+                AddFailure(result, "普客送达料理", inAirResult.Message);
                 if (request.StopOnError) return Finish(result);
             }
             else if (request.AutoStartCooking)
@@ -379,7 +379,7 @@ internal static class RuntimeOrderPreparationService
                 var recipeId = request.RecipeId >= 0 ? request.RecipeId : ResolveRecipeIdFromFoodId(expectedFoodId);
                 if (recipeId < 0)
                 {
-                    AddFailure(result, "普通客开始料理", $"未找到料理 {request.RecipeName}（成品 #{expectedFoodId}）对应的配方 ID。");
+                    AddFailure(result, "普客开始料理", $"未找到料理 {request.RecipeName}（成品 #{expectedFoodId}）对应的配方 ID。");
                     if (request.StopOnError) return Finish(result);
                 }
                 else
@@ -397,7 +397,7 @@ internal static class RuntimeOrderPreparationService
                     {
                         result.Steps.Add(new OrderPreparationStep
                         {
-                            Name = "普通客开始料理",
+                            Name = "普客开始料理",
                             Ok = true,
                             Message = cookingResult.Message,
                         });
@@ -411,18 +411,18 @@ internal static class RuntimeOrderPreparationService
                                 Message = cookingResult.QteMessage,
                             });
                         }
-                        AddSkipped(result, "普通客送达料理", "料理已开始制作，完成后会自动进入普通客保温/送达路径。");
+                        AddSkipped(result, "普客送达料理", "料理已开始制作，完成后会自动进入普客保温/送达路径。");
                     }
                     else
                     {
-                        AddFailure(result, "普通客开始料理", cookingResult.Message);
+                        AddFailure(result, "普客开始料理", cookingResult.Message);
                         if (request.StopOnError) return Finish(result);
                     }
                 }
             }
             else
             {
-                AddSkipped(result, "普通客料理", $"普通客订单尚未获得目标料理 {request.RecipeName}（料理 #{expectedFoodId}），自动开始料理已关闭。");
+                AddSkipped(result, "普客料理", $"普客订单尚未获得目标料理 {request.RecipeName}（料理 #{expectedFoodId}），自动开始料理已关闭。");
             }
         }
 
@@ -430,21 +430,21 @@ internal static class RuntimeOrderPreparationService
         {
             if (runtimeOrder.Controller == null)
             {
-                AddFailure(result, "触发普通客上菜评价", $"订单已满足，但未找到对应桌位控制器。{runtimeOrder.Diagnostic}");
+                AddFailure(result, "触发普客上菜评价", $"订单已满足，但未找到对应桌位控制器。{runtimeOrder.Diagnostic}");
                 return Finish(result);
             }
 
             InvokeInstance(runtimeOrder.Manager, "EvaluateOrder", new object?[] { runtimeOrder.Controller, false, null });
             result.Steps.Add(new OrderPreparationStep
             {
-                Name = "触发普通客上菜评价",
+                Name = "触发普客上菜评价",
                 Ok = true,
-                Message = "已调用游戏评价流程完成当前普通客订单。",
+                Message = "已调用游戏评价流程完成当前普客订单。",
             });
         }
         else
         {
-            AddSkipped(result, "触发普通客上菜评价", "订单尚未同时满足料理和酒水，暂不触发评价。");
+            AddSkipped(result, "触发普客上菜评价", "订单尚未同时满足料理和酒水，暂不触发评价。");
         }
 
         return Finish(result);
@@ -534,7 +534,7 @@ internal static class RuntimeOrderPreparationService
         var currentQuantity = GetBeverageQuantity(beverageId);
         if (currentQuantity == 0)
         {
-            return (false, false, $"{beverageName} 当前库存为 0，无法直送普通客订单。");
+            return (false, false, $"{beverageName} 当前库存为 0，无法直送普客订单。");
         }
 
         var sellable = InvokeStatic(DataBaseCoreTypeName, "AsNewBeverage", new object?[] { beverageId });
@@ -546,7 +546,7 @@ internal static class RuntimeOrderPreparationService
         WriteMember(order, "ServBeverage", sellable);
         if (ReadMember(order, "ServBeverage") == null)
         {
-            return (false, false, $"酒水 {beverageName} 已创建，但写入普通客订单失败。");
+            return (false, false, $"酒水 {beverageName} 已创建，但写入普客订单失败。");
         }
 
         if (currentQuantity > 0)
@@ -555,7 +555,7 @@ internal static class RuntimeOrderPreparationService
         }
 
         var quantityText = currentQuantity < 0 ? "无限库存" : $"剩余 {Math.Max(0, currentQuantity - 1)}";
-        return (true, false, $"{beverageName} 已直送普通客订单（{quantityText}）。");
+        return (true, false, $"{beverageName} 已直送普客订单（{quantityText}）。");
     }
 
     private static bool TryServeFoodFromTray(object order, int foodId, string foodName, out string message)
@@ -578,12 +578,12 @@ internal static class RuntimeOrderPreparationService
         WriteMember(order, "ServFood", food);
         if (ReadMember(order, "ServFood") == null)
         {
-            message = $"已找到目标料理 {foodName}，但写入普通客订单失败。";
+            message = $"已找到目标料理 {foodName}，但写入普客订单失败。";
             return false;
         }
 
         InvokeInstance(tray, "Deliver", new object?[] { food });
-        message = $"已将送餐盘中的 {foodName} 写入普通客订单。";
+        message = $"已将送餐盘中的 {foodName} 写入普客订单。";
         return true;
     }
 
@@ -597,17 +597,17 @@ internal static class RuntimeOrderPreparationService
 
         if (!IsSellable(foodInAir, sellableType: 0, id: foodId))
         {
-            return (false, true, $"普通客保温位中已有料理，但不是目标料理 {foodName}（料理 #{foodId}），本次不会错误送达。");
+            return (false, true, $"普客保温位中已有料理，但不是目标料理 {foodName}（料理 #{foodId}），本次不会错误送达。");
         }
 
         WriteMember(order, "ServFood", foodInAir);
         if (ReadMember(order, "ServFood") == null)
         {
-            return (false, true, $"已读取到保温位中的 {foodName}，但写入普通客订单失败。");
+            return (false, true, $"已读取到保温位中的 {foodName}，但写入普客订单失败。");
         }
 
         WriteMember(order, "ServedFoodInAir", null);
-        return (true, false, $"已将保温位中的 {foodName} 送达普通客订单。");
+        return (true, false, $"已将保温位中的 {foodName} 送达普客订单。");
     }
 
     private static int ResolveFoodIdFromRecipeId(int recipeId)
@@ -839,18 +839,18 @@ internal static class RuntimeOrderPreparationService
         var cookedFood = InvokeInstance(pending.CookController, "get_Result", Array.Empty<object?>());
         if (cookedFood == null)
         {
-            return (true, $"{pending.RecipeName} 已完成，但未读取到成品对象，已停止普通客自动收取。");
+            return (true, $"{pending.RecipeName} 已完成，但未读取到成品对象，已停止普客自动收取。");
         }
 
         if (pending.Target.FoodId >= 0 && !IsSellable(cookedFood, sellableType: 0, id: pending.Target.FoodId))
         {
-            return (true, $"{pending.RecipeName} 已完成，但成品不是目标料理 {pending.Target.FoodName}（料理 #{pending.Target.FoodId}），本次不会送达普通客订单。");
+            return (true, $"{pending.RecipeName} 已完成，但成品不是目标料理 {pending.Target.FoodName}（料理 #{pending.Target.FoodId}），本次不会送达普客订单。");
         }
 
         var order = pending.Target.Order;
         if (order == null)
         {
-            return (true, $"{pending.RecipeName} 已完成，但目标普通客订单对象已不可用，已停止自动收取。");
+            return (true, $"{pending.RecipeName} 已完成，但目标普客订单对象已不可用，已停止自动收取。");
         }
 
         if (ReadMember(order, "ServFood") != null)
@@ -858,14 +858,14 @@ internal static class RuntimeOrderPreparationService
             TryInvokeInstance(pending.CookController, "AfterPlayerExtract", Array.Empty<object?>());
             TryInvokeInstance(pending.CookController, "CloseCookingVisual", Array.Empty<object?>());
             TryClearCookController(pending.CookController, cookedFood);
-            return (true, $"{pending.RecipeName} 已完成，但目标普通客订单已有料理，本次未重复写入。");
+            return (true, $"{pending.RecipeName} 已完成，但目标普客订单已有料理，本次未重复写入。");
         }
 
         WriteMember(order, "ServedFoodInAir", cookedFood);
         WriteMember(order, "ServFood", cookedFood);
         if (ReadMember(order, "ServFood") == null)
         {
-            return (true, $"{pending.RecipeName} 已完成，但写入目标普通客订单失败，已停止自动收取。");
+            return (true, $"{pending.RecipeName} 已完成，但写入目标普客订单失败，已停止自动收取。");
         }
 
         WriteMember(order, "ServedFoodInAir", null);
@@ -881,10 +881,10 @@ internal static class RuntimeOrderPreparationService
             && ReadBool(InvokeInstance(order, "get_IsFullfilled", Array.Empty<object?>())))
         {
             InvokeInstance(pending.Target.Manager, "EvaluateOrder", new object?[] { pending.Target.Controller, false, null });
-            return (true, $"{pending.RecipeName} 已通过普通客保温路径送达 {prefix}，并已触发订单评价。");
+            return (true, $"{pending.RecipeName} 已通过普客保温路径送达 {prefix}，并已触发订单评价。");
         }
 
-        return (true, $"{pending.RecipeName} 已通过普通客保温路径送达 {prefix}，等待酒水或后续评价。");
+        return (true, $"{pending.RecipeName} 已通过普客保温路径送达 {prefix}，等待酒水或后续评价。");
     }
 
     private static bool TryExtractWithGameMethod(object cookController)

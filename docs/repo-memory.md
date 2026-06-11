@@ -34,13 +34,13 @@
 - 运行时推荐状态会尝试读取当前夜间经营场景已摆放的全部厨具，优先读取 `CookSystemManager.Instance.AllCookers` 中的控制器和 `Cooker.AllAvailableCookerType`，再兜底读取 `IzakayaConfigure.CookerConfigure` 与 `RunTimeStorage.GetAllCookers()`；读不到快照时不要过滤料理。目标厨具高亮会复用当前推荐目标，并扫描 `AllCookers`、`AllCookerControllers` 和场景中的 `CookController` 兜底寻找可高亮对象。
 - 经营中概览会显示厨具快照读取状态和 `RuntimeUiPinningService.Status`。排查“缺失厨具过滤/游戏界面置顶/目标厨具高亮”时，优先让用户提供这两行状态和 `BepInEx/LogOutput.log`。
 - 运行时捕获订单维护 `ChangeVersion`；UI 控制器在版本变化后延迟 0.2 秒强制刷新经营数据并发布本地 API 快照。伴随窗口在 `经营中` 和稀客专注模式下以 750ms 轮询快照，其他页面保持 2 秒。
-- 场景切换后 Mod 会等待短暂稳定窗口再读取运行时、经营和任务快照，避免在 DayScene/NightScene Awake 或 UI Panel 初始化阶段扫描 IL2CPP 对象导致游戏初始化异常。
+- 场景切换后 Mod 不再做固定秒数等待；运行时、经营和任务快照会立即尝试刷新。读取代码必须避开 IL2CPP `IEnumerator.Current` 这类加载阶段不稳定路径，优先用 Count/indexer、字段或静态快照读取，失败时返回状态提示并等待下一轮刷新，不得阻塞伴随窗口或影响游戏场景初始化。
 - `任务` 页通过 `RunTimeScheduler.GetAvailableInteractMissionForCharacter()` 读取 NPC 交谈任务，并通过 `RunTimeDayScene.trackedInteradctables`、`MissionInteractConditionComponent` 与 `RunTimeScheduler.trackingMissions` 中的 `InspectInteractable` 条件读取场景调查任务；候选来源会写入分来源诊断。`HaveMissionStarted()` 不能用于过滤任务页条目，因为它等价于检查任务是否在 `trackingMissions` 中。场景来源全空时可用 `trackingMissions` 未完成任务 fallback，并根据第一个未完成条件判断未接取/已开始；NPC 所在场景优先从 `RunTimeDayScene.trackedNPCs` 的 mapLabel 反查，本地化失败时显示原始 label；读取失败不回退静态全任务。
-- 普通客订单诊断来源包括 `OrderController.GetShowInUIOrders()`、HUD `OrderingElement.ActiveOrder` 和经营管理器控制器订单。普通客自动化已接入手动处理第一笔订单，入口需要实验性自动化总开关和普通客子开关同时开启：订单按首次出现时间稳定排序，酒水直接写订单并扣库存，料理启动后绑定当时的普通客订单对象，完成后走保温/送达路径并在满足后调用 `EvaluateOrder`，不占用玩家送餐盘。
+- 普客订单诊断来源包括 `OrderController.GetShowInUIOrders()`、HUD `OrderingElement.ActiveOrder` 和经营管理器控制器订单。普客自动化入口需要实验性自动化总开关和普客子开关同时开启；开启后不再保留手动处理按钮，伴随窗口会按首次出现时间稳定排序自动轮询处理最早一笔未满足普客订单。酒水直接写订单并扣库存，料理启动后绑定当时的普客订单对象，完成后走保温/送达路径并在满足后调用 `EvaluateOrder`，不占用玩家送餐盘。
 - 运行时稀客 ID 会先归一化为本地 `customer_rare.json` 身份；优先读取游戏 `DataBaseCharacter.GetAllMappedGuests()` 固定映射和 `GetSpecialGuestsAndMappedGuests()` 完整运行时稀客表，运行时表按游戏语言名称匹配本地唯一同名稀客，手工事件变体只作为兜底。本地缺失但运行时具备有效喜好 Tag 的稀客会合成为临时 `RuntimeRareCustomer`，供经营中订单推荐和伴随窗口稀客页使用；剧情 Intro/Parallel/Current、问号占位、隐藏图鉴、NeverCome、无喜好数据的角色不合成。带具体桌号的捕获订单只允许匹配同一桌活跃稀客，未入座 `desk=-1` 稀客不能保活旧订单。
 - 诊断开启且经营数据扫描触发时，运行时固定数据会按主题写到诊断目录：`runtime-static-data.log` 映射稀客与 `aliasSource`、`runtime-tags.log` 标签和 TagRule、`runtime-database-diff.log` 核心食材/酒水/料理表对照与读取方式、`runtime-guests.log` 普客/稀客/事件变体、`runtime-izakayas.log` 场景和客人池。游戏数据库未初始化时每 5 秒重试，日志头部 `Complete: True` 表示读取成功。
 - 稀客订单专注模式支持精简模式和料理/酒水显示数量配置；精简模式隐藏推荐料理 Tag 并压缩推荐面板间距，显示数量包含收藏置顶项。
-- 实验性自动化由设置页总开关启用，经营中页按稀客订单和普通客订单分组配置。稀客使用 `autoPrep*` 阶段配置，普通客使用 `autoNormal*` 阶段配置，取酒、开始料理、收取、QTE 和出错暂停互不复用。开启自动开始料理后，可选择跳过原生 QTE 或自动完成原生 QTE；自动完成不会打开游戏音游面板，只尝试调用 QTE 成功奖励入口，失败时回退为跳过 QTE 继续料理。稀客自动化只处理当前排序第一笔稀客订单；普通客自动化需要开启“启用普通客处理”且至少开启一个实际阶段；临时失败应继续等待并重试，非临时失败才按对应订单类型配置暂停。
+- 实验性自动化由设置页总开关启用，经营中页按稀客订单和普客订单分组配置。稀客使用 `autoPrep*` 阶段配置，普客使用 `autoNormal*` 阶段配置，取酒、开始料理、收取、QTE 和出错暂停互不复用。开启自动开始料理后，可选择跳过原生 QTE 或自动完成原生 QTE；自动完成不会打开游戏音游面板，只尝试调用 QTE 成功奖励入口，失败时回退为跳过 QTE 继续料理。稀客自动化只处理当前排序第一笔稀客订单；普客自动化需要开启“启用普客处理”且至少开启一个实际阶段；临时失败应继续等待并重试，非临时失败才按对应订单类型配置暂停。
 
 ## 推荐排序口径
 

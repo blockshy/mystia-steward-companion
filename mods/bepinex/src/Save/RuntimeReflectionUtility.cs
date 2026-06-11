@@ -208,7 +208,7 @@ internal static class RuntimeReflectionUtility
     public static IEnumerable<object?> EnumerateObjects(object? value)
     {
         if (value == null || value is string) yield break;
-        if (value is IEnumerable enumerable)
+        if (!LooksLikeIl2CppObject(value) && value is IEnumerable enumerable)
         {
             IEnumerator enumerator;
             try
@@ -270,6 +270,18 @@ internal static class RuntimeReflectionUtility
                 if (success) yield return item;
             }
         }
+    }
+
+    private static bool LooksLikeIl2CppObject(object value)
+    {
+        var type = value.GetType();
+        var fullName = type.FullName ?? "";
+        if (fullName.StartsWith("Il2Cpp", StringComparison.Ordinal)) return true;
+        if (fullName.StartsWith("NightScene.", StringComparison.Ordinal)) return true;
+        if (fullName.StartsWith("DayScene.", StringComparison.Ordinal)) return true;
+        if (fullName.StartsWith("GameData.", StringComparison.Ordinal)) return true;
+        if (fullName.StartsWith("DEYU.", StringComparison.Ordinal)) return true;
+        return type.Assembly.GetName().Name?.Contains("Il2Cpp", StringComparison.OrdinalIgnoreCase) == true;
     }
 
     public static object? NormalizeKeyValueValue(object? value)
