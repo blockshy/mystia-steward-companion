@@ -97,6 +97,7 @@ const MIN_FOCUS_SWITCH_COOLDOWN_MS = 250;
 const MAX_FOCUS_SWITCH_COOLDOWN_MS = 2000;
 const MAX_LOG_LINES_IN_VIEW = 400;
 const AUTO_FIRST_ORDER_TICK_MS = 1500;
+const MAX_NORMAL_AUTO_ORDERS_PER_TICK = 3;
 const NON_ORDERABLE_RARE_FOOD_TAGS = new Set(['流行喜爱', '流行厌恶']);
 const COOKER_TYPE_NAME_BY_ID = new Map<number, string>([
   [1, '煮锅'],
@@ -531,11 +532,13 @@ export function ModWorkbench() {
   const [favoriteBusyKey, setFavoriteBusyKey] = useState('');
   const [autoPrepBusy, setAutoPrepBusy] = useState(false);
   const [autoPrepMessage, setAutoPrepMessage] = useState('');
+  const [autoPrepPaused, setAutoPrepPaused] = useState(false);
   const [normalOrderBusy, setNormalOrderBusy] = useState(false);
   const [normalOrderMessage, setNormalOrderMessage] = useState('');
+  const [normalOrderPausedCount, setNormalOrderPausedCount] = useState(0);
   const autoFirstOrderStateRef = useRef<AutoFirstOrderState>({ orderKey: '', prepared: false, beverageHandled: false, paused: false });
   const autoFirstOrderBusyRef = useRef(false);
-  const normalOrderStateRef = useRef<AutoFirstOrderState>(emptyAutoFirstOrderState());
+  const normalOrderStatesRef = useRef(new Map<string, AutoFirstOrderState>());
   const normalOrderBusyRef = useRef(false);
   const lastAutoFirstOrderAtRef = useRef(0);
   const lastAutoNormalOrderAtRef = useRef(0);
@@ -709,6 +712,7 @@ export function ModWorkbench() {
 
     if (!hasAutomationActionEnabled(companionPreferences)) {
       autoFirstOrderStateRef.current = emptyAutoFirstOrderState();
+      setAutoPrepPaused(false);
       if (!companionPreferences.autoNormalOrderEnabled || !hasNormalOrderActionEnabled(companionPreferences)) {
         setAutoPrepMessage('自动化已开启，请在经营中页面启用至少一个子选项。');
       } else {
@@ -723,6 +727,7 @@ export function ModWorkbench() {
     const selection = selectNextOrderPreparation(orderRecommendations.recommendations, favorites, selectionPreferences);
     if (!selection.ok) {
       autoFirstOrderStateRef.current = emptyAutoFirstOrderState();
+      setAutoPrepPaused(false);
       setAutoPrepMessage(`自动化\n${selection.message}`);
       return;
     }
@@ -731,7 +736,9 @@ export function ModWorkbench() {
     const currentState = autoFirstOrderStateRef.current;
     if (currentState.orderKey !== orderKey) {
       autoFirstOrderStateRef.current = { orderKey, prepared: false, beverageHandled: false, paused: false };
+      setAutoPrepPaused(false);
     } else if (currentState.paused) {
+      setAutoPrepPaused(true);
       return;
     }
 
@@ -754,6 +761,7 @@ export function ModWorkbench() {
 
         if (completeResponse.ok) {
           autoFirstOrderStateRef.current = emptyAutoFirstOrderState();
+          setAutoPrepPaused(false);
           setAutoPrepMessage(`自动化\n${formatOrderPreparationResponse(completeResponse)}`);
           await refresh();
           return;
@@ -764,8 +772,10 @@ export function ModWorkbench() {
           const message = `自动化\n${formatOrderPreparationResponse(completeResponse)}`;
           if (companionPreferences.autoPrepStopOnError) {
             autoFirstOrderStateRef.current = { ...autoFirstOrderStateRef.current, orderKey, paused: true };
+            setAutoPrepPaused(true);
             setAutoPrepMessage(`${message}\n自动化已暂停，订单变化或重新开启后会继续。`);
           } else {
+            setAutoPrepPaused(false);
             setAutoPrepMessage(message);
           }
           await refresh();
@@ -827,6 +837,7 @@ export function ModWorkbench() {
         beverageHandled: nextBeverageHandled,
         paused: !prepareResponse.ok && !transientFailure && companionPreferences.autoPrepStopOnError,
       };
+      setAutoPrepPaused(autoFirstOrderStateRef.current.paused);
       const suffix = autoFirstOrderStateRef.current.paused
         ? '\n自动化已暂停，订单变化或重新开启后会继续。'
         : transientFailure
@@ -841,8 +852,10 @@ export function ModWorkbench() {
           ...autoFirstOrderStateRef.current,
           paused: true,
         };
+        setAutoPrepPaused(true);
         setAutoPrepMessage(`自动化\n${message}\n自动化已暂停，订单变化或重新开启后会继续。`);
       } else {
+        setAutoPrepPaused(false);
         setAutoPrepMessage(`自动化\n${message}`);
       }
     } finally {
@@ -864,7 +877,8 @@ export function ModWorkbench() {
     const now = Date.now();
     if (now - lastAutoNormalOrderAtRef.current < AUTO_FIRST_ORDER_TICK_MS) return;
     if (!hasNormalOrderActionEnabled(companionPreferences)) {
-      normalOrderStateRef.current = emptyAutoFirstOrderState();
+      normalOrderStatesRef.current.clear();
+      setNormalOrderPausedCount(0);
       setNormalOrderMessage('普客自动化已开启，请至少启用一个处理阶段：直送酒水、自动开始料理或自动收取料理。');
       return;
     }
@@ -874,19 +888,26 @@ export function ModWorkbench() {
       return;
     }
 
-    const order = sortNormalOrders(snapshot?.normalBusiness?.orders ?? []).filter((item) => !item.isFulfilled)[0];
-    if (!order) {
-      normalOrderStateRef.current = emptyAutoFirstOrderState();
+    const orders = sortNormalOrders(snapshot?.normalBusiness?.orders ?? []).filter((item) => !item.isFulfilled);
+    const activeKeys = new Set(orders.map(buildNormalAutoOrderKey));
+    for (const key of Array.from(normalOrderStatesRef.current.keys())) {
+      if (!activeKeys.has(key)) normalOrderStatesRef.current.delete(key);
+    }
+
+    if (orders.length === 0) {
+      normalOrderStatesRef.current.clear();
+      setNormalOrderPausedCount(0);
       setNormalOrderMessage('普客自动化\n当前没有可处理的普客订单。');
       lastAutoNormalOrderAtRef.current = now;
       return;
     }
 
-    const orderKey = buildNormalAutoOrderKey(order);
-    const currentState = normalOrderStateRef.current;
-    if (currentState.orderKey !== orderKey) {
-      normalOrderStateRef.current = { orderKey, prepared: false, beverageHandled: false, paused: false };
-    } else if (currentState.paused) {
+    const runnableOrders = orders
+      .filter((order) => !normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order))?.paused)
+      .slice(0, MAX_NORMAL_AUTO_ORDERS_PER_TICK);
+    const pausedCount = orders.filter((order) => normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order))?.paused).length;
+    setNormalOrderPausedCount(pausedCount);
+    if (runnableOrders.length === 0) {
       return;
     }
 
@@ -894,32 +915,58 @@ export function ModWorkbench() {
     lastAutoNormalOrderAtRef.current = now;
     setNormalOrderBusy(true);
     try {
-      const response = await completeFirstNormalOrder(
-        normalizedEndpoint,
-        apiToken,
-        order,
-        companionPreferences,
-      );
-      const transientFailure = !response.ok && isTransientAutoPreparationFailure(response);
-      normalOrderStateRef.current = {
-        ...normalOrderStateRef.current,
-        orderKey,
-        paused: !response.ok && !transientFailure && companionPreferences.autoNormalStopOnError,
-      };
-      const suffix = normalOrderStateRef.current.paused
-        ? '\n普客自动化已暂停，订单变化或重新开启后会继续。'
-        : transientFailure
-          ? '\n当前条件暂不可执行，将继续等待并自动重试。'
-          : '';
-      setNormalOrderMessage(`普客自动化\n${formatOrderPreparationResponse(response)}${suffix}`);
+      const messages: string[] = [];
+      for (const order of runnableOrders) {
+        const orderKey = buildNormalAutoOrderKey(order);
+        const currentState = normalOrderStatesRef.current.get(orderKey) ?? { orderKey, prepared: false, beverageHandled: false, paused: false };
+        const requestPreferences = {
+          ...companionPreferences,
+          autoNormalTakeBeverage: companionPreferences.autoNormalTakeBeverage && !currentState.beverageHandled,
+          autoNormalStartCooking: companionPreferences.autoNormalStartCooking && !currentState.prepared,
+          autoNormalCollectCooking: companionPreferences.autoNormalCollectCooking,
+        };
+
+        if (!requestPreferences.autoNormalTakeBeverage
+          && !requestPreferences.autoNormalStartCooking
+          && !requestPreferences.autoNormalCollectCooking) {
+          continue;
+        }
+
+        const response = await completeFirstNormalOrder(
+          normalizedEndpoint,
+          apiToken,
+          order,
+          requestPreferences,
+        );
+        const transientFailure = !response.ok && isTransientAutoPreparationFailure(response);
+        const nextState = {
+          orderKey,
+          prepared: currentState.prepared
+            || didAcknowledgeStep(response, '普客开始料理')
+            || didAcknowledgeStep(response, '普客送达料理')
+            || didAcknowledgeStep(response, '普客料理'),
+          beverageHandled: currentState.beverageHandled || didAcknowledgeStep(response, '普客直送酒水'),
+          paused: !response.ok && !transientFailure && companionPreferences.autoNormalStopOnError,
+        };
+        normalOrderStatesRef.current.set(orderKey, nextState);
+
+        const prefix = `桌 ${formatDesk(order.deskCode)} · ${order.foodName || `#${order.foodId}`}/${order.beverageName || `#${order.beverageId}`}`;
+        const suffix = nextState.paused
+          ? '\n普客自动化已暂停该订单，订单变化或重新开启后会继续。'
+          : transientFailure
+            ? '\n当前条件暂不可执行，将继续等待并自动重试。'
+            : '';
+        messages.push(`${prefix}\n${formatOrderPreparationResponse(response)}${suffix}`);
+      }
+      setNormalOrderPausedCount(Array.from(normalOrderStatesRef.current.values()).filter((state) => state.paused).length);
+      setNormalOrderMessage(messages.length > 0
+        ? `普客自动化\n${messages.join('\n\n')}`
+        : '普客自动化\n当前没有需要执行的新步骤。');
       await refresh();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (companionPreferences.autoNormalStopOnError) {
-        normalOrderStateRef.current = {
-          ...normalOrderStateRef.current,
-          paused: true,
-        };
+        setNormalOrderPausedCount(Array.from(normalOrderStatesRef.current.values()).filter((state) => state.paused).length);
         setNormalOrderMessage(`普客自动化\n${message}\n普客自动化已暂停，订单变化或重新开启后会继续。`);
       } else {
         setNormalOrderMessage(`普客自动化\n${message}`);
@@ -968,9 +1015,11 @@ export function ModWorkbench() {
   useEffect(() => {
     if (!companionPreferences.automationEnabled) {
       autoFirstOrderStateRef.current = emptyAutoFirstOrderState();
-      normalOrderStateRef.current = emptyAutoFirstOrderState();
+      normalOrderStatesRef.current.clear();
       lastAutoFirstOrderAtRef.current = 0;
       lastAutoNormalOrderAtRef.current = 0;
+      setAutoPrepPaused(false);
+      setNormalOrderPausedCount(0);
       return undefined;
     }
 
@@ -985,8 +1034,9 @@ export function ModWorkbench() {
 
   useEffect(() => {
     if (companionPreferences.automationEnabled && companionPreferences.autoNormalOrderEnabled) return;
-    normalOrderStateRef.current = emptyAutoFirstOrderState();
+    normalOrderStatesRef.current.clear();
     lastAutoNormalOrderAtRef.current = 0;
+    setNormalOrderPausedCount(0);
     setNormalOrderMessage('');
   }, [companionPreferences.automationEnabled, companionPreferences.autoNormalOrderEnabled]);
 
@@ -1231,9 +1281,11 @@ export function ModWorkbench() {
             favoriteError={favoriteError}
             autoPrepBusy={autoPrepBusy}
             autoPrepMessage={autoPrepMessage}
+            autoPrepPaused={autoPrepPaused}
             autoPrepPreferences={companionPreferences}
             normalOrderBusy={normalOrderBusy}
             normalOrderMessage={normalOrderMessage}
+            normalOrderPausedCount={normalOrderPausedCount}
             onPreferenceChange={updateCompanionPreferences}
             onToggleRecipeFavorite={toggleRecipeFavorite}
             onToggleBeverageFavorite={toggleBeverageFavorite}
@@ -1698,9 +1750,11 @@ function ModServicePanel({
   favoriteError,
   autoPrepBusy,
   autoPrepMessage,
+  autoPrepPaused,
   autoPrepPreferences,
   normalOrderBusy,
   normalOrderMessage,
+  normalOrderPausedCount,
   normalBusiness,
   onPreferenceChange,
   onToggleRecipeFavorite,
@@ -1720,9 +1774,11 @@ function ModServicePanel({
   favoriteError: string;
   autoPrepBusy: boolean;
   autoPrepMessage: string;
+  autoPrepPaused: boolean;
   autoPrepPreferences: CompanionPreferences;
   normalOrderBusy: boolean;
   normalOrderMessage: string;
+  normalOrderPausedCount: number;
   normalBusiness: NormalBusinessContext | null;
   onPreferenceChange: (next: Partial<CompanionPreferences>) => void;
   onToggleRecipeFavorite: ToggleRecipeFavorite;
@@ -1775,6 +1831,7 @@ function ModServicePanel({
               preferences={autoPrepPreferences}
               busy={autoPrepBusy}
               message={autoPrepMessage}
+              paused={autoPrepPaused}
               onPreferenceChange={onPreferenceChange}
             />
           )}
@@ -1835,6 +1892,7 @@ function ModServicePanel({
               preferences={autoPrepPreferences}
               busy={normalOrderBusy}
               message={normalOrderMessage}
+              pausedCount={normalOrderPausedCount}
               onPreferenceChange={onPreferenceChange}
             />
           )}
@@ -2629,11 +2687,13 @@ function RareServiceAutomationPanel({
   preferences,
   busy,
   message,
+  paused,
   onPreferenceChange,
 }: {
   preferences: CompanionPreferences;
   busy: boolean;
   message: string;
+  paused: boolean;
   onPreferenceChange: (next: Partial<CompanionPreferences>) => void;
 }) {
   return (
@@ -2684,7 +2744,7 @@ function RareServiceAutomationPanel({
           </div>
         </div>
       )}
-      <RareAutoPrepStatus busy={busy} message={message} preferences={preferences} />
+      <RareAutoPrepStatus busy={busy} paused={paused} message={message} preferences={preferences} />
     </ListPanel>
   );
 }
@@ -2693,11 +2753,13 @@ function NormalServiceAutomationPanel({
   preferences,
   busy,
   message,
+  pausedCount,
   onPreferenceChange,
 }: {
   preferences: CompanionPreferences;
   busy: boolean;
   message: string;
+  pausedCount: number;
   onPreferenceChange: (next: Partial<CompanionPreferences>) => void;
 }) {
   return (
@@ -2747,27 +2809,30 @@ function NormalServiceAutomationPanel({
           </div>
         </div>
       )}
-      <NormalAutoPrepStatus busy={busy} message={message} preferences={preferences} />
+      <NormalAutoPrepStatus busy={busy} pausedCount={pausedCount} message={message} preferences={preferences} />
     </ListPanel>
   );
 }
 
 function RareAutoPrepStatus({
   busy,
+  paused,
   message,
   preferences,
 }: {
   busy: boolean;
+  paused: boolean;
   message: string;
   preferences: CompanionPreferences;
 }) {
-  if (!message) return null;
+  if (!message && !paused) return null;
 
   return (
     <div className="mt-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
       <div className="font-medium text-foreground">稀客自动化{busy ? '处理中' : '状态'}</div>
-      <div className="mt-1 whitespace-pre-line text-muted-foreground">{message}</div>
+      {message && <div className="mt-1 whitespace-pre-line text-muted-foreground">{message}</div>}
       <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
+        <Badge variant={paused ? 'destructive' : 'secondary'}>{paused ? '已暂停' : '运行中'}</Badge>
         <Badge variant={preferences.autoPrepCompleteOrder ? 'secondary' : 'outline'}>完成 {preferences.autoPrepCompleteOrder ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepTakeBeverage ? 'secondary' : 'outline'}>取酒 {preferences.autoPrepTakeBeverage ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepStartCooking ? 'secondary' : 'outline'}>料理 {preferences.autoPrepStartCooking ? '开' : '关'}</Badge>
@@ -2785,20 +2850,24 @@ function RareAutoPrepStatus({
 
 function NormalAutoPrepStatus({
   busy,
+  pausedCount,
   message,
   preferences,
 }: {
   busy: boolean;
+  pausedCount: number;
   message: string;
   preferences: CompanionPreferences;
 }) {
-  if (!message) return null;
+  if (!message && pausedCount === 0) return null;
 
   return (
     <div className="mt-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
       <div className="font-medium text-foreground">普客自动化{busy ? '处理中' : '状态'}</div>
-      <div className="mt-1 whitespace-pre-line text-muted-foreground">{message}</div>
+      {message && <div className="mt-1 whitespace-pre-line text-muted-foreground">{message}</div>}
       <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
+        <Badge variant={pausedCount > 0 ? 'destructive' : 'secondary'}>暂停订单 {pausedCount}</Badge>
+        <Badge variant="outline">每轮最多 {MAX_NORMAL_AUTO_ORDERS_PER_TICK}</Badge>
         <Badge variant={preferences.autoNormalOrderEnabled ? 'secondary' : 'outline'}>启用 {preferences.autoNormalOrderEnabled ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoNormalTakeBeverage ? 'secondary' : 'outline'}>酒水 {preferences.autoNormalTakeBeverage ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoNormalStartCooking ? 'secondary' : 'outline'}>料理 {preferences.autoNormalStartCooking ? '开' : '关'}</Badge>
@@ -4392,6 +4461,17 @@ function getMissingTrayPart(response: OrderPreparationResponse): 'food' | 'bever
 
 function didCompleteStep(response: OrderPreparationResponse, name: string): boolean {
   return response.steps.some((step) => step.name === name && step.ok && !step.skipped);
+}
+
+function didAcknowledgeStep(response: OrderPreparationResponse, name: string): boolean {
+  return response.steps.some((step) => step.name === name && step.ok && !isInactiveSkippedStep(step));
+}
+
+function isInactiveSkippedStep(step: OrderPreparationStep): boolean {
+  if (!step.skipped) return false;
+  return step.message.includes('设置已关闭')
+    || step.message.includes('尚未获得')
+    || step.message.includes('订单尚未同时满足');
 }
 
 function isTransientAutoPreparationFailure(response: OrderPreparationResponse): boolean {
