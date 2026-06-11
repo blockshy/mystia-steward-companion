@@ -2232,7 +2232,9 @@ function ServiceAutomationPanel({
           </div>
           <div className="mt-2 text-xs text-muted-foreground">
             {preferences.autoPrepQteMode === 'native'
-              ? '开始料理后会尝试打开游戏原生音游面板；启用自动模拟成功时，会额外尝试触发 QTE 成功奖励。'
+              ? preferences.autoPrepSimulateQteSuccess
+                ? '自动模拟成功会直接尝试触发 QTE 成功奖励，并跳过原生面板以避免重复结算。'
+                : '开始料理后会尝试打开游戏原生音游面板；若面板打开失败，会回退为跳过 QTE 并继续料理。'
               : '跳过 QTE 会保持当前自动料理速度，但不会累计音游数值或触发对应 Buff。'}
           </div>
         </div>
