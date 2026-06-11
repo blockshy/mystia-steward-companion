@@ -806,29 +806,49 @@ internal static class RuntimeOrderPreparationService
 
         var controllers = ReadCookControllers(cookSystem, out var sourceStatus);
         var totalCount = 0;
-        var emptyCount = 0;
         var warmerCount = 0;
+        var occupiedResultCount = 0;
+        var occupiedRecipeCount = 0;
+        var nonWarmerCount = 0;
+        var sameSourceCount = 0;
+        var errorCount = 0;
         foreach (var controller in controllers)
         {
             try
             {
                 totalCount++;
-                if (IsSameObject(controller, sourceController)) continue;
-                if (ReadCookControllerResult(controller) != null) continue;
-                if (ReadCookControllerChosenRecipe(controller) != null) continue;
+                if (IsSameObject(controller, sourceController))
+                {
+                    sameSourceCount++;
+                    continue;
+                }
 
-                var phase = ToInt(TryInvokeInstanceValue(controller, "get_Phase") ?? ReadMember(controller, "Phase"), 0);
-                if (phase != 0) continue;
-
-                emptyCount++;
-                if (!IsWarmerController(controller)) continue;
+                if (!IsWarmerController(controller))
+                {
+                    nonWarmerCount++;
+                    continue;
+                }
 
                 warmerCount++;
-                return (true, controller, $"找到空保温位（扫描 {totalCount} 个控制器，空位 {emptyCount} 个）");
+
+                if (ReadCookControllerResult(controller) != null)
+                {
+                    occupiedResultCount++;
+                    continue;
+                }
+
+                if (ReadCookControllerChosenRecipe(controller) != null)
+                {
+                    occupiedRecipeCount++;
+                    continue;
+                }
+
+                return (true, controller, $"找到空保温位（扫描 {totalCount} 个控制器，保温位 {warmerCount} 个）");
             }
             catch
             {
                 // Stale IL2CPP controllers can appear while the scene is changing; keep scanning.
+                errorCount++;
             }
         }
 
@@ -837,12 +857,12 @@ internal static class RuntimeOrderPreparationService
             return (false, null, $"当前没有读取到任何厨具控制器（{sourceStatus}）");
         }
 
-        if (emptyCount == 0)
+        if (warmerCount == 0)
         {
-            return (false, null, $"没有空闲保温位（读取到 {totalCount} 个控制器；{sourceStatus}）");
+            return (false, null, $"没有读取到保温位（读取到 {totalCount} 个控制器，非保温位 {nonWarmerCount} 个，同源 {sameSourceCount} 个，异常 {errorCount} 个；{sourceStatus}）");
         }
 
-        return (false, null, $"没有匹配到空保温位（读取到 {totalCount} 个控制器，空位 {emptyCount} 个，保温位 {warmerCount} 个；{sourceStatus}）");
+        return (false, null, $"没有空闲保温位（读取到 {totalCount} 个控制器，保温位 {warmerCount} 个，已有成品 {occupiedResultCount} 个，正在制作 {occupiedRecipeCount} 个，同源 {sameSourceCount} 个，异常 {errorCount} 个；{sourceStatus}）");
     }
 
     private static IReadOnlyList<object> ReadCookControllers(object cookSystem, out string status)
