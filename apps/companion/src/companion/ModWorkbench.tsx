@@ -66,6 +66,11 @@ const ALWAYS_ON_TOP_STORAGE_KEY = `${STORAGE_PREFIX}-always-on-top`;
 const GAMEPAD_NAVIGATION_STORAGE_KEY = `${STORAGE_PREFIX}-gamepad-navigation`;
 const AUTOMATION_ENABLED_STORAGE_KEY = `${STORAGE_PREFIX}-automation-enabled`;
 const AUTO_NORMAL_ORDER_ENABLED_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-order-enabled`;
+const AUTO_NORMAL_TAKE_BEVERAGE_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-take-beverage`;
+const AUTO_NORMAL_START_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-start-cooking`;
+const AUTO_NORMAL_COLLECT_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-collect-cooking`;
+const AUTO_NORMAL_STOP_ON_ERROR_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-stop-on-error`;
+const AUTO_NORMAL_COMPLETE_QTE_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-complete-qte`;
 const AUTO_PREP_COMPLETE_ORDER_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-complete-order`;
 const AUTO_PREP_TAKE_BEVERAGE_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-take-beverage`;
 const AUTO_PREP_START_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-start-cooking`;
@@ -460,6 +465,11 @@ interface CompanionPreferences {
   gamepadNavigationEnabled: boolean;
   automationEnabled: boolean;
   autoNormalOrderEnabled: boolean;
+  autoNormalTakeBeverage: boolean;
+  autoNormalStartCooking: boolean;
+  autoNormalCollectCooking: boolean;
+  autoNormalStopOnError: boolean;
+  autoNormalCompleteQte: boolean;
   autoPrepCompleteOrder: boolean;
   autoPrepTakeBeverage: boolean;
   autoPrepStartCooking: boolean;
@@ -845,6 +855,10 @@ export function ModWorkbench() {
     if (normalOrderBusy) return;
     if (!companionPreferences.automationEnabled || !companionPreferences.autoNormalOrderEnabled) {
       setNormalOrderMessage('需要先在“经营中”的自动化面板开启普通客订单处理。');
+      return;
+    }
+    if (!hasNormalOrderActionEnabled(companionPreferences)) {
+      setNormalOrderMessage('需要至少开启一个普通客处理阶段：直送酒水、自动开始料理或自动收取料理。');
       return;
     }
 
@@ -2115,7 +2129,7 @@ function ModTasksPanel({
         action={(
           <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as MissionStatusFilter)}>
             <SelectTrigger className="h-8 w-28" data-gamepad-clickable="true">
-              <SelectValue />
+              <SelectValue>{getMissionStatusFilterLabel(statusFilter)}</SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">全部</SelectItem>
@@ -2562,59 +2576,108 @@ function ServiceAutomationPanel({
 }) {
   return (
     <ListPanel title="自动化（实验性）">
-      <div className={DENSE_TWO_COLUMN_GRID_TIGHT}>
-        <SwitchControl
-          label="普通客订单处理"
-          checked={preferences.autoNormalOrderEnabled}
-          onCheckedChange={(autoNormalOrderEnabled) => onPreferenceChange({ autoNormalOrderEnabled })}
-        />
-        <SwitchControl
-          label="自动完成订单"
-          checked={preferences.autoPrepCompleteOrder}
-          onCheckedChange={(autoPrepCompleteOrder) => onPreferenceChange({ autoPrepCompleteOrder })}
-        />
-        <SwitchControl
-          label="自动取酒"
-          checked={preferences.autoPrepTakeBeverage}
-          onCheckedChange={(autoPrepTakeBeverage) => onPreferenceChange({ autoPrepTakeBeverage })}
-        />
-        <SwitchControl
-          label="自动开始料理"
-          checked={preferences.autoPrepStartCooking}
-          onCheckedChange={(autoPrepStartCooking) => onPreferenceChange({ autoPrepStartCooking })}
-        />
-        <SwitchControl
-          label="自动收取料理"
-          checked={preferences.autoPrepCollectCooking}
-          onCheckedChange={(autoPrepCollectCooking) => onPreferenceChange({ autoPrepCollectCooking })}
-        />
-        <SwitchControl
-          label="只处理收藏配方"
-          checked={preferences.autoPrepFavoritesOnly}
-          onCheckedChange={(autoPrepFavoritesOnly) => onPreferenceChange({ autoPrepFavoritesOnly })}
-        />
-        <SwitchControl
-          label="出错时暂停"
-          checked={preferences.autoPrepStopOnError}
-          onCheckedChange={(autoPrepStopOnError) => onPreferenceChange({ autoPrepStopOnError })}
-        />
-      </div>
-      {preferences.autoPrepStartCooking && (
-        <div className="mt-3 rounded-md border border-border bg-muted/30 p-3">
-          <SwitchControl
-            label="自动完成原生 QTE"
-            checked={preferences.autoPrepCompleteQte}
-            onCheckedChange={(autoPrepCompleteQte) => onPreferenceChange({ autoPrepCompleteQte })}
-          />
-          <div className="mt-2 text-xs text-muted-foreground">
-            {preferences.autoPrepCompleteQte
-              ? '不会打开音游面板，会直接尝试完成原生 QTE 奖励结算，并继续开始料理。'
-              : '跳过原生 QTE 会保持当前自动料理速度，但不会累计音游数值或触发对应 Buff。'}
+      <div className="grid min-w-0 gap-3 md:grid-cols-2">
+        <div className="rounded-md border border-border bg-muted/20 p-3">
+          <div className="mb-3 text-sm font-medium text-foreground">稀客订单</div>
+          <div className="space-y-2">
+            <SwitchControl
+              label="自动完成订单"
+              checked={preferences.autoPrepCompleteOrder}
+              onCheckedChange={(autoPrepCompleteOrder) => onPreferenceChange({ autoPrepCompleteOrder })}
+            />
+            <SwitchControl
+              label="自动取酒"
+              checked={preferences.autoPrepTakeBeverage}
+              onCheckedChange={(autoPrepTakeBeverage) => onPreferenceChange({ autoPrepTakeBeverage })}
+            />
+            <SwitchControl
+              label="自动开始料理"
+              checked={preferences.autoPrepStartCooking}
+              onCheckedChange={(autoPrepStartCooking) => onPreferenceChange({ autoPrepStartCooking })}
+            />
+            <SwitchControl
+              label="自动收取料理"
+              checked={preferences.autoPrepCollectCooking}
+              onCheckedChange={(autoPrepCollectCooking) => onPreferenceChange({ autoPrepCollectCooking })}
+            />
+            <SwitchControl
+              label="只处理收藏配方"
+              checked={preferences.autoPrepFavoritesOnly}
+              onCheckedChange={(autoPrepFavoritesOnly) => onPreferenceChange({ autoPrepFavoritesOnly })}
+            />
+            <SwitchControl
+              label="出错时暂停"
+              checked={preferences.autoPrepStopOnError}
+              onCheckedChange={(autoPrepStopOnError) => onPreferenceChange({ autoPrepStopOnError })}
+            />
           </div>
+          {preferences.autoPrepStartCooking && (
+            <div className="mt-3 rounded-md border border-border bg-background/35 p-3">
+              <SwitchControl
+                label="自动完成原生 QTE"
+                checked={preferences.autoPrepCompleteQte}
+                onCheckedChange={(autoPrepCompleteQte) => onPreferenceChange({ autoPrepCompleteQte })}
+              />
+              <div className="mt-2 text-xs text-muted-foreground">
+                {preferences.autoPrepCompleteQte
+                  ? '不会打开音游面板，会直接尝试完成原生 QTE 奖励结算，并继续开始料理。'
+                  : '跳过原生 QTE 会保持当前自动料理速度，但不会累计音游数值或触发对应 Buff。'}
+              </div>
+            </div>
+          )}
         </div>
-      )}
+
+        <div className="rounded-md border border-border bg-muted/20 p-3">
+          <div className="mb-3 text-sm font-medium text-foreground">普通客订单</div>
+          <div className="space-y-2">
+            <SwitchControl
+              label="启用普通客处理"
+              checked={preferences.autoNormalOrderEnabled}
+              onCheckedChange={(autoNormalOrderEnabled) => onPreferenceChange({ autoNormalOrderEnabled })}
+            />
+            {preferences.autoNormalOrderEnabled && (
+              <>
+                <SwitchControl
+                  label="直送酒水"
+                  checked={preferences.autoNormalTakeBeverage}
+                  onCheckedChange={(autoNormalTakeBeverage) => onPreferenceChange({ autoNormalTakeBeverage })}
+                />
+                <SwitchControl
+                  label="自动开始料理"
+                  checked={preferences.autoNormalStartCooking}
+                  onCheckedChange={(autoNormalStartCooking) => onPreferenceChange({ autoNormalStartCooking })}
+                />
+                <SwitchControl
+                  label="自动收取料理"
+                  checked={preferences.autoNormalCollectCooking}
+                  onCheckedChange={(autoNormalCollectCooking) => onPreferenceChange({ autoNormalCollectCooking })}
+                />
+                <SwitchControl
+                  label="出错时暂停"
+                  checked={preferences.autoNormalStopOnError}
+                  onCheckedChange={(autoNormalStopOnError) => onPreferenceChange({ autoNormalStopOnError })}
+                />
+              </>
+            )}
+          </div>
+          {preferences.autoNormalOrderEnabled && preferences.autoNormalStartCooking && (
+            <div className="mt-3 rounded-md border border-border bg-background/35 p-3">
+              <SwitchControl
+                label="自动完成原生 QTE"
+                checked={preferences.autoNormalCompleteQte}
+                onCheckedChange={(autoNormalCompleteQte) => onPreferenceChange({ autoNormalCompleteQte })}
+              />
+              <div className="mt-2 text-xs text-muted-foreground">
+                {preferences.autoNormalCompleteQte
+                  ? '普通客料理会尝试完成原生 QTE 奖励结算。'
+                  : '普通客料理会跳过原生 QTE，只保留自动制作流程。'}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
       <div className="mt-3 text-xs text-muted-foreground">
-        稀客自动化只处理当前排序第一笔稀客订单；普通客处理需要单独开启后手动触发。
+        稀客和普通客的阶段开关互不影响；两类流程都只处理当前排序下的第一笔可处理订单。
       </div>
       <AutoPrepStatus busy={busy} message={message} preferences={preferences} />
     </ListPanel>
@@ -2637,17 +2700,25 @@ function AutoPrepStatus({
       <div className="font-medium text-foreground">自动化{busy ? '处理中' : '状态'}</div>
       <div className="mt-1 whitespace-pre-line text-muted-foreground">{message}</div>
       <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
-        <Badge variant={preferences.autoPrepCompleteOrder ? 'secondary' : 'outline'}>完成 {preferences.autoPrepCompleteOrder ? '开' : '关'}</Badge>
-        <Badge variant={preferences.autoNormalOrderEnabled ? 'secondary' : 'outline'}>普通客 {preferences.autoNormalOrderEnabled ? '开' : '关'}</Badge>
-        <Badge variant={preferences.autoPrepTakeBeverage ? 'secondary' : 'outline'}>取酒 {preferences.autoPrepTakeBeverage ? '开' : '关'}</Badge>
-        <Badge variant={preferences.autoPrepStartCooking ? 'secondary' : 'outline'}>料理 {preferences.autoPrepStartCooking ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoPrepCompleteOrder ? 'secondary' : 'outline'}>稀客完成 {preferences.autoPrepCompleteOrder ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoPrepTakeBeverage ? 'secondary' : 'outline'}>稀客取酒 {preferences.autoPrepTakeBeverage ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoPrepStartCooking ? 'secondary' : 'outline'}>稀客料理 {preferences.autoPrepStartCooking ? '开' : '关'}</Badge>
         {preferences.autoPrepStartCooking && (
           <Badge variant={preferences.autoPrepCompleteQte ? 'secondary' : 'outline'}>
-            QTE {preferences.autoPrepCompleteQte ? '自动完成' : '跳过'}
+            稀客 QTE {preferences.autoPrepCompleteQte ? '自动完成' : '跳过'}
           </Badge>
         )}
-        <Badge variant={preferences.autoPrepCollectCooking ? 'secondary' : 'outline'}>收取 {preferences.autoPrepCollectCooking ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoPrepCollectCooking ? 'secondary' : 'outline'}>稀客收取 {preferences.autoPrepCollectCooking ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepFavoritesOnly ? 'secondary' : 'outline'}>收藏限定 {preferences.autoPrepFavoritesOnly ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoNormalOrderEnabled ? 'secondary' : 'outline'}>普通客 {preferences.autoNormalOrderEnabled ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoNormalTakeBeverage ? 'secondary' : 'outline'}>普通酒水 {preferences.autoNormalTakeBeverage ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoNormalStartCooking ? 'secondary' : 'outline'}>普通料理 {preferences.autoNormalStartCooking ? '开' : '关'}</Badge>
+        {preferences.autoNormalStartCooking && (
+          <Badge variant={preferences.autoNormalCompleteQte ? 'secondary' : 'outline'}>
+            普通 QTE {preferences.autoNormalCompleteQte ? '自动完成' : '跳过'}
+          </Badge>
+        )}
+        <Badge variant={preferences.autoNormalCollectCooking ? 'secondary' : 'outline'}>普通收取 {preferences.autoNormalCollectCooking ? '开' : '关'}</Badge>
       </div>
     </div>
   );
@@ -3548,11 +3619,11 @@ async function completeFirstNormalOrder(
     recipeName: order.foodName || recipe?.name || '',
     beverageId: String(order.beverageId),
     beverageName: order.beverageName || BEVERAGE_NAME_BY_ID.get(order.beverageId) || '',
-    autoTakeBeverage: String(preferences.autoPrepTakeBeverage),
-    autoStartCooking: String(preferences.autoPrepStartCooking),
-    autoCollectCooking: String(preferences.autoPrepCollectCooking),
-    completeQte: String(preferences.autoPrepStartCooking && preferences.autoPrepCompleteQte),
-    stopOnError: String(preferences.autoPrepStopOnError),
+    autoTakeBeverage: String(preferences.autoNormalTakeBeverage),
+    autoStartCooking: String(preferences.autoNormalStartCooking),
+    autoCollectCooking: String(preferences.autoNormalCollectCooking),
+    completeQte: String(preferences.autoNormalStartCooking && preferences.autoNormalCompleteQte),
+    stopOnError: String(preferences.autoNormalStopOnError),
   });
   const abortController = new AbortController();
   const timeoutId = window.setTimeout(() => abortController.abort(), 5000);
@@ -4166,6 +4237,12 @@ function hasAutomationActionEnabled(preferences: CompanionPreferences): boolean 
     || preferences.autoPrepCollectCooking;
 }
 
+function hasNormalOrderActionEnabled(preferences: CompanionPreferences): boolean {
+  return preferences.autoNormalTakeBeverage
+    || preferences.autoNormalStartCooking
+    || preferences.autoNormalCollectCooking;
+}
+
 function buildAutoOrderKey(item: OrderRecommendation): string {
   const order = item.order;
   return [
@@ -4680,6 +4757,20 @@ function matchesMissionStatusFilter(mission: RuntimeMissionInfo, filter: Mission
   }
 }
 
+function getMissionStatusFilterLabel(filter: MissionStatusFilter): string {
+  switch (filter) {
+    case 'not-started':
+      return '未接取';
+    case 'started':
+      return '已开始';
+    case 'finished':
+      return '已完成';
+    case 'all':
+    default:
+      return '全部';
+  }
+}
+
 function readStoredTab(): ModTab {
   const value = readMigratedStorage(TAB_STORAGE_KEY, LEGACY_TAB_STORAGE_KEY, '');
   return value === 'overview'
@@ -4715,6 +4806,11 @@ function readStoredCompanionPreferences(): CompanionPreferences {
     gamepadNavigationEnabled: readStoredBoolean(GAMEPAD_NAVIGATION_STORAGE_KEY, true),
     automationEnabled: readStoredBoolean(AUTOMATION_ENABLED_STORAGE_KEY, false),
     autoNormalOrderEnabled: readStoredBoolean(AUTO_NORMAL_ORDER_ENABLED_STORAGE_KEY, false),
+    autoNormalTakeBeverage: readStoredBoolean(AUTO_NORMAL_TAKE_BEVERAGE_STORAGE_KEY, false),
+    autoNormalStartCooking: readStoredBoolean(AUTO_NORMAL_START_COOKING_STORAGE_KEY, false),
+    autoNormalCollectCooking: readStoredBoolean(AUTO_NORMAL_COLLECT_COOKING_STORAGE_KEY, false),
+    autoNormalStopOnError: readStoredBoolean(AUTO_NORMAL_STOP_ON_ERROR_STORAGE_KEY, false),
+    autoNormalCompleteQte: readStoredBoolean(AUTO_NORMAL_COMPLETE_QTE_STORAGE_KEY, false),
     autoPrepCompleteOrder: readStoredBoolean(AUTO_PREP_COMPLETE_ORDER_STORAGE_KEY, false),
     autoPrepTakeBeverage: readStoredBoolean(AUTO_PREP_TAKE_BEVERAGE_STORAGE_KEY, false),
     autoPrepStartCooking: readStoredBoolean(AUTO_PREP_START_COOKING_STORAGE_KEY, false),
@@ -4817,6 +4913,11 @@ function normalizeCompanionPreferences(value: Partial<CompanionPreferences>): Co
     gamepadNavigationEnabled: Boolean(value.gamepadNavigationEnabled),
     automationEnabled: Boolean(value.automationEnabled),
     autoNormalOrderEnabled: Boolean(value.autoNormalOrderEnabled),
+    autoNormalTakeBeverage: Boolean(value.autoNormalTakeBeverage),
+    autoNormalStartCooking: Boolean(value.autoNormalStartCooking),
+    autoNormalCollectCooking: Boolean(value.autoNormalCollectCooking),
+    autoNormalStopOnError: Boolean(value.autoNormalStopOnError),
+    autoNormalCompleteQte: Boolean(value.autoNormalCompleteQte),
     autoPrepCompleteOrder: Boolean(value.autoPrepCompleteOrder),
     autoPrepTakeBeverage: Boolean(value.autoPrepTakeBeverage),
     autoPrepStartCooking: Boolean(value.autoPrepStartCooking),
@@ -4855,6 +4956,11 @@ function persistCompanionPreferences(preferences: CompanionPreferences) {
   localStorage.setItem(GAMEPAD_NAVIGATION_STORAGE_KEY, normalized.gamepadNavigationEnabled ? '1' : '0');
   localStorage.setItem(AUTOMATION_ENABLED_STORAGE_KEY, normalized.automationEnabled ? '1' : '0');
   localStorage.setItem(AUTO_NORMAL_ORDER_ENABLED_STORAGE_KEY, normalized.autoNormalOrderEnabled ? '1' : '0');
+  localStorage.setItem(AUTO_NORMAL_TAKE_BEVERAGE_STORAGE_KEY, normalized.autoNormalTakeBeverage ? '1' : '0');
+  localStorage.setItem(AUTO_NORMAL_START_COOKING_STORAGE_KEY, normalized.autoNormalStartCooking ? '1' : '0');
+  localStorage.setItem(AUTO_NORMAL_COLLECT_COOKING_STORAGE_KEY, normalized.autoNormalCollectCooking ? '1' : '0');
+  localStorage.setItem(AUTO_NORMAL_STOP_ON_ERROR_STORAGE_KEY, normalized.autoNormalStopOnError ? '1' : '0');
+  localStorage.setItem(AUTO_NORMAL_COMPLETE_QTE_STORAGE_KEY, normalized.autoNormalCompleteQte ? '1' : '0');
   localStorage.setItem(AUTO_PREP_COMPLETE_ORDER_STORAGE_KEY, normalized.autoPrepCompleteOrder ? '1' : '0');
   localStorage.setItem(AUTO_PREP_TAKE_BEVERAGE_STORAGE_KEY, normalized.autoPrepTakeBeverage ? '1' : '0');
   localStorage.setItem(AUTO_PREP_START_COOKING_STORAGE_KEY, normalized.autoPrepStartCooking ? '1' : '0');
