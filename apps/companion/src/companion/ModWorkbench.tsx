@@ -535,6 +535,27 @@ interface NormalAutoOrderState {
   paused: boolean;
 }
 
+interface AutomationCookerCycle {
+  bucket: number;
+  used: Map<string, number>;
+  labels: Map<string, string[]>;
+}
+
+interface CookerRequirement {
+  key: string;
+  label: string;
+}
+
+interface CookerReservationResult {
+  ok: boolean;
+  message: string;
+}
+
+interface NormalCookerDemand {
+  counts: Map<string, number>;
+  labels: Map<string, string[]>;
+}
+
 type AutomationStep =
   | 'idle'
   | 'match-order'
@@ -599,6 +620,7 @@ export function ModWorkbench() {
   const normalOrderBusyRef = useRef(false);
   const lastAutoFirstOrderAtRef = useRef(0);
   const lastAutoNormalOrderAtRef = useRef(0);
+  const automationCookerCycleRef = useRef<AutomationCookerCycle | null>(null);
   const recommendationCacheRef = useRef(new Map<string, CachedRecommendation>());
   const refreshInFlightRef = useRef(false);
   const lastUiPinningSignatureRef = useRef('');
@@ -755,6 +777,19 @@ export function ModWorkbench() {
     setAutoPrepPaused(diagnostics.some((diagnostic) => diagnostic.paused));
   }, []);
 
+  const getAutomationCookerCycle = useCallback((now: number): AutomationCookerCycle => {
+    const bucket = Math.floor(now / AUTO_FIRST_ORDER_TICK_MS);
+    if (!automationCookerCycleRef.current || automationCookerCycleRef.current.bucket !== bucket) {
+      automationCookerCycleRef.current = {
+        bucket,
+        used: new Map<string, number>(),
+        labels: new Map<string, string[]>(),
+      };
+    }
+
+    return automationCookerCycleRef.current;
+  }, []);
+
   const retryRareAutomationOrder = useCallback((orderKey: string) => {
     const now = Date.now();
     const state = rareOrderStatesRef.current.get(orderKey);
@@ -875,6 +910,15 @@ export function ModWorkbench() {
     try {
       const messages: string[] = [];
       let completedOrderThisTick = false;
+      const cookerCycle = getAutomationCookerCycle(now);
+      const cookerCapacity = buildAutomationCookerCapacity(runtime);
+      const normalCookerDemand = buildNormalCookerDemand(
+        snapshot?.normalBusiness?.orders ?? [],
+        normalOrderStatesRef.current,
+        companionPreferences,
+        runtime,
+        now,
+      );
 
       for (const selection of candidateResult.selections) {
         const orderKey = buildAutoOrderKey(selection.item);
@@ -974,15 +1018,31 @@ export function ModWorkbench() {
           continue;
         }
 
-        const shouldPrepareFood = companionPreferences.autoPrepStartCooking && !currentState.prepared;
+        let shouldPrepareFood = companionPreferences.autoPrepStartCooking && !currentState.prepared;
         const shouldPrepareBeverage = companionPreferences.autoPrepTakeBeverage && !currentState.beverageHandled;
+        const schedulerNote = shouldPrepareFood
+          ? reserveRareCookerSlot(
+            cookerCycle,
+            getRareCookerRequirement(selection.recipe),
+            `稀客 ${selection.item.order.guestName || '当前订单'} · 桌 ${formatDesk(selection.item.order.deskCode)}`,
+            cookerCapacity,
+            normalCookerDemand,
+          )
+          : { ok: true, message: '' };
+        if (!schedulerNote.ok) {
+          shouldPrepareFood = false;
+        }
 
         if (!shouldPrepareFood && !shouldPrepareBeverage) {
           const waitingState = markAutomationWaiting(
             currentState,
-            companionPreferences.autoPrepCompleteOrder ? 'complete-order' : 'idle',
+            schedulerNote.ok
+              ? companionPreferences.autoPrepCompleteOrder ? 'complete-order' : 'idle'
+              : 'ensure-cooking',
             now,
-            companionPreferences.autoPrepCompleteOrder
+            !schedulerNote.ok
+              ? schedulerNote.message
+              : companionPreferences.autoPrepCompleteOrder
               ? '等待送餐盘出现目标料理或酒水。'
               : '已按当前设置完成可执行步骤；自动完成订单未开启。',
           );
@@ -1036,7 +1096,8 @@ export function ModWorkbench() {
           : transientFailure
             ? '\n当前条件暂不可执行，将继续等待并自动重试。'
             : '';
-        messages.push(`${prefix}\n${formatOrderPreparationResponse(prepareResponse)}\n${formatAutomationState(nextState)}${suffix}`);
+        const schedulerSuffix = schedulerNote.ok ? '' : `\n${schedulerNote.message}`;
+        messages.push(`${prefix}\n${formatOrderPreparationResponse(prepareResponse)}\n${formatAutomationState(nextState)}${schedulerSuffix}${suffix}`);
       }
 
       if (candidateResult.messages.length > 0) {
@@ -1076,6 +1137,9 @@ export function ModWorkbench() {
     orderRecommendations.recommendations,
     refresh,
     refreshRareOrderDiagnostics,
+    getAutomationCookerCycle,
+    runtime,
+    snapshot?.normalBusiness?.orders,
   ]);
 
   const runAutoNormalOrder = useCallback(async () => {
@@ -1108,13 +1172,28 @@ export function ModWorkbench() {
       return;
     }
 
-    const runnableOrders = orders
-      .filter((order) => {
-        const state = normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order));
-        if (state?.paused) return false;
-        return hasRunnableNormalOrderAction(state, companionPreferences, now);
-      })
-      .slice(0, MAX_NORMAL_AUTO_ORDERS_PER_TICK);
+    const cookerCycle = getAutomationCookerCycle(now);
+    const cookerCapacity = buildAutomationCookerCapacity(runtime);
+    const schedulerMessages: string[] = [];
+    const runnableOrders: NormalBusinessOrder[] = [];
+    for (const order of orders) {
+      const state = normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order));
+      if (!shouldAttemptNormalCooking(order, state, companionPreferences, now)) continue;
+
+      const reservation = reserveAutomationCookerSlot(
+        cookerCycle,
+        getNormalCookerRequirement(order),
+        `普客 桌 ${formatDesk(order.deskCode)} · ${order.foodName || `#${order.foodId}`}`,
+        cookerCapacity,
+      );
+      if (!reservation.ok) {
+        schedulerMessages.push(`桌 ${formatDesk(order.deskCode)} · ${order.foodName || `#${order.foodId}`}\n${reservation.message}`);
+        continue;
+      }
+
+      runnableOrders.push(order);
+      if (runnableOrders.length >= MAX_NORMAL_AUTO_ORDERS_PER_TICK) break;
+    }
     const pausedCount = orders.filter((order) => normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order))?.paused).length;
     setNormalOrderPausedCount(pausedCount);
     if (runnableOrders.length === 0) {
@@ -1126,9 +1205,10 @@ export function ModWorkbench() {
       const waitingState = orders
         .map((order) => normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order)))
         .find((state) => state && (state.prepared || state.collected || state.paused));
+      const schedulerText = schedulerMessages.length > 0 ? `\n${schedulerMessages.join('\n\n')}` : '';
       setNormalOrderMessage(waitingCount > 0 || collectedCount > 0 || pausedCount > 0
-        ? `普客自动化\n当前没有需要新开锅的普客订单。\n等待制作或送达 ${waitingCount} 笔，已收至保温箱 ${collectedCount} 笔，暂停 ${pausedCount} 笔。${waitingState ? `\n${formatAutomationState(waitingState)}` : ''}`
-        : '普客自动化\n当前没有需要执行的新步骤。');
+        ? `普客自动化\n当前没有需要新开锅的普客订单。\n等待制作或送达 ${waitingCount} 笔，已收至保温箱 ${collectedCount} 笔，暂停 ${pausedCount} 笔。${waitingState ? `\n${formatAutomationState(waitingState)}` : ''}${schedulerText}`
+        : `普客自动化\n当前没有需要执行的新步骤。${schedulerText}`);
       lastAutoNormalOrderAtRef.current = now;
       return;
     }
@@ -1210,7 +1290,7 @@ export function ModWorkbench() {
       }
       setNormalOrderPausedCount(Array.from(normalOrderStatesRef.current.values()).filter((state) => state.paused).length);
       setNormalOrderMessage(messages.length > 0
-        ? `普客自动化\n${messages.join('\n\n')}`
+        ? `普客自动化\n${messages.join('\n\n')}${schedulerMessages.length > 0 ? `\n\n${schedulerMessages.join('\n\n')}` : ''}`
         : '普客自动化\n当前没有需要执行的新步骤。');
       await refresh();
     } catch (err) {
@@ -1228,8 +1308,10 @@ export function ModWorkbench() {
   }, [
     apiToken,
     companionPreferences,
+    getAutomationCookerCycle,
     normalizedEndpoint,
     refresh,
+    runtime,
     snapshot?.normalBusiness?.orders,
   ]);
 
@@ -4301,6 +4383,165 @@ function buildRuntimeSets(runtime: RecommendationStateSnapshot | null): RuntimeS
   };
 }
 
+function buildAutomationCookerCapacity(runtime: RecommendationStateSnapshot | null | undefined): Map<string, number> {
+  const capacity = new Map<string, number>();
+  if (!runtime) return capacity;
+
+  for (const cooker of runtime.placedCookers ?? []) {
+    const keys = new Set<string>();
+    for (const typeName of cooker.typeNames ?? []) {
+      const normalized = normalizeCookerName(typeName);
+      if (normalized) keys.add(normalized);
+    }
+
+    for (const typeId of cooker.typeIds ?? []) {
+      const mapped = COOKER_TYPE_NAME_BY_ID.get(typeId);
+      const normalized = normalizeCookerName(mapped);
+      if (normalized) keys.add(normalized);
+    }
+
+    const name = normalizeCookerName(cooker.name);
+    if (name) keys.add(name);
+
+    for (const key of keys) {
+      capacity.set(key, (capacity.get(key) ?? 0) + 1);
+    }
+  }
+
+  if (capacity.size === 0) {
+    for (const typeId of runtime.placedCookerTypeIds ?? []) {
+      const key = normalizeCookerName(COOKER_TYPE_NAME_BY_ID.get(typeId));
+      if (!key) continue;
+      capacity.set(key, Math.max(1, capacity.get(key) ?? 0));
+    }
+  }
+
+  return capacity;
+}
+
+function getCookerSlotCapacity(key: string, capacity: Map<string, number>): number {
+  return Math.max(1, capacity.get(key) ?? 1);
+}
+
+function getRareCookerRequirement(recipe: IRareRecipeResult | null): CookerRequirement | null {
+  if (!recipe) return null;
+  return getRecipeCookerRequirement(recipe.recipe);
+}
+
+function getNormalCookerRequirement(order: NormalBusinessOrder): CookerRequirement | null {
+  const recipe = getNormalOrderRecipe(order);
+  if (!recipe) return null;
+  return getRecipeCookerRequirement(recipe);
+}
+
+function getRecipeCookerRequirement(recipe: IRecipe | null | undefined): CookerRequirement | null {
+  const key = normalizeCookerName(recipe?.cooker);
+  if (!key) return null;
+  return {
+    key,
+    label: key,
+  };
+}
+
+function getNormalOrderRecipe(order: NormalBusinessOrder): IRecipe | null {
+  return RECIPE_BY_FOOD_ID.get(order.foodId)
+    ?? RECIPES.find((item) => item.recipeId === order.foodId)
+    ?? null;
+}
+
+function buildNormalCookerDemand(
+  orders: NormalBusinessOrder[],
+  states: Map<string, NormalAutoOrderState>,
+  preferences: CompanionPreferences,
+  runtime: RecommendationStateSnapshot | null | undefined,
+  now: number,
+): NormalCookerDemand {
+  const counts = new Map<string, number>();
+  const labels = new Map<string, string[]>();
+  if (!preferences.automationEnabled || !preferences.autoNormalOrderEnabled || !preferences.autoNormalStartCooking) {
+    return { counts, labels };
+  }
+
+  const capacity = buildAutomationCookerCapacity(runtime);
+  let reservedOrders = 0;
+  for (const order of sortNormalOrders(orders).filter((item) => !item.isFulfilled)) {
+    const state = states.get(buildNormalAutoOrderKey(order));
+    if (!shouldAttemptNormalCooking(order, state, preferences, now)) continue;
+
+    const cooker = getNormalCookerRequirement(order);
+    if (!cooker) continue;
+
+    const limit = getCookerSlotCapacity(cooker.key, capacity);
+    const used = counts.get(cooker.key) ?? 0;
+    if (used >= limit) continue;
+
+    counts.set(cooker.key, used + 1);
+    const items = labels.get(cooker.key) ?? [];
+    items.push(`桌 ${formatDesk(order.deskCode)} · ${order.foodName || `#${order.foodId}`}`);
+    labels.set(cooker.key, items);
+    reservedOrders += 1;
+    if (reservedOrders >= MAX_NORMAL_AUTO_ORDERS_PER_TICK) break;
+  }
+
+  return { counts, labels };
+}
+
+function shouldAttemptNormalCooking(
+  order: NormalBusinessOrder,
+  state: NormalAutoOrderState | undefined,
+  preferences: CompanionPreferences,
+  now: number,
+): boolean {
+  if (!preferences.autoNormalStartCooking) return false;
+  if (order.hasServedFood || order.foodId < 0) return false;
+  if (state?.paused || state?.collected) return false;
+  return !state?.prepared || isNormalOrderPreparedStale(state, now);
+}
+
+function reserveAutomationCookerSlot(
+  cycle: AutomationCookerCycle,
+  cooker: CookerRequirement | null,
+  label: string,
+  capacity: Map<string, number>,
+): CookerReservationResult {
+  if (!cooker) return { ok: true, message: '' };
+  const limit = getCookerSlotCapacity(cooker.key, capacity);
+  const used = cycle.used.get(cooker.key) ?? 0;
+  if (used >= limit) {
+    const owners = cycle.labels.get(cooker.key) ?? [];
+    return {
+      ok: false,
+      message: `等待厨具 ${cooker.label}：本轮可用容量 ${limit} 已预约${owners.length > 0 ? `（${owners.join('、')}）` : ''}。`,
+    };
+  }
+
+  cycle.used.set(cooker.key, used + 1);
+  cycle.labels.set(cooker.key, [...(cycle.labels.get(cooker.key) ?? []), label]);
+  return { ok: true, message: '' };
+}
+
+function reserveRareCookerSlot(
+  cycle: AutomationCookerCycle,
+  cooker: CookerRequirement | null,
+  label: string,
+  capacity: Map<string, number>,
+  normalDemand: NormalCookerDemand,
+): CookerReservationResult {
+  if (!cooker) return { ok: true, message: '' };
+  const limit = getCookerSlotCapacity(cooker.key, capacity);
+  const used = cycle.used.get(cooker.key) ?? 0;
+  const normalReserved = normalDemand.counts.get(cooker.key) ?? 0;
+  if (normalReserved > 0 && used + normalReserved >= limit) {
+    const normalLabels = normalDemand.labels.get(cooker.key) ?? [];
+    return {
+      ok: false,
+      message: `等待厨具 ${cooker.label}：本轮优先给普客订单使用${normalLabels.length > 0 ? `（${normalLabels.join('、')}）` : ''}。`,
+    };
+  }
+
+  return reserveAutomationCookerSlot(cycle, cooker, label, capacity);
+}
+
 function buildPlacedCookerNameSet(runtime: RecommendationStateSnapshot): Set<string> {
   const names = new Set<string>();
   for (const typeId of runtime.placedCookerTypeIds ?? []) {
@@ -4824,15 +5065,6 @@ function buildNormalAutoOrderKey(order: NormalBusinessOrder): string {
     order.foodId,
     order.beverageId,
   ].join('|');
-}
-
-function hasRunnableNormalOrderAction(
-  state: NormalAutoOrderState | undefined,
-  preferences: CompanionPreferences,
-  now: number,
-): boolean {
-  if (!preferences.autoNormalStartCooking) return false;
-  return !state?.prepared || isNormalOrderPreparedStale(state, now);
 }
 
 function isNormalOrderPreparedStale(state: NormalAutoOrderState | undefined, now: number): boolean {
