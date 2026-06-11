@@ -69,6 +69,8 @@ const AUTO_PREP_START_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-start-c
 const AUTO_PREP_COLLECT_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-collect-cooking`;
 const AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-favorites-only`;
 const AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-stop-on-error`;
+const AUTO_PREP_QTE_MODE_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-qte-mode`;
+const AUTO_PREP_SIMULATE_QTE_SUCCESS_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-simulate-qte-success`;
 const FILTER_MISSING_COOKERS_STORAGE_KEY = `${STORAGE_PREFIX}-filter-missing-cookers`;
 const GAME_UI_PINNING_STORAGE_KEY = `${STORAGE_PREFIX}-game-ui-pinning`;
 const COOKER_HIGHLIGHT_STORAGE_KEY = `${STORAGE_PREFIX}-cooker-highlight`;
@@ -118,6 +120,7 @@ const MOD_TAB_TRIGGER_CLASS = 'min-w-0 flex-1 data-active:bg-primary data-active
 type ModTab = 'overview' | 'normal' | 'rare' | 'service' | 'inventory' | 'logs' | 'settings';
 const MOD_TABS: ModTab[] = ['overview', 'normal', 'rare', 'service', 'inventory', 'logs', 'settings'];
 type FocusSwitchBehavior = 'hide' | 'keep-visible';
+type AutoPrepQteMode = 'skip' | 'native';
 
 const RATING_LABELS: Record<TRating, string> = {
   ExGood: '完美',
@@ -354,6 +357,8 @@ interface CompanionPreferences {
   autoPrepCollectCooking: boolean;
   autoPrepFavoritesOnly: boolean;
   autoPrepStopOnError: boolean;
+  autoPrepQteMode: AutoPrepQteMode;
+  autoPrepSimulateQteSuccess: boolean;
   filterMissingCookers: boolean;
   gameUiPinningEnabled: boolean;
   cookerHighlightEnabled: boolean;
@@ -2207,6 +2212,31 @@ function ServiceAutomationPanel({
           onCheckedChange={(autoPrepStopOnError) => onPreferenceChange({ autoPrepStopOnError })}
         />
       </div>
+      {preferences.autoPrepStartCooking && (
+        <div className="mt-3 rounded-md border border-border bg-muted/30 p-3">
+          <div className={DENSE_TWO_COLUMN_GRID_TIGHT}>
+            <SwitchControl
+              label="打开原生 QTE"
+              checked={preferences.autoPrepQteMode === 'native'}
+              onCheckedChange={(checked) => onPreferenceChange({ autoPrepQteMode: checked ? 'native' : 'skip' })}
+            />
+            {preferences.autoPrepQteMode === 'native' && (
+              <div className="flex items-end">
+                <SwitchControl
+                  label="自动模拟成功（实验性）"
+                  checked={preferences.autoPrepSimulateQteSuccess}
+                  onCheckedChange={(autoPrepSimulateQteSuccess) => onPreferenceChange({ autoPrepSimulateQteSuccess })}
+                />
+              </div>
+            )}
+          </div>
+          <div className="mt-2 text-xs text-muted-foreground">
+            {preferences.autoPrepQteMode === 'native'
+              ? '开始料理后会尝试打开游戏原生音游面板；启用自动模拟成功时，会额外尝试触发 QTE 成功奖励。'
+              : '跳过 QTE 会保持当前自动料理速度，但不会累计音游数值或触发对应 Buff。'}
+          </div>
+        </div>
+      )}
       <div className="mt-3 text-xs text-muted-foreground">
         自动化只处理当前排序第一笔稀客订单；子选项关闭时不会执行对应动作。
       </div>
@@ -2234,6 +2264,16 @@ function AutoPrepStatus({
         <Badge variant={preferences.autoPrepCompleteOrder ? 'secondary' : 'outline'}>完成 {preferences.autoPrepCompleteOrder ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepTakeBeverage ? 'secondary' : 'outline'}>取酒 {preferences.autoPrepTakeBeverage ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepStartCooking ? 'secondary' : 'outline'}>料理 {preferences.autoPrepStartCooking ? '开' : '关'}</Badge>
+        {preferences.autoPrepStartCooking && (
+          <Badge variant={preferences.autoPrepQteMode === 'native' ? 'secondary' : 'outline'}>
+            QTE {preferences.autoPrepQteMode === 'native' ? '原生' : '跳过'}
+          </Badge>
+        )}
+        {preferences.autoPrepStartCooking && preferences.autoPrepQteMode === 'native' && (
+          <Badge variant={preferences.autoPrepSimulateQteSuccess ? 'secondary' : 'outline'}>
+            模拟成功 {preferences.autoPrepSimulateQteSuccess ? '开' : '关'}
+          </Badge>
+        )}
         <Badge variant={preferences.autoPrepCollectCooking ? 'secondary' : 'outline'}>收取 {preferences.autoPrepCollectCooking ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepFavoritesOnly ? 'secondary' : 'outline'}>收藏限定 {preferences.autoPrepFavoritesOnly ? '开' : '关'}</Badge>
       </div>
@@ -3041,6 +3081,12 @@ async function rareOrderAction(
     autoTakeBeverage: String(preferences.autoPrepTakeBeverage),
     autoStartCooking: String(preferences.autoPrepStartCooking),
     autoCollectCooking: String(preferences.autoPrepCollectCooking),
+    qteMode: preferences.autoPrepStartCooking ? preferences.autoPrepQteMode : 'skip',
+    simulateQteSuccess: String(
+      preferences.autoPrepStartCooking
+        && preferences.autoPrepQteMode === 'native'
+        && preferences.autoPrepSimulateQteSuccess,
+    ),
     favoritesOnly: String(preferences.autoPrepFavoritesOnly),
     stopOnError: String(preferences.autoPrepStopOnError),
     recipeFavorite: String(Boolean(recipeFavorite)),
@@ -3966,10 +4012,16 @@ function readStoredCompanionPreferences(): CompanionPreferences {
     autoPrepCollectCooking: readStoredBoolean(AUTO_PREP_COLLECT_COOKING_STORAGE_KEY, false),
     autoPrepFavoritesOnly: readStoredBoolean(AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY, false),
     autoPrepStopOnError: readStoredBoolean(AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY, false),
+    autoPrepQteMode: readStoredAutoPrepQteMode(),
+    autoPrepSimulateQteSuccess: readStoredBoolean(AUTO_PREP_SIMULATE_QTE_SUCCESS_STORAGE_KEY, false),
     filterMissingCookers: readStoredBoolean(FILTER_MISSING_COOKERS_STORAGE_KEY, true),
     gameUiPinningEnabled: readStoredBoolean(GAME_UI_PINNING_STORAGE_KEY, false),
     cookerHighlightEnabled: readStoredBoolean(COOKER_HIGHLIGHT_STORAGE_KEY, false),
   });
+}
+
+function readStoredAutoPrepQteMode(): AutoPrepQteMode {
+  return normalizeAutoPrepQteMode(localStorage.getItem(AUTO_PREP_QTE_MODE_STORAGE_KEY));
 }
 
 function readStoredFocusSwitchBehavior(): FocusSwitchBehavior {
@@ -3977,7 +4029,13 @@ function readStoredFocusSwitchBehavior(): FocusSwitchBehavior {
   return value === 'keep-visible' ? 'keep-visible' : 'hide';
 }
 
+function normalizeAutoPrepQteMode(value: unknown): AutoPrepQteMode {
+  return value === 'native' ? 'native' : 'skip';
+}
+
 function normalizeCompanionPreferences(value: CompanionPreferences): CompanionPreferences {
+  const qteMode = normalizeAutoPrepQteMode(value.autoPrepQteMode);
+
   return {
     windowOpacity: normalizeWindowOpacity(value.windowOpacity),
     focusSwitchBehavior: value.focusSwitchBehavior === 'keep-visible' ? 'keep-visible' : 'hide',
@@ -3991,6 +4049,8 @@ function normalizeCompanionPreferences(value: CompanionPreferences): CompanionPr
     autoPrepCollectCooking: Boolean(value.autoPrepCollectCooking),
     autoPrepFavoritesOnly: Boolean(value.autoPrepFavoritesOnly),
     autoPrepStopOnError: Boolean(value.autoPrepStopOnError),
+    autoPrepQteMode: qteMode,
+    autoPrepSimulateQteSuccess: qteMode === 'native' && Boolean(value.autoPrepSimulateQteSuccess),
     filterMissingCookers: value.filterMissingCookers !== false,
     gameUiPinningEnabled: Boolean(value.gameUiPinningEnabled),
     cookerHighlightEnabled: Boolean(value.cookerHighlightEnabled),
@@ -4024,6 +4084,8 @@ function persistCompanionPreferences(preferences: CompanionPreferences) {
   localStorage.setItem(AUTO_PREP_COLLECT_COOKING_STORAGE_KEY, normalized.autoPrepCollectCooking ? '1' : '0');
   localStorage.setItem(AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY, normalized.autoPrepFavoritesOnly ? '1' : '0');
   localStorage.setItem(AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY, normalized.autoPrepStopOnError ? '1' : '0');
+  localStorage.setItem(AUTO_PREP_QTE_MODE_STORAGE_KEY, normalized.autoPrepQteMode);
+  localStorage.setItem(AUTO_PREP_SIMULATE_QTE_SUCCESS_STORAGE_KEY, normalized.autoPrepSimulateQteSuccess ? '1' : '0');
   localStorage.setItem(FILTER_MISSING_COOKERS_STORAGE_KEY, normalized.filterMissingCookers ? '1' : '0');
   localStorage.setItem(GAME_UI_PINNING_STORAGE_KEY, normalized.gameUiPinningEnabled ? '1' : '0');
   localStorage.setItem(COOKER_HIGHLIGHT_STORAGE_KEY, normalized.cookerHighlightEnabled ? '1' : '0');

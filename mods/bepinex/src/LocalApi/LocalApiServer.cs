@@ -370,6 +370,8 @@ internal sealed class LocalApiServer : IDisposable
                 AutoTakeBeverage = ReadBoolQuery(query, "autoTakeBeverage") ?? false,
                 AutoStartCooking = ReadBoolQuery(query, "autoStartCooking") ?? false,
                 AutoCollectCooking = ReadBoolQuery(query, "autoCollectCooking") ?? false,
+                QteMode = ReadStringQuery(query, "qteMode"),
+                SimulateQteSuccess = ReadBoolQuery(query, "simulateQteSuccess") ?? false,
                 FavoritesOnly = ReadBoolQuery(query, "favoritesOnly") ?? false,
                 StopOnError = ReadBoolQuery(query, "stopOnError") ?? true,
                 RecipeFavorite = ReadBoolQuery(query, "recipeFavorite") ?? false,
