@@ -79,6 +79,7 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 - 伴随窗口根滚动区域必须预留稳定纵向滚动条槽位，避免页面内容因滚动条出现或消失产生横向跳动。
 - 伴随窗口滚动条样式必须跟随主题和窗口透明度；不要使用全局 `*::-webkit-scrollbar` 覆盖会刻意隐藏滚动条的导航栏。
 - 伴随窗口内手柄导航应优先处理同一行内的左右移动；range 滑杆获得焦点时，左右方向应调节数值而不是跳到其他按钮。收藏按钮等点击后会改变 UI 状态的控件，应使用稳定 `data-gamepad-focus-key` 恢复焦点。
+- Unity 场景切换后必须留出稳定窗口再读取 DayScene/NightScene 运行时对象；不要在切场景后的 Awake/Panel 初始化阶段发布任务、经营或运行时深度快照。任务页读取尤其不能在 DayScene UI 初始化期间扫描场景对象。
 - 运行时库存修改必须排队到 Unity 主线程执行，避免本地 API 网络线程直接写游戏对象。
 - 运行时库存修改页只保留快捷操作，当前为 `-10`、`+10` 和 `99`；不要恢复自定义数量输入、`+1` 或单独“应用”按钮，除非用户明确要求。
 - `任务` 页读取当前进度可接或正在推进的交互任务。NPC 交谈任务优先使用 `RunTimeScheduler.GetAvailableInteractMissionForCharacter()`，候选角色来源包括 `DataBaseDay.GetAllNPCKeys()`、`RunTimeDayScene.trackedNPCs`、`DaySceneMap.allCharacters` 和当前场景 `CharacterConditionComponent`。场景调查任务读取 `RunTimeDayScene.trackedInteradctables` 与 `MissionInteractConditionComponent`，再只读匹配 `RunTimeScheduler.trackingMissions` 中 `MissionNode.FinishCondition.ConditionType.InspectInteractable` 的任务。若场景定位来源为空，但 `trackingMissions` 有数据，则用未完成条件推断状态：第一个未完成条件是交谈/调查时显示未接取，否则显示已开始。NPC 所在场景优先从 `RunTimeDayScene.trackedNPCs` 的 mapLabel 反查，并用 `DaySceneLanguage.RefDaySceneName()` 显示本地化名称。不要再用 `HaveMissionStarted()` 过滤这些任务，因为它本身就是检查任务是否在 `trackingMissions` 中。不得调用 `TryTrigger...` 类会改变游戏状态的方法。读取失败必须显示分来源诊断信息，不得回退到静态全任务列表误导用户。

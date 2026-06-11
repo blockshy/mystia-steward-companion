@@ -19,6 +19,7 @@ internal sealed class StewardOverlayController
     private const float WindowHeaderHeight = 52f;
     private const float ResizeHandleSize = 24f;
     private const float SpecialOrderRefreshDebounceSeconds = 0.2f;
+    private const float MissionSnapshotSceneSettleSeconds = 5f;
     private static readonly JsonSerializerOptions LocalApiJsonOptions = new(JsonSerializerDefaults.Web);
 
     private StewardPluginConfig? _config;
@@ -68,6 +69,7 @@ internal sealed class StewardOverlayController
     private DateTime _lastRuntimeReadUtc = DateTime.MinValue;
     private float _nextAutoRefreshAt;
     private float _nextBusinessRefreshAt;
+    private float _missionSnapshotSafeAt;
     private bool _stylesInitialized;
     private bool _localApiSnapshotErrorLogged;
     private bool _disposed;
@@ -132,6 +134,7 @@ internal sealed class StewardOverlayController
             config.WindowHeight.Value);
         _placeIndex = Math.Max(0, Array.IndexOf(PlaceNames.All, config.DefaultPlace.Value));
         _activeSceneName = GetActiveSceneName();
+        _missionSnapshotSafeAt = Time.realtimeSinceStartup + MissionSnapshotSceneSettleSeconds;
         EnsureWindowInsideScreen();
         LoadRepository();
         _localApiToken = EnsureLocalApiToken(config);
@@ -215,8 +218,9 @@ internal sealed class StewardOverlayController
         if (string.Equals(sceneName, _activeSceneName, StringComparison.Ordinal)) return;
 
         _activeSceneName = sceneName;
-        _nextAutoRefreshAt = 0f;
-        _nextBusinessRefreshAt = 0f;
+        _missionSnapshotSafeAt = Time.realtimeSinceStartup + MissionSnapshotSceneSettleSeconds;
+        _nextAutoRefreshAt = _missionSnapshotSafeAt;
+        _nextBusinessRefreshAt = _missionSnapshotSafeAt;
         _businessFallbackState = null;
 
         if (IsNonGameplayScene(sceneName))
@@ -228,8 +232,10 @@ internal sealed class StewardOverlayController
             return;
         }
 
-        RefreshBusinessContext(false, force: true);
-        RefreshRuntimeState(false);
+        _status = L(
+            "已切换场景，等待游戏场景初始化完成后刷新数据。",
+            "Scene changed. Waiting for game scene initialization before refreshing data.");
+        PublishLocalApiSnapshot();
     }
 
     private bool IsTogglePressed()
@@ -1290,6 +1296,31 @@ internal sealed class StewardOverlayController
     private RuntimeMissionContext? ReadRuntimeMissionsForSnapshot()
     {
         if (!_runtimeLoaded) return null;
+
+        if (IsNonGameplayScene(_activeSceneName))
+        {
+            return new RuntimeMissionContext
+            {
+                Source = "任务数据等待存档加载完成。",
+            };
+        }
+
+        if (IsNightBusinessScene(_activeSceneName))
+        {
+            return new RuntimeMissionContext
+            {
+                Source = "任务数据只在日间场景读取；当前处于夜间经营。",
+            };
+        }
+
+        var remainingSettleSeconds = _missionSnapshotSafeAt - Time.realtimeSinceStartup;
+        if (remainingSettleSeconds > 0f)
+        {
+            return new RuntimeMissionContext
+            {
+                Source = $"任务数据等待场景稳定：{Math.Ceiling(remainingSettleSeconds):0} 秒后读取。",
+            };
+        }
 
         try
         {
