@@ -327,14 +327,14 @@ internal static class RuntimeOrderPreparationService
         }
         else
         {
-            var foodInAir = ReadMember(runtimeOrder.Order, "ServedFoodInAir");
-            if (foodInAir != null && IsSellable(foodInAir, sellableType: 0, id: expectedFoodId))
+            var pendingFood = ReadMember(runtimeOrder.Order, "ServedFoodInAir");
+            if (pendingFood != null && IsSellable(pendingFood, sellableType: 0, id: expectedFoodId))
             {
-                AddSkipped(result, "普客保温箱", $"目标料理 {request.RecipeName} 已在普客保温箱中，等待玩家手动送达。");
+                AddSkipped(result, "普客料理", $"目标料理 {request.RecipeName} 已处于订单待送达状态，等待玩家在游戏内确认。");
             }
-            else if (foodInAir != null)
+            else if (pendingFood != null)
             {
-                AddFailure(result, "普客保温箱", $"普客保温箱中已有其他料理，无法自动放入 {request.RecipeName}。");
+                AddFailure(result, "普客料理", $"订单已有其他待送达料理，暂不自动制作 {request.RecipeName}。");
                 if (request.StopOnError) return Finish(result);
             }
             else if (request.AutoStartCooking)
@@ -759,27 +759,154 @@ internal static class RuntimeOrderPreparationService
             return (true, $"{pending.RecipeName} 已完成，但目标普客订单已有料理，本次未放入保温箱。");
         }
 
-        var existingFoodInAir = ReadMember(order, "ServedFoodInAir");
-        if (existingFoodInAir != null)
+        var pendingFood = ReadMember(order, "ServedFoodInAir");
+        if (pendingFood != null)
         {
-            if (pending.Target.FoodId >= 0 && IsSellable(existingFoodInAir, sellableType: 0, id: pending.Target.FoodId))
+            if (pending.Target.FoodId >= 0 && IsSellable(pendingFood, sellableType: 0, id: pending.Target.FoodId))
             {
                 TryResetCookControllerAfterNormalWarmerCollect(pending.CookController, cookedFood);
-                return (true, $"{pending.RecipeName} 已完成，但目标料理已在普客保温箱中，本次未重复放入。");
+                return (true, $"{pending.RecipeName} 已完成，但目标料理已处于订单待送达状态，本次未放入保温箱。");
             }
 
-            return (false, $"{pending.RecipeName} 已完成，但普客保温位已有其他料理，等待玩家处理后再自动收取。");
+            return (false, $"{pending.RecipeName} 已完成，但订单已有其他待送达料理，等待玩家处理后再自动收取。");
         }
 
-        WriteMember(order, "ServedFoodInAir", cookedFood);
-        if (ReadMember(order, "ServedFoodInAir") == null)
+        var warmer = TryFindEmptyWarmerController(pending.CookController);
+        if (!warmer.Ok || warmer.Controller == null)
         {
-            return (true, $"{pending.RecipeName} 已完成，但写入普客保温位失败，已停止自动收取。");
+            return (false, $"{pending.RecipeName} 已完成，但{warmer.Message}，等待下一轮重试。");
+        }
+
+        if (!TryStoreFoodInWarmer(warmer.Controller, cookedFood, pending.Target.FoodId, out var storeMessage))
+        {
+            return (false, $"{pending.RecipeName} 已完成，但{storeMessage}，等待下一轮重试。");
         }
 
         TryResetCookControllerAfterNormalWarmerCollect(pending.CookController, cookedFood);
 
-        return (true, $"{pending.RecipeName} 已自动收至普客保温箱，等待玩家手动送达。");
+        return (true, $"{pending.RecipeName} 已自动收至普客保温箱，等待玩家手动送达。{storeMessage}");
+    }
+
+    private static (bool Ok, object? Controller, string Message) TryFindEmptyWarmerController(object sourceController)
+    {
+        object? cookSystem;
+        try
+        {
+            cookSystem = GetSingletonInstance(CookSystemManagerTypeName);
+        }
+        catch (Exception ex)
+        {
+            return (false, null, $"当前厨具管理器不可用：{ex.GetBaseException().Message}");
+        }
+
+        if (cookSystem == null)
+        {
+            return (false, null, "当前厨具管理器不可用");
+        }
+
+        object? controllers;
+        try
+        {
+            controllers = InvokeInstance(cookSystem, "get_AllCookerControllers", Array.Empty<object?>());
+        }
+        catch (Exception ex)
+        {
+            return (false, null, $"读取厨具控制器失败：{ex.GetBaseException().Message}");
+        }
+
+        var totalCount = 0;
+        var emptyCount = 0;
+        var warmerCount = 0;
+        foreach (var controller in ReadObjectEnumerable(controllers))
+        {
+            try
+            {
+                totalCount++;
+                if (IsSameObject(controller, sourceController)) continue;
+                if (ReadCookControllerResult(controller) != null) continue;
+                if (ReadCookControllerChosenRecipe(controller) != null) continue;
+
+                var phase = ToInt(TryInvokeInstanceValue(controller, "get_Phase") ?? ReadMember(controller, "Phase"), 0);
+                if (phase != 0) continue;
+
+                emptyCount++;
+                var cooker = InvokeInstance(controller, "get_Cooker", Array.Empty<object?>());
+                if (cooker == null || !IsWarmerCooker(cooker)) continue;
+
+                warmerCount++;
+                return (true, controller, $"找到空保温位（扫描 {totalCount} 个控制器，空位 {emptyCount} 个）");
+            }
+            catch
+            {
+                // Stale IL2CPP controllers can appear while the scene is changing; keep scanning.
+            }
+        }
+
+        if (totalCount == 0)
+        {
+            return (false, null, "当前没有读取到任何厨具控制器");
+        }
+
+        if (emptyCount == 0)
+        {
+            return (false, null, $"没有空闲保温位（读取到 {totalCount} 个控制器）");
+        }
+
+        return (false, null, $"没有匹配到空保温位（读取到 {totalCount} 个控制器，空位 {emptyCount} 个，保温位 {warmerCount} 个）");
+    }
+
+    private static bool TryStoreFoodInWarmer(object warmerController, object cookedFood, int expectedFoodId, out string message)
+    {
+        try
+        {
+            if (!TryInvokeInstance(warmerController, "Store", new object?[] { cookedFood }))
+            {
+                WriteMember(warmerController, "Result", cookedFood);
+            }
+
+            var storedFood = ReadCookControllerResult(warmerController);
+            if (storedFood == null)
+            {
+                message = "写入保温箱失败：写入后未读取到成品";
+                return false;
+            }
+
+            if (expectedFoodId >= 0 && !IsSellable(storedFood, sellableType: 0, id: expectedFoodId))
+            {
+                message = $"写入保温箱后读取到的料理不匹配（读取到 type={ReadSellableType(storedFood)}, id={ReadSellableId(storedFood)}）";
+                return false;
+            }
+
+            message = "";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            message = $"写入保温箱失败：{ex.GetBaseException().Message}";
+            return false;
+        }
+    }
+
+    private static object? ReadCookControllerResult(object cookController)
+    {
+        return TryInvokeInstanceValue(cookController, "get_Result") ?? ReadMember(cookController, "Result");
+    }
+
+    private static object? ReadCookControllerChosenRecipe(object cookController)
+    {
+        return TryInvokeInstanceValue(cookController, "get_ChosenRecipe") ?? ReadMember(cookController, "ChosenRecipe");
+    }
+
+    private static bool IsWarmerCooker(object cooker)
+    {
+        var directType = ToInt(TryInvokeInstanceValue(cooker, "get_Type")
+            ?? ReadMember(cooker, "Type")
+            ?? ReadMember(cooker, "type"), -1);
+        if (directType == 0) return true;
+        if (directType > 0) return false;
+
+        var cookerTypes = TryInvokeInstanceValue(cooker, "get_AllAvailableCookerType");
+        return !ReadIntEnumerable(cookerTypes).Any(id => id > 0);
     }
 
     private static void TryResetCookControllerAfterNormalWarmerCollect(object cookController, object cookedFood)
