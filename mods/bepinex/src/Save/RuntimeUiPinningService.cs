@@ -36,7 +36,7 @@ internal static class RuntimeUiPinningService
         {
             lock (SyncRoot)
             {
-                return $"{_status}; target=recipe:{_recipeId}/{_recipeName}, beverage:{_beverageId}/{_beverageName}, cooker:{_cookerTypeId}/{_cookerName}, ingredients:{string.Join(",", _ingredientIds)}; last={_lastAction}";
+                return $"{_status}; target=recipe:{_recipeId}/{_recipeName}, beverage:{_beverageId}/{_beverageName}, cooker:{_cookerTypeId}/{_cookerName}, ingredients:{string.Join(",", _ingredientIds)}; highlight={RuntimeCookerHighlightService.Status}; last={_lastAction}";
             }
         }
     }
@@ -108,6 +108,7 @@ internal static class RuntimeUiPinningService
             _log?.LogInfo(enabled
                 ? $"Runtime UI pinning target updated: recipe={_recipeId}/{_recipeName}, beverage={_beverageId}/{_beverageName}, cooker={_cookerTypeId}/{_cookerName}, ingredients={string.Join(",", _ingredientIds)}."
                 : "Runtime UI pinning target disabled.");
+            RuntimeCookerHighlightService.UpdateTarget(enabled, _cookerTypeId, _cookerName);
             return Status;
         }
     }

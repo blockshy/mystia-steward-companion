@@ -291,6 +291,7 @@ internal sealed class StewardOverlayController
 
     public void LateUpdate()
     {
+        RuntimeCookerHighlightService.Tick();
         if (_visible && _config?.BlockGameInputOnPanel.Value == true)
         {
             BlockGameInputIfPointerOverPanel();
@@ -305,6 +306,7 @@ internal sealed class StewardOverlayController
         CompanionProcessLauncher.TryNotifyExit();
         _localApiServer?.Dispose();
         _localApiServer = null;
+        RuntimeCookerHighlightService.Clear();
         RestoreCursorState();
     }
 
@@ -1168,6 +1170,7 @@ internal sealed class StewardOverlayController
                     Source = L("当前不在夜晚经营场景。", "Not in a night business scene."),
                 };
                 ClearPlacedCookersFromCurrentState("not in night business scene");
+                RuntimeCookerHighlightService.Clear();
                 if (manual) _status = L("当前无经营场景。", "No active business scene.");
                 return;
             }
@@ -1604,6 +1607,7 @@ internal sealed class StewardOverlayController
         _runtimeSource = "";
         _runtimeStateSignature = "";
         _lastRuntimeReadUtc = DateTime.MinValue;
+        RuntimeCookerHighlightService.Clear();
         InvalidateRecommendationCache();
         _status = status;
     }
