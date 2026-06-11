@@ -83,6 +83,10 @@ public static class RuntimeMissionSnapshotService
         source.Add($"sceneInteractables={sceneInteractableMissions.Count}");
         missions.AddRange(sceneInteractableMissions);
 
+        var fallbackMissions = ReadTrackingMissionFallbackMissions(dataBaseDayType, schedulerType, trackingMissions).ToList();
+        source.Add($"trackingFallback={fallbackMissions.Count}");
+        missions.AddRange(fallbackMissions);
+
         var deduplicated = missions
             .GroupBy(mission => $"{mission.Label}|{mission.CharacterLabel}", StringComparer.Ordinal)
             .Select(group => group.First())
@@ -144,9 +148,8 @@ public static class RuntimeMissionSnapshotService
 
                 foreach (var label in availableLabels)
                 {
-                    var started = RuntimeReflectionUtility.ToBool(RuntimeReflectionUtility.InvokeStaticMethod(schedulerType, "HaveMissionStarted", label));
                     var finished = RuntimeReflectionUtility.ToBool(RuntimeReflectionUtility.InvokeStaticMethod(schedulerType, "HaveMissionFinished", label));
-                    if (started || finished) continue;
+                    if (finished) continue;
 
                     missions.Add(new RuntimeMissionInfo
                     {
@@ -155,7 +158,7 @@ public static class RuntimeMissionSnapshotService
                         CharacterLabel = characterLabel,
                         CharacterName = ResolveNpcName(dataBaseDayType, characterLabel),
                         Source = source,
-                        Started = started,
+                        Started = false,
                         Finished = finished,
                     });
                 }
@@ -343,9 +346,8 @@ public static class RuntimeMissionSnapshotService
             var missionLabel = ReadTextMember(trackedMission, "missionLabel");
             if (string.IsNullOrWhiteSpace(missionLabel)) continue;
 
-            var started = RuntimeReflectionUtility.ToBool(RuntimeReflectionUtility.InvokeStaticMethod(schedulerType, "HaveMissionStarted", missionLabel));
             var finished = RuntimeReflectionUtility.ToBool(RuntimeReflectionUtility.InvokeStaticMethod(schedulerType, "HaveMissionFinished", missionLabel));
-            if (started || finished) continue;
+            if (finished) continue;
 
             var mission = RuntimeReflectionUtility.InvokeMethod(trackedMission, "GetMissionReference");
             var finishConditions = RuntimeReflectionUtility.GetMemberValue(mission, "finishCondition");
@@ -373,7 +375,7 @@ public static class RuntimeMissionSnapshotService
                     CharacterLabel = interactableLabel,
                     CharacterName = "场景交互",
                     Source = source,
-                    Started = started,
+                    Started = false,
                     Finished = finished,
                 };
             }
@@ -390,6 +392,73 @@ public static class RuntimeMissionSnapshotService
                 Source = $"{source}Key",
                 Started = false,
                 Finished = false,
+            };
+        }
+    }
+
+    private static IEnumerable<RuntimeMissionInfo> ReadTrackingMissionFallbackMissions(
+        Type dataBaseDayType,
+        Type schedulerType,
+        IReadOnlyList<object?> trackingMissions)
+    {
+        foreach (var trackedMission in trackingMissions)
+        {
+            var missionLabel = ReadTextMember(trackedMission, "missionLabel");
+            if (string.IsNullOrWhiteSpace(missionLabel)) continue;
+
+            var finished = RuntimeReflectionUtility.ToBool(RuntimeReflectionUtility.InvokeStaticMethod(schedulerType, "HaveMissionFinished", missionLabel));
+            if (finished) continue;
+
+            var mission = RuntimeReflectionUtility.InvokeMethod(trackedMission, "GetMissionReference");
+            var finishConditions = RuntimeReflectionUtility.GetMemberValue(mission, "finishCondition");
+            RuntimeMissionInfo? fallback = null;
+
+            foreach (var condition in RuntimeReflectionUtility.EnumerateObjects(finishConditions))
+            {
+                if (IsConditionType(condition, "TalkWithCharacter", 1))
+                {
+                    var characterLabel = ReadTextMember(condition, "label");
+                    if (string.IsNullOrWhiteSpace(characterLabel)) continue;
+                    fallback = new RuntimeMissionInfo
+                    {
+                        Label = missionLabel,
+                        Title = ResolveMissionTitle(missionLabel),
+                        CharacterLabel = characterLabel,
+                        CharacterName = ResolveNpcName(dataBaseDayType, characterLabel),
+                        Source = "TrackingMission:Talk",
+                        Started = false,
+                        Finished = finished,
+                    };
+                    break;
+                }
+
+                if (IsConditionType(condition, "InspectInteractable", 2))
+                {
+                    var interactableLabel = ReadTextMember(condition, "label");
+                    if (string.IsNullOrWhiteSpace(interactableLabel)) continue;
+                    fallback = new RuntimeMissionInfo
+                    {
+                        Label = missionLabel,
+                        Title = ResolveMissionTitle(missionLabel),
+                        CharacterLabel = interactableLabel,
+                        CharacterName = "场景交互",
+                        Source = "TrackingMission:Inspect",
+                        Started = false,
+                        Finished = finished,
+                    };
+                    break;
+                }
+            }
+
+            yield return fallback ?? new RuntimeMissionInfo
+            {
+                Label = missionLabel,
+                Title = ResolveMissionTitle(missionLabel),
+                CharacterLabel = missionLabel,
+                CharacterName = "任务",
+                Source = "TrackingMission",
+                Started = false,
+                Finished = finished,
             };
         }
     }

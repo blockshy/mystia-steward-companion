@@ -316,7 +316,7 @@ http://127.0.0.1:32145
 端点：
 
 - `GET /health`：检查本地 API 是否启动，不需要 token。
-- `GET /snapshot`：读取最新运行态快照。快照由 Unity 主线程按自动刷新节奏生成，网络线程只返回缓存 JSON。快照包含推荐状态、夜间稀客订单、当前可接任务和普通客订单诊断；任务读取有短缓存，候选来源包括全局 NPC、当前场景 NPC、`DaySceneMap`、跟踪交互物件和场景任务交互组件，普通客诊断会扫描 HUD 订单和经营管理器桌位订单。
+- `GET /snapshot`：读取最新运行态快照。快照由 Unity 主线程按自动刷新节奏生成，网络线程只返回缓存 JSON。快照包含推荐状态、夜间稀客订单、当前可接任务和普通客订单诊断；任务读取有短缓存，候选来源包括全局 NPC、当前场景 NPC、`DaySceneMap`、跟踪交互物件、场景任务交互组件和未完成 `trackingMissions` fallback，普通客诊断会扫描 HUD 订单和经营管理器桌位订单。
 - `GET /logs/settings`：读取日志读取和经营诊断开关状态。
 - `GET /logs/config?logAccess=true|false&diagnostics=true|false`：由伴随窗口回写日志和诊断开关。
 - `GET /logs/open-folder?target=log|diagnostics`：打开对应日志目录。
