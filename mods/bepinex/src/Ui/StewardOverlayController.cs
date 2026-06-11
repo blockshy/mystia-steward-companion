@@ -129,8 +129,8 @@ internal sealed class StewardOverlayController
         LoadRepository();
         _localApiToken = EnsureLocalApiToken(config);
         StartLocalApi();
-        RefreshRuntimeState(false);
         RefreshBusinessContext(false);
+        RefreshRuntimeState(false);
         PublishLocalApiSnapshot();
         if (_localApiServer != null)
         {
@@ -1074,8 +1074,7 @@ internal sealed class StewardOverlayController
 
             if (RuntimeReflectionRecommendationStateProvider.CanReadRuntimeState(out var runtimeReason))
             {
-                var includePlacedCookers = IsNightBusinessScene(_activeSceneName)
-                    || RuntimeCookerSnapshotService.HasNightBusinessContext();
+                var includePlacedCookers = HasActiveNightBusinessContext(_businessContext);
                 IRecommendationStateProvider runtimeProvider = new RuntimeReflectionRecommendationStateProvider(_repository, includePlacedCookers);
                 var previousSource = _runtimeSource;
                 var nextRuntimeState = runtimeProvider.LoadState();
@@ -1168,6 +1167,7 @@ internal sealed class StewardOverlayController
                 {
                     Source = L("当前不在夜晚经营场景。", "Not in a night business scene."),
                 };
+                ClearPlacedCookersFromCurrentState("not in night business scene");
                 if (manual) _status = L("当前无经营场景。", "No active business scene.");
                 return;
             }
@@ -1606,6 +1606,37 @@ internal sealed class StewardOverlayController
         _lastRuntimeReadUtc = DateTime.MinValue;
         InvalidateRecommendationCache();
         _status = status;
+    }
+
+    private void ClearPlacedCookersFromCurrentState(string status)
+    {
+        if (_state == null) return;
+        if (_state.PlacedCookers.Count == 0
+            && _state.PlacedCookerTypeIds.Count == 0
+            && string.Equals(_state.PlacedCookerStatus, status, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _state.PlacedCookers.Clear();
+        _state.PlacedCookerTypeIds.Clear();
+        _state.PlacedCookerStatus = status;
+        _runtimeStateSignature = BuildRecommendationStateSignature(_state);
+        _businessFallbackState = null;
+        InvalidateRecommendationCache();
+    }
+
+    private static bool HasActiveNightBusinessContext(NightBusinessContext? context)
+    {
+        if (context == null) return false;
+        if (string.IsNullOrWhiteSpace(context.Place) && string.IsNullOrWhiteSpace(context.PlaceLabel)) return false;
+        if (context.Source.Contains("not in", StringComparison.OrdinalIgnoreCase)
+            || context.Source.Contains("不在", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return true;
     }
 
     private RecommendationState GetBusinessRecommendationState()
