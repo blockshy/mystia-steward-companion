@@ -96,6 +96,11 @@ const MAX_LOG_LINES_IN_VIEW = 400;
 const AUTO_FIRST_ORDER_TICK_MS = 1500;
 const MAX_NORMAL_AUTO_ORDERS_PER_TICK = 3;
 const NORMAL_AUTO_PREPARED_RETRY_MS = 15000;
+const AUTO_STEP_RETRY_MS = 15000;
+const AUTO_STEP_ROLLBACK_MS = 30000;
+const AUTO_JOB_STALL_MS = 90000;
+const MAX_AUTO_STEP_RETRIES = 3;
+const MAX_AUTO_ROLLBACKS = 2;
 const NON_ORDERABLE_RARE_FOOD_TAGS = new Set(['流行喜爱', '流行厌恶']);
 const COOKER_TYPE_NAME_BY_ID = new Map<number, string>([
   [1, '煮锅'],
@@ -486,7 +491,15 @@ interface CompanionPreferences {
 interface AutoFirstOrderState {
   orderKey: string;
   prepared: boolean;
+  preparedAtMs: number;
   beverageHandled: boolean;
+  beverageHandledAtMs: number;
+  step: AutomationStep;
+  stepStartedAtMs: number;
+  lastProgressAtMs: number;
+  retryCount: number;
+  rollbackCount: number;
+  lastError: string;
   paused: boolean;
 }
 
@@ -495,8 +508,25 @@ interface NormalAutoOrderState {
   prepared: boolean;
   preparedAtMs: number;
   collected: boolean;
+  step: AutomationStep;
+  stepStartedAtMs: number;
+  lastProgressAtMs: number;
+  retryCount: number;
+  rollbackCount: number;
+  lastError: string;
   paused: boolean;
 }
+
+type AutomationStep =
+  | 'idle'
+  | 'match-order'
+  | 'ensure-beverage'
+  | 'ensure-cooking'
+  | 'wait-food-tray'
+  | 'wait-food-stored'
+  | 'complete-order'
+  | 'done'
+  | 'paused';
 
 type ToggleRecipeFavorite = (customer: ICustomerRare, foodTag: string, recipe: IRareRecipeResult) => Promise<void>;
 type ToggleBeverageFavorite = (customer: ICustomerRare, beverageTag: string, beverage: IRareBeverageResult) => Promise<void>;
@@ -540,7 +570,7 @@ export function ModWorkbench() {
   const [normalOrderBusy, setNormalOrderBusy] = useState(false);
   const [normalOrderMessage, setNormalOrderMessage] = useState('');
   const [normalOrderPausedCount, setNormalOrderPausedCount] = useState(0);
-  const autoFirstOrderStateRef = useRef<AutoFirstOrderState>({ orderKey: '', prepared: false, beverageHandled: false, paused: false });
+  const autoFirstOrderStateRef = useRef<AutoFirstOrderState>(emptyAutoFirstOrderState());
   const autoFirstOrderBusyRef = useRef(false);
   const normalOrderStatesRef = useRef(new Map<string, NormalAutoOrderState>());
   const normalOrderBusyRef = useRef(false);
@@ -737,9 +767,10 @@ export function ModWorkbench() {
     }
 
     const orderKey = buildAutoOrderKey(selection.item);
-    const currentState = autoFirstOrderStateRef.current;
+    let currentState = autoFirstOrderStateRef.current;
     if (currentState.orderKey !== orderKey) {
-      autoFirstOrderStateRef.current = { orderKey, prepared: false, beverageHandled: false, paused: false };
+      autoFirstOrderStateRef.current = emptyAutoFirstOrderState(orderKey, now);
+      currentState = autoFirstOrderStateRef.current;
       setAutoPrepPaused(false);
     } else if (currentState.paused) {
       setAutoPrepPaused(true);
@@ -774,21 +805,86 @@ export function ModWorkbench() {
         missingTrayPart = getMissingTrayPart(completeResponse);
         if (!missingTrayPart) {
           const message = `自动化\n${formatOrderPreparationResponse(completeResponse)}`;
-          if (companionPreferences.autoPrepStopOnError) {
-            autoFirstOrderStateRef.current = { ...autoFirstOrderStateRef.current, orderKey, paused: true };
+          const nextState = updateAutomationAfterResponse(
+            autoFirstOrderStateRef.current,
+            completeResponse,
+            now,
+            'complete-order',
+            companionPreferences.autoPrepStopOnError,
+          );
+          autoFirstOrderStateRef.current = nextState;
+          if (nextState.paused) {
             setAutoPrepPaused(true);
-            setAutoPrepMessage(`${message}\n自动化已暂停，订单变化或重新开启后会继续。`);
+            setAutoPrepMessage(`${message}\n${formatAutomationState(nextState)}\n自动化已暂停，订单变化或重新开启后会继续。`);
           } else {
             setAutoPrepPaused(false);
-            setAutoPrepMessage(message);
+            setAutoPrepMessage(`${message}\n${formatAutomationState(nextState)}\n当前步骤会继续重试。`);
           }
           await refresh();
           return;
         }
 
+        const stateBeforeWait = autoFirstOrderStateRef.current;
+        if (missingTrayPart === 'food' && stateBeforeWait.prepared) {
+          const shouldRollback = isAutomationTimestampStale(stateBeforeWait.preparedAtMs, now, AUTO_STEP_ROLLBACK_MS);
+          if (shouldRollback && stateBeforeWait.rollbackCount >= MAX_AUTO_ROLLBACKS) {
+            autoFirstOrderStateRef.current = pauseAutomationState(
+              stateBeforeWait,
+              now,
+              `目标料理长时间未进入送餐盘，已达到回退上限 ${MAX_AUTO_ROLLBACKS} 次。`,
+            );
+            setAutoPrepPaused(true);
+            setAutoPrepMessage(
+              `自动化\n${formatOrderPreparationResponse(completeResponse)}\n${formatAutomationState(autoFirstOrderStateRef.current)}\n自动化已暂停，订单变化或重新开启后会继续。`,
+            );
+            await refresh();
+            return;
+          }
+
+          if (!shouldRollback) {
+            autoFirstOrderStateRef.current = markAutomationWaiting(stateBeforeWait, 'wait-food-tray', now, '等待目标料理进入送餐盘。');
+            setAutoPrepMessage(
+              `自动化\n${formatOrderPreparationResponse(completeResponse)}\n${formatAutomationState(autoFirstOrderStateRef.current)}`,
+            );
+            await refresh();
+            return;
+          }
+
+          autoFirstOrderStateRef.current = {
+            ...stateBeforeWait,
+            prepared: false,
+            preparedAtMs: 0,
+            step: 'ensure-cooking',
+            stepStartedAtMs: now,
+            rollbackCount: stateBeforeWait.rollbackCount + 1,
+            retryCount: 0,
+            lastError: '目标料理未进入送餐盘，回退到重新开始料理。',
+          };
+        } else if (missingTrayPart === 'beverage' && stateBeforeWait.beverageHandled) {
+          const shouldRetryBeverage = isAutomationTimestampStale(stateBeforeWait.beverageHandledAtMs, now, AUTO_STEP_RETRY_MS);
+          if (!shouldRetryBeverage) {
+            autoFirstOrderStateRef.current = markAutomationWaiting(stateBeforeWait, 'ensure-beverage', now, '等待目标酒水进入送餐盘。');
+            setAutoPrepMessage(
+              `自动化\n${formatOrderPreparationResponse(completeResponse)}\n${formatAutomationState(autoFirstOrderStateRef.current)}`,
+            );
+            await refresh();
+            return;
+          }
+
+          autoFirstOrderStateRef.current = {
+            ...stateBeforeWait,
+            beverageHandled: false,
+            beverageHandledAtMs: 0,
+            step: 'ensure-beverage',
+            stepStartedAtMs: now,
+            retryCount: stateBeforeWait.retryCount + 1,
+            lastError: '目标酒水未进入送餐盘，重新取酒。',
+          };
+        }
+
         if (missingTrayPart === 'food' && autoFirstOrderStateRef.current.prepared) {
           setAutoPrepMessage(
-            `自动化\n${formatOrderPreparationResponse(completeResponse)}\n已准备过当前订单，等待料理完成或送餐盘更新。`,
+            `自动化\n${formatOrderPreparationResponse(completeResponse)}\n${formatAutomationState(autoFirstOrderStateRef.current)}`,
           );
           await refresh();
           return;
@@ -835,19 +931,29 @@ export function ModWorkbench() {
       const nextBeverageHandled = autoFirstOrderStateRef.current.beverageHandled
         || didCompleteStep(prepareResponse, '自动取酒');
       const transientFailure = !prepareResponse.ok && isTransientAutoPreparationFailure(prepareResponse);
-      autoFirstOrderStateRef.current = {
-        orderKey,
-        prepared: nextPrepared,
-        beverageHandled: nextBeverageHandled,
-        paused: !prepareResponse.ok && !transientFailure && companionPreferences.autoPrepStopOnError,
-      };
+      const preparedAtMs = nextPrepared && !autoFirstOrderStateRef.current.prepared ? now : autoFirstOrderStateRef.current.preparedAtMs;
+      const beverageHandledAtMs = nextBeverageHandled && !autoFirstOrderStateRef.current.beverageHandled ? now : autoFirstOrderStateRef.current.beverageHandledAtMs;
+      autoFirstOrderStateRef.current = updateAutomationAfterResponse(
+        {
+          ...autoFirstOrderStateRef.current,
+          orderKey,
+          prepared: nextPrepared,
+          preparedAtMs,
+          beverageHandled: nextBeverageHandled,
+          beverageHandledAtMs,
+        },
+        prepareResponse,
+        now,
+        shouldPrepareFood ? 'ensure-cooking' : shouldPrepareBeverage ? 'ensure-beverage' : 'match-order',
+        companionPreferences.autoPrepStopOnError,
+      );
       setAutoPrepPaused(autoFirstOrderStateRef.current.paused);
       const suffix = autoFirstOrderStateRef.current.paused
         ? '\n自动化已暂停，订单变化或重新开启后会继续。'
         : transientFailure
           ? '\n当前条件暂不可执行，将继续等待并自动重试。'
           : '';
-      setAutoPrepMessage(`自动化\n${formatOrderPreparationResponse(prepareResponse)}${suffix}`);
+      setAutoPrepMessage(`自动化\n${formatOrderPreparationResponse(prepareResponse)}\n${formatAutomationState(autoFirstOrderStateRef.current)}${suffix}`);
       await refresh();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -921,8 +1027,11 @@ export function ModWorkbench() {
         return state?.prepared && !state.collected;
       }).length;
       const collectedCount = orders.filter((order) => normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order))?.collected).length;
+      const waitingState = orders
+        .map((order) => normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order)))
+        .find((state) => state && (state.prepared || state.collected || state.paused));
       setNormalOrderMessage(waitingCount > 0 || collectedCount > 0 || pausedCount > 0
-        ? `普客自动化\n当前没有需要新开锅的普客订单。\n等待制作或送达 ${waitingCount} 笔，已收至保温箱 ${collectedCount} 笔，暂停 ${pausedCount} 笔。`
+        ? `普客自动化\n当前没有需要新开锅的普客订单。\n等待制作或送达 ${waitingCount} 笔，已收至保温箱 ${collectedCount} 笔，暂停 ${pausedCount} 笔。${waitingState ? `\n${formatAutomationState(waitingState)}` : ''}`
         : '普客自动化\n当前没有需要执行的新步骤。');
       lastAutoNormalOrderAtRef.current = now;
       return;
@@ -935,8 +1044,19 @@ export function ModWorkbench() {
       const messages: string[] = [];
       for (const order of runnableOrders) {
         const orderKey = buildNormalAutoOrderKey(order);
-        const currentState = normalOrderStatesRef.current.get(orderKey) ?? emptyNormalAutoOrderState(orderKey);
+        const currentState = normalOrderStatesRef.current.get(orderKey) ?? emptyNormalAutoOrderState(orderKey, now);
         const shouldRetryPrepared = isNormalOrderPreparedStale(currentState, now);
+        if (shouldRetryPrepared && currentState.rollbackCount >= MAX_AUTO_ROLLBACKS) {
+          const pausedState = pauseAutomationState(
+            currentState,
+            now,
+            `目标料理长时间未进入普客暂存容器，已达到回退上限 ${MAX_AUTO_ROLLBACKS} 次。`,
+          );
+          normalOrderStatesRef.current.set(orderKey, pausedState);
+          messages.push(`桌 ${formatDesk(order.deskCode)} · ${order.foodName || `#${order.foodId}`}\n${formatAutomationState(pausedState)}\n普客自动化已暂停该订单，订单变化或重新开启后会继续。`);
+          continue;
+        }
+
         const requestPreferences = {
           ...companionPreferences,
           autoNormalStartCooking: companionPreferences.autoNormalStartCooking
@@ -961,24 +1081,36 @@ export function ModWorkbench() {
           || didNormalOrderCollectToWarmer(response);
         const collected = currentState.collected || didNormalOrderCollectToWarmer(response);
         const prepared = currentState.prepared || acknowledgedStart;
-        const nextState = {
-          orderKey,
-          prepared,
-          preparedAtMs: acknowledgedStart || (shouldRetryPrepared && transientFailure)
-            ? now
-            : currentState.preparedAtMs,
+        const nextState = updateAutomationAfterResponse(
+          {
+            ...currentState,
+            orderKey,
+            prepared,
+            preparedAtMs: acknowledgedStart || (shouldRetryPrepared && transientFailure)
+              ? now
+              : currentState.preparedAtMs,
+            collected,
+            step: collected ? 'done' : prepared ? 'wait-food-stored' : 'ensure-cooking',
+            rollbackCount: shouldRetryPrepared && !collected ? currentState.rollbackCount + 1 : currentState.rollbackCount,
+          },
+          response,
+          now,
+          collected ? 'done' : requestPreferences.autoNormalStartCooking ? 'ensure-cooking' : 'wait-food-stored',
+          companionPreferences.autoNormalStopOnError,
+        );
+        const normalizedNextState = {
+          ...nextState,
           collected,
-          paused: !response.ok && !transientFailure && companionPreferences.autoNormalStopOnError,
         };
-        normalOrderStatesRef.current.set(orderKey, nextState);
+        normalOrderStatesRef.current.set(orderKey, normalizedNextState);
 
         const prefix = `桌 ${formatDesk(order.deskCode)} · ${order.foodName || `#${order.foodId}`}`;
-        const suffix = nextState.paused
+        const suffix = normalizedNextState.paused
           ? '\n普客自动化已暂停该订单，订单变化或重新开启后会继续。'
           : transientFailure
             ? '\n当前条件暂不可执行，将继续等待并自动重试。'
             : '';
-        messages.push(`${prefix}\n${formatOrderPreparationResponse(response)}${suffix}`);
+        messages.push(`${prefix}\n${formatOrderPreparationResponse(response)}\n${formatAutomationState(normalizedNextState)}${suffix}`);
       }
       setNormalOrderPausedCount(Array.from(normalOrderStatesRef.current.values()).filter((state) => state.paused).length);
       setNormalOrderMessage(messages.length > 0
@@ -4434,23 +4566,153 @@ function isNormalOrderPreparedStale(state: NormalAutoOrderState | undefined, now
   return state.preparedAtMs > 0 && now - state.preparedAtMs >= NORMAL_AUTO_PREPARED_RETRY_MS;
 }
 
-function emptyAutoFirstOrderState(): AutoFirstOrderState {
+function emptyAutoFirstOrderState(orderKey = '', now = 0): AutoFirstOrderState {
   return {
-    orderKey: '',
+    orderKey,
     prepared: false,
+    preparedAtMs: 0,
     beverageHandled: false,
+    beverageHandledAtMs: 0,
+    step: 'idle',
+    stepStartedAtMs: now,
+    lastProgressAtMs: now,
+    retryCount: 0,
+    rollbackCount: 0,
+    lastError: '',
     paused: false,
   };
 }
 
-function emptyNormalAutoOrderState(orderKey: string): NormalAutoOrderState {
+function emptyNormalAutoOrderState(orderKey: string, now = 0): NormalAutoOrderState {
   return {
     orderKey,
     prepared: false,
     preparedAtMs: 0,
     collected: false,
+    step: 'match-order',
+    stepStartedAtMs: now,
+    lastProgressAtMs: now,
+    retryCount: 0,
+    rollbackCount: 0,
+    lastError: '',
     paused: false,
   };
+}
+
+function isAutomationTimestampStale(value: number, now: number, timeoutMs: number): boolean {
+  return value > 0 && now - value >= timeoutMs;
+}
+
+function markAutomationWaiting<T extends AutoFirstOrderState | NormalAutoOrderState>(
+  state: T,
+  step: AutomationStep,
+  now: number,
+  message: string,
+): T {
+  return {
+    ...state,
+    step,
+    stepStartedAtMs: state.step === step ? state.stepStartedAtMs : now,
+    lastError: message,
+  };
+}
+
+function pauseAutomationState<T extends AutoFirstOrderState | NormalAutoOrderState>(
+  state: T,
+  now: number,
+  message: string,
+): T {
+  return {
+    ...state,
+    paused: true,
+    step: 'paused',
+    stepStartedAtMs: now,
+    lastError: message,
+  };
+}
+
+function updateAutomationAfterResponse<T extends AutoFirstOrderState | NormalAutoOrderState>(
+  state: T,
+  response: OrderPreparationResponse,
+  now: number,
+  step: AutomationStep,
+  stopOnError: boolean,
+): T {
+  const failed = !response.ok;
+  const transientFailure = failed && isTransientAutoPreparationFailure(response);
+  const hardFailure = failed && isHardAutoPreparationFailure(response);
+  const nextRetryCount = failed ? state.retryCount + 1 : 0;
+  const stalled = failed && state.lastProgressAtMs > 0 && now - state.lastProgressAtMs >= AUTO_JOB_STALL_MS;
+  const shouldPause = failed
+    && stopOnError
+    && (hardFailure || stalled || (!transientFailure && nextRetryCount >= MAX_AUTO_STEP_RETRIES));
+  const progressed = response.ok || response.steps.some(isMeaningfulAutomationProgressStep);
+  const nextStep = response.ok
+    ? step
+    : shouldPause
+      ? 'paused'
+      : step;
+
+  return {
+    ...state,
+    step: nextStep,
+    stepStartedAtMs: state.step === nextStep ? state.stepStartedAtMs : now,
+    lastProgressAtMs: progressed ? now : state.lastProgressAtMs,
+    retryCount: nextRetryCount,
+    lastError: failed
+      ? stalled
+        ? `${summarizeOrderPreparationFailure(response)}；超过 ${Math.round(AUTO_JOB_STALL_MS / 1000)} 秒没有进展`
+        : summarizeOrderPreparationFailure(response)
+      : '',
+    paused: shouldPause,
+  };
+}
+
+function formatAutomationState(state: AutoFirstOrderState | NormalAutoOrderState): string {
+  const now = Date.now();
+  const parts = [
+    `状态 ${getAutomationStepLabel(state.step)}`,
+    state.stepStartedAtMs > 0 ? `${Math.max(0, Math.round((now - state.stepStartedAtMs) / 1000))}秒` : '',
+    state.retryCount > 0 ? `重试 ${state.retryCount}/${MAX_AUTO_STEP_RETRIES}` : '',
+    state.rollbackCount > 0 ? `回退 ${state.rollbackCount}/${MAX_AUTO_ROLLBACKS}` : '',
+    state.lastError ? `最近 ${state.lastError}` : '',
+  ].filter(Boolean);
+  return parts.join(' · ');
+}
+
+function getAutomationStepLabel(step: AutomationStep): string {
+  switch (step) {
+    case 'match-order':
+      return '匹配订单';
+    case 'ensure-beverage':
+      return '确认酒水';
+    case 'ensure-cooking':
+      return '确认料理';
+    case 'wait-food-tray':
+      return '等待送餐盘';
+    case 'wait-food-stored':
+      return '等待保温箱';
+    case 'complete-order':
+      return '完成订单';
+    case 'done':
+      return '完成';
+    case 'paused':
+      return '暂停';
+    default:
+      return '待命';
+  }
+}
+
+function isMeaningfulAutomationProgressStep(step: OrderPreparationStep): boolean {
+  if (!step.ok || step.skipped) return false;
+  if (step.name.includes('选择') || step.name.includes('匹配')) return false;
+  return step.name.includes('自动取酒')
+    || step.name.includes('自动开始料理')
+    || step.name.includes('自动收取料理')
+    || step.name.includes('普客开始料理')
+    || step.name.includes('普客保温箱')
+    || step.name.includes('写入订单')
+    || step.name.includes('触发上菜评价');
 }
 
 function getMissingTrayPart(response: OrderPreparationResponse): 'food' | 'beverage' | null {
@@ -4494,7 +4756,36 @@ function isTransientAutoPreparationFailure(response: OrderPreparationResponse): 
     || text.includes('厨具被占用')
     || text.includes('送餐盘已满')
     || text.includes('送餐盘对象不可用')
-    || text.includes('厨具管理器不可用');
+    || text.includes('厨具管理器不可用')
+    || text.includes('运行时对象')
+    || text.includes('经营状态刚刷新')
+    || text.includes('未找到当前第一笔')
+    || text.includes('暂存容器不可用')
+    || text.includes('等待下一轮重试')
+    || text.includes('已在制作中')
+    || text.includes('已有待收取任务')
+    || text.includes('长时间未读取到成品对象');
+}
+
+function isHardAutoPreparationFailure(response: OrderPreparationResponse): boolean {
+  const text = [
+    response.error ?? '',
+    ...response.steps.map((step) => `${step.name} ${step.message}`),
+  ].join('\n');
+  return text.includes('材料不足')
+    || text.includes('当前库存为 0')
+    || text.includes('没有可用的推荐')
+    || text.includes('没有有效的料理 ID')
+    || text.includes('无法从游戏数据库读取料理配方')
+    || text.includes('未找到料理')
+    || text.includes('成品不是目标料理')
+    || text.includes('订单已有其他待送达料理')
+    || text.includes('收藏限定已开启');
+}
+
+function summarizeOrderPreparationFailure(response: OrderPreparationResponse): string {
+  const failed = response.steps.find((step) => !step.ok && !step.skipped);
+  return failed ? `${failed.name}: ${failed.message}` : response.error ?? '未知状态';
 }
 
 function pickRecipeForPreparation(

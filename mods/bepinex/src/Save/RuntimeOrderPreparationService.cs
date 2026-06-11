@@ -1,6 +1,8 @@
 using System.Collections;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Text;
+using BepInEx;
 using Il2CppInterop.Runtime.InteropTypes.Arrays;
 using MystiaStewardCompanion.LocalApi;
 
@@ -19,9 +21,11 @@ internal static class RuntimeOrderPreparationService
     private const string OrderControllerTypeName = "Night.UI.HUD.Ordering.OrderController";
     private const string MatchedCookComboTypeName = "NightScene.UI.CookingUtility.WorkSceneCookingSelectionPannel+MatchedCookCombo";
     private static readonly object PendingCookingLock = new();
+    private static readonly object AutomationLogLock = new();
     private static readonly List<PendingCookingCollection> PendingCookingCollections = new();
     private static readonly TimeSpan PendingCookingCollectGrace = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan PendingCookingIdleTimeout = TimeSpan.FromSeconds(90);
+    private const long AutomationLogMaxBytes = 1024 * 1024;
     private enum CookingCollectionTargetKind
     {
         Tray,
@@ -427,10 +431,12 @@ internal static class RuntimeOrderPreparationService
                 if (!string.IsNullOrWhiteSpace(result.Message))
                 {
                     messages.Add(result.Message);
+                    AppendAutomationLog("pending", pending.Target, result.Message);
                 }
 
                 if (result.Remove)
                 {
+                    AppendAutomationLog("pending-remove", pending.Target, $"{pending.RecipeName}; age={(DateTime.UtcNow - pending.CreatedAtUtc).TotalSeconds:F1}s");
                     PendingCookingCollections.RemoveAt(i);
                 }
             }
@@ -538,6 +544,7 @@ internal static class RuntimeOrderPreparationService
         var cookerSelection = TryGetCookerForOrder(baseFood, recipe);
         if (!cookerSelection.Ok || cookerSelection.CookController == null)
         {
+            AppendAutomationLog("start-failed", collectionTarget, $"{recipeName}: {cookerSelection.Message}");
             return CookingStartResult.Failed(cookerSelection.Message);
         }
 
@@ -545,6 +552,7 @@ internal static class RuntimeOrderPreparationService
         var cooker = InvokeInstance(cookController, "get_Cooker", Array.Empty<object?>());
         if (cooker == null)
         {
+            AppendAutomationLog("start-failed", collectionTarget, $"{recipeName}: controller has no cooker");
             return CookingStartResult.Failed("已找到可用厨具控制器，但无法读取厨具数据。");
         }
 
@@ -552,6 +560,7 @@ internal static class RuntimeOrderPreparationService
         var ingredientIds = ReadRecipeIngredientIds(recipe).Concat(extraIngredientIds).ToArray();
         if (!HasEnoughIngredients(ingredientIds, out var missingIngredientId))
         {
+            AppendAutomationLog("start-failed", collectionTarget, $"{recipeName}: missing ingredient #{missingIngredientId}");
             return CookingStartResult.Failed($"材料不足，缺少材料 #{missingIngredientId}。");
         }
 
@@ -579,6 +588,7 @@ internal static class RuntimeOrderPreparationService
         }
 
         var extraText = extraIngredientIds.Count == 0 ? "不加料" : string.Join(",", extraIngredientIds);
+        AppendAutomationLog("start-ok", collectionTarget, $"{recipeName}; cooker={DescribeCookController(cookController)}; autoCollect={autoCollect}; extra={extraText}");
         return CookingStartResult.Succeeded($"{recipeName} 已开始制作（配方 #{recipeId}，加料：{extraText}）。", qteResult.Message, qteResult.Skipped);
     }
 
@@ -639,7 +649,7 @@ internal static class RuntimeOrderPreparationService
     {
         lock (PendingCookingLock)
         {
-            PendingCookingCollections.RemoveAll(pending => ReferenceEquals(pending.CookController, cookController) || IsSameCookingCollectionTarget(pending.Target, target));
+            var removed = PendingCookingCollections.RemoveAll(pending => ReferenceEquals(pending.CookController, cookController) || IsSameCookingCollectionTarget(pending.Target, target));
             PendingCookingCollections.Add(new PendingCookingCollection
             {
                 CookController = cookController,
@@ -647,6 +657,7 @@ internal static class RuntimeOrderPreparationService
                 CreatedAtUtc = DateTime.UtcNow,
                 Target = target,
             });
+            AppendAutomationLog("pending-add", target, $"{recipeName}; cooker={DescribeCookController(cookController)}; replaced={removed}");
         }
     }
 
@@ -1132,6 +1143,69 @@ internal static class RuntimeOrderPreparationService
     {
         var cookerTypes = InvokeInstance(cooker, "get_AllAvailableCookerType", Array.Empty<object?>());
         return ReadIntEnumerable(cookerTypes).Contains(recipeCookerType);
+    }
+
+    private static string DescribeCookController(object cookController)
+    {
+        try
+        {
+            var cooker = TryInvokeInstanceValue(cookController, "get_Cooker");
+            var cookerId = cooker == null ? -1 : ToInt(ReadMember(cooker, "id") ?? ReadMember(cooker, "Id"), -1);
+            var pointer = (long)ReadObjectPointer(cookController);
+            return cookerId >= 0 ? $"#{cookerId}@0x{pointer:X}" : $"0x{pointer:X}";
+        }
+        catch
+        {
+            return "unknown";
+        }
+    }
+
+    private static void AppendAutomationLog(string action, CookingCollectionTarget? target, string message)
+    {
+        try
+        {
+            var directory = Path.Combine(Paths.ConfigPath, "MystiaStewardCompanion");
+            Directory.CreateDirectory(directory);
+            var path = Path.Combine(directory, "automation-jobs.log");
+            lock (AutomationLogLock)
+            {
+                RotateAutomationLogIfNeeded(path);
+                var line = string.Join(" ",
+                    DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff"),
+                    action,
+                    FormatAutomationTarget(target),
+                    message);
+                File.AppendAllText(path, line + Environment.NewLine, new UTF8Encoding(false));
+            }
+        }
+        catch
+        {
+            // Diagnostics must never affect game automation.
+        }
+    }
+
+    private static void RotateAutomationLogIfNeeded(string path)
+    {
+        try
+        {
+            var file = new FileInfo(path);
+            if (!file.Exists || file.Length < AutomationLogMaxBytes) return;
+            var backupPath = path + ".1";
+            if (File.Exists(backupPath)) File.Delete(backupPath);
+            File.Move(path, backupPath);
+        }
+        catch
+        {
+            // Ignore rotation failures; append may still succeed.
+        }
+    }
+
+    private static string FormatAutomationTarget(CookingCollectionTarget? target)
+    {
+        if (target == null) return "target=none";
+        return target.Kind == CookingCollectionTargetKind.NormalOrder
+            ? $"target=normal desk={target.DeskCode + 1} food={target.FoodId}/{target.FoodName} guest={target.GuestName}"
+            : "target=rare-tray";
     }
 
     private static void TryClearCookController(object cookController, object cookedFood)
