@@ -17,6 +17,8 @@ internal static class RuntimeOrderPreparationService
     private const string GuestsManagerTypeName = "NightScene.GuestManagementUtility.GuestsManager";
     private const string OrderControllerTypeName = "Night.UI.HUD.Ordering.OrderController";
     private const string MatchedCookComboTypeName = "NightScene.UI.CookingUtility.WorkSceneCookingSelectionPannel+MatchedCookCombo";
+    private const int NormalOrderChangeContextFoodDelivered = 3;
+    private const int NormalOrderChangeContextBeverageDelivered = 4;
     private static readonly object PendingCookingLock = new();
     private static readonly List<PendingCookingCollection> PendingCookingCollections = new();
     private enum CookingCollectionTargetKind
@@ -359,7 +361,7 @@ internal static class RuntimeOrderPreparationService
         }
         else
         {
-            var inAirResult = TryPromoteNormalFoodInAir(runtimeOrder.Order, expectedFoodId, request.RecipeName);
+            var inAirResult = TryDeliverNormalFoodInAir(runtimeOrder.Order, expectedFoodId, request.RecipeName);
             if (inAirResult.Ok)
             {
                 result.Steps.Add(new OrderPreparationStep
@@ -417,7 +419,7 @@ internal static class RuntimeOrderPreparationService
                                     Message = cookingResult.QteMessage,
                                 });
                             }
-                            AddSkipped(result, "普客送达料理", "料理已开始制作，完成后会自动进入普客保温/送达路径。");
+                            AddSkipped(result, "普客送达料理", "料理已开始制作，完成后会自动送达普客订单。");
                         }
                         else
                         {
@@ -433,56 +435,39 @@ internal static class RuntimeOrderPreparationService
             }
         }
 
-        if (ReadBool(InvokeInstance(runtimeOrder.Order, "get_IsFullfilled", Array.Empty<object?>())))
-        {
-            if (runtimeOrder.Controller == null)
-            {
-                AddFailure(result, "触发普客上菜评价", $"订单已满足，但未找到对应桌位控制器。{runtimeOrder.Diagnostic}");
-                return Finish(result);
-            }
-
-            var evaluateResult = TryEvaluateNormalOrder(runtimeOrder.Manager, runtimeOrder.Controller, runtimeOrder.Order);
-            if (!evaluateResult.Ok)
-            {
-                AddFailure(result, "触发普客上菜评价", evaluateResult.Message);
-                return Finish(result);
-            }
-
-            result.Steps.Add(new OrderPreparationStep
-            {
-                Name = "触发普客上菜评价",
-                Ok = true,
-                Message = evaluateResult.Message,
-            });
-        }
-        else
-        {
-            AddSkipped(result, "触发普客上菜评价", "订单尚未同时满足料理和酒水，暂不触发评价。");
-        }
+        TryEvaluateFulfilledNormalOrder(result, runtimeOrder.Manager, runtimeOrder.Controller, runtimeOrder.Order, runtimeOrder.Diagnostic);
 
         return Finish(result);
     }
 
-    private static (bool Ok, string Message) TryEvaluateNormalOrder(object? manager, object? controller, object order)
+    private static void TryEvaluateFulfilledNormalOrder(OrderPreparationResult result, object? manager, object? controller, object order, string diagnostic)
     {
-        if (manager == null)
+        if (!ReadBool(InvokeInstance(order, "get_IsFullfilled", Array.Empty<object?>())))
         {
-            return (false, "订单已满足，但普客管理器不可用。");
+            AddSkipped(result, "触发普客上菜评价", "订单尚未同时满足料理和酒水，暂不触发评价。");
+            return;
         }
 
-        if (controller == null)
+        if (manager == null || controller == null)
         {
-            return (false, "订单已满足，但未找到对应桌位控制器。");
+            var diagnosticText = string.IsNullOrWhiteSpace(diagnostic) ? "" : diagnostic;
+            AddFailure(result, "触发普客上菜评价", $"订单已满足，但未找到对应桌位控制器。{diagnosticText}");
+            return;
         }
 
         try
         {
             InvokeInstance(manager, "EvaluateOrder", new object?[] { controller, false, null });
-            return (true, "已调用游戏评价流程完成当前普客订单。");
+            result.Steps.Add(new OrderPreparationStep
+            {
+                Name = "触发普客上菜评价",
+                Ok = true,
+                Message = "已调用游戏评价流程完成当前普客订单。",
+            });
         }
         catch (Exception ex)
         {
-            return (false, ex.GetBaseException().Message);
+            AddFailure(result, "触发普客上菜评价", ex.GetBaseException().Message);
         }
     }
 
@@ -562,9 +547,27 @@ internal static class RuntimeOrderPreparationService
 
     private static (bool Ok, bool Skipped, string Message) TryServeBeverageDirect(object order, int beverageId, string beverageName)
     {
-        if (ReadMember(order, "ServBeverage") != null || ReadMember(order, "ServedBeverageInAir") != null)
+        if (ReadMember(order, "ServBeverage") != null)
         {
             return (true, true, "该订单已经写入酒水。");
+        }
+
+        var beverageInAir = ReadMember(order, "ServedBeverageInAir");
+        if (beverageInAir != null)
+        {
+            if (!IsSellable(beverageInAir, sellableType: 1, id: beverageId))
+            {
+                return (false, false, $"普客待送达酒水不是目标酒水 {beverageName}（酒水 #{beverageId}），本次不会错误送达。");
+            }
+
+            WriteMember(order, "ServBeverage", beverageInAir);
+            if (ReadMember(order, "ServBeverage") == null)
+            {
+                return (false, false, $"已读取到待送达酒水 {beverageName}，但写入普客订单失败。");
+            }
+
+            NotifyNormalOrderStatusUpdate(order, NormalOrderChangeContextBeverageDelivered);
+            return (true, true, $"{beverageName} 已从待送达状态写入普客订单。");
         }
 
         var currentQuantity = GetBeverageQuantity(beverageId);
@@ -591,8 +594,9 @@ internal static class RuntimeOrderPreparationService
             InvokeRuntimeStorageOut("BeverageOut", beverageId);
         }
 
+        NotifyNormalOrderStatusUpdate(order, NormalOrderChangeContextBeverageDelivered);
         var quantityText = currentQuantity < 0 ? "无限库存" : $"剩余 {Math.Max(0, currentQuantity - 1)}";
-        return (true, false, $"{beverageName} 已直送普客订单（{quantityText}）。");
+        return (true, false, $"{beverageName} 已按游戏送达状态写入普客订单（{quantityText}）。");
     }
 
     private static bool TryServeFoodFromTray(object order, int foodId, string foodName, out string message)
@@ -624,7 +628,7 @@ internal static class RuntimeOrderPreparationService
         return true;
     }
 
-    private static (bool Ok, bool Blocked, string Message) TryPromoteNormalFoodInAir(object order, int foodId, string foodName)
+    private static (bool Ok, bool Blocked, string Message) TryDeliverNormalFoodInAir(object order, int foodId, string foodName)
     {
         var foodInAir = ReadMember(order, "ServedFoodInAir");
         if (foodInAir == null)
@@ -643,6 +647,7 @@ internal static class RuntimeOrderPreparationService
             return (false, true, $"已读取到保温位中的 {foodName}，但写入普客订单失败。");
         }
 
+        NotifyNormalOrderStatusUpdate(order, NormalOrderChangeContextFoodDelivered);
         return (true, false, $"已将保温位中的 {foodName} 送达普客订单。");
     }
 
@@ -932,31 +937,140 @@ internal static class RuntimeOrderPreparationService
             return (true, $"{pending.RecipeName} 已完成，但目标普客订单已有料理，本次未重复写入。");
         }
 
+        var existingFoodInAir = ReadMember(order, "ServedFoodInAir");
+        if (existingFoodInAir != null)
+        {
+            if (pending.Target.FoodId >= 0 && IsSellable(existingFoodInAir, sellableType: 0, id: pending.Target.FoodId))
+            {
+                WriteMember(order, "ServFood", existingFoodInAir);
+                NotifyNormalOrderStatusUpdate(order, NormalOrderChangeContextFoodDelivered);
+                TryInvokeInstance(pending.CookController, "AfterPlayerExtract", Array.Empty<object?>());
+                TryInvokeInstance(pending.CookController, "CloseCookingVisual", Array.Empty<object?>());
+                TryClearCookController(pending.CookController, cookedFood);
+                return (true, BuildNormalOrderDeliveryMessage(pending, $"{pending.RecipeName} 已完成，目标料理已从普客保温位送达"));
+            }
+
+            return (false, $"{pending.RecipeName} 已完成，但普客保温位已有其他料理，等待玩家处理后再自动收取。");
+        }
+
         WriteMember(order, "ServedFoodInAir", cookedFood);
+        if (ReadMember(order, "ServedFoodInAir") == null)
+        {
+            return (true, $"{pending.RecipeName} 已完成，但写入普客保温位失败，已停止自动收取。");
+        }
+
         WriteMember(order, "ServFood", cookedFood);
         if (ReadMember(order, "ServFood") == null)
         {
             return (true, $"{pending.RecipeName} 已完成，但写入目标普客订单失败，已停止自动收取。");
         }
 
+        NotifyNormalOrderStatusUpdate(order, NormalOrderChangeContextFoodDelivered);
         TryInvokeInstance(pending.CookController, "AfterPlayerExtract", Array.Empty<object?>());
         TryInvokeInstance(pending.CookController, "CloseCookingVisual", Array.Empty<object?>());
         TryClearCookController(pending.CookController, cookedFood);
 
-        var prefix = pending.Target.DeskCode >= 0
-            ? $"桌 {pending.Target.DeskCode + 1} · {pending.Target.GuestName}"
-            : pending.Target.GuestName;
-        if (pending.Target.Manager != null
-            && pending.Target.Controller != null
-            && ReadBool(InvokeInstance(order, "get_IsFullfilled", Array.Empty<object?>())))
+        return (true, BuildNormalOrderDeliveryMessage(pending, $"{pending.RecipeName} 已自动送达普客订单"));
+    }
+
+    private static void NotifyNormalOrderStatusUpdate(object order, int context)
+    {
+        var partnerManager = GetSingletonInstance(PartnerManagerTypeName);
+        if (partnerManager == null) return;
+
+        TryInvokeWithConvertedArguments(partnerManager, "OnOrderBaseStatusUpdate", new object?[] { order, context, -1 });
+        TryInvokeWithConvertedArguments(partnerManager, "NotifySystemChanged", new object?[] { -1, context, order, null });
+    }
+
+    private static bool TryInvokeWithConvertedArguments(object target, string methodName, object?[] args)
+    {
+        foreach (var method in target.GetType().GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
         {
-            var evaluateResult = TryEvaluateNormalOrder(pending.Target.Manager, pending.Target.Controller, order);
-            return (true, evaluateResult.Ok
-                ? $"{pending.RecipeName} 已通过普客保温路径送达 {prefix}，并已触发订单评价。"
-                : $"{pending.RecipeName} 已通过普客保温路径送达 {prefix}，但触发订单评价失败：{evaluateResult.Message}");
+            if (!string.Equals(method.Name, methodName, StringComparison.Ordinal)) continue;
+            var parameters = method.GetParameters();
+            if (parameters.Length != args.Length) continue;
+            var converted = TryConvertArguments(parameters, args);
+            if (converted == null) continue;
+
+            try
+            {
+                method.Invoke(target, converted);
+                return true;
+            }
+            catch
+            {
+                // Try the next overload if the current runtime object rejects this signature.
+            }
         }
 
-        return (true, $"{pending.RecipeName} 已通过普客保温路径送达 {prefix}，等待酒水或后续评价。");
+        return false;
+    }
+
+    private static object?[]? TryConvertArguments(ParameterInfo[] parameters, object?[] args)
+    {
+        var converted = new object?[args.Length];
+        for (var i = 0; i < args.Length; i++)
+        {
+            var parameterType = parameters[i].ParameterType;
+            if (parameterType.IsByRef)
+            {
+                parameterType = parameterType.GetElementType() ?? parameterType;
+            }
+
+            var arg = args[i];
+            if (arg == null)
+            {
+                if (parameterType.IsValueType && Nullable.GetUnderlyingType(parameterType) == null) return null;
+                converted[i] = null;
+                continue;
+            }
+
+            if (parameterType.IsInstanceOfType(arg))
+            {
+                converted[i] = arg;
+                continue;
+            }
+
+            if (parameterType.IsEnum && arg is IConvertible enumValue)
+            {
+                converted[i] = Enum.ToObject(parameterType, enumValue.ToInt32(null));
+                continue;
+            }
+
+            if (parameterType.IsPrimitive && arg is IConvertible convertible)
+            {
+                converted[i] = Convert.ChangeType(convertible, parameterType);
+                continue;
+            }
+
+            return null;
+        }
+
+        return converted;
+    }
+
+    private static string BuildNormalOrderDeliveryMessage(PendingCookingCollection pending, string prefix)
+    {
+        var targetLabel = pending.Target.DeskCode >= 0
+            ? $"桌 {pending.Target.DeskCode + 1} · {pending.Target.GuestName}"
+            : pending.Target.GuestName;
+        if (pending.Target.Manager == null
+            || pending.Target.Controller == null
+            || pending.Target.Order == null
+            || !ReadBool(InvokeInstance(pending.Target.Order, "get_IsFullfilled", Array.Empty<object?>())))
+        {
+            return $"{prefix}：{targetLabel}，等待酒水或后续评价。";
+        }
+
+        try
+        {
+            InvokeInstance(pending.Target.Manager, "EvaluateOrder", new object?[] { pending.Target.Controller, false, null });
+            return $"{prefix}：{targetLabel}，并已触发订单评价。";
+        }
+        catch (Exception ex)
+        {
+            return $"{prefix}：{targetLabel}，但触发订单评价失败：{ex.GetBaseException().Message}";
+        }
     }
 
     private static bool TryExtractWithGameMethod(object cookController)
