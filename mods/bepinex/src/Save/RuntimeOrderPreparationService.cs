@@ -804,10 +804,11 @@ internal static class RuntimeOrderPreparationService
             return (false, null, "当前厨具管理器不可用");
         }
 
+        var controllers = ReadCookControllers(cookSystem, out var sourceStatus);
         var totalCount = 0;
         var emptyCount = 0;
         var warmerCount = 0;
-        foreach (var controller in EnumerateCookControllers(cookSystem))
+        foreach (var controller in controllers)
         {
             try
             {
@@ -833,20 +834,22 @@ internal static class RuntimeOrderPreparationService
 
         if (totalCount == 0)
         {
-            return (false, null, "当前没有读取到任何厨具控制器");
+            return (false, null, $"当前没有读取到任何厨具控制器（{sourceStatus}）");
         }
 
         if (emptyCount == 0)
         {
-            return (false, null, $"没有空闲保温位（读取到 {totalCount} 个控制器）");
+            return (false, null, $"没有空闲保温位（读取到 {totalCount} 个控制器；{sourceStatus}）");
         }
 
-        return (false, null, $"没有匹配到空保温位（读取到 {totalCount} 个控制器，空位 {emptyCount} 个，保温位 {warmerCount} 个）");
+        return (false, null, $"没有匹配到空保温位（读取到 {totalCount} 个控制器，空位 {emptyCount} 个，保温位 {warmerCount} 个；{sourceStatus}）");
     }
 
-    private static IEnumerable<object> EnumerateCookControllers(object cookSystem)
+    private static IReadOnlyList<object> ReadCookControllers(object cookSystem, out string status)
     {
+        var result = new List<object>();
         var seen = new HashSet<nint>();
+        var sourceParts = new List<string>();
 
         object? controllers = null;
         try
@@ -858,28 +861,40 @@ internal static class RuntimeOrderPreparationService
             // The backing dictionary and Unity object scan below are more tolerant.
         }
 
-        foreach (var controller in ReadObjectEnumerable(controllers))
-        {
-            if (!TryRememberObject(controller, seen)) continue;
-            yield return controller;
-        }
-
-        foreach (var item in ReadObjectEnumerable(ReadMember(cookSystem, "AllCookers")))
-        {
-            var controller = NormalizeDictionaryItem(item) ?? item;
-            if (!TryRememberObject(controller, seen)) continue;
-            yield return controller;
-        }
+        AddCookControllers("AllCookerControllers", ReadObjectEnumerable(controllers), result, seen, sourceParts);
+        AddCookControllers("AllCookers", ReadDictionaryValues(ReadMember(cookSystem, "AllCookers")), result, seen, sourceParts);
 
         var controllerType = FindType("NightScene.CookingUtility.CookController");
-        if (controllerType == null) yield break;
-
-        foreach (var item in RuntimeReflectionUtility.FindUnityObjectsIncludingInactive(controllerType))
+        if (controllerType != null)
         {
-            if (item == null) continue;
-            if (!TryRememberObject(item, seen)) continue;
-            yield return item;
+            AddCookControllers("UnityFind", FindUnityObjects(controllerType), result, seen, sourceParts);
         }
+
+        status = $"sources={string.Join(",", sourceParts)}";
+        return result;
+    }
+
+    private static void AddCookControllers(
+        string source,
+        IEnumerable<object?> controllers,
+        ICollection<object> result,
+        HashSet<nint> seen,
+        ICollection<string> sourceParts)
+    {
+        var scanned = 0;
+        var added = 0;
+
+        foreach (var controller in controllers)
+        {
+            scanned++;
+            if (controller == null) continue;
+            if (!TryRememberObject(controller, seen)) continue;
+
+            result.Add(controller);
+            added++;
+        }
+
+        sourceParts.Add($"{source}:{scanned}/{added}");
     }
 
     private static bool TryRememberObject(object value, HashSet<nint> seen)
@@ -1948,21 +1963,119 @@ internal static class RuntimeOrderPreparationService
     {
         if (value == null) yield break;
         if (value is string) yield break;
-        if (value is IEnumerable enumerable)
+        foreach (var item in EnumerateManaged(value).Concat(EnumerateByIndexer(value)))
         {
-            foreach (var item in enumerable)
-            {
-                yield return ToInt(item);
-            }
+            yield return ToInt(item);
         }
     }
 
     private static IEnumerable<object> ReadObjectEnumerable(object? value)
     {
-        foreach (var item in RuntimeReflectionUtility.EnumerateObjects(value))
+        if (value == null || value is string) yield break;
+
+        var seen = new HashSet<nint>();
+        foreach (var item in EnumerateManaged(value).Concat(EnumerateByIndexer(value)).Concat(ReadDictionaryValues(value)))
         {
-            if (item != null) yield return item;
+            if (item == null) continue;
+            if (!TryRememberObject(item, seen)) continue;
+            yield return item;
         }
+    }
+
+    private static IEnumerable<object?> ReadDictionaryValues(object? dictionary)
+    {
+        if (dictionary == null || dictionary is string) yield break;
+
+        if (dictionary is IDictionary managedDictionary)
+        {
+            foreach (DictionaryEntry entry in managedDictionary)
+            {
+                yield return entry.Value;
+            }
+
+            yield break;
+        }
+
+        var entries = ReadMember(dictionary, "entries")
+            ?? ReadMember(dictionary, "_entries")
+            ?? ReadMember(dictionary, "m_Entries");
+        var count = ToInt(ReadMember(dictionary, "count")
+            ?? ReadMember(dictionary, "_count")
+            ?? ReadMember(dictionary, "Count"));
+        if (entries == null || count <= 0) yield break;
+
+        var entryIndex = 0;
+        foreach (var entry in EnumerateByIndexer(entries))
+        {
+            if (entryIndex++ >= Math.Min(count, 256)) yield break;
+            if (entry == null) continue;
+
+            var hashCode = ToInt(ReadMember(entry, "hashCode") ?? ReadMember(entry, "_hashCode"));
+            if (hashCode < 0) continue;
+
+            var value = ReadMember(entry, "value")
+                ?? ReadMember(entry, "Value")
+                ?? ReadMember(entry, "_value");
+            if (value != null) yield return value;
+        }
+    }
+
+    private static IEnumerable<object?> EnumerateManaged(object value)
+    {
+        if (LooksLikeIl2CppObject(value)) yield break;
+        if (value is not IEnumerable enumerable) yield break;
+
+        foreach (var item in enumerable)
+        {
+            yield return item;
+        }
+    }
+
+    private static IEnumerable<object?> EnumerateByIndexer(object value)
+    {
+        var count = ToInt(TryInvokeInstanceValue(value, "get_Count")
+            ?? ReadMember(value, "Count")
+            ?? ReadMember(value, "Length")
+            ?? ReadMember(value, "_size"));
+        if (count <= 0) yield break;
+
+        for (var index = 0; index < Math.Min(count, 256); index++)
+        {
+            yield return TryInvokeInstanceValue(value, "get_Item", new object?[] { index });
+        }
+    }
+
+    private static IEnumerable<object?> FindUnityObjects(Type type)
+    {
+        var method = typeof(UnityEngine.Object).GetMethod("FindObjectsOfType", new[] { typeof(Type) });
+        if (method == null) yield break;
+
+        object? objects;
+        try
+        {
+            objects = method.Invoke(null, new object[] { type });
+        }
+        catch
+        {
+            yield break;
+        }
+
+        foreach (var item in ReadObjectEnumerable(objects))
+        {
+            yield return item;
+        }
+    }
+
+    private static bool LooksLikeIl2CppObject(object value)
+    {
+        var type = value.GetType();
+        var fullName = type.FullName ?? "";
+        if (fullName.StartsWith("Il2Cpp", StringComparison.Ordinal)) return true;
+        if (fullName.StartsWith("NightScene.", StringComparison.Ordinal)) return true;
+        if (fullName.StartsWith("DayScene.", StringComparison.Ordinal)) return true;
+        if (fullName.StartsWith("GameData.", StringComparison.Ordinal)) return true;
+        if (fullName.StartsWith("DEYU.", StringComparison.Ordinal)) return true;
+        return type.Assembly.GetName().Name?.Contains("Il2Cpp", StringComparison.OrdinalIgnoreCase) == true;
     }
 
     private static object? GetSingletonInstance(string typeName)
