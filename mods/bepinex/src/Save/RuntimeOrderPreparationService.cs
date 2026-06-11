@@ -106,7 +106,7 @@ internal static class RuntimeOrderPreparationService
             }
             else
             {
-                var cookingResult = TryStartCooking(request.RecipeId, request.RecipeName, request.ExtraIngredientIds, request.AutoCollectCooking, request.CompleteQte);
+                var cookingResult = TryStartCooking(request.RecipeId, request.RecipeName, request.ExtraIngredientIds, request.AutoCollectCooking);
                 if (cookingResult.Ok)
                 {
                     result.Steps.Add(new OrderPreparationStep
@@ -364,7 +364,7 @@ internal static class RuntimeOrderPreparationService
                             request.RecipeName,
                             request.DeskCode,
                             result.Order.GuestName);
-                        var cookingResult = TryStartCooking(recipeId, request.RecipeName, request.ExtraIngredientIds, request.AutoCollectCooking, request.CompleteQte, target);
+                        var cookingResult = TryStartCooking(recipeId, request.RecipeName, request.ExtraIngredientIds, request.AutoCollectCooking, target);
                         if (cookingResult.Ok)
                         {
                             result.Steps.Add(new OrderPreparationStep
@@ -521,7 +521,6 @@ internal static class RuntimeOrderPreparationService
         string recipeName,
         IReadOnlyList<int> extraIngredientIds,
         bool autoCollect,
-        bool completeQte,
         CookingCollectionTarget? collectionTarget = null)
     {
         var recipe = InvokeStatic(DataBaseCoreTypeName, "RefRecipe", new object?[] { recipeId });
@@ -565,7 +564,7 @@ internal static class RuntimeOrderPreparationService
         }
 
         InvokeInstance(cookController, "SetCook", new object?[] { finalFood, recipe, true });
-        var qteResult = TryHandleCookingQte(completeQte);
+        var qteResult = TryHandleCookingQte();
         InvokeInstance(cookController, "StartCookCountDown", new object?[] { 1f, false });
 
         var cookSystem = GetSingletonInstance(CookSystemManagerTypeName);
@@ -583,17 +582,12 @@ internal static class RuntimeOrderPreparationService
         return CookingStartResult.Succeeded($"{recipeName} 已开始制作（配方 #{recipeId}，加料：{extraText}）。", qteResult.Message, qteResult.Skipped);
     }
 
-    private static CookingQteResult TryHandleCookingQte(bool completeQte)
+    private static CookingQteResult TryHandleCookingQte()
     {
-        if (!completeQte)
-        {
-            return CookingQteResult.Skip("已跳过料理 QTE；不会累计音游数值或触发对应 Buff。");
-        }
-
         var completed = TryCompleteCookingQte(out var completeMessage);
         return completed
             ? CookingQteResult.Completed($"{completeMessage}；不会打开原生音游面板。")
-            : CookingQteResult.Skip($"{completeMessage}；已回退为跳过料理 QTE。");
+            : CookingQteResult.Skip($"{completeMessage}；料理流程已继续。");
     }
 
     private sealed class CookingQteResult

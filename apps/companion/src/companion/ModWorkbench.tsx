@@ -69,14 +69,12 @@ const AUTO_NORMAL_ORDER_ENABLED_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-ord
 const AUTO_NORMAL_START_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-start-cooking`;
 const AUTO_NORMAL_COLLECT_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-collect-cooking`;
 const AUTO_NORMAL_STOP_ON_ERROR_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-stop-on-error`;
-const AUTO_NORMAL_COMPLETE_QTE_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-complete-qte`;
 const AUTO_PREP_COMPLETE_ORDER_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-complete-order`;
 const AUTO_PREP_TAKE_BEVERAGE_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-take-beverage`;
 const AUTO_PREP_START_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-start-cooking`;
 const AUTO_PREP_COLLECT_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-collect-cooking`;
 const AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-favorites-only`;
 const AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-stop-on-error`;
-const AUTO_PREP_COMPLETE_QTE_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-complete-qte`;
 const FILTER_MISSING_COOKERS_STORAGE_KEY = `${STORAGE_PREFIX}-filter-missing-cookers`;
 const GAME_UI_PINNING_STORAGE_KEY = `${STORAGE_PREFIX}-game-ui-pinning`;
 const COOKER_HIGHLIGHT_STORAGE_KEY = `${STORAGE_PREFIX}-cooker-highlight`;
@@ -471,14 +469,12 @@ interface CompanionPreferences {
   autoNormalStartCooking: boolean;
   autoNormalCollectCooking: boolean;
   autoNormalStopOnError: boolean;
-  autoNormalCompleteQte: boolean;
   autoPrepCompleteOrder: boolean;
   autoPrepTakeBeverage: boolean;
   autoPrepStartCooking: boolean;
   autoPrepCollectCooking: boolean;
   autoPrepFavoritesOnly: boolean;
   autoPrepStopOnError: boolean;
-  autoPrepCompleteQte: boolean;
   filterMissingCookers: boolean;
   gameUiPinningEnabled: boolean;
   cookerHighlightEnabled: boolean;
@@ -2756,20 +2752,6 @@ function RareServiceAutomationPanel({
           onCheckedChange={(autoPrepStopOnError) => onPreferenceChange({ autoPrepStopOnError })}
         />
       </div>
-      {preferences.autoPrepStartCooking && (
-        <div className="mt-3 rounded-md border border-border bg-muted/20 p-3">
-          <SwitchControl
-            label="自动完成原生 QTE"
-            checked={preferences.autoPrepCompleteQte}
-            onCheckedChange={(autoPrepCompleteQte) => onPreferenceChange({ autoPrepCompleteQte })}
-          />
-          <div className="mt-2 text-xs text-muted-foreground">
-            {preferences.autoPrepCompleteQte
-              ? '不会打开音游面板，会直接尝试完成原生 QTE 奖励结算，并继续开始料理。'
-              : '跳过原生 QTE 会保持当前自动料理速度，但不会累计音游数值或触发对应 Buff。'}
-          </div>
-        </div>
-      )}
       <RareAutoPrepStatus busy={busy} paused={paused} message={message} preferences={preferences} />
     </ListPanel>
   );
@@ -2816,20 +2798,6 @@ function NormalServiceAutomationPanel({
           </>
         )}
       </div>
-      {preferences.autoNormalOrderEnabled && preferences.autoNormalStartCooking && (
-        <div className="mt-3 rounded-md border border-border bg-muted/20 p-3">
-          <SwitchControl
-            label="自动完成原生 QTE"
-            checked={preferences.autoNormalCompleteQte}
-            onCheckedChange={(autoNormalCompleteQte) => onPreferenceChange({ autoNormalCompleteQte })}
-          />
-          <div className="mt-2 text-xs text-muted-foreground">
-            {preferences.autoNormalCompleteQte
-              ? '普客料理会尝试完成原生 QTE 奖励结算。'
-              : '普客料理会跳过原生 QTE，只保留自动制作流程。'}
-          </div>
-        </div>
-      )}
       <NormalAutoPrepStatus busy={busy} pausedCount={pausedCount} message={message} preferences={preferences} />
     </ListPanel>
   );
@@ -2857,11 +2825,7 @@ function RareAutoPrepStatus({
         <Badge variant={preferences.autoPrepCompleteOrder ? 'secondary' : 'outline'}>完成 {preferences.autoPrepCompleteOrder ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepTakeBeverage ? 'secondary' : 'outline'}>取酒 {preferences.autoPrepTakeBeverage ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepStartCooking ? 'secondary' : 'outline'}>料理 {preferences.autoPrepStartCooking ? '开' : '关'}</Badge>
-        {preferences.autoPrepStartCooking && (
-          <Badge variant={preferences.autoPrepCompleteQte ? 'secondary' : 'outline'}>
-            QTE {preferences.autoPrepCompleteQte ? '自动完成' : '跳过'}
-          </Badge>
-        )}
+        {preferences.autoPrepStartCooking && <Badge variant="secondary">QTE 自动完成</Badge>}
         <Badge variant={preferences.autoPrepCollectCooking ? 'secondary' : 'outline'}>收取 {preferences.autoPrepCollectCooking ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepFavoritesOnly ? 'secondary' : 'outline'}>收藏限定 {preferences.autoPrepFavoritesOnly ? '开' : '关'}</Badge>
       </div>
@@ -2891,11 +2855,7 @@ function NormalAutoPrepStatus({
         <Badge variant="outline">每轮最多 {MAX_NORMAL_AUTO_ORDERS_PER_TICK}</Badge>
         <Badge variant={preferences.autoNormalOrderEnabled ? 'secondary' : 'outline'}>启用 {preferences.autoNormalOrderEnabled ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoNormalStartCooking ? 'secondary' : 'outline'}>料理 {preferences.autoNormalStartCooking ? '开' : '关'}</Badge>
-        {preferences.autoNormalStartCooking && (
-          <Badge variant={preferences.autoNormalCompleteQte ? 'secondary' : 'outline'}>
-            QTE {preferences.autoNormalCompleteQte ? '自动完成' : '跳过'}
-          </Badge>
-        )}
+        {preferences.autoNormalStartCooking && <Badge variant="secondary">QTE 自动完成</Badge>}
         <Badge variant={preferences.autoNormalCollectCooking ? 'secondary' : 'outline'}>收取 {preferences.autoNormalCollectCooking ? '开' : '关'}</Badge>
       </div>
     </div>
@@ -3800,7 +3760,6 @@ async function completeFirstNormalOrder(
     beverageName: order.beverageName || BEVERAGE_NAME_BY_ID.get(order.beverageId) || '',
     autoStartCooking: String(preferences.autoNormalStartCooking),
     autoCollectCooking: String(preferences.autoNormalCollectCooking),
-    completeQte: String(preferences.autoNormalStartCooking && preferences.autoNormalCompleteQte),
     stopOnError: String(preferences.autoNormalStopOnError),
   });
   const abortController = new AbortController();
@@ -3843,7 +3802,6 @@ async function rareOrderAction(
     autoTakeBeverage: String(preferences.autoPrepTakeBeverage),
     autoStartCooking: String(preferences.autoPrepStartCooking),
     autoCollectCooking: String(preferences.autoPrepCollectCooking),
-    completeQte: String(preferences.autoPrepStartCooking && preferences.autoPrepCompleteQte),
     favoritesOnly: String(preferences.autoPrepFavoritesOnly),
     stopOnError: String(preferences.autoPrepStopOnError),
     recipeFavorite: String(Boolean(recipeFavorite)),
@@ -5060,14 +5018,12 @@ function readStoredCompanionPreferences(): CompanionPreferences {
     autoNormalStartCooking: readStoredBoolean(AUTO_NORMAL_START_COOKING_STORAGE_KEY, false),
     autoNormalCollectCooking: readStoredBoolean(AUTO_NORMAL_COLLECT_COOKING_STORAGE_KEY, false),
     autoNormalStopOnError: readStoredBoolean(AUTO_NORMAL_STOP_ON_ERROR_STORAGE_KEY, false),
-    autoNormalCompleteQte: readStoredBoolean(AUTO_NORMAL_COMPLETE_QTE_STORAGE_KEY, false),
     autoPrepCompleteOrder: readStoredBoolean(AUTO_PREP_COMPLETE_ORDER_STORAGE_KEY, false),
     autoPrepTakeBeverage: readStoredBoolean(AUTO_PREP_TAKE_BEVERAGE_STORAGE_KEY, false),
     autoPrepStartCooking: readStoredBoolean(AUTO_PREP_START_COOKING_STORAGE_KEY, false),
     autoPrepCollectCooking: readStoredBoolean(AUTO_PREP_COLLECT_COOKING_STORAGE_KEY, false),
     autoPrepFavoritesOnly: readStoredBoolean(AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY, false),
     autoPrepStopOnError: readStoredBoolean(AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY, false),
-    autoPrepCompleteQte: readStoredBoolean(AUTO_PREP_COMPLETE_QTE_STORAGE_KEY, false),
     filterMissingCookers: readStoredBoolean(FILTER_MISSING_COOKERS_STORAGE_KEY, true),
     gameUiPinningEnabled: readStoredBoolean(GAME_UI_PINNING_STORAGE_KEY, false),
     cookerHighlightEnabled: readStoredBoolean(COOKER_HIGHLIGHT_STORAGE_KEY, false),
@@ -5166,14 +5122,12 @@ function normalizeCompanionPreferences(value: Partial<CompanionPreferences>): Co
     autoNormalStartCooking: Boolean(value.autoNormalStartCooking),
     autoNormalCollectCooking: Boolean(value.autoNormalCollectCooking),
     autoNormalStopOnError: Boolean(value.autoNormalStopOnError),
-    autoNormalCompleteQte: Boolean(value.autoNormalCompleteQte),
     autoPrepCompleteOrder: Boolean(value.autoPrepCompleteOrder),
     autoPrepTakeBeverage: Boolean(value.autoPrepTakeBeverage),
     autoPrepStartCooking: Boolean(value.autoPrepStartCooking),
     autoPrepCollectCooking: Boolean(value.autoPrepCollectCooking),
     autoPrepFavoritesOnly: Boolean(value.autoPrepFavoritesOnly),
     autoPrepStopOnError: Boolean(value.autoPrepStopOnError),
-    autoPrepCompleteQte: Boolean(value.autoPrepCompleteQte),
     filterMissingCookers: value.filterMissingCookers !== false,
     gameUiPinningEnabled: Boolean(value.gameUiPinningEnabled),
     cookerHighlightEnabled: Boolean(value.cookerHighlightEnabled),
@@ -5208,14 +5162,12 @@ function persistCompanionPreferences(preferences: CompanionPreferences) {
   localStorage.setItem(AUTO_NORMAL_START_COOKING_STORAGE_KEY, normalized.autoNormalStartCooking ? '1' : '0');
   localStorage.setItem(AUTO_NORMAL_COLLECT_COOKING_STORAGE_KEY, normalized.autoNormalCollectCooking ? '1' : '0');
   localStorage.setItem(AUTO_NORMAL_STOP_ON_ERROR_STORAGE_KEY, normalized.autoNormalStopOnError ? '1' : '0');
-  localStorage.setItem(AUTO_NORMAL_COMPLETE_QTE_STORAGE_KEY, normalized.autoNormalCompleteQte ? '1' : '0');
   localStorage.setItem(AUTO_PREP_COMPLETE_ORDER_STORAGE_KEY, normalized.autoPrepCompleteOrder ? '1' : '0');
   localStorage.setItem(AUTO_PREP_TAKE_BEVERAGE_STORAGE_KEY, normalized.autoPrepTakeBeverage ? '1' : '0');
   localStorage.setItem(AUTO_PREP_START_COOKING_STORAGE_KEY, normalized.autoPrepStartCooking ? '1' : '0');
   localStorage.setItem(AUTO_PREP_COLLECT_COOKING_STORAGE_KEY, normalized.autoPrepCollectCooking ? '1' : '0');
   localStorage.setItem(AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY, normalized.autoPrepFavoritesOnly ? '1' : '0');
   localStorage.setItem(AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY, normalized.autoPrepStopOnError ? '1' : '0');
-  localStorage.setItem(AUTO_PREP_COMPLETE_QTE_STORAGE_KEY, normalized.autoPrepCompleteQte ? '1' : '0');
   localStorage.setItem(FILTER_MISSING_COOKERS_STORAGE_KEY, normalized.filterMissingCookers ? '1' : '0');
   localStorage.setItem(GAME_UI_PINNING_STORAGE_KEY, normalized.gameUiPinningEnabled ? '1' : '0');
   localStorage.setItem(COOKER_HIGHLIGHT_STORAGE_KEY, normalized.cookerHighlightEnabled ? '1' : '0');

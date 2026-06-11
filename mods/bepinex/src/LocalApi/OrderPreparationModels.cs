@@ -17,7 +17,6 @@ internal sealed class OrderPreparationRequest
     public bool AutoTakeBeverage { get; init; }
     public bool AutoStartCooking { get; init; }
     public bool AutoCollectCooking { get; init; }
-    public bool CompleteQte { get; init; }
     public bool FavoritesOnly { get; init; }
     public bool StopOnError { get; init; }
     public bool RecipeFavorite { get; init; }
