@@ -14,7 +14,6 @@ internal static class RuntimeOrderPreparationService
     private const string PartnerManagerTypeName = "NightScene.PartnerUtility.PartnerManager";
     private const string CookSystemManagerTypeName = "NightScene.CookingUtility.CookSystemManager";
     private const string QteRewardManagerTypeName = "NightScene.CookingUtility.QTERewardManager";
-    private const string WorkSceneSustainedPanelTypeName = "NightScene.UI.WorkSceneSustainedPannel";
     private const string GuestsManagerTypeName = "NightScene.GuestManagementUtility.GuestsManager";
     private const string MatchedCookComboTypeName = "NightScene.UI.CookingUtility.WorkSceneCookingSelectionPannel+MatchedCookCombo";
     private static readonly object PendingCookingLock = new();
@@ -98,7 +97,7 @@ internal static class RuntimeOrderPreparationService
             }
             else
             {
-                var cookingResult = TryStartCooking(request.RecipeId, request.RecipeName, request.ExtraIngredientIds, request.AutoCollectCooking, request.QteMode, request.SimulateQteSuccess);
+                var cookingResult = TryStartCooking(request.RecipeId, request.RecipeName, request.ExtraIngredientIds, request.AutoCollectCooking, request.CompleteQte);
                 if (cookingResult.Ok)
                 {
                     result.Steps.Add(new OrderPreparationStep
@@ -349,8 +348,7 @@ internal static class RuntimeOrderPreparationService
         string recipeName,
         IReadOnlyList<int> extraIngredientIds,
         bool autoCollect,
-        string qteMode,
-        bool simulateQteSuccess)
+        bool completeQte)
     {
         var recipe = InvokeStatic(DataBaseCoreTypeName, "RefRecipe", new object?[] { recipeId });
         if (recipe == null)
@@ -393,11 +391,8 @@ internal static class RuntimeOrderPreparationService
         }
 
         InvokeInstance(cookController, "SetCook", new object?[] { finalFood, recipe, true });
-        var qteResult = TryHandleCookingQte(cookController, qteMode, simulateQteSuccess);
-        if (qteResult.ShouldStartCountdown)
-        {
-            InvokeInstance(cookController, "StartCookCountDown", new object?[] { 1f, false });
-        }
+        var qteResult = TryHandleCookingQte(completeQte);
+        InvokeInstance(cookController, "StartCookCountDown", new object?[] { 1f, false });
 
         var cookSystem = GetSingletonInstance(CookSystemManagerTypeName);
         if (cookSystem != null)
@@ -414,122 +409,60 @@ internal static class RuntimeOrderPreparationService
         return CookingStartResult.Succeeded($"{recipeName} 已开始制作（配方 #{recipeId}，加料：{extraText}）。", qteResult.Message, qteResult.Skipped);
     }
 
-    private static CookingQteResult TryHandleCookingQte(object cookController, string qteMode, bool simulateQteSuccess)
+    private static CookingQteResult TryHandleCookingQte(bool completeQte)
     {
-        if (!string.Equals(qteMode, "native", StringComparison.OrdinalIgnoreCase))
+        if (!completeQte)
         {
             return CookingQteResult.Skip("已跳过料理 QTE；不会累计音游数值或触发对应 Buff。");
         }
 
-        if (simulateQteSuccess)
-        {
-            var simulated = TrySimulateQteSuccess(out var simulateMessage);
-            return simulated
-                ? CookingQteResult.StartCountdown($"{simulateMessage}；为避免重复结算，本次不打开原生 QTE 面板。", skipped: false)
-                : CookingQteResult.StartCountdown(simulateMessage, skipped: true);
-        }
-
-        var openedNativePanel = TryOpenNativeCookingQtePanel(cookController, out var openMessage);
-        return openedNativePanel
-            ? CookingQteResult.WaitForNativePanel($"{openMessage}；料理倒计时将由原生 QTE 流程接管。")
-            : CookingQteResult.StartCountdown($"{openMessage}；已回退为跳过 QTE 并直接开始料理倒计时。", skipped: true);
-    }
-
-    private static bool TryOpenNativeCookingQtePanel(object cookController, out string message)
-    {
-        try
-        {
-            var panelType = FindType(WorkSceneSustainedPanelTypeName);
-            if (panelType == null)
-            {
-                message = "未找到原生 QTE 面板类型。";
-                return false;
-            }
-
-            var panel = FindUnityObject(panelType);
-            if (panel == null)
-            {
-                message = "未找到已打开的原生经营面板，暂未打开 QTE。";
-                return false;
-            }
-
-            var multiplier = 1f;
-            try
-            {
-                var value = InvokeInstance(cookController, "SolveQteMultiplier", Array.Empty<object?>());
-                if (value is IConvertible convertible) multiplier = convertible.ToSingle(null);
-            }
-            catch
-            {
-                multiplier = 1f;
-            }
-
-            InvokeInstance(panel, "OpenQTEPanelForCook", new object?[] { multiplier, cookController });
-            message = $"已打开原生料理 QTE 面板（倍率 {multiplier:0.##}）。";
-            return true;
-        }
-        catch (Exception ex)
-        {
-            message = $"打开原生料理 QTE 面板失败：{ex.GetBaseException().Message}";
-            return false;
-        }
+        var completed = TryCompleteCookingQte(out var completeMessage);
+        return completed
+            ? CookingQteResult.Completed($"{completeMessage}；不会打开原生音游面板。")
+            : CookingQteResult.Skip($"{completeMessage}；已回退为跳过料理 QTE。");
     }
 
     private sealed class CookingQteResult
     {
         public string Message { get; private init; } = "";
         public bool Skipped { get; private init; }
-        public bool ShouldStartCountdown { get; private init; }
-
         public static CookingQteResult Skip(string message)
         {
             return new CookingQteResult
             {
                 Message = message,
                 Skipped = true,
-                ShouldStartCountdown = true,
             };
         }
 
-        public static CookingQteResult StartCountdown(string message, bool skipped)
-        {
-            return new CookingQteResult
-            {
-                Message = message,
-                Skipped = skipped,
-                ShouldStartCountdown = true,
-            };
-        }
-
-        public static CookingQteResult WaitForNativePanel(string message)
+        public static CookingQteResult Completed(string message)
         {
             return new CookingQteResult
             {
                 Message = message,
                 Skipped = false,
-                ShouldStartCountdown = false,
             };
         }
     }
 
-    private static bool TrySimulateQteSuccess(out string message)
+    private static bool TryCompleteCookingQte(out string message)
     {
         try
         {
             var manager = GetSingletonInstance(QteRewardManagerTypeName);
             if (manager == null)
             {
-                message = "自动模拟 QTE 成功失败：QTE 奖励管理器不可用。";
+                message = "自动完成原生 QTE 失败：QTE 奖励管理器不可用。";
                 return false;
             }
 
             InvokeInstance(manager, "OnQTESucceeded", new object?[] { -1, true });
-            message = "已尝试模拟 QTE 成功奖励（实验性）。";
+            message = "已尝试自动完成原生 QTE 奖励结算。";
             return true;
         }
         catch (Exception ex)
         {
-            message = $"自动模拟 QTE 成功失败：{ex.GetBaseException().Message}";
+            message = $"自动完成原生 QTE 失败：{ex.GetBaseException().Message}";
             return false;
         }
     }
@@ -1449,40 +1382,6 @@ internal static class RuntimeOrderPreparationService
         {
             return false;
         }
-    }
-
-    private static object? FindUnityObject(Type type)
-    {
-        var method = typeof(UnityEngine.Object).GetMethod("FindObjectOfType", new[] { typeof(Type) });
-        if (method != null)
-        {
-            try
-            {
-                var active = method.Invoke(null, new object[] { type });
-                if (active != null) return active;
-            }
-            catch
-            {
-                // Fall through to the inactive-object lookup below.
-            }
-        }
-
-        var allMethod = typeof(UnityEngine.Resources).GetMethod("FindObjectsOfTypeAll", new[] { typeof(Type) });
-        if (allMethod == null) return null;
-
-        try
-        {
-            foreach (var item in ReadObjectEnumerable(allMethod.Invoke(null, new object[] { type })))
-            {
-                return item;
-            }
-        }
-        catch
-        {
-            return null;
-        }
-
-        return null;
     }
 
     private static Type? FindType(string fullName)
