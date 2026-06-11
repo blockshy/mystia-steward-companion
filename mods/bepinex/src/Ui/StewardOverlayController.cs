@@ -95,10 +95,17 @@ internal sealed class StewardOverlayController
     private sealed class PendingOrderPreparation
     {
         public OrderPreparationRequest Request { get; init; } = new();
-        public bool CompleteOrder { get; init; }
+        public OrderActionKind Action { get; init; }
         public ManualResetEventSlim Completion { get; } = new(false);
         public OrderPreparationResult? Result { get; set; }
         public Exception? Error { get; set; }
+    }
+
+    private enum OrderActionKind
+    {
+        PrepareRare,
+        CompleteRare,
+        CompleteNormal,
     }
 
     private sealed class RareRecommendationCache
@@ -1220,6 +1227,7 @@ internal sealed class StewardOverlayController
                 EditInventoryFromLocalApi,
                 PrepareOrderFromLocalApi,
                 CompleteOrderFromLocalApi,
+                CompleteNormalOrderFromLocalApi,
                 new FavoriteStore(FavoriteStore.ResolvePath(), _log),
                 _log);
             _localApiServer.Start();
@@ -1401,22 +1409,27 @@ internal sealed class StewardOverlayController
 
     private OrderPreparationResult PrepareOrderFromLocalApi(OrderPreparationRequest request)
     {
-        return RunOrderActionFromLocalApi(request, completeOrder: false);
+        return RunOrderActionFromLocalApi(request, OrderActionKind.PrepareRare);
     }
 
     private OrderPreparationResult CompleteOrderFromLocalApi(OrderPreparationRequest request)
     {
-        return RunOrderActionFromLocalApi(request, completeOrder: true);
+        return RunOrderActionFromLocalApi(request, OrderActionKind.CompleteRare);
     }
 
-    private OrderPreparationResult RunOrderActionFromLocalApi(OrderPreparationRequest request, bool completeOrder)
+    private OrderPreparationResult CompleteNormalOrderFromLocalApi(OrderPreparationRequest request)
+    {
+        return RunOrderActionFromLocalApi(request, OrderActionKind.CompleteNormal);
+    }
+
+    private OrderPreparationResult RunOrderActionFromLocalApi(OrderPreparationRequest request, OrderActionKind action)
     {
         if (Thread.CurrentThread.ManagedThreadId != _mainThreadId)
         {
             var pending = new PendingOrderPreparation
             {
                 Request = request,
-                CompleteOrder = completeOrder,
+                Action = action,
             };
             lock (_orderPreparationLock)
             {
@@ -1432,7 +1445,13 @@ internal sealed class StewardOverlayController
             return pending.Result ?? throw new InvalidOperationException("Order preparation did not produce a result.");
         }
 
-        return completeOrder ? ApplyOrderCompletion(request) : ApplyOrderPreparation(request);
+        return action switch
+        {
+            OrderActionKind.PrepareRare => ApplyOrderPreparation(request),
+            OrderActionKind.CompleteRare => ApplyOrderCompletion(request),
+            OrderActionKind.CompleteNormal => ApplyNormalOrderCompletion(request),
+            _ => ApplyOrderPreparation(request),
+        };
     }
 
     private OrderPreparationResult ApplyOrderPreparation(OrderPreparationRequest request)
@@ -1456,6 +1475,17 @@ internal sealed class StewardOverlayController
         return result;
     }
 
+    private OrderPreparationResult ApplyNormalOrderCompletion(OrderPreparationRequest request)
+    {
+        var result = RuntimeOrderPreparationService.CompleteNormalFirst(request);
+        _status = result.Ok
+            ? L("已处理当前第一笔普通客订单。", "First normal-customer order handled.")
+            : L($"处理当前第一笔普通客订单未完成：{result.Error}", $"Handling first normal-customer order did not finish: {result.Error}");
+        RefreshBusinessContext(false, force: true);
+        PublishLocalApiSnapshot();
+        return result;
+    }
+
     private void ProcessPendingOrderPreparations()
     {
         while (true)
@@ -1470,9 +1500,13 @@ internal sealed class StewardOverlayController
 
             try
             {
-                pending.Result = pending.CompleteOrder
-                    ? ApplyOrderCompletion(pending.Request)
-                    : ApplyOrderPreparation(pending.Request);
+                pending.Result = pending.Action switch
+                {
+                    OrderActionKind.PrepareRare => ApplyOrderPreparation(pending.Request),
+                    OrderActionKind.CompleteRare => ApplyOrderCompletion(pending.Request),
+                    OrderActionKind.CompleteNormal => ApplyNormalOrderCompletion(pending.Request),
+                    _ => ApplyOrderPreparation(pending.Request),
+                };
             }
             catch (Exception ex)
             {

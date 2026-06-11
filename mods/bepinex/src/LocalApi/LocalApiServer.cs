@@ -23,6 +23,7 @@ internal sealed class LocalApiServer : IDisposable
     private readonly Func<string, int, int, RuntimeInventoryEditResult> _editInventory;
     private readonly Func<OrderPreparationRequest, OrderPreparationResult> _prepareOrder;
     private readonly Func<OrderPreparationRequest, OrderPreparationResult> _completeOrder;
+    private readonly Func<OrderPreparationRequest, OrderPreparationResult> _completeNormalOrder;
     private readonly FavoriteStore _favoriteStore;
     private TcpListener? _listener;
     private Thread? _thread;
@@ -40,6 +41,7 @@ internal sealed class LocalApiServer : IDisposable
         Func<string, int, int, RuntimeInventoryEditResult> editInventory,
         Func<OrderPreparationRequest, OrderPreparationResult> prepareOrder,
         Func<OrderPreparationRequest, OrderPreparationResult> completeOrder,
+        Func<OrderPreparationRequest, OrderPreparationResult> completeNormalOrder,
         FavoriteStore favoriteStore,
         ManualLogSource log)
     {
@@ -53,6 +55,7 @@ internal sealed class LocalApiServer : IDisposable
         _editInventory = editInventory;
         _prepareOrder = prepareOrder;
         _completeOrder = completeOrder;
+        _completeNormalOrder = completeNormalOrder;
         _favoriteStore = favoriteStore;
         _logOutputPath = ResolveLogOutputPath();
         _healthJson = $"{{\"ok\":true,\"pluginVersion\":\"{EscapeJson(pluginVersion)}\",\"bindAddress\":\"{BindAddress}\",\"port\":{Port},\"authRequired\":true}}";
@@ -196,6 +199,9 @@ internal sealed class LocalApiServer : IDisposable
                         break;
                     case "/orders/complete-first":
                         WriteResponse(stream, 200, "OK", BuildOrderActionJson(query, _completeOrder));
+                        break;
+                    case "/orders/normal/complete-first":
+                        WriteResponse(stream, 200, "OK", BuildOrderActionJson(query, _completeNormalOrder));
                         break;
                     case "/ui-pinning/target":
                         WriteResponse(stream, 200, "OK", UpdateUiPinningTargetJson(query));
@@ -362,6 +368,7 @@ internal sealed class LocalApiServer : IDisposable
                 GuestName = ReadStringQuery(query, "guestName"),
                 FoodTag = ReadStringQuery(query, "foodTag"),
                 BeverageTag = ReadStringQuery(query, "beverageTag"),
+                FoodId = ReadIntQuery(query, "foodId", -1),
                 RecipeId = ReadIntQuery(query, "recipeId", -1),
                 RecipeName = ReadStringQuery(query, "recipeName"),
                 ExtraIngredientIds = ReadIntListQuery(query, "extraIngredientIds"),

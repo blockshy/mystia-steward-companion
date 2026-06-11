@@ -37,6 +37,7 @@ import type {
   IBeverage,
   ICustomerRare,
   IIngredient,
+  IRecipe,
   INormalBeverageResult,
   INormalRecipeResult,
   IRareBeverageResult,
@@ -47,6 +48,7 @@ import type {
 import { ALL_PLACES } from '@/lib/types';
 import allIngredients from '@/data/ingredients.json';
 import allBeverages from '@/data/beverages.json';
+import allRecipes from '@/data/recipes.json';
 
 const DEFAULT_ENDPOINT = 'http://127.0.0.1:32145';
 const STORAGE_PREFIX = 'mystia-steward-companion';
@@ -109,6 +111,8 @@ const INGREDIENT_ID_BY_NAME = new Map(INGREDIENTS.map((ingredient) => [ingredien
 const INGREDIENT_NAME_BY_ID = new Map(INGREDIENTS.map((ingredient) => [ingredient.id, ingredient.name]));
 const BEVERAGES = allBeverages as IBeverage[];
 const BEVERAGE_NAME_BY_ID = new Map(BEVERAGES.map((beverage) => [beverage.id, beverage.name]));
+const RECIPES = allRecipes as IRecipe[];
+const RECIPE_BY_FOOD_ID = new Map(RECIPES.map((recipe) => [recipe.id, recipe]));
 const LOW_STOCK_RESOURCE_THRESHOLD = 5;
 const EXTRA_INGREDIENT_RESOURCE_WEIGHT = 2;
 const DENSE_TWO_COLUMN_GRID = 'grid grid-cols-2 gap-4';
@@ -512,6 +516,8 @@ export function ModWorkbench() {
   const [favoriteBusyKey, setFavoriteBusyKey] = useState('');
   const [autoPrepBusy, setAutoPrepBusy] = useState(false);
   const [autoPrepMessage, setAutoPrepMessage] = useState('');
+  const [normalOrderBusy, setNormalOrderBusy] = useState(false);
+  const [normalOrderMessage, setNormalOrderMessage] = useState('');
   const autoFirstOrderStateRef = useRef<AutoFirstOrderState>({ orderKey: '', prepared: false, beverageHandled: false, paused: false });
   const autoFirstOrderBusyRef = useRef(false);
   const lastAutoFirstOrderAtRef = useRef(0);
@@ -831,6 +837,46 @@ export function ModWorkbench() {
     refresh,
   ]);
 
+  const handleFirstNormalOrder = useCallback(async () => {
+    if (normalOrderBusy) return;
+    if (!apiToken) {
+      setNormalOrderMessage('普通客自动化需要本地 API Token。');
+      return;
+    }
+
+    const order = (snapshot?.normalBusiness?.orders ?? [])
+      .filter((item) => !item.isFulfilled)
+      .sort((a, b) => a.deskCode - b.deskCode)[0];
+    if (!order) {
+      setNormalOrderMessage('当前没有可处理的普通客订单。');
+      return;
+    }
+
+    setNormalOrderBusy(true);
+    setNormalOrderMessage('');
+    try {
+      const response = await completeFirstNormalOrder(
+        normalizedEndpoint,
+        apiToken,
+        order,
+        companionPreferences,
+      );
+      setNormalOrderMessage(formatOrderPreparationResponse(response));
+      await refresh();
+    } catch (err) {
+      setNormalOrderMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setNormalOrderBusy(false);
+    }
+  }, [
+    apiToken,
+    companionPreferences,
+    normalOrderBusy,
+    normalizedEndpoint,
+    refresh,
+    snapshot?.normalBusiness?.orders,
+  ]);
+
   useEffect(() => {
     localStorage.setItem(ENDPOINT_STORAGE_KEY, normalizedEndpoint);
   }, [normalizedEndpoint]);
@@ -1116,9 +1162,12 @@ export function ModWorkbench() {
             autoPrepBusy={autoPrepBusy}
             autoPrepMessage={autoPrepMessage}
             autoPrepPreferences={companionPreferences}
+            normalOrderBusy={normalOrderBusy}
+            normalOrderMessage={normalOrderMessage}
             onPreferenceChange={updateCompanionPreferences}
             onToggleRecipeFavorite={toggleRecipeFavorite}
             onToggleBeverageFavorite={toggleBeverageFavorite}
+            onCompleteNormalOrder={handleFirstNormalOrder}
             onEnterFocusMode={() => setServiceFocusMode(true)}
             normalBusiness={snapshot?.normalBusiness ?? null}
           />
@@ -1581,10 +1630,13 @@ function ModServicePanel({
   autoPrepBusy,
   autoPrepMessage,
   autoPrepPreferences,
+  normalOrderBusy,
+  normalOrderMessage,
   normalBusiness,
   onPreferenceChange,
   onToggleRecipeFavorite,
   onToggleBeverageFavorite,
+  onCompleteNormalOrder,
   onEnterFocusMode,
 }: {
   runtime: RecommendationStateSnapshot | null;
@@ -1601,10 +1653,13 @@ function ModServicePanel({
   autoPrepBusy: boolean;
   autoPrepMessage: string;
   autoPrepPreferences: CompanionPreferences;
+  normalOrderBusy: boolean;
+  normalOrderMessage: string;
   normalBusiness: NormalBusinessContext | null;
   onPreferenceChange: (next: Partial<CompanionPreferences>) => void;
   onToggleRecipeFavorite: ToggleRecipeFavorite;
   onToggleBeverageFavorite: ToggleBeverageFavorite;
+  onCompleteNormalOrder: () => Promise<void>;
   onEnterFocusMode: () => void;
 }) {
   const activeGuests = night?.activeRareGuests ?? [];
@@ -1682,6 +1737,29 @@ function ModServicePanel({
       </div>
 
       <ListPanel title={`普通客订单诊断 (${normalBusiness?.orders.length ?? 0})`}>
+        {autoPrepPreferences.automationEnabled ? (
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm">
+            <span className="text-muted-foreground">
+              普通客自动化会处理桌号最靠前且未满足的普通客订单。
+            </span>
+            <Button
+              size="sm"
+              onClick={() => void onCompleteNormalOrder()}
+              disabled={normalOrderBusy || !normalBusiness || normalBusiness.orders.length === 0}
+            >
+              {normalOrderBusy ? '处理中' : '处理第一笔普通客订单'}
+            </Button>
+          </div>
+        ) : (
+          <div className="mb-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+            设置页开启“启用自动化（实验性）”后，可在这里处理第一笔普通客订单。
+          </div>
+        )}
+        {normalOrderMessage && (
+          <div className="mb-3 whitespace-pre-line rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+            {normalOrderMessage}
+          </div>
+        )}
         {!normalBusiness && <EmptyRow text="普通客订单只在经营场景中读取" />}
         {normalBusiness?.error && <EmptyRow text={normalBusiness.error} />}
         {normalBusiness?.orders.length === 0 && !normalBusiness.error && (
@@ -2011,7 +2089,7 @@ function ModTasksPanel({
       <Card>
         <CardContent className={`${DENSE_THREE_COLUMN_GRID} p-4 text-sm`}>
           <InfoLine label="任务数据" value={missions ? '已读取' : '暂不可用'} />
-          <InfoLine label="可接未接" value={`${rows.length} 个`} />
+          <InfoLine label="可推进任务" value={`${rows.length} 个`} />
           <InfoLine label="扫描状态" value={missions?.source || missions?.error || '暂无'} />
         </CardContent>
       </Card>
@@ -2020,7 +2098,7 @@ function ModTasksPanel({
         {!missions && <EmptyRow text="任务快照暂不可用" />}
         {missions?.error && <EmptyRow text={missions.error} />}
         {rows.length === 0 && missions && !missions.error && (
-          <EmptyRow text="当前进度未读取到可接但未接的任务" />
+          <EmptyRow text="当前进度未读取到可接或正在推进的任务" />
         )}
         {rows.map((mission) => (
           <div
@@ -3402,6 +3480,44 @@ async function completeFirstRareOrder(
     beverageFavorite,
     preferences,
   );
+}
+
+async function completeFirstNormalOrder(
+  endpoint: string,
+  apiToken: string,
+  order: NormalBusinessOrder,
+  preferences: CompanionPreferences,
+): Promise<OrderPreparationResponse> {
+  const recipe = RECIPE_BY_FOOD_ID.get(order.foodId)
+    ?? RECIPES.find((item) => item.recipeId === order.foodId)
+    ?? null;
+  const params = new URLSearchParams({
+    deskCode: String(order.deskCode),
+    guestName: order.guestName || '普通客',
+    foodId: String(order.foodId),
+    recipeId: recipe ? String(recipe.recipeId) : '-1',
+    recipeName: order.foodName || recipe?.name || '',
+    beverageId: String(order.beverageId),
+    beverageName: order.beverageName || BEVERAGE_NAME_BY_ID.get(order.beverageId) || '',
+    autoTakeBeverage: String(preferences.autoPrepTakeBeverage),
+    autoStartCooking: String(preferences.autoPrepStartCooking),
+    autoCollectCooking: String(preferences.autoPrepCollectCooking),
+    completeQte: String(preferences.autoPrepStartCooking && preferences.autoPrepCompleteQte),
+    stopOnError: String(preferences.autoPrepStopOnError),
+  });
+  const abortController = new AbortController();
+  const timeoutId = window.setTimeout(() => abortController.abort(), 5000);
+
+  try {
+    return await readLocalApiJson<OrderPreparationResponse>(
+      endpoint,
+      apiToken,
+      `/orders/normal/complete-first?${params.toString()}`,
+      abortController.signal,
+    );
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }
 
 async function rareOrderAction(

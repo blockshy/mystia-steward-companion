@@ -7,6 +7,7 @@ internal sealed class OrderPreparationRequest
     public string GuestName { get; init; } = "";
     public string FoodTag { get; init; } = "";
     public string BeverageTag { get; init; } = "";
+    public int FoodId { get; init; } = -1;
     public int RecipeId { get; init; } = -1;
     public string RecipeName { get; init; } = "";
     public IReadOnlyList<int> ExtraIngredientIds { get; init; } = Array.Empty<int>();

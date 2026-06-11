@@ -349,15 +349,13 @@ public static class RuntimeMissionSnapshotService
             var finished = RuntimeReflectionUtility.ToBool(RuntimeReflectionUtility.InvokeStaticMethod(schedulerType, "HaveMissionFinished", missionLabel));
             if (finished) continue;
 
-            var mission = RuntimeReflectionUtility.InvokeMethod(trackedMission, "GetMissionReference");
-            var finishConditions = RuntimeReflectionUtility.GetMemberValue(mission, "finishCondition");
-            foreach (var condition in RuntimeReflectionUtility.EnumerateObjects(finishConditions))
+            foreach (var snapshot in EnumerateConditionSnapshots(trackedMission))
             {
                 string? interactableLabel = null;
                 try
                 {
-                    if (!IsConditionType(condition, "InspectInteractable", 2)) continue;
-                    interactableLabel = ReadTextMember(condition, "label");
+                    if (!IsConditionType(snapshot.Condition, "InspectInteractable", 2) || snapshot.Finished) continue;
+                    interactableLabel = ReadTextMember(snapshot.Condition, "label");
                     if (string.IsNullOrWhiteSpace(interactableLabel) || !interactables.Contains(interactableLabel)) continue;
                 }
                 catch (Exception ex)
@@ -409,58 +407,97 @@ public static class RuntimeMissionSnapshotService
             var finished = RuntimeReflectionUtility.ToBool(RuntimeReflectionUtility.InvokeStaticMethod(schedulerType, "HaveMissionFinished", missionLabel));
             if (finished) continue;
 
-            var mission = RuntimeReflectionUtility.InvokeMethod(trackedMission, "GetMissionReference");
-            var finishConditions = RuntimeReflectionUtility.GetMemberValue(mission, "finishCondition");
-            RuntimeMissionInfo? fallback = null;
+            var conditions = EnumerateConditionSnapshots(trackedMission).ToList();
+            var firstUnfinished = conditions.FirstOrDefault(condition => !condition.Finished);
+            var talkCondition = conditions.FirstOrDefault(condition => IsConditionType(condition.Condition, "TalkWithCharacter", 1));
 
-            foreach (var condition in RuntimeReflectionUtility.EnumerateObjects(finishConditions))
+            if (firstUnfinished != null && IsConditionType(firstUnfinished.Condition, "TalkWithCharacter", 1))
             {
-                if (IsConditionType(condition, "TalkWithCharacter", 1))
+                var characterLabel = ReadTextMember(firstUnfinished.Condition, "label");
+                if (!string.IsNullOrWhiteSpace(characterLabel))
                 {
-                    var characterLabel = ReadTextMember(condition, "label");
-                    if (string.IsNullOrWhiteSpace(characterLabel)) continue;
-                    fallback = new RuntimeMissionInfo
+                    yield return new RuntimeMissionInfo
                     {
                         Label = missionLabel,
                         Title = ResolveMissionTitle(missionLabel),
                         CharacterLabel = characterLabel,
                         CharacterName = ResolveNpcName(dataBaseDayType, characterLabel),
-                        Source = "TrackingMission:Talk",
+                        Source = "TrackingMission:PendingTalk",
                         Started = false,
                         Finished = finished,
                     };
-                    break;
+                    continue;
                 }
+            }
 
-                if (IsConditionType(condition, "InspectInteractable", 2))
+            if (firstUnfinished != null && IsConditionType(firstUnfinished.Condition, "InspectInteractable", 2))
+            {
+                var interactableLabel = ReadTextMember(firstUnfinished.Condition, "label");
+                if (!string.IsNullOrWhiteSpace(interactableLabel))
                 {
-                    var interactableLabel = ReadTextMember(condition, "label");
-                    if (string.IsNullOrWhiteSpace(interactableLabel)) continue;
-                    fallback = new RuntimeMissionInfo
+                    yield return new RuntimeMissionInfo
                     {
                         Label = missionLabel,
                         Title = ResolveMissionTitle(missionLabel),
                         CharacterLabel = interactableLabel,
                         CharacterName = "场景交互",
-                        Source = "TrackingMission:Inspect",
+                        Source = "TrackingMission:PendingInspect",
                         Started = false,
                         Finished = finished,
                     };
-                    break;
+                    continue;
                 }
             }
 
-            yield return fallback ?? new RuntimeMissionInfo
+            var activeCharacterLabel = ReadTextMember(firstUnfinished?.Condition, "label")
+                ?? ReadTextMember(talkCondition?.Condition, "label")
+                ?? missionLabel;
+            var activeCharacterName = firstUnfinished != null && IsConditionType(firstUnfinished.Condition, "InspectInteractable", 2)
+                ? "场景交互"
+                : string.Equals(activeCharacterLabel, missionLabel, StringComparison.Ordinal)
+                    ? "任务"
+                    : ResolveNpcName(dataBaseDayType, activeCharacterLabel);
+
+            yield return new RuntimeMissionInfo
             {
                 Label = missionLabel,
                 Title = ResolveMissionTitle(missionLabel),
-                CharacterLabel = missionLabel,
-                CharacterName = "任务",
-                Source = "TrackingMission",
-                Started = false,
+                CharacterLabel = activeCharacterLabel,
+                CharacterName = activeCharacterName,
+                Source = firstUnfinished == null ? "TrackingMission:Tracked" : "TrackingMission:Active",
+                Started = firstUnfinished != null && !IsInitialAcceptCondition(firstUnfinished.Condition),
                 Finished = finished,
             };
         }
+    }
+
+    private static IEnumerable<MissionConditionSnapshot> EnumerateConditionSnapshots(object? trackedMission)
+    {
+        if (trackedMission == null) yield break;
+
+        var mission = RuntimeReflectionUtility.InvokeMethod(trackedMission, "GetMissionReference");
+        var finishConditions = RuntimeReflectionUtility.GetMemberValue(mission, "finishCondition");
+        var finishStates = RuntimeReflectionUtility
+            .EnumerateObjects(RuntimeReflectionUtility.GetMemberValue(trackedMission, "conditionFinishStates"))
+            .Select(RuntimeReflectionUtility.ToBool)
+            .ToList();
+
+        var index = 0;
+        foreach (var condition in RuntimeReflectionUtility.EnumerateObjects(finishConditions))
+        {
+            yield return new MissionConditionSnapshot
+            {
+                Condition = condition,
+                Finished = index < finishStates.Count && finishStates[index],
+            };
+            index++;
+        }
+    }
+
+    private static bool IsInitialAcceptCondition(object? condition)
+    {
+        return IsConditionType(condition, "TalkWithCharacter", 1)
+            || IsConditionType(condition, "InspectInteractable", 2);
     }
 
     private static bool IsConditionType(object? condition, string expectedName, int expectedValue)
@@ -469,6 +506,12 @@ public static class RuntimeMissionSnapshotService
         if (conditionType == null) return false;
         if (RuntimeReflectionUtility.ToInt(conditionType, int.MinValue) == expectedValue) return true;
         return string.Equals(conditionType.ToString(), expectedName, StringComparison.Ordinal);
+    }
+
+    private sealed class MissionConditionSnapshot
+    {
+        public object? Condition { get; init; }
+        public bool Finished { get; init; }
     }
 
     private static string? ReadTextMember(object? value, string memberName)
