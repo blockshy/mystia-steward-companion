@@ -222,6 +222,7 @@ public sealed class NormalBusinessOrder
     public bool HasServedFood { get; init; }
     public bool HasServedBeverage { get; init; }
     public bool IsFulfilled { get; init; }
+    public DateTime? FirstSeenAtUtc { get; init; }
     public string Source { get; init; } = "";
 }
 

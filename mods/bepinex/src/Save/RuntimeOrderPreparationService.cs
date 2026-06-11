@@ -19,6 +19,11 @@ internal static class RuntimeOrderPreparationService
     private const string MatchedCookComboTypeName = "NightScene.UI.CookingUtility.WorkSceneCookingSelectionPannel+MatchedCookCombo";
     private static readonly object PendingCookingLock = new();
     private static readonly List<PendingCookingCollection> PendingCookingCollections = new();
+    private enum CookingCollectionTargetKind
+    {
+        Tray,
+        NormalOrder,
+    }
 
     public static OrderPreparationResult Prepare(OrderPreparationRequest request)
     {
@@ -342,8 +347,7 @@ internal static class RuntimeOrderPreparationService
         }
 
         var expectedFoodId = request.FoodId >= 0 ? request.FoodId : ResolveFoodIdFromRecipeId(request.RecipeId);
-        var foodAlreadyServed = ReadMember(runtimeOrder.Order, "ServFood") != null
-            || ReadMember(runtimeOrder.Order, "ServedFoodInAir") != null;
+        var foodAlreadyServed = ReadMember(runtimeOrder.Order, "ServFood") != null;
         if (foodAlreadyServed)
         {
             AddSkipped(result, "普通客料理", "该订单已经写入料理。");
@@ -353,56 +357,73 @@ internal static class RuntimeOrderPreparationService
             AddFailure(result, "普通客料理", "订单没有有效的料理 ID。");
             if (request.StopOnError) return Finish(result);
         }
-        else if (TryServeFoodFromTray(runtimeOrder.Order, expectedFoodId, request.RecipeName, out var trayMessage))
+        else
         {
-            result.Steps.Add(new OrderPreparationStep
+            var inAirResult = TryPromoteNormalFoodInAir(runtimeOrder.Order, expectedFoodId, request.RecipeName);
+            if (inAirResult.Ok)
             {
-                Name = "普通客送达料理",
-                Ok = true,
-                Message = trayMessage,
-            });
-        }
-        else if (request.AutoStartCooking)
-        {
-            var recipeId = request.RecipeId >= 0 ? request.RecipeId : ResolveRecipeIdFromFoodId(expectedFoodId);
-            if (recipeId < 0)
+                result.Steps.Add(new OrderPreparationStep
+                {
+                    Name = "普通客送达料理",
+                    Ok = true,
+                    Message = inAirResult.Message,
+                });
+            }
+            else if (inAirResult.Blocked)
             {
-                AddFailure(result, "普通客开始料理", $"未找到料理 {request.RecipeName}（成品 #{expectedFoodId}）对应的配方 ID。");
+                AddFailure(result, "普通客送达料理", inAirResult.Message);
                 if (request.StopOnError) return Finish(result);
             }
-            else
+            else if (request.AutoStartCooking)
             {
-                var cookingResult = TryStartCooking(recipeId, request.RecipeName, request.ExtraIngredientIds, true, request.CompleteQte);
-                if (cookingResult.Ok)
+                var recipeId = request.RecipeId >= 0 ? request.RecipeId : ResolveRecipeIdFromFoodId(expectedFoodId);
+                if (recipeId < 0)
                 {
-                    result.Steps.Add(new OrderPreparationStep
-                    {
-                        Name = "普通客开始料理",
-                        Ok = true,
-                        Message = cookingResult.Message,
-                    });
-                    if (!string.IsNullOrWhiteSpace(cookingResult.QteMessage))
-                    {
-                        result.Steps.Add(new OrderPreparationStep
-                        {
-                            Name = "料理 QTE",
-                            Ok = true,
-                            Skipped = cookingResult.QteSkipped,
-                            Message = cookingResult.QteMessage,
-                        });
-                    }
-                    AddSkipped(result, "普通客送达料理", "料理已开始制作，完成后会自动收入送餐盘；再次处理该订单会尝试送达。");
+                    AddFailure(result, "普通客开始料理", $"未找到料理 {request.RecipeName}（成品 #{expectedFoodId}）对应的配方 ID。");
+                    if (request.StopOnError) return Finish(result);
                 }
                 else
                 {
-                    AddFailure(result, "普通客开始料理", cookingResult.Message);
-                    if (request.StopOnError) return Finish(result);
+                    var target = CookingCollectionTarget.ForNormalOrder(
+                        runtimeOrder.Manager,
+                        runtimeOrder.Controller,
+                        runtimeOrder.Order,
+                        expectedFoodId,
+                        request.RecipeName,
+                        request.DeskCode,
+                        result.Order.GuestName);
+                    var cookingResult = TryStartCooking(recipeId, request.RecipeName, request.ExtraIngredientIds, true, request.CompleteQte, target);
+                    if (cookingResult.Ok)
+                    {
+                        result.Steps.Add(new OrderPreparationStep
+                        {
+                            Name = "普通客开始料理",
+                            Ok = true,
+                            Message = cookingResult.Message,
+                        });
+                        if (!string.IsNullOrWhiteSpace(cookingResult.QteMessage))
+                        {
+                            result.Steps.Add(new OrderPreparationStep
+                            {
+                                Name = "料理 QTE",
+                                Ok = true,
+                                Skipped = cookingResult.QteSkipped,
+                                Message = cookingResult.QteMessage,
+                            });
+                        }
+                        AddSkipped(result, "普通客送达料理", "料理已开始制作，完成后会自动进入普通客保温/送达路径。");
+                    }
+                    else
+                    {
+                        AddFailure(result, "普通客开始料理", cookingResult.Message);
+                        if (request.StopOnError) return Finish(result);
+                    }
                 }
             }
-        }
-        else
-        {
-            AddSkipped(result, "普通客料理", $"送餐盘中没有找到目标料理 {request.RecipeName}（料理 #{expectedFoodId}），自动开始料理已关闭。");
+            else
+            {
+                AddSkipped(result, "普通客料理", $"普通客订单尚未获得目标料理 {request.RecipeName}（料理 #{expectedFoodId}），自动开始料理已关闭。");
+            }
         }
 
         if (ReadBool(InvokeInstance(runtimeOrder.Order, "get_IsFullfilled", Array.Empty<object?>())))
@@ -566,6 +587,29 @@ internal static class RuntimeOrderPreparationService
         return true;
     }
 
+    private static (bool Ok, bool Blocked, string Message) TryPromoteNormalFoodInAir(object order, int foodId, string foodName)
+    {
+        var foodInAir = ReadMember(order, "ServedFoodInAir");
+        if (foodInAir == null)
+        {
+            return (false, false, "");
+        }
+
+        if (!IsSellable(foodInAir, sellableType: 0, id: foodId))
+        {
+            return (false, true, $"普通客保温位中已有料理，但不是目标料理 {foodName}（料理 #{foodId}），本次不会错误送达。");
+        }
+
+        WriteMember(order, "ServFood", foodInAir);
+        if (ReadMember(order, "ServFood") == null)
+        {
+            return (false, true, $"已读取到保温位中的 {foodName}，但写入普通客订单失败。");
+        }
+
+        WriteMember(order, "ServedFoodInAir", null);
+        return (true, false, $"已将保温位中的 {foodName} 送达普通客订单。");
+    }
+
     private static int ResolveFoodIdFromRecipeId(int recipeId)
     {
         if (recipeId < 0) return -1;
@@ -607,7 +651,8 @@ internal static class RuntimeOrderPreparationService
         string recipeName,
         IReadOnlyList<int> extraIngredientIds,
         bool autoCollect,
-        bool completeQte)
+        bool completeQte,
+        CookingCollectionTarget? collectionTarget = null)
     {
         var recipe = InvokeStatic(DataBaseCoreTypeName, "RefRecipe", new object?[] { recipeId });
         if (recipe == null)
@@ -661,7 +706,7 @@ internal static class RuntimeOrderPreparationService
 
         if (autoCollect)
         {
-            RegisterPendingCookingCollection(cookController, recipeName);
+            RegisterPendingCookingCollection(cookController, recipeName, collectionTarget ?? CookingCollectionTarget.Tray());
         }
 
         var extraText = extraIngredientIds.Count == 0 ? "不加料" : string.Join(",", extraIngredientIds);
@@ -726,7 +771,7 @@ internal static class RuntimeOrderPreparationService
         }
     }
 
-    private static void RegisterPendingCookingCollection(object cookController, string recipeName)
+    private static void RegisterPendingCookingCollection(object cookController, string recipeName, CookingCollectionTarget target)
     {
         lock (PendingCookingLock)
         {
@@ -736,6 +781,7 @@ internal static class RuntimeOrderPreparationService
                 CookController = cookController,
                 RecipeName = recipeName,
                 CreatedAtUtc = DateTime.UtcNow,
+                Target = target,
             });
         }
     }
@@ -751,6 +797,11 @@ internal static class RuntimeOrderPreparationService
         if (phase != 3)
         {
             return (false, "");
+        }
+
+        if (pending.Target.Kind == CookingCollectionTargetKind.NormalOrder)
+        {
+            return TryCollectNormalOrderFood(pending);
         }
 
         var tray = GetSingletonInstance(IzakayaTrayTypeName);
@@ -781,6 +832,59 @@ internal static class RuntimeOrderPreparationService
         TryInvokeInstance(pending.CookController, "CloseCookingVisual", Array.Empty<object?>());
         TryClearCookController(pending.CookController, cookedFood);
         return (true, $"{pending.RecipeName} 已自动收入送餐盘。");
+    }
+
+    private static (bool Remove, string Message) TryCollectNormalOrderFood(PendingCookingCollection pending)
+    {
+        var cookedFood = InvokeInstance(pending.CookController, "get_Result", Array.Empty<object?>());
+        if (cookedFood == null)
+        {
+            return (true, $"{pending.RecipeName} 已完成，但未读取到成品对象，已停止普通客自动收取。");
+        }
+
+        if (pending.Target.FoodId >= 0 && !IsSellable(cookedFood, sellableType: 0, id: pending.Target.FoodId))
+        {
+            return (true, $"{pending.RecipeName} 已完成，但成品不是目标料理 {pending.Target.FoodName}（料理 #{pending.Target.FoodId}），本次不会送达普通客订单。");
+        }
+
+        var order = pending.Target.Order;
+        if (order == null)
+        {
+            return (true, $"{pending.RecipeName} 已完成，但目标普通客订单对象已不可用，已停止自动收取。");
+        }
+
+        if (ReadMember(order, "ServFood") != null)
+        {
+            TryInvokeInstance(pending.CookController, "AfterPlayerExtract", Array.Empty<object?>());
+            TryInvokeInstance(pending.CookController, "CloseCookingVisual", Array.Empty<object?>());
+            TryClearCookController(pending.CookController, cookedFood);
+            return (true, $"{pending.RecipeName} 已完成，但目标普通客订单已有料理，本次未重复写入。");
+        }
+
+        WriteMember(order, "ServedFoodInAir", cookedFood);
+        WriteMember(order, "ServFood", cookedFood);
+        if (ReadMember(order, "ServFood") == null)
+        {
+            return (true, $"{pending.RecipeName} 已完成，但写入目标普通客订单失败，已停止自动收取。");
+        }
+
+        WriteMember(order, "ServedFoodInAir", null);
+        TryInvokeInstance(pending.CookController, "AfterPlayerExtract", Array.Empty<object?>());
+        TryInvokeInstance(pending.CookController, "CloseCookingVisual", Array.Empty<object?>());
+        TryClearCookController(pending.CookController, cookedFood);
+
+        var prefix = pending.Target.DeskCode >= 0
+            ? $"桌 {pending.Target.DeskCode + 1} · {pending.Target.GuestName}"
+            : pending.Target.GuestName;
+        if (pending.Target.Manager != null
+            && pending.Target.Controller != null
+            && ReadBool(InvokeInstance(order, "get_IsFullfilled", Array.Empty<object?>())))
+        {
+            InvokeInstance(pending.Target.Manager, "EvaluateOrder", new object?[] { pending.Target.Controller, false, null });
+            return (true, $"{pending.RecipeName} 已通过普通客保温路径送达 {prefix}，并已触发订单评价。");
+        }
+
+        return (true, $"{pending.RecipeName} 已通过普通客保温路径送达 {prefix}，等待酒水或后续评价。");
     }
 
     private static bool TryExtractWithGameMethod(object cookController)
@@ -1967,6 +2071,49 @@ internal static class RuntimeOrderPreparationService
         public object CookController { get; init; } = new();
         public string RecipeName { get; init; } = "";
         public DateTime CreatedAtUtc { get; init; }
+        public CookingCollectionTarget Target { get; init; } = CookingCollectionTarget.Tray();
+    }
+
+    private sealed class CookingCollectionTarget
+    {
+        public CookingCollectionTargetKind Kind { get; private init; }
+        public object? Manager { get; private init; }
+        public object? Controller { get; private init; }
+        public object? Order { get; private init; }
+        public int FoodId { get; private init; } = -1;
+        public string FoodName { get; private init; } = "";
+        public int DeskCode { get; private init; } = -1;
+        public string GuestName { get; private init; } = "";
+
+        public static CookingCollectionTarget Tray()
+        {
+            return new CookingCollectionTarget
+            {
+                Kind = CookingCollectionTargetKind.Tray,
+            };
+        }
+
+        public static CookingCollectionTarget ForNormalOrder(
+            object? manager,
+            object? controller,
+            object? order,
+            int foodId,
+            string foodName,
+            int deskCode,
+            string guestName)
+        {
+            return new CookingCollectionTarget
+            {
+                Kind = CookingCollectionTargetKind.NormalOrder,
+                Manager = manager,
+                Controller = controller,
+                Order = order,
+                FoodId = foodId,
+                FoodName = foodName,
+                DeskCode = deskCode,
+                GuestName = guestName,
+            };
+        }
     }
 
     private sealed class CookingStartResult

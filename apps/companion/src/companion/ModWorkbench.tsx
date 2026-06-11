@@ -284,6 +284,7 @@ interface NormalBusinessOrder {
   hasServedFood: boolean;
   hasServedBeverage: boolean;
   isFulfilled: boolean;
+  firstSeenAtUtc?: string | null;
   source: string;
 }
 
@@ -867,9 +868,7 @@ export function ModWorkbench() {
       return;
     }
 
-    const order = (snapshot?.normalBusiness?.orders ?? [])
-      .filter((item) => !item.isFulfilled)
-      .sort((a, b) => a.deskCode - b.deskCode)[0];
+    const order = sortNormalOrders(snapshot?.normalBusiness?.orders ?? []).filter((item) => !item.isFulfilled)[0];
     if (!order) {
       setNormalOrderMessage('当前没有可处理的普通客订单。');
       return;
@@ -1763,7 +1762,7 @@ function ModServicePanel({
         {autoPrepPreferences.automationEnabled && autoPrepPreferences.autoNormalOrderEnabled ? (
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm">
             <span className="text-muted-foreground">
-              普通客自动化会处理桌号最靠前且未满足的普通客订单。
+              普通客自动化会处理最早出现且未满足的普通客订单。
             </span>
             <Button
               size="sm"
@@ -1792,7 +1791,7 @@ function ModServicePanel({
         {normalBusiness?.orders.length === 0 && !normalBusiness.error && (
           <EmptyRow text={normalBusiness.source || '暂无普通客订单'} />
         )}
-        {normalBusiness?.orders.map((order) => (
+        {sortNormalOrders(normalBusiness?.orders ?? []).map((order) => (
           <div
             key={`${order.deskCode}-${order.guestName}-${order.foodId}-${order.beverageId}-${order.source}`}
             className="border-b py-2 text-sm last:border-b-0"
@@ -3905,6 +3904,26 @@ function sortNightOrderRows<T extends { order: NightBusinessOrder }>(
 ): T[] {
   const groupFirstSeen = buildOrderGroupFirstSeen(rows.map((row) => row.order));
   return [...rows].sort((left, right) => compareNightOrders(left.order, right.order, mode, groupFirstSeen));
+}
+
+function sortNormalOrders(orders: NormalBusinessOrder[]): NormalBusinessOrder[] {
+  return [...orders].sort(compareNormalOrdersByTime);
+}
+
+function compareNormalOrdersByTime(left: NormalBusinessOrder, right: NormalBusinessOrder): number {
+  const leftSeenAt = getNormalOrderSeenTime(left);
+  const rightSeenAt = getNormalOrderSeenTime(right);
+  if (leftSeenAt !== rightSeenAt) return leftSeenAt - rightSeenAt;
+  if (left.deskCode !== right.deskCode) return left.deskCode - right.deskCode;
+  const foodCompare = left.foodName.localeCompare(right.foodName, 'zh-Hans-CN');
+  if (foodCompare !== 0) return foodCompare;
+  return left.beverageName.localeCompare(right.beverageName, 'zh-Hans-CN');
+}
+
+function getNormalOrderSeenTime(order: NormalBusinessOrder): number {
+  if (!order.firstSeenAtUtc) return Number.MAX_SAFE_INTEGER;
+  const time = Date.parse(order.firstSeenAtUtc);
+  return Number.isFinite(time) ? time : Number.MAX_SAFE_INTEGER;
 }
 
 function compareNightOrders(

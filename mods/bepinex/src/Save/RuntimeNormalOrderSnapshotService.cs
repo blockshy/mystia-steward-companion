@@ -16,6 +16,8 @@ public sealed class RuntimeNormalOrderSnapshotService
         ("CanPlayerRepellGuest", "Repellable"),
         ("ManualDesksDic", "ManualDesk"),
     };
+    private static readonly object FirstSeenLock = new();
+    private static readonly Dictionary<string, DateTime> FirstSeenByOrderKey = new(StringComparer.Ordinal);
 
     private readonly DataRepository _repository;
 
@@ -84,19 +86,97 @@ public sealed class RuntimeNormalOrderSnapshotService
             errors.Add($"Queue: {ex.Message}");
         }
 
-        var deduplicated = orders
-            .GroupBy(order => $"{order.DeskCode}|{order.GuestName}|{order.FoodId}|{order.BeverageId}", StringComparer.Ordinal)
-            .Select(group => group.First())
-            .OrderBy(order => order.DeskCode)
+        var deduplicated = ApplyFirstSeenOrder(orders)
+            .OrderBy(order => order.FirstSeenAtUtc ?? DateTime.MaxValue)
+            .ThenBy(order => order.DeskCode)
             .ThenBy(order => order.GuestName, StringComparer.Ordinal)
             .ToList();
         source.Add($"normalOrders={deduplicated.Count}");
+        source.Add("normalOrderSort=firstSeen");
 
         return new NormalBusinessContext
         {
             Orders = deduplicated,
             Source = string.Join("; ", source),
             Error = errors.Count == 0 ? null : string.Join("; ", errors),
+        };
+    }
+
+    private static IReadOnlyList<NormalBusinessOrder> ApplyFirstSeenOrder(IEnumerable<NormalBusinessOrder> orders)
+    {
+        var grouped = orders
+            .GroupBy(BuildOrderKey, StringComparer.Ordinal)
+            .Select(group => new
+            {
+                Key = group.Key,
+                Order = MergeOrderGroup(group),
+            })
+            .ToList();
+        var activeKeys = grouped.Select(group => group.Key).ToHashSet(StringComparer.Ordinal);
+        var now = DateTime.UtcNow;
+
+        lock (FirstSeenLock)
+        {
+            foreach (var staleKey in FirstSeenByOrderKey.Keys.Where(key => !activeKeys.Contains(key)).ToList())
+            {
+                FirstSeenByOrderKey.Remove(staleKey);
+            }
+
+            foreach (var group in grouped)
+            {
+                if (!FirstSeenByOrderKey.TryGetValue(group.Key, out var firstSeen))
+                {
+                    firstSeen = now;
+                    FirstSeenByOrderKey[group.Key] = firstSeen;
+                }
+            }
+
+            return grouped
+                .Select(group => CopyWithFirstSeen(group.Order, FirstSeenByOrderKey[group.Key]))
+                .ToList();
+        }
+    }
+
+    private static string BuildOrderKey(NormalBusinessOrder order)
+    {
+        return $"{order.DeskCode}|{order.GuestName}|{order.FoodId}|{order.BeverageId}";
+    }
+
+    private static NormalBusinessOrder MergeOrderGroup(IEnumerable<NormalBusinessOrder> group)
+    {
+        var orders = group.ToList();
+        var first = orders.First();
+        return new NormalBusinessOrder
+        {
+            DeskCode = first.DeskCode,
+            GuestName = first.GuestName,
+            FoodId = first.FoodId,
+            FoodName = first.FoodName,
+            BeverageId = first.BeverageId,
+            BeverageName = first.BeverageName,
+            HasServedFood = orders.Any(order => order.HasServedFood),
+            HasServedBeverage = orders.Any(order => order.HasServedBeverage),
+            IsFulfilled = orders.Any(order => order.IsFulfilled),
+            FirstSeenAtUtc = first.FirstSeenAtUtc,
+            Source = string.Join("/", orders.Select(order => order.Source).Where(source => !string.IsNullOrWhiteSpace(source)).Distinct(StringComparer.Ordinal)),
+        };
+    }
+
+    private static NormalBusinessOrder CopyWithFirstSeen(NormalBusinessOrder order, DateTime firstSeenAtUtc)
+    {
+        return new NormalBusinessOrder
+        {
+            DeskCode = order.DeskCode,
+            GuestName = order.GuestName,
+            FoodId = order.FoodId,
+            FoodName = order.FoodName,
+            BeverageId = order.BeverageId,
+            BeverageName = order.BeverageName,
+            HasServedFood = order.HasServedFood,
+            HasServedBeverage = order.HasServedBeverage,
+            IsFulfilled = order.IsFulfilled,
+            FirstSeenAtUtc = firstSeenAtUtc,
+            Source = order.Source,
         };
     }
 
