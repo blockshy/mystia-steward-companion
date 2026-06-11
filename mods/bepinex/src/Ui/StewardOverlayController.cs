@@ -169,12 +169,6 @@ internal sealed class StewardOverlayController
             }
         }
 
-        if (Input.GetKeyDown(_config.ReloadKey.Value))
-        {
-            RefreshBusinessContext(true);
-            RefreshRuntimeState(true);
-        }
-
         if (!_config.EnableInGameOverlay.Value && _visible)
         {
             SetOverlayVisible(false);
@@ -419,7 +413,6 @@ internal sealed class StewardOverlayController
         GUILayout.Label($"{L("当前数据源", "Current source")}: {FormatCurrentSource()}");
         GUILayout.Label($"{L("键鼠开关", "Keyboard toggle")}: {_config.ToggleKey.Value}");
         GUILayout.Label($"{L("手柄开关", "Controller toggle")}: {FormatControllerKey(_config.ControllerToggleKey.Value)}");
-        GUILayout.Label($"{L("刷新热键", "Refresh hotkey")}: {_config.ReloadKey.Value}");
 
         GUILayout.Space(8);
         GUILayout.Label($"{L("语言", "Language")}:");

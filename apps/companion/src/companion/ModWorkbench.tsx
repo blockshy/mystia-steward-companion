@@ -93,7 +93,9 @@ const DEFAULT_FOCUS_SWITCH_COOLDOWN_MS = 800;
 const MIN_FOCUS_SWITCH_COOLDOWN_MS = 250;
 const MAX_FOCUS_SWITCH_COOLDOWN_MS = 2000;
 const MAX_LOG_LINES_IN_VIEW = 400;
+const CONNECTION_RETRY_DELAYS_MS = [2000, 5000, 10000, 30000];
 const AUTO_FIRST_ORDER_TICK_MS = 1500;
+const MAX_RARE_AUTO_ORDERS_PER_TICK = 2;
 const MAX_NORMAL_AUTO_ORDERS_PER_TICK = 3;
 const NORMAL_AUTO_PREPARED_RETRY_MS = 15000;
 const AUTO_STEP_RETRY_MS = 15000;
@@ -536,6 +538,7 @@ export function ModWorkbench() {
   const [endpoint, setEndpoint] = useState(() =>
     readMigratedStorage(ENDPOINT_STORAGE_KEY, LEGACY_ENDPOINT_STORAGE_KEY, DEFAULT_ENDPOINT),
   );
+  const [endpointDraft, setEndpointDraft] = useState(endpoint);
   const [apiToken, setApiToken] = useState(() =>
     readMigratedStorage(TOKEN_STORAGE_KEY, LEGACY_TOKEN_STORAGE_KEY, ''),
   );
@@ -556,6 +559,8 @@ export function ModWorkbench() {
   const [snapshot, setSnapshot] = useState<LocalApiSnapshot | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [connectionPaused, setConnectionPaused] = useState(false);
+  const [connectionFailureCount, setConnectionFailureCount] = useState(0);
   const [lastConnectedAt, setLastConnectedAt] = useState<Date | null>(null);
   const [manualPlace, setManualPlace] = useState<TPlace | null>(null);
   const [rareCustomerId, setRareCustomerId] = useState<number | null>(null);
@@ -570,7 +575,7 @@ export function ModWorkbench() {
   const [normalOrderBusy, setNormalOrderBusy] = useState(false);
   const [normalOrderMessage, setNormalOrderMessage] = useState('');
   const [normalOrderPausedCount, setNormalOrderPausedCount] = useState(0);
-  const autoFirstOrderStateRef = useRef<AutoFirstOrderState>(emptyAutoFirstOrderState());
+  const rareOrderStatesRef = useRef(new Map<string, AutoFirstOrderState>());
   const autoFirstOrderBusyRef = useRef(false);
   const normalOrderStatesRef = useRef(new Map<string, NormalAutoOrderState>());
   const normalOrderBusyRef = useRef(false);
@@ -585,6 +590,20 @@ export function ModWorkbench() {
   }, []);
 
   const normalizedEndpoint = useMemo(() => normalizeEndpoint(endpoint), [endpoint]);
+  const normalizedEndpointDraft = useMemo(() => normalizeEndpoint(endpointDraft), [endpointDraft]);
+  const applyEndpointConnection = useCallback(() => {
+    setEndpoint(normalizedEndpointDraft);
+    setEndpointDraft(normalizedEndpointDraft);
+    setConnectionPaused(false);
+    setConnectionFailureCount(0);
+    setError('');
+    setSnapshot(null);
+  }, [normalizedEndpointDraft]);
+  const pauseConnection = useCallback(() => {
+    setConnectionPaused(true);
+    setLoading(false);
+    setError('已停止自动重连。');
+  }, []);
   const runtime = snapshot?.recommendationState ?? null;
   const night = snapshot?.nightBusiness ?? null;
   const detectedPlace = normalizePlace(night?.place);
@@ -624,6 +643,7 @@ export function ModWorkbench() {
   const snapshotRefreshIntervalMs = tab === 'service' || serviceFocusMode ? 750 : 2000;
 
   useEffect(() => {
+    if (!apiToken || connectionPaused) return;
     const signature = `${companionPreferences.gameUiPinningEnabled ? '1' : '0'}|${companionPreferences.cookerHighlightEnabled ? '1' : '0'}|${gameUiPinningTarget?.signature ?? 'disabled'}`;
     if (lastUiPinningSignatureRef.current === signature) return;
 
@@ -648,16 +668,24 @@ export function ModWorkbench() {
     };
   }, [
     apiToken,
+    connectionPaused,
     companionPreferences.cookerHighlightEnabled,
     companionPreferences.gameUiPinningEnabled,
     gameUiPinningTarget,
     normalizedEndpoint,
   ]);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (manual = false) => {
+    if (!apiToken) {
+      setError('未收到本地 API Token。请从游戏内启动或按 F8 唤起伴随窗口。');
+      setLoading(false);
+      return;
+    }
+    if (!manual && connectionPaused) return;
     if (refreshInFlightRef.current) return;
     refreshInFlightRef.current = true;
-    setLoading(true);
+    const showLoading = manual || !snapshot;
+    if (showLoading) setLoading(true);
     const abortController = new AbortController();
     const timeoutId = window.setTimeout(() => abortController.abort(), 2800);
 
@@ -665,21 +693,25 @@ export function ModWorkbench() {
       const data = await readSnapshot(normalizedEndpoint, apiToken, abortController.signal);
       setSnapshot(data);
       setError('');
+      setConnectionPaused(false);
+      setConnectionFailureCount(0);
       setLastConnectedAt(new Date());
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      setConnectionFailureCount((current) => Math.min(current + 1, CONNECTION_RETRY_DELAYS_MS.length));
     } finally {
       window.clearTimeout(timeoutId);
       refreshInFlightRef.current = false;
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
-  }, [apiToken, normalizedEndpoint]);
+  }, [apiToken, connectionPaused, normalizedEndpoint, snapshot]);
 
   const refreshFavorites = useCallback(async () => {
     if (!apiToken) {
       setFavorites(emptyFavoriteData());
       return;
     }
+    if (connectionPaused) return;
 
     const abortController = new AbortController();
     const timeoutId = window.setTimeout(() => abortController.abort(), 2800);
@@ -693,7 +725,7 @@ export function ModWorkbench() {
     } finally {
       window.clearTimeout(timeoutId);
     }
-  }, [apiToken, normalizedEndpoint]);
+  }, [apiToken, connectionPaused, normalizedEndpoint]);
 
   const toggleRecipeFavorite = useCallback<ToggleRecipeFavorite>(async (customer, foodTag, recipe) => {
     if (!apiToken || !foodTag) return;
@@ -745,7 +777,7 @@ export function ModWorkbench() {
     }
 
     if (!hasAutomationActionEnabled(companionPreferences)) {
-      autoFirstOrderStateRef.current = emptyAutoFirstOrderState();
+      rareOrderStatesRef.current.clear();
       setAutoPrepPaused(false);
       if (!companionPreferences.autoNormalOrderEnabled || !hasNormalOrderActionEnabled(companionPreferences)) {
         setAutoPrepMessage('自动化已开启，请在经营中页面启用至少一个子选项。');
@@ -758,212 +790,220 @@ export function ModWorkbench() {
     const selectionPreferences = companionPreferences.autoPrepCompleteOrder
       ? buildCompleteOrderPreferences(companionPreferences)
       : companionPreferences;
-    const selection = selectNextOrderPreparation(orderRecommendations.recommendations, favorites, selectionPreferences);
-    if (!selection.ok) {
-      autoFirstOrderStateRef.current = emptyAutoFirstOrderState();
+    const candidateResult = selectOrderPreparationCandidates(
+      orderRecommendations.recommendations,
+      favorites,
+      selectionPreferences,
+      MAX_RARE_AUTO_ORDERS_PER_TICK,
+    );
+    if (candidateResult.selections.length === 0) {
+      rareOrderStatesRef.current.clear();
       setAutoPrepPaused(false);
-      setAutoPrepMessage(`自动化\n${selection.message}`);
+      setAutoPrepMessage(`自动化\n${candidateResult.message}`);
       return;
     }
 
-    const orderKey = buildAutoOrderKey(selection.item);
-    let currentState = autoFirstOrderStateRef.current;
-    if (currentState.orderKey !== orderKey) {
-      autoFirstOrderStateRef.current = emptyAutoFirstOrderState(orderKey, now);
-      currentState = autoFirstOrderStateRef.current;
-      setAutoPrepPaused(false);
-    } else if (currentState.paused) {
-      setAutoPrepPaused(true);
-      return;
+    const activeKeys = new Set(candidateResult.selections.map((selection) => buildAutoOrderKey(selection.item)));
+    for (const key of Array.from(rareOrderStatesRef.current.keys())) {
+      if (!activeKeys.has(key)) rareOrderStatesRef.current.delete(key);
     }
 
     autoFirstOrderBusyRef.current = true;
     lastAutoFirstOrderAtRef.current = now;
     setAutoPrepBusy(true);
     try {
-      let missingTrayPart: 'food' | 'beverage' | null = null;
-      if (companionPreferences.autoPrepCompleteOrder) {
-        const completeResponse = await completeFirstRareOrder(
+      const messages: string[] = [];
+      let completedOrderThisTick = false;
+
+      for (const selection of candidateResult.selections) {
+        const orderKey = buildAutoOrderKey(selection.item);
+        const prefix = formatRareAutomationPrefix(selection.item);
+        let currentState = rareOrderStatesRef.current.get(orderKey) ?? emptyAutoFirstOrderState(orderKey, now);
+        if (currentState.paused) {
+          messages.push(`${prefix}\n${formatAutomationState(currentState)}\n稀客自动化已暂停该订单，订单变化或重新开启后会继续。`);
+          continue;
+        }
+
+        let missingTrayPart: 'food' | 'beverage' | null = null;
+        if (companionPreferences.autoPrepCompleteOrder && !completedOrderThisTick) {
+          const completeResponse = await completeFirstRareOrder(
+            normalizedEndpoint,
+            apiToken,
+            selection.item,
+            selection.recipe,
+            selection.beverage,
+            selection.recipeFavorite,
+            selection.beverageFavorite,
+            buildCompleteOrderPreferences(companionPreferences),
+          );
+
+          if (completeResponse.ok) {
+            rareOrderStatesRef.current.delete(orderKey);
+            completedOrderThisTick = true;
+            messages.push(`${prefix}\n${formatOrderPreparationResponse(completeResponse)}`);
+            continue;
+          }
+
+          missingTrayPart = getMissingTrayPart(completeResponse);
+          if (!missingTrayPart) {
+            const nextState = updateAutomationAfterResponse(
+              currentState,
+              completeResponse,
+              now,
+              'complete-order',
+              companionPreferences.autoPrepStopOnError,
+            );
+            rareOrderStatesRef.current.set(orderKey, nextState);
+            messages.push(`${prefix}\n${formatOrderPreparationResponse(completeResponse)}\n${formatAutomationState(nextState)}${nextState.paused ? '\n稀客自动化已暂停该订单，订单变化或重新开启后会继续。' : '\n当前步骤会继续重试。'}`);
+            continue;
+          }
+
+          if (missingTrayPart === 'food' && currentState.prepared) {
+            const shouldRollback = isAutomationTimestampStale(currentState.preparedAtMs, now, AUTO_STEP_ROLLBACK_MS);
+            if (shouldRollback && currentState.rollbackCount >= MAX_AUTO_ROLLBACKS) {
+              const pausedState = pauseAutomationState(
+                currentState,
+                now,
+                `目标料理长时间未进入送餐盘，已达到回退上限 ${MAX_AUTO_ROLLBACKS} 次。`,
+              );
+              rareOrderStatesRef.current.set(orderKey, pausedState);
+              messages.push(`${prefix}\n${formatOrderPreparationResponse(completeResponse)}\n${formatAutomationState(pausedState)}\n稀客自动化已暂停该订单，订单变化或重新开启后会继续。`);
+              continue;
+            }
+
+            if (!shouldRollback) {
+              const waitingState = markAutomationWaiting(currentState, 'wait-food-tray', now, '等待目标料理进入送餐盘。');
+              rareOrderStatesRef.current.set(orderKey, waitingState);
+              messages.push(`${prefix}\n${formatOrderPreparationResponse(completeResponse)}\n${formatAutomationState(waitingState)}`);
+              continue;
+            }
+
+            currentState = {
+              ...currentState,
+              prepared: false,
+              preparedAtMs: 0,
+              step: 'ensure-cooking',
+              stepStartedAtMs: now,
+              rollbackCount: currentState.rollbackCount + 1,
+              retryCount: 0,
+              lastError: '目标料理未进入送餐盘，回退到重新开始料理。',
+            };
+          } else if (missingTrayPart === 'beverage' && currentState.beverageHandled) {
+            const shouldRetryBeverage = isAutomationTimestampStale(currentState.beverageHandledAtMs, now, AUTO_STEP_RETRY_MS);
+            if (!shouldRetryBeverage) {
+              const waitingState = markAutomationWaiting(currentState, 'ensure-beverage', now, '等待目标酒水进入送餐盘。');
+              rareOrderStatesRef.current.set(orderKey, waitingState);
+              messages.push(`${prefix}\n${formatOrderPreparationResponse(completeResponse)}\n${formatAutomationState(waitingState)}`);
+              continue;
+            }
+
+            currentState = {
+              ...currentState,
+              beverageHandled: false,
+              beverageHandledAtMs: 0,
+              step: 'ensure-beverage',
+              stepStartedAtMs: now,
+              retryCount: currentState.retryCount + 1,
+              lastError: '目标酒水未进入送餐盘，重新取酒。',
+            };
+          }
+        } else if (companionPreferences.autoPrepCompleteOrder && completedOrderThisTick && currentState.prepared && currentState.beverageHandled) {
+          const waitingState = markAutomationWaiting(currentState, 'complete-order', now, '本轮已完成一笔稀客订单，等待下一轮完成。');
+          rareOrderStatesRef.current.set(orderKey, waitingState);
+          messages.push(`${prefix}\n${formatAutomationState(waitingState)}`);
+          continue;
+        }
+
+        const shouldPrepareFood = companionPreferences.autoPrepStartCooking
+          && (companionPreferences.autoPrepCompleteOrder
+            ? missingTrayPart === 'food' || !currentState.prepared
+            : !currentState.prepared);
+        const shouldPrepareBeverage = companionPreferences.autoPrepTakeBeverage
+          && (companionPreferences.autoPrepCompleteOrder
+            ? missingTrayPart === 'beverage' || !currentState.beverageHandled
+            : !currentState.beverageHandled);
+
+        if (!shouldPrepareFood && !shouldPrepareBeverage) {
+          const waitingState = markAutomationWaiting(
+            currentState,
+            companionPreferences.autoPrepCompleteOrder ? 'complete-order' : 'idle',
+            now,
+            companionPreferences.autoPrepCompleteOrder
+              ? '等待送餐盘出现目标料理或酒水。'
+              : '已按当前设置完成可执行步骤；自动完成订单未开启。',
+          );
+          rareOrderStatesRef.current.set(orderKey, waitingState);
+          messages.push(`${prefix}\n${formatAutomationState(waitingState)}`);
+          continue;
+        }
+
+        const preparePreferences = {
+          ...companionPreferences,
+          autoPrepTakeBeverage: shouldPrepareBeverage,
+          autoPrepStartCooking: shouldPrepareFood,
+          autoPrepCollectCooking: true,
+        };
+
+        const prepareResponse = await prepareNextRareOrder(
           normalizedEndpoint,
           apiToken,
           selection.item,
-          selection.recipe,
-          selection.beverage,
-          selection.recipeFavorite,
-          selection.beverageFavorite,
-          buildCompleteOrderPreferences(companionPreferences),
+          shouldPrepareFood ? selection.recipe : null,
+          shouldPrepareBeverage ? selection.beverage : null,
+          shouldPrepareFood ? selection.recipeFavorite : null,
+          shouldPrepareBeverage ? selection.beverageFavorite : null,
+          preparePreferences,
         );
 
-        if (completeResponse.ok) {
-          autoFirstOrderStateRef.current = emptyAutoFirstOrderState();
-          setAutoPrepPaused(false);
-          setAutoPrepMessage(`自动化\n${formatOrderPreparationResponse(completeResponse)}`);
-          await refresh();
-          return;
-        }
-
-        missingTrayPart = getMissingTrayPart(completeResponse);
-        if (!missingTrayPart) {
-          const message = `自动化\n${formatOrderPreparationResponse(completeResponse)}`;
-          const nextState = updateAutomationAfterResponse(
-            autoFirstOrderStateRef.current,
-            completeResponse,
-            now,
-            'complete-order',
-            companionPreferences.autoPrepStopOnError,
-          );
-          autoFirstOrderStateRef.current = nextState;
-          if (nextState.paused) {
-            setAutoPrepPaused(true);
-            setAutoPrepMessage(`${message}\n${formatAutomationState(nextState)}\n自动化已暂停，订单变化或重新开启后会继续。`);
-          } else {
-            setAutoPrepPaused(false);
-            setAutoPrepMessage(`${message}\n${formatAutomationState(nextState)}\n当前步骤会继续重试。`);
-          }
-          await refresh();
-          return;
-        }
-
-        const stateBeforeWait = autoFirstOrderStateRef.current;
-        if (missingTrayPart === 'food' && stateBeforeWait.prepared) {
-          const shouldRollback = isAutomationTimestampStale(stateBeforeWait.preparedAtMs, now, AUTO_STEP_ROLLBACK_MS);
-          if (shouldRollback && stateBeforeWait.rollbackCount >= MAX_AUTO_ROLLBACKS) {
-            autoFirstOrderStateRef.current = pauseAutomationState(
-              stateBeforeWait,
-              now,
-              `目标料理长时间未进入送餐盘，已达到回退上限 ${MAX_AUTO_ROLLBACKS} 次。`,
-            );
-            setAutoPrepPaused(true);
-            setAutoPrepMessage(
-              `自动化\n${formatOrderPreparationResponse(completeResponse)}\n${formatAutomationState(autoFirstOrderStateRef.current)}\n自动化已暂停，订单变化或重新开启后会继续。`,
-            );
-            await refresh();
-            return;
-          }
-
-          if (!shouldRollback) {
-            autoFirstOrderStateRef.current = markAutomationWaiting(stateBeforeWait, 'wait-food-tray', now, '等待目标料理进入送餐盘。');
-            setAutoPrepMessage(
-              `自动化\n${formatOrderPreparationResponse(completeResponse)}\n${formatAutomationState(autoFirstOrderStateRef.current)}`,
-            );
-            await refresh();
-            return;
-          }
-
-          autoFirstOrderStateRef.current = {
-            ...stateBeforeWait,
-            prepared: false,
-            preparedAtMs: 0,
-            step: 'ensure-cooking',
-            stepStartedAtMs: now,
-            rollbackCount: stateBeforeWait.rollbackCount + 1,
-            retryCount: 0,
-            lastError: '目标料理未进入送餐盘，回退到重新开始料理。',
-          };
-        } else if (missingTrayPart === 'beverage' && stateBeforeWait.beverageHandled) {
-          const shouldRetryBeverage = isAutomationTimestampStale(stateBeforeWait.beverageHandledAtMs, now, AUTO_STEP_RETRY_MS);
-          if (!shouldRetryBeverage) {
-            autoFirstOrderStateRef.current = markAutomationWaiting(stateBeforeWait, 'ensure-beverage', now, '等待目标酒水进入送餐盘。');
-            setAutoPrepMessage(
-              `自动化\n${formatOrderPreparationResponse(completeResponse)}\n${formatAutomationState(autoFirstOrderStateRef.current)}`,
-            );
-            await refresh();
-            return;
-          }
-
-          autoFirstOrderStateRef.current = {
-            ...stateBeforeWait,
-            beverageHandled: false,
-            beverageHandledAtMs: 0,
-            step: 'ensure-beverage',
-            stepStartedAtMs: now,
-            retryCount: stateBeforeWait.retryCount + 1,
-            lastError: '目标酒水未进入送餐盘，重新取酒。',
-          };
-        }
-
-        if (missingTrayPart === 'food' && autoFirstOrderStateRef.current.prepared) {
-          setAutoPrepMessage(
-            `自动化\n${formatOrderPreparationResponse(completeResponse)}\n${formatAutomationState(autoFirstOrderStateRef.current)}`,
-          );
-          await refresh();
-          return;
-        }
-      }
-
-      const shouldPrepareFood = companionPreferences.autoPrepStartCooking
-        && (companionPreferences.autoPrepCompleteOrder ? missingTrayPart === 'food' : !autoFirstOrderStateRef.current.prepared);
-      const shouldPrepareBeverage = companionPreferences.autoPrepTakeBeverage
-        && (companionPreferences.autoPrepCompleteOrder
-          ? missingTrayPart === 'beverage' || (missingTrayPart === 'food' && !autoFirstOrderStateRef.current.beverageHandled)
-          : !autoFirstOrderStateRef.current.beverageHandled);
-
-      if (!shouldPrepareFood && !shouldPrepareBeverage) {
-        setAutoPrepMessage(
-          companionPreferences.autoPrepCompleteOrder
-            ? '自动化\n等待送餐盘出现目标料理或酒水。'
-            : '自动化\n已按当前设置完成可执行步骤；自动完成订单未开启。',
+        const nextPrepared = currentState.prepared
+          || didCompleteStep(prepareResponse, '自动开始料理');
+        const nextBeverageHandled = currentState.beverageHandled
+          || didCompleteStep(prepareResponse, '自动取酒');
+        const transientFailure = !prepareResponse.ok && isTransientAutoPreparationFailure(prepareResponse);
+        const preparedAtMs = nextPrepared && !currentState.prepared ? now : currentState.preparedAtMs;
+        const beverageHandledAtMs = nextBeverageHandled && !currentState.beverageHandled ? now : currentState.beverageHandledAtMs;
+        const nextState = updateAutomationAfterResponse(
+          {
+            ...currentState,
+            orderKey,
+            prepared: nextPrepared,
+            preparedAtMs,
+            beverageHandled: nextBeverageHandled,
+            beverageHandledAtMs,
+          },
+          prepareResponse,
+          now,
+          shouldPrepareFood ? 'ensure-cooking' : shouldPrepareBeverage ? 'ensure-beverage' : 'match-order',
+          companionPreferences.autoPrepStopOnError,
         );
-        await refresh();
-        return;
+        rareOrderStatesRef.current.set(orderKey, nextState);
+        const suffix = nextState.paused
+          ? '\n稀客自动化已暂停该订单，订单变化或重新开启后会继续。'
+          : transientFailure
+            ? '\n当前条件暂不可执行，将继续等待并自动重试。'
+            : '';
+        messages.push(`${prefix}\n${formatOrderPreparationResponse(prepareResponse)}\n${formatAutomationState(nextState)}${suffix}`);
       }
 
-      const preparePreferences = {
-        ...companionPreferences,
-        autoPrepTakeBeverage: shouldPrepareBeverage,
-        autoPrepStartCooking: shouldPrepareFood,
-        autoPrepCollectCooking: true,
-      };
+      if (candidateResult.messages.length > 0) {
+        messages.push(...candidateResult.messages.map((message) => `跳过\n${message}`));
+      }
 
-      const prepareResponse = await prepareNextRareOrder(
-        normalizedEndpoint,
-        apiToken,
-        selection.item,
-        shouldPrepareFood ? selection.recipe : null,
-        shouldPrepareBeverage ? selection.beverage : null,
-        shouldPrepareFood ? selection.recipeFavorite : null,
-        shouldPrepareBeverage ? selection.beverageFavorite : null,
-        preparePreferences,
-      );
-
-      const nextPrepared = autoFirstOrderStateRef.current.prepared
-        || didCompleteStep(prepareResponse, '自动开始料理');
-      const nextBeverageHandled = autoFirstOrderStateRef.current.beverageHandled
-        || didCompleteStep(prepareResponse, '自动取酒');
-      const transientFailure = !prepareResponse.ok && isTransientAutoPreparationFailure(prepareResponse);
-      const preparedAtMs = nextPrepared && !autoFirstOrderStateRef.current.prepared ? now : autoFirstOrderStateRef.current.preparedAtMs;
-      const beverageHandledAtMs = nextBeverageHandled && !autoFirstOrderStateRef.current.beverageHandled ? now : autoFirstOrderStateRef.current.beverageHandledAtMs;
-      autoFirstOrderStateRef.current = updateAutomationAfterResponse(
-        {
-          ...autoFirstOrderStateRef.current,
-          orderKey,
-          prepared: nextPrepared,
-          preparedAtMs,
-          beverageHandled: nextBeverageHandled,
-          beverageHandledAtMs,
-        },
-        prepareResponse,
-        now,
-        shouldPrepareFood ? 'ensure-cooking' : shouldPrepareBeverage ? 'ensure-beverage' : 'match-order',
-        companionPreferences.autoPrepStopOnError,
-      );
-      setAutoPrepPaused(autoFirstOrderStateRef.current.paused);
-      const suffix = autoFirstOrderStateRef.current.paused
-        ? '\n自动化已暂停，订单变化或重新开启后会继续。'
-        : transientFailure
-          ? '\n当前条件暂不可执行，将继续等待并自动重试。'
-          : '';
-      setAutoPrepMessage(`自动化\n${formatOrderPreparationResponse(prepareResponse)}\n${formatAutomationState(autoFirstOrderStateRef.current)}${suffix}`);
+      setAutoPrepPaused(Array.from(rareOrderStatesRef.current.values()).some((state) => state.paused));
+      setAutoPrepMessage(messages.length > 0
+        ? `自动化\n${messages.join('\n\n')}`
+        : '自动化\n当前没有需要执行的新步骤。');
       await refresh();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (companionPreferences.autoPrepStopOnError) {
-        autoFirstOrderStateRef.current = {
-          ...autoFirstOrderStateRef.current,
-          paused: true,
-        };
+        for (const selection of candidateResult.selections) {
+          const orderKey = buildAutoOrderKey(selection.item);
+          const state = rareOrderStatesRef.current.get(orderKey) ?? emptyAutoFirstOrderState(orderKey, now);
+          rareOrderStatesRef.current.set(orderKey, pauseAutomationState(state, now, message));
+        }
         setAutoPrepPaused(true);
-        setAutoPrepMessage(`自动化\n${message}\n自动化已暂停，订单变化或重新开启后会继续。`);
+        setAutoPrepMessage(`自动化\n${message}\n稀客自动化已暂停，订单变化或重新开启后会继续。`);
       } else {
         setAutoPrepPaused(false);
         setAutoPrepMessage(`自动化\n${message}`);
@@ -1168,7 +1208,7 @@ export function ModWorkbench() {
 
   useEffect(() => {
     if (!companionPreferences.automationEnabled) {
-      autoFirstOrderStateRef.current = emptyAutoFirstOrderState();
+      rareOrderStatesRef.current.clear();
       normalOrderStatesRef.current.clear();
       lastAutoFirstOrderAtRef.current = 0;
       lastAutoNormalOrderAtRef.current = 0;
@@ -1219,8 +1259,16 @@ export function ModWorkbench() {
         return { launchEndpoint, launchToken };
       })
       .then(({ launchEndpoint, launchToken }) => {
-        if (!disposed && launchEndpoint) setEndpoint(launchEndpoint);
-        if (!disposed && launchToken) setApiToken(launchToken);
+        if (!disposed && launchEndpoint) {
+          const normalizedLaunchEndpoint = normalizeEndpoint(launchEndpoint);
+          setEndpoint(normalizedLaunchEndpoint);
+          setEndpointDraft(normalizedLaunchEndpoint);
+        }
+        if (!disposed && launchToken) {
+          setApiToken(launchToken);
+          setConnectionPaused(false);
+          setConnectionFailureCount(0);
+        }
       })
       .catch(() => {
         // Browser mode does not expose launch arguments.
@@ -1253,10 +1301,26 @@ export function ModWorkbench() {
   });
 
   useEffect(() => {
-    refresh();
-    const timer = window.setInterval(refresh, snapshotRefreshIntervalMs);
-    return () => window.clearInterval(timer);
-  }, [refresh, snapshotRefreshIntervalMs]);
+    if (!apiToken || connectionPaused) return;
+    const retryIndex = Math.max(0, Math.min(connectionFailureCount - 1, CONNECTION_RETRY_DELAYS_MS.length - 1));
+    const delay = error
+      ? CONNECTION_RETRY_DELAYS_MS[retryIndex]
+      : snapshot
+        ? snapshotRefreshIntervalMs
+        : 0;
+    const timer = window.setTimeout(() => {
+      void refresh();
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [
+    apiToken,
+    connectionFailureCount,
+    connectionPaused,
+    error,
+    refresh,
+    snapshot,
+    snapshotRefreshIntervalMs,
+  ]);
 
   useEffect(() => {
     refreshFavorites();
@@ -1294,14 +1358,24 @@ export function ModWorkbench() {
             {snapshot ? `mystia-steward-companion ${snapshot.pluginVersion}` : '等待本地 API 响应'}
           </p>
         </div>
-        <div className="flex w-full max-w-xl items-center gap-2">
+        <div className="flex w-full max-w-2xl items-center gap-2">
           <Input
-            value={endpoint}
-            onChange={(event) => setEndpoint(event.target.value)}
+            value={endpointDraft}
+            onChange={(event) => setEndpointDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') applyEndpointConnection();
+            }}
             spellCheck={false}
             className="font-mono text-xs"
           />
-          <Button size="sm" onClick={refresh} disabled={loading}>
+          <Button size="sm" variant="outline" onClick={applyEndpointConnection}>
+            连接
+          </Button>
+          <Button size="sm" variant="outline" onClick={pauseConnection} disabled={connectionPaused}>
+            <Power className="size-4" />
+            停止
+          </Button>
+          <Button size="sm" onClick={() => void refresh(true)} disabled={loading || !apiToken}>
             <RefreshCw className={loading ? 'size-4 animate-spin' : 'size-4'} />
             刷新
           </Button>
@@ -1311,9 +1385,17 @@ export function ModWorkbench() {
       <div className={DENSE_THREE_COLUMN_GRID}>
         <StatusCard
           label="连接状态"
-          value={error ? '未连接' : snapshot ? '已连接' : '连接中'}
-          detail={error || (lastConnectedAt ? `最近响应 ${formatTime(lastConnectedAt)}` : normalizedEndpoint)}
-          tone={error ? 'bad' : snapshot ? 'good' : 'neutral'}
+          value={!apiToken ? '未授权' : connectionPaused ? '已停止' : error ? '重试中' : snapshot ? '已连接' : '连接中'}
+          detail={!apiToken
+            ? '未收到游戏启动参数 Token'
+            : connectionPaused
+              ? '点击连接恢复自动重连'
+              : error
+                ? `${error}；${formatRetryDelay(connectionFailureCount)} 后重试`
+                : lastConnectedAt
+                  ? `最近响应 ${formatTime(lastConnectedAt)}`
+                  : normalizedEndpoint}
+          tone={!apiToken || connectionPaused || error ? 'bad' : snapshot ? 'good' : 'neutral'}
         />
         <StatusCard
           label="游戏运行态"
@@ -1539,7 +1621,6 @@ function ModOverviewPanel({
             <InfoLine label="RS Click" value="手柄默认在游戏与独立窗口之间切换" />
             <InfoLine label="手柄导航" value="左摇杆/十字键移动，A 确认，B 返回，LB/RB 切换页面，LT/RT 滚动" />
             <InfoLine label="专注模式" value="Y 进入专注模式或切换精简模式，X 收藏当前推荐项" />
-            <InfoLine label="F9" value="刷新游戏运行时数据检测" />
             <InfoLine label="窗口关闭" value="关闭按钮会隐藏到托盘；托盘菜单可重新显示或退出" />
           </div>
         </ListPanel>
@@ -2541,6 +2622,12 @@ function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToken: stri
   const [actionLoading, setActionLoading] = useState(false);
 
   const refreshLogs = useCallback(async () => {
+    if (!apiToken) {
+      setSettings(null);
+      setLogs(null);
+      setError('未收到本地 API Token。');
+      return;
+    }
     const abortController = new AbortController();
     const timeoutId = window.setTimeout(() => abortController.abort(), 2800);
     setLoading(true);
@@ -2609,10 +2696,11 @@ function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToken: stri
     : configuredLogLimit;
 
   useEffect(() => {
+    if (!apiToken) return;
     refreshLogs();
     const timer = window.setInterval(refreshLogs, 2000);
     return () => window.clearInterval(timer);
-  }, [refreshLogs]);
+  }, [apiToken, refreshLogs]);
 
   return (
     <div className="space-y-4">
@@ -2954,6 +3042,7 @@ function RareAutoPrepStatus({
       {message && <div className="mt-1 whitespace-pre-line text-muted-foreground">{message}</div>}
       <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
         <Badge variant={paused ? 'destructive' : 'secondary'}>{paused ? '已暂停' : '运行中'}</Badge>
+        <Badge variant="outline">每轮最多 {MAX_RARE_AUTO_ORDERS_PER_TICK}</Badge>
         <Badge variant={preferences.autoPrepCompleteOrder ? 'secondary' : 'outline'}>完成 {preferences.autoPrepCompleteOrder ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepTakeBeverage ? 'secondary' : 'outline'}>取酒 {preferences.autoPrepTakeBeverage ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepStartCooking ? 'secondary' : 'outline'}>料理 {preferences.autoPrepStartCooking ? '开' : '关'}</Badge>
@@ -4418,46 +4507,53 @@ type OrderPreparationSelection =
       message: string;
     };
 
-function selectNextOrderPreparation(
+type ValidOrderPreparationSelection = Extract<OrderPreparationSelection, { ok: true }>;
+
+function selectOrderPreparationCandidates(
   recommendations: OrderRecommendation[],
   favorites: FavoriteData,
   preferences: CompanionPreferences,
-): OrderPreparationSelection {
+  limit: number,
+): { selections: ValidOrderPreparationSelection[]; messages: string[]; message: string } {
   const rows = sortNightOrderRows(
     recommendations.map((item) => ({ order: item.order, item })),
     preferences.serviceOrderSortMode,
   );
   if (rows.length === 0) {
-    return { ok: false, message: '暂无可准备的稀客订单。' };
+    return { selections: [], messages: [], message: '暂无可准备的稀客订单。' };
   }
 
-  const item = rows[0].item;
-  const recipePick = pickRecipeForPreparation(item, favorites, preferences);
-  const beveragePick = pickBeverageForPreparation(item, favorites, preferences);
-  if (!recipePick.ok && (preferences.autoPrepStartCooking || preferences.autoPrepFavoritesOnly)) {
-    return {
-      ok: false,
-      message: preferences.autoPrepFavoritesOnly
-        ? '当前第一笔稀客订单没有匹配的收藏料理。'
-        : '当前第一笔稀客订单没有可用的推荐料理。',
-    };
-  }
-  if (!beveragePick.ok && (preferences.autoPrepTakeBeverage || preferences.autoPrepFavoritesOnly)) {
-    return {
-      ok: false,
-      message: preferences.autoPrepFavoritesOnly
-        ? '当前第一笔稀客订单没有匹配的收藏酒水。'
-        : '当前第一笔稀客订单没有可用的推荐酒水。',
-    };
+  const selections: ValidOrderPreparationSelection[] = [];
+  const messages: string[] = [];
+  for (const row of rows) {
+    const item = row.item;
+    const label = formatRareAutomationPrefix(item);
+    const recipePick = pickRecipeForPreparation(item, favorites, preferences);
+    const beveragePick = pickBeverageForPreparation(item, favorites, preferences);
+    if (!recipePick.ok && (preferences.autoPrepStartCooking || preferences.autoPrepFavoritesOnly)) {
+      messages.push(`${label}\n${preferences.autoPrepFavoritesOnly ? '没有匹配的收藏料理。' : '没有可用的推荐料理。'}`);
+      continue;
+    }
+    if (!beveragePick.ok && (preferences.autoPrepTakeBeverage || preferences.autoPrepFavoritesOnly)) {
+      messages.push(`${label}\n${preferences.autoPrepFavoritesOnly ? '没有匹配的收藏酒水。' : '没有可用的推荐酒水。'}`);
+      continue;
+    }
+
+    selections.push({
+      ok: true,
+      item,
+      recipe: recipePick.ok ? recipePick.recipe : null,
+      beverage: beveragePick.ok ? beveragePick.beverage : null,
+      recipeFavorite: recipePick.ok ? recipePick.favorite : null,
+      beverageFavorite: beveragePick.ok ? beveragePick.favorite : null,
+    });
+    if (selections.length >= limit) break;
   }
 
   return {
-    ok: true,
-    item,
-    recipe: recipePick.ok ? recipePick.recipe : null,
-    beverage: beveragePick.ok ? beveragePick.beverage : null,
-    recipeFavorite: recipePick.ok ? recipePick.favorite : null,
-    beverageFavorite: beveragePick.ok ? beveragePick.favorite : null,
+    selections,
+    messages,
+    message: selections.length > 0 ? '' : messages[0] ?? '当前稀客订单没有可执行的自动化候选。',
   };
 }
 
@@ -4539,6 +4635,11 @@ function buildAutoOrderKey(item: OrderRecommendation): string {
     order.foodTag,
     order.beverageTag,
   ].join('|');
+}
+
+function formatRareAutomationPrefix(item: OrderRecommendation): string {
+  const order = item.order;
+  return `${order.guestName || '稀客'} · 桌 ${formatDesk(order.deskCode)}\n料理 ${order.foodTag || '无'} / 酒水 ${order.beverageTag || '无'}`;
 }
 
 function buildNormalAutoOrderKey(order: NormalBusinessOrder): string {
@@ -5524,6 +5625,12 @@ async function toggleCompanionFocus(
 
 function formatTime(date: Date) {
   return date.toLocaleTimeString('zh-CN', { hour12: false });
+}
+
+function formatRetryDelay(failureCount: number) {
+  if (failureCount <= 0) return '稍后';
+  const index = Math.max(0, Math.min(failureCount - 1, CONNECTION_RETRY_DELAYS_MS.length - 1));
+  return `${Math.round(CONNECTION_RETRY_DELAYS_MS[index] / 1000)} 秒`;
 }
 
 function formatBytes(value: number) {

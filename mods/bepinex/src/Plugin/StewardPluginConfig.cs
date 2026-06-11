@@ -8,7 +8,6 @@ public sealed class StewardPluginConfig
     private StewardPluginConfig(
         ConfigEntry<KeyCode> toggleKey,
         ConfigEntry<KeyCode> controllerToggleKey,
-        ConfigEntry<KeyCode> reloadKey,
         ConfigEntry<bool> autoRefreshRuntime,
         ConfigEntry<float> autoRefreshSeconds,
         ConfigEntry<string> nonGameplaySceneKeywords,
@@ -47,7 +46,6 @@ public sealed class StewardPluginConfig
     {
         ToggleKey = toggleKey;
         ControllerToggleKey = controllerToggleKey;
-        ReloadKey = reloadKey;
         AutoRefreshRuntime = autoRefreshRuntime;
         AutoRefreshSeconds = autoRefreshSeconds;
         NonGameplaySceneKeywords = nonGameplaySceneKeywords;
@@ -87,7 +85,6 @@ public sealed class StewardPluginConfig
 
     public ConfigEntry<KeyCode> ToggleKey { get; }
     public ConfigEntry<KeyCode> ControllerToggleKey { get; }
-    public ConfigEntry<KeyCode> ReloadKey { get; }
     public ConfigEntry<bool> AutoRefreshRuntime { get; }
     public ConfigEntry<float> AutoRefreshSeconds { get; }
     public ConfigEntry<string> NonGameplaySceneKeywords { get; }
@@ -129,7 +126,6 @@ public sealed class StewardPluginConfig
         return new StewardPluginConfig(
             config.Bind("Hotkeys", "ToggleKey", KeyCode.F8, "Switch focus between the game and the mystia-steward-companion companion window. If Ui.EnableInGameOverlay is true, this toggles the in-game overlay instead."),
             config.Bind("Hotkeys", "ControllerToggleKey", KeyCode.JoystickButton9, "Switch focus between the game and companion window with a controller. Default JoystickButton9 is commonly RS Click."),
-            config.Bind("Hotkeys", "ReloadKey", KeyCode.F9, "Refresh runtime data detection."),
             config.Bind("Runtime", "AutoRefreshRuntime", true, "Refresh recommendations from live game runtime data."),
             config.Bind("Runtime", "AutoRefreshSeconds", 3f, "Seconds between live runtime-data refreshes."),
             config.Bind("Runtime", "NonGameplaySceneKeywords", "title,menu,start,select,loading,logo,opening,splash",
