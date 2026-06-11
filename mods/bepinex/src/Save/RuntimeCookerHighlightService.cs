@@ -8,6 +8,7 @@ namespace MystiaStewardCompanion.Save;
 internal static class RuntimeCookerHighlightService
 {
     private const string CookSystemManagerTypeName = "NightScene.CookingUtility.CookSystemManager";
+    private const string CookControllerTypeName = "NightScene.CookingUtility.CookController";
 
     private static readonly object SyncRoot = new();
     private static readonly Dictionary<nint, HighlightedRenderer> HighlightedRenderers = new();
@@ -92,6 +93,7 @@ internal static class RuntimeCookerHighlightService
         var controllerCount = 0;
         var matchedControllerCount = 0;
         var error = "";
+        var sourceStatus = "sources=none";
 
         try
         {
@@ -102,9 +104,8 @@ internal static class RuntimeCookerHighlightService
                 return;
             }
 
-            var controllers = TryInvokeInstanceValue(cookSystem, "get_AllCookerControllers")
-                ?? ReadMember(cookSystem, "AllCookerControllers");
-            foreach (var controller in ReadObjectEnumerable(controllers))
+            var controllers = ReadCookerControllers(cookSystem, out sourceStatus);
+            foreach (var controller in controllers)
             {
                 controllerCount++;
                 var cooker = TryInvokeInstanceValue(controller, "get_Cooker")
@@ -162,9 +163,58 @@ internal static class RuntimeCookerHighlightService
             }
 
             _status = matchedControllerCount == 0
-                ? $"target missing; controllers={controllerCount}; cooker={_targetCookerTypeId}/{_targetCookerName}"
-                : $"active; controllers={controllerCount}; matched={matchedControllerCount}; renderers={HighlightedRenderers.Count}; cooker={_targetCookerTypeId}/{_targetCookerName}";
+                ? $"target missing; controllers={controllerCount}; {sourceStatus}; cooker={_targetCookerTypeId}/{_targetCookerName}"
+                : $"active; controllers={controllerCount}; matched={matchedControllerCount}; renderers={HighlightedRenderers.Count}; {sourceStatus}; cooker={_targetCookerTypeId}/{_targetCookerName}";
         }
+    }
+
+    private static IReadOnlyList<object> ReadCookerControllers(object cookSystem, out string status)
+    {
+        var result = new List<object>();
+        var seen = new HashSet<nint>();
+        var sourceParts = new List<string>();
+
+        void AddControllers(string source, IEnumerable<object?> controllers)
+        {
+            var scanned = 0;
+            var added = 0;
+            foreach (var controller in controllers)
+            {
+                scanned++;
+                if (controller == null) continue;
+                nint pointer;
+                try
+                {
+                    pointer = ReadObjectPointer(controller);
+                }
+                catch
+                {
+                    pointer = new IntPtr(RuntimeHelpers.GetHashCode(controller));
+                }
+
+                if (!seen.Add(pointer)) continue;
+                result.Add(controller);
+                added++;
+            }
+
+            sourceParts.Add($"{source}:{scanned}/{added}");
+        }
+
+        var directControllers = TryInvokeInstanceValue(cookSystem, "get_AllCookerControllers")
+            ?? ReadMember(cookSystem, "AllCookerControllers");
+        AddControllers("AllCookerControllers", ReadObjectEnumerable(directControllers));
+
+        var allCookers = ReadMember(cookSystem, "AllCookers");
+        AddControllers("AllCookers", ReadDictionaryValues(allCookers).Where(value => value != null));
+
+        var controllerType = FindType(CookControllerTypeName);
+        if (controllerType != null)
+        {
+            AddControllers("UnityFind", FindUnityObjects(controllerType));
+        }
+
+        status = $"sources={string.Join(",", sourceParts)}";
+        return result;
     }
 
     private static IEnumerable<SpriteRenderer> ReadCookerRenderers(object controller)
@@ -185,9 +235,19 @@ internal static class RuntimeCookerHighlightService
             {
                 yield return renderer;
             }
+
+            foreach (var renderer in ReadSpriteRenderersInChildren(visual))
+            {
+                yield return renderer;
+            }
         }
 
         foreach (var renderer in ReadSpriteRenderers(ReadMember(controller, "sellableShadow")))
+        {
+            yield return renderer;
+        }
+
+        foreach (var renderer in ReadSpriteRenderersInChildren(controller))
         {
             yield return renderer;
         }
@@ -206,6 +266,35 @@ internal static class RuntimeCookerHighlightService
         foreach (var item in ReadObjectEnumerable(value))
         {
             if (item is SpriteRenderer itemRenderer) yield return itemRenderer;
+        }
+    }
+
+    private static IEnumerable<SpriteRenderer> ReadSpriteRenderersInChildren(object? value)
+    {
+        if (value == null || value is string) yield break;
+
+        object? renderers = null;
+        try
+        {
+            var method = value.GetType().GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                .FirstOrDefault(candidate =>
+                {
+                    if (!string.Equals(candidate.Name, "GetComponentsInChildren", StringComparison.Ordinal)) return false;
+                    var parameters = candidate.GetParameters();
+                    return parameters.Length == 2
+                        && parameters[0].ParameterType == typeof(Type)
+                        && parameters[1].ParameterType == typeof(bool);
+                });
+            renderers = method?.Invoke(value, new object?[] { typeof(SpriteRenderer), true });
+        }
+        catch
+        {
+            renderers = null;
+        }
+
+        foreach (var item in ReadObjectEnumerable(renderers))
+        {
+            if (item is SpriteRenderer renderer) yield return renderer;
         }
     }
 
@@ -358,6 +447,51 @@ internal static class RuntimeCookerHighlightService
         }
     }
 
+    private static IEnumerable<object?> ReadDictionaryValues(object? dictionary)
+    {
+        if (dictionary == null || dictionary is string) yield break;
+
+        if (dictionary is IDictionary managedDictionary)
+        {
+            foreach (DictionaryEntry entry in managedDictionary)
+            {
+                yield return entry.Value;
+            }
+
+            yield break;
+        }
+
+        var entries = ReadMember(dictionary, "entries")
+            ?? ReadMember(dictionary, "_entries")
+            ?? ReadMember(dictionary, "m_Entries");
+        var count = ToInt(ReadMember(dictionary, "count")
+            ?? ReadMember(dictionary, "_count")
+            ?? ReadMember(dictionary, "Count"));
+        if (entries != null && count > 0)
+        {
+            var entryIndex = 0;
+            foreach (var entry in EnumerateByIndexer(entries))
+            {
+                if (entryIndex++ >= Math.Min(count, 256)) break;
+                if (entry == null) continue;
+
+                var hashCode = ToInt(ReadMember(entry, "hashCode") ?? ReadMember(entry, "_hashCode"));
+                if (hashCode < 0) continue;
+
+                var value = ReadMember(entry, "value")
+                    ?? ReadMember(entry, "Value")
+                    ?? ReadMember(entry, "_value");
+                if (value != null) yield return value;
+            }
+        }
+
+        foreach (var item in ReadObjectEnumerable(dictionary))
+        {
+            var value = NormalizeDictionaryItem(item);
+            if (value != null) yield return value;
+        }
+    }
+
     private static IEnumerable<int> ReadIntEnumerable(object? value)
     {
         if (value == null || value is string) yield break;
@@ -408,6 +542,27 @@ internal static class RuntimeCookerHighlightService
         }
     }
 
+    private static IEnumerable<object?> FindUnityObjects(Type type)
+    {
+        var method = typeof(UnityEngine.Object).GetMethod("FindObjectsOfType", new[] { typeof(Type) });
+        if (method == null) yield break;
+
+        object? objects = null;
+        try
+        {
+            objects = method.Invoke(null, new object[] { type });
+        }
+        catch
+        {
+            yield break;
+        }
+
+        foreach (var item in ReadObjectEnumerable(objects))
+        {
+            yield return item;
+        }
+    }
+
     private static bool CanUseParameters(ParameterInfo[] parameters, object?[] args)
     {
         if (parameters.Length != args.Length) return false;
@@ -442,9 +597,21 @@ internal static class RuntimeCookerHighlightService
 
             var property = type.GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly);
             if (property != null) return property.GetValue(target);
+
+            var pascalName = char.ToUpperInvariant(name[0]) + name[1..];
+            if (!string.Equals(pascalName, name, StringComparison.Ordinal))
+            {
+                property = type.GetProperty(pascalName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly);
+                if (property != null) return property.GetValue(target);
+            }
         }
 
         return null;
+    }
+
+    private static object? NormalizeDictionaryItem(object item)
+    {
+        return ReadMember(item, "Value") ?? ReadMember(item, "value");
     }
 
     private static IEnumerable<string> BuildFieldNameCandidates(string name)
