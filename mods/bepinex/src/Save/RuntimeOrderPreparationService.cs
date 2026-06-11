@@ -755,9 +755,7 @@ internal static class RuntimeOrderPreparationService
 
         if (ReadMember(order, "ServFood") != null)
         {
-            TryInvokeInstance(pending.CookController, "AfterPlayerExtract", Array.Empty<object?>());
-            TryInvokeInstance(pending.CookController, "CloseCookingVisual", Array.Empty<object?>());
-            TryClearCookController(pending.CookController, cookedFood);
+            TryResetCookControllerAfterNormalWarmerCollect(pending.CookController, cookedFood);
             return (true, $"{pending.RecipeName} 已完成，但目标普客订单已有料理，本次未放入保温箱。");
         }
 
@@ -766,9 +764,7 @@ internal static class RuntimeOrderPreparationService
         {
             if (pending.Target.FoodId >= 0 && IsSellable(existingFoodInAir, sellableType: 0, id: pending.Target.FoodId))
             {
-                TryInvokeInstance(pending.CookController, "AfterPlayerExtract", Array.Empty<object?>());
-                TryInvokeInstance(pending.CookController, "CloseCookingVisual", Array.Empty<object?>());
-                TryClearCookController(pending.CookController, cookedFood);
+                TryResetCookControllerAfterNormalWarmerCollect(pending.CookController, cookedFood);
                 return (true, $"{pending.RecipeName} 已完成，但目标料理已在普客保温箱中，本次未重复放入。");
             }
 
@@ -781,11 +777,23 @@ internal static class RuntimeOrderPreparationService
             return (true, $"{pending.RecipeName} 已完成，但写入普客保温位失败，已停止自动收取。");
         }
 
-        TryInvokeInstance(pending.CookController, "AfterPlayerExtract", Array.Empty<object?>());
-        TryInvokeInstance(pending.CookController, "CloseCookingVisual", Array.Empty<object?>());
-        TryClearCookController(pending.CookController, cookedFood);
+        TryResetCookControllerAfterNormalWarmerCollect(pending.CookController, cookedFood);
 
         return (true, $"{pending.RecipeName} 已自动收至普客保温箱，等待玩家手动送达。");
+    }
+
+    private static void TryResetCookControllerAfterNormalWarmerCollect(object cookController, object cookedFood)
+    {
+        try
+        {
+            TryInvokeInstance(cookController, "CloseCookingVisual", Array.Empty<object?>());
+            TryClearCookController(cookController, cookedFood);
+        }
+        catch
+        {
+            // Do not call AfterPlayerExtract here. That path represents a player extract
+            // and can trigger cooker/order side effects beyond placing food in the warmer.
+        }
     }
 
     private static bool TryExtractWithGameMethod(object cookController)
