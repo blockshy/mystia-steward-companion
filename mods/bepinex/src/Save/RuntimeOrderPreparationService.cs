@@ -804,20 +804,10 @@ internal static class RuntimeOrderPreparationService
             return (false, null, "当前厨具管理器不可用");
         }
 
-        object? controllers;
-        try
-        {
-            controllers = InvokeInstance(cookSystem, "get_AllCookerControllers", Array.Empty<object?>());
-        }
-        catch (Exception ex)
-        {
-            return (false, null, $"读取厨具控制器失败：{ex.GetBaseException().Message}");
-        }
-
         var totalCount = 0;
         var emptyCount = 0;
         var warmerCount = 0;
-        foreach (var controller in ReadObjectEnumerable(controllers))
+        foreach (var controller in EnumerateCookControllers(cookSystem))
         {
             try
             {
@@ -830,8 +820,7 @@ internal static class RuntimeOrderPreparationService
                 if (phase != 0) continue;
 
                 emptyCount++;
-                var cooker = InvokeInstance(controller, "get_Cooker", Array.Empty<object?>());
-                if (cooker == null || !IsWarmerCooker(cooker)) continue;
+                if (!IsWarmerController(controller)) continue;
 
                 warmerCount++;
                 return (true, controller, $"找到空保温位（扫描 {totalCount} 个控制器，空位 {emptyCount} 个）");
@@ -853,6 +842,56 @@ internal static class RuntimeOrderPreparationService
         }
 
         return (false, null, $"没有匹配到空保温位（读取到 {totalCount} 个控制器，空位 {emptyCount} 个，保温位 {warmerCount} 个）");
+    }
+
+    private static IEnumerable<object> EnumerateCookControllers(object cookSystem)
+    {
+        var seen = new HashSet<nint>();
+
+        object? controllers = null;
+        try
+        {
+            controllers = InvokeInstance(cookSystem, "get_AllCookerControllers", Array.Empty<object?>());
+        }
+        catch
+        {
+            // The backing dictionary and Unity object scan below are more tolerant.
+        }
+
+        foreach (var controller in ReadObjectEnumerable(controllers))
+        {
+            if (!TryRememberObject(controller, seen)) continue;
+            yield return controller;
+        }
+
+        foreach (var item in ReadObjectEnumerable(ReadMember(cookSystem, "AllCookers")))
+        {
+            var controller = NormalizeDictionaryItem(item) ?? item;
+            if (!TryRememberObject(controller, seen)) continue;
+            yield return controller;
+        }
+
+        var controllerType = FindType("NightScene.CookingUtility.CookController");
+        if (controllerType == null) yield break;
+
+        foreach (var item in RuntimeReflectionUtility.FindUnityObjectsIncludingInactive(controllerType))
+        {
+            if (item == null) continue;
+            if (!TryRememberObject(item, seen)) continue;
+            yield return item;
+        }
+    }
+
+    private static bool TryRememberObject(object value, HashSet<nint> seen)
+    {
+        try
+        {
+            return seen.Add(ReadObjectPointer(value));
+        }
+        catch
+        {
+            return seen.Add(new IntPtr(RuntimeHelpers.GetHashCode(value)));
+        }
     }
 
     private static bool TryStoreFoodInWarmer(object warmerController, object cookedFood, int expectedFoodId, out string message)
@@ -897,8 +936,16 @@ internal static class RuntimeOrderPreparationService
         return TryInvokeInstanceValue(cookController, "get_ChosenRecipe") ?? ReadMember(cookController, "ChosenRecipe");
     }
 
-    private static bool IsWarmerCooker(object cooker)
+    private static bool IsWarmerController(object cookController)
     {
+        if (ReadBool(TryInvokeInstanceValue(cookController, "get_IsEmptyDesk") ?? ReadMember(cookController, "IsEmptyDesk")))
+        {
+            return true;
+        }
+
+        var cooker = TryInvokeInstanceValue(cookController, "get_Cooker") ?? ReadMember(cookController, "Cooker");
+        if (cooker == null) return false;
+
         var directType = ToInt(TryInvokeInstanceValue(cooker, "get_Type")
             ?? ReadMember(cooker, "Type")
             ?? ReadMember(cooker, "type"), -1);
