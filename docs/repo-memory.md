@@ -40,6 +40,7 @@
 - 普客 pending 料理完成后，只要成品料理 ID 匹配目标，就必须写入 `IzakayaConfigure.StoreFood()`；不要因为目标订单对象的 `ServFood` 或 `ServedFoodInAir` 非空而清理厨具并丢弃成品。订单对象在大量普客订单和桌位回收时可能短暂复用或状态滞后，丢弃成品会造成“显示已制作但保温箱没有”的堆积问题。
 - 普客订单显示“已开始制作”后如果长时间没有进入暂存容器，伴随窗口必须允许该订单重新进入调度；C# pending 收取也不能因为一次 `Phase=0` 或 IL2CPP 短暂读取异常就立即移除任务。短暂失败应继续重试，超过超时再输出诊断并释放 pending，避免普客/稀客同时自动化抢占厨具后出现永久堆积。
 - 自动化状态机只把实际取酒、开锅、收取、写入订单和触发评价视为真实进展；“选择订单”“匹配订单”不能刷新进展时间。稀客目标料理/酒水长时间未进入送餐盘时会回退到重新开锅或重新取酒；普客已开锅但长时间未收至暂存容器时会重新进入调度。达到回退上限后才按对应订单类型暂停。C# 侧开锅、pending 收取和 pending 移除会写入 `BepInEx/config/MystiaStewardCompanion/automation-jobs.log`，该日志约 1 MB 轮换。
+- 稀客自动化诊断由前端按订单 key 展示当前候选订单状态，包括步骤、料理/酒水阶段、重试、回退和最近原因。单笔 `重试` 只解除暂停并保留已完成阶段，单笔 `重置` 删除该订单本地状态并让下一轮重新判断；不得清空其他稀客、普客或全局自动化状态。
 - 运行时稀客 ID 会先归一化为本地 `customer_rare.json` 身份；优先读取游戏 `DataBaseCharacter.GetAllMappedGuests()` 固定映射和 `GetSpecialGuestsAndMappedGuests()` 完整运行时稀客表，运行时表按游戏语言名称匹配本地唯一同名稀客，手工事件变体只作为兜底。本地缺失但运行时具备有效喜好 Tag 的稀客会合成为临时 `RuntimeRareCustomer`，供经营中订单推荐和伴随窗口稀客页使用；剧情 Intro/Parallel/Current、问号占位、隐藏图鉴、NeverCome、无喜好数据的角色不合成。带具体桌号的捕获订单只允许匹配同一桌活跃稀客，未入座 `desk=-1` 稀客不能保活旧订单。
 - 稀客自动化匹配运行时捕获订单时要兼容事件变体名称和不完整 Tag。强买强卖等变体可能显示 `Tewi_HardSell`，捕获到的 `foodTag` 可能为空，`beverageTag` 可能是“请给我甘的饮料”这类完整句子；同桌且对象仍有效的捕获订单应优先保留，Tag 匹配允许包含关系，不要只做完全相等。
 - 诊断开启且经营数据扫描触发时，运行时固定数据会按主题写到诊断目录：`runtime-static-data.log` 映射稀客与 `aliasSource`、`runtime-tags.log` 标签和 TagRule、`runtime-database-diff.log` 核心食材/酒水/料理表对照与读取方式、`runtime-guests.log` 普客/稀客/事件变体、`runtime-izakayas.log` 场景和客人池。游戏数据库未初始化时每 5 秒重试，日志头部 `Complete: True` 表示读取成功。

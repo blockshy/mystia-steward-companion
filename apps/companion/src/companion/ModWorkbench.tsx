@@ -505,6 +505,23 @@ interface AutoFirstOrderState {
   paused: boolean;
 }
 
+interface RareAutoOrderDiagnostic {
+  orderKey: string;
+  title: string;
+  foodTag: string;
+  beverageTag: string;
+  recipeName: string;
+  beverageName: string;
+  stepLabel: string;
+  stepSeconds: number;
+  retryCount: number;
+  rollbackCount: number;
+  lastError: string;
+  prepared: boolean;
+  beverageHandled: boolean;
+  paused: boolean;
+}
+
 interface NormalAutoOrderState {
   orderKey: string;
   prepared: boolean;
@@ -572,10 +589,12 @@ export function ModWorkbench() {
   const [autoPrepBusy, setAutoPrepBusy] = useState(false);
   const [autoPrepMessage, setAutoPrepMessage] = useState('');
   const [autoPrepPaused, setAutoPrepPaused] = useState(false);
+  const [rareOrderDiagnostics, setRareOrderDiagnostics] = useState<RareAutoOrderDiagnostic[]>([]);
   const [normalOrderBusy, setNormalOrderBusy] = useState(false);
   const [normalOrderMessage, setNormalOrderMessage] = useState('');
   const [normalOrderPausedCount, setNormalOrderPausedCount] = useState(0);
   const rareOrderStatesRef = useRef(new Map<string, AutoFirstOrderState>());
+  const rareOrderDiagnosticItemsRef = useRef(new Map<string, ValidOrderPreparationSelection>());
   const autoFirstOrderBusyRef = useRef(false);
   const normalOrderStatesRef = useRef(new Map<string, NormalAutoOrderState>());
   const normalOrderBusyRef = useRef(false);
@@ -727,6 +746,41 @@ export function ModWorkbench() {
     }
   }, [apiToken, connectionPaused, normalizedEndpoint]);
 
+  const refreshRareOrderDiagnostics = useCallback((now = Date.now()) => {
+    const diagnostics = Array.from(rareOrderDiagnosticItemsRef.current.values()).map((selection) => {
+      const orderKey = buildAutoOrderKey(selection.item);
+      const state = rareOrderStatesRef.current.get(orderKey) ?? emptyAutoFirstOrderState(orderKey, now);
+      return buildRareAutoOrderDiagnostic(selection, state, now);
+    });
+    setRareOrderDiagnostics(diagnostics);
+    setAutoPrepPaused(diagnostics.some((diagnostic) => diagnostic.paused));
+  }, []);
+
+  const retryRareAutomationOrder = useCallback((orderKey: string) => {
+    const now = Date.now();
+    const state = rareOrderStatesRef.current.get(orderKey);
+    if (!state) return;
+    rareOrderStatesRef.current.set(orderKey, {
+      ...state,
+      paused: false,
+      step: state.prepared || state.beverageHandled ? 'complete-order' : 'match-order',
+      stepStartedAtMs: now,
+      retryCount: 0,
+      lastError: '已手动重试，等待下一轮自动化继续。',
+    });
+    lastAutoFirstOrderAtRef.current = 0;
+    setAutoPrepMessage('自动化\n已重新启用该稀客订单，下一轮会继续处理。');
+    refreshRareOrderDiagnostics(now);
+  }, [refreshRareOrderDiagnostics]);
+
+  const resetRareAutomationOrder = useCallback((orderKey: string) => {
+    const now = Date.now();
+    rareOrderStatesRef.current.delete(orderKey);
+    lastAutoFirstOrderAtRef.current = 0;
+    setAutoPrepMessage('自动化\n已重置该稀客订单状态，下一轮会重新判断料理、酒水和完成状态。');
+    refreshRareOrderDiagnostics(now);
+  }, [refreshRareOrderDiagnostics]);
+
   const toggleRecipeFavorite = useCallback<ToggleRecipeFavorite>(async (customer, foodTag, recipe) => {
     if (!apiToken || !foodTag) return;
     const existing = findRecipeFavorite(favorites, customer.id, foodTag, recipe);
@@ -778,6 +832,8 @@ export function ModWorkbench() {
 
     if (!hasAutomationActionEnabled(companionPreferences)) {
       rareOrderStatesRef.current.clear();
+      rareOrderDiagnosticItemsRef.current.clear();
+      setRareOrderDiagnostics([]);
       setAutoPrepPaused(false);
       if (!companionPreferences.autoNormalOrderEnabled || !hasNormalOrderActionEnabled(companionPreferences)) {
         setAutoPrepMessage('自动化已开启，请在经营中页面启用至少一个子选项。');
@@ -798,12 +854,18 @@ export function ModWorkbench() {
     );
     if (candidateResult.selections.length === 0) {
       rareOrderStatesRef.current.clear();
+      rareOrderDiagnosticItemsRef.current.clear();
+      setRareOrderDiagnostics([]);
       setAutoPrepPaused(false);
       setAutoPrepMessage(`自动化\n${candidateResult.message}`);
       return;
     }
 
     const activeKeys = new Set(candidateResult.selections.map((selection) => buildAutoOrderKey(selection.item)));
+    rareOrderDiagnosticItemsRef.current.clear();
+    for (const selection of candidateResult.selections) {
+      rareOrderDiagnosticItemsRef.current.set(buildAutoOrderKey(selection.item), selection);
+    }
     for (const key of Array.from(rareOrderStatesRef.current.keys())) {
       if (!activeKeys.has(key)) rareOrderStatesRef.current.delete(key);
     }
@@ -989,7 +1051,7 @@ export function ModWorkbench() {
         messages.push(...candidateResult.messages.map((message) => `跳过\n${message}`));
       }
 
-      setAutoPrepPaused(Array.from(rareOrderStatesRef.current.values()).some((state) => state.paused));
+      refreshRareOrderDiagnostics(now);
       setAutoPrepMessage(messages.length > 0
         ? `自动化\n${messages.join('\n\n')}`
         : '自动化\n当前没有需要执行的新步骤。');
@@ -1002,10 +1064,11 @@ export function ModWorkbench() {
           const state = rareOrderStatesRef.current.get(orderKey) ?? emptyAutoFirstOrderState(orderKey, now);
           rareOrderStatesRef.current.set(orderKey, pauseAutomationState(state, now, message));
         }
-        setAutoPrepPaused(true);
+        refreshRareOrderDiagnostics(now);
         setAutoPrepMessage(`自动化\n${message}\n稀客自动化已暂停，订单变化或重新开启后会继续。`);
       } else {
         setAutoPrepPaused(false);
+        refreshRareOrderDiagnostics(now);
         setAutoPrepMessage(`自动化\n${message}`);
       }
     } finally {
@@ -1020,6 +1083,7 @@ export function ModWorkbench() {
     normalizedEndpoint,
     orderRecommendations.recommendations,
     refresh,
+    refreshRareOrderDiagnostics,
   ]);
 
   const runAutoNormalOrder = useCallback(async () => {
@@ -1209,6 +1273,8 @@ export function ModWorkbench() {
   useEffect(() => {
     if (!companionPreferences.automationEnabled) {
       rareOrderStatesRef.current.clear();
+      rareOrderDiagnosticItemsRef.current.clear();
+      setRareOrderDiagnostics([]);
       normalOrderStatesRef.current.clear();
       lastAutoFirstOrderAtRef.current = 0;
       lastAutoNormalOrderAtRef.current = 0;
@@ -1518,6 +1584,7 @@ export function ModWorkbench() {
             autoPrepBusy={autoPrepBusy}
             autoPrepMessage={autoPrepMessage}
             autoPrepPaused={autoPrepPaused}
+            rareOrderDiagnostics={rareOrderDiagnostics}
             autoPrepPreferences={companionPreferences}
             normalOrderBusy={normalOrderBusy}
             normalOrderMessage={normalOrderMessage}
@@ -1525,6 +1592,8 @@ export function ModWorkbench() {
             onPreferenceChange={updateCompanionPreferences}
             onToggleRecipeFavorite={toggleRecipeFavorite}
             onToggleBeverageFavorite={toggleBeverageFavorite}
+            onRetryRareAutomationOrder={retryRareAutomationOrder}
+            onResetRareAutomationOrder={resetRareAutomationOrder}
             onEnterFocusMode={() => setServiceFocusMode(true)}
             normalBusiness={snapshot?.normalBusiness ?? null}
           />
@@ -1986,6 +2055,7 @@ function ModServicePanel({
   autoPrepBusy,
   autoPrepMessage,
   autoPrepPaused,
+  rareOrderDiagnostics,
   autoPrepPreferences,
   normalOrderBusy,
   normalOrderMessage,
@@ -1994,6 +2064,8 @@ function ModServicePanel({
   onPreferenceChange,
   onToggleRecipeFavorite,
   onToggleBeverageFavorite,
+  onRetryRareAutomationOrder,
+  onResetRareAutomationOrder,
   onEnterFocusMode,
 }: {
   runtime: RecommendationStateSnapshot | null;
@@ -2010,6 +2082,7 @@ function ModServicePanel({
   autoPrepBusy: boolean;
   autoPrepMessage: string;
   autoPrepPaused: boolean;
+  rareOrderDiagnostics: RareAutoOrderDiagnostic[];
   autoPrepPreferences: CompanionPreferences;
   normalOrderBusy: boolean;
   normalOrderMessage: string;
@@ -2018,6 +2091,8 @@ function ModServicePanel({
   onPreferenceChange: (next: Partial<CompanionPreferences>) => void;
   onToggleRecipeFavorite: ToggleRecipeFavorite;
   onToggleBeverageFavorite: ToggleBeverageFavorite;
+  onRetryRareAutomationOrder: (orderKey: string) => void;
+  onResetRareAutomationOrder: (orderKey: string) => void;
   onEnterFocusMode: () => void;
 }) {
   const activeGuests = night?.activeRareGuests ?? [];
@@ -2067,7 +2142,10 @@ function ModServicePanel({
               busy={autoPrepBusy}
               message={autoPrepMessage}
               paused={autoPrepPaused}
+              diagnostics={rareOrderDiagnostics}
               onPreferenceChange={onPreferenceChange}
+              onRetryOrder={onRetryRareAutomationOrder}
+              onResetOrder={onResetRareAutomationOrder}
             />
           )}
 
@@ -2930,13 +3008,19 @@ function RareServiceAutomationPanel({
   busy,
   message,
   paused,
+  diagnostics,
   onPreferenceChange,
+  onRetryOrder,
+  onResetOrder,
 }: {
   preferences: CompanionPreferences;
   busy: boolean;
   message: string;
   paused: boolean;
+  diagnostics: RareAutoOrderDiagnostic[];
   onPreferenceChange: (next: Partial<CompanionPreferences>) => void;
+  onRetryOrder: (orderKey: string) => void;
+  onResetOrder: (orderKey: string) => void;
 }) {
   return (
     <ListPanel title="稀客自动化（实验性）">
@@ -2972,7 +3056,15 @@ function RareServiceAutomationPanel({
           onCheckedChange={(autoPrepStopOnError) => onPreferenceChange({ autoPrepStopOnError })}
         />
       </div>
-      <RareAutoPrepStatus busy={busy} paused={paused} message={message} preferences={preferences} />
+      <RareAutoPrepStatus
+        busy={busy}
+        paused={paused}
+        message={message}
+        preferences={preferences}
+        diagnostics={diagnostics}
+        onRetryOrder={onRetryOrder}
+        onResetOrder={onResetOrder}
+      />
     </ListPanel>
   );
 }
@@ -3028,18 +3120,83 @@ function RareAutoPrepStatus({
   paused,
   message,
   preferences,
+  diagnostics,
+  onRetryOrder,
+  onResetOrder,
 }: {
   busy: boolean;
   paused: boolean;
   message: string;
   preferences: CompanionPreferences;
+  diagnostics: RareAutoOrderDiagnostic[];
+  onRetryOrder: (orderKey: string) => void;
+  onResetOrder: (orderKey: string) => void;
 }) {
-  if (!message && !paused) return null;
+  if (!message && !paused && diagnostics.length === 0) return null;
 
   return (
     <div className="mt-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
       <div className="font-medium text-foreground">稀客自动化{busy ? '处理中' : '状态'}</div>
-      {message && <div className="mt-1 whitespace-pre-line text-muted-foreground">{message}</div>}
+      {diagnostics.length > 0 && (
+        <div className="mt-2 space-y-2">
+          {diagnostics.map((diagnostic) => (
+            <div key={diagnostic.orderKey} className="rounded-md border border-border bg-background/70 px-2.5 py-2">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="truncate font-medium text-foreground">{diagnostic.title}</div>
+                  <div className="mt-0.5 text-xs text-muted-foreground">
+                    料理 {diagnostic.foodTag || '无'} · 酒水 {diagnostic.beverageTag || '无'}
+                  </div>
+                </div>
+                <div className="flex shrink-0 gap-1.5">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => onRetryOrder(diagnostic.orderKey)}
+                    disabled={busy || !diagnostic.paused}
+                    data-gamepad-focus-key={`rare-auto:${diagnostic.orderKey}:retry`}
+                  >
+                    重试
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => onResetOrder(diagnostic.orderKey)}
+                    disabled={busy}
+                    data-gamepad-focus-key={`rare-auto:${diagnostic.orderKey}:reset`}
+                  >
+                    重置
+                  </Button>
+                </div>
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground md:grid-cols-4">
+                <InfoLine label="料理" value={diagnostic.recipeName || '未选择'} />
+                <InfoLine label="酒水" value={diagnostic.beverageName || '未选择'} />
+                <InfoLine label="步骤" value={`${diagnostic.stepLabel} · ${diagnostic.stepSeconds}秒`} />
+                <InfoLine
+                  label="计数"
+                  value={`重试 ${diagnostic.retryCount}/${MAX_AUTO_STEP_RETRIES} · 回退 ${diagnostic.rollbackCount}/${MAX_AUTO_ROLLBACKS}`}
+                />
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
+                <Badge variant={diagnostic.paused ? 'destructive' : 'secondary'}>
+                  {diagnostic.paused ? '暂停' : '运行'}
+                </Badge>
+                <Badge variant={diagnostic.prepared ? 'secondary' : 'outline'}>
+                  料理{diagnostic.prepared ? '已开锅' : '待处理'}
+                </Badge>
+                <Badge variant={diagnostic.beverageHandled ? 'secondary' : 'outline'}>
+                  酒水{diagnostic.beverageHandled ? '已处理' : '待处理'}
+                </Badge>
+              </div>
+              {diagnostic.lastError && (
+                <div className="mt-1 text-xs text-muted-foreground">最近：{diagnostic.lastError}</div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {message && <div className="mt-2 whitespace-pre-line text-muted-foreground">{message}</div>}
       <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
         <Badge variant={paused ? 'destructive' : 'secondary'}>{paused ? '已暂停' : '运行中'}</Badge>
         <Badge variant="outline">每轮最多 {MAX_RARE_AUTO_ORDERS_PER_TICK}</Badge>
@@ -4640,6 +4797,30 @@ function buildAutoOrderKey(item: OrderRecommendation): string {
 function formatRareAutomationPrefix(item: OrderRecommendation): string {
   const order = item.order;
   return `${order.guestName || '稀客'} · 桌 ${formatDesk(order.deskCode)}\n料理 ${order.foodTag || '无'} / 酒水 ${order.beverageTag || '无'}`;
+}
+
+function buildRareAutoOrderDiagnostic(
+  selection: ValidOrderPreparationSelection,
+  state: AutoFirstOrderState,
+  now: number,
+): RareAutoOrderDiagnostic {
+  const order = selection.item.order;
+  return {
+    orderKey: buildAutoOrderKey(selection.item),
+    title: `${order.guestName || '稀客'} · 桌 ${formatDesk(order.deskCode)}`,
+    foodTag: order.foodTag || '',
+    beverageTag: order.beverageTag || '',
+    recipeName: selection.recipe?.recipe.name ?? '',
+    beverageName: selection.beverage?.beverage.name ?? '',
+    stepLabel: getAutomationStepLabel(state.step),
+    stepSeconds: state.stepStartedAtMs > 0 ? Math.max(0, Math.round((now - state.stepStartedAtMs) / 1000)) : 0,
+    retryCount: state.retryCount,
+    rollbackCount: state.rollbackCount,
+    lastError: state.lastError,
+    prepared: state.prepared,
+    beverageHandled: state.beverageHandled,
+    paused: state.paused,
+  };
 }
 
 function buildNormalAutoOrderKey(order: NormalBusinessOrder): string {
