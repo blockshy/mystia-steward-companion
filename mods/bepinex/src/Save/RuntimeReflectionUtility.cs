@@ -1,15 +1,26 @@
 using System.Collections;
 using System.Reflection;
+
 namespace MystiaStewardCompanion.Save;
 
 internal static class RuntimeReflectionUtility
 {
     public static Type? FindType(string fullName)
     {
+        var direct = Type.GetType(fullName, throwOnError: false);
+        if (direct != null) return direct;
+
         foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
         {
-            var type = assembly.GetType(fullName, throwOnError: false);
-            if (type != null) return type;
+            try
+            {
+                var type = assembly.GetType(fullName, throwOnError: false);
+                if (type != null) return type;
+            }
+            catch
+            {
+                // Ignore assemblies that cannot resolve unrelated IL2CPP types.
+            }
         }
 
         return null;
@@ -17,33 +28,104 @@ internal static class RuntimeReflectionUtility
 
     public static object? GetSingletonInstance(Type type)
     {
-        return GetStaticMemberValue(type, "Instance")
-            ?? GetStaticMemberValue(type, "Main")
-            ?? GetStaticMemberValue(type, "Singleton")
-            ?? GetStaticMemberValue(type, "Current");
+        foreach (var name in new[] { "Instance", "UniqueInstance", "instance", "m_Instance", "m_instance", "s_Instance", "m_UniqueInstance", "Main", "Singleton", "Current" })
+        {
+            var value = GetStaticMemberValue(type, name);
+            if (value != null) return value;
+        }
+
+        return null;
+    }
+
+    public static object? FindUnityObject(Type type)
+    {
+        var method = typeof(UnityEngine.Object).GetMethod("FindObjectOfType", new[] { typeof(Type) });
+        if (method == null) return null;
+
+        try
+        {
+            return method.Invoke(null, new object[] { type });
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    public static IEnumerable<object?> FindUnityObjects(Type type)
+    {
+        var method = typeof(UnityEngine.Object).GetMethod("FindObjectsOfType", new[] { typeof(Type) });
+        if (method == null) yield break;
+
+        object? objects;
+        try
+        {
+            objects = method.Invoke(null, new object[] { type });
+        }
+        catch
+        {
+            yield break;
+        }
+
+        foreach (var item in EnumerateObjects(objects))
+        {
+            yield return item;
+        }
     }
 
     public static object? InvokeStaticMethod(Type type, string methodName, params object?[] args)
     {
-        var method = FindMethod(type, methodName, args.Length, isStatic: true);
-        return method?.Invoke(null, args);
+        var method = FindMethod(type, methodName, args, isStatic: true)
+            ?? FindMethod(type, methodName, args.Length, isStatic: true)
+            ?? FindMethod(type, methodName, isStatic: true);
+        if (method == null) return null;
+
+        try
+        {
+            return method.Invoke(null, args);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     public static object? InvokeMethod(object? instance, string methodName, params object?[] args)
     {
         if (instance == null) return null;
-        var method = FindMethod(instance.GetType(), methodName, args.Length, isStatic: false);
-        return method?.Invoke(instance, args);
+        var method = FindMethod(instance.GetType(), methodName, args, isStatic: false)
+            ?? FindMethod(instance.GetType(), methodName, args.Length, isStatic: false)
+            ?? FindMethod(instance.GetType(), methodName, isStatic: false);
+        if (method == null) return null;
+
+        try
+        {
+            return method.Invoke(instance, args);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     public static object? GetStaticMemberValue(Type type, string name)
     {
-        const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
-        var property = type.GetProperty(name, flags);
-        if (property != null) return property.GetValue(null);
+        const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.FlattenHierarchy;
+        for (var current = type; current != null; current = current.BaseType)
+        {
+            foreach (var memberName in BuildMemberNameCandidates(name))
+            {
+                if (TryReadKnownStaticField(current, memberName, out var knownValue)) return knownValue;
 
-        var field = type.GetField(name, flags);
-        return field?.GetValue(null);
+                var property = FindProperty(current, memberName, flags);
+                if (TryReadProperty(null, property, out var propertyValue)) return propertyValue;
+
+                var field = current.GetField(memberName, flags);
+                if (TryReadField(null, field, out var fieldValue)) return fieldValue;
+            }
+        }
+
+        return null;
     }
 
     public static object? GetMemberValue(object? instance, string name)
@@ -53,14 +135,28 @@ internal static class RuntimeReflectionUtility
 
         for (var type = instance.GetType(); type != null; type = type.BaseType)
         {
-            var property = type.GetProperty(name, flags);
-            if (property != null) return property.GetValue(instance);
+            foreach (var memberName in BuildMemberNameCandidates(name))
+            {
+                if (TryReadKnownField(instance, type, memberName, out var knownValue)) return knownValue;
 
-            var field = type.GetField(name, flags);
-            if (field != null) return field.GetValue(instance);
+                var property = FindProperty(type, memberName, flags);
+                if (TryReadProperty(instance, property, out var propertyValue)) return propertyValue;
 
-            var method = type.GetMethod(name, flags, binder: null, Type.EmptyTypes, modifiers: null);
-            if (method != null) return method.Invoke(instance, null);
+                var field = type.GetField(memberName, flags);
+                if (TryReadField(instance, field, out var fieldValue)) return fieldValue;
+
+                var method = FindMethod(type, memberName, 0, isStatic: false);
+                if (method == null) continue;
+
+                try
+                {
+                    return method.Invoke(instance, null);
+                }
+                catch
+                {
+                    // Try the next candidate.
+                }
+            }
         }
 
         return null;
@@ -83,20 +179,72 @@ internal static class RuntimeReflectionUtility
 
             while (true)
             {
+                bool hasNext;
                 object? current;
                 try
                 {
-                    if (!enumerator.MoveNext()) yield break;
-                    current = enumerator.Current;
+                    hasNext = enumerator.MoveNext();
+                    current = hasNext ? enumerator.Current : null;
                 }
                 catch
                 {
                     yield break;
                 }
 
+                if (!hasNext) break;
                 yield return current;
             }
+
+            yield break;
         }
+
+        var values = GetMemberValue(value, "Values");
+        if (values != null && !ReferenceEquals(values, value))
+        {
+            foreach (var item in EnumerateObjects(values))
+            {
+                yield return item;
+            }
+        }
+
+        var count = ToInt(GetMemberValue(value, "Count"), -1);
+        if (count > 0)
+        {
+            for (var index = 0; index < count; index++)
+            {
+                object? item = null;
+                var success = false;
+                try
+                {
+                    item = InvokeMethod(value, "get_Item", index);
+                    success = item != null;
+                }
+                catch
+                {
+                    // Try the next index.
+                }
+
+                if (success) yield return item;
+            }
+        }
+    }
+
+    public static object? NormalizeKeyValueValue(object? value)
+    {
+        if (value == null) return null;
+        return GetMemberValue(value, "Value")
+            ?? GetMemberValue(value, "value")
+            ?? GetMemberValue(value, "m_Value")
+            ?? GetMemberValue(value, "Item2")
+            ?? value;
+    }
+
+    public static int CountObjects(object? value)
+    {
+        if (value == null) return 0;
+        var count = ToInt(GetMemberValue(value, "Count"), int.MinValue);
+        if (count != int.MinValue) return count;
+        return EnumerateObjects(value).Take(256).Count();
     }
 
     public static int ToInt(object? value, int fallback = 0)
@@ -123,11 +271,146 @@ internal static class RuntimeReflectionUtility
         return value[..maxLength] + "...";
     }
 
+    private static IEnumerable<string> BuildMemberNameCandidates(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) yield break;
+
+        yield return name;
+
+        var pascalName = char.ToUpperInvariant(name[0]) + name[1..];
+        if (!string.Equals(pascalName, name, StringComparison.Ordinal)) yield return pascalName;
+
+        var camelName = char.ToLowerInvariant(name[0]) + name[1..];
+        if (!string.Equals(camelName, name, StringComparison.Ordinal)) yield return camelName;
+    }
+
+    private static IEnumerable<string> BuildFieldNameCandidates(string name)
+    {
+        foreach (var memberName in BuildMemberNameCandidates(name))
+        {
+            yield return memberName;
+            yield return $"<{memberName}>k__BackingField";
+            yield return $"m_{memberName}";
+            yield return $"_{memberName}";
+        }
+    }
+
+    private static bool TryReadKnownField(object instance, Type type, string name, out object? value)
+    {
+        value = null;
+        foreach (var fieldName in BuildFieldNameCandidates(name))
+        {
+            var field = type.GetField(fieldName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            if (TryReadField(instance, field, out value)) return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryReadKnownStaticField(Type type, string name, out object? value)
+    {
+        value = null;
+        foreach (var fieldName in BuildFieldNameCandidates(name))
+        {
+            var field = type.GetField(fieldName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.FlattenHierarchy);
+            if (TryReadField(null, field, out value)) return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryReadProperty(object? instance, PropertyInfo? property, out object? value)
+    {
+        value = null;
+        if (property == null) return false;
+
+        try
+        {
+            value = property.GetValue(instance);
+            return value != null;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryReadField(object? instance, FieldInfo? field, out object? value)
+    {
+        value = null;
+        if (field == null) return false;
+
+        try
+        {
+            value = field.GetValue(instance);
+            return value != null;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static PropertyInfo? FindProperty(Type type, string name, BindingFlags flags)
+    {
+        try
+        {
+            return type.GetProperty(name, flags);
+        }
+        catch (AmbiguousMatchException)
+        {
+            return type.GetProperties(flags).FirstOrDefault(property => property.Name == name);
+        }
+    }
+
+    private static MethodInfo? FindMethod(Type type, string methodName, bool isStatic)
+    {
+        var flags = BindingFlags.Public | BindingFlags.NonPublic | (isStatic ? BindingFlags.Static : BindingFlags.Instance);
+        try
+        {
+            return type.GetMethod(methodName, flags);
+        }
+        catch (AmbiguousMatchException)
+        {
+            return type.GetMethods(flags).FirstOrDefault(method => method.Name == methodName);
+        }
+    }
+
     private static MethodInfo? FindMethod(Type type, string methodName, int argCount, bool isStatic)
     {
         var flags = BindingFlags.Public | BindingFlags.NonPublic | (isStatic ? BindingFlags.Static : BindingFlags.Instance);
         return type
             .GetMethods(flags)
             .FirstOrDefault(method => method.Name == methodName && method.GetParameters().Length == argCount);
+    }
+
+    private static MethodInfo? FindMethod(Type type, string methodName, object?[] args, bool isStatic)
+    {
+        var flags = BindingFlags.Public | BindingFlags.NonPublic | (isStatic ? BindingFlags.Static : BindingFlags.Instance);
+        foreach (var method in type.GetMethods(flags).Where(method => method.Name == methodName))
+        {
+            var parameters = method.GetParameters();
+            if (parameters.Length != args.Length) continue;
+            if (ArgumentsAreCompatible(parameters, args)) return method;
+        }
+
+        return null;
+    }
+
+    private static bool ArgumentsAreCompatible(IReadOnlyList<ParameterInfo> parameters, IReadOnlyList<object?> args)
+    {
+        for (var i = 0; i < parameters.Count; i++)
+        {
+            var arg = args[i];
+            if (arg == null) continue;
+            var parameterType = parameters[i].ParameterType;
+            if (parameterType.IsInstanceOfType(arg)) continue;
+            if (parameterType.IsEnum && arg is string) continue;
+            if (parameterType == typeof(int) && arg is IConvertible) continue;
+            if (parameterType == typeof(string)) continue;
+            return false;
+        }
+
+        return true;
     }
 }

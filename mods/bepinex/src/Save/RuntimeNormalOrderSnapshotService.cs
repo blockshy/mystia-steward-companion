@@ -5,6 +5,17 @@ namespace MystiaStewardCompanion.Save;
 public sealed class RuntimeNormalOrderSnapshotService
 {
     private const string OrderControllerTypeName = "Night.UI.HUD.Ordering.OrderController";
+    private const string OrderingElementTypeName = "NightScene.UI.GuestManagementUtility.OrderingElement";
+    private const string GuestsManagerTypeName = "NightScene.GuestManagementUtility.GuestsManager";
+    private const string GuestGroupControllerTypeName = "NightScene.GuestManagementUtility.GuestGroupController";
+    private static readonly (string MemberName, string Source)[] ManagerControllerSources =
+    {
+        ("AllPresentedGuestGroupController", "Presented"),
+        ("AllGuestInDeskController", "Desk"),
+        ("AllGuestsControllersInDesk", "DeskMap"),
+        ("CanPlayerRepellGuest", "Repellable"),
+        ("ManualDesksDic", "ManualDesk"),
+    };
 
     private readonly DataRepository _repository;
 
@@ -19,34 +30,58 @@ public sealed class RuntimeNormalOrderSnapshotService
         var errors = new List<string>();
         var source = new List<string>();
 
-        var orderControllerType = RuntimeReflectionUtility.FindType(OrderControllerTypeName);
-        if (orderControllerType == null)
-        {
-            return new NormalBusinessContext
-            {
-                Source = "OrderController=type-missing",
-                Error = "普通客订单控制器未加载，可能不在经营场景。",
-            };
-        }
-
         try
         {
-            var rawOrders = RuntimeReflectionUtility
-                .EnumerateObjects(RuntimeReflectionUtility.InvokeStaticMethod(orderControllerType, "GetShowInUIOrders"))
-                .ToList();
-            source.Add($"OrderController={rawOrders.Count}");
-
-            foreach (var rawOrder in rawOrders)
-            {
-                if (!IsNormalOrder(rawOrder)) continue;
-                var order = ReadNormalOrder(rawOrder, "OrderController");
-                if (order != null) orders.Add(order);
-            }
+            var orderControllerOrders = ReadOrderControllerOrders().ToList();
+            source.Add($"OrderController={orderControllerOrders.Count(order => order.Source == "OrderController")}");
+            source.Add($"OrderControllerElement={orderControllerOrders.Count(order => order.Source == "OrderControllerElement")}");
+            orders.AddRange(orderControllerOrders);
         }
         catch (Exception ex)
         {
             source.Add("OrderController=err");
-            errors.Add(ex.Message);
+            errors.Add($"order controller: {ex.Message}");
+        }
+
+        try
+        {
+            var hudOrders = ReadHudOrders().ToList();
+            source.Add($"HUD={hudOrders.Count}");
+            orders.AddRange(hudOrders);
+        }
+        catch (Exception ex)
+        {
+            source.Add("HUD=err");
+            errors.Add($"HUD: {ex.Message}");
+        }
+
+        source.Add(ReadManagerStatus());
+
+        foreach (var controllerSource in ManagerControllerSources)
+        {
+            try
+            {
+                var controllers = ReadManagerControllers(controllerSource.MemberName).ToList();
+                source.Add($"{controllerSource.Source}={controllers.Count}");
+                orders.AddRange(ReadControllerOrders(controllers, controllerSource.Source));
+            }
+            catch (Exception ex)
+            {
+                source.Add($"{controllerSource.Source}=err");
+                errors.Add($"{controllerSource.Source}: {ex.Message}");
+            }
+        }
+
+        try
+        {
+            var queuedControllers = ReadQueuedControllers().ToList();
+            source.Add($"Queue={queuedControllers.Count}");
+            orders.AddRange(ReadControllerOrders(queuedControllers, "Queue"));
+        }
+        catch (Exception ex)
+        {
+            source.Add("Queue=err");
+            errors.Add($"Queue: {ex.Message}");
         }
 
         var deduplicated = orders
@@ -65,9 +100,117 @@ public sealed class RuntimeNormalOrderSnapshotService
         };
     }
 
-    private NormalBusinessOrder? ReadNormalOrder(object? order, string source)
+    private IEnumerable<NormalBusinessOrder> ReadOrderControllerOrders()
+    {
+        var orderControllerType = RuntimeReflectionUtility.FindType(OrderControllerTypeName);
+        if (orderControllerType == null) yield break;
+
+        foreach (var order in RuntimeReflectionUtility.EnumerateObjects(RuntimeReflectionUtility.InvokeStaticMethod(orderControllerType, "GetShowInUIOrders")))
+        {
+            var parsed = ReadNormalOrder(order, null, "OrderController");
+            if (parsed != null) yield return parsed;
+        }
+
+        var controller = RuntimeReflectionUtility.GetSingletonInstance(orderControllerType)
+            ?? RuntimeReflectionUtility.FindUnityObject(orderControllerType);
+        if (controller == null) yield break;
+
+        foreach (var element in RuntimeReflectionUtility.EnumerateObjects(RuntimeReflectionUtility.GetMemberValue(controller, "m_Orders")))
+        {
+            var order = RuntimeReflectionUtility.GetMemberValue(RuntimeReflectionUtility.NormalizeKeyValueValue(element), "ActiveOrder");
+            var parsed = ReadNormalOrder(order, null, "OrderControllerElement");
+            if (parsed != null) yield return parsed;
+        }
+    }
+
+    private IEnumerable<NormalBusinessOrder> ReadHudOrders()
+    {
+        var orderingElementType = RuntimeReflectionUtility.FindType(OrderingElementTypeName);
+        if (orderingElementType == null) yield break;
+
+        foreach (var element in RuntimeReflectionUtility.FindUnityObjects(orderingElementType))
+        {
+            var order = RuntimeReflectionUtility.GetMemberValue(element, "ActiveOrder");
+            var parsed = ReadNormalOrder(order, null, "HUD");
+            if (parsed != null) yield return parsed;
+        }
+    }
+
+    private IEnumerable<object?> ReadManagerControllers(string memberName)
+    {
+        var manager = FindGuestsManager();
+        if (manager == null) yield break;
+
+        foreach (var item in RuntimeReflectionUtility.EnumerateObjects(RuntimeReflectionUtility.GetMemberValue(manager, memberName)))
+        {
+            var controller = RuntimeReflectionUtility.NormalizeKeyValueValue(item);
+            if (controller != null) yield return controller;
+        }
+    }
+
+    private static IEnumerable<object?> ReadQueuedControllers()
+    {
+        var guestGroupControllerType = RuntimeReflectionUtility.FindType(GuestGroupControllerTypeName);
+        if (guestGroupControllerType == null) yield break;
+
+        foreach (var item in RuntimeReflectionUtility.EnumerateObjects(RuntimeReflectionUtility.GetStaticMemberValue(guestGroupControllerType, "QueuedGuestControllers")))
+        {
+            var controller = RuntimeReflectionUtility.NormalizeKeyValueValue(item);
+            if (controller != null) yield return controller;
+        }
+    }
+
+    private IEnumerable<NormalBusinessOrder> ReadControllerOrders(IEnumerable<object?> controllers, string source)
+    {
+        foreach (var controller in controllers)
+        {
+            foreach (var order in EnumerateControllerOrders(controller))
+            {
+                var parsed = ReadNormalOrder(order, controller, source);
+                if (parsed != null) yield return parsed;
+            }
+        }
+    }
+
+    private static IEnumerable<object?> EnumerateControllerOrders(object? controller)
+    {
+        if (controller == null) yield break;
+
+        foreach (var memberName in new[] { "AllOrders", "AllOrdersData" })
+        {
+            foreach (var order in RuntimeReflectionUtility.EnumerateObjects(RuntimeReflectionUtility.GetMemberValue(controller, memberName)))
+            {
+                var normalized = RuntimeReflectionUtility.NormalizeKeyValueValue(order);
+                if (normalized != null) yield return normalized;
+            }
+        }
+
+        var peekOrder = RuntimeReflectionUtility.InvokeMethod(controller, "PeekOrders");
+        if (peekOrder != null) yield return peekOrder;
+    }
+
+    private static object? FindGuestsManager()
+    {
+        var guestsManagerType = RuntimeReflectionUtility.FindType(GuestsManagerTypeName);
+        if (guestsManagerType == null) return null;
+        return RuntimeReflectionUtility.GetSingletonInstance(guestsManagerType)
+            ?? RuntimeReflectionUtility.FindUnityObject(guestsManagerType);
+    }
+
+    private static string ReadManagerStatus()
+    {
+        var guestsManagerType = RuntimeReflectionUtility.FindType(GuestsManagerTypeName);
+        if (guestsManagerType == null) return "manager=type-missing";
+
+        var manager = RuntimeReflectionUtility.GetSingletonInstance(guestsManagerType)
+            ?? RuntimeReflectionUtility.FindUnityObject(guestsManagerType);
+        return manager == null ? "manager=missing" : "manager=ok";
+    }
+
+    private NormalBusinessOrder? ReadNormalOrder(object? order, object? controller, string source)
     {
         if (order == null) return null;
+        if (!IsNormalOrder(order)) return null;
 
         var requestFood = SafeGet(order, "RequestFood");
         var requestBeverage = SafeGet(order, "RequestBeverage");
@@ -79,11 +222,14 @@ public sealed class RuntimeNormalOrderSnapshotService
         return new NormalBusinessOrder
         {
             DeskCode = RuntimeReflectionUtility.ToInt(SafeGet(order, "DeskCode"), -1),
-            GuestName = ReadTextLikeValue(SafeGet(order, "Guest")),
+            GuestName = ReadTextLikeValue(SafeGet(order, "Guest"))
+                ?? ReadTextLikeValue(SafeGet(controller, "OrderingGuest"))
+                ?? ReadTextLikeValue(SafeGet(controller, "NormalGuestsGroups"))
+                ?? "",
             FoodId = foodId,
-            FoodName = recipe?.Name ?? ReadTextLikeValue(requestFood),
+            FoodName = recipe?.Name ?? ReadTextLikeValue(requestFood) ?? "",
             BeverageId = beverageId,
-            BeverageName = beverage?.Name ?? ReadTextLikeValue(requestBeverage),
+            BeverageName = beverage?.Name ?? ReadTextLikeValue(requestBeverage) ?? "",
             HasServedFood = SafeGet(order, "ServFood") != null || SafeGet(order, "ServedFoodInAir") != null,
             HasServedBeverage = SafeGet(order, "ServBeverage") != null || SafeGet(order, "ServedBeverageInAir") != null,
             IsFulfilled = RuntimeReflectionUtility.ToBool(SafeGet(order, "IsFullfilled")),
@@ -124,11 +270,13 @@ public sealed class RuntimeNormalOrderSnapshotService
         }
     }
 
-    private static string ReadTextLikeValue(object? value)
+    private static string? ReadTextLikeValue(object? value)
     {
-        if (value == null) return "";
+        if (value == null) return null;
+        value = RuntimeReflectionUtility.NormalizeKeyValueValue(value);
+        if (value == null) return null;
 
-        foreach (var member in new[] { "Name", "DisplayName", "Text", "Value" })
+        foreach (var member in new[] { "Name", "name", "DisplayName", "displayName", "StringId", "stringId", "Text", "text", "Value", "value", "Title", "title" })
         {
             var memberValue = SafeGet(value, member);
             var text = memberValue?.ToString();
@@ -148,6 +296,6 @@ public sealed class RuntimeNormalOrderSnapshotService
             // Ignore conversion failures.
         }
 
-        return "";
+        return null;
     }
 }
