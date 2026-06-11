@@ -20,6 +20,8 @@ internal static class RuntimeOrderPreparationService
     private const string MatchedCookComboTypeName = "NightScene.UI.CookingUtility.WorkSceneCookingSelectionPannel+MatchedCookCombo";
     private static readonly object PendingCookingLock = new();
     private static readonly List<PendingCookingCollection> PendingCookingCollections = new();
+    private static readonly TimeSpan PendingCookingCollectGrace = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan PendingCookingIdleTimeout = TimeSpan.FromSeconds(90);
     private enum CookingCollectionTargetKind
     {
         Tray,
@@ -417,7 +419,9 @@ internal static class RuntimeOrderPreparationService
                 }
                 catch (Exception ex)
                 {
-                    result = (true, $"{pending.RecipeName} 自动收取已停止：{ex.Message}");
+                    result = DateTime.UtcNow - pending.CreatedAtUtc >= PendingCookingIdleTimeout
+                        ? (true, $"{pending.RecipeName} 自动收取已停止：{ex.GetBaseException().Message}")
+                        : (false, "");
                 }
 
                 if (!string.IsNullOrWhiteSpace(result.Message))
@@ -689,20 +693,40 @@ internal static class RuntimeOrderPreparationService
 
     private static (bool Remove, string Message) TryCollectCookedFood(PendingCookingCollection pending)
     {
-        var phase = ToInt(InvokeInstance(pending.CookController, "get_Phase", Array.Empty<object?>()));
-        if (phase == 0)
+        var phase = ToInt(TryInvokeInstanceValue(pending.CookController, "get_Phase"), -1);
+        var cookedFood = ReadCookControllerResult(pending.CookController);
+        var chosenRecipe = ReadCookControllerChosenRecipe(pending.CookController);
+        var pendingAge = DateTime.UtcNow - pending.CreatedAtUtc;
+        var isExpiredIdle = pendingAge >= PendingCookingIdleTimeout;
+
+        if (cookedFood == null)
         {
-            return (true, "");
+            if (phase == 0 && chosenRecipe == null && isExpiredIdle)
+            {
+                return (true, $"{pending.RecipeName} 自动收取任务已结束：厨具已空闲且未读取到成品。");
+            }
+
+            if (phase == 3 && isExpiredIdle)
+            {
+                return (true, $"{pending.RecipeName} 已完成，但长时间未读取到成品对象，已停止自动收取。");
+            }
+
+            return (false, "");
         }
 
-        if (phase != 3)
+        if (phase == 0 && pendingAge < PendingCookingCollectGrace)
+        {
+            return (false, "");
+        }
+
+        if (phase != 3 && phase != 0)
         {
             return (false, "");
         }
 
         if (pending.Target.Kind == CookingCollectionTargetKind.NormalOrder)
         {
-            return TryCollectNormalOrderFood(pending);
+            return TryCollectNormalOrderFood(pending, cookedFood);
         }
 
         var tray = GetSingletonInstance(IzakayaTrayTypeName);
@@ -722,12 +746,6 @@ internal static class RuntimeOrderPreparationService
             return (true, $"{pending.RecipeName} 已自动收入送餐盘。");
         }
 
-        var cookedFood = InvokeInstance(pending.CookController, "get_Result", Array.Empty<object?>());
-        if (cookedFood == null)
-        {
-            return (true, $"{pending.RecipeName} 已完成，但未读取到成品对象，已停止自动收取。");
-        }
-
         InvokeInstance(tray, "Receive", new[] { cookedFood });
         TryInvokeInstance(pending.CookController, "AfterPlayerExtract", Array.Empty<object?>());
         TryInvokeInstance(pending.CookController, "CloseCookingVisual", Array.Empty<object?>());
@@ -735,14 +753,34 @@ internal static class RuntimeOrderPreparationService
         return (true, $"{pending.RecipeName} 已自动收入送餐盘。");
     }
 
-    private static (bool Remove, string Message) TryCollectNormalOrderFood(PendingCookingCollection pending)
+    private static object? ReadCookControllerResult(object cookController)
     {
-        var cookedFood = InvokeInstance(pending.CookController, "get_Result", Array.Empty<object?>());
-        if (cookedFood == null)
+        try
         {
-            return (true, $"{pending.RecipeName} 已完成，但未读取到成品对象，已停止普客自动收取。");
+            return TryInvokeInstanceValue(cookController, "get_Result")
+                ?? ReadMember(cookController, "Result");
         }
+        catch
+        {
+            return null;
+        }
+    }
 
+    private static object? ReadCookControllerChosenRecipe(object cookController)
+    {
+        try
+        {
+            return TryInvokeInstanceValue(cookController, "get_ChosenRecipe")
+                ?? ReadMember(cookController, "ChosenRecipe");
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static (bool Remove, string Message) TryCollectNormalOrderFood(PendingCookingCollection pending, object cookedFood)
+    {
         if (pending.Target.FoodId >= 0 && !IsSellable(cookedFood, sellableType: 0, id: pending.Target.FoodId))
         {
             return (true, $"{pending.RecipeName} 已完成，但成品不是目标料理 {pending.Target.FoodName}（料理 #{pending.Target.FoodId}），本次不会放入普客保温箱。");

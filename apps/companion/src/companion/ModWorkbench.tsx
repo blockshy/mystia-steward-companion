@@ -97,6 +97,7 @@ const MAX_FOCUS_SWITCH_COOLDOWN_MS = 2000;
 const MAX_LOG_LINES_IN_VIEW = 400;
 const AUTO_FIRST_ORDER_TICK_MS = 1500;
 const MAX_NORMAL_AUTO_ORDERS_PER_TICK = 3;
+const NORMAL_AUTO_PREPARED_RETRY_MS = 15000;
 const NON_ORDERABLE_RARE_FOOD_TAGS = new Set(['流行喜爱', '流行厌恶']);
 const COOKER_TYPE_NAME_BY_ID = new Map<number, string>([
   [1, '煮锅'],
@@ -496,6 +497,7 @@ interface AutoFirstOrderState {
 interface NormalAutoOrderState {
   orderKey: string;
   prepared: boolean;
+  preparedAtMs: number;
   collected: boolean;
   paused: boolean;
 }
@@ -912,7 +914,7 @@ export function ModWorkbench() {
       .filter((order) => {
         const state = normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order));
         if (state?.paused) return false;
-        return hasRunnableNormalOrderAction(state, companionPreferences);
+        return hasRunnableNormalOrderAction(state, companionPreferences, now);
       })
       .slice(0, MAX_NORMAL_AUTO_ORDERS_PER_TICK);
     const pausedCount = orders.filter((order) => normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order))?.paused).length;
@@ -937,10 +939,12 @@ export function ModWorkbench() {
       const messages: string[] = [];
       for (const order of runnableOrders) {
         const orderKey = buildNormalAutoOrderKey(order);
-        const currentState = normalOrderStatesRef.current.get(orderKey) ?? { orderKey, prepared: false, collected: false, paused: false };
+        const currentState = normalOrderStatesRef.current.get(orderKey) ?? emptyNormalAutoOrderState(orderKey);
+        const shouldRetryPrepared = isNormalOrderPreparedStale(currentState, now);
         const requestPreferences = {
           ...companionPreferences,
-          autoNormalStartCooking: companionPreferences.autoNormalStartCooking && !currentState.prepared,
+          autoNormalStartCooking: companionPreferences.autoNormalStartCooking
+            && (!currentState.prepared || shouldRetryPrepared),
           autoNormalCollectCooking: companionPreferences.autoNormalCollectCooking && !currentState.collected,
         };
 
@@ -956,13 +960,18 @@ export function ModWorkbench() {
           requestPreferences,
         );
         const transientFailure = !response.ok && isTransientAutoPreparationFailure(response);
+        const acknowledgedStart = didAcknowledgeStep(response, '普客开始料理')
+          || didAcknowledgeStep(response, '普客料理')
+          || didNormalOrderCollectToWarmer(response);
+        const collected = currentState.collected || didNormalOrderCollectToWarmer(response);
+        const prepared = currentState.prepared || acknowledgedStart;
         const nextState = {
           orderKey,
-          prepared: currentState.prepared
-            || didAcknowledgeStep(response, '普客开始料理')
-            || didAcknowledgeStep(response, '普客料理')
-            || didNormalOrderCollectToWarmer(response),
-          collected: currentState.collected || didNormalOrderCollectToWarmer(response),
+          prepared,
+          preparedAtMs: acknowledgedStart || (shouldRetryPrepared && transientFailure)
+            ? now
+            : currentState.preparedAtMs,
+          collected,
           paused: !response.ok && !transientFailure && companionPreferences.autoNormalStopOnError,
         };
         normalOrderStatesRef.current.set(orderKey, nextState);
@@ -4456,9 +4465,15 @@ function buildNormalAutoOrderKey(order: NormalBusinessOrder): string {
 function hasRunnableNormalOrderAction(
   state: NormalAutoOrderState | undefined,
   preferences: CompanionPreferences,
+  now: number,
 ): boolean {
   if (!preferences.autoNormalStartCooking) return false;
-  return !state?.prepared;
+  return !state?.prepared || isNormalOrderPreparedStale(state, now);
+}
+
+function isNormalOrderPreparedStale(state: NormalAutoOrderState | undefined, now: number): boolean {
+  if (!state?.prepared || state.collected || state.paused) return false;
+  return state.preparedAtMs > 0 && now - state.preparedAtMs >= NORMAL_AUTO_PREPARED_RETRY_MS;
 }
 
 function emptyAutoFirstOrderState(): AutoFirstOrderState {
@@ -4466,6 +4481,16 @@ function emptyAutoFirstOrderState(): AutoFirstOrderState {
     orderKey: '',
     prepared: false,
     beverageHandled: false,
+    paused: false,
+  };
+}
+
+function emptyNormalAutoOrderState(orderKey: string): NormalAutoOrderState {
+  return {
+    orderKey,
+    prepared: false,
+    preparedAtMs: 0,
+    collected: false,
     paused: false,
   };
 }
