@@ -19,6 +19,7 @@ internal sealed class StewardOverlayController
     private const float WindowHeaderHeight = 52f;
     private const float ResizeHandleSize = 24f;
     private const float SpecialOrderRefreshDebounceSeconds = 0.2f;
+    private const int SceneSnapshotStartupGuardFrames = 10;
     private static readonly JsonSerializerOptions LocalApiJsonOptions = new(JsonSerializerDefaults.Web);
 
     private StewardPluginConfig? _config;
@@ -68,6 +69,7 @@ internal sealed class StewardOverlayController
     private DateTime _lastRuntimeReadUtc = DateTime.MinValue;
     private float _nextAutoRefreshAt;
     private float _nextBusinessRefreshAt;
+    private int _sceneChangedFrame;
     private bool _stylesInitialized;
     private bool _localApiSnapshotErrorLogged;
     private bool _disposed;
@@ -132,6 +134,7 @@ internal sealed class StewardOverlayController
             config.WindowHeight.Value);
         _placeIndex = Math.Max(0, Array.IndexOf(PlaceNames.All, config.DefaultPlace.Value));
         _activeSceneName = GetActiveSceneName();
+        _sceneChangedFrame = Time.frameCount;
         EnsureWindowInsideScreen();
         LoadRepository();
         _localApiToken = EnsureLocalApiToken(config);
@@ -215,6 +218,7 @@ internal sealed class StewardOverlayController
         if (string.Equals(sceneName, _activeSceneName, StringComparison.Ordinal)) return;
 
         _activeSceneName = sceneName;
+        _sceneChangedFrame = Time.frameCount;
         _nextAutoRefreshAt = 0f;
         _nextBusinessRefreshAt = 0f;
         _businessFallbackState = null;
@@ -1310,6 +1314,14 @@ internal sealed class StewardOverlayController
             };
         }
 
+        if (IsSceneSnapshotStartupGuardActive())
+        {
+            return new RuntimeMissionContext
+            {
+                Source = "任务数据等待日间 UI 初始化完成。",
+            };
+        }
+
         try
         {
             return RuntimeMissionSnapshotService.Load();
@@ -1322,6 +1334,11 @@ internal sealed class StewardOverlayController
                 Error = ex.Message,
             };
         }
+    }
+
+    private bool IsSceneSnapshotStartupGuardActive()
+    {
+        return Time.frameCount - _sceneChangedFrame < SceneSnapshotStartupGuardFrames;
     }
 
     private NormalBusinessContext? ReadNormalBusinessForSnapshot()

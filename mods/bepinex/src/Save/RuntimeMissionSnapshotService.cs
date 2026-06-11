@@ -145,7 +145,9 @@ public static class RuntimeMissionSnapshotService
         IEnumerable<string> characterLabels,
         string source)
     {
-        foreach (var characterLabel in characterLabels)
+        foreach (var characterLabel in characterLabels
+                     .Where(label => !string.IsNullOrWhiteSpace(label))
+                     .Distinct(StringComparer.Ordinal))
         {
             try
             {
@@ -638,6 +640,8 @@ public static class RuntimeMissionSnapshotService
 
     private static string ResolveNpcName(Type dataBaseDayType, string npcKey)
     {
+        if (string.IsNullOrWhiteSpace(npcKey)) return "";
+
         var npc = RuntimeReflectionUtility.InvokeStaticMethod(dataBaseDayType, "RefNPC", npcKey);
         var text = ReadTextLikeValue(npc);
         return string.IsNullOrWhiteSpace(text) ? npcKey : text;
