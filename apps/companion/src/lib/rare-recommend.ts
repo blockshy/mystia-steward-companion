@@ -4,7 +4,6 @@
 import type {
   IRecipe,
   IIngredient,
-  IBeverage,
   ICustomerRare,
   IRareRecipeResult,
   IRareBeverageResult,
@@ -20,18 +19,10 @@ import {
   canCancelNegativeByConflict,
   countConflictCancellations,
 } from '@/lib/tags';
-
-import allRecipes from '@/data/recipes.json';
-import allIngredients from '@/data/ingredients.json';
-import allBeverages from '@/data/beverages.json';
-import allRareCustomers from '@/data/customer_rare.json';
-
-const ingredientsByName = new Map(
-  (allIngredients as IIngredient[]).map((i) => [i.name, i]),
-);
-const ingredientsById = new Map(
-  (allIngredients as IIngredient[]).map((i) => [i.id, i]),
-);
+import {
+  DEFAULT_RECOMMENDATION_DATA,
+  type RecommendationDataSet,
+} from '@/lib/recommendation-data';
 
 type RareEasterEffect = 'priority-exgood' | 'ban';
 
@@ -116,15 +107,20 @@ const RARE_EASTER_RULES: RareEasterRule[] = [
 ];
 
 /** 获取指定地区的稀客 */
-export function getRareCustomersByPlace(place: TPlace): ICustomerRare[] {
-  return (allRareCustomers as unknown as ICustomerRare[]).filter((c) =>
+export function getRareCustomersByPlace(
+  place: TPlace,
+  data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
+): ICustomerRare[] {
+  return data.rareCustomers.filter((c) =>
     c.places.includes(place),
   );
 }
 
 /** 获取全部稀客 */
-export function getAllRareCustomers(): ICustomerRare[] {
-  return allRareCustomers as unknown as ICustomerRare[];
+export function getAllRareCustomers(
+  data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
+): ICustomerRare[] {
+  return data.rareCustomers;
 }
 
 interface IngredientTagReasonResult {
@@ -375,6 +371,7 @@ export function rankRecipesForRare(
   ownedIngredientQty: Record<number, number> = {},
   isFamousShop = false,
   options: RareRecipeRankOptions = {},
+  data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
 ): IRareRecipeResult[] {
   const results: IRareRecipeResult[] = [];
 
@@ -386,6 +383,8 @@ export function rankRecipesForRare(
   const allowPreferenceFallback = options.allowPreferenceFallback ?? false;
   const minFoodScore = Math.max(1, options.minFoodScore ?? TARGET_FOOD_SCORE);
   const forcedRecipeIds = options.forcedRecipeIds ?? new Set<number>();
+  const ingredientsByName = new Map(data.ingredients.map((i) => [i.name, i]));
+  const ingredientsById = new Map(data.ingredients.map((i) => [i.id, i]));
 
   // 构建可用食材列表
   const usableIngredients: IIngredient[] = [];
@@ -402,7 +401,7 @@ export function rankRecipesForRare(
   const customerPriorityIngredientIds = getEasterIngredientIdsByEffect(customer.id, 'priority-exgood');
   const MAX_CANDIDATES = 18;
 
-  for (const recipe of allRecipes as IRecipe[]) {
+  for (const recipe of data.recipes) {
     if (!availableRecipeIds.has(recipe.id)) continue;
 
     // 基础食材可用性检查：必须在可用食材列表中，且未被禁用
@@ -781,6 +780,7 @@ export function rankPreferenceRecipesForRare(
   maxExtraIngredients = 4,
   ownedIngredientQty: Record<number, number> = {},
   isFamousShop = false,
+  data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
 ): IRareRecipeResult[] {
   return rankRecipesForRare(
     customer,
@@ -795,6 +795,7 @@ export function rankPreferenceRecipesForRare(
     ownedIngredientQty,
     isFamousShop,
     { allowPreferenceFallback: true, minFoodScore: 1 },
+    data,
   ).filter((row) => !row.meetsRequiredFood);
 }
 
@@ -803,10 +804,11 @@ export function rankBeveragesForRare(
   customer: ICustomerRare,
   requiredBevTag: string,
   availableBeverageIds: Set<number>,
+  data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
 ): IRareBeverageResult[] {
   const results: IRareBeverageResult[] = [];
 
-  for (const bev of allBeverages as IBeverage[]) {
+  for (const bev of data.beverages) {
     if (!availableBeverageIds.has(bev.id)) continue;
 
     const matchedTags = bev.tags.filter((t) =>
@@ -833,10 +835,11 @@ export function rankPreferenceBeveragesForRare(
   customer: ICustomerRare,
   requiredBevTag: string,
   availableBeverageIds: Set<number>,
+  data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
 ): IRareBeverageResult[] {
   const results: IRareBeverageResult[] = [];
 
-  for (const bev of allBeverages as IBeverage[]) {
+  for (const bev of data.beverages) {
     if (!availableBeverageIds.has(bev.id)) continue;
     if (bev.tags.includes(requiredBevTag)) continue;
 

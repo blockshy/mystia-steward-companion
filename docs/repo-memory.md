@@ -50,6 +50,7 @@
 - 稀客自动化匹配运行时捕获订单时要兼容事件变体名称和不完整 Tag。强买强卖等变体可能显示 `Tewi_HardSell`，捕获到的 `foodTag` 可能为空，`beverageTag` 可能是“请给我甘的饮料”这类完整句子；同桌且对象仍有效的捕获订单应优先保留，Tag 匹配允许包含关系，不要只做完全相等。
 - 手动事件稀客订单不一定走普通 `PostGenerateOrder` 路径。运行时捕获需要覆盖 `GuestsManager.SetManualControllerOrderInternal`，并在 `EvaulateManualOrder` / `EndDlc4SpecialManualOrder` 清理缓存，否则订单会在列表中一闪而过，无法进入自动化流程。项目不再解析 Unity/BepInEx 控制台订单日志，稀客点单必须来自运行时订单对象、控制器、HUD/面板或运行时缓存。
 - 诊断开启且经营数据扫描触发时，运行时固定数据会按主题写到诊断目录：`runtime-static-data.log` 映射稀客与 `aliasSource`、`runtime-tags.log` 标签和 TagRule、`runtime-database-diff.log` 核心食材/酒水/料理表对照与读取方式、`runtime-guests.log` 普客/稀客/事件变体、`runtime-izakayas.log` 场景和客人池。游戏数据库未初始化时每 5 秒重试，日志头部 `Complete: True` 表示读取成功。
+- 运行时固定数据不只写诊断日志，也会构造成 `RuntimeDataCatalog` 并发布到 `/snapshot.runtimeData`。伴随窗口连接到游戏且 `runtimeData.isComplete=true` 后，应优先使用运行时料理、食材、酒水、普客和稀客数据；内置 JSON 只作为离线或运行时未就绪兜底。排查外部静态数据依赖时，先看概览页“推荐数据”是否显示“游戏运行时”，再检查 `runtime-static-data.log`、`runtime-database-diff.log`、`runtime-guests.log` 的 `Complete: True`。
 - 稀客订单专注模式支持精简模式和料理/酒水显示数量配置；精简模式隐藏推荐料理 Tag 并压缩推荐面板间距，显示数量包含收藏置顶项。
 - 实验性自动化由设置页总开关启用，经营中页按稀客订单和普客订单分组配置。稀客使用 `autoPrep*` 阶段配置，普客使用 `autoNormal*` 阶段配置，取酒、开始料理、收取和出错暂停互不复用。设置页参数控制稀客/普客并发、稀客送餐盘等待、普客保温箱复查、最大重试和最大回退，默认值为 `2`、`3`、`30s`、`45s`、`3`、`2`；完成订单写入每轮最多执行 1 笔。开启自动开始料理后固定尝试完成原生 QTE 奖励结算，不再提供跳过或完成 QTE 的配置开关；该流程不会打开游戏音游面板，失败时只显示诊断并继续料理流程。普客自动化需要开启“启用普客处理”且至少开启一个实际阶段；临时失败应继续等待并重试，非临时失败才按对应订单类型配置暂停。稀客与普客暂停状态不能共用，普客内部也要按订单 key 隔离暂停。
 

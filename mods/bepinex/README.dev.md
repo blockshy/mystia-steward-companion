@@ -253,7 +253,9 @@ git push --force origin v1.0.1
 
 ## 数据同步
 
-结构化数据位于 `apps/companion/src/data/`。修改 JSON 数据后需要同步到 Mod：
+内置结构化数据位于 `apps/companion/src/data/`。这批 JSON 仍会随包保留，用于伴随窗口未连接游戏、游戏数据库未初始化或运行时固定数据读取失败时的兜底；连接游戏且 `/snapshot.runtimeData.isComplete=true` 后，推荐、库存名称、任务目标和自动化目标解析应优先使用 Mod 从游戏运行时读取并发布的 `RuntimeDataCatalog`。
+
+修改内置 JSON 兜底数据后需要同步到 Mod：
 
 ```bash
 bash mods/bepinex/tools/sync-data.sh
@@ -264,6 +266,8 @@ bash mods/bepinex/tools/sync-data.sh
 ## 运行时刷新行为
 
 Mod 会定期检查当前页面和游戏运行时状态。进入游戏并加载进度后，推荐状态来自当前内存中的运行时对象，不读取 `.memory` 存档文件。
+
+运行时固定数据读取成功后，C# 会把 `DataBaseCore`、`DataBaseCharacter` 和 `DataBaseLanguage` 中的料理、食材、酒水、普客、稀客和 tag 映射构造成 `RuntimeDataCatalog`，写入本地 API 快照并切换 C# 推荐仓库到运行时仓库。伴随窗口概览页的“推荐数据”显示“游戏运行时”时，表示前端推荐算法已经不再使用内置 JSON 作为主数据源。
 
 夜间经营中，`经营中 / Service` 页会读取 `GuestsManager`、稀客队列、`OrderController`、HUD、服务面板和桌位控制器中的稀客与订单。页面顶部只展示经营场景、扫描状态、推荐数据、厨具与置顶状态等通用信息，随后用 `稀客` / `普客` 页签分区展示各自功能。稀客进场、排队或入座后会先显示当前稀客，并尽量读取 `GuestGroupController.GetFund`、`BaseFundCarry`、`MaxFundCarry` 等当前携带金钱信息；稀客点单后，工作台会按桌号列出稀客、料理词条和酒水词条，并复用稀客推荐算法计算候选料理、加料和酒水。普客订单读取到 `GameData.CoreLanguage.LanguageBase` 这类 IL2CPP 本地化对象时，必须过滤为无文本，不得把运行时类型名当作客人、料理或酒水名称展示。
 

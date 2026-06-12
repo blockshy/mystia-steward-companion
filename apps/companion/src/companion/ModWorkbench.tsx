@@ -33,6 +33,13 @@ import {
 import { isTauriRuntime } from '@/lib/tauri-runtime';
 import { useThemeMode } from '@/lib/theme';
 import type { ThemeMode } from '@/lib/theme';
+import {
+  DEFAULT_RECOMMENDATION_DATA,
+  buildRecommendationDataIndexes,
+  buildRecommendationDataSet,
+  type RecommendationDataSet,
+  type RuntimeDataCatalogSnapshot,
+} from '@/lib/recommendation-data';
 import type {
   IBeverage,
   ICustomerRare,
@@ -46,9 +53,6 @@ import type {
   TRating,
 } from '@/lib/types';
 import { ALL_PLACES } from '@/lib/types';
-import allIngredients from '@/data/ingredients.json';
-import allBeverages from '@/data/beverages.json';
-import allRecipes from '@/data/recipes.json';
 
 const DEFAULT_ENDPOINT = 'http://127.0.0.1:32145';
 const STORAGE_PREFIX = 'mystia-steward-companion';
@@ -134,14 +138,8 @@ const COOKER_NAME_ALIASES = new Map<string, string>([
   ['锅', '煮锅'],
   ['炸锅', '油锅'],
 ]);
-const INGREDIENTS = allIngredients as IIngredient[];
-const INGREDIENT_BY_NAME = new Map(INGREDIENTS.map((ingredient) => [ingredient.name, ingredient]));
-const INGREDIENT_ID_BY_NAME = new Map(INGREDIENTS.map((ingredient) => [ingredient.name, ingredient.id]));
-const INGREDIENT_NAME_BY_ID = new Map(INGREDIENTS.map((ingredient) => [ingredient.id, ingredient.name]));
-const BEVERAGES = allBeverages as IBeverage[];
-const BEVERAGE_NAME_BY_ID = new Map(BEVERAGES.map((beverage) => [beverage.id, beverage.name]));
-const RECIPES = allRecipes as IRecipe[];
-const RECIPE_BY_FOOD_ID = new Map(RECIPES.map((recipe) => [recipe.id, recipe]));
+const DEFAULT_DATA_INDEXES = buildRecommendationDataIndexes(DEFAULT_RECOMMENDATION_DATA);
+const INGREDIENT_ID_BY_NAME = DEFAULT_DATA_INDEXES.ingredientIdByName;
 const LOW_STOCK_RESOURCE_THRESHOLD = 5;
 const EXTRA_INGREDIENT_RESOURCE_WEIGHT = 2;
 const DENSE_TWO_COLUMN_GRID = 'grid grid-cols-2 gap-4';
@@ -365,6 +363,7 @@ interface LocalApiSnapshot {
   runtimeMissions?: RuntimeMissionContext | null;
   normalBusiness?: NormalBusinessContext | null;
   runtimeRareCustomers?: RuntimeRareCustomer[];
+  runtimeData?: RuntimeDataCatalogSnapshot;
 }
 
 interface RuntimeSets {
@@ -782,16 +781,24 @@ export function ModWorkbench() {
   const night = snapshot?.nightBusiness ?? null;
   const detectedPlace = normalizePlace(night?.place);
   const selectedPlace = manualPlace ?? detectedPlace;
+  const recommendationData = useMemo(
+    () => buildRecommendationDataSet(snapshot?.runtimeData),
+    [snapshot?.runtimeData],
+  );
+  const recommendationIndexes = useMemo(
+    () => buildRecommendationDataIndexes(recommendationData),
+    [recommendationData],
+  );
   const runtimeRareCustomers = useMemo(
     () => (snapshot?.runtimeRareCustomers ?? []).map(toRuntimeRareCustomer),
     [snapshot?.runtimeRareCustomers],
   );
   const rareCustomersById = useMemo(
-    () => buildRareCustomerMap(runtimeRareCustomers),
-    [runtimeRareCustomers],
+    () => buildRareCustomerMap(runtimeRareCustomers, recommendationData),
+    [runtimeRareCustomers, recommendationData],
   );
 
-  const runtimeSets = useMemo(() => buildRuntimeSets(runtime), [runtime]);
+  const runtimeSets = useMemo(() => buildRuntimeSets(runtime, recommendationData), [recommendationData, runtime]);
   const orderRecommendations = useMemo(
     () => buildOrderRecommendations(
       night?.orders ?? [],
@@ -801,18 +808,24 @@ export function ModWorkbench() {
       favorites,
       companionPreferences,
       snapshot?.runtimeMissions?.serveTargets ?? [],
+      recommendationData,
     ),
-    [night?.orders, runtime, rareCustomersById, favorites, companionPreferences, snapshot?.runtimeMissions?.serveTargets],
+    [night?.orders, runtime, rareCustomersById, favorites, companionPreferences, snapshot?.runtimeMissions?.serveTargets, recommendationData],
   );
   const gameUiPinningTarget = useMemo(
     () => companionPreferences.gameUiPinningEnabled || companionPreferences.cookerHighlightEnabled
-      ? buildGameUiPinningTarget(orderRecommendations.recommendations, companionPreferences.serviceOrderSortMode)
+      ? buildGameUiPinningTarget(
+        orderRecommendations.recommendations,
+        companionPreferences.serviceOrderSortMode,
+        recommendationIndexes,
+      )
       : null,
     [
       companionPreferences.cookerHighlightEnabled,
       companionPreferences.gameUiPinningEnabled,
       companionPreferences.serviceOrderSortMode,
       orderRecommendations.recommendations,
+      recommendationIndexes,
     ],
   );
   const snapshotRefreshIntervalMs = tab === 'service' || serviceFocusMode ? 750 : 2000;
@@ -1060,6 +1073,7 @@ export function ModWorkbench() {
         companionPreferences,
         runtime,
         now,
+        recommendationData,
       );
 
       for (const selection of candidateResult.selections) {
@@ -1283,6 +1297,7 @@ export function ModWorkbench() {
     favorites,
     normalizedEndpoint,
     orderRecommendations.recommendations,
+    recommendationData,
     refresh,
     refreshRareOrderDiagnostics,
     getAutomationCookerCycle,
@@ -1336,7 +1351,7 @@ export function ModWorkbench() {
       if (needsCooking) {
         const reservation = reserveAutomationCookerSlot(
           cookerCycle,
-          getNormalCookerRequirement(order),
+          getNormalCookerRequirement(order, recommendationData),
           `普客 桌 ${formatDesk(order.deskCode)} · ${order.foodName || `#${order.foodId}`}`,
           cookerCapacity,
         );
@@ -1407,6 +1422,7 @@ export function ModWorkbench() {
           apiToken,
           order,
           requestPreferences,
+          recommendationData,
         );
         const transientFailure = !response.ok && isTransientAutoPreparationFailure(response);
         const pendingCooking = didNormalOrderCookingStillPending(response);
@@ -1474,6 +1490,7 @@ export function ModWorkbench() {
     companionPreferences,
     getAutomationCookerCycle,
     normalizedEndpoint,
+    recommendationData,
     refresh,
     refreshNormalOrderDiagnostics,
     runtime,
@@ -1755,6 +1772,8 @@ export function ModWorkbench() {
             snapshot={snapshot}
             runtime={runtime}
             night={night}
+            data={recommendationData}
+            indexes={recommendationIndexes}
             error={error}
             lastConnectedAt={lastConnectedAt}
           />
@@ -1766,6 +1785,7 @@ export function ModWorkbench() {
             runtimeSets={runtimeSets}
             selectedPlace={selectedPlace}
             detectedPlace={detectedPlace}
+            data={recommendationData}
             onPlaceChange={setManualPlace}
             onFollowDetectedPlace={() => setManualPlace(null)}
           />
@@ -1778,6 +1798,7 @@ export function ModWorkbench() {
             runtimeRareCustomers={runtimeRareCustomers}
             selectedPlace={selectedPlace}
             detectedPlace={detectedPlace}
+            data={recommendationData}
             rareCustomerId={rareCustomerId}
             requiredFoodTag={requiredFoodTag}
             requiredBeverageTag={requiredBeverageTag}
@@ -1816,6 +1837,7 @@ export function ModWorkbench() {
             detectedPlace={detectedPlace}
             recommendations={orderRecommendations.recommendations}
             recommendationIssues={orderRecommendations.recommendationIssues}
+            data={recommendationData}
             runtimeSets={runtimeSets}
             uiPinningStatus={snapshot?.runtimeUiPinningStatus ?? ''}
             uiPinningTarget={gameUiPinningTarget}
@@ -1849,6 +1871,7 @@ export function ModWorkbench() {
           <ModTasksPanel
             runtimeLoaded={snapshot?.runtimeLoaded ?? false}
             missions={snapshot?.runtimeMissions ?? null}
+            data={recommendationData}
           />
         </TabsContent>
 
@@ -1858,6 +1881,7 @@ export function ModWorkbench() {
             apiToken={apiToken}
             runtimeSets={runtimeSets}
             runtimeLoaded={snapshot?.runtimeLoaded ?? false}
+            data={recommendationData}
             onRefresh={refresh}
           />
         </TabsContent>
@@ -1888,6 +1912,8 @@ function ModOverviewPanel({
   snapshot,
   runtime,
   night,
+  data,
+  indexes,
   error,
   lastConnectedAt,
 }: {
@@ -1895,16 +1921,18 @@ function ModOverviewPanel({
   snapshot: LocalApiSnapshot | null;
   runtime: RecommendationStateSnapshot | null;
   night: NightBusinessContext | null;
+  data: RecommendationDataSet;
+  indexes: ReturnType<typeof buildRecommendationDataIndexes>;
   error: string;
   lastConnectedAt: Date | null;
 }) {
   const ownedIngredientEntries = useMemo(
-    () => buildLowStockEntries(runtime?.ownedIngredientQty ?? {}, INGREDIENT_NAME_BY_ID),
-    [runtime?.ownedIngredientQty],
+    () => buildLowStockEntries(runtime?.ownedIngredientQty ?? {}, indexes.ingredientNameById),
+    [indexes.ingredientNameById, runtime?.ownedIngredientQty],
   );
   const ownedBeverageEntries = useMemo(
-    () => buildLowStockEntries(runtime?.ownedBeverageQty ?? {}, BEVERAGE_NAME_BY_ID),
-    [runtime?.ownedBeverageQty],
+    () => buildLowStockEntries(runtime?.ownedBeverageQty ?? {}, indexes.beverageNameById),
+    [indexes.beverageNameById, runtime?.ownedBeverageQty],
   );
 
   return (
@@ -1918,6 +1946,7 @@ function ModOverviewPanel({
           <InfoLine label="场景" value={snapshot?.activeSceneName || '未知'} />
           <InfoLine label="运行时状态" value={snapshot?.status || '暂无快照'} />
           <InfoLine label="运行时来源" value={snapshot?.runtimeSource || '未知'} />
+          <InfoLine label="推荐数据" value={data.source === 'runtime' ? `游戏运行时 (${data.status})` : '内置兜底数据'} />
           <InfoLine label="数据目录" value={snapshot?.dataDirectory || '未知'} mono />
         </CardContent>
       </Card>
@@ -1965,6 +1994,7 @@ function ModNormalPanel({
   runtimeSets,
   selectedPlace,
   detectedPlace,
+  data,
   onPlaceChange,
   onFollowDetectedPlace,
 }: {
@@ -1972,6 +2002,7 @@ function ModNormalPanel({
   runtimeSets: RuntimeSets | null;
   selectedPlace: TPlace | null;
   detectedPlace: TPlace | null;
+  data: RecommendationDataSet;
   onPlaceChange: (place: TPlace) => void;
   onFollowDetectedPlace: () => void;
 }) {
@@ -1984,21 +2015,22 @@ function ModNormalPanel({
       runtime.popularFoodTag,
       runtime.popularHateFoodTag,
       runtime.famousShopEnabled,
+      data,
     )
       .sort(compareNormalRecipesForMod)
       .slice(0, MAX_RECOMMENDATION_ROWS);
-  }, [runtime, runtimeSets, selectedPlace]);
+  }, [data, runtime, runtimeSets, selectedPlace]);
 
   const beverages = useMemo(() => {
     if (!runtimeSets || !selectedPlace) return [];
-    return computeNormalBeverageResults(selectedPlace, runtimeSets.beverageIds)
+    return computeNormalBeverageResults(selectedPlace, runtimeSets.beverageIds, data)
       .sort(compareNormalBeveragesForMod)
       .slice(0, MAX_RECOMMENDATION_ROWS);
-  }, [runtimeSets, selectedPlace]);
+  }, [data, runtimeSets, selectedPlace]);
 
   const customers = useMemo(
-    () => (selectedPlace ? getNormalCustomersByPlace(selectedPlace) : []),
-    [selectedPlace],
+    () => (selectedPlace ? getNormalCustomersByPlace(selectedPlace, data) : []),
+    [data, selectedPlace],
   );
 
   if (!runtime || !runtimeSets) return <RuntimeUnavailable />;
@@ -2071,6 +2103,7 @@ function ModRarePanel({
   runtimeRareCustomers,
   selectedPlace,
   detectedPlace,
+  data,
   rareCustomerId,
   requiredFoodTag,
   requiredBeverageTag,
@@ -2091,6 +2124,7 @@ function ModRarePanel({
   runtimeRareCustomers: ICustomerRare[];
   selectedPlace: TPlace | null;
   detectedPlace: TPlace | null;
+  data: RecommendationDataSet;
   rareCustomerId: number | null;
   requiredFoodTag: string;
   requiredBeverageTag: string;
@@ -2106,13 +2140,14 @@ function ModRarePanel({
   onToggleRecipeFavorite: ToggleRecipeFavorite;
   onToggleBeverageFavorite: ToggleBeverageFavorite;
 }) {
+  const dataIndexes = useMemo(() => buildRecommendationDataIndexes(data), [data]);
   const customers = useMemo(() => {
     if (!selectedPlace) return [];
     return mergeRareCustomers(
-      getRareCustomersByPlace(selectedPlace),
+      getRareCustomersByPlace(selectedPlace, data),
       runtimeRareCustomers.filter((customer) => customer.places.includes(selectedPlace)),
     );
-  }, [runtimeRareCustomers, selectedPlace]);
+  }, [data, runtimeRareCustomers, selectedPlace]);
   const selectedCustomer = customers.find((customer) => customer.id === rareCustomerId) ?? customers[0] ?? null;
   const foodTag = requiredFoodTag || selectedCustomer?.positiveTags.find(isOrderableRareFoodTag) || '';
   const beverageTag = requiredBeverageTag || selectedCustomer?.beverageTags[0] || '';
@@ -2151,6 +2186,8 @@ function ModRarePanel({
       4,
       runtimeSets.ownedIngredientQty,
       runtime.famousShopEnabled,
+      {},
+      data,
     )
       .filter((recipe) => shouldKeepRecipeForCooker(recipe, runtimeSets, preferences.filterMissingCookers))
       .sort((a, b) => compareRareRecipesForService(
@@ -2159,14 +2196,15 @@ function ModRarePanel({
         runtimeSets.ownedIngredientQty,
         preferences.recipeSortRules,
         runtimeSets,
+        dataIndexes,
       ))
       .sort((a, b) => compareFavoriteRecipeResults(a, b, favorites, selectedCustomer.id, foodTag))
       .slice(0, MAX_RECOMMENDATION_ROWS);
-  }, [beverageTag, favorites, foodTag, preferences, runtime, runtimeSets, selectedCustomer]);
+  }, [beverageTag, data, dataIndexes, favorites, foodTag, preferences, runtime, runtimeSets, selectedCustomer]);
 
   const beverages = useMemo(() => {
     if (!runtimeSets || !selectedCustomer || !beverageTag) return [];
-    return rankBeveragesForRare(selectedCustomer, beverageTag, runtimeSets.beverageIds)
+    return rankBeveragesForRare(selectedCustomer, beverageTag, runtimeSets.beverageIds, data)
       .sort((a, b) => compareRareBeveragesForService(
         a,
         b,
@@ -2175,7 +2213,7 @@ function ModRarePanel({
       ))
       .sort((a, b) => compareFavoriteBeverageResults(a, b, favorites, selectedCustomer.id, beverageTag))
       .slice(0, MAX_RECOMMENDATION_ROWS);
-  }, [beverageTag, favorites, preferences.beverageSortRules, runtimeSets, selectedCustomer]);
+  }, [beverageTag, data, favorites, preferences.beverageSortRules, runtimeSets, selectedCustomer]);
 
   if (!runtime || !runtimeSets) return <RuntimeUnavailable />;
 
@@ -2294,6 +2332,7 @@ function ModServicePanel({
   detectedPlace,
   recommendations,
   recommendationIssues,
+  data,
   runtimeSets,
   uiPinningStatus,
   uiPinningTarget,
@@ -2326,6 +2365,7 @@ function ModServicePanel({
   detectedPlace: TPlace | null;
   recommendations: OrderRecommendation[];
   recommendationIssues: RecommendationIssue[];
+  data: RecommendationDataSet;
   runtimeSets: RuntimeSets | null;
   uiPinningStatus: string;
   uiPinningTarget: GameUiPinningTarget | null;
@@ -2367,6 +2407,7 @@ function ModServicePanel({
       normalOrders: normalBusiness?.orders ?? [],
       rareDiagnostics: rareOrderDiagnostics,
       normalDiagnostics: normalOrderDiagnostics,
+      data,
     }),
     [
       autoPrepPreferences,
@@ -2376,6 +2417,7 @@ function ModServicePanel({
       rareOrderDiagnostics,
       recommendations,
       runtime,
+      data,
     ],
   );
 
@@ -2823,12 +2865,14 @@ function ModInventoryPanel({
   apiToken,
   runtimeSets,
   runtimeLoaded,
+  data,
   onRefresh,
 }: {
   endpoint: string;
   apiToken: string;
   runtimeSets: RuntimeSets | null;
   runtimeLoaded: boolean;
+  data: RecommendationDataSet;
   onRefresh: () => Promise<void>;
 }) {
   const [search, setSearch] = useState('');
@@ -2837,12 +2881,12 @@ function ModInventoryPanel({
 
   const normalizedSearch = search.trim().toLowerCase();
   const ingredientRows = useMemo(
-    () => filterInventoryItems(INGREDIENTS, normalizedSearch),
-    [normalizedSearch],
+    () => filterInventoryItems(data.ingredients, normalizedSearch),
+    [data.ingredients, normalizedSearch],
   );
   const beverageRows = useMemo(
-    () => filterInventoryItems(BEVERAGES.filter((beverage) => beverage.id >= 0), normalizedSearch),
-    [normalizedSearch],
+    () => filterInventoryItems(data.beverages.filter((beverage) => beverage.id >= 0), normalizedSearch),
+    [data.beverages, normalizedSearch],
   );
 
   const applyQuantity = useCallback(async (kind: 'ingredient' | 'beverage', id: number, quantity: number) => {
@@ -2924,12 +2968,15 @@ function ModInventoryPanel({
 function ModTasksPanel({
   runtimeLoaded,
   missions,
+  data,
 }: {
   runtimeLoaded: boolean;
   missions: RuntimeMissionContext | null;
+  data: RecommendationDataSet;
 }) {
   const [statusFilters, setStatusFilters] = useState<MissionStatusFilter[]>(DEFAULT_MISSION_STATUS_FILTERS);
   const [showExtraInfo, setShowExtraInfo] = useState(false);
+  const recipeByFoodId = useMemo(() => buildRecommendationDataIndexes(data).recipeByFoodId, [data]);
 
   if (!runtimeLoaded) {
     return <RuntimeUnavailable />;
@@ -3023,7 +3070,7 @@ function ModTasksPanel({
                 {getMissionStatusFilterLabel(status)}
               </Badge>
               {mission.targetRecipeId != null && (
-                <Badge variant="outline">料理 {mission.targetRecipeName || RECIPE_BY_FOOD_ID.get(mission.targetRecipeId)?.name || `#${mission.targetRecipeId}`}</Badge>
+                <Badge variant="outline">料理 {mission.targetRecipeName || recipeByFoodId.get(mission.targetRecipeId)?.name || `#${mission.targetRecipeId}`}</Badge>
               )}
               {places.map((place) => <Badge key={place} variant="outline">场景 {place}</Badge>)}
               {shouldShowMissingPlace && <Badge variant="outline">场景 未读取</Badge>}
@@ -4941,9 +4988,11 @@ async function completeFirstNormalOrder(
   apiToken: string,
   order: NormalBusinessOrder,
   preferences: CompanionPreferences,
+  data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
 ): Promise<OrderPreparationResponse> {
-  const recipe = RECIPE_BY_FOOD_ID.get(order.foodId)
-    ?? RECIPES.find((item) => item.recipeId === order.foodId)
+  const indexes = buildRecommendationDataIndexes(data);
+  const recipe = indexes.recipeByFoodId.get(order.foodId)
+    ?? data.recipes.find((item) => item.recipeId === order.foodId)
     ?? null;
   const params = new URLSearchParams({
     orderKey: order.orderKey ?? '',
@@ -4953,7 +5002,7 @@ async function completeFirstNormalOrder(
     recipeId: recipe ? String(recipe.recipeId) : '-1',
     recipeName: order.foodName || recipe?.name || '',
     beverageId: String(order.beverageId),
-    beverageName: order.beverageName || BEVERAGE_NAME_BY_ID.get(order.beverageId) || '',
+    beverageName: order.beverageName || indexes.beverageNameById.get(order.beverageId) || '',
     autoStartCooking: String(preferences.autoNormalStartCooking),
     autoCollectCooking: String(preferences.autoNormalCollectCooking),
     stopOnError: String(preferences.autoNormalStopOnError),
@@ -5109,10 +5158,13 @@ async function readLocalApiJson<T>(endpoint: string, apiToken: string, path: str
   return await response.json() as T;
 }
 
-function buildRuntimeSets(runtime: RecommendationStateSnapshot | null): RuntimeSets | null {
+function buildRuntimeSets(
+  runtime: RecommendationStateSnapshot | null,
+  data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
+): RuntimeSets | null {
   if (!runtime) return null;
   const ingredientIds = new Set(runtime.availableIngredientIds);
-  const allIngredientIds = (allIngredients as IIngredient[]).map((ingredient) => ingredient.id);
+  const allIngredientIds = data.ingredients.map((ingredient) => ingredient.id);
   const unavailableIngredientIds = new Set(allIngredientIds.filter((id) => !ingredientIds.has(id)));
 
   return {
@@ -5177,8 +5229,11 @@ function getRareCookerRequirement(target: RareAutomationRecipeTarget | null): Co
   };
 }
 
-function getNormalCookerRequirement(order: NormalBusinessOrder): CookerRequirement | null {
-  const recipe = getNormalOrderRecipe(order);
+function getNormalCookerRequirement(
+  order: NormalBusinessOrder,
+  data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
+): CookerRequirement | null {
+  const recipe = getNormalOrderRecipe(order, data);
   if (!recipe) return null;
   return getRecipeCookerRequirement(recipe);
 }
@@ -5192,9 +5247,13 @@ function getRecipeCookerRequirement(recipe: IRecipe | null | undefined): CookerR
   };
 }
 
-function getNormalOrderRecipe(order: NormalBusinessOrder): IRecipe | null {
-  return RECIPE_BY_FOOD_ID.get(order.foodId)
-    ?? RECIPES.find((item) => item.recipeId === order.foodId)
+function getNormalOrderRecipe(
+  order: NormalBusinessOrder,
+  data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
+): IRecipe | null {
+  const indexes = buildRecommendationDataIndexes(data);
+  return indexes.recipeByFoodId.get(order.foodId)
+    ?? data.recipes.find((item) => item.recipeId === order.foodId)
     ?? null;
 }
 
@@ -5204,6 +5263,7 @@ function buildNormalCookerDemand(
   preferences: CompanionPreferences,
   runtime: RecommendationStateSnapshot | null | undefined,
   now: number,
+  data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
 ): NormalCookerDemand {
   const counts = new Map<string, number>();
   const labels = new Map<string, string[]>();
@@ -5217,7 +5277,7 @@ function buildNormalCookerDemand(
     const state = states.get(buildNormalAutoOrderKey(order));
     if (!shouldAttemptNormalCooking(order, state, preferences, now)) continue;
 
-    const cooker = getNormalCookerRequirement(order);
+    const cooker = getNormalCookerRequirement(order, data);
     if (!cooker) continue;
 
     const limit = getCookerSlotCapacity(cooker.key, capacity);
@@ -5243,6 +5303,7 @@ function buildAutomationResourceOverview({
   normalOrders,
   rareDiagnostics,
   normalDiagnostics,
+  data,
 }: {
   runtime: RecommendationStateSnapshot | null;
   recommendations: OrderRecommendation[];
@@ -5251,6 +5312,7 @@ function buildAutomationResourceOverview({
   normalOrders: NormalBusinessOrder[];
   rareDiagnostics: RareAutoOrderDiagnostic[];
   normalDiagnostics: NormalAutoOrderDiagnostic[];
+  data: RecommendationDataSet;
 }): AutomationResourceOverview {
   if (!preferences.automationEnabled) {
     return { cookers: [], tray: [] };
@@ -5269,7 +5331,7 @@ function buildAutomationResourceOverview({
       if (normalReserved >= preferences.autoNormalConcurrency) break;
       const diagnostic = normalDiagnosticByKey.get(buildNormalAutoOrderKey(order));
       if (diagnostic?.prepared || diagnostic?.collected || diagnostic?.paused || diagnostic?.hasServedFood) continue;
-      const cooker = getNormalCookerRequirement(order);
+      const cooker = getNormalCookerRequirement(order, data);
       if (!cooker) continue;
       const row = ensureCookerResourceRow(cookerRows, cooker.key, cooker.label, getCookerSlotCapacity(cooker.key, capacity));
       if (row.normalReserved + row.rareReserved >= row.capacity) continue;
@@ -5509,8 +5571,11 @@ function dedupeStrings(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
 
-function buildRareCustomerMap(runtimeRareCustomers: ICustomerRare[]): Map<number, ICustomerRare> {
-  const map = new Map(getAllRareCustomers().map((customer) => [customer.id, customer]));
+function buildRareCustomerMap(
+  runtimeRareCustomers: ICustomerRare[],
+  data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
+): Map<number, ICustomerRare> {
+  const map = new Map(getAllRareCustomers(data).map((customer) => [customer.id, customer]));
   for (const customer of runtimeRareCustomers) {
     if (!map.has(customer.id)) map.set(customer.id, customer);
   }
@@ -5658,6 +5723,7 @@ function buildOrderRecommendations(
   favorites: FavoriteData,
   preferences: CompanionPreferences,
   missionServeTargets: RuntimeMissionServeTarget[] = [],
+  data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
 ): { recommendations: OrderRecommendation[]; recommendationIssues: RecommendationIssue[] } {
   if (orders.length === 0) return { recommendations: [], recommendationIssues: [] };
   const sortedOrders = sortNightOrders(orders, preferences.serviceOrderSortMode);
@@ -5668,10 +5734,11 @@ function buildOrderRecommendations(
     };
   }
 
-  const runtimeSets = buildRuntimeSets(runtime);
+  const runtimeSets = buildRuntimeSets(runtime, data);
   if (!runtimeSets) return { recommendations: [], recommendationIssues: [] };
 
-  const stateSignature = buildRecommendationStateSignature(runtime, preferences);
+  const dataIndexes = buildRecommendationDataIndexes(data);
+  const stateSignature = `${data.source}:${data.status}|${buildRecommendationStateSignature(runtime, preferences)}`;
   const recommendations: OrderRecommendation[] = [];
   const recommendationIssues: RecommendationIssue[] = [];
 
@@ -5704,6 +5771,8 @@ function buildOrderRecommendations(
         4,
         runtimeSets.ownedIngredientQty,
         runtime.famousShopEnabled,
+        {},
+        data,
       )
         .filter((recipe) => shouldKeepRecipeForCooker(recipe, runtimeSets, preferences.filterMissingCookers))
         .sort((a, b) => compareRareRecipesForService(
@@ -5712,6 +5781,7 @@ function buildOrderRecommendations(
           runtimeSets.ownedIngredientQty,
           preferences.recipeSortRules,
           runtimeSets,
+          dataIndexes,
         ));
 
       const preferenceRecipes = recipes.length >= 3
@@ -5728,6 +5798,7 @@ function buildOrderRecommendations(
           4,
           runtimeSets.ownedIngredientQty,
           runtime.famousShopEnabled,
+          data,
         )
           .filter((recipe) => shouldKeepRecipeForCooker(recipe, runtimeSets, preferences.filterMissingCookers))
           .sort((a, b) => compareRareRecipesForService(
@@ -5736,9 +5807,10 @@ function buildOrderRecommendations(
             runtimeSets.ownedIngredientQty,
             preferences.recipeSortRules,
             runtimeSets,
+            dataIndexes,
           ));
 
-      const beverages = rankBeveragesForRare(customer, beverageTag, runtimeSets.beverageIds)
+      const beverages = rankBeveragesForRare(customer, beverageTag, runtimeSets.beverageIds, data)
         .sort((a, b) => compareRareBeveragesForService(
           a,
           b,
@@ -5748,7 +5820,7 @@ function buildOrderRecommendations(
 
       const preferenceBeverages = beverages.length >= 3
         ? []
-        : rankPreferenceBeveragesForRare(customer, beverageTag, runtimeSets.beverageIds)
+        : rankPreferenceBeveragesForRare(customer, beverageTag, runtimeSets.beverageIds, data)
           .sort((a, b) => compareRareBeveragesForService(
             a,
             b,
@@ -5777,6 +5849,7 @@ function buildOrderRecommendations(
         runtime,
         runtimeSets,
         preferences,
+        data,
       );
       if (missionRecipe) {
         recipeRows = promoteMissionRecipe(
@@ -5926,6 +5999,7 @@ function lockRareAutomationTargets(
 function buildGameUiPinningTarget(
   recommendations: OrderRecommendation[],
   orderSortMode: ServiceOrderSortMode,
+  indexes: ReturnType<typeof buildRecommendationDataIndexes> = DEFAULT_DATA_INDEXES,
 ): GameUiPinningTarget | null {
   const item = sortNightOrderRows(
     recommendations.map((recommendation) => ({ order: recommendation.order, recommendation })),
@@ -5938,7 +6012,7 @@ function buildGameUiPinningTarget(
 
   const baseIngredientIds = recipe
     ? recipe.recipe.ingredients
-      .map((name) => INGREDIENT_BY_NAME.get(name)?.id ?? -1)
+      .map((name) => indexes.ingredientByName.get(name)?.id ?? -1)
       .filter((id) => id >= 0)
     : [];
   const ingredientIds = normalizeIdList([
@@ -6574,9 +6648,11 @@ function findOrBuildMissionRecipe(
   runtime: RecommendationStateSnapshot,
   runtimeSets: RuntimeSets,
   preferences: CompanionPreferences,
+  data: RecommendationDataSet,
 ): IRareRecipeResult | null {
   const existing = [...rows, ...preferenceRows].find((row) => row.recipe.id === recipeId);
   if (existing) return existing;
+  const dataIndexes = buildRecommendationDataIndexes(data);
 
   const forced = rankRecipesForRare(
     customer,
@@ -6591,6 +6667,7 @@ function findOrBuildMissionRecipe(
     runtimeSets.ownedIngredientQty,
     runtime.famousShopEnabled,
     { allowPreferenceFallback: true, minFoodScore: 1, forcedRecipeIds: new Set([recipeId]) },
+    data,
   )
     .filter((recipe) => recipe.recipe.id === recipeId)
     .filter((recipe) => shouldKeepRecipeForCooker(recipe, runtimeSets, preferences.filterMissingCookers))
@@ -6600,6 +6677,7 @@ function findOrBuildMissionRecipe(
       runtimeSets.ownedIngredientQty,
       preferences.recipeSortRules,
       runtimeSets,
+      dataIndexes,
     ));
 
   return forced[0] ?? null;
@@ -6765,12 +6843,13 @@ function compareRareRecipesForService(
   ownedIngredientQty: Record<number, number> = {},
   rules: SortRule<RecipeSortKey>[] = DEFAULT_RECIPE_SORT_RULES,
   runtimeSets: RuntimeSets | null = null,
+  indexes: ReturnType<typeof buildRecommendationDataIndexes> = DEFAULT_DATA_INDEXES,
 ) {
   const sortRules = rules.length > 0 ? rules : DEFAULT_RECIPE_SORT_RULES;
   for (const rule of sortRules) {
     if (!rule.enabled) continue;
-    const diff = getRecipeSortValue(a, rule.key, ownedIngredientQty, runtimeSets)
-      - getRecipeSortValue(b, rule.key, ownedIngredientQty, runtimeSets);
+    const diff = getRecipeSortValue(a, rule.key, ownedIngredientQty, runtimeSets, indexes)
+      - getRecipeSortValue(b, rule.key, ownedIngredientQty, runtimeSets, indexes);
     if (diff !== 0) return rule.direction === 'asc' ? diff : -diff;
   }
   return a.recipe.id - b.recipe.id;
@@ -6781,6 +6860,7 @@ function getRecipeSortValue(
   key: RecipeSortKey,
   ownedIngredientQty: Record<number, number>,
   runtimeSets: RuntimeSets | null,
+  indexes: ReturnType<typeof buildRecommendationDataIndexes>,
 ): number {
   switch (key) {
     case 'requiredTag':
@@ -6792,7 +6872,7 @@ function getRecipeSortValue(
     case 'extraCount':
       return result.extraIngredients.length;
     case 'resourcePressure':
-      return getRareRecipeResourcePressure(result, ownedIngredientQty);
+      return getRareRecipeResourcePressure(result, ownedIngredientQty, indexes);
     case 'recipePrice':
       return result.recipe.price;
     case 'extraCost':
@@ -6838,9 +6918,10 @@ function isRecipeCookerAvailableForSort(
 function getRareRecipeResourcePressure(
   result: IRareRecipeResult,
   ownedIngredientQty: Record<number, number>,
+  indexes: ReturnType<typeof buildRecommendationDataIndexes> = DEFAULT_DATA_INDEXES,
 ): number {
   const basePressure = result.recipe.ingredients.reduce((sum, ingredientName) => {
-    const ingredient = INGREDIENT_BY_NAME.get(ingredientName);
+    const ingredient = indexes.ingredientByName.get(ingredientName);
     return sum + (ingredient ? getIngredientResourcePressure(ingredient, ownedIngredientQty) : 0);
   }, 0);
 

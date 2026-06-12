@@ -7,8 +7,8 @@
 - 仓库只维护 BepInEx Mod 与 Tauri 伴随窗口，不再维护独立网站和存档导入页面。
 - 伴随窗口入口为 `apps/companion/src/companion/ModWorkbench.tsx`，顶层挂载在 `apps/companion/src/App.tsx`。
 - 推荐算法集中在 `apps/companion/src/lib/normal-recommend.ts`、`apps/companion/src/lib/rare-recommend.ts` 和 `apps/companion/src/lib/tags.ts`。
-- 结构化数据以 `apps/companion/src/data/*.json` 为源头，构建时同步到 `mods/bepinex/Data/`。
-- C# Mod 不引用 TypeScript 模块；共享数据只通过 JSON 同步。
+- 连接游戏后，推荐、库存名称、任务目标和自动化目标应优先使用 Mod 从游戏运行时读取并通过本地 API 发布的结构化数据；`apps/companion/src/data/*.json` 与 `mods/bepinex/Data/` 只作为伴随窗口未连接游戏、游戏数据库未初始化或运行时读取失败时的兜底。
+- C# Mod 不引用 TypeScript 模块；前端和 Mod 的共享数据通过本地 API 的运行时快照传递，打包 JSON 只能作为离线兜底，不要为新增稀客事件变体优先补静态表。
 
 ## 命名约束
 
@@ -64,6 +64,7 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 ## 运行时约束
 
 - Mod 只读取当前游戏运行时数据，不读取 `.memory` 存档文件。
+- 运行时固定数据读取成功后，C# 侧会把 `DataBaseCore` / `DataBaseCharacter` / `DataBaseLanguage` 结构化为 `RuntimeDataCatalog`，并切换 `DataRepository` 到运行时仓库；伴随窗口收到 `snapshot.runtimeData.isComplete=true` 后，普客/稀客推荐、经营中推荐、任务目标、库存修改页和自动化目标解析都必须使用这份运行时数据集。
 - 夜间经营订单优先使用运行时对象；日志捕获仅作为兼容和排障手段。
 - 夜间经营订单必须按首次出现时间稳定显示；不得因桌号排序或推荐完整度排序让新订单插到旧订单前面。
 - 经营中订单排序支持 `点单顺序` 和 `稀客分组`。默认必须保持点单顺序；稀客分组模式下，同一稀客订单放在一起，稀客组之间按该稀客最早订单出现时间排序，组内仍按点单先后排序。经营中列表、当前点单推荐、专注模式、游戏界面置顶目标和自动化第一单选择必须复用同一排序函数。

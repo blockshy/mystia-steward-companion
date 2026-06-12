@@ -40,6 +40,28 @@ public sealed class Beverage
     public int Price { get; set; }
 }
 
+public sealed class RuntimeDataCatalog
+{
+    public bool IsComplete { get; init; }
+    public string Source { get; init; } = "";
+    public string Status { get; init; } = "";
+    public List<Recipe> Recipes { get; init; } = new();
+    public List<Ingredient> Ingredients { get; init; } = new();
+    public List<Beverage> Beverages { get; init; } = new();
+    public List<NormalCustomer> NormalCustomers { get; init; } = new();
+    public List<RareCustomer> RareCustomers { get; init; } = new();
+    public Dictionary<string, string> FoodTagIdMap { get; init; } = new(StringComparer.Ordinal);
+
+    public static RuntimeDataCatalog Empty(string status)
+    {
+        return new RuntimeDataCatalog
+        {
+            IsComplete = false,
+            Status = status,
+        };
+    }
+}
+
 public sealed class PlacedCookerInfo
 {
     public int ControllerIndex { get; init; }

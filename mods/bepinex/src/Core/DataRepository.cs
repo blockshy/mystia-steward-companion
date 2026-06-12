@@ -27,10 +27,19 @@ public sealed class DataRepository
         NormalCustomers = normalCustomers;
         RareCustomers = rareCustomers;
         FoodTagIdMap = foodTagIdMap;
-        IngredientsByName = ingredients.ToDictionary(i => i.Name, i => i);
-        IngredientsById = ingredients.ToDictionary(i => i.Id, i => i);
-        RecipeIdToId = recipes.ToDictionary(r => r.RecipeId, r => r.Id);
-        RareCustomersById = rareCustomers.ToDictionary(c => c.Id, c => c);
+        IngredientsByName = ingredients
+            .Where(i => !string.IsNullOrWhiteSpace(i.Name))
+            .GroupBy(i => i.Name, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+        IngredientsById = ingredients
+            .GroupBy(i => i.Id)
+            .ToDictionary(group => group.Key, group => group.First());
+        RecipeIdToId = recipes
+            .GroupBy(r => r.RecipeId)
+            .ToDictionary(group => group.Key, group => group.First().Id);
+        RareCustomersById = rareCustomers
+            .GroupBy(c => c.Id)
+            .ToDictionary(group => group.Key, group => group.First());
         RareCustomerIdentities = new RareCustomerIdentityResolver(RareCustomersById, rareCustomers);
     }
 
@@ -51,7 +60,7 @@ public sealed class DataRepository
     {
         if (!Directory.Exists(dataDirectory))
         {
-            throw new DirectoryNotFoundException($"Data directory not found: {dataDirectory}");
+            return Empty($"Data directory not found: {dataDirectory}");
         }
 
         return new DataRepository(
@@ -62,6 +71,30 @@ public sealed class DataRepository
             LoadJson<List<NormalCustomer>>(dataDirectory, "customer_normal.json"),
             LoadJson<List<RareCustomer>>(dataDirectory, "customer_rare.json"),
             LoadJson<Dictionary<string, string>>(dataDirectory, "food-tag-id-map.json"));
+    }
+
+    public static DataRepository FromRuntime(RuntimeDataCatalog catalog, string dataDirectory)
+    {
+        return new DataRepository(
+            string.IsNullOrWhiteSpace(dataDirectory) ? "runtime" : dataDirectory,
+            catalog.Recipes.ToList(),
+            catalog.Ingredients.ToList(),
+            catalog.Beverages.ToList(),
+            catalog.NormalCustomers.ToList(),
+            catalog.RareCustomers.ToList(),
+            new Dictionary<string, string>(catalog.FoodTagIdMap, StringComparer.Ordinal));
+    }
+
+    public static DataRepository Empty(string dataDirectory)
+    {
+        return new DataRepository(
+            dataDirectory,
+            new List<Recipe>(),
+            new List<Ingredient>(),
+            new List<Beverage>(),
+            new List<NormalCustomer>(),
+            new List<RareCustomer>(),
+            new Dictionary<string, string>(StringComparer.Ordinal));
     }
 
     public IReadOnlyList<NormalCustomer> GetNormalCustomersByPlace(string place)

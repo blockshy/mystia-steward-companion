@@ -20,6 +20,7 @@ internal sealed class StewardOverlayController
     private StewardPluginConfig? _config;
     private ManualLogSource? _log;
     private DataRepository? _repository;
+    private RuntimeDataCatalog _runtimeDataCatalog = RuntimeDataCatalog.Empty("not loaded");
     private RecommendationState? _state;
     private RecommendationState? _businessFallbackState;
     private NightBusinessContext? _businessContext;
@@ -249,6 +250,7 @@ internal sealed class StewardOverlayController
         {
             var dataDirectory = DataPathResolver.FindDataDirectory();
             _repository = DataRepository.Load(dataDirectory);
+            _runtimeDataCatalog = RuntimeDataCatalog.Empty("waiting for live game runtime data");
             _state = null;
             _businessFallbackState = null;
             _runtimeLoaded = false;
@@ -302,6 +304,7 @@ internal sealed class StewardOverlayController
                 _runtimeSource = runtimeProvider.Description;
                 _lastRuntimeErrorMessage = "";
                 _lastRuntimeReadUtc = DateTime.UtcNow;
+                TryRefreshRuntimeDataCatalog();
                 var sourceChanged = !string.Equals(previousSource, runtimeProvider.Description, StringComparison.OrdinalIgnoreCase);
                 var sourceLabel = FormatSourceDescription(runtimeProvider.Description);
                 _status = manual || sourceChanged
@@ -384,6 +387,7 @@ internal sealed class StewardOverlayController
                 CreateNightBusinessDiagnostics(),
                 _activeSceneName);
             _businessContext = provider.LoadContext();
+            TryRefreshRuntimeDataCatalog();
             if (manual)
             {
                 _status = _businessContext.Orders.Count > 0
@@ -444,6 +448,7 @@ internal sealed class StewardOverlayController
 
         try
         {
+            TryRefreshRuntimeDataCatalog();
             var publishedState = _state ?? (_businessContext?.Orders.Count > 0 ? GetBusinessRecommendationState() : null);
             var snapshot = new LocalApiSnapshot
             {
@@ -462,6 +467,7 @@ internal sealed class StewardOverlayController
                 RuntimeRareCustomers = _repository == null
                     ? new List<RuntimeRareCustomer>()
                     : new RuntimeMappedGuestCatalog(_repository).Snapshot().RuntimeRareCustomers.ToList(),
+                RuntimeData = _runtimeDataCatalog,
             };
             _localApiServer.SetSnapshotJson(JsonSerializer.Serialize(snapshot, LocalApiJsonOptions));
             _localApiSnapshotErrorLogged = false;
@@ -471,6 +477,30 @@ internal sealed class StewardOverlayController
             if (_localApiSnapshotErrorLogged) return;
             _localApiSnapshotErrorLogged = true;
             _log?.LogWarning($"Local API snapshot publish failed: {ex.Message}");
+        }
+    }
+
+    private void TryRefreshRuntimeDataCatalog()
+    {
+        if (_repository == null) return;
+        if (_runtimeDataCatalog.IsComplete) return;
+
+        try
+        {
+            var mappedGuestSnapshot = new RuntimeMappedGuestCatalog(_repository).Snapshot();
+            var staticDataSnapshot = new RuntimeStaticDataCatalog(_repository).Snapshot(mappedGuestSnapshot);
+            _runtimeDataCatalog = staticDataSnapshot.DataCatalog;
+            if (!_runtimeDataCatalog.IsComplete) return;
+
+            _repository = DataRepository.FromRuntime(_runtimeDataCatalog, _repository.DataDirectory);
+            _businessFallbackState = null;
+            _runtimeSource = string.IsNullOrWhiteSpace(_runtimeSource)
+                ? "game-runtime-static-data"
+                : $"{_runtimeSource}; runtime-static-data";
+        }
+        catch (Exception ex)
+        {
+            _runtimeDataCatalog = RuntimeDataCatalog.Empty($"runtime data unavailable: {ex.Message}");
         }
     }
 

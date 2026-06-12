@@ -17,6 +17,7 @@ internal sealed class LocalApiSnapshot
     public RuntimeMissionContext? RuntimeMissions { get; init; }
     public NormalBusinessContext? NormalBusiness { get; init; }
     public List<RuntimeRareCustomer> RuntimeRareCustomers { get; init; } = new();
+    public RuntimeDataCatalog RuntimeData { get; init; } = RuntimeDataCatalog.Empty("not loaded");
 }
 
 internal sealed class RecommendationStateSnapshot
