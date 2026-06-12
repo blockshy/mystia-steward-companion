@@ -349,13 +349,13 @@ public static class RuntimeMissionSnapshotService
                 if (errors.Count < 8) errors.Add($"mission status {label}: {ex.Message}");
             }
 
-            var parsedMission = RuntimeReflectionUtility.GetMemberValue(parsed, "Item1") ?? trackedMission;
-            var statusValue = RuntimeReflectionUtility.GetMemberValue(parsed, "Item2");
+            var parsedMission = ReadTupleItem(parsed, "Item1") ?? trackedMission;
+            var statusValue = ReadTupleItem(parsed, "Item2");
             yield return new MissionDataSnapshot
             {
                 TrackedMission = parsedMission,
                 Label = label,
-                Status = statusValue == null ? ReadTrackedMissionStatus(parsedMission) : NormalizeMissionStatus(statusValue),
+                Status = ResolveTrackedMissionStatus(parsedMission, trackedMission, statusValue),
             };
         }
     }
@@ -528,13 +528,6 @@ public static class RuntimeMissionSnapshotService
                 yield return label;
             }
         }
-    }
-
-    private static string ReadTrackedMissionStatus(object? trackedMission)
-    {
-        return RuntimeReflectionUtility.ToBool(RuntimeReflectionUtility.GetMemberValue(trackedMission, "HasFulfilled"))
-            ? MissionStatusFulfilled
-            : MissionStatusTracking;
     }
 
     private static IEnumerable<object?> ReadTrackingMissions(Type schedulerType, List<string> errors)
@@ -739,9 +732,10 @@ public static class RuntimeMissionSnapshotService
     private static string NormalizePlaceName(string label)
     {
         var languageType = RuntimeReflectionUtility.FindType(DaySceneLanguageTypeName);
-        var localized = languageType == null
+        var language = languageType == null
             ? null
-            : RuntimeReflectionUtility.InvokeStaticMethod(languageType, "RefDaySceneName", label)?.ToString();
+            : RuntimeReflectionUtility.InvokeStaticMethod(languageType, "GetMapLanguageData", label);
+        var localized = ReadTextLikeValue(language);
         return string.IsNullOrWhiteSpace(localized) ? label : localized;
     }
 
@@ -964,6 +958,11 @@ public static class RuntimeMissionSnapshotService
             var status = GetMissionStatus(statusByMission, missionLabel, MissionStatusTracking);
 
             var conditions = EnumerateConditionSnapshots(trackedMission).ToList();
+            if (status == MissionStatusTracking && conditions.Count > 0 && conditions.All(condition => condition.Finished))
+            {
+                status = MissionStatusFulfilled;
+            }
+
             var firstUnfinished = conditions.FirstOrDefault(condition => !condition.Finished);
             var talkCondition = conditions.FirstOrDefault(condition => IsConditionType(condition.Condition, "TalkWithCharacter", 1));
             var serveCondition = conditions.FirstOrDefault(condition => IsConditionType(condition.Condition, "ServeInWork", 4) && !condition.Finished)
@@ -1043,6 +1042,8 @@ public static class RuntimeMissionSnapshotService
     {
         if (trackedMission == null) yield break;
 
+        RefreshTrackedMissionFinishStates(trackedMission);
+
         var mission = RuntimeReflectionUtility.InvokeMethod(trackedMission, "GetMissionReference");
         var finishConditions = RuntimeReflectionUtility.GetMemberValue(mission, "finishCondition");
         var finishStates = RuntimeReflectionUtility
@@ -1076,13 +1077,90 @@ public static class RuntimeMissionSnapshotService
         return string.Equals(conditionType.ToString(), expectedName, StringComparison.Ordinal);
     }
 
+    private static string ResolveTrackedMissionStatus(object? parsedMission, object? originalMission, object? statusValue)
+    {
+        var parsedStatus = statusValue == null ? null : NormalizeMissionStatus(statusValue);
+        if (parsedStatus == MissionStatusFinished) return MissionStatusFinished;
+
+        if (IsTrackedMissionFulfilled(parsedMission) || IsTrackedMissionFulfilled(originalMission))
+        {
+            return MissionStatusFulfilled;
+        }
+
+        return parsedStatus ?? MissionStatusTracking;
+    }
+
+    private static bool IsTrackedMissionFulfilled(object? trackedMission)
+    {
+        if (trackedMission == null) return false;
+
+        RefreshTrackedMissionFinishStates(trackedMission);
+
+        foreach (var memberName in new[] { "HasFulfilled", "get_HasFulfilled", "HasFullfilled", "get_HasFullfilled", "IsFulfilled", "isFulfilled" })
+        {
+            var value = memberName.StartsWith("get_", StringComparison.Ordinal)
+                ? RuntimeReflectionUtility.InvokeMethod(trackedMission, memberName)
+                : RuntimeReflectionUtility.GetMemberValue(trackedMission, memberName);
+            if (RuntimeReflectionUtility.ToBool(value)) return true;
+        }
+
+        var finishStates = RuntimeReflectionUtility
+            .EnumerateObjects(RuntimeReflectionUtility.GetMemberValue(trackedMission, "conditionFinishStates"))
+            .Select(RuntimeReflectionUtility.ToBool)
+            .ToList();
+        return finishStates.Count > 0 && finishStates.All(state => state);
+    }
+
+    private static void RefreshTrackedMissionFinishStates(object? trackedMission)
+    {
+        try
+        {
+            RuntimeReflectionUtility.InvokeMethod(trackedMission, "UpdateFinishStates");
+        }
+        catch
+        {
+            // Best-effort only. The following field/property reads still provide a safe fallback.
+        }
+    }
+
+    private static object? ReadTupleItem(object? tuple, string itemName)
+    {
+        if (tuple == null) return null;
+        return RuntimeReflectionUtility.GetMemberValue(tuple, itemName)
+            ?? RuntimeReflectionUtility.GetMemberValue(tuple, $"m_{itemName}")
+            ?? RuntimeReflectionUtility.GetMemberValue(tuple, $"_{itemName}");
+    }
+
     private static string NormalizeMissionStatus(object? statusValue)
     {
         var statusText = statusValue?.ToString() ?? "";
-        var statusInt = RuntimeReflectionUtility.ToInt(statusValue, int.MinValue);
-        if (statusInt == 0 || statusText.Contains("Tracking", StringComparison.OrdinalIgnoreCase)) return MissionStatusTracking;
-        if (statusInt == 1 || statusText.Contains("Fulfilled", StringComparison.OrdinalIgnoreCase)) return MissionStatusFulfilled;
-        if (statusInt == 2 || statusText.Contains("Finished", StringComparison.OrdinalIgnoreCase)) return MissionStatusFinished;
+        if (statusText.Contains("Finished", StringComparison.OrdinalIgnoreCase)
+            || statusText.Contains("Done", StringComparison.OrdinalIgnoreCase))
+        {
+            return MissionStatusFinished;
+        }
+
+        if (statusText.Contains("Fulfilled", StringComparison.OrdinalIgnoreCase)
+            || statusText.Contains("Fullfilled", StringComparison.OrdinalIgnoreCase)
+            || statusText.Contains("Complete", StringComparison.OrdinalIgnoreCase))
+        {
+            return MissionStatusFulfilled;
+        }
+
+        if (statusText.Contains("Tracking", StringComparison.OrdinalIgnoreCase)
+            || statusText.Contains("Active", StringComparison.OrdinalIgnoreCase))
+        {
+            return MissionStatusTracking;
+        }
+
+        var statusNumber = RuntimeReflectionUtility.GetMemberValue(statusValue, "value__")
+            ?? RuntimeReflectionUtility.GetMemberValue(statusValue, "m_value")
+            ?? RuntimeReflectionUtility.GetMemberValue(statusValue, "value")
+            ?? statusValue;
+        var statusInt = RuntimeReflectionUtility.ToInt(statusNumber, int.MinValue);
+        if (statusInt == 0) return MissionStatusTracking;
+        if (statusInt == 1) return MissionStatusFulfilled;
+        if (statusInt == 2) return MissionStatusFinished;
         return MissionStatusTracking;
     }
 
@@ -1182,8 +1260,18 @@ public static class RuntimeMissionSnapshotService
     {
         if (string.IsNullOrWhiteSpace(npcKey)) return "";
 
+        var daySceneLanguageType = RuntimeReflectionUtility.FindType(DaySceneLanguageTypeName);
+        var daySceneName = daySceneLanguageType == null
+            ? null
+            : RuntimeReflectionUtility.InvokeStaticMethod(daySceneLanguageType, "RefDaySceneName", npcKey)?.ToString();
+        if (IsUsableLocalizedText(daySceneName, npcKey)) return daySceneName!.Trim();
+
         var npc = RuntimeReflectionUtility.InvokeStaticMethod(dataBaseDayType, "RefNPC", npcKey);
-        var text = ReadTextLikeValue(npc);
+        var identity = RuntimeReflectionUtility.GetMemberValue(npc, "identity");
+        var text = ReadTextLikeValue(RuntimeReflectionUtility.InvokeMethod(identity, "GetLanguageData"));
+        if (!string.IsNullOrWhiteSpace(text)) return text;
+
+        text = ReadTextLikeValue(RuntimeReflectionUtility.GetMemberValue(npc, "Text"));
         return string.IsNullOrWhiteSpace(text) ? npcKey : text;
     }
 
@@ -1195,7 +1283,7 @@ public static class RuntimeMissionSnapshotService
         {
             try
             {
-                var memberValue = RuntimeReflectionUtility.GetMemberValue(value, member)?.ToString();
+                var memberValue = NormalizeDisplayText(RuntimeReflectionUtility.GetMemberValue(value, member));
                 if (!string.IsNullOrWhiteSpace(memberValue)) return memberValue;
             }
             catch
@@ -1206,11 +1294,7 @@ public static class RuntimeMissionSnapshotService
 
         try
         {
-            var text = value.ToString();
-            if (!string.IsNullOrWhiteSpace(text) && !text.StartsWith(value.GetType().FullName ?? value.GetType().Name, StringComparison.Ordinal))
-            {
-                return text;
-            }
+            return NormalizeDisplayText(value) ?? "";
         }
         catch
         {
@@ -1218,5 +1302,41 @@ public static class RuntimeMissionSnapshotService
         }
 
         return "";
+    }
+
+    private static bool IsUsableLocalizedText(string? text, string sourceLabel)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        text = text.Trim();
+        if (string.Equals(text, sourceLabel, StringComparison.Ordinal)) return false;
+        return !LooksLikeRuntimeTypeName(text);
+    }
+
+    private static string? NormalizeDisplayText(object? value)
+    {
+        if (value == null) return null;
+
+        string? text;
+        try
+        {
+            text = value.ToString();
+        }
+        catch
+        {
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(text)) return null;
+        text = text.Trim();
+        return LooksLikeRuntimeTypeName(text) ? null : text;
+    }
+
+    private static bool LooksLikeRuntimeTypeName(string text)
+    {
+        if (text.Contains("LanguageBase", StringComparison.Ordinal)) return true;
+        if (text.StartsWith("GameData.", StringComparison.Ordinal)) return true;
+        if (text.StartsWith("Il2Cpp", StringComparison.Ordinal)) return true;
+        if (text.StartsWith("System.", StringComparison.Ordinal)) return true;
+        return false;
     }
 }
