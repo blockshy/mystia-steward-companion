@@ -48,7 +48,6 @@ mystia-steward-companion-bepinex.zip
     plugins/
       mystia-steward-companion/
         MystiaStewardCompanion.BepInEx.dll
-        Data/
         companion/
           mystia-steward-companion.exe
 ```

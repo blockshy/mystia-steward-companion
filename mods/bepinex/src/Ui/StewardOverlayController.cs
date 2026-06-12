@@ -248,8 +248,7 @@ internal sealed class StewardOverlayController
     {
         try
         {
-            var dataDirectory = DataPathResolver.FindDataDirectory();
-            _repository = DataRepository.Load(dataDirectory);
+            _repository = DataRepository.Empty("game-runtime-only");
             _runtimeDataCatalog = RuntimeDataCatalog.Empty("waiting for live game runtime data");
             _state = null;
             _businessFallbackState = null;
@@ -259,7 +258,9 @@ internal sealed class StewardOverlayController
             _lastRuntimeErrorMessage = "";
             _runtimeStateSignature = "";
             _lastRuntimeReadUtc = DateTime.MinValue;
-            _status = L("数据已加载，等待游戏运行时数据。", "Data loaded. Waiting for live game runtime data.");
+            _status = L(
+                "等待游戏运行时数据；不再读取外部兜底数据。",
+                "Waiting for live game runtime data; external fallback data is no longer loaded.");
         }
         catch (Exception ex)
         {

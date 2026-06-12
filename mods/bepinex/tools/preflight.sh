@@ -23,15 +23,6 @@ else
 fi
 
 echo
-echo "Checking data files"
-check_file "$ROOT_DIR/Data/recipes.json"
-check_file "$ROOT_DIR/Data/beverages.json"
-check_file "$ROOT_DIR/Data/ingredients.json"
-check_file "$ROOT_DIR/Data/customer_normal.json"
-check_file "$ROOT_DIR/Data/customer_rare.json"
-check_file "$ROOT_DIR/Data/food-tag-id-map.json"
-
-echo
 echo "Checking build references"
 check_file "$ROOT_DIR/References/BepInEx.Core.dll"
 check_file "$ROOT_DIR/References/BepInEx.Unity.IL2CPP.dll"

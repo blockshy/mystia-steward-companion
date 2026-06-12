@@ -25,7 +25,6 @@ if (Test-Path -LiteralPath $DistDir) {
 New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 
 Copy-Item -LiteralPath $DllPath -Destination $DistDir
-Copy-Item -LiteralPath (Join-Path $RootDir "Data") -Destination (Join-Path $DistDir "Data") -Recurse
 
 $CompanionCandidates = @(
     "apps/companion/src-tauri/target/release/mystia-steward-companion.exe",

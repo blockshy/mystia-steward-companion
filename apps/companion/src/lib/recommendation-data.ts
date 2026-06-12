@@ -1,8 +1,3 @@
-import allBeverages from '@/data/beverages.json';
-import allIngredients from '@/data/ingredients.json';
-import allNormalCustomers from '@/data/customer_normal.json';
-import allRareCustomers from '@/data/customer_rare.json';
-import allRecipes from '@/data/recipes.json';
 import type {
   IBeverage,
   ICustomerNormal,
@@ -19,18 +14,18 @@ export interface RecommendationDataSet {
   beverages: IBeverage[];
   normalCustomers: ICustomerNormal[];
   rareCustomers: ICustomerRare[];
-  source: 'bundled' | 'runtime';
+  source: 'runtime' | 'unavailable';
   status: string;
 }
 
 export const DEFAULT_RECOMMENDATION_DATA: RecommendationDataSet = {
-  recipes: allRecipes as IRecipe[],
-  ingredients: allIngredients as IIngredient[],
-  beverages: allBeverages as IBeverage[],
-  normalCustomers: allNormalCustomers as ICustomerNormal[],
-  rareCustomers: allRareCustomers as unknown as ICustomerRare[],
-  source: 'bundled',
-  status: 'bundled json',
+  recipes: [],
+  ingredients: [],
+  beverages: [],
+  normalCustomers: [],
+  rareCustomers: [],
+  source: 'unavailable',
+  status: '等待游戏运行时数据',
 };
 
 export interface RuntimeDataCatalogSnapshot {
@@ -73,7 +68,10 @@ export function buildRecommendationDataSet(
     || normalCustomers.length === 0
     || rareCustomers.length === 0
   ) {
-    return DEFAULT_RECOMMENDATION_DATA;
+    return {
+      ...DEFAULT_RECOMMENDATION_DATA,
+      status: runtimeData.status || runtimeData.source || '运行时数据不完整',
+    };
   }
 
   return {

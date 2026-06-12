@@ -35,15 +35,6 @@ if (Get-Command dotnet -ErrorAction SilentlyContinue) {
 }
 
 Write-Host ""
-Write-Host "Checking data files"
-Test-RequiredFile (Join-Path $RootDir "Data/recipes.json")
-Test-RequiredFile (Join-Path $RootDir "Data/beverages.json")
-Test-RequiredFile (Join-Path $RootDir "Data/ingredients.json")
-Test-RequiredFile (Join-Path $RootDir "Data/customer_normal.json")
-Test-RequiredFile (Join-Path $RootDir "Data/customer_rare.json")
-Test-RequiredFile (Join-Path $RootDir "Data/food-tag-id-map.json")
-
-Write-Host ""
 Write-Host "Checking build references: $EffectiveReferenceDir"
 Test-RequiredFile (Join-Path $EffectiveReferenceDir "BepInEx.Core.dll")
 Test-RequiredFile (Join-Path $EffectiveReferenceDir "BepInEx.Unity.IL2CPP.dll")

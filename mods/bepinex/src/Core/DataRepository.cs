@@ -1,16 +1,7 @@
-using System.Text.Json;
-
 namespace MystiaStewardCompanion.Core;
 
 public sealed class DataRepository
 {
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNameCaseInsensitive = true,
-        ReadCommentHandling = JsonCommentHandling.Skip,
-        AllowTrailingCommas = true,
-    };
-
     private DataRepository(
         string dataDirectory,
         List<Recipe> recipes,
@@ -56,23 +47,6 @@ public sealed class DataRepository
     public IReadOnlyDictionary<int, RareCustomer> RareCustomersById { get; }
     public RareCustomerIdentityResolver RareCustomerIdentities { get; }
 
-    public static DataRepository Load(string dataDirectory)
-    {
-        if (!Directory.Exists(dataDirectory))
-        {
-            return Empty($"Data directory not found: {dataDirectory}");
-        }
-
-        return new DataRepository(
-            dataDirectory,
-            LoadJson<List<Recipe>>(dataDirectory, "recipes.json"),
-            LoadJson<List<Ingredient>>(dataDirectory, "ingredients.json"),
-            LoadJson<List<Beverage>>(dataDirectory, "beverages.json"),
-            LoadJson<List<NormalCustomer>>(dataDirectory, "customer_normal.json"),
-            LoadJson<List<RareCustomer>>(dataDirectory, "customer_rare.json"),
-            LoadJson<Dictionary<string, string>>(dataDirectory, "food-tag-id-map.json"));
-    }
-
     public static DataRepository FromRuntime(RuntimeDataCatalog catalog, string dataDirectory)
     {
         return new DataRepository(
@@ -107,16 +81,4 @@ public sealed class DataRepository
         return RareCustomers.Where(c => c.Places.Contains(place)).ToList();
     }
 
-    private static T LoadJson<T>(string dataDirectory, string fileName)
-    {
-        var path = Path.Combine(dataDirectory, fileName);
-        if (!File.Exists(path))
-        {
-            throw new FileNotFoundException($"Required data file not found: {path}", path);
-        }
-
-        var json = File.ReadAllText(path);
-        return JsonSerializer.Deserialize<T>(json, JsonOptions)
-            ?? throw new InvalidDataException($"Failed to parse {path}");
-    }
 }

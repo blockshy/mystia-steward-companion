@@ -139,7 +139,6 @@ const COOKER_NAME_ALIASES = new Map<string, string>([
   ['炸锅', '油锅'],
 ]);
 const DEFAULT_DATA_INDEXES = buildRecommendationDataIndexes(DEFAULT_RECOMMENDATION_DATA);
-const INGREDIENT_ID_BY_NAME = DEFAULT_DATA_INDEXES.ingredientIdByName;
 const LOW_STOCK_RESOURCE_THRESHOLD = 5;
 const EXTRA_INGREDIENT_RESOURCE_WEIGHT = 2;
 const DENSE_TWO_COLUMN_GRID = 'grid grid-cols-2 gap-4';
@@ -1656,6 +1655,7 @@ export function ModWorkbench() {
         recommendations={orderRecommendations.recommendations}
         recommendationIssues={orderRecommendations.recommendationIssues}
         runtimeSets={runtimeSets}
+        dataIndexes={recommendationIndexes}
         favorites={favorites}
         favoriteBusyKey={favoriteBusyKey}
         favoriteError={favoriteError}
@@ -1946,7 +1946,10 @@ function ModOverviewPanel({
           <InfoLine label="场景" value={snapshot?.activeSceneName || '未知'} />
           <InfoLine label="运行时状态" value={snapshot?.status || '暂无快照'} />
           <InfoLine label="运行时来源" value={snapshot?.runtimeSource || '未知'} />
-          <InfoLine label="推荐数据" value={data.source === 'runtime' ? `游戏运行时 (${data.status})` : '内置兜底数据'} />
+          <InfoLine
+            label="推荐数据"
+            value={data.source === 'runtime' ? `游戏运行时 (${data.status})` : `等待游戏运行时数据 (${data.status})`}
+          />
           <InfoLine label="数据目录" value={snapshot?.dataDirectory || '未知'} mono />
         </CardContent>
       </Card>
@@ -2006,6 +2009,7 @@ function ModNormalPanel({
   onPlaceChange: (place: TPlace) => void;
   onFollowDetectedPlace: () => void;
 }) {
+  const dataIndexes = useMemo(() => buildRecommendationDataIndexes(data), [data]);
   const recipes = useMemo(() => {
     if (!runtime || !runtimeSets || !selectedPlace) return [];
     return computeNormalRecipeResults(
@@ -2057,6 +2061,7 @@ function ModNormalPanel({
                   recipe={recipe}
                   index={index}
                   ownedIngredientQty={runtimeSets.ownedIngredientQty}
+                  ingredientIdByName={dataIndexes.ingredientIdByName}
                 />
               ))}
             </div>
@@ -2293,6 +2298,7 @@ function ModRarePanel({
                     recipe={recipe}
                     index={index}
                     ownedIngredientQty={runtimeSets.ownedIngredientQty}
+                    ingredientIdByName={dataIndexes.ingredientIdByName}
                     favorite={findRecipeFavorite(favorites, selectedCustomer.id, foodTag, recipe)}
                     favoriteKey={recipeFavoriteKey(selectedCustomer.id, foodTag, recipe)}
                     favoriteBusyKey={favoriteBusyKey}
@@ -2393,6 +2399,7 @@ function ModServicePanel({
   onResetRareAutomationOrder: (orderKey: string) => void;
   onEnterFocusMode: () => void;
 }) {
+  const dataIndexes = useMemo(() => buildRecommendationDataIndexes(data), [data]);
   const activeGuests = night?.activeRareGuests ?? [];
   const orders = useMemo(
     () => sortNightOrders(night?.orders ?? [], autoPrepPreferences.serviceOrderSortMode),
@@ -2504,6 +2511,7 @@ function ModServicePanel({
             recommendations={recommendations}
             recommendationIssues={recommendationIssues}
             runtimeSets={runtimeSets}
+            dataIndexes={dataIndexes}
             orderSortMode={autoPrepPreferences.serviceOrderSortMode}
             favorites={favorites}
             favoriteBusyKey={favoriteBusyKey}
@@ -2698,6 +2706,7 @@ function ServiceFocusPage({
   recommendations,
   recommendationIssues,
   runtimeSets,
+  dataIndexes,
   orderSortMode,
   favorites,
   favoriteBusyKey,
@@ -2715,6 +2724,7 @@ function ServiceFocusPage({
   recommendations: OrderRecommendation[];
   recommendationIssues: RecommendationIssue[];
   runtimeSets: RuntimeSets | null;
+  dataIndexes: ReturnType<typeof buildRecommendationDataIndexes>;
   orderSortMode: ServiceOrderSortMode;
   favorites: FavoriteData;
   favoriteBusyKey: string;
@@ -2763,6 +2773,7 @@ function ServiceFocusPage({
           recommendations={recommendations}
           recommendationIssues={recommendationIssues}
           runtimeSets={runtimeSets}
+          dataIndexes={dataIndexes}
           orderSortMode={orderSortMode}
           favorites={favorites}
           favoriteBusyKey={favoriteBusyKey}
@@ -2784,6 +2795,7 @@ function CurrentOrderRecommendations({
   recommendations,
   recommendationIssues,
   runtimeSets,
+  dataIndexes,
   orderSortMode,
   favorites,
   favoriteBusyKey,
@@ -2798,6 +2810,7 @@ function CurrentOrderRecommendations({
   recommendations: OrderRecommendation[];
   recommendationIssues: RecommendationIssue[];
   runtimeSets: RuntimeSets | null;
+  dataIndexes: ReturnType<typeof buildRecommendationDataIndexes>;
   orderSortMode: ServiceOrderSortMode;
   favorites: FavoriteData;
   favoriteBusyKey: string;
@@ -2845,6 +2858,7 @@ function CurrentOrderRecommendations({
               key={`${row.item.order.deskCode}-${row.item.order.guestId}-${row.item.order.foodTagId}-${row.item.order.beverageTagId}`}
               item={row.item}
               runtimeSets={runtimeSets}
+              dataIndexes={dataIndexes}
               favorites={favorites}
               favoriteBusyKey={favoriteBusyKey}
               compact={compact}
@@ -4492,10 +4506,12 @@ function NormalRecipeRow({
   recipe,
   index,
   ownedIngredientQty,
+  ingredientIdByName,
 }: {
   recipe: INormalRecipeResult;
   index: number;
   ownedIngredientQty: Record<number, number>;
+  ingredientIdByName: Map<string, number>;
 }) {
   return (
     <div className="rounded-md border border-border/80 p-2 text-sm">
@@ -4514,7 +4530,7 @@ function NormalRecipeRow({
         <CustomerScoreBadges scores={recipe.customerScores} />
       </div>
       <div className="mt-1 text-xs text-muted-foreground">
-        基础配方: {formatIngredientNamesWithQty(recipe.recipe.ingredients, ownedIngredientQty) || '无'}
+        基础配方: {formatIngredientNamesWithQty(recipe.recipe.ingredients, ownedIngredientQty, ingredientIdByName) || '无'}
       </div>
     </div>
   );
@@ -4554,6 +4570,7 @@ function NormalBeverageRow({
 function OrderRecommendationPanel({
   item,
   runtimeSets,
+  dataIndexes,
   favorites,
   favoriteBusyKey,
   compact = false,
@@ -4564,6 +4581,7 @@ function OrderRecommendationPanel({
 }: {
   item: OrderRecommendation;
   runtimeSets: RuntimeSets | null;
+  dataIndexes: ReturnType<typeof buildRecommendationDataIndexes>;
   favorites: FavoriteData;
   favoriteBusyKey: string;
   compact?: boolean;
@@ -4613,6 +4631,7 @@ function OrderRecommendationPanel({
                 recipe={recipe}
                 index={index}
                 ownedIngredientQty={runtimeSets?.ownedIngredientQty ?? {}}
+                ingredientIdByName={dataIndexes.ingredientIdByName}
                 favorite={findRecipeFavorite(favorites, item.customer.id, item.order.foodTag, recipe)}
                 favoriteKey={recipeFavoriteKey(item.customer.id, item.order.foodTag, recipe)}
                 favoriteBusyKey={favoriteBusyKey}
@@ -4630,6 +4649,7 @@ function OrderRecommendationPanel({
                       recipe={recipe}
                       index={visibleRecipes.length + index}
                       ownedIngredientQty={runtimeSets?.ownedIngredientQty ?? {}}
+                      ingredientIdByName={dataIndexes.ingredientIdByName}
                       compact={compact}
                     />
                   ))}
@@ -4683,6 +4703,7 @@ function RecipeRecommendationRow({
   recipe,
   index,
   ownedIngredientQty,
+  ingredientIdByName,
   favorite,
   favoriteKey = '',
   favoriteBusyKey = '',
@@ -4692,6 +4713,7 @@ function RecipeRecommendationRow({
   recipe: IRareRecipeResult;
   index: number;
   ownedIngredientQty: Record<number, number>;
+  ingredientIdByName: Map<string, number>;
   favorite?: FavoriteRecipeEntry | null;
   favoriteKey?: string;
   favoriteBusyKey?: string;
@@ -4701,8 +4723,14 @@ function RecipeRecommendationRow({
   const totalCost = recipe.baseCost + recipe.extraCost;
   const extras = recipe.extraIngredients.length === 0
     ? '不加料'
-    : recipe.extraIngredients.map((ingredient) => formatIngredientWithQty(ingredient.name, ownedIngredientQty)).join(', ');
-  const baseRecipe = formatIngredientNamesWithQty(recipe.recipe.ingredients, ownedIngredientQty) || '无';
+    : recipe.extraIngredients
+      .map((ingredient) => formatIngredientWithQty(ingredient.name, ownedIngredientQty, ingredientIdByName))
+      .join(', ');
+  const baseRecipe = formatIngredientNamesWithQty(
+    recipe.recipe.ingredients,
+    ownedIngredientQty,
+    ingredientIdByName,
+  ) || '无';
   const busy = favoriteBusyKey === (favorite?.id ?? favoriteKey);
 
   return (
@@ -7489,12 +7517,20 @@ function formatDesk(deskCode: number) {
   return deskCode >= 0 ? String(deskCode + 1) : String(deskCode);
 }
 
-function formatIngredientNamesWithQty(names: string[], ownedIngredientQty: Record<number, number>) {
-  return names.map((name) => formatIngredientWithQty(name, ownedIngredientQty)).join(', ');
+function formatIngredientNamesWithQty(
+  names: string[],
+  ownedIngredientQty: Record<number, number>,
+  ingredientIdByName: Map<string, number>,
+) {
+  return names.map((name) => formatIngredientWithQty(name, ownedIngredientQty, ingredientIdByName)).join(', ');
 }
 
-function formatIngredientWithQty(name: string, ownedIngredientQty: Record<number, number>) {
-  const id = INGREDIENT_ID_BY_NAME.get(name);
+function formatIngredientWithQty(
+  name: string,
+  ownedIngredientQty: Record<number, number>,
+  ingredientIdByName: Map<string, number>,
+) {
+  const id = ingredientIdByName.get(name);
   return `${name}${formatQtySuffix(id == null ? undefined : ownedIngredientQty[id])}`;
 }
 

@@ -20,7 +20,6 @@ fi
 rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR"
 cp "$DLL_PATH" "$DIST_DIR/"
-cp -R "$ROOT_DIR/Data" "$DIST_DIR/Data"
 
 for companion_path in \
   "$REPO_ROOT/apps/companion/src-tauri/target/release/mystia-steward-companion.exe" \
