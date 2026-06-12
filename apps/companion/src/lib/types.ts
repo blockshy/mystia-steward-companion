@@ -111,8 +111,6 @@ export interface INormalRecipeResult {
   totalCoverage: number;
   profit: number;
   matchedTags: string[];
-  specialRuleTags: string[];
-  satisfiesSpecialRule: boolean;
   ingredientCost: number;
 }
 
@@ -126,7 +124,6 @@ export interface INormalBeverageResult {
 export interface IRareRecipeResult {
   recipe: IRecipe;
   extraIngredients: IIngredient[];
-  missionPriority?: boolean;
   // 记录每个加料被选中的用途标签（例如 { 12: ['甜', '果味'] }）
   extraIngredientReasonTags: Record<number, string[]>;
   isEasterPriority: boolean;
@@ -137,8 +134,6 @@ export interface IRareRecipeResult {
   easterScoreFloor: number | null;
   allTags: string[];
   cancelledTags: string[];
-  specialRuleTags: string[];
-  satisfiesSpecialRule: boolean;
   foodScore: number;
   meetsRequiredFood: boolean;
   rating: TRating;

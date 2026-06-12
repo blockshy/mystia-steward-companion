@@ -324,14 +324,3 @@ public sealed class RuntimeInventoryEditResult
     public bool Changed { get; init; }
     public string? Error { get; init; }
 }
-
-public sealed class RuntimeInventoryBulkEditResult
-{
-    public string ItemType { get; init; } = "";
-    public int RequestedQuantity { get; init; }
-    public int Total { get; init; }
-    public int Changed { get; init; }
-    public int Unchanged { get; init; }
-    public int Failed { get; init; }
-    public List<string> Errors { get; init; } = new();
-}

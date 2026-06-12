@@ -11,12 +11,6 @@ internal sealed class RuntimeStaticDataCatalog
     private const string DataBaseLanguageTypeName = "GameData.CoreLanguage.Collections.DataBaseLanguage";
     private const string DataBaseCharacterTypeName = "GameData.Core.Collections.CharacterUtility.DataBaseCharacter";
 
-    private static readonly HashSet<string> NonOrderableRareFoodTags = new(StringComparer.Ordinal)
-    {
-        "流行喜爱",
-        "流行厌恶",
-    };
-
     private static readonly TimeSpan RetryInterval = TimeSpan.FromSeconds(5);
     private static readonly object SyncRoot = new();
     private static RuntimeStaticDataSnapshot _snapshot = RuntimeStaticDataSnapshot.Empty("not loaded");
@@ -33,18 +27,10 @@ internal sealed class RuntimeStaticDataCatalog
     public RuntimeStaticDataCatalog(DataRepository repository)
     {
         _repository = repository;
-        _localIngredientsById = repository.Ingredients
-            .GroupBy(ingredient => ingredient.Id)
-            .ToDictionary(group => group.Key, group => group.First());
-        _localBeveragesById = repository.Beverages
-            .GroupBy(beverage => beverage.Id)
-            .ToDictionary(group => group.Key, group => group.First());
-        _localRecipesByRecipeId = repository.Recipes
-            .GroupBy(recipe => recipe.RecipeId)
-            .ToDictionary(group => group.Key, group => group.First());
-        _localNormalCustomersById = repository.NormalCustomers
-            .GroupBy(customer => customer.Id)
-            .ToDictionary(group => group.Key, group => group.First());
+        _localIngredientsById = repository.Ingredients.ToDictionary(ingredient => ingredient.Id);
+        _localBeveragesById = repository.Beverages.ToDictionary(beverage => beverage.Id);
+        _localRecipesByRecipeId = repository.Recipes.ToDictionary(recipe => recipe.RecipeId);
+        _localNormalCustomersById = repository.NormalCustomers.ToDictionary(customer => customer.Id);
         _localRareCustomersById = repository.RareCustomersById;
     }
 
@@ -87,10 +73,9 @@ internal sealed class RuntimeStaticDataCatalog
 
         var foodTags = ReadTagDictionary(languageType, "GetAllFoodTags", "GetAllFoodTagsId", "GetFoodTag");
         var beverageTags = ReadTagDictionary(languageType, "GetAllBeverageTags", null, "GetBeverageTag");
-        var specialGuestNames = ReadStringDictionary(languageType, "GetAllSpecialGuestsNames");
         var tagLines = BuildTagLines(coreType, languageType, foodTags, beverageTags, errors);
         var coreLines = BuildCoreLines(coreType, languageType, foodTags, beverageTags, errors);
-        var guestLines = BuildGuestLines(characterType, languageType, specialGuestNames, foodTags, beverageTags, mappedGuestSnapshot, errors);
+        var guestLines = BuildGuestLines(characterType, languageType, foodTags, beverageTags, mappedGuestSnapshot, errors);
         var izakayaLines = BuildIzakayaLines(coreType, languageType, errors);
         var coreEntryCount = CountDataRows(coreLines);
         var guestEntryCount = CountDataRows(guestLines);
@@ -105,12 +90,6 @@ internal sealed class RuntimeStaticDataCatalog
             $"izakayaEntries={izakayaEntryCount}",
             errors.Count == 0 ? "errors=0" : $"errors={errors.Count}",
         });
-        var runtimeData = BuildRuntimeDataCatalog(
-            status,
-            foodTags,
-            coreLines,
-            guestLines,
-            izakayaLines);
 
         return new RuntimeStaticDataSnapshot
         {
@@ -121,7 +100,6 @@ internal sealed class RuntimeStaticDataCatalog
             GuestLines = guestLines,
             IzakayaLines = izakayaLines,
             ErrorLines = errors,
-            DataCatalog = runtimeData,
             IsComplete = coreType != null
                 && languageType != null
                 && characterType != null
@@ -130,404 +108,6 @@ internal sealed class RuntimeStaticDataCatalog
                 && coreEntryCount > 0
                 && guestEntryCount > 0
                 && izakayaEntryCount > 0,
-        };
-    }
-
-    private static RuntimeDataCatalog BuildRuntimeDataCatalog(
-        string status,
-        IReadOnlyDictionary<int, string> foodTags,
-        IReadOnlyList<string> coreLines,
-        IReadOnlyList<string> guestLines,
-        IReadOnlyList<string> izakayaLines)
-    {
-        try
-        {
-            var ingredientRows = ParseSectionRows(coreLines, "Ingredients").ToList();
-            var beverageRows = ParseSectionRows(coreLines, "Beverages").ToList();
-            var foodRows = ParseSectionRows(coreLines, "Foods").ToList();
-            var recipeRows = ParseSectionRows(coreLines, "Recipes").ToList();
-            var normalRows = ParseSectionRows(guestLines, "NormalGuests").ToList();
-            var rareRows = ParseSectionRows(guestLines, "SpecialGuests").ToList();
-            var izakayaPlaceRows = ParseSectionRows(izakayaLines, "IzakayaGuestPlaces").ToList();
-            var normalPlacesById = BuildRuntimePlacesByGuestId(izakayaPlaceRows, "normal");
-            var rarePlacesById = BuildRuntimePlacesByGuestId(izakayaPlaceRows, "rare");
-
-            var ingredients = ingredientRows
-                .Select(row => new Ingredient
-                {
-                    Id = ParseInt(row, "id") ?? -1,
-                    Name = Field(row, "name"),
-                    Tags = ParseTagNames(Field(row, "tags")),
-                    Price = ParseInt(row, "value") ?? 0,
-                })
-                .Where(ingredient => ingredient.Id >= 0 && !string.IsNullOrWhiteSpace(ingredient.Name))
-                .GroupBy(ingredient => ingredient.Id)
-                .Select(group => group.First())
-                .OrderBy(ingredient => ingredient.Id)
-                .ToList();
-
-            var beverages = beverageRows
-                .Select(row =>
-                {
-                    var rawTags = ParseTagNames(Field(row, "rawTags"));
-                    return new Beverage
-                    {
-                        Id = ParseInt(row, "id") ?? -1,
-                        Name = Field(row, "name"),
-                        Tags = rawTags.Count > 0 ? rawTags : ParseTagNames(Field(row, "tags")),
-                        Price = ParseInt(row, "trueValue") ?? ParseInt(row, "value") ?? 0,
-                    };
-                })
-                .Where(beverage => beverage.Id >= 0 && !string.IsNullOrWhiteSpace(beverage.Name))
-                .GroupBy(beverage => beverage.Id)
-                .Select(group => group.First())
-                .OrderBy(beverage => beverage.Id)
-                .ToList();
-
-            var foods = foodRows
-                .Select(row => new RuntimeFoodRow(
-                    ParseInt(row, "id") ?? -1,
-                    Field(row, "name"),
-                    ParseTagNames(Field(row, "rawTags")).Count > 0
-                        ? ParseTagNames(Field(row, "rawTags"))
-                        : ParseTagNames(Field(row, "tags")),
-                    ParseTagNames(Field(row, "banTags")),
-                    ParseInt(row, "trueValue") ?? ParseInt(row, "value") ?? 0))
-                .Where(food => food.Id >= 0 && !string.IsNullOrWhiteSpace(food.Name))
-                .GroupBy(food => food.Id)
-                .ToDictionary(group => group.Key, group => group.First());
-
-            var recipes = recipeRows
-                .Select(row =>
-                {
-                    var foodId = ParseInt(row, "foodId");
-                    if (!foodId.HasValue || !foods.TryGetValue(foodId.Value, out var food)) return null;
-
-                    return new Recipe
-                    {
-                        Id = food.Id,
-                        RecipeId = ParseInt(row, "recipeId") ?? food.Id,
-                        Name = food.Name,
-                        Ingredients = ParseNamedCollection(Field(row, "ingredients")),
-                        PositiveTags = food.PositiveTags,
-                        NegativeTags = food.NegativeTags,
-                        Cooker = NormalizeCooker(Field(row, "cooker")),
-                        Price = food.Price,
-                    };
-                })
-                .Where(recipe => recipe != null)
-                .Cast<Recipe>()
-                .Where(recipe => recipe.RecipeId >= 0 && !string.IsNullOrWhiteSpace(recipe.Name))
-                .GroupBy(recipe => recipe.RecipeId)
-                .Select(group => group.First())
-                .OrderBy(recipe => recipe.RecipeId)
-                .ToList();
-
-            var normalCustomers = normalRows
-                .Select(row =>
-                {
-                    var id = ParseInt(row, "id") ?? -1;
-                    if (IsSuppressedRuntimeCustomerRow(row)) return null;
-
-                    return new NormalCustomer
-                    {
-                        Id = id,
-                        Name = Field(row, "name"),
-                        Places = ResolvePlaces(Field(row, "localPlaces"), normalPlacesById, id),
-                        PositiveTags = ParseTagNames(Field(row, "likeFood")),
-                        BeverageTags = ParseTagNames(Field(row, "likeBev")),
-                    };
-                })
-                .Where(customer => customer != null)
-                .Cast<NormalCustomer>()
-                .Where(customer => customer.Id >= 0
-                    && IsUsableDisplayName(customer.Name)
-                    && customer.Places.Count > 0
-                    && (customer.PositiveTags.Count > 0 || customer.BeverageTags.Count > 0))
-                .GroupBy(customer => customer.Id)
-                .Select(group => group.First())
-                .OrderBy(customer => customer.Id)
-                .ToList();
-
-            var rareCustomers = rareRows
-                .Select(row =>
-                {
-                    var negative = ParseTagNames(Field(row, "hateFood"));
-                    if (negative.Count == 0) negative = ParseTagNames(Field(row, "hateFoodOriginal"));
-                    var positive = ParseTagNames(Field(row, "likeFood"));
-                    if (positive.Count == 0) positive = ParseTagNames(Field(row, "likeFoodOriginal"));
-                    var id = ParseInt(row, "id") ?? -1;
-                    if (IsSuppressedRuntimeCustomerRow(row)) return null;
-
-                    return new RareCustomer
-                    {
-                        Id = id,
-                        Name = Field(row, "name"),
-                        Places = ResolvePlaces(
-                            Field(row, "localPlaces"),
-                            rarePlacesById,
-                            id,
-                            Field(row, "spawnType")),
-                        PositiveTags = positive,
-                        NegativeTags = negative,
-                        BeverageTags = ParseTagNames(Field(row, "likeBev")),
-                    };
-                })
-                .Where(customer => customer != null)
-                .Cast<RareCustomer>()
-                .Where(customer => customer.Id >= 0
-                    && IsUsableDisplayName(customer.Name)
-                    && customer.Places.Count > 0
-                    && customer.PositiveTags.Any(IsOrderableRareFoodTag)
-                    && customer.BeverageTags.Count > 0)
-                .GroupBy(customer => customer.Id)
-                .Select(group => group.First())
-                .OrderBy(customer => customer.Id)
-                .ToList();
-
-            var foodTagIdMap = foodTags
-                .OrderBy(pair => pair.Key)
-                .ToDictionary(
-                    pair => pair.Key.ToString(CultureInfo.InvariantCulture),
-                    pair => NormalizeTagName(pair.Value),
-                    StringComparer.Ordinal);
-
-            var isComplete = ingredients.Count > 0
-                && beverages.Count > 0
-                && recipes.Count > 0
-                && normalCustomers.Count > 0
-                && rareCustomers.Count > 0
-                && foodTagIdMap.Count > 0;
-
-            return new RuntimeDataCatalog
-            {
-                IsComplete = isComplete,
-                Source = "game-runtime",
-                Status = $"runtimeData=ingredients:{ingredients.Count},beverages:{beverages.Count},recipes:{recipes.Count},normal:{normalCustomers.Count},rare:{rareCustomers.Count}; {status}",
-                Ingredients = ingredients,
-                Beverages = beverages,
-                Recipes = recipes,
-                NormalCustomers = normalCustomers,
-                RareCustomers = rareCustomers,
-                FoodTagIdMap = foodTagIdMap,
-            };
-        }
-        catch (Exception ex)
-        {
-            return RuntimeDataCatalog.Empty($"runtime data build failed: {ex.Message}");
-        }
-    }
-
-    private static IEnumerable<Dictionary<string, string>> ParseSectionRows(IReadOnlyList<string> lines, string section)
-    {
-        var active = false;
-        foreach (var line in lines)
-        {
-            var trimmed = line.Trim();
-            if (trimmed.StartsWith("[", StringComparison.Ordinal) && trimmed.EndsWith("]", StringComparison.Ordinal))
-            {
-                active = string.Equals(trimmed, $"[{section}]", StringComparison.Ordinal);
-                continue;
-            }
-
-            if (!active || !trimmed.StartsWith("- ", StringComparison.Ordinal)) continue;
-            var row = ParseFields(trimmed[2..]);
-            if (row.Count > 0) yield return row;
-        }
-    }
-
-    private static Dictionary<string, string> ParseFields(string line)
-    {
-        var fields = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var part in line.Split(';'))
-        {
-            var index = part.IndexOf('=');
-            if (index <= 0) continue;
-            var key = part[..index].Trim();
-            var value = part[(index + 1)..].Trim();
-            if (key.Length == 0) continue;
-            if (!fields.ContainsKey(key)) fields[key] = value;
-        }
-
-        return fields;
-    }
-
-    private static string Field(IReadOnlyDictionary<string, string> row, string key)
-    {
-        return row.TryGetValue(key, out var value) ? value.Trim() : "";
-    }
-
-    private static int? ParseInt(IReadOnlyDictionary<string, string> row, string key)
-    {
-        var value = Field(row, key);
-        return int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
-            ? parsed
-            : null;
-    }
-
-    private static List<string> ParseTagNames(string value)
-    {
-        return ParseNamedCollection(value)
-            .Select(NormalizeTagName)
-            .Where(tag => !string.IsNullOrWhiteSpace(tag))
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
-    }
-
-    private static List<string> ParseNamedCollection(string value)
-    {
-        var trimmed = value.Trim();
-        if (string.IsNullOrWhiteSpace(trimmed)
-            || string.Equals(trimmed, "[]", StringComparison.Ordinal)
-            || string.Equals(trimmed, "missing", StringComparison.OrdinalIgnoreCase))
-        {
-            return new List<string>();
-        }
-
-        if (trimmed.StartsWith("[", StringComparison.Ordinal) && trimmed.EndsWith("]", StringComparison.Ordinal))
-        {
-            trimmed = trimmed[1..^1];
-        }
-
-        return trimmed
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(part =>
-            {
-                var at = part.IndexOf('@');
-                var text = at >= 0 ? part[..at] : part;
-                var paren = text.LastIndexOf('(');
-                if (paren > 0) text = text[..paren];
-                return text.Trim();
-            })
-            .Where(text => !string.IsNullOrWhiteSpace(text) && !text.StartsWith("#", StringComparison.Ordinal))
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
-    }
-
-    private static IReadOnlyDictionary<int, List<string>> BuildRuntimePlacesByGuestId(
-        IEnumerable<IReadOnlyDictionary<string, string>> rows,
-        string key)
-    {
-        var result = new Dictionary<int, HashSet<string>>();
-        foreach (var row in rows)
-        {
-            var place = Field(row, "place");
-            if (!PlaceNames.All.Contains(place, StringComparer.Ordinal)) continue;
-
-            foreach (var id in ParseIntCollection(Field(row, key)))
-            {
-                if (!result.TryGetValue(id, out var places))
-                {
-                    places = new HashSet<string>(StringComparer.Ordinal);
-                    result[id] = places;
-                }
-
-                places.Add(place);
-            }
-        }
-
-        return result.ToDictionary(
-            pair => pair.Key,
-            pair => pair.Value.OrderBy(value => value, StringComparer.Ordinal).ToList());
-    }
-
-    private static List<int> ParseIntCollection(string value)
-    {
-        var trimmed = value.Trim();
-        if (string.IsNullOrWhiteSpace(trimmed)
-            || string.Equals(trimmed, "[]", StringComparison.Ordinal)
-            || string.Equals(trimmed, "missing", StringComparison.OrdinalIgnoreCase))
-        {
-            return new List<int>();
-        }
-
-        if (trimmed.StartsWith("[", StringComparison.Ordinal) && trimmed.EndsWith("]", StringComparison.Ordinal))
-        {
-            trimmed = trimmed[1..^1];
-        }
-
-        return trimmed
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(part =>
-            {
-                var at = part.IndexOf('@');
-                var text = at >= 0 ? part[..at] : part;
-                var paren = text.LastIndexOf('(');
-                if (paren > 0) text = text[..paren];
-                if (text.StartsWith("#", StringComparison.Ordinal)) text = text[1..];
-                return int.TryParse(text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
-                    ? parsed
-                    : (int?)null;
-            })
-            .Where(id => id.HasValue)
-            .Select(id => id!.Value)
-            .Distinct()
-            .OrderBy(id => id)
-            .ToList();
-    }
-
-    private static List<string> ResolvePlaces(
-        string value,
-        IReadOnlyDictionary<int, List<string>> runtimePlacesById,
-        int id,
-        string spawnType = "")
-    {
-        var places = ParseNamedCollection(value)
-            .Where(place => PlaceNames.All.Contains(place, StringComparer.Ordinal))
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
-
-        if (places.Count > 0) return places;
-        if (string.Equals(spawnType, "EveryWhere", StringComparison.OrdinalIgnoreCase)) return PlaceNames.All.ToList();
-        if (runtimePlacesById.TryGetValue(id, out var runtimePlaces) && runtimePlaces.Count > 0) return runtimePlaces;
-        return new List<string>();
-    }
-
-    private static bool IsUsableDisplayName(string? value)
-    {
-        var text = value?.Trim() ?? "";
-        if (text.Length == 0) return false;
-        if (text.Equals("missing", StringComparison.OrdinalIgnoreCase)) return false;
-        if (text.Equals("null", StringComparison.OrdinalIgnoreCase)) return false;
-        if (text.Contains('?')) return false;
-        if (text.StartsWith("#", StringComparison.Ordinal)) return false;
-        return true;
-    }
-
-    private static bool IsOrderableRareFoodTag(string tag)
-    {
-        return !string.IsNullOrWhiteSpace(tag) && !NonOrderableRareFoodTags.Contains(tag.Trim());
-    }
-
-    private static bool IsSuppressedRuntimeCustomerRow(IReadOnlyDictionary<string, string> row)
-    {
-        return IsTruthy(Field(row, "doNotShow"))
-            || string.Equals(Field(row, "spawnType"), "NeverCome", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool IsTruthy(string value)
-    {
-        return string.Equals(value, "true", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(value, "yes", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(value, "1", StringComparison.Ordinal);
-    }
-
-    private static string NormalizeTagName(string value)
-    {
-        var normalized = FoodTags.NormalizeName(value.Trim()) ?? value.Trim();
-        return normalized;
-    }
-
-    private static string NormalizeCooker(string value)
-    {
-        return value.Trim() switch
-        {
-            "Pot" => "煮锅",
-            "Grill" => "烧烤架",
-            "Fryer" => "油锅",
-            "Steamer" => "蒸锅",
-            "CuttingBoard" => "料理台",
-            var other => other,
         };
     }
 
@@ -667,7 +247,6 @@ internal sealed class RuntimeStaticDataCatalog
     private List<string> BuildGuestLines(
         Type? characterType,
         Type? languageType,
-        IReadOnlyDictionary<int, string> specialGuestNames,
         IReadOnlyDictionary<int, string> foodTags,
         IReadOnlyDictionary<int, string> beverageTags,
         RuntimeMappedGuestCatalogSnapshot mappedGuestSnapshot,
@@ -706,7 +285,7 @@ internal sealed class RuntimeStaticDataCatalog
                 RareCustomer? local = null;
                 if (id.HasValue) _localRareCustomersById.TryGetValue(id.Value, out local);
                 local ??= ResolveMappedLocalCustomer(mappedGuestSnapshot, id, stringId);
-                return FormatSpecialGuestLine(guest, id, local, languageType, specialGuestNames, foodTags, beverageTags);
+                return FormatSpecialGuestLine(guest, id, local, languageType, foodTags, beverageTags);
             },
             errors);
 
@@ -722,7 +301,7 @@ internal sealed class RuntimeStaticDataCatalog
                     (id.HasValue && entry.RuntimeId == id.Value)
                     || (!string.IsNullOrWhiteSpace(stringId)
                         && string.Equals(entry.RuntimeStringId, stringId, StringComparison.OrdinalIgnoreCase)));
-                return $"id={FormatNullable(id)}; stringId={stringId}; name={ResolveSpecialGuestName(languageType, specialGuestNames, id, mappedEntry?.LocalRareCustomerName)}; mappedSourceId={FormatNullable(mappedEntry?.SourceGuestId)}; mappedSourceName={mappedEntry?.SourceDisplayName ?? ""}; localId={FormatNullable(mappedEntry?.LocalRareCustomerId)}; localName={mappedEntry?.LocalRareCustomerName ?? ""}; aliasSource={mappedEntry?.AliasSource ?? ""}; overrideDestination={mappedEntry?.OverrideDestination ?? ""}";
+                return $"id={FormatNullable(id)}; stringId={stringId}; name={ResolveLanguageName(languageType, "GetSpecialGuestLang", id, mappedEntry?.LocalRareCustomerName)}; mappedSourceId={FormatNullable(mappedEntry?.SourceGuestId)}; mappedSourceName={mappedEntry?.SourceDisplayName ?? ""}; localId={FormatNullable(mappedEntry?.LocalRareCustomerId)}; localName={mappedEntry?.LocalRareCustomerName ?? ""}; aliasSource={mappedEntry?.AliasSource ?? ""}; overrideDestination={mappedEntry?.OverrideDestination ?? ""}";
             },
             errors);
 
@@ -738,7 +317,7 @@ internal sealed class RuntimeStaticDataCatalog
             var hasTarget = InvokeStaticMethodWithArgs(characterType, "TryGetTargetSGuestMapping", args) is bool boolValue && boolValue;
             var targetId = hasTarget ? ToNullableInt(args[1]) : null;
             mappingCount++;
-            lines.Add($"  - origin={originId.Value}; target={FormatNullable(targetId)}; originName={ResolveSpecialGuestName(languageType, specialGuestNames, originId, null)}; targetName={ResolveSpecialGuestName(languageType, specialGuestNames, targetId, null)}");
+            lines.Add($"  - origin={originId.Value}; target={FormatNullable(targetId)}; originName={ResolveLanguageName(languageType, "GetSpecialGuestLang", originId, null)}; targetName={ResolveLanguageName(languageType, "GetSpecialGuestLang", targetId, null)}");
         }
         lines.Insert(lines.Count - mappingCount, $"count={mappingCount}");
 
@@ -748,7 +327,6 @@ internal sealed class RuntimeStaticDataCatalog
     private List<string> BuildIzakayaLines(Type? coreType, Type? languageType, List<string> errors)
     {
         var lines = new List<string>();
-        var placeRows = new List<string>();
         if (coreType == null)
         {
             lines.Add("DataBaseCore unavailable.");
@@ -762,25 +340,8 @@ internal sealed class RuntimeStaticDataCatalog
             id =>
             {
                 var izakaya = InvokeStaticMethod(coreType, "RefIzakaya", id);
-                var placeName = ResolveIzakayaPlaceName(languageType, izakaya, id);
-                if (!string.IsNullOrWhiteSpace(placeName))
-                {
-                    var normalIds = ReadPoolGuestIds(GetMemberValue(izakaya, "NormalGuestPool"), isSpecialPool: false);
-                    var rareIds = ReadPoolGuestIds(GetMemberValue(izakaya, "SpecialGuestPool"), isSpecialPool: true)
-                        .Concat(ReadPoolGuestIds(GetMemberValue(izakaya, "OriginalSpecialGuestPool"), isSpecialPool: true))
-                        .Distinct()
-                        .OrderBy(value => value)
-                        .ToList();
-                    placeRows.Add($"  - place={placeName}; normal={FormatIdList(normalIds)}; rare={FormatIdList(rareIds)}");
-                }
-
                 return $"id={id}; name={ResolveLanguageName(languageType, "GetIzakayaLang", id, null)}; level={FormatMember(izakaya, "IzakayaLevel")}; daySceneMapLabel={FormatMember(izakaya, "DaySceneMapLabel")}; daySceneMapName={FormatMember(izakaya, "DaySceneMapName")}; baseFundRange={FormatSimpleValue(GetMemberValue(izakaya, "BaseFundRange"))}; normalGuestPool={FormatPool(GetMemberValue(izakaya, "NormalGuestPool"))}; specialGuestPool={FormatPool(GetMemberValue(izakaya, "SpecialGuestPool"))}; originalSpecialGuestPool={FormatPool(GetMemberValue(izakaya, "OriginalSpecialGuestPool"))}; specialGuestGachaInterval={FormatMember(izakaya, "SpecialGuestGachaInterval")}; normalGuestSpanInterval={FormatMember(izakaya, "NormalGuestSpanInterval")}; passerby={FormatMember(izakaya, "SpawnPasserbyGuest")}/{FormatMember(izakaya, "PasserbyGuestSpanInterval")}";
             });
-
-        lines.Add("");
-        lines.Add("[IzakayaGuestPlaces]");
-        lines.Add($"count={placeRows.Count}");
-        lines.AddRange(placeRows);
 
         return lines;
     }
@@ -790,14 +351,13 @@ internal sealed class RuntimeStaticDataCatalog
         int? id,
         RareCustomer? local,
         Type? languageType,
-        IReadOnlyDictionary<int, string> specialGuestNames,
         IReadOnlyDictionary<int, string> foodTags,
         IReadOnlyDictionary<int, string> beverageTags)
     {
         var stringId = GetMemberValue(guest, "StringId")?.ToString()
             ?? GetMemberValue(guest, "StrID")?.ToString()
             ?? "";
-        return $"id={FormatNullable(id)}; stringId={stringId}; name={ResolveSpecialGuestName(languageType, specialGuestNames, id, local?.Name)}; local={FormatLocalName(local?.Name)}; likeFood={FormatTagCollection(GetMemberValue(guest, "LikeFoodTag"), foodTags)}; likeFoodOriginal={FormatTagCollection(GetMemberValue(guest, "LikeFoodTagOriginal"), foodTags)}; likeFoodUnfolded={FormatTagCollection(GetMemberValue(guest, "LikeFoodTagUnfolded"), foodTags)}; hateFood={FormatTagCollection(GetMemberValue(guest, "HateFoodTag"), foodTags)}; hateFoodOriginal={FormatTagCollection(GetMemberValue(guest, "HateFoodTagOriginal"), foodTags)}; likeBev={FormatTagCollection(GetMemberValue(guest, "LikeBevTag"), beverageTags)}; likeBevOriginal={FormatTagCollection(GetMemberValue(guest, "LikeBevTagOriginal"), beverageTags)}; likeBevUnfolded={FormatTagCollection(GetMemberValue(guest, "LikeBevTagUnfolded"), beverageTags)}; specialFoodText={ResolveLanguageDictionary(languageType, "GetSpecialFoodTagLang", id, foodTags)}; specialBevText={ResolveLanguageDictionary(languageType, "GetSpecialBevTagLang", id, beverageTags)}; spawnType={FormatMember(guest, "SpawnType")}; destination={FormatMember(guest, "Destination")}; doNotShow={FormatMember(guest, "DoNotShowInNotebook")}; easter={FormatEasterData(GetMemberValue(guest, "GuestFoodEasterEggData"))}; localPlaces={FormatStringCollection(local?.Places)}; localPositive={FormatStringCollection(local?.PositiveTags)}; localNegative={FormatStringCollection(local?.NegativeTags)}; localBev={FormatStringCollection(local?.BeverageTags)}";
+        return $"id={FormatNullable(id)}; stringId={stringId}; name={ResolveLanguageName(languageType, "GetSpecialGuestLang", id, local?.Name)}; local={FormatLocalName(local?.Name)}; likeFood={FormatTagCollection(GetMemberValue(guest, "LikeFoodTag"), foodTags)}; likeFoodOriginal={FormatTagCollection(GetMemberValue(guest, "LikeFoodTagOriginal"), foodTags)}; likeFoodUnfolded={FormatTagCollection(GetMemberValue(guest, "LikeFoodTagUnfolded"), foodTags)}; hateFood={FormatTagCollection(GetMemberValue(guest, "HateFoodTag"), foodTags)}; hateFoodOriginal={FormatTagCollection(GetMemberValue(guest, "HateFoodTagOriginal"), foodTags)}; likeBev={FormatTagCollection(GetMemberValue(guest, "LikeBevTag"), beverageTags)}; likeBevOriginal={FormatTagCollection(GetMemberValue(guest, "LikeBevTagOriginal"), beverageTags)}; likeBevUnfolded={FormatTagCollection(GetMemberValue(guest, "LikeBevTagUnfolded"), beverageTags)}; specialFoodText={ResolveLanguageDictionary(languageType, "GetSpecialFoodTagLang", id, foodTags)}; specialBevText={ResolveLanguageDictionary(languageType, "GetSpecialBevTagLang", id, beverageTags)}; spawnType={FormatMember(guest, "SpawnType")}; destination={FormatMember(guest, "Destination")}; doNotShow={FormatMember(guest, "DoNotShowInNotebook")}; easter={FormatEasterData(GetMemberValue(guest, "GuestFoodEasterEggData"))}; localPlaces={FormatStringCollection(local?.Places)}; localPositive={FormatStringCollection(local?.PositiveTags)}; localNegative={FormatStringCollection(local?.NegativeTags)}; localBev={FormatStringCollection(local?.BeverageTags)}";
     }
 
     private RareCustomer? ResolveMappedLocalCustomer(RuntimeMappedGuestCatalogSnapshot mappedGuestSnapshot, int? id, string? stringId)
@@ -937,23 +497,6 @@ internal sealed class RuntimeStaticDataCatalog
         return result;
     }
 
-    private static IReadOnlyDictionary<int, string> ReadStringDictionary(Type? languageType, string dictionaryMethod)
-    {
-        var result = new Dictionary<int, string>();
-        if (languageType == null) return result;
-
-        foreach (var pair in EnumerateKeyValuePairs(InvokeStaticMethod(languageType, dictionaryMethod)))
-        {
-            var id = ToNullableInt(pair.Key);
-            if (!id.HasValue) continue;
-
-            var text = CleanText(pair.Value);
-            if (!string.IsNullOrWhiteSpace(text)) result[id.Value] = text;
-        }
-
-        return result;
-    }
-
     private static string ResolveLanguageName(Type? languageType, string methodName, int? id, string? fallback)
     {
         if (languageType != null && id.HasValue)
@@ -964,22 +507,6 @@ internal sealed class RuntimeStaticDataCatalog
         }
 
         return string.IsNullOrWhiteSpace(fallback) ? "" : fallback.Trim();
-    }
-
-    private static string ResolveSpecialGuestName(
-        Type? languageType,
-        IReadOnlyDictionary<int, string> specialGuestNames,
-        int? id,
-        string? fallback)
-    {
-        if (id.HasValue
-            && specialGuestNames.TryGetValue(id.Value, out var dictionaryName)
-            && !string.IsNullOrWhiteSpace(dictionaryName))
-        {
-            return dictionaryName.Trim();
-        }
-
-        return ResolveLanguageName(languageType, "GetSpecialGuestLang", id, fallback);
     }
 
     private static string ResolveLanguageDictionary(
@@ -1118,88 +645,6 @@ internal sealed class RuntimeStaticDataCatalog
         }
 
         return parts.Count == 0 ? "[]" : $"[{string.Join(", ", parts)}]";
-    }
-
-    private static IReadOnlyList<int> ReadPoolGuestIds(object? value, bool isSpecialPool)
-    {
-        var result = new HashSet<int>();
-        foreach (var item in EnumerateObjects(value).Take(200))
-        {
-            CollectPoolGuestIds(item, isSpecialPool, result, 0);
-        }
-
-        return result.OrderBy(id => id).ToList();
-    }
-
-    private static void CollectPoolGuestIds(object? value, bool isSpecialPool, HashSet<int> result, int depth)
-    {
-        if (value == null || depth > 4) return;
-
-        var direct = ToNullableInt(value);
-        if (direct.HasValue)
-        {
-            result.Add(direct.Value);
-            return;
-        }
-
-        var idMembers = isSpecialPool
-            ? new[] { "GroupID", "GroupId", "groupID", "groupId", "SpecialGuestID", "SpecialGuestId", "GuestID", "GuestId", "ID", "Id" }
-            : new[] { "GuestID", "GuestId", "guestID", "guestId", "NormalGuestID", "NormalGuestId", "ID", "Id" };
-
-        foreach (var member in idMembers)
-        {
-            var id = ToNullableInt(GetMemberValue(value, member));
-            if (id.HasValue) result.Add(id.Value);
-        }
-
-        foreach (var member in new[]
-                 {
-                     "Data",
-                     "data",
-                     "Values",
-                     "values",
-                     "Guests",
-                     "guests",
-                     "IDs",
-                     "Ids",
-                     "ids",
-                     "GuestIDs",
-                     "GuestIds",
-                     "guestIds",
-                 })
-        {
-            foreach (var item in EnumerateObjects(GetMemberValue(value, member)).Take(200))
-            {
-                CollectPoolGuestIds(item, isSpecialPool, result, depth + 1);
-            }
-        }
-    }
-
-    private static string FormatIdList(IEnumerable<int> values)
-    {
-        var list = values.Distinct().OrderBy(value => value).ToList();
-        return list.Count == 0 ? "[]" : $"[{string.Join(",", list)}]";
-    }
-
-    private static string ResolveIzakayaPlaceName(Type? languageType, object? izakaya, int id)
-    {
-        foreach (var candidate in new[]
-                 {
-                     CleanText(GetMemberValue(izakaya, "DaySceneMapName")),
-                     CleanText(GetMemberValue(izakaya, "daySceneMapName")),
-                     CleanText(GetMemberValue(izakaya, "DaySceneMapLabel")),
-                     CleanText(GetMemberValue(izakaya, "daySceneMapLabel")),
-                     ResolveLanguageName(languageType, "GetIzakayaLang", id, null),
-                 })
-        {
-            if (string.IsNullOrWhiteSpace(candidate)) continue;
-            var place = PlaceNames.All.FirstOrDefault(name =>
-                string.Equals(name, candidate.Trim(), StringComparison.Ordinal)
-                || candidate.Contains(name, StringComparison.Ordinal));
-            if (!string.IsNullOrWhiteSpace(place)) return place;
-        }
-
-        return "";
     }
 
     private static string FormatEasterData(object? value)
@@ -1599,7 +1044,6 @@ internal sealed class RuntimeStaticDataSnapshot
     public IReadOnlyList<string> GuestLines { get; init; } = Array.Empty<string>();
     public IReadOnlyList<string> IzakayaLines { get; init; } = Array.Empty<string>();
     public IReadOnlyList<string> ErrorLines { get; init; } = Array.Empty<string>();
-    public RuntimeDataCatalog DataCatalog { get; init; } = RuntimeDataCatalog.Empty("not loaded");
     public bool IsComplete { get; init; }
 
     public static RuntimeStaticDataSnapshot Empty(string status)
@@ -1608,11 +1052,9 @@ internal sealed class RuntimeStaticDataSnapshot
         {
             CapturedAtUtc = DateTime.UtcNow,
             Status = status,
-            DataCatalog = RuntimeDataCatalog.Empty(status),
             IsComplete = false,
         };
     }
 }
 
 internal sealed record RuntimeIdReadResult(IReadOnlyList<int> Ids, IReadOnlyList<string> Diagnostics);
-internal sealed record RuntimeFoodRow(int Id, string Name, List<string> PositiveTags, List<string> NegativeTags, int Price);

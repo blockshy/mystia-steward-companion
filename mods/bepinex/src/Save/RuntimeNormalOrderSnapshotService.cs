@@ -21,25 +21,21 @@ public sealed class RuntimeNormalOrderSnapshotService
     private static readonly Dictionary<string, DateTime> FirstSeenByOrderKey = new(StringComparer.Ordinal);
 
     private readonly DataRepository _repository;
-    private readonly Dictionary<string, double> _performanceMs = new(StringComparer.Ordinal);
 
     public RuntimeNormalOrderSnapshotService(DataRepository repository)
     {
         _repository = repository;
     }
 
-    public IReadOnlyDictionary<string, double> PerformanceMs => _performanceMs;
-
     public NormalBusinessContext Load()
     {
-        _performanceMs.Clear();
         var orders = new List<NormalBusinessOrder>();
         var errors = new List<string>();
         var source = new List<string>();
 
         try
         {
-            var orderControllerOrders = Measure("orderController", () => ReadOrderControllerOrders().ToList());
+            var orderControllerOrders = ReadOrderControllerOrders().ToList();
             source.Add($"OrderController={orderControllerOrders.Count(order => order.Source == "OrderController")}");
             source.Add($"OrderControllerElement={orderControllerOrders.Count(order => order.Source == "OrderControllerElement")}");
             orders.AddRange(orderControllerOrders);
@@ -52,7 +48,7 @@ public sealed class RuntimeNormalOrderSnapshotService
 
         try
         {
-            var hudOrders = Measure("hud", () => ReadHudOrders().ToList());
+            var hudOrders = ReadHudOrders().ToList();
             source.Add($"HUD={hudOrders.Count}");
             orders.AddRange(hudOrders);
         }
@@ -62,15 +58,15 @@ public sealed class RuntimeNormalOrderSnapshotService
             errors.Add($"HUD: {ex.Message}");
         }
 
-        source.Add(Measure("manager.status", ReadManagerStatus));
+        source.Add(ReadManagerStatus());
 
         foreach (var controllerSource in ManagerControllerSources)
         {
             try
             {
-                var controllers = Measure($"controllers.{controllerSource.Source}", () => ReadManagerControllers(controllerSource.MemberName).ToList());
+                var controllers = ReadManagerControllers(controllerSource.MemberName).ToList();
                 source.Add($"{controllerSource.Source}={controllers.Count}");
-                orders.AddRange(Measure($"orders.{controllerSource.Source}", () => ReadControllerOrders(controllers, controllerSource.Source).ToList()));
+                orders.AddRange(ReadControllerOrders(controllers, controllerSource.Source));
             }
             catch (Exception ex)
             {
@@ -81,9 +77,9 @@ public sealed class RuntimeNormalOrderSnapshotService
 
         try
         {
-            var queuedControllers = Measure("controllers.Queue", () => ReadQueuedControllers().ToList());
+            var queuedControllers = ReadQueuedControllers().ToList();
             source.Add($"Queue={queuedControllers.Count}");
-            orders.AddRange(Measure("orders.Queue", () => ReadControllerOrders(queuedControllers, "Queue").ToList()));
+            orders.AddRange(ReadControllerOrders(queuedControllers, "Queue"));
         }
         catch (Exception ex)
         {
@@ -91,11 +87,11 @@ public sealed class RuntimeNormalOrderSnapshotService
             errors.Add($"Queue: {ex.Message}");
         }
 
-        var deduplicated = Measure("deduplicate", () => ApplyFirstSeenOrder(orders)
-                .OrderBy(order => order.FirstSeenAtUtc ?? DateTime.MaxValue)
-                .ThenBy(order => order.DeskCode)
-                .ThenBy(order => order.GuestName, StringComparer.Ordinal)
-                .ToList());
+        var deduplicated = ApplyFirstSeenOrder(orders)
+            .OrderBy(order => order.FirstSeenAtUtc ?? DateTime.MaxValue)
+            .ThenBy(order => order.DeskCode)
+            .ThenBy(order => order.GuestName, StringComparer.Ordinal)
+            .ToList();
         source.Add($"normalOrders={deduplicated.Count}");
         source.Add("normalOrderSort=firstSeen");
 
@@ -105,19 +101,6 @@ public sealed class RuntimeNormalOrderSnapshotService
             Source = string.Join("; ", source),
             Error = errors.Count == 0 ? null : string.Join("; ", errors),
         };
-    }
-
-    private T Measure<T>(string key, Func<T> action)
-    {
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-        try
-        {
-            return action();
-        }
-        finally
-        {
-            _performanceMs[key] = Math.Round(stopwatch.Elapsed.TotalMilliseconds, 2);
-        }
     }
 
     private static IReadOnlyList<NormalBusinessOrder> ApplyFirstSeenOrder(IEnumerable<NormalBusinessOrder> orders)
@@ -165,14 +148,11 @@ public sealed class RuntimeNormalOrderSnapshotService
     {
         var orders = group.ToList();
         var first = orders.First();
-        var guestName = orders
-            .Select(order => order.GuestName)
-            .FirstOrDefault(IsSpecificNormalGuestName) ?? first.GuestName;
         return new NormalBusinessOrder
         {
             OrderKey = first.OrderKey,
             DeskCode = first.DeskCode,
-            GuestName = guestName,
+            GuestName = first.GuestName,
             FoodId = first.FoodId,
             FoodName = first.FoodName,
             BeverageId = first.BeverageId,
@@ -183,16 +163,6 @@ public sealed class RuntimeNormalOrderSnapshotService
             FirstSeenAtUtc = first.FirstSeenAtUtc,
             Source = string.Join("/", orders.Select(order => order.Source).Where(source => !string.IsNullOrWhiteSpace(source)).Distinct(StringComparer.Ordinal)),
         };
-    }
-
-    private static bool IsSpecificNormalGuestName(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value)) return false;
-        var text = value.Trim();
-        return !string.Equals(text, "普客", StringComparison.Ordinal)
-            && !string.Equals(text, "普通客", StringComparison.Ordinal)
-            && !string.Equals(text, "Normal guest", StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(text, "NormalGuest", StringComparison.OrdinalIgnoreCase);
     }
 
     private static NormalBusinessOrder CopyWithFirstSeen(NormalBusinessOrder order, DateTime firstSeenAtUtc)
@@ -326,21 +296,18 @@ public sealed class RuntimeNormalOrderSnapshotService
         if (order == null) return null;
         if (!IsNormalOrder(order)) return null;
 
-        var requestFood = SafeGet(order, "RequestFood") ?? SafeInvoke(order, "get_RequestFood");
-        var requestBeverage = SafeGet(order, "RequestBeverage") ?? SafeInvoke(order, "get_RequestBeverage");
-        var foodId = ReadSellableId(requestFood, ReadFirstMember(order, "foodRequest", "FoodRequest", "requestFoodId", "RequestFoodId", "RequestFoodID"));
-        var beverageId = ReadSellableId(requestBeverage, ReadFirstMember(order, "beverageRequest", "BeverageRequest", "requestBevId", "RequestBevId", "requestBeverageId", "RequestBeverageId", "RequestBeverageID"));
+        var requestFood = SafeGet(order, "RequestFood");
+        var requestBeverage = SafeGet(order, "RequestBeverage");
+        var foodId = ReadSellableId(requestFood, SafeGet(order, "foodRequest"));
+        var beverageId = ReadSellableId(requestBeverage, SafeGet(order, "beverageRequest"));
         var recipe = _repository.Recipes.FirstOrDefault(item => item.RecipeId == foodId || item.Id == foodId);
         var beverage = _repository.Beverages.FirstOrDefault(item => item.Id == beverageId);
-        var guest = SafeGet(order, "Guest") ?? SafeInvoke(order, "get_Guest");
 
         return new NormalBusinessOrder
         {
             OrderKey = BuildRuntimeOrderKey(order),
             DeskCode = RuntimeReflectionUtility.ToInt(SafeGet(order, "DeskCode"), -1),
-            GuestName = ResolveNormalGuestName(guest)
-                ?? ResolveNormalGuestName(SafeGet(controller, "OrderingGuest"))
-                ?? ReadTextLikeValue(guest)
+            GuestName = ReadTextLikeValue(SafeGet(order, "Guest"))
                 ?? ReadTextLikeValue(SafeGet(controller, "OrderingGuest"))
                 ?? "",
             FoodId = foodId,
@@ -360,8 +327,7 @@ public sealed class RuntimeNormalOrderSnapshotService
         var typeName = order.GetType().Name;
         if (typeName.IndexOf("NormalOrder", StringComparison.OrdinalIgnoreCase) >= 0) return true;
         var orderType = SafeGet(order, "Type")?.ToString();
-        if (string.Equals(orderType, "Normal", StringComparison.OrdinalIgnoreCase)) return true;
-        return RuntimeReflectionUtility.ToInt(SafeGet(order, "Type"), -1) == 0;
+        return string.Equals(orderType, "Normal", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string BuildRuntimeOrderKey(object order)
@@ -389,28 +355,14 @@ public sealed class RuntimeNormalOrderSnapshotService
 
     private static int ReadSellableId(object? sellable, object? fallback)
     {
-        foreach (var member in new[] { "Id", "ID", "id", "foodID", "FoodID" })
+        foreach (var member in new[] { "Id", "ID", "id" })
         {
-            var value = SafeGet(sellable, member) ?? SafeInvoke(sellable, $"get_{member}");
+            var value = SafeGet(sellable, member);
             var parsed = RuntimeReflectionUtility.ToInt(value, int.MinValue);
             if (parsed != int.MinValue) return parsed;
         }
 
         return RuntimeReflectionUtility.ToInt(fallback, -1);
-    }
-
-    private static object? ReadFirstMember(object? value, params string[] members)
-    {
-        foreach (var member in members)
-        {
-            var result = SafeGet(value, member);
-            if (result != null) return result;
-
-            result = SafeInvoke(value, $"get_{member}");
-            if (result != null) return result;
-        }
-
-        return null;
     }
 
     private static object? SafeGet(object? value, string member)
@@ -445,42 +397,6 @@ public sealed class RuntimeNormalOrderSnapshotService
         catch
         {
             // Ignore conversion failures.
-        }
-
-        return null;
-    }
-
-    private static object? SafeInvoke(object? value, string method)
-    {
-        try
-        {
-            return RuntimeReflectionUtility.InvokeMethod(value, method);
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private string? ResolveNormalGuestName(object? guest)
-    {
-        var guestId = ReadGuestId(guest);
-        if (!guestId.HasValue) return null;
-
-        return _repository.NormalCustomers.FirstOrDefault(customer => customer.Id == guestId.Value)?.Name;
-    }
-
-    private static int? ReadGuestId(object? guest)
-    {
-        foreach (var member in new[] { "Id", "ID", "id", "CharacterID", "characterID" })
-        {
-            var value = SafeGet(guest, member);
-            var parsed = RuntimeReflectionUtility.ToInt(value, int.MinValue);
-            if (parsed != int.MinValue) return parsed;
-
-            value = SafeInvoke(guest, $"get_{member}");
-            parsed = RuntimeReflectionUtility.ToInt(value, int.MinValue);
-            if (parsed != int.MinValue) return parsed;
         }
 
         return null;

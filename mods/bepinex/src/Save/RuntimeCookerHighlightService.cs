@@ -9,7 +9,6 @@ internal static class RuntimeCookerHighlightService
 {
     private const string CookSystemManagerTypeName = "NightScene.CookingUtility.CookSystemManager";
     private const string CookControllerTypeName = "NightScene.CookingUtility.CookController";
-    private const float ScanIntervalSeconds = 1.25f;
 
     private static readonly object SyncRoot = new();
     private static readonly Dictionary<nint, HighlightedRenderer> HighlightedRenderers = new();
@@ -127,7 +126,7 @@ internal static class RuntimeCookerHighlightService
 
         lock (SyncRoot)
         {
-            _nextScanAt = Time.realtimeSinceStartup + ScanIntervalSeconds;
+            _nextScanAt = Time.realtimeSinceStartup + 0.75f;
             if (!string.IsNullOrWhiteSpace(error))
             {
                 _status = $"error: {error}";

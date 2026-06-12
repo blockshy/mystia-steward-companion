@@ -78,6 +78,7 @@ public sealed class NightBusinessDiagnosticSink
         AppendGuests(builder, "RawGuests", snapshot.RawGuests);
         AppendOrders(builder, "RawLiveOrders", snapshot.RawLiveOrders);
         AppendOrders(builder, "AcceptedRuntimeOrders", snapshot.AcceptedRuntimeOrders);
+        AppendOrders(builder, "AcceptedLogOrders", snapshot.AcceptedLogOrders);
         AppendGuests(builder, "ActiveGuests", snapshot.ActiveGuests);
         AppendOrders(builder, "FinalOrders", snapshot.FinalOrders);
         AppendCandidates(builder, "Candidates", snapshot.Candidates);
@@ -149,6 +150,7 @@ public sealed class NightBusinessDiagnosticSnapshot
     public IReadOnlyList<NightBusinessGuest> RawGuests { get; init; } = Array.Empty<NightBusinessGuest>();
     public IReadOnlyList<NightBusinessOrder> RawLiveOrders { get; init; } = Array.Empty<NightBusinessOrder>();
     public IReadOnlyList<NightBusinessOrder> AcceptedRuntimeOrders { get; init; } = Array.Empty<NightBusinessOrder>();
+    public IReadOnlyList<NightBusinessOrder> AcceptedLogOrders { get; init; } = Array.Empty<NightBusinessOrder>();
     public IReadOnlyList<NightBusinessGuest> ActiveGuests { get; init; } = Array.Empty<NightBusinessGuest>();
     public IReadOnlyList<NightBusinessOrder> FinalOrders { get; init; } = Array.Empty<NightBusinessOrder>();
     public IReadOnlyList<NightBusinessCandidateDiagnostic> Candidates { get; init; } = Array.Empty<NightBusinessCandidateDiagnostic>();

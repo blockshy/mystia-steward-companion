@@ -77,34 +77,6 @@ public static class SpecialOrderRuntimeCapture
         }
     }
 
-    public static int DismissOrder(int deskCode, int? guestId, string guestName, int foodTagId, int beverageTagId)
-    {
-        lock (SyncRoot)
-        {
-            var removed = Orders.RemoveAll(order => IsDismissRequestMatch(order, deskCode, guestId, guestName, foodTagId, beverageTagId));
-            _lastCapture = $"dismissed: desk={deskCode}, guestId={guestId?.ToString() ?? ""}, foodTagId={foodTagId}, bevTagId={beverageTagId}";
-            if (removed > 0)
-            {
-                _changeVersion++;
-            }
-
-            _status = BuildStatusLocked();
-            return removed;
-        }
-    }
-
-    public static void ClearOrders(string reason)
-    {
-        lock (SyncRoot)
-        {
-            if (Orders.Count == 0) return;
-            Orders.Clear();
-            _lastCapture = $"cleared: {reason}";
-            _changeVersion++;
-            _status = BuildStatusLocked();
-        }
-    }
-
     public static IReadOnlyList<string> RecentParseFailuresSnapshot(TimeSpan maxAge, int limit = 16)
     {
         var now = DateTime.UtcNow;
@@ -135,9 +107,6 @@ public static class SpecialOrderRuntimeCapture
 
             PatchMethod(_harmony, GuestGroupControllerTypeName, "PushToOrder", 1, false, nameof(OnControllerOrderAdded), null, patchedNow, missing);
             PatchMethod(_harmony, SpecialGuestsControllerTypeName, "PostGenerateOrder", 2, false, null, nameof(OnGeneratedSpecialOrder), patchedNow, missing);
-            PatchMethod(_harmony, GuestsManagerTypeName, "SetManualControllerOrderInternal", 3, false, null, nameof(OnManualControllerOrderSet), patchedNow, missing);
-            PatchMethod(_harmony, GuestsManagerTypeName, "EvaulateManualOrder", 2, false, nameof(OnManualOrderEvaluating), null, patchedNow, missing);
-            PatchMethod(_harmony, GuestsManagerTypeName, "EndDlc4SpecialManualOrder", 1, false, nameof(OnManualOrderEnded), null, patchedNow, missing);
             PatchMethod(_harmony, GuestsManagerTypeName, "AddToOrder", 1, false, nameof(OnOrderAdded), null, patchedNow, missing);
             PatchMethod(_harmony, GuestsManagerTypeName, "RemoveFromOrder", 1, false, nameof(OnOrderRemoved), null, patchedNow, missing);
             PatchMethod(_harmony, OrderControllerTypeName, "AddOrder", 1, true, nameof(OnOrderAdded), null, patchedNow, missing);
@@ -256,28 +225,6 @@ public static class SpecialOrderRuntimeCapture
         AddOrder(ParseOrder(__result, "PostGenerateOrder", __instance));
     }
 
-    private static void OnManualControllerOrderSet(object __0, object __2)
-    {
-        lock (SyncRoot) _generatedCallbacks++;
-        AddOrder(ParseOrder(__2, "ManualOrderSet", __0));
-    }
-
-    private static void OnManualOrderEvaluating(object __0)
-    {
-        lock (SyncRoot) _statusCallbacks++;
-        var order = ParseControllerCurrentOrder(__0, "ManualOrderEvaluate");
-        if (order is { IsFulfilled: true })
-        {
-            RemoveOrder(order with { CaptureSource = "ManualOrderEvaluate" });
-        }
-    }
-
-    private static void OnManualOrderEnded(object __0)
-    {
-        lock (SyncRoot) _removeCallbacks++;
-        RemoveOrder(ParseControllerCurrentOrder(__0, "ManualOrderEnd") ?? BuildControllerRemovalOrder(__0, "ManualOrderEnd"));
-    }
-
     private static void AddOrder(CapturedRuntimeSpecialOrder? order)
     {
         if (order == null) return;
@@ -351,12 +298,10 @@ public static class SpecialOrderRuntimeCapture
         var textParts = ParseOrderText(SafeToString(readableOrder));
         var orderTypeValue = GetMemberValue(readableOrder, "Type");
         var orderType = FormatValue(orderTypeValue);
-        var isManualSpecialOrder = IsManualSpecialOrder(readableOrder, controller);
         if (!IsSpecialOrderType(orderTypeValue, orderType)
             && !string.Equals(textParts.OrderType, "Special", StringComparison.OrdinalIgnoreCase)
             && readableOrder.GetType().Name.IndexOf("SpecialOrder", StringComparison.OrdinalIgnoreCase) < 0
-            && !textParts.LooksLikeSpecialOrder
-            && !isManualSpecialOrder)
+            && !textParts.LooksLikeSpecialOrder)
         {
             NoteParseFailure(source, $"not special: {order.GetType().FullName}", readableOrder, textParts);
             return null;
@@ -466,60 +411,6 @@ public static class SpecialOrderRuntimeCapture
         };
     }
 
-    private static CapturedRuntimeSpecialOrder? ParseControllerCurrentOrder(object? controller, string source)
-    {
-        if (controller == null)
-        {
-            NoteParseFailure(source, "controller is null");
-            return null;
-        }
-
-        var peekOrder = InvokeInstanceMethod(controller, "PeekOrders");
-        if (peekOrder != null)
-        {
-            var parsed = ParseOrder(peekOrder, source, controller);
-            if (parsed != null) return parsed;
-        }
-
-        var removal = BuildControllerRemovalOrder(controller, source);
-        if (removal != null) return removal;
-
-        NoteParseFailure(source, "controller order missing", controller);
-        return null;
-    }
-
-    private static CapturedRuntimeSpecialOrder? BuildControllerRemovalOrder(object? controller, string source)
-    {
-        if (controller == null) return null;
-
-        var specialGuest = GetMemberValue(controller, "SpecialGuest")
-            ?? GetMemberValue(controller, "OrderingGuest");
-        var guestId = ToNullableInt(GetMemberValue(specialGuest, "Id"));
-        var guestName = specialGuest == null ? "" : ReadGuestName(specialGuest, guestId);
-        if (string.IsNullOrWhiteSpace(guestName) && !guestId.HasValue) return null;
-
-        var deskCode = ToNullableInt(GetMemberValue(controller, "DeskCode")) ?? -1;
-        var capturedAt = DateTime.UtcNow;
-        return new CapturedRuntimeSpecialOrder(
-            deskCode,
-            guestId,
-            string.IsNullOrWhiteSpace(guestName) ? "Special guest" : guestName,
-            0,
-            false,
-            "",
-            0,
-            false,
-            "",
-            false,
-            capturedAt,
-            capturedAt,
-            "",
-            source)
-        {
-            ControllerObject = controller,
-        };
-    }
-
     private static bool IsSameOrderSlot(CapturedRuntimeSpecialOrder left, CapturedRuntimeSpecialOrder right)
     {
         if (!string.IsNullOrWhiteSpace(left.RuntimeKey)
@@ -547,58 +438,14 @@ public static class SpecialOrderRuntimeCapture
             return string.Equals(existing.RuntimeKey, removed.RuntimeKey, StringComparison.Ordinal);
         }
 
-        var removedHasDetails = HasAnyOrderDetail(removed);
-        if (!removedHasDetails
-            && existing.DeskCode >= 0
-            && removed.DeskCode >= 0
-            && existing.DeskCode == removed.DeskCode)
-        {
-            return true;
-        }
-
         if (!IsSameOrderSlot(existing, removed)) return false;
 
-        if (!removedHasDetails)
+        if (!HasAnyOrderDetail(removed))
         {
             return true;
         }
 
         return CanMergeCapturedOrderDetails(existing, removed);
-    }
-
-    private static bool IsDismissRequestMatch(
-        CapturedRuntimeSpecialOrder existing,
-        int deskCode,
-        int? guestId,
-        string guestName,
-        int foodTagId,
-        int beverageTagId)
-    {
-        if (deskCode >= 0 && existing.DeskCode >= 0 && existing.DeskCode != deskCode) return false;
-
-        var guestMatches = false;
-        if (guestId.HasValue && existing.GuestId.HasValue && existing.GuestId.Value == guestId.Value)
-        {
-            guestMatches = true;
-        }
-
-        if (!guestMatches
-            && !string.IsNullOrWhiteSpace(guestName)
-            && string.Equals(existing.GuestName, guestName, StringComparison.Ordinal))
-        {
-            guestMatches = true;
-        }
-
-        var requestedFoodTag = foodTagId != int.MinValue;
-        var requestedBeverageTag = beverageTagId != int.MinValue;
-        var foodMatches = !requestedFoodTag
-            || (existing.HasFoodTagId && existing.FoodTagId == foodTagId);
-        var beverageMatches = !requestedBeverageTag
-            || (existing.HasBeverageTagId && existing.BeverageTagId == beverageTagId);
-        var detailsMatch = foodMatches && beverageMatches && (requestedFoodTag || requestedBeverageTag);
-
-        if (detailsMatch) return true;
-        return guestMatches && deskCode >= 0;
     }
 
     private static bool HasAnyOrderDetail(CapturedRuntimeSpecialOrder order)
@@ -735,29 +582,6 @@ public static class SpecialOrderRuntimeCapture
     private static bool IsOrderFulfilled(object? order)
     {
         var value = GetMemberValue(order, "IsFullfilled");
-        if (value is bool boolValue) return boolValue;
-        return string.Equals(value?.ToString(), "true", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool IsManualSpecialOrder(object? order, object? controller)
-    {
-        if (!ToBool(GetMemberValue(order, "ManualOrder"))) return false;
-
-        var specialGuest = GetMemberValue(order, "SpecialGuests")
-            ?? GetMemberValue(controller, "SpecialGuest")
-            ?? GetMemberValue(controller, "OrderingGuest");
-        return IsExplicitSpecialGuest(specialGuest) || ToNullableInt(GetMemberValue(specialGuest, "Id")).HasValue;
-    }
-
-    private static bool IsExplicitSpecialGuest(object? guest)
-    {
-        var typeName = guest?.GetType().FullName ?? "";
-        return typeName.IndexOf("NightSceneUtility.SpecialGuest", StringComparison.OrdinalIgnoreCase) >= 0
-            || typeName.IndexOf("NightSceneUtility.MappedSpecialGuest", StringComparison.OrdinalIgnoreCase) >= 0;
-    }
-
-    private static bool ToBool(object? value)
-    {
         if (value is bool boolValue) return boolValue;
         return string.Equals(value?.ToString(), "true", StringComparison.OrdinalIgnoreCase);
     }

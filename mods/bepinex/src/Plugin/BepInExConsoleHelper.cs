@@ -8,56 +8,34 @@ namespace MystiaStewardCompanion.Plugin;
 internal static class BepInExConsoleHelper
 {
     private const int HideWindow = 0;
-    private const int ShowWindowNormal = 5;
 
     public static void Apply(bool disableConsoleLogWindow, bool hideConsoleWindow, ManualLogSource log)
     {
         if (disableConsoleLogWindow)
         {
-            SetConsoleLogForNextLaunch(false, log);
+            DisableConsoleLogForNextLaunch(log);
         }
 
         if (hideConsoleWindow)
         {
-            SetCurrentConsoleWindowVisible(false, log);
+            HideCurrentConsoleWindow(log);
         }
     }
 
-    public static void SetNativeConsoleEnabled(bool enabled, ManualLogSource log)
-    {
-        SetConsoleLogForNextLaunch(enabled, log);
-        SetCurrentConsoleWindowVisible(enabled, log);
-    }
-
-    public static bool IsCurrentConsoleWindowVisible()
-    {
-        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return false;
-
-        try
-        {
-            var consoleWindow = GetConsoleWindow();
-            return consoleWindow != IntPtr.Zero && IsWindowVisible(consoleWindow);
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private static void SetConsoleLogForNextLaunch(bool enabled, ManualLogSource log)
+    private static void DisableConsoleLogForNextLaunch(ManualLogSource log)
     {
         try
         {
             var configPath = Path.Combine(Paths.ConfigPath, "BepInEx.cfg");
-            SetIniBoolean(configPath, "Logging.Console", "Enabled", enabled);
+            SetIniBoolean(configPath, "Logging.Console", "Enabled", false);
         }
         catch (Exception ex)
         {
-            log.LogWarning($"Failed to set BepInEx console logging for next launch: {ex.Message}");
+            log.LogWarning($"Failed to disable BepInEx console logging for next launch: {ex.Message}");
         }
     }
 
-    private static void SetCurrentConsoleWindowVisible(bool visible, ManualLogSource log)
+    private static void HideCurrentConsoleWindow(ManualLogSource log)
     {
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return;
 
@@ -65,11 +43,11 @@ internal static class BepInExConsoleHelper
         {
             var consoleWindow = GetConsoleWindow();
             if (consoleWindow == IntPtr.Zero) return;
-            ShowWindow(consoleWindow, visible ? ShowWindowNormal : HideWindow);
+            ShowWindow(consoleWindow, HideWindow);
         }
         catch (Exception ex)
         {
-            log.LogWarning($"Failed to set BepInEx console window visibility: {ex.Message}");
+            log.LogWarning($"Failed to hide BepInEx console window: {ex.Message}");
         }
     }
 
@@ -138,7 +116,4 @@ internal static class BepInExConsoleHelper
 
     [DllImport("user32.dll")]
     private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-
-    [DllImport("user32.dll")]
-    private static extern bool IsWindowVisible(IntPtr hWnd);
 }
