@@ -2408,19 +2408,17 @@ function ModServicePanel({
             </ListPanel>
           </div>
 
-          {(recommendations.length > 0 || recommendationIssues.length > 0) && (
-            <CurrentOrderRecommendations
-              recommendations={recommendations}
-              recommendationIssues={recommendationIssues}
-              runtimeSets={runtimeSets}
-              orderSortMode={autoPrepPreferences.serviceOrderSortMode}
-              favorites={favorites}
-              favoriteBusyKey={favoriteBusyKey}
-              favoriteError={favoriteError}
-              onToggleRecipeFavorite={onToggleRecipeFavorite}
-              onToggleBeverageFavorite={onToggleBeverageFavorite}
-            />
-          )}
+          <CurrentOrderRecommendations
+            recommendations={recommendations}
+            recommendationIssues={recommendationIssues}
+            runtimeSets={runtimeSets}
+            orderSortMode={autoPrepPreferences.serviceOrderSortMode}
+            favorites={favorites}
+            favoriteBusyKey={favoriteBusyKey}
+            favoriteError={favoriteError}
+            onToggleRecipeFavorite={onToggleRecipeFavorite}
+            onToggleBeverageFavorite={onToggleBeverageFavorite}
+          />
         </TabsContent>
 
         <TabsContent value="normal" className="space-y-4">
@@ -2493,7 +2491,6 @@ function ModServicePanel({
 function AutomationResourcePanel({ overview }: { overview: AutomationResourceOverview }) {
   const hasCookerRows = overview.cookers.length > 0;
   const hasTrayRows = overview.tray.length > 0;
-  if (!hasCookerRows && !hasTrayRows) return null;
 
   return (
     <div className={DENSE_TWO_COLUMN_GRID}>
@@ -2698,6 +2695,7 @@ function CurrentOrderRecommendations({
           {favoriteError}
         </div>
       )}
+      {rows.length === 0 && <EmptyRow text="暂无当前稀客点单推荐" />}
       <div className={compact ? 'space-y-2' : 'space-y-4'}>
         {rows.map((row) => {
           if (row.kind === 'issue') {
@@ -3614,12 +3612,14 @@ function RareAutoPrepStatus({
   onRetryOrder: (orderKey: string) => void;
   onResetOrder: (orderKey: string) => void;
 }) {
-  if (!message && !paused && diagnostics.length === 0) return null;
-
   return (
     <div className="mt-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
       <div className="font-medium text-foreground">稀客自动化{busy ? '处理中' : '状态'}</div>
-      {diagnostics.length > 0 && (
+      {diagnostics.length === 0 ? (
+        <div className="mt-2 rounded-md border border-border bg-background/70 px-2.5 py-2 text-xs text-muted-foreground">
+          暂无正在处理的稀客订单。
+        </div>
+      ) : (
         <div className="mt-2 space-y-2">
           {diagnostics.map((diagnostic) => (
             <div key={diagnostic.orderKey} className="rounded-md border border-border bg-background/70 px-2.5 py-2">
@@ -3685,7 +3685,9 @@ function RareAutoPrepStatus({
           ))}
         </div>
       )}
-      {message && <div className="mt-2 whitespace-pre-line text-muted-foreground">{message}</div>}
+      <div className="mt-2 whitespace-pre-line text-muted-foreground">
+        {message || '等待稀客订单或自动化条件。'}
+      </div>
       <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
         <Badge variant={paused ? 'destructive' : 'secondary'}>{paused ? '已暂停' : '运行中'}</Badge>
         <Badge variant="outline">每轮最多 {preferences.autoRareConcurrency}</Badge>
@@ -3713,12 +3715,14 @@ function NormalAutoPrepStatus({
   preferences: CompanionPreferences;
   diagnostics: NormalAutoOrderDiagnostic[];
 }) {
-  if (!message && pausedCount === 0 && diagnostics.length === 0) return null;
-
   return (
     <div className="mt-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
       <div className="font-medium text-foreground">普客自动化{busy ? '处理中' : '状态'}</div>
-      {diagnostics.length > 0 && (
+      {diagnostics.length === 0 ? (
+        <div className="mt-2 rounded-md border border-border bg-background/70 px-2.5 py-2 text-xs text-muted-foreground">
+          暂无正在处理的普客订单。
+        </div>
+      ) : (
         <div className="mt-2 space-y-2">
           {diagnostics.map((diagnostic) => (
             <div key={diagnostic.orderKey} className="rounded-md border border-border bg-background/70 px-2.5 py-2">
@@ -3764,7 +3768,9 @@ function NormalAutoPrepStatus({
           ))}
         </div>
       )}
-      {message && <div className="mt-1 whitespace-pre-line text-muted-foreground">{message}</div>}
+      <div className="mt-1 whitespace-pre-line text-muted-foreground">
+        {message || '等待普客订单或自动化条件。'}
+      </div>
       <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
         <Badge variant={pausedCount > 0 ? 'destructive' : 'secondary'}>暂停订单 {pausedCount}</Badge>
         <Badge variant="outline">每轮最多 {preferences.autoNormalConcurrency}</Badge>
