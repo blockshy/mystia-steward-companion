@@ -2109,19 +2109,19 @@ function ModOverviewPanel({
             </Button>
             {inviteAllError && <EmptyRow text={inviteAllError} />}
             {inviteAllResult ? (
-              <div className="rounded-md border border-border/80 bg-background/35 p-2">
-                <InfoLine label="结果" value={inviteAllResult.status || (inviteAllResult.ok ? '已完成' : '失败')} />
-                <InfoLine
+              <div className="max-w-full min-w-0 overflow-hidden rounded-md border border-border/80 bg-background/35 p-2">
+                <WrappedInfoLine label="结果" value={inviteAllResult.status || (inviteAllResult.ok ? '已完成' : '失败')} />
+                <WrappedInfoLine
                   label="统计"
                   value={`新增 ${inviteAllResult.invitedCount} · 候选 ${inviteAllResult.candidateCount} · 可判定 ${inviteAllResult.usableCount} · 今晚已邀 ${inviteAllResult.existingControlledCount}/${inviteAllResult.existingSlotCount}`}
                 />
-                <InfoLine label="来源" value={inviteAllResult.source || '未知'} />
+                <WrappedInfoLine label="来源" value={inviteAllResult.source || '未知'} />
                 {inviteAllResult.diagnostics && (
-                  <InfoLine label="读取诊断" value={inviteAllResult.diagnostics} />
+                  <WrappedInfoLine label="读取诊断" value={inviteAllResult.diagnostics} mono />
                 )}
                 <div className="mt-2 flex flex-wrap gap-1">
                   {inviteAllResult.invited.slice(0, 12).map((entry) => (
-                    <Badge key={`${entry.id}-${entry.runtimeName || entry.name}`} variant="secondary">
+                    <Badge key={`${entry.id}-${entry.runtimeName || entry.name}`} variant="secondary" className="max-w-full">
                       {entry.name || entry.runtimeName || `#${entry.id}`}
                     </Badge>
                   ))}
@@ -2133,7 +2133,7 @@ function ModOverviewPanel({
                   )}
                 </div>
                 {inviteAllResult.skipped.length > 0 && (
-                  <div className="mt-2 text-xs text-muted-foreground">
+                  <div className="mt-2 max-w-full break-words text-xs text-muted-foreground">
                     跳过：{summarizeInvitationSkipped(inviteAllResult.skipped)}
                   </div>
                 )}
@@ -4348,6 +4348,17 @@ function InfoLine({ label, value, mono = false }: { label: string; value: string
   );
 }
 
+function WrappedInfoLine({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="min-w-0">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className={`mt-1 whitespace-normal break-words text-sm ${mono ? 'font-mono text-xs leading-relaxed' : 'font-medium'}`} title={value}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
 function formatGuestFund(guest: NightBusinessGuest): string {
   if (typeof guest.fund !== 'number' || !Number.isFinite(guest.fund)) return '';
   return String(Math.trunc(guest.fund));
@@ -4355,8 +4366,8 @@ function formatGuestFund(guest: NightBusinessGuest): string {
 
 function ListPanel({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
   return (
-    <Card>
-      <CardContent className="p-4">
+    <Card className="min-w-0">
+      <CardContent className="min-w-0 p-4">
         <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
           <h2 className="min-w-0 text-base font-semibold">{title}</h2>
           {action}
