@@ -26,7 +26,7 @@
 - `修改` 页通过 `/inventory/set` 在 Unity 主线程写入当前运行时材料和酒水库存；页面只保留 `-10`、`+10` 和 `99` 快捷按钮，用户仍需在游戏内保存才能持久化。
 - `BepInEx/LogOutput.log` 通过伴随窗口 `日志` 页读取，接口按 `LocalApi.MaxLogLines` 和 `LocalApi.MaxLogBytes` 裁剪尾部内容，前端也只保留有限行数显示。
 - Mod 默认写入 `BepInEx/config/BepInEx.cfg` 将 `[Logging.Console] Enabled=false`，并在 Windows 当前会话尝试隐藏控制台窗口；配置对下一次启动完全生效。
-- 旧游戏内 IMGUI 面板默认关闭，仅作为回退方案。
+- 游戏内 IMGUI 面板已移除；Mod 在游戏侧只保留后台控制器、本地 API、运行时读取、自动化和伴随窗口唤起。
 - 仓库不使用 GitHub Actions 自动构建 Release；`.github/workflows/ci.yml` 只保留手动前端检查。版本发布采用 Windows 本机构建后由 GitHub CLI 上传。
 - 默认热键 `F8` 和 `RS Click` 的主语义是游戏与伴随窗口焦点切换；伴随窗口聚焦时由 Tauri 前端处理热键并按设置切回游戏。手柄切换需要释放锁存和可配置后端防抖，防止同一次长按连续 toggle；默认冷却时间为 800ms。
 - 伴随窗口内手柄导航由 `apps/companion/src/companion/use-gamepad-navigation.ts` 管理：左摇杆/十字键移动焦点，`A` 确认，`B` 返回或退出专注模式，`LB/RB` 切页，`LT/RT` 滚动，`Y` 进入专注模式或切换精简模式，`X` 收藏当前推荐行。导航采用 `data-gamepad-scope` 分区，顶部页签栏左右键只在页签之间移动，向下进入当前页面内容；行内控件左右移动优先在当前 `data-gamepad-row` 内完成，range 滑杆左右键直接调值，推荐行和收藏按钮需要稳定 `data-gamepad-focus-key` 以便状态变化后回焦。

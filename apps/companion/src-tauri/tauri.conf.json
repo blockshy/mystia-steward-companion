@@ -30,8 +30,7 @@
     }
   },
   "bundle": {
-    "active": true,
-    "targets": ["nsis"],
+    "active": false,
     "category": "Utility",
     "icon": [
       "icons/32x32.png",

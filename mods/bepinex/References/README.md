@@ -8,7 +8,6 @@
 - `Il2CppInterop.Runtime.dll`
 - `Il2Cppmscorlib.dll`
 - `UnityEngine.CoreModule.dll`
-- `UnityEngine.IMGUIModule.dll`
 - `UnityEngine.InputLegacyModule.dll`
 
 不需要复制 `Assembly-CSharp.dll`。Mod 对游戏运行时状态的读取使用反射，类型和字段名来自导出的 `/tmp/Assembly-CSharp` 项目作为开发参考，不作为编译引用。

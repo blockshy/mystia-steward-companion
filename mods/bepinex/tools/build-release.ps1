@@ -34,7 +34,6 @@ $RequiredReferenceFiles = @(
     "Il2CppInterop.Runtime.dll",
     "Il2Cppmscorlib.dll",
     "UnityEngine.CoreModule.dll",
-    "UnityEngine.IMGUIModule.dll",
     "UnityEngine.InputLegacyModule.dll"
 )
 

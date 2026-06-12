@@ -6,7 +6,7 @@
 
 - `src/Core/`：推荐算法、数据模型和排序规则。
 - `src/Save/`：运行时反射读取、兼容探测和推荐状态构造。
-- `src/Ui/`：旧游戏内 IMGUI 回退面板、伴随窗口控制器和快照缓存。
+- `src/Ui/`：伴随窗口控制器、运行时循环和快照缓存。
 - `src/Plugin/`：BepInEx 入口、配置和伴随窗口启动逻辑。
 - `src/LocalApi/`：本地回环 API，供 Tauri 伴随窗口读取实时状态。
 - `Data/`：打包进 Mod 的料理、酒水、食材、普客、稀客和 tag 数据。
@@ -53,7 +53,6 @@ mods/bepinex/
     Il2CppInterop.Runtime.dll
     Il2Cppmscorlib.dll
     UnityEngine.CoreModule.dll
-    UnityEngine.IMGUIModule.dll
     UnityEngine.InputLegacyModule.dll
 ```
 
@@ -130,7 +129,6 @@ bash mods/bepinex/tools/package-release.sh
 ```text
 apps/companion/dist/
 apps/companion/src-tauri/target/release/mystia-steward-companion(.exe)
-apps/companion/src-tauri/target/release/bundle/nsis/*.exe
 mods/bepinex/bin/Release/MystiaStewardCompanion.BepInEx.dll
 mods/bepinex/dist/mystia-steward-companion-bepinex.zip
 ```
@@ -237,22 +235,6 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
   -Clobber
 ```
 
-### 清理旧安装器资产
-
-如果历史 Release 里已经上传过 setup 安装器，需要手动删除一次：
-
-```powershell
-gh release delete-asset v1.0.0 mystia-steward-companion_1.0.0_x64-setup.exe `
-  --repo blockshy/mystia-steward-companion `
-  --yes
-
-gh release delete-asset v1.0.0 Mystia.Steward.Companion_0.1.0_x64-setup.exe `
-  --repo blockshy/mystia-steward-companion `
-  --yes
-```
-
-之后重新运行发布脚本不会再上传 setup。
-
 ### 版本 tag
 
 发布脚本不会自动创建或移动 Git tag。新版本发布前应显式处理 tag：
@@ -349,9 +331,7 @@ http://127.0.0.1:32145
 
 ## 输入处理
 
-旧游戏内 IMGUI 面板默认关闭。启用后，面板脚本会释放锁定光标、消费 IMGUI 鼠标/键盘事件，并调用 `Input.ResetInputAxes()`，减少点击同时传递给游戏的情况。
-
-如果游戏逻辑在更早阶段直接读取鼠标输入，后续需要通过 Harmony Hook 游戏输入逻辑才能完全拦截。
+游戏内不再保留 IMGUI 面板。Mod 在游戏侧只处理 F8/RS Click 热键、后台读取、本地 API 和自动化执行；用户交互全部放在 Tauri 独立伴随窗口中。伴随窗口获得焦点时由独立进程消费鼠标、键盘和手柄输入，不需要拦截游戏内 IMGUI 事件。
 
 ## 调试建议
 
@@ -365,4 +345,4 @@ http://127.0.0.1:32145
 
 - 构建依赖本机 `References/` 中的 BepInEx、Il2CppInterop 和 Unity DLL；这些 DLL 不提交到仓库。
 - 运行时反射依赖游戏版本中的类型和字段名；如果游戏更新导致字段变化，需要根据导出的 `Assembly-CSharp` 项目调整 provider。
-- 旧游戏内 UI 使用 Unity IMGUI，仅保留回退用途；主要交互应放在 Tauri 独立伴随窗口中。
+- 伴随窗口是唯一用户界面；游戏内不再提供备用 IMGUI 面板。

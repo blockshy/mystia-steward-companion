@@ -39,7 +39,6 @@ check_file "$ROOT_DIR/References/0Harmony.dll"
 check_file "$ROOT_DIR/References/Il2CppInterop.Runtime.dll"
 check_file "$ROOT_DIR/References/Il2Cppmscorlib.dll"
 check_file "$ROOT_DIR/References/UnityEngine.CoreModule.dll"
-check_file "$ROOT_DIR/References/UnityEngine.IMGUIModule.dll"
 check_file "$ROOT_DIR/References/UnityEngine.InputLegacyModule.dll"
 
 if [[ "$FAILED" -ne 0 ]]; then

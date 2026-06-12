@@ -1930,7 +1930,7 @@ function ModOverviewPanel({
       <div className={DENSE_TWO_COLUMN_GRID}>
         <ListPanel title="快捷键">
           <div className="grid gap-2 text-sm">
-            <InfoLine label="F8" value="在游戏与独立窗口之间切换；若启用旧游戏内面板，则打开或关闭游戏内面板" />
+            <InfoLine label="F8" value="在游戏与独立窗口之间切换焦点或重新显示伴随窗口" />
             <InfoLine label="RS Click" value="手柄默认在游戏与独立窗口之间切换" />
             <InfoLine label="手柄导航" value="左摇杆/十字键移动，A 确认，B 返回，LB/RB 切换页面，LT/RT 滚动" />
             <InfoLine label="专注模式" value="Y 进入专注模式或切换精简模式，X 收藏当前推荐项" />
@@ -2925,6 +2925,7 @@ function ModTasksPanel({
   missions: RuntimeMissionContext | null;
 }) {
   const [statusFilters, setStatusFilters] = useState<MissionStatusFilter[]>(DEFAULT_MISSION_STATUS_FILTERS);
+  const [showExtraInfo, setShowExtraInfo] = useState(false);
 
   if (!runtimeLoaded) {
     return <RuntimeUnavailable />;
@@ -2954,6 +2955,17 @@ function ModTasksPanel({
         title={`可推进任务 (${filteredRows.length})`}
         action={(
           <div className="flex flex-wrap gap-1.5">
+            <Button
+              type="button"
+              size="sm"
+              variant={showExtraInfo ? 'default' : 'outline'}
+              className="h-8 px-2.5"
+              aria-pressed={showExtraInfo}
+              data-gamepad-clickable="true"
+              onClick={() => setShowExtraInfo((value) => !value)}
+            >
+              显示额外信息
+            </Button>
             {MISSION_STATUS_FILTER_OPTIONS.map((filter) => (
               <Button
                 key={filter}
@@ -2982,6 +2994,7 @@ function ModTasksPanel({
           const places = mission.places?.filter(Boolean) ?? [];
           const status = normalizeMissionStatus(mission);
           const shouldShowMissingPlace = places.length === 0 && status === 'available';
+          const displayTitle = getMissionDisplayTitle(mission, showExtraInfo);
           return (
           <div
             key={`${mission.characterLabel}-${mission.label}`}
@@ -2990,14 +3003,18 @@ function ModTasksPanel({
             data-gamepad-row-key={`task:${mission.characterLabel}:${mission.label}`}
           >
             <div className="flex items-center justify-between gap-3">
-              <span className="min-w-0 truncate font-medium" title={mission.title || mission.label}>
-                {mission.title || mission.label}
+              <span className="min-w-0 truncate font-medium" title={showExtraInfo ? mission.title || mission.label : displayTitle}>
+                {displayTitle}
               </span>
               <span className="shrink-0 text-muted-foreground">{mission.characterName || mission.characterLabel}</span>
             </div>
             <div className="mt-1 flex flex-wrap gap-1.5">
-              <Badge variant="outline">{mission.label}</Badge>
-              <Badge variant="secondary">{mission.source}</Badge>
+              {showExtraInfo && (
+                <>
+                  <Badge variant="outline">{mission.label}</Badge>
+                  <Badge variant="secondary">{mission.source}</Badge>
+                </>
+              )}
               <Badge variant={status === 'fulfilled' ? 'default' : status === 'tracking' ? 'secondary' : 'outline'}>
                 {getMissionStatusFilterLabel(status)}
               </Badge>
@@ -6904,6 +6921,25 @@ function getMissionStatusFilterLabel(filter: MissionStatusFilter): string {
     case 'fulfilled':
       return '可完成';
   }
+}
+
+function getMissionDisplayTitle(mission: RuntimeMissionInfo, showExtraInfo: boolean): string {
+  const title = mission.title?.trim() || '';
+  if (showExtraInfo || !isTechnicalMissionText(title)) {
+    return title || mission.label || '未解析任务';
+  }
+
+  if (mission.targetRecipeName) return `料理任务：${mission.targetRecipeName}`;
+  return '未解析任务';
+}
+
+function isTechnicalMissionText(value: string | null | undefined): boolean {
+  const text = value?.trim();
+  if (!text) return false;
+  if (text.includes('ScheduledEventMission:')) return true;
+  if (text.includes('_Mission') || text.includes('_Event')) return /^[A-Za-z0-9_:.+-]+$/.test(text);
+  if (text.startsWith('DLC') && /^[A-Za-z0-9_:.+-]+$/.test(text)) return true;
+  return false;
 }
 
 function normalizeMissionStatus(mission: RuntimeMissionInfo): MissionStatusFilter {

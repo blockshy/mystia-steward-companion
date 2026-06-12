@@ -11,7 +11,7 @@
     "lint": "eslint .",
     "preview": "vite preview --config apps/companion/vite.config.ts",
     "tauri:dev": "cd apps/companion && tauri dev",
-    "tauri:build": "cd apps/companion && tauri build"
+    "tauri:build": "cd apps/companion && tauri build --no-bundle"
   },
   "dependencies": {
     "@base-ui/react": "^1.3.0",

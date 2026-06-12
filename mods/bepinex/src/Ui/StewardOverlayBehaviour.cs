@@ -26,11 +26,6 @@ public sealed class StewardOverlayBehaviour : MonoBehaviour
         (_controller as StewardOverlayController)?.LateUpdate();
     }
 
-    private void OnGUI()
-    {
-        (_controller as StewardOverlayController)?.OnGUI();
-    }
-
     private void OnDestroy()
     {
         (_controller as StewardOverlayController)?.Dispose();

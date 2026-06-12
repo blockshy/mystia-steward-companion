@@ -51,7 +51,6 @@ Test-RequiredFile (Join-Path $EffectiveReferenceDir "0Harmony.dll")
 Test-RequiredFile (Join-Path $EffectiveReferenceDir "Il2CppInterop.Runtime.dll")
 Test-RequiredFile (Join-Path $EffectiveReferenceDir "Il2Cppmscorlib.dll")
 Test-RequiredFile (Join-Path $EffectiveReferenceDir "UnityEngine.CoreModule.dll")
-Test-RequiredFile (Join-Path $EffectiveReferenceDir "UnityEngine.IMGUIModule.dll")
 Test-RequiredFile (Join-Path $EffectiveReferenceDir "UnityEngine.InputLegacyModule.dll")
 
 if ($Failed) {
