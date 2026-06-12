@@ -26,6 +26,7 @@ internal sealed class LocalApiServer : IDisposable
     private readonly Func<OrderPreparationRequest, OrderPreparationResult> _prepareOrder;
     private readonly Func<OrderPreparationRequest, OrderPreparationResult> _completeOrder;
     private readonly Func<OrderPreparationRequest, OrderPreparationResult> _completeNormalOrder;
+    private readonly Func<RareGuestInvitationResult> _inviteAllRareGuests;
     private readonly FavoriteStore _favoriteStore;
     private TcpListener? _listener;
     private Thread? _thread;
@@ -45,6 +46,7 @@ internal sealed class LocalApiServer : IDisposable
         Func<OrderPreparationRequest, OrderPreparationResult> prepareOrder,
         Func<OrderPreparationRequest, OrderPreparationResult> completeOrder,
         Func<OrderPreparationRequest, OrderPreparationResult> completeNormalOrder,
+        Func<RareGuestInvitationResult> inviteAllRareGuests,
         FavoriteStore favoriteStore,
         ManualLogSource log)
     {
@@ -60,6 +62,7 @@ internal sealed class LocalApiServer : IDisposable
         _prepareOrder = prepareOrder;
         _completeOrder = completeOrder;
         _completeNormalOrder = completeNormalOrder;
+        _inviteAllRareGuests = inviteAllRareGuests;
         _favoriteStore = favoriteStore;
         _logOutputPath = ResolveLogOutputPath();
         _healthJson = $"{{\"ok\":true,\"pluginVersion\":\"{EscapeJson(pluginVersion)}\",\"bindAddress\":\"{BindAddress}\",\"port\":{Port},\"authRequired\":true}}";
@@ -218,6 +221,9 @@ internal sealed class LocalApiServer : IDisposable
                         break;
                     case "/orders/normal/complete-first":
                         WriteResponse(stream, 200, "OK", BuildOrderActionJson(query, _completeNormalOrder));
+                        break;
+                    case "/rare-guests/invite-all":
+                        WriteResponse(stream, 200, "OK", BuildRareGuestInvitationJson());
                         break;
                     case "/ui-pinning/target":
                         WriteResponse(stream, 200, "OK", UpdateUiPinningTargetJson(query));
@@ -534,6 +540,24 @@ internal sealed class LocalApiServer : IDisposable
         catch (Exception ex)
         {
             return "{\"ok\":false,\"prepared\":false,\"error\":\"" + EscapeJson(ex.Message) + "\",\"order\":{\"deskCode\":-1,\"guestId\":null,\"guestName\":\"\",\"foodTag\":\"\",\"beverageTag\":\"\"},\"recipeId\":-1,\"recipeName\":\"\",\"beverageId\":-1,\"beverageName\":\"\",\"steps\":[]}";
+        }
+    }
+
+    private string BuildRareGuestInvitationJson()
+    {
+        try
+        {
+            var result = _inviteAllRareGuests();
+            return JsonSerializer.Serialize(result, new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            });
+        }
+        catch (Exception ex)
+        {
+            return "{\"ok\":false,\"runtimeAvailable\":false,\"status\":\"稀客邀请失败。\",\"error\":\""
+                + EscapeJson(ex.Message)
+                + "\",\"candidateCount\":0,\"usableCount\":0,\"existingControlledCount\":0,\"invitedCount\":0,\"skippedCount\":0,\"invited\":[],\"skipped\":[]}";
         }
     }
 

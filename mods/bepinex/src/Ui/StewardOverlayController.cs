@@ -30,6 +30,8 @@ internal sealed class StewardOverlayController
     private readonly Queue<PendingInventoryBulkEdit> _pendingInventoryBulkEdits = new();
     private readonly object _orderPreparationLock = new();
     private readonly Queue<PendingOrderPreparation> _pendingOrderPreparations = new();
+    private readonly object _rareGuestInvitationLock = new();
+    private readonly Queue<PendingRareGuestInvitation> _pendingRareGuestInvitations = new();
     private bool _runtimeLoaded;
     private int _mainThreadId;
     private long _lastSpecialOrderChangeVersion;
@@ -79,6 +81,13 @@ internal sealed class StewardOverlayController
         public Exception? Error { get; set; }
     }
 
+    private sealed class PendingRareGuestInvitation
+    {
+        public ManualResetEventSlim Completion { get; } = new(false);
+        public RareGuestInvitationResult? Result { get; set; }
+        public Exception? Error { get; set; }
+    }
+
     private enum OrderActionKind
     {
         PrepareRare,
@@ -111,6 +120,7 @@ internal sealed class StewardOverlayController
         ProcessPendingInventoryEdits();
         ProcessPendingInventoryBulkEdits();
         ProcessPendingOrderPreparations();
+        ProcessPendingRareGuestInvitations();
         ProcessPendingCookingCollections();
         RefreshOnSceneChange();
         RefreshBusinessContextOnSpecialOrderChange();
@@ -442,6 +452,7 @@ internal sealed class StewardOverlayController
                 PrepareOrderFromLocalApi,
                 CompleteOrderFromLocalApi,
                 CompleteNormalOrderFromLocalApi,
+                InviteAllRareGuestsFromLocalApi,
                 new FavoriteStore(FavoriteStore.ResolvePath(), _log),
                 _log);
             _localApiServer.Start();
@@ -731,6 +742,28 @@ internal sealed class StewardOverlayController
         return RunOrderActionFromLocalApi(request, OrderActionKind.CompleteNormal);
     }
 
+    private RareGuestInvitationResult InviteAllRareGuestsFromLocalApi()
+    {
+        if (Thread.CurrentThread.ManagedThreadId == _mainThreadId)
+        {
+            return ApplyRareGuestInvitation();
+        }
+
+        var pending = new PendingRareGuestInvitation();
+        lock (_rareGuestInvitationLock)
+        {
+            _pendingRareGuestInvitations.Enqueue(pending);
+        }
+
+        if (!pending.Completion.Wait(TimeSpan.FromSeconds(3.5)))
+        {
+            throw new TimeoutException("Rare guest invitation timed out waiting for Unity main thread.");
+        }
+
+        if (pending.Error != null) throw pending.Error;
+        return pending.Result ?? throw new InvalidOperationException("Rare guest invitation did not produce a result.");
+    }
+
     private OrderPreparationResult RunOrderActionFromLocalApi(OrderPreparationRequest request, OrderActionKind action)
     {
         if (Thread.CurrentThread.ManagedThreadId != _mainThreadId)
@@ -826,6 +859,43 @@ internal sealed class StewardOverlayController
                 pending.Completion.Set();
             }
         }
+    }
+
+    private void ProcessPendingRareGuestInvitations()
+    {
+        while (true)
+        {
+            PendingRareGuestInvitation? pending;
+            lock (_rareGuestInvitationLock)
+            {
+                pending = _pendingRareGuestInvitations.Count == 0 ? null : _pendingRareGuestInvitations.Dequeue();
+            }
+
+            if (pending == null) return;
+
+            try
+            {
+                pending.Result = ApplyRareGuestInvitation();
+            }
+            catch (Exception ex)
+            {
+                pending.Error = ex;
+            }
+            finally
+            {
+                pending.Completion.Set();
+            }
+        }
+    }
+
+    private RareGuestInvitationResult ApplyRareGuestInvitation()
+    {
+        var result = RuntimeRareGuestInvitationService.InviteAllAvailable(_repository, _log);
+        _status = result.Ok
+            ? result.Status
+            : L($"邀请稀客失败：{result.Error ?? result.Status}", $"Rare guest invitation failed: {result.Error ?? result.Status}");
+        PublishLocalApiSnapshot();
+        return result;
     }
 
     private void ProcessPendingCookingCollections()

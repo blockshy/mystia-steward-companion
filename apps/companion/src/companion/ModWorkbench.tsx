@@ -518,6 +518,27 @@ interface FavoriteMutationResponse {
   error: string | null;
 }
 
+interface RareGuestInvitationEntry {
+  id: number;
+  name: string;
+  runtimeName: string;
+  reason: string;
+}
+
+interface RareGuestInvitationResponse {
+  ok: boolean;
+  runtimeAvailable: boolean;
+  status: string;
+  error: string | null;
+  candidateCount: number;
+  usableCount: number;
+  existingControlledCount: number;
+  invitedCount: number;
+  skippedCount: number;
+  invited: RareGuestInvitationEntry[];
+  skipped: RareGuestInvitationEntry[];
+}
+
 interface GameUiPinningTarget {
   signature: string;
   recipeId: number;
@@ -752,6 +773,9 @@ export function ModWorkbench() {
   const [favorites, setFavorites] = useState<FavoriteData>(() => emptyFavoriteData());
   const [favoriteError, setFavoriteError] = useState('');
   const [favoriteBusyKey, setFavoriteBusyKey] = useState('');
+  const [rareGuestInvitationResult, setRareGuestInvitationResult] = useState<RareGuestInvitationResponse | null>(null);
+  const [rareGuestInvitationError, setRareGuestInvitationError] = useState('');
+  const [rareGuestInvitationBusy, setRareGuestInvitationBusy] = useState(false);
   const [autoPrepBusy, setAutoPrepBusy] = useState(false);
   const [autoPrepMessage, setAutoPrepMessage] = useState('');
   const [autoPrepPaused, setAutoPrepPaused] = useState(false);
@@ -1029,6 +1053,28 @@ export function ModWorkbench() {
       setFavoriteBusyKey('');
     }
   }, [apiToken, favorites, normalizedEndpoint]);
+
+  const inviteAllRareGuests = useCallback(async () => {
+    if (!apiToken) {
+      setRareGuestInvitationError('未收到本地 API Token。请从游戏内启动或按 F8 唤起伴随窗口。');
+      return;
+    }
+
+    setRareGuestInvitationBusy(true);
+    setRareGuestInvitationError('');
+    try {
+      const response = await inviteAllAvailableRareGuests(normalizedEndpoint, apiToken);
+      setRareGuestInvitationResult(response);
+      if (!response.ok) {
+        setRareGuestInvitationError(response.error || response.status || '稀客邀请失败');
+      }
+      await refresh(true);
+    } catch (err) {
+      setRareGuestInvitationError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRareGuestInvitationBusy(false);
+    }
+  }, [apiToken, normalizedEndpoint, refresh]);
 
   const runAutoFirstOrder = useCallback(async () => {
     if (!companionPreferences.automationEnabled || autoFirstOrderBusyRef.current || autoPrepBusy) return;
@@ -1829,6 +1875,10 @@ export function ModWorkbench() {
             indexes={recommendationIndexes}
             error={error}
             lastConnectedAt={lastConnectedAt}
+            inviteAllBusy={rareGuestInvitationBusy}
+            inviteAllResult={rareGuestInvitationResult}
+            inviteAllError={rareGuestInvitationError}
+            onInviteAllRareGuests={inviteAllRareGuests}
           />
         </TabsContent>
 
@@ -1969,6 +2019,10 @@ function ModOverviewPanel({
   indexes,
   error,
   lastConnectedAt,
+  inviteAllBusy,
+  inviteAllResult,
+  inviteAllError,
+  onInviteAllRareGuests,
 }: {
   endpoint: string;
   snapshot: LocalApiSnapshot | null;
@@ -1978,6 +2032,10 @@ function ModOverviewPanel({
   indexes: ReturnType<typeof buildRecommendationDataIndexes>;
   error: string;
   lastConnectedAt: Date | null;
+  inviteAllBusy: boolean;
+  inviteAllResult: RareGuestInvitationResponse | null;
+  inviteAllError: string;
+  onInviteAllRareGuests: () => void;
 }) {
   const ownedIngredientEntries = useMemo(
     () => buildLowStockEntries(runtime?.ownedIngredientQty ?? {}, indexes.ingredientNameById),
@@ -2032,6 +2090,43 @@ function ModOverviewPanel({
           <InfoLine label="流行厌恶" value={runtime?.popularHateFoodTag || '无'} />
           <InfoLine label="当前经营场景" value={night?.place || night?.placeLabel || '无经营场景'} />
           <InfoLine label="经营扫描" value={night?.source || '暂无'} />
+        </ListPanel>
+
+        <ListPanel title="稀客邀请">
+          <div className="grid gap-3 text-sm">
+            <InfoLine label="机制" value="写入游戏原生可邀请稀客队列" />
+            <InfoLine label="可用状态" value={snapshot?.runtimeLoaded ? '等待用户执行' : '等待存档加载'} />
+            <Button
+              size="sm"
+              onClick={onInviteAllRareGuests}
+              disabled={!snapshot?.runtimeLoaded || Boolean(error) || inviteAllBusy}
+            >
+              {inviteAllBusy ? '邀请中...' : '邀请全部可邀请稀客'}
+            </Button>
+            {inviteAllError && <EmptyRow text={inviteAllError} />}
+            {inviteAllResult ? (
+              <div className="rounded-md border border-border/80 bg-background/35 p-2">
+                <InfoLine label="结果" value={inviteAllResult.status || (inviteAllResult.ok ? '已完成' : '失败')} />
+                <InfoLine
+                  label="统计"
+                  value={`新增 ${inviteAllResult.invitedCount} · 候选 ${inviteAllResult.candidateCount} · 已有 ${inviteAllResult.existingControlledCount}`}
+                />
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {inviteAllResult.invited.slice(0, 12).map((entry) => (
+                    <Badge key={`${entry.id}-${entry.runtimeName || entry.name}`} variant="secondary">
+                      {entry.name || entry.runtimeName || `#${entry.id}`}
+                    </Badge>
+                  ))}
+                  {inviteAllResult.invited.length > 12 && (
+                    <Badge variant="outline">+{inviteAllResult.invited.length - 12}</Badge>
+                  )}
+                  {inviteAllResult.invited.length === 0 && <span className="text-xs text-muted-foreground">暂无新增邀请</span>}
+                </div>
+              </div>
+            ) : (
+              <EmptyRow text="尚未执行邀请" />
+            )}
+          </div>
         </ListPanel>
 
         <ListPanel title="低库存概览">
@@ -5045,6 +5140,25 @@ async function exportDiagnosticPackage(
   signal: AbortSignal,
 ): Promise<DiagnosticPackageResponse> {
   return readLocalApiJson<DiagnosticPackageResponse>(endpoint, apiToken, '/logs/export-diagnostics?open=true', signal);
+}
+
+async function inviteAllAvailableRareGuests(
+  endpoint: string,
+  apiToken: string,
+): Promise<RareGuestInvitationResponse> {
+  const abortController = new AbortController();
+  const timeoutId = window.setTimeout(() => abortController.abort(), 5000);
+
+  try {
+    return await readLocalApiJson<RareGuestInvitationResponse>(
+      endpoint,
+      apiToken,
+      '/rare-guests/invite-all',
+      abortController.signal,
+    );
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }
 
 async function writeInventoryQuantity(
