@@ -1804,10 +1804,14 @@ export function ModWorkbench() {
             autoPrepPaused={autoPrepPaused}
             rareOrderDiagnostics={rareOrderDiagnostics}
             autoPrepPreferences={companionPreferences}
+            recipeLimit={serviceFocusRecipeLimit}
+            beverageLimit={serviceFocusBeverageLimit}
             normalOrderBusy={normalOrderBusy}
             normalOrderMessage={normalOrderMessage}
             normalOrderPausedCount={normalOrderPausedCount}
             normalOrderDiagnostics={normalOrderDiagnostics}
+            onRecipeLimitChange={setServiceFocusRecipeLimit}
+            onBeverageLimitChange={setServiceFocusBeverageLimit}
             onPreferenceChange={updateCompanionPreferences}
             onToggleRecipeFavorite={toggleRecipeFavorite}
             onToggleBeverageFavorite={toggleBeverageFavorite}
@@ -2276,11 +2280,15 @@ function ModServicePanel({
   autoPrepPaused,
   rareOrderDiagnostics,
   autoPrepPreferences,
+  recipeLimit,
+  beverageLimit,
   normalOrderBusy,
   normalOrderMessage,
   normalOrderPausedCount,
   normalOrderDiagnostics,
   normalBusiness,
+  onRecipeLimitChange,
+  onBeverageLimitChange,
   onPreferenceChange,
   onToggleRecipeFavorite,
   onToggleBeverageFavorite,
@@ -2304,11 +2312,15 @@ function ModServicePanel({
   autoPrepPaused: boolean;
   rareOrderDiagnostics: RareAutoOrderDiagnostic[];
   autoPrepPreferences: CompanionPreferences;
+  recipeLimit: number;
+  beverageLimit: number;
   normalOrderBusy: boolean;
   normalOrderMessage: string;
   normalOrderPausedCount: number;
   normalOrderDiagnostics: NormalAutoOrderDiagnostic[];
   normalBusiness: NormalBusinessContext | null;
+  onRecipeLimitChange: (value: number) => void;
+  onBeverageLimitChange: (value: number) => void;
   onPreferenceChange: (next: Partial<CompanionPreferences>) => void;
   onToggleRecipeFavorite: ToggleRecipeFavorite;
   onToggleBeverageFavorite: ToggleBeverageFavorite;
@@ -2373,12 +2385,6 @@ function ModServicePanel({
         </TabsList>
 
         <TabsContent value="rare" className="space-y-4">
-          <div className="flex flex-wrap justify-end gap-2">
-            <Button size="sm" onClick={onEnterFocusMode}>
-              稀客订单专注模式
-            </Button>
-          </div>
-
           {autoPrepPreferences.automationEnabled && (
             <RareServiceAutomationPanel
               preferences={autoPrepPreferences}
@@ -2435,6 +2441,17 @@ function ModServicePanel({
             favorites={favorites}
             favoriteBusyKey={favoriteBusyKey}
             favoriteError={favoriteError}
+            action={(
+              <ServiceRecommendationHeaderActions
+                recipeLimit={recipeLimit}
+                beverageLimit={beverageLimit}
+                onRecipeLimitChange={onRecipeLimitChange}
+                onBeverageLimitChange={onBeverageLimitChange}
+                onEnterFocusMode={onEnterFocusMode}
+              />
+            )}
+            recipeLimit={recipeLimit}
+            beverageLimit={beverageLimit}
             onToggleRecipeFavorite={onToggleRecipeFavorite}
             onToggleBeverageFavorite={onToggleBeverageFavorite}
           />
@@ -2586,6 +2603,30 @@ function ResourceUsageRow({
   );
 }
 
+function ServiceRecommendationHeaderActions({
+  recipeLimit,
+  beverageLimit,
+  onRecipeLimitChange,
+  onBeverageLimitChange,
+  onEnterFocusMode,
+}: {
+  recipeLimit: number;
+  beverageLimit: number;
+  onRecipeLimitChange: (value: number) => void;
+  onBeverageLimitChange: (value: number) => void;
+  onEnterFocusMode: () => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center justify-end gap-2">
+      <FocusLimitInput label="料理" value={recipeLimit} onChange={onRecipeLimitChange} />
+      <FocusLimitInput label="酒水" value={beverageLimit} onChange={onBeverageLimitChange} />
+      <Button size="sm" onClick={onEnterFocusMode}>
+        稀客订单专注模式
+      </Button>
+    </div>
+  );
+}
+
 function ServiceFocusPage({
   recommendations,
   recommendationIssues,
@@ -2646,7 +2687,7 @@ function ServiceFocusPage({
             value={beverageLimit}
             onChange={onBeverageLimitChange}
           />
-          <Button size="sm" variant="outline" onClick={onExit}>退出专注模式</Button>
+          <Button size="sm" onClick={onExit}>退出专注模式</Button>
         </div>
       </div>
 
@@ -2680,6 +2721,7 @@ function CurrentOrderRecommendations({
   favorites,
   favoriteBusyKey,
   favoriteError,
+  action,
   compact = false,
   recipeLimit = MAX_RECOMMENDATION_ROWS,
   beverageLimit = MAX_RECOMMENDATION_ROWS,
@@ -2693,6 +2735,7 @@ function CurrentOrderRecommendations({
   favorites: FavoriteData;
   favoriteBusyKey: string;
   favoriteError: string;
+  action?: ReactNode;
   compact?: boolean;
   recipeLimit?: number;
   beverageLimit?: number;
@@ -2708,7 +2751,7 @@ function CurrentOrderRecommendations({
   );
 
   return (
-    <ListPanel title="当前点单推荐">
+    <ListPanel title="当前点单推荐" action={action}>
       {favoriteError && (
         <div className="mb-2 rounded-md border border-destructive/30 px-3 py-2 text-sm text-destructive">
           {favoriteError}
@@ -3857,8 +3900,8 @@ function ListPanel({ title, action, children }: { title: string; action?: ReactN
   return (
     <Card>
       <CardContent className="p-4">
-        <div className="mb-2 flex items-center justify-between gap-3">
-          <h2 className="text-base font-semibold">{title}</h2>
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
+          <h2 className="min-w-0 text-base font-semibold">{title}</h2>
           {action}
         </div>
         {children}
