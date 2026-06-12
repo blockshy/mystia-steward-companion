@@ -19,7 +19,7 @@
 - 独立伴随窗口通过 `127.0.0.1:32145` 读取运行态；除 `/health` 外，本地 API 使用 `X-Mystia-Steward-Companion-Token` 授权。
 - 伴随窗口控制端口固定为 `127.0.0.1:32146`，支持 `show`、`toggle`、`exit` 消息；Mod 热键应先通知已有窗口，控制端口不可达时才启动新进程。
 - 伴随窗口会在 Tauri app data 目录保存 `window-state.txt`，记录外框位置和内框尺寸；启动时恢复大小和仍在显示器范围内的位置，防止换显示器后窗口离屏。
-- 伴随窗口 `设置` 页负责窗口透明度、焦点切换行为、切换冷却时间、置顶、主题、手柄导航、缺失厨具过滤、经营中订单排序、料理/酒水推荐排序、实验性游戏界面置顶、目标厨具高亮和实验性自动化总开关。透明度通过 Tauri transparent window + CSS 背景 alpha 实现，文字不随背景变淡；稀客专注模式的料理/酒水显示数量在专注模式浮层内调整。
+- 伴随窗口 `设置` 页负责窗口透明度、焦点切换行为、切换冷却时间、置顶、主题、手柄导航、缺失厨具过滤、任务料理优先、经营中订单排序、料理/酒水推荐排序、实验性游戏界面置顶、目标厨具高亮和实验性自动化总开关。透明度通过 Tauri transparent window + CSS 背景 alpha 实现，文字不随背景变淡；稀客专注模式的料理/酒水显示数量在专注模式浮层内调整。
 - 伴随窗口根滚动区域固定预留纵向滚动条槽位，避免页面高度变化时滚动条挤占宽度造成内容横向跳动；窗口、下拉和日志滚动条使用主题色并跟随透明度。
 - 焦点切换支持两种模式：隐藏伴随窗口再聚焦游戏，或保持伴随窗口悬浮并只聚焦游戏。保持悬浮依赖窗口置顶，独占全屏游戏可能覆盖置顶窗口，推荐窗口化或无边框窗口化。
 - 伴随窗口退出跟随不只依赖本地 API `/health` 失联，还会监控启动参数中的 `--game-pid`。游戏窗口 X、游戏内退出按钮、或 Unity 退出阶段未及时发送 `exit` 控制消息时，都应由 PID 监控兜底关闭伴随窗口。
@@ -35,7 +35,7 @@
 - 经营中概览会显示厨具快照读取状态和 `RuntimeUiPinningService.Status`。排查“缺失厨具过滤/游戏界面置顶/目标厨具高亮”时，优先让用户提供这两行状态和 `BepInEx/LogOutput.log`。
 - 运行时捕获订单维护 `ChangeVersion`；UI 控制器在版本变化后延迟 0.2 秒强制刷新经营数据并发布本地 API 快照。伴随窗口在 `经营中` 和稀客专注模式下以 750ms 轮询快照，其他页面保持 2 秒。
 - 场景切换后 Mod 不再做固定秒数等待；运行时和经营快照会立即尝试刷新。任务快照会跳过切场景后的前几个 Unity 帧，避免与 DayScene UI `Awake/Initialize` 同帧竞争；之后读取代码仍必须避开 IL2CPP `IEnumerator.Current` 这类加载阶段不稳定路径，优先用 Count/indexer、字段或静态快照读取，失败时返回状态提示并等待下一轮刷新，不得阻塞伴随窗口或影响游戏场景初始化。
-- `任务` 页通过 `RunTimeScheduler.GetAvailableInteractMissionForCharacter()` 读取 NPC 交谈任务，并通过 `RunTimeDayScene.trackedInteradctables`、`MissionInteractConditionComponent` 与 `RunTimeScheduler.trackingMissions` 中的 `InspectInteractable` 条件读取场景调查任务；候选来源会写入分来源诊断。`HaveMissionStarted()` 不能用于过滤任务页条目，因为它等价于检查任务是否在 `trackingMissions` 中。场景来源全空时可用 `trackingMissions` 未完成任务 fallback，并根据第一个未完成条件判断未接取/已开始；NPC 所在场景优先从 `RunTimeDayScene.trackedNPCs` 的 mapLabel 反查，本地化失败时显示原始 label；读取失败不回退静态全任务。
+- `任务` 页任务状态优先对 `RunTimeScheduler.trackingMissions` 中每条任务调用只读 `RunTimeScheduler.ParseActiveMissionData()`，映射为 `available`、`tracking`、`fulfilled`；已完成任务不再作为筛选分类展示，默认筛选显示可接取和可完成。NPC 交谈任务通过 `RunTimeScheduler.GetAvailableInteractMissionForCharacter()` 读取，并通过 `RunTimeDayScene.trackedInteradctables`、`MissionInteractConditionComponent` 与 `trackingMissions` 中的 `InspectInteractable` 条件读取场景调查任务；候选来源会写入分来源诊断。`HaveMissionStarted()` 不能用于过滤任务页条目，因为它等价于检查任务是否在 `trackingMissions` 中。经营投喂任务读取 `ServeInWork` 条件、mission `reciever` 和 `RunTimeScheduler.ContainsSpecialNPCServeInWorkMission()`，只用于任务页展示和经营中任务料理推荐置顶，不得调用 `TryTriggerServeMission()`。NPC 所在场景优先从 `RunTimeDayScene.trackedNPCs` 的 mapLabel 反查，本地化失败时显示原始 label；读取失败不回退静态全任务。
 - 经营中页顶部只放经营场景、扫描状态、推荐数据、厨具与置顶状态等通用信息，下面用 `稀客` / `普客` 二级页签承载各自列表、推荐和自动化配置。普客订单诊断来源包括 `OrderController.GetShowInUIOrders()`、HUD `OrderingElement.ActiveOrder` 和经营管理器控制器订单；读取文本时必须过滤 `GameData.CoreLanguage.LanguageBase` 等运行时类型名，普客订单 key 优先使用运行时订单对象指针 `orderKey`，不要只靠桌号/料理/酒水粗匹配。普客自动化入口需要实验性自动化总开关和普客子开关同时开启；开启后不再保留手动处理按钮，伴随窗口会按首次出现时间稳定排序并发轮询仍需启动料理的未满足普客订单，并发上限来自设置页参数，已开始制作或等待收取的订单不得继续占用调度名额。稀客和普客开锅请求会共用伴随窗口本轮厨具预约表，预约容量按当前已摆放厨具快照计算；同类厨具容量不足时优先保留普客待处理订单，稀客料理开锅等待不计作失败。每笔普客订单独立记录料理、保温箱收取和暂停状态；C# pending 和短期已收取回执优先绑定 `orderKey`，避免同桌同料理或桌位复用时串单；非临时错误只暂停对应订单，不影响稀客自动化或其他普客订单。普客自动化只制作料理并在完成后调用 `IzakayaConfigure.StoreFood()` 写入游戏料理暂存容器，不处理酒水、不写 `ServFood/ServBeverage/ServedFoodInAir`、不调用 `EvaluateOrder`、`CookController.Store()` 或 `CookController.AfterPlayerExtract`，最终送达和进餐状态交给玩家走游戏原生流程。同一订单已有 pending 料理时必须等待，不能重复占用同类厨具制作。
 - 经营中页的动态区域应保持固定入口：自动化资源、稀客/普客自动化状态和当前点单推荐在暂无数据时也显示紧凑空状态，避免稀客入场、点单或自动化诊断刷新时整块内容突然插入导致页面跳动。
 - 经营中页的“当前点单推荐”标题右侧承载稀客订单专注模式入口，以及料理/酒水推荐显示数量设置；这两个数量设置与稀客专注模式内部共用同一组 localStorage 配置，不要拆成两套。
@@ -59,5 +59,6 @@
 - 稀客和经营中主推荐列表只展示满足当前点单料理 Tag / 酒水 Tag 的结果；未满足点单但命中稀客喜好的结果只能显示在“喜好备选（不满足点单）”区域，不得混入正式推荐、收藏置顶或自动化。料理推荐优先 3 分以上候选，但低于 3 分且满足点单的料理仍要作为兜底显示。
 - `排除缺失厨具` 开启且已读取厨具快照时，正式推荐和喜好备选都会隐藏当前场景未摆放对应厨具的料理；厨具类型 1-5 映射为煮锅、烧烤架、油锅、蒸锅、料理台。
 - 稀客收藏保存在 `BepInEx/config/MystiaStewardCompanion/favorites.json`，按 `customerId + foodTag` 收藏料理方案（含加料 ID），按 `customerId + beverageTag` 收藏酒水。收藏只置顶当前仍在推荐候选中的结果，不绕过解锁、库存和点单 Tag 校验。
+- `优先任务料理` 默认关闭。开启后，当前稀客若存在已接取的 `ServeInWork` 投喂任务，任务指定料理可在经营中正式推荐中排到第一位；它仍需要通过解锁、库存和缺失厨具过滤。该置顶只影响推荐顺序和自动化选择，不自动推进任务状态。
 - 经营中订单显示顺序默认是首次出现时间升序；切换为稀客分组时，同组内仍按首次出现时间升序。新订单不应在点单顺序模式下插到已有订单前面；自动化和置顶目标必须使用页面同一排序结果。
 - 推荐行需要显示库存数量；料理行需要显示厨具、基础配方和加料，并对这些定位信息做高亮。

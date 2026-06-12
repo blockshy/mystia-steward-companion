@@ -12,6 +12,10 @@ public static class RuntimeMissionSnapshotService
     private const string DaySceneMapTypeName = "DayScene.DaySceneMap";
     private const string CharacterConditionComponentTypeName = "DayScene.Interactables.Collections.ConditionComponents.CharacterConditionComponent";
     private const string MissionInteractConditionComponentTypeName = "DayScene.Interactables.Collections.ConditionComponents.MissionInteractConditionComponent";
+    private const string MissionStatusAvailable = "available";
+    private const string MissionStatusTracking = "tracking";
+    private const string MissionStatusFulfilled = "fulfilled";
+    private const string MissionStatusFinished = "finished";
     private static readonly TimeSpan CacheDuration = TimeSpan.FromSeconds(3);
     private static RuntimeMissionContext? _cachedContext;
     private static DateTime _cachedAtUtc;
@@ -55,7 +59,19 @@ public static class RuntimeMissionSnapshotService
         var missionInteractType = RuntimeReflectionUtility.FindType(MissionInteractConditionComponentTypeName);
         source.Add($"types=RuntimeDayScene={(runtimeDaySceneType == null ? "missing" : "ok")}; DaySceneMap={(daySceneMapType == null ? "missing" : "ok")}; CharacterCondition={(characterComponentType == null ? "missing" : "ok")}; MissionInteract={(missionInteractType == null ? "missing" : "ok")}");
 
-        var trackingMissions = ReadTrackingMissions(schedulerType, errors).ToList();
+        var missionData = ReadTrackedMissionDataSnapshots(schedulerType, errors).ToList();
+        var statusByMission = missionData
+            .Where(mission => !string.IsNullOrWhiteSpace(mission.Label))
+            .GroupBy(mission => mission.Label, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.OrderByDescending(item => MissionStatusPriority(item.Status)).First().Status, StringComparer.Ordinal);
+        source.Add($"missionData={missionData.Count}; tracking={missionData.Count(mission => mission.Status == MissionStatusTracking)}; fulfilled={missionData.Count(mission => mission.Status == MissionStatusFulfilled)}; finished={missionData.Count(mission => mission.Status == MissionStatusFinished)}");
+
+        var trackingMissions = missionData.Count > 0
+            ? missionData
+                .Where(mission => mission.TrackedMission != null && mission.Status != MissionStatusFinished)
+                .Select(mission => mission.TrackedMission)
+                .ToList()
+            : ReadTrackingMissions(schedulerType, errors).ToList();
         source.Add($"trackingMissions={trackingMissions.Count}");
 
         var npcPlaceNames = ReadTrackedNpcPlaceNames(runtimeDaySceneType, dataBaseDayType, errors);
@@ -83,23 +99,26 @@ public static class RuntimeMissionSnapshotService
 
         var trackedInteractableLabels = ReadTrackedInteractableLabels(runtimeDaySceneType, errors).ToList();
         source.Add($"trackedInteractables={trackedInteractableLabels.Count}");
-        var trackedInteractableMissions = ReadInteractableMissions(schedulerType, trackingMissions, trackedInteractableLabels, "TrackedInteractable", errors).ToList();
+        var trackedInteractableMissions = ReadInteractableMissions(schedulerType, trackingMissions, statusByMission, trackedInteractableLabels, "TrackedInteractable", errors).ToList();
         source.Add($"trackedInteractableMissions={trackedInteractableMissions.Count}");
         missions.AddRange(trackedInteractableMissions);
 
         var sceneInteractableLabels = ReadSceneInteractableLabels(missionInteractType, errors).Except(trackedInteractableLabels, StringComparer.Ordinal).ToList();
         source.Add($"sceneInteractableKeys={sceneInteractableLabels.Count}");
-        var sceneInteractableMissions = ReadInteractableMissions(schedulerType, trackingMissions, sceneInteractableLabels, "SceneInteractable", errors).ToList();
+        var sceneInteractableMissions = ReadInteractableMissions(schedulerType, trackingMissions, statusByMission, sceneInteractableLabels, "SceneInteractable", errors).ToList();
         source.Add($"sceneInteractables={sceneInteractableMissions.Count}");
         missions.AddRange(sceneInteractableMissions);
 
-        var fallbackMissions = ReadTrackingMissionFallbackMissions(dataBaseDayType, schedulerType, npcPlaceNames, trackingMissions).ToList();
+        var fallbackMissions = ReadTrackingMissionFallbackMissions(dataBaseDayType, schedulerType, npcPlaceNames, trackingMissions, statusByMission).ToList();
         source.Add($"trackingFallback={fallbackMissions.Count}");
         missions.AddRange(fallbackMissions);
 
         var deduplicated = missions
             .GroupBy(mission => $"{mission.Label}|{mission.CharacterLabel}", StringComparer.Ordinal)
-            .Select(group => group.First())
+            .Select(group => group
+                .OrderByDescending(mission => MissionStatusPriority(mission.Status))
+                .ThenBy(mission => MissionSourcePriority(mission.Source))
+                .First())
             .OrderBy(mission => mission.CharacterName, StringComparer.Ordinal)
             .ThenBy(mission => mission.Title, StringComparer.Ordinal)
             .ToList();
@@ -111,6 +130,89 @@ public static class RuntimeMissionSnapshotService
             Source = string.Join("; ", source),
             Error = errors.Count == 0 ? null : string.Join("; ", errors),
         };
+    }
+
+    public static RuntimeMissionContext WithServeTargets(
+        RuntimeMissionContext context,
+        DataRepository? repository,
+        IEnumerable<NightBusinessGuest> activeGuests,
+        IEnumerable<NightBusinessOrder> activeOrders)
+    {
+        var targets = ReadServeTargets(repository, activeGuests, activeOrders).ToList();
+        var source = string.IsNullOrWhiteSpace(context.Source)
+            ? $"serveTargets={targets.Count}"
+            : $"{context.Source}; serveTargets={targets.Count}";
+
+        return new RuntimeMissionContext
+        {
+            AvailableMissions = context.AvailableMissions,
+            ServeTargets = targets,
+            Source = source,
+            Error = context.Error,
+        };
+    }
+
+    private static IEnumerable<RuntimeMissionServeTarget> ReadServeTargets(
+        DataRepository? repository,
+        IEnumerable<NightBusinessGuest> activeGuests,
+        IEnumerable<NightBusinessOrder> activeOrders)
+    {
+        var schedulerType = RuntimeReflectionUtility.FindType(RunTimeSchedulerTypeName);
+        if (schedulerType == null) yield break;
+
+        var guestRows = activeGuests
+            .Select(guest => (guest.GuestId, guest.GuestName))
+            .Concat(activeOrders.Select(order => (order.GuestId, order.GuestName)))
+            .Where(row => row.GuestId.HasValue)
+            .GroupBy(row => row.GuestId!.Value)
+            .Select(group => (GuestId: group.Key, GuestName: group.FirstOrDefault(row => !string.IsNullOrWhiteSpace(row.GuestName)).GuestName ?? ""))
+            .OrderBy(row => row.GuestId)
+            .ToList();
+
+        foreach (var guest in guestRows)
+        {
+            if (!TryReadServeMissionRecipe(schedulerType, guest.GuestId, out var recipeId)) continue;
+            if (recipeId < 0) continue;
+
+            var recipe = repository?.Recipes.FirstOrDefault(item => item.Id == recipeId);
+            yield return new RuntimeMissionServeTarget
+            {
+                GuestId = guest.GuestId,
+                GuestName = string.IsNullOrWhiteSpace(guest.GuestName)
+                    ? repository?.RareCustomersById.GetValueOrDefault(guest.GuestId)?.Name ?? ""
+                    : guest.GuestName,
+                GuestLabel = "",
+                MissionLabel = "",
+                MissionTitle = "",
+                RecipeId = recipeId,
+                RecipeName = recipe?.Name ?? "",
+                Status = MissionStatusTracking,
+                Source = "ContainsSpecialNPCServeInWorkMission",
+            };
+        }
+    }
+
+    private static bool TryReadServeMissionRecipe(Type schedulerType, int guestId, out int recipeId)
+    {
+        recipeId = -1;
+        try
+        {
+            var method = schedulerType
+                .GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)
+                .FirstOrDefault(method => method.Name == "ContainsSpecialNPCServeInWorkMission"
+                    && method.GetParameters().Length == 2);
+            if (method == null) return false;
+
+            object?[] args = { guestId, 0 };
+            var result = method.Invoke(null, args);
+            if (!RuntimeReflectionUtility.ToBool(result)) return false;
+            recipeId = RuntimeReflectionUtility.ToInt(args[1], -1);
+            return recipeId >= 0;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static IEnumerable<string> ReadGlobalNpcKeys(Type dataBaseDayType, List<string> errors)
@@ -172,6 +274,7 @@ public static class RuntimeMissionSnapshotService
                         CharacterName = ResolveNpcName(dataBaseDayType, characterLabel),
                         Places = ResolvePlaces(npcPlaceNames, characterLabel),
                         Source = source,
+                        Status = MissionStatusAvailable,
                         Started = false,
                         Finished = finished,
                     });
@@ -181,6 +284,34 @@ public static class RuntimeMissionSnapshotService
             {
                 if (errors.Count < 8) errors.Add($"{characterLabel}: {ex.Message}");
             }
+        }
+    }
+
+    private static IEnumerable<MissionDataSnapshot> ReadTrackedMissionDataSnapshots(Type schedulerType, List<string> errors)
+    {
+        foreach (var trackedMission in ReadTrackingMissions(schedulerType, errors))
+        {
+            var label = ReadTextMember(trackedMission, "missionLabel");
+            if (string.IsNullOrWhiteSpace(label)) continue;
+
+            object? parsed = null;
+            try
+            {
+                parsed = RuntimeReflectionUtility.InvokeStaticMethod(schedulerType, "ParseActiveMissionData", trackedMission);
+            }
+            catch (Exception ex)
+            {
+                if (errors.Count < 8) errors.Add($"mission status {label}: {ex.Message}");
+            }
+
+            var parsedMission = RuntimeReflectionUtility.GetMemberValue(parsed, "Item1") ?? trackedMission;
+            var statusValue = RuntimeReflectionUtility.GetMemberValue(parsed, "Item2");
+            yield return new MissionDataSnapshot
+            {
+                TrackedMission = parsedMission,
+                Label = label,
+                Status = NormalizeMissionStatus(statusValue),
+            };
         }
     }
 
@@ -435,6 +566,7 @@ public static class RuntimeMissionSnapshotService
     private static IEnumerable<RuntimeMissionInfo> ReadInteractableMissions(
         Type schedulerType,
         IReadOnlyList<object?> trackingMissions,
+        IReadOnlyDictionary<string, string> statusByMission,
         IEnumerable<string> interactableLabels,
         string source,
         List<string> errors)
@@ -453,6 +585,7 @@ public static class RuntimeMissionSnapshotService
 
             var finished = RuntimeReflectionUtility.ToBool(RuntimeReflectionUtility.InvokeStaticMethod(schedulerType, "HaveMissionFinished", missionLabel));
             if (finished) continue;
+            var status = GetMissionStatus(statusByMission, missionLabel, MissionStatusTracking);
 
             foreach (var snapshot in EnumerateConditionSnapshots(trackedMission))
             {
@@ -478,7 +611,8 @@ public static class RuntimeMissionSnapshotService
                     CharacterLabel = interactableLabel,
                     CharacterName = "场景交互",
                     Source = source,
-                    Started = false,
+                    Status = status,
+                    Started = status != MissionStatusAvailable,
                     Finished = finished,
                 };
             }
@@ -493,6 +627,7 @@ public static class RuntimeMissionSnapshotService
                 CharacterLabel = interactableLabel,
                 CharacterName = "场景交互",
                 Source = $"{source}Key",
+                Status = MissionStatusAvailable,
                 Started = false,
                 Finished = false,
             };
@@ -503,7 +638,8 @@ public static class RuntimeMissionSnapshotService
         Type dataBaseDayType,
         Type schedulerType,
         IReadOnlyDictionary<string, List<string>> npcPlaceNames,
-        IReadOnlyList<object?> trackingMissions)
+        IReadOnlyList<object?> trackingMissions,
+        IReadOnlyDictionary<string, string> statusByMission)
     {
         foreach (var trackedMission in trackingMissions)
         {
@@ -512,10 +648,14 @@ public static class RuntimeMissionSnapshotService
 
             var finished = RuntimeReflectionUtility.ToBool(RuntimeReflectionUtility.InvokeStaticMethod(schedulerType, "HaveMissionFinished", missionLabel));
             if (finished) continue;
+            var status = GetMissionStatus(statusByMission, missionLabel, MissionStatusTracking);
 
             var conditions = EnumerateConditionSnapshots(trackedMission).ToList();
             var firstUnfinished = conditions.FirstOrDefault(condition => !condition.Finished);
             var talkCondition = conditions.FirstOrDefault(condition => IsConditionType(condition.Condition, "TalkWithCharacter", 1));
+            var serveCondition = conditions.FirstOrDefault(condition => IsConditionType(condition.Condition, "ServeInWork", 4) && !condition.Finished)
+                ?? conditions.FirstOrDefault(condition => IsConditionType(condition.Condition, "ServeInWork", 4));
+            var missionReceiver = ReadMissionReceiver(trackedMission);
 
             if (firstUnfinished != null && IsConditionType(firstUnfinished.Condition, "TalkWithCharacter", 1))
             {
@@ -530,7 +670,8 @@ public static class RuntimeMissionSnapshotService
                         CharacterName = ResolveNpcName(dataBaseDayType, characterLabel),
                         Places = ResolvePlaces(npcPlaceNames, characterLabel),
                         Source = "TrackingMission:PendingTalk",
-                        Started = false,
+                        Status = status,
+                        Started = status != MissionStatusAvailable,
                         Finished = finished,
                     };
                     continue;
@@ -549,7 +690,8 @@ public static class RuntimeMissionSnapshotService
                         CharacterLabel = interactableLabel,
                         CharacterName = "场景交互",
                         Source = "TrackingMission:PendingInspect",
-                        Started = false,
+                        Status = status,
+                        Started = status != MissionStatusAvailable,
                         Finished = finished,
                     };
                     continue;
@@ -557,6 +699,8 @@ public static class RuntimeMissionSnapshotService
             }
 
             var activeCharacterLabel = ReadTextMember(firstUnfinished?.Condition, "label")
+                ?? ReadTextMember(serveCondition?.Condition, "label")
+                ?? missionReceiver
                 ?? ReadTextMember(talkCondition?.Condition, "label")
                 ?? missionLabel;
             var activeCharacterName = firstUnfinished != null && IsConditionType(firstUnfinished.Condition, "InspectInteractable", 2)
@@ -573,8 +717,11 @@ public static class RuntimeMissionSnapshotService
                 CharacterName = activeCharacterName,
                 Places = ResolvePlaces(npcPlaceNames, activeCharacterLabel),
                 Source = firstUnfinished == null ? "TrackingMission:Tracked" : "TrackingMission:Active",
-                Started = firstUnfinished != null && !IsInitialAcceptCondition(firstUnfinished.Condition),
+                Status = status,
+                Started = status != MissionStatusAvailable,
                 Finished = finished,
+                TargetRecipeId = ReadServeConditionRecipeId(serveCondition?.Condition),
+                TargetRecipeName = ResolveRecipeName(ReadServeConditionRecipeId(serveCondition?.Condition)),
             };
         }
     }
@@ -616,10 +763,84 @@ public static class RuntimeMissionSnapshotService
         return string.Equals(conditionType.ToString(), expectedName, StringComparison.Ordinal);
     }
 
+    private static string NormalizeMissionStatus(object? statusValue)
+    {
+        var statusText = statusValue?.ToString() ?? "";
+        var statusInt = RuntimeReflectionUtility.ToInt(statusValue, int.MinValue);
+        if (statusInt == 0 || statusText.Contains("Tracking", StringComparison.OrdinalIgnoreCase)) return MissionStatusTracking;
+        if (statusInt == 1 || statusText.Contains("Fulfilled", StringComparison.OrdinalIgnoreCase)) return MissionStatusFulfilled;
+        if (statusInt == 2 || statusText.Contains("Finished", StringComparison.OrdinalIgnoreCase)) return MissionStatusFinished;
+        return MissionStatusTracking;
+    }
+
+    private static string GetMissionStatus(IReadOnlyDictionary<string, string> statusByMission, string label, string fallback)
+    {
+        return statusByMission.TryGetValue(label, out var status) ? status : fallback;
+    }
+
+    private static int MissionStatusPriority(string status)
+    {
+        return status switch
+        {
+            MissionStatusFulfilled => 4,
+            MissionStatusTracking => 3,
+            MissionStatusAvailable => 2,
+            MissionStatusFinished => 1,
+            _ => 0,
+        };
+    }
+
+    private static int MissionSourcePriority(string source)
+    {
+        if (source.StartsWith("TrackingMission", StringComparison.Ordinal)) return 0;
+        if (source.Contains("Interactable", StringComparison.Ordinal)) return 1;
+        return 2;
+    }
+
+    private static string? ReadMissionReceiver(object? trackedMission)
+    {
+        var mission = RuntimeReflectionUtility.InvokeMethod(trackedMission, "GetMissionReference");
+        return ReadTextMember(mission, "reciever")
+            ?? ReadTextMember(mission, "receiver");
+    }
+
+    private static int? ReadServeConditionRecipeId(object? condition)
+    {
+        if (condition == null) return null;
+
+        foreach (var member in new[] { "amount", "product", "foodId", "recipeId" })
+        {
+            var value = RuntimeReflectionUtility.GetMemberValue(condition, member);
+            var id = RuntimeReflectionUtility.ToInt(value, int.MinValue);
+            if (id >= 0) return id;
+        }
+
+        return null;
+    }
+
+    private static string? ResolveRecipeName(int? recipeId)
+    {
+        if (!recipeId.HasValue || recipeId.Value < 0) return null;
+
+        var languageType = RuntimeReflectionUtility.FindType(DataBaseLanguageTypeName);
+        var language = languageType == null
+            ? null
+            : RuntimeReflectionUtility.InvokeStaticMethod(languageType, "GetFoodLang", recipeId.Value);
+        var text = ReadTextLikeValue(language);
+        return string.IsNullOrWhiteSpace(text) ? null : text;
+    }
+
     private sealed class MissionConditionSnapshot
     {
         public object? Condition { get; init; }
         public bool Finished { get; init; }
+    }
+
+    private sealed class MissionDataSnapshot
+    {
+        public object? TrackedMission { get; init; }
+        public string Label { get; init; } = "";
+        public string Status { get; init; } = MissionStatusTracking;
     }
 
     private static string? ReadTextMember(object? value, string memberName)

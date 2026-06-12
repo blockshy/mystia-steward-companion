@@ -1301,10 +1301,15 @@ internal sealed class StewardOverlayController
 
         if (IsNightBusinessScene(_activeSceneName))
         {
-            return new RuntimeMissionContext
+            var context = new RuntimeMissionContext
             {
                 Source = "任务数据只在日间场景读取；当前处于夜间经营。",
             };
+            return RuntimeMissionSnapshotService.WithServeTargets(
+                context,
+                _repository,
+                _businessContext?.ActiveRareGuests ?? Enumerable.Empty<NightBusinessGuest>(),
+                _businessContext?.Orders ?? Enumerable.Empty<NightBusinessOrder>());
         }
 
         if (IsSceneSnapshotStartupGuardActive())
@@ -1317,7 +1322,11 @@ internal sealed class StewardOverlayController
 
         try
         {
-            return RuntimeMissionSnapshotService.Load();
+            return RuntimeMissionSnapshotService.WithServeTargets(
+                RuntimeMissionSnapshotService.Load(),
+                _repository,
+                _businessContext?.ActiveRareGuests ?? Enumerable.Empty<NightBusinessGuest>(),
+                _businessContext?.Orders ?? Enumerable.Empty<NightBusinessOrder>());
         }
         catch (Exception ex)
         {

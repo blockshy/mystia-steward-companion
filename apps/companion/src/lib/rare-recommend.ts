@@ -358,6 +358,7 @@ function evaluateCombo(
 interface RareRecipeRankOptions {
   allowPreferenceFallback?: boolean;
   minFoodScore?: number;
+  forcedRecipeIds?: Set<number>;
 }
 
 /** 稀客料理推荐 */
@@ -384,6 +385,7 @@ export function rankRecipesForRare(
   const TARGET_FOOD_SCORE = 3;
   const allowPreferenceFallback = options.allowPreferenceFallback ?? false;
   const minFoodScore = Math.max(1, options.minFoodScore ?? TARGET_FOOD_SCORE);
+  const forcedRecipeIds = options.forcedRecipeIds ?? new Set<number>();
 
   // 构建可用食材列表
   const usableIngredients: IIngredient[] = [];
@@ -721,8 +723,9 @@ export function rankRecipesForRare(
       rating = getRating(finalFoodScore, ASSUMED_BEV_SCORE, finalMeetsRequiredFood, ASSUMED_BEV_MEETS);
     }
 
-    if (!finalMeetsRequiredFood && !allowPreferenceFallback) continue;
-    if (!finalMeetsRequiredFood && finalFoodScore <= 0) continue;
+    const forceInclude = forcedRecipeIds.has(recipe.id);
+    if (!forceInclude && !finalMeetsRequiredFood && !allowPreferenceFallback) continue;
+    if (!forceInclude && !finalMeetsRequiredFood && finalFoodScore <= 0) continue;
 
     const easterHighlightExtraIngredientIds = selectedIngredients
       .filter((ingredient) => bestEasterEffect.ingredientHighlightIds.includes(ingredient.id))

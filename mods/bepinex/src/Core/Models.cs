@@ -202,13 +202,30 @@ public sealed class RuntimeMissionInfo
     public string CharacterName { get; init; } = "";
     public List<string> Places { get; init; } = new();
     public string Source { get; init; } = "";
+    public string Status { get; init; } = "available";
     public bool Started { get; init; }
     public bool Finished { get; init; }
+    public int? TargetRecipeId { get; init; }
+    public string? TargetRecipeName { get; init; }
+}
+
+public sealed class RuntimeMissionServeTarget
+{
+    public int GuestId { get; init; }
+    public string GuestName { get; init; } = "";
+    public string GuestLabel { get; init; } = "";
+    public string MissionLabel { get; init; } = "";
+    public string MissionTitle { get; init; } = "";
+    public int RecipeId { get; init; }
+    public string RecipeName { get; init; } = "";
+    public string Status { get; init; } = "tracking";
+    public string Source { get; init; } = "";
 }
 
 public sealed class RuntimeMissionContext
 {
     public List<RuntimeMissionInfo> AvailableMissions { get; init; } = new();
+    public List<RuntimeMissionServeTarget> ServeTargets { get; init; } = new();
     public string Source { get; init; } = "";
     public string? Error { get; init; }
 }

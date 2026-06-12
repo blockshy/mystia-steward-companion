@@ -82,6 +82,7 @@ const AUTO_NORMAL_STORAGE_WAIT_SECONDS_STORAGE_KEY = `${STORAGE_PREFIX}-auto-nor
 const AUTO_MAX_STEP_RETRIES_STORAGE_KEY = `${STORAGE_PREFIX}-auto-max-step-retries`;
 const AUTO_MAX_ROLLBACKS_STORAGE_KEY = `${STORAGE_PREFIX}-auto-max-rollbacks`;
 const FILTER_MISSING_COOKERS_STORAGE_KEY = `${STORAGE_PREFIX}-filter-missing-cookers`;
+const PRIORITIZE_MISSION_RECIPES_STORAGE_KEY = `${STORAGE_PREFIX}-prioritize-mission-recipes`;
 const GAME_UI_PINNING_STORAGE_KEY = `${STORAGE_PREFIX}-game-ui-pinning`;
 const COOKER_HIGHLIGHT_STORAGE_KEY = `${STORAGE_PREFIX}-cooker-highlight`;
 const RECIPE_SORT_RULES_STORAGE_KEY = `${STORAGE_PREFIX}-recipe-sort-rules`;
@@ -157,7 +158,9 @@ type ModTab = 'overview' | 'normal' | 'rare' | 'service' | 'tasks' | 'inventory'
 const MOD_TABS: ModTab[] = ['overview', 'normal', 'rare', 'service', 'tasks', 'inventory', 'logs', 'settings'];
 type FocusSwitchBehavior = 'hide' | 'keep-visible';
 type ServiceOrderSortMode = 'ordered' | 'guest';
-type MissionStatusFilter = 'all' | 'not-started' | 'started' | 'finished';
+type MissionStatusFilter = 'available' | 'tracking' | 'fulfilled';
+const DEFAULT_MISSION_STATUS_FILTERS: MissionStatusFilter[] = ['available', 'fulfilled'];
+const MISSION_STATUS_FILTER_OPTIONS: MissionStatusFilter[] = ['available', 'tracking', 'fulfilled'];
 type SortDirection = 'asc' | 'desc';
 type RecipeSortKey =
   | 'requiredTag'
@@ -290,12 +293,28 @@ interface RuntimeMissionInfo {
   characterName: string;
   places?: string[];
   source: string;
+  status?: MissionStatusFilter | 'finished';
   started: boolean;
   finished: boolean;
+  targetRecipeId?: number | null;
+  targetRecipeName?: string | null;
+}
+
+interface RuntimeMissionServeTarget {
+  guestId: number;
+  guestName: string;
+  guestLabel: string;
+  missionLabel: string;
+  missionTitle: string;
+  recipeId: number;
+  recipeName: string;
+  status: MissionStatusFilter | 'finished';
+  source: string;
 }
 
 interface RuntimeMissionContext {
   availableMissions: RuntimeMissionInfo[];
+  serveTargets?: RuntimeMissionServeTarget[];
   source: string;
   error: string | null;
 }
@@ -520,6 +539,7 @@ interface CompanionPreferences {
   autoMaxStepRetries: number;
   autoMaxRollbacks: number;
   filterMissingCookers: boolean;
+  prioritizeMissionRecipes: boolean;
   gameUiPinningEnabled: boolean;
   cookerHighlightEnabled: boolean;
   recipeSortRules: SortRule<RecipeSortKey>[];
@@ -778,8 +798,9 @@ export function ModWorkbench() {
       recommendationCacheRef.current,
       favorites,
       companionPreferences,
+      snapshot?.runtimeMissions?.serveTargets ?? [],
     ),
-    [night?.orders, runtime, rareCustomersById, favorites, companionPreferences],
+    [night?.orders, runtime, rareCustomersById, favorites, companionPreferences, snapshot?.runtimeMissions?.serveTargets],
   );
   const gameUiPinningTarget = useMemo(
     () => companionPreferences.gameUiPinningEnabled || companionPreferences.cookerHighlightEnabled
@@ -2903,14 +2924,20 @@ function ModTasksPanel({
   runtimeLoaded: boolean;
   missions: RuntimeMissionContext | null;
 }) {
-  const [statusFilter, setStatusFilter] = useState<MissionStatusFilter>('all');
+  const [statusFilters, setStatusFilters] = useState<MissionStatusFilter[]>(DEFAULT_MISSION_STATUS_FILTERS);
 
   if (!runtimeLoaded) {
     return <RuntimeUnavailable />;
   }
 
   const rows = missions?.availableMissions ?? [];
-  const filteredRows = rows.filter((mission) => matchesMissionStatusFilter(mission, statusFilter));
+  const filteredRows = rows.filter((mission) => matchesMissionStatusFilter(mission, statusFilters));
+  const toggleStatusFilter = (filter: MissionStatusFilter) => {
+    setStatusFilters((current) => {
+      if (current.includes(filter)) return current.filter((item) => item !== filter);
+      return [...current, filter];
+    });
+  };
 
   return (
     <div className="space-y-4">
@@ -2923,19 +2950,23 @@ function ModTasksPanel({
       </Card>
 
       <ListPanel
-        title={`可接任务 (${filteredRows.length})`}
+        title={`可推进任务 (${filteredRows.length})`}
         action={(
-          <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as MissionStatusFilter)}>
-            <SelectTrigger className="h-8 w-28" data-gamepad-clickable="true">
-              <SelectValue>{getMissionStatusFilterLabel(statusFilter)}</SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">全部</SelectItem>
-              <SelectItem value="not-started">未接取</SelectItem>
-              <SelectItem value="started">已开始</SelectItem>
-              <SelectItem value="finished">已完成</SelectItem>
-            </SelectContent>
-          </Select>
+          <div className="flex flex-wrap gap-1.5">
+            {MISSION_STATUS_FILTER_OPTIONS.map((filter) => (
+              <Button
+                key={filter}
+                type="button"
+                size="sm"
+                variant={statusFilters.includes(filter) ? 'default' : 'outline'}
+                className="h-8 px-2.5"
+                data-gamepad-clickable="true"
+                onClick={() => toggleStatusFilter(filter)}
+              >
+                {getMissionStatusFilterLabel(filter)}
+              </Button>
+            ))}
+          </div>
         )}
       >
         {!missions && <EmptyRow text="任务快照暂不可用" />}
@@ -2948,7 +2979,8 @@ function ModTasksPanel({
         )}
         {filteredRows.map((mission) => {
           const places = mission.places?.filter(Boolean) ?? [];
-          const shouldShowMissingPlace = places.length === 0 && !mission.started && !mission.finished;
+          const status = normalizeMissionStatus(mission);
+          const shouldShowMissingPlace = places.length === 0 && status === 'available';
           return (
           <div
             key={`${mission.characterLabel}-${mission.label}`}
@@ -2965,8 +2997,12 @@ function ModTasksPanel({
             <div className="mt-1 flex flex-wrap gap-1.5">
               <Badge variant="outline">{mission.label}</Badge>
               <Badge variant="secondary">{mission.source}</Badge>
-              <Badge variant={mission.started ? 'default' : 'outline'}>{mission.started ? '已开始' : '未接取'}</Badge>
-              {mission.finished && <Badge variant="secondary">已完成</Badge>}
+              <Badge variant={status === 'fulfilled' ? 'default' : status === 'tracking' ? 'secondary' : 'outline'}>
+                {getMissionStatusFilterLabel(status)}
+              </Badge>
+              {mission.targetRecipeId != null && (
+                <Badge variant="outline">料理 {mission.targetRecipeName || RECIPE_BY_FOOD_ID.get(mission.targetRecipeId)?.name || `#${mission.targetRecipeId}`}</Badge>
+              )}
               {places.map((place) => <Badge key={place} variant="outline">场景 {place}</Badge>)}
               {shouldShowMissingPlace && <Badge variant="outline">场景 未读取</Badge>}
             </div>
@@ -3425,6 +3461,14 @@ function ModSettingsPanel({
           />
           <div className="text-xs text-muted-foreground">
             进入经营场景后，若读取到已摆放厨具，推荐列表会隐藏当前场景无法制作的料理。
+          </div>
+          <SwitchControl
+            label="优先任务料理"
+            checked={preferences.prioritizeMissionRecipes}
+            onCheckedChange={(prioritizeMissionRecipes) => onPreferenceChange({ prioritizeMissionRecipes })}
+          />
+          <div className="text-xs text-muted-foreground">
+            当前稀客存在经营投喂任务时，把任务指定料理优先放到推荐第一位；只影响排序，不会自动完成任务。
           </div>
           <SettingChoice
             label="经营中订单排序"
@@ -5499,6 +5543,7 @@ function buildOrderRecommendations(
   cache: Map<string, CachedRecommendation>,
   favorites: FavoriteData,
   preferences: CompanionPreferences,
+  missionServeTargets: RuntimeMissionServeTarget[] = [],
 ): { recommendations: OrderRecommendation[]; recommendationIssues: RecommendationIssue[] } {
   if (orders.length === 0) return { recommendations: [], recommendationIssues: [] };
   const sortedOrders = sortNightOrders(orders, preferences.serviceOrderSortMode);
@@ -5602,12 +5647,38 @@ function buildOrderRecommendations(
       trimRecommendationCache(cache);
     }
 
+    const missionTarget = preferences.prioritizeMissionRecipes
+      ? findMissionServeTargetForOrder(order, missionServeTargets)
+      : null;
+    let recipeRows = promoteFavoriteRecipes(cached.recipes, favorites, customer.id, foodTag);
+    let preferenceRecipeRows = cached.preferenceRecipes;
+    if (missionTarget) {
+      const missionRecipe = findOrBuildMissionRecipe(
+        missionTarget.recipeId,
+        recipeRows,
+        preferenceRecipeRows,
+        customer,
+        foodTag,
+        beverageTag,
+        runtime,
+        runtimeSets,
+        preferences,
+      );
+      if (missionRecipe) {
+        recipeRows = promoteMissionRecipe(
+          addRecipeRowIfMissing(recipeRows, missionRecipe),
+          missionTarget.recipeId,
+        );
+        preferenceRecipeRows = preferenceRecipeRows.filter((row) => row.recipe.id !== missionTarget.recipeId);
+      }
+    }
+
     recommendations.push({
       order,
       customer: cached.customer,
-      recipes: promoteFavoriteRecipes(cached.recipes, favorites, customer.id, foodTag).slice(0, MAX_FOCUS_RECOMMENDATION_ROWS),
+      recipes: recipeRows.slice(0, MAX_FOCUS_RECOMMENDATION_ROWS),
       beverages: promoteFavoriteBeverages(cached.beverages, favorites, customer.id, beverageTag).slice(0, MAX_FOCUS_RECOMMENDATION_ROWS),
-      preferenceRecipes: cached.preferenceRecipes.slice(0, MAX_FOCUS_RECOMMENDATION_ROWS),
+      preferenceRecipes: preferenceRecipeRows.slice(0, MAX_FOCUS_RECOMMENDATION_ROWS),
       preferenceBeverages: cached.preferenceBeverages.slice(0, MAX_FOCUS_RECOMMENDATION_ROWS),
     });
   }
@@ -6364,6 +6435,72 @@ function promoteFavoriteRecipes(
   return [...promoted, ...rows.filter((row) => !used.has(recipeResultKey(row)))];
 }
 
+function findMissionServeTargetForOrder(
+  order: NightBusinessOrder,
+  targets: RuntimeMissionServeTarget[],
+): RuntimeMissionServeTarget | null {
+  if (!targets.length) return null;
+  return targets.find((target) =>
+    target.status !== 'finished'
+    && target.recipeId >= 0
+    && (
+      (order.guestId != null && target.guestId === order.guestId)
+      || (!!target.guestName && target.guestName === order.guestName)
+    )
+  ) ?? null;
+}
+
+function findOrBuildMissionRecipe(
+  recipeId: number,
+  rows: IRareRecipeResult[],
+  preferenceRows: IRareRecipeResult[],
+  customer: ICustomerRare,
+  foodTag: string,
+  beverageTag: string,
+  runtime: RecommendationStateSnapshot,
+  runtimeSets: RuntimeSets,
+  preferences: CompanionPreferences,
+): IRareRecipeResult | null {
+  const existing = [...rows, ...preferenceRows].find((row) => row.recipe.id === recipeId);
+  if (existing) return existing;
+
+  const forced = rankRecipesForRare(
+    customer,
+    foodTag,
+    beverageTag,
+    runtimeSets.recipeIds,
+    runtimeSets.ingredientIds,
+    new Set<number>(),
+    runtime.popularFoodTag,
+    runtime.popularHateFoodTag,
+    4,
+    runtimeSets.ownedIngredientQty,
+    runtime.famousShopEnabled,
+    { allowPreferenceFallback: true, minFoodScore: 1, forcedRecipeIds: new Set([recipeId]) },
+  )
+    .filter((recipe) => recipe.recipe.id === recipeId)
+    .filter((recipe) => shouldKeepRecipeForCooker(recipe, runtimeSets, preferences.filterMissingCookers))
+    .sort((a, b) => compareRareRecipesForService(
+      a,
+      b,
+      runtimeSets.ownedIngredientQty,
+      preferences.recipeSortRules,
+      runtimeSets,
+    ));
+
+  return forced[0] ?? null;
+}
+
+function addRecipeRowIfMissing(rows: IRareRecipeResult[], recipe: IRareRecipeResult): IRareRecipeResult[] {
+  return rows.some((row) => recipeResultKey(row) === recipeResultKey(recipe)) ? rows : [...rows, recipe];
+}
+
+function promoteMissionRecipe(rows: IRareRecipeResult[], recipeId: number): IRareRecipeResult[] {
+  const target = rows.find((row) => row.recipe.id === recipeId);
+  if (!target) return rows;
+  return [target, ...rows.filter((row) => row !== target)];
+}
+
 function promoteFavoriteBeverages(
   rows: IRareBeverageResult[],
   favorites: FavoriteData,
@@ -6701,6 +6838,7 @@ function buildRecommendationStateSignature(runtime: RecommendationStateSnapshot,
     runtime.popularHateFoodTag ?? '',
     runtime.famousShopEnabled ? '1' : '0',
     preferences.filterMissingCookers ? 'filterCooker:1' : 'filterCooker:0',
+    preferences.prioritizeMissionRecipes ? 'missionRecipe:1' : 'missionRecipe:0',
     `recipeSort:${serializeSortRules(preferences.recipeSortRules)}`,
     `beverageSort:${serializeSortRules(preferences.beverageSortRules)}`,
     placedCookers,
@@ -6733,32 +6871,29 @@ function isOrderableRareFoodTag(tag: string): boolean {
   return !NON_ORDERABLE_RARE_FOOD_TAGS.has(tag);
 }
 
-function matchesMissionStatusFilter(mission: RuntimeMissionInfo, filter: MissionStatusFilter): boolean {
-  switch (filter) {
-    case 'not-started':
-      return !mission.started && !mission.finished;
-    case 'started':
-      return mission.started && !mission.finished;
-    case 'finished':
-      return mission.finished;
-    case 'all':
-    default:
-      return true;
-  }
+function matchesMissionStatusFilter(mission: RuntimeMissionInfo, filters: MissionStatusFilter[]): boolean {
+  if (filters.length === 0) return false;
+  if (mission.finished || mission.status === 'finished') return false;
+  return filters.includes(normalizeMissionStatus(mission));
 }
 
 function getMissionStatusFilterLabel(filter: MissionStatusFilter): string {
   switch (filter) {
-    case 'not-started':
-      return '未接取';
-    case 'started':
-      return '已开始';
-    case 'finished':
-      return '已完成';
-    case 'all':
-    default:
-      return '全部';
+    case 'available':
+      return '可接取';
+    case 'tracking':
+      return '进行中';
+    case 'fulfilled':
+      return '可完成';
   }
+}
+
+function normalizeMissionStatus(mission: RuntimeMissionInfo): MissionStatusFilter {
+  if (mission.status === 'available' || mission.status === 'tracking' || mission.status === 'fulfilled') {
+    return mission.status;
+  }
+  if (mission.finished || mission.status === 'finished') return 'fulfilled';
+  return mission.started ? 'tracking' : 'available';
 }
 
 function readStoredTab(): ModTab {
@@ -6819,6 +6954,7 @@ function readStoredCompanionPreferences(): CompanionPreferences {
     autoMaxStepRetries: readStoredNumber(AUTO_MAX_STEP_RETRIES_STORAGE_KEY, DEFAULT_AUTO_STEP_RETRIES),
     autoMaxRollbacks: readStoredNumber(AUTO_MAX_ROLLBACKS_STORAGE_KEY, DEFAULT_AUTO_ROLLBACKS),
     filterMissingCookers: readStoredBoolean(FILTER_MISSING_COOKERS_STORAGE_KEY, true),
+    prioritizeMissionRecipes: readStoredBoolean(PRIORITIZE_MISSION_RECIPES_STORAGE_KEY, false),
     gameUiPinningEnabled: readStoredBoolean(GAME_UI_PINNING_STORAGE_KEY, false),
     cookerHighlightEnabled: readStoredBoolean(COOKER_HIGHLIGHT_STORAGE_KEY, false),
     recipeSortRules: readStoredSortRules(RECIPE_SORT_RULES_STORAGE_KEY, RECIPE_SORT_OPTIONS),
@@ -6929,6 +7065,7 @@ function normalizeCompanionPreferences(value: Partial<CompanionPreferences>): Co
     autoMaxStepRetries: normalizeAutoStepRetries(value.autoMaxStepRetries ?? DEFAULT_AUTO_STEP_RETRIES),
     autoMaxRollbacks: normalizeAutoRollbacks(value.autoMaxRollbacks ?? DEFAULT_AUTO_ROLLBACKS),
     filterMissingCookers: value.filterMissingCookers !== false,
+    prioritizeMissionRecipes: Boolean(value.prioritizeMissionRecipes),
     gameUiPinningEnabled: Boolean(value.gameUiPinningEnabled),
     cookerHighlightEnabled: Boolean(value.cookerHighlightEnabled),
     recipeSortRules: normalizeSortRules(value.recipeSortRules, RECIPE_SORT_OPTIONS),
@@ -7000,6 +7137,7 @@ function persistCompanionPreferences(preferences: CompanionPreferences) {
   localStorage.setItem(AUTO_MAX_STEP_RETRIES_STORAGE_KEY, String(normalized.autoMaxStepRetries));
   localStorage.setItem(AUTO_MAX_ROLLBACKS_STORAGE_KEY, String(normalized.autoMaxRollbacks));
   localStorage.setItem(FILTER_MISSING_COOKERS_STORAGE_KEY, normalized.filterMissingCookers ? '1' : '0');
+  localStorage.setItem(PRIORITIZE_MISSION_RECIPES_STORAGE_KEY, normalized.prioritizeMissionRecipes ? '1' : '0');
   localStorage.setItem(GAME_UI_PINNING_STORAGE_KEY, normalized.gameUiPinningEnabled ? '1' : '0');
   localStorage.setItem(COOKER_HIGHLIGHT_STORAGE_KEY, normalized.cookerHighlightEnabled ? '1' : '0');
   localStorage.setItem(RECIPE_SORT_RULES_STORAGE_KEY, JSON.stringify(normalized.recipeSortRules));
