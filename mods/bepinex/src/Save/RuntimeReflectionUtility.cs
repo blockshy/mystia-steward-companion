@@ -250,7 +250,7 @@ internal static class RuntimeReflectionUtility
             }
         }
 
-        var count = ToInt(GetMemberValue(value, "Count"), -1);
+        var count = ToInt(GetMemberValue(value, "Count") ?? GetMemberValue(value, "Length"), -1);
         if (count > 0)
         {
             for (var index = 0; index < count; index++)
@@ -299,6 +299,8 @@ internal static class RuntimeReflectionUtility
         if (value == null) return 0;
         var count = ToInt(GetMemberValue(value, "Count"), int.MinValue);
         if (count != int.MinValue) return count;
+        var length = ToInt(GetMemberValue(value, "Length"), int.MinValue);
+        if (length != int.MinValue) return length;
         return EnumerateObjects(value).Take(256).Count();
     }
 

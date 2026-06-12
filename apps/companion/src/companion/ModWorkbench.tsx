@@ -2096,7 +2096,7 @@ function ModOverviewPanel({
 
         <ListPanel title="稀客邀请">
           <div className="grid gap-3 text-sm">
-            <InfoLine label="机制" value="写入游戏原生可邀请稀客队列" />
+            <InfoLine label="机制" value="执行游戏原生羁绊邀请判定，成功后记录今晚邀请" />
             <InfoLine label="可用状态" value={snapshot?.runtimeLoaded ? '等待用户执行' : '等待存档加载'} />
             <Button
               size="sm"
@@ -2111,7 +2111,7 @@ function ModOverviewPanel({
                 <InfoLine label="结果" value={inviteAllResult.status || (inviteAllResult.ok ? '已完成' : '失败')} />
                 <InfoLine
                   label="统计"
-                  value={`新增 ${inviteAllResult.invitedCount} · 名额 ${inviteAllResult.scheduledSlotCount} · 候选 ${inviteAllResult.candidateCount} · 已有 ${inviteAllResult.existingControlledCount}/${inviteAllResult.existingSlotCount}`}
+                  value={`新增 ${inviteAllResult.invitedCount} · 候选 ${inviteAllResult.candidateCount} · 可判定 ${inviteAllResult.usableCount} · 今晚已邀 ${inviteAllResult.existingControlledCount}/${inviteAllResult.existingSlotCount}`}
                 />
                 <div className="mt-2 flex flex-wrap gap-1">
                   {inviteAllResult.invited.slice(0, 12).map((entry) => (
@@ -2122,10 +2122,7 @@ function ModOverviewPanel({
                   {inviteAllResult.invited.length > 12 && (
                     <Badge variant="outline">+{inviteAllResult.invited.length - 12}</Badge>
                   )}
-                  {inviteAllResult.invited.length === 0 && inviteAllResult.scheduledSlotCount > 0 && (
-                    <Badge variant="secondary">原生邀请名额 x{inviteAllResult.scheduledSlotCount}</Badge>
-                  )}
-                  {inviteAllResult.invited.length === 0 && inviteAllResult.scheduledSlotCount === 0 && (
+                  {inviteAllResult.invited.length === 0 && (
                     <span className="text-xs text-muted-foreground">暂无新增邀请</span>
                   )}
                 </div>

@@ -31,10 +31,13 @@ internal sealed class RareGuestInvitationEntry
 
 internal static class RuntimeRareGuestInvitationService
 {
-    private const string SpecialGuestControlledTypeName = "Story.SpecialGuestControlled";
-    private const string ControlledSpecialGuestTypeName = "Story.ControlledSpecialGuest";
-    private const string ControlStatusTypeName = "Story.ControlStatus";
-    private const string RunTimePlayerDataTypeName = "GameData.RunTime.Common.RunTimePlayerData";
+    private const string DataBaseCharacterTypeName = "GameData.Core.Collections.CharacterUtility.DataBaseCharacter";
+    private const string DaySceneChatSelectionPanelTypeName = "DayScene.UI.DaySceneChatSelectionPannel";
+    private const string RunTimeAlbumTypeName = "GameData.RunTime.Common.RunTimeAlbum";
+    private const string StatusTrackerTypeName = "GameData.RunTime.Common.StatusTracker";
+    private const string RuntimeDaySceneTypeName = "GameData.RunTime.DaySceneUtility.RunTimeDayScene";
+    private const string DaySceneMapTypeName = "DayScene.DaySceneMap";
+    private const string CharacterConditionComponentTypeName = "DayScene.Interactables.Collections.ConditionComponents.CharacterConditionComponent";
 
     public static RareGuestInvitationResult InviteAllAvailable(DataRepository? repository, ManualLogSource? log)
     {
@@ -56,158 +59,125 @@ internal static class RuntimeRareGuestInvitationService
 
     private static RareGuestInvitationResult InviteAllAvailableCore(DataRepository? repository, ManualLogSource? log)
     {
-        var controlledType = RuntimeReflectionUtility.FindType(SpecialGuestControlledTypeName);
-        if (controlledType == null)
+        var dataBaseCharacterType = RuntimeReflectionUtility.FindType(DataBaseCharacterTypeName);
+        var panelType = RuntimeReflectionUtility.FindType(DaySceneChatSelectionPanelTypeName);
+        var albumType = RuntimeReflectionUtility.FindType(RunTimeAlbumTypeName);
+        var statusTrackerType = RuntimeReflectionUtility.FindType(StatusTrackerTypeName);
+        if (dataBaseCharacterType == null || panelType == null || albumType == null || statusTrackerType == null)
         {
-            return Fail("未找到游戏原生稀客邀请系统。");
+            return Fail("游戏原生羁绊邀请系统尚未初始化。请在读取存档后的日间场景再试。");
         }
 
-        var controlled = RuntimeReflectionUtility.GetSingletonInstance(controlledType)
-            ?? GetGenericSingletonInstance(controlledType)
-            ?? RuntimeReflectionUtility.FindUnityObject(controlledType);
-        if (controlled == null)
+        var statusTracker = RuntimeReflectionUtility.GetSingletonInstance(statusTrackerType)
+            ?? GetGenericSingletonInstance(statusTrackerType)
+            ?? RuntimeReflectionUtility.FindUnityObject(statusTrackerType);
+        if (statusTracker == null)
         {
-            return Fail("游戏原生稀客邀请系统尚未初始化。请在读取存档后的日间或经营准备阶段再试。");
+            return Fail("未读取到游戏邀请状态。请在读取存档后的日间场景再试。");
         }
 
-        var playerDataType = RuntimeReflectionUtility.FindType(RunTimePlayerDataTypeName);
-        if (playerDataType != null)
-        {
-            var hasDlc5 = RuntimeReflectionUtility.GetStaticMemberValue(playerDataType, "HasDLC5")
-                ?? RuntimeReflectionUtility.InvokeStaticMethod(playerDataType, "get_HasDLC5");
-            if (hasDlc5 != null && !RuntimeReflectionUtility.ToBool(hasDlc5))
-            {
-                return Fail("当前存档未启用游戏原生稀客邀请系统。");
-            }
-        }
-
-        var candidateGuests = ReadCandidateGuests(controlled).OfType<object>().ToList();
-        if (candidateGuests.Count == 0)
-        {
-            return Fail("未读取到可邀请稀客候选。");
-        }
-
-        var controlledList = RuntimeReflectionUtility.GetMemberValue(controlled, "m_ControlledSpecialGuests")
-            ?? RuntimeReflectionUtility.GetMemberValue(controlled, "ControlledSpecialGuests")
-            ?? (playerDataType == null ? null : RuntimeReflectionUtility.InvokeStaticMethod(playerDataType, "GetControlledSpecialGuests"));
-        if (controlledList == null)
-        {
-            return Fail("未读取到游戏受控稀客列表。");
-        }
-
-        var controlledEntryType = RuntimeReflectionUtility.FindType(ControlledSpecialGuestTypeName);
-        var controlStatusType = RuntimeReflectionUtility.FindType(ControlStatusTypeName);
-        if (controlledEntryType == null || controlStatusType == null)
-        {
-            return Fail("未找到游戏受控稀客数据结构。");
-        }
-
-        var currentEntries = ReadControlledEntries(controlledList)
-            .Where(entry => entry.Status != 0)
-            .GroupBy(entry => entry.Id)
-            .Select(group => group.OrderByDescending(entry => entry.Status).First())
-            .ToList();
-        var alreadyControlled = currentEntries.Select(entry => entry.Id).ToHashSet();
         var catalog = repository == null ? null : new RuntimeMappedGuestCatalog(repository);
+        var candidates = ReadInviteCandidates(dataBaseCharacterType, catalog, out var source);
+        if (candidates.Count == 0)
+        {
+            return Fail("未读取到稀客邀请候选。请确认已进入存档后的日间场景。");
+        }
+
         var result = new RareGuestInvitationResult
         {
             RuntimeAvailable = true,
-            CandidateCount = candidateGuests.Count,
-            ExistingSlotCount = RuntimeReflectionUtility.CountObjects(controlledList),
-            ExistingControlledCount = currentEntries.Count,
+            CandidateCount = candidates.Count,
+            ExistingSlotCount = RuntimeReflectionUtility.CountObjects(RuntimeReflectionUtility.GetMemberValue(statusTracker, "InvitedGuests")),
         };
 
-        var nextEntries = new List<object>();
-
-        foreach (var guest in candidateGuests)
+        foreach (var candidate in candidates)
         {
-            var id = ReadIntMember(guest, "id", "Id", "ID");
-            var runtimeName = ReadStringMember(guest, "StringId", "StrID", "Name", "DisplayName", "CharacterName");
-            var displayName = ResolveGuestName(catalog, guest, id, runtimeName);
-            if (id < 0)
-            {
-                result.Skipped.Add(new RareGuestInvitationEntry
-                {
-                    Id = id,
-                    Name = displayName,
-                    RuntimeName = runtimeName,
-                    Reason = "未读取到稀客 ID",
-                });
-                continue;
-            }
-
-            if (alreadyControlled.Contains(id))
-            {
-                result.Skipped.Add(new RareGuestInvitationEntry
-                {
-                    Id = id,
-                    Name = displayName,
-                    RuntimeName = runtimeName,
-                    Reason = "已在邀请或受控列表中",
-                });
-                continue;
-            }
-
-            if (!IsUsable(controlled, id))
-            {
-                result.Skipped.Add(new RareGuestInvitationEntry
-                {
-                    Id = id,
-                    Name = displayName,
-                    RuntimeName = runtimeName,
-                    Reason = "游戏判定当前不可邀请",
-                });
-                continue;
-            }
-
-            result.UsableCount++;
-            var nextEntry = CreateControlledEntry(controlledEntryType, controlStatusType, id, 1);
-            if (nextEntry == null)
-            {
-                result.Skipped.Add(new RareGuestInvitationEntry
-                {
-                    Id = id,
-                    Name = displayName,
-                    RuntimeName = runtimeName,
-                    Reason = "无法创建受控稀客条目",
-                });
-                continue;
-            }
-
-            alreadyControlled.Add(id);
-            nextEntries.Add(nextEntry);
-            result.Invited.Add(new RareGuestInvitationEntry
-            {
-                Id = id,
-                Name = displayName,
-                RuntimeName = runtimeName,
-                Reason = "已写入游戏原生邀请队列",
-            });
-        }
-
-        if (result.Invited.Count > 0 && !AppendControlledEntries(controlledList, nextEntries))
-        {
-            return Fail("写入游戏受控稀客列表失败。");
-        }
-
-        if (result.Invited.Count > 0 && playerDataType != null)
-        {
-            var persisted = RuntimeReflectionUtility.InvokeStaticMethod(playerDataType, "SetControlledSpecialGuests", controlledList);
-            _ = persisted;
-        }
-
-        if (result.Invited.Count == 0)
-        {
-            result.ScheduledSlotCount = ScheduleNativeInvitationSlots(controlled, controlledList, candidateGuests.Count);
-            result.ExistingSlotCount = Math.Max(result.ExistingSlotCount, RuntimeReflectionUtility.CountObjects(controlledList) - result.ScheduledSlotCount);
+            ProcessCandidate(result, panelType, albumType, statusTracker, candidate);
         }
 
         result.Ok = true;
-        result.InvitedCount = result.Invited.Count + result.ScheduledSlotCount;
+        result.InvitedCount = result.Invited.Count;
         result.SkippedCount = result.Skipped.Count;
-        result.Status = BuildStatus(result);
-        log?.LogInfo($"Invite all rare guests: {result.Status} candidates={result.CandidateCount}, usable={result.UsableCount}, existingSlots={result.ExistingSlotCount}, existingControlled={result.ExistingControlledCount}, scheduledSlots={result.ScheduledSlotCount}, skipped={result.SkippedCount}");
+        result.Status = BuildStatus(result, source);
+        log?.LogInfo($"Invite all rare guests: {result.Status} source={source}, candidates={result.CandidateCount}, eligible={result.UsableCount}, existingInvited={result.ExistingControlledCount}, invited={result.InvitedCount}, skipped={result.SkippedCount}");
         return result;
+    }
+
+    private static void ProcessCandidate(
+        RareGuestInvitationResult result,
+        Type panelType,
+        Type albumType,
+        object statusTracker,
+        InviteCandidate candidate)
+    {
+        if (candidate.Id < 0)
+        {
+            AddSkipped(result, candidate, "未读取到稀客 ID");
+            return;
+        }
+
+        if (HasNpcInvited(statusTracker, candidate.Id))
+        {
+            result.ExistingControlledCount++;
+            AddSkipped(result, candidate, "今晚已邀请");
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(candidate.RuntimeName) && HasTemptInvited(statusTracker, candidate.RuntimeName))
+        {
+            AddSkipped(result, candidate, "今日已尝试邀请");
+            return;
+        }
+
+        var level = RuntimeReflectionUtility.ToInt(
+            RuntimeReflectionUtility.InvokeStaticMethod(albumType, "GetOrGenerateSpecialNPCKizunaLevel", candidate.Id),
+            0);
+        if (level < 2)
+        {
+            AddSkipped(result, candidate, $"羁绊等级不足 {level}");
+            return;
+        }
+
+        if (!HasInviteDialog(candidate.Guest, level, succeed: true))
+        {
+            AddSkipped(result, candidate, $"当前羁绊等级无成功邀请对话 {level}");
+            return;
+        }
+
+        if (level < 5 && !HasInviteDialog(candidate.Guest, level, succeed: false))
+        {
+            AddSkipped(result, candidate, $"当前羁绊等级无失败邀请对话 {level}");
+            return;
+        }
+
+        result.UsableCount++;
+        var inviteCheck = TryInviteSpecGuest(panelType, candidate.Guest, level);
+        if (!inviteCheck.Invoked)
+        {
+            AddSkipped(result, candidate, inviteCheck.Error ?? "原生邀请判定调用失败");
+            return;
+        }
+
+        if (!inviteCheck.Succeeded)
+        {
+            AddSkipped(result, candidate, $"原生邀请判定失败（羁绊 {level}）");
+            return;
+        }
+
+        RuntimeReflectionUtility.InvokeMethod(statusTracker, "RecordInvitedGuest", candidate.Id);
+        if (!HasNpcInvited(statusTracker, candidate.Id))
+        {
+            AddSkipped(result, candidate, "原生记录邀请失败");
+            return;
+        }
+
+        result.Invited.Add(new RareGuestInvitationEntry
+        {
+            Id = candidate.Id,
+            Name = candidate.DisplayName,
+            RuntimeName = candidate.RuntimeName,
+            Reason = $"已按原生羁绊邀请记录（羁绊 {level}）",
+        });
     }
 
     private static RareGuestInvitationResult Fail(string message)
@@ -221,14 +191,167 @@ internal static class RuntimeRareGuestInvitationService
         };
     }
 
-    private static IEnumerable<object?> ReadCandidateGuests(object controlled)
+    private static IReadOnlyList<InviteCandidate> ReadInviteCandidates(
+        Type dataBaseCharacterType,
+        RuntimeMappedGuestCatalog? catalog,
+        out string source)
     {
-        var cache = RuntimeReflectionUtility.GetMemberValue(controlled, "m_SpecialGuestsCache")
-            ?? RuntimeReflectionUtility.GetMemberValue(controlled, "SpecialGuestsCache");
-        foreach (var item in RuntimeReflectionUtility.EnumerateObjects(cache))
+        var labelCandidates = ReadCurrentDaySceneNpcLabels()
+            .Select(label => RuntimeReflectionUtility.InvokeStaticMethod(dataBaseCharacterType, "RefSGuest", label))
+            .Where(guest => guest != null)
+            .Select(guest => BuildCandidate(catalog, guest!, "current-day-scene"))
+            .Where(candidate => candidate != null)
+            .Select(candidate => candidate!)
+            .ToList();
+        if (labelCandidates.Count > 0)
         {
-            if (item != null) yield return item;
+            source = "current-day-scene";
+            return DeduplicateCandidates(labelCandidates);
         }
+
+        var runtimeGuests = RuntimeReflectionUtility.InvokeStaticMethod(dataBaseCharacterType, "GetSpecialGuestsAndMappedGuests");
+        var candidates = RuntimeReflectionUtility
+            .EnumerateObjects(runtimeGuests)
+            .Where(guest => guest != null)
+            .Select(guest => BuildCandidate(catalog, guest!, "runtime-all"))
+            .Where(candidate => candidate != null)
+            .Select(candidate => candidate!)
+            .ToList();
+        source = "runtime-all";
+        return DeduplicateCandidates(candidates);
+    }
+
+    private static IReadOnlyList<InviteCandidate> DeduplicateCandidates(IEnumerable<InviteCandidate> candidates)
+    {
+        return candidates
+            .GroupBy(candidate => candidate.Id >= 0 ? $"id:{candidate.Id}" : $"name:{candidate.RuntimeName}", StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .OrderBy(candidate => candidate.Id < 0 ? int.MaxValue : candidate.Id)
+            .ThenBy(candidate => candidate.RuntimeName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static InviteCandidate? BuildCandidate(RuntimeMappedGuestCatalog? catalog, object guest, string source)
+    {
+        var id = ReadIntMember(guest, "ID", "Id", "id");
+        var runtimeName = ReadStringMember(guest, "StringId", "StrID", "Name", "DisplayName", "CharacterName");
+        var displayName = ResolveGuestName(catalog, guest, id, runtimeName);
+        return new InviteCandidate(guest, id, runtimeName, displayName, source);
+    }
+
+    private static IEnumerable<string> ReadCurrentDaySceneNpcLabels()
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var runtimeDaySceneType = RuntimeReflectionUtility.FindType(RuntimeDaySceneTypeName);
+        var daySceneMapType = RuntimeReflectionUtility.FindType(DaySceneMapTypeName);
+        var characterComponentType = RuntimeReflectionUtility.FindType(CharacterConditionComponentTypeName);
+
+        foreach (var label in ReadTrackedNpcLabels(runtimeDaySceneType))
+        {
+            if (seen.Add(label)) yield return label;
+        }
+
+        foreach (var label in ReadDaySceneMapCharacterLabels(daySceneMapType))
+        {
+            if (seen.Add(label)) yield return label;
+        }
+
+        foreach (var label in ReadSceneCharacterLabels(characterComponentType))
+        {
+            if (seen.Add(label)) yield return label;
+        }
+    }
+
+    private static IEnumerable<string> ReadTrackedNpcLabels(Type? runtimeDaySceneType)
+    {
+        if (runtimeDaySceneType == null) yield break;
+
+        var trackedNpcMaps = RuntimeReflectionUtility.GetStaticMemberValue(runtimeDaySceneType, "trackedNPCs");
+        foreach (var mapCandidate in RuntimeReflectionUtility.EnumerateObjects(trackedNpcMaps))
+        {
+            var map = RuntimeReflectionUtility.NormalizeKeyValueValue(mapCandidate);
+            foreach (var npcCandidate in RuntimeReflectionUtility.EnumerateObjects(map))
+            {
+                var npc = RuntimeReflectionUtility.NormalizeKeyValueValue(npcCandidate);
+                var label = ReadTextMember(npc, "key")
+                    ?? ReadTextMember(npcCandidate, "Key")
+                    ?? ReadTextMember(npcCandidate, "key");
+                if (!string.IsNullOrWhiteSpace(label)) yield return label;
+            }
+        }
+    }
+
+    private static IEnumerable<string> ReadDaySceneMapCharacterLabels(Type? daySceneMapType)
+    {
+        if (daySceneMapType == null) yield break;
+
+        var allCharacters = RuntimeReflectionUtility.GetStaticMemberValue(daySceneMapType, "allCharacters");
+        foreach (var characterCandidate in RuntimeReflectionUtility.EnumerateObjects(allCharacters))
+        {
+            var component = RuntimeReflectionUtility.NormalizeKeyValueValue(characterCandidate);
+            var label = ReadTextMember(characterCandidate, "Key")
+                ?? ReadTextMember(component, "CharacterLabel");
+            var trackedNpcData = RuntimeReflectionUtility.GetMemberValue(component, "trackedNPCData");
+            label ??= ReadTextMember(trackedNpcData, "key");
+            if (!string.IsNullOrWhiteSpace(label)) yield return label;
+        }
+    }
+
+    private static IEnumerable<string> ReadSceneCharacterLabels(Type? characterComponentType)
+    {
+        if (characterComponentType == null) yield break;
+
+        foreach (var component in RuntimeReflectionUtility.FindUnityObjectsIncludingInactive(characterComponentType))
+        {
+            var label = ReadTextMember(component, "CharacterLabel");
+            var trackedNpcData = RuntimeReflectionUtility.GetMemberValue(component, "trackedNPCData");
+            label ??= ReadTextMember(trackedNpcData, "key");
+            if (!string.IsNullOrWhiteSpace(label)) yield return label;
+        }
+    }
+
+    private static bool HasInviteDialog(object guest, int level, bool succeed)
+    {
+        var dialogs = RuntimeReflectionUtility.InvokeMethod(guest, "GetInviteDialogPackageAtKizunaLevel", level, succeed);
+        return RuntimeReflectionUtility.CountObjects(dialogs) > 0;
+    }
+
+    private static InviteSpecGuestResult TryInviteSpecGuest(Type panelType, object guest, int level)
+    {
+        var method = panelType
+            .GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+            .FirstOrDefault(candidate =>
+                string.Equals(candidate.Name, "InviteSpecGuest", StringComparison.Ordinal)
+                && candidate.GetParameters().Length == 3);
+        if (method == null)
+        {
+            return new InviteSpecGuestResult(false, false, "未找到原生 InviteSpecGuest 方法");
+        }
+
+        var args = new object?[] { guest, level, null };
+        try
+        {
+            var result = method.Invoke(null, args);
+            return new InviteSpecGuestResult(true, RuntimeReflectionUtility.ToBool(result), null);
+        }
+        catch (TargetInvocationException ex)
+        {
+            return new InviteSpecGuestResult(false, false, ex.InnerException?.Message ?? ex.Message);
+        }
+        catch (Exception ex)
+        {
+            return new InviteSpecGuestResult(false, false, ex.Message);
+        }
+    }
+
+    private static bool HasNpcInvited(object statusTracker, int id)
+    {
+        return RuntimeReflectionUtility.ToBool(RuntimeReflectionUtility.InvokeMethod(statusTracker, "HasNPCInvited", id));
+    }
+
+    private static bool HasTemptInvited(object statusTracker, string runtimeName)
+    {
+        return RuntimeReflectionUtility.ToBool(RuntimeReflectionUtility.InvokeMethod(statusTracker, "HasTemptInvited", runtimeName));
     }
 
     private static object? GetGenericSingletonInstance(Type concreteType)
@@ -263,150 +386,36 @@ internal static class RuntimeRareGuestInvitationService
         return null;
     }
 
-    private static IReadOnlyList<ControlledEntry> ReadControlledEntries(object controlledList)
+    private static void AddSkipped(RareGuestInvitationResult result, InviteCandidate candidate, string reason)
     {
-        var entries = new List<ControlledEntry>();
-        foreach (var item in RuntimeReflectionUtility.EnumerateObjects(controlledList))
+        result.Skipped.Add(new RareGuestInvitationEntry
         {
-            if (item == null) continue;
-            entries.Add(new ControlledEntry(
-                ReadIntMember(item, "Id", "ID", "id"),
-                ReadIntMember(item, "Status", "status")));
-        }
-
-        return entries;
+            Id = candidate.Id,
+            Name = candidate.DisplayName,
+            RuntimeName = candidate.RuntimeName,
+            Reason = reason,
+        });
     }
 
-    private static bool IsUsable(object controlled, int id)
+    private static string BuildStatus(RareGuestInvitationResult result, string source)
     {
-        var result = RuntimeReflectionUtility.InvokeMethod(controlled, "CheckSpecialGuestUsability", id);
-        return RuntimeReflectionUtility.ToBool(result);
-    }
-
-    private static object? CreateControlledEntry(Type controlledEntryType, Type controlStatusType, int id, int status)
-    {
-        try
-        {
-            var statusValue = controlStatusType.IsEnum
-                ? Enum.ToObject(controlStatusType, status)
-                : Convert.ChangeType(status, controlStatusType);
-            var created = Activator.CreateInstance(controlledEntryType, id, statusValue);
-            if (created != null) return created;
-        }
-        catch
-        {
-            // Fall back to field assignment below.
-        }
-
-        try
-        {
-            var created = Activator.CreateInstance(controlledEntryType);
-            if (created == null) return null;
-            SetMemberValue(created, "Id", id);
-            SetMemberValue(created, "Status", status);
-            return created;
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private static bool AppendControlledEntries(object controlledList, IReadOnlyList<object> entries)
-    {
-        foreach (var entry in entries)
-        {
-            if (!InvokeInstanceMethod(controlledList, "Add", entry)) return false;
-        }
-
-        return true;
-    }
-
-    private static int ScheduleNativeInvitationSlots(object controlled, object controlledList, int candidateCount)
-    {
-        var scheduled = 0;
-        var previousCount = RuntimeReflectionUtility.CountObjects(controlledList);
-        var targetCount = Math.Max(previousCount, candidateCount);
-
-        while (previousCount < targetCount)
-        {
-            RuntimeReflectionUtility.InvokeMethod(controlled, "ControlScheduled");
-            var nextCount = RuntimeReflectionUtility.CountObjects(controlledList);
-            if (nextCount <= previousCount) break;
-
-            scheduled += nextCount - previousCount;
-            previousCount = nextCount;
-        }
-
-        return scheduled;
-    }
-
-    private static string BuildStatus(RareGuestInvitationResult result)
-    {
+        var sourceLabel = source == "current-day-scene" ? "当前日间场景" : "运行时稀客数据";
         if (result.Invited.Count > 0)
         {
-            return $"已邀请 {result.Invited.Count} 位稀客。";
+            return $"{sourceLabel}已邀请 {result.Invited.Count} 位稀客。";
         }
 
-        if (result.ScheduledSlotCount > 0)
+        if (result.UsableCount > 0)
         {
-            return $"已新增 {result.ScheduledSlotCount} 个原生邀请名额；游戏会在经营准备时自动选择可邀请稀客。";
+            return $"{sourceLabel}没有新的成功邀请，可能本次原生成功率判定未通过。";
         }
 
-        if (result.ExistingSlotCount > 0)
+        if (result.ExistingControlledCount > 0)
         {
-            return $"已有 {result.ExistingSlotCount} 个原生邀请名额或受控稀客，无需新增。";
+            return $"{sourceLabel}中的可邀请稀客今晚均已邀请。";
         }
 
-        return "没有新的可邀请稀客或可用邀请名额。";
-    }
-
-    private static bool InvokeInstanceMethod(object instance, string name, params object?[] args)
-    {
-        var method = FindMethod(instance.GetType(), name, args.Length);
-        if (method == null) return false;
-
-        try
-        {
-            method.Invoke(instance, args);
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private static MethodInfo? FindMethod(Type type, string name, int argCount)
-    {
-        const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
-        return type.GetMethods(flags).FirstOrDefault(method =>
-            string.Equals(method.Name, name, StringComparison.Ordinal)
-            && method.GetParameters().Length == argCount);
-    }
-
-    private static void SetMemberValue(object instance, string name, object value)
-    {
-        const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
-        var type = instance.GetType();
-        var field = type.GetField(name, flags)
-            ?? type.GetField($"<{name}>k__BackingField", flags)
-            ?? type.GetField($"m_{name}", flags)
-            ?? type.GetField($"_{name}", flags);
-        if (field != null)
-        {
-            field.SetValue(instance, CoerceValue(value, field.FieldType));
-            return;
-        }
-
-        var property = type.GetProperty(name, flags);
-        property?.SetValue(instance, CoerceValue(value, property.PropertyType));
-    }
-
-    private static object CoerceValue(object value, Type targetType)
-    {
-        if (targetType.IsEnum) return Enum.ToObject(targetType, value);
-        return targetType == typeof(byte) ? Convert.ToByte(value) : Convert.ChangeType(value, targetType);
+        return $"{sourceLabel}没有新的可邀请稀客。";
     }
 
     private static string ResolveGuestName(RuntimeMappedGuestCatalog? catalog, object guest, int id, string runtimeName)
@@ -448,5 +457,13 @@ internal static class RuntimeRareGuestInvitationService
         return "";
     }
 
-    private sealed record ControlledEntry(int Id, int Status);
+    private static string? ReadTextMember(object? instance, string name)
+    {
+        var value = RuntimeReflectionUtility.GetMemberValue(instance, name)?.ToString();
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private sealed record InviteCandidate(object Guest, int Id, string RuntimeName, string DisplayName, string Source);
+
+    private sealed record InviteSpecGuestResult(bool Invoked, bool Succeeded, string? Error);
 }
