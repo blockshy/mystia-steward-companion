@@ -167,6 +167,8 @@ public sealed class NightBusinessOrder
     public string Source { get; init; } = "";
     public DateTime? FirstSeenAtUtc { get; init; }
     public DateTime? LastSeenAtUtc { get; init; }
+    public bool HasServedFood { get; init; }
+    public bool HasServedBeverage { get; init; }
 }
 
 public sealed class NightBusinessGuest

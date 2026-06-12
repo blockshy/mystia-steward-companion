@@ -267,6 +267,8 @@ interface NightBusinessOrder {
   source: string;
   firstSeenAtUtc?: string | null;
   lastSeenAtUtc?: string | null;
+  hasServedFood?: boolean;
+  hasServedBeverage?: boolean;
 }
 
 interface NightBusinessContext {
@@ -429,6 +431,9 @@ interface OrderPreparationStep {
 interface OrderPreparationResponse {
   ok: boolean;
   prepared: boolean;
+  servedFood?: boolean;
+  servedBeverage?: boolean;
+  completedOrder?: boolean;
   error: string | null;
   order: {
     deskCode: number;
@@ -549,6 +554,8 @@ interface RareAutoOrderDiagnostic {
   lastError: string;
   prepared: boolean;
   beverageHandled: boolean;
+  hasServedFood: boolean;
+  hasServedBeverage: boolean;
   paused: boolean;
 }
 
@@ -604,6 +611,27 @@ interface CookerReservationResult {
 interface NormalCookerDemand {
   counts: Map<string, number>;
   labels: Map<string, string[]>;
+}
+
+interface AutomationCookerResourceRow {
+  key: string;
+  label: string;
+  capacity: number;
+  normalReserved: number;
+  rareReserved: number;
+  labels: string[];
+}
+
+interface AutomationTrayResourceRow {
+  key: string;
+  label: string;
+  count: number;
+  labels: string[];
+}
+
+interface AutomationResourceOverview {
+  cookers: AutomationCookerResourceRow[];
+  tray: AutomationTrayResourceRow[];
 }
 
 type AutomationStep =
@@ -993,6 +1021,7 @@ export function ModWorkbench() {
         const orderKey = buildAutoOrderKey(selection.item);
         const prefix = formatRareAutomationPrefix(selection.item);
         let currentState = rareOrderStatesRef.current.get(orderKey) ?? emptyAutoFirstOrderState(orderKey, now);
+        currentState = syncRareStateWithOrderServedState(currentState, selection.item.order, now);
         if (currentState.paused) {
           messages.push(`${prefix}\n${formatAutomationState(currentState, companionPreferences)}\n稀客自动化已暂停该订单，订单变化或重新开启后会继续。`);
           continue;
@@ -1018,6 +1047,7 @@ export function ModWorkbench() {
             continue;
           }
 
+          currentState = applyRareServedStateFromResponse(currentState, selection.item.order, completeResponse, now);
           missingTrayParts = getMissingTrayParts(completeResponse);
           if (!missingTrayParts.food && !missingTrayParts.beverage) {
             const nextState = updateAutomationAfterResponse(
@@ -2272,6 +2302,26 @@ function ModServicePanel({
     () => sortNightOrders(night?.orders ?? [], autoPrepPreferences.serviceOrderSortMode),
     [autoPrepPreferences.serviceOrderSortMode, night?.orders],
   );
+  const automationResources = useMemo(
+    () => buildAutomationResourceOverview({
+      runtime,
+      recommendations,
+      favorites,
+      preferences: autoPrepPreferences,
+      normalOrders: normalBusiness?.orders ?? [],
+      rareDiagnostics: rareOrderDiagnostics,
+      normalDiagnostics: normalOrderDiagnostics,
+    }),
+    [
+      autoPrepPreferences,
+      favorites,
+      normalBusiness?.orders,
+      normalOrderDiagnostics,
+      rareOrderDiagnostics,
+      recommendations,
+      runtime,
+    ],
+  );
 
   return (
     <div className="space-y-4">
@@ -2290,6 +2340,8 @@ function ModServicePanel({
           <InfoLine label="界面置顶" value={uiPinningStatus || '暂无'} />
         </CardContent>
       </Card>
+
+      {autoPrepPreferences.automationEnabled && <AutomationResourcePanel overview={automationResources} />}
 
       <Tabs defaultValue="rare" className="space-y-4">
         <TabsList className="grid h-9 w-full grid-cols-2">
@@ -2434,6 +2486,86 @@ function ModServicePanel({
           </ListPanel>
         </TabsContent>
       </Tabs>
+    </div>
+  );
+}
+
+function AutomationResourcePanel({ overview }: { overview: AutomationResourceOverview }) {
+  const hasCookerRows = overview.cookers.length > 0;
+  const hasTrayRows = overview.tray.length > 0;
+  if (!hasCookerRows && !hasTrayRows) return null;
+
+  return (
+    <div className={DENSE_TWO_COLUMN_GRID}>
+      <ListPanel title="厨具预约">
+        {!hasCookerRows && <EmptyRow text="暂无厨具预约" />}
+        <div className="space-y-2">
+          {overview.cookers.map((row) => (
+            <ResourceUsageRow
+              key={row.key}
+              label={row.label}
+              value={`${row.normalReserved + row.rareReserved}/${row.capacity}`}
+              status={row.normalReserved + row.rareReserved > row.capacity ? 'over' : row.normalReserved + row.rareReserved > 0 ? 'active' : 'idle'}
+              details={[
+                row.normalReserved > 0 ? `普客 ${row.normalReserved}` : '',
+                row.rareReserved > 0 ? `稀客 ${row.rareReserved}` : '',
+                ...row.labels.slice(0, 2),
+              ].filter(Boolean)}
+              overflow={Math.max(0, row.labels.length - 2)}
+            />
+          ))}
+        </div>
+      </ListPanel>
+
+      <ListPanel title="送餐盘压力">
+        {!hasTrayRows && <EmptyRow text="暂无送餐盘占用" />}
+        <div className="space-y-2">
+          {overview.tray.map((row) => (
+            <ResourceUsageRow
+              key={row.key}
+              label={row.label}
+              value={String(row.count)}
+              status={row.count > 0 ? 'active' : 'idle'}
+              details={row.labels.slice(0, 3)}
+              overflow={Math.max(0, row.labels.length - 3)}
+            />
+          ))}
+        </div>
+      </ListPanel>
+    </div>
+  );
+}
+
+function ResourceUsageRow({
+  label,
+  value,
+  status,
+  details,
+  overflow,
+}: {
+  label: string;
+  value: string;
+  status: 'active' | 'idle' | 'over';
+  details: string[];
+  overflow: number;
+}) {
+  const badgeVariant = status === 'over' ? 'destructive' : status === 'active' ? 'secondary' : 'outline';
+  return (
+    <div className="rounded-md border border-border bg-background/70 px-2.5 py-2 text-sm">
+      <div className="flex items-center justify-between gap-3">
+        <span className="font-medium text-foreground">{label}</span>
+        <Badge variant={badgeVariant}>{value}</Badge>
+      </div>
+      {details.length > 0 && (
+        <div className="mt-1 flex flex-wrap gap-1.5 text-xs text-muted-foreground">
+          {details.map((item, index) => (
+            <span key={`${item}-${index}`} className="max-w-full truncate rounded-sm border border-border px-1.5 py-0.5">
+              {item}
+            </span>
+          ))}
+          {overflow > 0 && <span className="px-1.5 py-0.5">+{overflow}</span>}
+        </div>
+      )}
     </div>
   );
 }
@@ -3538,6 +3670,12 @@ function RareAutoPrepStatus({
                 </Badge>
                 <Badge variant={diagnostic.beverageHandled ? 'secondary' : 'outline'}>
                   酒水{diagnostic.beverageHandled ? '已处理' : '待处理'}
+                </Badge>
+                <Badge variant={diagnostic.hasServedFood ? 'secondary' : 'outline'}>
+                  订单{diagnostic.hasServedFood ? '已有料理' : '未送料理'}
+                </Badge>
+                <Badge variant={diagnostic.hasServedBeverage ? 'secondary' : 'outline'}>
+                  订单{diagnostic.hasServedBeverage ? '已有酒水' : '未送酒水'}
                 </Badge>
               </div>
               {diagnostic.lastError && (
@@ -4858,6 +4996,132 @@ function buildNormalCookerDemand(
   return { counts, labels };
 }
 
+function buildAutomationResourceOverview({
+  runtime,
+  recommendations,
+  favorites,
+  preferences,
+  normalOrders,
+  rareDiagnostics,
+  normalDiagnostics,
+}: {
+  runtime: RecommendationStateSnapshot | null;
+  recommendations: OrderRecommendation[];
+  favorites: FavoriteData;
+  preferences: CompanionPreferences;
+  normalOrders: NormalBusinessOrder[];
+  rareDiagnostics: RareAutoOrderDiagnostic[];
+  normalDiagnostics: NormalAutoOrderDiagnostic[];
+}): AutomationResourceOverview {
+  if (!preferences.automationEnabled) {
+    return { cookers: [], tray: [] };
+  }
+
+  const capacity = buildAutomationCookerCapacity(runtime);
+  const cookerRows = new Map<string, AutomationCookerResourceRow>();
+  for (const [key, count] of capacity.entries()) {
+    ensureCookerResourceRow(cookerRows, key, key, count);
+  }
+
+  const normalDiagnosticByKey = new Map(normalDiagnostics.map((item) => [item.orderKey, item]));
+  if (preferences.autoNormalOrderEnabled && preferences.autoNormalStartCooking) {
+    let normalReserved = 0;
+    for (const order of sortNormalOrders(normalOrders).filter((item) => !item.isFulfilled)) {
+      if (normalReserved >= preferences.autoNormalConcurrency) break;
+      const diagnostic = normalDiagnosticByKey.get(buildNormalAutoOrderKey(order));
+      if (diagnostic?.prepared || diagnostic?.collected || diagnostic?.paused || diagnostic?.hasServedFood) continue;
+      const cooker = getNormalCookerRequirement(order);
+      if (!cooker) continue;
+      const row = ensureCookerResourceRow(cookerRows, cooker.key, cooker.label, getCookerSlotCapacity(cooker.key, capacity));
+      if (row.normalReserved + row.rareReserved >= row.capacity) continue;
+      row.normalReserved += 1;
+      row.labels.push(`普客 桌 ${formatDesk(order.deskCode)} · ${order.foodName || `#${order.foodId}`}`);
+      normalReserved += 1;
+    }
+  }
+
+  const rareDiagnosticByKey = new Map(rareDiagnostics.map((item) => [item.orderKey, item]));
+  if (preferences.autoPrepStartCooking) {
+    const candidates = selectOrderPreparationCandidates(
+      recommendations,
+      favorites,
+      preferences,
+      preferences.autoRareConcurrency,
+    );
+    for (const selection of candidates.selections) {
+      const diagnostic = rareDiagnosticByKey.get(buildAutoOrderKey(selection.item));
+      if (diagnostic?.prepared || diagnostic?.hasServedFood || diagnostic?.paused) continue;
+      const cooker = getRareCookerRequirement(selection.recipe);
+      if (!cooker) continue;
+      const row = ensureCookerResourceRow(cookerRows, cooker.key, cooker.label, getCookerSlotCapacity(cooker.key, capacity));
+      if (row.normalReserved + row.rareReserved >= row.capacity) continue;
+      row.rareReserved += 1;
+      row.labels.push(`稀客 ${selection.item.order.guestName || '未知'} · 桌 ${formatDesk(selection.item.order.deskCode)}`);
+    }
+  }
+
+  return {
+    cookers: [...cookerRows.values()]
+      .filter((row) => row.normalReserved + row.rareReserved > 0)
+      .sort((left, right) => left.label.localeCompare(right.label, 'zh-CN')),
+    tray: buildTrayResourceRows(rareDiagnostics),
+  };
+}
+
+function ensureCookerResourceRow(
+  rows: Map<string, AutomationCookerResourceRow>,
+  key: string,
+  label: string,
+  capacity: number,
+): AutomationCookerResourceRow {
+  const existing = rows.get(key);
+  if (existing) {
+    existing.capacity = Math.max(existing.capacity, capacity);
+    return existing;
+  }
+
+  const row: AutomationCookerResourceRow = {
+    key,
+    label,
+    capacity: Math.max(1, capacity),
+    normalReserved: 0,
+    rareReserved: 0,
+    labels: [],
+  };
+  rows.set(key, row);
+  return row;
+}
+
+function buildTrayResourceRows(diagnostics: RareAutoOrderDiagnostic[]): AutomationTrayResourceRow[] {
+  const foodLabels: string[] = [];
+  const beverageLabels: string[] = [];
+  for (const diagnostic of diagnostics) {
+    if (diagnostic.paused) continue;
+    if (diagnostic.prepared && !diagnostic.hasServedFood) {
+      foodLabels.push(`${diagnostic.title} · ${diagnostic.recipeName || '料理'}`);
+    }
+
+    if (diagnostic.beverageHandled && !diagnostic.hasServedBeverage) {
+      beverageLabels.push(`${diagnostic.title} · ${diagnostic.beverageName || '酒水'}`);
+    }
+  }
+
+  return [
+    {
+      key: 'food',
+      label: '料理占用/待送',
+      count: foodLabels.length,
+      labels: foodLabels,
+    },
+    {
+      key: 'beverage',
+      label: '酒水占用/待送',
+      count: beverageLabels.length,
+      labels: beverageLabels,
+    },
+  ].filter((row) => row.count > 0);
+}
+
 function shouldAttemptNormalCooking(
   order: NormalBusinessOrder,
   state: NormalAutoOrderState | undefined,
@@ -5438,8 +5702,10 @@ function buildRareAutoOrderDiagnostic(
     retryCount: state.retryCount,
     rollbackCount: state.rollbackCount,
     lastError: state.lastError,
-    prepared: state.prepared,
-    beverageHandled: state.beverageHandled,
+    prepared: state.prepared || Boolean(order.hasServedFood),
+    beverageHandled: state.beverageHandled || Boolean(order.hasServedBeverage),
+    hasServedFood: Boolean(order.hasServedFood),
+    hasServedBeverage: Boolean(order.hasServedBeverage),
     paused: state.paused,
   };
 }
@@ -5707,6 +5973,8 @@ function isMeaningfulAutomationProgressStep(step: OrderPreparationStep): boolean
   return step.name.includes('自动取酒')
     || step.name.includes('自动开始料理')
     || step.name.includes('自动收取料理')
+    || step.name.includes('送达料理')
+    || step.name.includes('送达酒水')
     || step.name.includes('普客开始料理')
     || step.name.includes('普客保温箱')
     || step.name.includes('写入订单')
@@ -5715,6 +5983,67 @@ function isMeaningfulAutomationProgressStep(step: OrderPreparationStep): boolean
 
 function emptyMissingTrayParts() {
   return { food: false, beverage: false };
+}
+
+function syncRareStateWithOrderServedState(
+  state: AutoFirstOrderState,
+  order: NightBusinessOrder,
+  now: number,
+): AutoFirstOrderState {
+  if (!order.hasServedFood && !order.hasServedBeverage) return state;
+  return applyRareServedStateFromResponse(
+    state,
+    order,
+    {
+      ok: false,
+      prepared: false,
+      error: null,
+      order: {
+        deskCode: order.deskCode,
+        guestId: order.guestId,
+        guestName: order.guestName,
+        foodTag: order.foodTag,
+        beverageTag: order.beverageTag,
+      },
+      recipeId: -1,
+      recipeName: '',
+      beverageId: -1,
+      beverageName: '',
+      servedFood: order.hasServedFood,
+      servedBeverage: order.hasServedBeverage,
+      completedOrder: false,
+      steps: [],
+    },
+    now,
+  );
+}
+
+function applyRareServedStateFromResponse(
+  state: AutoFirstOrderState,
+  order: NightBusinessOrder,
+  response: OrderPreparationResponse,
+  now: number,
+): AutoFirstOrderState {
+  const servedFood = Boolean(response.servedFood)
+    || Boolean(order.hasServedFood)
+    || didCompleteStep(response, '送达料理');
+  const servedBeverage = Boolean(response.servedBeverage)
+    || Boolean(order.hasServedBeverage)
+    || didCompleteStep(response, '送达酒水');
+  if (!servedFood && !servedBeverage) return state;
+
+  const nextPrepared = state.prepared || servedFood;
+  const nextBeverageHandled = state.beverageHandled || servedBeverage;
+  return {
+    ...state,
+    prepared: nextPrepared,
+    preparedAtMs: nextPrepared && !state.prepared ? now : state.preparedAtMs,
+    beverageHandled: nextBeverageHandled,
+    beverageHandledAtMs: nextBeverageHandled && !state.beverageHandled ? now : state.beverageHandledAtMs,
+    lastProgressAtMs: now,
+    step: servedFood && servedBeverage ? 'complete-order' : servedFood ? 'ensure-beverage' : 'wait-food-tray',
+    stepStartedAtMs: now,
+  };
 }
 
 function getMissingTrayParts(response: OrderPreparationResponse) {

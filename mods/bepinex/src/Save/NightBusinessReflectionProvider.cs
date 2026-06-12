@@ -548,6 +548,8 @@ public sealed class NightBusinessReflectionProvider
             Source = source,
             FirstSeenAtUtc = now,
             LastSeenAtUtc = now,
+            HasServedFood = ReadOrderServedState(order, "ServFood", "ServedFoodInAir"),
+            HasServedBeverage = ReadOrderServedState(order, "ServBeverage", "ServedBeverageInAir"),
         };
         RecordCandidate("Order", source, accepted: true, "accepted special order", DescribeOrderCandidate(order, controller));
         return result;
@@ -808,6 +810,8 @@ public sealed class NightBusinessReflectionProvider
             Source = order.Source,
             FirstSeenAtUtc = firstSeenAtUtc,
             LastSeenAtUtc = lastSeenAtUtc,
+            HasServedFood = order.HasServedFood,
+            HasServedBeverage = order.HasServedBeverage,
         };
     }
 
@@ -832,10 +836,22 @@ public sealed class NightBusinessReflectionProvider
         if (!string.IsNullOrWhiteSpace(order.BeverageTag)) score += 8;
         if (order.FoodTagId != 0) score += 2;
         if (order.BeverageTagId != 0) score += 2;
+        if (order.HasServedFood) score += 1;
+        if (order.HasServedBeverage) score += 1;
         if (string.Equals(order.Source, "OrderLog", StringComparison.Ordinal)) score += 4;
         if (string.Equals(order.Source, "OrderController", StringComparison.Ordinal)) score += 2;
         if (string.Equals(order.Source, "ServePanel", StringComparison.Ordinal)) score += 1;
         return score;
+    }
+
+    private static bool ReadOrderServedState(object order, params string[] memberNames)
+    {
+        foreach (var memberName in memberNames)
+        {
+            if (GetMemberValue(order, memberName) != null) return true;
+        }
+
+        return false;
     }
 
     private static List<NightBusinessGuest> DeduplicateGuests(IEnumerable<NightBusinessGuest> guests)

@@ -33,6 +33,9 @@ internal sealed class OrderPreparationResult
     public string RecipeName { get; init; } = "";
     public int BeverageId { get; init; }
     public string BeverageName { get; init; } = "";
+    public bool ServedFood { get; set; }
+    public bool ServedBeverage { get; set; }
+    public bool CompletedOrder { get; set; }
     public List<OrderPreparationStep> Steps { get; } = new();
 }
 
