@@ -130,7 +130,7 @@ internal static class RuntimeRareGuestInvitationService
         }
 
         var level = RuntimeReflectionUtility.ToInt(
-            RuntimeReflectionUtility.InvokeStaticMethod(albumType, "GetOrGenerateSpecialNPCKizunaLevel", candidate.Id),
+            InvokeStaticMethodWithSingleParameter(albumType, "GetOrGenerateSpecialNPCKizunaLevel", typeof(int), candidate.Id),
             0);
         if (level < 2)
         {
@@ -197,7 +197,7 @@ internal static class RuntimeRareGuestInvitationService
         out string source)
     {
         var labelCandidates = ReadCurrentDaySceneNpcLabels()
-            .Select(label => RuntimeReflectionUtility.InvokeStaticMethod(dataBaseCharacterType, "RefSGuest", label))
+            .Select(label => InvokeStaticMethodWithSingleParameter(dataBaseCharacterType, "RefSGuest", typeof(string), label))
             .Where(guest => guest != null)
             .Select(guest => BuildCandidate(catalog, guest!, "current-day-scene"))
             .Where(candidate => candidate != null)
@@ -352,6 +352,42 @@ internal static class RuntimeRareGuestInvitationService
     private static bool HasTemptInvited(object statusTracker, string runtimeName)
     {
         return RuntimeReflectionUtility.ToBool(RuntimeReflectionUtility.InvokeMethod(statusTracker, "HasTemptInvited", runtimeName));
+    }
+
+    private static object? InvokeStaticMethodWithSingleParameter(
+        Type type,
+        string methodName,
+        Type parameterType,
+        object? arg)
+    {
+        var method = type
+            .GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+            .FirstOrDefault(candidate =>
+            {
+                if (!string.Equals(candidate.Name, methodName, StringComparison.Ordinal)) return false;
+                var parameters = candidate.GetParameters();
+                return parameters.Length == 1 && ParameterTypeMatches(parameters[0].ParameterType, parameterType);
+            });
+        if (method == null) return null;
+
+        try
+        {
+            return method.Invoke(null, new[] { arg });
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool ParameterTypeMatches(Type actual, Type expected)
+    {
+        if (actual == expected) return true;
+        if (string.Equals(actual.FullName, expected.FullName, StringComparison.Ordinal)) return true;
+
+        return expected == typeof(int)
+            ? string.Equals(actual.FullName, "System.Int32", StringComparison.Ordinal)
+            : expected == typeof(string) && string.Equals(actual.FullName, "System.String", StringComparison.Ordinal);
     }
 
     private static object? GetGenericSingletonInstance(Type concreteType)
