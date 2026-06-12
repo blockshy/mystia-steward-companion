@@ -101,6 +101,7 @@ const MAX_FOCUS_SWITCH_COOLDOWN_MS = 2000;
 const MAX_LOG_LINES_IN_VIEW = 400;
 const CONNECTION_RETRY_DELAYS_MS = [2000, 5000, 10000, 30000];
 const AUTO_FIRST_ORDER_TICK_MS = 1500;
+const RARE_TRAY_BACKLOG_REUSE_SECONDS = 30;
 const DEFAULT_RARE_AUTO_ORDERS_PER_TICK = 2;
 const DEFAULT_NORMAL_AUTO_ORDERS_PER_TICK = 3;
 const MIN_AUTO_ORDER_CONCURRENCY = 1;
@@ -148,6 +149,8 @@ const DENSE_THREE_COLUMN_GRID = 'grid grid-cols-3 gap-3';
 const DENSE_FOUR_COLUMN_GRID = 'grid grid-cols-4 gap-3';
 const DENSE_CARD_HEADER_GRID = 'grid grid-cols-[minmax(0,1fr)_auto] gap-3';
 const DENSE_ITEM_GRID = 'grid grid-cols-[repeat(auto-fit,minmax(11rem,1fr))] gap-2';
+const AUTOMATION_SWITCH_GRID = 'grid grid-cols-2 gap-2 xl:grid-cols-3';
+const AUTOMATION_SWITCH_CELL = 'min-w-0 rounded-md border border-border bg-background/70 px-2.5 py-2';
 const MOD_TAB_TRIGGER_CLASS = 'min-w-0 flex-1 data-active:bg-primary data-active:text-primary-foreground dark:data-active:bg-primary dark:data-active:text-primary-foreground';
 
 type ModTab = 'overview' | 'normal' | 'rare' | 'service' | 'tasks' | 'inventory' | 'logs' | 'settings';
@@ -526,6 +529,8 @@ interface CompanionPreferences {
 
 interface AutoFirstOrderState {
   orderKey: string;
+  recipeTarget: RareAutomationRecipeTarget | null;
+  beverageTarget: RareAutomationBeverageTarget | null;
   prepared: boolean;
   preparedAtMs: number;
   beverageHandled: boolean;
@@ -537,6 +542,22 @@ interface AutoFirstOrderState {
   rollbackCount: number;
   lastError: string;
   paused: boolean;
+}
+
+interface RareAutomationRecipeTarget {
+  recipeId: number;
+  foodId: number;
+  recipeName: string;
+  cookerName: string;
+  extraIngredientIds: number[];
+  acceptableFoodIds: number[];
+  favorite: boolean;
+}
+
+interface RareAutomationBeverageTarget {
+  beverageId: number;
+  beverageName: string;
+  favorite: boolean;
 }
 
 interface RareAutoOrderDiagnostic {
@@ -982,6 +1003,7 @@ export function ModWorkbench() {
       favorites,
       selectionPreferences,
       companionPreferences.autoRareConcurrency,
+      rareOrderStatesRef.current,
     );
     if (candidateResult.selections.length === 0) {
       rareOrderStatesRef.current.clear();
@@ -1021,6 +1043,7 @@ export function ModWorkbench() {
         const orderKey = buildAutoOrderKey(selection.item);
         const prefix = formatRareAutomationPrefix(selection.item);
         let currentState = rareOrderStatesRef.current.get(orderKey) ?? emptyAutoFirstOrderState(orderKey, now);
+        currentState = lockRareAutomationTargets(currentState, selection);
         currentState = syncRareStateWithOrderServedState(currentState, selection.item.order, now);
         if (currentState.paused) {
           messages.push(`${prefix}\n${formatAutomationState(currentState, companionPreferences)}\n稀客自动化已暂停该订单，订单变化或重新开启后会继续。`);
@@ -1033,10 +1056,8 @@ export function ModWorkbench() {
             normalizedEndpoint,
             apiToken,
             selection.item,
-            selection.recipe,
-            selection.beverage,
-            selection.recipeFavorite,
-            selection.beverageFavorite,
+            currentState.recipeTarget,
+            currentState.beverageTarget,
             buildCompleteOrderPreferences(companionPreferences),
           );
 
@@ -1123,7 +1144,7 @@ export function ModWorkbench() {
         const schedulerNote = shouldPrepareFood
           ? reserveRareCookerSlot(
             cookerCycle,
-            getRareCookerRequirement(selection.recipe),
+            getRareCookerRequirement(currentState.recipeTarget),
             `稀客 ${selection.item.order.guestName || '当前订单'} · 桌 ${formatDesk(selection.item.order.deskCode)}`,
             cookerCapacity,
             normalCookerDemand,
@@ -1162,10 +1183,8 @@ export function ModWorkbench() {
           normalizedEndpoint,
           apiToken,
           selection.item,
-          shouldPrepareFood ? selection.recipe : null,
-          shouldPrepareBeverage ? selection.beverage : null,
-          shouldPrepareFood ? selection.recipeFavorite : null,
-          shouldPrepareBeverage ? selection.beverageFavorite : null,
+          shouldPrepareFood ? currentState.recipeTarget : null,
+          shouldPrepareBeverage ? currentState.beverageTarget : null,
           preparePreferences,
         );
 
@@ -3496,33 +3515,33 @@ function RareServiceAutomationPanel({
 }) {
   return (
     <ListPanel title="稀客自动化（实验性）">
-      <div className="space-y-2">
-        <SwitchControl
+      <div className={AUTOMATION_SWITCH_GRID}>
+        <AutomationSwitchCell
           label="自动完成订单"
           checked={preferences.autoPrepCompleteOrder}
           onCheckedChange={(autoPrepCompleteOrder) => onPreferenceChange({ autoPrepCompleteOrder })}
         />
-        <SwitchControl
+        <AutomationSwitchCell
           label="自动取酒"
           checked={preferences.autoPrepTakeBeverage}
           onCheckedChange={(autoPrepTakeBeverage) => onPreferenceChange({ autoPrepTakeBeverage })}
         />
-        <SwitchControl
+        <AutomationSwitchCell
           label="自动开始料理"
           checked={preferences.autoPrepStartCooking}
           onCheckedChange={(autoPrepStartCooking) => onPreferenceChange({ autoPrepStartCooking })}
         />
-        <SwitchControl
+        <AutomationSwitchCell
           label="自动收取料理"
           checked={preferences.autoPrepCollectCooking}
           onCheckedChange={(autoPrepCollectCooking) => onPreferenceChange({ autoPrepCollectCooking })}
         />
-        <SwitchControl
+        <AutomationSwitchCell
           label="只处理收藏配方"
           checked={preferences.autoPrepFavoritesOnly}
           onCheckedChange={(autoPrepFavoritesOnly) => onPreferenceChange({ autoPrepFavoritesOnly })}
         />
-        <SwitchControl
+        <AutomationSwitchCell
           label="出错时暂停"
           checked={preferences.autoPrepStopOnError}
           onCheckedChange={(autoPrepStopOnError) => onPreferenceChange({ autoPrepStopOnError })}
@@ -3558,25 +3577,25 @@ function NormalServiceAutomationPanel({
 }) {
   return (
     <ListPanel title="普客自动化（实验性）">
-      <div className="space-y-2">
-        <SwitchControl
+      <div className={AUTOMATION_SWITCH_GRID}>
+        <AutomationSwitchCell
           label="启用普客处理"
           checked={preferences.autoNormalOrderEnabled}
           onCheckedChange={(autoNormalOrderEnabled) => onPreferenceChange({ autoNormalOrderEnabled })}
         />
         {preferences.autoNormalOrderEnabled && (
           <>
-            <SwitchControl
+            <AutomationSwitchCell
               label="自动开始料理"
               checked={preferences.autoNormalStartCooking}
               onCheckedChange={(autoNormalStartCooking) => onPreferenceChange({ autoNormalStartCooking })}
             />
-            <SwitchControl
+            <AutomationSwitchCell
               label="自动收取料理"
               checked={preferences.autoNormalCollectCooking}
               onCheckedChange={(autoNormalCollectCooking) => onPreferenceChange({ autoNormalCollectCooking })}
             />
-            <SwitchControl
+            <AutomationSwitchCell
               label="出错时暂停"
               checked={preferences.autoNormalStopOnError}
               onCheckedChange={(autoNormalStopOnError) => onPreferenceChange({ autoNormalStopOnError })}
@@ -3934,6 +3953,22 @@ function SwitchControl({
       </button>
       <span className="whitespace-nowrap">{label}</span>
     </label>
+  );
+}
+
+function AutomationSwitchCell({
+  label,
+  checked,
+  onCheckedChange,
+}: {
+  label: string;
+  checked: boolean;
+  onCheckedChange: (value: boolean) => void;
+}) {
+  return (
+    <div className={AUTOMATION_SWITCH_CELL}>
+      <SwitchControl label={label} checked={checked} onCheckedChange={onCheckedChange} />
+    </div>
   );
 }
 
@@ -4666,10 +4701,8 @@ async function prepareNextRareOrder(
   endpoint: string,
   apiToken: string,
   item: OrderRecommendation,
-  recipe: IRareRecipeResult | null,
-  beverage: IRareBeverageResult | null,
-  recipeFavorite: FavoriteRecipeEntry | null,
-  beverageFavorite: FavoriteBeverageEntry | null,
+  recipeTarget: RareAutomationRecipeTarget | null,
+  beverageTarget: RareAutomationBeverageTarget | null,
   preferences: CompanionPreferences,
 ): Promise<OrderPreparationResponse> {
   return rareOrderAction(
@@ -4677,10 +4710,8 @@ async function prepareNextRareOrder(
     apiToken,
     '/orders/prepare-next',
     item,
-    recipe,
-    beverage,
-    recipeFavorite,
-    beverageFavorite,
+    recipeTarget,
+    beverageTarget,
     preferences,
   );
 }
@@ -4689,10 +4720,8 @@ async function completeFirstRareOrder(
   endpoint: string,
   apiToken: string,
   item: OrderRecommendation,
-  recipe: IRareRecipeResult | null,
-  beverage: IRareBeverageResult | null,
-  recipeFavorite: FavoriteRecipeEntry | null,
-  beverageFavorite: FavoriteBeverageEntry | null,
+  recipeTarget: RareAutomationRecipeTarget | null,
+  beverageTarget: RareAutomationBeverageTarget | null,
   preferences: CompanionPreferences,
 ): Promise<OrderPreparationResponse> {
   return rareOrderAction(
@@ -4700,10 +4729,8 @@ async function completeFirstRareOrder(
     apiToken,
     '/orders/complete-first',
     item,
-    recipe,
-    beverage,
-    recipeFavorite,
-    beverageFavorite,
+    recipeTarget,
+    beverageTarget,
     preferences,
   );
 }
@@ -4750,10 +4777,8 @@ async function rareOrderAction(
   apiToken: string,
   path: string,
   item: OrderRecommendation,
-  recipe: IRareRecipeResult | null,
-  beverage: IRareBeverageResult | null,
-  recipeFavorite: FavoriteRecipeEntry | null,
-  beverageFavorite: FavoriteBeverageEntry | null,
+  recipeTarget: RareAutomationRecipeTarget | null,
+  beverageTarget: RareAutomationBeverageTarget | null,
   preferences: CompanionPreferences,
 ): Promise<OrderPreparationResponse> {
   const params = new URLSearchParams({
@@ -4762,18 +4787,21 @@ async function rareOrderAction(
     guestName: item.order.guestName,
     foodTag: item.order.foodTag,
     beverageTag: item.order.beverageTag,
-    recipeId: recipe ? String(recipe.recipe.recipeId) : '-1',
-    recipeName: recipe?.recipe.name ?? '',
-    extraIngredientIds: recipe ? recipe.extraIngredients.map((ingredient) => ingredient.id).join(',') : '',
-    beverageId: beverage ? String(beverage.beverage.id) : '-1',
-    beverageName: beverage?.beverage.name ?? '',
+    foodId: recipeTarget ? String(recipeTarget.foodId) : '-1',
+    recipeId: recipeTarget ? String(recipeTarget.recipeId) : '-1',
+    recipeName: recipeTarget?.recipeName ?? '',
+    extraIngredientIds: recipeTarget ? recipeTarget.extraIngredientIds.join(',') : '',
+    acceptableFoodIds: recipeTarget ? recipeTarget.acceptableFoodIds.join(',') : '',
+    trayBacklogMinSeconds: String(RARE_TRAY_BACKLOG_REUSE_SECONDS),
+    beverageId: beverageTarget ? String(beverageTarget.beverageId) : '-1',
+    beverageName: beverageTarget?.beverageName ?? '',
     autoTakeBeverage: String(preferences.autoPrepTakeBeverage),
     autoStartCooking: String(preferences.autoPrepStartCooking),
     autoCollectCooking: String(preferences.autoPrepCollectCooking),
     favoritesOnly: String(preferences.autoPrepFavoritesOnly),
     stopOnError: String(preferences.autoPrepStopOnError),
-    recipeFavorite: String(Boolean(recipeFavorite)),
-    beverageFavorite: String(Boolean(beverageFavorite)),
+    recipeFavorite: String(Boolean(recipeTarget?.favorite)),
+    beverageFavorite: String(Boolean(beverageTarget?.favorite)),
   });
   const abortController = new AbortController();
   const timeoutId = window.setTimeout(() => abortController.abort(), 5000);
@@ -4939,9 +4967,13 @@ function getCookerSlotCapacity(key: string, capacity: Map<string, number>): numb
   return Math.max(1, capacity.get(key) ?? 1);
 }
 
-function getRareCookerRequirement(recipe: IRareRecipeResult | null): CookerRequirement | null {
-  if (!recipe) return null;
-  return getRecipeCookerRequirement(recipe.recipe);
+function getRareCookerRequirement(target: RareAutomationRecipeTarget | null): CookerRequirement | null {
+  const key = normalizeCookerName(target?.cookerName);
+  if (!key) return null;
+  return {
+    key,
+    label: key,
+  };
 }
 
 function getNormalCookerRequirement(order: NormalBusinessOrder): CookerRequirement | null {
@@ -5053,11 +5085,12 @@ function buildAutomationResourceOverview({
       favorites,
       preferences,
       preferences.autoRareConcurrency,
+      new Map(),
     );
     for (const selection of candidates.selections) {
       const diagnostic = rareDiagnosticByKey.get(buildAutoOrderKey(selection.item));
       if (diagnostic?.prepared || diagnostic?.hasServedFood || diagnostic?.paused) continue;
-      const cooker = getRareCookerRequirement(selection.recipe);
+      const cooker = getRareCookerRequirement(selection.recipeTarget);
       if (!cooker) continue;
       const row = ensureCookerResourceRow(cookerRows, cooker.key, cooker.label, getCookerSlotCapacity(cooker.key, capacity));
       if (row.normalReserved + row.rareReserved >= row.capacity) continue;
@@ -5545,6 +5578,8 @@ type OrderPreparationSelection =
       item: OrderRecommendation;
       recipe: IRareRecipeResult | null;
       beverage: IRareBeverageResult | null;
+      recipeTarget: RareAutomationRecipeTarget | null;
+      beverageTarget: RareAutomationBeverageTarget | null;
       recipeFavorite: FavoriteRecipeEntry | null;
       beverageFavorite: FavoriteBeverageEntry | null;
     }
@@ -5560,6 +5595,7 @@ function selectOrderPreparationCandidates(
   favorites: FavoriteData,
   preferences: CompanionPreferences,
   limit: number,
+  states: ReadonlyMap<string, AutoFirstOrderState>,
 ): { selections: ValidOrderPreparationSelection[]; messages: string[]; message: string } {
   const rows = sortNightOrderRows(
     recommendations.map((item) => ({ order: item.order, item })),
@@ -5574,13 +5610,17 @@ function selectOrderPreparationCandidates(
   for (const row of rows) {
     const item = row.item;
     const label = formatRareAutomationPrefix(item);
+    const state = states.get(buildAutoOrderKey(item));
     const recipePick = pickRecipeForPreparation(item, favorites, preferences);
     const beveragePick = pickBeverageForPreparation(item, favorites, preferences);
-    if (!recipePick.ok && (preferences.autoPrepStartCooking || preferences.autoPrepFavoritesOnly)) {
+    const recipeTarget = state?.recipeTarget ?? (recipePick.ok ? buildRareRecipeTarget(item, recipePick.recipe, recipePick.favorite) : null);
+    const beverageTarget = state?.beverageTarget ?? (beveragePick.ok ? buildRareBeverageTarget(beveragePick.beverage, beveragePick.favorite) : null);
+
+    if (!recipeTarget && (preferences.autoPrepStartCooking || preferences.autoPrepFavoritesOnly)) {
       messages.push(`${label}\n${preferences.autoPrepFavoritesOnly ? '没有匹配的收藏料理。' : '没有可用的推荐料理。'}`);
       continue;
     }
-    if (!beveragePick.ok && (preferences.autoPrepTakeBeverage || preferences.autoPrepFavoritesOnly)) {
+    if (!beverageTarget && (preferences.autoPrepTakeBeverage || preferences.autoPrepFavoritesOnly)) {
       messages.push(`${label}\n${preferences.autoPrepFavoritesOnly ? '没有匹配的收藏酒水。' : '没有可用的推荐酒水。'}`);
       continue;
     }
@@ -5590,6 +5630,8 @@ function selectOrderPreparationCandidates(
       item,
       recipe: recipePick.ok ? recipePick.recipe : null,
       beverage: beveragePick.ok ? beveragePick.beverage : null,
+      recipeTarget,
+      beverageTarget,
       recipeFavorite: recipePick.ok ? recipePick.favorite : null,
       beverageFavorite: beveragePick.ok ? beveragePick.favorite : null,
     });
@@ -5600,6 +5642,56 @@ function selectOrderPreparationCandidates(
     selections,
     messages,
     message: selections.length > 0 ? '' : messages[0] ?? '当前稀客订单没有可执行的自动化候选。',
+  };
+}
+
+function buildRareRecipeTarget(
+  item: OrderRecommendation,
+  recipe: IRareRecipeResult,
+  favorite: FavoriteRecipeEntry | null,
+): RareAutomationRecipeTarget {
+  const acceptableFoodIds = uniqueNumbers([
+    recipe.recipe.id,
+    ...item.recipes.map((candidate) => candidate.recipe.id),
+  ]);
+  return {
+    recipeId: recipe.recipe.recipeId,
+    foodId: recipe.recipe.id,
+    recipeName: recipe.recipe.name,
+    cookerName: recipe.recipe.cooker,
+    extraIngredientIds: recipe.extraIngredients.map((ingredient) => ingredient.id),
+    acceptableFoodIds,
+    favorite: Boolean(favorite),
+  };
+}
+
+function buildRareBeverageTarget(
+  beverage: IRareBeverageResult,
+  favorite: FavoriteBeverageEntry | null,
+): RareAutomationBeverageTarget {
+  return {
+    beverageId: beverage.beverage.id,
+    beverageName: beverage.beverage.name,
+    favorite: Boolean(favorite),
+  };
+}
+
+function uniqueNumbers(values: number[]): number[] {
+  return [...new Set(values.filter((value) => Number.isFinite(value) && value >= 0))];
+}
+
+function lockRareAutomationTargets(
+  state: AutoFirstOrderState,
+  selection: ValidOrderPreparationSelection,
+): AutoFirstOrderState {
+  const recipeTarget = state.recipeTarget ?? selection.recipeTarget;
+  const beverageTarget = state.beverageTarget ?? selection.beverageTarget;
+  if (recipeTarget === state.recipeTarget && beverageTarget === state.beverageTarget) return state;
+
+  return {
+    ...state,
+    recipeTarget,
+    beverageTarget,
   };
 }
 
@@ -5700,8 +5792,8 @@ function buildRareAutoOrderDiagnostic(
     title: `${order.guestName || '稀客'} · 桌 ${formatDesk(order.deskCode)}`,
     foodTag: order.foodTag || '',
     beverageTag: order.beverageTag || '',
-    recipeName: selection.recipe?.recipe.name ?? '',
-    beverageName: selection.beverage?.beverage.name ?? '',
+    recipeName: state.recipeTarget?.recipeName ?? selection.recipeTarget?.recipeName ?? selection.recipe?.recipe.name ?? '',
+    beverageName: state.beverageTarget?.beverageName ?? selection.beverageTarget?.beverageName ?? selection.beverage?.beverage.name ?? '',
     stepLabel: getAutomationStepLabel(state.step),
     stepSeconds: state.stepStartedAtMs > 0 ? Math.max(0, Math.round((now - state.stepStartedAtMs) / 1000)) : 0,
     nextAction: getRareAutomationNextAction(state, now, preferences),
@@ -5833,6 +5925,8 @@ function isRecoverableNormalPausedState(state: NormalAutoOrderState | undefined,
 function emptyAutoFirstOrderState(orderKey = '', now = 0): AutoFirstOrderState {
   return {
     orderKey,
+    recipeTarget: null,
+    beverageTarget: null,
     prepared: false,
     preparedAtMs: 0,
     beverageHandled: false,

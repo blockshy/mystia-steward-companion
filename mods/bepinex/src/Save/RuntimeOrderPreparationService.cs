@@ -22,11 +22,14 @@ internal static class RuntimeOrderPreparationService
     private const string MatchedCookComboTypeName = "NightScene.UI.CookingUtility.WorkSceneCookingSelectionPannel+MatchedCookCombo";
     private static readonly object PendingCookingLock = new();
     private static readonly object AutomationLogLock = new();
+    private static readonly object TrayObservationLock = new();
     private static readonly List<PendingCookingCollection> PendingCookingCollections = new();
     private static readonly List<CompletedNormalCookingCollection> CompletedNormalCookingCollections = new();
+    private static readonly Dictionary<string, DateTime> TrayObservationFirstSeen = new();
     private static readonly TimeSpan PendingCookingCollectGrace = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan PendingCookingIdleTimeout = TimeSpan.FromSeconds(90);
     private static readonly TimeSpan CompletedNormalCookingRememberTimeout = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan TrayObservationRetention = TimeSpan.FromMinutes(5);
     private const long AutomationLogMaxBytes = 1024 * 1024;
     private enum CookingCollectionTargetKind
     {
@@ -237,15 +240,26 @@ internal static class RuntimeOrderPreparationService
         result.ServedBeverage = currentBeverage != null;
 
         var trayItems = ReadTrayItems(tray).ToList();
+        RefreshTrayObservations(trayItems);
         var missingTrayItem = false;
         var food = currentFood;
         var beverage = currentBeverage;
+        var matchedFoodId = expectedFoodId;
+        var matchedBacklogFood = false;
+        var matchedBacklogAgeSeconds = 0;
         var matchedFoodFromTray = false;
         var matchedBeverageFromTray = false;
 
         if (food == null)
         {
-            food = trayItems.FirstOrDefault(item => IsSellable(item, sellableType: 0, id: expectedFoodId));
+            food = FindRareOrderFoodInTray(
+                trayItems,
+                expectedFoodId,
+                request.AcceptableFoodIds,
+                TimeSpan.FromSeconds(Math.Max(0, request.TrayBacklogMinSeconds)),
+                out matchedFoodId,
+                out matchedBacklogFood,
+                out matchedBacklogAgeSeconds);
             if (food == null)
             {
                 AddFailure(result, "匹配送餐盘料理", $"送餐盘中没有找到目标料理 {request.RecipeName}（料理 #{expectedFoodId}）。{FormatTraySummary(trayItems)}");
@@ -256,6 +270,15 @@ internal static class RuntimeOrderPreparationService
                 WriteMember(runtimeOrder.Order, "ServFood", food);
                 result.ServedFood = true;
                 matchedFoodFromTray = true;
+                if (matchedBacklogFood)
+                {
+                    result.Steps.Add(new OrderPreparationStep
+                    {
+                        Name = "复用堆积料理",
+                        Ok = true,
+                        Message = $"送餐盘中料理 #{matchedFoodId} 已堆积 {matchedBacklogAgeSeconds} 秒，且满足当前料理 Tag，本次优先用于该稀客订单。",
+                    });
+                }
             }
         }
         else
@@ -297,7 +320,7 @@ internal static class RuntimeOrderPreparationService
 
         if (missingTrayItem)
         {
-            DeliverMatchedRareOrderPart(result, tray, food, matchedFoodFromTray, "送达料理", $"{request.RecipeName} 已先送达，等待补齐酒水后完成订单。");
+            DeliverMatchedRareOrderPart(result, tray, food, matchedFoodFromTray, "送达料理", FormatRareFoodDeliveryMessage(request.RecipeName, expectedFoodId, matchedFoodId, matchedBacklogFood, "已先送达，等待补齐酒水后完成订单。"));
             DeliverMatchedRareOrderPart(result, tray, beverage, matchedBeverageFromTray, "送达酒水", $"{request.BeverageName} 已先送达，等待补齐料理后完成订单。");
             return Finish(result);
         }
@@ -306,7 +329,7 @@ internal static class RuntimeOrderPreparationService
         {
             Name = "匹配送餐盘",
             Ok = true,
-            Message = $"已找到目标料理 {request.RecipeName} 和目标酒水 {request.BeverageName}。",
+            Message = $"已找到{(matchedBacklogFood ? $"堆积料理 #{matchedFoodId}" : $"目标料理 {request.RecipeName}")}和目标酒水 {request.BeverageName}。",
         });
 
         if (!ReadBool(InvokeInstance(runtimeOrder.Order, "get_IsFullfilled", Array.Empty<object?>())))
@@ -327,7 +350,7 @@ internal static class RuntimeOrderPreparationService
             return Finish(result);
         }
 
-        DeliverMatchedRareOrderPart(result, tray, food, matchedFoodFromTray, "送达料理", $"{request.RecipeName} 已送达。");
+        DeliverMatchedRareOrderPart(result, tray, food, matchedFoodFromTray, "送达料理", FormatRareFoodDeliveryMessage(request.RecipeName, expectedFoodId, matchedFoodId, matchedBacklogFood, "已送达。"));
         DeliverMatchedRareOrderPart(result, tray, beverage, matchedBeverageFromTray, "送达酒水", $"{request.BeverageName} 已送达。");
         result.Steps.Add(new OrderPreparationStep
         {
@@ -364,6 +387,119 @@ internal static class RuntimeOrderPreparationService
             Ok = true,
             Message = message,
         });
+    }
+
+    private static object? FindRareOrderFoodInTray(
+        IReadOnlyList<object> trayItems,
+        int expectedFoodId,
+        IReadOnlyList<int> acceptableFoodIds,
+        TimeSpan backlogThreshold,
+        out int matchedFoodId,
+        out bool matchedBacklogFood,
+        out int matchedBacklogAgeSeconds)
+    {
+        matchedFoodId = expectedFoodId;
+        matchedBacklogFood = false;
+        matchedBacklogAgeSeconds = 0;
+
+        var exact = trayItems.FirstOrDefault(item => IsSellable(item, sellableType: 0, id: expectedFoodId));
+        if (exact != null)
+        {
+            return exact;
+        }
+
+        var acceptable = acceptableFoodIds
+            .Where(id => id >= 0 && id != expectedFoodId)
+            .Distinct()
+            .ToHashSet();
+        if (acceptable.Count == 0) return null;
+
+        foreach (var item in trayItems)
+        {
+            if (ReadSellableType(item) != 0) continue;
+
+            var foodId = ReadSellableId(item);
+            if (!acceptable.Contains(foodId)) continue;
+            if (!TryGetTrayObservationAge(item, out var age) || age < backlogThreshold) continue;
+
+            matchedFoodId = foodId;
+            matchedBacklogFood = true;
+            matchedBacklogAgeSeconds = Math.Max(0, (int)Math.Floor(age.TotalSeconds));
+            return item;
+        }
+
+        return null;
+    }
+
+    private static string FormatRareFoodDeliveryMessage(
+        string recipeName,
+        int expectedFoodId,
+        int matchedFoodId,
+        bool matchedBacklogFood,
+        string suffix)
+    {
+        if (!matchedBacklogFood)
+        {
+            return $"{recipeName} {suffix}";
+        }
+
+        return $"已复用送餐盘中堆积料理 #{matchedFoodId}（原目标料理 #{expectedFoodId}：{recipeName}），{suffix}";
+    }
+
+    private static void RefreshTrayObservations(IReadOnlyList<object> trayItems)
+    {
+        var now = DateTime.UtcNow;
+        var currentKeys = new HashSet<string>();
+
+        lock (TrayObservationLock)
+        {
+            foreach (var item in trayItems)
+            {
+                var key = BuildTrayObservationKey(item);
+                currentKeys.Add(key);
+                if (!TrayObservationFirstSeen.ContainsKey(key))
+                {
+                    TrayObservationFirstSeen[key] = now;
+                }
+            }
+
+            foreach (var key in TrayObservationFirstSeen.Keys.ToArray())
+            {
+                if (currentKeys.Contains(key)) continue;
+                if (now - TrayObservationFirstSeen[key] <= TrayObservationRetention) continue;
+                TrayObservationFirstSeen.Remove(key);
+            }
+        }
+    }
+
+    private static bool TryGetTrayObservationAge(object item, out TimeSpan age)
+    {
+        var key = BuildTrayObservationKey(item);
+        lock (TrayObservationLock)
+        {
+            if (TrayObservationFirstSeen.TryGetValue(key, out var firstSeen))
+            {
+                age = DateTime.UtcNow - firstSeen;
+                return true;
+            }
+        }
+
+        age = TimeSpan.Zero;
+        return false;
+    }
+
+    private static string BuildTrayObservationKey(object item)
+    {
+        var type = ReadSellableType(item);
+        var id = ReadSellableId(item);
+        try
+        {
+            return $"{type}:{id}:ptr:{ReadObjectPointer(item):x}";
+        }
+        catch
+        {
+            return $"{type}:{id}:hash:{RuntimeHelpers.GetHashCode(item)}";
+        }
     }
 
     public static OrderPreparationResult CompleteNormalFirst(OrderPreparationRequest request)

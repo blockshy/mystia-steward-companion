@@ -459,6 +459,8 @@ internal sealed class LocalApiServer : IDisposable
                 RecipeId = ReadIntQuery(query, "recipeId", -1),
                 RecipeName = ReadStringQuery(query, "recipeName"),
                 ExtraIngredientIds = ReadIntListQuery(query, "extraIngredientIds"),
+                AcceptableFoodIds = ReadIntListQuery(query, "acceptableFoodIds"),
+                TrayBacklogMinSeconds = Math.Max(0, ReadIntQuery(query, "trayBacklogMinSeconds", 0)),
                 BeverageId = ReadIntQuery(query, "beverageId", -1),
                 BeverageName = ReadStringQuery(query, "beverageName"),
                 AutoTakeBeverage = ReadBoolQuery(query, "autoTakeBeverage") ?? false,

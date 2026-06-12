@@ -12,6 +12,8 @@ internal sealed class OrderPreparationRequest
     public int RecipeId { get; init; } = -1;
     public string RecipeName { get; init; } = "";
     public IReadOnlyList<int> ExtraIngredientIds { get; init; } = Array.Empty<int>();
+    public IReadOnlyList<int> AcceptableFoodIds { get; init; } = Array.Empty<int>();
+    public int TrayBacklogMinSeconds { get; init; }
     public int BeverageId { get; init; } = -1;
     public string BeverageName { get; init; } = "";
     public bool AutoTakeBeverage { get; init; }
