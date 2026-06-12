@@ -10,6 +10,7 @@ internal sealed class RuntimeMappedGuestCatalog
     private const string DataBaseLanguageTypeName = "GameData.CoreLanguage.Collections.DataBaseLanguage";
     private static readonly TimeSpan RetryInterval = TimeSpan.FromSeconds(5);
     private static readonly object SyncRoot = new();
+    private static readonly Dictionary<string, RareCustomerIdentity> VariantAliasCache = new(StringComparer.OrdinalIgnoreCase);
     private static RuntimeMappedGuestCatalogSnapshot _snapshot = RuntimeMappedGuestCatalogSnapshot.Empty("not loaded");
     private static DateTime _lastReadAttemptUtc = DateTime.MinValue;
     private static bool _loaded;
@@ -136,7 +137,7 @@ internal sealed class RuntimeMappedGuestCatalog
         lock (SyncRoot)
         {
             _snapshot = nextSnapshot;
-            _loaded = nextSnapshot.Entries.Count > 0;
+            _loaded = nextSnapshot.ResolvedCount > 0;
         }
     }
 
@@ -270,7 +271,18 @@ internal sealed class RuntimeMappedGuestCatalog
             .Where(group => group.Targets.Count == 1)
             .ToDictionary(group => group.Key, group => group.Targets[0], StringComparer.OrdinalIgnoreCase);
 
-        if (aliasGroups.Count == 0) return entries;
+        Dictionary<string, RareCustomerIdentity> aliases;
+        lock (SyncRoot)
+        {
+            foreach (var alias in aliasGroups)
+            {
+                VariantAliasCache[alias.Key] = alias.Value;
+            }
+
+            aliases = new Dictionary<string, RareCustomerIdentity>(VariantAliasCache, StringComparer.OrdinalIgnoreCase);
+        }
+
+        if (aliases.Count == 0) return entries;
 
         var result = new List<RuntimeMappedGuestEntry>(entries.Count);
         foreach (var entry in entries)
@@ -282,7 +294,7 @@ internal sealed class RuntimeMappedGuestCatalog
             }
 
             var key = NormalizeRuntimeAliasKey(entry.RuntimeStringId);
-            if (string.IsNullOrWhiteSpace(key) || !aliasGroups.TryGetValue(key, out var target))
+            if (string.IsNullOrWhiteSpace(key) || !aliases.TryGetValue(key, out var target))
             {
                 result.Add(entry);
                 continue;

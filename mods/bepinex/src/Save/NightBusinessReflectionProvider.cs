@@ -342,7 +342,7 @@ public sealed class NightBusinessReflectionProvider
     {
         foreach (var controller in controllers)
         {
-            if (!IsRareGuestController(controller))
+            if (!IsRareGuestController(controller, AllowOrderingGuestIdResolution(source)))
             {
                 RecordCandidate("Controller", source, accepted: false, "not recognized as rare guest controller", DescribeControllerCandidate(controller));
                 continue;
@@ -405,7 +405,7 @@ public sealed class NightBusinessReflectionProvider
         var guestId = ReadGuestId(guest);
         var identity = specialGuest != null
             ? ResolveRareCustomerIdentity(guest)
-            : ResolveOrderingGuestRareCustomerIdentity(orderingGuest);
+            : ResolveOrderingGuestRareCustomerIdentity(orderingGuest, AllowOrderingGuestIdResolution(source));
         if (specialGuest == null && identity == null && !IsSpecialGuestObject(orderingGuest))
         {
             RecordCandidate("GuestController", source, accepted: false, "OrderingGuest is not an explicit rare guest", DescribeControllerCandidate(controller));
@@ -435,7 +435,8 @@ public sealed class NightBusinessReflectionProvider
         var specialGuest = GetMemberValue(order, "SpecialGuests") ?? GetMemberValue(controller, "SpecialGuest");
         var orderingGuest = GetMemberValue(controller, "OrderingGuest");
         if (specialGuest == null
-            && (IsSpecialGuestObject(orderingGuest) || ResolveOrderingGuestRareCustomerIdentity(orderingGuest) != null))
+            && (IsSpecialGuestObject(orderingGuest)
+                || ResolveOrderingGuestRareCustomerIdentity(orderingGuest, IsSpecialOrder(order) || IsManualSpecialOrder(order, controller)) != null))
         {
             specialGuest = orderingGuest;
         }
@@ -484,7 +485,8 @@ public sealed class NightBusinessReflectionProvider
             ?? GetMemberValue(controller, "SpecialGuest");
         var orderingGuest = GetMemberValue(controller, "OrderingGuest");
         if (specialGuest == null
-            && (IsSpecialGuestObject(orderingGuest) || ResolveOrderingGuestRareCustomerIdentity(orderingGuest) != null))
+            && (IsSpecialGuestObject(orderingGuest)
+                || ResolveOrderingGuestRareCustomerIdentity(orderingGuest, IsManualSpecialOrder(order, controller)) != null))
         {
             specialGuest = orderingGuest;
         }
@@ -612,7 +614,7 @@ public sealed class NightBusinessReflectionProvider
                 LastSeenAtUtc = captured.CapturedAt,
             };
 
-            if (ShouldKeepCapturedOrder(order, captured.CapturedAt, activeGuests, now))
+            if (ShouldKeepCapturedOrder(order, captured, activeGuests, now))
             {
                 yield return order;
             }
@@ -678,12 +680,30 @@ public sealed class NightBusinessReflectionProvider
 
     private static bool ShouldKeepCapturedOrder(
         NightBusinessOrder order,
-        DateTime capturedAtUtc,
+        CapturedRuntimeSpecialOrder captured,
         IReadOnlyList<NightBusinessGuest> activeGuests,
         DateTime nowUtc)
     {
         if (MatchesActiveGuest(order, activeGuests)) return true;
-        return nowUtc - capturedAtUtc <= UnmatchedCapturedOrderGrace;
+        if (HasCapturedOrderRuntimeReference(captured) && HasCapturedOrderDetails(captured))
+        {
+            return nowUtc - captured.CapturedAt <= RuntimeCapturedOrderMaxAge;
+        }
+
+        return nowUtc - captured.CapturedAt <= UnmatchedCapturedOrderGrace;
+    }
+
+    private static bool HasCapturedOrderRuntimeReference(CapturedRuntimeSpecialOrder captured)
+    {
+        return captured.OrderObject != null || captured.ControllerObject != null;
+    }
+
+    private static bool HasCapturedOrderDetails(CapturedRuntimeSpecialOrder captured)
+    {
+        return captured.HasFoodTagId
+            || captured.HasBeverageTagId
+            || !string.IsNullOrWhiteSpace(captured.FoodTag)
+            || !string.IsNullOrWhiteSpace(captured.BeverageTag);
     }
 
     private static bool MatchesActiveGuest(NightBusinessOrder order, IReadOnlyList<NightBusinessGuest> activeGuests)
@@ -839,34 +859,36 @@ public sealed class NightBusinessReflectionProvider
         return order.GetType().Name.IndexOf("SpecialOrder", StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
-    private bool IsRareGuestController(object? controller)
+    private bool IsRareGuestController(object? controller, bool allowOrderingGuestId = false)
     {
         if (controller == null) return false;
         if (GetMemberValue(controller, "SpecialGuest") != null) return true;
 
         var guest = GetMemberValue(controller, "OrderingGuest");
-        return IsSpecialGuestObject(guest) || ResolveOrderingGuestRareCustomerIdentity(guest) != null;
+        return IsSpecialGuestObject(guest) || ResolveOrderingGuestRareCustomerIdentity(guest, allowOrderingGuestId) != null;
     }
 
     private bool IsManualSpecialOrder(object order, object? controller)
     {
         if (!ToBool(GetMemberValue(order, "ManualOrder"))) return false;
         if (IsSpecialGuestObject(GetMemberValue(order, "SpecialGuests"))) return true;
-        return IsRareGuestController(controller);
+        return IsRareGuestController(controller, allowOrderingGuestId: true);
     }
 
-    private RareCustomerIdentity? ResolveOrderingGuestRareCustomerIdentity(object? guest)
+    private RareCustomerIdentity? ResolveOrderingGuestRareCustomerIdentity(object? guest, bool allowIdOnly = false)
     {
         if (guest == null) return null;
         if (IsSpecialGuestObject(guest)) return ResolveRareCustomerIdentity(guest);
 
+        var guestId = ReadGuestId(guest);
         var stringId = ReadGuestStringId(guest);
+        var displayName = ReadGuestDisplayName(guest);
         var sourceGuestId = ReadSourceGuestId(guest);
 
         if (sourceGuestId.HasValue)
         {
             return ResolveRareCustomerIdentity(sourceGuestId, stringId)
-                ?? ResolveRareCustomerIdentity(sourceGuestId, ReadGuestDisplayName(guest));
+                ?? ResolveRareCustomerIdentity(sourceGuestId, displayName);
         }
 
         if (!string.IsNullOrWhiteSpace(stringId))
@@ -874,7 +896,17 @@ public sealed class NightBusinessReflectionProvider
             return ResolveRareCustomerIdentity(null, stringId);
         }
 
+        if (allowIdOnly && guestId.HasValue)
+        {
+            return ResolveRareCustomerIdentity(guestId, displayName);
+        }
+
         return null;
+    }
+
+    private static bool AllowOrderingGuestIdResolution(string source)
+    {
+        return string.Equals(source, "ManualDesk", StringComparison.Ordinal);
     }
 
     private static bool IsSpecialGuestObject(object? guest)

@@ -683,7 +683,7 @@ public static class SpecialOrderRuntimeCapture
         var specialGuest = GetMemberValue(order, "SpecialGuests")
             ?? GetMemberValue(controller, "SpecialGuest")
             ?? GetMemberValue(controller, "OrderingGuest");
-        return IsExplicitSpecialGuest(specialGuest);
+        return IsExplicitSpecialGuest(specialGuest) || ToNullableInt(GetMemberValue(specialGuest, "Id")).HasValue;
     }
 
     private static bool IsExplicitSpecialGuest(object? guest)
