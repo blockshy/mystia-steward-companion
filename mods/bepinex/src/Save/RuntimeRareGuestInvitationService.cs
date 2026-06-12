@@ -17,6 +17,8 @@ internal sealed class RareGuestInvitationResult
     public int ScheduledSlotCount { get; set; }
     public int InvitedCount { get; set; }
     public int SkippedCount { get; set; }
+    public string Source { get; set; } = "";
+    public string Diagnostics { get; set; } = "";
     public List<RareGuestInvitationEntry> Invited { get; set; } = new();
     public List<RareGuestInvitationEntry> Skipped { get; set; } = new();
 }
@@ -36,6 +38,7 @@ internal static class RuntimeRareGuestInvitationService
     private const string StatusTrackerTypeName = "GameData.RunTime.Common.StatusTracker";
     private const string RuntimeDaySceneTypeName = "GameData.RunTime.DaySceneUtility.RunTimeDayScene";
     private const string DaySceneMapTypeName = "DayScene.DaySceneMap";
+    private const string DaySceneSceneManagerTypeName = "DayScene.SceneManager";
     private const string CharacterConditionComponentTypeName = "DayScene.Interactables.Collections.ConditionComponents.CharacterConditionComponent";
 
     public static RareGuestInvitationResult InviteAllAvailable(DataRepository? repository, ManualLogSource? log)
@@ -75,16 +78,22 @@ internal static class RuntimeRareGuestInvitationService
         }
 
         var catalog = repository == null ? null : new RuntimeMappedGuestCatalog(repository);
-        var candidates = ReadInviteCandidates(dataBaseCharacterType, catalog, out var source);
+        var candidates = ReadInviteCandidates(dataBaseCharacterType, catalog, out var source, out var diagnostics);
         if (candidates.Count == 0)
         {
-            return Fail("未读取到稀客邀请候选。请确认已进入存档后的日间场景。");
+            var failed = Fail("未读取到当前日间场景可邀请稀客，已取消邀请以避免全量误邀。请确认角色已出现在日间场景后再试。");
+            failed.RuntimeAvailable = true;
+            failed.Source = source;
+            failed.Diagnostics = diagnostics;
+            return failed;
         }
 
         var result = new RareGuestInvitationResult
         {
             RuntimeAvailable = true,
             CandidateCount = candidates.Count,
+            Source = source,
+            Diagnostics = diagnostics,
             ExistingSlotCount = RuntimeReflectionUtility.CountObjects(RuntimeReflectionUtility.GetMemberValue(statusTracker, "InvitedGuests")),
         };
 
@@ -97,7 +106,7 @@ internal static class RuntimeRareGuestInvitationService
         result.InvitedCount = result.Invited.Count;
         result.SkippedCount = result.Skipped.Count;
         result.Status = BuildStatus(result, source);
-        log?.LogInfo($"Invite all rare guests: {result.Status} source={source}, candidates={result.CandidateCount}, eligible={result.UsableCount}, existingInvited={result.ExistingControlledCount}, invited={result.InvitedCount}, skipped={result.SkippedCount}");
+        log?.LogInfo($"Invite all rare guests: {result.Status} source={source}, diagnostics={diagnostics}, candidates={result.CandidateCount}, eligible={result.UsableCount}, existingInvited={result.ExistingControlledCount}, invited={result.InvitedCount}, skipped={result.SkippedCount}");
         return result;
     }
 
@@ -166,30 +175,19 @@ internal static class RuntimeRareGuestInvitationService
     private static IReadOnlyList<InviteCandidate> ReadInviteCandidates(
         Type dataBaseCharacterType,
         RuntimeMappedGuestCatalog? catalog,
-        out string source)
+        out string source,
+        out string diagnostics)
     {
-        var labelCandidates = ReadCurrentDaySceneNpcLabels()
-            .Select(label => InvokeStaticMethodWithSingleParameter(dataBaseCharacterType, "RefSGuest", typeof(string), label))
-            .Where(guest => guest != null)
-            .Select(guest => BuildCandidate(catalog, guest!, "current-day-scene"))
+        source = "current-day-scene";
+        var labels = ReadCurrentDaySceneNpcLabels(out diagnostics).ToList();
+        var candidates = labels
+            .Select(label => new { Label = label, Guest = InvokeStaticMethodWithSingleParameter(dataBaseCharacterType, "RefSGuest", typeof(string), label) })
+            .Where(item => item.Guest != null)
+            .Select(item => BuildCandidate(catalog, item.Guest!, "current-day-scene"))
             .Where(candidate => candidate != null)
             .Select(candidate => candidate!)
             .ToList();
-        if (labelCandidates.Count > 0)
-        {
-            source = "current-day-scene";
-            return DeduplicateCandidates(labelCandidates);
-        }
-
-        var runtimeGuests = RuntimeReflectionUtility.InvokeStaticMethod(dataBaseCharacterType, "GetSpecialGuestsAndMappedGuests");
-        var candidates = RuntimeReflectionUtility
-            .EnumerateObjects(runtimeGuests)
-            .Where(guest => guest != null)
-            .Select(guest => BuildCandidate(catalog, guest!, "runtime-all"))
-            .Where(candidate => candidate != null)
-            .Select(candidate => candidate!)
-            .ToList();
-        source = "runtime-all";
+        diagnostics = $"{diagnostics}; labels={labels.Count}; mapped={candidates.Count}";
         return DeduplicateCandidates(candidates);
     }
 
@@ -211,45 +209,68 @@ internal static class RuntimeRareGuestInvitationService
         return new InviteCandidate(guest, id, runtimeName, displayName, source);
     }
 
-    private static IEnumerable<string> ReadCurrentDaySceneNpcLabels()
+    private static IReadOnlyList<string> ReadCurrentDaySceneNpcLabels(out string diagnostics)
     {
         var seen = new HashSet<string>(StringComparer.Ordinal);
+        var labels = new List<string>();
         var runtimeDaySceneType = RuntimeReflectionUtility.FindType(RuntimeDaySceneTypeName);
         var daySceneMapType = RuntimeReflectionUtility.FindType(DaySceneMapTypeName);
+        var sceneManagerType = RuntimeReflectionUtility.FindType(DaySceneSceneManagerTypeName);
         var characterComponentType = RuntimeReflectionUtility.FindType(CharacterConditionComponentTypeName);
-
-        foreach (var label in ReadTrackedNpcLabels(runtimeDaySceneType))
+        var currentMapLabel = ReadCurrentMapLabel(sceneManagerType);
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal)
         {
-            if (seen.Add(label)) yield return label;
+            ["mapNpc"] = 0,
+            ["mapObject"] = 0,
+            ["sceneObject"] = 0,
+        };
+
+        foreach (var label in ReadMapNpcLabels(runtimeDaySceneType, currentMapLabel))
+        {
+            counts["mapNpc"]++;
+            if (seen.Add(label)) labels.Add(label);
         }
 
         foreach (var label in ReadDaySceneMapCharacterLabels(daySceneMapType))
         {
-            if (seen.Add(label)) yield return label;
+            counts["mapObject"]++;
+            if (seen.Add(label)) labels.Add(label);
         }
 
         foreach (var label in ReadSceneCharacterLabels(characterComponentType))
         {
-            if (seen.Add(label)) yield return label;
+            counts["sceneObject"]++;
+            if (seen.Add(label)) labels.Add(label);
         }
+
+        diagnostics = $"currentMap={currentMapLabel}; mapNpc={counts["mapNpc"]}; mapObject={counts["mapObject"]}; sceneObject={counts["sceneObject"]}";
+        return labels;
     }
 
-    private static IEnumerable<string> ReadTrackedNpcLabels(Type? runtimeDaySceneType)
+    private static string ReadCurrentMapLabel(Type? sceneManagerType)
+    {
+        if (sceneManagerType == null) return "";
+        var sceneManager = RuntimeReflectionUtility.GetSingletonInstance(sceneManagerType)
+            ?? GetGenericSingletonInstance(sceneManagerType)
+            ?? RuntimeReflectionUtility.FindUnityObject(sceneManagerType);
+        var current = RuntimeReflectionUtility.GetMemberValue(sceneManager, "CurrentActiveMapLabel")?.ToString()
+            ?? RuntimeReflectionUtility.GetMemberValue(sceneManager, "TargetMapLabel")?.ToString();
+        return string.IsNullOrWhiteSpace(current) ? "" : current.Trim();
+    }
+
+    private static IEnumerable<string> ReadMapNpcLabels(Type? runtimeDaySceneType, string mapLabel)
     {
         if (runtimeDaySceneType == null) yield break;
+        if (string.IsNullOrWhiteSpace(mapLabel)) yield break;
 
-        var trackedNpcMaps = RuntimeReflectionUtility.GetStaticMemberValue(runtimeDaySceneType, "trackedNPCs");
-        foreach (var mapCandidate in RuntimeReflectionUtility.EnumerateObjects(trackedNpcMaps))
+        var mapNpcs = InvokeStaticMethodWithSingleParameter(runtimeDaySceneType, "GetMapNPCs", typeof(string), mapLabel);
+        foreach (var npcCandidate in RuntimeReflectionUtility.EnumerateObjects(mapNpcs))
         {
-            var map = RuntimeReflectionUtility.NormalizeKeyValueValue(mapCandidate);
-            foreach (var npcCandidate in RuntimeReflectionUtility.EnumerateObjects(map))
-            {
-                var npc = RuntimeReflectionUtility.NormalizeKeyValueValue(npcCandidate);
-                var label = ReadTextMember(npc, "key")
-                    ?? ReadTextMember(npcCandidate, "Key")
-                    ?? ReadTextMember(npcCandidate, "key");
-                if (!string.IsNullOrWhiteSpace(label)) yield return label;
-            }
+            var npc = RuntimeReflectionUtility.NormalizeKeyValueValue(npcCandidate);
+            var label = ReadTextMember(npc, "key")
+                ?? ReadTextMember(npcCandidate, "Key")
+                ?? ReadTextMember(npcCandidate, "key");
+            if (!string.IsNullOrWhiteSpace(label)) yield return label;
         }
     }
 

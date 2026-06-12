@@ -537,6 +537,8 @@ interface RareGuestInvitationResponse {
   scheduledSlotCount: number;
   invitedCount: number;
   skippedCount: number;
+  source?: string;
+  diagnostics?: string;
   invited: RareGuestInvitationEntry[];
   skipped: RareGuestInvitationEntry[];
 }
@@ -2113,6 +2115,10 @@ function ModOverviewPanel({
                   label="统计"
                   value={`新增 ${inviteAllResult.invitedCount} · 候选 ${inviteAllResult.candidateCount} · 可判定 ${inviteAllResult.usableCount} · 今晚已邀 ${inviteAllResult.existingControlledCount}/${inviteAllResult.existingSlotCount}`}
                 />
+                <InfoLine label="来源" value={inviteAllResult.source || '未知'} />
+                {inviteAllResult.diagnostics && (
+                  <InfoLine label="读取诊断" value={inviteAllResult.diagnostics} />
+                )}
                 <div className="mt-2 flex flex-wrap gap-1">
                   {inviteAllResult.invited.slice(0, 12).map((entry) => (
                     <Badge key={`${entry.id}-${entry.runtimeName || entry.name}`} variant="secondary">
