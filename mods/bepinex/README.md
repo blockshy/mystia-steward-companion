@@ -68,7 +68,7 @@ mystia-steward-companion-bepinex.zip
 - `稀客订单专注模式`：只显示当前点单推荐；可切换精简模式，并自行设置推荐料理/推荐酒水显示数量，没有点单时显示等待提示。
 - `任务`：读取当前进度中可接取、进行中或可完成的交互任务，默认显示可接取和可完成任务，可用多选按钮切换筛选状态；任务行会显示标题、角色、任务状态，并尽量显示未接取 NPC 所在场景。任务 ID 和读取来源默认隐藏，需要排查时可打开 `显示额外信息`。
 - 独立伴随窗口会保存上次的位置和大小。重新启动游戏和 Mod 后，会优先恢复到上次调整过的窗口状态。
-- `设置`：调整窗口背景透明度（20% - 100%）、焦点切换行为、切换冷却时间、始终置顶、主题、手柄导航、缺失厨具过滤、任务料理优先、经营中订单排序、料理/酒水推荐排序、实验性游戏界面置顶、目标厨具高亮，并控制实验性自动化总开关和自动化参数。
+- `设置`：调整窗口背景透明度（20% - 100%）、焦点切换行为、切换冷却时间、始终置顶、主题、手柄导航、BepInEx 原生日志窗口、缺失厨具过滤、任务料理优先、经营中订单排序、料理/酒水推荐排序、实验性游戏界面置顶、目标厨具高亮，并控制实验性自动化总开关和自动化参数。
 - `修改`：用 `-10`、`+10` 和 `99` 快捷按钮修改当前运行时材料和酒水库存数量；修改后需要在游戏内保存才会持久化。
 - `日志`：读取 `BepInEx/LogOutput.log` 尾部内容、按需开启经营诊断，并可打开日志文件夹；日志读取有行数和字节上限，不会在窗口内无限累积。
 
@@ -157,8 +157,8 @@ BepInEx/config/com.tyukki.mystia-steward-companion.cfg
 - `LocalApi.ExposeLogs`：是否允许伴随窗口读取 `BepInEx/LogOutput.log`，默认开启，可在 `日志` 页切换。
 - `LocalApi.MaxLogLines`：日志页每次最多返回的日志行数，默认 `300`。
 - `LocalApi.MaxLogBytes`：日志页每次最多扫描的日志尾部字节数，默认 `262144`。
-- `BepInEx.DisableConsoleLogWindow`：启动后写入 `BepInEx/config/BepInEx.cfg`，将 BepInEx 控制台日志窗口设为下次启动关闭，默认开启。
-- `BepInEx.HideConsoleWindow`：Mod 加载后尝试隐藏当前 Windows 控制台窗口，默认开启。
+- `BepInEx.DisableConsoleLogWindow`：启动后写入 `BepInEx/config/BepInEx.cfg`，将 BepInEx 控制台日志窗口设为下次启动关闭，默认开启；可在 `设置` 页通过“BepInEx 原生日志窗口”切换。
+- `BepInEx.HideConsoleWindow`：Mod 加载后尝试隐藏当前 Windows 控制台窗口，默认开启；设置页切换时也会尝试即时显示或隐藏当前窗口。
 - `Diagnostics.EnableNightBusinessDiagnostics`：是否写入夜间经营诊断日志，默认关闭，可在 `日志` 页切换。
 - `SetConsoleUtf8`：加载 Mod 后尝试将 Windows 控制台切换到 UTF-8，默认开启。
 
@@ -179,6 +179,6 @@ BepInEx/config/com.tyukki.mystia-steward-companion.cfg
 - `F8` 无法打开独立窗口：确认 `mystia-steward-companion.exe` 位于 `BepInEx/plugins/mystia-steward-companion/companion/`，或在 `Companion.ExecutablePath` 中填写绝对路径。若窗口已打开，`F8` 会在游戏和独立窗口之间切换。
 - 一直显示运行时数据不可用：先确认已经进入游戏并加载进度；再到 `日志` 页临时开启日志读取。
 - `经营中` 没有稀客或稀客点单：进入 `日志` 页开启经营诊断并查看扫描状态，确认游戏内确实处于夜间经营流程。
-- 启动时仍短暂出现控制台：Mod 加载时控制台已经由 BepInEx 创建，本次启动只能尝试隐藏；`BepInEx.DisableConsoleLogWindow=true` 写入的配置会在下一次启动生效。
-- 控制台早期中文乱码：Mod 只能在自身加载后切换 UTF-8，不能修复 BepInEx preloader 已经输出的日志。日常建议关闭控制台并在伴随窗口 `日志` 页查看 `LogOutput.log`。
+- 启动时仍短暂出现控制台：Mod 加载时控制台已经由 BepInEx 创建，本次启动只能尝试隐藏；`BepInEx.DisableConsoleLogWindow=true` 写入的配置会在下一次启动生效。需要临时查看原生控制台时，可到 `设置 -> BepInEx` 开启。
+- 控制台早期中文乱码：Mod 只能在自身加载后切换 UTF-8，不能修复 BepInEx preloader 已经输出的日志。日常建议关闭控制台并在伴随窗口 `日志` 页查看 `LogOutput.log`；排查原生控制台问题时再临时开启。
 排查运行时识别问题时，请在 `日志` 页开启日志读取和经营诊断，然后提供 `BepInEx/LogOutput.log`、诊断日志和伴随窗口 `日志` 页内容。

@@ -568,6 +568,7 @@ internal sealed class StewardOverlayController
                 MaxLogLines = 300,
                 MaxLogBytes = 256 * 1024,
                 NightBusinessDiagnosticsPath = NightBusinessDiagnosticSink.ResolvePath(""),
+                NativeBepInExConsoleVisible = BepInExConsoleHelper.IsCurrentConsoleWindowVisible(),
             };
         }
 
@@ -579,14 +580,22 @@ internal sealed class StewardOverlayController
             MaxLogBytes = _config.LocalApiMaxLogBytes.Value,
             NightBusinessDiagnosticsEnabled = _config.EnableNightBusinessDiagnostics.Value,
             NightBusinessDiagnosticsPath = NightBusinessDiagnosticSink.ResolvePath(_config.NightBusinessDiagnosticsPath.Value),
+            NativeBepInExConsoleEnabled = !_config.DisableBepInExConsoleLog.Value && !_config.HideBepInExConsoleWindow.Value,
+            NativeBepInExConsoleVisible = BepInExConsoleHelper.IsCurrentConsoleWindowVisible(),
         };
     }
 
-    private void UpdateLocalApiLogSettings(bool? exposeLogs, bool? diagnostics)
+    private void UpdateLocalApiLogSettings(bool? exposeLogs, bool? diagnostics, bool? nativeConsole)
     {
         if (_config == null) return;
         if (exposeLogs.HasValue) _config.ExposeLocalApiLogs.Value = exposeLogs.Value;
         if (diagnostics.HasValue) _config.EnableNightBusinessDiagnostics.Value = diagnostics.Value;
+        if (nativeConsole.HasValue && _log != null)
+        {
+            _config.DisableBepInExConsoleLog.Value = !nativeConsole.Value;
+            _config.HideBepInExConsoleWindow.Value = !nativeConsole.Value;
+            BepInExConsoleHelper.SetNativeConsoleEnabled(nativeConsole.Value, _log);
+        }
     }
 
     private string OpenLocalApiLogFolder(string target)

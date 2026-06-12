@@ -19,13 +19,13 @@
 - 独立伴随窗口通过 `127.0.0.1:32145` 读取运行态；除 `/health` 外，本地 API 使用 `X-Mystia-Steward-Companion-Token` 授权。
 - 伴随窗口控制端口固定为 `127.0.0.1:32146`，支持 `show`、`toggle`、`exit` 消息；Mod 热键应先通知已有窗口，控制端口不可达时才启动新进程。
 - 伴随窗口会在 Tauri app data 目录保存 `window-state.txt`，记录外框位置和内框尺寸；启动时恢复大小和仍在显示器范围内的位置，防止换显示器后窗口离屏。
-- 伴随窗口 `设置` 页负责窗口透明度、焦点切换行为、切换冷却时间、置顶、主题、手柄导航、缺失厨具过滤、任务料理优先、经营中订单排序、料理/酒水推荐排序、实验性游戏界面置顶、目标厨具高亮和实验性自动化总开关。透明度通过 Tauri transparent window + CSS 背景 alpha 实现，文字不随背景变淡；稀客专注模式的料理/酒水显示数量在专注模式浮层内调整。
+- 伴随窗口 `设置` 页负责窗口透明度、焦点切换行为、切换冷却时间、置顶、主题、手柄导航、BepInEx 原生日志窗口、缺失厨具过滤、任务料理优先、经营中订单排序、料理/酒水推荐排序、实验性游戏界面置顶、目标厨具高亮和实验性自动化总开关。透明度通过 Tauri transparent window + CSS 背景 alpha 实现，文字不随背景变淡；稀客专注模式的料理/酒水显示数量在专注模式浮层内调整。
 - 伴随窗口根滚动区域固定预留纵向滚动条槽位，避免页面高度变化时滚动条挤占宽度造成内容横向跳动；窗口、下拉和日志滚动条使用主题色并跟随透明度。
 - 焦点切换支持两种模式：隐藏伴随窗口再聚焦游戏，或保持伴随窗口悬浮并只聚焦游戏。保持悬浮依赖窗口置顶，独占全屏游戏可能覆盖置顶窗口，推荐窗口化或无边框窗口化。
 - 伴随窗口退出跟随不只依赖本地 API `/health` 失联，还会监控启动参数中的 `--game-pid`。游戏窗口 X、游戏内退出按钮、或 Unity 退出阶段未及时发送 `exit` 控制消息时，都应由 PID 监控兜底关闭伴随窗口。
 - `修改` 页通过 `/inventory/set` 在 Unity 主线程写入当前运行时材料和酒水库存；页面只保留 `-10`、`+10` 和 `99` 快捷按钮，用户仍需在游戏内保存才能持久化。
 - `BepInEx/LogOutput.log` 通过伴随窗口 `日志` 页读取，接口按 `LocalApi.MaxLogLines` 和 `LocalApi.MaxLogBytes` 裁剪尾部内容，前端也只保留有限行数显示。
-- Mod 默认写入 `BepInEx/config/BepInEx.cfg` 将 `[Logging.Console] Enabled=false`，并在 Windows 当前会话尝试隐藏控制台窗口；配置对下一次启动完全生效。
+- Mod 默认写入 `BepInEx/config/BepInEx.cfg` 将 `[Logging.Console] Enabled=false`，并在 Windows 当前会话尝试隐藏控制台窗口；设置页可临时开启/关闭原生日志窗口，接口会同时修改当前窗口可见性和下一次启动配置。
 - 游戏内 IMGUI 面板已移除；Mod 在游戏侧只保留后台控制器、本地 API、运行时读取、自动化和伴随窗口唤起。
 - 仓库不使用 GitHub Actions 自动构建 Release；`.github/workflows/ci.yml` 只保留手动前端检查。版本发布采用 Windows 本机构建后由 GitHub CLI 上传。
 - 默认热键 `F8` 和 `RS Click` 的主语义是游戏与伴随窗口焦点切换；伴随窗口聚焦时由 Tauri 前端处理热键并按设置切回游戏。手柄切换需要释放锁存和可配置后端防抖，防止同一次长按连续 toggle；默认冷却时间为 800ms。
@@ -46,7 +46,7 @@
 - 稀客自动化诊断由前端按订单 key 展示当前候选订单状态，包括步骤、料理/酒水阶段、重试、回退和最近原因。单笔 `重试` 只解除暂停并保留已完成阶段，单笔 `重置` 删除该订单本地状态并让下一轮重新判断；不得清空其他稀客、普客或全局自动化状态。
 - 稀客自动化完成订单时，C# 必须同时返回缺料理和缺酒水诊断；前端回退料理时要同步失效酒水缓存，下一轮重新校验取酒。稀客料理自动收取 pending 需要按目标料理 ID 去重，厨具冻结或 Debuff 期间只等待已有 pending，不得重复消耗材料开同一道目标料理。
 - 经营中页的自动化资源视图只做可视化：厨具预约来自已摆放厨具容量、普客待开锅订单和稀客候选订单；送餐盘压力来自稀客诊断中已处理但尚未送达的料理/酒水。不要让该视图替代真实预约表或后端送达状态。
-- 运行时稀客 ID 会先归一化为本地 `customer_rare.json` 身份；优先读取游戏 `DataBaseCharacter.GetAllMappedGuests()` 固定映射和 `GetSpecialGuestsAndMappedGuests()` 完整运行时稀客表，运行时表按游戏语言名称匹配本地唯一同名稀客，手工事件变体只作为兜底。本地缺失但运行时具备有效喜好 Tag 的稀客会合成为临时 `RuntimeRareCustomer`，供经营中订单推荐和伴随窗口稀客页使用；剧情 Intro/Parallel/Current、问号占位、隐藏图鉴、NeverCome、无喜好数据的角色不合成。带具体桌号的捕获订单只允许匹配同一桌活跃稀客，未入座 `desk=-1` 稀客不能保活旧订单。
+- 运行时稀客 ID 会先归一化为本地 `customer_rare.json` 身份；优先读取游戏 `DataBaseCharacter.GetAllMappedGuests()` 固定映射和 `GetSpecialGuestsAndMappedGuests()` 完整运行时稀客表，运行时表按游戏语言名称匹配本地唯一同名稀客，并会把同族 `StringId` 唯一已解析条目作为自动别名来源，例如 `Yuyuko_Free -> Yuyuko`、`DLC4_Remilia -> Remilia`。手工事件变体只作为兜底。本地缺失但运行时具备有效喜好 Tag 的稀客会合成为临时 `RuntimeRareCustomer`，供经营中订单推荐和伴随窗口稀客页使用；剧情 Intro/Parallel/Current、问号占位、隐藏图鉴、NeverCome、无喜好数据的角色不合成。带具体桌号的捕获订单只允许匹配同一桌活跃稀客，未入座 `desk=-1` 稀客不能保活旧订单。
 - 稀客自动化匹配运行时捕获订单时要兼容事件变体名称和不完整 Tag。强买强卖等变体可能显示 `Tewi_HardSell`，捕获到的 `foodTag` 可能为空，`beverageTag` 可能是“请给我甘的饮料”这类完整句子；同桌且对象仍有效的捕获订单应优先保留，Tag 匹配允许包含关系，不要只做完全相等。
 - 诊断开启且经营数据扫描触发时，运行时固定数据会按主题写到诊断目录：`runtime-static-data.log` 映射稀客与 `aliasSource`、`runtime-tags.log` 标签和 TagRule、`runtime-database-diff.log` 核心食材/酒水/料理表对照与读取方式、`runtime-guests.log` 普客/稀客/事件变体、`runtime-izakayas.log` 场景和客人池。游戏数据库未初始化时每 5 秒重试，日志头部 `Complete: True` 表示读取成功。
 - 稀客订单专注模式支持精简模式和料理/酒水显示数量配置；精简模式隐藏推荐料理 Tag 并压缩推荐面板间距，显示数量包含收藏置顶项。

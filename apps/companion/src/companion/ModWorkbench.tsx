@@ -416,6 +416,8 @@ interface LocalApiLogSettings {
   nightBusinessDiagnosticsEnabled: boolean;
   nightBusinessDiagnosticsPath: string;
   nightBusinessDiagnosticsDirectory: string;
+  nativeBepInExConsoleEnabled: boolean;
+  nativeBepInExConsoleVisible: boolean;
 }
 
 interface LocalApiFolderResponse {
@@ -1866,6 +1868,8 @@ export function ModWorkbench() {
 
         <TabsContent value="settings" data-gamepad-scope="content">
           <ModSettingsPanel
+            endpoint={normalizedEndpoint}
+            apiToken={apiToken}
             preferences={companionPreferences}
             themeMode={themeMode}
             serviceFocusCompact={serviceFocusCompact}
@@ -3391,6 +3395,8 @@ function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToken: stri
 }
 
 function ModSettingsPanel({
+  endpoint,
+  apiToken,
   preferences,
   themeMode,
   serviceFocusCompact,
@@ -3398,6 +3404,8 @@ function ModSettingsPanel({
   onThemeModeChange,
   onServiceFocusCompactChange,
 }: {
+  endpoint: string;
+  apiToken: string;
   preferences: CompanionPreferences;
   themeMode: ThemeMode;
   serviceFocusCompact: boolean;
@@ -3405,6 +3413,56 @@ function ModSettingsPanel({
   onThemeModeChange: (mode: ThemeMode) => void;
   onServiceFocusCompactChange: (value: boolean) => void;
 }) {
+  const [logSettings, setLogSettings] = useState<LocalApiLogSettings | null>(null);
+  const [consoleBusy, setConsoleBusy] = useState(false);
+  const [consoleError, setConsoleError] = useState('');
+
+  const refreshConsoleSettings = useCallback(async () => {
+    if (!apiToken) {
+      setLogSettings(null);
+      return;
+    }
+
+    const abortController = new AbortController();
+    const timeoutId = window.setTimeout(() => abortController.abort(), 2800);
+    try {
+      const nextSettings = await readLogSettings(endpoint, apiToken, abortController.signal);
+      setLogSettings(nextSettings);
+      setConsoleError('');
+    } catch (err) {
+      setConsoleError(err instanceof Error ? err.message : String(err));
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+  }, [apiToken, endpoint]);
+
+  const toggleNativeConsole = useCallback(async () => {
+    if (!apiToken) return;
+
+    const abortController = new AbortController();
+    const timeoutId = window.setTimeout(() => abortController.abort(), 2800);
+    setConsoleBusy(true);
+    try {
+      const nextSettings = await writeLogSettings(
+        endpoint,
+        apiToken,
+        { nativeConsole: !(logSettings?.nativeBepInExConsoleEnabled ?? false) },
+        abortController.signal,
+      );
+      setLogSettings(nextSettings);
+      setConsoleError('');
+    } catch (err) {
+      setConsoleError(err instanceof Error ? err.message : String(err));
+    } finally {
+      window.clearTimeout(timeoutId);
+      setConsoleBusy(false);
+    }
+  }, [apiToken, endpoint, logSettings?.nativeBepInExConsoleEnabled]);
+
+  useEffect(() => {
+    refreshConsoleSettings();
+  }, [refreshConsoleSettings]);
+
   return (
     <div className={DENSE_TWO_COLUMN_GRID}>
       <ListPanel title="窗口">
@@ -3431,6 +3489,38 @@ function ModSettingsPanel({
             checked={preferences.alwaysOnTop}
             onCheckedChange={(alwaysOnTop) => onPreferenceChange({ alwaysOnTop })}
           />
+        </div>
+      </ListPanel>
+
+      <ListPanel title="BepInEx">
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              variant={logSettings?.nativeBepInExConsoleEnabled ? 'default' : 'outline'}
+              onClick={toggleNativeConsole}
+              disabled={!apiToken || consoleBusy}
+            >
+              <Power className="size-4" />
+              {logSettings?.nativeBepInExConsoleEnabled ? '关闭原生日志窗口' : '开启原生日志窗口'}
+            </Button>
+            <Button size="sm" variant="outline" onClick={refreshConsoleSettings} disabled={!apiToken || consoleBusy}>
+              <RefreshCw className="size-4" />
+              刷新状态
+            </Button>
+          </div>
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <InfoLine label="下次启动" value={logSettings?.nativeBepInExConsoleEnabled ? '开启' : '关闭'} />
+            <InfoLine label="当前窗口" value={logSettings?.nativeBepInExConsoleVisible ? '可见' : '未显示'} />
+          </div>
+          <div className="text-xs text-muted-foreground">
+            关闭后会隐藏当前 BepInEx 控制台，并将 BepInEx.cfg 的原生 Console log 设为下次启动关闭；日志页仍可读取 LogOutput.log。
+          </div>
+          {consoleError && (
+            <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+              {consoleError}
+            </div>
+          )}
         </div>
       </ListPanel>
 
@@ -4721,12 +4811,13 @@ async function readLogSettings(endpoint: string, apiToken: string, signal: Abort
 async function writeLogSettings(
   endpoint: string,
   apiToken: string,
-  next: { logAccess?: boolean; diagnostics?: boolean },
+  next: { logAccess?: boolean; diagnostics?: boolean; nativeConsole?: boolean },
   signal: AbortSignal,
 ): Promise<LocalApiLogSettings> {
   const params = new URLSearchParams();
   if (typeof next.logAccess === 'boolean') params.set('logAccess', String(next.logAccess));
   if (typeof next.diagnostics === 'boolean') params.set('diagnostics', String(next.diagnostics));
+  if (typeof next.nativeConsole === 'boolean') params.set('nativeConsole', String(next.nativeConsole));
   return readLocalApiJson<LocalApiLogSettings>(endpoint, apiToken, `/logs/config?${params.toString()}`, signal);
 }
 

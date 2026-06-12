@@ -193,7 +193,8 @@ internal sealed class RuntimeMappedGuestCatalog
             });
         }
 
-        var orderedEntries = entries
+        var normalizedEntries = ApplyVariantAliasNormalization(entries, out var variantAliasCount);
+        var orderedEntries = normalizedEntries
             .GroupBy(BuildEntryKey, StringComparer.OrdinalIgnoreCase)
             .Select(group => group
                 .OrderByDescending(entry => entry.LocalRareCustomerId.HasValue)
@@ -205,7 +206,82 @@ internal sealed class RuntimeMappedGuestCatalog
         return new RuntimeMappedGuestCatalogSnapshot(
             DateTime.UtcNow,
             orderedEntries,
-            $"loaded: entries={orderedEntries.Count}; mapped={mappedCount}; runtimeGuests={runtimeGuestCount}; localResolved={orderedEntries.Count(entry => entry.LocalRareCustomerId.HasValue)}; runtimeSynthetic={orderedEntries.Count(entry => entry.RuntimeCustomer != null)}");
+            $"loaded: entries={orderedEntries.Count}; mapped={mappedCount}; runtimeGuests={runtimeGuestCount}; localResolved={orderedEntries.Count(entry => entry.LocalRareCustomerId.HasValue)}; runtimeSynthetic={orderedEntries.Count(entry => entry.RuntimeCustomer != null)}; variantAliases={variantAliasCount}");
+    }
+
+    private static IReadOnlyList<RuntimeMappedGuestEntry> ApplyVariantAliasNormalization(
+        IReadOnlyList<RuntimeMappedGuestEntry> entries,
+        out int appliedCount)
+    {
+        appliedCount = 0;
+        var aliasGroups = entries
+            .Where(entry => entry.LocalRareCustomerId.HasValue && !string.IsNullOrWhiteSpace(entry.LocalRareCustomerName))
+            .Select(entry => new
+            {
+                Key = NormalizeRuntimeAliasKey(entry.RuntimeStringId),
+                Entry = entry,
+            })
+            .Where(item => !string.IsNullOrWhiteSpace(item.Key))
+            .GroupBy(item => item.Key!, StringComparer.OrdinalIgnoreCase)
+            .Select(group => new
+            {
+                Key = group.Key,
+                Targets = group
+                    .Select(item => new RareCustomerIdentity(item.Entry.LocalRareCustomerId!.Value, item.Entry.LocalRareCustomerName))
+                    .Distinct()
+                    .ToList(),
+            })
+            .Where(group => group.Targets.Count == 1)
+            .ToDictionary(group => group.Key, group => group.Targets[0], StringComparer.OrdinalIgnoreCase);
+
+        if (aliasGroups.Count == 0) return entries;
+
+        var result = new List<RuntimeMappedGuestEntry>(entries.Count);
+        foreach (var entry in entries)
+        {
+            if (entry.LocalRareCustomerId.HasValue)
+            {
+                result.Add(entry);
+                continue;
+            }
+
+            var key = NormalizeRuntimeAliasKey(entry.RuntimeStringId);
+            if (string.IsNullOrWhiteSpace(key) || !aliasGroups.TryGetValue(key, out var target))
+            {
+                result.Add(entry);
+                continue;
+            }
+
+            appliedCount++;
+            result.Add(CloneWithIdentity(entry, target, "variant-alias"));
+        }
+
+        return result;
+    }
+
+    private static RuntimeMappedGuestEntry CloneWithIdentity(
+        RuntimeMappedGuestEntry entry,
+        RareCustomerIdentity identity,
+        string aliasSource)
+    {
+        var prefix = entry.AliasSource.StartsWith("mapped-", StringComparison.OrdinalIgnoreCase)
+            ? "mapped"
+            : "runtime";
+
+        return new RuntimeMappedGuestEntry
+        {
+            RuntimeId = entry.RuntimeId,
+            RuntimeStringId = entry.RuntimeStringId,
+            SourceGuestId = entry.SourceGuestId,
+            SourceStringId = entry.SourceStringId,
+            SourceDisplayName = entry.SourceDisplayName,
+            LocalRareCustomerId = identity.Id,
+            LocalRareCustomerName = identity.Name,
+            RuntimeCustomer = null,
+            OverrideDestination = entry.OverrideDestination,
+            AliasSource = $"{prefix}-{aliasSource}",
+            RuntimeTypeName = entry.RuntimeTypeName,
+        };
     }
 
     private RuntimeRareCustomer? BuildRuntimeRareCustomer(
@@ -312,6 +388,52 @@ internal sealed class RuntimeMappedGuestCatalog
             || text.Contains("_Happy", StringComparison.OrdinalIgnoreCase);
     }
 
+    private static string? NormalizeRuntimeAliasKey(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var text = value.Trim();
+        if (text.Length == 0) return null;
+
+        var underscoreIndex = text.IndexOf('_');
+        if (underscoreIndex > 3
+            && text.StartsWith("DLC", StringComparison.OrdinalIgnoreCase)
+            && text.Skip(3).Take(underscoreIndex - 3).All(char.IsDigit))
+        {
+            text = text[(underscoreIndex + 1)..];
+        }
+
+        if (text.StartsWith("TBS_", StringComparison.OrdinalIgnoreCase))
+        {
+            text = text["TBS_".Length..];
+        }
+
+        var suffixes = new[]
+        {
+            "_Free",
+            "_HardSell",
+            "_Intro",
+            "_Parallel",
+            "_Current",
+            "_OnlyHead",
+            "_WithHead",
+            "_Ghost",
+            "_Joy",
+            "_Angry",
+            "_Sad",
+            "_Happy",
+        };
+        foreach (var suffix in suffixes)
+        {
+            if (text.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+            {
+                text = text[..^suffix.Length];
+                break;
+            }
+        }
+
+        return text.Length == 0 ? null : text;
+    }
+
     private static List<string> ReadRuntimeTagNames(
         object? value,
         IReadOnlyDictionary<int, string> tagNames,
@@ -389,9 +511,11 @@ internal sealed class RuntimeMappedGuestCatalog
             "runtime-name" => 3,
             "mapped-manual-alias" => 4,
             "runtime-manual-alias" => 5,
-            "runtime-synthetic" => 6,
-            "mapped-unresolved" => 7,
-            "runtime-unresolved" => 8,
+            "mapped-variant-alias" => 6,
+            "runtime-variant-alias" => 7,
+            "runtime-synthetic" => 8,
+            "mapped-unresolved" => 9,
+            "runtime-unresolved" => 10,
             _ => 10,
         };
     }

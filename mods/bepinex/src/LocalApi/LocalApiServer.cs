@@ -19,7 +19,7 @@ internal sealed class LocalApiServer : IDisposable
     private readonly string _healthJson;
     private readonly string _logOutputPath;
     private readonly Func<LocalApiLogSettings> _getLogSettings;
-    private readonly Action<bool?, bool?> _updateLogSettings;
+    private readonly Action<bool?, bool?, bool?> _updateLogSettings;
     private readonly Func<string, string> _openLogFolder;
     private readonly Func<string, int, int, RuntimeInventoryEditResult> _editInventory;
     private readonly Func<OrderPreparationRequest, OrderPreparationResult> _prepareOrder;
@@ -37,7 +37,7 @@ internal sealed class LocalApiServer : IDisposable
         string pluginVersion,
         string token,
         Func<LocalApiLogSettings> getLogSettings,
-        Action<bool?, bool?> updateLogSettings,
+        Action<bool?, bool?, bool?> updateLogSettings,
         Func<string, string> openLogFolder,
         Func<string, int, int, RuntimeInventoryEditResult> editInventory,
         Func<OrderPreparationRequest, OrderPreparationResult> prepareOrder,
@@ -192,7 +192,10 @@ internal sealed class LocalApiServer : IDisposable
                         WriteResponse(stream, 200, "OK", BuildLogSettingsJson());
                         break;
                     case "/logs/config":
-                        _updateLogSettings(ReadBoolQuery(query, "logAccess"), ReadBoolQuery(query, "diagnostics"));
+                        _updateLogSettings(
+                            ReadBoolQuery(query, "logAccess"),
+                            ReadBoolQuery(query, "diagnostics"),
+                            ReadBoolQuery(query, "nativeConsole"));
                         WriteResponse(stream, 200, "OK", BuildLogSettingsJson());
                         break;
                     case "/logs/open-folder":
@@ -323,7 +326,9 @@ internal sealed class LocalApiServer : IDisposable
             .Append("\"maxLogBytes\":").Append(Math.Clamp(settings.MaxLogBytes, 16 * 1024, 2 * 1024 * 1024)).Append(',')
             .Append("\"nightBusinessDiagnosticsEnabled\":").Append(settings.NightBusinessDiagnosticsEnabled ? "true" : "false").Append(',')
             .Append("\"nightBusinessDiagnosticsPath\":\"").Append(EscapeJson(settings.NightBusinessDiagnosticsPath)).Append("\",")
-            .Append("\"nightBusinessDiagnosticsDirectory\":\"").Append(EscapeJson(GetDirectory(settings.NightBusinessDiagnosticsPath))).Append("\"")
+            .Append("\"nightBusinessDiagnosticsDirectory\":\"").Append(EscapeJson(GetDirectory(settings.NightBusinessDiagnosticsPath))).Append("\",")
+            .Append("\"nativeBepInExConsoleEnabled\":").Append(settings.NativeBepInExConsoleEnabled ? "true" : "false").Append(',')
+            .Append("\"nativeBepInExConsoleVisible\":").Append(settings.NativeBepInExConsoleVisible ? "true" : "false")
             .Append('}')
             .ToString();
     }
@@ -840,4 +845,6 @@ internal sealed class LocalApiLogSettings
     public int MaxLogBytes { get; init; } = 256 * 1024;
     public bool NightBusinessDiagnosticsEnabled { get; init; }
     public string NightBusinessDiagnosticsPath { get; init; } = "";
+    public bool NativeBepInExConsoleEnabled { get; init; }
+    public bool NativeBepInExConsoleVisible { get; init; }
 }

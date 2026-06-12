@@ -299,8 +299,8 @@ http://127.0.0.1:32145
 
 - `GET /health`：检查本地 API 是否启动，不需要 token。
 - `GET /snapshot`：读取最新运行态快照。快照由 Unity 主线程按自动刷新节奏生成，网络线程只返回缓存 JSON。快照包含推荐状态、夜间稀客订单、任务状态、经营投喂任务目标和普客订单诊断；任务状态优先遍历 `RunTimeScheduler.trackingMissions` 并调用只读 `RunTimeScheduler.ParseActiveMissionData()`，再结合全局 NPC、当前场景 NPC、`DaySceneMap`、当天/常驻 `RunTimeScheduler.scheduledEvents` 后置任务、跟踪交互物件、场景任务交互组件和未完成 `trackingMissions` fallback 补充来源，并优先从 `RunTimeDayScene.trackedNPCs` 反查 NPC 所在场景，缺失时用 `DataBaseDay.RefNPC().possibleDestinations` 解析可能场景。夜间经营时会通过 `ContainsSpecialNPCServeInWorkMission()` 读取当前稀客是否有已接取的投喂任务指定料理；普客诊断会扫描 HUD 订单和经营管理器桌位订单。
-- `GET /logs/settings`：读取日志读取和经营诊断开关状态。
-- `GET /logs/config?logAccess=true|false&diagnostics=true|false`：由伴随窗口回写日志和诊断开关。
+- `GET /logs/settings`：读取日志读取、经营诊断和 BepInEx 原生日志窗口开关状态。
+- `GET /logs/config?logAccess=true|false&diagnostics=true|false&nativeConsole=true|false`：由伴随窗口回写日志、诊断和 BepInEx 原生日志窗口开关；`nativeConsole` 会同时尝试显示/隐藏当前 Windows 控制台，并写入下一次启动的 `BepInEx.cfg`。
 - `GET /logs/open-folder?target=log|diagnostics`：打开对应日志目录。
 - `GET /logs`：在 `LocalApi.ExposeLogs=true` 时读取 `BepInEx/LogOutput.log` 尾部日志，按 `LocalApi.MaxLogLines` 和 `LocalApi.MaxLogBytes` 裁剪。
 - `GET /inventory/set?type=ingredient|beverage&id=ID&qty=数量`：在 Unity 主线程修改当前运行时材料或酒水库存。
