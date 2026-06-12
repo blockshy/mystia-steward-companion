@@ -12,7 +12,9 @@ internal sealed class RareGuestInvitationResult
     public string? Error { get; set; }
     public int CandidateCount { get; set; }
     public int UsableCount { get; set; }
+    public int ExistingSlotCount { get; set; }
     public int ExistingControlledCount { get; set; }
+    public int ScheduledSlotCount { get; set; }
     public int InvitedCount { get; set; }
     public int SkippedCount { get; set; }
     public List<RareGuestInvitationEntry> Invited { get; set; } = new();
@@ -111,6 +113,7 @@ internal static class RuntimeRareGuestInvitationService
         {
             RuntimeAvailable = true,
             CandidateCount = candidateGuests.Count,
+            ExistingSlotCount = RuntimeReflectionUtility.CountObjects(controlledList),
             ExistingControlledCount = currentEntries.Count,
         };
 
@@ -193,13 +196,17 @@ internal static class RuntimeRareGuestInvitationService
             _ = persisted;
         }
 
+        if (result.Invited.Count == 0)
+        {
+            result.ScheduledSlotCount = ScheduleNativeInvitationSlots(controlled, controlledList, candidateGuests.Count);
+            result.ExistingSlotCount = Math.Max(result.ExistingSlotCount, RuntimeReflectionUtility.CountObjects(controlledList) - result.ScheduledSlotCount);
+        }
+
         result.Ok = true;
-        result.InvitedCount = result.Invited.Count;
+        result.InvitedCount = result.Invited.Count + result.ScheduledSlotCount;
         result.SkippedCount = result.Skipped.Count;
-        result.Status = result.InvitedCount == 0
-            ? "没有新的可邀请稀客。"
-            : $"已邀请 {result.InvitedCount} 位稀客。";
-        log?.LogInfo($"Invite all rare guests: {result.Status} candidates={result.CandidateCount}, usable={result.UsableCount}, existing={result.ExistingControlledCount}, skipped={result.SkippedCount}");
+        result.Status = BuildStatus(result);
+        log?.LogInfo($"Invite all rare guests: {result.Status} candidates={result.CandidateCount}, usable={result.UsableCount}, existingSlots={result.ExistingSlotCount}, existingControlled={result.ExistingControlledCount}, scheduledSlots={result.ScheduledSlotCount}, skipped={result.SkippedCount}");
         return result;
     }
 
@@ -313,6 +320,45 @@ internal static class RuntimeRareGuestInvitationService
         }
 
         return true;
+    }
+
+    private static int ScheduleNativeInvitationSlots(object controlled, object controlledList, int candidateCount)
+    {
+        var scheduled = 0;
+        var previousCount = RuntimeReflectionUtility.CountObjects(controlledList);
+        var targetCount = Math.Max(previousCount, candidateCount);
+
+        while (previousCount < targetCount)
+        {
+            RuntimeReflectionUtility.InvokeMethod(controlled, "ControlScheduled");
+            var nextCount = RuntimeReflectionUtility.CountObjects(controlledList);
+            if (nextCount <= previousCount) break;
+
+            scheduled += nextCount - previousCount;
+            previousCount = nextCount;
+        }
+
+        return scheduled;
+    }
+
+    private static string BuildStatus(RareGuestInvitationResult result)
+    {
+        if (result.Invited.Count > 0)
+        {
+            return $"已邀请 {result.Invited.Count} 位稀客。";
+        }
+
+        if (result.ScheduledSlotCount > 0)
+        {
+            return $"已新增 {result.ScheduledSlotCount} 个原生邀请名额；游戏会在经营准备时自动选择可邀请稀客。";
+        }
+
+        if (result.ExistingSlotCount > 0)
+        {
+            return $"已有 {result.ExistingSlotCount} 个原生邀请名额或受控稀客，无需新增。";
+        }
+
+        return "没有新的可邀请稀客或可用邀请名额。";
     }
 
     private static bool InvokeInstanceMethod(object instance, string name, params object?[] args)

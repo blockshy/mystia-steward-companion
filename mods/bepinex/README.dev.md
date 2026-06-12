@@ -307,7 +307,7 @@ http://127.0.0.1:32145
 - `GET /logs/export-diagnostics?open=true`：生成诊断 zip，包含 manifest、当前 snapshot、`LogOutput.log` 尾部、自动化作业日志尾部和诊断目录中的 `.log` 尾部；`open=true` 会打开诊断包目录。
 - `GET /orders/complete-first?...`：按伴随窗口传入的稀客订单匹配送餐盘内容并尝试完成订单。
 - `GET /orders/normal/complete-first?...`：按请求中的订单 key、桌位和料理处理一笔普客订单。普客自动化只负责按订单料理开始制作，并在完成后通过 `IzakayaConfigure.StoreFood()` 把料理写入游戏料理暂存容器；不处理酒水，不写入 `ServFood/ServBeverage/ServedFoodInAir`，也不触发订单评价。
-- `GET /rare-guests/invite-all`：排队到 Unity 主线程，读取游戏原生 `SpecialGuestControlled` 可邀请候选，向受控稀客列表追加新的 `PreControl` 条目并持久化到 `RunTimePlayerData`。该端点不直接刷出稀客，后续仍由游戏经营准备流程处理。
+- `GET /rare-guests/invite-all`：排队到 Unity 主线程，读取游戏原生 `SpecialGuestControlled` 可邀请候选；能确定具体可用稀客时向受控稀客列表追加新的 `PreControl` 条目并持久化到 `RunTimePlayerData`，若当前时机无法确定具体人选则调用原生 `ControlScheduled()` 补充邀请名额。该端点不直接刷出稀客，后续仍由游戏经营准备流程处理。
 
 除 `/health` 外，端点都需要 `X-Mystia-Steward-Companion-Token`。Token 由插件生成并保存在 BepInEx 配置中，启动伴随窗口时通过 `--token=` 参数传入 Tauri 后端。Tauri 伴随窗口会显示实时 Mod 工作台，包含 `概览`、`普客`、`稀客`、`经营中`、`任务`、`修改`、`日志`、`设置` 八个页签。它通过原生后端读取本地 API，不依赖浏览器或前端开发服务器。
 

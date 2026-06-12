@@ -532,7 +532,9 @@ interface RareGuestInvitationResponse {
   error: string | null;
   candidateCount: number;
   usableCount: number;
+  existingSlotCount: number;
   existingControlledCount: number;
+  scheduledSlotCount: number;
   invitedCount: number;
   skippedCount: number;
   invited: RareGuestInvitationEntry[];
@@ -2109,7 +2111,7 @@ function ModOverviewPanel({
                 <InfoLine label="结果" value={inviteAllResult.status || (inviteAllResult.ok ? '已完成' : '失败')} />
                 <InfoLine
                   label="统计"
-                  value={`新增 ${inviteAllResult.invitedCount} · 候选 ${inviteAllResult.candidateCount} · 已有 ${inviteAllResult.existingControlledCount}`}
+                  value={`新增 ${inviteAllResult.invitedCount} · 名额 ${inviteAllResult.scheduledSlotCount} · 候选 ${inviteAllResult.candidateCount} · 已有 ${inviteAllResult.existingControlledCount}/${inviteAllResult.existingSlotCount}`}
                 />
                 <div className="mt-2 flex flex-wrap gap-1">
                   {inviteAllResult.invited.slice(0, 12).map((entry) => (
@@ -2120,8 +2122,18 @@ function ModOverviewPanel({
                   {inviteAllResult.invited.length > 12 && (
                     <Badge variant="outline">+{inviteAllResult.invited.length - 12}</Badge>
                   )}
-                  {inviteAllResult.invited.length === 0 && <span className="text-xs text-muted-foreground">暂无新增邀请</span>}
+                  {inviteAllResult.invited.length === 0 && inviteAllResult.scheduledSlotCount > 0 && (
+                    <Badge variant="secondary">原生邀请名额 x{inviteAllResult.scheduledSlotCount}</Badge>
+                  )}
+                  {inviteAllResult.invited.length === 0 && inviteAllResult.scheduledSlotCount === 0 && (
+                    <span className="text-xs text-muted-foreground">暂无新增邀请</span>
+                  )}
                 </div>
+                {inviteAllResult.skipped.length > 0 && (
+                  <div className="mt-2 text-xs text-muted-foreground">
+                    跳过：{summarizeInvitationSkipped(inviteAllResult.skipped)}
+                  </div>
+                )}
               </div>
             ) : (
               <EmptyRow text="尚未执行邀请" />
@@ -5459,6 +5471,18 @@ async function readLocalApiJson<T>(endpoint: string, apiToken: string, path: str
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
   return await response.json() as T;
+}
+
+function summarizeInvitationSkipped(entries: RareGuestInvitationEntry[]): string {
+  const counts = new Map<string, number>();
+  for (const entry of entries) {
+    const reason = entry.reason || '未知原因';
+    counts.set(reason, (counts.get(reason) ?? 0) + 1);
+  }
+
+  return Array.from(counts.entries())
+    .map(([reason, count]) => `${reason} ${count}`)
+    .join(' · ');
 }
 
 function buildRuntimeSets(

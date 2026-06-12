@@ -557,7 +557,7 @@ internal sealed class LocalApiServer : IDisposable
         {
             return "{\"ok\":false,\"runtimeAvailable\":false,\"status\":\"稀客邀请失败。\",\"error\":\""
                 + EscapeJson(ex.Message)
-                + "\",\"candidateCount\":0,\"usableCount\":0,\"existingControlledCount\":0,\"invitedCount\":0,\"skippedCount\":0,\"invited\":[],\"skipped\":[]}";
+                + "\",\"candidateCount\":0,\"usableCount\":0,\"existingSlotCount\":0,\"existingControlledCount\":0,\"scheduledSlotCount\":0,\"invitedCount\":0,\"skippedCount\":0,\"invited\":[],\"skipped\":[]}";
         }
     }
 
