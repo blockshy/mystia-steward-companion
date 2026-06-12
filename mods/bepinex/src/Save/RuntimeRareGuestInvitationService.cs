@@ -34,6 +34,7 @@ internal sealed class RareGuestInvitationEntry
 internal static class RuntimeRareGuestInvitationService
 {
     private const string DataBaseCharacterTypeName = "GameData.Core.Collections.CharacterUtility.DataBaseCharacter";
+    private const string DataBaseDayTypeName = "GameData.Core.Collections.DaySceneUtility.DataBaseDay";
     private const string RunTimeAlbumTypeName = "GameData.RunTime.Common.RunTimeAlbum";
     private const string StatusTrackerTypeName = "GameData.RunTime.Common.StatusTracker";
     private const string RuntimeDaySceneTypeName = "GameData.RunTime.DaySceneUtility.RunTimeDayScene";
@@ -214,16 +215,22 @@ internal static class RuntimeRareGuestInvitationService
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var labels = new List<string>();
         var runtimeDaySceneType = RuntimeReflectionUtility.FindType(RuntimeDaySceneTypeName);
+        var dataBaseDayType = RuntimeReflectionUtility.FindType(DataBaseDayTypeName);
         var daySceneMapType = RuntimeReflectionUtility.FindType(DaySceneMapTypeName);
         var sceneManagerType = RuntimeReflectionUtility.FindType(DaySceneSceneManagerTypeName);
         var characterComponentType = RuntimeReflectionUtility.FindType(CharacterConditionComponentTypeName);
         var currentMapLabel = ReadCurrentMapLabel(sceneManagerType);
+        TryRefreshCurrentMapNpcs(runtimeDaySceneType);
         var counts = new Dictionary<string, int>(StringComparer.Ordinal)
         {
             ["mapNpc"] = 0,
             ["mapObject"] = 0,
             ["sceneObject"] = 0,
+            ["trackedAnyMap"] = 0,
+            ["staticMap"] = 0,
+            ["staticUnavailable"] = 0,
         };
+        var errors = new List<string>();
 
         foreach (var label in ReadMapNpcLabels(runtimeDaySceneType, currentMapLabel))
         {
@@ -243,8 +250,31 @@ internal static class RuntimeRareGuestInvitationService
             if (seen.Add(label)) labels.Add(label);
         }
 
-        diagnostics = $"currentMap={currentMapLabel}; mapNpc={counts["mapNpc"]}; mapObject={counts["mapObject"]}; sceneObject={counts["sceneObject"]}";
+        foreach (var label in ReadTrackedNpcLabelsFromAllMaps(runtimeDaySceneType, dataBaseDayType, currentMapLabel))
+        {
+            counts["trackedAnyMap"]++;
+            if (seen.Add(label)) labels.Add(label);
+        }
+
+        var staticMap = 0;
+        var staticUnavailable = 0;
+        foreach (var label in ReadStaticCurrentMapNpcLabels(runtimeDaySceneType, dataBaseDayType, currentMapLabel, errors, out staticMap, out staticUnavailable))
+        {
+            counts["staticMap"]++;
+            if (seen.Add(label)) labels.Add(label);
+        }
+
+        counts["staticUnavailable"] = staticUnavailable;
+        var errorText = errors.Count == 0 ? "" : $"; errors={string.Join("|", errors.Take(4))}";
+        diagnostics =
+            $"currentMap={currentMapLabel}; mapNpc={counts["mapNpc"]}; mapObject={counts["mapObject"]}; sceneObject={counts["sceneObject"]}; trackedAnyMap={counts["trackedAnyMap"]}; staticMap={staticMap}; staticAccepted={counts["staticMap"]}; staticUnavailable={counts["staticUnavailable"]}{errorText}";
         return labels;
+    }
+
+    private static void TryRefreshCurrentMapNpcs(Type? runtimeDaySceneType)
+    {
+        if (runtimeDaySceneType == null) return;
+        RuntimeReflectionUtility.InvokeStaticMethod(runtimeDaySceneType, "TryRefreshNPCs");
     }
 
     private static string ReadCurrentMapLabel(Type? sceneManagerType)
@@ -274,6 +304,74 @@ internal static class RuntimeRareGuestInvitationService
         }
     }
 
+    private static IEnumerable<string> ReadTrackedNpcLabelsFromAllMaps(Type? runtimeDaySceneType, Type? dataBaseDayType, string currentMapLabel)
+    {
+        if (runtimeDaySceneType == null || dataBaseDayType == null) yield break;
+        if (string.IsNullOrWhiteSpace(currentMapLabel)) yield break;
+
+        var trackedNpcMaps = RuntimeReflectionUtility.GetStaticMemberValue(runtimeDaySceneType, "trackedNPCs");
+        foreach (var mapCandidate in RuntimeReflectionUtility.EnumerateObjects(trackedNpcMaps))
+        {
+            var mapLabel = ReadTextMember(mapCandidate, "Key");
+            var npcMap = RuntimeReflectionUtility.NormalizeKeyValueValue(mapCandidate);
+            foreach (var npcCandidate in RuntimeReflectionUtility.EnumerateObjects(npcMap))
+            {
+                var npc = RuntimeReflectionUtility.NormalizeKeyValueValue(npcCandidate);
+                var label = ReadTextMember(npc, "key")
+                    ?? ReadTextMember(npcCandidate, "Key")
+                    ?? ReadTextMember(npcCandidate, "key");
+                if (string.IsNullOrWhiteSpace(label)) continue;
+                if (!TrackedNpcMatchesCurrentMap(dataBaseDayType, npc, mapLabel, currentMapLabel)) continue;
+                if (!IsTrackedNpcAvailable(runtimeDaySceneType, label, out var known) || !known) continue;
+                yield return label;
+            }
+        }
+    }
+
+    private static IReadOnlyList<string> ReadStaticCurrentMapNpcLabels(
+        Type? runtimeDaySceneType,
+        Type? dataBaseDayType,
+        string currentMapLabel,
+        List<string> errors,
+        out int staticMap,
+        out int staticUnavailable)
+    {
+        staticMap = 0;
+        staticUnavailable = 0;
+        var labels = new List<string>();
+        if (dataBaseDayType == null || string.IsNullOrWhiteSpace(currentMapLabel)) return labels;
+
+        var allNpcKeys = RuntimeReflectionUtility.InvokeStaticMethod(dataBaseDayType, "GetAllNPCKeys");
+        foreach (var keyCandidate in RuntimeReflectionUtility.EnumerateObjects(allNpcKeys))
+        {
+            var key = keyCandidate?.ToString()?.Trim();
+            if (string.IsNullOrWhiteSpace(key)) continue;
+
+            var npc = InvokeStaticMethodWithSingleParameter(dataBaseDayType, "RefNPC", typeof(string), key);
+            if (!StaticNpcMatchesCurrentMap(dataBaseDayType, npc, currentMapLabel)) continue;
+            staticMap++;
+
+            if (runtimeDaySceneType != null)
+            {
+                var available = IsTrackedNpcAvailable(runtimeDaySceneType, key, out var known);
+                if (!known || !available)
+                {
+                    staticUnavailable++;
+                    continue;
+                }
+            }
+
+            labels.Add(key);
+        }
+
+        if (staticMap == 0 && RuntimeReflectionUtility.CountObjects(allNpcKeys) == 0)
+        {
+            errors.Add("DataBaseDay.GetAllNPCKeys empty");
+        }
+
+        return labels;
+    }
+
     private static IEnumerable<string> ReadDaySceneMapCharacterLabels(Type? daySceneMapType)
     {
         if (daySceneMapType == null) yield break;
@@ -301,6 +399,69 @@ internal static class RuntimeRareGuestInvitationService
             label ??= ReadTextMember(trackedNpcData, "key");
             if (!string.IsNullOrWhiteSpace(label)) yield return label;
         }
+    }
+
+    private static bool TrackedNpcMatchesCurrentMap(Type dataBaseDayType, object? npc, string? mapLabel, string currentMapLabel)
+    {
+        foreach (var candidate in ResolveTrackedNpcMapLabels(dataBaseDayType, npc, mapLabel))
+        {
+            if (MapLabelsEqual(candidate, currentMapLabel)) return true;
+        }
+
+        return false;
+    }
+
+    private static IEnumerable<string> ResolveTrackedNpcMapLabels(Type dataBaseDayType, object? npc, string? mapLabel)
+    {
+        if (!string.IsNullOrWhiteSpace(mapLabel)) yield return mapLabel.Trim();
+
+        var overridePosition = RuntimeReflectionUtility.GetMemberValue(npc, "overridePosition");
+        var overrideMapLabel = ReadTextMember(overridePosition, "mapLabel");
+        if (!string.IsNullOrWhiteSpace(overrideMapLabel)) yield return overrideMapLabel;
+
+        var currentDestination = RuntimeReflectionUtility.GetMemberValue(npc, "currentDestination");
+        foreach (var label in ResolveDestinationMapLabels(dataBaseDayType, currentDestination))
+        {
+            yield return label;
+        }
+    }
+
+    private static bool StaticNpcMatchesCurrentMap(Type dataBaseDayType, object? npc, string currentMapLabel)
+    {
+        foreach (var destination in RuntimeReflectionUtility.EnumerateObjects(RuntimeReflectionUtility.GetMemberValue(npc, "possibleDestinations")))
+        {
+            foreach (var label in ResolveDestinationMapLabels(dataBaseDayType, destination))
+            {
+                if (MapLabelsEqual(label, currentMapLabel)) return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static IEnumerable<string> ResolveDestinationMapLabels(Type dataBaseDayType, object? destination)
+    {
+        var spawnMarker = ReadTextMember(destination, "spawnMarker");
+        if (string.IsNullOrWhiteSpace(spawnMarker)) yield break;
+
+        var mapLabel = InvokeStaticMethodWithSingleParameter(dataBaseDayType, "GetMapLabelFromSpawnMarker", typeof(string), spawnMarker)?.ToString();
+        if (!string.IsNullOrWhiteSpace(mapLabel)) yield return mapLabel.Trim();
+    }
+
+    private static bool IsTrackedNpcAvailable(Type runtimeDaySceneType, string key, out bool known)
+    {
+        known = false;
+        var value = InvokeStaticMethodWithSingleParameter(runtimeDaySceneType, "RefTrackedNPCAvailability", typeof(string), key);
+        if (value == null) return false;
+
+        known = true;
+        return RuntimeReflectionUtility.ToBool(value);
+    }
+
+    private static bool MapLabelsEqual(string? left, string? right)
+    {
+        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right)) return false;
+        return string.Equals(left.Trim(), right.Trim(), StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool HasInviteDialog(object guest, int level, bool succeed)
