@@ -1938,9 +1938,9 @@ internal static class RuntimeOrderPreparationService
     {
         if (sellable != null)
         {
-            foreach (var member in new[] { "id", "Id", "ID" })
+            foreach (var member in new[] { "id", "Id", "ID", "foodID", "FoodID" })
             {
-                var parsed = ToInt(ReadMember(sellable, member), int.MinValue);
+                var parsed = ToInt(ReadMember(sellable, member) ?? TryInvokeInstanceValue(sellable, $"get_{member}"), int.MinValue);
                 if (parsed != int.MinValue) return parsed;
             }
         }

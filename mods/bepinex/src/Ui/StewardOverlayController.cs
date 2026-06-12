@@ -844,9 +844,15 @@ internal sealed class StewardOverlayController
     private static bool HasActiveNightBusinessContext(NightBusinessContext? context)
     {
         if (context == null) return false;
-        if (string.IsNullOrWhiteSpace(context.Place) && string.IsNullOrWhiteSpace(context.PlaceLabel)) return false;
-        if (context.Source.Contains("not in", StringComparison.OrdinalIgnoreCase)
-            || context.Source.Contains("不在", StringComparison.OrdinalIgnoreCase))
+        var status = $"{context.Source}; {context.Error}";
+        if (string.IsNullOrWhiteSpace(context.Source) && !string.IsNullOrWhiteSpace(context.Error)) return false;
+        if (status.Contains("not in", StringComparison.OrdinalIgnoreCase)
+            || status.Contains("not loaded", StringComparison.OrdinalIgnoreCase)
+            || status.Contains("non-game", StringComparison.OrdinalIgnoreCase)
+            || status.Contains("No active business scene", StringComparison.OrdinalIgnoreCase)
+            || status.Contains("不在", StringComparison.OrdinalIgnoreCase)
+            || status.Contains("未加载", StringComparison.OrdinalIgnoreCase)
+            || status.Contains("当前无经营场景", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }

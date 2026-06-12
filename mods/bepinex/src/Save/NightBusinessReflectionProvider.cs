@@ -1049,9 +1049,14 @@ public sealed class NightBusinessReflectionProvider
     {
         if (order == null) return $"order=null; controller=[{DescribeControllerCandidate(controller)}]";
 
+        var isNormalOrder = IsNormalOrderCandidate(order);
+        var orderGuest = GetMemberValue(order, "Guest");
         var specialGuest = GetMemberValue(order, "SpecialGuests")
             ?? GetMemberValue(controller, "SpecialGuest")
-            ?? GetMemberValue(controller, "OrderingGuest");
+            ?? (isNormalOrder ? null : GetMemberValue(controller, "OrderingGuest"));
+        var orderingGuest = GetMemberValue(controller, "OrderingGuest");
+        var requestFood = GetMemberValue(order, "RequestFood");
+        var requestBeverage = GetMemberValue(order, "RequestBeverage");
         var parts = new List<string>
         {
             $"orderType={ShortType(order)}",
@@ -1060,12 +1065,25 @@ public sealed class NightBusinessReflectionProvider
             $"requestFoodTag={ShortValue(GetMemberValue(order, "RequestFoodTag"))}",
             $"requestBeverageTag={ShortValue(GetMemberValue(order, "RequestBeverageTag"))}",
             $"foodRequest={ShortValue(GetMemberValue(order, "foodRequest"))}",
+            $"beverageRequest={ShortValue(GetMemberValue(order, "beverageRequest"))}",
+            $"requestFood=[{DescribeSellableObject(requestFood)}]",
+            $"requestBeverage=[{DescribeSellableObject(requestBeverage)}]",
+            $"guest=[{DescribeGuestObject(orderGuest ?? orderingGuest, includeMapping: !isNormalOrder)}]",
             $"specialGuest=[{DescribeGuestObject(specialGuest)}]",
             $"controller=[{DescribeControllerCandidate(controller)}]",
             $"text={TrimDiagnostic(SafeToString(order) ?? "", 260)}",
         };
 
         return string.Join("; ", parts);
+    }
+
+    private static bool IsNormalOrderCandidate(object? order)
+    {
+        if (order == null) return false;
+        var typeName = order.GetType().Name;
+        if (typeName.IndexOf("NormalOrder", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+        var type = GetMemberValue(order, "Type");
+        return string.Equals(type?.ToString(), "Normal", StringComparison.OrdinalIgnoreCase) || ToNullableInt(type) == 0;
     }
 
     private string DescribeGuestObject(object? guest, bool includeMapping = true)
@@ -1078,7 +1096,7 @@ public sealed class NightBusinessReflectionProvider
         var identity = IsSpecialGuestObject(guest)
             ? ResolveRareCustomerIdentity(guest)
             : ResolveOrderingGuestRareCustomerIdentity(guest);
-        var knownName = identity?.Name ?? "";
+        var knownName = identity?.Name ?? ResolveNormalCustomerName(id) ?? "";
 
         var parts = new List<string>
         {
@@ -1089,12 +1107,35 @@ public sealed class NightBusinessReflectionProvider
             $"sourceGuestId={sourceGuestId?.ToString() ?? ""}",
         };
 
-        if (includeMapping && id.HasValue)
+        if (includeMapping && id.HasValue && IsSpecialGuestObject(guest))
         {
             parts.Add($"mapping=[{DescribeSpecialGuestMapping(id.Value)}]");
         }
 
         return string.Join(",", parts);
+    }
+
+    private string DescribeSellableObject(object? sellable)
+    {
+        if (sellable == null) return "null";
+
+        var id = ToNullableInt(GetMemberValue(sellable, "id")
+            ?? GetMemberValue(sellable, "Id")
+            ?? GetMemberValue(sellable, "ID")
+            ?? GetMemberValue(sellable, "foodID")
+            ?? GetMemberValue(sellable, "FoodID"));
+        var name = GetMemberValue(sellable, "Name")?.ToString()
+            ?? GetMemberValue(sellable, "name")?.ToString();
+        return string.Join(",",
+            $"type={ShortType(sellable)}",
+            $"id={id?.ToString() ?? ""}",
+            $"name={TrimDiagnostic(name ?? "", 80)}");
+    }
+
+    private string? ResolveNormalCustomerName(int? id)
+    {
+        if (!id.HasValue) return null;
+        return _repository.NormalCustomers.FirstOrDefault(customer => customer.Id == id.Value)?.Name;
     }
 
     private string DescribeSpecialGuestMapping(int id)
