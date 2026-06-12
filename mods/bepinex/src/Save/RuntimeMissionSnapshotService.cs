@@ -77,11 +77,11 @@ public static class RuntimeMissionSnapshotService
             : ReadTrackingMissions(schedulerType, errors).ToList();
         source.Add($"trackingMissions={trackingMissions.Count}");
 
-        var npcPlaceNames = ReadTrackedNpcPlaceNames(runtimeDaySceneType, dataBaseDayType, errors);
-        source.Add($"npcPlaces={npcPlaceNames.Count}");
-
         var npcKeys = ReadGlobalNpcKeys(dataBaseDayType, errors).ToList();
         source.Add($"npcKeys={npcKeys.Count}");
+
+        var npcPlaceNames = ReadNpcPlaceNames(runtimeDaySceneType, dataBaseDayType, npcKeys, source, errors);
+        source.Add($"npcPlaces={npcPlaceNames.Count}");
         AddAvailableInteractMissions(missions, errors, dataBaseDayType, schedulerType, npcPlaceNames, statusByMission, npcKeys, "InteractMission");
 
         var trackedNpcLabels = ReadTrackedNpcLabels(runtimeDaySceneType, errors).Except(npcKeys, StringComparer.Ordinal).ToList();
@@ -317,7 +317,7 @@ public static class RuntimeMissionSnapshotService
                         Title = ResolveMissionTitle(label),
                         CharacterLabel = characterLabel,
                         CharacterName = ResolveNpcName(dataBaseDayType, characterLabel),
-                        Places = ResolvePlaces(npcPlaceNames, characterLabel),
+                        Places = ResolvePlaces(dataBaseDayType, npcPlaceNames, characterLabel),
                         Source = source,
                         Status = status,
                         Started = status != MissionStatusAvailable,
@@ -409,7 +409,7 @@ public static class RuntimeMissionSnapshotService
                     Title = ResolveMissionTitle(missionLabel),
                     CharacterLabel = characterLabel,
                     CharacterName = ResolveNpcName(dataBaseDayType, characterLabel),
-                    Places = ResolvePlaces(npcPlaceNames, characterLabel),
+                    Places = ResolvePlaces(dataBaseDayType, npcPlaceNames, characterLabel),
                     Source = string.IsNullOrWhiteSpace(scheduledEvent.Label)
                         ? "ScheduledEventMission"
                         : $"ScheduledEventMission:{scheduledEvent.Label}",
@@ -563,6 +563,42 @@ public static class RuntimeMissionSnapshotService
         }
     }
 
+    private static IReadOnlyDictionary<string, List<string>> ReadNpcPlaceNames(
+        Type? runtimeDaySceneType,
+        Type dataBaseDayType,
+        IEnumerable<string> npcKeys,
+        List<string> source,
+        List<string> errors)
+    {
+        var result = ReadTrackedNpcPlaceNames(runtimeDaySceneType, dataBaseDayType, errors)
+            .ToDictionary(pair => pair.Key, pair => pair.Value.ToHashSet(StringComparer.Ordinal), StringComparer.Ordinal);
+        source.Add($"runtimeNpcPlaces={result.Count}");
+
+        var staticCount = 0;
+        foreach (var pair in ReadStaticNpcPlaceNames(dataBaseDayType, npcKeys, errors))
+        {
+            if (!result.TryGetValue(pair.Key, out var places))
+            {
+                places = new HashSet<string>(StringComparer.Ordinal);
+                result[pair.Key] = places;
+            }
+
+            var before = places.Count;
+            foreach (var place in pair.Value)
+            {
+                places.Add(place);
+            }
+
+            if (places.Count > before) staticCount++;
+        }
+
+        source.Add($"staticNpcPlaces={staticCount}");
+        return result.ToDictionary(
+            pair => pair.Key,
+            pair => pair.Value.OrderBy(value => value, StringComparer.Ordinal).ToList(),
+            StringComparer.Ordinal);
+    }
+
     private static IReadOnlyDictionary<string, List<string>> ReadTrackedNpcPlaceNames(Type? runtimeDaySceneType, Type dataBaseDayType, List<string> errors)
     {
         var result = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
@@ -614,6 +650,55 @@ public static class RuntimeMissionSnapshotService
         return result.ToDictionary(pair => pair.Key, pair => pair.Value.OrderBy(value => value, StringComparer.Ordinal).ToList(), StringComparer.Ordinal);
     }
 
+    private static IReadOnlyDictionary<string, List<string>> ReadStaticNpcPlaceNames(
+        Type dataBaseDayType,
+        IEnumerable<string> npcKeys,
+        List<string> errors)
+    {
+        var result = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        foreach (var key in npcKeys.Where(key => !string.IsNullOrWhiteSpace(key)).Distinct(StringComparer.Ordinal))
+        {
+            try
+            {
+                var npc = RuntimeReflectionUtility.InvokeStaticMethod(dataBaseDayType, "RefNPC", key);
+                foreach (var place in ResolveStaticNpcPlaces(dataBaseDayType, npc))
+                {
+                    if (!result.TryGetValue(key, out var places))
+                    {
+                        places = new HashSet<string>(StringComparer.Ordinal);
+                        result[key] = places;
+                    }
+
+                    places.Add(place);
+                }
+            }
+            catch (Exception ex)
+            {
+                if (errors.Count < 8) errors.Add($"static npc place {key}: {ex.Message}");
+            }
+        }
+
+        return result.ToDictionary(
+            pair => pair.Key,
+            pair => pair.Value.OrderBy(value => value, StringComparer.Ordinal).ToList(),
+            StringComparer.Ordinal);
+    }
+
+    private static IEnumerable<string> ResolveStaticNpcPlaces(Type dataBaseDayType, object? npc)
+    {
+        foreach (var destination in RuntimeReflectionUtility.EnumerateObjects(RuntimeReflectionUtility.GetMemberValue(npc, "possibleDestinations")))
+        {
+            var spawnMarker = ReadTextMember(destination, "spawnMarker");
+            if (string.IsNullOrWhiteSpace(spawnMarker)) continue;
+
+            var mapLabel = RuntimeReflectionUtility.InvokeStaticMethod(dataBaseDayType, "GetMapLabelFromSpawnMarker", spawnMarker)?.ToString();
+            if (string.IsNullOrWhiteSpace(mapLabel)) continue;
+
+            var normalized = NormalizePlaceName(mapLabel);
+            if (!string.IsNullOrWhiteSpace(normalized)) yield return normalized;
+        }
+    }
+
     private static IEnumerable<string> ResolveTrackedNpcPlaces(Type dataBaseDayType, object? npc, string? mapLabel)
     {
         foreach (var label in ResolvePlaceLabelCandidates(dataBaseDayType, npc, mapLabel))
@@ -640,9 +725,15 @@ public static class RuntimeMissionSnapshotService
         }
     }
 
-    private static List<string> ResolvePlaces(IReadOnlyDictionary<string, List<string>> npcPlaceNames, string characterLabel)
+    private static List<string> ResolvePlaces(Type dataBaseDayType, IReadOnlyDictionary<string, List<string>> npcPlaceNames, string characterLabel)
     {
-        return npcPlaceNames.TryGetValue(characterLabel, out var places) ? places : new List<string>();
+        if (npcPlaceNames.TryGetValue(characterLabel, out var places) && places.Count > 0) return places;
+
+        var npc = RuntimeReflectionUtility.InvokeStaticMethod(dataBaseDayType, "RefNPC", characterLabel);
+        return ResolveStaticNpcPlaces(dataBaseDayType, npc)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(value => value, StringComparer.Ordinal)
+            .ToList();
     }
 
     private static string NormalizePlaceName(string label)
@@ -890,7 +981,7 @@ public static class RuntimeMissionSnapshotService
                         Title = ResolveMissionTitle(missionLabel),
                         CharacterLabel = characterLabel,
                         CharacterName = ResolveNpcName(dataBaseDayType, characterLabel),
-                        Places = ResolvePlaces(npcPlaceNames, characterLabel),
+                        Places = ResolvePlaces(dataBaseDayType, npcPlaceNames, characterLabel),
                         Source = "TrackingMission:PendingTalk",
                         Status = status,
                         Started = status != MissionStatusAvailable,
@@ -937,7 +1028,7 @@ public static class RuntimeMissionSnapshotService
                 Title = ResolveMissionTitle(missionLabel),
                 CharacterLabel = activeCharacterLabel,
                 CharacterName = activeCharacterName,
-                Places = ResolvePlaces(npcPlaceNames, activeCharacterLabel),
+                Places = ResolvePlaces(dataBaseDayType, npcPlaceNames, activeCharacterLabel),
                 Source = firstUnfinished == null ? "TrackingMission:Tracked" : "TrackingMission:Active",
                 Status = status,
                 Started = status != MissionStatusAvailable,
