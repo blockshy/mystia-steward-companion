@@ -720,6 +720,7 @@ public static class RuntimeMissionSnapshotService
 
     private static List<string> ResolvePlaces(Type dataBaseDayType, IReadOnlyDictionary<string, List<string>> npcPlaceNames, string characterLabel)
     {
+        if (string.IsNullOrWhiteSpace(characterLabel)) return new List<string>();
         if (npcPlaceNames.TryGetValue(characterLabel, out var places) && places.Count > 0) return places;
 
         var npc = RuntimeReflectionUtility.InvokeStaticMethod(dataBaseDayType, "RefNPC", characterLabel);

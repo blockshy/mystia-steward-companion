@@ -40,6 +40,11 @@ internal sealed class RuntimeMappedGuestCatalog
 
     public RareCustomer? ResolveCustomer(int? runtimeId, string? runtimeNameOrStringId)
     {
+        if (runtimeId.HasValue && _localRareCustomersById.TryGetValue(runtimeId.Value, out var currentLocalCustomer))
+        {
+            return currentLocalCustomer;
+        }
+
         var snapshot = Snapshot();
         var entry = FindEntry(snapshot, runtimeId, runtimeNameOrStringId);
         if (entry == null) return null;
@@ -50,22 +55,52 @@ internal sealed class RuntimeMappedGuestCatalog
             return localCustomer;
         }
 
+        if (entry.RuntimeId.HasValue && _localRareCustomersById.TryGetValue(entry.RuntimeId.Value, out var entryLocalCustomer))
+        {
+            return entryLocalCustomer;
+        }
+
+        if (entry.SourceGuestId.HasValue && _localRareCustomersById.TryGetValue(entry.SourceGuestId.Value, out var sourceLocalCustomer))
+        {
+            return sourceLocalCustomer;
+        }
+
         return entry.RuntimeCustomer?.ToRareCustomer();
     }
 
     public RareCustomerIdentity? Resolve(int? runtimeId, string? runtimeNameOrStringId)
     {
+        if (runtimeId.HasValue && _localRareCustomersById.TryGetValue(runtimeId.Value, out var currentLocalCustomer))
+        {
+            return new RareCustomerIdentity(currentLocalCustomer.Id, currentLocalCustomer.Name);
+        }
+
         var snapshot = Snapshot();
         var entry = FindEntry(snapshot, runtimeId, runtimeNameOrStringId);
 
-        if (entry == null || !entry.LocalRareCustomerId.HasValue || string.IsNullOrWhiteSpace(entry.LocalRareCustomerName))
+        if (entry == null)
         {
-            return entry?.RuntimeCustomer == null
-                ? null
-                : new RareCustomerIdentity(entry.RuntimeCustomer.Id, entry.RuntimeCustomer.Name);
+            return null;
         }
 
-        return new RareCustomerIdentity(entry.LocalRareCustomerId.Value, entry.LocalRareCustomerName);
+        if (entry.LocalRareCustomerId.HasValue && !string.IsNullOrWhiteSpace(entry.LocalRareCustomerName))
+        {
+            return new RareCustomerIdentity(entry.LocalRareCustomerId.Value, entry.LocalRareCustomerName);
+        }
+
+        if (entry.RuntimeId.HasValue && _localRareCustomersById.TryGetValue(entry.RuntimeId.Value, out var entryLocalCustomer))
+        {
+            return new RareCustomerIdentity(entryLocalCustomer.Id, entryLocalCustomer.Name);
+        }
+
+        if (entry.SourceGuestId.HasValue && _localRareCustomersById.TryGetValue(entry.SourceGuestId.Value, out var sourceLocalCustomer))
+        {
+            return new RareCustomerIdentity(sourceLocalCustomer.Id, sourceLocalCustomer.Name);
+        }
+
+        return entry.RuntimeCustomer == null
+            ? null
+            : new RareCustomerIdentity(entry.RuntimeCustomer.Id, entry.RuntimeCustomer.Name);
     }
 
     private static RuntimeMappedGuestEntry? FindEntry(
@@ -115,6 +150,7 @@ internal sealed class RuntimeMappedGuestCatalog
         var languageType = FindType(DataBaseLanguageTypeName);
         var foodTags = ReadTagDictionary(languageType, "GetAllFoodTags", "GetAllFoodTagsID", "GetFoodTag");
         var beverageTags = ReadTagDictionary(languageType, "GetAllBeverageTags", null, "GetBeverageTag");
+        var specialGuestNames = ReadStringDictionary(languageType, "GetAllSpecialGuestsNames");
 
         var mappedGuests = InvokeStaticMethod(dataBaseCharacterType, "GetAllMappedGuests");
         var entries = new List<RuntimeMappedGuestEntry>();
@@ -137,7 +173,7 @@ internal sealed class RuntimeMappedGuestCatalog
             var sourceDisplayName = GetMemberValue(sourceGuest, "Name")?.ToString()
                 ?? GetMemberValue(sourceGuest, "DisplayName")?.ToString()
                 ?? GetMemberValue(sourceGuest, "CharacterName")?.ToString();
-            sourceDisplayName = ResolveLanguageName(languageType, "GetSpecialGuestLang", sourceGuestId, sourceDisplayName);
+            sourceDisplayName = ResolveSpecialGuestName(languageType, specialGuestNames, sourceGuestId, sourceDisplayName);
             var resolved = ResolveRuntimeIdentity(sourceGuestId, sourceStringId, sourceDisplayName);
 
             entries.Add(new RuntimeMappedGuestEntry
@@ -169,7 +205,7 @@ internal sealed class RuntimeMappedGuestCatalog
             var memberDisplayName = GetMemberValue(runtimeGuest, "Name")?.ToString()
                 ?? GetMemberValue(runtimeGuest, "DisplayName")?.ToString()
                 ?? GetMemberValue(runtimeGuest, "CharacterName")?.ToString();
-            var runtimeDisplayName = ResolveLanguageName(languageType, "GetSpecialGuestLang", runtimeId, memberDisplayName);
+            var runtimeDisplayName = ResolveSpecialGuestName(languageType, specialGuestNames, runtimeId, memberDisplayName);
             var resolved = ResolveRuntimeIdentity(runtimeId, runtimeStringId, runtimeDisplayName);
             var runtimeCustomer = resolved.Identity == null
                 ? BuildRuntimeRareCustomer(runtimeGuest, runtimeId, runtimeStringId, runtimeDisplayName, foodTags, beverageTags)
@@ -588,6 +624,23 @@ internal sealed class RuntimeMappedGuestCatalog
         return result;
     }
 
+    private static IReadOnlyDictionary<int, string> ReadStringDictionary(Type? languageType, string dictionaryMethod)
+    {
+        var result = new Dictionary<int, string>();
+        if (languageType == null) return result;
+
+        foreach (var pair in EnumerateKeyValuePairs(InvokeStaticMethod(languageType, dictionaryMethod)))
+        {
+            var id = ToNullableInt(pair.Key);
+            if (!id.HasValue) continue;
+
+            var text = CleanText(pair.Value);
+            if (!string.IsNullOrWhiteSpace(text)) result[id.Value] = text;
+        }
+
+        return result;
+    }
+
     private static string ResolveLanguageName(Type? languageType, string methodName, int? id, string? fallback)
     {
         if (languageType != null && id.HasValue)
@@ -598,6 +651,22 @@ internal sealed class RuntimeMappedGuestCatalog
         }
 
         return string.IsNullOrWhiteSpace(fallback) ? "" : fallback.Trim();
+    }
+
+    private static string ResolveSpecialGuestName(
+        Type? languageType,
+        IReadOnlyDictionary<int, string> specialGuestNames,
+        int? id,
+        string? fallback)
+    {
+        if (id.HasValue
+            && specialGuestNames.TryGetValue(id.Value, out var dictionaryName)
+            && !string.IsNullOrWhiteSpace(dictionaryName))
+        {
+            return dictionaryName.Trim();
+        }
+
+        return ResolveLanguageName(languageType, "GetSpecialGuestLang", id, fallback);
     }
 
     private static string CleanText(object? value)

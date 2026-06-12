@@ -148,11 +148,14 @@ public sealed class RuntimeNormalOrderSnapshotService
     {
         var orders = group.ToList();
         var first = orders.First();
+        var guestName = orders
+            .Select(order => order.GuestName)
+            .FirstOrDefault(IsSpecificNormalGuestName) ?? first.GuestName;
         return new NormalBusinessOrder
         {
             OrderKey = first.OrderKey,
             DeskCode = first.DeskCode,
-            GuestName = first.GuestName,
+            GuestName = guestName,
             FoodId = first.FoodId,
             FoodName = first.FoodName,
             BeverageId = first.BeverageId,
@@ -163,6 +166,16 @@ public sealed class RuntimeNormalOrderSnapshotService
             FirstSeenAtUtc = first.FirstSeenAtUtc,
             Source = string.Join("/", orders.Select(order => order.Source).Where(source => !string.IsNullOrWhiteSpace(source)).Distinct(StringComparer.Ordinal)),
         };
+    }
+
+    private static bool IsSpecificNormalGuestName(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        var text = value.Trim();
+        return !string.Equals(text, "普客", StringComparison.Ordinal)
+            && !string.Equals(text, "普通客", StringComparison.Ordinal)
+            && !string.Equals(text, "Normal guest", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(text, "NormalGuest", StringComparison.OrdinalIgnoreCase);
     }
 
     private static NormalBusinessOrder CopyWithFirstSeen(NormalBusinessOrder order, DateTime firstSeenAtUtc)

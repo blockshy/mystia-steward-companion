@@ -383,12 +383,12 @@ internal sealed class StewardOverlayController
                 return;
             }
 
+            TryRefreshRuntimeDataCatalog();
             var provider = new NightBusinessReflectionProvider(
                 _repository,
                 CreateNightBusinessDiagnostics(),
                 _activeSceneName);
             _businessContext = provider.LoadContext();
-            TryRefreshRuntimeDataCatalog();
             if (manual)
             {
                 _status = _businessContext.Orders.Count > 0
