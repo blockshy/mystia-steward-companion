@@ -307,7 +307,7 @@ http://127.0.0.1:32145
 - `GET /logs/export-diagnostics?open=true`：生成诊断 zip，包含 manifest、当前 snapshot、`LogOutput.log` 尾部、自动化作业日志尾部和诊断目录中的 `.log` 尾部；`open=true` 会打开诊断包目录。
 - `GET /orders/complete-first?...`：按伴随窗口传入的稀客订单匹配送餐盘内容并尝试完成订单。
 - `GET /orders/normal/complete-first?...`：按请求中的订单 key、桌位和料理处理一笔普客订单。普客自动化只负责按订单料理开始制作，并在完成后通过 `IzakayaConfigure.StoreFood()` 把料理写入游戏料理暂存容器；不处理酒水，不写入 `ServFood/ServBeverage/ServedFoodInAir`，也不触发订单评价。
-- `GET /rare-guests/invite-all`：排队到 Unity 主线程，优先读取当前日间场景 NPC 并用 `DataBaseCharacter.RefSGuest()` 映射稀客；没有日间场景候选时回退到 `DataBaseCharacter.GetSpecialGuestsAndMappedGuests()`。每个候选会读取 `RunTimeAlbum.GetOrGenerateSpecialNPCKizunaLevel()`、检查 `StatusTracker.HasNPCInvited()` / `HasTemptInvited()` 和当前等级邀请对话，再调用 `DaySceneChatSelectionPannel.InviteSpecGuest()` 执行游戏原生成功率判定；成功后调用 `StatusTracker.RecordInvitedGuest()`。该端点不直接刷出稀客，不推进时间，也不写 `Story.SpecialGuestControlled`。
+- `GET /rare-guests/invite-all`：排队到 Unity 主线程，优先读取当前日间场景 NPC 并用 `DataBaseCharacter.RefSGuest()` 映射稀客；没有日间场景候选时回退到 `DataBaseCharacter.GetSpecialGuestsAndMappedGuests()`。每个候选会读取 `RunTimeAlbum.GetOrGenerateSpecialNPCKizunaLevel()`、检查 `StatusTracker.HasNPCInvited()` 和当前等级成功邀请对话包；符合条件后直接调用 `StatusTracker.RecordInvitedGuest()` 写入今晚邀请名单。该端点不调用 `DaySceneChatSelectionPannel.InviteSpecGuest()`，避免触发随机失败和消耗今日尝试次数；也不以 `HasTemptInvited()` 作为跳过条件，避免旧版本或手动失败尝试把可写入邀请卡住。该端点不直接刷出稀客，不推进时间，不写 `Story.SpecialGuestControlled`。
 
 除 `/health` 外，端点都需要 `X-Mystia-Steward-Companion-Token`。Token 由插件生成并保存在 BepInEx 配置中，启动伴随窗口时通过 `--token=` 参数传入 Tauri 后端。Tauri 伴随窗口会显示实时 Mod 工作台，包含 `概览`、`普客`、`稀客`、`经营中`、`任务`、`修改`、`日志`、`设置` 八个页签。它通过原生后端读取本地 API，不依赖浏览器或前端开发服务器。
 

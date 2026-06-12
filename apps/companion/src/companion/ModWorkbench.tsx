@@ -2096,7 +2096,7 @@ function ModOverviewPanel({
 
         <ListPanel title="稀客邀请">
           <div className="grid gap-3 text-sm">
-            <InfoLine label="机制" value="执行游戏原生羁绊邀请判定，成功后记录今晚邀请" />
+            <InfoLine label="机制" value="按游戏羁绊邀请条件写入今晚邀请名单" />
             <InfoLine label="可用状态" value={snapshot?.runtimeLoaded ? '等待用户执行' : '等待存档加载'} />
             <Button
               size="sm"

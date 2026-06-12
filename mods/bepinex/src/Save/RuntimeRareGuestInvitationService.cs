@@ -32,7 +32,6 @@ internal sealed class RareGuestInvitationEntry
 internal static class RuntimeRareGuestInvitationService
 {
     private const string DataBaseCharacterTypeName = "GameData.Core.Collections.CharacterUtility.DataBaseCharacter";
-    private const string DaySceneChatSelectionPanelTypeName = "DayScene.UI.DaySceneChatSelectionPannel";
     private const string RunTimeAlbumTypeName = "GameData.RunTime.Common.RunTimeAlbum";
     private const string StatusTrackerTypeName = "GameData.RunTime.Common.StatusTracker";
     private const string RuntimeDaySceneTypeName = "GameData.RunTime.DaySceneUtility.RunTimeDayScene";
@@ -60,10 +59,9 @@ internal static class RuntimeRareGuestInvitationService
     private static RareGuestInvitationResult InviteAllAvailableCore(DataRepository? repository, ManualLogSource? log)
     {
         var dataBaseCharacterType = RuntimeReflectionUtility.FindType(DataBaseCharacterTypeName);
-        var panelType = RuntimeReflectionUtility.FindType(DaySceneChatSelectionPanelTypeName);
         var albumType = RuntimeReflectionUtility.FindType(RunTimeAlbumTypeName);
         var statusTrackerType = RuntimeReflectionUtility.FindType(StatusTrackerTypeName);
-        if (dataBaseCharacterType == null || panelType == null || albumType == null || statusTrackerType == null)
+        if (dataBaseCharacterType == null || albumType == null || statusTrackerType == null)
         {
             return Fail("游戏原生羁绊邀请系统尚未初始化。请在读取存档后的日间场景再试。");
         }
@@ -92,7 +90,7 @@ internal static class RuntimeRareGuestInvitationService
 
         foreach (var candidate in candidates)
         {
-            ProcessCandidate(result, panelType, albumType, statusTracker, candidate);
+            ProcessCandidate(result, albumType, statusTracker, candidate);
         }
 
         result.Ok = true;
@@ -105,7 +103,6 @@ internal static class RuntimeRareGuestInvitationService
 
     private static void ProcessCandidate(
         RareGuestInvitationResult result,
-        Type panelType,
         Type albumType,
         object statusTracker,
         InviteCandidate candidate)
@@ -120,12 +117,6 @@ internal static class RuntimeRareGuestInvitationService
         {
             result.ExistingControlledCount++;
             AddSkipped(result, candidate, "今晚已邀请");
-            return;
-        }
-
-        if (!string.IsNullOrWhiteSpace(candidate.RuntimeName) && HasTemptInvited(statusTracker, candidate.RuntimeName))
-        {
-            AddSkipped(result, candidate, "今日已尝试邀请");
             return;
         }
 
@@ -144,26 +135,7 @@ internal static class RuntimeRareGuestInvitationService
             return;
         }
 
-        if (level < 5 && !HasInviteDialog(candidate.Guest, level, succeed: false))
-        {
-            AddSkipped(result, candidate, $"当前羁绊等级无失败邀请对话 {level}");
-            return;
-        }
-
         result.UsableCount++;
-        var inviteCheck = TryInviteSpecGuest(panelType, candidate.Guest, level);
-        if (!inviteCheck.Invoked)
-        {
-            AddSkipped(result, candidate, inviteCheck.Error ?? "原生邀请判定调用失败");
-            return;
-        }
-
-        if (!inviteCheck.Succeeded)
-        {
-            AddSkipped(result, candidate, $"原生邀请判定失败（羁绊 {level}）");
-            return;
-        }
-
         RuntimeReflectionUtility.InvokeMethod(statusTracker, "RecordInvitedGuest", candidate.Id);
         if (!HasNpcInvited(statusTracker, candidate.Id))
         {
@@ -176,7 +148,7 @@ internal static class RuntimeRareGuestInvitationService
             Id = candidate.Id,
             Name = candidate.DisplayName,
             RuntimeName = candidate.RuntimeName,
-            Reason = $"已按原生羁绊邀请记录（羁绊 {level}）",
+            Reason = $"已按原生羁绊邀请条件加入今晚名单（羁绊 {level}）",
         });
     }
 
@@ -316,42 +288,9 @@ internal static class RuntimeRareGuestInvitationService
         return RuntimeReflectionUtility.CountObjects(dialogs) > 0;
     }
 
-    private static InviteSpecGuestResult TryInviteSpecGuest(Type panelType, object guest, int level)
-    {
-        var method = panelType
-            .GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
-            .FirstOrDefault(candidate =>
-                string.Equals(candidate.Name, "InviteSpecGuest", StringComparison.Ordinal)
-                && candidate.GetParameters().Length == 3);
-        if (method == null)
-        {
-            return new InviteSpecGuestResult(false, false, "未找到原生 InviteSpecGuest 方法");
-        }
-
-        var args = new object?[] { guest, level, null };
-        try
-        {
-            var result = method.Invoke(null, args);
-            return new InviteSpecGuestResult(true, RuntimeReflectionUtility.ToBool(result), null);
-        }
-        catch (TargetInvocationException ex)
-        {
-            return new InviteSpecGuestResult(false, false, ex.InnerException?.Message ?? ex.Message);
-        }
-        catch (Exception ex)
-        {
-            return new InviteSpecGuestResult(false, false, ex.Message);
-        }
-    }
-
     private static bool HasNpcInvited(object statusTracker, int id)
     {
         return RuntimeReflectionUtility.ToBool(RuntimeReflectionUtility.InvokeMethod(statusTracker, "HasNPCInvited", id));
-    }
-
-    private static bool HasTemptInvited(object statusTracker, string runtimeName)
-    {
-        return RuntimeReflectionUtility.ToBool(RuntimeReflectionUtility.InvokeMethod(statusTracker, "HasTemptInvited", runtimeName));
     }
 
     private static object? InvokeStaticMethodWithSingleParameter(
@@ -443,7 +382,7 @@ internal static class RuntimeRareGuestInvitationService
 
         if (result.UsableCount > 0)
         {
-            return $"{sourceLabel}没有新的成功邀请，可能本次原生成功率判定未通过。";
+            return $"{sourceLabel}没有新的可写入邀请，可能候选已被忽略或原生记录失败。";
         }
 
         if (result.ExistingControlledCount > 0)
@@ -501,5 +440,4 @@ internal static class RuntimeRareGuestInvitationService
 
     private sealed record InviteCandidate(object Guest, int Id, string RuntimeName, string DisplayName, string Source);
 
-    private sealed record InviteSpecGuestResult(bool Invoked, bool Succeeded, string? Error);
 }
