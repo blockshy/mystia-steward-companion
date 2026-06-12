@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { ArrowDown, ArrowUp, FolderOpen, Power, RefreshCw, RotateCcw, Star } from 'lucide-react';
+import { Archive, ArrowDown, ArrowUp, FolderOpen, Power, RefreshCw, RotateCcw, Star } from 'lucide-react';
 import { CustomerScoreBadges } from '@/components/ScoreBadge';
 import { RegionSelector } from '@/components/RegionSelector';
 import { TagBadge } from '@/components/TagBadge';
@@ -75,6 +75,12 @@ const AUTO_PREP_START_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-start-c
 const AUTO_PREP_COLLECT_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-collect-cooking`;
 const AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-favorites-only`;
 const AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-stop-on-error`;
+const AUTO_RARE_CONCURRENCY_STORAGE_KEY = `${STORAGE_PREFIX}-auto-rare-concurrency`;
+const AUTO_NORMAL_CONCURRENCY_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-concurrency`;
+const AUTO_RARE_TRAY_WAIT_SECONDS_STORAGE_KEY = `${STORAGE_PREFIX}-auto-rare-tray-wait-seconds`;
+const AUTO_NORMAL_STORAGE_WAIT_SECONDS_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-storage-wait-seconds`;
+const AUTO_MAX_STEP_RETRIES_STORAGE_KEY = `${STORAGE_PREFIX}-auto-max-step-retries`;
+const AUTO_MAX_ROLLBACKS_STORAGE_KEY = `${STORAGE_PREFIX}-auto-max-rollbacks`;
 const FILTER_MISSING_COOKERS_STORAGE_KEY = `${STORAGE_PREFIX}-filter-missing-cookers`;
 const GAME_UI_PINNING_STORAGE_KEY = `${STORAGE_PREFIX}-game-ui-pinning`;
 const COOKER_HIGHLIGHT_STORAGE_KEY = `${STORAGE_PREFIX}-cooker-highlight`;
@@ -95,14 +101,23 @@ const MAX_FOCUS_SWITCH_COOLDOWN_MS = 2000;
 const MAX_LOG_LINES_IN_VIEW = 400;
 const CONNECTION_RETRY_DELAYS_MS = [2000, 5000, 10000, 30000];
 const AUTO_FIRST_ORDER_TICK_MS = 1500;
-const MAX_RARE_AUTO_ORDERS_PER_TICK = 2;
-const MAX_NORMAL_AUTO_ORDERS_PER_TICK = 3;
-const NORMAL_AUTO_PREPARED_RETRY_MS = 45000;
+const DEFAULT_RARE_AUTO_ORDERS_PER_TICK = 2;
+const DEFAULT_NORMAL_AUTO_ORDERS_PER_TICK = 3;
+const MIN_AUTO_ORDER_CONCURRENCY = 1;
+const MAX_RARE_AUTO_ORDER_CONCURRENCY = 4;
+const MAX_NORMAL_AUTO_ORDER_CONCURRENCY = 6;
+const DEFAULT_NORMAL_AUTO_STORAGE_WAIT_SECONDS = 45;
+const MIN_AUTO_WAIT_SECONDS = 10;
+const MAX_AUTO_WAIT_SECONDS = 180;
 const NORMAL_AUTO_RECOVERABLE_PAUSE_RETRY_MS = 10000;
-const AUTO_STEP_ROLLBACK_MS = 30000;
+const DEFAULT_RARE_AUTO_TRAY_WAIT_SECONDS = 30;
 const AUTO_JOB_STALL_MS = 90000;
-const MAX_AUTO_STEP_RETRIES = 3;
-const MAX_AUTO_ROLLBACKS = 2;
+const DEFAULT_AUTO_STEP_RETRIES = 3;
+const MIN_AUTO_STEP_RETRIES = 1;
+const MAX_AUTO_STEP_RETRIES_LIMIT = 10;
+const DEFAULT_AUTO_ROLLBACKS = 2;
+const MIN_AUTO_ROLLBACKS = 0;
+const MAX_AUTO_ROLLBACKS_LIMIT = 5;
 const NON_ORDERABLE_RARE_FOOD_TAGS = new Set(['流行喜爱', '流行厌恶']);
 const COOKER_TYPE_NAME_BY_ID = new Map<number, string>([
   [1, '煮锅'],
@@ -385,6 +400,14 @@ interface LocalApiFolderResponse {
   error: string | null;
 }
 
+interface DiagnosticPackageResponse {
+  ok: boolean;
+  path: string;
+  directory: string;
+  files: string[];
+  error: string | null;
+}
+
 interface InventoryEditResponse {
   ok: boolean;
   type: 'ingredient' | 'beverage';
@@ -482,6 +505,12 @@ interface CompanionPreferences {
   autoPrepCollectCooking: boolean;
   autoPrepFavoritesOnly: boolean;
   autoPrepStopOnError: boolean;
+  autoRareConcurrency: number;
+  autoNormalConcurrency: number;
+  autoRareTrayWaitSeconds: number;
+  autoNormalStorageWaitSeconds: number;
+  autoMaxStepRetries: number;
+  autoMaxRollbacks: number;
   filterMissingCookers: boolean;
   gameUiPinningEnabled: boolean;
   cookerHighlightEnabled: boolean;
@@ -514,12 +543,32 @@ interface RareAutoOrderDiagnostic {
   beverageName: string;
   stepLabel: string;
   stepSeconds: number;
+  nextAction: string;
   retryCount: number;
   rollbackCount: number;
   lastError: string;
   prepared: boolean;
   beverageHandled: boolean;
   paused: boolean;
+}
+
+interface NormalAutoOrderDiagnostic {
+  orderKey: string;
+  title: string;
+  foodName: string;
+  beverageName: string;
+  source: string;
+  stepLabel: string;
+  stepSeconds: number;
+  nextAction: string;
+  retryCount: number;
+  rollbackCount: number;
+  lastError: string;
+  prepared: boolean;
+  collected: boolean;
+  paused: boolean;
+  hasServedFood: boolean;
+  hasServedBeverage: boolean;
 }
 
 interface NormalAutoOrderState {
@@ -571,6 +620,18 @@ type AutomationStep =
 type ToggleRecipeFavorite = (customer: ICustomerRare, foodTag: string, recipe: IRareRecipeResult) => Promise<void>;
 type ToggleBeverageFavorite = (customer: ICustomerRare, beverageTag: string, beverage: IRareBeverageResult) => Promise<void>;
 
+interface AutomationLogEntry {
+  raw: string;
+  timestamp: string;
+  action: string;
+  target: string;
+  desk: string;
+  orderKey: string;
+  food: string;
+  guest: string;
+  message: string;
+}
+
 export function ModWorkbench() {
   const { mode: themeMode, setMode: setThemeMode } = useThemeMode();
   const [endpoint, setEndpoint] = useState(() =>
@@ -614,6 +675,7 @@ export function ModWorkbench() {
   const [normalOrderBusy, setNormalOrderBusy] = useState(false);
   const [normalOrderMessage, setNormalOrderMessage] = useState('');
   const [normalOrderPausedCount, setNormalOrderPausedCount] = useState(0);
+  const [normalOrderDiagnostics, setNormalOrderDiagnostics] = useState<NormalAutoOrderDiagnostic[]>([]);
   const rareOrderStatesRef = useRef(new Map<string, AutoFirstOrderState>());
   const rareOrderDiagnosticItemsRef = useRef(new Map<string, ValidOrderPreparationSelection>());
   const autoFirstOrderBusyRef = useRef(false);
@@ -772,11 +834,17 @@ export function ModWorkbench() {
     const diagnostics = Array.from(rareOrderDiagnosticItemsRef.current.values()).map((selection) => {
       const orderKey = buildAutoOrderKey(selection.item);
       const state = rareOrderStatesRef.current.get(orderKey) ?? emptyAutoFirstOrderState(orderKey, now);
-      return buildRareAutoOrderDiagnostic(selection, state, now);
+      return buildRareAutoOrderDiagnostic(selection, state, now, companionPreferences);
     });
     setRareOrderDiagnostics(diagnostics);
     setAutoPrepPaused(diagnostics.some((diagnostic) => diagnostic.paused));
-  }, []);
+  }, [companionPreferences]);
+
+  const refreshNormalOrderDiagnostics = useCallback((orders = snapshot?.normalBusiness?.orders ?? [], now = Date.now()) => {
+    const diagnostics = buildNormalAutoOrderDiagnostics(orders, normalOrderStatesRef.current, now, companionPreferences);
+    setNormalOrderDiagnostics(diagnostics);
+    setNormalOrderPausedCount(diagnostics.filter((diagnostic) => diagnostic.paused).length);
+  }, [companionPreferences, snapshot?.normalBusiness?.orders]);
 
   const getAutomationCookerCycle = useCallback((now: number): AutomationCookerCycle => {
     const bucket = Math.floor(now / AUTO_FIRST_ORDER_TICK_MS);
@@ -885,7 +953,7 @@ export function ModWorkbench() {
       orderRecommendations.recommendations,
       favorites,
       selectionPreferences,
-      MAX_RARE_AUTO_ORDERS_PER_TICK,
+      companionPreferences.autoRareConcurrency,
     );
     if (candidateResult.selections.length === 0) {
       rareOrderStatesRef.current.clear();
@@ -926,7 +994,7 @@ export function ModWorkbench() {
         const prefix = formatRareAutomationPrefix(selection.item);
         let currentState = rareOrderStatesRef.current.get(orderKey) ?? emptyAutoFirstOrderState(orderKey, now);
         if (currentState.paused) {
-          messages.push(`${prefix}\n${formatAutomationState(currentState)}\n稀客自动化已暂停该订单，订单变化或重新开启后会继续。`);
+          messages.push(`${prefix}\n${formatAutomationState(currentState, companionPreferences)}\n稀客自动化已暂停该订单，订单变化或重新开启后会继续。`);
           continue;
         }
 
@@ -958,9 +1026,10 @@ export function ModWorkbench() {
               now,
               'complete-order',
               companionPreferences.autoPrepStopOnError,
+              companionPreferences.autoMaxStepRetries,
             );
             rareOrderStatesRef.current.set(orderKey, nextState);
-            messages.push(`${prefix}\n${formatOrderPreparationResponse(completeResponse)}\n${formatAutomationState(nextState)}${nextState.paused ? '\n稀客自动化已暂停该订单，订单变化或重新开启后会继续。' : '\n当前步骤会继续重试。'}`);
+            messages.push(`${prefix}\n${formatOrderPreparationResponse(completeResponse)}\n${formatAutomationState(nextState, companionPreferences)}${nextState.paused ? '\n稀客自动化已暂停该订单，订单变化或重新开启后会继续。' : '\n当前步骤会继续重试。'}`);
             continue;
           }
 
@@ -977,22 +1046,22 @@ export function ModWorkbench() {
           }
 
           if (missingTrayParts.food && currentState.prepared) {
-            const shouldRollback = isAutomationTimestampStale(currentState.preparedAtMs, now, AUTO_STEP_ROLLBACK_MS);
-            if (shouldRollback && currentState.rollbackCount >= MAX_AUTO_ROLLBACKS) {
+            const shouldRollback = isAutomationTimestampStale(currentState.preparedAtMs, now, companionPreferences.autoRareTrayWaitSeconds * 1000);
+            if (shouldRollback && currentState.rollbackCount >= companionPreferences.autoMaxRollbacks) {
               const pausedState = pauseAutomationState(
                 currentState,
                 now,
-                `目标料理长时间未进入送餐盘，已达到回退上限 ${MAX_AUTO_ROLLBACKS} 次。`,
+                `目标料理长时间未进入送餐盘，已达到回退上限 ${companionPreferences.autoMaxRollbacks} 次。`,
               );
               rareOrderStatesRef.current.set(orderKey, pausedState);
-              messages.push(`${prefix}\n${formatOrderPreparationResponse(completeResponse)}\n${formatAutomationState(pausedState)}\n稀客自动化已暂停该订单，订单变化或重新开启后会继续。`);
+              messages.push(`${prefix}\n${formatOrderPreparationResponse(completeResponse)}\n${formatAutomationState(pausedState, companionPreferences)}\n稀客自动化已暂停该订单，订单变化或重新开启后会继续。`);
               continue;
             }
 
             if (!shouldRollback) {
               const waitingState = markAutomationWaiting(currentState, 'wait-food-tray', now, '等待目标料理进入送餐盘。');
               rareOrderStatesRef.current.set(orderKey, waitingState);
-              messages.push(`${prefix}\n${formatOrderPreparationResponse(completeResponse)}\n${formatAutomationState(waitingState)}`);
+              messages.push(`${prefix}\n${formatOrderPreparationResponse(completeResponse)}\n${formatAutomationState(waitingState, companionPreferences)}`);
               if (!missingTrayParts.beverage) continue;
               currentState = waitingState;
             }
@@ -1015,7 +1084,7 @@ export function ModWorkbench() {
         } else if (companionPreferences.autoPrepCompleteOrder && completedOrderThisTick && currentState.prepared && currentState.beverageHandled) {
           const waitingState = markAutomationWaiting(currentState, 'complete-order', now, '本轮已完成一笔稀客订单，等待下一轮完成。');
           rareOrderStatesRef.current.set(orderKey, waitingState);
-          messages.push(`${prefix}\n${formatAutomationState(waitingState)}`);
+          messages.push(`${prefix}\n${formatAutomationState(waitingState, companionPreferences)}`);
           continue;
         }
 
@@ -1048,7 +1117,7 @@ export function ModWorkbench() {
               : '已按当前设置完成可执行步骤；自动完成订单未开启。',
           );
           rareOrderStatesRef.current.set(orderKey, waitingState);
-          messages.push(`${prefix}\n${formatAutomationState(waitingState)}`);
+          messages.push(`${prefix}\n${formatAutomationState(waitingState, companionPreferences)}`);
           continue;
         }
 
@@ -1095,6 +1164,7 @@ export function ModWorkbench() {
           now,
           shouldPrepareFood ? 'ensure-cooking' : shouldPrepareBeverage ? 'ensure-beverage' : 'match-order',
           companionPreferences.autoPrepStopOnError,
+          companionPreferences.autoMaxStepRetries,
         );
         rareOrderStatesRef.current.set(orderKey, nextState);
         const suffix = nextState.paused
@@ -1103,7 +1173,7 @@ export function ModWorkbench() {
             ? '\n当前条件暂不可执行，将继续等待并自动重试。'
             : '';
         const schedulerSuffix = schedulerNote.ok ? '' : `\n${schedulerNote.message}`;
-        messages.push(`${prefix}\n${formatOrderPreparationResponse(prepareResponse)}\n${formatAutomationState(nextState)}${schedulerSuffix}${suffix}`);
+        messages.push(`${prefix}\n${formatOrderPreparationResponse(prepareResponse)}\n${formatAutomationState(nextState, companionPreferences)}${schedulerSuffix}${suffix}`);
       }
 
       if (candidateResult.messages.length > 0) {
@@ -1154,6 +1224,7 @@ export function ModWorkbench() {
     if (now - lastAutoNormalOrderAtRef.current < AUTO_FIRST_ORDER_TICK_MS) return;
     if (!hasNormalOrderActionEnabled(companionPreferences)) {
       normalOrderStatesRef.current.clear();
+      setNormalOrderDiagnostics([]);
       setNormalOrderPausedCount(0);
       setNormalOrderMessage('普客自动化已开启，请至少启用一个处理阶段：自动制作料理或收至保温箱。');
       return;
@@ -1169,9 +1240,11 @@ export function ModWorkbench() {
     for (const key of Array.from(normalOrderStatesRef.current.keys())) {
       if (!activeKeys.has(key)) normalOrderStatesRef.current.delete(key);
     }
+    refreshNormalOrderDiagnostics(orders, now);
 
     if (orders.length === 0) {
       normalOrderStatesRef.current.clear();
+      setNormalOrderDiagnostics([]);
       setNormalOrderPausedCount(0);
       setNormalOrderMessage('普客自动化\n当前没有可处理的普客订单。');
       lastAutoNormalOrderAtRef.current = now;
@@ -1202,10 +1275,9 @@ export function ModWorkbench() {
       }
 
       runnableOrders.push(order);
-      if (runnableOrders.length >= MAX_NORMAL_AUTO_ORDERS_PER_TICK) break;
+      if (runnableOrders.length >= companionPreferences.autoNormalConcurrency) break;
     }
     const pausedCount = orders.filter((order) => normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order))?.paused).length;
-    setNormalOrderPausedCount(pausedCount);
     if (runnableOrders.length === 0) {
       const waitingCount = orders.filter((order) => {
         const state = normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order));
@@ -1217,8 +1289,9 @@ export function ModWorkbench() {
         .find((state) => state && (state.prepared || state.collected || state.paused));
       const schedulerText = schedulerMessages.length > 0 ? `\n${schedulerMessages.join('\n\n')}` : '';
       setNormalOrderMessage(waitingCount > 0 || collectedCount > 0 || pausedCount > 0
-        ? `普客自动化\n当前没有需要新开锅的普客订单。\n等待制作或送达 ${waitingCount} 笔，已收至保温箱 ${collectedCount} 笔，暂停 ${pausedCount} 笔。${waitingState ? `\n${formatAutomationState(waitingState)}` : ''}${schedulerText}`
+        ? `普客自动化\n当前没有需要新开锅的普客订单。\n等待制作或送达 ${waitingCount} 笔，已收至保温箱 ${collectedCount} 笔，暂停 ${pausedCount} 笔。${waitingState ? `\n${formatAutomationState(waitingState, companionPreferences)}` : ''}${schedulerText}`
         : `普客自动化\n当前没有需要执行的新步骤。${schedulerText}`);
+      refreshNormalOrderDiagnostics(orders, now);
       lastAutoNormalOrderAtRef.current = now;
       return;
     }
@@ -1243,7 +1316,7 @@ export function ModWorkbench() {
             lastError: '等待普客暂存容器超时后已自动恢复，继续确认料理制作状态。',
           }
           : storedState;
-        const shouldRetryPrepared = isNormalOrderPreparedStale(currentState, now);
+        const shouldRetryPrepared = isNormalOrderPreparedStale(currentState, now, companionPreferences);
 
         const requestPreferences = {
           ...companionPreferences,
@@ -1291,6 +1364,7 @@ export function ModWorkbench() {
           now,
           collected ? 'done' : requestPreferences.autoNormalStartCooking ? 'ensure-cooking' : 'wait-food-stored',
           companionPreferences.autoNormalStopOnError,
+          companionPreferences.autoMaxStepRetries,
         );
         const normalizedNextState = {
           ...nextState,
@@ -1304,9 +1378,9 @@ export function ModWorkbench() {
           : transientFailure
             ? '\n当前条件暂不可执行，将继续等待并自动重试。'
             : '';
-        messages.push(`${prefix}\n${formatOrderPreparationResponse(response)}\n${formatAutomationState(normalizedNextState)}${suffix}`);
+        messages.push(`${prefix}\n${formatOrderPreparationResponse(response)}\n${formatAutomationState(normalizedNextState, companionPreferences)}${suffix}`);
       }
-      setNormalOrderPausedCount(Array.from(normalOrderStatesRef.current.values()).filter((state) => state.paused).length);
+      refreshNormalOrderDiagnostics(orders, now);
       setNormalOrderMessage(messages.length > 0
         ? `普客自动化\n${messages.join('\n\n')}${schedulerMessages.length > 0 ? `\n\n${schedulerMessages.join('\n\n')}` : ''}`
         : '普客自动化\n当前没有需要执行的新步骤。');
@@ -1314,7 +1388,7 @@ export function ModWorkbench() {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (companionPreferences.autoNormalStopOnError) {
-        setNormalOrderPausedCount(Array.from(normalOrderStatesRef.current.values()).filter((state) => state.paused).length);
+        refreshNormalOrderDiagnostics(orders, now);
         setNormalOrderMessage(`普客自动化\n${message}\n普客自动化已暂停，订单变化或重新开启后会继续。`);
       } else {
         setNormalOrderMessage(`普客自动化\n${message}`);
@@ -1329,6 +1403,7 @@ export function ModWorkbench() {
     getAutomationCookerCycle,
     normalizedEndpoint,
     refresh,
+    refreshNormalOrderDiagnostics,
     runtime,
     snapshot?.normalBusiness?.orders,
   ]);
@@ -1368,6 +1443,7 @@ export function ModWorkbench() {
       rareOrderDiagnosticItemsRef.current.clear();
       setRareOrderDiagnostics([]);
       normalOrderStatesRef.current.clear();
+      setNormalOrderDiagnostics([]);
       lastAutoFirstOrderAtRef.current = 0;
       lastAutoNormalOrderAtRef.current = 0;
       setAutoPrepPaused(false);
@@ -1387,6 +1463,7 @@ export function ModWorkbench() {
   useEffect(() => {
     if (companionPreferences.automationEnabled && companionPreferences.autoNormalOrderEnabled) return;
     normalOrderStatesRef.current.clear();
+    setNormalOrderDiagnostics([]);
     lastAutoNormalOrderAtRef.current = 0;
     setNormalOrderPausedCount(0);
     setNormalOrderMessage('');
@@ -1681,6 +1758,7 @@ export function ModWorkbench() {
             normalOrderBusy={normalOrderBusy}
             normalOrderMessage={normalOrderMessage}
             normalOrderPausedCount={normalOrderPausedCount}
+            normalOrderDiagnostics={normalOrderDiagnostics}
             onPreferenceChange={updateCompanionPreferences}
             onToggleRecipeFavorite={toggleRecipeFavorite}
             onToggleBeverageFavorite={toggleBeverageFavorite}
@@ -2152,6 +2230,7 @@ function ModServicePanel({
   normalOrderBusy,
   normalOrderMessage,
   normalOrderPausedCount,
+  normalOrderDiagnostics,
   normalBusiness,
   onPreferenceChange,
   onToggleRecipeFavorite,
@@ -2179,6 +2258,7 @@ function ModServicePanel({
   normalOrderBusy: boolean;
   normalOrderMessage: string;
   normalOrderPausedCount: number;
+  normalOrderDiagnostics: NormalAutoOrderDiagnostic[];
   normalBusiness: NormalBusinessContext | null;
   onPreferenceChange: (next: Partial<CompanionPreferences>) => void;
   onToggleRecipeFavorite: ToggleRecipeFavorite;
@@ -2298,6 +2378,7 @@ function ModServicePanel({
               busy={normalOrderBusy}
               message={normalOrderMessage}
               pausedCount={normalOrderPausedCount}
+              diagnostics={normalOrderDiagnostics}
               onPreferenceChange={onPreferenceChange}
             />
           )}
@@ -2787,6 +2868,9 @@ function InventoryEditColumn<TItem extends IIngredient | IBeverage>({
 function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToken: string }) {
   const [settings, setSettings] = useState<LocalApiLogSettings | null>(null);
   const [logs, setLogs] = useState<LocalApiLogs | null>(null);
+  const [automationLogs, setAutomationLogs] = useState<LocalApiLogs | null>(null);
+  const [automationLogFilter, setAutomationLogFilter] = useState('');
+  const [diagnosticPackage, setDiagnosticPackage] = useState<DiagnosticPackageResponse | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
@@ -2795,6 +2879,7 @@ function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToken: stri
     if (!apiToken) {
       setSettings(null);
       setLogs(null);
+      setAutomationLogs(null);
       setError('未收到本地 API Token。');
       return;
     }
@@ -2805,7 +2890,17 @@ function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToken: stri
     try {
       const nextSettings = await readLogSettings(endpoint, apiToken, abortController.signal);
       setSettings(nextSettings);
-      setLogs(nextSettings.logAccessEnabled ? await readLogs(endpoint, apiToken, abortController.signal) : null);
+      if (nextSettings.logAccessEnabled) {
+        const [nextLogs, nextAutomationLogs] = await Promise.all([
+          readLogs(endpoint, apiToken, abortController.signal),
+          readAutomationLogs(endpoint, apiToken, abortController.signal),
+        ]);
+        setLogs(nextLogs);
+        setAutomationLogs(nextAutomationLogs);
+      } else {
+        setLogs(null);
+        setAutomationLogs(null);
+      }
       setError('');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -2823,11 +2918,18 @@ function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToken: stri
     try {
       const nextSettings = await writeLogSettings(endpoint, apiToken, next, abortController.signal);
       setSettings(nextSettings);
-      if (!nextSettings.logAccessEnabled) setLogs(null);
+      if (!nextSettings.logAccessEnabled) {
+        setLogs(null);
+        setAutomationLogs(null);
+      }
       setError('');
       if (nextSettings.logAccessEnabled) {
-        const nextLogs = await readLogs(endpoint, apiToken, abortController.signal);
+        const [nextLogs, nextAutomationLogs] = await Promise.all([
+          readLogs(endpoint, apiToken, abortController.signal),
+          readAutomationLogs(endpoint, apiToken, abortController.signal),
+        ]);
         setLogs(nextLogs);
+        setAutomationLogs(nextAutomationLogs);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -2837,7 +2939,7 @@ function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToken: stri
     }
   }, [apiToken, endpoint]);
 
-  const openFolder = useCallback(async (target: 'log' | 'diagnostics') => {
+  const openFolder = useCallback(async (target: 'log' | 'diagnostics' | 'automation') => {
     const abortController = new AbortController();
     const timeoutId = window.setTimeout(() => abortController.abort(), 2800);
     setActionLoading(true);
@@ -2854,16 +2956,57 @@ function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToken: stri
     }
   }, [apiToken, endpoint]);
 
+  const exportDiagnostics = useCallback(async () => {
+    const abortController = new AbortController();
+    const timeoutId = window.setTimeout(() => abortController.abort(), 8000);
+    setActionLoading(true);
+
+    try {
+      const result = await exportDiagnosticPackage(endpoint, apiToken, abortController.signal);
+      if (!result.ok) throw new Error(result.error || '导出诊断包失败');
+      setDiagnosticPackage(result);
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      window.clearTimeout(timeoutId);
+      setActionLoading(false);
+    }
+  }, [apiToken, endpoint]);
+
   const visibleLogLines = useMemo(
     () => (logs?.lines ?? []).slice(-MAX_LOG_LINES_IN_VIEW),
     [logs?.lines],
   );
+  const automationLogEntries = useMemo(
+    () => (automationLogs?.lines ?? []).map(parseAutomationLogLine).slice(-MAX_LOG_LINES_IN_VIEW),
+    [automationLogs?.lines],
+  );
+  const filteredAutomationLogEntries = useMemo(() => {
+    const keyword = automationLogFilter.trim().toLowerCase();
+    if (!keyword) return automationLogEntries.slice(-160);
+    return automationLogEntries
+      .filter((entry) => [
+        entry.raw,
+        entry.action,
+        entry.target,
+        entry.desk,
+        entry.orderKey,
+        entry.food,
+        entry.guest,
+        entry.message,
+      ].join(' ').toLowerCase().includes(keyword))
+      .slice(-160);
+  }, [automationLogEntries, automationLogFilter]);
   const configuredLogLimit = settings
     ? `${settings.maxLogLines ?? MAX_LOG_LINES_IN_VIEW} 行 / ${formatBytes(settings.maxLogBytes ?? 0)}`
     : '未知';
   const responseLogLimit = logs
     ? `${logs.maxLines ?? settings?.maxLogLines ?? MAX_LOG_LINES_IN_VIEW} 行 / ${formatBytes(logs.maxBytes ?? settings?.maxLogBytes ?? 0)}`
     : configuredLogLimit;
+  const automationLogNotice = automationLogs?.error
+    || (settings && !settings.logAccessEnabled ? '日志读取已关闭。' : '')
+    || (automationLogs?.exists === false ? '尚未生成 automation-jobs.log。自动化执行开锅、收取或 pending 变化后会写入。' : '');
 
   useEffect(() => {
     if (!apiToken) return;
@@ -2909,6 +3052,14 @@ function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToken: stri
               <FolderOpen className="size-4" />
               打开诊断文件夹
             </Button>
+            <Button size="sm" variant="outline" onClick={() => openFolder('automation')} disabled={!apiToken || actionLoading}>
+              <FolderOpen className="size-4" />
+              打开自动化日志
+            </Button>
+            <Button size="sm" variant="outline" onClick={exportDiagnostics} disabled={!apiToken || actionLoading}>
+              <Archive className="size-4" />
+              导出诊断包
+            </Button>
             <Button size="sm" variant="outline" onClick={refreshLogs} disabled={loading}>
               <RefreshCw className={loading ? 'size-4 animate-spin' : 'size-4'} />
               刷新
@@ -2925,6 +3076,56 @@ function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToken: stri
           <InfoLine label="窗口缓存" value={`最多显示 ${MAX_LOG_LINES_IN_VIEW} 行`} />
           <InfoLine label="经营诊断" value={settings?.nightBusinessDiagnosticsEnabled ? '开启' : '关闭'} />
           <InfoLine label="诊断日志目录" value={settings?.nightBusinessDiagnosticsDirectory || '未知'} mono />
+          <InfoLine label="最近诊断包" value={diagnosticPackage?.path || '未导出'} mono />
+          <InfoLine label="打包内容" value={diagnosticPackage ? `${diagnosticPackage.files.length} 个文件` : '未导出'} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="space-y-3 p-4">
+          <div className={DENSE_CARD_HEADER_GRID}>
+            <div className="min-w-0">
+              <div className="text-sm font-semibold">自动化作业日志</div>
+              <div className="mt-1 truncate text-xs text-muted-foreground" title={automationLogs?.path || ''}>
+                {automationLogs?.path || '等待日志响应'}
+              </div>
+            </div>
+            <Badge variant={automationLogs?.exists ? 'secondary' : 'outline'}>
+              {automationLogs?.exists ? `${automationLogEntries.length} 行` : '未生成'}
+            </Badge>
+          </div>
+          <Input
+            value={automationLogFilter}
+            onChange={(event) => setAutomationLogFilter(event.target.value)}
+            placeholder="过滤 action / 桌号 / 料理 / orderKey"
+            className="h-8"
+          />
+          {automationLogNotice ? (
+              <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+                {automationLogNotice}
+              </div>
+            ) : filteredAutomationLogEntries.length > 0 ? (
+              <div className="max-h-[32vh] space-y-1 overflow-auto pr-1">
+                {filteredAutomationLogEntries.map((entry, index) => (
+                  <div key={`${entry.timestamp}-${index}`} className="rounded-md border border-border bg-background/70 px-2.5 py-2 text-xs">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <Badge variant="outline">{entry.action || 'unknown'}</Badge>
+                      {entry.target && <Badge variant="secondary">{entry.target}</Badge>}
+                      {entry.desk && <span className="text-muted-foreground">桌 {entry.desk}</span>}
+                      <span className="font-mono text-muted-foreground">{entry.timestamp}</span>
+                    </div>
+                    <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1 text-muted-foreground">
+                      <InfoLine label="料理" value={entry.food || '无'} />
+                      <InfoLine label="客人" value={entry.guest || '无'} />
+                    </div>
+                    {entry.orderKey && <div className="mt-1 truncate font-mono text-[11px] text-muted-foreground" title={entry.orderKey}>key {entry.orderKey}</div>}
+                    {entry.message && <div className="mt-1 whitespace-pre-wrap text-foreground">{entry.message}</div>}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <EmptyRow text="暂无匹配的自动化日志" />
+            )}
         </CardContent>
       </Card>
 
@@ -3089,6 +3290,55 @@ function ModSettingsPanel({
           <div className="text-xs text-muted-foreground">
             关闭时不会显示或执行任何自动化动作；开启后可在“经营中”页面配置具体子功能。
           </div>
+          <div className="grid grid-cols-2 gap-3">
+            <AutomationNumberInput
+              label="稀客并发"
+              value={preferences.autoRareConcurrency}
+              min={MIN_AUTO_ORDER_CONCURRENCY}
+              max={MAX_RARE_AUTO_ORDER_CONCURRENCY}
+              onChange={(autoRareConcurrency) => onPreferenceChange({ autoRareConcurrency })}
+            />
+            <AutomationNumberInput
+              label="普客并发"
+              value={preferences.autoNormalConcurrency}
+              min={MIN_AUTO_ORDER_CONCURRENCY}
+              max={MAX_NORMAL_AUTO_ORDER_CONCURRENCY}
+              onChange={(autoNormalConcurrency) => onPreferenceChange({ autoNormalConcurrency })}
+            />
+            <AutomationNumberInput
+              label="稀客等待送餐盘"
+              value={preferences.autoRareTrayWaitSeconds}
+              min={MIN_AUTO_WAIT_SECONDS}
+              max={MAX_AUTO_WAIT_SECONDS}
+              unit="秒"
+              onChange={(autoRareTrayWaitSeconds) => onPreferenceChange({ autoRareTrayWaitSeconds })}
+            />
+            <AutomationNumberInput
+              label="普客保温箱复查"
+              value={preferences.autoNormalStorageWaitSeconds}
+              min={MIN_AUTO_WAIT_SECONDS}
+              max={MAX_AUTO_WAIT_SECONDS}
+              unit="秒"
+              onChange={(autoNormalStorageWaitSeconds) => onPreferenceChange({ autoNormalStorageWaitSeconds })}
+            />
+            <AutomationNumberInput
+              label="最大重试"
+              value={preferences.autoMaxStepRetries}
+              min={MIN_AUTO_STEP_RETRIES}
+              max={MAX_AUTO_STEP_RETRIES_LIMIT}
+              onChange={(autoMaxStepRetries) => onPreferenceChange({ autoMaxStepRetries })}
+            />
+            <AutomationNumberInput
+              label="最大回退"
+              value={preferences.autoMaxRollbacks}
+              min={MIN_AUTO_ROLLBACKS}
+              max={MAX_AUTO_ROLLBACKS_LIMIT}
+              onChange={(autoMaxRollbacks) => onPreferenceChange({ autoMaxRollbacks })}
+            />
+          </div>
+          <div className="text-xs text-muted-foreground">
+            参数会在下一轮自动化轮询生效。并发过高可能抢占厨具；等待时间过短可能导致重复开锅。
+          </div>
         </div>
       </ListPanel>
     </div>
@@ -3166,12 +3416,14 @@ function NormalServiceAutomationPanel({
   busy,
   message,
   pausedCount,
+  diagnostics,
   onPreferenceChange,
 }: {
   preferences: CompanionPreferences;
   busy: boolean;
   message: string;
   pausedCount: number;
+  diagnostics: NormalAutoOrderDiagnostic[];
   onPreferenceChange: (next: Partial<CompanionPreferences>) => void;
 }) {
   return (
@@ -3202,7 +3454,13 @@ function NormalServiceAutomationPanel({
           </>
         )}
       </div>
-      <NormalAutoPrepStatus busy={busy} pausedCount={pausedCount} message={message} preferences={preferences} />
+      <NormalAutoPrepStatus
+        busy={busy}
+        pausedCount={pausedCount}
+        message={message}
+        preferences={preferences}
+        diagnostics={diagnostics}
+      />
     </ListPanel>
   );
 }
@@ -3261,13 +3519,14 @@ function RareAutoPrepStatus({
                   </Button>
                 </div>
               </div>
-              <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground md:grid-cols-4">
+              <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground md:grid-cols-5">
                 <InfoLine label="料理" value={diagnostic.recipeName || '未选择'} />
                 <InfoLine label="酒水" value={diagnostic.beverageName || '未选择'} />
                 <InfoLine label="步骤" value={`${diagnostic.stepLabel} · ${diagnostic.stepSeconds}秒`} />
+                <InfoLine label="下次" value={diagnostic.nextAction} />
                 <InfoLine
                   label="计数"
-                  value={`重试 ${diagnostic.retryCount}/${MAX_AUTO_STEP_RETRIES} · 回退 ${diagnostic.rollbackCount}/${MAX_AUTO_ROLLBACKS}`}
+                  value={`重试 ${diagnostic.retryCount}/${preferences.autoMaxStepRetries} · 回退 ${diagnostic.rollbackCount}/${preferences.autoMaxRollbacks}`}
                 />
               </div>
               <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
@@ -3291,7 +3550,7 @@ function RareAutoPrepStatus({
       {message && <div className="mt-2 whitespace-pre-line text-muted-foreground">{message}</div>}
       <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
         <Badge variant={paused ? 'destructive' : 'secondary'}>{paused ? '已暂停' : '运行中'}</Badge>
-        <Badge variant="outline">每轮最多 {MAX_RARE_AUTO_ORDERS_PER_TICK}</Badge>
+        <Badge variant="outline">每轮最多 {preferences.autoRareConcurrency}</Badge>
         <Badge variant={preferences.autoPrepCompleteOrder ? 'secondary' : 'outline'}>完成 {preferences.autoPrepCompleteOrder ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepTakeBeverage ? 'secondary' : 'outline'}>取酒 {preferences.autoPrepTakeBeverage ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepStartCooking ? 'secondary' : 'outline'}>料理 {preferences.autoPrepStartCooking ? '开' : '关'}</Badge>
@@ -3308,21 +3567,69 @@ function NormalAutoPrepStatus({
   pausedCount,
   message,
   preferences,
+  diagnostics,
 }: {
   busy: boolean;
   pausedCount: number;
   message: string;
   preferences: CompanionPreferences;
+  diagnostics: NormalAutoOrderDiagnostic[];
 }) {
-  if (!message && pausedCount === 0) return null;
+  if (!message && pausedCount === 0 && diagnostics.length === 0) return null;
 
   return (
     <div className="mt-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
       <div className="font-medium text-foreground">普客自动化{busy ? '处理中' : '状态'}</div>
+      {diagnostics.length > 0 && (
+        <div className="mt-2 space-y-2">
+          {diagnostics.map((diagnostic) => (
+            <div key={diagnostic.orderKey} className="rounded-md border border-border bg-background/70 px-2.5 py-2">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="truncate font-medium text-foreground">{diagnostic.title}</div>
+                  <div className="mt-0.5 text-xs text-muted-foreground">
+                    料理 {diagnostic.foodName || '无'} · 酒水 {diagnostic.beverageName || '无'}
+                  </div>
+                </div>
+                <Badge variant={diagnostic.paused ? 'destructive' : 'secondary'}>
+                  {diagnostic.paused ? '暂停' : '运行'}
+                </Badge>
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground md:grid-cols-5">
+                <InfoLine label="步骤" value={`${diagnostic.stepLabel} · ${diagnostic.stepSeconds}秒`} />
+                <InfoLine label="下次" value={diagnostic.nextAction} />
+                <InfoLine
+                  label="计数"
+                  value={`重试 ${diagnostic.retryCount}/${preferences.autoMaxStepRetries} · 回退 ${diagnostic.rollbackCount}/${preferences.autoMaxRollbacks}`}
+                />
+                <InfoLine label="来源" value={diagnostic.source || '未知'} />
+                <InfoLine label="Key" value={diagnostic.orderKey} mono />
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
+                <Badge variant={diagnostic.prepared ? 'secondary' : 'outline'}>
+                  料理{diagnostic.prepared ? '已开锅' : '待处理'}
+                </Badge>
+                <Badge variant={diagnostic.collected ? 'secondary' : 'outline'}>
+                  保温箱{diagnostic.collected ? '已收取' : '待收取'}
+                </Badge>
+                <Badge variant={diagnostic.hasServedFood ? 'secondary' : 'outline'}>
+                  订单{diagnostic.hasServedFood ? '已有料理' : '未送料理'}
+                </Badge>
+                <Badge variant={diagnostic.hasServedBeverage ? 'secondary' : 'outline'}>
+                  酒水{diagnostic.hasServedBeverage ? '已有' : '未处理'}
+                </Badge>
+              </div>
+              {diagnostic.lastError && (
+                <div className="mt-1 text-xs text-muted-foreground">最近：{diagnostic.lastError}</div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
       {message && <div className="mt-1 whitespace-pre-line text-muted-foreground">{message}</div>}
       <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
         <Badge variant={pausedCount > 0 ? 'destructive' : 'secondary'}>暂停订单 {pausedCount}</Badge>
-        <Badge variant="outline">每轮最多 {MAX_NORMAL_AUTO_ORDERS_PER_TICK}</Badge>
+        <Badge variant="outline">每轮最多 {preferences.autoNormalConcurrency}</Badge>
         <Badge variant={preferences.autoNormalOrderEnabled ? 'secondary' : 'outline'}>启用 {preferences.autoNormalOrderEnabled ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoNormalStartCooking ? 'secondary' : 'outline'}>料理 {preferences.autoNormalStartCooking ? '开' : '关'}</Badge>
         {preferences.autoNormalStartCooking && <Badge variant="secondary">QTE 自动完成</Badge>}
@@ -3535,6 +3842,41 @@ function FocusSwitchCooldownInput({
         单位毫秒，范围 {MIN_FOCUS_SWITCH_COOLDOWN_MS} - {MAX_FOCUS_SWITCH_COOLDOWN_MS}。调低后切换更快，过低可能重复触发。
       </div>
     </div>
+  );
+}
+
+function AutomationNumberInput({
+  label,
+  value,
+  min,
+  max,
+  unit = '',
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  unit?: string;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label className="grid gap-1 text-sm">
+      <span className="font-medium">{label}</span>
+      <div className="flex items-center gap-2">
+        <Input
+          type="number"
+          min={min}
+          max={max}
+          step={1}
+          value={value}
+          onChange={(event) => onChange(clampInteger(Number(event.target.value), min, max, value))}
+          className="h-8"
+        />
+        {unit && <span className="shrink-0 text-xs text-muted-foreground">{unit}</span>}
+      </div>
+      <span className="text-xs text-muted-foreground">{min} - {max}</span>
+    </label>
   );
 }
 
@@ -4079,6 +4421,10 @@ async function readLogs(endpoint: string, apiToken: string, signal: AbortSignal)
   return readLocalApiJson<LocalApiLogs>(endpoint, apiToken, '/logs', signal);
 }
 
+async function readAutomationLogs(endpoint: string, apiToken: string, signal: AbortSignal): Promise<LocalApiLogs> {
+  return readLocalApiJson<LocalApiLogs>(endpoint, apiToken, '/logs/automation', signal);
+}
+
 async function readLogSettings(endpoint: string, apiToken: string, signal: AbortSignal): Promise<LocalApiLogSettings> {
   return readLocalApiJson<LocalApiLogSettings>(endpoint, apiToken, '/logs/settings', signal);
 }
@@ -4098,10 +4444,18 @@ async function writeLogSettings(
 async function openLogFolder(
   endpoint: string,
   apiToken: string,
-  target: 'log' | 'diagnostics',
+  target: 'log' | 'diagnostics' | 'automation',
   signal: AbortSignal,
 ): Promise<LocalApiFolderResponse> {
   return readLocalApiJson<LocalApiFolderResponse>(endpoint, apiToken, `/logs/open-folder?target=${target}`, signal);
+}
+
+async function exportDiagnosticPackage(
+  endpoint: string,
+  apiToken: string,
+  signal: AbortSignal,
+): Promise<DiagnosticPackageResponse> {
+  return readLocalApiJson<DiagnosticPackageResponse>(endpoint, apiToken, '/logs/export-diagnostics?open=true', signal);
 }
 
 async function writeInventoryQuantity(
@@ -4498,7 +4852,7 @@ function buildNormalCookerDemand(
     items.push(`桌 ${formatDesk(order.deskCode)} · ${order.foodName || `#${order.foodId}`}`);
     labels.set(cooker.key, items);
     reservedOrders += 1;
-    if (reservedOrders >= MAX_NORMAL_AUTO_ORDERS_PER_TICK) break;
+    if (reservedOrders >= preferences.autoNormalConcurrency) break;
   }
 
   return { counts, labels };
@@ -4514,7 +4868,7 @@ function shouldAttemptNormalCooking(
   if (order.hasServedFood || order.foodId < 0) return false;
   if (state?.collected) return false;
   if (state?.paused && !isRecoverableNormalPausedState(state, now)) return false;
-  return !state?.prepared || isNormalOrderPreparedStale(state, now);
+  return !state?.prepared || isNormalOrderPreparedStale(state, now, preferences);
 }
 
 function shouldConfirmNormalCollection(
@@ -4527,7 +4881,7 @@ function shouldConfirmNormalCollection(
   if (order.hasServedFood || order.foodId < 0) return false;
   if (!state?.prepared || state.collected) return false;
   if (state.paused && !isRecoverableNormalPausedState(state, now)) return false;
-  return isNormalOrderPreparedStale(state, now);
+  return isNormalOrderPreparedStale(state, now, preferences);
 }
 
 function reserveAutomationCookerSlot(
@@ -5068,6 +5422,7 @@ function buildRareAutoOrderDiagnostic(
   selection: ValidOrderPreparationSelection,
   state: AutoFirstOrderState,
   now: number,
+  preferences: CompanionPreferences,
 ): RareAutoOrderDiagnostic {
   const order = selection.item.order;
   return {
@@ -5079,6 +5434,7 @@ function buildRareAutoOrderDiagnostic(
     beverageName: selection.beverage?.beverage.name ?? '',
     stepLabel: getAutomationStepLabel(state.step),
     stepSeconds: state.stepStartedAtMs > 0 ? Math.max(0, Math.round((now - state.stepStartedAtMs) / 1000)) : 0,
+    nextAction: getRareAutomationNextAction(state, now, preferences),
     retryCount: state.retryCount,
     rollbackCount: state.rollbackCount,
     lastError: state.lastError,
@@ -5086,6 +5442,93 @@ function buildRareAutoOrderDiagnostic(
     beverageHandled: state.beverageHandled,
     paused: state.paused,
   };
+}
+
+function buildNormalAutoOrderDiagnostics(
+  orders: NormalBusinessOrder[],
+  states: Map<string, NormalAutoOrderState>,
+  now: number,
+  preferences: CompanionPreferences,
+): NormalAutoOrderDiagnostic[] {
+  return sortNormalOrders(orders)
+    .filter((order) => !order.isFulfilled)
+    .map((order) => {
+      const orderKey = buildNormalAutoOrderKey(order);
+      const state = states.get(orderKey) ?? emptyNormalAutoOrderState(orderKey, now);
+      return buildNormalAutoOrderDiagnostic(order, state, now, preferences);
+    });
+}
+
+function buildNormalAutoOrderDiagnostic(
+  order: NormalBusinessOrder,
+  state: NormalAutoOrderState,
+  now: number,
+  preferences: CompanionPreferences,
+): NormalAutoOrderDiagnostic {
+  return {
+    orderKey: buildNormalAutoOrderKey(order),
+    title: `桌 ${formatDesk(order.deskCode)} · ${order.foodName || `#${order.foodId}`}`,
+    foodName: order.foodName || `#${order.foodId}`,
+    beverageName: order.beverageName || `#${order.beverageId}`,
+    source: order.source || '',
+    stepLabel: getAutomationStepLabel(state.step),
+    stepSeconds: state.stepStartedAtMs > 0 ? Math.max(0, Math.round((now - state.stepStartedAtMs) / 1000)) : 0,
+    nextAction: getNormalAutomationNextAction(state, now, preferences),
+    retryCount: state.retryCount,
+    rollbackCount: state.rollbackCount,
+    lastError: state.lastError,
+    prepared: state.prepared,
+    collected: state.collected,
+    paused: state.paused,
+    hasServedFood: order.hasServedFood,
+    hasServedBeverage: order.hasServedBeverage,
+  };
+}
+
+function getRareAutomationNextAction(
+  state: AutoFirstOrderState,
+  now: number,
+  preferences: CompanionPreferences,
+): string {
+  if (state.paused) return '等待手动重试或订单变化';
+  if (state.prepared && state.step === 'wait-food-tray') {
+    return formatRemainingAction(state.preparedAtMs, now, preferences.autoRareTrayWaitSeconds * 1000, '料理回退检查');
+  }
+  if (state.step === 'complete-order') return '下一轮尝试完成订单';
+  if (state.step === 'ensure-beverage') return '下一轮校验取酒';
+  if (state.step === 'ensure-cooking') return '下一轮校验厨具/开锅';
+  if (state.step === 'match-order') return '下一轮匹配订单';
+  if (state.step === 'done') return '等待订单从列表移除';
+  return '下一轮刷新';
+}
+
+function getNormalAutomationNextAction(
+  state: NormalAutoOrderState,
+  now: number,
+  preferences: CompanionPreferences,
+): string {
+  if (state.paused) {
+    if (isRecoverableNormalPausedState(state, now)) return '下一轮自动恢复';
+    if (state.lastError.includes('目标料理长时间未进入普客暂存容器')) {
+      return formatRemainingAction(state.stepStartedAtMs, now, NORMAL_AUTO_RECOVERABLE_PAUSE_RETRY_MS, '自动恢复');
+    }
+    return '等待订单变化或手动处理';
+  }
+  if (state.collected) return '等待玩家手动送达';
+  if (state.prepared) {
+    return formatRemainingAction(state.preparedAtMs, now, preferences.autoNormalStorageWaitSeconds * 1000, '保温箱复查');
+  }
+  if (state.step === 'ensure-cooking') return '下一轮校验厨具/开锅';
+  if (state.step === 'wait-food-stored') return '下一轮确认保温箱';
+  if (state.step === 'match-order') return '下一轮匹配订单';
+  return '下一轮刷新';
+}
+
+function formatRemainingAction(startedAtMs: number, now: number, timeoutMs: number, label: string): string {
+  if (startedAtMs <= 0) return `${label}等待中`;
+  const remainingMs = timeoutMs - (now - startedAtMs);
+  if (remainingMs <= 0) return `下一轮${label}`;
+  return `${label}约 ${Math.ceil(remainingMs / 1000)} 秒`;
 }
 
 function buildNormalAutoOrderKey(order: NormalBusinessOrder): string {
@@ -5099,10 +5542,14 @@ function buildNormalAutoOrderKey(order: NormalBusinessOrder): string {
   ].join('|');
 }
 
-function isNormalOrderPreparedStale(state: NormalAutoOrderState | undefined, now: number): boolean {
+function isNormalOrderPreparedStale(
+  state: NormalAutoOrderState | undefined,
+  now: number,
+  preferences: CompanionPreferences,
+): boolean {
   if (!state?.prepared || state.collected) return false;
   if (state.paused && !isRecoverableNormalPausedState(state, now)) return false;
-  return state.preparedAtMs > 0 && now - state.preparedAtMs >= NORMAL_AUTO_PREPARED_RETRY_MS;
+  return state.preparedAtMs > 0 && now - state.preparedAtMs >= preferences.autoNormalStorageWaitSeconds * 1000;
 }
 
 function isRecoverableNormalPausedState(state: NormalAutoOrderState | undefined, now: number): boolean {
@@ -5182,6 +5629,7 @@ function updateAutomationAfterResponse<T extends AutoFirstOrderState | NormalAut
   now: number,
   step: AutomationStep,
   stopOnError: boolean,
+  maxStepRetries = DEFAULT_AUTO_STEP_RETRIES,
 ): T {
   const failed = !response.ok;
   const transientFailure = failed && isTransientAutoPreparationFailure(response);
@@ -5190,7 +5638,7 @@ function updateAutomationAfterResponse<T extends AutoFirstOrderState | NormalAut
   const stalled = failed && state.lastProgressAtMs > 0 && now - state.lastProgressAtMs >= AUTO_JOB_STALL_MS;
   const shouldPause = failed
     && stopOnError
-    && (hardFailure || (!transientFailure && (stalled || nextRetryCount >= MAX_AUTO_STEP_RETRIES)));
+    && (hardFailure || (!transientFailure && (stalled || nextRetryCount >= maxStepRetries)));
   const progressed = response.ok || response.steps.some(isMeaningfulAutomationProgressStep);
   const nextStep = response.ok
     ? step
@@ -5213,13 +5661,18 @@ function updateAutomationAfterResponse<T extends AutoFirstOrderState | NormalAut
   };
 }
 
-function formatAutomationState(state: AutoFirstOrderState | NormalAutoOrderState): string {
+function formatAutomationState(
+  state: AutoFirstOrderState | NormalAutoOrderState,
+  preferences?: CompanionPreferences,
+): string {
   const now = Date.now();
+  const maxStepRetries = preferences?.autoMaxStepRetries ?? DEFAULT_AUTO_STEP_RETRIES;
+  const maxRollbacks = preferences?.autoMaxRollbacks ?? DEFAULT_AUTO_ROLLBACKS;
   const parts = [
     `状态 ${getAutomationStepLabel(state.step)}`,
     state.stepStartedAtMs > 0 ? `${Math.max(0, Math.round((now - state.stepStartedAtMs) / 1000))}秒` : '',
-    state.retryCount > 0 ? `重试 ${state.retryCount}/${MAX_AUTO_STEP_RETRIES}` : '',
-    state.rollbackCount > 0 ? `回退 ${state.rollbackCount}/${MAX_AUTO_ROLLBACKS}` : '',
+    state.retryCount > 0 ? `重试 ${state.retryCount}/${maxStepRetries}` : '',
+    state.rollbackCount > 0 ? `回退 ${state.rollbackCount}/${maxRollbacks}` : '',
     state.lastError ? `最近 ${state.lastError}` : '',
   ].filter(Boolean);
   return parts.join(' · ');
@@ -5856,6 +6309,13 @@ function readStoredBoolean(key: string, fallback: boolean) {
   return value === '1' || value === 'true';
 }
 
+function readStoredNumber(key: string, fallback: number) {
+  const raw = localStorage.getItem(key);
+  if (raw === null) return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : fallback;
+}
+
 function readStoredFocusLimit(key: string) {
   return normalizeFocusRecommendationLimit(Number(localStorage.getItem(key) ?? DEFAULT_FOCUS_RECOMMENDATION_ROWS));
 }
@@ -5880,6 +6340,12 @@ function readStoredCompanionPreferences(): CompanionPreferences {
     autoPrepCollectCooking: readStoredBoolean(AUTO_PREP_COLLECT_COOKING_STORAGE_KEY, false),
     autoPrepFavoritesOnly: readStoredBoolean(AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY, false),
     autoPrepStopOnError: readStoredBoolean(AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY, false),
+    autoRareConcurrency: readStoredNumber(AUTO_RARE_CONCURRENCY_STORAGE_KEY, DEFAULT_RARE_AUTO_ORDERS_PER_TICK),
+    autoNormalConcurrency: readStoredNumber(AUTO_NORMAL_CONCURRENCY_STORAGE_KEY, DEFAULT_NORMAL_AUTO_ORDERS_PER_TICK),
+    autoRareTrayWaitSeconds: readStoredNumber(AUTO_RARE_TRAY_WAIT_SECONDS_STORAGE_KEY, DEFAULT_RARE_AUTO_TRAY_WAIT_SECONDS),
+    autoNormalStorageWaitSeconds: readStoredNumber(AUTO_NORMAL_STORAGE_WAIT_SECONDS_STORAGE_KEY, DEFAULT_NORMAL_AUTO_STORAGE_WAIT_SECONDS),
+    autoMaxStepRetries: readStoredNumber(AUTO_MAX_STEP_RETRIES_STORAGE_KEY, DEFAULT_AUTO_STEP_RETRIES),
+    autoMaxRollbacks: readStoredNumber(AUTO_MAX_ROLLBACKS_STORAGE_KEY, DEFAULT_AUTO_ROLLBACKS),
     filterMissingCookers: readStoredBoolean(FILTER_MISSING_COOKERS_STORAGE_KEY, true),
     gameUiPinningEnabled: readStoredBoolean(GAME_UI_PINNING_STORAGE_KEY, false),
     cookerHighlightEnabled: readStoredBoolean(COOKER_HIGHLIGHT_STORAGE_KEY, false),
@@ -5984,6 +6450,12 @@ function normalizeCompanionPreferences(value: Partial<CompanionPreferences>): Co
     autoPrepCollectCooking: Boolean(value.autoPrepCollectCooking),
     autoPrepFavoritesOnly: Boolean(value.autoPrepFavoritesOnly),
     autoPrepStopOnError: Boolean(value.autoPrepStopOnError),
+    autoRareConcurrency: normalizeRareAutoConcurrency(value.autoRareConcurrency ?? DEFAULT_RARE_AUTO_ORDERS_PER_TICK),
+    autoNormalConcurrency: normalizeNormalAutoConcurrency(value.autoNormalConcurrency ?? DEFAULT_NORMAL_AUTO_ORDERS_PER_TICK),
+    autoRareTrayWaitSeconds: normalizeAutomationWaitSeconds(value.autoRareTrayWaitSeconds ?? DEFAULT_RARE_AUTO_TRAY_WAIT_SECONDS, DEFAULT_RARE_AUTO_TRAY_WAIT_SECONDS),
+    autoNormalStorageWaitSeconds: normalizeAutomationWaitSeconds(value.autoNormalStorageWaitSeconds ?? DEFAULT_NORMAL_AUTO_STORAGE_WAIT_SECONDS, DEFAULT_NORMAL_AUTO_STORAGE_WAIT_SECONDS),
+    autoMaxStepRetries: normalizeAutoStepRetries(value.autoMaxStepRetries ?? DEFAULT_AUTO_STEP_RETRIES),
+    autoMaxRollbacks: normalizeAutoRollbacks(value.autoMaxRollbacks ?? DEFAULT_AUTO_ROLLBACKS),
     filterMissingCookers: value.filterMissingCookers !== false,
     gameUiPinningEnabled: Boolean(value.gameUiPinningEnabled),
     cookerHighlightEnabled: Boolean(value.cookerHighlightEnabled),
@@ -6006,6 +6478,31 @@ function normalizeFocusSwitchCooldownMs(value: number) {
   );
 }
 
+function normalizeRareAutoConcurrency(value: number) {
+  return clampInteger(value, MIN_AUTO_ORDER_CONCURRENCY, MAX_RARE_AUTO_ORDER_CONCURRENCY, DEFAULT_RARE_AUTO_ORDERS_PER_TICK);
+}
+
+function normalizeNormalAutoConcurrency(value: number) {
+  return clampInteger(value, MIN_AUTO_ORDER_CONCURRENCY, MAX_NORMAL_AUTO_ORDER_CONCURRENCY, DEFAULT_NORMAL_AUTO_ORDERS_PER_TICK);
+}
+
+function normalizeAutomationWaitSeconds(value: number, fallback: number) {
+  return clampInteger(value, MIN_AUTO_WAIT_SECONDS, MAX_AUTO_WAIT_SECONDS, fallback);
+}
+
+function normalizeAutoStepRetries(value: number) {
+  return clampInteger(value, MIN_AUTO_STEP_RETRIES, MAX_AUTO_STEP_RETRIES_LIMIT, DEFAULT_AUTO_STEP_RETRIES);
+}
+
+function normalizeAutoRollbacks(value: number) {
+  return clampInteger(value, MIN_AUTO_ROLLBACKS, MAX_AUTO_ROLLBACKS_LIMIT, DEFAULT_AUTO_ROLLBACKS);
+}
+
+function clampInteger(value: number, min: number, max: number, fallback: number) {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, Math.trunc(value)));
+}
+
 function persistCompanionPreferences(preferences: CompanionPreferences) {
   const normalized = normalizeCompanionPreferences(preferences);
   localStorage.setItem(WINDOW_OPACITY_STORAGE_KEY, String(normalized.windowOpacity));
@@ -6024,6 +6521,12 @@ function persistCompanionPreferences(preferences: CompanionPreferences) {
   localStorage.setItem(AUTO_PREP_COLLECT_COOKING_STORAGE_KEY, normalized.autoPrepCollectCooking ? '1' : '0');
   localStorage.setItem(AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY, normalized.autoPrepFavoritesOnly ? '1' : '0');
   localStorage.setItem(AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY, normalized.autoPrepStopOnError ? '1' : '0');
+  localStorage.setItem(AUTO_RARE_CONCURRENCY_STORAGE_KEY, String(normalized.autoRareConcurrency));
+  localStorage.setItem(AUTO_NORMAL_CONCURRENCY_STORAGE_KEY, String(normalized.autoNormalConcurrency));
+  localStorage.setItem(AUTO_RARE_TRAY_WAIT_SECONDS_STORAGE_KEY, String(normalized.autoRareTrayWaitSeconds));
+  localStorage.setItem(AUTO_NORMAL_STORAGE_WAIT_SECONDS_STORAGE_KEY, String(normalized.autoNormalStorageWaitSeconds));
+  localStorage.setItem(AUTO_MAX_STEP_RETRIES_STORAGE_KEY, String(normalized.autoMaxStepRetries));
+  localStorage.setItem(AUTO_MAX_ROLLBACKS_STORAGE_KEY, String(normalized.autoMaxRollbacks));
   localStorage.setItem(FILTER_MISSING_COOKERS_STORAGE_KEY, normalized.filterMissingCookers ? '1' : '0');
   localStorage.setItem(GAME_UI_PINNING_STORAGE_KEY, normalized.gameUiPinningEnabled ? '1' : '0');
   localStorage.setItem(COOKER_HIGHLIGHT_STORAGE_KEY, normalized.cookerHighlightEnabled ? '1' : '0');
@@ -6101,6 +6604,49 @@ function formatBytes(value: number) {
   if (!Number.isFinite(value) || value <= 0) return '未知';
   if (value >= 1024 * 1024) return `${Math.round(value / 1024 / 1024)} MiB`;
   return `${Math.round(value / 1024)} KiB`;
+}
+
+function parseAutomationLogLine(line: string): AutomationLogEntry {
+  const match = /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\s+(\S+)\s*(.*)$/.exec(line);
+  if (!match) {
+    return {
+      raw: line,
+      timestamp: '',
+      action: '',
+      target: '',
+      desk: '',
+      orderKey: '',
+      food: '',
+      guest: '',
+      message: line,
+    };
+  }
+
+  const [, timestamp, action, rest] = match;
+  const tokens = rest.trim().split(/\s+/).filter(Boolean);
+  const attrs = new Map<string, string>();
+  let messageStart = 0;
+  for (let index = 0; index < tokens.length; index += 1) {
+    const separator = tokens[index].indexOf('=');
+    if (separator <= 0) {
+      messageStart = index;
+      break;
+    }
+    attrs.set(tokens[index].slice(0, separator), tokens[index].slice(separator + 1));
+    messageStart = index + 1;
+  }
+
+  return {
+    raw: line,
+    timestamp,
+    action,
+    target: attrs.get('target') ?? '',
+    desk: attrs.get('desk') ?? '',
+    orderKey: attrs.get('orderKey') ?? '',
+    food: attrs.get('food') ?? '',
+    guest: attrs.get('guest') ?? '',
+    message: tokens.slice(messageStart).join(' '),
+  };
 }
 
 function formatDesk(deskCode: number) {

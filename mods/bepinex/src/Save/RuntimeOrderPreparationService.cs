@@ -1273,9 +1273,9 @@ internal static class RuntimeOrderPreparationService
     {
         try
         {
-            var directory = Path.Combine(Paths.ConfigPath, "MystiaStewardCompanion");
-            Directory.CreateDirectory(directory);
-            var path = Path.Combine(directory, "automation-jobs.log");
+            var path = ResolveAutomationLogPath();
+            var directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
             lock (AutomationLogLock)
             {
                 RotateAutomationLogIfNeeded(path);
@@ -1291,6 +1291,11 @@ internal static class RuntimeOrderPreparationService
         {
             // Diagnostics must never affect game automation.
         }
+    }
+
+    public static string ResolveAutomationLogPath()
+    {
+        return Path.Combine(Paths.ConfigPath, "MystiaStewardCompanion", "automation-jobs.log");
     }
 
     private static void RotateAutomationLogIfNeeded(string path)

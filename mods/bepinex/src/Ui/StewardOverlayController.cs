@@ -1395,9 +1395,13 @@ internal sealed class StewardOverlayController
     private string OpenLocalApiLogFolder(string target)
     {
         var settings = GetLocalApiLogSettings();
-        var path = string.Equals(target, "diagnostics", StringComparison.OrdinalIgnoreCase)
-            ? settings.NightBusinessDiagnosticsPath
-            : settings.LogOutputPath;
+        var path = target.ToLowerInvariant() switch
+        {
+            "diagnostics" => settings.NightBusinessDiagnosticsPath,
+            "automation" => RuntimeOrderPreparationService.ResolveAutomationLogPath(),
+            "packages" => Path.Combine(LocalApiServer.ResolveDiagnosticPackageDirectory(), "diagnostics.zip"),
+            _ => settings.LogOutputPath,
+        };
         var directory = Path.GetDirectoryName(path);
         if (string.IsNullOrWhiteSpace(directory))
         {

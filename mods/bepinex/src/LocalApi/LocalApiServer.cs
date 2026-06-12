@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using System.IO.Compression;
 using BepInEx;
 using BepInEx.Logging;
 using MystiaStewardCompanion.Save;
@@ -181,6 +182,12 @@ internal sealed class LocalApiServer : IDisposable
                     case "/logs":
                         WriteResponse(stream, 200, "OK", BuildLogsJson());
                         break;
+                    case "/logs/automation":
+                        WriteResponse(stream, 200, "OK", BuildAutomationLogsJson());
+                        break;
+                    case "/logs/export-diagnostics":
+                        WriteResponse(stream, 200, "OK", BuildDiagnosticPackageJson(ReadBoolQuery(query, "open") ?? false));
+                        break;
                     case "/logs/settings":
                         WriteResponse(stream, 200, "OK", BuildLogSettingsJson());
                         break;
@@ -245,10 +252,21 @@ internal sealed class LocalApiServer : IDisposable
     {
         var settings = _getLogSettings();
         var logPath = string.IsNullOrWhiteSpace(settings.LogOutputPath) ? _logOutputPath : settings.LogOutputPath;
+        return BuildLogFileJson(logPath, settings);
+    }
+
+    private string BuildAutomationLogsJson()
+    {
+        var settings = _getLogSettings();
+        return BuildLogFileJson(RuntimeOrderPreparationService.ResolveAutomationLogPath(), settings);
+    }
+
+    private static string BuildLogFileJson(string logPath, LocalApiLogSettings settings)
+    {
+        var maxLogBytes = Math.Clamp(settings.MaxLogBytes, 16 * 1024, 2 * 1024 * 1024);
+        var maxLogLines = Math.Clamp(settings.MaxLogLines, 50, 2000);
         if (!settings.LogAccessEnabled)
         {
-            var maxLogBytes = Math.Clamp(settings.MaxLogBytes, 16 * 1024, 2 * 1024 * 1024);
-            var maxLogLines = Math.Clamp(settings.MaxLogLines, 50, 2000);
             return "{\"capturedAtUtc\":\""
                 + DateTime.UtcNow.ToString("O")
                 + "\",\"path\":\""
@@ -262,8 +280,6 @@ internal sealed class LocalApiServer : IDisposable
 
         try
         {
-            var maxLogBytes = Math.Clamp(settings.MaxLogBytes, 16 * 1024, 2 * 1024 * 1024);
-            var maxLogLines = Math.Clamp(settings.MaxLogLines, 50, 2000);
             var exists = File.Exists(logPath);
             var lines = exists ? ReadLogTail(logPath, maxLogBytes, maxLogLines) : new List<string>();
             var builder = new StringBuilder();
@@ -322,6 +338,76 @@ internal sealed class LocalApiServer : IDisposable
         catch (Exception ex)
         {
             return "{\"ok\":false,\"directory\":\"\",\"error\":\"" + EscapeJson(ex.Message) + "\"}";
+        }
+    }
+
+    private string BuildDiagnosticPackageJson(bool openFolder)
+    {
+        try
+        {
+            var settings = _getLogSettings();
+            var packageDirectory = ResolveDiagnosticPackageDirectory();
+            Directory.CreateDirectory(packageDirectory);
+            var packagePath = Path.Combine(
+                packageDirectory,
+                "mystia-steward-companion-diagnostics-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".zip");
+            var added = new List<string>();
+            var maxLogBytes = Math.Clamp(settings.MaxLogBytes, 16 * 1024, 2 * 1024 * 1024);
+            var maxLogLines = Math.Clamp(settings.MaxLogLines, 50, 2000);
+
+            using (var archive = ZipFile.Open(packagePath, ZipArchiveMode.Create))
+            {
+                AddTextEntry(archive, "manifest.json", BuildDiagnosticManifestJson(settings), added);
+                AddTextEntry(archive, "snapshot/current-snapshot.json", GetSnapshotJson(), added);
+                AddLogTailEntry(
+                    archive,
+                    string.IsNullOrWhiteSpace(settings.LogOutputPath) ? _logOutputPath : settings.LogOutputPath,
+                    "logs/LogOutput.tail.log",
+                    maxLogBytes,
+                    maxLogLines,
+                    added);
+                AddLogTailEntry(
+                    archive,
+                    RuntimeOrderPreparationService.ResolveAutomationLogPath(),
+                    "logs/automation-jobs.tail.log",
+                    maxLogBytes,
+                    maxLogLines,
+                    added);
+                AddLogTailEntry(
+                    archive,
+                    RuntimeOrderPreparationService.ResolveAutomationLogPath() + ".1",
+                    "logs/automation-jobs.1.tail.log",
+                    maxLogBytes,
+                    maxLogLines,
+                    added);
+                AddDiagnosticLogEntries(archive, settings.NightBusinessDiagnosticsPath, maxLogBytes, maxLogLines, added);
+            }
+
+            if (openFolder)
+            {
+                try
+                {
+                    _openLogFolder("packages");
+                }
+                catch (Exception ex)
+                {
+                    _log.LogWarning($"Open diagnostic package folder failed: {ex.Message}");
+                }
+            }
+
+            return new StringBuilder()
+                .Append('{')
+                .Append("\"ok\":true,")
+                .Append("\"path\":\"").Append(EscapeJson(packagePath)).Append("\",")
+                .Append("\"directory\":\"").Append(EscapeJson(packageDirectory)).Append("\",")
+                .Append("\"files\":").Append(BuildJsonStringArray(added)).Append(',')
+                .Append("\"error\":null")
+                .Append('}')
+                .ToString();
+        }
+        catch (Exception ex)
+        {
+            return "{\"ok\":false,\"path\":\"\",\"directory\":\"\",\"files\":[],\"error\":\"" + EscapeJson(ex.Message) + "\"}";
         }
     }
 
@@ -482,6 +568,76 @@ internal sealed class LocalApiServer : IDisposable
         }
 
         return lines;
+    }
+
+    public static string ResolveDiagnosticPackageDirectory()
+    {
+        return Path.Combine(Paths.ConfigPath, "MystiaStewardCompanion", "diagnostic-packages");
+    }
+
+    private static void AddDiagnosticLogEntries(ZipArchive archive, string primaryPath, int maxBytes, int maxLines, List<string> added)
+    {
+        var directory = Path.GetDirectoryName(primaryPath);
+        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory)) return;
+
+        foreach (var path in Directory.EnumerateFiles(directory, "*.log", SearchOption.TopDirectoryOnly).OrderBy(Path.GetFileName))
+        {
+            var name = Path.GetFileName(path);
+            if (string.IsNullOrWhiteSpace(name)) continue;
+            AddLogTailEntry(archive, path, "diagnostics/" + name.Replace(".log", ".tail.log", StringComparison.Ordinal), maxBytes, maxLines, added);
+        }
+    }
+
+    private static void AddLogTailEntry(
+        ZipArchive archive,
+        string path,
+        string entryName,
+        int maxBytes,
+        int maxLines,
+        List<string> added)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return;
+        var content = string.Join(Environment.NewLine, ReadLogTail(path, maxBytes, maxLines));
+        AddTextEntry(archive, entryName, content, added);
+    }
+
+    private static void AddTextEntry(ZipArchive archive, string entryName, string content, List<string> added)
+    {
+        var entry = archive.CreateEntry(entryName, CompressionLevel.Fastest);
+        using var stream = entry.Open();
+        using var writer = new StreamWriter(stream, new UTF8Encoding(false));
+        writer.Write(content);
+        added.Add(entryName);
+    }
+
+    private string BuildDiagnosticManifestJson(LocalApiLogSettings settings)
+    {
+        return new StringBuilder()
+            .Append('{')
+            .Append("\"generatedAtUtc\":\"").Append(DateTime.UtcNow.ToString("O")).Append("\",")
+            .Append("\"baseUrl\":\"").Append(EscapeJson(BaseUrl)).Append("\",")
+            .Append("\"logOutputPath\":\"").Append(EscapeJson(string.IsNullOrWhiteSpace(settings.LogOutputPath) ? _logOutputPath : settings.LogOutputPath)).Append("\",")
+            .Append("\"automationLogPath\":\"").Append(EscapeJson(RuntimeOrderPreparationService.ResolveAutomationLogPath())).Append("\",")
+            .Append("\"nightBusinessDiagnosticsPath\":\"").Append(EscapeJson(settings.NightBusinessDiagnosticsPath)).Append("\",")
+            .Append("\"maxLogLines\":").Append(Math.Clamp(settings.MaxLogLines, 50, 2000)).Append(',')
+            .Append("\"maxLogBytes\":").Append(Math.Clamp(settings.MaxLogBytes, 16 * 1024, 2 * 1024 * 1024))
+            .Append('}')
+            .ToString();
+    }
+
+    private static string BuildJsonStringArray(IEnumerable<string> values)
+    {
+        var builder = new StringBuilder();
+        builder.Append('[');
+        var first = true;
+        foreach (var value in values)
+        {
+            if (!first) builder.Append(',');
+            builder.Append('"').Append(EscapeJson(value)).Append('"');
+            first = false;
+        }
+        builder.Append(']');
+        return builder.ToString();
     }
 
     private static string ReadRequest(NetworkStream stream)
