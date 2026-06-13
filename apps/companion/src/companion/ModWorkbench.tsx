@@ -153,10 +153,14 @@ const DENSE_ITEM_GRID = 'grid grid-cols-[repeat(auto-fit,minmax(11rem,1fr))] gap
 const AUTOMATION_SWITCH_GRID = 'grid grid-cols-2 gap-2 xl:grid-cols-3';
 const AUTOMATION_SWITCH_CELL = 'min-w-0 rounded-md border border-border bg-background/70 px-2.5 py-2';
 const MOD_TAB_TRIGGER_CLASS = 'min-w-0 flex-1 data-active:bg-primary data-active:text-primary-foreground dark:data-active:bg-primary dark:data-active:text-primary-foreground';
+const INNER_TAB_TRIGGER_CLASS = 'min-w-0 flex-1 data-active:bg-primary data-active:text-primary-foreground dark:data-active:bg-primary dark:data-active:text-primary-foreground';
+const RECOMMENDATION_SCROLL_AREA = 'min-h-[28rem] max-h-[calc(100vh-18rem)] overflow-auto pr-1';
 
 type ModTab = 'overview' | 'normal' | 'rare' | 'service' | 'tasks' | 'inventory' | 'logs' | 'settings';
 const MOD_TABS: ModTab[] = ['overview', 'normal', 'rare', 'service', 'tasks', 'inventory', 'logs', 'settings'];
 const BASIC_MOD_TABS: ModTab[] = MOD_TABS.filter((tab) => tab !== 'logs');
+type OverviewTab = 'status' | 'inventory' | 'actions';
+type SettingsTab = 'window' | 'recommendation' | 'sorting' | 'automation' | 'debug';
 type FocusSwitchBehavior = 'hide' | 'keep-visible';
 type ServiceOrderSortMode = 'ordered' | 'guest';
 type RareGuestInvitationScope = 'current' | 'all';
@@ -2213,60 +2217,81 @@ function ModOverviewPanel({
     () => buildLowStockEntries(runtime?.ownedBeverageQty ?? {}, indexes.beverageNameById),
     [indexes.beverageNameById, runtime?.ownedBeverageQty],
   );
+  const [overviewTab, setOverviewTab] = useState<OverviewTab>('status');
 
   return (
     <div className="space-y-4">
-      <Card>
-        <CardContent className={`${DENSE_TWO_COLUMN_GRID_TIGHT} p-4 text-sm`}>
-          <InfoLine label="数据来源" value="游戏实时 API，不读取 .memory 存档" />
-          {showDebugDetails && <InfoLine label="API 地址" value={endpoint} mono />}
-          <InfoLine label="连接状态" value={error ? `未连接: ${error}` : snapshot ? '已连接' : '连接中'} />
-          <InfoLine label="最近响应" value={lastConnectedAt ? formatTime(lastConnectedAt) : '暂无'} />
-          <InfoLine label="场景" value={snapshot?.activeSceneName || '未知'} />
-          <InfoLine label="运行时状态" value={snapshot?.status || '暂无快照'} />
-          {showDebugDetails && <InfoLine label="运行时来源" value={snapshot?.runtimeSource || '未知'} />}
-          <InfoLine
-            label="推荐数据"
-            value={data.source === 'runtime' ? `游戏运行时 (${data.status})` : `等待游戏运行时数据 (${data.status})`}
-          />
-          {showDebugDetails && <InfoLine label="性能耗时" value={formatPerformanceMs(snapshot?.performanceMs)} mono />}
-        </CardContent>
-      </Card>
+      <Tabs value={overviewTab} onValueChange={(value) => setOverviewTab(value as OverviewTab)} className="space-y-4">
+        <TabsList className="grid h-9 w-full grid-cols-3">
+          <TabsTrigger value="status" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
+            状态
+          </TabsTrigger>
+          <TabsTrigger value="inventory" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
+            库存
+          </TabsTrigger>
+          <TabsTrigger value="actions" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
+            操作
+          </TabsTrigger>
+        </TabsList>
 
-      <Card>
-        <CardContent className={`${DENSE_FOUR_COLUMN_GRID} p-4 text-sm`}>
-          <Metric label="可用料理" value={runtime?.availableRecipeIds.length ?? 0} />
-          <Metric label="可用酒水" value={runtime?.availableBeverageIds.length ?? 0} />
-          <Metric label="可用食材" value={runtime?.availableIngredientIds.length ?? 0} />
-          <Metric label="明星店" value={runtime?.famousShopEnabled ? '开启' : '关闭'} />
-        </CardContent>
-      </Card>
+        <TabsContent value="status" className="space-y-4">
+          <Card>
+            <CardContent className={`${DENSE_TWO_COLUMN_GRID_TIGHT} p-4 text-sm`}>
+              <InfoLine label="数据来源" value="游戏实时 API，不读取 .memory 存档" />
+              {showDebugDetails && <InfoLine label="API 地址" value={endpoint} mono />}
+              <InfoLine label="连接状态" value={error ? `未连接: ${error}` : snapshot ? '已连接' : '连接中'} />
+              <InfoLine label="最近响应" value={lastConnectedAt ? formatTime(lastConnectedAt) : '暂无'} />
+              <InfoLine label="场景" value={snapshot?.activeSceneName || '未知'} />
+              <InfoLine label="运行时状态" value={snapshot?.status || '暂无快照'} />
+              {showDebugDetails && <InfoLine label="运行时来源" value={snapshot?.runtimeSource || '未知'} />}
+              <InfoLine
+                label="推荐数据"
+                value={data.source === 'runtime' ? `游戏运行时 (${data.status})` : `等待游戏运行时数据 (${data.status})`}
+              />
+              {showDebugDetails && <InfoLine label="性能耗时" value={formatPerformanceMs(snapshot?.performanceMs)} mono />}
+            </CardContent>
+          </Card>
 
-      <div className={DENSE_TWO_COLUMN_GRID}>
-        <ListPanel title="快捷键">
-          <div className="grid gap-2 text-sm">
-            <InfoLine label="F8" value="在游戏与独立窗口之间切换焦点或重新显示伴随窗口" />
-            <InfoLine label="RS Click" value="手柄默认在游戏与独立窗口之间切换" />
-            <InfoLine label="手柄导航" value="左摇杆/十字键移动，A 确认，B 返回，LB/RB 切换页面，LT/RT 滚动" />
-            <InfoLine label="专注模式" value="Y 进入专注模式或切换精简模式，X 收藏当前推荐项" />
-            <InfoLine label="窗口关闭" value="关闭按钮会隐藏到托盘；托盘菜单可重新显示或退出" />
-          </div>
-        </ListPanel>
+          <ListPanel title="实时标签">
+            <div className={DENSE_TWO_COLUMN_GRID_TIGHT}>
+              <InfoLine label="流行喜爱" value={runtime?.popularFoodTag || '无'} />
+              <InfoLine label="流行厌恶" value={runtime?.popularHateFoodTag || '无'} />
+              <InfoLine label="当前经营场景" value={night?.place || night?.placeLabel || '无经营场景'} />
+              {showDebugDetails && <InfoLine label="经营扫描" value={night?.source || '暂无'} />}
+            </div>
+          </ListPanel>
+        </TabsContent>
 
-        <ListPanel title="实时标签">
-          <InfoLine label="流行喜爱" value={runtime?.popularFoodTag || '无'} />
-          <InfoLine label="流行厌恶" value={runtime?.popularHateFoodTag || '无'} />
-          <InfoLine label="当前经营场景" value={night?.place || night?.placeLabel || '无经营场景'} />
-          {showDebugDetails && <InfoLine label="经营扫描" value={night?.source || '暂无'} />}
-        </ListPanel>
+        <TabsContent value="inventory" className="space-y-4">
+          <Card>
+            <CardContent className={`${DENSE_FOUR_COLUMN_GRID} p-4 text-sm`}>
+              <Metric label="可用料理" value={runtime?.availableRecipeIds.length ?? 0} />
+              <Metric label="可用酒水" value={runtime?.availableBeverageIds.length ?? 0} />
+              <Metric label="可用食材" value={runtime?.availableIngredientIds.length ?? 0} />
+              <Metric label="明星店" value={runtime?.famousShopEnabled ? '开启' : '关闭'} />
+            </CardContent>
+          </Card>
 
-        <ListPanel title="低库存概览">
-          <div className={DENSE_TWO_COLUMN_GRID}>
-            <LowStockColumn title="材料" entries={ownedIngredientEntries} />
-            <LowStockColumn title="酒水" entries={ownedBeverageEntries} />
-          </div>
-        </ListPanel>
-      </div>
+          <ListPanel title="低库存概览">
+            <div className={DENSE_TWO_COLUMN_GRID}>
+              <LowStockColumn title="材料" entries={ownedIngredientEntries} />
+              <LowStockColumn title="酒水" entries={ownedBeverageEntries} />
+            </div>
+          </ListPanel>
+        </TabsContent>
+
+        <TabsContent value="actions" className="space-y-4">
+          <ListPanel title="快捷键">
+            <div className={`${DENSE_TWO_COLUMN_GRID_TIGHT} text-sm`}>
+              <InfoLine label="F8" value="在游戏与独立窗口之间切换焦点或重新显示伴随窗口" />
+              <InfoLine label="RS Click" value="手柄默认在游戏与独立窗口之间切换" />
+              <InfoLine label="手柄导航" value="左摇杆/十字键移动，A 确认，B 返回，LB/RB 切换页面，LT/RT 滚动" />
+              <InfoLine label="专注模式" value="Y 进入专注模式或切换精简模式，X 收藏当前推荐项" />
+              <InfoLine label="窗口关闭" value="关闭按钮会隐藏到托盘；托盘菜单可重新显示或退出" />
+            </div>
+          </ListPanel>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
@@ -2494,7 +2519,7 @@ function ModNormalPanel({
 
       {selectedPlace && (
         <div className={DENSE_TWO_COLUMN_GRID}>
-          <ListPanel title={`料理推荐 (${recipes.length})`}>
+          <ListPanel title={`料理推荐 (${recipes.length})`} contentClassName={RECOMMENDATION_SCROLL_AREA}>
             {recipes.length === 0 && <EmptyRow text="暂无可推荐料理" />}
             <div className="space-y-2">
               {recipes.map((recipe, index) => (
@@ -2509,7 +2534,7 @@ function ModNormalPanel({
             </div>
           </ListPanel>
 
-          <ListPanel title={`酒水推荐 (${beverages.length})`}>
+          <ListPanel title={`酒水推荐 (${beverages.length})`} contentClassName={RECOMMENDATION_SCROLL_AREA}>
             {beverages.length === 0 && <EmptyRow text="暂无可推荐酒水" />}
             <div className="space-y-2">
               {beverages.map((beverage, index) => (
@@ -2526,7 +2551,7 @@ function ModNormalPanel({
       )}
 
       {selectedPlace && (
-        <ListPanel title={`地区普客 (${customers.length})`}>
+        <ListPanel title={`地区普客 (${customers.length})`} contentClassName="min-h-[8rem]">
           <div className={DENSE_ITEM_GRID}>
             {customers.map((customer) => (
               <div key={customer.id} className="rounded-md border border-border/80 p-2 text-sm">
@@ -2750,7 +2775,7 @@ function ModRarePanel({
           )}
 
           <div className={DENSE_TWO_COLUMN_GRID}>
-            <ListPanel title={`料理推荐 (${recipes.length})`}>
+            <ListPanel title={`料理推荐 (${recipes.length})`} contentClassName={RECOMMENDATION_SCROLL_AREA}>
               {recipes.length === 0 && <EmptyRow text="暂无满足点单的料理" />}
               <div className="space-y-2">
                 {recipes.map((recipe, index) => (
@@ -2769,7 +2794,7 @@ function ModRarePanel({
               </div>
             </ListPanel>
 
-            <ListPanel title={`酒水推荐 (${beverages.length})`}>
+            <ListPanel title={`酒水推荐 (${beverages.length})`} contentClassName={RECOMMENDATION_SCROLL_AREA}>
               {beverages.length === 0 && <EmptyRow text="暂无满足点单的酒水" />}
               <div className="space-y-2">
                 {beverages.map((beverage, index) => (
@@ -2946,7 +2971,7 @@ function ModServicePanel({
           )}
 
           <div className={DENSE_TWO_COLUMN_GRID}>
-            <ListPanel title="当前稀客">
+            <ListPanel title="当前稀客" contentClassName="min-h-[9rem]">
               {activeGuests.length === 0 && <EmptyRow text="暂无稀客" />}
               {activeGuests.map((guest) => {
                 const fund = formatGuestFund(guest);
@@ -2965,7 +2990,7 @@ function ModServicePanel({
               })}
             </ListPanel>
 
-            <ListPanel title="当前稀客点单">
+            <ListPanel title="当前稀客点单" contentClassName="min-h-[9rem]">
               {orders.length === 0 && <EmptyRow text={night?.error || '暂无点单'} />}
               {dismissRareOrderError && <EmptyRow text={dismissRareOrderError} />}
               {orders.map((order) => {
@@ -3049,7 +3074,7 @@ function ModServicePanel({
             />
           )}
 
-          <ListPanel title={`${showDebugDetails ? '普客订单诊断' : '普客订单'} (${normalBusiness?.orders.length ?? 0})`}>
+          <ListPanel title={`${showDebugDetails ? '普客订单诊断' : '普客订单'} (${normalBusiness?.orders.length ?? 0})`} contentClassName="min-h-[18rem]">
             {autoPrepPreferences.automationEnabled && autoPrepPreferences.autoNormalOrderEnabled ? (
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm">
                 <span className="text-muted-foreground">
@@ -3341,7 +3366,11 @@ function CurrentOrderRecommendations({
   );
 
   return (
-    <ListPanel title="当前点单推荐" action={action}>
+    <ListPanel
+      title="当前点单推荐"
+      action={action}
+      contentClassName={compact ? 'min-h-[24rem] max-h-[calc(100vh-12rem)] overflow-auto pr-1' : 'min-h-[32rem] max-h-[calc(100vh-20rem)] overflow-auto pr-1'}
+    >
       {favoriteError && (
         <div className="mb-2 rounded-md border border-destructive/30 px-3 py-2 text-sm text-destructive">
           {favoriteError}
@@ -4089,6 +4118,7 @@ function ModSettingsPanel({
   const [logSettings, setLogSettings] = useState<LocalApiLogSettings | null>(null);
   const [consoleBusy, setConsoleBusy] = useState(false);
   const [consoleError, setConsoleError] = useState('');
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('window');
 
   const refreshConsoleSettings = useCallback(async () => {
     if (!apiToken) {
@@ -4137,239 +4167,279 @@ function ModSettingsPanel({
     refreshConsoleSettings();
   }, [preferences.showDebugDetails, refreshConsoleSettings]);
 
-  return (
-    <div className={DENSE_TWO_COLUMN_GRID}>
-      <ListPanel title="窗口">
-        <div className="space-y-4">
-          <OpacitySlider
-            value={preferences.windowOpacity}
-            onChange={(windowOpacity) => onPreferenceChange({ windowOpacity })}
-          />
-          <SettingChoice
-            label="焦点切换"
-            value={preferences.focusSwitchBehavior}
-            options={[
-              { value: 'hide', label: '隐藏窗口', description: '切回游戏时隐藏伴随窗口。' },
-              { value: 'keep-visible', label: '保持悬浮', description: '只切回游戏焦点，窗口继续置顶显示。' },
-            ]}
-            onChange={(focusSwitchBehavior) => onPreferenceChange({ focusSwitchBehavior })}
-          />
-          <FocusSwitchCooldownInput
-            value={preferences.focusSwitchCooldownMs}
-            onChange={(focusSwitchCooldownMs) => onPreferenceChange({ focusSwitchCooldownMs })}
-          />
-          <SwitchControl
-            label="始终置顶"
-            checked={preferences.alwaysOnTop}
-            onCheckedChange={(alwaysOnTop) => onPreferenceChange({ alwaysOnTop })}
-          />
-        </div>
-      </ListPanel>
+  useEffect(() => {
+    if (!preferences.showDebugDetails && settingsTab === 'debug') {
+      setSettingsTab('window');
+    }
+  }, [preferences.showDebugDetails, settingsTab]);
 
-      {preferences.showDebugDetails && (
-        <ListPanel title="BepInEx">
-          <div className="space-y-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                size="sm"
-                variant={logSettings?.nativeBepInExConsoleEnabled ? 'default' : 'outline'}
-                onClick={toggleNativeConsole}
-                disabled={!apiToken || consoleBusy}
-              >
-                <Power className="size-4" />
-                {logSettings?.nativeBepInExConsoleEnabled ? '关闭原生日志窗口' : '开启原生日志窗口'}
-              </Button>
-              <Button size="sm" variant="outline" onClick={refreshConsoleSettings} disabled={!apiToken || consoleBusy}>
-                <RefreshCw className="size-4" />
-                刷新状态
-              </Button>
+  return (
+    <Tabs value={settingsTab} onValueChange={(value) => setSettingsTab(value as SettingsTab)} className="space-y-4">
+      <TabsList className={preferences.showDebugDetails ? 'grid h-9 w-full grid-cols-5' : 'grid h-9 w-full grid-cols-4'}>
+        <TabsTrigger value="window" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
+          窗口
+        </TabsTrigger>
+        <TabsTrigger value="recommendation" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
+          推荐
+        </TabsTrigger>
+        <TabsTrigger value="sorting" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
+          排序
+        </TabsTrigger>
+        <TabsTrigger value="automation" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
+          自动化
+        </TabsTrigger>
+        {preferences.showDebugDetails && (
+          <TabsTrigger value="debug" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
+            调试
+          </TabsTrigger>
+        )}
+      </TabsList>
+
+      <TabsContent value="window" className="space-y-4">
+        <div className={DENSE_TWO_COLUMN_GRID}>
+          <ListPanel title="窗口">
+            <div className="space-y-4">
+              <OpacitySlider
+                value={preferences.windowOpacity}
+                onChange={(windowOpacity) => onPreferenceChange({ windowOpacity })}
+              />
+              <SettingChoice
+                label="焦点切换"
+                value={preferences.focusSwitchBehavior}
+                options={[
+                  { value: 'hide', label: '隐藏窗口', description: '切回游戏时隐藏伴随窗口。' },
+                  { value: 'keep-visible', label: '保持悬浮', description: '只切回游戏焦点，窗口继续置顶显示。' },
+                ]}
+                onChange={(focusSwitchBehavior) => onPreferenceChange({ focusSwitchBehavior })}
+              />
+              <FocusSwitchCooldownInput
+                value={preferences.focusSwitchCooldownMs}
+                onChange={(focusSwitchCooldownMs) => onPreferenceChange({ focusSwitchCooldownMs })}
+              />
+              <SwitchControl
+                label="始终置顶"
+                checked={preferences.alwaysOnTop}
+                onCheckedChange={(alwaysOnTop) => onPreferenceChange({ alwaysOnTop })}
+              />
             </div>
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              <InfoLine label="下次启动" value={logSettings?.nativeBepInExConsoleEnabled ? '开启' : '关闭'} />
-              <InfoLine label="当前窗口" value={logSettings?.nativeBepInExConsoleVisible ? '可见' : '未显示'} />
-            </div>
-            <div className="text-xs text-muted-foreground">
-              关闭后会隐藏当前 BepInEx 控制台，并将 BepInEx.cfg 的原生 Console log 设为下次启动关闭；日志页仍可读取 LogOutput.log。
-            </div>
-            {consoleError && (
-              <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                {consoleError}
+          </ListPanel>
+
+          <ListPanel title="显示">
+            <div className="space-y-4">
+              <SettingChoice
+                label="主题"
+                value={themeMode}
+                options={[
+                  { value: 'system', label: '跟随系统', description: '使用系统浅色或深色主题。' },
+                  { value: 'light', label: '浅色', description: '固定使用浅色主题。' },
+                  { value: 'dark', label: '深色', description: '固定使用深色主题。' },
+                ]}
+                onChange={onThemeModeChange}
+              />
+              <SwitchControl
+                label="手柄导航"
+                checked={preferences.gamepadNavigationEnabled}
+                onCheckedChange={(gamepadNavigationEnabled) => onPreferenceChange({ gamepadNavigationEnabled })}
+              />
+              <div className="text-xs text-muted-foreground">
+                关闭手柄导航只影响伴随窗口内的手柄操作；F8 仍可在伴随窗口聚焦时切回游戏。
               </div>
-            )}
+              <SwitchControl
+                label="显示调试信息"
+                checked={preferences.showDebugDetails}
+                onCheckedChange={(showDebugDetails) => onPreferenceChange({ showDebugDetails })}
+              />
+              <div className="text-xs text-muted-foreground">
+                开启后显示日志页、扫描状态、运行时来源、性能耗时和订单内部来源；普通使用建议保持关闭。
+              </div>
+            </div>
+          </ListPanel>
+
+          <ListPanel title="稀客专注模式">
+            <div className="space-y-4">
+              <SwitchControl
+                label="默认精简模式"
+                checked={serviceFocusCompact}
+                onCheckedChange={onServiceFocusCompactChange}
+              />
+              <div className="text-xs text-muted-foreground">
+                料理和酒水显示数量在进入专注模式后直接调整，设置会自动记住。
+              </div>
+            </div>
+          </ListPanel>
+        </div>
+      </TabsContent>
+
+      <TabsContent value="recommendation" className="space-y-4">
+        <ListPanel title="推荐">
+          <div className="space-y-4">
+            <SwitchControl
+              label="排除缺失厨具"
+              checked={preferences.filterMissingCookers}
+              onCheckedChange={(filterMissingCookers) => onPreferenceChange({ filterMissingCookers })}
+            />
+            <div className="text-xs text-muted-foreground">
+              进入经营场景后，若读取到已摆放厨具，推荐列表会隐藏当前场景无法制作的料理。
+            </div>
+            <SwitchControl
+              label="优先任务料理"
+              checked={preferences.prioritizeMissionRecipes}
+              onCheckedChange={(prioritizeMissionRecipes) => onPreferenceChange({ prioritizeMissionRecipes })}
+            />
+            <div className="text-xs text-muted-foreground">
+              当前稀客存在经营投喂任务时，把任务指定料理优先放到推荐第一位；只影响排序，不会自动完成任务。
+            </div>
+            <SettingChoice
+              label="经营中订单排序"
+              value={preferences.serviceOrderSortMode}
+              options={[
+                { value: 'ordered', label: '点单顺序', description: '按订单首次出现时间排列，保持当前默认行为。' },
+                { value: 'guest', label: '稀客分组', description: '同一稀客的订单放在一起，组内仍按点单先后排列。' },
+              ]}
+              onChange={(serviceOrderSortMode) => onPreferenceChange({ serviceOrderSortMode })}
+            />
+            <SwitchControl
+              label="游戏界面置顶推荐（实验性）"
+              checked={preferences.gameUiPinningEnabled}
+              onCheckedChange={(gameUiPinningEnabled) => onPreferenceChange({ gameUiPinningEnabled })}
+            />
+            <div className="text-xs text-muted-foreground">
+              打开料理或酒水选择界面时，尝试把当前第一笔订单的推荐材料、料理和酒水排到前面；失败时只记录诊断，不修改库存。
+            </div>
+            <SwitchControl
+              label="目标厨具高亮（实验性）"
+              checked={preferences.cookerHighlightEnabled}
+              onCheckedChange={(cookerHighlightEnabled) => onPreferenceChange({ cookerHighlightEnabled })}
+            />
+            <div className="text-xs text-muted-foreground">
+              经营中有推荐目标厨具时，尝试让对应已摆放厨具显示黄色脉冲高亮；只改变可见提示，不自动操作厨具。
+            </div>
           </div>
         </ListPanel>
+      </TabsContent>
+
+      <TabsContent value="sorting" className="space-y-4">
+        <div className={DENSE_TWO_COLUMN_GRID}>
+          <ListPanel title="料理排序">
+            <SortRulesControl
+              rules={preferences.recipeSortRules}
+              options={RECIPE_SORT_OPTIONS}
+              onChange={(recipeSortRules) => onPreferenceChange({ recipeSortRules })}
+              onReset={() => onPreferenceChange({ recipeSortRules: buildDefaultSortRules(RECIPE_SORT_OPTIONS) })}
+            />
+          </ListPanel>
+
+          <ListPanel title="酒水排序">
+            <SortRulesControl
+              rules={preferences.beverageSortRules}
+              options={BEVERAGE_SORT_OPTIONS}
+              onChange={(beverageSortRules) => onPreferenceChange({ beverageSortRules })}
+              onReset={() => onPreferenceChange({ beverageSortRules: buildDefaultSortRules(BEVERAGE_SORT_OPTIONS) })}
+            />
+          </ListPanel>
+        </div>
+      </TabsContent>
+
+      <TabsContent value="automation" className="space-y-4">
+        <ListPanel title="自动化">
+          <div className="space-y-4">
+            <SwitchControl
+              label="启用自动化（实验性）"
+              checked={preferences.automationEnabled}
+              onCheckedChange={(automationEnabled) => onPreferenceChange({ automationEnabled })}
+            />
+            <div className="text-xs text-muted-foreground">
+              关闭时不会显示或执行任何自动化动作；开启后可在“经营中”页面配置具体子功能。
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <AutomationNumberInput
+                label="稀客并发"
+                value={preferences.autoRareConcurrency}
+                min={MIN_AUTO_ORDER_CONCURRENCY}
+                max={MAX_RARE_AUTO_ORDER_CONCURRENCY}
+                onChange={(autoRareConcurrency) => onPreferenceChange({ autoRareConcurrency })}
+              />
+              <AutomationNumberInput
+                label="普客并发"
+                value={preferences.autoNormalConcurrency}
+                min={MIN_AUTO_ORDER_CONCURRENCY}
+                max={MAX_NORMAL_AUTO_ORDER_CONCURRENCY}
+                onChange={(autoNormalConcurrency) => onPreferenceChange({ autoNormalConcurrency })}
+              />
+              <AutomationNumberInput
+                label="稀客等待送餐盘"
+                value={preferences.autoRareTrayWaitSeconds}
+                min={MIN_AUTO_WAIT_SECONDS}
+                max={MAX_AUTO_WAIT_SECONDS}
+                unit="秒"
+                onChange={(autoRareTrayWaitSeconds) => onPreferenceChange({ autoRareTrayWaitSeconds })}
+              />
+              <AutomationNumberInput
+                label="普客保温箱复查"
+                value={preferences.autoNormalStorageWaitSeconds}
+                min={MIN_AUTO_WAIT_SECONDS}
+                max={MAX_AUTO_WAIT_SECONDS}
+                unit="秒"
+                onChange={(autoNormalStorageWaitSeconds) => onPreferenceChange({ autoNormalStorageWaitSeconds })}
+              />
+              <AutomationNumberInput
+                label="最大重试"
+                value={preferences.autoMaxStepRetries}
+                min={MIN_AUTO_STEP_RETRIES}
+                max={MAX_AUTO_STEP_RETRIES_LIMIT}
+                onChange={(autoMaxStepRetries) => onPreferenceChange({ autoMaxStepRetries })}
+              />
+              <AutomationNumberInput
+                label="最大回退"
+                value={preferences.autoMaxRollbacks}
+                min={MIN_AUTO_ROLLBACKS}
+                max={MAX_AUTO_ROLLBACKS_LIMIT}
+                onChange={(autoMaxRollbacks) => onPreferenceChange({ autoMaxRollbacks })}
+              />
+            </div>
+            <div className="text-xs text-muted-foreground">
+              参数会在下一轮自动化轮询生效。并发过高可能抢占厨具；等待时间过短可能导致重复开锅。
+            </div>
+          </div>
+        </ListPanel>
+      </TabsContent>
+
+      {preferences.showDebugDetails && (
+        <TabsContent value="debug" className="space-y-4">
+          <ListPanel title="BepInEx">
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  size="sm"
+                  variant={logSettings?.nativeBepInExConsoleEnabled ? 'default' : 'outline'}
+                  onClick={toggleNativeConsole}
+                  disabled={!apiToken || consoleBusy}
+                >
+                  <Power className="size-4" />
+                  {logSettings?.nativeBepInExConsoleEnabled ? '关闭原生日志窗口' : '开启原生日志窗口'}
+                </Button>
+                <Button size="sm" variant="outline" onClick={refreshConsoleSettings} disabled={!apiToken || consoleBusy}>
+                  <RefreshCw className="size-4" />
+                  刷新状态
+                </Button>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <InfoLine label="下次启动" value={logSettings?.nativeBepInExConsoleEnabled ? '开启' : '关闭'} />
+                <InfoLine label="当前窗口" value={logSettings?.nativeBepInExConsoleVisible ? '可见' : '未显示'} />
+              </div>
+              <div className="text-xs text-muted-foreground">
+                关闭后会隐藏当前 BepInEx 控制台，并将 BepInEx.cfg 的原生 Console log 设为下次启动关闭；日志页仍可读取 LogOutput.log。
+              </div>
+              {consoleError && (
+                <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                  {consoleError}
+                </div>
+              )}
+            </div>
+          </ListPanel>
+        </TabsContent>
       )}
-
-      <ListPanel title="显示">
-        <div className="space-y-4">
-          <SettingChoice
-            label="主题"
-            value={themeMode}
-            options={[
-              { value: 'system', label: '跟随系统', description: '使用系统浅色或深色主题。' },
-              { value: 'light', label: '浅色', description: '固定使用浅色主题。' },
-              { value: 'dark', label: '深色', description: '固定使用深色主题。' },
-            ]}
-            onChange={onThemeModeChange}
-          />
-          <SwitchControl
-            label="手柄导航"
-            checked={preferences.gamepadNavigationEnabled}
-            onCheckedChange={(gamepadNavigationEnabled) => onPreferenceChange({ gamepadNavigationEnabled })}
-          />
-          <div className="text-xs text-muted-foreground">
-            关闭手柄导航只影响伴随窗口内的手柄操作；F8 仍可在伴随窗口聚焦时切回游戏。
-          </div>
-          <SwitchControl
-            label="显示调试信息"
-            checked={preferences.showDebugDetails}
-            onCheckedChange={(showDebugDetails) => onPreferenceChange({ showDebugDetails })}
-          />
-          <div className="text-xs text-muted-foreground">
-            开启后显示日志页、扫描状态、运行时来源、性能耗时和订单内部来源；普通使用建议保持关闭。
-          </div>
-        </div>
-      </ListPanel>
-
-      <ListPanel title="稀客专注模式">
-        <div className="space-y-4">
-          <SwitchControl
-            label="默认精简模式"
-            checked={serviceFocusCompact}
-            onCheckedChange={onServiceFocusCompactChange}
-          />
-          <div className="text-xs text-muted-foreground">
-            料理和酒水显示数量在进入专注模式后直接调整，设置会自动记住。
-          </div>
-        </div>
-      </ListPanel>
-
-      <ListPanel title="推荐">
-        <div className="space-y-4">
-          <SwitchControl
-            label="排除缺失厨具"
-            checked={preferences.filterMissingCookers}
-            onCheckedChange={(filterMissingCookers) => onPreferenceChange({ filterMissingCookers })}
-          />
-          <div className="text-xs text-muted-foreground">
-            进入经营场景后，若读取到已摆放厨具，推荐列表会隐藏当前场景无法制作的料理。
-          </div>
-          <SwitchControl
-            label="优先任务料理"
-            checked={preferences.prioritizeMissionRecipes}
-            onCheckedChange={(prioritizeMissionRecipes) => onPreferenceChange({ prioritizeMissionRecipes })}
-          />
-          <div className="text-xs text-muted-foreground">
-            当前稀客存在经营投喂任务时，把任务指定料理优先放到推荐第一位；只影响排序，不会自动完成任务。
-          </div>
-          <SettingChoice
-            label="经营中订单排序"
-            value={preferences.serviceOrderSortMode}
-            options={[
-              { value: 'ordered', label: '点单顺序', description: '按订单首次出现时间排列，保持当前默认行为。' },
-              { value: 'guest', label: '稀客分组', description: '同一稀客的订单放在一起，组内仍按点单先后排列。' },
-            ]}
-            onChange={(serviceOrderSortMode) => onPreferenceChange({ serviceOrderSortMode })}
-          />
-          <SwitchControl
-            label="游戏界面置顶推荐（实验性）"
-            checked={preferences.gameUiPinningEnabled}
-            onCheckedChange={(gameUiPinningEnabled) => onPreferenceChange({ gameUiPinningEnabled })}
-          />
-          <div className="text-xs text-muted-foreground">
-            打开料理或酒水选择界面时，尝试把当前第一笔订单的推荐材料、料理和酒水排到前面；失败时只记录诊断，不修改库存。
-          </div>
-          <SwitchControl
-            label="目标厨具高亮（实验性）"
-            checked={preferences.cookerHighlightEnabled}
-            onCheckedChange={(cookerHighlightEnabled) => onPreferenceChange({ cookerHighlightEnabled })}
-          />
-          <div className="text-xs text-muted-foreground">
-            经营中有推荐目标厨具时，尝试让对应已摆放厨具显示黄色脉冲高亮；只改变可见提示，不自动操作厨具。
-          </div>
-        </div>
-      </ListPanel>
-
-      <ListPanel title="料理排序">
-        <SortRulesControl
-          rules={preferences.recipeSortRules}
-          options={RECIPE_SORT_OPTIONS}
-          onChange={(recipeSortRules) => onPreferenceChange({ recipeSortRules })}
-          onReset={() => onPreferenceChange({ recipeSortRules: buildDefaultSortRules(RECIPE_SORT_OPTIONS) })}
-        />
-      </ListPanel>
-
-      <ListPanel title="酒水排序">
-        <SortRulesControl
-          rules={preferences.beverageSortRules}
-          options={BEVERAGE_SORT_OPTIONS}
-          onChange={(beverageSortRules) => onPreferenceChange({ beverageSortRules })}
-          onReset={() => onPreferenceChange({ beverageSortRules: buildDefaultSortRules(BEVERAGE_SORT_OPTIONS) })}
-        />
-      </ListPanel>
-
-      <ListPanel title="自动化">
-        <div className="space-y-4">
-          <SwitchControl
-            label="启用自动化（实验性）"
-            checked={preferences.automationEnabled}
-            onCheckedChange={(automationEnabled) => onPreferenceChange({ automationEnabled })}
-          />
-          <div className="text-xs text-muted-foreground">
-            关闭时不会显示或执行任何自动化动作；开启后可在“经营中”页面配置具体子功能。
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <AutomationNumberInput
-              label="稀客并发"
-              value={preferences.autoRareConcurrency}
-              min={MIN_AUTO_ORDER_CONCURRENCY}
-              max={MAX_RARE_AUTO_ORDER_CONCURRENCY}
-              onChange={(autoRareConcurrency) => onPreferenceChange({ autoRareConcurrency })}
-            />
-            <AutomationNumberInput
-              label="普客并发"
-              value={preferences.autoNormalConcurrency}
-              min={MIN_AUTO_ORDER_CONCURRENCY}
-              max={MAX_NORMAL_AUTO_ORDER_CONCURRENCY}
-              onChange={(autoNormalConcurrency) => onPreferenceChange({ autoNormalConcurrency })}
-            />
-            <AutomationNumberInput
-              label="稀客等待送餐盘"
-              value={preferences.autoRareTrayWaitSeconds}
-              min={MIN_AUTO_WAIT_SECONDS}
-              max={MAX_AUTO_WAIT_SECONDS}
-              unit="秒"
-              onChange={(autoRareTrayWaitSeconds) => onPreferenceChange({ autoRareTrayWaitSeconds })}
-            />
-            <AutomationNumberInput
-              label="普客保温箱复查"
-              value={preferences.autoNormalStorageWaitSeconds}
-              min={MIN_AUTO_WAIT_SECONDS}
-              max={MAX_AUTO_WAIT_SECONDS}
-              unit="秒"
-              onChange={(autoNormalStorageWaitSeconds) => onPreferenceChange({ autoNormalStorageWaitSeconds })}
-            />
-            <AutomationNumberInput
-              label="最大重试"
-              value={preferences.autoMaxStepRetries}
-              min={MIN_AUTO_STEP_RETRIES}
-              max={MAX_AUTO_STEP_RETRIES_LIMIT}
-              onChange={(autoMaxStepRetries) => onPreferenceChange({ autoMaxStepRetries })}
-            />
-            <AutomationNumberInput
-              label="最大回退"
-              value={preferences.autoMaxRollbacks}
-              min={MIN_AUTO_ROLLBACKS}
-              max={MAX_AUTO_ROLLBACKS_LIMIT}
-              onChange={(autoMaxRollbacks) => onPreferenceChange({ autoMaxRollbacks })}
-            />
-          </div>
-          <div className="text-xs text-muted-foreground">
-            参数会在下一轮自动化轮询生效。并发过高可能抢占厨具；等待时间过短可能导致重复开锅。
-          </div>
-        </div>
-      </ListPanel>
-    </div>
+    </Tabs>
   );
 }
 
@@ -4748,7 +4818,17 @@ function formatGuestFund(guest: NightBusinessGuest): string {
   return String(Math.trunc(guest.fund));
 }
 
-function ListPanel({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
+function ListPanel({
+  title,
+  action,
+  children,
+  contentClassName = '',
+}: {
+  title: string;
+  action?: ReactNode;
+  children: ReactNode;
+  contentClassName?: string;
+}) {
   return (
     <Card className="min-w-0">
       <CardContent className="min-w-0 p-4">
@@ -4756,7 +4836,7 @@ function ListPanel({ title, action, children }: { title: string; action?: ReactN
           <h2 className="min-w-0 text-base font-semibold">{title}</h2>
           {action}
         </div>
-        {children}
+        {contentClassName ? <div className={contentClassName}>{children}</div> : children}
       </CardContent>
     </Card>
   );
