@@ -26,8 +26,8 @@ internal sealed class LocalApiServer : IDisposable
     private readonly Func<OrderPreparationRequest, OrderPreparationResult> _prepareOrder;
     private readonly Func<OrderPreparationRequest, OrderPreparationResult> _completeOrder;
     private readonly Func<OrderPreparationRequest, OrderPreparationResult> _completeNormalOrder;
-    private readonly Func<string, RareGuestInvitationResult> _listRareGuestInvitations;
-    private readonly Func<string, RareGuestInvitationResult> _inviteAllRareGuests;
+    private readonly Func<string, string, RareGuestInvitationResult> _listRareGuestInvitations;
+    private readonly Func<string, string, RareGuestInvitationResult> _inviteAllRareGuests;
     private readonly Func<int, string, RareGuestInvitationResult> _inviteRareGuest;
     private readonly FavoriteStore _favoriteStore;
     private TcpListener? _listener;
@@ -48,8 +48,8 @@ internal sealed class LocalApiServer : IDisposable
         Func<OrderPreparationRequest, OrderPreparationResult> prepareOrder,
         Func<OrderPreparationRequest, OrderPreparationResult> completeOrder,
         Func<OrderPreparationRequest, OrderPreparationResult> completeNormalOrder,
-        Func<string, RareGuestInvitationResult> listRareGuestInvitations,
-        Func<string, RareGuestInvitationResult> inviteAllRareGuests,
+        Func<string, string, RareGuestInvitationResult> listRareGuestInvitations,
+        Func<string, string, RareGuestInvitationResult> inviteAllRareGuests,
         Func<int, string, RareGuestInvitationResult> inviteRareGuest,
         FavoriteStore favoriteStore,
         ManualLogSource log)
@@ -232,10 +232,10 @@ internal sealed class LocalApiServer : IDisposable
                         WriteResponse(stream, 200, "OK", BuildRareOrderDismissJson(query));
                         break;
                     case "/rare-guests/invitations":
-                        WriteResponse(stream, 200, "OK", BuildRareGuestInvitationJson(() => _listRareGuestInvitations(ReadStringQuery(query, "scope"))));
+                        WriteResponse(stream, 200, "OK", BuildRareGuestInvitationJson(() => _listRareGuestInvitations(ReadStringQuery(query, "scope"), ReadStringQuery(query, "levels"))));
                         break;
                     case "/rare-guests/invite-all":
-                        WriteResponse(stream, 200, "OK", BuildRareGuestInvitationJson(() => _inviteAllRareGuests(ReadStringQuery(query, "scope"))));
+                        WriteResponse(stream, 200, "OK", BuildRareGuestInvitationJson(() => _inviteAllRareGuests(ReadStringQuery(query, "scope"), ReadStringQuery(query, "levels"))));
                         break;
                     case "/rare-guests/invite":
                         WriteResponse(stream, 200, "OK", BuildRareGuestInvitationJson(() => _inviteRareGuest(ReadIntQuery(query, "guestId", -1), ReadStringQuery(query, "scope"))));
@@ -540,6 +540,8 @@ internal sealed class LocalApiServer : IDisposable
                 AutoTakeBeverage = ReadBoolQuery(query, "autoTakeBeverage") ?? false,
                 AutoStartCooking = ReadBoolQuery(query, "autoStartCooking") ?? false,
                 AutoCollectCooking = ReadBoolQuery(query, "autoCollectCooking") ?? false,
+                AutoDeliverFood = ReadBoolQuery(query, "autoDeliverFood") ?? false,
+                AutoCompleteOrder = ReadBoolQuery(query, "autoCompleteOrder") ?? false,
                 FavoritesOnly = ReadBoolQuery(query, "favoritesOnly") ?? false,
                 StopOnError = ReadBoolQuery(query, "stopOnError") ?? true,
                 RecipeFavorite = ReadBoolQuery(query, "recipeFavorite") ?? false,

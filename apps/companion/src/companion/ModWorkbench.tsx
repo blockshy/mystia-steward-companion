@@ -67,6 +67,7 @@ const ENDPOINT_STORAGE_KEY = `${STORAGE_PREFIX}-mod-api-endpoint`;
 const TOKEN_STORAGE_KEY = `${STORAGE_PREFIX}-mod-api-token`;
 const TAB_STORAGE_KEY = `${STORAGE_PREFIX}-mod-tab`;
 const RARE_GUEST_INVITATION_SCOPE_STORAGE_KEY = `${STORAGE_PREFIX}-rare-guest-invitation-scope`;
+const RARE_GUEST_INVITATION_LEVELS_STORAGE_KEY = `${STORAGE_PREFIX}-rare-guest-invitation-levels`;
 const FOCUS_COMPACT_STORAGE_KEY = `${STORAGE_PREFIX}-service-focus-compact`;
 const FOCUS_RECIPE_LIMIT_STORAGE_KEY = `${STORAGE_PREFIX}-service-focus-recipe-limit`;
 const FOCUS_BEVERAGE_LIMIT_STORAGE_KEY = `${STORAGE_PREFIX}-service-focus-beverage-limit`;
@@ -78,8 +79,11 @@ const MOUSE_PASSTHROUGH_STORAGE_KEY = `${STORAGE_PREFIX}-mouse-passthrough`;
 const GAMEPAD_NAVIGATION_STORAGE_KEY = `${STORAGE_PREFIX}-gamepad-navigation`;
 const AUTOMATION_ENABLED_STORAGE_KEY = `${STORAGE_PREFIX}-automation-enabled`;
 const AUTO_NORMAL_ORDER_ENABLED_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-order-enabled`;
+const AUTO_NORMAL_TAKE_BEVERAGE_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-take-beverage`;
 const AUTO_NORMAL_START_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-start-cooking`;
 const AUTO_NORMAL_COLLECT_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-collect-cooking`;
+const AUTO_NORMAL_DELIVER_FOOD_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-deliver-food`;
+const AUTO_NORMAL_COMPLETE_ORDER_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-complete-order`;
 const AUTO_NORMAL_STOP_ON_ERROR_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-stop-on-error`;
 const AUTO_PREP_COMPLETE_ORDER_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-complete-order`;
 const AUTO_PREP_TAKE_BEVERAGE_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-take-beverage`;
@@ -367,6 +371,10 @@ interface NormalBusinessOrder {
   beverageName: string;
   hasServedFood: boolean;
   hasServedBeverage: boolean;
+  hasStoredFood?: boolean;
+  hasStoredFoodReceipt?: boolean;
+  storedFoodCount?: number;
+  storedFoodStatus?: string;
   isFulfilled: boolean;
   firstSeenAtUtc?: string | null;
   source: string;
@@ -622,8 +630,11 @@ interface CompanionPreferences {
   gamepadNavigationEnabled: boolean;
   automationEnabled: boolean;
   autoNormalOrderEnabled: boolean;
+  autoNormalTakeBeverage: boolean;
   autoNormalStartCooking: boolean;
   autoNormalCollectCooking: boolean;
+  autoNormalDeliverFood: boolean;
+  autoNormalCompleteOrder: boolean;
   autoNormalStopOnError: boolean;
   autoPrepCompleteOrder: boolean;
   autoPrepTakeBeverage: boolean;
@@ -714,7 +725,13 @@ interface NormalAutoOrderDiagnostic {
   rollbackCount: number;
   lastError: string;
   prepared: boolean;
+  beverageHandled: boolean;
   collected: boolean;
+  storedFoodCount: number;
+  hasStoredFoodReceipt: boolean;
+  storedFoodStatus: string;
+  foodDelivered: boolean;
+  completed: boolean;
   paused: boolean;
   hasServedFood: boolean;
   hasServedBeverage: boolean;
@@ -724,7 +741,13 @@ interface NormalAutoOrderState {
   orderKey: string;
   prepared: boolean;
   preparedAtMs: number;
+  beverageHandled: boolean;
+  beverageHandledAtMs: number;
   collected: boolean;
+  foodDelivered: boolean;
+  foodDeliveredAtMs: number;
+  completed: boolean;
+  completedAtMs: number;
   step: AutomationStep;
   stepStartedAtMs: number;
   lastProgressAtMs: number;
@@ -783,6 +806,7 @@ type AutomationStep =
   | 'ensure-cooking'
   | 'wait-food-tray'
   | 'wait-food-stored'
+  | 'deliver-food'
   | 'complete-order'
   | 'done'
   | 'paused';
@@ -841,6 +865,9 @@ export function ModWorkbench() {
   const [favoriteBusyKey, setFavoriteBusyKey] = useState('');
   const [rareGuestInvitationScope, setRareGuestInvitationScope] = useState<RareGuestInvitationScope>(() =>
     readStoredRareGuestInvitationScope(),
+  );
+  const [rareGuestInvitationLevels, setRareGuestInvitationLevels] = useState<number[]>(() =>
+    readStoredRareGuestInvitationLevels(),
   );
   const [rareGuestInvitationResult, setRareGuestInvitationResult] = useState<RareGuestInvitationResponse | null>(null);
   const [rareGuestInvitationError, setRareGuestInvitationError] = useState('');
@@ -1161,7 +1188,11 @@ export function ModWorkbench() {
     setRareGuestInvitationBusyKey('list');
     setRareGuestInvitationError('');
     try {
-      const response = await fetchAvailableRareGuestInvitations(normalizedEndpoint, apiToken, rareGuestInvitationScope);
+      const response = await fetchAvailableRareGuestInvitations(
+        normalizedEndpoint,
+        apiToken,
+        rareGuestInvitationScope,
+      );
       setRareGuestInvitationResult(response);
       if (!response.ok) {
         setRareGuestInvitationError(response.error || response.status || '读取可邀请稀客失败');
@@ -1182,7 +1213,12 @@ export function ModWorkbench() {
     setRareGuestInvitationBusyKey('all');
     setRareGuestInvitationError('');
     try {
-      const response = await inviteAllAvailableRareGuests(normalizedEndpoint, apiToken, rareGuestInvitationScope);
+      const response = await inviteAllAvailableRareGuests(
+        normalizedEndpoint,
+        apiToken,
+        rareGuestInvitationScope,
+        rareGuestInvitationLevels,
+      );
       setRareGuestInvitationResult(response);
       if (!response.ok) {
         setRareGuestInvitationError(response.error || response.status || '稀客邀请失败');
@@ -1193,7 +1229,7 @@ export function ModWorkbench() {
     } finally {
       setRareGuestInvitationBusyKey('');
     }
-  }, [apiToken, normalizedEndpoint, rareGuestInvitationScope, refresh]);
+  }, [apiToken, normalizedEndpoint, rareGuestInvitationLevels, rareGuestInvitationScope, refresh]);
 
   const inviteRareGuest = useCallback(async (guestId: number) => {
     if (!apiToken) {
@@ -1503,14 +1539,39 @@ export function ModWorkbench() {
           companionPreferences.autoPrepStopOnError,
           companionPreferences.autoMaxStepRetries,
         );
-        rareOrderStatesRef.current.set(orderKey, nextState);
-        const suffix = nextState.paused
+        let finalState = nextState;
+        let followUpMessage = '';
+        if (companionPreferences.autoPrepCompleteOrder
+          && !completedOrderThisTick
+          && nextBeverageHandled
+          && !currentState.beverageHandled) {
+          const immediateCompleteResponse = await completeFirstRareOrder(
+            normalizedEndpoint,
+            apiToken,
+            selection.item,
+            finalState.recipeTarget,
+            finalState.beverageTarget,
+            buildCompleteOrderPreferences(companionPreferences),
+          );
+          if (immediateCompleteResponse.ok) {
+            rareOrderStatesRef.current.delete(orderKey);
+            completedOrderThisTick = true;
+            messages.push(`${prefix}\n${formatOrderPreparationResponse(prepareResponse)}\n${formatOrderPreparationResponse(immediateCompleteResponse)}`);
+            continue;
+          }
+
+          finalState = applyRareServedStateFromResponse(finalState, selection.item.order, immediateCompleteResponse, now);
+          followUpMessage = `\n${formatOrderPreparationResponse(immediateCompleteResponse)}`;
+        }
+
+        rareOrderStatesRef.current.set(orderKey, finalState);
+        const suffix = finalState.paused
           ? '\n稀客自动化已暂停该订单，订单变化或重新开启后会继续。'
           : transientFailure
             ? '\n当前条件暂不可执行，将继续等待并自动重试。'
             : '';
         const schedulerSuffix = schedulerNote.ok ? '' : `\n${schedulerNote.message}`;
-        messages.push(`${prefix}\n${formatOrderPreparationResponse(prepareResponse)}\n${formatAutomationState(nextState, companionPreferences)}${schedulerSuffix}${suffix}`);
+        messages.push(`${prefix}\n${formatOrderPreparationResponse(prepareResponse)}${followUpMessage}\n${formatAutomationState(finalState, companionPreferences)}${schedulerSuffix}${suffix}`);
       }
 
       if (candidateResult.messages.length > 0) {
@@ -1564,7 +1625,7 @@ export function ModWorkbench() {
       normalOrderStatesRef.current.clear();
       setNormalOrderDiagnostics([]);
       setNormalOrderPausedCount(0);
-      setNormalOrderMessage('普客自动化已开启，请至少启用一个处理阶段：自动制作料理或收至保温箱。');
+      setNormalOrderMessage('普客自动化已开启，请至少启用一个处理阶段：送达酒水、自动制作料理、收至保温箱、送达料理或完成订单。');
       return;
     }
 
@@ -1577,6 +1638,16 @@ export function ModWorkbench() {
     const activeKeys = new Set(orders.map(buildNormalAutoOrderKey));
     for (const key of Array.from(normalOrderStatesRef.current.keys())) {
       if (!activeKeys.has(key)) normalOrderStatesRef.current.delete(key);
+    }
+    for (const order of orders) {
+      const orderKey = buildNormalAutoOrderKey(order);
+      const syncedState = syncNormalOrderStateWithSnapshot(
+        order,
+        normalOrderStatesRef.current.get(orderKey),
+        now,
+        companionPreferences,
+      );
+      if (syncedState) normalOrderStatesRef.current.set(orderKey, syncedState);
     }
     refreshNormalOrderDiagnostics(orders, now);
 
@@ -1595,9 +1666,12 @@ export function ModWorkbench() {
     const runnableOrders: NormalBusinessOrder[] = [];
     for (const order of orders) {
       const state = normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order));
+      const needsBeverage = shouldAttemptNormalBeverage(order, state, companionPreferences, now);
       const needsCooking = shouldAttemptNormalCooking(order, state, companionPreferences, now);
       const needsCollectionCheck = shouldConfirmNormalCollection(order, state, companionPreferences, now);
-      if (!needsCooking && !needsCollectionCheck) continue;
+      const needsFoodDelivery = shouldAttemptNormalFoodDelivery(order, state, companionPreferences, now);
+      const needsCompletion = shouldAttemptNormalCompletion(order, state, companionPreferences, now);
+      if (!needsBeverage && !needsCooking && !needsCollectionCheck && !needsFoodDelivery && !needsCompletion) continue;
 
       if (needsCooking) {
         const reservation = reserveAutomationCookerSlot(
@@ -1619,9 +1693,9 @@ export function ModWorkbench() {
     if (runnableOrders.length === 0) {
       const waitingCount = orders.filter((order) => {
         const state = normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order));
-        return state?.prepared && !state.collected;
+        return state?.prepared && !isNormalOrderCollected(order, state);
       }).length;
-      const collectedCount = orders.filter((order) => normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order))?.collected).length;
+      const collectedCount = orders.filter((order) => isNormalOrderCollected(order, normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order)))).length;
       const waitingState = orders
         .map((order) => normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order)))
         .find((state) => state && (state.prepared || state.collected || state.paused));
@@ -1642,9 +1716,10 @@ export function ModWorkbench() {
       for (const order of runnableOrders) {
         const orderKey = buildNormalAutoOrderKey(order);
         const storedState = normalOrderStatesRef.current.get(orderKey) ?? emptyNormalAutoOrderState(orderKey, now);
-        const currentState = isRecoverableNormalPausedState(storedState, now)
+        const syncedState = syncNormalOrderStateWithSnapshot(order, storedState, now, companionPreferences) ?? storedState;
+        const currentState = isRecoverableNormalPausedState(syncedState, now)
           ? {
-            ...storedState,
+            ...syncedState,
             paused: false,
             step: 'wait-food-stored' as const,
             stepStartedAtMs: now,
@@ -1653,20 +1728,36 @@ export function ModWorkbench() {
             rollbackCount: 0,
             lastError: '等待普客暂存容器超时后已自动恢复，继续确认料理制作状态。',
           }
-          : storedState;
+          : syncedState;
         const shouldRetryPrepared = isNormalOrderPreparedStale(currentState, now, companionPreferences);
+        const shouldHandleBeverage = shouldAttemptNormalBeverage(order, currentState, companionPreferences, now);
         const shouldConfirmCollected = shouldConfirmNormalCollection(order, currentState, companionPreferences, now);
+        const shouldDeliverFood = shouldAttemptNormalFoodDelivery(order, currentState, companionPreferences, now);
+        const shouldCompleteOrder = shouldAttemptNormalCompletion(order, currentState, companionPreferences, now)
+          || (companionPreferences.autoNormalCompleteOrder
+            && !order.isFulfilled
+            && !(currentState.paused && !isRecoverableNormalPausedState(currentState, now))
+            && (order.hasServedFood || currentState.foodDelivered || shouldDeliverFood)
+            && (order.hasServedBeverage || currentState.beverageHandled || shouldHandleBeverage));
 
         const requestPreferences = {
           ...companionPreferences,
+          autoNormalTakeBeverage: companionPreferences.autoNormalTakeBeverage && shouldHandleBeverage,
           autoNormalStartCooking: companionPreferences.autoNormalStartCooking
             && shouldAttemptNormalCooking(order, currentState, companionPreferences, now),
           autoNormalCollectCooking: companionPreferences.autoNormalCollectCooking
             && (!currentState.collected || shouldConfirmCollected),
+          autoNormalDeliverFood: companionPreferences.autoNormalDeliverFood
+            && (shouldDeliverFood || shouldConfirmCollected || companionPreferences.autoNormalCollectCooking),
+          autoNormalCompleteOrder: companionPreferences.autoNormalCompleteOrder
+            && (shouldCompleteOrder || shouldDeliverFood || shouldConfirmCollected || companionPreferences.autoNormalDeliverFood),
         };
 
-        if (!requestPreferences.autoNormalStartCooking
-          && !requestPreferences.autoNormalCollectCooking) {
+        if (!requestPreferences.autoNormalTakeBeverage
+          && !requestPreferences.autoNormalStartCooking
+          && !requestPreferences.autoNormalCollectCooking
+          && !requestPreferences.autoNormalDeliverFood
+          && !requestPreferences.autoNormalCompleteOrder) {
           continue;
         }
 
@@ -1686,11 +1777,29 @@ export function ModWorkbench() {
           || didAcknowledgeStep(response, '普客料理')
           || didNormalOrderCollectToWarmer(response);
         const collectedNow = didNormalOrderCollectToWarmer(response);
-        const collected = warmerMissing ? collectedNow : currentState.collected || collectedNow;
-        const prepared = warmerMissing ? acknowledgedStart : currentState.prepared || acknowledgedStart;
-        const rollbackCount = collected || pendingCooking || startedCooking
+        const beverageHandledNow = didNormalOrderDeliverBeverage(response);
+        const foodDeliveredNow = didNormalOrderDeliverFood(response);
+        const completedNow = didNormalOrderComplete(response);
+        const snapshotCollected = isNormalOrderCollected(order, currentState);
+        const collected = warmerMissing ? collectedNow : currentState.collected || collectedNow || snapshotCollected;
+        const prepared = warmerMissing ? acknowledgedStart : currentState.prepared || acknowledgedStart || snapshotCollected;
+        const beverageHandled = currentState.beverageHandled || order.hasServedBeverage || beverageHandledNow;
+        const foodDelivered = currentState.foodDelivered || order.hasServedFood || foodDeliveredNow;
+        const completed = currentState.completed || order.isFulfilled || completedNow;
+        const rollbackCount = collected || pendingCooking || startedCooking || beverageHandledNow || foodDeliveredNow || completedNow
           ? 0
           : currentState.rollbackCount;
+        const nextStep: AutomationStep = completed
+          ? 'done'
+          : requestPreferences.autoNormalCompleteOrder || foodDelivered
+            ? 'complete-order'
+            : requestPreferences.autoNormalTakeBeverage && !beverageHandled
+              ? 'ensure-beverage'
+              : collected
+                ? companionPreferences.autoNormalDeliverFood ? 'deliver-food' : 'done'
+                : prepared
+                  ? 'wait-food-stored'
+                  : 'ensure-cooking';
         const nextState = updateAutomationAfterResponse(
           {
             ...currentState,
@@ -1701,19 +1810,28 @@ export function ModWorkbench() {
               : prepared
                 ? currentState.preparedAtMs
                 : 0,
+            beverageHandled,
+            beverageHandledAtMs: beverageHandledNow && !currentState.beverageHandled ? now : currentState.beverageHandledAtMs,
             collected,
-            step: collected ? 'done' : prepared ? 'wait-food-stored' : 'ensure-cooking',
+            foodDelivered,
+            foodDeliveredAtMs: foodDeliveredNow && !currentState.foodDelivered ? now : currentState.foodDeliveredAtMs,
+            completed,
+            completedAtMs: completedNow && !currentState.completed ? now : currentState.completedAtMs,
+            step: nextStep,
             rollbackCount,
           },
           response,
           now,
-          collected ? 'done' : requestPreferences.autoNormalStartCooking ? 'ensure-cooking' : 'wait-food-stored',
+          nextStep,
           companionPreferences.autoNormalStopOnError,
           companionPreferences.autoMaxStepRetries,
         );
         const normalizedNextState = {
           ...nextState,
+          beverageHandled,
           collected,
+          foodDelivered,
+          completed,
         };
         normalOrderStatesRef.current.set(orderKey, normalizedNextState);
 
@@ -1769,6 +1887,10 @@ export function ModWorkbench() {
   useEffect(() => {
     localStorage.setItem(RARE_GUEST_INVITATION_SCOPE_STORAGE_KEY, rareGuestInvitationScope);
   }, [rareGuestInvitationScope]);
+
+  useEffect(() => {
+    localStorage.setItem(RARE_GUEST_INVITATION_LEVELS_STORAGE_KEY, serializeRareGuestInvitationLevels(rareGuestInvitationLevels));
+  }, [rareGuestInvitationLevels]);
 
   useEffect(() => {
     localStorage.setItem(FOCUS_COMPACT_STORAGE_KEY, serviceFocusCompact ? '1' : '0');
@@ -2226,6 +2348,7 @@ export function ModWorkbench() {
             missions={snapshot?.runtimeMissions ?? null}
             data={recommendationData}
             inviteScope={rareGuestInvitationScope}
+            inviteLevels={rareGuestInvitationLevels}
             inviteBusyKey={rareGuestInvitationBusyKey}
             inviteAllResult={rareGuestInvitationResult}
             inviteAllError={rareGuestInvitationError}
@@ -2234,6 +2357,9 @@ export function ModWorkbench() {
               setRareGuestInvitationScope(scope);
               setRareGuestInvitationResult(null);
               lastRareGuestInvitationRefreshSignatureRef.current = '';
+            }}
+            onInviteLevelsChange={(levels) => {
+              setRareGuestInvitationLevels(normalizeRareGuestInvitationLevels(levels));
             }}
             onRefreshRareGuestInvitations={loadRareGuestInvitations}
             onInviteAllRareGuests={inviteAllRareGuests}
@@ -2393,11 +2519,13 @@ function RareGuestInvitationPanel({
   activeDayMapName,
   activeDayMapLabel,
   inviteScope,
+  inviteLevels,
   inviteBusyKey,
   inviteAllResult,
   inviteAllError,
   showDebugDetails,
   onInviteScopeChange,
+  onInviteLevelsChange,
   onRefreshRareGuestInvitations,
   onInviteAllRareGuests,
   onInviteRareGuest,
@@ -2406,19 +2534,25 @@ function RareGuestInvitationPanel({
   activeDayMapName: string;
   activeDayMapLabel: string;
   inviteScope: RareGuestInvitationScope;
+  inviteLevels: number[];
   inviteBusyKey: string;
   inviteAllResult: RareGuestInvitationResponse | null;
   inviteAllError: string;
   showDebugDetails: boolean;
   onInviteScopeChange: (scope: RareGuestInvitationScope) => void;
+  onInviteLevelsChange: (levels: number[]) => void;
   onRefreshRareGuestInvitations: () => void;
   onInviteAllRareGuests: () => void;
   onInviteRareGuest: (guestId: number) => void;
 }) {
   const availableEntries = inviteAllResult?.available ?? [];
-  const candidateEntries = (inviteAllResult?.candidates?.length ? inviteAllResult.candidates : availableEntries)
+  const sourceEntries = inviteAllResult?.candidates?.length ? inviteAllResult.candidates : availableEntries;
+  const levelOptions = getInvitationKizunaLevelOptions(sourceEntries);
+  const candidateEntries = sourceEntries
+    .filter((entry) => matchesInvitationKizunaLevels(entry, inviteLevels))
     .slice()
     .sort(compareInvitationEntries);
+  const filteredAvailableEntries = availableEntries.filter((entry) => matchesInvitationKizunaLevels(entry, inviteLevels));
   const isBusy = inviteBusyKey !== '';
   const isListBusy = inviteBusyKey === 'list';
   const isAllBusy = inviteBusyKey === 'all';
@@ -2426,7 +2560,7 @@ function RareGuestInvitationPanel({
 
   return (
     <ListPanel
-      title={`稀客邀请 (${availableEntries.length}/${candidateEntries.length})`}
+      title={`稀客邀请 (${filteredAvailableEntries.length}/${candidateEntries.length})`}
       action={(
         <div className="flex min-w-0 flex-wrap justify-end gap-1.5">
           <div className="grid h-8 grid-cols-2 rounded-md border border-border bg-background/70 p-0.5">
@@ -2469,7 +2603,7 @@ function RareGuestInvitationPanel({
             size="sm"
             className="h-8 px-2.5"
             onClick={onInviteAllRareGuests}
-            disabled={!runtimeLoaded || isBusy || availableEntries.length === 0}
+            disabled={!runtimeLoaded || isBusy || filteredAvailableEntries.length === 0}
             data-gamepad-clickable="true"
           >
             {isAllBusy ? '邀请中...' : '邀请全部'}
@@ -2486,9 +2620,38 @@ function RareGuestInvitationPanel({
         {inviteAllResult ? (
           <div className="max-w-full min-w-0 overflow-hidden rounded-md border border-border/80 bg-background/35 p-2">
             <div className="grid gap-1 text-xs text-muted-foreground sm:grid-cols-2">
-              <span className="truncate">新增 {inviteAllResult.invitedCount} · 可邀请 {availableEntries.length} · 候选 {candidateEntries.length}</span>
+              <span className="truncate">新增 {inviteAllResult.invitedCount} · 可邀请 {filteredAvailableEntries.length} · 候选 {candidateEntries.length}</span>
               <span className="truncate sm:text-right">{inviteAllResult.status || (inviteAllResult.ok ? '已完成' : '失败')}</span>
             </div>
+            {levelOptions.length > 0 && (
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                <Button
+                  type="button"
+                  size="xs"
+                  variant={inviteLevels.length === 0 ? 'default' : 'outline'}
+                  className="h-7 px-2"
+                  onClick={() => onInviteLevelsChange([])}
+                  disabled={isBusy}
+                  data-gamepad-clickable="true"
+                >
+                  全部羁绊
+                </Button>
+                {levelOptions.map((level) => (
+                  <Button
+                    key={level}
+                    type="button"
+                    size="xs"
+                    variant={inviteLevels.includes(level) ? 'default' : 'outline'}
+                    className="h-7 px-2"
+                    onClick={() => onInviteLevelsChange(toggleNumberInList(inviteLevels, level))}
+                    disabled={isBusy}
+                    data-gamepad-clickable="true"
+                  >
+                    羁绊 {level}
+                  </Button>
+                ))}
+              </div>
+            )}
             <div className="mt-2 grid min-w-0 gap-1.5">
               {candidateEntries.map((entry) => {
                 const busy = inviteBusyKey === `guest:${entry.id}`;
@@ -3309,13 +3472,13 @@ function ModServicePanel({
             {autoPrepPreferences.automationEnabled && autoPrepPreferences.autoNormalOrderEnabled ? (
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm">
                 <span className="text-muted-foreground">
-                  普客自动化会自动制作最早出现的未完成普客料理，并在完成后收至保温箱。
+                  普客自动化会按开关处理普客订单，可执行送达酒水、制作料理、收至保温箱、送达料理和完成订单。
                 </span>
                 {normalOrderBusy && <Badge variant="secondary">处理中</Badge>}
               </div>
             ) : autoPrepPreferences.automationEnabled ? (
               <div className="mb-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
-                开启“启用普客处理”后，可自动制作普客料理并收至保温箱。
+                开启“启用普客处理”后，可按阶段开关自动处理普客订单。
               </div>
             ) : (
               <div className="mb-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
@@ -3348,6 +3511,11 @@ function ModServicePanel({
                   <Badge variant="outline">酒水 {order.beverageName || `#${order.beverageId}`}</Badge>
                   {order.hasServedFood && <Badge variant="secondary">已有料理</Badge>}
                   {order.hasServedBeverage && <Badge variant="secondary">已有酒水</Badge>}
+                  {order.hasStoredFood && (
+                    <Badge variant={order.hasStoredFoodReceipt ? 'secondary' : 'outline'} title={order.storedFoodStatus || undefined}>
+                      {order.hasStoredFoodReceipt ? '保温箱' : '同名'} {order.storedFoodCount ?? 0}
+                    </Badge>
+                  )}
                   {order.isFulfilled && <Badge variant="secondary">已满足</Badge>}
                   {showDebugDetails && <Badge variant="secondary">{order.source}</Badge>}
                 </div>
@@ -3819,11 +3987,13 @@ function ModTasksPanel({
   missions,
   data,
   inviteScope,
+  inviteLevels,
   inviteBusyKey,
   inviteAllResult,
   inviteAllError,
   showDebugDetails,
   onInviteScopeChange,
+  onInviteLevelsChange,
   onRefreshRareGuestInvitations,
   onInviteAllRareGuests,
   onInviteRareGuest,
@@ -3834,11 +4004,13 @@ function ModTasksPanel({
   missions: RuntimeMissionContext | null;
   data: RecommendationDataSet;
   inviteScope: RareGuestInvitationScope;
+  inviteLevels: number[];
   inviteBusyKey: string;
   inviteAllResult: RareGuestInvitationResponse | null;
   inviteAllError: string;
   showDebugDetails: boolean;
   onInviteScopeChange: (scope: RareGuestInvitationScope) => void;
+  onInviteLevelsChange: (levels: number[]) => void;
   onRefreshRareGuestInvitations: () => void;
   onInviteAllRareGuests: () => void;
   onInviteRareGuest: (guestId: number) => void;
@@ -3868,11 +4040,13 @@ function ModTasksPanel({
         activeDayMapName={activeDayMapName}
         activeDayMapLabel={activeDayMapLabel}
         inviteScope={inviteScope}
+        inviteLevels={inviteLevels}
         inviteBusyKey={inviteBusyKey}
         inviteAllResult={inviteAllResult}
         inviteAllError={inviteAllError}
         showDebugDetails={showDebugDetails}
         onInviteScopeChange={onInviteScopeChange}
+        onInviteLevelsChange={onInviteLevelsChange}
         onRefreshRareGuestInvitations={onRefreshRareGuestInvitations}
         onInviteAllRareGuests={onInviteAllRareGuests}
         onInviteRareGuest={onInviteRareGuest}
@@ -4370,7 +4544,7 @@ function ModSettingsPanel({
     }
   }, [apiToken, endpoint]);
 
-  const toggleNativeConsole = useCallback(async () => {
+  const setNativeConsoleEnabled = useCallback(async (nativeConsole: boolean) => {
     if (!apiToken) return;
 
     const abortController = new AbortController();
@@ -4380,7 +4554,7 @@ function ModSettingsPanel({
       const nextSettings = await writeLogSettings(
         endpoint,
         apiToken,
-        { nativeConsole: !(logSettings?.nativeBepInExConsoleEnabled ?? false) },
+        { nativeConsole },
         abortController.signal,
       );
       setLogSettings(nextSettings);
@@ -4391,7 +4565,7 @@ function ModSettingsPanel({
       window.clearTimeout(timeoutId);
       setConsoleBusy(false);
     }
-  }, [apiToken, endpoint, logSettings?.nativeBepInExConsoleEnabled]);
+  }, [apiToken, endpoint]);
 
   useEffect(() => {
     if (!preferences.showDebugDetails) return;
@@ -4648,15 +4822,12 @@ function ModSettingsPanel({
           <ListPanel title="BepInEx">
             <div className="space-y-3">
               <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  size="sm"
-                  variant={logSettings?.nativeBepInExConsoleEnabled ? 'default' : 'outline'}
-                  onClick={toggleNativeConsole}
+                <SwitchControl
+                  label="原生日志窗口"
+                  checked={logSettings?.nativeBepInExConsoleEnabled ?? false}
+                  onCheckedChange={setNativeConsoleEnabled}
                   disabled={!apiToken || consoleBusy}
-                >
-                  <Power className="size-4" />
-                  {logSettings?.nativeBepInExConsoleEnabled ? '关闭原生日志窗口' : '开启原生日志窗口'}
-                </Button>
+                />
                 <Button size="sm" variant="outline" onClick={refreshConsoleSettings} disabled={!apiToken || consoleBusy}>
                   <RefreshCw className="size-4" />
                   刷新状态
@@ -4779,6 +4950,11 @@ function NormalServiceAutomationPanel({
         {preferences.autoNormalOrderEnabled && (
           <>
             <AutomationSwitchCell
+              label="自动送达酒水"
+              checked={preferences.autoNormalTakeBeverage}
+              onCheckedChange={(autoNormalTakeBeverage) => onPreferenceChange({ autoNormalTakeBeverage })}
+            />
+            <AutomationSwitchCell
               label="自动开始料理"
               checked={preferences.autoNormalStartCooking}
               onCheckedChange={(autoNormalStartCooking) => onPreferenceChange({ autoNormalStartCooking })}
@@ -4787,6 +4963,16 @@ function NormalServiceAutomationPanel({
               label="自动收取料理"
               checked={preferences.autoNormalCollectCooking}
               onCheckedChange={(autoNormalCollectCooking) => onPreferenceChange({ autoNormalCollectCooking })}
+            />
+            <AutomationSwitchCell
+              label="自动送达料理"
+              checked={preferences.autoNormalDeliverFood}
+              onCheckedChange={(autoNormalDeliverFood) => onPreferenceChange({ autoNormalDeliverFood })}
+            />
+            <AutomationSwitchCell
+              label="自动完成订单"
+              checked={preferences.autoNormalCompleteOrder}
+              onCheckedChange={(autoNormalCompleteOrder) => onPreferenceChange({ autoNormalCompleteOrder })}
             />
             <AutomationSwitchCell
               label="出错时暂停"
@@ -4971,17 +5157,31 @@ function NormalAutoPrepStatus({
                 )}
               </div>
               <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
+                <Badge variant={diagnostic.beverageHandled ? 'secondary' : 'outline'}>
+                  酒水{diagnostic.beverageHandled ? '已送达' : '待处理'}
+                </Badge>
                 <Badge variant={diagnostic.prepared ? 'secondary' : 'outline'}>
                   料理{diagnostic.prepared ? '已开锅' : '待处理'}
                 </Badge>
                 <Badge variant={diagnostic.collected ? 'secondary' : 'outline'}>
-                  保温箱{diagnostic.collected ? '已收取' : '待收取'}
+                  保温箱{diagnostic.collected ? `已收取 ${diagnostic.storedFoodCount}` : '待收取'}
+                </Badge>
+                {diagnostic.storedFoodCount > 0 && !diagnostic.hasStoredFoodReceipt && (
+                  <Badge variant="outline" title={diagnostic.storedFoodStatus || undefined}>
+                    同名料理 {diagnostic.storedFoodCount}
+                  </Badge>
+                )}
+                <Badge variant={diagnostic.foodDelivered ? 'secondary' : 'outline'}>
+                  料理{diagnostic.foodDelivered ? '已送达' : '未送达'}
                 </Badge>
                 <Badge variant={diagnostic.hasServedFood ? 'secondary' : 'outline'}>
                   订单{diagnostic.hasServedFood ? '已有料理' : '未送料理'}
                 </Badge>
                 <Badge variant={diagnostic.hasServedBeverage ? 'secondary' : 'outline'}>
-                  酒水{diagnostic.hasServedBeverage ? '已有' : '未处理'}
+                  订单{diagnostic.hasServedBeverage ? '已有酒水' : '未送酒水'}
+                </Badge>
+                <Badge variant={diagnostic.completed ? 'secondary' : 'outline'}>
+                  订单{diagnostic.completed ? '已完成' : '待完成'}
                 </Badge>
               </div>
               {diagnostic.lastError && (
@@ -4998,9 +5198,12 @@ function NormalAutoPrepStatus({
         <Badge variant={pausedCount > 0 ? 'destructive' : 'secondary'}>暂停订单 {pausedCount}</Badge>
         <Badge variant="outline">每轮最多 {preferences.autoNormalConcurrency}</Badge>
         <Badge variant={preferences.autoNormalOrderEnabled ? 'secondary' : 'outline'}>启用 {preferences.autoNormalOrderEnabled ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoNormalTakeBeverage ? 'secondary' : 'outline'}>酒水 {preferences.autoNormalTakeBeverage ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoNormalStartCooking ? 'secondary' : 'outline'}>料理 {preferences.autoNormalStartCooking ? '开' : '关'}</Badge>
         {preferences.autoNormalStartCooking && <Badge variant="secondary">QTE 自动完成</Badge>}
         <Badge variant={preferences.autoNormalCollectCooking ? 'secondary' : 'outline'}>收取 {preferences.autoNormalCollectCooking ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoNormalDeliverFood ? 'secondary' : 'outline'}>送料理 {preferences.autoNormalDeliverFood ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoNormalCompleteOrder ? 'secondary' : 'outline'}>完成 {preferences.autoNormalCompleteOrder ? '开' : '关'}</Badge>
       </div>
     </div>
   );
@@ -5061,13 +5264,17 @@ function SwitchControl({
   label,
   checked,
   onCheckedChange,
+  disabled,
+  title,
 }: {
   label: string;
   checked: boolean;
   onCheckedChange: (value: boolean) => void;
+  disabled?: boolean;
+  title?: string;
 }) {
   return (
-    <SwitchField label={label} checked={checked} onCheckedChange={onCheckedChange} />
+    <SwitchField label={label} checked={checked} onCheckedChange={onCheckedChange} disabled={disabled} title={title} />
   );
 }
 
@@ -5075,14 +5282,18 @@ function AutomationSwitchCell({
   label,
   checked,
   onCheckedChange,
+  disabled,
+  title,
 }: {
   label: string;
   checked: boolean;
   onCheckedChange: (value: boolean) => void;
+  disabled?: boolean;
+  title?: string;
 }) {
   return (
     <div className={AUTOMATION_SWITCH_CELL}>
-      <SwitchControl label={label} checked={checked} onCheckedChange={onCheckedChange} />
+      <SwitchControl label={label} checked={checked} onCheckedChange={onCheckedChange} disabled={disabled} title={title} />
     </div>
   );
 }
@@ -5735,8 +5946,10 @@ async function inviteAllAvailableRareGuests(
   endpoint: string,
   apiToken: string,
   scope: RareGuestInvitationScope,
+  levels: number[],
 ): Promise<RareGuestInvitationResponse> {
   const params = new URLSearchParams({ scope });
+  appendRareGuestInvitationLevels(params, levels);
   return mutateRareGuestInvitation(endpoint, apiToken, `/rare-guests/invite-all?${params.toString()}`);
 }
 
@@ -5757,6 +5970,11 @@ async function inviteAvailableRareGuest(
 ): Promise<RareGuestInvitationResponse> {
   const params = new URLSearchParams({ guestId: String(guestId), scope });
   return mutateRareGuestInvitation(endpoint, apiToken, `/rare-guests/invite?${params.toString()}`);
+}
+
+function appendRareGuestInvitationLevels(params: URLSearchParams, levels: number[]) {
+  const serialized = serializeRareGuestInvitationLevels(levels);
+  if (serialized) params.set('levels', serialized);
 }
 
 async function mutateRareGuestInvitation(
@@ -5952,8 +6170,11 @@ async function completeFirstNormalOrder(
     recipeName: order.foodName || recipe?.name || '',
     beverageId: String(order.beverageId),
     beverageName: order.beverageName || indexes.beverageNameById.get(order.beverageId) || '',
+    autoTakeBeverage: String(preferences.autoNormalTakeBeverage),
     autoStartCooking: String(preferences.autoNormalStartCooking),
     autoCollectCooking: String(preferences.autoNormalCollectCooking),
+    autoDeliverFood: String(preferences.autoNormalDeliverFood),
+    autoCompleteOrder: String(preferences.autoNormalCompleteOrder),
     stopOnError: String(preferences.autoNormalStopOnError),
   });
   const abortController = new AbortController();
@@ -6131,10 +6352,29 @@ function compareInvitationEntries(left: RareGuestInvitationEntry, right: RareGue
   const sceneCompare = formatInvitationScenes(left).localeCompare(formatInvitationScenes(right), 'zh-Hans-CN');
   if (sceneCompare !== 0) return sceneCompare;
 
+  const levelCompare = normalizeInvitationKizunaLevel(left) - normalizeInvitationKizunaLevel(right);
+  if (levelCompare !== 0) return levelCompare;
+
   return (left.name || left.runtimeName || `#${left.id}`).localeCompare(
     right.name || right.runtimeName || `#${right.id}`,
     'zh-Hans-CN',
   );
+}
+
+function normalizeInvitationKizunaLevel(entry: RareGuestInvitationEntry): number {
+  return typeof entry.kizunaLevel === 'number' && Number.isFinite(entry.kizunaLevel) ? entry.kizunaLevel : 999;
+}
+
+function getInvitationKizunaLevelOptions(entries: RareGuestInvitationEntry[]): number[] {
+  return Array.from(new Set(entries
+    .map(normalizeInvitationKizunaLevel)
+    .filter((level) => level !== 999)))
+    .sort((a, b) => a - b);
+}
+
+function matchesInvitationKizunaLevels(entry: RareGuestInvitationEntry, levels: number[]): boolean {
+  if (levels.length === 0) return true;
+  return levels.includes(normalizeInvitationKizunaLevel(entry));
 }
 
 function formatInvitationScenes(entry: RareGuestInvitationEntry): string {
@@ -6419,6 +6659,66 @@ function buildTrayResourceRows(diagnostics: RareAutoOrderDiagnostic[]): Automati
   ].filter((row) => row.count > 0);
 }
 
+function isNormalOrderCollected(order: NormalBusinessOrder, state: NormalAutoOrderState | undefined): boolean {
+  if (state?.collected) return true;
+  if (order.hasStoredFoodReceipt) return true;
+  return Boolean(order.hasStoredFood && (state?.prepared || state?.collected));
+}
+
+function syncNormalOrderStateWithSnapshot(
+  order: NormalBusinessOrder,
+  state: NormalAutoOrderState | undefined,
+  now: number,
+  preferences: CompanionPreferences,
+): NormalAutoOrderState | undefined {
+  const snapshotCollected = isNormalOrderCollected(order, state);
+  const snapshotFoodDelivered = order.hasServedFood;
+  const snapshotBeverageDelivered = order.hasServedBeverage;
+  const snapshotCompleted = order.isFulfilled;
+  if (!snapshotCollected && !snapshotFoodDelivered && !snapshotBeverageDelivered && !snapshotCompleted) return state;
+
+  const base = state ?? emptyNormalAutoOrderState(buildNormalAutoOrderKey(order), now);
+  const collected = base.collected || snapshotCollected;
+  const foodDelivered = base.foodDelivered || snapshotFoodDelivered;
+  const beverageHandled = base.beverageHandled || snapshotBeverageDelivered;
+  const completed = base.completed || snapshotCompleted;
+  const prepared = base.prepared || collected || foodDelivered;
+  let step = base.step;
+  if (completed) {
+    step = 'done';
+  } else if (foodDelivered) {
+    step = preferences.autoNormalCompleteOrder ? 'complete-order' : 'done';
+  } else if (collected) {
+    step = preferences.autoNormalDeliverFood ? 'deliver-food' : 'wait-food-stored';
+  }
+
+  const madeProgress = prepared !== base.prepared
+    || collected !== base.collected
+    || foodDelivered !== base.foodDelivered
+    || beverageHandled !== base.beverageHandled
+    || completed !== base.completed
+    || step !== base.step;
+
+  return {
+    ...base,
+    prepared,
+    preparedAtMs: prepared && base.preparedAtMs <= 0 ? now : base.preparedAtMs,
+    beverageHandled,
+    beverageHandledAtMs: beverageHandled && base.beverageHandledAtMs <= 0 ? now : base.beverageHandledAtMs,
+    collected,
+    foodDelivered,
+    foodDeliveredAtMs: foodDelivered && base.foodDeliveredAtMs <= 0 ? now : base.foodDeliveredAtMs,
+    completed,
+    completedAtMs: completed && base.completedAtMs <= 0 ? now : base.completedAtMs,
+    step,
+    stepStartedAtMs: madeProgress ? now : base.stepStartedAtMs,
+    lastProgressAtMs: madeProgress ? now : base.lastProgressAtMs,
+    retryCount: madeProgress ? 0 : base.retryCount,
+    rollbackCount: madeProgress ? 0 : base.rollbackCount,
+    lastError: madeProgress ? '' : base.lastError,
+  };
+}
+
 function shouldAttemptNormalCooking(
   order: NormalBusinessOrder,
   state: NormalAutoOrderState | undefined,
@@ -6427,9 +6727,22 @@ function shouldAttemptNormalCooking(
 ): boolean {
   if (!preferences.autoNormalStartCooking) return false;
   if (order.hasServedFood || order.foodId < 0) return false;
-  if (state?.collected) return false;
+  if (isNormalOrderCollected(order, state)) return false;
   if (state?.paused && !isRecoverableNormalPausedState(state, now)) return false;
   return !state?.prepared || isNormalOrderPreparedStale(state, now, preferences);
+}
+
+function shouldAttemptNormalBeverage(
+  order: NormalBusinessOrder,
+  state: NormalAutoOrderState | undefined,
+  preferences: CompanionPreferences,
+  now: number,
+): boolean {
+  if (!preferences.autoNormalTakeBeverage) return false;
+  if (order.hasServedBeverage || order.beverageId < 0) return false;
+  if (state?.beverageHandled) return false;
+  if (state?.paused && !isRecoverableNormalPausedState(state, now)) return false;
+  return true;
 }
 
 function shouldConfirmNormalCollection(
@@ -6442,12 +6755,39 @@ function shouldConfirmNormalCollection(
   if (order.hasServedFood || order.foodId < 0) return false;
   if (!state) return false;
   if (state.paused && !isRecoverableNormalPausedState(state, now)) return false;
-  if (state.collected) {
+  if (isNormalOrderCollected(order, state)) {
     return isAutomationTimestampStale(state.stepStartedAtMs, now, preferences.autoNormalStorageWaitSeconds * 1000);
   }
 
   if (!state.prepared) return false;
   return isNormalOrderPreparedStale(state, now, preferences);
+}
+
+function shouldAttemptNormalFoodDelivery(
+  order: NormalBusinessOrder,
+  state: NormalAutoOrderState | undefined,
+  preferences: CompanionPreferences,
+  now: number,
+): boolean {
+  if (!preferences.autoNormalDeliverFood) return false;
+  if (order.hasServedFood || order.foodId < 0) return false;
+  if (state?.foodDelivered) return false;
+  if (state?.paused && !isRecoverableNormalPausedState(state, now)) return false;
+  return isNormalOrderCollected(order, state);
+}
+
+function shouldAttemptNormalCompletion(
+  order: NormalBusinessOrder,
+  state: NormalAutoOrderState | undefined,
+  preferences: CompanionPreferences,
+  now: number,
+): boolean {
+  if (!preferences.autoNormalCompleteOrder) return false;
+  if (order.isFulfilled || state?.completed) return false;
+  if (state?.paused && !isRecoverableNormalPausedState(state, now)) return false;
+  const hasFood = order.hasServedFood || state?.foodDelivered;
+  const hasBeverage = order.hasServedBeverage || state?.beverageHandled;
+  return Boolean(hasFood && hasBeverage);
 }
 
 function reserveAutomationCookerSlot(
@@ -7091,8 +7431,11 @@ function hasAutomationActionEnabled(preferences: CompanionPreferences): boolean 
 }
 
 function hasNormalOrderActionEnabled(preferences: CompanionPreferences): boolean {
-  return preferences.autoNormalStartCooking
-    || preferences.autoNormalCollectCooking;
+  return preferences.autoNormalTakeBeverage
+    || preferences.autoNormalStartCooking
+    || preferences.autoNormalCollectCooking
+    || preferences.autoNormalDeliverFood
+    || preferences.autoNormalCompleteOrder;
 }
 
 function buildAutoOrderKey(item: OrderRecommendation): string {
@@ -7196,8 +7539,14 @@ function buildNormalAutoOrderDiagnostic(
     retryCount: state.retryCount,
     rollbackCount: state.rollbackCount,
     lastError: state.lastError,
-    prepared: state.prepared,
-    collected: state.collected,
+    prepared: state.prepared || isNormalOrderCollected(order, state),
+    beverageHandled: state.beverageHandled || order.hasServedBeverage,
+    collected: isNormalOrderCollected(order, state),
+    storedFoodCount: order.storedFoodCount ?? 0,
+    hasStoredFoodReceipt: Boolean(order.hasStoredFoodReceipt),
+    storedFoodStatus: order.storedFoodStatus ?? '',
+    foodDelivered: state.foodDelivered || order.hasServedFood,
+    completed: state.completed || order.isFulfilled,
     paused: state.paused,
     hasServedFood: order.hasServedFood,
     hasServedBeverage: order.hasServedBeverage,
@@ -7233,7 +7582,12 @@ function getNormalAutomationNextAction(
     }
     return '等待订单变化或手动处理';
   }
+  if (state.completed || state.step === 'done') return '等待订单从列表移除';
+  if (state.step === 'complete-order') return '下一轮尝试完成订单';
+  if (state.step === 'deliver-food') return '下一轮尝试送达料理';
+  if (state.step === 'ensure-beverage') return '下一轮校验酒水';
   if (state.collected) {
+    if (preferences.autoNormalDeliverFood && !state.foodDelivered) return '下一轮尝试送达料理';
     return formatRemainingAction(state.stepStartedAtMs, now, preferences.autoNormalStorageWaitSeconds * 1000, '保温箱复查');
   }
   if (state.prepared) {
@@ -7270,6 +7624,8 @@ function buildNormalOrderAutomationSignature(orders: NormalBusinessOrder[]): str
       order.isFulfilled ? 'fulfilled' : 'open',
       order.hasServedFood ? 'food-served' : 'food-open',
       order.hasServedBeverage ? 'bev-served' : 'bev-open',
+      order.hasStoredFoodReceipt ? 'stored-receipt' : 'stored-no-receipt',
+      order.hasStoredFood ? `stored:${order.storedFoodCount ?? 0}` : 'stored:0',
       order.foodId,
       order.beverageId,
       order.deskCode,
@@ -7317,7 +7673,13 @@ function emptyNormalAutoOrderState(orderKey: string, now = 0): NormalAutoOrderSt
     orderKey,
     prepared: false,
     preparedAtMs: 0,
+    beverageHandled: false,
+    beverageHandledAtMs: 0,
     collected: false,
+    foodDelivered: false,
+    foodDeliveredAtMs: 0,
+    completed: false,
+    completedAtMs: 0,
     step: 'match-order',
     stepStartedAtMs: now,
     lastProgressAtMs: now,
@@ -7448,6 +7810,9 @@ function isMeaningfulAutomationProgressStep(step: OrderPreparationStep): boolean
     || step.name.includes('送达酒水')
     || step.name.includes('普客开始料理')
     || step.name.includes('普客保温箱')
+    || step.name.includes('普客送达酒水')
+    || step.name.includes('普客送达料理')
+    || step.name.includes('触发普客评价')
     || step.name.includes('写入订单')
     || step.name.includes('触发上菜评价');
 }
@@ -7544,6 +7909,22 @@ function didNormalOrderCollectToWarmer(response: OrderPreparationResponse): bool
       || step.message.includes('目标普客订单已有料理')));
 }
 
+function didNormalOrderDeliverBeverage(response: OrderPreparationResponse): boolean {
+  return Boolean(response.servedBeverage)
+    || didCompleteStep(response, '普客送达酒水')
+    || response.steps.some((step) => step.name === '普客送达酒水' && step.ok && !isInactiveSkippedStep(step));
+}
+
+function didNormalOrderDeliverFood(response: OrderPreparationResponse): boolean {
+  return Boolean(response.servedFood)
+    || didCompleteStep(response, '普客送达料理')
+    || response.steps.some((step) => step.name === '普客送达料理' && step.ok && !isInactiveSkippedStep(step));
+}
+
+function didNormalOrderComplete(response: OrderPreparationResponse): boolean {
+  return Boolean(response.completedOrder) || didCompleteStep(response, '触发普客评价');
+}
+
 function didNormalOrderWarmerMissing(response: OrderPreparationResponse): boolean {
   return response.steps.some((step) => step.name === '普客保温箱复查'
     && (step.message.includes('未读取到该料理')
@@ -7586,6 +7967,7 @@ function isTransientAutoPreparationFailure(response: OrderPreparationResponse): 
     || text.includes('经营状态刚刷新')
     || text.includes('未找到当前第一笔')
     || text.includes('暂存容器不可用')
+    || text.includes('普客保温箱中没有找到目标料理')
     || text.includes('等待下一轮重试')
     || text.includes('已有待收取任务')
     || text.includes('已在制作中')
@@ -7750,7 +8132,11 @@ function findOrBuildMissionRecipe(
     4,
     runtimeSets.ownedIngredientQty,
     runtime.famousShopEnabled,
-    { allowPreferenceFallback: true, minFoodScore: 1, forcedRecipeIds: new Set([recipeId]) },
+    {
+      allowPreferenceFallback: true,
+      minFoodScore: 1,
+      forcedRecipeIds: new Set([recipeId]),
+    },
     data,
   )
     .filter((recipe) => recipe.recipe.id === recipeId)
@@ -8226,6 +8612,35 @@ function readStoredRareGuestInvitationScope(): RareGuestInvitationScope {
   return localStorage.getItem(RARE_GUEST_INVITATION_SCOPE_STORAGE_KEY) === 'all' ? 'all' : 'current';
 }
 
+function readStoredRareGuestInvitationLevels(): number[] {
+  return normalizeRareGuestInvitationLevels(parseNumberList(localStorage.getItem(RARE_GUEST_INVITATION_LEVELS_STORAGE_KEY)));
+}
+
+function normalizeRareGuestInvitationLevels(levels: number[]): number[] {
+  return Array.from(new Set(levels
+    .map((level) => Math.trunc(level))
+    .filter((level) => Number.isFinite(level) && level >= 0)))
+    .sort((a, b) => a - b);
+}
+
+function serializeRareGuestInvitationLevels(levels: number[]): string {
+  return normalizeRareGuestInvitationLevels(levels).join(',');
+}
+
+function parseNumberList(value: string | null | undefined): number[] {
+  if (!value?.trim()) return [];
+  return value
+    .split(/[,\s;|]+/)
+    .map((part) => Number(part))
+    .filter((level) => Number.isFinite(level));
+}
+
+function toggleNumberInList(values: number[], value: number): number[] {
+  return values.includes(value)
+    ? values.filter((item) => item !== value)
+    : normalizeRareGuestInvitationLevels([...values, value]);
+}
+
 function readStoredBoolean(key: string, fallback: boolean) {
   const value = localStorage.getItem(key);
   if (value === null) return fallback;
@@ -8255,8 +8670,11 @@ function readStoredCompanionPreferences(): CompanionPreferences {
     gamepadNavigationEnabled: readStoredBoolean(GAMEPAD_NAVIGATION_STORAGE_KEY, true),
     automationEnabled: readStoredBoolean(AUTOMATION_ENABLED_STORAGE_KEY, false),
     autoNormalOrderEnabled: readStoredBoolean(AUTO_NORMAL_ORDER_ENABLED_STORAGE_KEY, false),
+    autoNormalTakeBeverage: readStoredBoolean(AUTO_NORMAL_TAKE_BEVERAGE_STORAGE_KEY, false),
     autoNormalStartCooking: readStoredBoolean(AUTO_NORMAL_START_COOKING_STORAGE_KEY, false),
     autoNormalCollectCooking: readStoredBoolean(AUTO_NORMAL_COLLECT_COOKING_STORAGE_KEY, false),
+    autoNormalDeliverFood: readStoredBoolean(AUTO_NORMAL_DELIVER_FOOD_STORAGE_KEY, false),
+    autoNormalCompleteOrder: readStoredBoolean(AUTO_NORMAL_COMPLETE_ORDER_STORAGE_KEY, false),
     autoNormalStopOnError: readStoredBoolean(AUTO_NORMAL_STOP_ON_ERROR_STORAGE_KEY, false),
     autoPrepCompleteOrder: readStoredBoolean(AUTO_PREP_COMPLETE_ORDER_STORAGE_KEY, false),
     autoPrepTakeBeverage: readStoredBoolean(AUTO_PREP_TAKE_BEVERAGE_STORAGE_KEY, false),
@@ -8368,8 +8786,11 @@ function normalizeCompanionPreferences(value: Partial<CompanionPreferences>): Co
     gamepadNavigationEnabled: Boolean(value.gamepadNavigationEnabled),
     automationEnabled: Boolean(value.automationEnabled),
     autoNormalOrderEnabled: Boolean(value.autoNormalOrderEnabled),
+    autoNormalTakeBeverage: Boolean(value.autoNormalTakeBeverage),
     autoNormalStartCooking: Boolean(value.autoNormalStartCooking),
     autoNormalCollectCooking: Boolean(value.autoNormalCollectCooking),
+    autoNormalDeliverFood: Boolean(value.autoNormalDeliverFood),
+    autoNormalCompleteOrder: Boolean(value.autoNormalCompleteOrder),
     autoNormalStopOnError: Boolean(value.autoNormalStopOnError),
     autoPrepCompleteOrder: Boolean(value.autoPrepCompleteOrder),
     autoPrepTakeBeverage: Boolean(value.autoPrepTakeBeverage),
@@ -8442,8 +8863,11 @@ function persistCompanionPreferences(preferences: CompanionPreferences) {
   localStorage.setItem(GAMEPAD_NAVIGATION_STORAGE_KEY, normalized.gamepadNavigationEnabled ? '1' : '0');
   localStorage.setItem(AUTOMATION_ENABLED_STORAGE_KEY, normalized.automationEnabled ? '1' : '0');
   localStorage.setItem(AUTO_NORMAL_ORDER_ENABLED_STORAGE_KEY, normalized.autoNormalOrderEnabled ? '1' : '0');
+  localStorage.setItem(AUTO_NORMAL_TAKE_BEVERAGE_STORAGE_KEY, normalized.autoNormalTakeBeverage ? '1' : '0');
   localStorage.setItem(AUTO_NORMAL_START_COOKING_STORAGE_KEY, normalized.autoNormalStartCooking ? '1' : '0');
   localStorage.setItem(AUTO_NORMAL_COLLECT_COOKING_STORAGE_KEY, normalized.autoNormalCollectCooking ? '1' : '0');
+  localStorage.setItem(AUTO_NORMAL_DELIVER_FOOD_STORAGE_KEY, normalized.autoNormalDeliverFood ? '1' : '0');
+  localStorage.setItem(AUTO_NORMAL_COMPLETE_ORDER_STORAGE_KEY, normalized.autoNormalCompleteOrder ? '1' : '0');
   localStorage.setItem(AUTO_NORMAL_STOP_ON_ERROR_STORAGE_KEY, normalized.autoNormalStopOnError ? '1' : '0');
   localStorage.setItem(AUTO_PREP_COMPLETE_ORDER_STORAGE_KEY, normalized.autoPrepCompleteOrder ? '1' : '0');
   localStorage.setItem(AUTO_PREP_TAKE_BEVERAGE_STORAGE_KEY, normalized.autoPrepTakeBeverage ? '1' : '0');

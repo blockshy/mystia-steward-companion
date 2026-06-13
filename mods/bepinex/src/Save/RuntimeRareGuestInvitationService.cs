@@ -17,6 +17,7 @@ internal sealed class RareGuestInvitationResult
     public int ScheduledSlotCount { get; set; }
     public int InvitedCount { get; set; }
     public int SkippedCount { get; set; }
+    public string KizunaLevelFilter { get; set; } = "";
     public string Source { get; set; } = "";
     public string Diagnostics { get; set; } = "";
     public string Scope { get; set; } = "";
@@ -54,11 +55,11 @@ internal static class RuntimeRareGuestInvitationService
     private const string DaySceneSceneManagerTypeName = "DayScene.SceneManager";
     private const string CharacterConditionComponentTypeName = "DayScene.Interactables.Collections.ConditionComponents.CharacterConditionComponent";
 
-    public static RareGuestInvitationResult ListAvailable(DataRepository? repository, ManualLogSource? log, string scopeText = "")
+    public static RareGuestInvitationResult ListAvailable(DataRepository? repository, ManualLogSource? log, string scopeText = "", string kizunaLevelsText = "")
     {
         try
         {
-            return ListAvailableCore(repository, log, ParseScope(scopeText));
+            return ListAvailableCore(repository, log, ParseScope(scopeText), ParseKizunaLevelFilter(kizunaLevelsText));
         }
         catch (Exception ex)
         {
@@ -90,11 +91,11 @@ internal static class RuntimeRareGuestInvitationService
         }
     }
 
-    public static RareGuestInvitationResult InviteAllAvailable(DataRepository? repository, ManualLogSource? log, string scopeText = "")
+    public static RareGuestInvitationResult InviteAllAvailable(DataRepository? repository, ManualLogSource? log, string scopeText = "", string kizunaLevelsText = "")
     {
         try
         {
-            return InviteAllAvailableCore(repository, log, ParseScope(scopeText));
+            return InviteAllAvailableCore(repository, log, ParseScope(scopeText), ParseKizunaLevelFilter(kizunaLevelsText));
         }
         catch (Exception ex)
         {
@@ -119,7 +120,7 @@ internal static class RuntimeRareGuestInvitationService
         };
     }
 
-    private static RareGuestInvitationResult ListAvailableCore(DataRepository? repository, ManualLogSource? log, RareGuestInvitationScope scope)
+    private static RareGuestInvitationResult ListAvailableCore(DataRepository? repository, ManualLogSource? log, RareGuestInvitationScope scope, KizunaLevelFilter kizunaFilter)
     {
         var context = ReadInvitationContext(repository, scope);
         if (!context.Ok) return context.Result;
@@ -127,14 +128,14 @@ internal static class RuntimeRareGuestInvitationService
         var result = CreateBaseResult(context);
         foreach (var candidate in context.Candidates)
         {
-            ProcessCandidate(result, context.AlbumType!, context.StatusTracker!, candidate, writeInvitation: false);
+            ProcessCandidate(result, context.AlbumType!, context.StatusTracker!, candidate, writeInvitation: false, kizunaFilter);
         }
 
         result.Ok = true;
         result.InvitedCount = result.Invited.Count;
         result.SkippedCount = result.Skipped.Count;
         result.Status = BuildListStatus(result, context.Source);
-        log?.LogInfo($"List inviteable rare guests: {result.Status} scope={context.ScopeText}, source={context.Source}, diagnostics={context.Diagnostics}, candidates={result.CandidateCount}, available={result.Available.Count}, skipped={result.SkippedCount}");
+        log?.LogInfo($"List inviteable rare guests: {result.Status} scope={context.ScopeText}, kizuna={kizunaFilter.Text}, source={context.Source}, diagnostics={context.Diagnostics}, candidates={result.CandidateCount}, available={result.Available.Count}, skipped={result.SkippedCount}");
         return result;
     }
 
@@ -182,7 +183,7 @@ internal static class RuntimeRareGuestInvitationService
         return result;
     }
 
-    private static RareGuestInvitationResult InviteAllAvailableCore(DataRepository? repository, ManualLogSource? log, RareGuestInvitationScope scope)
+    private static RareGuestInvitationResult InviteAllAvailableCore(DataRepository? repository, ManualLogSource? log, RareGuestInvitationScope scope, KizunaLevelFilter kizunaFilter)
     {
         var context = ReadInvitationContext(repository, scope);
         if (!context.Ok) return context.Result;
@@ -190,14 +191,14 @@ internal static class RuntimeRareGuestInvitationService
         var result = CreateBaseResult(context);
         foreach (var candidate in context.Candidates)
         {
-            ProcessCandidate(result, context.AlbumType!, context.StatusTracker!, candidate, writeInvitation: true);
+            ProcessCandidate(result, context.AlbumType!, context.StatusTracker!, candidate, writeInvitation: true, kizunaFilter);
         }
 
         result.Ok = true;
         result.InvitedCount = result.Invited.Count;
         result.SkippedCount = result.Skipped.Count;
         result.Status = BuildStatus(result, context.Source);
-        log?.LogInfo($"Invite all rare guests: {result.Status} scope={context.ScopeText}, source={context.Source}, diagnostics={context.Diagnostics}, candidates={result.CandidateCount}, eligible={result.UsableCount}, existingInvited={result.ExistingControlledCount}, invited={result.InvitedCount}, skipped={result.SkippedCount}");
+        log?.LogInfo($"Invite all rare guests: {result.Status} scope={context.ScopeText}, kizuna={kizunaFilter.Text}, source={context.Source}, diagnostics={context.Diagnostics}, candidates={result.CandidateCount}, eligible={result.UsableCount}, existingInvited={result.ExistingControlledCount}, invited={result.InvitedCount}, skipped={result.SkippedCount}");
         return result;
     }
 
@@ -254,10 +255,10 @@ internal static class RuntimeRareGuestInvitationService
         return new RareGuestInvitationResult
         {
             RuntimeAvailable = true,
-            CandidateCount = context.Candidates.Count,
             Source = context.Source,
             Diagnostics = context.Diagnostics,
             Scope = context.ScopeText,
+            KizunaLevelFilter = "",
             CurrentMapLabel = context.CurrentMap.Label,
             CurrentMapName = context.CurrentMap.Name,
             ExistingSlotCount = RuntimeReflectionUtility.CountObjects(RuntimeReflectionUtility.GetMemberValue(context.StatusTracker, "InvitedGuests")),
@@ -269,30 +270,41 @@ internal static class RuntimeRareGuestInvitationService
         Type albumType,
         object statusTracker,
         InviteCandidate candidate,
-        bool writeInvitation)
+        bool writeInvitation,
+        KizunaLevelFilter? kizunaFilter = null)
     {
         if (candidate.Id < 0)
         {
+            if (kizunaFilter is { IsEmpty: false }) return;
+            result.CandidateCount++;
             AddUnavailableCandidate(result, candidate, "invalid", "未读取到稀客 ID", -1);
-            return;
-        }
-
-        if (candidate.AvailabilityKnown && !candidate.RuntimeAvailable)
-        {
-            AddUnavailableCandidate(result, candidate, "unavailable", "当前时间不可见", -1);
-            return;
-        }
-
-        if (HasNpcInvited(statusTracker, candidate.Id))
-        {
-            result.ExistingControlledCount++;
-            AddUnavailableCandidate(result, candidate, "invited", "今晚已邀请", -1);
             return;
         }
 
         var level = RuntimeReflectionUtility.ToInt(
             InvokeStaticMethodWithSingleParameter(albumType, "GetOrGenerateSpecialNPCKizunaLevel", typeof(int), candidate.Id),
             0);
+        if (kizunaFilter is { IsEmpty: false } && !kizunaFilter.Matches(level))
+        {
+            return;
+        }
+
+        result.CandidateCount++;
+        if (kizunaFilter != null) result.KizunaLevelFilter = kizunaFilter.Text;
+
+        if (candidate.AvailabilityKnown && !candidate.RuntimeAvailable)
+        {
+            AddUnavailableCandidate(result, candidate, "unavailable", "当前时间不可见", level);
+            return;
+        }
+
+        if (HasNpcInvited(statusTracker, candidate.Id))
+        {
+            result.ExistingControlledCount++;
+            AddUnavailableCandidate(result, candidate, "invited", "今晚已邀请", level);
+            return;
+        }
+
         if (level < 2)
         {
             AddUnavailableCandidate(result, candidate, "low-kizuna", $"羁绊等级不足 {level}", level);
@@ -335,6 +347,20 @@ internal static class RuntimeRareGuestInvitationService
             Status = message,
             Error = message,
         };
+    }
+
+    private static KizunaLevelFilter ParseKizunaLevelFilter(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return KizunaLevelFilter.Empty;
+
+        var levels = text
+            .Split(new[] { ',', ';', '|', ' ' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(part => int.TryParse(part.Trim(), out var value) ? value : -1)
+            .Where(value => value >= 0)
+            .Distinct()
+            .OrderBy(value => value)
+            .ToArray();
+        return levels.Length == 0 ? KizunaLevelFilter.Empty : new KizunaLevelFilter(levels);
     }
 
     private static IReadOnlyList<InviteCandidate> ReadInviteCandidates(
@@ -1126,6 +1152,27 @@ internal static class RuntimeRareGuestInvitationService
     {
         CurrentScene,
         AllScenes,
+    }
+
+    private sealed class KizunaLevelFilter
+    {
+        public static readonly KizunaLevelFilter Empty = new(Array.Empty<int>());
+
+        private readonly HashSet<int> _levels;
+
+        public KizunaLevelFilter(IReadOnlyCollection<int> levels)
+        {
+            _levels = levels.Count == 0 ? new HashSet<int>() : new HashSet<int>(levels);
+            Text = _levels.Count == 0 ? "" : string.Join(",", _levels.OrderBy(level => level));
+        }
+
+        public bool IsEmpty => _levels.Count == 0;
+        public string Text { get; }
+
+        public bool Matches(int level)
+        {
+            return IsEmpty || _levels.Contains(level);
+        }
     }
 
     internal sealed class DaySceneMapInfo
