@@ -14,12 +14,17 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
 
     private readonly DataRepository _repository;
     private readonly bool _includePlacedCookers;
+    private readonly bool _includeDaySceneState;
     private readonly Dictionary<string, double> _performanceMs = new(StringComparer.Ordinal);
 
-    public RuntimeReflectionRecommendationStateProvider(DataRepository repository, bool includePlacedCookers = true)
+    public RuntimeReflectionRecommendationStateProvider(
+        DataRepository repository,
+        bool includePlacedCookers = true,
+        bool includeDaySceneState = true)
     {
         _repository = repository;
         _includePlacedCookers = includePlacedCookers;
+        _includeDaySceneState = includeDaySceneState;
     }
 
     public string Description => "Game runtime live data";
@@ -65,13 +70,18 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
         _performanceMs.Clear();
         var storagePartial = Measure("storage.saveData", () => TryInvokeStaticSafely(RuntimeStorageTypeName, "GenerateSaveData"));
         var playerPartial = Measure("player.saveData", () => TryInvokeStaticSafely(RuntimePlayerDataTypeName, "GenerateSaveData"));
-        var dayScenePartial = Measure("dayScene.saveData", () => TryInvokeStaticSafely(RuntimeDaySceneTypeName, "GenerateSaveData"));
+        var dayScenePartial = _includeDaySceneState
+            ? Measure("dayScene.saveData", () => TryInvokeStaticSafely(RuntimeDaySceneTypeName, "GenerateSaveData"))
+            : null;
 
         var recipeGameIds = Measure("storage.recipes", () => ReadLiveRecipeIds(storagePartial));
         var ingredients = Measure("storage.ingredients", () => ReadLiveIngredients(storagePartial));
         var beverages = Measure("storage.beverages", () => ReadLiveBeverages(storagePartial));
-        var trackedSwitch = Measure("dayScene.switches", () => ReadStringBoolDictionary(GetMemberValue(dayScenePartial, "trackedSwitch")));
-        var famousShopEnabled = Measure("player.famousShop", () => ReadTrackedSwitch(FamousShopSwitchKey, trackedSwitch));
+        var trackedSwitch = _includeDaySceneState
+            ? Measure("dayScene.switches", () => ReadStringBoolDictionary(GetMemberValue(dayScenePartial, "trackedSwitch")))
+            : new Dictionary<string, bool>(StringComparer.Ordinal);
+        var famousShopEnabled = _includeDaySceneState
+            && Measure("player.famousShop", () => ReadTrackedSwitch(FamousShopSwitchKey, trackedSwitch));
         var popularFoodTag = Measure("player.popularFood", () => ResolveFoodTag(ReadPopularFoodTags("Like", GetMemberValue(playerPartial, "popLikeFoodTags"))));
         var playerLevel = Measure("player.level", () => ReadPlayerLevel(playerPartial));
 

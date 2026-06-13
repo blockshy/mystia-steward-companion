@@ -18,7 +18,8 @@ internal sealed class StewardOverlayController
     private const float RuntimeDataFullPublishIntervalSeconds = 10f;
     private const float PendingCookingProcessIntervalSeconds = 0.25f;
     private const float NormalBusinessSnapshotCacheSeconds = 0.75f;
-    private const int SceneSnapshotStartupGuardFrames = 10;
+    private const int SceneSnapshotStartupGuardFrames = 30;
+    private const float SceneSnapshotStartupGuardSeconds = 2f;
     private static readonly JsonSerializerOptions LocalApiJsonOptions = new(JsonSerializerDefaults.Web);
 
     private StewardPluginConfig? _config;
@@ -53,6 +54,7 @@ internal sealed class StewardOverlayController
     private float _nextRuntimeDataFullPublishAt;
     private float _nextPendingCookingProcessAt;
     private float _nextNormalBusinessRefreshAt;
+    private float _sceneChangedAtRealtime;
     private int _sceneChangedFrame;
     private bool _localApiSnapshotErrorLogged;
     private bool _disposed;
@@ -125,6 +127,7 @@ internal sealed class StewardOverlayController
         _mainThreadId = Thread.CurrentThread.ManagedThreadId;
         _activeSceneName = GetActiveSceneName();
         _sceneChangedFrame = Time.frameCount;
+        _sceneChangedAtRealtime = Time.realtimeSinceStartup;
         LoadRepository();
         _localApiToken = EnsureLocalApiToken(config);
         StartLocalApi();
@@ -191,6 +194,7 @@ internal sealed class StewardOverlayController
 
         _activeSceneName = sceneName;
         _sceneChangedFrame = Time.frameCount;
+        _sceneChangedAtRealtime = Time.realtimeSinceStartup;
         _nextAutoRefreshAt = 0f;
         _nextBusinessRefreshAt = 0f;
         _businessFallbackState = null;
@@ -339,7 +343,11 @@ internal sealed class StewardOverlayController
             if (RuntimeReflectionRecommendationStateProvider.CanReadRuntimeState(out var runtimeReason))
             {
                 var includePlacedCookers = HasActiveNightBusinessContext(_businessContext);
-                var runtimeProvider = new RuntimeReflectionRecommendationStateProvider(_repository, includePlacedCookers);
+                var includeDaySceneState = ShouldReadDaySceneRuntimeState();
+                var runtimeProvider = new RuntimeReflectionRecommendationStateProvider(
+                    _repository,
+                    includePlacedCookers,
+                    includeDaySceneState);
                 var previousSource = _runtimeSource;
                 var nextRuntimeState = Measure("runtime.loadState", runtimeProvider.LoadState);
                 RecordPerformanceEntries("runtime.", runtimeProvider.PerformanceMs);
@@ -736,7 +744,16 @@ internal sealed class StewardOverlayController
 
     private bool IsSceneSnapshotStartupGuardActive()
     {
-        return Time.frameCount - _sceneChangedFrame < SceneSnapshotStartupGuardFrames;
+        return Time.frameCount - _sceneChangedFrame < SceneSnapshotStartupGuardFrames
+            || Time.realtimeSinceStartup - _sceneChangedAtRealtime < SceneSnapshotStartupGuardSeconds;
+    }
+
+    private bool ShouldReadDaySceneRuntimeState()
+    {
+        if (!_runtimeLoaded && IsSceneSnapshotStartupGuardActive()) return false;
+        if (IsNonGameplayScene(_activeSceneName)) return false;
+        if (IsNightBusinessScene(_activeSceneName)) return true;
+        return !IsSceneSnapshotStartupGuardActive();
     }
 
     private NormalBusinessContext? ReadNormalBusinessForSnapshot()
@@ -1093,6 +1110,18 @@ internal sealed class StewardOverlayController
 
     private RareGuestInvitationResult ApplyRareGuestInvitation(RareGuestInvitationAction action, int guestId, string scope)
     {
+        if (!CanRunRareGuestInvitationAction(out var waitReason))
+        {
+            return new RareGuestInvitationResult
+            {
+                Ok = false,
+                RuntimeAvailable = false,
+                Status = waitReason,
+                Error = waitReason,
+                Scope = string.IsNullOrWhiteSpace(scope) ? "current" : scope.Trim(),
+            };
+        }
+
         var result = action switch
         {
             RareGuestInvitationAction.List => RuntimeRareGuestInvitationService.ListAvailable(_repository, _log, scope),
@@ -1107,6 +1136,36 @@ internal sealed class StewardOverlayController
             PublishLocalApiSnapshot();
         }
         return result;
+    }
+
+    private bool CanRunRareGuestInvitationAction(out string reason)
+    {
+        reason = "";
+        if (!_runtimeLoaded)
+        {
+            reason = "游戏运行时数据尚未读取完成，请稍后再试。";
+            return false;
+        }
+
+        if (IsNonGameplayScene(_activeSceneName))
+        {
+            reason = "当前未进入存档，无法读取可邀请稀客。";
+            return false;
+        }
+
+        if (IsNightBusinessScene(_activeSceneName))
+        {
+            reason = "当前处于夜间经营，稀客邀请只支持日间场景。";
+            return false;
+        }
+
+        if (IsSceneSnapshotStartupGuardActive())
+        {
+            reason = "日间场景正在初始化，请稍后再试。";
+            return false;
+        }
+
+        return true;
     }
 
     private void ProcessPendingCookingCollections()
