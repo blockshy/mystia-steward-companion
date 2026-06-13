@@ -36,6 +36,9 @@ public sealed class NightBusinessReflectionProvider
     private IReadOnlyList<string>? _foodTagCandidates;
     private IReadOnlyList<string>? _beverageTagCandidates;
     private List<NightBusinessCandidateDiagnostic>? _candidateDiagnostics;
+    private readonly Dictionary<string, double> _performanceMs = new(StringComparer.Ordinal);
+
+    public IReadOnlyDictionary<string, double> PerformanceMs => _performanceMs;
 
     public NightBusinessReflectionProvider(
         DataRepository repository,
@@ -52,20 +55,21 @@ public sealed class NightBusinessReflectionProvider
 
     public NightBusinessContext LoadContext()
     {
+        _performanceMs.Clear();
         var guests = new List<NightBusinessGuest>();
         var orders = new List<NightBusinessOrder>();
         var errors = new List<string>();
         var sourceStats = new List<string>();
         _candidateDiagnostics = _diagnostics == null ? null : new List<NightBusinessCandidateDiagnostic>();
-        var mappedGuestSnapshot = _mappedGuestCatalog.Snapshot();
-        var staticDataSnapshot = _staticDataCatalog.Snapshot(mappedGuestSnapshot);
+        var mappedGuestSnapshot = Measure("static.mappedGuests", _mappedGuestCatalog.Snapshot);
+        var staticDataSnapshot = Measure("static.data", () => _staticDataCatalog.Snapshot(mappedGuestSnapshot));
         sourceStats.Add($"MappedGuests={mappedGuestSnapshot.ResolvedCount}/{mappedGuestSnapshot.Entries.Count}; {mappedGuestSnapshot.Status}");
         sourceStats.Add($"StaticData={staticDataSnapshot.Status}");
-        WriteRuntimeStaticDataDiagnostics(mappedGuestSnapshot, staticDataSnapshot);
+        Measure("diagnostics.staticData", () => WriteRuntimeStaticDataDiagnostics(mappedGuestSnapshot, staticDataSnapshot));
 
         try
         {
-            var orderControllerOrders = ReadOrderControllerOrders().ToList();
+            var orderControllerOrders = Measure("rare.orderController", () => ReadOrderControllerOrders().ToList());
             sourceStats.Add($"OrderController={orderControllerOrders.Count}");
             orders.AddRange(orderControllerOrders);
         }
@@ -77,7 +81,7 @@ public sealed class NightBusinessReflectionProvider
 
         try
         {
-            var hudOrders = ReadHudOrders().ToList();
+            var hudOrders = Measure("rare.hud", () => ReadHudOrders().ToList());
             sourceStats.Add($"HUD={hudOrders.Count}");
             orders.AddRange(hudOrders);
         }
@@ -89,10 +93,10 @@ public sealed class NightBusinessReflectionProvider
 
         try
         {
-            var servePanelContexts = ReadServePanelContexts().ToList();
+            var servePanelContexts = Measure("rare.servePanel.contexts", () => ReadServePanelContexts().ToList());
             sourceStats.Add($"ServePanel={servePanelContexts.Count}");
-            guests.AddRange(ReadServePanelRareGuests(servePanelContexts));
-            orders.AddRange(ReadServePanelOrders(servePanelContexts));
+            guests.AddRange(Measure("rare.servePanel.guests", () => ReadServePanelRareGuests(servePanelContexts).ToList()));
+            orders.AddRange(Measure("rare.servePanel.orders", () => ReadServePanelOrders(servePanelContexts).ToList()));
         }
         catch (Exception ex)
         {
@@ -100,17 +104,17 @@ public sealed class NightBusinessReflectionProvider
             errors.Add($"serve panel: {ex.Message}");
         }
 
-        var managerStatus = ReadManagerStatus();
-        var queueStatus = ReadQueueStatus();
+        var managerStatus = Measure("manager.status", ReadManagerStatus);
+        var queueStatus = Measure("queue.status", ReadQueueStatus);
 
         foreach (var source in ManagerControllerSources)
         {
             try
             {
-                var controllers = ReadManagerControllers(source.MemberName).ToList();
+                var controllers = Measure($"controllers.{source.Source}", () => ReadManagerControllers(source.MemberName).ToList());
                 sourceStats.Add($"{source.Source}={controllers.Count}");
-                guests.AddRange(ReadRareGuests(controllers, source.Source));
-                orders.AddRange(ReadControllerOrders(controllers, source.Source));
+                guests.AddRange(Measure($"rare.guests.{source.Source}", () => ReadRareGuests(controllers, source.Source).ToList()));
+                orders.AddRange(Measure($"rare.orders.{source.Source}", () => ReadControllerOrders(controllers, source.Source).ToList()));
             }
             catch (Exception ex)
             {
@@ -121,10 +125,10 @@ public sealed class NightBusinessReflectionProvider
 
         try
         {
-            var queuedControllers = ReadQueuedControllers().ToList();
+            var queuedControllers = Measure("controllers.Queue", () => ReadQueuedControllers().ToList());
             sourceStats.Add($"Queue={queuedControllers.Count}");
-            guests.AddRange(ReadRareGuests(queuedControllers, "Queue"));
-            orders.AddRange(ReadControllerOrders(queuedControllers, "Queue"));
+            guests.AddRange(Measure("rare.guests.Queue", () => ReadRareGuests(queuedControllers, "Queue").ToList()));
+            orders.AddRange(Measure("rare.orders.Queue", () => ReadControllerOrders(queuedControllers, "Queue").ToList()));
         }
         catch (Exception ex)
         {
@@ -132,13 +136,13 @@ public sealed class NightBusinessReflectionProvider
             errors.Add($"Queue: {ex.Message}");
         }
 
-        var activeGuests = DeduplicateGuests(guests);
+        var activeGuests = Measure("deduplicate.guests", () => DeduplicateGuests(guests));
         var rawLiveOrders = orders.ToList();
         var acceptedRuntimeOrders = new List<NightBusinessOrder>();
         try
         {
-            var runtimeOrders = SpecialOrderRuntimeCapture.Snapshot(RuntimeCapturedOrderMaxAge);
-            acceptedRuntimeOrders = ReadRuntimeCapturedOrders(runtimeOrders, activeGuests).ToList();
+            var runtimeOrders = Measure("runtimeCapture.snapshot", () => SpecialOrderRuntimeCapture.Snapshot(RuntimeCapturedOrderMaxAge));
+            acceptedRuntimeOrders = Measure("runtimeCapture.accept", () => ReadRuntimeCapturedOrders(runtimeOrders, activeGuests).ToList());
             sourceStats.Add($"RuntimeCapture={acceptedRuntimeOrders.Count}/{runtimeOrders.Count}");
             sourceStats.Add($"RuntimeCaptureStatus={SpecialOrderRuntimeCapture.Status}");
             sourceStats.Add($"UiPinning={RuntimeUiPinningService.Status}");
@@ -150,13 +154,13 @@ public sealed class NightBusinessReflectionProvider
             errors.Add($"runtime capture: {ex.Message}");
         }
 
-        var activeOrders = DeduplicateOrders(orders);
-        var place = ReadCurrentPlace();
-        var placeLabel = ReadCurrentPlaceLabel();
+        var activeOrders = Measure("deduplicate.orders", () => DeduplicateOrders(orders));
+        var place = Measure("place.name", ReadCurrentPlace);
+        var placeLabel = Measure("place.label", ReadCurrentPlaceLabel);
         var recentRuntimeParseFailures = _diagnostics == null
             ? Array.Empty<string>()
-            : SpecialOrderRuntimeCapture.RecentParseFailuresSnapshot(TimeSpan.FromMinutes(5));
-        WriteDiagnostics(
+            : Measure("runtimeCapture.failures", () => SpecialOrderRuntimeCapture.RecentParseFailuresSnapshot(TimeSpan.FromMinutes(5)));
+        Measure("diagnostics.nightBusiness", () => WriteDiagnostics(
             managerStatus,
             queueStatus,
             sourceStats,
@@ -169,7 +173,7 @@ public sealed class NightBusinessReflectionProvider
             _candidateDiagnostics ?? new List<NightBusinessCandidateDiagnostic>(),
             recentRuntimeParseFailures,
             place,
-            placeLabel);
+            placeLabel));
         _candidateDiagnostics = null;
 
         return new NightBusinessContext
@@ -181,6 +185,32 @@ public sealed class NightBusinessReflectionProvider
             Source = $"Night scene live orders; {managerStatus}; {queueStatus}; {string.Join("; ", sourceStats)}; guests={activeGuests.Count}; orders={activeOrders.Count}",
             Error = errors.Count == 0 ? null : string.Join("; ", errors),
         };
+    }
+
+    private T Measure<T>(string key, Func<T> action)
+    {
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            return action();
+        }
+        finally
+        {
+            _performanceMs[key] = Math.Round(stopwatch.Elapsed.TotalMilliseconds, 2);
+        }
+    }
+
+    private void Measure(string key, Action action)
+    {
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            action();
+        }
+        finally
+        {
+            _performanceMs[key] = Math.Round(stopwatch.Elapsed.TotalMilliseconds, 2);
+        }
     }
 
     private void WriteRuntimeStaticDataDiagnostics(

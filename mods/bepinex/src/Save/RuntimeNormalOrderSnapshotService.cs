@@ -21,21 +21,25 @@ public sealed class RuntimeNormalOrderSnapshotService
     private static readonly Dictionary<string, DateTime> FirstSeenByOrderKey = new(StringComparer.Ordinal);
 
     private readonly DataRepository _repository;
+    private readonly Dictionary<string, double> _performanceMs = new(StringComparer.Ordinal);
 
     public RuntimeNormalOrderSnapshotService(DataRepository repository)
     {
         _repository = repository;
     }
 
+    public IReadOnlyDictionary<string, double> PerformanceMs => _performanceMs;
+
     public NormalBusinessContext Load()
     {
+        _performanceMs.Clear();
         var orders = new List<NormalBusinessOrder>();
         var errors = new List<string>();
         var source = new List<string>();
 
         try
         {
-            var orderControllerOrders = ReadOrderControllerOrders().ToList();
+            var orderControllerOrders = Measure("orderController", () => ReadOrderControllerOrders().ToList());
             source.Add($"OrderController={orderControllerOrders.Count(order => order.Source == "OrderController")}");
             source.Add($"OrderControllerElement={orderControllerOrders.Count(order => order.Source == "OrderControllerElement")}");
             orders.AddRange(orderControllerOrders);
@@ -48,7 +52,7 @@ public sealed class RuntimeNormalOrderSnapshotService
 
         try
         {
-            var hudOrders = ReadHudOrders().ToList();
+            var hudOrders = Measure("hud", () => ReadHudOrders().ToList());
             source.Add($"HUD={hudOrders.Count}");
             orders.AddRange(hudOrders);
         }
@@ -58,15 +62,15 @@ public sealed class RuntimeNormalOrderSnapshotService
             errors.Add($"HUD: {ex.Message}");
         }
 
-        source.Add(ReadManagerStatus());
+        source.Add(Measure("manager.status", ReadManagerStatus));
 
         foreach (var controllerSource in ManagerControllerSources)
         {
             try
             {
-                var controllers = ReadManagerControllers(controllerSource.MemberName).ToList();
+                var controllers = Measure($"controllers.{controllerSource.Source}", () => ReadManagerControllers(controllerSource.MemberName).ToList());
                 source.Add($"{controllerSource.Source}={controllers.Count}");
-                orders.AddRange(ReadControllerOrders(controllers, controllerSource.Source));
+                orders.AddRange(Measure($"orders.{controllerSource.Source}", () => ReadControllerOrders(controllers, controllerSource.Source).ToList()));
             }
             catch (Exception ex)
             {
@@ -77,9 +81,9 @@ public sealed class RuntimeNormalOrderSnapshotService
 
         try
         {
-            var queuedControllers = ReadQueuedControllers().ToList();
+            var queuedControllers = Measure("controllers.Queue", () => ReadQueuedControllers().ToList());
             source.Add($"Queue={queuedControllers.Count}");
-            orders.AddRange(ReadControllerOrders(queuedControllers, "Queue"));
+            orders.AddRange(Measure("orders.Queue", () => ReadControllerOrders(queuedControllers, "Queue").ToList()));
         }
         catch (Exception ex)
         {
@@ -87,11 +91,11 @@ public sealed class RuntimeNormalOrderSnapshotService
             errors.Add($"Queue: {ex.Message}");
         }
 
-        var deduplicated = ApplyFirstSeenOrder(orders)
-            .OrderBy(order => order.FirstSeenAtUtc ?? DateTime.MaxValue)
-            .ThenBy(order => order.DeskCode)
-            .ThenBy(order => order.GuestName, StringComparer.Ordinal)
-            .ToList();
+        var deduplicated = Measure("deduplicate", () => ApplyFirstSeenOrder(orders)
+                .OrderBy(order => order.FirstSeenAtUtc ?? DateTime.MaxValue)
+                .ThenBy(order => order.DeskCode)
+                .ThenBy(order => order.GuestName, StringComparer.Ordinal)
+                .ToList());
         source.Add($"normalOrders={deduplicated.Count}");
         source.Add("normalOrderSort=firstSeen");
 
@@ -101,6 +105,19 @@ public sealed class RuntimeNormalOrderSnapshotService
             Source = string.Join("; ", source),
             Error = errors.Count == 0 ? null : string.Join("; ", errors),
         };
+    }
+
+    private T Measure<T>(string key, Func<T> action)
+    {
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            return action();
+        }
+        finally
+        {
+            _performanceMs[key] = Math.Round(stopwatch.Elapsed.TotalMilliseconds, 2);
+        }
     }
 
     private static IReadOnlyList<NormalBusinessOrder> ApplyFirstSeenOrder(IEnumerable<NormalBusinessOrder> orders)

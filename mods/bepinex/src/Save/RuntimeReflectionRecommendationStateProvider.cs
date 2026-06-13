@@ -14,6 +14,7 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
 
     private readonly DataRepository _repository;
     private readonly bool _includePlacedCookers;
+    private readonly Dictionary<string, double> _performanceMs = new(StringComparer.Ordinal);
 
     public RuntimeReflectionRecommendationStateProvider(DataRepository repository, bool includePlacedCookers = true)
     {
@@ -22,6 +23,7 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
     }
 
     public string Description => "Game runtime live data";
+    public IReadOnlyDictionary<string, double> PerformanceMs => _performanceMs;
 
     public static bool CanReadRuntimeState(out string reason)
     {
@@ -60,17 +62,18 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
 
     public RecommendationState LoadState()
     {
-        var storagePartial = TryInvokeStaticSafely(RuntimeStorageTypeName, "GenerateSaveData");
-        var playerPartial = TryInvokeStaticSafely(RuntimePlayerDataTypeName, "GenerateSaveData");
-        var dayScenePartial = TryInvokeStaticSafely(RuntimeDaySceneTypeName, "GenerateSaveData");
+        _performanceMs.Clear();
+        var storagePartial = Measure("storage.saveData", () => TryInvokeStaticSafely(RuntimeStorageTypeName, "GenerateSaveData"));
+        var playerPartial = Measure("player.saveData", () => TryInvokeStaticSafely(RuntimePlayerDataTypeName, "GenerateSaveData"));
+        var dayScenePartial = Measure("dayScene.saveData", () => TryInvokeStaticSafely(RuntimeDaySceneTypeName, "GenerateSaveData"));
 
-        var recipeGameIds = ReadLiveRecipeIds(storagePartial);
-        var ingredients = ReadLiveIngredients(storagePartial);
-        var beverages = ReadLiveBeverages(storagePartial);
-        var trackedSwitch = ReadStringBoolDictionary(GetMemberValue(dayScenePartial, "trackedSwitch"));
-        var famousShopEnabled = ReadTrackedSwitch(FamousShopSwitchKey, trackedSwitch);
-        var popularFoodTag = ResolveFoodTag(ReadPopularFoodTags("Like", GetMemberValue(playerPartial, "popLikeFoodTags")));
-        var playerLevel = ReadPlayerLevel(playerPartial);
+        var recipeGameIds = Measure("storage.recipes", () => ReadLiveRecipeIds(storagePartial));
+        var ingredients = Measure("storage.ingredients", () => ReadLiveIngredients(storagePartial));
+        var beverages = Measure("storage.beverages", () => ReadLiveBeverages(storagePartial));
+        var trackedSwitch = Measure("dayScene.switches", () => ReadStringBoolDictionary(GetMemberValue(dayScenePartial, "trackedSwitch")));
+        var famousShopEnabled = Measure("player.famousShop", () => ReadTrackedSwitch(FamousShopSwitchKey, trackedSwitch));
+        var popularFoodTag = Measure("player.popularFood", () => ResolveFoodTag(ReadPopularFoodTags("Like", GetMemberValue(playerPartial, "popLikeFoodTags"))));
+        var playerLevel = Measure("player.level", () => ReadPlayerLevel(playerPartial));
 
         if (recipeGameIds.Count == 0 && ingredients.Count == 0 && beverages.Count == 0 && playerLevel <= 0)
         {
@@ -84,20 +87,23 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
             Beverages = beverages,
             PlayerLevel = playerLevel,
             PopularFoodTag = famousShopEnabled && popularFoodTag == "招牌" ? null : popularFoodTag,
-            PopularHateFoodTag = ResolveFoodTag(ReadPopularFoodTags("Hate", GetMemberValue(playerPartial, "popHateFoodTags"))),
+            PopularHateFoodTag = Measure("player.popularHateFood", () => ResolveFoodTag(ReadPopularFoodTags("Hate", GetMemberValue(playerPartial, "popHateFoodTags")))),
             FamousShopEnabled = famousShopEnabled,
-            CollabStatus = ReadStringBoolDictionary(GetMemberValue(playerPartial, "collabStatus")),
+            CollabStatus = Measure("player.collabStatus", () => ReadStringBoolDictionary(GetMemberValue(playerPartial, "collabStatus"))),
         };
 
-        var state = RecommendationState.FromSave(_repository, parsed);
-        foreach (var rareCustomerId in ExpandAvailableRareCustomerIds(RuntimeRareCustomerAvailabilityService.ReadAvailableRareCustomerIds()))
+        var state = Measure("state.fromSave", () => RecommendationState.FromSave(_repository, parsed));
+        var rareCustomerIds = Measure(
+            "rare.available",
+            () => ExpandAvailableRareCustomerIds(RuntimeRareCustomerAvailabilityService.ReadAvailableRareCustomerIds()).ToList());
+        foreach (var rareCustomerId in rareCustomerIds)
         {
             state.AvailableRareCustomerIds.Add(rareCustomerId);
         }
 
         if (_includePlacedCookers)
         {
-            RuntimeCookerSnapshotService.ApplyTo(state);
+            Measure("cookerSnapshot", () => RuntimeCookerSnapshotService.ApplyTo(state));
         }
         else
         {
@@ -105,6 +111,32 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
         }
 
         return state;
+    }
+
+    private T Measure<T>(string key, Func<T> action)
+    {
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            return action();
+        }
+        finally
+        {
+            _performanceMs[key] = Math.Round(stopwatch.Elapsed.TotalMilliseconds, 2);
+        }
+    }
+
+    private void Measure(string key, Action action)
+    {
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            action();
+        }
+        finally
+        {
+            _performanceMs[key] = Math.Round(stopwatch.Elapsed.TotalMilliseconds, 2);
+        }
     }
 
     private HashSet<int> ExpandAvailableRareCustomerIds(HashSet<int> recordedIds)

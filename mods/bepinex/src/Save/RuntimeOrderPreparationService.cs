@@ -30,7 +30,16 @@ internal static class RuntimeOrderPreparationService
     private static readonly TimeSpan PendingCookingIdleTimeout = TimeSpan.FromSeconds(90);
     private static readonly TimeSpan CompletedNormalCookingRememberTimeout = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan TrayObservationRetention = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan AutomationLogRepeatSummaryInterval = TimeSpan.FromSeconds(30);
     private const long AutomationLogMaxBytes = 1024 * 1024;
+    private const int AutomationLogRepeatSummaryCount = 25;
+    private static string _lastAutomationLogKey = "";
+    private static string _lastAutomationLogTarget = "";
+    private static string _lastAutomationLogMessage = "";
+    private static int _lastAutomationLogRepeatCount;
+    private static int _lastAutomationLogReportedCount;
+    private static DateTime _lastAutomationLogFirstAt = DateTime.MinValue;
+    private static DateTime _lastAutomationLogLastAt = DateTime.MinValue;
     private enum CookingCollectionTargetKind
     {
         Tray,
@@ -1589,19 +1598,75 @@ internal static class RuntimeOrderPreparationService
             if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
             lock (AutomationLogLock)
             {
+                var now = DateTime.Now;
+                var targetText = FormatAutomationTarget(target);
+                var key = string.Join("|", action, targetText, message);
+                if (string.Equals(key, _lastAutomationLogKey, StringComparison.Ordinal))
+                {
+                    _lastAutomationLogRepeatCount++;
+                    _lastAutomationLogLastAt = now;
+                    var unreportedCount = _lastAutomationLogRepeatCount - _lastAutomationLogReportedCount;
+                    if (unreportedCount < AutomationLogRepeatSummaryCount
+                        && now - _lastAutomationLogFirstAt < AutomationLogRepeatSummaryInterval)
+                    {
+                        return;
+                    }
+
+                    RotateAutomationLogIfNeeded(path);
+                    File.AppendAllText(
+                        path,
+                        FormatAutomationLogLine(
+                            now,
+                            "repeat",
+                            targetText,
+                            $"上一条重复 {unreportedCount} 次，累计 {_lastAutomationLogRepeatCount - 1} 次；{message}") + Environment.NewLine,
+                        new UTF8Encoding(false));
+                    _lastAutomationLogReportedCount = _lastAutomationLogRepeatCount;
+                    _lastAutomationLogFirstAt = now;
+                    return;
+                }
+
                 RotateAutomationLogIfNeeded(path);
-                var line = string.Join(" ",
-                    DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff"),
-                    action,
-                    FormatAutomationTarget(target),
-                    message);
-                File.AppendAllText(path, line + Environment.NewLine, new UTF8Encoding(false));
+                FlushAutomationLogRepeatSummary(path, now);
+                File.AppendAllText(path, FormatAutomationLogLine(now, action, targetText, message) + Environment.NewLine, new UTF8Encoding(false));
+                _lastAutomationLogKey = key;
+                _lastAutomationLogTarget = targetText;
+                _lastAutomationLogMessage = message;
+                _lastAutomationLogRepeatCount = 1;
+                _lastAutomationLogReportedCount = 1;
+                _lastAutomationLogFirstAt = now;
+                _lastAutomationLogLastAt = now;
             }
         }
         catch
         {
             // Diagnostics must never affect game automation.
         }
+    }
+
+    private static void FlushAutomationLogRepeatSummary(string path, DateTime now)
+    {
+        if (_lastAutomationLogRepeatCount <= _lastAutomationLogReportedCount) return;
+
+        var unreportedCount = _lastAutomationLogRepeatCount - _lastAutomationLogReportedCount;
+        File.AppendAllText(
+            path,
+            FormatAutomationLogLine(
+                now,
+                "repeat",
+                _lastAutomationLogTarget,
+                $"上一条重复 {unreportedCount} 次，累计 {_lastAutomationLogRepeatCount - 1} 次；{_lastAutomationLogMessage}") + Environment.NewLine,
+            new UTF8Encoding(false));
+        _lastAutomationLogReportedCount = _lastAutomationLogRepeatCount;
+    }
+
+    private static string FormatAutomationLogLine(DateTime now, string action, string targetText, string message)
+    {
+        return string.Join(" ",
+            now.ToString("yyyy-MM-dd HH:mm:ss.fff"),
+            action,
+            targetText,
+            message);
     }
 
     public static string ResolveAutomationLogPath()
