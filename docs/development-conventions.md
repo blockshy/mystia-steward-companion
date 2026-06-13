@@ -103,6 +103,7 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 - 游戏内料理/酒水列表置顶是实验性功能，只允许重排已生成的 UI 列表，不得自动点击或绕过游戏自身筛选；本地 API 更新置顶目标失败时必须静默降级。
 - `BepInEx/LogOutput.log` 通过伴随窗口 `日志` 页读取，必须保留后端读取上限和前端显示上限，避免无限累积日志。
 - BepInEx 控制台窗口默认由 Mod 写入 `BepInEx.cfg` 在下次启动关闭，并在 Windows 上隐藏已创建的控制台窗口；伴随窗口 `设置` 页可通过本地 API 临时开启/关闭原生日志窗口，修改时必须同时更新当前窗口可见性和下次启动配置。
+- 面向普通用户的伴随窗口默认隐藏调试信息。新增扫描状态、运行时来源、性能耗时、内部订单来源、订单 key、诊断日志、BepInEx 控制台控制、任务 label/source 等偏排查内容时，必须受 `CompanionPreferences.showDebugDetails` 总开关控制；该开关默认关闭，并只在 `设置 -> 显示调试信息` 中开启。
 - 游戏内不再保留 IMGUI 面板；游戏侧只负责后台读取、自动化执行、本地 API 和伴随窗口唤起，所有用户交互放在独立伴随窗口。
 
 ## 文档维护

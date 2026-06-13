@@ -90,6 +90,7 @@ const FILTER_MISSING_COOKERS_STORAGE_KEY = `${STORAGE_PREFIX}-filter-missing-coo
 const PRIORITIZE_MISSION_RECIPES_STORAGE_KEY = `${STORAGE_PREFIX}-prioritize-mission-recipes`;
 const GAME_UI_PINNING_STORAGE_KEY = `${STORAGE_PREFIX}-game-ui-pinning`;
 const COOKER_HIGHLIGHT_STORAGE_KEY = `${STORAGE_PREFIX}-cooker-highlight`;
+const SHOW_DEBUG_DETAILS_STORAGE_KEY = `${STORAGE_PREFIX}-show-debug-details`;
 const RECIPE_SORT_RULES_STORAGE_KEY = `${STORAGE_PREFIX}-recipe-sort-rules`;
 const BEVERAGE_SORT_RULES_STORAGE_KEY = `${STORAGE_PREFIX}-beverage-sort-rules`;
 const SERVICE_ORDER_SORT_MODE_STORAGE_KEY = `${STORAGE_PREFIX}-service-order-sort-mode`;
@@ -155,6 +156,7 @@ const MOD_TAB_TRIGGER_CLASS = 'min-w-0 flex-1 data-active:bg-primary data-active
 
 type ModTab = 'overview' | 'normal' | 'rare' | 'service' | 'tasks' | 'inventory' | 'logs' | 'settings';
 const MOD_TABS: ModTab[] = ['overview', 'normal', 'rare', 'service', 'tasks', 'inventory', 'logs', 'settings'];
+const BASIC_MOD_TABS: ModTab[] = MOD_TABS.filter((tab) => tab !== 'logs');
 type FocusSwitchBehavior = 'hide' | 'keep-visible';
 type ServiceOrderSortMode = 'ordered' | 'guest';
 type RareGuestInvitationScope = 'current' | 'all';
@@ -603,6 +605,7 @@ interface CompanionPreferences {
   prioritizeMissionRecipes: boolean;
   gameUiPinningEnabled: boolean;
   cookerHighlightEnabled: boolean;
+  showDebugDetails: boolean;
   recipeSortRules: SortRule<RecipeSortKey>[];
   beverageSortRules: SortRule<BeverageSortKey>[];
   serviceOrderSortMode: ServiceOrderSortMode;
@@ -834,6 +837,12 @@ export function ModWorkbench() {
     setCompanionPreferences((current) => normalizeCompanionPreferences({ ...current, ...next }));
   }, []);
 
+  useEffect(() => {
+    if (!companionPreferences.showDebugDetails && tab === 'logs') {
+      setTab('overview');
+    }
+  }, [companionPreferences.showDebugDetails, tab]);
+
   const normalizedEndpoint = useMemo(() => normalizeEndpoint(endpoint), [endpoint]);
   const normalizedEndpointDraft = useMemo(() => normalizeEndpoint(endpointDraft), [endpointDraft]);
   const applyEndpointConnection = useCallback(() => {
@@ -896,6 +905,7 @@ export function ModWorkbench() {
     () => buildNormalOrderAutomationSignature(snapshot?.normalBusiness?.orders ?? []),
     [snapshot?.normalBusiness?.orders],
   );
+  const visibleTabs = companionPreferences.showDebugDetails ? MOD_TABS : BASIC_MOD_TABS;
   const orderRecommendations = useMemo(
     () => buildOrderRecommendations(
       night?.orders ?? [],
@@ -1847,7 +1857,7 @@ export function ModWorkbench() {
     enabled: companionPreferences.gamepadNavigationEnabled,
     toggleCooldownMs: companionPreferences.focusSwitchCooldownMs,
     activeTab: tab,
-    tabs: MOD_TABS,
+    tabs: visibleTabs,
     focusMode: serviceFocusMode,
     onTabChange: setTab,
     onToggleWindow: () => {
@@ -1901,6 +1911,7 @@ export function ModWorkbench() {
         favoriteBusyKey={favoriteBusyKey}
         favoriteError={favoriteError}
         orderSortMode={companionPreferences.serviceOrderSortMode}
+        showDebugDetails={companionPreferences.showDebugDetails}
         compact={serviceFocusCompact}
         recipeLimit={serviceFocusRecipeLimit}
         beverageLimit={serviceFocusBeverageLimit}
@@ -1999,9 +2010,11 @@ export function ModWorkbench() {
           <TabsTrigger value="inventory" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="inventory">
             修改
           </TabsTrigger>
-          <TabsTrigger value="logs" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="logs">
-            日志
-          </TabsTrigger>
+          {companionPreferences.showDebugDetails && (
+            <TabsTrigger value="logs" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="logs">
+              日志
+            </TabsTrigger>
+          )}
           <TabsTrigger value="settings" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="settings">
             设置
           </TabsTrigger>
@@ -2017,6 +2030,7 @@ export function ModWorkbench() {
             indexes={recommendationIndexes}
             error={error}
             lastConnectedAt={lastConnectedAt}
+            showDebugDetails={companionPreferences.showDebugDetails}
           />
         </TabsContent>
 
@@ -2109,6 +2123,7 @@ export function ModWorkbench() {
             onDismissRareOrder={dismissRareOrder}
             onEnterFocusMode={() => setServiceFocusMode(true)}
             normalBusiness={snapshot?.normalBusiness ?? null}
+            showDebugDetails={companionPreferences.showDebugDetails}
           />
         </TabsContent>
 
@@ -2123,6 +2138,7 @@ export function ModWorkbench() {
             inviteBusyKey={rareGuestInvitationBusyKey}
             inviteAllResult={rareGuestInvitationResult}
             inviteAllError={rareGuestInvitationError}
+            showDebugDetails={companionPreferences.showDebugDetails}
             onInviteScopeChange={(scope) => {
               setRareGuestInvitationScope(scope);
               setRareGuestInvitationResult(null);
@@ -2145,9 +2161,11 @@ export function ModWorkbench() {
           />
         </TabsContent>
 
-        <TabsContent value="logs" data-gamepad-scope="content">
-          <ModLogsPanel endpoint={normalizedEndpoint} apiToken={apiToken} />
-        </TabsContent>
+        {companionPreferences.showDebugDetails && (
+          <TabsContent value="logs" data-gamepad-scope="content">
+            <ModLogsPanel endpoint={normalizedEndpoint} apiToken={apiToken} />
+          </TabsContent>
+        )}
 
         <TabsContent value="settings" data-gamepad-scope="content">
           <ModSettingsPanel
@@ -2175,6 +2193,7 @@ function ModOverviewPanel({
   indexes,
   error,
   lastConnectedAt,
+  showDebugDetails,
 }: {
   endpoint: string;
   snapshot: LocalApiSnapshot | null;
@@ -2184,6 +2203,7 @@ function ModOverviewPanel({
   indexes: ReturnType<typeof buildRecommendationDataIndexes>;
   error: string;
   lastConnectedAt: Date | null;
+  showDebugDetails: boolean;
 }) {
   const ownedIngredientEntries = useMemo(
     () => buildLowStockEntries(runtime?.ownedIngredientQty ?? {}, indexes.ingredientNameById),
@@ -2199,17 +2219,17 @@ function ModOverviewPanel({
       <Card>
         <CardContent className={`${DENSE_TWO_COLUMN_GRID_TIGHT} p-4 text-sm`}>
           <InfoLine label="数据来源" value="游戏实时 API，不读取 .memory 存档" />
-          <InfoLine label="API 地址" value={endpoint} mono />
+          {showDebugDetails && <InfoLine label="API 地址" value={endpoint} mono />}
           <InfoLine label="连接状态" value={error ? `未连接: ${error}` : snapshot ? '已连接' : '连接中'} />
           <InfoLine label="最近响应" value={lastConnectedAt ? formatTime(lastConnectedAt) : '暂无'} />
           <InfoLine label="场景" value={snapshot?.activeSceneName || '未知'} />
           <InfoLine label="运行时状态" value={snapshot?.status || '暂无快照'} />
-          <InfoLine label="运行时来源" value={snapshot?.runtimeSource || '未知'} />
+          {showDebugDetails && <InfoLine label="运行时来源" value={snapshot?.runtimeSource || '未知'} />}
           <InfoLine
             label="推荐数据"
             value={data.source === 'runtime' ? `游戏运行时 (${data.status})` : `等待游戏运行时数据 (${data.status})`}
           />
-          <InfoLine label="性能耗时" value={formatPerformanceMs(snapshot?.performanceMs)} mono />
+          {showDebugDetails && <InfoLine label="性能耗时" value={formatPerformanceMs(snapshot?.performanceMs)} mono />}
         </CardContent>
       </Card>
 
@@ -2237,7 +2257,7 @@ function ModOverviewPanel({
           <InfoLine label="流行喜爱" value={runtime?.popularFoodTag || '无'} />
           <InfoLine label="流行厌恶" value={runtime?.popularHateFoodTag || '无'} />
           <InfoLine label="当前经营场景" value={night?.place || night?.placeLabel || '无经营场景'} />
-          <InfoLine label="经营扫描" value={night?.source || '暂无'} />
+          {showDebugDetails && <InfoLine label="经营扫描" value={night?.source || '暂无'} />}
         </ListPanel>
 
         <ListPanel title="低库存概览">
@@ -2259,6 +2279,7 @@ function RareGuestInvitationPanel({
   inviteBusyKey,
   inviteAllResult,
   inviteAllError,
+  showDebugDetails,
   onInviteScopeChange,
   onRefreshRareGuestInvitations,
   onInviteAllRareGuests,
@@ -2271,6 +2292,7 @@ function RareGuestInvitationPanel({
   inviteBusyKey: string;
   inviteAllResult: RareGuestInvitationResponse | null;
   inviteAllError: string;
+  showDebugDetails: boolean;
   onInviteScopeChange: (scope: RareGuestInvitationScope) => void;
   onRefreshRareGuestInvitations: () => void;
   onInviteAllRareGuests: () => void;
@@ -2355,6 +2377,7 @@ function RareGuestInvitationPanel({
                 const busy = inviteBusyKey === `guest:${entry.id}`;
                 const canInvite = entry.canInvite ?? availableEntries.some((item) => item.id === entry.id);
                 const sceneText = formatInvitationScenes(entry);
+                const detailText = entry.reason || (showDebugDetails ? entry.runtimeName || `#${entry.id}` : '');
                 return (
                   <div
                     key={`${entry.id}-${entry.runtimeName || entry.name}`}
@@ -2367,7 +2390,7 @@ function RareGuestInvitationPanel({
                         <span className="text-xs text-muted-foreground">{formatInvitationStatus(entry)}</span>
                         {sceneText && <span className="truncate text-xs text-muted-foreground">{sceneText}</span>}
                       </div>
-                      <div className="truncate text-xs text-muted-foreground">{entry.reason || entry.runtimeName || `#${entry.id}`}</div>
+                      {detailText && <div className="truncate text-xs text-muted-foreground">{detailText}</div>}
                     </div>
                     <Button
                       type="button"
@@ -2807,6 +2830,7 @@ function ModServicePanel({
   onResetRareAutomationOrder,
   onDismissRareOrder,
   onEnterFocusMode,
+  showDebugDetails,
 }: {
   runtime: RecommendationStateSnapshot | null;
   night: NightBusinessContext | null;
@@ -2844,6 +2868,7 @@ function ModServicePanel({
   onResetRareAutomationOrder: (orderKey: string) => void;
   onDismissRareOrder: (order: NightBusinessOrder) => void;
   onEnterFocusMode: () => void;
+  showDebugDetails: boolean;
 }) {
   const dataIndexes = useMemo(() => buildRecommendationDataIndexes(data), [data]);
   const activeGuests = night?.activeRareGuests ?? [];
@@ -2879,9 +2904,9 @@ function ModServicePanel({
       <Card>
         <CardContent className={`${DENSE_THREE_COLUMN_GRID} p-4 text-sm`}>
           <InfoLine label="经营场景" value={detectedPlace ?? night?.placeLabel ?? '无经营场景'} />
-          <InfoLine label="扫描状态" value={night?.source || '暂无'} />
           <InfoLine label="推荐数据" value={runtime ? '已就绪' : '暂不可用'} />
-          <InfoLine label="性能耗时" value={formatPerformanceMs(performanceMs)} mono />
+          {showDebugDetails && <InfoLine label="扫描状态" value={night?.source || '暂无'} />}
+          {showDebugDetails && <InfoLine label="性能耗时" value={formatPerformanceMs(performanceMs)} mono />}
           <InfoLine
             label="已摆放厨具"
             value={runtimeSets?.hasCookerSnapshot
@@ -2889,7 +2914,7 @@ function ModServicePanel({
               : runtime?.placedCookerStatus ? `未读取 · ${runtime.placedCookerStatus}` : '未读取'}
           />
           <InfoLine label="目标厨具" value={uiPinningTarget?.cookerName || '暂无'} />
-          <InfoLine label="界面置顶" value={uiPinningStatus || '暂无'} />
+          {showDebugDetails && <InfoLine label="界面置顶" value={uiPinningStatus || '暂无'} />}
         </CardContent>
       </Card>
 
@@ -2913,6 +2938,7 @@ function ModServicePanel({
               message={autoPrepMessage}
               paused={autoPrepPaused}
               diagnostics={rareOrderDiagnostics}
+              showDebugDetails={showDebugDetails}
               onPreferenceChange={onPreferenceChange}
               onRetryOrder={onRetryRareAutomationOrder}
               onResetOrder={onResetRareAutomationOrder}
@@ -2930,7 +2956,10 @@ function ModServicePanel({
                       <span>{guest.guestName}</span>
                       {fund && <span className="ml-1 text-muted-foreground">· 金钱 {fund}</span>}
                     </span>
-                    <span className="text-muted-foreground">桌 {formatDesk(guest.deskCode)} · {guest.source}</span>
+                    <span className="text-muted-foreground">
+                      桌 {formatDesk(guest.deskCode)}
+                      {showDebugDetails ? ` · ${guest.source}` : ''}
+                    </span>
                   </div>
                 );
               })}
@@ -2951,9 +2980,13 @@ function ModServicePanel({
                           <span className="shrink-0 text-muted-foreground">桌 {formatDesk(order.deskCode)}</span>
                         </div>
                         <div className="mt-1 flex flex-wrap gap-1.5">
-                          <Badge variant="outline">料理 {order.foodTag || '无'} ({order.foodTagId})</Badge>
-                          <Badge variant="outline">酒水 {order.beverageTag || '无'} ({order.beverageTagId})</Badge>
-                          <Badge variant="secondary">{order.source}</Badge>
+                          <Badge variant="outline">
+                            料理 {order.foodTag || '无'}{showDebugDetails ? ` (${order.foodTagId})` : ''}
+                          </Badge>
+                          <Badge variant="outline">
+                            酒水 {order.beverageTag || '无'}{showDebugDetails ? ` (${order.beverageTagId})` : ''}
+                          </Badge>
+                          {showDebugDetails && <Badge variant="secondary">{order.source}</Badge>}
                         </div>
                       </div>
                       <Button
@@ -2983,6 +3016,7 @@ function ModServicePanel({
             runtimeSets={runtimeSets}
             dataIndexes={dataIndexes}
             orderSortMode={autoPrepPreferences.serviceOrderSortMode}
+            showDebugDetails={showDebugDetails}
             favorites={favorites}
             favoriteBusyKey={favoriteBusyKey}
             favoriteError={favoriteError}
@@ -3010,11 +3044,12 @@ function ModServicePanel({
               message={normalOrderMessage}
               pausedCount={normalOrderPausedCount}
               diagnostics={normalOrderDiagnostics}
+              showDebugDetails={showDebugDetails}
               onPreferenceChange={onPreferenceChange}
             />
           )}
 
-          <ListPanel title={`普客订单诊断 (${normalBusiness?.orders.length ?? 0})`}>
+          <ListPanel title={`${showDebugDetails ? '普客订单诊断' : '普客订单'} (${normalBusiness?.orders.length ?? 0})`}>
             {autoPrepPreferences.automationEnabled && autoPrepPreferences.autoNormalOrderEnabled ? (
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm">
                 <span className="text-muted-foreground">
@@ -3058,7 +3093,7 @@ function ModServicePanel({
                   {order.hasServedFood && <Badge variant="secondary">已有料理</Badge>}
                   {order.hasServedBeverage && <Badge variant="secondary">已有酒水</Badge>}
                   {order.isFulfilled && <Badge variant="secondary">已满足</Badge>}
-                  <Badge variant="secondary">{order.source}</Badge>
+                  {showDebugDetails && <Badge variant="secondary">{order.source}</Badge>}
                 </div>
               </div>
             ))}
@@ -3178,6 +3213,7 @@ function ServiceFocusPage({
   runtimeSets,
   dataIndexes,
   orderSortMode,
+  showDebugDetails,
   favorites,
   favoriteBusyKey,
   favoriteError,
@@ -3196,6 +3232,7 @@ function ServiceFocusPage({
   runtimeSets: RuntimeSets | null;
   dataIndexes: ReturnType<typeof buildRecommendationDataIndexes>;
   orderSortMode: ServiceOrderSortMode;
+  showDebugDetails: boolean;
   favorites: FavoriteData;
   favoriteBusyKey: string;
   favoriteError: string;
@@ -3245,6 +3282,7 @@ function ServiceFocusPage({
           runtimeSets={runtimeSets}
           dataIndexes={dataIndexes}
           orderSortMode={orderSortMode}
+          showDebugDetails={showDebugDetails}
           favorites={favorites}
           favoriteBusyKey={favoriteBusyKey}
           favoriteError={favoriteError}
@@ -3267,6 +3305,7 @@ function CurrentOrderRecommendations({
   runtimeSets,
   dataIndexes,
   orderSortMode,
+  showDebugDetails = false,
   favorites,
   favoriteBusyKey,
   favoriteError,
@@ -3282,6 +3321,7 @@ function CurrentOrderRecommendations({
   runtimeSets: RuntimeSets | null;
   dataIndexes: ReturnType<typeof buildRecommendationDataIndexes>;
   orderSortMode: ServiceOrderSortMode;
+  showDebugDetails?: boolean;
   favorites: FavoriteData;
   favoriteBusyKey: string;
   favoriteError: string;
@@ -3334,6 +3374,7 @@ function CurrentOrderRecommendations({
               compact={compact}
               recipeLimit={recipeLimit}
               beverageLimit={beverageLimit}
+              showDebugDetails={showDebugDetails}
               onToggleRecipeFavorite={onToggleRecipeFavorite}
               onToggleBeverageFavorite={onToggleBeverageFavorite}
             />
@@ -3521,6 +3562,7 @@ function ModTasksPanel({
   inviteBusyKey,
   inviteAllResult,
   inviteAllError,
+  showDebugDetails,
   onInviteScopeChange,
   onRefreshRareGuestInvitations,
   onInviteAllRareGuests,
@@ -3535,6 +3577,7 @@ function ModTasksPanel({
   inviteBusyKey: string;
   inviteAllResult: RareGuestInvitationResponse | null;
   inviteAllError: string;
+  showDebugDetails: boolean;
   onInviteScopeChange: (scope: RareGuestInvitationScope) => void;
   onRefreshRareGuestInvitations: () => void;
   onInviteAllRareGuests: () => void;
@@ -3568,6 +3611,7 @@ function ModTasksPanel({
         inviteBusyKey={inviteBusyKey}
         inviteAllResult={inviteAllResult}
         inviteAllError={inviteAllError}
+        showDebugDetails={showDebugDetails}
         onInviteScopeChange={onInviteScopeChange}
         onRefreshRareGuestInvitations={onRefreshRareGuestInvitations}
         onInviteAllRareGuests={onInviteAllRareGuests}
@@ -3578,7 +3622,7 @@ function ModTasksPanel({
         <CardContent className={`${DENSE_THREE_COLUMN_GRID} p-4 text-sm`}>
           <InfoLine label="任务数据" value={missions ? '已读取' : '暂不可用'} />
           <InfoLine label="可推进任务" value={`${filteredRows.length}/${rows.length} 个`} />
-          <InfoLine label="扫描状态" value={missions?.source || missions?.error || '暂无'} />
+          {showDebugDetails && <InfoLine label="扫描状态" value={missions?.source || missions?.error || '暂无'} />}
         </CardContent>
       </Card>
 
@@ -3586,17 +3630,19 @@ function ModTasksPanel({
         title={`可推进任务 (${filteredRows.length})`}
         action={(
           <div className="flex flex-wrap gap-1.5">
-            <Button
-              type="button"
-              size="sm"
-              variant={showExtraInfo ? 'default' : 'outline'}
-              className="h-8 px-2.5"
-              aria-pressed={showExtraInfo}
-              data-gamepad-clickable="true"
-              onClick={() => setShowExtraInfo((value) => !value)}
-            >
-              显示额外信息
-            </Button>
+            {showDebugDetails && (
+              <Button
+                type="button"
+                size="sm"
+                variant={showExtraInfo ? 'default' : 'outline'}
+                className="h-8 px-2.5"
+                aria-pressed={showExtraInfo}
+                data-gamepad-clickable="true"
+                onClick={() => setShowExtraInfo((value) => !value)}
+              >
+                显示额外信息
+              </Button>
+            )}
             {MISSION_STATUS_FILTER_OPTIONS.map((filter) => (
               <Button
                 key={filter}
@@ -3625,7 +3671,7 @@ function ModTasksPanel({
           const places = mission.places?.filter(Boolean) ?? [];
           const status = normalizeMissionStatus(mission);
           const shouldShowMissingPlace = places.length === 0 && status === 'available';
-          const displayTitle = getMissionDisplayTitle(mission, showExtraInfo);
+          const displayTitle = getMissionDisplayTitle(mission, showDebugDetails && showExtraInfo);
           return (
           <div
             key={`${mission.characterLabel}-${mission.label}`}
@@ -3634,13 +3680,13 @@ function ModTasksPanel({
             data-gamepad-row-key={`task:${mission.characterLabel}:${mission.label}`}
           >
             <div className="flex items-center justify-between gap-3">
-              <span className="min-w-0 truncate font-medium" title={showExtraInfo ? mission.title || mission.label : displayTitle}>
+              <span className="min-w-0 truncate font-medium" title={showDebugDetails && showExtraInfo ? mission.title || mission.label : displayTitle}>
                 {displayTitle}
               </span>
               <span className="shrink-0 text-muted-foreground">{mission.characterName || mission.characterLabel}</span>
             </div>
             <div className="mt-1 flex flex-wrap gap-1.5">
-              {showExtraInfo && (
+              {showDebugDetails && showExtraInfo && (
                 <>
                   <Badge variant="outline">{mission.label}</Badge>
                   <Badge variant="secondary">{mission.source}</Badge>
@@ -4087,8 +4133,9 @@ function ModSettingsPanel({
   }, [apiToken, endpoint, logSettings?.nativeBepInExConsoleEnabled]);
 
   useEffect(() => {
+    if (!preferences.showDebugDetails) return;
     refreshConsoleSettings();
-  }, [refreshConsoleSettings]);
+  }, [preferences.showDebugDetails, refreshConsoleSettings]);
 
   return (
     <div className={DENSE_TWO_COLUMN_GRID}>
@@ -4119,37 +4166,39 @@ function ModSettingsPanel({
         </div>
       </ListPanel>
 
-      <ListPanel title="BepInEx">
-        <div className="space-y-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              size="sm"
-              variant={logSettings?.nativeBepInExConsoleEnabled ? 'default' : 'outline'}
-              onClick={toggleNativeConsole}
-              disabled={!apiToken || consoleBusy}
-            >
-              <Power className="size-4" />
-              {logSettings?.nativeBepInExConsoleEnabled ? '关闭原生日志窗口' : '开启原生日志窗口'}
-            </Button>
-            <Button size="sm" variant="outline" onClick={refreshConsoleSettings} disabled={!apiToken || consoleBusy}>
-              <RefreshCw className="size-4" />
-              刷新状态
-            </Button>
-          </div>
-          <div className="grid grid-cols-2 gap-2 text-xs">
-            <InfoLine label="下次启动" value={logSettings?.nativeBepInExConsoleEnabled ? '开启' : '关闭'} />
-            <InfoLine label="当前窗口" value={logSettings?.nativeBepInExConsoleVisible ? '可见' : '未显示'} />
-          </div>
-          <div className="text-xs text-muted-foreground">
-            关闭后会隐藏当前 BepInEx 控制台，并将 BepInEx.cfg 的原生 Console log 设为下次启动关闭；日志页仍可读取 LogOutput.log。
-          </div>
-          {consoleError && (
-            <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-              {consoleError}
+      {preferences.showDebugDetails && (
+        <ListPanel title="BepInEx">
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                variant={logSettings?.nativeBepInExConsoleEnabled ? 'default' : 'outline'}
+                onClick={toggleNativeConsole}
+                disabled={!apiToken || consoleBusy}
+              >
+                <Power className="size-4" />
+                {logSettings?.nativeBepInExConsoleEnabled ? '关闭原生日志窗口' : '开启原生日志窗口'}
+              </Button>
+              <Button size="sm" variant="outline" onClick={refreshConsoleSettings} disabled={!apiToken || consoleBusy}>
+                <RefreshCw className="size-4" />
+                刷新状态
+              </Button>
             </div>
-          )}
-        </div>
-      </ListPanel>
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <InfoLine label="下次启动" value={logSettings?.nativeBepInExConsoleEnabled ? '开启' : '关闭'} />
+              <InfoLine label="当前窗口" value={logSettings?.nativeBepInExConsoleVisible ? '可见' : '未显示'} />
+            </div>
+            <div className="text-xs text-muted-foreground">
+              关闭后会隐藏当前 BepInEx 控制台，并将 BepInEx.cfg 的原生 Console log 设为下次启动关闭；日志页仍可读取 LogOutput.log。
+            </div>
+            {consoleError && (
+              <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                {consoleError}
+              </div>
+            )}
+          </div>
+        </ListPanel>
+      )}
 
       <ListPanel title="显示">
         <div className="space-y-4">
@@ -4170,6 +4219,14 @@ function ModSettingsPanel({
           />
           <div className="text-xs text-muted-foreground">
             关闭手柄导航只影响伴随窗口内的手柄操作；F8 仍可在伴随窗口聚焦时切回游戏。
+          </div>
+          <SwitchControl
+            label="显示调试信息"
+            checked={preferences.showDebugDetails}
+            onCheckedChange={(showDebugDetails) => onPreferenceChange({ showDebugDetails })}
+          />
+          <div className="text-xs text-muted-foreground">
+            开启后显示日志页、扫描状态、运行时来源、性能耗时和订单内部来源；普通使用建议保持关闭。
           </div>
         </div>
       </ListPanel>
@@ -4322,6 +4379,7 @@ function RareServiceAutomationPanel({
   message,
   paused,
   diagnostics,
+  showDebugDetails,
   onPreferenceChange,
   onRetryOrder,
   onResetOrder,
@@ -4331,6 +4389,7 @@ function RareServiceAutomationPanel({
   message: string;
   paused: boolean;
   diagnostics: RareAutoOrderDiagnostic[];
+  showDebugDetails: boolean;
   onPreferenceChange: (next: Partial<CompanionPreferences>) => void;
   onRetryOrder: (orderKey: string) => void;
   onResetOrder: (orderKey: string) => void;
@@ -4375,6 +4434,7 @@ function RareServiceAutomationPanel({
         message={message}
         preferences={preferences}
         diagnostics={diagnostics}
+        showDebugDetails={showDebugDetails}
         onRetryOrder={onRetryOrder}
         onResetOrder={onResetOrder}
       />
@@ -4388,6 +4448,7 @@ function NormalServiceAutomationPanel({
   message,
   pausedCount,
   diagnostics,
+  showDebugDetails,
   onPreferenceChange,
 }: {
   preferences: CompanionPreferences;
@@ -4395,6 +4456,7 @@ function NormalServiceAutomationPanel({
   message: string;
   pausedCount: number;
   diagnostics: NormalAutoOrderDiagnostic[];
+  showDebugDetails: boolean;
   onPreferenceChange: (next: Partial<CompanionPreferences>) => void;
 }) {
   return (
@@ -4431,6 +4493,7 @@ function NormalServiceAutomationPanel({
         message={message}
         preferences={preferences}
         diagnostics={diagnostics}
+        showDebugDetails={showDebugDetails}
       />
     </ListPanel>
   );
@@ -4442,6 +4505,7 @@ function RareAutoPrepStatus({
   message,
   preferences,
   diagnostics,
+  showDebugDetails,
   onRetryOrder,
   onResetOrder,
 }: {
@@ -4450,6 +4514,7 @@ function RareAutoPrepStatus({
   message: string;
   preferences: CompanionPreferences;
   diagnostics: RareAutoOrderDiagnostic[];
+  showDebugDetails: boolean;
   onRetryOrder: (orderKey: string) => void;
   onResetOrder: (orderKey: string) => void;
 }) {
@@ -4497,10 +4562,12 @@ function RareAutoPrepStatus({
                 <InfoLine label="酒水" value={diagnostic.beverageName || '未选择'} />
                 <InfoLine label="步骤" value={`${diagnostic.stepLabel} · ${diagnostic.stepSeconds}秒`} />
                 <InfoLine label="下次" value={diagnostic.nextAction} />
-                <InfoLine
-                  label="计数"
-                  value={`重试 ${diagnostic.retryCount}/${preferences.autoMaxStepRetries} · 回退 ${diagnostic.rollbackCount}/${preferences.autoMaxRollbacks}`}
-                />
+                {showDebugDetails && (
+                  <InfoLine
+                    label="计数"
+                    value={`重试 ${diagnostic.retryCount}/${preferences.autoMaxStepRetries} · 回退 ${diagnostic.rollbackCount}/${preferences.autoMaxRollbacks}`}
+                  />
+                )}
               </div>
               <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
                 <Badge variant={diagnostic.paused ? 'destructive' : 'secondary'}>
@@ -4549,12 +4616,14 @@ function NormalAutoPrepStatus({
   message,
   preferences,
   diagnostics,
+  showDebugDetails,
 }: {
   busy: boolean;
   pausedCount: number;
   message: string;
   preferences: CompanionPreferences;
   diagnostics: NormalAutoOrderDiagnostic[];
+  showDebugDetails: boolean;
 }) {
   return (
     <div className="mt-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
@@ -4581,12 +4650,16 @@ function NormalAutoPrepStatus({
               <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground md:grid-cols-5">
                 <InfoLine label="步骤" value={`${diagnostic.stepLabel} · ${diagnostic.stepSeconds}秒`} />
                 <InfoLine label="下次" value={diagnostic.nextAction} />
-                <InfoLine
-                  label="计数"
-                  value={`重试 ${diagnostic.retryCount}/${preferences.autoMaxStepRetries} · 回退 ${diagnostic.rollbackCount}/${preferences.autoMaxRollbacks}`}
-                />
-                <InfoLine label="来源" value={diagnostic.source || '未知'} />
-                <InfoLine label="Key" value={diagnostic.orderKey} mono />
+                {showDebugDetails && (
+                  <>
+                    <InfoLine
+                      label="计数"
+                      value={`重试 ${diagnostic.retryCount}/${preferences.autoMaxStepRetries} · 回退 ${diagnostic.rollbackCount}/${preferences.autoMaxRollbacks}`}
+                    />
+                    <InfoLine label="来源" value={diagnostic.source || '未知'} />
+                    <InfoLine label="Key" value={diagnostic.orderKey} mono />
+                  </>
+                )}
               </div>
               <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
                 <Badge variant={diagnostic.prepared ? 'secondary' : 'outline'}>
@@ -5142,6 +5215,7 @@ function OrderRecommendationPanel({
   compact = false,
   recipeLimit = MAX_RECOMMENDATION_ROWS,
   beverageLimit = MAX_RECOMMENDATION_ROWS,
+  showDebugDetails = false,
   onToggleRecipeFavorite,
   onToggleBeverageFavorite,
 }: {
@@ -5153,6 +5227,7 @@ function OrderRecommendationPanel({
   compact?: boolean;
   recipeLimit?: number;
   beverageLimit?: number;
+  showDebugDetails?: boolean;
   onToggleRecipeFavorite: ToggleRecipeFavorite;
   onToggleBeverageFavorite: ToggleBeverageFavorite;
 }) {
@@ -5181,7 +5256,7 @@ function OrderRecommendationPanel({
                 目标厨具 {targetCookerName}
               </Badge>
             )}
-            <Badge variant="secondary">{item.order.source}</Badge>
+            {showDebugDetails && <Badge variant="secondary">{item.order.source}</Badge>}
           </div>
         </div>
       </div>
@@ -8020,6 +8095,7 @@ function readStoredCompanionPreferences(): CompanionPreferences {
     prioritizeMissionRecipes: readStoredBoolean(PRIORITIZE_MISSION_RECIPES_STORAGE_KEY, false),
     gameUiPinningEnabled: readStoredBoolean(GAME_UI_PINNING_STORAGE_KEY, false),
     cookerHighlightEnabled: readStoredBoolean(COOKER_HIGHLIGHT_STORAGE_KEY, false),
+    showDebugDetails: readStoredBoolean(SHOW_DEBUG_DETAILS_STORAGE_KEY, false),
     recipeSortRules: readStoredSortRules(RECIPE_SORT_RULES_STORAGE_KEY, RECIPE_SORT_OPTIONS),
     beverageSortRules: readStoredSortRules(BEVERAGE_SORT_RULES_STORAGE_KEY, BEVERAGE_SORT_OPTIONS),
     serviceOrderSortMode: readStoredServiceOrderSortMode(),
@@ -8131,6 +8207,7 @@ function normalizeCompanionPreferences(value: Partial<CompanionPreferences>): Co
     prioritizeMissionRecipes: Boolean(value.prioritizeMissionRecipes),
     gameUiPinningEnabled: Boolean(value.gameUiPinningEnabled),
     cookerHighlightEnabled: Boolean(value.cookerHighlightEnabled),
+    showDebugDetails: Boolean(value.showDebugDetails),
     recipeSortRules: normalizeSortRules(value.recipeSortRules, RECIPE_SORT_OPTIONS),
     beverageSortRules: normalizeSortRules(value.beverageSortRules, BEVERAGE_SORT_OPTIONS),
     serviceOrderSortMode: value.serviceOrderSortMode === 'guest' ? 'guest' : 'ordered',
@@ -8203,6 +8280,7 @@ function persistCompanionPreferences(preferences: CompanionPreferences) {
   localStorage.setItem(PRIORITIZE_MISSION_RECIPES_STORAGE_KEY, normalized.prioritizeMissionRecipes ? '1' : '0');
   localStorage.setItem(GAME_UI_PINNING_STORAGE_KEY, normalized.gameUiPinningEnabled ? '1' : '0');
   localStorage.setItem(COOKER_HIGHLIGHT_STORAGE_KEY, normalized.cookerHighlightEnabled ? '1' : '0');
+  localStorage.setItem(SHOW_DEBUG_DETAILS_STORAGE_KEY, normalized.showDebugDetails ? '1' : '0');
   localStorage.setItem(RECIPE_SORT_RULES_STORAGE_KEY, JSON.stringify(normalized.recipeSortRules));
   localStorage.setItem(BEVERAGE_SORT_RULES_STORAGE_KEY, JSON.stringify(normalized.beverageSortRules));
   localStorage.setItem(SERVICE_ORDER_SORT_MODE_STORAGE_KEY, normalized.serviceOrderSortMode);
