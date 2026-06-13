@@ -96,6 +96,8 @@ internal sealed class StewardOverlayController
 
     private sealed class PendingRareGuestInvitation
     {
+        public RareGuestInvitationAction Action { get; init; }
+        public int GuestId { get; init; } = -1;
         public ManualResetEventSlim Completion { get; } = new(false);
         public RareGuestInvitationResult? Result { get; set; }
         public Exception? Error { get; set; }
@@ -106,6 +108,13 @@ internal sealed class StewardOverlayController
         PrepareRare,
         CompleteRare,
         CompleteNormal,
+    }
+
+    private enum RareGuestInvitationAction
+    {
+        List,
+        InviteAll,
+        InviteOne,
     }
 
     public void Initialize(StewardPluginConfig config, ManualLogSource log)
@@ -481,7 +490,9 @@ internal sealed class StewardOverlayController
                 PrepareOrderFromLocalApi,
                 CompleteOrderFromLocalApi,
                 CompleteNormalOrderFromLocalApi,
+                ListRareGuestInvitationsFromLocalApi,
                 InviteAllRareGuestsFromLocalApi,
+                InviteRareGuestFromLocalApi,
                 new FavoriteStore(FavoriteStore.ResolvePath(), _log),
                 _log);
             _localApiServer.Start();
@@ -894,12 +905,31 @@ internal sealed class StewardOverlayController
 
     private RareGuestInvitationResult InviteAllRareGuestsFromLocalApi()
     {
+        return RunRareGuestInvitationFromLocalApi(RareGuestInvitationAction.InviteAll);
+    }
+
+    private RareGuestInvitationResult ListRareGuestInvitationsFromLocalApi()
+    {
+        return RunRareGuestInvitationFromLocalApi(RareGuestInvitationAction.List);
+    }
+
+    private RareGuestInvitationResult InviteRareGuestFromLocalApi(int guestId)
+    {
+        return RunRareGuestInvitationFromLocalApi(RareGuestInvitationAction.InviteOne, guestId);
+    }
+
+    private RareGuestInvitationResult RunRareGuestInvitationFromLocalApi(RareGuestInvitationAction action, int guestId = -1)
+    {
         if (Thread.CurrentThread.ManagedThreadId == _mainThreadId)
         {
-            return ApplyRareGuestInvitation();
+            return ApplyRareGuestInvitation(action, guestId);
         }
 
-        var pending = new PendingRareGuestInvitation();
+        var pending = new PendingRareGuestInvitation
+        {
+            Action = action,
+            GuestId = guestId,
+        };
         lock (_rareGuestInvitationLock)
         {
             _pendingRareGuestInvitations.Enqueue(pending);
@@ -1025,7 +1055,7 @@ internal sealed class StewardOverlayController
 
             try
             {
-                pending.Result = ApplyRareGuestInvitation();
+                pending.Result = ApplyRareGuestInvitation(pending.Action, pending.GuestId);
             }
             catch (Exception ex)
             {
@@ -1038,13 +1068,21 @@ internal sealed class StewardOverlayController
         }
     }
 
-    private RareGuestInvitationResult ApplyRareGuestInvitation()
+    private RareGuestInvitationResult ApplyRareGuestInvitation(RareGuestInvitationAction action, int guestId)
     {
-        var result = RuntimeRareGuestInvitationService.InviteAllAvailable(_repository, _log);
-        _status = result.Ok
-            ? result.Status
-            : L($"邀请稀客失败：{result.Error ?? result.Status}", $"Rare guest invitation failed: {result.Error ?? result.Status}");
-        PublishLocalApiSnapshot();
+        var result = action switch
+        {
+            RareGuestInvitationAction.List => RuntimeRareGuestInvitationService.ListAvailable(_repository, _log),
+            RareGuestInvitationAction.InviteOne => RuntimeRareGuestInvitationService.InviteOne(_repository, guestId, _log),
+            _ => RuntimeRareGuestInvitationService.InviteAllAvailable(_repository, _log),
+        };
+        if (action != RareGuestInvitationAction.List)
+        {
+            _status = result.Ok
+                ? result.Status
+                : L($"邀请稀客失败：{result.Error ?? result.Status}", $"Rare guest invitation failed: {result.Error ?? result.Status}");
+            PublishLocalApiSnapshot();
+        }
         return result;
     }
 

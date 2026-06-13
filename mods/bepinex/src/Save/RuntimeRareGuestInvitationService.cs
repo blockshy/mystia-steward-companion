@@ -19,6 +19,7 @@ internal sealed class RareGuestInvitationResult
     public int SkippedCount { get; set; }
     public string Source { get; set; } = "";
     public string Diagnostics { get; set; } = "";
+    public List<RareGuestInvitationEntry> Available { get; set; } = new();
     public List<RareGuestInvitationEntry> Invited { get; set; } = new();
     public List<RareGuestInvitationEntry> Skipped { get; set; } = new();
 }
@@ -42,6 +43,42 @@ internal static class RuntimeRareGuestInvitationService
     private const string DaySceneSceneManagerTypeName = "DayScene.SceneManager";
     private const string CharacterConditionComponentTypeName = "DayScene.Interactables.Collections.ConditionComponents.CharacterConditionComponent";
 
+    public static RareGuestInvitationResult ListAvailable(DataRepository? repository, ManualLogSource? log)
+    {
+        try
+        {
+            return ListAvailableCore(repository, log);
+        }
+        catch (Exception ex)
+        {
+            return new RareGuestInvitationResult
+            {
+                Ok = false,
+                RuntimeAvailable = false,
+                Status = "读取可邀请稀客失败。",
+                Error = ex.Message,
+            };
+        }
+    }
+
+    public static RareGuestInvitationResult InviteOne(DataRepository? repository, int guestId, ManualLogSource? log)
+    {
+        try
+        {
+            return InviteOneCore(repository, guestId, log);
+        }
+        catch (Exception ex)
+        {
+            return new RareGuestInvitationResult
+            {
+                Ok = false,
+                RuntimeAvailable = false,
+                Status = "稀客邀请失败。",
+                Error = ex.Message,
+            };
+        }
+    }
+
     public static RareGuestInvitationResult InviteAllAvailable(DataRepository? repository, ManualLogSource? log)
     {
         try
@@ -60,14 +97,95 @@ internal static class RuntimeRareGuestInvitationService
         }
     }
 
+    private static RareGuestInvitationResult ListAvailableCore(DataRepository? repository, ManualLogSource? log)
+    {
+        var context = ReadInvitationContext(repository);
+        if (!context.Ok) return context.Result;
+
+        var result = CreateBaseResult(context);
+        foreach (var candidate in context.Candidates)
+        {
+            ProcessCandidate(result, context.AlbumType!, context.StatusTracker!, candidate, writeInvitation: false);
+        }
+
+        result.Ok = true;
+        result.InvitedCount = result.Invited.Count;
+        result.SkippedCount = result.Skipped.Count;
+        result.Status = BuildListStatus(result, context.Source);
+        log?.LogInfo($"List inviteable rare guests: {result.Status} source={context.Source}, diagnostics={context.Diagnostics}, candidates={result.CandidateCount}, available={result.Available.Count}, skipped={result.SkippedCount}");
+        return result;
+    }
+
+    private static RareGuestInvitationResult InviteOneCore(DataRepository? repository, int guestId, ManualLogSource? log)
+    {
+        if (guestId < 0)
+        {
+            return Fail("稀客 ID 无效。");
+        }
+
+        var context = ReadInvitationContext(repository);
+        if (!context.Ok) return context.Result;
+
+        var result = CreateBaseResult(context);
+        var target = context.Candidates.FirstOrDefault(candidate => candidate.Id == guestId);
+        if (target == null)
+        {
+            result.Ok = false;
+            result.RuntimeAvailable = true;
+            result.Status = "当前场景未找到该稀客或该稀客当前不可邀请。";
+            result.Error = result.Status;
+            result.SkippedCount = result.Skipped.Count;
+            return result;
+        }
+
+        ProcessCandidate(result, context.AlbumType!, context.StatusTracker!, target, writeInvitation: true);
+        foreach (var candidate in context.Candidates.Where(candidate => candidate.Id != guestId))
+        {
+            ProcessCandidate(result, context.AlbumType!, context.StatusTracker!, candidate, writeInvitation: false);
+        }
+
+        result.InvitedCount = result.Invited.Count;
+        result.SkippedCount = result.Skipped.Count;
+        result.Ok = result.Invited.Count > 0 || result.ExistingControlledCount > 0;
+        result.Status = result.Invited.Count > 0
+            ? $"已邀请 {result.Invited[0].Name}。"
+            : BuildStatus(result, context.Source);
+        if (!result.Ok)
+        {
+            result.Error = result.Skipped.FirstOrDefault(entry => entry.Id == guestId)?.Reason ?? result.Status;
+        }
+
+        log?.LogInfo($"Invite rare guest {guestId}: {result.Status} source={context.Source}, diagnostics={context.Diagnostics}, available={result.Available.Count}, invited={result.InvitedCount}, skipped={result.SkippedCount}");
+        return result;
+    }
+
     private static RareGuestInvitationResult InviteAllAvailableCore(DataRepository? repository, ManualLogSource? log)
+    {
+        var context = ReadInvitationContext(repository);
+        if (!context.Ok) return context.Result;
+
+        var result = CreateBaseResult(context);
+        foreach (var candidate in context.Candidates)
+        {
+            ProcessCandidate(result, context.AlbumType!, context.StatusTracker!, candidate, writeInvitation: true);
+        }
+
+        result.Ok = true;
+        result.InvitedCount = result.Invited.Count;
+        result.SkippedCount = result.Skipped.Count;
+        result.Status = BuildStatus(result, context.Source);
+        log?.LogInfo($"Invite all rare guests: {result.Status} source={context.Source}, diagnostics={context.Diagnostics}, candidates={result.CandidateCount}, eligible={result.UsableCount}, existingInvited={result.ExistingControlledCount}, invited={result.InvitedCount}, skipped={result.SkippedCount}");
+        return result;
+    }
+
+    private static InvitationContext ReadInvitationContext(DataRepository? repository)
     {
         var dataBaseCharacterType = RuntimeReflectionUtility.FindType(DataBaseCharacterTypeName);
         var albumType = RuntimeReflectionUtility.FindType(RunTimeAlbumTypeName);
         var statusTrackerType = RuntimeReflectionUtility.FindType(StatusTrackerTypeName);
         if (dataBaseCharacterType == null || albumType == null || statusTrackerType == null)
         {
-            return Fail("游戏原生羁绊邀请系统尚未初始化。请在读取存档后的日间场景再试。");
+            return InvitationContext.Failed(Fail("游戏原生羁绊邀请系统尚未初始化。请在读取存档后的日间场景再试。"));
         }
 
         var statusTracker = RuntimeReflectionUtility.GetSingletonInstance(statusTrackerType)
@@ -75,7 +193,7 @@ internal static class RuntimeRareGuestInvitationService
             ?? RuntimeReflectionUtility.FindUnityObject(statusTrackerType);
         if (statusTracker == null)
         {
-            return Fail("未读取到游戏邀请状态。请在读取存档后的日间场景再试。");
+            return InvitationContext.Failed(Fail("未读取到游戏邀请状态。请在读取存档后的日间场景再试。"));
         }
 
         var catalog = repository == null ? null : new RuntimeMappedGuestCatalog(repository);
@@ -86,36 +204,39 @@ internal static class RuntimeRareGuestInvitationService
             failed.RuntimeAvailable = true;
             failed.Source = source;
             failed.Diagnostics = diagnostics;
-            return failed;
+            return InvitationContext.Failed(failed);
         }
 
-        var result = new RareGuestInvitationResult
+        return new InvitationContext
         {
-            RuntimeAvailable = true,
-            CandidateCount = candidates.Count,
+            Ok = true,
+            Result = new RareGuestInvitationResult(),
+            AlbumType = albumType,
+            StatusTracker = statusTracker,
+            Candidates = candidates,
             Source = source,
             Diagnostics = diagnostics,
-            ExistingSlotCount = RuntimeReflectionUtility.CountObjects(RuntimeReflectionUtility.GetMemberValue(statusTracker, "InvitedGuests")),
         };
+    }
 
-        foreach (var candidate in candidates)
+    private static RareGuestInvitationResult CreateBaseResult(InvitationContext context)
+    {
+        return new RareGuestInvitationResult
         {
-            ProcessCandidate(result, albumType, statusTracker, candidate);
-        }
-
-        result.Ok = true;
-        result.InvitedCount = result.Invited.Count;
-        result.SkippedCount = result.Skipped.Count;
-        result.Status = BuildStatus(result, source);
-        log?.LogInfo($"Invite all rare guests: {result.Status} source={source}, diagnostics={diagnostics}, candidates={result.CandidateCount}, eligible={result.UsableCount}, existingInvited={result.ExistingControlledCount}, invited={result.InvitedCount}, skipped={result.SkippedCount}");
-        return result;
+            RuntimeAvailable = true,
+            CandidateCount = context.Candidates.Count,
+            Source = context.Source,
+            Diagnostics = context.Diagnostics,
+            ExistingSlotCount = RuntimeReflectionUtility.CountObjects(RuntimeReflectionUtility.GetMemberValue(context.StatusTracker, "InvitedGuests")),
+        };
     }
 
     private static void ProcessCandidate(
         RareGuestInvitationResult result,
         Type albumType,
         object statusTracker,
-        InviteCandidate candidate)
+        InviteCandidate candidate,
+        bool writeInvitation)
     {
         if (candidate.Id < 0)
         {
@@ -146,6 +267,18 @@ internal static class RuntimeRareGuestInvitationService
         }
 
         result.UsableCount++;
+        if (!writeInvitation)
+        {
+            result.Available.Add(new RareGuestInvitationEntry
+            {
+                Id = candidate.Id,
+                Name = candidate.DisplayName,
+                RuntimeName = candidate.RuntimeName,
+                Reason = $"可邀请（羁绊 {level}）",
+            });
+            return;
+        }
+
         RuntimeReflectionUtility.InvokeMethod(statusTracker, "RecordInvitedGuest", candidate.Id);
         if (!HasNpcInvited(statusTracker, candidate.Id))
         {
@@ -690,6 +823,22 @@ internal static class RuntimeRareGuestInvitationService
         return $"{sourceLabel}没有新的可邀请稀客。";
     }
 
+    private static string BuildListStatus(RareGuestInvitationResult result, string source)
+    {
+        var sourceLabel = source == "current-day-scene" ? "当前日间场景" : "运行时稀客数据";
+        if (result.Available.Count > 0)
+        {
+            return $"{sourceLabel}有 {result.Available.Count} 位可邀请稀客。";
+        }
+
+        if (result.ExistingControlledCount > 0)
+        {
+            return $"{sourceLabel}中的可邀请稀客今晚均已邀请。";
+        }
+
+        return $"{sourceLabel}没有新的可邀请稀客。";
+    }
+
     private static string ResolveGuestName(RuntimeMappedGuestCatalog? catalog, object guest, int id, string runtimeName)
     {
         var resolved = catalog?.Resolve(id >= 0 ? id : null, runtimeName);
@@ -736,5 +885,25 @@ internal static class RuntimeRareGuestInvitationService
     }
 
     private sealed record InviteCandidate(object Guest, int Id, string RuntimeName, string DisplayName, string Source);
+
+    private sealed class InvitationContext
+    {
+        public bool Ok { get; init; }
+        public RareGuestInvitationResult Result { get; init; } = new();
+        public Type? AlbumType { get; init; }
+        public object? StatusTracker { get; init; }
+        public IReadOnlyList<InviteCandidate> Candidates { get; init; } = Array.Empty<InviteCandidate>();
+        public string Source { get; init; } = "";
+        public string Diagnostics { get; init; } = "";
+
+        public static InvitationContext Failed(RareGuestInvitationResult result)
+        {
+            return new InvitationContext
+            {
+                Ok = false,
+                Result = result,
+            };
+        }
+    }
 
 }

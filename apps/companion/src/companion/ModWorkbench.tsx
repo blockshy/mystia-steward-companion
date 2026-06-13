@@ -539,6 +539,7 @@ interface RareGuestInvitationResponse {
   skippedCount: number;
   source?: string;
   diagnostics?: string;
+  available: RareGuestInvitationEntry[];
   invited: RareGuestInvitationEntry[];
   skipped: RareGuestInvitationEntry[];
 }
@@ -787,7 +788,7 @@ export function ModWorkbench() {
   const [favoriteBusyKey, setFavoriteBusyKey] = useState('');
   const [rareGuestInvitationResult, setRareGuestInvitationResult] = useState<RareGuestInvitationResponse | null>(null);
   const [rareGuestInvitationError, setRareGuestInvitationError] = useState('');
-  const [rareGuestInvitationBusy, setRareGuestInvitationBusy] = useState(false);
+  const [rareGuestInvitationBusyKey, setRareGuestInvitationBusyKey] = useState('');
   const [dismissRareOrderBusyKey, setDismissRareOrderBusyKey] = useState('');
   const [dismissRareOrderError, setDismissRareOrderError] = useState('');
   const [autoPrepBusy, setAutoPrepBusy] = useState(false);
@@ -1087,13 +1088,34 @@ export function ModWorkbench() {
     }
   }, [apiToken, favorites, normalizedEndpoint]);
 
+  const loadRareGuestInvitations = useCallback(async () => {
+    if (!apiToken) {
+      setRareGuestInvitationError('未收到本地 API Token。请从游戏内启动或按 F8 唤起伴随窗口。');
+      return;
+    }
+
+    setRareGuestInvitationBusyKey('list');
+    setRareGuestInvitationError('');
+    try {
+      const response = await fetchAvailableRareGuestInvitations(normalizedEndpoint, apiToken);
+      setRareGuestInvitationResult(response);
+      if (!response.ok) {
+        setRareGuestInvitationError(response.error || response.status || '读取可邀请稀客失败');
+      }
+    } catch (err) {
+      setRareGuestInvitationError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRareGuestInvitationBusyKey('');
+    }
+  }, [apiToken, normalizedEndpoint]);
+
   const inviteAllRareGuests = useCallback(async () => {
     if (!apiToken) {
       setRareGuestInvitationError('未收到本地 API Token。请从游戏内启动或按 F8 唤起伴随窗口。');
       return;
     }
 
-    setRareGuestInvitationBusy(true);
+    setRareGuestInvitationBusyKey('all');
     setRareGuestInvitationError('');
     try {
       const response = await inviteAllAvailableRareGuests(normalizedEndpoint, apiToken);
@@ -1105,9 +1127,38 @@ export function ModWorkbench() {
     } catch (err) {
       setRareGuestInvitationError(err instanceof Error ? err.message : String(err));
     } finally {
-      setRareGuestInvitationBusy(false);
+      setRareGuestInvitationBusyKey('');
     }
   }, [apiToken, normalizedEndpoint, refresh]);
+
+  const inviteRareGuest = useCallback(async (guestId: number) => {
+    if (!apiToken) {
+      setRareGuestInvitationError('未收到本地 API Token。请从游戏内启动或按 F8 唤起伴随窗口。');
+      return;
+    }
+
+    const busyKey = `guest:${guestId}`;
+    setRareGuestInvitationBusyKey(busyKey);
+    setRareGuestInvitationError('');
+    try {
+      const response = await inviteAvailableRareGuest(normalizedEndpoint, apiToken, guestId);
+      setRareGuestInvitationResult(response);
+      if (!response.ok) {
+        setRareGuestInvitationError(response.error || response.status || '稀客邀请失败');
+      }
+      await refresh(true);
+    } catch (err) {
+      setRareGuestInvitationError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRareGuestInvitationBusyKey('');
+    }
+  }, [apiToken, normalizedEndpoint, refresh]);
+
+  useEffect(() => {
+    if (tab !== 'tasks' || !(snapshot?.runtimeLoaded ?? false) || !apiToken) return;
+    if (rareGuestInvitationResult || rareGuestInvitationBusyKey) return;
+    void loadRareGuestInvitations();
+  }, [apiToken, loadRareGuestInvitations, rareGuestInvitationBusyKey, rareGuestInvitationResult, snapshot?.runtimeLoaded, tab]);
 
   const dismissRareOrder = useCallback(async (order: NightBusinessOrder) => {
     if (!apiToken) {
@@ -2031,10 +2082,12 @@ export function ModWorkbench() {
             runtimeLoaded={snapshot?.runtimeLoaded ?? false}
             missions={snapshot?.runtimeMissions ?? null}
             data={recommendationData}
-            inviteAllBusy={rareGuestInvitationBusy}
+            inviteBusyKey={rareGuestInvitationBusyKey}
             inviteAllResult={rareGuestInvitationResult}
             inviteAllError={rareGuestInvitationError}
+            onRefreshRareGuestInvitations={loadRareGuestInvitations}
             onInviteAllRareGuests={inviteAllRareGuests}
+            onInviteRareGuest={inviteRareGuest}
           />
         </TabsContent>
 
@@ -2157,33 +2210,59 @@ function ModOverviewPanel({
 
 function RareGuestInvitationPanel({
   runtimeLoaded,
-  inviteAllBusy,
+  inviteBusyKey,
   inviteAllResult,
   inviteAllError,
+  onRefreshRareGuestInvitations,
   onInviteAllRareGuests,
+  onInviteRareGuest,
 }: {
   runtimeLoaded: boolean;
-  inviteAllBusy: boolean;
+  inviteBusyKey: string;
   inviteAllResult: RareGuestInvitationResponse | null;
   inviteAllError: string;
+  onRefreshRareGuestInvitations: () => void;
   onInviteAllRareGuests: () => void;
+  onInviteRareGuest: (guestId: number) => void;
 }) {
+  const availableEntries = inviteAllResult?.available ?? [];
+  const isBusy = inviteBusyKey !== '';
+  const isListBusy = inviteBusyKey === 'list';
+  const isAllBusy = inviteBusyKey === 'all';
+
   return (
-    <ListPanel title="稀客邀请">
+    <ListPanel
+      title={`稀客邀请 (${availableEntries.length})`}
+      action={(
+        <div className="flex flex-wrap gap-1.5">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-8 px-2.5"
+            onClick={onRefreshRareGuestInvitations}
+            disabled={!runtimeLoaded || isBusy}
+            data-gamepad-clickable="true"
+          >
+            {isListBusy ? '刷新中...' : '刷新列表'}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            className="h-8 px-2.5"
+            onClick={onInviteAllRareGuests}
+            disabled={!runtimeLoaded || isBusy || availableEntries.length === 0}
+            data-gamepad-clickable="true"
+          >
+            {isAllBusy ? '邀请中...' : '邀请全部'}
+          </Button>
+        </div>
+      )}
+    >
       <div className="grid min-w-0 gap-3 text-sm">
         <div className={DENSE_TWO_COLUMN_GRID_TIGHT}>
           <InfoLine label="机制" value="按游戏羁绊邀请条件写入今晚邀请名单" />
-          <InfoLine label="可用状态" value={runtimeLoaded ? '等待用户执行' : '等待存档加载'} />
-        </div>
-        <div>
-          <Button
-            size="sm"
-            onClick={onInviteAllRareGuests}
-            disabled={!runtimeLoaded || inviteAllBusy}
-            data-gamepad-clickable="true"
-          >
-            {inviteAllBusy ? '邀请中...' : '邀请全部可邀请稀客'}
-          </Button>
+          <InfoLine label="可用状态" value={runtimeLoaded ? '读取当前场景' : '等待存档加载'} />
         </div>
         {inviteAllError && <EmptyRow text={inviteAllError} />}
         {inviteAllResult ? (
@@ -2197,19 +2276,47 @@ function RareGuestInvitationPanel({
             {inviteAllResult.diagnostics && (
               <WrappedInfoLine label="读取诊断" value={inviteAllResult.diagnostics} mono />
             )}
-            <div className="mt-2 flex max-w-full flex-wrap gap-1">
-              {inviteAllResult.invited.slice(0, 12).map((entry) => (
-                <Badge key={`${entry.id}-${entry.runtimeName || entry.name}`} variant="secondary" className="max-w-full truncate">
-                  {entry.name || entry.runtimeName || `#${entry.id}`}
-                </Badge>
-              ))}
-              {inviteAllResult.invited.length > 12 && (
-                <Badge variant="outline">+{inviteAllResult.invited.length - 12}</Badge>
-              )}
-              {inviteAllResult.invited.length === 0 && (
-                <span className="text-xs text-muted-foreground">暂无新增邀请</span>
+            <div className="mt-2 grid min-w-0 gap-1.5">
+              {availableEntries.map((entry) => {
+                const busy = inviteBusyKey === `guest:${entry.id}`;
+                return (
+                  <div
+                    key={`${entry.id}-${entry.runtimeName || entry.name}`}
+                    className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-md border border-border/70 bg-background/45 px-2 py-1.5"
+                    data-gamepad-row="rare-invitation"
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium">{entry.name || entry.runtimeName || `#${entry.id}`}</div>
+                      <div className="truncate text-xs text-muted-foreground">{entry.reason || entry.runtimeName || `#${entry.id}`}</div>
+                    </div>
+                    <Button
+                      type="button"
+                      size="xs"
+                      onClick={() => onInviteRareGuest(entry.id)}
+                      disabled={!runtimeLoaded || isBusy}
+                      data-gamepad-clickable="true"
+                    >
+                      {busy ? '邀请中' : '邀请'}
+                    </Button>
+                  </div>
+                );
+              })}
+              {availableEntries.length === 0 && (
+                <EmptyRow text={isListBusy ? '正在读取当前场景稀客' : '当前场景暂无可邀请稀客'} />
               )}
             </div>
+            {inviteAllResult.invited.length > 0 && (
+              <div className="mt-2 flex max-w-full flex-wrap gap-1">
+                {inviteAllResult.invited.slice(0, 12).map((entry) => (
+                  <Badge key={`${entry.id}-${entry.runtimeName || entry.name}`} variant="secondary" className="max-w-full truncate">
+                    {entry.name || entry.runtimeName || `#${entry.id}`}
+                  </Badge>
+                ))}
+                {inviteAllResult.invited.length > 12 && (
+                  <Badge variant="outline">+{inviteAllResult.invited.length - 12}</Badge>
+                )}
+              </div>
+            )}
             {inviteAllResult.skipped.length > 0 && (
               <div className="mt-2 max-w-full break-words text-xs text-muted-foreground">
                 跳过：{summarizeInvitationSkipped(inviteAllResult.skipped)}
@@ -3328,18 +3435,22 @@ function ModTasksPanel({
   runtimeLoaded,
   missions,
   data,
-  inviteAllBusy,
+  inviteBusyKey,
   inviteAllResult,
   inviteAllError,
+  onRefreshRareGuestInvitations,
   onInviteAllRareGuests,
+  onInviteRareGuest,
 }: {
   runtimeLoaded: boolean;
   missions: RuntimeMissionContext | null;
   data: RecommendationDataSet;
-  inviteAllBusy: boolean;
+  inviteBusyKey: string;
   inviteAllResult: RareGuestInvitationResponse | null;
   inviteAllError: string;
+  onRefreshRareGuestInvitations: () => void;
   onInviteAllRareGuests: () => void;
+  onInviteRareGuest: (guestId: number) => void;
 }) {
   const [statusFilters, setStatusFilters] = useState<MissionStatusFilter[]>(DEFAULT_MISSION_STATUS_FILTERS);
   const [showExtraInfo, setShowExtraInfo] = useState(false);
@@ -3363,10 +3474,12 @@ function ModTasksPanel({
     <div className="space-y-4">
       <RareGuestInvitationPanel
         runtimeLoaded={runtimeLoaded}
-        inviteAllBusy={inviteAllBusy}
+        inviteBusyKey={inviteBusyKey}
         inviteAllResult={inviteAllResult}
         inviteAllError={inviteAllError}
+        onRefreshRareGuestInvitations={onRefreshRareGuestInvitations}
         onInviteAllRareGuests={onInviteAllRareGuests}
+        onInviteRareGuest={onInviteRareGuest}
       />
 
       <Card>
@@ -5289,6 +5402,30 @@ async function inviteAllAvailableRareGuests(
   endpoint: string,
   apiToken: string,
 ): Promise<RareGuestInvitationResponse> {
+  return mutateRareGuestInvitation(endpoint, apiToken, '/rare-guests/invite-all');
+}
+
+async function fetchAvailableRareGuestInvitations(
+  endpoint: string,
+  apiToken: string,
+): Promise<RareGuestInvitationResponse> {
+  return mutateRareGuestInvitation(endpoint, apiToken, '/rare-guests/invitations');
+}
+
+async function inviteAvailableRareGuest(
+  endpoint: string,
+  apiToken: string,
+  guestId: number,
+): Promise<RareGuestInvitationResponse> {
+  const params = new URLSearchParams({ guestId: String(guestId) });
+  return mutateRareGuestInvitation(endpoint, apiToken, `/rare-guests/invite?${params.toString()}`);
+}
+
+async function mutateRareGuestInvitation(
+  endpoint: string,
+  apiToken: string,
+  path: string,
+): Promise<RareGuestInvitationResponse> {
   const abortController = new AbortController();
   const timeoutId = window.setTimeout(() => abortController.abort(), 5000);
 
@@ -5296,7 +5433,7 @@ async function inviteAllAvailableRareGuests(
     return await readLocalApiJson<RareGuestInvitationResponse>(
       endpoint,
       apiToken,
-      '/rare-guests/invite-all',
+      path,
       abortController.signal,
     );
   } finally {
