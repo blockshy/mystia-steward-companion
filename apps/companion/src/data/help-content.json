@@ -1,7 +1,7 @@
 {
   "version": 1,
   "updatedAt": "2026-06-13",
-  "intro": "这里记录伴随窗口的常用操作、功能说明和排查步骤。内容来自项目内 JSON，后续可以直接修改 apps/companion/src/data/help-content.json。",
+  "intro": "这里记录伴随窗口的常用操作、功能说明和排查步骤。",
   "categories": [
     {
       "id": "start",

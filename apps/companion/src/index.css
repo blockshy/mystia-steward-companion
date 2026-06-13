@@ -46,6 +46,10 @@
   --radius: 0.625rem;
   --companion-window-opacity: 1;
   --companion-window-opacity-percent: 100%;
+  --scrollbar-thumb: color-mix(in srgb, var(--primary) var(--companion-window-opacity-percent), transparent);
+  --scrollbar-thumb-hover: color-mix(in srgb, var(--ring) var(--companion-window-opacity-percent), transparent);
+  --scrollbar-page-track: color-mix(in srgb, var(--background) var(--companion-window-opacity-percent), transparent);
+  --scrollbar-surface-track: color-mix(in srgb, var(--card) var(--companion-window-opacity-percent), transparent);
   --background: #fbf8f3;
   --foreground: #3d2e1f;
   --card: #fff9f0;
@@ -122,7 +126,7 @@
     @apply font-sans;
     overflow-y: scroll;
     scrollbar-gutter: stable;
-    scrollbar-color: color-mix(in srgb, var(--border) var(--companion-window-opacity-percent), transparent) transparent;
+    scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-page-track);
     scrollbar-width: thin;
   }
 
@@ -145,39 +149,40 @@
 
 .companion-shell {
   background-color: color-mix(in srgb, var(--background) var(--companion-window-opacity-percent), transparent);
-  scrollbar-color: color-mix(in srgb, var(--primary) var(--companion-window-opacity-percent), transparent)
-    color-mix(in srgb, var(--card) var(--companion-window-opacity-percent), transparent);
-  scrollbar-width: thin;
 }
 
-.companion-shell [data-slot='select-content'],
-.companion-shell pre {
-  scrollbar-color: color-mix(in srgb, var(--primary) var(--companion-window-opacity-percent), transparent)
-    color-mix(in srgb, var(--card) var(--companion-window-opacity-percent), transparent);
+.companion-shell,
+.companion-shell *,
+[data-slot='select-content'] {
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-surface-track);
   scrollbar-width: thin;
 }
 
 html::-webkit-scrollbar,
 .companion-shell::-webkit-scrollbar,
-.companion-shell [data-slot='select-content']::-webkit-scrollbar,
-.companion-shell pre::-webkit-scrollbar {
+.companion-shell *::-webkit-scrollbar,
+[data-slot='select-content']::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
 
-html::-webkit-scrollbar-track,
+html::-webkit-scrollbar-track {
+  background: var(--scrollbar-page-track);
+  border-radius: 999px;
+}
+
 .companion-shell::-webkit-scrollbar-track,
-.companion-shell [data-slot='select-content']::-webkit-scrollbar-track,
-.companion-shell pre::-webkit-scrollbar-track {
-  background: color-mix(in srgb, var(--card) var(--companion-window-opacity-percent), transparent);
+.companion-shell *::-webkit-scrollbar-track,
+[data-slot='select-content']::-webkit-scrollbar-track {
+  background: var(--scrollbar-surface-track);
   border-radius: 999px;
 }
 
 html::-webkit-scrollbar-thumb,
 .companion-shell::-webkit-scrollbar-thumb,
-.companion-shell [data-slot='select-content']::-webkit-scrollbar-thumb,
-.companion-shell pre::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--primary) var(--companion-window-opacity-percent), transparent);
+.companion-shell *::-webkit-scrollbar-thumb,
+[data-slot='select-content']::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
   border: 2px solid transparent;
   border-radius: 999px;
   background-clip: content-box;
@@ -185,9 +190,9 @@ html::-webkit-scrollbar-thumb,
 
 html::-webkit-scrollbar-thumb:hover,
 .companion-shell::-webkit-scrollbar-thumb:hover,
-.companion-shell [data-slot='select-content']::-webkit-scrollbar-thumb:hover,
-.companion-shell pre::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--ring) var(--companion-window-opacity-percent), transparent);
+.companion-shell *::-webkit-scrollbar-thumb:hover,
+[data-slot='select-content']::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
   background-clip: content-box;
 }
 
@@ -196,6 +201,16 @@ html::-webkit-scrollbar-thumb:hover,
   background-color: color-mix(in srgb, var(--card) var(--companion-window-opacity-percent), transparent);
 }
 
-.companion-shell [data-slot='select-content'] {
+[data-slot='select-content'] {
   background-color: color-mix(in srgb, var(--popover) var(--companion-window-opacity-percent), transparent);
+}
+
+[data-slot='select-scroll-up-button'],
+[data-slot='select-scroll-down-button'] {
+  background-color: color-mix(in srgb, var(--popover) var(--companion-window-opacity-percent), transparent);
+}
+
+[data-slot='accordion-trigger'][data-panel-open] [data-slot='accordion-chevron'],
+[data-slot='accordion-trigger'][aria-expanded='true'] [data-slot='accordion-chevron'] {
+  transform: rotate(180deg);
 }

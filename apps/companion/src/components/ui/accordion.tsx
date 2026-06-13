@@ -35,7 +35,10 @@ function AccordionTrigger({
         {...props}
       >
         {children}
-        <ChevronDown className="mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform data-panel-open:rotate-180" />
+        <ChevronDown
+          data-slot="accordion-chevron"
+          className="mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform"
+        />
       </AccordionPrimitive.Trigger>
     </AccordionPrimitive.Header>
   );

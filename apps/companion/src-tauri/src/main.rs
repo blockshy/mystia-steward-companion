@@ -30,6 +30,7 @@ struct GamePidState(Arc<Mutex<Option<u32>>>);
 struct WindowSwitchState(Arc<Mutex<Option<Instant>>>);
 struct CompanionPreferenceState(Arc<Mutex<CompanionPreferences>>);
 struct MousePassthroughState(Arc<Mutex<bool>>);
+struct TrayPassthroughMenuState(Arc<Mutex<Option<MenuItem<tauri::Wry>>>>);
 
 #[derive(Clone, Copy)]
 struct CompanionPreferences {
@@ -248,8 +249,31 @@ fn set_mouse_passthrough_internal(
     if let Ok(mut current) = mouse_passthrough.lock() {
         *current = enabled;
     }
+    update_mouse_passthrough_tray_label(app, enabled);
     let _ = app.emit("mouse-passthrough-changed", enabled);
     Ok(enabled)
+}
+
+fn mouse_passthrough_tray_label(enabled: bool) -> &'static str {
+    if enabled {
+        "关闭鼠标穿透"
+    } else {
+        "开启鼠标穿透"
+    }
+}
+
+fn update_mouse_passthrough_tray_label(app: &tauri::AppHandle, enabled: bool) {
+    let Some(state) = app.try_state::<TrayPassthroughMenuState>() else {
+        return;
+    };
+    let item = state
+        .0
+        .lock()
+        .ok()
+        .and_then(|current| current.as_ref().cloned());
+    if let Some(item) = item {
+        let _ = item.set_text(mouse_passthrough_tray_label(enabled));
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -595,15 +619,18 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
         None::<&str>,
     )?;
     let reconnect = MenuItem::with_id(app, "reconnect", "重连游戏", true, None::<&str>)?;
-    let disable_passthrough = MenuItem::with_id(
+    let toggle_passthrough = MenuItem::with_id(
         app,
-        "disable_passthrough",
-        "关闭鼠标穿透",
+        "toggle_passthrough",
+        mouse_passthrough_tray_label(false),
         true,
         None::<&str>,
     )?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &reconnect, &disable_passthrough, &quit])?;
+    let menu = Menu::with_items(app, &[&show, &reconnect, &toggle_passthrough, &quit])?;
+    if let Ok(mut item) = app.state::<TrayPassthroughMenuState>().0.lock() {
+        *item = Some(toggle_passthrough.clone());
+    }
 
     let mut tray = TrayIconBuilder::new()
         .tooltip("mystia-steward-companion")
@@ -617,9 +644,10 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
                     show_main_window_without_passthrough_state(app);
                 }
             }
-            "disable_passthrough" => {
+            "toggle_passthrough" => {
                 if let Some(state) = app.try_state::<MousePassthroughState>() {
-                    let _ = set_mouse_passthrough_internal(app, &state.0, false);
+                    let enabled = !current_mouse_passthrough(&state.0);
+                    let _ = set_mouse_passthrough_internal(app, &state.0, enabled);
                 }
             }
             "quit" => app.exit(0),
@@ -693,6 +721,7 @@ fn main() {
             CompanionPreferences::default(),
         ))))
         .manage(MousePassthroughState(Arc::new(Mutex::new(false))))
+        .manage(TrayPassthroughMenuState(Arc::new(Mutex::new(None))))
         .setup(|app| {
             setup_tray(app)?;
             if let Some(window) = app.get_webview_window("main") {

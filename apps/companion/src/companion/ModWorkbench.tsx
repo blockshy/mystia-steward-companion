@@ -2570,9 +2570,9 @@ function ModHelpPanel() {
               <h2 className="text-base font-semibold">帮助</h2>
               <p className="mt-1 max-w-3xl text-sm text-muted-foreground">{HELP_CONTENT.intro}</p>
             </div>
-            <div className="text-right text-xs text-muted-foreground">
-              <div>条目 {visibleItems}/{totalItems}</div>
-              <div>更新 {HELP_CONTENT.updatedAt}</div>
+            <div className="flex w-full items-center justify-between gap-3 text-xs text-muted-foreground">
+              <span>条目 {visibleItems}/{totalItems}</span>
+              <span>更新 {HELP_CONTENT.updatedAt}</span>
             </div>
           </div>
           <Input
