@@ -19,6 +19,10 @@ internal sealed class RareGuestInvitationResult
     public int SkippedCount { get; set; }
     public string Source { get; set; } = "";
     public string Diagnostics { get; set; } = "";
+    public string Scope { get; set; } = "";
+    public string CurrentMapLabel { get; set; } = "";
+    public string CurrentMapName { get; set; } = "";
+    public List<RareGuestInvitationEntry> Candidates { get; set; } = new();
     public List<RareGuestInvitationEntry> Available { get; set; } = new();
     public List<RareGuestInvitationEntry> Invited { get; set; } = new();
     public List<RareGuestInvitationEntry> Skipped { get; set; } = new();
@@ -30,12 +34,19 @@ internal sealed class RareGuestInvitationEntry
     public string Name { get; set; } = "";
     public string RuntimeName { get; set; } = "";
     public string Reason { get; set; } = "";
+    public string Status { get; set; } = "";
+    public bool CanInvite { get; set; }
+    public bool IsCurrentScene { get; set; }
+    public int KizunaLevel { get; set; } = -1;
+    public List<string> SceneLabels { get; set; } = new();
+    public List<string> SceneNames { get; set; } = new();
 }
 
 internal static class RuntimeRareGuestInvitationService
 {
     private const string DataBaseCharacterTypeName = "GameData.Core.Collections.CharacterUtility.DataBaseCharacter";
     private const string DataBaseDayTypeName = "GameData.Core.Collections.DaySceneUtility.DataBaseDay";
+    private const string DaySceneLanguageTypeName = "GameData.CoreLanguage.Collections.DaySceneLanguage";
     private const string RunTimeAlbumTypeName = "GameData.RunTime.Common.RunTimeAlbum";
     private const string StatusTrackerTypeName = "GameData.RunTime.Common.StatusTracker";
     private const string RuntimeDaySceneTypeName = "GameData.RunTime.DaySceneUtility.RunTimeDayScene";
@@ -43,11 +54,11 @@ internal static class RuntimeRareGuestInvitationService
     private const string DaySceneSceneManagerTypeName = "DayScene.SceneManager";
     private const string CharacterConditionComponentTypeName = "DayScene.Interactables.Collections.ConditionComponents.CharacterConditionComponent";
 
-    public static RareGuestInvitationResult ListAvailable(DataRepository? repository, ManualLogSource? log)
+    public static RareGuestInvitationResult ListAvailable(DataRepository? repository, ManualLogSource? log, string scopeText = "")
     {
         try
         {
-            return ListAvailableCore(repository, log);
+            return ListAvailableCore(repository, log, ParseScope(scopeText));
         }
         catch (Exception ex)
         {
@@ -61,11 +72,11 @@ internal static class RuntimeRareGuestInvitationService
         }
     }
 
-    public static RareGuestInvitationResult InviteOne(DataRepository? repository, int guestId, ManualLogSource? log)
+    public static RareGuestInvitationResult InviteOne(DataRepository? repository, int guestId, ManualLogSource? log, string scopeText = "")
     {
         try
         {
-            return InviteOneCore(repository, guestId, log);
+            return InviteOneCore(repository, guestId, log, ParseScope(scopeText));
         }
         catch (Exception ex)
         {
@@ -79,11 +90,11 @@ internal static class RuntimeRareGuestInvitationService
         }
     }
 
-    public static RareGuestInvitationResult InviteAllAvailable(DataRepository? repository, ManualLogSource? log)
+    public static RareGuestInvitationResult InviteAllAvailable(DataRepository? repository, ManualLogSource? log, string scopeText = "")
     {
         try
         {
-            return InviteAllAvailableCore(repository, log);
+            return InviteAllAvailableCore(repository, log, ParseScope(scopeText));
         }
         catch (Exception ex)
         {
@@ -97,9 +108,20 @@ internal static class RuntimeRareGuestInvitationService
         }
     }
 
-    private static RareGuestInvitationResult ListAvailableCore(DataRepository? repository, ManualLogSource? log)
+    public static DaySceneMapInfo ReadCurrentDaySceneMapInfo()
     {
-        var context = ReadInvitationContext(repository);
+        var sceneManagerType = RuntimeReflectionUtility.FindType(DaySceneSceneManagerTypeName);
+        var label = ReadCurrentMapLabel(sceneManagerType);
+        return new DaySceneMapInfo
+        {
+            Label = label,
+            Name = NormalizePlaceName(label),
+        };
+    }
+
+    private static RareGuestInvitationResult ListAvailableCore(DataRepository? repository, ManualLogSource? log, RareGuestInvitationScope scope)
+    {
+        var context = ReadInvitationContext(repository, scope);
         if (!context.Ok) return context.Result;
 
         var result = CreateBaseResult(context);
@@ -112,18 +134,18 @@ internal static class RuntimeRareGuestInvitationService
         result.InvitedCount = result.Invited.Count;
         result.SkippedCount = result.Skipped.Count;
         result.Status = BuildListStatus(result, context.Source);
-        log?.LogInfo($"List inviteable rare guests: {result.Status} source={context.Source}, diagnostics={context.Diagnostics}, candidates={result.CandidateCount}, available={result.Available.Count}, skipped={result.SkippedCount}");
+        log?.LogInfo($"List inviteable rare guests: {result.Status} scope={context.ScopeText}, source={context.Source}, diagnostics={context.Diagnostics}, candidates={result.CandidateCount}, available={result.Available.Count}, skipped={result.SkippedCount}");
         return result;
     }
 
-    private static RareGuestInvitationResult InviteOneCore(DataRepository? repository, int guestId, ManualLogSource? log)
+    private static RareGuestInvitationResult InviteOneCore(DataRepository? repository, int guestId, ManualLogSource? log, RareGuestInvitationScope scope)
     {
         if (guestId < 0)
         {
             return Fail("稀客 ID 无效。");
         }
 
-        var context = ReadInvitationContext(repository);
+        var context = ReadInvitationContext(repository, scope);
         if (!context.Ok) return context.Result;
 
         var result = CreateBaseResult(context);
@@ -146,22 +168,23 @@ internal static class RuntimeRareGuestInvitationService
 
         result.InvitedCount = result.Invited.Count;
         result.SkippedCount = result.Skipped.Count;
-        result.Ok = result.Invited.Count > 0 || result.ExistingControlledCount > 0;
+        var targetEntry = result.Candidates.FirstOrDefault(entry => entry.Id == guestId);
+        result.Ok = result.Invited.Count > 0 || string.Equals(targetEntry?.Status, "invited", StringComparison.Ordinal);
         result.Status = result.Invited.Count > 0
             ? $"已邀请 {result.Invited[0].Name}。"
             : BuildStatus(result, context.Source);
         if (!result.Ok)
         {
-            result.Error = result.Skipped.FirstOrDefault(entry => entry.Id == guestId)?.Reason ?? result.Status;
+            result.Error = targetEntry?.Reason ?? result.Status;
         }
 
         log?.LogInfo($"Invite rare guest {guestId}: {result.Status} source={context.Source}, diagnostics={context.Diagnostics}, available={result.Available.Count}, invited={result.InvitedCount}, skipped={result.SkippedCount}");
         return result;
     }
 
-    private static RareGuestInvitationResult InviteAllAvailableCore(DataRepository? repository, ManualLogSource? log)
+    private static RareGuestInvitationResult InviteAllAvailableCore(DataRepository? repository, ManualLogSource? log, RareGuestInvitationScope scope)
     {
-        var context = ReadInvitationContext(repository);
+        var context = ReadInvitationContext(repository, scope);
         if (!context.Ok) return context.Result;
 
         var result = CreateBaseResult(context);
@@ -174,11 +197,11 @@ internal static class RuntimeRareGuestInvitationService
         result.InvitedCount = result.Invited.Count;
         result.SkippedCount = result.Skipped.Count;
         result.Status = BuildStatus(result, context.Source);
-        log?.LogInfo($"Invite all rare guests: {result.Status} source={context.Source}, diagnostics={context.Diagnostics}, candidates={result.CandidateCount}, eligible={result.UsableCount}, existingInvited={result.ExistingControlledCount}, invited={result.InvitedCount}, skipped={result.SkippedCount}");
+        log?.LogInfo($"Invite all rare guests: {result.Status} scope={context.ScopeText}, source={context.Source}, diagnostics={context.Diagnostics}, candidates={result.CandidateCount}, eligible={result.UsableCount}, existingInvited={result.ExistingControlledCount}, invited={result.InvitedCount}, skipped={result.SkippedCount}");
         return result;
     }
 
-    private static InvitationContext ReadInvitationContext(DataRepository? repository)
+    private static InvitationContext ReadInvitationContext(DataRepository? repository, RareGuestInvitationScope scope)
     {
         var dataBaseCharacterType = RuntimeReflectionUtility.FindType(DataBaseCharacterTypeName);
         var albumType = RuntimeReflectionUtility.FindType(RunTimeAlbumTypeName);
@@ -197,13 +220,18 @@ internal static class RuntimeRareGuestInvitationService
         }
 
         var catalog = repository == null ? null : new RuntimeMappedGuestCatalog(repository);
-        var candidates = ReadInviteCandidates(dataBaseCharacterType, catalog, out var source, out var diagnostics);
+        var candidates = ReadInviteCandidates(dataBaseCharacterType, catalog, scope, out var source, out var diagnostics, out var currentMap);
         if (candidates.Count == 0)
         {
-            var failed = Fail("未读取到当前日间场景可邀请稀客，已取消邀请以避免全量误邀。请确认角色已出现在日间场景后再试。");
+            var failed = Fail(scope == RareGuestInvitationScope.AllScenes
+                ? "未读取到可邀请稀客候选。请确认已读取存档并处于日间场景。"
+                : "未读取到当前日间场景稀客候选，已取消邀请以避免误邀。请确认角色已出现在日间场景后再试。");
             failed.RuntimeAvailable = true;
+            failed.Scope = ScopeToText(scope);
             failed.Source = source;
             failed.Diagnostics = diagnostics;
+            failed.CurrentMapLabel = currentMap.Label;
+            failed.CurrentMapName = currentMap.Name;
             return InvitationContext.Failed(failed);
         }
 
@@ -216,6 +244,8 @@ internal static class RuntimeRareGuestInvitationService
             Candidates = candidates,
             Source = source,
             Diagnostics = diagnostics,
+            Scope = scope,
+            CurrentMap = currentMap,
         };
     }
 
@@ -227,6 +257,9 @@ internal static class RuntimeRareGuestInvitationService
             CandidateCount = context.Candidates.Count,
             Source = context.Source,
             Diagnostics = context.Diagnostics,
+            Scope = context.ScopeText,
+            CurrentMapLabel = context.CurrentMap.Label,
+            CurrentMapName = context.CurrentMap.Name,
             ExistingSlotCount = RuntimeReflectionUtility.CountObjects(RuntimeReflectionUtility.GetMemberValue(context.StatusTracker, "InvitedGuests")),
         };
     }
@@ -240,14 +273,20 @@ internal static class RuntimeRareGuestInvitationService
     {
         if (candidate.Id < 0)
         {
-            AddSkipped(result, candidate, "未读取到稀客 ID");
+            AddUnavailableCandidate(result, candidate, "invalid", "未读取到稀客 ID", -1);
+            return;
+        }
+
+        if (candidate.AvailabilityKnown && !candidate.RuntimeAvailable)
+        {
+            AddUnavailableCandidate(result, candidate, "unavailable", "当前时间不可见", -1);
             return;
         }
 
         if (HasNpcInvited(statusTracker, candidate.Id))
         {
             result.ExistingControlledCount++;
-            AddSkipped(result, candidate, "今晚已邀请");
+            AddUnavailableCandidate(result, candidate, "invited", "今晚已邀请", -1);
             return;
         }
 
@@ -256,43 +295,35 @@ internal static class RuntimeRareGuestInvitationService
             0);
         if (level < 2)
         {
-            AddSkipped(result, candidate, $"羁绊等级不足 {level}");
+            AddUnavailableCandidate(result, candidate, "low-kizuna", $"羁绊等级不足 {level}", level);
             return;
         }
 
         if (!HasInviteDialog(candidate.Guest, level, succeed: true))
         {
-            AddSkipped(result, candidate, $"当前羁绊等级无成功邀请对话 {level}");
+            AddUnavailableCandidate(result, candidate, "missing-dialog", $"当前羁绊等级无成功邀请对话 {level}", level);
             return;
         }
 
         result.UsableCount++;
+        var availableEntry = BuildEntry(candidate, "available", true, $"可邀请（羁绊 {level}）", level);
         if (!writeInvitation)
         {
-            result.Available.Add(new RareGuestInvitationEntry
-            {
-                Id = candidate.Id,
-                Name = candidate.DisplayName,
-                RuntimeName = candidate.RuntimeName,
-                Reason = $"可邀请（羁绊 {level}）",
-            });
+            result.Candidates.Add(availableEntry);
+            result.Available.Add(availableEntry);
             return;
         }
 
         RuntimeReflectionUtility.InvokeMethod(statusTracker, "RecordInvitedGuest", candidate.Id);
         if (!HasNpcInvited(statusTracker, candidate.Id))
         {
-            AddSkipped(result, candidate, "原生记录邀请失败");
+            AddUnavailableCandidate(result, candidate, "failed", "原生记录邀请失败", level);
             return;
         }
 
-        result.Invited.Add(new RareGuestInvitationEntry
-        {
-            Id = candidate.Id,
-            Name = candidate.DisplayName,
-            RuntimeName = candidate.RuntimeName,
-            Reason = $"已按原生羁绊邀请条件加入今晚名单（羁绊 {level}）",
-        });
+        var invitedEntry = BuildEntry(candidate, "invited", false, $"已按原生羁绊邀请条件加入今晚名单（羁绊 {level}）", level);
+        result.Candidates.Add(invitedEntry);
+        result.Invited.Add(invitedEntry);
     }
 
     private static RareGuestInvitationResult Fail(string message)
@@ -309,19 +340,24 @@ internal static class RuntimeRareGuestInvitationService
     private static IReadOnlyList<InviteCandidate> ReadInviteCandidates(
         Type dataBaseCharacterType,
         RuntimeMappedGuestCatalog? catalog,
+        RareGuestInvitationScope scope,
         out string source,
-        out string diagnostics)
+        out string diagnostics,
+        out DaySceneMapInfo currentMap)
     {
-        source = "current-day-scene";
-        var labels = ReadCurrentDaySceneNpcLabels(out diagnostics).ToList();
-        var candidates = labels
-            .Select(label => new { Label = label, Guest = InvokeStaticMethodWithSingleParameter(dataBaseCharacterType, "RefSGuest", typeof(string), label) })
+        currentMap = ReadCurrentDaySceneMapInfo();
+        source = scope == RareGuestInvitationScope.AllScenes ? "all-day-scenes" : "current-day-scene";
+        var records = scope == RareGuestInvitationScope.AllScenes
+            ? ReadAllDaySceneNpcRecords(currentMap, out diagnostics).ToList()
+            : ReadCurrentDaySceneNpcRecords(currentMap, out diagnostics).ToList();
+        var candidates = records
+            .Select(record => new { Record = record, Guest = InvokeStaticMethodWithSingleParameter(dataBaseCharacterType, "RefSGuest", typeof(string), record.Label) })
             .Where(item => item.Guest != null)
-            .Select(item => BuildCandidate(catalog, item.Guest!, "current-day-scene"))
+            .Select(item => BuildCandidate(catalog, item.Guest!, item.Record))
             .Where(candidate => candidate != null)
             .Select(candidate => candidate!)
             .ToList();
-        diagnostics = $"{diagnostics}; labels={labels.Count}; mapped={candidates.Count}";
+        diagnostics = $"{diagnostics}; labels={records.Count}; mapped={candidates.Count}";
         return DeduplicateCandidates(candidates);
     }
 
@@ -335,24 +371,32 @@ internal static class RuntimeRareGuestInvitationService
             .ToList();
     }
 
-    private static InviteCandidate? BuildCandidate(RuntimeMappedGuestCatalog? catalog, object guest, string source)
+    private static InviteCandidate? BuildCandidate(RuntimeMappedGuestCatalog? catalog, object guest, InviteCandidateRecord record)
     {
         var id = ReadIntMember(guest, "ID", "Id", "id");
         var runtimeName = ReadStringMember(guest, "StringId", "StrID", "Name", "DisplayName", "CharacterName");
         var displayName = ResolveGuestName(catalog, guest, id, runtimeName);
-        return new InviteCandidate(guest, id, runtimeName, displayName, source);
+        return new InviteCandidate(
+            guest,
+            id,
+            runtimeName,
+            displayName,
+            record.Source,
+            record.SceneLabels,
+            record.SceneNames,
+            record.IsCurrentScene,
+            record.AvailabilityKnown,
+            record.RuntimeAvailable);
     }
 
-    private static IReadOnlyList<string> ReadCurrentDaySceneNpcLabels(out string diagnostics)
+    private static IReadOnlyList<InviteCandidateRecord> ReadCurrentDaySceneNpcRecords(DaySceneMapInfo currentMap, out string diagnostics)
     {
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        var labels = new List<string>();
+        var records = new List<InviteCandidateRecord>();
         var runtimeDaySceneType = RuntimeReflectionUtility.FindType(RuntimeDaySceneTypeName);
         var dataBaseDayType = RuntimeReflectionUtility.FindType(DataBaseDayTypeName);
         var daySceneMapType = RuntimeReflectionUtility.FindType(DaySceneMapTypeName);
-        var sceneManagerType = RuntimeReflectionUtility.FindType(DaySceneSceneManagerTypeName);
         var characterComponentType = RuntimeReflectionUtility.FindType(CharacterConditionComponentTypeName);
-        var currentMapLabel = ReadCurrentMapLabel(sceneManagerType);
+        var currentMapLabel = currentMap.Label;
         TryRefreshCurrentMapNpcs(runtimeDaySceneType);
         var counts = new Dictionary<string, int>(StringComparer.Ordinal)
         {
@@ -368,41 +412,56 @@ internal static class RuntimeRareGuestInvitationService
         foreach (var label in ReadMapNpcLabels(runtimeDaySceneType, currentMapLabel))
         {
             counts["mapNpc"]++;
-            if (seen.Add(label)) labels.Add(label);
+            records.Add(CreateRecord(label, currentMapLabel, currentMap.Name, isCurrentScene: true, known: true, available: true, source: "mapNpc"));
         }
 
         foreach (var label in ReadDaySceneMapCharacterLabels(daySceneMapType))
         {
             counts["mapObject"]++;
-            if (seen.Add(label)) labels.Add(label);
+            records.Add(CreateRecord(label, currentMapLabel, currentMap.Name, isCurrentScene: true, known: true, available: true, source: "mapObject"));
         }
 
         foreach (var label in ReadSceneCharacterLabels(characterComponentType))
         {
             counts["sceneObject"]++;
-            if (seen.Add(label)) labels.Add(label);
+            records.Add(CreateRecord(label, currentMapLabel, currentMap.Name, isCurrentScene: true, known: true, available: true, source: "sceneObject"));
         }
 
-        foreach (var label in ReadTrackedNpcLabelsFromAllMaps(runtimeDaySceneType, dataBaseDayType, currentMapLabel))
+        foreach (var record in ReadTrackedNpcRecords(runtimeDaySceneType, dataBaseDayType, currentMapLabel))
         {
             counts["trackedAnyMap"]++;
-            if (seen.Add(label)) labels.Add(label);
+            records.Add(record);
         }
 
         var staticMap = 0;
         var staticUnavailable = 0;
         var keyDiagnostics = "";
-        foreach (var label in ReadStaticCurrentMapNpcLabels(runtimeDaySceneType, dataBaseDayType, currentMapLabel, errors, out staticMap, out staticUnavailable, out keyDiagnostics))
+        foreach (var record in ReadStaticMapNpcRecords(runtimeDaySceneType, dataBaseDayType, currentMapLabel, currentOnly: true, errors: errors, out staticMap, out staticUnavailable, out keyDiagnostics))
         {
             counts["staticMap"]++;
-            if (seen.Add(label)) labels.Add(label);
+            records.Add(record);
         }
 
         counts["staticUnavailable"] = staticUnavailable;
         var errorText = errors.Count == 0 ? "" : $"; errors={string.Join("|", errors.Take(4))}";
         diagnostics =
             $"currentMap={currentMapLabel}; mapNpc={counts["mapNpc"]}; mapObject={counts["mapObject"]}; sceneObject={counts["sceneObject"]}; trackedAnyMap={counts["trackedAnyMap"]}; staticMap={staticMap}; staticAccepted={counts["staticMap"]}; staticUnavailable={counts["staticUnavailable"]}; {keyDiagnostics}{errorText}";
-        return labels;
+        return DeduplicateRecords(records);
+    }
+
+    private static IReadOnlyList<InviteCandidateRecord> ReadAllDaySceneNpcRecords(DaySceneMapInfo currentMap, out string diagnostics)
+    {
+        var runtimeDaySceneType = RuntimeReflectionUtility.FindType(RuntimeDaySceneTypeName);
+        var dataBaseDayType = RuntimeReflectionUtility.FindType(DataBaseDayTypeName);
+        TryRefreshCurrentMapNpcs(runtimeDaySceneType);
+        var errors = new List<string>();
+        var staticMap = 0;
+        var staticUnavailable = 0;
+        var keyDiagnostics = "";
+        var records = ReadStaticMapNpcRecords(runtimeDaySceneType, dataBaseDayType, currentMap.Label, currentOnly: false, errors: errors, out staticMap, out staticUnavailable, out keyDiagnostics);
+        var errorText = errors.Count == 0 ? "" : $"; errors={string.Join("|", errors.Take(4))}";
+        diagnostics = $"currentMap={currentMap.Label}; allScenes=1; staticMap={staticMap}; staticAccepted={records.Count}; staticUnavailable={staticUnavailable}; {keyDiagnostics}{errorText}";
+        return DeduplicateRecords(records);
     }
 
     private static void TryRefreshCurrentMapNpcs(Type? runtimeDaySceneType)
@@ -422,6 +481,82 @@ internal static class RuntimeRareGuestInvitationService
         return string.IsNullOrWhiteSpace(current) ? "" : current.Trim();
     }
 
+    private static InviteCandidateRecord CreateRecord(
+        string label,
+        string sceneLabel,
+        string sceneName,
+        bool isCurrentScene,
+        bool known,
+        bool available,
+        string source)
+    {
+        var sceneLabels = string.IsNullOrWhiteSpace(sceneLabel)
+            ? new List<string>()
+            : new List<string> { sceneLabel.Trim() };
+        var sceneNames = string.IsNullOrWhiteSpace(sceneName)
+            ? sceneLabels.Select(NormalizePlaceName).Where(value => !string.IsNullOrWhiteSpace(value)).ToList()
+            : new List<string> { sceneName.Trim() };
+        return new InviteCandidateRecord(label.Trim(), sceneLabels, sceneNames, isCurrentScene, known, available, source);
+    }
+
+    private static InviteCandidateRecord CreateRecord(
+        string label,
+        IReadOnlyList<string> sceneLabels,
+        bool isCurrentScene,
+        bool known,
+        bool available,
+        string source)
+    {
+        var normalizedLabels = sceneLabels
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var sceneNames = normalizedLabels
+            .Select(NormalizePlaceName)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        return new InviteCandidateRecord(label.Trim(), normalizedLabels, sceneNames, isCurrentScene, known, available, source);
+    }
+
+    private static IReadOnlyList<InviteCandidateRecord> DeduplicateRecords(IEnumerable<InviteCandidateRecord> records)
+    {
+        return records
+            .Where(record => !string.IsNullOrWhiteSpace(record.Label))
+            .GroupBy(record => record.Label, StringComparer.Ordinal)
+            .Select(group =>
+            {
+                var items = group.ToList();
+                var labels = items
+                    .SelectMany(item => item.SceneLabels)
+                    .Where(value => !string.IsNullOrWhiteSpace(value))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var names = items
+                    .SelectMany(item => item.SceneNames)
+                    .Where(value => !string.IsNullOrWhiteSpace(value))
+                    .Distinct(StringComparer.Ordinal)
+                    .OrderBy(value => value, StringComparer.Ordinal)
+                    .ToList();
+                var knownRecords = items.Where(item => item.AvailabilityKnown).ToList();
+                var available = knownRecords.Count == 0 || knownRecords.Any(item => item.RuntimeAvailable);
+                return new InviteCandidateRecord(
+                    group.Key,
+                    labels,
+                    names,
+                    items.Any(item => item.IsCurrentScene),
+                    knownRecords.Count > 0,
+                    available,
+                    string.Join("+", items.Select(item => item.Source).Distinct(StringComparer.Ordinal)));
+            })
+            .OrderBy(record => record.SceneNames.FirstOrDefault() ?? record.SceneLabels.FirstOrDefault() ?? "", StringComparer.Ordinal)
+            .ThenBy(record => record.Label, StringComparer.Ordinal)
+            .ToList();
+    }
+
     private static IEnumerable<string> ReadMapNpcLabels(Type? runtimeDaySceneType, string mapLabel)
     {
         if (runtimeDaySceneType == null) yield break;
@@ -438,7 +573,7 @@ internal static class RuntimeRareGuestInvitationService
         }
     }
 
-    private static IEnumerable<string> ReadTrackedNpcLabelsFromAllMaps(Type? runtimeDaySceneType, Type? dataBaseDayType, string currentMapLabel)
+    private static IEnumerable<InviteCandidateRecord> ReadTrackedNpcRecords(Type? runtimeDaySceneType, Type? dataBaseDayType, string currentMapLabel)
     {
         if (runtimeDaySceneType == null || dataBaseDayType == null) yield break;
         if (string.IsNullOrWhiteSpace(currentMapLabel)) yield break;
@@ -456,16 +591,28 @@ internal static class RuntimeRareGuestInvitationService
                     ?? ReadTextMember(npcCandidate, "key");
                 if (string.IsNullOrWhiteSpace(label)) continue;
                 if (!TrackedNpcMatchesCurrentMap(dataBaseDayType, npc, mapLabel, currentMapLabel)) continue;
-                if (!IsTrackedNpcAvailable(runtimeDaySceneType, label, out var known) || !known) continue;
-                yield return label;
+                var available = IsTrackedNpcAvailable(runtimeDaySceneType, label, out var known);
+                var sceneLabels = ResolveTrackedNpcMapLabels(dataBaseDayType, npc, mapLabel)
+                    .Where(value => !string.IsNullOrWhiteSpace(value))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (sceneLabels.Count == 0 && !string.IsNullOrWhiteSpace(currentMapLabel)) sceneLabels.Add(currentMapLabel);
+                yield return CreateRecord(
+                    label,
+                    sceneLabels,
+                    isCurrentScene: true,
+                    known,
+                    available,
+                    source: "trackedAnyMap");
             }
         }
     }
 
-    private static IReadOnlyList<string> ReadStaticCurrentMapNpcLabels(
+    private static IReadOnlyList<InviteCandidateRecord> ReadStaticMapNpcRecords(
         Type? runtimeDaySceneType,
         Type? dataBaseDayType,
         string currentMapLabel,
+        bool currentOnly,
         List<string> errors,
         out int staticMap,
         out int staticUnavailable,
@@ -474,8 +621,9 @@ internal static class RuntimeRareGuestInvitationService
         staticMap = 0;
         staticUnavailable = 0;
         keyDiagnostics = "npcKeys=0";
-        var labels = new List<string>();
-        if (dataBaseDayType == null || string.IsNullOrWhiteSpace(currentMapLabel)) return labels;
+        var records = new List<InviteCandidateRecord>();
+        if (dataBaseDayType == null) return records;
+        if (currentOnly && string.IsNullOrWhiteSpace(currentMapLabel)) return records;
 
         var npcKeys = ReadGlobalNpcKeys(dataBaseDayType, errors, out keyDiagnostics);
         foreach (var key in npcKeys)
@@ -483,20 +631,30 @@ internal static class RuntimeRareGuestInvitationService
             if (string.IsNullOrWhiteSpace(key)) continue;
 
             var npc = InvokeStaticMethodWithSingleParameter(dataBaseDayType, "RefNPC", typeof(string), key);
-            if (!StaticNpcMatchesCurrentMap(dataBaseDayType, npc, currentMapLabel)) continue;
+            var sceneLabels = ResolveStaticNpcMapLabels(dataBaseDayType, npc)
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var isCurrentScene = sceneLabels.Any(label => MapLabelsEqual(label, currentMapLabel));
+            if (currentOnly && !isCurrentScene) continue;
             staticMap++;
 
+            var available = true;
+            var known = false;
             if (runtimeDaySceneType != null)
             {
-                var available = IsTrackedNpcAvailable(runtimeDaySceneType, key, out var known);
-                if (!known || !available)
-                {
-                    staticUnavailable++;
-                    continue;
-                }
+                available = IsTrackedNpcAvailable(runtimeDaySceneType, key, out known);
+                if (known && !available) staticUnavailable++;
             }
 
-            labels.Add(key);
+            records.Add(CreateRecord(
+                key,
+                sceneLabels,
+                isCurrentScene,
+                known,
+                available,
+                source: currentOnly ? "staticCurrentMap" : "staticAllMaps"));
         }
 
         if (staticMap == 0 && npcKeys.Count == 0)
@@ -504,7 +662,7 @@ internal static class RuntimeRareGuestInvitationService
             errors.Add("DataBaseDay NPC key sources empty");
         }
 
-        return labels;
+        return records;
     }
 
     private static IReadOnlyList<string> ReadGlobalNpcKeys(Type dataBaseDayType, List<string> errors, out string diagnostics)
@@ -687,6 +845,17 @@ internal static class RuntimeRareGuestInvitationService
         return false;
     }
 
+    private static IEnumerable<string> ResolveStaticNpcMapLabels(Type dataBaseDayType, object? npc)
+    {
+        foreach (var destination in RuntimeReflectionUtility.EnumerateObjects(RuntimeReflectionUtility.GetMemberValue(npc, "possibleDestinations")))
+        {
+            foreach (var label in ResolveDestinationMapLabels(dataBaseDayType, destination))
+            {
+                if (!string.IsNullOrWhiteSpace(label)) yield return label.Trim();
+            }
+        }
+    }
+
     private static IEnumerable<string> ResolveDestinationMapLabels(Type dataBaseDayType, object? destination)
     {
         var spawnMarker = ReadTextMember(destination, "spawnMarker");
@@ -710,6 +879,32 @@ internal static class RuntimeRareGuestInvitationService
     {
         if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right)) return false;
         return string.Equals(left.Trim(), right.Trim(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizePlaceName(string label)
+    {
+        if (string.IsNullOrWhiteSpace(label)) return "";
+        var languageType = RuntimeReflectionUtility.FindType(DaySceneLanguageTypeName);
+        var language = languageType == null
+            ? null
+            : RuntimeReflectionUtility.InvokeStaticMethod(languageType, "GetMapLanguageData", label);
+        var localized = ReadTextLikeValue(language);
+        return string.IsNullOrWhiteSpace(localized) ? label.Trim() : localized.Trim();
+    }
+
+    private static string ReadTextLikeValue(object? value)
+    {
+        if (value == null) return "";
+
+        foreach (var member in new[] { "Text", "Name", "Value", "content", "text", "name", "value" })
+        {
+            var item = RuntimeReflectionUtility.GetMemberValue(value, member);
+            var text = item?.ToString();
+            if (!string.IsNullOrWhiteSpace(text)) return text.Trim();
+        }
+
+        var raw = value.ToString();
+        return string.IsNullOrWhiteSpace(raw) ? "" : raw.Trim();
     }
 
     private static bool HasInviteDialog(object guest, int level, bool succeed)
@@ -791,20 +986,43 @@ internal static class RuntimeRareGuestInvitationService
         return null;
     }
 
-    private static void AddSkipped(RareGuestInvitationResult result, InviteCandidate candidate, string reason)
+    private static void AddUnavailableCandidate(
+        RareGuestInvitationResult result,
+        InviteCandidate candidate,
+        string status,
+        string reason,
+        int kizunaLevel)
     {
-        result.Skipped.Add(new RareGuestInvitationEntry
+        var entry = BuildEntry(candidate, status, false, reason, kizunaLevel);
+        result.Candidates.Add(entry);
+        result.Skipped.Add(entry);
+    }
+
+    private static RareGuestInvitationEntry BuildEntry(
+        InviteCandidate candidate,
+        string status,
+        bool canInvite,
+        string reason,
+        int kizunaLevel)
+    {
+        return new RareGuestInvitationEntry
         {
             Id = candidate.Id,
             Name = candidate.DisplayName,
             RuntimeName = candidate.RuntimeName,
             Reason = reason,
-        });
+            Status = status,
+            CanInvite = canInvite,
+            IsCurrentScene = candidate.IsCurrentScene,
+            KizunaLevel = kizunaLevel,
+            SceneLabels = candidate.SceneLabels.ToList(),
+            SceneNames = candidate.SceneNames.ToList(),
+        };
     }
 
     private static string BuildStatus(RareGuestInvitationResult result, string source)
     {
-        var sourceLabel = source == "current-day-scene" ? "当前日间场景" : "运行时稀客数据";
+        var sourceLabel = source == "current-day-scene" ? "当前日间场景" : "全部日间场景";
         if (result.Invited.Count > 0)
         {
             return $"{sourceLabel}已邀请 {result.Invited.Count} 位稀客。";
@@ -825,7 +1043,7 @@ internal static class RuntimeRareGuestInvitationService
 
     private static string BuildListStatus(RareGuestInvitationResult result, string source)
     {
-        var sourceLabel = source == "current-day-scene" ? "当前日间场景" : "运行时稀客数据";
+        var sourceLabel = source == "current-day-scene" ? "当前日间场景" : "全部日间场景";
         if (result.Available.Count > 0)
         {
             return $"{sourceLabel}有 {result.Available.Count} 位可邀请稀客。";
@@ -884,7 +1102,51 @@ internal static class RuntimeRareGuestInvitationService
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 
-    private sealed record InviteCandidate(object Guest, int Id, string RuntimeName, string DisplayName, string Source);
+    private static RareGuestInvitationScope ParseScope(string scopeText)
+    {
+        return string.Equals(scopeText, "all", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(scopeText, "all-scenes", StringComparison.OrdinalIgnoreCase)
+            ? RareGuestInvitationScope.AllScenes
+            : RareGuestInvitationScope.CurrentScene;
+    }
+
+    private static string ScopeToText(RareGuestInvitationScope scope)
+    {
+        return scope == RareGuestInvitationScope.AllScenes ? "all" : "current";
+    }
+
+    private enum RareGuestInvitationScope
+    {
+        CurrentScene,
+        AllScenes,
+    }
+
+    internal sealed class DaySceneMapInfo
+    {
+        public string Label { get; init; } = "";
+        public string Name { get; init; } = "";
+    }
+
+    private sealed record InviteCandidateRecord(
+        string Label,
+        IReadOnlyList<string> SceneLabels,
+        IReadOnlyList<string> SceneNames,
+        bool IsCurrentScene,
+        bool AvailabilityKnown,
+        bool RuntimeAvailable,
+        string Source);
+
+    private sealed record InviteCandidate(
+        object Guest,
+        int Id,
+        string RuntimeName,
+        string DisplayName,
+        string Source,
+        IReadOnlyList<string> SceneLabels,
+        IReadOnlyList<string> SceneNames,
+        bool IsCurrentScene,
+        bool AvailabilityKnown,
+        bool RuntimeAvailable);
 
     private sealed class InvitationContext
     {
@@ -895,6 +1157,9 @@ internal static class RuntimeRareGuestInvitationService
         public IReadOnlyList<InviteCandidate> Candidates { get; init; } = Array.Empty<InviteCandidate>();
         public string Source { get; init; } = "";
         public string Diagnostics { get; init; } = "";
+        public RareGuestInvitationScope Scope { get; init; }
+        public string ScopeText => ScopeToText(Scope);
+        public DaySceneMapInfo CurrentMap { get; init; } = new();
 
         public static InvitationContext Failed(RareGuestInvitationResult result)
         {

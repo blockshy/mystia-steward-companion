@@ -26,9 +26,9 @@ internal sealed class LocalApiServer : IDisposable
     private readonly Func<OrderPreparationRequest, OrderPreparationResult> _prepareOrder;
     private readonly Func<OrderPreparationRequest, OrderPreparationResult> _completeOrder;
     private readonly Func<OrderPreparationRequest, OrderPreparationResult> _completeNormalOrder;
-    private readonly Func<RareGuestInvitationResult> _listRareGuestInvitations;
-    private readonly Func<RareGuestInvitationResult> _inviteAllRareGuests;
-    private readonly Func<int, RareGuestInvitationResult> _inviteRareGuest;
+    private readonly Func<string, RareGuestInvitationResult> _listRareGuestInvitations;
+    private readonly Func<string, RareGuestInvitationResult> _inviteAllRareGuests;
+    private readonly Func<int, string, RareGuestInvitationResult> _inviteRareGuest;
     private readonly FavoriteStore _favoriteStore;
     private TcpListener? _listener;
     private Thread? _thread;
@@ -48,9 +48,9 @@ internal sealed class LocalApiServer : IDisposable
         Func<OrderPreparationRequest, OrderPreparationResult> prepareOrder,
         Func<OrderPreparationRequest, OrderPreparationResult> completeOrder,
         Func<OrderPreparationRequest, OrderPreparationResult> completeNormalOrder,
-        Func<RareGuestInvitationResult> listRareGuestInvitations,
-        Func<RareGuestInvitationResult> inviteAllRareGuests,
-        Func<int, RareGuestInvitationResult> inviteRareGuest,
+        Func<string, RareGuestInvitationResult> listRareGuestInvitations,
+        Func<string, RareGuestInvitationResult> inviteAllRareGuests,
+        Func<int, string, RareGuestInvitationResult> inviteRareGuest,
         FavoriteStore favoriteStore,
         ManualLogSource log)
     {
@@ -232,13 +232,13 @@ internal sealed class LocalApiServer : IDisposable
                         WriteResponse(stream, 200, "OK", BuildRareOrderDismissJson(query));
                         break;
                     case "/rare-guests/invitations":
-                        WriteResponse(stream, 200, "OK", BuildRareGuestInvitationJson(_listRareGuestInvitations));
+                        WriteResponse(stream, 200, "OK", BuildRareGuestInvitationJson(() => _listRareGuestInvitations(ReadStringQuery(query, "scope"))));
                         break;
                     case "/rare-guests/invite-all":
-                        WriteResponse(stream, 200, "OK", BuildRareGuestInvitationJson(_inviteAllRareGuests));
+                        WriteResponse(stream, 200, "OK", BuildRareGuestInvitationJson(() => _inviteAllRareGuests(ReadStringQuery(query, "scope"))));
                         break;
                     case "/rare-guests/invite":
-                        WriteResponse(stream, 200, "OK", BuildRareGuestInvitationJson(() => _inviteRareGuest(ReadIntQuery(query, "guestId", -1))));
+                        WriteResponse(stream, 200, "OK", BuildRareGuestInvitationJson(() => _inviteRareGuest(ReadIntQuery(query, "guestId", -1), ReadStringQuery(query, "scope"))));
                         break;
                     case "/ui-pinning/target":
                         WriteResponse(stream, 200, "OK", UpdateUiPinningTargetJson(query));
@@ -572,7 +572,7 @@ internal sealed class LocalApiServer : IDisposable
         {
             return "{\"ok\":false,\"runtimeAvailable\":false,\"status\":\"稀客邀请失败。\",\"error\":\""
                 + EscapeJson(ex.Message)
-                + "\",\"candidateCount\":0,\"usableCount\":0,\"existingSlotCount\":0,\"existingControlledCount\":0,\"scheduledSlotCount\":0,\"invitedCount\":0,\"skippedCount\":0,\"available\":[],\"invited\":[],\"skipped\":[]}";
+                + "\",\"candidateCount\":0,\"usableCount\":0,\"existingSlotCount\":0,\"existingControlledCount\":0,\"scheduledSlotCount\":0,\"invitedCount\":0,\"skippedCount\":0,\"scope\":\"current\",\"currentMapLabel\":\"\",\"currentMapName\":\"\",\"candidates\":[],\"available\":[],\"invited\":[],\"skipped\":[]}";
         }
     }
 

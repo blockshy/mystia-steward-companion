@@ -98,6 +98,7 @@ internal sealed class StewardOverlayController
     {
         public RareGuestInvitationAction Action { get; init; }
         public int GuestId { get; init; } = -1;
+        public string Scope { get; init; } = "";
         public ManualResetEventSlim Completion { get; } = new(false);
         public RareGuestInvitationResult? Result { get; set; }
         public Exception? Error { get; set; }
@@ -523,11 +524,14 @@ internal sealed class StewardOverlayController
             _nextLocalApiSnapshotPublishAt = Time.realtimeSinceStartup + LocalApiSnapshotPublishMinIntervalSeconds;
             TryRefreshRuntimeDataCatalog();
             var publishedState = _state ?? (_businessContext?.Orders.Count > 0 ? GetBusinessRecommendationState() : null);
+            var dayMap = RuntimeRareGuestInvitationService.ReadCurrentDaySceneMapInfo();
             var snapshot = new LocalApiSnapshot
             {
                 PluginVersion = MystiaStewardCompanionPlugin.PluginVersion,
                 CapturedAtUtc = DateTime.UtcNow,
                 ActiveSceneName = _activeSceneName,
+                ActiveDayMapLabel = dayMap.Label,
+                ActiveDayMapName = dayMap.Name,
                 RuntimeLoaded = _runtimeLoaded,
                 Status = _status,
                 RuntimeSource = _runtimeSource,
@@ -903,32 +907,33 @@ internal sealed class StewardOverlayController
         return RunOrderActionFromLocalApi(request, OrderActionKind.CompleteNormal);
     }
 
-    private RareGuestInvitationResult InviteAllRareGuestsFromLocalApi()
+    private RareGuestInvitationResult InviteAllRareGuestsFromLocalApi(string scope)
     {
-        return RunRareGuestInvitationFromLocalApi(RareGuestInvitationAction.InviteAll);
+        return RunRareGuestInvitationFromLocalApi(RareGuestInvitationAction.InviteAll, scope: scope);
     }
 
-    private RareGuestInvitationResult ListRareGuestInvitationsFromLocalApi()
+    private RareGuestInvitationResult ListRareGuestInvitationsFromLocalApi(string scope)
     {
-        return RunRareGuestInvitationFromLocalApi(RareGuestInvitationAction.List);
+        return RunRareGuestInvitationFromLocalApi(RareGuestInvitationAction.List, scope: scope);
     }
 
-    private RareGuestInvitationResult InviteRareGuestFromLocalApi(int guestId)
+    private RareGuestInvitationResult InviteRareGuestFromLocalApi(int guestId, string scope)
     {
-        return RunRareGuestInvitationFromLocalApi(RareGuestInvitationAction.InviteOne, guestId);
+        return RunRareGuestInvitationFromLocalApi(RareGuestInvitationAction.InviteOne, guestId, scope);
     }
 
-    private RareGuestInvitationResult RunRareGuestInvitationFromLocalApi(RareGuestInvitationAction action, int guestId = -1)
+    private RareGuestInvitationResult RunRareGuestInvitationFromLocalApi(RareGuestInvitationAction action, int guestId = -1, string scope = "")
     {
         if (Thread.CurrentThread.ManagedThreadId == _mainThreadId)
         {
-            return ApplyRareGuestInvitation(action, guestId);
+            return ApplyRareGuestInvitation(action, guestId, scope);
         }
 
         var pending = new PendingRareGuestInvitation
         {
             Action = action,
             GuestId = guestId,
+            Scope = scope,
         };
         lock (_rareGuestInvitationLock)
         {
@@ -1055,7 +1060,7 @@ internal sealed class StewardOverlayController
 
             try
             {
-                pending.Result = ApplyRareGuestInvitation(pending.Action, pending.GuestId);
+                pending.Result = ApplyRareGuestInvitation(pending.Action, pending.GuestId, pending.Scope);
             }
             catch (Exception ex)
             {
@@ -1068,13 +1073,13 @@ internal sealed class StewardOverlayController
         }
     }
 
-    private RareGuestInvitationResult ApplyRareGuestInvitation(RareGuestInvitationAction action, int guestId)
+    private RareGuestInvitationResult ApplyRareGuestInvitation(RareGuestInvitationAction action, int guestId, string scope)
     {
         var result = action switch
         {
-            RareGuestInvitationAction.List => RuntimeRareGuestInvitationService.ListAvailable(_repository, _log),
-            RareGuestInvitationAction.InviteOne => RuntimeRareGuestInvitationService.InviteOne(_repository, guestId, _log),
-            _ => RuntimeRareGuestInvitationService.InviteAllAvailable(_repository, _log),
+            RareGuestInvitationAction.List => RuntimeRareGuestInvitationService.ListAvailable(_repository, _log, scope),
+            RareGuestInvitationAction.InviteOne => RuntimeRareGuestInvitationService.InviteOne(_repository, guestId, _log, scope),
+            _ => RuntimeRareGuestInvitationService.InviteAllAvailable(_repository, _log, scope),
         };
         if (action != RareGuestInvitationAction.List)
         {

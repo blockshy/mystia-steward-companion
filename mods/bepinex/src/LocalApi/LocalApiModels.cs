@@ -7,6 +7,8 @@ internal sealed class LocalApiSnapshot
     public string PluginVersion { get; init; } = "";
     public DateTime CapturedAtUtc { get; init; }
     public string ActiveSceneName { get; init; } = "";
+    public string ActiveDayMapLabel { get; init; } = "";
+    public string ActiveDayMapName { get; init; } = "";
     public bool RuntimeLoaded { get; init; }
     public string Status { get; init; } = "";
     public string RuntimeSource { get; init; } = "";
