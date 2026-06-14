@@ -350,8 +350,8 @@ internal sealed class StewardOverlayController
             _lastRuntimeReadUtc = DateTime.MinValue;
             _runtimeRareCustomers.Clear();
             _status = L(
-                "等待游戏运行时数据；不再读取外部兜底数据。",
-                "Waiting for live game runtime data; external fallback data is no longer loaded.");
+                "等待游戏运行时数据；当前页面需要运行时数据就绪。",
+                "Waiting for live game runtime data; this page requires runtime data to be ready.");
         }
         catch (Exception ex)
         {

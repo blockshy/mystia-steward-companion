@@ -10,7 +10,7 @@
 - `UnityEngine.CoreModule.dll`
 - `UnityEngine.InputLegacyModule.dll`
 
-不需要复制 `Assembly-CSharp.dll`。Mod 对游戏运行时状态的读取使用反射，类型和字段名来自导出的 `/tmp/Assembly-CSharp` 项目作为开发参考，不作为编译引用。
+不需要复制额外的游戏业务 DLL。Mod 对游戏运行时状态的读取使用反射，编译只依赖上方列出的 BepInEx、Il2CppInterop 和 Unity 基础引用。
 
 常见来源：
 

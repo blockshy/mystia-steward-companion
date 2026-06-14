@@ -41,7 +41,7 @@ sudo apt-get install -y pkg-config libwebkit2gtk-4.1-dev libayatana-appindicator
 
 ## 构建引用
 
-本项目不提交 BepInEx 和 Unity DLL。构建前只需要把 BepInEx、Il2CppInterop 和 Unity 引用复制到 `References/`，不需要也不应该复制 `Assembly-CSharp.dll`：
+本项目不提交 BepInEx 和 Unity DLL。构建前只需要把 BepInEx、Il2CppInterop 和 Unity 基础引用复制到 `References/`，不需要也不应该复制额外的游戏业务 DLL：
 
 ```text
 mods/bepinex/
@@ -252,9 +252,9 @@ git push --force origin v1.0.1
 
 ## 运行时数据源
 
-推荐、库存名称、任务目标和自动化目标解析只使用游戏运行时读取到的 `RuntimeDataCatalog`。伴随窗口未连接游戏、游戏数据库未初始化或 `/snapshot.runtimeData.isComplete=false` 时，页面会显示等待运行时数据，不再回退到内置 JSON。
+推荐、库存名称、任务目标和自动化目标解析使用游戏运行时读取到的 `RuntimeDataCatalog`。伴随窗口未连接游戏、游戏数据库未初始化或 `/snapshot.runtimeData.isComplete=false` 时，页面会显示等待运行时数据。
 
-仓库不再保留旧版推荐 JSON，也不再执行数据同步步骤。发布包只包含 Mod DLL 和伴随窗口程序，推荐、库存、任务和自动化目标都来自游戏当前运行时。
+发布包包含 Mod DLL 和伴随窗口程序，推荐、库存、任务和自动化目标都来自游戏当前运行时。
 
 ## 运行时刷新行为
 
@@ -315,7 +315,7 @@ http://127.0.0.1:32145
 - `GET /rare-guests/invitations?scope=current|all`：排队到 Unity 主线程，返回指定范围内的稀客邀请候选和禁用原因。列表查询应默认返回全量候选，前端再按羁绊等级筛选显示，避免切换筛选时丢失其他等级选项。
 - `GET /rare-guests/invite-all?scope=current|all&levels=2,3`：按同一套候选扫描和判定逻辑批量邀请可邀请稀客；`levels` 可选，只邀请指定羁绊等级的可邀请项。候选来源优先使用 `DayScene.SceneManager.CurrentActiveMapLabel`、`RunTimeDayScene.GetMapNPCs()`、`DaySceneMap.allCharacters` 和场景中的 `CharacterConditionComponent`，若这些实时对象还未填充，则按当前地图反查 `DataBaseDay.GetAllNPCKeys()`、`AllMappedNPCsMapping`、`AllNPCsMapping` 或 `allNPCs` 中的 NPC key，再通过 `RefNPC().possibleDestinations` 判断所在地图，并用 `RunTimeDayScene.RefTrackedNPCAvailability()` 过滤当前存档和时间下真正可见的 NPC。当前场景候选为空时直接失败，不回退到 `DataBaseCharacter.GetSpecialGuestsAndMappedGuests()` 执行全量邀请。每个候选会读取 `RunTimeAlbum.GetOrGenerateSpecialNPCKizunaLevel()`、检查 `StatusTracker.HasNPCInvited()` 和当前等级成功邀请对话包；符合条件后直接调用 `StatusTracker.RecordInvitedGuest()` 写入今晚邀请名单。该端点不调用 `DaySceneChatSelectionPannel.InviteSpecGuest()`，避免触发随机失败和消耗今日尝试次数；也不以 `HasTemptInvited()` 作为跳过条件，避免旧版本或手动失败尝试把可写入邀请卡住。该端点不直接刷出稀客，不推进时间，不写 `Story.SpecialGuestControlled`。
 
-除 `/health` 外，端点都需要 `X-Mystia-Steward-Companion-Token`。Token 由插件生成并保存在 BepInEx 配置中，启动伴随窗口时通过 `--token=` 参数传入 Tauri 后端。Tauri 伴随窗口会显示实时 Mod 工作台，默认包含 `概览`、`普客`、`稀客`、`经营中`、`任务`、`修改`、`帮助`、`设置` 八个页签；`概览` 内部按 `状态`、`库存`、`操作` 分栏，`设置` 内部按 `窗口`、`推荐`、`排序`、`自动化` 分栏。窗口设置包含透明度、焦点切换、始终置顶和鼠标穿透锁定；鼠标穿透必须通过 Tauri 原生窗口 `set_ignore_cursor_events` 控制，不能只用 CSS `pointer-events` 模拟。帮助页内容来自 `apps/companion/src/data/help-content.json`，由前端渲染为折叠面板，修改文案时优先改 JSON。`日志` 页签、设置中的 `调试` 分栏、BepInEx 原生日志窗口控制、扫描状态、运行时来源、性能耗时、订单来源和内部 key 这类诊断信息只在 `设置 -> 显示调试信息` 开启后显示。它通过原生后端读取本地 API，不依赖浏览器或前端开发服务器。
+除 `/health` 外，端点都需要 `X-Mystia-Steward-Companion-Token`。Token 由插件生成并保存在 BepInEx 配置中，启动伴随窗口时通过 `--token=` 参数传入 Tauri 后端。Tauri 伴随窗口会显示实时 Mod 工作台，默认包含 `概览`、`普客`、`稀客`、`经营中`、`任务`、`修改`、`帮助`、`设置` 八个页签；`概览` 内部按 `状态`、`库存`、`操作` 分栏，`设置` 内部按 `窗口`、`推荐`、`排序`、`自动化` 分栏。窗口设置包含透明度、焦点切换、始终置顶和鼠标穿透锁定；鼠标穿透必须通过 Tauri 原生窗口 `set_ignore_cursor_events` 控制，不能只用 CSS `pointer-events` 模拟。帮助页内容来自 `apps/companion/src/data/help-content.json`，由前端渲染为折叠面板，修改文案时优先改 JSON。`日志` 页签、设置中的 `调试` 分栏、BepInEx 原生日志窗口控制、扫描状态、运行时来源、性能耗时、订单来源和内部 key 这类诊断信息只在 `设置 -> 显示调试信息` 开启后显示。它通过 Tauri 原生后端读取本地 API。
 
 伴随窗口的自动化能力只在前端 `设置` 页总开关开启后运行。稀客并发、普客并发、稀客送餐盘等待、普客保温箱复查、最大重试和最大回退都由 `CompanionPreferences` 配置控制，默认值分别为 `2`、`3`、`30s`、`45s`、`3`、`2`；稀客完成订单评价每轮仍最多执行 1 笔，普客按普客并发数处理。经营中订单排序支持点单顺序和稀客分组，必须同时影响经营中列表、专注模式、游戏界面置顶和自动化选单；料理/酒水排序配置会影响稀客页、经营中页、专注模式和自动化选单，新增排序项时需要同时覆盖这些入口。`优先任务料理` 开启时，当前稀客已接取投喂任务的指定料理可提升到正式推荐第一位，并会影响自动化选单，但仍必须通过解锁、库存和缺失厨具过滤。稀客正式推荐料理为空时，自动化允许使用“喜好备选”料理并在诊断中标识；收藏限定开启时，备选料理也必须命中收藏。稀客与普客自动化的阶段配置必须独立保存和独立传参：稀客使用 `autoPrep*` 配置，普客使用 `autoNormal*` 配置；普客阶段包括送达酒水、开始料理、收至保温箱、送达料理、完成订单和出错暂停，不能复用稀客取酒或完成订单开关。自动开始料理固定尝试完成原生 QTE 奖励结算，不提供跳过开关。普客自动化需要按订单 key 维护独立状态，非临时错误只暂停对应普客订单，不得暂停稀客自动化或其他普客订单；已进入制作中的普客料理必须绑定目标订单/桌位，后续轮询检测到 pending 后只能等待，不得在同类多个厨具上重复开始同一订单料理。普客订单变化需要立即触发一次处理，常规重复轮询仍需节流。C# pending target 和短期已收取回执都要优先保存并匹配 `OrderKey`，避免桌位复用或同料理多单时串单。稀客与普客的开锅请求必须经过前端同一轮厨具预约表，预约容量来自当前已摆放厨具快照；同类厨具容量不足时，普客待处理订单优先保留容量，稀客订单进入等待态并继续处理不占厨具的取酒/完成步骤。稀客完成订单流程必须支持料理和酒水单项先送达：只要送餐盘中存在目标项，就可写入 `ServFood` 或 `ServBeverage` 并调用 `IzakayaTray.Deliver()` 释放送餐盘格子；只有 `get_IsFullfilled()` 为真时才能调用 `EvaluateOrder()`。前端在自动取酒或自动收取料理返回后可以立即触发一次完成请求，若单项送达成功则合并展示状态，减少等待下一轮轮询造成的送餐盘占用。普客送达料理优先从短期回执对应的保温箱对象取出，找不到时再按料理 ID 取同名成品；送达酒水直接创建酒水对象并扣库存；完成订单前也必须确认 `get_IsFullfilled()`。普客收取料理仍必须经过 `IzakayaConfigure.StoreFood()` 暂存容器，前端只能在后端确认收取后继续请求送达，不得直接跳过容器写订单。子选项默认关闭并记忆用户上次配置。临时失败例如厨具占用、运行时对象暂不可读，应保持可重试，不应永久停止自动任务；非临时错误在对应订单类型的 `出错时暂停` 开启时才暂停当前订单。前端状态机只将取酒、开锅、收取、单项送达、写入订单和触发评价视为真实进展；稀客目标料理/酒水超过等待阈值仍未进入送餐盘且未送达时，需要回退到上一实际步骤重新执行，并在达到回退上限后按设置暂停。普客已开锅但暂未进入暂存容器时，应先重新确认后端 pending 待收取任务；后端仍在制作时刷新等待时间，不增加回退或暂停，后端已完成收取时用短期回执标记已收至保温箱，只有 pending 消失且需要重新开锅时才重新发起制作。稀客页下拉选项不再按存档进度集合过滤，只按经营场景、可读名称和可用 Tag 过滤。
 
@@ -332,7 +332,7 @@ http://127.0.0.1:32145
 - 默认使用 `127.0.0.1`，不要改成 `localhost`。
 - 若代理扩展或系统代理拦截本地请求，将 `127.0.0.1`、`localhost` 和回环地址加入直连/绕过列表。
 - 若伴随窗口无法连接，先确认日志中出现 `Local API listening at http://127.0.0.1:32145`，再检查端口占用。
-- 由于接口使用 token 且不再开放通配 CORS，不建议直接用浏览器访问受保护端点；调试伴随窗口时使用 Tauri 运行环境。
+- 受保护端点需要 token；调试伴随窗口时使用 Tauri 运行环境或显式携带 token 的本地客户端。
 
 ## 输入处理
 
@@ -349,5 +349,5 @@ http://127.0.0.1:32145
 ## 已知限制
 
 - 构建依赖本机 `References/` 中的 BepInEx、Il2CppInterop 和 Unity DLL；这些 DLL 不提交到仓库。
-- 运行时反射依赖游戏版本中的类型和字段名；如果游戏更新导致字段变化，需要根据导出的 `Assembly-CSharp` 项目调整 provider。
+- 运行时反射依赖游戏版本中的类型和字段名；如果游戏更新导致字段变化，需要核对并调整 provider 中的运行时类型名、字段名和方法名。
 - 伴随窗口是唯一用户界面；游戏内不再提供备用 IMGUI 面板。

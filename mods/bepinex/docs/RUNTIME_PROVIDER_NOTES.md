@@ -1,8 +1,8 @@
 # 运行时 Provider 说明
 
-当前 Mod 默认使用 `RuntimeReflectionRecommendationStateProvider`。它不在构建期引用 `Assembly-CSharp.dll`，而是在游戏运行时通过反射查找 BepInEx 已加载的 IL2CPP interop 类型，并直接读取当前内存中的运行时数据。
+当前 Mod 默认使用 `RuntimeReflectionRecommendationStateProvider`。它不在构建期引用额外的游戏业务 DLL，而是在游戏运行时通过反射查找 BepInEx 已加载的 IL2CPP interop 类型，并直接读取当前内存中的运行时数据。
 
-`/tmp/Assembly-CSharp` 导出的项目只作为开发参考，用来确认稳定的类型、字段和方法名。不要把导出的 `Assembly-CSharp.dll` 或游戏生成的 `Assembly-CSharp.dll` 复制到 `References/`。
+`References/` 只放构建所需的 BepInEx、Il2CppInterop 和 Unity 基础引用，不放额外的游戏业务 DLL。
 
 ## 读取流程
 
@@ -54,4 +54,4 @@
 - 推荐算法保持游戏无关，运行时反射代码只放在 `Save/` 或其他 Mod 专属层。
 - 字段名和类型名集中维护在 provider 内，避免散落到 UI 或推荐服务。
 - 稀客推荐组合搜索必须走伴随窗口缓存，不能在高频快照轮询中直接反复调用完整 `RankRecipes(...)`。
-- 游戏更新后如果字段变化，优先重新导出 `Assembly-CSharp` 项目并核对 provider 中的字符串路径。
+- 游戏更新后如果字段变化，优先核对 provider 中的运行时类型名、字段名和方法名。

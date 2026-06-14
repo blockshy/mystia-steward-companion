@@ -4,11 +4,11 @@
 
 ## 代码边界
 
-- 仓库只维护 BepInEx Mod 与 Tauri 伴随窗口，不再维护独立网站和存档导入页面。
+- 仓库维护 BepInEx Mod 与 Tauri 伴随窗口。
 - 伴随窗口入口为 `apps/companion/src/companion/ModWorkbench.tsx`，顶层挂载在 `apps/companion/src/App.tsx`。
 - 推荐算法集中在 `apps/companion/src/lib/normal-recommend.ts`、`apps/companion/src/lib/rare-recommend.ts` 和 `apps/companion/src/lib/tags.ts`。
-- 推荐、库存名称、任务目标和自动化目标只使用 Mod 从游戏运行时读取并通过本地 API 发布的结构化数据；运行时数据未就绪时，伴随窗口显示等待状态，不再回退到外部 JSON。
-- C# Mod 不引用 TypeScript 模块；前端和 Mod 的共享数据通过本地 API 的运行时快照传递，仓库和发布包都不保留旧版推荐 JSON，不要为新增稀客事件变体优先补静态表。
+- 推荐、库存名称、任务目标和自动化目标使用 Mod 从游戏运行时读取并通过本地 API 发布的结构化数据；运行时数据未就绪时，伴随窗口显示等待状态。
+- C# Mod 不引用 TypeScript 模块；前端和 Mod 的共享数据通过本地 API 的运行时快照传递。新增稀客事件变体时，优先确认游戏运行时映射和别名归一化逻辑。
 
 ## 命名约束
 
