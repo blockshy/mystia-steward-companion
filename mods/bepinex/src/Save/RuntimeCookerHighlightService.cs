@@ -7,8 +7,6 @@ namespace MystiaStewardCompanion.Save;
 
 internal static class RuntimeCookerHighlightService
 {
-    private const string CookSystemManagerTypeName = "NightScene.CookingUtility.CookSystemManager";
-    private const string CookControllerTypeName = "NightScene.CookingUtility.CookController";
     private const float ScanIntervalSeconds = 1.25f;
 
     private static readonly object SyncRoot = new();
@@ -98,7 +96,7 @@ internal static class RuntimeCookerHighlightService
 
         try
         {
-            var cookSystem = GetSingletonInstance(CookSystemManagerTypeName);
+            var cookSystem = RuntimeCookerReflection.GetCookSystemManager();
             if (cookSystem == null)
             {
                 SetStatus("waiting: cook system missing");
@@ -113,7 +111,7 @@ internal static class RuntimeCookerHighlightService
                     ?? ReadMember(controller, "Cooker");
                 if (cooker == null) continue;
 
-                var typeIds = ReadCookerTypeIds(cooker);
+                var typeIds = RuntimeCookerReflection.ReadCookerTypeIds(cooker);
                 if (!typeIds.Contains(targetCookerTypeId)) continue;
 
                 matchedControllerCount++;
@@ -171,51 +169,7 @@ internal static class RuntimeCookerHighlightService
 
     private static IReadOnlyList<object> ReadCookerControllers(object cookSystem, out string status)
     {
-        var result = new List<object>();
-        var seen = new HashSet<nint>();
-        var sourceParts = new List<string>();
-
-        void AddControllers(string source, IEnumerable<object?> controllers)
-        {
-            var scanned = 0;
-            var added = 0;
-            foreach (var controller in controllers)
-            {
-                scanned++;
-                if (controller == null) continue;
-                nint pointer;
-                try
-                {
-                    pointer = ReadObjectPointer(controller);
-                }
-                catch
-                {
-                    pointer = new IntPtr(RuntimeHelpers.GetHashCode(controller));
-                }
-
-                if (!seen.Add(pointer)) continue;
-                result.Add(controller);
-                added++;
-            }
-
-            sourceParts.Add($"{source}:{scanned}/{added}");
-        }
-
-        var directControllers = TryInvokeInstanceValue(cookSystem, "get_AllCookerControllers")
-            ?? ReadMember(cookSystem, "AllCookerControllers");
-        AddControllers("AllCookerControllers", ReadObjectEnumerable(directControllers));
-
-        var allCookers = ReadMember(cookSystem, "AllCookers");
-        AddControllers("AllCookers", ReadDictionaryValues(allCookers).Where(value => value != null));
-
-        var controllerType = FindType(CookControllerTypeName);
-        if (controllerType != null)
-        {
-            AddControllers("UnityFind", FindUnityObjects(controllerType));
-        }
-
-        status = $"sources={string.Join(",", sourceParts)}";
-        return result;
+        return RuntimeCookerReflection.ReadCookerControllersFromCookSystem(cookSystem, out status);
     }
 
     private static IEnumerable<SpriteRenderer> ReadCookerRenderers(object controller)
@@ -357,36 +311,6 @@ internal static class RuntimeCookerHighlightService
         HighlightedRenderers.Remove(pointer);
     }
 
-    private static List<int> ReadCookerTypeIds(object cooker)
-    {
-        try
-        {
-            var directType = ToInt(TryInvokeInstanceValue(cooker, "get_Type")
-                ?? ReadMember(cooker, "Type")
-                ?? ReadMember(cooker, "type"));
-            if (directType > 0) return new List<int> { directType };
-        }
-        catch
-        {
-            // Fall back to all available cooker types below.
-        }
-
-        var cookerTypes = TryInvokeInstanceValue(cooker, "get_AllAvailableCookerType");
-        return ReadIntEnumerable(cookerTypes).Where(id => id > 0).Distinct().ToList();
-    }
-
-    private static object? GetSingletonInstance(string typeName)
-    {
-        var type = FindType(typeName);
-        if (type == null) return null;
-
-        var property = type.GetProperty("Instance", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.FlattenHierarchy);
-        if (property != null) return property.GetValue(null);
-
-        var method = type.GetMethod("get_Instance", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.FlattenHierarchy);
-        return method?.Invoke(null, Array.Empty<object?>());
-    }
-
     private static object? TryInvokeInstanceValue(object target, string methodName)
     {
         try
@@ -400,29 +324,6 @@ internal static class RuntimeCookerHighlightService
         {
             return null;
         }
-    }
-
-    private static Type? FindType(string fullName)
-    {
-        var direct = Type.GetType(fullName, false);
-        if (direct != null) return direct;
-
-        foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
-        {
-            Type? type;
-            try
-            {
-                type = assembly.GetType(fullName, false);
-            }
-            catch
-            {
-                continue;
-            }
-
-            if (type != null) return type;
-        }
-
-        return null;
     }
 
     private static IEnumerable<object> ReadObjectEnumerable(object? value)
@@ -445,61 +346,6 @@ internal static class RuntimeCookerHighlightService
 
             if (!seen.Add(pointer)) continue;
             yield return item;
-        }
-    }
-
-    private static IEnumerable<object?> ReadDictionaryValues(object? dictionary)
-    {
-        if (dictionary == null || dictionary is string) yield break;
-
-        if (dictionary is IDictionary managedDictionary)
-        {
-            foreach (DictionaryEntry entry in managedDictionary)
-            {
-                yield return entry.Value;
-            }
-
-            yield break;
-        }
-
-        var entries = ReadMember(dictionary, "entries")
-            ?? ReadMember(dictionary, "_entries")
-            ?? ReadMember(dictionary, "m_Entries");
-        var count = ToInt(ReadMember(dictionary, "count")
-            ?? ReadMember(dictionary, "_count")
-            ?? ReadMember(dictionary, "Count"));
-        if (entries != null && count > 0)
-        {
-            var entryIndex = 0;
-            foreach (var entry in EnumerateByIndexer(entries))
-            {
-                if (entryIndex++ >= Math.Min(count, 256)) break;
-                if (entry == null) continue;
-
-                var hashCode = ToInt(ReadMember(entry, "hashCode") ?? ReadMember(entry, "_hashCode"));
-                if (hashCode < 0) continue;
-
-                var value = ReadMember(entry, "value")
-                    ?? ReadMember(entry, "Value")
-                    ?? ReadMember(entry, "_value");
-                if (value != null) yield return value;
-            }
-        }
-
-        foreach (var item in ReadObjectEnumerable(dictionary))
-        {
-            var value = NormalizeDictionaryItem(item);
-            if (value != null) yield return value;
-        }
-    }
-
-    private static IEnumerable<int> ReadIntEnumerable(object? value)
-    {
-        if (value == null || value is string) yield break;
-
-        foreach (var item in EnumerateManaged(value).Concat(EnumerateByIndexer(value)))
-        {
-            yield return ToInt(item);
         }
     }
 
@@ -540,27 +386,6 @@ internal static class RuntimeCookerHighlightService
         catch
         {
             return null;
-        }
-    }
-
-    private static IEnumerable<object?> FindUnityObjects(Type type)
-    {
-        var method = typeof(UnityEngine.Object).GetMethod("FindObjectsOfType", new[] { typeof(Type) });
-        if (method == null) yield break;
-
-        object? objects = null;
-        try
-        {
-            objects = method.Invoke(null, new object[] { type });
-        }
-        catch
-        {
-            yield break;
-        }
-
-        foreach (var item in ReadObjectEnumerable(objects))
-        {
-            yield return item;
         }
     }
 

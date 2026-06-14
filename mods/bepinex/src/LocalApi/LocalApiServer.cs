@@ -34,6 +34,10 @@ internal sealed class LocalApiServer : IDisposable
     private Thread? _thread;
     private bool _running;
     private string _snapshotJson = "{\"runtimeLoaded\":false,\"status\":\"Snapshot is not ready.\"}";
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+    };
 
     public LocalApiServer(
         string configuredHost,
@@ -71,7 +75,14 @@ internal sealed class LocalApiServer : IDisposable
         _inviteRareGuest = inviteRareGuest;
         _favoriteStore = favoriteStore;
         _logOutputPath = ResolveLogOutputPath();
-        _healthJson = $"{{\"ok\":true,\"pluginVersion\":\"{EscapeJson(pluginVersion)}\",\"bindAddress\":\"{BindAddress}\",\"port\":{Port},\"authRequired\":true}}";
+        _healthJson = ToJson(new LocalApiHealthDto
+        {
+            Ok = true,
+            PluginVersion = pluginVersion,
+            BindAddress = BindAddress.ToString(),
+            Port = Port,
+            AuthRequired = true,
+        });
     }
 
     public IPAddress BindAddress { get; }
@@ -158,7 +169,7 @@ internal sealed class LocalApiServer : IDisposable
                 var parts = firstLine.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                 if (parts.Length < 2)
                 {
-                    WriteResponse(stream, 400, "Bad Request", "{\"error\":\"bad request\"}");
+                    WriteResponse(stream, 400, "Bad Request", ToJson(new LocalApiErrorDto { Error = "bad request" }));
                     return;
                 }
 
@@ -173,13 +184,13 @@ internal sealed class LocalApiServer : IDisposable
 
                 if (!string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase))
                 {
-                    WriteResponse(stream, 405, "Method Not Allowed", "{\"error\":\"method not allowed\"}");
+                    WriteResponse(stream, 405, "Method Not Allowed", ToJson(new LocalApiErrorDto { Error = "method not allowed" }));
                     return;
                 }
 
                 if (RequiresAuthorization(path) && !IsAuthorized(request))
                 {
-                    WriteResponse(stream, 401, "Unauthorized", "{\"error\":\"unauthorized\"}");
+                    WriteResponse(stream, 401, "Unauthorized", ToJson(new LocalApiErrorDto { Error = "unauthorized" }));
                     return;
                 }
 
@@ -259,7 +270,7 @@ internal sealed class LocalApiServer : IDisposable
                         WriteResponse(stream, 200, "OK", _favoriteStore.RemoveBeverage(ReadStringQuery(query, "id")));
                         break;
                     default:
-                        WriteResponse(stream, 404, "Not Found", "{\"error\":\"not found\"}");
+                        WriteResponse(stream, 404, "Not Found", ToJson(new LocalApiErrorDto { Error = "not found" }));
                         break;
                 }
             }
@@ -297,67 +308,67 @@ internal sealed class LocalApiServer : IDisposable
         var maxLogLines = Math.Clamp(settings.MaxLogLines, 50, 2000);
         if (!settings.LogAccessEnabled)
         {
-            return "{\"capturedAtUtc\":\""
-                + DateTime.UtcNow.ToString("O")
-                + "\",\"path\":\""
-                + EscapeJson(logPath)
-                + "\",\"exists\":false,\"enabled\":false,\"maxLines\":"
-                + maxLogLines
-                + ",\"maxBytes\":"
-                + maxLogBytes
-                + ",\"lines\":[],\"error\":\"log access is disabled\"}";
+            return ToJson(new LocalApiLogFileDto
+            {
+                CapturedAtUtc = DateTime.UtcNow.ToString("O"),
+                Path = logPath,
+                Exists = false,
+                Enabled = false,
+                MaxLines = maxLogLines,
+                MaxBytes = maxLogBytes,
+                Lines = Array.Empty<string>(),
+                Error = "log access is disabled",
+            });
         }
 
         try
         {
             var exists = File.Exists(logPath);
             var lines = exists ? ReadLogTail(logPath, maxLogBytes, maxLogLines) : new List<string>();
-            var builder = new StringBuilder();
-            builder.Append('{');
-            builder.Append("\"capturedAtUtc\":\"").Append(DateTime.UtcNow.ToString("O")).Append("\",");
-            builder.Append("\"path\":\"").Append(EscapeJson(logPath)).Append("\",");
-            builder.Append("\"exists\":").Append(exists ? "true" : "false").Append(',');
-            builder.Append("\"enabled\":true,");
-            builder.Append("\"maxLines\":").Append(maxLogLines).Append(',');
-            builder.Append("\"maxBytes\":").Append(maxLogBytes).Append(',');
-            builder.Append("\"lines\":[");
-            for (var i = 0; i < lines.Count; i++)
+            return ToJson(new LocalApiLogFileDto
             {
-                if (i > 0) builder.Append(',');
-                builder.Append('"').Append(EscapeJson(lines[i])).Append('"');
-            }
-            builder.Append("],\"error\":null}");
-            return builder.ToString();
+                CapturedAtUtc = DateTime.UtcNow.ToString("O"),
+                Path = logPath,
+                Exists = exists,
+                Enabled = true,
+                MaxLines = maxLogLines,
+                MaxBytes = maxLogBytes,
+                Lines = lines,
+                Error = null,
+            });
         }
         catch (Exception ex)
         {
-            return "{\"capturedAtUtc\":\""
-                + DateTime.UtcNow.ToString("O")
-                + "\",\"path\":\""
-                + EscapeJson(logPath)
-                + "\",\"exists\":false,\"enabled\":true,\"lines\":[],\"error\":\""
-                + EscapeJson(ex.Message)
-                + "\"}";
+            return ToJson(new LocalApiLogFileDto
+            {
+                CapturedAtUtc = DateTime.UtcNow.ToString("O"),
+                Path = logPath,
+                Exists = false,
+                Enabled = true,
+                MaxLines = maxLogLines,
+                MaxBytes = maxLogBytes,
+                Lines = Array.Empty<string>(),
+                Error = ex.Message,
+            });
         }
     }
 
     private string BuildLogSettingsJson()
     {
         var settings = _getLogSettings();
-        return new StringBuilder()
-            .Append('{')
-            .Append("\"logAccessEnabled\":").Append(settings.LogAccessEnabled ? "true" : "false").Append(',')
-            .Append("\"logOutputPath\":\"").Append(EscapeJson(settings.LogOutputPath)).Append("\",")
-            .Append("\"logOutputDirectory\":\"").Append(EscapeJson(GetDirectory(settings.LogOutputPath))).Append("\",")
-            .Append("\"maxLogLines\":").Append(Math.Clamp(settings.MaxLogLines, 50, 2000)).Append(',')
-            .Append("\"maxLogBytes\":").Append(Math.Clamp(settings.MaxLogBytes, 16 * 1024, 2 * 1024 * 1024)).Append(',')
-            .Append("\"nightBusinessDiagnosticsEnabled\":").Append(settings.NightBusinessDiagnosticsEnabled ? "true" : "false").Append(',')
-            .Append("\"nightBusinessDiagnosticsPath\":\"").Append(EscapeJson(settings.NightBusinessDiagnosticsPath)).Append("\",")
-            .Append("\"nightBusinessDiagnosticsDirectory\":\"").Append(EscapeJson(GetDirectory(settings.NightBusinessDiagnosticsPath))).Append("\",")
-            .Append("\"nativeBepInExConsoleEnabled\":").Append(settings.NativeBepInExConsoleEnabled ? "true" : "false").Append(',')
-            .Append("\"nativeBepInExConsoleVisible\":").Append(settings.NativeBepInExConsoleVisible ? "true" : "false")
-            .Append('}')
-            .ToString();
+        return ToJson(new LocalApiLogSettingsDto
+        {
+            LogAccessEnabled = settings.LogAccessEnabled,
+            LogOutputPath = settings.LogOutputPath,
+            LogOutputDirectory = GetDirectory(settings.LogOutputPath),
+            MaxLogLines = Math.Clamp(settings.MaxLogLines, 50, 2000),
+            MaxLogBytes = Math.Clamp(settings.MaxLogBytes, 16 * 1024, 2 * 1024 * 1024),
+            NightBusinessDiagnosticsEnabled = settings.NightBusinessDiagnosticsEnabled,
+            NightBusinessDiagnosticsPath = settings.NightBusinessDiagnosticsPath,
+            NightBusinessDiagnosticsDirectory = GetDirectory(settings.NightBusinessDiagnosticsPath),
+            NativeBepInExConsoleEnabled = settings.NativeBepInExConsoleEnabled,
+            NativeBepInExConsoleVisible = settings.NativeBepInExConsoleVisible,
+        });
     }
 
     private string OpenLogFolderJson(string target)
@@ -365,11 +376,11 @@ internal sealed class LocalApiServer : IDisposable
         try
         {
             var directory = _openLogFolder(target);
-            return "{\"ok\":true,\"directory\":\"" + EscapeJson(directory) + "\",\"error\":null}";
+            return ToJson(new LocalApiDirectoryActionDto { Ok = true, Directory = directory, Error = null });
         }
         catch (Exception ex)
         {
-            return "{\"ok\":false,\"directory\":\"\",\"error\":\"" + EscapeJson(ex.Message) + "\"}";
+            return ToJson(new LocalApiDirectoryActionDto { Ok = false, Directory = "", Error = ex.Message });
         }
     }
 
@@ -427,19 +438,25 @@ internal sealed class LocalApiServer : IDisposable
                 }
             }
 
-            return new StringBuilder()
-                .Append('{')
-                .Append("\"ok\":true,")
-                .Append("\"path\":\"").Append(EscapeJson(packagePath)).Append("\",")
-                .Append("\"directory\":\"").Append(EscapeJson(packageDirectory)).Append("\",")
-                .Append("\"files\":").Append(BuildJsonStringArray(added)).Append(',')
-                .Append("\"error\":null")
-                .Append('}')
-                .ToString();
+            return ToJson(new LocalApiDiagnosticPackageDto
+            {
+                Ok = true,
+                Path = packagePath,
+                Directory = packageDirectory,
+                Files = added,
+                Error = null,
+            });
         }
         catch (Exception ex)
         {
-            return "{\"ok\":false,\"path\":\"\",\"directory\":\"\",\"files\":[],\"error\":\"" + EscapeJson(ex.Message) + "\"}";
+            return ToJson(new LocalApiDiagnosticPackageDto
+            {
+                Ok = false,
+                Path = "",
+                Directory = "",
+                Files = Array.Empty<string>(),
+                Error = ex.Message,
+            });
         }
     }
 
@@ -449,29 +466,28 @@ internal sealed class LocalApiServer : IDisposable
         if (!int.TryParse(ReadStringQuery(query, "id"), out var itemId)
             || !int.TryParse(ReadStringQuery(query, "qty"), out var quantity))
         {
-            return "{\"ok\":false,\"error\":\"invalid inventory edit parameters\"}";
+            return ToJson(new LocalApiErrorDto { Error = "invalid inventory edit parameters" });
         }
 
         try
         {
             var result = _editInventory(itemType, itemId, quantity);
             var ok = string.IsNullOrWhiteSpace(result.Error);
-            return new StringBuilder()
-                .Append('{')
-                .Append("\"ok\":").Append(ok ? "true" : "false").Append(',')
-                .Append("\"type\":\"").Append(EscapeJson(result.ItemType)).Append("\",")
-                .Append("\"id\":").Append(result.ItemId).Append(',')
-                .Append("\"requestedQuantity\":").Append(result.RequestedQuantity).Append(',')
-                .Append("\"previousQuantity\":").Append(result.PreviousQuantity).Append(',')
-                .Append("\"quantity\":").Append(result.Quantity).Append(',')
-                .Append("\"changed\":").Append(result.Changed ? "true" : "false").Append(',')
-                .Append("\"error\":").Append(ok ? "null" : $"\"{EscapeJson(result.Error ?? "")}\"")
-                .Append('}')
-                .ToString();
+            return ToJson(new LocalApiInventoryEditDto
+            {
+                Ok = ok,
+                Type = result.ItemType,
+                Id = result.ItemId,
+                RequestedQuantity = result.RequestedQuantity,
+                PreviousQuantity = result.PreviousQuantity,
+                Quantity = result.Quantity,
+                Changed = result.Changed,
+                Error = ok ? null : result.Error,
+            });
         }
         catch (Exception ex)
         {
-            return "{\"ok\":false,\"error\":\"" + EscapeJson(ex.Message) + "\"}";
+            return ToJson(new LocalApiErrorDto { Error = ex.Message });
         }
     }
 
@@ -481,7 +497,7 @@ internal sealed class LocalApiServer : IDisposable
         var itemIds = ReadIntListQuery(query, "ids");
         if (!int.TryParse(ReadStringQuery(query, "qty"), out var quantity) || itemIds.Count == 0)
         {
-            return "{\"ok\":false,\"error\":\"invalid inventory bulk edit parameters\"}";
+            return ToJson(new LocalApiErrorDto { Error = "invalid inventory bulk edit parameters" });
         }
 
         RuntimeInventoryBulkEditResult result;
@@ -491,30 +507,21 @@ internal sealed class LocalApiServer : IDisposable
         }
         catch (Exception ex)
         {
-            return "{\"ok\":false,\"error\":\"" + EscapeJson(ex.Message) + "\"}";
+            return ToJson(new LocalApiErrorDto { Error = ex.Message });
         }
 
-        var builder = new StringBuilder()
-            .Append('{')
-            .Append("\"ok\":").Append(result.Failed == 0 ? "true" : "false").Append(',')
-            .Append("\"type\":\"").Append(EscapeJson(result.ItemType)).Append("\",")
-            .Append("\"requestedQuantity\":").Append(result.RequestedQuantity).Append(',')
-            .Append("\"total\":").Append(result.Total).Append(',')
-            .Append("\"changed\":").Append(result.Changed).Append(',')
-            .Append("\"unchanged\":").Append(result.Unchanged).Append(',')
-            .Append("\"failed\":").Append(result.Failed).Append(',')
-            .Append("\"errors\":[");
-
-        for (var i = 0; i < result.Errors.Count; i++)
+        return ToJson(new LocalApiInventoryBulkEditDto
         {
-            if (i > 0) builder.Append(',');
-            builder.Append('"').Append(EscapeJson(result.Errors[i])).Append('"');
-        }
-
-        builder.Append("],\"error\":");
-        builder.Append(result.Failed == 0 ? "null" : $"\"{EscapeJson(string.Join("; ", result.Errors))}\"");
-        builder.Append('}');
-        return builder.ToString();
+            Ok = result.Failed == 0,
+            Type = result.ItemType,
+            RequestedQuantity = result.RequestedQuantity,
+            Total = result.Total,
+            Changed = result.Changed,
+            Unchanged = result.Unchanged,
+            Failed = result.Failed,
+            Errors = result.Errors,
+            Error = result.Failed == 0 ? null : string.Join("; ", result.Errors),
+        });
     }
 
     private string BuildOrderActionJson(string query, Func<OrderPreparationRequest, OrderPreparationResult> action)
@@ -549,14 +556,16 @@ internal sealed class LocalApiServer : IDisposable
             };
 
             var result = action(request);
-            return JsonSerializer.Serialize(result, new JsonSerializerOptions
-            {
-                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-            });
+            return ToJson(result);
         }
         catch (Exception ex)
         {
-            return "{\"ok\":false,\"prepared\":false,\"error\":\"" + EscapeJson(ex.Message) + "\",\"order\":{\"deskCode\":-1,\"guestId\":null,\"guestName\":\"\",\"foodTag\":\"\",\"beverageTag\":\"\"},\"recipeId\":-1,\"recipeName\":\"\",\"beverageId\":-1,\"beverageName\":\"\",\"steps\":[]}";
+            return ToJson(new LocalApiOrderActionErrorDto
+            {
+                Ok = false,
+                Prepared = false,
+                Error = ex.Message,
+            });
         }
     }
 
@@ -565,16 +574,17 @@ internal sealed class LocalApiServer : IDisposable
         try
         {
             var result = action();
-            return JsonSerializer.Serialize(result, new JsonSerializerOptions
-            {
-                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-            });
+            return ToJson(result);
         }
         catch (Exception ex)
         {
-            return "{\"ok\":false,\"runtimeAvailable\":false,\"status\":\"稀客邀请失败。\",\"error\":\""
-                + EscapeJson(ex.Message)
-                + "\",\"candidateCount\":0,\"usableCount\":0,\"existingSlotCount\":0,\"existingControlledCount\":0,\"scheduledSlotCount\":0,\"invitedCount\":0,\"skippedCount\":0,\"scope\":\"current\",\"currentMapLabel\":\"\",\"currentMapName\":\"\",\"candidates\":[],\"available\":[],\"invited\":[],\"skipped\":[]}";
+            return ToJson(new LocalApiRareGuestInvitationErrorDto
+            {
+                Ok = false,
+                RuntimeAvailable = false,
+                Status = "稀客邀请失败。",
+                Error = ex.Message,
+            });
         }
     }
 
@@ -591,11 +601,11 @@ internal sealed class LocalApiServer : IDisposable
             var status = removed > 0
                 ? $"已删除 {removed} 条稀客订单缓存。"
                 : "未找到匹配的稀客订单缓存。";
-            return "{\"ok\":true,\"removed\":" + removed + ",\"status\":\"" + EscapeJson(status) + "\",\"error\":null}";
+            return ToJson(new LocalApiRareOrderDismissDto { Ok = true, Removed = removed, Status = status, Error = null });
         }
         catch (Exception ex)
         {
-            return "{\"ok\":false,\"removed\":0,\"status\":\"\",\"error\":\"" + EscapeJson(ex.Message) + "\"}";
+            return ToJson(new LocalApiRareOrderDismissDto { Ok = false, Removed = 0, Status = "", Error = ex.Message });
         }
     }
 
@@ -615,11 +625,11 @@ internal sealed class LocalApiServer : IDisposable
                 ReadStringQuery(query, "beverageName"),
                 ReadIntQuery(query, "cookerTypeId", -1),
                 ReadStringQuery(query, "cookerName"));
-            return "{\"ok\":true,\"status\":\"" + EscapeJson(status) + "\",\"error\":null}";
+            return ToJson(new LocalApiStatusDto { Ok = true, Status = status, Error = null });
         }
         catch (Exception ex)
         {
-            return "{\"ok\":false,\"status\":\"\",\"error\":\"" + EscapeJson(ex.Message) + "\"}";
+            return ToJson(new LocalApiStatusDto { Ok = false, Status = "", Error = ex.Message });
         }
     }
 
@@ -642,7 +652,7 @@ internal sealed class LocalApiServer : IDisposable
         }
         catch (Exception ex)
         {
-            return "{\"ok\":false,\"favorites\":{\"version\":1,\"recipes\":[],\"beverages\":[]},\"error\":\"" + EscapeJson(ex.Message) + "\"}";
+            return ToJson(new LocalApiFavoriteErrorDto { Ok = false, Error = ex.Message });
         }
     }
 
@@ -664,7 +674,7 @@ internal sealed class LocalApiServer : IDisposable
         }
         catch (Exception ex)
         {
-            return "{\"ok\":false,\"favorites\":{\"version\":1,\"recipes\":[],\"beverages\":[]},\"error\":\"" + EscapeJson(ex.Message) + "\"}";
+            return ToJson(new LocalApiFavoriteErrorDto { Ok = false, Error = ex.Message });
         }
     }
 
@@ -729,32 +739,16 @@ internal sealed class LocalApiServer : IDisposable
 
     private string BuildDiagnosticManifestJson(LocalApiLogSettings settings)
     {
-        return new StringBuilder()
-            .Append('{')
-            .Append("\"generatedAtUtc\":\"").Append(DateTime.UtcNow.ToString("O")).Append("\",")
-            .Append("\"baseUrl\":\"").Append(EscapeJson(BaseUrl)).Append("\",")
-            .Append("\"logOutputPath\":\"").Append(EscapeJson(string.IsNullOrWhiteSpace(settings.LogOutputPath) ? _logOutputPath : settings.LogOutputPath)).Append("\",")
-            .Append("\"automationLogPath\":\"").Append(EscapeJson(RuntimeOrderPreparationService.ResolveAutomationLogPath())).Append("\",")
-            .Append("\"nightBusinessDiagnosticsPath\":\"").Append(EscapeJson(settings.NightBusinessDiagnosticsPath)).Append("\",")
-            .Append("\"maxLogLines\":").Append(Math.Clamp(settings.MaxLogLines, 50, 2000)).Append(',')
-            .Append("\"maxLogBytes\":").Append(Math.Clamp(settings.MaxLogBytes, 16 * 1024, 2 * 1024 * 1024))
-            .Append('}')
-            .ToString();
-    }
-
-    private static string BuildJsonStringArray(IEnumerable<string> values)
-    {
-        var builder = new StringBuilder();
-        builder.Append('[');
-        var first = true;
-        foreach (var value in values)
+        return ToJson(new LocalApiDiagnosticManifestDto
         {
-            if (!first) builder.Append(',');
-            builder.Append('"').Append(EscapeJson(value)).Append('"');
-            first = false;
-        }
-        builder.Append(']');
-        return builder.ToString();
+            GeneratedAtUtc = DateTime.UtcNow.ToString("O"),
+            BaseUrl = BaseUrl,
+            LogOutputPath = string.IsNullOrWhiteSpace(settings.LogOutputPath) ? _logOutputPath : settings.LogOutputPath,
+            AutomationLogPath = RuntimeOrderPreparationService.ResolveAutomationLogPath(),
+            NightBusinessDiagnosticsPath = settings.NightBusinessDiagnosticsPath,
+            MaxLogLines = Math.Clamp(settings.MaxLogLines, 50, 2000),
+            MaxLogBytes = Math.Clamp(settings.MaxLogBytes, 16 * 1024, 2 * 1024 * 1024),
+        });
     }
 
     private static string ReadRequest(NetworkStream stream)
@@ -815,14 +809,9 @@ internal sealed class LocalApiServer : IDisposable
         return IPAddress.Loopback;
     }
 
-    private static string EscapeJson(string value)
+    private static string ToJson<T>(T value)
     {
-        return (value ?? "")
-            .Replace("\\", "\\\\", StringComparison.Ordinal)
-            .Replace("\r", "\\r", StringComparison.Ordinal)
-            .Replace("\n", "\\n", StringComparison.Ordinal)
-            .Replace("\t", "\\t", StringComparison.Ordinal)
-            .Replace("\"", "\\\"", StringComparison.Ordinal);
+        return JsonSerializer.Serialize(value, JsonOptions);
     }
 
     public static string ResolveLogOutputPath()

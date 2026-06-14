@@ -7,22 +7,11 @@ namespace MystiaStewardCompanion.Save;
 
 internal static class RuntimeCookerSnapshotService
 {
-    private const string CookSystemManagerTypeName = "NightScene.CookingUtility.CookSystemManager";
     private const string GuestsManagerTypeName = "NightScene.GuestManagementUtility.GuestsManager";
     private const string IzakayaConfigureTypeName = "GameData.RunTime.NightSceneUtility.IzakayaConfigure";
     private const string RunTimeStorageTypeName = "GameData.RunTime.Common.RunTimeStorage";
-    private const string DataBaseCoreTypeName = "GameData.Core.Collections.DataBaseCore";
 
     private static readonly object SyncRoot = new();
-
-    private static readonly Dictionary<int, string> CookerTypeNames = new()
-    {
-        [1] = "煮锅",
-        [2] = "烧烤架",
-        [3] = "油锅",
-        [4] = "蒸锅",
-        [5] = "料理台",
-    };
 
     public static string Status
     {
@@ -95,7 +84,7 @@ internal static class RuntimeCookerSnapshotService
         object? cookSystem;
         try
         {
-            cookSystem = GetSingletonInstance(CookSystemManagerTypeName);
+            cookSystem = RuntimeCookerReflection.GetCookSystemManager();
         }
         catch (Exception ex)
         {
@@ -136,10 +125,10 @@ internal static class RuntimeCookerSnapshotService
 
             if (cooker == null) continue;
 
-            var typeIds = ReadCookerTypeIds(cooker).Where(id => id > 0).Distinct().OrderBy(id => id).ToList();
+            var typeIds = RuntimeCookerReflection.ReadCookerTypeIds(cooker).Where(id => id > 0).Distinct().OrderBy(id => id).ToList();
             if (typeIds.Count == 0) continue;
 
-            var typeNames = typeIds.Select(ResolveCookerTypeName).Where(name => name.Length > 0).Distinct().ToList();
+            var typeNames = typeIds.Select(RuntimeCookerReflection.ResolveCookerTypeName).Where(name => name.Length > 0).Distinct().ToList();
             result.Add(new PlacedCookerInfo
             {
                 ControllerIndex = controllerIndex,
@@ -188,13 +177,13 @@ internal static class RuntimeCookerSnapshotService
             var cookerId = cookerIds[index];
             if (cookerId < 0) continue;
 
-            var cooker = ResolveCookerById(cookerId);
+            var cooker = RuntimeCookerReflection.ResolveCookerById(cookerId);
             if (cooker == null) continue;
 
-            var typeIds = ReadCookerTypeIds(cooker).Where(id => id > 0).Distinct().OrderBy(id => id).ToList();
+            var typeIds = RuntimeCookerReflection.ReadCookerTypeIds(cooker).Where(id => id > 0).Distinct().OrderBy(id => id).ToList();
             if (typeIds.Count == 0) continue;
 
-            var typeNames = typeIds.Select(ResolveCookerTypeName).Where(name => name.Length > 0).Distinct().ToList();
+            var typeNames = typeIds.Select(RuntimeCookerReflection.ResolveCookerTypeName).Where(name => name.Length > 0).Distinct().ToList();
             result.Add(new PlacedCookerInfo
             {
                 ControllerIndex = index,
@@ -225,7 +214,10 @@ internal static class RuntimeCookerSnapshotService
         object? cookerPairs;
         try
         {
-            cookerPairs = InvokeStatic(RunTimeStorageTypeName, "GetAllCookers", Array.Empty<object?>());
+            var storageType = RuntimeReflectionUtility.FindType(RunTimeStorageTypeName);
+            cookerPairs = storageType == null
+                ? null
+                : RuntimeReflectionUtility.InvokeStaticMethod(storageType, "GetAllCookers");
         }
         catch (Exception ex)
         {
@@ -240,10 +232,10 @@ internal static class RuntimeCookerSnapshotService
             var count = ReadPairValueInt(pair);
             if (cooker == null || count <= 0) continue;
 
-            var typeIds = ReadCookerTypeIds(cooker).Where(id => id > 0).Distinct().OrderBy(id => id).ToList();
+            var typeIds = RuntimeCookerReflection.ReadCookerTypeIds(cooker).Where(id => id > 0).Distinct().OrderBy(id => id).ToList();
             if (typeIds.Count == 0) continue;
 
-            var typeNames = typeIds.Select(ResolveCookerTypeName).Where(name => name.Length > 0).Distinct().ToList();
+            var typeNames = typeIds.Select(RuntimeCookerReflection.ResolveCookerTypeName).Where(name => name.Length > 0).Distinct().ToList();
             result.Add(new PlacedCookerInfo
             {
                 ControllerIndex = index++,
@@ -298,41 +290,6 @@ internal static class RuntimeCookerSnapshotService
         }
     }
 
-    private static List<int> ReadCookerTypeIds(object cooker)
-    {
-        try
-        {
-            var directType = ToInt(TryInvokeInstanceValue(cooker, "get_Type")
-                ?? ReadMember(cooker, "Type")
-                ?? ReadMember(cooker, "type"));
-            if (directType > 0) return new List<int> { directType };
-        }
-        catch
-        {
-            // Fall back to the public enumerable below only if the direct serialized type is unavailable.
-        }
-
-        var cookerTypes = TryInvokeInstanceValue(cooker, "get_AllAvailableCookerType");
-        return ReadIntEnumerable(cookerTypes).Where(id => id > 0).ToList();
-    }
-
-    private static object? ResolveCookerById(int cookerId)
-    {
-        try
-        {
-            return InvokeStatic(DataBaseCoreTypeName, "RefCooker", new object?[] { cookerId });
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private static string ResolveCookerTypeName(int typeId)
-    {
-        return CookerTypeNames.TryGetValue(typeId, out var name) ? name : $"#{typeId}";
-    }
-
     private static object? TryInvokeInstanceValue(object target, string methodName)
     {
         return TryInvokeInstanceValue(target, methodName, Array.Empty<object?>());
@@ -352,33 +309,14 @@ internal static class RuntimeCookerSnapshotService
 
     private static object? GetSingletonInstance(string typeName)
     {
-        var type = FindType(typeName);
+        var type = RuntimeReflectionUtility.FindType(typeName);
         if (type == null) return null;
-
-        var property = type.GetProperty("Instance", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.FlattenHierarchy);
-        if (property != null) return property.GetValue(null);
-
-        var method = type.GetMethod("get_Instance", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.FlattenHierarchy);
-        return method?.Invoke(null, Array.Empty<object?>());
+        return RuntimeReflectionUtility.GetSingletonInstance(type);
     }
 
     private static object? InvokeInstance(object target, string methodName, object?[] args)
     {
-        var method = target.GetType().GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-            .FirstOrDefault(candidate => string.Equals(candidate.Name, methodName, StringComparison.Ordinal)
-                && CanUseParameters(candidate.GetParameters(), args));
-        return method == null ? null : method.Invoke(target, args);
-    }
-
-    private static object? InvokeStatic(string typeName, string methodName, object?[] args)
-    {
-        var type = FindType(typeName);
-        if (type == null) return null;
-
-        var method = type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
-            .FirstOrDefault(candidate => string.Equals(candidate.Name, methodName, StringComparison.Ordinal)
-                && CanUseParameters(candidate.GetParameters(), args));
-        return method == null ? null : method.Invoke(null, args);
+        return RuntimeReflectionUtility.InvokeMethod(target, methodName, args);
     }
 
     private static object? ReadPairKey(object item)
@@ -407,29 +345,6 @@ internal static class RuntimeCookerSnapshotService
         }
 
         return true;
-    }
-
-    private static Type? FindType(string fullName)
-    {
-        var direct = Type.GetType(fullName, false);
-        if (direct != null) return direct;
-
-        foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
-        {
-            Type? type;
-            try
-            {
-                type = assembly.GetType(fullName, false);
-            }
-            catch
-            {
-                continue;
-            }
-
-            if (type != null) return type;
-        }
-
-        return null;
     }
 
     private static IEnumerable<object> ReadObjectEnumerable(object? value)

@@ -328,6 +328,26 @@ internal static class RuntimeReflectionUtility
         return value[..maxLength] + "...";
     }
 
+    public static nint ReadObjectPointer(object target)
+    {
+        var pointer = GetMemberValue(target, "Pointer") ?? GetMemberValue(target, "NativePointer") ?? GetMemberValue(target, "m_CachedPtr");
+        if (pointer is IntPtr intPtr) return intPtr;
+        if (pointer is nint native) return native;
+        if (pointer is IConvertible convertible)
+        {
+            try
+            {
+                return new IntPtr(convertible.ToInt64(null));
+            }
+            catch
+            {
+                return new IntPtr(System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(target));
+            }
+        }
+
+        return new IntPtr(System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(target));
+    }
+
     private static IEnumerable<string> BuildMemberNameCandidates(string name)
     {
         if (string.IsNullOrWhiteSpace(name)) yield break;

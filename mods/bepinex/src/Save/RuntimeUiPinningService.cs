@@ -11,7 +11,6 @@ internal static class RuntimeUiPinningService
     private const string CookingSelectionPanelTypeName = "NightScene.UI.CookingUtility.WorkSceneCookingSelectionPannel";
     private const string StoragePanelTypeName = "NightScene.UI.CookingUtility.WorkSceneStoragePannel";
     private const string RunTimePlayerDataTypeName = "GameData.RunTime.Common.RunTimePlayerData";
-    private const string DataBaseCoreTypeName = "GameData.Core.Collections.DataBaseCore";
 
     private static readonly object SyncRoot = new();
     private static readonly HashSet<string> PatchedMethods = new(StringComparer.Ordinal);
@@ -238,68 +237,16 @@ internal static class RuntimeUiPinningService
 
     private static bool IsTargetCooker(int cookerId, int targetCookerTypeId, string targetCookerName)
     {
-        var cooker = ResolveCookerById(cookerId);
+        var cooker = RuntimeCookerReflection.ResolveCookerById(cookerId);
         if (cooker == null) return false;
 
-        var typeIds = ReadCookerTypeIds(cooker);
+        var typeIds = RuntimeCookerReflection.ReadCookerTypeIds(cooker);
         if (typeIds.Contains(targetCookerTypeId)) return true;
 
         if (string.IsNullOrWhiteSpace(targetCookerName)) return false;
-        var normalizedTarget = NormalizeCookerName(targetCookerName);
-        var name = NormalizeCookerName(ReadName(cooker));
+        var normalizedTarget = RuntimeCookerReflection.NormalizeCookerName(targetCookerName);
+        var name = RuntimeCookerReflection.NormalizeCookerName(RuntimeCookerReflection.ReadCookerName(cooker));
         return name.Length > 0 && string.Equals(name, normalizedTarget, StringComparison.Ordinal);
-    }
-
-    private static object? ResolveCookerById(int cookerId)
-    {
-        try
-        {
-            var cooker = InvokeStatic(DataBaseCoreTypeName, "RefCooker", new object?[] { cookerId });
-            return cooker == Missing.Value ? null : cooker;
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private static List<int> ReadCookerTypeIds(object cooker)
-    {
-        try
-        {
-            var directType = ToInt(TryInvokeInstanceValue(cooker, "get_Type")
-                ?? ReadMember(cooker, "Type")
-                ?? ReadMember(cooker, "type"));
-            if (directType > 0) return new List<int> { directType };
-        }
-        catch
-        {
-            // Fall back to all available cooker types below.
-        }
-
-        var cookerTypes = TryInvokeInstanceValue(cooker, "get_AllAvailableCookerType");
-        return ReadIntEnumerable(cookerTypes).Where(id => id > 0).Distinct().ToList();
-    }
-
-    private static string ReadName(object value)
-    {
-        return TryInvokeInstanceValue(value, "get_Name")?.ToString()
-            ?? TryInvokeInstanceValue(value, "get_name")?.ToString()
-            ?? ReadMember(value, "Name")?.ToString()
-            ?? ReadMember(value, "name")?.ToString()
-            ?? "";
-    }
-
-    private static string NormalizeCookerName(string value)
-    {
-        return value.Trim() switch
-        {
-            "烤架" => "烧烤架",
-            "烧烤台" => "烧烤架",
-            "锅" => "煮锅",
-            "炸锅" => "油锅",
-            var normalized => normalized,
-        };
     }
 
     private static void TrySortPinnedIngredients(object target, string fieldName, int[] ingredientIds)
