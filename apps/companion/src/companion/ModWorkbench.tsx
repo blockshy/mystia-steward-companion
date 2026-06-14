@@ -161,16 +161,16 @@ const COOKER_NAME_ALIASES = new Map<string, string>([
 const DEFAULT_DATA_INDEXES = buildRecommendationDataIndexes(DEFAULT_RECOMMENDATION_DATA);
 const LOW_STOCK_RESOURCE_THRESHOLD = 5;
 const EXTRA_INGREDIENT_RESOURCE_WEIGHT = 2;
-const DENSE_TWO_COLUMN_GRID = 'grid grid-cols-2 gap-4';
+const DENSE_TWO_COLUMN_GRID = 'grid grid-cols-2 gap-3';
 const DENSE_TWO_COLUMN_GRID_TIGHT = 'grid grid-cols-2 gap-2';
 const DENSE_THREE_COLUMN_GRID = 'grid grid-cols-3 gap-3';
 const DENSE_FOUR_COLUMN_GRID = 'grid grid-cols-4 gap-3';
 const DENSE_CARD_HEADER_GRID = 'grid grid-cols-[minmax(0,1fr)_auto] gap-3';
 const DENSE_ITEM_GRID = 'grid grid-cols-[repeat(auto-fit,minmax(11rem,1fr))] gap-2';
 const AUTOMATION_SWITCH_GRID = 'grid grid-cols-2 gap-2 xl:grid-cols-3';
-const AUTOMATION_SWITCH_CELL = 'min-w-0 rounded-md border border-border bg-background/70 px-2.5 py-2';
-const MOD_TAB_TRIGGER_CLASS = 'min-w-0 flex-1 data-active:bg-primary data-active:text-primary-foreground dark:data-active:bg-primary dark:data-active:text-primary-foreground';
-const INNER_TAB_TRIGGER_CLASS = 'min-w-0 flex-1 data-active:bg-primary data-active:text-primary-foreground dark:data-active:bg-primary dark:data-active:text-primary-foreground';
+const AUTOMATION_SWITCH_CELL = 'min-w-0 rounded-sm bg-muted/35 px-2.5 py-1.5';
+const MOD_TAB_TRIGGER_CLASS = 'min-w-0 flex-1';
+const INNER_TAB_TRIGGER_CLASS = 'min-w-0 flex-1';
 const RECOMMENDATION_SCROLL_AREA = 'min-h-[28rem] max-h-[calc(100vh-18rem)] overflow-auto pr-1';
 
 type ModTab = 'overview' | 'normal' | 'rare' | 'service' | 'tasks' | 'inventory' | 'help' | 'logs' | 'settings';
@@ -1917,10 +1917,10 @@ export function ModWorkbench() {
   }
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-foreground">Mod 工作台</h1>
+          <h1 className="text-[1.7rem] font-bold leading-tight text-foreground">Mod 工作台</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             {snapshot ? `mystia-steward-companion ${snapshot.pluginVersion}` : '等待本地 API 响应'}
           </p>
@@ -2350,7 +2350,7 @@ function RareGuestInvitationPanel({
       title={`稀客邀请 (${filteredAvailableEntries.length}/${candidateEntries.length})`}
       action={(
         <div className="flex min-w-0 flex-wrap justify-end gap-1.5">
-          <div className="grid h-8 grid-cols-2 rounded-md border border-border bg-background/70 p-0.5">
+          <div className="grid h-8 grid-cols-2 rounded-sm bg-muted/45 p-0.5">
             <Button
               type="button"
               size="xs"
@@ -2405,7 +2405,7 @@ function RareGuestInvitationPanel({
         </div>
         {inviteAllError && <EmptyRow text={inviteAllError} />}
         {inviteAllResult ? (
-          <div className="max-w-full min-w-0 overflow-hidden rounded-md border border-border/80 bg-background/35 p-2">
+          <div className="max-w-full min-w-0 overflow-hidden rounded-sm bg-muted/25 p-2">
             <div className="grid gap-1 text-xs text-muted-foreground sm:grid-cols-2">
               <span className="truncate">新增 {inviteAllResult.invitedCount} · 可邀请 {filteredAvailableEntries.length} · 候选 {candidateEntries.length}</span>
               <span className="truncate sm:text-right">{inviteAllResult.status || (inviteAllResult.ok ? '已完成' : '失败')}</span>
@@ -2448,7 +2448,7 @@ function RareGuestInvitationPanel({
                 return (
                   <div
                     key={`${entry.id}-${entry.runtimeName || entry.name}`}
-                    className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-md border border-border/70 bg-background/45 px-2 py-1.5"
+                    className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-sm bg-background/45 px-2 py-1.5"
                     data-gamepad-row="rare-invitation"
                   >
                     <div className="min-w-0">
@@ -3112,23 +3112,23 @@ function ModServicePanel({
 
           <ListPanel title={`${showDebugDetails ? '普客订单诊断' : '普客订单'} (${normalBusiness?.orders.length ?? 0})`} contentClassName="min-h-[18rem]">
             {autoPrepPreferences.automationEnabled && autoPrepPreferences.autoNormalOrderEnabled ? (
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-sm bg-muted/35 px-3 py-2 text-sm">
                 <span className="text-muted-foreground">
                   普客自动化会按开关处理普客订单，可执行送达酒水、制作料理、收至保温箱、送达料理和完成订单。
                 </span>
                 {normalOrderBusy && <Badge variant="secondary">处理中</Badge>}
               </div>
             ) : autoPrepPreferences.automationEnabled ? (
-              <div className="mb-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+              <div className="mb-3 rounded-sm bg-muted/35 px-3 py-2 text-sm text-muted-foreground">
                 开启“启用普客处理”后，可按阶段开关自动处理普客订单。
               </div>
             ) : (
-              <div className="mb-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+              <div className="mb-3 rounded-sm bg-muted/35 px-3 py-2 text-sm text-muted-foreground">
                 设置页开启“启用自动化（实验性）”后，可启用普客订单自动处理。
               </div>
             )}
             {normalOrderMessage && !autoPrepPreferences.automationEnabled && (
-              <div className="mb-3 whitespace-pre-line rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+              <div className="mb-3 whitespace-pre-line rounded-sm bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
                 {normalOrderMessage}
               </div>
             )}

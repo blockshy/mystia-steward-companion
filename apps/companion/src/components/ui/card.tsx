@@ -13,7 +13,7 @@ function Card({
       data-slot="card"
       data-size={size}
       withBorder
-      radius="md"
+      radius="sm"
       padding={size === 'sm' ? 'sm' : 'md'}
       className={cn('steward-card group/card flex flex-col gap-4 overflow-hidden text-sm data-[size=sm]:gap-3', className)}
       {...props}

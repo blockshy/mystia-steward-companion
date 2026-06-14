@@ -19,7 +19,7 @@ type ButtonProps = Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'color'> & {
 const buttonVariantMap: Record<ButtonVariant, MantineButtonProps['variant']> = {
   default: 'filled',
   outline: 'default',
-  secondary: 'light',
+  secondary: 'default',
   ghost: 'subtle',
   destructive: 'light',
   link: 'transparent',
@@ -40,6 +40,8 @@ function Button({ className, variant = 'default', size = 'default', ...props }: 
   return (
     <MantineButton
       data-slot="button"
+      data-ui-variant={variant}
+      data-ui-size={size}
       color={variant === 'destructive' ? 'red' : 'steward'}
       variant={buttonVariantMap[variant]}
       size={buttonSizeMap[size]}

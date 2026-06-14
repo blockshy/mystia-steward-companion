@@ -43,20 +43,20 @@
 }
 
 :root {
-  --radius: 0.625rem;
+  --radius: 0.5rem;
   --companion-window-opacity: 1;
   --companion-window-opacity-percent: 100%;
-  --scrollbar-thumb: color-mix(in srgb, var(--primary) var(--companion-window-opacity-percent), transparent);
-  --scrollbar-thumb-hover: color-mix(in srgb, var(--ring) var(--companion-window-opacity-percent), transparent);
+  --scrollbar-thumb: color-mix(in srgb, var(--primary) 38%, var(--muted-foreground));
+  --scrollbar-thumb-hover: color-mix(in srgb, var(--primary) 58%, var(--muted-foreground));
   --scrollbar-page-track: color-mix(in srgb, var(--background) var(--companion-window-opacity-percent), transparent);
-  --scrollbar-surface-track: color-mix(in srgb, var(--card) var(--companion-window-opacity-percent), transparent);
+  --scrollbar-surface-track: color-mix(in srgb, var(--background) 72%, var(--card));
   --background: #fbf8f3;
   --foreground: #3d2e1f;
   --card: #fff9f0;
   --card-foreground: #3d2e1f;
   --popover: #fff9f0;
   --popover-foreground: #3d2e1f;
-  --primary: #b8602a;
+  --primary: #b86b35;
   --primary-foreground: #fff9f0;
   --secondary: #f1e6d4;
   --secondary-foreground: #5c3d1e;
@@ -65,56 +65,56 @@
   --accent: #f1e6d4;
   --accent-foreground: #5c3d1e;
   --destructive: #c53030;
-  --border: #e8dcc8;
-  --input: #e8dcc8;
-  --ring: #b8602a;
-  --chart-1: #b8602a;
+  --border: #eadfce;
+  --input: #e6d9c6;
+  --ring: #b86b35;
+  --chart-1: #b86b35;
   --chart-2: #d4a373;
   --chart-3: #8b7355;
   --chart-4: #5c3d1e;
   --chart-5: #3d2e1f;
   --sidebar: #fff9f0;
   --sidebar-foreground: #3d2e1f;
-  --sidebar-primary: #b8602a;
+  --sidebar-primary: #b86b35;
   --sidebar-primary-foreground: #fff9f0;
   --sidebar-accent: #f1e6d4;
   --sidebar-accent-foreground: #5c3d1e;
   --sidebar-border: #e8dcc8;
-  --sidebar-ring: #b8602a;
+  --sidebar-ring: #b86b35;
 }
 
 .dark {
-  --background: #17120f;
-  --foreground: #f4eadc;
-  --card: #211813;
+  --background: #15100d;
+  --foreground: #f3e7d7;
+  --card: #1d1511;
   --card-foreground: #f4eadc;
-  --popover: #261b15;
+  --popover: #241914;
   --popover-foreground: #f4eadc;
-  --primary: #e09a57;
+  --primary: #d8894a;
   --primary-foreground: #21130b;
-  --secondary: #2f241c;
-  --secondary-foreground: #f2dfc4;
-  --muted: #2a2019;
-  --muted-foreground: #bfa991;
-  --accent: #3a2a20;
+  --secondary: #2a2019;
+  --secondary-foreground: #edd8bd;
+  --muted: #241b16;
+  --muted-foreground: #b7a28d;
+  --accent: #30231b;
   --accent-foreground: #f2dfc4;
   --destructive: #ff6b6b;
-  --border: #433126;
-  --input: #4a3629;
-  --ring: #d48445;
-  --chart-1: #e09a57;
+  --border: #34261e;
+  --input: #3d2d23;
+  --ring: #d8894a;
+  --chart-1: #d8894a;
   --chart-2: #bfa991;
   --chart-3: #7f5e45;
   --chart-4: #f2dfc4;
   --chart-5: #433126;
-  --sidebar: #211813;
+  --sidebar: #1d1511;
   --sidebar-foreground: #f4eadc;
-  --sidebar-primary: #e09a57;
+  --sidebar-primary: #d8894a;
   --sidebar-primary-foreground: #21130b;
-  --sidebar-accent: #2f241c;
+  --sidebar-accent: #2a2019;
   --sidebar-accent-foreground: #f2dfc4;
-  --sidebar-border: #433126;
-  --sidebar-ring: #d48445;
+  --sidebar-border: #34261e;
+  --sidebar-ring: #d8894a;
 }
 
 @layer base {
@@ -164,13 +164,22 @@ html::-webkit-scrollbar,
 .companion-shell *::-webkit-scrollbar,
 .mantine-Popover-dropdown::-webkit-scrollbar,
 .mantine-Combobox-dropdown::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
+}
+
+html::-webkit-scrollbar-button,
+.companion-shell::-webkit-scrollbar-button,
+.companion-shell *::-webkit-scrollbar-button,
+.mantine-Popover-dropdown::-webkit-scrollbar-button,
+.mantine-Combobox-dropdown::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 html::-webkit-scrollbar-track {
   background: var(--scrollbar-page-track);
-  border-radius: 999px;
 }
 
 .companion-shell::-webkit-scrollbar-track,
@@ -178,7 +187,6 @@ html::-webkit-scrollbar-track {
 .mantine-Popover-dropdown::-webkit-scrollbar-track,
 .mantine-Combobox-dropdown::-webkit-scrollbar-track {
   background: var(--scrollbar-surface-track);
-  border-radius: 999px;
 }
 
 html::-webkit-scrollbar-thumb,
@@ -187,9 +195,8 @@ html::-webkit-scrollbar-thumb,
 .mantine-Popover-dropdown::-webkit-scrollbar-thumb,
 .mantine-Combobox-dropdown::-webkit-scrollbar-thumb {
   background: var(--scrollbar-thumb);
-  border: 2px solid transparent;
+  border: 2px solid var(--scrollbar-surface-track);
   border-radius: 999px;
-  background-clip: content-box;
 }
 
 html::-webkit-scrollbar-thumb:hover,
@@ -198,7 +205,6 @@ html::-webkit-scrollbar-thumb:hover,
 .mantine-Popover-dropdown::-webkit-scrollbar-thumb:hover,
 .mantine-Combobox-dropdown::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar-thumb-hover);
-  background-clip: content-box;
 }
 
 .companion-shell [data-slot='card'],
@@ -209,18 +215,69 @@ html::-webkit-scrollbar-thumb:hover,
 }
 
 .steward-card {
-  border-color: var(--border);
+  border-color: color-mix(in srgb, var(--border) 62%, transparent);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--foreground) 4%, transparent);
   color: var(--card-foreground);
 }
 
+.steward-status-card,
+.steward-list-panel {
+  border-color: color-mix(in srgb, var(--border) 48%, transparent);
+}
+
+.steward-status-card {
+  background-color: color-mix(in srgb, var(--card) 78%, var(--background));
+}
+
+.steward-list-panel {
+  background-color: color-mix(in srgb, var(--card) 88%, var(--background));
+}
+
 .steward-button {
-  border-color: var(--border);
+  border-color: color-mix(in srgb, var(--border) 62%, transparent);
   font-weight: 600;
+  border-radius: calc(var(--radius) - 1px);
+  box-shadow: none;
+  transition-property: background-color, border-color, color;
+  transition-duration: 140ms;
 }
 
 .steward-button-icon {
   padding-inline: 0;
   width: 2rem;
+}
+
+.steward-button[data-ui-size='xs'],
+.steward-button[data-ui-size='icon-xs'] {
+  font-size: 0.75rem;
+}
+
+.steward-button[data-ui-variant='default'] {
+  border-color: transparent;
+  background-color: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.steward-button[data-ui-variant='outline'],
+.steward-button[data-ui-variant='secondary'] {
+  background-color: color-mix(in srgb, var(--card) 58%, var(--background));
+  color: var(--foreground);
+}
+
+.steward-button[data-ui-variant='outline']:hover,
+.steward-button[data-ui-variant='secondary']:hover {
+  background-color: color-mix(in srgb, var(--accent) 70%, var(--card));
+  border-color: color-mix(in srgb, var(--border) 85%, transparent);
+}
+
+.steward-button[data-ui-variant='ghost'] {
+  background-color: transparent;
+  color: var(--muted-foreground);
+}
+
+.steward-button[data-ui-variant='ghost']:hover {
+  background-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  color: var(--foreground);
 }
 
 .steward-button-link {
@@ -229,15 +286,30 @@ html::-webkit-scrollbar-thumb:hover,
 
 .steward-badge {
   max-width: 100%;
+  min-height: 1.25rem;
   text-transform: none;
   letter-spacing: 0;
+  font-weight: 600;
+}
+
+.steward-badge[data-ui-variant='default'] {
+  background-color: color-mix(in srgb, var(--primary) 82%, var(--card));
+  color: var(--primary-foreground);
+}
+
+.steward-badge[data-ui-variant='secondary'],
+.steward-badge[data-ui-variant='outline'],
+.steward-badge[data-ui-variant='ghost'] {
+  border-color: color-mix(in srgb, var(--border) 55%, transparent);
+  background-color: color-mix(in srgb, var(--muted) 60%, transparent);
+  color: var(--muted-foreground);
 }
 
 .steward-input,
 .steward-select-input {
   min-height: 2rem;
-  border-color: var(--input);
-  background-color: color-mix(in srgb, var(--background) 70%, transparent);
+  border-color: color-mix(in srgb, var(--input) 72%, transparent);
+  background-color: color-mix(in srgb, var(--background) 76%, transparent);
   color: var(--foreground);
 }
 
@@ -253,7 +325,7 @@ html::-webkit-scrollbar-thumb:hover,
 }
 
 .steward-select-dropdown {
-  border-color: var(--border);
+  border-color: color-mix(in srgb, var(--border) 70%, transparent);
   background-color: color-mix(in srgb, var(--popover) var(--companion-window-opacity-percent), transparent);
   color: var(--popover-foreground);
 }
@@ -270,10 +342,10 @@ html::-webkit-scrollbar-thumb:hover,
 
 .steward-tabs-list {
   min-width: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background-color: color-mix(in srgb, var(--card) var(--companion-window-opacity-percent), transparent);
-  padding: 2px;
+  border: 1px solid color-mix(in srgb, var(--border) 35%, transparent);
+  border-radius: calc(var(--radius) + 1px);
+  background-color: color-mix(in srgb, var(--background) 54%, var(--card));
+  padding: 1px;
   gap: 2px;
 }
 
@@ -283,15 +355,17 @@ html::-webkit-scrollbar-thumb:hover,
 }
 
 .steward-tabs-trigger {
-  min-height: 1.9rem;
+  min-height: 1.8rem;
   flex: 1 1 0;
   color: color-mix(in srgb, var(--foreground) 60%, transparent);
   font-weight: 600;
   white-space: nowrap;
+  border-radius: calc(var(--radius) - 2px);
 }
 
 .steward-tabs-trigger:hover {
   color: var(--foreground);
+  background-color: color-mix(in srgb, var(--accent) 34%, transparent);
 }
 
 .steward-tabs-trigger[data-active] {
@@ -314,8 +388,8 @@ html::-webkit-scrollbar-thumb:hover,
 }
 
 .steward-choice-card {
-  border-color: var(--border);
-  background-color: color-mix(in srgb, var(--background) 55%, transparent);
+  border-color: color-mix(in srgb, var(--border) 60%, transparent);
+  background-color: color-mix(in srgb, var(--background) 64%, transparent);
   color: var(--foreground);
 }
 
@@ -331,9 +405,9 @@ html::-webkit-scrollbar-thumb:hover,
 
 .steward-accordion-item {
   overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background-color: color-mix(in srgb, var(--background) 70%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 48%, transparent);
+  border-radius: calc(var(--radius) - 1px);
+  background-color: color-mix(in srgb, var(--background) 76%, transparent);
 }
 
 .steward-accordion-trigger {
@@ -346,8 +420,39 @@ html::-webkit-scrollbar-thumb:hover,
 }
 
 .steward-accordion-content .mantine-Accordion-content {
-  border-top: 1px solid var(--border);
+  border-top: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
   padding: 0.75rem;
+}
+
+.steward-empty-row {
+  display: flex;
+  min-height: 4.5rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: calc(var(--radius) - 2px);
+  background-color: color-mix(in srgb, var(--background) 42%, transparent);
+  padding: 1rem;
+}
+
+.steward-empty-state {
+  display: flex;
+  min-height: 8rem;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: var(--radius);
+  background-color: color-mix(in srgb, var(--card) 54%, var(--background));
+  padding: 1.5rem;
+}
+
+.steward-empty-state-mark {
+  width: 1.25rem;
+  height: 1.25rem;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  border-radius: 999px;
+  background:
+    linear-gradient(color-mix(in srgb, var(--muted-foreground) 60%, transparent), color-mix(in srgb, var(--muted-foreground) 60%, transparent)) center/0.55rem 1px no-repeat;
 }
 
 .mantine-Popover-dropdown,

@@ -18,6 +18,7 @@ function Badge({ className, variant = 'default', ...props }: BadgeProps) {
   return (
     <MantineBadge
       data-slot="badge"
+      data-ui-variant={variant}
       color={color}
       variant={mantineVariant}
       radius="sm"
