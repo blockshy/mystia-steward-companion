@@ -148,7 +148,14 @@
 }
 
 .companion-shell {
+  opacity: var(--companion-window-opacity);
   background-color: color-mix(in srgb, var(--background) var(--companion-window-opacity-percent), transparent);
+  isolation: isolate;
+}
+
+.mantine-Popover-dropdown,
+.mantine-Combobox-dropdown {
+  opacity: var(--companion-window-opacity);
 }
 
 .companion-shell,

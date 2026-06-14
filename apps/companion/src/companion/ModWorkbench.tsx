@@ -79,7 +79,6 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { ChoiceGroup, type ChoiceOption } from '@/components/ui/choice-group';
 import { EmptyRow, EmptyState, InfoLine, ListPanel, Metric, StatusCard } from '@/components/ui/display';
 import { Input } from '@/components/ui/input';
 import { SelectBox } from '@/components/ui/select';
@@ -4239,12 +4238,12 @@ function ModSettingsPanel({
                 value={preferences.windowOpacity}
                 onChange={(windowOpacity) => onPreferenceChange({ windowOpacity })}
               />
-              <SettingChoice
+              <SettingSwitchGroup
                 label="焦点切换"
                 value={preferences.focusSwitchBehavior}
                 options={[
-                  { value: 'hide', label: '隐藏窗口', description: '切回游戏时隐藏伴随窗口。' },
-                  { value: 'keep-visible', label: '保持悬浮', description: '只切回游戏焦点，窗口继续置顶显示。' },
+                  { value: 'hide', label: '隐藏窗口' },
+                  { value: 'keep-visible', label: '保持悬浮' },
                 ]}
                 onChange={(focusSwitchBehavior) => onPreferenceChange({ focusSwitchBehavior })}
               />
@@ -4270,13 +4269,13 @@ function ModSettingsPanel({
 
           <ListPanel title="显示">
             <div className="space-y-4">
-              <SettingChoice
+              <SettingSwitchGroup
                 label="主题"
                 value={themeMode}
                 options={[
-                  { value: 'system', label: '跟随系统', description: '使用系统浅色或深色主题。' },
-                  { value: 'light', label: '浅色', description: '固定使用浅色主题。' },
-                  { value: 'dark', label: '深色', description: '固定使用深色主题。' },
+                  { value: 'system', label: '跟随系统' },
+                  { value: 'light', label: '浅色' },
+                  { value: 'dark', label: '深色' },
                 ]}
                 onChange={onThemeModeChange}
               />
@@ -4333,12 +4332,12 @@ function ModSettingsPanel({
             <div className="text-xs text-muted-foreground">
               当前稀客存在经营投喂任务时，把任务指定料理优先放到推荐第一位；只影响排序，不会自动完成任务。
             </div>
-            <SettingChoice
+            <SettingSwitchGroup
               label="经营中订单排序"
               value={preferences.serviceOrderSortMode}
               options={[
-                { value: 'ordered', label: '点单顺序', description: '按订单首次出现时间排列，保持当前默认行为。' },
-                { value: 'guest', label: '稀客分组', description: '同一稀客的订单放在一起，组内仍按点单先后排列。' },
+                { value: 'ordered', label: '点单顺序' },
+                { value: 'guest', label: '稀客分组' },
               ]}
               onChange={(serviceOrderSortMode) => onPreferenceChange({ serviceOrderSortMode })}
             />
@@ -4395,22 +4394,22 @@ function ModSettingsPanel({
             <div className="text-xs text-muted-foreground">
               关闭时不会显示或执行任何自动化动作；开启后可在“经营中”页面配置具体子功能。
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <AutomationNumberInput
+            <div className="grid gap-4 md:grid-cols-2">
+              <AutomationSliderField
                 label="稀客并发"
                 value={preferences.autoRareConcurrency}
                 min={MIN_AUTO_ORDER_CONCURRENCY}
                 max={MAX_RARE_AUTO_ORDER_CONCURRENCY}
                 onChange={(autoRareConcurrency) => onPreferenceChange({ autoRareConcurrency })}
               />
-              <AutomationNumberInput
+              <AutomationSliderField
                 label="普客并发"
                 value={preferences.autoNormalConcurrency}
                 min={MIN_AUTO_ORDER_CONCURRENCY}
                 max={MAX_NORMAL_AUTO_ORDER_CONCURRENCY}
                 onChange={(autoNormalConcurrency) => onPreferenceChange({ autoNormalConcurrency })}
               />
-              <AutomationNumberInput
+              <AutomationSliderField
                 label="稀客等待送餐盘"
                 value={preferences.autoRareTrayWaitSeconds}
                 min={MIN_AUTO_WAIT_SECONDS}
@@ -4418,7 +4417,7 @@ function ModSettingsPanel({
                 unit="秒"
                 onChange={(autoRareTrayWaitSeconds) => onPreferenceChange({ autoRareTrayWaitSeconds })}
               />
-              <AutomationNumberInput
+              <AutomationSliderField
                 label="普客保温箱复查"
                 value={preferences.autoNormalStorageWaitSeconds}
                 min={MIN_AUTO_WAIT_SECONDS}
@@ -4426,14 +4425,14 @@ function ModSettingsPanel({
                 unit="秒"
                 onChange={(autoNormalStorageWaitSeconds) => onPreferenceChange({ autoNormalStorageWaitSeconds })}
               />
-              <AutomationNumberInput
+              <AutomationSliderField
                 label="最大重试"
                 value={preferences.autoMaxStepRetries}
                 min={MIN_AUTO_STEP_RETRIES}
                 max={MAX_AUTO_STEP_RETRIES_LIMIT}
                 onChange={(autoMaxStepRetries) => onPreferenceChange({ autoMaxStepRetries })}
               />
-              <AutomationNumberInput
+              <AutomationSliderField
                 label="最大回退"
                 value={preferences.autoMaxRollbacks}
                 min={MIN_AUTO_ROLLBACKS}
@@ -4981,7 +4980,7 @@ function FocusSwitchCooldownInput({
   );
 }
 
-function AutomationNumberInput({
+function AutomationSliderField({
   label,
   value,
   min,
@@ -4997,22 +4996,16 @@ function AutomationNumberInput({
   onChange: (value: number) => void;
 }) {
   return (
-    <label className="grid gap-1 text-sm">
-      <span className="font-medium">{label}</span>
-      <div className="flex items-center gap-2">
-        <Input
-          type="number"
-          min={min}
-          max={max}
-          step={1}
-          value={value}
-          onChange={(event) => onChange(clampInteger(Number(event.target.value), min, max, value))}
-          className="h-8"
-        />
-        {unit && <span className="shrink-0 text-xs text-muted-foreground">{unit}</span>}
-      </div>
-      <span className="text-xs text-muted-foreground">{min} - {max}</span>
-    </label>
+    <SliderField
+      label={label}
+      value={value}
+      min={min}
+      max={max}
+      step={1}
+      valueText={`${value}${unit}`}
+      description={`${min}${unit} - ${max}${unit}`}
+      onChange={(nextValue) => onChange(clampInteger(nextValue, min, max, value))}
+    />
   );
 }
 
@@ -5033,13 +5026,18 @@ function OpacitySlider({
       max={100}
       step={1}
       valueText={`${percent}%`}
-      description="仅调整窗口和面板背景，文字、按钮和标签不会整体变淡。"
+      description="调整整个伴随窗口透明度，包含背景、文字、按钮和标签。"
       onChange={(nextPercent) => onChange(normalizeWindowOpacity(nextPercent / 100))}
     />
   );
 }
 
-function SettingChoice<TValue extends string>({
+type SettingSwitchOption<TValue extends string> = {
+  value: TValue;
+  label: string;
+};
+
+function SettingSwitchGroup<TValue extends string>({
   label,
   value,
   options,
@@ -5047,10 +5045,27 @@ function SettingChoice<TValue extends string>({
 }: {
   label: string;
   value: TValue;
-  options: ChoiceOption<TValue>[];
+  options: SettingSwitchOption<TValue>[];
   onChange: (value: TValue) => void;
 }) {
-  return <ChoiceGroup label={label} value={value} options={options} onChange={onChange} />;
+  return (
+    <div className="space-y-2">
+      <div className="text-sm font-medium">{label}</div>
+      <div className="grid gap-2">
+        {options.map((option) => (
+          <SwitchField
+            key={option.value}
+            label={option.label}
+            checked={value === option.value}
+            onCheckedChange={(checked) => {
+              if (checked) onChange(option.value);
+            }}
+            className="rounded-sm bg-muted/35 px-2.5 py-2"
+          />
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function SortRulesControl<K extends string>({
