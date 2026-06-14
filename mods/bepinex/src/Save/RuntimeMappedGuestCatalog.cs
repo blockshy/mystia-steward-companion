@@ -39,6 +39,14 @@ internal sealed class RuntimeMappedGuestCatalog
         }
     }
 
+    public static void ResetRetryDelay()
+    {
+        lock (SyncRoot)
+        {
+            _lastReadAttemptUtc = DateTime.MinValue;
+        }
+    }
+
     public RareCustomer? ResolveCustomer(int? runtimeId, string? runtimeNameOrStringId)
     {
         if (runtimeId.HasValue && _localRareCustomersById.TryGetValue(runtimeId.Value, out var currentLocalCustomer))

@@ -12,6 +12,7 @@ internal sealed class LocalApiSnapshot
     public bool RuntimeLoaded { get; init; }
     public string Status { get; init; } = "";
     public string RuntimeSource { get; init; } = "";
+    public string RuntimeSceneReadinessStatus { get; init; } = "";
     public string RuntimeUiPinningStatus { get; init; } = "";
     public RecommendationStateSnapshot? RecommendationState { get; init; }
     public NightBusinessContext? NightBusiness { get; init; }

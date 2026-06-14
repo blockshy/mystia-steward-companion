@@ -57,6 +57,14 @@ internal sealed class RuntimeStaticDataCatalog
         }
     }
 
+    public static void ResetRetryDelay()
+    {
+        lock (SyncRoot)
+        {
+            _lastReadAttemptUtc = DateTime.MinValue;
+        }
+    }
+
     private void EnsureLoaded(RuntimeMappedGuestCatalogSnapshot mappedGuestSnapshot)
     {
         lock (SyncRoot)

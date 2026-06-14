@@ -63,6 +63,14 @@ public static class SpecialOrderRuntimeCapture
         TryAttach(log, true);
     }
 
+    public static void ResetAttachRetryDelay()
+    {
+        lock (SyncRoot)
+        {
+            _lastAttachAttemptUtc = DateTime.MinValue;
+        }
+    }
+
     public static IReadOnlyList<CapturedRuntimeSpecialOrder> Snapshot(TimeSpan maxAge)
     {
         TryAttach(_log, false);

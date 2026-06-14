@@ -406,6 +406,7 @@ interface LocalApiSnapshot {
   runtimeLoaded: boolean;
   status: string;
   runtimeSource: string;
+  runtimeSceneReadinessStatus?: string;
   runtimeUiPinningStatus?: string;
   recommendationState: RecommendationStateSnapshot | null;
   nightBusiness: NightBusinessContext | null;
@@ -925,11 +926,6 @@ export function ModWorkbench() {
 
   useEffect(() => {
     if (!snapshot) return;
-    if (!snapshot.runtimeLoaded) {
-      setCachedRuntimeData(null);
-      return;
-    }
-
     if (snapshot.runtimeData?.isComplete) {
       setCachedRuntimeData(snapshot.runtimeData);
     }
@@ -941,9 +937,7 @@ export function ModWorkbench() {
   const selectedPlace = manualPlace ?? detectedPlace;
   const effectiveRuntimeData = snapshot?.runtimeData?.isComplete
     ? snapshot.runtimeData
-    : snapshot?.runtimeLoaded
-      ? cachedRuntimeData ?? snapshot?.runtimeData
-      : snapshot?.runtimeData;
+    : cachedRuntimeData ?? snapshot?.runtimeData;
   const recommendationData = useMemo(
     () => buildRecommendationDataSet(effectiveRuntimeData),
     [effectiveRuntimeData],
@@ -2461,6 +2455,7 @@ function ModOverviewPanel({
               <InfoLine label="场景" value={snapshot?.activeSceneName || '未知'} />
               <InfoLine label="运行时状态" value={snapshot?.status || '暂无快照'} />
               {showDebugDetails && <InfoLine label="运行时来源" value={snapshot?.runtimeSource || '未知'} />}
+              {showDebugDetails && <InfoLine label="场景就绪" value={snapshot?.runtimeSceneReadinessStatus || '暂无'} mono />}
               <InfoLine
                 label="推荐数据"
                 value={data.source === 'runtime' ? `游戏运行时 (${data.status})` : `等待游戏运行时数据 (${data.status})`}
