@@ -1,56 +1,58 @@
-import { Button as ButtonPrimitive } from "@base-ui/react/button"
-import { cva, type VariantProps } from "class-variance-authority"
+import { Button as MantineButton } from '@mantine/core';
+import type { ButtonProps as MantineButtonProps } from '@mantine/core';
+import type { ButtonHTMLAttributes, ReactNode } from 'react';
 
-import { cn } from "@/lib/utils"
+import { cn } from '@/lib/utils';
 
-const buttonVariants = cva(
-  "group/button inline-flex shrink-0 items-center justify-center rounded-md border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap transition-colors outline-none select-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/35 disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-2 aria-invalid:ring-destructive/20 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
-  {
-    variants: {
-      variant: {
-        default: "bg-primary text-primary-foreground hover:bg-primary/90 [a]:hover:bg-primary/90",
-        outline:
-          "border-border bg-background/70 hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:bg-input/20 dark:hover:bg-input/40",
-        secondary:
-          "border-border bg-secondary text-secondary-foreground hover:bg-secondary/80 aria-expanded:bg-secondary aria-expanded:text-secondary-foreground",
-        ghost:
-          "hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:hover:bg-muted/50",
-        destructive:
-          "bg-destructive/10 text-destructive hover:bg-destructive/20 focus-visible:border-destructive/40 focus-visible:ring-destructive/20 dark:bg-destructive/20 dark:hover:bg-destructive/30 dark:focus-visible:ring-destructive/40",
-        link: "text-primary underline-offset-4 hover:underline",
-      },
-      size: {
-        default:
-          "h-8 gap-1.5 px-2.5 has-data-[icon=inline-end]:pr-2 has-data-[icon=inline-start]:pl-2",
-        xs: "h-6 gap-1 px-2 text-xs has-data-[icon=inline-end]:pr-1.5 has-data-[icon=inline-start]:pl-1.5 [&_svg:not([class*='size-'])]:size-3",
-        sm: "h-7 gap-1 px-2.5 text-[0.8rem] has-data-[icon=inline-end]:pr-1.5 has-data-[icon=inline-start]:pl-1.5 [&_svg:not([class*='size-'])]:size-3.5",
-        lg: "h-9 gap-1.5 px-2.5 has-data-[icon=inline-end]:pr-2 has-data-[icon=inline-start]:pl-2",
-        icon: "size-8",
-        "icon-xs": "size-6 [&_svg:not([class*='size-'])]:size-3",
-        "icon-sm": "size-7",
-        "icon-lg": "size-9",
-      },
-    },
-    defaultVariants: {
-      variant: "default",
-      size: "default",
-    },
-  }
-)
+type ButtonVariant = 'default' | 'outline' | 'secondary' | 'ghost' | 'destructive' | 'link';
+type ButtonSize = 'default' | 'xs' | 'sm' | 'lg' | 'icon' | 'icon-xs' | 'icon-sm' | 'icon-lg';
 
-function Button({
-  className,
-  variant = "default",
-  size = "default",
-  ...props
-}: ButtonPrimitive.Props & VariantProps<typeof buttonVariants>) {
+type ButtonProps = Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'color'> & {
+  variant?: ButtonVariant;
+  size?: ButtonSize;
+  leftSection?: ReactNode;
+  rightSection?: ReactNode;
+  loading?: boolean;
+  fullWidth?: boolean;
+};
+
+const buttonVariantMap: Record<ButtonVariant, MantineButtonProps['variant']> = {
+  default: 'filled',
+  outline: 'default',
+  secondary: 'light',
+  ghost: 'subtle',
+  destructive: 'light',
+  link: 'transparent',
+};
+
+const buttonSizeMap: Record<ButtonSize, MantineButtonProps['size']> = {
+  default: 'compact-sm',
+  xs: 'compact-xs',
+  sm: 'compact-xs',
+  lg: 'compact-md',
+  icon: 'compact-sm',
+  'icon-xs': 'compact-xs',
+  'icon-sm': 'compact-xs',
+  'icon-lg': 'compact-md',
+};
+
+function Button({ className, variant = 'default', size = 'default', ...props }: ButtonProps) {
   return (
-    <ButtonPrimitive
+    <MantineButton
       data-slot="button"
-      className={cn(buttonVariants({ variant, size, className }))}
-      {...props}
+      color={variant === 'destructive' ? 'red' : 'steward'}
+      variant={buttonVariantMap[variant]}
+      size={buttonSizeMap[size]}
+      className={cn(
+        'steward-button',
+        size.startsWith('icon') && 'steward-button-icon',
+        variant === 'link' && 'steward-button-link',
+        className,
+      )}
+      {...(props as MantineButtonProps)}
     />
-  )
+  );
 }
 
-export { Button }
+export { Button };
+export type { ButtonProps };

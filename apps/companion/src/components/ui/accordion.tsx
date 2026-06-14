@@ -1,19 +1,29 @@
-import { Accordion as AccordionPrimitive } from '@base-ui/react/accordion';
-import { ChevronDown } from 'lucide-react';
+import { Accordion as MantineAccordion } from '@mantine/core';
 import type { ReactNode } from 'react';
 
 import { cn } from '@/lib/utils';
 
-const Accordion = AccordionPrimitive.Root;
+type AccordionProps = React.ComponentProps<typeof MantineAccordion>;
 
-function AccordionItem({
-  className,
-  ...props
-}: AccordionPrimitive.Item.Props) {
+function Accordion({ className, defaultValue, value, ...props }: AccordionProps) {
+  const multiple = Array.isArray(defaultValue) || Array.isArray(value);
   return (
-    <AccordionPrimitive.Item
+    <MantineAccordion
+      data-slot="accordion"
+      className={cn('steward-accordion', className)}
+      defaultValue={defaultValue}
+      value={value}
+      multiple={multiple}
+      {...props}
+    />
+  );
+}
+
+function AccordionItem({ className, ...props }: React.ComponentProps<typeof MantineAccordion.Item>) {
+  return (
+    <MantineAccordion.Item
       data-slot="accordion-item"
-      className={cn('rounded-md border border-border bg-background/70', className)}
+      className={cn('steward-accordion-item', className)}
       {...props}
     />
   );
@@ -23,35 +33,26 @@ function AccordionTrigger({
   className,
   children,
   ...props
-}: AccordionPrimitive.Trigger.Props & { children: ReactNode }) {
+}: React.ComponentProps<typeof MantineAccordion.Control> & { children: ReactNode }) {
   return (
-    <AccordionPrimitive.Header>
-      <AccordionPrimitive.Trigger
-        data-slot="accordion-trigger"
-        className={cn(
-          'flex w-full cursor-pointer items-start justify-between gap-3 px-3 py-2.5 text-left text-sm transition-colors outline-none hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring/35',
-          className,
-        )}
-        {...props}
-      >
-        {children}
-        <ChevronDown
-          data-slot="accordion-chevron"
-          className="mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform"
-        />
-      </AccordionPrimitive.Trigger>
-    </AccordionPrimitive.Header>
+    <MantineAccordion.Control
+      data-slot="accordion-trigger"
+      className={cn('steward-accordion-trigger', className)}
+      {...props}
+    >
+      {children}
+    </MantineAccordion.Control>
   );
 }
 
 function AccordionContent({
   className,
   ...props
-}: AccordionPrimitive.Panel.Props) {
+}: React.ComponentProps<typeof MantineAccordion.Panel>) {
   return (
-    <AccordionPrimitive.Panel
+    <MantineAccordion.Panel
       data-slot="accordion-content"
-      className={cn('border-t border-border px-3 py-3 text-sm', className)}
+      className={cn('steward-accordion-content text-sm', className)}
       {...props}
     />
   );

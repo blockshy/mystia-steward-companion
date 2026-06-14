@@ -1,8 +1,9 @@
-import { Slider as SliderPrimitive } from '@base-ui/react/slider';
+import { Slider as MantineSlider } from '@mantine/core';
+import type { SliderProps as MantineSliderProps } from '@mantine/core';
 
 import { cn } from '@/lib/utils';
 
-type SliderProps = Omit<SliderPrimitive.Root.Props<number>, 'value' | 'onValueChange'> & {
+type SliderProps = Omit<MantineSliderProps, 'value' | 'onChange'> & {
   value: number;
   onValueChange: (value: number) => void;
   gamepadStep?: number;
@@ -20,27 +21,24 @@ function Slider({
   ...props
 }: SliderProps) {
   return (
-    <SliderPrimitive.Root
+    <div
       data-slot="slider"
-      className={cn('relative flex w-full touch-none items-center py-2 outline-none', className)}
-      value={value}
-      min={min}
-      max={max}
-      step={step}
-      disabled={disabled}
-      onValueChange={onValueChange}
-      {...props}
+      className={cn('relative py-2', className)}
     >
-      <SliderPrimitive.Control className="relative flex h-5 w-full items-center">
-        <SliderPrimitive.Track className="relative h-1.5 w-full rounded-full bg-muted">
-          <SliderPrimitive.Indicator className="absolute h-full rounded-full bg-primary" />
-        </SliderPrimitive.Track>
-        <SliderPrimitive.Thumb
-          index={0}
-          tabIndex={-1}
-          className="size-4 rounded-full border border-primary bg-background shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/35"
-        />
-      </SliderPrimitive.Control>
+      <MantineSlider
+        color="steward"
+        size="sm"
+        thumbSize={16}
+        label={null}
+        value={value}
+        min={min}
+        max={max}
+        step={step}
+        disabled={disabled}
+        onChange={onValueChange}
+        className="steward-slider"
+        {...props}
+      />
       <input
         type="range"
         min={min}
@@ -54,7 +52,7 @@ function Slider({
         onChange={(event) => onValueChange(Number(event.target.value))}
         className="absolute inset-0 h-full w-full cursor-pointer opacity-0 disabled:cursor-not-allowed"
       />
-    </SliderPrimitive.Root>
+    </div>
   );
 }
 

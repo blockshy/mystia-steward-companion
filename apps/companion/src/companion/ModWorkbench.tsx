@@ -82,13 +82,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { ChoiceGroup, type ChoiceOption } from '@/components/ui/choice-group';
 import { EmptyRow, EmptyState, InfoLine, ListPanel, Metric, StatusCard } from '@/components/ui/display';
 import { Input } from '@/components/ui/input';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+import { SelectBox } from '@/components/ui/select';
 import { SliderField } from '@/components/ui/slider';
 import { Switch, SwitchField } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -2775,44 +2769,38 @@ function ModRarePanel({
             <CardContent className={`${DENSE_THREE_COLUMN_GRID} p-4 text-sm`}>
               <div>
                 <div className="mb-1 text-xs text-muted-foreground">稀客</div>
-                <Select value={String(selectedCustomer.id)} onValueChange={(value) => onRareCustomerChange(Number(value))}>
-                  <SelectTrigger className="w-full">
-                    <SelectValue>{selectedCustomer.name}</SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    {customers.map((customer) => (
-                      <SelectItem key={customer.id} value={String(customer.id)}>{customer.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <SelectBox
+                  value={String(selectedCustomer.id)}
+                  aria-label="稀客"
+                  searchable
+                  className="w-full"
+                  options={customers.map((customer) => ({ value: String(customer.id), label: customer.name }))}
+                  onValueChange={(value) => onRareCustomerChange(Number(value))}
+                />
               </div>
 
               <div>
                 <div className="mb-1 text-xs text-muted-foreground">点单料理 Tag</div>
-                <Select value={foodTag} onValueChange={(value) => onFoodTagChange(value ?? '')}>
-                  <SelectTrigger className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {selectedFoodTags.map((tag) => (
-                      <SelectItem key={tag} value={tag}>{tag}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <SelectBox
+                  value={foodTag}
+                  aria-label="点单料理 Tag"
+                  searchable
+                  className="w-full"
+                  options={selectedFoodTags.map((tag) => ({ value: tag, label: tag }))}
+                  onValueChange={onFoodTagChange}
+                />
               </div>
 
               <div>
                 <div className="mb-1 text-xs text-muted-foreground">点单酒水 Tag</div>
-                <Select value={beverageTag} onValueChange={(value) => onBeverageTagChange(value ?? '')}>
-                  <SelectTrigger className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {selectedBeverageTags.map((tag) => (
-                      <SelectItem key={tag} value={tag}>{tag}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <SelectBox
+                  value={beverageTag}
+                  aria-label="点单酒水 Tag"
+                  searchable
+                  className="w-full"
+                  options={selectedBeverageTags.map((tag) => ({ value: tag, label: tag }))}
+                  onValueChange={onBeverageTagChange}
+                />
               </div>
             </CardContent>
           </Card>

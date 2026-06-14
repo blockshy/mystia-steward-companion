@@ -29,14 +29,12 @@ const FOCUSABLE_SELECTOR = [
   '[tabindex]:not([tabindex="-1"])',
   '[role="button"]:not([aria-disabled="true"])',
   '[role="switch"]:not([aria-disabled="true"])',
-  '[data-slot="select-item"]:not([data-disabled])',
   '[data-gamepad-focusable="true"]',
 ].join(',');
 const GAMEPAD_SCOPE_SELECTOR = '[data-gamepad-scope]';
 const GAMEPAD_ROW_SELECTOR = '[data-gamepad-row="true"]';
 const GAMEPAD_SLIDER_SELECTOR = '[data-gamepad-slider="true"]';
-const SELECT_CONTENT_SELECTOR = '[data-slot="select-content"]';
-const SELECT_ITEM_SELECTOR = '[data-slot="select-item"]:not([data-disabled])';
+const SELECT_ROOT_SELECTOR = '[data-slot="select"]';
 const TAB_SELECTOR = '[data-gamepad-tab="true"]';
 
 type GamepadDirection = 'up' | 'down' | 'left' | 'right';
@@ -350,7 +348,7 @@ function moveFocus(direction: GamepadDirection, focusElement: (element: HTMLElem
   }
 
   if (adjustGamepadSlider(active, direction)) return;
-  if (moveWithinOpenSelect(active, direction, focusElement)) return;
+  if (moveWithinSelect(active, direction)) return;
   if (moveFromTabs(active, direction, focusElement)) return;
   if (moveWithinContent(active, direction, focusElement)) return;
 
@@ -360,26 +358,18 @@ function moveFocus(direction: GamepadDirection, focusElement: (element: HTMLElem
   scrollActiveContainer(direction === 'left' ? -SCROLL_STEP : SCROLL_STEP);
 }
 
-function moveWithinOpenSelect(
+function moveWithinSelect(
   active: HTMLElement,
   direction: GamepadDirection,
-  focusElement: (element: HTMLElement) => void,
 ): boolean {
-  const selectContent = active.closest<HTMLElement>(SELECT_CONTENT_SELECTOR);
-  if (!selectContent) return false;
-  if (direction !== 'up' && direction !== 'down') return true;
+  if (!isSelectControl(active)) return false;
 
-  const items = getFocusableElementsWithin(selectContent, SELECT_ITEM_SELECTOR);
-  const currentIndex = items.indexOf(active);
-  if (currentIndex < 0) return false;
+  if (direction === 'up' || direction === 'down') {
+    dispatchSelectKey(active, direction === 'up' ? 'ArrowUp' : 'ArrowDown');
+    return true;
+  }
 
-  const nextIndex = direction === 'up'
-    ? Math.max(0, currentIndex - 1)
-    : Math.min(items.length - 1, currentIndex + 1);
-  const next = items[nextIndex];
-  if (!next || next === active) return true;
-  focusElement(next);
-  return true;
+  return isSelectExpanded(active);
 }
 
 function moveFromTabs(
@@ -583,6 +573,11 @@ function activateFocusedElement(focusElement: (element: HTMLElement) => void) {
     return;
   }
 
+  if (isSelectControl(active)) {
+    dispatchSelectKey(active, 'Enter');
+    return;
+  }
+
   const favoriteButton = active.dataset.gamepadRow === 'true'
     ? active.querySelector<HTMLElement>('[data-gamepad-favorite="true"]:not([disabled])')
     : null;
@@ -590,6 +585,25 @@ function activateFocusedElement(focusElement: (element: HTMLElement) => void) {
   const target = favoriteButton ?? active;
   restoreFocusAfterAction(target, focusElement);
   target.click();
+}
+
+function isSelectControl(element: HTMLElement): boolean {
+  return Boolean(element.closest(SELECT_ROOT_SELECTOR));
+}
+
+function isSelectExpanded(element: HTMLElement): boolean {
+  const root = element.closest<HTMLElement>(SELECT_ROOT_SELECTOR);
+  return Boolean(root?.querySelector('[aria-expanded="true"]'));
+}
+
+function dispatchSelectKey(element: HTMLElement, key: 'ArrowUp' | 'ArrowDown' | 'Enter') {
+  const code = key === 'Enter' ? 'Enter' : key;
+  element.dispatchEvent(new KeyboardEvent('keydown', {
+    key,
+    code,
+    bubbles: true,
+    cancelable: true,
+  }));
 }
 
 function activateFavoriteAction(focusElement?: (element: HTMLElement) => void) {

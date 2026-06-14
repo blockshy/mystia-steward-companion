@@ -153,7 +153,8 @@
 
 .companion-shell,
 .companion-shell *,
-[data-slot='select-content'] {
+.mantine-Popover-dropdown,
+.mantine-Combobox-dropdown {
   scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-surface-track);
   scrollbar-width: thin;
 }
@@ -161,7 +162,8 @@
 html::-webkit-scrollbar,
 .companion-shell::-webkit-scrollbar,
 .companion-shell *::-webkit-scrollbar,
-[data-slot='select-content']::-webkit-scrollbar {
+.mantine-Popover-dropdown::-webkit-scrollbar,
+.mantine-Combobox-dropdown::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
@@ -173,7 +175,8 @@ html::-webkit-scrollbar-track {
 
 .companion-shell::-webkit-scrollbar-track,
 .companion-shell *::-webkit-scrollbar-track,
-[data-slot='select-content']::-webkit-scrollbar-track {
+.mantine-Popover-dropdown::-webkit-scrollbar-track,
+.mantine-Combobox-dropdown::-webkit-scrollbar-track {
   background: var(--scrollbar-surface-track);
   border-radius: 999px;
 }
@@ -181,7 +184,8 @@ html::-webkit-scrollbar-track {
 html::-webkit-scrollbar-thumb,
 .companion-shell::-webkit-scrollbar-thumb,
 .companion-shell *::-webkit-scrollbar-thumb,
-[data-slot='select-content']::-webkit-scrollbar-thumb {
+.mantine-Popover-dropdown::-webkit-scrollbar-thumb,
+.mantine-Combobox-dropdown::-webkit-scrollbar-thumb {
   background: var(--scrollbar-thumb);
   border: 2px solid transparent;
   border-radius: 999px;
@@ -191,26 +195,162 @@ html::-webkit-scrollbar-thumb,
 html::-webkit-scrollbar-thumb:hover,
 .companion-shell::-webkit-scrollbar-thumb:hover,
 .companion-shell *::-webkit-scrollbar-thumb:hover,
-[data-slot='select-content']::-webkit-scrollbar-thumb:hover {
+.mantine-Popover-dropdown::-webkit-scrollbar-thumb:hover,
+.mantine-Combobox-dropdown::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar-thumb-hover);
   background-clip: content-box;
 }
 
 .companion-shell [data-slot='card'],
-.companion-shell [data-slot='tabs-list'] {
+.companion-shell [data-slot='tabs-list'],
+.mantine-Popover-dropdown,
+.mantine-Combobox-dropdown {
   background-color: color-mix(in srgb, var(--card) var(--companion-window-opacity-percent), transparent);
 }
 
-[data-slot='select-content'] {
-  background-color: color-mix(in srgb, var(--popover) var(--companion-window-opacity-percent), transparent);
+.steward-card {
+  border-color: var(--border);
+  color: var(--card-foreground);
 }
 
-[data-slot='select-scroll-up-button'],
-[data-slot='select-scroll-down-button'] {
-  background-color: color-mix(in srgb, var(--popover) var(--companion-window-opacity-percent), transparent);
+.steward-button {
+  border-color: var(--border);
+  font-weight: 600;
 }
 
-[data-slot='accordion-trigger'][data-panel-open] [data-slot='accordion-chevron'],
-[data-slot='accordion-trigger'][aria-expanded='true'] [data-slot='accordion-chevron'] {
-  transform: rotate(180deg);
+.steward-button-icon {
+  padding-inline: 0;
+  width: 2rem;
+}
+
+.steward-button-link {
+  color: var(--primary);
+}
+
+.steward-badge {
+  max-width: 100%;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.steward-input,
+.steward-select-input {
+  min-height: 2rem;
+  border-color: var(--input);
+  background-color: color-mix(in srgb, var(--background) 70%, transparent);
+  color: var(--foreground);
+}
+
+.dark .steward-input,
+.dark .steward-select-input {
+  background-color: color-mix(in srgb, var(--input) 20%, transparent);
+}
+
+.steward-input:focus,
+.steward-select-input:focus,
+.steward-select-input:focus-within {
+  border-color: var(--ring);
+}
+
+.steward-select-dropdown {
+  border-color: var(--border);
+  background-color: color-mix(in srgb, var(--popover) var(--companion-window-opacity-percent), transparent);
+  color: var(--popover-foreground);
+}
+
+.steward-select-option {
+  color: var(--popover-foreground);
+}
+
+.steward-select-option:hover,
+.steward-select-option[data-combobox-selected] {
+  background-color: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.steward-tabs-list {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background-color: color-mix(in srgb, var(--card) var(--companion-window-opacity-percent), transparent);
+  padding: 2px;
+  gap: 2px;
+}
+
+.steward-tabs-list-line {
+  border-color: transparent;
+  background-color: transparent;
+}
+
+.steward-tabs-trigger {
+  min-height: 1.9rem;
+  flex: 1 1 0;
+  color: color-mix(in srgb, var(--foreground) 60%, transparent);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.steward-tabs-trigger:hover {
+  color: var(--foreground);
+}
+
+.steward-tabs-trigger[data-active] {
+  background-color: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.steward-switch .mantine-Switch-track {
+  border-color: var(--border);
+  background-color: var(--muted);
+}
+
+.steward-switch .mantine-Switch-track[data-checked] {
+  border-color: var(--primary);
+  background-color: var(--primary);
+}
+
+.steward-slider .mantine-Slider-track::before {
+  background-color: var(--muted);
+}
+
+.steward-choice-card {
+  border-color: var(--border);
+  background-color: color-mix(in srgb, var(--background) 55%, transparent);
+  color: var(--foreground);
+}
+
+.steward-choice-card:hover {
+  background-color: var(--muted);
+}
+
+.steward-choice-card-active,
+.steward-choice-card[data-checked] {
+  border-color: var(--primary);
+  background-color: color-mix(in srgb, var(--primary) 10%, transparent);
+}
+
+.steward-accordion-item {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background-color: color-mix(in srgb, var(--background) 70%, transparent);
+}
+
+.steward-accordion-trigger {
+  padding: 0.625rem 0.75rem;
+  color: var(--foreground);
+}
+
+.steward-accordion-trigger:hover {
+  background-color: color-mix(in srgb, var(--muted) 60%, transparent);
+}
+
+.steward-accordion-content .mantine-Accordion-content {
+  border-top: 1px solid var(--border);
+  padding: 0.75rem;
+}
+
+.mantine-Popover-dropdown,
+.mantine-Combobox-dropdown {
+  backdrop-filter: blur(4px);
 }
