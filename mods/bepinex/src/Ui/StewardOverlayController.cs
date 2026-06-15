@@ -14,12 +14,12 @@ namespace MystiaStewardCompanion.Ui;
 internal sealed class StewardOverlayController
 {
     private const float SpecialOrderRefreshDebounceSeconds = 0.2f;
-    private const float LocalApiSnapshotPublishMinIntervalSeconds = 0.5f;
+    private const float LocalApiSnapshotPublishMinIntervalSeconds = 0.35f;
     private const float RuntimeDataFullPublishIntervalSeconds = 10f;
+    private const float RuntimeDataCatalogRetrySeconds = 5f;
+    private const float PerformanceSnapshotMaxAgeSeconds = 12f;
     private const float PendingCookingProcessIntervalSeconds = 0.25f;
-    private const float NormalBusinessSnapshotCacheSeconds = 0.75f;
-    private const int SceneSnapshotStartupGuardFrames = 30;
-    private const float SceneSnapshotStartupGuardSeconds = 2f;
+    private const float NormalBusinessSnapshotCacheSeconds = 0.35f;
     private static readonly JsonSerializerOptions LocalApiJsonOptions = new(JsonSerializerDefaults.Web);
 
     private StewardPluginConfig? _config;
@@ -52,10 +52,9 @@ internal sealed class StewardOverlayController
     private float _nextBusinessRefreshAt;
     private float _nextLocalApiSnapshotPublishAt;
     private float _nextRuntimeDataFullPublishAt;
+    private float _nextRuntimeDataCatalogRefreshAt;
     private float _nextPendingCookingProcessAt;
     private float _nextNormalBusinessRefreshAt;
-    private float _sceneChangedAtRealtime;
-    private int _sceneChangedFrame;
     private bool _localApiSnapshotErrorLogged;
     private bool _disposed;
     private bool _controllerToggleLatched;
@@ -63,9 +62,11 @@ internal sealed class StewardOverlayController
     private bool _localApiSnapshotPublishPending;
     private float _nextControllerToggleAt;
     private float _nextSpecialOrderRefreshAt;
+    private long _lastRuntimeSceneReadinessVersion;
     private string _lastPublishedRuntimeDataSignature = "";
     private readonly List<RuntimeRareCustomer> _runtimeRareCustomers = new();
     private readonly Dictionary<string, double> _performanceMs = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, float> _performanceUpdatedAt = new(StringComparer.Ordinal);
 
     private sealed class PendingInventoryEdit
     {
@@ -101,6 +102,7 @@ internal sealed class StewardOverlayController
         public RareGuestInvitationAction Action { get; init; }
         public int GuestId { get; init; } = -1;
         public string Scope { get; init; } = "";
+        public string KizunaLevels { get; init; } = "";
         public ManualResetEventSlim Completion { get; } = new(false);
         public RareGuestInvitationResult? Result { get; set; }
         public Exception? Error { get; set; }
@@ -126,8 +128,6 @@ internal sealed class StewardOverlayController
         _log = log;
         _mainThreadId = Thread.CurrentThread.ManagedThreadId;
         _activeSceneName = GetActiveSceneName();
-        _sceneChangedFrame = Time.frameCount;
-        _sceneChangedAtRealtime = Time.realtimeSinceStartup;
         LoadRepository();
         _localApiToken = EnsureLocalApiToken(config);
         StartLocalApi();
@@ -143,12 +143,13 @@ internal sealed class StewardOverlayController
     public void Update()
     {
         if (_disposed || _config == null) return;
+        RefreshOnSceneChange();
+        RefreshOnRuntimeSceneReadinessChange();
         ProcessPendingInventoryEdits();
         ProcessPendingInventoryBulkEdits();
         ProcessPendingOrderPreparations();
         ProcessPendingRareGuestInvitations();
         ProcessPendingCookingCollections();
-        RefreshOnSceneChange();
         RefreshBusinessContextOnSpecialOrderChange();
 
         if (IsTogglePressed())
@@ -193,14 +194,28 @@ internal sealed class StewardOverlayController
         if (string.Equals(sceneName, _activeSceneName, StringComparison.Ordinal)) return;
 
         _activeSceneName = sceneName;
-        _sceneChangedFrame = Time.frameCount;
-        _sceneChangedAtRealtime = Time.realtimeSinceStartup;
+        if (IsNonGameplayScene(sceneName) || IsNightBusinessScene(sceneName))
+        {
+            RuntimeSceneReadinessCapture.ClearForSceneChange(sceneName);
+        }
+
         _nextAutoRefreshAt = 0f;
         _nextBusinessRefreshAt = 0f;
+        ResetRuntimeRetryDelays();
+        _lastPublishedRuntimeDataSignature = "";
         _businessFallbackState = null;
         RuntimeMissionSnapshotService.ClearCache();
         _normalBusinessContext = null;
         _nextNormalBusinessRefreshAt = 0f;
+
+        if (IsIzakayaPrepActive(sceneName))
+        {
+            ClearNightBusinessRuntime(L(
+                "经营准备界面正在初始化；暂不读取夜间经营对象。",
+                "Izakaya prep is initializing; night-business objects are not read yet."));
+            PublishLocalApiSnapshot();
+            return;
+        }
 
         if (IsNonGameplayScene(sceneName))
         {
@@ -215,6 +230,27 @@ internal sealed class StewardOverlayController
             "已切换场景，正在刷新游戏数据。",
             "Scene changed. Refreshing game data.");
         PublishLocalApiSnapshot();
+    }
+
+    private void RefreshOnRuntimeSceneReadinessChange()
+    {
+        var version = RuntimeSceneReadinessCapture.ChangeVersion;
+        if (version == _lastRuntimeSceneReadinessVersion) return;
+
+        _lastRuntimeSceneReadinessVersion = version;
+        _nextAutoRefreshAt = 0f;
+        ResetRuntimeRetryDelays();
+        _lastPublishedRuntimeDataSignature = "";
+        RuntimeMissionSnapshotService.ClearCache();
+        _localApiSnapshotPublishPending = true;
+    }
+
+    private void ResetRuntimeRetryDelays()
+    {
+        _nextRuntimeDataCatalogRefreshAt = 0f;
+        RuntimeMappedGuestCatalog.ResetRetryDelay();
+        RuntimeStaticDataCatalog.ResetRetryDelay();
+        SpecialOrderRuntimeCapture.ResetAttachRetryDelay();
     }
 
     private bool IsTogglePressed()
@@ -332,17 +368,29 @@ internal sealed class StewardOverlayController
         try
         {
             _activeSceneName = GetActiveSceneName();
-            if (IsNonGameplayScene(_activeSceneName))
+            if (!CanReadRuntimeStateInCurrentScene(_activeSceneName, out var sceneWaitReason))
             {
-                ClearLoadedRuntime(L(
-                    "当前游戏运行时数据不可用：当前处于非游戏内页面。",
-                    "Live game runtime data unavailable: this is not an in-game page."));
+                if (IsNonGameplayScene(_activeSceneName))
+                {
+                    ClearLoadedRuntime(sceneWaitReason);
+                }
+                else if (IsIzakayaPrepActive(_activeSceneName) || IsNightBusinessScene(_activeSceneName))
+                {
+                    ClearNightBusinessRuntime(sceneWaitReason);
+                }
+                else
+                {
+                    _status = sceneWaitReason;
+                }
+
                 return;
             }
 
             if (RuntimeReflectionRecommendationStateProvider.CanReadRuntimeState(out var runtimeReason))
             {
-                var includePlacedCookers = HasActiveNightBusinessContext(_businessContext);
+                TryRefreshRuntimeDataCatalog();
+
+                var includePlacedCookers = !IsIzakayaPrepActive(_activeSceneName) && HasActiveNightBusinessContext(_businessContext);
                 var includeDaySceneState = ShouldReadDaySceneRuntimeState();
                 var runtimeProvider = new RuntimeReflectionRecommendationStateProvider(
                     _repository,
@@ -366,7 +414,6 @@ internal sealed class StewardOverlayController
                 _runtimeSource = runtimeProvider.Description;
                 _lastRuntimeErrorMessage = "";
                 _lastRuntimeReadUtc = DateTime.UtcNow;
-                TryRefreshRuntimeDataCatalog();
                 var sourceChanged = !string.Equals(previousSource, runtimeProvider.Description, StringComparison.OrdinalIgnoreCase);
                 var sourceLabel = FormatSourceDescription(runtimeProvider.Description);
                 _status = manual || sourceChanged
@@ -434,22 +481,21 @@ internal sealed class StewardOverlayController
                 return;
             }
 
+            if (IsIzakayaPrepActive(_activeSceneName))
+            {
+                ClearNightBusinessRuntime(L(
+                    "经营准备界面正在初始化；当前无经营场景。",
+                    "Izakaya prep is initializing; no active business scene."));
+                return;
+            }
+
             if (!IsNightBusinessScene(_activeSceneName))
             {
-                SpecialOrderRuntimeCapture.ClearOrders("left night business scene");
-                _businessContext = new NightBusinessContext
-                {
-                    Source = L("当前不在夜晚经营场景。", "Not in a night business scene."),
-                };
-                _normalBusinessContext = null;
-                _nextNormalBusinessRefreshAt = 0f;
-                ClearPlacedCookersFromCurrentState("not in night business scene");
-                RuntimeCookerHighlightService.Clear();
+                ClearNightBusinessRuntime(L("当前不在夜晚经营场景。", "Not in a night business scene."));
                 if (manual) _status = L("当前无经营场景。", "No active business scene.");
                 return;
             }
 
-            TryRefreshRuntimeDataCatalog();
             var provider = new NightBusinessReflectionProvider(
                 _repository,
                 CreateNightBusinessDiagnostics(),
@@ -530,8 +576,10 @@ internal sealed class StewardOverlayController
         {
             _localApiSnapshotPublishPending = false;
             _nextLocalApiSnapshotPublishAt = Time.realtimeSinceStartup + LocalApiSnapshotPublishMinIntervalSeconds;
-            TryRefreshRuntimeDataCatalog();
-            var publishedState = _state ?? (_businessContext?.Orders.Count > 0 ? GetBusinessRecommendationState() : null);
+            var runtimeBasicsLoaded = HasRuntimeBasicsLoaded();
+            var publishedState = CanPublishRecommendationState()
+                ? _state ?? (_businessContext?.Orders.Count > 0 ? GetBusinessRecommendationState() : null)
+                : null;
             var dayMap = ReadActiveDayMapForSnapshot();
             var snapshot = new LocalApiSnapshot
             {
@@ -540,9 +588,10 @@ internal sealed class StewardOverlayController
                 ActiveSceneName = _activeSceneName,
                 ActiveDayMapLabel = dayMap.Label,
                 ActiveDayMapName = dayMap.Name,
-                RuntimeLoaded = _runtimeLoaded,
+                RuntimeLoaded = runtimeBasicsLoaded,
                 Status = _status,
                 RuntimeSource = _runtimeSource,
+                RuntimeSceneReadinessStatus = RuntimeSceneReadinessCapture.Status,
                 RuntimeUiPinningStatus = RuntimeUiPinningService.Status,
                 RecommendationState = Measure(
                     "snapshot.recommendationState",
@@ -571,10 +620,10 @@ internal sealed class StewardOverlayController
 
     private (string Label, string Name) ReadActiveDayMapForSnapshot()
     {
-        if (!_runtimeLoaded) return ("", "");
-        if (IsNonGameplayScene(_activeSceneName)) return ("", "");
-        if (IsNightBusinessScene(_activeSceneName)) return ("", "");
-        if (IsSceneSnapshotStartupGuardActive()) return ("", "");
+        if (!HasRuntimeBasicsLoaded()) return ("", "");
+        if (!IsDaySceneRuntimeScene(_activeSceneName)) return ("", "");
+        if (ShouldBlockDaySceneRuntimeReads(_activeSceneName)) return ("", "");
+        if (!IsDayScenePanelReady()) return ("", "");
 
         try
         {
@@ -646,11 +695,14 @@ internal sealed class StewardOverlayController
 
         var milliseconds = Math.Round(elapsed.TotalMilliseconds, 2);
         _performanceMs[key] = milliseconds;
+        _performanceUpdatedAt[key] = Time.realtimeSinceStartup;
     }
 
     private Dictionary<string, double> BuildPerformanceSnapshot()
     {
+        var minUpdatedAt = Time.realtimeSinceStartup - PerformanceSnapshotMaxAgeSeconds;
         return _performanceMs
+            .Where(item => _performanceUpdatedAt.TryGetValue(item.Key, out var updatedAt) && updatedAt >= minUpdatedAt)
             .OrderByDescending(item => item.Value)
             .Take(12)
             .ToDictionary(item => item.Key, item => item.Value, StringComparer.Ordinal);
@@ -658,9 +710,12 @@ internal sealed class StewardOverlayController
 
     private void RecordPerformanceEntries(string prefix, IReadOnlyDictionary<string, double> entries)
     {
+        var updatedAt = Time.realtimeSinceStartup;
         foreach (var entry in entries)
         {
-            _performanceMs[$"{prefix}{entry.Key}"] = entry.Value;
+            var key = $"{prefix}{entry.Key}";
+            _performanceMs[key] = entry.Value;
+            _performanceUpdatedAt[key] = updatedAt;
         }
     }
 
@@ -668,6 +723,8 @@ internal sealed class StewardOverlayController
     {
         if (_repository == null) return;
         if (_runtimeDataCatalog.IsComplete) return;
+        if (Time.realtimeSinceStartup < _nextRuntimeDataCatalogRefreshAt) return;
+        _nextRuntimeDataCatalogRefreshAt = Time.realtimeSinceStartup + RuntimeDataCatalogRetrySeconds;
 
         try
         {
@@ -680,6 +737,7 @@ internal sealed class StewardOverlayController
 
             _repository = DataRepository.FromRuntime(_runtimeDataCatalog);
             _businessFallbackState = null;
+            _nextRuntimeDataCatalogRefreshAt = 0f;
             _runtimeSource = string.IsNullOrWhiteSpace(_runtimeSource)
                 ? "game-runtime-static-data"
                 : $"{_runtimeSource}; runtime-static-data";
@@ -692,13 +750,21 @@ internal sealed class StewardOverlayController
 
     private RuntimeMissionContext? ReadRuntimeMissionsForSnapshot()
     {
-        if (!_runtimeLoaded) return null;
+        if (!HasRuntimeBasicsLoaded()) return null;
 
         if (IsNonGameplayScene(_activeSceneName))
         {
             return new RuntimeMissionContext
             {
                 Source = "任务数据等待存档加载完成。",
+            };
+        }
+
+        if (ShouldBlockDaySceneRuntimeReads(_activeSceneName))
+        {
+            return new RuntimeMissionContext
+            {
+                Source = "任务数据等待经营准备界面初始化完成。",
             };
         }
 
@@ -715,7 +781,15 @@ internal sealed class StewardOverlayController
                 _businessContext?.Orders ?? Enumerable.Empty<NightBusinessOrder>()));
         }
 
-        if (IsSceneSnapshotStartupGuardActive())
+        if (!IsDaySceneRuntimeScene(_activeSceneName))
+        {
+            return new RuntimeMissionContext
+            {
+                Source = "任务数据只在日间场景读取。",
+            };
+        }
+
+        if (!IsDayScenePanelReady())
         {
             return new RuntimeMissionContext
             {
@@ -742,18 +816,24 @@ internal sealed class StewardOverlayController
         }
     }
 
-    private bool IsSceneSnapshotStartupGuardActive()
-    {
-        return Time.frameCount - _sceneChangedFrame < SceneSnapshotStartupGuardFrames
-            || Time.realtimeSinceStartup - _sceneChangedAtRealtime < SceneSnapshotStartupGuardSeconds;
-    }
-
     private bool ShouldReadDaySceneRuntimeState()
     {
-        if (!_runtimeLoaded && IsSceneSnapshotStartupGuardActive()) return false;
+        if (!IsDaySceneRuntimeScene(_activeSceneName)) return false;
+        if (ShouldBlockDaySceneRuntimeReads(_activeSceneName)) return false;
+        return IsDayScenePanelReady();
+    }
+
+    private bool HasRuntimeBasicsLoaded()
+    {
         if (IsNonGameplayScene(_activeSceneName)) return false;
-        if (IsNightBusinessScene(_activeSceneName)) return true;
-        return !IsSceneSnapshotStartupGuardActive();
+        return _runtimeLoaded || _state != null || _runtimeDataCatalog.IsComplete;
+    }
+
+    private bool CanPublishRecommendationState()
+    {
+        if (IsNonGameplayScene(_activeSceneName)) return false;
+        if (_state != null) return true;
+        return HasActiveNightBusinessContext(_businessContext);
     }
 
     private NormalBusinessContext? ReadNormalBusinessForSnapshot()
@@ -942,14 +1022,14 @@ internal sealed class StewardOverlayController
         return RunOrderActionFromLocalApi(request, OrderActionKind.CompleteNormal);
     }
 
-    private RareGuestInvitationResult InviteAllRareGuestsFromLocalApi(string scope)
+    private RareGuestInvitationResult InviteAllRareGuestsFromLocalApi(string scope, string kizunaLevels)
     {
-        return RunRareGuestInvitationFromLocalApi(RareGuestInvitationAction.InviteAll, scope: scope);
+        return RunRareGuestInvitationFromLocalApi(RareGuestInvitationAction.InviteAll, scope: scope, kizunaLevels: kizunaLevels);
     }
 
-    private RareGuestInvitationResult ListRareGuestInvitationsFromLocalApi(string scope)
+    private RareGuestInvitationResult ListRareGuestInvitationsFromLocalApi(string scope, string kizunaLevels)
     {
-        return RunRareGuestInvitationFromLocalApi(RareGuestInvitationAction.List, scope: scope);
+        return RunRareGuestInvitationFromLocalApi(RareGuestInvitationAction.List, scope: scope, kizunaLevels: kizunaLevels);
     }
 
     private RareGuestInvitationResult InviteRareGuestFromLocalApi(int guestId, string scope)
@@ -957,11 +1037,11 @@ internal sealed class StewardOverlayController
         return RunRareGuestInvitationFromLocalApi(RareGuestInvitationAction.InviteOne, guestId, scope);
     }
 
-    private RareGuestInvitationResult RunRareGuestInvitationFromLocalApi(RareGuestInvitationAction action, int guestId = -1, string scope = "")
+    private RareGuestInvitationResult RunRareGuestInvitationFromLocalApi(RareGuestInvitationAction action, int guestId = -1, string scope = "", string kizunaLevels = "")
     {
         if (Thread.CurrentThread.ManagedThreadId == _mainThreadId)
         {
-            return ApplyRareGuestInvitation(action, guestId, scope);
+            return ApplyRareGuestInvitation(action, guestId, scope, kizunaLevels);
         }
 
         var pending = new PendingRareGuestInvitation
@@ -969,6 +1049,7 @@ internal sealed class StewardOverlayController
             Action = action,
             GuestId = guestId,
             Scope = scope,
+            KizunaLevels = kizunaLevels,
         };
         lock (_rareGuestInvitationLock)
         {
@@ -1018,6 +1099,8 @@ internal sealed class StewardOverlayController
 
     private OrderPreparationResult ApplyOrderPreparation(OrderPreparationRequest request)
     {
+        if (!CanRunNightBusinessOrderAction(out var reason)) return BuildUnavailableOrderResult(request, reason);
+
         var result = RuntimeOrderPreparationService.Prepare(request);
         _status = result.Ok
             ? L("已准备下一笔稀客订单。", "Next rare-customer order prepared.")
@@ -1026,8 +1109,57 @@ internal sealed class StewardOverlayController
         return result;
     }
 
+    private bool CanRunNightBusinessOrderAction(out string reason)
+    {
+        reason = "";
+        _activeSceneName = GetActiveSceneName();
+        if (IsIzakayaPrepActive(_activeSceneName))
+        {
+            reason = "经营准备界面正在初始化，暂不执行订单自动化。";
+            return false;
+        }
+
+        if (!IsNightBusinessScene(_activeSceneName))
+        {
+            reason = "当前不在夜晚经营场景，暂不执行订单自动化。";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static OrderPreparationResult BuildUnavailableOrderResult(OrderPreparationRequest request, string reason)
+    {
+        var result = new OrderPreparationResult
+        {
+            Ok = false,
+            Error = reason,
+            Order = new OrderPreparationOrder
+            {
+                DeskCode = request.DeskCode,
+                GuestId = request.GuestId,
+                GuestName = request.GuestName,
+                FoodTag = request.FoodTag,
+                BeverageTag = request.BeverageTag,
+            },
+            RecipeId = request.RecipeId,
+            RecipeName = request.RecipeName,
+            BeverageId = request.BeverageId,
+            BeverageName = request.BeverageName,
+        };
+        result.Steps.Add(new OrderPreparationStep
+        {
+            Name = "场景检查",
+            Ok = false,
+            Message = reason,
+        });
+        return result;
+    }
+
     private OrderPreparationResult ApplyOrderCompletion(OrderPreparationRequest request)
     {
+        if (!CanRunNightBusinessOrderAction(out var reason)) return BuildUnavailableOrderResult(request, reason);
+
         var result = RuntimeOrderPreparationService.CompleteFirst(request);
         _status = result.Ok
             ? L("已完成当前第一笔稀客订单。", "First rare-customer order completed.")
@@ -1039,6 +1171,8 @@ internal sealed class StewardOverlayController
 
     private OrderPreparationResult ApplyNormalOrderCompletion(OrderPreparationRequest request)
     {
+        if (!CanRunNightBusinessOrderAction(out var reason)) return BuildUnavailableOrderResult(request, reason);
+
         var result = RuntimeOrderPreparationService.CompleteNormalFirst(request);
         _status = result.Ok
             ? L("已处理当前第一笔普客订单。", "First normal-customer order handled.")
@@ -1095,7 +1229,7 @@ internal sealed class StewardOverlayController
 
             try
             {
-                pending.Result = ApplyRareGuestInvitation(pending.Action, pending.GuestId, pending.Scope);
+                pending.Result = ApplyRareGuestInvitation(pending.Action, pending.GuestId, pending.Scope, pending.KizunaLevels);
             }
             catch (Exception ex)
             {
@@ -1108,7 +1242,7 @@ internal sealed class StewardOverlayController
         }
     }
 
-    private RareGuestInvitationResult ApplyRareGuestInvitation(RareGuestInvitationAction action, int guestId, string scope)
+    private RareGuestInvitationResult ApplyRareGuestInvitation(RareGuestInvitationAction action, int guestId, string scope, string kizunaLevels = "")
     {
         if (!CanRunRareGuestInvitationAction(out var waitReason))
         {
@@ -1124,9 +1258,9 @@ internal sealed class StewardOverlayController
 
         var result = action switch
         {
-            RareGuestInvitationAction.List => RuntimeRareGuestInvitationService.ListAvailable(_repository, _log, scope),
+            RareGuestInvitationAction.List => RuntimeRareGuestInvitationService.ListAvailable(_repository, _log, scope, kizunaLevels),
             RareGuestInvitationAction.InviteOne => RuntimeRareGuestInvitationService.InviteOne(_repository, guestId, _log, scope),
-            _ => RuntimeRareGuestInvitationService.InviteAllAvailable(_repository, _log, scope),
+            _ => RuntimeRareGuestInvitationService.InviteAllAvailable(_repository, _log, scope, kizunaLevels),
         };
         if (action != RareGuestInvitationAction.List)
         {
@@ -1141,7 +1275,7 @@ internal sealed class StewardOverlayController
     private bool CanRunRareGuestInvitationAction(out string reason)
     {
         reason = "";
-        if (!_runtimeLoaded)
+        if (!HasRuntimeBasicsLoaded())
         {
             reason = "游戏运行时数据尚未读取完成，请稍后再试。";
             return false;
@@ -1153,13 +1287,25 @@ internal sealed class StewardOverlayController
             return false;
         }
 
+        if (ShouldBlockDaySceneRuntimeReads(_activeSceneName))
+        {
+            reason = "经营准备界面正在初始化，暂不读取可邀请稀客。";
+            return false;
+        }
+
         if (IsNightBusinessScene(_activeSceneName))
         {
             reason = "当前处于夜间经营，稀客邀请只支持日间场景。";
             return false;
         }
 
-        if (IsSceneSnapshotStartupGuardActive())
+        if (!IsDaySceneRuntimeScene(_activeSceneName))
+        {
+            reason = "当前不在日间场景，无法读取可邀请稀客。";
+            return false;
+        }
+
+        if (!IsDayScenePanelReady())
         {
             reason = "日间场景正在初始化，请稍后再试。";
             return false;
@@ -1172,6 +1318,12 @@ internal sealed class StewardOverlayController
     {
         if (Time.realtimeSinceStartup < _nextPendingCookingProcessAt) return;
         _nextPendingCookingProcessAt = Time.realtimeSinceStartup + PendingCookingProcessIntervalSeconds;
+
+        if (!IsNightBusinessScene(_activeSceneName))
+        {
+            RuntimeOrderPreparationService.ClearPendingCookingCollections();
+            return;
+        }
 
         var messages = Measure(
             "automation.collect",
@@ -1317,6 +1469,22 @@ internal sealed class StewardOverlayController
         _runtimeStateSignature = "";
         _lastRuntimeReadUtc = DateTime.MinValue;
         SpecialOrderRuntimeCapture.ClearOrders("runtime cleared");
+        RuntimeOrderPreparationService.ClearPendingCookingCollections();
+        RuntimeCookerHighlightService.Clear();
+        _status = status;
+    }
+
+    private void ClearNightBusinessRuntime(string status)
+    {
+        SpecialOrderRuntimeCapture.ClearOrders("left night business scene");
+        RuntimeOrderPreparationService.ClearPendingCookingCollections();
+        _businessContext = new NightBusinessContext
+        {
+            Source = status,
+        };
+        _normalBusinessContext = null;
+        _nextNormalBusinessRefreshAt = 0f;
+        ClearPlacedCookersFromCurrentState("not in night business scene");
         RuntimeCookerHighlightService.Clear();
         _status = status;
     }
@@ -1487,17 +1655,76 @@ internal sealed class StewardOverlayController
 
     private bool IsNonGameplayScene(string sceneName)
     {
-        if (string.IsNullOrWhiteSpace(sceneName)) return false;
-        if (sceneName.Contains("entry", StringComparison.OrdinalIgnoreCase)
-            || sceneName.Contains("title", StringComparison.OrdinalIgnoreCase)
-            || sceneName.Contains("menu", StringComparison.OrdinalIgnoreCase)
-            || sceneName.Contains("loading", StringComparison.OrdinalIgnoreCase))
+        if (string.IsNullOrWhiteSpace(sceneName)) return true;
+        var normalized = sceneName.Trim();
+        var compact = normalized.Replace(" ", "", StringComparison.Ordinal);
+        if (IsMainMenuPanelActive()
+            || normalized.Contains("entry", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("title", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("menu", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("loading", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(normalized, "Main", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("Main Scene", StringComparison.OrdinalIgnoreCase)
+            || compact.Contains("MainScene", StringComparison.OrdinalIgnoreCase)
+            || compact.Contains("MainMenu", StringComparison.OrdinalIgnoreCase))
         {
             return true;
         }
 
         if (_config == null) return false;
         return ContainsConfiguredKeyword(sceneName, _config.NonGameplaySceneKeywords.Value);
+    }
+
+    private bool CanReadRuntimeStateInCurrentScene(string sceneName, out string reason)
+    {
+        reason = "";
+        if (IsNonGameplayScene(sceneName))
+        {
+            reason = L(
+                "当前游戏运行时数据不可用：当前处于非游戏内页面。",
+                "Live game runtime data unavailable: this is not an in-game page.");
+            return false;
+        }
+
+        if (IsIzakayaPrepActive(sceneName))
+        {
+            if (IsIzakayaPrepPanelReady()) return true;
+
+            reason = L(
+                "经营准备界面正在初始化；等待游戏准备面板完成打开后读取运行态。",
+                "Izakaya prep is initializing; waiting for the game prep panel to finish opening before reading live runtime state.");
+            return false;
+        }
+
+        if (IsNightBusinessScene(sceneName)) return true;
+
+        if (!IsDaySceneRuntimeScene(sceneName))
+        {
+            reason = L(
+                "等待日间场景 UI 初始化完成；暂不读取游戏运行态。",
+                "Waiting for day-scene UI initialization before reading live runtime state.");
+            return false;
+        }
+
+        if (!IsDayScenePanelReady())
+        {
+            reason = L(
+                "日间场景正在初始化；暂不读取游戏运行态。",
+                "Day scene is initializing; live runtime state is not read yet.");
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool IsDayScenePanelReady()
+    {
+        return RuntimeSceneReadinessCapture.DaySceneReady && IsDayScenePanelActive();
+    }
+
+    private static bool IsIzakayaPrepPanelReady()
+    {
+        return RuntimeSceneReadinessCapture.IzakayaPrepReady && IsIzakayaPrepPanelActiveInWorkPrepRoot();
     }
 
     private static bool IsNightBusinessScene(string sceneName)
@@ -1508,6 +1735,108 @@ internal sealed class StewardOverlayController
         return string.Equals(normalized, "Work", StringComparison.OrdinalIgnoreCase)
             || string.Equals(normalized, "WorkScene", StringComparison.OrdinalIgnoreCase)
             || normalized.Contains("WorkScene", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsIzakayaPrepScene(string sceneName)
+    {
+        if (string.IsNullOrWhiteSpace(sceneName)) return false;
+
+        var normalized = sceneName.Trim();
+        if (normalized.Contains("WorkPrep", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("IzakayaConfig", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("IzakayaPrep", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return normalized.Contains("Prep", StringComparison.OrdinalIgnoreCase)
+            && (normalized.Contains("Work", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("Izakaya", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private bool IsDaySceneRuntimeScene(string sceneName)
+    {
+        if (string.IsNullOrWhiteSpace(sceneName)) return false;
+        if (IsNonGameplayScene(sceneName)) return false;
+        if (IsNightBusinessScene(sceneName)) return false;
+        if (IsIzakayaPrepScene(sceneName)) return false;
+        return IsDayScenePanelActive();
+    }
+
+    private static bool IsIzakayaPrepActive(string sceneName)
+    {
+        if (IsIzakayaPrepScene(sceneName)) return true;
+        if (IsNightBusinessScene(sceneName)) return false;
+        return IsIzakayaPrepPanelActiveInWorkPrepRoot();
+    }
+
+    private static bool ShouldBlockDaySceneRuntimeReads(string sceneName)
+    {
+        if (IsIzakayaPrepScene(sceneName)) return true;
+        if (IsNightBusinessScene(sceneName)) return false;
+        return IsIzakayaPrepPanelActiveInWorkPrepRoot();
+    }
+
+    private static bool IsIzakayaPrepPanelActiveInWorkPrepRoot()
+    {
+        return FindActiveIzakayaPrepPanelInWorkPrepRoot() != null;
+    }
+
+    private static bool IsMainMenuPanelActive()
+    {
+        return FindActiveGameObject("MainMenuPannel") != null
+            || FindActiveGameObject("MainMenuPannel(Clone)") != null
+            || FindActiveGameObject("EventMainMenuPannel") != null
+            || FindActiveGameObject("EventMainMenuPannel(Clone)") != null;
+    }
+
+    private static bool IsDayScenePanelActive()
+    {
+        return FindActiveGameObject("DaySceneSustainedPannel") != null
+            || FindActiveGameObject("DaySceneSustainedPannel(Clone)") != null;
+    }
+
+    private static GameObject? FindActiveGameObject(string name)
+    {
+        try
+        {
+            var gameObject = GameObject.Find(name);
+            return gameObject != null && gameObject.activeInHierarchy ? gameObject : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static GameObject? FindActiveIzakayaPrepPanelInWorkPrepRoot()
+    {
+        try
+        {
+            var panel = GameObject.Find("IzakayaConfigPannelNew(Clone)")
+                ?? GameObject.Find("IzakayaConfigPannelNew");
+            if (panel == null || !panel.activeInHierarchy) return null;
+            return HasWorkPrepAncestor(panel.transform) ? panel : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool HasWorkPrepAncestor(Transform? transform)
+    {
+        for (var current = transform; current != null; current = current.parent)
+        {
+            var name = current.name ?? "";
+            if (name.Contains("WorkPrep", StringComparison.OrdinalIgnoreCase)
+                || name.Contains("WorkPrepScenePannelRoot", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static string GetActiveSceneName()

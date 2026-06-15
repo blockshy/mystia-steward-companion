@@ -66,7 +66,8 @@ public sealed class RareRecommendationService
             foreach (var candidate in allCandidates)
             {
                 var matchesPreferredOrRequired = candidate.Tags.Any(tag =>
-                    customerPreferredTagSet.Contains(tag) || tag == requiredFoodTag);
+                    customerPreferredTagSet.Contains(tag)
+                    || tag == requiredFoodTag);
                 var canCancelNegative = TagRules.CanCancelNegativeByConflict(
                     baseEval.ActiveTags,
                     candidate.Tags,
@@ -98,7 +99,8 @@ public sealed class RareRecommendationService
                 ? baseEasterEffect
                 : ResolvedRareEasterEffect.Empty;
 
-            if (baseEval.FoodScore >= TargetFoodScore && baseEval.MeetsRequiredFood)
+            if (baseEval.FoodScore >= TargetFoodScore
+                && baseEval.MeetsRequiredFood)
             {
                 bestCombo = new List<Ingredient>();
             }
@@ -174,7 +176,7 @@ public sealed class RareRecommendationService
                         if (comboEasterEffect.Effect == RareEasterEffect.PriorityExGood
                             && eval.MeetsRequiredFood
                             && (bestPriorityComboForK == null
-                                || IsReasonDataPreferred(reason, bestPriorityReasonForK, cost, bestPriorityCostForK)))
+                                || IsComboPreferred(eval, bestPriorityEvalForK, reason, bestPriorityReasonForK, cost, bestPriorityCostForK)))
                         {
                             bestPriorityComboForK = combo;
                             bestPriorityEvalForK = eval;
@@ -184,7 +186,7 @@ public sealed class RareRecommendationService
                         }
 
                         if (eval.FoodScore >= TargetFoodScore && eval.MeetsRequiredFood
-                            && (bestComboForK == null || IsReasonDataPreferred(reason, bestReasonForK, cost, bestCostForK)))
+                            && (bestComboForK == null || IsComboPreferred(eval, bestEvalForK, reason, bestReasonForK, cost, bestCostForK)))
                         {
                             bestComboForK = combo;
                             bestEvalForK = eval;
@@ -432,6 +434,18 @@ public sealed class RareRecommendationService
         }
 
         return nextCost < previousCost;
+    }
+
+    private static bool IsComboPreferred(
+        ComboEvaluation nextEval,
+        ComboEvaluation? previousEval,
+        IngredientTagReasonResult next,
+        IngredientTagReasonResult? previous,
+        int nextCost,
+        int previousCost)
+    {
+        if (previousEval == null) return true;
+        return IsReasonDataPreferred(next, previous, nextCost, previousCost);
     }
 
     private static bool ShouldReplaceRequiredFallback(

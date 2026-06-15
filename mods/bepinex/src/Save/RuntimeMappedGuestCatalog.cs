@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Reflection;
 using MystiaStewardCompanion.Core;
+using static MystiaStewardCompanion.Save.RuntimeLanguageUtility;
 
 namespace MystiaStewardCompanion.Save;
 
@@ -36,6 +37,14 @@ internal sealed class RuntimeMappedGuestCatalog
         lock (SyncRoot)
         {
             return _snapshot;
+        }
+    }
+
+    public static void ResetRetryDelay()
+    {
+        lock (SyncRoot)
+        {
+            _lastReadAttemptUtc = DateTime.MinValue;
         }
     }
 
@@ -634,87 +643,6 @@ internal sealed class RuntimeMappedGuestCatalog
         }
 
         return result;
-    }
-
-    private static IReadOnlyDictionary<int, string> ReadStringDictionary(Type? languageType, string dictionaryMethod)
-    {
-        var result = new Dictionary<int, string>();
-        if (languageType == null) return result;
-
-        foreach (var pair in EnumerateKeyValuePairs(InvokeStaticMethod(languageType, dictionaryMethod)))
-        {
-            var id = ToNullableInt(pair.Key);
-            if (!id.HasValue) continue;
-
-            var text = CleanText(pair.Value);
-            if (!string.IsNullOrWhiteSpace(text)) result[id.Value] = text;
-        }
-
-        return result;
-    }
-
-    private static string ResolveLanguageName(Type? languageType, string methodName, int? id, string? fallback)
-    {
-        if (languageType != null && id.HasValue)
-        {
-            var value = InvokeStaticMethod(languageType, methodName, id.Value);
-            var text = CleanText(value);
-            if (!string.IsNullOrWhiteSpace(text)) return text;
-        }
-
-        return string.IsNullOrWhiteSpace(fallback) ? "" : fallback.Trim();
-    }
-
-    private static string ResolveSpecialGuestName(
-        Type? languageType,
-        IReadOnlyDictionary<int, string> specialGuestNames,
-        int? id,
-        string? fallback)
-    {
-        if (id.HasValue
-            && specialGuestNames.TryGetValue(id.Value, out var dictionaryName)
-            && !string.IsNullOrWhiteSpace(dictionaryName))
-        {
-            return dictionaryName.Trim();
-        }
-
-        return ResolveLanguageName(languageType, "GetSpecialGuestLang", id, fallback);
-    }
-
-    private static string CleanText(object? value)
-    {
-        if (value == null) return "";
-        if (value is string text) return text.Trim();
-
-        foreach (var memberName in new[]
-                 {
-                     "Name",
-                     "DisplayName",
-                     "Title",
-                     "Label",
-                     "Text",
-                     "name",
-                     "title",
-                     "text",
-                 })
-        {
-            var memberValue = GetMemberValue(value, memberName);
-            if (memberValue == null || ReferenceEquals(memberValue, value)) continue;
-            var memberText = memberValue.ToString()?.Trim();
-            if (!string.IsNullOrWhiteSpace(memberText)) return memberText;
-        }
-
-        try
-        {
-            var objectText = value.ToString()?.Trim() ?? "";
-            return objectText.StartsWith(value.GetType().FullName ?? "", StringComparison.Ordinal)
-                ? ""
-                : objectText;
-        }
-        catch
-        {
-            return "";
-        }
     }
 
     private static IEnumerable<(object? Key, object? Value)> EnumerateKeyValuePairs(object? value)

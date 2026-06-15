@@ -179,6 +179,10 @@ public sealed class RuntimeNormalOrderSnapshotService
             BeverageName = first.BeverageName,
             HasServedFood = orders.Any(order => order.HasServedFood),
             HasServedBeverage = orders.Any(order => order.HasServedBeverage),
+            HasStoredFood = orders.Any(order => order.HasStoredFood),
+            HasStoredFoodReceipt = orders.Any(order => order.HasStoredFoodReceipt),
+            StoredFoodCount = orders.Max(order => order.StoredFoodCount),
+            StoredFoodStatus = string.Join("; ", orders.Select(order => order.StoredFoodStatus).Where(status => !string.IsNullOrWhiteSpace(status)).Distinct(StringComparer.Ordinal)),
             IsFulfilled = orders.Any(order => order.IsFulfilled),
             FirstSeenAtUtc = first.FirstSeenAtUtc,
             Source = string.Join("/", orders.Select(order => order.Source).Where(source => !string.IsNullOrWhiteSpace(source)).Distinct(StringComparer.Ordinal)),
@@ -208,6 +212,10 @@ public sealed class RuntimeNormalOrderSnapshotService
             BeverageName = order.BeverageName,
             HasServedFood = order.HasServedFood,
             HasServedBeverage = order.HasServedBeverage,
+            HasStoredFood = order.HasStoredFood,
+            HasStoredFoodReceipt = order.HasStoredFoodReceipt,
+            StoredFoodCount = order.StoredFoodCount,
+            StoredFoodStatus = order.StoredFoodStatus,
             IsFulfilled = order.IsFulfilled,
             FirstSeenAtUtc = firstSeenAtUtc,
             Source = order.Source,
@@ -333,11 +341,14 @@ public sealed class RuntimeNormalOrderSnapshotService
         var recipe = _repository.Recipes.FirstOrDefault(item => item.RecipeId == foodId || item.Id == foodId);
         var beverage = _repository.Beverages.FirstOrDefault(item => item.Id == beverageId);
         var guest = SafeGet(order, "Guest") ?? SafeInvoke(order, "get_Guest");
+        var orderKey = BuildRuntimeOrderKey(order);
+        var deskCode = RuntimeReflectionUtility.ToInt(SafeGet(order, "DeskCode"), -1);
+        var storedFood = RuntimeOrderPreparationService.ReadNormalOrderStoredFoodSnapshot(orderKey, deskCode, foodId);
 
         return new NormalBusinessOrder
         {
-            OrderKey = BuildRuntimeOrderKey(order),
-            DeskCode = RuntimeReflectionUtility.ToInt(SafeGet(order, "DeskCode"), -1),
+            OrderKey = orderKey,
+            DeskCode = deskCode,
             GuestName = ResolveNormalGuestName(guest)
                 ?? ResolveNormalGuestName(SafeGet(controller, "OrderingGuest"))
                 ?? ReadTextLikeValue(guest)
@@ -349,6 +360,10 @@ public sealed class RuntimeNormalOrderSnapshotService
             BeverageName = beverage?.Name ?? ReadTextLikeValue(requestBeverage) ?? "",
             HasServedFood = SafeGet(order, "ServFood") != null || SafeGet(order, "ServedFoodInAir") != null,
             HasServedBeverage = SafeGet(order, "ServBeverage") != null || SafeGet(order, "ServedBeverageInAir") != null,
+            HasStoredFood = storedFood.HasStoredFood,
+            HasStoredFoodReceipt = storedFood.HasOrderReceipt,
+            StoredFoodCount = storedFood.Count,
+            StoredFoodStatus = storedFood.Status,
             IsFulfilled = RuntimeReflectionUtility.ToBool(SafeGet(order, "IsFullfilled")),
             Source = source,
         };

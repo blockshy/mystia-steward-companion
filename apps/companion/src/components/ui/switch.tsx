@@ -28,15 +28,19 @@ function SwitchField({
   checked,
   onCheckedChange,
   className,
+  disabled,
+  title,
 }: {
   label: string;
   checked: boolean;
   onCheckedChange: (checked: boolean) => void;
   className?: string;
+  disabled?: boolean;
+  title?: string;
 }) {
   return (
-    <label className={cn('flex items-center gap-2 text-sm', className)}>
-      <Switch checked={checked} onCheckedChange={onCheckedChange} />
+    <label className={cn('flex items-center gap-2 text-sm', disabled && 'text-muted-foreground', className)} title={title}>
+      <Switch checked={checked} onCheckedChange={onCheckedChange} disabled={disabled} />
       <span className="whitespace-nowrap">{label}</span>
     </label>
   );

@@ -36,6 +36,7 @@ public sealed class MystiaStewardCompanionPlugin : BasePlugin
             Log);
 
         SpecialOrderRuntimeCapture.Attach(Log);
+        RuntimeSceneReadinessCapture.Attach(Log);
         RuntimeUiPinningService.Attach(Log);
 
         StewardOverlayRuntimeContext.Configure(settings, Log);

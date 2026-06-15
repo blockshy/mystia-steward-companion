@@ -222,6 +222,17 @@ function isReasonDataPreferred(
   return nextCost < prevCost;
 }
 
+function isComboPreferred(
+  prevEval: ReturnType<typeof evaluateCombo> | null,
+  nextReason: IngredientTagReasonResult,
+  prevReason: IngredientTagReasonResult | null,
+  nextCost: number,
+  prevCost: number,
+): boolean {
+  if (!prevEval) return true;
+  return isReasonDataPreferred(nextReason, prevReason, nextCost, prevCost);
+}
+
 function resolveRareEasterEffect(
   customerId: number,
   recipeId: number,
@@ -338,7 +349,12 @@ function evaluateCombo(
   popularFoodTag: string | null,
   popularHateFoodTag: string | null,
   isFamousShop: boolean,
-): { foodScore: number; meetsRequiredFood: boolean; activeTags: string[]; cancelledTags: string[] } {
+): {
+  foodScore: number;
+  meetsRequiredFood: boolean;
+  activeTags: string[];
+  cancelledTags: string[];
+} {
   const { activeTags, cancelledTags } = resolveFinalFoodTags(
     recipe,
     extraIngredients,
@@ -348,7 +364,12 @@ function evaluateCombo(
   );
   const foodScore = scoreFoodForRare(activeTags, customer.positiveTags, customer.negativeTags);
   const meetsRequiredFood = activeTags.includes(requiredFoodTag);
-  return { foodScore, meetsRequiredFood, activeTags, cancelledTags };
+  return {
+    foodScore,
+    meetsRequiredFood,
+    activeTags,
+    cancelledTags,
+  };
 }
 
 interface RareRecipeRankOptions {
@@ -444,7 +465,9 @@ export function rankRecipesForRare(
     // 2) 可通过互斥规则抵消当前已激活的顾客厌恶Tag
     const relevant: IIngredient[] = [];
     for (const c of allCandidates) {
-      const matchesPreferredOrRequired = c.tags.some((t) => customerPreferredTagSet.has(t) || t === requiredFoodTag);
+      const matchesPreferredOrRequired = c.tags.some((t) =>
+        customerPreferredTagSet.has(t) || t === requiredFoodTag,
+      );
       const canCancelNegative = canCancelNegativeByConflict(
         baseActiveTags,
         c.tags,
@@ -506,7 +529,10 @@ export function rankRecipesForRare(
     // 先评估不加料的情况
     const baseEval = bestEval;
 
-    if (baseEval.foodScore >= minFoodScore && (baseEval.meetsRequiredFood || allowPreferenceFallback)) {
+    if (
+      baseEval.foodScore >= minFoodScore
+      && (baseEval.meetsRequiredFood || allowPreferenceFallback)
+    ) {
       bestCombo = [];
     } else if (extraSlots > 0) {
       const n = candidates.length;
@@ -604,16 +630,16 @@ export function rankRecipesForRare(
                 bestRequiredFallbackCombo === null ||
                 bestRequiredFallbackEval === null ||
                 bestRequiredFallbackReasonData === null ||
-                shouldReplaceRequiredFallback(
-                  bestRequiredFallbackEval,
-                  bestRequiredFallbackCombo,
-                  bestRequiredFallbackReasonData,
-                  bestRequiredFallbackCost,
-                  ev,
-                  combo,
-                  reasonData,
-                  cost,
-                )
+                  shouldReplaceRequiredFallback(
+                    bestRequiredFallbackEval,
+                    bestRequiredFallbackCombo,
+                    bestRequiredFallbackReasonData,
+                    bestRequiredFallbackCost,
+                    ev,
+                    combo,
+                    reasonData,
+                    cost,
+                  )
               )
             ) {
               bestRequiredFallbackCombo = combo;
@@ -631,7 +657,13 @@ export function rankRecipesForRare(
             if (comboEasterEffect.effect === 'priority-exgood' && (ev.meetsRequiredFood || allowPreferenceFallback)) {
               const shouldReplacePriority =
                 bestPriorityComboForK === null ||
-                isReasonDataPreferred(reasonData, bestPriorityReasonForK, cost, bestPriorityCostForK);
+                isComboPreferred(
+                  bestPriorityEvalForK,
+                  reasonData,
+                  bestPriorityReasonForK,
+                  cost,
+                  bestPriorityCostForK,
+                );
               if (shouldReplacePriority) {
                 bestPriorityComboForK = combo;
                 bestPriorityEvalForK = ev;
@@ -646,7 +678,13 @@ export function rankRecipesForRare(
             if (ev.foodScore >= minFoodScore && (ev.meetsRequiredFood || allowPreferenceFallback)) {
               const shouldReplace =
                 bestComboForK === null ||
-                isReasonDataPreferred(reasonData, bestReasonForK, cost, bestCostForK);
+                isComboPreferred(
+                  bestEvalForK,
+                  reasonData,
+                  bestReasonForK,
+                  cost,
+                  bestCostForK,
+                );
 
               if (shouldReplace) {
                 bestComboForK = combo;
@@ -794,7 +832,10 @@ export function rankPreferenceRecipesForRare(
     maxExtraIngredients,
     ownedIngredientQty,
     isFamousShop,
-    { allowPreferenceFallback: true, minFoodScore: 1 },
+    {
+      allowPreferenceFallback: true,
+      minFoodScore: 1,
+    },
     data,
   ).filter((row) => !row.meetsRequiredFood);
 }
