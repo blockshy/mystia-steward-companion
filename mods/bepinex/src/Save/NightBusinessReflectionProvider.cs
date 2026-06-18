@@ -1,4 +1,5 @@
 using System.Reflection;
+using Il2CppInterop.Runtime.InteropTypes;
 using MystiaStewardCompanion.Core;
 using UnityEngine;
 using static MystiaStewardCompanion.Save.RuntimeReflectionUtility;
@@ -12,6 +13,7 @@ public sealed class NightBusinessReflectionProvider
 
     private const string GuestGroupControllerTypeName = "NightScene.GuestManagementUtility.GuestGroupController";
     private const string GuestsManagerTypeName = "NightScene.GuestManagementUtility.GuestsManager";
+    private const string SpecialOrderTypeName = "NightScene.GuestManagementUtility.GuestsManager+SpecialOrder";
     private const string OrderControllerTypeName = "Night.UI.HUD.Ordering.OrderController";
     private const string OrderingElementTypeName = "NightScene.UI.GuestManagementUtility.OrderingElement";
     private const string WorkSceneServePannelTypeName = "NightScene.UI.GuestManagementUtility.WorkSceneServePannel";
@@ -166,6 +168,7 @@ public sealed class NightBusinessReflectionProvider
         var activeGuests = Measure("deduplicate.guests", () => DeduplicateGuests(guests));
         var rawLiveOrders = orders.ToList();
         var acceptedRuntimeOrders = new List<NightBusinessOrder>();
+        var reflectionFallbackOrders = new List<NightBusinessOrder>();
         if (runtimeOrders.Count > 0)
         {
             acceptedRuntimeOrders = Measure("runtimeCapture.accept", () => ReadRuntimeCapturedOrders(runtimeOrders, activeGuests).ToList());
@@ -173,11 +176,24 @@ public sealed class NightBusinessReflectionProvider
             sourceStats.Add($"RuntimeCaptureStatus={SpecialOrderRuntimeCapture.Status}");
             sourceStats.Add($"UiPinning={RuntimeUiPinningService.Status}");
             orders.AddRange(acceptedRuntimeOrders);
+            if (preferRuntimeCapturedOrders && acceptedRuntimeOrders.Count < runtimeOrders.Count)
+            {
+                reflectionFallbackOrders = Measure(
+                    "runtimeCapture.reflectionFallback",
+                    () => ReadReflectionFallbackOrders(sourceStats, errors).ToList());
+                sourceStats.Add($"ReflectionFallback={reflectionFallbackOrders.Count}");
+                orders.AddRange(reflectionFallbackOrders);
+            }
+            else
+            {
+                sourceStats.Add("ReflectionFallback=skipped");
+            }
         }
         else
         {
             sourceStats.Add($"RuntimeCaptureStatus={SpecialOrderRuntimeCapture.Status}");
             sourceStats.Add($"UiPinning={RuntimeUiPinningService.Status}");
+            sourceStats.Add("ReflectionFallback=not-needed");
         }
 
         var activeOrders = Measure("deduplicate.orders", () => DeduplicateOrders(orders));
@@ -300,6 +316,78 @@ public sealed class NightBusinessReflectionProvider
         {
             // Diagnostics must never affect gameplay or recommendation refreshes.
         }
+    }
+
+    private IReadOnlyList<NightBusinessOrder> ReadReflectionFallbackOrders(
+        ICollection<string> sourceStats,
+        ICollection<string> errors)
+    {
+        var result = new List<NightBusinessOrder>();
+
+        try
+        {
+            var servePanelContexts = Measure("fallback.rare.servePanel.contexts", () => ReadServePanelContexts().ToList());
+            sourceStats.Add($"FallbackServePanel={servePanelContexts.Count}");
+            result.AddRange(Measure("fallback.rare.servePanel.orders", () => ReadServePanelOrders(servePanelContexts).ToList()));
+        }
+        catch (Exception ex)
+        {
+            sourceStats.Add("FallbackServePanel=err");
+            errors.Add($"fallback serve panel: {ex.Message}");
+        }
+
+        try
+        {
+            var orderControllerOrders = Measure("fallback.rare.orderController", () => ReadOrderControllerOrders().ToList());
+            sourceStats.Add($"FallbackOrderController={orderControllerOrders.Count}");
+            result.AddRange(orderControllerOrders);
+        }
+        catch (Exception ex)
+        {
+            sourceStats.Add("FallbackOrderController=err");
+            errors.Add($"fallback order controller: {ex.Message}");
+        }
+
+        try
+        {
+            var hudOrders = Measure("fallback.rare.hud", () => ReadHudOrders().ToList());
+            sourceStats.Add($"FallbackHUD={hudOrders.Count}");
+            result.AddRange(hudOrders);
+        }
+        catch (Exception ex)
+        {
+            sourceStats.Add("FallbackHUD=err");
+            errors.Add($"fallback HUD orders: {ex.Message}");
+        }
+
+        foreach (var source in ManagerControllerSources)
+        {
+            try
+            {
+                var controllers = Measure($"fallback.controllers.{source.Source}", () => ReadManagerControllers(source.MemberName).ToList());
+                sourceStats.Add($"Fallback{source.Source}={controllers.Count}");
+                result.AddRange(Measure($"fallback.rare.orders.{source.Source}", () => ReadControllerOrders(controllers, source.Source).ToList()));
+            }
+            catch (Exception ex)
+            {
+                sourceStats.Add($"Fallback{source.Source}=err");
+                errors.Add($"fallback {source.Source}: {ex.Message}");
+            }
+        }
+
+        try
+        {
+            var queuedControllers = Measure("fallback.controllers.Queue", () => ReadQueuedControllers().ToList());
+            sourceStats.Add($"FallbackQueue={queuedControllers.Count}");
+            result.AddRange(Measure("fallback.rare.orders.Queue", () => ReadControllerOrders(queuedControllers, "Queue").ToList()));
+        }
+        catch (Exception ex)
+        {
+            sourceStats.Add("FallbackQueue=err");
+            errors.Add($"fallback Queue: {ex.Message}");
+        }
+
+        return result;
     }
 
     private IEnumerable<NightBusinessOrder> ReadOrderControllerOrders()
@@ -529,43 +617,44 @@ public sealed class NightBusinessReflectionProvider
             return null;
         }
 
-        if (!IsSpecialOrder(order) && !IsManualSpecialOrder(order, controller))
+        var readableOrder = TryCastOrder(order, SpecialOrderTypeName) ?? order;
+        if (!IsSpecialOrder(readableOrder) && !IsManualSpecialOrder(readableOrder, controller))
         {
-            RecordCandidate("Order", source, accepted: false, "not a special order by current rules", () => DescribeOrderCandidate(order, controller));
+            RecordCandidate("Order", source, accepted: false, "not a special order by current rules", () => DescribeOrderCandidate(readableOrder, controller));
             return null;
         }
 
         var now = DateTime.UtcNow;
 
-        var specialGuest = GetMemberValue(order, "SpecialGuests")
+        var specialGuest = GetMemberValue(readableOrder, "SpecialGuests")
             ?? GetMemberValue(controller, "SpecialGuest");
         var orderingGuest = GetMemberValue(controller, "OrderingGuest");
         if (specialGuest == null
             && (IsSpecialGuestObject(orderingGuest)
-                || ResolveOrderingGuestRareCustomerIdentity(orderingGuest, IsManualSpecialOrder(order, controller)) != null))
+                || ResolveOrderingGuestRareCustomerIdentity(orderingGuest, IsManualSpecialOrder(readableOrder, controller)) != null))
         {
             specialGuest = orderingGuest;
         }
 
         if (specialGuest == null)
         {
-            RecordCandidate("Order", source, accepted: false, "SpecialGuests/SpecialGuest/OrderingGuest missing", () => DescribeOrderCandidate(order, controller));
+            RecordCandidate("Order", source, accepted: false, "SpecialGuests/SpecialGuest/OrderingGuest missing", () => DescribeOrderCandidate(readableOrder, controller));
             return null;
         }
 
         var guestId = ReadGuestId(specialGuest);
         var identity = ResolveRareCustomerIdentity(specialGuest);
-        var foodTag = ResolveOrderTagText(order, controller, specialGuest, "GetOrderFoodText", "GetFoodTagText", "RequestFoodTag", "ReqFoodTag", useFoodTagMap: true);
-        var beverageTag = ResolveOrderTagText(order, controller, specialGuest, "GetOrderBevText", "GetBevTagText", "RequestBeverageTag", "ReqBevTag", useFoodTagMap: false);
-        var foodTagId = ResolveTagId(foodTag, GetMemberValue(order, "RequestFoodTag"), useFoodTagMap: true);
-        var beverageTagId = ResolveTagId(beverageTag, GetMemberValue(order, "RequestBeverageTag"), useFoodTagMap: false);
+        var foodTag = ResolveOrderTagText(readableOrder, controller, specialGuest, "GetOrderFoodText", "GetFoodTagText", "RequestFoodTag", "ReqFoodTag", useFoodTagMap: true);
+        var beverageTag = ResolveOrderTagText(readableOrder, controller, specialGuest, "GetOrderBevText", "GetBevTagText", "RequestBeverageTag", "ReqBevTag", useFoodTagMap: false);
+        var foodTagId = ResolveTagId(foodTag, GetMemberValue(readableOrder, "RequestFoodTag"), useFoodTagMap: true);
+        var beverageTagId = ResolveTagId(beverageTag, GetMemberValue(readableOrder, "RequestBeverageTag"), useFoodTagMap: false);
         if (foodTagId == 0 && beverageTagId == 0 && string.IsNullOrWhiteSpace(foodTag) && string.IsNullOrWhiteSpace(beverageTag))
         {
-            RecordCandidate("Order", source, accepted: false, "empty food and beverage tag", () => DescribeOrderCandidate(order, controller));
+            RecordCandidate("Order", source, accepted: false, "empty food and beverage tag", () => DescribeOrderCandidate(readableOrder, controller));
             return null;
         }
 
-        var deskCode = ToInt(GetMemberValue(order, "DeskCode") ?? GetMemberValue(controller, "DeskCode"));
+        var deskCode = ToInt(GetMemberValue(readableOrder, "DeskCode") ?? GetMemberValue(controller, "DeskCode"));
         var result = new NightBusinessOrder
         {
             DeskCode = deskCode,
@@ -578,10 +667,10 @@ public sealed class NightBusinessReflectionProvider
             Source = source,
             FirstSeenAtUtc = now,
             LastSeenAtUtc = now,
-            HasServedFood = ReadOrderServedState(order, "ServFood", "ServedFoodInAir"),
-            HasServedBeverage = ReadOrderServedState(order, "ServBeverage", "ServedBeverageInAir"),
+            HasServedFood = ReadOrderServedState(readableOrder, "ServFood", "ServedFoodInAir"),
+            HasServedBeverage = ReadOrderServedState(readableOrder, "ServBeverage", "ServedBeverageInAir"),
         };
-        RecordCandidate("Order", source, accepted: true, "accepted special order", () => DescribeOrderCandidate(order, controller));
+        RecordCandidate("Order", source, accepted: true, "accepted special order", () => DescribeOrderCandidate(readableOrder, controller));
         return result;
     }
 
@@ -734,7 +823,7 @@ public sealed class NightBusinessReflectionProvider
         return tagId.HasValue ? ResolveTagTextFromMap(tagId.Value, useFoodTagMap) : "";
     }
 
-    private static bool ShouldKeepCapturedOrder(
+    private bool ShouldKeepCapturedOrder(
         NightBusinessOrder order,
         CapturedRuntimeSpecialOrder captured,
         IReadOnlyList<NightBusinessGuest> activeGuests,
@@ -742,6 +831,7 @@ public sealed class NightBusinessReflectionProvider
     {
         if (!HasCapturedOrderDetails(captured)) return false;
         if (MatchesActiveGuest(order, activeGuests)) return true;
+        if (IsCapturedRuntimeOrderStillLive(captured)) return true;
         return nowUtc - captured.CapturedAt <= UnmatchedCapturedOrderGrace;
     }
 
@@ -751,6 +841,80 @@ public sealed class NightBusinessReflectionProvider
             || captured.HasBeverageTagId
             || !string.IsNullOrWhiteSpace(captured.FoodTag)
             || !string.IsNullOrWhiteSpace(captured.BeverageTag);
+    }
+
+    private bool IsCapturedRuntimeOrderStillLive(CapturedRuntimeSpecialOrder captured)
+    {
+        if (captured.OrderObject == null || captured.ControllerObject == null) return false;
+
+        try
+        {
+            if (IsRuntimeOrderFulfilled(captured.OrderObject)) return false;
+
+            foreach (var currentOrder in EnumerateControllerOrders(captured.ControllerObject))
+            {
+                if (currentOrder == null) continue;
+                var readableCurrentOrder = TryCastOrder(currentOrder, SpecialOrderTypeName) ?? currentOrder;
+                if (!IsSameRuntimeObject(readableCurrentOrder, captured.OrderObject)
+                    && !IsSameRuntimeObject(currentOrder, captured.OrderObject))
+                {
+                    continue;
+                }
+
+                if (IsRuntimeOrderFulfilled(readableCurrentOrder)) return false;
+                return ReadOrder(readableCurrentOrder, captured.ControllerObject, "RuntimeCaptureLive") != null;
+            }
+        }
+        catch
+        {
+            return false;
+        }
+
+        return false;
+    }
+
+    private static object? TryCastOrder(object? order, string targetTypeName)
+    {
+        if (order is not Il2CppObjectBase il2CppObject) return null;
+
+        var targetType = FindType(targetTypeName);
+        if (targetType == null) return null;
+        if (targetType.IsInstanceOfType(order)) return order;
+
+        var tryCast = typeof(Il2CppObjectBase)
+            .GetMethods(BindingFlags.Public | BindingFlags.Instance)
+            .FirstOrDefault(method => method.Name == "TryCast"
+                && method.IsGenericMethodDefinition
+                && method.GetParameters().Length == 0);
+        if (tryCast == null) return null;
+
+        try
+        {
+            return tryCast.MakeGenericMethod(targetType).Invoke(il2CppObject, Array.Empty<object?>());
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool IsSameRuntimeObject(object left, object right)
+    {
+        try
+        {
+            return ReadObjectPointer(left) == ReadObjectPointer(right);
+        }
+        catch
+        {
+            return ReferenceEquals(left, right);
+        }
+    }
+
+    private static bool IsRuntimeOrderFulfilled(object order)
+    {
+        var value = GetMemberValue(order, "IsFullfilled");
+        if (value is bool boolValue) return boolValue;
+        return string.Equals(value?.ToString(), "true", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool MatchesActiveGuest(NightBusinessOrder order, IReadOnlyList<NightBusinessGuest> activeGuests)

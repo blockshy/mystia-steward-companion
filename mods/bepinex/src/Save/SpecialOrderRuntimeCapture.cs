@@ -283,7 +283,11 @@ public static class SpecialOrderRuntimeCapture
     private static void OnManualOrderEnded(object __0)
     {
         lock (SyncRoot) _removeCallbacks++;
-        RemoveOrder(ParseControllerCurrentOrder(__0, "ManualOrderEnd") ?? BuildControllerRemovalOrder(__0, "ManualOrderEnd"));
+        var order = ParseControllerCurrentOrder(__0, "ManualOrderEnd");
+        if (order is { IsFulfilled: true })
+        {
+            RemoveOrder(order with { CaptureSource = "ManualOrderEnd" });
+        }
     }
 
     private static void AddOrder(CapturedRuntimeSpecialOrder? order)
@@ -556,20 +560,9 @@ public static class SpecialOrderRuntimeCapture
         }
 
         var removedHasDetails = HasAnyOrderDetail(removed);
-        if (!removedHasDetails
-            && existing.DeskCode >= 0
-            && removed.DeskCode >= 0
-            && existing.DeskCode == removed.DeskCode)
-        {
-            return true;
-        }
+        if (!removedHasDetails) return false;
 
         if (!IsSameOrderSlot(existing, removed)) return false;
-
-        if (!removedHasDetails)
-        {
-            return true;
-        }
 
         return CanMergeCapturedOrderDetails(existing, removed);
     }
