@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Reflection;
 
 namespace MystiaStewardCompanion.Save;
@@ -136,7 +137,7 @@ internal static class RuntimeCookerReflection
             AddControllers("AllCookerControllers", RuntimeReflectionUtility.EnumerateObjects(directControllers));
 
             var allCookers = RuntimeReflectionUtility.GetMemberValue(cookSystem, "AllCookers");
-            AddControllers("AllCookers", RuntimeReflectionUtility.EnumerateObjects(allCookers).Select(RuntimeReflectionUtility.NormalizeKeyValueValue));
+            AddControllers("AllCookers", ReadDictionaryValues(allCookers).Where(value => value != null));
         }
 
         var controllerType = RuntimeReflectionUtility.FindType(CookControllerTypeName);
@@ -147,5 +148,55 @@ internal static class RuntimeCookerReflection
 
         status = $"sources={string.Join(",", sourceParts)}";
         return result;
+    }
+
+    private static IEnumerable<object?> ReadDictionaryValues(object? dictionary)
+    {
+        if (dictionary == null || dictionary is string) yield break;
+
+        if (dictionary is IDictionary managedDictionary)
+        {
+            foreach (DictionaryEntry entry in managedDictionary)
+            {
+                yield return entry.Value;
+            }
+
+            yield break;
+        }
+
+        var entries = RuntimeReflectionUtility.GetMemberValue(dictionary, "entries")
+            ?? RuntimeReflectionUtility.GetMemberValue(dictionary, "_entries")
+            ?? RuntimeReflectionUtility.GetMemberValue(dictionary, "m_Entries");
+        var count = RuntimeReflectionUtility.ToInt(
+            RuntimeReflectionUtility.GetMemberValue(dictionary, "count")
+            ?? RuntimeReflectionUtility.GetMemberValue(dictionary, "_count")
+            ?? RuntimeReflectionUtility.GetMemberValue(dictionary, "Count"),
+            -1);
+        if (entries != null && count > 0)
+        {
+            var entryIndex = 0;
+            foreach (var entry in RuntimeReflectionUtility.EnumerateObjects(entries))
+            {
+                if (entryIndex++ >= Math.Min(count, 256)) break;
+                if (entry == null) continue;
+
+                var hashCode = RuntimeReflectionUtility.ToInt(
+                    RuntimeReflectionUtility.GetMemberValue(entry, "hashCode")
+                    ?? RuntimeReflectionUtility.GetMemberValue(entry, "_hashCode"),
+                    -1);
+                if (hashCode < 0) continue;
+
+                var value = RuntimeReflectionUtility.GetMemberValue(entry, "value")
+                    ?? RuntimeReflectionUtility.GetMemberValue(entry, "Value")
+                    ?? RuntimeReflectionUtility.GetMemberValue(entry, "_value");
+                if (value != null) yield return value;
+            }
+        }
+
+        foreach (var item in RuntimeReflectionUtility.EnumerateObjects(dictionary))
+        {
+            var value = RuntimeReflectionUtility.NormalizeKeyValueValue(item);
+            if (value != null) yield return value;
+        }
     }
 }

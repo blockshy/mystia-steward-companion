@@ -86,6 +86,18 @@ internal static class RuntimeCookerHighlightService
         }
     }
 
+    public static void Suspend(string reason)
+    {
+        lock (SyncRoot)
+        {
+            RestoreAllLocked();
+            _nextScanAt = 0f;
+            _status = _enabled
+                ? $"suspended: {reason}"
+                : "disabled";
+        }
+    }
+
     private static void ScanAndApply(int targetCookerTypeId)
     {
         var renderers = new List<SpriteRenderer>();

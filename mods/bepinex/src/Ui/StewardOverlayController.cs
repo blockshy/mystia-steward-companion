@@ -1734,7 +1734,7 @@ internal sealed class StewardOverlayController
         _lastRuntimeReadUtc = DateTime.MinValue;
         SpecialOrderRuntimeCapture.ClearOrders("runtime cleared");
         RuntimeOrderPreparationService.ClearPendingCookingCollections();
-        RuntimeCookerHighlightService.Clear();
+        RuntimeCookerHighlightService.Suspend(status);
         _status = status;
     }
 
@@ -1749,7 +1749,7 @@ internal sealed class StewardOverlayController
         _normalBusinessContext = null;
         _nextNormalBusinessRefreshAt = 0f;
         ClearPlacedCookersFromCurrentState("not in night business scene");
-        RuntimeCookerHighlightService.Clear();
+        RuntimeCookerHighlightService.Suspend(status);
         _status = status;
     }
 
