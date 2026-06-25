@@ -18,6 +18,7 @@ internal static partial class RuntimeOrderPreparationService
     private const string GuestsManagerTypeName = "NightScene.GuestManagementUtility.GuestsManager";
     private const string OrderControllerTypeName = "Night.UI.HUD.Ordering.OrderController";
     private const string MatchedCookComboTypeName = "NightScene.UI.CookingUtility.WorkSceneCookingSelectionPannel+MatchedCookCombo";
+    private const int MaxFoodIngredientCount = 5;
     private static readonly object PendingCookingLock = new();
     private static readonly object TrayObservationLock = new();
     private static readonly List<PendingCookingCollection> PendingCookingCollections = new();

@@ -28,6 +28,7 @@ export interface RecipeCatalogItem {
   recipeId: number;
   name: string;
   description: string;
+  // 基础配方食材是数量敏感序列，重复项表示同一材料需要多份。
   ingredients: string[];
   positiveTags: string[];
   negativeTags: string[];

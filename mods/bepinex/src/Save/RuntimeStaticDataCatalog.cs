@@ -221,7 +221,7 @@ internal sealed class RuntimeStaticDataCatalog
                         Id = food.Id,
                         RecipeId = ParseInt(row, "recipeId") ?? food.Id,
                         Name = food.Name,
-                        Ingredients = ParseNamedCollection(Field(row, "ingredients")),
+                        Ingredients = ParseOrderedNamedCollection(Field(row, "ingredients")),
                         PositiveTags = food.PositiveTags,
                         NegativeTags = food.NegativeTags,
                         Cooker = NormalizeCooker(Field(row, "cooker")),
@@ -409,14 +409,21 @@ internal sealed class RuntimeStaticDataCatalog
 
     private static List<string> ParseTagNames(string value)
     {
-        return ParseNamedCollection(value)
+        return ParseOrderedNamedCollection(value)
             .Select(NormalizeTagName)
             .Where(tag => !string.IsNullOrWhiteSpace(tag))
             .Distinct(StringComparer.Ordinal)
             .ToList();
     }
 
-    private static List<string> ParseNamedCollection(string value)
+    private static List<string> ParseDistinctNamedCollection(string value)
+    {
+        return ParseOrderedNamedCollection(value)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+    }
+
+    private static List<string> ParseOrderedNamedCollection(string value)
     {
         var trimmed = value.Trim();
         if (string.IsNullOrWhiteSpace(trimmed)
@@ -442,7 +449,6 @@ internal sealed class RuntimeStaticDataCatalog
                 return text.Trim();
             })
             .Where(text => !string.IsNullOrWhiteSpace(text) && !text.StartsWith("#", StringComparison.Ordinal))
-            .Distinct(StringComparer.Ordinal)
             .ToList();
     }
 
@@ -520,9 +526,8 @@ internal sealed class RuntimeStaticDataCatalog
         int id,
         string spawnType = "")
     {
-        var places = ParseNamedCollection(value)
+        var places = ParseDistinctNamedCollection(value)
             .Where(place => PlaceNames.All.Contains(place, StringComparer.Ordinal))
-            .Distinct(StringComparer.Ordinal)
             .ToList();
 
         if (places.Count > 0) return places;

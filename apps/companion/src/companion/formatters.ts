@@ -88,7 +88,24 @@ export function formatIngredientNamesWithQty(
   ownedIngredientQty: Record<number, number>,
   ingredientIdByName: Map<string, number>,
 ) {
-  return names.map((name) => formatIngredientWithQty(name, ownedIngredientQty, ingredientIdByName)).join(', ');
+  const counts = new Map<string, number>();
+  const orderedNames: string[] = [];
+
+  for (const name of names) {
+    const text = name.trim();
+    if (!text) continue;
+    if (!counts.has(text)) orderedNames.push(text);
+    counts.set(text, (counts.get(text) ?? 0) + 1);
+  }
+
+  return orderedNames
+    .map((name) => {
+      const count = counts.get(name) ?? 1;
+      const id = ingredientIdByName.get(name);
+      const countSuffix = count > 1 ? ` x${count}` : '';
+      return `${name}${countSuffix}${formatQtySuffix(id == null ? undefined : ownedIngredientQty[id])}`;
+    })
+    .join(', ');
 }
 
 export function formatIngredientWithQty(

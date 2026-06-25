@@ -85,8 +85,15 @@ internal static partial class RuntimeOrderPreparationService
             return CookingStartResult.Failed("已找到可用厨具控制器，但无法读取厨具数据。");
         }
 
+        var baseIngredientIds = ReadRecipeIngredientIds(recipe);
+        if (baseIngredientIds.Length + extraIngredientIds.Count > MaxFoodIngredientCount)
+        {
+            AppendAutomationLog("start-failed", collectionTarget, $"{recipeName}: too many ingredients base={baseIngredientIds.Length}; extra={extraIngredientIds.Count}");
+            return CookingStartResult.Failed($"料理材料超过游戏上限：基础 {baseIngredientIds.Length} 个，加料 {extraIngredientIds.Count} 个，最多 {MaxFoodIngredientCount} 个。");
+        }
+
         var finalFood = CreateCookResult(recipe, extraIngredientIds, cooker) ?? baseFood;
-        var ingredientIds = ReadRecipeIngredientIds(recipe).Concat(extraIngredientIds).ToArray();
+        var ingredientIds = baseIngredientIds.Concat(extraIngredientIds).ToArray();
         if (!HasEnoughIngredients(ingredientIds, out var missingIngredientId))
         {
             AppendAutomationLog("start-failed", collectionTarget, $"{recipeName}: missing ingredient #{missingIngredientId}");

@@ -136,9 +136,9 @@ function normalizeRuntimeRecipe(value: RuntimeDataCatalogSnapshot['recipes'][num
     recipeId: value.recipeId,
     name: value.name,
     description: value.description ?? '',
-    ingredients: normalizeStringArray(value.ingredients),
-    positiveTags: normalizeStringArray(value.positiveTags),
-    negativeTags: normalizeStringArray(value.negativeTags),
+    ingredients: normalizeStringList(value.ingredients),
+    positiveTags: normalizeDistinctStringArray(value.positiveTags),
+    negativeTags: normalizeDistinctStringArray(value.negativeTags),
     cooker: value.cooker ?? '',
     baseCookTime: value.baseCookTime ?? 0,
     dlc: value.dlc ?? 0,
@@ -155,7 +155,7 @@ function normalizeRuntimeIngredient(value: RuntimeDataCatalogSnapshot['ingredien
     name: value.name,
     description: value.description ?? '',
     type: value.type ?? '',
-    tags: normalizeStringArray(value.tags),
+    tags: normalizeDistinctStringArray(value.tags),
     dlc: value.dlc ?? 0,
     level: value.level ?? 0,
     price: value.price ?? 0,
@@ -169,7 +169,7 @@ function normalizeRuntimeBeverage(value: RuntimeDataCatalogSnapshot['beverages']
     id: value.id,
     name: value.name,
     description: value.description ?? '',
-    tags: normalizeStringArray(value.tags),
+    tags: normalizeDistinctStringArray(value.tags),
     dlc: value.dlc ?? 0,
     level: value.level ?? 0,
     price: value.price ?? 0,
@@ -182,8 +182,8 @@ function normalizeRuntimeNormalCustomer(
 ): NormalCustomerCatalogItem | null {
   if (!Number.isFinite(value.id) || !isUsableRuntimeName(value.name)) return null;
   const places = normalizePlaces(value.places);
-  const positiveTags = normalizeStringArray(value.positiveTags);
-  const beverageTags = normalizeStringArray(value.beverageTags);
+  const positiveTags = normalizeDistinctStringArray(value.positiveTags);
+  const beverageTags = normalizeDistinctStringArray(value.beverageTags);
   if (places.length === 0 || (positiveTags.length === 0 && beverageTags.length === 0)) return null;
 
   return {
@@ -202,8 +202,8 @@ function normalizeRuntimeRareCustomerData(
 ): RareCustomerCatalogItem | null {
   if (!Number.isFinite(value.id) || !isUsableRuntimeName(value.name)) return null;
   const places = normalizePlaces(value.places);
-  const positiveTags = normalizeStringArray(value.positiveTags).filter(isOrderableRareFoodTag);
-  const beverageTags = normalizeStringArray(value.beverageTags);
+  const positiveTags = normalizeDistinctStringArray(value.positiveTags).filter(isOrderableRareFoodTag);
+  const beverageTags = normalizeDistinctStringArray(value.beverageTags);
   if (places.length === 0 || positiveTags.length === 0 || beverageTags.length === 0) return null;
 
   return {
@@ -215,7 +215,7 @@ function normalizeRuntimeRareCustomerData(
     price: value.price ?? [0, 0],
     enduranceLimit: value.enduranceLimit ?? 1,
     positiveTags,
-    negativeTags: normalizeStringArray(value.negativeTags),
+    negativeTags: normalizeDistinctStringArray(value.negativeTags),
     beverageTags,
     positiveTagMapping: value.positiveTagMapping ?? {},
     beverageTagMapping: value.beverageTagMapping ?? {},
@@ -225,7 +225,13 @@ function normalizeRuntimeRareCustomerData(
   };
 }
 
-function normalizeStringArray(value: unknown): string[] {
+function normalizeStringList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map((item) => String(item).trim()).filter(Boolean)
+    : [];
+}
+
+function normalizeDistinctStringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? [...new Set(value.map((item) => String(item).trim()).filter(Boolean))]
     : [];
@@ -247,7 +253,7 @@ function normalizeRuntimeTagPriorityRules(value: unknown): RuntimeTagPriorityRul
       const record = item as Partial<RuntimeTagPriorityRule>;
       const id = Number(record.id);
       const tagIds = normalizeNumberArray(record.tagIds);
-      const tags = normalizeStringArray(record.tags);
+      const tags = normalizeDistinctStringArray(record.tags);
       if (!Number.isFinite(id) || id < 0 || tagIds.length === 0 || tags.length === 0) return null;
       return {
         id: Math.trunc(id),
@@ -274,7 +280,7 @@ function normalizeNumberArray(value: unknown): number[] {
 }
 
 function normalizePlaces(value: unknown): PlaceName[] {
-  const places = normalizeStringArray(value)
+  const places = normalizeDistinctStringArray(value)
     .filter((place): place is PlaceName => (ALL_PLACES as string[]).includes(place));
   return places;
 }

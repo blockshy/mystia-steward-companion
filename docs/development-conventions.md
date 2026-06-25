@@ -78,6 +78,7 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 - `游戏界面置顶推荐` 和 `目标厨具高亮` 是两个独立开关。两者可以共享当前第一笔稀客订单的推荐目标，但本地 API 必须分别传递 `enabled` 与 `highlightEnabled`，C# 侧也要分别控制列表置顶补丁和厨具高亮服务。
 - 稀客料理/酒水展示排序由伴随窗口设置页的置顶开关和推荐权重共同控制。硬过滤后先应用任务料理、收藏料理、收藏酒水置顶，再由 `RecommendationSortProfile` 的启用项、权重、方向和预设共同决定顺序；默认均衡预设综合稀客偏好、厌恶风险、加料数量、资源压力、成本、利润、酒水库存和当前厨具可做。新增排序或置顶规则时必须同时接入稀客页、经营中页、专注模式、缓存签名和自动化当前第一单选择，不要让不同入口出现不同排序。
 - 推荐 tag 解析统一维护在 `apps/companion/src/recommendation-engine/tag-resolution.ts`，动态料理 tag 维护在 `dynamic-food-tags.ts`。运行时导出的 `tagPriorityRules` 优先级最高；运行时缺失时只允许使用 `PROJECT_VERIFIED_TAG_PRIORITY_RULES` 这组项目验证规则，不得在其他模块重新硬编码互斥/压制关系。新增或调整 tag 规则必须来自游戏运行时行为、反编译资料或可复现实测，并同步更新该集中模块和相关文档。
+- 运行时料理配方的基础食材必须作为数量敏感序列处理，重复项表示同一材料需要多份；`RuntimeDataCatalog.Recipes[].Ingredients` 和前端 `RecipeCatalogItem.ingredients` 不得去重。只有 tag、场景、ID 列表等集合语义字段可以在解析和归一化时去重。推荐加料槽位、大份动态 tag、基础成本和自动化下单保护都必须基于保留重复后的真实基础食材数量。
 - 已捕获且仍能匹配当前稀客，或仍能从原运行时订单对象和控制器确认未完成的订单，不得使用短时间缓存过期清理；只应在明确移除、确认上菜完成、稀客离场或长时间硬上限后消失。
 - 本地 API 监听 `127.0.0.1`，避免代理工具干扰 `localhost`；除 `/health` 外，接口必须通过伴随窗口传入的 token 访问。
 - 伴随窗口单实例控制监听 `127.0.0.1:32146`；热键逻辑必须先发送 `show`/`toggle`/`exit` 控制消息，控制端口不可达时才启动伴随进程，避免手柄快捷键重复创建窗口。

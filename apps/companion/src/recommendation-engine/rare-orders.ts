@@ -28,6 +28,7 @@ import type {
 const DEFAULT_BEAM_WIDTH = 64;
 const DEFAULT_FOOD_PLAN_CANDIDATE_LIMIT = 80;
 const DEFAULT_BEVERAGE_PLAN_CANDIDATE_LIMIT = 40;
+const MAX_FOOD_INGREDIENT_COUNT = 5;
 const LOW_STOCK_THRESHOLD = 5;
 
 interface BuildRareOrderPlansOptions {
@@ -153,10 +154,7 @@ export function buildRareFoodCandidates(
     if (!hasAvailableBaseIngredients(recipe, ingredientsByName, context)) continue;
     if (context.filterMissingCookers && !isCookerAvailable(recipe, context)) continue;
 
-    const extraSlots = Math.max(
-      0,
-      Math.min(5 - recipe.ingredients.length, context.maxExtraIngredients),
-    );
+    const extraSlots = getAvailableExtraIngredientSlots(recipe, context);
     const baseIngredientIds = new Set(recipe.ingredients
       .map((name) => ingredientsByName.get(name)?.id ?? -1)
       .filter((id) => id >= 0));
@@ -347,6 +345,14 @@ function isIngredientExcluded(id: number, context: RecommendationRuntimeContext)
 function isCookerAvailable(recipe: RecipeCatalogItem, context: RecommendationRuntimeContext): boolean {
   if (!context.hasCookerSnapshot) return true;
   return context.placedCookerNames.has(recipe.cooker);
+}
+
+function getAvailableExtraIngredientSlots(
+  recipe: RecipeCatalogItem,
+  context: RecommendationRuntimeContext,
+): number {
+  const remainingRecipeSlots = MAX_FOOD_INGREDIENT_COUNT - recipe.ingredients.length;
+  return Math.max(0, Math.min(remainingRecipeSlots, context.maxExtraIngredients));
 }
 
 function buildRelevantIngredientPool({
