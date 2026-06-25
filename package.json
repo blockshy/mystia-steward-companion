@@ -2,7 +2,7 @@
   "name": "mystia-steward-companion",
   "description": "mystia-steward-companion - 东方夜雀食堂 BepInEx Mod 与桌面伴随窗口",
   "private": true,
-  "version": "1.0.8",
+  "version": "1.0.9",
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
