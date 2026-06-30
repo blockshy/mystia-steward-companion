@@ -15,6 +15,11 @@ import type {
   NormalRecipeRecommendation,
 } from '@/recommendation-engine/types';
 
+/**
+ * 普客覆盖推荐所需的运行时上下文。
+ *
+ * 该上下文只关心“当前能做什么”和流行 Tag，不处理稀客订单、预算和库存排序。
+ */
 export interface NormalCoverageRuntimeContext {
   availableRecipeIds: Set<number>;
   availableBeverageIds: Set<number>;
@@ -25,6 +30,9 @@ export interface NormalCoverageRuntimeContext {
   tagPriorityRules: RuntimeTagPriorityRule[];
 }
 
+/**
+ * 读取指定地区会出现的普客目录。
+ */
 export function getNormalCustomersByPlace(
   data: RecommendationDataSet,
   place: PlaceName,
@@ -32,6 +40,11 @@ export function getNormalCustomersByPlace(
   return data.normalCustomers.filter((customer) => customer.places.includes(place));
 }
 
+/**
+ * 构建地区普客料理覆盖推荐。
+ *
+ * 料理必须已解锁，并且基础材料不能被用户禁用；额外加料不参与普客覆盖推荐，避免把地区页变成订单级搜索。
+ */
 export function buildNormalFoodRecommendations({
   data,
   place,
@@ -80,6 +93,9 @@ export function buildNormalFoodRecommendations({
   return rows.sort(compareNormalFoodRecommendations);
 }
 
+/**
+ * 构建地区普客酒水覆盖推荐。
+ */
 export function buildNormalBeverageRecommendations({
   data,
   place,
@@ -114,6 +130,9 @@ export function buildNormalBeverageRecommendations({
   return rows.sort(compareNormalBeverageRecommendations);
 }
 
+/**
+ * 普客料理推荐排序：覆盖度优先，其次覆盖人数、材料成本、利润和 ID 稳定排序。
+ */
 export function compareNormalFoodRecommendations(
   left: NormalRecipeRecommendation,
   right: NormalRecipeRecommendation,
@@ -125,6 +144,9 @@ export function compareNormalFoodRecommendations(
   return left.recipe.id - right.recipe.id;
 }
 
+/**
+ * 普客酒水推荐排序：覆盖度优先，其次覆盖人数、价格和 ID 稳定排序。
+ */
 export function compareNormalBeverageRecommendations(
   left: NormalBeverageRecommendation,
   right: NormalBeverageRecommendation,
@@ -135,6 +157,9 @@ export function compareNormalBeverageRecommendations(
   return left.beverage.id - right.beverage.id;
 }
 
+/**
+ * 判断配方基础材料是否都存在且未被用户禁用。
+ */
 function hasUsableBaseIngredients(
   recipe: RecipeCatalogItem,
   ingredientsByName: Map<string, IngredientCatalogItem>,
@@ -153,6 +178,9 @@ function calculateBaseIngredientCost(
   return recipe.ingredients.reduce((sum, name) => sum + (ingredientsByName.get(name)?.price ?? 0), 0);
 }
 
+/**
+ * 统计某个候选能命中的普客偏好 Tag。
+ */
 function buildCustomerCoverage(
   customers: NormalCustomerCatalogItem[],
   activeTags: string[],
@@ -169,6 +197,9 @@ function buildCustomerCoverage(
   });
 }
 
+/**
+ * 构建料理覆盖推荐的解释条件。
+ */
 function buildNormalFoodConditions(
   recipe: RecipeCatalogItem,
   coverage: CustomerCoverageSummary[],

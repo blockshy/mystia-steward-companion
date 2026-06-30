@@ -1,6 +1,11 @@
 export type RecommendationSortPresetId = 'balanced' | 'resources' | 'profit' | 'simple';
 export type RecommendationObjectiveDirection = 'asc' | 'desc';
 
+/**
+ * 稀客推荐方案排序目标。
+ *
+ * 这些目标只参与同一分桶内的权重排序；置顶类开关由排序上下文单独处理，避免和权重规则混在一起。
+ */
 export type RecommendationObjectiveKey =
   | 'foodPreference'
   | 'beveragePreference'
@@ -12,6 +17,9 @@ export type RecommendationObjectiveKey =
   | 'beverageStock'
   | 'cookerAvailable';
 
+/**
+ * 用户可调整的单个排序目标定义。
+ */
 export interface RecommendationObjectiveDefinition {
   key: RecommendationObjectiveKey;
   label: string;
@@ -19,6 +27,9 @@ export interface RecommendationObjectiveDefinition {
   direction: RecommendationObjectiveDirection;
 }
 
+/**
+ * 一个排序目标在当前配置中的启用状态、方向和权重。
+ */
 export interface RecommendationObjectiveRule {
   key: RecommendationObjectiveKey;
   enabled: boolean;
@@ -26,11 +37,19 @@ export interface RecommendationObjectiveRule {
   direction: RecommendationObjectiveDirection;
 }
 
+/**
+ * 推荐权重排序配置。
+ */
 export interface RecommendationSortProfile {
   preset: RecommendationSortPresetId;
   objectives: RecommendationObjectiveRule[];
 }
 
+/**
+ * 排序时额外注入的运行时置顶上下文。
+ *
+ * 收藏、任务料理和酒水收藏置顶属于硬性排序边界，不写入 objective 权重，避免用户误以为调权重能覆盖置顶规则。
+ */
 export interface RecommendationPlanSortContext {
   favoriteRecipeKeys?: Set<string>;
   favoriteBeverageIds?: Set<number>;
@@ -133,6 +152,11 @@ export function buildDefaultRecommendationSortProfile(
   return buildRecommendationSortProfile(preset);
 }
 
+/**
+ * 将外部存储或旧配置值归一化为当前排序配置。
+ *
+ * 未识别字段会被丢弃，只接受当前定义过的 objective，保证 localStorage 中的脏数据不会污染排序规则。
+ */
 export function normalizeRecommendationSortProfile(value: unknown): RecommendationSortProfile {
   const record = isRecord(value) ? value : {};
   const preset = isRecommendationSortPresetId(record.preset) ? record.preset : 'balanced';
@@ -161,6 +185,9 @@ export function normalizeRecommendationSortProfile(value: unknown): Recommendati
   };
 }
 
+/**
+ * 序列化前重新归一化配置，避免持久化过期字段。
+ */
 export function serializeRecommendationSortProfile(profile: RecommendationSortProfile): string {
   const normalized = normalizeRecommendationSortProfile(profile);
   return JSON.stringify({

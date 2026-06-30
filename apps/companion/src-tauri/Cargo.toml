@@ -9,6 +9,10 @@ edition = "2021"
 name = "mystia-steward-companion"
 path = "src/main.rs"
 
+[[bin]]
+name = "mystia-steward-companion-updater"
+path = "src/bin/updater.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

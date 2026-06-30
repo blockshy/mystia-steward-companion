@@ -7,10 +7,16 @@ import {
   type RecommendationSortProfile,
 } from '@/recommendation-engine';
 
+/**
+ * 伴随窗口用户偏好的 localStorage 读写与归一化。
+ *
+ * 该模块只负责浏览器/Tauri 窗口侧的持久化；真正影响游戏运行时的开关会通过 API 或 Tauri command 同步到 Mod。
+ */
 const STORAGE_PREFIX = 'mystia-steward-companion';
 
 const BACKGROUND_OPACITY_STORAGE_KEY = `${STORAGE_PREFIX}-background-opacity`;
 const CONTENT_OPACITY_STORAGE_KEY = `${STORAGE_PREFIX}-content-opacity`;
+// v1.0.7 之前窗口透明度只有一个字段，读取时兼容、保存时删除旧 key。
 const LEGACY_WINDOW_OPACITY_STORAGE_KEY = `${STORAGE_PREFIX}-window-opacity`;
 const FOCUS_SWITCH_BEHAVIOR_STORAGE_KEY = `${STORAGE_PREFIX}-focus-switch-behavior`;
 const FOCUS_SWITCH_COOLDOWN_STORAGE_KEY = `${STORAGE_PREFIX}-focus-switch-cooldown-ms`;
@@ -86,6 +92,11 @@ export const DEFAULT_RECOMMENDATION_EXCLUSIONS: RecommendationExclusions = {
 export type FocusSwitchBehavior = 'hide' | 'keep-visible';
 export type ServiceOrderSortMode = 'ordered' | 'guest';
 
+/**
+ * 伴随窗口全部用户偏好。
+ *
+ * 字段按 UI 区块组织：窗口行为、自动化、推荐约束、调试和排序。新增字段必须同时更新读取、归一化和持久化。
+ */
 export interface CompanionPreferences {
   backgroundOpacity: number;
   contentOpacity: number;
@@ -138,6 +149,9 @@ export function normalizeFocusRecommendationLimit(value: number) {
   return Math.max(1, Math.min(MAX_FOCUS_RECOMMENDATION_ROWS, Math.trunc(value)));
 }
 
+/**
+ * 从 localStorage 读取并归一化用户偏好。
+ */
 export function readStoredCompanionPreferences(): CompanionPreferences {
   return normalizeCompanionPreferences({
     backgroundOpacity: readStoredNumber(
@@ -190,6 +204,11 @@ export function readStoredCompanionPreferences(): CompanionPreferences {
   });
 }
 
+/**
+ * 将外部输入归一化为完整偏好对象。
+ *
+ * 该函数是所有偏好入口的唯一清洗层，负责处理旧字段、非法数值和缺省值。
+ */
 export function normalizeCompanionPreferences(
   value: Partial<CompanionPreferences> & { windowOpacity?: number },
 ): CompanionPreferences {
@@ -285,6 +304,11 @@ export function normalizeRecipeVariantLimitPerBase(value: number | undefined) {
   );
 }
 
+/**
+ * 持久化伴随窗口偏好。
+ *
+ * 保存前会重新归一化，确保 localStorage 中不会长期保留越界数值或过期结构。
+ */
 export function persistCompanionPreferences(preferences: CompanionPreferences) {
   const normalized = normalizeCompanionPreferences(preferences);
   localStorage.setItem(BACKGROUND_OPACITY_STORAGE_KEY, String(normalized.backgroundOpacity));
@@ -339,6 +363,9 @@ export function persistCompanionPreferences(preferences: CompanionPreferences) {
   );
 }
 
+/**
+ * 将视觉透明度偏好写入 CSS 变量。
+ */
 export function applyCompanionVisualPreferences(preferences: CompanionPreferences) {
   const backgroundOpacity = normalizeBackgroundOpacity(preferences.backgroundOpacity);
   const backgroundPercent = `${Math.round(backgroundOpacity * 100)}%`;
@@ -351,6 +378,11 @@ export function applyCompanionVisualPreferences(preferences: CompanionPreference
   document.documentElement.style.setProperty('--companion-content-opacity-percent', contentPercent);
 }
 
+/**
+ * 将窗口行为偏好同步到 Tauri 壳。
+ *
+ * 浏览器模式或旧版本伴随窗口缺少命令时静默忽略，避免设置页在开发预览中报错。
+ */
 export async function applyCompanionPreferencesToTauri(
   focusSwitchBehavior: FocusSwitchBehavior,
   alwaysOnTop: boolean,
@@ -368,7 +400,7 @@ export async function applyCompanionPreferencesToTauri(
     });
     await invoke('set_mouse_passthrough', { enabled: mousePassthroughEnabled });
   } catch {
-    // Browser mode and older companion builds do not expose this command.
+    // 浏览器模式和旧版伴随窗口不一定暴露这些 command，偏好仍会保存在前端本地。
   }
 }
 
@@ -421,6 +453,9 @@ function readStoredRecommendationExclusions(): RecommendationExclusions {
   });
 }
 
+/**
+ * 归一化推荐排除项，过滤非法 ID 并稳定排序。
+ */
 export function normalizeRecommendationExclusions(value: unknown): RecommendationExclusions {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return DEFAULT_RECOMMENDATION_EXCLUSIONS;
   const exclusions = value as Partial<RecommendationExclusions>;

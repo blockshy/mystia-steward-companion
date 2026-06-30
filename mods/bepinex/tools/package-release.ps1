@@ -42,6 +42,26 @@ foreach ($RelativePath in $CompanionCandidates) {
     }
 }
 
+$UpdaterCandidates = @(
+    "apps/companion/src-tauri/target/release/mystia-steward-companion-updater.exe",
+    "apps/companion/src-tauri/target/release/mystia-steward-companion-updater"
+)
+
+$UpdaterIncluded = $false
+foreach ($RelativePath in $UpdaterCandidates) {
+    $UpdaterPath = Join-Path $RepoRoot $RelativePath
+    if (Test-Path -LiteralPath $UpdaterPath -PathType Leaf) {
+        Copy-Item -LiteralPath $UpdaterPath -Destination (Join-Path $DistDir (Split-Path $UpdaterPath -Leaf))
+        Write-Host "Included updater executable: $UpdaterPath"
+        $UpdaterIncluded = $true
+        break
+    }
+}
+
+if (-not $UpdaterIncluded) {
+    Write-Error "Missing updater executable. Run: cargo build --manifest-path apps/companion/src-tauri/Cargo.toml --release --bin mystia-steward-companion-updater"
+}
+
 if (Test-Path -LiteralPath $ZipPath) {
     Remove-Item -LiteralPath $ZipPath -Force
 }

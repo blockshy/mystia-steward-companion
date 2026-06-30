@@ -75,6 +75,11 @@ type OrderPreparationSelection =
 
 export type ValidOrderPreparationSelection = Extract<OrderPreparationSelection, { ok: true }>;
 
+/**
+ * 估算普客自动化本轮会占用的厨具需求。
+ *
+ * 稀客自动化在预约厨具时会先让出普客已经需要的容量，避免同一轮里两套自动化抢同一个灶台。
+ */
 export function buildNormalCookerDemand(
   orders: NormalBusinessOrder[],
   states: Map<string, NormalAutoOrderState>,
@@ -113,6 +118,11 @@ export function buildNormalCookerDemand(
   return { counts, labels };
 }
 
+/**
+ * 构建自动化资源占用概览。
+ *
+ * UI 通过该结果展示本轮预计占用的厨具槽位和送餐盘资源，便于解释订单为什么等待。
+ */
 export function buildAutomationResourceOverview({
   runtime,
   recommendations,
@@ -188,12 +198,22 @@ export function buildAutomationResourceOverview({
   };
 }
 
+/**
+ * 判断普客订单是否已经拥有可送达料理。
+ *
+ * 自动收菜回执和游戏快照都会参与判断，避免快照短暂缺字段时丢失已完成进度。
+ */
 export function isNormalOrderCollected(order: NormalBusinessOrder, state: NormalAutoOrderState | undefined): boolean {
   if (state?.collected) return true;
   if (order.hasStoredFoodReceipt) return true;
   return Boolean(order.hasStoredFood && (state?.prepared || state?.collected));
 }
 
+/**
+ * 将普客自动化本地状态与最新 Mod 快照同步。
+ *
+ * 快照是最终事实来源：如果游戏已经显示送达或完成，就推进本地状态并重置重试计数。
+ */
 export function syncNormalOrderStateWithSnapshot(
   order: NormalBusinessOrder,
   state: NormalAutoOrderState | undefined,
@@ -248,6 +268,9 @@ export function syncNormalOrderStateWithSnapshot(
   };
 }
 
+/**
+ * 判断是否应尝试为普客订单开始料理。
+ */
 export function shouldAttemptNormalCooking(
   order: NormalBusinessOrder,
   state: NormalAutoOrderState | undefined,
@@ -261,6 +284,9 @@ export function shouldAttemptNormalCooking(
   return !state?.prepared || isNormalOrderPreparedStale(state, now, preferences);
 }
 
+/**
+ * 判断是否应尝试为普客订单处理酒水。
+ */
 export function shouldAttemptNormalBeverage(
   order: NormalBusinessOrder,
   state: NormalAutoOrderState | undefined,
@@ -274,6 +300,9 @@ export function shouldAttemptNormalBeverage(
   return true;
 }
 
+/**
+ * 判断是否应复查普客料理是否已经进入保温缓存。
+ */
 export function shouldConfirmNormalCollection(
   order: NormalBusinessOrder,
   state: NormalAutoOrderState | undefined,
@@ -292,6 +321,9 @@ export function shouldConfirmNormalCollection(
   return isNormalOrderPreparedStale(state, now, preferences);
 }
 
+/**
+ * 判断是否应把普客保温缓存中的料理送达订单。
+ */
 export function shouldAttemptNormalFoodDelivery(
   order: NormalBusinessOrder,
   state: NormalAutoOrderState | undefined,
@@ -305,6 +337,9 @@ export function shouldAttemptNormalFoodDelivery(
   return isNormalOrderCollected(order, state);
 }
 
+/**
+ * 判断普客订单是否具备触发完成评价的条件。
+ */
 export function shouldAttemptNormalCompletion(
   order: NormalBusinessOrder,
   state: NormalAutoOrderState | undefined,
@@ -319,6 +354,11 @@ export function shouldAttemptNormalCompletion(
   return Boolean(hasFood && hasBeverage);
 }
 
+/**
+ * 在单轮自动化中预约一个厨具槽位。
+ *
+ * 预约只影响前端本轮选择，不修改游戏状态；真正厨具占用由 Mod 开火后产生。
+ */
 export function reserveAutomationCookerSlot(
   cycle: AutomationCookerCycle,
   cooker: CookerRequirement | null,
@@ -341,6 +381,9 @@ export function reserveAutomationCookerSlot(
   return { ok: true, message: '' };
 }
 
+/**
+ * 为稀客订单预约厨具槽位，并尊重普客本轮预留需求。
+ */
 export function reserveRareCookerSlot(
   cycle: AutomationCookerCycle,
   cooker: CookerRequirement | null,
@@ -363,6 +406,11 @@ export function reserveRareCookerSlot(
   return reserveAutomationCookerSlot(cycle, cooker, label, capacity);
 }
 
+/**
+ * 从当前稀客订单推荐中选择可执行的自动化候选。
+ *
+ * 选择时会结合收藏限定、已锁定目标、推荐兜底方案和自动化并发上限，返回可执行项以及跳过原因。
+ */
 export function selectOrderPreparationCandidates(
   recommendations: OrderRecommendation[],
   favorites: FavoriteData,
@@ -421,6 +469,11 @@ export function selectOrderPreparationCandidates(
   };
 }
 
+/**
+ * 锁定一笔稀客订单的自动化料理和酒水目标。
+ *
+ * 锁定后即使推荐列表因库存或快照刷新重新排序，也继续处理最初选择的目标，避免自动化中途换菜。
+ */
 export function lockRareAutomationTargets(
   state: AutoFirstOrderState,
   selection: ValidOrderPreparationSelection,
@@ -436,6 +489,11 @@ export function lockRareAutomationTargets(
   };
 }
 
+/**
+ * 构建发送给 Mod 的游戏内目标厨具/材料高亮目标。
+ *
+ * 目标总是来自当前排序后的第一笔稀客订单，签名包含订单、料理、材料、酒水和厨具，便于 Mod 判断是否需要更新高亮。
+ */
 export function buildGameUiPinningTarget(
   recommendations: OrderRecommendation[],
   orderSortMode: ServiceOrderSortMode,
@@ -484,6 +542,9 @@ export function buildGameUiPinningTarget(
   };
 }
 
+/**
+ * 构建“直接完成订单”动作需要的临时偏好。
+ */
 export function buildCompleteOrderPreferences(preferences: CompanionPreferences): CompanionPreferences {
   return {
     ...preferences,
@@ -494,6 +555,9 @@ export function buildCompleteOrderPreferences(preferences: CompanionPreferences)
   };
 }
 
+/**
+ * 判断稀客自动化是否至少启用了一个动作。
+ */
 export function hasAutomationActionEnabled(preferences: CompanionPreferences): boolean {
   return preferences.autoPrepCompleteOrder
     || preferences.autoPrepTakeBeverage
@@ -509,6 +573,11 @@ export function hasNormalOrderActionEnabled(preferences: CompanionPreferences): 
     || preferences.autoNormalCompleteOrder;
 }
 
+/**
+ * 构建稀客自动化状态键。
+ *
+ * 键中包含首次出现时间、桌号、稀客和 Tag，尽量避免同桌后续新订单复用旧状态。
+ */
 export function buildAutoOrderKey(item: OrderRecommendation): string {
   const order = item.order;
   return [
@@ -520,6 +589,9 @@ export function buildAutoOrderKey(item: OrderRecommendation): string {
   ].join('|');
 }
 
+/**
+ * 构建夜间稀客订单快照键。
+ */
 export function buildNightBusinessOrderKey(order: NightBusinessOrder): string {
   return [
     order.firstSeenAtUtc ?? order.lastSeenAtUtc ?? '',
@@ -566,6 +638,9 @@ export function buildRareAutoOrderDiagnostic(
   };
 }
 
+/**
+ * 构建普客自动化诊断行。
+ */
 export function buildNormalAutoOrderDiagnostics(
   orders: NormalBusinessOrder[],
   states: Map<string, NormalAutoOrderState>,
@@ -581,6 +656,9 @@ export function buildNormalAutoOrderDiagnostics(
     });
 }
 
+/**
+ * 构建普客自动化状态键。
+ */
 export function buildNormalAutoOrderKey(order: NormalBusinessOrder): string {
   if (order.orderKey) return order.orderKey;
   return [
@@ -592,6 +670,9 @@ export function buildNormalAutoOrderKey(order: NormalBusinessOrder): string {
   ].join('|');
 }
 
+/**
+ * 构建普客订单快照签名，用于在订单状态变化时立即触发自动化复查。
+ */
 export function buildNormalOrderAutomationSignature(orders: NormalBusinessOrder[]): string {
   return sortNormalOrders(orders)
     .map((order) => [
@@ -608,6 +689,9 @@ export function buildNormalOrderAutomationSignature(orders: NormalBusinessOrder[
     .join('|');
 }
 
+/**
+ * 判断普客开火后是否等待过久，需要重新确认或重试。
+ */
 export function isNormalOrderPreparedStale(
   state: NormalAutoOrderState | undefined,
   now: number,
@@ -618,12 +702,18 @@ export function isNormalOrderPreparedStale(
   return state.preparedAtMs > 0 && now - state.preparedAtMs >= preferences.autoNormalStorageWaitSeconds * 1000;
 }
 
+/**
+ * 判断普客暂停状态是否属于可自动恢复的临时失败。
+ */
 export function isRecoverableNormalPausedState(state: NormalAutoOrderState | undefined, now: number): boolean {
   if (!state?.paused) return false;
   if (!state.lastError.includes('目标料理长时间未进入普客暂存容器')) return false;
   return state.stepStartedAtMs <= 0 || now - state.stepStartedAtMs >= NORMAL_AUTO_RECOVERABLE_PAUSE_RETRY_MS;
 }
 
+/**
+ * 用订单快照中的已送达字段推进稀客自动化本地状态。
+ */
 export function syncRareStateWithOrderServedState(
   state: AutoFirstOrderState,
   order: NightBusinessOrder,
@@ -657,6 +747,9 @@ export function syncRareStateWithOrderServedState(
   );
 }
 
+/**
+ * 根据 Mod 返回的订单准备结果推进稀客自动化状态。
+ */
 export function applyRareServedStateFromResponse(
   state: AutoFirstOrderState,
   order: NightBusinessOrder,
@@ -685,6 +778,9 @@ export function applyRareServedStateFromResponse(
   };
 }
 
+/**
+ * 将 Mod 订单处理响应格式化为用户可读的多行文本。
+ */
 export function formatOrderPreparationResponse(response: OrderPreparationResponse) {
   const title = response.ok
     ? `已处理：${response.order.guestName} · 桌 ${formatDesk(response.order.deskCode)}`

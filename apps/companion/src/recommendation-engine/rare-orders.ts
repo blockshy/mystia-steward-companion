@@ -58,6 +58,12 @@ interface IngredientSearchState {
   resourcePressure: number;
 }
 
+/**
+ * 为单个稀客点单构建料理与酒水的组合推荐方案。
+ *
+ * 函数先分别生成料理候选和酒水候选，再组合成完整方案并按推荐权重排序。候选数量会先被截断，
+ * 避免稀客经营中同时处理多笔订单时组合爆炸影响 UI 和 Worker 响应。
+ */
 export function buildRareOrderPlans({
   data,
   customer,
@@ -91,6 +97,11 @@ export function buildRareOrderPlans({
   });
 }
 
+/**
+ * 从已筛选的料理/酒水候选构造完整推荐方案。
+ *
+ * 该入口供经营中订单复用已算好的候选，保证收藏置顶、任务置顶和兜底候选在最终组合排序中走同一套规则。
+ */
 export function buildRareOrderPlansFromCandidates({
   data,
   customer,
@@ -136,6 +147,12 @@ export function sortRareOrderPlans(
   return [...plans].sort((left, right) => compareRarePlans(left, right, profile, sortContext, ranges));
 }
 
+/**
+ * 构建稀客料理候选。
+ *
+ * 基础配方必须已解锁、材料可用且满足厨具硬过滤；额外食材通过有限宽度搜索补齐点单 Tag 和稀客偏好。
+ * 游戏限制料理最多五种材料，因此重复基础材料会按配方原始长度占用槽位。
+ */
 export function buildRareFoodCandidates(
   data: RecommendationDataSet,
   demand: RareTagOrderDemand,
@@ -154,6 +171,7 @@ export function buildRareFoodCandidates(
     if (!hasAvailableBaseIngredients(recipe, ingredientsByName, context)) continue;
     if (context.filterMissingCookers && !isCookerAvailable(recipe, context)) continue;
 
+    // extraSlots 使用配方原始材料数量计算，不能用去重后的材料集合，否则重复材料配方会错误地允许继续加料。
     const extraSlots = getAvailableExtraIngredientSlots(recipe, context);
     const baseIngredientIds = new Set(recipe.ingredients
       .map((name) => ingredientsByName.get(name)?.id ?? -1)
@@ -184,6 +202,11 @@ export function buildRareFoodCandidates(
   return candidates.sort(compareFoodCandidates);
 }
 
+/**
+ * 构建稀客酒水候选。
+ *
+ * 酒水没有“加料”搜索，只根据已解锁、排除列表、点单 Tag、稀客偏好和库存压力生成排序信号。
+ */
 export function buildRareBeverageCandidates(
   data: RecommendationDataSet,
   demand: RareTagOrderDemand,
@@ -351,10 +374,17 @@ function getAvailableExtraIngredientSlots(
   recipe: RecipeCatalogItem,
   context: RecommendationRuntimeContext,
 ): number {
+  // 游戏本身最多允许五种材料。这里必须使用配方原始材料数量，重复材料也会占用真实槽位。
   const remainingRecipeSlots = MAX_FOOD_INGREDIENT_COUNT - recipe.ingredients.length;
   return Math.max(0, Math.min(remainingRecipeSlots, context.maxExtraIngredients));
 }
 
+/**
+ * 缩小额外食材搜索池。
+ *
+ * 全量材料组合会迅速膨胀；这里仅保留能满足点单 Tag、稀客正向偏好，或能压制负面 Tag 的食材。
+ * 禁用/排除材料和与配方冲突的禁忌 Tag 已在进入搜索前过滤。
+ */
 function buildRelevantIngredientPool({
   recipe,
   usableIngredients,
@@ -412,6 +442,7 @@ function searchIngredientStates({
     }
 
     if (expanded.length === 0) break;
+    // Beam search 保留每层最优的一小批状态，兼顾推荐质量和经营中多订单实时计算性能。
     const nextFrontier = keepBestStates(expanded, DEFAULT_BEAM_WIDTH);
     for (const state of nextFrontier) states.set(stateKey(state), state);
     frontier = nextFrontier;
@@ -747,6 +778,7 @@ function compareRarePlans(
   sortContext: RecommendationPlanSortContext,
   ranges: Map<RecommendationObjectiveKey, ObjectiveRange>,
 ): number {
+  // 强制置顶和方案分桶属于硬优先级，必须先于权重分数；否则收藏/任务置顶会被收益或库存权重冲掉。
   const pinDiff = getPlanPinRank(right, sortContext) - getPlanPinRank(left, sortContext);
   if (pinDiff !== 0) return pinDiff;
   const bucketDiff = getBucketRank(right.bucket) - getBucketRank(left.bucket);
@@ -775,6 +807,7 @@ function buildObjectiveRanges(
   plans: RareOrderRecommendationPlan[],
 ): Map<RecommendationObjectiveKey, ObjectiveRange> {
   const ranges = new Map<RecommendationObjectiveKey, ObjectiveRange>();
+  // 权重分数按当前候选集归一化，不使用固定全局范围，避免某一项数值量纲过大压制其他目标。
   const keys: RecommendationObjectiveKey[] = [
     'foodPreference',
     'beveragePreference',

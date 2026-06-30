@@ -7,15 +7,26 @@ using MystiaStewardCompanion.Core;
 using MystiaStewardCompanion.LocalApi;
 using MystiaStewardCompanion.Plugin;
 using MystiaStewardCompanion.Save;
+using MystiaStewardCompanion.Updates;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
 namespace MystiaStewardCompanion.Ui;
 
+/// <summary>
+/// Mod 运行时主控制器，负责在 Unity 主线程中刷新游戏数据、处理本地 API 请求并发布伴随窗口快照。
+/// </summary>
+/// <remarks>
+/// 本地 API 的 HTTP 处理运行在后台线程，但 IL2CPP/Unity 对象只能安全地在 Unity 主线程访问。
+/// 因此涉及库存、订单、稀客邀请和自动化的请求都会先进入队列，再由 <see cref="Update"/> 消费执行。
+/// </remarks>
 internal sealed class StewardOverlayController
 {
+    // 稀客订单 Hook 可能在同一帧连续触发多次，短暂防抖可减少重复读取夜间经营对象。
     private const float SpecialOrderRefreshDebounceSeconds = 0.2f;
+    // 本地 API 快照序列化成本较高，限制最短发布时间避免每帧刷新造成卡顿。
     private const float LocalApiSnapshotPublishMinIntervalSeconds = 0.35f;
+    // 结构化运行时目录体积较大，只在内容变化、强制刷新或间隔到达时完整发布。
     private const float RuntimeDataFullPublishIntervalSeconds = 10f;
     private const float RuntimeDataCatalogRetrySeconds = 5f;
     private const float PerformanceSnapshotMaxAgeSeconds = 12f;
@@ -33,11 +44,14 @@ internal sealed class StewardOverlayController
     private NormalBusinessContext? _normalBusinessContext;
     private LocalApiServer? _localApiServer;
     private readonly object _inventoryEditLock = new();
+    // 后台 HTTP 线程提交的库存编辑请求，统一在 Unity 主线程处理。
     private readonly Queue<PendingInventoryEdit> _pendingInventoryEdits = new();
     private readonly Queue<PendingInventoryBulkEdit> _pendingInventoryBulkEdits = new();
     private readonly object _orderPreparationLock = new();
+    // 订单准备会读写运行时订单、厨具和库存，必须串行回到主线程执行。
     private readonly Queue<PendingOrderPreparation> _pendingOrderPreparations = new();
     private readonly object _rareGuestInvitationLock = new();
+    // 稀客邀请涉及日间场景候选和角色状态，同样不允许在 API 后台线程直接执行。
     private readonly Queue<PendingRareGuestInvitation> _pendingRareGuestInvitations = new();
     private bool _runtimeLoaded;
     private int _mainThreadId;
@@ -70,6 +84,9 @@ internal sealed class StewardOverlayController
     private readonly Dictionary<string, double> _performanceMs = new(StringComparer.Ordinal);
     private readonly Dictionary<string, float> _performanceUpdatedAt = new(StringComparer.Ordinal);
 
+    /// <summary>
+    /// 后台 API 线程提交的一次单项库存编辑请求。
+    /// </summary>
     private sealed class PendingInventoryEdit
     {
         public string ItemType { get; init; } = "";
@@ -80,6 +97,9 @@ internal sealed class StewardOverlayController
         public Exception? Error { get; set; }
     }
 
+    /// <summary>
+    /// 后台 API 线程提交的一次批量库存编辑请求。
+    /// </summary>
     private sealed class PendingInventoryBulkEdit
     {
         public string ItemType { get; init; } = "";
@@ -90,6 +110,12 @@ internal sealed class StewardOverlayController
         public Exception? Error { get; set; }
     }
 
+    /// <summary>
+    /// 后台 API 线程提交的一次订单自动化请求。
+    /// </summary>
+    /// <remarks>
+    /// Completion 用于让 HTTP 处理线程等待主线程执行完成并返回结构化结果。
+    /// </remarks>
     private sealed class PendingOrderPreparation
     {
         public OrderPreparationRequest Request { get; init; } = new();
@@ -99,6 +125,9 @@ internal sealed class StewardOverlayController
         public Exception? Error { get; set; }
     }
 
+    /// <summary>
+    /// 后台 API 线程提交的一次稀客邀请或邀请列表读取请求。
+    /// </summary>
     private sealed class PendingRareGuestInvitation
     {
         public RareGuestInvitationAction Action { get; init; }
@@ -124,6 +153,12 @@ internal sealed class StewardOverlayController
         InviteOne,
     }
 
+    /// <summary>
+    /// 初始化主控制器、运行时数据源和本地 API。
+    /// </summary>
+    /// <remarks>
+    /// 该方法在插件启动时由 Unity 主线程调用。它只加载本地数据仓库的空壳，实际静态目录和存档状态随后从游戏运行时读取。
+    /// </remarks>
     public void Initialize(StewardPluginConfig config, ManualLogSource log)
     {
         _config = config;
@@ -142,6 +177,12 @@ internal sealed class StewardOverlayController
         }
     }
 
+    /// <summary>
+    /// Unity 每帧更新入口。
+    /// </summary>
+    /// <remarks>
+    /// 执行顺序很重要：先处理场景变化和待办队列，再刷新订单/运行时快照，最后按节流策略发布到本地 API。
+    /// </remarks>
     public void Update()
     {
         if (_disposed || _config == null) return;
@@ -170,6 +211,9 @@ internal sealed class StewardOverlayController
         FlushPendingLocalApiSnapshot();
     }
 
+    /// <summary>
+    /// 在稀客订单 Hook 版本变化后防抖刷新夜间经营上下文。
+    /// </summary>
     private void RefreshBusinessContextOnSpecialOrderChange()
     {
         if (_config == null || !_config.AutoRefreshRuntime.Value) return;
@@ -188,6 +232,12 @@ internal sealed class StewardOverlayController
         RefreshBusinessContext(false, force: true);
     }
 
+    /// <summary>
+    /// 处理游戏场景切换导致的运行时状态失效。
+    /// </summary>
+    /// <remarks>
+    /// 不同场景可读取的数据范围不同。离开经营或进入准备界面时需要清理夜间对象，避免伴随窗口继续使用过期引用。
+    /// </remarks>
     private void RefreshOnSceneChange()
     {
         if (_config == null) return;
@@ -234,6 +284,9 @@ internal sealed class StewardOverlayController
         PublishLocalApiSnapshot();
     }
 
+    /// <summary>
+    /// 响应运行时场景就绪探针变化，强制下一轮重新读取目录和快照。
+    /// </summary>
     private void RefreshOnRuntimeSceneReadinessChange()
     {
         var version = RuntimeSceneReadinessCapture.ChangeVersion;
@@ -255,6 +308,12 @@ internal sealed class StewardOverlayController
         SpecialOrderRuntimeCapture.ResetAttachRetryDelay();
     }
 
+    /// <summary>
+    /// 检测键盘或手柄快捷键是否触发伴随窗口显隐。
+    /// </summary>
+    /// <remarks>
+    /// 手柄右摇杆按下在新旧输入系统中的表现不同，因此额外通过 InputSystem 反射读取 pressed/held 状态。
+    /// </remarks>
     private bool IsTogglePressed()
     {
         if (_config == null) return false;
@@ -319,11 +378,17 @@ internal sealed class StewardOverlayController
         }
     }
 
+    /// <summary>
+    /// Unity LateUpdate 入口，用于厨具高亮等需要等待普通 Update 后再执行的视觉效果。
+    /// </summary>
     public void LateUpdate()
     {
         RuntimeCookerHighlightService.Tick();
     }
 
+    /// <summary>
+    /// 停止本地 API、通知伴随窗口退出并清理运行时视觉状态。
+    /// </summary>
     public void Dispose()
     {
         if (_disposed) return;
@@ -335,6 +400,13 @@ internal sealed class StewardOverlayController
         RuntimeCookerHighlightService.Clear();
     }
 
+    /// <summary>
+    /// 初始化运行时数据仓库状态。
+    /// </summary>
+    /// <remarks>
+    /// 当前版本静态数据优先来自游戏运行时目录，因此这里不会立即读取仓库内 JSON 数据，
+    /// 而是进入“等待实时数据”的状态。
+    /// </remarks>
     private void LoadRepository()
     {
         try
@@ -362,6 +434,14 @@ internal sealed class StewardOverlayController
         }
     }
 
+    /// <summary>
+    /// 刷新推荐系统所需的游戏运行时基础状态。
+    /// </summary>
+    /// <param name="manual">是否由用户手动触发刷新，用于决定状态提示和日志强度。</param>
+    /// <remarks>
+    /// 本方法读取库存、解锁料理、流行 Tag、厨具和日间状态，并将配置覆盖项应用到推荐状态。
+    /// 读取失败时不会清空已加载状态，除非当前场景明确不再允许使用旧运行时数据。
+    /// </remarks>
     private void RefreshRuntimeState(bool manual)
     {
         if (_repository == null || _config == null) return;
@@ -463,6 +543,11 @@ internal sealed class StewardOverlayController
         }
     }
 
+    /// <summary>
+    /// 刷新夜晚经营上下文，包括稀客订单和普客订单。
+    /// </summary>
+    /// <param name="manual">是否由用户手动触发。</param>
+    /// <param name="force">是否跳过缓存时间立即读取。</param>
     private void RefreshBusinessContext(bool manual, bool force = false)
     {
         if (_repository == null || _config == null) return;
@@ -528,12 +613,24 @@ internal sealed class StewardOverlayController
         }
     }
 
+    /// <summary>
+    /// 启动本地 loopback API，并把需要回到主线程执行的动作注入服务器。
+    /// </summary>
     private void StartLocalApi()
     {
         if (_config == null || _log == null || !_config.LocalApiEnabled.Value) return;
 
         try
         {
+            var updateService = new UpdateService(
+                new UpdateServiceSettings
+                {
+                    Enabled = _config.UpdatesEnabled.Value,
+                    AutoCheck = _config.UpdatesAutoCheck.Value,
+                    CheckIntervalHours = _config.UpdatesCheckIntervalHours.Value,
+                    IncludePrerelease = _config.UpdatesIncludePrerelease.Value,
+                },
+                _log);
             _localApiServer = new LocalApiServer(
                 _config.LocalApiHost.Value,
                 _config.LocalApiPort.Value,
@@ -550,9 +647,11 @@ internal sealed class StewardOverlayController
                 ListRareGuestInvitationsFromLocalApi,
                 InviteAllRareGuestsFromLocalApi,
                 InviteRareGuestFromLocalApi,
+                updateService,
                 new FavoriteStore(FavoriteStore.ResolvePath(), _log),
                 _log);
             _localApiServer.Start();
+            updateService.StartAutoCheck();
         }
         catch (Exception ex)
         {
@@ -564,6 +663,13 @@ internal sealed class StewardOverlayController
         }
     }
 
+    /// <summary>
+    /// 构建并发布本地 API 快照。
+    /// </summary>
+    /// <param name="force">是否忽略节流和内容签名，强制写入最新快照。</param>
+    /// <remarks>
+    /// 快照是伴随窗口的主要数据来源。为降低经营中帧耗，本方法会做节流、内容签名去重和大体积运行时目录的间隔发布。
+    /// </remarks>
     private void PublishLocalApiSnapshot(bool force = false)
     {
         if (_localApiServer == null) return;
@@ -629,6 +735,12 @@ internal sealed class StewardOverlayController
         }
     }
 
+    /// <summary>
+    /// 在快照中读取当前日间地图信息。
+    /// </summary>
+    /// <remarks>
+    /// 日间 UI 尚未就绪时不读取运行时对象，避免进入地图切换或准备面板期间读到半初始化状态。
+    /// </remarks>
     private (string Label, string Name) ReadActiveDayMapForSnapshot()
     {
         if (!HasRuntimeBasicsLoaded()) return ("", "");
@@ -655,6 +767,10 @@ internal sealed class StewardOverlayController
         PublishLocalApiSnapshot();
     }
 
+    /// <summary>
+    /// 根据运行时目录体积和签名决定本轮是否完整发布目录。
+    /// </summary>
+    /// <returns>需要随快照发布的目录；本轮可复用前端缓存时返回 <c>null</c>。</returns>
     private RuntimeDataCatalog? BuildRuntimeDataForSnapshot(bool force)
     {
         if (!_runtimeDataCatalog.IsComplete) return _runtimeDataCatalog;
@@ -687,6 +803,12 @@ internal sealed class StewardOverlayController
             catalog.FoodTagIdMap.Count);
     }
 
+    /// <summary>
+    /// 生成本地 API 快照内容签名。
+    /// </summary>
+    /// <remarks>
+    /// 签名只包含会影响 UI 展示的字段，不包含捕获时间和性能指标，从而避免无意义的快照重复写入。
+    /// </remarks>
     private static string BuildLocalApiSnapshotContentSignature(LocalApiSnapshot snapshot)
     {
         var builder = new StringBuilder(2048);
@@ -978,6 +1100,13 @@ internal sealed class StewardOverlayController
         }
     }
 
+    /// <summary>
+    /// 尝试刷新从游戏运行时导出的结构化静态目录。
+    /// </summary>
+    /// <remarks>
+    /// 推荐引擎的料理、酒水、材料和稀客目录最终以游戏运行时为准。读取成功后替换当前仓库数据源；
+    /// 失败时保留空目录状态并按重试间隔再次尝试。
+    /// </remarks>
     private void TryRefreshRuntimeDataCatalog()
     {
         if (_repository == null) return;
@@ -1007,6 +1136,12 @@ internal sealed class StewardOverlayController
         }
     }
 
+    /// <summary>
+    /// 读取任务面板快照，并补充经营订单相关的上菜目标。
+    /// </summary>
+    /// <remarks>
+    /// 任务和稀客邀请只在日间场景读取；夜间经营时仍会把当前订单目标合并到任务上下文，便于 UI 展示。
+    /// </remarks>
     private RuntimeMissionContext? ReadRuntimeMissionsForSnapshot()
     {
         if (!HasRuntimeBasicsLoaded()) return null;
@@ -1082,6 +1217,10 @@ internal sealed class StewardOverlayController
         return IsDayScenePanelReady();
     }
 
+    /// <summary>
+    /// 判断当前是否允许读取日间任务与可邀请稀客。
+    /// </summary>
+    /// <param name="reason">不可读取时返回面向 UI 的等待或错误原因。</param>
     private bool CanReadDaySceneTaskRuntime(out string reason)
     {
         reason = "";
@@ -1149,6 +1288,12 @@ internal sealed class StewardOverlayController
         return RefreshNormalBusinessContext(force: false);
     }
 
+    /// <summary>
+    /// 读取或刷新普客订单快照。
+    /// </summary>
+    /// <remarks>
+    /// 普客订单只在已确认夜间经营上下文有效时读取，并使用短缓存降低每帧反射扫描成本。
+    /// </remarks>
     private NormalBusinessContext? RefreshNormalBusinessContext(bool force)
     {
         if (_repository == null || !HasActiveNightBusinessContext(_businessContext))
@@ -1254,6 +1399,13 @@ internal sealed class StewardOverlayController
         return directory;
     }
 
+    /// <summary>
+    /// 处理本地 API 发起的单项库存编辑请求。
+    /// </summary>
+    /// <remarks>
+    /// 若当前线程不是 Unity 主线程，会将请求入队并阻塞等待主线程在 <see cref="Update"/> 中执行。
+    /// 超时会返回给 HTTP 调用方，避免后台请求无限挂起。
+    /// </remarks>
     private RuntimeInventoryEditResult EditInventoryFromLocalApi(string itemType, int itemId, int quantity)
     {
         if (Thread.CurrentThread.ManagedThreadId == _mainThreadId)
@@ -1281,6 +1433,12 @@ internal sealed class StewardOverlayController
         return pending.Result ?? throw new InvalidOperationException("Inventory edit did not produce a result.");
     }
 
+    /// <summary>
+    /// 处理本地 API 发起的批量库存编辑请求。
+    /// </summary>
+    /// <remarks>
+    /// 批量操作可能触发多次运行时库存写入，因此等待时间比单项编辑略长。
+    /// </remarks>
     private RuntimeInventoryBulkEditResult EditInventoryBulkFromLocalApi(string itemType, IReadOnlyList<int> itemIds, int quantity)
     {
         if (Thread.CurrentThread.ManagedThreadId == _mainThreadId)
@@ -1338,6 +1496,12 @@ internal sealed class StewardOverlayController
         return RunRareGuestInvitationFromLocalApi(RareGuestInvitationAction.InviteOne, guestId, scope);
     }
 
+    /// <summary>
+    /// 处理本地 API 发起的稀客邀请读取或邀请请求。
+    /// </summary>
+    /// <remarks>
+    /// 稀客邀请读取依赖日间场景运行时对象。后台线程调用时会入队并等待主线程返回结果。
+    /// </remarks>
     private RareGuestInvitationResult RunRareGuestInvitationFromLocalApi(RareGuestInvitationAction action, int guestId = -1, string scope = "", string kizunaLevels = "")
     {
         if (Thread.CurrentThread.ManagedThreadId == _mainThreadId)
@@ -1366,6 +1530,12 @@ internal sealed class StewardOverlayController
         return pending.Result ?? throw new InvalidOperationException("Rare guest invitation did not produce a result.");
     }
 
+    /// <summary>
+    /// 处理本地 API 发起的订单自动化请求。
+    /// </summary>
+    /// <remarks>
+    /// 订单自动化会读写订单对象、送餐盘、厨具和库存，必须统一在主线程串行执行。
+    /// </remarks>
     private OrderPreparationResult RunOrderActionFromLocalApi(OrderPreparationRequest request, OrderActionKind action)
     {
         if (Thread.CurrentThread.ManagedThreadId != _mainThreadId)
@@ -1398,6 +1568,9 @@ internal sealed class StewardOverlayController
         };
     }
 
+    /// <summary>
+    /// 执行稀客订单准备动作并刷新快照。
+    /// </summary>
     private OrderPreparationResult ApplyOrderPreparation(OrderPreparationRequest request)
     {
         if (!CanRunNightBusinessOrderAction(out var reason)) return BuildUnavailableOrderResult(request, reason);
@@ -1410,6 +1583,9 @@ internal sealed class StewardOverlayController
         return result;
     }
 
+    /// <summary>
+    /// 检查是否允许执行夜间经营订单自动化。
+    /// </summary>
     private bool CanRunNightBusinessOrderAction(out string reason)
     {
         reason = "";
@@ -1429,6 +1605,9 @@ internal sealed class StewardOverlayController
         return true;
     }
 
+    /// <summary>
+    /// 在当前场景不允许执行订单自动化时构造统一失败结果。
+    /// </summary>
     private static OrderPreparationResult BuildUnavailableOrderResult(OrderPreparationRequest request, string reason)
     {
         var result = new OrderPreparationResult
@@ -1483,6 +1662,12 @@ internal sealed class StewardOverlayController
         return result;
     }
 
+    /// <summary>
+    /// 消费后台线程提交的订单自动化队列。
+    /// </summary>
+    /// <remarks>
+    /// 每个 pending 都会在 finally 中释放等待线程，确保业务异常不会导致 HTTP 线程永久阻塞。
+    /// </remarks>
     private void ProcessPendingOrderPreparations()
     {
         while (true)
@@ -1516,6 +1701,9 @@ internal sealed class StewardOverlayController
         }
     }
 
+    /// <summary>
+    /// 消费后台线程提交的稀客邀请队列。
+    /// </summary>
     private void ProcessPendingRareGuestInvitations()
     {
         while (true)
@@ -1543,6 +1731,9 @@ internal sealed class StewardOverlayController
         }
     }
 
+    /// <summary>
+    /// 执行稀客邀请列表读取或邀请动作。
+    /// </summary>
     private RareGuestInvitationResult ApplyRareGuestInvitation(RareGuestInvitationAction action, int guestId, string scope, string kizunaLevels = "")
     {
         if (!CanRunRareGuestInvitationAction(out var waitReason))
@@ -1578,6 +1769,12 @@ internal sealed class StewardOverlayController
         return CanReadDaySceneTaskRuntime(out reason);
     }
 
+    /// <summary>
+    /// 轮询自动收菜队列并发布产生的自动化消息。
+    /// </summary>
+    /// <remarks>
+    /// 离开夜间经营场景时立即清理待收取队列，避免下一次经营复用旧厨具对象引用。
+    /// </remarks>
     private void ProcessPendingCookingCollections()
     {
         if (Time.realtimeSinceStartup < _nextPendingCookingProcessAt) return;
@@ -1600,6 +1797,9 @@ internal sealed class StewardOverlayController
         }
     }
 
+    /// <summary>
+    /// 消费单项库存编辑队列。
+    /// </summary>
     private void ProcessPendingInventoryEdits()
     {
         while (true)
@@ -1627,6 +1827,9 @@ internal sealed class StewardOverlayController
         }
     }
 
+    /// <summary>
+    /// 消费批量库存编辑队列。
+    /// </summary>
     private void ProcessPendingInventoryBulkEdits()
     {
         while (true)
@@ -1654,6 +1857,9 @@ internal sealed class StewardOverlayController
         }
     }
 
+    /// <summary>
+    /// 在主线程执行库存数量写入，并刷新依赖库存的运行时快照。
+    /// </summary>
     private RuntimeInventoryEditResult ApplyInventoryEdit(string itemType, int itemId, int quantity)
     {
         var result = RuntimeInventoryEditor.SetQuantity(itemType, itemId, quantity);
@@ -1668,6 +1874,9 @@ internal sealed class StewardOverlayController
         return result;
     }
 
+    /// <summary>
+    /// 在主线程执行批量库存写入，并汇总成功、未变化和失败数量。
+    /// </summary>
     private RuntimeInventoryBulkEditResult ApplyInventoryBulkEdit(string itemType, IReadOnlyList<int> itemIds, int quantity)
     {
         var normalizedType = itemType;
@@ -1719,6 +1928,12 @@ internal sealed class StewardOverlayController
         };
     }
 
+    /// <summary>
+    /// 清除全部已加载运行时状态。
+    /// </summary>
+    /// <remarks>
+    /// 用于主菜单、未加载存档等场景。会同时清空订单捕获、自动收菜队列和厨具高亮，避免跨存档残留。
+    /// </remarks>
     private void ClearLoadedRuntime(string status)
     {
         _state = null;
@@ -1738,6 +1953,9 @@ internal sealed class StewardOverlayController
         _status = status;
     }
 
+    /// <summary>
+    /// 清除夜间经营专属状态，但保留基础推荐运行时数据。
+    /// </summary>
     private void ClearNightBusinessRuntime(string status)
     {
         SpecialOrderRuntimeCapture.ClearOrders("left night business scene");
@@ -1753,6 +1971,12 @@ internal sealed class StewardOverlayController
         _status = status;
     }
 
+    /// <summary>
+    /// 从当前推荐状态中移除摆放厨具快照。
+    /// </summary>
+    /// <remarks>
+    /// 不在夜间经营场景时厨具对象引用会失效，但库存和解锁料理仍可继续用于推荐。
+    /// </remarks>
     private void ClearPlacedCookersFromCurrentState(string status)
     {
         if (_state == null) return;
@@ -1770,6 +1994,9 @@ internal sealed class StewardOverlayController
         _businessFallbackState = null;
     }
 
+    /// <summary>
+    /// 判断夜间经营上下文是否可用于推荐和订单自动化。
+    /// </summary>
     private static bool HasActiveNightBusinessContext(NightBusinessContext? context)
     {
         if (context == null) return false;
@@ -1789,6 +2016,12 @@ internal sealed class StewardOverlayController
         return true;
     }
 
+    /// <summary>
+    /// 取得经营页可用的推荐状态。
+    /// </summary>
+    /// <remarks>
+    /// 若基础运行时状态暂不可读但夜间订单存在，则构造一次全可用兜底状态，保证订单推荐仍可显示候选。
+    /// </remarks>
     private RecommendationState GetBusinessRecommendationState()
     {
         if (_state != null) return _state;
@@ -1803,6 +2036,9 @@ internal sealed class StewardOverlayController
         return _businessFallbackState;
     }
 
+    /// <summary>
+    /// 生成推荐状态签名，用于判断运行时状态是否发生会影响推荐的变化。
+    /// </summary>
     private static string BuildRecommendationStateSignature(RecommendationState state)
     {
         unchecked
@@ -1881,6 +2117,12 @@ internal sealed class StewardOverlayController
         }
     }
 
+    /// <summary>
+    /// 获取或生成本地 API Token。
+    /// </summary>
+    /// <remarks>
+    /// Token 写入 BepInEx 配置，用于伴随窗口和 Mod 本地 API 之间的 loopback 请求鉴权。
+    /// </remarks>
     private static string EnsureLocalApiToken(StewardPluginConfig config)
     {
         var token = config.LocalApiToken.Value.Trim();
@@ -1939,6 +2181,11 @@ internal sealed class StewardOverlayController
         return ContainsConfiguredKeyword(sceneName, _config.NonGameplaySceneKeywords.Value);
     }
 
+    /// <summary>
+    /// 判断当前场景是否允许读取基础运行时推荐状态。
+    /// </summary>
+    /// <param name="sceneName">Unity 当前激活场景名。</param>
+    /// <param name="reason">不可读取时返回面向 UI 的原因。</param>
     private bool CanReadRuntimeStateInCurrentScene(string sceneName, out string reason)
     {
         reason = "";
@@ -2018,6 +2265,9 @@ internal sealed class StewardOverlayController
                 || normalized.Contains("Izakaya", StringComparison.OrdinalIgnoreCase));
     }
 
+    /// <summary>
+    /// 判断当前是否是可读取日间运行时对象的场景。
+    /// </summary>
     private bool IsDaySceneRuntimeScene(string sceneName)
     {
         if (string.IsNullOrWhiteSpace(sceneName)) return false;
@@ -2034,6 +2284,12 @@ internal sealed class StewardOverlayController
         return IsIzakayaPrepPanelActiveInWorkPrepRoot();
     }
 
+    /// <summary>
+    /// 判断日间运行时读取是否应被经营准备面板阻塞。
+    /// </summary>
+    /// <remarks>
+    /// 部分场景名仍像日间场景，但经营准备面板已经激活，此时读取日间任务或稀客候选容易拿到过期对象。
+    /// </remarks>
     private static bool ShouldBlockDaySceneRuntimeReads(string sceneName)
     {
         if (IsIzakayaPrepScene(sceneName)) return true;

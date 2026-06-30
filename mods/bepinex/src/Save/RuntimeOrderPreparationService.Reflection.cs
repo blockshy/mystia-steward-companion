@@ -8,6 +8,12 @@ namespace MystiaStewardCompanion.Save;
 
 internal static partial class RuntimeOrderPreparationService
 {
+    /// <summary>
+    /// 安全调用实例方法，失败时返回 <c>null</c>。
+    /// </summary>
+    /// <remarks>
+    /// 用于可选 getter 或版本差异字段读取，不应承载必须成功的业务动作。
+    /// </remarks>
     private static object? TryInvokeInstanceValue(object target, string methodName)
     {
         return TryInvokeInstanceValue(target, methodName, Array.Empty<object?>());
@@ -25,6 +31,12 @@ internal static partial class RuntimeOrderPreparationService
         }
     }
 
+    /// <summary>
+    /// 读取 IL2CPP/Unity 对象的稳定指针。
+    /// </summary>
+    /// <remarks>
+    /// 指针用于运行时对象去重和短期回执匹配；无法读取原生指针时退回托管对象 hash，保证诊断和缓存仍可工作。
+    /// </remarks>
     private static nint ReadObjectPointer(object target)
     {
         var pointer = ReadMember(target, "Pointer") ?? ReadMember(target, "NativePointer") ?? ReadMember(target, "m_CachedPtr");
@@ -34,6 +46,12 @@ internal static partial class RuntimeOrderPreparationService
         return new IntPtr(RuntimeHelpers.GetHashCode(target));
     }
 
+    /// <summary>
+    /// 读取对象字段或属性，兼容 IL2CPP backing field 与常见私有字段命名。
+    /// </summary>
+    /// <remarks>
+    /// 先走通用 RuntimeReflectionUtility，再走本地精确字段扫描，避免多个模块重复维护反射候选名称。
+    /// </remarks>
     private static object? ReadMember(object target, string name)
     {
         try
@@ -43,7 +61,7 @@ internal static partial class RuntimeOrderPreparationService
         }
         catch
         {
-            // Fall back to the local exact-field reader below.
+            // 通用工具失败时继续使用本地精确字段读取，反射适配层不因单个字段异常中断流程。
         }
 
         for (var type = target.GetType(); type != null; type = type.BaseType)
@@ -68,6 +86,12 @@ internal static partial class RuntimeOrderPreparationService
         return null;
     }
 
+    /// <summary>
+    /// 写入对象字段或属性。
+    /// </summary>
+    /// <remarks>
+    /// 仅用于订单字段、厨具状态等运行时自动化入口。调用方必须先确认写入符合游戏当前生命周期。
+    /// </remarks>
     private static bool WriteMember(object target, string name, object? value)
     {
         for (var type = target.GetType(); type != null; type = type.BaseType)
@@ -92,6 +116,9 @@ internal static partial class RuntimeOrderPreparationService
         return false;
     }
 
+    /// <summary>
+    /// 构建一个 C# 属性在 IL2CPP/反编译环境下可能出现的字段名候选。
+    /// </summary>
     private static IEnumerable<string> BuildFieldNameCandidates(string name)
     {
         if (string.IsNullOrWhiteSpace(name)) yield break;
@@ -121,6 +148,12 @@ internal static partial class RuntimeOrderPreparationService
         }
     }
 
+    /// <summary>
+    /// 将托管集合、IL2CPP 索引集合或字典值统一枚举为对象序列。
+    /// </summary>
+    /// <remarks>
+    /// 游戏运行时容器形态不稳定，枚举时通过对象指针去重，并对每条路径设置数量上限，避免错误容器导致长时间卡顿。
+    /// </remarks>
     private static IEnumerable<object> ReadObjectEnumerable(object? value)
     {
         if (value == null || value is string) yield break;
@@ -134,6 +167,12 @@ internal static partial class RuntimeOrderPreparationService
         }
     }
 
+    /// <summary>
+    /// 枚举 IL2CPP 字典或托管字典的值。
+    /// </summary>
+    /// <remarks>
+    /// 反射读取字典内部 entries 时只接受 hashCode 非负的有效槽位，跳过空槽和删除槽。
+    /// </remarks>
     private static IEnumerable<object?> ReadDictionaryValues(object? dictionary)
     {
         if (dictionary == null || dictionary is string) yield break;
@@ -218,6 +257,12 @@ internal static partial class RuntimeOrderPreparationService
         }
     }
 
+    /// <summary>
+    /// 判断对象是否更适合按 IL2CPP 对象处理，而不是直接作为托管 IEnumerable 展开。
+    /// </summary>
+    /// <remarks>
+    /// 很多 IL2CPP 游戏对象实现了运行时接口，但直接枚举会触发无关逻辑或异常；这类对象交给索引器/字段路径读取。
+    /// </remarks>
     private static bool LooksLikeIl2CppObject(object value)
     {
         var type = value.GetType();
@@ -230,6 +275,10 @@ internal static partial class RuntimeOrderPreparationService
         return type.Assembly.GetName().Name?.Contains("Il2Cpp", StringComparison.OrdinalIgnoreCase) == true;
     }
 
+    /// <summary>
+    /// 获取游戏单例或场景中的 Unity 对象实例。
+    /// </summary>
+    /// <exception cref="InvalidOperationException">目标类型尚未加载时抛出。</exception>
     private static object? GetSingletonInstance(string typeName)
     {
         var type = FindType(typeName)
@@ -238,6 +287,11 @@ internal static partial class RuntimeOrderPreparationService
             ?? RuntimeReflectionUtility.FindUnityObject(type);
     }
 
+    /// <summary>
+    /// 调用游戏静态方法。
+    /// </summary>
+    /// <exception cref="InvalidOperationException">目标类型尚未加载时抛出。</exception>
+    /// <exception cref="MissingMethodException">未找到匹配参数的方法时抛出。</exception>
     private static object? InvokeStatic(string typeName, string methodName, object?[] args)
     {
         var type = FindType(typeName)
@@ -252,6 +306,9 @@ internal static partial class RuntimeOrderPreparationService
         return method.Invoke(null, args);
     }
 
+    /// <summary>
+    /// 调用游戏实例方法，找不到方法或方法执行失败时向上抛出异常。
+    /// </summary>
     private static object? InvokeInstance(object target, string methodName, object?[] args)
     {
         var method = target.GetType().GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
@@ -261,6 +318,12 @@ internal static partial class RuntimeOrderPreparationService
         return method.Invoke(target, args);
     }
 
+    /// <summary>
+    /// 尝试调用游戏实例方法，失败时返回 <c>false</c>。
+    /// </summary>
+    /// <remarks>
+    /// 用于可选清理、视觉同步或兼容路径，不能用于必须成功的核心步骤。
+    /// </remarks>
     private static bool TryInvokeInstance(object target, string methodName, object?[] args)
     {
         var method = target.GetType().GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
@@ -279,6 +342,12 @@ internal static partial class RuntimeOrderPreparationService
         }
     }
 
+    /// <summary>
+    /// 在当前 AppDomain 中查找 IL2CPP 类型。
+    /// </summary>
+    /// <remarks>
+    /// 游戏类型加载顺序依赖场景，未找到类型通常代表场景尚未就绪，而不一定是致命错误。
+    /// </remarks>
     private static Type? FindType(string fullName)
     {
         var direct = Type.GetType(fullName, false);
@@ -302,6 +371,12 @@ internal static partial class RuntimeOrderPreparationService
         return null;
     }
 
+    /// <summary>
+    /// 判断一组参数是否可以用于当前反射方法签名。
+    /// </summary>
+    /// <remarks>
+    /// 支持 by-ref 参数和基础数值转换，满足游戏 API 中常见的 out/ref 与枚举数值签名。
+    /// </remarks>
     private static bool CanUseParameters(ParameterInfo[] parameters, object?[] args)
     {
         if (parameters.Length != args.Length) return false;

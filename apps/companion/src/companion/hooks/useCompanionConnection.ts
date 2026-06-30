@@ -16,6 +16,12 @@ const INITIAL_PROBE_TIMEOUT_MS = 700;
 const AUTO_POLL_TIMEOUT_MS = 1800;
 const MANUAL_REFRESH_TIMEOUT_MS = 2800;
 
+/**
+ * 维护伴随窗口与游戏内本地 API 的连接状态。
+ *
+ * Hook 负责读取 Tauri 启动参数、持久化 endpoint/token、轮询快照、失败退避和手动暂停。
+ * 运行时完整数据会单独缓存，避免游戏场景短暂不可读时推荐数据立即退化为空目录。
+ */
 export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
   const [endpoint, setEndpoint] = useState(readStoredEndpoint);
   const [endpointDraft, setEndpointDraft] = useState(endpoint);
@@ -35,6 +41,7 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
   const normalizedEndpointDraft = useMemo(() => normalizeEndpoint(endpointDraft), [endpointDraft]);
 
   const applyEndpointConnection = useCallback(() => {
+    // 递增请求序号会让已发出的旧请求响应失效，避免切换 endpoint 后旧响应覆盖新连接状态。
     latestRequestIdRef.current += 1;
     inFlightRequestIdRef.current = null;
     setEndpoint(normalizedEndpointDraft);
@@ -150,7 +157,7 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
         }
       })
       .catch(() => {
-        // Browser mode does not expose launch arguments.
+        // 浏览器开发模式没有 Tauri 启动参数，连接信息由 localStorage 或页面输入提供。
       });
 
     return () => {
@@ -160,6 +167,7 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
 
   useEffect(() => {
     if (!apiToken || connectionPaused) return;
+    // 有错误时按固定退避序列重连；已连接后使用调用方传入的刷新间隔，经营中页面会传入更短间隔。
     const retryIndex = Math.max(0, Math.min(connectionFailureCount - 1, CONNECTION_RETRY_DELAYS_MS.length - 1));
     const delay = error
       ? CONNECTION_RETRY_DELAYS_MS[retryIndex]

@@ -8,6 +8,12 @@ namespace MystiaStewardCompanion.Save;
 
 internal static partial class RuntimeOrderPreparationService
 {
+    /// <summary>
+    /// 将已匹配的稀客订单物品从送餐盘交付给游戏订单。
+    /// </summary>
+    /// <remarks>
+    /// 只有本轮新匹配到的料理或酒水才调用 Deliver；订单原本已送达的部分不重复移动，避免错误消费送餐盘物品。
+    /// </remarks>
     private static void DeliverMatchedRareOrderPart(
         OrderPreparationResult result,
         object tray,
@@ -26,6 +32,13 @@ internal static partial class RuntimeOrderPreparationService
         });
     }
 
+    /// <summary>
+    /// 在送餐盘中查找可用于稀客订单的目标料理。
+    /// </summary>
+    /// <remarks>
+    /// 优先精确匹配推荐料理。若没有精确料理，才允许复用已经堆积一段时间、且能满足同一 Tag 的候选料理，
+    /// 避免刚出锅的其他订单料理被立即抢走。
+    /// </remarks>
     private static object? FindRareOrderFoodInTray(
         IReadOnlyList<object> trayItems,
         int expectedFoodId,
@@ -83,6 +96,12 @@ internal static partial class RuntimeOrderPreparationService
         return $"已复用送餐盘中堆积料理 #{matchedFoodId}（原目标料理 #{expectedFoodId}：{recipeName}），{suffix}";
     }
 
+    /// <summary>
+    /// 更新送餐盘物品的首次出现时间。
+    /// </summary>
+    /// <remarks>
+    /// 该时间只用于判断“堆积料理”是否足够久，不作为订单状态来源；消失后的键会延迟清理，容忍短暂读取抖动。
+    /// </remarks>
     private static void RefreshTrayObservations(IReadOnlyList<object> trayItems)
     {
         var now = DateTime.UtcNow;
@@ -125,6 +144,12 @@ internal static partial class RuntimeOrderPreparationService
         return false;
     }
 
+    /// <summary>
+    /// 构建送餐盘物品的稳定识别键。
+    /// </summary>
+    /// <remarks>
+    /// IL2CPP 对象指针可用时优先使用指针；无法读取指针时退回托管对象 hash，仅用于短期观测窗口。
+    /// </remarks>
     private static string BuildTrayObservationKey(object item)
     {
         var type = ReadSellableType(item);
@@ -139,6 +164,12 @@ internal static partial class RuntimeOrderPreparationService
         }
     }
 
+    /// <summary>
+    /// 从库存创建酒水对象并放入送餐盘。
+    /// </summary>
+    /// <remarks>
+    /// 成功放入后会同步扣减运行时库存。库存小于 0 视为游戏的无限库存或不可计数状态，不再扣减显示数量。
+    /// </remarks>
     private static (bool Ok, string Message) TryTakeBeverageToTray(int beverageId, string beverageName)
     {
         var tray = GetSingletonInstance(IzakayaTrayTypeName);
@@ -180,6 +211,12 @@ internal static partial class RuntimeOrderPreparationService
         return (true, $"{beverageName} 已放入送餐盘（{quantityText}）。");
     }
 
+    /// <summary>
+    /// 为游戏原生 Extract 方法创建 Receive 回调委托。
+    /// </summary>
+    /// <remarks>
+    /// Extract 的委托泛型参数由游戏方法签名决定，需在运行时构造匹配的泛型回调。
+    /// </remarks>
     private static Delegate? CreateTrayReceiveDelegate(Type delegateType)
     {
         var invoke = delegateType.GetMethod("Invoke");
@@ -200,6 +237,13 @@ internal static partial class RuntimeOrderPreparationService
         InvokeInstance(tray, "Receive", new object?[] { sellable });
     }
 
+    /// <summary>
+    /// 读取送餐盘中的全部物品。
+    /// </summary>
+    /// <remarks>
+    /// 送餐盘底层可能是 FixedList、IL2CPP List 或可枚举集合。这里先按槽位读取，再枚举兜底，
+    /// 并通过对象指针去重，避免同一物品被不同读取路径重复返回。
+    /// </remarks>
     private static IEnumerable<object> ReadTrayItems(object tray)
     {
         var trayList = InvokeInstance(tray, "get_Tray", Array.Empty<object?>());

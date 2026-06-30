@@ -9,12 +9,20 @@ import type {
   RecommendationBudgetResult,
 } from '@/recommendation-engine';
 
+/**
+ * 工作台一级 Tab。值会持久化到 localStorage，并用于手柄导航定位。
+ */
 export type ModTab = 'overview' | 'normal' | 'rare' | 'service' | 'tasks' | 'inventory' | 'help' | 'logs' | 'settings';
 export type OverviewTab = 'status' | 'inventory' | 'actions';
-export type SettingsTab = 'window' | 'recommendation' | 'automation' | 'debug';
+export type SettingsTab = 'window' | 'recommendation' | 'automation' | 'updates' | 'debug';
 export type RareGuestInvitationScope = 'current' | 'all';
 export type MissionStatusFilter = 'available' | 'tracking' | 'fulfilled';
 
+/**
+ * Mod 发布给前端的推荐基础状态快照。
+ *
+ * 该结构来自 C# 的 RecommendationStateSnapshot，字段使用数组和普通对象，前端再转换为 Set/Map 供推荐引擎使用。
+ */
 export interface RecommendationStateSnapshot {
   availableRecipeIds: number[];
   availableBeverageIds: number[];
@@ -30,6 +38,9 @@ export interface RecommendationStateSnapshot {
   famousShopEnabled: boolean;
 }
 
+/**
+ * 当前夜间经营场景中已摆放厨具的运行时快照。
+ */
 export interface PlacedCookerSnapshot {
   controllerIndex: number;
   typeIds: number[];
@@ -39,6 +50,9 @@ export interface PlacedCookerSnapshot {
   source: string;
 }
 
+/**
+ * 夜间经营中的稀客或映射稀客信息。
+ */
 export interface NightBusinessGuest {
   deskCode: number;
   guestId: number | null;
@@ -51,6 +65,9 @@ export interface NightBusinessGuest {
   willPayMoney?: boolean | null;
 }
 
+/**
+ * 夜间经营稀客订单快照。
+ */
 export interface NightBusinessOrder {
   deskCode: number;
   guestId: number | null;
@@ -66,6 +83,9 @@ export interface NightBusinessOrder {
   hasServedBeverage?: boolean;
 }
 
+/**
+ * 夜间经营上下文，是稀客订单页和服务自动化的主要输入。
+ */
 export interface NightBusinessContext {
   place: string | null;
   placeLabel: string | null;
@@ -75,6 +95,9 @@ export interface NightBusinessContext {
   error: string | null;
 }
 
+/**
+ * 游戏运行时任务信息。
+ */
 export interface RuntimeMissionInfo {
   label: string;
   title: string;
@@ -89,6 +112,9 @@ export interface RuntimeMissionInfo {
   targetRecipeName?: string | null;
 }
 
+/**
+ * 可直接关联到稀客/料理推荐的任务上菜目标。
+ */
 export interface RuntimeMissionServeTarget {
   guestId: number;
   guestName: string;
@@ -101,6 +127,9 @@ export interface RuntimeMissionServeTarget {
   source: string;
 }
 
+/**
+ * 任务面板运行时快照。
+ */
 export interface RuntimeMissionContext {
   availableMissions: RuntimeMissionInfo[];
   serveTargets?: RuntimeMissionServeTarget[];
@@ -108,6 +137,9 @@ export interface RuntimeMissionContext {
   error: string | null;
 }
 
+/**
+ * 夜间经营中的普客订单快照。
+ */
 export interface NormalBusinessOrder {
   orderKey?: string;
   deskCode: number;
@@ -127,12 +159,18 @@ export interface NormalBusinessOrder {
   source: string;
 }
 
+/**
+ * 普客订单上下文，是普客服务页和普客自动化的主要输入。
+ */
 export interface NormalBusinessContext {
   orders: NormalBusinessOrder[];
   source: string;
   error: string | null;
 }
 
+/**
+ * 从游戏运行时映射出的稀客目录项。
+ */
 export interface RuntimeRareCustomer {
   id: number;
   runtimeStringId: string;
@@ -144,6 +182,11 @@ export interface RuntimeRareCustomer {
   source: string;
 }
 
+/**
+ * 本地 API `/snapshot` 返回的完整快照。
+ *
+ * 快照是前端唯一的实时数据入口；体积较大的 runtimeData 可能按签名和时间间隔省略。
+ */
 export interface LocalApiSnapshot {
   pluginVersion: string;
   capturedAtUtc: string;
@@ -164,6 +207,9 @@ export interface LocalApiSnapshot {
   performanceMs?: Record<string, number>;
 }
 
+/**
+ * 前端从推荐状态快照归一化出的集合结构。
+ */
 export interface RuntimeSets {
   recipeIds: Set<number>;
   beverageIds: Set<number>;
@@ -176,6 +222,9 @@ export interface RuntimeSets {
   hasCookerSnapshot: boolean;
 }
 
+/**
+ * 已按稀客需求计算好的推荐结果缓存。
+ */
 export interface CachedRecommendation {
   customer: RareCustomerCatalogItem;
   preparationPlan: RareOrderRecommendationPlan | null;
@@ -185,6 +234,9 @@ export interface CachedRecommendation {
   beverages: RareBeverageRecommendation[];
 }
 
+/**
+ * 带运行时订单的稀客推荐行。
+ */
 export interface OrderRecommendation extends CachedRecommendation {
   order: NightBusinessOrder;
 }
@@ -229,6 +281,29 @@ export interface DiagnosticPackageResponse {
   path: string;
   directory: string;
   files: string[];
+  error: string | null;
+}
+
+export interface UpdateStatusResponse {
+  ok: boolean;
+  currentVersion: string;
+  enabled: boolean;
+  autoCheck: boolean;
+  includePrerelease: boolean;
+  state: string;
+  latestVersion: string;
+  latestTag: string;
+  hasUpdate: boolean;
+  checkedAtUtc: string;
+  publishedAtUtc: string;
+  releaseUrl: string;
+  packageAsset: string;
+  packageSize: number;
+  downloadedVersion: string;
+  downloadedAtUtc: string;
+  staged: boolean;
+  installState: string;
+  installMessage: string;
   error: string | null;
 }
 

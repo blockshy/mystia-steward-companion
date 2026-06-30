@@ -2,6 +2,12 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright';
 
+/**
+ * 伴随窗口 UI 巡检脚本。
+ *
+ * 脚本配合 mock-local-api 使用，会遍历主要 Tab、截图、检查透明背景模型、横向溢出、hover 反馈和 Select Portal。
+ * 它不是端到端业务测试，目标是快速发现布局和主题层面的回归。
+ */
 const APP_URL = process.env.MYSTIA_APP_URL || 'http://127.0.0.1:4173/';
 const API_URL = process.env.MYSTIA_API_URL || 'http://127.0.0.1:32145';
 const API_TOKEN = process.env.MYSTIA_API_TOKEN || 'mock-token';
@@ -149,6 +155,11 @@ async function auditPage(page, viewport, tab) {
   await auditSelectDropdown(page, viewport, tab);
 }
 
+/**
+ * 检查 Tauri 透明窗口模型。
+ *
+ * 根节点必须保持透明，内容壳负责背景透明度，文字保持不透明，避免桌面透明窗口出现整窗发灰或文字半透明。
+ */
 async function auditTransparencyModel(page, viewport) {
   const result = await page.evaluate(() => {
     const shell = document.querySelector('.companion-shell');
@@ -211,6 +222,9 @@ async function auditTransparencyModel(page, viewport) {
   }
 }
 
+/**
+ * 抽样检查可交互控件 hover 后是否产生可见样式变化。
+ */
 async function auditHoverTarget(page, viewport, tab, target) {
   const locators = page.locator(target.selector);
   const count = Math.min(await locators.count(), 4);

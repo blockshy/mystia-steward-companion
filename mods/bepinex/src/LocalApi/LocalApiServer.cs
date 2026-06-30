@@ -6,9 +6,18 @@ using System.IO.Compression;
 using BepInEx;
 using BepInEx.Logging;
 using MystiaStewardCompanion.Save;
+using MystiaStewardCompanion.Updates;
 
 namespace MystiaStewardCompanion.LocalApi;
 
+/// <summary>
+/// 运行在游戏进程内的回环 HTTP API，向伴随窗口暴露运行时快照并接收受控操作请求。
+/// </summary>
+/// <remarks>
+/// 服务器使用轻量 <see cref="TcpListener"/>，避免在 IL2CPP Mod 中引入额外 Web 框架依赖。
+/// 只允许回环地址绑定，除 <c>/health</c> 外所有端点都要求 Token。GET 端点用于读取和历史兼容的轻量动作，
+/// POST 端点保留给更新检查、下载、安装排程等高风险副作用操作。
+/// </remarks>
 internal sealed class LocalApiServer : IDisposable
 {
     private const int MaxRequestBytes = 32768;
@@ -29,6 +38,7 @@ internal sealed class LocalApiServer : IDisposable
     private readonly Func<string, string, RareGuestInvitationResult> _listRareGuestInvitations;
     private readonly Func<string, string, RareGuestInvitationResult> _inviteAllRareGuests;
     private readonly Func<int, string, RareGuestInvitationResult> _inviteRareGuest;
+    private readonly UpdateService _updateService;
     private readonly FavoriteStore _favoriteStore;
     private TcpListener? _listener;
     private Thread? _thread;
@@ -55,6 +65,7 @@ internal sealed class LocalApiServer : IDisposable
         Func<string, string, RareGuestInvitationResult> listRareGuestInvitations,
         Func<string, string, RareGuestInvitationResult> inviteAllRareGuests,
         Func<int, string, RareGuestInvitationResult> inviteRareGuest,
+        UpdateService updateService,
         FavoriteStore favoriteStore,
         ManualLogSource log)
     {
@@ -73,6 +84,7 @@ internal sealed class LocalApiServer : IDisposable
         _listRareGuestInvitations = listRareGuestInvitations;
         _inviteAllRareGuests = inviteAllRareGuests;
         _inviteRareGuest = inviteRareGuest;
+        _updateService = updateService;
         _favoriteStore = favoriteStore;
         _logOutputPath = ResolveLogOutputPath();
         _healthJson = ToJson(new LocalApiHealthDto
@@ -89,6 +101,13 @@ internal sealed class LocalApiServer : IDisposable
     public int Port { get; }
     public string BaseUrl => $"http://{FormatHostForUrl(BindAddress)}:{Port}";
 
+    /// <summary>
+    /// 启动本地 API 监听线程。
+    /// </summary>
+    /// <remarks>
+    /// 监听线程只负责接收连接和分派请求；需要访问 Unity 或游戏运行时对象的操作会通过委托回到
+    /// <c>StewardOverlayController</c>，再由主线程队列执行，避免跨线程直接触碰 IL2CPP 对象。
+    /// </remarks>
     public void Start()
     {
         if (_running) return;
@@ -105,6 +124,13 @@ internal sealed class LocalApiServer : IDisposable
         _log.LogInfo($"Local API listening at {BaseUrl}. Use 127.0.0.1 to avoid proxy and localhost resolution issues.");
     }
 
+    /// <summary>
+    /// 更新伴随窗口读取的最新快照 JSON。
+    /// </summary>
+    /// <param name="snapshotJson">已经序列化好的运行时快照。</param>
+    /// <remarks>
+    /// 快照在 Unity 主线程构建并一次性替换，API 线程只读取字符串副本，避免每个 HTTP 请求重复反射读取游戏对象。
+    /// </remarks>
     public void SetSnapshotJson(string snapshotJson)
     {
         lock (_snapshotLock)
@@ -155,6 +181,14 @@ internal sealed class LocalApiServer : IDisposable
         }
     }
 
+    /// <summary>
+    /// 解析单个 HTTP 请求并路由到对应端点。
+    /// </summary>
+    /// <param name="client">由监听线程接收到的 TCP 客户端。</param>
+    /// <remarks>
+    /// 当前协议只支持简单的 GET/POST，无请求体。Tauri 伴随窗口通过 Header 传入 Token；
+    /// 浏览器开发模式同样走回环地址和 Token，避免把游戏运行时操作暴露给任意网页。
+    /// </remarks>
     private void HandleClient(TcpClient client)
     {
         using (client)
@@ -182,7 +216,9 @@ internal sealed class LocalApiServer : IDisposable
                     return;
                 }
 
-                if (!string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase))
+                var isGet = string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase);
+                var isPost = string.Equals(method, "POST", StringComparison.OrdinalIgnoreCase);
+                if (!isGet && !isPost)
                 {
                     WriteResponse(stream, 405, "Method Not Allowed", ToJson(new LocalApiErrorDto { Error = "method not allowed" }));
                     return;
@@ -191,6 +227,27 @@ internal sealed class LocalApiServer : IDisposable
                 if (RequiresAuthorization(path) && !IsAuthorized(request))
                 {
                     WriteResponse(stream, 401, "Unauthorized", ToJson(new LocalApiErrorDto { Error = "unauthorized" }));
+                    return;
+                }
+
+                if (isPost)
+                {
+                    // 更新安装会下载文件、写入状态并启动独立进程，因此只接受 POST，避免被预取、刷新或普通链接误触发。
+                    switch (path)
+                    {
+                        case "/updates/check":
+                            WriteResponse(stream, 200, "OK", ToJson(_updateService.CheckForUpdates(force: true)));
+                            break;
+                        case "/updates/download":
+                            WriteResponse(stream, 200, "OK", ToJson(_updateService.DownloadUpdate()));
+                            break;
+                        case "/updates/install-on-exit":
+                            WriteResponse(stream, 200, "OK", ToJson(_updateService.InstallOnExit()));
+                            break;
+                        default:
+                            WriteResponse(stream, 404, "Not Found", ToJson(new LocalApiErrorDto { Error = "not found" }));
+                            break;
+                    }
                     return;
                 }
 
@@ -220,6 +277,9 @@ internal sealed class LocalApiServer : IDisposable
                             ReadBoolQuery(query, "diagnostics"),
                             ReadBoolQuery(query, "nativeConsole"));
                         WriteResponse(stream, 200, "OK", BuildLogSettingsJson());
+                        break;
+                    case "/updates/status":
+                        WriteResponse(stream, 200, "OK", ToJson(_updateService.GetStatus()));
                         break;
                     case "/logs/open-folder":
                         WriteResponse(stream, 200, "OK", OpenLogFolderJson(ReadStringQuery(query, "target")));
@@ -751,6 +811,14 @@ internal sealed class LocalApiServer : IDisposable
         });
     }
 
+    /// <summary>
+    /// 从 TCP 流中读取 HTTP 请求头。
+    /// </summary>
+    /// <param name="stream">客户端网络流。</param>
+    /// <returns>ASCII 解码后的请求头文本。</returns>
+    /// <remarks>
+    /// 本地 API 不接收请求体，因此读到头部结束标记后立即返回。最大读取长度用于限制异常客户端占用内存。
+    /// </remarks>
     private static string ReadRequest(NetworkStream stream)
     {
         var buffer = new byte[MaxRequestBytes];
@@ -833,12 +901,24 @@ internal sealed class LocalApiServer : IDisposable
             : address.ToString();
     }
 
+    /// <summary>
+    /// 校验请求头中的本地 API Token。
+    /// </summary>
+    /// <param name="request">完整请求头文本。</param>
+    /// <returns>Token 与当前插件生成或配置的值完全一致时返回 <c>true</c>。</returns>
     private bool IsAuthorized(string request)
     {
         if (string.IsNullOrWhiteSpace(_token)) return false;
         return string.Equals(ReadHeader(request, "X-Mystia-Steward-Companion-Token"), _token, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// 判断端点是否需要 Token 鉴权。
+    /// </summary>
+    /// <remarks>
+    /// <c>/health</c> 保持无鉴权，供伴随窗口启动探测和进程存活判断使用；其他端点可能暴露存档状态、
+    /// 日志路径或运行时修改能力，必须鉴权。
+    /// </remarks>
     private static bool RequiresAuthorization(string path)
     {
         return !string.Equals(path, "/health", StringComparison.Ordinal);

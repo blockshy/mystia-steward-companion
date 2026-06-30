@@ -180,11 +180,12 @@ bash mods/bepinex/tools/package-release.sh
 ```text
 apps/companion/dist/
 apps/companion/src-tauri/target/release/mystia-steward-companion(.exe)
+apps/companion/src-tauri/target/release/mystia-steward-companion-updater(.exe)
 mods/bepinex/bin/Release/MystiaStewardCompanion.BepInEx.dll
 mods/bepinex/dist/mystia-steward-companion-bepinex.zip
 ```
 
-PowerShell 7 脚本固定生成 `.zip`；bash 脚本在系统没有 `zip` 时会改为生成 `.tar.gz`。打包脚本会在检测到 `apps/companion/src-tauri/target/release/mystia-steward-companion(.exe)` 时自动复制到安装包的 `companion/` 子目录。
+PowerShell 7 脚本固定生成 `.zip`；bash 脚本在系统没有 `zip` 时会改为生成 `.tar.gz`。打包脚本会在检测到 `apps/companion/src-tauri/target/release/mystia-steward-companion(.exe)` 时自动复制到安装包的 `companion/` 子目录，并把 `mystia-steward-companion-updater(.exe)` 放在插件目录根部。
 
 ## 本地发布
 
@@ -193,9 +194,9 @@ PowerShell 7 脚本固定生成 `.zip`；bash 脚本在系统没有 `zip` 时会
 GitHub Release 只上传以下资产：
 
 - `mystia-steward-companion-bepinex.zip`
-- `checksums.txt`
+- `update-manifest.json`
 
-不上传 Tauri setup 安装器，避免用户误以为只安装桌面程序即可使用 Mod。
+`update-manifest.json` 给 Mod 内置自动更新使用，只包含版本、资产文件名、zip 大小和 SHA256，不记录本机打包路径。不上传 Tauri setup 安装器，避免用户误以为只安装桌面程序即可使用 Mod。
 
 发布前检查：
 
@@ -244,7 +245,7 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
   -Notes "版本更新说明"
 ```
 
-脚本会先执行完整构建，再用 `gh release create` 创建 Release 并上传 zip 与 checksums。
+脚本会先执行完整构建，再用 `gh release create` 创建 Release 并上传 zip 与 update-manifest。
 
 如果引用 DLL 不在 `mods\bepinex\References`，传入 `-ReferenceDir`：
 
@@ -267,7 +268,7 @@ gh release edit v1.0.0 `
   --notes "修正后的发布说明"
 ```
 
-如果 Release 已存在，只想替换同名 zip 和 checksums，使用 `-Clobber`：
+如果 Release 已存在，只想替换同名 zip 和 update-manifest，使用 `-Clobber`：
 
 ```powershell
 pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `

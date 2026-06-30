@@ -3,6 +3,11 @@ import type { RuntimeTagPriorityRule } from '@/lib/recommendation-data';
 import { buildDynamicFoodTags } from '@/recommendation-engine/dynamic-food-tags';
 import type { ResolvedTags } from '@/recommendation-engine/types';
 
+/**
+ * 项目内已验证的基础 Tag 压制规则。
+ *
+ * 当 Mod 暂时无法从游戏运行时读取 Tag 优先级时，推荐引擎使用这组规则保持结果稳定。
+ */
 export const PROJECT_VERIFIED_TAG_PRIORITY_RULES: RuntimeTagPriorityRule[] = [
   { id: 1, tagIds: [], tags: ['肉', '素'] },
   { id: 2, tagIds: [], tags: ['重油', '清淡'] },
@@ -11,6 +16,11 @@ export const PROJECT_VERIFIED_TAG_PRIORITY_RULES: RuntimeTagPriorityRule[] = [
   { id: 5, tagIds: [], tags: ['灼热', '凉爽'] },
 ];
 
+/**
+ * 按游戏 Tag 优先级规则过滤互斥 Tag。
+ *
+ * 同一条规则中靠前的 Tag 会保留，后续命中的 Tag 会进入 suppressedTags，供 UI 解释为什么该 Tag 未生效。
+ */
 export function resolveTagPriority(
   rawTags: string[],
   runtimeRules: RuntimeTagPriorityRule[],
@@ -36,6 +46,11 @@ export function resolveTagPriority(
   };
 }
 
+/**
+ * 解析料理最终生效的 Tag。
+ *
+ * 结果包含配方基础正面 Tag、动态 Tag、额外食材 Tag，以及流行喜爱/流行厌恶等运行时派生 Tag。
+ */
 export function resolveFoodTags({
   recipe,
   extraIngredients,
@@ -68,6 +83,11 @@ export function resolveFoodTags({
   };
 }
 
+/**
+ * 查找哪些高优先级 Tag 可以压制目标 Tag。
+ *
+ * 用于稀客加料搜索：当候选含有稀客厌恶 Tag 时，搜索可通过更高优先级 Tag 将其压制。
+ */
 export function findTagsThatCanSuppress(
   activeTags: string[],
   tagsToSuppress: string[],
@@ -88,6 +108,9 @@ export function findTagsThatCanSuppress(
   return uniqueStrings(candidates);
 }
 
+/**
+ * 判断某个额外食材是否会直接带来配方负面 Tag。
+ */
 export function hasForbiddenIngredientTag(
   ingredient: IngredientCatalogItem,
   recipe: RecipeCatalogItem,

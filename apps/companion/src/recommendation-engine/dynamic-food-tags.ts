@@ -4,6 +4,11 @@ const ECONOMICAL_PRICE_LIMIT = 20;
 const EXPENSIVE_PRICE_LIMIT = 60;
 const LARGE_PORTION_INGREDIENT_COUNT = 5;
 
+/**
+ * 根据价格、材料槽位和额外加料推导游戏内动态料理 Tag。
+ *
+ * 这些 Tag 不总是直接存在于静态配方表中，但会影响稀客和普客的偏好匹配。
+ */
 export function buildDynamicFoodTags({
   recipe,
   extraIngredients,

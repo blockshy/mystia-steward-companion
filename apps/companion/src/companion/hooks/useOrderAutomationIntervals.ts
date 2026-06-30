@@ -13,6 +13,12 @@ interface UseOrderAutomationIntervalsOptions {
   onNormalAutomationDisabled: () => void;
 }
 
+/**
+ * 管理稀客和普客自动化的轮询节奏。
+ *
+ * 稀客按固定间隔尝试处理第一笔可行动订单；普客除固定轮询外，还会在订单快照签名变化时立即重试一次，
+ * 以便料理收取、送达或新订单出现后尽快推进下一步。
+ */
 export function useOrderAutomationIntervals({
   automationEnabled,
   autoNormalOrderEnabled,
@@ -51,6 +57,7 @@ export function useOrderAutomationIntervals({
   }, [automationEnabled, normalTickMs, runAutoNormalOrder]);
 
   useEffect(() => {
+    // 普客订单状态由 Mod 快照驱动，签名变化通常表示订单进度或列表发生变化，需要重置本轮判断。
     if (!automationEnabled || !autoNormalOrderEnabled) {
       lastNormalOrderSignatureRef.current = normalOrderSignature;
       return;

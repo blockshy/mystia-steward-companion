@@ -1,5 +1,14 @@
 #requires -Version 7.0
 
+<#
+.SYNOPSIS
+    构建并发布 mystia-steward-companion 的 GitHub Release 资产。
+
+.DESCRIPTION
+    该脚本用于正式发布阶段：校验项目版本与 tag 一致、按需调用 build-release.ps1、
+    生成 update-manifest.json，并通过 GitHub CLI 创建或上传 Release 资产。
+    脚本不会自动修改版本号，也不会推送 dev/main 分支。
+#>
 param(
     [Parameter(Mandatory = $true)]
     [string]$Tag,
@@ -22,7 +31,7 @@ $RepoRoot = (Resolve-Path (Join-Path $RootDir "../..")).Path
 $BuildScript = Join-Path $ToolDir "build-release.ps1"
 $DistRoot = Join-Path $RootDir "dist"
 $ModZip = Join-Path $DistRoot "mystia-steward-companion-bepinex.zip"
-$ChecksumPath = Join-Path $DistRoot "checksums.txt"
+$ManifestPath = Join-Path $DistRoot "update-manifest.json"
 
 function Invoke-Checked {
     param(
@@ -87,6 +96,14 @@ function Get-FirstMatch {
 }
 
 function Assert-ProjectVersion {
+    <#
+    .SYNOPSIS
+        校验所有发布版本来源是否与目标 tag 一致。
+
+    .DESCRIPTION
+        自动更新和用户可见版本依赖 package.json、Tauri、Cargo 和 PluginVersion 同步。
+        任一来源不一致都会停止发布，避免生成 manifest 后出现版本识别错误。
+    #>
     param([Parameter(Mandatory = $true)][string]$ExpectedVersion)
 
     $PackageJson = Join-Path $RepoRoot "package.json"
@@ -183,15 +200,23 @@ try {
         throw "Missing Mod package: $ModZip"
     }
 
-    $AssetPaths = @($ModZip)
-
     New-Item -ItemType Directory -Force -Path $DistRoot | Out-Null
-    $ChecksumLines = foreach ($Asset in $AssetPaths) {
-        $Hash = Get-FileHash -Algorithm SHA256 -LiteralPath $Asset
-        "$($Hash.Hash.ToLowerInvariant())  $($Hash.Path)"
+    $ModZipHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $ModZip).Hash.ToLowerInvariant()
+    $ModZipItem = Get-Item -LiteralPath $ModZip
+    $Manifest = [ordered]@{
+        schemaVersion = 1
+        version = $ExpectedVersion
+        tag = $Tag
+        channel = if ($Prerelease) { "prerelease" } else { "stable" }
+        packageAsset = (Split-Path $ModZip -Leaf)
+        packageSha256 = $ModZipHash
+        packageSize = $ModZipItem.Length
+        releaseUrl = "https://github.com/$Repo/releases/tag/$Tag"
+        publishedAtUtc = [DateTime]::UtcNow.ToString("O")
     }
-    $ChecksumLines | Set-Content -Encoding UTF8 -LiteralPath $ChecksumPath
-    $AssetPaths += $ChecksumPath
+    $Manifest | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $ManifestPath
+
+    $AssetPaths = @($ModZip, $ManifestPath)
 
     $Gh = Get-GhCommand
     $ReleaseExists = Test-GhReleaseExists -Gh $Gh -Tag $Tag -Repo $Repo

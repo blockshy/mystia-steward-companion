@@ -5,6 +5,13 @@ using Il2CppInterop.Runtime.InteropTypes;
 
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>
+/// 捕获游戏运行时产生的稀客订单，并为本地 API 和自动上菜流程提供可复用的订单快照。
+/// </summary>
+/// <remarks>
+/// 游戏没有稳定的“当前稀客订单列表”公开接口，因此这里通过 Harmony 监听订单生成、加入、移除和状态更新等关键点。
+/// 捕获结果只保存在内存中，并通过运行时对象指针、桌号、稀客和 Tag 信息合并多次回调，避免同一订单在不同 Hook 中重复出现。
+/// </remarks>
 public static class SpecialOrderRuntimeCapture
 {
     private const string GuestsManagerTypeName = "NightScene.GuestManagementUtility.GuestsManager";
@@ -13,6 +20,7 @@ public static class SpecialOrderRuntimeCapture
     private const string SpecialGuestsControllerTypeName = "NightScene.GuestManagementUtility.SpecialGuestsController";
     private const string OrderControllerTypeName = "Night.UI.HUD.Ordering.OrderController";
     private const string PartnerManagerTypeName = "NightScene.PartnerUtility.PartnerManager";
+    // 只保留最近的运行时订单，避免长时间经营或 Hook 异常时诊断缓存无限增长。
     private const int MaxOrders = 32;
 
     private static readonly object SyncRoot = new();
@@ -35,6 +43,9 @@ public static class SpecialOrderRuntimeCapture
     private static string _lastParseFailure = "";
     private static string _lastOrderShape = "";
 
+    /// <summary>
+    /// 捕获结果的变更版本号，供快照轮询方判断稀客订单是否需要重新发布。
+    /// </summary>
     public static long ChangeVersion
     {
         get
@@ -46,6 +57,9 @@ public static class SpecialOrderRuntimeCapture
         }
     }
 
+    /// <summary>
+    /// 返回当前 Hook 安装和解析状态，主要用于调试信息与本地 API 诊断。
+    /// </summary>
     public static string Status
     {
         get
@@ -57,12 +71,19 @@ public static class SpecialOrderRuntimeCapture
         }
     }
 
+    /// <summary>
+    /// 尝试安装稀客订单相关的 Harmony Patch。
+    /// </summary>
+    /// <param name="log">用于输出首次安装、等待游戏类型加载或安装失败的 BepInEx 日志。</param>
     public static void Attach(ManualLogSource log)
     {
         _log = log;
         TryAttach(log, true);
     }
 
+    /// <summary>
+    /// 重置延迟重试时间，让下一次快照读取可以立刻尝试重新安装 Hook。
+    /// </summary>
     public static void ResetAttachRetryDelay()
     {
         lock (SyncRoot)
@@ -71,6 +92,15 @@ public static class SpecialOrderRuntimeCapture
         }
     }
 
+    /// <summary>
+    /// 返回最近捕获到且未过期的稀客订单快照。
+    /// </summary>
+    /// <param name="maxAge">订单最后一次被捕获后允许保留的最长时间。</param>
+    /// <returns>按首次捕获时间排序的订单副本，调用方可以安全枚举。</returns>
+    /// <remarks>
+    /// 读取快照时会顺带触发一次非强制 Attach。这样可以覆盖玩家进入经营场景后游戏类型才加载完成的情况，
+    /// 但通过重试间隔避免每轮本地 API 轮询都反复扫描 AppDomain。
+    /// </remarks>
     public static IReadOnlyList<CapturedRuntimeSpecialOrder> Snapshot(TimeSpan maxAge)
     {
         TryAttach(_log, false);
@@ -85,6 +115,15 @@ public static class SpecialOrderRuntimeCapture
         }
     }
 
+    /// <summary>
+    /// 根据前端操作主动从捕获列表中移除一个订单。
+    /// </summary>
+    /// <param name="deskCode">游戏桌号，未知时为负数。</param>
+    /// <param name="guestId">稀客运行时 ID，未知时为 <c>null</c>。</param>
+    /// <param name="guestName">稀客名称，作为 ID 缺失时的辅助匹配条件。</param>
+    /// <param name="foodTagId">料理 Tag ID，未指定时使用 <see cref="int.MinValue"/>。</param>
+    /// <param name="beverageTagId">酒水 Tag ID，未指定时使用 <see cref="int.MinValue"/>。</param>
+    /// <returns>被移除的捕获记录数量。</returns>
     public static int DismissOrder(int deskCode, int? guestId, string guestName, int foodTagId, int beverageTagId)
     {
         lock (SyncRoot)
@@ -101,6 +140,10 @@ public static class SpecialOrderRuntimeCapture
         }
     }
 
+    /// <summary>
+    /// 清空内存中的稀客订单捕获结果。
+    /// </summary>
+    /// <param name="reason">记录到诊断状态中的清理原因。</param>
     public static void ClearOrders(string reason)
     {
         lock (SyncRoot)
@@ -113,6 +156,12 @@ public static class SpecialOrderRuntimeCapture
         }
     }
 
+    /// <summary>
+    /// 返回近期订单解析失败诊断，帮助确认游戏版本字段变化或 Hook 参数形态变化。
+    /// </summary>
+    /// <param name="maxAge">诊断记录允许保留的最长时间。</param>
+    /// <param name="limit">返回的最多记录数。</param>
+    /// <returns>按时间倒序排列的简短诊断文本。</returns>
     public static IReadOnlyList<string> RecentParseFailuresSnapshot(TimeSpan maxAge, int limit = 16)
     {
         var now = DateTime.UtcNow;
@@ -127,6 +176,13 @@ public static class SpecialOrderRuntimeCapture
         }
     }
 
+    /// <summary>
+    /// 安装所有已知稀客订单生命周期 Hook。
+    /// </summary>
+    /// <remarks>
+    /// 不同 DLC、普通订单和稀客手动订单会走不同游戏入口。这里一次性尝试多个方法，并允许部分缺失，
+    /// 以便当前游戏版本只要暴露其中一条链路就能捕获订单。
+    /// </remarks>
     private static void TryAttach(ManualLogSource? log, bool force)
     {
         lock (SyncRoot)
@@ -180,6 +236,18 @@ public static class SpecialOrderRuntimeCapture
         }
     }
 
+    /// <summary>
+    /// 为一个 IL2CPP 类型方法安装 Harmony Prefix 或 Postfix。
+    /// </summary>
+    /// <param name="harmony">当前捕获服务使用的 Harmony 实例。</param>
+    /// <param name="typeName">游戏运行时类型全名。</param>
+    /// <param name="methodName">需要监听的方法名。</param>
+    /// <param name="parameterCount">用于区分重载的方法参数数量。</param>
+    /// <param name="isStatic">目标方法是否为静态方法。</param>
+    /// <param name="prefixName">本类中 Prefix 回调方法名，未使用时为 <c>null</c>。</param>
+    /// <param name="postfixName">本类中 Postfix 回调方法名，未使用时为 <c>null</c>。</param>
+    /// <param name="patchedNow">本次新安装成功的方法列表。</param>
+    /// <param name="missing">当前游戏域尚未找到的方法或类型列表。</param>
     private static void PatchMethod(
         Harmony harmony,
         string typeName,
@@ -290,6 +358,13 @@ public static class SpecialOrderRuntimeCapture
         }
     }
 
+    /// <summary>
+    /// 合并一条新捕获的订单记录。
+    /// </summary>
+    /// <remarks>
+    /// 同一稀客订单可能先由生成 Hook 捕获到 Tag，又由控制器 Hook 捕获到桌号或 guest 对象。
+    /// 因此这里按运行时对象、桌号和稀客维度合并，并优先保留信息更完整的一份记录。
+    /// </remarks>
     private static void AddOrder(CapturedRuntimeSpecialOrder? order)
     {
         if (order == null) return;
@@ -312,6 +387,9 @@ public static class SpecialOrderRuntimeCapture
         }
     }
 
+    /// <summary>
+    /// 根据游戏移除、评价完成或手动结束回调移除订单。
+    /// </summary>
     private static void RemoveOrder(CapturedRuntimeSpecialOrder? order)
     {
         if (order == null) return;
@@ -325,6 +403,12 @@ public static class SpecialOrderRuntimeCapture
         }
     }
 
+    /// <summary>
+    /// 处理订单状态更新回调，只在明确移除或已完成送达时清理捕获记录。
+    /// </summary>
+    /// <remarks>
+    /// 游戏部分状态更新只表示 UI 或伙伴系统刷新，不代表订单结束。这里保守识别完成上下文，避免订单刚生成后被误删。
+    /// </remarks>
     private static void UpdateOrderStatus(CapturedRuntimeSpecialOrder? order, object? context)
     {
         if (order == null) return;
@@ -351,6 +435,13 @@ public static class SpecialOrderRuntimeCapture
             || string.Equals(contextName, "4", StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// 从运行时订单对象和可选控制器中解析稀客、桌号、料理 Tag 与酒水 Tag。
+    /// </summary>
+    /// <param name="order">游戏订单对象，可能是 IL2CPP 基类或具体 SpecialOrder。</param>
+    /// <param name="source">触发解析的 Hook 名称，用于诊断。</param>
+    /// <param name="controller">订单所属控制器，部分字段只能从控制器读取。</param>
+    /// <returns>解析成功时返回标准捕获记录；非稀客订单或字段不足时返回 <c>null</c>。</returns>
     private static CapturedRuntimeSpecialOrder? ParseOrder(object? order, string source, object? controller = null)
     {
         if (order == null)
@@ -478,6 +569,13 @@ public static class SpecialOrderRuntimeCapture
         };
     }
 
+    /// <summary>
+    /// 在订单对象不可直接读取时，从控制器当前订单或控制器自身字段构造移除匹配记录。
+    /// </summary>
+    /// <remarks>
+    /// 手动稀客订单结束时，游戏回调里不一定仍能拿到完整订单对象。这个降级记录只用于移除匹配，
+    /// 因此允许缺失 Tag，但必须至少能确定稀客或桌号。
+    /// </remarks>
     private static CapturedRuntimeSpecialOrder? ParseControllerCurrentOrder(object? controller, string source)
     {
         if (controller == null)
@@ -532,6 +630,12 @@ public static class SpecialOrderRuntimeCapture
         };
     }
 
+    /// <summary>
+    /// 判断两个捕获记录是否指向同一个订单槽位。
+    /// </summary>
+    /// <remarks>
+    /// 运行时对象指针最可靠；指针不可用时退化为桌号与稀客信息匹配，避免不同桌的同名订单被合并。
+    /// </remarks>
     private static bool IsSameOrderSlot(CapturedRuntimeSpecialOrder left, CapturedRuntimeSpecialOrder right)
     {
         if (!string.IsNullOrWhiteSpace(left.RuntimeKey)
@@ -610,6 +714,13 @@ public static class SpecialOrderRuntimeCapture
             || !string.IsNullOrWhiteSpace(order.BeverageTag);
     }
 
+    /// <summary>
+    /// 合并两次 Hook 捕获到的同一订单信息。
+    /// </summary>
+    /// <remarks>
+    /// 不同来源的记录可能分别拥有文本 Tag、数值 Tag、稀客 ID 或控制器对象。合并时保留更完整字段，
+    /// 但如果料理或酒水 Tag 明显冲突，就不把两条记录视为同一订单。
+    /// </remarks>
     private static CapturedRuntimeSpecialOrder MergeCapturedOrder(
         CapturedRuntimeSpecialOrder incoming,
         CapturedRuntimeSpecialOrder existing)
@@ -800,6 +911,13 @@ public static class SpecialOrderRuntimeCapture
         }
     }
 
+    /// <summary>
+    /// 兼容读取 IL2CPP 自动属性、私有字段和常见字段命名风格。
+    /// </summary>
+    /// <remarks>
+    /// Il2CppInterop 暴露的对象在不同版本或反编译形态下可能出现 <c>m_</c>、下划线和 backing field 等命名。
+    /// 统一在这里收敛字段候选，避免业务解析逻辑里散落多套反射访问。
+    /// </remarks>
     private static object? GetMemberValue(object? instance, string name)
     {
         if (instance == null) return null;
@@ -826,6 +944,12 @@ public static class SpecialOrderRuntimeCapture
         return null;
     }
 
+    /// <summary>
+    /// 尝试将 IL2CPP 基类对象转换为指定的游戏订单类型。
+    /// </summary>
+    /// <remarks>
+    /// Harmony 回调参数有时是基类或接口视角，直接反射字段会缺少子类成员。通过 TryCast 后再读取可提高解析成功率。
+    /// </remarks>
     private static object? TryCastOrder(object? order, string targetTypeName)
     {
         if (order is not Il2CppObjectBase il2CppObject) return null;
@@ -851,6 +975,12 @@ public static class SpecialOrderRuntimeCapture
         }
     }
 
+    /// <summary>
+    /// 记录一次订单解析失败，并保存经过截断的对象形态诊断。
+    /// </summary>
+    /// <remarks>
+    /// 解析失败不抛出异常，避免 Hook 影响游戏原始流程；诊断通过本地 API 暴露给调试面板。
+    /// </remarks>
     private static void NoteParseFailure(string source, string reason, object? order = null, ParsedOrderText? textParts = null)
     {
         var shape = DescribeOrderShape(order, textParts);
@@ -1016,7 +1146,7 @@ public static class SpecialOrderRuntimeCapture
         }
         catch
         {
-            // Fall through to the type name.
+            // 无法转换为数字时继续使用类型名，避免诊断文本因为异常中断。
         }
 
         return type.FullName ?? type.Name;
@@ -1100,7 +1230,7 @@ public static class SpecialOrderRuntimeCapture
             }
             catch
             {
-                // Ignore assemblies that cannot resolve unrelated IL2CPP types.
+                // 某些程序集解析无关 IL2CPP 类型时会抛异常，查找目标类型时直接跳过即可。
             }
         }
 
@@ -1119,7 +1249,7 @@ public static class SpecialOrderRuntimeCapture
         }
         catch
         {
-            // Fall through to string parsing.
+            // 无法按 IConvertible 读取时继续尝试字符串解析。
         }
 
         return int.TryParse(value.ToString(), out var parsed) ? parsed : null;
@@ -1155,6 +1285,12 @@ internal readonly record struct ParsedOrderText(
     }
 }
 
+/// <summary>
+/// 一条从游戏运行时捕获到的稀客订单。
+/// </summary>
+/// <remarks>
+/// 公开字段用于 JSON 快照和自动上菜匹配；运行时对象引用仅在 Mod 内部用于再次定位订单，不会序列化给前端。
+/// </remarks>
 public sealed record CapturedRuntimeSpecialOrder(
     int DeskCode,
     int? GuestId,
@@ -1175,6 +1311,9 @@ public sealed record CapturedRuntimeSpecialOrder(
     internal object? ControllerObject { get; init; }
 }
 
+/// <summary>
+/// 稀客订单 Hook 解析失败的简短诊断记录。
+/// </summary>
 internal sealed record RuntimeParseFailureDiagnostic(
     DateTime CapturedAtUtc,
     string Message);

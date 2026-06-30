@@ -3,7 +3,7 @@ import type {
   RareAutomationBeverageTarget,
   RareAutomationRecipeTarget,
 } from '@/companion/automation-state';
-import { readLocalApiJson, readLocalApiJsonWithTimeout } from '@/companion/local-api';
+import { readLocalApiJson, readLocalApiJsonWithTimeout, writeLocalApiJsonWithTimeout } from '@/companion/local-api';
 import type { CompanionPreferences } from '@/companion/preferences';
 import { normalizeEditableQuantity } from '@/companion/preferences';
 import { serializeRareGuestInvitationLevels } from '@/companion/storage';
@@ -24,6 +24,7 @@ import type {
   RareGuestInvitationResponse,
   RareGuestInvitationScope,
   RareOrderDismissResponse,
+  UpdateStatusResponse,
 } from '@/companion/types';
 import {
   DEFAULT_RECOMMENDATION_DATA,
@@ -35,6 +36,13 @@ import type {
 } from '@/lib/catalog-types';
 import type { RareBeverageRecommendation, RareRecipeRecommendation } from '@/recommendation-engine';
 
+/**
+ * 伴随窗口访问 Mod 本地 API 的类型化门面。
+ *
+ * 该文件只负责把 UI/推荐引擎中的领域对象转换为本地 API 协议参数，不直接保存状态。
+ * 大多数历史端点使用 GET + query string；更新安装等高风险动作已通过 `writeLocalApiJsonWithTimeout`
+ * 走 POST，避免被普通刷新或预取误触发。
+ */
 const RARE_TRAY_BACKLOG_REUSE_SECONDS = 30;
 
 export async function readSnapshot(
@@ -88,6 +96,22 @@ export async function exportDiagnosticPackage(
   signal: AbortSignal,
 ): Promise<DiagnosticPackageResponse> {
   return readLocalApiJson<DiagnosticPackageResponse>(endpoint, apiToken, '/logs/export-diagnostics?open=true', signal);
+}
+
+export async function readUpdateStatus(endpoint: string, apiToken: string, signal: AbortSignal): Promise<UpdateStatusResponse> {
+  return readLocalApiJson<UpdateStatusResponse>(endpoint, apiToken, '/updates/status', signal);
+}
+
+export async function checkForUpdates(endpoint: string, apiToken: string): Promise<UpdateStatusResponse> {
+  return writeLocalApiJsonWithTimeout<UpdateStatusResponse>(endpoint, apiToken, '/updates/check', 15000);
+}
+
+export async function downloadUpdate(endpoint: string, apiToken: string): Promise<UpdateStatusResponse> {
+  return writeLocalApiJsonWithTimeout<UpdateStatusResponse>(endpoint, apiToken, '/updates/download', 60000);
+}
+
+export async function installUpdateOnExit(endpoint: string, apiToken: string): Promise<UpdateStatusResponse> {
+  return writeLocalApiJsonWithTimeout<UpdateStatusResponse>(endpoint, apiToken, '/updates/install-on-exit', 5000);
 }
 
 export async function inviteAllAvailableRareGuests(
@@ -188,6 +212,7 @@ export async function publishGameUiPinningTarget(
   highlightEnabled: boolean,
   target: GameUiPinningTarget | null,
 ): Promise<void> {
+  // 游戏界面置顶/高亮由 Mod 侧按当前 UI 面板反射处理；前端只发布“当前推荐目标”，不尝试直接操作游戏对象。
   const params = new URLSearchParams({
     enabled: String(enabled),
     highlightEnabled: String(highlightEnabled),
@@ -357,6 +382,7 @@ async function rareOrderAction(
   beverageTarget: RareAutomationBeverageTarget | null,
   preferences: CompanionPreferences,
 ): Promise<OrderPreparationResponse> {
+  // 订单自动化需要把本次推荐锁定的料理、加料和酒水传给 Mod，避免轮询刷新后前端列表变化影响正在执行的订单。
   const params = new URLSearchParams({
     deskCode: String(item.order.deskCode),
     guestId: item.order.guestId == null ? '' : String(item.order.guestId),

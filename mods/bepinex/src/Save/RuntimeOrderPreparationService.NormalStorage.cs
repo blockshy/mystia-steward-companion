@@ -8,6 +8,12 @@ namespace MystiaStewardCompanion.Save;
 
 internal static partial class RuntimeOrderPreparationService
 {
+    /// <summary>
+    /// 直接为普客订单创建并写入酒水。
+    /// </summary>
+    /// <remarks>
+    /// 普客酒水不经过送餐盘，成功写入订单字段后同步扣减库存，避免 UI 显示与游戏库存产生偏差。
+    /// </remarks>
     private static (bool Ok, string Message) TryDeliverNormalOrderBeverage(object order, int beverageId, string beverageName)
     {
         var currentQuantity = GetBeverageQuantity(beverageId);
@@ -36,6 +42,13 @@ internal static partial class RuntimeOrderPreparationService
         return (true, $"{beverageName} 已送达普客订单（{quantityText}）。");
     }
 
+    /// <summary>
+    /// 从普客保温缓存取出目标料理并写入订单。
+    /// </summary>
+    /// <remarks>
+    /// 优先按自动收菜时记录的对象键匹配，避免多个同名料理存在时误送；缺少对象键时才退回同料理 ID 匹配。
+    /// 如果订单写入失败，会尽力将料理放回保温缓存。
+    /// </remarks>
     private static (bool Ok, string Message) TryDeliverNormalOrderFoodFromStorage(
         object order,
         string orderKey,
@@ -90,6 +103,13 @@ internal static partial class RuntimeOrderPreparationService
             ?? TryInvokeInstanceValue(order, "get_ServBeverage");
     }
 
+    /// <summary>
+    /// 将料理写入普客订单的已送达字段。
+    /// </summary>
+    /// <remarks>
+    /// 游戏存在“空中待送达”字段和最终字段两层状态。这里先触发待送达字段，再清空并提交最终字段，
+    /// 以兼容 UI 动画路径和订单完成判定。
+    /// </remarks>
     private static bool TrySetNormalOrderServedFood(object order, object food)
     {
         var visualUpdated = TryInvokeInstance(order, "set_ServedFoodInAir", new object?[] { food })
@@ -112,6 +132,12 @@ internal static partial class RuntimeOrderPreparationService
         return committed || (visualUpdated && ReadMember(order, "ServBeverage") != null);
     }
 
+    /// <summary>
+    /// 记录普客料理已经被自动收至保温缓存。
+    /// </summary>
+    /// <remarks>
+    /// 该记录是本地自动化回执，不替代游戏实际容器。后续每轮会重新验证暂存容器中是否仍存在目标料理。
+    /// </remarks>
     private static void RememberCompletedNormalOrderCooking(CookingCollectionTarget target, object storedFood)
     {
         if (target.Kind != CookingCollectionTargetKind.NormalOrder || target.FoodId < 0) return;
@@ -134,6 +160,12 @@ internal static partial class RuntimeOrderPreparationService
         }
     }
 
+    /// <summary>
+    /// 确认普客目标料理是否仍存在于保温缓存中。
+    /// </summary>
+    /// <remarks>
+    /// 如果运行时容器可验证且目标已消失，会撤销本地回执，允许下一轮重新制作或重新送达。
+    /// </remarks>
     private static bool TryConfirmCompletedNormalOrderCooking(string orderKey, int deskCode, int foodId, out string message)
     {
         lock (PendingCookingLock)
@@ -189,6 +221,12 @@ internal static partial class RuntimeOrderPreparationService
         }
     }
 
+    /// <summary>
+    /// 读取供前端展示的普客保温缓存状态。
+    /// </summary>
+    /// <remarks>
+    /// 返回值同时区分“存在自动化回执”和“仅发现同名料理”，让 UI 可以提示当前料理是否可靠绑定到目标订单。
+    /// </remarks>
     internal static NormalStoredFoodSnapshot ReadNormalOrderStoredFoodSnapshot(string orderKey, int deskCode, int foodId)
     {
         if (foodId < 0)
@@ -241,6 +279,12 @@ internal static partial class RuntimeOrderPreparationService
         CompletedNormalCookingCollections.RemoveAll(item => now - item.StoredAtUtc >= CompletedNormalCookingRememberTimeout);
     }
 
+    /// <summary>
+    /// 验证游戏暂存容器中是否存在目标料理。
+    /// </summary>
+    /// <remarks>
+    /// 对象键命中最可靠；若对象键丢失但同料理 ID 存在，则仍视为可用，但提示中保留匹配精度差异。
+    /// </remarks>
     private static NormalStorageStatus ReadNormalStorageStatus(int foodId, string storedFoodKey)
     {
         var configure = GetSingletonInstance(IzakayaConfigureTypeName);
@@ -324,6 +368,13 @@ internal static partial class RuntimeOrderPreparationService
         return fallback;
     }
 
+    /// <summary>
+    /// 从游戏暂存容器中移除料理对象。
+    /// </summary>
+    /// <remarks>
+    /// 优先使用原生 RemoveStoredFood；若原生入口返回失败但列表状态已变化，则以验证结果为准。
+    /// 只有确认无法移除时，才尝试托管列表、IL2CPP Remove 或 RemoveAt。
+    /// </remarks>
     private static bool TryRemoveStoredNormalFood(object configure, object storedFoods, object food, out string message)
     {
         try
@@ -456,6 +507,12 @@ internal static partial class RuntimeOrderPreparationService
         }
     }
 
+    /// <summary>
+    /// 将完成料理收入普客保温缓存。
+    /// </summary>
+    /// <remarks>
+    /// 自动收菜阶段不直接写入普客订单，先存入保温缓存并建立回执，避免订单尚未稳定时误触发评价。
+    /// </remarks>
     private static (bool Remove, string Message) TryCollectNormalOrderFood(PendingCookingCollection pending, object cookedFood)
     {
         if (pending.Target.FoodId >= 0 && !IsSellable(cookedFood, sellableType: 0, id: pending.Target.FoodId))
@@ -474,6 +531,9 @@ internal static partial class RuntimeOrderPreparationService
         return (true, $"{pending.RecipeName} 已自动收至普客保温箱，等待玩家手动送达。{storeMessage}");
     }
 
+    /// <summary>
+    /// 调用游戏暂存容器保存料理，并验证保存结果。
+    /// </summary>
     private static bool TryStoreFoodInNormalStorage(object cookedFood, int expectedFoodId, out string message)
     {
         try
@@ -541,7 +601,7 @@ internal static partial class RuntimeOrderPreparationService
         }
         catch
         {
-            // Best-effort rollback only. The caller reports the original delivery failure.
+            // 这里只做尽力回滚，调用方会报告原始送达失败；回滚失败不能掩盖主错误。
         }
     }
 
@@ -600,8 +660,7 @@ internal static partial class RuntimeOrderPreparationService
         }
         catch
         {
-            // Do not call AfterPlayerExtract here. That path represents a player extract
-            // and can trigger cooker/order side effects beyond placing food in the warmer.
+            // 不调用 AfterPlayerExtract：该路径代表玩家手动收菜，可能触发超过“放入保温箱”的厨具或订单副作用。
         }
     }
 }

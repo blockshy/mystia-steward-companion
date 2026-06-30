@@ -135,6 +135,12 @@ const MOD_TAB_TRIGGER_CLASS = 'min-w-0 flex-1';
 const MOD_TABS: ModTab[] = ['overview', 'normal', 'rare', 'service', 'tasks', 'inventory', 'help', 'logs', 'settings'];
 const BASIC_MOD_TABS: ModTab[] = MOD_TABS.filter((tab) => tab !== 'logs');
 
+/**
+ * 伴随窗口的根工作台组件。
+ *
+ * 这里汇总本地 API 连接、推荐数据、收藏、自动化状态、手柄导航和页面路由。组件本身不直接读取游戏对象；
+ * 所有运行时输入来自 `useCompanionConnection` 的快照，所有回写操作通过 `api.ts` 发送到 Mod 本地 API。
+ */
 export function ModWorkbench() {
   const { mode: themeMode, setMode: setThemeMode } = useThemeMode();
   const [tab, setTab] = useState<ModTab>(() => readStoredTab());
@@ -145,6 +151,7 @@ export function ModWorkbench() {
   const [companionPreferences, setCompanionPreferences] = useState<CompanionPreferences>(() =>
     readStoredCompanionPreferences(),
   );
+  // 经营中页面需要尽快响应订单变化和自动化结果；其他页面使用较低频率，减少本地 API 与反射快照压力。
   const snapshotRefreshIntervalMs = tab === 'service' || serviceFocusMode ? 750 : 2000;
   const {
     endpointDraft,
@@ -201,6 +208,7 @@ export function ModWorkbench() {
   const [normalOrderMessage, setNormalOrderMessage] = useState('');
   const [normalOrderPausedCount, setNormalOrderPausedCount] = useState(0);
   const [normalOrderDiagnostics, setNormalOrderDiagnostics] = useState<NormalAutoOrderDiagnostic[]>([]);
+  // 自动化状态不放入 useState，是为了避免每个轮询 tick 都触发整页重渲染；页面只在诊断摘要变化时更新。
   const rareOrderStatesRef = useRef(new Map<string, AutoFirstOrderState>());
   const rareOrderDiagnosticItemsRef = useRef(new Map<string, ValidOrderPreparationSelection>());
   const autoFirstOrderBusyRef = useRef(false);
@@ -228,6 +236,7 @@ export function ModWorkbench() {
   const effectiveRuntimeData = snapshot?.runtimeData?.isComplete
     ? snapshot.runtimeData
     : cachedRuntimeData ?? snapshot?.runtimeData;
+  // 运行时目录数据较大且不是每次快照都完整发布；优先使用完整快照，否则复用上一次完整缓存。
   const recommendationData = useMemo(
     () => buildRecommendationDataSet(effectiveRuntimeData),
     [effectiveRuntimeData],
@@ -306,7 +315,7 @@ export function ModWorkbench() {
       })
       .catch(() => {
         if (!cancelled) lastUiPinningSignatureRef.current = '';
-        // Local API may be unavailable before the game reaches the title screen.
+        // 游戏尚未进入标题或存档前，本地 API 可能还没有启动。
       });
 
     return () => {
@@ -1040,7 +1049,7 @@ export function ModWorkbench() {
         });
       })
       .catch(() => {
-        // Browser mode and older companion builds do not expose this event.
+        // 浏览器开发模式和旧版伴随窗口不一定暴露该事件。
       });
 
     return () => {
@@ -1391,6 +1400,6 @@ async function toggleCompanionFocus(
       windowSwitchCooldownMs: normalizeFocusSwitchCooldownMs(focusSwitchCooldownMs),
     });
   } catch {
-    // Browser mode and older companion builds do not expose this command.
+    // 浏览器开发模式和旧版伴随窗口不一定暴露该 command。
   }
 }

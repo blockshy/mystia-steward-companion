@@ -100,12 +100,12 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
   -ReferenceDir "D:\path\to\mystia-steward-companion-references"
 ```
 
-脚本会先运行 `build-release.ps1`，然后只上传 Mod 压缩包：
+脚本会先运行 `build-release.ps1`，然后上传 Mod 压缩包和自动更新清单：
 
 - `mods/bepinex/dist/mystia-steward-companion-bepinex.zip`
-- `mods/bepinex/dist/checksums.txt`
+- `mods/bepinex/dist/update-manifest.json`
 
-`checksums.txt` 只包含 zip 的 SHA256。Tauri setup 安装器不会上传到 Release，避免和 Mod 分发包混淆。
+`update-manifest.json` 包含版本号、资产文件名、zip 大小和 SHA256，不包含本机打包路径。Tauri setup 安装器不会上传到 Release，避免和 Mod 分发包混淆。
 
 ## 只上传已有产物
 

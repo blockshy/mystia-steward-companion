@@ -8,6 +8,12 @@ namespace MystiaStewardCompanion.Save;
 
 internal static partial class RuntimeOrderPreparationService
 {
+    /// <summary>
+    /// 按配方 ID 读取最终料理 ID。
+    /// </summary>
+    /// <remarks>
+    /// 前端推荐以配方为主，而订单匹配和送达验证多以成品料理 ID 为准，需要在运行时数据库中做一次转换。
+    /// </remarks>
     private static int ResolveFoodIdFromRecipeId(int recipeId)
     {
         if (recipeId < 0) return -1;
@@ -15,6 +21,12 @@ internal static partial class RuntimeOrderPreparationService
         return recipe == null ? -1 : ToInt(ReadMember(recipe, "foodID"));
     }
 
+    /// <summary>
+    /// 按成品料理 ID 反查可用于开火的配方 ID。
+    /// </summary>
+    /// <remarks>
+    /// 普客订单有时只暴露成品料理 ID。正常路径遍历游戏配方表；若表读取失败，则尝试“料理 ID 与配方 ID 相同”的常见情形。
+    /// </remarks>
     private static int ResolveRecipeIdFromFoodId(int foodId)
     {
         if (foodId < 0) return -1;
@@ -30,7 +42,7 @@ internal static partial class RuntimeOrderPreparationService
         }
         catch
         {
-            // Fall back to the common case where food id and recipe id are identical.
+            // 游戏多数基础料理的 food id 与 recipe id 一致，配方表不可枚举时用该规则做最后尝试。
         }
 
         try
@@ -44,6 +56,19 @@ internal static partial class RuntimeOrderPreparationService
         }
     }
 
+    /// <summary>
+    /// 调用游戏烹饪系统开始制作料理。
+    /// </summary>
+    /// <param name="recipeId">目标配方 ID。</param>
+    /// <param name="recipeName">用于用户提示和自动化日志的料理名称。</param>
+    /// <param name="extraIngredientIds">推荐算法选择的额外加料材料 ID。</param>
+    /// <param name="autoCollect">料理完成后是否自动收取。</param>
+    /// <param name="collectionTarget">自动收取后的目标归属；未指定时收入稀客送餐盘。</param>
+    /// <returns>开火结果以及原生 QTE 处理状态。</returns>
+    /// <remarks>
+    /// 此方法会扣除材料库存、写入厨具控制器、触发游戏开火回调，并可能登记后续自动收取任务。
+    /// 调用前必须已位于夜晚经营场景，且应运行在 Unity 主线程。
+    /// </remarks>
     private static CookingStartResult TryStartCooking(
         int recipeId,
         string recipeName,
@@ -128,6 +153,9 @@ internal static partial class RuntimeOrderPreparationService
         return CookingStartResult.Succeeded($"{recipeName} 已开始制作（配方 #{recipeId}，加料：{extraText}）。", qteResult.Message, qteResult.Skipped);
     }
 
+    /// <summary>
+    /// 尝试直接结算游戏原生 QTE，避免自动开火后弹出音游面板打断流程。
+    /// </summary>
     private static CookingQteResult TryHandleCookingQte()
     {
         var completed = TryCompleteCookingQte(out var completeMessage);
@@ -136,6 +164,9 @@ internal static partial class RuntimeOrderPreparationService
             : CookingQteResult.Skip($"{completeMessage}；料理流程已继续。");
     }
 
+    /// <summary>
+    /// QTE 自动处理结果。
+    /// </summary>
     private sealed class CookingQteResult
     {
         public string Message { get; private init; } = "";
@@ -159,6 +190,11 @@ internal static partial class RuntimeOrderPreparationService
         }
     }
 
+    /// <summary>
+    /// 调用游戏 QTE 奖励管理器的成功回调。
+    /// </summary>
+    /// <param name="message">返回给订单准备步骤的说明文本。</param>
+    /// <returns>成功调用原生结算入口时返回 <c>true</c>。</returns>
     private static bool TryCompleteCookingQte(out string message)
     {
         try
@@ -181,6 +217,12 @@ internal static partial class RuntimeOrderPreparationService
         }
     }
 
+    /// <summary>
+    /// 登记一个等待收取的烹饪任务。
+    /// </summary>
+    /// <remarks>
+    /// 同一个厨具或同一个目标订单只保留一条待办，避免重复点击导致同一锅料理被多次收取或送达。
+    /// </remarks>
     private static void RegisterPendingCookingCollection(object cookController, string recipeName, CookingCollectionTarget target)
     {
         lock (PendingCookingLock)
@@ -197,6 +239,12 @@ internal static partial class RuntimeOrderPreparationService
         }
     }
 
+    /// <summary>
+    /// 判断指定普客订单是否已有目标料理正在制作。
+    /// </summary>
+    /// <remarks>
+    /// 优先用前端锁定的订单 key 匹配；缺失时退回运行时订单对象或桌号，保证重复轮询不会反复开火。
+    /// </remarks>
     private static bool HasPendingNormalOrderCooking(string orderKey, object order, int deskCode, int foodId, out string message)
     {
         lock (PendingCookingLock)
@@ -230,6 +278,9 @@ internal static partial class RuntimeOrderPreparationService
         return false;
     }
 
+    /// <summary>
+    /// 判断送餐盘目标料理是否已经在制作中。
+    /// </summary>
     private static bool HasPendingTrayCooking(int foodId, out string message)
     {
         lock (PendingCookingLock)
@@ -250,6 +301,9 @@ internal static partial class RuntimeOrderPreparationService
         return false;
     }
 
+    /// <summary>
+    /// 判断两个自动收菜目标是否代表同一个业务目标。
+    /// </summary>
     private static bool IsSameCookingCollectionTarget(CookingCollectionTarget left, CookingCollectionTarget right)
     {
         if (left.Kind != right.Kind) return false;
@@ -269,6 +323,15 @@ internal static partial class RuntimeOrderPreparationService
         return left.DeskCode >= 0 && left.DeskCode == right.DeskCode;
     }
 
+    /// <summary>
+    /// 尝试从一个待收取任务中读取成品并移动到目标容器。
+    /// </summary>
+    /// <returns>
+    /// <c>Remove</c> 表示该待办是否应从队列删除；<c>Message</c> 是需要展示或记录的处理结果。
+    /// </returns>
+    /// <remarks>
+    /// 游戏完成料理后，CookController 的阶段和 Result 字段并不总是在同一帧稳定，因此这里同时看阶段、成品对象和等待时间。
+    /// </remarks>
     private static (bool Remove, string Message) TryCollectCookedFood(PendingCookingCollection pending)
     {
         var phase = ToInt(TryInvokeInstanceValue(pending.CookController, "get_Phase"), -1);
@@ -369,6 +432,12 @@ internal static partial class RuntimeOrderPreparationService
         }
     }
 
+    /// <summary>
+    /// 优先调用游戏原生 Extract 逻辑收取料理。
+    /// </summary>
+    /// <remarks>
+    /// 原生 Extract 会同步厨具视觉、回调和内部状态，是最接近玩家手动收菜的路径；只有它不可用时才走手动 Receive。
+    /// </remarks>
     private static bool TryExtractWithGameMethod(object cookController)
     {
         var method = cookController.GetType().GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
@@ -398,6 +467,12 @@ internal static partial class RuntimeOrderPreparationService
         return ToInt(value);
     }
 
+    /// <summary>
+    /// 调用运行时库存扣减方法。
+    /// </summary>
+    /// <remarks>
+    /// 部分游戏方法包含可选参数，除第一个物品 ID 外均使用类型默认值，保持与原生调用约定兼容。
+    /// </remarks>
     private static void InvokeRuntimeStorageOut(string methodName, int itemId)
     {
         var type = FindType(RuntimeStorageTypeName)
@@ -429,6 +504,13 @@ internal static partial class RuntimeOrderPreparationService
         return InvokeStatic(DataBaseCoreTypeName, "AsNewFood", new object?[] { foodId });
     }
 
+    /// <summary>
+    /// 创建能体现额外加料结果的料理对象。
+    /// </summary>
+    /// <remarks>
+    /// 推荐算法可能为满足 Tag 选择额外食材，必须通过游戏的 MatchedCookCombo 生成最终成品，
+    /// 否则 UI 推荐与游戏实际料理效果会不一致。
+    /// </remarks>
     private static object? CreateCookResult(object recipe, IReadOnlyList<int> extraIngredientIds, object cooker)
     {
         var combo = CreateMatchedCookCombo(recipe, extraIngredientIds);
@@ -457,6 +539,13 @@ internal static partial class RuntimeOrderPreparationService
         return null;
     }
 
+    /// <summary>
+    /// 选择可用于当前配方的厨具控制器。
+    /// </summary>
+    /// <remarks>
+    /// 优先使用伙伴管理器入口，因为它包含游戏原生的订单厨具选择规则；失败后再扫描玩家厨具列表，
+    /// 并排除本服务已登记为待收取的厨具，避免同一个灶台被并发复用。
+    /// </remarks>
     private static (bool Ok, object? CookController, string Message) TryGetCookerForOrder(object baseFood, object recipe)
     {
         string? partnerMessage = null;
@@ -527,6 +616,9 @@ internal static partial class RuntimeOrderPreparationService
         return (false, null, $"{cookSystemResult.Message}（{partnerMessage}）");
     }
 
+    /// <summary>
+    /// 从厨具系统中扫描空闲且支持配方类型的厨具。
+    /// </summary>
     private static (bool Ok, object? CookController, string Message) TryGetCookerFromCookSystem(object recipe)
     {
         var cookSystem = GetSingletonInstance(CookSystemManagerTypeName);
@@ -625,16 +717,28 @@ internal static partial class RuntimeOrderPreparationService
         }
         catch
         {
-            // The preferred Extract path performs cleanup. This fallback should not fail the collection.
+            // 首选 Extract 路径会完成清理；这里的兜底清理失败不应影响收菜结果。
         }
     }
 
+    /// <summary>
+    /// 读取配方基础材料列表。
+    /// </summary>
+    /// <remarks>
+    /// 重复材料必须按原始数组保留，因为游戏材料上限和库存扣减都按槽位计算。
+    /// </remarks>
     private static int[] ReadRecipeIngredientIds(object recipe)
     {
         var ingredients = ReadMember(recipe, "ingredients");
         return ReadIntEnumerable(ingredients).ToArray();
     }
 
+    /// <summary>
+    /// 检查库存是否足以扣除基础材料和额外加料。
+    /// </summary>
+    /// <remarks>
+    /// 相同材料会先聚合数量再比较库存，避免重复材料配方被误判为只需一份材料。
+    /// </remarks>
     private static bool HasEnoughIngredients(IEnumerable<int> ingredientIds, out int missingIngredientId)
     {
         var required = ingredientIds

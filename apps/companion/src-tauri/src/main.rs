@@ -1,4 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+//! Tauri 桌面壳入口。
+//!
+//! React 前端负责业务 UI；本文件负责桌面能力：窗口状态持久化、托盘菜单、鼠标穿透、
+//! 与游戏 Mod 的控制端口互通，以及把 WebView 发来的请求转发到游戏进程内的本地 API。
 
 use std::fs;
 use std::io::{Read, Write};
@@ -15,7 +19,9 @@ use tauri::{
     Window, WindowEvent,
 };
 
+/// Mod 本地 API 默认端口；真实值可由游戏启动伴随窗口时通过 `--api=` 覆盖。
 const DEFAULT_API_ENDPOINT: &str = "http://127.0.0.1:32145";
+/// 伴随窗口控制端口。游戏内 F8、updater 和单实例逻辑都通过该端口发送 show/toggle/exit 消息。
 const CONTROL_PORT: u16 = 32146;
 const CONTROL_SHOW: &[u8] = b"mystia-steward-companion:show";
 const CONTROL_TOGGLE: &[u8] = b"mystia-steward-companion:toggle";
@@ -58,10 +64,26 @@ struct PersistedWindowState {
 
 #[tauri::command]
 fn fetch_snapshot(endpoint: String, token: String, timeout_ms: Option<u64>) -> Result<String, String> {
-    request_local_api_with_frontend_timeout(&endpoint, None, &token, timeout_ms)
+    request_local_api_with_frontend_timeout("GET", &endpoint, None, &token, timeout_ms)
+}
+
+/// Tauri command：为前端代理一次本地 API 请求。
+///
+/// WebView 环境下直接 `fetch(127.0.0.1)` 容易受到代理、CORS 或平台网络策略影响，因此生产环境统一走
+/// Rust 侧 TCP 请求；浏览器开发模式仍由前端直接 fetch mock API。
+#[tauri::command]
+fn request_local_api(
+    endpoint: String,
+    token: String,
+    method: Option<String>,
+    timeout_ms: Option<u64>,
+) -> Result<String, String> {
+    let method = method.unwrap_or_else(|| "GET".to_string());
+    request_local_api_with_frontend_timeout(&method, &endpoint, None, &token, timeout_ms)
 }
 
 fn request_local_api_with_frontend_timeout(
+    method: &str,
     endpoint: &str,
     path_override: Option<&str>,
     token: &str,
@@ -69,6 +91,7 @@ fn request_local_api_with_frontend_timeout(
 ) -> Result<String, String> {
     let timeout = normalize_local_api_timeout(timeout_ms);
     request_local_api_with_timeout(
+        method,
         endpoint,
         path_override,
         token,
@@ -82,7 +105,12 @@ fn normalize_local_api_timeout(timeout_ms: Option<u64>) -> Duration {
     Duration::from_millis(timeout_ms.unwrap_or(1800).clamp(300, 5000))
 }
 
+/// 使用最小 HTTP 客户端访问 Mod 本地 API。
+///
+/// 这里只支持 GET/POST 且不发送请求体，匹配 Mod 侧 `LocalApiServer` 的协议。保持手写 TCP 请求可以避免
+/// 为桌面壳引入额外 HTTP 依赖，也能精确控制连接、读取和写入超时。
 fn request_local_api_with_timeout(
+    method: &str,
     endpoint: &str,
     path_override: Option<&str>,
     token: &str,
@@ -92,6 +120,7 @@ fn request_local_api_with_timeout(
 ) -> Result<String, String> {
     let target = LocalApiTarget::parse(&endpoint)?;
     let path = path_override.unwrap_or(&target.path);
+    let method = normalize_http_method(method)?;
     validate_http_fragment(path, "path")?;
     validate_http_fragment(token, "token")?;
 
@@ -112,8 +141,8 @@ fn request_local_api_with_timeout(
         format!("X-Mystia-Steward-Companion-Token: {}\r\n", token.trim())
     };
     let request = format!(
-        "GET {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n{}Connection: close\r\nCache-Control: no-store\r\n\r\n",
-        path, target.port, auth_header
+        "{} {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n{}Connection: close\r\nCache-Control: no-store\r\nContent-Length: 0\r\n\r\n",
+        method, path, target.port, auth_header
     );
     stream
         .write_all(request.as_bytes())
@@ -387,6 +416,16 @@ fn validate_http_fragment(value: &str, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn normalize_http_method(method: &str) -> Result<&'static str, String> {
+    if method.eq_ignore_ascii_case("GET") {
+        return Ok("GET");
+    }
+    if method.eq_ignore_ascii_case("POST") {
+        return Ok("POST");
+    }
+    Err(format!("unsupported local api method: {method}"))
+}
+
 fn parse_http_body(response: &str) -> Result<String, String> {
     let (head, body) = response
         .split_once("\r\n\r\n")
@@ -472,6 +511,7 @@ fn start_game_shutdown_monitor(
             }
 
             if request_local_api_with_timeout(
+                "GET",
                 &endpoint,
                 Some("/health"),
                 "",
@@ -771,6 +811,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             fetch_snapshot,
+            request_local_api,
             launch_api_endpoint,
             launch_api_token,
             toggle_companion_focus,

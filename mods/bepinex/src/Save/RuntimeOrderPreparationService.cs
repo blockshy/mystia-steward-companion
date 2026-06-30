@@ -6,6 +6,13 @@ using MystiaStewardCompanion.LocalApi;
 
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>
+/// 在游戏运行时执行订单准备、自动取酒、自动开火、自动收菜和上菜评价。
+/// </summary>
+/// <remarks>
+/// 本服务只应由 Unity 主线程调用。入口请求来自本地 API，但实际执行由 <c>StewardOverlayController</c>
+/// 调度回游戏线程，以避免后台 HTTP 线程直接访问 IL2CPP 对象造成崩溃或状态竞争。
+/// </remarks>
 internal static partial class RuntimeOrderPreparationService
 {
     private const string DataBaseCoreTypeName = "GameData.Core.Collections.DataBaseCore";
@@ -18,12 +25,17 @@ internal static partial class RuntimeOrderPreparationService
     private const string GuestsManagerTypeName = "NightScene.GuestManagementUtility.GuestsManager";
     private const string OrderControllerTypeName = "Night.UI.HUD.Ordering.OrderController";
     private const string MatchedCookComboTypeName = "NightScene.UI.CookingUtility.WorkSceneCookingSelectionPannel+MatchedCookCombo";
+    // 游戏料理最多只能携带五个食材槽位，重复材料也会占用多个槽位。
     private const int MaxFoodIngredientCount = 5;
     private static readonly object PendingCookingLock = new();
     private static readonly object TrayObservationLock = new();
+    // 自动开火后料理不会立即进入送餐盘，需保存 CookController，后续轮询完成状态再收取。
     private static readonly List<PendingCookingCollection> PendingCookingCollections = new();
+    // 普客自动收菜会先放入“保温箱”式缓存，之后再按订单确认并送达。
     private static readonly List<CompletedNormalCookingCollection> CompletedNormalCookingCollections = new();
+    // 记录送餐盘物品首次出现时间，用于判断堆积料理是否可以被稀客订单复用。
     private static readonly Dictionary<string, DateTime> TrayObservationFirstSeen = new();
+    // 刚开始料理后给游戏一小段时间生成 CookController 结果，避免过早判定失败。
     private static readonly TimeSpan PendingCookingCollectGrace = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan PendingCookingIdleTimeout = TimeSpan.FromSeconds(90);
     private static readonly TimeSpan CompletedNormalCookingRememberTimeout = TimeSpan.FromMinutes(10);
@@ -34,6 +46,15 @@ internal static partial class RuntimeOrderPreparationService
         NormalOrder,
     }
 
+    /// <summary>
+    /// 按伴随窗口当前推荐结果准备一笔稀客订单。
+    /// </summary>
+    /// <param name="request">包含目标订单、推荐料理、酒水、额外食材和自动化开关的请求。</param>
+    /// <returns>分步骤记录执行结果；失败时包含可展示给 UI 的错误原因。</returns>
+    /// <remarks>
+    /// 该方法主要执行“准备”动作：自动取酒、开始料理和登记自动收取。它不直接完成稀客订单，
+    /// 完成订单由 <see cref="CompleteFirst(OrderPreparationRequest)"/> 在确认送餐盘物品齐全后处理。
+    /// </remarks>
     public static OrderPreparationResult Prepare(OrderPreparationRequest request)
     {
         var result = new OrderPreparationResult
@@ -158,6 +179,15 @@ internal static partial class RuntimeOrderPreparationService
         return Finish(result);
     }
 
+    /// <summary>
+    /// 完成当前匹配到的第一笔稀客订单。
+    /// </summary>
+    /// <param name="request">前端锁定的订单和推荐目标，必须与当前运行时订单匹配。</param>
+    /// <returns>上菜、送达和评价调用的步骤结果。</returns>
+    /// <remarks>
+    /// 该方法会写入订单的 <c>ServFood</c> 与 <c>ServBeverage</c> 字段，并在游戏判定订单已满足后调用
+    /// <c>EvaluateOrder</c>。如果只找到部分物品，会先送达已匹配部分，但不会触发评价。
+    /// </remarks>
     public static OrderPreparationResult CompleteFirst(OrderPreparationRequest request)
     {
         var result = new OrderPreparationResult
@@ -368,6 +398,15 @@ internal static partial class RuntimeOrderPreparationService
         return Finish(result);
     }
 
+    /// <summary>
+    /// 完成当前匹配到的第一笔普客订单。
+    /// </summary>
+    /// <param name="request">前端锁定的普客订单、目标料理和酒水。</param>
+    /// <returns>普客取酒、料理、保温箱转移、送达和评价的分步骤结果。</returns>
+    /// <remarks>
+    /// 普客流程与稀客不同：料理可先进入内部保温缓存，后续轮询再从缓存转入订单字段。
+    /// 因此该方法会同时读取运行时订单、待送达物品和本服务维护的完成料理缓存。
+    /// </remarks>
     public static OrderPreparationResult CompleteNormalFirst(OrderPreparationRequest request)
     {
         var result = new OrderPreparationResult
@@ -650,6 +689,14 @@ internal static partial class RuntimeOrderPreparationService
         return Finish(result);
     }
 
+    /// <summary>
+    /// 轮询自动开火后的待收取料理，并在料理完成时收入送餐盘或普客保温缓存。
+    /// </summary>
+    /// <returns>本轮产生的用户可见自动化消息。</returns>
+    /// <remarks>
+    /// 该方法由 Overlay 的 Update 循环调用，必须保持轻量且容忍游戏对象临时不可用。
+    /// 超过空闲超时仍无法收取的待办会被移除，避免永久占用自动化状态。
+    /// </remarks>
     public static IReadOnlyList<string> ProcessPendingCookingCollections()
     {
         var messages = new List<string>();
@@ -687,6 +734,10 @@ internal static partial class RuntimeOrderPreparationService
         return messages;
     }
 
+    /// <summary>
+    /// 清理所有待收取料理和普客保温缓存。
+    /// </summary>
+    /// <returns>被清理的缓存项数量。</returns>
     public static int ClearPendingCookingCollections()
     {
         lock (PendingCookingLock)
@@ -703,6 +754,9 @@ internal static partial class RuntimeOrderPreparationService
         RuntimeAutomationLogService.Append(action, FormatAutomationTarget(target), message);
     }
 
+    /// <summary>
+    /// 取得自动化日志文件路径，供本地 API 返回给伴随窗口。
+    /// </summary>
     public static string ResolveAutomationLogPath()
     {
         return RuntimeAutomationLogService.ResolvePath();
@@ -730,6 +784,13 @@ internal static partial class RuntimeOrderPreparationService
         return result;
     }
 
+    /// <summary>
+    /// 将步骤列表归约为订单准备结果。
+    /// </summary>
+    /// <remarks>
+    /// “选择订单”和“匹配订单”只代表定位成功，不算作真正准备行为；这样 UI 可以区分“已执行自动化”
+    /// 与“仅确认目标存在”两类结果。
+    /// </remarks>
     private static OrderPreparationResult Finish(OrderPreparationResult result)
     {
         result.Prepared = result.Steps.Any(step => step.Ok
@@ -768,6 +829,9 @@ internal static partial class RuntimeOrderPreparationService
         });
     }
 
+    /// <summary>
+    /// 等待料理完成并收取的上下文。
+    /// </summary>
     private sealed class PendingCookingCollection
     {
         public object CookController { get; init; } = new();
@@ -776,6 +840,9 @@ internal static partial class RuntimeOrderPreparationService
         public CookingCollectionTarget Target { get; init; } = CookingCollectionTarget.Tray();
     }
 
+    /// <summary>
+    /// 已从灶台收取、等待送达给普客订单的料理缓存记录。
+    /// </summary>
     private sealed class CompletedNormalCookingCollection
     {
         public string OrderKey { get; init; } = "";
@@ -787,6 +854,12 @@ internal static partial class RuntimeOrderPreparationService
         public DateTime LastConfirmedAtUtc { get; set; }
     }
 
+    /// <summary>
+    /// 普客保温缓存验证结果。
+    /// </summary>
+    /// <remarks>
+    /// 游戏内部存储字段在部分场景下可能不可读，因此状态区分“已验证没有目标”和“无法验证”。
+    /// </remarks>
     private sealed class NormalStorageStatus
     {
         public bool CanVerify { get; private init; }
@@ -814,6 +887,9 @@ internal static partial class RuntimeOrderPreparationService
         }
     }
 
+    /// <summary>
+    /// 暴露给本地 API 的普客保温缓存快照。
+    /// </summary>
     internal sealed class NormalStoredFoodSnapshot
     {
         public NormalStoredFoodSnapshot(bool hasStoredFood, bool hasOrderReceipt, int count, string status)
@@ -830,6 +906,9 @@ internal static partial class RuntimeOrderPreparationService
         public string Status { get; }
     }
 
+    /// <summary>
+    /// 描述自动收菜的最终归属：稀客送餐盘或指定普客订单。
+    /// </summary>
     private sealed class CookingCollectionTarget
     {
         public CookingCollectionTargetKind Kind { get; private init; }
@@ -885,6 +964,9 @@ internal static partial class RuntimeOrderPreparationService
         }
     }
 
+    /// <summary>
+    /// 游戏开火动作的结果，包含可能触发的 QTE 处理结果。
+    /// </summary>
     private sealed class CookingStartResult
     {
         public bool Ok { get; private init; }

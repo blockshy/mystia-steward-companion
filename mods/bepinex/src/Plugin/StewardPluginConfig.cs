@@ -3,6 +3,13 @@ using UnityEngine;
 
 namespace MystiaStewardCompanion.Plugin;
 
+/// <summary>
+/// Mod 的 BepInEx 配置封装，集中暴露热键、运行时读取、本地 API、伴随窗口、诊断和自动更新设置。
+/// </summary>
+/// <remarks>
+/// 该类型只负责绑定和保存 <see cref="ConfigEntry{T}"/>，不直接读取游戏运行时对象。调用方应在需要时读取
+/// Entry 的当前值，这样用户手动修改配置后可以在后续刷新中逐步生效。
+/// </remarks>
 public sealed class StewardPluginConfig
 {
     private StewardPluginConfig(
@@ -26,6 +33,10 @@ public sealed class StewardPluginConfig
         ConfigEntry<bool> enableNightBusinessDiagnostics,
         ConfigEntry<string> nightBusinessDiagnosticsPath,
         ConfigEntry<float> nightBusinessDiagnosticsIntervalSeconds,
+        ConfigEntry<bool> updatesEnabled,
+        ConfigEntry<bool> updatesAutoCheck,
+        ConfigEntry<int> updatesCheckIntervalHours,
+        ConfigEntry<bool> updatesIncludePrerelease,
         ConfigEntry<int> maxExtraIngredients,
         ConfigEntry<string> popularFoodTagOverride,
         ConfigEntry<string> popularHateFoodTagOverride,
@@ -51,6 +62,10 @@ public sealed class StewardPluginConfig
         EnableNightBusinessDiagnostics = enableNightBusinessDiagnostics;
         NightBusinessDiagnosticsPath = nightBusinessDiagnosticsPath;
         NightBusinessDiagnosticsIntervalSeconds = nightBusinessDiagnosticsIntervalSeconds;
+        UpdatesEnabled = updatesEnabled;
+        UpdatesAutoCheck = updatesAutoCheck;
+        UpdatesCheckIntervalHours = updatesCheckIntervalHours;
+        UpdatesIncludePrerelease = updatesIncludePrerelease;
         MaxExtraIngredients = maxExtraIngredients;
         PopularFoodTagOverride = popularFoodTagOverride;
         PopularHateFoodTagOverride = popularHateFoodTagOverride;
@@ -77,11 +92,24 @@ public sealed class StewardPluginConfig
     public ConfigEntry<bool> EnableNightBusinessDiagnostics { get; }
     public ConfigEntry<string> NightBusinessDiagnosticsPath { get; }
     public ConfigEntry<float> NightBusinessDiagnosticsIntervalSeconds { get; }
+    public ConfigEntry<bool> UpdatesEnabled { get; }
+    public ConfigEntry<bool> UpdatesAutoCheck { get; }
+    public ConfigEntry<int> UpdatesCheckIntervalHours { get; }
+    public ConfigEntry<bool> UpdatesIncludePrerelease { get; }
     public ConfigEntry<int> MaxExtraIngredients { get; }
     public ConfigEntry<string> PopularFoodTagOverride { get; }
     public ConfigEntry<string> PopularHateFoodTagOverride { get; }
     public ConfigEntry<bool> FamousShopOverride { get; }
 
+    /// <summary>
+    /// 从 BepInEx 配置文件中绑定全部配置项，并为首次运行写入默认值。
+    /// </summary>
+    /// <param name="config">BepInEx 为当前插件提供的配置文件对象。</param>
+    /// <returns>包含所有配置 Entry 的强类型访问对象。</returns>
+    /// <remarks>
+    /// 配置分组名称也是用户可见的 INI 分节名，修改时需要同步 README 和故障排查说明。
+    /// 本地 API 默认只绑定回环地址，并通过 Token 鉴权；不要把默认地址改为非回环地址。
+    /// </remarks>
     public static StewardPluginConfig Bind(ConfigFile config)
     {
         return new StewardPluginConfig(
@@ -106,6 +134,10 @@ public sealed class StewardPluginConfig
             config.Bind("Diagnostics", "EnableNightBusinessDiagnostics", false, "Write night-business detection snapshots to an external file for debugging."),
             config.Bind("Diagnostics", "NightBusinessDiagnosticsPath", "", "Optional diagnostics log path. Empty uses BepInEx/config/mystia-steward-companion/night-business-diagnostics.log."),
             config.Bind("Diagnostics", "NightBusinessDiagnosticsIntervalSeconds", 2f, "Minimum seconds between diagnostics snapshots."),
+            config.Bind("Updates", "Enabled", true, "Allow the plugin to check GitHub Releases for mystia-steward-companion updates."),
+            config.Bind("Updates", "AutoCheck", true, "Check for updates automatically when the local API starts."),
+            config.Bind("Updates", "CheckIntervalHours", 24, "Minimum hours between automatic update checks."),
+            config.Bind("Updates", "IncludePrerelease", false, "Include GitHub prerelease versions when checking for updates."),
             config.Bind("Rare", "MaxExtraIngredients", 4, "Maximum extra ingredients to search for rare recipes."),
             config.Bind("Overrides", "PopularFoodTag", "", "Optional popular liked food tag override. Empty uses live runtime data."),
             config.Bind("Overrides", "PopularHateFoodTag", "", "Optional popular hated food tag override. Empty uses live runtime data."),

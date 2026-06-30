@@ -5,6 +5,13 @@ using MystiaStewardCompanion.Core;
 
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>
+/// 通过反射读取游戏运行时数据，并转换为推荐引擎使用的 <see cref="RecommendationState"/>。
+/// </summary>
+/// <remarks>
+/// 该 Provider 运行在游戏进程内，优先调用游戏公开的运行时静态方法；当方法在当前游戏版本不可用时，
+/// 回退到 <c>GenerateSaveData</c> 生成的临时快照。所有反射访问都需要容忍字段缺失、DLC 差异和场景未就绪。
+/// </remarks>
 public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendationStateProvider
 {
     private const string RuntimeStorageTypeName = "GameData.RunTime.Common.RunTimeStorage";
@@ -30,6 +37,11 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
     public string Description => "Game runtime live data";
     public IReadOnlyDictionary<string, double> PerformanceMs => _performanceMs;
 
+    /// <summary>
+    /// 检查当前游戏域是否已经加载推荐所需的运行时类型和基础方法。
+    /// </summary>
+    /// <param name="reason">不可读取时给 UI 或日志展示的原因。</param>
+    /// <returns>基础类型和入口方法均可用时返回 <c>true</c>。</returns>
     public static bool CanReadRuntimeState(out string reason)
     {
         reason = "";
@@ -65,6 +77,11 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
         return true;
     }
 
+    /// <summary>
+    /// 读取当前存档的推荐状态快照。
+    /// </summary>
+    /// <returns>包含已解锁料理、库存、流行 Tag、稀客可用性和厨具快照的推荐状态。</returns>
+    /// <exception cref="InvalidOperationException">游戏尚未载入存档或运行时返回空数据时抛出。</exception>
     public RecommendationState LoadState()
     {
         _performanceMs.Clear();
@@ -123,6 +140,12 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
         return state;
     }
 
+    /// <summary>
+    /// 执行一段运行时读取并记录耗时。
+    /// </summary>
+    /// <remarks>
+    /// 耗时会随本地 API 快照发布到伴随窗口，用于定位某个反射读取点导致的卡顿。
+    /// </remarks>
     private T Measure<T>(string key, Func<T> action)
     {
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -149,6 +172,13 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
         }
     }
 
+    /// <summary>
+    /// 将游戏运行时记录的稀客 ID 扩展为项目静态目录、来源 ID 和映射 ID 的并集。
+    /// </summary>
+    /// <remarks>
+    /// 游戏内部同一个稀客可能同时存在 runtime id、source guest id 和本地目录 id。只保留原始 ID
+    /// 会导致前端无法匹配静态稀客目录，因此这里在可用时读取映射表做兼容扩展。
+    /// </remarks>
     private HashSet<int> ExpandAvailableRareCustomerIds(HashSet<int> recordedIds)
     {
         var result = new HashSet<int>(recordedIds);
@@ -168,7 +198,7 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
         }
         catch
         {
-            // Mapping expansion is an optimization. The raw recorded ids are still usable.
+            // 映射扩展只是提高目录匹配率；失败时保留原始运行时 ID，避免因映射读取异常丢失全部稀客。
         }
 
         return result;

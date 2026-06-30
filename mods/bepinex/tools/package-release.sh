@@ -32,6 +32,23 @@ for companion_path in \
   fi
 done
 
+updater_included=0
+for updater_path in \
+  "$REPO_ROOT/apps/companion/src-tauri/target/release/mystia-steward-companion-updater.exe" \
+  "$REPO_ROOT/apps/companion/src-tauri/target/release/mystia-steward-companion-updater"; do
+  if [[ -f "$updater_path" ]]; then
+    cp "$updater_path" "$DIST_DIR/$(basename "$updater_path")"
+    echo "Included updater executable: $updater_path"
+    updater_included=1
+    break
+  fi
+done
+
+if [[ "$updater_included" != "1" ]]; then
+  echo "Missing updater executable. Run: cargo build --manifest-path apps/companion/src-tauri/Cargo.toml --release --bin mystia-steward-companion-updater" >&2
+  exit 1
+fi
+
 rm -f "$ZIP_PATH" "$TAR_PATH"
 if command -v zip >/dev/null 2>&1; then
   (

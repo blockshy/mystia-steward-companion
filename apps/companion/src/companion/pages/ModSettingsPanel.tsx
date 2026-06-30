@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { IconRefresh } from '@tabler/icons-react';
+import { IconDownload, IconExternalLink, IconPackageImport, IconRefresh } from '@tabler/icons-react';
 import { Button, InfoLine, ListPanel, MultiSelectBox, NumberInput, Slider, SwitchField, Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui-kit';
-import { readLogSettings, writeLogSettings } from '@/companion/api';
+import { checkForUpdates, downloadUpdate, installUpdateOnExit, readLogSettings, readUpdateStatus, writeLogSettings } from '@/companion/api';
 import { buildInventorySelectOptions, type InventorySortMode } from '@/companion/domain/inventory-sorting';
+import { formatBytes } from '@/companion/formatters';
 import {
   MAX_RECIPE_VARIANT_LIMIT_PER_BASE,
   MAX_AUTO_ROLLBACKS_LIMIT,
@@ -18,7 +19,7 @@ import {
   normalizeRecipeVariantLimitPerBase,
   type CompanionPreferences,
 } from '@/companion/preferences';
-import type { LocalApiLogSettings, RuntimeSets, SettingsTab } from '@/companion/types';
+import type { LocalApiLogSettings, RuntimeSets, SettingsTab, UpdateStatusResponse } from '@/companion/types';
 import type { RecommendationDataSet } from '@/lib/recommendation-data';
 import type { ThemeMode } from '@/lib/theme';
 import {
@@ -66,6 +67,9 @@ export function ModSettingsPanel({
   const [logSettings, setLogSettings] = useState<LocalApiLogSettings | null>(null);
   const [consoleBusy, setConsoleBusy] = useState(false);
   const [consoleError, setConsoleError] = useState('');
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatusResponse | null>(null);
+  const [updateBusy, setUpdateBusy] = useState<'check' | 'download' | 'install' | null>(null);
+  const [updateError, setUpdateError] = useState('');
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('window');
   const [ingredientExclusionSortMode, setIngredientExclusionSortMode] = useState<InventorySortMode>('name');
   const [beverageExclusionSortMode, setBeverageExclusionSortMode] = useState<InventorySortMode>('name');
@@ -137,10 +141,56 @@ export function ModSettingsPanel({
     }
   }, [apiToken, endpoint]);
 
+  const refreshUpdateStatus = useCallback(async () => {
+    if (!apiToken) {
+      setUpdateStatus(null);
+      return;
+    }
+
+    const abortController = new AbortController();
+    const timeoutId = window.setTimeout(() => abortController.abort(), 2800);
+    try {
+      const status = await readUpdateStatus(endpoint, apiToken, abortController.signal);
+      setUpdateStatus(status);
+      setUpdateError('');
+    } catch (err) {
+      setUpdateError(err instanceof Error ? err.message : String(err));
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+  }, [apiToken, endpoint]);
+
+  const runUpdateAction = useCallback(async (
+    action: 'check' | 'download' | 'install',
+    request: () => Promise<UpdateStatusResponse>,
+  ) => {
+    if (!apiToken || updateBusy) return;
+    setUpdateBusy(action);
+    try {
+      const status = await request();
+      setUpdateStatus(status);
+      setUpdateError(status.error ?? '');
+    } catch (err) {
+      setUpdateError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUpdateBusy(null);
+    }
+  }, [apiToken, updateBusy]);
+
+  const openReleasePage = useCallback(() => {
+    const url = updateStatus?.releaseUrl;
+    if (!url) return;
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }, [updateStatus?.releaseUrl]);
+
   useEffect(() => {
     if (!preferences.showDebugDetails) return;
     refreshConsoleSettings();
   }, [preferences.showDebugDetails, refreshConsoleSettings]);
+
+  useEffect(() => {
+    refreshUpdateStatus();
+  }, [refreshUpdateStatus]);
 
   useEffect(() => {
     if (!preferences.showDebugDetails && settingsTab === 'debug') {
@@ -148,9 +198,14 @@ export function ModSettingsPanel({
     }
   }, [preferences.showDebugDetails, settingsTab]);
 
+  const updateStateLabel = formatUpdateState(updateStatus);
+  const updateDetail = updateError || updateStatus?.error || updateStatus?.installMessage || '';
+  const canDownloadUpdate = Boolean(updateStatus?.hasUpdate && updateStatus.enabled);
+  const canInstallUpdate = Boolean(updateStatus?.staged && updateStatus.enabled);
+
   return (
     <Tabs value={settingsTab} onValueChange={(value) => setSettingsTab(value as SettingsTab)} className="space-y-4">
-      <TabsList className={preferences.showDebugDetails ? 'grid h-9 w-full grid-cols-4' : 'grid h-9 w-full grid-cols-3'}>
+      <TabsList className={preferences.showDebugDetails ? 'grid h-9 w-full grid-cols-5' : 'grid h-9 w-full grid-cols-4'}>
         <TabsTrigger value="window" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
           窗口
         </TabsTrigger>
@@ -159,6 +214,9 @@ export function ModSettingsPanel({
         </TabsTrigger>
         <TabsTrigger value="automation" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
           自动化
+        </TabsTrigger>
+        <TabsTrigger value="updates" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
+          更新
         </TabsTrigger>
         {preferences.showDebugDetails && (
           <TabsTrigger value="debug" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
@@ -251,7 +309,79 @@ export function ModSettingsPanel({
               </div>
             </div>
           </ListPanel>
+
         </div>
+      </TabsContent>
+
+      <TabsContent value="updates" className="space-y-4">
+        <ListPanel title="更新">
+          <div className="space-y-4">
+            <div className="grid gap-2 text-sm">
+              <InfoLine label="当前版本" value={updateStatus?.currentVersion || '未知'} />
+              <InfoLine label="最新版本" value={updateStatus?.latestVersion || '未检查'} />
+              <InfoLine label="状态" value={updateStateLabel} />
+              <InfoLine label="更新包" value={updateStatus?.packageSize ? formatBytes(updateStatus.packageSize) : '未知'} />
+            </div>
+            {updateDetail && (
+              <div className="rounded border border-border/70 bg-background/45 px-3 py-2 text-xs text-muted-foreground">
+                {updateDetail}
+              </div>
+            )}
+            {updateStatus?.installState === 'waiting' && (
+              <div className="text-xs text-muted-foreground">
+                已启动安装排程；关闭游戏和伴随窗口后会自动替换插件目录。
+              </div>
+            )}
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                leftSection={<IconRefresh size={14} />}
+                loading={updateBusy === 'check'}
+                disabled={!apiToken || Boolean(updateBusy)}
+                onClick={() => runUpdateAction('check', () => checkForUpdates(endpoint, apiToken))}
+              >
+                检查
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                leftSection={<IconDownload size={14} />}
+                loading={updateBusy === 'download'}
+                disabled={!apiToken || Boolean(updateBusy) || !canDownloadUpdate}
+                onClick={() => runUpdateAction('download', () => downloadUpdate(endpoint, apiToken))}
+              >
+                下载
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                leftSection={<IconPackageImport size={14} />}
+                loading={updateBusy === 'install'}
+                disabled={!apiToken || Boolean(updateBusy) || !canInstallUpdate}
+                onClick={() => runUpdateAction('install', () => installUpdateOnExit(endpoint, apiToken))}
+              >
+                退出后安装
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                leftSection={<IconExternalLink size={14} />}
+                disabled={!updateStatus?.releaseUrl}
+                onClick={openReleasePage}
+              >
+                发布页
+              </Button>
+            </div>
+            <div className="text-xs text-muted-foreground">
+              更新包会先下载到配置目录；实际替换只会在游戏进程退出后由独立 updater 执行。
+            </div>
+          </div>
+        </ListPanel>
       </TabsContent>
 
       <TabsContent value="recommendation" className="space-y-4">
@@ -591,6 +721,32 @@ function RecommendationSortProfileControl({
 function clampWeight(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(100, Math.trunc(value)));
+}
+
+function formatUpdateState(status: UpdateStatusResponse | null): string {
+  if (!status) return '等待本地 API';
+  if (!status.enabled) return '已关闭';
+  if (status.installState === 'waiting') return '等待退出后安装';
+  if (status.installState === 'succeeded') return '安装完成';
+  if (status.installState === 'failed') return '安装失败';
+  if (status.staged) return '已下载';
+  if (status.hasUpdate) return '有新版本';
+  switch (status.state) {
+    case 'checking':
+      return '检查中';
+    case 'downloading':
+      return '下载中';
+    case 'current':
+      return '已是最新';
+    case 'failed':
+      return '检查失败';
+    case 'disabled':
+      return '已关闭';
+    case 'manifestMissing':
+      return '等待首个自动更新版本';
+    default:
+      return '未检查';
+  }
 }
 
 function parseSelectedIds(values: string[]): number[] {

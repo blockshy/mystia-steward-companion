@@ -17,6 +17,12 @@ const EMPTY_RECOMMENDATIONS: OrderRecommendationResult = {
   recommendationIssues: [],
 };
 
+/**
+ * 在 Web Worker 中异步计算订单推荐。
+ *
+ * 推荐搜索可能涉及稀客订单、加料组合、预算和排序权重，放在 Worker 中执行可以避免经营页 UI 卡顿。
+ * Hook 通过递增 requestId 丢弃过期响应，确保快速刷新快照时不会把旧推荐写回界面。
+ */
 export function useOrderRecommendations(
   payload: OrderRecommendationWorkerPayload,
 ): AsyncOrderRecommendationResult {
@@ -83,6 +89,7 @@ export function useOrderRecommendations(
   useEffect(() => {
     const requestId = latestRequestIdRef.current + 1;
     latestRequestIdRef.current = requestId;
+    // 状态切换延后到 microtask，避免 React 同步渲染阶段中连续 payload 变化造成过期 pending 状态闪烁。
     const scheduleCurrentState = (
       buildNextState: (
         current: AsyncOrderRecommendationResult,

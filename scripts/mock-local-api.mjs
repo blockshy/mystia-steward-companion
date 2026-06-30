@@ -1,5 +1,11 @@
 import http from 'node:http';
 
+/**
+ * 本地 API 模拟服务。
+ *
+ * 用于前端预览和 Playwright UI 巡检，不连接真实游戏进程。数据形态尽量贴近 Mod loopback API，
+ * 但所有库存、收藏、订单和更新状态都只保存在当前 Node 进程内。
+ */
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 32145;
 const MOCK_TOKEN = 'mock-token';
@@ -111,6 +117,29 @@ const logSettings = {
   nativeBepInExConsoleVisible: false,
 };
 
+const updateStatus = {
+  ok: true,
+  currentVersion: '1.0.9-mock',
+  enabled: true,
+  autoCheck: true,
+  includePrerelease: false,
+  state: 'available',
+  latestVersion: '1.0.10',
+  latestTag: 'v1.0.10',
+  hasUpdate: true,
+  checkedAtUtc: nowIso(),
+  publishedAtUtc: nowIso(),
+  releaseUrl: 'https://github.com/blockshy/mystia-steward-companion/releases/tag/v1.0.10',
+  packageAsset: 'mystia-steward-companion-bepinex.zip',
+  packageSize: 27 * 1024 * 1024,
+  downloadedVersion: '',
+  downloadedAtUtc: '',
+  staged: false,
+  installState: '',
+  installMessage: '',
+  error: null,
+};
+
 const server = http.createServer((request, response) => {
   setCorsHeaders(response);
 
@@ -120,13 +149,50 @@ const server = http.createServer((request, response) => {
     return;
   }
 
+  const requestUrl = new URL(request.url || '/', `http://${host}:${port}`);
+  const path = normalizePath(requestUrl.pathname);
+
+  if (request.method === 'POST') {
+    try {
+      if (path === '/updates/check') {
+        updateStatus.state = 'available';
+        updateStatus.checkedAtUtc = nowIso();
+        updateStatus.hasUpdate = true;
+        updateStatus.error = null;
+        sendJson(response, 200, updateStatus);
+        return;
+      }
+
+      if (path === '/updates/download') {
+        updateStatus.state = 'downloaded';
+        updateStatus.downloadedVersion = updateStatus.latestVersion;
+        updateStatus.downloadedAtUtc = nowIso();
+        updateStatus.staged = true;
+        updateStatus.error = null;
+        sendJson(response, 200, updateStatus);
+        return;
+      }
+
+      if (path === '/updates/install-on-exit') {
+        updateStatus.installState = 'waiting';
+        updateStatus.installMessage = '等待游戏和伴随窗口退出后安装更新。';
+        updateStatus.error = null;
+        sendJson(response, 200, updateStatus);
+        return;
+      }
+
+      sendJson(response, 404, { ok: false, error: `Unknown mock endpoint: ${path}` });
+      return;
+    } catch (error) {
+      sendJson(response, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+      return;
+    }
+  }
+
   if (request.method !== 'GET') {
     sendJson(response, 405, { ok: false, error: 'Only GET is supported by the mock local API.' });
     return;
   }
-
-  const requestUrl = new URL(request.url || '/', `http://${host}:${port}`);
-  const path = normalizePath(requestUrl.pathname);
 
   try {
     if (path === '/snapshot') {
@@ -211,6 +277,11 @@ const server = http.createServer((request, response) => {
         files: ['BepInEx.log', 'night-business-diagnostics.log', 'automation-jobs.log'],
         error: null,
       });
+      return;
+    }
+
+    if (path === '/updates/status') {
+      sendJson(response, 200, updateStatus);
       return;
     }
 
