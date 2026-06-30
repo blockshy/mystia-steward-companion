@@ -54,6 +54,40 @@ internal static partial class RuntimeOrderPreparationService
 
     private static RuntimeOrderMatch FindRuntimeNormalOrder(OrderPreparationRequest request)
     {
+        var strictMatch = FindRuntimeNormalOrderCore(request);
+        if (strictMatch.Order != null && strictMatch.Controller != null)
+        {
+            return strictMatch;
+        }
+
+        if (string.IsNullOrWhiteSpace(request.OrderKey) || request.DeskCode < 0 || request.FoodId < 0 || request.BeverageId < 0)
+        {
+            return strictMatch;
+        }
+
+        var relaxedRequest = CopyNormalOrderRequestWithoutOrderKey(request);
+        var relaxedMatch = FindRuntimeNormalOrderCore(relaxedRequest);
+        if (relaxedMatch.Order == null)
+        {
+            return strictMatch;
+        }
+
+        if (relaxedMatch.Controller == null && strictMatch.Order != null)
+        {
+            return strictMatch;
+        }
+
+        return new RuntimeOrderMatch
+        {
+            Manager = relaxedMatch.Manager,
+            Controller = relaxedMatch.Controller,
+            Order = relaxedMatch.Order,
+            Diagnostic = $"orderKeyFallback strict=({strictMatch.Diagnostic}) relaxed=({relaxedMatch.Diagnostic})",
+        };
+    }
+
+    private static RuntimeOrderMatch FindRuntimeNormalOrderCore(OrderPreparationRequest request)
+    {
         var manager = GetSingletonInstance(GuestsManagerTypeName);
         if (manager == null) return new RuntimeOrderMatch();
 
@@ -85,6 +119,12 @@ internal static partial class RuntimeOrderPreparationService
             }
         }
 
+        var captured = FindCapturedRuntimeNormalOrder(request, manager);
+        if (captured.Order != null && captured.Controller != null)
+        {
+            return captured;
+        }
+
         var scannedUiOrders = 0;
         foreach (var order in EnumerateOrderControllerOrders())
         {
@@ -97,13 +137,41 @@ internal static partial class RuntimeOrderPreparationService
                 Manager = manager,
                 Controller = controller,
                 Order = order,
-                Diagnostic = $"controllers={scannedControllers}, controllerOrders={scannedControllerOrders}, uiOrders={scannedUiOrders}",
+                Diagnostic = $"controllers={scannedControllers}, controllerOrders={scannedControllerOrders}, captured=({captured.Diagnostic}), uiOrders={scannedUiOrders}, uiController={(controller == null ? "missing" : "ok")}",
             };
         }
 
         return new RuntimeOrderMatch
         {
-            Diagnostic = $"controllers={scannedControllers}, controllerOrders={scannedControllerOrders}, uiOrders={scannedUiOrders}",
+            Diagnostic = $"controllers={scannedControllers}, controllerOrders={scannedControllerOrders}, captured=({captured.Diagnostic}), uiOrders={scannedUiOrders}",
+        };
+    }
+
+    private static OrderPreparationRequest CopyNormalOrderRequestWithoutOrderKey(OrderPreparationRequest request)
+    {
+        return new OrderPreparationRequest
+        {
+            DeskCode = request.DeskCode,
+            GuestId = request.GuestId,
+            GuestName = request.GuestName,
+            FoodTag = request.FoodTag,
+            BeverageTag = request.BeverageTag,
+            FoodId = request.FoodId,
+            RecipeId = request.RecipeId,
+            RecipeName = request.RecipeName,
+            ExtraIngredientIds = request.ExtraIngredientIds,
+            BeverageId = request.BeverageId,
+            BeverageName = request.BeverageName,
+            AutoTakeBeverage = request.AutoTakeBeverage,
+            AutoStartCooking = request.AutoStartCooking,
+            AutoCollectCooking = request.AutoCollectCooking,
+            AutoDeliverFood = request.AutoDeliverFood,
+            AutoCompleteOrder = request.AutoCompleteOrder,
+            RecipeFavoritesOnly = request.RecipeFavoritesOnly,
+            BeverageFavoritesOnly = request.BeverageFavoritesOnly,
+            StopOnError = request.StopOnError,
+            RecipeFavorite = request.RecipeFavorite,
+            BeverageFavorite = request.BeverageFavorite,
         };
     }
 
@@ -281,6 +349,90 @@ internal static partial class RuntimeOrderPreparationService
         {
             Diagnostic = $"capturedCandidates={candidates.Count}, capturedTotal={capturedOrders.Count}, captured=[{FormatCapturedOrderSummary(capturedOrders)}]",
         };
+    }
+
+    private static RuntimeOrderMatch FindCapturedRuntimeNormalOrder(OrderPreparationRequest request, object manager)
+    {
+        var capturedOrders = NormalOrderRuntimeCapture.Snapshot(TimeSpan.FromHours(6));
+        var candidates = capturedOrders
+            .Select(captured => new
+            {
+                Order = captured,
+                Score = ScoreCapturedNormalOrder(captured, request),
+            })
+            .Where(candidate => candidate.Score > 0)
+            .OrderByDescending(candidate => candidate.Score)
+            .ThenBy(candidate => candidate.Order.FirstCapturedAt)
+            .ThenBy(candidate => candidate.Order.CapturedAt)
+            .ToList();
+
+        foreach (var candidate in candidates)
+        {
+            var captured = candidate.Order;
+            if (captured.OrderObject == null || captured.ControllerObject == null) continue;
+
+            try
+            {
+                if (!IsMatchingNormalOrder(captured.OrderObject, request)) continue;
+            }
+            catch
+            {
+                continue;
+            }
+
+            return new RuntimeOrderMatch
+            {
+                Manager = manager,
+                Controller = captured.ControllerObject,
+                Order = captured.OrderObject,
+                Diagnostic = $"normalCapturedCandidates={candidates.Count}, score={candidate.Score}, source={captured.CaptureSource}",
+            };
+        }
+
+        return new RuntimeOrderMatch
+        {
+            Diagnostic = $"normalCapturedCandidates={candidates.Count}, normalCapturedTotal={capturedOrders.Count}, normalCaptured=[{FormatCapturedNormalOrderSummary(capturedOrders)}]",
+        };
+    }
+
+    private static int ScoreCapturedNormalOrder(CapturedRuntimeNormalOrder captured, OrderPreparationRequest request)
+    {
+        if (captured.OrderObject == null || captured.ControllerObject == null) return 0;
+
+        var score = 0;
+        if (!string.IsNullOrWhiteSpace(request.OrderKey) && !string.IsNullOrWhiteSpace(captured.RuntimeKey))
+        {
+            score += string.Equals(request.OrderKey, captured.RuntimeKey, StringComparison.Ordinal) ? 32 : -12;
+        }
+
+        if (request.DeskCode >= 0 && captured.DeskCode >= 0)
+        {
+            score += request.DeskCode == captured.DeskCode ? 12 : -8;
+        }
+
+        if (request.FoodId >= 0 && captured.FoodId >= 0)
+        {
+            score += request.FoodId == captured.FoodId ? 8 : -4;
+        }
+
+        if (request.BeverageId >= 0 && captured.BeverageId >= 0)
+        {
+            score += request.BeverageId == captured.BeverageId ? 8 : -4;
+        }
+
+        return score >= 16 ? score : 0;
+    }
+
+    private static string FormatCapturedNormalOrderSummary(IReadOnlyList<CapturedRuntimeNormalOrder> capturedOrders)
+    {
+        if (capturedOrders.Count == 0) return "";
+
+        var items = capturedOrders
+            .Take(4)
+            .Select(order => $"desk={order.DeskCode + 1},guest={order.GuestName},food={order.FoodId},bev={order.BeverageId},source={order.CaptureSource},obj={(order.OrderObject == null ? "no" : "yes")}/{(order.ControllerObject == null ? "no" : "yes")}")
+            .ToArray();
+        var suffix = capturedOrders.Count > items.Length ? $" ... total={capturedOrders.Count}" : "";
+        return string.Join("; ", items) + suffix;
     }
 
     private static int ScoreCapturedOrder(CapturedRuntimeSpecialOrder captured, OrderPreparationRequest request)

@@ -9,6 +9,7 @@ public sealed class RuntimeNormalOrderSnapshotService
     private const string OrderingElementTypeName = "NightScene.UI.GuestManagementUtility.OrderingElement";
     private const string GuestsManagerTypeName = "NightScene.GuestManagementUtility.GuestsManager";
     private const string GuestGroupControllerTypeName = "NightScene.GuestManagementUtility.GuestGroupController";
+    private static readonly TimeSpan RuntimeCapturedOrderMaxAge = TimeSpan.FromHours(6);
     private static readonly (string MemberName, string Source)[] ManagerControllerSources =
     {
         ("AllPresentedGuestGroupController", "Presented"),
@@ -89,6 +90,19 @@ public sealed class RuntimeNormalOrderSnapshotService
         {
             source.Add("Queue=err");
             errors.Add($"Queue: {ex.Message}");
+        }
+
+        try
+        {
+            var runtimeCapturedOrders = Measure("runtimeCapture", () => ReadRuntimeCapturedOrders().ToList());
+            source.Add($"RuntimeCapture={runtimeCapturedOrders.Count}");
+            source.Add($"RuntimeCaptureStatus={NormalOrderRuntimeCapture.Status}");
+            orders.AddRange(runtimeCapturedOrders);
+        }
+        catch (Exception ex)
+        {
+            source.Add("RuntimeCapture=err");
+            errors.Add($"RuntimeCapture: {ex.Message}");
         }
 
         var deduplicated = Measure("deduplicate", () => ApplyFirstSeenOrder(orders)
@@ -179,11 +193,11 @@ public sealed class RuntimeNormalOrderSnapshotService
             BeverageName = first.BeverageName,
             HasServedFood = orders.Any(order => order.HasServedFood),
             HasServedBeverage = orders.Any(order => order.HasServedBeverage),
-            HasStoredFood = orders.Any(order => order.HasStoredFood),
-            HasStoredFoodReceipt = orders.Any(order => order.HasStoredFoodReceipt),
-            StoredFoodCount = orders.Max(order => order.StoredFoodCount),
-            StoredFoodStatus = string.Join("; ", orders.Select(order => order.StoredFoodStatus).Where(status => !string.IsNullOrWhiteSpace(status)).Distinct(StringComparer.Ordinal)),
-            IsFulfilled = orders.Any(order => order.IsFulfilled),
+            ReadyToEvaluate = orders.Any(order => order.ReadyToEvaluate),
+            HasEvaluated = orders.Any(order => order.HasEvaluated),
+            ControllerAvailable = orders.Any(order => order.ControllerAvailable),
+            CanAutomate = orders.Any(order => order.CanAutomate),
+            ActionBlockReason = ResolveActionBlockReason(orders),
             FirstSeenAtUtc = first.FirstSeenAtUtc,
             Source = string.Join("/", orders.Select(order => order.Source).Where(source => !string.IsNullOrWhiteSpace(source)).Distinct(StringComparer.Ordinal)),
         };
@@ -212,14 +226,26 @@ public sealed class RuntimeNormalOrderSnapshotService
             BeverageName = order.BeverageName,
             HasServedFood = order.HasServedFood,
             HasServedBeverage = order.HasServedBeverage,
-            HasStoredFood = order.HasStoredFood,
-            HasStoredFoodReceipt = order.HasStoredFoodReceipt,
-            StoredFoodCount = order.StoredFoodCount,
-            StoredFoodStatus = order.StoredFoodStatus,
-            IsFulfilled = order.IsFulfilled,
+            ReadyToEvaluate = order.ReadyToEvaluate,
+            HasEvaluated = order.HasEvaluated,
+            ControllerAvailable = order.ControllerAvailable,
+            CanAutomate = order.CanAutomate,
+            ActionBlockReason = order.ActionBlockReason,
             FirstSeenAtUtc = firstSeenAtUtc,
             Source = order.Source,
         };
+    }
+
+    private static string ResolveActionBlockReason(IReadOnlyList<NormalBusinessOrder> orders)
+    {
+        if (orders.Any(order => order.CanAutomate)) return "";
+
+        var reason = orders
+            .Select(order => order.ActionBlockReason)
+            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+        return string.IsNullOrWhiteSpace(reason)
+            ? "订单仍在 HUD 中，但未读取到可执行客人控制器。"
+            : reason;
     }
 
     private IEnumerable<NormalBusinessOrder> ReadOrderControllerOrders()
@@ -294,6 +320,15 @@ public sealed class RuntimeNormalOrderSnapshotService
         }
     }
 
+    private IEnumerable<NormalBusinessOrder> ReadRuntimeCapturedOrders()
+    {
+        foreach (var captured in NormalOrderRuntimeCapture.Snapshot(RuntimeCapturedOrderMaxAge))
+        {
+            var parsed = ReadNormalOrder(captured.OrderObject, captured.ControllerObject, $"RuntimeCapture:{captured.CaptureSource}");
+            if (parsed != null) yield return parsed;
+        }
+    }
+
     private static IEnumerable<object?> EnumerateControllerOrders(object? controller)
     {
         if (controller == null) yield break;
@@ -343,7 +378,6 @@ public sealed class RuntimeNormalOrderSnapshotService
         var guest = SafeGet(order, "Guest") ?? SafeInvoke(order, "get_Guest");
         var orderKey = BuildRuntimeOrderKey(order);
         var deskCode = RuntimeReflectionUtility.ToInt(SafeGet(order, "DeskCode"), -1);
-        var storedFood = RuntimeOrderPreparationService.ReadNormalOrderStoredFoodSnapshot(orderKey, deskCode, foodId);
 
         return new NormalBusinessOrder
         {
@@ -360,11 +394,11 @@ public sealed class RuntimeNormalOrderSnapshotService
             BeverageName = beverage?.Name ?? ReadTextLikeValue(requestBeverage) ?? "",
             HasServedFood = SafeGet(order, "ServFood") != null || SafeGet(order, "ServedFoodInAir") != null,
             HasServedBeverage = SafeGet(order, "ServBeverage") != null || SafeGet(order, "ServedBeverageInAir") != null,
-            HasStoredFood = storedFood.HasStoredFood,
-            HasStoredFoodReceipt = storedFood.HasOrderReceipt,
-            StoredFoodCount = storedFood.Count,
-            StoredFoodStatus = storedFood.Status,
-            IsFulfilled = RuntimeReflectionUtility.ToBool(SafeGet(order, "IsFullfilled")),
+            ReadyToEvaluate = RuntimeReflectionUtility.ToBool(SafeGet(order, "IsFullfilled")),
+            HasEvaluated = RuntimeReflectionUtility.ToBool(SafeGet(controller, "HasEvaluated") ?? SafeInvoke(controller, "get_HasEvaluated")),
+            ControllerAvailable = controller != null,
+            CanAutomate = controller != null,
+            ActionBlockReason = controller == null ? "订单仍在 HUD 中，但未读取到可执行客人控制器。" : "",
             Source = source,
         };
     }

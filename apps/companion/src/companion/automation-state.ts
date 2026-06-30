@@ -11,8 +11,6 @@ export type AutomationStep =
   | 'match-order'
   | 'ensure-beverage'
   | 'ensure-cooking'
-  | 'wait-food-tray'
-  | 'wait-food-stored'
   | 'deliver-food'
   | 'complete-order'
   | 'done'
@@ -24,7 +22,6 @@ export interface RareAutomationRecipeTarget {
   recipeName: string;
   cookerName: string;
   extraIngredientIds: number[];
-  acceptableFoodIds: number[];
   favorite: boolean;
   preferenceFallback: boolean;
 }
@@ -236,10 +233,8 @@ export function getAutomationStepLabel(step: AutomationStep): string {
       return '确认酒水';
     case 'ensure-cooking':
       return '确认料理';
-    case 'wait-food-tray':
-      return '等待送餐盘';
-    case 'wait-food-stored':
-      return '等待保温箱';
+    case 'deliver-food':
+      return '送达料理';
     case 'complete-order':
       return '完成订单';
     case 'done':
@@ -254,33 +249,17 @@ export function getAutomationStepLabel(step: AutomationStep): string {
 function isMeaningfulAutomationProgressStep(step: OrderPreparationStep): boolean {
   if (!step.ok || step.skipped) return false;
   if (step.name.includes('选择') || step.name.includes('匹配')) return false;
-  return step.name.includes('自动取酒')
+  return step.name.includes('自动送达酒水')
     || step.name.includes('自动开始料理')
-    || step.name.includes('自动收取料理')
+    || step.name.includes('自动送达料理')
     || step.name.includes('送达料理')
     || step.name.includes('送达酒水')
     || step.name.includes('普客开始料理')
-    || step.name.includes('普客保温箱')
     || step.name.includes('普客送达酒水')
     || step.name.includes('普客送达料理')
     || step.name.includes('触发普客评价')
     || step.name.includes('写入订单')
     || step.name.includes('触发上菜评价');
-}
-
-export function emptyMissingTrayParts() {
-  return { food: false, beverage: false };
-}
-
-export function getMissingTrayParts(response: OrderPreparationResponse) {
-  const missing = emptyMissingTrayParts();
-  if (response.ok) return missing;
-  for (const step of response.steps) {
-    if (step.ok || step.skipped) continue;
-    if (step.name.includes('匹配送餐盘料理')) missing.food = true;
-    if (step.name.includes('匹配送餐盘酒水')) missing.beverage = true;
-  }
-  return missing;
 }
 
 export function didCompleteStep(response: OrderPreparationResponse, name: string): boolean {
@@ -289,14 +268,6 @@ export function didCompleteStep(response: OrderPreparationResponse, name: string
 
 export function didAcknowledgeStep(response: OrderPreparationResponse, name: string): boolean {
   return response.steps.some((step) => step.name === name && step.ok && !isInactiveSkippedStep(step));
-}
-
-export function didNormalOrderCollectToWarmer(response: OrderPreparationResponse): boolean {
-  return response.steps.some((step) => step.ok
-    && (step.message.includes('已在普客保温箱')
-      || step.message.includes('已自动收至普客保温箱')
-      || step.message.includes('该订单已经送达料理')
-      || step.message.includes('目标普客订单已有料理')));
 }
 
 export function didNormalOrderDeliverBeverage(response: OrderPreparationResponse): boolean {
@@ -315,13 +286,6 @@ export function didNormalOrderComplete(response: OrderPreparationResponse): bool
   return Boolean(response.completedOrder) || didCompleteStep(response, '触发普客评价');
 }
 
-export function didNormalOrderWarmerMissing(response: OrderPreparationResponse): boolean {
-  return response.steps.some((step) => step.name === '普客保温箱复查'
-    && (step.message.includes('未读取到该料理')
-      || step.message.includes('已撤销本地回执')
-      || step.message.includes('目标料理数量 0')));
-}
-
 export function didNormalOrderCookingStillPending(response: OrderPreparationResponse): boolean {
   return didOrderCookingStillPending(response, '普客开始料理');
 }
@@ -331,8 +295,7 @@ export function didOrderCookingStillPending(response: OrderPreparationResponse, 
     && step.ok
     && step.skipped
     && (step.message.includes('已在制作中')
-      || step.message.includes('等待完成后会自动收至普客保温箱')
-      || step.message.includes('等待完成后会自动收入送餐盘')));
+      || step.message.includes('等待完成后会自动直接送达')));
 }
 
 function isInactiveSkippedStep(step: OrderPreparationStep): boolean {
@@ -350,16 +313,13 @@ export function isTransientAutoPreparationFailure(response: OrderPreparationResp
   return text.includes('当前没有空闲厨具')
     || text.includes('当前没有读取到任何厨具')
     || text.includes('厨具被占用')
-    || text.includes('送餐盘已满')
-    || text.includes('送餐盘对象不可用')
     || text.includes('厨具管理器不可用')
     || text.includes('运行时对象')
     || text.includes('经营状态刚刷新')
     || text.includes('未找到当前第一笔')
-    || text.includes('暂存容器不可用')
-    || text.includes('普客保温箱中没有找到目标料理')
+    || text.includes('等待直接送达')
     || text.includes('等待下一轮重试')
-    || text.includes('已有待收取任务')
+    || text.includes('已有待直送任务')
     || text.includes('已在制作中')
     || text.includes('长时间未读取到成品对象');
 }
@@ -377,7 +337,9 @@ function isHardAutoPreparationFailure(response: OrderPreparationResponse): boole
     || text.includes('未找到料理')
     || text.includes('成品不是目标料理')
     || text.includes('订单已有其他待送达料理')
-    || text.includes('收藏限定已开启');
+    || text.includes('收藏限定已开启')
+    || text.includes('收藏料理限定已开启')
+    || text.includes('收藏酒水限定已开启');
 }
 
 function summarizeOrderPreparationFailure(response: OrderPreparationResponse): string {

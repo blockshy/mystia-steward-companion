@@ -1,6 +1,10 @@
 import { useEffect, useMemo } from 'react';
 import { Card, CardContent, EmptyRow, EmptyState, ListPanel, SelectBox } from '@/components/ui-kit';
 import {
+  buildCustomFoodCandidates,
+  mergeCustomFoodCandidates,
+} from '@/companion/domain/custom-recipes';
+import {
   beverageFavoriteKey,
   findBeverageFavorite,
   findRecipeFavorite,
@@ -16,8 +20,8 @@ import {
   mergeRareCustomers,
 } from '@/companion/domain/service-recommendations';
 import type { CompanionPreferences } from '@/companion/preferences';
-import type { FavoriteData, RecommendationStateSnapshot, RuntimeSets, ToggleBeverageFavorite, ToggleRecipeFavorite } from '@/companion/types';
-import { BeverageRecommendationRow, PlaceToolbar, RecipeRecommendationRow, RuntimeUnavailable } from '@/companion/pages/shared';
+import type { CustomRecipeData, FavoriteData, RecommendationStateSnapshot, RuntimeSets, ToggleBeverageFavorite, ToggleRecipeFavorite } from '@/companion/types';
+import { BeverageRecommendationRow, EffectiveCustomRecipesViewer, PlaceToolbar, RecipeRecommendationRow, RuntimeUnavailable } from '@/companion/pages/shared';
 import { DENSE_THREE_COLUMN_GRID, DENSE_TWO_COLUMN_GRID, MAX_RECOMMENDATION_ROWS, RECOMMENDATION_SCROLL_AREA } from '@/companion/pages/shared-constants';
 import { buildRecommendationDataIndexes, getRareCustomersByPlace, type RecommendationDataSet } from '@/lib/recommendation-data';
 import type { RareCustomerCatalogItem, PlaceName } from '@/lib/catalog-types';
@@ -34,6 +38,7 @@ export function ModRarePanel({
   requiredFoodTag,
   requiredBeverageTag,
   favorites,
+  customRecipes,
   favoriteBusyKey,
   favoriteError,
   preferences,
@@ -55,6 +60,7 @@ export function ModRarePanel({
   requiredFoodTag: string;
   requiredBeverageTag: string;
   favorites: FavoriteData;
+  customRecipes: CustomRecipeData;
   favoriteBusyKey: string;
   favoriteError: string;
   preferences: CompanionPreferences;
@@ -148,6 +154,28 @@ export function ModRarePanel({
     return buildRareFoodCandidates(data, demand, candidateContext);
   }, [candidateContext, data, demand]);
 
+  const combinedFoodCandidates = useMemo(() => {
+    if (!candidateContext || !demand || !selectedCustomer) return foodCandidates;
+    const customFoodCandidates = buildCustomFoodCandidates({
+      customRecipes,
+      data,
+      customer: selectedCustomer,
+      requiredFoodTag: foodTag,
+      requiredBeverageTag: beverageTag,
+      context: candidateContext,
+    });
+    return mergeCustomFoodCandidates(foodCandidates, customFoodCandidates);
+  }, [
+    beverageTag,
+    candidateContext,
+    customRecipes,
+    data,
+    demand,
+    foodCandidates,
+    foodTag,
+    selectedCustomer,
+  ]);
+
   const beverageCandidates = useMemo(() => {
     if (!candidateContext || !demand) return [];
     return buildRareBeverageCandidates(data, demand, candidateContext);
@@ -155,7 +183,7 @@ export function ModRarePanel({
 
   const recipes = useMemo(() => {
     if (!candidateContext || !selectedCustomer || !foodTag || !sortContext) return [];
-    return deriveRecipeRowsFromCandidates(foodCandidates, beverageCandidates, {
+    return deriveRecipeRowsFromCandidates(combinedFoodCandidates, beverageCandidates, {
       variantLimitPerBase: preferences.recipeVariantLimitPerBase,
       limit: MAX_RECOMMENDATION_ROWS,
       budget: candidateContext.budget,
@@ -166,7 +194,7 @@ export function ModRarePanel({
   }, [
     beverageCandidates,
     candidateContext,
-    foodCandidates,
+    combinedFoodCandidates,
     foodTag,
     preferences.recipeVariantLimitPerBase,
     preferences.recommendationSortProfile,
@@ -176,7 +204,7 @@ export function ModRarePanel({
 
   const beverages = useMemo(() => {
     if (!candidateContext || !selectedCustomer || !beverageTag || !sortContext) return [];
-    return deriveBeverageRowsFromCandidates(beverageCandidates, foodCandidates, {
+    return deriveBeverageRowsFromCandidates(beverageCandidates, combinedFoodCandidates, {
       limit: MAX_RECOMMENDATION_ROWS,
       budget: candidateContext.budget,
       budgetPolicy: candidateContext.budgetPolicy,
@@ -187,7 +215,7 @@ export function ModRarePanel({
     beverageCandidates,
     beverageTag,
     candidateContext,
-    foodCandidates,
+    combinedFoodCandidates,
     preferences.recommendationSortProfile,
     selectedCustomer,
     sortContext,
@@ -258,6 +286,13 @@ export function ModRarePanel({
           <div className={DENSE_TWO_COLUMN_GRID}>
             <ListPanel title={`料理推荐 (${recipes.length})`} contentClassName={RECOMMENDATION_SCROLL_AREA}>
               {recipes.length === 0 && <EmptyRow text="暂无可推荐料理" />}
+              <EffectiveCustomRecipesViewer
+                customer={selectedCustomer}
+                foodTag={foodTag}
+                customRecipes={customRecipes}
+                runtimeSets={runtimeSets}
+                dataIndexes={dataIndexes}
+              />
               <div className="space-y-2">
                 {recipes.map((recipe, index) => (
                   <RecipeRecommendationRow

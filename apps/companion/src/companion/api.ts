@@ -9,6 +9,9 @@ import { normalizeEditableQuantity } from '@/companion/preferences';
 import { serializeRareGuestInvitationLevels } from '@/companion/storage';
 import type {
   DiagnosticPackageResponse,
+  CustomRecipeData,
+  CustomRecipeMutationResponse,
+  CustomRecipeUpsertInput,
   FavoriteData,
   FavoriteMutationResponse,
   GameUiPinningTarget,
@@ -43,8 +46,6 @@ import type { RareBeverageRecommendation, RareRecipeRecommendation } from '@/rec
  * 大多数历史端点使用 GET + query string；更新安装等高风险动作已通过 `writeLocalApiJsonWithTimeout`
  * 走 POST，避免被普通刷新或预取误触发。
  */
-const RARE_TRAY_BACKLOG_REUSE_SECONDS = 30;
-
 export async function readSnapshot(
   endpoint: string,
   apiToken: string,
@@ -309,6 +310,60 @@ export async function readFavorites(endpoint: string, apiToken: string, signal: 
   return readLocalApiJson<FavoriteData>(endpoint, apiToken, '/favorites', signal);
 }
 
+export async function readCustomRecipes(endpoint: string, apiToken: string, signal: AbortSignal): Promise<CustomRecipeData> {
+  return readLocalApiJson<CustomRecipeData>(endpoint, apiToken, '/custom-recipes', signal);
+}
+
+export async function upsertCustomRecipe(
+  endpoint: string,
+  apiToken: string,
+  input: CustomRecipeUpsertInput,
+): Promise<CustomRecipeMutationResponse> {
+  const params = new URLSearchParams({
+    id: input.id ?? '',
+    customerId: String(input.customerId),
+    customerName: input.customerName,
+    foodTag: input.foodTag ?? '',
+    foodId: String(input.foodId),
+    recipeId: String(input.recipeId),
+    recipeName: input.recipeName,
+    extraIngredientIds: input.extraIngredientIds.join(','),
+    enabled: String(input.enabled),
+    pinToTop: String(input.pinToTop),
+  });
+  if (input.sortOrder != null) params.set('sortOrder', String(input.sortOrder));
+  return mutateCustomRecipe(endpoint, apiToken, `/custom-recipes/upsert?${params.toString()}`);
+}
+
+export async function removeCustomRecipe(
+  endpoint: string,
+  apiToken: string,
+  id: string,
+): Promise<CustomRecipeMutationResponse> {
+  const params = new URLSearchParams({ id });
+  return mutateCustomRecipe(endpoint, apiToken, `/custom-recipes/remove?${params.toString()}`);
+}
+
+export async function toggleCustomRecipe(
+  endpoint: string,
+  apiToken: string,
+  id: string,
+  enabled: boolean,
+): Promise<CustomRecipeMutationResponse> {
+  const params = new URLSearchParams({ id, enabled: String(enabled) });
+  return mutateCustomRecipe(endpoint, apiToken, `/custom-recipes/toggle?${params.toString()}`);
+}
+
+export async function moveCustomRecipe(
+  endpoint: string,
+  apiToken: string,
+  id: string,
+  direction: 'up' | 'down',
+): Promise<CustomRecipeMutationResponse> {
+  const params = new URLSearchParams({ id, direction });
+  return mutateCustomRecipe(endpoint, apiToken, `/custom-recipes/move?${params.toString()}`);
+}
+
 export async function addRecipeFavorite(
   endpoint: string,
   apiToken: string,
@@ -393,14 +448,13 @@ async function rareOrderAction(
     recipeId: recipeTarget ? String(recipeTarget.recipeId) : '-1',
     recipeName: recipeTarget?.recipeName ?? '',
     extraIngredientIds: recipeTarget ? recipeTarget.extraIngredientIds.join(',') : '',
-    acceptableFoodIds: recipeTarget ? recipeTarget.acceptableFoodIds.join(',') : '',
-    trayBacklogMinSeconds: String(RARE_TRAY_BACKLOG_REUSE_SECONDS),
     beverageId: beverageTarget ? String(beverageTarget.beverageId) : '-1',
     beverageName: beverageTarget?.beverageName ?? '',
     autoTakeBeverage: String(preferences.autoPrepTakeBeverage),
     autoStartCooking: String(preferences.autoPrepStartCooking),
     autoCollectCooking: String(preferences.autoPrepCollectCooking),
-    favoritesOnly: String(preferences.autoPrepFavoritesOnly),
+    recipeFavoritesOnly: String(preferences.autoPrepRecipeFavoritesOnly),
+    beverageFavoritesOnly: String(preferences.autoPrepBeverageFavoritesOnly),
     stopOnError: String(preferences.autoPrepStopOnError),
     recipeFavorite: String(Boolean(recipeTarget?.favorite)),
     beverageFavorite: String(Boolean(beverageTarget?.favorite)),
@@ -419,4 +473,12 @@ async function mutateFavorite(
   path: string,
 ): Promise<FavoriteMutationResponse> {
   return readLocalApiJsonWithTimeout<FavoriteMutationResponse>(endpoint, apiToken, path, 3200);
+}
+
+async function mutateCustomRecipe(
+  endpoint: string,
+  apiToken: string,
+  path: string,
+): Promise<CustomRecipeMutationResponse> {
+  return readLocalApiJsonWithTimeout<CustomRecipeMutationResponse>(endpoint, apiToken, path, 3200);
 }

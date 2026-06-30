@@ -1,5 +1,6 @@
 import type { CompanionPreferences } from '@/companion/preferences';
 import type {
+  CustomRecipeData,
   FavoriteData,
   NightBusinessGuest,
   NightBusinessOrder,
@@ -21,6 +22,7 @@ export interface OrderRecommendationWorkerPayload {
   runtime: RecommendationStateSnapshot | null;
   runtimeRareCustomers: RareCustomerCatalogItem[];
   favorites: FavoriteData;
+  customRecipes: CustomRecipeData;
   preferences: CompanionPreferences;
   activeRareGuests: NightBusinessGuest[];
   missionServeTargets: RuntimeMissionServeTarget[];

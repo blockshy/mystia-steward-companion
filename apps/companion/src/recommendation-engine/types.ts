@@ -174,6 +174,11 @@ export interface RareRecipeRecommendation {
   recipe: RecipeCatalogItem;
   extraIngredients: IngredientCatalogItem[];
   missionPriority?: boolean;
+  customRecipe?: boolean;
+  customRecipePinned?: boolean;
+  customRecipeSortOrder?: number;
+  customRecipeScope?: 'tag' | 'all';
+  customRecipeId?: string;
   extraIngredientReasonTags: Record<number, string[]>;
   allTags: string[];
   cancelledTags: string[];
@@ -197,6 +202,11 @@ export interface RareBeverageRecommendation {
 export interface FoodCandidate {
   recipe: RecipeCatalogItem;
   extraIngredients: IngredientCatalogItem[];
+  customRecipe?: boolean;
+  customRecipePinned?: boolean;
+  customRecipeSortOrder?: number;
+  customRecipeScope?: 'tag' | 'all';
+  customRecipeId?: string;
   extraIngredientReasonTags: Record<number, string[]>;
   activeTags: string[];
   suppressedTags: string[];

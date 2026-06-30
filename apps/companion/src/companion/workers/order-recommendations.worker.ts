@@ -27,6 +27,7 @@ workerScope.onmessage = (event) => {
       rareCustomersById,
       recommendationCaches,
       payload.favorites,
+      payload.customRecipes,
       payload.preferences,
       payload.activeRareGuests,
       payload.missionServeTargets,

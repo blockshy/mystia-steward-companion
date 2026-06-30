@@ -40,6 +40,7 @@ internal sealed class LocalApiServer : IDisposable
     private readonly Func<int, string, RareGuestInvitationResult> _inviteRareGuest;
     private readonly UpdateService _updateService;
     private readonly FavoriteStore _favoriteStore;
+    private readonly CustomRecipeStore _customRecipeStore;
     private TcpListener? _listener;
     private Thread? _thread;
     private bool _running;
@@ -67,6 +68,7 @@ internal sealed class LocalApiServer : IDisposable
         Func<int, string, RareGuestInvitationResult> inviteRareGuest,
         UpdateService updateService,
         FavoriteStore favoriteStore,
+        CustomRecipeStore customRecipeStore,
         ManualLogSource log)
     {
         BindAddress = ResolveLoopbackAddress(configuredHost, log);
@@ -86,6 +88,7 @@ internal sealed class LocalApiServer : IDisposable
         _inviteRareGuest = inviteRareGuest;
         _updateService = updateService;
         _favoriteStore = favoriteStore;
+        _customRecipeStore = customRecipeStore;
         _logOutputPath = ResolveLogOutputPath();
         _healthJson = ToJson(new LocalApiHealthDto
         {
@@ -328,6 +331,25 @@ internal sealed class LocalApiServer : IDisposable
                         break;
                     case "/favorites/remove-beverage":
                         WriteResponse(stream, 200, "OK", _favoriteStore.RemoveBeverage(ReadStringQuery(query, "id")));
+                        break;
+                    case "/custom-recipes":
+                        WriteResponse(stream, 200, "OK", _customRecipeStore.GetJson());
+                        break;
+                    case "/custom-recipes/upsert":
+                        WriteResponse(stream, 200, "OK", UpsertCustomRecipeJson(query));
+                        break;
+                    case "/custom-recipes/remove":
+                        WriteResponse(stream, 200, "OK", _customRecipeStore.Remove(ReadStringQuery(query, "id")));
+                        break;
+                    case "/custom-recipes/toggle":
+                        WriteResponse(stream, 200, "OK", _customRecipeStore.Toggle(
+                            ReadStringQuery(query, "id"),
+                            ReadBoolQuery(query, "enabled") ?? true));
+                        break;
+                    case "/custom-recipes/move":
+                        WriteResponse(stream, 200, "OK", _customRecipeStore.Move(
+                            ReadStringQuery(query, "id"),
+                            ReadStringQuery(query, "direction")));
                         break;
                     default:
                         WriteResponse(stream, 404, "Not Found", ToJson(new LocalApiErrorDto { Error = "not found" }));
@@ -600,8 +622,6 @@ internal sealed class LocalApiServer : IDisposable
                 RecipeId = ReadIntQuery(query, "recipeId", -1),
                 RecipeName = ReadStringQuery(query, "recipeName"),
                 ExtraIngredientIds = ReadIntListQuery(query, "extraIngredientIds"),
-                AcceptableFoodIds = ReadIntListQuery(query, "acceptableFoodIds"),
-                TrayBacklogMinSeconds = Math.Max(0, ReadIntQuery(query, "trayBacklogMinSeconds", 0)),
                 BeverageId = ReadIntQuery(query, "beverageId", -1),
                 BeverageName = ReadStringQuery(query, "beverageName"),
                 AutoTakeBeverage = ReadBoolQuery(query, "autoTakeBeverage") ?? false,
@@ -609,7 +629,8 @@ internal sealed class LocalApiServer : IDisposable
                 AutoCollectCooking = ReadBoolQuery(query, "autoCollectCooking") ?? false,
                 AutoDeliverFood = ReadBoolQuery(query, "autoDeliverFood") ?? false,
                 AutoCompleteOrder = ReadBoolQuery(query, "autoCompleteOrder") ?? false,
-                FavoritesOnly = ReadBoolQuery(query, "favoritesOnly") ?? false,
+                RecipeFavoritesOnly = ReadBoolQuery(query, "recipeFavoritesOnly") ?? false,
+                BeverageFavoritesOnly = ReadBoolQuery(query, "beverageFavoritesOnly") ?? false,
                 StopOnError = ReadBoolQuery(query, "stopOnError") ?? true,
                 RecipeFavorite = ReadBoolQuery(query, "recipeFavorite") ?? false,
                 BeverageFavorite = ReadBoolQuery(query, "beverageFavorite") ?? false,
@@ -735,6 +756,37 @@ internal sealed class LocalApiServer : IDisposable
         catch (Exception ex)
         {
             return ToJson(new LocalApiFavoriteErrorDto { Ok = false, Error = ex.Message });
+        }
+    }
+
+    private string UpsertCustomRecipeJson(string query)
+    {
+        if (!int.TryParse(ReadStringQuery(query, "customerId"), out var customerId)
+            || !int.TryParse(ReadStringQuery(query, "foodId"), out var foodId))
+        {
+            return ToJson(new LocalApiCustomRecipeErrorDto { Ok = false, Error = "invalid custom recipe parameters" });
+        }
+
+        try
+        {
+            return _customRecipeStore.Upsert(new CustomRecipeMutation
+            {
+                Id = ReadStringQuery(query, "id"),
+                CustomerId = customerId,
+                CustomerName = ReadStringQuery(query, "customerName"),
+                FoodTag = ReadStringQuery(query, "foodTag"),
+                FoodId = foodId,
+                RecipeId = ReadIntQuery(query, "recipeId", -1),
+                RecipeName = ReadStringQuery(query, "recipeName"),
+                ExtraIngredientIds = ReadIntListQuery(query, "extraIngredientIds"),
+                Enabled = ReadBoolQuery(query, "enabled") ?? true,
+                PinToTop = ReadBoolQuery(query, "pinToTop") ?? true,
+                SortOrder = ReadNullableIntQuery(query, "sortOrder"),
+            });
+        }
+        catch (Exception ex)
+        {
+            return ToJson(new LocalApiCustomRecipeErrorDto { Ok = false, Error = ex.Message });
         }
     }
 

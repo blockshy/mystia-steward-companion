@@ -8,6 +8,7 @@ import { formatDesk, formatGuestFund, formatPerformanceMs } from '@/companion/fo
 import type { CompanionPreferences, ServiceOrderSortMode } from '@/companion/preferences';
 import type {
   AutomationResourceOverview,
+  CustomRecipeData,
   FavoriteData,
   GameUiPinningTarget,
   NightBusinessContext,
@@ -53,6 +54,7 @@ export function ModServicePanel({
   favorites,
   favoriteBusyKey,
   favoriteError,
+  customRecipes,
   autoPrepBusy,
   autoPrepMessage,
   autoPrepPaused,
@@ -91,6 +93,7 @@ export function ModServicePanel({
   favorites: FavoriteData;
   favoriteBusyKey: string;
   favoriteError: string;
+  customRecipes: CustomRecipeData;
   autoPrepBusy: boolean;
   autoPrepMessage: string;
   autoPrepPaused: boolean;
@@ -264,6 +267,7 @@ export function ModServicePanel({
             orderSortMode={autoPrepPreferences.serviceOrderSortMode}
             showDebugDetails={showDebugDetails}
             favorites={favorites}
+            customRecipes={customRecipes}
             favoriteBusyKey={favoriteBusyKey}
             favoriteError={favoriteError}
             action={(
@@ -299,7 +303,7 @@ export function ModServicePanel({
             {autoPrepPreferences.automationEnabled && autoPrepPreferences.autoNormalOrderEnabled ? (
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-sm steward-muted-surface-35 px-3 py-2 text-sm">
                 <span className="text-muted-foreground">
-                  普客自动化会按开关处理普客订单，可执行送达酒水、制作料理、收至保温箱、送达料理和完成订单。
+                  普客自动化会按开关处理普客订单，可执行送达酒水、制作料理、送达料理和完成订单。
                 </span>
                 {normalOrderBusy && <Badge variant="secondary">处理中</Badge>}
               </div>
@@ -338,14 +342,16 @@ export function ModServicePanel({
                   <Badge variant="outline">酒水 {order.beverageName || `#${order.beverageId}`}</Badge>
                   {order.hasServedFood && <Badge variant="secondary">已有料理</Badge>}
                   {order.hasServedBeverage && <Badge variant="secondary">已有酒水</Badge>}
-                  {order.hasStoredFood && (
-                    <Badge variant={order.hasStoredFoodReceipt ? 'secondary' : 'outline'} title={order.storedFoodStatus || undefined}>
-                      {order.hasStoredFoodReceipt ? '保温箱' : '同名'} {order.storedFoodCount ?? 0}
-                    </Badge>
-                  )}
-                  {order.isFulfilled && <Badge variant="secondary">已满足</Badge>}
+                  {order.readyToEvaluate && !order.hasEvaluated && <Badge variant="secondary">待评价</Badge>}
+                  {order.hasEvaluated && <Badge variant="secondary">已评价</Badge>}
+                  {order.canAutomate === false && <Badge variant="outline">暂不可自动处理</Badge>}
                   {showDebugDetails && <Badge variant="secondary">{order.source}</Badge>}
                 </div>
+                {order.canAutomate === false && order.actionBlockReason && (
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {order.actionBlockReason}
+                  </div>
+                )}
               </div>
             ))}
           </ListPanel>
@@ -357,46 +363,27 @@ export function ModServicePanel({
 
 function AutomationResourcePanel({ overview }: { overview: AutomationResourceOverview }) {
   const hasCookerRows = overview.cookers.length > 0;
-  const hasTrayRows = overview.tray.length > 0;
 
   return (
-    <div className={DENSE_TWO_COLUMN_GRID}>
-      <ListPanel title="厨具预约">
-        {!hasCookerRows && <EmptyRow text="暂无厨具预约" />}
-        <div className="space-y-2">
-          {overview.cookers.map((row) => (
-            <ResourceUsageRow
-              key={row.key}
-              label={row.label}
-              value={`${row.normalReserved + row.rareReserved}/${row.capacity}`}
-              status={row.normalReserved + row.rareReserved > row.capacity ? 'over' : row.normalReserved + row.rareReserved > 0 ? 'active' : 'idle'}
-              details={[
-                row.normalReserved > 0 ? `普客 ${row.normalReserved}` : '',
-                row.rareReserved > 0 ? `稀客 ${row.rareReserved}` : '',
-                ...row.labels.slice(0, 2),
-              ].filter(Boolean)}
-              overflow={Math.max(0, row.labels.length - 2)}
-            />
-          ))}
-        </div>
-      </ListPanel>
-
-      <ListPanel title="送餐盘压力">
-        {!hasTrayRows && <EmptyRow text="暂无送餐盘占用" />}
-        <div className="space-y-2">
-          {overview.tray.map((row) => (
-            <ResourceUsageRow
-              key={row.key}
-              label={row.label}
-              value={String(row.count)}
-              status={row.count > 0 ? 'active' : 'idle'}
-              details={row.labels.slice(0, 3)}
-              overflow={Math.max(0, row.labels.length - 3)}
-            />
-          ))}
-        </div>
-      </ListPanel>
-    </div>
+    <ListPanel title="厨具预约">
+      {!hasCookerRows && <EmptyRow text="暂无厨具预约" />}
+      <div className="space-y-2">
+        {overview.cookers.map((row) => (
+          <ResourceUsageRow
+            key={row.key}
+            label={row.label}
+            value={`${row.normalReserved + row.rareReserved}/${row.capacity}`}
+            status={row.normalReserved + row.rareReserved > row.capacity ? 'over' : row.normalReserved + row.rareReserved > 0 ? 'active' : 'idle'}
+            details={[
+              row.normalReserved > 0 ? `普客 ${row.normalReserved}` : '',
+              row.rareReserved > 0 ? `稀客 ${row.rareReserved}` : '',
+              ...row.labels.slice(0, 2),
+            ].filter(Boolean)}
+            overflow={Math.max(0, row.labels.length - 2)}
+          />
+        ))}
+      </div>
+    </ListPanel>
   );
 }
 
@@ -466,6 +453,7 @@ export function ServiceFocusPage({
   orderSortMode,
   showDebugDetails,
   favorites,
+  customRecipes,
   favoriteBusyKey,
   favoriteError,
   compact,
@@ -485,6 +473,7 @@ export function ServiceFocusPage({
   orderSortMode: ServiceOrderSortMode;
   showDebugDetails: boolean;
   favorites: FavoriteData;
+  customRecipes: CustomRecipeData;
   favoriteBusyKey: string;
   favoriteError: string;
   compact: boolean;
@@ -535,6 +524,7 @@ export function ServiceFocusPage({
           orderSortMode={orderSortMode}
           showDebugDetails={showDebugDetails}
           favorites={favorites}
+          customRecipes={customRecipes}
           favoriteBusyKey={favoriteBusyKey}
           favoriteError={favoriteError}
           compact={compact}
@@ -558,6 +548,7 @@ function CurrentOrderRecommendations({
   orderSortMode,
   showDebugDetails = false,
   favorites,
+  customRecipes,
   favoriteBusyKey,
   favoriteError,
   action,
@@ -574,6 +565,7 @@ function CurrentOrderRecommendations({
   orderSortMode: ServiceOrderSortMode;
   showDebugDetails?: boolean;
   favorites: FavoriteData;
+  customRecipes: CustomRecipeData;
   favoriteBusyKey: string;
   favoriteError: string;
   action?: ReactNode;
@@ -629,6 +621,7 @@ function CurrentOrderRecommendations({
               runtimeSets={runtimeSets}
               dataIndexes={dataIndexes}
               favorites={favorites}
+              customRecipes={customRecipes}
               favoriteBusyKey={favoriteBusyKey}
               compact={compact}
               recipeLimit={recipeLimit}
@@ -674,7 +667,7 @@ function RareServiceAutomationPanel({
           onCheckedChange={(autoPrepCompleteOrder) => onPreferenceChange({ autoPrepCompleteOrder })}
         />
         <AutomationSwitchCell
-          label="自动取酒"
+          label="自动送达酒水"
           checked={preferences.autoPrepTakeBeverage}
           onCheckedChange={(autoPrepTakeBeverage) => onPreferenceChange({ autoPrepTakeBeverage })}
         />
@@ -684,14 +677,19 @@ function RareServiceAutomationPanel({
           onCheckedChange={(autoPrepStartCooking) => onPreferenceChange({ autoPrepStartCooking })}
         />
         <AutomationSwitchCell
-          label="自动收取料理"
+          label="出锅后送达"
           checked={preferences.autoPrepCollectCooking}
           onCheckedChange={(autoPrepCollectCooking) => onPreferenceChange({ autoPrepCollectCooking })}
         />
         <AutomationSwitchCell
-          label="只处理收藏配方"
-          checked={preferences.autoPrepFavoritesOnly}
-          onCheckedChange={(autoPrepFavoritesOnly) => onPreferenceChange({ autoPrepFavoritesOnly })}
+          label="只处理收藏料理"
+          checked={preferences.autoPrepRecipeFavoritesOnly}
+          onCheckedChange={(autoPrepRecipeFavoritesOnly) => onPreferenceChange({ autoPrepRecipeFavoritesOnly })}
+        />
+        <AutomationSwitchCell
+          label="只处理收藏酒水"
+          checked={preferences.autoPrepBeverageFavoritesOnly}
+          onCheckedChange={(autoPrepBeverageFavoritesOnly) => onPreferenceChange({ autoPrepBeverageFavoritesOnly })}
         />
         <AutomationSwitchCell
           label="出错时暂停"
@@ -751,14 +749,12 @@ function NormalServiceAutomationPanel({
               onCheckedChange={(autoNormalStartCooking) => onPreferenceChange({ autoNormalStartCooking })}
             />
             <AutomationSwitchCell
-              label="自动收取料理"
-              checked={preferences.autoNormalCollectCooking}
-              onCheckedChange={(autoNormalCollectCooking) => onPreferenceChange({ autoNormalCollectCooking })}
-            />
-            <AutomationSwitchCell
               label="自动送达料理"
               checked={preferences.autoNormalDeliverFood}
-              onCheckedChange={(autoNormalDeliverFood) => onPreferenceChange({ autoNormalDeliverFood })}
+              onCheckedChange={(autoNormalDeliverFood) => onPreferenceChange({
+                autoNormalDeliverFood,
+                autoNormalCollectCooking: autoNormalDeliverFood,
+              })}
             />
             <AutomationSwitchCell
               label="自动完成订单"
@@ -863,7 +859,7 @@ function RareAutoPrepStatus({
                   料理{diagnostic.prepared ? '已开锅' : '待处理'}
                 </Badge>
                 <Badge variant={diagnostic.beverageHandled ? 'secondary' : 'outline'}>
-                  酒水{diagnostic.beverageHandled ? '已处理' : '待处理'}
+                  酒水{diagnostic.beverageHandled ? '已送达' : '待处理'}
                 </Badge>
                 <Badge variant={diagnostic.hasServedFood ? 'secondary' : 'outline'}>
                   订单{diagnostic.hasServedFood ? '已有料理' : '未送料理'}
@@ -886,11 +882,12 @@ function RareAutoPrepStatus({
         <Badge variant={paused ? 'destructive' : 'secondary'}>{paused ? '已暂停' : '运行中'}</Badge>
         <Badge variant="outline">每轮最多 {preferences.autoRareConcurrency}</Badge>
         <Badge variant={preferences.autoPrepCompleteOrder ? 'secondary' : 'outline'}>完成 {preferences.autoPrepCompleteOrder ? '开' : '关'}</Badge>
-        <Badge variant={preferences.autoPrepTakeBeverage ? 'secondary' : 'outline'}>取酒 {preferences.autoPrepTakeBeverage ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoPrepTakeBeverage ? 'secondary' : 'outline'}>送酒 {preferences.autoPrepTakeBeverage ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepStartCooking ? 'secondary' : 'outline'}>料理 {preferences.autoPrepStartCooking ? '开' : '关'}</Badge>
         {preferences.autoPrepStartCooking && <Badge variant="secondary">QTE 自动完成</Badge>}
-        <Badge variant={preferences.autoPrepCollectCooking ? 'secondary' : 'outline'}>收取 {preferences.autoPrepCollectCooking ? '开' : '关'}</Badge>
-        <Badge variant={preferences.autoPrepFavoritesOnly ? 'secondary' : 'outline'}>收藏限定 {preferences.autoPrepFavoritesOnly ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoPrepCollectCooking ? 'secondary' : 'outline'}>直送 {preferences.autoPrepCollectCooking ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoPrepRecipeFavoritesOnly ? 'secondary' : 'outline'}>收藏料理 {preferences.autoPrepRecipeFavoritesOnly ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoPrepBeverageFavoritesOnly ? 'secondary' : 'outline'}>收藏酒水 {preferences.autoPrepBeverageFavoritesOnly ? '开' : '关'}</Badge>
       </div>
     </div>
   );
@@ -954,14 +951,6 @@ function NormalAutoPrepStatus({
                 <Badge variant={diagnostic.prepared ? 'secondary' : 'outline'}>
                   料理{diagnostic.prepared ? '已开锅' : '待处理'}
                 </Badge>
-                <Badge variant={diagnostic.collected ? 'secondary' : 'outline'}>
-                  保温箱{diagnostic.collected ? `已收取 ${diagnostic.storedFoodCount}` : '待收取'}
-                </Badge>
-                {diagnostic.storedFoodCount > 0 && !diagnostic.hasStoredFoodReceipt && (
-                  <Badge variant="outline" title={diagnostic.storedFoodStatus || undefined}>
-                    同名料理 {diagnostic.storedFoodCount}
-                  </Badge>
-                )}
                 <Badge variant={diagnostic.foodDelivered ? 'secondary' : 'outline'}>
                   料理{diagnostic.foodDelivered ? '已送达' : '未送达'}
                 </Badge>
@@ -971,8 +960,11 @@ function NormalAutoPrepStatus({
                 <Badge variant={diagnostic.hasServedBeverage ? 'secondary' : 'outline'}>
                   订单{diagnostic.hasServedBeverage ? '已有酒水' : '未送酒水'}
                 </Badge>
+                <Badge variant={diagnostic.readyToEvaluate ? 'secondary' : 'outline'}>
+                  评价{diagnostic.readyToEvaluate ? '待触发' : '未满足'}
+                </Badge>
                 <Badge variant={diagnostic.completed ? 'secondary' : 'outline'}>
-                  订单{diagnostic.completed ? '已完成' : '待完成'}
+                  订单{diagnostic.completed ? '已评价' : '未评价'}
                 </Badge>
               </div>
               {diagnostic.lastError && (
@@ -992,7 +984,6 @@ function NormalAutoPrepStatus({
         <Badge variant={preferences.autoNormalTakeBeverage ? 'secondary' : 'outline'}>酒水 {preferences.autoNormalTakeBeverage ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoNormalStartCooking ? 'secondary' : 'outline'}>料理 {preferences.autoNormalStartCooking ? '开' : '关'}</Badge>
         {preferences.autoNormalStartCooking && <Badge variant="secondary">QTE 自动完成</Badge>}
-        <Badge variant={preferences.autoNormalCollectCooking ? 'secondary' : 'outline'}>收取 {preferences.autoNormalCollectCooking ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoNormalDeliverFood ? 'secondary' : 'outline'}>送料理 {preferences.autoNormalDeliverFood ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoNormalCompleteOrder ? 'secondary' : 'outline'}>完成 {preferences.autoNormalCompleteOrder ? '开' : '关'}</Badge>
       </div>

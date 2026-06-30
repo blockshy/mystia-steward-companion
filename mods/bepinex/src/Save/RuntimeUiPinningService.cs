@@ -10,7 +10,6 @@ internal static class RuntimeUiPinningService
 {
     private const string CookingSelectionPanelTypeName = "NightScene.UI.CookingUtility.WorkSceneCookingSelectionPannel";
     private const string StoragePanelTypeName = "NightScene.UI.CookingUtility.WorkSceneStoragePannel";
-    private const string RunTimePlayerDataTypeName = "GameData.RunTime.Common.RunTimePlayerData";
 
     private static readonly object SyncRoot = new();
     private static readonly HashSet<string> PatchedMethods = new(StringComparer.Ordinal);
@@ -53,7 +52,6 @@ internal static class RuntimeUiPinningService
             PatchMethod(_harmony, CookingSelectionPanelTypeName, "UpdateRecipeField", 0, nameof(OnRecipeFieldUpdated), patchedNow, missing);
             PatchMethod(_harmony, CookingSelectionPanelTypeName, "UpdateIngField", 0, nameof(OnIngredientFieldUpdated), patchedNow, missing);
             PatchMethod(_harmony, StoragePanelTypeName, "UpdateBevField", 0, nameof(OnBeverageFieldUpdated), patchedNow, missing);
-            PatchMethod(_harmony, RunTimePlayerDataTypeName, "CheckPinned", 2, nameof(OnCheckPinned), patchedNow, missing);
 
             lock (SyncRoot)
             {
@@ -181,38 +179,6 @@ internal static class RuntimeUiPinningService
         TryMoveFirst(__instance, "Beverages", item => ReadObjectId(ReadPairKey(item) ?? item) == beverageId, "beverage");
     }
 
-    private static void OnCheckPinned(int pinnedType, int pinnedID, ref bool __result)
-    {
-        if (!ReadTarget(out var recipeId, out var beverageId, out var ingredientIds, out _, out _, out var cookerTypeId, out var cookerName)) return;
-        if (pinnedType == 1 && recipeId >= 0 && pinnedID == recipeId)
-        {
-            __result = true;
-            NoteAction($"checkPinned recipe hit: {pinnedID}");
-            return;
-        }
-
-        if (pinnedType == 2 && beverageId >= 0 && pinnedID == beverageId)
-        {
-            __result = true;
-            NoteAction($"checkPinned beverage hit: {pinnedID}");
-            return;
-        }
-
-        if ((pinnedType == 0 || pinnedType == 4 || pinnedType == 5 || pinnedType == 6)
-            && ingredientIds.Contains(pinnedID))
-        {
-            __result = true;
-            NoteAction($"checkPinned ingredient hit: {pinnedType}/{pinnedID}");
-            return;
-        }
-
-        if (pinnedType == 3 && cookerTypeId > 0 && IsTargetCooker(pinnedID, cookerTypeId, cookerName))
-        {
-            __result = true;
-            NoteAction($"checkPinned cooker hit: {pinnedID}/{cookerTypeId}");
-        }
-    }
-
     private static bool ReadTarget(
         out int recipeId,
         out int beverageId,
@@ -233,20 +199,6 @@ internal static class RuntimeUiPinningService
             cookerName = _cookerName;
             return _enabled;
         }
-    }
-
-    private static bool IsTargetCooker(int cookerId, int targetCookerTypeId, string targetCookerName)
-    {
-        var cooker = RuntimeCookerReflection.ResolveCookerById(cookerId);
-        if (cooker == null) return false;
-
-        var typeIds = RuntimeCookerReflection.ReadCookerTypeIds(cooker);
-        if (typeIds.Contains(targetCookerTypeId)) return true;
-
-        if (string.IsNullOrWhiteSpace(targetCookerName)) return false;
-        var normalizedTarget = RuntimeCookerReflection.NormalizeCookerName(targetCookerName);
-        var name = RuntimeCookerReflection.NormalizeCookerName(RuntimeCookerReflection.ReadCookerName(cooker));
-        return name.Length > 0 && string.Equals(name, normalizedTarget, StringComparison.Ordinal);
     }
 
     private static void TrySortPinnedIngredients(object target, string fieldName, int[] ingredientIds)
@@ -342,16 +294,6 @@ internal static class RuntimeUiPinningService
             if (item == null) continue;
             if (!seen.Add(ReadObjectPointer(item))) continue;
             yield return item;
-        }
-    }
-
-    private static IEnumerable<int> ReadIntEnumerable(object? value)
-    {
-        if (value == null || value is string) yield break;
-
-        foreach (var item in EnumerateManaged(value).Concat(EnumerateByIndexer(value)))
-        {
-            yield return ToInt(item);
         }
     }
 
@@ -488,19 +430,6 @@ internal static class RuntimeUiPinningService
         return method.ReturnType == typeof(void) ? Missing.Value : result;
     }
 
-    private static object? InvokeStatic(string typeName, string methodName, object?[] args)
-    {
-        var type = FindType(typeName);
-        if (type == null) return Missing.Value;
-
-        var method = type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
-            .FirstOrDefault(candidate => string.Equals(candidate.Name, methodName, StringComparison.Ordinal)
-                && CanUseParameters(candidate.GetParameters(), args));
-        if (method == null) return Missing.Value;
-        var result = method.Invoke(null, args);
-        return method.ReturnType == typeof(void) ? Missing.Value : result;
-    }
-
     private static object? ReadMember(object target, string name)
     {
         for (var type = target.GetType(); type != null; type = type.BaseType)
@@ -590,24 +519,6 @@ internal static class RuntimeUiPinningService
         }
 
         return int.TryParse(value.ToString(), out var parsed) ? parsed : -1;
-    }
-
-    private static bool ReadBool(object? value)
-    {
-        if (value is bool boolean) return boolean;
-        if (value is IConvertible convertible)
-        {
-            try
-            {
-                return convertible.ToInt32(null) != 0;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        return false;
     }
 
     private static nint ReadObjectPointer(object target)

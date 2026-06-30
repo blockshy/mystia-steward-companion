@@ -211,11 +211,11 @@ public sealed class NormalBusinessOrder
     public string BeverageName { get; init; } = "";
     public bool HasServedFood { get; init; }
     public bool HasServedBeverage { get; init; }
-    public bool HasStoredFood { get; init; }
-    public bool HasStoredFoodReceipt { get; init; }
-    public int StoredFoodCount { get; init; }
-    public string StoredFoodStatus { get; init; } = "";
-    public bool IsFulfilled { get; init; }
+    public bool ReadyToEvaluate { get; init; }
+    public bool HasEvaluated { get; init; }
+    public bool ControllerAvailable { get; init; }
+    public bool CanAutomate { get; init; } = true;
+    public string ActionBlockReason { get; init; } = "";
     public DateTime? FirstSeenAtUtc { get; init; }
     public string Source { get; init; } = "";
 }

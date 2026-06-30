@@ -1,8 +1,10 @@
+import { useMemo, useState } from 'react';
 import { PlaceSelect } from '@/components/controls/PlaceSelect';
 import { RecommendationItem, RecommendationMetaBadge, RecommendationTagPills } from '@/components/RecommendationItem';
 import { CustomerCoverageBadges } from '@/components/recommendation/CustomerCoverageBadges';
 import { TagPill, TagPillGroup } from '@/components/recommendation/TagPillGroup';
 import { Badge, Button, EmptyRow, EmptyState, NumberInput, SegmentedControl, SliderField, SwitchField } from '@/components/ui-kit';
+import { getEffectiveCustomRecipeEntries } from '@/companion/domain/custom-recipes';
 import { findBeverageFavorite, findRecipeFavorite, beverageFavoriteKey, recipeFavoriteKey } from '@/companion/domain/favorites';
 import { INVENTORY_SORT_OPTIONS, type InventorySortMode } from '@/companion/domain/inventory-sorting';
 import { formatDesk, formatIngredientNamesWithQty, formatIngredientWithQty, formatQtySuffix } from '@/companion/formatters';
@@ -20,6 +22,7 @@ import {
 } from '@/companion/preferences';
 import type {
   FavoriteBeverageEntry,
+  CustomRecipeData,
   FavoriteData,
   FavoriteRecipeEntry,
   OrderRecommendation,
@@ -28,7 +31,7 @@ import type {
   ToggleRecipeFavorite,
 } from '@/companion/types';
 import type { buildRecommendationDataIndexes } from '@/lib/recommendation-data';
-import { ALL_PLACES, type PlaceName } from '@/lib/catalog-types';
+import { ALL_PLACES, type PlaceName, type RareCustomerCatalogItem } from '@/lib/catalog-types';
 import type {
   NormalBeverageRecommendation,
   NormalRecipeRecommendation,
@@ -397,6 +400,7 @@ export function OrderRecommendationPanel({
   recipeLimit = MAX_RECOMMENDATION_ROWS,
   beverageLimit = MAX_RECOMMENDATION_ROWS,
   showDebugDetails = false,
+  customRecipes,
   onToggleRecipeFavorite,
   onToggleBeverageFavorite,
 }: {
@@ -404,6 +408,7 @@ export function OrderRecommendationPanel({
   runtimeSets: RuntimeSets | null;
   dataIndexes: ReturnType<typeof buildRecommendationDataIndexes>;
   favorites: FavoriteData;
+  customRecipes: CustomRecipeData;
   favoriteBusyKey: string;
   compact?: boolean;
   recipeLimit?: number;
@@ -444,6 +449,14 @@ export function OrderRecommendationPanel({
         <div>
           <h3 className={compact ? 'mb-1 text-xs font-semibold' : 'mb-2 text-sm font-semibold'}>推荐料理</h3>
           {visibleRecipes.length === 0 && <EmptyRow text="暂无可推荐料理" />}
+          <EffectiveCustomRecipesViewer
+            customer={item.customer}
+            foodTag={item.order.foodTag}
+            customRecipes={customRecipes}
+            runtimeSets={runtimeSets}
+            dataIndexes={dataIndexes}
+            compact={compact}
+          />
           <div className={compact ? 'space-y-1.5' : 'space-y-2'}>
             {visibleRecipes.map((recipe, index) => (
               <RecipeRecommendationRow
@@ -482,6 +495,87 @@ export function OrderRecommendationPanel({
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+export function EffectiveCustomRecipesViewer({
+  customer,
+  foodTag,
+  customRecipes,
+  runtimeSets,
+  dataIndexes,
+  compact = false,
+}: {
+  customer: RareCustomerCatalogItem;
+  foodTag: string;
+  customRecipes: CustomRecipeData;
+  runtimeSets: RuntimeSets | null;
+  dataIndexes: ReturnType<typeof buildRecommendationDataIndexes>;
+  compact?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const entries = useMemo(
+    () => getEffectiveCustomRecipeEntries(customRecipes, customer.id, foodTag),
+    [customRecipes, customer.id, foodTag],
+  );
+
+  if (!foodTag) return null;
+
+  return (
+    <div className={compact ? 'mb-1.5' : 'mb-2'}>
+      <Button
+        type="button"
+        variant="outline"
+        size="xs"
+        onClick={() => setOpen((value) => !value)}
+      >
+        {open ? '收起自定义配方' : `查看生效的自定义配方 (${entries.length})`}
+      </Button>
+      {open && (
+        <div className="mt-2 rounded-md border border-border p-2">
+          <div className="mt-2 max-h-72 space-y-1.5 overflow-auto pr-1">
+            {entries.length === 0 && <EmptyRow text="当前稀客和点单料理 Tag 没有生效的自定义配方" />}
+            {entries.map((entry) => {
+              const recipe = dataIndexes.recipeByFoodId.get(entry.foodId);
+              const extras = entry.extraIngredientIds.length === 0
+                ? '不加料'
+                : entry.extraIngredientIds
+                  .map((id) => formatIngredientWithQty(
+                    dataIndexes.ingredientNameById.get(id) ?? `#${id}`,
+                    runtimeSets?.ownedIngredientQty ?? {},
+                    dataIndexes.ingredientIdByName,
+                  ))
+                  .join(', ');
+              const baseRecipe = formatIngredientNamesWithQty(
+                recipe?.ingredients ?? [],
+                runtimeSets?.ownedIngredientQty ?? {},
+                dataIndexes.ingredientIdByName,
+              ) || '无';
+
+              return (
+                <div
+                  key={entry.id}
+                  className="flex flex-wrap items-start justify-between gap-2 rounded-md border border-border px-2 py-2 text-sm"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="font-medium">{recipe?.name ?? `料理 #${entry.foodId}`}</span>
+                      <Badge variant={entry.foodTag === null ? 'secondary' : 'outline'}>
+                        {entry.foodTag === null ? '全部点单' : entry.foodTag}
+                      </Badge>
+                      {entry.pinToTop && <Badge variant="secondary">置顶</Badge>}
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      排序 {entry.sortOrder} · 厨具 {recipe?.cooker || '未知'} · 基础 {baseRecipe} · 加料 {extras}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -543,6 +637,14 @@ export function RecipeRecommendationRow({
             <Badge className="steward-meta-cooker">
               任务
             </Badge>
+          )}
+          {recipe.customRecipe && (
+            <Badge variant={recipe.customRecipePinned ? 'secondary' : 'outline'}>
+              {recipe.customRecipePinned ? '自定义置顶' : '自定义'}
+            </Badge>
+          )}
+          {recipe.customRecipeScope === 'all' && (
+            <Badge variant="outline">全部点单</Badge>
           )}
           <Badge variant={recipe.meetsRequiredFood ? 'secondary' : 'outline'}>
             {recipe.meetsRequiredFood ? '满足点单' : '偏好备选'}

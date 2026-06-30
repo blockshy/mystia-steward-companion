@@ -62,11 +62,11 @@ internal static partial class RuntimeOrderPreparationService
     /// <param name="recipeId">目标配方 ID。</param>
     /// <param name="recipeName">用于用户提示和自动化日志的料理名称。</param>
     /// <param name="extraIngredientIds">推荐算法选择的额外加料材料 ID。</param>
-    /// <param name="autoCollect">料理完成后是否自动收取。</param>
-    /// <param name="collectionTarget">自动收取后的目标归属；未指定时收入稀客送餐盘。</param>
+    /// <param name="autoCollect">料理完成后是否登记出锅直送任务。参数名沿用内部烹饪流程命名，外部语义是直接送达。</param>
+    /// <param name="collectionTarget">料理完成后的直接送达目标；未指定时仅按料理名称登记稀客目标。</param>
     /// <returns>开火结果以及原生 QTE 处理状态。</returns>
     /// <remarks>
-    /// 此方法会扣除材料库存、写入厨具控制器、触发游戏开火回调，并可能登记后续自动收取任务。
+    /// 此方法会扣除材料库存、写入厨具控制器、触发游戏开火回调，并可能登记后续出锅直送任务。
     /// 调用前必须已位于夜晚经营场景，且应运行在 Unity 主线程。
     /// </remarks>
     private static CookingStartResult TryStartCooking(
@@ -89,10 +89,10 @@ internal static partial class RuntimeOrderPreparationService
         }
 
         var targetFoodId = ToInt(ReadMember(recipe, "foodID"));
-        var target = collectionTarget ?? CookingCollectionTarget.ForTrayFood(targetFoodId, recipeName);
-        if (autoCollect && target.Kind == CookingCollectionTargetKind.Tray && target.FoodId >= 0 && HasPendingTrayCooking(target.FoodId, out var pendingTrayMessage))
+        var target = collectionTarget ?? CookingCollectionTarget.ForRareOrder(new OrderPreparationRequest { RecipeName = recipeName }, targetFoodId);
+        if (autoCollect && HasPendingCookingTarget(target, out var pendingMessage))
         {
-            return CookingStartResult.Succeeded(pendingTrayMessage, "", true);
+            return CookingStartResult.Succeeded(pendingMessage, "", true);
         }
 
         var cookerSelection = TryGetCookerForOrder(baseFood, recipe);
@@ -218,10 +218,10 @@ internal static partial class RuntimeOrderPreparationService
     }
 
     /// <summary>
-    /// 登记一个等待收取的烹饪任务。
+    /// 登记一个等待出锅后直接送达的烹饪任务。
     /// </summary>
     /// <remarks>
-    /// 同一个厨具或同一个目标订单只保留一条待办，避免重复点击导致同一锅料理被多次收取或送达。
+    /// 同一个厨具或同一个目标订单只保留一条待办，避免重复点击导致同一锅料理被多次直送。
     /// </remarks>
     private static void RegisterPendingCookingCollection(object cookController, string recipeName, CookingCollectionTarget target)
     {
@@ -245,32 +245,15 @@ internal static partial class RuntimeOrderPreparationService
     /// <remarks>
     /// 优先用前端锁定的订单 key 匹配；缺失时退回运行时订单对象或桌号，保证重复轮询不会反复开火。
     /// </remarks>
-    private static bool HasPendingNormalOrderCooking(string orderKey, object order, int deskCode, int foodId, out string message)
+    private static bool HasPendingNormalOrderCooking(string orderKey, object order, int deskCode, int foodId, int beverageId, out string message)
     {
         lock (PendingCookingLock)
         {
             foreach (var pending in PendingCookingCollections)
             {
-                if (pending.Target.Kind != CookingCollectionTargetKind.NormalOrder) continue;
-                if (pending.Target.FoodId != foodId) continue;
-                if (!string.IsNullOrWhiteSpace(orderKey) && !string.IsNullOrWhiteSpace(pending.Target.OrderKey))
-                {
-                    if (!string.Equals(orderKey, pending.Target.OrderKey, StringComparison.Ordinal)) continue;
-                    message = $"目标料理 {pending.Target.FoodName} 已在制作中，等待完成后会自动收至普客保温箱。";
-                    return true;
-                }
-
-                if (pending.Target.Order != null && IsSameObject(pending.Target.Order, order))
-                {
-                    message = $"目标料理 {pending.Target.FoodName} 已在制作中，等待完成后会自动收至普客保温箱。";
-                    return true;
-                }
-
-                if (pending.Target.DeskCode == deskCode)
-                {
-                    message = $"桌 {deskCode + 1} 的目标料理 {pending.Target.FoodName} 已在制作中，等待完成后会自动收至普客保温箱。";
-                    return true;
-                }
+                if (!IsMatchingPendingNormalOrderCooking(pending, orderKey, order, deskCode, foodId, beverageId)) continue;
+                message = FormatPendingNormalOrderCookingMessage(pending, deskCode);
+                return true;
             }
         }
 
@@ -278,21 +261,80 @@ internal static partial class RuntimeOrderPreparationService
         return false;
     }
 
-    /// <summary>
-    /// 判断送餐盘目标料理是否已经在制作中。
-    /// </summary>
-    private static bool HasPendingTrayCooking(int foodId, out string message)
+    private static (bool Found, bool Delivered, string StepName, string Message) TryProcessPendingNormalOrderCooking(string orderKey, object order, int deskCode, int foodId, int beverageId)
+    {
+        lock (PendingCookingLock)
+        {
+            for (var i = PendingCookingCollections.Count - 1; i >= 0; i--)
+            {
+                var pending = PendingCookingCollections[i];
+                if (!IsMatchingPendingNormalOrderCooking(pending, orderKey, order, deskCode, foodId, beverageId)) continue;
+
+                var result = TryCollectCookedFood(pending);
+                if (!string.IsNullOrWhiteSpace(result.Message))
+                {
+                    AppendAutomationLog("pending", pending.Target, result.Message);
+                }
+
+                if (result.Remove)
+                {
+                    AppendAutomationLog("pending-remove", pending.Target, $"{pending.RecipeName}; age={(DateTime.UtcNow - pending.CreatedAtUtc).TotalSeconds:F1}s");
+                    PendingCookingCollections.RemoveAt(i);
+                }
+
+                var delivered = ReadOrderServedFood(order) != null
+                    || result.Message.Contains("已直接送达普客订单", StringComparison.Ordinal);
+                if (delivered)
+                {
+                    return (true, true, "普客送达料理", string.IsNullOrWhiteSpace(result.Message)
+                        ? $"{pending.Target.FoodName} 已直接送达普客订单。"
+                        : result.Message);
+                }
+
+                if (!string.IsNullOrWhiteSpace(result.Message))
+                {
+                    return (true, false, "普客送达料理", result.Message);
+                }
+
+                return (true, false, "普客开始料理", FormatPendingNormalOrderCookingMessage(pending, deskCode));
+            }
+        }
+
+        return (false, false, "", "");
+    }
+
+    private static bool IsMatchingPendingNormalOrderCooking(PendingCookingCollection pending, string orderKey, object order, int deskCode, int foodId, int beverageId)
+    {
+        if (pending.Target.Kind != CookingCollectionTargetKind.NormalOrder) return false;
+        if (pending.Target.FoodId != foodId) return false;
+        if (pending.Target.BeverageId >= 0 && beverageId >= 0 && pending.Target.BeverageId != beverageId) return false;
+        if (!string.IsNullOrWhiteSpace(orderKey) && !string.IsNullOrWhiteSpace(pending.Target.OrderKey))
+        {
+            if (string.Equals(orderKey, pending.Target.OrderKey, StringComparison.Ordinal)) return true;
+        }
+
+        if (pending.Target.Order != null && IsSameObject(pending.Target.Order, order)) return true;
+        return pending.Target.DeskCode == deskCode;
+    }
+
+    private static string FormatPendingNormalOrderCookingMessage(PendingCookingCollection pending, int deskCode)
+    {
+        return pending.Target.DeskCode == deskCode
+            ? $"桌 {deskCode + 1} 的目标料理 {pending.Target.FoodName} 已在制作中，等待完成后会自动直接送达。"
+            : $"目标料理 {pending.Target.FoodName} 已在制作中，等待完成后会自动直接送达。";
+    }
+
+    private static bool HasPendingCookingTarget(CookingCollectionTarget target, out string message)
     {
         lock (PendingCookingLock)
         {
             foreach (var pending in PendingCookingCollections)
             {
-                if (pending.Target.Kind != CookingCollectionTargetKind.Tray) continue;
-                if (pending.Target.FoodId != foodId) continue;
+                if (!IsSameCookingCollectionTarget(pending.Target, target)) continue;
                 var pendingAge = DateTime.UtcNow - pending.CreatedAtUtc;
                 if (pendingAge >= PendingCookingIdleTimeout) continue;
 
-                message = $"目标料理 {pending.Target.FoodName} 已在制作中，等待完成后会自动收入送餐盘。";
+                message = $"目标料理 {pending.Target.FoodName} 已在制作中，等待完成后会自动直接送达。";
                 return true;
             }
         }
@@ -302,14 +344,19 @@ internal static partial class RuntimeOrderPreparationService
     }
 
     /// <summary>
-    /// 判断两个自动收菜目标是否代表同一个业务目标。
+    /// 判断两个出锅直送目标是否代表同一个业务目标。
     /// </summary>
     private static bool IsSameCookingCollectionTarget(CookingCollectionTarget left, CookingCollectionTarget right)
     {
         if (left.Kind != right.Kind) return false;
-        if (left.Kind == CookingCollectionTargetKind.Tray)
+        if (left.Kind == CookingCollectionTargetKind.RareOrder)
         {
-            return left.FoodId >= 0 && left.FoodId == right.FoodId;
+            if (left.FoodId != right.FoodId) return false;
+            if (left.DeskCode >= 0 && right.DeskCode >= 0 && left.DeskCode != right.DeskCode) return false;
+            if (left.GuestId.HasValue && right.GuestId.HasValue) return left.GuestId.Value == right.GuestId.Value;
+            return !string.IsNullOrWhiteSpace(left.GuestName)
+                && !string.IsNullOrWhiteSpace(right.GuestName)
+                && string.Equals(left.GuestName, right.GuestName, StringComparison.Ordinal);
         }
 
         if (left.Kind != CookingCollectionTargetKind.NormalOrder) return false;
@@ -324,7 +371,7 @@ internal static partial class RuntimeOrderPreparationService
     }
 
     /// <summary>
-    /// 尝试从一个待收取任务中读取成品并移动到目标容器。
+    /// 尝试从一个待处理任务中读取成品并直接送达目标订单。
     /// </summary>
     /// <returns>
     /// <c>Remove</c> 表示该待办是否应从队列删除；<c>Message</c> 是需要展示或记录的处理结果。
@@ -335,6 +382,8 @@ internal static partial class RuntimeOrderPreparationService
     private static (bool Remove, string Message) TryCollectCookedFood(PendingCookingCollection pending)
     {
         var phase = ToInt(TryInvokeInstanceValue(pending.CookController, "get_Phase"), -1);
+        TryFinalizeCookControllerIfProgressComplete(pending.CookController, phase);
+        phase = ToInt(TryInvokeInstanceValue(pending.CookController, "get_Phase"), phase);
         var cookedFood = ReadCookControllerResult(pending.CookController);
         var chosenRecipe = ReadCookControllerChosenRecipe(pending.CookController);
         var pendingAge = DateTime.UtcNow - pending.CreatedAtUtc;
@@ -344,12 +393,12 @@ internal static partial class RuntimeOrderPreparationService
         {
             if (phase == 0 && chosenRecipe == null && isExpiredIdle)
             {
-                return (true, $"{pending.RecipeName} 自动收取任务已结束：厨具已空闲且未读取到成品。");
+                return (true, $"{pending.RecipeName} 出锅直送任务已结束：厨具已空闲且未读取到成品。");
             }
 
             if (phase == 3 && isExpiredIdle)
             {
-                return (true, $"{pending.RecipeName} 已完成，但长时间未读取到成品对象，已停止自动收取。");
+                return (true, $"{pending.RecipeName} 已完成，但长时间未读取到成品对象，已停止出锅直送。");
             }
 
             return (false, "");
@@ -365,33 +414,23 @@ internal static partial class RuntimeOrderPreparationService
             return (false, "");
         }
 
-        if (pending.Target.Kind == CookingCollectionTargetKind.NormalOrder)
-        {
-            return TryCollectNormalOrderFood(pending, cookedFood);
-        }
+        return TryDeliverPendingCookedFood(pending, cookedFood);
+    }
 
-        var tray = GetSingletonInstance(IzakayaTrayTypeName);
-        if (tray == null)
-        {
-            return (false, "");
-        }
+    private static void TryFinalizeCookControllerIfProgressComplete(object cookController, int phase)
+    {
+        if (phase != 2) return;
+        var progress = ToFloat(TryInvokeInstanceValue(cookController, "get_CookingProgress") ?? ReadMember(cookController, "CookingProgress"), 0f);
+        if (progress < 0.999f) return;
 
-        var isFull = InvokeInstance(tray, "get_IsTrayFull", Array.Empty<object?>());
-        if (ReadBool(isFull))
+        try
         {
-            return (false, "");
+            TryInvokeInstance(cookController, "FinishCooking", Array.Empty<object?>());
         }
-
-        if (TryExtractWithGameMethod(pending.CookController))
+        catch
         {
-            return (true, $"{pending.RecipeName} 已自动收入送餐盘。");
+            // 料理已经进入可收取边界时，FinishCooking 只是对齐游戏自身状态；失败则保留下一轮重试。
         }
-
-        InvokeInstance(tray, "Receive", new[] { cookedFood });
-        TryInvokeInstance(pending.CookController, "AfterPlayerExtract", Array.Empty<object?>());
-        TryInvokeInstance(pending.CookController, "CloseCookingVisual", Array.Empty<object?>());
-        TryClearCookController(pending.CookController, cookedFood);
-        return (true, $"{pending.RecipeName} 已自动收入送餐盘。");
     }
 
     private static object? ReadCookControllerResult(object cookController)
@@ -429,35 +468,6 @@ internal static partial class RuntimeOrderPreparationService
         catch
         {
             return seen.Add(new IntPtr(RuntimeHelpers.GetHashCode(value)));
-        }
-    }
-
-    /// <summary>
-    /// 优先调用游戏原生 Extract 逻辑收取料理。
-    /// </summary>
-    /// <remarks>
-    /// 原生 Extract 会同步厨具视觉、回调和内部状态，是最接近玩家手动收菜的路径；只有它不可用时才走手动 Receive。
-    /// </remarks>
-    private static bool TryExtractWithGameMethod(object cookController)
-    {
-        var method = cookController.GetType().GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-            .FirstOrDefault(candidate => string.Equals(candidate.Name, "Extract", StringComparison.Ordinal)
-                && candidate.GetParameters().Length == 1);
-        if (method == null) return false;
-
-        var parameterType = method.GetParameters()[0].ParameterType;
-        if (!typeof(Delegate).IsAssignableFrom(parameterType)) return false;
-
-        try
-        {
-            var callback = CreateTrayReceiveDelegate(parameterType);
-            if (callback == null) return false;
-            method.Invoke(cookController, new object?[] { callback });
-            return true;
-        }
-        catch
-        {
-            return false;
         }
     }
 
@@ -544,7 +554,7 @@ internal static partial class RuntimeOrderPreparationService
     /// </summary>
     /// <remarks>
     /// 优先使用伙伴管理器入口，因为它包含游戏原生的订单厨具选择规则；失败后再扫描玩家厨具列表，
-    /// 并排除本服务已登记为待收取的厨具，避免同一个灶台被并发复用。
+    /// 并排除本服务已登记为待直送的厨具，避免同一个灶台被并发复用。
     /// </remarks>
     private static (bool Ok, object? CookController, string Message) TryGetCookerForOrder(object baseFood, object recipe)
     {
@@ -578,7 +588,7 @@ internal static partial class RuntimeOrderPreparationService
                                 return (true, selectedController, "已通过伙伴厨具入口找到空闲可用厨具。");
                             }
 
-                            partnerMessage = "伙伴厨具入口返回的厨具已有待收取任务。";
+                            partnerMessage = "伙伴厨具入口返回的厨具已有待直送任务。";
                             break;
                         }
 
@@ -717,7 +727,7 @@ internal static partial class RuntimeOrderPreparationService
         }
         catch
         {
-            // 首选 Extract 路径会完成清理；这里的兜底清理失败不应影响收菜结果。
+            // 送达已经成功时，兜底清理失败不应影响订单结果。
         }
     }
 

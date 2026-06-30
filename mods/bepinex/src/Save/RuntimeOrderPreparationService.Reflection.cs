@@ -436,6 +436,21 @@ internal static partial class RuntimeOrderPreparationService
         }
     }
 
+    private static float ToFloat(object? value, float fallback)
+    {
+        if (value == null) return fallback;
+        try
+        {
+            if (value is float number) return number;
+            if (value is IConvertible convertible) return convertible.ToSingle(null);
+            return float.TryParse(value.ToString(), out var parsed) ? parsed : fallback;
+        }
+        catch
+        {
+            return fallback;
+        }
+    }
+
     private static bool ReadBool(object? value)
     {
         if (value is bool boolValue) return boolValue;

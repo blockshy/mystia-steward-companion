@@ -149,7 +149,7 @@ export function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToke
     : configuredLogLimit;
   const automationLogNotice = automationLogs?.error
     || (settings && !settings.logAccessEnabled ? '日志读取已关闭。' : '')
-    || (automationLogs?.exists === false ? '尚未生成 automation-jobs.log。自动化执行开锅、收取或 pending 变化后会写入。' : '');
+    || (automationLogs?.exists === false ? '尚未生成 automation-jobs.log。自动化执行开锅、直送或 pending 变化后会写入。' : '');
 
   useEffect(() => {
     if (!apiToken) return;

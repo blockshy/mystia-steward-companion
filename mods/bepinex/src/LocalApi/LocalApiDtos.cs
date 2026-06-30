@@ -164,3 +164,16 @@ internal sealed class LocalApiFavoriteErrorDto
     public LocalApiFavoriteStoreDto Favorites { get; init; } = new();
     public string Error { get; init; } = "";
 }
+
+internal sealed class LocalApiCustomRecipeStoreDto
+{
+    public int Version { get; init; } = 1;
+    public IReadOnlyList<object> Recipes { get; init; } = Array.Empty<object>();
+}
+
+internal sealed class LocalApiCustomRecipeErrorDto
+{
+    public bool Ok { get; init; }
+    public LocalApiCustomRecipeStoreDto CustomRecipes { get; init; } = new();
+    public string Error { get; init; } = "";
+}

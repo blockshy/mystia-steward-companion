@@ -84,6 +84,27 @@ const favoriteData = {
   ],
 };
 
+const customRecipeData = {
+  version: 1,
+  recipes: [
+    {
+      id: 'mock-custom-1001-all-202',
+      customerId: 1001,
+      customerName: '米斯蒂娅',
+      foodTag: null,
+      foodId: 202,
+      recipeId: 202,
+      recipeName: '蜂蜜蛋糕',
+      extraIngredientIds: [7],
+      enabled: true,
+      pinToTop: true,
+      sortOrder: 100,
+      createdAtUtc: nowIso(),
+      updatedAtUtc: nowIso(),
+    },
+  ],
+};
+
 const inventory = {
   ingredient: {
     1: 12,
@@ -224,6 +245,33 @@ const server = http.createServer((request, response) => {
     if (path === '/favorites/remove-beverage') {
       removeFavorite(favoriteData.beverages, requestUrl.searchParams.get('id'));
       sendJson(response, 200, { ok: true, favorites: favoriteData, error: null });
+      return;
+    }
+
+    if (path === '/custom-recipes') {
+      sendJson(response, 200, customRecipeData);
+      return;
+    }
+
+    if (path === '/custom-recipes/upsert') {
+      sendJson(response, 200, upsertCustomRecipe(requestUrl.searchParams));
+      return;
+    }
+
+    if (path === '/custom-recipes/remove') {
+      removeFavorite(customRecipeData.recipes, requestUrl.searchParams.get('id'));
+      normalizeCustomRecipeSortOrders();
+      sendJson(response, 200, { ok: true, customRecipes: customRecipeData, error: null });
+      return;
+    }
+
+    if (path === '/custom-recipes/toggle') {
+      sendJson(response, 200, toggleCustomRecipe(requestUrl.searchParams));
+      return;
+    }
+
+    if (path === '/custom-recipes/move') {
+      sendJson(response, 200, moveCustomRecipe(requestUrl.searchParams));
       return;
     }
 
@@ -400,11 +448,8 @@ function buildSnapshot() {
           beverageName: '热茶',
           hasServedFood: false,
           hasServedBeverage: true,
-          hasStoredFood: true,
-          hasStoredFoodReceipt: false,
-          storedFoodCount: 1,
-          storedFoodStatus: '保温箱内已有同名料理',
-          isFulfilled: false,
+          readyToEvaluate: false,
+          hasEvaluated: false,
           firstSeenAtUtc: nowIso(-75),
           source: 'mock',
         },
@@ -418,10 +463,8 @@ function buildSnapshot() {
           beverageName: '果味米酒',
           hasServedFood: false,
           hasServedBeverage: false,
-          hasStoredFood: false,
-          storedFoodCount: 0,
-          storedFoodStatus: '',
-          isFulfilled: false,
+          readyToEvaluate: false,
+          hasEvaluated: false,
           firstSeenAtUtc: nowIso(-40),
           source: 'mock',
         },
@@ -600,6 +643,79 @@ function mutateBeverageFavorite(params) {
     });
   }
   return { ok: true, favorites: favoriteData, error: null };
+}
+
+function upsertCustomRecipe(params) {
+  const id = (params.get('id') || '').trim();
+  const customerId = Number(params.get('customerId'));
+  const foodId = Number(params.get('foodId'));
+  if (!Number.isFinite(customerId) || !Number.isFinite(foodId)) {
+    return { ok: false, customRecipes: customRecipeData, error: 'invalid custom recipe parameters' };
+  }
+
+  const now = nowIso();
+  const entry = {
+    id: id || `mock-custom-${Date.now()}`,
+    customerId,
+    customerName: params.get('customerName') || '',
+    foodTag: normalizeOptionalText(params.get('foodTag')),
+    foodId,
+    recipeId: Number(params.get('recipeId') || -1),
+    recipeName: params.get('recipeName') || '',
+    extraIngredientIds: parseIdList(params.get('extraIngredientIds') || ''),
+    enabled: normalizeBoolean(params.get('enabled'), true),
+    pinToTop: normalizeBoolean(params.get('pinToTop'), true),
+    sortOrder: Number(params.get('sortOrder') || nextCustomRecipeSortOrder()),
+    createdAtUtc: now,
+    updatedAtUtc: now,
+  };
+
+  const existingIndex = customRecipeData.recipes.findIndex((item) => item.id === entry.id);
+  if (existingIndex >= 0) {
+    entry.createdAtUtc = customRecipeData.recipes[existingIndex].createdAtUtc;
+    customRecipeData.recipes[existingIndex] = entry;
+  } else {
+    customRecipeData.recipes.push(entry);
+  }
+  normalizeCustomRecipeSortOrders();
+  return { ok: true, customRecipes: customRecipeData, error: null };
+}
+
+function toggleCustomRecipe(params) {
+  const entry = customRecipeData.recipes.find((item) => item.id === params.get('id'));
+  if (!entry) return { ok: false, customRecipes: customRecipeData, error: 'custom recipe not found' };
+  entry.enabled = normalizeBoolean(params.get('enabled'), true);
+  entry.updatedAtUtc = nowIso();
+  return { ok: true, customRecipes: customRecipeData, error: null };
+}
+
+function moveCustomRecipe(params) {
+  const ordered = [...customRecipeData.recipes].sort(compareCustomRecipeEntries);
+  const index = ordered.findIndex((item) => item.id === params.get('id'));
+  if (index < 0) return { ok: false, customRecipes: customRecipeData, error: 'custom recipe not found' };
+  const targetIndex = params.get('direction') === 'up' ? index - 1 : index + 1;
+  if (targetIndex >= 0 && targetIndex < ordered.length) {
+    [ordered[index].sortOrder, ordered[targetIndex].sortOrder] = [ordered[targetIndex].sortOrder, ordered[index].sortOrder];
+    ordered[index].updatedAtUtc = nowIso();
+    ordered[targetIndex].updatedAtUtc = nowIso();
+  }
+  normalizeCustomRecipeSortOrders();
+  return { ok: true, customRecipes: customRecipeData, error: null };
+}
+
+function nextCustomRecipeSortOrder() {
+  return customRecipeData.recipes.length === 0
+    ? 100
+    : Math.max(...customRecipeData.recipes.map((entry) => entry.sortOrder || 0)) + 100;
+}
+
+function normalizeCustomRecipeSortOrders() {
+  customRecipeData.recipes.sort(compareCustomRecipeEntries);
+}
+
+function compareCustomRecipeEntries(left, right) {
+  if (left.sortOrder !== right.sortOrder) return left.sortOrder - right.sortOrder;
+  return String(left.id).localeCompare(String(right.id));
 }
 
 function setInventoryQuantity(params) {
@@ -818,6 +934,25 @@ function normalizeQuantity(value) {
   const quantity = Number(value || 0);
   if (!Number.isFinite(quantity)) return 0;
   return Math.max(0, Math.min(999, Math.trunc(quantity)));
+}
+
+function parseIdList(value) {
+  return [...new Set(String(value)
+    .split(',')
+    .map((part) => Number(part.trim()))
+    .filter((id) => Number.isFinite(id) && id >= 0))]
+    .sort((left, right) => left - right);
+}
+
+function normalizeOptionalText(value) {
+  const trimmed = String(value || '').trim();
+  return trimmed ? trimmed : null;
+}
+
+function normalizeBoolean(value, fallback) {
+  if (value === 'true' || value === '1') return true;
+  if (value === 'false' || value === '0') return false;
+  return fallback;
 }
 
 function nowIso(offsetSeconds = 0) {

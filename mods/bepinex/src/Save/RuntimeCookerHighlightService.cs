@@ -62,7 +62,6 @@ internal static class RuntimeCookerHighlightService
 
         if (!enabled || targetCookerTypeId <= 0)
         {
-            Clear();
             return;
         }
 

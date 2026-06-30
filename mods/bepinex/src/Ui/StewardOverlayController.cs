@@ -30,8 +30,8 @@ internal sealed class StewardOverlayController
     private const float RuntimeDataFullPublishIntervalSeconds = 10f;
     private const float RuntimeDataCatalogRetrySeconds = 5f;
     private const float PerformanceSnapshotMaxAgeSeconds = 12f;
-    private const float PendingCookingProcessIntervalSeconds = 0.25f;
-    private const float NormalBusinessSnapshotCacheSeconds = 0.35f;
+    private const float PendingCookingProcessIntervalSeconds = 0.5f;
+    private const float NormalBusinessSnapshotCacheSeconds = 1f;
     private static readonly JsonSerializerOptions LocalApiJsonOptions = new(JsonSerializerDefaults.Web);
 
     private StewardPluginConfig? _config;
@@ -74,10 +74,13 @@ internal sealed class StewardOverlayController
     private bool _disposed;
     private bool _controllerToggleLatched;
     private bool _specialOrderRefreshPending;
+    private bool _normalOrderRefreshPending;
     private bool _localApiSnapshotPublishPending;
     private float _nextControllerToggleAt;
     private float _nextSpecialOrderRefreshAt;
+    private float _nextNormalOrderCaptureRefreshAt;
     private long _lastRuntimeSceneReadinessVersion;
+    private long _lastNormalOrderChangeVersion;
     private string _lastPublishedRuntimeDataSignature = "";
     private string _lastLocalApiSnapshotContentSignature = "";
     private readonly List<RuntimeRareCustomer> _runtimeRareCustomers = new();
@@ -193,7 +196,7 @@ internal sealed class StewardOverlayController
         ProcessPendingOrderPreparations();
         ProcessPendingRareGuestInvitations();
         ProcessPendingCookingCollections();
-        RefreshBusinessContextOnSpecialOrderChange();
+        RefreshBusinessContextOnOrderCaptureChange();
 
         if (IsTogglePressed())
         {
@@ -212,24 +215,43 @@ internal sealed class StewardOverlayController
     }
 
     /// <summary>
-    /// 在稀客订单 Hook 版本变化后防抖刷新夜间经营上下文。
+    /// 在订单 Hook 版本变化后防抖刷新对应经营上下文。
     /// </summary>
-    private void RefreshBusinessContextOnSpecialOrderChange()
+    private void RefreshBusinessContextOnOrderCaptureChange()
     {
         if (_config == null || !_config.AutoRefreshRuntime.Value) return;
 
-        var version = SpecialOrderRuntimeCapture.ChangeVersion;
-        if (version != _lastSpecialOrderChangeVersion)
+        var specialVersion = SpecialOrderRuntimeCapture.ChangeVersion;
+        if (specialVersion != _lastSpecialOrderChangeVersion)
         {
-            _lastSpecialOrderChangeVersion = version;
+            _lastSpecialOrderChangeVersion = specialVersion;
             _specialOrderRefreshPending = true;
             _nextSpecialOrderRefreshAt = Time.realtimeSinceStartup + SpecialOrderRefreshDebounceSeconds;
         }
 
-        if (!_specialOrderRefreshPending || Time.realtimeSinceStartup < _nextSpecialOrderRefreshAt) return;
+        var normalVersion = NormalOrderRuntimeCapture.ChangeVersion;
+        if (normalVersion != _lastNormalOrderChangeVersion)
+        {
+            _lastNormalOrderChangeVersion = normalVersion;
+            _normalOrderRefreshPending = true;
+            _nextNormalOrderCaptureRefreshAt = Time.realtimeSinceStartup + SpecialOrderRefreshDebounceSeconds;
+        }
 
-        _specialOrderRefreshPending = false;
-        RefreshBusinessContext(false, force: true);
+        var now = Time.realtimeSinceStartup;
+        if (_specialOrderRefreshPending && now >= _nextSpecialOrderRefreshAt)
+        {
+            _specialOrderRefreshPending = false;
+            _normalOrderRefreshPending = false;
+            RefreshBusinessContext(false, force: true);
+            return;
+        }
+
+        if (_normalOrderRefreshPending && now >= _nextNormalOrderCaptureRefreshAt)
+        {
+            _normalOrderRefreshPending = false;
+            RefreshNormalBusinessContext(force: true);
+            PublishLocalApiSnapshot();
+        }
     }
 
     /// <summary>
@@ -306,6 +328,7 @@ internal sealed class StewardOverlayController
         RuntimeMappedGuestCatalog.ResetRetryDelay();
         RuntimeStaticDataCatalog.ResetRetryDelay();
         SpecialOrderRuntimeCapture.ResetAttachRetryDelay();
+        NormalOrderRuntimeCapture.ResetAttachRetryDelay();
     }
 
     /// <summary>
@@ -631,6 +654,7 @@ internal sealed class StewardOverlayController
                     IncludePrerelease = _config.UpdatesIncludePrerelease.Value,
                 },
                 _log);
+            var favoriteStore = new FavoriteStore(FavoriteStore.ResolvePath(), _log);
             _localApiServer = new LocalApiServer(
                 _config.LocalApiHost.Value,
                 _config.LocalApiPort.Value,
@@ -648,7 +672,8 @@ internal sealed class StewardOverlayController
                 InviteAllRareGuestsFromLocalApi,
                 InviteRareGuestFromLocalApi,
                 updateService,
-                new FavoriteStore(FavoriteStore.ResolvePath(), _log),
+                favoriteStore,
+                new CustomRecipeStore(CustomRecipeStore.ResolvePath(), favoriteStore, _log),
                 _log);
             _localApiServer.Start();
             updateService.StartAutoCheck();
@@ -977,11 +1002,8 @@ internal sealed class StewardOverlayController
             AppendValue(builder, order.BeverageName);
             AppendValue(builder, order.HasServedFood);
             AppendValue(builder, order.HasServedBeverage);
-            AppendValue(builder, order.HasStoredFood);
-            AppendValue(builder, order.HasStoredFoodReceipt);
-            AppendValue(builder, order.StoredFoodCount);
-            AppendValue(builder, order.StoredFoodStatus);
-            AppendValue(builder, order.IsFulfilled);
+            AppendValue(builder, order.ReadyToEvaluate);
+            AppendValue(builder, order.HasEvaluated);
             AppendValue(builder, order.Source);
         }
     }
@@ -1534,7 +1556,7 @@ internal sealed class StewardOverlayController
     /// 处理本地 API 发起的订单自动化请求。
     /// </summary>
     /// <remarks>
-    /// 订单自动化会读写订单对象、送餐盘、厨具和库存，必须统一在主线程串行执行。
+    /// 订单自动化会读写订单对象、厨具、桌面显示和库存，必须统一在主线程串行执行。
     /// </remarks>
     private OrderPreparationResult RunOrderActionFromLocalApi(OrderPreparationRequest request, OrderActionKind action)
     {
@@ -1657,7 +1679,7 @@ internal sealed class StewardOverlayController
         _status = result.Ok
             ? L("已处理当前第一笔普客订单。", "First normal-customer order handled.")
             : L($"处理当前第一笔普客订单未完成：{result.Error}", $"Handling first normal-customer order did not finish: {result.Error}");
-        RefreshBusinessContext(false, force: true);
+        RefreshNormalBusinessContext(force: true);
         PublishLocalApiSnapshot();
         return result;
     }
@@ -1770,21 +1792,23 @@ internal sealed class StewardOverlayController
     }
 
     /// <summary>
-    /// 轮询自动收菜队列并发布产生的自动化消息。
+    /// 轮询出锅直送队列并发布产生的自动化消息。
     /// </summary>
     /// <remarks>
-    /// 离开夜间经营场景时立即清理待收取队列，避免下一次经营复用旧厨具对象引用。
+    /// 离开夜间经营场景时立即清理待直送队列，避免下一次经营复用旧厨具对象引用。
     /// </remarks>
     private void ProcessPendingCookingCollections()
     {
-        if (Time.realtimeSinceStartup < _nextPendingCookingProcessAt) return;
-        _nextPendingCookingProcessAt = Time.realtimeSinceStartup + PendingCookingProcessIntervalSeconds;
+        if (!RuntimeOrderPreparationService.HasPendingCookingCollections) return;
 
         if (!IsNightBusinessScene(_activeSceneName))
         {
             RuntimeOrderPreparationService.ClearPendingCookingCollections();
             return;
         }
+
+        if (Time.realtimeSinceStartup < _nextPendingCookingProcessAt) return;
+        _nextPendingCookingProcessAt = Time.realtimeSinceStartup + PendingCookingProcessIntervalSeconds;
 
         var messages = Measure(
             "automation.collect",
@@ -1932,7 +1956,7 @@ internal sealed class StewardOverlayController
     /// 清除全部已加载运行时状态。
     /// </summary>
     /// <remarks>
-    /// 用于主菜单、未加载存档等场景。会同时清空订单捕获、自动收菜队列和厨具高亮，避免跨存档残留。
+    /// 用于主菜单、未加载存档等场景。会同时清空订单捕获、出锅直送队列和厨具高亮，避免跨存档残留。
     /// </remarks>
     private void ClearLoadedRuntime(string status)
     {
@@ -1948,6 +1972,7 @@ internal sealed class StewardOverlayController
         _runtimeStateSignature = "";
         _lastRuntimeReadUtc = DateTime.MinValue;
         SpecialOrderRuntimeCapture.ClearOrders("runtime cleared");
+        NormalOrderRuntimeCapture.ClearOrders("runtime cleared");
         RuntimeOrderPreparationService.ClearPendingCookingCollections();
         RuntimeCookerHighlightService.Suspend(status);
         _status = status;
@@ -1959,6 +1984,7 @@ internal sealed class StewardOverlayController
     private void ClearNightBusinessRuntime(string status)
     {
         SpecialOrderRuntimeCapture.ClearOrders("left night business scene");
+        NormalOrderRuntimeCapture.ClearOrders("left night business scene");
         RuntimeOrderPreparationService.ClearPendingCookingCollections();
         _businessContext = new NightBusinessContext
         {

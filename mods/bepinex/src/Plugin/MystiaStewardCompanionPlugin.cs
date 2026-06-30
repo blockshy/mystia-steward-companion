@@ -52,6 +52,7 @@ public sealed class MystiaStewardCompanionPlugin : BasePlugin
             Log);
 
         SpecialOrderRuntimeCapture.Attach(Log);
+        NormalOrderRuntimeCapture.Attach(Log);
         RuntimeSceneReadinessCapture.Attach(Log);
         RuntimeUiPinningService.Attach(Log);
 

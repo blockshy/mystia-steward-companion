@@ -26,6 +26,8 @@ const CONTROL_PORT: u16 = 32146;
 const CONTROL_SHOW: &[u8] = b"mystia-steward-companion:show";
 const CONTROL_TOGGLE: &[u8] = b"mystia-steward-companion:toggle";
 const CONTROL_EXIT: &[u8] = b"mystia-steward-companion:exit";
+const CONTROL_MAX_MESSAGE_BYTES: usize = 1024;
+const CONNECTION_UPDATED_EVENT: &str = "connection-updated";
 const WINDOW_STATE_FILE: &str = "window-state.txt";
 const MIN_WINDOW_WIDTH: u32 = 720;
 const MIN_WINDOW_HEIGHT: u32 = 520;
@@ -34,6 +36,7 @@ const MIN_WINDOW_SWITCH_COOLDOWN_MS: u64 = 250;
 const MAX_WINDOW_SWITCH_COOLDOWN_MS: u64 = 2000;
 
 struct GamePidState(Arc<Mutex<Option<u32>>>);
+struct LaunchConnectionState(Arc<Mutex<LaunchConnection>>);
 struct WindowSwitchState(Arc<Mutex<Option<Instant>>>);
 struct CompanionPreferenceState(Arc<Mutex<CompanionPreferences>>);
 struct MousePassthroughState(Arc<Mutex<bool>>);
@@ -62,8 +65,18 @@ struct PersistedWindowState {
     height: u32,
 }
 
+#[derive(Clone, Default)]
+struct LaunchConnection {
+    endpoint: Option<String>,
+    token: Option<String>,
+}
+
 #[tauri::command]
-fn fetch_snapshot(endpoint: String, token: String, timeout_ms: Option<u64>) -> Result<String, String> {
+fn fetch_snapshot(
+    endpoint: String,
+    token: String,
+    timeout_ms: Option<u64>,
+) -> Result<String, String> {
     request_local_api_with_frontend_timeout("GET", &endpoint, None, &token, timeout_ms)
 }
 
@@ -157,13 +170,15 @@ fn request_local_api_with_timeout(
 }
 
 #[tauri::command]
-fn launch_api_endpoint() -> Option<String> {
-    std::env::args().find_map(|arg| arg.strip_prefix("--api=").map(|value| value.to_string()))
+fn launch_api_endpoint(
+    connection_state: tauri::State<'_, LaunchConnectionState>,
+) -> Option<String> {
+    current_launch_connection(&connection_state.0).endpoint
 }
 
 #[tauri::command]
-fn launch_api_token() -> Option<String> {
-    std::env::args().find_map(|arg| arg.strip_prefix("--token=").map(|value| value.to_string()))
+fn launch_api_token(connection_state: tauri::State<'_, LaunchConnectionState>) -> Option<String> {
+    current_launch_connection(&connection_state.0).token
 }
 
 #[tauri::command]
@@ -235,12 +250,79 @@ fn launch_game_pid() -> Option<u32> {
     })
 }
 
+fn launch_api_endpoint_arg() -> Option<String> {
+    std::env::args().find_map(|arg| arg.strip_prefix("--api=").map(|value| value.to_string()))
+}
+
+fn launch_api_token_arg() -> Option<String> {
+    std::env::args().find_map(|arg| arg.strip_prefix("--token=").map(|value| value.to_string()))
+}
+
+fn launch_connection_from_args() -> LaunchConnection {
+    LaunchConnection {
+        endpoint: launch_api_endpoint_arg(),
+        token: launch_api_token_arg(),
+    }
+}
+
 fn parse_control_game_pid(message: &[u8]) -> Option<u32> {
     let text = std::str::from_utf8(message).ok()?;
     text.split_whitespace().find_map(|part| {
         part.strip_prefix("--game-pid=")
             .and_then(|value| value.parse::<u32>().ok())
     })
+}
+
+fn parse_control_launch_connection(message: &[u8]) -> LaunchConnection {
+    let Some(text) = std::str::from_utf8(message).ok() else {
+        return LaunchConnection::default();
+    };
+
+    let mut connection = LaunchConnection::default();
+    for part in text.split_whitespace() {
+        if let Some(endpoint) = part.strip_prefix("--api=") {
+            if !endpoint.trim().is_empty() {
+                connection.endpoint = Some(endpoint.to_string());
+            }
+            continue;
+        }
+
+        if let Some(token) = part.strip_prefix("--token=") {
+            if !token.trim().is_empty() {
+                connection.token = Some(token.to_string());
+            }
+        }
+    }
+
+    connection
+}
+
+fn update_launch_connection(
+    current: &Arc<Mutex<LaunchConnection>>,
+    next: LaunchConnection,
+) -> bool {
+    if next.endpoint.is_none() && next.token.is_none() {
+        return false;
+    }
+
+    let Ok(mut current_connection) = current.lock() else {
+        return false;
+    };
+    if let Some(endpoint) = next.endpoint {
+        current_connection.endpoint = Some(endpoint);
+    }
+    if let Some(token) = next.token {
+        current_connection.token = Some(token);
+    }
+
+    true
+}
+
+fn current_launch_connection(current: &Arc<Mutex<LaunchConnection>>) -> LaunchConnection {
+    current
+        .lock()
+        .map(|connection| connection.clone())
+        .unwrap_or_default()
 }
 
 fn update_game_pid(game_pid: &Arc<Mutex<Option<u32>>>, next: Option<u32>) {
@@ -444,12 +526,43 @@ fn notify_existing_instance() -> bool {
         return false;
     };
 
-    stream.write_all(CONTROL_SHOW).is_ok()
+    stream
+        .write_all(
+            build_control_message(
+                "mystia-steward-companion:show",
+                launch_game_pid(),
+                launch_api_endpoint_arg(),
+                launch_api_token_arg(),
+            )
+            .as_bytes(),
+        )
+        .is_ok()
+}
+
+fn build_control_message(
+    command: &str,
+    game_pid: Option<u32>,
+    endpoint: Option<String>,
+    token: Option<String>,
+) -> String {
+    let mut message = String::from(command);
+    message.push('\n');
+    if let Some(game_pid) = game_pid {
+        message.push_str(&format!("--game-pid={game_pid}\n"));
+    }
+    if let Some(endpoint) = endpoint {
+        message.push_str(&format!("--api={endpoint}\n"));
+    }
+    if let Some(token) = token {
+        message.push_str(&format!("--token={token}\n"));
+    }
+    message
 }
 
 fn start_instance_control_server(
     app: tauri::AppHandle,
     game_pid: Arc<Mutex<Option<u32>>>,
+    connection_state: Arc<Mutex<LaunchConnection>>,
     switch_state: Arc<Mutex<Option<Instant>>>,
     preferences: Arc<Mutex<CompanionPreferences>>,
     mouse_passthrough: Arc<Mutex<bool>>,
@@ -464,12 +577,16 @@ fn start_instance_control_server(
             let Ok(mut stream) = stream else {
                 continue;
             };
-            let mut buffer = [0u8; 64];
+            let mut buffer = [0u8; CONTROL_MAX_MESSAGE_BYTES];
             let Ok(size) = stream.read(&mut buffer) else {
                 continue;
             };
             let message = &buffer[..size];
             update_game_pid(&game_pid, parse_control_game_pid(message));
+            if update_launch_connection(&connection_state, parse_control_launch_connection(message))
+            {
+                let _ = app.emit(CONNECTION_UPDATED_EVENT, true);
+            }
             if message.starts_with(CONTROL_SHOW) {
                 show_main_window(&app, &mouse_passthrough);
             } else if message.starts_with(CONTROL_TOGGLE) {
@@ -766,8 +883,11 @@ fn main() {
         return;
     }
 
+    let launch_connection = Arc::new(Mutex::new(launch_connection_from_args()));
+
     tauri::Builder::default()
         .manage(GamePidState(Arc::new(Mutex::new(launch_game_pid()))))
+        .manage(LaunchConnectionState(launch_connection.clone()))
         .manage(WindowSwitchState(Arc::new(Mutex::new(None))))
         .manage(CompanionPreferenceState(Arc::new(Mutex::new(
             CompanionPreferences::default(),
@@ -782,12 +902,14 @@ fn main() {
             }
             let app_handle = app.handle().clone();
             let game_pid = app.state::<GamePidState>().0.clone();
+            let connection_state = app.state::<LaunchConnectionState>().0.clone();
             let switch_state = app.state::<WindowSwitchState>().0.clone();
             let preferences = app.state::<CompanionPreferenceState>().0.clone();
             let mouse_passthrough = app.state::<MousePassthroughState>().0.clone();
             start_instance_control_server(
                 app_handle.clone(),
                 game_pid,
+                connection_state.clone(),
                 switch_state,
                 preferences,
                 mouse_passthrough.clone(),
@@ -795,7 +917,9 @@ fn main() {
             start_mouse_passthrough_hotkey_monitor(app_handle.clone(), mouse_passthrough);
             start_game_shutdown_monitor(
                 app_handle,
-                launch_api_endpoint().unwrap_or_else(|| DEFAULT_API_ENDPOINT.to_string()),
+                current_launch_connection(&connection_state)
+                    .endpoint
+                    .unwrap_or_else(|| DEFAULT_API_ENDPOINT.to_string()),
                 app.state::<GamePidState>().0.clone(),
             );
             Ok(())

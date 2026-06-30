@@ -35,12 +35,13 @@ const AUTO_PREP_COMPLETE_ORDER_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-comple
 const AUTO_PREP_TAKE_BEVERAGE_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-take-beverage`;
 const AUTO_PREP_START_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-start-cooking`;
 const AUTO_PREP_COLLECT_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-collect-cooking`;
-const AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-favorites-only`;
+const AUTO_PREP_RECIPE_FAVORITES_ONLY_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-recipe-favorites-only`;
+const AUTO_PREP_BEVERAGE_FAVORITES_ONLY_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-beverage-favorites-only`;
+// 旧版只有一个“只处理收藏配方”开关，读取时拆分到料理/酒水两个新语义，保存后删除旧 key。
+const LEGACY_AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-favorites-only`;
 const AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-stop-on-error`;
 const AUTO_RARE_CONCURRENCY_STORAGE_KEY = `${STORAGE_PREFIX}-auto-rare-concurrency`;
 const AUTO_NORMAL_CONCURRENCY_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-concurrency`;
-const AUTO_RARE_TRAY_WAIT_SECONDS_STORAGE_KEY = `${STORAGE_PREFIX}-auto-rare-tray-wait-seconds`;
-const AUTO_NORMAL_STORAGE_WAIT_SECONDS_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-storage-wait-seconds`;
 const AUTO_MAX_STEP_RETRIES_STORAGE_KEY = `${STORAGE_PREFIX}-auto-max-step-retries`;
 const AUTO_MAX_ROLLBACKS_STORAGE_KEY = `${STORAGE_PREFIX}-auto-max-rollbacks`;
 const FILTER_MISSING_COOKERS_STORAGE_KEY = `${STORAGE_PREFIX}-filter-missing-cookers`;
@@ -71,10 +72,6 @@ export const DEFAULT_NORMAL_AUTO_ORDERS_PER_TICK = 3;
 export const MIN_AUTO_ORDER_CONCURRENCY = 1;
 export const MAX_RARE_AUTO_ORDER_CONCURRENCY = 4;
 export const MAX_NORMAL_AUTO_ORDER_CONCURRENCY = 6;
-export const DEFAULT_NORMAL_AUTO_STORAGE_WAIT_SECONDS = 45;
-export const MIN_AUTO_WAIT_SECONDS = 10;
-export const MAX_AUTO_WAIT_SECONDS = 180;
-export const DEFAULT_RARE_AUTO_TRAY_WAIT_SECONDS = 30;
 export const DEFAULT_AUTO_STEP_RETRIES = 3;
 export const MIN_AUTO_STEP_RETRIES = 1;
 export const MAX_AUTO_STEP_RETRIES_LIMIT = 10;
@@ -117,12 +114,11 @@ export interface CompanionPreferences {
   autoPrepTakeBeverage: boolean;
   autoPrepStartCooking: boolean;
   autoPrepCollectCooking: boolean;
-  autoPrepFavoritesOnly: boolean;
+  autoPrepRecipeFavoritesOnly: boolean;
+  autoPrepBeverageFavoritesOnly: boolean;
   autoPrepStopOnError: boolean;
   autoRareConcurrency: number;
   autoNormalConcurrency: number;
-  autoRareTrayWaitSeconds: number;
-  autoNormalStorageWaitSeconds: number;
   autoMaxStepRetries: number;
   autoMaxRollbacks: number;
   filterMissingCookers: boolean;
@@ -178,12 +174,17 @@ export function readStoredCompanionPreferences(): CompanionPreferences {
     autoPrepTakeBeverage: readStoredBoolean(AUTO_PREP_TAKE_BEVERAGE_STORAGE_KEY, false),
     autoPrepStartCooking: readStoredBoolean(AUTO_PREP_START_COOKING_STORAGE_KEY, false),
     autoPrepCollectCooking: readStoredBoolean(AUTO_PREP_COLLECT_COOKING_STORAGE_KEY, false),
-    autoPrepFavoritesOnly: readStoredBoolean(AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY, false),
+    autoPrepRecipeFavoritesOnly: readStoredBoolean(
+      AUTO_PREP_RECIPE_FAVORITES_ONLY_STORAGE_KEY,
+      readStoredBoolean(LEGACY_AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY, false),
+    ),
+    autoPrepBeverageFavoritesOnly: readStoredBoolean(
+      AUTO_PREP_BEVERAGE_FAVORITES_ONLY_STORAGE_KEY,
+      readStoredBoolean(LEGACY_AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY, false),
+    ),
     autoPrepStopOnError: readStoredBoolean(AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY, false),
     autoRareConcurrency: readStoredNumber(AUTO_RARE_CONCURRENCY_STORAGE_KEY, DEFAULT_RARE_AUTO_ORDERS_PER_TICK),
     autoNormalConcurrency: readStoredNumber(AUTO_NORMAL_CONCURRENCY_STORAGE_KEY, DEFAULT_NORMAL_AUTO_ORDERS_PER_TICK),
-    autoRareTrayWaitSeconds: readStoredNumber(AUTO_RARE_TRAY_WAIT_SECONDS_STORAGE_KEY, DEFAULT_RARE_AUTO_TRAY_WAIT_SECONDS),
-    autoNormalStorageWaitSeconds: readStoredNumber(AUTO_NORMAL_STORAGE_WAIT_SECONDS_STORAGE_KEY, DEFAULT_NORMAL_AUTO_STORAGE_WAIT_SECONDS),
     autoMaxStepRetries: readStoredNumber(AUTO_MAX_STEP_RETRIES_STORAGE_KEY, DEFAULT_AUTO_STEP_RETRIES),
     autoMaxRollbacks: readStoredNumber(AUTO_MAX_ROLLBACKS_STORAGE_KEY, DEFAULT_AUTO_ROLLBACKS),
     filterMissingCookers: readStoredBoolean(FILTER_MISSING_COOKERS_STORAGE_KEY, true),
@@ -210,9 +211,10 @@ export function readStoredCompanionPreferences(): CompanionPreferences {
  * 该函数是所有偏好入口的唯一清洗层，负责处理旧字段、非法数值和缺省值。
  */
 export function normalizeCompanionPreferences(
-  value: Partial<CompanionPreferences> & { windowOpacity?: number },
+  value: Partial<CompanionPreferences> & { windowOpacity?: number; autoPrepFavoritesOnly?: boolean },
 ): CompanionPreferences {
   const legacyBackgroundOpacity = value.backgroundOpacity ?? value.windowOpacity ?? DEFAULT_BACKGROUND_OPACITY;
+  const legacyFavoritesOnly = Boolean(value.autoPrepFavoritesOnly);
 
   return {
     backgroundOpacity: normalizeBackgroundOpacity(legacyBackgroundOpacity),
@@ -234,12 +236,11 @@ export function normalizeCompanionPreferences(
     autoPrepTakeBeverage: Boolean(value.autoPrepTakeBeverage),
     autoPrepStartCooking: Boolean(value.autoPrepStartCooking),
     autoPrepCollectCooking: Boolean(value.autoPrepCollectCooking),
-    autoPrepFavoritesOnly: Boolean(value.autoPrepFavoritesOnly),
+    autoPrepRecipeFavoritesOnly: Boolean(value.autoPrepRecipeFavoritesOnly ?? legacyFavoritesOnly),
+    autoPrepBeverageFavoritesOnly: Boolean(value.autoPrepBeverageFavoritesOnly ?? legacyFavoritesOnly),
     autoPrepStopOnError: Boolean(value.autoPrepStopOnError),
     autoRareConcurrency: normalizeRareAutoConcurrency(value.autoRareConcurrency ?? DEFAULT_RARE_AUTO_ORDERS_PER_TICK),
     autoNormalConcurrency: normalizeNormalAutoConcurrency(value.autoNormalConcurrency ?? DEFAULT_NORMAL_AUTO_ORDERS_PER_TICK),
-    autoRareTrayWaitSeconds: normalizeAutomationWaitSeconds(value.autoRareTrayWaitSeconds ?? DEFAULT_RARE_AUTO_TRAY_WAIT_SECONDS, DEFAULT_RARE_AUTO_TRAY_WAIT_SECONDS),
-    autoNormalStorageWaitSeconds: normalizeAutomationWaitSeconds(value.autoNormalStorageWaitSeconds ?? DEFAULT_NORMAL_AUTO_STORAGE_WAIT_SECONDS, DEFAULT_NORMAL_AUTO_STORAGE_WAIT_SECONDS),
     autoMaxStepRetries: normalizeAutoStepRetries(value.autoMaxStepRetries ?? DEFAULT_AUTO_STEP_RETRIES),
     autoMaxRollbacks: normalizeAutoRollbacks(value.autoMaxRollbacks ?? DEFAULT_AUTO_ROLLBACKS),
     filterMissingCookers: value.filterMissingCookers !== false,
@@ -281,10 +282,6 @@ export function normalizeRareAutoConcurrency(value: number) {
 
 export function normalizeNormalAutoConcurrency(value: number) {
   return clampInteger(value, MIN_AUTO_ORDER_CONCURRENCY, MAX_NORMAL_AUTO_ORDER_CONCURRENCY, DEFAULT_NORMAL_AUTO_ORDERS_PER_TICK);
-}
-
-export function normalizeAutomationWaitSeconds(value: number, fallback: number) {
-  return clampInteger(value, MIN_AUTO_WAIT_SECONDS, MAX_AUTO_WAIT_SECONDS, fallback);
 }
 
 export function normalizeAutoStepRetries(value: number) {
@@ -331,12 +328,12 @@ export function persistCompanionPreferences(preferences: CompanionPreferences) {
   localStorage.setItem(AUTO_PREP_TAKE_BEVERAGE_STORAGE_KEY, normalized.autoPrepTakeBeverage ? '1' : '0');
   localStorage.setItem(AUTO_PREP_START_COOKING_STORAGE_KEY, normalized.autoPrepStartCooking ? '1' : '0');
   localStorage.setItem(AUTO_PREP_COLLECT_COOKING_STORAGE_KEY, normalized.autoPrepCollectCooking ? '1' : '0');
-  localStorage.setItem(AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY, normalized.autoPrepFavoritesOnly ? '1' : '0');
+  localStorage.setItem(AUTO_PREP_RECIPE_FAVORITES_ONLY_STORAGE_KEY, normalized.autoPrepRecipeFavoritesOnly ? '1' : '0');
+  localStorage.setItem(AUTO_PREP_BEVERAGE_FAVORITES_ONLY_STORAGE_KEY, normalized.autoPrepBeverageFavoritesOnly ? '1' : '0');
+  localStorage.removeItem(LEGACY_AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY);
   localStorage.setItem(AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY, normalized.autoPrepStopOnError ? '1' : '0');
   localStorage.setItem(AUTO_RARE_CONCURRENCY_STORAGE_KEY, String(normalized.autoRareConcurrency));
   localStorage.setItem(AUTO_NORMAL_CONCURRENCY_STORAGE_KEY, String(normalized.autoNormalConcurrency));
-  localStorage.setItem(AUTO_RARE_TRAY_WAIT_SECONDS_STORAGE_KEY, String(normalized.autoRareTrayWaitSeconds));
-  localStorage.setItem(AUTO_NORMAL_STORAGE_WAIT_SECONDS_STORAGE_KEY, String(normalized.autoNormalStorageWaitSeconds));
   localStorage.setItem(AUTO_MAX_STEP_RETRIES_STORAGE_KEY, String(normalized.autoMaxStepRetries));
   localStorage.setItem(AUTO_MAX_ROLLBACKS_STORAGE_KEY, String(normalized.autoMaxRollbacks));
   localStorage.setItem(FILTER_MISSING_COOKERS_STORAGE_KEY, normalized.filterMissingCookers ? '1' : '0');

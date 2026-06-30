@@ -15,6 +15,7 @@ export const CONNECTION_RETRY_DELAYS_MS = [2000, 5000, 10000, 30000];
 const INITIAL_PROBE_TIMEOUT_MS = 700;
 const AUTO_POLL_TIMEOUT_MS = 1800;
 const MANUAL_REFRESH_TIMEOUT_MS = 2800;
+const CONNECTION_UPDATED_EVENT = 'connection-updated';
 
 /**
  * 维护伴随窗口与游戏内本地 API 的连接状态。
@@ -33,12 +34,47 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
   const [connectionProbing, setConnectionProbing] = useState(false);
   const [connectionPaused, setConnectionPaused] = useState(false);
   const [connectionFailureCount, setConnectionFailureCount] = useState(0);
+  const [connectionRevision, setConnectionRevision] = useState(0);
   const [lastConnectedAt, setLastConnectedAt] = useState<Date | null>(null);
   const latestRequestIdRef = useRef(0);
   const inFlightRequestIdRef = useRef<number | null>(null);
 
   const normalizedEndpoint = useMemo(() => normalizeEndpoint(endpoint), [endpoint]);
   const normalizedEndpointDraft = useMemo(() => normalizeEndpoint(endpointDraft), [endpointDraft]);
+
+  const applyRuntimeConnection = useCallback((launchEndpoint?: string | null, launchToken?: string | null) => {
+    if (!launchEndpoint && !launchToken) return;
+
+    // 启动参数或控制端口带来的连接信息代表当前游戏进程状态，收到后立即废弃旧请求和旧快照。
+    latestRequestIdRef.current += 1;
+    inFlightRequestIdRef.current = null;
+    if (launchEndpoint) {
+      const normalizedLaunchEndpoint = normalizeEndpoint(launchEndpoint);
+      setEndpoint(normalizedLaunchEndpoint);
+      setEndpointDraft(normalizedLaunchEndpoint);
+    }
+    if (launchToken) {
+      setApiToken(launchToken);
+    }
+    setSnapshot(null);
+    setCachedRuntimeData(null);
+    setConnectionPaused(false);
+    setConnectionFailureCount(0);
+    setError('');
+    setManualRefreshing(false);
+    setConnectionProbing(false);
+    setConnectionRevision((current) => current + 1);
+  }, []);
+
+  const readLaunchConnection = useCallback(async (shouldSkip?: () => boolean) => {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const [launchEndpoint, launchToken] = await Promise.all([
+      invoke<string | null>('launch_api_endpoint'),
+      invoke<string | null>('launch_api_token'),
+    ]);
+    if (shouldSkip?.()) return;
+    applyRuntimeConnection(launchEndpoint, launchToken);
+  }, [applyRuntimeConnection]);
 
   const applyEndpointConnection = useCallback(() => {
     // 递增请求序号会让已发出的旧请求响应失效，避免切换 endpoint 后旧响应覆盖新连接状态。
@@ -136,26 +172,7 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
     if (!isTauriRuntime()) return;
 
     let disposed = false;
-    import('@tauri-apps/api/core')
-      .then(async ({ invoke }) => {
-        const [launchEndpoint, launchToken] = await Promise.all([
-          invoke<string | null>('launch_api_endpoint'),
-          invoke<string | null>('launch_api_token'),
-        ]);
-        return { launchEndpoint, launchToken };
-      })
-      .then(({ launchEndpoint, launchToken }) => {
-        if (!disposed && launchEndpoint) {
-          const normalizedLaunchEndpoint = normalizeEndpoint(launchEndpoint);
-          setEndpoint(normalizedLaunchEndpoint);
-          setEndpointDraft(normalizedLaunchEndpoint);
-        }
-        if (!disposed && launchToken) {
-          setApiToken(launchToken);
-          setConnectionPaused(false);
-          setConnectionFailureCount(0);
-        }
-      })
+    readLaunchConnection(() => disposed)
       .catch(() => {
         // 浏览器开发模式没有 Tauri 启动参数，连接信息由 localStorage 或页面输入提供。
       });
@@ -163,7 +180,41 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
     return () => {
       disposed = true;
     };
-  }, []);
+  }, [readLaunchConnection]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    import('@tauri-apps/api/event')
+      .then(({ listen }) => listen<boolean>(CONNECTION_UPDATED_EVENT, () => {
+        if (!disposed) void readLaunchConnection(() => disposed);
+      }))
+      .then((nextUnlisten) => {
+        if (disposed) {
+          nextUnlisten();
+          return;
+        }
+        unlisten = nextUnlisten;
+      })
+      .catch(() => {
+        // 浏览器开发模式没有 Tauri 事件通道，连接参数仍由 localStorage 或页面输入提供。
+      });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [readLaunchConnection]);
+
+  useEffect(() => {
+    if (connectionRevision === 0 || !apiToken || connectionPaused) return;
+    const timer = window.setTimeout(() => {
+      void refresh();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [apiToken, connectionPaused, connectionRevision, refresh]);
 
   useEffect(() => {
     if (!apiToken || connectionPaused) return;

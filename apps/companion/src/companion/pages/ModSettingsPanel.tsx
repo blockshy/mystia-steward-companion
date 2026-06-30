@@ -8,14 +8,12 @@ import {
   MAX_RECIPE_VARIANT_LIMIT_PER_BASE,
   MAX_AUTO_ROLLBACKS_LIMIT,
   MAX_AUTO_STEP_RETRIES_LIMIT,
-  MAX_AUTO_WAIT_SECONDS,
   MAX_NORMAL_AUTO_ORDER_CONCURRENCY,
   MAX_RARE_AUTO_ORDER_CONCURRENCY,
   MIN_RECIPE_VARIANT_LIMIT_PER_BASE,
   MIN_AUTO_ORDER_CONCURRENCY,
   MIN_AUTO_ROLLBACKS,
   MIN_AUTO_STEP_RETRIES,
-  MIN_AUTO_WAIT_SECONDS,
   normalizeRecipeVariantLimitPerBase,
   type CompanionPreferences,
 } from '@/companion/preferences';
@@ -556,22 +554,6 @@ export function ModSettingsPanel({
                 min={MIN_AUTO_ORDER_CONCURRENCY}
                 max={MAX_NORMAL_AUTO_ORDER_CONCURRENCY}
                 onChange={(autoNormalConcurrency) => onPreferenceChange({ autoNormalConcurrency })}
-              />
-              <AutomationSliderField
-                label="稀客等待送餐盘"
-                value={preferences.autoRareTrayWaitSeconds}
-                min={MIN_AUTO_WAIT_SECONDS}
-                max={MAX_AUTO_WAIT_SECONDS}
-                unit="秒"
-                onChange={(autoRareTrayWaitSeconds) => onPreferenceChange({ autoRareTrayWaitSeconds })}
-              />
-              <AutomationSliderField
-                label="普客保温箱复查"
-                value={preferences.autoNormalStorageWaitSeconds}
-                min={MIN_AUTO_WAIT_SECONDS}
-                max={MAX_AUTO_WAIT_SECONDS}
-                unit="秒"
-                onChange={(autoNormalStorageWaitSeconds) => onPreferenceChange({ autoNormalStorageWaitSeconds })}
               />
               <AutomationSliderField
                 label="最大重试"

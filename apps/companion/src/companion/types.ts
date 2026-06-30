@@ -12,7 +12,7 @@ import type {
 /**
  * 工作台一级 Tab。值会持久化到 localStorage，并用于手柄导航定位。
  */
-export type ModTab = 'overview' | 'normal' | 'rare' | 'service' | 'tasks' | 'inventory' | 'help' | 'logs' | 'settings';
+export type ModTab = 'overview' | 'normal' | 'rare' | 'custom-recipes' | 'service' | 'tasks' | 'inventory' | 'help' | 'logs' | 'settings';
 export type OverviewTab = 'status' | 'inventory' | 'actions';
 export type SettingsTab = 'window' | 'recommendation' | 'automation' | 'updates' | 'debug';
 export type RareGuestInvitationScope = 'current' | 'all';
@@ -150,11 +150,11 @@ export interface NormalBusinessOrder {
   beverageName: string;
   hasServedFood: boolean;
   hasServedBeverage: boolean;
-  hasStoredFood?: boolean;
-  hasStoredFoodReceipt?: boolean;
-  storedFoodCount?: number;
-  storedFoodStatus?: string;
-  isFulfilled: boolean;
+  readyToEvaluate: boolean;
+  hasEvaluated: boolean;
+  controllerAvailable?: boolean;
+  canAutomate?: boolean;
+  actionBlockReason?: string;
   firstSeenAtUtc?: string | null;
   source: string;
 }
@@ -228,6 +228,7 @@ export interface RuntimeSets {
 export interface CachedRecommendation {
   customer: RareCustomerCatalogItem;
   preparationPlan: RareOrderRecommendationPlan | null;
+  executionPlans: RareOrderRecommendationPlan[];
   budget: RecommendationBudgetResult | null;
   blockedMessages: string[];
   recipes: RareRecipeRecommendation[];
@@ -363,6 +364,47 @@ export interface FavoriteMutationResponse {
   error: string | null;
 }
 
+export interface CustomRecipeData {
+  version: number;
+  recipes: CustomRecipeEntry[];
+}
+
+export interface CustomRecipeEntry {
+  id: string;
+  customerId: number;
+  customerName: string;
+  foodTag: string | null;
+  foodId: number;
+  recipeId: number;
+  recipeName: string;
+  extraIngredientIds: number[];
+  enabled: boolean;
+  pinToTop: boolean;
+  sortOrder: number;
+  createdAtUtc: string;
+  updatedAtUtc: string;
+}
+
+export interface CustomRecipeUpsertInput {
+  id?: string;
+  customerId: number;
+  customerName: string;
+  foodTag: string | null;
+  foodId: number;
+  recipeId: number;
+  recipeName: string;
+  extraIngredientIds: number[];
+  enabled: boolean;
+  pinToTop: boolean;
+  sortOrder?: number;
+}
+
+export interface CustomRecipeMutationResponse {
+  ok: boolean;
+  customRecipes: CustomRecipeData;
+  error: string | null;
+}
+
 export interface RareGuestInvitationEntry {
   id: number;
   name: string;
@@ -453,14 +495,16 @@ export interface NormalAutoOrderDiagnostic {
   prepared: boolean;
   beverageHandled: boolean;
   collected: boolean;
-  storedFoodCount: number;
-  hasStoredFoodReceipt: boolean;
-  storedFoodStatus: string;
   foodDelivered: boolean;
   completed: boolean;
   paused: boolean;
   hasServedFood: boolean;
   hasServedBeverage: boolean;
+  readyToEvaluate: boolean;
+  hasEvaluated: boolean;
+  controllerAvailable?: boolean;
+  canAutomate?: boolean;
+  actionBlockReason?: string;
 }
 
 export interface AutomationCookerCycle {
@@ -493,16 +537,8 @@ export interface AutomationCookerResourceRow {
   labels: string[];
 }
 
-export interface AutomationTrayResourceRow {
-  key: string;
-  label: string;
-  count: number;
-  labels: string[];
-}
-
 export interface AutomationResourceOverview {
   cookers: AutomationCookerResourceRow[];
-  tray: AutomationTrayResourceRow[];
 }
 
 export type ToggleRecipeFavorite = (customer: RareCustomerCatalogItem, foodTag: string, recipe: RareRecipeRecommendation) => Promise<void>;

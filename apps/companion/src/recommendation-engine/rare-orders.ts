@@ -781,6 +781,8 @@ function compareRarePlans(
   // 强制置顶和方案分桶属于硬优先级，必须先于权重分数；否则收藏/任务置顶会被收益或库存权重冲掉。
   const pinDiff = getPlanPinRank(right, sortContext) - getPlanPinRank(left, sortContext);
   if (pinDiff !== 0) return pinDiff;
+  const customOrderDiff = comparePinnedCustomPlanOrder(left, right);
+  if (customOrderDiff !== 0) return customOrderDiff;
   const bucketDiff = getBucketRank(right.bucket) - getBucketRank(left.bucket);
   if (bucketDiff !== 0) return bucketDiff;
   if (left.warnings.length !== right.warnings.length) return left.warnings.length - right.warnings.length;
@@ -893,10 +895,20 @@ function getPlanPinRank(
   sortContext: RecommendationPlanSortContext,
 ): number {
   if (plan.bucket === 'blocked') return 0;
-  if (sortContext.pinMissionRecipe && plan.food && sortContext.missionRecipeId === plan.food.recipe.id) return 3;
+  if (sortContext.pinMissionRecipe && plan.food && sortContext.missionRecipeId === plan.food.recipe.id) return 4;
+  if (plan.food?.customRecipePinned) return 3;
   if (sortContext.pinFavoriteRecipe && plan.food && sortContext.favoriteRecipeKeys?.has(buildPlanRecipeKey(plan.food))) return 2;
   if (sortContext.pinFavoriteBeverage && plan.beverage && sortContext.favoriteBeverageIds?.has(plan.beverage.beverage.id)) return 1;
   return 0;
+}
+
+function getPlanCustomSortOrder(plan: RareOrderRecommendationPlan): number {
+  return plan.food?.customRecipePinned ? plan.food.customRecipeSortOrder ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER;
+}
+
+function comparePinnedCustomPlanOrder(left: RareOrderRecommendationPlan, right: RareOrderRecommendationPlan): number {
+  if (!left.food?.customRecipePinned || !right.food?.customRecipePinned) return 0;
+  return getPlanCustomSortOrder(left) - getPlanCustomSortOrder(right);
 }
 
 function buildPlanRecipeKey(food: FoodCandidate): string {

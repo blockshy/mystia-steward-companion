@@ -27,14 +27,14 @@ internal static class CompanionProcessLauncher
 
     public static void TryShowOrLaunch(StewardPluginConfig config, ManualLogSource log, string localApiToken)
     {
-        if (SendControlMessage(ControlShow)) return;
+        if (SendControlMessage(ControlShow, config, localApiToken)) return;
         TryLaunch(config, log, localApiToken);
     }
 
     public static void TryToggleOrLaunch(StewardPluginConfig config, ManualLogSource log, string localApiToken)
     {
         if (IsRequestThrottled()) return;
-        if (SendControlMessage(ControlToggle)) return;
+        if (SendControlMessage(ControlToggle, config, localApiToken)) return;
         TryLaunch(config, log, localApiToken);
     }
 
@@ -77,7 +77,7 @@ internal static class CompanionProcessLauncher
         }
     }
 
-    private static bool SendControlMessage(string message)
+    private static bool SendControlMessage(string message, StewardPluginConfig? config = null, string localApiToken = "")
     {
         try
         {
@@ -87,7 +87,7 @@ internal static class CompanionProcessLauncher
                 return false;
             }
 
-            var bytes = Encoding.UTF8.GetBytes(BuildControlMessage(message));
+            var bytes = Encoding.UTF8.GetBytes(BuildControlMessage(message, config, localApiToken));
             using var stream = client.GetStream();
             stream.Write(bytes, 0, bytes.Length);
             stream.Flush();
@@ -99,9 +99,26 @@ internal static class CompanionProcessLauncher
         }
     }
 
-    private static string BuildControlMessage(string message)
+    private static string BuildControlMessage(string message, StewardPluginConfig? config, string localApiToken)
     {
-        return $"{message}\n--game-pid={Process.GetCurrentProcess().Id}\n";
+        var builder = new StringBuilder()
+            .AppendLine(message)
+            .Append("--game-pid=")
+            .AppendLine(Process.GetCurrentProcess().Id.ToString());
+
+        if (config != null)
+        {
+            builder
+                .Append("--api=http://127.0.0.1:")
+                .AppendLine(Math.Clamp(config.LocalApiPort.Value, 1024, 65535).ToString());
+        }
+
+        if (!string.IsNullOrWhiteSpace(localApiToken))
+        {
+            builder.Append("--token=").AppendLine(localApiToken.Trim());
+        }
+
+        return builder.ToString();
     }
 
     private static bool IsRequestThrottled()
