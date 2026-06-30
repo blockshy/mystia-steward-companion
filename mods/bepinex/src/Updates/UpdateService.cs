@@ -4,6 +4,7 @@ using System.Net;
 using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using BepInEx;
 using BepInEx.Logging;
 using MystiaStewardCompanion.Plugin;
@@ -19,10 +20,11 @@ namespace MystiaStewardCompanion.Updates;
 /// </remarks>
 internal sealed class UpdateService
 {
-    private const string RepoApi = "https://api.github.com/repos/blockshy/mystia-steward-companion";
     private const string RepoWeb = "https://github.com/blockshy/mystia-steward-companion";
     private const string ManifestAssetName = "update-manifest.json";
     private const string PackageAssetName = "mystia-steward-companion-bepinex.zip";
+    private const string ReleasesAtomUrl = RepoWeb + "/releases.atom";
+    private const string AllReleasesUrl = RepoWeb + "/releases";
     private const string LatestManifestDownloadUrl = RepoWeb + "/releases/latest/download/" + ManifestAssetName;
     private const string LatestPackageDownloadUrl = RepoWeb + "/releases/latest/download/" + PackageAssetName;
     private const string LatestReleaseUrl = RepoWeb + "/releases/latest";
@@ -110,8 +112,8 @@ internal sealed class UpdateService
     /// <returns>检查后的更新状态；网络、清单或校验信息异常时会返回失败状态而不是向 API 层抛出。</returns>
     /// <remarks>
     /// 稳定版默认读取 <c>releases/latest/download/update-manifest.json</c>，避免 GitHub REST API
-    /// 未认证请求的 rate limit。只有开启预发布检查时才需要调用 Release API，因为 latest download
-    /// 无法表达“包含 prerelease”的语义。
+    /// 未认证请求的 rate limit。开启预发布检查时读取 <c>releases.atom</c> 中的公开 tag，
+    /// 再按固定资产下载地址读取 manifest，避免测试通道耗尽 GitHub REST API 限额。
     /// </remarks>
     public UpdateStatus CheckForUpdates(bool force)
     {
@@ -142,6 +144,7 @@ internal sealed class UpdateService
         {
             var candidate = FetchUpdateCandidate();
             var manifest = candidate.Manifest;
+            ValidateManifestVersion(manifest);
             if (!string.Equals(manifest.PackageAsset, PackageAssetName, StringComparison.Ordinal))
             {
                 throw new InvalidOperationException($"更新清单引用了未知资产：{manifest.PackageAsset}");
@@ -286,7 +289,7 @@ internal sealed class UpdateService
     /// <returns>安装排程状态。</returns>
     /// <remarks>
     /// updater 会先被复制到配置目录下的 runner 子目录再启动，避免从即将被替换的插件目录运行自身。
-    /// 该方法只启动进程和写入等待状态，不会关闭游戏或直接移动当前 DLL。
+    /// 该方法只启动进程和写入等待状态；Windows 下 updater 会显示独立窗口，由用户确认后再关闭游戏和替换文件。
     /// </remarks>
     public UpdateStatus InstallOnExit()
     {
@@ -345,7 +348,8 @@ internal sealed class UpdateService
             File.WriteAllText(_installStatusPath, JsonSerializer.Serialize(new UpdateInstallStatus
             {
                 State = "waiting",
-                Message = "等待游戏和伴随窗口退出后安装更新。",
+                Message = "已启动独立更新程序，请在弹窗中确认关闭游戏并完成安装。",
+                Progress = 0,
             }, JsonOptions));
 
             var process = Process.Start(startInfo);
@@ -357,7 +361,7 @@ internal sealed class UpdateService
             lock (_lock)
             {
                 _state.InstallState = "waiting";
-                _state.InstallMessage = "等待游戏和伴随窗口退出后安装更新。";
+                _state.InstallMessage = "已启动独立更新程序，请在弹窗中确认关闭游戏并完成安装。";
                 _state.InstallProcessId = process.Id;
                 _state.Error = null;
                 SaveState();
@@ -449,79 +453,91 @@ internal sealed class UpdateService
     /// 获取包含 prerelease 的更新候选。
     /// </summary>
     /// <remarks>
-    /// GitHub 的 latest asset 地址不会返回 prerelease，因此该路径必须调用 Release API 并从返回资产中选择
-    /// manifest 与 zip。只有用户显式开启预发布检查时才走此分支。
+    /// GitHub 的 latest asset 地址不会返回 prerelease；这里通过 releases.atom 获取公开 Release tag，
+    /// 再按版本从高到低尝试读取每个 tag 下的 update-manifest.json。Atom 不走 REST API，
+    /// 可以避免未认证请求触发 rate limit。
     /// </remarks>
-    private UpdateCandidate FetchPrereleaseAwareCandidate()
+    private static UpdateCandidate FetchPrereleaseAwareCandidate()
     {
-        var release = FetchLatestReleaseFromApi();
-        var manifestAsset = release.Assets.FirstOrDefault(asset => string.Equals(asset.Name, ManifestAssetName, StringComparison.Ordinal));
-        var packageAsset = release.Assets.FirstOrDefault(asset => string.Equals(asset.Name, PackageAssetName, StringComparison.Ordinal));
-        if (manifestAsset == null)
+        var releases = FetchReleaseFeedCandidates();
+        foreach (var release in releases)
         {
-            throw new InvalidOperationException("最新 Release 未提供 update-manifest.json，无法自动更新。");
-        }
-        if (packageAsset == null)
-        {
-            throw new InvalidOperationException("最新 Release 未提供 Mod 更新包，无法自动更新。");
-        }
-
-        return new UpdateCandidate
-        {
-            Manifest = DownloadManifest(manifestAsset.DownloadUrl),
-            ReleaseUrl = release.HtmlUrl,
-            PublishedAtUtc = release.PublishedAtUtc,
-            PackageSize = packageAsset.Size,
-            PackageDownloadUrl = packageAsset.DownloadUrl,
-            ManifestDownloadUrl = manifestAsset.DownloadUrl,
-        };
-    }
-
-    private ReleaseInfo FetchLatestReleaseFromApi()
-    {
-        var url = _settings.IncludePrerelease ? $"{RepoApi}/releases" : $"{RepoApi}/releases/latest";
-        var json = ReadString(url);
-        using var document = JsonDocument.Parse(json);
-        return document.RootElement.ValueKind == JsonValueKind.Array
-            ? ParseReleaseArray(document.RootElement)
-            : ParseRelease(document.RootElement);
-    }
-
-    private ReleaseInfo ParseReleaseArray(JsonElement root)
-    {
-        foreach (var item in root.EnumerateArray())
-        {
-            if (ReadBool(item, "draft")) continue;
-            if (!_settings.IncludePrerelease && ReadBool(item, "prerelease")) continue;
-            return ParseRelease(item);
-        }
-
-        throw new InvalidOperationException("未找到可用 Release。");
-    }
-
-    private static ReleaseInfo ParseRelease(JsonElement root)
-    {
-        var assets = new List<ReleaseAssetInfo>();
-        if (root.TryGetProperty("assets", out var assetsElement) && assetsElement.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var asset in assetsElement.EnumerateArray())
+            var manifestUrl = BuildVersionedAssetDownloadUrl(release.TagName, ManifestAssetName, "");
+            UpdateManifest manifest;
+            try
             {
-                assets.Add(new ReleaseAssetInfo
-                {
-                    Name = ReadString(asset, "name"),
-                    DownloadUrl = ReadString(asset, "browser_download_url"),
-                    Size = ReadLong(asset, "size"),
-                });
+                manifest = DownloadManifest(manifestUrl);
             }
+            catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+            {
+                continue;
+            }
+
+            ValidateManifestVersion(manifest);
+            if (!string.Equals(manifest.PackageAsset, PackageAssetName, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException($"更新清单引用了未知资产：{manifest.PackageAsset}");
+            }
+            if (string.IsNullOrWhiteSpace(manifest.PackageSha256))
+            {
+                throw new InvalidOperationException("更新清单缺少 packageSha256。");
+            }
+
+            var packageTag = string.IsNullOrWhiteSpace(manifest.Tag) ? release.TagName : manifest.Tag;
+            return new UpdateCandidate
+            {
+                Manifest = manifest,
+                ReleaseUrl = string.IsNullOrWhiteSpace(manifest.ReleaseUrl) ? release.HtmlUrl : manifest.ReleaseUrl,
+                PublishedAtUtc = ParseDateOrNull(manifest.PublishedAtUtc) ?? release.PublishedAtUtc,
+                PackageSize = manifest.PackageSize,
+                PackageDownloadUrl = BuildVersionedAssetDownloadUrl(packageTag, PackageAssetName, ""),
+                ManifestDownloadUrl = manifestUrl,
+            };
         }
 
-        return new ReleaseInfo
+        throw new InvalidOperationException("未找到带自动更新清单的可用 Release。");
+    }
+
+    private static List<ReleaseInfo> FetchReleaseFeedCandidates()
+    {
+        var xml = ReadString(ReleasesAtomUrl);
+        var releases = new List<(ReleaseInfo Release, SemanticVersion Version)>();
+        foreach (Match entryMatch in Regex.Matches(xml, @"<entry\b[^>]*>(?<entry>.*?)</entry>", RegexOptions.Singleline | RegexOptions.CultureInvariant))
         {
-            TagName = ReadString(root, "tag_name"),
-            HtmlUrl = ReadString(root, "html_url"),
-            PublishedAtUtc = ParseDateOrNull(ReadString(root, "published_at")),
-            Assets = assets,
-        };
+            var entry = entryMatch.Groups["entry"].Value;
+            var tag = MatchGroup(entry, @"<title>(?<value>[^<]+)</title>");
+            if (string.IsNullOrWhiteSpace(tag)) continue;
+            if (!SemanticVersion.TryParse(WebUtility.HtmlDecode(tag), out var version)) continue;
+
+            var href = MatchGroup(entry, @"<link\b[^>]*rel=""alternate""[^>]*href=""(?<value>[^""]+)""");
+            if (string.IsNullOrWhiteSpace(href))
+            {
+                href = $"{RepoWeb}/releases/tag/{Uri.EscapeDataString(tag)}";
+            }
+            var updatedAt = MatchGroup(entry, @"<updated>(?<value>[^<]+)</updated>");
+            releases.Add((new ReleaseInfo
+            {
+                TagName = WebUtility.HtmlDecode(tag),
+                HtmlUrl = WebUtility.HtmlDecode(href),
+                PublishedAtUtc = ParseDateOrNull(updatedAt),
+            }, version));
+        }
+
+        if (releases.Count == 0)
+        {
+            throw new InvalidOperationException("未从 GitHub Release Feed 读取到可用版本。");
+        }
+
+        return releases
+            .OrderByDescending(item => item.Version)
+            .Select(item => item.Release)
+            .ToList();
+    }
+
+    private static string MatchGroup(string input, string pattern)
+    {
+        var match = Regex.Match(input, pattern, RegexOptions.Singleline | RegexOptions.CultureInvariant);
+        return match.Success ? match.Groups["value"].Value : "";
     }
 
     private static UpdateManifest DownloadManifest(string url)
@@ -529,6 +545,24 @@ internal sealed class UpdateService
         var json = ReadString(url);
         return JsonSerializer.Deserialize<UpdateManifest>(json, JsonOptions)
             ?? throw new InvalidOperationException("update-manifest.json 解析失败。");
+    }
+
+    private static void ValidateManifestVersion(UpdateManifest manifest)
+    {
+        if (!SemanticVersion.TryParse(manifest.Version, out var manifestVersion))
+        {
+            throw new InvalidOperationException($"update-manifest.json 中的版本号无效：{manifest.Version}");
+        }
+
+        if (string.IsNullOrWhiteSpace(manifest.Tag)) return;
+        if (!SemanticVersion.TryParse(manifest.Tag, out var tagVersion))
+        {
+            throw new InvalidOperationException($"update-manifest.json 中的 tag 无效：{manifest.Tag}");
+        }
+        if (manifestVersion.CompareTo(tagVersion) != 0)
+        {
+            throw new InvalidOperationException($"update-manifest.json 的 version 与 tag 不一致：{manifest.Version} / {manifest.Tag}");
+        }
     }
 
     private static string ReadString(string url)
@@ -549,7 +583,7 @@ internal sealed class UpdateService
     {
         if (ex is HttpRequestException { StatusCode: HttpStatusCode.Forbidden })
         {
-            return "GitHub 请求达到频率限制。稳定版更新检查已改用 Release 固定下载地址；如果仍看到该提示，请稍后再试，或关闭预发布版本检查。";
+            return "GitHub 暂时拒绝了更新请求。请稍后再试，或点击发布页手动下载更新包。";
         }
 
         return ex.InnerException is HttpRequestException { StatusCode: HttpStatusCode.NotFound }
@@ -652,27 +686,12 @@ internal sealed class UpdateService
 
     private static int CompareVersion(string left, string right)
     {
-        var leftParts = ParseVersionParts(left);
-        var rightParts = ParseVersionParts(right);
-        for (var index = 0; index < Math.Max(leftParts.Count, rightParts.Count); index++)
-        {
-            var l = index < leftParts.Count ? leftParts[index] : 0;
-            var r = index < rightParts.Count ? rightParts[index] : 0;
-            if (l != r) return l.CompareTo(r);
-        }
-
-        return 0;
-    }
-
-    private static List<int> ParseVersionParts(string value)
-    {
-        var trimmed = value.Trim().TrimStart('v', 'V');
-        var suffixStart = trimmed.IndexOfAny(new[] { '-', '+' });
-        if (suffixStart >= 0) trimmed = trimmed[..suffixStart];
-        return trimmed
-            .Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(part => int.TryParse(part, out var number) ? number : 0)
-            .ToList();
+        var leftOk = SemanticVersion.TryParse(left, out var leftVersion);
+        var rightOk = SemanticVersion.TryParse(right, out var rightVersion);
+        if (!leftOk && !rightOk) return 0;
+        if (!leftOk) return -1;
+        if (!rightOk) return 1;
+        return leftVersion.CompareTo(rightVersion);
     }
 
     private UpdateState LoadState()
@@ -706,18 +725,110 @@ internal sealed class UpdateService
             _state.InstallMessage = status.Message;
             if (string.Equals(status.State, "succeeded", StringComparison.OrdinalIgnoreCase))
             {
-                _state.State = "installed";
                 _state.Error = null;
+                if (IsInstalledVersionRunning(_state))
+                {
+                    _state.State = "current";
+                    _state.InstallState = "";
+                    _state.InstallMessage = "";
+                    _state.InstallProcessId = 0;
+                    TryDeleteFile(_installStatusPath);
+                }
+                else
+                {
+                    _state.State = "installed";
+                    _state.InstallMessage = string.IsNullOrWhiteSpace(status.Message)
+                        ? "更新安装完成。请重新启动游戏。"
+                        : status.Message;
+                }
             }
             else if (string.Equals(status.State, "failed", StringComparison.OrdinalIgnoreCase))
             {
                 _state.Error = status.Message;
+            }
+            else if (string.Equals(status.State, "cancelled", StringComparison.OrdinalIgnoreCase))
+            {
+                _state.Error = null;
+                _state.InstallProcessId = 0;
+                _state.InstallMessage = string.IsNullOrWhiteSpace(status.Message)
+                    ? "安装已取消，可重新打开安装程序。"
+                    : status.Message;
+            }
+            else if (IsInstallInProgress(status.State) && !IsUpdaterProcessRunning(_state.InstallProcessId))
+            {
+                _state.InstallState = "failed";
+                _state.InstallMessage = "更新程序已退出但安装未完成，请重新打开安装程序。";
+                _state.Error = _state.InstallMessage;
+                File.WriteAllText(_installStatusPath, JsonSerializer.Serialize(new UpdateInstallStatus
+                {
+                    State = _state.InstallState,
+                    Message = _state.InstallMessage,
+                    Progress = status.Progress,
+                }, JsonOptions));
             }
             SaveState();
         }
         catch (Exception ex)
         {
             _log.LogWarning($"Read update install status failed: {ex.Message}");
+        }
+    }
+
+    private static bool IsInstalledVersionRunning(UpdateState state)
+    {
+        var installedVersion = string.IsNullOrWhiteSpace(state.DownloadedVersion)
+            ? state.LatestVersion
+            : state.DownloadedVersion;
+        return !string.IsNullOrWhiteSpace(installedVersion)
+            && CompareVersion(MystiaStewardCompanionPlugin.PluginVersion, installedVersion) >= 0;
+    }
+
+    private static bool IsInstallInProgress(string state)
+    {
+        return state is
+            "waiting" or
+            "preparing" or
+            "closing-companion" or
+            "waiting-game" or
+            "terminating-game" or
+            "game-closed" or
+            "backing-up" or
+            "installing" or
+            "verifying";
+    }
+
+    private static bool IsUpdaterProcessRunning(int processId)
+    {
+        if (processId <= 0) return false;
+
+        try
+        {
+            using var process = Process.GetProcessById(processId);
+            if (process.HasExited) return false;
+            return process.ProcessName.Contains(
+                "mystia-steward-companion-updater",
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+        catch
+        {
+            // 进程仍可能存在但当前权限无法读取详情；保守地认为 updater 还在，避免误报失败。
+            return true;
+        }
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+        catch
+        {
+            // 删除状态文件失败不影响运行态展示；已清理后的 update-state 会覆盖下一次 API 状态。
         }
     }
 
@@ -747,7 +858,7 @@ internal sealed class UpdateService
             HasUpdate = hasUpdate,
             CheckedAtUtc = _state.CheckedAtUtc?.ToString("O") ?? "",
             PublishedAtUtc = _state.PublishedAtUtc?.ToString("O") ?? "",
-            ReleaseUrl = _state.ReleaseUrl,
+            ReleaseUrl = string.IsNullOrWhiteSpace(_state.ReleaseUrl) ? AllReleasesUrl : _state.ReleaseUrl,
             PackageAsset = _state.PackageAsset,
             PackageSize = _state.PackageSize,
             DownloadedVersion = _state.DownloadedVersion,
@@ -783,24 +894,6 @@ internal sealed class UpdateService
         var invalid = Path.GetInvalidFileNameChars();
         var sanitized = new string(value.Select(character => invalid.Contains(character) ? '_' : character).ToArray());
         return string.IsNullOrWhiteSpace(sanitized) ? "unknown" : sanitized;
-    }
-
-    private static string ReadString(JsonElement element, string name)
-    {
-        return element.TryGetProperty(name, out var property) && property.ValueKind == JsonValueKind.String
-            ? property.GetString() ?? ""
-            : "";
-    }
-
-    private static long ReadLong(JsonElement element, string name)
-    {
-        return element.TryGetProperty(name, out var property) && property.TryGetInt64(out var value) ? value : 0;
-    }
-
-    private static bool ReadBool(JsonElement element, string name)
-    {
-        return element.TryGetProperty(name, out var property)
-            && property.ValueKind == JsonValueKind.True;
     }
 
     private static DateTime? ParseDateOrNull(string value)
@@ -919,6 +1012,7 @@ internal sealed class UpdateInstallStatus
 {
     public string State { get; init; } = "";
     public string Message { get; init; } = "";
+    public int Progress { get; init; }
 }
 
 internal sealed class ReleaseInfo
@@ -926,14 +1020,102 @@ internal sealed class ReleaseInfo
     public string TagName { get; init; } = "";
     public string HtmlUrl { get; init; } = "";
     public DateTime? PublishedAtUtc { get; init; }
-    public IReadOnlyList<ReleaseAssetInfo> Assets { get; init; } = Array.Empty<ReleaseAssetInfo>();
 }
 
-internal sealed class ReleaseAssetInfo
+internal sealed class SemanticVersion : IComparable<SemanticVersion>
 {
-    public string Name { get; init; } = "";
-    public string DownloadUrl { get; init; } = "";
-    public long Size { get; init; }
+    private static readonly Regex Pattern = new(
+        @"^v?(?<major>0|[1-9]\d*)\.(?<minor>0|[1-9]\d*)\.(?<patch>0|[1-9]\d*)(?:-(?<pre>[0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private readonly IReadOnlyList<PrereleaseIdentifier> _prerelease;
+
+    private SemanticVersion(int major, int minor, int patch, IReadOnlyList<PrereleaseIdentifier> prerelease)
+    {
+        Major = major;
+        Minor = minor;
+        Patch = patch;
+        _prerelease = prerelease;
+    }
+
+    public int Major { get; }
+    public int Minor { get; }
+    public int Patch { get; }
+
+    public static bool TryParse(string value, out SemanticVersion version)
+    {
+        version = null!;
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        var match = Pattern.Match(value.Trim());
+        if (!match.Success) return false;
+        if (!int.TryParse(match.Groups["major"].Value, out var major)) return false;
+        if (!int.TryParse(match.Groups["minor"].Value, out var minor)) return false;
+        if (!int.TryParse(match.Groups["patch"].Value, out var patch)) return false;
+
+        var prerelease = new List<PrereleaseIdentifier>();
+        var pre = match.Groups["pre"].Value;
+        if (!string.IsNullOrWhiteSpace(pre))
+        {
+            foreach (var part in pre.Split('.'))
+            {
+                if (string.IsNullOrWhiteSpace(part)) return false;
+                prerelease.Add(PrereleaseIdentifier.Parse(part));
+            }
+        }
+
+        version = new SemanticVersion(major, minor, patch, prerelease);
+        return true;
+    }
+
+    public int CompareTo(SemanticVersion? other)
+    {
+        if (other == null) return 1;
+        var core = Major.CompareTo(other.Major);
+        if (core != 0) return core;
+        core = Minor.CompareTo(other.Minor);
+        if (core != 0) return core;
+        core = Patch.CompareTo(other.Patch);
+        if (core != 0) return core;
+
+        if (_prerelease.Count == 0 && other._prerelease.Count == 0) return 0;
+        if (_prerelease.Count == 0) return 1;
+        if (other._prerelease.Count == 0) return -1;
+
+        for (var index = 0; index < Math.Min(_prerelease.Count, other._prerelease.Count); index++)
+        {
+            var diff = _prerelease[index].CompareTo(other._prerelease[index]);
+            if (diff != 0) return diff;
+        }
+
+        return _prerelease.Count.CompareTo(other._prerelease.Count);
+    }
+}
+
+internal readonly struct PrereleaseIdentifier : IComparable<PrereleaseIdentifier>
+{
+    private PrereleaseIdentifier(string text, long? number)
+    {
+        Text = text;
+        Number = number;
+    }
+
+    private string Text { get; }
+    private long? Number { get; }
+
+    public static PrereleaseIdentifier Parse(string value)
+    {
+        return long.TryParse(value, out var number)
+            ? new PrereleaseIdentifier(value, number)
+            : new PrereleaseIdentifier(value, null);
+    }
+
+    public int CompareTo(PrereleaseIdentifier other)
+    {
+        if (Number.HasValue && other.Number.HasValue) return Number.Value.CompareTo(other.Number.Value);
+        if (Number.HasValue) return -1;
+        if (other.Number.HasValue) return 1;
+        return string.Compare(Text, other.Text, StringComparison.Ordinal);
+    }
 }
 
 internal sealed class UpdateManifestMissingException : Exception

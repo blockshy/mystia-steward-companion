@@ -185,7 +185,7 @@ mods/bepinex/bin/Release/MystiaStewardCompanion.BepInEx.dll
 mods/bepinex/dist/mystia-steward-companion-bepinex.zip
 ```
 
-PowerShell 7 脚本固定生成 `.zip`；bash 脚本在系统没有 `zip` 时会改为生成 `.tar.gz`。打包脚本会在检测到 `apps/companion/src-tauri/target/release/mystia-steward-companion(.exe)` 时自动复制到安装包的 `companion/` 子目录，并把 `mystia-steward-companion-updater(.exe)` 放在插件目录根部。
+PowerShell 7 脚本固定生成 `.zip`；bash 脚本在系统没有 `zip` 时会改为生成 `.tar.gz`。打包脚本会在检测到 `apps/companion/src-tauri/target/release/mystia-steward-companion(.exe)` 时自动复制到安装包的 `companion/` 子目录，并把 `mystia-steward-companion-updater(.exe)` 放在插件目录根部。Windows 下该 updater 会显示独立更新窗口，负责提示关闭游戏、展示阶段进度并在游戏退出后替换插件目录。
 
 ## 本地发布
 
@@ -204,35 +204,74 @@ GitHub Release 只上传以下资产：
 - `mods\bepinex\References` 中 8 个编译引用 DLL 齐全。
 - 已运行 `mods\bepinex\tools\set-version.ps1` 并提交版本号变更。
 - 用户可见功能和开发约束已同步到 README 或 `docs/`。
-- 若发布新版本，先提交版本号变更并创建或移动对应 tag，例如 `v1.0.1`。
+- 若发布新版本，先提交版本号变更并创建或移动对应 tag，例如 `v1.1.0` 或 `v1.1.0-preview.1`。
 
 Release Note 只写从上一个版本到当前版本新增的用户可见功能、优化和 BUG 修复。内部重构、文档、构建脚本、版本号变更不写入 Note；如果某个优化或修复只是本版本新增功能的二次调整，不单独列出，只在新增功能描述中体现最终能力。
 
 ### 同步版本号
 
-以 `1.0.1` 为例：
+以稳定版 `1.1.0` 为例：
 
 ```powershell
-pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\set-version.ps1 -Version 1.0.1
+pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\set-version.ps1 -Version 1.1.0
 
 git add package.json apps\companion\src-tauri\Cargo.toml apps\companion\src-tauri\Cargo.lock apps\companion\src-tauri\tauri.conf.json mods\bepinex\src\Plugin\MystiaStewardCompanionPlugin.cs
-git commit -m "chore(release): bump version to 1.0.1"
+git commit -m "chore(release): bump version to 1.1.0"
 git push origin dev
 ```
 
-版本号变更先进入 `dev`；确认版本可发布后，再合并到 `main`，并在 `main` 上执行发布脚本。
+版本号变更先进入 `dev`；确认稳定版可发布后，再合并到 `main`，并在 `main` 上执行发布脚本。预览版使用 `X.Y.Z-preview.N`，只用于自动更新测试，通常不合并 `main`。
 
 Linux 开发环境可使用：
 
 ```bash
-bash mods/bepinex/tools/set-version.sh 1.0.1
+bash mods/bepinex/tools/set-version.sh 1.1.0
 ```
 
-发布脚本会根据 `-Tag` 校验 `package.json`、`tauri.conf.json`、`Cargo.toml`、`Cargo.lock` 和 `PluginVersion`。如果版本不一致，脚本会失败并提示先同步版本。
+发布脚本会根据 `-Tag` 校验 `package.json`、`tauri.conf.json`、`Cargo.toml`、`Cargo.lock` 和 `PluginVersion`。如果版本不一致，脚本会失败并提示先同步版本。自动更新发布只支持稳定版 `X.Y.Z` 和预览版 `X.Y.Z-preview.N`；预览版必须加 `-Prerelease` 或 `-Preview`，稳定版不能加。
+
+### 发布预览版
+
+预览版用于验证 Mod 内置自动更新链路。示例流程：
+
+```text
+v1.1.0-preview.1 -> v1.1.0-preview.2 -> v1.1.0
+```
+
+在 `dev` 上同步预览版本、提交、推送并创建 tag：
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\set-version.ps1 -Version 1.1.0-preview.1
+git add package.json apps\companion\src-tauri\Cargo.toml apps\companion\src-tauri\Cargo.lock apps\companion\src-tauri\tauri.conf.json mods\bepinex\src\Plugin\MystiaStewardCompanionPlugin.cs
+git commit -m "chore(release): bump version to 1.1.0-preview.1"
+git push origin dev
+
+git tag -a v1.1.0-preview.1 -m "v1.1.0-preview.1"
+git push origin v1.1.0-preview.1
+```
+
+发布 GitHub Prerelease：
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
+  -Tag v1.1.0-preview.1 `
+  -Title "v1.1.0-preview.1" `
+  -Notes "预览版更新测试说明" `
+  -Prerelease
+```
+
+测试者需要在 `BepInEx/config/com.tyukki.mystia-steward-companion.cfg` 中设置：
+
+```ini
+[Updates]
+IncludePrerelease = true
+```
+
+默认配置不会检查预览版。测试通过后，同步 `1.1.0` 并按稳定版流程合并 `main`、发布普通 Release。
 
 ### 发布新版本
 
-以 `v1.0.1` 为例：
+以稳定版 `v1.1.0` 为例：
 
 ```powershell
 git checkout main
@@ -240,8 +279,8 @@ git pull --ff-only origin main
 git fetch --tags --force origin
 
 pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
-  -Tag v1.0.1 `
-  -Title "v1.0.1" `
+  -Tag v1.1.0 `
+  -Title "v1.1.0" `
   -Notes "版本更新说明"
 ```
 
@@ -251,8 +290,8 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
 
 ```powershell
 pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
-  -Tag v1.0.1 `
-  -Title "v1.0.1" `
+  -Tag v1.1.0 `
+  -Title "v1.1.0" `
   -Notes "版本更新说明" `
   -ReferenceDir "D:\path\to\mystia-steward-companion-references"
 ```
@@ -292,15 +331,15 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
 发布脚本不会自动创建或移动 Git tag。新版本发布前应显式处理 tag：
 
 ```powershell
-git tag -a v1.0.1 -m "v1.0.1"
-git push origin v1.0.1
+git tag -a v1.1.0 -m "v1.1.0"
+git push origin v1.1.0
 ```
 
 如果需要修正尚未正式发布的 tag 指向：
 
 ```powershell
-git tag -f -a v1.0.1 -m "v1.0.1"
-git push --force origin v1.0.1
+git tag -f -a v1.1.0 -m "v1.1.0"
+git push --force origin v1.1.0
 ```
 
 ## 运行时数据源

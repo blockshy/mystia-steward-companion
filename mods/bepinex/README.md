@@ -63,7 +63,9 @@ Local API listening at http://127.0.0.1:32145
 
 ## 更新 Mod
 
-支持自动更新的版本会在设置页显示更新状态。发现新版本后，可以在伴随窗口中点击检查、下载和退出后安装；更新包会先保存到配置目录，实际替换会在游戏和伴随窗口退出后由独立 updater 完成。首次安装或从不支持自动更新的旧版本升级时，仍按下面的手动流程处理。
+支持自动更新的版本会在设置页显示更新状态。发现新版本后，可以在伴随窗口中点击检查、下载和打开安装程序；更新包会先保存到配置目录，实际替换由独立更新程序在弹窗中提示关闭游戏并显示进度。首次安装或从不支持自动更新的旧版本升级时，仍按下面的手动流程处理。
+
+默认只检查正式版本。预览版仅用于自动更新测试，普通用户不需要开启；测试者如需参与预览版更新链路，可以在配置文件中设置 `Updates.IncludePrerelease = true`。
 
 手动更新时只需要替换插件目录，通常不需要删除配置和收藏数据。
 
@@ -95,6 +97,7 @@ BepInEx/plugins/
 - 不要把新包解压成 `BepInEx/plugins/mystia-steward-companion/mystia-steward-companion/` 这种嵌套目录。
 - 收藏配方保存在 `BepInEx/config/MystiaStewardCompanion/favorites.json`，自定义推荐料理保存在 `BepInEx/config/MystiaStewardCompanion/custom-recipes.json`，只替换插件目录不会覆盖它们。
 - 自动更新使用 GitHub Release 中的 `update-manifest.json` 校验更新包 SHA256；该清单不包含本机打包路径。
+- 预览版 Release 不会被默认更新检查命中；只有手动开启 `Updates.IncludePrerelease` 的测试者会收到。
 - 窗口位置、大小、背景透明度、文字透明度等伴随窗口本地设置由桌面程序保存。若需要重置，可删除 `%LOCALAPPDATA%\com.tyukki.mystia-steward-companion`，下次启动会重新生成。
 - Windows 可能缓存旧 exe 图标。若更新后图标看起来没变，通常是系统图标缓存问题，不影响 Mod 功能。
 

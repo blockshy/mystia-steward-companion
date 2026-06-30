@@ -62,6 +62,7 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 - `.github/workflows/ci.yml` 仅支持手动触发，用于前端 lint 和 build 检查。
 - 仓库不使用 GitHub Actions 自动构建 Release；不要新增 tag 自动构建 workflow。
 - 版本发布采用本机 Windows 构建后通过 `gh` 上传，详细说明见 `docs/local-release.md`。
+- 自动更新发布只支持稳定版 `X.Y.Z` 和预览版 `X.Y.Z-preview.N`。预览版必须发布为 GitHub Prerelease，用于 `dev` 上验证自动更新链路；稳定版确认后再合并 `main` 并发布普通 Release。
 - 不要主动创建 tag 或发布 Release；版本构建必须等待用户明确指令。
 
 ## 运行时约束

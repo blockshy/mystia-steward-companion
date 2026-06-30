@@ -5,8 +5,9 @@
     构建并发布 mystia-steward-companion 的 GitHub Release 资产。
 
 .DESCRIPTION
-    该脚本用于正式发布阶段：校验项目版本与 tag 一致、按需调用 build-release.ps1、
-    生成 update-manifest.json，并通过 GitHub CLI 创建或上传 Release 资产。
+    该脚本用于稳定版和预览版发布阶段：校验项目版本与 tag 一致、按需调用 build-release.ps1、
+    生成 update-manifest.json，并通过 GitHub CLI 创建或上传 Release 资产。预览版必须使用
+    X.Y.Z-preview.N tag 并带 -Prerelease 或 -Preview。
     脚本不会自动修改版本号，也不会推送 dev/main 分支。
 #>
 param(
@@ -14,6 +15,7 @@ param(
     [string]$Tag,
     [string]$Title = "",
     [string]$Notes = "",
+    [Alias("Preview")]
     [switch]$Prerelease,
     [switch]$SkipBuild,
     [switch]$SkipVersionCheck,
@@ -77,6 +79,50 @@ function Get-VersionFromTag {
     }
 
     return $Version
+}
+
+function Get-ReleaseChannel {
+    <#
+    .SYNOPSIS
+        根据版本号判断发布通道。
+
+    .DESCRIPTION
+        自动更新只支持稳定版和 preview 预览版两种公开通道。这里主动拒绝任意 SemVer
+        后缀，避免把 alpha、rc 或临时测试 tag 混入 Mod 内置更新链路。
+    #>
+    param([Parameter(Mandatory = $true)][string]$Version)
+
+    if ($Version -match '^\d+\.\d+\.\d+$') {
+        return "stable"
+    }
+    if ($Version -match '^\d+\.\d+\.\d+-preview\.[1-9]\d*$') {
+        return "preview"
+    }
+
+    throw "Unsupported release version: $Version. Use stable X.Y.Z or preview X.Y.Z-preview.N."
+}
+
+function Assert-ReleaseMode {
+    <#
+    .SYNOPSIS
+        校验 tag 版本和 GitHub Release 类型一致。
+
+    .DESCRIPTION
+        preview 版本必须发布为 GitHub prerelease，稳定版本不能带 -Prerelease。
+        这能防止 preview 包成为 latest，也能避免稳定版本误进入测试通道。
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Channel,
+        [Parameter(Mandatory = $true)][bool]$IsPrerelease
+    )
+
+    if ($Channel -eq "preview" -and -not $IsPrerelease) {
+        throw "Preview versions must be published with -Prerelease, for example: -Tag v1.1.0-preview.1 -Prerelease"
+    }
+
+    if ($Channel -eq "stable" -and $IsPrerelease) {
+        throw "Stable versions must not use -Prerelease. Use a tag like v1.1.0-preview.1 for preview releases."
+    }
 }
 
 function Get-FirstMatch {
@@ -175,6 +221,8 @@ function Test-GhReleaseExists {
 Push-Location $RepoRoot
 try {
     $ExpectedVersion = Get-VersionFromTag -Tag $Tag
+    $ReleaseChannel = Get-ReleaseChannel -Version $ExpectedVersion
+    Assert-ReleaseMode -Channel $ReleaseChannel -IsPrerelease $Prerelease.IsPresent
     if (-not $SkipVersionCheck) {
         Assert-ProjectVersion -ExpectedVersion $ExpectedVersion
     }
@@ -207,7 +255,7 @@ try {
         schemaVersion = 1
         version = $ExpectedVersion
         tag = $Tag
-        channel = if ($Prerelease) { "prerelease" } else { "stable" }
+        channel = $ReleaseChannel
         packageAsset = (Split-Path $ModZip -Leaf)
         packageSha256 = $ModZipHash
         packageSize = $ModZipItem.Length
@@ -233,6 +281,10 @@ try {
         }
 
         Invoke-Checked -FilePath $Gh -Arguments $UploadArgs
+
+        if ($ReleaseChannel -eq "preview") {
+            Invoke-Checked -FilePath $Gh -Arguments @("release", "edit", $Tag, "--repo", $Repo, "--prerelease", "--latest=false")
+        }
     }
     else {
         if ([string]::IsNullOrWhiteSpace($Title)) {
@@ -253,8 +305,9 @@ try {
         $CreateArgs += "--notes"
         $CreateArgs += $Notes
 
-        if ($Prerelease) {
+        if ($ReleaseChannel -eq "preview") {
             $CreateArgs += "--prerelease"
+            $CreateArgs += "--latest=false"
         }
 
         Invoke-Checked -FilePath $Gh -Arguments $CreateArgs

@@ -4,6 +4,7 @@ import { Button, InfoLine, ListPanel, MultiSelectBox, NumberInput, Slider, Switc
 import { checkForUpdates, downloadUpdate, installUpdateOnExit, readLogSettings, readUpdateStatus, writeLogSettings } from '@/companion/api';
 import { buildInventorySelectOptions, type InventorySortMode } from '@/companion/domain/inventory-sorting';
 import { formatBytes } from '@/companion/formatters';
+import { openProjectReleaseUrl } from '@/lib/external-url';
 import {
   MAX_RECIPE_VARIANT_LIMIT_PER_BASE,
   MAX_AUTO_ROLLBACKS_LIMIT,
@@ -175,10 +176,15 @@ export function ModSettingsPanel({
     }
   }, [apiToken, updateBusy]);
 
-  const openReleasePage = useCallback(() => {
+  const openReleasePage = useCallback(async () => {
     const url = updateStatus?.releaseUrl;
     if (!url) return;
-    window.open(url, '_blank', 'noopener,noreferrer');
+    try {
+      setUpdateError('');
+      await openProjectReleaseUrl(url);
+    } catch (err) {
+      setUpdateError(`无法打开发布页：${err instanceof Error ? err.message : String(err)}`);
+    }
   }, [updateStatus?.releaseUrl]);
 
   useEffect(() => {
@@ -327,7 +333,7 @@ export function ModSettingsPanel({
             )}
             {updateStatus?.installState === 'waiting' && (
               <div className="text-xs text-muted-foreground">
-                已启动安装排程；关闭游戏和伴随窗口后会自动替换插件目录。
+                已打开独立更新程序；请在弹窗中确认关闭游戏并完成安装。
               </div>
             )}
             <div className="flex flex-wrap gap-2">
@@ -362,7 +368,7 @@ export function ModSettingsPanel({
                 disabled={!apiToken || Boolean(updateBusy) || !canInstallUpdate}
                 onClick={() => runUpdateAction('install', () => installUpdateOnExit(endpoint, apiToken))}
               >
-                退出后安装
+                打开安装程序
               </Button>
               <Button
                 type="button"
@@ -370,13 +376,13 @@ export function ModSettingsPanel({
                 variant="outline"
                 leftSection={<IconExternalLink size={14} />}
                 disabled={!updateStatus?.releaseUrl}
-                onClick={openReleasePage}
+                onClick={() => void openReleasePage()}
               >
                 发布页
               </Button>
             </div>
             <div className="text-xs text-muted-foreground">
-              更新包会先下载到配置目录；实际替换只会在游戏进程退出后由独立 updater 执行。
+              更新包会先下载到配置目录；安装阶段由独立更新程序显示进度，并在游戏退出后替换插件目录。
             </div>
           </div>
         </ListPanel>
@@ -708,9 +714,30 @@ function clampWeight(value: number): number {
 function formatUpdateState(status: UpdateStatusResponse | null): string {
   if (!status) return '等待本地 API';
   if (!status.enabled) return '已关闭';
-  if (status.installState === 'waiting') return '等待退出后安装';
-  if (status.installState === 'succeeded') return '安装完成';
-  if (status.installState === 'failed') return '安装失败';
+  switch (status.installState) {
+    case 'waiting':
+      return '更新程序已打开';
+    case 'closing-companion':
+      return '正在关闭伴随窗口';
+    case 'waiting-game':
+      return '等待游戏退出';
+    case 'terminating-game':
+      return '正在关闭游戏';
+    case 'game-closed':
+      return '游戏已退出';
+    case 'backing-up':
+      return '正在备份';
+    case 'installing':
+      return '正在安装';
+    case 'verifying':
+      return '正在校验';
+    case 'succeeded':
+      return '安装完成';
+    case 'failed':
+      return '安装失败';
+    case 'cancelled':
+      return '已取消安装';
+  }
   if (status.staged) return '已下载';
   if (status.hasUpdate) return '有新版本';
   switch (status.state) {
@@ -720,6 +747,8 @@ function formatUpdateState(status: UpdateStatusResponse | null): string {
       return '下载中';
     case 'current':
       return '已是最新';
+    case 'installed':
+      return '安装完成';
     case 'failed':
       return '检查失败';
     case 'disabled':

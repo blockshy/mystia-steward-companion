@@ -23,7 +23,7 @@ public sealed class MystiaStewardCompanionPlugin : BasePlugin
 
     public const string PluginGuid = "com.tyukki.mystia-steward-companion";
     public const string PluginName = "mystia-steward-companion";
-    public const string PluginVersion = "1.0.9";
+    public const string PluginVersion = "1.1.0-preview.3";
 
     /// <summary>
     /// BepInEx 调用的插件加载入口。

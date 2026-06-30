@@ -34,19 +34,30 @@ UnityEngine.CoreModule.dll
 UnityEngine.InputLegacyModule.dll
 ```
 
-## 同步版本号
+## 版本号与发布通道
 
 发布前先同步项目内版本号。脚本会同时修改 `package.json`、`tauri.conf.json`、`Cargo.toml`、`Cargo.lock` 和 Mod 的 `PluginVersion`：
 
 ```powershell
-pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\set-version.ps1 -Version 1.0.1
+pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\set-version.ps1 -Version 1.1.0
 ```
 
 Linux 开发环境可使用等价脚本：
 
 ```bash
-bash mods/bepinex/tools/set-version.sh 1.0.1
+bash mods/bepinex/tools/set-version.sh 1.1.0
 ```
+
+自动更新发布只支持两种公开通道：
+
+- 稳定版：`X.Y.Z`，例如 `1.1.0`，发布为普通 GitHub Release。
+- 预览版：`X.Y.Z-preview.N`，例如 `1.1.0-preview.1`，发布为 GitHub Prerelease。
+
+`publish-release.ps1` 会强制校验通道和 tag：
+
+- `v1.1.0-preview.1` 必须带 `-Prerelease` 或 `-Preview`。
+- `v1.1.0` 不能带 `-Prerelease`。
+- 其他后缀，例如 `alpha`、`beta`、`rc`，不进入自动更新发布流程。
 
 版本号同步后先提交到 `dev`：
 
@@ -56,9 +67,54 @@ git commit -m "chore(release): bump version to 1.0.1"
 git push origin dev
 ```
 
-确认版本可发布后，再合并到 `main`，并在 `main` 上执行发布脚本。
+稳定版确认可发布后，再合并到 `main`，并在 `main` 上执行发布脚本。预览版只用于更新链路测试，通常保留在 `dev` 上打 tag 并发布 GitHub Prerelease，不合并 `main`。
 
 `publish-release.ps1` 会根据 `-Tag` 校验代码版本。如果代码仍是旧版本，脚本会失败并提示先运行 `set-version.ps1`。
+
+## 预览版更新测试流程
+
+预览版用于验证自动更新链路，典型流程如下：
+
+```text
+v1.1.0-preview.1
+↓ 测试检查、下载、打开安装程序并完成安装
+v1.1.0-preview.2
+↓ 修复问题后再次测试
+v1.1.0
+↓ 正式发布
+```
+
+发布预览版时，在 `dev` 上同步预览版本号、提交并推送，然后创建并推送 tag：
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\set-version.ps1 -Version 1.1.0-preview.1
+
+git add package.json apps\companion\src-tauri\Cargo.toml apps\companion\src-tauri\Cargo.lock apps\companion\src-tauri\tauri.conf.json mods\bepinex\src\Plugin\MystiaStewardCompanionPlugin.cs
+git commit -m "chore(release): bump version to 1.1.0-preview.1"
+git push origin dev
+
+git tag -a v1.1.0-preview.1 -m "v1.1.0-preview.1"
+git push origin v1.1.0-preview.1
+```
+
+然后在 Windows 发布机上发布 GitHub Prerelease：
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
+  -Tag v1.1.0-preview.1 `
+  -Title "v1.1.0-preview.1" `
+  -Notes "预览版更新测试说明" `
+  -Prerelease
+```
+
+测试者需要在 BepInEx 配置中开启预发布检查：
+
+```ini
+[Updates]
+IncludePrerelease = true
+```
+
+开启后，预览版会参与自动更新检查；默认配置下普通用户只检查稳定版。测试 `preview.1 -> preview.2` 时，重复以上步骤发布 `v1.1.0-preview.2`。测试通过后，再同步 `1.1.0`，按稳定版流程合并 `main` 并正式发布。
 
 ## Release Note 规则
 
@@ -85,8 +141,8 @@ git checkout main
 git pull --ff-only origin main
 
 pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
-  -Tag v1.0.1 `
-  -Title "v1.0.1" `
+  -Tag v1.1.0 `
+  -Title "v1.1.0" `
   -Notes "版本更新说明"
 ```
 
@@ -94,8 +150,8 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
 
 ```powershell
 pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
-  -Tag v1.0.1 `
-  -Title "v1.0.1" `
+  -Tag v1.1.0 `
+  -Title "v1.1.0" `
   -Notes "版本更新说明" `
   -ReferenceDir "D:\path\to\mystia-steward-companion-references"
 ```
@@ -113,7 +169,7 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
 
 ```powershell
 pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
-  -Tag v1.0.0 `
+  -Tag v1.1.0 `
   -SkipBuild `
   -Clobber
 ```
