@@ -19,7 +19,8 @@ public sealed class StewardPluginConfig
         ConfigEntry<float> autoRefreshSeconds,
         ConfigEntry<string> nonGameplaySceneKeywords,
         ConfigEntry<bool> localApiEnabled,
-        ConfigEntry<string> localApiHost,
+        ConfigEntry<bool> localApiLanEnabled,
+        ConfigEntry<string> localApiLanHost,
         ConfigEntry<int> localApiPort,
         ConfigEntry<string> localApiToken,
         ConfigEntry<bool> exposeLocalApiLogs,
@@ -48,7 +49,8 @@ public sealed class StewardPluginConfig
         AutoRefreshSeconds = autoRefreshSeconds;
         NonGameplaySceneKeywords = nonGameplaySceneKeywords;
         LocalApiEnabled = localApiEnabled;
-        LocalApiHost = localApiHost;
+        LocalApiLanEnabled = localApiLanEnabled;
+        LocalApiLanHost = localApiLanHost;
         LocalApiPort = localApiPort;
         LocalApiToken = localApiToken;
         ExposeLocalApiLogs = exposeLocalApiLogs;
@@ -78,7 +80,8 @@ public sealed class StewardPluginConfig
     public ConfigEntry<float> AutoRefreshSeconds { get; }
     public ConfigEntry<string> NonGameplaySceneKeywords { get; }
     public ConfigEntry<bool> LocalApiEnabled { get; }
-    public ConfigEntry<string> LocalApiHost { get; }
+    public ConfigEntry<bool> LocalApiLanEnabled { get; }
+    public ConfigEntry<string> LocalApiLanHost { get; }
     public ConfigEntry<int> LocalApiPort { get; }
     public ConfigEntry<string> LocalApiToken { get; }
     public ConfigEntry<bool> ExposeLocalApiLogs { get; }
@@ -108,7 +111,7 @@ public sealed class StewardPluginConfig
     /// <returns>包含所有配置 Entry 的强类型访问对象。</returns>
     /// <remarks>
     /// 配置分组名称也是用户可见的 INI 分节名，修改时需要同步 README 和故障排查说明。
-    /// 本地 API 默认只绑定回环地址，并通过 Token 鉴权；不要把默认地址改为非回环地址。
+    /// 本地 API 始终保留回环监听，并通过 Token 鉴权；LAN 监听只能作为显式开启的附加通道。
     /// </remarks>
     public static StewardPluginConfig Bind(ConfigFile config)
     {
@@ -119,9 +122,10 @@ public sealed class StewardPluginConfig
             config.Bind("Runtime", "AutoRefreshSeconds", 3f, "Seconds between live runtime-data refreshes."),
             config.Bind("Runtime", "NonGameplaySceneKeywords", "title,menu,start,select,loading,logo,opening,splash",
                 "Comma-separated scene name keywords treated as pages where live runtime data is unavailable."),
-            config.Bind("LocalApi", "Enabled", true, "Expose live runtime data to an external companion window over a loopback-only local API."),
-            config.Bind("LocalApi", "Host", "127.0.0.1", "Loopback bind host. Keep 127.0.0.1 to avoid proxy, localhost, and IPv6 issues."),
-            config.Bind("LocalApi", "Port", 32145, "Loopback local API port for the external companion UI."),
+            config.Bind("LocalApi", "Enabled", true, "Expose live runtime data to an external companion window over the token-protected local API."),
+            config.Bind("LocalApi", "AllowLanConnections", false, "Allow trusted private-network devices to connect. The loopback listener always remains enabled."),
+            config.Bind("LocalApi", "LanHost", "auto", "LAN bind host. Use auto to listen on detected private IPv4 addresses, or set a specific private IPv4 address."),
+            config.Bind("LocalApi", "Port", 32145, "Local API port for the external companion UI."),
             config.Bind("LocalApi", "Token", "", "Internal local API token. Empty lets the plugin generate one on next launch."),
             config.Bind("LocalApi", "ExposeLogs", true, "Allow the companion window to read BepInEx/LogOutput.log through the token-protected local API."),
             config.Bind("LocalApi", "MaxLogLines", 300, "Maximum LogOutput.log lines returned to the companion window."),

@@ -1,7 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { IconDownload, IconExternalLink, IconPackageImport, IconRefresh } from '@tabler/icons-react';
-import { Button, InfoLine, ListPanel, MultiSelectBox, NumberInput, Slider, SwitchField, Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui-kit';
-import { checkForUpdates, downloadUpdate, installUpdateOnExit, readLogSettings, readUpdateStatus, writeLogSettings } from '@/companion/api';
+import { IconCopy, IconDownload, IconExternalLink, IconKey, IconPackageImport, IconRefresh } from '@tabler/icons-react';
+import { Button, InfoLine, Input, ListPanel, MultiSelectBox, NumberInput, Slider, SwitchField, Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui-kit';
+import {
+  checkForUpdates,
+  downloadUpdate,
+  installUpdateOnExit,
+  readLocalApiConnectionConfig,
+  readLogSettings,
+  readUpdateStatus,
+  regenerateLocalApiToken,
+  writeLocalApiConnectionConfig,
+  writeLogSettings,
+} from '@/companion/api';
 import { buildInventorySelectOptions, type InventorySortMode } from '@/companion/domain/inventory-sorting';
 import { formatBytes } from '@/companion/formatters';
 import { openProjectReleaseUrl } from '@/lib/external-url';
@@ -18,7 +28,7 @@ import {
   normalizeRecipeVariantLimitPerBase,
   type CompanionPreferences,
 } from '@/companion/preferences';
-import type { LocalApiLogSettings, RuntimeSets, SettingsTab, UpdateStatusResponse } from '@/companion/types';
+import type { LocalApiConnectionConfig, LocalApiLogSettings, RuntimeSets, SettingsTab, UpdateStatusResponse } from '@/companion/types';
 import type { RecommendationDataSet } from '@/lib/recommendation-data';
 import type { ThemeMode } from '@/lib/theme';
 import {
@@ -49,6 +59,7 @@ export function ModSettingsPanel({
   themeMode,
   serviceFocusCompact,
   onPreferenceChange,
+  onConnectionConfigApplied,
   onThemeModeChange,
   onServiceFocusCompactChange,
 }: {
@@ -60,10 +71,17 @@ export function ModSettingsPanel({
   themeMode: ThemeMode;
   serviceFocusCompact: boolean;
   onPreferenceChange: (next: Partial<CompanionPreferences>) => void;
+  onConnectionConfigApplied: (endpoint: string, apiToken: string) => void;
   onThemeModeChange: (mode: ThemeMode) => void;
   onServiceFocusCompactChange: (value: boolean) => void;
 }) {
   const [logSettings, setLogSettings] = useState<LocalApiLogSettings | null>(null);
+  const [connectionConfig, setConnectionConfig] = useState<LocalApiConnectionConfig | null>(null);
+  const [connectionLanEnabled, setConnectionLanEnabled] = useState(false);
+  const [connectionLanHost, setConnectionLanHost] = useState('auto');
+  const [connectionBusy, setConnectionBusy] = useState<'refresh' | 'apply' | 'token' | 'copy' | null>(null);
+  const [connectionError, setConnectionError] = useState('');
+  const [connectionTokenVisible, setConnectionTokenVisible] = useState(false);
   const [consoleBusy, setConsoleBusy] = useState(false);
   const [consoleError, setConsoleError] = useState('');
   const [updateStatus, setUpdateStatus] = useState<UpdateStatusResponse | null>(null);
@@ -97,6 +115,114 @@ export function ModSettingsPanel({
       },
     });
   }, [onPreferenceChange, preferences.recommendationExclusions]);
+
+  const applyConnectionConfigState = useCallback((nextConfig: LocalApiConnectionConfig) => {
+    setConnectionConfig(nextConfig);
+    setConnectionLanEnabled(nextConfig.lanEnabled);
+    setConnectionLanHost(nextConfig.lanBindHost || 'auto');
+    setConnectionError(nextConfig.error ?? nextConfig.lanError ?? '');
+  }, []);
+
+  const refreshConnectionConfig = useCallback(async () => {
+    if (!apiToken) {
+      setConnectionConfig(null);
+      setConnectionError('未收到 Mod API Token。');
+      return;
+    }
+
+    const abortController = new AbortController();
+    const timeoutId = window.setTimeout(() => abortController.abort(), 2800);
+    setConnectionBusy('refresh');
+    try {
+      const nextConfig = await readLocalApiConnectionConfig(endpoint, apiToken, abortController.signal);
+      applyConnectionConfigState(nextConfig);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setConnectionError(message.includes('403') ? '连接配置只能在游戏所在设备的本机窗口中修改。' : message);
+    } finally {
+      window.clearTimeout(timeoutId);
+      setConnectionBusy(null);
+    }
+  }, [apiToken, applyConnectionConfigState, endpoint]);
+
+  const submitConnectionConfig = useCallback(async (next: { lanEnabled: boolean; lanBindHost: string }) => {
+    if (!apiToken || connectionBusy) return null;
+
+    setConnectionBusy('apply');
+    try {
+      const nextConfig = await writeLocalApiConnectionConfig(endpoint, apiToken, {
+        lanEnabled: next.lanEnabled,
+        lanBindHost: next.lanBindHost,
+      });
+      applyConnectionConfigState(nextConfig);
+      if (nextConfig.localEndpoint && nextConfig.token) {
+        onConnectionConfigApplied(nextConfig.localEndpoint, nextConfig.token);
+      }
+      return nextConfig;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setConnectionError(message.includes('403') ? '连接配置只能在游戏所在设备的本机窗口中修改。' : message);
+      throw err;
+    } finally {
+      setConnectionBusy(null);
+    }
+  }, [
+    apiToken,
+    applyConnectionConfigState,
+    connectionBusy,
+    endpoint,
+    onConnectionConfigApplied,
+  ]);
+
+  const applyConnectionConfig = useCallback(() => {
+    void submitConnectionConfig({
+      lanEnabled: connectionLanEnabled,
+      lanBindHost: connectionLanHost,
+    }).catch(() => undefined);
+  }, [connectionLanEnabled, connectionLanHost, submitConnectionConfig]);
+
+  const toggleConnectionLanEnabled = useCallback((lanEnabled: boolean) => {
+    const previousLanEnabled = connectionConfig?.lanEnabled ?? connectionLanEnabled;
+    setConnectionLanEnabled(lanEnabled);
+    void submitConnectionConfig({
+      lanEnabled,
+      lanBindHost: connectionLanHost,
+    }).catch(() => {
+      setConnectionLanEnabled(previousLanEnabled);
+    });
+  }, [connectionConfig?.lanEnabled, connectionLanEnabled, connectionLanHost, submitConnectionConfig]);
+
+  const regenerateConnectionToken = useCallback(async () => {
+    if (!apiToken || connectionBusy) return;
+    if (!window.confirm('重置后其他设备需要重新输入新 Token。继续？')) return;
+
+    setConnectionBusy('token');
+    try {
+      const nextConfig = await regenerateLocalApiToken(endpoint, apiToken);
+      applyConnectionConfigState(nextConfig);
+      if (nextConfig.localEndpoint && nextConfig.token) {
+        onConnectionConfigApplied(nextConfig.localEndpoint, nextConfig.token);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setConnectionError(message.includes('403') ? 'Token 只能在游戏所在设备的本机窗口中重置。' : message);
+    } finally {
+      setConnectionBusy(null);
+    }
+  }, [apiToken, applyConnectionConfigState, connectionBusy, endpoint, onConnectionConfigApplied]);
+
+  const copyConnectionText = useCallback(async (value: string, fallbackMessage: string) => {
+    if (!value || connectionBusy) return;
+    setConnectionBusy('copy');
+    try {
+      await navigator.clipboard.writeText(value);
+      setConnectionError('');
+    } catch {
+      setConnectionError(fallbackMessage);
+    } finally {
+      setConnectionBusy(null);
+    }
+  }, [connectionBusy]);
 
   const refreshConsoleSettings = useCallback(async () => {
     if (!apiToken) {
@@ -197,6 +323,11 @@ export function ModSettingsPanel({
   }, [refreshUpdateStatus]);
 
   useEffect(() => {
+    if (settingsTab !== 'connection') return;
+    refreshConnectionConfig();
+  }, [refreshConnectionConfig, settingsTab]);
+
+  useEffect(() => {
     if (!preferences.showDebugDetails && settingsTab === 'debug') {
       setSettingsTab('window');
     }
@@ -206,12 +337,40 @@ export function ModSettingsPanel({
   const updateDetail = updateError || updateStatus?.error || updateStatus?.installMessage || '';
   const canDownloadUpdate = Boolean(updateStatus?.hasUpdate && updateStatus.enabled);
   const canInstallUpdate = Boolean(updateStatus?.staged && updateStatus.enabled);
+  const hostDraftDirty = connectionConfig
+    ? normalizeLanHostDraft(connectionLanHost) !== normalizeLanHostDraft(connectionConfig.lanBindHost)
+    : false;
+  const connectionDraftDirty = connectionConfig
+    ? connectionLanEnabled !== connectionConfig.lanEnabled || hostDraftDirty
+    : false;
+  const lanEndpointText = connectionBusy === 'apply' && connectionLanEnabled
+    ? '应用中'
+    : hostDraftDirty
+      ? '应用后刷新'
+      : connectionConfig?.lanEndpoints.length
+        ? connectionConfig.lanEndpoints.join(' / ')
+        : '未生成';
+  const firstLanEndpoint = connectionConfig?.lanEndpoints[0] ?? '';
+  const lanStatusLabel = !connectionConfig
+    ? '未读取'
+    : connectionBusy === 'apply' && connectionDraftDirty
+      ? '应用中'
+      : hostDraftDirty
+        ? '监听地址待应用'
+        : connectionConfig.lanEnabled
+          ? connectionConfig.lanRunning ? '已开启' : '未监听'
+          : '未开启';
+  const tokenValue = connectionConfig?.token || apiToken;
+  const tokenDisplayValue = connectionTokenVisible ? tokenValue : maskToken(tokenValue);
 
   return (
     <Tabs value={settingsTab} onValueChange={(value) => setSettingsTab(value as SettingsTab)} className="space-y-4">
-      <TabsList className={preferences.showDebugDetails ? 'grid h-9 w-full grid-cols-5' : 'grid h-9 w-full grid-cols-4'}>
+      <TabsList className={preferences.showDebugDetails ? 'grid h-9 w-full grid-cols-6' : 'grid h-9 w-full grid-cols-5'}>
         <TabsTrigger value="window" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
           窗口
+        </TabsTrigger>
+        <TabsTrigger value="connection" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
+          连接
         </TabsTrigger>
         <TabsTrigger value="recommendation" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
           推荐
@@ -301,20 +460,119 @@ export function ModSettingsPanel({
             </div>
           </ListPanel>
 
-          <ListPanel title="稀客专注模式">
-            <div className="space-y-4">
-              <SwitchControl
-                label="默认精简模式"
-                checked={serviceFocusCompact}
-                onCheckedChange={onServiceFocusCompactChange}
-              />
-              <div className="text-xs text-muted-foreground">
-                料理和酒水显示数量在进入专注模式后直接调整，设置会自动记住。
-              </div>
-            </div>
-          </ListPanel>
-
         </div>
+      </TabsContent>
+
+      <TabsContent value="connection" className="space-y-4">
+        <ListPanel title="连接">
+          <div className="space-y-4">
+            <div className="grid gap-2 text-sm">
+              <InfoLine label="本机地址" value={connectionConfig?.localEndpoint || endpoint} mono />
+              <InfoLine label="端口" value={String(connectionConfig?.port ?? 32145)} />
+              <InfoLine label="LAN 状态" value={lanStatusLabel} />
+              <InfoLine label="LAN 地址" value={lanEndpointText} mono />
+            </div>
+
+            <SwitchControl
+              label="允许局域网设备连接"
+              checked={connectionLanEnabled}
+              onCheckedChange={toggleConnectionLanEnabled}
+              disabled={!apiToken || Boolean(connectionBusy)}
+            />
+
+            <label className="grid gap-1 text-sm">
+              <span className="text-muted-foreground">LAN 监听地址</span>
+              <Input
+                value={connectionLanHost}
+                onChange={(event) => setConnectionLanHost(event.target.value)}
+                placeholder="auto"
+                disabled={!connectionLanEnabled || !apiToken || Boolean(connectionBusy)}
+                inputClassName="font-mono"
+              />
+            </label>
+            <div className="text-xs text-muted-foreground">
+              开关会立即应用；修改监听地址后点击应用。`auto` 会监听 A 设备检测到的私网 IPv4，本机地址始终保留。
+            </div>
+
+            <label className="grid gap-1 text-sm">
+              <span className="text-muted-foreground">Token</span>
+              <Input
+                value={tokenDisplayValue}
+                readOnly
+                type={connectionTokenVisible ? 'text' : 'password'}
+                inputClassName="font-mono"
+              />
+            </label>
+
+            <div className="flex flex-wrap gap-2" data-gamepad-axis="x">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                leftSection={<IconRefresh size={14} />}
+                loading={connectionBusy === 'refresh'}
+                disabled={!apiToken || Boolean(connectionBusy)}
+                onClick={refreshConnectionConfig}
+              >
+                刷新
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={!apiToken || Boolean(connectionBusy) || !connectionDraftDirty}
+                onClick={applyConnectionConfig}
+              >
+                应用
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                leftSection={<IconCopy size={14} />}
+                disabled={!firstLanEndpoint || Boolean(connectionBusy)}
+                onClick={() => void copyConnectionText(firstLanEndpoint, '无法复制 LAN 地址。')}
+              >
+                复制 LAN 地址
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                leftSection={<IconCopy size={14} />}
+                disabled={!tokenValue || Boolean(connectionBusy)}
+                onClick={() => void copyConnectionText(tokenValue, '无法复制 Token。')}
+              >
+                复制 Token
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => setConnectionTokenVisible((current) => !current)}
+              >
+                {connectionTokenVisible ? '隐藏 Token' : '显示 Token'}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                leftSection={<IconKey size={14} />}
+                loading={connectionBusy === 'token'}
+                disabled={!apiToken || Boolean(connectionBusy)}
+                onClick={regenerateConnectionToken}
+              >
+                重置 Token
+              </Button>
+            </div>
+
+            {connectionError && (
+              <div className="border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                {connectionError}
+              </div>
+            )}
+          </div>
+        </ListPanel>
       </TabsContent>
 
       <TabsContent value="updates" className="space-y-4">
@@ -401,6 +659,14 @@ export function ModSettingsPanel({
                 ]}
                 onChange={(serviceOrderSortMode) => onPreferenceChange({ serviceOrderSortMode })}
               />
+              <SwitchControl
+                label="稀客专注模式默认精简"
+                checked={serviceFocusCompact}
+                onCheckedChange={onServiceFocusCompactChange}
+              />
+              <div className="text-xs text-muted-foreground">
+                料理和酒水显示数量在进入专注模式后直接调整，设置会自动记住。
+              </div>
               <SwitchControl
                 label="游戏界面置顶推荐（实验性）"
                 checked={preferences.gameUiPinningEnabled}
@@ -714,6 +980,20 @@ function RecommendationSortProfileControl({
 function clampWeight(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(100, Math.trunc(value)));
+}
+
+function normalizeLanHostDraft(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized || normalized === '0.0.0.0' || normalized === '127.0.0.1' || normalized === 'localhost') {
+    return 'auto';
+  }
+  return normalized;
+}
+
+function maskToken(value: string): string {
+  if (!value) return '';
+  if (value.length <= 8) return '*'.repeat(value.length);
+  return `${value.slice(0, 4)}${'*'.repeat(Math.max(8, value.length - 8))}${value.slice(-4)}`;
 }
 
 function formatUpdateState(status: UpdateStatusResponse | null): string {

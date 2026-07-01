@@ -637,7 +637,7 @@ internal sealed class StewardOverlayController
     }
 
     /// <summary>
-    /// 启动本地 loopback API，并把需要回到主线程执行的动作注入服务器。
+    /// 启动本地 API，并把需要回到主线程执行的动作注入服务器。
     /// </summary>
     private void StartLocalApi()
     {
@@ -656,12 +656,16 @@ internal sealed class StewardOverlayController
                 _log);
             var favoriteStore = new FavoriteStore(FavoriteStore.ResolvePath(), _log);
             _localApiServer = new LocalApiServer(
-                _config.LocalApiHost.Value,
+                _config.LocalApiLanEnabled.Value,
+                _config.LocalApiLanHost.Value,
                 _config.LocalApiPort.Value,
                 MystiaStewardCompanionPlugin.PluginVersion,
                 _localApiToken,
                 GetLocalApiLogSettings,
                 UpdateLocalApiLogSettings,
+                GetLocalApiConnectionConfig,
+                UpdateLocalApiConnectionConfig,
+                RegenerateLocalApiToken,
                 OpenLocalApiLogFolder,
                 EditInventoryFromLocalApi,
                 EditInventoryBulkFromLocalApi,
@@ -1358,6 +1362,58 @@ internal sealed class StewardOverlayController
         return new NightBusinessDiagnosticSink(
             _config.NightBusinessDiagnosticsPath.Value,
             TimeSpan.FromSeconds(Math.Max(1f, _config.NightBusinessDiagnosticsIntervalSeconds.Value)));
+    }
+
+    private LocalApiConnectionConfigDto GetLocalApiConnectionConfig()
+    {
+        var port = Math.Clamp(_config?.LocalApiPort.Value ?? 32145, 1024, 65535);
+        return new LocalApiConnectionConfigDto
+        {
+            Ok = true,
+            LocalEndpoint = _localApiServer?.BaseUrl ?? $"http://127.0.0.1:{port}",
+            LanEnabled = _config?.LocalApiLanEnabled.Value ?? false,
+            LanRunning = _localApiServer?.LanRunning ?? false,
+            LanBindHost = _config?.LocalApiLanHost.Value ?? "auto",
+            Port = port,
+            Token = _localApiToken,
+            LanBindAddresses = _localApiServer?.LanBindAddresses ?? Array.Empty<string>(),
+            LanEndpoints = _localApiServer?.LanEndpoints ?? Array.Empty<string>(),
+            LanError = string.IsNullOrWhiteSpace(_localApiServer?.LanError) ? null : _localApiServer?.LanError,
+        };
+    }
+
+    private LocalApiConnectionConfigDto UpdateLocalApiConnectionConfig(LocalApiConnectionConfigUpdate update)
+    {
+        if (_config == null)
+        {
+            return new LocalApiConnectionConfigDto
+            {
+                Ok = false,
+                Error = "configuration is not available",
+            };
+        }
+
+        if (update.LanEnabled.HasValue) _config.LocalApiLanEnabled.Value = update.LanEnabled.Value;
+        if (update.LanBindHost != null) _config.LocalApiLanHost.Value = NormalizeLocalApiLanHost(update.LanBindHost);
+        _localApiServer?.ApplyLanSettings(_config.LocalApiLanEnabled.Value, _config.LocalApiLanHost.Value);
+        return GetLocalApiConnectionConfig();
+    }
+
+    private LocalApiConnectionConfigDto RegenerateLocalApiToken()
+    {
+        if (_config == null)
+        {
+            return new LocalApiConnectionConfigDto
+            {
+                Ok = false,
+                Error = "configuration is not available",
+            };
+        }
+
+        _localApiToken = GenerateLocalApiToken();
+        _config.LocalApiToken.Value = _localApiToken;
+        _localApiServer?.SetToken(_localApiToken);
+        return GetLocalApiConnectionConfig();
     }
 
     private LocalApiLogSettings GetLocalApiLogSettings()
@@ -2147,21 +2203,40 @@ internal sealed class StewardOverlayController
     /// 获取或生成本地 API Token。
     /// </summary>
     /// <remarks>
-    /// Token 写入 BepInEx 配置，用于伴随窗口和 Mod 本地 API 之间的 loopback 请求鉴权。
+    /// Token 写入 BepInEx 配置，用于伴随窗口和 Mod 本地 API 之间的请求鉴权。
     /// </remarks>
     private static string EnsureLocalApiToken(StewardPluginConfig config)
     {
         var token = config.LocalApiToken.Value.Trim();
         if (IsUsableLocalApiToken(token)) return token;
 
-        token = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
+        token = GenerateLocalApiToken();
         config.LocalApiToken.Value = token;
         return token;
+    }
+
+    private static string GenerateLocalApiToken()
+    {
+        return Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
     }
 
     private static bool IsUsableLocalApiToken(string token)
     {
         return token.Length >= 32 && token.All(character => !char.IsControl(character) && !char.IsWhiteSpace(character));
+    }
+
+    private static string NormalizeLocalApiLanHost(string value)
+    {
+        var normalized = value.Trim();
+        if (string.IsNullOrWhiteSpace(normalized)
+            || string.Equals(normalized, "0.0.0.0", StringComparison.Ordinal)
+            || string.Equals(normalized, "127.0.0.1", StringComparison.Ordinal)
+            || string.Equals(normalized, "localhost", StringComparison.OrdinalIgnoreCase))
+        {
+            return "auto";
+        }
+
+        return normalized;
     }
 
     private static void OpenDirectory(string directory)

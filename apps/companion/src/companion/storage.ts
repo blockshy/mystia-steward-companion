@@ -35,7 +35,12 @@ export function readStoredApiToken(): string {
 }
 
 export function persistApiToken(apiToken: string) {
-  if (apiToken) localStorage.setItem(TOKEN_STORAGE_KEY, apiToken);
+  if (apiToken) {
+    localStorage.setItem(TOKEN_STORAGE_KEY, apiToken);
+    return;
+  }
+
+  localStorage.removeItem(TOKEN_STORAGE_KEY);
 }
 
 export function readStoredTab(): ModTab {

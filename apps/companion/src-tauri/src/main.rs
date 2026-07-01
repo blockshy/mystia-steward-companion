@@ -139,7 +139,7 @@ fn request_local_api_with_timeout(
     validate_http_fragment(path, "path")?;
     validate_http_fragment(token, "token")?;
 
-    let address = SocketAddr::from((Ipv4Addr::LOCALHOST, target.port));
+    let address = SocketAddr::from((target.host, target.port));
     let mut stream = TcpStream::connect_timeout(&address, connect_timeout)
         .map_err(|error| format!("connect failed: {error}"))?;
 
@@ -156,8 +156,8 @@ fn request_local_api_with_timeout(
         format!("X-Mystia-Steward-Companion-Token: {}\r\n", token.trim())
     };
     let request = format!(
-        "{} {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n{}Connection: close\r\nCache-Control: no-store\r\nContent-Length: 0\r\n\r\n",
-        method, path, target.port, auth_header
+        "{} {} HTTP/1.1\r\nHost: {}:{}\r\n{}Connection: close\r\nCache-Control: no-store\r\nContent-Length: 0\r\n\r\n",
+        method, path, target.host, target.port, auth_header
     );
     stream
         .write_all(request.as_bytes())
@@ -450,6 +450,7 @@ fn apply_window_transparent_background(window: &WebviewWindow) {
 }
 
 struct LocalApiTarget {
+    host: Ipv4Addr,
     port: u16,
     path: String,
 }
@@ -457,10 +458,15 @@ struct LocalApiTarget {
 impl LocalApiTarget {
     fn parse(input: &str) -> Result<Self, String> {
         let trimmed = input.trim().trim_end_matches('/');
-        let without_scheme = trimmed
-            .strip_prefix("http://")
-            .or_else(|| trimmed.strip_prefix("https://"))
-            .unwrap_or(trimmed);
+        let without_scheme = if let Some(rest) = trimmed.strip_prefix("http://") {
+            rest
+        } else if trimmed.starts_with("https://") {
+            return Err("local API only supports http endpoints".to_string());
+        } else if trimmed.contains("://") {
+            return Err("invalid local API endpoint scheme".to_string());
+        } else {
+            trimmed
+        };
         let (authority, path) = if let Some((host, rest)) = without_scheme.split_once('/') {
             let normalized_path = if rest.is_empty() {
                 "/snapshot".to_string()
@@ -473,11 +479,10 @@ impl LocalApiTarget {
         };
 
         let (host, port) = parse_authority(authority)?;
-        if host != "127.0.0.1" && host != "localhost" {
-            return Err("only 127.0.0.1 loopback endpoints are allowed".to_string());
-        }
+        let host = parse_local_api_host(host)?;
 
         Ok(Self {
+            host,
             port,
             path: if path == "/" {
                 "/snapshot".to_string()
@@ -492,10 +497,33 @@ fn parse_authority(authority: &str) -> Result<(&str, u16), String> {
     let (host, port_text) = authority
         .rsplit_once(':')
         .ok_or_else(|| "missing local API port".to_string())?;
+    if host.trim().is_empty() {
+        return Err("missing local API host".to_string());
+    }
     let port = port_text
         .parse::<u16>()
         .map_err(|_| "invalid local API port".to_string())?;
     Ok((host, port))
+}
+
+fn parse_local_api_host(host: &str) -> Result<Ipv4Addr, String> {
+    if host.eq_ignore_ascii_case("localhost") {
+        return Ok(Ipv4Addr::LOCALHOST);
+    }
+
+    let address = host.parse::<Ipv4Addr>().map_err(|_| {
+        "local API host must be 127.0.0.1 or a private LAN IPv4 address".to_string()
+    })?;
+    if address == Ipv4Addr::UNSPECIFIED {
+        return Err(
+            "0.0.0.0 is a bind address and cannot be used as a connection endpoint".to_string(),
+        );
+    }
+    if address.is_loopback() || address.is_private() || address.is_link_local() {
+        return Ok(address);
+    }
+
+    Err("only loopback or private LAN IPv4 endpoints are allowed".to_string())
 }
 
 fn validate_http_fragment(value: &str, label: &str) -> Result<(), String> {

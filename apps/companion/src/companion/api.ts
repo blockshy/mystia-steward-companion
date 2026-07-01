@@ -17,6 +17,7 @@ import type {
   GameUiPinningTarget,
   InventoryBulkEditResponse,
   InventoryEditResponse,
+  LocalApiConnectionConfig,
   LocalApiFolderResponse,
   LocalApiLogSettings,
   LocalApiLogs,
@@ -80,6 +81,43 @@ export async function writeLogSettings(
   if (typeof next.diagnostics === 'boolean') params.set('diagnostics', String(next.diagnostics));
   if (typeof next.nativeConsole === 'boolean') params.set('nativeConsole', String(next.nativeConsole));
   return readLocalApiJson<LocalApiLogSettings>(endpoint, apiToken, `/logs/config?${params.toString()}`, signal);
+}
+
+export async function readLocalApiConnectionConfig(
+  endpoint: string,
+  apiToken: string,
+  signal: AbortSignal,
+): Promise<LocalApiConnectionConfig> {
+  return readLocalApiJson<LocalApiConnectionConfig>(endpoint, apiToken, '/local-api/config', signal);
+}
+
+export async function writeLocalApiConnectionConfig(
+  endpoint: string,
+  apiToken: string,
+  next: { lanEnabled: boolean; lanBindHost: string },
+): Promise<LocalApiConnectionConfig> {
+  const params = new URLSearchParams({
+    lanEnabled: String(next.lanEnabled),
+    lanHost: next.lanBindHost.trim() || 'auto',
+  });
+  return writeLocalApiJsonWithTimeout<LocalApiConnectionConfig>(
+    endpoint,
+    apiToken,
+    `/local-api/config?${params.toString()}`,
+    3500,
+  );
+}
+
+export async function regenerateLocalApiToken(
+  endpoint: string,
+  apiToken: string,
+): Promise<LocalApiConnectionConfig> {
+  return writeLocalApiJsonWithTimeout<LocalApiConnectionConfig>(
+    endpoint,
+    apiToken,
+    '/local-api/token/regenerate',
+    3500,
+  );
 }
 
 export async function openLogFolder(

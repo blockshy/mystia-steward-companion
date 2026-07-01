@@ -9,6 +9,12 @@ internal sealed class LocalApiHealthDto
     public string BindAddress { get; init; } = "";
     public int Port { get; init; }
     public bool AuthRequired { get; init; }
+    public string LocalEndpoint { get; init; } = "";
+    public bool LanEnabled { get; init; }
+    public bool LanRunning { get; init; }
+    public IReadOnlyList<string> LanBindAddresses { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> LanEndpoints { get; init; } = Array.Empty<string>();
+    public string? LanError { get; init; }
 }
 
 internal sealed class LocalApiErrorDto
@@ -41,6 +47,27 @@ internal sealed class LocalApiLogSettingsDto
     public string NightBusinessDiagnosticsDirectory { get; init; } = "";
     public bool NativeBepInExConsoleEnabled { get; init; }
     public bool NativeBepInExConsoleVisible { get; init; }
+}
+
+internal sealed class LocalApiConnectionConfigDto
+{
+    public bool Ok { get; init; } = true;
+    public string LocalEndpoint { get; init; } = "";
+    public bool LanEnabled { get; init; }
+    public bool LanRunning { get; init; }
+    public string LanBindHost { get; init; } = "auto";
+    public int Port { get; init; }
+    public string Token { get; init; } = "";
+    public IReadOnlyList<string> LanBindAddresses { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> LanEndpoints { get; init; } = Array.Empty<string>();
+    public string? LanError { get; init; }
+    public string? Error { get; init; }
+}
+
+internal sealed class LocalApiConnectionConfigUpdate
+{
+    public bool? LanEnabled { get; init; }
+    public string? LanBindHost { get; init; }
 }
 
 internal sealed class LocalApiDirectoryActionDto

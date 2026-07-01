@@ -9,9 +9,11 @@ import http from 'node:http';
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 32145;
 const MOCK_TOKEN = 'mock-token';
+const MOCK_LAN_ADDRESS = '192.168.1.20';
 
 const host = process.env.MOCK_API_HOST || DEFAULT_HOST;
 const port = Number(process.env.MOCK_API_PORT || DEFAULT_PORT);
+let mockToken = MOCK_TOKEN;
 
 const ingredients = [
   ingredient(1, '鸡蛋', ['家常', '甜'], 8, '禽蛋'),
@@ -161,6 +163,11 @@ const updateStatus = {
   error: null,
 };
 
+const connectionConfig = {
+  lanEnabled: false,
+  lanBindHost: 'auto',
+};
+
 const server = http.createServer((request, response) => {
   setCorsHeaders(response);
 
@@ -175,6 +182,19 @@ const server = http.createServer((request, response) => {
 
   if (request.method === 'POST') {
     try {
+      if (path === '/local-api/config') {
+        connectionConfig.lanEnabled = normalizeBoolean(requestUrl.searchParams.get('lanEnabled'), connectionConfig.lanEnabled);
+        connectionConfig.lanBindHost = normalizeLanHost(requestUrl.searchParams.get('lanHost') || connectionConfig.lanBindHost);
+        sendJson(response, 200, buildConnectionConfig());
+        return;
+      }
+
+      if (path === '/local-api/token/regenerate') {
+        mockToken = `mock-token-${Date.now().toString(36)}`;
+        sendJson(response, 200, buildConnectionConfig());
+        return;
+      }
+
       if (path === '/updates/check') {
         updateStatus.state = 'available';
         updateStatus.checkedAtUtc = nowIso();
@@ -216,6 +236,11 @@ const server = http.createServer((request, response) => {
   }
 
   try {
+    if (path === '/local-api/config') {
+      sendJson(response, 200, buildConnectionConfig());
+      return;
+    }
+
     if (path === '/snapshot') {
       sendJson(response, 200, buildSnapshot());
       return;
@@ -955,13 +980,40 @@ function normalizeBoolean(value, fallback) {
   return fallback;
 }
 
+function normalizeLanHost(value) {
+  const normalized = String(value || '').trim();
+  if (!normalized || normalized === '0.0.0.0' || normalized === '127.0.0.1' || normalized.toLowerCase() === 'localhost') {
+    return 'auto';
+  }
+  return normalized;
+}
+
+function buildConnectionConfig() {
+  const lanRunning = connectionConfig.lanEnabled;
+  const lanBindAddresses = lanRunning ? [MOCK_LAN_ADDRESS] : [];
+  const lanEndpoints = lanBindAddresses.map((address) => `http://${address}:${port}`);
+  return {
+    ok: true,
+    localEndpoint: `http://127.0.0.1:${port}`,
+    lanEnabled: connectionConfig.lanEnabled,
+    lanRunning,
+    lanBindHost: connectionConfig.lanBindHost,
+    port,
+    token: mockToken,
+    lanBindAddresses,
+    lanEndpoints,
+    lanError: null,
+    error: null,
+  };
+}
+
 function nowIso(offsetSeconds = 0) {
   return new Date(Date.now() + offsetSeconds * 1000).toISOString();
 }
 
 function setCorsHeaders(response) {
   response.setHeader('Access-Control-Allow-Origin', '*');
-  response.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   response.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Mystia-Steward-Companion-Token');
   response.setHeader('Access-Control-Max-Age', '86400');
 }

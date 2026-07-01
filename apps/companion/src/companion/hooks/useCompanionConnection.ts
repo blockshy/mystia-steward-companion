@@ -27,6 +27,7 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
   const [endpoint, setEndpoint] = useState(readStoredEndpoint);
   const [endpointDraft, setEndpointDraft] = useState(endpoint);
   const [apiToken, setApiToken] = useState(readStoredApiToken);
+  const [apiTokenDraft, setApiTokenDraft] = useState(apiToken);
   const [snapshot, setSnapshot] = useState<LocalApiSnapshot | null>(null);
   const [cachedRuntimeData, setCachedRuntimeData] = useState<RuntimeDataCatalogSnapshot | null>(null);
   const [error, setError] = useState('');
@@ -55,6 +56,7 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
     }
     if (launchToken) {
       setApiToken(launchToken);
+      setApiTokenDraft(launchToken);
     }
     setSnapshot(null);
     setCachedRuntimeData(null);
@@ -82,6 +84,8 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
     inFlightRequestIdRef.current = null;
     setEndpoint(normalizedEndpointDraft);
     setEndpointDraft(normalizedEndpointDraft);
+    setApiToken(apiTokenDraft.trim());
+    setApiTokenDraft(apiTokenDraft.trim());
     setConnectionPaused(false);
     setConnectionFailureCount(0);
     setError('');
@@ -89,7 +93,26 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
     setCachedRuntimeData(null);
     setManualRefreshing(false);
     setConnectionProbing(false);
-  }, [normalizedEndpointDraft]);
+  }, [apiTokenDraft, normalizedEndpointDraft]);
+
+  const applyConnectionDetails = useCallback((nextEndpoint: string, nextToken: string) => {
+    const normalizedNextEndpoint = normalizeEndpoint(nextEndpoint);
+    const normalizedNextToken = nextToken.trim();
+    latestRequestIdRef.current += 1;
+    inFlightRequestIdRef.current = null;
+    setEndpoint(normalizedNextEndpoint);
+    setEndpointDraft(normalizedNextEndpoint);
+    setApiToken(normalizedNextToken);
+    setApiTokenDraft(normalizedNextToken);
+    setConnectionPaused(false);
+    setConnectionFailureCount(0);
+    setError('');
+    setSnapshot(null);
+    setCachedRuntimeData(null);
+    setManualRefreshing(false);
+    setConnectionProbing(false);
+    setConnectionRevision((current) => current + 1);
+  }, []);
 
   const pauseConnection = useCallback(() => {
     latestRequestIdRef.current += 1;
@@ -244,6 +267,8 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
     setEndpointDraft,
     apiToken,
     setApiToken,
+    apiTokenDraft,
+    setApiTokenDraft,
     snapshot,
     cachedRuntimeData,
     error,
@@ -254,6 +279,7 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
     lastConnectedAt,
     normalizedEndpoint,
     applyEndpointConnection,
+    applyConnectionDetails,
     pauseConnection,
     refresh,
   };

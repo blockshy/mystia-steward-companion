@@ -43,6 +43,8 @@ function StatusMetric({
 interface WorkbenchHeaderProps {
   endpointDraft: string;
   onEndpointDraftChange: (value: string) => void;
+  apiTokenDraft: string;
+  onApiTokenDraftChange: (value: string) => void;
   onApplyEndpointConnection: () => void;
   onPauseConnection: () => void;
   onRefresh: () => void;
@@ -61,6 +63,8 @@ interface WorkbenchHeaderProps {
 export function WorkbenchHeader({
   endpointDraft,
   onEndpointDraftChange,
+  apiTokenDraft,
+  onApiTokenDraftChange,
   onApplyEndpointConnection,
   onPauseConnection,
   onRefresh,
@@ -79,7 +83,7 @@ export function WorkbenchHeader({
     ? '未授权'
     : connectionPaused ? '已停止' : error ? '重试中' : snapshot ? '已连接' : '连接中';
   const connectionDetail = !apiToken
-    ? '未收到游戏启动参数 Token'
+    ? '请输入 Mod API Token 后连接'
     : connectionPaused
       ? '点击连接恢复自动重连'
       : error
@@ -116,7 +120,20 @@ export function WorkbenchHeader({
               if (event.key === 'Enter') onApplyEndpointConnection();
             }}
             spellCheck={false}
-            className="min-w-[9rem] max-w-[16rem] flex-1 basis-[13rem]"
+            className="min-w-[8.5rem] max-w-[15rem] flex-1 basis-[12rem]"
+            inputClassName="font-mono"
+          />
+          <Input
+            value={apiTokenDraft}
+            onChange={(event) => onApiTokenDraftChange(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') onApplyEndpointConnection();
+            }}
+            type="password"
+            placeholder="Token"
+            spellCheck={false}
+            autoComplete="off"
+            className="min-w-[7rem] max-w-[10rem] flex-1 basis-[8rem]"
             inputClassName="font-mono"
           />
           <SwitchField

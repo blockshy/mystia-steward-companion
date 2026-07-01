@@ -152,6 +152,8 @@ export function ModWorkbench() {
     endpointDraft,
     setEndpointDraft,
     apiToken,
+    apiTokenDraft,
+    setApiTokenDraft,
     snapshot,
     cachedRuntimeData,
     error,
@@ -161,6 +163,7 @@ export function ModWorkbench() {
     lastConnectedAt,
     normalizedEndpoint,
     applyEndpointConnection,
+    applyConnectionDetails,
     pauseConnection,
     refresh,
   } = useCompanionConnection(snapshotRefreshIntervalMs);
@@ -1120,6 +1123,8 @@ export function ModWorkbench() {
       <WorkbenchHeader
         endpointDraft={endpointDraft}
         onEndpointDraftChange={setEndpointDraft}
+        apiTokenDraft={apiTokenDraft}
+        onApiTokenDraftChange={setApiTokenDraft}
         onApplyEndpointConnection={applyEndpointConnection}
         onPauseConnection={pauseConnection}
         onRefresh={() => void refresh(true)}
@@ -1355,6 +1360,7 @@ export function ModWorkbench() {
             themeMode={themeMode}
             serviceFocusCompact={serviceFocusCompact}
             onPreferenceChange={updateCompanionPreferences}
+            onConnectionConfigApplied={applyConnectionDetails}
             onThemeModeChange={setThemeMode}
             onServiceFocusCompactChange={setServiceFocusCompact}
           />

@@ -61,7 +61,7 @@ internal static class CompanionProcessLauncher
                 WorkingDirectory = Path.GetDirectoryName(executablePath) ?? "",
                 UseShellExecute = false,
             };
-            startInfo.ArgumentList.Add($"--api=http://127.0.0.1:{Math.Clamp(config.LocalApiPort.Value, 1024, 65535)}");
+            startInfo.ArgumentList.Add($"--api={BuildLocalApiEndpoint(config)}");
             startInfo.ArgumentList.Add($"--game-pid={Process.GetCurrentProcess().Id}");
             if (!string.IsNullOrWhiteSpace(localApiToken))
             {
@@ -109,8 +109,8 @@ internal static class CompanionProcessLauncher
         if (config != null)
         {
             builder
-                .Append("--api=http://127.0.0.1:")
-                .AppendLine(Math.Clamp(config.LocalApiPort.Value, 1024, 65535).ToString());
+                .Append("--api=")
+                .AppendLine(BuildLocalApiEndpoint(config));
         }
 
         if (!string.IsNullOrWhiteSpace(localApiToken))
@@ -119,6 +119,12 @@ internal static class CompanionProcessLauncher
         }
 
         return builder.ToString();
+    }
+
+    private static string BuildLocalApiEndpoint(StewardPluginConfig config)
+    {
+        var port = Math.Clamp(config.LocalApiPort.Value, 1024, 65535);
+        return $"http://127.0.0.1:{port}";
     }
 
     private static bool IsRequestThrottled()
