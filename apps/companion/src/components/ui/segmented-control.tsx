@@ -27,11 +27,12 @@ function SegmentedControl<TValue extends string>({
   return (
     <MantineSegmentedControl
       data-slot="segmented-control"
+      data-gamepad-axis="x"
       value={value}
       data={options}
       color="steward"
       size="sm"
-      radius="md"
+      radius={0}
       className={composeClassNames('steward-segmented-control', className)}
       onChange={(nextValue) => onValueChange(nextValue as TValue)}
       {...props}

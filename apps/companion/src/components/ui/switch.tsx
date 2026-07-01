@@ -49,7 +49,7 @@ function SwitchField({
       {...props}
     >
       <Switch checked={checked} onCheckedChange={onCheckedChange} disabled={disabled} />
-      <span className="whitespace-nowrap">{label}</span>
+      <span className="min-w-0 truncate">{label}</span>
     </label>
   );
 }

@@ -21,7 +21,7 @@ function Badge({ className, variant = 'default', ...props }: BadgeProps) {
       data-ui-variant={variant}
       color={color}
       variant={mantineVariant}
-      radius="md"
+      radius={0}
       size="sm"
       className={composeClassNames('steward-badge', className)}
       {...(props as MantineBadgeProps)}

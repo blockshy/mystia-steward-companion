@@ -327,7 +327,7 @@ export function ModSettingsPanel({
               <InfoLine label="更新包" value={updateStatus?.packageSize ? formatBytes(updateStatus.packageSize) : '未知'} />
             </div>
             {updateDetail && (
-              <div className="rounded border border-border/70 bg-background/45 px-3 py-2 text-xs text-muted-foreground">
+              <div className="steward-inline-panel px-3 py-2 text-xs text-muted-foreground">
                 {updateDetail}
               </div>
             )}
@@ -336,7 +336,7 @@ export function ModSettingsPanel({
                 已打开独立更新程序；请在弹窗中确认关闭游戏并完成安装。
               </div>
             )}
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap gap-2" data-gamepad-axis="x">
               <Button
                 type="button"
                 size="sm"
@@ -546,7 +546,7 @@ export function ModSettingsPanel({
             <div className="text-xs text-muted-foreground">
               关闭时不会显示或执行任何自动化动作；开启后可在“经营中”页面配置具体子功能。
             </div>
-            <div className="grid gap-4 md:grid-cols-2">
+            <div className="grid grid-cols-2 gap-4 max-[719px]:grid-cols-1">
               <AutomationSliderField
                 label="稀客并发"
                 value={preferences.autoRareConcurrency}
@@ -587,7 +587,7 @@ export function ModSettingsPanel({
         <TabsContent value="debug" className="space-y-4">
           <ListPanel title="BepInEx">
             <div className="space-y-3">
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2" data-gamepad-axis="x">
                 <SwitchControl
                   label="原生日志窗口"
                   checked={logSettings?.nativeBepInExConsoleEnabled ?? false}
@@ -607,7 +607,7 @@ export function ModSettingsPanel({
                 关闭后会隐藏当前 BepInEx 控制台，并将 BepInEx.cfg 的原生 Console log 设为下次启动关闭；日志页仍可读取 LogOutput.log。
               </div>
               {consoleError && (
-                <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                <div className="border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
                   {consoleError}
                 </div>
               )}
@@ -668,14 +668,21 @@ function RecommendationSortProfileControl({
             : definition.description;
 
           return (
-            <div key={definition.key} className="rounded-md border border-border p-2">
-              <div className="grid grid-cols-[minmax(0,1fr)_minmax(8rem,11rem)_2.5rem] items-center gap-2">
-                <SwitchField
-                  label={definition.label}
-                  checked={rule.enabled}
-                  disabled={controlDisabled}
-                  onCheckedChange={(enabled) => updateObjective(definition.key, { enabled })}
-                />
+            <div key={definition.key} className="steward-data-row p-2">
+              <div className="grid min-w-0 gap-2">
+                <div className="flex min-w-0 items-center justify-between gap-2">
+                  <SwitchField
+                    label={definition.label}
+                    checked={rule.enabled}
+                    disabled={controlDisabled}
+                    onCheckedChange={(enabled) => updateObjective(definition.key, { enabled })}
+                    title={definition.label}
+                    className="min-w-0 flex-1"
+                  />
+                  <span className={rule.enabled && !controlDisabled ? 'shrink-0 text-right text-sm tabular-nums' : 'shrink-0 text-right text-sm tabular-nums text-muted-foreground'}>
+                    {rule.weight}
+                  </span>
+                </div>
                 <Slider
                   value={rule.weight}
                   min={0}
@@ -683,11 +690,9 @@ function RecommendationSortProfileControl({
                   step={5}
                   disabled={!rule.enabled || controlDisabled}
                   aria-label={`${definition.label}权重`}
+                  className="min-w-0"
                   onValueChange={(weight) => updateObjective(definition.key, { weight })}
                 />
-                <span className={rule.enabled && !controlDisabled ? 'text-right text-sm tabular-nums' : 'text-right text-sm tabular-nums text-muted-foreground'}>
-                  {rule.weight}
-                </span>
               </div>
               <div className="mt-1 text-xs text-muted-foreground">{description}</div>
             </div>

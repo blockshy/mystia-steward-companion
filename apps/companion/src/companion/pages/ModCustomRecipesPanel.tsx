@@ -254,7 +254,7 @@ export function ModCustomRecipesPanel({
           />
 
           {(customRecipeError || formError) && (
-            <div className="rounded-md border border-destructive/30 px-3 py-2 text-sm text-destructive">
+            <div className="border border-destructive/30 px-3 py-2 text-sm text-destructive">
               {formError || customRecipeError}
             </div>
           )}
@@ -343,7 +343,7 @@ function RecipeFormSummary({
       .join(', ');
 
   return (
-    <div className="rounded-md border border-border px-3 py-2 text-sm text-muted-foreground">
+    <div className="steward-inline-panel px-3 py-2 text-sm text-muted-foreground">
       厨具 {recipe.cooker || '未知'} · 基础 {base} · 加料 {extras}
     </div>
   );
@@ -391,8 +391,8 @@ function CustomRecipeRow({
       .join(', ');
 
   return (
-    <div className="rounded-md border border-border px-3 py-2 text-sm">
-      <div className="flex flex-wrap items-start justify-between gap-2">
+    <div className="steward-data-row px-3 py-2 text-sm">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="font-medium">{entry.customerName || `稀客 #${entry.customerId}`}</span>
@@ -410,7 +410,7 @@ function CustomRecipeRow({
             排序 {entry.sortOrder} · 厨具 {recipe?.cooker || '未知'} · 基础 {base} · 加料 {extras}
           </div>
         </div>
-        <div className="flex flex-wrap justify-end gap-1.5">
+        <div className="flex flex-wrap justify-end gap-1.5" data-gamepad-axis="x">
           <Button type="button" size="xs" variant="outline" disabled={busy || index === 0} onClick={() => void onMove(entry.id, 'up')}>
             上移
           </Button>

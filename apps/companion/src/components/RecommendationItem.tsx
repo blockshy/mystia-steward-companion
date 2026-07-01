@@ -56,7 +56,8 @@ function RecommendationItem({
   return (
     <div
       className={composeClassNames(
-        compact ? 'rounded-md border border-border/80 p-1.5 text-xs' : 'rounded-md border border-border/80 p-2 text-sm',
+        'steward-data-row',
+        compact ? 'px-1.5 py-1.5 text-xs' : 'px-2 py-2 text-sm',
         className,
       )}
       data-gamepad-focusable={favorite ? 'true' : undefined}
@@ -117,7 +118,7 @@ function RecommendationMetaBadge({
   }[tone];
 
   return (
-    <span className={composeClassNames('inline-flex max-w-full items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs', toneClass, className)}>
+    <span className={composeClassNames('inline-flex max-w-full items-center gap-1 border px-1.5 py-0.5 text-xs', toneClass, className)}>
       <span className="shrink-0 font-medium">{label}</span>
       <span className="min-w-0 truncate" title={value}>{value}</span>
     </span>

@@ -36,14 +36,14 @@
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
+  --radius-sm: 0;
+  --radius-md: 0;
+  --radius-lg: 0;
+  --radius-xl: 0;
 }
 
 :root {
-  --radius: 0.5rem;
+  --radius: 0;
   --companion-background-opacity-percent: 100%;
   --companion-window-opacity-percent: var(--companion-background-opacity-percent);
   --companion-content-opacity: 1;
@@ -329,6 +329,14 @@
   body[data-gamepad-navigation='active'] [data-gamepad-focus='true'] {
     box-shadow: 0 0 0 4px color-mix(in srgb, var(--ring) 20%, transparent);
   }
+
+  body[data-gamepad-navigation='active'] .steward-tabs-trigger[data-gamepad-focus='true'],
+  body[data-gamepad-navigation='active'] .steward-tabs-trigger:focus {
+    outline: 0 !important;
+    box-shadow:
+      inset 0 0 0 2px var(--ring),
+      inset 0 -2px 0 var(--primary) !important;
+  }
 }
 
 /* Keep this outside Tailwind layers so Mantine's unlayered body rule cannot cover the Tauri transparent window. */
@@ -448,22 +456,53 @@ html::-webkit-scrollbar-thumb:hover,
 }
 
 .steward-card {
-  border-color: color-mix(in srgb, var(--border) 62%, transparent);
-  box-shadow: 0 1px 0 color-mix(in srgb, var(--foreground) 4%, transparent);
+  border-color: color-mix(in srgb, var(--border) 54%, transparent);
+  box-shadow: none;
   color: var(--card-foreground);
 }
 
 .steward-status-card,
 .steward-list-panel {
-  border-color: color-mix(in srgb, var(--border) 48%, transparent);
+  border-color: color-mix(in srgb, var(--border) 46%, transparent);
 }
 
 .steward-status-card {
-  background-color: var(--companion-card-surface);
+  background-color: color-mix(in srgb, var(--companion-card-surface) 94%, var(--companion-background-surface));
 }
 
 .steward-list-panel {
   background-color: var(--companion-card-surface);
+}
+
+.steward-panel-header {
+  min-height: 2.5rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 42%, transparent);
+  background-color: color-mix(in srgb, var(--companion-muted-surface) 42%, transparent);
+}
+
+.steward-data-row {
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--border) 52%, transparent);
+  background-color: color-mix(in srgb, var(--companion-background-surface) 64%, transparent);
+  color: var(--foreground);
+}
+
+@media (hover: hover) {
+  .steward-data-row:hover {
+    border-color: color-mix(in srgb, var(--primary) 36%, var(--border));
+    background-color: color-mix(in srgb, var(--companion-muted-surface) 52%, transparent);
+  }
+}
+
+.steward-inline-panel {
+  border: 1px solid color-mix(in srgb, var(--border) 42%, transparent);
+  background-color: color-mix(in srgb, var(--companion-background-surface) 58%, transparent);
+}
+
+.steward-workbench-header {
+  border: 1px solid color-mix(in srgb, var(--border) 46%, transparent);
+  background-color: color-mix(in srgb, var(--companion-card-surface) 82%, transparent);
+  padding: 0.75rem;
 }
 
 .steward-button {
@@ -471,7 +510,7 @@ html::-webkit-scrollbar-thumb:hover,
   font-size: var(--steward-control-font-sm);
   font-weight: 600;
   line-height: var(--steward-control-line-sm);
-  border-radius: var(--radius);
+  box-shadow: none;
 }
 
 .steward-button .mantine-Button-label {
@@ -480,17 +519,17 @@ html::-webkit-scrollbar-thumb:hover,
 
 .steward-button[data-ui-variant='default'] {
   --button-bg: var(--primary) !important;
-  --button-hover: color-mix(in srgb, var(--primary) 86%, #3f1813) !important;
+  --button-hover: color-mix(in srgb, var(--primary) 88%, var(--foreground-base)) !important;
   --button-color: var(--primary-foreground) !important;
-  --button-bd: 1px solid color-mix(in srgb, var(--primary) 82%, var(--border)) !important;
+  --button-bd: 1px solid color-mix(in srgb, var(--primary) 76%, var(--border)) !important;
 }
 
 .steward-button[data-ui-variant='outline'],
 .steward-button[data-ui-variant='secondary'] {
-  --button-bg: var(--companion-card-surface) !important;
-  --button-hover: var(--companion-muted-surface) !important;
+  --button-bg: color-mix(in srgb, var(--companion-card-surface) 78%, transparent) !important;
+  --button-hover: color-mix(in srgb, var(--companion-muted-surface) 72%, transparent) !important;
   --button-color: var(--foreground) !important;
-  --button-bd: 1px solid color-mix(in srgb, var(--input) 68%, transparent) !important;
+  --button-bd: 1px solid color-mix(in srgb, var(--input) 62%, transparent) !important;
 }
 
 .steward-button[data-ui-variant='ghost'] {
@@ -534,11 +573,11 @@ html::-webkit-scrollbar-thumb:hover,
 
 .steward-badge {
   max-width: 100%;
-  min-height: 1.25rem;
+  min-height: 1.125rem;
   text-transform: none;
   letter-spacing: 0;
   font-size: var(--steward-control-font-xs);
-  font-weight: 600;
+  font-weight: 500;
   line-height: var(--steward-control-line-xs);
 }
 
@@ -550,8 +589,8 @@ html::-webkit-scrollbar-thumb:hover,
 .steward-badge[data-ui-variant='secondary'],
 .steward-badge[data-ui-variant='outline'],
 .steward-badge[data-ui-variant='ghost'] {
-  border-color: color-mix(in srgb, var(--border) 55%, transparent);
-  background-color: color-mix(in srgb, var(--muted) 60%, transparent);
+  border-color: color-mix(in srgb, var(--border) 50%, transparent);
+  background-color: color-mix(in srgb, var(--muted) 44%, transparent);
   color: var(--muted-foreground);
 }
 
@@ -574,9 +613,10 @@ html::-webkit-scrollbar-thumb:hover,
   --input-padding-y-lg: 0;
   --input-padding-y-xl: 0;
   --input-padding: 0.625rem;
-  --input-bd: color-mix(in srgb, var(--input) 64%, transparent) !important;
+  --input-radius: 0 !important;
+  --input-bd: color-mix(in srgb, var(--input) 58%, transparent) !important;
   --input-bd-focus: var(--ring) !important;
-  --input-bg: var(--companion-card-surface) !important;
+  --input-bg: color-mix(in srgb, var(--companion-card-surface) 82%, transparent) !important;
   --input-color: var(--foreground) !important;
   --input-placeholder-color: color-mix(in srgb, var(--muted-foreground) 76%, transparent) !important;
 }
@@ -614,6 +654,28 @@ html::-webkit-scrollbar-thumb:hover,
 
 .steward-multi-select-field::placeholder {
   line-height: var(--steward-control-line-sm);
+}
+
+.steward-multi-select-pill {
+  --pill-radius: 0 !important;
+  border: 1px solid color-mix(in srgb, var(--primary) 34%, var(--border));
+  background-color: color-mix(in srgb, var(--primary) 13%, var(--companion-card-surface)) !important;
+  color: var(--foreground);
+}
+
+.steward-multi-select-pill .mantine-Pill-label {
+  color: inherit;
+}
+
+.steward-multi-select-pill .mantine-Pill-remove {
+  color: var(--muted-foreground);
+}
+
+@media (hover: hover) {
+  .steward-multi-select-pill .mantine-Pill-remove:hover {
+    background-color: color-mix(in srgb, var(--primary) 18%, transparent);
+    color: var(--foreground);
+  }
 }
 
 .steward-input-root[data-size='xs'],
@@ -661,14 +723,13 @@ html::-webkit-scrollbar-thumb:hover,
 }
 
 .steward-select-dropdown {
-  border-color: color-mix(in srgb, var(--border) 70%, transparent);
+  border-color: color-mix(in srgb, var(--border) 62%, transparent);
   background-color: var(--companion-popover-surface);
   color: var(--popover-foreground);
-  box-shadow: 0 2px 8px color-mix(in srgb, var(--foreground-base) 12%, transparent);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--foreground-base) 10%, transparent);
 }
 
 .steward-select-option {
-  border-radius: var(--radius);
   color: var(--popover-foreground);
   transition:
     background-color 120ms ease,
@@ -720,27 +781,18 @@ html::-webkit-scrollbar-thumb:hover,
   .steward-multi-select .mantine-Input-wrapper:hover,
   .steward-select:hover,
   .steward-select .mantine-Input-wrapper:hover {
-    --input-bd: color-mix(in srgb, var(--primary) 44%, var(--input)) !important;
-    --input-bg: color-mix(
-      in srgb,
-      var(--companion-card-surface) 84%,
-      var(--companion-muted-surface)
-    ) !important;
+    --input-bd: color-mix(in srgb, var(--primary) 34%, var(--input)) !important;
   }
 
   .steward-input:hover,
   .steward-number-input-root:hover .steward-number-input,
   .steward-multi-select:hover .steward-select-input,
   .steward-select:hover .steward-select-input {
-    border-color: color-mix(in srgb, var(--ring) 54%, var(--input)) !important;
-    background-color: color-mix(
-      in srgb,
-      var(--companion-card-surface) 78%,
-      var(--accent)
-    ) !important;
-    box-shadow: 0 0 0 1px color-mix(in srgb, var(--ring) 20%, transparent);
-    filter: brightness(1.04);
-    outline: 1px solid color-mix(in srgb, var(--ring) 22%, transparent);
+    border-color: color-mix(in srgb, var(--ring) 42%, var(--input)) !important;
+    background-color: color-mix(in srgb, var(--companion-card-surface) 88%, var(--companion-muted-surface)) !important;
+    box-shadow: none;
+    filter: none;
+    outline: 1px solid color-mix(in srgb, var(--ring) 16%, transparent);
     outline-offset: 0;
   }
 }
@@ -766,8 +818,8 @@ html::-webkit-scrollbar-thumb:hover,
   max-width: 100%;
   height: var(--steward-control-height-sm);
   min-height: var(--steward-control-height-sm);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--input) 60%, transparent);
-  background-color: var(--companion-muted-surface) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--input) 54%, transparent);
+  background-color: color-mix(in srgb, var(--companion-card-surface) 72%, transparent) !important;
   color: var(--foreground);
   --sc-padding: 0 0.625rem !important;
   --sc-color: var(--companion-card-surface) !important;
@@ -780,8 +832,8 @@ html::-webkit-scrollbar-thumb:hover,
 }
 
 .steward-segmented-control .mantine-SegmentedControl-indicator {
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary) 34%, var(--border));
-  background-color: var(--companion-card-surface) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary) 34%, transparent);
+  background-color: color-mix(in srgb, var(--primary) 13%, var(--companion-card-surface)) !important;
 }
 
 .steward-segmented-control .mantine-SegmentedControl-label {
@@ -791,7 +843,6 @@ html::-webkit-scrollbar-thumb:hover,
   align-items: center;
   justify-content: center;
   padding-block: 0 !important;
-  border-radius: calc(var(--radius) - 1px);
   color: var(--muted-foreground);
   line-height: var(--steward-control-line-sm);
   transition:
@@ -816,24 +867,26 @@ html::-webkit-scrollbar-thumb:hover,
   }
 
   .steward-segmented-control .mantine-SegmentedControl-label:not([data-disabled], [data-read-only]):hover {
-    background-color: color-mix(in srgb, var(--primary) 10%, transparent) !important;
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary) 22%, transparent);
+    background-color: color-mix(in srgb, var(--primary) 8%, transparent) !important;
+    box-shadow: none;
     color: var(--foreground) !important;
-    filter: brightness(1.05);
+    filter: none;
     outline-color: color-mix(in srgb, var(--ring) 55%, transparent);
   }
 }
 
 .steward-tabs-list {
   min-width: 0;
-  --tab-border-color: color-mix(in srgb, var(--border) 68%, transparent);
-  --tab-hover-color: var(--companion-muted-surface);
+  border: 1px solid color-mix(in srgb, var(--border) 42%, transparent);
+  overflow: hidden;
+  --tab-border-color: color-mix(in srgb, var(--border) 48%, transparent);
+  --tab-hover-color: color-mix(in srgb, var(--companion-muted-surface) 58%, transparent);
 }
 
 .steward-tabs-trigger {
   height: var(--steward-control-height-md);
   min-height: var(--steward-control-height-md);
-  flex: 1 1 0;
+  flex: 1 0 max-content;
   padding-block: 0;
   padding-inline: 0.75rem;
   font-size: var(--steward-control-font-sm);
@@ -845,13 +898,16 @@ html::-webkit-scrollbar-thumb:hover,
 
 .steward-tabs-trigger[data-active] {
   border-color: var(--primary) !important;
+  background-color: color-mix(in srgb, var(--primary) 8%, transparent) !important;
   color: var(--foreground);
+  box-shadow: inset 0 -2px 0 var(--primary);
 }
 
 @media (hover: hover) {
   .steward-tabs-trigger:hover:not([data-active], [data-disabled]) {
-    border-color: color-mix(in srgb, var(--border) 70%, transparent) !important;
-    background-color: var(--companion-muted-surface) !important;
+    border-color: color-mix(in srgb, var(--border) 52%, transparent) !important;
+    background-color: transparent !important;
+    box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--primary) 62%, transparent);
     color: var(--foreground);
   }
 }
@@ -867,7 +923,6 @@ html::-webkit-scrollbar-thumb:hover,
   min-width: 0;
   height: var(--steward-control-height-sm);
   padding-inline: 0.625rem;
-  border-radius: var(--radius);
   cursor: pointer;
   font-size: var(--steward-control-font-sm);
   line-height: var(--steward-control-line-sm);
@@ -936,7 +991,7 @@ html::-webkit-scrollbar-thumb:hover,
 }
 
 .steward-choice-card {
-  border-color: color-mix(in srgb, var(--border) 60%, transparent);
+  border-color: color-mix(in srgb, var(--border) 52%, transparent);
   background-color: var(--companion-background-surface);
   color: var(--foreground);
 }
@@ -953,8 +1008,7 @@ html::-webkit-scrollbar-thumb:hover,
 
 .steward-accordion-item {
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--border) 48%, transparent);
-  border-radius: var(--radius);
+  border: 1px solid color-mix(in srgb, var(--border) 44%, transparent);
   background-color: var(--companion-background-surface);
 }
 
@@ -980,7 +1034,6 @@ html::-webkit-scrollbar-thumb:hover,
 
 .steward-tree-label {
   min-height: var(--steward-control-height-sm);
-  border-radius: var(--radius);
   color: var(--foreground);
   transition:
     background-color 120ms ease,
@@ -998,31 +1051,30 @@ html::-webkit-scrollbar-thumb:hover,
 
 .steward-empty-row {
   display: flex;
-  min-height: 4.5rem;
+  min-height: 3.5rem;
   align-items: center;
   justify-content: center;
-  border-radius: calc(var(--radius) - 2px);
-  background-color: var(--companion-background-surface);
-  padding: 1rem;
+  border: 1px dashed color-mix(in srgb, var(--border) 44%, transparent);
+  background-color: color-mix(in srgb, var(--companion-background-surface) 62%, transparent);
+  padding: 0.875rem;
 }
 
 .steward-empty-state {
   display: flex;
-  min-height: 8rem;
+  min-height: 7rem;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
-  border-radius: var(--radius);
-  background-color: var(--companion-card-surface);
-  padding: 1.5rem;
+  border: 1px dashed color-mix(in srgb, var(--border) 46%, transparent);
+  background-color: color-mix(in srgb, var(--companion-card-surface) 76%, transparent);
+  padding: 1.25rem;
 }
 
 .steward-empty-state-mark {
   width: 1.25rem;
   height: 1.25rem;
   border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
-  border-radius: 999px;
   background:
     linear-gradient(color-mix(in srgb, var(--muted-foreground) 60%, transparent), color-mix(in srgb, var(--muted-foreground) 60%, transparent)) center/0.55rem 1px no-repeat;
 }

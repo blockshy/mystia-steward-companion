@@ -239,7 +239,7 @@ export function ModRarePanel({
       {selectedPlace && selectedCustomer && (
         <>
           <Card>
-            <CardContent className={`${DENSE_THREE_COLUMN_GRID} p-4 text-sm`}>
+            <CardContent className={`${DENSE_THREE_COLUMN_GRID} p-4 text-sm`} data-gamepad-axis="x">
               <div>
                 <div className="mb-1 text-xs text-muted-foreground">稀客</div>
                 <SelectBox
@@ -278,7 +278,7 @@ export function ModRarePanel({
             </CardContent>
           </Card>
           {favoriteError && (
-            <div className="rounded-md border border-destructive/30 px-3 py-2 text-sm text-destructive">
+            <div className="border border-destructive/30 px-3 py-2 text-sm text-destructive">
               {favoriteError}
             </div>
           )}

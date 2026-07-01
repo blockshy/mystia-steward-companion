@@ -11,6 +11,7 @@
     "lint": "eslint .",
     "mock:api": "node scripts/mock-local-api.mjs",
     "audit:ui": "node scripts/playwright-ui-audit.mjs",
+    "audit:gamepad": "node scripts/playwright-gamepad-audit.mjs",
     "preview": "vite preview --config apps/companion/vite.config.ts",
     "tauri:dev": "cd apps/companion && tauri dev",
     "tauri:build": "cd apps/companion && tauri build --no-bundle"

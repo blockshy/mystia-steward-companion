@@ -119,7 +119,7 @@ export function ModNormalPanel({
         <ListPanel title={`地区普客 (${customers.length})`} contentClassName="min-h-[8rem]">
           <div className={DENSE_ITEM_GRID}>
             {customers.map((customer) => (
-              <div key={customer.id} className="rounded-md border border-border/80 p-2 text-sm">
+              <div key={customer.id} className="steward-data-row p-2 text-sm">
                 <div className="font-medium">{customer.name}</div>
                 <div className="mt-1 space-y-1">
                   <TagPillGroup tags={customer.positiveTags} tone="positive" />

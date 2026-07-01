@@ -168,7 +168,7 @@ export function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToke
               {error || logs?.path || settings?.logOutputPath || '等待日志响应'}
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+          <div className="flex flex-wrap items-center gap-2 lg:justify-end" data-gamepad-axis="x">
             <Button
               size="sm"
               variant={settings?.logAccessEnabled ? 'default' : 'outline'}
@@ -248,13 +248,13 @@ export function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToke
               className="h-7"
             />
             {automationLogNotice ? (
-              <div className="rounded-md border border-border steward-muted-surface-30 px-3 py-2 text-sm text-muted-foreground">
+              <div className="steward-inline-panel px-3 py-2 text-sm text-muted-foreground">
                 {automationLogNotice}
               </div>
             ) : filteredAutomationLogEntries.length > 0 ? (
               <div className="max-h-[34vh] space-y-2 overflow-auto pr-1">
                 {filteredAutomationLogEntries.map((entry, index) => (
-                  <div key={`${entry.timestamp}-${index}`} className="rounded-sm border border-border steward-background-surface-70 px-3 py-2.5 text-xs leading-5">
+                  <div key={`${entry.timestamp}-${index}`} className="steward-data-row px-3 py-2.5 text-xs leading-5">
                     <div className="flex flex-wrap items-center gap-1.5">
                       <Badge variant="outline">{entry.action || 'unknown'}</Badge>
                       {entry.target && <Badge variant="secondary">{entry.target}</Badge>}
@@ -291,7 +291,7 @@ export function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToke
             </div>
           </AccordionTrigger>
           <AccordionContent className="p-0">
-            <pre className="max-h-[62vh] overflow-auto whitespace-pre-wrap break-words rounded-sm border border-border steward-background-surface-55 p-3.5 font-mono text-xs leading-6 text-foreground">
+            <pre className="max-h-[62vh] overflow-auto whitespace-pre-wrap break-words border border-border steward-background-surface-55 p-3.5 font-mono text-xs leading-6 text-foreground">
               {error
                 || logs?.error
                 || (!settings?.logAccessEnabled ? '日志读取已关闭。需要排查时点击“开启日志读取”，结束后建议关闭。' : null)

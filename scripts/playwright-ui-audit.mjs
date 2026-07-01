@@ -17,12 +17,14 @@ const STORAGE_PREFIX = 'mystia-steward-companion';
 const viewports = [
   { name: 'desktop', width: 1280, height: 900 },
   { name: 'compact', width: 900, height: 760 },
+  { name: 'minimum', width: 720, height: 760 },
 ];
 
 const tabs = [
   { value: 'overview', label: '概览' },
   { value: 'normal', label: '普客' },
   { value: 'rare', label: '稀客' },
+  { value: 'custom-recipes', label: '自定义推荐料理' },
   { value: 'service', label: '经营中' },
   { value: 'tasks', label: '任务' },
   { value: 'inventory', label: '修改' },
@@ -76,7 +78,7 @@ for (const viewport of viewports) {
   const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
   await page.addInitScript(seedLocalStorage, { apiUrl: API_URL, apiToken: API_TOKEN, storagePrefix: STORAGE_PREFIX });
   await page.goto(APP_URL, { waitUntil: 'domcontentloaded' });
-  await page.waitForFunction(() => document.body.innerText.includes('1.0.5-mock'), null, { timeout: 10000 });
+  await page.waitForFunction(() => document.body.innerText.includes('1.0.5'), null, { timeout: 10000 });
   await auditTransparencyModel(page, viewport);
 
   for (const tab of tabs) {
@@ -148,11 +150,271 @@ async function auditPage(page, viewport, tab) {
     });
   }
 
+  await auditMinimumViewportLayout(page, viewport, tab);
+
   for (const target of hoverTargets) {
     await auditHoverTarget(page, viewport, tab, target);
   }
 
   await auditSelectDropdown(page, viewport, tab);
+}
+
+async function auditMinimumViewportLayout(page, viewport, tab) {
+  if (viewport.name !== 'minimum') return;
+
+  await auditMinimumTwoColumnGrids(page, viewport, tab);
+
+  if (tab.value === 'overview') {
+    await auditMinimumShellGutter(page, viewport, tab);
+    await auditMinimumHeaderLayout(page, viewport, tab);
+  }
+
+  if (tab.value === 'settings') {
+    await auditMinimumRecommendationSettingsLayout(page, viewport, tab);
+  }
+}
+
+async function auditMinimumTwoColumnGrids(page, viewport, tab) {
+  const result = await page.evaluate(({ tabValue }) => {
+    const expectedTabs = new Set(['overview', 'normal', 'rare', 'custom-recipes', 'service', 'tasks', 'inventory', 'settings']);
+    const candidates = Array.from(document.querySelectorAll('*'))
+      .filter((node) => node instanceof HTMLElement)
+      .filter((element) => {
+        const className = element.getAttribute('class') || '';
+        return className.includes('grid-cols-2')
+          && className.includes('max-[719px]:grid-cols-1')
+          && isVisible(element);
+      });
+
+    const checked = [];
+    const failures = [];
+    for (const element of candidates) {
+      const children = Array.from(element.children)
+        .filter((node) => node instanceof HTMLElement && isVisible(node));
+      if (children.length < 2) continue;
+
+      const [first, second] = children;
+      const firstRect = first.getBoundingClientRect();
+      const secondRect = second.getBoundingClientRect();
+      const gridStyle = window.getComputedStyle(element);
+      const sameRow = Math.abs(firstRect.top - secondRect.top) <= 2 && secondRect.left > firstRect.left + 8;
+      const usableWidth = firstRect.width >= 120 && secondRect.width >= 120;
+      const summary = {
+        text: normalizeText(element.textContent || '').slice(0, 40),
+        columns: gridStyle.gridTemplateColumns,
+        firstTop: Math.round(firstRect.top),
+        secondTop: Math.round(secondRect.top),
+        firstLeft: Math.round(firstRect.left),
+        secondLeft: Math.round(secondRect.left),
+        firstWidth: Math.round(firstRect.width),
+        secondWidth: Math.round(secondRect.width),
+      };
+      checked.push(summary);
+      if (!sameRow || !usableWidth) {
+        failures.push({ ...summary, sameRow, usableWidth });
+      }
+    }
+
+    return {
+      ok: failures.length === 0 && (!expectedTabs.has(tabValue) || checked.length > 0),
+      checkedCount: checked.length,
+      failures,
+      expected: expectedTabs.has(tabValue),
+    };
+
+    function isVisible(element) {
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      return rect.width > 0
+        && rect.height > 0
+        && style.display !== 'none'
+        && style.visibility !== 'hidden'
+        && Number(style.opacity || '1') > 0.05;
+    }
+
+    function normalizeText(value) {
+      return value.replace(/\s+/g, ' ').trim();
+    }
+  }, { tabValue: tab.value });
+
+  if (!result.ok) {
+    issues.push({
+      viewport: viewport.name,
+      tab: tab.label,
+      component: 'TwoColumnLayout',
+      message: result.checkedCount === 0 && result.expected
+        ? '最小宽度下未找到应保持双列的可见网格。'
+        : `最小宽度双列网格异常：${JSON.stringify(result.failures).slice(0, 300)}`,
+    });
+  }
+}
+
+async function auditMinimumShellGutter(page, viewport, tab) {
+  const result = await page.evaluate(() => {
+    const main = document.querySelector('.companion-shell > main');
+    const content = main?.firstElementChild;
+    if (!(main instanceof HTMLElement) || !(content instanceof HTMLElement)) {
+      return { ok: false, reason: '未找到外层窗口布局检查目标。' };
+    }
+
+    const rect = content.getBoundingClientRect();
+    const clientWidth = document.documentElement.clientWidth;
+    const top = rect.top;
+    const left = rect.left;
+    const right = clientWidth - rect.right;
+    const maxGutter = 8;
+    const maxRightGutter = 18;
+    return {
+      ok: top <= maxGutter && left <= maxGutter && right <= maxRightGutter,
+      top: Math.round(top),
+      left: Math.round(left),
+      right: Math.round(right),
+      maxGutter,
+      maxRightGutter,
+    };
+  });
+
+  if (!result.ok) {
+    issues.push({
+      viewport: viewport.name,
+      tab: tab.label,
+      component: 'ShellGutter',
+      message: result.reason || `最小宽度外层边距过大：top=${result.top}px，left=${result.left}px，right=${result.right}px，期望 top/left 不超过 ${result.maxGutter}px、right 含滚动条稳定槽不超过 ${result.maxRightGutter}px。`,
+    });
+  }
+}
+
+async function auditMinimumHeaderLayout(page, viewport, tab) {
+  const result = await page.evaluate(() => {
+    const header = document.querySelector('.steward-workbench-header');
+    const headerGrid = header?.firstElementChild;
+    const toolbar = headerGrid?.children[1];
+    const statusGrid = header?.children[1];
+    if (!(header instanceof HTMLElement)
+      || !(headerGrid instanceof HTMLElement)
+      || !(toolbar instanceof HTMLElement)
+      || !(statusGrid instanceof HTMLElement)) {
+      return { ok: false, reason: '未找到 Header 布局检查目标。' };
+    }
+
+    const gridChildren = Array.from(headerGrid.children).filter((node) => node instanceof HTMLElement);
+    const toolbarChildren = Array.from(toolbar.children).filter((node) => node instanceof HTMLElement);
+    const statusChildren = Array.from(statusGrid.children).filter((node) => node instanceof HTMLElement);
+    if (gridChildren.length < 2 || toolbarChildren.length < 3 || statusChildren.length !== 3) {
+      return { ok: false, reason: 'Header 工具条或状态摘要项目数量不符合预期。' };
+    }
+
+    const [brandRect, toolbarRect] = gridChildren.map((node) => node.getBoundingClientRect());
+    const toolbarRects = toolbarChildren.map((node) => node.getBoundingClientRect());
+    const statusRects = statusChildren.map((node) => node.getBoundingClientRect());
+    const toolbarTop = toolbarRects[0].top;
+    const statusTop = statusRects[0].top;
+    const toolbarSameLine = Math.abs(brandRect.top - toolbarRect.top) <= 4
+      && toolbarRects.every((rect) => Math.abs(rect.top - toolbarTop) <= 4);
+    const statusSameLine = statusRects.every((rect) => Math.abs(rect.top - statusTop) <= 4);
+    const statusUsableWidth = statusRects.every((rect) => rect.width >= 120);
+
+    return {
+      ok: toolbarSameLine && statusSameLine && statusUsableWidth,
+      toolbarSameLine,
+      statusSameLine,
+      statusUsableWidth,
+      toolbarTops: toolbarRects.map((rect) => Math.round(rect.top)),
+      statusTops: statusRects.map((rect) => Math.round(rect.top)),
+      statusWidths: statusRects.map((rect) => Math.round(rect.width)),
+    };
+  });
+
+  if (!result.ok) {
+    issues.push({
+      viewport: viewport.name,
+      tab: tab.label,
+      component: 'ResponsiveHeader',
+      message: result.reason || `最小宽度 Header 未保持同行或状态三列异常：toolbarSameLine=${result.toolbarSameLine}，statusSameLine=${result.statusSameLine}，statusWidths=${result.statusWidths?.join('/')}`,
+    });
+  }
+}
+
+async function auditMinimumRecommendationSettingsLayout(page, viewport, tab) {
+  const recommendationTab = page.getByRole('tab', { name: '推荐', exact: true }).first();
+  if (!(await recommendationTab.count())) {
+    issues.push({
+      viewport: viewport.name,
+      tab: tab.label,
+      component: 'SettingsRecommendation',
+      message: '未找到设置页推荐分栏入口。',
+    });
+    return;
+  }
+
+  await recommendationTab.click();
+  await page.waitForTimeout(200);
+  await auditMinimumTwoColumnGrids(page, viewport, { ...tab, label: `${tab.label} 推荐` });
+
+  const result = await page.evaluate(() => {
+    const visibleContent = Array.from(document.querySelectorAll('[data-slot="tabs-content"]'))
+      .find((node) => node instanceof HTMLElement
+        && node.getAttribute('data-state') === 'active'
+        && node.textContent?.includes('推荐权重'));
+    const scope = visibleContent instanceof HTMLElement ? visibleContent : document.body;
+    const rows = Array.from(scope.querySelectorAll('.steward-data-row'))
+      .filter((node) => node instanceof HTMLElement && node.querySelector('[data-slot="slider"]'));
+
+    if (rows.length === 0) {
+      return { ok: false, reason: '未找到推荐权重滑条行。' };
+    }
+
+    const failures = rows.map((row, index) => {
+      const slider = row.querySelector('[data-slot="slider"]');
+      const switchField = row.querySelector('.steward-switch-field');
+      const value = row.querySelector('.tabular-nums');
+      if (!(slider instanceof HTMLElement)
+        || !(switchField instanceof HTMLElement)
+        || !(value instanceof HTMLElement)
+        || !(row instanceof HTMLElement)) {
+        return { index, reason: '权重行缺少滑条、标签或数值。' };
+      }
+
+      const rowRect = row.getBoundingClientRect();
+      const sliderRect = slider.getBoundingClientRect();
+      const switchRect = switchField.getBoundingClientRect();
+      const valueRect = value.getBoundingClientRect();
+      const headerBottom = Math.max(switchRect.bottom, valueRect.bottom);
+      const stacked = sliderRect.top >= headerBottom - 1;
+      const contained = sliderRect.left >= rowRect.left - 1 && sliderRect.right <= rowRect.right + 1;
+      const usableWidth = sliderRect.width >= 180;
+      if (stacked && contained && usableWidth) return null;
+
+      return {
+        index,
+        stacked,
+        contained,
+        usableWidth,
+        sliderTop: Math.round(sliderRect.top),
+        headerBottom: Math.round(headerBottom),
+        sliderWidth: Math.round(sliderRect.width),
+      };
+    }).filter(Boolean);
+
+    return {
+      ok: failures.length === 0,
+      rowCount: rows.length,
+      failures,
+    };
+  });
+
+  if (!result.ok) {
+    issues.push({
+      viewport: viewport.name,
+      tab: tab.label,
+      component: 'RecommendationWeights',
+      message: result.reason || `推荐权重滑条最小宽度布局异常：${JSON.stringify(result.failures).slice(0, 300)}`,
+    });
+  }
+
+  const screenshotPath = path.join(OUTPUT_DIR, `${viewport.name}-${tab.value}-recommendation.png`);
+  await page.screenshot({ path: screenshotPath, fullPage: true });
+  screenshots.push({ tab: `${tab.label} 推荐`, viewport: viewport.name, path: screenshotPath });
 }
 
 /**
