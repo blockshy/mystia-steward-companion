@@ -618,16 +618,16 @@ internal sealed class StewardOverlayController
                 return;
             }
 
-            var diagnostics = CreateNightBusinessDiagnostics();
+            var diagnosticsEnabled = AggregateModLogService.Enabled;
             var specialOrderVersion = SpecialOrderRuntimeCapture.ChangeVersion;
-            if (CanReuseNightBusinessContext(manual, force, diagnostics != null, specialOrderVersion))
+            if (CanReuseNightBusinessContext(manual, force, diagnosticsEnabled, specialOrderVersion))
             {
                 return;
             }
 
             var provider = new NightBusinessReflectionProvider(
                 _repository,
-                diagnostics,
+                diagnosticsEnabled,
                 _activeSceneName,
                 _runtimeMappedGuestSnapshot,
                 _runtimeStaticDataSnapshot);
@@ -1407,15 +1407,6 @@ internal sealed class StewardOverlayController
         }
     }
 
-    private NightBusinessDiagnosticSink? CreateNightBusinessDiagnostics()
-    {
-        if (_config == null || !_config.EnableNightBusinessDiagnostics.Value) return null;
-
-        return new NightBusinessDiagnosticSink(
-            _config.NightBusinessDiagnosticsPath.Value,
-            TimeSpan.FromSeconds(Math.Max(1f, _config.NightBusinessDiagnosticsIntervalSeconds.Value)));
-    }
-
     private LocalApiConnectionConfigDto GetLocalApiConnectionConfig()
     {
         var port = Math.Clamp(_config?.LocalApiPort.Value ?? 32145, 1024, 65535);
@@ -1474,48 +1465,26 @@ internal sealed class StewardOverlayController
         {
             return new LocalApiLogSettings
             {
-                LogOutputPath = LocalApiServer.ResolveLogOutputPath(),
-                MaxLogLines = 300,
-                MaxLogBytes = 256 * 1024,
-                NightBusinessDiagnosticsPath = NightBusinessDiagnosticSink.ResolvePath(""),
                 AggregateModLogPath = AggregateModLogService.ResolvePath(""),
                 AggregateModLogMaxFileBytes = AggregateModLogService.MaxFileBytes,
-                NativeBepInExConsoleVisible = BepInExConsoleHelper.IsCurrentConsoleWindowVisible(),
             };
         }
 
         return new LocalApiLogSettings
         {
-            LogAccessEnabled = _config.ExposeLocalApiLogs.Value,
-            LogOutputPath = LocalApiServer.ResolveLogOutputPath(),
-            MaxLogLines = _config.LocalApiMaxLogLines.Value,
-            MaxLogBytes = _config.LocalApiMaxLogBytes.Value,
-            NightBusinessDiagnosticsEnabled = _config.EnableNightBusinessDiagnostics.Value,
-            NightBusinessDiagnosticsPath = NightBusinessDiagnosticSink.ResolvePath(_config.NightBusinessDiagnosticsPath.Value),
             AggregateModLogEnabled = _config.EnableAggregateModLog.Value,
             AggregateModLogPath = AggregateModLogService.ResolvePath(_config.AggregateModLogPath.Value),
             AggregateModLogMaxFileBytes = AggregateModLogService.MaxFileBytes,
-            NativeBepInExConsoleEnabled = !_config.DisableBepInExConsoleLog.Value && !_config.HideBepInExConsoleWindow.Value,
-            NativeBepInExConsoleVisible = BepInExConsoleHelper.IsCurrentConsoleWindowVisible(),
         };
     }
 
-    private void UpdateLocalApiLogSettings(bool? exposeLogs, bool? diagnostics, bool? nativeConsole, bool? aggregateLog)
+    private void UpdateLocalApiLogSettings(bool? aggregateLog)
     {
         if (_config == null) return;
-        if (exposeLogs.HasValue) _config.ExposeLocalApiLogs.Value = exposeLogs.Value;
-        if (diagnostics.HasValue) _config.EnableNightBusinessDiagnostics.Value = diagnostics.Value;
         if (aggregateLog.HasValue)
         {
             _config.EnableAggregateModLog.Value = aggregateLog.Value;
             AggregateModLogService.Configure(_config.EnableAggregateModLog.Value, _config.AggregateModLogPath.Value);
-        }
-
-        if (nativeConsole.HasValue && _log != null)
-        {
-            _config.DisableBepInExConsoleLog.Value = !nativeConsole.Value;
-            _config.HideBepInExConsoleWindow.Value = !nativeConsole.Value;
-            BepInExConsoleHelper.SetNativeConsoleEnabled(nativeConsole.Value, _log);
         }
     }
 
@@ -1524,11 +1493,9 @@ internal sealed class StewardOverlayController
         var settings = GetLocalApiLogSettings();
         var path = target.ToLowerInvariant() switch
         {
-            "diagnostics" => settings.NightBusinessDiagnosticsPath,
-            "automation" => RuntimeOrderPreparationService.ResolveAutomationLogPath(),
             "aggregate" => settings.AggregateModLogPath,
             "packages" => Path.Combine(LocalApiServer.ResolveDiagnosticPackageDirectory(), "diagnostics.zip"),
-            _ => settings.LogOutputPath,
+            _ => settings.AggregateModLogPath,
         };
         var directory = Path.GetDirectoryName(path);
         if (string.IsNullOrWhiteSpace(directory))

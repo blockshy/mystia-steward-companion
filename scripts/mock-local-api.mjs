@@ -129,20 +129,10 @@ const inventory = {
 };
 
 const logSettings = {
-  logAccessEnabled: true,
-  logOutputPath: '/tmp/mystia-steward-companion/mock/BepInEx.log',
-  logOutputDirectory: '/tmp/mystia-steward-companion/mock',
-  maxLogLines: 400,
-  maxLogBytes: 131072,
-  nightBusinessDiagnosticsEnabled: true,
-  nightBusinessDiagnosticsPath: '/tmp/mystia-steward-companion/mock/night-business-diagnostics.log',
-  nightBusinessDiagnosticsDirectory: '/tmp/mystia-steward-companion/mock',
   aggregateModLogEnabled: false,
   aggregateModLogPath: '/tmp/mystia-steward-companion/mock/aggregate-mod.log',
   aggregateModLogDirectory: '/tmp/mystia-steward-companion/mock',
   aggregateModLogMaxFileBytes: 10 * 1024 * 1024,
-  nativeBepInExConsoleEnabled: false,
-  nativeBepInExConsoleVisible: false,
 };
 
 const updateStatus = {
@@ -336,16 +326,6 @@ const server = http.createServer((request, response) => {
       return;
     }
 
-    if (path === '/logs') {
-      sendJson(response, 200, buildLogResponse('BepInEx.log', buildRuntimeLogLines()));
-      return;
-    }
-
-    if (path === '/logs/automation') {
-      sendJson(response, 200, buildLogResponse('automation-jobs.log', buildAutomationLogLines()));
-      return;
-    }
-
     if (path === '/logs/settings') {
       sendJson(response, 200, logSettings);
       return;
@@ -358,8 +338,7 @@ const server = http.createServer((request, response) => {
     }
 
     if (path === '/logs/open-folder') {
-      const target = requestUrl.searchParams.get('target') || 'log';
-      sendJson(response, 200, { ok: true, directory: `/tmp/mystia-steward-companion/mock/${target}`, error: null });
+      sendJson(response, 200, { ok: true, directory: logSettings.aggregateModLogDirectory, error: null });
       return;
     }
 
@@ -368,7 +347,7 @@ const server = http.createServer((request, response) => {
         ok: true,
         path: '/tmp/mystia-steward-companion/mock/diagnostics.zip',
         directory: '/tmp/mystia-steward-companion/mock',
-        files: ['BepInEx.log', 'night-business-diagnostics.log', 'automation-jobs.log', 'aggregate-mod.log'],
+        files: ['manifest.json', 'snapshot/current-snapshot.json', 'logs/aggregate-mod.log'],
         error: null,
       });
       return;
@@ -823,42 +802,7 @@ function setBulkInventoryQuantity(params) {
   };
 }
 
-function buildLogResponse(fileName, lines) {
-  return {
-    capturedAtUtc: nowIso(),
-    path: `/tmp/mystia-steward-companion/mock/${fileName}`,
-    exists: true,
-    enabled: logSettings.logAccessEnabled,
-    maxLines: logSettings.maxLogLines,
-    maxBytes: logSettings.maxLogBytes,
-    lines,
-    error: null,
-  };
-}
-
-function buildRuntimeLogLines() {
-  return [
-    '[Info   :MystiaStewardCompanion] Mock local API snapshot served.',
-    '[Debug  :MystiaStewardCompanion] Night business scanner found 2 rare orders and 2 normal orders.',
-    '[Info   :MystiaStewardCompanion] Runtime catalog includes 8 recipes, 8 ingredients, 5 beverages.',
-    '[Warning:MystiaStewardCompanion] Mock low-stock warning: 月光草 <= 1.',
-    '[Debug  :MystiaStewardCompanion] UI pinning target changed to 蜂蜜蛋糕 / 料理台.',
-  ];
-}
-
-function buildAutomationLogLines() {
-  return [
-    '2026-06-14 19:30:01.125 prepare target=rare desk=1 orderKey=mock-rare-1 food=蜂蜜蛋糕 guest=米斯蒂娅 start mock preparation',
-    '2026-06-14 19:30:02.412 beverage target=rare desk=1 orderKey=mock-rare-1 food=果味米酒 guest=米斯蒂娅 served beverage',
-    '2026-06-14 19:30:04.018 prepare target=normal desk=2 orderKey=mock-normal-1 food=蘑菇拼盘 guest=妖怪鼠客 pending cooker',
-    '2026-06-14 19:30:05.772 complete target=rare desk=3 orderKey=mock-rare-2 food=香辣烤肉 guest=露米娅 waiting tray',
-  ];
-}
-
 function applyLogSettings(params) {
-  if (params.has('logAccess')) logSettings.logAccessEnabled = params.get('logAccess') === 'true';
-  if (params.has('diagnostics')) logSettings.nightBusinessDiagnosticsEnabled = params.get('diagnostics') === 'true';
-  if (params.has('nativeConsole')) logSettings.nativeBepInExConsoleEnabled = params.get('nativeConsole') === 'true';
   if (params.has('aggregateLog')) logSettings.aggregateModLogEnabled = params.get('aggregateLog') === 'true';
 }
 

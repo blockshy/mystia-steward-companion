@@ -23,34 +23,12 @@ internal sealed class LocalApiErrorDto
     public string Error { get; init; } = "";
 }
 
-internal sealed class LocalApiLogFileDto
-{
-    public string CapturedAtUtc { get; init; } = "";
-    public string Path { get; init; } = "";
-    public bool Exists { get; init; }
-    public bool Enabled { get; init; }
-    public int MaxLines { get; init; }
-    public int MaxBytes { get; init; }
-    public IReadOnlyList<string> Lines { get; init; } = Array.Empty<string>();
-    public string? Error { get; init; }
-}
-
 internal sealed class LocalApiLogSettingsDto
 {
-    public bool LogAccessEnabled { get; init; }
-    public string LogOutputPath { get; init; } = "";
-    public string LogOutputDirectory { get; init; } = "";
-    public int MaxLogLines { get; init; }
-    public int MaxLogBytes { get; init; }
-    public bool NightBusinessDiagnosticsEnabled { get; init; }
-    public string NightBusinessDiagnosticsPath { get; init; } = "";
-    public string NightBusinessDiagnosticsDirectory { get; init; } = "";
     public bool AggregateModLogEnabled { get; init; }
     public string AggregateModLogPath { get; init; } = "";
     public string AggregateModLogDirectory { get; init; } = "";
     public long AggregateModLogMaxFileBytes { get; init; }
-    public bool NativeBepInExConsoleEnabled { get; init; }
-    public bool NativeBepInExConsoleVisible { get; init; }
 }
 
 internal sealed class LocalApiConnectionConfigDto
@@ -108,13 +86,8 @@ internal sealed class LocalApiDiagnosticManifestDto
 {
     public string GeneratedAtUtc { get; init; } = "";
     public string BaseUrl { get; init; } = "";
-    public string LogOutputPath { get; init; } = "";
-    public string AutomationLogPath { get; init; } = "";
-    public string NightBusinessDiagnosticsPath { get; init; } = "";
     public string AggregateModLogPath { get; init; } = "";
     public long AggregateModLogMaxFileBytes { get; init; }
-    public int MaxLogLines { get; init; }
-    public int MaxLogBytes { get; init; }
 }
 
 internal sealed class LocalApiInventoryEditDto

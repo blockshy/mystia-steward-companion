@@ -33,7 +33,7 @@ internal sealed class NightBusinessReflectionProvider
     private readonly RareCustomerIdentityResolver _rareIdentityResolver;
     private readonly RuntimeMappedGuestCatalogSnapshot? _mappedGuestSnapshot;
     private readonly RuntimeStaticDataSnapshot? _staticDataSnapshot;
-    private readonly NightBusinessDiagnosticSink? _diagnostics;
+    private readonly bool _diagnosticsEnabled;
     private readonly string _sceneName;
     private IReadOnlyList<string>? _foodTagCandidates;
     private IReadOnlyList<string>? _beverageTagCandidates;
@@ -44,7 +44,7 @@ internal sealed class NightBusinessReflectionProvider
 
     public NightBusinessReflectionProvider(
         DataRepository repository,
-        NightBusinessDiagnosticSink? diagnostics = null,
+        bool diagnosticsEnabled = false,
         string sceneName = "",
         RuntimeMappedGuestCatalogSnapshot? mappedGuestSnapshot = null,
         RuntimeStaticDataSnapshot? staticDataSnapshot = null)
@@ -53,7 +53,7 @@ internal sealed class NightBusinessReflectionProvider
         _rareIdentityResolver = repository.RareCustomerIdentities;
         _mappedGuestSnapshot = mappedGuestSnapshot;
         _staticDataSnapshot = staticDataSnapshot;
-        _diagnostics = diagnostics;
+        _diagnosticsEnabled = diagnosticsEnabled;
         _sceneName = sceneName;
     }
 
@@ -64,7 +64,7 @@ internal sealed class NightBusinessReflectionProvider
         var orders = new List<NightBusinessOrder>();
         var errors = new List<string>();
         var sourceStats = new List<string>();
-        _candidateDiagnostics = _diagnostics == null ? null : new List<NightBusinessCandidateDiagnostic>();
+        _candidateDiagnostics = _diagnosticsEnabled ? new List<NightBusinessCandidateDiagnostic>() : null;
         sourceStats.Add(_mappedGuestSnapshot == null
             ? "MappedGuests=cached-missing"
             : $"MappedGuests={_mappedGuestSnapshot.ResolvedCount}/{_mappedGuestSnapshot.Entries.Count}; {_mappedGuestSnapshot.Status}");
@@ -88,7 +88,7 @@ internal sealed class NightBusinessReflectionProvider
             errors.Add($"runtime capture: {ex.Message}");
         }
 
-        var preferRuntimeCapturedOrders = _diagnostics == null && runtimeOrders.Count > 0;
+        var preferRuntimeCapturedOrders = !_diagnosticsEnabled && runtimeOrders.Count > 0;
         sourceStats.Add(preferRuntimeCapturedOrders ? "OrderReadMode=RuntimeCapture" : "OrderReadMode=Reflection");
 
         try
@@ -206,7 +206,7 @@ internal sealed class NightBusinessReflectionProvider
         var activeOrders = Measure("deduplicate.orders", () => DeduplicateOrders(orders));
         var place = Measure("place.name", ReadCurrentPlace);
         var placeLabel = Measure("place.label", ReadCurrentPlaceLabel);
-        var recentRuntimeParseFailures = _diagnostics == null
+        var recentRuntimeParseFailures = !_diagnosticsEnabled
             ? Array.Empty<string>()
             : Measure("runtimeCapture.failures", () => SpecialOrderRuntimeCapture.RecentParseFailuresSnapshot(TimeSpan.FromMinutes(5)));
         Measure("diagnostics.nightBusiness", () => WriteDiagnostics(
@@ -266,14 +266,20 @@ internal sealed class NightBusinessReflectionProvider
         RuntimeMappedGuestCatalogSnapshot mappedGuestSnapshot,
         RuntimeStaticDataSnapshot staticDataSnapshot)
     {
-        if (_diagnostics == null) return;
+        if (!_diagnosticsEnabled) return;
 
         try
         {
-            RuntimeStaticDataDiagnosticSink.WriteMappedSpecialGuests(
-                RuntimeStaticDataDiagnosticSink.ResolvePath(_diagnostics.Path),
-                mappedGuestSnapshot);
-            RuntimeStaticDataDiagnosticSink.WriteStaticData(_diagnostics.Path, staticDataSnapshot);
+            var mappedSection = RuntimeStaticDataDiagnosticFormatter.FormatMappedSpecialGuests(mappedGuestSnapshot);
+            if (mappedSection != null)
+            {
+                AggregateModLogService.AppendSection(mappedSection.Channel, mappedSection.Title, mappedSection.Content);
+            }
+
+            foreach (var section in RuntimeStaticDataDiagnosticFormatter.FormatStaticData(staticDataSnapshot))
+            {
+                AggregateModLogService.AppendSection(section.Channel, section.Title, section.Content);
+            }
         }
         catch
         {
@@ -296,11 +302,11 @@ internal sealed class NightBusinessReflectionProvider
         string? place,
         string? placeLabel)
     {
-        if (_diagnostics == null) return;
+        if (!_diagnosticsEnabled) return;
 
         try
         {
-            _diagnostics.Write(new NightBusinessDiagnosticSnapshot
+            var snapshot = new NightBusinessDiagnosticSnapshot
             {
                 CapturedAtUtc = DateTime.UtcNow,
                 SceneName = _sceneName,
@@ -317,7 +323,11 @@ internal sealed class NightBusinessReflectionProvider
                 FinalOrders = finalOrders.ToList(),
                 Candidates = candidates.ToList(),
                 RecentRuntimeParseFailures = recentRuntimeParseFailures.ToList(),
-            });
+            };
+            AggregateModLogService.AppendSection(
+                "night-business",
+                "Night Business Diagnostic",
+                NightBusinessDiagnosticFormatter.Format(snapshot));
         }
         catch
         {

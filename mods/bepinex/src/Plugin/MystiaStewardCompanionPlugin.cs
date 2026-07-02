@@ -47,10 +47,7 @@ public sealed class MystiaStewardCompanionPlugin : BasePlugin
             ConsoleEncodingHelper.TryUseUtf8(Log);
         }
 
-        BepInExConsoleHelper.Apply(
-            settings.DisableBepInExConsoleLog.Value,
-            settings.HideBepInExConsoleWindow.Value,
-            Log);
+        BepInExConsoleHelper.Apply(Log);
 
         SpecialOrderRuntimeCapture.Attach(Log);
         NormalOrderRuntimeCapture.Attach(Log);

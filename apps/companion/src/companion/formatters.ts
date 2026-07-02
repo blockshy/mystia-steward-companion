@@ -1,7 +1,4 @@
-import type {
-  AutomationLogEntry,
-  NightBusinessGuest,
-} from '@/companion/types';
+import type { NightBusinessGuest } from '@/companion/types';
 
 export function formatGuestFund(guest: NightBusinessGuest): string {
   if (typeof guest.fund !== 'number' || !Number.isFinite(guest.fund)) return '';
@@ -34,49 +31,6 @@ export function formatBytes(value: number) {
   if (!Number.isFinite(value) || value <= 0) return '未知';
   if (value >= 1024 * 1024) return `${Math.round(value / 1024 / 1024)} MiB`;
   return `${Math.round(value / 1024)} KiB`;
-}
-
-export function parseAutomationLogLine(line: string): AutomationLogEntry {
-  const match = /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\s+(\S+)\s*(.*)$/.exec(line);
-  if (!match) {
-    return {
-      raw: line,
-      timestamp: '',
-      action: '',
-      target: '',
-      desk: '',
-      orderKey: '',
-      food: '',
-      guest: '',
-      message: line,
-    };
-  }
-
-  const [, timestamp, action, rest] = match;
-  const tokens = rest.trim().split(/\s+/).filter(Boolean);
-  const attrs = new Map<string, string>();
-  let messageStart = 0;
-  for (let index = 0; index < tokens.length; index += 1) {
-    const separator = tokens[index].indexOf('=');
-    if (separator <= 0) {
-      messageStart = index;
-      break;
-    }
-    attrs.set(tokens[index].slice(0, separator), tokens[index].slice(separator + 1));
-    messageStart = index + 1;
-  }
-
-  return {
-    raw: line,
-    timestamp,
-    action,
-    target: attrs.get('target') ?? '',
-    desk: attrs.get('desk') ?? '',
-    orderKey: attrs.get('orderKey') ?? '',
-    food: attrs.get('food') ?? '',
-    guest: attrs.get('guest') ?? '',
-    message: tokens.slice(messageStart).join(' '),
-  };
 }
 
 export function formatDesk(deskCode: number) {

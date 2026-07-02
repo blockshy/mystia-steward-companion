@@ -14,7 +14,7 @@ import type {
  */
 export type ModTab = 'overview' | 'normal' | 'rare' | 'custom-recipes' | 'service' | 'tasks' | 'inventory' | 'help' | 'logs' | 'settings';
 export type OverviewTab = 'status' | 'inventory' | 'actions';
-export type SettingsTab = 'window' | 'connection' | 'recommendation' | 'automation' | 'updates' | 'debug';
+export type SettingsTab = 'window' | 'connection' | 'recommendation' | 'automation' | 'updates';
 export type RareGuestInvitationScope = 'current' | 'all';
 export type MissionStatusFilter = 'available' | 'tracking' | 'fulfilled';
 
@@ -247,32 +247,11 @@ export interface RecommendationIssue {
   message: string;
 }
 
-export interface LocalApiLogs {
-  capturedAtUtc: string;
-  path: string;
-  exists: boolean;
-  enabled: boolean;
-  maxLines?: number;
-  maxBytes?: number;
-  lines: string[];
-  error: string | null;
-}
-
 export interface LocalApiLogSettings {
-  logAccessEnabled: boolean;
-  logOutputPath: string;
-  logOutputDirectory: string;
-  maxLogLines?: number;
-  maxLogBytes?: number;
-  nightBusinessDiagnosticsEnabled: boolean;
-  nightBusinessDiagnosticsPath: string;
-  nightBusinessDiagnosticsDirectory: string;
   aggregateModLogEnabled: boolean;
   aggregateModLogPath: string;
   aggregateModLogDirectory: string;
   aggregateModLogMaxFileBytes: number;
-  nativeBepInExConsoleEnabled: boolean;
-  nativeBepInExConsoleVisible: boolean;
 }
 
 export interface LocalApiConnectionConfig {
@@ -588,15 +567,3 @@ export interface AutomationResourceOverview {
 
 export type ToggleRecipeFavorite = (customer: RareCustomerCatalogItem, foodTag: string, recipe: RareRecipeRecommendation) => Promise<void>;
 export type ToggleBeverageFavorite = (customer: RareCustomerCatalogItem, beverageTag: string, beverage: RareBeverageRecommendation) => Promise<void>;
-
-export interface AutomationLogEntry {
-  raw: string;
-  timestamp: string;
-  action: string;
-  target: string;
-  desk: string;
-  orderKey: string;
-  food: string;
-  guest: string;
-  message: string;
-}

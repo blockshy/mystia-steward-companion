@@ -228,7 +228,7 @@ BepInEx/plugins/
 - `推荐`：经营中订单排序、稀客专注模式默认精简、推荐权重、预算处理、排除缺失厨具、任务料理/收藏料理/收藏酒水置顶、带库存显示与排序的排除材料/酒水、同基础料理展示数量、游戏界面置顶推荐、目标厨具高亮。
 - `自动化`：实验性自动化总开关、稀客/普客并发数、等待阈值、重试和回退参数。
 - `更新`：检查、下载和打开安装程序。
-- 开启 `显示调试信息` 后，会出现调试相关内容，并允许控制 BepInEx 原生日志窗口、日志读取和经营诊断。
+- 开启 `显示调试信息` 后，会显示日志页、扫描状态、运行时来源、性能耗时和订单内部来源等排查信息。
 
 ### 帮助
 
@@ -238,11 +238,11 @@ BepInEx/plugins/
 
 日志页仅在 `设置 -> 窗口 -> 显示调试信息` 开启后显示：
 
-- 可读取 `BepInEx/LogOutput.log` 尾部内容。
-- 可读取自动化作业日志。
-- 可开启/关闭经营诊断和总日志。
-- 可打开日志文件夹或导出诊断包。
-- 日志读取有行数和字节上限，不会在窗口内无限累积。
+- 可开启/关闭总日志。
+- 可打开总日志目录。
+- 可导出诊断包。
+- 总日志默认关闭，开启后统一记录 BepInEx/Unity 事件、自动化、经营诊断和运行时数据诊断。
+- 单个总日志文件达到 10 MB 后会拆分新文件，不限制分片总数。
 
 ## 推荐与排序规则
 
@@ -427,9 +427,7 @@ BepInEx/config/com.tyukki.mystia-steward-companion.cfg
 
 ```text
 BepInEx/config/MystiaStewardCompanion/favorites.json
-BepInEx/config/MystiaStewardCompanion/automation-jobs.log
 BepInEx/config/MystiaStewardCompanion/aggregate-mod.log
-BepInEx/config/mystia-steward-companion/night-business-diagnostics.log
 ```
 
 常用配置项：
@@ -443,13 +441,7 @@ BepInEx/config/mystia-steward-companion/night-business-diagnostics.log
 | `LocalApi.AllowLanConnections` | `false` | 是否允许可信局域网设备连接；本机回环连接始终启用。 |
 | `LocalApi.LanHost` | `auto` | LAN 监听地址；`auto` 会监听检测到的私网 IPv4，也可指定本机私网 IPv4。 |
 | `LocalApi.Port` | `32145` | 本地 API 端口。 |
-| `LocalApi.ExposeLogs` | `true` | 允许伴随窗口读取 `BepInEx/LogOutput.log`。 |
-| `LocalApi.MaxLogLines` | `300` | 日志页每次最多返回的日志行数。 |
-| `LocalApi.MaxLogBytes` | `262144` | 日志页每次最多扫描的日志尾部字节数。 |
-| `BepInEx.DisableConsoleLogWindow` | `true` | 将 BepInEx 控制台日志窗口设为下次启动关闭。 |
-| `BepInEx.HideConsoleWindow` | `true` | Mod 加载后尝试隐藏当前 Windows 控制台窗口。 |
-| `Diagnostics.EnableNightBusinessDiagnostics` | `false` | 是否写入夜间经营诊断日志。 |
-| `Diagnostics.EnableAggregateModLog` | `false` | 是否写入总日志。启用后捕获 Mod 运行期间的 BepInEx/Unity 日志事件。 |
+| `Diagnostics.EnableAggregateModLog` | `false` | 是否写入总日志。启用后统一记录 BepInEx/Unity 事件、自动化、经营诊断和运行时数据诊断。 |
 | `Diagnostics.AggregateModLogPath` | 空 | 总日志路径；留空时写入 `BepInEx/config/MystiaStewardCompanion/aggregate-mod.log`，每 10 MB 分片且不限制分片总数。 |
 | `SetConsoleUtf8` | `true` | Mod 加载后尝试把 Windows 控制台切换到 UTF-8。 |
 
@@ -460,23 +452,11 @@ BepInEx/config/mystia-steward-companion/night-business-diagnostics.log
 普通使用不需要开启诊断。遇到识别、推荐或自动化问题时，建议按以下顺序收集信息：
 
 1. 打开 `设置 -> 窗口 -> 显示调试信息`。
-2. 进入 `日志` 页，开启日志读取和经营诊断；如果问题难以复现或需要长时间记录，再开启总日志。
+2. 进入 `日志` 页，开启总日志。
 3. 复现问题。
-4. 导出诊断包，或提供 `BepInEx/LogOutput.log`、经营诊断日志和伴随窗口日志页内容；开启总日志后优先提供 `aggregate-mod.log` 当前文件和相关分片。
+4. 导出诊断包，或提供 `aggregate-mod.log` 当前文件和相关分片。
 
-开启经营诊断后，除 `night-business-diagnostics.log` 外，还会按需写入运行时固定数据快照：
-
-- `runtime-static-data.log`：稀客映射和运行时别名归一化来源。
-- `runtime-tags.log`：料理/酒水标签文本和 TagRule。
-- `runtime-database-diff.log`：食材、酒水、料理运行时数据对照。
-- `runtime-guests.log`：普客、稀客和映射稀客。
-- `runtime-izakayas.log`：经营场景、场景标签和客人池。
-
-这些文件不是游戏启动瞬间立即生成，而是在诊断开启且对应运行时数据扫描触发时写入。日志顶部 `Complete: True` 且 `Status` 中各项计数大于 0，通常表示本次固定数据读取成功。
-
-自动化诊断会写入 `BepInEx/config/MystiaStewardCompanion/automation-jobs.log`，文件超过约 1 MB 时自动轮换为 `.1`。排查“已开始制作但未直接送达”“订单长时间等待”“重复开锅”等问题时，优先提供诊断包或该日志。
-
-总日志默认关闭。开启后会监听 BepInEx 的所有日志源，每条记录带时间、级别、来源和线程标注，并写入 `BepInEx/config/MystiaStewardCompanion/aggregate-mod.log`。单个文件达到 10 MB 后会拆分为 `aggregate-mod.1.log`、`aggregate-mod.2.log` 等递增文件，不设置分片总数上限。排查结束后建议关闭，避免长期写入占用磁盘。
+总日志默认关闭。开启后会监听 BepInEx 的所有日志源，每条记录带时间、级别、来源和线程标注，并写入 `BepInEx/config/MystiaStewardCompanion/aggregate-mod.log`。自动化动作、经营扫描候选、运行时固定数据快照都会以不同 channel 写入同一组总日志文件。单个文件达到 10 MB 后会拆分为 `aggregate-mod.1.log`、`aggregate-mod.2.log` 等递增文件，不设置分片总数上限。排查结束后建议关闭，避免长期写入占用磁盘。
 
 ## 故障排查
 
@@ -496,11 +476,11 @@ BepInEx/plugins/mystia-steward-companion/companion/
 
 ### 一直显示运行时数据不可用
 
-先确认已经进入游戏并读取存档。若仍不可用，开启 `显示调试信息`，进入 `日志` 页查看连接状态和 `LogOutput.log`。
+先确认已经进入游戏并读取存档。若仍不可用，开启 `显示调试信息`，进入 `日志` 页开启总日志并导出诊断包。
 
 ### 经营中没有稀客或点单
 
-确认游戏内稀客已经入座并完成点单。若仍不显示，开启 `显示调试信息` 和经营诊断，查看经营中页扫描状态与日志页内容。
+确认游戏内稀客已经入座并完成点单。若仍不显示，开启 `显示调试信息` 和总日志，查看经营中页扫描状态并导出诊断包。
 
 ### 自动化卡住或重复等待
 
@@ -508,15 +488,15 @@ BepInEx/plugins/mystia-steward-companion/companion/
 
 ### 夜间经营订单较多时卡顿
 
-先开启 `显示调试信息`，在概览页或经营中页查看快照耗时。若卡顿同时伴随多笔订单自动化，建议临时降低稀客并发或普客并发，或关闭暂时不需要的自动化阶段。仍无法定位时，到日志页开启总日志并复现，再导出诊断包或提供总日志文件，同时记录当时稀客/普客订单数量、开启的自动化阶段和是否开启经营诊断。
+先开启 `显示调试信息`，在概览页或经营中页查看快照耗时。若卡顿同时伴随多笔订单自动化，建议临时降低稀客并发或普客并发，或关闭暂时不需要的自动化阶段。仍无法定位时，到日志页开启总日志并复现，再导出诊断包或提供总日志文件，同时记录当时稀客/普客订单数量和开启的自动化阶段。
 
 ### 启动时仍短暂出现控制台
 
-Mod 加载时控制台已经由 BepInEx 创建，本次启动只能尝试隐藏；`BepInEx.DisableConsoleLogWindow=true` 写入的配置会在下一次启动生效。需要临时查看原生控制台时，开启 `显示调试信息` 后到设置页切换。
+Mod 加载时控制台已经由 BepInEx 创建，本次启动只能尝试隐藏；下一次启动会继续由 Mod 写入 BepInEx 配置关闭控制台日志窗口。排查运行期问题时优先使用日志页的总日志，不再通过伴随窗口切换原生控制台。
 
 ### 控制台早期中文乱码
 
-Mod 只能在自身加载后切换 UTF-8，不能修复 BepInEx preloader 已经输出的日志。日常建议关闭控制台；排查原生控制台问题时再临时开启。
+Mod 只能在自身加载后切换 UTF-8，不能修复 BepInEx preloader 已经输出的日志。日常建议忽略控制台早期输出；需要排查 Mod 运行期问题时开启总日志。
 
 ### 想重置 Mod 设置
 

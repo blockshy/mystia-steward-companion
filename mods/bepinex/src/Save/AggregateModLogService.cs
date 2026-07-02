@@ -18,12 +18,20 @@ internal static class AggregateModLogService
 
     private static readonly object SyncRoot = new();
     private static readonly UTF8Encoding Utf8NoBom = new(false);
+    private static readonly TimeSpan AutomationRepeatSummaryInterval = TimeSpan.FromSeconds(30);
+    private const int AutomationRepeatSummaryCount = 25;
 
     private static AggregateLogListener? _listener;
     private static StreamWriter? _writer;
     private static string _path = ResolvePath("");
     private static long _currentBytes;
     private static bool _enabled;
+    private static string _lastAutomationKey = "";
+    private static string _lastAutomationTarget = "";
+    private static string _lastAutomationMessage = "";
+    private static int _lastAutomationRepeatCount;
+    private static int _lastAutomationReportedCount;
+    private static DateTime _lastAutomationFirstAt = DateTime.MinValue;
 
     public static bool Enabled
     {
@@ -111,6 +119,87 @@ internal static class AggregateModLogService
         }
     }
 
+    public static void AppendLine(string channel, string message)
+    {
+        try
+        {
+            lock (SyncRoot)
+            {
+                if (!_enabled) return;
+                WriteLineLocked($"{FormatTimestamp()} [{NormalizeChannel(channel)}] {NormalizeMessage(message)}");
+            }
+        }
+        catch
+        {
+            // Logging diagnostics must never affect the game process.
+        }
+    }
+
+    public static void AppendSection(string channel, string title, string content)
+    {
+        try
+        {
+            lock (SyncRoot)
+            {
+                if (!_enabled) return;
+                WriteLineLocked($"==== {FormatTimestamp()} [{NormalizeChannel(channel)}] {title} ====");
+                foreach (var line in SplitLines(content))
+                {
+                    WriteLineLocked(line);
+                }
+                WriteLineLocked("");
+            }
+        }
+        catch
+        {
+            // Logging diagnostics must never affect the game process.
+        }
+    }
+
+    public static void AppendAutomation(string action, string targetText, string message)
+    {
+        try
+        {
+            lock (SyncRoot)
+            {
+                if (!_enabled) return;
+
+                var now = DateTime.Now;
+                var key = string.Join("|", action, targetText, message);
+                if (string.Equals(key, _lastAutomationKey, StringComparison.Ordinal))
+                {
+                    _lastAutomationRepeatCount++;
+                    var unreportedCount = _lastAutomationRepeatCount - _lastAutomationReportedCount;
+                    if (unreportedCount < AutomationRepeatSummaryCount && now - _lastAutomationFirstAt < AutomationRepeatSummaryInterval)
+                    {
+                        return;
+                    }
+
+                    WriteAutomationLineLocked(
+                        "repeat",
+                        targetText,
+                        $"上一条重复 {unreportedCount} 次，累计 {_lastAutomationRepeatCount - 1} 次；{message}");
+                    _lastAutomationReportedCount = _lastAutomationRepeatCount;
+                    _lastAutomationFirstAt = now;
+                    return;
+                }
+
+                FlushAutomationRepeatSummaryLocked();
+                WriteAutomationLineLocked(action, targetText, message);
+                _lastAutomationKey = key;
+                _lastAutomationTarget = targetText;
+                _lastAutomationMessage = message;
+                _lastAutomationRepeatCount = 1;
+                _lastAutomationReportedCount = 1;
+                _lastAutomationFirstAt = now;
+            }
+        }
+        catch
+        {
+            // Logging diagnostics must never affect game automation.
+        }
+    }
+
     private static void WriteEvent(LogEventArgs eventArgs)
     {
         try
@@ -174,7 +263,7 @@ internal static class AggregateModLogService
 
     private static void WriteServiceLineLocked(string message)
     {
-        WriteLineLocked($"==== {DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz} [service] {message}; path={_path}; maxFileBytes={MaxFileBytes} ====");
+        WriteLineLocked($"==== {FormatTimestamp()} [service] {message}; path={_path}; maxFileBytes={MaxFileBytes} ====");
     }
 
     private static void WriteLineLocked(string line)
@@ -244,7 +333,35 @@ internal static class AggregateModLogService
     {
         var sourceName = eventArgs.Source?.SourceName ?? "unknown";
         var message = NormalizeMessage(eventArgs.Data?.ToString() ?? "");
-        return $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz} [{eventArgs.Level}] source={EscapeToken(sourceName)} thread={Environment.CurrentManagedThreadId} {message}";
+        return $"{FormatTimestamp()} [bepinex] level={eventArgs.Level} source={EscapeToken(sourceName)} thread={Environment.CurrentManagedThreadId} {message}";
+    }
+
+    private static void FlushAutomationRepeatSummaryLocked()
+    {
+        if (_lastAutomationRepeatCount <= _lastAutomationReportedCount) return;
+
+        var unreportedCount = _lastAutomationRepeatCount - _lastAutomationReportedCount;
+        WriteAutomationLineLocked(
+            "repeat",
+            _lastAutomationTarget,
+            $"上一条重复 {unreportedCount} 次，累计 {_lastAutomationRepeatCount - 1} 次；{_lastAutomationMessage}");
+        _lastAutomationReportedCount = _lastAutomationRepeatCount;
+    }
+
+    private static void WriteAutomationLineLocked(string action, string targetText, string message)
+    {
+        WriteLineLocked($"{FormatTimestamp()} [automation] action={EscapeToken(action)} {targetText} {NormalizeMessage(message)}");
+    }
+
+    private static string FormatTimestamp()
+    {
+        return DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss.fff zzz");
+    }
+
+    private static string NormalizeChannel(string channel)
+    {
+        var value = string.IsNullOrWhiteSpace(channel) ? "mod" : channel.Trim().ToLowerInvariant();
+        return value.Replace(" ", "-", StringComparison.Ordinal);
     }
 
     private static string NormalizeMessage(string message)
@@ -253,6 +370,14 @@ internal static class AggregateModLogService
             .Replace("\r\n", "\n", StringComparison.Ordinal)
             .Replace('\r', '\n')
             .Replace("\n", "\n    ", StringComparison.Ordinal);
+    }
+
+    private static IEnumerable<string> SplitLines(string content)
+    {
+        return (content ?? "")
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n')
+            .Split('\n');
     }
 
     private static string EscapeToken(string value)

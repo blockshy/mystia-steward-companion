@@ -22,6 +22,8 @@ namespace MystiaStewardCompanion.LocalApi;
 internal sealed class LocalApiServer : IDisposable
 {
     private const int MaxRequestBytes = 32768;
+    private const int DiagnosticTailMaxBytes = 2 * 1024 * 1024;
+    private const int DiagnosticTailMaxLines = 2000;
     private const string AutoLanHost = "auto";
     private const string ClientIdHeaderName = "X-Mystia-Steward-Companion-Client-Id";
     private const string ClientLabelHeaderName = "X-Mystia-Steward-Companion-Client-Label";
@@ -36,9 +38,8 @@ internal sealed class LocalApiServer : IDisposable
     private bool _lanEnabled;
     private string _lanBindHost;
     private string _lanError = "";
-    private readonly string _logOutputPath;
     private readonly Func<LocalApiLogSettings> _getLogSettings;
-    private readonly Action<bool?, bool?, bool?, bool?> _updateLogSettings;
+    private readonly Action<bool?> _updateLogSettings;
     private readonly Func<LocalApiConnectionConfigDto> _getConnectionConfig;
     private readonly Func<LocalApiConnectionConfigUpdate, LocalApiConnectionConfigDto> _updateConnectionConfig;
     private readonly Func<LocalApiConnectionConfigDto> _regenerateLocalApiToken;
@@ -86,7 +87,7 @@ internal sealed class LocalApiServer : IDisposable
         string pluginVersion,
         string token,
         Func<LocalApiLogSettings> getLogSettings,
-        Action<bool?, bool?, bool?, bool?> updateLogSettings,
+        Action<bool?> updateLogSettings,
         Func<LocalApiConnectionConfigDto> getConnectionConfig,
         Func<LocalApiConnectionConfigUpdate, LocalApiConnectionConfigDto> updateConnectionConfig,
         Func<LocalApiConnectionConfigDto> regenerateLocalApiToken,
@@ -128,7 +129,6 @@ internal sealed class LocalApiServer : IDisposable
         _updateService = updateService;
         _favoriteStore = favoriteStore;
         _customRecipeStore = customRecipeStore;
-        _logOutputPath = ResolveLogOutputPath();
     }
 
     public IPAddress BindAddress { get; }
@@ -474,12 +474,6 @@ internal sealed class LocalApiServer : IDisposable
                     case "/automation/lease":
                         WriteResponse(stream, 200, "OK", ToJson(ReadAutomationLease(request)));
                         break;
-                    case "/logs":
-                        WriteResponse(stream, 200, "OK", BuildLogsJson());
-                        break;
-                    case "/logs/automation":
-                        WriteResponse(stream, 200, "OK", BuildAutomationLogsJson());
-                        break;
                     case "/logs/export-diagnostics":
                         WriteResponse(stream, 200, "OK", BuildDiagnosticPackageJson(ReadBoolQuery(query, "open") ?? false));
                         break;
@@ -487,11 +481,7 @@ internal sealed class LocalApiServer : IDisposable
                         WriteResponse(stream, 200, "OK", BuildLogSettingsJson());
                         break;
                     case "/logs/config":
-                        _updateLogSettings(
-                            ReadBoolQuery(query, "logAccess"),
-                            ReadBoolQuery(query, "diagnostics"),
-                            ReadBoolQuery(query, "nativeConsole"),
-                            ReadBoolQuery(query, "aggregateLog"));
+                        _updateLogSettings(ReadBoolQuery(query, "aggregateLog"));
                         WriteResponse(stream, 200, "OK", BuildLogSettingsJson());
                         break;
                     case "/updates/status":
@@ -753,89 +743,15 @@ internal sealed class LocalApiServer : IDisposable
         }
     }
 
-    private string BuildLogsJson()
-    {
-        var settings = _getLogSettings();
-        var logPath = string.IsNullOrWhiteSpace(settings.LogOutputPath) ? _logOutputPath : settings.LogOutputPath;
-        return BuildLogFileJson(logPath, settings);
-    }
-
-    private string BuildAutomationLogsJson()
-    {
-        var settings = _getLogSettings();
-        return BuildLogFileJson(RuntimeOrderPreparationService.ResolveAutomationLogPath(), settings);
-    }
-
-    private static string BuildLogFileJson(string logPath, LocalApiLogSettings settings)
-    {
-        var maxLogBytes = Math.Clamp(settings.MaxLogBytes, 16 * 1024, 2 * 1024 * 1024);
-        var maxLogLines = Math.Clamp(settings.MaxLogLines, 50, 2000);
-        if (!settings.LogAccessEnabled)
-        {
-            return ToJson(new LocalApiLogFileDto
-            {
-                CapturedAtUtc = DateTime.UtcNow.ToString("O"),
-                Path = logPath,
-                Exists = false,
-                Enabled = false,
-                MaxLines = maxLogLines,
-                MaxBytes = maxLogBytes,
-                Lines = Array.Empty<string>(),
-                Error = "log access is disabled",
-            });
-        }
-
-        try
-        {
-            var exists = File.Exists(logPath);
-            var lines = exists ? ReadLogTail(logPath, maxLogBytes, maxLogLines) : new List<string>();
-            return ToJson(new LocalApiLogFileDto
-            {
-                CapturedAtUtc = DateTime.UtcNow.ToString("O"),
-                Path = logPath,
-                Exists = exists,
-                Enabled = true,
-                MaxLines = maxLogLines,
-                MaxBytes = maxLogBytes,
-                Lines = lines,
-                Error = null,
-            });
-        }
-        catch (Exception ex)
-        {
-            return ToJson(new LocalApiLogFileDto
-            {
-                CapturedAtUtc = DateTime.UtcNow.ToString("O"),
-                Path = logPath,
-                Exists = false,
-                Enabled = true,
-                MaxLines = maxLogLines,
-                MaxBytes = maxLogBytes,
-                Lines = Array.Empty<string>(),
-                Error = ex.Message,
-            });
-        }
-    }
-
     private string BuildLogSettingsJson()
     {
         var settings = _getLogSettings();
         return ToJson(new LocalApiLogSettingsDto
         {
-            LogAccessEnabled = settings.LogAccessEnabled,
-            LogOutputPath = settings.LogOutputPath,
-            LogOutputDirectory = GetDirectory(settings.LogOutputPath),
-            MaxLogLines = Math.Clamp(settings.MaxLogLines, 50, 2000),
-            MaxLogBytes = Math.Clamp(settings.MaxLogBytes, 16 * 1024, 2 * 1024 * 1024),
-            NightBusinessDiagnosticsEnabled = settings.NightBusinessDiagnosticsEnabled,
-            NightBusinessDiagnosticsPath = settings.NightBusinessDiagnosticsPath,
-            NightBusinessDiagnosticsDirectory = GetDirectory(settings.NightBusinessDiagnosticsPath),
             AggregateModLogEnabled = settings.AggregateModLogEnabled,
             AggregateModLogPath = settings.AggregateModLogPath,
             AggregateModLogDirectory = GetDirectory(settings.AggregateModLogPath),
             AggregateModLogMaxFileBytes = settings.AggregateModLogMaxFileBytes,
-            NativeBepInExConsoleEnabled = settings.NativeBepInExConsoleEnabled,
-            NativeBepInExConsoleVisible = settings.NativeBepInExConsoleVisible,
         });
     }
 
@@ -863,36 +779,12 @@ internal sealed class LocalApiServer : IDisposable
                 packageDirectory,
                 "mystia-steward-companion-diagnostics-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".zip");
             var added = new List<string>();
-            var maxLogBytes = Math.Clamp(settings.MaxLogBytes, 16 * 1024, 2 * 1024 * 1024);
-            var maxLogLines = Math.Clamp(settings.MaxLogLines, 50, 2000);
 
             using (var archive = ZipFile.Open(packagePath, ZipArchiveMode.Create))
             {
                 AddTextEntry(archive, "manifest.json", BuildDiagnosticManifestJson(settings), added);
                 AddTextEntry(archive, "snapshot/current-snapshot.json", GetSnapshotJson(), added);
-                AddLogTailEntry(
-                    archive,
-                    string.IsNullOrWhiteSpace(settings.LogOutputPath) ? _logOutputPath : settings.LogOutputPath,
-                    "logs/LogOutput.tail.log",
-                    maxLogBytes,
-                    maxLogLines,
-                    added);
-                AddLogTailEntry(
-                    archive,
-                    RuntimeOrderPreparationService.ResolveAutomationLogPath(),
-                    "logs/automation-jobs.tail.log",
-                    maxLogBytes,
-                    maxLogLines,
-                    added);
-                AddLogTailEntry(
-                    archive,
-                    RuntimeOrderPreparationService.ResolveAutomationLogPath() + ".1",
-                    "logs/automation-jobs.1.tail.log",
-                    maxLogBytes,
-                    maxLogLines,
-                    added);
-                AddDiagnosticLogEntries(archive, settings.NightBusinessDiagnosticsPath, maxLogBytes, maxLogLines, added);
-                AddAggregateLogEntries(archive, settings.AggregateModLogPath, maxLogBytes, maxLogLines, added);
+                AddAggregateLogEntries(archive, settings.AggregateModLogPath, DiagnosticTailMaxBytes, DiagnosticTailMaxLines, added);
             }
 
             if (openFolder)
@@ -1201,19 +1093,6 @@ internal sealed class LocalApiServer : IDisposable
         return Path.Combine(Paths.ConfigPath, "MystiaStewardCompanion", "diagnostic-packages");
     }
 
-    private static void AddDiagnosticLogEntries(ZipArchive archive, string primaryPath, int maxBytes, int maxLines, List<string> added)
-    {
-        var directory = Path.GetDirectoryName(primaryPath);
-        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory)) return;
-
-        foreach (var path in Directory.EnumerateFiles(directory, "*.log", SearchOption.TopDirectoryOnly).OrderBy(Path.GetFileName))
-        {
-            var name = Path.GetFileName(path);
-            if (string.IsNullOrWhiteSpace(name)) continue;
-            AddLogTailEntry(archive, path, "diagnostics/" + name.Replace(".log", ".tail.log", StringComparison.Ordinal), maxBytes, maxLines, added);
-        }
-    }
-
     private static void AddAggregateLogEntries(ZipArchive archive, string primaryPath, int maxBytes, int maxLines, List<string> added)
     {
         foreach (var path in AggregateModLogService.EnumerateFiles(primaryPath))
@@ -1252,13 +1131,8 @@ internal sealed class LocalApiServer : IDisposable
         {
             GeneratedAtUtc = DateTime.UtcNow.ToString("O"),
             BaseUrl = BaseUrl,
-            LogOutputPath = string.IsNullOrWhiteSpace(settings.LogOutputPath) ? _logOutputPath : settings.LogOutputPath,
-            AutomationLogPath = RuntimeOrderPreparationService.ResolveAutomationLogPath(),
-            NightBusinessDiagnosticsPath = settings.NightBusinessDiagnosticsPath,
             AggregateModLogPath = settings.AggregateModLogPath,
             AggregateModLogMaxFileBytes = settings.AggregateModLogMaxFileBytes,
-            MaxLogLines = Math.Clamp(settings.MaxLogLines, 50, 2000),
-            MaxLogBytes = Math.Clamp(settings.MaxLogBytes, 16 * 1024, 2 * 1024 * 1024),
         });
     }
 
@@ -1443,18 +1317,6 @@ internal sealed class LocalApiServer : IDisposable
         return JsonSerializer.Serialize(value, JsonOptions);
     }
 
-    public static string ResolveLogOutputPath()
-    {
-        try
-        {
-            return Path.Combine(Paths.BepInExRootPath, "LogOutput.log");
-        }
-        catch
-        {
-            return Path.Combine(AppContext.BaseDirectory, "BepInEx", "LogOutput.log");
-        }
-    }
-
     private static string FormatHostForUrl(IPAddress address)
     {
         return address.AddressFamily == AddressFamily.InterNetworkV6
@@ -1603,15 +1465,7 @@ internal sealed class LocalApiServer : IDisposable
 
 internal sealed class LocalApiLogSettings
 {
-    public bool LogAccessEnabled { get; init; }
-    public string LogOutputPath { get; init; } = "";
-    public int MaxLogLines { get; init; } = 300;
-    public int MaxLogBytes { get; init; } = 256 * 1024;
-    public bool NightBusinessDiagnosticsEnabled { get; init; }
-    public string NightBusinessDiagnosticsPath { get; init; } = "";
     public bool AggregateModLogEnabled { get; init; }
     public string AggregateModLogPath { get; init; } = "";
     public long AggregateModLogMaxFileBytes { get; init; } = AggregateModLogService.MaxFileBytes;
-    public bool NativeBepInExConsoleEnabled { get; init; }
-    public bool NativeBepInExConsoleVisible { get; init; }
 }

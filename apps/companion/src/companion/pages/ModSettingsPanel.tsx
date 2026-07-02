@@ -6,11 +6,9 @@ import {
   downloadUpdate,
   installUpdateOnExit,
   readLocalApiConnectionConfig,
-  readLogSettings,
   readUpdateStatus,
   regenerateLocalApiToken,
   writeLocalApiConnectionConfig,
-  writeLogSettings,
 } from '@/companion/api';
 import { buildInventorySelectOptions, type InventorySortMode } from '@/companion/domain/inventory-sorting';
 import { formatBytes } from '@/companion/formatters';
@@ -28,7 +26,7 @@ import {
   normalizeRecipeVariantLimitPerBase,
   type CompanionPreferences,
 } from '@/companion/preferences';
-import type { LocalApiConnectionConfig, LocalApiLogSettings, RuntimeSets, SettingsTab, UpdateStatusResponse } from '@/companion/types';
+import type { LocalApiConnectionConfig, RuntimeSets, SettingsTab, UpdateStatusResponse } from '@/companion/types';
 import type { RecommendationDataSet } from '@/lib/recommendation-data';
 import type { ThemeMode } from '@/lib/theme';
 import {
@@ -77,15 +75,12 @@ export function ModSettingsPanel({
   onServiceFocusCompactChange: (value: boolean) => void;
   supportsDesktopWindowControls: boolean;
 }) {
-  const [logSettings, setLogSettings] = useState<LocalApiLogSettings | null>(null);
   const [connectionConfig, setConnectionConfig] = useState<LocalApiConnectionConfig | null>(null);
   const [connectionLanEnabled, setConnectionLanEnabled] = useState(false);
   const [connectionLanHost, setConnectionLanHost] = useState('auto');
   const [connectionBusy, setConnectionBusy] = useState<'refresh' | 'apply' | 'token' | 'copy' | null>(null);
   const [connectionError, setConnectionError] = useState('');
   const [connectionTokenVisible, setConnectionTokenVisible] = useState(false);
-  const [consoleBusy, setConsoleBusy] = useState(false);
-  const [consoleError, setConsoleError] = useState('');
   const [updateStatus, setUpdateStatus] = useState<UpdateStatusResponse | null>(null);
   const [updateBusy, setUpdateBusy] = useState<'check' | 'download' | 'install' | null>(null);
   const [updateError, setUpdateError] = useState('');
@@ -226,48 +221,6 @@ export function ModSettingsPanel({
     }
   }, [connectionBusy]);
 
-  const refreshConsoleSettings = useCallback(async () => {
-    if (!apiToken) {
-      setLogSettings(null);
-      return;
-    }
-
-    const abortController = new AbortController();
-    const timeoutId = window.setTimeout(() => abortController.abort(), 2800);
-    try {
-      const nextSettings = await readLogSettings(endpoint, apiToken, abortController.signal);
-      setLogSettings(nextSettings);
-      setConsoleError('');
-    } catch (err) {
-      setConsoleError(err instanceof Error ? err.message : String(err));
-    } finally {
-      window.clearTimeout(timeoutId);
-    }
-  }, [apiToken, endpoint]);
-
-  const setNativeConsoleEnabled = useCallback(async (nativeConsole: boolean) => {
-    if (!apiToken) return;
-
-    const abortController = new AbortController();
-    const timeoutId = window.setTimeout(() => abortController.abort(), 2800);
-    setConsoleBusy(true);
-    try {
-      const nextSettings = await writeLogSettings(
-        endpoint,
-        apiToken,
-        { nativeConsole },
-        abortController.signal,
-      );
-      setLogSettings(nextSettings);
-      setConsoleError('');
-    } catch (err) {
-      setConsoleError(err instanceof Error ? err.message : String(err));
-    } finally {
-      window.clearTimeout(timeoutId);
-      setConsoleBusy(false);
-    }
-  }, [apiToken, endpoint]);
-
   const refreshUpdateStatus = useCallback(async () => {
     if (!apiToken) {
       setUpdateStatus(null);
@@ -316,11 +269,6 @@ export function ModSettingsPanel({
   }, [updateStatus?.releaseUrl]);
 
   useEffect(() => {
-    if (!preferences.showDebugDetails) return;
-    refreshConsoleSettings();
-  }, [preferences.showDebugDetails, refreshConsoleSettings]);
-
-  useEffect(() => {
     refreshUpdateStatus();
   }, [refreshUpdateStatus]);
 
@@ -328,12 +276,6 @@ export function ModSettingsPanel({
     if (settingsTab !== 'connection') return;
     refreshConnectionConfig();
   }, [refreshConnectionConfig, settingsTab]);
-
-  useEffect(() => {
-    if (!preferences.showDebugDetails && settingsTab === 'debug') {
-      setSettingsTab('window');
-    }
-  }, [preferences.showDebugDetails, settingsTab]);
 
   const updateStateLabel = formatUpdateState(updateStatus);
   const updateDetail = updateError || updateStatus?.error || updateStatus?.installMessage || '';
@@ -367,10 +309,7 @@ export function ModSettingsPanel({
 
   return (
     <Tabs value={settingsTab} onValueChange={(value) => setSettingsTab(value as SettingsTab)} className="space-y-4">
-      <TabsList
-        scrollable
-        className={preferences.showDebugDetails ? 'grid h-9 w-full grid-cols-6' : 'grid h-9 w-full grid-cols-5'}
-      >
+      <TabsList scrollable className="grid h-9 w-full grid-cols-5">
         <TabsTrigger value="window" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
           窗口
         </TabsTrigger>
@@ -386,11 +325,6 @@ export function ModSettingsPanel({
         <TabsTrigger value="updates" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
           更新
         </TabsTrigger>
-        {preferences.showDebugDetails && (
-          <TabsTrigger value="debug" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
-            调试
-          </TabsTrigger>
-        )}
       </TabsList>
 
       <TabsContent value="window" className="space-y-4">
@@ -861,39 +795,6 @@ export function ModSettingsPanel({
           </div>
         </ListPanel>
       </TabsContent>
-
-      {preferences.showDebugDetails && (
-        <TabsContent value="debug" className="space-y-4">
-          <ListPanel title="BepInEx">
-            <div className="space-y-3">
-              <div className="flex flex-wrap items-center gap-2" data-gamepad-axis="x">
-                <SwitchControl
-                  label="原生日志窗口"
-                  checked={logSettings?.nativeBepInExConsoleEnabled ?? false}
-                  onCheckedChange={setNativeConsoleEnabled}
-                  disabled={!apiToken || consoleBusy}
-                />
-                <Button size="sm" variant="outline" onClick={refreshConsoleSettings} disabled={!apiToken || consoleBusy}>
-                  <IconRefresh className="size-4" />
-                  刷新状态
-                </Button>
-              </div>
-              <div className="grid grid-cols-2 gap-2 text-xs max-[479px]:grid-cols-1">
-                <InfoLine label="下次启动" value={logSettings?.nativeBepInExConsoleEnabled ? '开启' : '关闭'} />
-                <InfoLine label="当前窗口" value={logSettings?.nativeBepInExConsoleVisible ? '可见' : '未显示'} />
-              </div>
-              <div className="text-xs text-muted-foreground">
-                关闭后会隐藏当前 BepInEx 控制台，并将 BepInEx.cfg 的原生 Console log 设为下次启动关闭；日志页仍可读取 LogOutput.log。
-              </div>
-              {consoleError && (
-                <div className="border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                  {consoleError}
-                </div>
-              )}
-            </div>
-          </ListPanel>
-        </TabsContent>
-      )}
     </Tabs>
   );
 }
