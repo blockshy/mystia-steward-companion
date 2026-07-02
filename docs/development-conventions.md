@@ -64,7 +64,10 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 - 仓库不使用 GitHub Actions 自动构建 Release；不要新增 tag 自动构建 workflow。
 - 版本发布采用本机 Windows 构建后通过 `gh` 上传，详细说明见 `docs/local-release.md`。
 - 自动更新发布只支持稳定版 `X.Y.Z` 和预览版 `X.Y.Z-preview.N`。预览版必须发布为 GitHub Prerelease，用于 `dev` 上验证自动更新链路；稳定版确认后再合并 `main` 并发布普通 Release。
+- GitHub Release 需要上传 Mod 主包、`update-manifest.json` 和独立 Windows x64 伴随窗口包。`update-manifest.json` 只服务 Mod 自动更新，必须继续指向 `mystia-steward-companion-bepinex.zip`，不要把独立伴随窗口包纳入自动更新清单。
 - 不要主动创建 tag 或发布 Release；版本构建必须等待用户明确指令。
+- 用户和测试文档中的 BepInEx 安装版本优先固定到已验证的 `BepInEx-Unity.IL2CPP-win-x64-6.0.0-be.783+c58c42d.zip`。不要笼统推荐最新 Bleeding Edge；#784 及之后构建若要恢复支持，需要先通过实测和运行时日志确认。
+- Android APK 不是 Windows 伴随窗口 EXE 的转换产物。若后续实现 Android 支持，应作为 Tauri mobile 目标单独初始化、配置 Android 权限/签名、剥离桌面专属能力，并先限定明确的移动端布局和真机测试范围；在完成这些工作前，不要把 APK 写入常规 Release 资产列表。
 
 ## 运行时约束
 

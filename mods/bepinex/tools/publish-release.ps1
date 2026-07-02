@@ -33,6 +33,7 @@ $RepoRoot = (Resolve-Path (Join-Path $RootDir "../..")).Path
 $BuildScript = Join-Path $ToolDir "build-release.ps1"
 $DistRoot = Join-Path $RootDir "dist"
 $ModZip = Join-Path $DistRoot "mystia-steward-companion-bepinex.zip"
+$CompanionZip = Join-Path $DistRoot "mystia-steward-companion-companion-windows-x64.zip"
 $ManifestPath = Join-Path $DistRoot "update-manifest.json"
 
 function Invoke-Checked {
@@ -247,6 +248,9 @@ try {
     if (-not (Test-Path -LiteralPath $ModZip -PathType Leaf)) {
         throw "Missing Mod package: $ModZip"
     }
+    if (-not (Test-Path -LiteralPath $CompanionZip -PathType Leaf)) {
+        throw "Missing companion package: $CompanionZip"
+    }
 
     New-Item -ItemType Directory -Force -Path $DistRoot | Out-Null
     $ModZipHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $ModZip).Hash.ToLowerInvariant()
@@ -264,7 +268,7 @@ try {
     }
     $Manifest | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $ManifestPath
 
-    $AssetPaths = @($ModZip, $ManifestPath)
+    $AssetPaths = @($ModZip, $ManifestPath, $CompanionZip)
 
     $Gh = Get-GhCommand
     $ReleaseExists = Test-GhReleaseExists -Gh $Gh -Tag $Tag -Repo $Repo

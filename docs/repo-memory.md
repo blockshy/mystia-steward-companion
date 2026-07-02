@@ -16,6 +16,7 @@
 - 用户可见项目名、安装目录和发布产物使用 `mystia-steward-companion`；旧名称只保留在兼容迁移和上游来源说明中。
 - `References/` 只放本机编译 DLL，不提交仓库。
 - 推荐数据来自游戏运行时 `RuntimeDataCatalog`；`build-release.ps1` 和发布包只包含 Mod DLL 与伴随窗口程序。
+- 用户安装和测试优先使用已验证的 BepInEx Bleeding Edge #783 Windows x64 IL2CPP 包：`BepInEx-Unity.IL2CPP-win-x64-6.0.0-be.783+c58c42d.zip`。#784 及之后构建当前不建议用于本项目，后续如需支持新版 BepInEx，必须重新实测并检查运行时日志。
 - 独立伴随窗口默认通过 `127.0.0.1:32145` 读取运行态；该回环 listener 必须始终保留。`LocalApi.AllowLanConnections=true` 只会额外开启 LAN listener，供可信局域网设备连接；LAN 配置和 Token 重置只能由 A 设备本机回环客户端调用。除 `/health` 外，本地 API 使用 `X-Mystia-Steward-Companion-Token` 授权，远程伴随窗口需要手动输入 A 设备 endpoint 和 token；Tauri 代理只接受 loopback/private/link-local IPv4 endpoint。
 - 伴随窗口控制端口固定为 `127.0.0.1:32146`，支持 `show`、`toggle`、`exit` 消息；Mod 热键应先通知已有窗口，控制端口不可达时才启动新进程。
 - 伴随窗口会在 Tauri app data 目录保存 `window-state.txt`，记录外框位置和内框尺寸；启动时恢复大小和仍在显示器范围内的位置，防止换显示器后窗口离屏。
@@ -29,7 +30,8 @@
 - `BepInEx/LogOutput.log` 通过伴随窗口 `日志` 页读取，接口按 `LocalApi.MaxLogLines` 和 `LocalApi.MaxLogBytes` 裁剪尾部内容，前端也只保留有限行数显示。
 - Mod 默认写入 `BepInEx/config/BepInEx.cfg` 将 `[Logging.Console] Enabled=false`，并在 Windows 当前会话尝试隐藏控制台窗口；设置页可临时开启/关闭原生日志窗口，接口会同时修改当前窗口可见性和下一次启动配置。
 - 游戏内 IMGUI 面板已移除；Mod 在游戏侧只保留后台控制器、本地 API、运行时读取、自动化和伴随窗口唤起。
-- 仓库不使用 GitHub Actions 自动构建 Release；`.github/workflows/ci.yml` 只保留手动前端检查。版本发布采用 Windows 本机构建后由 GitHub CLI 上传。自动更新发布只支持稳定版 `X.Y.Z` 和预览版 `X.Y.Z-preview.N`；预览版必须是 GitHub Prerelease，用于 `dev` 上测试 `preview.1 -> preview.2 -> stable` 更新链路，稳定版再合并 `main` 发布普通 Release。
+- 仓库不使用 GitHub Actions 自动构建 Release；`.github/workflows/ci.yml` 只保留手动前端检查。版本发布采用 Windows 本机构建后由 GitHub CLI 上传。自动更新发布只支持稳定版 `X.Y.Z` 和预览版 `X.Y.Z-preview.N`；预览版必须是 GitHub Prerelease，用于 `dev` 上测试 `preview.1 -> preview.2 -> stable` 更新链路，稳定版再合并 `main` 发布普通 Release。Release 资产包含 `mystia-steward-companion-bepinex.zip`、`update-manifest.json` 和 `mystia-steward-companion-companion-windows-x64.zip`；更新清单只指向 Mod 主包，独立伴随窗口包只给 B 设备跨局域网连接使用。
+- Android APK 当前不是已支持产物，也不能从 Windows EXE 直接转换。后续若要做 Android 版，应按 Tauri mobile 独立目标处理，补 Android 权限、签名、桌面能力剥离、移动端布局和真机 LAN 连接测试，再决定是否作为单独 Release 资产发布。
 - 默认热键 `F8` 和 `RS Click` 的主语义是游戏与伴随窗口焦点切换；伴随窗口聚焦时由 Tauri 前端处理热键并按设置切回游戏。手柄切换需要释放锁存和可配置后端防抖，防止同一次长按连续 toggle；默认冷却时间为 800ms。
 - 伴随窗口内手柄导航由 `apps/companion/src/companion/use-gamepad-navigation.ts` 管理：左摇杆/十字键移动焦点，`A` 确认，`B` 返回或退出专注模式，`LB/RB` 切页，`LT/RT` 滚动，`Y` 进入专注模式或切换精简模式，`X` 收藏当前推荐行。导航采用 `data-gamepad-scope` 分区，顶部页签栏左右键只在页签之间移动，向下进入当前页面内容；内部 `TabsList` 左右键只在当前页签组内移动，下键进入 active panel，panel 顶部上键回到对应 trigger；`SegmentedControl` 以可见 label 作为手柄焦点目标，左右键只在当前选项组内切换；横向按钮组和工具条使用 `data-gamepad-axis="x"` 约束左右移动。通用 content 空间导航按交叉轴对齐优先：左右移动优先垂直对齐候选，上下移动优先水平对齐候选，没有对齐候选时才回退到跨行/跨列候选。行内控件左右移动优先在当前 `data-gamepad-row` 内完成，range 和 Mantine `[role="slider"]` 左右键直接调值，Select/MultiSelect 下拉框必须由确认键展开且展开后方向键才移动选项，推荐行和收藏按钮需要稳定 `data-gamepad-focus-key` 以便状态变化后回焦。Gamepad API 轮询使用集中输入状态机，按键同时读取 `pressed` 与模拟量 `value`，并在 blur、页面隐藏、手柄断开、无手柄或导航关闭时重置 latch；`A` / `X` 在 active element 丢失时会复用上一手柄高亮元素，避免第一次确认被焦点恢复吞掉。
 - 经营中稀客订单默认按首次捕获时间稳定排序；也可在设置页切换为稀客分组。稀客分组模式下，同一稀客订单放在一起，稀客组之间按该稀客最早订单出现时间排序，组内仍按点单先后排序。运行时捕获订单保留到明确移除、稀客离场或 6 小时硬上限，避免长时间未上菜时从伴随窗口消失。

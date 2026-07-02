@@ -23,7 +23,7 @@ Windows 上通常需要：
 - PowerShell 7。
 - Rust stable、Microsoft C++ Build Tools 2022 或 Visual Studio “使用 C++ 的桌面开发”组件。
 - Microsoft Edge WebView2 Runtime。
-- 已安装并启动过一次 BepInEx Unity IL2CPP 的游戏目录。
+- 已安装并启动过一次 BepInEx Unity IL2CPP 的游戏目录；普通开发和验证优先使用 #783 构建 `BepInEx-Unity.IL2CPP-win-x64-6.0.0-be.783+c58c42d.zip`，不要直接追最新 Bleeding Edge。
 
 推荐初始化命令：
 
@@ -183,20 +183,22 @@ apps/companion/src-tauri/target/release/mystia-steward-companion(.exe)
 apps/companion/src-tauri/target/release/mystia-steward-companion-updater(.exe)
 mods/bepinex/bin/Release/MystiaStewardCompanion.BepInEx.dll
 mods/bepinex/dist/mystia-steward-companion-bepinex.zip
+mods/bepinex/dist/mystia-steward-companion-companion-windows-x64.zip
 ```
 
-PowerShell 7 脚本固定生成 `.zip`；bash 脚本在系统没有 `zip` 时会改为生成 `.tar.gz`。打包脚本会在检测到 `apps/companion/src-tauri/target/release/mystia-steward-companion(.exe)` 时自动复制到安装包的 `companion/` 子目录，并把 `mystia-steward-companion-updater(.exe)` 放在插件目录根部。Windows 下该 updater 会显示独立更新窗口，负责提示关闭游戏、展示阶段进度并在游戏退出后替换插件目录。
+PowerShell 7 脚本固定生成 `.zip`；bash 脚本在系统没有 `zip` 时会改为生成 `.tar.gz`。打包脚本会在检测到 `apps/companion/src-tauri/target/release/mystia-steward-companion(.exe)` 时自动复制到安装包的 `companion/` 子目录，并把 `mystia-steward-companion-updater(.exe)` 放在插件目录根部。检测到 Windows `.exe` 时，还会生成 `mystia-steward-companion-companion-windows-x64.zip`，供其他设备只下载伴随窗口并通过 LAN 连接。Windows 下该 updater 会显示独立更新窗口，负责提示关闭游戏、展示阶段进度并在游戏退出后替换插件目录。
 
 ## 本地发布
 
 本地发布方案见仓库根目录的 `docs/local-release.md`。仓库不使用 GitHub Actions 自动构建 Release；版本发布需要在 Windows 本机构建完整产物后通过 GitHub CLI 上传。
 
-GitHub Release 只上传以下资产：
+GitHub Release 上传以下资产：
 
 - `mystia-steward-companion-bepinex.zip`
 - `update-manifest.json`
+- `mystia-steward-companion-companion-windows-x64.zip`
 
-`update-manifest.json` 给 Mod 内置自动更新使用，只包含版本、资产文件名、zip 大小和 SHA256，不记录本机打包路径。不上传 Tauri setup 安装器，避免用户误以为只安装桌面程序即可使用 Mod。
+`update-manifest.json` 给 Mod 内置自动更新使用，只包含版本、资产文件名、zip 大小和 SHA256，不记录本机打包路径，并且只指向 `mystia-steward-companion-bepinex.zip`。独立伴随窗口包只给 B 设备跨局域网连接使用，不参与 Mod 自动更新。不上传 Tauri setup 安装器，避免用户误以为只安装桌面程序即可使用 Mod。
 
 发布前检查：
 
@@ -284,7 +286,7 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
   -Notes "版本更新说明"
 ```
 
-脚本会先执行完整构建，再用 `gh release create` 创建 Release 并上传 zip 与 update-manifest。
+脚本会先执行完整构建，再用 `gh release create` 创建 Release 并上传 Mod zip、独立伴随窗口 zip 与 update-manifest。
 
 如果引用 DLL 不在 `mods\bepinex\References`，传入 `-ReferenceDir`：
 
