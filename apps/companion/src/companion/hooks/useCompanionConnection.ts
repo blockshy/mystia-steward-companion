@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { readHealth, readSnapshotText } from '@/companion/api';
+import { readHealth, readSnapshot } from '@/companion/api';
 import {
   normalizeEndpoint,
   persistApiToken,
@@ -40,14 +40,12 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
   const [lastConnectedAt, setLastConnectedAt] = useState<Date | null>(null);
   const latestRequestIdRef = useRef(0);
   const inFlightRequestIdRef = useRef<number | null>(null);
-  const lastSnapshotTextRef = useRef('');
   const lastConnectedAtUpdateMsRef = useRef(0);
 
   const normalizedEndpoint = useMemo(() => normalizeEndpoint(endpoint), [endpoint]);
   const normalizedEndpointDraft = useMemo(() => normalizeEndpoint(endpointDraft), [endpointDraft]);
 
   const clearSnapshotCache = useCallback(() => {
-    lastSnapshotTextRef.current = '';
     lastConnectedAtUpdateMsRef.current = 0;
     setSnapshot(null);
     setCachedRuntimeData(null);
@@ -178,22 +176,11 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
         return;
       }
 
-      const snapshotText = await readSnapshotText(normalizedEndpoint, apiToken, {
+      const data = await readSnapshot(normalizedEndpoint, apiToken, {
         signal: abortController.signal,
         timeoutMs,
       });
       if (latestRequestIdRef.current !== requestId) return;
-
-      if (snapshotText === lastSnapshotTextRef.current) {
-        setError('');
-        setConnectionPaused(false);
-        setConnectionFailureCount(0);
-        markConnected(manual);
-        return;
-      }
-
-      const data = JSON.parse(snapshotText) as LocalApiSnapshot;
-      lastSnapshotTextRef.current = snapshotText;
       setSnapshot(data);
       setError('');
       setConnectionPaused(false);
