@@ -9,7 +9,8 @@ namespace MystiaStewardCompanion.Save;
 /// 通过反射读取游戏运行时数据，并转换为推荐引擎使用的 <see cref="RecommendationState"/>。
 /// </summary>
 /// <remarks>
-/// 该 Provider 运行在游戏进程内，调用游戏公开的运行时静态方法读取热路径数据。
+/// 该 Provider 运行在游戏进程内。库存和解锁料理使用运行时存储快照作为权威来源，
+/// 玩家等级、流行标签和日间开关使用游戏公开的运行时静态方法读取。
 /// 所有反射访问都需要容忍字段缺失、DLC 差异和场景未就绪。
 /// </remarks>
 public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendationStateProvider
@@ -60,11 +61,9 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
             return false;
         }
 
-        if (FindStaticMethod(runtimeStorage, "GetAllRecipeIndex") == null
-            || FindStaticMethod(runtimeStorage, "GetAllBeveragesId") == null
-            || FindStaticMethod(runtimeStorage, "GetAllIngredients") == null)
+        if (FindStaticMethod(runtimeStorage, "GenerateSaveData") == null)
         {
-            reason = "RunTimeStorage live-data methods are not available.";
+            reason = "RunTimeStorage save-data snapshot method is not available.";
             return false;
         }
 
@@ -86,15 +85,16 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
     public RecommendationState LoadState()
     {
         _performanceMs.Clear();
-        var recipeGameIds = Measure("storage.recipes", ReadLiveRecipeIds);
-        var ingredients = Measure("storage.ingredients", ReadLiveIngredients);
-        var beverages = Measure("storage.beverages", ReadLiveBeverages);
+        var storagePartial = Measure("storage.saveData", () => InvokeStaticSafely(RuntimeStorageTypeName, "GenerateSaveData"));
+        var recipeGameIds = Measure("storage.recipes", () => ReadStorageRecipeIds(storagePartial));
+        var ingredients = Measure("storage.ingredients", () => ReadStorageIngredients(storagePartial));
+        var beverages = Measure("storage.beverages", () => ReadStorageBeverages(storagePartial));
         var famousShopEnabled = _includeDaySceneState
             && Measure("player.famousShop", () => ReadTrackedSwitch(FamousShopSwitchKey));
         var popularFoodTag = Measure("player.popularFood", () => ResolveFoodTag(ReadPopularFoodTags("Like")));
         var playerLevel = Measure("player.level", ReadPlayerLevel);
 
-        if (recipeGameIds.Count == 0 && ingredients.Count == 0 && beverages.Count == 0 && playerLevel <= 0)
+        if (recipeGameIds.Count == 0 || (ingredients.Count == 0 && beverages.Count == 0 && playerLevel <= 0))
         {
             throw new InvalidOperationException("Game runtime data is empty; game progress may not be loaded.");
         }
@@ -214,19 +214,19 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
         if (id.HasValue && id.Value >= 0) target.Add(id.Value);
     }
 
-    private static List<int> ReadLiveRecipeIds()
+    private static List<int> ReadStorageRecipeIds(object? storagePartial)
     {
-        return ReadIntCollection(InvokeStaticSafely(RuntimeStorageTypeName, "GetAllRecipeIndex")).ToList();
+        return ReadIntCollection(GetMemberValue(storagePartial, "recipes")).ToList();
     }
 
-    private static Dictionary<int, int> ReadLiveBeverages()
+    private static Dictionary<int, int> ReadStorageBeverages(object? storagePartial)
     {
-        return ReadIntDictionary(InvokeStaticSafely(RuntimeStorageTypeName, "GetAllBeveragesId"));
+        return ReadIntDictionary(GetMemberValue(storagePartial, "beverages"));
     }
 
-    private static Dictionary<int, int> ReadLiveIngredients()
+    private static Dictionary<int, int> ReadStorageIngredients(object? storagePartial)
     {
-        return ReadObjectIntPairDictionary(InvokeStaticSafely(RuntimeStorageTypeName, "GetAllIngredients"));
+        return ReadIntDictionary(GetMemberValue(storagePartial, "ingredients"));
     }
 
     private static int ReadPlayerLevel()
@@ -433,36 +433,6 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
         }
 
         return result;
-    }
-
-    private static Dictionary<int, int> ReadObjectIntPairDictionary(object? value)
-    {
-        var result = new Dictionary<int, int>();
-        if (value == null) return result;
-
-        foreach (var item in EnumerateObjects(value))
-        {
-            var key = GetMemberValue(item, "Key") ?? GetMemberValue(item, "key");
-            var itemValue = GetMemberValue(item, "Value") ?? GetMemberValue(item, "value");
-            if (key == null || itemValue == null) continue;
-
-            var id = ReadObjectId(key);
-            if (id == null) continue;
-
-            result[id.Value] = ToInt(itemValue);
-        }
-
-        return result;
-    }
-
-    private static int? ReadObjectId(object? value)
-    {
-        if (value == null) return null;
-
-        var id = GetMemberValue(value, "Id") ?? GetMemberValue(value, "id");
-        if (id == null) return null;
-
-        return ToInt(id);
     }
 
     private static Dictionary<string, bool> ReadStringBoolDictionary(object? value)

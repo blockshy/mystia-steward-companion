@@ -6,12 +6,12 @@
 
 ## 读取流程
 
-1. 通过 `GameData.RunTime.Common.RunTimeStorage.GetAllRecipeIndex()` 读取当前已解锁料理。
-2. 通过 `GameData.RunTime.Common.RunTimeStorage.GetAllBeveragesId()` 读取当前酒水数量。
-3. 通过 `GameData.RunTime.Common.RunTimeStorage.GetAllIngredients()` 读取当前食材数量。
+1. 通过 `GameData.RunTime.Common.RunTimeStorage.GenerateSaveData()` 生成当前运行时存储快照，读取其中的 `recipes`、`beverages` 和 `ingredients`。
+2. `recipes` 作为已解锁料理的权威来源；如果该集合为空，本轮不发布空的推荐状态，等待下一次运行时读取。
+3. `beverages` 和 `ingredients` 分别作为当前酒水与食材数量来源。
 4. 通过 `GameData.RunTime.Common.RunTimePlayerData.GetLevel()` 和 `GetPopFoodTags(...)` 读取玩家等级与流行喜好/厌恶标签。
 5. 通过 `GameData.RunTime.DaySceneUtility.RunTimeDayScene.GetTrackedSwitch("Aya_FamousIzakaya", false)` 判断明星店状态。
-6. 对没有直接 getter 的字段，例如 `CollabStatus`，直接读取同一运行时类型上的静态字段，不在常规推荐状态热路径调用 `GenerateSaveData()`。
+6. 对没有直接 getter 的玩家字段，例如 `CollabStatus`，直接读取同一运行时类型上的静态字段；玩家和日间状态不在常规推荐状态热路径生成 save-data 快照。
 7. 将读取结果转换为 `ParsedSaveData`，再生成推荐算法使用的 `RecommendationState`。
 
 ## 夜间经营订单
