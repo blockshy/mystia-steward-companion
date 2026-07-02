@@ -109,7 +109,7 @@ export function usePageRecommendations(payload: PageRecommendationPayload | null
     scheduleCurrentState((current) => {
       if (settledRequestIdRef.current === requestId) return current;
       return {
-        result: null,
+        result: current.result,
         pending: true,
         isCurrent: false,
         error: null,
