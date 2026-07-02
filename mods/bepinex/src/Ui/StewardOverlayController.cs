@@ -969,6 +969,7 @@ internal sealed class StewardOverlayController
             AppendValue(builder, order.BeverageTagId);
             AppendValue(builder, order.BeverageTag);
             AppendValue(builder, order.Source);
+            AppendValue(builder, order.IsFreeOrder);
             AppendValue(builder, order.HasServedFood);
             AppendValue(builder, order.HasServedBeverage);
         }

@@ -78,6 +78,7 @@ export interface NightBusinessOrder {
   source: string;
   firstSeenAtUtc?: string | null;
   lastSeenAtUtc?: string | null;
+  isFreeOrder?: boolean;
   hasServedFood?: boolean;
   hasServedBeverage?: boolean;
 }

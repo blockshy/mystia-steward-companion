@@ -549,6 +549,7 @@ export function buildAutoOrderKey(item: OrderRecommendation): string {
     order.guestId ?? order.guestName,
     order.foodTag,
     order.beverageTag,
+    order.isFreeOrder ? 'free' : 'paid',
   ].join('|');
 }
 
@@ -565,6 +566,7 @@ export function buildNightBusinessOrderKey(order: NightBusinessOrder): string {
     order.beverageTagId,
     order.beverageTag,
     order.source,
+    order.isFreeOrder ? 'free' : 'paid',
   ].join('|');
 }
 

@@ -163,6 +163,7 @@ export function buildOrderRecommendations(
       serializeCustomRecipeContext(customRecipes, customer.id, foodTag),
       `budgetPolicy:${preferences.recommendationBudgetPolicy}`,
       serializeBudgetContext(budgetContext),
+      `freeOrder:${order.isFreeOrder === true ? '1' : '0'}`,
       `recipeVariantLimit:${preferences.recipeVariantLimitPerBase}`,
     ].join('|');
     let cached = caches.orders.get(cacheKey);
@@ -205,7 +206,7 @@ export function buildOrderRecommendations(
         preparationPlan,
         executionPlans: plans.filter((plan) => plan.bucket !== 'blocked').slice(0, EXECUTION_PLAN_LIMIT),
         budget: findRecommendationBudget(plans, preparationPlan),
-        blockedMessages: buildBlockedPlanMessages(plans),
+        blockedMessages: buildBlockedPlanMessages(plans, orderRuntimeContext.budget, orderRuntimeContext.budgetPolicy),
         recipes: deriveRecipeRowsFromCandidates(combinedFoodCandidates, beverageCandidates, {
           variantLimitPerBase: preferences.recipeVariantLimitPerBase,
           limit: MAX_FOCUS_RECOMMENDATION_ROWS,
@@ -361,6 +362,7 @@ function findBudgetContextForOrder(
   order: NightBusinessOrder,
   activeRareGuests: NightBusinessGuest[],
 ): RecommendationBudgetContext | null {
+  if (order.isFreeOrder === true) return null;
   if (activeRareGuests.length === 0) return null;
   const guest = findActiveRareGuestForOrder(order, activeRareGuests);
   if (!guest) return null;
@@ -553,8 +555,17 @@ function findRecommendationBudget(
   return preparationPlan?.budget ?? plans.find((plan) => plan.budget)?.budget ?? null;
 }
 
-function buildBlockedPlanMessages(plans: RareOrderRecommendationPlan[]): string[] {
-  if (plans.length === 0 || plans.some((plan) => plan.bucket !== 'blocked')) return [];
+function buildBlockedPlanMessages(
+  plans: RareOrderRecommendationPlan[],
+  budget: RecommendationBudgetContext | null,
+  budgetPolicy: RecommendationBudgetPolicy,
+): string[] {
+  if (plans.some((plan) => plan.bucket !== 'blocked')) return [];
+  if (plans.length === 0) {
+    if (budgetPolicy === 'block' && budget?.willPayMoney === false) return ['稀客当前不会付款。'];
+    if (isBudgetBlockingPairing(budget, budgetPolicy)) return ['没有可搭配且不超预算的料理/酒水组合。'];
+    return [];
+  }
 
   const messages = plans.flatMap((plan) =>
     plan.conditionResults

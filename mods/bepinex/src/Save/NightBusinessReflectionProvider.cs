@@ -674,6 +674,7 @@ internal sealed class NightBusinessReflectionProvider
             Source = source,
             FirstSeenAtUtc = now,
             LastSeenAtUtc = now,
+            IsFreeOrder = ReadOrderFreeState(readableOrder),
             HasServedFood = ReadOrderServedState(readableOrder, "ServFood", "ServedFoodInAir"),
             HasServedBeverage = ReadOrderServedState(readableOrder, "ServBeverage", "ServedBeverageInAir"),
         };
@@ -764,6 +765,7 @@ internal sealed class NightBusinessReflectionProvider
                 Source = string.IsNullOrWhiteSpace(captured.CaptureSource) ? "RuntimeCapture" : $"RuntimeCapture:{captured.CaptureSource}",
                 FirstSeenAtUtc = captured.FirstCapturedAt,
                 LastSeenAtUtc = captured.CapturedAt,
+                IsFreeOrder = captured.IsFreeOrder,
             };
 
             if (ShouldKeepCapturedOrder(order, captured, activeGuests, now))
@@ -961,10 +963,12 @@ internal sealed class NightBusinessReflectionProvider
             }
 
             var selected = GetOrderCompletenessScore(order) > GetOrderCompletenessScore(existing) ? order : existing;
+            var isFreeOrder = order.IsFreeOrder || existing.IsFreeOrder;
             bySlot[key] = CopyOrderWithSeenTimes(
                 selected,
                 MinSeenAt(existing.FirstSeenAtUtc, order.FirstSeenAtUtc),
-                MaxSeenAt(existing.LastSeenAtUtc, order.LastSeenAtUtc));
+                MaxSeenAt(existing.LastSeenAtUtc, order.LastSeenAtUtc),
+                isFreeOrder);
         }
 
         return bySlot.Values
@@ -975,7 +979,11 @@ internal sealed class NightBusinessReflectionProvider
             .ToList();
     }
 
-    private static NightBusinessOrder CopyOrderWithSeenTimes(NightBusinessOrder order, DateTime? firstSeenAtUtc, DateTime? lastSeenAtUtc)
+    private static NightBusinessOrder CopyOrderWithSeenTimes(
+        NightBusinessOrder order,
+        DateTime? firstSeenAtUtc,
+        DateTime? lastSeenAtUtc,
+        bool isFreeOrder)
     {
         return new NightBusinessOrder
         {
@@ -989,6 +997,7 @@ internal sealed class NightBusinessReflectionProvider
             Source = order.Source,
             FirstSeenAtUtc = firstSeenAtUtc,
             LastSeenAtUtc = lastSeenAtUtc,
+            IsFreeOrder = isFreeOrder,
             HasServedFood = order.HasServedFood,
             HasServedBeverage = order.HasServedBeverage,
         };
@@ -1030,6 +1039,14 @@ internal sealed class NightBusinessReflectionProvider
         }
 
         return false;
+    }
+
+    private static bool ReadOrderFreeState(object order)
+    {
+        var value = GetMemberValue(order, "FreeOrder");
+        if (value is bool boolValue) return boolValue;
+        if (bool.TryParse(value?.ToString(), out var parsed)) return parsed;
+        return bool.TryParse(ResolveOrderTextValue(SafeToString(order), "IsFreeOrder?"), out var textParsed) && textParsed;
     }
 
     private static List<NightBusinessGuest> DeduplicateGuests(IEnumerable<NightBusinessGuest> guests)
@@ -1514,6 +1531,11 @@ internal sealed class NightBusinessReflectionProvider
     }
 
     private static string ResolveOrderTagFromText(string? orderText, string label)
+    {
+        return ResolveOrderTextValue(orderText, label);
+    }
+
+    private static string ResolveOrderTextValue(string? orderText, string label)
     {
         if (string.IsNullOrWhiteSpace(orderText)) return "";
 
