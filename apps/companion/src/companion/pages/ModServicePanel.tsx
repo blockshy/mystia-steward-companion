@@ -845,7 +845,7 @@ function RareAutoPrepStatus({
                   </Button>
                 </div>
               </div>
-              <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground md:grid-cols-5">
+              <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground max-[479px]:grid-cols-1 md:grid-cols-5">
                 <InfoLine label="料理" value={diagnostic.recipeName || '未选择'} />
                 <InfoLine label="酒水" value={diagnostic.beverageName || '未选择'} />
                 <InfoLine label="步骤" value={`${diagnostic.stepLabel} · ${diagnostic.stepSeconds}秒`} />
@@ -936,7 +936,7 @@ function NormalAutoPrepStatus({
                   {diagnostic.paused ? '暂停' : '运行'}
                 </Badge>
               </div>
-              <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground md:grid-cols-5">
+              <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground max-[479px]:grid-cols-1 md:grid-cols-5">
                 <InfoLine label="步骤" value={`${diagnostic.stepLabel} · ${diagnostic.stepSeconds}秒`} />
                 <InfoLine label="下次" value={diagnostic.nextAction} />
                 {showDebugDetails && (

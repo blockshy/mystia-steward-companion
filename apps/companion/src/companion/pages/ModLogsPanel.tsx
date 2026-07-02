@@ -212,7 +212,7 @@ export function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToke
       </Card>
 
       <Card>
-        <CardContent className="grid grid-cols-2 gap-x-4 gap-y-3 p-4 text-sm">
+        <CardContent className="grid grid-cols-2 gap-x-4 gap-y-3 p-4 text-sm max-[719px]:grid-cols-1">
           <InfoLine label="本地 API 授权" value={apiToken ? '已通过启动参数接收' : '未收到 token，请从游戏内按 F8 重新显示窗口'} />
           <InfoLine label="日志读取" value={settings?.logAccessEnabled ? '开启' : '关闭'} />
           <InfoLine label="读取上限" value={responseLogLimit} />
@@ -261,7 +261,7 @@ export function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToke
                       {entry.desk && <span className="text-muted-foreground">桌 {entry.desk}</span>}
                       <span className="font-mono text-muted-foreground">{entry.timestamp}</span>
                     </div>
-                    <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1 text-muted-foreground">
+                    <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1 text-muted-foreground max-[479px]:grid-cols-1">
                       <InfoLine label="料理" value={entry.food || '无'} />
                       <InfoLine label="客人" value={entry.guest || '无'} />
                     </div>

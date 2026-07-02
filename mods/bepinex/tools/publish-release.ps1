@@ -20,7 +20,9 @@ param(
     [switch]$SkipBuild,
     [switch]$SkipVersionCheck,
     [switch]$Clobber,
+    [switch]$BuildAndroidApk,
     [string]$ReferenceDir = "",
+    [string]$AndroidApkPath = "",
     [string]$Repo = "blockshy/mystia-steward-companion"
 )
 
@@ -34,6 +36,7 @@ $BuildScript = Join-Path $ToolDir "build-release.ps1"
 $DistRoot = Join-Path $RootDir "dist"
 $ModZip = Join-Path $DistRoot "mystia-steward-companion-bepinex.zip"
 $CompanionZip = Join-Path $DistRoot "mystia-steward-companion-companion-windows-x64.zip"
+$DefaultAndroidApk = Join-Path $DistRoot "mystia-steward-companion-android-universal.apk"
 $ManifestPath = Join-Path $DistRoot "update-manifest.json"
 
 function Invoke-Checked {
@@ -219,6 +222,29 @@ function Test-GhReleaseExists {
     }
 }
 
+function Resolve-OptionalAndroidApk {
+    param([string]$ConfiguredPath)
+
+    if ([string]::IsNullOrWhiteSpace($ConfiguredPath)) {
+        if (Test-Path -LiteralPath $DefaultAndroidApk -PathType Leaf) {
+            return (Resolve-Path -LiteralPath $DefaultAndroidApk).Path
+        }
+
+        return ""
+    }
+
+    $CandidatePath = $ConfiguredPath
+    if (-not [System.IO.Path]::IsPathRooted($CandidatePath)) {
+        $CandidatePath = Join-Path $RepoRoot $CandidatePath
+    }
+
+    if (-not (Test-Path -LiteralPath $CandidatePath -PathType Leaf)) {
+        throw "Missing Android APK: $CandidatePath"
+    }
+
+    return (Resolve-Path -LiteralPath $CandidatePath).Path
+}
+
 Push-Location $RepoRoot
 try {
     $ExpectedVersion = Get-VersionFromTag -Tag $Tag
@@ -239,6 +265,9 @@ try {
         if (-not [string]::IsNullOrWhiteSpace($ReferenceDir)) {
             $BuildArgs += "-ReferenceDir"
             $BuildArgs += $ReferenceDir
+        }
+        if ($BuildAndroidApk) {
+            $BuildArgs += "-BuildAndroidApk"
         }
 
         $Pwsh = Get-PwshCommand
@@ -268,7 +297,12 @@ try {
     }
     $Manifest | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $ManifestPath
 
-    $AssetPaths = @($ModZip, $ManifestPath, $CompanionZip)
+    [string[]]$AssetPaths = @($ModZip, $ManifestPath, $CompanionZip)
+    $ResolvedAndroidApk = Resolve-OptionalAndroidApk -ConfiguredPath $AndroidApkPath
+    if (-not [string]::IsNullOrWhiteSpace($ResolvedAndroidApk)) {
+        $AssetPaths += $ResolvedAndroidApk
+        Write-Host "Including Android APK asset: $ResolvedAndroidApk"
+    }
 
     $Gh = Get-GhCommand
     $ReleaseExists = Test-GhReleaseExists -Gh $Gh -Tag $Tag -Repo $Repo

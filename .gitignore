@@ -12,6 +12,10 @@ dist
 dist-ssr
 apps/companion/src-tauri/target/
 src-tauri/target/
+apps/companion/src-tauri/gen/android/**/build/
+apps/companion/src-tauri/gen/android/keystore.properties
+apps/companion/src-tauri/gen/android/**/*.jks
+apps/companion/src-tauri/gen/android/**/*.keystore
 .game
 *.local
 AGENTS.md

@@ -5,6 +5,10 @@ description = "Desktop companion window for mystia-steward-companion"
 authors = ["mystia-steward-companion contributors"]
 edition = "2021"
 
+[lib]
+name = "mystia_steward_companion"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 [[bin]]
 name = "mystia-steward-companion"
 path = "src/main.rs"

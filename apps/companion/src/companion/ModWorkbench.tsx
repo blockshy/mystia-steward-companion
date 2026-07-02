@@ -125,7 +125,8 @@ import type { PlaceName } from '@/lib/catalog-types';
 
 const AUTO_FIRST_ORDER_TICK_MS = 1500;
 const AUTO_NORMAL_ORDER_TICK_MS = 500;
-const MOD_TAB_TRIGGER_CLASS = 'min-w-0 flex-1';
+const MOD_TAB_TRIGGER_CLASS = 'min-w-[4.75rem] flex-none min-[720px]:min-w-0 min-[720px]:flex-1';
+type CompanionPlatform = 'desktop' | 'mobile';
 
 const MOD_TABS: ModTab[] = ['overview', 'normal', 'rare', 'custom-recipes', 'service', 'tasks', 'inventory', 'help', 'logs', 'settings'];
 const BASIC_MOD_TABS: ModTab[] = MOD_TABS.filter((tab) => tab !== 'logs');
@@ -146,6 +147,7 @@ export function ModWorkbench() {
   const [companionPreferences, setCompanionPreferences] = useState<CompanionPreferences>(() =>
     readStoredCompanionPreferences(),
   );
+  const [companionPlatform, setCompanionPlatform] = useState<CompanionPlatform>('desktop');
   // 经营中页面需要尽快响应订单变化和自动化结果；其他页面使用较低频率，减少本地 API 与反射快照压力。
   const snapshotRefreshIntervalMs = tab === 'service' || serviceFocusMode ? 750 : 2000;
   const {
@@ -235,6 +237,22 @@ export function ModWorkbench() {
       setTab('overview');
     }
   }, [companionPreferences.showDebugDetails, tab]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let cancelled = false;
+    import('@tauri-apps/api/core')
+      .then(({ invoke }) => invoke<string>('companion_platform'))
+      .then((platform) => {
+        if (!cancelled) setCompanionPlatform(platform === 'mobile' ? 'mobile' : 'desktop');
+      })
+      .catch(() => {
+        if (!cancelled) setCompanionPlatform('desktop');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const runtime = snapshot?.recommendationState ?? null;
   const night = snapshot?.nightBusiness ?? null;
@@ -1119,7 +1137,7 @@ export function ModWorkbench() {
   }
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3" data-companion-surface="workbench">
       <WorkbenchHeader
         endpointDraft={endpointDraft}
         onEndpointDraftChange={setEndpointDraft}
@@ -1135,14 +1153,15 @@ export function ModWorkbench() {
         lastConnectedAt={lastConnectedAt}
         loading={loading}
         normalizedEndpoint={normalizedEndpoint}
-        mousePassthroughEnabled={companionPreferences.mousePassthroughEnabled}
+        mousePassthroughEnabled={companionPlatform === 'desktop' && companionPreferences.mousePassthroughEnabled}
         night={night}
         snapshot={snapshot}
       />
 
       <Tabs value={tab} onValueChange={(value) => setTab(value as ModTab)} className="space-y-3">
         <TabsList
-          className="h-9 !w-full max-w-full justify-stretch overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          scrollable
+          className="h-9 !w-full max-w-full justify-stretch"
           data-gamepad-scope="tabs"
         >
           <TabsTrigger value="overview" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="overview">
@@ -1363,6 +1382,7 @@ export function ModWorkbench() {
             onConnectionConfigApplied={applyConnectionDetails}
             onThemeModeChange={setThemeMode}
             onServiceFocusCompactChange={setServiceFocusCompact}
+            supportsDesktopWindowControls={companionPlatform === 'desktop'}
           />
         </TabsContent>
       </Tabs>

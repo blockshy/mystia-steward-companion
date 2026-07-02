@@ -505,6 +505,27 @@ html::-webkit-scrollbar-thumb:hover,
   padding: 0.75rem;
 }
 
+.companion-shell {
+  min-height: 100dvh;
+}
+
+.companion-main {
+  min-width: 0;
+}
+
+@media (max-width: 719px) {
+  .companion-main {
+    padding-top: max(0.5rem, env(safe-area-inset-top));
+    padding-right: max(0.5rem, env(safe-area-inset-right));
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+    padding-left: max(0.5rem, env(safe-area-inset-left));
+  }
+
+  [data-companion-surface='workbench'] {
+    font-size: 0.9375rem;
+  }
+}
+
 .steward-button {
   min-height: var(--steward-control-height-sm);
   font-size: var(--steward-control-font-sm);
@@ -881,6 +902,31 @@ html::-webkit-scrollbar-thumb:hover,
   overflow: hidden;
   --tab-border-color: color-mix(in srgb, var(--border) 48%, transparent);
   --tab-hover-color: color-mix(in srgb, var(--companion-muted-surface) 58%, transparent);
+}
+
+@media (max-width: 719px) {
+  .steward-tabs-list[data-scrollable-tabs='true'] {
+    display: flex;
+    max-width: 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    scroll-padding-inline: 0.25rem;
+    scrollbar-width: none;
+    touch-action: pan-x;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .steward-tabs-list[data-scrollable-tabs='true']::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+  }
+
+  .steward-tabs-list[data-scrollable-tabs='true'] .steward-tabs-trigger {
+    flex: 0 0 auto;
+  }
 }
 
 .steward-tabs-trigger {

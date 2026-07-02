@@ -62,6 +62,7 @@ export function ModSettingsPanel({
   onConnectionConfigApplied,
   onThemeModeChange,
   onServiceFocusCompactChange,
+  supportsDesktopWindowControls,
 }: {
   endpoint: string;
   apiToken: string;
@@ -74,6 +75,7 @@ export function ModSettingsPanel({
   onConnectionConfigApplied: (endpoint: string, apiToken: string) => void;
   onThemeModeChange: (mode: ThemeMode) => void;
   onServiceFocusCompactChange: (value: boolean) => void;
+  supportsDesktopWindowControls: boolean;
 }) {
   const [logSettings, setLogSettings] = useState<LocalApiLogSettings | null>(null);
   const [connectionConfig, setConnectionConfig] = useState<LocalApiConnectionConfig | null>(null);
@@ -365,7 +367,10 @@ export function ModSettingsPanel({
 
   return (
     <Tabs value={settingsTab} onValueChange={(value) => setSettingsTab(value as SettingsTab)} className="space-y-4">
-      <TabsList className={preferences.showDebugDetails ? 'grid h-9 w-full grid-cols-6' : 'grid h-9 w-full grid-cols-5'}>
+      <TabsList
+        scrollable
+        className={preferences.showDebugDetails ? 'grid h-9 w-full grid-cols-6' : 'grid h-9 w-full grid-cols-5'}
+      >
         <TabsTrigger value="window" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
           窗口
         </TabsTrigger>
@@ -400,32 +405,40 @@ export function ModSettingsPanel({
                 value={preferences.contentOpacity}
                 onChange={(contentOpacity) => onPreferenceChange({ contentOpacity })}
               />
-              <SettingSegmentedControl
-                label="焦点切换"
-                value={preferences.focusSwitchBehavior}
-                options={[
-                  { value: 'hide', label: '隐藏窗口' },
-                  { value: 'keep-visible', label: '保持悬浮' },
-                ]}
-                onChange={(focusSwitchBehavior) => onPreferenceChange({ focusSwitchBehavior })}
-              />
-              <FocusSwitchCooldownInput
-                value={preferences.focusSwitchCooldownMs}
-                onChange={(focusSwitchCooldownMs) => onPreferenceChange({ focusSwitchCooldownMs })}
-              />
-              <SwitchControl
-                label="始终置顶"
-                checked={preferences.alwaysOnTop}
-                onCheckedChange={(alwaysOnTop) => onPreferenceChange({ alwaysOnTop })}
-              />
-              <SwitchControl
-                label="鼠标穿透锁定"
-                checked={preferences.mousePassthroughEnabled}
-                onCheckedChange={(mousePassthroughEnabled) => onPreferenceChange({ mousePassthroughEnabled })}
-              />
-              <div className="text-xs text-muted-foreground">
-                开启后伴随窗口会忽略鼠标点击，点击会落到下方游戏或其他窗口；按 F10、F8/RS Click 或托盘菜单可恢复操作。
-              </div>
+              {supportsDesktopWindowControls ? (
+                <>
+                  <SettingSegmentedControl
+                    label="焦点切换"
+                    value={preferences.focusSwitchBehavior}
+                    options={[
+                      { value: 'hide', label: '隐藏窗口' },
+                      { value: 'keep-visible', label: '保持悬浮' },
+                    ]}
+                    onChange={(focusSwitchBehavior) => onPreferenceChange({ focusSwitchBehavior })}
+                  />
+                  <FocusSwitchCooldownInput
+                    value={preferences.focusSwitchCooldownMs}
+                    onChange={(focusSwitchCooldownMs) => onPreferenceChange({ focusSwitchCooldownMs })}
+                  />
+                  <SwitchControl
+                    label="始终置顶"
+                    checked={preferences.alwaysOnTop}
+                    onCheckedChange={(alwaysOnTop) => onPreferenceChange({ alwaysOnTop })}
+                  />
+                  <SwitchControl
+                    label="鼠标穿透锁定"
+                    checked={preferences.mousePassthroughEnabled}
+                    onCheckedChange={(mousePassthroughEnabled) => onPreferenceChange({ mousePassthroughEnabled })}
+                  />
+                  <div className="text-xs text-muted-foreground">
+                    开启后伴随窗口会忽略鼠标点击，点击会落到下方游戏或其他窗口；按 F10、F8/RS Click 或托盘菜单可恢复操作。
+                  </div>
+                </>
+              ) : (
+                <div className="steward-inline-panel px-3 py-2 text-xs text-muted-foreground">
+                  Android 端仅保留显示设置；置顶、鼠标穿透和焦点切换由桌面窗口提供。
+                </div>
+              )}
             </div>
           </ListPanel>
 
@@ -865,7 +878,7 @@ export function ModSettingsPanel({
                   刷新状态
                 </Button>
               </div>
-              <div className="grid grid-cols-2 gap-2 text-xs">
+              <div className="grid grid-cols-2 gap-2 text-xs max-[479px]:grid-cols-1">
                 <InfoLine label="下次启动" value={logSettings?.nativeBepInExConsoleEnabled ? '开启' : '关闭'} />
                 <InfoLine label="当前窗口" value={logSettings?.nativeBepInExConsoleVisible ? '可见' : '未显示'} />
               </div>
