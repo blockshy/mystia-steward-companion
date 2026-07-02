@@ -128,7 +128,7 @@
             "确认 LAN 状态已开启，并复制 LAN 地址和 Token。",
             "如果未生成 LAN 地址，检查 A 设备是否有 192.168.x.x、10.x.x.x 或 172.16-31.x.x 这类局域网 IPv4；多网卡或 VPN 环境可手动填写 A 设备实际 IPv4 后点击应用。",
             "必要时在 A 设备 Windows 防火墙中允许 32145 端口入站。",
-            "Windows 设备下载并启动 mystia-steward-companion-companion-windows-x64.zip 中的伴随窗口；如果当前版本没有独立包，也可从完整 Mod 包的 companion 目录取出 exe。",
+            "Windows 设备下载 mystia-steward-companion-companion-windows-x64.exe 并直接运行；如果当前版本没有独立 EXE，也可从完整 Mod 包的 companion 目录取出 exe。",
             "Android 设备下载并安装对应 CPU 架构的 APK；普通手机和平板优先选择 mystia-steward-companion-android-arm64-v8a.apk，旧设备再选择 mystia-steward-companion-android-armeabi-v7a.apk。",
             "在 B 设备顶部连接区填写 A 设备的 LAN 地址和 Token，然后点击连接。",
             "等待顶部连接状态变为已连接。"

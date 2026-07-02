@@ -63,10 +63,10 @@ mystia-steward-companion 1.x.x loaded. Press F8 to open or focus the companion w
 Local API loopback listener is available at http://127.0.0.1:32145
 ```
 
-如果只想在另一台设备上运行伴随窗口，不需要把完整 Mod 发布包安装到 B 设备。Windows 设备可下载 Release 中的独立伴随窗口包：
+如果只想在另一台设备上运行伴随窗口，不需要把完整 Mod 发布包安装到 B 设备。Windows 设备可下载 Release 中的独立伴随窗口 EXE，下载后直接双击运行，不需要解压：
 
 ```text
-mystia-steward-companion-companion-windows-x64.zip
+mystia-steward-companion-companion-windows-x64.exe
 ```
 
 Android 设备可下载 Release 中对应 CPU 架构的 APK。普通手机和平板优先选择 `arm64-v8a`，只有较旧设备再选择 `armeabi-v7a`：
@@ -394,7 +394,7 @@ A 设备操作：
 
 B 设备操作：
 
-1. Windows 设备从 Release 下载 `mystia-steward-companion-companion-windows-x64.zip` 并解压；如果当前版本还没有独立包，也可以从完整 Mod 包的 `mystia-steward-companion/companion/` 目录取出 `mystia-steward-companion.exe`。
+1. Windows 设备从 Release 下载 `mystia-steward-companion-companion-windows-x64.exe`，下载后直接双击运行；如果当前版本还没有独立 EXE，也可以从完整 Mod 包的 `mystia-steward-companion/companion/` 目录取出 `mystia-steward-companion.exe`。
 2. Android 设备从 Release 下载对应 CPU 架构的 APK 并安装。普通手机和平板优先选择 `mystia-steward-companion-android-arm64-v8a.apk`，旧设备再选择 `mystia-steward-companion-android-armeabi-v7a.apk`。若系统提示未知来源，需要只对本次下载来源临时允许安装。
 3. 启动 B 设备上的伴随窗口。
 4. 在窗口顶部连接区填写 A 设备复制出的 `LAN 地址`，例如 `http://192.168.1.20:32145`。

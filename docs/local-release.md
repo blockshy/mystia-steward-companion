@@ -158,15 +158,15 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
   -ReferenceDir "D:\path\to\mystia-steward-companion-references"
 ```
 
-脚本会先运行 `build-release.ps1`，然后上传 Mod 压缩包、自动更新清单和供其他设备直接使用的独立伴随窗口包：
+脚本会先运行 `build-release.ps1`，然后上传 Mod 压缩包、自动更新清单和供其他设备直接使用的独立伴随窗口 EXE：
 
 - `mods/bepinex/dist/mystia-steward-companion-bepinex.zip`
 - `mods/bepinex/dist/update-manifest.json`
-- `mods/bepinex/dist/mystia-steward-companion-companion-windows-x64.zip`
+- `mods/bepinex/dist/mystia-steward-companion-companion-windows-x64.exe`
 - 可选：`mods/bepinex/dist/mystia-steward-companion-android-arm64-v8a.apk`
 - 可选：`mods/bepinex/dist/mystia-steward-companion-android-armeabi-v7a.apk`
 
-`update-manifest.json` 包含版本号、资产文件名、zip 大小和 SHA256，不包含本机打包路径，并且只指向 `mystia-steward-companion-bepinex.zip`。独立 Windows 伴随窗口包和 Android APK 只给 B 设备跨局域网连接使用，不参与 Mod 自动更新。Tauri setup 安装器不会上传到 Release，避免和 Mod 分发包混淆。
+`update-manifest.json` 包含版本号、资产文件名、zip 大小和 SHA256，不包含本机打包路径，并且只指向 `mystia-steward-companion-bepinex.zip`。独立 Windows 伴随窗口 EXE 和 Android APK 只给 B 设备跨局域网连接使用，不参与 Mod 自动更新。Tauri setup 安装器不会上传到 Release，避免和 Mod 分发包混淆。
 
 如发布机已配置 Android 工具链和签名配置，可在发布构建时直接生成 Android APK：
 
@@ -184,7 +184,7 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
   -BuildAndroidApk
 ```
 
-没有 `-BuildAndroidApk` 时，Windows 发布流程继续只构建 Mod 主包、更新清单和 Windows 独立伴随窗口包，不强制依赖 Android SDK/NDK/JDK 或 keystore。
+没有 `-BuildAndroidApk` 时，Windows 发布流程继续只构建 Mod 主包、更新清单和 Windows 独立伴随窗口 EXE，不强制依赖 Android SDK/NDK/JDK 或 keystore。
 
 Android APK 也可以在具备 Android 工具链的机器上单独构建。仓库已包含 `apps/companion/src-tauri/gen/android/` 工程；签名配置、keystore、Gradle 缓存和 build 输出不能提交：
 
@@ -251,7 +251,7 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
   -AndroidApkPath "D:\path\android-apks"
 ```
 
-没有 APK 时，Windows 发布流程继续只上传 Mod 主包、更新清单和 Windows 独立伴随窗口包。
+没有 APK 时，Windows 发布流程继续只上传 Mod 主包、更新清单和 Windows 独立伴随窗口 EXE。
 
 Windows 下如果 Android 构建出现 `this and base files have different roots: C:\... and D:\...`，这是 Kotlin 增量编译缓存跨盘符相对路径问题。仓库已在 Android Gradle 配置中关闭 Kotlin incremental compilation；如果本机仍使用旧 daemon 或旧缓存，先清理：
 

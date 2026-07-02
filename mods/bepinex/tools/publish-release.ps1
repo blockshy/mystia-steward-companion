@@ -35,7 +35,7 @@ $RepoRoot = (Resolve-Path (Join-Path $RootDir "../..")).Path
 $BuildScript = Join-Path $ToolDir "build-release.ps1"
 $DistRoot = Join-Path $RootDir "dist"
 $ModZip = Join-Path $DistRoot "mystia-steward-companion-bepinex.zip"
-$CompanionZip = Join-Path $DistRoot "mystia-steward-companion-companion-windows-x64.zip"
+$CompanionExe = Join-Path $DistRoot "mystia-steward-companion-companion-windows-x64.exe"
 $DefaultAndroidApkPattern = "mystia-steward-companion-android-*.apk"
 $ManifestPath = Join-Path $DistRoot "update-manifest.json"
 
@@ -289,8 +289,8 @@ try {
     if (-not (Test-Path -LiteralPath $ModZip -PathType Leaf)) {
         throw "Missing Mod package: $ModZip"
     }
-    if (-not (Test-Path -LiteralPath $CompanionZip -PathType Leaf)) {
-        throw "Missing companion package: $CompanionZip"
+    if (-not (Test-Path -LiteralPath $CompanionExe -PathType Leaf)) {
+        throw "Missing companion executable: $CompanionExe"
     }
 
     New-Item -ItemType Directory -Force -Path $DistRoot | Out-Null
@@ -309,7 +309,7 @@ try {
     }
     $Manifest | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $ManifestPath
 
-    [string[]]$AssetPaths = @($ModZip, $ManifestPath, $CompanionZip)
+    [string[]]$AssetPaths = @($ModZip, $ManifestPath, $CompanionExe)
     [string[]]$ResolvedAndroidApks = @(Resolve-OptionalAndroidApks -ConfiguredPath $AndroidApkPath)
     foreach ($ResolvedAndroidApk in $ResolvedAndroidApks) {
         if ([string]::IsNullOrWhiteSpace($ResolvedAndroidApk)) {
