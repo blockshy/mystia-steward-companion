@@ -19,6 +19,15 @@ export async function readLocalApiJson<T>(
   path: string,
   options?: AbortSignal | LocalApiRequestOptions,
 ): Promise<T> {
+  return JSON.parse(await readLocalApiText(endpoint, apiToken, path, options)) as T;
+}
+
+export async function readLocalApiText(
+  endpoint: string,
+  apiToken: string,
+  path: string,
+  options?: AbortSignal | LocalApiRequestOptions,
+): Promise<string> {
   const targetEndpoint = `${endpoint}${path}`;
   const requestOptions = normalizeRequestOptions(options);
   const method = requestOptions.method ?? 'GET';
@@ -35,7 +44,7 @@ export async function readLocalApiJson<T>(
       clientId,
       clientLabel,
     });
-    return JSON.parse(payload) as T;
+    return payload;
   }
 
   validateDirectFetchEndpoint(targetEndpoint);
@@ -52,7 +61,7 @@ export async function readLocalApiJson<T>(
   });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
-  return await response.json() as T;
+  return await response.text();
 }
 
 export async function readLocalApiJsonWithTimeout<T>(

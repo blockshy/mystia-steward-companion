@@ -1,12 +1,12 @@
 # 开发约定与流程
 
-更新日期：2026-07-01
+更新日期：2026-07-02
 
 ## 代码边界
 
 - 仓库维护 BepInEx Mod 与 Tauri 伴随窗口。
 - 伴随窗口入口为 `apps/companion/src/companion/ModWorkbench.tsx`，顶层挂载在 `apps/companion/src/App.tsx`。
-- 推荐算法核心集中在 `apps/companion/src/recommendation-engine/`；经营中订单推荐由 `apps/companion/src/companion/domain/service-recommendations.ts` 组装，并通过 `apps/companion/src/companion/workers/order-recommendations.worker.ts` 放到 worker 中计算。普客准备推荐使用 `apps/companion/src/recommendation-engine/normal-coverage.ts` 和运行时数据索引。
+- 推荐算法核心集中在 `apps/companion/src/recommendation-engine/`；经营中订单推荐由 `apps/companion/src/companion/domain/service-recommendations.ts` 组装，并通过 `apps/companion/src/companion/workers/order-recommendations.worker.ts` 放到 worker 中计算。普客页和稀客页的页面推荐通过 `apps/companion/src/companion/workers/page-recommendations.worker.ts` 计算，页面组件只负责选择状态和结果渲染，不得把候选搜索、排序或自定义料理合并重新放回 React render 链路。
 - 推荐、库存名称、任务目标和自动化目标使用 Mod 从游戏运行时读取并通过本地 API 发布的结构化数据；运行时数据未就绪时，伴随窗口显示等待状态。
 - C# Mod 不引用 TypeScript 模块；前端和 Mod 的共享数据通过本地 API 的运行时快照传递。新增稀客事件变体时，优先确认游戏运行时映射和别名归一化逻辑。
 
@@ -73,7 +73,7 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 
 - Mod 只读取当前游戏运行时数据，不读取 `.memory` 存档文件。
 - 运行时固定数据读取成功后，C# 侧会把 `DataBaseCore` / `DataBaseCharacter` / `DataBaseLanguage` 结构化为 `RuntimeDataCatalog`，并切换 `DataRepository` 到运行时仓库；伴随窗口收到 `snapshot.runtimeData.isComplete=true` 后，普客/稀客推荐、经营中推荐、任务目标、库存修改页和自动化目标解析都必须使用这份运行时数据集。
-- 本地 API 快照需要避免在 Unity 主线程高频序列化大对象。完整 `RuntimeDataCatalog` 可以被节流省略，前端必须缓存最近一次完整数据并继续使用；不要把缺失的 `snapshot.runtimeData` 当作数据不可用。快照内容签名未变化时应复用上一份缓存 JSON，不要为了 `CapturedAtUtc` 或性能数字重复序列化。运行时固定数据读取完成后不得在经营快照热路径重复刷新，未完成时也要做重试间隔保护。新增重扫描或自动化轮询时要记录到 `performanceMs` 或复用现有耗时指标，便于概览页排查掉帧；性能快照只保留近期样本，避免旧耗时长期误导判断。经营扫描指标应尽量按来源拆分，例如 `business.rare.*`、`business.normal.*`、`runtime.cookerSnapshot` 和 `mission.serveTargets`；普客订单快照应优先复用短 TTL 缓存，不要在一次快照发布链路中重复枚举同一批运行时对象。
+- 本地 API 快照需要避免在 Unity 主线程高频序列化大对象。完整 `RuntimeDataCatalog` 可以被节流省略，前端必须缓存最近一次完整数据并继续使用；不要把缺失的 `snapshot.runtimeData` 当作数据不可用。快照内容签名未变化时应复用上一份缓存 JSON，不要为了 `CapturedAtUtc` 或性能数字重复序列化；前端读取 `/snapshot` 时也应先比较原始 JSON 文本，内容未变化不得重新 `JSON.parse` 和 `setSnapshot` 触发整页推荐重算。运行时固定数据读取完成后不得在经营快照热路径重复刷新，未完成时也要做重试间隔保护。新增重扫描或自动化轮询时要记录到 `performanceMs` 或复用现有耗时指标，便于概览页排查掉帧；性能快照只保留近期样本，避免旧耗时长期误导判断。经营扫描指标应尽量按来源拆分，例如 `business.rare.*`、`business.normal.*`、`runtime.cookerSnapshot` 和 `mission.serveTargets`；普客订单快照应优先复用短 TTL 缓存，不要在一次快照发布链路中重复枚举同一批运行时对象。
 - 夜间经营订单优先使用 `SpecialOrderRuntimeCapture` 运行时捕获缓存；捕获缓存为空、诊断开启、需要初始化/回退校验，或捕获缓存有订单但本轮可接受订单少于缓存数量时，再扫描 OrderController、HUD、服务面板和桌位控制器补位。控制器扫描仍要读取活动稀客和预算资金信息，但不应在已有完整捕获订单时重复做完整订单反射扫描。
 - 夜间经营订单必须按首次出现时间稳定显示；不得因桌号排序或推荐完整度排序让新订单插到旧订单前面。
 - 经营中订单排序支持 `点单顺序` 和 `稀客分组`。默认必须保持点单顺序；稀客分组模式下，同一稀客订单放在一起，稀客组之间按该稀客最早订单出现时间排序，组内仍按点单先后排序。经营中列表、当前点单推荐、专注模式、游戏界面置顶目标和自动化第一单选择必须复用同一排序函数。

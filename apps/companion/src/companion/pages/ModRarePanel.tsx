@@ -1,31 +1,23 @@
 import { useEffect, useMemo } from 'react';
 import { Card, CardContent, EmptyRow, EmptyState, ListPanel, SelectBox } from '@/components/ui-kit';
 import {
-  buildCustomFoodCandidates,
-  mergeCustomFoodCandidates,
-} from '@/companion/domain/custom-recipes';
-import {
   beverageFavoriteKey,
   findBeverageFavorite,
   findRecipeFavorite,
   recipeFavoriteKey,
 } from '@/companion/domain/favorites';
 import {
-  buildRecommendationPlanSortContext,
-  buildRecommendationRuntimeContext,
-  deriveBeverageRowsFromCandidates,
-  deriveRecipeRowsFromCandidates,
   isOrderableRareFoodTag,
   isSelectableRareCustomer,
   mergeRareCustomers,
 } from '@/companion/domain/service-recommendations';
+import { usePageRecommendations } from '@/companion/hooks/usePageRecommendations';
 import type { CompanionPreferences } from '@/companion/preferences';
 import type { CustomRecipeData, FavoriteData, RecommendationStateSnapshot, RuntimeSets, ToggleBeverageFavorite, ToggleRecipeFavorite } from '@/companion/types';
 import { BeverageRecommendationRow, EffectiveCustomRecipesViewer, PlaceToolbar, RecipeRecommendationRow, RuntimeUnavailable } from '@/companion/pages/shared';
-import { DENSE_THREE_COLUMN_GRID, DENSE_TWO_COLUMN_GRID, MAX_RECOMMENDATION_ROWS, RECOMMENDATION_SCROLL_AREA } from '@/companion/pages/shared-constants';
+import { DENSE_THREE_COLUMN_GRID, DENSE_TWO_COLUMN_GRID, RECOMMENDATION_SCROLL_AREA } from '@/companion/pages/shared-constants';
 import { buildRecommendationDataIndexes, getRareCustomersByPlace, type RecommendationDataSet } from '@/lib/recommendation-data';
 import type { RareCustomerCatalogItem, PlaceName } from '@/lib/catalog-types';
-import { buildRareBeverageCandidates, buildRareFoodCandidates } from '@/recommendation-engine';
 
 export function ModRarePanel({
   runtime,
@@ -42,6 +34,7 @@ export function ModRarePanel({
   favoriteBusyKey,
   favoriteError,
   preferences,
+  active,
   onPlaceChange,
   onFollowDetectedPlace,
   onRareCustomerChange,
@@ -64,6 +57,7 @@ export function ModRarePanel({
   favoriteBusyKey: string;
   favoriteError: string;
   preferences: CompanionPreferences;
+  active: boolean;
   onPlaceChange: (place: PlaceName) => void;
   onFollowDetectedPlace: () => void;
   onRareCustomerChange: (customerId: number | null) => void;
@@ -102,17 +96,6 @@ export function ModRarePanel({
   const beverageTag = requiredBeverageTag && selectedBeverageTags.includes(requiredBeverageTag)
     ? requiredBeverageTag
     : selectedBeverageTags[0] ?? '';
-  const sortContext = useMemo(() => {
-    if (!selectedCustomer || !foodTag || !beverageTag) return null;
-    return buildRecommendationPlanSortContext(
-      favorites,
-      selectedCustomer.id,
-      foodTag,
-      beverageTag,
-      null,
-      preferences,
-    );
-  }, [beverageTag, favorites, foodTag, preferences, selectedCustomer]);
 
   useEffect(() => {
     if (!selectedCustomer) {
@@ -134,92 +117,42 @@ export function ModRarePanel({
     selectedCustomer,
   ]);
 
-  const candidateContext = useMemo(() => {
-    if (!runtime || !runtimeSets) return null;
-    return buildRecommendationRuntimeContext(runtime, runtimeSets, preferences, data);
-  }, [data, preferences, runtime, runtimeSets]);
-
-  const demand = useMemo(() => {
-    if (!selectedCustomer || !foodTag || !beverageTag) return null;
-    return {
-      type: 'rare-tag-order' as const,
-      customer: selectedCustomer,
-      requiredFoodTag: foodTag,
-      requiredBeverageTag: beverageTag,
-    };
-  }, [beverageTag, foodTag, selectedCustomer]);
-
-  const foodCandidates = useMemo(() => {
-    if (!candidateContext || !demand) return [];
-    return buildRareFoodCandidates(data, demand, candidateContext);
-  }, [candidateContext, data, demand]);
-
-  const combinedFoodCandidates = useMemo(() => {
-    if (!candidateContext || !demand || !selectedCustomer) return foodCandidates;
-    const customFoodCandidates = buildCustomFoodCandidates({
+  const recommendationPayload = useMemo(
+    () => (active && runtime && selectedCustomer && foodTag && beverageTag
+      ? {
+        kind: 'rare' as const,
+        runtime,
+        selectedCustomer,
+        foodTag,
+        beverageTag,
+        favorites,
+        customRecipes,
+        preferences,
+        data,
+      }
+      : null),
+    [
+      active,
+      beverageTag,
       customRecipes,
       data,
-      customer: selectedCustomer,
-      requiredFoodTag: foodTag,
-      requiredBeverageTag: beverageTag,
-      context: candidateContext,
-    });
-    return mergeCustomFoodCandidates(foodCandidates, customFoodCandidates);
-  }, [
-    beverageTag,
-    candidateContext,
-    customRecipes,
-    data,
-    demand,
-    foodCandidates,
-    foodTag,
-    selectedCustomer,
-  ]);
-
-  const beverageCandidates = useMemo(() => {
-    if (!candidateContext || !demand) return [];
-    return buildRareBeverageCandidates(data, demand, candidateContext);
-  }, [candidateContext, data, demand]);
-
-  const recipes = useMemo(() => {
-    if (!candidateContext || !selectedCustomer || !foodTag || !sortContext) return [];
-    return deriveRecipeRowsFromCandidates(combinedFoodCandidates, beverageCandidates, {
-      variantLimitPerBase: preferences.recipeVariantLimitPerBase,
-      limit: MAX_RECOMMENDATION_ROWS,
-      budget: candidateContext.budget,
-      budgetPolicy: candidateContext.budgetPolicy,
-      sortProfile: preferences.recommendationSortProfile,
-      sortContext,
-    });
-  }, [
-    beverageCandidates,
-    candidateContext,
-    combinedFoodCandidates,
-    foodTag,
-    preferences.recipeVariantLimitPerBase,
-    preferences.recommendationSortProfile,
-    selectedCustomer,
-    sortContext,
-  ]);
-
-  const beverages = useMemo(() => {
-    if (!candidateContext || !selectedCustomer || !beverageTag || !sortContext) return [];
-    return deriveBeverageRowsFromCandidates(beverageCandidates, combinedFoodCandidates, {
-      limit: MAX_RECOMMENDATION_ROWS,
-      budget: candidateContext.budget,
-      budgetPolicy: candidateContext.budgetPolicy,
-      sortProfile: preferences.recommendationSortProfile,
-      sortContext,
-    });
-  }, [
-    beverageCandidates,
-    beverageTag,
-    candidateContext,
-    combinedFoodCandidates,
-    preferences.recommendationSortProfile,
-    selectedCustomer,
-    sortContext,
-  ]);
+      favorites,
+      foodTag,
+      preferences,
+      runtime,
+      selectedCustomer,
+    ],
+  );
+  const pageRecommendations = usePageRecommendations(recommendationPayload);
+  const rareResult = pageRecommendations.result?.kind === 'rare'
+    ? pageRecommendations.result
+    : null;
+  const recipes = rareResult?.recipes ?? [];
+  const beverages = rareResult?.beverages ?? [];
+  const recipeEmptyText = pageRecommendations.error
+    || (pageRecommendations.pending && recipes.length === 0 ? '推荐计算中' : '暂无可推荐料理');
+  const beverageEmptyText = pageRecommendations.error
+    || (pageRecommendations.pending && beverages.length === 0 ? '推荐计算中' : '暂无可推荐酒水');
 
   if (!runtime || !runtimeSets) return <RuntimeUnavailable />;
 
@@ -285,7 +218,7 @@ export function ModRarePanel({
 
           <div className={DENSE_TWO_COLUMN_GRID}>
             <ListPanel title={`料理推荐 (${recipes.length})`} contentClassName={RECOMMENDATION_SCROLL_AREA}>
-              {recipes.length === 0 && <EmptyRow text="暂无可推荐料理" />}
+              {recipes.length === 0 && <EmptyRow text={recipeEmptyText} />}
               <EffectiveCustomRecipesViewer
                 customer={selectedCustomer}
                 foodTag={foodTag}
@@ -311,7 +244,7 @@ export function ModRarePanel({
             </ListPanel>
 
             <ListPanel title={`酒水推荐 (${beverages.length})`} contentClassName={RECOMMENDATION_SCROLL_AREA}>
-              {beverages.length === 0 && <EmptyRow text="暂无可推荐酒水" />}
+              {beverages.length === 0 && <EmptyRow text={beverageEmptyText} />}
               <div className="space-y-2">
                 {beverages.map((beverage, index) => (
                   <BeverageRecommendationRow

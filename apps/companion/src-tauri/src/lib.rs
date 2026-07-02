@@ -96,24 +96,6 @@ struct LaunchConnection {
     token: Option<String>,
 }
 
-#[tauri::command]
-async fn fetch_snapshot(
-    endpoint: String,
-    token: String,
-    timeout_ms: Option<u64>,
-) -> Result<String, String> {
-    request_local_api_with_frontend_timeout_async(
-        "GET".to_string(),
-        endpoint,
-        None,
-        token,
-        timeout_ms,
-        None,
-        None,
-    )
-    .await
-}
-
 /// Tauri command：为前端代理一次本地 API 请求。
 ///
 /// WebView 环境下直接 `fetch(127.0.0.1)` 容易受到代理、CORS 或平台网络策略影响，因此生产环境统一走
@@ -1207,7 +1189,6 @@ pub fn run() {
 
     builder
         .invoke_handler(tauri::generate_handler![
-            fetch_snapshot,
             request_local_api,
             launch_api_endpoint,
             launch_api_token,

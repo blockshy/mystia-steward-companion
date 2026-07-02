@@ -3,7 +3,7 @@ import type {
   RareAutomationBeverageTarget,
   RareAutomationRecipeTarget,
 } from '@/companion/automation-state';
-import { readLocalApiJson, readLocalApiJsonWithTimeout, writeLocalApiJsonWithTimeout } from '@/companion/local-api';
+import { readLocalApiJson, readLocalApiJsonWithTimeout, readLocalApiText, writeLocalApiJsonWithTimeout } from '@/companion/local-api';
 import type { CompanionPreferences } from '@/companion/preferences';
 import { normalizeEditableQuantity } from '@/companion/preferences';
 import { serializeRareGuestInvitationLevels } from '@/companion/storage';
@@ -23,7 +23,6 @@ import type {
   LocalApiHealth,
   LocalApiLogSettings,
   LocalApiLogs,
-  LocalApiSnapshot,
   NightBusinessOrder,
   NormalBusinessOrder,
   OrderRecommendation,
@@ -49,12 +48,12 @@ import type { RareBeverageRecommendation, RareRecipeRecommendation } from '@/rec
  * 大多数历史端点使用 GET + query string；更新安装等高风险动作已通过 `writeLocalApiJsonWithTimeout`
  * 走 POST，避免被普通刷新或预取误触发。
  */
-export async function readSnapshot(
+export async function readSnapshotText(
   endpoint: string,
   apiToken: string,
   options: { signal: AbortSignal; timeoutMs: number },
-): Promise<LocalApiSnapshot> {
-  return readLocalApiJson<LocalApiSnapshot>(endpoint, apiToken, '/snapshot', {
+): Promise<string> {
+  return readLocalApiText(endpoint, apiToken, '/snapshot', {
     signal: options.signal,
     tauriTimeoutMs: options.timeoutMs,
   });

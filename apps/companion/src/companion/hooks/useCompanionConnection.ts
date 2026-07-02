@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { readHealth, readSnapshot } from '@/companion/api';
+import { readHealth, readSnapshotText } from '@/companion/api';
 import {
   normalizeEndpoint,
   persistApiToken,
@@ -15,6 +15,7 @@ export const CONNECTION_RETRY_DELAYS_MS = [2000, 5000, 10000, 30000];
 const INITIAL_PROBE_TIMEOUT_MS = 700;
 const AUTO_POLL_TIMEOUT_MS = 1800;
 const MANUAL_REFRESH_TIMEOUT_MS = 2800;
+const CONNECTED_AT_UPDATE_INTERVAL_MS = 30_000;
 const CONNECTION_UPDATED_EVENT = 'connection-updated';
 
 /**
@@ -39,9 +40,25 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
   const [lastConnectedAt, setLastConnectedAt] = useState<Date | null>(null);
   const latestRequestIdRef = useRef(0);
   const inFlightRequestIdRef = useRef<number | null>(null);
+  const lastSnapshotTextRef = useRef('');
+  const lastConnectedAtUpdateMsRef = useRef(0);
 
   const normalizedEndpoint = useMemo(() => normalizeEndpoint(endpoint), [endpoint]);
   const normalizedEndpointDraft = useMemo(() => normalizeEndpoint(endpointDraft), [endpointDraft]);
+
+  const clearSnapshotCache = useCallback(() => {
+    lastSnapshotTextRef.current = '';
+    lastConnectedAtUpdateMsRef.current = 0;
+    setSnapshot(null);
+    setCachedRuntimeData(null);
+  }, []);
+
+  const markConnected = useCallback((force = false) => {
+    const now = Date.now();
+    if (!force && now - lastConnectedAtUpdateMsRef.current < CONNECTED_AT_UPDATE_INTERVAL_MS) return;
+    lastConnectedAtUpdateMsRef.current = now;
+    setLastConnectedAt(new Date(now));
+  }, []);
 
   const applyRuntimeConnection = useCallback((launchEndpoint?: string | null, launchToken?: string | null) => {
     if (!launchEndpoint && !launchToken) return;
@@ -58,15 +75,14 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
       setApiToken(launchToken);
       setApiTokenDraft(launchToken);
     }
-    setSnapshot(null);
-    setCachedRuntimeData(null);
+    clearSnapshotCache();
     setConnectionPaused(false);
     setConnectionFailureCount(0);
     setError('');
     setManualRefreshing(false);
     setConnectionProbing(false);
     setConnectionRevision((current) => current + 1);
-  }, []);
+  }, [clearSnapshotCache]);
 
   const readLaunchConnection = useCallback(async (shouldSkip?: () => boolean) => {
     const { invoke } = await import('@tauri-apps/api/core');
@@ -89,11 +105,10 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
     setConnectionPaused(false);
     setConnectionFailureCount(0);
     setError('');
-    setSnapshot(null);
-    setCachedRuntimeData(null);
+    clearSnapshotCache();
     setManualRefreshing(false);
     setConnectionProbing(false);
-  }, [apiTokenDraft, normalizedEndpointDraft]);
+  }, [apiTokenDraft, clearSnapshotCache, normalizedEndpointDraft]);
 
   const applyConnectionDetails = useCallback((nextEndpoint: string, nextToken: string) => {
     const normalizedNextEndpoint = normalizeEndpoint(nextEndpoint);
@@ -107,13 +122,11 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
     setConnectionPaused(false);
     setConnectionFailureCount(0);
     setError('');
-    setSnapshot(null);
-    setCachedRuntimeData(null);
+    clearSnapshotCache();
     setManualRefreshing(false);
     setConnectionProbing(false);
     setConnectionRevision((current) => current + 1);
-  }, []);
-
+  }, [clearSnapshotCache]);
   const pauseConnection = useCallback(() => {
     latestRequestIdRef.current += 1;
     inFlightRequestIdRef.current = null;
@@ -161,20 +174,31 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
         if (latestRequestIdRef.current !== requestId) return;
         setError('');
         setConnectionFailureCount(0);
-        setLastConnectedAt(new Date());
+        markConnected(manual);
         return;
       }
 
-      const data = await readSnapshot(normalizedEndpoint, apiToken, {
+      const snapshotText = await readSnapshotText(normalizedEndpoint, apiToken, {
         signal: abortController.signal,
         timeoutMs,
       });
       if (latestRequestIdRef.current !== requestId) return;
+
+      if (snapshotText === lastSnapshotTextRef.current) {
+        setError('');
+        setConnectionPaused(false);
+        setConnectionFailureCount(0);
+        markConnected(manual);
+        return;
+      }
+
+      const data = JSON.parse(snapshotText) as LocalApiSnapshot;
+      lastSnapshotTextRef.current = snapshotText;
       setSnapshot(data);
       setError('');
       setConnectionPaused(false);
       setConnectionFailureCount(0);
-      setLastConnectedAt(new Date());
+      markConnected(true);
     } catch (err) {
       if (latestRequestIdRef.current !== requestId) return;
       const nextError = err instanceof Error ? err.message : String(err);
@@ -190,7 +214,7 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
         if (!manual && !snapshot) setConnectionProbing(false);
       }
     }
-  }, [apiToken, connectionPaused, error, normalizedEndpoint, snapshot]);
+  }, [apiToken, connectionPaused, error, markConnected, normalizedEndpoint, snapshot]);
 
   useEffect(() => {
     persistEndpoint(normalizedEndpoint);
