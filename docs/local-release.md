@@ -184,7 +184,7 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
   -BuildAndroidApk
 ```
 
-没有 `-BuildAndroidApk` 时，Windows 发布流程继续只构建 Mod 主包、更新清单和 Windows 独立伴随窗口 EXE，不强制依赖 Android SDK/NDK/JDK 或 keystore。
+没有 `-BuildAndroidApk` 时，Windows 发布流程继续只构建 Mod 主包、更新清单和 Windows 独立伴随窗口 EXE，不强制依赖 Android SDK/NDK/JDK 或 keystore，也不会启用 Android APK 专用的 Rust LTO 体积优化。
 
 Android APK 也可以在具备 Android 工具链的机器上单独构建。仓库已包含 `apps/companion/src-tauri/gen/android/` 工程；签名配置、keystore、Gradle 缓存和 build 输出不能提交：
 
@@ -233,6 +233,8 @@ storeFile=C:\\Users\\Administrator\\.android\\mystia-steward-companion-release.j
 ```powershell
 pnpm tauri:android:apk:signed
 ```
+
+签名 APK 脚本会在 Android 构建进程内注入 `CARGO_PROFILE_RELEASE_STRIP=symbols`、`CARGO_PROFILE_RELEASE_LTO=thin` 和 `CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1`，用于降低 APK 体积。该优化不会写入全局 Cargo release profile，避免普通 Windows 发布构建在 Rust 链接优化阶段耗时过长。
 
 成功后会生成：
 

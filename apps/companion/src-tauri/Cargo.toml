@@ -25,5 +25,3 @@ tauri = { version = "2", features = ["tray-icon"] }
 
 [profile.release]
 strip = "symbols"
-lto = "thin"
-codegen-units = 1

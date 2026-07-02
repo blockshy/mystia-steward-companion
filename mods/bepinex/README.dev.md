@@ -106,7 +106,7 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1 -SkipIns
 pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1 -BuildAndroidApk
 ```
 
-该参数会在 Windows 伴随窗口、Mod 包和 Windows 独立伴随窗口包生成后，额外执行 `pnpm tauri:android:apk:signed`，并把签名 APK 放到 `mods\bepinex\dist\mystia-steward-companion-android-universal.apk`。默认不启用该参数，避免普通 Windows-only 构建被 Android 工具链或 keystore 绑定。
+该参数会在 Windows 伴随窗口、Mod 包和 Windows 独立伴随窗口 EXE 生成后，额外执行 `pnpm tauri:android:apk:signed`，并把签名 APK 放到 `mods\bepinex\dist\mystia-steward-companion-android-arm64-v8a.apk` 和 `mods\bepinex\dist\mystia-steward-companion-android-armeabi-v7a.apk`。默认不启用该参数，避免普通 Windows-only 构建被 Android 工具链、keystore 或 Android 专用 Rust LTO 体积优化绑定。
 
 ## 拆分构建
 
@@ -141,10 +141,11 @@ pnpm tauri:android:apk:signed
 
 仓库已包含 Tauri mobile 生成的 Android 工程，路径为 `apps/companion/src-tauri/gen/android/`。不要删除或绕过该工程；需要重新生成时才运行 `tauri android init`。签名文件、keystore、Gradle 缓存、JNI `.so` 和 Android build 输出不能提交。
 
-`pnpm tauri:android:apk` 可用于本地构建验证，默认输出未签名 universal release APK：
+`pnpm tauri:android:apk` 可用于本地构建验证，默认输出按 ABI 拆分的未签名 release APK：
 
 ```text
-apps/companion/src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk
+apps/companion/src-tauri/gen/android/app/build/outputs/apk/arm64/release/app-arm64-release-unsigned.apk
+apps/companion/src-tauri/gen/android/app/build/outputs/apk/arm/release/app-arm-release-unsigned.apk
 ```
 
 发布用 APK 必须完成签名。先生成或准备自己的发布 keystore，例如 Windows PowerShell：
@@ -185,10 +186,13 @@ pnpm tauri:android:apk:signed
 该命令会构建 release APK、调用 `apksigner verify --verbose --print-certs` 验签，并复制发布资产到：
 
 ```text
-mods/bepinex/dist/mystia-steward-companion-android-universal.apk
+mods/bepinex/dist/mystia-steward-companion-android-arm64-v8a.apk
+mods/bepinex/dist/mystia-steward-companion-android-armeabi-v7a.apk
 ```
 
-也可以通过 `build-release.ps1 -BuildAndroidApk` 或 `publish-release.ps1 -BuildAndroidApk` 在本地构建/发布流程中自动生成该文件。如果 APK 放在其他位置，发布时通过 `publish-release.ps1 -AndroidApkPath "D:\path\mystia-steward-companion-android-universal.apk"` 指定。APK 只作为 GitHub Release 的独立下载资产，不写入 `update-manifest.json`，也不参与 Mod 自动更新。
+签名 APK 脚本会在 Android 构建进程内注入 `CARGO_PROFILE_RELEASE_STRIP=symbols`、`CARGO_PROFILE_RELEASE_LTO=thin` 和 `CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1`，用于降低 APK 体积。该优化不会写入全局 Cargo release profile，避免普通 Windows 发布构建在 Rust 链接优化阶段耗时过长。
+
+也可以通过 `build-release.ps1 -BuildAndroidApk` 或 `publish-release.ps1 -BuildAndroidApk` 在本地构建/发布流程中自动生成这些文件。如果 APK 放在其他位置，发布时通过 `publish-release.ps1 -AndroidApkPath "D:\path\android-apks"` 指定 APK 文件或所在目录。APK 只作为 GitHub Release 的独立下载资产，不写入 `update-manifest.json`，也不参与 Mod 自动更新。
 
 Windows 下如果 `pnpm tauri:android:apk` 出现 `this and base files have different roots: C:\... and D:\...`，这是 Kotlin 增量编译缓存跨盘符相对路径问题。仓库已在 Android Gradle 配置中关闭 Kotlin incremental compilation；若本机仍复用旧 daemon 或旧缓存，先执行：
 
@@ -270,11 +274,12 @@ apps/companion/src-tauri/target/release/mystia-steward-companion(.exe)
 apps/companion/src-tauri/target/release/mystia-steward-companion-updater(.exe)
 mods/bepinex/bin/Release/MystiaStewardCompanion.BepInEx.dll
 mods/bepinex/dist/mystia-steward-companion-bepinex.zip
-mods/bepinex/dist/mystia-steward-companion-companion-windows-x64.zip
-mods/bepinex/dist/mystia-steward-companion-android-universal.apk
+mods/bepinex/dist/mystia-steward-companion-companion-windows-x64.exe
+mods/bepinex/dist/mystia-steward-companion-android-arm64-v8a.apk
+mods/bepinex/dist/mystia-steward-companion-android-armeabi-v7a.apk
 ```
 
-PowerShell 7 脚本固定生成 `.zip`；bash 脚本在系统没有 `zip` 时会改为生成 `.tar.gz`。打包脚本会在检测到 `apps/companion/src-tauri/target/release/mystia-steward-companion(.exe)` 时自动复制到安装包的 `companion/` 子目录，并把 `mystia-steward-companion-updater(.exe)` 放在插件目录根部。检测到 Windows `.exe` 时，还会生成 `mystia-steward-companion-companion-windows-x64.zip`，供其他设备只下载伴随窗口并通过 LAN 连接。Android APK 由 Tauri mobile/Android 工具链单独构建和签名，打包脚本不会从 Windows EXE 派生 APK。Windows 下该 updater 会显示独立更新窗口，负责提示关闭游戏、展示阶段进度并在游戏退出后替换插件目录。
+PowerShell 7 脚本固定生成 Mod 主包 `.zip`；bash 脚本在系统没有 `zip` 时会改为生成 `.tar.gz`。打包脚本会在检测到 `apps/companion/src-tauri/target/release/mystia-steward-companion(.exe)` 时自动复制到安装包的 `companion/` 子目录，并把 `mystia-steward-companion-updater(.exe)` 放在插件目录根部。检测到 Windows `.exe` 时，还会在 `dist` 根目录复制一份 `mystia-steward-companion-companion-windows-x64.exe`，供其他设备只下载伴随窗口并通过 LAN 连接。Android APK 由 Tauri mobile/Android 工具链单独构建和签名，打包脚本不会从 Windows EXE 派生 APK。Windows 下该 updater 会显示独立更新窗口，负责提示关闭游戏、展示阶段进度并在游戏退出后替换插件目录。
 
 ## 本地发布
 
@@ -284,10 +289,11 @@ GitHub Release 上传以下资产：
 
 - `mystia-steward-companion-bepinex.zip`
 - `update-manifest.json`
-- `mystia-steward-companion-companion-windows-x64.zip`
-- 可选：`mystia-steward-companion-android-universal.apk`
+- `mystia-steward-companion-companion-windows-x64.exe`
+- 可选：`mystia-steward-companion-android-arm64-v8a.apk`
+- 可选：`mystia-steward-companion-android-armeabi-v7a.apk`
 
-`update-manifest.json` 给 Mod 内置自动更新使用，只包含版本、资产文件名、zip 大小和 SHA256，不记录本机打包路径，并且只指向 `mystia-steward-companion-bepinex.zip`。独立 Windows 伴随窗口包和 Android APK 只给 B 设备跨局域网连接使用，不参与 Mod 自动更新。不上传 Tauri setup 安装器，避免用户误以为只安装桌面程序即可使用 Mod。
+`update-manifest.json` 给 Mod 内置自动更新使用，只包含版本、资产文件名、zip 大小和 SHA256，不记录本机打包路径，并且只指向 `mystia-steward-companion-bepinex.zip`。独立 Windows 伴随窗口 EXE 和 Android APK 只给 B 设备跨局域网连接使用，不参与 Mod 自动更新。不上传 Tauri setup 安装器，避免用户误以为只安装桌面程序即可使用 Mod。
 
 发布前检查：
 
@@ -375,7 +381,7 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
   -Notes "版本更新说明"
 ```
 
-脚本会先执行完整构建，再用 `gh release create` 创建 Release 并上传 Mod zip、独立伴随窗口 zip 与 update-manifest。
+脚本会先执行完整构建，再用 `gh release create` 创建 Release 并上传 Mod zip、独立伴随窗口 EXE 与 update-manifest。
 
 如果引用 DLL 不在 `mods\bepinex\References`，传入 `-ReferenceDir`：
 

@@ -68,6 +68,7 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 - 不要主动创建 tag 或发布 Release；版本构建必须等待用户明确指令。
 - 用户和测试文档中的 BepInEx 安装版本优先固定到已验证的 `BepInEx-Unity.IL2CPP-win-x64-6.0.0-be.783+c58c42d.zip`。不要笼统推荐最新 Bleeding Edge；#784 及之后构建若要恢复支持，需要先通过实测和运行时日志确认。
 - Android APK 不是 Windows 伴随窗口 EXE 的转换产物。Android 版按 Tauri mobile 目标维护，只作为 B 设备 LAN 伴随窗口；桌面托盘、置顶、鼠标穿透、焦点切换、单实例控制和游戏关闭自动退出必须继续隔离在桌面平台代码中。Android applicationId 固定为 `com.tyukki.mystia.steward.companion`；不要使用带连字符的产品名作为 Android 包名。桌面 Tauri identifier 继续使用既有值，Android 通过 `apps/companion/src-tauri/tauri.android.conf.json` 单独覆盖 identifier，避免影响桌面端本地数据目录。仓库保留 `apps/companion/src-tauri/gen/android/` 工程，Gradle Rust 插件必须通过 Corepack 调用 pnpm。Android 发布 APK 默认通过 `--split-per-abi --target aarch64 armv7` 构建，避免 universal fat APK；`pnpm tauri:android:apk:signed` 读取被 Git 忽略的 `apps/companion/src-tauri/gen/android/keystore.properties`，构建后用 `apksigner verify` 验签并复制 `mods/bepinex/dist/mystia-steward-companion-android-arm64-v8a.apk` 和 `mods/bepinex/dist/mystia-steward-companion-android-armeabi-v7a.apk`；`build-release.ps1 -BuildAndroidApk` 和 `publish-release.ps1 -BuildAndroidApk` 只是复用该签名构建流程，不允许把 keystore、密码和签名配置提交。Android Gradle 已关闭 Kotlin incremental compilation，避免 Windows 上 Cargo registry 与项目分属不同盘符时出现 Kotlin daemon 相对路径报错。APK 需要 Android 工具链构建、签名和真机验证，作为独立 Release 资产上传，不参与 Mod 自动更新。
+- Android APK 体积优化只允许在 Android 构建脚本中通过 `CARGO_PROFILE_RELEASE_*` 环境变量启用；不要把 `lto` 或 `codegen-units` 写入全局 Cargo release profile，避免普通 Windows `build-release.ps1` 构建被 Android 优化拖慢。
 
 ## 运行时约束
 
