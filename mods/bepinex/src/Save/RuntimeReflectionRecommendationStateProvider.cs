@@ -112,14 +112,6 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
         };
 
         var state = Measure("state.fromSave", () => RecommendationState.FromSave(_repository, parsed));
-        var rareCustomerIds = Measure(
-            "rare.available",
-            () => ExpandAvailableRareCustomerIds(RuntimeRareCustomerAvailabilityService.ReadAvailableRareCustomerIds()).ToList());
-        foreach (var rareCustomerId in rareCustomerIds)
-        {
-            state.AvailableRareCustomerIds.Add(rareCustomerId);
-        }
-
         if (_includePlacedCookers)
         {
             Measure("cookerSnapshot", () => RuntimeCookerSnapshotService.ApplyTo(state));
@@ -162,56 +154,6 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
         {
             _performanceMs[key] = Math.Round(stopwatch.Elapsed.TotalMilliseconds, 2);
         }
-    }
-
-    /// <summary>
-    /// 将游戏运行时记录的稀客 ID 扩展为项目静态目录、来源 ID 和映射 ID 的并集。
-    /// </summary>
-    /// <remarks>
-    /// 游戏内部同一个稀客可能同时存在 runtime id、source guest id 和本地目录 id。只保留原始 ID
-    /// 会导致前端无法匹配静态稀客目录，因此这里在可用时读取映射表做兼容扩展。
-    /// </remarks>
-    private HashSet<int> ExpandAvailableRareCustomerIds(HashSet<int> recordedIds)
-    {
-        var result = new HashSet<int>(recordedIds);
-        if (recordedIds.Count == 0) return result;
-
-        try
-        {
-            var mappedGuests = new RuntimeMappedGuestCatalog(_repository).Snapshot();
-            foreach (var entry in mappedGuests.Entries)
-            {
-                if (!MatchesRecordedRareCustomer(entry, recordedIds)) continue;
-                AddIfValid(result, entry.RuntimeId);
-                AddIfValid(result, entry.SourceGuestId);
-                AddIfValid(result, entry.LocalRareCustomerId);
-                AddIfValid(result, entry.RuntimeCustomer?.Id);
-            }
-        }
-        catch
-        {
-            // 映射扩展只是提高目录匹配率；失败时保留原始运行时 ID，避免因映射读取异常丢失全部稀客。
-        }
-
-        return result;
-    }
-
-    private static bool MatchesRecordedRareCustomer(RuntimeMappedGuestEntry entry, HashSet<int> recordedIds)
-    {
-        return IsRecorded(entry.RuntimeId, recordedIds)
-            || IsRecorded(entry.SourceGuestId, recordedIds)
-            || IsRecorded(entry.LocalRareCustomerId, recordedIds)
-            || IsRecorded(entry.RuntimeCustomer?.Id, recordedIds);
-    }
-
-    private static bool IsRecorded(int? id, HashSet<int> recordedIds)
-    {
-        return id.HasValue && recordedIds.Contains(id.Value);
-    }
-
-    private static void AddIfValid(HashSet<int> target, int? id)
-    {
-        if (id.HasValue && id.Value >= 0) target.Add(id.Value);
     }
 
     private static List<int> ReadStorageRecipeIds(object? storagePartial)

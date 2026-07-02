@@ -32,12 +32,15 @@ internal sealed class StewardOverlayController
     private const float PerformanceSnapshotMaxAgeSeconds = 12f;
     private const float PendingCookingProcessIntervalSeconds = 0.5f;
     private const float NormalBusinessSnapshotCacheSeconds = 1f;
+    private const float StableBusinessContextRescanSeconds = 5f;
     private static readonly JsonSerializerOptions LocalApiJsonOptions = new(JsonSerializerDefaults.Web);
 
     private StewardPluginConfig? _config;
     private ManualLogSource? _log;
     private DataRepository? _repository;
     private RuntimeDataCatalog _runtimeDataCatalog = RuntimeDataCatalog.Empty("not loaded");
+    private RuntimeMappedGuestCatalogSnapshot? _runtimeMappedGuestSnapshot;
+    private RuntimeStaticDataSnapshot? _runtimeStaticDataSnapshot;
     private RecommendationState? _state;
     private RecommendationState? _businessFallbackState;
     private NightBusinessContext? _businessContext;
@@ -70,6 +73,10 @@ internal sealed class StewardOverlayController
     private float _nextRuntimeDataCatalogRefreshAt;
     private float _nextPendingCookingProcessAt;
     private float _nextNormalBusinessRefreshAt;
+    private float _nextStableBusinessContextRescanAt;
+    private long _businessContextSpecialOrderVersion = long.MinValue;
+    private string _businessContextSceneName = "";
+    private long _normalBusinessContextCaptureVersion = long.MinValue;
     private bool _localApiSnapshotErrorLogged;
     private bool _disposed;
     private bool _controllerToggleLatched;
@@ -241,7 +248,6 @@ internal sealed class StewardOverlayController
         if (_specialOrderRefreshPending && now >= _nextSpecialOrderRefreshAt)
         {
             _specialOrderRefreshPending = false;
-            _normalOrderRefreshPending = false;
             RefreshBusinessContext(false, force: true);
             return;
         }
@@ -281,6 +287,8 @@ internal sealed class StewardOverlayController
         RuntimeMissionSnapshotService.ClearCache();
         _normalBusinessContext = null;
         _nextNormalBusinessRefreshAt = 0f;
+        ResetNightBusinessRefreshCache();
+        ResetNormalBusinessRefreshCache();
 
         if (IsIzakayaPrepActive(sceneName))
         {
@@ -436,11 +444,15 @@ internal sealed class StewardOverlayController
         {
             _repository = DataRepository.Empty();
             _runtimeDataCatalog = RuntimeDataCatalog.Empty("waiting for live game runtime data");
+            _runtimeMappedGuestSnapshot = null;
+            _runtimeStaticDataSnapshot = null;
             _state = null;
             _businessFallbackState = null;
             _runtimeLoaded = false;
             _businessContext = null;
             _normalBusinessContext = null;
+            ResetNightBusinessRefreshCache();
+            ResetNormalBusinessRefreshCache();
             _runtimeSource = "";
             _lastRuntimeErrorMessage = "";
             _runtimeStateSignature = "";
@@ -606,13 +618,25 @@ internal sealed class StewardOverlayController
                 return;
             }
 
+            var diagnostics = CreateNightBusinessDiagnostics();
+            var specialOrderVersion = SpecialOrderRuntimeCapture.ChangeVersion;
+            if (CanReuseNightBusinessContext(manual, force, diagnostics != null, specialOrderVersion))
+            {
+                return;
+            }
+
             var provider = new NightBusinessReflectionProvider(
                 _repository,
-                CreateNightBusinessDiagnostics(),
-                _activeSceneName);
+                diagnostics,
+                _activeSceneName,
+                _runtimeMappedGuestSnapshot,
+                _runtimeStaticDataSnapshot);
             _businessContext = Measure("business.rare.total", provider.LoadContext);
+            _businessContextSpecialOrderVersion = specialOrderVersion;
+            _businessContextSceneName = _activeSceneName;
+            _nextStableBusinessContextRescanAt = Time.realtimeSinceStartup + StableBusinessContextRescanSeconds;
             RecordPerformanceEntries("business.rare.", provider.PerformanceMs);
-            RefreshNormalBusinessContext(force: true);
+            RefreshNormalBusinessContext(force: manual);
             if (manual)
             {
                 _status = _businessContext.Orders.Count > 0
@@ -634,6 +658,19 @@ internal sealed class StewardOverlayController
             RecordPerformance("refresh.business", stopwatch.Elapsed);
             PublishLocalApiSnapshot();
         }
+    }
+
+    private bool CanReuseNightBusinessContext(
+        bool manual,
+        bool force,
+        bool diagnosticsEnabled,
+        long specialOrderVersion)
+    {
+        if (manual || force || diagnosticsEnabled) return false;
+        if (_businessContext == null || !HasActiveNightBusinessContext(_businessContext)) return false;
+        if (!string.Equals(_businessContextSceneName, _activeSceneName, StringComparison.Ordinal)) return false;
+        if (_businessContextSpecialOrderVersion != specialOrderVersion) return false;
+        return Time.realtimeSinceStartup < _nextStableBusinessContextRescanAt;
     }
 
     /// <summary>
@@ -870,7 +907,6 @@ internal sealed class StewardOverlayController
         AppendInts(builder, snapshot.AvailableRecipeIds);
         AppendInts(builder, snapshot.AvailableBeverageIds);
         AppendInts(builder, snapshot.AvailableIngredientIds);
-        AppendInts(builder, snapshot.AvailableRareCustomerIds);
         AppendIntDictionary(builder, snapshot.OwnedIngredientQty);
         AppendIntDictionary(builder, snapshot.OwnedBeverageQty);
         AppendInts(builder, snapshot.PlacedCookerTypeIds);
@@ -1143,9 +1179,11 @@ internal sealed class StewardOverlayController
         try
         {
             var mappedGuestSnapshot = Measure("runtimeData.mappedGuests", () => new RuntimeMappedGuestCatalog(_repository).Snapshot());
+            _runtimeMappedGuestSnapshot = mappedGuestSnapshot;
             _runtimeRareCustomers.Clear();
             _runtimeRareCustomers.AddRange(mappedGuestSnapshot.RuntimeRareCustomers);
             var staticDataSnapshot = Measure("runtimeData.staticData", () => new RuntimeStaticDataCatalog(_repository).Snapshot(mappedGuestSnapshot));
+            _runtimeStaticDataSnapshot = staticDataSnapshot;
             _runtimeDataCatalog = staticDataSnapshot.DataCatalog;
             if (!_runtimeDataCatalog.IsComplete) return;
 
@@ -1335,11 +1373,23 @@ internal sealed class StewardOverlayController
             return _normalBusinessContext;
         }
 
+        var captureVersion = NormalOrderRuntimeCapture.ChangeVersion;
+        if (!force
+            && NormalOrderRuntimeCapture.IsAttached
+            && _normalBusinessContext != null
+            && _normalBusinessContext.Orders.Count == 0
+            && _normalBusinessContextCaptureVersion == captureVersion)
+        {
+            _nextNormalBusinessRefreshAt = Time.realtimeSinceStartup + NormalBusinessSnapshotCacheSeconds;
+            return _normalBusinessContext;
+        }
+
         try
         {
             var service = new RuntimeNormalOrderSnapshotService(_repository);
             _normalBusinessContext = Measure("business.normal.total", service.Load);
             RecordPerformanceEntries("business.normal.", service.PerformanceMs);
+            _normalBusinessContextCaptureVersion = captureVersion;
             _nextNormalBusinessRefreshAt = Time.realtimeSinceStartup + NormalBusinessSnapshotCacheSeconds;
             return _normalBusinessContext;
         }
@@ -1350,6 +1400,7 @@ internal sealed class StewardOverlayController
                 Source = "error",
                 Error = ex.Message,
             };
+            _normalBusinessContextCaptureVersion = captureVersion;
             _nextNormalBusinessRefreshAt = Time.realtimeSinceStartup + NormalBusinessSnapshotCacheSeconds;
             return _normalBusinessContext;
         }
@@ -2024,6 +2075,10 @@ internal sealed class StewardOverlayController
         };
         _normalBusinessContext = null;
         _nextNormalBusinessRefreshAt = 0f;
+        ResetNightBusinessRefreshCache();
+        ResetNormalBusinessRefreshCache();
+        _runtimeMappedGuestSnapshot = null;
+        _runtimeStaticDataSnapshot = null;
         _runtimeSource = "";
         _runtimeStateSignature = "";
         _lastRuntimeReadUtc = DateTime.MinValue;
@@ -2048,9 +2103,23 @@ internal sealed class StewardOverlayController
         };
         _normalBusinessContext = null;
         _nextNormalBusinessRefreshAt = 0f;
+        ResetNightBusinessRefreshCache();
+        ResetNormalBusinessRefreshCache();
         ClearPlacedCookersFromCurrentState("not in night business scene");
         RuntimeCookerHighlightService.Suspend(status);
         _status = status;
+    }
+
+    private void ResetNightBusinessRefreshCache()
+    {
+        _businessContextSpecialOrderVersion = long.MinValue;
+        _businessContextSceneName = "";
+        _nextStableBusinessContextRescanAt = 0f;
+    }
+
+    private void ResetNormalBusinessRefreshCache()
+    {
+        _normalBusinessContextCaptureVersion = long.MinValue;
     }
 
     /// <summary>
@@ -2129,7 +2198,6 @@ internal sealed class StewardOverlayController
             hash = HashIds(hash, state.AvailableRecipeIds);
             hash = HashIds(hash, state.AvailableBeverageIds);
             hash = HashIds(hash, state.AvailableIngredientIds);
-            hash = HashIds(hash, state.AvailableRareCustomerIds);
             foreach (var item in state.OwnedIngredientQty.OrderBy(item => item.Key))
             {
                 hash = (hash * 31) + item.Key;

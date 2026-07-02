@@ -62,6 +62,17 @@ public static class NormalOrderRuntimeCapture
         }
     }
 
+    public static bool IsAttached
+    {
+        get
+        {
+            lock (SyncRoot)
+            {
+                return PatchedMethods.Count > 0;
+            }
+        }
+    }
+
     /// <summary>
     /// 尝试安装普通订单生命周期 Hook。
     /// </summary>

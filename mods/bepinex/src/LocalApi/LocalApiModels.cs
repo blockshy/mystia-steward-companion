@@ -28,7 +28,6 @@ internal sealed class RecommendationStateSnapshot
     public List<int> AvailableRecipeIds { get; init; } = new();
     public List<int> AvailableBeverageIds { get; init; } = new();
     public List<int> AvailableIngredientIds { get; init; } = new();
-    public List<int> AvailableRareCustomerIds { get; init; } = new();
     public Dictionary<int, int> OwnedIngredientQty { get; init; } = new();
     public Dictionary<int, int> OwnedBeverageQty { get; init; } = new();
     public List<int> PlacedCookerTypeIds { get; init; } = new();
@@ -45,7 +44,6 @@ internal sealed class RecommendationStateSnapshot
             AvailableRecipeIds = state.AvailableRecipeIds.OrderBy(id => id).ToList(),
             AvailableBeverageIds = state.AvailableBeverageIds.OrderBy(id => id).ToList(),
             AvailableIngredientIds = state.AvailableIngredientIds.OrderBy(id => id).ToList(),
-            AvailableRareCustomerIds = state.AvailableRareCustomerIds.OrderBy(id => id).ToList(),
             OwnedIngredientQty = state.OwnedIngredientQty
                 .OrderBy(item => item.Key)
                 .ToDictionary(item => item.Key, item => item.Value),

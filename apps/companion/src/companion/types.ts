@@ -27,7 +27,6 @@ export interface RecommendationStateSnapshot {
   availableRecipeIds: number[];
   availableBeverageIds: number[];
   availableIngredientIds: number[];
-  availableRareCustomerIds?: number[];
   ownedIngredientQty: Record<string, number>;
   ownedBeverageQty: Record<string, number>;
   placedCookerTypeIds?: number[];
