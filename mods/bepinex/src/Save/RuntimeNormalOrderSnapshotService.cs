@@ -34,9 +34,28 @@ public sealed class RuntimeNormalOrderSnapshotService
     public NormalBusinessContext Load()
     {
         _performanceMs.Clear();
-        var orders = new List<NormalBusinessOrder>();
         var errors = new List<string>();
         var source = new List<string>();
+
+        try
+        {
+            var runtimeCapturedOrders = Measure("runtimeCapture", () => ReadRuntimeCapturedOrders().ToList());
+            source.Add($"RuntimeCapture={runtimeCapturedOrders.Count}");
+            source.Add($"RuntimeCaptureStatus={NormalOrderRuntimeCapture.Status}");
+            if (runtimeCapturedOrders.Count > 0)
+            {
+                source.Add("normalOrderMode=runtimeCapture");
+                return BuildContext(runtimeCapturedOrders, source, errors);
+            }
+        }
+        catch (Exception ex)
+        {
+            source.Add("RuntimeCapture=err");
+            errors.Add($"RuntimeCapture: {ex.Message}");
+        }
+
+        source.Add("normalOrderMode=reflectionBootstrap");
+        var orders = new List<NormalBusinessOrder>();
 
         try
         {
@@ -92,19 +111,11 @@ public sealed class RuntimeNormalOrderSnapshotService
             errors.Add($"Queue: {ex.Message}");
         }
 
-        try
-        {
-            var runtimeCapturedOrders = Measure("runtimeCapture", () => ReadRuntimeCapturedOrders().ToList());
-            source.Add($"RuntimeCapture={runtimeCapturedOrders.Count}");
-            source.Add($"RuntimeCaptureStatus={NormalOrderRuntimeCapture.Status}");
-            orders.AddRange(runtimeCapturedOrders);
-        }
-        catch (Exception ex)
-        {
-            source.Add("RuntimeCapture=err");
-            errors.Add($"RuntimeCapture: {ex.Message}");
-        }
+        return BuildContext(orders, source, errors);
+    }
 
+    private NormalBusinessContext BuildContext(IEnumerable<NormalBusinessOrder> orders, List<string> source, List<string> errors)
+    {
         var deduplicated = Measure("deduplicate", () => ApplyFirstSeenOrder(orders)
                 .OrderBy(order => order.FirstSeenAtUtc ?? DateTime.MaxValue)
                 .ThenBy(order => order.DeskCode)
