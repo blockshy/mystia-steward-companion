@@ -6,7 +6,7 @@ authors = ["mystia-steward-companion contributors"]
 edition = "2021"
 
 [lib]
-name = "mystia_steward_companion"
+name = "mystia_steward_companion_mobile"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [[bin]]
