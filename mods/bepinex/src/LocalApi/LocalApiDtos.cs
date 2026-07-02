@@ -70,6 +70,20 @@ internal sealed class LocalApiConnectionConfigUpdate
     public string? LanBindHost { get; init; }
 }
 
+internal sealed class LocalApiAutomationLeaseDto
+{
+    public bool Ok { get; init; } = true;
+    public bool Owned { get; init; }
+    public string ClientId { get; init; } = "";
+    public string ClientLabel { get; init; } = "";
+    public string OwnerClientId { get; init; } = "";
+    public string OwnerLabel { get; init; } = "";
+    public string OwnerLastSeenUtc { get; init; } = "";
+    public string ExpiresAtUtc { get; init; } = "";
+    public int TtlMs { get; init; }
+    public string? Error { get; init; }
+}
+
 internal sealed class LocalApiDirectoryActionDto
 {
     public bool Ok { get; init; }

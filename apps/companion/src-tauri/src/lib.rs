@@ -102,7 +102,7 @@ fn fetch_snapshot(
     token: String,
     timeout_ms: Option<u64>,
 ) -> Result<String, String> {
-    request_local_api_with_frontend_timeout("GET", &endpoint, None, &token, timeout_ms)
+    request_local_api_with_frontend_timeout("GET", &endpoint, None, &token, timeout_ms, None, None)
 }
 
 /// Tauri command：为前端代理一次本地 API 请求。
@@ -115,9 +115,19 @@ fn request_local_api(
     token: String,
     method: Option<String>,
     timeout_ms: Option<u64>,
+    client_id: Option<String>,
+    client_label: Option<String>,
 ) -> Result<String, String> {
     let method = method.unwrap_or_else(|| "GET".to_string());
-    request_local_api_with_frontend_timeout(&method, &endpoint, None, &token, timeout_ms)
+    request_local_api_with_frontend_timeout(
+        &method,
+        &endpoint,
+        None,
+        &token,
+        timeout_ms,
+        client_id.as_deref(),
+        client_label.as_deref(),
+    )
 }
 
 fn request_local_api_with_frontend_timeout(
@@ -126,6 +136,8 @@ fn request_local_api_with_frontend_timeout(
     path_override: Option<&str>,
     token: &str,
     timeout_ms: Option<u64>,
+    client_id: Option<&str>,
+    client_label: Option<&str>,
 ) -> Result<String, String> {
     let timeout = normalize_local_api_timeout(timeout_ms);
     request_local_api_with_timeout(
@@ -136,6 +148,8 @@ fn request_local_api_with_frontend_timeout(
         timeout,
         timeout,
         Duration::from_millis(timeout.as_millis().min(1200) as u64),
+        client_id,
+        client_label,
     )
 }
 
@@ -155,12 +169,20 @@ fn request_local_api_with_timeout(
     connect_timeout: Duration,
     read_timeout: Duration,
     write_timeout: Duration,
+    client_id: Option<&str>,
+    client_label: Option<&str>,
 ) -> Result<String, String> {
     let target = LocalApiTarget::parse(&endpoint)?;
     let path = path_override.unwrap_or(&target.path);
     let method = normalize_http_method(method)?;
     validate_http_fragment(path, "path")?;
     validate_http_fragment(token, "token")?;
+    if let Some(value) = client_id {
+        validate_http_fragment(value, "client id")?;
+    }
+    if let Some(value) = client_label {
+        validate_http_fragment(value, "client label")?;
+    }
 
     let address = SocketAddr::from((target.host, target.port));
     let mut stream = TcpStream::connect_timeout(&address, connect_timeout)
@@ -178,9 +200,19 @@ fn request_local_api_with_timeout(
     } else {
         format!("X-Mystia-Steward-Companion-Token: {}\r\n", token.trim())
     };
+    let client_id_header = client_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("X-Mystia-Steward-Companion-Client-Id: {value}\r\n"))
+        .unwrap_or_default();
+    let client_label_header = client_label
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("X-Mystia-Steward-Companion-Client-Label: {value}\r\n"))
+        .unwrap_or_default();
     let request = format!(
-        "{} {} HTTP/1.1\r\nHost: {}:{}\r\n{}Connection: close\r\nCache-Control: no-store\r\nContent-Length: 0\r\n\r\n",
-        method, path, target.host, target.port, auth_header
+        "{} {} HTTP/1.1\r\nHost: {}:{}\r\n{}{}{}Connection: close\r\nCache-Control: no-store\r\nContent-Length: 0\r\n\r\n",
+        method, path, target.host, target.port, auth_header, client_id_header, client_label_header
     );
     stream
         .write_all(request.as_bytes())
@@ -813,6 +845,8 @@ fn start_game_shutdown_monitor(
                 Duration::from_millis(350),
                 Duration::from_millis(350),
                 Duration::from_millis(250),
+                None,
+                None,
             )
             .is_ok()
             {

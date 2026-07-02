@@ -23,10 +23,14 @@ internal sealed class LocalApiServer : IDisposable
 {
     private const int MaxRequestBytes = 32768;
     private const string AutoLanHost = "auto";
+    private const string ClientIdHeaderName = "X-Mystia-Steward-Companion-Client-Id";
+    private const string ClientLabelHeaderName = "X-Mystia-Steward-Companion-Client-Label";
+    private static readonly TimeSpan AutomationLeaseTtl = TimeSpan.FromSeconds(15);
 
     private readonly ManualLogSource _log;
     private readonly object _snapshotLock = new();
     private readonly object _listenerLock = new();
+    private readonly object _automationLeaseLock = new();
     private readonly string _pluginVersion;
     private string _token;
     private bool _lanEnabled;
@@ -52,6 +56,7 @@ internal sealed class LocalApiServer : IDisposable
     private readonly CustomRecipeStore _customRecipeStore;
     private readonly List<LocalApiListener> _listeners = new();
     private readonly List<IPAddress> _activeLanAddresses = new();
+    private AutomationLease? _automationLease;
     private bool _running;
     private string _snapshotJson = "{\"runtimeLoaded\":false,\"status\":\"Snapshot is not ready.\"}";
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -64,6 +69,14 @@ internal sealed class LocalApiServer : IDisposable
         public string Name { get; init; } = "";
         public bool IsLan { get; init; }
         public TcpListener Listener { get; init; } = null!;
+    }
+
+    private sealed class AutomationLease
+    {
+        public string ClientId { get; init; } = "";
+        public string ClientLabel { get; init; } = "";
+        public DateTime LastSeenUtc { get; set; }
+        public DateTime ExpiresAtUtc { get; set; }
     }
 
     public LocalApiServer(
@@ -397,6 +410,12 @@ internal sealed class LocalApiServer : IDisposable
                     // 更新安装会下载文件、写入状态并启动独立进程，因此只接受 POST，避免被预取、刷新或普通链接误触发。
                     switch (path)
                     {
+                        case "/automation/lease/acquire":
+                            WriteResponse(stream, 200, "OK", ToJson(AcquireAutomationLease(request)));
+                            break;
+                        case "/automation/lease/release":
+                            WriteResponse(stream, 200, "OK", ToJson(ReleaseAutomationLease(request)));
+                            break;
                         case "/local-api/config":
                             if (!isLoopbackClient)
                             {
@@ -452,6 +471,9 @@ internal sealed class LocalApiServer : IDisposable
                     case "/snapshot":
                         WriteResponse(stream, 200, "OK", GetSnapshotJson());
                         break;
+                    case "/automation/lease":
+                        WriteResponse(stream, 200, "OK", ToJson(ReadAutomationLease(request)));
+                        break;
                     case "/logs":
                         WriteResponse(stream, 200, "OK", BuildLogsJson());
                         break;
@@ -484,12 +506,27 @@ internal sealed class LocalApiServer : IDisposable
                         WriteResponse(stream, 200, "OK", BuildInventoryBulkEditJson(query));
                         break;
                     case "/orders/prepare-next":
+                        if (!TryRequireAutomationLease(request, out var prepareLeaseError))
+                        {
+                            WriteResponse(stream, 200, "OK", ToJson(prepareLeaseError));
+                            break;
+                        }
                         WriteResponse(stream, 200, "OK", BuildOrderActionJson(query, _prepareOrder));
                         break;
                     case "/orders/complete-first":
+                        if (!TryRequireAutomationLease(request, out var completeLeaseError))
+                        {
+                            WriteResponse(stream, 200, "OK", ToJson(completeLeaseError));
+                            break;
+                        }
                         WriteResponse(stream, 200, "OK", BuildOrderActionJson(query, _completeOrder));
                         break;
                     case "/orders/normal/complete-first":
+                        if (!TryRequireAutomationLease(request, out var normalLeaseError))
+                        {
+                            WriteResponse(stream, 200, "OK", ToJson(normalLeaseError));
+                            break;
+                        }
                         WriteResponse(stream, 200, "OK", BuildOrderActionJson(query, _completeNormalOrder));
                         break;
                     case "/orders/rare/dismiss":
@@ -577,6 +614,142 @@ internal sealed class LocalApiServer : IDisposable
             LanEndpoints = LanEndpoints,
             LanError = string.IsNullOrWhiteSpace(_lanError) ? null : _lanError,
         });
+    }
+
+    private LocalApiAutomationLeaseDto ReadAutomationLease(string request)
+    {
+        var (clientId, clientLabel, error) = ReadClientIdentity(request);
+        if (!string.IsNullOrWhiteSpace(error))
+        {
+            return new LocalApiAutomationLeaseDto
+            {
+                Ok = false,
+                ClientId = clientId,
+                ClientLabel = clientLabel,
+                TtlMs = (int)AutomationLeaseTtl.TotalMilliseconds,
+                Error = error,
+            };
+        }
+
+        lock (_automationLeaseLock)
+        {
+            PruneExpiredAutomationLease(DateTime.UtcNow);
+            return BuildAutomationLeaseDto(clientId, clientLabel, null);
+        }
+    }
+
+    private LocalApiAutomationLeaseDto AcquireAutomationLease(string request)
+    {
+        var (clientId, clientLabel, error) = ReadClientIdentity(request);
+        if (!string.IsNullOrWhiteSpace(error))
+        {
+            return new LocalApiAutomationLeaseDto
+            {
+                Ok = false,
+                ClientId = clientId,
+                ClientLabel = clientLabel,
+                TtlMs = (int)AutomationLeaseTtl.TotalMilliseconds,
+                Error = error,
+            };
+        }
+
+        lock (_automationLeaseLock)
+        {
+            var now = DateTime.UtcNow;
+            PruneExpiredAutomationLease(now);
+            if (_automationLease != null
+                && !string.Equals(_automationLease.ClientId, clientId, StringComparison.Ordinal))
+            {
+                return BuildAutomationLeaseDto(
+                    clientId,
+                    clientLabel,
+                    $"自动化当前由 {_automationLease.ClientLabel} 控制，本窗口仅查看。");
+            }
+
+            _automationLease = new AutomationLease
+            {
+                ClientId = clientId,
+                ClientLabel = clientLabel,
+                LastSeenUtc = now,
+                ExpiresAtUtc = now + AutomationLeaseTtl,
+            };
+            return BuildAutomationLeaseDto(clientId, clientLabel, null);
+        }
+    }
+
+    private LocalApiAutomationLeaseDto ReleaseAutomationLease(string request)
+    {
+        var (clientId, clientLabel, error) = ReadClientIdentity(request);
+        if (!string.IsNullOrWhiteSpace(error))
+        {
+            return new LocalApiAutomationLeaseDto
+            {
+                Ok = false,
+                ClientId = clientId,
+                ClientLabel = clientLabel,
+                TtlMs = (int)AutomationLeaseTtl.TotalMilliseconds,
+                Error = error,
+            };
+        }
+
+        lock (_automationLeaseLock)
+        {
+            PruneExpiredAutomationLease(DateTime.UtcNow);
+            if (_automationLease != null
+                && string.Equals(_automationLease.ClientId, clientId, StringComparison.Ordinal))
+            {
+                _automationLease = null;
+            }
+
+            return BuildAutomationLeaseDto(clientId, clientLabel, null);
+        }
+    }
+
+    private bool TryRequireAutomationLease(string request, out LocalApiOrderActionErrorDto error)
+    {
+        var status = ReadAutomationLease(request);
+        if (status.Ok && status.Owned)
+        {
+            error = new LocalApiOrderActionErrorDto();
+            return true;
+        }
+
+        error = new LocalApiOrderActionErrorDto
+        {
+            Ok = false,
+            Prepared = false,
+            Error = status.Error
+                ?? (string.IsNullOrWhiteSpace(status.OwnerClientId)
+                    ? "自动化控制权不可用，请先在本窗口开启自动化。"
+                    : $"自动化当前由 {status.OwnerLabel} 控制，本窗口仅查看。"),
+        };
+        return false;
+    }
+
+    private LocalApiAutomationLeaseDto BuildAutomationLeaseDto(string clientId, string clientLabel, string? error)
+    {
+        var lease = _automationLease;
+        return new LocalApiAutomationLeaseDto
+        {
+            Ok = string.IsNullOrWhiteSpace(error),
+            Owned = lease != null && string.Equals(lease.ClientId, clientId, StringComparison.Ordinal),
+            ClientId = clientId,
+            ClientLabel = clientLabel,
+            OwnerClientId = lease?.ClientId ?? "",
+            OwnerLabel = lease?.ClientLabel ?? "",
+            OwnerLastSeenUtc = lease == null ? "" : lease.LastSeenUtc.ToString("O"),
+            ExpiresAtUtc = lease == null ? "" : lease.ExpiresAtUtc.ToString("O"),
+            TtlMs = (int)AutomationLeaseTtl.TotalMilliseconds,
+            Error = error,
+        };
+    }
+
+    private void PruneExpiredAutomationLease(DateTime now)
+    {
+        if (_automationLease != null && _automationLease.ExpiresAtUtc <= now)
+        {
+            _automationLease = null;
+        }
     }
 
     private string BuildLogsJson()
@@ -1276,6 +1449,30 @@ internal sealed class LocalApiServer : IDisposable
     {
         if (string.IsNullOrWhiteSpace(_token)) return false;
         return string.Equals(ReadHeader(request, "X-Mystia-Steward-Companion-Token"), _token, StringComparison.Ordinal);
+    }
+
+    private static (string ClientId, string ClientLabel, string? Error) ReadClientIdentity(string request)
+    {
+        var clientId = (ReadHeader(request, ClientIdHeaderName) ?? "").Trim();
+        if (!IsValidClientId(clientId))
+        {
+            return ("", "伴随窗口", "自动化请求缺少有效客户端 ID。");
+        }
+
+        var label = (ReadHeader(request, ClientLabelHeaderName) ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(label)) label = "伴随窗口";
+        if (label.Length > 48) label = label[..48];
+        return (clientId, label, null);
+    }
+
+    private static bool IsValidClientId(string value)
+    {
+        if (value.Length < 16 || value.Length > 64) return false;
+        return value.All(static character =>
+            (character >= 'a' && character <= 'z')
+            || (character >= 'A' && character <= 'Z')
+            || (character >= '0' && character <= '9')
+            || character == '-');
     }
 
     /// <summary>

@@ -285,6 +285,19 @@ export interface LocalApiConnectionConfig {
   error: string | null;
 }
 
+export interface LocalApiAutomationLease {
+  ok: boolean;
+  owned: boolean;
+  clientId: string;
+  clientLabel: string;
+  ownerClientId: string;
+  ownerLabel: string;
+  ownerLastSeenUtc: string;
+  expiresAtUtc: string;
+  ttlMs: number;
+  error: string | null;
+}
+
 export interface LocalApiFolderResponse {
   ok: boolean;
   directory: string;

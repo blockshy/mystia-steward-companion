@@ -1,4 +1,5 @@
 import { isTauriRuntime } from '@/lib/tauri-runtime';
+import { readCompanionClientId, readCompanionClientLabel } from '@/companion/client-identity';
 
 /**
  * 本地 API 请求参数。
@@ -21,6 +22,8 @@ export async function readLocalApiJson<T>(
   const targetEndpoint = `${endpoint}${path}`;
   const requestOptions = normalizeRequestOptions(options);
   const method = requestOptions.method ?? 'GET';
+  const clientId = readCompanionClientId();
+  const clientLabel = readCompanionClientLabel();
   if (isTauriRuntime()) {
     // 生产环境通过 Tauri command 访问回环 API，避免 WebView 直接访问 localhost 时受代理、CORS 或平台策略影响。
     const { invoke } = await import('@tauri-apps/api/core');
@@ -29,12 +32,16 @@ export async function readLocalApiJson<T>(
       token: apiToken,
       method,
       timeoutMs: requestOptions.tauriTimeoutMs,
+      clientId,
+      clientLabel,
     });
     return JSON.parse(payload) as T;
   }
 
   const headers = new Headers();
   if (apiToken) headers.set('X-Mystia-Steward-Companion-Token', apiToken);
+  headers.set('X-Mystia-Steward-Companion-Client-Id', clientId);
+  headers.set('X-Mystia-Steward-Companion-Client-Label', clientLabel);
   const response = await fetch(targetEndpoint, {
     cache: 'no-store',
     headers,

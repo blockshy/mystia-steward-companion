@@ -17,6 +17,7 @@ import type {
   GameUiPinningTarget,
   InventoryBulkEditResponse,
   InventoryEditResponse,
+  LocalApiAutomationLease,
   LocalApiConnectionConfig,
   LocalApiFolderResponse,
   LocalApiLogSettings,
@@ -117,6 +118,38 @@ export async function regenerateLocalApiToken(
     apiToken,
     '/local-api/token/regenerate',
     3500,
+  );
+}
+
+export async function readAutomationLease(
+  endpoint: string,
+  apiToken: string,
+  signal: AbortSignal,
+): Promise<LocalApiAutomationLease> {
+  return readLocalApiJson<LocalApiAutomationLease>(endpoint, apiToken, '/automation/lease', signal);
+}
+
+export async function acquireAutomationLease(
+  endpoint: string,
+  apiToken: string,
+): Promise<LocalApiAutomationLease> {
+  return writeLocalApiJsonWithTimeout<LocalApiAutomationLease>(
+    endpoint,
+    apiToken,
+    '/automation/lease/acquire',
+    2200,
+  );
+}
+
+export async function releaseAutomationLease(
+  endpoint: string,
+  apiToken: string,
+): Promise<LocalApiAutomationLease> {
+  return writeLocalApiJsonWithTimeout<LocalApiAutomationLease>(
+    endpoint,
+    apiToken,
+    '/automation/lease/release',
+    2200,
   );
 }
 
