@@ -17,7 +17,7 @@
     "tauri:build": "cd apps/companion && tauri build --no-bundle",
     "tauri:android:dev": "cd apps/companion && tauri android dev",
     "tauri:android:build": "cd apps/companion && tauri android build",
-    "tauri:android:apk": "cd apps/companion && tauri android build --apk",
+    "tauri:android:apk": "cd apps/companion && tauri android build --apk --split-per-abi --target aarch64 armv7",
     "tauri:android:apk:signed": "node scripts/build-android-signed-apk.mjs"
   },
   "dependencies": {

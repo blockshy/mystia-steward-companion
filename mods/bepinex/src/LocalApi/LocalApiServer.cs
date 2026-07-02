@@ -1282,6 +1282,10 @@ internal sealed class LocalApiServer : IDisposable
         headers.Append("Content-Type: application/json; charset=utf-8\r\n");
         headers.Append("Content-Length: ").Append(bodyBytes.Length).Append("\r\n");
         headers.Append("Cache-Control: no-store\r\n");
+        headers.Append("Access-Control-Allow-Origin: *\r\n");
+        headers.Append("Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n");
+        headers.Append("Access-Control-Allow-Headers: Content-Type, X-Mystia-Steward-Companion-Token, X-Mystia-Steward-Companion-Client-Id, X-Mystia-Steward-Companion-Client-Label\r\n");
+        headers.Append("Access-Control-Max-Age: 86400\r\n");
         headers.Append("Connection: close\r\n");
         headers.Append("\r\n");
 

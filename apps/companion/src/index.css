@@ -511,16 +511,13 @@ html::-webkit-scrollbar-thumb:hover,
 
 .companion-main {
   min-width: 0;
+  padding-top: max(0.5rem, env(safe-area-inset-top, 0px));
+  padding-right: max(0.5rem, env(safe-area-inset-right, 0px));
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom, 0px));
+  padding-left: max(0.5rem, env(safe-area-inset-left, 0px));
 }
 
 @media (max-width: 719px) {
-  .companion-main {
-    padding-top: max(0.5rem, env(safe-area-inset-top));
-    padding-right: max(0.5rem, env(safe-area-inset-right));
-    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
-    padding-left: max(0.5rem, env(safe-area-inset-left));
-  }
-
   [data-companion-surface='workbench'] {
     font-size: 0.9375rem;
   }

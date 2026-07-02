@@ -97,12 +97,21 @@ struct LaunchConnection {
 }
 
 #[tauri::command]
-fn fetch_snapshot(
+async fn fetch_snapshot(
     endpoint: String,
     token: String,
     timeout_ms: Option<u64>,
 ) -> Result<String, String> {
-    request_local_api_with_frontend_timeout("GET", &endpoint, None, &token, timeout_ms, None, None)
+    request_local_api_with_frontend_timeout_async(
+        "GET".to_string(),
+        endpoint,
+        None,
+        token,
+        timeout_ms,
+        None,
+        None,
+    )
+    .await
 }
 
 /// Tauri command：为前端代理一次本地 API 请求。
@@ -110,7 +119,7 @@ fn fetch_snapshot(
 /// WebView 环境下直接 `fetch(127.0.0.1)` 容易受到代理、CORS 或平台网络策略影响，因此生产环境统一走
 /// Rust 侧 TCP 请求；浏览器开发模式仍由前端直接 fetch mock API。
 #[tauri::command]
-fn request_local_api(
+async fn request_local_api(
     endpoint: String,
     token: String,
     method: Option<String>,
@@ -119,15 +128,40 @@ fn request_local_api(
     client_label: Option<String>,
 ) -> Result<String, String> {
     let method = method.unwrap_or_else(|| "GET".to_string());
-    request_local_api_with_frontend_timeout(
-        &method,
-        &endpoint,
+    request_local_api_with_frontend_timeout_async(
+        method,
+        endpoint,
         None,
-        &token,
+        token,
         timeout_ms,
-        client_id.as_deref(),
-        client_label.as_deref(),
+        client_id,
+        client_label,
     )
+    .await
+}
+
+async fn request_local_api_with_frontend_timeout_async(
+    method: String,
+    endpoint: String,
+    path_override: Option<String>,
+    token: String,
+    timeout_ms: Option<u64>,
+    client_id: Option<String>,
+    client_label: Option<String>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        request_local_api_with_frontend_timeout(
+            &method,
+            &endpoint,
+            path_override.as_deref(),
+            &token,
+            timeout_ms,
+            client_id.as_deref(),
+            client_label.as_deref(),
+        )
+    })
+    .await
+    .map_err(|error| format!("local api task failed: {error}"))?
 }
 
 fn request_local_api_with_frontend_timeout(

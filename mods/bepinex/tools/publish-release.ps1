@@ -36,7 +36,7 @@ $BuildScript = Join-Path $ToolDir "build-release.ps1"
 $DistRoot = Join-Path $RootDir "dist"
 $ModZip = Join-Path $DistRoot "mystia-steward-companion-bepinex.zip"
 $CompanionZip = Join-Path $DistRoot "mystia-steward-companion-companion-windows-x64.zip"
-$DefaultAndroidApk = Join-Path $DistRoot "mystia-steward-companion-android-universal.apk"
+$DefaultAndroidApkPattern = "mystia-steward-companion-android-*.apk"
 $ManifestPath = Join-Path $DistRoot "update-manifest.json"
 
 function Invoke-Checked {
@@ -222,15 +222,15 @@ function Test-GhReleaseExists {
     }
 }
 
-function Resolve-OptionalAndroidApk {
+function Resolve-OptionalAndroidApks {
     param([string]$ConfiguredPath)
 
     if ([string]::IsNullOrWhiteSpace($ConfiguredPath)) {
-        if (Test-Path -LiteralPath $DefaultAndroidApk -PathType Leaf) {
-            return (Resolve-Path -LiteralPath $DefaultAndroidApk).Path
-        }
-
-        return ""
+        return @(
+            Get-ChildItem -LiteralPath $DistRoot -Filter $DefaultAndroidApkPattern -File -ErrorAction SilentlyContinue |
+                Sort-Object -Property Name |
+                ForEach-Object { $_.FullName }
+        )
     }
 
     $CandidatePath = $ConfiguredPath
@@ -238,11 +238,23 @@ function Resolve-OptionalAndroidApk {
         $CandidatePath = Join-Path $RepoRoot $CandidatePath
     }
 
+    if (Test-Path -LiteralPath $CandidatePath -PathType Container) {
+        $Matches = @(
+            Get-ChildItem -LiteralPath $CandidatePath -Filter "*.apk" -File |
+                Sort-Object -Property Name |
+                ForEach-Object { $_.FullName }
+        )
+        if ($Matches.Count -eq 0) {
+            throw "No Android APKs found in: $CandidatePath"
+        }
+        return $Matches
+    }
+
     if (-not (Test-Path -LiteralPath $CandidatePath -PathType Leaf)) {
         throw "Missing Android APK: $CandidatePath"
     }
 
-    return (Resolve-Path -LiteralPath $CandidatePath).Path
+    return @((Resolve-Path -LiteralPath $CandidatePath).Path)
 }
 
 Push-Location $RepoRoot
@@ -298,8 +310,11 @@ try {
     $Manifest | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $ManifestPath
 
     [string[]]$AssetPaths = @($ModZip, $ManifestPath, $CompanionZip)
-    $ResolvedAndroidApk = Resolve-OptionalAndroidApk -ConfiguredPath $AndroidApkPath
-    if (-not [string]::IsNullOrWhiteSpace($ResolvedAndroidApk)) {
+    [string[]]$ResolvedAndroidApks = @(Resolve-OptionalAndroidApks -ConfiguredPath $AndroidApkPath)
+    foreach ($ResolvedAndroidApk in $ResolvedAndroidApks) {
+        if ([string]::IsNullOrWhiteSpace($ResolvedAndroidApk)) {
+            continue
+        }
         $AssetPaths += $ResolvedAndroidApk
         Write-Host "Including Android APK asset: $ResolvedAndroidApk"
     }

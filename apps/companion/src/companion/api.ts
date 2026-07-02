@@ -20,6 +20,7 @@ import type {
   LocalApiAutomationLease,
   LocalApiConnectionConfig,
   LocalApiFolderResponse,
+  LocalApiHealth,
   LocalApiLogSettings,
   LocalApiLogs,
   LocalApiSnapshot,
@@ -54,6 +55,16 @@ export async function readSnapshot(
   options: { signal: AbortSignal; timeoutMs: number },
 ): Promise<LocalApiSnapshot> {
   return readLocalApiJson<LocalApiSnapshot>(endpoint, apiToken, '/snapshot', {
+    signal: options.signal,
+    tauriTimeoutMs: options.timeoutMs,
+  });
+}
+
+export async function readHealth(
+  endpoint: string,
+  options: { signal: AbortSignal; timeoutMs: number },
+): Promise<LocalApiHealth> {
+  return readLocalApiJson<LocalApiHealth>(endpoint, '', '/health', {
     signal: options.signal,
     tauriTimeoutMs: options.timeoutMs,
   });

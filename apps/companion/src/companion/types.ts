@@ -285,6 +285,20 @@ export interface LocalApiConnectionConfig {
   error: string | null;
 }
 
+export interface LocalApiHealth {
+  ok: boolean;
+  pluginVersion: string;
+  bindAddress: string;
+  port: number;
+  authRequired: boolean;
+  localEndpoint: string;
+  lanEnabled: boolean;
+  lanRunning: boolean;
+  lanBindAddresses: string[];
+  lanEndpoints: string[];
+  lanError: string | null;
+}
+
 export interface LocalApiAutomationLease {
   ok: boolean;
   owned: boolean;

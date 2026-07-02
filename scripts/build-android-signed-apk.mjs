@@ -11,25 +11,42 @@ const companionDir = path.join(repoRoot, 'apps', 'companion');
 const androidDir = path.join(companionDir, 'src-tauri', 'gen', 'android');
 const androidJavaSourcesDir = path.join(androidDir, 'app', 'src', 'main', 'java');
 const keystorePropertiesPath = path.join(androidDir, 'keystore.properties');
-const releaseOutputDir = path.join(androidDir, 'app', 'build', 'outputs', 'apk', 'universal', 'release');
+const apkOutputDir = path.join(androidDir, 'app', 'build', 'outputs', 'apk');
 const distDir = path.join(repoRoot, 'mods', 'bepinex', 'dist');
-const releaseAssetPath = path.join(distDir, 'mystia-steward-companion-android-universal.apk');
+const releaseApkTargets = [
+  {
+    target: 'aarch64',
+    flavor: 'arm64',
+    abi: 'arm64-v8a',
+    assetName: 'mystia-steward-companion-android-arm64-v8a.apk',
+  },
+  {
+    target: 'armv7',
+    flavor: 'arm',
+    abi: 'armeabi-v7a',
+    assetName: 'mystia-steward-companion-android-armeabi-v7a.apk',
+  },
+];
 
 assertSigningConfig();
 cleanGeneratedAndroidSources();
-rmSync(releaseOutputDir, { recursive: true, force: true });
+rmSync(apkOutputDir, { recursive: true, force: true });
 runTauriAndroidApkBuild();
 
-const signedApk = findSignedApk();
+const signedApks = findSignedApks();
 const apkSigner = findApkSignerCommand();
-run(apkSigner.command, [...apkSigner.args, 'verify', '--verbose', '--print-certs', signedApk], { cwd: repoRoot });
 
 mkdirSync(distDir, { recursive: true });
-copyFileSync(signedApk, releaseAssetPath);
+for (const item of signedApks) {
+  run(apkSigner.command, [...apkSigner.args, 'verify', '--verbose', '--print-certs', item.apkPath], { cwd: repoRoot });
+  const releaseAssetPath = path.join(distDir, item.target.assetName);
+  copyFileSync(item.apkPath, releaseAssetPath);
+  console.log(`Signed Android APK verified: ${item.apkPath}`);
+  console.log(`Release asset copied to: ${releaseAssetPath}`);
+}
 
 console.log('');
-console.log(`Signed Android APK verified: ${signedApk}`);
-console.log(`Release asset copied to: ${releaseAssetPath}`);
+console.log(`Built ${signedApks.length} signed Android APKs.`);
 
 function assertSigningConfig() {
   if (!existsSync(keystorePropertiesPath)) {
@@ -87,12 +104,20 @@ function resolveStoreFile(storeFile) {
 
 function runTauriAndroidApkBuild() {
   const tauriCliScript = findTauriCliScript();
+  const buildArgs = [
+    'android',
+    'build',
+    '--apk',
+    '--split-per-abi',
+    '--target',
+    ...releaseApkTargets.map((target) => target.target),
+  ];
   if (tauriCliScript) {
-    run(process.execPath, [tauriCliScript, 'android', 'build', '--apk'], { cwd: companionDir });
+    run(process.execPath, [tauriCliScript, ...buildArgs], { cwd: companionDir });
     return;
   }
 
-  run('tauri', ['android', 'build', '--apk'], { cwd: companionDir });
+  run('tauri', buildArgs, { cwd: companionDir });
 }
 
 function cleanGeneratedAndroidSources() {
@@ -139,21 +164,65 @@ function findTauriCliScript() {
   }
 }
 
-function findSignedApk() {
-  if (!existsSync(releaseOutputDir)) {
-    throw new Error(`Android release output directory was not generated: ${releaseOutputDir}`);
+function findSignedApks() {
+  if (!existsSync(apkOutputDir)) {
+    throw new Error(`Android APK output directory was not generated: ${apkOutputDir}`);
   }
 
-  const candidates = readdirSync(releaseOutputDir)
-    .filter((fileName) => fileName.endsWith('.apk') && !fileName.endsWith('-unsigned.apk'))
-    .map((fileName) => path.join(releaseOutputDir, fileName));
+  const candidates = listFilesRecursive(apkOutputDir)
+    .filter((filePath) => filePath.endsWith('.apk') && !filePath.endsWith('-unsigned.apk'));
 
   if (candidates.length === 0) {
-    throw new Error(`No signed release APK found in ${releaseOutputDir}`);
+    throw new Error(`No signed release APK found in ${apkOutputDir}`);
   }
 
-  candidates.sort((left, right) => left.localeCompare(right));
-  return candidates[0];
+  return releaseApkTargets.map((target) => {
+    const matches = candidates
+      .filter((candidate) => isTargetReleaseApk(candidate, target))
+      .sort((left, right) => left.localeCompare(right));
+
+    if (matches.length === 0) {
+      const relativeCandidates = candidates.map((candidate) => path.relative(apkOutputDir, candidate));
+      throw new Error(
+        [
+          `No signed ${target.abi} release APK found in ${apkOutputDir}`,
+          'Generated APKs:',
+          ...relativeCandidates.map((candidate) => `  - ${candidate}`),
+        ].join('\n'),
+      );
+    }
+
+    return {
+      target,
+      apkPath: matches[0],
+    };
+  });
+}
+
+function listFilesRecursive(rootDir) {
+  const files = [];
+  const stack = [rootDir];
+
+  while (stack.length > 0) {
+    const currentDir = stack.pop();
+    for (const entry of readdirSync(currentDir, { withFileTypes: true })) {
+      const entryPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(entryPath);
+      } else if (entry.isFile()) {
+        files.push(entryPath);
+      }
+    }
+  }
+
+  return files;
+}
+
+function isTargetReleaseApk(candidate, target) {
+  const normalized = candidate.replace(/\\/g, '/').toLowerCase();
+  const flavor = target.flavor.toLowerCase();
+  return normalized.includes(`/apk/${flavor}/release/`)
+    || normalized.endsWith(`/app-${flavor}-release.apk`);
 }
 
 function findApkSignerCommand() {

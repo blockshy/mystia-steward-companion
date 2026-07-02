@@ -69,10 +69,11 @@ Local API loopback listener is available at http://127.0.0.1:32145
 mystia-steward-companion-companion-windows-x64.zip
 ```
 
-Android 设备可下载 Release 中的 APK：
+Android 设备可下载 Release 中对应 CPU 架构的 APK。普通手机和平板优先选择 `arm64-v8a`，只有较旧设备再选择 `armeabi-v7a`：
 
 ```text
-mystia-steward-companion-android-universal.apk
+mystia-steward-companion-android-arm64-v8a.apk
+mystia-steward-companion-android-armeabi-v7a.apk
 ```
 
 这些独立伴随窗口只用于 B 设备连接 A 设备上的游戏；A 设备仍必须按上面的方式安装 BepInEx 和 Mod。
@@ -394,7 +395,7 @@ A 设备操作：
 B 设备操作：
 
 1. Windows 设备从 Release 下载 `mystia-steward-companion-companion-windows-x64.zip` 并解压；如果当前版本还没有独立包，也可以从完整 Mod 包的 `mystia-steward-companion/companion/` 目录取出 `mystia-steward-companion.exe`。
-2. Android 设备从 Release 下载 `mystia-steward-companion-android-universal.apk` 并安装。若系统提示未知来源，需要只对本次下载来源临时允许安装。
+2. Android 设备从 Release 下载对应 CPU 架构的 APK 并安装。普通手机和平板优先选择 `mystia-steward-companion-android-arm64-v8a.apk`，旧设备再选择 `mystia-steward-companion-android-armeabi-v7a.apk`。若系统提示未知来源，需要只对本次下载来源临时允许安装。
 3. 启动 B 设备上的伴随窗口。
 4. 在窗口顶部连接区填写 A 设备复制出的 `LAN 地址`，例如 `http://192.168.1.20:32145`。
 5. 填写 A 设备复制出的 Token。
@@ -410,9 +411,9 @@ B 设备操作：
 - `F8`、`RS Click` 和自动启动只控制 A 设备本机窗口，不能远程唤起 B 设备窗口。
 - 多个伴随窗口可以同时连接查看；自动化同一时间只允许一个窗口取得控制权，未取得控制权的窗口不会执行自动化动作。
 - Android 版没有桌面托盘、置顶、鼠标穿透、窗口焦点切换和游戏关闭自动退出能力；这些能力只适用于 A 设备本机的 Windows 伴随窗口。
-- Android 版支持竖屏和横屏；手机竖屏下顶部页签栏可横向滑动，焦点或当前页签会自动滚入可视区域，平板和横屏会尽量接近桌面布局。
+- Android 版支持竖屏和横屏；手机竖屏下顶部页签栏可横向滑动，焦点或当前页签会自动滚入可视区域，平板和横屏会尽量接近桌面布局；内容会避开系统状态栏和导航栏安全区域。
 
-A 设备本机 Windows 伴随窗口在游戏关闭或 Mod 卸载时会自动退出；B 设备独立窗口和 Android 版会保留界面并进入重连状态。断线后窗口只保留最近一次只读数据用于查看，不再执行自动化、置顶目标发布等会写入游戏运行时的后台动作。
+A 设备本机 Windows 伴随窗口在游戏关闭或 Mod 卸载时会自动退出；B 设备独立窗口和 Android 版会保留界面并进入重连状态。断线后窗口只保留最近一次只读数据用于查看，自动重连期间优先做轻量健康检查，不再执行自动化、置顶目标发布等会写入游戏运行时的后台动作。
 
 ## 配置与数据位置
 
