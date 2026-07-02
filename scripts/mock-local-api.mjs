@@ -137,6 +137,10 @@ const logSettings = {
   nightBusinessDiagnosticsEnabled: true,
   nightBusinessDiagnosticsPath: '/tmp/mystia-steward-companion/mock/night-business-diagnostics.log',
   nightBusinessDiagnosticsDirectory: '/tmp/mystia-steward-companion/mock',
+  aggregateModLogEnabled: false,
+  aggregateModLogPath: '/tmp/mystia-steward-companion/mock/aggregate-mod.log',
+  aggregateModLogDirectory: '/tmp/mystia-steward-companion/mock',
+  aggregateModLogMaxFileBytes: 10 * 1024 * 1024,
   nativeBepInExConsoleEnabled: false,
   nativeBepInExConsoleVisible: false,
 };
@@ -364,7 +368,7 @@ const server = http.createServer((request, response) => {
         ok: true,
         path: '/tmp/mystia-steward-companion/mock/diagnostics.zip',
         directory: '/tmp/mystia-steward-companion/mock',
-        files: ['BepInEx.log', 'night-business-diagnostics.log', 'automation-jobs.log'],
+        files: ['BepInEx.log', 'night-business-diagnostics.log', 'automation-jobs.log', 'aggregate-mod.log'],
         error: null,
       });
       return;
@@ -855,6 +859,7 @@ function applyLogSettings(params) {
   if (params.has('logAccess')) logSettings.logAccessEnabled = params.get('logAccess') === 'true';
   if (params.has('diagnostics')) logSettings.nightBusinessDiagnosticsEnabled = params.get('diagnostics') === 'true';
   if (params.has('nativeConsole')) logSettings.nativeBepInExConsoleEnabled = params.get('nativeConsole') === 'true';
+  if (params.has('aggregateLog')) logSettings.aggregateModLogEnabled = params.get('aggregateLog') === 'true';
 }
 
 function ingredient(id, name, tags, price, type) {

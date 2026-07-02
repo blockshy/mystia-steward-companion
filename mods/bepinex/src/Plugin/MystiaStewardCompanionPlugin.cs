@@ -41,6 +41,7 @@ public sealed class MystiaStewardCompanionPlugin : BasePlugin
         }
 
         var settings = StewardPluginConfig.Bind(Config);
+        AggregateModLogService.Configure(settings.EnableAggregateModLog.Value, settings.AggregateModLogPath.Value);
         if (settings.SetConsoleUtf8.Value)
         {
             ConsoleEncodingHelper.TryUseUtf8(Log);

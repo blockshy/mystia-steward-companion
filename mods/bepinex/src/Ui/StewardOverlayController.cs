@@ -1478,6 +1478,8 @@ internal sealed class StewardOverlayController
                 MaxLogLines = 300,
                 MaxLogBytes = 256 * 1024,
                 NightBusinessDiagnosticsPath = NightBusinessDiagnosticSink.ResolvePath(""),
+                AggregateModLogPath = AggregateModLogService.ResolvePath(""),
+                AggregateModLogMaxFileBytes = AggregateModLogService.MaxFileBytes,
                 NativeBepInExConsoleVisible = BepInExConsoleHelper.IsCurrentConsoleWindowVisible(),
             };
         }
@@ -1490,16 +1492,25 @@ internal sealed class StewardOverlayController
             MaxLogBytes = _config.LocalApiMaxLogBytes.Value,
             NightBusinessDiagnosticsEnabled = _config.EnableNightBusinessDiagnostics.Value,
             NightBusinessDiagnosticsPath = NightBusinessDiagnosticSink.ResolvePath(_config.NightBusinessDiagnosticsPath.Value),
+            AggregateModLogEnabled = _config.EnableAggregateModLog.Value,
+            AggregateModLogPath = AggregateModLogService.ResolvePath(_config.AggregateModLogPath.Value),
+            AggregateModLogMaxFileBytes = AggregateModLogService.MaxFileBytes,
             NativeBepInExConsoleEnabled = !_config.DisableBepInExConsoleLog.Value && !_config.HideBepInExConsoleWindow.Value,
             NativeBepInExConsoleVisible = BepInExConsoleHelper.IsCurrentConsoleWindowVisible(),
         };
     }
 
-    private void UpdateLocalApiLogSettings(bool? exposeLogs, bool? diagnostics, bool? nativeConsole)
+    private void UpdateLocalApiLogSettings(bool? exposeLogs, bool? diagnostics, bool? nativeConsole, bool? aggregateLog)
     {
         if (_config == null) return;
         if (exposeLogs.HasValue) _config.ExposeLocalApiLogs.Value = exposeLogs.Value;
         if (diagnostics.HasValue) _config.EnableNightBusinessDiagnostics.Value = diagnostics.Value;
+        if (aggregateLog.HasValue)
+        {
+            _config.EnableAggregateModLog.Value = aggregateLog.Value;
+            AggregateModLogService.Configure(_config.EnableAggregateModLog.Value, _config.AggregateModLogPath.Value);
+        }
+
         if (nativeConsole.HasValue && _log != null)
         {
             _config.DisableBepInExConsoleLog.Value = !nativeConsole.Value;
@@ -1515,6 +1526,7 @@ internal sealed class StewardOverlayController
         {
             "diagnostics" => settings.NightBusinessDiagnosticsPath,
             "automation" => RuntimeOrderPreparationService.ResolveAutomationLogPath(),
+            "aggregate" => settings.AggregateModLogPath,
             "packages" => Path.Combine(LocalApiServer.ResolveDiagnosticPackageDirectory(), "diagnostics.zip"),
             _ => settings.LogOutputPath,
         };

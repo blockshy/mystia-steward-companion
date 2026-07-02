@@ -85,13 +85,14 @@ export async function readLogSettings(endpoint: string, apiToken: string, signal
 export async function writeLogSettings(
   endpoint: string,
   apiToken: string,
-  next: { logAccess?: boolean; diagnostics?: boolean; nativeConsole?: boolean },
+  next: { logAccess?: boolean; diagnostics?: boolean; nativeConsole?: boolean; aggregateLog?: boolean },
   signal: AbortSignal,
 ): Promise<LocalApiLogSettings> {
   const params = new URLSearchParams();
   if (typeof next.logAccess === 'boolean') params.set('logAccess', String(next.logAccess));
   if (typeof next.diagnostics === 'boolean') params.set('diagnostics', String(next.diagnostics));
   if (typeof next.nativeConsole === 'boolean') params.set('nativeConsole', String(next.nativeConsole));
+  if (typeof next.aggregateLog === 'boolean') params.set('aggregateLog', String(next.aggregateLog));
   return readLocalApiJson<LocalApiLogSettings>(endpoint, apiToken, `/logs/config?${params.toString()}`, signal);
 }
 
@@ -167,7 +168,7 @@ export async function releaseAutomationLease(
 export async function openLogFolder(
   endpoint: string,
   apiToken: string,
-  target: 'log' | 'diagnostics' | 'automation',
+  target: 'log' | 'diagnostics' | 'automation' | 'aggregate',
   signal: AbortSignal,
 ): Promise<LocalApiFolderResponse> {
   return readLocalApiJson<LocalApiFolderResponse>(endpoint, apiToken, `/logs/open-folder?target=${target}`, signal);

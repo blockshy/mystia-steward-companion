@@ -507,15 +507,15 @@ Port = 32145
 - `POST /local-api/config?lanEnabled=true|false&lanHost=auto|IPv4`：由 A 设备本机伴随窗口保存 LAN 开关和监听地址，并动态启停 LAN listener；本机回环 listener 不重启也不关闭。
 - `POST /local-api/token/regenerate`：重置本地 API Token，返回新 Token 并立即更新当前 API 鉴权；只允许回环客户端调用。
 - `GET /snapshot`：读取最新运行态快照。快照由 Unity 主线程按自动刷新节奏生成，网络线程只返回缓存 JSON。快照包含推荐状态、夜间稀客订单、任务状态、经营投喂任务目标、普客订单诊断和 `performanceMs` 快照耗时；任务状态优先遍历 `RunTimeScheduler.trackingMissions` 并调用只读 `RunTimeScheduler.ParseActiveMissionData()`，再结合全局 NPC、当前场景 NPC、`DaySceneMap`、当天/常驻 `RunTimeScheduler.scheduledEvents` 后置任务、跟踪交互物件、场景任务交互组件和未完成 `trackingMissions` fallback 补充来源，并优先从 `RunTimeDayScene.trackedNPCs` 反查 NPC 所在场景，缺失时用 `DataBaseDay.RefNPC().possibleDestinations` 解析可能场景。夜间经营时会通过 `ContainsSpecialNPCServeInWorkMission()` 读取当前稀客是否有已接取的投喂任务指定料理；普客诊断会扫描 HUD 订单和经营管理器桌位订单。完整 `runtimeData` 可能被节流省略，前端必须复用最近一次完整数据。
-- `GET /logs/settings`：读取日志读取、经营诊断和 BepInEx 原生日志窗口开关状态。
-- `GET /logs/config?logAccess=true|false&diagnostics=true|false&nativeConsole=true|false`：由伴随窗口回写日志、诊断和 BepInEx 原生日志窗口开关；`nativeConsole` 会同时尝试显示/隐藏当前 Windows 控制台，并写入下一次启动的 `BepInEx.cfg`。
-- `GET /logs/open-folder?target=log|diagnostics`：打开对应日志目录。
+- `GET /logs/settings`：读取日志读取、经营诊断、总日志和 BepInEx 原生日志窗口开关状态。
+- `GET /logs/config?logAccess=true|false&diagnostics=true|false&aggregateLog=true|false&nativeConsole=true|false`：由伴随窗口回写日志、诊断、总日志和 BepInEx 原生日志窗口开关；`aggregateLog` 会即时注册或移除 BepInEx 全局日志监听器，`nativeConsole` 会同时尝试显示/隐藏当前 Windows 控制台，并写入下一次启动的 `BepInEx.cfg`。
+- `GET /logs/open-folder?target=log|diagnostics|automation|aggregate`：打开对应日志目录。
 - `GET /logs`：在 `LocalApi.ExposeLogs=true` 时读取 `BepInEx/LogOutput.log` 尾部日志，按 `LocalApi.MaxLogLines` 和 `LocalApi.MaxLogBytes` 裁剪。
 - `GET /inventory/set?type=ingredient|beverage&id=ID&qty=数量`：在 Unity 主线程修改当前运行时材料或酒水库存。
 - `GET /inventory/bulk-set?type=ingredient|beverage&ids=ID1,ID2&qty=数量`：批量修改当前运行时材料或酒水库存；用于修改页的材料/酒水批量设为 `99`，只在批量结束后刷新一次运行时快照。
 - `GET /orders/prepare-next?...`：按伴随窗口传入的稀客订单执行准备步骤，可组合送达酒水、开始料理、出锅后直送和收藏限定。
 - `GET /logs/automation`：读取 `BepInEx/config/MystiaStewardCompanion/automation-jobs.log` 尾部内容，返回结构与 `/logs` 一致，受日志读取开关和读取上限控制。
-- `GET /logs/export-diagnostics?open=true`：生成诊断 zip，包含 manifest、当前 snapshot、`LogOutput.log` 尾部、自动化作业日志尾部和诊断目录中的 `.log` 尾部；`open=true` 会打开诊断包目录。
+- `GET /logs/export-diagnostics?open=true`：生成诊断 zip，包含 manifest、当前 snapshot、`LogOutput.log` 尾部、自动化作业日志尾部、诊断目录中的 `.log` 尾部和总日志分片尾部；`open=true` 会打开诊断包目录。
 - `GET /orders/complete-first?...`：按伴随窗口传入的稀客订单确认直接送达状态，必要时补送酒水，并在订单满足后触发评价。
 - `GET /orders/rare/dismiss?...`：按桌号和点单 Tag 删除一笔运行时稀客订单捕获缓存，用于清理偶发未被游戏移除事件命中的过时订单。
 - `GET /orders/normal/complete-first?...`：按请求中的订单 key、桌位、料理和酒水处理一笔普客订单。普客自动化可按 `autoNormal*` 阶段配置送达酒水、开始料理、出锅后直接送达料理，并在订单 `get_IsFullfilled()` 为真后调用 `EvaluateOrder()` 完成评价；该字段只表示订单已满足并可评价，前端仍需以 `HasEvaluated` 或订单消失判断真正完成。若订单只存在于 HUD / `OrderController`，但没有可执行 `GuestGroupController`，后端必须拒绝自动送达并返回不可执行诊断。
@@ -535,6 +535,8 @@ Port = 32145
 普客订单自动化仍是实验性功能。伴随窗口会显示当前 UI 订单里识别到的普客桌位、料理、酒水、待评价和已评价状态；设置页开启自动化总开关后，还需要在经营中自动化面板开启“启用普客处理”，并至少开启送达酒水、自动开始料理、自动送达料理或自动完成订单中的一个阶段，之后会自动处理按首次出现时间排序的未评价普客订单，不再需要点击手动处理按钮。普客酒水和料理送达都走统一送达提交，在顾客桌面显示和订单状态同步后才调用 `EvaluateOrder()`。特殊经营场景不再接入运行时推荐和自动化分支；已分析过的怪诞料理大赛、饕餮尤魔挑战链路记录在 `docs/special-business-scenes-notes.md`，后续若恢复适配必须重新验证原生评价副作用。`ServedFoodInAir` / `ServedBeverageInAir` 只作为统一送达提交中的过渡状态，顾客桌面显示必须通过 `GuestTableDisplayer` 更新，是否可评价以 `ServFood` / `ServBeverage` 和 `get_IsFullfilled()` 为准，是否真正完成以 `HasEvaluated` 或订单移除为准。
 
 自动化诊断文件 `BepInEx/config/MystiaStewardCompanion/automation-jobs.log` 由 C# 侧写入，记录开锅成功/失败、pending 直送、pending 移除和目标订单信息，约 1 MB 自动轮换为 `.1`。连续相同 action、目标和消息会合并为 `repeat` 摘要，避免厨具冻结、订单对象短暂不可读等临时状态刷爆日志。伴随窗口 `日志` 页通过 `/logs/automation` 读取并解析该文件，显示 action、target、桌号、订单 key、料理和最近消息；`导出诊断包` 通过 `/logs/export-diagnostics` 生成 zip，所有日志内容都只取尾部上限。该日志只用于排查，不得让写入、读取或打包失败影响自动化或游戏运行。
+
+总日志文件 `BepInEx/config/MystiaStewardCompanion/aggregate-mod.log` 默认关闭，由 `Diagnostics.EnableAggregateModLog` 或日志页“总日志”开关启用。启用后注册 BepInEx 全局 `ILogListener`，捕获所有日志源并按时间、级别、来源和线程标注；单个文件达到 10 MB 后拆分为递增编号分片，不设置分片总数上限。该服务不得调用插件日志源回写自身状态，避免递归；写入和分片失败必须吞掉异常，不得影响游戏流程。
 
 代理工具注意事项：
 

@@ -27,7 +27,7 @@
 - 焦点切换支持两种模式：隐藏伴随窗口再聚焦游戏，或保持伴随窗口悬浮并只聚焦游戏。保持悬浮依赖窗口置顶，独占全屏游戏可能覆盖置顶窗口，推荐窗口化或无边框窗口化。
 - 伴随窗口退出跟随不只依赖本地 API `/health` 失联，还会监控启动参数中的 `--game-pid`。游戏窗口 X、游戏内退出按钮、或 Unity 退出阶段未及时发送 `exit` 控制消息时，都应由 PID 监控兜底关闭伴随窗口。
 - `修改` 页通过 `/inventory/set` 和 `/inventory/bulk-set` 在 Unity 主线程写入当前运行时材料和酒水库存；材料和酒水列表可按名称或库存排序。页面只保留单项 `-10`、`+10`、`99` 和当前存档可编辑材料/酒水批量设为 `99` 快捷按钮，用户仍需在游戏内保存才能持久化。
-- `BepInEx/LogOutput.log` 通过伴随窗口 `日志` 页读取，接口按 `LocalApi.MaxLogLines` 和 `LocalApi.MaxLogBytes` 裁剪尾部内容，前端也只保留有限行数显示。
+- `BepInEx/LogOutput.log` 通过伴随窗口 `日志` 页读取，接口按 `LocalApi.MaxLogLines` 和 `LocalApi.MaxLogBytes` 裁剪尾部内容，前端也只保留有限行数显示。总日志 `BepInEx/config/MystiaStewardCompanion/aggregate-mod.log` 默认关闭，日志页可即时开启；启用后捕获 BepInEx 全局日志源，每条记录标注时间、级别、来源和线程，单个文件 10 MB 后拆分为递增编号分片且不限制分片总数。排查长时间或难复现问题时优先让用户开启总日志、复现后提供当前文件和相关分片。
 - Mod 默认写入 `BepInEx/config/BepInEx.cfg` 将 `[Logging.Console] Enabled=false`，并在 Windows 当前会话尝试隐藏控制台窗口；设置页可临时开启/关闭原生日志窗口，接口会同时修改当前窗口可见性和下一次启动配置。
 - 游戏内 IMGUI 面板已移除；Mod 在游戏侧只保留后台控制器、本地 API、运行时读取、自动化和伴随窗口唤起。
 - 仓库不使用 GitHub Actions 自动构建 Release；`.github/workflows/ci.yml` 只保留手动前端检查。版本发布采用 Windows 本机构建后由 GitHub CLI 上传。自动更新发布只支持稳定版 `X.Y.Z` 和预览版 `X.Y.Z-preview.N`；预览版必须是 GitHub Prerelease，用于 `dev` 上测试 `preview.1 -> preview.2 -> stable` 更新链路，稳定版再合并 `main` 发布普通 Release。Release 资产包含 `mystia-steward-companion-bepinex.zip`、`update-manifest.json` 和可直接运行的 `mystia-steward-companion-companion-windows-x64.exe`；如发布机已配置 Android 工具链和签名配置，可通过 `build-release.ps1 -BuildAndroidApk` 或 `publish-release.ps1 -BuildAndroidApk` 额外生成并上传 `mystia-steward-companion-android-arm64-v8a.apk` 和 `mystia-steward-companion-android-armeabi-v7a.apk`。更新清单只指向 Mod 主包，独立 Windows 伴随窗口 EXE 和 Android APK 只给 B 设备跨局域网连接使用。

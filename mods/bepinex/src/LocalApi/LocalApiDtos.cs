@@ -45,6 +45,10 @@ internal sealed class LocalApiLogSettingsDto
     public bool NightBusinessDiagnosticsEnabled { get; init; }
     public string NightBusinessDiagnosticsPath { get; init; } = "";
     public string NightBusinessDiagnosticsDirectory { get; init; } = "";
+    public bool AggregateModLogEnabled { get; init; }
+    public string AggregateModLogPath { get; init; } = "";
+    public string AggregateModLogDirectory { get; init; } = "";
+    public long AggregateModLogMaxFileBytes { get; init; }
     public bool NativeBepInExConsoleEnabled { get; init; }
     public bool NativeBepInExConsoleVisible { get; init; }
 }
@@ -107,6 +111,8 @@ internal sealed class LocalApiDiagnosticManifestDto
     public string LogOutputPath { get; init; } = "";
     public string AutomationLogPath { get; init; } = "";
     public string NightBusinessDiagnosticsPath { get; init; } = "";
+    public string AggregateModLogPath { get; init; } = "";
+    public long AggregateModLogMaxFileBytes { get; init; }
     public int MaxLogLines { get; init; }
     public int MaxLogBytes { get; init; }
 }

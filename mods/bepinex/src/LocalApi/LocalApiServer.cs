@@ -38,7 +38,7 @@ internal sealed class LocalApiServer : IDisposable
     private string _lanError = "";
     private readonly string _logOutputPath;
     private readonly Func<LocalApiLogSettings> _getLogSettings;
-    private readonly Action<bool?, bool?, bool?> _updateLogSettings;
+    private readonly Action<bool?, bool?, bool?, bool?> _updateLogSettings;
     private readonly Func<LocalApiConnectionConfigDto> _getConnectionConfig;
     private readonly Func<LocalApiConnectionConfigUpdate, LocalApiConnectionConfigDto> _updateConnectionConfig;
     private readonly Func<LocalApiConnectionConfigDto> _regenerateLocalApiToken;
@@ -86,7 +86,7 @@ internal sealed class LocalApiServer : IDisposable
         string pluginVersion,
         string token,
         Func<LocalApiLogSettings> getLogSettings,
-        Action<bool?, bool?, bool?> updateLogSettings,
+        Action<bool?, bool?, bool?, bool?> updateLogSettings,
         Func<LocalApiConnectionConfigDto> getConnectionConfig,
         Func<LocalApiConnectionConfigUpdate, LocalApiConnectionConfigDto> updateConnectionConfig,
         Func<LocalApiConnectionConfigDto> regenerateLocalApiToken,
@@ -490,7 +490,8 @@ internal sealed class LocalApiServer : IDisposable
                         _updateLogSettings(
                             ReadBoolQuery(query, "logAccess"),
                             ReadBoolQuery(query, "diagnostics"),
-                            ReadBoolQuery(query, "nativeConsole"));
+                            ReadBoolQuery(query, "nativeConsole"),
+                            ReadBoolQuery(query, "aggregateLog"));
                         WriteResponse(stream, 200, "OK", BuildLogSettingsJson());
                         break;
                     case "/updates/status":
@@ -829,6 +830,10 @@ internal sealed class LocalApiServer : IDisposable
             NightBusinessDiagnosticsEnabled = settings.NightBusinessDiagnosticsEnabled,
             NightBusinessDiagnosticsPath = settings.NightBusinessDiagnosticsPath,
             NightBusinessDiagnosticsDirectory = GetDirectory(settings.NightBusinessDiagnosticsPath),
+            AggregateModLogEnabled = settings.AggregateModLogEnabled,
+            AggregateModLogPath = settings.AggregateModLogPath,
+            AggregateModLogDirectory = GetDirectory(settings.AggregateModLogPath),
+            AggregateModLogMaxFileBytes = settings.AggregateModLogMaxFileBytes,
             NativeBepInExConsoleEnabled = settings.NativeBepInExConsoleEnabled,
             NativeBepInExConsoleVisible = settings.NativeBepInExConsoleVisible,
         });
@@ -887,6 +892,7 @@ internal sealed class LocalApiServer : IDisposable
                     maxLogLines,
                     added);
                 AddDiagnosticLogEntries(archive, settings.NightBusinessDiagnosticsPath, maxLogBytes, maxLogLines, added);
+                AddAggregateLogEntries(archive, settings.AggregateModLogPath, maxLogBytes, maxLogLines, added);
             }
 
             if (openFolder)
@@ -1208,6 +1214,16 @@ internal sealed class LocalApiServer : IDisposable
         }
     }
 
+    private static void AddAggregateLogEntries(ZipArchive archive, string primaryPath, int maxBytes, int maxLines, List<string> added)
+    {
+        foreach (var path in AggregateModLogService.EnumerateFiles(primaryPath))
+        {
+            var name = Path.GetFileName(path);
+            if (string.IsNullOrWhiteSpace(name)) continue;
+            AddLogTailEntry(archive, path, "aggregate/" + name.Replace(".log", ".tail.log", StringComparison.Ordinal), maxBytes, maxLines, added);
+        }
+    }
+
     private static void AddLogTailEntry(
         ZipArchive archive,
         string path,
@@ -1239,6 +1255,8 @@ internal sealed class LocalApiServer : IDisposable
             LogOutputPath = string.IsNullOrWhiteSpace(settings.LogOutputPath) ? _logOutputPath : settings.LogOutputPath,
             AutomationLogPath = RuntimeOrderPreparationService.ResolveAutomationLogPath(),
             NightBusinessDiagnosticsPath = settings.NightBusinessDiagnosticsPath,
+            AggregateModLogPath = settings.AggregateModLogPath,
+            AggregateModLogMaxFileBytes = settings.AggregateModLogMaxFileBytes,
             MaxLogLines = Math.Clamp(settings.MaxLogLines, 50, 2000),
             MaxLogBytes = Math.Clamp(settings.MaxLogBytes, 16 * 1024, 2 * 1024 * 1024),
         });
@@ -1591,6 +1609,9 @@ internal sealed class LocalApiLogSettings
     public int MaxLogBytes { get; init; } = 256 * 1024;
     public bool NightBusinessDiagnosticsEnabled { get; init; }
     public string NightBusinessDiagnosticsPath { get; init; } = "";
+    public bool AggregateModLogEnabled { get; init; }
+    public string AggregateModLogPath { get; init; } = "";
+    public long AggregateModLogMaxFileBytes { get; init; } = AggregateModLogService.MaxFileBytes;
     public bool NativeBepInExConsoleEnabled { get; init; }
     public bool NativeBepInExConsoleVisible { get; init; }
 }

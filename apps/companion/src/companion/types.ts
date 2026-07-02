@@ -267,6 +267,10 @@ export interface LocalApiLogSettings {
   nightBusinessDiagnosticsEnabled: boolean;
   nightBusinessDiagnosticsPath: string;
   nightBusinessDiagnosticsDirectory: string;
+  aggregateModLogEnabled: boolean;
+  aggregateModLogPath: string;
+  aggregateModLogDirectory: string;
+  aggregateModLogMaxFileBytes: number;
   nativeBepInExConsoleEnabled: boolean;
   nativeBepInExConsoleVisible: boolean;
 }

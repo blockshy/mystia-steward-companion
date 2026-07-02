@@ -34,6 +34,8 @@ public sealed class StewardPluginConfig
         ConfigEntry<bool> enableNightBusinessDiagnostics,
         ConfigEntry<string> nightBusinessDiagnosticsPath,
         ConfigEntry<float> nightBusinessDiagnosticsIntervalSeconds,
+        ConfigEntry<bool> enableAggregateModLog,
+        ConfigEntry<string> aggregateModLogPath,
         ConfigEntry<bool> updatesEnabled,
         ConfigEntry<bool> updatesAutoCheck,
         ConfigEntry<int> updatesCheckIntervalHours,
@@ -64,6 +66,8 @@ public sealed class StewardPluginConfig
         EnableNightBusinessDiagnostics = enableNightBusinessDiagnostics;
         NightBusinessDiagnosticsPath = nightBusinessDiagnosticsPath;
         NightBusinessDiagnosticsIntervalSeconds = nightBusinessDiagnosticsIntervalSeconds;
+        EnableAggregateModLog = enableAggregateModLog;
+        AggregateModLogPath = aggregateModLogPath;
         UpdatesEnabled = updatesEnabled;
         UpdatesAutoCheck = updatesAutoCheck;
         UpdatesCheckIntervalHours = updatesCheckIntervalHours;
@@ -95,6 +99,8 @@ public sealed class StewardPluginConfig
     public ConfigEntry<bool> EnableNightBusinessDiagnostics { get; }
     public ConfigEntry<string> NightBusinessDiagnosticsPath { get; }
     public ConfigEntry<float> NightBusinessDiagnosticsIntervalSeconds { get; }
+    public ConfigEntry<bool> EnableAggregateModLog { get; }
+    public ConfigEntry<string> AggregateModLogPath { get; }
     public ConfigEntry<bool> UpdatesEnabled { get; }
     public ConfigEntry<bool> UpdatesAutoCheck { get; }
     public ConfigEntry<int> UpdatesCheckIntervalHours { get; }
@@ -138,6 +144,8 @@ public sealed class StewardPluginConfig
             config.Bind("Diagnostics", "EnableNightBusinessDiagnostics", false, "Write night-business detection snapshots to an external file for debugging."),
             config.Bind("Diagnostics", "NightBusinessDiagnosticsPath", "", "Optional diagnostics log path. Empty uses BepInEx/config/mystia-steward-companion/night-business-diagnostics.log."),
             config.Bind("Diagnostics", "NightBusinessDiagnosticsIntervalSeconds", 2f, "Minimum seconds between diagnostics snapshots."),
+            config.Bind("Diagnostics", "EnableAggregateModLog", false, "Write a troubleshooting aggregate log that captures all BepInEx log sources while enabled."),
+            config.Bind("Diagnostics", "AggregateModLogPath", "", "Optional aggregate log path. Empty uses BepInEx/config/MystiaStewardCompanion/aggregate-mod.log. The file rotates every 10 MB without a total cap."),
             config.Bind("Updates", "Enabled", true, "Allow the plugin to check GitHub Releases for mystia-steward-companion updates."),
             config.Bind("Updates", "AutoCheck", true, "Check for updates automatically when the local API starts."),
             config.Bind("Updates", "CheckIntervalHours", 24, "Minimum hours between automatic update checks."),

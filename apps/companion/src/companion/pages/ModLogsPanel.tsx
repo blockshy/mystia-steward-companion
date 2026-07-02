@@ -53,7 +53,7 @@ export function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToke
     }
   }, [apiToken, endpoint]);
 
-  const updateSettings = useCallback(async (next: { logAccess?: boolean; diagnostics?: boolean }) => {
+  const updateSettings = useCallback(async (next: { logAccess?: boolean; diagnostics?: boolean; aggregateLog?: boolean }) => {
     const abortController = new AbortController();
     const timeoutId = window.setTimeout(() => abortController.abort(), 2800);
     setActionLoading(true);
@@ -82,7 +82,7 @@ export function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToke
     }
   }, [apiToken, endpoint]);
 
-  const openFolder = useCallback(async (target: 'log' | 'diagnostics' | 'automation') => {
+  const openFolder = useCallback(async (target: 'log' | 'diagnostics' | 'automation' | 'aggregate') => {
     const abortController = new AbortController();
     const timeoutId = window.setTimeout(() => abortController.abort(), 2800);
     setActionLoading(true);
@@ -187,6 +187,15 @@ export function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToke
               <IconPower className="size-4" />
               {settings?.nightBusinessDiagnosticsEnabled ? '关闭经营诊断' : '开启经营诊断'}
             </Button>
+            <Button
+              size="sm"
+              variant={settings?.aggregateModLogEnabled ? 'default' : 'outline'}
+              onClick={() => updateSettings({ aggregateLog: !settings?.aggregateModLogEnabled })}
+              disabled={!apiToken || actionLoading}
+            >
+              <IconPower className="size-4" />
+              {settings?.aggregateModLogEnabled ? '关闭总日志' : '开启总日志'}
+            </Button>
             <Button size="sm" variant="outline" onClick={() => openFolder('log')} disabled={!apiToken || actionLoading}>
               <IconFolderOpen className="size-4" />
               打开日志文件夹
@@ -198,6 +207,10 @@ export function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToke
             <Button size="sm" variant="outline" onClick={() => openFolder('automation')} disabled={!apiToken || actionLoading}>
               <IconFolderOpen className="size-4" />
               打开自动化日志
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => openFolder('aggregate')} disabled={!apiToken || actionLoading}>
+              <IconFolderOpen className="size-4" />
+              打开总日志
             </Button>
             <Button size="sm" variant="outline" onClick={exportDiagnostics} disabled={!apiToken || actionLoading}>
               <IconArchive className="size-4" />
@@ -219,6 +232,9 @@ export function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToke
           <InfoLine label="窗口缓存" value={`最多显示 ${MAX_LOG_LINES_IN_VIEW} 行`} />
           <InfoLine label="经营诊断" value={settings?.nightBusinessDiagnosticsEnabled ? '开启' : '关闭'} />
           <InfoLine label="诊断日志目录" value={settings?.nightBusinessDiagnosticsDirectory || '未知'} mono />
+          <InfoLine label="总日志" value={settings?.aggregateModLogEnabled ? '开启' : '关闭'} />
+          <InfoLine label="总日志分片" value={formatBytes(settings?.aggregateModLogMaxFileBytes ?? 10 * 1024 * 1024)} />
+          <InfoLine label="总日志目录" value={settings?.aggregateModLogDirectory || '未知'} mono />
           <InfoLine label="最近诊断包" value={diagnosticPackage?.path || '未导出'} mono />
           <InfoLine label="打包内容" value={diagnosticPackage ? `${diagnosticPackage.files.length} 个文件` : '未导出'} />
         </CardContent>
