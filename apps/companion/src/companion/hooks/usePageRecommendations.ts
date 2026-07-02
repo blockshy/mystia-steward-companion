@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   PageRecommendationPayload,
   PageRecommendationResult,
@@ -23,8 +23,28 @@ const INITIAL_STATE: PageRecommendationState = {
 export function usePageRecommendations(payload: PageRecommendationPayload | null): PageRecommendationState {
   const [state, setState] = useState<PageRecommendationState>(INITIAL_STATE);
   const workerRef = useRef<Worker | null>(null);
-  const latestRequestIdRef = useRef(0);
-  const settledRequestIdRef = useRef(0);
+  const requestSequenceRef = useRef(0);
+  const stateVersionRef = useRef(0);
+  const activeRequestIdRef = useRef<number | null>(null);
+  const queuedRequestRef = useRef<PageRecommendationWorkerRequest | null>(null);
+
+  const createRequest = useCallback((nextPayload: PageRecommendationPayload): PageRecommendationWorkerRequest => {
+    requestSequenceRef.current += 1;
+    return {
+      requestId: requestSequenceRef.current,
+      payload: nextPayload,
+    };
+  }, []);
+
+  const postRequest = useCallback((worker: Worker, request: PageRecommendationWorkerRequest) => {
+    activeRequestIdRef.current = request.requestId;
+    try {
+      worker.postMessage(request);
+    } catch (error) {
+      activeRequestIdRef.current = null;
+      throw error;
+    }
+  }, []);
 
   useEffect(() => {
     const worker = new Worker(new URL('../workers/page-recommendations.worker.ts', import.meta.url), {
@@ -34,29 +54,44 @@ export function usePageRecommendations(payload: PageRecommendationPayload | null
 
     worker.onmessage = (event: MessageEvent<PageRecommendationWorkerResponse>) => {
       const response = event.data;
-      if (response.requestId !== latestRequestIdRef.current) return;
-      settledRequestIdRef.current = response.requestId;
+      if (response.requestId !== activeRequestIdRef.current) return;
+
+      activeRequestIdRef.current = null;
+      const queuedRequest = queuedRequestRef.current;
+      queuedRequestRef.current = null;
+      const hasQueuedRequest = queuedRequest !== null;
+      let queueError: string | null = null;
+
+      if (queuedRequest) {
+        try {
+          postRequest(worker, queuedRequest);
+        } catch (error) {
+          queueError = error instanceof Error ? error.message : String(error);
+        }
+      }
 
       if (response.ok) {
         setState({
           result: response.result,
-          pending: false,
-          isCurrent: true,
-          error: null,
+          pending: hasQueuedRequest && !queueError,
+          isCurrent: !hasQueuedRequest || queueError !== null,
+          error: queueError,
         });
         return;
       }
 
-      setState({
-        result: null,
-        pending: false,
-        isCurrent: true,
-        error: response.error,
-      });
+      setState((current) => ({
+        result: current.result,
+        pending: hasQueuedRequest && !queueError,
+        isCurrent: !hasQueuedRequest || queueError !== null,
+        error: queueError ?? response.error,
+      }));
     };
 
     worker.onerror = (event) => {
       const message = event.message || '推荐计算 Worker 运行失败。';
+      activeRequestIdRef.current = null;
+      queuedRequestRef.current = null;
       setState({
         result: null,
         pending: false,
@@ -68,30 +103,32 @@ export function usePageRecommendations(payload: PageRecommendationPayload | null
     return () => {
       worker.terminate();
       workerRef.current = null;
+      activeRequestIdRef.current = null;
+      queuedRequestRef.current = null;
     };
-  }, []);
+  }, [postRequest]);
 
   useEffect(() => {
-    const requestId = latestRequestIdRef.current + 1;
-    latestRequestIdRef.current = requestId;
+    const stateVersion = stateVersionRef.current + 1;
+    stateVersionRef.current = stateVersion;
     const scheduleCurrentState = (
       buildNextState: (current: PageRecommendationState) => PageRecommendationState,
     ) => {
       queueMicrotask(() => {
-        if (latestRequestIdRef.current !== requestId) return;
+        if (stateVersionRef.current !== stateVersion) return;
         setState(buildNextState);
       });
     };
 
     if (!payload) {
-      settledRequestIdRef.current = requestId;
+      activeRequestIdRef.current = null;
+      queuedRequestRef.current = null;
       scheduleCurrentState(() => INITIAL_STATE);
       return;
     }
 
     const worker = workerRef.current;
     if (!worker) {
-      settledRequestIdRef.current = requestId;
       scheduleCurrentState(() => ({
         result: null,
         pending: false,
@@ -101,13 +138,28 @@ export function usePageRecommendations(payload: PageRecommendationPayload | null
       return;
     }
 
-    const request: PageRecommendationWorkerRequest = {
-      requestId,
-      payload,
-    };
+    const request = createRequest(payload);
+    if (activeRequestIdRef.current === null) {
+      try {
+        postRequest(worker, request);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        scheduleCurrentState((current) => ({
+          result: current.result,
+          pending: false,
+          isCurrent: true,
+          error: message,
+        }));
+        return;
+      }
+    } else {
+      queuedRequestRef.current = request;
+    }
 
     scheduleCurrentState((current) => {
-      if (settledRequestIdRef.current === requestId) return current;
+      const requestStillPending = activeRequestIdRef.current === request.requestId
+        || queuedRequestRef.current?.requestId === request.requestId;
+      if (!requestStillPending) return current;
       return {
         result: current.result,
         pending: true,
@@ -115,8 +167,7 @@ export function usePageRecommendations(payload: PageRecommendationPayload | null
         error: null,
       };
     });
-    worker.postMessage(request);
-  }, [payload]);
+  }, [createRequest, payload, postRequest]);
 
   return state;
 }
