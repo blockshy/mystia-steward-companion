@@ -409,7 +409,14 @@ export function ModWorkbench() {
       snapshot?.runtimeMissions?.serveTargets,
     ],
   );
-  const orderRecommendations = useOrderRecommendations(orderRecommendationPayload);
+  const orderRecommendationsEnabled = tab === 'service'
+    || serviceFocusMode
+    || companionPreferences.automationEnabled
+    || companionPreferences.gameUiPinningEnabled
+    || companionPreferences.cookerHighlightEnabled;
+  const orderRecommendations = useOrderRecommendations(orderRecommendationPayload, {
+    enabled: orderRecommendationsEnabled,
+  });
   const gameUiPinningTarget = useMemo(
     () => companionPreferences.gameUiPinningEnabled || companionPreferences.cookerHighlightEnabled
       ? buildGameUiPinningTarget(
@@ -1321,6 +1328,7 @@ export function ModWorkbench() {
             selectedPlace={selectedPlace}
             detectedPlace={detectedPlace}
             data={recommendationData}
+            active={tab === 'normal'}
             onPlaceChange={setManualPlace}
             onFollowDetectedPlace={() => setManualPlace(null)}
           />
@@ -1342,6 +1350,7 @@ export function ModWorkbench() {
             favoriteBusyKey={favoriteBusyKey}
             favoriteError={favoriteError}
             preferences={companionPreferences}
+            active={tab === 'rare'}
             onPlaceChange={(place) => {
               setManualPlace(place);
               setRareCustomerId(null);

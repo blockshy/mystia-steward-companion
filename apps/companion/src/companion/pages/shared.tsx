@@ -429,6 +429,7 @@ export function OrderRecommendationPanel({
           <div className="mt-1 flex flex-wrap gap-1.5">
             <Badge variant="outline">料理 {item.order.foodTag || '无'}</Badge>
             <Badge variant="outline">酒水 {item.order.beverageTag || '无'}</Badge>
+            {item.order.isFreeOrder && <Badge variant="secondary">免费订单</Badge>}
             {targetCookerName && (
               <Badge className="steward-tag-extra">
                 目标厨具 {targetCookerName}

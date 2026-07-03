@@ -452,7 +452,7 @@ function buildSnapshot() {
       placeLabel: '妖怪兽道',
       activeRareGuests: [
         { deskCode: 1, guestId: 1001, guestName: '米斯蒂娅', source: 'mock', fund: 420, baseFundCarry: 240, maxFundCarry: 520, extraFundByBuff: 80, willPayMoney: true },
-        { deskCode: 3, guestId: 1002, guestName: '露米娅', source: 'mock', fund: 360, baseFundCarry: 220, maxFundCarry: 430, extraFundByBuff: 40, willPayMoney: true },
+        { deskCode: 3, guestId: 1002, guestName: '露米娅', source: 'mock', fund: 0, baseFundCarry: 220, maxFundCarry: 430, extraFundByBuff: 40, willPayMoney: false },
       ],
       orders: [
         {
@@ -466,6 +466,7 @@ function buildSnapshot() {
           source: 'mock',
           firstSeenAtUtc: nowIso(-240),
           lastSeenAtUtc: nowIso(-12),
+          isFreeOrder: false,
           hasServedFood: false,
           hasServedBeverage: true,
         },
@@ -480,6 +481,7 @@ function buildSnapshot() {
           source: 'mock',
           firstSeenAtUtc: nowIso(-120),
           lastSeenAtUtc: nowIso(-5),
+          isFreeOrder: true,
           hasServedFood: false,
           hasServedBeverage: false,
         },

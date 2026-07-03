@@ -27,6 +27,11 @@ const releaseApkTargets = [
     assetName: 'mystia-steward-companion-android-armeabi-v7a.apk',
   },
 ];
+const androidReleaseProfileEnv = {
+  CARGO_PROFILE_RELEASE_STRIP: 'symbols',
+  CARGO_PROFILE_RELEASE_LTO: 'thin',
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '1',
+};
 
 assertSigningConfig();
 cleanGeneratedAndroidSources();
@@ -104,6 +109,7 @@ function resolveStoreFile(storeFile) {
 
 function runTauriAndroidApkBuild() {
   const tauriCliScript = findTauriCliScript();
+  const buildOptions = withAndroidReleaseProfileEnv({ cwd: companionDir });
   const buildArgs = [
     'android',
     'build',
@@ -113,11 +119,21 @@ function runTauriAndroidApkBuild() {
     ...releaseApkTargets.map((target) => target.target),
   ];
   if (tauriCliScript) {
-    run(process.execPath, [tauriCliScript, ...buildArgs], { cwd: companionDir });
+    run(process.execPath, [tauriCliScript, ...buildArgs], buildOptions);
     return;
   }
 
-  run('tauri', buildArgs, { cwd: companionDir });
+  run('tauri', buildArgs, buildOptions);
+}
+
+function withAndroidReleaseProfileEnv(options) {
+  return {
+    ...options,
+    env: {
+      ...process.env,
+      ...androidReleaseProfileEnv,
+    },
+  };
 }
 
 function cleanGeneratedAndroidSources() {

@@ -6,7 +6,7 @@ using static MystiaStewardCompanion.Save.RuntimeReflectionUtility;
 
 namespace MystiaStewardCompanion.Save;
 
-public sealed class NightBusinessReflectionProvider
+internal sealed class NightBusinessReflectionProvider
 {
     private static readonly TimeSpan UnmatchedCapturedOrderGrace = TimeSpan.FromSeconds(8);
     private static readonly TimeSpan RuntimeCapturedOrderMaxAge = TimeSpan.FromHours(6);
@@ -31,8 +31,8 @@ public sealed class NightBusinessReflectionProvider
 
     private readonly DataRepository _repository;
     private readonly RareCustomerIdentityResolver _rareIdentityResolver;
-    private readonly RuntimeMappedGuestCatalog _mappedGuestCatalog;
-    private readonly RuntimeStaticDataCatalog _staticDataCatalog;
+    private readonly RuntimeMappedGuestCatalogSnapshot? _mappedGuestSnapshot;
+    private readonly RuntimeStaticDataSnapshot? _staticDataSnapshot;
     private readonly NightBusinessDiagnosticSink? _diagnostics;
     private readonly string _sceneName;
     private IReadOnlyList<string>? _foodTagCandidates;
@@ -45,12 +45,14 @@ public sealed class NightBusinessReflectionProvider
     public NightBusinessReflectionProvider(
         DataRepository repository,
         NightBusinessDiagnosticSink? diagnostics = null,
-        string sceneName = "")
+        string sceneName = "",
+        RuntimeMappedGuestCatalogSnapshot? mappedGuestSnapshot = null,
+        RuntimeStaticDataSnapshot? staticDataSnapshot = null)
     {
         _repository = repository;
         _rareIdentityResolver = repository.RareCustomerIdentities;
-        _mappedGuestCatalog = new RuntimeMappedGuestCatalog(repository);
-        _staticDataCatalog = new RuntimeStaticDataCatalog(repository);
+        _mappedGuestSnapshot = mappedGuestSnapshot;
+        _staticDataSnapshot = staticDataSnapshot;
         _diagnostics = diagnostics;
         _sceneName = sceneName;
     }
@@ -63,11 +65,16 @@ public sealed class NightBusinessReflectionProvider
         var errors = new List<string>();
         var sourceStats = new List<string>();
         _candidateDiagnostics = _diagnostics == null ? null : new List<NightBusinessCandidateDiagnostic>();
-        var mappedGuestSnapshot = Measure("static.mappedGuests", _mappedGuestCatalog.Snapshot);
-        var staticDataSnapshot = Measure("static.data", () => _staticDataCatalog.Snapshot(mappedGuestSnapshot));
-        sourceStats.Add($"MappedGuests={mappedGuestSnapshot.ResolvedCount}/{mappedGuestSnapshot.Entries.Count}; {mappedGuestSnapshot.Status}");
-        sourceStats.Add($"StaticData={staticDataSnapshot.Status}");
-        Measure("diagnostics.staticData", () => WriteRuntimeStaticDataDiagnostics(mappedGuestSnapshot, staticDataSnapshot));
+        sourceStats.Add(_mappedGuestSnapshot == null
+            ? "MappedGuests=cached-missing"
+            : $"MappedGuests={_mappedGuestSnapshot.ResolvedCount}/{_mappedGuestSnapshot.Entries.Count}; {_mappedGuestSnapshot.Status}");
+        sourceStats.Add(_staticDataSnapshot == null
+            ? "StaticData=cached-missing"
+            : $"StaticData={_staticDataSnapshot.Status}");
+        if (_mappedGuestSnapshot != null && _staticDataSnapshot != null)
+        {
+            Measure("diagnostics.staticData", () => WriteRuntimeStaticDataDiagnostics(_mappedGuestSnapshot, _staticDataSnapshot));
+        }
 
         IReadOnlyList<CapturedRuntimeSpecialOrder> runtimeOrders = Array.Empty<CapturedRuntimeSpecialOrder>();
         try
@@ -667,6 +674,7 @@ public sealed class NightBusinessReflectionProvider
             Source = source,
             FirstSeenAtUtc = now,
             LastSeenAtUtc = now,
+            IsFreeOrder = ReadOrderFreeState(readableOrder),
             HasServedFood = ReadOrderServedState(readableOrder, "ServFood", "ServedFoodInAir"),
             HasServedBeverage = ReadOrderServedState(readableOrder, "ServBeverage", "ServedBeverageInAir"),
         };
@@ -757,6 +765,7 @@ public sealed class NightBusinessReflectionProvider
                 Source = string.IsNullOrWhiteSpace(captured.CaptureSource) ? "RuntimeCapture" : $"RuntimeCapture:{captured.CaptureSource}",
                 FirstSeenAtUtc = captured.FirstCapturedAt,
                 LastSeenAtUtc = captured.CapturedAt,
+                IsFreeOrder = captured.IsFreeOrder,
             };
 
             if (ShouldKeepCapturedOrder(order, captured, activeGuests, now))
@@ -954,10 +963,12 @@ public sealed class NightBusinessReflectionProvider
             }
 
             var selected = GetOrderCompletenessScore(order) > GetOrderCompletenessScore(existing) ? order : existing;
+            var isFreeOrder = order.IsFreeOrder || existing.IsFreeOrder;
             bySlot[key] = CopyOrderWithSeenTimes(
                 selected,
                 MinSeenAt(existing.FirstSeenAtUtc, order.FirstSeenAtUtc),
-                MaxSeenAt(existing.LastSeenAtUtc, order.LastSeenAtUtc));
+                MaxSeenAt(existing.LastSeenAtUtc, order.LastSeenAtUtc),
+                isFreeOrder);
         }
 
         return bySlot.Values
@@ -968,7 +979,11 @@ public sealed class NightBusinessReflectionProvider
             .ToList();
     }
 
-    private static NightBusinessOrder CopyOrderWithSeenTimes(NightBusinessOrder order, DateTime? firstSeenAtUtc, DateTime? lastSeenAtUtc)
+    private static NightBusinessOrder CopyOrderWithSeenTimes(
+        NightBusinessOrder order,
+        DateTime? firstSeenAtUtc,
+        DateTime? lastSeenAtUtc,
+        bool isFreeOrder)
     {
         return new NightBusinessOrder
         {
@@ -982,6 +997,7 @@ public sealed class NightBusinessReflectionProvider
             Source = order.Source,
             FirstSeenAtUtc = firstSeenAtUtc,
             LastSeenAtUtc = lastSeenAtUtc,
+            IsFreeOrder = isFreeOrder,
             HasServedFood = order.HasServedFood,
             HasServedBeverage = order.HasServedBeverage,
         };
@@ -1023,6 +1039,14 @@ public sealed class NightBusinessReflectionProvider
         }
 
         return false;
+    }
+
+    private static bool ReadOrderFreeState(object order)
+    {
+        var value = GetMemberValue(order, "FreeOrder");
+        if (value is bool boolValue) return boolValue;
+        if (bool.TryParse(value?.ToString(), out var parsed)) return parsed;
+        return bool.TryParse(ResolveOrderTextValue(SafeToString(order), "IsFreeOrder?"), out var textParsed) && textParsed;
     }
 
     private static List<NightBusinessGuest> DeduplicateGuests(IEnumerable<NightBusinessGuest> guests)
@@ -1142,8 +1166,50 @@ public sealed class NightBusinessReflectionProvider
 
     private RareCustomerIdentity? ResolveRareCustomerIdentity(int? guestId, string? runtimeNameOrStringId)
     {
-        return _mappedGuestCatalog.Resolve(guestId, runtimeNameOrStringId)
+        return ResolveCachedMappedGuestIdentity(guestId, runtimeNameOrStringId)
             ?? _rareIdentityResolver.Resolve(guestId, runtimeNameOrStringId);
+    }
+
+    private RareCustomerIdentity? ResolveCachedMappedGuestIdentity(int? guestId, string? runtimeNameOrStringId)
+    {
+        if (guestId.HasValue && _repository.RareCustomersById.TryGetValue(guestId.Value, out var directCustomer))
+        {
+            return new RareCustomerIdentity(directCustomer.Id, directCustomer.Name);
+        }
+
+        if (_mappedGuestSnapshot == null) return null;
+
+        RuntimeMappedGuestEntry? entry = null;
+        if (guestId.HasValue)
+        {
+            _mappedGuestSnapshot.ByRuntimeId.TryGetValue(guestId.Value, out entry);
+        }
+
+        if (entry == null && !string.IsNullOrWhiteSpace(runtimeNameOrStringId))
+        {
+            _mappedGuestSnapshot.ByRuntimeStringId.TryGetValue(runtimeNameOrStringId.Trim(), out entry);
+        }
+
+        if (entry == null) return null;
+
+        if (entry.LocalRareCustomerId.HasValue && !string.IsNullOrWhiteSpace(entry.LocalRareCustomerName))
+        {
+            return new RareCustomerIdentity(entry.LocalRareCustomerId.Value, entry.LocalRareCustomerName);
+        }
+
+        if (entry.RuntimeId.HasValue && _repository.RareCustomersById.TryGetValue(entry.RuntimeId.Value, out var runtimeCustomer))
+        {
+            return new RareCustomerIdentity(runtimeCustomer.Id, runtimeCustomer.Name);
+        }
+
+        if (entry.SourceGuestId.HasValue && _repository.RareCustomersById.TryGetValue(entry.SourceGuestId.Value, out var sourceCustomer))
+        {
+            return new RareCustomerIdentity(sourceCustomer.Id, sourceCustomer.Name);
+        }
+
+        return entry.RuntimeCustomer == null
+            ? null
+            : new RareCustomerIdentity(entry.RuntimeCustomer.Id, entry.RuntimeCustomer.Name);
     }
 
     private RareCustomerIdentity? ResolveRareCustomerIdentityFromFields(object? guest)
@@ -1465,6 +1531,11 @@ public sealed class NightBusinessReflectionProvider
     }
 
     private static string ResolveOrderTagFromText(string? orderText, string label)
+    {
+        return ResolveOrderTextValue(orderText, label);
+    }
+
+    private static string ResolveOrderTextValue(string? orderText, string label)
     {
         if (string.IsNullOrWhiteSpace(orderText)) return "";
 

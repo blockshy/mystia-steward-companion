@@ -106,7 +106,7 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1 -SkipIns
 pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1 -BuildAndroidApk
 ```
 
-该参数会在 Windows 伴随窗口、Mod 包和 Windows 独立伴随窗口包生成后，额外执行 `pnpm tauri:android:apk:signed`，并把签名 APK 放到 `mods\bepinex\dist\mystia-steward-companion-android-universal.apk`。默认不启用该参数，避免普通 Windows-only 构建被 Android 工具链或 keystore 绑定。
+该参数会在 Windows 伴随窗口、Mod 包和 Windows 独立伴随窗口 EXE 生成后，额外执行 `pnpm tauri:android:apk:signed`，并把签名 APK 放到 `mods\bepinex\dist\mystia-steward-companion-android-arm64-v8a.apk` 和 `mods\bepinex\dist\mystia-steward-companion-android-armeabi-v7a.apk`。默认不启用该参数，避免普通 Windows-only 构建被 Android 工具链、keystore 或 Android 专用 Rust LTO 体积优化绑定。
 
 ## 拆分构建
 
@@ -141,10 +141,11 @@ pnpm tauri:android:apk:signed
 
 仓库已包含 Tauri mobile 生成的 Android 工程，路径为 `apps/companion/src-tauri/gen/android/`。不要删除或绕过该工程；需要重新生成时才运行 `tauri android init`。签名文件、keystore、Gradle 缓存、JNI `.so` 和 Android build 输出不能提交。
 
-`pnpm tauri:android:apk` 可用于本地构建验证，默认输出未签名 universal release APK：
+`pnpm tauri:android:apk` 可用于本地构建验证，默认输出按 ABI 拆分的未签名 release APK：
 
 ```text
-apps/companion/src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk
+apps/companion/src-tauri/gen/android/app/build/outputs/apk/arm64/release/app-arm64-release-unsigned.apk
+apps/companion/src-tauri/gen/android/app/build/outputs/apk/arm/release/app-arm-release-unsigned.apk
 ```
 
 发布用 APK 必须完成签名。先生成或准备自己的发布 keystore，例如 Windows PowerShell：
@@ -185,10 +186,13 @@ pnpm tauri:android:apk:signed
 该命令会构建 release APK、调用 `apksigner verify --verbose --print-certs` 验签，并复制发布资产到：
 
 ```text
-mods/bepinex/dist/mystia-steward-companion-android-universal.apk
+mods/bepinex/dist/mystia-steward-companion-android-arm64-v8a.apk
+mods/bepinex/dist/mystia-steward-companion-android-armeabi-v7a.apk
 ```
 
-也可以通过 `build-release.ps1 -BuildAndroidApk` 或 `publish-release.ps1 -BuildAndroidApk` 在本地构建/发布流程中自动生成该文件。如果 APK 放在其他位置，发布时通过 `publish-release.ps1 -AndroidApkPath "D:\path\mystia-steward-companion-android-universal.apk"` 指定。APK 只作为 GitHub Release 的独立下载资产，不写入 `update-manifest.json`，也不参与 Mod 自动更新。
+签名 APK 脚本会在 Android 构建进程内注入 `CARGO_PROFILE_RELEASE_STRIP=symbols`、`CARGO_PROFILE_RELEASE_LTO=thin` 和 `CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1`，用于降低 APK 体积。该优化不会写入全局 Cargo release profile，避免普通 Windows 发布构建在 Rust 链接优化阶段耗时过长。
+
+也可以通过 `build-release.ps1 -BuildAndroidApk` 或 `publish-release.ps1 -BuildAndroidApk` 在本地构建/发布流程中自动生成这些文件。如果 APK 放在其他位置，发布时通过 `publish-release.ps1 -AndroidApkPath "D:\path\android-apks"` 指定 APK 文件或所在目录。APK 只作为 GitHub Release 的独立下载资产，不写入 `update-manifest.json`，也不参与 Mod 自动更新。
 
 Windows 下如果 `pnpm tauri:android:apk` 出现 `this and base files have different roots: C:\... and D:\...`，这是 Kotlin 增量编译缓存跨盘符相对路径问题。仓库已在 Android Gradle 配置中关闭 Kotlin incremental compilation；若本机仍复用旧 daemon 或旧缓存，先执行：
 
@@ -270,11 +274,12 @@ apps/companion/src-tauri/target/release/mystia-steward-companion(.exe)
 apps/companion/src-tauri/target/release/mystia-steward-companion-updater(.exe)
 mods/bepinex/bin/Release/MystiaStewardCompanion.BepInEx.dll
 mods/bepinex/dist/mystia-steward-companion-bepinex.zip
-mods/bepinex/dist/mystia-steward-companion-companion-windows-x64.zip
-mods/bepinex/dist/mystia-steward-companion-android-universal.apk
+mods/bepinex/dist/mystia-steward-companion-companion-windows-x64.exe
+mods/bepinex/dist/mystia-steward-companion-android-arm64-v8a.apk
+mods/bepinex/dist/mystia-steward-companion-android-armeabi-v7a.apk
 ```
 
-PowerShell 7 脚本固定生成 `.zip`；bash 脚本在系统没有 `zip` 时会改为生成 `.tar.gz`。打包脚本会在检测到 `apps/companion/src-tauri/target/release/mystia-steward-companion(.exe)` 时自动复制到安装包的 `companion/` 子目录，并把 `mystia-steward-companion-updater(.exe)` 放在插件目录根部。检测到 Windows `.exe` 时，还会生成 `mystia-steward-companion-companion-windows-x64.zip`，供其他设备只下载伴随窗口并通过 LAN 连接。Android APK 由 Tauri mobile/Android 工具链单独构建和签名，打包脚本不会从 Windows EXE 派生 APK。Windows 下该 updater 会显示独立更新窗口，负责提示关闭游戏、展示阶段进度并在游戏退出后替换插件目录。
+PowerShell 7 脚本固定生成 Mod 主包 `.zip`；bash 脚本在系统没有 `zip` 时会改为生成 `.tar.gz`。打包脚本会在检测到 `apps/companion/src-tauri/target/release/mystia-steward-companion(.exe)` 时自动复制到安装包的 `companion/` 子目录，并把 `mystia-steward-companion-updater(.exe)` 放在插件目录根部。检测到 Windows `.exe` 时，还会在 `dist` 根目录复制一份 `mystia-steward-companion-companion-windows-x64.exe`，供其他设备只下载伴随窗口并通过 LAN 连接。Android APK 由 Tauri mobile/Android 工具链单独构建和签名，打包脚本不会从 Windows EXE 派生 APK。Windows 下该 updater 会显示独立更新窗口，负责提示关闭游戏、展示阶段进度并在游戏退出后替换插件目录。
 
 ## 本地发布
 
@@ -284,10 +289,11 @@ GitHub Release 上传以下资产：
 
 - `mystia-steward-companion-bepinex.zip`
 - `update-manifest.json`
-- `mystia-steward-companion-companion-windows-x64.zip`
-- 可选：`mystia-steward-companion-android-universal.apk`
+- `mystia-steward-companion-companion-windows-x64.exe`
+- 可选：`mystia-steward-companion-android-arm64-v8a.apk`
+- 可选：`mystia-steward-companion-android-armeabi-v7a.apk`
 
-`update-manifest.json` 给 Mod 内置自动更新使用，只包含版本、资产文件名、zip 大小和 SHA256，不记录本机打包路径，并且只指向 `mystia-steward-companion-bepinex.zip`。独立 Windows 伴随窗口包和 Android APK 只给 B 设备跨局域网连接使用，不参与 Mod 自动更新。不上传 Tauri setup 安装器，避免用户误以为只安装桌面程序即可使用 Mod。
+`update-manifest.json` 给 Mod 内置自动更新使用，只包含版本、资产文件名、zip 大小和 SHA256，不记录本机打包路径，并且只指向 `mystia-steward-companion-bepinex.zip`。独立 Windows 伴随窗口 EXE 和 Android APK 只给 B 设备跨局域网连接使用，不参与 Mod 自动更新。不上传 Tauri setup 安装器，避免用户误以为只安装桌面程序即可使用 Mod。
 
 发布前检查：
 
@@ -375,7 +381,7 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
   -Notes "版本更新说明"
 ```
 
-脚本会先执行完整构建，再用 `gh release create` 创建 Release 并上传 Mod zip、独立伴随窗口 zip 与 update-manifest。
+脚本会先执行完整构建，再用 `gh release create` 创建 Release 并上传 Mod zip、独立伴随窗口 EXE 与 update-manifest。
 
 如果引用 DLL 不在 `mods\bepinex\References`，传入 `-ReferenceDir`：
 
@@ -447,11 +453,13 @@ Mod 会定期检查当前页面和游戏运行时状态。进入游戏并加载�
 
 运行态读取不再依赖固定秒数等待。日间任务列表、当前日间地图和稀客邀请通过 `DayScene.SceneManager.CurrentActiveMapLabel` / `TargetMapLabel`、`RunTimeDayScene.GetMapNPCs()`、`RunTimeDayScene.RefTrackedNPCAvailability()`、`DaySceneMap.allCharacters` 和 `RunTimeScheduler` 等运行态入口读取，不再把 `DaySceneSustainedPannel` 面板激活状态作为总门禁；夜间经营准备读取要求 `PrepNightScene.UI.IzakayaConfigPannel.OnPanelOpen` / `GoToSpecific` 已触发，且 `WorkPrepScenePannelRoot` 下的 `IzakayaConfigPannelNew` 仍激活。准备阶段只读取库存、已解锁、流行 Tag 等基础玩家运行态，因此 `修改`、`普客` 和 `稀客` 页面可以提前使用；任务列表、当前日间地图和稀客邀请仍只在日间场景读取。
 
-为降低经营中掉帧风险，本地 API 快照发布会做轻量节流：Unity 主线程最多约每 0.35 秒刷新一次缓存 JSON；若快照内容签名未变化，会复用上一份缓存 JSON，不为了 `CapturedAtUtc` 或性能数字重复序列化；完整 `RuntimeDataCatalog` 只在首次、内容变化、强制刷新或约每 10 秒补发一次，其余快照可能省略 `runtimeData`。运行时固定数据已经完整读取后，不再从经营快照热路径反复触发静态数据扫描；读取未完整时也按约 5 秒间隔重试，避免 `runtimeData.staticData` 在每轮经营刷新里反复消耗主线程。伴随窗口需要缓存最近一次完整运行时数据，不能把缺失的 `runtimeData` 当作数据丢失。概览页和经营中页会显示 `performanceMs` 中最近约 12 秒内耗时最高的快照环节，排查卡顿时优先记录 `refresh.business`、`refresh.runtime`、`snapshot.serialize`、`automation.collect` 和 `snapshot.publish`。经营扫描还会细分 `business.rare.*`、`business.normal.*`、`runtime.cookerSnapshot`、`mission.serveTargets` 等子项；普客订单快照会在短时间内复用，避免同一轮 `/snapshot` 发布重复枚举 `OrderController`、HUD 和 `GuestsManager`。
+推荐状态中的库存、酒水和已解锁料理使用 `RunTimeStorage.GenerateSaveData()` 生成的一份当前运行时存储快照作为权威来源；玩家等级、流行 Tag、明星店开关和联动状态继续使用轻量 getter 或静态字段读取。若存储快照中的 `recipes` 为空，Mod 会等待下一轮运行时读取，不会向伴随窗口发布空的可用料理集合。
 
-普客订单被动快照缓存约 1 秒。`NormalOrderRuntimeCapture` 通过 `GuestGroupController.PushToOrder` 捕获订单与可执行客人控制器绑定，不能为了性能删除；其版本变化后只强制刷新普客订单快照，不重新扫描稀客经营上下文。pending 出锅直送没有待办项时不在 `Update()` 热路径轮询。游戏界面置顶只在料理、材料和酒水面板字段刷新后重排列表，不再 Hook `RunTimePlayerData.CheckPinned` 这类全局高频查询。
+为降低经营中掉帧风险，本地 API 快照发布会做轻量节流：Unity 主线程最多约每 0.35 秒刷新一次缓存 JSON；若快照内容签名未变化，会复用上一份缓存 JSON，不为了 `CapturedAtUtc` 或性能数字重复序列化；完整 `RuntimeDataCatalog` 只在首次、内容变化、强制刷新或约每 10 秒补发一次，其余快照可能省略 `runtimeData`。运行时固定数据已经完整读取后，会缓存稀客映射和静态目录快照，经营 provider 与经营诊断只消费缓存，不再从经营快照热路径反复触发静态数据扫描；读取未完整时也按约 5 秒间隔重试，避免 `runtimeData.staticData` 在每轮经营刷新里反复消耗主线程。伴随窗口需要缓存最近一次完整运行时数据，不能把缺失的 `runtimeData` 当作数据丢失。概览页和经营中页会显示 `performanceMs` 中最近约 12 秒内耗时最高的快照环节，排查卡顿时优先记录 `refresh.business`、`refresh.runtime`、`snapshot.serialize`、`automation.collect` 和 `snapshot.publish`。经营扫描还会细分 `business.rare.*`、`business.normal.*`、`runtime.cookerSnapshot`、`mission.serveTargets` 等子项；普客订单快照会在短时间内复用，避免同一轮 `/snapshot` 发布重复枚举 `OrderController`、HUD 和 `GuestsManager`。
 
-夜间经营中，`经营中 / Service` 页优先使用 `SpecialOrderRuntimeCapture` 捕获到的稀客订单缓存；捕获缓存为空、诊断开启或需要初始化/回退校验时，再扫描 `GuestsManager`、稀客队列、`OrderController`、HUD、服务面板和桌位控制器中的订单。页面仍会读取桌位控制器中的活动稀客，用于显示当前稀客和 `GuestGroupController.GetFund`、`BaseFundCarry`、`MaxFundCarry` 等当前携带金钱信息，但捕获缓存已有订单时不应重复做完整订单反射扫描。普客订单使用 `NormalOrderRuntimeCapture` 记录 `GuestGroupController.PushToOrder` 建立的订单归属；HUD / `OrderController` 只作为显示和诊断来源，不能单独作为自动送达或评价依据。页面顶部只展示经营场景、扫描状态、推荐数据、厨具与置顶状态等通用信息，随后用 `稀客` / `普客` 页签分区展示各自功能。稀客点单后，工作台会按桌号列出稀客、料理词条和酒水词条，并复用稀客推荐算法计算候选料理、加料和酒水。普客订单读取到 `GameData.CoreLanguage.LanguageBase` 这类 IL2CPP 本地化对象时，必须过滤为无文本，不得把运行时类型名当作客人、料理或酒水名称展示。
+普客订单被动快照缓存约 1 秒。`NormalOrderRuntimeCapture` 通过 `GuestGroupController.PushToOrder` 捕获订单与可执行客人控制器绑定，不能为了性能删除；常规快照先读捕获缓存，捕获已有可解析订单时直接返回，捕获为空且 Hook 已安装、捕获版本未变化时复用上一次空结果，捕获不可用时才做 `OrderController`、HUD 和 `GuestsManager` 启动扫描。捕获版本变化后只强制刷新普客订单快照，不重新扫描稀客经营上下文。pending 出锅直送没有待办项时不在 `Update()` 热路径轮询。游戏界面置顶只在料理、材料和酒水面板字段刷新后重排列表，不再 Hook `RunTimePlayerData.CheckPinned` 这类全局高频查询。
+
+夜间经营中，`经营中 / Service` 页优先使用 `SpecialOrderRuntimeCapture` 捕获到的稀客订单缓存；捕获缓存为空、诊断开启或需要初始化校验时，再扫描 `GuestsManager`、稀客队列、`OrderController`、HUD、服务面板和桌位控制器中的订单。捕获版本、场景和诊断状态都未变化时会复用已有经营上下文，并按较慢节奏重新校验。页面仍会读取桌位控制器中的活动稀客，用于显示当前稀客和 `GuestGroupController.GetFund`、`BaseFundCarry`、`MaxFundCarry` 等当前携带金钱信息，但捕获缓存已有订单时不应重复做完整订单反射扫描。普客订单使用 `NormalOrderRuntimeCapture` 记录 `GuestGroupController.PushToOrder` 建立的订单归属；HUD / `OrderController` 只作为捕获为空的启动扫描和诊断来源，不能单独作为自动送达或评价依据。页面顶部只展示经营场景、扫描状态、推荐数据、厨具与置顶状态等通用信息，随后用 `稀客` / `普客` 页签分区展示各自功能。稀客点单后，工作台会按桌号列出稀客、料理词条和酒水词条，并复用稀客推荐算法计算候选料理、加料和酒水。普客订单读取到 `GameData.CoreLanguage.LanguageBase` 这类 IL2CPP 本地化对象时，必须过滤为无文本，不得把运行时类型名当作客人、料理或酒水名称展示。
 
 若 IL2CPP getter 无法读取订单列表，Mod 会继续尝试 `AllOrdersData` 和 `PeekOrders()`；若 tag ID 读取失败，会从稀客控制器的订单文本方法读取中文词条。
 
@@ -471,7 +479,7 @@ Mod 会定期检查当前页面和游戏运行时状态。进入游戏并加载�
 - `runtime-guests.log`：`DataBaseCharacter` 普客、稀客、映射稀客、原始稀客映射和 `GuestFoodEasterEggData` 类型/简单字段。
 - `runtime-izakayas.log`：`DataBaseCore.GetAllIzakayas()` 或静态 `Izakayas` 字典读取到的经营场景标签、等级、普通/稀客池和刷新参数。
 
-固定数据快照只在 `Diagnostics.EnableNightBusinessDiagnostics=true` 且 `NightBusinessReflectionProvider.LoadContext()` 被调用时写入；也就是说，通常需要进入游戏并让伴随窗口/Mod 触发一次经营数据刷新。若游戏的 `DataBaseCore`、`DataBaseLanguage` 或 `DataBaseCharacter` 尚未初始化，快照会记录缺失状态并按 5 秒间隔重试。判断读取成功时优先看日志头部 `Complete: True` 和 `Status` 中各类计数是否大于 0。
+固定数据快照由基础运行时目录刷新路径读取并缓存；`Diagnostics.EnableNightBusinessDiagnostics=true` 且 `NightBusinessReflectionProvider.LoadContext()` 被调用时，经营诊断只把已缓存的目录快照写入日志，不会在经营热路径重新扫描 `DataBaseCore`、`DataBaseLanguage` 或 `DataBaseCharacter`。若游戏数据库尚未初始化，目录刷新会按 5 秒间隔重试。判断读取成功时优先看日志头部 `Complete: True` 和 `Status` 中各类计数是否大于 0。
 
 ## 本地 API 与伴随窗口
 
@@ -516,7 +524,9 @@ Port = 32145
 
 除 `/health` 外，端点都需要 `X-Mystia-Steward-Companion-Token`。Token 由插件生成并保存在 BepInEx 配置中，同机启动伴随窗口时通过 `--token=` 参数传入 Tauri 后端；A 设备本机设置页可以复制或重置 Token。远程局域网连接时，用户需要在 B 设备伴随窗口顶部连接区手动输入 A 设备的 endpoint 和 token，点击 `连接` 后才开始轮询。Tauri 伴随窗口会显示实时 Mod 工作台，默认包含 `概览`、`普客`、`稀客`、`经营中`、`任务`、`修改`、`帮助`、`设置` 八个页签；`概览` 内部按 `状态`、`库存`、`操作` 分栏，`设置` 内部按 `窗口`、`连接`、`推荐`、`自动化`、`更新` 分栏，调试开关开启后才显示 `调试` 分栏。窗口设置包含透明度、焦点切换、始终置顶、鼠标穿透锁定、手柄导航和显示调试信息；连接设置包含本地 API/LAN 连接配置；推荐设置包含订单排序、推荐权重、预算策略、缺失厨具过滤、任务料理/收藏料理/收藏酒水置顶、带库存显示和名称/库存排序的排除材料/酒水、同基础料理展示数量、游戏界面置顶和厨具高亮。Android 伴随窗口只作为 B 设备 LAN 客户端，不提供桌面托盘、置顶、鼠标穿透、焦点切换、单实例控制和游戏关闭自动退出；桌面鼠标穿透必须通过 Tauri 原生窗口 `set_ignore_cursor_events` 控制，不能只用 CSS `pointer-events` 模拟。帮助页内容来自 `apps/companion/src/data/help-content.json`，由前端渲染为目录树和详情面板，修改文案时优先改 JSON。`日志` 页签、设置中的 `调试` 分栏、BepInEx 原生日志窗口控制、扫描状态、运行时来源、性能耗时、订单来源和内部 key 这类诊断信息只在 `设置 -> 显示调试信息` 开启后显示。它通过 Tauri 原生后端读取本地 API。
 
-伴随窗口的自动化能力只在前端 `设置` 页总开关开启后运行。稀客并发、普客并发、最大重试和最大回退都由 `CompanionPreferences` 配置控制，默认值分别为 `2`、`3`、`3`、`2`；稀客完成订单评价每轮仍最多执行 1 笔，普客按普客并发数处理。经营中订单排序支持点单顺序和稀客分组，必须同时影响经营中列表、专注模式、游戏界面置顶和自动化选单；料理/酒水排序配置会影响稀客页、经营中页、专注模式和自动化选单，新增排序或置顶规则时需要同时覆盖这些入口。同基础料理展示数量只裁剪页面推荐行，自动化必须从独立执行候选构造目标，不能因为页面隐藏了加料变体而跳过可执行方案。预算策略、任务料理/收藏料理/收藏酒水置顶、排除材料和排除酒水都必须进入推荐链路和缓存签名；预算可阻止、提示或忽略超预算方案，排除材料需要同时过滤基础配方和加料。任务料理置顶只在当前稀客有已接取投喂任务且目标料理通过解锁、库存、预算、排除项和缺失厨具过滤后生效；收藏料理置顶和收藏酒水置顶分别只影响对应列表，且不绕过硬过滤。偏好命中但不满足点单的料理/酒水直接进入统一推荐列表并标识为 `偏好备选`，自动化根据排序后的执行候选锁定目标；收藏限定开启时，锁定目标仍必须命中收藏。稀客与普客自动化的阶段配置必须独立保存和独立传参：稀客使用 `autoPrep*` 配置，普客使用 `autoNormal*` 配置；普客阶段包括送达酒水、开始料理、送达料理、完成订单和出错暂停，不能复用稀客送酒或完成订单开关。自动开始料理固定尝试完成原生 QTE 奖励结算，不提供跳过开关。普客自动化需要按订单 key 维护独立状态，非临时错误只暂停对应普客订单，不得暂停稀客自动化或其他普客订单；已进入制作中的普客料理必须绑定目标订单/桌位，后续轮询检测到 pending 后只能等待，不得在同类多个厨具上重复开始同一订单料理。普客订单变化需要立即触发一次处理，常规重复轮询仍需节流。C# pending target 必须优先保存并匹配 `OrderKey`，避免桌位复用或同料理多单时串单；如果游戏重建普客订单对象导致旧 key 失效，只能在桌号、料理和酒水仍一致时重匹配当前订单继续直送。稀客与普客的开锅请求必须经过前端同一轮厨具预约表，预约容量来自当前已摆放厨具快照；同类厨具容量不足时，普客待处理订单优先保留容量，稀客订单进入等待态并继续处理不占厨具的送酒/完成步骤。稀客和普客都必须支持料理和酒水单项先送达：送达提交必须同步顾客桌面显示和订单状态，只有 `get_IsFullfilled()` 为真时才能调用 `EvaluateOrder()`；`get_IsFullfilled()` 不是终态字段，普客快照还需要区分 `ReadyToEvaluate` 和 `HasEvaluated`。酒水创建对象后必须在送达提交成功后才扣库存；料理出锅后直接送达目标订单，送达失败时保留成品和 pending 以便下一轮重试。子选项默认关闭并记忆用户上次配置。临时失败例如厨具占用、运行时对象暂不可读、桌面显示暂不可写，应保持可重试，不应永久停止自动任务；非临时错误在对应订单类型的 `出错时暂停` 开启时才暂停当前订单。前端状态机只将送酒、开锅、单项送达提交和触发评价视为真实进展；稀客页下拉选项不再按存档进度集合过滤，只按经营场景、可读名称和可用 Tag 过滤。
+伴随窗口的自动化能力只在前端 `设置` 页总开关开启后运行。稀客并发、普客并发、最大重试和最大回退都由 `CompanionPreferences` 配置控制，默认值分别为 `2`、`3`、`3`、`2`；稀客完成订单评价每轮仍最多执行 1 笔，普客按普客并发数处理。经营中订单排序支持点单顺序和稀客分组，必须同时影响经营中列表、专注模式、游戏界面置顶和自动化选单；料理/酒水排序配置会影响稀客页、经营中页、专注模式和自动化选单，新增排序或置顶规则时需要同时覆盖这些入口。同基础料理展示数量只裁剪页面推荐行，自动化必须从独立执行候选构造目标，不能因为页面隐藏了加料变体而跳过可执行方案。预算策略、订单级免费状态、任务料理/收藏料理/收藏酒水置顶、排除材料和排除酒水都必须进入推荐链路和缓存签名；预算可阻止、提示或忽略超预算方案，订单级 `isFreeOrder=true` 时不应用付款预算阻止，排除材料需要同时过滤基础配方和加料。任务料理置顶只在当前稀客有已接取投喂任务且目标料理通过解锁、库存、预算、排除项和缺失厨具过滤后生效；收藏料理置顶和收藏酒水置顶分别只影响对应列表，且不绕过硬过滤。偏好命中但不满足点单的料理/酒水直接进入统一推荐列表并标识为 `偏好备选`，自动化根据排序后的执行候选锁定目标；收藏限定开启时，锁定目标仍必须命中收藏。稀客与普客自动化的阶段配置必须独立保存和独立传参：稀客使用 `autoPrep*` 配置，普客使用 `autoNormal*` 配置；普客阶段包括送达酒水、开始料理、送达料理、完成订单和出错暂停，不能复用稀客送酒或完成订单开关。自动开始料理固定尝试完成原生 QTE 奖励结算，不提供跳过开关。普客自动化需要按订单 key 维护独立状态，非临时错误只暂停对应普客订单，不得暂停稀客自动化或其他普客订单；已进入制作中的普客料理必须绑定目标订单/桌位，后续轮询检测到 pending 后只能等待，不得在同类多个厨具上重复开始同一订单料理。普客订单变化需要立即触发一次处理，常规重复轮询仍需节流。C# pending target 必须优先保存并匹配 `OrderKey`，避免桌位复用或同料理多单时串单；如果游戏重建普客订单对象导致旧 key 失效，只能在桌号、料理和酒水仍一致时重匹配当前订单继续直送。稀客与普客的开锅请求必须经过前端同一轮厨具预约表，预约容量来自当前已摆放厨具快照；同类厨具容量不足时，普客待处理订单优先保留容量，稀客订单进入等待态并继续处理不占厨具的送酒/完成步骤。稀客和普客都必须支持料理和酒水单项先送达：送达提交必须同步顾客桌面显示和订单状态，只有 `get_IsFullfilled()` 为真时才能调用 `EvaluateOrder()`；`get_IsFullfilled()` 不是终态字段，普客快照还需要区分 `ReadyToEvaluate` 和 `HasEvaluated`。酒水创建对象后必须在送达提交成功后才扣库存；料理出锅后直接送达目标订单，送达失败时保留成品和 pending 以便下一轮重试。子选项默认关闭并记忆用户上次配置。临时失败例如厨具占用、运行时对象暂不可读、桌面显示暂不可写，应保持可重试，不应永久停止自动任务；非临时错误在对应订单类型的 `出错时暂停` 开启时才暂停当前订单。前端状态机只将送酒、开锅、单项送达提交和触发评价视为真实进展；稀客页下拉选项不再按存档进度集合过滤，只按经营场景、可读名称和可用 Tag 过滤。
+
+自动化在订单部分送达后恢复顾客耐心时，必须先读取同一 `GuestGroupController` 的 `CurrentPatient` 和 `MaxPatient`，再把 `AddPatient` 入参限制到剩余耐心空间内；若检测到当前耐心已经高于上限，只允许调用 `SetPatient(MaxPatient)` 做一次状态校正。游戏原生 `AddPatient` 不裁剪上限，而 `GuestTableDisplayer.UpdatePatient` 会先用 progress 索引贴图数组，因此不得恢复到 `MaxPatient` 以上。
 
 稀客自动化诊断由前端状态机维护，每个当前候选订单都要暴露当前步骤、下次动作、已开锅、已送酒、重试/回退次数、最近原因和暂停状态。普客自动化也要按订单 key 展示下次动作、送酒、开锅、送料理、完成订单和订单已有料理/酒水状态，避免只靠长文本判断卡住位置。`重试` 只解除该订单暂停并保留已完成阶段，`重置` 删除该订单本地状态并在下一轮重新判断；两者都不得影响其他稀客订单或普客订单状态。
 

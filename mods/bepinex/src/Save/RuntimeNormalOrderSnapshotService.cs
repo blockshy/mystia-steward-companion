@@ -22,11 +22,27 @@ public sealed class RuntimeNormalOrderSnapshotService
     private static readonly Dictionary<string, DateTime> FirstSeenByOrderKey = new(StringComparer.Ordinal);
 
     private readonly DataRepository _repository;
+    private readonly IReadOnlyDictionary<int, Recipe> _recipesById;
+    private readonly IReadOnlyDictionary<int, Recipe> _recipesByRecipeId;
+    private readonly IReadOnlyDictionary<int, Beverage> _beveragesById;
+    private readonly IReadOnlyDictionary<int, NormalCustomer> _normalCustomersById;
     private readonly Dictionary<string, double> _performanceMs = new(StringComparer.Ordinal);
 
     public RuntimeNormalOrderSnapshotService(DataRepository repository)
     {
         _repository = repository;
+        _recipesById = repository.Recipes
+            .GroupBy(recipe => recipe.Id)
+            .ToDictionary(group => group.Key, group => group.First());
+        _recipesByRecipeId = repository.Recipes
+            .GroupBy(recipe => recipe.RecipeId)
+            .ToDictionary(group => group.Key, group => group.First());
+        _beveragesById = repository.Beverages
+            .GroupBy(beverage => beverage.Id)
+            .ToDictionary(group => group.Key, group => group.First());
+        _normalCustomersById = repository.NormalCustomers
+            .GroupBy(customer => customer.Id)
+            .ToDictionary(group => group.Key, group => group.First());
     }
 
     public IReadOnlyDictionary<string, double> PerformanceMs => _performanceMs;
@@ -34,9 +50,28 @@ public sealed class RuntimeNormalOrderSnapshotService
     public NormalBusinessContext Load()
     {
         _performanceMs.Clear();
-        var orders = new List<NormalBusinessOrder>();
         var errors = new List<string>();
         var source = new List<string>();
+
+        try
+        {
+            var runtimeCapturedOrders = Measure("runtimeCapture", () => ReadRuntimeCapturedOrders().ToList());
+            source.Add($"RuntimeCapture={runtimeCapturedOrders.Count}");
+            source.Add($"RuntimeCaptureStatus={NormalOrderRuntimeCapture.Status}");
+            if (runtimeCapturedOrders.Count > 0)
+            {
+                source.Add("normalOrderMode=runtimeCapture");
+                return BuildContext(runtimeCapturedOrders, source, errors);
+            }
+        }
+        catch (Exception ex)
+        {
+            source.Add("RuntimeCapture=err");
+            errors.Add($"RuntimeCapture: {ex.Message}");
+        }
+
+        source.Add("normalOrderMode=reflectionBootstrap");
+        var orders = new List<NormalBusinessOrder>();
 
         try
         {
@@ -92,19 +127,11 @@ public sealed class RuntimeNormalOrderSnapshotService
             errors.Add($"Queue: {ex.Message}");
         }
 
-        try
-        {
-            var runtimeCapturedOrders = Measure("runtimeCapture", () => ReadRuntimeCapturedOrders().ToList());
-            source.Add($"RuntimeCapture={runtimeCapturedOrders.Count}");
-            source.Add($"RuntimeCaptureStatus={NormalOrderRuntimeCapture.Status}");
-            orders.AddRange(runtimeCapturedOrders);
-        }
-        catch (Exception ex)
-        {
-            source.Add("RuntimeCapture=err");
-            errors.Add($"RuntimeCapture: {ex.Message}");
-        }
+        return BuildContext(orders, source, errors);
+    }
 
+    private NormalBusinessContext BuildContext(IEnumerable<NormalBusinessOrder> orders, List<string> source, List<string> errors)
+    {
         var deduplicated = Measure("deduplicate", () => ApplyFirstSeenOrder(orders)
                 .OrderBy(order => order.FirstSeenAtUtc ?? DateTime.MaxValue)
                 .ThenBy(order => order.DeskCode)
@@ -373,8 +400,8 @@ public sealed class RuntimeNormalOrderSnapshotService
         var requestBeverage = SafeGet(order, "RequestBeverage") ?? SafeInvoke(order, "get_RequestBeverage");
         var foodId = ReadSellableId(requestFood, ReadFirstMember(order, "foodRequest", "FoodRequest", "requestFoodId", "RequestFoodId", "RequestFoodID"));
         var beverageId = ReadSellableId(requestBeverage, ReadFirstMember(order, "beverageRequest", "BeverageRequest", "requestBevId", "RequestBevId", "requestBeverageId", "RequestBeverageId", "RequestBeverageID"));
-        var recipe = _repository.Recipes.FirstOrDefault(item => item.RecipeId == foodId || item.Id == foodId);
-        var beverage = _repository.Beverages.FirstOrDefault(item => item.Id == beverageId);
+        var recipe = ResolveRecipe(foodId);
+        _beveragesById.TryGetValue(beverageId, out var beverage);
         var guest = SafeGet(order, "Guest") ?? SafeInvoke(order, "get_Guest");
         var orderKey = BuildRuntimeOrderKey(order);
         var deskCode = RuntimeReflectionUtility.ToInt(SafeGet(order, "DeskCode"), -1);
@@ -516,7 +543,13 @@ public sealed class RuntimeNormalOrderSnapshotService
         var guestId = ReadGuestId(guest);
         if (!guestId.HasValue) return null;
 
-        return _repository.NormalCustomers.FirstOrDefault(customer => customer.Id == guestId.Value)?.Name;
+        return _normalCustomersById.TryGetValue(guestId.Value, out var customer) ? customer.Name : null;
+    }
+
+    private Recipe? ResolveRecipe(int foodId)
+    {
+        if (_recipesByRecipeId.TryGetValue(foodId, out var byRecipeId)) return byRecipeId;
+        return _recipesById.TryGetValue(foodId, out var byId) ? byId : null;
     }
 
     private static int? ReadGuestId(object? guest)

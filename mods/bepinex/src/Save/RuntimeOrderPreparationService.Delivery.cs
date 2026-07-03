@@ -148,15 +148,81 @@ internal static partial class RuntimeOrderPreparationService
             return true;
         }
 
-        var recoverValue = PatientRecoverPerDeliveredItem * deliveredItemCount;
+        if (!TryReadPatientBounds(runtimeOrder.Controller, out var currentPatient, out var maxPatient, out var patientMessage))
+        {
+            message = $"订单尚未补齐，但{patientMessage}，已跳过恢复顾客耐心以避免耐心条越界。";
+            return true;
+        }
+
+        if (maxPatient <= 0)
+        {
+            message = $"订单尚未补齐，但顾客耐心上限异常（{maxPatient}），已跳过恢复顾客耐心。";
+            return true;
+        }
+
+        if (currentPatient > maxPatient)
+        {
+            if (TryInvokeInstance(runtimeOrder.Controller, "SetPatient", new object?[] { maxPatient }))
+            {
+                message = $"订单尚未补齐，检测到顾客耐心 {currentPatient}/{maxPatient} 已超过上限，已校正为上限值。";
+                return true;
+            }
+
+            message = $"订单尚未补齐，检测到顾客耐心 {currentPatient}/{maxPatient} 已超过上限，但无法调用 GuestGroupController.SetPatient 校正。";
+            return false;
+        }
+
+        var requestedRecoverValue = PatientRecoverPerDeliveredItem * deliveredItemCount;
+        var remainingPatient = maxPatient - Math.Max(0, currentPatient);
+        if (remainingPatient <= 0)
+        {
+            message = "订单尚未补齐，顾客耐心已满，本轮不恢复耐心。";
+            return true;
+        }
+
+        var recoverValue = Math.Min(requestedRecoverValue, remainingPatient);
         if (TryInvokeInstance(runtimeOrder.Controller, "AddPatient", new object?[] { recoverValue }))
         {
-            message = $"订单尚未补齐，已按游戏规则恢复顾客耐心 {recoverValue}。";
+            message = recoverValue == requestedRecoverValue
+                ? $"订单尚未补齐，已按游戏规则恢复顾客耐心 {recoverValue}。"
+                : $"订单尚未补齐，已按耐心上限恢复顾客耐心 {recoverValue}（原计划 {requestedRecoverValue}）。";
             return true;
         }
 
         message = "订单尚未补齐，但无法调用 GuestGroupController.AddPatient 恢复顾客耐心。";
         return false;
+    }
+
+    private static bool TryReadPatientBounds(object controller, out int currentPatient, out int maxPatient, out string message)
+    {
+        currentPatient = 0;
+        maxPatient = 0;
+
+        var currentValue = ReadMember(controller, "CurrentPatient") ?? TryInvokeInstanceValue(controller, "get_CurrentPatient");
+        if (!TryReadIntValue(currentValue, out currentPatient))
+        {
+            message = "无法读取 GuestGroupController.CurrentPatient";
+            return false;
+        }
+
+        var maxValue = ReadMember(controller, "MaxPatient") ?? TryInvokeInstanceValue(controller, "get_MaxPatient");
+        if (!TryReadIntValue(maxValue, out maxPatient))
+        {
+            message = "无法读取 GuestGroupController.MaxPatient";
+            return false;
+        }
+
+        message = "";
+        return true;
+    }
+
+    private static bool TryReadIntValue(object? value, out int number)
+    {
+        number = 0;
+        if (value == null) return false;
+
+        number = ToInt(value, int.MinValue);
+        return number != int.MinValue;
     }
 
     private static bool AddPatientRecoveryStepIfNeeded(

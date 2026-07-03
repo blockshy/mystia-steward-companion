@@ -377,7 +377,7 @@ public static class SpecialOrderRuntimeCapture
             var next = existing.Aggregate(order, MergeCapturedOrder);
             Orders.Add(next);
             _capturedOrders++;
-            _lastCapture = $"{next.CaptureSource}: desk={next.DeskCode}, guestId={next.GuestId?.ToString() ?? ""}, food={next.FoodTag}({next.FoodTagId}), bev={next.BeverageTag}({next.BeverageTagId})";
+            _lastCapture = $"{next.CaptureSource}: desk={next.DeskCode}, guestId={next.GuestId?.ToString() ?? ""}, food={next.FoodTag}({next.FoodTagId}), bev={next.BeverageTag}({next.BeverageTagId}), free={next.IsFreeOrder}";
             _changeVersion++;
             _status = BuildStatusLocked();
             if (Orders.Count > MaxOrders)
@@ -470,6 +470,7 @@ public static class SpecialOrderRuntimeCapture
             ?? GetMemberValue(controller, "OrderingGuest");
         var foodTagId = ToNullableInt(GetMemberValue(readableOrder, "RequestFoodTag"));
         var beverageTagId = NormalizeBeverageTagId(ToNullableInt(GetMemberValue(readableOrder, "RequestBeverageTag")));
+        var isFreeOrder = ReadOrderFreeState(readableOrder, textParts.FreeOrder);
         var deskCode = ToNullableInt(GetMemberValue(readableOrder, "DeskCode"))
             ?? ToNullableInt(GetMemberValue(controller, "DeskCode"))
             ?? textParts.DeskCode
@@ -482,6 +483,7 @@ public static class SpecialOrderRuntimeCapture
             textParts.BeverageTag,
             textParts.GuestName,
             deskCode,
+            isFreeOrder,
             readableOrder,
             controller,
             source);
@@ -495,6 +497,7 @@ public static class SpecialOrderRuntimeCapture
         string textBeverageTag,
         string textGuestName,
         int deskCode,
+        bool isFreeOrder,
         object? order,
         object? controller,
         string source)
@@ -558,6 +561,7 @@ public static class SpecialOrderRuntimeCapture
             beverageTagId ?? 0,
             beverageTagId.HasValue,
             beverageTag,
+            isFreeOrder,
             IsOrderFulfilled(order),
             capturedAt,
             capturedAt,
@@ -620,6 +624,7 @@ public static class SpecialOrderRuntimeCapture
             0,
             false,
             "",
+            false,
             false,
             capturedAt,
             capturedAt,
@@ -759,6 +764,7 @@ public static class SpecialOrderRuntimeCapture
             BeverageTagId = beverage.TagId,
             HasBeverageTagId = beverage.HasTagId,
             BeverageTag = beverage.Tag,
+            IsFreeOrder = incoming.IsFreeOrder || existing.IsFreeOrder,
             IsFulfilled = incoming.IsFulfilled || existing.IsFulfilled,
             FirstCapturedAt = existing.FirstCapturedAt < incoming.FirstCapturedAt ? existing.FirstCapturedAt : incoming.FirstCapturedAt,
             RuntimeKey = string.IsNullOrWhiteSpace(incoming.RuntimeKey) ? existing.RuntimeKey : incoming.RuntimeKey,
@@ -849,6 +855,14 @@ public static class SpecialOrderRuntimeCapture
         var value = GetMemberValue(order, "IsFullfilled");
         if (value is bool boolValue) return boolValue;
         return string.Equals(value?.ToString(), "true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ReadOrderFreeState(object? order, bool? textValue)
+    {
+        var value = GetMemberValue(order, "FreeOrder");
+        if (value is bool boolValue) return boolValue;
+        if (bool.TryParse(value?.ToString(), out var parsed)) return parsed;
+        return textValue ?? false;
     }
 
     private static bool IsManualSpecialOrder(object? order, object? controller)
@@ -1026,7 +1040,14 @@ public static class SpecialOrderRuntimeCapture
             ReadLabeledValue(lines, "OrderType"),
             ReadLabeledValue(lines, "ReqFoodTag"),
             ReadLabeledValue(lines, "ReqBevTag"),
-            ReadLabeledValue(lines, "Guest"));
+            ReadLabeledValue(lines, "Guest"),
+            ReadLabeledBool(lines, "IsFreeOrder?"));
+    }
+
+    private static bool? ReadLabeledBool(IReadOnlyList<string> lines, string label)
+    {
+        var value = ReadLabeledValue(lines, label);
+        return bool.TryParse(value, out var parsed) ? parsed : null;
     }
 
     private static int? ReadLabeledInt(IReadOnlyList<string> lines, string label)
@@ -1271,9 +1292,10 @@ internal readonly record struct ParsedOrderText(
     string OrderType,
     string FoodTag,
     string BeverageTag,
-    string GuestName)
+    string GuestName,
+    bool? FreeOrder)
 {
-    public static ParsedOrderText Empty { get; } = new(null, "", "", "", "");
+    public static ParsedOrderText Empty { get; } = new(null, "", "", "", "", null);
 
     public bool LooksLikeSpecialOrder =>
         !string.IsNullOrWhiteSpace(GuestName)
@@ -1281,7 +1303,7 @@ internal readonly record struct ParsedOrderText(
 
     public string ToDiagnosticString()
     {
-        return $"desk={DeskCode?.ToString() ?? ""},type={OrderType},food={FoodTag},bev={BeverageTag},guest={GuestName}";
+        return $"desk={DeskCode?.ToString() ?? ""},type={OrderType},food={FoodTag},bev={BeverageTag},guest={GuestName},free={FreeOrder?.ToString() ?? ""}";
     }
 }
 
@@ -1301,6 +1323,7 @@ public sealed record CapturedRuntimeSpecialOrder(
     int BeverageTagId,
     bool HasBeverageTagId,
     string BeverageTag,
+    bool IsFreeOrder,
     bool IsFulfilled,
     DateTime FirstCapturedAt,
     DateTime CapturedAt,

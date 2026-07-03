@@ -6,12 +6,12 @@
 
 ## 读取流程
 
-1. 通过 `GameData.RunTime.Common.RunTimeStorage.GetAllRecipeIndex()` 读取当前已解锁料理。
-2. 通过 `GameData.RunTime.Common.RunTimeStorage.GetAllBeveragesId()` 读取当前酒水数量。
-3. 通过 `GameData.RunTime.Common.RunTimeStorage.GetAllIngredients()` 读取当前食材数量。
+1. 通过 `GameData.RunTime.Common.RunTimeStorage.GenerateSaveData()` 生成当前运行时存储快照，读取其中的 `recipes`、`beverages` 和 `ingredients`。
+2. `recipes` 作为已解锁料理的权威来源；如果该集合为空，本轮不发布空的推荐状态，等待下一次运行时读取。
+3. `beverages` 和 `ingredients` 分别作为当前酒水与食材数量来源。
 4. 通过 `GameData.RunTime.Common.RunTimePlayerData.GetLevel()` 和 `GetPopFoodTags(...)` 读取玩家等级与流行喜好/厌恶标签。
 5. 通过 `GameData.RunTime.DaySceneUtility.RunTimeDayScene.GetTrackedSwitch("Aya_FamousIzakaya", false)` 判断明星店状态。
-6. 对没有直接 getter 的字段，例如 `collabStatus`，调用同一批运行时对象的 `GenerateSaveData()` 生成当前内存快照作为补充；这不是读取 `.memory` 文件。
+6. 对没有直接 getter 的玩家字段，例如 `CollabStatus`，直接读取同一运行时类型上的静态字段；玩家和日间状态不在常规推荐状态热路径生成 save-data 快照。
 7. 将读取结果转换为 `ParsedSaveData`，再生成推荐算法使用的 `RecommendationState`。
 
 ## 夜间经营订单
@@ -36,9 +36,11 @@
 
 `NightBusinessReflectionProvider` 会优先读取 auto-property backing field，并在普通 `IEnumerable` 不可用时通过反射调用 `GetEnumerator()`、`MoveNext()` 和 `Current` 枚举 IL2CPP 集合。`NightBusinessContext.Source` 会记录扫描摘要，例如 `OrderController=1; ServePanel=1; manager=ok; Presented=1; Desk=0; Queue=1; guests=1; orders=1`，用于判断是管理器未找到、集合为空，还是只缺少订单数据。如果当前游戏版本字段名变化，优先核对以上路径；无法映射稀客 ID 时，检查运行时固定数据日志中的 `runtime-static-data.log` 和 `runtime-guests.log`。
 
-运行时捕获订单维护 `SpecialOrderRuntimeCapture.ChangeVersion`。当订单新增、合并或移除时，UI 控制器会在 Unity 主线程等待 0.2 秒防抖后强制刷新经营数据并发布本地 API 快照；基础运行时库存仍按 `AutoRefreshSeconds` 慢刷新，避免恢复高频反射扫描导致掉帧。伴随窗口在 `经营中` 和稀客专注模式下以 750ms 轮询缓存快照，其他页面保持 2 秒。
+运行时捕获订单维护 `SpecialOrderRuntimeCapture.ChangeVersion`。当订单新增、合并或移除时，UI 控制器会在 Unity 主线程等待 0.2 秒防抖后强制刷新经营数据并发布本地 API 快照；捕获版本、场景和诊断状态都未变化时复用已有经营上下文，并按较慢节奏重新校验，避免 750ms 快照轮询带动完整经营扫描。基础运行时库存仍按 `AutoRefreshSeconds` 慢刷新，避免恢复高频反射扫描导致掉帧。伴随窗口在 `经营中` 和稀客专注模式下以 750ms 轮询缓存快照，其他页面保持 2 秒。
 
-启用经营诊断后，稀客别名快照会写入独立日志 `runtime-static-data.log`，默认路径为 `BepInEx/config/MystiaStewardCompanion/runtime-static-data.log`。如果用户配置了自定义经营诊断日志路径，则该静态日志写入同一目录。日志会标记 `aliasSource`，用于区分固定映射、运行时同名归一化、直接本地 ID 和手工兜底；内容只在快照变化时追加，便于排查事件稀客别名而不污染逐帧经营诊断。
+普客订单快照优先读取 `NormalOrderRuntimeCapture` 记录的订单与 `GuestGroupController` 绑定；只要捕获缓存能解析出订单，就不再扫描 `OrderController`、HUD、`GuestsManager` 控制器集合或队列。捕获为空且 Hook 已安装、捕获版本未变化时复用上一次空结果；捕获 Hook 尚未安装成功或需要启动期校验时，才进入反射启动扫描，并在来源摘要中标记 `normalOrderMode=reflectionBootstrap`。捕获路径会标记 `normalOrderMode=runtimeCapture`，用于确认常规轮询没有继续做全量订单扫描。
+
+启用经营诊断后，稀客别名快照会写入独立日志 `runtime-static-data.log`，默认路径为 `BepInEx/config/MystiaStewardCompanion/runtime-static-data.log`。如果用户配置了自定义经营诊断日志路径，则该静态日志写入同一目录。日志会复用已缓存的运行时目录快照并标记 `aliasSource`，用于区分固定映射、运行时同名归一化、直接本地 ID 和手工兜底；内容只在快照变化时追加，便于排查事件稀客别名而不污染逐帧经营诊断。
 
 ## 回退行为
 

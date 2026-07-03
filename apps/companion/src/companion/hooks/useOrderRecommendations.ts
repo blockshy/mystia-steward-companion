@@ -12,9 +12,20 @@ interface AsyncOrderRecommendationResult extends OrderRecommendationResult {
   error: string | null;
 }
 
+interface UseOrderRecommendationsOptions {
+  enabled?: boolean;
+}
+
 const EMPTY_RECOMMENDATIONS: OrderRecommendationResult = {
   recommendations: [],
   recommendationIssues: [],
+};
+
+const EMPTY_ASYNC_RECOMMENDATIONS: AsyncOrderRecommendationResult = {
+  ...EMPTY_RECOMMENDATIONS,
+  pending: false,
+  isCurrent: true,
+  error: null,
 };
 
 /**
@@ -25,13 +36,9 @@ const EMPTY_RECOMMENDATIONS: OrderRecommendationResult = {
  */
 export function useOrderRecommendations(
   payload: OrderRecommendationWorkerPayload,
+  { enabled = true }: UseOrderRecommendationsOptions = {},
 ): AsyncOrderRecommendationResult {
-  const [state, setState] = useState<AsyncOrderRecommendationResult>({
-    ...EMPTY_RECOMMENDATIONS,
-    pending: false,
-    isCurrent: true,
-    error: null,
-  });
+  const [state, setState] = useState<AsyncOrderRecommendationResult>(EMPTY_ASYNC_RECOMMENDATIONS);
   const workerRef = useRef<Worker | null>(null);
   const latestRequestIdRef = useRef(0);
   const settledRequestIdRef = useRef(0);
@@ -42,6 +49,12 @@ export function useOrderRecommendations(
   }, [payload]);
 
   useEffect(() => {
+    if (!enabled) {
+      workerRef.current?.terminate();
+      workerRef.current = null;
+      return undefined;
+    }
+
     const worker = new Worker(new URL('../workers/order-recommendations.worker.ts', import.meta.url), {
       type: 'module',
     });
@@ -84,7 +97,7 @@ export function useOrderRecommendations(
       worker.terminate();
       workerRef.current = null;
     };
-  }, []);
+  }, [enabled]);
 
   useEffect(() => {
     const requestId = latestRequestIdRef.current + 1;
@@ -101,14 +114,9 @@ export function useOrderRecommendations(
       });
     };
 
-    if (payload.orders.length === 0) {
+    if (!enabled || payload.orders.length === 0) {
       settledRequestIdRef.current = requestId;
-      scheduleCurrentState(() => ({
-        ...EMPTY_RECOMMENDATIONS,
-        pending: false,
-        isCurrent: true,
-        error: null,
-      }));
+      scheduleCurrentState(() => EMPTY_ASYNC_RECOMMENDATIONS);
       return;
     }
 
@@ -139,7 +147,7 @@ export function useOrderRecommendations(
       };
     });
     worker.postMessage(request);
-  }, [payload]);
+  }, [enabled, payload]);
 
   return state;
 }

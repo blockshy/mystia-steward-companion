@@ -102,7 +102,7 @@ public sealed class NightBusinessDiagnosticSink
         foreach (var order in orders.Take(24))
         {
             builder.AppendLine(
-                $"  - source={order.Source}; desk={order.DeskCode}; guestId={FormatNullable(order.GuestId)}; guest={order.GuestName}; food={order.FoodTag}({order.FoodTagId}); beverage={order.BeverageTag}({order.BeverageTagId})");
+                $"  - source={order.Source}; desk={order.DeskCode}; guestId={FormatNullable(order.GuestId)}; guest={order.GuestName}; food={order.FoodTag}({order.FoodTagId}); beverage={order.BeverageTag}({order.BeverageTagId}); freeOrder={FormatNullableBool(order.IsFreeOrder)}");
         }
     }
 

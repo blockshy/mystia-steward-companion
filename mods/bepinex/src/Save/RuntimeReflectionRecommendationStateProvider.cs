@@ -9,8 +9,9 @@ namespace MystiaStewardCompanion.Save;
 /// 通过反射读取游戏运行时数据，并转换为推荐引擎使用的 <see cref="RecommendationState"/>。
 /// </summary>
 /// <remarks>
-/// 该 Provider 运行在游戏进程内，优先调用游戏公开的运行时静态方法；当方法在当前游戏版本不可用时，
-/// 回退到 <c>GenerateSaveData</c> 生成的临时快照。所有反射访问都需要容忍字段缺失、DLC 差异和场景未就绪。
+/// 该 Provider 运行在游戏进程内。库存和解锁料理使用运行时存储快照作为权威来源，
+/// 玩家等级、流行标签和日间开关使用游戏公开的运行时静态方法读取。
+/// 所有反射访问都需要容忍字段缺失、DLC 差异和场景未就绪。
 /// </remarks>
 public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendationStateProvider
 {
@@ -60,15 +61,14 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
             return false;
         }
 
-        if (FindStaticMethod(runtimeStorage, "GetAllRecipeIndex") == null
-            && FindStaticMethod(runtimeStorage, "GenerateSaveData") == null)
+        if (FindStaticMethod(runtimeStorage, "GenerateSaveData") == null)
         {
-            reason = "RunTimeStorage live-data methods are not available.";
+            reason = "RunTimeStorage save-data snapshot method is not available.";
             return false;
         }
 
         if (FindStaticMethod(runtimePlayerData, "GetLevel") == null
-            && FindStaticMethod(runtimePlayerData, "GenerateSaveData") == null)
+            || FindStaticMethod(runtimePlayerData, "GetPopFoodTags") == null)
         {
             reason = "RunTimePlayerData live-data methods are not available.";
             return false;
@@ -85,24 +85,16 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
     public RecommendationState LoadState()
     {
         _performanceMs.Clear();
-        var storagePartial = Measure("storage.saveData", () => TryInvokeStaticSafely(RuntimeStorageTypeName, "GenerateSaveData"));
-        var playerPartial = Measure("player.saveData", () => TryInvokeStaticSafely(RuntimePlayerDataTypeName, "GenerateSaveData"));
-        var dayScenePartial = _includeDaySceneState
-            ? Measure("dayScene.saveData", () => TryInvokeStaticSafely(RuntimeDaySceneTypeName, "GenerateSaveData"))
-            : null;
-
-        var recipeGameIds = Measure("storage.recipes", () => ReadLiveRecipeIds(storagePartial));
-        var ingredients = Measure("storage.ingredients", () => ReadLiveIngredients(storagePartial));
-        var beverages = Measure("storage.beverages", () => ReadLiveBeverages(storagePartial));
-        var trackedSwitch = _includeDaySceneState
-            ? Measure("dayScene.switches", () => ReadStringBoolDictionary(GetMemberValue(dayScenePartial, "trackedSwitch")))
-            : new Dictionary<string, bool>(StringComparer.Ordinal);
+        var storagePartial = Measure("storage.saveData", () => InvokeStaticSafely(RuntimeStorageTypeName, "GenerateSaveData"));
+        var recipeGameIds = Measure("storage.recipes", () => ReadStorageRecipeIds(storagePartial));
+        var ingredients = Measure("storage.ingredients", () => ReadStorageIngredients(storagePartial));
+        var beverages = Measure("storage.beverages", () => ReadStorageBeverages(storagePartial));
         var famousShopEnabled = _includeDaySceneState
-            && Measure("player.famousShop", () => ReadTrackedSwitch(FamousShopSwitchKey, trackedSwitch));
-        var popularFoodTag = Measure("player.popularFood", () => ResolveFoodTag(ReadPopularFoodTags("Like", GetMemberValue(playerPartial, "popLikeFoodTags"))));
-        var playerLevel = Measure("player.level", () => ReadPlayerLevel(playerPartial));
+            && Measure("player.famousShop", () => ReadTrackedSwitch(FamousShopSwitchKey));
+        var popularFoodTag = Measure("player.popularFood", () => ResolveFoodTag(ReadPopularFoodTags("Like")));
+        var playerLevel = Measure("player.level", ReadPlayerLevel);
 
-        if (recipeGameIds.Count == 0 && ingredients.Count == 0 && beverages.Count == 0 && playerLevel <= 0)
+        if (recipeGameIds.Count == 0 || (ingredients.Count == 0 && beverages.Count == 0 && playerLevel <= 0))
         {
             throw new InvalidOperationException("Game runtime data is empty; game progress may not be loaded.");
         }
@@ -114,20 +106,12 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
             Beverages = beverages,
             PlayerLevel = playerLevel,
             PopularFoodTag = famousShopEnabled && popularFoodTag == "招牌" ? null : popularFoodTag,
-            PopularHateFoodTag = Measure("player.popularHateFood", () => ResolveFoodTag(ReadPopularFoodTags("Hate", GetMemberValue(playerPartial, "popHateFoodTags")))),
+            PopularHateFoodTag = Measure("player.popularHateFood", () => ResolveFoodTag(ReadPopularFoodTags("Hate"))),
             FamousShopEnabled = famousShopEnabled,
-            CollabStatus = Measure("player.collabStatus", () => ReadStringBoolDictionary(GetMemberValue(playerPartial, "collabStatus"))),
+            CollabStatus = Measure("player.collabStatus", ReadCollabStatus),
         };
 
         var state = Measure("state.fromSave", () => RecommendationState.FromSave(_repository, parsed));
-        var rareCustomerIds = Measure(
-            "rare.available",
-            () => ExpandAvailableRareCustomerIds(RuntimeRareCustomerAvailabilityService.ReadAvailableRareCustomerIds()).ToList());
-        foreach (var rareCustomerId in rareCustomerIds)
-        {
-            state.AvailableRareCustomerIds.Add(rareCustomerId);
-        }
-
         if (_includePlacedCookers)
         {
             Measure("cookerSnapshot", () => RuntimeCookerSnapshotService.ApplyTo(state));
@@ -172,87 +156,27 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
         }
     }
 
-    /// <summary>
-    /// 将游戏运行时记录的稀客 ID 扩展为项目静态目录、来源 ID 和映射 ID 的并集。
-    /// </summary>
-    /// <remarks>
-    /// 游戏内部同一个稀客可能同时存在 runtime id、source guest id 和本地目录 id。只保留原始 ID
-    /// 会导致前端无法匹配静态稀客目录，因此这里在可用时读取映射表做兼容扩展。
-    /// </remarks>
-    private HashSet<int> ExpandAvailableRareCustomerIds(HashSet<int> recordedIds)
+    private static List<int> ReadStorageRecipeIds(object? storagePartial)
     {
-        var result = new HashSet<int>(recordedIds);
-        if (recordedIds.Count == 0) return result;
-
-        try
-        {
-            var mappedGuests = new RuntimeMappedGuestCatalog(_repository).Snapshot();
-            foreach (var entry in mappedGuests.Entries)
-            {
-                if (!MatchesRecordedRareCustomer(entry, recordedIds)) continue;
-                AddIfValid(result, entry.RuntimeId);
-                AddIfValid(result, entry.SourceGuestId);
-                AddIfValid(result, entry.LocalRareCustomerId);
-                AddIfValid(result, entry.RuntimeCustomer?.Id);
-            }
-        }
-        catch
-        {
-            // 映射扩展只是提高目录匹配率；失败时保留原始运行时 ID，避免因映射读取异常丢失全部稀客。
-        }
-
-        return result;
-    }
-
-    private static bool MatchesRecordedRareCustomer(RuntimeMappedGuestEntry entry, HashSet<int> recordedIds)
-    {
-        return IsRecorded(entry.RuntimeId, recordedIds)
-            || IsRecorded(entry.SourceGuestId, recordedIds)
-            || IsRecorded(entry.LocalRareCustomerId, recordedIds)
-            || IsRecorded(entry.RuntimeCustomer?.Id, recordedIds);
-    }
-
-    private static bool IsRecorded(int? id, HashSet<int> recordedIds)
-    {
-        return id.HasValue && recordedIds.Contains(id.Value);
-    }
-
-    private static void AddIfValid(HashSet<int> target, int? id)
-    {
-        if (id.HasValue && id.Value >= 0) target.Add(id.Value);
-    }
-
-    private static List<int> ReadLiveRecipeIds(object? storagePartial)
-    {
-        var recipeIds = ReadIntCollection(TryInvokeStaticSafely(RuntimeStorageTypeName, "GetAllRecipeIndex")).ToList();
-        if (recipeIds.Count > 0) return recipeIds;
-
         return ReadIntCollection(GetMemberValue(storagePartial, "recipes")).ToList();
     }
 
-    private static Dictionary<int, int> ReadLiveBeverages(object? storagePartial)
+    private static Dictionary<int, int> ReadStorageBeverages(object? storagePartial)
     {
-        var beverages = ReadIntDictionary(TryInvokeStaticSafely(RuntimeStorageTypeName, "GetAllBeveragesId"));
-        return beverages.Count > 0
-            ? beverages
-            : ReadIntDictionary(GetMemberValue(storagePartial, "beverages"));
+        return ReadIntDictionary(GetMemberValue(storagePartial, "beverages"));
     }
 
-    private static Dictionary<int, int> ReadLiveIngredients(object? storagePartial)
+    private static Dictionary<int, int> ReadStorageIngredients(object? storagePartial)
     {
-        var ingredients = ReadObjectIntPairDictionary(TryInvokeStaticSafely(RuntimeStorageTypeName, "GetAllIngredients"));
-        return ingredients.Count > 0
-            ? ingredients
-            : ReadIntDictionary(GetMemberValue(storagePartial, "ingredients"));
+        return ReadIntDictionary(GetMemberValue(storagePartial, "ingredients"));
     }
 
-    private static int ReadPlayerLevel(object? playerPartial)
+    private static int ReadPlayerLevel()
     {
-        var level = ToInt(TryInvokeStaticSafely(RuntimePlayerDataTypeName, "GetLevel"));
-        return level > 0 ? level : ReadIntMember(playerPartial, "level");
+        return ToInt(InvokeStaticSafely(RuntimePlayerDataTypeName, "GetLevel"));
     }
 
-    private static IEnumerable<int> ReadPopularFoodTags(string popTypeName, object? fallback)
+    private static IEnumerable<int> ReadPopularFoodTags(string popTypeName)
     {
         var type = FindType(RuntimePlayerDataTypeName);
         var method = type == null ? null : FindStaticMethod(type, "GetPopFoodTags");
@@ -281,15 +205,15 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
                 }
                 catch
                 {
-                    // Fall back to the generated runtime player-data snapshot.
+                    // Let the next refresh retry the live getter.
                 }
             }
         }
 
-        return ReadIntCollection(fallback).ToList();
+        return Enumerable.Empty<int>();
     }
 
-    private static bool ReadTrackedSwitch(string key, IReadOnlyDictionary<string, bool> fallback)
+    private static bool ReadTrackedSwitch(string key)
     {
         var type = FindType(RuntimeDaySceneTypeName);
         var method = type == null ? null : FindStaticMethod(type, "GetTrackedSwitch");
@@ -302,11 +226,19 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
             }
             catch
             {
-                // Fall back to the generated runtime day-scene snapshot.
+                // Let the next refresh retry the live getter.
             }
         }
 
-        return fallback.TryGetValue(key, out var enabled) && enabled;
+        return false;
+    }
+
+    private static Dictionary<string, bool> ReadCollabStatus()
+    {
+        var type = FindType(RuntimePlayerDataTypeName);
+        return type == null
+            ? new Dictionary<string, bool>(StringComparer.Ordinal)
+            : ReadStringBoolDictionary(RuntimeReflectionUtility.GetStaticMemberValue(type, "CollabStatus"));
     }
 
     private string? ResolveFoodTag(IEnumerable<int> tagIds)
@@ -323,20 +255,15 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
         return null;
     }
 
-    private static object? TryInvokeStatic(string typeName, string methodName)
-    {
-        var type = FindType(typeName);
-        if (type == null) return null;
-
-        var method = FindStaticMethod(type, methodName);
-        return method == null ? null : InvokeMethod(method, null, Array.Empty<object?>());
-    }
-
-    private static object? TryInvokeStaticSafely(string typeName, string methodName)
+    private static object? InvokeStaticSafely(string typeName, string methodName)
     {
         try
         {
-            return TryInvokeStatic(typeName, methodName);
+            var type = FindType(typeName);
+            if (type == null) return null;
+
+            var method = FindStaticMethod(type, methodName);
+            return method == null ? null : InvokeMethod(method, null, Array.Empty<object?>());
         }
         catch
         {
@@ -404,11 +331,6 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
         return field?.GetValue(instance);
     }
 
-    private static int ReadIntMember(object? instance, string name)
-    {
-        return ToInt(GetMemberValue(instance, name));
-    }
-
     private static IEnumerable<int> ReadIntCollection(object? value)
     {
         foreach (var item in EnumerateObjects(value))
@@ -453,36 +375,6 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
         }
 
         return result;
-    }
-
-    private static Dictionary<int, int> ReadObjectIntPairDictionary(object? value)
-    {
-        var result = new Dictionary<int, int>();
-        if (value == null) return result;
-
-        foreach (var item in EnumerateObjects(value))
-        {
-            var key = GetMemberValue(item, "Key") ?? GetMemberValue(item, "key");
-            var itemValue = GetMemberValue(item, "Value") ?? GetMemberValue(item, "value");
-            if (key == null || itemValue == null) continue;
-
-            var id = ReadObjectId(key);
-            if (id == null) continue;
-
-            result[id.Value] = ToInt(itemValue);
-        }
-
-        return result;
-    }
-
-    private static int? ReadObjectId(object? value)
-    {
-        if (value == null) return null;
-
-        var id = GetMemberValue(value, "Id") ?? GetMemberValue(value, "id");
-        if (id == null) return null;
-
-        return ToInt(id);
     }
 
     private static Dictionary<string, bool> ReadStringBoolDictionary(object? value)

@@ -235,6 +235,7 @@ export function ModServicePanel({
                           <Badge variant="outline">
                             酒水 {order.beverageTag || '无'}{showDebugDetails ? ` (${order.beverageTagId})` : ''}
                           </Badge>
+                          {order.isFreeOrder && <Badge variant="secondary">免费订单</Badge>}
                           {showDebugDetails && <Badge variant="secondary">{order.source}</Badge>}
                         </div>
                       </div>
