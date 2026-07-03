@@ -16,6 +16,7 @@ namespace MystiaStewardCompanion.Save;
 internal static partial class RuntimeOrderPreparationService
 {
     private const string DataBaseCoreTypeName = "GameData.Core.Collections.DataBaseCore";
+    private const string IzakayaConfigureTypeName = "GameData.RunTime.NightSceneUtility.IzakayaConfigure";
     private const string RuntimeStorageTypeName = "GameData.RunTime.Common.RunTimeStorage";
     private const string TileManagerTypeName = "NightScene.Tiles.TileManager";
     private const string PartnerManagerTypeName = "NightScene.PartnerUtility.PartnerManager";
@@ -30,9 +31,23 @@ internal static partial class RuntimeOrderPreparationService
     private static readonly object PendingCookingLock = new();
     // 自动开火后料理不会立即完成，需保存 CookController，后续轮询完成状态再直接送达。
     private static readonly List<PendingCookingCollection> PendingCookingCollections = new();
+    private static readonly List<AutomationRuntimeEvent> AutomationRuntimeEvents = new();
+    private const int MaxAutomationRuntimeEvents = 64;
+    private static long AutomationRuntimeEventSequence;
     // 刚开始料理后给游戏一小段时间生成 CookController 结果，避免过早判定失败。
     private static readonly TimeSpan PendingCookingCollectGrace = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan PendingCookingIdleTimeout = TimeSpan.FromSeconds(90);
+
+    private static class OrderPreparationStepCodes
+    {
+        public const string BeverageDelivered = "beverage-delivered";
+        public const string CookingStarted = "cooking-started";
+        public const string CookingPending = "cooking-pending";
+        public const string CookingMismatchStored = "cooking-mismatch-stored";
+        public const string FoodDelivered = "food-delivered";
+        public const string OrderCompleted = "order-completed";
+    }
+
     private enum CookingCollectionTargetKind
     {
         RareOrder,
@@ -47,6 +62,14 @@ internal static partial class RuntimeOrderPreparationService
             {
                 return PendingCookingCollections.Count > 0;
             }
+        }
+    }
+
+    public static IReadOnlyList<AutomationRuntimeEvent> SnapshotAutomationRuntimeEvents()
+    {
+        lock (PendingCookingLock)
+        {
+            return AutomationRuntimeEvents.ToList();
         }
     }
 
@@ -130,6 +153,7 @@ internal static partial class RuntimeOrderPreparationService
                         result.ServedBeverage = true;
                         result.Steps.Add(new OrderPreparationStep
                         {
+                            Code = OrderPreparationStepCodes.BeverageDelivered,
                             Name = "自动送达酒水",
                             Ok = true,
                             Message = beverageResult.Message,
@@ -164,8 +188,12 @@ internal static partial class RuntimeOrderPreparationService
                 {
                     result.Steps.Add(new OrderPreparationStep
                     {
+                        Code = cookingResult.ExistingPending
+                            ? OrderPreparationStepCodes.CookingPending
+                            : OrderPreparationStepCodes.CookingStarted,
                         Name = "自动开始料理",
                         Ok = true,
+                        Skipped = cookingResult.ExistingPending,
                         Message = cookingResult.Message,
                     });
 
@@ -301,6 +329,7 @@ internal static partial class RuntimeOrderPreparationService
             result.ServedBeverage = true;
             result.Steps.Add(new OrderPreparationStep
             {
+                Code = OrderPreparationStepCodes.BeverageDelivered,
                 Name = "送达酒水",
                 Ok = true,
                 Message = beverageResult.Message,
@@ -414,6 +443,7 @@ internal static partial class RuntimeOrderPreparationService
                         result.ServedBeverage = true;
                         result.Steps.Add(new OrderPreparationStep
                         {
+                            Code = OrderPreparationStepCodes.BeverageDelivered,
                             Name = "普客送达酒水",
                             Ok = true,
                             Message = $"{request.BeverageName} 已处于订单待送达状态，已按游戏送达流程提交。",
@@ -439,6 +469,7 @@ internal static partial class RuntimeOrderPreparationService
                         result.ServedBeverage = true;
                         result.Steps.Add(new OrderPreparationStep
                         {
+                            Code = OrderPreparationStepCodes.BeverageDelivered,
                             Name = "普客送达酒水",
                             Ok = true,
                             Message = beverageResult.Message,
@@ -509,20 +540,34 @@ internal static partial class RuntimeOrderPreparationService
             {
                 var pendingResult = autoDeliverFood
                     ? TryProcessPendingNormalOrderCooking(request.OrderKey, runtimeOrder.Order, request.DeskCode, expectedFoodId, request.BeverageId)
-                    : (Found: true, Delivered: false, StepName: "普客开始料理", Message: pendingMessage);
+                    : (Found: true, Delivered: false, StepName: "普客开始料理", Message: pendingMessage, Code: OrderPreparationStepCodes.CookingPending);
                 if (pendingResult.Delivered)
                 {
                     result.ServedFood = true;
                     result.Steps.Add(new OrderPreparationStep
                     {
+                        Code = pendingResult.Code,
                         Name = "普客送达料理",
                         Ok = true,
                         Message = pendingResult.Message,
                     });
                 }
+                else if (pendingResult.Code == OrderPreparationStepCodes.CookingMismatchStored)
+                {
+                    AddFailure(
+                        result,
+                        string.IsNullOrWhiteSpace(pendingResult.StepName) ? "普客送达料理" : pendingResult.StepName,
+                        string.IsNullOrWhiteSpace(pendingResult.Message) ? pendingMessage : pendingResult.Message,
+                        pendingResult.Code);
+                    if (request.StopOnError) return Finish(result);
+                }
                 else
                 {
-                    AddSkipped(result, string.IsNullOrWhiteSpace(pendingResult.StepName) ? "普客开始料理" : pendingResult.StepName, string.IsNullOrWhiteSpace(pendingResult.Message) ? pendingMessage : pendingResult.Message);
+                    AddSkipped(
+                        result,
+                        string.IsNullOrWhiteSpace(pendingResult.StepName) ? "普客开始料理" : pendingResult.StepName,
+                        string.IsNullOrWhiteSpace(pendingResult.Message) ? pendingMessage : pendingResult.Message,
+                        pendingResult.Code);
                 }
             }
             else if (request.AutoStartCooking)
@@ -553,8 +598,12 @@ internal static partial class RuntimeOrderPreparationService
                     {
                         result.Steps.Add(new OrderPreparationStep
                         {
+                            Code = cookingResult.ExistingPending
+                                ? OrderPreparationStepCodes.CookingPending
+                                : OrderPreparationStepCodes.CookingStarted,
                             Name = "普客开始料理",
                             Ok = true,
+                            Skipped = cookingResult.ExistingPending,
                             Message = cookingResult.Message,
                         });
                         if (!string.IsNullOrWhiteSpace(cookingResult.QteMessage))
@@ -622,7 +671,7 @@ internal static partial class RuntimeOrderPreparationService
             for (var i = PendingCookingCollections.Count - 1; i >= 0; i--)
             {
                 var pending = PendingCookingCollections[i];
-                (bool Remove, string Message) result;
+                (bool Remove, string Message, string Code) result;
                 try
                 {
                     result = TryCollectCookedFood(pending);
@@ -630,8 +679,8 @@ internal static partial class RuntimeOrderPreparationService
                 catch (Exception ex)
                 {
                     result = DateTime.UtcNow - pending.CreatedAtUtc >= PendingCookingIdleTimeout
-                        ? (true, $"{pending.RecipeName} 出锅直送已停止：{ex.GetBaseException().Message}")
-                        : (false, "");
+                        ? (true, $"{pending.RecipeName} 出锅直送已停止：{ex.GetBaseException().Message}", "")
+                        : (false, "", "");
                 }
 
                 if (!string.IsNullOrWhiteSpace(result.Message))
@@ -668,6 +717,42 @@ internal static partial class RuntimeOrderPreparationService
     private static void AppendAutomationLog(string action, CookingCollectionTarget? target, string message)
     {
         AggregateModLogService.AppendAutomation(action, FormatAutomationTarget(target), message);
+    }
+
+    private static void RecordAutomationRuntimeEvent(
+        string code,
+        CookingCollectionTarget target,
+        string message,
+        int actualFoodId = -1)
+    {
+        if (string.IsNullOrWhiteSpace(code)) return;
+
+        lock (PendingCookingLock)
+        {
+            AutomationRuntimeEventSequence++;
+            AutomationRuntimeEvents.Add(new AutomationRuntimeEvent
+            {
+                Sequence = AutomationRuntimeEventSequence,
+                CreatedAtUtc = DateTime.UtcNow,
+                Code = code,
+                TargetKind = target.Kind == CookingCollectionTargetKind.RareOrder ? "rare" : "normal",
+                OrderKey = target.OrderKey,
+                DeskCode = target.DeskCode,
+                GuestId = target.GuestId,
+                GuestName = target.GuestName,
+                FoodId = target.FoodId,
+                FoodName = target.FoodName,
+                BeverageId = target.BeverageId,
+                BeverageName = target.BeverageName,
+                ActualFoodId = actualFoodId,
+                Message = message,
+            });
+
+            if (AutomationRuntimeEvents.Count > MaxAutomationRuntimeEvents)
+            {
+                AutomationRuntimeEvents.RemoveRange(0, AutomationRuntimeEvents.Count - MaxAutomationRuntimeEvents);
+            }
+        }
     }
 
     private static string FormatAutomationTarget(CookingCollectionTarget? target)
@@ -716,20 +801,22 @@ internal static partial class RuntimeOrderPreparationService
         return result;
     }
 
-    private static void AddFailure(OrderPreparationResult result, string name, string message)
+    private static void AddFailure(OrderPreparationResult result, string name, string message, string code = "")
     {
         result.Steps.Add(new OrderPreparationStep
         {
+            Code = code,
             Name = name,
             Ok = false,
             Message = message,
         });
     }
 
-    private static void AddSkipped(OrderPreparationResult result, string name, string message)
+    private static void AddSkipped(OrderPreparationResult result, string name, string message, string code = "")
     {
         result.Steps.Add(new OrderPreparationStep
         {
+            Code = code,
             Name = name,
             Ok = true,
             Skipped = true,
@@ -826,8 +913,9 @@ internal static partial class RuntimeOrderPreparationService
         public string Message { get; private init; } = "";
         public string QteMessage { get; private init; } = "";
         public bool QteSkipped { get; private init; }
+        public bool ExistingPending { get; private init; }
 
-        public static CookingStartResult Succeeded(string message, string qteMessage, bool qteSkipped)
+        public static CookingStartResult Succeeded(string message, string qteMessage, bool qteSkipped, bool existingPending = false)
         {
             return new CookingStartResult
             {
@@ -835,6 +923,7 @@ internal static partial class RuntimeOrderPreparationService
                 Message = message,
                 QteMessage = qteMessage,
                 QteSkipped = qteSkipped,
+                ExistingPending = existingPending,
             };
         }
 

@@ -19,8 +19,27 @@ internal sealed class LocalApiSnapshot
     public RuntimeMissionContext? RuntimeMissions { get; init; }
     public NormalBusinessContext? NormalBusiness { get; init; }
     public List<RuntimeRareCustomer> RuntimeRareCustomers { get; init; } = new();
+    public List<AutomationRuntimeEvent> AutomationEvents { get; init; } = new();
     public RuntimeDataCatalog? RuntimeData { get; init; }
     public Dictionary<string, double> PerformanceMs { get; init; } = new(StringComparer.Ordinal);
+}
+
+internal sealed class AutomationRuntimeEvent
+{
+    public long Sequence { get; init; }
+    public DateTime CreatedAtUtc { get; init; }
+    public string Code { get; init; } = "";
+    public string TargetKind { get; init; } = "";
+    public string OrderKey { get; init; } = "";
+    public int DeskCode { get; init; } = -1;
+    public int? GuestId { get; init; }
+    public string GuestName { get; init; } = "";
+    public int FoodId { get; init; } = -1;
+    public string FoodName { get; init; } = "";
+    public int BeverageId { get; init; } = -1;
+    public string BeverageName { get; init; } = "";
+    public int ActualFoodId { get; init; } = -1;
+    public string Message { get; init; } = "";
 }
 
 internal sealed class RecommendationStateSnapshot

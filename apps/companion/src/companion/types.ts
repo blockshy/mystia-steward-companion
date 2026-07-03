@@ -203,8 +203,26 @@ export interface LocalApiSnapshot {
   runtimeMissions?: RuntimeMissionContext | null;
   normalBusiness?: NormalBusinessContext | null;
   runtimeRareCustomers?: RuntimeRareCustomer[];
+  automationEvents?: AutomationRuntimeEvent[];
   runtimeData?: RuntimeDataCatalogSnapshot;
   performanceMs?: Record<string, number>;
+}
+
+export interface AutomationRuntimeEvent {
+  sequence: number;
+  createdAtUtc: string;
+  code: 'cooking-mismatch-stored' | 'food-delivered' | string;
+  targetKind: 'rare' | 'normal' | string;
+  orderKey?: string;
+  deskCode: number;
+  guestId?: number | null;
+  guestName?: string;
+  foodId: number;
+  foodName?: string;
+  beverageId: number;
+  beverageName?: string;
+  actualFoodId?: number;
+  message?: string;
 }
 
 /**

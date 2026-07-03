@@ -92,7 +92,7 @@ internal static partial class RuntimeOrderPreparationService
         var target = collectionTarget ?? CookingCollectionTarget.ForRareOrder(new OrderPreparationRequest { RecipeName = recipeName }, targetFoodId);
         if (autoCollect && HasPendingCookingTarget(target, out var pendingMessage))
         {
-            return CookingStartResult.Succeeded(pendingMessage, "", true);
+            return CookingStartResult.Succeeded(pendingMessage, "", true, existingPending: true);
         }
 
         var cookerSelection = TryGetCookerForOrder(baseFood, recipe);
@@ -261,7 +261,7 @@ internal static partial class RuntimeOrderPreparationService
         return false;
     }
 
-    private static (bool Found, bool Delivered, string StepName, string Message) TryProcessPendingNormalOrderCooking(string orderKey, object order, int deskCode, int foodId, int beverageId)
+    private static (bool Found, bool Delivered, string StepName, string Message, string Code) TryProcessPendingNormalOrderCooking(string orderKey, object order, int deskCode, int foodId, int beverageId)
     {
         lock (PendingCookingLock)
         {
@@ -288,19 +288,20 @@ internal static partial class RuntimeOrderPreparationService
                 {
                     return (true, true, "普客送达料理", string.IsNullOrWhiteSpace(result.Message)
                         ? $"{pending.Target.FoodName} 已直接送达普客订单。"
-                        : result.Message);
+                        : result.Message,
+                        string.IsNullOrWhiteSpace(result.Code) ? OrderPreparationStepCodes.FoodDelivered : result.Code);
                 }
 
                 if (!string.IsNullOrWhiteSpace(result.Message))
                 {
-                    return (true, false, "普客送达料理", result.Message);
+                    return (true, false, "普客送达料理", result.Message, result.Code);
                 }
 
-                return (true, false, "普客开始料理", FormatPendingNormalOrderCookingMessage(pending, deskCode));
+                return (true, false, "普客开始料理", FormatPendingNormalOrderCookingMessage(pending, deskCode), OrderPreparationStepCodes.CookingPending);
             }
         }
 
-        return (false, false, "", "");
+        return (false, false, "", "", "");
     }
 
     private static bool IsMatchingPendingNormalOrderCooking(PendingCookingCollection pending, string orderKey, object order, int deskCode, int foodId, int beverageId)
@@ -379,7 +380,7 @@ internal static partial class RuntimeOrderPreparationService
     /// <remarks>
     /// 游戏完成料理后，CookController 的阶段和 Result 字段并不总是在同一帧稳定，因此这里同时看阶段、成品对象和等待时间。
     /// </remarks>
-    private static (bool Remove, string Message) TryCollectCookedFood(PendingCookingCollection pending)
+    private static (bool Remove, string Message, string Code) TryCollectCookedFood(PendingCookingCollection pending)
     {
         var phase = ToInt(TryInvokeInstanceValue(pending.CookController, "get_Phase"), -1);
         TryFinalizeCookControllerIfProgressComplete(pending.CookController, phase);
@@ -393,25 +394,25 @@ internal static partial class RuntimeOrderPreparationService
         {
             if (phase == 0 && chosenRecipe == null && isExpiredIdle)
             {
-                return (true, $"{pending.RecipeName} 出锅直送任务已结束：厨具已空闲且未读取到成品。");
+                return (true, $"{pending.RecipeName} 出锅直送任务已结束：厨具已空闲且未读取到成品。", "");
             }
 
             if (phase == 3 && isExpiredIdle)
             {
-                return (true, $"{pending.RecipeName} 已完成，但长时间未读取到成品对象，已停止出锅直送。");
+                return (true, $"{pending.RecipeName} 已完成，但长时间未读取到成品对象，已停止出锅直送。", "");
             }
 
-            return (false, "");
+            return (false, "", "");
         }
 
         if (phase == 0 && pendingAge < PendingCookingCollectGrace)
         {
-            return (false, "");
+            return (false, "", "");
         }
 
         if (phase != 3 && phase != 0)
         {
-            return (false, "");
+            return (false, "", "");
         }
 
         return TryDeliverPendingCookedFood(pending, cookedFood);

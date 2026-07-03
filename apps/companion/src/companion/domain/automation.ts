@@ -667,6 +667,20 @@ export function isNormalOrderPreparedStale(
 }
 
 /**
+ * 判断稀客开火后是否等待过久，需要重新确认或重试。
+ */
+export function isRareOrderPreparedStale(
+  state: AutoFirstOrderState | undefined,
+  now: number,
+  preferences: CompanionPreferences,
+): boolean {
+  if (!state?.prepared) return false;
+  if (state.paused) return false;
+  void preferences;
+  return isAutomationTimestampStale(state.preparedAtMs, now, DIRECT_DELIVERY_RETRY_WAIT_MS);
+}
+
+/**
  * 判断普客暂停状态是否属于可自动恢复的临时失败。
  */
 export function isRecoverableNormalPausedState(state: NormalAutoOrderState | undefined, now: number): boolean {

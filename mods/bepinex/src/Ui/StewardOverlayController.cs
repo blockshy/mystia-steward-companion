@@ -774,6 +774,7 @@ internal sealed class StewardOverlayController
                 RuntimeMissions = Measure("snapshot.missions", ReadRuntimeMissionsForSnapshot),
                 NormalBusiness = Measure("snapshot.normalBusiness", ReadNormalBusinessForSnapshot),
                 RuntimeRareCustomers = _runtimeRareCustomers.ToList(),
+                AutomationEvents = RuntimeOrderPreparationService.SnapshotAutomationRuntimeEvents().ToList(),
                 RuntimeData = BuildRuntimeDataForSnapshot(force),
                 PerformanceMs = BuildPerformanceSnapshot(),
             };
@@ -892,8 +893,20 @@ internal sealed class StewardOverlayController
         AppendRuntimeMissions(builder, snapshot.RuntimeMissions);
         AppendNormalBusiness(builder, snapshot.NormalBusiness);
         AppendRuntimeRareCustomers(builder, snapshot.RuntimeRareCustomers);
+        AppendAutomationRuntimeEvents(builder, snapshot.AutomationEvents);
         AppendValue(builder, snapshot.RuntimeData == null ? "<runtime-data:null>" : BuildRuntimeDataSignature(snapshot.RuntimeData));
         return builder.ToString();
+    }
+
+    private static void AppendAutomationRuntimeEvents(StringBuilder builder, IEnumerable<AutomationRuntimeEvent> events)
+    {
+        var lastSequence = 0L;
+        foreach (var item in events)
+        {
+            lastSequence = Math.Max(lastSequence, item.Sequence);
+        }
+
+        AppendValue(builder, $"automation-events:{lastSequence}");
     }
 
     private static void AppendRecommendationSnapshot(StringBuilder builder, RecommendationStateSnapshot? snapshot)

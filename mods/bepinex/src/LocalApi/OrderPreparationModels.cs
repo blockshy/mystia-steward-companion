@@ -53,6 +53,7 @@ internal sealed class OrderPreparationOrder
 
 internal sealed class OrderPreparationStep
 {
+    public string Code { get; init; } = "";
     public string Name { get; init; } = "";
     public bool Ok { get; init; }
     public bool Skipped { get; init; }

@@ -79,14 +79,32 @@ internal static partial class RuntimeOrderPreparationService
     /// 将已经出锅的料理直接送达给登记的目标订单。
     /// </summary>
     /// <remarks>
-    /// 送达失败时不清理厨具，保留成品供下一轮重试或玩家手动处理；送达成功后才执行厨具清理。
+    /// 订单或桌面对象暂不可写时保留成品供下一轮重试；非目标成品会放入游戏料理暂存容器，送达成功后会执行厨具清理。
     /// </remarks>
-    private static (bool Remove, string Message) TryDeliverPendingCookedFood(PendingCookingCollection pending, object cookedFood)
+    private static (bool Remove, string Message, string Code) TryDeliverPendingCookedFood(PendingCookingCollection pending, object cookedFood)
     {
         var target = pending.Target;
         if (target.FoodId >= 0 && !IsSellable(cookedFood, sellableType: 0, id: target.FoodId))
         {
-            return (true, $"{pending.RecipeName} 已完成，但成品不是目标料理 {target.FoodName}（料理 #{target.FoodId}），已停止自动送达并保留在厨具中。");
+            var actualFoodId = ReadSellableId(cookedFood);
+            var actualText = actualFoodId >= 0 ? $"料理 #{actualFoodId}" : "未知成品";
+            if (TryStoreMismatchedCookResultInWarmer(pending, cookedFood, actualFoodId, out var storeMessage))
+            {
+                var mismatchMessage = $"{pending.RecipeName} 已完成，但成品 {actualText} 不是目标料理 {target.FoodName}（料理 #{target.FoodId}），已放入保温箱并释放该自动化待办，将在下一轮重试目标料理。{storeMessage}";
+                RecordAutomationRuntimeEvent(
+                    OrderPreparationStepCodes.CookingMismatchStored,
+                    target,
+                    mismatchMessage,
+                    actualFoodId);
+                return (
+                    true,
+                    mismatchMessage,
+                    OrderPreparationStepCodes.CookingMismatchStored);
+            }
+
+            return ShouldStopPendingDirectDelivery(
+                pending,
+                $"{pending.RecipeName} 已完成，但成品 {actualText} 不是目标料理 {target.FoodName}（料理 #{target.FoodId}），且写入保温箱失败：{storeMessage}");
         }
 
         var request = BuildOrderRequestFromCookingTarget(target);
@@ -106,7 +124,7 @@ internal static partial class RuntimeOrderPreparationService
         if (ReadOrderServedFood(runtimeOrder.Order) != null)
         {
             TryCompleteCookControllerAfterDirectDelivery(pending.CookController, cookedFood);
-            return (true, $"{pending.RecipeName} 已完成，但目标订单已有料理，已释放厨具。");
+            return (true, $"{pending.RecipeName} 已完成，但目标订单已有料理，已释放厨具。", "");
         }
 
         var pendingFood = ReadMember(runtimeOrder.Order, "ServedFoodInAir");
@@ -144,17 +162,115 @@ internal static partial class RuntimeOrderPreparationService
             message += evaluationSuffix;
         }
 
-        return (true, message);
+        RecordAutomationRuntimeEvent(OrderPreparationStepCodes.FoodDelivered, target, message);
+        return (true, message, OrderPreparationStepCodes.FoodDelivered);
     }
 
-    private static (bool Remove, string Message) ShouldStopPendingDirectDelivery(PendingCookingCollection pending, string message)
+    private static (bool Remove, string Message, string Code) ShouldStopPendingDirectDelivery(PendingCookingCollection pending, string message)
     {
         if (DateTime.UtcNow - pending.CreatedAtUtc >= PendingCookingIdleTimeout)
         {
-            return (true, $"{pending.RecipeName} 自动送达已停止：{message} 成品保留在厨具中。");
+            return (true, $"{pending.RecipeName} 自动送达已停止：{message} 成品保留在厨具中。", "");
         }
 
-        return (false, $"{pending.RecipeName} 已完成，等待直接送达：{message}");
+        return (false, $"{pending.RecipeName} 已完成，等待直接送达：{message}", OrderPreparationStepCodes.CookingPending);
+    }
+
+    private static bool TryStoreMismatchedCookResultInWarmer(PendingCookingCollection pending, object cookedFood, int actualFoodId, out string message)
+    {
+        try
+        {
+            var configure = GetSingletonInstance(IzakayaConfigureTypeName);
+            if (configure == null)
+            {
+                message = "当前料理暂存容器不可用";
+                return false;
+            }
+
+            var beforeCount = CountStoredFoods(configure, actualFoodId);
+            if (!TryInvokeStoreFood(configure, cookedFood))
+            {
+                message = "未找到可用的 StoreFood 入口";
+                return false;
+            }
+
+            var afterCount = CountStoredFoods(configure, actualFoodId);
+            if (actualFoodId >= 0 && beforeCount >= 0 && afterCount >= 0 && afterCount <= beforeCount)
+            {
+                message = $"StoreFood 后未读取到保温箱数量增加（料理 #{actualFoodId}: {beforeCount}->{afterCount}）";
+                return false;
+            }
+
+            var resetMessage = TryResetCookControllerAfterWarmerStore(pending.CookController, cookedFood);
+            var storeStatus = actualFoodId >= 0 && beforeCount >= 0 && afterCount >= 0
+                ? $"保温箱数量 {beforeCount}->{afterCount}。"
+                : "已调用游戏 StoreFood。";
+            message = string.IsNullOrWhiteSpace(resetMessage) ? storeStatus : $"{storeStatus}{resetMessage}";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            message = ex.GetBaseException().Message;
+            return false;
+        }
+    }
+
+    private static bool TryInvokeStoreFood(object configure, object cookedFood)
+    {
+        return TryInvokeInstance(configure, "StoreFood", new object?[] { cookedFood, -1 })
+            || TryInvokeInstance(configure, "StoreFood", new object?[] { cookedFood });
+    }
+
+    private static object? ReadStoredFoodList(object configure)
+    {
+        return ReadMember(configure, "StoredFoods")
+            ?? TryInvokeInstanceValue(configure, "get_StoredFoods")
+            ?? TryInvokeInstanceValue(configure, "GetStoredFoods");
+    }
+
+    private static int CountStoredFoods(object configure, int foodId)
+    {
+        if (foodId < 0) return -1;
+
+        var storedFoods = ReadStoredFoodList(configure);
+        if (storedFoods == null) return -1;
+
+        var rawCount = ToInt(TryInvokeInstanceValue(storedFoods, "get_Count")
+            ?? ReadMember(storedFoods, "Count")
+            ?? ReadMember(storedFoods, "_size"), -1);
+        var count = 0;
+        var scanned = 0;
+        foreach (var food in ReadObjectEnumerable(storedFoods))
+        {
+            scanned++;
+            if (IsSellable(food, sellableType: 0, id: foodId))
+            {
+                count++;
+            }
+        }
+
+        return scanned == 0 && rawCount > 0 ? -1 : count;
+    }
+
+    private static string TryResetCookControllerAfterWarmerStore(object cookController, object cookedFood)
+    {
+        try
+        {
+            TryInvokeInstance(cookController, "CloseCookingVisual", Array.Empty<object?>());
+            TryClearCookController(cookController, cookedFood);
+
+            var phaseAfterClear = ToInt(TryInvokeInstanceValue(cookController, "get_Phase"), -1);
+            if (phaseAfterClear <= 0)
+            {
+                return "厨具阶段已恢复空闲。";
+            }
+
+            return $"厨具复位状态异常（phase={phaseAfterClear}），成品已进入保温箱。";
+        }
+        catch (Exception ex)
+        {
+            return $"厨具复位诊断：{ex.GetBaseException().Message}。";
+        }
     }
 
     private static OrderPreparationRequest BuildOrderRequestFromCookingTarget(CookingCollectionTarget target)

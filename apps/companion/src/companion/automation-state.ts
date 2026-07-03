@@ -69,7 +69,16 @@ export interface NormalAutoOrderState {
   paused: boolean;
 }
 
+export type OrderPreparationStepCode =
+  | 'beverage-delivered'
+  | 'cooking-started'
+  | 'cooking-pending'
+  | 'cooking-mismatch-stored'
+  | 'food-delivered'
+  | 'order-completed';
+
 export interface OrderPreparationStep {
+  code?: OrderPreparationStepCode | '';
   name: string;
   ok: boolean;
   skipped: boolean;
@@ -248,6 +257,13 @@ export function getAutomationStepLabel(step: AutomationStep): string {
 
 function isMeaningfulAutomationProgressStep(step: OrderPreparationStep): boolean {
   if (!step.ok || step.skipped) return false;
+  if (step.code === 'beverage-delivered'
+    || step.code === 'cooking-started'
+    || step.code === 'food-delivered'
+    || step.code === 'order-completed') {
+    return true;
+  }
+
   if (step.name.includes('选择') || step.name.includes('匹配')) return false;
   return step.name.includes('自动送达酒水')
     || step.name.includes('自动开始料理')
@@ -266,24 +282,32 @@ export function didCompleteStep(response: OrderPreparationResponse, name: string
   return response.steps.some((step) => step.name === name && step.ok && !step.skipped);
 }
 
+export function didCompleteStepCode(response: OrderPreparationResponse, code: OrderPreparationStepCode): boolean {
+  return response.steps.some((step) => step.code === code && step.ok && !step.skipped);
+}
+
 export function didAcknowledgeStep(response: OrderPreparationResponse, name: string): boolean {
   return response.steps.some((step) => step.name === name && step.ok && !isInactiveSkippedStep(step));
 }
 
 export function didNormalOrderDeliverBeverage(response: OrderPreparationResponse): boolean {
   return Boolean(response.servedBeverage)
+    || didCompleteStepCode(response, 'beverage-delivered')
     || didCompleteStep(response, '普客送达酒水')
     || response.steps.some((step) => step.name === '普客送达酒水' && step.ok && !isInactiveSkippedStep(step));
 }
 
 export function didNormalOrderDeliverFood(response: OrderPreparationResponse): boolean {
   return Boolean(response.servedFood)
+    || didCompleteStepCode(response, 'food-delivered')
     || didCompleteStep(response, '普客送达料理')
     || response.steps.some((step) => step.name === '普客送达料理' && step.ok && !isInactiveSkippedStep(step));
 }
 
 export function didNormalOrderComplete(response: OrderPreparationResponse): boolean {
-  return Boolean(response.completedOrder) || didCompleteStep(response, '触发普客评价');
+  return Boolean(response.completedOrder)
+    || didCompleteStepCode(response, 'order-completed')
+    || didCompleteStep(response, '触发普客评价');
 }
 
 export function didNormalOrderCookingStillPending(response: OrderPreparationResponse): boolean {
@@ -291,11 +315,21 @@ export function didNormalOrderCookingStillPending(response: OrderPreparationResp
 }
 
 export function didOrderCookingStillPending(response: OrderPreparationResponse, stepName: string): boolean {
-  return response.steps.some((step) => step.name === stepName
-    && step.ok
-    && step.skipped
-    && (step.message.includes('已在制作中')
-      || step.message.includes('等待完成后会自动直接送达')));
+  return response.steps.some((step) => step.ok && (
+    step.code === 'cooking-pending'
+    || (
+      step.name === stepName
+      && step.skipped
+      && (
+        step.message.includes('已在制作中')
+        || step.message.includes('等待完成后会自动直接送达')
+      )
+    )
+  ));
+}
+
+export function didCookingMismatchStored(response: OrderPreparationResponse): boolean {
+  return response.steps.some((step) => step.code === 'cooking-mismatch-stored');
 }
 
 function isInactiveSkippedStep(step: OrderPreparationStep): boolean {
@@ -306,6 +340,7 @@ function isInactiveSkippedStep(step: OrderPreparationStep): boolean {
 }
 
 export function isTransientAutoPreparationFailure(response: OrderPreparationResponse): boolean {
+  if (didCookingMismatchStored(response)) return true;
   const text = [
     response.error ?? '',
     ...response.steps.map((step) => `${step.name} ${step.message}`),
@@ -335,7 +370,6 @@ function isHardAutoPreparationFailure(response: OrderPreparationResponse): boole
     || text.includes('没有有效的料理 ID')
     || text.includes('无法从游戏数据库读取料理配方')
     || text.includes('未找到料理')
-    || text.includes('成品不是目标料理')
     || text.includes('订单已有其他待送达料理')
     || text.includes('收藏限定已开启')
     || text.includes('收藏料理限定已开启')
