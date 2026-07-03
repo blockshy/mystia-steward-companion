@@ -301,23 +301,23 @@ export function ModServicePanel({
 
           <ListPanel title={`${showDebugDetails ? '普客订单诊断' : '普客订单'} (${normalBusiness?.orders.length ?? 0})`} contentClassName="min-h-[18rem]">
             {autoPrepPreferences.automationEnabled && autoPrepPreferences.autoNormalOrderEnabled ? (
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-sm steward-muted-surface-35 px-3 py-2 text-sm">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2 steward-muted-surface-35 px-3 py-2 text-sm">
                 <span className="text-muted-foreground">
                   普客自动化会按开关处理普客订单，可执行送达酒水、制作料理、送达料理和完成订单。
                 </span>
                 {normalOrderBusy && <Badge variant="secondary">处理中</Badge>}
               </div>
             ) : autoPrepPreferences.automationEnabled ? (
-              <div className="mb-3 rounded-sm steward-muted-surface-35 px-3 py-2 text-sm text-muted-foreground">
+              <div className="mb-3 steward-muted-surface-35 px-3 py-2 text-sm text-muted-foreground">
                 开启“启用普客处理”后，可按阶段开关自动处理普客订单。
               </div>
             ) : (
-              <div className="mb-3 rounded-sm steward-muted-surface-35 px-3 py-2 text-sm text-muted-foreground">
+              <div className="mb-3 steward-muted-surface-35 px-3 py-2 text-sm text-muted-foreground">
                 设置页开启“启用自动化（实验性）”后，可启用普客订单自动处理。
               </div>
             )}
             {normalOrderMessage && !autoPrepPreferences.automationEnabled && (
-              <div className="mb-3 whitespace-pre-line rounded-sm steward-muted-surface-40 px-3 py-2 text-sm text-muted-foreground">
+              <div className="mb-3 whitespace-pre-line steward-muted-surface-40 px-3 py-2 text-sm text-muted-foreground">
                 {normalOrderMessage}
               </div>
             )}
@@ -402,7 +402,7 @@ function ResourceUsageRow({
 }) {
   const badgeVariant = status === 'over' ? 'destructive' : status === 'active' ? 'secondary' : 'outline';
   return (
-    <div className="rounded-md border border-border steward-background-surface-70 px-2.5 py-2 text-sm">
+    <div className="steward-data-row px-2.5 py-2 text-sm">
       <div className="flex items-center justify-between gap-3">
         <span className="font-medium text-foreground">{label}</span>
         <Badge variant={badgeVariant}>{value}</Badge>
@@ -410,7 +410,7 @@ function ResourceUsageRow({
       {details.length > 0 && (
         <div className="mt-1 flex flex-wrap gap-1.5 text-xs text-muted-foreground">
           {details.map((item, index) => (
-            <span key={`${item}-${index}`} className="max-w-full truncate rounded-sm border border-border px-1.5 py-0.5">
+            <span key={`${item}-${index}`} className="max-w-full truncate border border-border/60 px-1.5 py-0.5">
               {item}
             </span>
           ))}
@@ -489,7 +489,7 @@ export function ServiceFocusPage({
   const hasOrders = recommendations.length > 0 || recommendationIssues.length > 0;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4" data-gamepad-scope="content">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold text-foreground">稀客订单专注模式</h1>
@@ -594,7 +594,7 @@ function CurrentOrderRecommendations({
       }
     >
       {favoriteError && (
-        <div className="mb-2 rounded-md border border-destructive/30 px-3 py-2 text-sm text-destructive">
+        <div className="mb-2 border border-destructive/30 px-3 py-2 text-sm text-destructive">
           {favoriteError}
         </div>
       )}
@@ -606,7 +606,7 @@ function CurrentOrderRecommendations({
             return (
               <div
                 key={`${issue.order.deskCode}-${issue.order.guestId}-issue`}
-                className={compact ? 'rounded-md border border-border p-2 text-xs' : 'rounded-md border border-border p-3 text-sm'}
+                className={compact ? 'steward-data-row p-2 text-xs' : 'steward-data-row p-3 text-sm'}
               >
                 <div className="font-medium">{issue.order.guestName} · 桌 {formatDesk(issue.order.deskCode)}</div>
                 <div className="mt-1 text-xs text-muted-foreground">{issue.message}</div>
@@ -801,16 +801,16 @@ function RareAutoPrepStatus({
   onResetOrder: (orderKey: string) => void;
 }) {
   return (
-    <div className="mt-3 rounded-md border border-border steward-muted-surface-40 px-3 py-2 text-sm">
+    <div className="steward-inline-panel mt-3 px-3 py-2 text-sm">
       <div className="font-medium text-foreground">稀客自动化{busy ? '处理中' : '状态'}</div>
       {diagnostics.length === 0 ? (
-        <div className="mt-2 rounded-md border border-border steward-background-surface-70 px-2.5 py-2 text-xs text-muted-foreground">
+        <div className="steward-data-row mt-2 px-2.5 py-2 text-xs text-muted-foreground">
           暂无正在处理的稀客订单。
         </div>
       ) : (
         <div className="mt-2 space-y-2">
           {diagnostics.map((diagnostic) => (
-            <div key={diagnostic.orderKey} className="rounded-md border border-border steward-background-surface-70 px-2.5 py-2">
+            <div key={diagnostic.orderKey} className="steward-data-row px-2.5 py-2">
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div className="min-w-0">
                   <div className="truncate font-medium text-foreground">{diagnostic.title}</div>
@@ -818,7 +818,7 @@ function RareAutoPrepStatus({
                     料理 {diagnostic.foodTag || '无'} · 酒水 {diagnostic.beverageTag || '无'}
                   </div>
                 </div>
-                <div className="flex shrink-0 gap-1.5">
+                <div className="flex shrink-0 gap-1.5" data-gamepad-axis="x">
                   <Button
                     size="sm"
                     variant="outline"
@@ -909,16 +909,16 @@ function NormalAutoPrepStatus({
   showDebugDetails: boolean;
 }) {
   return (
-    <div className="mt-3 rounded-md border border-border steward-muted-surface-40 px-3 py-2 text-sm">
+    <div className="steward-inline-panel mt-3 px-3 py-2 text-sm">
       <div className="font-medium text-foreground">普客自动化{busy ? '处理中' : '状态'}</div>
       {diagnostics.length === 0 ? (
-        <div className="mt-2 rounded-md border border-border steward-background-surface-70 px-2.5 py-2 text-xs text-muted-foreground">
+        <div className="steward-data-row mt-2 px-2.5 py-2 text-xs text-muted-foreground">
           暂无正在处理的普客订单。
         </div>
       ) : (
         <div className="mt-2 space-y-2">
           {diagnostics.map((diagnostic) => (
-            <div key={diagnostic.orderKey} className="rounded-md border border-border steward-background-surface-70 px-2.5 py-2">
+            <div key={diagnostic.orderKey} className="steward-data-row px-2.5 py-2">
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div className="min-w-0">
                   <div className="truncate font-medium text-foreground">{diagnostic.title}</div>

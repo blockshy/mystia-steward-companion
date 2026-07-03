@@ -48,10 +48,12 @@ function MultiSelectBox({
       classNames={{
         input: composeClassNames('steward-select-input', inputClassName),
         inputField: 'steward-multi-select-field',
+        pill: 'steward-multi-select-pill',
         pillsList: 'steward-multi-select-pills',
         dropdown: composeClassNames('steward-select-dropdown', dropdownClassName),
         option: composeClassNames('steward-select-option', optionClassName),
       }}
+      openOnFocus={false}
       comboboxProps={{
         withinPortal: true,
         middlewares: { flip: true, shift: true },

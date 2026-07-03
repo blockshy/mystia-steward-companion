@@ -1,6 +1,6 @@
 # 开发约定与流程
 
-更新日期：2026-06-15
+更新日期：2026-07-01
 
 ## 代码边界
 
@@ -25,7 +25,8 @@
 - 面向用户的文案默认使用中文；Mod UI 需要同时保留中文和英文入口。
 - 不在组件中硬编码平衡值，优先更新结构化数据和类型化逻辑。
 - 伴随窗口 UI 基础组件统一放在 `apps/companion/src/components/ui/`。按钮、输入框、选择框、页签、卡片、徽标、开关、滑杆、选项组、折叠面板、状态卡片、空状态和信息字段都优先使用该目录组件，不要在业务页面复制外部模板组件或手写第二套样式。
-- UI 原语以 Mantine 组件为交互基础，通过 `apps/companion/src/components/ui/` 和 `components/ui-kit` 做项目级适配；样式由 Mantine theme、项目 CSS token 和少量尺寸归一 wrapper 控制。新增组件要保持工具型窗口的紧凑布局、`md` 圆角、实边框、弱动画和可读高对比，不引入通用后台模板、玻璃拟态、过度圆角或独立视觉体系。
+- UI 原语以 Mantine 组件为交互基础，通过 `apps/companion/src/components/ui/` 和 `components/ui-kit` 做项目级适配；样式由 Mantine theme、项目 CSS token 和少量尺寸归一 wrapper 控制。新增组件要保持工具型窗口的紧凑布局、企业控制台式扁平分组、直角窄边框、弱动画和可读高对比；除开关、滚动条滑块等需要圆形几何的控件外，不再使用圆角。列表和推荐优先使用表格化行项目，不引入通用后台模板、玻璃拟态、过度圆角、卡片堆叠或独立视觉体系。
+- 伴随窗口布局必须覆盖 Tauri 主窗口最小宽度 720px。常规双列密集面板应在 720px 及以上保持双列，仅低于最小窗口限制时退回单列；顶部工具条、状态摘要、滑杆和表单控件不得通过提高窗口最小宽度、隐藏关键信息或横向溢出来规避问题；UI 巡检需包含 720px 最小宽度截图和关键布局断言。
 - 页面级代码应继续按页面和业务域拆分到 `apps/companion/src/companion/pages/`、`domain/`、`hooks/`、`features/` 或 `workers/`。新增页面时先复用 `ListPanel`、`InfoLine`、`EmptyState`、`SwitchField`、`SliderField`、`SegmentedControl`、`Tree` 和 `Accordion`，避免页面层样式混乱。
 
 ## 构建验证
@@ -84,12 +85,12 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 - 已捕获且仍能匹配当前稀客，或仍能从原运行时订单对象和控制器确认未完成的订单，不得使用短时间缓存过期清理；只应在明确移除、确认上菜完成、稀客离场或长时间硬上限后消失。
 - 本地 API 监听 `127.0.0.1`，避免代理工具干扰 `localhost`；除 `/health` 外，接口必须通过伴随窗口传入的 token 访问。
 - 伴随窗口单实例控制监听 `127.0.0.1:32146`；热键逻辑必须先发送 `show`/`toggle`/`exit` 控制消息，控制端口不可达时才启动伴随进程，避免手柄快捷键重复创建窗口。
-- `F8` 和 `RS Click` 默认用于在游戏和伴随窗口之间切换焦点；伴随窗口聚焦时由 Tauri 前端处理热键并调用后端按设置切回游戏窗口。焦点行为不能写死为隐藏窗口，必须支持保持伴随窗口悬浮只切焦点。手柄切换必须做释放锁存和可配置后端防抖，避免一次长按在两侧窗口间反复触发。伴随窗口内手柄焦点必须优先遵守 `data-gamepad-scope` 区域，不要让顶部页签横向移动跳入页面内容。
+- `F8` 和 `RS Click` 默认用于在游戏和伴随窗口之间切换焦点；伴随窗口聚焦时由 Tauri 前端处理热键并调用后端按设置切回游戏窗口。焦点行为不能写死为隐藏窗口，必须支持保持伴随窗口悬浮只切焦点。手柄切换必须做释放锁存和可配置后端防抖，避免一次长按在两侧窗口间反复触发。伴随窗口内手柄焦点必须优先遵守 `data-gamepad-scope` 区域，不要让顶部页签横向移动跳入页面内容。Tabs、SegmentedControl、横向按钮组和 slider 这类复合控件必须使用组件级语义处理方向键；通用空间导航必须按交叉轴对齐优先选择候选，不允许依赖只看中心点距离的全局几何搜索碰运气。
 - 伴随窗口透明度通过 Tauri transparent window 和前端 CSS 变量实现；背景透明度只影响窗口背景、面板、弹层和滚动条轨道，文字透明度只影响普通文字、图标和辅助徽章内容，主操作按钮必须保持可读。不要用 Windows `SetLayeredWindowAttributes(..., LWA_ALPHA)` 或其他整窗 alpha 实现背景透明度，因为它会让文字和图标一起变淡。
 - 鼠标穿透锁定必须通过 Tauri 原生窗口 `set_ignore_cursor_events` 实现，不能只使用 CSS `pointer-events`。`F10` 负责切换鼠标穿透；`F8`、`RS Click`、托盘显示/重连和单实例 `show` 控制消息必须自动关闭穿透，避免窗口被唤回后仍无法点击。
 - 伴随窗口根滚动区域必须预留稳定纵向滚动条槽位，避免页面内容因滚动条出现或消失产生横向跳动。
 - 伴随窗口滚动条样式必须跟随主题和背景透明度；不要使用全局 `*::-webkit-scrollbar` 覆盖会刻意隐藏滚动条的导航栏。
-- 伴随窗口内手柄导航应优先处理同一行内的左右移动；range 滑杆获得焦点时，左右方向应调节数值而不是跳到其他按钮。收藏按钮等点击后会改变 UI 状态的控件，应使用稳定 `data-gamepad-focus-key` 恢复焦点。
+- 伴随窗口内手柄导航应优先处理同一行内的左右移动；`TabsList` 左右键只在当前页签组内移动，下键进入当前 active panel，panel 顶部上键回到控制该 panel 的 trigger；`SegmentedControl` 使用可见 label 作为手柄焦点目标，左右键只在当前选项组内切换；横向按钮组和工具条统一使用 `data-gamepad-axis="x"` 约束左右移动。通用 content 空间导航左右移动必须优先垂直对齐候选，上下移动必须优先水平对齐候选，避免焦点从上方表单跳到下方列表按钮。range 和 Mantine `[role="slider"]` 获得焦点时，左右方向应调节数值而不是跳到其他按钮。Select/MultiSelect 下拉框获得焦点时不得因方向键自动展开，必须由确认键展开，展开后方向键才用于移动选项。收藏按钮等点击后会改变 UI 状态的控件，应使用稳定 `data-gamepad-focus-key` 恢复焦点。Gamepad API 轮询必须使用集中输入状态机，按键读取同时检查 `pressed` 和模拟量 `value`，并在窗口 blur、页面隐藏、手柄断开、无手柄或禁用导航时清理 latch；确认/收藏动作在 active element 丢失时应优先使用上一手柄高亮元素继续执行，不把本次按键只消耗在重新找焦点上。
 - 经营中、专注模式和日志等实时页面的动态内容区应保留稳定容器和紧凑空状态；不要因为暂无订单、暂无预约或暂无日志就直接卸载整块区域，避免数据刷新时页面大幅跳动。
 - 帮助页内容必须保存在 `apps/companion/src/data/help-content.json`，前端只负责搜索、目录树和详情渲染。新增用户可见功能或排查流程时，同步更新帮助 JSON，避免只改 README。
 - Unity 场景切换后不要再用固定秒数等待来规避加载问题。日间任务列表、日间地图和稀客邀请必须通过运行态数据入口判断可读性：排除主菜单、夜间经营和经营准备后，优先读取 `DayScene.SceneManager.CurrentActiveMapLabel` / `TargetMapLabel`、`RunTimeDayScene.GetMapNPCs()`、`RunTimeDayScene.RefTrackedNPCAvailability()` 和 `RunTimeScheduler` 数据；不能把 `DaySceneSustainedPannel` 是否激活作为日间数据总门禁，否则常规日间场景会被误判为 UI 初始化中。夜间经营准备读取仍以 `PrepNightScene.UI.IzakayaConfigPannel.OnPanelOpen` / `GoToSpecific` 为 ready 信号，并用 `Cleanup_Generated` / `GotoWork` 清理；进入夜间经营准备时，只能用 `WorkPrepScenePannelRoot` 下活跃的 `IzakayaConfigPannelNew` 和 ready 信号阻断日间读取，不能用泛化的同名面板或残留对象判断。读取代码必须避开不稳定的 IL2CPP 托管枚举路径，尤其不要直接依赖 `IEnumerator.Current`；优先使用 Count/indexer、字段、静态快照或可空单例。读取失败应降级为状态提示并等待下一轮刷新。

@@ -131,7 +131,7 @@ export function ModInventoryPanel({
               修改会写入当前游戏运行时库存；请在游戏内保存后再退出。经营中修改可能会和实时消耗同时发生。
             </div>
           </div>
-          <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
+          <div className="flex min-w-0 flex-wrap items-center justify-end gap-2" data-gamepad-axis="x">
             <Button
               size="sm"
               variant="outline"
@@ -241,7 +241,7 @@ function InventoryEditColumn<TItem extends IngredientCatalogItem | BeverageCatal
           return (
             <div
               key={key}
-              className="rounded-md border border-border/80 px-2 py-1.5 text-sm"
+              className="steward-data-row px-2 py-1.5 text-sm"
               data-gamepad-row="true"
               data-gamepad-row-key={`inventory:${key}`}
             >

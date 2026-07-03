@@ -49,6 +49,7 @@ function SelectBox({
         dropdown: composeClassNames('steward-select-dropdown', dropdownClassName),
         option: composeClassNames('steward-select-option', optionClassName),
       }}
+      openOnFocus={false}
       comboboxProps={{
         withinPortal: true,
         middlewares: { flip: true, shift: true },

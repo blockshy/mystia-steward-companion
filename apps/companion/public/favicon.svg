@@ -1,14 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="mystia-steward-companion">
-  <rect x="4" y="4" width="56" height="56" rx="14" fill="#13242d"/>
+  <rect x="4" y="4" width="56" height="56" fill="#13242d"/>
   <path d="M10 46 46 10c7 4 12 11 13 20v7L37 59h-7c-8 0-16-5-20-13Z" fill="#23434a" opacity=".55"/>
-  <rect x="14" y="12" width="36" height="40" rx="8" fill="#f5d779"/>
-  <rect x="18" y="18" width="28" height="6" rx="3" fill="#13242d"/>
+  <rect x="14" y="12" width="36" height="40" fill="#f5d779"/>
+  <rect x="18" y="18" width="28" height="6" fill="#13242d"/>
   <circle cx="22" cy="21" r="1.8" fill="#2bd4a5"/>
-  <rect x="18" y="30" width="9" height="9" rx="3" fill="#13242d"/>
-  <path d="m20.3 34.2 2.4 2.3 5-5.8" fill="none" stroke="#2bd4a5" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
-  <rect x="31" y="31" width="15" height="3" rx="1.5" fill="#13242d"/>
-  <rect x="31" y="37" width="11" height="3" rx="1.5" fill="#8a742e"/>
+  <rect x="18" y="30" width="9" height="9" fill="#13242d"/>
+  <path d="m20.3 34.2 2.4 2.3 5-5.8" fill="none" stroke="#2bd4a5" stroke-width="3.4" stroke-linecap="square" stroke-linejoin="miter"/>
+  <rect x="31" y="31" width="15" height="3" fill="#13242d"/>
+  <rect x="31" y="37" width="11" height="3" fill="#8a742e"/>
   <circle cx="47" cy="47" r="11" fill="#70d6ff"/>
   <circle cx="47" cy="47" r="8" fill="none" stroke="#fff4d0" stroke-width="3"/>
-  <path d="M47 40v14M40 47h14" stroke="#13242d" stroke-width="4" stroke-linecap="round"/>
+  <path d="M47 40v14M40 47h14" stroke="#13242d" stroke-width="4" stroke-linecap="square"/>
 </svg>

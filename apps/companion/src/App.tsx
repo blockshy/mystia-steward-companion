@@ -3,7 +3,7 @@ import { ModWorkbench } from '@/companion/ModWorkbench';
 export default function App() {
   return (
     <div className="companion-shell min-h-screen">
-      <main className="mx-auto max-w-7xl px-4 py-6">
+      <main className="mx-auto max-w-[1360px] p-1.5 md:p-2">
         <ModWorkbench />
       </main>
     </div>

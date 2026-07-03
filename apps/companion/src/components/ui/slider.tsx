@@ -35,6 +35,7 @@ function Slider({
         max={max}
         step={step}
         disabled={disabled}
+        thumbLabel={props['aria-label']}
         onChange={onValueChange}
         className="steward-slider"
         {...props}

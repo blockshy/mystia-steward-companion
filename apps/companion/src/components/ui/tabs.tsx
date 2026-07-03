@@ -29,6 +29,7 @@ function TabsList({ className, ...props }: ComponentProps<typeof MantineTabs.Lis
   return (
     <MantineTabs.List
       data-slot="tabs-list"
+      data-gamepad-axis="x"
       className={composeClassNames('steward-tabs-list group/tabs-list', className)}
       {...props}
     />
@@ -49,6 +50,7 @@ function TabsContent({ className, ...props }: ComponentProps<typeof MantineTabs.
   return (
     <MantineTabs.Panel
       data-slot="tabs-content"
+      data-gamepad-scope="content"
       className={composeClassNames("steward-tabs-content flex-1 text-sm outline-none", className)}
       {...props}
     />

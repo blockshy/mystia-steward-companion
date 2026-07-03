@@ -7,7 +7,7 @@ import { useThemeMode } from '@/lib/theme';
 const companionTheme = createTheme({
   fontFamily: "'Geist Variable', sans-serif",
   primaryColor: 'steward',
-  defaultRadius: 'md',
+  defaultRadius: 0,
   primaryShade: { light: 6, dark: 4 },
   colors: {
     steward: [

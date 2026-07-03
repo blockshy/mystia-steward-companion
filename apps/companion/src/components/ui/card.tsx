@@ -13,9 +13,9 @@ function Card({
       data-slot="card"
       data-size={size}
       withBorder
-      radius="md"
+      radius={0}
       padding={size === 'sm' ? 'sm' : 'md'}
-      className={composeClassNames('steward-card group/card flex flex-col gap-4 overflow-hidden text-sm data-[size=sm]:gap-3', className)}
+      className={composeClassNames('steward-card group/card flex flex-col gap-3 overflow-hidden text-sm data-[size=sm]:gap-2.5', className)}
       {...props}
     />
   )
@@ -39,7 +39,7 @@ function CardTitle({ className, ...props }: React.ComponentProps<"div">) {
     <div
       data-slot="card-title"
       className={composeClassNames(
-        "text-base leading-snug font-semibold group-data-[size=sm]/card:text-sm",
+        "text-sm leading-snug font-semibold group-data-[size=sm]/card:text-sm",
         className
       )}
       {...props}
@@ -51,7 +51,7 @@ function CardDescription({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="card-description"
-      className={composeClassNames("text-sm text-muted-foreground", className)}
+      className={composeClassNames("text-xs text-muted-foreground", className)}
       {...props}
     />
   )
@@ -85,7 +85,7 @@ function CardFooter({ className, ...props }: React.ComponentProps<"div">) {
     <div
       data-slot="card-footer"
       className={composeClassNames(
-        "flex items-center border-t steward-muted-surface-45 pt-3 group-data-[size=sm]/card:pt-2",
+        "flex items-center border-t steward-muted-surface-45 px-3 py-2 group-data-[size=sm]/card:px-2.5 group-data-[size=sm]/card:py-1.5",
         className
       )}
       {...props}

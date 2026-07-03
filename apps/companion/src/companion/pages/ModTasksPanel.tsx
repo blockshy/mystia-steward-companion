@@ -75,7 +75,7 @@ function RareGuestInvitationPanel({
     <ListPanel
       title={`稀客邀请 (${visibleAvailableEntries.length}/${candidateEntries.length})`}
       action={(
-        <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
+        <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5" data-gamepad-axis="x">
           <SegmentedControl<RareGuestInvitationScope>
             value={inviteScope}
             options={[
@@ -109,7 +109,7 @@ function RareGuestInvitationPanel({
         </div>
         {!inviteAllResult && inviteAllError && <EmptyRow text={inviteAllError} />}
         {inviteAllResult ? (
-          <div className="max-w-full min-w-0 overflow-hidden rounded-sm steward-muted-surface-25 p-2">
+          <div className="max-w-full min-w-0 overflow-hidden steward-muted-surface-25 p-2">
             <div className="grid gap-1 text-xs text-muted-foreground sm:grid-cols-2">
               <span className="truncate">
                 新增 {inviteAllResult.invitedCount}
@@ -130,7 +130,7 @@ function RareGuestInvitationPanel({
               />
             </div>
             {levelOptions.length > 0 && (
-              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+              <div className="mt-2 flex flex-wrap items-center gap-1.5" data-gamepad-axis="x">
                 <Button
                   type="button"
                   size="xs"
@@ -177,8 +177,9 @@ function RareGuestInvitationPanel({
                 return (
                   <div
                     key={`${entry.id}-${entry.runtimeName || entry.name}`}
-                    className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-sm steward-background-surface-45 px-2 py-1.5"
-                    data-gamepad-row="rare-invitation"
+                    className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 steward-background-surface-45 px-2 py-1.5"
+                    data-gamepad-row="true"
+                    data-gamepad-row-key={`rare-invitation:${entry.id}:${entry.runtimeName || entry.name}`}
                   >
                     <div className="min-w-0">
                       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
@@ -316,7 +317,7 @@ export function ModTasksPanel({
       <ListPanel
         title={`可推进任务 (${filteredRows.length})`}
         action={(
-          <div className="flex flex-wrap gap-1.5">
+          <div className="flex flex-wrap gap-1.5" data-gamepad-axis="x">
             {showDebugDetails && (
               <Button
                 type="button"

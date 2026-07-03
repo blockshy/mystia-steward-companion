@@ -1116,7 +1116,7 @@ export function ModWorkbench() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       <WorkbenchHeader
         endpointDraft={endpointDraft}
         onEndpointDraftChange={setEndpointDraft}
@@ -1135,7 +1135,7 @@ export function ModWorkbench() {
         snapshot={snapshot}
       />
 
-      <Tabs value={tab} onValueChange={(value) => setTab(value as ModTab)} className="space-y-4">
+      <Tabs value={tab} onValueChange={(value) => setTab(value as ModTab)} className="space-y-3">
         <TabsList
           className="h-9 !w-full max-w-full justify-stretch overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           data-gamepad-scope="tabs"

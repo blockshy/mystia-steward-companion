@@ -316,7 +316,7 @@ export function PlaceToolbar({
   onFollowDetectedPlace: () => void;
 }) {
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="flex flex-wrap items-center gap-2" data-gamepad-axis="x">
       <PlaceSelect value={selectedPlace} places={ALL_PLACES} onChange={onPlaceChange} />
       {detectedPlace && (
         <Button size="sm" variant="outline" onClick={onFollowDetectedPlace}>
@@ -422,7 +422,7 @@ export function OrderRecommendationPanel({
   const targetCookerName = visibleRecipes[0]?.recipe.cooker ?? '';
 
   return (
-    <div className={compact ? 'rounded-md border border-border p-2' : 'rounded-md border border-border p-3'}>
+    <div className={compact ? 'steward-data-row p-2' : 'steward-data-row p-3'}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <div className="text-sm font-semibold">{item.customer.name} · 桌 {formatDesk(item.order.deskCode)}</div>
@@ -533,7 +533,7 @@ export function EffectiveCustomRecipesViewer({
         {open ? '收起自定义配方' : `查看生效的自定义配方 (${entries.length})`}
       </Button>
       {open && (
-        <div className="mt-2 rounded-md border border-border p-2">
+        <div className="steward-inline-panel mt-2 p-2">
           <div className="mt-2 max-h-72 space-y-1.5 overflow-auto pr-1">
             {entries.length === 0 && <EmptyRow text="当前稀客和点单料理 Tag 没有生效的自定义配方" />}
             {entries.map((entry) => {
@@ -556,7 +556,7 @@ export function EffectiveCustomRecipesViewer({
               return (
                 <div
                   key={entry.id}
-                  className="flex flex-wrap items-start justify-between gap-2 rounded-md border border-border px-2 py-2 text-sm"
+                  className="steward-data-row flex flex-wrap items-start justify-between gap-2 px-2 py-2 text-sm"
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-1.5">
