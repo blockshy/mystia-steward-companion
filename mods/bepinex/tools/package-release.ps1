@@ -13,6 +13,9 @@ $DistRoot = Join-Path $RootDir "dist"
 $PackageDirName = "mystia-steward-companion"
 $DistDir = Join-Path $DistRoot $PackageDirName
 $ZipPath = Join-Path $DistRoot "mystia-steward-companion-bepinex.zip"
+$CompanionStandaloneExePath = Join-Path $DistRoot "mystia-steward-companion-companion-windows-x64.exe"
+$LegacyCompanionStandaloneDir = Join-Path $DistRoot "mystia-steward-companion-companion-windows-x64"
+$LegacyCompanionZipPath = Join-Path $DistRoot "mystia-steward-companion-companion-windows-x64.zip"
 $DllPath = Join-Path $OutputDir "MystiaStewardCompanion.BepInEx.dll"
 
 if (-not (Test-Path -LiteralPath $DllPath -PathType Leaf)) {
@@ -21,6 +24,15 @@ if (-not (Test-Path -LiteralPath $DllPath -PathType Leaf)) {
 
 if (Test-Path -LiteralPath $DistDir) {
     Remove-Item -LiteralPath $DistDir -Recurse -Force
+}
+if (Test-Path -LiteralPath $LegacyCompanionStandaloneDir) {
+    Remove-Item -LiteralPath $LegacyCompanionStandaloneDir -Recurse -Force
+}
+if (Test-Path -LiteralPath $CompanionStandaloneExePath) {
+    Remove-Item -LiteralPath $CompanionStandaloneExePath -Force
+}
+if (Test-Path -LiteralPath $LegacyCompanionZipPath) {
+    Remove-Item -LiteralPath $LegacyCompanionZipPath -Force
 }
 New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 
@@ -38,6 +50,11 @@ foreach ($RelativePath in $CompanionCandidates) {
         New-Item -ItemType Directory -Force -Path $CompanionDir | Out-Null
         Copy-Item -LiteralPath $CompanionPath -Destination (Join-Path $CompanionDir (Split-Path $CompanionPath -Leaf))
         Write-Host "Included companion executable: $CompanionPath"
+
+        if ([System.IO.Path]::GetExtension($CompanionPath).Equals(".exe", [System.StringComparison]::OrdinalIgnoreCase)) {
+            Copy-Item -LiteralPath $CompanionPath -Destination $CompanionStandaloneExePath
+            Write-Host "Companion executable created: $CompanionStandaloneExePath"
+        }
         break
     }
 }

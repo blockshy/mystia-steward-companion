@@ -22,6 +22,8 @@
 - PowerShell 7。
 - GitHub CLI，并完成 `gh auth login`。
 
+如需同时发布 Android APK，还需要 Android Studio/SDK/NDK、JDK 17、Android Rust targets，并完成 APK 签名配置。Android APK 是 Tauri mobile 的单独构建产物，不从 Windows EXE 转换。
+
 `mods/bepinex/References/` 需要包含：
 
 ```text
@@ -156,12 +158,108 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
   -ReferenceDir "D:\path\to\mystia-steward-companion-references"
 ```
 
-脚本会先运行 `build-release.ps1`，然后上传 Mod 压缩包和自动更新清单：
+脚本会先运行 `build-release.ps1`，然后上传 Mod 压缩包、自动更新清单和供其他设备直接使用的独立伴随窗口 EXE：
 
 - `mods/bepinex/dist/mystia-steward-companion-bepinex.zip`
 - `mods/bepinex/dist/update-manifest.json`
+- `mods/bepinex/dist/mystia-steward-companion-companion-windows-x64.exe`
+- 可选：`mods/bepinex/dist/mystia-steward-companion-android-arm64-v8a.apk`
+- 可选：`mods/bepinex/dist/mystia-steward-companion-android-armeabi-v7a.apk`
 
-`update-manifest.json` 包含版本号、资产文件名、zip 大小和 SHA256，不包含本机打包路径。Tauri setup 安装器不会上传到 Release，避免和 Mod 分发包混淆。
+`update-manifest.json` 包含版本号、资产文件名、zip 大小和 SHA256，不包含本机打包路径，并且只指向 `mystia-steward-companion-bepinex.zip`。独立 Windows 伴随窗口 EXE 和 Android APK 只给 B 设备跨局域网连接使用，不参与 Mod 自动更新。Tauri setup 安装器不会上传到 Release，避免和 Mod 分发包混淆。
+
+如发布机已配置 Android 工具链和签名配置，可在发布构建时直接生成 Android APK：
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1 -BuildAndroidApk
+```
+
+正式发布命令也可以透传该参数：
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
+  -Tag v1.1.0 `
+  -Title "v1.1.0" `
+  -Notes "版本更新说明" `
+  -BuildAndroidApk
+```
+
+没有 `-BuildAndroidApk` 时，Windows 发布流程继续只构建 Mod 主包、更新清单和 Windows 独立伴随窗口 EXE，不强制依赖 Android SDK/NDK/JDK 或 keystore。
+
+Android APK 也可以在具备 Android 工具链的机器上单独构建。仓库已包含 `apps/companion/src-tauri/gen/android/` 工程；签名配置、keystore、Gradle 缓存和 build 输出不能提交：
+
+```powershell
+pnpm tauri:android:apk
+```
+
+该命令默认会生成按 ABI 拆分的未签名验证包，例如：
+
+```text
+apps\companion\src-tauri\gen\android\app\build\outputs\apk\arm64\release\app-arm64-release-unsigned.apk
+apps\companion\src-tauri\gen\android\app\build\outputs\apk\arm\release\app-arm-release-unsigned.apk
+```
+
+正式发布必须使用已签名 APK。先准备本机私有 keystore：
+
+```powershell
+keytool -genkeypair -v `
+  -keystore "$env:USERPROFILE\.android\mystia-steward-companion-release.jks" `
+  -storetype PKCS12 `
+  -keyalg RSA `
+  -keysize 2048 `
+  -validity 10000 `
+  -alias mystia-steward-companion
+```
+
+然后创建 `apps\companion\src-tauri\gen\android\keystore.properties`。该文件已被 Git 忽略，不能提交：
+
+```properties
+keyAlias=mystia-steward-companion
+password=<keystore 和 key 共用密码>
+storeFile=C:\\Users\\Administrator\\.android\\mystia-steward-companion-release.jks
+```
+
+如果 keystore 密码和 key 密码不同，使用：
+
+```properties
+keyAlias=mystia-steward-companion
+storePassword=<keystore 密码>
+keyPassword=<key 密码>
+storeFile=C:\\Users\\Administrator\\.android\\mystia-steward-companion-release.jks
+```
+
+构建、验签并复制发布资产：
+
+```powershell
+pnpm tauri:android:apk:signed
+```
+
+成功后会生成：
+
+```text
+mods\bepinex\dist\mystia-steward-companion-android-arm64-v8a.apk
+mods\bepinex\dist\mystia-steward-companion-android-armeabi-v7a.apk
+```
+
+`publish-release.ps1` 会自动把 `mods\bepinex\dist` 下的 Android APK 作为额外 Release 资产上传。若 APK 位于其他路径，发布时可显式传入单个 APK 或包含 APK 的目录：
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
+  -Tag v1.1.0 `
+  -Title "v1.1.0" `
+  -Notes "版本更新说明" `
+  -AndroidApkPath "D:\path\android-apks"
+```
+
+没有 APK 时，Windows 发布流程继续只上传 Mod 主包、更新清单和 Windows 独立伴随窗口 EXE。
+
+Windows 下如果 Android 构建出现 `this and base files have different roots: C:\... and D:\...`，这是 Kotlin 增量编译缓存跨盘符相对路径问题。仓库已在 Android Gradle 配置中关闭 Kotlin incremental compilation；如果本机仍使用旧 daemon 或旧缓存，先清理：
+
+```powershell
+cd apps\companion\src-tauri\gen\android
+.\gradlew --stop
+Remove-Item -Recurse -Force .gradle, build, app\build, buildSrc\build -ErrorAction SilentlyContinue
+```
 
 ## 只上传已有产物
 

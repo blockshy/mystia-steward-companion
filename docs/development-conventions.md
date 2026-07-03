@@ -64,7 +64,10 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 - 仓库不使用 GitHub Actions 自动构建 Release；不要新增 tag 自动构建 workflow。
 - 版本发布采用本机 Windows 构建后通过 `gh` 上传，详细说明见 `docs/local-release.md`。
 - 自动更新发布只支持稳定版 `X.Y.Z` 和预览版 `X.Y.Z-preview.N`。预览版必须发布为 GitHub Prerelease，用于 `dev` 上验证自动更新链路；稳定版确认后再合并 `main` 并发布普通 Release。
+- GitHub Release 需要上传 Mod 主包、`update-manifest.json` 和独立 Windows x64 伴随窗口 EXE：`mystia-steward-companion-companion-windows-x64.exe`；如发布机已配置 Android 工具链和签名配置，可通过 `build-release.ps1 -BuildAndroidApk` 或 `publish-release.ps1 -BuildAndroidApk` 生成并上传按 ABI 拆分的 Android APK，默认资产为 `mystia-steward-companion-android-arm64-v8a.apk` 和 `mystia-steward-companion-android-armeabi-v7a.apk`。`update-manifest.json` 只服务 Mod 自动更新，必须继续指向 `mystia-steward-companion-bepinex.zip`，不要把独立伴随窗口 EXE 或 Android APK 纳入自动更新清单。
 - 不要主动创建 tag 或发布 Release；版本构建必须等待用户明确指令。
+- 用户和测试文档中的 BepInEx 安装版本优先固定到已验证的 `BepInEx-Unity.IL2CPP-win-x64-6.0.0-be.783+c58c42d.zip`。不要笼统推荐最新 Bleeding Edge；#784 及之后构建若要恢复支持，需要先通过实测和运行时日志确认。
+- Android APK 不是 Windows 伴随窗口 EXE 的转换产物。Android 版按 Tauri mobile 目标维护，只作为 B 设备 LAN 伴随窗口；桌面托盘、置顶、鼠标穿透、焦点切换、单实例控制和游戏关闭自动退出必须继续隔离在桌面平台代码中。Android applicationId 固定为 `com.tyukki.mystia.steward.companion`；不要使用带连字符的产品名作为 Android 包名。桌面 Tauri identifier 继续使用既有值，Android 通过 `apps/companion/src-tauri/tauri.android.conf.json` 单独覆盖 identifier，避免影响桌面端本地数据目录。仓库保留 `apps/companion/src-tauri/gen/android/` 工程，Gradle Rust 插件必须通过 Corepack 调用 pnpm。Android 发布 APK 默认通过 `--split-per-abi --target aarch64 armv7` 构建，避免 universal fat APK；`pnpm tauri:android:apk:signed` 读取被 Git 忽略的 `apps/companion/src-tauri/gen/android/keystore.properties`，构建后用 `apksigner verify` 验签并复制 `mods/bepinex/dist/mystia-steward-companion-android-arm64-v8a.apk` 和 `mods/bepinex/dist/mystia-steward-companion-android-armeabi-v7a.apk`；`build-release.ps1 -BuildAndroidApk` 和 `publish-release.ps1 -BuildAndroidApk` 只是复用该签名构建流程，不允许把 keystore、密码和签名配置提交。Android Gradle 已关闭 Kotlin incremental compilation，避免 Windows 上 Cargo registry 与项目分属不同盘符时出现 Kotlin daemon 相对路径报错。APK 需要 Android 工具链构建、签名和真机验证，作为独立 Release 资产上传，不参与 Mod 自动更新。
 
 ## 运行时约束
 
@@ -83,7 +86,8 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 - 推荐 tag 解析统一维护在 `apps/companion/src/recommendation-engine/tag-resolution.ts`，动态料理 tag 维护在 `dynamic-food-tags.ts`。运行时导出的 `tagPriorityRules` 优先级最高；运行时缺失时只允许使用 `PROJECT_VERIFIED_TAG_PRIORITY_RULES` 这组项目验证规则，不得在其他模块重新硬编码互斥/压制关系。新增或调整 tag 规则必须来自游戏运行时行为、反编译资料或可复现实测，并同步更新该集中模块和相关文档。
 - 运行时料理配方的基础食材必须作为数量敏感序列处理，重复项表示同一材料需要多份；`RuntimeDataCatalog.Recipes[].Ingredients` 和前端 `RecipeCatalogItem.ingredients` 不得去重。只有 tag、场景、ID 列表等集合语义字段可以在解析和归一化时去重。推荐加料槽位、大份动态 tag、基础成本和自动化下单保护都必须基于保留重复后的真实基础食材数量。
 - 已捕获且仍能匹配当前稀客，或仍能从原运行时订单对象和控制器确认未完成的订单，不得使用短时间缓存过期清理；只应在明确移除、确认上菜完成、稀客离场或长时间硬上限后消失。
-- 本地 API 监听 `127.0.0.1`，避免代理工具干扰 `localhost`；除 `/health` 外，接口必须通过伴随窗口传入的 token 访问。
+- 本地 API 必须始终保留 `127.0.0.1` 回环监听，避免 LAN 配置错误导致用户无法从 A 设备本机恢复；`LocalApi.AllowLanConnections=true` 只会额外启用 LAN listener。LAN listener 必须限制私网来源，连接配置和 Token 重置端点只能由回环客户端调用；Tauri 代理只接受 loopback/private/link-local IPv4 endpoint，除 `/health` 外所有接口都必须通过伴随窗口传入的 token 访问。
+- 每个伴随窗口必须生成稳定客户端 ID，并通过本地 API header 传给 Mod。订单自动化端点必须由 Mod 本地 API 的自动化 lease 仲裁，同一时间只允许一个客户端执行自动化；其他客户端可以读取快照和配置普通偏好，但不得绕过 lease 直接调用订单自动化动作。连接断开或快照错误时，前端可以保留最近一次只读展示，但不得继续用旧快照驱动自动化、游戏界面置顶目标或其他写入游戏运行时的后台动作。断线重连期间应优先轮询轻量 `/health`，确认 API 恢复后再读取 `/snapshot`；Android 端应直接使用 WebView `fetch` 访问 LAN API，桌面端 Tauri 代理必须在线程池执行阻塞 TCP 请求，避免同步 command 卡住 WebView。
 - 伴随窗口单实例控制监听 `127.0.0.1:32146`；热键逻辑必须先发送 `show`/`toggle`/`exit` 控制消息，控制端口不可达时才启动伴随进程，避免手柄快捷键重复创建窗口。
 - `F8` 和 `RS Click` 默认用于在游戏和伴随窗口之间切换焦点；伴随窗口聚焦时由 Tauri 前端处理热键并调用后端按设置切回游戏窗口。焦点行为不能写死为隐藏窗口，必须支持保持伴随窗口悬浮只切焦点。手柄切换必须做释放锁存和可配置后端防抖，避免一次长按在两侧窗口间反复触发。伴随窗口内手柄焦点必须优先遵守 `data-gamepad-scope` 区域，不要让顶部页签横向移动跳入页面内容。Tabs、SegmentedControl、横向按钮组和 slider 这类复合控件必须使用组件级语义处理方向键；通用空间导航必须按交叉轴对齐优先选择候选，不允许依赖只看中心点距离的全局几何搜索碰运气。
 - 伴随窗口透明度通过 Tauri transparent window 和前端 CSS 变量实现；背景透明度只影响窗口背景、面板、弹层和滚动条轨道，文字透明度只影响普通文字、图标和辅助徽章内容，主操作按钮必须保持可读。不要用 Windows `SetLayeredWindowAttributes(..., LWA_ALPHA)` 或其他整窗 alpha 实现背景透明度，因为它会让文字和图标一起变淡。
@@ -105,6 +109,7 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 - 特殊经营场景暂不接入标准推荐和自动化链路。不要在 `RecommendationState`、本地 API、前端排序或自动化阶段中重新加入特殊目标 Tag 分支，除非先基于运行时日志和反编译资料重新验证完整原生副作用。已分析内容记录在 `docs/special-business-scenes-notes.md`，只作为后续设计参考。
 - 普客订单中的客人、料理和酒水名称只能使用本地数据仓库名称或明确可读文本。`GameData.CoreLanguage.LanguageBase`、`Il2Cpp*`、`GameData.*` 这类运行时类型名必须过滤掉；普客订单去重也不得依赖不稳定的客人文本。
 - 自动化能力是实验性功能，必须由设置页总开关控制；总开关关闭时经营中页不显示自动化配置，也不执行任何自动化动作。稀客并发、普客并发、最大重试和最大回退都必须走 `CompanionPreferences`，默认分别为 `2`、`3`、`3`、`2`；稀客完成订单评价每轮最多执行 1 笔，避免多稀客订单同时修改运行时对象，普客按普客并发数处理。普客订单处理必须额外由经营中自动化面板的“启用普客处理”子开关启用，开启后不保留手动处理按钮，由伴随窗口轮询自动执行。稀客阶段配置使用 `autoPrep*`，普客阶段配置使用 `autoNormal*`；普客送酒、开锅、送料理、完成订单和出错暂停都要独立保存、独立传参。子选项默认关闭但记忆用户上次配置。
+- 自动化总开关开启后，前端必须先获取自动化 lease 并持续续约；未取得 lease、连接失败或快照处于错误状态时，不得启动稀客或普客自动化轮询。关闭自动化时应释放 lease，异常退出或 Android 后台暂停时依赖后端 TTL 自动释放。
 - 自动化遇到厨具占用、出锅料理暂未直接送达、运行时订单或厨具对象短暂不可读等临时状态时，应保持可重试；不得因为一次失败永久停止。`出错时暂停` 只用于非临时错误。稀客暂停状态和普客暂停状态必须隔离；普客的非临时错误只暂停对应订单 key，不得影响稀客自动化或其他普客订单。
 - 自动化状态机只把实际动作视为进展，例如送酒、开锅、单项送达提交或触发评价；不要把“选择订单”“匹配订单”这类前置成功当作进展，否则会掩盖真实卡住。稀客和普客完成订单都必须允许料理和酒水按阶段分别送达，只要目标项已进入订单就应通过 `hasServedFood/hasServedBeverage` 校准前端状态；只有订单 `get_IsFullfilled()` 为真时才能触发 `EvaluateOrder()`，但本地状态不能把该字段当成已完成，应继续等待 `HasEvaluated` 或订单消失。C# pending 直送、开锅成功/失败和 pending 移除需要写入 `BepInEx/config/MystiaStewardCompanion/automation-jobs.log`，连续相同日志必须合并为 `repeat` 摘要，伴随窗口日志页需要能通过 `/logs/automation` 有上限读取并展示结构化作业记录，也需要能通过 `/logs/export-diagnostics` 导出包含 snapshot 和日志尾部的诊断 zip；诊断日志和诊断包都必须有大小上限并且不能影响游戏流程。
 - 稀客订单进入自动化后必须锁定本订单的料理、加料和酒水；后续轮询即使库存或排序导致推荐列表变化，也不能改用新的第一推荐，除非用户重置该订单或订单自然结束。自动化锁定排序后的统一推荐候选；若锁定料理标注为 `偏好备选`，状态中也必须保留该标识。`只处理收藏料理` 只限制料理动作，`只处理收藏酒水` 只限制酒水动作；执行候选截断必须保留当前订单可用收藏项，避免收藏项不在首屏推荐时被误判为不可用。
@@ -119,8 +124,8 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 - 普客订单被动快照应保持约 1 秒级缓存；普客自动化动作后只强制刷新普客订单快照。pending 出锅直送无待办时不要在 `Update()` 热路径轮询。
 - `BepInEx/LogOutput.log` 通过伴随窗口 `日志` 页读取，必须保留后端读取上限和前端显示上限，避免无限累积日志。
 - BepInEx 控制台窗口默认由 Mod 写入 `BepInEx.cfg` 在下次启动关闭，并在 Windows 上隐藏已创建的控制台窗口；伴随窗口 `设置` 页可通过本地 API 临时开启/关闭原生日志窗口，修改时必须同时更新当前窗口可见性和下次启动配置。
-- 面向普通用户的伴随窗口默认隐藏调试信息。新增扫描状态、运行时来源、性能耗时、内部订单来源、订单 key、诊断日志、BepInEx 控制台控制、任务 label/source 等偏排查内容时，必须受 `CompanionPreferences.showDebugDetails` 总开关控制；该开关默认关闭，并只在 `设置 -> 显示调试信息` 中开启。
-- 伴随窗口信息密度优先通过内部页签控制，不要把所有区块直接堆到同一页面。`概览` 固定使用 `状态 / 库存 / 操作` 分栏；`设置` 固定使用 `窗口 / 推荐 / 排序 / 自动化` 分栏，调试开关开启后才显示 `调试` 分栏。普客、稀客和经营中页面的推荐/订单列表应保留稳定内容区域和内部滚动，避免数据从空变有时造成大幅布局跳动。
+- 面向普通用户的伴随窗口默认隐藏调试信息。新增扫描状态、运行时来源、性能耗时、内部订单来源、订单 key、诊断日志、BepInEx 控制台控制、任务 label/source 等偏排查内容时，必须受 `CompanionPreferences.showDebugDetails` 总开关控制；该开关默认关闭，并只在 `设置 -> 窗口 -> 显示调试信息` 中开启。
+- 伴随窗口信息密度优先通过内部页签控制，不要把所有区块直接堆到同一页面。`概览` 固定使用 `状态 / 库存 / 操作` 分栏；`设置` 固定使用 `窗口 / 连接 / 推荐 / 自动化 / 更新` 分栏，调试开关开启后才显示 `调试` 分栏。连接配置必须集中在 `连接` 分栏，稀客专注模式默认精简放在 `推荐` 分栏。普客、稀客、经营中和稀客订单专注模式的推荐/订单列表应保留稳定内容区域和内部滚动，避免数据从空变有时造成大幅布局跳动。
 - 游戏内不再保留 IMGUI 面板；游戏侧只负责后台读取、自动化执行、本地 API 和伴随窗口唤起，所有用户交互放在独立伴随窗口。
 
 ## 文档维护

@@ -30,7 +30,7 @@ function StatusMetric({
       : 'text-foreground';
 
   return (
-    <div className="min-w-0 border-l border-border/45 px-3 py-2 first:border-l-0">
+    <div className="min-w-0 border-l border-border/45 px-3 py-2 first:border-l-0 max-[719px]:border-l-0 max-[719px]:border-t max-[719px]:first:border-t-0">
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className={composeClassNames('mt-0.5 truncate text-sm font-semibold', toneClass)} title={value}>
         {value}
@@ -43,6 +43,8 @@ function StatusMetric({
 interface WorkbenchHeaderProps {
   endpointDraft: string;
   onEndpointDraftChange: (value: string) => void;
+  apiTokenDraft: string;
+  onApiTokenDraftChange: (value: string) => void;
   onApplyEndpointConnection: () => void;
   onPauseConnection: () => void;
   onRefresh: () => void;
@@ -61,6 +63,8 @@ interface WorkbenchHeaderProps {
 export function WorkbenchHeader({
   endpointDraft,
   onEndpointDraftChange,
+  apiTokenDraft,
+  onApiTokenDraftChange,
   onApplyEndpointConnection,
   onPauseConnection,
   onRefresh,
@@ -79,7 +83,7 @@ export function WorkbenchHeader({
     ? '未授权'
     : connectionPaused ? '已停止' : error ? '重试中' : snapshot ? '已连接' : '连接中';
   const connectionDetail = !apiToken
-    ? '未收到游戏启动参数 Token'
+    ? '请输入 Mod API Token 后连接'
     : connectionPaused
       ? '点击连接恢复自动重连'
       : error
@@ -93,7 +97,7 @@ export function WorkbenchHeader({
 
   return (
     <div className="steward-workbench-header">
-      <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-3">
+      <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-3 max-[719px]:grid-cols-1">
         <div className="min-w-0 space-y-1">
           <div className="flex min-w-0 flex-nowrap items-baseline gap-x-2">
             <h1 className="shrink-0 whitespace-nowrap text-[1.45rem] font-bold leading-tight text-foreground">Mod 工作台</h1>
@@ -108,7 +112,7 @@ export function WorkbenchHeader({
           )}
         </div>
 
-        <div className="flex min-w-0 flex-nowrap items-center justify-end gap-2">
+        <div className="flex min-w-0 flex-nowrap items-center justify-end gap-2 max-[719px]:flex-wrap max-[719px]:justify-start">
           <Input
             value={endpointDraft}
             onChange={(event) => onEndpointDraftChange(event.target.value)}
@@ -116,7 +120,20 @@ export function WorkbenchHeader({
               if (event.key === 'Enter') onApplyEndpointConnection();
             }}
             spellCheck={false}
-            className="min-w-[9rem] max-w-[16rem] flex-1 basis-[13rem]"
+            className="min-w-[8.5rem] max-w-[15rem] flex-1 basis-[12rem] max-[719px]:max-w-none max-[719px]:basis-full"
+            inputClassName="font-mono"
+          />
+          <Input
+            value={apiTokenDraft}
+            onChange={(event) => onApiTokenDraftChange(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') onApplyEndpointConnection();
+            }}
+            type="password"
+            placeholder="Token"
+            spellCheck={false}
+            autoComplete="off"
+            className="min-w-[7rem] max-w-[10rem] flex-1 basis-[8rem] max-[719px]:max-w-none"
             inputClassName="font-mono"
           />
           <SwitchField
@@ -138,7 +155,7 @@ export function WorkbenchHeader({
         </div>
       </div>
 
-      <div className="mt-3 grid grid-cols-3 overflow-hidden border border-border/45 steward-background-surface-45">
+      <div className="mt-3 grid grid-cols-3 overflow-hidden border border-border/45 steward-background-surface-45 max-[719px]:grid-cols-1">
         <StatusMetric
           label="连接状态"
           value={connectionValue}

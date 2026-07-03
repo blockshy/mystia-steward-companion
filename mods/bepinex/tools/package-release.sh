@@ -9,6 +9,10 @@ PACKAGE_DIR_NAME="mystia-steward-companion"
 DIST_DIR="$ROOT_DIR/dist/$PACKAGE_DIR_NAME"
 ZIP_PATH="$ROOT_DIR/dist/mystia-steward-companion-bepinex.zip"
 TAR_PATH="$ROOT_DIR/dist/mystia-steward-companion-bepinex.tar.gz"
+COMPANION_EXE_PATH="$ROOT_DIR/dist/mystia-steward-companion-companion-windows-x64.exe"
+LEGACY_COMPANION_DIST_DIR="$ROOT_DIR/dist/mystia-steward-companion-companion-windows-x64"
+LEGACY_COMPANION_ZIP_PATH="$ROOT_DIR/dist/mystia-steward-companion-companion-windows-x64.zip"
+LEGACY_COMPANION_TAR_PATH="$ROOT_DIR/dist/mystia-steward-companion-companion-windows-x64.tar.gz"
 DLL_PATH="$OUTPUT_DIR/MystiaStewardCompanion.BepInEx.dll"
 
 if [[ ! -f "$DLL_PATH" ]]; then
@@ -18,6 +22,8 @@ if [[ ! -f "$DLL_PATH" ]]; then
 fi
 
 rm -rf "$DIST_DIR"
+rm -rf "$LEGACY_COMPANION_DIST_DIR"
+rm -f "$COMPANION_EXE_PATH" "$LEGACY_COMPANION_ZIP_PATH" "$LEGACY_COMPANION_TAR_PATH"
 mkdir -p "$DIST_DIR"
 cp "$DLL_PATH" "$DIST_DIR/"
 
@@ -28,6 +34,10 @@ for companion_path in \
     mkdir -p "$DIST_DIR/companion"
     cp "$companion_path" "$DIST_DIR/companion/$(basename "$companion_path")"
     echo "Included companion executable: $companion_path"
+    if [[ "$(basename "$companion_path")" == *.exe ]]; then
+      cp "$companion_path" "$COMPANION_EXE_PATH"
+      echo "Companion executable created: $COMPANION_EXE_PATH"
+    fi
     break
   fi
 done

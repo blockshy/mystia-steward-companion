@@ -253,10 +253,16 @@ async function auditInnerTabs(page) {
   await activateTopTab(page, 'settings');
   await focusInnerTab(page, '窗口');
   await pressButton(page, BUTTON_DPAD_RIGHT, { holdMs: 70 });
-  await expectFocusedInnerTab(page, '推荐', '设置页“窗口”按右键应聚焦“推荐”二级 Tab');
+  await expectFocusedInnerTab(page, '连接', '设置页“窗口”按右键应聚焦“连接”二级 Tab');
+
+  await pressButton(page, BUTTON_DPAD_RIGHT, { holdMs: 70 });
+  await expectFocusedInnerTab(page, '推荐', '设置页“连接”按右键应聚焦“推荐”二级 Tab');
 
   await pressButton(page, BUTTON_DPAD_LEFT, { holdMs: 70 });
-  await expectFocusedInnerTab(page, '窗口', '设置页“推荐”按左键应回到“窗口”二级 Tab');
+  await expectFocusedInnerTab(page, '连接', '设置页“推荐”按左键应回到“连接”二级 Tab');
+
+  await pressButton(page, BUTTON_DPAD_LEFT, { holdMs: 70 });
+  await expectFocusedInnerTab(page, '窗口', '设置页“连接”按左键应回到“窗口”二级 Tab');
 
   await pressButton(page, BUTTON_DPAD_DOWN, { holdMs: 70 });
   await expectFocusedLabel(page, /背景透明度/, '设置页“窗口”按下键应进入背景透明度控件');

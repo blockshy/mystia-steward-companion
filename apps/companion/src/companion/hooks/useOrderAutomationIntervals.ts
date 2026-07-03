@@ -47,14 +47,14 @@ export function useOrderAutomationIntervals({
   }, [automationEnabled, onAutomationDisabled, rareTickMs, runAutoFirstOrder]);
 
   useEffect(() => {
-    if (!automationEnabled) return undefined;
+    if (!automationEnabled || !autoNormalOrderEnabled) return undefined;
 
     void runAutoNormalOrder();
     const timer = window.setInterval(() => {
       void runAutoNormalOrder();
     }, normalTickMs);
     return () => window.clearInterval(timer);
-  }, [automationEnabled, normalTickMs, runAutoNormalOrder]);
+  }, [automationEnabled, autoNormalOrderEnabled, normalTickMs, runAutoNormalOrder]);
 
   useEffect(() => {
     // 普客订单状态由 Mod 快照驱动，签名变化通常表示订单进度或列表发生变化，需要重置本轮判断。

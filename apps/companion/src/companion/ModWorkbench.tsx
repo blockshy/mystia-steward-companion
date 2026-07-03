@@ -18,11 +18,13 @@ import { ModServicePanel, ServiceFocusPage } from '@/companion/pages/ModServiceP
 import { ModSettingsPanel } from '@/companion/pages/ModSettingsPanel';
 import { ModTasksPanel } from '@/companion/pages/ModTasksPanel';
 import {
+  acquireAutomationLease,
   completeFirstNormalOrder,
   completeFirstRareOrder,
   dismissRuntimeRareOrder,
   prepareNextRareOrder,
   publishGameUiPinningTarget,
+  releaseAutomationLease,
 } from '@/companion/api';
 import {
   didAcknowledgeStep,
@@ -108,6 +110,7 @@ import {
 } from '@/companion/storage';
 import type {
   AutomationCookerCycle,
+  LocalApiAutomationLease,
   ModTab,
   NightBusinessOrder,
   NormalAutoOrderDiagnostic,
@@ -125,7 +128,9 @@ import type { PlaceName } from '@/lib/catalog-types';
 
 const AUTO_FIRST_ORDER_TICK_MS = 1500;
 const AUTO_NORMAL_ORDER_TICK_MS = 500;
-const MOD_TAB_TRIGGER_CLASS = 'min-w-0 flex-1';
+const AUTOMATION_LEASE_RENEW_INTERVAL_MS = 3000;
+const MOD_TAB_TRIGGER_CLASS = 'min-w-[4.75rem] flex-none min-[720px]:min-w-0 min-[720px]:flex-1';
+type CompanionPlatform = 'desktop' | 'mobile';
 
 const MOD_TABS: ModTab[] = ['overview', 'normal', 'rare', 'custom-recipes', 'service', 'tasks', 'inventory', 'help', 'logs', 'settings'];
 const BASIC_MOD_TABS: ModTab[] = MOD_TABS.filter((tab) => tab !== 'logs');
@@ -146,12 +151,15 @@ export function ModWorkbench() {
   const [companionPreferences, setCompanionPreferences] = useState<CompanionPreferences>(() =>
     readStoredCompanionPreferences(),
   );
+  const [companionPlatform, setCompanionPlatform] = useState<CompanionPlatform>('desktop');
   // 经营中页面需要尽快响应订单变化和自动化结果；其他页面使用较低频率，减少本地 API 与反射快照压力。
   const snapshotRefreshIntervalMs = tab === 'service' || serviceFocusMode ? 750 : 2000;
   const {
     endpointDraft,
     setEndpointDraft,
     apiToken,
+    apiTokenDraft,
+    setApiTokenDraft,
     snapshot,
     cachedRuntimeData,
     error,
@@ -161,6 +169,7 @@ export function ModWorkbench() {
     lastConnectedAt,
     normalizedEndpoint,
     applyEndpointConnection,
+    applyConnectionDetails,
     pauseConnection,
     refresh,
   } = useCompanionConnection(snapshotRefreshIntervalMs);
@@ -212,6 +221,8 @@ export function ModWorkbench() {
   const [normalOrderMessage, setNormalOrderMessage] = useState('');
   const [normalOrderPausedCount, setNormalOrderPausedCount] = useState(0);
   const [normalOrderDiagnostics, setNormalOrderDiagnostics] = useState<NormalAutoOrderDiagnostic[]>([]);
+  const [automationLease, setAutomationLease] = useState<LocalApiAutomationLease | null>(null);
+  const [automationLeaseError, setAutomationLeaseError] = useState('');
   // 自动化状态不放入 useState，是为了避免每个轮询 tick 都触发整页重渲染；页面只在诊断摘要变化时更新。
   const rareOrderStatesRef = useRef(new Map<string, AutoFirstOrderState>());
   const rareOrderDiagnosticItemsRef = useRef(new Map<string, ValidOrderPreparationSelection>());
@@ -233,7 +244,28 @@ export function ModWorkbench() {
     }
   }, [companionPreferences.showDebugDetails, tab]);
 
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let cancelled = false;
+    import('@tauri-apps/api/core')
+      .then(({ invoke }) => invoke<string>('companion_platform'))
+      .then((platform) => {
+        if (!cancelled) setCompanionPlatform(platform === 'mobile' ? 'mobile' : 'desktop');
+      })
+      .catch(() => {
+        if (!cancelled) setCompanionPlatform('desktop');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const runtime = snapshot?.recommendationState ?? null;
+  const connectionReadyForActions = Boolean(apiToken && !connectionPaused && !error && snapshot);
+  const automationLeaseOwned = Boolean(automationLease?.ok && automationLease.owned);
+  const automationRuntimeEnabled = companionPreferences.automationEnabled
+    && connectionReadyForActions
+    && automationLeaseOwned;
   const night = snapshot?.nightBusiness ?? null;
   const detectedPlace = normalizePlace(night?.place);
   const selectedPlace = manualPlace ?? detectedPlace;
@@ -255,6 +287,97 @@ export function ModWorkbench() {
       .filter(isUsableRareCustomer),
     [snapshot?.runtimeRareCustomers],
   );
+
+  useEffect(() => {
+    if (!companionPreferences.automationEnabled || !connectionReadyForActions) {
+      setAutomationLease(null);
+      setAutomationLeaseError('');
+      return undefined;
+    }
+
+    let cancelled = false;
+    const renewLease = async () => {
+      try {
+        const nextLease = await acquireAutomationLease(normalizedEndpoint, apiToken);
+        if (cancelled) return;
+        setAutomationLease(nextLease);
+        setAutomationLeaseError(nextLease.owned ? '' : nextLease.error || '自动化控制权当前不可用。');
+      } catch (err) {
+        if (cancelled) return;
+        setAutomationLease(null);
+        setAutomationLeaseError(err instanceof Error ? err.message : String(err));
+      }
+    };
+
+    void renewLease();
+    const timer = window.setInterval(() => {
+      void renewLease();
+    }, AUTOMATION_LEASE_RENEW_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [
+    apiToken,
+    companionPreferences.automationEnabled,
+    connectionReadyForActions,
+    normalizedEndpoint,
+  ]);
+
+  useEffect(() => {
+    if (companionPreferences.automationEnabled) return;
+
+    const lease = automationLease;
+    setAutomationLease(null);
+    setAutomationLeaseError('');
+    if (!lease?.owned || !apiToken || connectionPaused) return;
+
+    releaseAutomationLease(normalizedEndpoint, apiToken).catch(() => {
+      // 关闭自动化时释放租约是优化路径；失败后后端 TTL 会自动过期。
+    });
+  }, [
+    apiToken,
+    automationLease,
+    companionPreferences.automationEnabled,
+    connectionPaused,
+    normalizedEndpoint,
+  ]);
+
+  useEffect(() => {
+    if (!companionPreferences.automationEnabled) return;
+
+    if (!connectionReadyForActions) {
+      setAutoPrepMessage('自动化\n连接不可用，已暂停执行。');
+      setNormalOrderMessage('');
+      return;
+    }
+
+    if (!automationLease) {
+      setAutoPrepMessage(automationLeaseError
+        ? `自动化控制权\n${automationLeaseError}`
+        : '自动化\n正在获取本窗口自动化控制权。');
+      setNormalOrderMessage('');
+      return;
+    }
+
+    if (!automationLeaseOwned) {
+      const owner = automationLease.ownerLabel || '其他设备';
+      setAutoPrepMessage(`自动化控制权\n${automationLease.error || `自动化当前由 ${owner} 控制，本窗口仅查看。`}`);
+      setNormalOrderMessage('');
+      return;
+    }
+
+    if (automationLeaseError) {
+      setAutoPrepMessage(`自动化控制权\n${automationLeaseError}`);
+    }
+  }, [
+    automationLease,
+    automationLeaseError,
+    automationLeaseOwned,
+    companionPreferences.automationEnabled,
+    connectionReadyForActions,
+  ]);
 
   const runtimeSets = useMemo(() => buildRuntimeSets(runtime, recommendationData), [recommendationData, runtime]);
   const normalOrderSignature = useMemo(
@@ -304,7 +427,7 @@ export function ModWorkbench() {
     ],
   );
   useEffect(() => {
-    if (!apiToken || connectionPaused) return;
+    if (!connectionReadyForActions) return;
     const signature = `${companionPreferences.gameUiPinningEnabled ? '1' : '0'}|${companionPreferences.cookerHighlightEnabled ? '1' : '0'}|${gameUiPinningTarget?.signature ?? 'disabled'}`;
     if (lastUiPinningSignatureRef.current === signature) return;
 
@@ -329,7 +452,7 @@ export function ModWorkbench() {
     };
   }, [
     apiToken,
-    connectionPaused,
+    connectionReadyForActions,
     companionPreferences.cookerHighlightEnabled,
     companionPreferences.gameUiPinningEnabled,
     gameUiPinningTarget,
@@ -1056,7 +1179,7 @@ export function ModWorkbench() {
   }, []);
 
   useOrderAutomationIntervals({
-    automationEnabled: companionPreferences.automationEnabled,
+    automationEnabled: automationRuntimeEnabled,
     autoNormalOrderEnabled: companionPreferences.autoNormalOrderEnabled,
     normalOrderSignature,
     rareTickMs: AUTO_FIRST_ORDER_TICK_MS,
@@ -1116,10 +1239,12 @@ export function ModWorkbench() {
   }
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3" data-companion-surface="workbench">
       <WorkbenchHeader
         endpointDraft={endpointDraft}
         onEndpointDraftChange={setEndpointDraft}
+        apiTokenDraft={apiTokenDraft}
+        onApiTokenDraftChange={setApiTokenDraft}
         onApplyEndpointConnection={applyEndpointConnection}
         onPauseConnection={pauseConnection}
         onRefresh={() => void refresh(true)}
@@ -1130,14 +1255,15 @@ export function ModWorkbench() {
         lastConnectedAt={lastConnectedAt}
         loading={loading}
         normalizedEndpoint={normalizedEndpoint}
-        mousePassthroughEnabled={companionPreferences.mousePassthroughEnabled}
+        mousePassthroughEnabled={companionPlatform === 'desktop' && companionPreferences.mousePassthroughEnabled}
         night={night}
         snapshot={snapshot}
       />
 
       <Tabs value={tab} onValueChange={(value) => setTab(value as ModTab)} className="space-y-3">
         <TabsList
-          className="h-9 !w-full max-w-full justify-stretch overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          scrollable
+          className="h-9 !w-full max-w-full justify-stretch"
           data-gamepad-scope="tabs"
         >
           <TabsTrigger value="overview" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="overview">
@@ -1355,8 +1481,10 @@ export function ModWorkbench() {
             themeMode={themeMode}
             serviceFocusCompact={serviceFocusCompact}
             onPreferenceChange={updateCompanionPreferences}
+            onConnectionConfigApplied={applyConnectionDetails}
             onThemeModeChange={setThemeMode}
             onServiceFocusCompactChange={setServiceFocusCompact}
+            supportsDesktopWindowControls={companionPlatform === 'desktop'}
           />
         </TabsContent>
       </Tabs>

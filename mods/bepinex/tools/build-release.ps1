@@ -2,11 +2,12 @@
 
 <#
 .SYNOPSIS
-    构建本地发布包所需的前端、Tauri 窗口、独立 updater 和 BepInEx 插件。
+    构建本地发布包所需的前端、Tauri 窗口、独立 updater、BepInEx 插件和可选 Android APK。
 
 .DESCRIPTION
     该脚本是 Windows 本地发布流程的构建入口。它会先检查 Unity/BepInEx 引用 DLL，
     再按参数选择安装依赖、运行预检、构建前端/Tauri、构建插件并调用 package-release.ps1 打包。
+    如传入 -BuildAndroidApk，会额外调用签名 APK 构建脚本，并把 APK 放在 dist 根目录。
     脚本不会创建 Git tag 或 GitHub Release；上传发布由 publish-release.ps1 负责。
 #>
 param(
@@ -17,6 +18,7 @@ param(
     [switch]$SkipFrontendBuild,
     [switch]$SkipTauriBuild,
     [switch]$SkipPackage,
+    [switch]$BuildAndroidApk,
     [switch]$NoFrozenLockfile,
     [string]$ReferenceDir = $env:MYSTIA_REFERENCE_DIR
 )
@@ -196,6 +198,10 @@ try {
     if (-not $SkipPackage) {
         Write-Step "Create release package"
         & $PackageScript -Configuration $Configuration
+    }
+
+    if ($BuildAndroidApk) {
+        Invoke-Pnpm -Title "Build signed Android APK" -Arguments @("tauri:android:apk:signed")
     }
 }
 finally {

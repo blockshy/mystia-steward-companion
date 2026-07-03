@@ -88,14 +88,14 @@ function ListPanel({
 }) {
   return (
     <Card className={composeClassNames('steward-list-panel min-w-0', className)}>
-      <CardContent className="min-w-0 p-0">
+      <CardContent className="flex min-h-0 min-w-0 flex-1 flex-col p-0">
         <div className="steward-panel-header flex flex-wrap items-center justify-between gap-3 px-3 py-2">
           <h2 className="min-w-0 text-sm font-semibold">{title}</h2>
           {action}
         </div>
         {contentClassName
-          ? <div className={composeClassNames('px-3 py-3', contentClassName)}>{children}</div>
-          : <div className="px-3 py-3">{children}</div>}
+          ? <div className={composeClassNames('min-w-0 px-3 py-3', contentClassName)}>{children}</div>
+          : <div className="min-w-0 px-3 py-3">{children}</div>}
       </CardContent>
     </Card>
   );

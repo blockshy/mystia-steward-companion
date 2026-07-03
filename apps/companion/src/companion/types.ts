@@ -14,7 +14,7 @@ import type {
  */
 export type ModTab = 'overview' | 'normal' | 'rare' | 'custom-recipes' | 'service' | 'tasks' | 'inventory' | 'help' | 'logs' | 'settings';
 export type OverviewTab = 'status' | 'inventory' | 'actions';
-export type SettingsTab = 'window' | 'recommendation' | 'automation' | 'updates' | 'debug';
+export type SettingsTab = 'window' | 'connection' | 'recommendation' | 'automation' | 'updates' | 'debug';
 export type RareGuestInvitationScope = 'current' | 'all';
 export type MissionStatusFilter = 'available' | 'tracking' | 'fulfilled';
 
@@ -269,6 +269,47 @@ export interface LocalApiLogSettings {
   nightBusinessDiagnosticsDirectory: string;
   nativeBepInExConsoleEnabled: boolean;
   nativeBepInExConsoleVisible: boolean;
+}
+
+export interface LocalApiConnectionConfig {
+  ok: boolean;
+  localEndpoint: string;
+  lanEnabled: boolean;
+  lanRunning: boolean;
+  lanBindHost: string;
+  port: number;
+  token: string;
+  lanBindAddresses: string[];
+  lanEndpoints: string[];
+  lanError: string | null;
+  error: string | null;
+}
+
+export interface LocalApiHealth {
+  ok: boolean;
+  pluginVersion: string;
+  bindAddress: string;
+  port: number;
+  authRequired: boolean;
+  localEndpoint: string;
+  lanEnabled: boolean;
+  lanRunning: boolean;
+  lanBindAddresses: string[];
+  lanEndpoints: string[];
+  lanError: string | null;
+}
+
+export interface LocalApiAutomationLease {
+  ok: boolean;
+  owned: boolean;
+  clientId: string;
+  clientLabel: string;
+  ownerClientId: string;
+  ownerLabel: string;
+  ownerLastSeenUtc: string;
+  expiresAtUtc: string;
+  ttlMs: number;
+  error: string | null;
 }
 
 export interface LocalApiFolderResponse {

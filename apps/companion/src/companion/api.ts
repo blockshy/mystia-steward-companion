@@ -17,7 +17,10 @@ import type {
   GameUiPinningTarget,
   InventoryBulkEditResponse,
   InventoryEditResponse,
+  LocalApiAutomationLease,
+  LocalApiConnectionConfig,
   LocalApiFolderResponse,
+  LocalApiHealth,
   LocalApiLogSettings,
   LocalApiLogs,
   LocalApiSnapshot,
@@ -57,6 +60,16 @@ export async function readSnapshot(
   });
 }
 
+export async function readHealth(
+  endpoint: string,
+  options: { signal: AbortSignal; timeoutMs: number },
+): Promise<LocalApiHealth> {
+  return readLocalApiJson<LocalApiHealth>(endpoint, '', '/health', {
+    signal: options.signal,
+    tauriTimeoutMs: options.timeoutMs,
+  });
+}
+
 export async function readLogs(endpoint: string, apiToken: string, signal: AbortSignal): Promise<LocalApiLogs> {
   return readLocalApiJson<LocalApiLogs>(endpoint, apiToken, '/logs', signal);
 }
@@ -80,6 +93,75 @@ export async function writeLogSettings(
   if (typeof next.diagnostics === 'boolean') params.set('diagnostics', String(next.diagnostics));
   if (typeof next.nativeConsole === 'boolean') params.set('nativeConsole', String(next.nativeConsole));
   return readLocalApiJson<LocalApiLogSettings>(endpoint, apiToken, `/logs/config?${params.toString()}`, signal);
+}
+
+export async function readLocalApiConnectionConfig(
+  endpoint: string,
+  apiToken: string,
+  signal: AbortSignal,
+): Promise<LocalApiConnectionConfig> {
+  return readLocalApiJson<LocalApiConnectionConfig>(endpoint, apiToken, '/local-api/config', signal);
+}
+
+export async function writeLocalApiConnectionConfig(
+  endpoint: string,
+  apiToken: string,
+  next: { lanEnabled: boolean; lanBindHost: string },
+): Promise<LocalApiConnectionConfig> {
+  const params = new URLSearchParams({
+    lanEnabled: String(next.lanEnabled),
+    lanHost: next.lanBindHost.trim() || 'auto',
+  });
+  return writeLocalApiJsonWithTimeout<LocalApiConnectionConfig>(
+    endpoint,
+    apiToken,
+    `/local-api/config?${params.toString()}`,
+    3500,
+  );
+}
+
+export async function regenerateLocalApiToken(
+  endpoint: string,
+  apiToken: string,
+): Promise<LocalApiConnectionConfig> {
+  return writeLocalApiJsonWithTimeout<LocalApiConnectionConfig>(
+    endpoint,
+    apiToken,
+    '/local-api/token/regenerate',
+    3500,
+  );
+}
+
+export async function readAutomationLease(
+  endpoint: string,
+  apiToken: string,
+  signal: AbortSignal,
+): Promise<LocalApiAutomationLease> {
+  return readLocalApiJson<LocalApiAutomationLease>(endpoint, apiToken, '/automation/lease', signal);
+}
+
+export async function acquireAutomationLease(
+  endpoint: string,
+  apiToken: string,
+): Promise<LocalApiAutomationLease> {
+  return writeLocalApiJsonWithTimeout<LocalApiAutomationLease>(
+    endpoint,
+    apiToken,
+    '/automation/lease/acquire',
+    2200,
+  );
+}
+
+export async function releaseAutomationLease(
+  endpoint: string,
+  apiToken: string,
+): Promise<LocalApiAutomationLease> {
+  return writeLocalApiJsonWithTimeout<LocalApiAutomationLease>(
+    endpoint,
+    apiToken,
+    '/automation/lease/release',
+    2200,
+  );
 }
 
 export async function openLogFolder(

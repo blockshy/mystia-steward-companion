@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { readSnapshot } from '@/companion/api';
+import { readHealth, readSnapshot } from '@/companion/api';
 import {
   normalizeEndpoint,
   persistApiToken,
@@ -27,6 +27,7 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
   const [endpoint, setEndpoint] = useState(readStoredEndpoint);
   const [endpointDraft, setEndpointDraft] = useState(endpoint);
   const [apiToken, setApiToken] = useState(readStoredApiToken);
+  const [apiTokenDraft, setApiTokenDraft] = useState(apiToken);
   const [snapshot, setSnapshot] = useState<LocalApiSnapshot | null>(null);
   const [cachedRuntimeData, setCachedRuntimeData] = useState<RuntimeDataCatalogSnapshot | null>(null);
   const [error, setError] = useState('');
@@ -55,6 +56,7 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
     }
     if (launchToken) {
       setApiToken(launchToken);
+      setApiTokenDraft(launchToken);
     }
     setSnapshot(null);
     setCachedRuntimeData(null);
@@ -82,6 +84,8 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
     inFlightRequestIdRef.current = null;
     setEndpoint(normalizedEndpointDraft);
     setEndpointDraft(normalizedEndpointDraft);
+    setApiToken(apiTokenDraft.trim());
+    setApiTokenDraft(apiTokenDraft.trim());
     setConnectionPaused(false);
     setConnectionFailureCount(0);
     setError('');
@@ -89,7 +93,26 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
     setCachedRuntimeData(null);
     setManualRefreshing(false);
     setConnectionProbing(false);
-  }, [normalizedEndpointDraft]);
+  }, [apiTokenDraft, normalizedEndpointDraft]);
+
+  const applyConnectionDetails = useCallback((nextEndpoint: string, nextToken: string) => {
+    const normalizedNextEndpoint = normalizeEndpoint(nextEndpoint);
+    const normalizedNextToken = nextToken.trim();
+    latestRequestIdRef.current += 1;
+    inFlightRequestIdRef.current = null;
+    setEndpoint(normalizedNextEndpoint);
+    setEndpointDraft(normalizedNextEndpoint);
+    setApiToken(normalizedNextToken);
+    setApiTokenDraft(normalizedNextToken);
+    setConnectionPaused(false);
+    setConnectionFailureCount(0);
+    setError('');
+    setSnapshot(null);
+    setCachedRuntimeData(null);
+    setManualRefreshing(false);
+    setConnectionProbing(false);
+    setConnectionRevision((current) => current + 1);
+  }, []);
 
   const pauseConnection = useCallback(() => {
     latestRequestIdRef.current += 1;
@@ -113,7 +136,10 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
     const requestId = latestRequestIdRef.current + 1;
     latestRequestIdRef.current = requestId;
     inFlightRequestIdRef.current = requestId;
-    const timeoutMs = manual
+    const shouldProbeHealth = !manual && Boolean(error);
+    const timeoutMs = shouldProbeHealth
+      ? INITIAL_PROBE_TIMEOUT_MS
+      : manual
       ? MANUAL_REFRESH_TIMEOUT_MS
       : snapshot
         ? AUTO_POLL_TIMEOUT_MS
@@ -127,6 +153,18 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
     const timeoutId = window.setTimeout(() => abortController.abort(), timeoutMs);
 
     try {
+      if (shouldProbeHealth) {
+        await readHealth(normalizedEndpoint, {
+          signal: abortController.signal,
+          timeoutMs,
+        });
+        if (latestRequestIdRef.current !== requestId) return;
+        setError('');
+        setConnectionFailureCount(0);
+        setLastConnectedAt(new Date());
+        return;
+      }
+
       const data = await readSnapshot(normalizedEndpoint, apiToken, {
         signal: abortController.signal,
         timeoutMs,
@@ -139,7 +177,8 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
       setLastConnectedAt(new Date());
     } catch (err) {
       if (latestRequestIdRef.current !== requestId) return;
-      setError(err instanceof Error ? err.message : String(err));
+      const nextError = err instanceof Error ? err.message : String(err);
+      setError((current) => current === nextError ? current : nextError);
       setConnectionFailureCount((current) => Math.min(current + 1, CONNECTION_RETRY_DELAYS_MS.length));
     } finally {
       window.clearTimeout(timeoutId);
@@ -151,7 +190,7 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
         if (!manual && !snapshot) setConnectionProbing(false);
       }
     }
-  }, [apiToken, connectionPaused, normalizedEndpoint, snapshot]);
+  }, [apiToken, connectionPaused, error, normalizedEndpoint, snapshot]);
 
   useEffect(() => {
     persistEndpoint(normalizedEndpoint);
@@ -244,6 +283,8 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
     setEndpointDraft,
     apiToken,
     setApiToken,
+    apiTokenDraft,
+    setApiTokenDraft,
     snapshot,
     cachedRuntimeData,
     error,
@@ -254,6 +295,7 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
     lastConnectedAt,
     normalizedEndpoint,
     applyEndpointConnection,
+    applyConnectionDetails,
     pauseConnection,
     refresh,
   };

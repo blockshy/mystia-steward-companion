@@ -489,8 +489,8 @@ export function ServiceFocusPage({
   const hasOrders = recommendations.length > 0 || recommendationIssues.length > 0;
 
   return (
-    <div className="space-y-4" data-gamepad-scope="content">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+    <div className="flex min-h-[calc(100dvh-1rem)] flex-col gap-4" data-gamepad-scope="content">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold text-foreground">稀客订单专注模式</h1>
           <p className="mt-1 text-sm text-muted-foreground">只显示当前稀客点单推荐。</p>
@@ -528,6 +528,7 @@ export function ServiceFocusPage({
           favoriteBusyKey={favoriteBusyKey}
           favoriteError={favoriteError}
           compact={compact}
+          fillAvailableHeight
           recipeLimit={recipeLimit}
           beverageLimit={beverageLimit}
           onToggleRecipeFavorite={onToggleRecipeFavorite}
@@ -553,6 +554,7 @@ function CurrentOrderRecommendations({
   favoriteError,
   action,
   compact = false,
+  fillAvailableHeight = false,
   recipeLimit = MAX_RECOMMENDATION_ROWS,
   beverageLimit = MAX_RECOMMENDATION_ROWS,
   onToggleRecipeFavorite,
@@ -570,6 +572,7 @@ function CurrentOrderRecommendations({
   favoriteError: string;
   action?: ReactNode;
   compact?: boolean;
+  fillAvailableHeight?: boolean;
   recipeLimit?: number;
   beverageLimit?: number;
   onToggleRecipeFavorite: ToggleRecipeFavorite;
@@ -587,8 +590,11 @@ function CurrentOrderRecommendations({
     <ListPanel
       title="当前点单推荐"
       action={action}
+      className={fillAvailableHeight ? 'min-h-0 flex-1' : undefined}
       contentClassName={
-        compact
+        fillAvailableHeight
+          ? `${SCROLL_FADE_CLASS} min-h-0 flex-1 overflow-auto pb-4 pr-1`
+          : compact
           ? `${SCROLL_FADE_CLASS} min-h-[24rem] max-h-[calc(100vh-12rem)] overflow-auto pb-4 pr-1`
           : `${SCROLL_FADE_CLASS} min-h-[32rem] max-h-[calc(100vh-20rem)] overflow-auto pb-4 pr-1`
       }
@@ -839,7 +845,7 @@ function RareAutoPrepStatus({
                   </Button>
                 </div>
               </div>
-              <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground md:grid-cols-5">
+              <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground max-[479px]:grid-cols-1 md:grid-cols-5">
                 <InfoLine label="料理" value={diagnostic.recipeName || '未选择'} />
                 <InfoLine label="酒水" value={diagnostic.beverageName || '未选择'} />
                 <InfoLine label="步骤" value={`${diagnostic.stepLabel} · ${diagnostic.stepSeconds}秒`} />
@@ -930,7 +936,7 @@ function NormalAutoPrepStatus({
                   {diagnostic.paused ? '暂停' : '运行'}
                 </Badge>
               </div>
-              <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground md:grid-cols-5">
+              <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground max-[479px]:grid-cols-1 md:grid-cols-5">
                 <InfoLine label="步骤" value={`${diagnostic.stepLabel} · ${diagnostic.stepSeconds}秒`} />
                 <InfoLine label="下次" value={diagnostic.nextAction} />
                 {showDebugDetails && (

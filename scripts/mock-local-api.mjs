@@ -9,9 +9,12 @@ import http from 'node:http';
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 32145;
 const MOCK_TOKEN = 'mock-token';
+const MOCK_LAN_ADDRESS = '192.168.1.20';
+const AUTOMATION_LEASE_TTL_MS = 15000;
 
 const host = process.env.MOCK_API_HOST || DEFAULT_HOST;
 const port = Number(process.env.MOCK_API_PORT || DEFAULT_PORT);
+let mockToken = MOCK_TOKEN;
 
 const ingredients = [
   ingredient(1, '鸡蛋', ['家常', '甜'], 8, '禽蛋'),
@@ -161,6 +164,12 @@ const updateStatus = {
   error: null,
 };
 
+const connectionConfig = {
+  lanEnabled: false,
+  lanBindHost: 'auto',
+};
+let automationLease = null;
+
 const server = http.createServer((request, response) => {
   setCorsHeaders(response);
 
@@ -175,6 +184,29 @@ const server = http.createServer((request, response) => {
 
   if (request.method === 'POST') {
     try {
+      if (path === '/automation/lease/acquire') {
+        sendJson(response, 200, acquireAutomationLease(request));
+        return;
+      }
+
+      if (path === '/automation/lease/release') {
+        sendJson(response, 200, releaseAutomationLease(request));
+        return;
+      }
+
+      if (path === '/local-api/config') {
+        connectionConfig.lanEnabled = normalizeBoolean(requestUrl.searchParams.get('lanEnabled'), connectionConfig.lanEnabled);
+        connectionConfig.lanBindHost = normalizeLanHost(requestUrl.searchParams.get('lanHost') || connectionConfig.lanBindHost);
+        sendJson(response, 200, buildConnectionConfig());
+        return;
+      }
+
+      if (path === '/local-api/token/regenerate') {
+        mockToken = `mock-token-${Date.now().toString(36)}`;
+        sendJson(response, 200, buildConnectionConfig());
+        return;
+      }
+
       if (path === '/updates/check') {
         updateStatus.state = 'available';
         updateStatus.checkedAtUtc = nowIso();
@@ -216,6 +248,16 @@ const server = http.createServer((request, response) => {
   }
 
   try {
+    if (path === '/automation/lease') {
+      sendJson(response, 200, readAutomationLease(request));
+      return;
+    }
+
+    if (path === '/local-api/config') {
+      sendJson(response, 200, buildConnectionConfig());
+      return;
+    }
+
     if (path === '/snapshot') {
       sendJson(response, 200, buildSnapshot());
       return;
@@ -339,6 +381,15 @@ const server = http.createServer((request, response) => {
     }
 
     if (path === '/orders/prepare-next' || path === '/orders/complete-first' || path === '/orders/normal/complete-first') {
+      const lease = readAutomationLease(request);
+      if (!lease.owned) {
+        sendJson(response, 200, {
+          ok: false,
+          prepared: false,
+          error: lease.error || (lease.ownerLabel ? `自动化当前由 ${lease.ownerLabel} 控制，本窗口仅查看。` : '自动化控制权不可用。'),
+        });
+        return;
+      }
       sendJson(response, 200, buildOrderActionResponse(requestUrl.searchParams));
       return;
     }
@@ -955,14 +1006,145 @@ function normalizeBoolean(value, fallback) {
   return fallback;
 }
 
+function normalizeLanHost(value) {
+  const normalized = String(value || '').trim();
+  if (!normalized || normalized === '0.0.0.0' || normalized === '127.0.0.1' || normalized.toLowerCase() === 'localhost') {
+    return 'auto';
+  }
+  return normalized;
+}
+
+function readAutomationLease(request) {
+  const identity = readClientIdentity(request);
+  if (identity.error) {
+    return {
+      ok: false,
+      owned: false,
+      clientId: identity.clientId,
+      clientLabel: identity.clientLabel,
+      ownerClientId: '',
+      ownerLabel: '',
+      ownerLastSeenUtc: '',
+      expiresAtUtc: '',
+      ttlMs: AUTOMATION_LEASE_TTL_MS,
+      error: identity.error,
+    };
+  }
+
+  pruneAutomationLease();
+  return buildAutomationLease(identity.clientId, identity.clientLabel, null);
+}
+
+function acquireAutomationLease(request) {
+  const identity = readClientIdentity(request);
+  if (identity.error) {
+    return {
+      ok: false,
+      owned: false,
+      clientId: identity.clientId,
+      clientLabel: identity.clientLabel,
+      ownerClientId: '',
+      ownerLabel: '',
+      ownerLastSeenUtc: '',
+      expiresAtUtc: '',
+      ttlMs: AUTOMATION_LEASE_TTL_MS,
+      error: identity.error,
+    };
+  }
+
+  pruneAutomationLease();
+  if (automationLease && automationLease.clientId !== identity.clientId) {
+    return buildAutomationLease(
+      identity.clientId,
+      identity.clientLabel,
+      `自动化当前由 ${automationLease.clientLabel} 控制，本窗口仅查看。`,
+    );
+  }
+
+  const now = Date.now();
+  automationLease = {
+    clientId: identity.clientId,
+    clientLabel: identity.clientLabel,
+    lastSeenAt: now,
+    expiresAt: now + AUTOMATION_LEASE_TTL_MS,
+  };
+  return buildAutomationLease(identity.clientId, identity.clientLabel, null);
+}
+
+function releaseAutomationLease(request) {
+  const identity = readClientIdentity(request);
+  if (!identity.error && automationLease?.clientId === identity.clientId) {
+    automationLease = null;
+  }
+  return readAutomationLease(request);
+}
+
+function buildAutomationLease(clientId, clientLabel, error) {
+  return {
+    ok: !error,
+    owned: automationLease?.clientId === clientId,
+    clientId,
+    clientLabel,
+    ownerClientId: automationLease?.clientId || '',
+    ownerLabel: automationLease?.clientLabel || '',
+    ownerLastSeenUtc: automationLease ? new Date(automationLease.lastSeenAt).toISOString() : '',
+    expiresAtUtc: automationLease ? new Date(automationLease.expiresAt).toISOString() : '',
+    ttlMs: AUTOMATION_LEASE_TTL_MS,
+    error,
+  };
+}
+
+function pruneAutomationLease() {
+  if (automationLease && automationLease.expiresAt <= Date.now()) {
+    automationLease = null;
+  }
+}
+
+function readClientIdentity(request) {
+  const clientId = String(request.headers['x-mystia-steward-companion-client-id'] || '').trim();
+  if (!/^[a-zA-Z0-9-]{16,64}$/.test(clientId)) {
+    return {
+      clientId: '',
+      clientLabel: '伴随窗口',
+      error: '自动化请求缺少有效客户端 ID。',
+    };
+  }
+
+  const rawLabel = String(request.headers['x-mystia-steward-companion-client-label'] || '').trim();
+  return {
+    clientId,
+    clientLabel: rawLabel ? rawLabel.slice(0, 48) : '伴随窗口',
+    error: null,
+  };
+}
+
+function buildConnectionConfig() {
+  const lanRunning = connectionConfig.lanEnabled;
+  const lanBindAddresses = lanRunning ? [MOCK_LAN_ADDRESS] : [];
+  const lanEndpoints = lanBindAddresses.map((address) => `http://${address}:${port}`);
+  return {
+    ok: true,
+    localEndpoint: `http://127.0.0.1:${port}`,
+    lanEnabled: connectionConfig.lanEnabled,
+    lanRunning,
+    lanBindHost: connectionConfig.lanBindHost,
+    port,
+    token: mockToken,
+    lanBindAddresses,
+    lanEndpoints,
+    lanError: null,
+    error: null,
+  };
+}
+
 function nowIso(offsetSeconds = 0) {
   return new Date(Date.now() + offsetSeconds * 1000).toISOString();
 }
 
 function setCorsHeaders(response) {
   response.setHeader('Access-Control-Allow-Origin', '*');
-  response.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  response.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Mystia-Steward-Companion-Token');
+  response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  response.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Mystia-Steward-Companion-Token, X-Mystia-Steward-Companion-Client-Id, X-Mystia-Steward-Companion-Client-Label');
   response.setHeader('Access-Control-Max-Age', '86400');
 }
 

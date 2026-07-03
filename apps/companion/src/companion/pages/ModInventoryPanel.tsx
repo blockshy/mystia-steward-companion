@@ -10,7 +10,7 @@ import {
 import { normalizeEditableQuantity } from '@/companion/preferences';
 import type { RuntimeSets } from '@/companion/types';
 import { InventorySortControl, RuntimeUnavailable } from '@/companion/pages/shared';
-import { DENSE_CARD_HEADER_GRID, DENSE_TWO_COLUMN_GRID } from '@/companion/pages/shared-constants';
+import { DENSE_TWO_COLUMN_GRID } from '@/companion/pages/shared-constants';
 import type { RecommendationDataSet } from '@/lib/recommendation-data';
 import type { BeverageCatalogItem, IngredientCatalogItem } from '@/lib/catalog-types';
 
@@ -124,14 +124,14 @@ export function ModInventoryPanel({
   return (
     <div className="space-y-4">
       <Card>
-        <CardContent className={`${DENSE_CARD_HEADER_GRID} p-4 text-sm`}>
-          <div>
+        <CardContent className="grid grid-cols-[minmax(14rem,1fr)_auto] gap-3 p-4 text-sm max-[719px]:grid-cols-1">
+          <div className="min-w-0">
             <div className="font-semibold">库存数量修改</div>
             <div className="mt-1 text-xs text-muted-foreground">
               修改会写入当前游戏运行时库存；请在游戏内保存后再退出。经营中修改可能会和实时消耗同时发生。
             </div>
           </div>
-          <div className="flex min-w-0 flex-wrap items-center justify-end gap-2" data-gamepad-axis="x">
+          <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 max-[719px]:justify-start" data-gamepad-axis="x">
             <Button
               size="sm"
               variant="outline"
@@ -154,7 +154,7 @@ export function ModInventoryPanel({
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder="搜索名称或 ID"
-              className="w-56"
+              className="min-w-[10rem] flex-1 basis-[12rem] max-[479px]:basis-full"
             />
             <Button size="sm" onClick={onRefresh}>
               <IconRefresh className="size-4" />
@@ -162,7 +162,7 @@ export function ModInventoryPanel({
             </Button>
           </div>
           {message && (
-            <div className="lg:col-span-2 text-xs text-muted-foreground">
+            <div className="col-span-full text-xs text-muted-foreground">
               {message}
             </div>
           )}
