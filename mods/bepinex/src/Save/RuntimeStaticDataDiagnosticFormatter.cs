@@ -1,83 +1,67 @@
 using System.Text;
-using BepInEx;
 using MystiaStewardCompanion.Core;
 
 namespace MystiaStewardCompanion.Save;
 
-internal static class RuntimeStaticDataDiagnosticSink
+internal static class RuntimeStaticDataDiagnosticFormatter
 {
-    private const long MaxLogBytes = 2 * 1024 * 1024;
     private static readonly object SyncRoot = new();
-    private static readonly Dictionary<string, string> LastSignatureByPath = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly Dictionary<string, string> LastSignatureBySection = new(StringComparer.OrdinalIgnoreCase);
 
-    public static string ResolvePath(string? diagnosticsPath)
-    {
-        return ResolvePath(diagnosticsPath, "runtime-static-data.log");
-    }
-
-    public static string ResolvePath(string? diagnosticsPath, string fileName)
-    {
-        if (!string.IsNullOrWhiteSpace(diagnosticsPath))
-        {
-            var directory = System.IO.Path.GetDirectoryName(diagnosticsPath.Trim());
-            if (!string.IsNullOrWhiteSpace(directory))
-            {
-                return System.IO.Path.Combine(directory, fileName);
-            }
-        }
-
-        return System.IO.Path.Combine(Paths.ConfigPath, "MystiaStewardCompanion", fileName);
-    }
-
-    public static void WriteMappedSpecialGuests(string path, RuntimeMappedGuestCatalogSnapshot snapshot)
+    public static AggregateLogSection? FormatMappedSpecialGuests(RuntimeMappedGuestCatalogSnapshot snapshot)
     {
         var signature = BuildSignature(snapshot);
         lock (SyncRoot)
         {
-            if (LastSignatureByPath.TryGetValue(path, out var lastSignature)
+            if (LastSignatureBySection.TryGetValue("runtime-static-data", out var lastSignature)
                 && string.Equals(lastSignature, signature, StringComparison.Ordinal))
             {
-                return;
+                return null;
             }
 
-            LastSignatureByPath[path] = signature;
-            var directory = System.IO.Path.GetDirectoryName(path);
-            if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
-            RotateIfNeeded(path);
-            File.AppendAllText(path, FormatMappedSpecialGuests(snapshot), Encoding.UTF8);
+            LastSignatureBySection["runtime-static-data"] = signature;
         }
+
+        return new AggregateLogSection("runtime-static-data", "Runtime Static Data", FormatMappedSpecialGuestsContent(snapshot));
     }
 
-    public static void WriteStaticData(string? diagnosticsPath, RuntimeStaticDataSnapshot snapshot)
+    public static IReadOnlyList<AggregateLogSection> FormatStaticData(RuntimeStaticDataSnapshot snapshot)
     {
-        WriteSection(
-            ResolvePath(diagnosticsPath, "runtime-tags.log"),
+        var sections = new List<AggregateLogSection>();
+        AddSection(
+            sections,
+            "runtime-tags",
             "Runtime Tags",
             "DataBaseLanguage tag tables and DataBaseCore TagRules",
             snapshot,
             snapshot.TagLines);
-        WriteSection(
-            ResolvePath(diagnosticsPath, "runtime-database-diff.log"),
+        AddSection(
+            sections,
+            "runtime-database",
             "Runtime Core Database",
             "DataBaseCore ingredients, beverages, foods, and recipes with local-data comparison",
             snapshot,
             snapshot.CoreLines);
-        WriteSection(
-            ResolvePath(diagnosticsPath, "runtime-guests.log"),
+        AddSection(
+            sections,
+            "runtime-guests",
             "Runtime Guests",
             "DataBaseCharacter normal guests, special guests, mapped guests, and guest easter data",
             snapshot,
             snapshot.GuestLines);
-        WriteSection(
-            ResolvePath(diagnosticsPath, "runtime-izakayas.log"),
+        AddSection(
+            sections,
+            "runtime-izakayas",
             "Runtime Izakayas",
             "DataBaseCore izakaya scene pools and labels",
             snapshot,
             snapshot.IzakayaLines);
+        return sections;
     }
 
-    private static void WriteSection(
-        string path,
+    private static void AddSection(
+        ICollection<AggregateLogSection> sections,
+        string channel,
         string title,
         string source,
         RuntimeStaticDataSnapshot snapshot,
@@ -86,28 +70,16 @@ internal static class RuntimeStaticDataDiagnosticSink
         var signature = BuildSignature(snapshot, lines);
         lock (SyncRoot)
         {
-            if (LastSignatureByPath.TryGetValue(path, out var lastSignature)
+            if (LastSignatureBySection.TryGetValue(channel, out var lastSignature)
                 && string.Equals(lastSignature, signature, StringComparison.Ordinal))
             {
                 return;
             }
 
-            LastSignatureByPath[path] = signature;
-            var directory = System.IO.Path.GetDirectoryName(path);
-            if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
-            RotateIfNeeded(path);
-            File.AppendAllText(path, FormatSection(title, source, snapshot, lines), Encoding.UTF8);
+            LastSignatureBySection[channel] = signature;
         }
-    }
 
-    private static void RotateIfNeeded(string path)
-    {
-        if (!File.Exists(path)) return;
-        if (new FileInfo(path).Length <= MaxLogBytes) return;
-
-        var backupPath = path + ".bak";
-        if (File.Exists(backupPath)) File.Delete(backupPath);
-        File.Move(path, backupPath);
+        sections.Add(new AggregateLogSection(channel, title, FormatSectionContent(source, snapshot, lines)));
     }
 
     private static string BuildSignature(RuntimeMappedGuestCatalogSnapshot snapshot)
@@ -149,15 +121,12 @@ internal static class RuntimeStaticDataDiagnosticSink
         return builder.ToString();
     }
 
-    private static string FormatSection(
-        string title,
+    private static string FormatSectionContent(
         string source,
         RuntimeStaticDataSnapshot snapshot,
         IReadOnlyList<string> lines)
     {
         var builder = new StringBuilder();
-        builder.AppendLine($"==== mystia-steward-companion {title} ====");
-        builder.AppendLine($"Utc: {DateTime.UtcNow:O}");
         builder.AppendLine($"Source: {source}");
         builder.AppendLine($"ReadAtUtc: {snapshot.CapturedAtUtc:O}");
         builder.AppendLine($"Status: {snapshot.Status}");
@@ -176,15 +145,12 @@ internal static class RuntimeStaticDataDiagnosticSink
             builder.AppendLine(line);
         }
 
-        builder.AppendLine();
         return builder.ToString();
     }
 
-    private static string FormatMappedSpecialGuests(RuntimeMappedGuestCatalogSnapshot snapshot)
+    private static string FormatMappedSpecialGuestsContent(RuntimeMappedGuestCatalogSnapshot snapshot)
     {
         var builder = new StringBuilder();
-        builder.AppendLine("==== mystia-steward-companion Runtime Static Data ====");
-        builder.AppendLine($"Utc: {DateTime.UtcNow:O}");
         builder.AppendLine("Source: DataBaseCharacter.GetAllMappedGuests() + GetSpecialGuestsAndMappedGuests()");
         builder.AppendLine($"ReadAtUtc: {snapshot.CapturedAtUtc:O}");
         builder.AppendLine($"Status: {snapshot.Status}");
@@ -197,7 +163,6 @@ internal static class RuntimeStaticDataDiagnosticSink
                 $"  - runtimeId={FormatNullable(entry.RuntimeId)}; strId={entry.RuntimeStringId}; sourceGuestId={FormatNullable(entry.SourceGuestId)}; sourceStringId={entry.SourceStringId}; sourceName={entry.SourceDisplayName}; localId={FormatNullable(entry.LocalRareCustomerId)}; localName={entry.LocalRareCustomerName}; runtimeCustomer={FormatRuntimeCustomer(entry.RuntimeCustomer)}; aliasSource={entry.AliasSource}; overrideDestination={entry.OverrideDestination}; type={entry.RuntimeTypeName}");
         }
 
-        builder.AppendLine();
         return builder.ToString();
     }
 
@@ -212,3 +177,5 @@ internal static class RuntimeStaticDataDiagnosticSink
         return $"{customer.Name}({customer.Id}); food=[{string.Join(",", customer.PositiveTags)}]; hate=[{string.Join(",", customer.NegativeTags)}]; bev=[{string.Join(",", customer.BeverageTags)}]";
     }
 }
+
+internal sealed record AggregateLogSection(string Channel, string Title, string Content);

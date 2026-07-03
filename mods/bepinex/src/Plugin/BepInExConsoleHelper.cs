@@ -8,40 +8,11 @@ namespace MystiaStewardCompanion.Plugin;
 internal static class BepInExConsoleHelper
 {
     private const int HideWindow = 0;
-    private const int ShowWindowNormal = 5;
 
-    public static void Apply(bool disableConsoleLogWindow, bool hideConsoleWindow, ManualLogSource log)
+    public static void Apply(ManualLogSource log)
     {
-        if (disableConsoleLogWindow)
-        {
-            SetConsoleLogForNextLaunch(false, log);
-        }
-
-        if (hideConsoleWindow)
-        {
-            SetCurrentConsoleWindowVisible(false, log);
-        }
-    }
-
-    public static void SetNativeConsoleEnabled(bool enabled, ManualLogSource log)
-    {
-        SetConsoleLogForNextLaunch(enabled, log);
-        SetCurrentConsoleWindowVisible(enabled, log);
-    }
-
-    public static bool IsCurrentConsoleWindowVisible()
-    {
-        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return false;
-
-        try
-        {
-            var consoleWindow = GetConsoleWindow();
-            return consoleWindow != IntPtr.Zero && IsWindowVisible(consoleWindow);
-        }
-        catch
-        {
-            return false;
-        }
+        SetConsoleLogForNextLaunch(false, log);
+        SetCurrentConsoleWindowVisible(false, log);
     }
 
     private static void SetConsoleLogForNextLaunch(bool enabled, ManualLogSource log)
@@ -65,7 +36,7 @@ internal static class BepInExConsoleHelper
         {
             var consoleWindow = GetConsoleWindow();
             if (consoleWindow == IntPtr.Zero) return;
-            ShowWindow(consoleWindow, visible ? ShowWindowNormal : HideWindow);
+            if (!visible) ShowWindow(consoleWindow, HideWindow);
         }
         catch (Exception ex)
         {
@@ -139,6 +110,4 @@ internal static class BepInExConsoleHelper
     [DllImport("user32.dll")]
     private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
-    [DllImport("user32.dll")]
-    private static extern bool IsWindowVisible(IntPtr hWnd);
 }

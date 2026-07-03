@@ -41,15 +41,16 @@ public sealed class MystiaStewardCompanionPlugin : BasePlugin
         }
 
         var settings = StewardPluginConfig.Bind(Config);
+        AggregateModLogService.Configure(
+            settings.EnableAggregateModLog.Value,
+            settings.AggregateModLogPath.Value,
+            settings.AggregateModLogMaxFileCount.Value);
         if (settings.SetConsoleUtf8.Value)
         {
             ConsoleEncodingHelper.TryUseUtf8(Log);
         }
 
-        BepInExConsoleHelper.Apply(
-            settings.DisableBepInExConsoleLog.Value,
-            settings.HideBepInExConsoleWindow.Value,
-            Log);
+        BepInExConsoleHelper.Apply(Log);
 
         SpecialOrderRuntimeCapture.Attach(Log);
         NormalOrderRuntimeCapture.Attach(Log);

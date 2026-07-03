@@ -667,15 +667,7 @@ internal static partial class RuntimeOrderPreparationService
 
     private static void AppendAutomationLog(string action, CookingCollectionTarget? target, string message)
     {
-        RuntimeAutomationLogService.Append(action, FormatAutomationTarget(target), message);
-    }
-
-    /// <summary>
-    /// 取得自动化日志文件路径，供本地 API 返回给伴随窗口。
-    /// </summary>
-    public static string ResolveAutomationLogPath()
-    {
-        return RuntimeAutomationLogService.ResolvePath();
+        AggregateModLogService.AppendAutomation(action, FormatAutomationTarget(target), message);
     }
 
     private static string FormatAutomationTarget(CookingCollectionTarget? target)

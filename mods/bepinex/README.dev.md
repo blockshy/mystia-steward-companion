@@ -469,17 +469,17 @@ Mod 会定期检查当前页面和游戏运行时状态。进入游戏并加载�
 
 如果没有检测到运行时数据，普客和稀客推荐页只显示运行时数据不可用，不会回退到“全内容可用”状态，避免误以为库存和解锁内容已经同步。
 
-开启经营诊断后，`night-business-diagnostics.log` 会额外输出 `Candidates` 和 `RecentRuntimeParseFailures`。前者记录被扫描到的 controller/order 候选、接纳状态和过滤原因；后者记录运行时订单捕获器最近未能解析为稀客订单的样本。排查映射稀客或特殊事件稀客时，优先查看这两段。
+开启总日志后，经营扫描会额外输出 `night-business` section，其中包含 `Candidates` 和 `RecentRuntimeParseFailures`。前者记录被扫描到的 controller/order 候选、接纳状态和过滤原因；后者记录运行时订单捕获器最近未能解析为稀客订单的样本。排查映射稀客或特殊事件稀客时，优先查看这两段。
 
-同一目录还会输出运行时固定数据快照，默认目录为 `BepInEx/config/MystiaStewardCompanion/`：
+总日志还会输出运行时固定数据快照：
 
-- `runtime-static-data.log`：`DataBaseCharacter.GetAllMappedGuests()` 固定映射和 `GetSpecialGuestsAndMappedGuests()` 运行时同名别名，日志中的 `aliasSource` 会标明归一化来源。
-- `runtime-tags.log`：`DataBaseLanguage` 的料理/酒水标签文本、DLC 标签映射，以及 `DataBaseCore.TagRules`。
-- `runtime-database-diff.log`：`DataBaseCore` 食材、酒水、菜品、料理运行时表；每个表会记录 `GetAllX` 方法读取结果，以及游戏静态字典 fallback 的读取结果。
-- `runtime-guests.log`：`DataBaseCharacter` 普客、稀客、映射稀客、原始稀客映射和 `GuestFoodEasterEggData` 类型/简单字段。
-- `runtime-izakayas.log`：`DataBaseCore.GetAllIzakayas()` 或静态 `Izakayas` 字典读取到的经营场景标签、等级、普通/稀客池和刷新参数。
+- `runtime-static-data`：`DataBaseCharacter.GetAllMappedGuests()` 固定映射和 `GetSpecialGuestsAndMappedGuests()` 运行时同名别名，日志中的 `aliasSource` 会标明归一化来源。
+- `runtime-tags`：`DataBaseLanguage` 的料理/酒水标签文本、DLC 标签映射，以及 `DataBaseCore.TagRules`。
+- `runtime-database`：`DataBaseCore` 食材、酒水、菜品、料理运行时表；每个表会记录 `GetAllX` 方法读取结果，以及游戏静态字典 fallback 的读取结果。
+- `runtime-guests`：`DataBaseCharacter` 普客、稀客、映射稀客、原始稀客映射和 `GuestFoodEasterEggData` 类型/简单字段。
+- `runtime-izakayas`：`DataBaseCore.GetAllIzakayas()` 或静态 `Izakayas` 字典读取到的经营场景标签、等级、普通/稀客池和刷新参数。
 
-固定数据快照由基础运行时目录刷新路径读取并缓存；`Diagnostics.EnableNightBusinessDiagnostics=true` 且 `NightBusinessReflectionProvider.LoadContext()` 被调用时，经营诊断只把已缓存的目录快照写入日志，不会在经营热路径重新扫描 `DataBaseCore`、`DataBaseLanguage` 或 `DataBaseCharacter`。若游戏数据库尚未初始化，目录刷新会按 5 秒间隔重试。判断读取成功时优先看日志头部 `Complete: True` 和 `Status` 中各类计数是否大于 0。
+固定数据快照由基础运行时目录刷新路径读取并缓存；总日志开启且 `NightBusinessReflectionProvider.LoadContext()` 被调用时，经营诊断只把已缓存的目录快照写入总日志，不会在经营热路径重新扫描 `DataBaseCore`、`DataBaseLanguage` 或 `DataBaseCharacter`。若游戏数据库尚未初始化，目录刷新会按 5 秒间隔重试。判断读取成功时优先看 section 里的 `Complete: True` 和 `Status` 中各类计数是否大于 0。
 
 ## 本地 API 与伴随窗口
 
@@ -507,22 +507,20 @@ Port = 32145
 - `POST /local-api/config?lanEnabled=true|false&lanHost=auto|IPv4`：由 A 设备本机伴随窗口保存 LAN 开关和监听地址，并动态启停 LAN listener；本机回环 listener 不重启也不关闭。
 - `POST /local-api/token/regenerate`：重置本地 API Token，返回新 Token 并立即更新当前 API 鉴权；只允许回环客户端调用。
 - `GET /snapshot`：读取最新运行态快照。快照由 Unity 主线程按自动刷新节奏生成，网络线程只返回缓存 JSON。快照包含推荐状态、夜间稀客订单、任务状态、经营投喂任务目标、普客订单诊断和 `performanceMs` 快照耗时；任务状态优先遍历 `RunTimeScheduler.trackingMissions` 并调用只读 `RunTimeScheduler.ParseActiveMissionData()`，再结合全局 NPC、当前场景 NPC、`DaySceneMap`、当天/常驻 `RunTimeScheduler.scheduledEvents` 后置任务、跟踪交互物件、场景任务交互组件和未完成 `trackingMissions` fallback 补充来源，并优先从 `RunTimeDayScene.trackedNPCs` 反查 NPC 所在场景，缺失时用 `DataBaseDay.RefNPC().possibleDestinations` 解析可能场景。夜间经营时会通过 `ContainsSpecialNPCServeInWorkMission()` 读取当前稀客是否有已接取的投喂任务指定料理；普客诊断会扫描 HUD 订单和经营管理器桌位订单。完整 `runtimeData` 可能被节流省略，前端必须复用最近一次完整数据。
-- `GET /logs/settings`：读取日志读取、经营诊断和 BepInEx 原生日志窗口开关状态。
-- `GET /logs/config?logAccess=true|false&diagnostics=true|false&nativeConsole=true|false`：由伴随窗口回写日志、诊断和 BepInEx 原生日志窗口开关；`nativeConsole` 会同时尝试显示/隐藏当前 Windows 控制台，并写入下一次启动的 `BepInEx.cfg`。
-- `GET /logs/open-folder?target=log|diagnostics`：打开对应日志目录。
-- `GET /logs`：在 `LocalApi.ExposeLogs=true` 时读取 `BepInEx/LogOutput.log` 尾部日志，按 `LocalApi.MaxLogLines` 和 `LocalApi.MaxLogBytes` 裁剪。
+- `GET /logs/settings`：读取总日志开关、总日志路径、单文件分片大小、文件上限和总容量上限。
+- `GET /logs/config?aggregateLog=true|false&aggregateLogMaxFiles=30`：由伴随窗口回写总日志开关和文件上限；`aggregateLog` 会即时注册或移除 BepInEx 全局日志监听器。
+- `GET /logs/open-folder?target=aggregate`：打开总日志目录。
 - `GET /inventory/set?type=ingredient|beverage&id=ID&qty=数量`：在 Unity 主线程修改当前运行时材料或酒水库存。
 - `GET /inventory/bulk-set?type=ingredient|beverage&ids=ID1,ID2&qty=数量`：批量修改当前运行时材料或酒水库存；用于修改页的材料/酒水批量设为 `99`，只在批量结束后刷新一次运行时快照。
 - `GET /orders/prepare-next?...`：按伴随窗口传入的稀客订单执行准备步骤，可组合送达酒水、开始料理、出锅后直送和收藏限定。
-- `GET /logs/automation`：读取 `BepInEx/config/MystiaStewardCompanion/automation-jobs.log` 尾部内容，返回结构与 `/logs` 一致，受日志读取开关和读取上限控制。
-- `GET /logs/export-diagnostics?open=true`：生成诊断 zip，包含 manifest、当前 snapshot、`LogOutput.log` 尾部、自动化作业日志尾部和诊断目录中的 `.log` 尾部；`open=true` 会打开诊断包目录。
+- `GET /logs/export-diagnostics?open=true`：生成诊断 zip，包含 manifest、当前 snapshot 和总日志分片尾部；`open=true` 会打开诊断包目录。
 - `GET /orders/complete-first?...`：按伴随窗口传入的稀客订单确认直接送达状态，必要时补送酒水，并在订单满足后触发评价。
 - `GET /orders/rare/dismiss?...`：按桌号和点单 Tag 删除一笔运行时稀客订单捕获缓存，用于清理偶发未被游戏移除事件命中的过时订单。
 - `GET /orders/normal/complete-first?...`：按请求中的订单 key、桌位、料理和酒水处理一笔普客订单。普客自动化可按 `autoNormal*` 阶段配置送达酒水、开始料理、出锅后直接送达料理，并在订单 `get_IsFullfilled()` 为真后调用 `EvaluateOrder()` 完成评价；该字段只表示订单已满足并可评价，前端仍需以 `HasEvaluated` 或订单消失判断真正完成。若订单只存在于 HUD / `OrderController`，但没有可执行 `GuestGroupController`，后端必须拒绝自动送达并返回不可执行诊断。
 - `GET /rare-guests/invitations?scope=current|all`：排队到 Unity 主线程，返回指定范围内的稀客邀请候选、当前已邀请列表和禁用原因。列表查询应默认返回全量候选，前端再按羁绊等级筛选显示，避免切换筛选时丢失其他等级选项。
 - `GET /rare-guests/invite-all?scope=current|all&levels=2,3`：按同一套候选扫描和判定逻辑批量邀请可邀请稀客；`levels` 可选，只邀请指定羁绊等级的可邀请项。`current` 候选优先使用 `DayScene.SceneManager.CurrentActiveMapLabel`、`RunTimeDayScene.GetMapNPCs()`、`DaySceneMap.allCharacters` 和场景中的 `CharacterConditionComponent`，若这些实时对象还未填充，则按当前地图反查 `DataBaseDay.GetAllNPCKeys()`、`AllMappedNPCsMapping`、`AllNPCsMapping` 或 `allNPCs` 中的 NPC key，再通过 `RefNPC().possibleDestinations` 判断所在地图，并用 `RunTimeDayScene.RefTrackedNPCAvailability()` 判断当前范围内的运行时可见性。`all` 候选会合并当前场景候选和全部日间静态 NPC 候选；全部静态候选不使用当前时间可见性作为硬过滤，避免 `TrackedNPC.ShouldShown(RemainActions)` 误删跨场景候选。当前场景候选为空时直接失败，不回退到 `DataBaseCharacter.GetSpecialGuestsAndMappedGuests()` 执行全量邀请。每个候选会读取 `RunTimeAlbum.GetOrGenerateSpecialNPCKizunaLevel()`、检查 `StatusTracker.HasNPCInvited()` 和当前等级成功邀请对话包；符合条件后直接调用 `StatusTracker.RecordInvitedGuest()` 写入今晚邀请名单。该端点不调用 `DaySceneChatSelectionPannel.InviteSpecGuest()`，避免触发随机失败和消耗今日尝试次数；也不以 `HasTemptInvited()` 作为跳过条件，避免旧版本或手动失败尝试把可写入邀请卡住。该端点不直接刷出稀客，不推进时间，不写 `Story.SpecialGuestControlled`。
 
-除 `/health` 外，端点都需要 `X-Mystia-Steward-Companion-Token`。Token 由插件生成并保存在 BepInEx 配置中，同机启动伴随窗口时通过 `--token=` 参数传入 Tauri 后端；A 设备本机设置页可以复制或重置 Token。远程局域网连接时，用户需要在 B 设备伴随窗口顶部连接区手动输入 A 设备的 endpoint 和 token，点击 `连接` 后才开始轮询。Tauri 伴随窗口会显示实时 Mod 工作台，默认包含 `概览`、`普客`、`稀客`、`经营中`、`任务`、`修改`、`帮助`、`设置` 八个页签；`概览` 内部按 `状态`、`库存`、`操作` 分栏，`设置` 内部按 `窗口`、`连接`、`推荐`、`自动化`、`更新` 分栏，调试开关开启后才显示 `调试` 分栏。窗口设置包含透明度、焦点切换、始终置顶、鼠标穿透锁定、手柄导航和显示调试信息；连接设置包含本地 API/LAN 连接配置；推荐设置包含订单排序、推荐权重、预算策略、缺失厨具过滤、任务料理/收藏料理/收藏酒水置顶、带库存显示和名称/库存排序的排除材料/酒水、同基础料理展示数量、游戏界面置顶和厨具高亮。Android 伴随窗口只作为 B 设备 LAN 客户端，不提供桌面托盘、置顶、鼠标穿透、焦点切换、单实例控制和游戏关闭自动退出；桌面鼠标穿透必须通过 Tauri 原生窗口 `set_ignore_cursor_events` 控制，不能只用 CSS `pointer-events` 模拟。帮助页内容来自 `apps/companion/src/data/help-content.json`，由前端渲染为目录树和详情面板，修改文案时优先改 JSON。`日志` 页签、设置中的 `调试` 分栏、BepInEx 原生日志窗口控制、扫描状态、运行时来源、性能耗时、订单来源和内部 key 这类诊断信息只在 `设置 -> 显示调试信息` 开启后显示。它通过 Tauri 原生后端读取本地 API。
+除 `/health` 外，端点都需要 `X-Mystia-Steward-Companion-Token`。Token 由插件生成并保存在 BepInEx 配置中，同机启动伴随窗口时通过 `--token=` 参数传入 Tauri 后端；A 设备本机设置页可以复制或重置 Token。远程局域网连接时，用户需要在 B 设备伴随窗口顶部连接区手动输入 A 设备的 endpoint 和 token，点击 `连接` 后才开始轮询。Tauri 伴随窗口会显示实时 Mod 工作台，默认包含 `概览`、`普客`、`稀客`、`经营中`、`任务`、`修改`、`帮助`、`设置` 八个页签；`概览` 内部按 `状态`、`库存`、`操作` 分栏，`设置` 内部按 `窗口`、`连接`、`推荐`、`自动化`、`更新` 分栏。窗口设置包含透明度、焦点切换、始终置顶、鼠标穿透锁定、手柄导航和显示调试信息；连接设置包含本地 API/LAN 连接配置；推荐设置包含订单排序、推荐权重、预算策略、缺失厨具过滤、任务料理/收藏料理/收藏酒水置顶、带库存显示和名称/库存排序的排除材料/酒水、同基础料理展示数量、游戏界面置顶和厨具高亮。Android 伴随窗口只作为 B 设备 LAN 客户端，不提供桌面托盘、置顶、鼠标穿透、焦点切换、单实例控制和游戏关闭自动退出；桌面鼠标穿透必须通过 Tauri 原生窗口 `set_ignore_cursor_events` 控制，不能只用 CSS `pointer-events` 模拟。帮助页内容来自 `apps/companion/src/data/help-content.json`，由前端渲染为目录树和详情面板，修改文案时优先改 JSON。`日志` 页签、扫描状态、运行时来源、性能耗时、订单来源和内部 key 这类诊断信息只在 `设置 -> 显示调试信息` 开启后显示。它通过 Tauri 原生后端读取本地 API。
 
 伴随窗口的自动化能力只在前端 `设置` 页总开关开启后运行。稀客并发、普客并发、最大重试和最大回退都由 `CompanionPreferences` 配置控制，默认值分别为 `2`、`3`、`3`、`2`；稀客完成订单评价每轮仍最多执行 1 笔，普客按普客并发数处理。经营中订单排序支持点单顺序和稀客分组，必须同时影响经营中列表、专注模式、游戏界面置顶和自动化选单；料理/酒水排序配置会影响稀客页、经营中页、专注模式和自动化选单，新增排序或置顶规则时需要同时覆盖这些入口。同基础料理展示数量只裁剪页面推荐行，自动化必须从独立执行候选构造目标，不能因为页面隐藏了加料变体而跳过可执行方案。预算策略、订单级免费状态、任务料理/收藏料理/收藏酒水置顶、排除材料和排除酒水都必须进入推荐链路和缓存签名；预算可阻止、提示或忽略超预算方案，订单级 `isFreeOrder=true` 时不应用付款预算阻止，排除材料需要同时过滤基础配方和加料。任务料理置顶只在当前稀客有已接取投喂任务且目标料理通过解锁、库存、预算、排除项和缺失厨具过滤后生效；收藏料理置顶和收藏酒水置顶分别只影响对应列表，且不绕过硬过滤。偏好命中但不满足点单的料理/酒水直接进入统一推荐列表并标识为 `偏好备选`，自动化根据排序后的执行候选锁定目标；收藏限定开启时，锁定目标仍必须命中收藏。稀客与普客自动化的阶段配置必须独立保存和独立传参：稀客使用 `autoPrep*` 配置，普客使用 `autoNormal*` 配置；普客阶段包括送达酒水、开始料理、送达料理、完成订单和出错暂停，不能复用稀客送酒或完成订单开关。自动开始料理固定尝试完成原生 QTE 奖励结算，不提供跳过开关。普客自动化需要按订单 key 维护独立状态，非临时错误只暂停对应普客订单，不得暂停稀客自动化或其他普客订单；已进入制作中的普客料理必须绑定目标订单/桌位，后续轮询检测到 pending 后只能等待，不得在同类多个厨具上重复开始同一订单料理。普客订单变化需要立即触发一次处理，常规重复轮询仍需节流。C# pending target 必须优先保存并匹配 `OrderKey`，避免桌位复用或同料理多单时串单；如果游戏重建普客订单对象导致旧 key 失效，只能在桌号、料理和酒水仍一致时重匹配当前订单继续直送。稀客与普客的开锅请求必须经过前端同一轮厨具预约表，预约容量来自当前已摆放厨具快照；同类厨具容量不足时，普客待处理订单优先保留容量，稀客订单进入等待态并继续处理不占厨具的送酒/完成步骤。稀客和普客都必须支持料理和酒水单项先送达：送达提交必须同步顾客桌面显示和订单状态，只有 `get_IsFullfilled()` 为真时才能调用 `EvaluateOrder()`；`get_IsFullfilled()` 不是终态字段，普客快照还需要区分 `ReadyToEvaluate` 和 `HasEvaluated`。酒水创建对象后必须在送达提交成功后才扣库存；料理出锅后直接送达目标订单，送达失败时保留成品和 pending 以便下一轮重试。子选项默认关闭并记忆用户上次配置。临时失败例如厨具占用、运行时对象暂不可读、桌面显示暂不可写，应保持可重试，不应永久停止自动任务；非临时错误在对应订单类型的 `出错时暂停` 开启时才暂停当前订单。前端状态机只将送酒、开锅、单项送达提交和触发评价视为真实进展；稀客页下拉选项不再按存档进度集合过滤，只按经营场景、可读名称和可用 Tag 过滤。
 
@@ -530,11 +528,11 @@ Port = 32145
 
 稀客自动化诊断由前端状态机维护，每个当前候选订单都要暴露当前步骤、下次动作、已开锅、已送酒、重试/回退次数、最近原因和暂停状态。普客自动化也要按订单 key 展示下次动作、送酒、开锅、送料理、完成订单和订单已有料理/酒水状态，避免只靠长文本判断卡住位置。`重试` 只解除该订单暂停并保留已完成阶段，`重置` 删除该订单本地状态并在下一轮重新判断；两者都不得影响其他稀客订单或普客订单状态。
 
-伴随窗口直接双击启动时通常没有本地 API Token。前端必须停留在未授权状态，不得高频请求 `/snapshot` 或 `/logs`；用户修改端点或 token 输入框时也不得立即重连，只有点击 `连接` 或从游戏启动参数收到新 token 后才恢复轮询。自动探测和失败重试必须使用较短本地 API 超时且不触发全局刷新 loading；手动刷新可使用稍长超时。连接失败后使用递增退避，允许用户点击 `停止` 暂停自动重连。
+伴随窗口直接双击启动时通常没有本地 API Token。前端必须停留在未授权状态，不得高频请求 `/snapshot` 或日志端点；用户修改端点或 token 输入框时也不得立即重连，只有点击 `连接` 或从游戏启动参数收到新 token 后才恢复轮询。自动探测和失败重试必须使用较短本地 API 超时且不触发全局刷新 loading；手动刷新可使用稍长超时。连接失败后使用递增退避，允许用户点击 `停止` 暂停自动重连。
 
 普客订单自动化仍是实验性功能。伴随窗口会显示当前 UI 订单里识别到的普客桌位、料理、酒水、待评价和已评价状态；设置页开启自动化总开关后，还需要在经营中自动化面板开启“启用普客处理”，并至少开启送达酒水、自动开始料理、自动送达料理或自动完成订单中的一个阶段，之后会自动处理按首次出现时间排序的未评价普客订单，不再需要点击手动处理按钮。普客酒水和料理送达都走统一送达提交，在顾客桌面显示和订单状态同步后才调用 `EvaluateOrder()`。特殊经营场景不再接入运行时推荐和自动化分支；已分析过的怪诞料理大赛、饕餮尤魔挑战链路记录在 `docs/special-business-scenes-notes.md`，后续若恢复适配必须重新验证原生评价副作用。`ServedFoodInAir` / `ServedBeverageInAir` 只作为统一送达提交中的过渡状态，顾客桌面显示必须通过 `GuestTableDisplayer` 更新，是否可评价以 `ServFood` / `ServBeverage` 和 `get_IsFullfilled()` 为准，是否真正完成以 `HasEvaluated` 或订单移除为准。
 
-自动化诊断文件 `BepInEx/config/MystiaStewardCompanion/automation-jobs.log` 由 C# 侧写入，记录开锅成功/失败、pending 直送、pending 移除和目标订单信息，约 1 MB 自动轮换为 `.1`。连续相同 action、目标和消息会合并为 `repeat` 摘要，避免厨具冻结、订单对象短暂不可读等临时状态刷爆日志。伴随窗口 `日志` 页通过 `/logs/automation` 读取并解析该文件，显示 action、target、桌号、订单 key、料理和最近消息；`导出诊断包` 通过 `/logs/export-diagnostics` 生成 zip，所有日志内容都只取尾部上限。该日志只用于排查，不得让写入、读取或打包失败影响自动化或游戏运行。
+总日志文件 `BepInEx/config/MystiaStewardCompanion/aggregate-mod.log` 默认关闭，由 `Diagnostics.EnableAggregateModLog` 或日志页“总日志”开关启用。启用后注册 BepInEx 全局 `ILogListener`，捕获所有日志源并按时间、级别、来源和线程标注；C# 侧开锅成功/失败、pending 直送、pending 移除、经营诊断和运行时固定数据诊断也写入该文件。连续相同 automation action、目标和消息会合并为 `repeat` 摘要，避免厨具冻结、订单对象短暂不可读等临时状态刷爆日志。单个文件达到 10 MB 后拆分为递增编号分片；默认保留 30 个文件，约 300 MB，超过上限时删除最旧分片。该服务不得调用插件日志源回写自身状态，避免递归；写入、分片和裁剪失败必须吞掉异常，不得影响游戏流程。
 
 代理工具注意事项：
 
@@ -554,8 +552,8 @@ Port = 32145
 - `preflight.ps1` 报 DLL 缺失：先启动一次已安装 BepInEx 的游戏，再从 `BepInEx/core` 和 `BepInEx/interop` 复制所需引用。
 - 构建报 `Il2Cppmscorlib` 缺失：从 `游戏根目录/BepInEx/interop/Il2Cppmscorlib.dll` 复制到 `References/`。
 - PowerShell 执行 `bash ...` 报 WSL `/bin/bash` 不存在：在 Windows 下改用对应 `.ps1` 脚本。
-- 运行时数据不可用：查看设置页场景名、扫描状态和 `BepInEx/LogOutput.log`。
-- `经营中` 没有稀客或点单：查看 `经营扫描 / Scan status`；如果 `manager=missing`，需要核对夜间经营管理器字段；如果 `guests>0` 但 `orders=0`，提供经营诊断中的 `Sources`、`Candidates` 和 `RecentRuntimeParseFailures`。
+- 运行时数据不可用：查看设置页场景名、扫描状态；需要日志时开启总日志并导出诊断包。
+- `经营中` 没有稀客或点单：查看 `经营扫描 / Scan status`；如果 `manager=missing`，需要核对夜间经营管理器字段；如果 `guests>0` 但 `orders=0`，提供总日志中 `night-business` section 的 `Sources`、`Candidates` 和 `RecentRuntimeParseFailures`。
 
 ## 已知限制
 
