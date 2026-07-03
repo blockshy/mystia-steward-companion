@@ -974,6 +974,7 @@ internal sealed class StewardOverlayController
                      .ThenBy(order => order.BeverageTagId)
                      .ThenBy(order => order.Source, StringComparer.Ordinal))
         {
+            AppendValue(builder, order.TraceId);
             AppendValue(builder, order.DeskCode);
             AppendValue(builder, order.GuestId);
             AppendValue(builder, order.GuestName);
@@ -1047,6 +1048,7 @@ internal sealed class StewardOverlayController
                      .ThenBy(order => order.DeskCode)
                      .ThenBy(order => order.GuestName, StringComparer.Ordinal))
         {
+            AppendValue(builder, order.TraceId);
             AppendValue(builder, order.OrderKey);
             AppendValue(builder, order.DeskCode);
             AppendValue(builder, order.GuestName);

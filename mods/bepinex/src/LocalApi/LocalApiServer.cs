@@ -895,6 +895,7 @@ internal sealed class LocalApiServer : IDisposable
         {
             var request = new OrderPreparationRequest
             {
+                TraceId = ReadStringQuery(query, "traceId"),
                 OrderKey = ReadStringQuery(query, "orderKey"),
                 DeskCode = ReadIntQuery(query, "deskCode", -1),
                 GuestId = ReadNullableIntQuery(query, "guestId"),

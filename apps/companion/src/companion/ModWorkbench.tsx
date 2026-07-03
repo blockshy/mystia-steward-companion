@@ -59,7 +59,6 @@ import {
   buildNormalOrderAutomationSignature,
   buildRareAutoOrderDiagnostic,
   formatOrderPreparationResponse,
-  formatRareAutomationPrefix,
   hasAutomationActionEnabled,
   hasNormalOrderActionEnabled,
   isNormalOrderCollected,
@@ -143,6 +142,27 @@ function isCookingMismatchStoredEvent(event: AutomationRuntimeEvent): boolean {
   return event.code === 'cooking-mismatch-stored';
 }
 
+function composeAutomationDetail(...parts: Array<string | null | undefined | false>): string {
+  return parts
+    .map((part) => typeof part === 'string' ? part.trim() : '')
+    .filter(Boolean)
+    .join('\n');
+}
+
+function withAutomationDetail<T extends AutoFirstOrderState | NormalAutoOrderState>(
+  state: T,
+  now: number,
+  ...parts: Array<string | null | undefined | false>
+): T {
+  const detailMessage = composeAutomationDetail(...parts);
+  if (!detailMessage) return state;
+  return {
+    ...state,
+    detailMessage,
+    detailUpdatedAtMs: now,
+  };
+}
+
 function matchesRareAutomationEvent(
   event: AutomationRuntimeEvent,
   selection: ValidOrderPreparationSelection,
@@ -150,6 +170,7 @@ function matchesRareAutomationEvent(
 ): boolean {
   if (event.targetKind !== 'rare') return false;
   const order = selection.item.order;
+  if (event.traceId && order.traceId) return event.traceId === order.traceId;
   const recipeTarget = state.recipeTarget ?? selection.recipeTarget;
   if (event.foodId >= 0 && recipeTarget?.foodId !== event.foodId) return false;
   if (event.deskCode >= 0 && order.deskCode !== event.deskCode) return false;
@@ -178,6 +199,7 @@ function resetRareOrderStateAfterRuntimeMismatch(
 
 function matchesNormalAutomationEvent(event: AutomationRuntimeEvent, order: NormalBusinessOrder): boolean {
   if (event.targetKind !== 'normal') return false;
+  if (event.traceId && order.traceId) return event.traceId === order.traceId;
   const orderKey = buildNormalAutoOrderKey(order);
   if (event.orderKey && event.orderKey === orderKey) return true;
   if (event.foodId >= 0 && order.foodId !== event.foodId) return false;
@@ -768,7 +790,8 @@ export function ModWorkbench() {
     lastAutoFirstOrderAtRef.current = now;
     setAutoPrepBusy(true);
     try {
-      const messages: string[] = [];
+      const globalMessages: string[] = [];
+      let updatedOrderDetailCount = 0;
       let completedOrderThisTick = false;
       const cookerCycle = getAutomationCookerCycle(now);
       const cookerCapacity = buildAutomationCookerCapacity(runtime);
@@ -783,7 +806,6 @@ export function ModWorkbench() {
 
       for (const selection of candidateResult.selections) {
         const orderKey = buildAutoOrderKey(selection.item);
-        const prefix = formatRareAutomationPrefix(selection.item);
         let currentState = rareOrderStatesRef.current.get(orderKey) ?? emptyAutoFirstOrderState(orderKey, now);
         currentState = lockRareAutomationTargets(currentState, selection);
         currentState = syncRareStateWithOrderServedState(currentState, selection.item.order, now);
@@ -801,7 +823,13 @@ export function ModWorkbench() {
           };
         }
         if (currentState.paused) {
-          messages.push(`${prefix}\n${formatAutomationState(currentState, companionPreferences)}\n稀客自动化已暂停该订单，订单变化或重新开启后会继续。`);
+          rareOrderStatesRef.current.set(orderKey, withAutomationDetail(
+            currentState,
+            now,
+            formatAutomationState(currentState, companionPreferences),
+            '稀客自动化已暂停该订单，订单变化或重新开启后会继续。',
+          ));
+          updatedOrderDetailCount += 1;
           continue;
         }
 
@@ -817,9 +845,21 @@ export function ModWorkbench() {
           );
 
           if (completeResponse.completedOrder) {
-            rareOrderStatesRef.current.delete(orderKey);
+            rareOrderStatesRef.current.set(orderKey, withAutomationDetail(
+              {
+                ...currentState,
+                step: 'done',
+                stepStartedAtMs: now,
+                lastProgressAtMs: now,
+                retryCount: 0,
+                lastError: '',
+                paused: false,
+              },
+              now,
+              formatOrderPreparationResponse(completeResponse),
+            ));
             completedOrderThisTick = true;
-            messages.push(`${prefix}\n${formatOrderPreparationResponse(completeResponse)}`);
+            updatedOrderDetailCount += 1;
             continue;
           }
 
@@ -835,14 +875,24 @@ export function ModWorkbench() {
           currentState = nextState;
           preflightMessage = formatOrderPreparationResponse(completeResponse);
           if (currentState.paused) {
-            rareOrderStatesRef.current.set(orderKey, currentState);
-            messages.push(`${prefix}\n${preflightMessage}\n${formatAutomationState(currentState, companionPreferences)}\n稀客自动化已暂停该订单，订单变化或重新开启后会继续。`);
+            rareOrderStatesRef.current.set(orderKey, withAutomationDetail(
+              currentState,
+              now,
+              preflightMessage,
+              formatAutomationState(currentState, companionPreferences),
+              '稀客自动化已暂停该订单，订单变化或重新开启后会继续。',
+            ));
+            updatedOrderDetailCount += 1;
             continue;
           }
         } else if (companionPreferences.autoPrepCompleteOrder && completedOrderThisTick && currentState.prepared && currentState.beverageHandled) {
           const waitingState = markAutomationWaiting(currentState, 'complete-order', now, '本轮已完成一笔稀客订单，等待下一轮完成。');
-          rareOrderStatesRef.current.set(orderKey, waitingState);
-          messages.push(`${prefix}\n${formatAutomationState(waitingState, companionPreferences)}`);
+          rareOrderStatesRef.current.set(orderKey, withAutomationDetail(
+            waitingState,
+            now,
+            formatAutomationState(waitingState, companionPreferences),
+          ));
+          updatedOrderDetailCount += 1;
           continue;
         }
 
@@ -874,8 +924,13 @@ export function ModWorkbench() {
               ? '等待料理出锅后直接送达，或等待下一轮完成订单。'
               : '已按当前设置完成可执行步骤；自动完成订单未开启。',
           );
-          rareOrderStatesRef.current.set(orderKey, waitingState);
-          messages.push(`${prefix}${preflightMessage ? `\n${preflightMessage}` : ''}\n${formatAutomationState(waitingState, companionPreferences)}`);
+          rareOrderStatesRef.current.set(orderKey, withAutomationDetail(
+            waitingState,
+            now,
+            preflightMessage,
+            formatAutomationState(waitingState, companionPreferences),
+          ));
+          updatedOrderDetailCount += 1;
           continue;
         }
 
@@ -945,33 +1000,59 @@ export function ModWorkbench() {
             buildCompleteOrderPreferences(companionPreferences),
           );
           if (immediateCompleteResponse.completedOrder) {
-            rareOrderStatesRef.current.delete(orderKey);
+            rareOrderStatesRef.current.set(orderKey, withAutomationDetail(
+              {
+                ...finalState,
+                step: 'done',
+                stepStartedAtMs: now,
+                lastProgressAtMs: now,
+                retryCount: 0,
+                lastError: '',
+                paused: false,
+              },
+              now,
+              preflightMessage,
+              formatOrderPreparationResponse(prepareResponse),
+              formatOrderPreparationResponse(immediateCompleteResponse),
+            ));
             completedOrderThisTick = true;
-            messages.push(`${prefix}${preflightMessage ? `\n${preflightMessage}` : ''}\n${formatOrderPreparationResponse(prepareResponse)}\n${formatOrderPreparationResponse(immediateCompleteResponse)}`);
+            updatedOrderDetailCount += 1;
             continue;
           }
 
           finalState = applyRareServedStateFromResponse(finalState, selection.item.order, immediateCompleteResponse, now);
-          followUpMessage = `\n${formatOrderPreparationResponse(immediateCompleteResponse)}`;
+          followUpMessage = formatOrderPreparationResponse(immediateCompleteResponse);
         }
 
-        rareOrderStatesRef.current.set(orderKey, finalState);
         const suffix = finalState.paused
-          ? '\n稀客自动化已暂停该订单，订单变化或重新开启后会继续。'
+          ? '稀客自动化已暂停该订单，订单变化或重新开启后会继续。'
           : transientFailure
-            ? '\n当前条件暂不可执行，将继续等待并自动重试。'
+            ? '当前条件暂不可执行，将继续等待并自动重试。'
             : '';
-        const schedulerSuffix = schedulerNote.ok ? '' : `\n${schedulerNote.message}`;
-        messages.push(`${prefix}${preflightMessage ? `\n${preflightMessage}` : ''}\n${formatOrderPreparationResponse(prepareResponse)}${followUpMessage}\n${formatAutomationState(finalState, companionPreferences)}${schedulerSuffix}${suffix}`);
+        const schedulerSuffix = schedulerNote.ok ? '' : schedulerNote.message;
+        rareOrderStatesRef.current.set(orderKey, withAutomationDetail(
+          finalState,
+          now,
+          preflightMessage,
+          formatOrderPreparationResponse(prepareResponse),
+          followUpMessage,
+          formatAutomationState(finalState, companionPreferences),
+          schedulerSuffix,
+          suffix,
+        ));
+        updatedOrderDetailCount += 1;
       }
 
       if (candidateResult.messages.length > 0) {
-        messages.push(...candidateResult.messages.map((message) => `跳过\n${message}`));
+        globalMessages.push(...candidateResult.messages.map((message) => `跳过\n${message}`));
       }
 
       refreshRareOrderDiagnostics(now);
-      setAutoPrepMessage(messages.length > 0
-        ? `自动化\n${messages.join('\n\n')}`
+      setAutoPrepMessage(updatedOrderDetailCount > 0 || globalMessages.length > 0
+        ? `自动化\n${[
+          updatedOrderDetailCount > 0 ? `已更新 ${updatedOrderDetailCount} 笔订单详情，可展开对应订单查看。` : '',
+          ...globalMessages,
+        ].filter(Boolean).join('\n\n')}`
         : '自动化\n当前没有需要执行的新步骤。');
       await refresh();
     } catch (err) {
@@ -980,7 +1061,12 @@ export function ModWorkbench() {
         for (const selection of candidateResult.selections) {
           const orderKey = buildAutoOrderKey(selection.item);
           const state = rareOrderStatesRef.current.get(orderKey) ?? emptyAutoFirstOrderState(orderKey, now);
-          rareOrderStatesRef.current.set(orderKey, pauseAutomationState(state, now, message));
+          rareOrderStatesRef.current.set(orderKey, withAutomationDetail(
+            pauseAutomationState(state, now, message),
+            now,
+            message,
+            '稀客自动化已暂停，订单变化或重新开启后会继续。',
+          ));
         }
         refreshRareOrderDiagnostics(now);
         setAutoPrepMessage(`自动化\n${message}\n稀客自动化已暂停，订单变化或重新开启后会继续。`);
@@ -1098,12 +1184,9 @@ export function ModWorkbench() {
         const state = normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order));
         return state?.prepared && !isNormalOrderCollected(order, state);
       }).length;
-      const waitingState = orders
-        .map((order) => normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order)))
-        .find((state) => state && (state.prepared || state.collected || state.paused));
       const schedulerText = schedulerMessages.length > 0 ? `\n${schedulerMessages.join('\n\n')}` : '';
       setNormalOrderMessage(waitingCount > 0 || pausedCount > 0
-        ? `普客自动化\n当前没有需要新开锅的普客订单。\n等待制作或送达 ${waitingCount} 笔，暂停 ${pausedCount} 笔。${waitingState ? `\n${formatAutomationState(waitingState, companionPreferences)}` : ''}${blockedText}${schedulerText}`
+        ? `普客自动化\n当前没有需要新开锅的普客订单。\n等待制作或送达 ${waitingCount} 笔，暂停 ${pausedCount} 笔。${blockedText}${schedulerText}`
         : `普客自动化\n当前没有需要执行的新步骤。${blockedText}${schedulerText}`);
       refreshNormalOrderDiagnostics(orders, now);
       lastAutoNormalOrderAtRef.current = now;
@@ -1114,7 +1197,7 @@ export function ModWorkbench() {
     lastAutoNormalOrderAtRef.current = now;
     setNormalOrderBusy(true);
     try {
-      const messages: string[] = [];
+      let updatedOrderDetailCount = 0;
       for (const order of runnableOrders) {
         const orderKey = buildNormalAutoOrderKey(order);
         const storedState = normalOrderStatesRef.current.get(orderKey) ?? emptyNormalAutoOrderState(orderKey, now);
@@ -1243,19 +1326,27 @@ export function ModWorkbench() {
           foodDelivered,
           completed,
         };
-        normalOrderStatesRef.current.set(orderKey, normalizedNextState);
 
-        const prefix = `桌 ${formatDesk(order.deskCode)} · ${order.foodName || `#${order.foodId}`}`;
         const suffix = normalizedNextState.paused
-          ? '\n普客自动化已暂停该订单，订单变化或重新开启后会继续。'
+          ? '普客自动化已暂停该订单，订单变化或重新开启后会继续。'
           : transientFailure
-            ? '\n当前条件暂不可执行，将继续等待并自动重试。'
+            ? '当前条件暂不可执行，将继续等待并自动重试。'
             : '';
-        messages.push(`${prefix}\n${formatOrderPreparationResponse(response)}\n${formatAutomationState(normalizedNextState, companionPreferences)}${suffix}`);
+        normalOrderStatesRef.current.set(orderKey, withAutomationDetail(
+          normalizedNextState,
+          now,
+          formatOrderPreparationResponse(response),
+          formatAutomationState(normalizedNextState, companionPreferences),
+          suffix,
+        ));
+        updatedOrderDetailCount += 1;
       }
       refreshNormalOrderDiagnostics(orders, now);
-      setNormalOrderMessage(messages.length > 0
-        ? `普客自动化\n${messages.join('\n\n')}${schedulerMessages.length > 0 ? `\n\n${schedulerMessages.join('\n\n')}` : ''}`
+      setNormalOrderMessage(updatedOrderDetailCount > 0 || schedulerMessages.length > 0
+        ? `普客自动化\n${[
+          updatedOrderDetailCount > 0 ? `已更新 ${updatedOrderDetailCount} 笔订单详情，可展开对应订单查看。` : '',
+          ...schedulerMessages,
+        ].filter(Boolean).join('\n\n')}`
         : '普客自动化\n当前没有需要执行的新步骤。');
       await refresh();
     } catch (err) {

@@ -277,6 +277,7 @@ internal static partial class RuntimeOrderPreparationService
     {
         return new OrderPreparationRequest
         {
+            TraceId = target.TraceId,
             OrderKey = target.OrderKey,
             DeskCode = target.DeskCode,
             GuestId = target.GuestId,

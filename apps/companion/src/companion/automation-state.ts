@@ -46,6 +46,8 @@ export interface AutoFirstOrderState {
   retryCount: number;
   rollbackCount: number;
   lastError: string;
+  detailMessage: string;
+  detailUpdatedAtMs: number;
   paused: boolean;
 }
 
@@ -66,6 +68,8 @@ export interface NormalAutoOrderState {
   retryCount: number;
   rollbackCount: number;
   lastError: string;
+  detailMessage: string;
+  detailUpdatedAtMs: number;
   paused: boolean;
 }
 
@@ -93,6 +97,7 @@ export interface OrderPreparationResponse {
   completedOrder?: boolean;
   error: string | null;
   order: {
+    traceId?: string;
     deskCode: number;
     guestId: number | null;
     guestName: string;
@@ -121,6 +126,8 @@ export function emptyAutoFirstOrderState(orderKey = '', now = 0): AutoFirstOrder
     retryCount: 0,
     rollbackCount: 0,
     lastError: '',
+    detailMessage: '',
+    detailUpdatedAtMs: 0,
     paused: false,
   };
 }
@@ -143,6 +150,8 @@ export function emptyNormalAutoOrderState(orderKey: string, now = 0): NormalAuto
     retryCount: 0,
     rollbackCount: 0,
     lastError: '',
+    detailMessage: '',
+    detailUpdatedAtMs: 0,
     paused: false,
   };
 }

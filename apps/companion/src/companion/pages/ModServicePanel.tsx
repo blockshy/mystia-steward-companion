@@ -1,7 +1,24 @@
 import { useMemo } from 'react';
 import type { ReactNode } from 'react';
 import { IconTrash } from '@tabler/icons-react';
-import { Badge, Button, Card, CardContent, EmptyRow, EmptyState, InfoLine, ListPanel, Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui-kit';
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  EmptyRow,
+  EmptyState,
+  InfoLine,
+  ListPanel,
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from '@/components/ui-kit';
 import { buildAutomationResourceOverview, buildNightBusinessOrderKey } from '@/companion/domain/automation';
 import { sortNightOrderRows, sortNightOrders, sortNormalOrders } from '@/companion/domain/sorting';
 import { formatDesk, formatGuestFund, formatPerformanceMs } from '@/companion/formatters';
@@ -39,6 +56,58 @@ import {
 } from '@/companion/pages/shared';
 import { buildRecommendationDataIndexes, type RecommendationDataSet } from '@/lib/recommendation-data';
 import type { PlaceName } from '@/lib/catalog-types';
+
+function OrderTraceBadge({ traceId }: { traceId?: string }) {
+  if (!traceId) return null;
+  return (
+    <Badge variant="secondary" title={`总日志标识 ${traceId}`}>
+      日志 {traceId}
+    </Badge>
+  );
+}
+
+function formatAutomationDetailTime(value: number): string {
+  if (value <= 0) return '';
+  return new Date(value).toLocaleTimeString('zh-CN', {
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
+
+function AutomationDetailAccordion({
+  id,
+  detailMessage,
+  detailUpdatedAtMs,
+}: {
+  id: string;
+  detailMessage: string;
+  detailUpdatedAtMs: number;
+}) {
+  const detail = detailMessage.trim();
+  if (!detail) return null;
+  const updatedAt = formatAutomationDetailTime(detailUpdatedAtMs);
+
+  return (
+    <Accordion className="mt-2 text-xs">
+      <AccordionItem value={id}>
+        <AccordionTrigger
+          className="px-2 py-1.5 text-xs"
+          data-gamepad-focus-key={`automation-detail:${id}`}
+        >
+          <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+            <span>自动化详情</span>
+            {updatedAt && <span className="text-muted-foreground">更新 {updatedAt}</span>}
+          </span>
+        </AccordionTrigger>
+        <AccordionContent className="text-xs text-muted-foreground">
+          <div className="whitespace-pre-line leading-relaxed">{detail}</div>
+        </AccordionContent>
+      </AccordionItem>
+    </Accordion>
+  );
+}
 
 export function ModServicePanel({
   runtime,
@@ -235,6 +304,7 @@ export function ModServicePanel({
                           <Badge variant="outline">
                             酒水 {order.beverageTag || '无'}{showDebugDetails ? ` (${order.beverageTagId})` : ''}
                           </Badge>
+                          <OrderTraceBadge traceId={order.traceId} />
                           {order.isFreeOrder && <Badge variant="secondary">免费订单</Badge>}
                           {showDebugDetails && <Badge variant="secondary">{order.source}</Badge>}
                         </div>
@@ -341,6 +411,7 @@ export function ModServicePanel({
                 <div className="mt-1 flex flex-wrap gap-1.5">
                   <Badge variant="outline">料理 {order.foodName || `#${order.foodId}`}</Badge>
                   <Badge variant="outline">酒水 {order.beverageName || `#${order.beverageId}`}</Badge>
+                  <OrderTraceBadge traceId={order.traceId} />
                   {order.hasServedFood && <Badge variant="secondary">已有料理</Badge>}
                   {order.hasServedBeverage && <Badge variant="secondary">已有酒水</Badge>}
                   {order.readyToEvaluate && !order.hasEvaluated && <Badge variant="secondary">待评价</Badge>}
@@ -859,6 +930,7 @@ function RareAutoPrepStatus({
                 )}
               </div>
               <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
+                <OrderTraceBadge traceId={diagnostic.traceId} />
                 <Badge variant={diagnostic.paused ? 'destructive' : 'secondary'}>
                   {diagnostic.paused ? '暂停' : '运行'}
                 </Badge>
@@ -878,6 +950,11 @@ function RareAutoPrepStatus({
               {diagnostic.lastError && (
                 <div className="mt-1 text-xs text-muted-foreground">最近：{diagnostic.lastError}</div>
               )}
+              <AutomationDetailAccordion
+                id={`rare:${diagnostic.orderKey}`}
+                detailMessage={diagnostic.detailMessage}
+                detailUpdatedAtMs={diagnostic.detailUpdatedAtMs}
+              />
             </div>
           ))}
         </div>
@@ -952,6 +1029,7 @@ function NormalAutoPrepStatus({
                 )}
               </div>
               <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
+                <OrderTraceBadge traceId={diagnostic.traceId} />
                 <Badge variant={diagnostic.beverageHandled ? 'secondary' : 'outline'}>
                   酒水{diagnostic.beverageHandled ? '已送达' : '待处理'}
                 </Badge>
@@ -977,6 +1055,11 @@ function NormalAutoPrepStatus({
               {diagnostic.lastError && (
                 <div className="mt-1 text-xs text-muted-foreground">最近：{diagnostic.lastError}</div>
               )}
+              <AutomationDetailAccordion
+                id={`normal:${diagnostic.orderKey}`}
+                detailMessage={diagnostic.detailMessage}
+                detailUpdatedAtMs={diagnostic.detailUpdatedAtMs}
+              />
             </div>
           ))}
         </div>

@@ -31,7 +31,7 @@ internal static class AggregateModLogService
     private static long _currentBytes;
     private static bool _enabled;
     private static string _lastAutomationKey = "";
-    private static string _lastAutomationTarget = "";
+    private static OrderLogContext? _lastAutomationContext;
     private static string _lastAutomationMessage = "";
     private static int _lastAutomationRepeatCount;
     private static int _lastAutomationReportedCount;
@@ -137,22 +137,6 @@ internal static class AggregateModLogService
         }
     }
 
-    public static void AppendLine(string channel, string message)
-    {
-        try
-        {
-            lock (SyncRoot)
-            {
-                if (!_enabled) return;
-                WriteLineLocked($"{FormatTimestamp()} [{NormalizeChannel(channel)}] {NormalizeMessage(message)}");
-            }
-        }
-        catch
-        {
-            // Logging diagnostics must never affect the game process.
-        }
-    }
-
     public static void AppendSection(string channel, string title, string content)
     {
         try
@@ -174,7 +158,7 @@ internal static class AggregateModLogService
         }
     }
 
-    public static void AppendAutomation(string action, string targetText, string message)
+    public static void AppendAutomation(string action, OrderLogContext? context, string message)
     {
         try
         {
@@ -183,7 +167,8 @@ internal static class AggregateModLogService
                 if (!_enabled) return;
 
                 var now = DateTime.Now;
-                var key = string.Join("|", action, targetText, message);
+                var contextText = FormatContext(context);
+                var key = string.Join("|", action, contextText, message);
                 if (string.Equals(key, _lastAutomationKey, StringComparison.Ordinal))
                 {
                     _lastAutomationRepeatCount++;
@@ -195,7 +180,7 @@ internal static class AggregateModLogService
 
                     WriteAutomationLineLocked(
                         "repeat",
-                        targetText,
+                        context,
                         $"上一条重复 {unreportedCount} 次，累计 {_lastAutomationRepeatCount - 1} 次；{message}");
                     _lastAutomationReportedCount = _lastAutomationRepeatCount;
                     _lastAutomationFirstAt = now;
@@ -203,9 +188,9 @@ internal static class AggregateModLogService
                 }
 
                 FlushAutomationRepeatSummaryLocked();
-                WriteAutomationLineLocked(action, targetText, message);
+                WriteAutomationLineLocked(action, context, message);
                 _lastAutomationKey = key;
-                _lastAutomationTarget = targetText;
+                _lastAutomationContext = context;
                 _lastAutomationMessage = message;
                 _lastAutomationRepeatCount = 1;
                 _lastAutomationReportedCount = 1;
@@ -393,14 +378,41 @@ internal static class AggregateModLogService
         var unreportedCount = _lastAutomationRepeatCount - _lastAutomationReportedCount;
         WriteAutomationLineLocked(
             "repeat",
-            _lastAutomationTarget,
+            _lastAutomationContext,
             $"上一条重复 {unreportedCount} 次，累计 {_lastAutomationRepeatCount - 1} 次；{_lastAutomationMessage}");
         _lastAutomationReportedCount = _lastAutomationRepeatCount;
     }
 
-    private static void WriteAutomationLineLocked(string action, string targetText, string message)
+    private static void WriteAutomationLineLocked(string action, OrderLogContext? context, string message)
     {
-        WriteLineLocked($"{FormatTimestamp()} [automation] action={EscapeToken(action)} {targetText} {NormalizeMessage(message)}");
+        WriteLineLocked($"{FormatTimestamp()} [automation] action={EscapeToken(action)} {FormatContext(context)} message={EscapeToken(NormalizeMessage(message))}");
+    }
+
+    private static string FormatContext(OrderLogContext? context)
+    {
+        if (context == null) return "trace=none kind=none";
+
+        var builder = new StringBuilder(160);
+        AppendToken(builder, "trace", context.TraceId);
+        AppendToken(builder, "kind", context.Kind);
+        if (context.DeskCode >= 0) AppendToken(builder, "desk", (context.DeskCode + 1).ToString());
+        AppendToken(builder, "orderKey", context.OrderKey);
+        if (context.GuestId.HasValue) AppendToken(builder, "guestId", context.GuestId.Value.ToString());
+        AppendToken(builder, "guest", context.GuestName);
+        if (context.FoodId >= 0) AppendToken(builder, "foodId", context.FoodId.ToString());
+        AppendToken(builder, "food", context.FoodName);
+        if (context.BeverageId >= 0) AppendToken(builder, "beverageId", context.BeverageId.ToString());
+        AppendToken(builder, "beverage", context.BeverageName);
+        return builder.Length == 0 ? "trace=none kind=none" : builder.ToString();
+    }
+
+    private static void AppendToken(StringBuilder builder, string key, string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return;
+        if (builder.Length > 0) builder.Append(' ');
+        builder.Append(key);
+        builder.Append('=');
+        builder.Append(EscapeToken(value.Trim()));
     }
 
     private static string FormatTimestamp()
@@ -432,7 +444,11 @@ internal static class AggregateModLogService
 
     private static string EscapeToken(string value)
     {
-        return value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace(" ", "\\ ", StringComparison.Ordinal);
+        return value
+            .Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("\r", "\\r", StringComparison.Ordinal)
+            .Replace("\n", "\\n", StringComparison.Ordinal)
+            .Replace(" ", "\\ ", StringComparison.Ordinal);
     }
 
     private sealed class AggregateLogListener : ILogListener
@@ -448,4 +464,18 @@ internal static class AggregateModLogService
         {
         }
     }
+}
+
+internal sealed class OrderLogContext
+{
+    public string TraceId { get; init; } = "";
+    public string Kind { get; init; } = "";
+    public string OrderKey { get; init; } = "";
+    public int DeskCode { get; init; } = -1;
+    public int? GuestId { get; init; }
+    public string GuestName { get; init; } = "";
+    public int FoodId { get; init; } = -1;
+    public string FoodName { get; init; } = "";
+    public int BeverageId { get; init; } = -1;
+    public string BeverageName { get; init; } = "";
 }

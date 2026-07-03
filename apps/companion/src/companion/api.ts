@@ -355,6 +355,7 @@ export async function completeFirstNormalOrder(
     ?? data.recipes.find((item) => item.recipeId === order.foodId)
     ?? null;
   const params = new URLSearchParams({
+    traceId: order.traceId ?? '',
     orderKey: order.orderKey ?? '',
     deskCode: String(order.deskCode),
     guestName: order.guestName || '普客',
@@ -511,6 +512,7 @@ async function rareOrderAction(
 ): Promise<OrderPreparationResponse> {
   // 订单自动化需要把本次推荐锁定的料理、加料和酒水传给 Mod，避免轮询刷新后前端列表变化影响正在执行的订单。
   const params = new URLSearchParams({
+    traceId: item.order.traceId ?? '',
     deskCode: String(item.order.deskCode),
     guestId: item.order.guestId == null ? '' : String(item.order.guestId),
     guestName: item.order.guestName,

@@ -127,6 +127,7 @@ public sealed class RuntimeRareCustomer
 
 public sealed class NightBusinessOrder
 {
+    public string TraceId { get; init; } = "";
     public int DeskCode { get; init; }
     public int? GuestId { get; init; }
     public string GuestName { get; init; } = "";
@@ -203,6 +204,7 @@ public sealed class RuntimeMissionContext
 
 public sealed class NormalBusinessOrder
 {
+    public string TraceId { get; init; } = "";
     public string OrderKey { get; init; } = "";
     public int DeskCode { get; init; }
     public string GuestName { get; init; } = "";

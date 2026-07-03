@@ -2,6 +2,7 @@ namespace MystiaStewardCompanion.LocalApi;
 
 internal sealed class OrderPreparationRequest
 {
+    public string TraceId { get; init; } = "";
     public string OrderKey { get; init; } = "";
     public int DeskCode { get; init; }
     public int? GuestId { get; init; }
@@ -44,6 +45,7 @@ internal sealed class OrderPreparationResult
 
 internal sealed class OrderPreparationOrder
 {
+    public string TraceId { get; init; } = "";
     public int DeskCode { get; init; }
     public int? GuestId { get; init; }
     public string GuestName { get; init; } = "";

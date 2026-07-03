@@ -84,10 +84,12 @@ internal static partial class RuntimeOrderPreparationService
     /// </remarks>
     public static OrderPreparationResult Prepare(OrderPreparationRequest request)
     {
+        var traceId = ResolveRequestTraceId(OrderTraceKind.Rare, request);
         var result = new OrderPreparationResult
         {
             Order = new OrderPreparationOrder
             {
+                TraceId = traceId,
                 DeskCode = request.DeskCode,
                 GuestId = request.GuestId,
                 GuestName = request.GuestName,
@@ -243,10 +245,12 @@ internal static partial class RuntimeOrderPreparationService
     /// </remarks>
     public static OrderPreparationResult CompleteFirst(OrderPreparationRequest request)
     {
+        var traceId = ResolveRequestTraceId(OrderTraceKind.Rare, request);
         var result = new OrderPreparationResult
         {
             Order = new OrderPreparationOrder
             {
+                TraceId = traceId,
                 DeskCode = request.DeskCode,
                 GuestId = request.GuestId,
                 GuestName = request.GuestName,
@@ -362,10 +366,12 @@ internal static partial class RuntimeOrderPreparationService
     /// </remarks>
     public static OrderPreparationResult CompleteNormalFirst(OrderPreparationRequest request)
     {
+        var traceId = ResolveRequestTraceId(OrderTraceKind.Normal, request);
         var result = new OrderPreparationResult
         {
             Order = new OrderPreparationOrder
             {
+                TraceId = traceId,
                 DeskCode = request.DeskCode,
                 GuestName = string.IsNullOrWhiteSpace(request.GuestName) ? "普客" : request.GuestName,
                 FoodTag = "普客",
@@ -585,6 +591,7 @@ internal static partial class RuntimeOrderPreparationService
                         runtimeOrder.Controller,
                         runtimeOrder.Order,
                         request.OrderKey,
+                        traceId,
                         expectedFoodId,
                         request.RecipeName,
                         request.DeskCode,
@@ -716,7 +723,17 @@ internal static partial class RuntimeOrderPreparationService
 
     private static void AppendAutomationLog(string action, CookingCollectionTarget? target, string message)
     {
-        AggregateModLogService.AppendAutomation(action, FormatAutomationTarget(target), message);
+        AggregateModLogService.AppendAutomation(action, target?.ToLogContext(), message);
+    }
+
+    private static string ResolveRequestTraceId(OrderTraceKind kind, OrderPreparationRequest request)
+    {
+        var stableKey = kind == OrderTraceKind.Normal
+            ? string.IsNullOrWhiteSpace(request.OrderKey)
+                ? $"normal:{request.DeskCode}|{request.GuestName}|{request.FoodId}|{request.BeverageId}"
+                : $"normal:{request.OrderKey}"
+            : $"rare:{request.DeskCode}|{request.GuestId?.ToString() ?? request.GuestName}|{request.FoodTag}|{request.BeverageTag}";
+        return RuntimeOrderTraceIdService.GetRequestTraceId(kind, request.TraceId, stableKey);
     }
 
     private static void RecordAutomationRuntimeEvent(
@@ -736,6 +753,7 @@ internal static partial class RuntimeOrderPreparationService
                 CreatedAtUtc = DateTime.UtcNow,
                 Code = code,
                 TargetKind = target.Kind == CookingCollectionTargetKind.RareOrder ? "rare" : "normal",
+                TraceId = target.TraceId,
                 OrderKey = target.OrderKey,
                 DeskCode = target.DeskCode,
                 GuestId = target.GuestId,
@@ -753,14 +771,6 @@ internal static partial class RuntimeOrderPreparationService
                 AutomationRuntimeEvents.RemoveRange(0, AutomationRuntimeEvents.Count - MaxAutomationRuntimeEvents);
             }
         }
-    }
-
-    private static string FormatAutomationTarget(CookingCollectionTarget? target)
-    {
-        if (target == null) return "target=none";
-        return target.Kind == CookingCollectionTargetKind.NormalOrder
-            ? $"target=normal desk={target.DeskCode + 1} orderKey={target.OrderKey} food={target.FoodId}/{target.FoodName} beverage={target.BeverageId}/{target.BeverageName} guest={target.GuestName}"
-            : $"target=rare desk={target.DeskCode + 1} guest={target.GuestName}/{target.GuestId?.ToString() ?? ""} food={target.FoodId}/{target.FoodName} beverage={target.BeverageId}/{target.BeverageName}";
     }
 
     private static OrderPreparationResult Fail(OrderPreparationResult result, string error)
@@ -841,6 +851,7 @@ internal static partial class RuntimeOrderPreparationService
     private sealed class CookingCollectionTarget
     {
         public CookingCollectionTargetKind Kind { get; private init; }
+        public string TraceId { get; private init; } = "";
         public object? Manager { get; private init; }
         public object? Controller { get; private init; }
         public object? Order { get; private init; }
@@ -861,6 +872,10 @@ internal static partial class RuntimeOrderPreparationService
             return new CookingCollectionTarget
             {
                 Kind = CookingCollectionTargetKind.RareOrder,
+                TraceId = RuntimeOrderTraceIdService.GetRequestTraceId(
+                    OrderTraceKind.Rare,
+                    request.TraceId,
+                    $"rare:{request.DeskCode}|{request.GuestId?.ToString() ?? request.GuestName}|{request.FoodTag}|{request.BeverageTag}"),
                 GuestId = request.GuestId,
                 FoodTag = request.FoodTag,
                 BeverageTag = request.BeverageTag,
@@ -878,6 +893,7 @@ internal static partial class RuntimeOrderPreparationService
             object? controller,
             object? order,
             string orderKey,
+            string traceId,
             int foodId,
             string foodName,
             int deskCode,
@@ -889,6 +905,12 @@ internal static partial class RuntimeOrderPreparationService
             return new CookingCollectionTarget
             {
                 Kind = CookingCollectionTargetKind.NormalOrder,
+                TraceId = RuntimeOrderTraceIdService.GetRequestTraceId(
+                    OrderTraceKind.Normal,
+                    traceId,
+                    string.IsNullOrWhiteSpace(orderKey)
+                        ? $"normal:{deskCode}|{guestName}|{foodId}|{beverageId}"
+                        : $"normal:{orderKey}"),
                 Manager = manager,
                 Controller = controller,
                 Order = order,
@@ -900,6 +922,23 @@ internal static partial class RuntimeOrderPreparationService
                 DeskCode = deskCode,
                 GuestName = guestName,
                 AutoCompleteOrder = autoCompleteOrder,
+            };
+        }
+
+        public OrderLogContext ToLogContext()
+        {
+            return new OrderLogContext
+            {
+                TraceId = TraceId,
+                Kind = Kind == CookingCollectionTargetKind.NormalOrder ? "normal" : "rare",
+                OrderKey = OrderKey,
+                DeskCode = DeskCode,
+                GuestId = GuestId,
+                GuestName = GuestName,
+                FoodId = FoodId,
+                FoodName = FoodName,
+                BeverageId = BeverageId,
+                BeverageName = BeverageName,
             };
         }
     }

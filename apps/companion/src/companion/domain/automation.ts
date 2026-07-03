@@ -583,6 +583,7 @@ export function buildRareAutoOrderDiagnostic(
   const order = selection.item.order;
   return {
     orderKey: buildAutoOrderKey(selection.item),
+    traceId: order.traceId,
     title: `${order.guestName || '稀客'} · 桌 ${formatDesk(order.deskCode)}`,
     foodTag: order.foodTag || '',
     beverageTag: order.beverageTag || '',
@@ -594,6 +595,8 @@ export function buildRareAutoOrderDiagnostic(
     retryCount: state.retryCount,
     rollbackCount: state.rollbackCount,
     lastError: state.lastError,
+    detailMessage: state.detailMessage,
+    detailUpdatedAtMs: state.detailUpdatedAtMs,
     prepared: state.prepared || Boolean(order.hasServedFood),
     beverageHandled: state.beverageHandled || Boolean(order.hasServedBeverage),
     hasServedFood: Boolean(order.hasServedFood),
@@ -706,6 +709,7 @@ export function syncRareStateWithOrderServedState(
       prepared: false,
       error: null,
       order: {
+        traceId: order.traceId,
         deskCode: order.deskCode,
         guestId: order.guestId,
         guestName: order.guestName,
@@ -760,9 +764,10 @@ export function applyRareServedStateFromResponse(
  * 将 Mod 订单处理响应格式化为用户可读的多行文本。
  */
 export function formatOrderPreparationResponse(response: OrderPreparationResponse) {
+  const traceSuffix = response.order.traceId ? ` · 日志 ${response.order.traceId}` : '';
   const title = response.ok
-    ? `已处理：${response.order.guestName} · 桌 ${formatDesk(response.order.deskCode)}`
-    : `未完成：${response.order.guestName || '当前订单'} · 桌 ${formatDesk(response.order.deskCode)}`;
+    ? `已处理：${response.order.guestName} · 桌 ${formatDesk(response.order.deskCode)}${traceSuffix}`
+    : `未完成：${response.order.guestName || '当前订单'} · 桌 ${formatDesk(response.order.deskCode)}${traceSuffix}`;
   const target = [
     response.recipeName ? `料理 ${response.recipeName}` : '',
     response.beverageName ? `酒水 ${response.beverageName}` : '',
@@ -844,6 +849,7 @@ function buildNormalAutoOrderDiagnostic(
 ): NormalAutoOrderDiagnostic {
   return {
     orderKey: buildNormalAutoOrderKey(order),
+    traceId: order.traceId,
     title: `桌 ${formatDesk(order.deskCode)} · ${order.foodName || `#${order.foodId}`}`,
     foodName: order.foodName || `#${order.foodId}`,
     beverageName: order.beverageName || `#${order.beverageId}`,
@@ -854,6 +860,8 @@ function buildNormalAutoOrderDiagnostic(
     retryCount: state.retryCount,
     rollbackCount: state.rollbackCount,
     lastError: state.lastError,
+    detailMessage: state.detailMessage,
+    detailUpdatedAtMs: state.detailUpdatedAtMs,
     prepared: state.prepared || isNormalOrderCollected(order, state),
     beverageHandled: state.beverageHandled || order.hasServedBeverage,
     collected: isNormalOrderCollected(order, state),

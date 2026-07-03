@@ -211,6 +211,7 @@ public sealed class RuntimeNormalOrderSnapshotService
             .FirstOrDefault(IsSpecificNormalGuestName) ?? first.GuestName;
         return new NormalBusinessOrder
         {
+            TraceId = first.TraceId,
             OrderKey = first.OrderKey,
             DeskCode = first.DeskCode,
             GuestName = guestName,
@@ -242,8 +243,23 @@ public sealed class RuntimeNormalOrderSnapshotService
 
     private static NormalBusinessOrder CopyWithFirstSeen(NormalBusinessOrder order, DateTime firstSeenAtUtc)
     {
+        var traceOrder = new NormalBusinessOrder
+        {
+            OrderKey = order.OrderKey,
+            DeskCode = order.DeskCode,
+            GuestName = order.GuestName,
+            FoodId = order.FoodId,
+            FoodName = order.FoodName,
+            BeverageId = order.BeverageId,
+            BeverageName = order.BeverageName,
+            FirstSeenAtUtc = firstSeenAtUtc,
+        };
+
         return new NormalBusinessOrder
         {
+            TraceId = string.IsNullOrWhiteSpace(order.TraceId)
+                ? RuntimeOrderTraceIdService.GetNormalTraceId(traceOrder)
+                : order.TraceId,
             OrderKey = order.OrderKey,
             DeskCode = order.DeskCode,
             GuestName = order.GuestName,

@@ -242,6 +242,7 @@ BepInEx/plugins/
 - 可打开总日志目录。
 - 可导出诊断包。
 - 总日志默认关闭，开启后统一记录 BepInEx/Unity 事件、自动化、经营诊断和运行时数据诊断。
+- 经营中页订单和自动化状态中的 `日志 R-0001` / `日志 N-0001` 对应总日志里的 `trace=R-0001` / `trace=N-0001`，排查单笔订单时优先按这个标识搜索。
 - 单个总日志文件达到 10 MB 后会拆分新文件；默认保留 30 个文件，约 300 MB，可在日志页调整。
 
 ## 推荐与排序规则
@@ -461,7 +462,7 @@ BepInEx/config/MystiaStewardCompanion/aggregate-mod.log
 3. 复现问题。
 4. 导出诊断包，或提供 `aggregate-mod.log` 当前文件和相关分片。
 
-总日志默认关闭。开启后会监听 BepInEx 的所有日志源，每条记录带时间、级别、来源和线程标注，并写入 `BepInEx/config/MystiaStewardCompanion/aggregate-mod.log`。自动化动作、经营扫描候选、运行时固定数据快照都会以不同 channel 写入同一组总日志文件。单个文件达到 10 MB 后会拆分为 `aggregate-mod.1.log`、`aggregate-mod.2.log` 等递增文件；默认保留 30 个文件，约 300 MB，可在日志页或 `Diagnostics.AggregateModLogMaxFileCount` 调整。排查结束后建议关闭，避免长期写入占用磁盘。
+总日志默认关闭。开启后会监听 BepInEx 的所有日志源，每条记录带时间、级别、来源和线程标注，并写入 `BepInEx/config/MystiaStewardCompanion/aggregate-mod.log`。自动化动作、经营扫描候选、运行时固定数据快照都会以不同 channel 写入同一组总日志文件。订单相关自动化日志会带 `trace=` 字段；该字段与经营中页显示的订单日志标识一致。单个文件达到 10 MB 后会拆分为 `aggregate-mod.1.log`、`aggregate-mod.2.log` 等递增文件；默认保留 30 个文件，约 300 MB，可在日志页或 `Diagnostics.AggregateModLogMaxFileCount` 调整。排查结束后建议关闭，避免长期写入占用磁盘。
 
 ## 故障排查
 

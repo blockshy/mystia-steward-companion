@@ -29,6 +29,7 @@ internal sealed class AutomationRuntimeEvent
     public long Sequence { get; init; }
     public DateTime CreatedAtUtc { get; init; }
     public string Code { get; init; } = "";
+    public string TraceId { get; init; } = "";
     public string TargetKind { get; init; } = "";
     public string OrderKey { get; init; } = "";
     public int DeskCode { get; init; } = -1;

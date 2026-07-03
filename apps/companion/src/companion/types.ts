@@ -68,6 +68,7 @@ export interface NightBusinessGuest {
  * 夜间经营稀客订单快照。
  */
 export interface NightBusinessOrder {
+  traceId?: string;
   deskCode: number;
   guestId: number | null;
   guestName: string;
@@ -141,6 +142,7 @@ export interface RuntimeMissionContext {
  * 夜间经营中的普客订单快照。
  */
 export interface NormalBusinessOrder {
+  traceId?: string;
   orderKey?: string;
   deskCode: number;
   guestName: string;
@@ -212,6 +214,7 @@ export interface AutomationRuntimeEvent {
   sequence: number;
   createdAtUtc: string;
   code: 'cooking-mismatch-stored' | 'food-delivered' | string;
+  traceId?: string;
   targetKind: 'rare' | 'normal' | string;
   orderKey?: string;
   deskCode: number;
@@ -506,6 +509,7 @@ export interface GameUiPinningTarget {
 
 export interface RareAutoOrderDiagnostic {
   orderKey: string;
+  traceId?: string;
   title: string;
   foodTag: string;
   beverageTag: string;
@@ -517,6 +521,8 @@ export interface RareAutoOrderDiagnostic {
   retryCount: number;
   rollbackCount: number;
   lastError: string;
+  detailMessage: string;
+  detailUpdatedAtMs: number;
   prepared: boolean;
   beverageHandled: boolean;
   hasServedFood: boolean;
@@ -526,6 +532,7 @@ export interface RareAutoOrderDiagnostic {
 
 export interface NormalAutoOrderDiagnostic {
   orderKey: string;
+  traceId?: string;
   title: string;
   foodName: string;
   beverageName: string;
@@ -536,6 +543,8 @@ export interface NormalAutoOrderDiagnostic {
   retryCount: number;
   rollbackCount: number;
   lastError: string;
+  detailMessage: string;
+  detailUpdatedAtMs: number;
   prepared: boolean;
   beverageHandled: boolean;
   collected: boolean;

@@ -982,6 +982,7 @@ internal sealed class NightBusinessReflectionProvider
         }
 
         return bySlot.Values
+            .Select(WithTraceId)
             .OrderBy(order => order.FirstSeenAtUtc ?? DateTime.MaxValue)
             .ThenBy(order => order.LastSeenAtUtc ?? DateTime.MaxValue)
             .ThenBy(order => order.DeskCode)
@@ -989,14 +990,27 @@ internal sealed class NightBusinessReflectionProvider
             .ToList();
     }
 
+    private static NightBusinessOrder WithTraceId(NightBusinessOrder order)
+    {
+        if (!string.IsNullOrWhiteSpace(order.TraceId)) return order;
+        return CopyOrderWithSeenTimes(
+            order,
+            order.FirstSeenAtUtc,
+            order.LastSeenAtUtc,
+            order.IsFreeOrder,
+            RuntimeOrderTraceIdService.GetRareTraceId(order));
+    }
+
     private static NightBusinessOrder CopyOrderWithSeenTimes(
         NightBusinessOrder order,
         DateTime? firstSeenAtUtc,
         DateTime? lastSeenAtUtc,
-        bool isFreeOrder)
+        bool isFreeOrder,
+        string? traceId = null)
     {
         return new NightBusinessOrder
         {
+            TraceId = string.IsNullOrWhiteSpace(traceId) ? order.TraceId : traceId,
             DeskCode = order.DeskCode,
             GuestId = order.GuestId,
             GuestName = order.GuestName,
