@@ -8,14 +8,44 @@ namespace MystiaStewardCompanion.Save;
 
 internal static partial class RuntimeOrderPreparationService
 {
-    private static RuntimeOrderMatch FindRuntimeOrder(OrderPreparationRequest request)
+    private enum RuntimeOrderLookupPurpose
+    {
+        Delivery,
+        NativeEvaluation,
+    }
+
+    private static RuntimeOrderMatch FindRuntimeOrder(
+        OrderPreparationRequest request,
+        RuntimeOrderLookupPurpose purpose = RuntimeOrderLookupPurpose.Delivery)
     {
         var manager = GetSingletonInstance(GuestsManagerTypeName);
         if (manager == null) return new RuntimeOrderMatch();
 
-        var captured = FindCapturedRuntimeOrder(request, manager);
-        if (captured.Order != null && captured.Controller != null)
+        var requiresLiveKoishiBoss = RequiresLiveWackyKoishiBossController(request);
+        var requiresLiveYuyukoPhase3Boss = purpose == RuntimeOrderLookupPurpose.NativeEvaluation
+            && RequiresLiveYuyukoPhase3BossController(request);
+        var requiresYuyukoStoryManualEvaluation = purpose == RuntimeOrderLookupPurpose.NativeEvaluation
+            && RequiresStoryYuyukoPhase3ManualEvaluation(request);
+        var yuyukoManualEvaluationCallbackDiagnostic = "";
+        var yuyukoManualEvaluationCallback = requiresYuyukoStoryManualEvaluation
+            ? FindCapturedYuyukoPhase3ManualEvaluationCallback(request, out yuyukoManualEvaluationCallbackDiagnostic)
+            : null;
+        var captured = requiresLiveKoishiBoss
+            ? new RuntimeOrderMatch { Diagnostic = BuildWackyKoishiCaptureSkippedDiagnostic("capturedSkipped") }
+            : requiresLiveYuyukoPhase3Boss
+                ? new RuntimeOrderMatch
+                {
+                    ManualEvaluationCallback = yuyukoManualEvaluationCallback,
+                    Diagnostic = BuildYuyukoPhase3CaptureSkippedDiagnostic("capturedSkipped")
+                        + (requiresYuyukoStoryManualEvaluation
+                            ? $"; {yuyukoManualEvaluationCallbackDiagnostic}"
+                            : $"; evaluationMode={ResolveYuyukoPhase3EvaluationMode(request)}"),
+                }
+                : FindCapturedRuntimeOrder(request, manager);
+        if (!requiresLiveKoishiBoss && !requiresLiveYuyukoPhase3Boss && captured.Order != null && captured.Controller != null)
         {
+            AppendWackyBossRuntimeDiagnostic("rare-captured-match", request, captured, "accept", captured.Diagnostic);
+            AppendYuyukoRuntimeDiagnostic("rare-captured-match", request, captured, "accept", captured.Diagnostic);
             return captured;
         }
 
@@ -30,24 +60,77 @@ internal static partial class RuntimeOrderPreparationService
                 scannedOrders++;
                 try
                 {
-                    if (!IsMatchingSpecialOrder(order, controller, request)) continue;
+                    if (requiresLiveYuyukoPhase3Boss)
+                    {
+                        if (!IsMatchingYuyukoPhase3EvaluationOrder(order, controller, request, out var yuyukoRejectReason))
+                        {
+                            AppendYuyukoRuntimeDiagnostic(
+                                "yuyuko-live-evaluation-candidate",
+                                request,
+                                new RuntimeOrderMatch { Manager = manager, Controller = controller, Order = order, ManualEvaluationCallback = yuyukoManualEvaluationCallback },
+                                "reject",
+                                yuyukoRejectReason);
+                            continue;
+                        }
+
+                        AppendYuyukoRuntimeDiagnostic(
+                            "yuyuko-live-evaluation-candidate",
+                            request,
+                            new RuntimeOrderMatch { Manager = manager, Controller = controller, Order = order, ManualEvaluationCallback = yuyukoManualEvaluationCallback },
+                            "accept",
+                            yuyukoRejectReason);
+                    }
+                    else if (!IsMatchingSpecialOrder(order, controller, request, out var specialRejectReason))
+                    {
+                        AppendYuyukoRuntimeDiagnostic(
+                            "rare-live-candidate-rejected",
+                            request,
+                            new RuntimeOrderMatch { Manager = manager, Controller = controller, Order = order },
+                            "reject",
+                            specialRejectReason);
+                        continue;
+                    }
                 }
                 catch
                 {
                     continue;
                 }
 
-                return new RuntimeOrderMatch
+                if (requiresLiveKoishiBoss
+                    && !IsExecutableWackyKoishiBossRuntimeOrder(controller, order, out var rejectReason))
+                {
+                    AppendWackyBossRuntimeDiagnostic(
+                        "rare-live-candidate-rejected",
+                        request,
+                        new RuntimeOrderMatch { Manager = manager, Controller = controller, Order = order },
+                        "reject",
+                        rejectReason);
+                    continue;
+                }
+
+                var match = new RuntimeOrderMatch
                 {
                     Manager = manager,
                     Controller = controller,
                     Order = order,
+                    ManualEvaluationCallback = requiresYuyukoStoryManualEvaluation ? yuyukoManualEvaluationCallback : null,
+                    Diagnostic = IsWackyKoishiBossRequest(request)
+                        ? $"{DescribeWackyKoishiExecutionMode(request)}, liveController=ok, scannedControllers={scannedControllers}, scannedOrders={scannedOrders}"
+                        : requiresLiveYuyukoPhase3Boss
+                            ? requiresYuyukoStoryManualEvaluation
+                                ? $"yuyuko phase3 liveController=ok, purpose={purpose}, evaluationMode={ResolveYuyukoPhase3EvaluationMode(request)}, scannedControllers={scannedControllers}, scannedOrders={scannedOrders}, manualCallback={(yuyukoManualEvaluationCallback == null ? "missing" : "captured")}, callbackCapture=({yuyukoManualEvaluationCallbackDiagnostic})"
+                                : $"yuyuko phase3 liveController=ok, purpose={purpose}, evaluationMode={ResolveYuyukoPhase3EvaluationMode(request)}, scannedControllers={scannedControllers}, scannedOrders={scannedOrders}"
+                        : "",
                 };
+                AppendWackyBossRuntimeDiagnostic("rare-live-match", request, match, "accept", match.Diagnostic);
+                AppendYuyukoRuntimeDiagnostic("rare-live-match", request, match, "accept", match.Diagnostic);
+                return match;
             }
         }
 
         return new RuntimeOrderMatch
         {
+            ManualEvaluationCallback = requiresYuyukoStoryManualEvaluation ? yuyukoManualEvaluationCallback : null,
             Diagnostic = $"captured={captured.Diagnostic}, scannedControllers={scannedControllers}, scannedOrders={scannedOrders}",
         };
     }
@@ -60,7 +143,12 @@ internal static partial class RuntimeOrderPreparationService
             return strictMatch;
         }
 
-        if (string.IsNullOrWhiteSpace(request.OrderKey) || request.DeskCode < 0 || request.FoodId < 0 || request.BeverageId < 0)
+        if (RequiresLiveWackyKoishiBossController(request))
+        {
+            return strictMatch;
+        }
+
+        if (string.IsNullOrWhiteSpace(request.OrderKey) || request.DeskCode < 0 || GetNormalMatchFoodId(request) < 0 || GetNormalMatchBeverageId(request) < 0)
         {
             return strictMatch;
         }
@@ -91,6 +179,25 @@ internal static partial class RuntimeOrderPreparationService
         var manager = GetSingletonInstance(GuestsManagerTypeName);
         if (manager == null) return new RuntimeOrderMatch();
 
+        var requiresLiveKoishiBoss = RequiresLiveWackyKoishiBossController(request);
+        var captured = FindCapturedRuntimeNormalOrder(request, manager);
+        if (captured.Order != null && captured.Controller != null)
+        {
+            if (!requiresLiveKoishiBoss
+                || IsExecutableWackyKoishiBossRuntimeOrder(captured.Controller, captured.Order, out var capturedRejectReason))
+            {
+                AppendWackyBossRuntimeDiagnostic("normal-captured-match", request, captured, "accept", captured.Diagnostic);
+                return captured;
+            }
+
+            AppendWackyBossRuntimeDiagnostic(
+                "normal-captured-candidate-rejected",
+                request,
+                captured,
+                "reject",
+                capturedRejectReason);
+        }
+
         var scannedControllers = 0;
         var scannedControllerOrders = 0;
         foreach (var controller in EnumerateGuestControllers(manager))
@@ -102,27 +209,37 @@ internal static partial class RuntimeOrderPreparationService
                 scannedControllerOrders++;
                 try
                 {
-                    if (!IsMatchingNormalOrder(order, request)) continue;
+                    if (!IsMatchingNormalOrder(order, request, controller)) continue;
                 }
                 catch
                 {
                     continue;
                 }
 
-                return new RuntimeOrderMatch
+                if (requiresLiveKoishiBoss
+                    && !IsExecutableWackyKoishiBossRuntimeOrder(controller, order, out var rejectReason))
+                {
+                    AppendWackyBossRuntimeDiagnostic(
+                        "normal-live-candidate-rejected",
+                        request,
+                        new RuntimeOrderMatch { Manager = manager, Controller = controller, Order = order },
+                        "reject",
+                        rejectReason);
+                    continue;
+                }
+
+                var match = new RuntimeOrderMatch
                 {
                     Manager = manager,
                     Controller = controller,
                     Order = order,
-                    Diagnostic = $"controllerOrders={scannedControllerOrders}",
+                    Diagnostic = IsWackyKoishiBossRequest(request)
+                        ? $"{DescribeWackyKoishiExecutionMode(request)}, liveController=ok, controllerOrders={scannedControllerOrders}"
+                        : $"controllerOrders={scannedControllerOrders}",
                 };
+                AppendWackyBossRuntimeDiagnostic("normal-live-match", request, match, "accept", match.Diagnostic);
+                return match;
             }
-        }
-
-        var captured = FindCapturedRuntimeNormalOrder(request, manager);
-        if (captured.Order != null && captured.Controller != null)
-        {
-            return captured;
         }
 
         var scannedUiOrders = 0;
@@ -132,13 +249,35 @@ internal static partial class RuntimeOrderPreparationService
             if (!IsMatchingNormalOrder(order, request)) continue;
 
             var controller = FindControllerForOrder(manager, order, request);
-            return new RuntimeOrderMatch
+            if (controller != null && SpecialBusinessOrderClassifier.Classify(order, controller).BlocksNormalAutomation)
+            {
+                continue;
+            }
+
+            if (requiresLiveKoishiBoss)
+            {
+                var candidate = new RuntimeOrderMatch { Manager = manager, Controller = controller, Order = order };
+                if (!IsExecutableWackyKoishiBossRuntimeOrder(controller, order, out var rejectReason))
+                {
+                    AppendWackyBossRuntimeDiagnostic(
+                        "normal-ui-candidate-rejected",
+                        request,
+                        candidate,
+                        "reject",
+                        rejectReason);
+                    continue;
+                }
+            }
+
+            var match = new RuntimeOrderMatch
             {
                 Manager = manager,
                 Controller = controller,
                 Order = order,
                 Diagnostic = $"controllers={scannedControllers}, controllerOrders={scannedControllerOrders}, captured=({captured.Diagnostic}), uiOrders={scannedUiOrders}, uiController={(controller == null ? "missing" : "ok")}",
             };
+            AppendWackyBossRuntimeDiagnostic("normal-ui-match", request, match, "accept", match.Diagnostic);
+            return match;
         }
 
         return new RuntimeOrderMatch
@@ -151,15 +290,22 @@ internal static partial class RuntimeOrderPreparationService
     {
         return new OrderPreparationRequest
         {
+            TraceId = request.TraceId,
             DeskCode = request.DeskCode,
             GuestId = request.GuestId,
             GuestName = request.GuestName,
+            SpecialBusinessRole = request.SpecialBusinessRole,
             FoodTag = request.FoodTag,
             BeverageTag = request.BeverageTag,
+            MatchFoodId = request.MatchFoodId,
+            MatchBeverageId = request.MatchBeverageId,
             FoodId = request.FoodId,
             RecipeId = request.RecipeId,
             RecipeName = request.RecipeName,
             ExtraIngredientIds = request.ExtraIngredientIds,
+            PredictedFoodTags = request.PredictedFoodTags,
+            WackyTargetFoodTags = request.WackyTargetFoodTags,
+            ExecutionReason = request.ExecutionReason,
             BeverageId = request.BeverageId,
             BeverageName = request.BeverageName,
             AutoTakeBeverage = request.AutoTakeBeverage,
@@ -229,7 +375,7 @@ internal static partial class RuntimeOrderPreparationService
         {
             if (controller == null) continue;
             if (ToInt(ReadMember(controller, "DeskCode") ?? TryInvokeInstanceValue(controller, "get_DeskCode"), -999) != request.DeskCode) continue;
-            if (EnumerateControllerOrders(controller).Any(candidate => IsMatchingNormalOrder(candidate, request)))
+            if (EnumerateControllerOrders(controller).Any(candidate => IsMatchingNormalOrder(candidate, request, controller)))
             {
                 return controller;
             }
@@ -238,9 +384,10 @@ internal static partial class RuntimeOrderPreparationService
         return null;
     }
 
-    private static bool IsMatchingNormalOrder(object order, OrderPreparationRequest request)
+    private static bool IsMatchingNormalOrder(object order, OrderPreparationRequest request, object? controller = null)
     {
         if (!IsNormalOrder(order)) return false;
+        if (SpecialBusinessOrderClassifier.Classify(order, controller).BlocksNormalAutomation) return false;
         if (!string.IsNullOrWhiteSpace(request.OrderKey)
             && !string.Equals(BuildRuntimeOrderKey(order), request.OrderKey, StringComparison.Ordinal))
         {
@@ -250,9 +397,21 @@ internal static partial class RuntimeOrderPreparationService
         var deskCode = ToInt(ReadMember(order, "DeskCode") ?? TryInvokeInstanceValue(order, "get_DeskCode"), -999);
         if (request.DeskCode >= 0 && deskCode != request.DeskCode) return false;
 
-        if (request.FoodId >= 0 && ReadNormalFoodId(order) != request.FoodId) return false;
-        if (request.BeverageId >= 0 && ReadNormalBeverageId(order) != request.BeverageId) return false;
+        var matchFoodId = GetNormalMatchFoodId(request);
+        var matchBeverageId = GetNormalMatchBeverageId(request);
+        if (matchFoodId >= 0 && ReadNormalFoodId(order) != matchFoodId) return false;
+        if (matchBeverageId >= 0 && ReadNormalBeverageId(order) != matchBeverageId) return false;
         return true;
+    }
+
+    private static int GetNormalMatchFoodId(OrderPreparationRequest request)
+    {
+        return request.MatchFoodId >= 0 ? request.MatchFoodId : request.FoodId;
+    }
+
+    private static int GetNormalMatchBeverageId(OrderPreparationRequest request)
+    {
+        return request.MatchBeverageId >= 0 ? request.MatchBeverageId : request.BeverageId;
     }
 
     private static string BuildRuntimeOrderKey(object order)
@@ -341,7 +500,8 @@ internal static partial class RuntimeOrderPreparationService
                 Manager = manager,
                 Controller = captured.ControllerObject,
                 Order = captured.OrderObject,
-                Diagnostic = $"capturedCandidates={candidates.Count}, score={candidate.Score}, source={captured.CaptureSource}",
+                ManualEvaluationCallback = captured.ManualEvaluationCallback,
+                Diagnostic = $"capturedCandidates={candidates.Count}, score={candidate.Score}, source={captured.CaptureSource}, manualCallback={(captured.ManualEvaluationCallback == null ? "missing" : "captured")}",
             };
         }
 
@@ -349,6 +509,34 @@ internal static partial class RuntimeOrderPreparationService
         {
             Diagnostic = $"capturedCandidates={candidates.Count}, capturedTotal={capturedOrders.Count}, captured=[{FormatCapturedOrderSummary(capturedOrders)}]",
         };
+    }
+
+    private static object? FindCapturedYuyukoPhase3ManualEvaluationCallback(
+        OrderPreparationRequest request,
+        out string diagnostic)
+    {
+        var capturedOrders = SpecialOrderRuntimeCapture.Snapshot(TimeSpan.FromHours(6));
+        var candidates = capturedOrders
+            .Select(captured => new
+            {
+                Order = captured,
+                Score = ScoreCapturedOrder(captured, request),
+            })
+            .Where(candidate => candidate.Score > 0)
+            .OrderByDescending(candidate => candidate.Score)
+            .ThenBy(candidate => candidate.Order.FirstCapturedAt)
+            .ThenBy(candidate => candidate.Order.CapturedAt)
+            .ToList();
+        var callbackCandidate = candidates.FirstOrDefault(candidate => candidate.Order.ManualEvaluationCallback != null);
+        if (callbackCandidate == null)
+        {
+            diagnostic = $"manualCallback=missing, capturedCandidates={candidates.Count}, capturedTotal={capturedOrders.Count}, captured=[{FormatCapturedOrderSummary(capturedOrders)}]";
+            return null;
+        }
+
+        var callback = callbackCandidate.Order.ManualEvaluationCallback;
+        diagnostic = $"manualCallback=captured, capturedCandidates={candidates.Count}, score={callbackCandidate.Score}, source={callbackCandidate.Order.CaptureSource}, callback={YuyukoChallengeEvaluationTracker.DescribeCallback(callback)}";
+        return callback;
     }
 
     private static RuntimeOrderMatch FindCapturedRuntimeNormalOrder(OrderPreparationRequest request, object manager)
@@ -373,7 +561,7 @@ internal static partial class RuntimeOrderPreparationService
 
             try
             {
-                if (!IsMatchingNormalOrder(captured.OrderObject, request)) continue;
+                if (!IsMatchingNormalOrder(captured.OrderObject, request, captured.ControllerObject)) continue;
             }
             catch
             {
@@ -410,14 +598,16 @@ internal static partial class RuntimeOrderPreparationService
             score += request.DeskCode == captured.DeskCode ? 12 : -8;
         }
 
-        if (request.FoodId >= 0 && captured.FoodId >= 0)
+        var matchFoodId = GetNormalMatchFoodId(request);
+        var matchBeverageId = GetNormalMatchBeverageId(request);
+        if (matchFoodId >= 0 && captured.FoodId >= 0)
         {
-            score += request.FoodId == captured.FoodId ? 8 : -4;
+            score += matchFoodId == captured.FoodId ? 8 : -4;
         }
 
-        if (request.BeverageId >= 0 && captured.BeverageId >= 0)
+        if (matchBeverageId >= 0 && captured.BeverageId >= 0)
         {
-            score += request.BeverageId == captured.BeverageId ? 8 : -4;
+            score += matchBeverageId == captured.BeverageId ? 8 : -4;
         }
 
         return score >= 16 ? score : 0;
@@ -466,12 +656,14 @@ internal static partial class RuntimeOrderPreparationService
 
         if (!string.IsNullOrWhiteSpace(request.FoodTag) && !string.IsNullOrWhiteSpace(captured.FoodTag))
         {
-            score += TextMatches(captured.FoodTag, request.FoodTag) ? 3 : -2;
+            if (!TextMatches(captured.FoodTag, request.FoodTag)) return 0;
+            score += 3;
         }
 
         if (!string.IsNullOrWhiteSpace(request.BeverageTag) && !string.IsNullOrWhiteSpace(captured.BeverageTag))
         {
-            score += TextMatches(captured.BeverageTag, request.BeverageTag) ? 3 : -2;
+            if (!TextMatches(captured.BeverageTag, request.BeverageTag)) return 0;
+            score += 3;
         }
 
         return score >= (deskMatched ? 8 : 12) ? score : 0;
@@ -487,13 +679,54 @@ internal static partial class RuntimeOrderPreparationService
             || right.Contains(left, StringComparison.Ordinal);
     }
 
+    private static bool SpecialOrderTagsMatch(object order, OrderPreparationRequest request, out string rejectReason)
+    {
+        rejectReason = "";
+        if (!string.IsNullOrWhiteSpace(request.FoodTag))
+        {
+            var orderFoodTag = ReadSpecialOrderTagText(order, isFood: true);
+            if (!string.IsNullOrWhiteSpace(orderFoodTag) && !TextMatches(orderFoodTag, request.FoodTag))
+            {
+                rejectReason = $"food tag mismatch order={orderFoodTag}, expected={request.FoodTag}";
+                return false;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.BeverageTag))
+        {
+            var orderBeverageTag = ReadSpecialOrderTagText(order, isFood: false);
+            if (!string.IsNullOrWhiteSpace(orderBeverageTag) && !TextMatches(orderBeverageTag, request.BeverageTag))
+            {
+                rejectReason = $"beverage tag mismatch order={orderBeverageTag}, expected={request.BeverageTag}";
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static string ReadSpecialOrderTagText(object order, bool isFood)
+    {
+        var memberName = isFood ? "RequestFoodTag" : "RequestBeverageTag";
+        var raw = ReadMember(order, memberName) ?? TryInvokeInstanceValue(order, $"get_{memberName}");
+        var tagId = ToInt(raw, int.MinValue);
+        if (tagId != int.MinValue)
+        {
+            var tagName = isFood ? TryReadFoodTagName(tagId) : TryReadBeverageTagName(tagId);
+            if (!string.IsNullOrWhiteSpace(tagName)) return tagName;
+        }
+
+        var textMember = isFood ? "ReqFoodTag" : "ReqBevTag";
+        return ReadMember(order, textMember)?.ToString()?.Trim() ?? "";
+    }
+
     private static string FormatCapturedOrderSummary(IReadOnlyList<CapturedRuntimeSpecialOrder> capturedOrders)
     {
         if (capturedOrders.Count == 0) return "";
 
         var items = capturedOrders
             .Take(4)
-            .Select(order => $"desk={order.DeskCode + 1},guest={order.GuestName}/{order.GuestId?.ToString() ?? ""},food={order.FoodTag},bev={order.BeverageTag},source={order.CaptureSource},obj={(order.OrderObject == null ? "no" : "yes")}/{(order.ControllerObject == null ? "no" : "yes")}")
+            .Select(order => $"desk={order.DeskCode + 1},guest={order.GuestName}/{order.GuestId?.ToString() ?? ""},food={order.FoodTag},bev={order.BeverageTag},source={order.CaptureSource},obj={(order.OrderObject == null ? "no" : "yes")}/{(order.ControllerObject == null ? "no" : "yes")},manualCallback={(order.ManualEvaluationCallback == null ? "no" : "yes")}")
             .ToArray();
         var suffix = capturedOrders.Count > items.Length ? $" ... total={capturedOrders.Count}" : "";
         return string.Join("; ", items) + suffix;
@@ -529,6 +762,43 @@ internal static partial class RuntimeOrderPreparationService
                 if (!seen.Add(pointer)) continue;
                 yield return controller;
             }
+        }
+
+        foreach (var controller in EnumerateManualControlledGuestControllers())
+        {
+            nint pointer;
+            try
+            {
+                pointer = ReadObjectPointer(controller);
+            }
+            catch
+            {
+                continue;
+            }
+
+            if (!seen.Add(pointer)) continue;
+            yield return controller;
+        }
+    }
+
+    private static IEnumerable<object> EnumerateManualControlledGuestControllers()
+    {
+        var director = GetSingletonInstance(NightSceneDirectorTypeName);
+        if (director == null) yield break;
+
+        foreach (var item in ReadObjectEnumerable(ReadMember(director, "controlledGuest")))
+        {
+            object? controller;
+            try
+            {
+                controller = NormalizeDictionaryItem(item);
+            }
+            catch
+            {
+                continue;
+            }
+
+            if (controller != null) yield return controller;
         }
     }
 
@@ -578,15 +848,22 @@ internal static partial class RuntimeOrderPreparationService
         return ReadMember(item, "Value") ?? item;
     }
 
-    private static bool IsMatchingSpecialOrder(object order, object controller, OrderPreparationRequest request)
+    private static bool IsMatchingSpecialOrder(
+        object order,
+        object controller,
+        OrderPreparationRequest request,
+        out string rejectReason)
     {
+        rejectReason = "";
         if (ToInt(ReadMember(order, "DeskCode") ?? TryInvokeInstanceValue(order, "get_DeskCode")) != request.DeskCode)
         {
+            rejectReason = "desk mismatch";
             return false;
         }
 
         if (!IsSpecialOrder(order))
         {
+            rejectReason = "not special order";
             return false;
         }
 
@@ -596,11 +873,118 @@ internal static partial class RuntimeOrderPreparationService
             var controllerGuestId = ReadGuestId(ReadMember(controller, "SpecialGuest") ?? TryInvokeInstanceValue(controller, "get_SpecialGuest"));
             if (orderGuestId != request.GuestId.Value && controllerGuestId != request.GuestId.Value)
             {
+                rejectReason = $"guest mismatch order={orderGuestId}, controller={controllerGuestId}, expected={request.GuestId.Value}";
                 return false;
             }
         }
 
+        if (!SpecialOrderTagsMatch(order, request, out rejectReason))
+        {
+            return false;
+        }
+
         return true;
+    }
+
+    private static bool IsMatchingYuyukoPhase3EvaluationOrder(
+        object order,
+        object controller,
+        OrderPreparationRequest request,
+        out string rejectReason)
+    {
+        rejectReason = "";
+        if (ToInt(ReadMember(order, "DeskCode") ?? TryInvokeInstanceValue(order, "get_DeskCode")) != request.DeskCode)
+        {
+            rejectReason = "desk mismatch";
+            return false;
+        }
+
+        if (!IsSpecialOrder(order))
+        {
+            rejectReason = "not special order";
+            return false;
+        }
+
+        var orderGuestId = ReadGuestId(ReadMember(order, "SpecialGuests") ?? TryInvokeInstanceValue(order, "get_SpecialGuests"));
+        var controllerGuestId = ReadGuestId(ReadMember(controller, "SpecialGuest") ?? TryInvokeInstanceValue(controller, "get_SpecialGuest"));
+        var hasReadableGuest = orderGuestId >= 0 || controllerGuestId >= 0;
+        if (request.GuestId.HasValue
+            && hasReadableGuest
+            && orderGuestId != request.GuestId.Value
+            && controllerGuestId != request.GuestId.Value)
+        {
+            rejectReason = $"guest mismatch order={orderGuestId}, controller={controllerGuestId}, expected={request.GuestId.Value}";
+            return false;
+        }
+
+        if (!SpecialOrderTagsMatch(order, request, out rejectReason))
+        {
+            return false;
+        }
+
+        var evaluationCallback = ReadControllerCallback(controller, "OverrideEvaluationCallback");
+        if (evaluationCallback == null)
+        {
+            rejectReason = "OverrideEvaluationCallback missing";
+            return false;
+        }
+
+        var servedFood = ReadOrderServedFood(order);
+        if (!ServedYuyukoPhase3TargetMatches(servedFood, sellableType: 0, request.FoodId, "food", out rejectReason))
+        {
+            return false;
+        }
+
+        var servedBeverage = ReadOrderServedBeverage(order);
+        if (!ServedYuyukoPhase3TargetMatches(servedBeverage, sellableType: 1, request.BeverageId, "beverage", out rejectReason))
+        {
+            return false;
+        }
+
+        var orderFullfilled = ReadBool(TryInvokeInstanceValue(order, "get_IsFullfilled") ?? ReadMember(order, "IsFullfilled"));
+        var servedFoodLevel = ReadSellableLevel(servedFood);
+        var servedBeverageLevel = ReadSellableLevel(servedBeverage);
+        var levelSum = servedFoodLevel >= 0 && servedBeverageLevel >= 0
+            ? (servedFoodLevel + servedBeverageLevel).ToString()
+            : "";
+        rejectReason = $"yuyuko phase3 evaluation signature matched; guestReadable={hasReadableGuest}; orderGuest={orderGuestId}; controllerGuest={controllerGuestId}; callback=present; fulfilled={orderFullfilled}; servedFood={FormatYuyukoServedTarget(servedFood)}; servedBeverage={FormatYuyukoServedTarget(servedBeverage)}; servedLevelSum={levelSum}";
+        return true;
+    }
+
+    private static bool ServedYuyukoPhase3TargetMatches(
+        object? sellable,
+        int sellableType,
+        int expectedId,
+        string label,
+        out string rejectReason)
+    {
+        rejectReason = "";
+        if (sellable == null || expectedId < 0)
+        {
+            return true;
+        }
+
+        if (!TryReadSellableIdentity(sellable, out var actualType, out var actualId))
+        {
+            rejectReason = $"served {label} identity unavailable";
+            return false;
+        }
+
+        if (actualType != sellableType || actualId != expectedId)
+        {
+            rejectReason = $"served {label} mismatch actual={actualType}/{actualId}, expected={sellableType}/{expectedId}";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static string FormatYuyukoServedTarget(object? sellable)
+    {
+        if (sellable == null) return "null";
+        return TryReadSellableIdentity(sellable, out var sellableType, out var id)
+            ? $"{sellableType}/{id}"
+            : SpecialBusinessDiagnostics.DescribeObject(sellable);
     }
 
     private static bool IsSpecialOrder(object order)
@@ -630,6 +1014,7 @@ internal static partial class RuntimeOrderPreparationService
         public object? Manager { get; init; }
         public object? Controller { get; init; }
         public object? Order { get; init; }
+        public object? ManualEvaluationCallback { get; init; }
         public string Diagnostic { get; init; } = "";
     }
 }

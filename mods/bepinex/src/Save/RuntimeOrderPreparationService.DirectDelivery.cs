@@ -1,4 +1,6 @@
+using MystiaStewardCompanion.Core;
 using MystiaStewardCompanion.LocalApi;
+using System.Reflection;
 
 namespace MystiaStewardCompanion.Save;
 
@@ -60,10 +62,28 @@ internal static partial class RuntimeOrderPreparationService
         return item != null && ReadSellableType(item) == sellableType && ReadSellableId(item) == id;
     }
 
+    private static bool IsFoodSellable(object? item)
+    {
+        return TryReadSellableIdentity(item, out var sellableType, out var id)
+            && sellableType == 0
+            && id >= 0;
+    }
+
+    private static bool TryReadSellableIdentity(object? item, out int sellableType, out int id)
+    {
+        sellableType = -1;
+        id = -1;
+        if (item == null) return false;
+
+        sellableType = ReadSellableType(item);
+        id = ReadSellableId(item);
+        return sellableType >= 0 && id >= 0;
+    }
+
     private static int ReadSellableType(object item)
     {
         var value = TryInvokeInstanceValue(item, "get_Type") ?? ReadMember(item, "Type");
-        return ToInt(value);
+        return ToInt(value, -1);
     }
 
     private static int ReadSellableId(object item)
@@ -72,7 +92,7 @@ internal static partial class RuntimeOrderPreparationService
             ?? TryInvokeInstanceValue(item, "get_Id")
             ?? ReadMember(item, "id")
             ?? ReadMember(item, "Id");
-        return ToInt(value);
+        return ToInt(value, -1);
     }
 
     /// <summary>
@@ -88,23 +108,163 @@ internal static partial class RuntimeOrderPreparationService
         {
             var actualFoodId = ReadSellableId(cookedFood);
             var actualText = actualFoodId >= 0 ? $"料理 #{actualFoodId}" : "未知成品";
+            var actualFoodTags = ReadFoodTagNames(cookedFood).ToArray();
+            var activeTargetTags = target.WackyTargetFoodTags;
+            AppendWackyPendingDiagnostic(
+                "cooked-food-id-mismatch",
+                pending,
+                "store-mismatched-food",
+                actualFoodId,
+                activeTargetTags,
+                actualFoodTags,
+                $"actual={actualText}; expected={target.FoodName}({target.FoodId})");
             if (TryStoreMismatchedCookResultInWarmer(pending, cookedFood, actualFoodId, out var storeMessage))
             {
                 var mismatchMessage = $"{pending.RecipeName} 已完成，但成品 {actualText} 不是目标料理 {target.FoodName}（料理 #{target.FoodId}），已放入保温箱并释放该自动化待办，将在下一轮重试目标料理。{storeMessage}";
+                AppendWackyPendingDiagnostic(
+                    "cooked-food-id-mismatch-stored",
+                    pending,
+                    "stored-in-warmer",
+                    actualFoodId,
+                    activeTargetTags,
+                    actualFoodTags,
+                    storeMessage);
                 RecordAutomationRuntimeEvent(
                     OrderPreparationStepCodes.CookingMismatchStored,
                     target,
                     mismatchMessage,
-                    actualFoodId);
+                    actualFoodId,
+                    actualFoodTags: actualFoodTags);
                 return (
                     true,
                     mismatchMessage,
                     OrderPreparationStepCodes.CookingMismatchStored);
             }
 
+            AppendWackyPendingDiagnostic(
+                "cooked-food-id-mismatch-store-failed",
+                pending,
+                "keep-on-cooker",
+                actualFoodId,
+                activeTargetTags,
+                actualFoodTags,
+                storeMessage);
             return ShouldStopPendingDirectDelivery(
                 pending,
                 $"{pending.RecipeName} 已完成，但成品 {actualText} 不是目标料理 {target.FoodName}（料理 #{target.FoodId}），且写入保温箱失败：{storeMessage}");
+        }
+
+        if (TryDetectWackyTargetSignatureChanged(pending, out var originalTargetSignature, out var currentTargetSignature, out var originalTargetTags, out var currentTargetTags))
+        {
+            var actualFoodId = ReadSellableId(cookedFood);
+            var actualTagsForSignature = ReadFoodTagNames(cookedFood).ToArray();
+            var signatureMessage = $"{pending.RecipeName} 已完成，但怪诞料理目标已变化：开锅时 {FormatWackyTargetForMessage(originalTargetSignature, originalTargetTags)}，当前 {FormatWackyTargetForMessage(currentTargetSignature, currentTargetTags)}";
+            AppendWackyPendingDiagnostic(
+                "wacky-target-signature-changed",
+                pending,
+                "store-stale-target",
+                actualFoodId,
+                currentTargetTags,
+                actualTagsForSignature,
+                signatureMessage);
+            if (TryStoreMismatchedCookResultInWarmer(pending, cookedFood, actualFoodId, out var signatureStoreMessage))
+            {
+                var staleMessage = $"{signatureMessage}，已放入保温箱并释放该自动化待办，将在下一轮按当前目标重新推荐并开锅。{signatureStoreMessage}";
+                AppendWackyPendingDiagnostic(
+                    "wacky-target-signature-changed-stored",
+                    pending,
+                    "stored-in-warmer",
+                    actualFoodId,
+                    currentTargetTags,
+                    actualTagsForSignature,
+                    signatureStoreMessage);
+                RecordAutomationRuntimeEvent(
+                    OrderPreparationStepCodes.CookingMismatchStored,
+                    target,
+                    staleMessage,
+                    actualFoodId,
+                    currentTargetTags,
+                    actualTagsForSignature);
+                return (
+                    true,
+                    staleMessage,
+                    OrderPreparationStepCodes.CookingMismatchStored);
+            }
+
+            AppendWackyPendingDiagnostic(
+                "wacky-target-signature-changed-store-failed",
+                pending,
+                "keep-on-cooker",
+                actualFoodId,
+                currentTargetTags,
+                actualTagsForSignature,
+                signatureStoreMessage);
+            return ShouldStopPendingDirectDelivery(
+                pending,
+                $"{signatureMessage}，且写入保温箱失败：{signatureStoreMessage}");
+        }
+
+        var hasWackyTargetTags = TryDetectWackyTagMismatch(target, cookedFood, out var targetTags, out var actualTags);
+        if (hasWackyTargetTags)
+        {
+            var actualFoodId = ReadSellableId(cookedFood);
+            var tagMessage = $"{pending.RecipeName} 已完成，但成品 Tag（{string.Join("、", actualTags)}）不含当前怪诞料理目标 Tag（{string.Join("、", targetTags)}）";
+            AppendWackyPendingDiagnostic(
+                "cooked-food-tag-mismatch",
+                pending,
+                "store-tag-mismatch",
+                actualFoodId,
+                targetTags,
+                actualTags,
+                tagMessage);
+            if (TryStoreMismatchedCookResultInWarmer(pending, cookedFood, actualFoodId, out var wackyStoreMessage))
+            {
+                var wackyMessage = $"{tagMessage}，已放入保温箱并释放该自动化待办，将在下一轮按新目标重试。{wackyStoreMessage}";
+                AppendWackyPendingDiagnostic(
+                    "cooked-food-tag-mismatch-stored",
+                    pending,
+                    "stored-in-warmer",
+                    actualFoodId,
+                    targetTags,
+                    actualTags,
+                    wackyStoreMessage);
+                RememberRecentWackyRejectedRecipe(target, targetTags);
+                RecordAutomationRuntimeEvent(
+                    OrderPreparationStepCodes.CookingMismatchStored,
+                    target,
+                    wackyMessage,
+                    actualFoodId,
+                    targetTags,
+                    actualTags);
+                return (
+                    true,
+                    wackyMessage,
+                    OrderPreparationStepCodes.CookingMismatchStored);
+            }
+
+            AppendWackyPendingDiagnostic(
+                "cooked-food-tag-mismatch-store-failed",
+                pending,
+                "keep-on-cooker",
+                actualFoodId,
+                targetTags,
+                actualTags,
+                wackyStoreMessage);
+            return ShouldStopPendingDirectDelivery(
+                pending,
+                $"{tagMessage}，且写入保温箱失败：{wackyStoreMessage}");
+        }
+
+        if (targetTags.Count > 0)
+        {
+            AppendWackyPendingDiagnostic(
+                "cooked-food-tag-match",
+                pending,
+                "continue-delivery",
+                ReadSellableId(cookedFood),
+                targetTags,
+                actualTags,
+                "cooked food tags matched active wacky target tags");
         }
 
         var request = BuildOrderRequestFromCookingTarget(target);
@@ -113,13 +273,23 @@ internal static partial class RuntimeOrderPreparationService
             : FindRuntimeOrder(request);
         if (runtimeOrder.Order == null || runtimeOrder.Manager == null)
         {
-            return ShouldStopPendingDirectDelivery(pending, $"未找到目标订单对象。{runtimeOrder.Diagnostic}");
+            return HandleUndeliverableCookedFood(
+                pending,
+                cookedFood,
+                PendingDeliveryFailureKind.MissingOrder,
+                $"未找到目标订单对象。{runtimeOrder.Diagnostic}");
         }
 
         if (runtimeOrder.Controller == null)
         {
-            return ShouldStopPendingDirectDelivery(pending, $"已找到目标订单，但未读取到可执行客人控制器；该订单可能只残留在 HUD 中。{runtimeOrder.Diagnostic}");
+            return HandleUndeliverableCookedFood(
+                pending,
+                cookedFood,
+                PendingDeliveryFailureKind.MissingController,
+                $"已找到目标订单，但未读取到可执行客人控制器；该订单可能只残留在 HUD 中。{runtimeOrder.Diagnostic}");
         }
+
+        pending.ResetDeliveryFailures();
 
         if (ReadOrderServedFood(runtimeOrder.Order) != null)
         {
@@ -131,6 +301,25 @@ internal static partial class RuntimeOrderPreparationService
         if (pendingFood != null && !IsSellable(pendingFood, sellableType: 0, id: target.FoodId))
         {
             return ShouldStopPendingDirectDelivery(pending, "订单已有其他待送达料理，暂不覆盖。");
+        }
+
+        if (IsWackyKoishiBossTarget(target))
+        {
+            AppendWackyBossRuntimeDiagnostic(
+                "pending-food-delivery-before",
+                request,
+                runtimeOrder,
+                "commit-food",
+                $"food={target.FoodName}; cookedFood={SpecialBusinessDiagnostics.DescribeObject(cookedFood)}");
+        }
+        if (IsYuyukoBossTarget(target))
+        {
+            AppendYuyukoRuntimeDiagnostic(
+                "pending-food-delivery-before",
+                request,
+                runtimeOrder,
+                "commit-food",
+                $"food={target.FoodName}; cookedFood={SpecialBusinessDiagnostics.DescribeObject(cookedFood)}");
         }
 
         var delivery = TryCommitRuntimeDelivery(runtimeOrder, cookedFood, RuntimeDeliveryItemKind.Food, target.FoodName);
@@ -145,9 +334,26 @@ internal static partial class RuntimeOrderPreparationService
             : "";
         var label = target.Kind == CookingCollectionTargetKind.NormalOrder ? "普客订单" : "稀客订单";
         var evaluationSuffix = "";
-        if (target.Kind == CookingCollectionTargetKind.NormalOrder && target.AutoCompleteOrder)
+        if (RequiresNativeWackyKoishiBossEvaluationEntry(request))
         {
-            var evaluation = TryEvaluateRuntimeOrderIfReady(runtimeOrder, "当前普客订单", allowControllerMissing: true);
+            var evaluation = TryEvaluateWackyKoishiBossRuntimeOrderIfReady(request, runtimeOrder, $"当前{label}");
+            evaluationSuffix = string.IsNullOrWhiteSpace(evaluation.Message) ? "" : evaluation.Message;
+        }
+        else if (target.Kind == CookingCollectionTargetKind.NormalOrder && target.AutoCompleteOrder)
+        {
+            if (IsWackyKoishiBossTarget(target))
+            {
+                AppendWackyBossRuntimeDiagnostic(
+                    "pending-food-delivery-evaluate",
+                    request,
+                    runtimeOrder,
+                    "call-generic-evaluate",
+                    "Koishi boss clue-stage order uses regular order evaluation after direct food delivery.");
+            }
+
+            var evaluation = IsYuyukoBossTarget(target)
+                ? TryEvaluateYuyukoChallengeRuntimeOrderIfReady(request, runtimeOrder, "当前普客订单", reacquireLiveOrder: false, allowControllerMissing: true)
+                : TryEvaluateRuntimeOrderIfReady(runtimeOrder, "当前普客订单", allowControllerMissing: true);
             evaluationSuffix = string.IsNullOrWhiteSpace(evaluation.Message) ? "" : evaluation.Message;
         }
 
@@ -162,6 +368,24 @@ internal static partial class RuntimeOrderPreparationService
             message += evaluationSuffix;
         }
 
+        if (IsYuyukoBossTarget(target))
+        {
+            AppendYuyukoRuntimeDiagnostic(
+                "pending-food-delivery-after",
+                request,
+                runtimeOrder,
+                "food-delivered",
+                message);
+        }
+
+        AppendWackyPendingDiagnostic(
+            "cooked-food-delivered",
+            pending,
+            "delivered-to-order",
+            ReadSellableId(cookedFood),
+            targetTags,
+            actualTags,
+            message);
         RecordAutomationRuntimeEvent(OrderPreparationStepCodes.FoodDelivered, target, message);
         return (true, message, OrderPreparationStepCodes.FoodDelivered);
     }
@@ -176,6 +400,178 @@ internal static partial class RuntimeOrderPreparationService
         return (false, $"{pending.RecipeName} 已完成，等待直接送达：{message}", OrderPreparationStepCodes.CookingPending);
     }
 
+    private static (bool Remove, string Message, string Code) HandleUndeliverableCookedFood(
+        PendingCookingCollection pending,
+        object cookedFood,
+        PendingDeliveryFailureKind failureKind,
+        string reason)
+    {
+        var nowUtc = DateTime.UtcNow;
+        var failure = pending.RecordDeliveryFailure(failureKind, nowUtc);
+        var threshold = GetPendingFailureRetireAttempts(failureKind);
+        var delay = GetPendingFailureRetireDelay(failureKind);
+        var failureAge = nowUtc - failure.FirstAtUtc;
+        var failureDetail = FormatPendingDeliveryFailureDetail(failureKind, failure.Count, threshold, failureAge, delay);
+        if (failure.Count < threshold || failureAge < delay)
+        {
+            return ShouldStopPendingDirectDelivery(pending, $"{reason}{failureDetail}");
+        }
+
+        var actualFoodId = ReadSellableId(cookedFood);
+        var actualTags = ReadFoodTagNames(cookedFood).ToArray();
+        if (IsWackyTargetContext(pending.Target))
+        {
+            AppendWackyPendingDiagnostic(
+                "wacky-undeliverable-target",
+                pending,
+                "store-undeliverable-food",
+                actualFoodId,
+                pending.Target.WackyTargetFoodTags,
+                actualTags,
+                $"{reason}{failureDetail}");
+        }
+
+        if (TryStoreMismatchedCookResultInWarmer(pending, cookedFood, actualFoodId, out var storeMessage))
+        {
+            var targetLabel = failureKind == PendingDeliveryFailureKind.MissingController
+                ? "目标订单暂不可执行"
+                : "目标订单已不存在、已切换或暂不可达";
+            var message = $"{pending.RecipeName} 已完成，但{targetLabel}，已放入保温箱并释放该自动化待办。原因：{reason}{failureDetail} {storeMessage}";
+            if (IsWackyTargetContext(pending.Target))
+            {
+                AppendWackyPendingDiagnostic(
+                    "wacky-undeliverable-target-stored",
+                    pending,
+                    "stored-in-warmer",
+                    actualFoodId,
+                    pending.Target.WackyTargetFoodTags,
+                    actualTags,
+                    storeMessage);
+            }
+
+            RecordAutomationRuntimeEvent(
+                OrderPreparationStepCodes.CookingMismatchStored,
+                pending.Target,
+                message,
+                actualFoodId,
+                pending.Target.WackyTargetFoodTags,
+                actualTags);
+            return (true, message, OrderPreparationStepCodes.CookingMismatchStored);
+        }
+
+        if (IsWackyTargetContext(pending.Target))
+        {
+            AppendWackyPendingDiagnostic(
+                "wacky-undeliverable-target-store-failed",
+                pending,
+                "keep-on-cooker",
+                actualFoodId,
+                pending.Target.WackyTargetFoodTags,
+                actualTags,
+                storeMessage);
+        }
+
+        return ShouldStopPendingDirectDelivery(
+            pending,
+            $"{reason}{failureDetail} 已达到自动释放阈值，但写入保温箱失败：{storeMessage}");
+    }
+
+    private static int GetPendingFailureRetireAttempts(PendingDeliveryFailureKind failureKind)
+    {
+        return failureKind == PendingDeliveryFailureKind.MissingController
+            ? PendingMissingControllerRetireAttempts
+            : PendingMissingTargetRetireAttempts;
+    }
+
+    private static TimeSpan GetPendingFailureRetireDelay(PendingDeliveryFailureKind failureKind)
+    {
+        return failureKind == PendingDeliveryFailureKind.MissingController
+            ? PendingMissingControllerRetireDelay
+            : PendingMissingTargetRetireDelay;
+    }
+
+    private static string FormatPendingDeliveryFailureDetail(
+        PendingDeliveryFailureKind failureKind,
+        int count,
+        int threshold,
+        TimeSpan age,
+        TimeSpan delay)
+    {
+        var reason = failureKind == PendingDeliveryFailureKind.MissingController
+            ? "控制器不可达"
+            : "订单不可达";
+        return $"（{reason}连续 {count}/{threshold} 次，持续 {age.TotalSeconds:F1}/{delay.TotalSeconds:F0}s）";
+    }
+
+    private static bool TryDetectWackyTagMismatch(CookingCollectionTarget target, object cookedFood, out IReadOnlyList<string> targetTags, out IReadOnlyList<string> actualTags)
+    {
+        targetTags = Array.Empty<string>();
+        actualTags = Array.Empty<string>();
+        var activeTargetTags = target.WackyTargetFoodTags;
+        if (activeTargetTags.Count == 0) return false;
+
+        var cookedTags = ReadFoodTagNames(cookedFood).ToArray();
+        if (cookedTags.Length == 0) return false;
+
+        targetTags = activeTargetTags;
+        actualTags = cookedTags;
+        return !cookedTags.Any(tag => activeTargetTags.Contains(tag, StringComparer.Ordinal));
+    }
+
+    private static bool TryDetectWackyTargetSignatureChanged(
+        PendingCookingCollection pending,
+        out string originalSignature,
+        out string currentSignature,
+        out IReadOnlyList<string> originalTags,
+        out IReadOnlyList<string> currentTags)
+    {
+        originalSignature = pending.Target.WackyTargetSignature;
+        originalTags = pending.Target.WackyTargetFoodTags;
+        currentSignature = "";
+        currentTags = Array.Empty<string>();
+        if (string.IsNullOrWhiteSpace(originalSignature)) return false;
+
+        RuntimeSpecialBusinessContextService.TryGetActiveWackyTargetSignature(out currentSignature, out currentTags);
+        return !string.Equals(originalSignature, currentSignature, StringComparison.Ordinal);
+    }
+
+    private static string FormatWackyTargetForMessage(string signature, IReadOnlyList<string> tags)
+    {
+        if (string.IsNullOrWhiteSpace(signature)) return "非怪诞料理目标";
+        return tags.Count == 0 ? signature : $"{signature}（Tag {string.Join("、", tags)}）";
+    }
+
+    private static IEnumerable<string> ReadFoodTagNames(object cookedFood)
+    {
+        var rawTags = TryInvokeInstanceValue(cookedFood, "get_Tags")
+            ?? ReadMember(cookedFood, "Tags")
+            ?? TryInvokeInstanceValue(cookedFood, "get_RawTags")
+            ?? ReadMember(cookedFood, "RawTags");
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var rawTag in ReadIntEnumerable(rawTags))
+        {
+            if (rawTag < 0) continue;
+
+            var tagName = TryReadFoodTagName(rawTag);
+            if (string.IsNullOrWhiteSpace(tagName)) continue;
+
+            var normalized = FoodTags.NormalizeName(tagName) ?? tagName;
+            if (seen.Add(normalized)) yield return normalized;
+        }
+    }
+
+    private static string TryReadFoodTagName(int tagId)
+    {
+        try
+        {
+            return InvokeStatic(DataBaseLanguageTypeName, "GetFoodTag", new object?[] { tagId })?.ToString()?.Trim() ?? "";
+        }
+        catch
+        {
+            return "";
+        }
+    }
+
     private static bool TryStoreMismatchedCookResultInWarmer(PendingCookingCollection pending, object cookedFood, int actualFoodId, out string message)
     {
         try
@@ -188,9 +584,9 @@ internal static partial class RuntimeOrderPreparationService
             }
 
             var beforeCount = CountStoredFoods(configure, actualFoodId);
-            if (!TryInvokeStoreFood(configure, cookedFood))
+            if (!TryInvokeStoreFood(configure, cookedFood, out var storeDiagnostic))
             {
-                message = "未找到可用的 StoreFood 入口";
+                message = storeDiagnostic;
                 return false;
             }
 
@@ -215,10 +611,132 @@ internal static partial class RuntimeOrderPreparationService
         }
     }
 
-    private static bool TryInvokeStoreFood(object configure, object cookedFood)
+    private static bool TryInvokeStoreFood(object configure, object cookedFood, out string diagnostic)
     {
-        return TryInvokeInstance(configure, "StoreFood", new object?[] { cookedFood, -1 })
-            || TryInvokeInstance(configure, "StoreFood", new object?[] { cookedFood });
+        diagnostic = "";
+        var methods = configure.GetType()
+            .GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+            .Where(method => string.Equals(method.Name, "StoreFood", StringComparison.Ordinal))
+            .OrderByDescending(method => method.GetParameters().Length == 2)
+            .ThenBy(method => method.GetParameters().Length)
+            .ToArray();
+        if (methods.Length == 0)
+        {
+            diagnostic = "未找到 StoreFood 方法";
+            return false;
+        }
+
+        var errors = new List<string>();
+        foreach (var method in methods)
+        {
+            if (!TryBuildStoreFoodArguments(method, cookedFood, out var args, out var skippedReason))
+            {
+                errors.Add($"{FormatMethodSignature(method)}: {skippedReason}");
+                continue;
+            }
+
+            try
+            {
+                method.Invoke(configure, args);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                var root = ex.GetBaseException();
+                errors.Add($"{FormatMethodSignature(method)}: {root.GetType().Name}: {root.Message}");
+            }
+        }
+
+        diagnostic = errors.Count == 0
+            ? "未找到可用的 StoreFood 入口"
+            : $"StoreFood 调用失败：{string.Join("；", errors.Distinct(StringComparer.Ordinal))}";
+        return false;
+    }
+
+    private static bool TryBuildStoreFoodArguments(
+        MethodInfo method,
+        object cookedFood,
+        out object?[] args,
+        out string skippedReason)
+    {
+        args = Array.Empty<object?>();
+        skippedReason = "";
+        var parameters = method.GetParameters();
+        if (parameters.Length == 1)
+        {
+            if (!parameters[0].ParameterType.IsInstanceOfType(cookedFood))
+            {
+                skippedReason = $"第一个参数需要 {parameters[0].ParameterType.FullName}，实际为 {cookedFood.GetType().FullName}";
+                return false;
+            }
+
+            args = new object?[] { cookedFood };
+            return true;
+        }
+
+        if (parameters.Length == 2)
+        {
+            if (!parameters[0].ParameterType.IsInstanceOfType(cookedFood))
+            {
+                skippedReason = $"第一个参数需要 {parameters[0].ParameterType.FullName}，实际为 {cookedFood.GetType().FullName}";
+                return false;
+            }
+
+            if (!TryBuildStoreFoodSenderArgument(parameters[1].ParameterType, out var sender))
+            {
+                skippedReason = $"第二个参数不是可传入的整数类型：{parameters[1].ParameterType.FullName}";
+                return false;
+            }
+
+            args = new[] { cookedFood, sender };
+            return true;
+        }
+
+        skippedReason = $"参数数量不支持：{parameters.Length}";
+        return false;
+    }
+
+    private static bool TryBuildStoreFoodSenderArgument(Type parameterType, out object? value)
+    {
+        value = null;
+        if (parameterType.IsByRef)
+        {
+            parameterType = parameterType.GetElementType() ?? parameterType;
+        }
+
+        try
+        {
+            if (parameterType.IsEnum)
+            {
+                value = Enum.ToObject(parameterType, -1);
+                return true;
+            }
+
+            if (parameterType == typeof(int))
+            {
+                value = -1;
+                return true;
+            }
+
+            if (parameterType.IsPrimitive)
+            {
+                value = Convert.ChangeType(-1, parameterType);
+                return true;
+            }
+        }
+        catch
+        {
+            value = null;
+            return false;
+        }
+
+        return false;
+    }
+
+    private static string FormatMethodSignature(MethodInfo method)
+    {
+        var parameters = string.Join(", ", method.GetParameters().Select(parameter => parameter.ParameterType.Name));
+        return $"{method.DeclaringType?.FullName ?? method.Name}.{method.Name}({parameters})";
     }
 
     private static object? ReadStoredFoodList(object configure)
@@ -282,10 +800,19 @@ internal static partial class RuntimeOrderPreparationService
             DeskCode = target.DeskCode,
             GuestId = target.GuestId,
             GuestName = target.GuestName,
+            SpecialBusinessRole = target.SpecialBusinessRole,
             FoodTag = target.FoodTag,
             BeverageTag = target.BeverageTag,
+            MatchFoodId = target.MatchFoodId,
+            MatchBeverageId = target.MatchBeverageId,
             FoodId = target.FoodId,
+            RecipeId = target.RecipeId,
             RecipeName = target.FoodName,
+            ExtraIngredientIds = target.ExtraIngredientIds,
+            PredictedFoodTags = target.PredictedFoodTags,
+            WackyTargetFoodTags = target.WackyTargetFoodTags,
+            ExecutionMode = target.ExecutionMode,
+            ExecutionReason = target.ExecutionReason,
             BeverageId = target.BeverageId,
             BeverageName = target.BeverageName,
             AutoCompleteOrder = target.AutoCompleteOrder,

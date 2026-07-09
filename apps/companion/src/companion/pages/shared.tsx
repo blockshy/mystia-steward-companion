@@ -429,6 +429,10 @@ export function OrderRecommendationPanel({
           <div className="mt-1 flex flex-wrap gap-1.5">
             <Badge variant="outline">料理 {item.order.foodTag || '无'}</Badge>
             <Badge variant="outline">酒水 {item.order.beverageTag || '无'}</Badge>
+            {item.order.specialBusinessRoleLabel && (
+              <Badge variant="secondary">{item.order.specialBusinessRoleLabel}</Badge>
+            )}
+            {item.order.automationAllowed === false && <Badge variant="outline">暂不可自动处理</Badge>}
             {item.order.isFreeOrder && <Badge variant="secondary">免费订单</Badge>}
             {targetCookerName && (
               <Badge className="steward-tag-extra">
@@ -441,6 +445,11 @@ export function OrderRecommendationPanel({
           {item.blockedMessages.length > 0 && (
             <div className="mt-1 text-xs text-muted-foreground">
               {item.blockedMessages.join('；')}
+            </div>
+          )}
+          {item.order.automationAllowed === false && item.order.automationBlockReason && (
+            <div className="mt-1 text-xs text-muted-foreground">
+              {item.order.automationBlockReason}
             </div>
           )}
         </div>

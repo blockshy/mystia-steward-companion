@@ -116,6 +116,57 @@ export function buildRecommendationDataIndexes(data: RecommendationDataSet) {
   };
 }
 
+export function buildRecommendationDataSignature(data: RecommendationDataSet): string {
+  return [
+    data.source,
+    data.status,
+    data.recipes.map((recipe) => [
+      recipe.id,
+      recipe.recipeId,
+      recipe.name,
+      recipe.cooker,
+      recipe.price,
+      recipe.level,
+      recipe.baseCookTime,
+      recipe.ingredients.join(','),
+      stableStringArraySignature(recipe.positiveTags),
+      stableStringArraySignature(recipe.negativeTags),
+    ].join(':')).join(','),
+    data.ingredients.map((ingredient) => [
+      ingredient.id,
+      ingredient.name,
+      ingredient.type,
+      ingredient.price,
+      stableStringArraySignature(ingredient.tags),
+    ].join(':')).join(','),
+    data.beverages.map((beverage) => [
+      beverage.id,
+      beverage.name,
+      beverage.price,
+      beverage.level,
+      stableStringArraySignature(beverage.tags),
+    ].join(':')).join(','),
+    data.normalCustomers.map((customer) => [
+      customer.id,
+      customer.name,
+      stableStringArraySignature(customer.places),
+      stableStringArraySignature(customer.positiveTags),
+      stableStringArraySignature(customer.beverageTags),
+    ].join(':')).join(','),
+    data.rareCustomers.map((customer) => [
+      customer.id,
+      customer.name,
+      stableStringArraySignature(customer.places),
+      stableStringArraySignature(customer.positiveTags),
+      stableStringArraySignature(customer.negativeTags),
+      stableStringArraySignature(customer.beverageTags),
+    ].join(':')).join(','),
+    data.tagPriorityRules
+      .map((rule) => `${rule.id}:${stableNumberArraySignature(rule.tagIds)}:${stableStringArraySignature(rule.tags)}`)
+      .join(','),
+  ].join('\n');
+}
+
 export function getRareCustomersByPlace(
   place: PlaceName,
   data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
@@ -223,6 +274,21 @@ function normalizeRuntimeRareCustomerData(
     evaluation: value.evaluation ?? {},
     spellCards: value.spellCards ?? { positive: [], negative: [] },
   };
+}
+
+function stableNumberArraySignature(values: readonly number[] | undefined): string {
+  return [...(values ?? [])]
+    .filter((value) => Number.isFinite(value))
+    .sort((left, right) => left - right)
+    .join(',');
+}
+
+function stableStringArraySignature(values: readonly string[] | undefined): string {
+  return [...(values ?? [])]
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .sort()
+    .join(',');
 }
 
 function normalizeStringList(value: unknown): string[] {

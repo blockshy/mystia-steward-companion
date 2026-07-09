@@ -278,6 +278,73 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
+    private static bool TryEvaluateWackyKoishiBossOrderIfReady(
+        OrderPreparationResult result,
+        OrderPreparationRequest request,
+        RuntimeOrderMatch runtimeOrder,
+        string stepName,
+        string orderLabel)
+    {
+        var evaluation = TryEvaluateWackyKoishiBossRuntimeOrderIfReady(request, runtimeOrder, orderLabel);
+        if (!evaluation.Ok)
+        {
+            AddFailure(result, stepName, evaluation.Message);
+            return false;
+        }
+
+        if (evaluation.Completed)
+        {
+            result.CompletedOrder = true;
+        }
+
+        result.Steps.Add(new OrderPreparationStep
+        {
+            Name = stepName,
+            Ok = true,
+            Skipped = evaluation.Skipped,
+            Message = evaluation.Message,
+        });
+        return true;
+    }
+
+    private static (bool Ok, bool Completed, bool Skipped, string Message) TryEvaluateWackyKoishiBossRuntimeOrderIfReady(
+        OrderPreparationRequest request,
+        RuntimeOrderMatch runtimeOrder,
+        string orderLabel)
+    {
+        AppendWackyBossRuntimeDiagnostic(
+            "koishi-native-evaluate-before",
+            request,
+            runtimeOrder,
+            "call-native-evaluate-entry",
+            "Koishi boss full-feed order enters the game EvaluateOrder pipeline so the boss OverrideEvaluationCallback can score it.");
+
+        if (!IsExecutableWackyKoishiBossRuntimeOrder(runtimeOrder.Controller, runtimeOrder.Order, out var diagnostic))
+        {
+            AppendWackyBossRuntimeDiagnostic(
+                "koishi-native-evaluate-after",
+                request,
+                runtimeOrder,
+                "blocked-native-evaluate-entry",
+                diagnostic);
+            return (false, false, false, $"怪诞料理三阶段小石本体订单缺少可执行原生评价条件：{diagnostic}");
+        }
+
+        var evaluation = TryEvaluateRuntimeOrderIfReady(runtimeOrder, orderLabel);
+        var decision = evaluation.Ok
+            ? evaluation.Skipped
+                ? "native-evaluate-entry-skipped"
+                : "native-evaluate-entry-called"
+            : "native-evaluate-entry-failed";
+        AppendWackyBossRuntimeDiagnostic(
+            "koishi-native-evaluate-after",
+            request,
+            runtimeOrder,
+            decision,
+            evaluation.Message);
+        return evaluation;
+    }
+
     private static (bool Ok, bool Completed, bool Skipped, string Message) TryEvaluateRuntimeOrderIfReady(
         RuntimeOrderMatch runtimeOrder,
         string orderLabel,

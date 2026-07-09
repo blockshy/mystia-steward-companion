@@ -55,6 +55,8 @@ public sealed class MystiaStewardCompanionPlugin : BasePlugin
         SpecialOrderRuntimeCapture.Attach(Log);
         NormalOrderRuntimeCapture.Attach(Log);
         RuntimeSceneReadinessCapture.Attach(Log);
+        RuntimeSpecialBusinessContextService.Attach(Log);
+        YuyukoChallengeEvaluationTracker.Attach(Log);
         RuntimeUiPinningService.Attach(Log);
 
         StewardOverlayRuntimeContext.Configure(settings, Log);

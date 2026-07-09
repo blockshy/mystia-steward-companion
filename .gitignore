@@ -19,6 +19,7 @@ apps/companion/src-tauri/gen/android/**/*.keystore
 .game
 *.local
 AGENTS.md
+SESSION_HANDOVER.md
 dev/
 temp/
 .playwright-cli/

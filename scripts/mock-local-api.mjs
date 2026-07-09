@@ -255,7 +255,21 @@ const server = http.createServer((request, response) => {
     }
 
     if (path === '/snapshot') {
-      sendJson(response, 200, buildSnapshot());
+      const snapshot = buildSnapshot();
+      if (requestUrl.searchParams.get('knownSignature') === snapshot.snapshotSignature) {
+        sendJson(response, 200, {
+          unchanged: true,
+          snapshotSignature: snapshot.snapshotSignature,
+        });
+        return;
+      }
+
+      sendJson(response, 200, snapshot);
+      return;
+    }
+
+    if (path === '/runtime-data') {
+      sendJson(response, 200, buildRuntimeData());
       return;
     }
 
@@ -349,7 +363,7 @@ const server = http.createServer((request, response) => {
         ok: true,
         path: '/tmp/mystia-steward-companion/mock/diagnostics.zip',
         directory: '/tmp/mystia-steward-companion/mock',
-        files: ['manifest.json', 'snapshot/current-snapshot.json', 'logs/aggregate-mod.log'],
+        files: ['manifest.json', 'snapshot/current-snapshot.json', 'snapshot/runtime-data.json', 'logs/aggregate-mod.log'],
         error: null,
       });
       return;
@@ -402,7 +416,7 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
 }
 
 function buildSnapshot() {
-  return {
+  const snapshot = {
     pluginVersion: '1.0.5-mock',
     capturedAtUtc: nowIso(),
     activeSceneName: 'NightScene.MockBusiness',
@@ -542,30 +556,67 @@ function buildSnapshot() {
       beverageTags: customer.beverageTags,
       source: 'mock',
     })),
-    runtimeData: {
-      isComplete: true,
-      source: 'mock-local-api',
-      status: 'mock runtime data complete',
-      recipes,
-      ingredients,
-      beverages,
-      normalCustomers,
-      rareCustomers,
-      foodTagIdMap: {
-        甜: '11',
-        肉: '12',
-        家常: '13',
-        清淡: '14',
-        菌类: '15',
-        梦幻: '16',
-      },
-    },
+    runtimeDataComplete: true,
+    runtimeDataSource: 'mock-local-api',
+    runtimeDataStatus: 'mock runtime data complete',
+    runtimeDataSignature: buildRuntimeDataSignature(),
     performanceMs: {
       snapshot: 3,
       runtimeData: 6,
       recommendations: 4,
     },
   };
+  snapshot.snapshotSignature = buildSnapshotSignature(snapshot);
+  return snapshot;
+}
+
+function buildSnapshotSignature(snapshot) {
+  return [
+    snapshot.pluginVersion,
+    snapshot.activeSceneName,
+    snapshot.runtimeLoaded ? '1' : '0',
+    snapshot.status,
+    snapshot.runtimeDataSignature,
+    snapshot.nightBusiness?.orders?.length ?? 0,
+    snapshot.normalBusiness?.orders?.length ?? 0,
+    snapshot.specialBusiness?.challengeType ?? '',
+    snapshot.specialBusiness?.phase ?? '',
+  ].join('|');
+}
+
+function buildRuntimeData() {
+  return {
+    isComplete: true,
+    source: 'mock-local-api',
+    status: 'mock runtime data complete',
+    recipes,
+    ingredients,
+    beverages,
+    normalCustomers,
+    rareCustomers,
+    foodTagIdMap: {
+      甜: '11',
+      肉: '12',
+      家常: '13',
+      清淡: '14',
+      菌类: '15',
+      梦幻: '16',
+    },
+  };
+}
+
+function buildRuntimeDataSignature() {
+  return [
+    '1',
+    'mock-local-api',
+    'mock runtime data complete',
+    recipes.length,
+    ingredients.length,
+    beverages.length,
+    normalCustomers.length,
+    rareCustomers.length,
+    6,
+  ].join('|');
 }
 
 function buildInvitationResponse(path, params) {

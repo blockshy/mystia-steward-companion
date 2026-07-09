@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { readHealth, readSnapshot } from '@/companion/api';
+import { readHealth, readRuntimeData, readSnapshot } from '@/companion/api';
 import {
   normalizeEndpoint,
   persistApiToken,
@@ -15,6 +15,7 @@ export const CONNECTION_RETRY_DELAYS_MS = [2000, 5000, 10000, 30000];
 const INITIAL_PROBE_TIMEOUT_MS = 700;
 const AUTO_POLL_TIMEOUT_MS = 1800;
 const MANUAL_REFRESH_TIMEOUT_MS = 2800;
+const RUNTIME_DATA_TIMEOUT_MS = 6000;
 const CONNECTED_AT_UPDATE_INTERVAL_MS = 30_000;
 const CONNECTION_UPDATED_EVENT = 'connection-updated';
 
@@ -41,12 +42,20 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
   const latestRequestIdRef = useRef(0);
   const inFlightRequestIdRef = useRef<number | null>(null);
   const lastConnectedAtUpdateMsRef = useRef(0);
+  const cachedRuntimeDataSignatureRef = useRef('');
+  const snapshotSignatureRef = useRef('');
+  const runtimeDataRequestIdRef = useRef(0);
+  const runtimeDataInFlightSignatureRef = useRef('');
 
   const normalizedEndpoint = useMemo(() => normalizeEndpoint(endpoint), [endpoint]);
   const normalizedEndpointDraft = useMemo(() => normalizeEndpoint(endpointDraft), [endpointDraft]);
 
   const clearSnapshotCache = useCallback(() => {
     lastConnectedAtUpdateMsRef.current = 0;
+    cachedRuntimeDataSignatureRef.current = '';
+    snapshotSignatureRef.current = '';
+    runtimeDataRequestIdRef.current += 1;
+    runtimeDataInFlightSignatureRef.current = '';
     setSnapshot(null);
     setCachedRuntimeData(null);
   }, []);
@@ -134,6 +143,77 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
     setError('已停止自动重连。');
   }, []);
 
+  const ensureRuntimeDataCache = useCallback((sourceSnapshot: LocalApiSnapshot) => {
+    const runtimeDataSignature = sourceSnapshot.runtimeDataSignature ?? '';
+    if (sourceSnapshot.runtimeDataComplete && runtimeDataSignature) {
+      if (cachedRuntimeDataSignatureRef.current === runtimeDataSignature) return;
+      if (runtimeDataInFlightSignatureRef.current === runtimeDataSignature) return;
+
+      const requestId = runtimeDataRequestIdRef.current + 1;
+      runtimeDataRequestIdRef.current = requestId;
+      runtimeDataInFlightSignatureRef.current = runtimeDataSignature;
+      const runtimeDataAbortController = new AbortController();
+      const runtimeDataTimeoutId = window.setTimeout(
+        () => runtimeDataAbortController.abort(),
+        RUNTIME_DATA_TIMEOUT_MS,
+      );
+
+      void readRuntimeData(normalizedEndpoint, apiToken, {
+        signal: runtimeDataAbortController.signal,
+        timeoutMs: RUNTIME_DATA_TIMEOUT_MS,
+      })
+        .then((runtimeData) => {
+          if (runtimeDataRequestIdRef.current !== requestId) return;
+          if (!runtimeData.isComplete) {
+            throw new Error(runtimeData.status || '运行时目录尚未完整加载。');
+          }
+          const cacheSignature = runtimeDataSignature || buildRuntimeDataCatalogCacheSignature(runtimeData);
+          cachedRuntimeDataSignatureRef.current = cacheSignature;
+          setCachedRuntimeData(runtimeData);
+        })
+        .catch((runtimeDataError) => {
+          if (runtimeDataRequestIdRef.current !== requestId) return;
+          const runtimeDataStatus = runtimeDataError instanceof Error
+            ? runtimeDataError.message
+            : String(runtimeDataError);
+          setCachedRuntimeData((current) => current ?? {
+            isComplete: false,
+            source: sourceSnapshot.runtimeDataSource || sourceSnapshot.runtimeSource || '',
+            status: runtimeDataStatus || sourceSnapshot.runtimeDataStatus || '运行时目录读取失败，等待下一轮重试。',
+            recipes: [],
+            ingredients: [],
+            beverages: [],
+            normalCustomers: [],
+            rareCustomers: [],
+          });
+        })
+        .finally(() => {
+          window.clearTimeout(runtimeDataTimeoutId);
+          if (runtimeDataRequestIdRef.current === requestId) {
+            runtimeDataInFlightSignatureRef.current = '';
+          }
+        });
+      return;
+    }
+
+    if (!sourceSnapshot.runtimeDataComplete && !cachedRuntimeDataSignatureRef.current) {
+      const status = sourceSnapshot.runtimeDataStatus || sourceSnapshot.status || '等待游戏运行时数据';
+      setCachedRuntimeData((current) => {
+        if (current) return current;
+        return {
+          isComplete: false,
+          source: sourceSnapshot.runtimeDataSource || sourceSnapshot.runtimeSource || '',
+          status,
+          recipes: [],
+          ingredients: [],
+          beverages: [],
+          normalCustomers: [],
+          rareCustomers: [],
+        };
+      });
+    }
+  }, [apiToken, normalizedEndpoint]);
+
   const refresh = useCallback(async (manual = false) => {
     if (!apiToken) {
       setError('未收到本地 API Token。请从游戏内启动或按 F8 唤起伴随窗口。');
@@ -179,9 +259,24 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
       const data = await readSnapshot(normalizedEndpoint, apiToken, {
         signal: abortController.signal,
         timeoutMs,
+        knownSignature: snapshotSignatureRef.current,
       });
       if (latestRequestIdRef.current !== requestId) return;
+      window.clearTimeout(timeoutId);
+      if (isSnapshotUnchanged(data)) {
+        snapshotSignatureRef.current = data.snapshotSignature;
+        if (snapshot) ensureRuntimeDataCache(snapshot);
+        setError('');
+        setConnectionPaused(false);
+        setConnectionFailureCount(0);
+        markConnected();
+        return;
+      }
+
+      const nextSnapshotSignature = data.snapshotSignature ?? '';
+      snapshotSignatureRef.current = nextSnapshotSignature;
       setSnapshot(data);
+      ensureRuntimeDataCache(data);
       setError('');
       setConnectionPaused(false);
       setConnectionFailureCount(0);
@@ -201,7 +296,7 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
         if (!manual && !snapshot) setConnectionProbing(false);
       }
     }
-  }, [apiToken, connectionPaused, error, markConnected, normalizedEndpoint, snapshot]);
+  }, [apiToken, connectionPaused, ensureRuntimeDataCache, error, markConnected, normalizedEndpoint, snapshot]);
 
   useEffect(() => {
     persistEndpoint(normalizedEndpoint);
@@ -210,13 +305,6 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
   useEffect(() => {
     persistApiToken(apiToken);
   }, [apiToken]);
-
-  useEffect(() => {
-    if (!snapshot) return;
-    if (snapshot.runtimeData?.isComplete) {
-      setCachedRuntimeData(snapshot.runtimeData);
-    }
-  }, [snapshot]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -268,17 +356,28 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
 
   useEffect(() => {
     if (!apiToken || connectionPaused) return;
-    // 有错误时按固定退避序列重连；已连接后使用调用方传入的刷新间隔，经营中页面会传入更短间隔。
-    const retryIndex = Math.max(0, Math.min(connectionFailureCount - 1, CONNECTION_RETRY_DELAYS_MS.length - 1));
-    const delay = error
-      ? CONNECTION_RETRY_DELAYS_MS[retryIndex]
-      : snapshot
-        ? snapshotRefreshIntervalMs
-        : 0;
-    const timer = window.setTimeout(() => {
+    if (!snapshot && !error) {
+      const timer = window.setTimeout(() => {
+        void refresh();
+      }, 0);
+      return () => window.clearTimeout(timer);
+    }
+
+    if (error) {
+      // 有错误时按固定退避序列重连。
+      const retryIndex = Math.max(0, Math.min(connectionFailureCount - 1, CONNECTION_RETRY_DELAYS_MS.length - 1));
+      const timer = window.setTimeout(() => {
+        void refresh();
+      }, CONNECTION_RETRY_DELAYS_MS[retryIndex]);
+      return () => window.clearTimeout(timer);
+    }
+
+    // 已连接后使用独立 interval 保持轮询。不能依赖每次请求后的 React 状态变更来续约 timer；
+    // /snapshot 返回 unchanged 时通常不会触发重新渲染，但仍必须继续观察后续经营状态变化。
+    const timer = window.setInterval(() => {
       void refresh();
-    }, delay);
-    return () => window.clearTimeout(timer);
+    }, snapshotRefreshIntervalMs);
+    return () => window.clearInterval(timer);
   }, [
     apiToken,
     connectionFailureCount,
@@ -310,4 +409,54 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
     pauseConnection,
     refresh,
   };
+}
+
+function isSnapshotUnchanged(
+  data: Awaited<ReturnType<typeof readSnapshot>>,
+): data is { unchanged: true; snapshotSignature: string } {
+  return 'unchanged' in data && data.unchanged === true;
+}
+
+function buildRuntimeDataCatalogCacheSignature(runtimeData: RuntimeDataCatalogSnapshot): string {
+  return [
+    runtimeData.source,
+    runtimeData.status,
+    buildCatalogEdgeSignature(runtimeData.recipes),
+    buildCatalogEdgeSignature(runtimeData.ingredients),
+    buildCatalogEdgeSignature(runtimeData.beverages),
+    buildCatalogEdgeSignature(runtimeData.normalCustomers),
+    buildCatalogEdgeSignature(runtimeData.rareCustomers),
+    buildRecordEdgeSignature(runtimeData.foodTagIdMap),
+    buildRecordEdgeSignature(runtimeData.beverageTagIdMap),
+    runtimeData.tagPriorityRules?.length ?? 0,
+  ].join('|');
+}
+
+function buildCatalogEdgeSignature(items: ReadonlyArray<{ id: number; name: string; recipeId?: number }>): string {
+  if (items.length === 0) return '0';
+  const first = items[0];
+  const last = items[items.length - 1];
+  return [
+    items.length,
+    first?.id ?? '',
+    first?.recipeId ?? '',
+    first?.name ?? '',
+    last?.id ?? '',
+    last?.recipeId ?? '',
+    last?.name ?? '',
+  ].join(':');
+}
+
+function buildRecordEdgeSignature(record: Record<string, string> | undefined): string {
+  if (!record) return '0';
+  const entries = Object.entries(record).sort(([left], [right]) => left.localeCompare(right));
+  const first = entries[0];
+  const last = entries[entries.length - 1];
+  return [
+    entries.length,
+    first?.[0] ?? '',
+    first?.[1] ?? '',
+    last?.[0] ?? '',
+    last?.[1] ?? '',
+  ].join(':');
 }

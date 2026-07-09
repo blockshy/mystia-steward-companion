@@ -23,6 +23,12 @@ internal sealed class LocalApiErrorDto
     public string Error { get; init; } = "";
 }
 
+internal sealed class LocalApiSnapshotUnchangedDto
+{
+    public bool Unchanged { get; init; }
+    public string SnapshotSignature { get; init; } = "";
+}
+
 internal sealed class LocalApiLogSettingsDto
 {
     public bool AggregateModLogEnabled { get; init; }

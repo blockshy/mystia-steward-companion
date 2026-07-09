@@ -1,0 +1,220 @@
+using System.Runtime.CompilerServices;
+using System.Text;
+
+namespace MystiaStewardCompanion.Save;
+
+internal static class SpecialBusinessDiagnostics
+{
+    private static readonly object SyncRoot = new();
+    private static readonly HashSet<string> SeenOnceKeys = new(StringComparer.Ordinal);
+    private static readonly Dictionary<string, int> LastProgressBuckets = new(StringComparer.Ordinal);
+
+    public static void AppendWackySnapshot(
+        string title,
+        IEnumerable<string> lines,
+        string? onceKey = null)
+    {
+        AppendSnapshot("special-business.wacky", title, lines, onceKey);
+    }
+
+    public static void AppendWackyProgressSnapshot(
+        string key,
+        double? progress,
+        string title,
+        IEnumerable<string> lines,
+        int bucketCount = 20)
+    {
+        if (!AggregateModLogService.Enabled) return;
+        var bucket = progress.HasValue && !double.IsNaN(progress.Value)
+            ? Math.Clamp((int)Math.Floor(progress.Value * bucketCount), 0, bucketCount)
+            : -1;
+        lock (SyncRoot)
+        {
+            if (LastProgressBuckets.TryGetValue(key, out var previous) && previous == bucket) return;
+            LastProgressBuckets[key] = bucket;
+        }
+
+        AppendWackySnapshot(title, lines);
+    }
+
+    public static void AppendYuyukoSnapshot(
+        string title,
+        IEnumerable<string> lines,
+        string? onceKey = null)
+    {
+        AppendSnapshot("special-business.yuyuko", title, lines, onceKey);
+    }
+
+    public static void AppendYuyukoProgressSnapshot(
+        string key,
+        double? progress,
+        string title,
+        IEnumerable<string> lines,
+        int bucketCount = 20)
+    {
+        if (!AggregateModLogService.Enabled) return;
+        var bucket = progress.HasValue && !double.IsNaN(progress.Value)
+            ? Math.Clamp((int)Math.Floor(progress.Value * bucketCount), 0, bucketCount)
+            : -1;
+        lock (SyncRoot)
+        {
+            if (LastProgressBuckets.TryGetValue(key, out var previous) && previous == bucket) return;
+            LastProgressBuckets[key] = bucket;
+        }
+
+        AppendYuyukoSnapshot(title, lines);
+    }
+
+    public static void AppendWackyOrderClassification(
+        string challengeType,
+        string role,
+        string roleLabel,
+        SpecialBusinessOrderProbe guest,
+        object? order,
+        object? controller,
+        string source,
+        string reason)
+    {
+        AppendWackySnapshot(
+            "Wacky Cooking Order Classified",
+            new[]
+            {
+                $"challengeType: {challengeType}",
+                $"role: {role}",
+                $"roleLabel: {roleLabel}",
+                $"source: {source}",
+                $"reason: {reason}",
+                $"guestId: {guest.Id?.ToString() ?? ""}",
+                $"guestText: {guest.Text}",
+                $"order: {DescribeObject(order)}",
+                $"controller: {DescribeObject(controller)}",
+                $"deskCode: {ReadIntMember(order, "DeskCode", "deskCode")}",
+                $"controllerDeskCode: {ReadIntMember(controller, "DeskCode", "deskCode", "DeskIndex", "deskIndex")}",
+                $"controllerSpawnType: {SpecialBusinessOrderProbe.ReadControllerSpawnType(controller)}",
+                $"rawSpawnType: {ReadTextMember(controller, "SpawnType", "spawnType")}",
+                $"isHerself: {ReadTextMember(controller, "IsHerself", "isHerself")}",
+                $"isControlled: {ReadTextMember(controller, "IsControlled", "isControlled")}",
+            },
+            $"wacky-classify|{role}|{source}|{ObjectKey(order)}|{ObjectKey(controller)}|{guest.Id?.ToString() ?? guest.Text}");
+    }
+
+    public static string DescribeObject(object? value)
+    {
+        if (value == null) return "null";
+        return $"{value.GetType().FullName}@0x{RuntimeHelpers.GetHashCode(value):X}";
+    }
+
+    public static string FormatIdName(int id, string name)
+    {
+        return id >= 0
+            ? string.IsNullOrWhiteSpace(name) ? $"#{id}" : $"{id}/{name}"
+            : string.IsNullOrWhiteSpace(name) ? "" : name;
+    }
+
+    public static string FormatTags(IEnumerable<string>? tags)
+    {
+        var values = tags?
+            .Where(tag => !string.IsNullOrWhiteSpace(tag))
+            .Select(tag => tag.Trim())
+            .Distinct(StringComparer.Ordinal)
+            .ToArray() ?? Array.Empty<string>();
+        return values.Length == 0 ? "(none)" : string.Join("、", values);
+    }
+
+    public static string FormatIds(IEnumerable<int>? ids)
+    {
+        var values = ids?
+            .Where(id => id >= 0)
+            .Select(id => id.ToString())
+            .ToArray() ?? Array.Empty<string>();
+        return values.Length == 0 ? "(none)" : string.Join(",", values);
+    }
+
+    public static string FormatOrderContext(OrderLogContext? context)
+    {
+        if (context == null) return "trace=none kind=none";
+        var builder = new StringBuilder();
+        AppendPair(builder, "trace", context.TraceId);
+        AppendPair(builder, "kind", context.Kind);
+        if (context.DeskCode >= 0) AppendPair(builder, "desk", (context.DeskCode + 1).ToString());
+        AppendPair(builder, "orderKey", context.OrderKey);
+        if (context.GuestId.HasValue) AppendPair(builder, "guestId", context.GuestId.Value.ToString());
+        AppendPair(builder, "guest", context.GuestName);
+        if (context.MatchFoodId >= 0) AppendPair(builder, "matchFoodId", context.MatchFoodId.ToString());
+        if (context.MatchBeverageId >= 0) AppendPair(builder, "matchBeverageId", context.MatchBeverageId.ToString());
+        if (context.FoodId >= 0) AppendPair(builder, "foodId", context.FoodId.ToString());
+        AppendPair(builder, "food", context.FoodName);
+        if (context.BeverageId >= 0) AppendPair(builder, "beverageId", context.BeverageId.ToString());
+        AppendPair(builder, "beverage", context.BeverageName);
+        AppendPair(builder, "rule", context.RuleReason);
+        return builder.Length == 0 ? "trace=none kind=none" : builder.ToString();
+    }
+
+    private static void AppendPair(StringBuilder builder, string key, string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return;
+        if (builder.Length > 0) builder.Append("; ");
+        builder.Append(key);
+        builder.Append('=');
+        builder.Append(value.Trim());
+    }
+
+    private static void AppendSnapshot(
+        string channel,
+        string title,
+        IEnumerable<string> lines,
+        string? onceKey)
+    {
+        if (!AggregateModLogService.Enabled) return;
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(onceKey))
+            {
+                lock (SyncRoot)
+                {
+                    if (!SeenOnceKeys.Add($"{channel}|{onceKey}")) return;
+                }
+            }
+
+            AggregateModLogService.AppendSection(
+                channel,
+                title,
+                string.Join(Environment.NewLine, lines.Where(line => !string.IsNullOrWhiteSpace(line))));
+        }
+        catch
+        {
+            // Diagnostics must never affect gameplay.
+        }
+    }
+
+    private static string ObjectKey(object? value)
+    {
+        return value == null ? "null" : RuntimeHelpers.GetHashCode(value).ToString("X");
+    }
+
+    private static string ReadIntMember(object? value, params string[] members)
+    {
+        foreach (var member in members)
+        {
+            var raw = RuntimeReflectionUtility.GetMemberValue(value, member)
+                ?? RuntimeReflectionUtility.InvokeMethod(value, $"get_{member}");
+            var parsed = RuntimeReflectionUtility.ToInt(raw, int.MinValue);
+            if (parsed != int.MinValue) return parsed.ToString();
+        }
+
+        return "";
+    }
+
+    private static string ReadTextMember(object? value, params string[] members)
+    {
+        foreach (var member in members)
+        {
+            var raw = RuntimeReflectionUtility.GetMemberValue(value, member)
+                ?? RuntimeReflectionUtility.InvokeMethod(value, $"get_{member}");
+            var text = raw?.ToString()?.Trim() ?? "";
+            if (text.Length > 0) return text;
+        }
+
+        return "";
+    }
+}

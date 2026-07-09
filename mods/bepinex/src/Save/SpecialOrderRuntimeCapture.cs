@@ -332,10 +332,11 @@ public static class SpecialOrderRuntimeCapture
         AddOrder(ParseOrder(__result, "PostGenerateOrder", __instance));
     }
 
-    private static void OnManualControllerOrderSet(object __0, object __2)
+    private static void OnManualControllerOrderSet(object __0, object __1, object __2)
     {
         lock (SyncRoot) _generatedCallbacks++;
-        AddOrder(ParseOrder(__2, "ManualOrderSet", __0));
+        var order = ParseOrder(__2, "ManualOrderSet", __0);
+        AddOrder(order == null ? null : order with { ManualEvaluationCallback = __1 });
     }
 
     private static void OnManualOrderEvaluating(object __0)
@@ -377,7 +378,7 @@ public static class SpecialOrderRuntimeCapture
             var next = existing.Aggregate(order, MergeCapturedOrder);
             Orders.Add(next);
             _capturedOrders++;
-            _lastCapture = $"{next.CaptureSource}: desk={next.DeskCode}, guestId={next.GuestId?.ToString() ?? ""}, food={next.FoodTag}({next.FoodTagId}), bev={next.BeverageTag}({next.BeverageTagId}), free={next.IsFreeOrder}";
+            _lastCapture = $"{next.CaptureSource}: desk={next.DeskCode}, guestId={next.GuestId?.ToString() ?? ""}, food={next.FoodTag}({next.FoodTagId}), bev={next.BeverageTag}({next.BeverageTagId}), free={next.IsFreeOrder}, manualCallback={(next.ManualEvaluationCallback == null ? "no" : "yes")}";
             _changeVersion++;
             _status = BuildStatusLocked();
             if (Orders.Count > MaxOrders)
@@ -424,6 +425,12 @@ public static class SpecialOrderRuntimeCapture
         if (!IsOrderDeliveryContext(contextName)) return;
         if (!order.IsFulfilled) return;
 
+        if (HasMatchingManualEvaluationCallback(order))
+        {
+            AddOrder(order with { CaptureSource = MergeCaptureSource(order.CaptureSource, "Fulfilled") });
+            return;
+        }
+
         RemoveOrder(order with { CaptureSource = "OrderFulfilled" });
     }
 
@@ -455,11 +462,17 @@ public static class SpecialOrderRuntimeCapture
         var orderTypeValue = GetMemberValue(readableOrder, "Type");
         var orderType = FormatValue(orderTypeValue);
         var isManualSpecialOrder = IsManualSpecialOrder(readableOrder, controller);
-        if (!IsSpecialOrderType(orderTypeValue, orderType)
-            && !string.Equals(textParts.OrderType, "Special", StringComparison.OrdinalIgnoreCase)
-            && readableOrder.GetType().Name.IndexOf("SpecialOrder", StringComparison.OrdinalIgnoreCase) < 0
-            && !textParts.LooksLikeSpecialOrder
-            && !isManualSpecialOrder)
+        var looksLikeSpecialOrder = IsSpecialOrderType(orderTypeValue, orderType)
+            || string.Equals(textParts.OrderType, "Special", StringComparison.OrdinalIgnoreCase)
+            || readableOrder.GetType().Name.IndexOf("SpecialOrder", StringComparison.OrdinalIgnoreCase) >= 0
+            || textParts.LooksLikeSpecialOrder
+            || isManualSpecialOrder;
+        if (!looksLikeSpecialOrder && ToBool(GetMemberValue(readableOrder, "ManualOrder")))
+        {
+            return null;
+        }
+
+        if (!looksLikeSpecialOrder)
         {
             NoteParseFailure(source, $"not special: {order.GetType().FullName}", readableOrder, textParts);
             return null;
@@ -771,7 +784,19 @@ public static class SpecialOrderRuntimeCapture
             CaptureSource = MergeCaptureSource(existing.CaptureSource, incoming.CaptureSource),
             OrderObject = incoming.OrderObject ?? existing.OrderObject,
             ControllerObject = incoming.ControllerObject ?? existing.ControllerObject,
+            ManualEvaluationCallback = incoming.ManualEvaluationCallback ?? existing.ManualEvaluationCallback,
         };
+    }
+
+    private static bool HasMatchingManualEvaluationCallback(CapturedRuntimeSpecialOrder order)
+    {
+        lock (SyncRoot)
+        {
+            return Orders.Any(existing =>
+                existing.ManualEvaluationCallback != null
+                && IsSameOrderSlot(existing, order)
+                && CanMergeCapturedOrderDetails(existing, order));
+        }
     }
 
     private static bool CanMergeCapturedOrderDetails(CapturedRuntimeSpecialOrder left, CapturedRuntimeSpecialOrder right)
@@ -868,11 +893,18 @@ public static class SpecialOrderRuntimeCapture
     private static bool IsManualSpecialOrder(object? order, object? controller)
     {
         if (!ToBool(GetMemberValue(order, "ManualOrder"))) return false;
+        if (!HasManualSpecialOrderTag(order)) return false;
 
         var specialGuest = GetMemberValue(order, "SpecialGuests")
             ?? GetMemberValue(controller, "SpecialGuest")
             ?? GetMemberValue(controller, "OrderingGuest");
         return IsExplicitSpecialGuest(specialGuest) || ToNullableInt(GetMemberValue(specialGuest, "Id")).HasValue;
+    }
+
+    private static bool HasManualSpecialOrderTag(object? order)
+    {
+        return ToNullableInt(GetMemberValue(order, "RequestFoodTag")).HasValue
+            || ToNullableInt(GetMemberValue(order, "RequestBeverageTag")).HasValue;
     }
 
     private static bool IsExplicitSpecialGuest(object? guest)
@@ -1332,6 +1364,7 @@ public sealed record CapturedRuntimeSpecialOrder(
 {
     internal object? OrderObject { get; init; }
     internal object? ControllerObject { get; init; }
+    internal object? ManualEvaluationCallback { get; init; }
 }
 
 /// <summary>

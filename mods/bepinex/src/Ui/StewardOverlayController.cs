@@ -26,11 +26,10 @@ internal sealed class StewardOverlayController
     private const float SpecialOrderRefreshDebounceSeconds = 0.2f;
     // 本地 API 快照序列化成本较高，限制最短发布时间避免每帧刷新造成卡顿。
     private const float LocalApiSnapshotPublishMinIntervalSeconds = 0.35f;
-    // 结构化运行时目录体积较大，只在内容变化、强制刷新或间隔到达时完整发布。
-    private const float RuntimeDataFullPublishIntervalSeconds = 10f;
     private const float RuntimeDataCatalogRetrySeconds = 5f;
     private const float PerformanceSnapshotMaxAgeSeconds = 12f;
     private const float PendingCookingProcessIntervalSeconds = 0.5f;
+    private const float ActiveBusinessSnapshotRefreshSeconds = 0.75f;
     private const float NormalBusinessSnapshotCacheSeconds = 1f;
     private const float StableBusinessContextRescanSeconds = 5f;
     private static readonly JsonSerializerOptions LocalApiJsonOptions = new(JsonSerializerDefaults.Web);
@@ -59,6 +58,7 @@ internal sealed class StewardOverlayController
     private bool _runtimeLoaded;
     private int _mainThreadId;
     private long _lastSpecialOrderChangeVersion;
+    private long _lastSpecialBusinessChangeVersion;
     private string _runtimeSource = "";
     private string _activeSceneName = "";
     private string _status = "Not initialized.";
@@ -69,9 +69,9 @@ internal sealed class StewardOverlayController
     private float _nextAutoRefreshAt;
     private float _nextBusinessRefreshAt;
     private float _nextLocalApiSnapshotPublishAt;
-    private float _nextRuntimeDataFullPublishAt;
     private float _nextRuntimeDataCatalogRefreshAt;
     private float _nextPendingCookingProcessAt;
+    private float _nextActiveBusinessSnapshotRefreshAt;
     private float _nextNormalBusinessRefreshAt;
     private float _nextStableBusinessContextRescanAt;
     private long _businessContextSpecialOrderVersion = long.MinValue;
@@ -83,6 +83,7 @@ internal sealed class StewardOverlayController
     private bool _specialOrderRefreshPending;
     private bool _normalOrderRefreshPending;
     private bool _localApiSnapshotPublishPending;
+    private bool _localApiSnapshotForcePending;
     private float _nextControllerToggleAt;
     private float _nextSpecialOrderRefreshAt;
     private float _nextNormalOrderCaptureRefreshAt;
@@ -90,9 +91,20 @@ internal sealed class StewardOverlayController
     private long _lastNormalOrderChangeVersion;
     private string _lastPublishedRuntimeDataSignature = "";
     private string _lastLocalApiSnapshotContentSignature = "";
+    private string _localApiSnapshotDirtyReason = "";
+    private string _lastLocalApiSnapshotDiagnosticSignature = "";
+    private LocalApiSnapshotDirtyDomain _localApiSnapshotDirtyDomains = LocalApiSnapshotDirtyDomain.None;
     private readonly List<RuntimeRareCustomer> _runtimeRareCustomers = new();
     private readonly Dictionary<string, double> _performanceMs = new(StringComparer.Ordinal);
     private readonly Dictionary<string, float> _performanceUpdatedAt = new(StringComparer.Ordinal);
+
+    private sealed class RuntimeDataCatalogInfo
+    {
+        public bool IsComplete { get; init; }
+        public string Source { get; init; } = "";
+        public string Status { get; init; } = "";
+        public string Signature { get; init; } = "";
+    }
 
     /// <summary>
     /// 后台 API 线程提交的一次单项库存编辑请求。
@@ -163,6 +175,21 @@ internal sealed class StewardOverlayController
         InviteOne,
     }
 
+    [Flags]
+    private enum LocalApiSnapshotDirtyDomain
+    {
+        None = 0,
+        Runtime = 1 << 0,
+        RareBusiness = 1 << 1,
+        NormalBusiness = 1 << 2,
+        SpecialBusiness = 1 << 3,
+        Automation = 1 << 4,
+        Missions = 1 << 5,
+        Scene = 1 << 6,
+        RuntimeData = 1 << 7,
+        All = Runtime | RareBusiness | NormalBusiness | SpecialBusiness | Automation | Missions | Scene | RuntimeData,
+    }
+
     /// <summary>
     /// 初始化主控制器、运行时数据源和本地 API。
     /// </summary>
@@ -204,6 +231,7 @@ internal sealed class StewardOverlayController
         ProcessPendingRareGuestInvitations();
         ProcessPendingCookingCollections();
         RefreshBusinessContextOnOrderCaptureChange();
+        MarkActiveBusinessSnapshotDirtyIfDue();
 
         if (IsTogglePressed())
         {
@@ -244,6 +272,13 @@ internal sealed class StewardOverlayController
             _nextNormalOrderCaptureRefreshAt = Time.realtimeSinceStartup + SpecialOrderRefreshDebounceSeconds;
         }
 
+        var specialBusinessVersion = RuntimeSpecialBusinessContextService.ChangeVersion;
+        if (specialBusinessVersion != _lastSpecialBusinessChangeVersion)
+        {
+            _lastSpecialBusinessChangeVersion = specialBusinessVersion;
+            MarkLocalApiSnapshotDirty(LocalApiSnapshotDirtyDomain.SpecialBusiness, "special business changed");
+        }
+
         var now = Time.realtimeSinceStartup;
         if (_specialOrderRefreshPending && now >= _nextSpecialOrderRefreshAt)
         {
@@ -256,7 +291,7 @@ internal sealed class StewardOverlayController
         {
             _normalOrderRefreshPending = false;
             RefreshNormalBusinessContext(force: true);
-            PublishLocalApiSnapshot();
+            MarkLocalApiSnapshotDirty(LocalApiSnapshotDirtyDomain.NormalBusiness, "normal order capture changed");
         }
     }
 
@@ -281,6 +316,7 @@ internal sealed class StewardOverlayController
 
         _nextAutoRefreshAt = 0f;
         _nextBusinessRefreshAt = 0f;
+        _nextActiveBusinessSnapshotRefreshAt = 0f;
         ResetRuntimeRetryDelays();
         _lastPublishedRuntimeDataSignature = "";
         _businessFallbackState = null;
@@ -295,7 +331,7 @@ internal sealed class StewardOverlayController
             ClearNightBusinessRuntime(L(
                 "经营准备界面正在初始化；暂不读取夜间经营对象。",
                 "Izakaya prep is initializing; night-business objects are not read yet."));
-            PublishLocalApiSnapshot();
+            MarkLocalApiSnapshotDirty(LocalApiSnapshotDirtyDomain.Scene, "entered izakaya prep", force: true);
             return;
         }
 
@@ -304,14 +340,14 @@ internal sealed class StewardOverlayController
             ClearLoadedRuntime(L(
                 "当前游戏运行时数据不可用：当前处于非游戏内页面。",
                 "Live game runtime data unavailable: this is not an in-game page."));
-            PublishLocalApiSnapshot();
+            MarkLocalApiSnapshotDirty(LocalApiSnapshotDirtyDomain.Scene, "entered non-game scene", force: true);
             return;
         }
 
         _status = L(
             "已切换场景，正在刷新游戏数据。",
             "Scene changed. Refreshing game data.");
-        PublishLocalApiSnapshot();
+        MarkLocalApiSnapshotDirty(LocalApiSnapshotDirtyDomain.Scene, "scene changed", force: true);
     }
 
     /// <summary>
@@ -327,7 +363,7 @@ internal sealed class StewardOverlayController
         ResetRuntimeRetryDelays();
         _lastPublishedRuntimeDataSignature = "";
         RuntimeMissionSnapshotService.ClearCache();
-        _localApiSnapshotPublishPending = true;
+        MarkLocalApiSnapshotDirty(LocalApiSnapshotDirtyDomain.Scene | LocalApiSnapshotDirtyDomain.RuntimeData, "runtime scene readiness changed", force: true);
     }
 
     private void ResetRuntimeRetryDelays()
@@ -507,7 +543,7 @@ internal sealed class StewardOverlayController
             {
                 TryRefreshRuntimeDataCatalog();
 
-                var includePlacedCookers = !IsIzakayaPrepActive(_activeSceneName) && HasActiveNightBusinessContext(_businessContext);
+                var includePlacedCookers = !IsIzakayaPrepActive(_activeSceneName) && IsNightBusinessScene(_activeSceneName);
                 var includeDaySceneState = ShouldReadDaySceneRuntimeState();
                 var runtimeProvider = new RuntimeReflectionRecommendationStateProvider(
                     _repository,
@@ -574,7 +610,7 @@ internal sealed class StewardOverlayController
         finally
         {
             RecordPerformance("refresh.runtime", stopwatch.Elapsed);
-            PublishLocalApiSnapshot();
+            MarkLocalApiSnapshotDirty(LocalApiSnapshotDirtyDomain.Runtime | LocalApiSnapshotDirtyDomain.RuntimeData, "runtime refreshed");
         }
     }
 
@@ -618,7 +654,9 @@ internal sealed class StewardOverlayController
                 return;
             }
 
-            var diagnosticsEnabled = AggregateModLogService.Enabled;
+            // Aggregate logging should not disable runtime-capture based caching during normal polling.
+            // Full candidate diagnostics are intentionally limited to manual refreshes.
+            var diagnosticsEnabled = AggregateModLogService.Enabled && manual;
             var specialOrderVersion = SpecialOrderRuntimeCapture.ChangeVersion;
             if (CanReuseNightBusinessContext(manual, force, diagnosticsEnabled, specialOrderVersion))
             {
@@ -656,7 +694,9 @@ internal sealed class StewardOverlayController
         finally
         {
             RecordPerformance("refresh.business", stopwatch.Elapsed);
-            PublishLocalApiSnapshot();
+            MarkLocalApiSnapshotDirty(
+                LocalApiSnapshotDirtyDomain.RareBusiness | LocalApiSnapshotDirtyDomain.NormalBusiness | LocalApiSnapshotDirtyDomain.SpecialBusiness,
+                "business context refreshed");
         }
     }
 
@@ -745,16 +785,22 @@ internal sealed class StewardOverlayController
             return;
         }
 
+        var dirtyDomains = _localApiSnapshotDirtyDomains == LocalApiSnapshotDirtyDomain.None
+            ? (force ? LocalApiSnapshotDirtyDomain.All : LocalApiSnapshotDirtyDomain.Runtime)
+            : _localApiSnapshotDirtyDomains;
+        var dirtyReason = string.IsNullOrWhiteSpace(_localApiSnapshotDirtyReason)
+            ? (force ? "forced publish" : "direct publish")
+            : _localApiSnapshotDirtyReason;
         var stopwatch = Stopwatch.StartNew();
         try
         {
-            _localApiSnapshotPublishPending = false;
             _nextLocalApiSnapshotPublishAt = Time.realtimeSinceStartup + LocalApiSnapshotPublishMinIntervalSeconds;
             var runtimeBasicsLoaded = HasRuntimeBasicsLoaded();
             var publishedState = CanPublishRecommendationState()
                 ? _state ?? (_businessContext?.Orders.Count > 0 ? GetBusinessRecommendationState() : null)
                 : null;
             var dayMap = ReadActiveDayMapForSnapshot();
+            var runtimeDataInfo = PublishRuntimeDataCatalogForLocalApi(force);
             var snapshot = new LocalApiSnapshot
             {
                 PluginVersion = MystiaStewardCompanionPlugin.PluginVersion,
@@ -771,23 +817,34 @@ internal sealed class StewardOverlayController
                     "snapshot.recommendationState",
                     () => publishedState == null ? null : RecommendationStateSnapshot.From(publishedState)),
                 NightBusiness = _businessContext,
+                SpecialBusiness = Measure("snapshot.specialBusiness", RuntimeSpecialBusinessContextService.Snapshot),
                 RuntimeMissions = Measure("snapshot.missions", ReadRuntimeMissionsForSnapshot),
                 NormalBusiness = Measure("snapshot.normalBusiness", ReadNormalBusinessForSnapshot),
                 RuntimeRareCustomers = _runtimeRareCustomers.ToList(),
                 AutomationEvents = RuntimeOrderPreparationService.SnapshotAutomationRuntimeEvents().ToList(),
-                RuntimeData = BuildRuntimeDataForSnapshot(force),
+                RuntimeDataComplete = runtimeDataInfo.IsComplete,
+                RuntimeDataSource = runtimeDataInfo.Source,
+                RuntimeDataStatus = runtimeDataInfo.Status,
+                RuntimeDataSignature = runtimeDataInfo.Signature,
                 PerformanceMs = BuildPerformanceSnapshot(),
             };
 
             var contentSignature = BuildLocalApiSnapshotContentSignature(snapshot);
             if (!force && string.Equals(contentSignature, _lastLocalApiSnapshotContentSignature, StringComparison.Ordinal))
             {
+                AppendLocalApiSnapshotDiagnostic("skip-unchanged", dirtyDomains, dirtyReason, contentSignature, snapshot);
+                ClearLocalApiSnapshotDirtyState();
                 _localApiSnapshotErrorLogged = false;
                 return;
             }
 
-            _localApiServer.SetSnapshotJson(Measure("snapshot.serialize", () => JsonSerializer.Serialize(snapshot, LocalApiJsonOptions)));
+            snapshot.SnapshotSignature = contentSignature;
+            _localApiServer.SetSnapshotJson(
+                Measure("snapshot.serialize", () => JsonSerializer.Serialize(snapshot, LocalApiJsonOptions)),
+                contentSignature);
             _lastLocalApiSnapshotContentSignature = contentSignature;
+            AppendLocalApiSnapshotDiagnostic(force ? "publish-forced" : "publish", dirtyDomains, dirtyReason, contentSignature, snapshot);
+            ClearLocalApiSnapshotDirtyState();
             _localApiSnapshotErrorLogged = false;
         }
         catch (Exception ex)
@@ -799,6 +856,62 @@ internal sealed class StewardOverlayController
         finally
         {
             RecordPerformance("snapshot.publish", stopwatch.Elapsed);
+        }
+    }
+
+    private void AppendLocalApiSnapshotDiagnostic(
+        string outcome,
+        LocalApiSnapshotDirtyDomain dirtyDomains,
+        string dirtyReason,
+        string signature,
+        LocalApiSnapshot snapshot)
+    {
+        if (!AggregateModLogService.Enabled) return;
+
+        try
+        {
+            var normalCount = snapshot.NormalBusiness?.Orders.Count ?? -1;
+            var rareCount = snapshot.NightBusiness?.Orders.Count ?? -1;
+            var specialActive = snapshot.SpecialBusiness?.Active == true;
+            var diagnosticSignature = string.Join(
+                "|",
+                outcome,
+                dirtyDomains,
+                dirtyReason,
+                signature,
+                snapshot.ActiveSceneName,
+                normalCount,
+                rareCount,
+                specialActive,
+                snapshot.SpecialBusiness?.ChallengeType ?? "",
+                snapshot.SpecialBusiness?.Phase ?? "");
+            if (string.Equals(diagnosticSignature, _lastLocalApiSnapshotDiagnosticSignature, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _lastLocalApiSnapshotDiagnosticSignature = diagnosticSignature;
+            AggregateModLogService.AppendSection(
+                "snapshot",
+                "Local API Snapshot",
+                string.Join(
+                    Environment.NewLine,
+                    $"outcome: {outcome}",
+                    $"dirty: {dirtyDomains}",
+                    $"reason: {dirtyReason}",
+                    $"signature: {signature}",
+                    $"scene: {snapshot.ActiveSceneName}",
+                    $"runtimeLoaded: {snapshot.RuntimeLoaded}",
+                    $"nightOrders: {rareCount}",
+                    $"normalOrders: {normalCount}",
+                    $"specialActive: {specialActive}",
+                    $"special: {snapshot.SpecialBusiness?.ChallengeType ?? ""} {snapshot.SpecialBusiness?.Phase ?? ""}",
+                    $"normalSource: {snapshot.NormalBusiness?.Source ?? ""}",
+                    $"normalError: {snapshot.NormalBusiness?.Error ?? ""}"));
+        }
+        catch
+        {
+            // Snapshot diagnostics must never affect gameplay or local API responses.
         }
     }
 
@@ -829,30 +942,76 @@ internal sealed class StewardOverlayController
     private void FlushPendingLocalApiSnapshot()
     {
         if (!_localApiSnapshotPublishPending) return;
-        if (Time.realtimeSinceStartup < _nextLocalApiSnapshotPublishAt) return;
+        if (!_localApiSnapshotForcePending && Time.realtimeSinceStartup < _nextLocalApiSnapshotPublishAt) return;
 
-        PublishLocalApiSnapshot();
+        PublishLocalApiSnapshot(_localApiSnapshotForcePending);
     }
 
-    /// <summary>
-    /// 根据运行时目录体积和签名决定本轮是否完整发布目录。
-    /// </summary>
-    /// <returns>需要随快照发布的目录；本轮可复用前端缓存时返回 <c>null</c>。</returns>
-    private RuntimeDataCatalog? BuildRuntimeDataForSnapshot(bool force)
+    private void MarkActiveBusinessSnapshotDirtyIfDue()
     {
-        if (!_runtimeDataCatalog.IsComplete) return _runtimeDataCatalog;
+        if (_localApiServer == null || _config == null || !_config.AutoRefreshRuntime.Value) return;
+        if (!CanReadNormalBusinessSnapshot() && !HasActiveNightBusinessContext(_businessContext)) return;
 
-        var signature = BuildRuntimeDataSignature(_runtimeDataCatalog);
-        if (force
-            || Time.realtimeSinceStartup >= _nextRuntimeDataFullPublishAt
-            || !string.Equals(signature, _lastPublishedRuntimeDataSignature, StringComparison.Ordinal))
+        var now = Time.realtimeSinceStartup;
+        if (now < _nextActiveBusinessSnapshotRefreshAt) return;
+
+        _nextActiveBusinessSnapshotRefreshAt = now + ActiveBusinessSnapshotRefreshSeconds;
+        MarkLocalApiSnapshotDirty(
+            LocalApiSnapshotDirtyDomain.NormalBusiness | LocalApiSnapshotDirtyDomain.SpecialBusiness | LocalApiSnapshotDirtyDomain.Automation,
+            "active business refresh");
+    }
+
+    private void MarkLocalApiSnapshotDirty(LocalApiSnapshotDirtyDomain domains, string reason, bool force = false)
+    {
+        if (domains == LocalApiSnapshotDirtyDomain.None) return;
+
+        _localApiSnapshotDirtyDomains |= domains;
+        if (!string.IsNullOrWhiteSpace(reason))
         {
-            _lastPublishedRuntimeDataSignature = signature;
-            _nextRuntimeDataFullPublishAt = Time.realtimeSinceStartup + RuntimeDataFullPublishIntervalSeconds;
-            return _runtimeDataCatalog;
+            _localApiSnapshotDirtyReason = string.IsNullOrWhiteSpace(_localApiSnapshotDirtyReason)
+                ? reason
+                : $"{_localApiSnapshotDirtyReason}; {reason}";
+            if (_localApiSnapshotDirtyReason.Length > 512)
+            {
+                _localApiSnapshotDirtyReason = _localApiSnapshotDirtyReason.Substring(_localApiSnapshotDirtyReason.Length - 512);
+            }
         }
 
-        return null;
+        if (force)
+        {
+            _localApiSnapshotForcePending = true;
+            _nextLocalApiSnapshotPublishAt = 0f;
+        }
+
+        _localApiSnapshotPublishPending = true;
+    }
+
+    private void ClearLocalApiSnapshotDirtyState()
+    {
+        _localApiSnapshotPublishPending = false;
+        _localApiSnapshotForcePending = false;
+        _localApiSnapshotDirtyDomains = LocalApiSnapshotDirtyDomain.None;
+        _localApiSnapshotDirtyReason = "";
+    }
+
+    private RuntimeDataCatalogInfo PublishRuntimeDataCatalogForLocalApi(bool force)
+    {
+        var signature = BuildRuntimeDataSignature(_runtimeDataCatalog);
+        if (force || !string.Equals(signature, _lastPublishedRuntimeDataSignature, StringComparison.Ordinal))
+        {
+            _lastPublishedRuntimeDataSignature = signature;
+            _localApiServer?.SetRuntimeDataJson(Measure(
+                "runtimeData.serialize",
+                () => JsonSerializer.Serialize(_runtimeDataCatalog, LocalApiJsonOptions)));
+        }
+
+        return new RuntimeDataCatalogInfo
+        {
+            IsComplete = _runtimeDataCatalog.IsComplete,
+            Source = _runtimeDataCatalog.Source,
+            Status = _runtimeDataCatalog.Status,
+            Signature = signature,
+        };
     }
 
     private static string BuildRuntimeDataSignature(RuntimeDataCatalog catalog)
@@ -890,11 +1049,15 @@ internal sealed class StewardOverlayController
         AppendValue(builder, snapshot.RuntimeUiPinningStatus);
         AppendRecommendationSnapshot(builder, snapshot.RecommendationState);
         AppendNightBusiness(builder, snapshot.NightBusiness);
+        AppendSpecialBusiness(builder, snapshot.SpecialBusiness);
         AppendRuntimeMissions(builder, snapshot.RuntimeMissions);
         AppendNormalBusiness(builder, snapshot.NormalBusiness);
         AppendRuntimeRareCustomers(builder, snapshot.RuntimeRareCustomers);
         AppendAutomationRuntimeEvents(builder, snapshot.AutomationEvents);
-        AppendValue(builder, snapshot.RuntimeData == null ? "<runtime-data:null>" : BuildRuntimeDataSignature(snapshot.RuntimeData));
+        AppendValue(builder, snapshot.RuntimeDataComplete);
+        AppendValue(builder, snapshot.RuntimeDataSource);
+        AppendValue(builder, snapshot.RuntimeDataStatus);
+        AppendValue(builder, snapshot.RuntimeDataSignature);
         return builder.ToString();
     }
 
@@ -978,15 +1141,63 @@ internal sealed class StewardOverlayController
             AppendValue(builder, order.DeskCode);
             AppendValue(builder, order.GuestId);
             AppendValue(builder, order.GuestName);
+            AppendValue(builder, order.SpecialBusinessRole);
+            AppendValue(builder, order.SpecialBusinessRoleLabel);
+            AppendValue(builder, order.AutomationAllowed);
+            AppendValue(builder, order.AutomationBlockReason);
             AppendValue(builder, order.FoodTagId);
             AppendValue(builder, order.FoodTag);
             AppendValue(builder, order.BeverageTagId);
             AppendValue(builder, order.BeverageTag);
             AppendValue(builder, order.Source);
+            AppendValue(builder, order.FirstSeenAtUtc?.ToString("O"));
+            AppendValue(builder, order.LastSeenAtUtc?.ToString("O"));
             AppendValue(builder, order.IsFreeOrder);
+            AppendValue(builder, order.Fund);
+            AppendValue(builder, order.BaseFundCarry);
+            AppendValue(builder, order.MaxFundCarry);
+            AppendValue(builder, order.ExtraFundByBuff);
+            AppendValue(builder, order.WillPayMoney);
+            AppendValue(builder, order.RemainingOrderCount);
             AppendValue(builder, order.HasServedFood);
             AppendValue(builder, order.HasServedBeverage);
         }
+    }
+
+    private static void AppendSpecialBusiness(StringBuilder builder, SpecialBusinessContext? context)
+    {
+        if (context == null)
+        {
+            AppendValue(builder, "<special-business:null>");
+            return;
+        }
+
+        AppendValue(builder, context.Active);
+        AppendValue(builder, context.ChallengeType);
+        AppendValue(builder, context.DisplayName);
+        AppendValue(builder, context.Category);
+        AppendValue(builder, context.RuleSummary);
+        AppendStrings(builder, context.FoodTargetTags);
+        AppendStrings(builder, context.BeverageTargetTags);
+        AppendValue(builder, context.TargetFund);
+        AppendValue(builder, context.TargetLabel);
+        AppendValue(builder, context.Phase);
+        AppendValue(builder, context.CurrentValue);
+        AppendValue(builder, context.MaxValue);
+        AppendValue(builder, context.TargetValue);
+        AppendValue(builder, context.TargetTimeProgress);
+        AppendValue(builder, context.TargetTagTimeProgress);
+        AppendValue(builder, context.WackyKoishiShieldBroken);
+        AppendStrings(builder, context.WackyKoishiFoodPreferenceTags);
+        AppendStrings(builder, context.WackyKoishiFoodHateTags);
+        AppendStrings(builder, context.WackyKoishiBeveragePreferenceTags);
+        AppendValue(builder, context.CurrentSpellCount);
+        AppendValue(builder, context.TargetSpellCount);
+        AppendValue(builder, context.RecommendationPolicy);
+        AppendValue(builder, context.AutomationPolicy);
+        AppendValue(builder, context.Source);
+        AppendValue(builder, context.Error);
+        AppendValue(builder, context.LastTargetUpdatedUtc?.ToString("O"));
     }
 
     private static void AppendRuntimeMissions(StringBuilder builder, RuntimeMissionContext? context)
@@ -1052,6 +1263,16 @@ internal sealed class StewardOverlayController
             AppendValue(builder, order.OrderKey);
             AppendValue(builder, order.DeskCode);
             AppendValue(builder, order.GuestName);
+            AppendValue(builder, order.SpecialBusinessRole);
+            AppendValue(builder, order.SpecialBusinessRoleLabel);
+            AppendStrings(builder, order.FoodPreferenceTags);
+            AppendStrings(builder, order.BeveragePreferenceTags);
+            AppendValue(builder, order.Fund);
+            AppendValue(builder, order.BaseFundCarry);
+            AppendValue(builder, order.MaxFundCarry);
+            AppendValue(builder, order.ExtraFundByBuff);
+            AppendValue(builder, order.WillPayMoney);
+            AppendValue(builder, order.RemainingOrderCount);
             AppendValue(builder, order.FoodId);
             AppendValue(builder, order.FoodName);
             AppendValue(builder, order.BeverageId);
@@ -1060,6 +1281,10 @@ internal sealed class StewardOverlayController
             AppendValue(builder, order.HasServedBeverage);
             AppendValue(builder, order.ReadyToEvaluate);
             AppendValue(builder, order.HasEvaluated);
+            AppendValue(builder, order.ControllerAvailable);
+            AppendValue(builder, order.CanAutomate);
+            AppendValue(builder, order.ActionBlockReason);
+            AppendValue(builder, order.FirstSeenAtUtc?.ToString("O"));
             AppendValue(builder, order.Source);
         }
     }
@@ -1133,6 +1358,18 @@ internal sealed class StewardOverlayController
     private static void AppendValue(StringBuilder builder, int? value)
     {
         builder.Append(value?.ToString() ?? "<null>").Append('|');
+    }
+
+    private static void AppendValue(StringBuilder builder, double? value)
+    {
+        if (!value.HasValue)
+        {
+            builder.Append("<null>|");
+            return;
+        }
+
+        var clamped = Math.Clamp(value.Value, 0d, 1d);
+        builder.Append(Math.Round(clamped * 100d).ToString(System.Globalization.CultureInfo.InvariantCulture)).Append("%|");
     }
 
     private T Measure<T>(string key, Func<T> action)
@@ -1356,9 +1593,18 @@ internal sealed class StewardOverlayController
         return HasActiveNightBusinessContext(_businessContext);
     }
 
+    private bool CanReadNormalBusinessSnapshot()
+    {
+        if (_repository == null) return false;
+
+        if (IsNonGameplayScene(_activeSceneName)) return false;
+        if (IsIzakayaPrepActive(_activeSceneName)) return false;
+        return IsNightBusinessScene(_activeSceneName);
+    }
+
     private NormalBusinessContext? ReadNormalBusinessForSnapshot()
     {
-        if (_repository == null || !HasActiveNightBusinessContext(_businessContext))
+        if (!CanReadNormalBusinessSnapshot())
         {
             _normalBusinessContext = null;
             _nextNormalBusinessRefreshAt = 0f;
@@ -1372,15 +1618,20 @@ internal sealed class StewardOverlayController
     /// 读取或刷新普客订单快照。
     /// </summary>
     /// <remarks>
-    /// 普客订单只在已确认夜间经营上下文有效时读取，并使用短缓存降低每帧反射扫描成本。
+    /// 普客 HUD 订单可能早于稀客经营上下文稳定出现，因此这里只以夜间经营场景为读取门禁。
+    /// 订单是否可执行仍由 <see cref="RuntimeNormalOrderSnapshotService"/> 合并 live 订单和捕获控制器后判断。
     /// </remarks>
     private NormalBusinessContext? RefreshNormalBusinessContext(bool force)
     {
-        if (_repository == null || !HasActiveNightBusinessContext(_businessContext))
+        if (!CanReadNormalBusinessSnapshot())
         {
             _normalBusinessContext = null;
+            _nextNormalBusinessRefreshAt = 0f;
             return null;
         }
+
+        var repository = _repository;
+        if (repository == null) return null;
 
         if (!force
             && _normalBusinessContext != null
@@ -1402,7 +1653,7 @@ internal sealed class StewardOverlayController
 
         try
         {
-            var service = new RuntimeNormalOrderSnapshotService(_repository);
+            var service = new RuntimeNormalOrderSnapshotService(repository);
             _normalBusinessContext = Measure("business.normal.total", service.Load);
             RecordPerformanceEntries("business.normal.", service.PerformanceMs);
             _normalBusinessContextCaptureVersion = captureVersion;
@@ -1717,7 +1968,7 @@ internal sealed class StewardOverlayController
         _status = result.Ok
             ? L("已准备下一笔稀客订单。", "Next rare-customer order prepared.")
             : L($"准备下一笔稀客订单未完成：{result.Error}", $"Preparing next rare-customer order did not finish: {result.Error}");
-        PublishLocalApiSnapshot();
+        MarkLocalApiSnapshotDirty(LocalApiSnapshotDirtyDomain.RareBusiness | LocalApiSnapshotDirtyDomain.Automation, "rare order prepared");
         return result;
     }
 
@@ -1783,7 +2034,7 @@ internal sealed class StewardOverlayController
             ? L("已完成当前第一笔稀客订单。", "First rare-customer order completed.")
             : L($"完成当前第一笔稀客订单失败：{result.Error}", $"Completing first rare-customer order failed: {result.Error}");
         RefreshBusinessContext(false, force: true);
-        PublishLocalApiSnapshot();
+        MarkLocalApiSnapshotDirty(LocalApiSnapshotDirtyDomain.RareBusiness | LocalApiSnapshotDirtyDomain.Automation, "rare order completed");
         return result;
     }
 
@@ -1796,7 +2047,7 @@ internal sealed class StewardOverlayController
             ? L("已处理当前第一笔普客订单。", "First normal-customer order handled.")
             : L($"处理当前第一笔普客订单未完成：{result.Error}", $"Handling first normal-customer order did not finish: {result.Error}");
         RefreshNormalBusinessContext(force: true);
-        PublishLocalApiSnapshot();
+        MarkLocalApiSnapshotDirty(LocalApiSnapshotDirtyDomain.NormalBusiness | LocalApiSnapshotDirtyDomain.Automation, "normal order action completed");
         return result;
     }
 
@@ -1897,7 +2148,7 @@ internal sealed class StewardOverlayController
             _status = result.Ok
                 ? result.Status
                 : L($"邀请稀客失败：{result.Error ?? result.Status}", $"Rare guest invitation failed: {result.Error ?? result.Status}");
-            PublishLocalApiSnapshot();
+            MarkLocalApiSnapshotDirty(LocalApiSnapshotDirtyDomain.Runtime | LocalApiSnapshotDirtyDomain.Missions, "rare guest invitation changed");
         }
         return result;
     }
@@ -1933,7 +2184,7 @@ internal sealed class StewardOverlayController
         {
             _status = message;
             _log?.LogInfo(message);
-            PublishLocalApiSnapshot();
+            MarkLocalApiSnapshotDirty(LocalApiSnapshotDirtyDomain.Automation | LocalApiSnapshotDirtyDomain.NormalBusiness | LocalApiSnapshotDirtyDomain.RareBusiness, "pending cooking collection processed");
         }
     }
 
@@ -2010,7 +2261,7 @@ internal sealed class StewardOverlayController
             : L($"库存修改失败：{result.Error}", $"Inventory edit failed: {result.Error}");
         RefreshRuntimeState(false);
         RefreshBusinessContext(false);
-        PublishLocalApiSnapshot();
+        MarkLocalApiSnapshotDirty(LocalApiSnapshotDirtyDomain.Runtime | LocalApiSnapshotDirtyDomain.RareBusiness | LocalApiSnapshotDirtyDomain.NormalBusiness, "inventory edited");
         return result;
     }
 
@@ -2054,7 +2305,7 @@ internal sealed class StewardOverlayController
             $"Inventory bulk edit: {normalizedType} total {total}, changed {changed}, unchanged {unchanged}, failed {failed}");
         RefreshRuntimeState(false);
         RefreshBusinessContext(false);
-        PublishLocalApiSnapshot();
+        MarkLocalApiSnapshotDirty(LocalApiSnapshotDirtyDomain.Runtime | LocalApiSnapshotDirtyDomain.RareBusiness | LocalApiSnapshotDirtyDomain.NormalBusiness, "inventory bulk edited");
 
         return new RuntimeInventoryBulkEditResult
         {

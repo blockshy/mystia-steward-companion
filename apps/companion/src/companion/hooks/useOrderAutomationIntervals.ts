@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 
 interface UseOrderAutomationIntervalsOptions {
   automationEnabled: boolean;
@@ -32,9 +32,17 @@ export function useOrderAutomationIntervals({
   onNormalAutomationDisabled,
 }: UseOrderAutomationIntervalsOptions) {
   const lastNormalOrderSignatureRef = useRef('');
+  const normalSignatureTimerRef = useRef<number | null>(null);
+
+  const clearNormalSignatureTimer = useCallback(() => {
+    if (normalSignatureTimerRef.current === null) return;
+    window.clearTimeout(normalSignatureTimerRef.current);
+    normalSignatureTimerRef.current = null;
+  }, []);
 
   useEffect(() => {
     if (!automationEnabled) {
+      clearNormalSignatureTimer();
       onAutomationDisabled();
       return undefined;
     }
@@ -44,21 +52,31 @@ export function useOrderAutomationIntervals({
       void runAutoFirstOrder();
     }, rareTickMs);
     return () => window.clearInterval(timer);
-  }, [automationEnabled, onAutomationDisabled, rareTickMs, runAutoFirstOrder]);
+  }, [automationEnabled, clearNormalSignatureTimer, onAutomationDisabled, rareTickMs, runAutoFirstOrder]);
 
   useEffect(() => {
-    if (!automationEnabled || !autoNormalOrderEnabled) return undefined;
+    if (!automationEnabled || !autoNormalOrderEnabled) {
+      clearNormalSignatureTimer();
+      return undefined;
+    }
 
     void runAutoNormalOrder();
     const timer = window.setInterval(() => {
       void runAutoNormalOrder();
     }, normalTickMs);
     return () => window.clearInterval(timer);
-  }, [automationEnabled, autoNormalOrderEnabled, normalTickMs, runAutoNormalOrder]);
+  }, [
+    automationEnabled,
+    autoNormalOrderEnabled,
+    clearNormalSignatureTimer,
+    normalTickMs,
+    runAutoNormalOrder,
+  ]);
 
   useEffect(() => {
     // 普客订单状态由 Mod 快照驱动，签名变化通常表示订单进度或列表发生变化，需要重置本轮判断。
     if (!automationEnabled || !autoNormalOrderEnabled) {
+      clearNormalSignatureTimer();
       lastNormalOrderSignatureRef.current = normalOrderSignature;
       return;
     }
@@ -66,17 +84,31 @@ export function useOrderAutomationIntervals({
     if (lastNormalOrderSignatureRef.current === normalOrderSignature) return;
     lastNormalOrderSignatureRef.current = normalOrderSignature;
     onNormalOrderSignatureChanged();
-    void runAutoNormalOrder();
+    clearNormalSignatureTimer();
+    normalSignatureTimerRef.current = window.setTimeout(() => {
+      normalSignatureTimerRef.current = null;
+      void runAutoNormalOrder();
+    }, Math.min(500, normalTickMs));
   }, [
     automationEnabled,
     autoNormalOrderEnabled,
+    clearNormalSignatureTimer,
     normalOrderSignature,
+    normalTickMs,
     onNormalOrderSignatureChanged,
     runAutoNormalOrder,
   ]);
 
   useEffect(() => {
     if (automationEnabled && autoNormalOrderEnabled) return;
+    clearNormalSignatureTimer();
     onNormalAutomationDisabled();
-  }, [automationEnabled, autoNormalOrderEnabled, onNormalAutomationDisabled]);
+  }, [
+    automationEnabled,
+    autoNormalOrderEnabled,
+    clearNormalSignatureTimer,
+    onNormalAutomationDisabled,
+  ]);
+
+  useEffect(() => () => clearNormalSignatureTimer(), [clearNormalSignatureTimer]);
 }

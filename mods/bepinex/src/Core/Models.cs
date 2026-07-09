@@ -21,6 +21,7 @@ public sealed class Recipe
     public List<string> PositiveTags { get; set; } = new();
     public List<string> NegativeTags { get; set; } = new();
     public string Cooker { get; set; } = "";
+    public int Level { get; set; }
     public int Price { get; set; }
 }
 
@@ -37,6 +38,7 @@ public sealed class Beverage
     public int Id { get; set; }
     public string Name { get; set; } = "";
     public List<string> Tags { get; set; } = new();
+    public int Level { get; set; }
     public int Price { get; set; }
 }
 
@@ -131,6 +133,10 @@ public sealed class NightBusinessOrder
     public int DeskCode { get; init; }
     public int? GuestId { get; init; }
     public string GuestName { get; init; } = "";
+    public string SpecialBusinessRole { get; init; } = "";
+    public string SpecialBusinessRoleLabel { get; init; } = "";
+    public bool AutomationAllowed { get; init; } = true;
+    public string AutomationBlockReason { get; init; } = "";
     public int FoodTagId { get; init; }
     public string FoodTag { get; init; } = "";
     public int BeverageTagId { get; init; }
@@ -139,6 +145,12 @@ public sealed class NightBusinessOrder
     public DateTime? FirstSeenAtUtc { get; init; }
     public DateTime? LastSeenAtUtc { get; init; }
     public bool IsFreeOrder { get; init; }
+    public int? Fund { get; init; }
+    public int? BaseFundCarry { get; init; }
+    public int? MaxFundCarry { get; init; }
+    public int? ExtraFundByBuff { get; init; }
+    public bool? WillPayMoney { get; init; }
+    public int? RemainingOrderCount { get; init; }
     public bool HasServedFood { get; init; }
     public bool HasServedBeverage { get; init; }
 }
@@ -164,6 +176,36 @@ public sealed class NightBusinessContext
     public List<NightBusinessOrder> Orders { get; init; } = new();
     public string Source { get; init; } = "";
     public string? Error { get; init; }
+}
+
+public sealed class SpecialBusinessContext
+{
+    public bool Active { get; init; }
+    public string ChallengeType { get; init; } = "";
+    public string DisplayName { get; init; } = "";
+    public string Category { get; init; } = "";
+    public string RuleSummary { get; init; } = "";
+    public List<string> FoodTargetTags { get; init; } = new();
+    public List<string> BeverageTargetTags { get; init; } = new();
+    public int? TargetFund { get; init; }
+    public string TargetLabel { get; init; } = "";
+    public string Phase { get; init; } = "";
+    public int? CurrentValue { get; init; }
+    public int? MaxValue { get; init; }
+    public int? TargetValue { get; init; }
+    public double? TargetTimeProgress { get; init; }
+    public double? TargetTagTimeProgress { get; init; }
+    public bool? WackyKoishiShieldBroken { get; init; }
+    public List<string> WackyKoishiFoodPreferenceTags { get; init; } = new();
+    public List<string> WackyKoishiFoodHateTags { get; init; } = new();
+    public List<string> WackyKoishiBeveragePreferenceTags { get; init; } = new();
+    public int? CurrentSpellCount { get; init; }
+    public int? TargetSpellCount { get; init; }
+    public string RecommendationPolicy { get; init; } = "";
+    public string AutomationPolicy { get; init; } = "";
+    public string Source { get; init; } = "";
+    public string? Error { get; init; }
+    public DateTime? LastTargetUpdatedUtc { get; init; }
 }
 
 public sealed class RuntimeMissionInfo
@@ -207,7 +249,18 @@ public sealed class NormalBusinessOrder
     public string TraceId { get; init; } = "";
     public string OrderKey { get; init; } = "";
     public int DeskCode { get; init; }
+    public int? GuestId { get; init; }
     public string GuestName { get; init; } = "";
+    public string SpecialBusinessRole { get; init; } = "";
+    public string SpecialBusinessRoleLabel { get; init; } = "";
+    public List<string> FoodPreferenceTags { get; init; } = new();
+    public List<string> BeveragePreferenceTags { get; init; } = new();
+    public int? Fund { get; init; }
+    public int? BaseFundCarry { get; init; }
+    public int? MaxFundCarry { get; init; }
+    public int? ExtraFundByBuff { get; init; }
+    public bool? WillPayMoney { get; init; }
+    public int? RemainingOrderCount { get; init; }
     public int FoodId { get; init; }
     public string FoodName { get; init; } = "";
     public int BeverageId { get; init; }

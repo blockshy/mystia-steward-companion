@@ -17,6 +17,16 @@ export type PageRecommendationPayload =
   | NormalPageRecommendationPayload
   | RarePageRecommendationPayload;
 
+export type PageRecommendationWorkerRuntimePayload =
+  Omit<NormalPageRecommendationPayload, 'data'> & {
+    data?: RecommendationDataSet;
+    dataSignature: string;
+  }
+  | Omit<RarePageRecommendationPayload, 'data'> & {
+    data?: RecommendationDataSet;
+    dataSignature: string;
+  };
+
 export interface NormalPageRecommendationPayload {
   kind: 'normal';
   runtime: RecommendationStateSnapshot;
@@ -54,7 +64,7 @@ export interface RarePageRecommendationResult {
 
 export interface PageRecommendationWorkerRequest {
   requestId: number;
-  payload: PageRecommendationPayload;
+  payload: PageRecommendationWorkerRuntimePayload;
 }
 
 export type PageRecommendationWorkerResponse =

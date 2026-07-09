@@ -10,7 +10,8 @@ namespace MystiaStewardCompanion.Save;
 /// <remarks>
 /// HUD 的 <c>OrderController</c> 只能说明订单仍对玩家可见，不能保证订单仍有可执行的客人控制器。
 /// 普客自动化送达、恢复耐心和评价都必须通过 <c>GuestGroupController</c>，因此这里在
-/// <c>GuestGroupController.PushToOrder</c> 阶段记录真实归属，并在订单移除或评价后清理。
+/// <c>GuestGroupController.PushToOrder</c> 和 <c>GuestsManager.SetManualControllerOrderInternal</c>
+/// 阶段记录真实归属，并在订单移除或评价后清理。
 /// </remarks>
 public static class NormalOrderRuntimeCapture
 {
@@ -128,6 +129,31 @@ public static class NormalOrderRuntimeCapture
         }
     }
 
+    /// <summary>
+    /// 按当前 live 订单来源清理已经不可见的捕获绑定。
+    /// </summary>
+    /// <remarks>
+    /// 捕获缓存只用于补充可执行 <c>GuestGroupController</c> 绑定，不再作为订单仍存在的事实来源。
+    /// </remarks>
+    public static int PruneMissing(
+        IReadOnlySet<string> liveRuntimeKeys,
+        IReadOnlySet<string> liveSlots,
+        string reason)
+    {
+        lock (SyncRoot)
+        {
+            var removed = Orders.RemoveAll(order => !MatchesLiveOrder(order, liveRuntimeKeys, liveSlots));
+            if (removed > 0)
+            {
+                _changeVersion++;
+                _lastCapture = $"pruned={removed}: {reason}";
+                _status = BuildStatusLocked();
+            }
+
+            return removed;
+        }
+    }
+
     private static void TryAttach(ManualLogSource? log, bool force)
     {
         lock (SyncRoot)
@@ -143,8 +169,10 @@ public static class NormalOrderRuntimeCapture
             _harmony ??= new Harmony("com.tyukki.mystia-steward-companion.normal-order-runtime-capture");
 
             PatchMethod(_harmony, GuestGroupControllerTypeName, "PushToOrder", 1, false, nameof(OnControllerOrderAdded), null, patchedNow, missing);
+            PatchMethod(_harmony, GuestsManagerTypeName, "SetManualControllerOrderInternal", 3, false, null, nameof(OnManualControllerOrderSet), patchedNow, missing);
             PatchMethod(_harmony, GuestsManagerTypeName, "RemoveFromOrder", 1, false, nameof(OnOrderRemoved), null, patchedNow, missing);
             PatchMethod(_harmony, GuestsManagerTypeName, "EvaluateOrder", 3, false, nameof(OnOrderEvaluating), null, patchedNow, missing);
+            PatchMethod(_harmony, GuestsManagerTypeName, "EvaulateManualOrder", 2, false, nameof(OnManualOrderEvaluating), null, patchedNow, missing);
 
             lock (SyncRoot)
             {
@@ -227,6 +255,12 @@ public static class NormalOrderRuntimeCapture
         AddOrder(ParseOrder(__0, "ControllerOrderAdd", __instance));
     }
 
+    private static void OnManualControllerOrderSet(object __0, object __2)
+    {
+        lock (SyncRoot) _addCallbacks++;
+        AddOrder(ParseOrder(__2, "ManualOrderSet", __0));
+    }
+
     private static void OnOrderRemoved(object __0)
     {
         lock (SyncRoot) _removeCallbacks++;
@@ -237,6 +271,13 @@ public static class NormalOrderRuntimeCapture
     {
         lock (SyncRoot) _removeCallbacks++;
         var order = ParseControllerCurrentOrder(__0, "EvaluateOrder");
+        if (order != null) RemoveOrder(order);
+    }
+
+    private static void OnManualOrderEvaluating(object __0)
+    {
+        lock (SyncRoot) _removeCallbacks++;
+        var order = ParseControllerCurrentOrder(__0, "ManualOrderEvaluate");
         if (order != null) RemoveOrder(order);
     }
 
@@ -363,6 +404,23 @@ public static class NormalOrderRuntimeCapture
         return left.DeskCode == right.DeskCode
             && left.FoodId == right.FoodId
             && left.BeverageId == right.BeverageId;
+    }
+
+    private static bool MatchesLiveOrder(
+        CapturedRuntimeNormalOrder order,
+        IReadOnlySet<string> liveRuntimeKeys,
+        IReadOnlySet<string> liveSlots)
+    {
+        if (!string.IsNullOrWhiteSpace(order.RuntimeKey) && liveRuntimeKeys.Contains(order.RuntimeKey)) return true;
+        var slot = BuildOrderSlot(order);
+        return slot.Length > 0 && liveSlots.Contains(slot);
+    }
+
+    private static string BuildOrderSlot(CapturedRuntimeNormalOrder order)
+    {
+        return order.DeskCode < 0 || (order.FoodId < 0 && order.BeverageId < 0)
+            ? ""
+            : $"{order.DeskCode}|{order.FoodId}|{order.BeverageId}";
     }
 
     private static bool IsNormalOrder(object order)

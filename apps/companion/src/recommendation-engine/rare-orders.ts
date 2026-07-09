@@ -12,6 +12,11 @@ import {
   resolveFoodTags,
   resolveTagPriority,
 } from '@/recommendation-engine/tag-resolution';
+import {
+  buildKoishiFeedPlanningInfo,
+  estimateKoishiBrokenShieldFeedScore,
+  isKoishiFeedPlanSustainable,
+} from '@/recommendation-engine/koishi-feed';
 import type {
   BeverageCandidate,
   ConditionResult,
@@ -36,6 +41,7 @@ interface BuildRareOrderPlansOptions {
   customer: RareCustomerCatalogItem;
   requiredFoodTag: string;
   requiredBeverageTag: string;
+  specialFoodTargetTags?: string[];
   context: RecommendationRuntimeContext;
   limit?: number;
   sortProfile?: RecommendationSortProfile;
@@ -53,6 +59,8 @@ interface IngredientSearchState {
   suppressedTags: string[];
   matchedPositiveTags: string[];
   matchedNegativeTags: string[];
+  matchedSpecialFoodTargetTags: string[];
+  meetsSpecialFoodTarget: boolean;
   meetsRequiredFood: boolean;
   extraCost: number;
   resourcePressure: number;
@@ -69,6 +77,7 @@ export function buildRareOrderPlans({
   customer,
   requiredFoodTag,
   requiredBeverageTag,
+  specialFoodTargetTags = [],
   context,
   limit,
   sortProfile,
@@ -79,6 +88,7 @@ export function buildRareOrderPlans({
     customer,
     requiredFoodTag,
     requiredBeverageTag,
+    specialFoodTargetTags,
   };
   const foodCandidates = buildRareFoodCandidates(data, demand, context);
   const beverageCandidates = buildRareBeverageCandidates(data, demand, context);
@@ -88,6 +98,7 @@ export function buildRareOrderPlans({
     customer,
     requiredFoodTag,
     requiredBeverageTag,
+    specialFoodTargetTags,
     context,
     limit,
     sortProfile,
@@ -107,6 +118,7 @@ export function buildRareOrderPlansFromCandidates({
   customer,
   requiredFoodTag,
   requiredBeverageTag,
+  specialFoodTargetTags = [],
   context,
   limit,
   sortProfile,
@@ -119,6 +131,7 @@ export function buildRareOrderPlansFromCandidates({
     customer,
     requiredFoodTag,
     requiredBeverageTag,
+    specialFoodTargetTags,
   };
   const plans: RareOrderRecommendationPlan[] = [];
   for (const food of foodCandidates) {
@@ -271,6 +284,7 @@ function buildRarePlan(
   const bucket = resolvePlanBucket(food, beverage, conditionResults);
   const reasons = [
     food.meetsRequiredFood ? `料理满足 ${demand.requiredFoodTag}` : '',
+    food.matchedSpecialFoodTargetTags.length > 0 ? `特殊目标 ${food.matchedSpecialFoodTargetTags.join('、')}` : '',
     beverage.meetsRequiredBeverage ? `酒水满足 ${demand.requiredBeverageTag}` : '',
     food.matchedPositiveTags.length > 0 ? `料理偏好 ${food.matchedPositiveTags.join('、')}` : '',
     beverage.matchedTags.length > 0 ? `酒水偏好 ${beverage.matchedTags.join('、')}` : '',
@@ -403,6 +417,7 @@ function buildRelevantIngredientPool({
   const usefulTags = new Set([
     demand.requiredFoodTag,
     ...demand.customer.positiveTags,
+    ...getSpecialFoodTargetTags(demand),
     ...findTagsThatCanSuppress(baseState.activeTags, demand.customer.negativeTags, tagPriorityRules),
   ]);
 
@@ -467,12 +482,17 @@ function evaluateIngredientState(
   });
   const matchedPositiveTags = resolved.activeTags.filter((tag) => demand.customer.positiveTags.includes(tag));
   const matchedNegativeTags = resolved.activeTags.filter((tag) => demand.customer.negativeTags.includes(tag));
+  const matchedSpecialFoodTargetTags = getSpecialFoodTargetTags(demand)
+    .filter((tag) => resolved.activeTags.includes(tag));
+  const meetsSpecialFoodTarget = getSpecialFoodTargetTags(demand).length === 0 || matchedSpecialFoodTargetTags.length > 0;
   return {
     ingredients: extraIngredients,
     activeTags: resolved.activeTags,
     suppressedTags: resolved.suppressedTags,
     matchedPositiveTags,
     matchedNegativeTags,
+    matchedSpecialFoodTargetTags,
+    meetsSpecialFoodTarget,
     meetsRequiredFood: resolved.activeTags.includes(demand.requiredFoodTag),
     extraCost: extraIngredients.reduce((sum, ingredient) => sum + ingredient.price, 0),
     resourcePressure: calculateResourcePressure(extraIngredients, context.ownedIngredientQty),
@@ -501,6 +521,7 @@ function buildFoodCandidate(
     suppressedTags: state.suppressedTags,
     matchedPositiveTags: state.matchedPositiveTags,
     matchedNegativeTags: state.matchedNegativeTags,
+    matchedSpecialFoodTargetTags: state.matchedSpecialFoodTargetTags,
     meetsRequiredFood: state.meetsRequiredFood,
     baseCost,
     extraCost: state.extraCost,
@@ -516,6 +537,7 @@ function buildFoodConditionResults(
   demand: RareTagOrderDemand,
   cookerAvailable: boolean,
 ): ConditionResult[] {
+  const specialTargetTags = getSpecialFoodTargetTags(demand);
   const results: ConditionResult[] = [
     {
       id: 'food.required-tag',
@@ -528,6 +550,19 @@ function buildFoodConditionResults(
         : `未满足点单料理 ${demand.requiredFoodTag}`,
     },
   ];
+
+  if (specialTargetTags.length > 0) {
+    results.push({
+      id: 'food.special-target-tag',
+      target: 'food',
+      status: state.meetsSpecialFoodTarget ? 'pass' : 'fail',
+      severity: 'hard',
+      label: '特殊目标 Tag',
+      detail: state.meetsSpecialFoodTarget
+        ? `满足特殊目标 Tag ${state.matchedSpecialFoodTargetTags.join('、')}`
+        : `未满足特殊目标 Tag ${specialTargetTags.join('、')}`,
+    });
+  }
 
   if (!cookerAvailable) {
     results.push({
@@ -697,10 +732,26 @@ function buildExtraIngredientReasons(
   demand: RareTagOrderDemand,
 ): Record<number, string[]> {
   const result: Record<number, string[]> = {};
-  const relevantTags = new Set([demand.requiredFoodTag, ...demand.customer.positiveTags]);
+  const relevantTags = new Set([
+    demand.requiredFoodTag,
+    ...demand.customer.positiveTags,
+    ...getSpecialFoodTargetTags(demand),
+  ]);
   for (const ingredient of extraIngredients) {
     const reasons = ingredient.tags.filter((tag) => relevantTags.has(tag));
     if (reasons.length > 0) result[ingredient.id] = reasons;
+  }
+  return result;
+}
+
+function getSpecialFoodTargetTags(demand: RareTagOrderDemand): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const tag of demand.specialFoodTargetTags ?? []) {
+    const text = tag.trim();
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    result.push(text);
   }
   return result;
 }
@@ -726,6 +777,9 @@ function keepBestStates(states: IngredientSearchState[], limit: number): Ingredi
 }
 
 function compareIngredientStates(left: IngredientSearchState, right: IngredientSearchState): number {
+  const leftSpecial = left.meetsSpecialFoodTarget ? 1 : 0;
+  const rightSpecial = right.meetsSpecialFoodTarget ? 1 : 0;
+  if (leftSpecial !== rightSpecial) return rightSpecial - leftSpecial;
   const leftRequired = left.meetsRequiredFood ? 1 : 0;
   const rightRequired = right.meetsRequiredFood ? 1 : 0;
   if (leftRequired !== rightRequired) return rightRequired - leftRequired;
@@ -742,6 +796,9 @@ function compareIngredientStates(left: IngredientSearchState, right: IngredientS
 }
 
 export function compareFoodCandidates(left: FoodCandidate, right: FoodCandidate): number {
+  if (left.matchedSpecialFoodTargetTags.length !== right.matchedSpecialFoodTargetTags.length) {
+    return right.matchedSpecialFoodTargetTags.length - left.matchedSpecialFoodTargetTags.length;
+  }
   const leftRequired = left.meetsRequiredFood ? 1 : 0;
   const rightRequired = right.meetsRequiredFood ? 1 : 0;
   if (leftRequired !== rightRequired) return rightRequired - leftRequired;
@@ -786,6 +843,8 @@ function compareRarePlans(
   const bucketDiff = getBucketRank(right.bucket) - getBucketRank(left.bucket);
   if (bucketDiff !== 0) return bucketDiff;
   if (left.warnings.length !== right.warnings.length) return left.warnings.length - right.warnings.length;
+  const specialBusinessDiff = compareSpecialBusinessPlanPriority(left, right, sortContext);
+  if (specialBusinessDiff !== 0) return specialBusinessDiff;
   const scoreDiff = calculatePlanScore(right, profile, ranges)
     - calculatePlanScore(left, profile, ranges);
   if (scoreDiff !== 0) return scoreDiff;
@@ -895,11 +954,226 @@ function getPlanPinRank(
   sortContext: RecommendationPlanSortContext,
 ): number {
   if (plan.bucket === 'blocked') return 0;
-  if (sortContext.pinMissionRecipe && plan.food && sortContext.missionRecipeId === plan.food.recipe.id) return 4;
-  if (plan.food?.customRecipePinned) return 3;
-  if (sortContext.pinFavoriteRecipe && plan.food && sortContext.favoriteRecipeKeys?.has(buildPlanRecipeKey(plan.food))) return 2;
-  if (sortContext.pinFavoriteBeverage && plan.beverage && sortContext.favoriteBeverageIds?.has(plan.beverage.beverage.id)) return 1;
+  let rank = 0;
+  if (sortContext.specialPreferDamageLevel) rank = Math.max(rank, getPlanDamagePinRank(plan));
+  if (sortContext.pinMissionRecipe && plan.food && sortContext.missionRecipeId === plan.food.recipe.id) rank = Math.max(rank, 50);
+  if (plan.food?.customRecipePinned) rank = Math.max(rank, 40);
+  if (sortContext.pinFavoriteRecipe && plan.food && sortContext.favoriteRecipeKeys?.has(buildPlanRecipeKey(plan.food))) rank = Math.max(rank, 20);
+  if (sortContext.pinFavoriteBeverage && plan.beverage && sortContext.favoriteBeverageIds?.has(plan.beverage.beverage.id)) rank = Math.max(rank, 10);
+  return rank;
+}
+
+function getPlanSpecialBusinessRank(
+  plan: RareOrderRecommendationPlan,
+  sortContext: RecommendationPlanSortContext,
+): number {
+  return getFoodSpecialBusinessRank(plan.food, sortContext)
+    + getBeverageSpecialBusinessRank(plan.beverage, sortContext);
+}
+
+function getFoodSpecialBusinessRank(
+  food: FoodCandidate | null,
+  sortContext: RecommendationPlanSortContext,
+): number {
+  if (!food || !sortContext.specialTargetFoodTags || sortContext.specialTargetFoodTags.size === 0) return 0;
+  return countTagMatches(food.activeTags, sortContext.specialTargetFoodTags);
+}
+
+function getBeverageSpecialBusinessRank(
+  beverage: BeverageCandidate | null,
+  sortContext: RecommendationPlanSortContext,
+): number {
+  if (!beverage || !sortContext.specialTargetBeverageTags || sortContext.specialTargetBeverageTags.size === 0) return 0;
+  return countTagMatches(beverage.activeTags, sortContext.specialTargetBeverageTags);
+}
+
+function countTagMatches(tags: string[], targetTags: Set<string>): number {
+  return tags.reduce((count, tag) => count + (targetTags.has(tag) ? 1 : 0), 0);
+}
+
+function compareSpecialBusinessPlanPriority(
+  left: RareOrderRecommendationPlan,
+  right: RareOrderRecommendationPlan,
+  sortContext: RecommendationPlanSortContext,
+): number {
+  const rankDiff = getPlanSpecialBusinessRank(right, sortContext) - getPlanSpecialBusinessRank(left, sortContext);
+  if (rankDiff !== 0) return rankDiff;
+
+  if (sortContext.specialPreferDamageLevel) {
+    const negativeDiff = (left.food?.matchedNegativeTags.length ?? 0) - (right.food?.matchedNegativeTags.length ?? 0);
+    if (negativeDiff !== 0) return negativeDiff;
+    const budgetFitDiff = getPlanBudgetFitRank(right) - getPlanBudgetFitRank(left);
+    if (budgetFitDiff !== 0) return budgetFitDiff;
+    const koishiBudgetPlanDiff = compareKoishiFeedBudgetPlanPriority(left, right, sortContext);
+    if (koishiBudgetPlanDiff !== 0) return koishiBudgetPlanDiff;
+    const levelDiff = getPlanDamageLevel(right) - getPlanDamageLevel(left);
+    if (levelDiff !== 0) return levelDiff;
+    const damageProxyDiff = getPlanDamageProxyScore(right) - getPlanDamageProxyScore(left);
+    if (damageProxyDiff !== 0) return damageProxyDiff;
+    const preferenceDiff = getHighEvaluationPreferenceScore(right) - getHighEvaluationPreferenceScore(left);
+    if (preferenceDiff !== 0) return preferenceDiff;
+    const budgetEfficiencyDiff = getPlanBudgetEfficiencyTieScore(right) - getPlanBudgetEfficiencyTieScore(left);
+    if (budgetEfficiencyDiff !== 0) return budgetEfficiencyDiff;
+    const priceDiff = left.estimatedPrice - right.estimatedPrice;
+    if (priceDiff !== 0) return priceDiff;
+  }
+
+  if (sortContext.specialPreferHighFoodLevel || sortContext.specialPreferHighBeverageLevel) {
+    const negativeDiff = (left.food?.matchedNegativeTags.length ?? 0) - (right.food?.matchedNegativeTags.length ?? 0);
+    if (negativeDiff !== 0) return negativeDiff;
+    const preferenceDiff = getHighEvaluationPreferenceScore(right) - getHighEvaluationPreferenceScore(left);
+    if (preferenceDiff !== 0) return preferenceDiff;
+  }
+
+  if (sortContext.specialPreferHighFoodLevel) {
+    const diff = (right.food?.recipe.level ?? 0) - (left.food?.recipe.level ?? 0);
+    if (diff !== 0) return diff;
+  }
+
+  if (sortContext.specialPreferHighBeverageLevel) {
+    const diff = (right.beverage?.beverage.level ?? 0) - (left.beverage?.beverage.level ?? 0);
+    if (diff !== 0) return diff;
+  }
+
   return 0;
+}
+
+function getPlanDamageLevel(plan: RareOrderRecommendationPlan): number {
+  return (plan.food?.recipe.level ?? 0) + (plan.beverage?.beverage.level ?? 0);
+}
+
+function getPlanBudgetFitRank(plan: RareOrderRecommendationPlan): number {
+  const remainingBudget = plan.budget?.remainingBudget;
+  if (remainingBudget == null) return 0;
+  return plan.budget && plan.budget.overBudget <= 0 ? 1 : -1;
+}
+
+function getPlanDamageProxyScore(plan: RareOrderRecommendationPlan): number {
+  const negativePenalty = (plan.food?.matchedNegativeTags.length ?? 0) * 100_000;
+  return getPlanKoishiFeedScore(plan) * 10_000
+    + getHighEvaluationPreferenceScore(plan) * 10
+    - Math.max(0, plan.estimatedPrice)
+    - negativePenalty;
+}
+
+function getPlanBudgetEfficiencyTieScore(plan: RareOrderRecommendationPlan): number {
+  const feedScore = getPlanKoishiFeedScore(plan);
+  if (feedScore <= 0) return 0;
+  const price = Math.max(1, plan.estimatedPrice);
+  const remainingBudget = plan.budget?.remainingBudget;
+  if (remainingBudget == null) return 0;
+
+  if (plan.budget && plan.budget.overBudget > 0) return -plan.budget.overBudget * 1_000;
+  return Math.round((feedScore * 100_000) / price);
+}
+
+function getPlanDamagePinRank(plan: RareOrderRecommendationPlan): number {
+  if ((plan.food?.matchedNegativeTags.length ?? 0) > 0) return 0;
+  return 10_000;
+}
+
+function getHighEvaluationPreferenceScore(plan: RareOrderRecommendationPlan): number {
+  return (plan.food?.matchedPositiveTags.length ?? 0)
+    + (plan.beverage?.matchedTags.length ?? 0);
+}
+
+function compareKoishiFeedBudgetPlanPriority(
+  left: RareOrderRecommendationPlan,
+  right: RareOrderRecommendationPlan,
+  sortContext: RecommendationPlanSortContext,
+): number {
+  const remainingScore = normalizePositiveInt(sortContext.specialKoishiRemainingScore);
+  if (remainingScore == null) return 0;
+
+  const leftInfo = buildKoishiFeedBudgetPlanInfo(left, remainingScore, sortContext.specialKoishiRemainingOrderCount);
+  const rightInfo = buildKoishiFeedBudgetPlanInfo(right, remainingScore, sortContext.specialKoishiRemainingOrderCount);
+  if (!leftInfo || !rightInfo) return 0;
+
+  const sustainableDiff = Number(rightInfo.sustainable) - Number(leftInfo.sustainable);
+  if (sustainableDiff !== 0) return sustainableDiff;
+
+  const completionDiff = Number(rightInfo.completesTarget) - Number(leftInfo.completesTarget);
+  if (completionDiff !== 0) return completionDiff;
+
+  const attemptFloorDiff = Number(rightInfo.meetsAttemptFloor) - Number(leftInfo.meetsAttemptFloor);
+  if (attemptFloorDiff !== 0) return attemptFloorDiff;
+
+  if (leftInfo.sustainable && rightInfo.sustainable) {
+    const scoreDiff = rightInfo.feedScore - leftInfo.feedScore;
+    if (scoreDiff !== 0) return scoreDiff;
+  }
+
+  const efficiencyDiff = rightInfo.efficiency - leftInfo.efficiency;
+  if (Math.abs(efficiencyDiff) >= 1) return efficiencyDiff;
+
+  const scoreDiff = rightInfo.feedScore - leftInfo.feedScore;
+  if (scoreDiff !== 0) return scoreDiff;
+
+  return left.estimatedPrice - right.estimatedPrice;
+}
+
+function buildKoishiFeedBudgetPlanInfo(
+  plan: RareOrderRecommendationPlan,
+  remainingScore: number,
+  remainingOrderCount: number | null | undefined,
+): {
+  feedScore: number;
+  efficiency: number;
+  sustainable: boolean;
+  completesTarget: boolean;
+  meetsAttemptFloor: boolean;
+} | null {
+  const remainingBudget = plan.budget?.remainingBudget;
+  if (remainingBudget == null || remainingBudget <= 0 || plan.bucket === 'blocked') return null;
+  const feedScore = getPlanKoishiFeedScore(plan);
+  const planning = buildKoishiFeedPlanningInfo({ remainingScore, remainingBudget, remainingOrderCount });
+  const meetsAttemptFloor = planning.requiredScoreThisOrder == null || feedScore >= planning.requiredScoreThisOrder;
+  if (feedScore <= 0) return null;
+  const estimatedPrice = Math.max(0, plan.estimatedPrice);
+  if (estimatedPrice > remainingBudget) {
+    return {
+      feedScore,
+      efficiency: -Math.max(0, estimatedPrice - remainingBudget),
+      sustainable: false,
+      completesTarget: false,
+      meetsAttemptFloor,
+    };
+  }
+  const completesTarget = feedScore >= remainingScore;
+  const sustainable = isKoishiFeedPlanSustainable({
+    estimatedPrice,
+    estimatedFeedScore: feedScore,
+    remainingBudget,
+    remainingScore,
+    remainingOrderCount,
+  });
+  return {
+    feedScore,
+    efficiency: Math.round((feedScore * 1_000_000) / Math.max(1, estimatedPrice)),
+    sustainable,
+    completesTarget,
+    meetsAttemptFloor,
+  };
+}
+
+function getPlanKoishiFeedScore(plan: RareOrderRecommendationPlan): number {
+  return estimateKoishiBrokenShieldFeedScore({
+    meetsRequiredFood: plan.food?.meetsRequiredFood === true,
+    meetsRequiredBeverage: plan.beverage?.meetsRequiredBeverage === true,
+    preferenceMatches: getHighEvaluationPreferenceScore(plan),
+    negativeMatches: plan.food?.matchedNegativeTags.length ?? 0,
+    foodLevel: plan.food?.recipe.level,
+    beverageLevel: plan.beverage?.beverage.level,
+    foodPrice: plan.food?.recipe.price,
+    beveragePrice: plan.beverage?.beverage.price,
+    estimatedPrice: plan.estimatedPrice,
+  });
+}
+
+function normalizePositiveInt(value: number | null | undefined): number | null {
+  if (!Number.isFinite(value)) return null;
+  const normalized = Math.trunc(value ?? 0);
+  return normalized > 0 ? normalized : null;
 }
 
 function getPlanCustomSortOrder(plan: RareOrderRecommendationPlan): number {

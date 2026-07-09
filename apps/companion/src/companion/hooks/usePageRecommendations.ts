@@ -3,8 +3,10 @@ import type {
   PageRecommendationPayload,
   PageRecommendationResult,
   PageRecommendationWorkerRequest,
+  PageRecommendationWorkerRuntimePayload,
   PageRecommendationWorkerResponse,
 } from '@/companion/workers/page-recommendations.types';
+import { buildRecommendationDataSignature } from '@/lib/recommendation-data';
 
 interface PageRecommendationState {
   result: PageRecommendationResult | null;
@@ -19,6 +21,7 @@ const INITIAL_STATE: PageRecommendationState = {
   isCurrent: true,
   error: null,
 };
+const DATA_CACHE_MISS_MESSAGE = '推荐数据集尚未初始化';
 
 export function usePageRecommendations(payload: PageRecommendationPayload | null): PageRecommendationState {
   const [state, setState] = useState<PageRecommendationState>(INITIAL_STATE);
@@ -26,27 +29,49 @@ export function usePageRecommendations(payload: PageRecommendationPayload | null
   const requestSequenceRef = useRef(0);
   const stateVersionRef = useRef(0);
   const activeRequestIdRef = useRef<number | null>(null);
+  const activeRequestRef = useRef<PageRecommendationWorkerRequest | null>(null);
   const queuedRequestRef = useRef<PageRecommendationWorkerRequest | null>(null);
+  const postedDataSignatureRef = useRef('');
+  const payloadRef = useRef(payload);
+  const workerEnabled = payload !== null;
+
+  useEffect(() => {
+    payloadRef.current = payload;
+  }, [payload]);
 
   const createRequest = useCallback((nextPayload: PageRecommendationPayload): PageRecommendationWorkerRequest => {
     requestSequenceRef.current += 1;
+    const dataSignature = buildRecommendationDataSignature(nextPayload.data);
+    const includeData = postedDataSignatureRef.current !== dataSignature;
     return {
       requestId: requestSequenceRef.current,
-      payload: nextPayload,
+      payload: buildRuntimePayload(nextPayload, dataSignature, includeData),
     };
   }, []);
 
   const postRequest = useCallback((worker: Worker, request: PageRecommendationWorkerRequest) => {
     activeRequestIdRef.current = request.requestId;
+    activeRequestRef.current = request;
     try {
       worker.postMessage(request);
     } catch (error) {
       activeRequestIdRef.current = null;
+      activeRequestRef.current = null;
       throw error;
     }
   }, []);
 
   useEffect(() => {
+    if (!workerEnabled) {
+      workerRef.current?.terminate();
+      workerRef.current = null;
+      activeRequestIdRef.current = null;
+      activeRequestRef.current = null;
+      queuedRequestRef.current = null;
+      postedDataSignatureRef.current = '';
+      return undefined;
+    }
+
     const worker = new Worker(new URL('../workers/page-recommendations.worker.ts', import.meta.url), {
       type: 'module',
     });
@@ -56,11 +81,22 @@ export function usePageRecommendations(payload: PageRecommendationPayload | null
       const response = event.data;
       if (response.requestId !== activeRequestIdRef.current) return;
 
+      const activeRequest = activeRequestRef.current;
       activeRequestIdRef.current = null;
-      const queuedRequest = queuedRequestRef.current;
+      activeRequestRef.current = null;
+      let queuedRequest = queuedRequestRef.current;
       queuedRequestRef.current = null;
       const hasQueuedRequest = queuedRequest !== null;
       let queueError: string | null = null;
+
+      if (response.ok) {
+        if (activeRequest?.payload.data) {
+          postedDataSignatureRef.current = activeRequest.payload.dataSignature;
+        }
+      } else if (activeRequest?.payload.data || isDataCacheMiss(response.error)) {
+        postedDataSignatureRef.current = '';
+        queuedRequest = payloadRef.current ? createRequest(payloadRef.current) : null;
+      }
 
       if (queuedRequest) {
         try {
@@ -82,8 +118,8 @@ export function usePageRecommendations(payload: PageRecommendationPayload | null
 
       setState((current) => ({
         result: current.result,
-        pending: hasQueuedRequest && !queueError,
-        isCurrent: !hasQueuedRequest || queueError !== null,
+        pending: queuedRequest !== null && !queueError,
+        isCurrent: queuedRequest === null || queueError !== null,
         error: queueError ?? response.error,
       }));
     };
@@ -91,7 +127,9 @@ export function usePageRecommendations(payload: PageRecommendationPayload | null
     worker.onerror = (event) => {
       const message = event.message || '推荐计算 Worker 运行失败。';
       activeRequestIdRef.current = null;
+      activeRequestRef.current = null;
       queuedRequestRef.current = null;
+      postedDataSignatureRef.current = '';
       setState({
         result: null,
         pending: false,
@@ -104,9 +142,11 @@ export function usePageRecommendations(payload: PageRecommendationPayload | null
       worker.terminate();
       workerRef.current = null;
       activeRequestIdRef.current = null;
+      activeRequestRef.current = null;
       queuedRequestRef.current = null;
+      postedDataSignatureRef.current = '';
     };
-  }, [postRequest]);
+  }, [createRequest, postRequest, workerEnabled]);
 
   useEffect(() => {
     const stateVersion = stateVersionRef.current + 1;
@@ -122,6 +162,7 @@ export function usePageRecommendations(payload: PageRecommendationPayload | null
 
     if (!payload) {
       activeRequestIdRef.current = null;
+      activeRequestRef.current = null;
       queuedRequestRef.current = null;
       scheduleCurrentState(() => INITIAL_STATE);
       return;
@@ -170,4 +211,19 @@ export function usePageRecommendations(payload: PageRecommendationPayload | null
   }, [createRequest, payload, postRequest]);
 
   return state;
+}
+
+function buildRuntimePayload(
+  payload: PageRecommendationPayload,
+  dataSignature: string,
+  includeData: boolean,
+): PageRecommendationWorkerRuntimePayload {
+  const { data, ...rest } = payload;
+  return includeData
+    ? { ...rest, data, dataSignature }
+    : { ...rest, dataSignature };
+}
+
+function isDataCacheMiss(error: string): boolean {
+  return error.includes(DATA_CACHE_MISS_MESSAGE);
 }

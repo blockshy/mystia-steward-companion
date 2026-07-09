@@ -188,6 +188,7 @@ internal sealed class RuntimeStaticDataCatalog
                         Id = ParseInt(row, "id") ?? -1,
                         Name = Field(row, "name"),
                         Tags = rawTags.Count > 0 ? rawTags : ParseTagNames(Field(row, "tags")),
+                        Level = ParseInt(row, "level") ?? 0,
                         Price = ParseInt(row, "trueValue") ?? ParseInt(row, "value") ?? 0,
                     };
                 })
@@ -201,6 +202,7 @@ internal sealed class RuntimeStaticDataCatalog
                 .Select(row => new RuntimeFoodRow(
                     ParseInt(row, "id") ?? -1,
                     Field(row, "name"),
+                    ParseInt(row, "level") ?? 0,
                     ParseTagNames(Field(row, "rawTags")).Count > 0
                         ? ParseTagNames(Field(row, "rawTags"))
                         : ParseTagNames(Field(row, "tags")),
@@ -225,6 +227,7 @@ internal sealed class RuntimeStaticDataCatalog
                         PositiveTags = food.PositiveTags,
                         NegativeTags = food.NegativeTags,
                         Cooker = NormalizeCooker(Field(row, "cooker")),
+                        Level = food.Level,
                         Price = food.Price,
                     };
                 })
@@ -1668,4 +1671,4 @@ internal sealed class RuntimeStaticDataSnapshot
 }
 
 internal sealed record RuntimeIdReadResult(IReadOnlyList<int> Ids, IReadOnlyList<string> Diagnostics);
-internal sealed record RuntimeFoodRow(int Id, string Name, List<string> PositiveTags, List<string> NegativeTags, int Price);
+internal sealed record RuntimeFoodRow(int Id, string Name, int Level, List<string> PositiveTags, List<string> NegativeTags, int Price);

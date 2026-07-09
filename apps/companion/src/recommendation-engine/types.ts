@@ -20,6 +20,7 @@ export interface RareTagOrderDemand {
   customer: RareCustomerCatalogItem;
   requiredFoodTag: string;
   requiredBeverageTag: string;
+  specialFoodTargetTags?: string[];
 }
 
 /**
@@ -212,6 +213,7 @@ export interface FoodCandidate {
   suppressedTags: string[];
   matchedPositiveTags: string[];
   matchedNegativeTags: string[];
+  matchedSpecialFoodTargetTags: string[];
   meetsRequiredFood: boolean;
   baseCost: number;
   extraCost: number;

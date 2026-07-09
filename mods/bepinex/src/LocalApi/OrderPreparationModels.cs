@@ -7,12 +7,19 @@ internal sealed class OrderPreparationRequest
     public int DeskCode { get; init; }
     public int? GuestId { get; init; }
     public string GuestName { get; init; } = "";
+    public string SpecialBusinessRole { get; init; } = "";
     public string FoodTag { get; init; } = "";
     public string BeverageTag { get; init; } = "";
+    public int MatchFoodId { get; init; } = -1;
+    public int MatchBeverageId { get; init; } = -1;
     public int FoodId { get; init; } = -1;
     public int RecipeId { get; init; } = -1;
     public string RecipeName { get; init; } = "";
     public IReadOnlyList<int> ExtraIngredientIds { get; init; } = Array.Empty<int>();
+    public IReadOnlyList<string> PredictedFoodTags { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> WackyTargetFoodTags { get; init; } = Array.Empty<string>();
+    public string ExecutionMode { get; init; } = "";
+    public string ExecutionReason { get; init; } = "";
     public int BeverageId { get; init; } = -1;
     public string BeverageName { get; init; } = "";
     public bool AutoTakeBeverage { get; init; }

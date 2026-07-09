@@ -18,6 +18,8 @@ use std::process::Command;
 #[cfg(desktop)]
 use std::thread;
 #[cfg(desktop)]
+use tauri::image::Image;
+#[cfg(desktop)]
 use tauri::menu::{Menu, MenuItem};
 #[cfg(desktop)]
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -48,6 +50,8 @@ const CONTROL_MAX_MESSAGE_BYTES: usize = 1024;
 const CONNECTION_UPDATED_EVENT: &str = "connection-updated";
 #[cfg(desktop)]
 const WINDOW_STATE_FILE: &str = "window-state.txt";
+#[cfg(desktop)]
+const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray-icon.png");
 #[cfg(desktop)]
 const MIN_WINDOW_WIDTH: u32 = 720;
 #[cfg(desktop)]
@@ -1074,7 +1078,9 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
             }
         });
 
-    if let Some(icon) = app.default_window_icon() {
+    if let Ok(icon) = Image::from_bytes(TRAY_ICON_BYTES) {
+        tray = tray.icon(icon);
+    } else if let Some(icon) = app.default_window_icon() {
         tray = tray.icon(icon.clone());
     }
 
@@ -1147,6 +1153,8 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 apply_window_transparent_background(&window);
                 restore_window_state(&window);
+                let _ = window.show();
+                let _ = window.set_focus();
             }
             let app_handle = app.handle().clone();
             let game_pid = app.state::<GamePidState>().0.clone();

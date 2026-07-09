@@ -2,6 +2,7 @@ using System.Collections;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using Il2CppInterop.Runtime.InteropTypes.Arrays;
+using MystiaStewardCompanion.Core;
 using MystiaStewardCompanion.LocalApi;
 
 namespace MystiaStewardCompanion.Save;
@@ -16,6 +17,7 @@ namespace MystiaStewardCompanion.Save;
 internal static partial class RuntimeOrderPreparationService
 {
     private const string DataBaseCoreTypeName = "GameData.Core.Collections.DataBaseCore";
+    private const string DataBaseLanguageTypeName = "GameData.CoreLanguage.Collections.DataBaseLanguage";
     private const string IzakayaConfigureTypeName = "GameData.RunTime.NightSceneUtility.IzakayaConfigure";
     private const string RuntimeStorageTypeName = "GameData.RunTime.Common.RunTimeStorage";
     private const string TileManagerTypeName = "NightScene.Tiles.TileManager";
@@ -23,6 +25,7 @@ internal static partial class RuntimeOrderPreparationService
     private const string CookSystemManagerTypeName = "NightScene.CookingUtility.CookSystemManager";
     private const string QteRewardManagerTypeName = "NightScene.CookingUtility.QTERewardManager";
     private const string GuestsManagerTypeName = "NightScene.GuestManagementUtility.GuestsManager";
+    private const string NightSceneDirectorTypeName = "NightScene.NightSceneDirector";
     private const string OrderControllerTypeName = "Night.UI.HUD.Ordering.OrderController";
     private const string SellablePropertyHelperTypeName = "GameData.Core.Collections.SellablePropertyHelper";
     private const string MatchedCookComboTypeName = "NightScene.UI.CookingUtility.WorkSceneCookingSelectionPannel+MatchedCookCombo";
@@ -37,6 +40,10 @@ internal static partial class RuntimeOrderPreparationService
     // 刚开始料理后给游戏一小段时间生成 CookController 结果，避免过早判定失败。
     private static readonly TimeSpan PendingCookingCollectGrace = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan PendingCookingIdleTimeout = TimeSpan.FromSeconds(90);
+    private static readonly TimeSpan PendingMissingTargetRetireDelay = TimeSpan.FromSeconds(4);
+    private static readonly TimeSpan PendingMissingControllerRetireDelay = TimeSpan.FromSeconds(6);
+    private const int PendingMissingTargetRetireAttempts = 6;
+    private const int PendingMissingControllerRetireAttempts = 10;
 
     private static class OrderPreparationStepCodes
     {
@@ -52,6 +59,12 @@ internal static partial class RuntimeOrderPreparationService
     {
         RareOrder,
         NormalOrder,
+    }
+
+    private enum PendingDeliveryFailureKind
+    {
+        MissingOrder,
+        MissingController,
     }
 
     public static bool HasPendingCookingCollections
@@ -85,6 +98,8 @@ internal static partial class RuntimeOrderPreparationService
     public static OrderPreparationResult Prepare(OrderPreparationRequest request)
     {
         var traceId = ResolveRequestTraceId(OrderTraceKind.Rare, request);
+        AppendWackyRequestDiagnostic("rare-prepare-start", request, traceId, "rare");
+        AppendYuyukoRequestDiagnostic("rare-prepare-start", request, traceId, "rare");
         var result = new OrderPreparationResult
         {
             Order = new OrderPreparationOrder
@@ -185,35 +200,42 @@ internal static partial class RuntimeOrderPreparationService
             {
                 var expectedFoodId = request.FoodId >= 0 ? request.FoodId : ResolveFoodIdFromRecipeId(request.RecipeId);
                 var target = CookingCollectionTarget.ForRareOrder(request, expectedFoodId);
-                var cookingResult = TryStartCooking(request.RecipeId, request.RecipeName, request.ExtraIngredientIds, request.AutoCollectCooking, target);
-                if (cookingResult.Ok)
+                if (TryGetRecentWackyRejectedCookingMessage(target, out var rejectedMessage))
                 {
-                    result.Steps.Add(new OrderPreparationStep
-                    {
-                        Code = cookingResult.ExistingPending
-                            ? OrderPreparationStepCodes.CookingPending
-                            : OrderPreparationStepCodes.CookingStarted,
-                        Name = "自动开始料理",
-                        Ok = true,
-                        Skipped = cookingResult.ExistingPending,
-                        Message = cookingResult.Message,
-                    });
-
-                    if (!string.IsNullOrWhiteSpace(cookingResult.QteMessage))
-                    {
-                        result.Steps.Add(new OrderPreparationStep
-                        {
-                            Name = "料理 QTE",
-                            Ok = true,
-                            Skipped = cookingResult.QteSkipped,
-                            Message = cookingResult.QteMessage,
-                        });
-                    }
+                    AddSkipped(result, "自动开始料理", rejectedMessage);
                 }
                 else
                 {
-                    AddFailure(result, "自动开始料理", cookingResult.Message);
-                    if (request.StopOnError) return Finish(result);
+                    var cookingResult = TryStartCooking(request.RecipeId, request.RecipeName, request.ExtraIngredientIds, request.AutoCollectCooking, target);
+                    if (cookingResult.Ok)
+                    {
+                        result.Steps.Add(new OrderPreparationStep
+                        {
+                            Code = cookingResult.ExistingPending
+                                ? OrderPreparationStepCodes.CookingPending
+                                : OrderPreparationStepCodes.CookingStarted,
+                            Name = "自动开始料理",
+                            Ok = true,
+                            Skipped = cookingResult.ExistingPending,
+                            Message = cookingResult.Message,
+                        });
+
+                        if (!string.IsNullOrWhiteSpace(cookingResult.QteMessage))
+                        {
+                            result.Steps.Add(new OrderPreparationStep
+                            {
+                                Name = "料理 QTE",
+                                Ok = true,
+                                Skipped = cookingResult.QteSkipped,
+                                Message = cookingResult.QteMessage,
+                            });
+                        }
+                    }
+                    else
+                    {
+                        AddFailure(result, "自动开始料理", cookingResult.Message);
+                        if (request.StopOnError) return Finish(result);
+                    }
                 }
             }
         }
@@ -246,6 +268,7 @@ internal static partial class RuntimeOrderPreparationService
     public static OrderPreparationResult CompleteFirst(OrderPreparationRequest request)
     {
         var traceId = ResolveRequestTraceId(OrderTraceKind.Rare, request);
+        AppendYuyukoRequestDiagnostic("rare-complete-start", request, traceId, "rare");
         var result = new OrderPreparationResult
         {
             Order = new OrderPreparationOrder
@@ -348,6 +371,31 @@ internal static partial class RuntimeOrderPreparationService
             return Finish(result);
         }
 
+        if (RequiresNativeWackyKoishiBossEvaluationEntry(request))
+        {
+            if (!TryEvaluateWackyKoishiBossOrderIfReady(result, request, runtimeOrder, "触发上菜评价", "当前订单"))
+            {
+                return Finish(result);
+            }
+
+            return Finish(result);
+        }
+
+        if (IsWackyKoishiBossRequest(request))
+        {
+            AppendWackyBossRuntimeDiagnostic("rare-evaluate-generic", request, runtimeOrder, "call-generic-evaluate", "Koishi boss clue-stage order uses regular order evaluation.");
+        }
+
+        if (IsYuyukoBossRequest(request))
+        {
+            if (!TryEvaluateYuyukoChallengeOrderIfReady(result, request, runtimeOrder, "触发上菜评价", "当前订单"))
+            {
+                return Finish(result);
+            }
+
+            return Finish(result);
+        }
+
         if (!TryEvaluateOrderIfReady(result, runtimeOrder, "触发上菜评价", "当前订单"))
         {
             return Finish(result);
@@ -367,6 +415,8 @@ internal static partial class RuntimeOrderPreparationService
     public static OrderPreparationResult CompleteNormalFirst(OrderPreparationRequest request)
     {
         var traceId = ResolveRequestTraceId(OrderTraceKind.Normal, request);
+        AppendWackyRequestDiagnostic("normal-complete-start", request, traceId, "normal");
+        AppendYuyukoRequestDiagnostic("normal-complete-start", request, traceId, "normal");
         var result = new OrderPreparationResult
         {
             Order = new OrderPreparationOrder
@@ -387,7 +437,7 @@ internal static partial class RuntimeOrderPreparationService
         {
             Name = "选择普客订单",
             Ok = true,
-            Message = $"桌 {request.DeskCode + 1} · {result.Order.GuestName} · 料理 {request.RecipeName}",
+            Message = FormatNormalSelectionMessage(request, result.Order.GuestName),
         });
 
         var autoTakeBeverage = request.AutoTakeBeverage;
@@ -406,6 +456,22 @@ internal static partial class RuntimeOrderPreparationService
         {
             var diagnostic = string.IsNullOrWhiteSpace(runtimeOrder.Diagnostic) ? "" : $"（{runtimeOrder.Diagnostic}）";
             AddFailure(result, "匹配普客订单", $"已找到桌 {request.DeskCode + 1} 的普客订单，但未读取到可执行客人控制器；该订单可能只残留在 HUD 中，暂不自动送达以避免卡住顾客。{diagnostic}");
+            return Finish(result);
+        }
+
+        if (!TryValidateYuyukoPhase3NormalOrderTargetInvariant(request, runtimeOrder, out var yuyukoNormalTargetDiagnostic))
+        {
+            AppendYuyukoRuntimeDiagnostic(
+                "yuyuko-normal-target-invariant",
+                request,
+                runtimeOrder,
+                "blocked-normal-target",
+                yuyukoNormalTargetDiagnostic);
+            AddFailure(
+                result,
+                "校验幽幽子三阶段普客目标",
+                "幽幽子三阶段普客订单执行目标未满足原订单料理/酒水，已停止自动送达和评价，避免触发原生差评。"
+                + $"诊断：{yuyukoNormalTargetDiagnostic}。");
             return Finish(result);
         }
 
@@ -592,45 +658,61 @@ internal static partial class RuntimeOrderPreparationService
                         runtimeOrder.Order,
                         request.OrderKey,
                         traceId,
+                        request.MatchFoodId,
+                        request.MatchBeverageId,
                         expectedFoodId,
                         request.RecipeName,
                         request.DeskCode,
                         result.Order.GuestName,
                         request.BeverageId,
                         request.BeverageName,
+                        recipeId,
+                        request.ExtraIngredientIds,
+                        request.PredictedFoodTags,
+                        request.WackyTargetFoodTags,
+                        request.SpecialBusinessRole,
+                        request.ExecutionMode,
+                        request.ExecutionReason,
                         request.AutoCompleteOrder);
                     var autoDeliverCookedFood = request.AutoCollectCooking && autoDeliverFood;
-                    var cookingResult = TryStartCooking(recipeId, request.RecipeName, request.ExtraIngredientIds, autoDeliverCookedFood, target);
-                    if (cookingResult.Ok)
+                    if (TryGetRecentWackyRejectedCookingMessage(target, out var rejectedMessage))
                     {
-                        result.Steps.Add(new OrderPreparationStep
-                        {
-                            Code = cookingResult.ExistingPending
-                                ? OrderPreparationStepCodes.CookingPending
-                                : OrderPreparationStepCodes.CookingStarted,
-                            Name = "普客开始料理",
-                            Ok = true,
-                            Skipped = cookingResult.ExistingPending,
-                            Message = cookingResult.Message,
-                        });
-                        if (!string.IsNullOrWhiteSpace(cookingResult.QteMessage))
-                        {
-                            result.Steps.Add(new OrderPreparationStep
-                            {
-                                Name = "料理 QTE",
-                                Ok = true,
-                                Skipped = cookingResult.QteSkipped,
-                                Message = cookingResult.QteMessage,
-                            });
-                        }
-                        AddSkipped(result, "普客送达料理", autoDeliverCookedFood
-                            ? "料理已开始制作，完成后会自动直接送达顾客。"
-                            : "料理已开始制作，自动送达料理未开启，完成后保留在厨具中等待手动处理。");
+                        AddSkipped(result, "普客开始料理", rejectedMessage);
                     }
                     else
                     {
-                        AddFailure(result, "普客开始料理", cookingResult.Message);
-                        if (request.StopOnError) return Finish(result);
+                        var cookingResult = TryStartCooking(recipeId, request.RecipeName, request.ExtraIngredientIds, autoDeliverCookedFood, target);
+                        if (cookingResult.Ok)
+                        {
+                            result.Steps.Add(new OrderPreparationStep
+                            {
+                                Code = cookingResult.ExistingPending
+                                    ? OrderPreparationStepCodes.CookingPending
+                                    : OrderPreparationStepCodes.CookingStarted,
+                                Name = "普客开始料理",
+                                Ok = true,
+                                Skipped = cookingResult.ExistingPending,
+                                Message = cookingResult.Message,
+                            });
+                            if (!string.IsNullOrWhiteSpace(cookingResult.QteMessage))
+                            {
+                                result.Steps.Add(new OrderPreparationStep
+                                {
+                                    Name = "料理 QTE",
+                                    Ok = true,
+                                    Skipped = cookingResult.QteSkipped,
+                                    Message = cookingResult.QteMessage,
+                                });
+                            }
+                            AddSkipped(result, "普客送达料理", autoDeliverCookedFood
+                                ? "料理已开始制作，完成后会自动直接送达顾客。"
+                                : "料理已开始制作，自动送达料理未开启，完成后保留在厨具中等待手动处理。");
+                        }
+                        else
+                        {
+                            AddFailure(result, "普客开始料理", cookingResult.Message);
+                            if (request.StopOnError) return Finish(result);
+                        }
                     }
                 }
             }
@@ -647,9 +729,28 @@ internal static partial class RuntimeOrderPreparationService
             return Finish(result);
         }
 
-        if (autoCompleteOrder)
+        if (autoCompleteOrder && RequiresNativeWackyKoishiBossEvaluationEntry(request))
         {
-            if (!TryEvaluateOrderIfReady(result, runtimeOrder, "触发普客评价", "当前普客订单"))
+            if (!TryEvaluateWackyKoishiBossOrderIfReady(result, request, runtimeOrder, "触发普客评价", "当前普客订单"))
+            {
+                return Finish(result);
+            }
+        }
+        else if (autoCompleteOrder)
+        {
+            if (IsWackyKoishiBossRequest(request))
+            {
+                AppendWackyBossRuntimeDiagnostic("normal-evaluate-generic", request, runtimeOrder, "call-generic-evaluate", "Koishi boss clue-stage order uses regular order evaluation.");
+            }
+
+            if (IsYuyukoBossRequest(request))
+            {
+                if (!TryEvaluateYuyukoChallengeOrderIfReady(result, request, runtimeOrder, "触发普客评价", "当前普客订单", reacquireLiveOrder: false))
+                {
+                    return Finish(result);
+                }
+            }
+            else if (!TryEvaluateOrderIfReady(result, runtimeOrder, "触发普客评价", "当前普客订单"))
             {
                 return Finish(result);
             }
@@ -707,6 +808,40 @@ internal static partial class RuntimeOrderPreparationService
         return messages;
     }
 
+    private static string FormatNormalSelectionMessage(OrderPreparationRequest request, string guestName)
+    {
+        var matchFoodId = request.MatchFoodId >= 0 ? request.MatchFoodId : request.FoodId;
+        var matchBeverageId = request.MatchBeverageId >= 0 ? request.MatchBeverageId : request.BeverageId;
+        var targetChanged = (matchFoodId >= 0 && request.FoodId >= 0 && matchFoodId != request.FoodId)
+            || (matchBeverageId >= 0 && request.BeverageId >= 0 && matchBeverageId != request.BeverageId)
+            || request.ExtraIngredientIds.Count > 0;
+        var message = $"桌 {request.DeskCode + 1} · {guestName} · 料理 {request.RecipeName}";
+        if (!targetChanged && string.IsNullOrWhiteSpace(request.ExecutionMode) && string.IsNullOrWhiteSpace(request.ExecutionReason)) return message;
+
+        var details = new List<string>();
+        if (targetChanged)
+        {
+            details.Add($"原订单 料理 #{matchFoodId} / 酒水 #{matchBeverageId}");
+            details.Add($"执行 料理 #{request.FoodId} / 酒水 #{request.BeverageId}");
+            if (request.ExtraIngredientIds.Count > 0)
+            {
+                details.Add($"加料 #{string.Join(",#", request.ExtraIngredientIds)}");
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.ExecutionMode))
+        {
+            details.Add($"执行模式 {request.ExecutionMode.Trim()}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.ExecutionReason))
+        {
+            details.Add(request.ExecutionReason.Trim());
+        }
+
+        return $"{message}（{string.Join("；", details)}）";
+    }
+
     /// <summary>
     /// 清理所有等待出锅后直接送达的料理任务。
     /// </summary>
@@ -730,7 +865,7 @@ internal static partial class RuntimeOrderPreparationService
     {
         var stableKey = kind == OrderTraceKind.Normal
             ? string.IsNullOrWhiteSpace(request.OrderKey)
-                ? $"normal:{request.DeskCode}|{request.GuestName}|{request.FoodId}|{request.BeverageId}"
+                ? $"normal:{request.DeskCode}|{request.GuestName}|{(request.MatchFoodId >= 0 ? request.MatchFoodId : request.FoodId)}|{(request.MatchBeverageId >= 0 ? request.MatchBeverageId : request.BeverageId)}"
                 : $"normal:{request.OrderKey}"
             : $"rare:{request.DeskCode}|{request.GuestId?.ToString() ?? request.GuestName}|{request.FoodTag}|{request.BeverageTag}";
         return RuntimeOrderTraceIdService.GetRequestTraceId(kind, request.TraceId, stableKey);
@@ -740,7 +875,9 @@ internal static partial class RuntimeOrderPreparationService
         string code,
         CookingCollectionTarget target,
         string message,
-        int actualFoodId = -1)
+        int actualFoodId = -1,
+        IReadOnlyList<string>? targetFoodTags = null,
+        IReadOnlyList<string>? actualFoodTags = null)
     {
         if (string.IsNullOrWhiteSpace(code)) return;
 
@@ -762,7 +899,11 @@ internal static partial class RuntimeOrderPreparationService
                 FoodName = target.FoodName,
                 BeverageId = target.BeverageId,
                 BeverageName = target.BeverageName,
+                RecipeId = target.RecipeId,
+                ExtraIngredientIds = target.ExtraIngredientIds.ToList(),
                 ActualFoodId = actualFoodId,
+                TargetFoodTags = (targetFoodTags ?? Array.Empty<string>()).ToList(),
+                ActualFoodTags = (actualFoodTags ?? Array.Empty<string>()).ToList(),
                 Message = message,
             });
 
@@ -843,6 +984,36 @@ internal static partial class RuntimeOrderPreparationService
         public string RecipeName { get; init; } = "";
         public DateTime CreatedAtUtc { get; init; }
         public CookingCollectionTarget Target { get; init; } = CookingCollectionTarget.ForRareOrder(new OrderPreparationRequest(), -1);
+        public int MissingTargetCount { get; private set; }
+        public DateTime? FirstMissingTargetAtUtc { get; private set; }
+        public int MissingControllerCount { get; private set; }
+        public DateTime? FirstMissingControllerAtUtc { get; private set; }
+
+        public (int Count, DateTime FirstAtUtc) RecordDeliveryFailure(PendingDeliveryFailureKind kind, DateTime nowUtc)
+        {
+            if (kind == PendingDeliveryFailureKind.MissingController)
+            {
+                FirstMissingControllerAtUtc ??= nowUtc;
+                MissingControllerCount++;
+                MissingTargetCount = 0;
+                FirstMissingTargetAtUtc = null;
+                return (MissingControllerCount, FirstMissingControllerAtUtc.Value);
+            }
+
+            FirstMissingTargetAtUtc ??= nowUtc;
+            MissingTargetCount++;
+            MissingControllerCount = 0;
+            FirstMissingControllerAtUtc = null;
+            return (MissingTargetCount, FirstMissingTargetAtUtc.Value);
+        }
+
+        public void ResetDeliveryFailures()
+        {
+            MissingTargetCount = 0;
+            FirstMissingTargetAtUtc = null;
+            MissingControllerCount = 0;
+            FirstMissingControllerAtUtc = null;
+        }
     }
 
     /// <summary>
@@ -859,16 +1030,34 @@ internal static partial class RuntimeOrderPreparationService
         public int? GuestId { get; private init; }
         public string FoodTag { get; private init; } = "";
         public string BeverageTag { get; private init; } = "";
+        public int MatchFoodId { get; private init; } = -1;
+        public int MatchBeverageId { get; private init; } = -1;
         public int FoodId { get; private init; } = -1;
         public string FoodName { get; private init; } = "";
         public int BeverageId { get; private init; } = -1;
         public string BeverageName { get; private init; } = "";
+        public int RecipeId { get; private init; } = -1;
+        public IReadOnlyList<int> ExtraIngredientIds { get; private init; } = Array.Empty<int>();
+        public IReadOnlyList<string> PredictedFoodTags { get; private init; } = Array.Empty<string>();
+        public IReadOnlyList<string> WackyTargetFoodTags { get; private init; } = Array.Empty<string>();
+        public string WackyTargetSignature { get; private init; } = "";
+        public string SpecialBusinessRole { get; private init; } = "";
+        public string ExecutionMode { get; private init; } = "";
+        public string ExecutionReason { get; private init; } = "";
         public int DeskCode { get; private init; } = -1;
         public string GuestName { get; private init; } = "";
         public bool AutoCompleteOrder { get; private init; }
 
         public static CookingCollectionTarget ForRareOrder(OrderPreparationRequest request, int foodId)
         {
+            var shouldFallbackToCurrentWackyTarget = !string.Equals(
+                request.SpecialBusinessRole,
+                WackyCookingCompetitionRuntimePolicy.KoishiBossRole,
+                StringComparison.Ordinal);
+            var wackyTargetSignature = CaptureRequestedWackyTargetSignature(
+                request.WackyTargetFoodTags,
+                fallbackToCurrent: shouldFallbackToCurrentWackyTarget,
+                out var wackyTargetFoodTags);
             return new CookingCollectionTarget
             {
                 Kind = CookingCollectionTargetKind.RareOrder,
@@ -883,6 +1072,14 @@ internal static partial class RuntimeOrderPreparationService
                 FoodName = request.RecipeName,
                 BeverageId = request.BeverageId,
                 BeverageName = request.BeverageName,
+                RecipeId = request.RecipeId,
+                ExtraIngredientIds = request.ExtraIngredientIds.ToList(),
+                PredictedFoodTags = WackyCookingCompetitionRuntimePolicy.NormalizeTags(request.PredictedFoodTags).ToList(),
+                WackyTargetFoodTags = wackyTargetFoodTags.ToList(),
+                WackyTargetSignature = wackyTargetSignature,
+                SpecialBusinessRole = request.SpecialBusinessRole,
+                ExecutionMode = request.ExecutionMode,
+                ExecutionReason = request.ExecutionReason,
                 DeskCode = request.DeskCode,
                 GuestName = request.GuestName,
             };
@@ -894,14 +1091,26 @@ internal static partial class RuntimeOrderPreparationService
             object? order,
             string orderKey,
             string traceId,
+            int matchFoodId,
+            int matchBeverageId,
             int foodId,
             string foodName,
             int deskCode,
             string guestName,
             int beverageId,
             string beverageName,
+            int recipeId,
+            IReadOnlyList<int> extraIngredientIds,
+            IReadOnlyList<string> predictedFoodTags,
+            IReadOnlyList<string> wackyTargetFoodTags,
+            string specialBusinessRole,
+            string executionMode,
+            string executionReason,
             bool autoCompleteOrder)
         {
+            var normalizedMatchFoodId = matchFoodId >= 0 ? matchFoodId : foodId;
+            var normalizedMatchBeverageId = matchBeverageId >= 0 ? matchBeverageId : beverageId;
+            var wackyTargetSignature = CaptureRequestedWackyTargetSignature(wackyTargetFoodTags, fallbackToCurrent: false, out var normalizedWackyTargetFoodTags);
             return new CookingCollectionTarget
             {
                 Kind = CookingCollectionTargetKind.NormalOrder,
@@ -909,16 +1118,26 @@ internal static partial class RuntimeOrderPreparationService
                     OrderTraceKind.Normal,
                     traceId,
                     string.IsNullOrWhiteSpace(orderKey)
-                        ? $"normal:{deskCode}|{guestName}|{foodId}|{beverageId}"
+                        ? $"normal:{deskCode}|{guestName}|{normalizedMatchFoodId}|{normalizedMatchBeverageId}"
                         : $"normal:{orderKey}"),
                 Manager = manager,
                 Controller = controller,
                 Order = order,
                 OrderKey = orderKey,
+                MatchFoodId = normalizedMatchFoodId,
+                MatchBeverageId = normalizedMatchBeverageId,
                 FoodId = foodId,
                 FoodName = foodName,
                 BeverageId = beverageId,
                 BeverageName = beverageName,
+                RecipeId = recipeId,
+                ExtraIngredientIds = extraIngredientIds.ToList(),
+                PredictedFoodTags = WackyCookingCompetitionRuntimePolicy.NormalizeTags(predictedFoodTags).ToList(),
+                WackyTargetFoodTags = normalizedWackyTargetFoodTags.ToList(),
+                WackyTargetSignature = wackyTargetSignature,
+                SpecialBusinessRole = specialBusinessRole,
+                ExecutionMode = executionMode,
+                ExecutionReason = executionReason,
                 DeskCode = deskCode,
                 GuestName = guestName,
                 AutoCompleteOrder = autoCompleteOrder,
@@ -935,10 +1154,13 @@ internal static partial class RuntimeOrderPreparationService
                 DeskCode = DeskCode,
                 GuestId = GuestId,
                 GuestName = GuestName,
+                MatchFoodId = MatchFoodId,
+                MatchBeverageId = MatchBeverageId,
                 FoodId = FoodId,
                 FoodName = FoodName,
                 BeverageId = BeverageId,
                 BeverageName = BeverageName,
+                RuleReason = ExecutionReason,
             };
         }
     }

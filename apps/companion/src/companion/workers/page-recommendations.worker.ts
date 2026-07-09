@@ -18,10 +18,12 @@ import {
 } from '@/recommendation-engine';
 import type {
   NormalPageRecommendationPayload,
+  PageRecommendationPayload,
   PageRecommendationWorkerRequest,
   PageRecommendationWorkerResponse,
   RarePageRecommendationPayload,
 } from '@/companion/workers/page-recommendations.types';
+import type { RecommendationDataSet } from '@/lib/recommendation-data';
 
 type WorkerScope = {
   postMessage: (message: PageRecommendationWorkerResponse) => void;
@@ -29,11 +31,18 @@ type WorkerScope = {
 };
 
 const workerScope = self as unknown as WorkerScope;
+let cachedData: RecommendationDataSet | null = null;
+let cachedDataSignature = '';
 
 workerScope.onmessage = (event) => {
-  const { requestId, payload } = event.data;
+  const { requestId, payload: runtimePayload } = event.data;
 
   try {
+    const data = resolveRecommendationData(runtimePayload);
+    const payload = {
+      ...runtimePayload,
+      data,
+    } as PageRecommendationPayload;
     workerScope.postMessage({
       requestId,
       ok: true,
@@ -49,6 +58,22 @@ workerScope.onmessage = (event) => {
     });
   }
 };
+
+function resolveRecommendationData(
+  payload: PageRecommendationWorkerRequest['payload'],
+): RecommendationDataSet {
+  if (payload.data) {
+    cachedData = payload.data;
+    cachedDataSignature = payload.dataSignature;
+    return payload.data;
+  }
+
+  if (cachedData && cachedDataSignature === payload.dataSignature) {
+    return cachedData;
+  }
+
+  throw new Error('推荐数据集尚未初始化，等待下一轮快照。');
+}
 
 function buildNormalPageRecommendations(payload: NormalPageRecommendationPayload) {
   const runtimeSets = buildRuntimeSets(payload.runtime, payload.data);

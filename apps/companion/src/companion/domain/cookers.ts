@@ -121,9 +121,7 @@ function getNormalOrderRecipe(
   data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
 ): RecipeCatalogItem | null {
   const indexes = buildRecommendationDataIndexes(data);
-  return indexes.recipeByFoodId.get(order.foodId)
-    ?? data.recipes.find((item) => item.recipeId === order.foodId)
-    ?? null;
+  return indexes.recipeByFoodId.get(order.foodId) ?? null;
 }
 
 export function resolveCookerTypeId(value: string | null | undefined): number {

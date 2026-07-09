@@ -1,4 +1,3 @@
-import type { RuntimeDataCatalogSnapshot } from '@/lib/recommendation-data';
 import type {
   RareCustomerCatalogItem,
 } from '@/lib/catalog-types';
@@ -72,6 +71,10 @@ export interface NightBusinessOrder {
   deskCode: number;
   guestId: number | null;
   guestName: string;
+  specialBusinessRole?: string;
+  specialBusinessRoleLabel?: string;
+  automationAllowed?: boolean;
+  automationBlockReason?: string;
   foodTagId: number;
   foodTag: string;
   beverageTagId: number;
@@ -80,6 +83,12 @@ export interface NightBusinessOrder {
   firstSeenAtUtc?: string | null;
   lastSeenAtUtc?: string | null;
   isFreeOrder?: boolean;
+  fund?: number | null;
+  baseFundCarry?: number | null;
+  maxFundCarry?: number | null;
+  extraFundByBuff?: number | null;
+  willPayMoney?: boolean | null;
+  remainingOrderCount?: number | null;
   hasServedFood?: boolean;
   hasServedBeverage?: boolean;
 }
@@ -94,6 +103,38 @@ export interface NightBusinessContext {
   orders: NightBusinessOrder[];
   source: string;
   error: string | null;
+}
+
+/**
+ * 特殊经营挑战上下文。该快照用于提示，并把明确的目标 Tag 或等级评分规则注入推荐排序。
+ */
+export interface SpecialBusinessContext {
+  active: boolean;
+  challengeType: string;
+  displayName: string;
+  category: string;
+  ruleSummary: string;
+  foodTargetTags: string[];
+  beverageTargetTags: string[];
+  targetFund?: number | null;
+  targetLabel?: string;
+  phase?: string;
+  currentValue?: number | null;
+  maxValue?: number | null;
+  targetValue?: number | null;
+  targetTimeProgress?: number | null;
+  targetTagTimeProgress?: number | null;
+  wackyKoishiShieldBroken?: boolean | null;
+  wackyKoishiFoodPreferenceTags?: string[];
+  wackyKoishiFoodHateTags?: string[];
+  wackyKoishiBeveragePreferenceTags?: string[];
+  currentSpellCount?: number | null;
+  targetSpellCount?: number | null;
+  recommendationPolicy: string;
+  automationPolicy: string;
+  source: string;
+  error: string | null;
+  lastTargetUpdatedUtc?: string | null;
 }
 
 /**
@@ -145,7 +186,18 @@ export interface NormalBusinessOrder {
   traceId?: string;
   orderKey?: string;
   deskCode: number;
+  guestId?: number | null;
   guestName: string;
+  specialBusinessRole?: string;
+  specialBusinessRoleLabel?: string;
+  foodPreferenceTags?: string[];
+  beveragePreferenceTags?: string[];
+  fund?: number | null;
+  baseFundCarry?: number | null;
+  maxFundCarry?: number | null;
+  extraFundByBuff?: number | null;
+  willPayMoney?: boolean | null;
+  remainingOrderCount?: number | null;
   foodId: number;
   foodName: string;
   beverageId: number;
@@ -159,6 +211,25 @@ export interface NormalBusinessOrder {
   actionBlockReason?: string;
   firstSeenAtUtc?: string | null;
   source: string;
+}
+
+export type NormalOrderExecutionMode = 'progress' | 'refresh';
+
+export interface NormalOrderExecutionTarget {
+  matchFoodId: number;
+  matchBeverageId: number;
+  foodId: number;
+  recipeId: number;
+  executionMode?: NormalOrderExecutionMode;
+  recipeName: string;
+  extraIngredientIds: number[];
+  beverageId: number;
+  beverageName: string;
+  cookerName: string;
+  foodTags: string[];
+  beverageTags: string[];
+  wackyTargetFoodTags?: string[];
+  reason: string;
 }
 
 /**
@@ -185,12 +256,13 @@ export interface RuntimeRareCustomer {
 }
 
 /**
- * 本地 API `/snapshot` 返回的完整快照。
+ * 本地 API `/snapshot` 返回的轻量实时快照。
  *
- * 快照是前端唯一的实时数据入口；体积较大的 runtimeData 可能按签名和时间间隔省略。
+ * 快照是前端的实时状态入口；体积较大的运行时目录通过 `/runtime-data` 按签名单独读取。
  */
 export interface LocalApiSnapshot {
   pluginVersion: string;
+  snapshotSignature?: string;
   capturedAtUtc: string;
   activeSceneName: string;
   activeDayMapLabel?: string;
@@ -202,13 +274,24 @@ export interface LocalApiSnapshot {
   runtimeUiPinningStatus?: string;
   recommendationState: RecommendationStateSnapshot | null;
   nightBusiness: NightBusinessContext | null;
+  specialBusiness?: SpecialBusinessContext | null;
   runtimeMissions?: RuntimeMissionContext | null;
   normalBusiness?: NormalBusinessContext | null;
   runtimeRareCustomers?: RuntimeRareCustomer[];
   automationEvents?: AutomationRuntimeEvent[];
-  runtimeData?: RuntimeDataCatalogSnapshot;
+  runtimeDataComplete?: boolean;
+  runtimeDataSource?: string;
+  runtimeDataStatus?: string;
+  runtimeDataSignature?: string;
   performanceMs?: Record<string, number>;
 }
+
+export interface LocalApiSnapshotUnchanged {
+  unchanged: true;
+  snapshotSignature: string;
+}
+
+export type LocalApiSnapshotResponse = LocalApiSnapshot | LocalApiSnapshotUnchanged;
 
 export interface AutomationRuntimeEvent {
   sequence: number;
@@ -224,7 +307,11 @@ export interface AutomationRuntimeEvent {
   foodName?: string;
   beverageId: number;
   beverageName?: string;
+  recipeId?: number;
+  extraIngredientIds?: number[];
   actualFoodId?: number;
+  targetFoodTags?: string[];
+  actualFoodTags?: string[];
   message?: string;
 }
 
@@ -315,6 +402,12 @@ export interface LocalApiAutomationLease {
   ownerLastSeenUtc: string;
   expiresAtUtc: string;
   ttlMs: number;
+  error: string | null;
+}
+
+export interface LocalApiStatusResponse {
+  ok: boolean;
+  status: string;
   error: string | null;
 }
 
@@ -524,7 +617,7 @@ export interface RareAutoOrderDiagnostic {
   detailMessage: string;
   detailUpdatedAtMs: number;
   prepared: boolean;
-  beverageHandled: boolean;
+  beverageDeliveryRequested: boolean;
   hasServedFood: boolean;
   hasServedBeverage: boolean;
   paused: boolean;
@@ -546,9 +639,8 @@ export interface NormalAutoOrderDiagnostic {
   detailMessage: string;
   detailUpdatedAtMs: number;
   prepared: boolean;
-  beverageHandled: boolean;
-  collected: boolean;
-  foodDelivered: boolean;
+  beverageDeliveryRequested: boolean;
+  foodDeliveryRequested: boolean;
   completed: boolean;
   paused: boolean;
   hasServedFood: boolean;
@@ -590,8 +682,15 @@ export interface AutomationCookerResourceRow {
   labels: string[];
 }
 
+export interface AutomationBlockedNormalResourceRow {
+  orderKey: string;
+  label: string;
+  reason: string;
+}
+
 export interface AutomationResourceOverview {
   cookers: AutomationCookerResourceRow[];
+  normalBlocked: AutomationBlockedNormalResourceRow[];
 }
 
 export type ToggleRecipeFavorite = (customer: RareCustomerCatalogItem, foodTag: string, recipe: RareRecipeRecommendation) => Promise<void>;

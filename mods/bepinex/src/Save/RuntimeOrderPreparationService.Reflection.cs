@@ -87,6 +87,52 @@ internal static partial class RuntimeOrderPreparationService
     }
 
     /// <summary>
+    /// 只按精确名称读取字段或属性，不使用 Pascal/camel-case 退化候选。
+    /// </summary>
+    /// <remarks>
+    /// CookController 同时存在 Sellable 属性 Result 和 SpriteRenderer 字段 result，
+    /// 成品读取必须避免大小写退化命中视觉字段。
+    /// </remarks>
+    private static object? ReadExactMember(object target, params string[] names)
+    {
+        for (var type = target.GetType(); type != null; type = type.BaseType)
+        {
+            foreach (var name in names)
+            {
+                if (string.IsNullOrWhiteSpace(name)) continue;
+
+                var property = type.GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly);
+                if (property != null)
+                {
+                    try
+                    {
+                        var propertyValue = property.GetValue(target);
+                        if (propertyValue != null) return propertyValue;
+                    }
+                    catch
+                    {
+                        // Try the exact backing field or the next exact name.
+                    }
+                }
+
+                var field = type.GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly);
+                if (field == null) continue;
+                try
+                {
+                    var fieldValue = field.GetValue(target);
+                    if (fieldValue != null) return fieldValue;
+                }
+                catch
+                {
+                    // Try the next exact name.
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// 写入对象字段或属性。
     /// </summary>
     /// <remarks>

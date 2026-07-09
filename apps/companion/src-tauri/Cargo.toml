@@ -21,7 +21,7 @@ path = "src/bin/updater.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = ["image-png", "tray-icon"] }
 
 [profile.release]
 strip = "symbols"

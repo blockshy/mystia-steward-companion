@@ -5,6 +5,7 @@ namespace MystiaStewardCompanion.LocalApi;
 internal sealed class LocalApiSnapshot
 {
     public string PluginVersion { get; init; } = "";
+    public string SnapshotSignature { get; set; } = "";
     public DateTime CapturedAtUtc { get; init; }
     public string ActiveSceneName { get; init; } = "";
     public string ActiveDayMapLabel { get; init; } = "";
@@ -16,11 +17,15 @@ internal sealed class LocalApiSnapshot
     public string RuntimeUiPinningStatus { get; init; } = "";
     public RecommendationStateSnapshot? RecommendationState { get; init; }
     public NightBusinessContext? NightBusiness { get; init; }
+    public SpecialBusinessContext? SpecialBusiness { get; init; }
     public RuntimeMissionContext? RuntimeMissions { get; init; }
     public NormalBusinessContext? NormalBusiness { get; init; }
     public List<RuntimeRareCustomer> RuntimeRareCustomers { get; init; } = new();
     public List<AutomationRuntimeEvent> AutomationEvents { get; init; } = new();
-    public RuntimeDataCatalog? RuntimeData { get; init; }
+    public bool RuntimeDataComplete { get; init; }
+    public string RuntimeDataSource { get; init; } = "";
+    public string RuntimeDataStatus { get; init; } = "";
+    public string RuntimeDataSignature { get; init; } = "";
     public Dictionary<string, double> PerformanceMs { get; init; } = new(StringComparer.Ordinal);
 }
 
@@ -39,7 +44,11 @@ internal sealed class AutomationRuntimeEvent
     public string FoodName { get; init; } = "";
     public int BeverageId { get; init; } = -1;
     public string BeverageName { get; init; } = "";
+    public int RecipeId { get; init; } = -1;
+    public List<int> ExtraIngredientIds { get; init; } = new();
     public int ActualFoodId { get; init; } = -1;
+    public List<string> TargetFoodTags { get; init; } = new();
+    public List<string> ActualFoodTags { get; init; } = new();
     public string Message { get; init; } = "";
 }
 

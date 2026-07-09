@@ -414,7 +414,7 @@ internal sealed class NightBusinessReflectionProvider
 
         foreach (var order in EnumerateObjects(InvokeStaticMethod(orderControllerType, "GetShowInUIOrders")))
         {
-            var parsed = ReadOrder(order, null, "OrderController");
+            var parsed = ReadOrder(order, FindControllerForOrder(order), "OrderController");
             if (parsed != null) yield return parsed;
         }
 
@@ -424,7 +424,7 @@ internal sealed class NightBusinessReflectionProvider
         foreach (var element in EnumerateObjects(GetMemberValue(controller, "m_Orders")))
         {
             var order = GetMemberValue(element, "ActiveOrder");
-            var parsed = ReadOrder(order, null, "OrderControllerElement");
+            var parsed = ReadOrder(order, FindControllerForOrder(order), "OrderControllerElement");
             if (parsed != null) yield return parsed;
         }
     }
@@ -437,7 +437,7 @@ internal sealed class NightBusinessReflectionProvider
         foreach (var element in FindUnityObjects(orderingElementType))
         {
             var order = GetMemberValue(element, "ActiveOrder");
-            var parsed = ReadOrder(order, null, "HUD");
+            var parsed = ReadOrder(order, FindControllerForOrder(order), "HUD");
             if (parsed != null) yield return parsed;
         }
     }
@@ -489,6 +489,48 @@ internal sealed class NightBusinessReflectionProvider
 
     private IEnumerable<object?> ReadQueuedControllers()
     {
+        var guestGroupControllerType = FindType(GuestGroupControllerTypeName);
+        if (guestGroupControllerType == null) yield break;
+
+        foreach (var item in EnumerateObjects(GetStaticMemberValue(guestGroupControllerType, "QueuedGuestControllers")))
+        {
+            var controller = NormalizeKeyValueValue(item);
+            if (controller != null) yield return controller;
+        }
+    }
+
+    private object? FindControllerForOrder(object? order)
+    {
+        if (order == null) return null;
+        var manager = FindGuestsManager();
+        if (manager == null) return null;
+
+        foreach (var controller in EnumerateAllKnownControllers(manager))
+        {
+            if (controller == null) continue;
+            foreach (var candidate in EnumerateControllerOrders(controller))
+            {
+                if (candidate != null && IsSameRuntimeObject(candidate, order)) return controller;
+            }
+        }
+
+        var deskCode = ToNullableInt(GetMemberValue(order, "DeskCode"));
+        if (!deskCode.HasValue || deskCode.Value < 0) return null;
+        return EnumerateAllKnownControllers(manager)
+            .FirstOrDefault(controller => ToNullableInt(GetMemberValue(controller, "DeskCode")) == deskCode);
+    }
+
+    private static IEnumerable<object?> EnumerateAllKnownControllers(object manager)
+    {
+        foreach (var (memberName, _) in ManagerControllerSources)
+        {
+            foreach (var item in EnumerateObjects(GetMemberValue(manager, memberName)))
+            {
+                var controller = NormalizeKeyValueValue(item);
+                if (controller != null) yield return controller;
+            }
+        }
+
         var guestGroupControllerType = FindType(GuestGroupControllerTypeName);
         if (guestGroupControllerType == null) yield break;
 
@@ -635,7 +677,12 @@ internal sealed class NightBusinessReflectionProvider
         }
 
         var readableOrder = TryCastOrder(order, SpecialOrderTypeName) ?? order;
-        if (!IsSpecialOrder(readableOrder) && !IsManualSpecialOrder(readableOrder, controller))
+        var classification = SpecialBusinessOrderClassifier.Classify(readableOrder, controller, source);
+        var classifiedSpecialBusinessOrder = !string.IsNullOrWhiteSpace(classification.Role)
+            && !string.Equals(classification.Role, SpecialBusinessOrderRoles.WackyTarget, StringComparison.Ordinal);
+        if (!IsSpecialOrder(readableOrder)
+            && !IsManualSpecialOrder(readableOrder, controller)
+            && !classifiedSpecialBusinessOrder)
         {
             RecordCandidate("Order", source, accepted: false, "not a special order by current rules", () => DescribeOrderCandidate(readableOrder, controller));
             return null;
@@ -646,9 +693,14 @@ internal sealed class NightBusinessReflectionProvider
         var specialGuest = GetMemberValue(readableOrder, "SpecialGuests")
             ?? GetMemberValue(controller, "SpecialGuest");
         var orderingGuest = GetMemberValue(controller, "OrderingGuest");
+        if (specialGuest == null && classifiedSpecialBusinessOrder && orderingGuest != null)
+        {
+            specialGuest = orderingGuest;
+        }
+
         if (specialGuest == null
             && (IsSpecialGuestObject(orderingGuest)
-                || ResolveOrderingGuestRareCustomerIdentity(orderingGuest, IsManualSpecialOrder(readableOrder, controller)) != null))
+                || ResolveOrderingGuestRareCustomerIdentity(orderingGuest, IsManualSpecialOrder(readableOrder, controller) || classifiedSpecialBusinessOrder) != null))
         {
             specialGuest = orderingGuest;
         }
@@ -660,7 +712,9 @@ internal sealed class NightBusinessReflectionProvider
         }
 
         var guestId = ReadGuestId(specialGuest);
-        var identity = ResolveRareCustomerIdentity(specialGuest);
+        var identity = IsSpecialGuestObject(specialGuest)
+            ? ResolveRareCustomerIdentity(specialGuest)
+            : ResolveOrderingGuestRareCustomerIdentity(specialGuest, classifiedSpecialBusinessOrder);
         var foodTag = ResolveOrderTagText(readableOrder, controller, specialGuest, "GetOrderFoodText", "GetFoodTagText", "RequestFoodTag", "ReqFoodTag", useFoodTagMap: true);
         var beverageTag = ResolveOrderTagText(readableOrder, controller, specialGuest, "GetOrderBevText", "GetBevTagText", "RequestBeverageTag", "ReqBevTag", useFoodTagMap: false);
         var foodTagId = ResolveTagId(foodTag, GetMemberValue(readableOrder, "RequestFoodTag"), useFoodTagMap: true);
@@ -677,6 +731,10 @@ internal sealed class NightBusinessReflectionProvider
             DeskCode = deskCode,
             GuestId = identity?.Id ?? guestId,
             GuestName = identity?.Name ?? ReadGuestName(specialGuest, guestId),
+            SpecialBusinessRole = classification.Role,
+            SpecialBusinessRoleLabel = classification.RoleLabel,
+            AutomationAllowed = classification.AutomationAllowed,
+            AutomationBlockReason = classification.AutomationBlockReason,
             FoodTagId = foodTagId,
             FoodTag = foodTag,
             BeverageTagId = beverageTagId,
@@ -685,6 +743,12 @@ internal sealed class NightBusinessReflectionProvider
             FirstSeenAtUtc = now,
             LastSeenAtUtc = now,
             IsFreeOrder = ReadOrderFreeState(readableOrder),
+            Fund = ReadNullableIntMember(controller, "GetFund"),
+            BaseFundCarry = ReadNullableIntMember(controller, "BaseFundCarry"),
+            MaxFundCarry = ReadNullableIntMember(controller, "MaxFundCarry"),
+            ExtraFundByBuff = ReadNullableIntMember(controller, "ExtraFundByBuff"),
+            WillPayMoney = ReadNullableBoolMember(controller, "WillPayMoney"),
+            RemainingOrderCount = ReadNullableIntMember(controller, "RemainOrderCount"),
             HasServedFood = ReadOrderServedState(readableOrder, "ServFood", "ServedFoodInAir"),
             HasServedBeverage = ReadOrderServedState(readableOrder, "ServBeverage", "ServedBeverageInAir"),
         };
@@ -751,6 +815,7 @@ internal sealed class NightBusinessReflectionProvider
         {
             var activeGuest = FindActiveGuestForCapturedOrder(captured, activeGuests);
             var identity = ResolveRareCustomerIdentity(captured.GuestId, captured.GuestName);
+            var classification = SpecialBusinessOrderClassifier.Classify(captured.OrderObject, captured.ControllerObject);
             var guestId = identity?.Id ?? captured.GuestId ?? activeGuest?.GuestId;
             var fallbackGuestName = !string.IsNullOrWhiteSpace(captured.GuestName)
                 ? captured.GuestName
@@ -768,6 +833,10 @@ internal sealed class NightBusinessReflectionProvider
                 DeskCode = captured.DeskCode,
                 GuestId = guestId,
                 GuestName = identity?.Name ?? ResolveRareGuestName(guestId, fallbackGuestName),
+                SpecialBusinessRole = classification.Role,
+                SpecialBusinessRoleLabel = classification.RoleLabel,
+                AutomationAllowed = classification.AutomationAllowed,
+                AutomationBlockReason = classification.AutomationBlockReason,
                 FoodTagId = ResolveTagId(foodTag, captured.HasFoodTagId ? captured.FoodTagId : null, useFoodTagMap: true),
                 FoodTag = foodTag,
                 BeverageTagId = ResolveTagId(beverageTag, captured.HasBeverageTagId ? captured.BeverageTagId : null, useFoodTagMap: false),
@@ -776,6 +845,12 @@ internal sealed class NightBusinessReflectionProvider
                 FirstSeenAtUtc = captured.FirstCapturedAt,
                 LastSeenAtUtc = captured.CapturedAt,
                 IsFreeOrder = captured.IsFreeOrder,
+                Fund = activeGuest?.Fund ?? ReadNullableIntMember(captured.ControllerObject, "GetFund"),
+                BaseFundCarry = activeGuest?.BaseFundCarry ?? ReadNullableIntMember(captured.ControllerObject, "BaseFundCarry"),
+                MaxFundCarry = activeGuest?.MaxFundCarry ?? ReadNullableIntMember(captured.ControllerObject, "MaxFundCarry"),
+                ExtraFundByBuff = activeGuest?.ExtraFundByBuff ?? ReadNullableIntMember(captured.ControllerObject, "ExtraFundByBuff"),
+                WillPayMoney = activeGuest?.WillPayMoney ?? ReadNullableBoolMember(captured.ControllerObject, "WillPayMoney"),
+                RemainingOrderCount = ReadNullableIntMember(captured.ControllerObject, "RemainOrderCount"),
             };
 
             if (ShouldKeepCapturedOrder(order, captured, activeGuests, now))
@@ -978,7 +1053,8 @@ internal sealed class NightBusinessReflectionProvider
                 selected,
                 MinSeenAt(existing.FirstSeenAtUtc, order.FirstSeenAtUtc),
                 MaxSeenAt(existing.LastSeenAtUtc, order.LastSeenAtUtc),
-                isFreeOrder);
+                isFreeOrder,
+                fallbackOrder: ReferenceEquals(selected, order) ? existing : order);
         }
 
         return bySlot.Values
@@ -1006,7 +1082,8 @@ internal sealed class NightBusinessReflectionProvider
         DateTime? firstSeenAtUtc,
         DateTime? lastSeenAtUtc,
         bool isFreeOrder,
-        string? traceId = null)
+        string? traceId = null,
+        NightBusinessOrder? fallbackOrder = null)
     {
         return new NightBusinessOrder
         {
@@ -1014,6 +1091,10 @@ internal sealed class NightBusinessReflectionProvider
             DeskCode = order.DeskCode,
             GuestId = order.GuestId,
             GuestName = order.GuestName,
+            SpecialBusinessRole = order.SpecialBusinessRole,
+            SpecialBusinessRoleLabel = order.SpecialBusinessRoleLabel,
+            AutomationAllowed = order.AutomationAllowed,
+            AutomationBlockReason = order.AutomationBlockReason,
             FoodTagId = order.FoodTagId,
             FoodTag = order.FoodTag,
             BeverageTagId = order.BeverageTagId,
@@ -1022,6 +1103,12 @@ internal sealed class NightBusinessReflectionProvider
             FirstSeenAtUtc = firstSeenAtUtc,
             LastSeenAtUtc = lastSeenAtUtc,
             IsFreeOrder = isFreeOrder,
+            Fund = order.Fund ?? fallbackOrder?.Fund,
+            BaseFundCarry = order.BaseFundCarry ?? fallbackOrder?.BaseFundCarry,
+            MaxFundCarry = order.MaxFundCarry ?? fallbackOrder?.MaxFundCarry,
+            ExtraFundByBuff = order.ExtraFundByBuff ?? fallbackOrder?.ExtraFundByBuff,
+            WillPayMoney = order.WillPayMoney ?? fallbackOrder?.WillPayMoney,
+            RemainingOrderCount = order.RemainingOrderCount ?? fallbackOrder?.RemainingOrderCount,
             HasServedFood = order.HasServedFood,
             HasServedBeverage = order.HasServedBeverage,
         };
@@ -1779,12 +1866,17 @@ internal sealed class NightBusinessReflectionProvider
 
     private static int? ReadNullableIntMember(object? instance, string name)
     {
-        return ToNullableInt(GetMemberValue(instance, name));
+        return ToNullableInt(
+            GetMemberValue(instance, name)
+            ?? RuntimeReflectionUtility.InvokeMethod(instance, $"get_{name}")
+            ?? RuntimeReflectionUtility.InvokeMethod(instance, name));
     }
 
     private static bool? ReadNullableBoolMember(object? instance, string name)
     {
-        var value = GetMemberValue(instance, name);
+        var value = GetMemberValue(instance, name)
+            ?? RuntimeReflectionUtility.InvokeMethod(instance, $"get_{name}")
+            ?? RuntimeReflectionUtility.InvokeMethod(instance, name);
         if (value == null) return null;
         if (value is bool boolValue) return boolValue;
         if (bool.TryParse(value.ToString(), out var parsed)) return parsed;

@@ -143,14 +143,70 @@ internal static partial class RuntimeOrderPreparationService
             TryInvokeInstance(cookSystem, "CallCookerStartCallback", new object?[] { finalFood, recipe });
         }
 
+        if (!TryValidateCookerStart(cookController, recipe, targetFoodId, out var startDiagnostic))
+        {
+            AppendAutomationLog("start-failed", collectionTarget, $"{recipeName}: {startDiagnostic}; cooker={DescribeCookController(cookController)}");
+            return CookingStartResult.Failed($"料理开火后厨具状态验证失败：{startDiagnostic}");
+        }
+
         if (autoCollect)
         {
             RegisterPendingCookingCollection(cookController, recipeName, target);
         }
 
         var extraText = extraIngredientIds.Count == 0 ? "不加料" : string.Join(",", extraIngredientIds);
-        AppendAutomationLog("start-ok", collectionTarget, $"{recipeName}; cooker={DescribeCookController(cookController)}; autoCollect={autoCollect}; extra={extraText}");
+        AppendAutomationLog("start-ok", collectionTarget, $"{recipeName}; cooker={DescribeCookController(cookController)}; autoCollect={autoCollect}; extra={extraText}; {startDiagnostic}");
         return CookingStartResult.Succeeded($"{recipeName} 已开始制作（配方 #{recipeId}，加料：{extraText}）。", qteResult.Message, qteResult.Skipped);
+    }
+
+    private static bool TryValidateCookerStart(
+        object cookController,
+        object recipe,
+        int targetFoodId,
+        out string diagnostic)
+    {
+        var phase = ToInt(
+            TryInvokeInstanceValue(cookController, "get_Phase")
+            ?? ReadMember(cookController, "Phase"),
+            -1);
+        var result = ReadCookControllerResult(cookController, out var invalidResultDiagnostic);
+        if (result == null)
+        {
+            diagnostic = string.IsNullOrWhiteSpace(invalidResultDiagnostic)
+                ? $"未读取到厨具成品对象，phase={phase}"
+                : $"厨具成品对象无效：{invalidResultDiagnostic}，phase={phase}";
+            return false;
+        }
+
+        var resultFoodId = ReadSellableId(result);
+        if (!IsSellable(result, sellableType: 0, id: targetFoodId))
+        {
+            diagnostic = $"厨具成品不是目标料理：actual=#{resultFoodId}; expected=#{targetFoodId}; phase={phase}";
+            return false;
+        }
+
+        var chosenRecipe = ReadCookControllerChosenRecipe(cookController);
+        if (chosenRecipe == null)
+        {
+            diagnostic = $"未读取到厨具目标配方，result=#{resultFoodId}; phase={phase}";
+            return false;
+        }
+
+        var chosenFoodId = ToInt(ReadMember(chosenRecipe, "foodID"), int.MinValue);
+        if (!IsSameObject(chosenRecipe, recipe) && chosenFoodId != targetFoodId)
+        {
+            diagnostic = $"厨具目标配方不匹配：chosenFood=#{chosenFoodId}; expectedFood=#{targetFoodId}; result=#{resultFoodId}; phase={phase}";
+            return false;
+        }
+
+        if (phase == 0)
+        {
+            diagnostic = $"厨具仍为空闲状态：result=#{resultFoodId}; chosenFood=#{chosenFoodId}; phase={phase}";
+            return false;
+        }
+
+        diagnostic = $"startValidated=1; phase={phase}; result=#{resultFoodId}; chosenFood=#{chosenFoodId}";
+        return true;
     }
 
     /// <summary>
@@ -236,6 +292,14 @@ internal static partial class RuntimeOrderPreparationService
                 Target = target,
             });
             AppendAutomationLog("pending-add", target, $"{recipeName}; cooker={DescribeCookController(cookController)}; replaced={removed}");
+            if (IsWackyTargetContext(target))
+            {
+                AppendWackyPendingDiagnostic(
+                    "pending-add",
+                    PendingCookingCollections[^1],
+                    "registered",
+                    detail: $"recipe={recipeName}; cooker={DescribeCookController(cookController)}; replaced={removed}");
+            }
         }
     }
 
@@ -352,6 +416,27 @@ internal static partial class RuntimeOrderPreparationService
         if (left.Kind != right.Kind) return false;
         if (left.Kind == CookingCollectionTargetKind.RareOrder)
         {
+            if (!string.IsNullOrWhiteSpace(left.TraceId)
+                && !string.IsNullOrWhiteSpace(right.TraceId)
+                && !string.Equals(left.TraceId, right.TraceId, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            if (!string.IsNullOrWhiteSpace(left.FoodTag)
+                && !string.IsNullOrWhiteSpace(right.FoodTag)
+                && !TextMatches(left.FoodTag, right.FoodTag))
+            {
+                return false;
+            }
+
+            if (!string.IsNullOrWhiteSpace(left.BeverageTag)
+                && !string.IsNullOrWhiteSpace(right.BeverageTag)
+                && !TextMatches(left.BeverageTag, right.BeverageTag))
+            {
+                return false;
+            }
+
             if (left.FoodId != right.FoodId) return false;
             if (left.DeskCode >= 0 && right.DeskCode >= 0 && left.DeskCode != right.DeskCode) return false;
             if (left.GuestId.HasValue && right.GuestId.HasValue) return left.GuestId.Value == right.GuestId.Value;
@@ -385,13 +470,21 @@ internal static partial class RuntimeOrderPreparationService
         var phase = ToInt(TryInvokeInstanceValue(pending.CookController, "get_Phase"), -1);
         TryFinalizeCookControllerIfProgressComplete(pending.CookController, phase);
         phase = ToInt(TryInvokeInstanceValue(pending.CookController, "get_Phase"), phase);
-        var cookedFood = ReadCookControllerResult(pending.CookController);
+        var cookedFood = ReadCookControllerResult(pending.CookController, out var invalidResultDiagnostic);
         var chosenRecipe = ReadCookControllerChosenRecipe(pending.CookController);
         var pendingAge = DateTime.UtcNow - pending.CreatedAtUtc;
         var isExpiredIdle = pendingAge >= PendingCookingIdleTimeout;
 
         if (cookedFood == null)
         {
+            if (!string.IsNullOrWhiteSpace(invalidResultDiagnostic))
+            {
+                return (
+                    true,
+                    $"{pending.RecipeName} 出锅直送已停止：厨具成品对象不是料理 Sellable（{invalidResultDiagnostic}）。请手动检查厨具。",
+                    "");
+            }
+
             if (phase == 0 && chosenRecipe == null && isExpiredIdle)
             {
                 return (true, $"{pending.RecipeName} 出锅直送任务已结束：厨具已空闲且未读取到成品。", "");
@@ -434,17 +527,61 @@ internal static partial class RuntimeOrderPreparationService
         }
     }
 
-    private static object? ReadCookControllerResult(object cookController)
+    private static object? ReadCookControllerResult(object cookController, out string invalidResultDiagnostic)
     {
+        invalidResultDiagnostic = "";
         try
         {
-            return TryInvokeInstanceValue(cookController, "get_Result")
-                ?? ReadMember(cookController, "Result");
-        }
-        catch
-        {
+            if (TryAcceptCookControllerFoodResult(
+                    TryInvokeInstanceValue(cookController, "get_Result"),
+                    "get_Result",
+                    out var getterResult,
+                    out invalidResultDiagnostic))
+            {
+                return getterResult;
+            }
+
+            if (!string.IsNullOrWhiteSpace(invalidResultDiagnostic))
+            {
+                return null;
+            }
+
+            if (TryAcceptCookControllerFoodResult(
+                    ReadExactMember(cookController, "Result", "<Result>k__BackingField"),
+                    "Result",
+                    out var exactResult,
+                    out invalidResultDiagnostic))
+            {
+                return exactResult;
+            }
+
             return null;
         }
+        catch (Exception ex)
+        {
+            invalidResultDiagnostic = ex.GetBaseException().Message;
+            return null;
+        }
+    }
+
+    private static bool TryAcceptCookControllerFoodResult(
+        object? value,
+        string source,
+        out object? cookedFood,
+        out string invalidResultDiagnostic)
+    {
+        cookedFood = null;
+        invalidResultDiagnostic = "";
+        if (value == null) return false;
+
+        if (IsFoodSellable(value))
+        {
+            cookedFood = value;
+            return true;
+        }
+
+        invalidResultDiagnostic = $"{source}={SpecialBusinessDiagnostics.DescribeObject(value)} type={value.GetType().FullName}";
+        return false;
     }
 
     private static object? ReadCookControllerChosenRecipe(object cookController)

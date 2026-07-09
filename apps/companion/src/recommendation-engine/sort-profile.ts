@@ -57,6 +57,14 @@ export interface RecommendationPlanSortContext {
   pinMissionRecipe?: boolean;
   pinFavoriteRecipe?: boolean;
   pinFavoriteBeverage?: boolean;
+  specialTargetFoodTags?: Set<string>;
+  specialTargetBeverageTags?: Set<string>;
+  specialPreferHighFoodLevel?: boolean;
+  specialPreferHighBeverageLevel?: boolean;
+  specialPreferDamageLevel?: boolean;
+  specialPreferYuyukoProgress?: boolean;
+  specialKoishiRemainingScore?: number | null;
+  specialKoishiRemainingOrderCount?: number | null;
 }
 
 export interface RecommendationSortPreset {

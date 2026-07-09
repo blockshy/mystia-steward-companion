@@ -22,6 +22,7 @@ export interface RareAutomationRecipeTarget {
   recipeName: string;
   cookerName: string;
   extraIngredientIds: number[];
+  foodTags: string[];
   favorite: boolean;
   preferenceFallback: boolean;
 }
@@ -35,6 +36,7 @@ export interface RareAutomationBeverageTarget {
 export interface AutoFirstOrderState {
   orderKey: string;
   recipeTarget: RareAutomationRecipeTarget | null;
+  recipeTargetSignature: string;
   beverageTarget: RareAutomationBeverageTarget | null;
   prepared: boolean;
   preparedAtMs: number;
@@ -115,6 +117,7 @@ export function emptyAutoFirstOrderState(orderKey = '', now = 0): AutoFirstOrder
   return {
     orderKey,
     recipeTarget: null,
+    recipeTargetSignature: '',
     beverageTarget: null,
     prepared: false,
     preparedAtMs: 0,

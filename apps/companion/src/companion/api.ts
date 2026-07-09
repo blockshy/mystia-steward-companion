@@ -22,8 +22,10 @@ import type {
   LocalApiFolderResponse,
   LocalApiHealth,
   LocalApiLogSettings,
-  LocalApiSnapshot,
+  LocalApiSnapshotResponse,
+  LocalApiStatusResponse,
   NightBusinessOrder,
+  NormalOrderExecutionTarget,
   NormalBusinessOrder,
   OrderRecommendation,
   RareGuestInvitationResponse,
@@ -34,12 +36,39 @@ import type {
 import {
   DEFAULT_RECOMMENDATION_DATA,
   buildRecommendationDataIndexes,
+  type RuntimeDataCatalogSnapshot,
   type RecommendationDataSet,
 } from '@/lib/recommendation-data';
 import type {
   RareCustomerCatalogItem,
 } from '@/lib/catalog-types';
-import type { RareBeverageRecommendation, RareRecipeRecommendation } from '@/recommendation-engine';
+import type { RareBeverageRecommendation, RareOrderRecommendationPlan, RareRecipeRecommendation } from '@/recommendation-engine';
+
+export interface AutomationDecisionDiagnosticRequest {
+  signature: string;
+  eventName: string;
+  message: string;
+  scene: string;
+  challengeType: string;
+  phase: string;
+  specialBusinessRole: string;
+  orderCount: number;
+  selectionCount: number;
+  skipCount: number;
+  automationEnabled: boolean;
+  leaseOwned: boolean;
+  autoCompleteOrder: boolean;
+  autoTakeBeverage: boolean;
+  autoStartCooking: boolean;
+  autoCollectCooking: boolean;
+  recipeFavoritesOnly: boolean;
+  beverageFavoritesOnly: boolean;
+  rareConcurrency: number;
+  leaseMessage: string;
+  orderLines: string[];
+  selectionLines: string[];
+  skipLines: string[];
+}
 
 /**
  * 伴随窗口访问 Mod 本地 API 的类型化门面。
@@ -51,9 +80,23 @@ import type { RareBeverageRecommendation, RareRecipeRecommendation } from '@/rec
 export async function readSnapshot(
   endpoint: string,
   apiToken: string,
+  options: { signal: AbortSignal; timeoutMs: number; knownSignature?: string },
+): Promise<LocalApiSnapshotResponse> {
+  const params = new URLSearchParams();
+  if (options.knownSignature) params.set('knownSignature', options.knownSignature);
+  const path = params.size > 0 ? `/snapshot?${params.toString()}` : '/snapshot';
+  return readLocalApiJson<LocalApiSnapshotResponse>(endpoint, apiToken, path, {
+    signal: options.signal,
+    tauriTimeoutMs: options.timeoutMs,
+  });
+}
+
+export async function readRuntimeData(
+  endpoint: string,
+  apiToken: string,
   options: { signal: AbortSignal; timeoutMs: number },
-): Promise<LocalApiSnapshot> {
-  return readLocalApiJson<LocalApiSnapshot>(endpoint, apiToken, '/snapshot', {
+): Promise<RuntimeDataCatalogSnapshot> {
+  return readLocalApiJson<RuntimeDataCatalogSnapshot>(endpoint, apiToken, '/runtime-data', {
     signal: options.signal,
     tauriTimeoutMs: options.timeoutMs,
   });
@@ -151,6 +194,44 @@ export async function releaseAutomationLease(
     apiToken,
     '/automation/lease/release',
     2200,
+  );
+}
+
+export async function appendAutomationDecisionDiagnostic(
+  endpoint: string,
+  apiToken: string,
+  diagnostic: AutomationDecisionDiagnosticRequest,
+): Promise<LocalApiStatusResponse> {
+  const params = new URLSearchParams({
+    signature: diagnostic.signature,
+    eventName: diagnostic.eventName,
+    message: diagnostic.message,
+    scene: diagnostic.scene,
+    challengeType: diagnostic.challengeType,
+    phase: diagnostic.phase,
+    specialBusinessRole: diagnostic.specialBusinessRole,
+    orderCount: String(diagnostic.orderCount),
+    selectionCount: String(diagnostic.selectionCount),
+    skipCount: String(diagnostic.skipCount),
+    automationEnabled: String(diagnostic.automationEnabled),
+    leaseOwned: String(diagnostic.leaseOwned),
+    autoCompleteOrder: String(diagnostic.autoCompleteOrder),
+    autoTakeBeverage: String(diagnostic.autoTakeBeverage),
+    autoStartCooking: String(diagnostic.autoStartCooking),
+    autoCollectCooking: String(diagnostic.autoCollectCooking),
+    recipeFavoritesOnly: String(diagnostic.recipeFavoritesOnly),
+    beverageFavoritesOnly: String(diagnostic.beverageFavoritesOnly),
+    rareConcurrency: String(diagnostic.rareConcurrency),
+    leaseMessage: diagnostic.leaseMessage,
+    orderLines: diagnostic.orderLines.join('\n'),
+    selectionLines: diagnostic.selectionLines.join('\n'),
+    skipLines: diagnostic.skipLines.join('\n'),
+  });
+  return readLocalApiJsonWithTimeout<LocalApiStatusResponse>(
+    endpoint,
+    apiToken,
+    `/diagnostics/automation-decision?${params.toString()}`,
+    2500,
   );
 }
 
@@ -349,21 +430,31 @@ export async function completeFirstNormalOrder(
   order: NormalBusinessOrder,
   preferences: CompanionPreferences,
   data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
+  executionTarget: NormalOrderExecutionTarget | null = null,
 ): Promise<OrderPreparationResponse> {
   const indexes = buildRecommendationDataIndexes(data);
-  const recipe = indexes.recipeByFoodId.get(order.foodId)
-    ?? data.recipes.find((item) => item.recipeId === order.foodId)
-    ?? null;
+  const recipe = indexes.recipeByFoodId.get(order.foodId) ?? null;
+  const targetRecipeId = executionTarget?.recipeId ?? recipe?.recipeId ?? -1;
+  const targetFoodId = executionTarget?.foodId ?? order.foodId;
+  const targetBeverageId = executionTarget?.beverageId ?? order.beverageId;
   const params = new URLSearchParams({
     traceId: order.traceId ?? '',
     orderKey: order.orderKey ?? '',
     deskCode: String(order.deskCode),
     guestName: order.guestName || '普客',
-    foodId: String(order.foodId),
-    recipeId: recipe ? String(recipe.recipeId) : '-1',
-    recipeName: order.foodName || recipe?.name || '',
-    beverageId: String(order.beverageId),
-    beverageName: order.beverageName || indexes.beverageNameById.get(order.beverageId) || '',
+    specialBusinessRole: order.specialBusinessRole ?? '',
+    matchFoodId: String(executionTarget?.matchFoodId ?? order.foodId),
+    matchBeverageId: String(executionTarget?.matchBeverageId ?? order.beverageId),
+    foodId: String(targetFoodId),
+    recipeId: String(targetRecipeId),
+    recipeName: executionTarget?.recipeName || order.foodName || recipe?.name || '',
+    extraIngredientIds: executionTarget ? executionTarget.extraIngredientIds.join(',') : '',
+    predictedFoodTags: executionTarget ? executionTarget.foodTags.join(',') : '',
+    wackyTargetFoodTags: executionTarget ? (executionTarget.wackyTargetFoodTags ?? []).join(',') : '',
+    executionMode: executionTarget?.executionMode ?? '',
+    executionReason: executionTarget?.reason ?? '',
+    beverageId: String(targetBeverageId),
+    beverageName: executionTarget?.beverageName || order.beverageName || indexes.beverageNameById.get(order.beverageId) || '',
     autoTakeBeverage: String(preferences.autoNormalTakeBeverage),
     autoStartCooking: String(preferences.autoNormalStartCooking),
     autoCollectCooking: String(preferences.autoNormalCollectCooking),
@@ -516,17 +607,22 @@ async function rareOrderAction(
     deskCode: String(item.order.deskCode),
     guestId: item.order.guestId == null ? '' : String(item.order.guestId),
     guestName: item.order.guestName,
+    specialBusinessRole: item.order.specialBusinessRole ?? '',
     foodTag: item.order.foodTag,
     beverageTag: item.order.beverageTag,
     foodId: recipeTarget ? String(recipeTarget.foodId) : '-1',
     recipeId: recipeTarget ? String(recipeTarget.recipeId) : '-1',
     recipeName: recipeTarget?.recipeName ?? '',
     extraIngredientIds: recipeTarget ? recipeTarget.extraIngredientIds.join(',') : '',
+    predictedFoodTags: recipeTarget ? recipeTarget.foodTags.join(',') : '',
+    executionReason: buildRareOrderExecutionReason(item, recipeTarget, beverageTarget),
     beverageId: beverageTarget ? String(beverageTarget.beverageId) : '-1',
     beverageName: beverageTarget?.beverageName ?? '',
     autoTakeBeverage: String(preferences.autoPrepTakeBeverage),
     autoStartCooking: String(preferences.autoPrepStartCooking),
     autoCollectCooking: String(preferences.autoPrepCollectCooking),
+    autoDeliverFood: String(preferences.autoPrepCollectCooking),
+    autoCompleteOrder: String(preferences.autoPrepCompleteOrder),
     recipeFavoritesOnly: String(preferences.autoPrepRecipeFavoritesOnly),
     beverageFavoritesOnly: String(preferences.autoPrepBeverageFavoritesOnly),
     stopOnError: String(preferences.autoPrepStopOnError),
@@ -539,6 +635,57 @@ async function rareOrderAction(
     `${path}?${params.toString()}`,
     5000,
   );
+}
+
+function buildRareOrderExecutionReason(
+  item: OrderRecommendation,
+  recipeTarget: RareAutomationRecipeTarget | null,
+  beverageTarget: RareAutomationBeverageTarget | null,
+): string {
+  const planReason = findRareOrderExecutionPlanReason(item, recipeTarget, beverageTarget);
+  const details = [
+    item.order.specialBusinessRole ? `特殊经营角色 ${item.order.specialBusinessRole}` : '',
+    planReason,
+    recipeTarget?.foodTags.length ? `预测料理 Tag ${recipeTarget.foodTags.join('、')}` : '',
+    beverageTarget ? `目标酒水 ${beverageTarget.beverageName || `#${beverageTarget.beverageId}`}` : '',
+  ].filter(Boolean);
+  return details.join('；');
+}
+
+function findRareOrderExecutionPlanReason(
+  item: OrderRecommendation,
+  recipeTarget: RareAutomationRecipeTarget | null,
+  beverageTarget: RareAutomationBeverageTarget | null,
+): string {
+  const matchedPlan = item.executionPlans.find((plan) => rareOrderPlanMatchesTargets(plan, recipeTarget, beverageTarget))
+    ?? (rareOrderPlanMatchesTargets(item.preparationPlan, recipeTarget, beverageTarget) ? item.preparationPlan : null);
+  return matchedPlan?.reasons[0] ?? '';
+}
+
+function rareOrderPlanMatchesTargets(
+  plan: RareOrderRecommendationPlan | null,
+  recipeTarget: RareAutomationRecipeTarget | null,
+  beverageTarget: RareAutomationBeverageTarget | null,
+): boolean {
+  if (!plan) return false;
+  if (recipeTarget && (
+    !plan.food
+    || plan.food.recipe.id !== recipeTarget.foodId
+    || plan.food.recipe.recipeId !== recipeTarget.recipeId
+    || !sameNumberList(
+      plan.food.extraIngredients.map((ingredient) => ingredient.id),
+      recipeTarget.extraIngredientIds,
+    )
+  )) return false;
+  if (beverageTarget && (!plan.beverage || plan.beverage.beverage.id !== beverageTarget.beverageId)) return false;
+  return true;
+}
+
+function sameNumberList(left: readonly number[], right: readonly number[]): boolean {
+  if (left.length !== right.length) return false;
+  const normalizedLeft = [...left].sort((a, b) => a - b);
+  const normalizedRight = [...right].sort((a, b) => a - b);
+  return normalizedLeft.every((value, index) => value === normalizedRight[index]);
 }
 
 async function mutateFavorite(

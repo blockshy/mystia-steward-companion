@@ -21,11 +21,21 @@ import {
   findRecipeFavorite,
   normalizeIdList,
 } from '@/companion/domain/favorites';
+import { buildNormalAutoOrderKey } from '@/companion/domain/normal-order-key';
 import { toRareRecipeResult } from '@/companion/domain/service-recommendations';
 import {
   sortNightOrderRows,
   sortNormalOrders,
 } from '@/companion/domain/sorting';
+import {
+  buildSpecialBusinessFoodTargetSignature,
+  buildSpecialBusinessOrderRule,
+  buildWackyRejectedRecipeKeyForRareRecipe,
+  getWackyTargetTagCountdownDeferral,
+  getNormalExecutionCookerRequirement,
+  hasMatchingSpecialBusinessTag,
+  selectSpecialBusinessNormalExecutionTarget,
+} from '@/companion/domain/special-business';
 import { formatDesk } from '@/companion/formatters';
 import type { CompanionPreferences, ServiceOrderSortMode } from '@/companion/preferences';
 import type {
@@ -39,12 +49,14 @@ import type {
   FavoriteRecipeEntry,
   GameUiPinningTarget,
   NightBusinessOrder,
+  NormalOrderExecutionTarget,
   NormalAutoOrderDiagnostic,
   NormalBusinessOrder,
   NormalCookerDemand,
   OrderRecommendation,
   RareAutoOrderDiagnostic,
   RecommendationStateSnapshot,
+  SpecialBusinessContext,
 } from '@/companion/types';
 import {
   DEFAULT_RECOMMENDATION_DATA,
@@ -70,10 +82,226 @@ type OrderPreparationSelection =
     }
   | {
       ok: false;
+      reason: OrderPreparationSkipReason;
       message: string;
     };
 
 export type ValidOrderPreparationSelection = Extract<OrderPreparationSelection, { ok: true }>;
+
+export type OrderPreparationSkipReason =
+  | 'automation-blocked'
+  | 'recipe-favorite-missing'
+  | 'recipe-target-missing'
+  | 'beverage-favorite-missing'
+  | 'beverage-target-missing';
+
+export interface OrderPreparationCandidateSkip {
+  reason: OrderPreparationSkipReason;
+  orderKey: string;
+  label: string;
+  message: string;
+  recipeRecommendationCount: number;
+  beverageRecommendationCount: number;
+  executionPlanCount: number;
+}
+
+export interface OrderPreparationCandidateResult {
+  selections: ValidOrderPreparationSelection[];
+  skips: OrderPreparationCandidateSkip[];
+  messages: string[];
+  message: string;
+}
+
+export interface NormalExecutionTargetSelectionLike {
+  orderKey: string;
+  target: NormalOrderExecutionTarget | null;
+  message: string;
+}
+
+export interface NormalCookingTargetDecision {
+  orderKey: string;
+  target: NormalOrderExecutionTarget | null;
+  blockedReason: string;
+  cooker: CookerRequirement | null;
+  label: string;
+}
+
+export function getSpecialBusinessRecipeCookingDeferral(
+  specialBusiness: SpecialBusinessContext | null | undefined,
+  role: string | null | undefined,
+  recipeName: string,
+  recipeTags: readonly string[],
+): string {
+  const rule = buildSpecialBusinessOrderRule(specialBusiness, role);
+  const targetTags = rule.foodTargetTags;
+  if (!rule.requiresWackyFoodTarget || targetTags.length === 0) return '';
+
+  if (!hasMatchingSpecialBusinessTag(recipeTags, targetTags)) {
+    return `当前怪诞料理目标 Tag 为 ${targetTags.join('、')}，${recipeName || '目标料理'} 不含该 Tag，等待目标刷新后再开锅。`;
+  }
+
+  return getWackyTargetTagCountdownDeferral(specialBusiness);
+}
+
+export function getSpecialBusinessRareCookingDeferral(
+  specialBusiness: SpecialBusinessContext | null | undefined,
+  item: OrderRecommendation,
+  target: RareAutomationRecipeTarget | null,
+  fallbackRecipe: RareRecipeRecommendation | null,
+): string {
+  const recipe = target ? findRecipeRowForTarget(item, target) : null;
+  const recipeName = target?.recipeName ?? recipe?.recipe.name ?? fallbackRecipe?.recipe.name ?? '';
+  const recipeTags = target?.foodTags.length ? target.foodTags : recipe?.allTags ?? fallbackRecipe?.allTags ?? [];
+  return getSpecialBusinessRecipeCookingDeferral(specialBusiness, item.order.specialBusinessRole, recipeName, recipeTags);
+}
+
+export interface RareRecipeTargetReconciliation {
+  state: AutoFirstOrderState;
+  message: string;
+}
+
+export function reconcileRareRecipeTargetForSpecialBusiness(
+  specialBusiness: SpecialBusinessContext | null | undefined,
+  item: OrderRecommendation,
+  state: AutoFirstOrderState,
+  recommendedTarget: RareAutomationRecipeTarget | null,
+  now: number,
+  rejectedRecipeKeys: readonly string[] = [],
+): RareRecipeTargetReconciliation {
+  const signature = buildSpecialBusinessFoodTargetSignature(specialBusiness, item.order.specialBusinessRole);
+  if (!signature) {
+    if (!state.recipeTargetSignature) return { state, message: '' };
+    return {
+      state: {
+        ...state,
+        recipeTargetSignature: '',
+      },
+      message: '',
+    };
+  }
+
+  const rule = buildSpecialBusinessOrderRule(specialBusiness, item.order.specialBusinessRole);
+  const targetTags = rule.foodTargetTags;
+  if (targetTags.length === 0) {
+    return { state, message: '' };
+  }
+
+  const rejected = new Set(rejectedRecipeKeys);
+  const currentTarget = state.recipeTarget;
+  const currentMatches = currentTarget ? rareRecipeTargetMatchesSpecialTags(item, currentTarget, targetTags) : false;
+  const recommendedMatches = recommendedTarget ? rareRecipeTargetMatchesSpecialTags(item, recommendedTarget, targetTags) : false;
+  const currentRejected = currentTarget ? isRareRecipeTargetRejectedBySpecialBusiness(currentTarget, targetTags, rejected) : false;
+  const recommendedRejected = recommendedTarget ? isRareRecipeTargetRejectedBySpecialBusiness(recommendedTarget, targetTags, rejected) : false;
+  const signatureChanged = state.recipeTargetSignature !== signature;
+  const canKeepCurrentTarget = currentTarget && currentMatches && !currentRejected;
+
+  if (canKeepCurrentTarget && !signatureChanged) {
+    return { state, message: '' };
+  }
+
+  if (canKeepCurrentTarget && signatureChanged) {
+    return {
+      state: {
+        ...state,
+        recipeTargetSignature: signature,
+      },
+      message: '',
+    };
+  }
+
+  if (recommendedTarget && recommendedMatches && !recommendedRejected) {
+    const changedTarget = !currentTarget || !isSameRareRecipeTarget(currentTarget, recommendedTarget);
+    const reason = currentRejected
+      ? '旧料理目标已被实机判定不匹配'
+      : '旧料理目标不可用';
+    return {
+      state: {
+        ...state,
+        recipeTarget: recommendedTarget,
+        recipeTargetSignature: signature,
+        prepared: false,
+        preparedAtMs: 0,
+        step: 'ensure-cooking',
+        stepStartedAtMs: now,
+        lastProgressAtMs: now,
+        retryCount: 0,
+        rollbackCount: changedTarget ? state.rollbackCount + 1 : state.rollbackCount,
+        lastError: changedTarget
+          ? `怪诞料理目标 Tag 为 ${targetTags.join('、')}，已切换到命中该 Tag 的推荐料理 ${recommendedTarget.recipeName}。`
+          : '',
+      },
+      message: changedTarget
+        ? `怪诞料理目标 Tag 为 ${targetTags.join('、')}，${reason}，已切换到 ${recommendedTarget.recipeName}。`
+        : '',
+    };
+  }
+
+  if (!currentTarget && state.recipeTargetSignature === signature) {
+    return { state, message: '' };
+  }
+
+  return {
+    state: {
+      ...state,
+      recipeTarget: null,
+      recipeTargetSignature: signature,
+      prepared: false,
+      preparedAtMs: 0,
+      step: 'ensure-cooking',
+      stepStartedAtMs: now,
+      lastProgressAtMs: now,
+      retryCount: 0,
+      rollbackCount: currentTarget ? state.rollbackCount + 1 : state.rollbackCount,
+      lastError: `当前怪诞料理目标 Tag 为 ${targetTags.join('、')}，当前没有可执行且命中该 Tag 的推荐料理。`,
+    },
+    message: `当前怪诞料理目标 Tag 为 ${targetTags.join('、')}，当前没有可执行且命中该 Tag 的推荐料理。`,
+  };
+}
+
+export function buildNormalCookingTargetDecision(
+  order: NormalBusinessOrder,
+  data: RecommendationDataSet,
+  selection: NormalExecutionTargetSelectionLike | null | undefined,
+): NormalCookingTargetDecision {
+  const target = selection?.target ?? null;
+  const blockedReason = selection?.message ?? '';
+  return {
+    orderKey: buildNormalAutoOrderKey(order),
+    target,
+    blockedReason,
+    cooker: blockedReason
+      ? null
+      : getNormalExecutionCookerRequirement(target) ?? getNormalCookerRequirement(order, data),
+    label: `普客 桌 ${formatDesk(order.deskCode)} · ${(target?.recipeName || order.foodName) || `#${order.foodId}`}`,
+  };
+}
+
+function resolveNormalExecutionTargetSelectionForOverview({
+  orderKey,
+  requiresSpecialNormalTarget,
+  normalExecutionTargetByKey,
+  normalExecutionTargetsPending,
+  normalExecutionTargetsError,
+}: {
+  orderKey: string;
+  requiresSpecialNormalTarget: boolean;
+  normalExecutionTargetByKey: ReadonlyMap<string, NormalExecutionTargetSelectionLike>;
+  normalExecutionTargetsPending: boolean;
+  normalExecutionTargetsError: string | null;
+}): NormalExecutionTargetSelectionLike {
+  const selection = normalExecutionTargetByKey.get(orderKey);
+  if (selection) return selection;
+  if (!requiresSpecialNormalTarget) {
+    return { orderKey, target: null, message: '' };
+  }
+  if (normalExecutionTargetsError) {
+    return { orderKey, target: null, message: `特殊经营执行目标计算失败：${normalExecutionTargetsError}` };
+  }
+  if (normalExecutionTargetsPending) {
+    return { orderKey, target: null, message: '特殊经营执行目标计算中，等待下一轮。' };
+  }
+  return { orderKey, target: null, message: '特殊经营执行目标暂不可用，等待下一轮。' };
+}
 
 /**
  * 估算普客自动化本轮会占用的厨具需求。
@@ -87,6 +315,8 @@ export function buildNormalCookerDemand(
   runtime: RecommendationStateSnapshot | null | undefined,
   now: number,
   data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
+  specialBusiness: SpecialBusinessContext | null | undefined = null,
+  specialBusinessRejectedRecipeKeys: readonly string[] = [],
 ): NormalCookerDemand {
   const counts = new Map<string, number>();
   const labels = new Map<string, string[]>();
@@ -99,8 +329,22 @@ export function buildNormalCookerDemand(
   for (const order of sortNormalOrders(orders).filter((item) => !item.hasEvaluated)) {
     const state = states.get(buildNormalAutoOrderKey(order));
     if (!shouldAttemptNormalCooking(order, state, preferences, now)) continue;
+    const specialTargetSelection = selectSpecialBusinessNormalExecutionTarget({
+      order,
+      specialBusiness,
+      runtime,
+      preferences,
+      data,
+      rejectedRecipeKeys: specialBusinessRejectedRecipeKeys,
+    });
+    const targetDecision = buildNormalCookingTargetDecision(order, data, {
+      orderKey: buildNormalAutoOrderKey(order),
+      target: specialTargetSelection.target,
+      message: specialTargetSelection.message,
+    });
+    if (targetDecision.blockedReason) continue;
 
-    const cooker = getNormalCookerRequirement(order, data);
+    const cooker = targetDecision.cooker;
     if (!cooker) continue;
 
     const limit = getCookerSlotCapacity(cooker.key, capacity);
@@ -109,7 +353,7 @@ export function buildNormalCookerDemand(
 
     counts.set(cooker.key, used + 1);
     const items = labels.get(cooker.key) ?? [];
-    items.push(`桌 ${formatDesk(order.deskCode)} · ${order.foodName || `#${order.foodId}`}`);
+    items.push(targetDecision.label);
     labels.set(cooker.key, items);
     reservedOrders += 1;
     if (reservedOrders >= preferences.autoNormalConcurrency) break;
@@ -129,6 +373,11 @@ export function buildAutomationResourceOverview({
   favorites,
   preferences,
   normalOrders,
+  specialBusiness,
+  normalExecutionTargets,
+  normalExecutionTargetsEnabled = false,
+  normalExecutionTargetsPending = false,
+  normalExecutionTargetsError = null,
   rareDiagnostics,
   normalDiagnostics,
   data,
@@ -138,33 +387,61 @@ export function buildAutomationResourceOverview({
   favorites: FavoriteData;
   preferences: CompanionPreferences;
   normalOrders: NormalBusinessOrder[];
+  specialBusiness?: SpecialBusinessContext | null;
+  normalExecutionTargets?: readonly NormalExecutionTargetSelectionLike[];
+  normalExecutionTargetsEnabled?: boolean;
+  normalExecutionTargetsPending?: boolean;
+  normalExecutionTargetsError?: string | null;
   rareDiagnostics: RareAutoOrderDiagnostic[];
   normalDiagnostics: NormalAutoOrderDiagnostic[];
   data: RecommendationDataSet;
 }): AutomationResourceOverview {
   if (!preferences.automationEnabled) {
-    return { cookers: [] };
+    return { cookers: [], normalBlocked: [] };
   }
 
   const capacity = buildAutomationCookerCapacity(runtime);
   const cookerRows = new Map<string, AutomationCookerResourceRow>();
+  const normalBlocked: AutomationResourceOverview['normalBlocked'] = [];
   for (const [key, count] of capacity.entries()) {
     ensureCookerResourceRow(cookerRows, key, key, count);
   }
 
   const normalDiagnosticByKey = new Map(normalDiagnostics.map((item) => [item.orderKey, item]));
+  const normalExecutionTargetByKey = new Map(
+    (normalExecutionTargets ?? []).map((selection) => [selection.orderKey, selection]),
+  );
+  const requiresSpecialNormalTarget = normalExecutionTargetsEnabled && Boolean(specialBusiness?.active);
   if (preferences.autoNormalOrderEnabled && preferences.autoNormalStartCooking) {
     let normalReserved = 0;
     for (const order of sortNormalOrders(normalOrders).filter((item) => !item.hasEvaluated)) {
       if (normalReserved >= preferences.autoNormalConcurrency) break;
-      const diagnostic = normalDiagnosticByKey.get(buildNormalAutoOrderKey(order));
-      if (diagnostic?.prepared || diagnostic?.collected || diagnostic?.paused || diagnostic?.hasServedFood) continue;
-      const cooker = getNormalCookerRequirement(order, data);
+      const orderKey = buildNormalAutoOrderKey(order);
+      const diagnostic = normalDiagnosticByKey.get(orderKey);
+      if (diagnostic?.prepared || diagnostic?.foodDeliveryRequested || diagnostic?.paused || diagnostic?.hasServedFood) continue;
+      const targetSelection = resolveNormalExecutionTargetSelectionForOverview({
+        orderKey,
+        requiresSpecialNormalTarget,
+        normalExecutionTargetByKey,
+        normalExecutionTargetsPending,
+        normalExecutionTargetsError,
+      });
+      const targetDecision = buildNormalCookingTargetDecision(order, data, targetSelection);
+      if (targetDecision.blockedReason) {
+        normalBlocked.push({
+          orderKey,
+          label: targetDecision.label,
+          reason: targetDecision.blockedReason,
+        });
+        continue;
+      }
+
+      const cooker = targetDecision.cooker;
       if (!cooker) continue;
       const row = ensureCookerResourceRow(cookerRows, cooker.key, cooker.label, getCookerSlotCapacity(cooker.key, capacity));
       if (row.normalReserved + row.rareReserved >= row.capacity) continue;
       row.normalReserved += 1;
-      row.labels.push(`普客 桌 ${formatDesk(order.deskCode)} · ${order.foodName || `#${order.foodId}`}`);
+      row.labels.push(targetDecision.label);
       normalReserved += 1;
     }
   }
@@ -176,7 +453,6 @@ export function buildAutomationResourceOverview({
       favorites,
       preferences,
       preferences.autoRareConcurrency,
-      new Map(),
     );
     for (const selection of candidates.selections) {
       const diagnostic = rareDiagnosticByKey.get(buildAutoOrderKey(selection.item));
@@ -194,6 +470,7 @@ export function buildAutomationResourceOverview({
     cookers: [...cookerRows.values()]
       .filter((row) => row.normalReserved + row.rareReserved > 0)
       .sort((left, right) => left.label.localeCompare(right.label, 'zh-CN')),
+    normalBlocked,
   };
 }
 
@@ -380,36 +657,69 @@ export function selectOrderPreparationCandidates(
   favorites: FavoriteData,
   preferences: CompanionPreferences,
   limit: number,
-  states: ReadonlyMap<string, AutoFirstOrderState>,
-): { selections: ValidOrderPreparationSelection[]; messages: string[]; message: string } {
+  states?: ReadonlyMap<string, AutoFirstOrderState>,
+): OrderPreparationCandidateResult {
   const rows = sortNightOrderRows(
     recommendations.map((item) => ({ order: item.order, item })),
     preferences.serviceOrderSortMode,
   );
   if (rows.length === 0) {
-    return { selections: [], messages: [], message: '暂无可准备的稀客订单。' };
+    return { selections: [], skips: [], messages: [], message: '暂无可准备的稀客订单。' };
   }
 
   const selections: ValidOrderPreparationSelection[] = [];
+  const skips: OrderPreparationCandidateSkip[] = [];
   const messages: string[] = [];
   for (const row of rows) {
     const item = row.item;
     const label = formatRareAutomationPrefix(item);
-    const state = states.get(buildAutoOrderKey(item));
-    const planPick = pickPlanForPreparation(item, favorites, preferences);
-    const recipeTarget = state?.recipeTarget ?? (planPick.recipe
-      ? buildRareRecipeTarget(item, planPick.recipe, planPick.recipeFavorite, planPick.preferenceFallback)
-      : null);
-    const beverageTarget = state?.beverageTarget ?? (planPick.beverage
-      ? buildRareBeverageTarget(planPick.beverage, planPick.beverageFavorite)
-      : null);
-
-    if (!recipeTarget && preferences.autoPrepStartCooking) {
-      messages.push(`${label}\n${preferences.autoPrepRecipeFavoritesOnly ? '没有匹配的收藏料理。' : '没有可用的推荐料理。'}`);
+    if (item.order.automationAllowed === false) {
+      const skip = buildOrderPreparationSkip(
+        item,
+        label,
+        'automation-blocked',
+        item.order.automationBlockReason || '特殊经营订单暂不允许标准自动化接管。',
+      );
+      skips.push(skip);
+      messages.push(skip.message);
       continue;
     }
-    if (!beverageTarget && preferences.autoPrepTakeBeverage) {
-      messages.push(`${label}\n${preferences.autoPrepBeverageFavoritesOnly ? '没有匹配的收藏酒水。' : '没有可用的推荐酒水。'}`);
+
+    const state = states?.get(buildAutoOrderKey(item));
+    const needsRecipeTarget = preferences.autoPrepStartCooking
+      && !state?.prepared
+      && !item.order.hasServedFood;
+    const needsBeverageTarget = preferences.autoPrepTakeBeverage
+      && !state?.beverageHandled
+      && !item.order.hasServedBeverage;
+    const planPick = pickPlanForPreparation(item, favorites, preferences);
+    const recipeTarget = planPick.recipe
+      ? buildRareRecipeTarget(item, planPick.recipe, planPick.recipeFavorite, planPick.preferenceFallback)
+      : null;
+    const beverageTarget = planPick.beverage
+      ? buildRareBeverageTarget(planPick.beverage, planPick.beverageFavorite)
+      : null;
+
+    if (!recipeTarget && needsRecipeTarget) {
+      const skip = buildOrderPreparationSkip(
+        item,
+        label,
+        preferences.autoPrepRecipeFavoritesOnly ? 'recipe-favorite-missing' : 'recipe-target-missing',
+        formatRareAutomationMissingRecipeTargetMessage(item, preferences.autoPrepRecipeFavoritesOnly),
+      );
+      skips.push(skip);
+      messages.push(skip.message);
+      continue;
+    }
+    if (!beverageTarget && needsBeverageTarget) {
+      const skip = buildOrderPreparationSkip(
+        item,
+        label,
+        preferences.autoPrepBeverageFavoritesOnly ? 'beverage-favorite-missing' : 'beverage-target-missing',
+        formatRareAutomationMissingBeverageTargetMessage(item, preferences.autoPrepBeverageFavoritesOnly),
+      );
+      skips.push(skip);
+      messages.push(skip.message);
       continue;
     }
 
@@ -428,8 +738,78 @@ export function selectOrderPreparationCandidates(
 
   return {
     selections,
+    skips,
     messages,
     message: selections.length > 0 ? '' : messages[0] ?? '当前稀客订单没有可执行的自动化候选。',
+  };
+}
+
+export function formatRareAutomationMissingRecipeTargetMessage(
+  item: OrderRecommendation,
+  favoritesOnly: boolean,
+): string {
+  if (favoritesOnly) {
+    return item.recipes.length > 0
+      ? '推荐页已有料理候选，但没有匹配收藏限定的自动化料理。'
+      : '没有匹配的收藏料理。';
+  }
+
+  if (item.recipes.length > 0 && item.executionPlans.length > 0) {
+    return '推荐页已有料理候选，但没有同时满足当前订单、特殊经营和酒水条件的自动化料理。';
+  }
+
+  if (item.recipes.length > 0) {
+    return appendRecommendationBlockedDetails('推荐页已有料理候选，但没有可直接执行的完整自动化方案。', item);
+  }
+
+  return '没有可用的推荐料理。';
+}
+
+export function formatRareAutomationMissingBeverageTargetMessage(
+  item: OrderRecommendation,
+  favoritesOnly: boolean,
+): string {
+  if (favoritesOnly) {
+    return item.beverages.length > 0
+      ? '推荐页已有酒水候选，但没有匹配收藏限定的自动化酒水。'
+      : '没有匹配的收藏酒水。';
+  }
+
+  if (item.beverages.length > 0 && item.executionPlans.length > 0) {
+    return '推荐页已有酒水候选，但没有同时满足当前订单、特殊经营和料理条件的自动化酒水。';
+  }
+
+  if (item.beverages.length > 0) {
+    return appendRecommendationBlockedDetails('推荐页已有酒水候选，但没有可直接执行的完整自动化方案。', item);
+  }
+
+  return '没有可用的推荐酒水。';
+}
+
+function appendRecommendationBlockedDetails(message: string, item: OrderRecommendation): string {
+  if (item.blockedMessages.length === 0) return message;
+  const details = item.blockedMessages
+    .slice(0, 2)
+    .map((value) => value.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .join('；');
+  return details ? `${message}原因：${details}` : message;
+}
+
+function buildOrderPreparationSkip(
+  item: OrderRecommendation,
+  label: string,
+  reason: OrderPreparationSkipReason,
+  detail: string,
+): OrderPreparationCandidateSkip {
+  return {
+    reason,
+    orderKey: buildAutoOrderKey(item),
+    label,
+    message: `${label}\n${detail}`,
+    recipeRecommendationCount: item.recipes.length,
+    beverageRecommendationCount: item.beverages.length,
+    executionPlanCount: item.executionPlans.length,
   };
 }
 
@@ -456,20 +836,35 @@ export function lockRareAutomationTargets(
 /**
  * 构建发送给 Mod 的游戏内目标厨具/材料高亮目标。
  *
- * 目标总是来自当前排序后的第一笔稀客订单，签名包含订单、料理、材料、酒水和厨具，便于 Mod 判断是否需要更新高亮。
+ * 特殊经营可要求目标来自自动化可执行计划，避免推荐页展示候选与实际可执行目标分叉。
+ * 签名包含订单、料理、材料、酒水和厨具，便于 Mod 判断是否需要更新高亮。
  */
 export function buildGameUiPinningTarget(
   recommendations: OrderRecommendation[],
   orderSortMode: ServiceOrderSortMode,
   indexes: ReturnType<typeof buildRecommendationDataIndexes> = DEFAULT_DATA_INDEXES,
+  options: { requireExecutablePlan?: boolean } = {},
 ): GameUiPinningTarget | null {
-  const item = sortNightOrderRows(
+  const rows = sortNightOrderRows(
     recommendations.map((recommendation) => ({ order: recommendation.order, recommendation })),
     orderSortMode,
-  )[0]?.recommendation;
+  );
+  const item = options.requireExecutablePlan
+    ? rows.find((row) => row.recommendation.executionPlans.length > 0)?.recommendation
+    : rows[0]?.recommendation;
   if (!item) return null;
-  const recipe = item.recipes[0] ?? null;
-  const beverage = item.beverages[0] ?? null;
+  const executablePlan = item.executionPlans[0] ?? null;
+  if (options.requireExecutablePlan && !executablePlan) return null;
+
+  let recipe: RareRecipeRecommendation | null = null;
+  let beverage: RareBeverageRecommendation | null = null;
+  if (executablePlan) {
+    recipe = executablePlan.food ? getRecipeRowForPlan(item, executablePlan) : null;
+    beverage = executablePlan.beverage ? getBeverageRowForPlan(item, executablePlan) : null;
+  } else {
+    recipe = item.recipes[0] ?? null;
+    beverage = item.beverages[0] ?? null;
+  }
   if (!recipe && !beverage) return null;
 
   const baseIngredientIds = recipe
@@ -598,7 +993,7 @@ export function buildRareAutoOrderDiagnostic(
     detailMessage: state.detailMessage,
     detailUpdatedAtMs: state.detailUpdatedAtMs,
     prepared: state.prepared || Boolean(order.hasServedFood),
-    beverageHandled: state.beverageHandled || Boolean(order.hasServedBeverage),
+    beverageDeliveryRequested: state.beverageHandled || Boolean(order.hasServedBeverage),
     hasServedFood: Boolean(order.hasServedFood),
     hasServedBeverage: Boolean(order.hasServedBeverage),
     paused: state.paused,
@@ -623,20 +1018,6 @@ export function buildNormalAutoOrderDiagnostics(
 }
 
 /**
- * 构建普客自动化状态键。
- */
-export function buildNormalAutoOrderKey(order: NormalBusinessOrder): string {
-  if (order.orderKey) return order.orderKey;
-  return [
-    order.firstSeenAtUtc ?? '',
-    order.deskCode,
-    order.guestName,
-    order.foodId,
-    order.beverageId,
-  ].join('|');
-}
-
-/**
  * 构建普客订单快照签名，用于在订单状态变化时立即触发自动化复查。
  */
 export function buildNormalOrderAutomationSignature(orders: NormalBusinessOrder[]): string {
@@ -654,6 +1035,8 @@ export function buildNormalOrderAutomationSignature(orders: NormalBusinessOrder[
     ].join(':'))
     .join('|');
 }
+
+export { buildNormalAutoOrderKey };
 
 /**
  * 判断普客开火后是否等待过久，需要重新确认或重试。
@@ -815,6 +1198,7 @@ function buildRareRecipeTarget(
     recipeName: recipe.recipe.name,
     cookerName: recipe.recipe.cooker,
     extraIngredientIds: recipe.extraIngredients.map((ingredient) => ingredient.id),
+    foodTags: recipe.allTags,
     favorite: Boolean(favorite),
     preferenceFallback,
   };
@@ -863,9 +1247,8 @@ function buildNormalAutoOrderDiagnostic(
     detailMessage: state.detailMessage,
     detailUpdatedAtMs: state.detailUpdatedAtMs,
     prepared: state.prepared || isNormalOrderCollected(order, state),
-    beverageHandled: state.beverageHandled || order.hasServedBeverage,
-    collected: isNormalOrderCollected(order, state),
-    foodDelivered: state.foodDelivered || order.hasServedFood,
+    beverageDeliveryRequested: state.beverageHandled || order.hasServedBeverage,
+    foodDeliveryRequested: state.foodDelivered || order.hasServedFood,
     completed: state.completed || order.hasEvaluated,
     paused: state.paused,
     hasServedFood: order.hasServedFood,
@@ -993,6 +1376,38 @@ function findRecipeRowForPlan(
   ) ?? null;
 }
 
+function findRecipeRowForTarget(
+  item: OrderRecommendation,
+  target: RareAutomationRecipeTarget,
+): RareRecipeRecommendation | null {
+  return findRecipeRowForPlan(item, target.foodId, target.extraIngredientIds);
+}
+
+function rareRecipeTargetMatchesSpecialTags(
+  item: OrderRecommendation,
+  target: RareAutomationRecipeTarget,
+  targetTags: readonly string[],
+): boolean {
+  const recipe = findRecipeRowForTarget(item, target);
+  const tags = target.foodTags.length ? target.foodTags : recipe?.allTags ?? [];
+  return hasMatchingSpecialBusinessTag(tags, targetTags);
+}
+
+function isRareRecipeTargetRejectedBySpecialBusiness(
+  target: RareAutomationRecipeTarget,
+  targetTags: readonly string[],
+  rejectedRecipeKeys: ReadonlySet<string>,
+): boolean {
+  if (rejectedRecipeKeys.size === 0) return false;
+  const key = buildWackyRejectedRecipeKeyForRareRecipe(
+    targetTags,
+    target.foodId,
+    target.recipeId,
+    target.extraIngredientIds,
+  );
+  return Boolean(key && rejectedRecipeKeys.has(key));
+}
+
 function getRecipeRowForPlan(
   item: OrderRecommendation,
   plan: RareOrderRecommendationPlan,
@@ -1024,4 +1439,13 @@ function getBeverageRowForPlan(
     meetsRequiredBev: plan.beverage.meetsRequiredBeverage,
     matchedTags: plan.beverage.matchedTags,
   };
+}
+
+function isSameRareRecipeTarget(
+  left: RareAutomationRecipeTarget,
+  right: RareAutomationRecipeTarget,
+): boolean {
+  return left.foodId === right.foodId
+    && left.recipeId === right.recipeId
+    && normalizeIdList(left.extraIngredientIds).join(',') === normalizeIdList(right.extraIngredientIds).join(',');
 }

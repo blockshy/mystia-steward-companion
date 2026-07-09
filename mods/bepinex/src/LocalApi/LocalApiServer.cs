@@ -24,6 +24,8 @@ internal sealed class LocalApiServer : IDisposable
     private const int MaxRequestBytes = 32768;
     private const int DiagnosticTailMaxBytes = 2 * 1024 * 1024;
     private const int DiagnosticTailMaxLines = 2000;
+    private const int AutomationDecisionDiagnosticMaxLines = 12;
+    private const int AutomationDecisionDiagnosticMaxTextLength = 600;
     private const string AutoLanHost = "auto";
     private const string ClientIdHeaderName = "X-Mystia-Steward-Companion-Client-Id";
     private const string ClientLabelHeaderName = "X-Mystia-Steward-Companion-Client-Label";
@@ -60,6 +62,10 @@ internal sealed class LocalApiServer : IDisposable
     private AutomationLease? _automationLease;
     private bool _running;
     private string _snapshotJson = "{\"runtimeLoaded\":false,\"status\":\"Snapshot is not ready.\"}";
+    private string _snapshotSignature = "";
+    private string _runtimeDataJson = "{\"isComplete\":false,\"status\":\"Runtime data is not ready.\"}";
+    private string _lastSnapshotRequestDiagnosticSignature = "";
+    private string _lastAutomationDecisionDiagnosticSignature = "";
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -78,6 +84,16 @@ internal sealed class LocalApiServer : IDisposable
         public string ClientLabel { get; init; } = "";
         public DateTime LastSeenUtc { get; set; }
         public DateTime ExpiresAtUtc { get; set; }
+    }
+
+    private sealed class SnapshotRequestSummary
+    {
+        public string CapturedAtUtc { get; init; } = "";
+        public string Scene { get; init; } = "";
+        public int NormalOrders { get; init; } = -1;
+        public bool SpecialActive { get; init; }
+        public string ChallengeType { get; init; } = "";
+        public string Phase { get; init; } = "";
     }
 
     public LocalApiServer(
@@ -174,11 +190,20 @@ internal sealed class LocalApiServer : IDisposable
     /// <remarks>
     /// 快照在 Unity 主线程构建并一次性替换，API 线程只读取字符串副本，避免每个 HTTP 请求重复反射读取游戏对象。
     /// </remarks>
-    public void SetSnapshotJson(string snapshotJson)
+    public void SetSnapshotJson(string snapshotJson, string snapshotSignature)
     {
         lock (_snapshotLock)
         {
             _snapshotJson = snapshotJson;
+            _snapshotSignature = snapshotSignature;
+        }
+    }
+
+    public void SetRuntimeDataJson(string runtimeDataJson)
+    {
+        lock (_snapshotLock)
+        {
+            _runtimeDataJson = runtimeDataJson;
         }
     }
 
@@ -469,10 +494,16 @@ internal sealed class LocalApiServer : IDisposable
                         WriteResponse(stream, 200, "OK", ToJson(_getConnectionConfig()));
                         break;
                     case "/snapshot":
-                        WriteResponse(stream, 200, "OK", GetSnapshotJson());
+                        WriteResponse(stream, 200, "OK", GetSnapshotJson(query, request));
+                        break;
+                    case "/runtime-data":
+                        WriteResponse(stream, 200, "OK", GetRuntimeDataJson());
                         break;
                     case "/automation/lease":
                         WriteResponse(stream, 200, "OK", ToJson(ReadAutomationLease(request)));
+                        break;
+                    case "/diagnostics/automation-decision":
+                        WriteResponse(stream, 200, "OK", BuildAutomationDecisionDiagnosticJson(query, request));
                         break;
                     case "/logs/export-diagnostics":
                         WriteResponse(stream, 200, "OK", BuildDiagnosticPackageJson(ReadBoolQuery(query, "open") ?? false));
@@ -583,11 +614,168 @@ internal sealed class LocalApiServer : IDisposable
         }
     }
 
-    private string GetSnapshotJson()
+    private string GetSnapshotJson(string query = "", string request = "", bool logRequest = true)
+    {
+        string knownSignature;
+        string currentSignature;
+        string snapshotJson;
+        string responseJson;
+        bool unchanged;
+        lock (_snapshotLock)
+        {
+            knownSignature = ReadStringQuery(query, "knownSignature");
+            currentSignature = _snapshotSignature;
+            snapshotJson = _snapshotJson;
+            unchanged = !string.IsNullOrWhiteSpace(knownSignature)
+                && !string.IsNullOrWhiteSpace(_snapshotSignature)
+                && string.Equals(knownSignature, _snapshotSignature, StringComparison.Ordinal);
+            responseJson = unchanged
+                ? ToJson(new LocalApiSnapshotUnchangedDto
+                {
+                    Unchanged = true,
+                    SnapshotSignature = _snapshotSignature,
+                })
+                : _snapshotJson;
+        }
+
+        if (logRequest)
+        {
+            AppendSnapshotRequestDiagnostic(
+                request,
+                knownSignature,
+                currentSignature,
+                snapshotJson,
+                responseJson.Length,
+                unchanged);
+        }
+
+        return responseJson;
+    }
+
+    private void AppendSnapshotRequestDiagnostic(
+        string request,
+        string knownSignature,
+        string currentSignature,
+        string snapshotJson,
+        int responseLength,
+        bool unchanged)
+    {
+        if (!AggregateModLogService.Enabled) return;
+
+        try
+        {
+            var summary = ReadSnapshotRequestSummary(snapshotJson);
+            var clientId = (ReadHeader(request, ClientIdHeaderName) ?? "").Trim();
+            var clientLabel = (ReadHeader(request, ClientLabelHeaderName) ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(clientLabel)) clientLabel = "unknown";
+            var diagnosticSignature = string.Join(
+                "|",
+                clientId,
+                clientLabel,
+                FormatShortSignature(knownSignature),
+                FormatShortSignature(currentSignature),
+                unchanged ? "unchanged" : "full",
+                responseLength,
+                summary.Scene,
+                summary.NormalOrders,
+                summary.SpecialActive,
+                summary.ChallengeType,
+                summary.Phase);
+            if (string.Equals(diagnosticSignature, _lastSnapshotRequestDiagnosticSignature, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _lastSnapshotRequestDiagnosticSignature = diagnosticSignature;
+            AggregateModLogService.AppendSection(
+                "snapshot.request",
+                "Local API Snapshot Request",
+                string.Join(
+                    Environment.NewLine,
+                    $"client: {clientLabel} / {FormatShortSignature(clientId)}",
+                    $"knownSignature: {FormatShortSignature(knownSignature)}",
+                    $"currentSignature: {FormatShortSignature(currentSignature)}",
+                    $"response: {(unchanged ? "unchanged" : "full")}",
+                    $"responseBytes: {responseLength}",
+                    $"scene: {summary.Scene}",
+                    $"normalOrders: {summary.NormalOrders}",
+                    $"specialActive: {summary.SpecialActive}",
+                    $"special: {summary.ChallengeType} {summary.Phase}",
+                    $"capturedAtUtc: {summary.CapturedAtUtc}"));
+        }
+        catch
+        {
+            // Request diagnostics must never affect local API responses.
+        }
+    }
+
+    private static SnapshotRequestSummary ReadSnapshotRequestSummary(string snapshotJson)
+    {
+        using var document = JsonDocument.Parse(snapshotJson);
+        var root = document.RootElement;
+        var normalOrders = -1;
+        if (TryGetJsonProperty(root, "normalBusiness", out var normalBusiness)
+            && normalBusiness.ValueKind == JsonValueKind.Object
+            && TryGetJsonProperty(normalBusiness, "orders", out var normalOrdersElement)
+            && normalOrdersElement.ValueKind == JsonValueKind.Array)
+        {
+            normalOrders = normalOrdersElement.GetArrayLength();
+        }
+
+        var specialActive = false;
+        var challengeType = "";
+        var phase = "";
+        if (TryGetJsonProperty(root, "specialBusiness", out var specialBusiness)
+            && specialBusiness.ValueKind == JsonValueKind.Object)
+        {
+            specialActive = ReadJsonBoolean(specialBusiness, "active");
+            challengeType = ReadJsonString(specialBusiness, "challengeType");
+            phase = ReadJsonString(specialBusiness, "phase");
+        }
+
+        return new SnapshotRequestSummary
+        {
+            CapturedAtUtc = ReadJsonString(root, "capturedAtUtc"),
+            Scene = ReadJsonString(root, "activeSceneName"),
+            NormalOrders = normalOrders,
+            SpecialActive = specialActive,
+            ChallengeType = challengeType,
+            Phase = phase,
+        };
+    }
+
+    private static bool TryGetJsonProperty(JsonElement element, string name, out JsonElement value)
+    {
+        if (element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out value)) return true;
+        value = default;
+        return false;
+    }
+
+    private static string ReadJsonString(JsonElement element, string name)
+    {
+        return TryGetJsonProperty(element, name, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString() ?? ""
+            : "";
+    }
+
+    private static bool ReadJsonBoolean(JsonElement element, string name)
+    {
+        return TryGetJsonProperty(element, name, out var value)
+            && value.ValueKind == JsonValueKind.True;
+    }
+
+    private static string FormatShortSignature(string value)
+    {
+        var normalized = (value ?? "").Trim();
+        if (normalized.Length == 0) return "<empty>";
+        return normalized.Length <= 12 ? normalized : normalized[..12];
+    }
+
+    private string GetRuntimeDataJson()
     {
         lock (_snapshotLock)
         {
-            return _snapshotJson;
+            return _runtimeDataJson;
         }
     }
 
@@ -737,6 +925,96 @@ internal sealed class LocalApiServer : IDisposable
         };
     }
 
+    private string BuildAutomationDecisionDiagnosticJson(string query, string request)
+    {
+        try
+        {
+            AppendAutomationDecisionDiagnostic(query, request);
+            return ToJson(new LocalApiStatusDto
+            {
+                Ok = true,
+                Status = "automation decision diagnostic appended",
+                Error = null,
+            });
+        }
+        catch (Exception ex)
+        {
+            return ToJson(new LocalApiStatusDto
+            {
+                Ok = false,
+                Status = "",
+                Error = ex.Message,
+            });
+        }
+    }
+
+    private void AppendAutomationDecisionDiagnostic(string query, string request)
+    {
+        if (!AggregateModLogService.Enabled) return;
+
+        try
+        {
+            var clientId = (ReadHeader(request, ClientIdHeaderName) ?? "").Trim();
+            var clientLabel = (ReadHeader(request, ClientLabelHeaderName) ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(clientLabel)) clientLabel = "unknown";
+
+            var signature = LimitDiagnosticText(ReadStringQuery(query, "signature"), 160);
+            var diagnosticSignature = string.Join("|", clientId, signature);
+            if (!string.IsNullOrWhiteSpace(signature)
+                && string.Equals(diagnosticSignature, _lastAutomationDecisionDiagnosticSignature, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _lastAutomationDecisionDiagnosticSignature = diagnosticSignature;
+
+            var challengeType = LimitDiagnosticText(ReadStringQuery(query, "challengeType"), 80);
+            var phase = LimitDiagnosticText(ReadStringQuery(query, "phase"), 40);
+            var channel = challengeType.Contains("Yuyuko", StringComparison.OrdinalIgnoreCase)
+                || challengeType.Contains("幽幽子", StringComparison.Ordinal)
+                    ? "special-business.yuyuko"
+                    : "automation.frontend";
+            var title = channel == "special-business.yuyuko"
+                ? "Yuyuko Challenge Frontend Automation Decision"
+                : "Frontend Automation Decision";
+
+            var lines = new List<string>
+            {
+                $"client: {clientLabel} / {FormatShortSignature(clientId)}",
+                $"event: {LimitDiagnosticText(ReadStringQuery(query, "eventName"), 80)}",
+                $"message: {LimitDiagnosticText(ReadStringQuery(query, "message"))}",
+                $"scene: {LimitDiagnosticText(ReadStringQuery(query, "scene"), 60)}",
+                $"special: {challengeType} {phase}",
+                $"specialRole: {LimitDiagnosticText(ReadStringQuery(query, "specialBusinessRole"), 80)}",
+                $"counts: orders={ReadIntQuery(query, "orderCount", 0)}, selections={ReadIntQuery(query, "selectionCount", 0)}, skips={ReadIntQuery(query, "skipCount", 0)}",
+                string.Join(
+                    "; ",
+                    "automation=" + (ReadBoolQuery(query, "automationEnabled") ?? false),
+                    "leaseOwned=" + (ReadBoolQuery(query, "leaseOwned") ?? false),
+                    "complete=" + (ReadBoolQuery(query, "autoCompleteOrder") ?? false),
+                    "takeBeverage=" + (ReadBoolQuery(query, "autoTakeBeverage") ?? false),
+                    "startCooking=" + (ReadBoolQuery(query, "autoStartCooking") ?? false),
+                    "collectCooking=" + (ReadBoolQuery(query, "autoCollectCooking") ?? false),
+                    "recipeFavoritesOnly=" + (ReadBoolQuery(query, "recipeFavoritesOnly") ?? false),
+                    "beverageFavoritesOnly=" + (ReadBoolQuery(query, "beverageFavoritesOnly") ?? false),
+                    "rareConcurrency=" + ReadIntQuery(query, "rareConcurrency", 0)),
+            };
+
+            var leaseMessage = LimitDiagnosticText(ReadStringQuery(query, "leaseMessage"));
+            if (!string.IsNullOrWhiteSpace(leaseMessage)) lines.Add($"leaseMessage: {leaseMessage}");
+
+            AppendPrefixedDiagnosticLines(lines, "order", ReadDiagnosticLines(query, "orderLines"));
+            AppendPrefixedDiagnosticLines(lines, "selection", ReadDiagnosticLines(query, "selectionLines"));
+            AppendPrefixedDiagnosticLines(lines, "skip", ReadDiagnosticLines(query, "skipLines"));
+
+            AggregateModLogService.AppendSection(channel, title, string.Join(Environment.NewLine, lines));
+        }
+        catch
+        {
+            // Frontend diagnostics must never affect local API responses.
+        }
+    }
+
     private void PruneExpiredAutomationLease(DateTime now)
     {
         if (_automationLease != null && _automationLease.ExpiresAtUtc <= now)
@@ -787,7 +1065,8 @@ internal sealed class LocalApiServer : IDisposable
             using (var archive = ZipFile.Open(packagePath, ZipArchiveMode.Create))
             {
                 AddTextEntry(archive, "manifest.json", BuildDiagnosticManifestJson(settings), added);
-                AddTextEntry(archive, "snapshot/current-snapshot.json", GetSnapshotJson(), added);
+                AddTextEntry(archive, "snapshot/current-snapshot.json", GetSnapshotJson(logRequest: false), added);
+                AddTextEntry(archive, "snapshot/runtime-data.json", GetRuntimeDataJson(), added);
                 AddAggregateLogEntries(archive, settings.AggregateModLogPath, DiagnosticTailMaxBytes, DiagnosticTailMaxLines, added);
             }
 
@@ -900,12 +1179,19 @@ internal sealed class LocalApiServer : IDisposable
                 DeskCode = ReadIntQuery(query, "deskCode", -1),
                 GuestId = ReadNullableIntQuery(query, "guestId"),
                 GuestName = ReadStringQuery(query, "guestName"),
+                SpecialBusinessRole = ReadStringQuery(query, "specialBusinessRole"),
                 FoodTag = ReadStringQuery(query, "foodTag"),
                 BeverageTag = ReadStringQuery(query, "beverageTag"),
+                MatchFoodId = ReadIntQuery(query, "matchFoodId", -1),
+                MatchBeverageId = ReadIntQuery(query, "matchBeverageId", -1),
                 FoodId = ReadIntQuery(query, "foodId", -1),
                 RecipeId = ReadIntQuery(query, "recipeId", -1),
                 RecipeName = ReadStringQuery(query, "recipeName"),
                 ExtraIngredientIds = ReadIntListQuery(query, "extraIngredientIds"),
+                PredictedFoodTags = ReadStringListQuery(query, "predictedFoodTags"),
+                WackyTargetFoodTags = ReadStringListQuery(query, "wackyTargetFoodTags"),
+                ExecutionMode = ReadStringQuery(query, "executionMode"),
+                ExecutionReason = ReadStringQuery(query, "executionReason"),
                 BeverageId = ReadIntQuery(query, "beverageId", -1),
                 BeverageName = ReadStringQuery(query, "beverageName"),
                 AutoTakeBeverage = ReadBoolQuery(query, "autoTakeBeverage") ?? false,
@@ -1450,6 +1736,39 @@ internal sealed class LocalApiServer : IDisposable
         return "";
     }
 
+    private static IReadOnlyList<string> ReadDiagnosticLines(string query, string key)
+    {
+        var value = ReadStringQuery(query, key);
+        if (string.IsNullOrWhiteSpace(value)) return Array.Empty<string>();
+
+        return value
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n')
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .Select(line => LimitDiagnosticText(line))
+            .Take(AutomationDecisionDiagnosticMaxLines)
+            .ToArray();
+    }
+
+    private static void AppendPrefixedDiagnosticLines(List<string> lines, string prefix, IReadOnlyList<string> values)
+    {
+        for (var index = 0; index < values.Count; index++)
+        {
+            lines.Add($"{prefix}[{index + 1}]: {values[index]}");
+        }
+    }
+
+    private static string LimitDiagnosticText(string value, int maxLength = AutomationDecisionDiagnosticMaxTextLength)
+    {
+        if (maxLength <= 0) return "";
+        var normalized = (value ?? "").Trim();
+        if (normalized.Length <= maxLength) return normalized;
+        return maxLength <= 3
+            ? normalized[..maxLength]
+            : normalized[..(maxLength - 3)] + "...";
+    }
+
     private static List<int> ReadIntListQuery(string query, string key)
     {
         var value = ReadStringQuery(query, key);
@@ -1461,6 +1780,19 @@ internal sealed class LocalApiServer : IDisposable
             .Where(id => id >= 0)
             .Distinct()
             .OrderBy(id => id)
+            .ToList();
+    }
+
+    private static List<string> ReadStringListQuery(string query, string key)
+    {
+        var value = ReadStringQuery(query, key);
+        if (string.IsNullOrWhiteSpace(value)) return new List<string>();
+
+        return value
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(part => !string.IsNullOrWhiteSpace(part))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(part => part, StringComparer.Ordinal)
             .ToList();
     }
 

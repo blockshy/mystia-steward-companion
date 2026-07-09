@@ -399,10 +399,13 @@ internal static class AggregateModLogService
         AppendToken(builder, "orderKey", context.OrderKey);
         if (context.GuestId.HasValue) AppendToken(builder, "guestId", context.GuestId.Value.ToString());
         AppendToken(builder, "guest", context.GuestName);
+        if (context.MatchFoodId >= 0) AppendToken(builder, "matchFoodId", context.MatchFoodId.ToString());
+        if (context.MatchBeverageId >= 0) AppendToken(builder, "matchBeverageId", context.MatchBeverageId.ToString());
         if (context.FoodId >= 0) AppendToken(builder, "foodId", context.FoodId.ToString());
         AppendToken(builder, "food", context.FoodName);
         if (context.BeverageId >= 0) AppendToken(builder, "beverageId", context.BeverageId.ToString());
         AppendToken(builder, "beverage", context.BeverageName);
+        AppendToken(builder, "rule", context.RuleReason);
         return builder.Length == 0 ? "trace=none kind=none" : builder.ToString();
     }
 
@@ -474,8 +477,11 @@ internal sealed class OrderLogContext
     public int DeskCode { get; init; } = -1;
     public int? GuestId { get; init; }
     public string GuestName { get; init; } = "";
+    public int MatchFoodId { get; init; } = -1;
+    public int MatchBeverageId { get; init; } = -1;
     public int FoodId { get; init; } = -1;
     public string FoodName { get; init; } = "";
     public int BeverageId { get; init; } = -1;
     public string BeverageName { get; init; } = "";
+    public string RuleReason { get; init; } = "";
 }

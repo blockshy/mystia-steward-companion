@@ -216,6 +216,9 @@ function buildCustomFoodCandidate(
   });
   const matchedPositiveTags = resolved.activeTags.filter((tag) => demand.customer.positiveTags.includes(tag));
   const matchedNegativeTags = resolved.activeTags.filter((tag) => demand.customer.negativeTags.includes(tag));
+  const matchedSpecialFoodTargetTags = getSpecialFoodTargetTags(demand)
+    .filter((tag) => resolved.activeTags.includes(tag));
+  const meetsSpecialFoodTarget = getSpecialFoodTargetTags(demand).length === 0 || matchedSpecialFoodTargetTags.length > 0;
   const meetsRequiredFood = resolved.activeTags.includes(demand.requiredFoodTag);
   const cookerAvailable = isCookerAvailable(recipe, context);
   const baseCost = recipe.ingredients.reduce((sum, name) => sum + (ingredientsByName.get(name)?.price ?? 0), 0);
@@ -234,6 +237,7 @@ function buildCustomFoodCandidate(
     suppressedTags: resolved.suppressedTags,
     matchedPositiveTags,
     matchedNegativeTags,
+    matchedSpecialFoodTargetTags,
     meetsRequiredFood,
     baseCost,
     extraCost,
@@ -244,6 +248,8 @@ function buildCustomFoodCandidate(
       entry,
       demand,
       meetsRequiredFood,
+      meetsSpecialFoodTarget,
+      matchedSpecialFoodTargetTags,
       matchedPositiveTags,
       matchedNegativeTags,
       suppressedTags: resolved.suppressedTags,
@@ -257,6 +263,8 @@ function buildCustomFoodConditionResults({
   entry,
   demand,
   meetsRequiredFood,
+  meetsSpecialFoodTarget,
+  matchedSpecialFoodTargetTags,
   matchedPositiveTags,
   matchedNegativeTags,
   suppressedTags,
@@ -266,6 +274,8 @@ function buildCustomFoodConditionResults({
   entry: CustomRecipeEntry;
   demand: RareTagOrderDemand;
   meetsRequiredFood: boolean;
+  meetsSpecialFoodTarget: boolean;
+  matchedSpecialFoodTargetTags: string[];
   matchedPositiveTags: string[];
   matchedNegativeTags: string[];
   suppressedTags: string[];
@@ -293,6 +303,19 @@ function buildCustomFoodConditionResults({
         : `未满足点单料理 ${demand.requiredFoodTag}`,
     },
   ];
+  const specialTargetTags = getSpecialFoodTargetTags(demand);
+  if (specialTargetTags.length > 0) {
+    results.push({
+      id: 'food.special-target-tag',
+      target: 'food',
+      status: meetsSpecialFoodTarget ? 'pass' : 'fail',
+      severity: 'hard',
+      label: '特殊目标 Tag',
+      detail: meetsSpecialFoodTarget
+        ? `满足特殊目标 Tag ${matchedSpecialFoodTargetTags.join('、')}`
+        : `未满足特殊目标 Tag ${specialTargetTags.join('、')}`,
+    });
+  }
 
   if (!cookerAvailable) {
     results.push({
@@ -365,10 +388,26 @@ function buildExtraIngredientReasons(
   demand: RareTagOrderDemand,
 ): Record<number, string[]> {
   const result: Record<number, string[]> = {};
-  const relevantTags = new Set([demand.requiredFoodTag, ...demand.customer.positiveTags]);
+  const relevantTags = new Set([
+    demand.requiredFoodTag,
+    ...demand.customer.positiveTags,
+    ...getSpecialFoodTargetTags(demand),
+  ]);
   for (const ingredient of extraIngredients) {
     const reasons = ingredient.tags.filter((tag) => relevantTags.has(tag));
     if (reasons.length > 0) result[ingredient.id] = reasons;
+  }
+  return result;
+}
+
+function getSpecialFoodTargetTags(demand: RareTagOrderDemand): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const tag of demand.specialFoodTargetTags ?? []) {
+    const text = tag.trim();
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    result.push(text);
   }
   return result;
 }

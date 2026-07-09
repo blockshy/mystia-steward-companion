@@ -14,17 +14,18 @@ import {
   EmptyState,
   InfoLine,
   ListPanel,
+  SegmentedControl,
   Tabs,
   TabsContent,
   TabsList,
   TabsTrigger,
 } from '@/components/ui-kit';
 import { buildAutomationResourceOverview, buildNightBusinessOrderKey } from '@/companion/domain/automation';
-import { sortNightOrderRows, sortNightOrders, sortNormalOrders } from '@/companion/domain/sorting';
+import type { NormalOrderDetailPlan } from '@/companion/domain/normal-order-details';
+import { sortNightOrderRows, sortNightOrders } from '@/companion/domain/sorting';
 import { formatDesk, formatGuestFund, formatPerformanceMs } from '@/companion/formatters';
 import type { CompanionPreferences, ServiceOrderSortMode } from '@/companion/preferences';
 import type {
-  AutomationResourceOverview,
   CustomRecipeData,
   FavoriteData,
   GameUiPinningTarget,
@@ -37,9 +38,11 @@ import type {
   RecommendationIssue,
   RecommendationStateSnapshot,
   RuntimeSets,
+  SpecialBusinessContext,
   ToggleBeverageFavorite,
   ToggleRecipeFavorite,
 } from '@/companion/types';
+import type { NormalExecutionTargetSelection } from '@/companion/workers/order-recommendations.types';
 import {
   AUTOMATION_SWITCH_GRID,
   DENSE_THREE_COLUMN_GRID,
@@ -54,17 +57,26 @@ import {
   OrderRecommendationPanel,
   SwitchControl,
 } from '@/companion/pages/shared';
+import {
+  AutomationResourcePanel,
+  OrderTraceBadge,
+  SpecialBusinessNotice,
+  SpecialBusinessOrderList,
+} from '@/companion/pages/service/ServiceContextPanels';
+import { NormalOrderDetailCard } from '@/companion/pages/service/NormalOrderDetailCard';
 import { buildRecommendationDataIndexes, type RecommendationDataSet } from '@/lib/recommendation-data';
 import type { PlaceName } from '@/lib/catalog-types';
 
-function OrderTraceBadge({ traceId }: { traceId?: string }) {
-  if (!traceId) return null;
-  return (
-    <Badge variant="secondary" title={`总日志标识 ${traceId}`}>
-      日志 {traceId}
-    </Badge>
-  );
-}
+export type ServicePanelView = 'recommendations' | 'automation' | 'diagnostics';
+export type ServiceRecommendationTab = 'rare' | 'normal';
+
+const SERVICE_PANEL_VIEW_OPTIONS: { value: ServicePanelView; label: string }[] = [
+  { value: 'recommendations', label: '推荐' },
+  { value: 'automation', label: '自动化' },
+  { value: 'diagnostics', label: '诊断' },
+];
+
+const SERVICE_PANEL_DEFAULT_VIEW_OPTIONS = SERVICE_PANEL_VIEW_OPTIONS.filter((option) => option.value !== 'diagnostics');
 
 function formatAutomationDetailTime(value: number): string {
   if (value <= 0) return '';
@@ -109,14 +121,34 @@ function AutomationDetailAccordion({
   );
 }
 
+function formatServiceSpecialBusinessSummary(context: SpecialBusinessContext | null): string {
+  if (!context?.active) return '无';
+  const parts = [
+    context.displayName || context.challengeType || '特殊经营',
+    context.phase ? `阶段 ${context.phase}` : '',
+    context.foodTargetTags.length > 0 ? `料理 ${context.foodTargetTags.join('、')}` : '',
+    context.beverageTargetTags.length > 0 ? `酒水 ${context.beverageTargetTags.join('、')}` : '',
+  ].filter(Boolean);
+  return parts.join(' · ');
+}
+
+function buildNormalOrderDetailPlanKey(plan: NormalOrderDetailPlan): string {
+  const { order } = plan;
+  return order.orderKey
+    ?? order.traceId
+    ?? `${order.deskCode}-${order.guestName}-${order.foodId}-${order.beverageId}-${order.source}`;
+}
+
 export function ModServicePanel({
   runtime,
   night,
+  specialBusiness,
   detectedPlace,
   recommendations,
   recommendationIssues,
   data,
   performanceMs,
+  orderRecommendationPerformanceMs,
   runtimeSets,
   uiPinningStatus,
   uiPinningTarget,
@@ -135,7 +167,16 @@ export function ModServicePanel({
   normalOrderMessage,
   normalOrderPausedCount,
   normalOrderDiagnostics,
+  normalExecutionTargets,
+  normalExecutionTargetsEnabled,
+  normalExecutionTargetsPending,
+  normalExecutionTargetsError,
+  normalOrderDetailPlans,
+  normalOrderDetailsPending,
+  normalOrderDetailsError,
   normalBusiness,
+  serviceView,
+  serviceRecommendationTab,
   dismissRareOrderBusyKey,
   dismissRareOrderError,
   onRecipeLimitChange,
@@ -147,15 +188,19 @@ export function ModServicePanel({
   onResetRareAutomationOrder,
   onDismissRareOrder,
   onEnterFocusMode,
+  onServiceViewChange,
+  onServiceRecommendationTabChange,
   showDebugDetails,
 }: {
   runtime: RecommendationStateSnapshot | null;
   night: NightBusinessContext | null;
+  specialBusiness: SpecialBusinessContext | null;
   detectedPlace: PlaceName | null;
   recommendations: OrderRecommendation[];
   recommendationIssues: RecommendationIssue[];
   data: RecommendationDataSet;
   performanceMs?: Record<string, number>;
+  orderRecommendationPerformanceMs?: Record<string, number>;
   runtimeSets: RuntimeSets | null;
   uiPinningStatus: string;
   uiPinningTarget: GameUiPinningTarget | null;
@@ -174,7 +219,16 @@ export function ModServicePanel({
   normalOrderMessage: string;
   normalOrderPausedCount: number;
   normalOrderDiagnostics: NormalAutoOrderDiagnostic[];
+  normalExecutionTargets: NormalExecutionTargetSelection[];
+  normalExecutionTargetsEnabled: boolean;
+  normalExecutionTargetsPending: boolean;
+  normalExecutionTargetsError: string | null;
+  normalOrderDetailPlans: NormalOrderDetailPlan[];
+  normalOrderDetailsPending: boolean;
+  normalOrderDetailsError: string | null;
   normalBusiness: NormalBusinessContext | null;
+  serviceView: ServicePanelView;
+  serviceRecommendationTab: ServiceRecommendationTab;
   dismissRareOrderBusyKey: string;
   dismissRareOrderError: string;
   onRecipeLimitChange: (value: number) => void;
@@ -186,6 +240,8 @@ export function ModServicePanel({
   onResetRareAutomationOrder: (orderKey: string) => void;
   onDismissRareOrder: (order: NightBusinessOrder) => void;
   onEnterFocusMode: () => void;
+  onServiceViewChange: (value: ServicePanelView) => void;
+  onServiceRecommendationTabChange: (value: ServiceRecommendationTab) => void;
   showDebugDetails: boolean;
 }) {
   const dataIndexes = useMemo(() => buildRecommendationDataIndexes(data), [data]);
@@ -201,6 +257,11 @@ export function ModServicePanel({
       favorites,
       preferences: autoPrepPreferences,
       normalOrders: normalBusiness?.orders ?? [],
+      specialBusiness,
+      normalExecutionTargets,
+      normalExecutionTargetsEnabled,
+      normalExecutionTargetsPending,
+      normalExecutionTargetsError,
       rareDiagnostics: rareOrderDiagnostics,
       normalDiagnostics: normalOrderDiagnostics,
       data,
@@ -208,14 +269,29 @@ export function ModServicePanel({
     [
       autoPrepPreferences,
       favorites,
+      normalExecutionTargets,
+      normalExecutionTargetsEnabled,
+      normalExecutionTargetsError,
+      normalExecutionTargetsPending,
       normalBusiness?.orders,
       normalOrderDiagnostics,
       rareOrderDiagnostics,
       recommendations,
       runtime,
+      specialBusiness,
       data,
     ],
   );
+  const activeServiceView = showDebugDetails || serviceView !== 'diagnostics'
+    ? serviceView
+    : 'recommendations';
+  const serviceViewOptions = showDebugDetails ? SERVICE_PANEL_VIEW_OPTIONS : SERVICE_PANEL_DEFAULT_VIEW_OPTIONS;
+  const automationTrackedCount = rareOrderDiagnostics.length + normalOrderDiagnostics.length;
+  const automationStatus = !autoPrepPreferences.automationEnabled
+    ? '未开启'
+    : automationTrackedCount > 0
+    ? `已开启 · 跟踪 ${automationTrackedCount} 笔`
+    : '已开启';
 
   return (
     <div className="space-y-4">
@@ -223,8 +299,8 @@ export function ModServicePanel({
         <CardContent className={`${DENSE_THREE_COLUMN_GRID} p-4 text-sm`}>
           <InfoLine label="经营场景" value={detectedPlace ?? night?.placeLabel ?? '无经营场景'} />
           <InfoLine label="推荐数据" value={runtime ? '已就绪' : '暂不可用'} />
-          {showDebugDetails && <InfoLine label="扫描状态" value={night?.source || '暂无'} />}
-          {showDebugDetails && <InfoLine label="性能耗时" value={formatPerformanceMs(performanceMs)} mono />}
+          <InfoLine label="自动化" value={automationStatus} />
+          <InfoLine label="特殊经营" value={formatServiceSpecialBusinessSummary(specialBusiness)} />
           <InfoLine
             label="已摆放厨具"
             value={runtimeSets?.hasCookerSnapshot
@@ -232,13 +308,31 @@ export function ModServicePanel({
               : runtime?.placedCookerStatus ? `未读取 · ${runtime.placedCookerStatus}` : '未读取'}
           />
           <InfoLine label="目标厨具" value={uiPinningTarget?.cookerName || '暂无'} />
-          {showDebugDetails && <InfoLine label="界面置顶" value={uiPinningStatus || '暂无'} />}
         </CardContent>
       </Card>
 
-      {autoPrepPreferences.automationEnabled && <AutomationResourcePanel overview={automationResources} />}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <SegmentedControl
+          value={activeServiceView}
+          options={serviceViewOptions}
+          onValueChange={(value) => onServiceViewChange(value as ServicePanelView)}
+          className="w-full sm:w-auto"
+        />
+        {activeServiceView === 'recommendations' && autoPrepPreferences.automationEnabled && (
+          <Badge variant="secondary">
+            自动化{automationTrackedCount > 0 ? `跟踪 ${automationTrackedCount} 笔` : '已开启'}
+          </Badge>
+        )}
+      </div>
 
-      <Tabs defaultValue="rare" className="space-y-4">
+      {activeServiceView === 'recommendations' && (
+      <Tabs
+        value={serviceRecommendationTab}
+        onValueChange={(value) => {
+          if (value === 'rare' || value === 'normal') onServiceRecommendationTabChange(value);
+        }}
+        className="space-y-4"
+      >
         <TabsList className="grid h-9 w-full grid-cols-2">
           <TabsTrigger value="rare" className={MOD_TAB_TRIGGER_CLASS}>
             稀客
@@ -249,20 +343,6 @@ export function ModServicePanel({
         </TabsList>
 
         <TabsContent value="rare" className="space-y-4">
-          {autoPrepPreferences.automationEnabled && (
-            <RareServiceAutomationPanel
-              preferences={autoPrepPreferences}
-              busy={autoPrepBusy}
-              message={autoPrepMessage}
-              paused={autoPrepPaused}
-              diagnostics={rareOrderDiagnostics}
-              showDebugDetails={showDebugDetails}
-              onPreferenceChange={onPreferenceChange}
-              onRetryOrder={onRetryRareAutomationOrder}
-              onResetOrder={onResetRareAutomationOrder}
-            />
-          )}
-
           <div className={DENSE_TWO_COLUMN_GRID}>
             <ListPanel title="当前稀客" contentClassName="min-h-[9rem]">
               {activeGuests.length === 0 && <EmptyRow text="暂无稀客" />}
@@ -305,9 +385,18 @@ export function ModServicePanel({
                             酒水 {order.beverageTag || '无'}{showDebugDetails ? ` (${order.beverageTagId})` : ''}
                           </Badge>
                           <OrderTraceBadge traceId={order.traceId} />
+                          {order.specialBusinessRoleLabel && (
+                            <Badge variant="secondary">{order.specialBusinessRoleLabel}</Badge>
+                          )}
+                          {order.automationAllowed === false && <Badge variant="outline">暂不可自动处理</Badge>}
                           {order.isFreeOrder && <Badge variant="secondary">免费订单</Badge>}
                           {showDebugDetails && <Badge variant="secondary">{order.source}</Badge>}
                         </div>
+                        {order.automationAllowed === false && order.automationBlockReason && (
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            {order.automationBlockReason}
+                          </div>
+                        )}
                       </div>
                       <Button
                         type="button"
@@ -358,135 +447,115 @@ export function ModServicePanel({
         </TabsContent>
 
         <TabsContent value="normal" className="space-y-4">
-          {autoPrepPreferences.automationEnabled && (
-            <NormalServiceAutomationPanel
-              preferences={autoPrepPreferences}
-              busy={normalOrderBusy}
-              message={normalOrderMessage}
-              pausedCount={normalOrderPausedCount}
-              diagnostics={normalOrderDiagnostics}
-              showDebugDetails={showDebugDetails}
-              onPreferenceChange={onPreferenceChange}
-            />
-          )}
-
-          <ListPanel title={`${showDebugDetails ? '普客订单诊断' : '普客订单'} (${normalBusiness?.orders.length ?? 0})`} contentClassName="min-h-[18rem]">
-            {autoPrepPreferences.automationEnabled && autoPrepPreferences.autoNormalOrderEnabled ? (
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-2 steward-muted-surface-35 px-3 py-2 text-sm">
-                <span className="text-muted-foreground">
-                  普客自动化会按开关处理普客订单，可执行送达酒水、制作料理、送达料理和完成订单。
-                </span>
-                {normalOrderBusy && <Badge variant="secondary">处理中</Badge>}
-              </div>
-            ) : autoPrepPreferences.automationEnabled ? (
-              <div className="mb-3 steward-muted-surface-35 px-3 py-2 text-sm text-muted-foreground">
-                开启“启用普客处理”后，可按阶段开关自动处理普客订单。
-              </div>
-            ) : (
-              <div className="mb-3 steward-muted-surface-35 px-3 py-2 text-sm text-muted-foreground">
-                设置页开启“启用自动化（实验性）”后，可启用普客订单自动处理。
-              </div>
-            )}
-            {normalOrderMessage && !autoPrepPreferences.automationEnabled && (
-              <div className="mb-3 whitespace-pre-line steward-muted-surface-40 px-3 py-2 text-sm text-muted-foreground">
-                {normalOrderMessage}
-              </div>
-            )}
+          <ListPanel title={`普客订单 (${normalBusiness?.orders.length ?? 0})`} contentClassName="min-h-[18rem]">
             {!normalBusiness && <EmptyRow text="普客订单只在经营场景中读取" />}
             {normalBusiness?.error && <EmptyRow text={normalBusiness.error} />}
             {normalBusiness?.orders.length === 0 && !normalBusiness.error && (
               <EmptyRow text={normalBusiness.source || '暂无普客订单'} />
             )}
-            {sortNormalOrders(normalBusiness?.orders ?? []).map((order) => (
-              <div
-                key={`${order.deskCode}-${order.guestName}-${order.foodId}-${order.beverageId}-${order.source}`}
-                className="border-b py-2 text-sm last:border-b-0"
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <span className="min-w-0 truncate font-medium" title={order.guestName || '普客'}>
-                    {order.guestName || '普客'}
-                  </span>
-                  <span className="shrink-0 text-muted-foreground">桌 {formatDesk(order.deskCode)}</span>
-                </div>
-                <div className="mt-1 flex flex-wrap gap-1.5">
-                  <Badge variant="outline">料理 {order.foodName || `#${order.foodId}`}</Badge>
-                  <Badge variant="outline">酒水 {order.beverageName || `#${order.beverageId}`}</Badge>
-                  <OrderTraceBadge traceId={order.traceId} />
-                  {order.hasServedFood && <Badge variant="secondary">已有料理</Badge>}
-                  {order.hasServedBeverage && <Badge variant="secondary">已有酒水</Badge>}
-                  {order.readyToEvaluate && !order.hasEvaluated && <Badge variant="secondary">待评价</Badge>}
-                  {order.hasEvaluated && <Badge variant="secondary">已评价</Badge>}
-                  {order.canAutomate === false && <Badge variant="outline">暂不可自动处理</Badge>}
-                  {showDebugDetails && <Badge variant="secondary">{order.source}</Badge>}
-                </div>
-                {order.canAutomate === false && order.actionBlockReason && (
-                  <div className="mt-1 text-xs text-muted-foreground">
-                    {order.actionBlockReason}
-                  </div>
-                )}
+            {normalOrderDetailsPending && normalOrderDetailPlans.length === 0 && (normalBusiness?.orders.length ?? 0) > 0 && (
+              <EmptyRow text="普客订单详情计算中" />
+            )}
+            {normalOrderDetailsPending && normalOrderDetailPlans.length > 0 && (
+              <div className="border-b py-2 text-xs text-muted-foreground">
+                普客订单详情正在更新，当前显示上一轮结果。
               </div>
+            )}
+            {normalOrderDetailsError && normalOrderDetailPlans.length === 0 && (normalBusiness?.orders.length ?? 0) > 0 && (
+              <EmptyRow text={`普客订单详情计算失败：${normalOrderDetailsError}`} />
+            )}
+            {!normalOrderDetailsPending
+              && !normalOrderDetailsError
+              && normalOrderDetailPlans.length === 0
+              && (normalBusiness?.orders.length ?? 0) > 0
+              && <EmptyRow text="暂无普客订单详情" />}
+            {normalOrderDetailPlans.map((plan) => (
+              <NormalOrderDetailCard
+                key={buildNormalOrderDetailPlanKey(plan)}
+                plan={plan}
+                ownedIngredientQty={runtimeSets?.ownedIngredientQty ?? {}}
+                ownedBeverageQty={runtimeSets?.ownedBeverageQty ?? {}}
+                ingredientIdByName={dataIndexes.ingredientIdByName}
+                showDebugDetails={showDebugDetails}
+              />
             ))}
           </ListPanel>
         </TabsContent>
       </Tabs>
-    </div>
-  );
-}
+      )}
 
-function AutomationResourcePanel({ overview }: { overview: AutomationResourceOverview }) {
-  const hasCookerRows = overview.cookers.length > 0;
+      {activeServiceView === 'automation' && (
+        <div className="space-y-4">
+          {autoPrepPreferences.automationEnabled ? (
+            <>
+              <AutomationResourcePanel overview={automationResources} />
 
-  return (
-    <ListPanel title="厨具预约">
-      {!hasCookerRows && <EmptyRow text="暂无厨具预约" />}
-      <div className="space-y-2">
-        {overview.cookers.map((row) => (
-          <ResourceUsageRow
-            key={row.key}
-            label={row.label}
-            value={`${row.normalReserved + row.rareReserved}/${row.capacity}`}
-            status={row.normalReserved + row.rareReserved > row.capacity ? 'over' : row.normalReserved + row.rareReserved > 0 ? 'active' : 'idle'}
-            details={[
-              row.normalReserved > 0 ? `普客 ${row.normalReserved}` : '',
-              row.rareReserved > 0 ? `稀客 ${row.rareReserved}` : '',
-              ...row.labels.slice(0, 2),
-            ].filter(Boolean)}
-            overflow={Math.max(0, row.labels.length - 2)}
-          />
-        ))}
-      </div>
-    </ListPanel>
-  );
-}
+              <Tabs defaultValue="rare" className="space-y-4">
+                <TabsList className="grid h-9 w-full grid-cols-2">
+                  <TabsTrigger value="rare" className={MOD_TAB_TRIGGER_CLASS}>
+                    稀客
+                  </TabsTrigger>
+                  <TabsTrigger value="normal" className={MOD_TAB_TRIGGER_CLASS}>
+                    普客
+                  </TabsTrigger>
+                </TabsList>
 
-function ResourceUsageRow({
-  label,
-  value,
-  status,
-  details,
-  overflow,
-}: {
-  label: string;
-  value: string;
-  status: 'active' | 'idle' | 'over';
-  details: string[];
-  overflow: number;
-}) {
-  const badgeVariant = status === 'over' ? 'destructive' : status === 'active' ? 'secondary' : 'outline';
-  return (
-    <div className="steward-data-row px-2.5 py-2 text-sm">
-      <div className="flex items-center justify-between gap-3">
-        <span className="font-medium text-foreground">{label}</span>
-        <Badge variant={badgeVariant}>{value}</Badge>
-      </div>
-      {details.length > 0 && (
-        <div className="mt-1 flex flex-wrap gap-1.5 text-xs text-muted-foreground">
-          {details.map((item, index) => (
-            <span key={`${item}-${index}`} className="max-w-full truncate border border-border/60 px-1.5 py-0.5">
-              {item}
-            </span>
-          ))}
-          {overflow > 0 && <span className="px-1.5 py-0.5">+{overflow}</span>}
+                <TabsContent value="rare" className="space-y-4">
+                  <RareServiceAutomationPanel
+                    preferences={autoPrepPreferences}
+                    busy={autoPrepBusy}
+                    message={autoPrepMessage}
+                    paused={autoPrepPaused}
+                    diagnostics={rareOrderDiagnostics}
+                    showDebugDetails={showDebugDetails}
+                    onPreferenceChange={onPreferenceChange}
+                    onRetryOrder={onRetryRareAutomationOrder}
+                    onResetOrder={onResetRareAutomationOrder}
+                  />
+                </TabsContent>
+
+                <TabsContent value="normal" className="space-y-4">
+                  <NormalServiceAutomationPanel
+                    preferences={autoPrepPreferences}
+                    busy={normalOrderBusy}
+                    message={normalOrderMessage}
+                    pausedCount={normalOrderPausedCount}
+                    diagnostics={normalOrderDiagnostics}
+                    showDebugDetails={showDebugDetails}
+                    onPreferenceChange={onPreferenceChange}
+                  />
+                </TabsContent>
+              </Tabs>
+            </>
+          ) : (
+            <ListPanel title="自动化">
+              <EmptyRow text="设置页开启“启用自动化（实验性）”后，这里会显示自动化控制和执行状态。" />
+            </ListPanel>
+          )}
+        </div>
+      )}
+
+      {activeServiceView === 'diagnostics' && showDebugDetails && (
+        <div className="space-y-4">
+          {specialBusiness?.active && (
+            <SpecialBusinessNotice context={specialBusiness} showDebugDetails={showDebugDetails} />
+          )}
+          {specialBusiness?.active && (
+            <SpecialBusinessOrderList
+              night={night}
+              normalBusiness={normalBusiness}
+              showDebugDetails={showDebugDetails}
+            />
+          )}
+          <ListPanel title="经营诊断">
+            <div className={DENSE_TWO_COLUMN_GRID}>
+              <InfoLine label="扫描状态" value={night?.source || '暂无'} />
+              <InfoLine label="性能耗时" value={formatPerformanceMs(performanceMs)} mono />
+              <InfoLine label="前端推荐耗时" value={formatPerformanceMs(orderRecommendationPerformanceMs)} mono />
+              <InfoLine label="界面置顶" value={uiPinningStatus || '暂无'} />
+              <InfoLine label="普客来源" value={normalBusiness?.source || normalBusiness?.error || '暂无'} />
+            </div>
+          </ListPanel>
         </div>
       )}
     </div>
@@ -937,8 +1006,8 @@ function RareAutoPrepStatus({
                 <Badge variant={diagnostic.prepared ? 'secondary' : 'outline'}>
                   料理{diagnostic.prepared ? '已开锅' : '待处理'}
                 </Badge>
-                <Badge variant={diagnostic.beverageHandled ? 'secondary' : 'outline'}>
-                  酒水{diagnostic.beverageHandled ? '已送达' : '待处理'}
+                <Badge variant={diagnostic.beverageDeliveryRequested ? 'secondary' : 'outline'}>
+                  酒水处理{diagnostic.hasServedBeverage ? '已确认' : diagnostic.beverageDeliveryRequested ? '待确认' : '待处理'}
                 </Badge>
                 <Badge variant={diagnostic.hasServedFood ? 'secondary' : 'outline'}>
                   订单{diagnostic.hasServedFood ? '已有料理' : '未送料理'}
@@ -1030,14 +1099,14 @@ function NormalAutoPrepStatus({
               </div>
               <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
                 <OrderTraceBadge traceId={diagnostic.traceId} />
-                <Badge variant={diagnostic.beverageHandled ? 'secondary' : 'outline'}>
-                  酒水{diagnostic.beverageHandled ? '已送达' : '待处理'}
+                <Badge variant={diagnostic.beverageDeliveryRequested ? 'secondary' : 'outline'}>
+                  酒水处理{diagnostic.hasServedBeverage ? '已确认' : diagnostic.beverageDeliveryRequested ? '待确认' : '待处理'}
                 </Badge>
                 <Badge variant={diagnostic.prepared ? 'secondary' : 'outline'}>
                   料理{diagnostic.prepared ? '已开锅' : '待处理'}
                 </Badge>
-                <Badge variant={diagnostic.foodDelivered ? 'secondary' : 'outline'}>
-                  料理{diagnostic.foodDelivered ? '已送达' : '未送达'}
+                <Badge variant={diagnostic.foodDeliveryRequested ? 'secondary' : 'outline'}>
+                  料理送达{diagnostic.hasServedFood ? '已确认' : diagnostic.foodDeliveryRequested ? '待确认' : '未请求'}
                 </Badge>
                 <Badge variant={diagnostic.hasServedFood ? 'secondary' : 'outline'}>
                   订单{diagnostic.hasServedFood ? '已有料理' : '未送料理'}
