@@ -22,7 +22,6 @@ public sealed class RuntimeNormalOrderSnapshotService
     private static readonly object FirstSeenLock = new();
     private static readonly Dictionary<string, DateTime> FirstSeenByOrderKey = new(StringComparer.Ordinal);
 
-    private readonly DataRepository _repository;
     private readonly IReadOnlyDictionary<int, Recipe> _recipesById;
     private readonly IReadOnlyDictionary<int, Beverage> _beveragesById;
     private readonly IReadOnlyDictionary<int, NormalCustomer> _normalCustomersById;
@@ -30,7 +29,6 @@ public sealed class RuntimeNormalOrderSnapshotService
 
     public RuntimeNormalOrderSnapshotService(DataRepository repository)
     {
-        _repository = repository;
         _recipesById = repository.Recipes
             .GroupBy(recipe => recipe.Id)
             .ToDictionary(group => group.Key, group => group.First());
@@ -683,8 +681,8 @@ public sealed class RuntimeNormalOrderSnapshotService
             ReadyToEvaluate = RuntimeReflectionUtility.ToBool(SafeGet(order, "IsFullfilled")),
             HasEvaluated = RuntimeReflectionUtility.ToBool(SafeGet(controller, "HasEvaluated") ?? SafeInvoke(controller, "get_HasEvaluated")),
             ControllerAvailable = controller != null,
-            CanAutomate = controller != null && !classification.BlocksNormalAutomation,
-            ActionBlockReason = classification.BlocksNormalAutomation
+            CanAutomate = controller != null && classification.AutomationAllowed,
+            ActionBlockReason = !classification.AutomationAllowed
                 ? classification.AutomationBlockReason
                 : controller == null ? "订单仍在 HUD 中，但未读取到可执行客人控制器。" : "",
             Source = source,

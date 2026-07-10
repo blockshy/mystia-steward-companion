@@ -1,5 +1,3 @@
-using System.Text.Json.Serialization;
-
 namespace MystiaStewardCompanion.Core;
 
 public static class PlaceNames
@@ -288,12 +286,9 @@ public sealed class ParsedSaveData
     public List<int> RecipeGameIds { get; init; } = new();
     public Dictionary<int, int> Ingredients { get; init; } = new();
     public Dictionary<int, int> Beverages { get; init; } = new();
-    public int PlayerLevel { get; init; }
-    public List<string> ActivatedDlc { get; init; } = new();
     public string? PopularFoodTag { get; init; }
     public string? PopularHateFoodTag { get; init; }
     public bool FamousShopEnabled { get; init; }
-    public Dictionary<string, bool> CollabStatus { get; init; } = new();
 }
 
 public sealed class RecommendationState

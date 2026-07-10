@@ -51,8 +51,8 @@ internal static partial class RuntimeOrderPreparationService
         public const string CookingStarted = "cooking-started";
         public const string CookingPending = "cooking-pending";
         public const string CookingMismatchStored = "cooking-mismatch-stored";
+        public const string CookingTagsUnreadableStored = "cooking-tags-unreadable-stored";
         public const string FoodDelivered = "food-delivered";
-        public const string OrderCompleted = "order-completed";
     }
 
     private enum CookingCollectionTargetKind
@@ -247,7 +247,6 @@ internal static partial class RuntimeOrderPreparationService
         if (request.AutoCollectCooking)
         {
             AddSkipped(result, "自动送达料理", "料理完成后会自动尝试直接送达顾客。");
-            if (request.StopOnError) return Finish(result);
         }
         else
         {
@@ -612,7 +611,7 @@ internal static partial class RuntimeOrderPreparationService
             {
                 var pendingResult = autoDeliverFood
                     ? TryProcessPendingNormalOrderCooking(request.OrderKey, runtimeOrder.Order, request.DeskCode, expectedFoodId, request.BeverageId)
-                    : (Found: true, Delivered: false, StepName: "普客开始料理", Message: pendingMessage, Code: OrderPreparationStepCodes.CookingPending);
+                    : (Delivered: false, StepName: "普客开始料理", Message: pendingMessage, Code: OrderPreparationStepCodes.CookingPending);
                 if (pendingResult.Delivered)
                 {
                     result.ServedFood = true;
@@ -624,7 +623,8 @@ internal static partial class RuntimeOrderPreparationService
                         Message = pendingResult.Message,
                     });
                 }
-                else if (pendingResult.Code == OrderPreparationStepCodes.CookingMismatchStored)
+                else if (pendingResult.Code is OrderPreparationStepCodes.CookingMismatchStored
+                    or OrderPreparationStepCodes.CookingTagsUnreadableStored)
                 {
                     AddFailure(
                         result,
@@ -653,8 +653,6 @@ internal static partial class RuntimeOrderPreparationService
                 else
                 {
                     var target = CookingCollectionTarget.ForNormalOrder(
-                        runtimeOrder.Manager,
-                        runtimeOrder.Controller,
                         runtimeOrder.Order,
                         request.OrderKey,
                         traceId,
@@ -1023,8 +1021,6 @@ internal static partial class RuntimeOrderPreparationService
     {
         public CookingCollectionTargetKind Kind { get; private init; }
         public string TraceId { get; private init; } = "";
-        public object? Manager { get; private init; }
-        public object? Controller { get; private init; }
         public object? Order { get; private init; }
         public string OrderKey { get; private init; } = "";
         public int? GuestId { get; private init; }
@@ -1086,8 +1082,6 @@ internal static partial class RuntimeOrderPreparationService
         }
 
         public static CookingCollectionTarget ForNormalOrder(
-            object? manager,
-            object? controller,
             object? order,
             string orderKey,
             string traceId,
@@ -1120,8 +1114,6 @@ internal static partial class RuntimeOrderPreparationService
                     string.IsNullOrWhiteSpace(orderKey)
                         ? $"normal:{deskCode}|{guestName}|{normalizedMatchFoodId}|{normalizedMatchBeverageId}"
                         : $"normal:{orderKey}"),
-                Manager = manager,
-                Controller = controller,
                 Order = order,
                 OrderKey = orderKey,
                 MatchFoodId = normalizedMatchFoodId,

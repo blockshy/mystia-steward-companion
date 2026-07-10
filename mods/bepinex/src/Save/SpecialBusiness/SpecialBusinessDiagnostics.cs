@@ -5,9 +5,24 @@ namespace MystiaStewardCompanion.Save;
 
 internal static class SpecialBusinessDiagnostics
 {
+    private const int MaxSeenOnceKeys = 512;
+    private const int MaxProgressKeys = 256;
     private static readonly object SyncRoot = new();
     private static readonly HashSet<string> SeenOnceKeys = new(StringComparer.Ordinal);
+    private static readonly Queue<string> SeenOnceOrder = new();
     private static readonly Dictionary<string, int> LastProgressBuckets = new(StringComparer.Ordinal);
+    private static readonly Queue<string> ProgressKeyOrder = new();
+
+    public static void Reset()
+    {
+        lock (SyncRoot)
+        {
+            SeenOnceKeys.Clear();
+            SeenOnceOrder.Clear();
+            LastProgressBuckets.Clear();
+            ProgressKeyOrder.Clear();
+        }
+    }
 
     public static void AppendWackySnapshot(
         string title,
@@ -24,17 +39,7 @@ internal static class SpecialBusinessDiagnostics
         IEnumerable<string> lines,
         int bucketCount = 20)
     {
-        if (!AggregateModLogService.Enabled) return;
-        var bucket = progress.HasValue && !double.IsNaN(progress.Value)
-            ? Math.Clamp((int)Math.Floor(progress.Value * bucketCount), 0, bucketCount)
-            : -1;
-        lock (SyncRoot)
-        {
-            if (LastProgressBuckets.TryGetValue(key, out var previous) && previous == bucket) return;
-            LastProgressBuckets[key] = bucket;
-        }
-
-        AppendWackySnapshot(title, lines);
+        AppendProgressSnapshot("special-business.wacky", key, progress, title, lines, bucketCount);
     }
 
     public static void AppendYuyukoSnapshot(
@@ -52,17 +57,7 @@ internal static class SpecialBusinessDiagnostics
         IEnumerable<string> lines,
         int bucketCount = 20)
     {
-        if (!AggregateModLogService.Enabled) return;
-        var bucket = progress.HasValue && !double.IsNaN(progress.Value)
-            ? Math.Clamp((int)Math.Floor(progress.Value * bucketCount), 0, bucketCount)
-            : -1;
-        lock (SyncRoot)
-        {
-            if (LastProgressBuckets.TryGetValue(key, out var previous) && previous == bucket) return;
-            LastProgressBuckets[key] = bucket;
-        }
-
-        AppendYuyukoSnapshot(title, lines);
+        AppendProgressSnapshot("special-business.yuyuko", key, progress, title, lines, bucketCount);
     }
 
     public static void AppendWackyOrderClassification(
@@ -172,7 +167,13 @@ internal static class SpecialBusinessDiagnostics
             {
                 lock (SyncRoot)
                 {
-                    if (!SeenOnceKeys.Add($"{channel}|{onceKey}")) return;
+                    var scopedKey = $"{channel}|{onceKey}";
+                    if (!SeenOnceKeys.Add(scopedKey)) return;
+                    SeenOnceOrder.Enqueue(scopedKey);
+                    while (SeenOnceOrder.Count > MaxSeenOnceKeys)
+                    {
+                        SeenOnceKeys.Remove(SeenOnceOrder.Dequeue());
+                    }
                 }
             }
 
@@ -185,6 +186,34 @@ internal static class SpecialBusinessDiagnostics
         {
             // Diagnostics must never affect gameplay.
         }
+    }
+
+    private static void AppendProgressSnapshot(
+        string channel,
+        string key,
+        double? progress,
+        string title,
+        IEnumerable<string> lines,
+        int bucketCount)
+    {
+        if (!AggregateModLogService.Enabled) return;
+        var normalizedBucketCount = Math.Max(1, bucketCount);
+        var bucket = progress.HasValue && !double.IsNaN(progress.Value)
+            ? Math.Clamp((int)Math.Floor(progress.Value * normalizedBucketCount), 0, normalizedBucketCount)
+            : -1;
+        var scopedKey = $"{channel}|{key}";
+        lock (SyncRoot)
+        {
+            if (LastProgressBuckets.TryGetValue(scopedKey, out var previous) && previous == bucket) return;
+            if (!LastProgressBuckets.ContainsKey(scopedKey)) ProgressKeyOrder.Enqueue(scopedKey);
+            LastProgressBuckets[scopedKey] = bucket;
+            while (ProgressKeyOrder.Count > MaxProgressKeys)
+            {
+                LastProgressBuckets.Remove(ProgressKeyOrder.Dequeue());
+            }
+        }
+
+        AppendSnapshot(channel, title, lines, onceKey: null);
     }
 
     private static string ObjectKey(object? value)

@@ -12,46 +12,107 @@ internal static class CompanionProcessLauncher
     private const string ControlToggle = "mystia-steward-companion:toggle";
     private const string ControlExit = "mystia-steward-companion:exit";
     private static readonly object RequestLock = new();
+    private static readonly object LifecycleLock = new();
     private static DateTime _lastRequestUtc = DateTime.MinValue;
+    private static int _generation;
+    private static bool _stopping;
+
+    public static void BeginSession()
+    {
+        lock (LifecycleLock)
+        {
+            _generation += 1;
+            _stopping = false;
+        }
+    }
 
     public static void TryAutoLaunch(StewardPluginConfig config, ManualLogSource log, string localApiToken)
     {
         if (!config.CompanionAutoLaunch.Value) return;
-        TryShowOrLaunch(config, log, localApiToken);
-    }
-
-    public static void TryLaunchOrFocus(StewardPluginConfig config, ManualLogSource log, string localApiToken)
-    {
-        TryShowOrLaunch(config, log, localApiToken);
-    }
-
-    public static void TryShowOrLaunch(StewardPluginConfig config, ManualLogSource log, string localApiToken)
-    {
-        if (SendControlMessage(ControlShow, config, localApiToken)) return;
-        TryLaunch(config, log, localApiToken);
+        var options = CaptureLaunchOptions(config, log, localApiToken);
+        if (options != null) QueueControlOrLaunch(ControlShow, options);
     }
 
     public static void TryToggleOrLaunch(StewardPluginConfig config, ManualLogSource log, string localApiToken)
     {
         if (IsRequestThrottled()) return;
-        if (SendControlMessage(ControlToggle, config, localApiToken)) return;
-        TryLaunch(config, log, localApiToken);
+        var options = CaptureLaunchOptions(config, log, localApiToken);
+        if (options != null) QueueControlOrLaunch(ControlToggle, options);
     }
 
-    public static void TryNotifyExit()
+    public static void TryNotifyExit(ManualLogSource? log)
     {
-        SendControlMessage(ControlExit);
+        int generation;
+        lock (LifecycleLock)
+        {
+            if (_stopping) return;
+            _stopping = true;
+            generation = _generation;
+        }
+
+        if (!ThreadPool.QueueUserWorkItem(_ =>
+            {
+                if (IsStoppingGeneration(generation))
+                {
+                    SendControlMessage(ControlExit, apiEndpoint: "", localApiToken: "");
+                }
+            }))
+        {
+            log?.LogWarning("Companion exit notification could not be queued.");
+        }
     }
 
-    private static void TryLaunch(StewardPluginConfig config, ManualLogSource log, string localApiToken)
+    private static void QueueControlOrLaunch(string message, CompanionLaunchOptions options)
+    {
+        if (ThreadPool.QueueUserWorkItem(_ =>
+        {
+            if (!IsActiveGeneration(options.Generation)) return;
+            if (SendControlMessage(message, options.ApiEndpoint, options.LocalApiToken))
+            {
+                if (!IsActiveGeneration(options.Generation))
+                {
+                    SendControlMessage(ControlExit, apiEndpoint: "", localApiToken: "");
+                }
+                return;
+            }
+            TryLaunch(options);
+        }))
+        {
+            return;
+        }
+
+        options.Log.LogWarning("Companion control request could not be queued.");
+    }
+
+    private static CompanionLaunchOptions? CaptureLaunchOptions(
+        StewardPluginConfig config,
+        ManualLogSource log,
+        string localApiToken)
+    {
+        int generation;
+        lock (LifecycleLock)
+        {
+            if (_stopping) return null;
+            generation = _generation;
+        }
+
+        return new CompanionLaunchOptions(
+            config.CompanionExecutablePath.Value,
+            BuildLocalApiEndpoint(config.LocalApiPort.Value),
+            localApiToken.Trim(),
+            log,
+            generation);
+    }
+
+    private static void TryLaunch(CompanionLaunchOptions options)
     {
         try
         {
             RecordRequestTime();
-            var executablePath = ResolveExecutablePath(config.CompanionExecutablePath.Value);
+            var executablePath = ResolveExecutablePath(options.ConfiguredExecutablePath);
             if (string.IsNullOrWhiteSpace(executablePath))
             {
-                log.LogInfo("Companion launch skipped: companion executable was not found.");
+                options.Log.LogInfo("Companion launch skipped: companion executable was not found.");
                 return;
             }
 
@@ -61,23 +122,28 @@ internal static class CompanionProcessLauncher
                 WorkingDirectory = Path.GetDirectoryName(executablePath) ?? "",
                 UseShellExecute = false,
             };
-            startInfo.ArgumentList.Add($"--api={BuildLocalApiEndpoint(config)}");
+            startInfo.ArgumentList.Add($"--api={options.ApiEndpoint}");
             startInfo.ArgumentList.Add($"--game-pid={Process.GetCurrentProcess().Id}");
-            if (!string.IsNullOrWhiteSpace(localApiToken))
+            if (!string.IsNullOrWhiteSpace(options.LocalApiToken))
             {
-                startInfo.ArgumentList.Add($"--token={localApiToken}");
+                startInfo.ArgumentList.Add($"--token={options.LocalApiToken}");
             }
 
-            Process.Start(startInfo);
-            log.LogInfo($"Companion launch/focus requested: {executablePath}");
+            lock (LifecycleLock)
+            {
+                if (_stopping || options.Generation != _generation) return;
+                using var process = Process.Start(startInfo)
+                    ?? throw new InvalidOperationException("Companion process could not be started.");
+            }
+            options.Log.LogInfo($"Companion launch/focus requested: {executablePath}");
         }
         catch (Exception ex)
         {
-            log.LogWarning($"Companion launch failed: {ex.Message}");
+            options.Log.LogWarning($"Companion launch failed: {ex.Message}");
         }
     }
 
-    private static bool SendControlMessage(string message, StewardPluginConfig? config = null, string localApiToken = "")
+    private static bool SendControlMessage(string message, string apiEndpoint, string localApiToken)
     {
         try
         {
@@ -87,7 +153,7 @@ internal static class CompanionProcessLauncher
                 return false;
             }
 
-            var bytes = Encoding.UTF8.GetBytes(BuildControlMessage(message, config, localApiToken));
+            var bytes = Encoding.UTF8.GetBytes(BuildControlMessage(message, apiEndpoint, localApiToken));
             using var stream = client.GetStream();
             stream.Write(bytes, 0, bytes.Length);
             stream.Flush();
@@ -99,18 +165,18 @@ internal static class CompanionProcessLauncher
         }
     }
 
-    private static string BuildControlMessage(string message, StewardPluginConfig? config, string localApiToken)
+    private static string BuildControlMessage(string message, string apiEndpoint, string localApiToken)
     {
         var builder = new StringBuilder()
             .AppendLine(message)
             .Append("--game-pid=")
             .AppendLine(Process.GetCurrentProcess().Id.ToString());
 
-        if (config != null)
+        if (!string.IsNullOrWhiteSpace(apiEndpoint))
         {
             builder
                 .Append("--api=")
-                .AppendLine(BuildLocalApiEndpoint(config));
+                .AppendLine(apiEndpoint);
         }
 
         if (!string.IsNullOrWhiteSpace(localApiToken))
@@ -121,10 +187,26 @@ internal static class CompanionProcessLauncher
         return builder.ToString();
     }
 
-    private static string BuildLocalApiEndpoint(StewardPluginConfig config)
+    private static string BuildLocalApiEndpoint(int configuredPort)
     {
-        var port = Math.Clamp(config.LocalApiPort.Value, 1024, 65535);
+        var port = Math.Clamp(configuredPort, 1024, 65535);
         return $"http://127.0.0.1:{port}";
+    }
+
+    private static bool IsActiveGeneration(int generation)
+    {
+        lock (LifecycleLock)
+        {
+            return !_stopping && generation == _generation;
+        }
+    }
+
+    private static bool IsStoppingGeneration(int generation)
+    {
+        lock (LifecycleLock)
+        {
+            return _stopping && generation == _generation;
+        }
     }
 
     private static bool IsRequestThrottled()
@@ -177,5 +259,12 @@ internal static class CompanionProcessLauncher
             .Select(candidate => Path.Combine(pluginDirectory, candidate))
             .FirstOrDefault(File.Exists) ?? "";
     }
+
+    private sealed record CompanionLaunchOptions(
+        string ConfiguredExecutablePath,
+        string ApiEndpoint,
+        string LocalApiToken,
+        ManualLogSource Log,
+        int Generation);
 
 }

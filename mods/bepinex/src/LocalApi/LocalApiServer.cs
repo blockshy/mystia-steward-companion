@@ -16,8 +16,8 @@ namespace MystiaStewardCompanion.LocalApi;
 /// </summary>
 /// <remarks>
 /// 服务器使用轻量 <see cref="TcpListener"/>，避免在 IL2CPP Mod 中引入额外 Web 框架依赖。
-/// 始终保留回环监听，LAN 监听只能作为显式开启的附加通道。除 <c>/health</c> 外所有端点都要求 Token。GET 端点用于读取和历史兼容的轻量动作，
-/// POST 端点保留给更新检查、下载、安装排程等高风险副作用操作。
+/// 始终保留回环监听，LAN 监听只能作为显式开启的附加通道。除 <c>/health</c> 外所有端点都要求 Token。
+/// GET 端点只读取状态，任何会修改运行时、配置、文件或外部进程状态的操作都只接受 POST。
 /// </remarks>
 internal sealed class LocalApiServer : IDisposable
 {
@@ -26,14 +26,18 @@ internal sealed class LocalApiServer : IDisposable
     private const int DiagnosticTailMaxLines = 2000;
     private const int AutomationDecisionDiagnosticMaxLines = 12;
     private const int AutomationDecisionDiagnosticMaxTextLength = 600;
+    private const int MaxConcurrentClientHandlers = 16;
     private const string AutoLanHost = "auto";
     private const string ClientIdHeaderName = "X-Mystia-Steward-Companion-Client-Id";
     private const string ClientLabelHeaderName = "X-Mystia-Steward-Companion-Client-Label";
     private static readonly TimeSpan AutomationLeaseTtl = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan ListenerStopTimeout = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan ClientHandlerStopTimeout = TimeSpan.FromSeconds(3);
 
     private readonly ManualLogSource _log;
     private readonly object _snapshotLock = new();
     private readonly object _listenerLock = new();
+    private readonly object _lanSettingsLock = new();
     private readonly object _automationLeaseLock = new();
     private readonly string _pluginVersion;
     private string _token;
@@ -57,10 +61,12 @@ internal sealed class LocalApiServer : IDisposable
     private readonly UpdateService _updateService;
     private readonly FavoriteStore _favoriteStore;
     private readonly CustomRecipeStore _customRecipeStore;
-    private readonly List<LocalApiListener> _listeners = new();
-    private readonly List<IPAddress> _activeLanAddresses = new();
+    private readonly BoundedHandlerPool<TcpClient> _clientHandlers;
+    private readonly List<LocalApiListenerWorker> _listeners = new();
+    private readonly List<LanAddressCandidate> _activeLanCandidates = new();
     private AutomationLease? _automationLease;
     private bool _running;
+    private bool _lanSettingsApplied;
     private string _snapshotJson = "{\"runtimeLoaded\":false,\"status\":\"Snapshot is not ready.\"}";
     private string _snapshotSignature = "";
     private string _runtimeDataJson = "{\"isComplete\":false,\"status\":\"Runtime data is not ready.\"}";
@@ -71,19 +77,21 @@ internal sealed class LocalApiServer : IDisposable
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
     };
 
-    private sealed class LocalApiListener
-    {
-        public string Name { get; init; } = "";
-        public bool IsLan { get; init; }
-        public TcpListener Listener { get; init; } = null!;
-    }
-
     private sealed class AutomationLease
     {
         public string ClientId { get; init; } = "";
         public string ClientLabel { get; init; } = "";
         public DateTime LastSeenUtc { get; set; }
         public DateTime ExpiresAtUtc { get; set; }
+    }
+
+    private sealed class LanAddressCandidate
+    {
+        public IPAddress Address { get; init; } = IPAddress.None;
+        public string InterfaceName { get; init; } = "";
+        public NetworkInterfaceType InterfaceType { get; init; }
+        public bool HasGateway { get; init; }
+        public bool LinkLocal { get; init; }
     }
 
     private sealed class SnapshotRequestSummary
@@ -124,6 +132,9 @@ internal sealed class LocalApiServer : IDisposable
         BindAddress = IPAddress.Loopback;
         Port = Math.Clamp(port, 1024, 65535);
         _log = log;
+        _clientHandlers = new BoundedHandlerPool<TcpClient>(
+            MaxConcurrentClientHandlers,
+            exception => _log.LogWarning($"Local API client handler failed: {exception.Message}"));
         _pluginVersion = pluginVersion;
         _token = token.Trim();
         _lanEnabled = lanEnabled;
@@ -150,12 +161,20 @@ internal sealed class LocalApiServer : IDisposable
     public IPAddress BindAddress { get; }
     public int Port { get; }
     public string BaseUrl => $"http://{FormatHostForUrl(BindAddress)}:{Port}";
-    public string LanBindHost => _lanBindHost;
-    public bool LanEnabled => _lanEnabled;
-    public bool LanRunning => GetActiveLanAddresses().Count > 0;
+    public bool LanRunning => GetActiveLanCandidates().Count > 0;
     public string LanError => _lanError;
-    public IReadOnlyList<string> LanBindAddresses => GetActiveLanAddresses().Select(static address => address.ToString()).ToArray();
-    public IReadOnlyList<string> LanEndpoints => GetActiveLanAddresses().Select(address => $"http://{FormatHostForUrl(address)}:{Port}").ToArray();
+    public IReadOnlyList<LocalApiLanEndpointDto> LanEndpoints => GetActiveLanCandidates()
+        .Select((candidate, index) => new LocalApiLanEndpointDto
+        {
+            Address = candidate.Address.ToString(),
+            Endpoint = $"http://{FormatHostForUrl(candidate.Address)}:{Port}",
+            InterfaceName = candidate.InterfaceName,
+            InterfaceType = candidate.InterfaceType.ToString(),
+            HasGateway = candidate.HasGateway,
+            LinkLocal = candidate.LinkLocal,
+            Recommended = index == 0,
+        })
+        .ToArray();
 
     /// <summary>
     /// 启动本地 API 监听线程。
@@ -166,20 +185,27 @@ internal sealed class LocalApiServer : IDisposable
     /// </remarks>
     public void Start()
     {
-        if (_running) return;
+        lock (_lanSettingsLock)
+        {
+            if (_running) return;
 
-        _running = true;
-        try
-        {
-            StartListener("loopback", BindAddress, isLan: false);
-            ApplyLanSettings(_lanEnabled, _lanBindHost);
-            _log.LogInfo($"Local API loopback listener is available at {BaseUrl}. LAN listener is an optional add-on for trusted private networks.");
-        }
-        catch
-        {
-            _running = false;
-            StopAllListeners();
-            throw;
+            _running = true;
+            _lanSettingsApplied = false;
+            try
+            {
+                _clientHandlers.StartAccepting();
+                StartListener("loopback", BindAddress, lanCandidate: null);
+                ApplyLanSettingsCore(_lanEnabled, _lanBindHost);
+                _log.LogInfo($"Local API loopback listener is available at {BaseUrl}. LAN listener is an optional add-on for trusted private networks.");
+            }
+            catch
+            {
+                _running = false;
+                _lanSettingsApplied = false;
+                _clientHandlers.StopAccepting();
+                StopAllListeners();
+                throw;
+            }
         }
     }
 
@@ -209,52 +235,87 @@ internal sealed class LocalApiServer : IDisposable
 
     public void Dispose()
     {
-        _running = false;
-        StopAllListeners();
+        lock (_lanSettingsLock)
+        {
+            _running = false;
+            _lanSettingsApplied = false;
+            _clientHandlers.StopAccepting();
+            StopAllListeners();
+        }
+
+        if (!_clientHandlers.WaitForIdle(ClientHandlerStopTimeout))
+        {
+            _log.LogWarning("Local API client handlers did not stop within three seconds.");
+        }
     }
 
     public void ApplyLanSettings(bool lanEnabled, string lanBindHost)
     {
-        _lanEnabled = lanEnabled;
-        _lanBindHost = NormalizeLanBindHost(lanBindHost);
-        StopLanListeners();
-        _lanError = "";
-
-        if (!_running || !lanEnabled)
+        lock (_lanSettingsLock)
         {
-            if (_running) _log.LogInfo("Local API LAN listener is disabled. Loopback listener remains available.");
+            ApplyLanSettingsCore(lanEnabled, lanBindHost);
+        }
+    }
+
+    private void ApplyLanSettingsCore(bool lanEnabled, string lanBindHost)
+    {
+        var normalizedHost = NormalizeLanBindHost(lanBindHost);
+        if (!_running)
+        {
+            _lanEnabled = lanEnabled;
+            _lanBindHost = normalizedHost;
+            _lanSettingsApplied = false;
+            _lanError = "";
             return;
         }
 
-        var bindAddresses = ResolveLanBindAddresses(_lanBindHost, _log);
-        if (bindAddresses.Count == 0)
+        var resolution = lanEnabled
+            ? ResolveLanBindCandidates(normalizedHost)
+            : (Candidates: (IReadOnlyList<LanAddressCandidate>)Array.Empty<LanAddressCandidate>(), Error: "");
+        var bindCandidates = resolution.Candidates;
+        if (_lanSettingsApplied
+            && _lanEnabled == lanEnabled
+            && string.Equals(_lanBindHost, normalizedHost, StringComparison.OrdinalIgnoreCase)
+            && TryRefreshActiveLanCandidates(
+                bindCandidates,
+                lanEnabled && bindCandidates.Count == 0 ? resolution.Error : ""))
         {
-            _lanError = "No private LAN IPv4 address is available for binding.";
+            return;
+        }
+
+        _lanEnabled = lanEnabled;
+        _lanBindHost = normalizedHost;
+        _lanSettingsApplied = true;
+        StopLanListeners();
+        _lanError = "";
+
+        if (!lanEnabled)
+        {
+            _log.LogInfo("Local API LAN listener is disabled. Loopback listener remains available.");
+            return;
+        }
+
+        if (bindCandidates.Count == 0)
+        {
+            _lanError = resolution.Error;
             _log.LogWarning($"Local API LAN listener was not started: {_lanError}");
             return;
         }
 
-        var started = new List<IPAddress>();
-        foreach (var address in bindAddresses)
+        foreach (var candidate in bindCandidates)
         {
             try
             {
-                StartListener("LAN", address, isLan: true);
-                started.Add(address);
+                StartListener("LAN", candidate.Address, candidate);
             }
             catch (Exception ex)
             {
                 _lanError = ex.Message;
-                _log.LogWarning($"Local API LAN listener failed on {address}:{Port}: {ex.Message}");
+                _log.LogWarning($"Local API LAN listener failed on {candidate.Address}:{Port}: {ex.Message}");
             }
         }
 
-        lock (_listenerLock)
-        {
-            _activeLanAddresses.Clear();
-            _activeLanAddresses.AddRange(started);
-        }
-
+        var started = GetActiveLanCandidates();
         if (started.Count == 0)
         {
             if (string.IsNullOrWhiteSpace(_lanError)) _lanError = "LAN listener failed on all private IPv4 addresses.";
@@ -263,7 +324,7 @@ internal sealed class LocalApiServer : IDisposable
         }
 
         _lanError = "";
-        _log.LogInfo($"Local API LAN listener available at {string.Join(", ", started.Select(address => $"http://{address}:{Port}"))}.");
+        _log.LogInfo($"Local API LAN listener available at {string.Join(", ", started.Select(candidate => $"http://{candidate.Address}:{Port}"))}.");
     }
 
     public void SetToken(string token)
@@ -271,38 +332,49 @@ internal sealed class LocalApiServer : IDisposable
         _token = token.Trim();
     }
 
-    private void StartListener(string name, IPAddress bindAddress, bool isLan)
+    private void StartListener(string name, IPAddress bindAddress, LanAddressCandidate? lanCandidate)
     {
-        var tcpListener = new TcpListener(bindAddress, Port);
-        tcpListener.Start();
-        var listener = new LocalApiListener
-        {
-            Name = name,
-            IsLan = isLan,
-            Listener = tcpListener,
-        };
-        var thread = new Thread(() => ListenLoop(listener))
-        {
-            IsBackground = true,
-            Name = isLan
+        var isLan = lanCandidate != null;
+        var listener = new LocalApiListenerWorker(
+            name,
+            isLan,
+            bindAddress,
+            Port,
+            isLan
                 ? $"mystia-steward-companion Local API LAN {bindAddress}"
                 : "mystia-steward-companion Local API loopback",
-        };
+            client => _clientHandlers.TryDispatch(client, HandleClient),
+            HandleListenerFailure);
         lock (_listenerLock)
         {
             _listeners.Add(listener);
+            if (lanCandidate != null) _activeLanCandidates.Add(lanCandidate);
         }
-        thread.Start();
+
+        try
+        {
+            listener.Start();
+        }
+        catch
+        {
+            lock (_listenerLock)
+            {
+                _listeners.Remove(listener);
+                if (lanCandidate != null) _activeLanCandidates.Remove(lanCandidate);
+            }
+            listener.Stop(ListenerStopTimeout);
+            throw;
+        }
     }
 
     private void StopLanListeners()
     {
-        List<LocalApiListener> lanListeners;
+        List<LocalApiListenerWorker> lanListeners;
         lock (_listenerLock)
         {
             lanListeners = _listeners.Where(static listener => listener.IsLan).ToList();
             _listeners.RemoveAll(static listener => listener.IsLan);
-            _activeLanAddresses.Clear();
+            _activeLanCandidates.Clear();
         }
 
         foreach (var listener in lanListeners)
@@ -313,12 +385,12 @@ internal sealed class LocalApiServer : IDisposable
 
     private void StopAllListeners()
     {
-        List<LocalApiListener> listeners;
+        List<LocalApiListenerWorker> listeners;
         lock (_listenerLock)
         {
             listeners = _listeners.ToList();
             _listeners.Clear();
-            _activeLanAddresses.Clear();
+            _activeLanCandidates.Clear();
         }
 
         foreach (var listener in listeners)
@@ -327,49 +399,75 @@ internal sealed class LocalApiServer : IDisposable
         }
     }
 
-    private static void StopListener(LocalApiListener listener)
+    private void StopListener(LocalApiListenerWorker listener)
     {
-        try
+        if (!listener.Stop(ListenerStopTimeout))
         {
-            listener.Listener.Stop();
-        }
-        catch
-        {
-            // Stopping listeners during shutdown should not surface as a plugin error.
+            _log.LogWarning($"Local API {listener.Name} listener thread did not stop within {ListenerStopTimeout.TotalSeconds:0.#} seconds.");
         }
     }
 
-    private IReadOnlyList<IPAddress> GetActiveLanAddresses()
+    private IReadOnlyList<LanAddressCandidate> GetActiveLanCandidates()
     {
         lock (_listenerLock)
         {
-            return _activeLanAddresses.ToArray();
+            return _activeLanCandidates.ToArray();
         }
     }
 
-    private void ListenLoop(LocalApiListener listener)
+    private bool TryRefreshActiveLanCandidates(
+        IReadOnlyList<LanAddressCandidate> candidates,
+        string lanError)
     {
-        while (_running)
+        lock (_listenerLock)
         {
-            try
+            if (!HaveSameAddresses(_activeLanCandidates, candidates)) return false;
+
+            _activeLanCandidates.Clear();
+            _activeLanCandidates.AddRange(candidates);
+            _lanError = lanError;
+            return true;
+        }
+    }
+
+    private void HandleListenerFailure(LocalApiListenerWorker listener, Exception exception)
+    {
+        lock (_listenerLock)
+        {
+            if (!_listeners.Remove(listener)) return;
+            if (listener.IsLan)
             {
-                var client = listener.Listener.AcceptTcpClient();
-                if (client == null) continue;
-                ThreadPool.QueueUserWorkItem(_ => HandleClient(client));
-            }
-            catch (SocketException) when (!_running)
-            {
-                return;
-            }
-            catch (ObjectDisposedException) when (!_running)
-            {
-                return;
-            }
-            catch (Exception ex)
-            {
-                _log.LogWarning($"Local API {listener.Name} accept failed: {ex.Message}");
+                _activeLanCandidates.RemoveAll(candidate => candidate.Address.Equals(listener.BindAddress));
+                _lanError = exception.Message;
             }
         }
+
+        if (listener.IsLan)
+        {
+            _log.LogWarning($"Local API {listener.Name} listener terminated after an unexpected failure: {exception.Message}");
+            return;
+        }
+
+        lock (_lanSettingsLock)
+        {
+            _running = false;
+            _lanSettingsApplied = false;
+            StopLanListeners();
+        }
+        _log.LogError($"Local API loopback listener terminated after an unexpected failure: {exception.Message}. Restart the game to restore the local API.");
+    }
+
+    private static bool HaveSameAddresses(
+        IReadOnlyList<LanAddressCandidate> left,
+        IReadOnlyList<LanAddressCandidate> right)
+    {
+        if (left.Count != right.Count) return false;
+        return left.Select(static candidate => candidate.Address.ToString())
+            .OrderBy(static address => address, StringComparer.Ordinal)
+            .SequenceEqual(
+                right.Select(static candidate => candidate.Address.ToString())
+                    .OrderBy(static address => address, StringComparer.Ordinal),
+                StringComparer.Ordinal);
     }
 
     /// <summary>
@@ -382,125 +480,96 @@ internal sealed class LocalApiServer : IDisposable
     /// </remarks>
     private void HandleClient(TcpClient client)
     {
-        using (client)
+        NetworkStream? stream = null;
+        try
         {
-            try
+            client.ReceiveTimeout = 2500;
+            client.SendTimeout = 2500;
+            stream = client.GetStream();
+            var remoteEndPoint = client.Client.RemoteEndPoint as IPEndPoint;
+            if (!IsClientAddressAllowed(remoteEndPoint))
             {
-                client.ReceiveTimeout = 2500;
-                client.SendTimeout = 2500;
-                using var stream = client.GetStream();
-                var remoteEndPoint = client.Client.RemoteEndPoint as IPEndPoint;
-                if (!IsClientAddressAllowed(remoteEndPoint))
-                {
-                    WriteResponse(stream, 403, "Forbidden", ToJson(new LocalApiErrorDto { Error = "forbidden client address" }));
-                    return;
-                }
+                WriteResponse(stream, 403, "Forbidden", ToJson(new LocalApiErrorDto { Error = "forbidden client address" }));
+                return;
+            }
 
-                var request = ReadRequest(stream);
-                var firstLine = request.Split('\n').FirstOrDefault()?.TrimEnd('\r') ?? "";
-                var parts = firstLine.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length < 2)
-                {
-                    WriteResponse(stream, 400, "Bad Request", ToJson(new LocalApiErrorDto { Error = "bad request" }));
-                    return;
-                }
+            var request = HttpRequestReader.ReadHeader(stream, MaxRequestBytes);
+            var firstLine = request.Split('\n').FirstOrDefault()?.TrimEnd('\r') ?? "";
+            var parts = firstLine.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length < 2)
+            {
+                WriteResponse(stream, 400, "Bad Request", ToJson(new LocalApiErrorDto { Error = "bad request" }));
+                return;
+            }
 
-                var method = parts[0];
-                var (path, query) = SplitRequestTarget(parts[1]);
-                path = NormalizeApiPath(path);
-                if (string.Equals(method, "OPTIONS", StringComparison.OrdinalIgnoreCase))
-                {
-                    WriteResponse(stream, 204, "No Content", "");
-                    return;
-                }
+            var method = parts[0];
+            var (path, query) = SplitRequestTarget(parts[1]);
+            if (string.Equals(method, "OPTIONS", StringComparison.OrdinalIgnoreCase))
+            {
+                WriteResponse(stream, 204, "No Content", "");
+                return;
+            }
 
-                var isGet = string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase);
-                var isPost = string.Equals(method, "POST", StringComparison.OrdinalIgnoreCase);
-                if (!isGet && !isPost)
-                {
-                    WriteResponse(stream, 405, "Method Not Allowed", ToJson(new LocalApiErrorDto { Error = "method not allowed" }));
-                    return;
-                }
+            var isGet = string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase);
+            var isPost = string.Equals(method, "POST", StringComparison.OrdinalIgnoreCase);
+            if (!isGet && !isPost)
+            {
+                WriteResponse(stream, 405, "Method Not Allowed", ToJson(new LocalApiErrorDto { Error = "method not allowed" }));
+                return;
+            }
 
-                if (RequiresAuthorization(path) && !IsAuthorized(request))
-                {
-                    WriteResponse(stream, 401, "Unauthorized", ToJson(new LocalApiErrorDto { Error = "unauthorized" }));
-                    return;
-                }
+            if (RequiresAuthorization(path) && !IsAuthorized(request))
+            {
+                WriteResponse(stream, 401, "Unauthorized", ToJson(new LocalApiErrorDto { Error = "unauthorized" }));
+                return;
+            }
 
-                var isLoopbackClient = IsLoopbackClient(remoteEndPoint);
+            var isLoopbackClient = IsLoopbackClient(remoteEndPoint);
 
-                if (isPost)
-                {
-                    // 更新安装会下载文件、写入状态并启动独立进程，因此只接受 POST，避免被预取、刷新或普通链接误触发。
-                    switch (path)
-                    {
-                        case "/automation/lease/acquire":
-                            WriteResponse(stream, 200, "OK", ToJson(AcquireAutomationLease(request)));
-                            break;
-                        case "/automation/lease/release":
-                            WriteResponse(stream, 200, "OK", ToJson(ReleaseAutomationLease(request)));
-                            break;
-                        case "/local-api/config":
-                            if (!isLoopbackClient)
-                            {
-                                WriteResponse(stream, 403, "Forbidden", ToJson(new LocalApiErrorDto { Error = "local configuration is only allowed from the game PC" }));
-                                break;
-                            }
-                            var updatedConfig = _updateConnectionConfig(new LocalApiConnectionConfigUpdate
-                            {
-                                LanEnabled = ReadBoolQuery(query, "lanEnabled"),
-                                LanBindHost = ReadStringQuery(query, "lanHost"),
-                            });
-                            WriteResponse(stream, 200, "OK", ToJson(updatedConfig));
-                            break;
-                        case "/local-api/token/regenerate":
-                            if (!isLoopbackClient)
-                            {
-                                WriteResponse(stream, 403, "Forbidden", ToJson(new LocalApiErrorDto { Error = "token regeneration is only allowed from the game PC" }));
-                                break;
-                            }
-                            var regeneratedConfig = _regenerateLocalApiToken();
-                            SetToken(regeneratedConfig.Token);
-                            WriteResponse(stream, 200, "OK", ToJson(regeneratedConfig));
-                            break;
-                        case "/updates/check":
-                            WriteResponse(stream, 200, "OK", ToJson(_updateService.CheckForUpdates(force: true)));
-                            break;
-                        case "/updates/download":
-                            WriteResponse(stream, 200, "OK", ToJson(_updateService.DownloadUpdate()));
-                            break;
-                        case "/updates/install-on-exit":
-                            WriteResponse(stream, 200, "OK", ToJson(_updateService.InstallOnExit()));
-                            break;
-                        default:
-                            WriteResponse(stream, 404, "Not Found", ToJson(new LocalApiErrorDto { Error = "not found" }));
-                            break;
-                    }
-                    return;
-                }
-
+            if (isPost)
+            {
                 switch (path)
                 {
-                    case "/health":
-                        WriteResponse(stream, 200, "OK", BuildHealthJson());
+                    case "/automation/lease/acquire":
+                        WriteResponse(stream, 200, "OK", ToJson(AcquireAutomationLease(request)));
+                        break;
+                    case "/automation/lease/release":
+                        WriteResponse(stream, 200, "OK", ToJson(ReleaseAutomationLease(request)));
                         break;
                     case "/local-api/config":
                         if (!isLoopbackClient)
                         {
-                            WriteResponse(stream, 403, "Forbidden", ToJson(new LocalApiErrorDto { Error = "local configuration is only available on the game PC" }));
+                            WriteResponse(stream, 403, "Forbidden", ToJson(new LocalApiErrorDto { Error = "local configuration is only allowed from the game PC" }));
                             break;
                         }
-                        WriteResponse(stream, 200, "OK", ToJson(_getConnectionConfig()));
+                        var updatedConfig = _updateConnectionConfig(new LocalApiConnectionConfigUpdate
+                        {
+                            LanEnabled = ReadBoolQuery(query, "lanEnabled"),
+                            LanBindHost = ReadStringQuery(query, "lanHost"),
+                        });
+                        WriteResponse(stream, 200, "OK", ToJson(updatedConfig));
                         break;
-                    case "/snapshot":
-                        WriteResponse(stream, 200, "OK", GetSnapshotJson(query, request));
+                    case "/local-api/token/regenerate":
+                        if (!isLoopbackClient)
+                        {
+                            WriteResponse(stream, 403, "Forbidden", ToJson(new LocalApiErrorDto { Error = "token regeneration is only allowed from the game PC" }));
+                            break;
+                        }
+                        var regeneratedConfig = _regenerateLocalApiToken();
+                        SetToken(regeneratedConfig.Token);
+                        WriteResponse(stream, 200, "OK", ToJson(regeneratedConfig));
                         break;
-                    case "/runtime-data":
-                        WriteResponse(stream, 200, "OK", GetRuntimeDataJson());
+                    case "/updates/status":
+                        WriteResponse(stream, 200, "OK", ToJson(_updateService.GetStatus()));
                         break;
-                    case "/automation/lease":
-                        WriteResponse(stream, 200, "OK", ToJson(ReadAutomationLease(request)));
+                    case "/updates/check":
+                        WriteResponse(stream, 200, "OK", ToJson(_updateService.CheckForUpdates(force: true)));
+                        break;
+                    case "/updates/download":
+                        WriteResponse(stream, 200, "OK", ToJson(_updateService.DownloadUpdate()));
+                        break;
+                    case "/updates/install-on-exit":
+                        WriteResponse(stream, 200, "OK", ToJson(_updateService.InstallOnExit()));
                         break;
                     case "/diagnostics/automation-decision":
                         WriteResponse(stream, 200, "OK", BuildAutomationDecisionDiagnosticJson(query, request));
@@ -508,17 +577,11 @@ internal sealed class LocalApiServer : IDisposable
                     case "/logs/export-diagnostics":
                         WriteResponse(stream, 200, "OK", BuildDiagnosticPackageJson(ReadBoolQuery(query, "open") ?? false));
                         break;
-                    case "/logs/settings":
-                        WriteResponse(stream, 200, "OK", BuildLogSettingsJson());
-                        break;
                     case "/logs/config":
                         _updateLogSettings(
                             ReadBoolQuery(query, "aggregateLog"),
                             ReadNullableIntQuery(query, "aggregateLogMaxFiles"));
                         WriteResponse(stream, 200, "OK", BuildLogSettingsJson());
-                        break;
-                    case "/updates/status":
-                        WriteResponse(stream, 200, "OK", ToJson(_updateService.GetStatus()));
                         break;
                     case "/logs/open-folder":
                         WriteResponse(stream, 200, "OK", OpenLogFolderJson(ReadStringQuery(query, "target")));
@@ -568,9 +631,6 @@ internal sealed class LocalApiServer : IDisposable
                     case "/ui-pinning/target":
                         WriteResponse(stream, 200, "OK", UpdateUiPinningTargetJson(query));
                         break;
-                    case "/favorites":
-                        WriteResponse(stream, 200, "OK", _favoriteStore.GetJson());
-                        break;
                     case "/favorites/add-recipe":
                         WriteResponse(stream, 200, "OK", AddRecipeFavoriteJson(query));
                         break;
@@ -582,9 +642,6 @@ internal sealed class LocalApiServer : IDisposable
                         break;
                     case "/favorites/remove-beverage":
                         WriteResponse(stream, 200, "OK", _favoriteStore.RemoveBeverage(ReadStringQuery(query, "id")));
-                        break;
-                    case "/custom-recipes":
-                        WriteResponse(stream, 200, "OK", _customRecipeStore.GetJson());
                         break;
                     case "/custom-recipes/upsert":
                         WriteResponse(stream, 200, "OK", UpsertCustomRecipeJson(query));
@@ -606,11 +663,57 @@ internal sealed class LocalApiServer : IDisposable
                         WriteResponse(stream, 404, "Not Found", ToJson(new LocalApiErrorDto { Error = "not found" }));
                         break;
                 }
+                return;
             }
-            catch (Exception ex)
+
+            switch (path)
             {
-                _log.LogWarning($"Local API request failed: {ex.Message}");
+                case "/health":
+                    WriteResponse(stream, 200, "OK", BuildHealthJson());
+                    break;
+                case "/local-api/config":
+                    if (!isLoopbackClient)
+                    {
+                        WriteResponse(stream, 403, "Forbidden", ToJson(new LocalApiErrorDto { Error = "local configuration is only available on the game PC" }));
+                        break;
+                    }
+                    WriteResponse(stream, 200, "OK", ToJson(_getConnectionConfig()));
+                    break;
+                case "/snapshot":
+                    WriteResponse(stream, 200, "OK", GetSnapshotJson(query, request));
+                    break;
+                case "/runtime-data":
+                    WriteResponse(stream, 200, "OK", GetRuntimeDataJson());
+                    break;
+                case "/automation/lease":
+                    WriteResponse(stream, 200, "OK", ToJson(ReadAutomationLease(request)));
+                    break;
+                case "/logs/settings":
+                    WriteResponse(stream, 200, "OK", BuildLogSettingsJson());
+                    break;
+                case "/favorites":
+                    WriteResponse(stream, 200, "OK", _favoriteStore.GetJson());
+                    break;
+                case "/custom-recipes":
+                    WriteResponse(stream, 200, "OK", _customRecipeStore.GetJson());
+                    break;
+                default:
+                    WriteResponse(stream, 404, "Not Found", ToJson(new LocalApiErrorDto { Error = "not found" }));
+                    break;
             }
+        }
+        catch (HttpRequestReadException ex)
+        {
+            TryWriteErrorResponse(stream, ex.StatusCode, ex.Reason, ex.Error);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning($"Local API request failed: {ex.Message}");
+            TryWriteErrorResponse(stream, 500, "Internal Server Error", "internal server error");
+        }
+        finally
+        {
+            stream?.Dispose();
         }
     }
 
@@ -791,8 +894,6 @@ internal sealed class LocalApiServer : IDisposable
             LocalEndpoint = BaseUrl,
             LanEnabled = _lanEnabled,
             LanRunning = LanRunning,
-            LanBindAddresses = LanBindAddresses,
-            LanEndpoints = LanEndpoints,
             LanError = string.IsNullOrWhiteSpace(_lanError) ? null : _lanError,
         });
     }
@@ -1303,7 +1404,7 @@ internal sealed class LocalApiServer : IDisposable
         }
         catch (Exception ex)
         {
-            return ToJson(new LocalApiFavoriteErrorDto { Ok = false, Error = ex.Message });
+            return ToJson(new LocalApiFavoriteMutationDto { Ok = false, Error = ex.Message });
         }
     }
 
@@ -1325,7 +1426,7 @@ internal sealed class LocalApiServer : IDisposable
         }
         catch (Exception ex)
         {
-            return ToJson(new LocalApiFavoriteErrorDto { Ok = false, Error = ex.Message });
+            return ToJson(new LocalApiFavoriteMutationDto { Ok = false, Error = ex.Message });
         }
     }
 
@@ -1334,7 +1435,7 @@ internal sealed class LocalApiServer : IDisposable
         if (!int.TryParse(ReadStringQuery(query, "customerId"), out var customerId)
             || !int.TryParse(ReadStringQuery(query, "foodId"), out var foodId))
         {
-            return ToJson(new LocalApiCustomRecipeErrorDto { Ok = false, Error = "invalid custom recipe parameters" });
+            return ToJson(new LocalApiCustomRecipeMutationDto { Ok = false, Error = "invalid custom recipe parameters" });
         }
 
         try
@@ -1356,7 +1457,7 @@ internal sealed class LocalApiServer : IDisposable
         }
         catch (Exception ex)
         {
-            return ToJson(new LocalApiCustomRecipeErrorDto { Ok = false, Error = ex.Message });
+            return ToJson(new LocalApiCustomRecipeMutationDto { Ok = false, Error = ex.Message });
         }
     }
 
@@ -1429,36 +1530,6 @@ internal sealed class LocalApiServer : IDisposable
         });
     }
 
-    /// <summary>
-    /// 从 TCP 流中读取 HTTP 请求头。
-    /// </summary>
-    /// <param name="stream">客户端网络流。</param>
-    /// <returns>ASCII 解码后的请求头文本。</returns>
-    /// <remarks>
-    /// 本地 API 不接收请求体，因此读到头部结束标记后立即返回。最大读取长度用于限制异常客户端占用内存。
-    /// </remarks>
-    private static string ReadRequest(NetworkStream stream)
-    {
-        var buffer = new byte[MaxRequestBytes];
-        var total = 0;
-        while (total < buffer.Length)
-        {
-            var count = stream.Read(buffer, total, buffer.Length - total);
-            if (count <= 0) break;
-            total += count;
-            if (total >= 4
-                && buffer[total - 4] == '\r'
-                && buffer[total - 3] == '\n'
-                && buffer[total - 2] == '\r'
-                && buffer[total - 1] == '\n')
-            {
-                break;
-            }
-        }
-
-        return Encoding.ASCII.GetString(buffer, 0, total);
-    }
-
     private static void WriteResponse(NetworkStream stream, int status, string reason, string body)
     {
         var bodyBytes = Encoding.UTF8.GetBytes(body);
@@ -1482,93 +1553,169 @@ internal sealed class LocalApiServer : IDisposable
         }
     }
 
+    private static void TryWriteErrorResponse(NetworkStream? stream, int status, string reason, string error)
+    {
+        if (stream == null) return;
+        try
+        {
+            WriteResponse(stream, status, reason, ToJson(new LocalApiErrorDto { Error = error }));
+        }
+        catch
+        {
+            // The connection may already be closed or have a partial response; handler shutdown still proceeds.
+        }
+    }
+
     private static string NormalizeLanBindHost(string configuredHost)
     {
         var host = (configuredHost ?? "").Trim();
-        if (string.IsNullOrWhiteSpace(host)
-            || string.Equals(host, "0.0.0.0", StringComparison.Ordinal)
-            || string.Equals(host, "127.0.0.1", StringComparison.Ordinal)
-            || string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase))
-        {
-            return AutoLanHost;
-        }
-
-        return host;
+        if (string.IsNullOrWhiteSpace(host)) return AutoLanHost;
+        return string.Equals(host, AutoLanHost, StringComparison.OrdinalIgnoreCase) ? AutoLanHost : host;
     }
 
-    private static IReadOnlyList<IPAddress> ResolveLanBindAddresses(string configuredHost, ManualLogSource log)
+    private static (IReadOnlyList<LanAddressCandidate> Candidates, string Error) ResolveLanBindCandidates(
+        string configuredHost)
     {
         var host = NormalizeLanBindHost(configuredHost);
+        var discovered = GetPrivateLanIPv4Candidates();
         if (string.Equals(host, AutoLanHost, StringComparison.OrdinalIgnoreCase))
         {
-            return GetPrivateLanIPv4Addresses();
+            return discovered.Count > 0
+                ? (discovered, "")
+                : (discovered, "No active private LAN IPv4 address is available for binding.");
         }
 
-        if (IPAddress.TryParse(host, out var parsed))
+        if (!IPAddress.TryParse(host, out var parsed))
         {
-            var address = NormalizeIPv4Address(parsed);
-            if (address != null && IsPrivateLanAddress(address))
-            {
-                return new[] { address };
-            }
+            return (
+                Array.Empty<LanAddressCandidate>(),
+                $"LAN host '{configuredHost}' must be a private IPv4 address or 'auto'.");
         }
 
-        log.LogWarning($"Local API LAN host '{configuredHost}' is not a private IPv4 bind address. LAN listener will remain disabled.");
-        return Array.Empty<IPAddress>();
+        var address = NormalizeIPv4Address(parsed);
+        if (address == null || !IsPrivateLanAddress(address))
+        {
+            return (
+                Array.Empty<LanAddressCandidate>(),
+                $"LAN host '{configuredHost}' is not a private IPv4 address.");
+        }
+
+        var matched = discovered.FirstOrDefault(candidate => candidate.Address.Equals(address));
+        return matched != null
+            ? (new[] { matched }, "")
+            : (
+                Array.Empty<LanAddressCandidate>(),
+                $"LAN host '{configuredHost}' is not assigned to an active network interface.");
     }
 
-    private static IReadOnlyList<IPAddress> GetPrivateLanIPv4Addresses()
+    private static IReadOnlyList<LanAddressCandidate> GetPrivateLanIPv4Candidates()
     {
-        var addresses = new List<IPAddress>();
+        var candidates = new List<LanAddressCandidate>();
+        NetworkInterface[] networkInterfaces;
 
         try
         {
-            foreach (var networkInterface in NetworkInterface.GetAllNetworkInterfaces())
+            networkInterfaces = NetworkInterface.GetAllNetworkInterfaces();
+        }
+        catch
+        {
+            return Array.Empty<LanAddressCandidate>();
+        }
+
+        foreach (var networkInterface in networkInterfaces)
+        {
+            if (networkInterface.NetworkInterfaceType == NetworkInterfaceType.Loopback
+                || networkInterface.OperationalStatus != OperationalStatus.Up)
             {
-                if (networkInterface.NetworkInterfaceType == NetworkInterfaceType.Loopback
-                    || networkInterface.OperationalStatus != OperationalStatus.Up)
+                continue;
+            }
+
+            try
+            {
+                IPInterfaceProperties properties;
+                try
+                {
+                    properties = networkInterface.GetIPProperties();
+                }
+                catch
                 {
                     continue;
                 }
 
-                foreach (var unicast in networkInterface.GetIPProperties().UnicastAddresses)
+                var hasGateway = properties.GatewayAddresses.Any(gateway =>
+                {
+                    var gatewayAddress = NormalizeIPv4Address(gateway.Address);
+                    return gatewayAddress != null && !gatewayAddress.Equals(IPAddress.Any);
+                });
+                foreach (var unicast in properties.UnicastAddresses)
                 {
                     var address = NormalizeIPv4Address(unicast.Address);
                     if (address != null && IsPrivateLanAddress(address))
                     {
-                        addresses.Add(address);
-                    }
-                }
-            }
-        }
-        catch
-        {
-            // Fall back to DNS hostname resolution below.
-        }
-
-        if (addresses.Count == 0)
-        {
-            try
-            {
-                foreach (var address in Dns.GetHostAddresses(Dns.GetHostName()))
-                {
-                    var ipv4 = NormalizeIPv4Address(address);
-                    if (ipv4 != null && IsPrivateLanAddress(ipv4))
-                    {
-                        addresses.Add(ipv4);
+                        candidates.Add(new LanAddressCandidate
+                        {
+                            Address = address,
+                            InterfaceName = networkInterface.Name,
+                            InterfaceType = networkInterface.NetworkInterfaceType,
+                            HasGateway = hasGateway,
+                            LinkLocal = IsLinkLocalAddress(address),
+                        });
                     }
                 }
             }
             catch
             {
-                // No LAN address can be advertised.
+                // A changing or virtual adapter must not discard candidates found on other adapters.
             }
         }
 
-        return addresses
-            .Distinct()
-            .OrderBy(static address => address.ToString(), StringComparer.Ordinal)
+        return candidates
+            .GroupBy(static candidate => candidate.Address)
+            .Select(static group => OrderLanCandidates(group).First())
+            .OrderByDescending(static candidate => candidate.HasGateway)
+            .ThenBy(static candidate => candidate.LinkLocal)
+            .ThenBy(static candidate => GetInterfacePreference(candidate.InterfaceType))
+            .ThenBy(static candidate => candidate.InterfaceName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static candidate => GetIPv4SortKey(candidate.Address))
             .ToArray();
+    }
+
+    private static IOrderedEnumerable<LanAddressCandidate> OrderLanCandidates(
+        IEnumerable<LanAddressCandidate> candidates)
+    {
+        return candidates
+            .OrderByDescending(static candidate => candidate.HasGateway)
+            .ThenBy(static candidate => candidate.LinkLocal)
+            .ThenBy(static candidate => GetInterfacePreference(candidate.InterfaceType))
+            .ThenBy(static candidate => candidate.InterfaceName, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static int GetInterfacePreference(NetworkInterfaceType interfaceType)
+    {
+        return interfaceType switch
+        {
+            NetworkInterfaceType.Wireless80211 => 0,
+            NetworkInterfaceType.Ethernet => 1,
+            NetworkInterfaceType.FastEthernetT => 1,
+            NetworkInterfaceType.FastEthernetFx => 1,
+            NetworkInterfaceType.GigabitEthernet => 1,
+            _ => 2,
+        };
+    }
+
+    private static uint GetIPv4SortKey(IPAddress address)
+    {
+        var bytes = address.GetAddressBytes();
+        return ((uint)bytes[0] << 24)
+            | ((uint)bytes[1] << 16)
+            | ((uint)bytes[2] << 8)
+            | bytes[3];
+    }
+
+    private static bool IsLinkLocalAddress(IPAddress address)
+    {
+        var bytes = address.GetAddressBytes();
+        return bytes.Length == 4 && bytes[0] == 169 && bytes[1] == 254;
     }
 
     private bool IsClientAddressAllowed(IPEndPoint? remoteEndPoint)
@@ -1691,13 +1838,6 @@ internal sealed class LocalApiServer : IDisposable
         return queryStart < 0
             ? (target, "")
             : (target[..queryStart], target[(queryStart + 1)..]);
-    }
-
-    private static string NormalizeApiPath(string path)
-    {
-        if (string.IsNullOrWhiteSpace(path) || path == "/") return "/snapshot";
-        if (path.StartsWith("/api/", StringComparison.Ordinal)) return path[4..];
-        return path;
     }
 
     private static bool? ReadBoolQuery(string query, string key)

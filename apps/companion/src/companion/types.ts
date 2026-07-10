@@ -296,7 +296,7 @@ export type LocalApiSnapshotResponse = LocalApiSnapshot | LocalApiSnapshotUnchan
 export interface AutomationRuntimeEvent {
   sequence: number;
   createdAtUtc: string;
-  code: 'cooking-mismatch-stored' | 'food-delivered' | string;
+  code: 'cooking-mismatch-stored' | 'cooking-tags-unreadable-stored' | 'food-delivered' | string;
   traceId?: string;
   targetKind: 'rare' | 'normal' | string;
   orderKey?: string;
@@ -364,6 +364,16 @@ export interface LocalApiLogSettings {
   aggregateModLogMaxTotalBytes: number;
 }
 
+export interface LocalApiLanEndpoint {
+  address: string;
+  endpoint: string;
+  interfaceName: string;
+  interfaceType: string;
+  hasGateway: boolean;
+  linkLocal: boolean;
+  recommended: boolean;
+}
+
 export interface LocalApiConnectionConfig {
   ok: boolean;
   localEndpoint: string;
@@ -372,8 +382,7 @@ export interface LocalApiConnectionConfig {
   lanBindHost: string;
   port: number;
   token: string;
-  lanBindAddresses: string[];
-  lanEndpoints: string[];
+  lanEndpoints: LocalApiLanEndpoint[];
   lanError: string | null;
   error: string | null;
 }
@@ -387,8 +396,6 @@ export interface LocalApiHealth {
   localEndpoint: string;
   lanEnabled: boolean;
   lanRunning: boolean;
-  lanBindAddresses: string[];
-  lanEndpoints: string[];
   lanError: string | null;
 }
 

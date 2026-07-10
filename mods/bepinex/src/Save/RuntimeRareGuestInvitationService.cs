@@ -926,19 +926,6 @@ internal static class RuntimeRareGuestInvitationService
         }
     }
 
-    private static bool StaticNpcMatchesCurrentMap(Type dataBaseDayType, object? npc, string currentMapLabel)
-    {
-        foreach (var destination in RuntimeReflectionUtility.EnumerateObjects(RuntimeReflectionUtility.GetMemberValue(npc, "possibleDestinations")))
-        {
-            foreach (var label in ResolveDestinationMapLabels(dataBaseDayType, destination))
-            {
-                if (MapLabelsEqual(label, currentMapLabel)) return true;
-            }
-        }
-
-        return false;
-    }
-
     private static IEnumerable<string> ResolveStaticNpcMapLabels(Type dataBaseDayType, object? npc)
     {
         foreach (var destination in RuntimeReflectionUtility.EnumerateObjects(RuntimeReflectionUtility.GetMemberValue(npc, "possibleDestinations")))

@@ -9,7 +9,24 @@ import http from 'node:http';
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 32145;
 const MOCK_TOKEN = 'mock-token';
-const MOCK_LAN_ADDRESS = '192.168.1.20';
+const MOCK_LAN_ENDPOINTS = [
+  {
+    address: '192.168.1.20',
+    interfaceName: 'Wi-Fi',
+    interfaceType: 'Wireless80211',
+    hasGateway: true,
+    linkLocal: false,
+    recommended: true,
+  },
+  {
+    address: '172.24.112.1',
+    interfaceName: 'vEthernet (WSL)',
+    interfaceType: 'Ethernet',
+    hasGateway: false,
+    linkLocal: false,
+    recommended: false,
+  },
+];
 const AUTOMATION_LEASE_TTL_MS = 15000;
 
 const host = process.env.MOCK_API_HOST || DEFAULT_HOST;
@@ -161,7 +178,7 @@ const updateStatus = {
 };
 
 const connectionConfig = {
-  lanEnabled: false,
+  lanEnabled: process.env.MOCK_LAN_ENABLED === '1',
   lanBindHost: 'auto',
 };
 let automationLease = null;
@@ -176,7 +193,7 @@ const server = http.createServer((request, response) => {
   }
 
   const requestUrl = new URL(request.url || '/', `http://${host}:${port}`);
-  const path = normalizePath(requestUrl.pathname);
+  const path = requestUrl.pathname;
 
   if (request.method === 'POST') {
     try {
@@ -203,11 +220,126 @@ const server = http.createServer((request, response) => {
         return;
       }
 
+      if (path === '/diagnostics/automation-decision') {
+        sendJson(response, 200, { ok: true, status: 'mock automation diagnostic recorded', error: null });
+        return;
+      }
+
+      if (path === '/logs/config') {
+        applyLogSettings(requestUrl.searchParams);
+        sendJson(response, 200, logSettings);
+        return;
+      }
+
+      if (path === '/logs/open-folder') {
+        sendJson(response, 200, { ok: true, directory: logSettings.aggregateModLogDirectory, error: null });
+        return;
+      }
+
+      if (path === '/logs/export-diagnostics') {
+        sendJson(response, 200, {
+          ok: true,
+          path: '/tmp/mystia-steward-companion/mock/diagnostics.zip',
+          directory: '/tmp/mystia-steward-companion/mock',
+          files: ['manifest.json', 'snapshot/current-snapshot.json', 'snapshot/runtime-data.json', 'logs/aggregate-mod.log'],
+          error: null,
+        });
+        return;
+      }
+
+      if (path === '/favorites/add-recipe') {
+        sendJson(response, 200, mutateRecipeFavorite(requestUrl.searchParams));
+        return;
+      }
+
+      if (path === '/favorites/remove-recipe') {
+        removeFavorite(favoriteData.recipes, requestUrl.searchParams.get('id'));
+        sendJson(response, 200, { ok: true, favorites: favoriteData, error: null });
+        return;
+      }
+
+      if (path === '/favorites/add-beverage') {
+        sendJson(response, 200, mutateBeverageFavorite(requestUrl.searchParams));
+        return;
+      }
+
+      if (path === '/favorites/remove-beverage') {
+        removeFavorite(favoriteData.beverages, requestUrl.searchParams.get('id'));
+        sendJson(response, 200, { ok: true, favorites: favoriteData, error: null });
+        return;
+      }
+
+      if (path === '/custom-recipes/upsert') {
+        sendJson(response, 200, upsertCustomRecipe(requestUrl.searchParams));
+        return;
+      }
+
+      if (path === '/custom-recipes/remove') {
+        removeFavorite(customRecipeData.recipes, requestUrl.searchParams.get('id'));
+        normalizeCustomRecipeSortOrders();
+        sendJson(response, 200, { ok: true, customRecipes: customRecipeData, error: null });
+        return;
+      }
+
+      if (path === '/custom-recipes/toggle') {
+        sendJson(response, 200, toggleCustomRecipe(requestUrl.searchParams));
+        return;
+      }
+
+      if (path === '/custom-recipes/move') {
+        sendJson(response, 200, moveCustomRecipe(requestUrl.searchParams));
+        return;
+      }
+
+      if (path === '/rare-guests/invitations' || path === '/rare-guests/invite-all' || path === '/rare-guests/invite') {
+        sendJson(response, 200, buildInvitationResponse(path, requestUrl.searchParams));
+        return;
+      }
+
+      if (path === '/inventory/set') {
+        sendJson(response, 200, setInventoryQuantity(requestUrl.searchParams));
+        return;
+      }
+
+      if (path === '/inventory/bulk-set') {
+        sendJson(response, 200, setBulkInventoryQuantity(requestUrl.searchParams));
+        return;
+      }
+
+      if (path === '/orders/rare/dismiss') {
+        sendJson(response, 200, { ok: true, removed: 1, status: 'mock rare order dismissed', error: null });
+        return;
+      }
+
+      if (path === '/orders/prepare-next' || path === '/orders/complete-first' || path === '/orders/normal/complete-first') {
+        const lease = readAutomationLease(request);
+        if (!lease.owned) {
+          sendJson(response, 200, {
+            ok: false,
+            prepared: false,
+            error: lease.error || (lease.ownerLabel ? `自动化当前由 ${lease.ownerLabel} 控制，本窗口仅查看。` : '自动化控制权不可用。'),
+          });
+          return;
+        }
+        sendJson(response, 200, buildOrderActionResponse(requestUrl.searchParams));
+        return;
+      }
+
+      if (path === '/ui-pinning/target') {
+        sendJson(response, 200, { ok: true, status: 'mock target accepted' });
+        return;
+      }
+
       if (path === '/updates/check') {
         updateStatus.state = 'available';
         updateStatus.checkedAtUtc = nowIso();
         updateStatus.hasUpdate = true;
         updateStatus.error = null;
+        sendJson(response, 200, updateStatus);
+        return;
+      }
+
+      if (path === '/updates/status') {
         sendJson(response, 200, updateStatus);
         return;
       }
@@ -239,11 +371,16 @@ const server = http.createServer((request, response) => {
   }
 
   if (request.method !== 'GET') {
-    sendJson(response, 405, { ok: false, error: 'Only GET is supported by the mock local API.' });
+    sendJson(response, 405, { ok: false, error: 'Method not allowed by the mock local API.' });
     return;
   }
 
   try {
+    if (path === '/health') {
+      sendJson(response, 200, buildHealth());
+      return;
+    }
+
     if (path === '/automation/lease') {
       sendJson(response, 200, readAutomationLease(request));
       return;
@@ -278,123 +415,13 @@ const server = http.createServer((request, response) => {
       return;
     }
 
-    if (path === '/favorites/add-recipe') {
-      sendJson(response, 200, mutateRecipeFavorite(requestUrl.searchParams));
-      return;
-    }
-
-    if (path === '/favorites/remove-recipe') {
-      removeFavorite(favoriteData.recipes, requestUrl.searchParams.get('id'));
-      sendJson(response, 200, { ok: true, favorites: favoriteData, error: null });
-      return;
-    }
-
-    if (path === '/favorites/add-beverage') {
-      sendJson(response, 200, mutateBeverageFavorite(requestUrl.searchParams));
-      return;
-    }
-
-    if (path === '/favorites/remove-beverage') {
-      removeFavorite(favoriteData.beverages, requestUrl.searchParams.get('id'));
-      sendJson(response, 200, { ok: true, favorites: favoriteData, error: null });
-      return;
-    }
-
     if (path === '/custom-recipes') {
       sendJson(response, 200, customRecipeData);
       return;
     }
 
-    if (path === '/custom-recipes/upsert') {
-      sendJson(response, 200, upsertCustomRecipe(requestUrl.searchParams));
-      return;
-    }
-
-    if (path === '/custom-recipes/remove') {
-      removeFavorite(customRecipeData.recipes, requestUrl.searchParams.get('id'));
-      normalizeCustomRecipeSortOrders();
-      sendJson(response, 200, { ok: true, customRecipes: customRecipeData, error: null });
-      return;
-    }
-
-    if (path === '/custom-recipes/toggle') {
-      sendJson(response, 200, toggleCustomRecipe(requestUrl.searchParams));
-      return;
-    }
-
-    if (path === '/custom-recipes/move') {
-      sendJson(response, 200, moveCustomRecipe(requestUrl.searchParams));
-      return;
-    }
-
-    if (path === '/rare-guests/invitations' || path === '/rare-guests/invite-all' || path === '/rare-guests/invite') {
-      sendJson(response, 200, buildInvitationResponse(path, requestUrl.searchParams));
-      return;
-    }
-
-    if (path === '/inventory/set') {
-      sendJson(response, 200, setInventoryQuantity(requestUrl.searchParams));
-      return;
-    }
-
-    if (path === '/inventory/bulk-set') {
-      sendJson(response, 200, setBulkInventoryQuantity(requestUrl.searchParams));
-      return;
-    }
-
     if (path === '/logs/settings') {
       sendJson(response, 200, logSettings);
-      return;
-    }
-
-    if (path === '/logs/config') {
-      applyLogSettings(requestUrl.searchParams);
-      sendJson(response, 200, logSettings);
-      return;
-    }
-
-    if (path === '/logs/open-folder') {
-      sendJson(response, 200, { ok: true, directory: logSettings.aggregateModLogDirectory, error: null });
-      return;
-    }
-
-    if (path === '/logs/export-diagnostics') {
-      sendJson(response, 200, {
-        ok: true,
-        path: '/tmp/mystia-steward-companion/mock/diagnostics.zip',
-        directory: '/tmp/mystia-steward-companion/mock',
-        files: ['manifest.json', 'snapshot/current-snapshot.json', 'snapshot/runtime-data.json', 'logs/aggregate-mod.log'],
-        error: null,
-      });
-      return;
-    }
-
-    if (path === '/updates/status') {
-      sendJson(response, 200, updateStatus);
-      return;
-    }
-
-    if (path === '/orders/rare/dismiss') {
-      sendJson(response, 200, { ok: true, removed: 1, status: 'mock rare order dismissed', error: null });
-      return;
-    }
-
-    if (path === '/orders/prepare-next' || path === '/orders/complete-first' || path === '/orders/normal/complete-first') {
-      const lease = readAutomationLease(request);
-      if (!lease.owned) {
-        sendJson(response, 200, {
-          ok: false,
-          prepared: false,
-          error: lease.error || (lease.ownerLabel ? `自动化当前由 ${lease.ownerLabel} 控制，本窗口仅查看。` : '自动化控制权不可用。'),
-        });
-        return;
-      }
-      sendJson(response, 200, buildOrderActionResponse(requestUrl.searchParams));
-      return;
-    }
-
-    if (path === '/ui-pinning/target') {
-      sendJson(response, 200, { ok: true, status: 'mock target accepted' });
       return;
     }
 
@@ -979,11 +1006,6 @@ function removeFavorite(entries, id) {
   if (index >= 0) entries.splice(index, 1);
 }
 
-function normalizePath(pathname) {
-  if (pathname === '/') return '/';
-  return pathname.replace(/\/+$/, '');
-}
-
 function normalizeScope(value) {
   return value === 'all' ? 'all' : 'current';
 }
@@ -1019,10 +1041,8 @@ function normalizeBoolean(value, fallback) {
 
 function normalizeLanHost(value) {
   const normalized = String(value || '').trim();
-  if (!normalized || normalized === '0.0.0.0' || normalized === '127.0.0.1' || normalized.toLowerCase() === 'localhost') {
-    return 'auto';
-  }
-  return normalized;
+  if (!normalized) return 'auto';
+  return normalized.toLowerCase() === 'auto' ? 'auto' : normalized;
 }
 
 function readAutomationLease(request) {
@@ -1130,21 +1150,54 @@ function readClientIdentity(request) {
 }
 
 function buildConnectionConfig() {
-  const lanRunning = connectionConfig.lanEnabled;
-  const lanBindAddresses = lanRunning ? [MOCK_LAN_ADDRESS] : [];
-  const lanEndpoints = lanBindAddresses.map((address) => `http://${address}:${port}`);
+  const lanState = resolveMockLanState();
   return {
     ok: true,
     localEndpoint: `http://127.0.0.1:${port}`,
     lanEnabled: connectionConfig.lanEnabled,
-    lanRunning,
+    lanRunning: lanState.lanRunning,
     lanBindHost: connectionConfig.lanBindHost,
     port,
     token: mockToken,
-    lanBindAddresses,
-    lanEndpoints,
-    lanError: null,
+    lanEndpoints: lanState.lanEndpoints,
+    lanError: lanState.lanError,
     error: null,
+  };
+}
+
+function buildHealth() {
+  const lanState = resolveMockLanState();
+  return {
+    ok: true,
+    pluginVersion: '0.0.0-mock',
+    bindAddress: '127.0.0.1',
+    port,
+    authRequired: true,
+    localEndpoint: `http://127.0.0.1:${port}`,
+    lanEnabled: connectionConfig.lanEnabled,
+    lanRunning: lanState.lanRunning,
+    lanError: lanState.lanError,
+  };
+}
+
+function resolveMockLanState() {
+  const candidates = connectionConfig.lanBindHost === 'auto'
+    ? MOCK_LAN_ENDPOINTS
+    : MOCK_LAN_ENDPOINTS.filter((candidate) => candidate.address === connectionConfig.lanBindHost);
+  const lanRunning = connectionConfig.lanEnabled && candidates.length > 0;
+  const lanEndpoints = lanRunning
+    ? candidates.map((candidate, index) => ({
+      ...candidate,
+      endpoint: `http://${candidate.address}:${port}`,
+      recommended: index === 0,
+    }))
+    : [];
+  return {
+    lanRunning,
+    lanEndpoints,
+    lanError: connectionConfig.lanEnabled && !lanRunning
+      ? `LAN host '${connectionConfig.lanBindHost}' is not assigned to an active network interface.`
+      : null,
   };
 }
 

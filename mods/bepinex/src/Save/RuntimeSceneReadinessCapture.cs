@@ -81,7 +81,7 @@ internal static class RuntimeSceneReadinessCapture
             lock (SyncRoot)
             {
                 _status = PatchedMethods.Count == 0
-                    ? $"waiting: {string.Join(", ", missing.Take(4))}"
+                    ? $"unavailable: {string.Join(", ", missing.Take(4))}"
                     : missing.Count == 0
                         ? $"patched={PatchedMethods.Count}"
                         : $"patched={PatchedMethods.Count}; missing={string.Join(", ", missing.Take(4))}";
@@ -93,7 +93,7 @@ internal static class RuntimeSceneReadinessCapture
             }
             else if (PatchedMethods.Count == 0)
             {
-                log.LogWarning($"Runtime scene readiness waiting for game types: {string.Join(", ", missing.Take(4))}.");
+                log.LogWarning($"Runtime scene readiness unavailable; game members were not found: {string.Join(", ", missing.Take(4))}.");
             }
         }
         catch (Exception ex)
@@ -131,7 +131,7 @@ internal static class RuntimeSceneReadinessCapture
             if (PatchedMethods.Contains(key)) return;
         }
 
-        var type = FindType(typeName);
+        var type = RuntimeReflectionUtility.FindType(typeName);
         var target = type?.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
             .FirstOrDefault(method => method.Name == methodName && method.GetParameters().Length == parameterCount);
         var postfix = typeof(RuntimeSceneReadinessCapture).GetMethod(postfixName, BindingFlags.NonPublic | BindingFlags.Static);
@@ -205,24 +205,4 @@ internal static class RuntimeSceneReadinessCapture
         _changeVersion++;
     }
 
-    private static Type? FindType(string fullName)
-    {
-        var direct = Type.GetType(fullName, false);
-        if (direct != null) return direct;
-
-        foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
-        {
-            try
-            {
-                var type = assembly.GetType(fullName, false);
-                if (type != null) return type;
-            }
-            catch
-            {
-                // Ignore assemblies that cannot resolve unrelated IL2CPP types.
-            }
-        }
-
-        return null;
-    }
 }

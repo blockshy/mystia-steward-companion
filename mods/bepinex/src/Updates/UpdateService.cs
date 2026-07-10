@@ -5,8 +5,10 @@ using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Xml.Linq;
 using BepInEx;
 using BepInEx.Logging;
+using MystiaStewardCompanion.Core;
 using MystiaStewardCompanion.Plugin;
 
 namespace MystiaStewardCompanion.Updates;
@@ -26,13 +28,15 @@ internal sealed class UpdateService
     private const string ReleasesAtomUrl = RepoWeb + "/releases.atom";
     private const string AllReleasesUrl = RepoWeb + "/releases";
     private const string LatestManifestDownloadUrl = RepoWeb + "/releases/latest/download/" + ManifestAssetName;
-    private const string LatestPackageDownloadUrl = RepoWeb + "/releases/latest/download/" + PackageAssetName;
     private const string LatestReleaseUrl = RepoWeb + "/releases/latest";
     private const string PackageRootDirectoryName = "mystia-steward-companion";
     private const string RequiredPluginDll = "MystiaStewardCompanion.BepInEx.dll";
     private const string RequiredWindowsCompanion = "companion/mystia-steward-companion.exe";
     private const string RequiredWindowsUpdater = "mystia-steward-companion-updater.exe";
-    private static readonly HttpClient Http = CreateHttpClient();
+    private const int SupportedManifestSchemaVersion = 1;
+    private static readonly TimeSpan PackageDownloadTimeout = TimeSpan.FromMinutes(5);
+    private static readonly HttpClient Http = CreateHttpClient(TimeSpan.FromSeconds(12));
+    private static readonly HttpClient DownloadHttp = CreateHttpClient(PackageDownloadTimeout);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
@@ -41,6 +45,7 @@ internal sealed class UpdateService
     private readonly UpdateServiceSettings _settings;
     private readonly ManualLogSource _log;
     private readonly object _lock = new();
+    private readonly object _operationLock = new();
     private readonly string _updatesRoot;
     private readonly string _statePath;
     private readonly string _installStatusPath;
@@ -90,7 +95,6 @@ internal sealed class UpdateService
         {
             try
             {
-                if (ShouldSkipAutoCheck()) return;
                 CheckForUpdates(force: false);
             }
             catch (Exception ex)
@@ -116,6 +120,19 @@ internal sealed class UpdateService
     /// 再按固定资产下载地址读取 manifest，避免测试通道耗尽 GitHub REST API 限额。
     /// </remarks>
     public UpdateStatus CheckForUpdates(bool force)
+    {
+        if (!Monitor.TryEnter(_operationLock)) return BusyStatus();
+        try
+        {
+            return CheckForUpdatesCore(force);
+        }
+        finally
+        {
+            Monitor.Exit(_operationLock);
+        }
+    }
+
+    private UpdateStatus CheckForUpdatesCore(bool force)
     {
         if (!_settings.Enabled)
         {
@@ -144,16 +161,6 @@ internal sealed class UpdateService
         {
             var candidate = FetchUpdateCandidate();
             var manifest = candidate.Manifest;
-            ValidateManifestVersion(manifest);
-            if (!string.Equals(manifest.PackageAsset, PackageAssetName, StringComparison.Ordinal))
-            {
-                throw new InvalidOperationException($"更新清单引用了未知资产：{manifest.PackageAsset}");
-            }
-            if (string.IsNullOrWhiteSpace(manifest.PackageSha256))
-            {
-                throw new InvalidOperationException("更新清单缺少 packageSha256。");
-            }
-
             var hasUpdate = CompareVersion(manifest.Version, MystiaStewardCompanionPlugin.PluginVersion) > 0;
             lock (_lock)
             {
@@ -161,27 +168,13 @@ internal sealed class UpdateService
                 _state.CheckedAtUtc = DateTime.UtcNow;
                 _state.LatestVersion = manifest.Version;
                 _state.LatestTag = manifest.Tag;
-                _state.Channel = manifest.Channel;
                 _state.ReleaseUrl = string.IsNullOrWhiteSpace(manifest.ReleaseUrl) ? candidate.ReleaseUrl : manifest.ReleaseUrl;
                 _state.PublishedAtUtc = ParseDateOrNull(manifest.PublishedAtUtc) ?? candidate.PublishedAtUtc;
                 _state.PackageAsset = manifest.PackageAsset;
                 _state.PackageSha256 = manifest.PackageSha256.ToLowerInvariant();
-                _state.PackageSize = manifest.PackageSize > 0 ? manifest.PackageSize : candidate.PackageSize;
+                _state.PackageSize = manifest.PackageSize;
                 _state.PackageDownloadUrl = candidate.PackageDownloadUrl;
-                _state.ManifestDownloadUrl = candidate.ManifestDownloadUrl;
                 _state.Error = null;
-                SaveState();
-                return BuildStatus(null);
-            }
-        }
-        catch (UpdateManifestMissingException ex)
-        {
-            lock (_lock)
-            {
-                // 线上最新版本尚未带 manifest 时不视为功能故障；这通常发生在首次引入自动更新后的过渡版本。
-                _state.State = "manifestMissing";
-                _state.CheckedAtUtc = DateTime.UtcNow;
-                _state.Error = ex.Message;
                 SaveState();
                 return BuildStatus(null);
             }
@@ -208,6 +201,19 @@ internal sealed class UpdateService
     /// </remarks>
     public UpdateStatus DownloadUpdate()
     {
+        if (!Monitor.TryEnter(_operationLock)) return BusyStatus();
+        try
+        {
+            return DownloadUpdateCore();
+        }
+        finally
+        {
+            Monitor.Exit(_operationLock);
+        }
+    }
+
+    private UpdateStatus DownloadUpdateCore()
+    {
         if (!_settings.Enabled)
         {
             return ErrorStatus("自动更新已关闭。");
@@ -216,6 +222,12 @@ internal sealed class UpdateService
         UpdateState snapshot;
         lock (_lock)
         {
+            RefreshInstallStatus();
+            if (IsActiveInstall(_state))
+            {
+                return BuildStatus("更新程序正在运行，不能覆盖其暂存目录。");
+            }
+
             snapshot = _state.Clone();
         }
 
@@ -232,6 +244,7 @@ internal sealed class UpdateService
             }
         }
 
+        string? pendingRoot = null;
         try
         {
             lock (_lock)
@@ -242,13 +255,15 @@ internal sealed class UpdateService
             }
 
             var version = SanitizePathSegment(snapshot.LatestVersion);
-            var versionRoot = Path.Combine(_updatesRoot, "downloads", version);
-            var packagePath = Path.Combine(versionRoot, PackageAssetName);
-            var extractRoot = Path.Combine(versionRoot, "extract");
-            if (Directory.Exists(versionRoot)) Directory.Delete(versionRoot, recursive: true);
-            Directory.CreateDirectory(versionRoot);
+            var downloadsRoot = Path.Combine(_updatesRoot, "downloads");
+            var versionRoot = Path.Combine(downloadsRoot, version);
+            pendingRoot = Path.Combine(downloadsRoot, $".{version}.{Guid.NewGuid():N}.tmp");
+            var packagePath = Path.Combine(pendingRoot, PackageAssetName);
+            var extractRoot = Path.Combine(pendingRoot, "extract");
+            Directory.CreateDirectory(pendingRoot);
 
-            DownloadFile(snapshot.PackageDownloadUrl, packagePath);
+            DownloadFile(snapshot.PackageDownloadUrl, packagePath, snapshot.PackageSize);
+
             var actualHash = ComputeSha256(packagePath);
             if (!string.Equals(actualHash, snapshot.PackageSha256, StringComparison.OrdinalIgnoreCase))
             {
@@ -258,13 +273,15 @@ internal sealed class UpdateService
             ExtractPackage(packagePath, extractRoot);
             var stagedPluginDirectory = Path.Combine(extractRoot, PackageRootDirectoryName);
             ValidatePackageDirectory(stagedPluginDirectory);
+            PromoteDownloadDirectory(pendingRoot, versionRoot);
+            pendingRoot = null;
+            stagedPluginDirectory = Path.Combine(versionRoot, "extract", PackageRootDirectoryName);
 
             lock (_lock)
             {
                 _state.State = "downloaded";
                 _state.DownloadedVersion = snapshot.LatestVersion;
                 _state.DownloadedAtUtc = DateTime.UtcNow;
-                _state.PackagePath = packagePath;
                 _state.StagedDirectory = stagedPluginDirectory;
                 _state.Error = null;
                 SaveState();
@@ -273,6 +290,7 @@ internal sealed class UpdateService
         }
         catch (Exception ex)
         {
+            TryDeleteDirectory(pendingRoot);
             lock (_lock)
             {
                 _state.State = "failed";
@@ -293,6 +311,19 @@ internal sealed class UpdateService
     /// </remarks>
     public UpdateStatus InstallOnExit()
     {
+        if (!Monitor.TryEnter(_operationLock)) return BusyStatus();
+        try
+        {
+            return InstallOnExitCore();
+        }
+        finally
+        {
+            Monitor.Exit(_operationLock);
+        }
+    }
+
+    private UpdateStatus InstallOnExitCore()
+    {
         if (!_settings.Enabled)
         {
             return ErrorStatus("自动更新已关闭。");
@@ -301,6 +332,12 @@ internal sealed class UpdateService
         UpdateState snapshot;
         lock (_lock)
         {
+            RefreshInstallStatus();
+            if (IsActiveInstall(_state))
+            {
+                return BuildStatus(null);
+            }
+
             snapshot = _state.Clone();
         }
 
@@ -309,11 +346,18 @@ internal sealed class UpdateService
             return ErrorStatus("尚未下载可安装的更新。");
         }
 
+        if (CompareVersion(snapshot.DownloadedVersion, MystiaStewardCompanionPlugin.PluginVersion) <= 0)
+        {
+            return ErrorStatus(
+                $"暂存版本 {snapshot.DownloadedVersion} 不高于当前版本 {MystiaStewardCompanionPlugin.PluginVersion}，已拒绝安装。");
+        }
+
+        var startedProcessId = 0;
         try
         {
             ValidatePackageDirectory(snapshot.StagedDirectory);
             var pluginDirectory = ResolvePluginDirectory();
-            var updaterSource = ResolveUpdaterSource(pluginDirectory, snapshot.StagedDirectory);
+            var updaterSource = ResolveUpdaterSource(snapshot.StagedDirectory);
             var runnerDirectory = Path.Combine(_updatesRoot, "runner", DateTime.UtcNow.ToString("yyyyMMddHHmmss"));
             Directory.CreateDirectory(runnerDirectory);
             var runnerPath = Path.Combine(runnerDirectory, Path.GetFileName(updaterSource));
@@ -345,24 +389,22 @@ internal sealed class UpdateService
             startInfo.ArgumentList.Add("--control-port");
             startInfo.ArgumentList.Add("32146");
 
-            File.WriteAllText(_installStatusPath, JsonSerializer.Serialize(new UpdateInstallStatus
-            {
-                State = "waiting",
-                Message = "已启动独立更新程序，请在弹窗中确认关闭游戏并完成安装。",
-                Progress = 0,
-            }, JsonOptions));
-
-            var process = Process.Start(startInfo);
-            if (process == null)
-            {
-                throw new InvalidOperationException("updater 进程启动失败。");
-            }
-
             lock (_lock)
             {
+                const string waitingMessage = "已启动独立更新程序，请在弹窗中确认关闭游戏并完成安装。";
+                AtomicFile.WriteAllText(_installStatusPath, JsonSerializer.Serialize(new UpdateInstallStatus
+                {
+                    State = "waiting",
+                    Message = waitingMessage,
+                    Progress = 0,
+                }, JsonOptions));
+
+                using var process = Process.Start(startInfo)
+                    ?? throw new InvalidOperationException("updater 进程启动失败。");
+                startedProcessId = process.Id;
                 _state.InstallState = "waiting";
-                _state.InstallMessage = "已启动独立更新程序，请在弹窗中确认关闭游戏并完成安装。";
-                _state.InstallProcessId = process.Id;
+                _state.InstallMessage = waitingMessage;
+                _state.InstallProcessId = startedProcessId;
                 _state.Error = null;
                 SaveState();
                 return BuildStatus(null);
@@ -372,39 +414,47 @@ internal sealed class UpdateService
         {
             lock (_lock)
             {
+                if (startedProcessId > 0 && IsUpdaterProcessRunning(startedProcessId))
+                {
+                    _state.InstallState = "waiting";
+                    _state.InstallMessage = "更新程序已启动，但 Mod 无法保存完整安装状态。请在更新窗口中完成或取消安装。";
+                    _state.InstallProcessId = startedProcessId;
+                    _state.Error = ex.Message;
+                    _log.LogWarning($"Updater started but install state could not be persisted: {ex.Message}");
+                    return BuildStatus(ex.Message);
+                }
+
                 _state.InstallState = "failed";
                 _state.InstallMessage = ex.Message;
+                _state.InstallProcessId = 0;
                 _state.Error = ex.Message;
+                try
+                {
+                    AtomicFile.WriteAllText(_installStatusPath, JsonSerializer.Serialize(new UpdateInstallStatus
+                    {
+                        State = "failed",
+                        Message = ex.Message,
+                        Progress = 0,
+                    }, JsonOptions));
+                }
+                catch (Exception statusException)
+                {
+                    _log.LogWarning($"Write failed install status failed: {statusException.Message}");
+                }
                 SaveState();
                 return BuildStatus(ex.Message);
             }
         }
     }
 
-    public string OpenReleasePage()
-    {
-        lock (_lock)
-        {
-            return _state.ReleaseUrl;
-        }
-    }
-
-    private static HttpClient CreateHttpClient()
+    private static HttpClient CreateHttpClient(TimeSpan timeout)
     {
         var client = new HttpClient
         {
-            Timeout = TimeSpan.FromSeconds(12),
+            Timeout = timeout,
         };
         client.DefaultRequestHeaders.UserAgent.ParseAdd("mystia-steward-companion-updater/1.0");
         return client;
-    }
-
-    private bool ShouldSkipAutoCheck()
-    {
-        lock (_lock)
-        {
-            return !IsCheckDue();
-        }
     }
 
     private bool IsCheckDue()
@@ -430,23 +480,14 @@ internal sealed class UpdateService
     /// </remarks>
     private static UpdateCandidate FetchStableCandidateFromLatestAssets()
     {
-        try
+        var manifest = DownloadManifest(LatestManifestDownloadUrl);
+        return new UpdateCandidate
         {
-            var manifest = DownloadManifest(LatestManifestDownloadUrl);
-            return new UpdateCandidate
-            {
-                Manifest = manifest,
-                ReleaseUrl = LatestReleaseUrl,
-                PublishedAtUtc = ParseDateOrNull(manifest.PublishedAtUtc),
-                PackageSize = manifest.PackageSize,
-                PackageDownloadUrl = BuildVersionedAssetDownloadUrl(manifest.Tag, PackageAssetName, LatestPackageDownloadUrl),
-                ManifestDownloadUrl = LatestManifestDownloadUrl,
-            };
-        }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
-        {
-            throw new UpdateManifestMissingException("最新正式 Release 尚未提供 update-manifest.json。请先手动更新到支持自动更新的版本，之后即可使用内置更新。", ex);
-        }
+            Manifest = manifest,
+            ReleaseUrl = LatestReleaseUrl,
+            PublishedAtUtc = ParseDateOrNull(manifest.PublishedAtUtc),
+            PackageDownloadUrl = BuildVersionedAssetDownloadUrl(manifest.Tag, PackageAssetName),
+        };
     }
 
     /// <summary>
@@ -462,7 +503,7 @@ internal sealed class UpdateService
         var releases = FetchReleaseFeedCandidates();
         foreach (var release in releases)
         {
-            var manifestUrl = BuildVersionedAssetDownloadUrl(release.TagName, ManifestAssetName, "");
+            var manifestUrl = BuildVersionedAssetDownloadUrl(release.TagName, ManifestAssetName);
             UpdateManifest manifest;
             try
             {
@@ -473,25 +514,18 @@ internal sealed class UpdateService
                 continue;
             }
 
-            ValidateManifestVersion(manifest);
-            if (!string.Equals(manifest.PackageAsset, PackageAssetName, StringComparison.Ordinal))
+            if (CompareVersion(manifest.Tag, release.TagName) != 0)
             {
-                throw new InvalidOperationException($"更新清单引用了未知资产：{manifest.PackageAsset}");
-            }
-            if (string.IsNullOrWhiteSpace(manifest.PackageSha256))
-            {
-                throw new InvalidOperationException("更新清单缺少 packageSha256。");
+                throw new InvalidOperationException(
+                    $"Release Feed tag 与 update-manifest.json 不一致：{release.TagName} / {manifest.Tag}");
             }
 
-            var packageTag = string.IsNullOrWhiteSpace(manifest.Tag) ? release.TagName : manifest.Tag;
             return new UpdateCandidate
             {
                 Manifest = manifest,
                 ReleaseUrl = string.IsNullOrWhiteSpace(manifest.ReleaseUrl) ? release.HtmlUrl : manifest.ReleaseUrl,
                 PublishedAtUtc = ParseDateOrNull(manifest.PublishedAtUtc) ?? release.PublishedAtUtc,
-                PackageSize = manifest.PackageSize,
-                PackageDownloadUrl = BuildVersionedAssetDownloadUrl(packageTag, PackageAssetName, ""),
-                ManifestDownloadUrl = manifestUrl,
+                PackageDownloadUrl = BuildVersionedAssetDownloadUrl(manifest.Tag, PackageAssetName),
             };
         }
 
@@ -500,25 +534,37 @@ internal sealed class UpdateService
 
     private static List<ReleaseInfo> FetchReleaseFeedCandidates()
     {
-        var xml = ReadString(ReleasesAtomUrl);
-        var releases = new List<(ReleaseInfo Release, SemanticVersion Version)>();
-        foreach (Match entryMatch in Regex.Matches(xml, @"<entry\b[^>]*>(?<entry>.*?)</entry>", RegexOptions.Singleline | RegexOptions.CultureInvariant))
-        {
-            var entry = entryMatch.Groups["entry"].Value;
-            var tag = MatchGroup(entry, @"<title>(?<value>[^<]+)</title>");
-            if (string.IsNullOrWhiteSpace(tag)) continue;
-            if (!SemanticVersion.TryParse(WebUtility.HtmlDecode(tag), out var version)) continue;
+        return ParseReleaseFeed(ReadString(ReleasesAtomUrl));
+    }
 
-            var href = MatchGroup(entry, @"<link\b[^>]*rel=""alternate""[^>]*href=""(?<value>[^""]+)""");
+    internal static List<ReleaseInfo> ParseReleaseFeed(string xml)
+    {
+        var document = XDocument.Parse(xml, LoadOptions.None);
+        var atom = document.Root?.Name.Namespace
+            ?? throw new InvalidOperationException("GitHub Release Feed 缺少根元素。");
+        var releases = new List<(ReleaseInfo Release, SemanticVersion Version)>();
+        foreach (var entry in document.Descendants(atom + "entry"))
+        {
+            var tag = entry.Element(atom + "title")?.Value.Trim() ?? "";
+            if (string.IsNullOrWhiteSpace(tag)) continue;
+            if (!SemanticVersion.TryParse(tag, out var version)) continue;
+
+            var href = entry.Elements(atom + "link")
+                .FirstOrDefault(link => string.Equals(
+                    link.Attribute("rel")?.Value,
+                    "alternate",
+                    StringComparison.OrdinalIgnoreCase))
+                ?.Attribute("href")
+                ?.Value;
             if (string.IsNullOrWhiteSpace(href))
             {
                 href = $"{RepoWeb}/releases/tag/{Uri.EscapeDataString(tag)}";
             }
-            var updatedAt = MatchGroup(entry, @"<updated>(?<value>[^<]+)</updated>");
+            var updatedAt = entry.Element(atom + "updated")?.Value ?? "";
             releases.Add((new ReleaseInfo
             {
-                TagName = WebUtility.HtmlDecode(tag),
-                HtmlUrl = WebUtility.HtmlDecode(href),
+                TagName = tag,
+                HtmlUrl = href,
                 PublishedAtUtc = ParseDateOrNull(updatedAt),
             }, version));
         }
@@ -534,27 +580,33 @@ internal sealed class UpdateService
             .ToList();
     }
 
-    private static string MatchGroup(string input, string pattern)
-    {
-        var match = Regex.Match(input, pattern, RegexOptions.Singleline | RegexOptions.CultureInvariant);
-        return match.Success ? match.Groups["value"].Value : "";
-    }
-
     private static UpdateManifest DownloadManifest(string url)
     {
         var json = ReadString(url);
-        return JsonSerializer.Deserialize<UpdateManifest>(json, JsonOptions)
+        var manifest = JsonSerializer.Deserialize<UpdateManifest>(json, JsonOptions)
             ?? throw new InvalidOperationException("update-manifest.json 解析失败。");
+        ValidateManifest(manifest);
+        return manifest;
     }
 
-    private static void ValidateManifestVersion(UpdateManifest manifest)
+    internal static void ValidateManifest(UpdateManifest manifest)
     {
+        if (manifest.SchemaVersion != SupportedManifestSchemaVersion)
+        {
+            throw new InvalidOperationException(
+                $"update-manifest.json schemaVersion 不受支持：{manifest.SchemaVersion}，当前仅支持 {SupportedManifestSchemaVersion}。");
+        }
+
         if (!SemanticVersion.TryParse(manifest.Version, out var manifestVersion))
         {
             throw new InvalidOperationException($"update-manifest.json 中的版本号无效：{manifest.Version}");
         }
 
-        if (string.IsNullOrWhiteSpace(manifest.Tag)) return;
+        if (string.IsNullOrWhiteSpace(manifest.Tag))
+        {
+            throw new InvalidOperationException("update-manifest.json 缺少 tag。");
+        }
+
         if (!SemanticVersion.TryParse(manifest.Tag, out var tagVersion))
         {
             throw new InvalidOperationException($"update-manifest.json 中的 tag 无效：{manifest.Tag}");
@@ -562,6 +614,30 @@ internal sealed class UpdateService
         if (manifestVersion.CompareTo(tagVersion) != 0)
         {
             throw new InvalidOperationException($"update-manifest.json 的 version 与 tag 不一致：{manifest.Version} / {manifest.Tag}");
+        }
+
+        var expectedChannel = manifestVersion.IsPrerelease ? "preview" : "stable";
+        if (!string.Equals(manifest.Channel, expectedChannel, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"update-manifest.json 的 channel 与版本不一致：期望 {expectedChannel}，实际 {manifest.Channel}。");
+        }
+
+        if (!string.Equals(manifest.PackageAsset, PackageAssetName, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException($"更新清单引用了未知资产：{manifest.PackageAsset}");
+        }
+
+        if (string.IsNullOrWhiteSpace(manifest.PackageSha256)
+            || manifest.PackageSha256.Length != 64
+            || manifest.PackageSha256.Any(character => !Uri.IsHexDigit(character)))
+        {
+            throw new InvalidOperationException("update-manifest.json 的 packageSha256 必须是 64 位十六进制 SHA256。");
+        }
+
+        if (manifest.PackageSize <= 0)
+        {
+            throw new InvalidOperationException("update-manifest.json 的 packageSize 必须大于 0。");
         }
     }
 
@@ -571,12 +647,60 @@ internal sealed class UpdateService
         return Http.GetStringAsync(url).GetAwaiter().GetResult();
     }
 
-    private static void DownloadFile(string url, string path)
+    private static void DownloadFile(string url, string path, long expectedSize)
     {
         if (string.IsNullOrWhiteSpace(url)) throw new InvalidOperationException("更新包下载地址为空。");
+        if (expectedSize <= 0) throw new InvalidOperationException("更新包声明大小必须大于 0。");
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        var bytes = Http.GetByteArrayAsync(url).GetAwaiter().GetResult();
-        File.WriteAllBytes(path, bytes);
+        using var cancellation = new CancellationTokenSource(PackageDownloadTimeout);
+        DownloadFileAsync(url, path, expectedSize, cancellation.Token).GetAwaiter().GetResult();
+    }
+
+    private static async Task DownloadFileAsync(string url, string path, long expectedSize, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        using var response = await DownloadHttp.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+            .ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        if (response.Content.Headers.ContentLength is long contentLength && contentLength != expectedSize)
+        {
+            throw new InvalidOperationException(
+                $"更新包大小不匹配：期望 {expectedSize} 字节，响应声明 {contentLength} 字节。");
+        }
+
+        await using var source = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        await using var destination = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true);
+        await CopyDownloadContentAsync(source, destination, expectedSize, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static async Task CopyDownloadContentAsync(
+        Stream source,
+        Stream destination,
+        long expectedSize,
+        CancellationToken cancellationToken)
+    {
+        if (expectedSize <= 0) throw new ArgumentOutOfRangeException(nameof(expectedSize));
+
+        var buffer = new byte[81920];
+        long total = 0;
+        while (true)
+        {
+            var read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken).ConfigureAwait(false);
+            if (read == 0) break;
+            total += read;
+            if (total > expectedSize)
+            {
+                throw new InvalidOperationException(
+                    $"更新包大小超过清单声明：期望 {expectedSize} 字节，已接收至少 {total} 字节。");
+            }
+
+            await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+        }
+
+        if (total != expectedSize)
+        {
+            throw new InvalidOperationException($"更新包大小不匹配：期望 {expectedSize} 字节，实际 {total} 字节。");
+        }
     }
 
     private static string FormatUpdateError(Exception ex)
@@ -586,9 +710,7 @@ internal sealed class UpdateService
             return "GitHub 暂时拒绝了更新请求。请稍后再试，或点击发布页手动下载更新包。";
         }
 
-        return ex.InnerException is HttpRequestException { StatusCode: HttpStatusCode.NotFound }
-            ? ex.Message
-            : ex.Message;
+        return ex.Message;
     }
 
     /// <summary>
@@ -596,13 +718,11 @@ internal sealed class UpdateService
     /// </summary>
     /// <param name="tag">Release tag，例如 <c>v1.0.10</c>。</param>
     /// <param name="assetName">Release 资产文件名。</param>
-    /// <param name="fallback">tag 缺失时使用的 latest 下载地址。</param>
-    /// <returns>优先指向指定 tag 的下载 URL。</returns>
-    private static string BuildVersionedAssetDownloadUrl(string tag, string assetName, string fallback)
+    /// <returns>指向指定 tag 的下载 URL。</returns>
+    private static string BuildVersionedAssetDownloadUrl(string tag, string assetName)
     {
-        return string.IsNullOrWhiteSpace(tag)
-            ? fallback
-            : $"{RepoWeb}/releases/download/{Uri.EscapeDataString(tag)}/{Uri.EscapeDataString(assetName)}";
+        if (string.IsNullOrWhiteSpace(tag)) throw new ArgumentException("Release tag is required.", nameof(tag));
+        return $"{RepoWeb}/releases/download/{Uri.EscapeDataString(tag)}/{Uri.EscapeDataString(assetName)}";
     }
 
     /// <summary>
@@ -636,6 +756,45 @@ internal sealed class UpdateService
         }
     }
 
+    private static void PromoteDownloadDirectory(string pendingRoot, string versionRoot)
+    {
+        var backupRoot = $"{versionRoot}.{Guid.NewGuid():N}.old";
+        var movedExisting = false;
+        if (Directory.Exists(versionRoot))
+        {
+            Directory.Move(versionRoot, backupRoot);
+            movedExisting = true;
+        }
+
+        try
+        {
+            Directory.Move(pendingRoot, versionRoot);
+        }
+        catch
+        {
+            if (movedExisting && !Directory.Exists(versionRoot) && Directory.Exists(backupRoot))
+            {
+                Directory.Move(backupRoot, versionRoot);
+            }
+            throw;
+        }
+
+        if (movedExisting) TryDeleteDirectory(backupRoot);
+    }
+
+    private static void TryDeleteDirectory(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return;
+        try
+        {
+            if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
+        }
+        catch
+        {
+            // Stale temporary directories do not invalidate a fully verified staged package.
+        }
+    }
+
     /// <summary>
     /// 校验暂存插件目录是否包含自动更新所需的最小文件集合。
     /// </summary>
@@ -663,17 +822,12 @@ internal sealed class UpdateService
         return Path.GetFullPath(directory);
     }
 
-    private static string ResolveUpdaterSource(string pluginDirectory, string stagedDirectory)
+    private static string ResolveUpdaterSource(string stagedDirectory)
     {
-        var candidates = new[]
-        {
-            Path.Combine(pluginDirectory, RequiredWindowsUpdater),
-            Path.Combine(stagedDirectory, RequiredWindowsUpdater),
-            Path.Combine(stagedDirectory, "mystia-steward-companion-updater"),
-        };
-
-        return candidates.FirstOrDefault(File.Exists)
-            ?? throw new InvalidOperationException("未找到 updater 可执行程序。");
+        var updaterPath = Path.Combine(stagedDirectory, RequiredWindowsUpdater);
+        return File.Exists(updaterPath)
+            ? updaterPath
+            : throw new InvalidOperationException("已校验的暂存包缺少 updater 可执行程序。");
     }
 
     private static string ComputeSha256(string path)
@@ -710,8 +864,7 @@ internal sealed class UpdateService
 
     private void SaveState()
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(_statePath)!);
-        File.WriteAllText(_statePath, JsonSerializer.Serialize(_state, JsonOptions));
+        AtomicFile.WriteAllText(_statePath, JsonSerializer.Serialize(_state, JsonOptions));
     }
 
     private void RefreshInstallStatus()
@@ -721,6 +874,7 @@ internal sealed class UpdateService
             if (!File.Exists(_installStatusPath)) return;
             var status = JsonSerializer.Deserialize<UpdateInstallStatus>(File.ReadAllText(_installStatusPath), JsonOptions);
             if (status == null || string.IsNullOrWhiteSpace(status.State)) return;
+            var previousState = JsonSerializer.Serialize(_state, JsonOptions);
             _state.InstallState = status.State;
             _state.InstallMessage = status.Message;
             if (string.Equals(status.State, "succeeded", StringComparison.OrdinalIgnoreCase))
@@ -759,14 +913,18 @@ internal sealed class UpdateService
                 _state.InstallState = "failed";
                 _state.InstallMessage = "更新程序已退出但安装未完成，请重新打开安装程序。";
                 _state.Error = _state.InstallMessage;
-                File.WriteAllText(_installStatusPath, JsonSerializer.Serialize(new UpdateInstallStatus
+                AtomicFile.WriteAllText(_installStatusPath, JsonSerializer.Serialize(new UpdateInstallStatus
                 {
                     State = _state.InstallState,
                     Message = _state.InstallMessage,
                     Progress = status.Progress,
                 }, JsonOptions));
             }
-            SaveState();
+
+            if (!string.Equals(previousState, JsonSerializer.Serialize(_state, JsonOptions), StringComparison.Ordinal))
+            {
+                SaveState();
+            }
         }
         catch (Exception ex)
         {
@@ -842,6 +1000,14 @@ internal sealed class UpdateService
         }
     }
 
+    private UpdateStatus BusyStatus()
+    {
+        lock (_lock)
+        {
+            return BuildStatus("另一项更新操作正在进行，请等待完成后重试。");
+        }
+    }
+
     private UpdateStatus BuildStatus(string? error)
     {
         var hasUpdate = HasAvailableUpdate(_state);
@@ -863,18 +1029,53 @@ internal sealed class UpdateService
             PackageSize = _state.PackageSize,
             DownloadedVersion = _state.DownloadedVersion,
             DownloadedAtUtc = _state.DownloadedAtUtc?.ToString("O") ?? "",
-            Staged = !string.IsNullOrWhiteSpace(_state.StagedDirectory) && Directory.Exists(_state.StagedDirectory),
+            Staged = HasInstallableStagedUpdate(_state),
             InstallState = _state.InstallState,
             InstallMessage = _state.InstallMessage,
             Error = error ?? _state.Error,
         };
     }
 
-    private static bool HasAvailableUpdate(UpdateState state)
+    internal static bool HasAvailableUpdate(UpdateState state)
     {
-        return CompareVersion(state.LatestVersion, MystiaStewardCompanionPlugin.PluginVersion) > 0
-            && !string.IsNullOrWhiteSpace(state.PackageDownloadUrl)
-            && !string.IsNullOrWhiteSpace(state.PackageSha256);
+        if (CompareVersion(state.LatestVersion, MystiaStewardCompanionPlugin.PluginVersion) <= 0
+            || string.IsNullOrWhiteSpace(state.PackageDownloadUrl)
+            || !SemanticVersion.TryParse(state.LatestVersion, out var version))
+        {
+            return false;
+        }
+
+        try
+        {
+            ValidateManifest(new UpdateManifest
+            {
+                SchemaVersion = SupportedManifestSchemaVersion,
+                Version = state.LatestVersion,
+                Tag = state.LatestTag,
+                Channel = version.IsPrerelease ? "preview" : "stable",
+                PackageAsset = state.PackageAsset,
+                PackageSha256 = state.PackageSha256,
+                PackageSize = state.PackageSize,
+            });
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    private static bool HasInstallableStagedUpdate(UpdateState state)
+    {
+        return CompareVersion(state.DownloadedVersion, MystiaStewardCompanionPlugin.PluginVersion) > 0
+            && !string.IsNullOrWhiteSpace(state.StagedDirectory)
+            && Directory.Exists(state.StagedDirectory);
+    }
+
+    private static bool IsActiveInstall(UpdateState state)
+    {
+        return IsInstallInProgress(state.InstallState)
+            && IsUpdaterProcessRunning(state.InstallProcessId);
     }
 
     private static string ResolveUpdatesRoot()
@@ -940,17 +1141,14 @@ internal sealed class UpdateState
     public DateTime? CheckedAtUtc { get; set; }
     public string LatestVersion { get; set; } = "";
     public string LatestTag { get; set; } = "";
-    public string Channel { get; set; } = "";
     public string ReleaseUrl { get; set; } = "";
     public DateTime? PublishedAtUtc { get; set; }
     public string PackageAsset { get; set; } = "";
     public string PackageSha256 { get; set; } = "";
     public long PackageSize { get; set; }
     public string PackageDownloadUrl { get; set; } = "";
-    public string ManifestDownloadUrl { get; set; } = "";
     public string DownloadedVersion { get; set; } = "";
     public DateTime? DownloadedAtUtc { get; set; }
-    public string PackagePath { get; set; } = "";
     public string StagedDirectory { get; set; } = "";
     public string InstallState { get; set; } = "";
     public string InstallMessage { get; set; } = "";
@@ -965,17 +1163,14 @@ internal sealed class UpdateState
             CheckedAtUtc = CheckedAtUtc,
             LatestVersion = LatestVersion,
             LatestTag = LatestTag,
-            Channel = Channel,
             ReleaseUrl = ReleaseUrl,
             PublishedAtUtc = PublishedAtUtc,
             PackageAsset = PackageAsset,
             PackageSha256 = PackageSha256,
             PackageSize = PackageSize,
             PackageDownloadUrl = PackageDownloadUrl,
-            ManifestDownloadUrl = ManifestDownloadUrl,
             DownloadedVersion = DownloadedVersion,
             DownloadedAtUtc = DownloadedAtUtc,
-            PackagePath = PackagePath,
             StagedDirectory = StagedDirectory,
             InstallState = InstallState,
             InstallMessage = InstallMessage,
@@ -1003,9 +1198,7 @@ internal sealed class UpdateCandidate
     public UpdateManifest Manifest { get; init; } = new();
     public string ReleaseUrl { get; init; } = "";
     public DateTime? PublishedAtUtc { get; init; }
-    public long PackageSize { get; init; }
     public string PackageDownloadUrl { get; init; } = "";
-    public string ManifestDownloadUrl { get; init; } = "";
 }
 
 internal sealed class UpdateInstallStatus
@@ -1041,8 +1234,9 @@ internal sealed class SemanticVersion : IComparable<SemanticVersion>
     public int Major { get; }
     public int Minor { get; }
     public int Patch { get; }
+    public bool IsPrerelease => _prerelease.Count > 0;
 
-    public static bool TryParse(string value, out SemanticVersion version)
+    public static bool TryParse(string? value, out SemanticVersion version)
     {
         version = null!;
         if (string.IsNullOrWhiteSpace(value)) return false;
@@ -1115,13 +1309,5 @@ internal readonly struct PrereleaseIdentifier : IComparable<PrereleaseIdentifier
         if (Number.HasValue) return -1;
         if (other.Number.HasValue) return 1;
         return string.Compare(Text, other.Text, StringComparison.Ordinal);
-    }
-}
-
-internal sealed class UpdateManifestMissingException : Exception
-{
-    public UpdateManifestMissingException(string message, Exception innerException)
-        : base(message, innerException)
-    {
     }
 }

@@ -99,6 +99,11 @@ internal static class RuntimeCookerHighlightService
 
     private static void ScanAndApply(int targetCookerTypeId)
     {
+        lock (SyncRoot)
+        {
+            _nextScanAt = Time.realtimeSinceStartup + ScanIntervalSeconds;
+        }
+
         var renderers = new List<SpriteRenderer>();
         var controllerCount = 0;
         var matchedControllerCount = 0;
@@ -136,7 +141,6 @@ internal static class RuntimeCookerHighlightService
 
         lock (SyncRoot)
         {
-            _nextScanAt = Time.realtimeSinceStartup + ScanIntervalSeconds;
             if (!string.IsNullOrWhiteSpace(error))
             {
                 _status = $"error: {error}";
@@ -444,11 +448,6 @@ internal static class RuntimeCookerHighlightService
         }
 
         return null;
-    }
-
-    private static object? NormalizeDictionaryItem(object item)
-    {
-        return ReadMember(item, "Value") ?? ReadMember(item, "value");
     }
 
     private static IEnumerable<string> BuildFieldNameCandidates(string name)

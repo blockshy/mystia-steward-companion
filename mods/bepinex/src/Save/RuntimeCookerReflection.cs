@@ -75,28 +75,6 @@ internal static class RuntimeCookerReflection
         return CookerTypeNames.TryGetValue(typeId, out var name) ? name : $"#{typeId}";
     }
 
-    public static string ReadCookerName(object? cooker)
-    {
-        if (cooker == null) return "";
-        return RuntimeReflectionUtility.InvokeMethod(cooker, "get_Name")?.ToString()
-            ?? RuntimeReflectionUtility.InvokeMethod(cooker, "get_name")?.ToString()
-            ?? RuntimeReflectionUtility.GetMemberValue(cooker, "Name")?.ToString()
-            ?? RuntimeReflectionUtility.GetMemberValue(cooker, "name")?.ToString()
-            ?? "";
-    }
-
-    public static string NormalizeCookerName(string value)
-    {
-        return value.Trim() switch
-        {
-            "烤架" => "烧烤架",
-            "烧烤台" => "烧烤架",
-            "锅" => "煮锅",
-            "炸锅" => "油锅",
-            var normalized => normalized,
-        };
-    }
-
     public static IReadOnlyList<object> ReadCookerControllersFromCookSystem(object? cookSystem, out string status)
     {
         var result = new List<object>();

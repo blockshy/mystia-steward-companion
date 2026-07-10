@@ -188,7 +188,11 @@ internal static partial class RuntimeOrderPreparationService
     {
         if (value == null) yield break;
         if (value is string) yield break;
-        foreach (var item in EnumerateManaged(value).Concat(EnumerateByIndexer(value)))
+
+        var items = HasIl2CppEnumerator(value)
+            ? EnumerateIl2Cpp(value)
+            : EnumerateManaged(value).Concat(EnumerateByIndexer(value));
+        foreach (var item in items)
         {
             yield return ToInt(item);
         }
@@ -282,24 +286,37 @@ internal static partial class RuntimeOrderPreparationService
         }
     }
 
-    private static IEnumerable<object?> FindUnityObjects(Type type)
+    private static bool HasIl2CppEnumerator(object value)
     {
-        var method = typeof(UnityEngine.Object).GetMethod("FindObjectsOfType", new[] { typeof(Type) });
-        if (method == null) yield break;
+        return LooksLikeIl2CppObject(value)
+            && value.GetType()
+                .GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                .Any(method => method.Name == "GetEnumerator" && method.GetParameters().Length == 0);
+    }
 
-        object? objects;
+    private static IEnumerable<object?> EnumerateIl2Cpp(object value)
+    {
+        var enumerator = InvokeInstance(value, "GetEnumerator", Array.Empty<object?>())
+            ?? throw new InvalidOperationException($"{value.GetType().FullName}.GetEnumerator returned null.");
         try
         {
-            objects = method.Invoke(null, new object[] { type });
-        }
-        catch
-        {
-            yield break;
-        }
+            for (var index = 0; index < 256; index++)
+            {
+                var moved = InvokeInstance(enumerator, "MoveNext", Array.Empty<object?>());
+                if (moved is not bool hasNext)
+                {
+                    throw new InvalidOperationException($"{enumerator.GetType().FullName}.MoveNext returned a non-Boolean result.");
+                }
 
-        foreach (var item in ReadObjectEnumerable(objects))
+                if (!hasNext) yield break;
+                yield return InvokeInstance(enumerator, "get_Current", Array.Empty<object?>());
+            }
+
+            throw new InvalidOperationException("IL2CPP collection exceeded the 256-item automation limit.");
+        }
+        finally
         {
-            yield return item;
+            TryInvokeInstance(enumerator, "Dispose", Array.Empty<object?>());
         }
     }
 

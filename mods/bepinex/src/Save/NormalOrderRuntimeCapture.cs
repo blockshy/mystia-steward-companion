@@ -106,7 +106,14 @@ public static class NormalOrderRuntimeCapture
         var now = DateTime.UtcNow;
         lock (SyncRoot)
         {
-            Orders.RemoveAll(order => now - order.CapturedAt > maxAge);
+            var removed = Orders.RemoveAll(order => now - order.CapturedAt > maxAge);
+            if (removed > 0)
+            {
+                _changeVersion++;
+                _lastCapture = $"expired: count={removed}";
+                _status = BuildStatusLocked();
+            }
+
             return Orders
                 .OrderBy(order => order.FirstCapturedAt)
                 .ThenBy(order => order.CapturedAt)
@@ -355,11 +362,12 @@ public static class NormalOrderRuntimeCapture
             _capturedOrders++;
             _lastCapture = $"{next.CaptureSource}: desk={next.DeskCode + 1}, food={next.FoodId}, beverage={next.BeverageId}, obj={(next.OrderObject == null ? "no" : "yes")}/{(next.ControllerObject == null ? "no" : "yes")}";
             _changeVersion++;
-            _status = BuildStatusLocked();
             if (Orders.Count > MaxOrders)
             {
                 Orders.RemoveRange(0, Orders.Count - MaxOrders);
             }
+
+            _status = BuildStatusLocked();
         }
     }
 

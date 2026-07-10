@@ -6,7 +6,7 @@ import {
   downloadUpdate,
   installUpdateOnExit,
   readLocalApiConnectionConfig,
-  readUpdateStatus,
+  refreshUpdateStatus,
   regenerateLocalApiToken,
   writeLocalApiConnectionConfig,
 } from '@/companion/api';
@@ -221,22 +221,18 @@ export function ModSettingsPanel({
     }
   }, [connectionBusy]);
 
-  const refreshUpdateStatus = useCallback(async () => {
+  const refreshDisplayedUpdateStatus = useCallback(async () => {
     if (!apiToken) {
       setUpdateStatus(null);
       return;
     }
 
-    const abortController = new AbortController();
-    const timeoutId = window.setTimeout(() => abortController.abort(), 2800);
     try {
-      const status = await readUpdateStatus(endpoint, apiToken, abortController.signal);
+      const status = await refreshUpdateStatus(endpoint, apiToken);
       setUpdateStatus(status);
       setUpdateError('');
     } catch (err) {
       setUpdateError(err instanceof Error ? err.message : String(err));
-    } finally {
-      window.clearTimeout(timeoutId);
     }
   }, [apiToken, endpoint]);
 
@@ -269,8 +265,8 @@ export function ModSettingsPanel({
   }, [updateStatus?.releaseUrl]);
 
   useEffect(() => {
-    refreshUpdateStatus();
-  }, [refreshUpdateStatus]);
+    refreshDisplayedUpdateStatus();
+  }, [refreshDisplayedUpdateStatus]);
 
   useEffect(() => {
     if (settingsTab !== 'connection') return;
@@ -287,14 +283,14 @@ export function ModSettingsPanel({
   const connectionDraftDirty = connectionConfig
     ? connectionLanEnabled !== connectionConfig.lanEnabled || hostDraftDirty
     : false;
-  const lanEndpointText = connectionBusy === 'apply' && connectionLanEnabled
+  const lanEndpoints = connectionConfig?.lanEndpoints ?? [];
+  const lanEndpointStatus = connectionBusy === 'apply' && connectionLanEnabled
     ? '应用中'
     : hostDraftDirty
       ? '应用后刷新'
-      : connectionConfig?.lanEndpoints.length
-        ? connectionConfig.lanEndpoints.join(' / ')
+      : lanEndpoints.length > 0
+        ? `${lanEndpoints.length} 个可用地址`
         : '未生成';
-  const firstLanEndpoint = connectionConfig?.lanEndpoints[0] ?? '';
   const lanStatusLabel = !connectionConfig
     ? '未读取'
     : connectionBusy === 'apply' && connectionDraftDirty
@@ -417,7 +413,7 @@ export function ModSettingsPanel({
               <InfoLine label="本机地址" value={connectionConfig?.localEndpoint || endpoint} mono />
               <InfoLine label="端口" value={String(connectionConfig?.port ?? 32145)} />
               <InfoLine label="LAN 状态" value={lanStatusLabel} />
-              <InfoLine label="LAN 地址" value={lanEndpointText} mono />
+              <InfoLine label="LAN 地址" value={lanEndpointStatus} />
             </div>
 
             <SwitchControl
@@ -438,7 +434,51 @@ export function ModSettingsPanel({
               />
             </label>
             <div className="text-xs text-muted-foreground">
-              开关会立即应用；修改监听地址后点击应用。`auto` 会监听 A 设备检测到的私网 IPv4，本机地址始终保留。
+              开关会立即应用；修改监听地址后点击应用。`auto` 会监听活动网卡的私网 IPv4，也可填写其中一个明确地址；本机地址始终保留。
+            </div>
+
+            <div className="grid gap-1.5">
+              <div className="text-xs text-muted-foreground">局域网连接地址</div>
+              {lanEndpoints.length > 0 && !hostDraftDirty ? (
+                <div className="divide-y divide-border/50 border-y border-border/50">
+                  {lanEndpoints.map((lanEndpoint) => (
+                    <div
+                      key={`${lanEndpoint.address}-${lanEndpoint.interfaceName}`}
+                      className="flex min-w-0 items-center gap-3 py-2"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+                          <code className="min-w-0 break-all text-xs font-medium text-foreground">
+                            {lanEndpoint.endpoint}
+                          </code>
+                          {lanEndpoint.recommended && (
+                            <span className="shrink-0 text-xs font-semibold text-primary">推荐</span>
+                          )}
+                        </div>
+                        <div className="mt-0.5 text-xs text-muted-foreground">
+                          {formatLanEndpointDetail(lanEndpoint)}
+                        </div>
+                      </div>
+                      <Button
+                        type="button"
+                        size="icon-sm"
+                        variant="ghost"
+                        className="shrink-0"
+                        aria-label={`复制 ${lanEndpoint.endpoint}`}
+                        title="复制此地址"
+                        disabled={Boolean(connectionBusy)}
+                        onClick={() => void copyConnectionText(lanEndpoint.endpoint, '无法复制 LAN 地址。')}
+                      >
+                        <IconCopy size={14} />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="border-y border-border/50 py-2 text-xs text-muted-foreground">
+                  {hostDraftDirty ? '应用监听地址后生成连接地址。' : '开启局域网连接后生成可用地址。'}
+                </div>
+              )}
             </div>
 
             <label className="grid gap-1 text-sm">
@@ -471,16 +511,6 @@ export function ModSettingsPanel({
                 onClick={applyConnectionConfig}
               >
                 应用
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                leftSection={<IconCopy size={14} />}
-                disabled={!firstLanEndpoint || Boolean(connectionBusy)}
-                onClick={() => void copyConnectionText(firstLanEndpoint, '无法复制 LAN 地址。')}
-              >
-                复制 LAN 地址
               </Button>
               <Button
                 type="button"
@@ -898,16 +928,41 @@ function clampWeight(value: number): number {
 
 function normalizeLanHostDraft(value: string): string {
   const normalized = value.trim().toLowerCase();
-  if (!normalized || normalized === '0.0.0.0' || normalized === '127.0.0.1' || normalized === 'localhost') {
-    return 'auto';
-  }
-  return normalized;
+  return normalized || 'auto';
 }
 
 function maskToken(value: string): string {
   if (!value) return '';
   if (value.length <= 8) return '*'.repeat(value.length);
   return `${value.slice(0, 4)}${'*'.repeat(Math.max(8, value.length - 8))}${value.slice(-4)}`;
+}
+
+function formatLanEndpointDetail(endpoint: LocalApiConnectionConfig['lanEndpoints'][number]): string {
+  const interfaceType = formatLanInterfaceType(endpoint.interfaceType);
+  const interfaceLabel = endpoint.interfaceName || interfaceType || '未知网络接口';
+  const details = [interfaceLabel];
+  if (endpoint.interfaceName && interfaceType && endpoint.interfaceName !== interfaceType) details.push(interfaceType);
+  if (endpoint.hasGateway) details.push('默认网关');
+  if (endpoint.linkLocal) details.push('链路本地');
+  return details.join(' · ');
+}
+
+function formatLanInterfaceType(value: string): string {
+  switch (value.trim().toLowerCase()) {
+    case 'wireless80211':
+      return '无线网卡';
+    case 'ethernet':
+    case 'fastethernett':
+    case 'fastethernetfx':
+    case 'gigabitethernet':
+      return '以太网';
+    case 'tunnel':
+      return '隧道';
+    case 'ppp':
+      return 'PPP / VPN';
+    default:
+      return value;
+  }
 }
 
 function formatUpdateState(status: UpdateStatusResponse | null): string {

@@ -1,4 +1,3 @@
-using System.Text;
 using System.Text.Json;
 using BepInEx;
 using BepInEx.Logging;
@@ -16,7 +15,6 @@ internal sealed class CustomRecipeStore
     private readonly string _path;
     private readonly FavoriteStore _favoriteStore;
     private readonly ManualLogSource _log;
-    private bool _migrationChecked;
 
     public CustomRecipeStore(string path, FavoriteStore favoriteStore, ManualLogSource log)
     {
@@ -34,8 +32,7 @@ internal sealed class CustomRecipeStore
     {
         lock (_lock)
         {
-            var data = LoadWithMigration();
-            Save(data);
+            var data = Load();
             return JsonSerializer.Serialize(data, JsonOptions);
         }
     }
@@ -44,7 +41,7 @@ internal sealed class CustomRecipeStore
     {
         lock (_lock)
         {
-            var data = LoadWithMigration();
+            var data = Load();
             var now = DateTime.UtcNow;
             var normalizedExtras = NormalizeIds(mutation.ExtraIngredientIds);
             var existing = string.IsNullOrWhiteSpace(mutation.Id)
@@ -95,7 +92,7 @@ internal sealed class CustomRecipeStore
     {
         lock (_lock)
         {
-            var data = LoadWithMigration();
+            var data = Load();
             data.Recipes.RemoveAll(entry => string.Equals(entry.Id, id, StringComparison.Ordinal));
             NormalizeData(data);
             Save(data);
@@ -107,7 +104,7 @@ internal sealed class CustomRecipeStore
     {
         lock (_lock)
         {
-            var data = LoadWithMigration();
+            var data = Load();
             var entry = data.Recipes.FirstOrDefault(item => string.Equals(item.Id, id, StringComparison.Ordinal));
             if (entry != null)
             {
@@ -125,7 +122,7 @@ internal sealed class CustomRecipeStore
     {
         lock (_lock)
         {
-            var data = LoadWithMigration();
+            var data = Load();
             var ordered = data.Recipes
                 .OrderBy(entry => entry.SortOrder)
                 .ThenBy(entry => entry.CreatedAtUtc)
@@ -152,90 +149,88 @@ internal sealed class CustomRecipeStore
         }
     }
 
-    private CustomRecipeData LoadWithMigration()
+    public int MigrateManualRecipeFavorites()
     {
-        var data = Load();
-        if (_migrationChecked) return data;
-
-        _migrationChecked = true;
-        var migrated = _favoriteStore.ExtractManualRecipeFavorites();
-        if (migrated.Count == 0) return data;
-
-        var now = DateTime.UtcNow;
-        var existingKeys = new HashSet<string>(
-            data.Recipes.Select(entry => BuildRecipeKey(entry.CustomerId, entry.FoodTag, entry.FoodId, entry.ExtraIngredientIds)),
-            StringComparer.Ordinal);
-        var nextSortOrder = NextSortOrder(data);
-
-        foreach (var favorite in migrated)
+        lock (_lock)
         {
-            var key = BuildRecipeKey(favorite.CustomerId, favorite.FoodTag, favorite.RecipeId, favorite.ExtraIngredientIds);
-            if (existingKeys.Contains(key)) continue;
-            existingKeys.Add(key);
-            data.Recipes.Add(new CustomRecipeEntry
-            {
-                Id = Guid.NewGuid().ToString("N"),
-                CustomerId = favorite.CustomerId,
-                CustomerName = favorite.CustomerName,
-                FoodTag = NormalizeOptionalTag(favorite.FoodTag),
-                FoodId = favorite.RecipeId,
-                RecipeId = -1,
-                RecipeName = "",
-                ExtraIngredientIds = NormalizeIds(favorite.ExtraIngredientIds),
-                Enabled = true,
-                PinToTop = true,
-                SortOrder = nextSortOrder,
-                CreatedAtUtc = favorite.CreatedAtUtc == default ? now : favorite.CreatedAtUtc,
-                UpdatedAtUtc = now,
-            });
-            nextSortOrder += 100;
-        }
+            var migrated = _favoriteStore.ReadManualRecipeFavorites();
+            if (migrated.Count == 0) return 0;
 
-        NormalizeData(data);
-        Save(data);
-        _log.LogInfo($"Migrated {migrated.Count} manual recipe favorites to custom-recipes.json.");
-        return data;
+            var data = Load();
+            var now = DateTime.UtcNow;
+            var existingKeys = new HashSet<string>(
+                data.Recipes.Select(entry => BuildRecipeKey(entry.CustomerId, entry.FoodTag, entry.FoodId, entry.ExtraIngredientIds)),
+                StringComparer.Ordinal);
+            var nextSortOrder = NextSortOrder(data);
+            var addedCount = 0;
+
+            foreach (var favorite in migrated)
+            {
+                var key = BuildRecipeKey(favorite.CustomerId, favorite.FoodTag, favorite.RecipeId, favorite.ExtraIngredientIds);
+                if (!existingKeys.Add(key)) continue;
+
+                data.Recipes.Add(new CustomRecipeEntry
+                {
+                    Id = Guid.NewGuid().ToString("N"),
+                    CustomerId = favorite.CustomerId,
+                    CustomerName = favorite.CustomerName,
+                    FoodTag = NormalizeOptionalTag(favorite.FoodTag),
+                    FoodId = favorite.RecipeId,
+                    RecipeId = -1,
+                    RecipeName = "",
+                    ExtraIngredientIds = NormalizeIds(favorite.ExtraIngredientIds),
+                    Enabled = true,
+                    PinToTop = true,
+                    SortOrder = nextSortOrder,
+                    CreatedAtUtc = favorite.CreatedAtUtc == default ? now : favorite.CreatedAtUtc,
+                    UpdatedAtUtc = now,
+                });
+                nextSortOrder += 100;
+                addedCount++;
+            }
+
+            if (addedCount > 0)
+            {
+                NormalizeData(data);
+                Save(data);
+            }
+
+            // Cross-file transaction order is intentional: persist the destination before deleting
+            // legacy entries. A retry after interruption recognizes the destination keys and resumes here.
+            _favoriteStore.RemoveManualRecipeFavorites();
+            _log.LogInfo($"Migrated {migrated.Count} manual recipe favorites to custom-recipes.json ({addedCount} added).");
+            return addedCount;
+        }
     }
 
     private CustomRecipeData Load()
     {
         try
         {
-            if (!File.Exists(_path)) return new CustomRecipeData();
-            var json = File.ReadAllText(_path, Encoding.UTF8);
-            var data = JsonSerializer.Deserialize<CustomRecipeData>(json, JsonOptions) ?? new CustomRecipeData();
+            var data = JsonFileStore.LoadOrCreate<CustomRecipeData>(_path, JsonOptions);
             NormalizeData(data);
             return data;
         }
         catch (Exception ex)
         {
-            _log.LogWarning($"Failed to load custom recipes: {ex.Message}");
-            return new CustomRecipeData();
+            _log.LogError($"Failed to load custom recipes from '{_path}': {ex.Message}");
+            throw new InvalidDataException("The custom recipes file could not be read. The original file was not changed.", ex);
         }
     }
 
     private void Save(CustomRecipeData data)
     {
-        var directory = Path.GetDirectoryName(_path);
-        if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
-
         data.Version = 1;
-        var json = JsonSerializer.Serialize(data, JsonOptions);
-        var tempPath = $"{_path}.tmp";
-        File.WriteAllText(tempPath, json, new UTF8Encoding(false));
-        if (File.Exists(_path))
-        {
-            File.Replace(tempPath, _path, null);
-        }
-        else
-        {
-            File.Move(tempPath, _path);
-        }
+        JsonFileStore.Save(_path, data, JsonOptions);
     }
 
     private static void NormalizeData(CustomRecipeData data)
     {
-        data.Version = Math.Max(1, data.Version);
+        if (data.Version != 1)
+        {
+            throw new InvalidDataException($"Unsupported custom recipe schema version: {data.Version}.");
+        }
+
         data.Recipes ??= new List<CustomRecipeEntry>();
         var nextSortOrder = 100;
         foreach (var entry in data.Recipes.OrderBy(entry => entry.SortOrder).ThenBy(entry => entry.CreatedAtUtc))
@@ -256,14 +251,12 @@ internal sealed class CustomRecipeStore
 
     private static string BuildMutationJson(bool ok, CustomRecipeData data, string? error)
     {
-        var customRecipesJson = JsonSerializer.Serialize(data, JsonOptions);
-        return "{\"ok\":"
-            + (ok ? "true" : "false")
-            + ",\"customRecipes\":"
-            + customRecipesJson
-            + ",\"error\":"
-            + (string.IsNullOrWhiteSpace(error) ? "null" : $"\"{EscapeJson(error)}\"")
-            + "}";
+        return JsonSerializer.Serialize(new LocalApiCustomRecipeMutationDto
+        {
+            Ok = ok,
+            CustomRecipes = data,
+            Error = string.IsNullOrWhiteSpace(error) ? null : error,
+        }, JsonOptions);
     }
 
     private static string BuildRecipeKey(int customerId, string? foodTag, int foodId, IEnumerable<int> extraIngredientIds)
@@ -286,15 +279,6 @@ internal sealed class CustomRecipeStore
             .ToList();
     }
 
-    private static string EscapeJson(string value)
-    {
-        return value
-            .Replace("\\", "\\\\", StringComparison.Ordinal)
-            .Replace("\r", "\\r", StringComparison.Ordinal)
-            .Replace("\n", "\\n", StringComparison.Ordinal)
-            .Replace("\t", "\\t", StringComparison.Ordinal)
-            .Replace("\"", "\\\"", StringComparison.Ordinal);
-    }
 }
 
 internal sealed class CustomRecipeMutation
@@ -316,6 +300,13 @@ internal sealed class CustomRecipeData
 {
     public int Version { get; set; } = 1;
     public List<CustomRecipeEntry> Recipes { get; set; } = new();
+}
+
+internal sealed class LocalApiCustomRecipeMutationDto
+{
+    public bool Ok { get; init; }
+    public CustomRecipeData CustomRecipes { get; init; } = new();
+    public string? Error { get; init; }
 }
 
 internal sealed class CustomRecipeEntry

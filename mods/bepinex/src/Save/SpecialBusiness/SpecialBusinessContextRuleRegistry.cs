@@ -60,16 +60,6 @@ internal static class SpecialBusinessContextRuleRegistry
             "不改变自动化策略。建议只在确认标准订单可处理时启用。");
     }
 
-    private static SpecialBusinessContextRule Boss(string displayName, string summary)
-    {
-        return new SpecialBusinessContextRule(
-            displayName,
-            "boss",
-            summary,
-            "P3 捕获到阶段信息时，推荐会偏向高等级料理与酒水；其他阶段不改变排序。",
-            "不改变自动化策略。建议只在确认标准订单可处理时启用。");
-    }
-
     private static SpecialBusinessContextRule StoryYuyukoChallenge()
     {
         return new SpecialBusinessContextRule(

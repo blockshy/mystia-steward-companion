@@ -8,6 +8,14 @@ internal static class RuntimeStaticDataDiagnosticFormatter
     private static readonly object SyncRoot = new();
     private static readonly Dictionary<string, string> LastSignatureBySection = new(StringComparer.OrdinalIgnoreCase);
 
+    public static void Reset()
+    {
+        lock (SyncRoot)
+        {
+            LastSignatureBySection.Clear();
+        }
+    }
+
     public static AggregateLogSection? FormatMappedSpecialGuests(RuntimeMappedGuestCatalogSnapshot snapshot)
     {
         var signature = BuildSignature(snapshot);

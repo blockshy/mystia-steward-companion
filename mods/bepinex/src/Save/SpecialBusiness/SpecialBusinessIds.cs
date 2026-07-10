@@ -10,6 +10,7 @@ internal static class SpecialBusinessChallengeTypes
 
 internal static class SpecialBusinessOrderRoles
 {
+    public const string YuumaBoss = "yuuma-boss-order";
     public const string WackyGhost = "wacky-ghost-order";
     public const string WackyKoishiBoss = "wacky-koishi-boss";
     public const string WackyTarget = "wacky-target-order";

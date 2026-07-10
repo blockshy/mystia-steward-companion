@@ -62,6 +62,7 @@ internal sealed class NightBusinessReflectionProvider
         _performanceMs.Clear();
         var guests = new List<NightBusinessGuest>();
         var orders = new List<NightBusinessOrder>();
+        var reflectionOrders = new List<NightBusinessOrder>();
         var errors = new List<string>();
         var sourceStats = new List<string>();
         _candidateDiagnostics = _diagnosticsEnabled ? new List<NightBusinessCandidateDiagnostic>() : null;
@@ -88,7 +89,7 @@ internal sealed class NightBusinessReflectionProvider
             errors.Add($"runtime capture: {ex.Message}");
         }
 
-        var preferRuntimeCapturedOrders = !_diagnosticsEnabled && runtimeOrders.Count > 0;
+        var preferRuntimeCapturedOrders = runtimeOrders.Count > 0;
         sourceStats.Add(preferRuntimeCapturedOrders ? "OrderReadMode=RuntimeCapture" : "OrderReadMode=Reflection");
 
         try
@@ -96,9 +97,9 @@ internal sealed class NightBusinessReflectionProvider
             var servePanelContexts = Measure("rare.servePanel.contexts", () => ReadServePanelContexts().ToList());
             sourceStats.Add($"ServePanel={servePanelContexts.Count}");
             guests.AddRange(Measure("rare.servePanel.guests", () => ReadServePanelRareGuests(servePanelContexts).ToList()));
-            if (!preferRuntimeCapturedOrders)
+            if (_diagnosticsEnabled || !preferRuntimeCapturedOrders)
             {
-                orders.AddRange(Measure("rare.servePanel.orders", () => ReadServePanelOrders(servePanelContexts).ToList()));
+                reflectionOrders.AddRange(Measure("rare.servePanel.orders", () => ReadServePanelOrders(servePanelContexts).ToList()));
             }
         }
         catch (Exception ex)
@@ -107,13 +108,13 @@ internal sealed class NightBusinessReflectionProvider
             errors.Add($"serve panel: {ex.Message}");
         }
 
-        if (!preferRuntimeCapturedOrders)
+        if (_diagnosticsEnabled || !preferRuntimeCapturedOrders)
         {
             try
             {
                 var orderControllerOrders = Measure("rare.orderController", () => ReadOrderControllerOrders().ToList());
                 sourceStats.Add($"OrderController={orderControllerOrders.Count}");
-                orders.AddRange(orderControllerOrders);
+                reflectionOrders.AddRange(orderControllerOrders);
             }
             catch (Exception ex)
             {
@@ -125,7 +126,7 @@ internal sealed class NightBusinessReflectionProvider
             {
                 var hudOrders = Measure("rare.hud", () => ReadHudOrders().ToList());
                 sourceStats.Add($"HUD={hudOrders.Count}");
-                orders.AddRange(hudOrders);
+                reflectionOrders.AddRange(hudOrders);
             }
             catch (Exception ex)
             {
@@ -144,9 +145,9 @@ internal sealed class NightBusinessReflectionProvider
                 var controllers = Measure($"controllers.{source.Source}", () => ReadManagerControllers(source.MemberName).ToList());
                 sourceStats.Add($"{source.Source}={controllers.Count}");
                 guests.AddRange(Measure($"rare.guests.{source.Source}", () => ReadRareGuests(controllers, source.Source).ToList()));
-                if (!preferRuntimeCapturedOrders)
+                if (_diagnosticsEnabled || !preferRuntimeCapturedOrders)
                 {
-                    orders.AddRange(Measure($"rare.orders.{source.Source}", () => ReadControllerOrders(controllers, source.Source).ToList()));
+                    reflectionOrders.AddRange(Measure($"rare.orders.{source.Source}", () => ReadControllerOrders(controllers, source.Source).ToList()));
                 }
             }
             catch (Exception ex)
@@ -161,9 +162,9 @@ internal sealed class NightBusinessReflectionProvider
             var queuedControllers = Measure("controllers.Queue", () => ReadQueuedControllers().ToList());
             sourceStats.Add($"Queue={queuedControllers.Count}");
             guests.AddRange(Measure("rare.guests.Queue", () => ReadRareGuests(queuedControllers, "Queue").ToList()));
-            if (!preferRuntimeCapturedOrders)
+            if (_diagnosticsEnabled || !preferRuntimeCapturedOrders)
             {
-                orders.AddRange(Measure("rare.orders.Queue", () => ReadControllerOrders(queuedControllers, "Queue").ToList()));
+                reflectionOrders.AddRange(Measure("rare.orders.Queue", () => ReadControllerOrders(queuedControllers, "Queue").ToList()));
             }
         }
         catch (Exception ex)
@@ -173,7 +174,12 @@ internal sealed class NightBusinessReflectionProvider
         }
 
         var activeGuests = Measure("deduplicate.guests", () => DeduplicateGuests(guests));
-        var rawLiveOrders = orders.ToList();
+        if (!preferRuntimeCapturedOrders)
+        {
+            orders.AddRange(reflectionOrders);
+        }
+
+        var rawLiveOrders = reflectionOrders.ToList();
         var acceptedRuntimeOrders = new List<NightBusinessOrder>();
         var reflectionFallbackOrders = new List<NightBusinessOrder>();
         if (runtimeOrders.Count > 0)
@@ -1598,9 +1604,12 @@ internal sealed class NightBusinessReflectionProvider
     private bool TryResolveTagTextFromMap(int tagId, bool useFoodTagMap, out string tagText)
     {
         var key = tagId.ToString();
-        if (useFoodTagMap && _repository.FoodTagIdMap.TryGetValue(key, out var mapped))
+        var tagMap = useFoodTagMap
+            ? _repository.FoodTagIdMap
+            : _repository.BeverageTagIdMap;
+        if (tagMap.TryGetValue(key, out var mapped))
         {
-            tagText = FoodTags.NormalizeName(mapped) ?? mapped;
+            tagText = NormalizeTagText(mapped) ?? mapped;
             return true;
         }
 
@@ -1819,9 +1828,12 @@ internal sealed class NightBusinessReflectionProvider
     {
         if (!string.IsNullOrWhiteSpace(tagText))
         {
-            foreach (var item in _repository.FoodTagIdMap)
+            var tagMap = useFoodTagMap
+                ? _repository.FoodTagIdMap
+                : _repository.BeverageTagIdMap;
+            foreach (var item in tagMap)
             {
-                var mapped = FoodTags.NormalizeName(item.Value) ?? item.Value;
+                var mapped = NormalizeTagText(item.Value) ?? item.Value;
                 if (string.Equals(mapped, tagText, StringComparison.Ordinal) && int.TryParse(item.Key, out var parsed))
                 {
                     return parsed;

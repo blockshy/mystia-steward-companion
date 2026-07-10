@@ -7,7 +7,6 @@ namespace MystiaStewardCompanion.Save;
 
 internal static class RuntimeCookerSnapshotService
 {
-    private const string GuestsManagerTypeName = "NightScene.GuestManagementUtility.GuestsManager";
     private const string IzakayaConfigureTypeName = "GameData.RunTime.NightSceneUtility.IzakayaConfigure";
     private const string RunTimeStorageTypeName = "GameData.RunTime.Common.RunTimeStorage";
 
@@ -37,19 +36,6 @@ internal static class RuntimeCookerSnapshotService
             {
                 state.PlacedCookerTypeIds.Add(typeId);
             }
-        }
-    }
-
-    public static bool HasNightBusinessContext()
-    {
-        try
-        {
-            if (GetSingletonInstance(GuestsManagerTypeName) == null) return false;
-            return ReadConfiguredCookerIds(out _).Any(id => id >= 0);
-        }
-        catch
-        {
-            return false;
         }
     }
 
@@ -333,18 +319,6 @@ internal static class RuntimeCookerSnapshotService
             ?? ReadMember(item, "Value")
             ?? ReadMember(item, "value")
             ?? ReadMember(item, "Item2"));
-    }
-
-    private static bool CanUseParameters(ParameterInfo[] parameters, object?[] args)
-    {
-        if (parameters.Length != args.Length) return false;
-        for (var i = 0; i < parameters.Length; i++)
-        {
-            if (args[i] == null) continue;
-            if (!parameters[i].ParameterType.IsInstanceOfType(args[i])) return false;
-        }
-
-        return true;
     }
 
     private static IEnumerable<object> ReadObjectEnumerable(object? value)

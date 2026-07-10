@@ -12,9 +12,18 @@ internal sealed class LocalApiHealthDto
     public string LocalEndpoint { get; init; } = "";
     public bool LanEnabled { get; init; }
     public bool LanRunning { get; init; }
-    public IReadOnlyList<string> LanBindAddresses { get; init; } = Array.Empty<string>();
-    public IReadOnlyList<string> LanEndpoints { get; init; } = Array.Empty<string>();
     public string? LanError { get; init; }
+}
+
+internal sealed class LocalApiLanEndpointDto
+{
+    public string Address { get; init; } = "";
+    public string Endpoint { get; init; } = "";
+    public string InterfaceName { get; init; } = "";
+    public string InterfaceType { get; init; } = "";
+    public bool HasGateway { get; init; }
+    public bool LinkLocal { get; init; }
+    public bool Recommended { get; init; }
 }
 
 internal sealed class LocalApiErrorDto
@@ -48,8 +57,7 @@ internal sealed class LocalApiConnectionConfigDto
     public string LanBindHost { get; init; } = "auto";
     public int Port { get; init; }
     public string Token { get; init; } = "";
-    public IReadOnlyList<string> LanBindAddresses { get; init; } = Array.Empty<string>();
-    public IReadOnlyList<string> LanEndpoints { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<LocalApiLanEndpointDto> LanEndpoints { get; init; } = Array.Empty<LocalApiLanEndpointDto>();
     public string? LanError { get; init; }
     public string? Error { get; init; }
 }
@@ -179,31 +187,4 @@ internal sealed class LocalApiStatusDto
     public bool Ok { get; init; }
     public string Status { get; init; } = "";
     public string? Error { get; init; }
-}
-
-internal sealed class LocalApiFavoriteStoreDto
-{
-    public int Version { get; init; } = 1;
-    public IReadOnlyList<object> Recipes { get; init; } = Array.Empty<object>();
-    public IReadOnlyList<object> Beverages { get; init; } = Array.Empty<object>();
-}
-
-internal sealed class LocalApiFavoriteErrorDto
-{
-    public bool Ok { get; init; }
-    public LocalApiFavoriteStoreDto Favorites { get; init; } = new();
-    public string Error { get; init; } = "";
-}
-
-internal sealed class LocalApiCustomRecipeStoreDto
-{
-    public int Version { get; init; } = 1;
-    public IReadOnlyList<object> Recipes { get; init; } = Array.Empty<object>();
-}
-
-internal sealed class LocalApiCustomRecipeErrorDto
-{
-    public bool Ok { get; init; }
-    public LocalApiCustomRecipeStoreDto CustomRecipes { get; init; } = new();
-    public string Error { get; init; } = "";
 }

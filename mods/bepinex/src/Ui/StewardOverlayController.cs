@@ -32,6 +32,7 @@ internal sealed class StewardOverlayController
     private const float ActiveBusinessSnapshotRefreshSeconds = 0.75f;
     private const float NormalBusinessSnapshotCacheSeconds = 1f;
     private const float StableBusinessContextRescanSeconds = 5f;
+    private const int MaxPendingMainThreadCommandsPerQueue = 64;
     private static readonly JsonSerializerOptions LocalApiJsonOptions = new(JsonSerializerDefaults.Web);
 
     private StewardPluginConfig? _config;
@@ -78,7 +79,7 @@ internal sealed class StewardOverlayController
     private string _businessContextSceneName = "";
     private long _normalBusinessContextCaptureVersion = long.MinValue;
     private bool _localApiSnapshotErrorLogged;
-    private bool _disposed;
+    private volatile bool _disposed;
     private bool _controllerToggleLatched;
     private bool _specialOrderRefreshPending;
     private bool _normalOrderRefreshPending;
@@ -109,27 +110,21 @@ internal sealed class StewardOverlayController
     /// <summary>
     /// 后台 API 线程提交的一次单项库存编辑请求。
     /// </summary>
-    private sealed class PendingInventoryEdit
+    private sealed class PendingInventoryEdit : MainThreadCommand<RuntimeInventoryEditResult>
     {
         public string ItemType { get; init; } = "";
         public int ItemId { get; init; }
         public int Quantity { get; init; }
-        public ManualResetEventSlim Completion { get; } = new(false);
-        public RuntimeInventoryEditResult? Result { get; set; }
-        public Exception? Error { get; set; }
     }
 
     /// <summary>
     /// 后台 API 线程提交的一次批量库存编辑请求。
     /// </summary>
-    private sealed class PendingInventoryBulkEdit
+    private sealed class PendingInventoryBulkEdit : MainThreadCommand<RuntimeInventoryBulkEditResult>
     {
         public string ItemType { get; init; } = "";
         public IReadOnlyList<int> ItemIds { get; init; } = Array.Empty<int>();
         public int Quantity { get; init; }
-        public ManualResetEventSlim Completion { get; } = new(false);
-        public RuntimeInventoryBulkEditResult? Result { get; set; }
-        public Exception? Error { get; set; }
     }
 
     /// <summary>
@@ -138,27 +133,21 @@ internal sealed class StewardOverlayController
     /// <remarks>
     /// Completion 用于让 HTTP 处理线程等待主线程执行完成并返回结构化结果。
     /// </remarks>
-    private sealed class PendingOrderPreparation
+    private sealed class PendingOrderPreparation : MainThreadCommand<OrderPreparationResult>
     {
         public OrderPreparationRequest Request { get; init; } = new();
         public OrderActionKind Action { get; init; }
-        public ManualResetEventSlim Completion { get; } = new(false);
-        public OrderPreparationResult? Result { get; set; }
-        public Exception? Error { get; set; }
     }
 
     /// <summary>
     /// 后台 API 线程提交的一次稀客邀请或邀请列表读取请求。
     /// </summary>
-    private sealed class PendingRareGuestInvitation
+    private sealed class PendingRareGuestInvitation : MainThreadCommand<RareGuestInvitationResult>
     {
         public RareGuestInvitationAction Action { get; init; }
         public int GuestId { get; init; } = -1;
         public string Scope { get; init; } = "";
         public string KizunaLevels { get; init; } = "";
-        public ManualResetEventSlim Completion { get; } = new(false);
-        public RareGuestInvitationResult? Result { get; set; }
-        public Exception? Error { get; set; }
     }
 
     private enum OrderActionKind
@@ -198,6 +187,7 @@ internal sealed class StewardOverlayController
     /// </remarks>
     public void Initialize(StewardPluginConfig config, ManualLogSource log)
     {
+        CompanionProcessLauncher.BeginSession();
         _config = config;
         _log = log;
         _mainThreadId = Thread.CurrentThread.ManagedThreadId;
@@ -461,10 +451,32 @@ internal sealed class StewardOverlayController
         if (_disposed) return;
 
         _disposed = true;
-        CompanionProcessLauncher.TryNotifyExit();
+        CompanionProcessLauncher.TryNotifyExit(_log);
+        CancelPendingMainThreadCommands(_pendingInventoryEdits, _inventoryEditLock);
+        CancelPendingMainThreadCommands(_pendingInventoryBulkEdits, _inventoryEditLock);
+        CancelPendingMainThreadCommands(_pendingOrderPreparations, _orderPreparationLock);
+        CancelPendingMainThreadCommands(_pendingRareGuestInvitations, _rareGuestInvitationLock);
         _localApiServer?.Dispose();
         _localApiServer = null;
         RuntimeCookerHighlightService.Clear();
+        AggregateModLogService.Shutdown();
+    }
+
+    private void ThrowIfDisposed()
+    {
+        if (_disposed) throw new ObjectDisposedException(nameof(StewardOverlayController));
+    }
+
+    private static void CancelPendingMainThreadCommands<TCommand>(Queue<TCommand> queue, object syncRoot)
+        where TCommand : IMainThreadCommand
+    {
+        lock (syncRoot)
+        {
+            while (queue.Count > 0)
+            {
+                queue.Dequeue().Cancel(new ObjectDisposedException(nameof(StewardOverlayController)));
+            }
+        }
     }
 
     /// <summary>
@@ -732,6 +744,16 @@ internal sealed class StewardOverlayController
                 },
                 _log);
             var favoriteStore = new FavoriteStore(FavoriteStore.ResolvePath(), _log);
+            var customRecipeStore = new CustomRecipeStore(CustomRecipeStore.ResolvePath(), favoriteStore, _log);
+            try
+            {
+                customRecipeStore.MigrateManualRecipeFavorites();
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning($"Manual recipe favorite migration did not complete; local API startup will continue and the migration can be retried: {ex.Message}");
+            }
+
             _localApiServer = new LocalApiServer(
                 _config.LocalApiLanEnabled.Value,
                 _config.LocalApiLanHost.Value,
@@ -754,7 +776,7 @@ internal sealed class StewardOverlayController
                 InviteRareGuestFromLocalApi,
                 updateService,
                 favoriteStore,
-                new CustomRecipeStore(CustomRecipeStore.ResolvePath(), favoriteStore, _log),
+                customRecipeStore,
                 _log);
             _localApiServer.Start();
             updateService.StartAutoCheck();
@@ -1685,8 +1707,7 @@ internal sealed class StewardOverlayController
             LanBindHost = _config?.LocalApiLanHost.Value ?? "auto",
             Port = port,
             Token = _localApiToken,
-            LanBindAddresses = _localApiServer?.LanBindAddresses ?? Array.Empty<string>(),
-            LanEndpoints = _localApiServer?.LanEndpoints ?? Array.Empty<string>(),
+            LanEndpoints = _localApiServer?.LanEndpoints ?? Array.Empty<LocalApiLanEndpointDto>(),
             LanError = string.IsNullOrWhiteSpace(_localApiServer?.LanError) ? null : _localApiServer?.LanError,
         };
     }
@@ -1802,7 +1823,7 @@ internal sealed class StewardOverlayController
             return ApplyInventoryEdit(itemType, itemId, quantity);
         }
 
-        var pending = new PendingInventoryEdit
+        using var pending = new PendingInventoryEdit
         {
             ItemType = itemType,
             ItemId = itemId,
@@ -1810,16 +1831,17 @@ internal sealed class StewardOverlayController
         };
         lock (_inventoryEditLock)
         {
+            ThrowIfDisposed();
+            if (_pendingInventoryEdits.Count >= MaxPendingMainThreadCommandsPerQueue)
+            {
+                throw new InvalidOperationException("Inventory edit queue is full. Retry after the game resumes processing frames.");
+            }
             _pendingInventoryEdits.Enqueue(pending);
         }
 
-        if (!pending.Completion.Wait(TimeSpan.FromSeconds(2.5)))
-        {
-            throw new TimeoutException("Inventory edit timed out waiting for Unity main thread.");
-        }
-
-        if (pending.Error != null) throw pending.Error;
-        return pending.Result ?? throw new InvalidOperationException("Inventory edit did not produce a result.");
+        return pending.WaitForResult(
+            TimeSpan.FromSeconds(2.5),
+            "Inventory edit timed out before the Unity main thread started it.");
     }
 
     /// <summary>
@@ -1835,7 +1857,7 @@ internal sealed class StewardOverlayController
             return ApplyInventoryBulkEdit(itemType, itemIds, quantity);
         }
 
-        var pending = new PendingInventoryBulkEdit
+        using var pending = new PendingInventoryBulkEdit
         {
             ItemType = itemType,
             ItemIds = itemIds.ToArray(),
@@ -1843,16 +1865,17 @@ internal sealed class StewardOverlayController
         };
         lock (_inventoryEditLock)
         {
+            ThrowIfDisposed();
+            if (_pendingInventoryBulkEdits.Count >= MaxPendingMainThreadCommandsPerQueue)
+            {
+                throw new InvalidOperationException("Inventory bulk edit queue is full. Retry after the game resumes processing frames.");
+            }
             _pendingInventoryBulkEdits.Enqueue(pending);
         }
 
-        if (!pending.Completion.Wait(TimeSpan.FromSeconds(6)))
-        {
-            throw new TimeoutException("Inventory bulk edit timed out waiting for Unity main thread.");
-        }
-
-        if (pending.Error != null) throw pending.Error;
-        return pending.Result ?? throw new InvalidOperationException("Inventory bulk edit did not produce a result.");
+        return pending.WaitForResult(
+            TimeSpan.FromSeconds(6),
+            "Inventory bulk edit timed out before the Unity main thread started it.");
     }
 
     private OrderPreparationResult PrepareOrderFromLocalApi(OrderPreparationRequest request)
@@ -1898,7 +1921,7 @@ internal sealed class StewardOverlayController
             return ApplyRareGuestInvitation(action, guestId, scope, kizunaLevels);
         }
 
-        var pending = new PendingRareGuestInvitation
+        using var pending = new PendingRareGuestInvitation
         {
             Action = action,
             GuestId = guestId,
@@ -1907,16 +1930,17 @@ internal sealed class StewardOverlayController
         };
         lock (_rareGuestInvitationLock)
         {
+            ThrowIfDisposed();
+            if (_pendingRareGuestInvitations.Count >= MaxPendingMainThreadCommandsPerQueue)
+            {
+                throw new InvalidOperationException("Rare guest invitation queue is full. Retry after the game resumes processing frames.");
+            }
             _pendingRareGuestInvitations.Enqueue(pending);
         }
 
-        if (!pending.Completion.Wait(TimeSpan.FromSeconds(3.5)))
-        {
-            throw new TimeoutException("Rare guest invitation timed out waiting for Unity main thread.");
-        }
-
-        if (pending.Error != null) throw pending.Error;
-        return pending.Result ?? throw new InvalidOperationException("Rare guest invitation did not produce a result.");
+        return pending.WaitForResult(
+            TimeSpan.FromSeconds(3.5),
+            "Rare guest invitation timed out before the Unity main thread started it.");
     }
 
     /// <summary>
@@ -1929,23 +1953,24 @@ internal sealed class StewardOverlayController
     {
         if (Thread.CurrentThread.ManagedThreadId != _mainThreadId)
         {
-            var pending = new PendingOrderPreparation
+            using var pending = new PendingOrderPreparation
             {
                 Request = request,
                 Action = action,
             };
             lock (_orderPreparationLock)
             {
+                ThrowIfDisposed();
+                if (_pendingOrderPreparations.Count >= MaxPendingMainThreadCommandsPerQueue)
+                {
+                    throw new InvalidOperationException("Order action queue is full. Retry after the game resumes processing frames.");
+                }
                 _pendingOrderPreparations.Enqueue(pending);
             }
 
-            if (!pending.Completion.Wait(TimeSpan.FromSeconds(3.5)))
-            {
-                throw new TimeoutException("Order preparation timed out waiting for Unity main thread.");
-            }
-
-            if (pending.Error != null) throw pending.Error;
-            return pending.Result ?? throw new InvalidOperationException("Order preparation did not produce a result.");
+            return pending.WaitForResult(
+                TimeSpan.FromSeconds(3.5),
+                "Order action timed out before the Unity main thread started it.");
         }
 
         return action switch
@@ -2055,7 +2080,7 @@ internal sealed class StewardOverlayController
     /// 消费后台线程提交的订单自动化队列。
     /// </summary>
     /// <remarks>
-    /// 每个 pending 都会在 finally 中释放等待线程，确保业务异常不会导致 HTTP 线程永久阻塞。
+    /// 每帧最多执行一个有效命令；已经超时取消的排队命令只出队不执行。
     /// </remarks>
     private void ProcessPendingOrderPreparations()
     {
@@ -2068,25 +2093,25 @@ internal sealed class StewardOverlayController
             }
 
             if (pending == null) return;
+            if (!pending.TryBegin()) continue;
 
             try
             {
-                pending.Result = pending.Action switch
+                var result = pending.Action switch
                 {
                     OrderActionKind.PrepareRare => ApplyOrderPreparation(pending.Request),
                     OrderActionKind.CompleteRare => ApplyOrderCompletion(pending.Request),
                     OrderActionKind.CompleteNormal => ApplyNormalOrderCompletion(pending.Request),
                     _ => ApplyOrderPreparation(pending.Request),
                 };
+                pending.Complete(result);
             }
             catch (Exception ex)
             {
-                pending.Error = ex;
+                pending.Fail(ex);
             }
-            finally
-            {
-                pending.Completion.Set();
-            }
+
+            return;
         }
     }
 
@@ -2104,19 +2129,18 @@ internal sealed class StewardOverlayController
             }
 
             if (pending == null) return;
+            if (!pending.TryBegin()) continue;
 
             try
             {
-                pending.Result = ApplyRareGuestInvitation(pending.Action, pending.GuestId, pending.Scope, pending.KizunaLevels);
+                pending.Complete(ApplyRareGuestInvitation(pending.Action, pending.GuestId, pending.Scope, pending.KizunaLevels));
             }
             catch (Exception ex)
             {
-                pending.Error = ex;
+                pending.Fail(ex);
             }
-            finally
-            {
-                pending.Completion.Set();
-            }
+
+            return;
         }
     }
 
@@ -2202,19 +2226,18 @@ internal sealed class StewardOverlayController
             }
 
             if (pending == null) return;
+            if (!pending.TryBegin()) continue;
 
             try
             {
-                pending.Result = ApplyInventoryEdit(pending.ItemType, pending.ItemId, pending.Quantity);
+                pending.Complete(ApplyInventoryEdit(pending.ItemType, pending.ItemId, pending.Quantity));
             }
             catch (Exception ex)
             {
-                pending.Error = ex;
+                pending.Fail(ex);
             }
-            finally
-            {
-                pending.Completion.Set();
-            }
+
+            return;
         }
     }
 
@@ -2232,19 +2255,18 @@ internal sealed class StewardOverlayController
             }
 
             if (pending == null) return;
+            if (!pending.TryBegin()) continue;
 
             try
             {
-                pending.Result = ApplyInventoryBulkEdit(pending.ItemType, pending.ItemIds, pending.Quantity);
+                pending.Complete(ApplyInventoryBulkEdit(pending.ItemType, pending.ItemIds, pending.Quantity));
             }
             catch (Exception ex)
             {
-                pending.Error = ex;
+                pending.Fail(ex);
             }
-            finally
-            {
-                pending.Completion.Set();
-            }
+
+            return;
         }
     }
 
@@ -2556,15 +2578,8 @@ internal sealed class StewardOverlayController
     private static string NormalizeLocalApiLanHost(string value)
     {
         var normalized = value.Trim();
-        if (string.IsNullOrWhiteSpace(normalized)
-            || string.Equals(normalized, "0.0.0.0", StringComparison.Ordinal)
-            || string.Equals(normalized, "127.0.0.1", StringComparison.Ordinal)
-            || string.Equals(normalized, "localhost", StringComparison.OrdinalIgnoreCase))
-        {
-            return "auto";
-        }
-
-        return normalized;
+        if (string.IsNullOrWhiteSpace(normalized)) return "auto";
+        return string.Equals(normalized, "auto", StringComparison.OrdinalIgnoreCase) ? "auto" : normalized;
     }
 
     private static void OpenDirectory(string directory)

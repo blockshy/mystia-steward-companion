@@ -45,37 +45,10 @@ internal sealed class RuntimeMappedGuestCatalog
         lock (SyncRoot)
         {
             _lastReadAttemptUtc = DateTime.MinValue;
+            _loaded = false;
+            _snapshot = RuntimeMappedGuestCatalogSnapshot.Empty("not loaded");
+            VariantAliasCache.Clear();
         }
-    }
-
-    public RareCustomer? ResolveCustomer(int? runtimeId, string? runtimeNameOrStringId)
-    {
-        if (runtimeId.HasValue && _localRareCustomersById.TryGetValue(runtimeId.Value, out var currentLocalCustomer))
-        {
-            return currentLocalCustomer;
-        }
-
-        var snapshot = Snapshot();
-        var entry = FindEntry(snapshot, runtimeId, runtimeNameOrStringId);
-        if (entry == null) return null;
-
-        if (entry.LocalRareCustomerId.HasValue
-            && _localRareCustomersById.TryGetValue(entry.LocalRareCustomerId.Value, out var localCustomer))
-        {
-            return localCustomer;
-        }
-
-        if (entry.RuntimeId.HasValue && _localRareCustomersById.TryGetValue(entry.RuntimeId.Value, out var entryLocalCustomer))
-        {
-            return entryLocalCustomer;
-        }
-
-        if (entry.SourceGuestId.HasValue && _localRareCustomersById.TryGetValue(entry.SourceGuestId.Value, out var sourceLocalCustomer))
-        {
-            return sourceLocalCustomer;
-        }
-
-        return entry.RuntimeCustomer?.ToRareCustomer();
     }
 
     public RareCustomerIdentity? Resolve(int? runtimeId, string? runtimeNameOrStringId)
@@ -361,19 +334,16 @@ internal sealed class RuntimeMappedGuestCatalog
             GetMemberValue(runtimeGuest, "LikeFoodTag")
                 ?? GetMemberValue(runtimeGuest, "LikeFoodTagUnfolded")
                 ?? GetMemberValue(runtimeGuest, "LikeFoodTagOriginal"),
-            foodTags,
-            includeFoodTags: true);
+            foodTags);
         var negativeTags = ReadRuntimeTagNames(
             GetMemberValue(runtimeGuest, "HateFoodTag")
                 ?? GetMemberValue(runtimeGuest, "HateFoodTagOriginal"),
-            foodTags,
-            includeFoodTags: true);
+            foodTags);
         var beverageTagNames = ReadRuntimeTagNames(
             GetMemberValue(runtimeGuest, "LikeBevTag")
                 ?? GetMemberValue(runtimeGuest, "LikeBevTagUnfolded")
                 ?? GetMemberValue(runtimeGuest, "LikeBevTagOriginal"),
-            beverageTags,
-            includeFoodTags: false);
+            beverageTags);
 
         if (positiveTags.Count == 0 && beverageTagNames.Count == 0) return null;
 
@@ -493,14 +463,13 @@ internal sealed class RuntimeMappedGuestCatalog
 
     private static List<string> ReadRuntimeTagNames(
         object? value,
-        IReadOnlyDictionary<int, string> tagNames,
-        bool includeFoodTags)
+        IReadOnlyDictionary<int, string> tagNames)
     {
         var result = new List<string>();
 
         void AddTagName(string? tagName)
         {
-            var normalized = NormalizeRuntimeTagName(tagName, includeFoodTags);
+            var normalized = NormalizeRuntimeTagName(tagName);
             if (string.IsNullOrWhiteSpace(normalized)) return;
             result.Add(normalized);
         }
@@ -536,7 +505,7 @@ internal sealed class RuntimeMappedGuestCatalog
             .ToList();
     }
 
-    private static string? NormalizeRuntimeTagName(string? value, bool includeFoodTags)
+    private static string? NormalizeRuntimeTagName(string? value)
     {
         if (string.IsNullOrWhiteSpace(value)) return null;
         var text = value.Trim();
@@ -546,9 +515,7 @@ internal sealed class RuntimeMappedGuestCatalog
         if (text.StartsWith("厨具", StringComparison.Ordinal)) return null;
         if (string.Equals(text, "黑暗物质", StringComparison.Ordinal)) return null;
 
-        var normalized = FoodTags.NormalizeName(text) ?? text;
-        if (includeFoodTags || !FoodTags.All.Contains(normalized)) return normalized;
-        return normalized;
+        return FoodTags.NormalizeName(text) ?? text;
     }
 
     private static string BuildEntryKey(RuntimeMappedGuestEntry entry)

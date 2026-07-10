@@ -1,6 +1,6 @@
 # 开发约定与流程
 
-更新日期：2026-07-08
+更新日期：2026-07-10
 
 ## 代码边界
 
@@ -76,11 +76,12 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 - Mod 只读取当前游戏运行时数据，不读取 `.memory` 存档文件。
 - 运行时固定数据读取成功后，C# 侧会把 `DataBaseCore` / `DataBaseCharacter` / `DataBaseLanguage` 结构化为 `RuntimeDataCatalog`，并切换 `DataRepository` 到运行时仓库；伴随窗口收到 `/snapshot` 中的 `runtimeDataComplete=true` 和新的 `runtimeDataSignature` 后，只在本地缓存为空或签名变化时读取 `/runtime-data`，普客/稀客推荐、经营中推荐、任务目标、库存修改页和自动化目标解析都必须使用这份缓存后的运行时数据集。
 - 本地 API 快照需要避免在 Unity 主线程和 WebView IPC 热路径高频序列化大对象。完整 `RuntimeDataCatalog` 不得再随 `/snapshot` 周期性发布；`/snapshot` 只携带运行时目录完成状态、来源、状态文本和签名，完整目录由 `/runtime-data` 独立端点按签名懒加载。`/snapshot` 必须携带 `snapshotSignature`，前端轮询时带上 `knownSignature`；内容未变化时后端返回 `{ unchanged: true, snapshotSignature }`，前端只更新连接存活状态，不得重新 `setSnapshot`、重新派生推荐或触发 worker。伴随窗口收到完整目录后应保存到独立缓存，不得放进主 `snapshot` state，避免大对象随轮询快照、Tauri IPC 字符串、props 链路和 React DevTools/闭包长期留存。快照内容签名未变化时后端应复用上一份缓存 JSON，不要为了 `CapturedAtUtc` 或性能数字重复序列化。前端仍必须按成功返回的快照更新连接状态，避免跳过运行时目录恢复。运行时固定数据读取完成后不得在经营快照热路径重复刷新，未完成时也要做重试间隔保护；经营诊断只能复用已缓存的运行时目录快照。新增重扫描或自动化轮询时要记录到 `performanceMs` 或复用现有耗时指标，便于概览页排查掉帧；性能快照只保留近期样本，避免旧耗时长期误导判断。经营扫描指标应尽量按来源拆分，例如 `business.rare.*`、`business.normal.*`、`runtime.cookerSnapshot` 和 `mission.serveTargets`；普客订单快照应优先复用短 TTL 缓存，不要在一次快照发布链路中重复枚举同一批运行时对象。
-- 夜间经营订单优先使用 `SpecialOrderRuntimeCapture` 运行时捕获缓存；捕获缓存为空、诊断开启、需要初始化/回退校验，或捕获缓存有订单但本轮可接受订单少于缓存数量时，再扫描 OrderController、HUD、服务面板和桌位控制器补位。控制器扫描仍要读取活动稀客和预算资金信息，但不应在已有完整捕获订单时重复做完整订单反射扫描。
+- 夜间经营订单优先使用 `SpecialOrderRuntimeCapture` 运行时捕获缓存；捕获缓存为空、需要初始化/回退校验，或捕获缓存有订单但本轮可接受订单少于缓存数量时，才把 OrderController、HUD、服务面板和桌位控制器反射结果用于业务缺失项补充。诊断开启时可以额外采样这些来源，但诊断样本只能进入日志快照，不能改变正式订单集合。控制器扫描仍要读取活动稀客和预算资金信息。
 - 夜间经营稀客订单必须保留订单级 `IsFreeOrder`。免费订单不应用 `GuestGroupController.WillPayMoney=false` 的付款预算阻止；非免费订单继续按当前预算策略和剩余资金判断。
 - 夜间经营订单必须按首次出现时间稳定显示；不得因桌号排序或推荐完整度排序让新订单插到旧订单前面。
 - 经营中订单排序支持 `点单顺序` 和 `稀客分组`。默认必须保持点单顺序；稀客分组模式下，同一稀客订单放在一起，稀客组之间按该稀客最早订单出现时间排序，组内仍按点单先后排序。经营中列表、当前点单推荐、专注模式、游戏界面置顶目标和自动化第一单选择必须复用同一排序函数。普客特殊经营自动化目标选择是候选搜索级工作，必须通过经营中订单推荐 Worker 预计算并按订单 key 复用，自动化 tick 只能消费结果，不能在 UI 主线程逐单同步调用完整目标搜索。
 - 稀客/经营中推荐使用统一料理/酒水列表：满足点单 Tag 的候选优先，不满足点单但命中稀客偏好的候选直接进入同一列表并标注 `偏好备选`。不得再维护满足点单与喜好备选两套结果数组。自定义推荐料理必须从 `custom-recipes.json` 转换为普通料理候选参与同一套硬过滤、预算、排序、自动化和 UI 展示，不得再通过 `favorites.source=manual` 或其他兼容路径混入收藏体系。当前稀客已接取的经营投喂任务指定料理可通过 `任务料理置顶` 开关在硬过滤后置顶；自定义推荐料理的单条置顶、收藏料理和收藏酒水分别按独立规则置顶。置顶不得绕过解锁、库存、预算阻止、排除项和缺失厨具过滤。料理推荐优先 `foodScore >= 3`，但必须保留“满足点单且低于 3 分”的候选作为兜底。
+- `v1.1.x` 的兼容支持只包含两项一次性迁移：旧 GUID 配置 `com.tyukki.mystia-steward.cfg` 在当前配置不存在时复制到新 GUID，以及 Local API 启动阶段将 `favorites.source=manual` 在自定义料理写入成功后迁出收藏文件。迁移不得延迟到 `GET /custom-recipes`，只读端点不能隐含文件写入。两项代码计划在 `v1.2.0` 删除；不得扩大为长期兼容层，也不得借迁移名义继续保留旧 API 路径、旧类型或旧业务逻辑。
 - 稀客页场景候选必须优先使用运行时数据集；只按经营场景、可用中文名称和可用点单 Tag 过滤，不再按当前存档记录/解锁进度过滤。当前进度来源不稳定，容易误删可测试稀客；后续若要恢复，必须先基于游戏运行时明确的已解锁字段重新实现。
 - 经营中读取到已摆放厨具快照时，`排除缺失厨具` 可过滤当前场景没有对应厨具的料理；读不到快照或无法映射厨具名时不得误删推荐。料理厨具类型以游戏 `CookSystemManager` 的 `AllAvailableCookerType` 为准，前端只消费本地 API 给出的中文厨具名。设置页的 `同基础料理显示` 控制同一基础料理在稀客页和经营中推荐中最多展示多少个加料变体；该限制只裁剪 UI 展示行。经营中展示行应从完整料理/酒水候选直接派生，自动化目标应从独立执行候选构造，不能只依赖裁剪后的 UI 行，也不能让执行候选上限提前裁掉用于补位的偏好候选。非可见经营中页的后台自动化推荐只能返回自动化需要的紧凑结果，并限制 worker 候选缓存和回包重复更新，避免自动化开启后在概览、设置等页面继续累积完整推荐对象。
 - `游戏界面置顶推荐` 和 `目标厨具高亮` 是两个独立开关。两者可以共享当前第一笔稀客订单的推荐目标，但本地 API 必须分别传递 `enabled` 与 `highlightEnabled`，C# 侧也要分别控制列表置顶补丁和厨具高亮服务。
@@ -89,8 +90,10 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 - 推荐 tag 解析统一维护在 `apps/companion/src/recommendation-engine/tag-resolution.ts`，动态料理 tag 维护在 `dynamic-food-tags.ts`。运行时导出的 `tagPriorityRules` 优先级最高；运行时缺失时只允许使用 `PROJECT_VERIFIED_TAG_PRIORITY_RULES` 这组项目验证规则，不得在其他模块重新硬编码互斥/压制关系。新增或调整 tag 规则必须来自游戏运行时行为、反编译资料或可复现实测，并同步更新该集中模块和相关文档。
 - 运行时料理配方的基础食材必须作为数量敏感序列处理，重复项表示同一材料需要多份；`RuntimeDataCatalog.Recipes[].Ingredients` 和前端 `RecipeCatalogItem.ingredients` 不得去重。只有 tag、场景、ID 列表等集合语义字段可以在解析和归一化时去重。推荐加料槽位、大份动态 tag、基础成本和自动化下单保护都必须基于保留重复后的真实基础食材数量。
 - 已捕获且仍能匹配当前稀客，或仍能从原运行时订单对象和控制器确认未完成的订单，不得使用短时间缓存过期清理；只应在明确移除、确认上菜完成、稀客离场或长时间硬上限后消失。
-- 本地 API 必须始终保留 `127.0.0.1` 回环监听，避免 LAN 配置错误导致用户无法从 A 设备本机恢复；`LocalApi.AllowLanConnections=true` 只会额外启用 LAN listener。LAN listener 必须限制私网来源，连接配置和 Token 重置端点只能由回环客户端调用；Tauri 代理只接受 loopback/private/link-local IPv4 endpoint，除 `/health` 外所有接口都必须通过伴随窗口传入的 token 访问。
-- 每个伴随窗口必须生成稳定客户端 ID，并通过本地 API header 传给 Mod。订单自动化端点必须由 Mod 本地 API 的自动化 lease 仲裁，同一时间只允许一个客户端执行自动化；其他客户端可以读取快照和配置普通偏好，但不得绕过 lease 直接调用订单自动化动作。连接断开或快照错误时，前端可以保留最近一次只读展示，但不得继续用旧快照驱动自动化、游戏界面置顶目标或其他写入游戏运行时的后台动作。断线重连期间应优先轮询轻量 `/health`，确认 API 恢复后再读取 `/snapshot`；Android 端应直接使用 WebView `fetch` 访问 LAN API，桌面端 Tauri 代理必须在线程池执行阻塞 TCP 请求，避免同步 command 卡住 WebView。
+- 本地 API 必须始终保留 `127.0.0.1` 回环监听，避免 LAN 配置错误导致用户无法从 A 设备本机恢复；`LocalApi.AllowLanConnections=true` 只会额外启用 LAN listener。LAN listener 必须限制私网来源，连接配置和 Token 重置端点只能由回环客户端调用；每个 listener 必须拥有独立停止状态和线程所有权，动态重配要串行、幂等并等待旧 worker 有界退出，accept 终止错误不得无延迟重试或逐条刷日志。Tauri 代理只接受 loopback/private/link-local IPv4 endpoint，除 `/health` 外所有接口都必须通过伴随窗口传入的 token 访问。
+- 本地 API 路由只接受规范路径，不提供根路径 `/` 到快照或健康检查的映射，也不接受 `/api/*` 前缀别名。只读查询使用 `GET`；文件写入、运行时修改、配置变更、控制权变更、诊断导出/打开目录和更新操作统一使用 `POST`，即使参数当前仍放在 query 中也不得退回副作用 `GET`。`/updates/status` 会归并 updater 结果并可能写入或删除状态文件，必须使用 `POST`。新增客户端、mock 和文档必须同步方法与精确路径；不存在的路径/方法组合返回 404，GET、POST、OPTIONS 以外的方法返回 405。在正式定义结构化 body schema 前不得自行编造 JSON request body 契约。
+- 正式 Tauri runtime 的 Rust TCP 代理必须把连接超时和响应读取超时分开处理：连接超时最长 5 秒，读取超时可按前端命令要求放宽到最多 60 秒。长耗时请求不能被连接上限提前截断；浏览器开发模式的 fetch 超时仍由前端调用方控制。
+- 每个伴随窗口必须生成稳定客户端 ID，并通过本地 API header 传给 Mod。订单自动化端点必须由 Mod 本地 API 的自动化 lease 仲裁，同一时间只允许一个客户端执行自动化；其他客户端可以读取快照和配置普通偏好，但不得绕过 lease 直接调用订单自动化动作。连接断开或快照错误时，前端可以保留最近一次只读展示，但不得继续用旧快照驱动自动化、游戏界面置顶目标或其他写入游戏运行时的后台动作。断线重连期间应优先轮询轻量 `/health`，确认 API 恢复后再读取 `/snapshot`；桌面和 Android 等所有正式 Tauri runtime 必须统一通过在线程池执行阻塞 TCP 请求的 Rust command 访问本地 API，只有浏览器开发模式可以直接 `fetch` mock API，不得保留移动端 WebView 网络 fallback。
 - 伴随窗口单实例控制监听 `127.0.0.1:32146`；热键逻辑必须先发送 `show`/`toggle`/`exit` 控制消息，控制端口不可达时才启动伴随进程，避免手柄快捷键重复创建窗口。
 - `F8` 和 `RS Click` 默认用于在游戏和伴随窗口之间切换焦点；伴随窗口聚焦时由 Tauri 前端处理热键并调用后端按设置切回游戏窗口。焦点行为不能写死为隐藏窗口，必须支持保持伴随窗口悬浮只切焦点。手柄切换必须做释放锁存和可配置后端防抖，避免一次长按在两侧窗口间反复触发。伴随窗口内手柄焦点必须优先遵守 `data-gamepad-scope` 区域，不要让顶部页签横向移动跳入页面内容。Tabs、SegmentedControl、横向按钮组和 slider 这类复合控件必须使用组件级语义处理方向键；通用空间导航必须按交叉轴对齐优先选择候选，不允许依赖只看中心点距离的全局几何搜索碰运气。
 - 伴随窗口透明度通过 Tauri transparent window 和前端 CSS 变量实现；背景透明度只影响窗口背景、面板、弹层和滚动条轨道，文字透明度只影响普通文字、图标和辅助徽章内容，主操作按钮必须保持可读。不要用 Windows `SetLayeredWindowAttributes(..., LWA_ALPHA)` 或其他整窗 alpha 实现背景透明度，因为它会让文字和图标一起变淡。桌面主窗口在 Tauri 配置中保持初始隐藏，Rust setup 先恢复窗口大小和位置，再 `show()` 并聚焦，避免启动时先出现在默认位置再跳到保存位置。托盘使用专用 `icons/tray-icon.png`，窗口/安装包使用多尺寸 `icon.ico` 和 PNG 图标；更新源图时必须重新生成这些资产，避免任务栏和托盘小尺寸主体过小。
@@ -101,7 +104,7 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 - 经营中、专注模式和日志等实时页面的动态内容区应保留稳定容器和紧凑空状态；不要因为暂无订单、暂无预约或暂无日志就直接卸载整块区域，避免数据刷新时页面大幅跳动。
 - 帮助页内容必须保存在 `apps/companion/src/data/help-content.json`，前端只负责搜索、目录树和详情渲染。新增用户可见功能或排查流程时，同步更新帮助 JSON，避免只改 README。
 - Unity 场景切换后不要再用固定秒数等待来规避加载问题。日间任务列表、日间地图和稀客邀请必须通过运行态数据入口判断可读性：排除主菜单、夜间经营和经营准备后，优先读取 `DayScene.SceneManager.CurrentActiveMapLabel` / `TargetMapLabel`、`RunTimeDayScene.GetMapNPCs()`、`RunTimeDayScene.RefTrackedNPCAvailability()` 和 `RunTimeScheduler` 数据；不能把 `DaySceneSustainedPannel` 是否激活作为日间数据总门禁，否则常规日间场景会被误判为 UI 初始化中。夜间经营准备读取仍以 `PrepNightScene.UI.IzakayaConfigPannel.OnPanelOpen` / `GoToSpecific` 为 ready 信号，并用 `Cleanup_Generated` / `GotoWork` 清理；进入夜间经营准备时，只能用 `WorkPrepScenePannelRoot` 下活跃的 `IzakayaConfigPannelNew` 和 ready 信号阻断日间读取，不能用泛化的同名面板或残留对象判断。读取代码必须避开不稳定的 IL2CPP 托管枚举路径，尤其不要直接依赖 `IEnumerator.Current`；优先使用 Count/indexer、字段、静态快照或可空单例。读取失败应降级为状态提示并等待下一轮刷新。
-- 运行时静态目录（料理、材料、酒水、普客、稀客、场景）和玩家存档状态（库存、已解锁、流行 Tag、已摆放厨具）必须分层读取。静态目录可用后应立即发布给伴随窗口，让任务、邀请、普客和稀客基础选项可用；玩家存档状态读取失败时只影响库存和推荐可用性，不应阻塞任务和邀请。基础推荐状态的库存、酒水和已解锁料理必须以 `RunTimeStorage.GenerateSaveData()` 生成的单份运行时存储快照为权威来源，`recipes` 为空时等待下一轮读取而不是发布空可用料理集合；玩家等级、流行 Tag、明星店开关和联动状态使用 `RunTimePlayerData` / `RunTimeDayScene` 轻量 getter 或静态字段读取。夜间经营准备阶段在准备面板 ready 后允许读取这些基础玩家运行态，用于修改页、普客页和稀客页；但仍不得读取 DayScene 快照、任务列表或稀客邀请。
+- 运行时静态目录（料理、材料、酒水、普客、稀客、场景）和玩家存档状态（库存、已解锁、流行 Tag、已摆放厨具）必须分层读取。静态目录可用后应立即发布给伴随窗口，让任务、邀请、普客和稀客基础选项可用；玩家存档状态读取失败时只影响库存和推荐可用性，不应阻塞任务和邀请。基础推荐状态的库存、酒水和已解锁料理必须以 `RunTimeStorage.GenerateSaveData()` 生成的单份运行时存储快照为权威来源，`recipes` 为空时等待下一轮读取而不是发布空可用料理集合；玩家等级、流行喜好/厌恶 Tag 和明星店开关使用 `RunTimePlayerData` / `RunTimeDayScene` 轻量 getter 读取。夜间经营准备阶段在准备面板 ready 后允许读取这些基础玩家运行态，用于修改页、普客页和稀客页；但仍不得读取 DayScene 快照、任务列表或稀客邀请。
 - 主菜单 `Main Scene` / `MainMenuPannel` 必须在代码中显式视为非游戏场景，不要只依赖 `NonGameplaySceneKeywords` 默认配置，因为用户已有配置文件不会自动补充新关键词。非游戏场景下不得读取运行时静态目录或玩家存档状态，避免 DataBase/Language 初始化不完整时触发 Unity 空引用。
 - 日间任务、邀请和当前地图读取必须依赖 `DayScene.SceneManager`、`RunTimeDayScene`、`DataBaseDay` 和 `RunTimeScheduler` 的运行态对象。若这些入口缺失或当前地图 label 为空，读取服务应返回分来源诊断；不要在外层统一返回“日间 UI 初始化中”。
 - 运行时库存修改必须排队到 Unity 主线程执行，避免本地 API 网络线程直接写游戏对象。
@@ -131,8 +134,12 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 - 自动开始料理固定尝试完成原生 QTE 奖励结算，不再提供跳过或完成 QTE 的配置开关。该功能不打开游戏音游面板，只尝试调用游戏 QTE 成功奖励入口；运行时失败时返回诊断信息，不应中断已开始的料理。
 - 游戏内料理/酒水列表置顶是实验性功能，只允许重排已生成的 UI 列表，不得自动点击或绕过游戏自身筛选；本地 API 更新置顶目标失败时必须静默降级。
 - 普客订单被动快照应保持约 1 秒级缓存；普客自动化动作后只强制刷新普客订单快照。pending 出锅直送无待办时不要在 `Update()` 热路径轮询。
-- 伴随窗口 `日志` 页只控制总日志 `aggregate-mod.log` 和诊断包导出，不再读取 `BepInEx/LogOutput.log`、自动化独立日志或经营诊断独立日志。
-- BepInEx 控制台窗口默认由 Mod 写入 `BepInEx.cfg` 在下次启动关闭，并在 Windows 上隐藏已创建的控制台窗口；伴随窗口不再提供原生控制台切换开关。
+- 伴随窗口 `日志` 页只控制总日志 `aggregate-mod.log` 和诊断包导出，不再读取 `BepInEx/LogOutput.log`、自动化独立日志或经营诊断独立日志。总日志分片上限不保护 BepInEx/Unity 共享 output log；任何后台 worker 都不得用无限异常重试向共享日志持续写入，Mod 也不得接管、截断或删除共享日志。
+- Mod 不得改写全局 `BepInEx.cfg` 或主动隐藏宿主控制台，避免影响同进程中的其他插件；控制台是否启用由 BepInEx/用户配置决定。`SetConsoleUtf8` 只负责用户显式启用时的当前控制台编码。
+- 本地 API 提交到 Unity 主线程的库存、订单和稀客邀请命令必须有排队上限和明确状态。尚未开始的命令超时后必须原子取消，主线程不得晚到执行；已经开始的命令必须返回确定结果，避免客户端在副作用已发生时重试。控制器销毁时先取消并唤醒排队命令，再停止并等待有界的 HTTP handler；每类队列每帧最多执行一个有效命令。
+- 运行时库存修改只允许调用当前游戏的 `RunTimeStorage.IngredientInRange/IngredientOutRange/BeverageInRange/BeverageOutRange` 原生入口，并在调用后读取最终数量做精确校验。不得在原生调用异常时直接写 `Ingredients`/`Beverages` 私有字典绕过 callback。
+- 诊断开关只能增加采样和日志，不得改变推荐、订单或自动化的权威业务输入。夜间经营在有 runtime capture 时始终以 capture 为正式来源；反射探针结果只进入诊断快照。
+- 自动更新同一时刻只允许一个检查、下载或安装操作。`update-manifest.json` 必须严格校验当前 schema、版本/tag/channel、资产名、SHA256 和大小；更新包流式写盘后同时校验长度和 hash。安装只能使用已校验 staged 包中的 updater，且 staged 版本必须高于当前版本，禁止旧暂存包降级安装。
 - 面向普通用户的伴随窗口默认隐藏调试信息。新增扫描状态、运行时来源、性能耗时、内部订单来源、订单 key、总日志、任务 label/source 等偏排查内容时，必须受 `CompanionPreferences.showDebugDetails` 总开关控制；该开关默认关闭，并只在 `设置 -> 窗口 -> 显示调试信息` 中开启。
 - 伴随窗口信息密度优先通过内部页签控制，不要把所有区块直接堆到同一页面。`概览` 固定使用 `状态 / 库存 / 操作` 分栏；`设置` 固定使用 `窗口 / 连接 / 推荐 / 自动化 / 更新` 分栏。连接配置必须集中在 `连接` 分栏，稀客专注模式默认精简放在 `推荐` 分栏。普客、稀客、经营中和稀客订单专注模式的推荐/订单列表应保留稳定内容区域和内部滚动，避免数据从空变有时造成大幅布局跳动。
 - 游戏内不再保留 IMGUI 面板；游戏侧只负责后台读取、自动化执行、本地 API 和伴随窗口唤起，所有用户交互放在独立伴随窗口。

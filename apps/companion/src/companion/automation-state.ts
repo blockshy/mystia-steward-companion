@@ -80,6 +80,7 @@ export type OrderPreparationStepCode =
   | 'cooking-started'
   | 'cooking-pending'
   | 'cooking-mismatch-stored'
+  | 'cooking-tags-unreadable-stored'
   | 'food-delivered'
   | 'order-completed';
 
@@ -202,11 +203,12 @@ export function updateAutomationAfterResponse<T extends AutoFirstOrderState | No
   const failed = !response.ok;
   const transientFailure = failed && isTransientAutoPreparationFailure(response);
   const hardFailure = failed && isHardAutoPreparationFailure(response);
+  const fatalFailure = failed && didCookingTagsUnreadableStored(response);
   const nextRetryCount = failed ? state.retryCount + 1 : 0;
   const stalled = failed && state.lastProgressAtMs > 0 && now - state.lastProgressAtMs >= AUTO_JOB_STALL_MS;
-  const shouldPause = failed
+  const shouldPause = fatalFailure || (failed
     && stopOnError
-    && (hardFailure || (!transientFailure && (stalled || nextRetryCount >= maxStepRetries)));
+    && (hardFailure || (!transientFailure && (stalled || nextRetryCount >= maxStepRetries))));
   const progressed = response.ok || response.steps.some(isMeaningfulAutomationProgressStep);
   const nextStep = response.ok
     ? step
@@ -342,6 +344,10 @@ export function didOrderCookingStillPending(response: OrderPreparationResponse, 
 
 export function didCookingMismatchStored(response: OrderPreparationResponse): boolean {
   return response.steps.some((step) => step.code === 'cooking-mismatch-stored');
+}
+
+export function didCookingTagsUnreadableStored(response: OrderPreparationResponse): boolean {
+  return response.steps.some((step) => step.code === 'cooking-tags-unreadable-stored');
 }
 
 function isInactiveSkippedStep(step: OrderPreparationStep): boolean {

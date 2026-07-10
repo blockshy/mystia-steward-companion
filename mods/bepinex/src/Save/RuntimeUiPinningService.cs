@@ -56,7 +56,7 @@ internal static class RuntimeUiPinningService
             lock (SyncRoot)
             {
                 _status = PatchedMethods.Count == 0
-                    ? $"waiting: {string.Join(", ", missing.Take(4))}"
+                    ? $"unavailable: {string.Join(", ", missing.Take(4))}"
                     : $"patched={PatchedMethods.Count}";
             }
 
@@ -66,7 +66,7 @@ internal static class RuntimeUiPinningService
             }
             else if (PatchedMethods.Count == 0)
             {
-                log.LogWarning($"Runtime UI pinning waiting for game types: {string.Join(", ", missing.Take(4))}.");
+                log.LogWarning($"Runtime UI pinning unavailable; game members were not found: {string.Join(", ", missing.Take(4))}.");
             }
         }
         catch (Exception ex)
@@ -129,7 +129,7 @@ internal static class RuntimeUiPinningService
             if (PatchedMethods.Contains(key)) return;
         }
 
-        var type = FindType(typeName);
+        var type = RuntimeReflectionUtility.FindType(typeName);
         var target = type?.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static)
             .FirstOrDefault(method => method.Name == methodName && method.GetParameters().Length == parameterCount);
         var postfix = typeof(RuntimeUiPinningService).GetMethod(postfixName, BindingFlags.NonPublic | BindingFlags.Static);
@@ -150,15 +150,15 @@ internal static class RuntimeUiPinningService
 
     private static void OnRecipeFieldUpdated(object __instance)
     {
-        if (!ReadTarget(out var recipeId, out _, out _, out _, out _, out _, out _)) return;
-        if (recipeId < 0) return;
-        TryMoveFirst(__instance, "RecipeInstances", item => ReadObjectId(item) == recipeId, "recipe");
+        var target = ReadTarget();
+        if (!target.Enabled || target.RecipeId < 0) return;
+        TryMoveFirst(__instance, "RecipeInstances", item => ReadObjectId(item) == target.RecipeId, "recipe");
     }
 
     private static void OnIngredientFieldUpdated(object __instance)
     {
-        if (!ReadTarget(out _, out _, out var ingredientIds, out _, out _, out _, out _)) return;
-        if (ingredientIds.Length == 0) return;
+        var target = ReadTarget();
+        if (!target.Enabled || target.IngredientIds.Length == 0) return;
 
         foreach (var fieldName in new[]
         {
@@ -168,38 +168,30 @@ internal static class RuntimeUiPinningService
             "Ingredient_VeggiesInsatance",
         })
         {
-            TrySortPinnedIngredients(__instance, fieldName, ingredientIds);
+            TrySortPinnedIngredients(__instance, fieldName, target.IngredientIds);
         }
     }
 
     private static void OnBeverageFieldUpdated(object __instance)
     {
-        if (!ReadTarget(out _, out var beverageId, out _, out _, out _, out _, out _)) return;
-        if (beverageId < 0) return;
-        TryMoveFirst(__instance, "Beverages", item => ReadObjectId(ReadPairKey(item) ?? item) == beverageId, "beverage");
+        var target = ReadTarget();
+        if (!target.Enabled || target.BeverageId < 0) return;
+        TryMoveFirst(__instance, "Beverages", item => ReadObjectId(ReadPairKey(item) ?? item) == target.BeverageId, "beverage");
     }
 
-    private static bool ReadTarget(
-        out int recipeId,
-        out int beverageId,
-        out int[] ingredientIds,
-        out string recipeName,
-        out string beverageName,
-        out int cookerTypeId,
-        out string cookerName)
+    private static PinningTargetSnapshot ReadTarget()
     {
         lock (SyncRoot)
         {
-            recipeId = _recipeId;
-            beverageId = _beverageId;
-            ingredientIds = _ingredientIds.ToArray();
-            recipeName = _recipeName;
-            beverageName = _beverageName;
-            cookerTypeId = _cookerTypeId;
-            cookerName = _cookerName;
-            return _enabled;
+            return new PinningTargetSnapshot(_enabled, _recipeId, _beverageId, _ingredientIds.ToArray());
         }
     }
+
+    private readonly record struct PinningTargetSnapshot(
+        bool Enabled,
+        int RecipeId,
+        int BeverageId,
+        int[] IngredientIds);
 
     private static void TrySortPinnedIngredients(object target, string fieldName, int[] ingredientIds)
     {
@@ -476,29 +468,6 @@ internal static class RuntimeUiPinningService
         }
 
         return true;
-    }
-
-    private static Type? FindType(string fullName)
-    {
-        var direct = Type.GetType(fullName, false);
-        if (direct != null) return direct;
-
-        foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
-        {
-            Type? type;
-            try
-            {
-                type = assembly.GetType(fullName, false);
-            }
-            catch
-            {
-                continue;
-            }
-
-            if (type != null) return type;
-        }
-
-        return null;
     }
 
     private static int ToInt(object? value)

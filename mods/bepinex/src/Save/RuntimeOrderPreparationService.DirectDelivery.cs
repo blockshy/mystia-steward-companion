@@ -6,6 +6,14 @@ namespace MystiaStewardCompanion.Save;
 
 internal static partial class RuntimeOrderPreparationService
 {
+    private enum WackyTagValidation
+    {
+        NotRequired,
+        Matched,
+        Mismatched,
+        Unreadable,
+    }
+
     /// <summary>
     /// 直接为订单创建并写入酒水。
     /// </summary>
@@ -204,33 +212,43 @@ internal static partial class RuntimeOrderPreparationService
                 $"{signatureMessage}，且写入保温箱失败：{signatureStoreMessage}");
         }
 
-        var hasWackyTargetTags = TryDetectWackyTagMismatch(target, cookedFood, out var targetTags, out var actualTags);
-        if (hasWackyTargetTags)
+        var wackyTagValidation = ValidateWackyTags(target, cookedFood, out var targetTags, out var actualTags);
+        if (wackyTagValidation is WackyTagValidation.Mismatched or WackyTagValidation.Unreadable)
         {
             var actualFoodId = ReadSellableId(cookedFood);
-            var tagMessage = $"{pending.RecipeName} 已完成，但成品 Tag（{string.Join("、", actualTags)}）不含当前怪诞料理目标 Tag（{string.Join("、", targetTags)}）";
+            var unreadableTags = wackyTagValidation == WackyTagValidation.Unreadable;
+            var resultCode = unreadableTags
+                ? OrderPreparationStepCodes.CookingTagsUnreadableStored
+                : OrderPreparationStepCodes.CookingMismatchStored;
+            var diagnosticPrefix = unreadableTags ? "cooked-food-tags-unreadable" : "cooked-food-tag-mismatch";
+            var tagMessage = unreadableTags
+                ? $"{pending.RecipeName} 已完成，但无法读取成品 Tag，不能确认满足当前怪诞料理目标 Tag（{string.Join("、", targetTags)}）"
+                : $"{pending.RecipeName} 已完成，但成品 Tag（{string.Join("、", actualTags)}）不含当前怪诞料理目标 Tag（{string.Join("、", targetTags)}）";
             AppendWackyPendingDiagnostic(
-                "cooked-food-tag-mismatch",
+                diagnosticPrefix,
                 pending,
-                "store-tag-mismatch",
+                unreadableTags ? "store-unreadable-tags" : "store-tag-mismatch",
                 actualFoodId,
                 targetTags,
                 actualTags,
                 tagMessage);
             if (TryStoreMismatchedCookResultInWarmer(pending, cookedFood, actualFoodId, out var wackyStoreMessage))
             {
-                var wackyMessage = $"{tagMessage}，已放入保温箱并释放该自动化待办，将在下一轮按新目标重试。{wackyStoreMessage}";
+                var nextAction = unreadableTags
+                    ? "已放入保温箱并暂停该订单自动化，请检查运行时 Tag 读取后再继续。"
+                    : "已放入保温箱并释放该自动化待办，将在下一轮重新推荐并重试。";
+                var wackyMessage = $"{tagMessage}，{nextAction}{wackyStoreMessage}";
                 AppendWackyPendingDiagnostic(
-                    "cooked-food-tag-mismatch-stored",
+                    $"{diagnosticPrefix}-stored",
                     pending,
                     "stored-in-warmer",
                     actualFoodId,
                     targetTags,
                     actualTags,
                     wackyStoreMessage);
-                RememberRecentWackyRejectedRecipe(target, targetTags);
+                if (!unreadableTags) RememberRecentWackyRejectedRecipe(target, targetTags);
                 RecordAutomationRuntimeEvent(
-                    OrderPreparationStepCodes.CookingMismatchStored,
+                    resultCode,
                     target,
                     wackyMessage,
                     actualFoodId,
@@ -239,11 +257,11 @@ internal static partial class RuntimeOrderPreparationService
                 return (
                     true,
                     wackyMessage,
-                    OrderPreparationStepCodes.CookingMismatchStored);
+                    resultCode);
             }
 
             AppendWackyPendingDiagnostic(
-                "cooked-food-tag-mismatch-store-failed",
+                $"{diagnosticPrefix}-store-failed",
                 pending,
                 "keep-on-cooker",
                 actualFoodId,
@@ -255,7 +273,7 @@ internal static partial class RuntimeOrderPreparationService
                 $"{tagMessage}，且写入保温箱失败：{wackyStoreMessage}");
         }
 
-        if (targetTags.Count > 0)
+        if (wackyTagValidation == WackyTagValidation.Matched)
         {
             AppendWackyPendingDiagnostic(
                 "cooked-food-tag-match",
@@ -503,19 +521,21 @@ internal static partial class RuntimeOrderPreparationService
         return $"（{reason}连续 {count}/{threshold} 次，持续 {age.TotalSeconds:F1}/{delay.TotalSeconds:F0}s）";
     }
 
-    private static bool TryDetectWackyTagMismatch(CookingCollectionTarget target, object cookedFood, out IReadOnlyList<string> targetTags, out IReadOnlyList<string> actualTags)
+    private static WackyTagValidation ValidateWackyTags(
+        CookingCollectionTarget target,
+        object cookedFood,
+        out IReadOnlyList<string> targetTags,
+        out IReadOnlyList<string> actualTags)
     {
-        targetTags = Array.Empty<string>();
-        actualTags = Array.Empty<string>();
         var activeTargetTags = target.WackyTargetFoodTags;
-        if (activeTargetTags.Count == 0) return false;
-
-        var cookedTags = ReadFoodTagNames(cookedFood).ToArray();
-        if (cookedTags.Length == 0) return false;
-
         targetTags = activeTargetTags;
-        actualTags = cookedTags;
-        return !cookedTags.Any(tag => activeTargetTags.Contains(tag, StringComparer.Ordinal));
+        actualTags = Array.Empty<string>();
+        if (targetTags.Count == 0) return WackyTagValidation.NotRequired;
+
+        if (!TryReadFoodTagNames(cookedFood, out actualTags)) return WackyTagValidation.Unreadable;
+        return actualTags.Any(tag => activeTargetTags.Contains(tag, StringComparer.Ordinal))
+            ? WackyTagValidation.Matched
+            : WackyTagValidation.Mismatched;
     }
 
     private static bool TryDetectWackyTargetSignatureChanged(
@@ -543,32 +563,52 @@ internal static partial class RuntimeOrderPreparationService
 
     private static IEnumerable<string> ReadFoodTagNames(object cookedFood)
     {
+        if (!TryReadFoodTagNames(cookedFood, out var tags)) yield break;
+        foreach (var tag in tags) yield return tag;
+    }
+
+    private static bool TryReadFoodTagNames(object cookedFood, out IReadOnlyList<string> tags)
+    {
+        tags = Array.Empty<string>();
         var rawTags = TryInvokeInstanceValue(cookedFood, "get_Tags")
             ?? ReadMember(cookedFood, "Tags")
             ?? TryInvokeInstanceValue(cookedFood, "get_RawTags")
             ?? ReadMember(cookedFood, "RawTags");
+        if (rawTags == null) return false;
+
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var rawTag in ReadIntEnumerable(rawTags))
-        {
-            if (rawTag < 0) continue;
-
-            var tagName = TryReadFoodTagName(rawTag);
-            if (string.IsNullOrWhiteSpace(tagName)) continue;
-
-            var normalized = FoodTags.NormalizeName(tagName) ?? tagName;
-            if (seen.Add(normalized)) yield return normalized;
-        }
-    }
-
-    private static string TryReadFoodTagName(int tagId)
-    {
         try
         {
-            return InvokeStatic(DataBaseLanguageTypeName, "GetFoodTag", new object?[] { tagId })?.ToString()?.Trim() ?? "";
+            foreach (var rawTag in ReadIntEnumerable(rawTags))
+            {
+                if (rawTag < 0) continue;
+
+                if (!TryReadFoodTagName(rawTag, out var tagName)) return false;
+
+                var normalized = FoodTags.NormalizeName(tagName) ?? tagName;
+                seen.Add(normalized);
+            }
         }
         catch
         {
-            return "";
+            return false;
+        }
+
+        tags = seen.ToArray();
+        return true;
+    }
+
+    private static bool TryReadFoodTagName(int tagId, out string tagName)
+    {
+        try
+        {
+            tagName = InvokeStatic(DataBaseLanguageTypeName, "GetFoodTag", new object?[] { tagId })?.ToString()?.Trim() ?? "";
+            return !string.IsNullOrWhiteSpace(tagName);
+        }
+        catch
+        {
+            tagName = "";
+            return false;
         }
     }
 

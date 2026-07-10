@@ -62,6 +62,7 @@ internal sealed class RuntimeStaticDataCatalog
         lock (SyncRoot)
         {
             _lastReadAttemptUtc = DateTime.MinValue;
+            _loaded = false;
         }
     }
 
@@ -139,7 +140,8 @@ internal sealed class RuntimeStaticDataCatalog
                 && beverageTags.Count > 0
                 && coreEntryCount > 0
                 && guestEntryCount > 0
-                && izakayaEntryCount > 0,
+                && izakayaEntryCount > 0
+                && runtimeData.IsComplete,
         };
     }
 

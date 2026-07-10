@@ -16,14 +16,12 @@ internal static class SpecialBusinessOrderClassifier
 }
 
 internal sealed record SpecialBusinessOrderClassification(
-    bool BlocksNormalAutomation,
     bool AutomationAllowed,
     string Role,
     string RoleLabel,
     string AutomationBlockReason)
 {
     public static SpecialBusinessOrderClassification Standard { get; } = new(
-        BlocksNormalAutomation: false,
         AutomationAllowed: true,
         Role: "",
         RoleLabel: "",

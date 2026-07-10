@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <LangVersion>10.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <ReferenceDir Condition="'$(ReferenceDir)' == ''">../../mods/bepinex/References</ReferenceDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../../mods/bepinex/src/Core/AtomicFile.cs" Link="AtomicFile.cs" />
+    <Compile Include="../../mods/bepinex/src/Updates/UpdateService.cs" Link="UpdateService.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="BepInEx.Core">
+      <HintPath>$(ReferenceDir)/BepInEx.Core.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+</Project>

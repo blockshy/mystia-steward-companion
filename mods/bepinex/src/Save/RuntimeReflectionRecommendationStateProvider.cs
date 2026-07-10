@@ -13,7 +13,7 @@ namespace MystiaStewardCompanion.Save;
 /// 玩家等级、流行标签和日间开关使用游戏公开的运行时静态方法读取。
 /// 所有反射访问都需要容忍字段缺失、DLC 差异和场景未就绪。
 /// </remarks>
-public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendationStateProvider
+public sealed class RuntimeReflectionRecommendationStateProvider
 {
     private const string RuntimeStorageTypeName = "GameData.RunTime.Common.RunTimeStorage";
     private const string RuntimePlayerDataTypeName = "GameData.RunTime.Common.RunTimePlayerData";
@@ -104,11 +104,9 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
             RecipeGameIds = recipeGameIds,
             Ingredients = ingredients,
             Beverages = beverages,
-            PlayerLevel = playerLevel,
             PopularFoodTag = famousShopEnabled && popularFoodTag == "招牌" ? null : popularFoodTag,
             PopularHateFoodTag = Measure("player.popularHateFood", () => ResolveFoodTag(ReadPopularFoodTags("Hate"))),
             FamousShopEnabled = famousShopEnabled,
-            CollabStatus = Measure("player.collabStatus", ReadCollabStatus),
         };
 
         var state = Measure("state.fromSave", () => RecommendationState.FromSave(_repository, parsed));
@@ -231,14 +229,6 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
         }
 
         return false;
-    }
-
-    private static Dictionary<string, bool> ReadCollabStatus()
-    {
-        var type = FindType(RuntimePlayerDataTypeName);
-        return type == null
-            ? new Dictionary<string, bool>(StringComparer.Ordinal)
-            : ReadStringBoolDictionary(RuntimeReflectionUtility.GetStaticMemberValue(type, "CollabStatus"));
     }
 
     private string? ResolveFoodTag(IEnumerable<int> tagIds)
@@ -372,50 +362,6 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
             var itemValue = ReadIndexedValue(value, key);
             if (itemValue == null) continue;
             result[ToInt(key)] = ToInt(itemValue);
-        }
-
-        return result;
-    }
-
-    private static Dictionary<string, bool> ReadStringBoolDictionary(object? value)
-    {
-        var result = new Dictionary<string, bool>(StringComparer.Ordinal);
-        if (value == null) return result;
-
-        if (value is IDictionary dictionary)
-        {
-            foreach (DictionaryEntry entry in dictionary)
-            {
-                var key = entry.Key?.ToString();
-                if (!string.IsNullOrWhiteSpace(key)) result[key] = ToBool(entry.Value);
-            }
-
-            return result;
-        }
-
-        foreach (var item in EnumerateObjects(value))
-        {
-            var key = (GetMemberValue(item, "Key") ?? GetMemberValue(item, "key"))?.ToString();
-            if (string.IsNullOrWhiteSpace(key)) continue;
-
-            var itemValue = GetMemberValue(item, "Value") ?? GetMemberValue(item, "value");
-            if (itemValue == null) continue;
-            result[key] = ToBool(itemValue);
-        }
-
-        if (result.Count > 0) return result;
-
-        var keys = GetMemberValue(value, "Keys");
-        if (keys == null) return result;
-
-        foreach (var keyObject in EnumerateObjects(keys))
-        {
-            var key = keyObject?.ToString();
-            if (string.IsNullOrWhiteSpace(key)) continue;
-
-            var itemValue = ReadIndexedValue(value, keyObject);
-            if (itemValue == null) continue;
-            result[key] = ToBool(itemValue);
         }
 
         return result;

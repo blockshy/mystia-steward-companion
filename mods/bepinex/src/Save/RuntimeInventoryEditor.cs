@@ -44,14 +44,7 @@ public static class RuntimeInventoryEditor
         }
 
         var delta = targetQuantity - currentQuantity;
-        try
-        {
-            ApplyDelta(normalizedType, itemId, delta);
-        }
-        catch
-        {
-            SetRawQuantity(normalizedType, itemId, targetQuantity);
-        }
+        ApplyDelta(normalizedType, itemId, delta);
 
         var nextQuantity = GetQuantity(normalizedType, itemId);
         return new RuntimeInventoryEditResult
@@ -62,6 +55,9 @@ public static class RuntimeInventoryEditor
             PreviousQuantity = currentQuantity,
             Quantity = nextQuantity,
             Changed = nextQuantity != currentQuantity,
+            Error = nextQuantity == targetQuantity
+                ? null
+                : $"Native inventory operation returned quantity {nextQuantity} instead of {targetQuantity}.",
         };
     }
 
@@ -128,22 +124,10 @@ public static class RuntimeInventoryEditor
 
     private static IEnumerable<object> BuildRepeatedIdArgumentCandidates(Type parameterType, int itemId, int count)
     {
-        if (parameterType.IsArray && parameterType.GetElementType() == typeof(int))
+        if (parameterType == typeof(Il2CppSystem.Collections.Generic.IEnumerable<int>))
         {
-            yield return Enumerable.Repeat(itemId, count).ToArray();
-            yield break;
-        }
-
-        if (parameterType == typeof(Il2CppStructArray<int>) || parameterType.FullName?.Contains("Il2CppStructArray") == true)
-        {
-            yield return BuildIl2CppIntArray(itemId, count);
-            yield break;
-        }
-
-        if (typeof(IEnumerable).IsAssignableFrom(parameterType))
-        {
-            yield return Enumerable.Repeat(itemId, count).ToArray();
-            yield return BuildIl2CppIntArray(itemId, count);
+            yield return BuildIl2CppIntArray(itemId, count)
+                .Cast<Il2CppSystem.Collections.Generic.IEnumerable<int>>();
         }
     }
 
@@ -158,40 +142,6 @@ public static class RuntimeInventoryEditor
         return array;
     }
 
-    private static void SetRawQuantity(string itemType, int itemId, int quantity)
-    {
-        var propertyName = itemType == "ingredient" ? "Ingredients" : "Beverages";
-        var type = FindType(RuntimeStorageTypeName)
-            ?? throw new InvalidOperationException("RunTimeStorage type is not loaded.");
-        var dictionary = type.GetProperty(propertyName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
-            ?.GetValue(null);
-        if (dictionary == null) throw new InvalidOperationException($"RunTimeStorage.{propertyName} is not available.");
-
-        if (dictionary is IDictionary managedDictionary)
-        {
-            if (quantity <= 0)
-            {
-                managedDictionary.Remove(itemId);
-            }
-            else
-            {
-                managedDictionary[itemId] = quantity;
-            }
-
-            return;
-        }
-
-        if (quantity <= 0 && TryInvokeDictionaryMethod(dictionary, "Remove", itemId))
-        {
-            return;
-        }
-
-        if (TryInvokeDictionaryMethod(dictionary, "set_Item", itemId, quantity)) return;
-        if (quantity > 0 && TryInvokeDictionaryMethod(dictionary, "Add", itemId, quantity)) return;
-
-        throw new InvalidOperationException($"Cannot write RunTimeStorage.{propertyName}.");
-    }
-
     private static object? InvokeStatic(string methodName, object?[] args)
     {
         var method = FindRuntimeStorageMethod(methodName)
@@ -203,29 +153,6 @@ public static class RuntimeInventoryEditor
     {
         var type = FindType(RuntimeStorageTypeName);
         return type?.GetMethod(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
-    }
-
-    private static bool TryInvokeDictionaryMethod(object dictionary, string methodName, params object?[] args)
-    {
-        foreach (var method in dictionary.GetType().GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
-        {
-            if (!string.Equals(method.Name, methodName, StringComparison.Ordinal)) continue;
-            var parameters = method.GetParameters();
-            if (parameters.Length != args.Length) continue;
-            if (!CanUseParameters(parameters, args)) continue;
-
-            try
-            {
-                InvokeMethod(method, dictionary, args);
-                return true;
-            }
-            catch
-            {
-                // Try the next overload.
-            }
-        }
-
-        return false;
     }
 
     private static bool CanUseParameters(IReadOnlyList<ParameterInfo> parameters, IReadOnlyList<object?> args)

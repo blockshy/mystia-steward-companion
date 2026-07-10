@@ -243,6 +243,16 @@ mods\bepinex\dist\mystia-steward-companion-android-arm64-v8a.apk
 mods\bepinex\dist\mystia-steward-companion-android-armeabi-v7a.apk
 ```
 
+构建和验签只能证明 APK 产物有效，不能证明 LAN 功能可用。正式上传 Android 资产前必须使用真机完成以下检查：
+
+1. A 设备启动游戏和 Mod，开启 LAN listener，确认设置页列出的推荐地址与 B 设备处于同一局域网网段。
+2. Android 浏览器通过 `GET http://A设备局域网地址:32145/health` 看到 JSON，先排除错误地址、Windows 防火墙和 AP/client isolation。
+3. 安装本次签名 APK，使用同一地址和正确 Token 执行 `GET /snapshot`、`GET /runtime-data`，再用错误 Token 确认显示未授权。不得用 `/` 或 `/api/*` 代替规范路径。
+4. 在 A 设备连续关闭、开启和重新应用 LAN 配置，确认回环连接不受影响，worker 线程不累积，`LogOutput.log` 不出现重复 `Local API LAN accept failed`。
+5. Android 断开并恢复 Wi-Fi、切到后台再返回，确认重连和自动化 lease 状态正确。
+
+没有真机时只能记录“构建、签名和包元数据通过，LAN 未实机验证”，不能把 APK 标记为已完成 LAN 发布验证。
+
 `publish-release.ps1` 会自动把 `mods\bepinex\dist` 下的 Android APK 作为额外 Release 资产上传。若 APK 位于其他路径，发布时可显式传入单个 APK 或包含 APK 的目录：
 
 ```powershell

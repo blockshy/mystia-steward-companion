@@ -3,7 +3,7 @@ import type {
   RareAutomationBeverageTarget,
   RareAutomationRecipeTarget,
 } from '@/companion/automation-state';
-import { readLocalApiJson, readLocalApiJsonWithTimeout, writeLocalApiJsonWithTimeout } from '@/companion/local-api';
+import { readLocalApiJson, writeLocalApiJsonWithTimeout } from '@/companion/local-api';
 import type { CompanionPreferences } from '@/companion/preferences';
 import { normalizeEditableQuantity } from '@/companion/preferences';
 import { serializeRareGuestInvitationLevels } from '@/companion/storage';
@@ -74,8 +74,8 @@ export interface AutomationDecisionDiagnosticRequest {
  * 伴随窗口访问 Mod 本地 API 的类型化门面。
  *
  * 该文件只负责把 UI/推荐引擎中的领域对象转换为本地 API 协议参数，不直接保存状态。
- * 大多数历史端点使用 GET + query string；更新安装等高风险动作已通过 `writeLocalApiJsonWithTimeout`
- * 走 POST，避免被普通刷新或预取误触发。
+ * 纯读取端点使用 GET；任何会修改 Mod、游戏运行时、文件或宿主窗口状态的命令都通过
+ * `writeLocalApiJsonWithTimeout` 使用 POST，避免被普通刷新或预取误触发。
  */
 export async function readSnapshot(
   endpoint: string,
@@ -125,7 +125,13 @@ export async function writeLogSettings(
   const params = new URLSearchParams();
   if (typeof next.aggregateLog === 'boolean') params.set('aggregateLog', String(next.aggregateLog));
   if (typeof next.aggregateLogMaxFileCount === 'number') params.set('aggregateLogMaxFiles', String(next.aggregateLogMaxFileCount));
-  return readLocalApiJson<LocalApiLogSettings>(endpoint, apiToken, `/logs/config?${params.toString()}`, signal);
+  return writeLocalApiJsonWithTimeout<LocalApiLogSettings>(
+    endpoint,
+    apiToken,
+    `/logs/config?${params.toString()}`,
+    2800,
+    signal,
+  );
 }
 
 export async function readLocalApiConnectionConfig(
@@ -227,7 +233,7 @@ export async function appendAutomationDecisionDiagnostic(
     selectionLines: diagnostic.selectionLines.join('\n'),
     skipLines: diagnostic.skipLines.join('\n'),
   });
-  return readLocalApiJsonWithTimeout<LocalApiStatusResponse>(
+  return writeLocalApiJsonWithTimeout<LocalApiStatusResponse>(
     endpoint,
     apiToken,
     `/diagnostics/automation-decision?${params.toString()}`,
@@ -241,7 +247,13 @@ export async function openLogFolder(
   target: 'aggregate',
   signal: AbortSignal,
 ): Promise<LocalApiFolderResponse> {
-  return readLocalApiJson<LocalApiFolderResponse>(endpoint, apiToken, `/logs/open-folder?target=${target}`, signal);
+  return writeLocalApiJsonWithTimeout<LocalApiFolderResponse>(
+    endpoint,
+    apiToken,
+    `/logs/open-folder?target=${target}`,
+    2800,
+    signal,
+  );
 }
 
 export async function exportDiagnosticPackage(
@@ -249,11 +261,17 @@ export async function exportDiagnosticPackage(
   apiToken: string,
   signal: AbortSignal,
 ): Promise<DiagnosticPackageResponse> {
-  return readLocalApiJson<DiagnosticPackageResponse>(endpoint, apiToken, '/logs/export-diagnostics?open=true', signal);
+  return writeLocalApiJsonWithTimeout<DiagnosticPackageResponse>(
+    endpoint,
+    apiToken,
+    '/logs/export-diagnostics?open=true',
+    8000,
+    signal,
+  );
 }
 
-export async function readUpdateStatus(endpoint: string, apiToken: string, signal: AbortSignal): Promise<UpdateStatusResponse> {
-  return readLocalApiJson<UpdateStatusResponse>(endpoint, apiToken, '/updates/status', signal);
+export async function refreshUpdateStatus(endpoint: string, apiToken: string): Promise<UpdateStatusResponse> {
+  return writeLocalApiJsonWithTimeout<UpdateStatusResponse>(endpoint, apiToken, '/updates/status', 2800);
 }
 
 export async function checkForUpdates(endpoint: string, apiToken: string): Promise<UpdateStatusResponse> {
@@ -311,7 +329,7 @@ export async function dismissRuntimeRareOrder(
   });
   if (order.guestId != null) params.set('guestId', String(order.guestId));
 
-  return readLocalApiJsonWithTimeout<RareOrderDismissResponse>(
+  return writeLocalApiJsonWithTimeout<RareOrderDismissResponse>(
     endpoint,
     apiToken,
     `/orders/rare/dismiss?${params.toString()}`,
@@ -331,7 +349,7 @@ export async function writeInventoryQuantity(
     id: String(itemId),
     qty: String(normalizeEditableQuantity(quantity)),
   });
-  return readLocalApiJsonWithTimeout<InventoryEditResponse>(
+  return writeLocalApiJsonWithTimeout<InventoryEditResponse>(
     endpoint,
     apiToken,
     `/inventory/set?${params.toString()}`,
@@ -351,7 +369,7 @@ export async function writeInventoryBulkQuantity(
     ids: itemIds.join(','),
     qty: String(normalizeEditableQuantity(quantity)),
   });
-  return readLocalApiJsonWithTimeout<InventoryBulkEditResponse>(
+  return writeLocalApiJsonWithTimeout<InventoryBulkEditResponse>(
     endpoint,
     apiToken,
     `/inventory/bulk-set?${params.toString()}`,
@@ -378,7 +396,7 @@ export async function publishGameUiPinningTarget(
     cookerTypeId: target ? String(target.cookerTypeId) : '-1',
     cookerName: target?.cookerName ?? '',
   });
-  await readLocalApiJsonWithTimeout<{ ok: boolean }>(
+  await writeLocalApiJsonWithTimeout<{ ok: boolean }>(
     endpoint,
     apiToken,
     `/ui-pinning/target?${params.toString()}`,
@@ -462,7 +480,7 @@ export async function completeFirstNormalOrder(
     autoCompleteOrder: String(preferences.autoNormalCompleteOrder),
     stopOnError: String(preferences.autoNormalStopOnError),
   });
-  return readLocalApiJsonWithTimeout<OrderPreparationResponse>(
+  return writeLocalApiJsonWithTimeout<OrderPreparationResponse>(
     endpoint,
     apiToken,
     `/orders/normal/complete-first?${params.toString()}`,
@@ -589,7 +607,7 @@ async function mutateRareGuestInvitation(
   apiToken: string,
   path: string,
 ): Promise<RareGuestInvitationResponse> {
-  return readLocalApiJsonWithTimeout<RareGuestInvitationResponse>(endpoint, apiToken, path, 5000);
+  return writeLocalApiJsonWithTimeout<RareGuestInvitationResponse>(endpoint, apiToken, path, 5000);
 }
 
 async function rareOrderAction(
@@ -629,7 +647,7 @@ async function rareOrderAction(
     recipeFavorite: String(Boolean(recipeTarget?.favorite)),
     beverageFavorite: String(Boolean(beverageTarget?.favorite)),
   });
-  return readLocalApiJsonWithTimeout<OrderPreparationResponse>(
+  return writeLocalApiJsonWithTimeout<OrderPreparationResponse>(
     endpoint,
     apiToken,
     `${path}?${params.toString()}`,
@@ -693,7 +711,7 @@ async function mutateFavorite(
   apiToken: string,
   path: string,
 ): Promise<FavoriteMutationResponse> {
-  return readLocalApiJsonWithTimeout<FavoriteMutationResponse>(endpoint, apiToken, path, 3200);
+  return writeLocalApiJsonWithTimeout<FavoriteMutationResponse>(endpoint, apiToken, path, 3200);
 }
 
 async function mutateCustomRecipe(
@@ -701,5 +719,5 @@ async function mutateCustomRecipe(
   apiToken: string,
   path: string,
 ): Promise<CustomRecipeMutationResponse> {
-  return readLocalApiJsonWithTimeout<CustomRecipeMutationResponse>(endpoint, apiToken, path, 3200);
+  return writeLocalApiJsonWithTimeout<CustomRecipeMutationResponse>(endpoint, apiToken, path, 3200);
 }

@@ -50,7 +50,6 @@ internal static class SpecialBusinessModuleRegistry
     public static SpecialBusinessOrderClassification AllowedSpecialOrder(string role, string label)
     {
         return new SpecialBusinessOrderClassification(
-            BlocksNormalAutomation: false,
             AutomationAllowed: true,
             Role: role,
             RoleLabel: label,
@@ -60,7 +59,6 @@ internal static class SpecialBusinessModuleRegistry
     public static SpecialBusinessOrderClassification Blocked(string role, string label, string reason)
     {
         return new SpecialBusinessOrderClassification(
-            BlocksNormalAutomation: true,
             AutomationAllowed: false,
             Role: role,
             RoleLabel: label,

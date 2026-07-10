@@ -25,7 +25,7 @@ internal static partial class RuntimeOrderPreparationService
     /// 按成品料理 ID 反查可用于开火的配方 ID。
     /// </summary>
     /// <remarks>
-    /// 普客订单有时只暴露成品料理 ID。正常路径遍历游戏配方表；若表读取失败，则尝试“料理 ID 与配方 ID 相同”的常见情形。
+    /// 普客订单有时只暴露成品料理 ID，因此遍历游戏配方表查找精确匹配。
     /// </remarks>
     private static int ResolveRecipeIdFromFoodId(int foodId)
     {
@@ -42,18 +42,10 @@ internal static partial class RuntimeOrderPreparationService
         }
         catch
         {
-            // 游戏多数基础料理的 food id 与 recipe id 一致，配方表不可枚举时用该规则做最后尝试。
-        }
-
-        try
-        {
-            var fallbackRecipe = InvokeStatic(DataBaseCoreTypeName, "RefRecipe", new object?[] { foodId });
-            return fallbackRecipe == null ? -1 : foodId;
-        }
-        catch
-        {
             return -1;
         }
+
+        return -1;
     }
 
     /// <summary>
@@ -117,7 +109,25 @@ internal static partial class RuntimeOrderPreparationService
             return CookingStartResult.Failed($"料理材料超过游戏上限：基础 {baseIngredientIds.Length} 个，加料 {extraIngredientIds.Count} 个，最多 {MaxFoodIngredientCount} 个。");
         }
 
-        var finalFood = CreateCookResult(recipe, extraIngredientIds, cooker) ?? baseFood;
+        object? cookResult;
+        try
+        {
+            cookResult = CreateCookResult(recipe, extraIngredientIds, cooker);
+        }
+        catch (Exception ex)
+        {
+            var message = ex.InnerException?.Message ?? ex.Message;
+            AppendAutomationLog("start-failed", collectionTarget, $"{recipeName}: MatchedCookCombo failed: {message}");
+            return CookingStartResult.Failed($"无法生成料理结果，已取消开火：{message}");
+        }
+
+        if (cookResult == null && extraIngredientIds.Count > 0)
+        {
+            AppendAutomationLog("start-failed", collectionTarget, $"{recipeName}: failed to create MatchedCookCombo for {extraIngredientIds.Count} extra ingredients");
+            return CookingStartResult.Failed($"无法根据 {extraIngredientIds.Count} 个额外食材生成料理结果，已取消开火。");
+        }
+
+        var finalFood = cookResult ?? baseFood;
         var ingredientIds = baseIngredientIds.Concat(extraIngredientIds).ToArray();
         if (!HasEnoughIngredients(ingredientIds, out var missingIngredientId))
         {
@@ -325,7 +335,7 @@ internal static partial class RuntimeOrderPreparationService
         return false;
     }
 
-    private static (bool Found, bool Delivered, string StepName, string Message, string Code) TryProcessPendingNormalOrderCooking(string orderKey, object order, int deskCode, int foodId, int beverageId)
+    private static (bool Delivered, string StepName, string Message, string Code) TryProcessPendingNormalOrderCooking(string orderKey, object order, int deskCode, int foodId, int beverageId)
     {
         lock (PendingCookingLock)
         {
@@ -350,7 +360,7 @@ internal static partial class RuntimeOrderPreparationService
                     || result.Message.Contains("已直接送达普客订单", StringComparison.Ordinal);
                 if (delivered)
                 {
-                    return (true, true, "普客送达料理", string.IsNullOrWhiteSpace(result.Message)
+                    return (true, "普客送达料理", string.IsNullOrWhiteSpace(result.Message)
                         ? $"{pending.Target.FoodName} 已直接送达普客订单。"
                         : result.Message,
                         string.IsNullOrWhiteSpace(result.Code) ? OrderPreparationStepCodes.FoodDelivered : result.Code);
@@ -358,14 +368,14 @@ internal static partial class RuntimeOrderPreparationService
 
                 if (!string.IsNullOrWhiteSpace(result.Message))
                 {
-                    return (true, false, "普客送达料理", result.Message, result.Code);
+                    return (false, "普客送达料理", result.Message, result.Code);
                 }
 
-                return (true, false, "普客开始料理", FormatPendingNormalOrderCookingMessage(pending, deskCode), OrderPreparationStepCodes.CookingPending);
+                return (false, "普客开始料理", FormatPendingNormalOrderCookingMessage(pending, deskCode), OrderPreparationStepCodes.CookingPending);
             }
         }
 
-        return (false, false, "", "", "");
+        return (false, "", "", "");
     }
 
     private static bool IsMatchingPendingNormalOrderCooking(PendingCookingCollection pending, string orderKey, object order, int deskCode, int foodId, int beverageId)

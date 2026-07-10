@@ -783,6 +783,10 @@ function isCookingMismatchStoredEvent(event: AutomationRuntimeEvent): boolean {
   return event.code === 'cooking-mismatch-stored';
 }
 
+function isCookingTagsUnreadableStoredEvent(event: AutomationRuntimeEvent): boolean {
+  return event.code === 'cooking-tags-unreadable-stored';
+}
+
 function trimRejectedRecipeKeys(keys: readonly string[]): string[] {
   const merged: string[] = [];
   for (const key of keys) {
@@ -840,6 +844,22 @@ function withAutomationDetail<T extends AutoFirstOrderState | NormalAutoOrderSta
     ...state,
     detailMessage,
     detailUpdatedAtMs: now,
+  };
+}
+
+function enforceAutomationRollbackLimit<T extends AutoFirstOrderState | NormalAutoOrderState>(
+  state: T,
+  maxRollbacks: number,
+  now: number,
+): T {
+  if (state.paused || state.rollbackCount <= 0 || state.rollbackCount < maxRollbacks) return state;
+  const limitMessage = `自动回退已达到上限 ${state.rollbackCount}/${maxRollbacks}，已暂停该订单。`;
+  return {
+    ...state,
+    paused: true,
+    step: 'paused',
+    stepStartedAtMs: now,
+    lastError: state.lastError ? `${state.lastError}；${limitMessage}` : limitMessage,
   };
 }
 
@@ -911,6 +931,47 @@ function resetNormalOrderStateAfterRuntimeMismatch(
     retryCount: 0,
     rollbackCount: state.rollbackCount + 1,
     lastError: event.message || '非目标成品已放入保温箱，重新制作目标料理。',
+  };
+}
+
+function pauseRareOrderStateAfterRuntimeFailure(
+  state: AutoFirstOrderState,
+  now: number,
+  event: AutomationRuntimeEvent,
+): AutoFirstOrderState {
+  return {
+    ...state,
+    prepared: false,
+    preparedAtMs: 0,
+    paused: true,
+    step: 'paused',
+    stepStartedAtMs: now,
+    retryCount: 0,
+    lastError: event.message || '无法读取成品 Tag，已暂停自动化。',
+  };
+}
+
+function pauseNormalOrderStateAfterRuntimeFailure(
+  state: NormalAutoOrderState,
+  orderKey: string,
+  now: number,
+  event: AutomationRuntimeEvent,
+): NormalAutoOrderState {
+  return {
+    ...state,
+    orderKey,
+    prepared: false,
+    preparedAtMs: 0,
+    collected: false,
+    foodDelivered: false,
+    foodDeliveredAtMs: 0,
+    completed: false,
+    completedAtMs: 0,
+    paused: true,
+    step: 'paused',
+    stepStartedAtMs: now,
+    retryCount: 0,
+    lastError: event.message || '无法读取成品 Tag，已暂停自动化。',
   };
 }
 
@@ -1670,11 +1731,14 @@ export function ModWorkbench() {
     const now = Date.now();
     let rareChanged = false;
     let normalChanged = false;
+    let rarePaused = false;
+    let normalPaused = false;
     const normalOrders = snapshot?.normalBusiness?.orders ?? [];
 
     for (const event of nextEvents) {
-      if (!isCookingMismatchStoredEvent(event)) continue;
-      if (isWackyTargetTagMismatchEvent(event)) {
+      const tagsUnreadable = isCookingTagsUnreadableStoredEvent(event);
+      if (!isCookingMismatchStoredEvent(event) && !tagsUnreadable) continue;
+      if (!tagsUnreadable && isWackyTargetTagMismatchEvent(event)) {
         const rejectedKey = buildWackyRejectedRecipeKeyFromEvent(event);
         if (rejectedKey) {
           rememberSpecialBusinessRejectedRecipeKey(rejectedKey);
@@ -1686,8 +1750,16 @@ export function ModWorkbench() {
           const state = rareOrderStatesRef.current.get(orderKey);
           if (!state || !matchesRareAutomationEvent(event, selection, state)) continue;
 
-          rareOrderStatesRef.current.set(orderKey, resetRareOrderStateAfterRuntimeMismatch(state, now, event));
+          const nextState = tagsUnreadable
+            ? pauseRareOrderStateAfterRuntimeFailure(state, now, event)
+            : enforceAutomationRollbackLimit(
+              resetRareOrderStateAfterRuntimeMismatch(state, now, event),
+              companionPreferences.autoMaxRollbacks,
+              now,
+            );
+          rareOrderStatesRef.current.set(orderKey, nextState);
           rareChanged = true;
+          rarePaused ||= tagsUnreadable;
           lastAutoFirstOrderAtRef.current = 0;
           break;
         }
@@ -1711,8 +1783,16 @@ export function ModWorkbench() {
 
         const state = normalOrderStatesRef.current.get(matchedKey)
           ?? emptyNormalAutoOrderState(matchedKey, now);
-        normalOrderStatesRef.current.set(matchedKey, resetNormalOrderStateAfterRuntimeMismatch(state, matchedKey, now, event));
+        const nextState = tagsUnreadable
+          ? pauseNormalOrderStateAfterRuntimeFailure(state, matchedKey, now, event)
+          : enforceAutomationRollbackLimit(
+            resetNormalOrderStateAfterRuntimeMismatch(state, matchedKey, now, event),
+            companionPreferences.autoMaxRollbacks,
+            now,
+          );
+        normalOrderStatesRef.current.set(matchedKey, nextState);
         normalChanged = true;
+        normalPaused ||= tagsUnreadable;
         lastAutoNormalOrderAtRef.current = 0;
         if (matchedOrder && matchedOrder.hasEvaluated) {
           normalOrderStatesRef.current.delete(matchedKey);
@@ -1727,14 +1807,19 @@ export function ModWorkbench() {
 
     if (rareChanged) {
       refreshRareOrderDiagnostics(now);
-      publishAutoPrepMessage('自动化\n非目标成品已放入保温箱，下一轮将重新制作目标料理。');
+      publishAutoPrepMessage(rarePaused
+        ? '自动化\n无法读取成品 Tag，成品已放入保温箱并暂停当前订单自动化。'
+        : '自动化\n非目标成品已放入保温箱，下一轮将重新制作目标料理。');
     }
     if (normalChanged) {
       refreshNormalOrderDiagnostics(normalOrders, now);
-      publishNormalOrderMessage('普客自动化\n非目标成品已放入保温箱，下一轮将重新制作目标料理。');
+      publishNormalOrderMessage(normalPaused
+        ? '普客自动化\n无法读取成品 Tag，成品已放入保温箱并暂停当前订单自动化。'
+        : '普客自动化\n非目标成品已放入保温箱，下一轮将重新制作目标料理。');
     }
   }, [
     automationRuntimeEnabled,
+    companionPreferences.autoMaxRollbacks,
     publishAutoPrepMessage,
     publishNormalOrderMessage,
     refreshNormalOrderDiagnostics,
@@ -1931,6 +2016,11 @@ export function ModWorkbench() {
             lastError: '目标料理长时间未直接送达，已自动恢复并重新确认料理制作状态。',
           };
         }
+        currentState = enforceAutomationRollbackLimit(
+          currentState,
+          companionPreferences.autoMaxRollbacks,
+          now,
+        );
         if (currentState.paused) {
           rareOrderStatesRef.current.set(orderKey, withAutomationDetail(
             currentState,
@@ -2113,23 +2203,27 @@ export function ModWorkbench() {
           : startedRareCooking || pendingRareCooking || (nextPrepared && !currentState.prepared) ? now : currentState.preparedAtMs;
         const beverageHandledAtMs = nextBeverageHandled && !currentState.beverageHandled ? now : currentState.beverageHandledAtMs;
         const rollbackCount = cookingMismatchStored
-          ? currentState.rollbackCount + 1
+          ? currentState.rollbackCount
           : startedRareCooking || pendingRareCooking ? 0 : currentState.rollbackCount;
-        const nextState = updateAutomationAfterResponse(
-          {
-            ...currentState,
-            orderKey,
-            prepared: nextPrepared,
-            preparedAtMs,
-            beverageHandled: nextBeverageHandled,
-            beverageHandledAtMs,
-            rollbackCount,
-          },
-          prepareResponse,
+        const nextState = enforceAutomationRollbackLimit(
+          updateAutomationAfterResponse(
+            {
+              ...currentState,
+              orderKey,
+              prepared: nextPrepared,
+              preparedAtMs,
+              beverageHandled: nextBeverageHandled,
+              beverageHandledAtMs,
+              rollbackCount,
+            },
+            prepareResponse,
+            now,
+            shouldPrepareFood ? 'ensure-cooking' : shouldPrepareBeverage ? 'ensure-beverage' : 'match-order',
+            companionPreferences.autoPrepStopOnError,
+            companionPreferences.autoMaxStepRetries,
+          ),
+          companionPreferences.autoMaxRollbacks,
           now,
-          shouldPrepareFood ? 'ensure-cooking' : shouldPrepareBeverage ? 'ensure-beverage' : 'match-order',
-          companionPreferences.autoPrepStopOnError,
-          companionPreferences.autoMaxStepRetries,
         );
         let finalState = nextState;
         let followUpMessage = '';
@@ -2281,7 +2375,10 @@ export function ModWorkbench() {
         companionPreferences,
       );
       if (syncedState) {
-        normalOrderStatesRef.current.set(orderKey, syncedState);
+        normalOrderStatesRef.current.set(
+          orderKey,
+          enforceAutomationRollbackLimit(syncedState, companionPreferences.autoMaxRollbacks, now),
+        );
       }
     }
     refreshNormalOrderDiagnostics(orders, now);
@@ -2329,6 +2426,7 @@ export function ModWorkbench() {
       if (order.canAutomate === false) continue;
 
       const state = normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order));
+      if (state?.paused) continue;
       const forceKoishiFullFeedAutomation = isWackyKoishiBossFullFeedContext(
         snapshot?.specialBusiness,
         order.specialBusinessRole,
@@ -2560,7 +2658,7 @@ export function ModWorkbench() {
           ? false
           : currentState.completed || order.hasEvaluated || completedNow;
         const rollbackCount = cookingMismatchStored
-          ? currentState.rollbackCount + 1
+          ? currentState.rollbackCount
           : collected || pendingCooking || startedCooking || beverageHandledNow || foodDeliveredNow || completedNow
           ? 0
           : currentState.rollbackCount;
@@ -2574,37 +2672,41 @@ export function ModWorkbench() {
         } else if (!cookingMismatchStored && prepared && !foodDelivered) {
           nextStep = 'deliver-food';
         }
-        const nextState = updateAutomationAfterResponse(
-          {
-            ...currentState,
-            orderKey,
-            prepared,
-            preparedAtMs: cookingMismatchStored
-              ? 0
-              : acknowledgedStart || (shouldRetryPrepared && transientFailure)
-              ? now
-              : prepared
-                ? currentState.preparedAtMs
-                : 0,
-            beverageHandled,
-            beverageHandledAtMs: beverageHandledNow && !currentState.beverageHandled ? now : currentState.beverageHandledAtMs,
-            collected,
-            foodDelivered,
-            foodDeliveredAtMs: cookingMismatchStored
-              ? 0
-              : foodDeliveredNow && !currentState.foodDelivered ? now : currentState.foodDeliveredAtMs,
-            completed,
-            completedAtMs: cookingMismatchStored
-              ? 0
-              : completedNow && !currentState.completed ? now : currentState.completedAtMs,
-            step: nextStep,
-            rollbackCount,
-          },
-          response,
+        const nextState = enforceAutomationRollbackLimit(
+          updateAutomationAfterResponse(
+            {
+              ...currentState,
+              orderKey,
+              prepared,
+              preparedAtMs: cookingMismatchStored
+                ? 0
+                : acknowledgedStart || (shouldRetryPrepared && transientFailure)
+                ? now
+                : prepared
+                  ? currentState.preparedAtMs
+                  : 0,
+              beverageHandled,
+              beverageHandledAtMs: beverageHandledNow && !currentState.beverageHandled ? now : currentState.beverageHandledAtMs,
+              collected,
+              foodDelivered,
+              foodDeliveredAtMs: cookingMismatchStored
+                ? 0
+                : foodDeliveredNow && !currentState.foodDelivered ? now : currentState.foodDeliveredAtMs,
+              completed,
+              completedAtMs: cookingMismatchStored
+                ? 0
+                : completedNow && !currentState.completed ? now : currentState.completedAtMs,
+              step: nextStep,
+              rollbackCount,
+            },
+            response,
+            now,
+            nextStep,
+            companionPreferences.autoNormalStopOnError,
+            companionPreferences.autoMaxStepRetries,
+          ),
+          companionPreferences.autoMaxRollbacks,
           now,
-          nextStep,
-          companionPreferences.autoNormalStopOnError,
-          companionPreferences.autoMaxStepRetries,
         );
         const normalizedNextState = {
           ...nextState,

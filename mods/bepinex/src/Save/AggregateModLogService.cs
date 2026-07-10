@@ -48,17 +48,6 @@ internal static class AggregateModLogService
         }
     }
 
-    public static string CurrentPath
-    {
-        get
-        {
-            lock (SyncRoot)
-            {
-                return _path;
-            }
-        }
-    }
-
     public static string ResolvePath(string? configuredPath)
     {
         if (!string.IsNullOrWhiteSpace(configuredPath)) return configuredPath.Trim();
@@ -231,6 +220,7 @@ internal static class AggregateModLogService
 
             if (_writer != null)
             {
+                FlushAutomationRepeatSummaryLocked();
                 WriteServiceLineLocked(reason);
             }
         }
@@ -242,6 +232,9 @@ internal static class AggregateModLogService
         {
             _enabled = false;
             CloseWriterLocked();
+            ResetAutomationRepeatStateLocked();
+            RuntimeStaticDataDiagnosticFormatter.Reset();
+            SpecialBusinessDiagnostics.Reset();
         }
     }
 
@@ -381,6 +374,16 @@ internal static class AggregateModLogService
             _lastAutomationContext,
             $"上一条重复 {unreportedCount} 次，累计 {_lastAutomationRepeatCount - 1} 次；{_lastAutomationMessage}");
         _lastAutomationReportedCount = _lastAutomationRepeatCount;
+    }
+
+    private static void ResetAutomationRepeatStateLocked()
+    {
+        _lastAutomationKey = "";
+        _lastAutomationContext = null;
+        _lastAutomationMessage = "";
+        _lastAutomationRepeatCount = 0;
+        _lastAutomationReportedCount = 0;
+        _lastAutomationFirstAt = DateTime.MinValue;
     }
 
     private static void WriteAutomationLineLocked(string action, OrderLogContext? context, string message)

@@ -107,7 +107,14 @@ public static class SpecialOrderRuntimeCapture
         var now = DateTime.UtcNow;
         lock (SyncRoot)
         {
-            Orders.RemoveAll(order => now - order.CapturedAt > maxAge);
+            var removed = Orders.RemoveAll(order => now - order.CapturedAt > maxAge);
+            if (removed > 0)
+            {
+                _changeVersion++;
+                _lastCapture = $"expired: count={removed}";
+                _status = BuildStatusLocked();
+            }
+
             return Orders
                 .OrderBy(order => order.FirstCapturedAt)
                 .ThenBy(order => order.CapturedAt)
@@ -380,11 +387,12 @@ public static class SpecialOrderRuntimeCapture
             _capturedOrders++;
             _lastCapture = $"{next.CaptureSource}: desk={next.DeskCode}, guestId={next.GuestId?.ToString() ?? ""}, food={next.FoodTag}({next.FoodTagId}), bev={next.BeverageTag}({next.BeverageTagId}), free={next.IsFreeOrder}, manualCallback={(next.ManualEvaluationCallback == null ? "no" : "yes")}";
             _changeVersion++;
-            _status = BuildStatusLocked();
             if (Orders.Count > MaxOrders)
             {
                 Orders.RemoveRange(0, Orders.Count - MaxOrders);
             }
+
+            _status = BuildStatusLocked();
         }
     }
 
@@ -1306,11 +1314,6 @@ public static class SpecialOrderRuntimeCapture
         }
 
         return int.TryParse(value.ToString(), out var parsed) ? parsed : null;
-    }
-
-    private static int ToInt(object? value)
-    {
-        return ToNullableInt(value) ?? 0;
     }
 
     private static int? NormalizeBeverageTagId(int? value)

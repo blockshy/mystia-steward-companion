@@ -123,6 +123,8 @@ dotnet build mods/bepinex/MystiaStewardCompanion.BepInEx.csproj -c Release
 
 Android 版是给 B 设备使用的移动端伴随窗口，只通过可信局域网连接 A 设备上的游戏和 Mod。它不是 Windows EXE 的转换产物，也不包含托盘、置顶、鼠标穿透、焦点切换、单实例控制和游戏关闭自动退出等桌面能力。
 
+Android 与桌面正式构建统一通过 Tauri Rust `request_local_api` command 使用原生 TCP 访问 Mod；只有浏览器/Vite 开发模式直接 `fetch` mock API。不得为 Android 保留 WebView direct-fetch fallback，也不得通过放宽 CSP 绕过原生代理错误。
+
 Android 开发或发布机器还需要：
 
 - Android Studio、Android SDK、platform-tools、build-tools 和 NDK。
@@ -293,7 +295,7 @@ GitHub Release 上传以下资产：
 - 可选：`mystia-steward-companion-android-arm64-v8a.apk`
 - 可选：`mystia-steward-companion-android-armeabi-v7a.apk`
 
-`update-manifest.json` 给 Mod 内置自动更新使用，只包含版本、资产文件名、zip 大小和 SHA256，不记录本机打包路径，并且只指向 `mystia-steward-companion-bepinex.zip`。独立 Windows 伴随窗口 EXE 和 Android APK 只给 B 设备跨局域网连接使用，不参与 Mod 自动更新。不上传 Tauri setup 安装器，避免用户误以为只安装桌面程序即可使用 Mod。
+`update-manifest.json` 给 Mod 内置自动更新使用，只包含版本、资产文件名、zip 大小和 SHA256，不记录本机打包路径，并且只指向 `mystia-steward-companion-bepinex.zip`。Mod 严格接受 schema 1，并校验 version/tag/channel、资产名、包长度和 SHA256；缓存候选也必须重新满足同一组约束。下载正文使用五分钟取消令牌并按声明长度边读边限制，先写同目录临时目录，完整校验后再替换正式 staged 目录。检查、下载和安装同一时刻只运行一项；updater 存活时拒绝覆盖 staged 目录或重复启动。安装只能使用已校验 staged 包内的 updater，且 staged 版本必须高于当前插件版本，禁止旧暂存包降级。独立 Windows 伴随窗口 EXE 和 Android APK 只给 B 设备跨局域网连接使用，不参与 Mod 自动更新。不上传 Tauri setup 安装器，避免用户误以为只安装桌面程序即可使用 Mod。
 
 发布前检查：
 
@@ -441,7 +443,7 @@ git push --force origin v1.1.0
 
 ## 运行时数据源
 
-推荐、库存名称、任务目标和自动化目标解析使用游戏运行时读取到的 `RuntimeDataCatalog`。伴随窗口未连接游戏、游戏数据库未初始化或 `/snapshot.runtimeData.isComplete=false` 时，页面会显示等待运行时数据。
+推荐、库存名称、任务目标和自动化目标解析使用游戏运行时读取到的 `RuntimeDataCatalog`。伴随窗口未连接游戏、游戏数据库未初始化或 `/snapshot` 返回的 `runtimeDataComplete=false` 时，页面会显示等待运行时数据。
 
 发布包包含 Mod DLL 和伴随窗口程序，推荐、库存、任务和自动化目标都来自游戏当前运行时。
 
@@ -453,13 +455,13 @@ Mod 会定期检查当前页面和游戏运行时状态。进入游戏并加载�
 
 运行态读取不再依赖固定秒数等待。日间任务列表、当前日间地图和稀客邀请通过 `DayScene.SceneManager.CurrentActiveMapLabel` / `TargetMapLabel`、`RunTimeDayScene.GetMapNPCs()`、`RunTimeDayScene.RefTrackedNPCAvailability()`、`DaySceneMap.allCharacters` 和 `RunTimeScheduler` 等运行态入口读取，不再把 `DaySceneSustainedPannel` 面板激活状态作为总门禁；夜间经营准备读取要求 `PrepNightScene.UI.IzakayaConfigPannel.OnPanelOpen` / `GoToSpecific` 已触发，且 `WorkPrepScenePannelRoot` 下的 `IzakayaConfigPannelNew` 仍激活。准备阶段只读取库存、已解锁、流行 Tag 等基础玩家运行态，因此 `修改`、`普客` 和 `稀客` 页面可以提前使用；任务列表、当前日间地图和稀客邀请仍只在日间场景读取。
 
-推荐状态中的库存、酒水和已解锁料理使用 `RunTimeStorage.GenerateSaveData()` 生成的一份当前运行时存储快照作为权威来源；玩家等级、流行 Tag、明星店开关和联动状态继续使用轻量 getter 或静态字段读取。若存储快照中的 `recipes` 为空，Mod 会等待下一轮运行时读取，不会向伴随窗口发布空的可用料理集合。
+推荐状态中的库存、酒水和已解锁料理使用 `RunTimeStorage.GenerateSaveData()` 生成的一份当前运行时存储快照作为权威来源；玩家等级、流行喜好/厌恶 Tag 和明星店开关继续使用轻量 getter 读取。若存储快照中的 `recipes` 为空，Mod 会等待下一轮运行时读取，不会向伴随窗口发布空的可用料理集合。
 
-为降低经营中掉帧风险，本地 API 快照发布会做轻量节流：Unity 主线程最多约每 0.35 秒刷新一次缓存 JSON；若快照内容签名未变化，会复用上一份缓存 JSON，不为了 `CapturedAtUtc` 或性能数字重复序列化；完整 `RuntimeDataCatalog` 只在首次、内容变化、强制刷新或约每 10 秒补发一次，其余快照可能省略 `runtimeData`。运行时固定数据已经完整读取后，会缓存稀客映射和静态目录快照，经营 provider 与经营诊断只消费缓存，不再从经营快照热路径反复触发静态数据扫描；读取未完整时也按约 5 秒间隔重试，避免 `runtimeData.staticData` 在每轮经营刷新里反复消耗主线程。伴随窗口需要缓存最近一次完整运行时数据，不能把缺失的 `runtimeData` 当作数据丢失。概览页和经营中页会显示 `performanceMs` 中最近约 12 秒内耗时最高的快照环节，排查卡顿时优先记录 `refresh.business`、`refresh.runtime`、`snapshot.serialize`、`automation.collect` 和 `snapshot.publish`。经营扫描还会细分 `business.rare.*`、`business.normal.*`、`runtime.cookerSnapshot`、`mission.serveTargets` 等子项；普客订单快照会在短时间内复用，避免同一轮 `/snapshot` 发布重复枚举 `OrderController`、HUD 和 `GuestsManager`。
+为降低经营中掉帧风险，本地 API 快照发布会做轻量节流：Unity 主线程最多约每 0.35 秒刷新一次缓存 JSON；若快照内容签名未变化，会复用上一份缓存 JSON，不为了 `CapturedAtUtc` 或性能数字重复序列化。完整 `RuntimeDataCatalog` 不再放进 `/snapshot`；快照只发布目录是否完整、来源、状态和签名，伴随窗口仅在本地缓存为空或签名变化时通过 `/runtime-data` 读取完整目录。运行时固定数据已经完整读取后，会缓存稀客映射和静态目录快照，经营 provider 与经营诊断只消费缓存，不再从经营快照热路径反复触发静态数据扫描；读取未完整时也按约 5 秒间隔重试，避免 `runtimeData.staticData` 在每轮经营刷新里反复消耗主线程。伴随窗口需要按签名缓存最近一次完整运行时数据，不能把 `/runtime-data` 的临时读取失败当作主快照丢失。概览页和经营中页会显示 `performanceMs` 中最近约 12 秒内耗时最高的快照环节，排查卡顿时优先记录 `refresh.business`、`refresh.runtime`、`snapshot.serialize`、`runtimeData.serialize`、`automation.collect` 和 `snapshot.publish`。经营扫描还会细分 `business.rare.*`、`business.normal.*`、`runtime.cookerSnapshot`、`mission.serveTargets` 等子项；普客订单快照会在短时间内复用，避免同一轮 `/snapshot` 发布重复枚举 `OrderController`、HUD 和 `GuestsManager`。
 
 普客订单被动快照缓存约 1 秒。`NormalOrderRuntimeCapture` 通过 `GuestGroupController.PushToOrder` 和 `GuestsManager.SetManualControllerOrderInternal` 捕获订单与可执行客人控制器绑定，不能为了性能删除；常规快照先读取 live `OrderController` / HUD 可见订单来决定订单是否仍存在，再把仍与 live 订单 key 或桌位/料理/酒水槽位匹配的捕获缓存合并回来补充 controller 绑定。手动控制订单还会从 `NightSceneDirector.controlledGuest` 枚举 controller，用于怪诞料理大赛三阶段最终 BOSS 这类 HUD 可见但不在常规桌位集合中的普通订单。已不可见的捕获缓存会被剔除，避免经营中页残留旧订单；捕获为空且 Hook 已安装、捕获版本未变化时可复用上一次空结果，捕获不可用时才做 `GuestsManager` 启动扫描。捕获版本变化后只强制刷新普客订单快照，不重新扫描稀客经营上下文。pending 出锅直送没有待办项时不在 `Update()` 热路径轮询。游戏界面置顶只在料理、材料和酒水面板字段刷新后重排列表，不再 Hook `RunTimePlayerData.CheckPinned` 这类全局高频查询。
 
-夜间经营中，`经营中 / Service` 页优先使用 `SpecialOrderRuntimeCapture` 捕获到的稀客订单缓存；捕获缓存为空、诊断开启或需要初始化校验时，再扫描 `GuestsManager`、稀客队列、`OrderController`、HUD、服务面板和桌位控制器中的订单。捕获版本、场景和诊断状态都未变化时会复用已有经营上下文，并按较慢节奏重新校验。页面仍会读取桌位控制器中的活动稀客，用于显示当前稀客和 `GuestGroupController.GetFund`、`BaseFundCarry`、`MaxFundCarry` 等当前携带金钱信息，但捕获缓存已有订单时不应重复做完整订单反射扫描。普客订单使用 `OrderController` / HUD 判断订单可见性，使用 `NormalOrderRuntimeCapture` 记录 `GuestGroupController.PushToOrder` 或 `SetManualControllerOrderInternal` 建立的订单归属；HUD / `OrderController` 单独存在时只能显示推荐和不可执行诊断，不能单独用于自动送达或评价。页面顶部只展示经营场景、扫描状态、推荐数据、厨具与置顶状态等通用信息，随后用 `稀客` / `普客` 页签分区展示各自功能。稀客点单后，工作台会按桌号列出稀客、料理词条和酒水词条，并复用稀客推荐算法计算候选料理、加料和酒水。普客订单读取到 `GameData.CoreLanguage.LanguageBase` 这类 IL2CPP 本地化对象时，必须过滤为无文本，不得把运行时类型名当作客人、料理或酒水名称展示。
+夜间经营中，`经营中 / Service` 页优先使用 `SpecialOrderRuntimeCapture` 捕获到的稀客订单缓存；捕获缓存为空、需要初始化校验或本轮可接受订单少于缓存数量时，再扫描 `GuestsManager`、稀客队列、`OrderController`、HUD、服务面板和桌位控制器补充业务缺失项。诊断开启时允许额外采样这些来源，但样本只写日志，不合入正式订单集合。捕获版本、场景和诊断状态都未变化时会复用已有经营上下文，并按较慢节奏重新校验。页面仍会读取桌位控制器中的活动稀客，用于显示当前稀客和 `GuestGroupController.GetFund`、`BaseFundCarry`、`MaxFundCarry` 等当前携带金钱信息。普客订单使用 `OrderController` / HUD 判断订单可见性，使用 `NormalOrderRuntimeCapture` 记录 `GuestGroupController.PushToOrder` 或 `SetManualControllerOrderInternal` 建立的订单归属；HUD / `OrderController` 单独存在时只能显示推荐和不可执行诊断，不能单独用于自动送达或评价。页面顶部只展示经营场景、扫描状态、推荐数据、厨具与置顶状态等通用信息，随后用 `稀客` / `普客` 页签分区展示各自功能。稀客点单后，工作台会按桌号列出稀客、料理词条和酒水词条，并复用稀客推荐算法计算候选料理、加料和酒水。普客订单读取到 `GameData.CoreLanguage.LanguageBase` 这类 IL2CPP 本地化对象时，必须过滤为无文本，不得把运行时类型名当作客人、料理或酒水名称展示。
 
 若 IL2CPP getter 无法读取订单列表，Mod 会继续尝试 `AllOrdersData` 和 `PeekOrders()`；若 tag ID 读取失败，会从稀客控制器的订单文本方法读取中文词条。
 
@@ -470,6 +472,8 @@ Mod 会定期检查当前页面和游戏运行时状态。进入游戏并加载�
 如果没有检测到运行时数据，普客和稀客推荐页只显示运行时数据不可用，不会回退到“全内容可用”状态，避免误以为库存和解锁内容已经同步。
 
 开启总日志后，经营扫描会额外输出 `night-business` section，其中包含 `Candidates` 和 `RecentRuntimeParseFailures`。前者记录被扫描到的 controller/order 候选、接纳状态和过滤原因；后者记录运行时订单捕获器最近未能解析为稀客订单的样本。排查映射稀客或特殊事件稀客时，优先查看这两段。
+
+诊断采样不得改变正式业务输入。有 runtime capture 时，推荐和自动化始终使用捕获订单及既有缺失项反射补充；为完整诊断额外枚举到的 HUD/controller 订单只写入 `night-business` section，不合入最终订单集合。
 
 总日志还会输出运行时固定数据快照：
 
@@ -498,29 +502,53 @@ LanHost = auto
 Port = 32145
 ```
 
-`LanHost=auto` 会监听检测到的私网 IPv4，也可以写 A 设备的具体局域网 IPv4。LAN 通道仍要求除 `/health` 外的所有端点携带 `X-Mystia-Steward-Companion-Token`，服务端会拒绝非私网来源；连接配置和 Token 重置端点只允许 A 设备本机回环客户端调用。用户仍可能需要在 Windows 防火墙中允许该端口入站。不要把该端口通过公网端口映射暴露出去。
+`LanHost=auto` 会按默认网关、接口类型和 link-local 状态排列检测到的私网 IPv4，同时监听全部合格候选；也可以写 A 设备的具体局域网 IPv4。结构化 endpoint 明细只通过回环限定的连接配置端点返回，`/health` 不暴露本机网卡名称。LAN 通道仍要求除 `/health` 外的所有端点携带 `X-Mystia-Steward-Companion-Token`，服务端会拒绝非私网来源；连接配置和 Token 重置端点只允许 A 设备本机回环客户端调用。用户仍可能需要在 Windows 防火墙中允许游戏 EXE 的该端口入站。不要把该端口通过公网端口映射暴露出去。
+
+每个 loopback/LAN listener 都必须拥有独立停止状态和 worker 线程。动态应用 LAN 配置时先比较规范化配置和目标地址集合；无变化直接返回，有变化时串行停止并有界等待旧 worker，再启动新地址。主动停止引发的 accept 异常直接结束 worker；未预期 accept 异常最多记录一次并终止对应 listener，不得无延迟无限重试。
+
+客户端 handler 使用有界调度器限制并发；服务停止时先拒绝新连接、关闭在途 socket，再有界等待 handler 退出，资源释放异常也必须归还 handler 槽位。HTTP 请求头必须在 32 KiB 内完整出现 `CRLFCRLF`，EOF 截断返回 400，超限返回 431；业务异常返回结构化 500，不能只断开连接。需要访问 IL2CPP 的库存、订单和稀客邀请命令继续回到 Unity 主线程，但每类队列有容量上限且每帧最多执行一个有效命令：尚未开始的命令超时后会被取消，主线程恢复后不得晚到执行；已经开始的命令等待确定结果，避免客户端在副作用已发生时重试。控制器销毁时先取消并唤醒排队命令，再等待 API handler。
+
+正式 Tauri 客户端的 Rust TCP 代理必须分别限制连接和响应读取：连接超时最长 5 秒，读取超时按前端命令要求最多允许 60 秒。不能用连接超时上限截断更新下载等长耗时请求，否则客户端会先报失败而 Mod 侧仍可能继续处理。
 
 端点：
 
+路由只接受下列规范路径。根路径 `/` 不代表健康检查或快照，`/api/*` 也不是这些路由的别名；不存在的路径/方法组合返回 404，GET、POST、OPTIONS 之外的方法返回 405。只读查询使用 `GET`；任何会写文件、修改运行时状态、更新服务配置、获取或释放控制权、创建诊断包、打开本机目录、访问网络更新状态或启动进程的操作都使用 `POST`。当前写操作仍使用 URL query 传递参数，尚未定义 JSON request body 契约。
+
 - `GET /health`：检查本地 API 是否启动，不需要 token。
-- `GET /local-api/config`：读取本机 endpoint、LAN listener 状态、LAN endpoint 和当前 Token；只允许回环客户端调用。
+- `GET /local-api/config`：读取本机 endpoint、LAN listener 状态、结构化 LAN endpoint 候选和当前 Token；每个候选包含地址、接口、默认网关、link-local 和推荐状态，只允许回环客户端调用。
 - `POST /local-api/config?lanEnabled=true|false&lanHost=auto|IPv4`：由 A 设备本机伴随窗口保存 LAN 开关和监听地址，并动态启停 LAN listener；本机回环 listener 不重启也不关闭。
 - `POST /local-api/token/regenerate`：重置本地 API Token，返回新 Token 并立即更新当前 API 鉴权；只允许回环客户端调用。
-- `GET /snapshot`：读取最新运行态快照。快照由 Unity 主线程按自动刷新节奏生成，网络线程只返回缓存 JSON。快照包含推荐状态、夜间稀客订单、任务状态、经营投喂任务目标、普客订单诊断和 `performanceMs` 快照耗时；任务状态优先遍历 `RunTimeScheduler.trackingMissions` 并调用只读 `RunTimeScheduler.ParseActiveMissionData()`，再结合全局 NPC、当前场景 NPC、`DaySceneMap`、当天/常驻 `RunTimeScheduler.scheduledEvents` 后置任务、跟踪交互物件、场景任务交互组件和未完成 `trackingMissions` fallback 补充来源，并优先从 `RunTimeDayScene.trackedNPCs` 反查 NPC 所在场景，缺失时用 `DataBaseDay.RefNPC().possibleDestinations` 解析可能场景。夜间经营时会通过 `ContainsSpecialNPCServeInWorkMission()` 读取当前稀客是否有已接取的投喂任务指定料理；普客诊断会扫描 HUD 订单和经营管理器桌位订单。完整 `runtimeData` 可能被节流省略，前端必须复用最近一次完整数据。
+- `GET /snapshot?knownSignature=...`：读取最新运行态快照。快照由 Unity 主线程按自动刷新节奏生成，网络线程只返回缓存 JSON；签名未变化时返回轻量 unchanged 响应。快照包含推荐状态、夜间稀客订单、任务状态、经营投喂任务目标、普客订单诊断、运行时目录元信息和 `performanceMs` 快照耗时，不包含完整 `RuntimeDataCatalog`。
+- `GET /runtime-data`：读取当前完整 `RuntimeDataCatalog`。伴随窗口只在本地没有目录缓存或 `/snapshot` 中的 `runtimeDataSignature` 变化时调用。
+- `GET /automation/lease`：读取当前自动化控制权状态。
 - `GET /logs/settings`：读取总日志开关、总日志路径、单文件分片大小、文件上限和总容量上限。
-- `GET /logs/config?aggregateLog=true|false&aggregateLogMaxFiles=30`：由伴随窗口回写总日志开关和文件上限；`aggregateLog` 会即时注册或移除 BepInEx 全局日志监听器。
-- `GET /logs/open-folder?target=aggregate`：打开总日志目录。
-- `GET /inventory/set?type=ingredient|beverage&id=ID&qty=数量`：在 Unity 主线程修改当前运行时材料或酒水库存。
-- `GET /inventory/bulk-set?type=ingredient|beverage&ids=ID1,ID2&qty=数量`：批量修改当前运行时材料或酒水库存；用于修改页的材料/酒水批量设为 `99`，只在批量结束后刷新一次运行时快照。
-- `GET /orders/prepare-next?...`：按伴随窗口传入的稀客订单执行准备步骤，可组合送达酒水、开始料理、出锅后直送和收藏限定。
-- `GET /logs/export-diagnostics?open=true`：生成诊断 zip，包含 manifest、当前 snapshot 和总日志分片尾部；`open=true` 会打开诊断包目录。
-- `GET /orders/complete-first?...`：按伴随窗口传入的稀客订单确认直接送达状态，必要时补送酒水，并在订单满足后触发评价。
-- `GET /orders/rare/dismiss?...`：按桌号和点单 Tag 删除一笔运行时稀客订单捕获缓存，用于清理偶发未被游戏移除事件命中的过时订单。
-- `GET /orders/normal/complete-first?...`：按请求中的订单 key、桌位、料理和酒水处理一笔普客订单。普客自动化可按 `autoNormal*` 阶段配置送达酒水、开始料理、出锅后直接送达料理，并在订单 `get_IsFullfilled()` 为真后调用 `EvaluateOrder()` 完成评价；该字段只表示订单已满足并可评价，前端仍需以 `HasEvaluated` 或订单消失判断真正完成。若订单只存在于 HUD / `OrderController`，但没有可执行 `GuestGroupController`，后端必须拒绝自动送达并返回不可执行诊断。
-- `GET /rare-guests/invitations?scope=current|all`：排队到 Unity 主线程，返回指定范围内的稀客邀请候选、当前已邀请列表和禁用原因。列表查询应默认返回全量候选，前端再按羁绊等级筛选显示，避免切换筛选时丢失其他等级选项。
-- `GET /rare-guests/invite-all?scope=current|all&levels=2,3`：按同一套候选扫描和判定逻辑批量邀请可邀请稀客；`levels` 可选，只邀请指定羁绊等级的可邀请项。`current` 候选优先使用 `DayScene.SceneManager.CurrentActiveMapLabel`、`RunTimeDayScene.GetMapNPCs()`、`DaySceneMap.allCharacters` 和场景中的 `CharacterConditionComponent`，若这些实时对象还未填充，则按当前地图反查 `DataBaseDay.GetAllNPCKeys()`、`AllMappedNPCsMapping`、`AllNPCsMapping` 或 `allNPCs` 中的 NPC key，再通过 `RefNPC().possibleDestinations` 判断所在地图，并用 `RunTimeDayScene.RefTrackedNPCAvailability()` 判断当前范围内的运行时可见性。`all` 候选会合并当前场景候选和全部日间静态 NPC 候选；全部静态候选不使用当前时间可见性作为硬过滤，避免 `TrackedNPC.ShouldShown(RemainActions)` 误删跨场景候选。当前场景候选为空时直接失败，不回退到 `DataBaseCharacter.GetSpecialGuestsAndMappedGuests()` 执行全量邀请。每个候选会读取 `RunTimeAlbum.GetOrGenerateSpecialNPCKizunaLevel()`、检查 `StatusTracker.HasNPCInvited()` 和当前等级成功邀请对话包；符合条件后直接调用 `StatusTracker.RecordInvitedGuest()` 写入今晚邀请名单。该端点不调用 `DaySceneChatSelectionPannel.InviteSpecGuest()`，避免触发随机失败和消耗今日尝试次数；也不以 `HasTemptInvited()` 作为跳过条件，避免旧版本或手动失败尝试把可写入邀请卡住。该端点不直接刷出稀客，不推进时间，不写 `Story.SpecialGuestControlled`。
+- `POST /logs/config?aggregateLog=true|false&aggregateLogMaxFiles=30`：由伴随窗口回写总日志开关和文件上限；`aggregateLog` 会即时注册或移除 BepInEx 全局日志监听器。
+- `POST /logs/open-folder?target=aggregate`：打开总日志目录。
+- `POST /inventory/set?type=ingredient|beverage&id=ID&qty=数量`：在 Unity 主线程通过 `RunTimeStorage` 原生 Range API 修改当前运行时材料或酒水库存，并回读校验最终数量；原生调用失败时不会绕过 callback 直写私有字典。
+- `POST /inventory/bulk-set?type=ingredient|beverage&ids=ID1,ID2&qty=数量`：批量修改当前运行时材料或酒水库存；用于修改页的材料/酒水批量设为 `99`，只在批量结束后刷新一次运行时快照。
+- `POST /orders/prepare-next?...`：按伴随窗口传入的稀客订单执行准备步骤，可组合送达酒水、开始料理、出锅后直送和收藏限定；调用方必须持有自动化 lease。
+- `POST /logs/export-diagnostics?open=true`：生成诊断 zip，包含 manifest、当前 snapshot、运行时目录和总日志分片尾部；`open=true` 会打开诊断包目录。
+- `POST /orders/complete-first?...`：按伴随窗口传入的稀客订单确认直接送达状态，必要时补送酒水，并在订单满足后触发评价；调用方必须持有自动化 lease。
+- `POST /orders/rare/dismiss?...`：按桌号和点单 Tag 删除一笔运行时稀客订单捕获缓存，用于清理偶发未被游戏移除事件命中的过时订单。
+- `POST /orders/normal/complete-first?...`：按请求中的订单 key、桌位、原订单目标和实际执行目标处理一笔普客订单；调用方必须持有自动化 lease。普客自动化可按 `autoNormal*` 阶段配置送达酒水、开始料理、出锅后直接送达料理，并在订单 `get_IsFullfilled()` 为真后调用 `EvaluateOrder()` 完成评价；该字段只表示订单已满足并可评价，前端仍需以 `HasEvaluated` 或订单消失判断真正完成。若订单只存在于 HUD / `OrderController`，但没有可执行 `GuestGroupController`，后端必须拒绝自动送达并返回不可执行诊断。
+- `POST /rare-guests/invitations?scope=current|all`：排队到 Unity 主线程，返回指定范围内的稀客邀请候选、当前已邀请列表和禁用原因。候选扫描会通过 `GetOrGenerateSpecialNPCKizunaLevel()` 补齐运行时羁绊状态，因此不是纯读请求；结果应默认返回全量候选，前端再按羁绊等级筛选显示，避免切换筛选时丢失其他等级选项。
+- `POST /rare-guests/invite-all?scope=current|all&levels=2,3`：按同一套候选扫描和判定逻辑批量邀请可邀请稀客；`levels` 可选，只邀请指定羁绊等级的可邀请项。`current` 候选优先使用 `DayScene.SceneManager.CurrentActiveMapLabel`、`RunTimeDayScene.GetMapNPCs()`、`DaySceneMap.allCharacters` 和场景中的 `CharacterConditionComponent`，若这些实时对象还未填充，则按当前地图反查 `DataBaseDay.GetAllNPCKeys()`、`AllMappedNPCsMapping`、`AllNPCsMapping` 或 `allNPCs` 中的 NPC key，再通过 `RefNPC().possibleDestinations` 判断所在地图，并用 `RunTimeDayScene.RefTrackedNPCAvailability()` 判断当前范围内的运行时可见性。`all` 候选会合并当前场景候选和全部日间静态 NPC 候选；全部静态候选不使用当前时间可见性作为硬过滤，避免 `TrackedNPC.ShouldShown(RemainActions)` 误删跨场景候选。当前场景候选为空时直接失败，不回退到 `DataBaseCharacter.GetSpecialGuestsAndMappedGuests()` 执行全量邀请。每个候选会读取 `RunTimeAlbum.GetOrGenerateSpecialNPCKizunaLevel()`、检查 `StatusTracker.HasNPCInvited()` 和当前等级成功邀请对话包；符合条件后直接调用 `StatusTracker.RecordInvitedGuest()` 写入今晚邀请名单。该端点不调用 `DaySceneChatSelectionPannel.InviteSpecGuest()`，避免触发随机失败和消耗今日尝试次数；也不以 `HasTemptInvited()` 作为跳过条件，避免旧版本或手动失败尝试把可写入邀请卡住。该端点不直接刷出稀客，不推进时间，不写 `Story.SpecialGuestControlled`。
+- `POST /rare-guests/invite?guestId=ID&scope=current|all`：邀请单个当前可邀请稀客。
+- `POST /automation/lease/acquire`、`POST /automation/lease/release`：获取或释放当前客户端的自动化控制权。
+- `POST /diagnostics/automation-decision?...`：把伴随窗口的自动化候选决策写入总日志。
+- `POST /ui-pinning/target?...`：更新游戏内料理、食材、酒水置顶和厨具高亮目标。
+- `GET /favorites`：读取收藏料理和收藏酒水。
+- `POST /favorites/add-recipe?...`、`POST /favorites/remove-recipe?id=...`、`POST /favorites/add-beverage?...`、`POST /favorites/remove-beverage?id=...`：增删收藏数据。
+- `GET /custom-recipes`：读取自定义推荐料理。
+- `POST /custom-recipes/upsert?...`、`POST /custom-recipes/remove?id=...`、`POST /custom-recipes/toggle?id=...&enabled=true|false`、`POST /custom-recipes/move?id=...&direction=up|down`：维护自定义推荐料理。
+- `POST /updates/status`：归并并返回当前更新检查、下载、暂存和安装程序状态；归并 updater 结果时可能写入或删除状态文件，因此不是只读查询。
+- `POST /updates/check`、`POST /updates/download`、`POST /updates/install-on-exit`：检查、下载或启动退出安装流程；更新服务按单操作串行。
 
-除 `/health` 外，端点都需要 `X-Mystia-Steward-Companion-Token`。Token 由插件生成并保存在 BepInEx 配置中，同机启动伴随窗口时通过 `--token=` 参数传入 Tauri 后端；A 设备本机设置页可以复制或重置 Token。远程局域网连接时，用户需要在 B 设备伴随窗口顶部连接区手动输入 A 设备的 endpoint 和 token，点击 `连接` 后才开始轮询。Tauri 伴随窗口会显示实时 Mod 工作台，默认包含 `概览`、`普客`、`稀客`、`经营中`、`任务`、`修改`、`帮助`、`设置` 八个页签；`概览` 内部按 `状态`、`库存`、`操作` 分栏，`设置` 内部按 `窗口`、`连接`、`推荐`、`自动化`、`更新` 分栏。窗口设置包含透明度、焦点切换、始终置顶、鼠标穿透锁定、手柄导航和显示调试信息；连接设置包含本地 API/LAN 连接配置；推荐设置包含订单排序、推荐权重、预算策略、缺失厨具过滤、任务料理/收藏料理/收藏酒水置顶、带库存显示和名称/库存排序的排除材料/酒水、同基础料理展示数量、游戏界面置顶和厨具高亮。Android 伴随窗口只作为 B 设备 LAN 客户端，不提供桌面托盘、置顶、鼠标穿透、焦点切换、单实例控制和游戏关闭自动退出；桌面鼠标穿透必须通过 Tauri 原生窗口 `set_ignore_cursor_events` 控制，不能只用 CSS `pointer-events` 模拟。帮助页内容来自 `apps/companion/src/data/help-content.json`，由前端渲染为目录树和详情面板，修改文案时优先改 JSON。`日志` 页签、扫描状态、运行时来源、性能耗时、订单来源和内部 key 这类诊断信息只在 `设置 -> 显示调试信息` 开启后显示。它通过 Tauri 原生后端读取本地 API。
+### v1.1.x 一次性迁移边界
+
+`v1.1.x` 只保留两项明确的一次性迁移：当新 GUID 配置不存在时，把 `BepInEx/config/com.tyukki.mystia-steward.cfg` 复制为 `com.tyukki.mystia-steward-companion.cfg`；Local API 启动阶段先把 `favorites.json` 中 `source=manual` 的料理写入 `custom-recipes.json`，写入成功后再从收藏文件删除旧条目，使后续 `GET /custom-recipes` 保持只读。两项迁移都计划在 `v1.2.0` 删除，不是长期兼容层；除这两项外，不保留旧路径、旧类型或旧 API 路由别名。需要从更早版本升级的安装，应先启动任一 `v1.1.x` 版本并确认迁移完成，再升级到 `v1.2.0` 或更高版本。
+
+除 `/health` 外，端点都需要 `X-Mystia-Steward-Companion-Token`。Token 由插件生成并保存在 BepInEx 配置中，同机启动伴随窗口时通过 `--token=` 参数传入 Tauri 后端；A 设备本机设置页可以复制或重置 Token。远程局域网连接时，用户需要在 B 设备伴随窗口顶部连接区手动输入 A 设备的 endpoint 和 token，点击 `连接` 后才开始轮询。Tauri 伴随窗口会显示实时 Mod 工作台，默认包含 `概览`、`普客`、`稀客`、`自定义推荐料理`、`经营中`、`任务`、`修改`、`帮助`、`设置` 九个页签；`概览` 内部按 `状态`、`库存`、`操作` 分栏，`设置` 内部按 `窗口`、`连接`、`推荐`、`自动化`、`更新` 分栏。窗口设置包含透明度、焦点切换、始终置顶、鼠标穿透锁定、手柄导航和显示调试信息；连接设置包含本地 API/LAN 连接配置并逐项展示可复制的 endpoint；推荐设置包含订单排序、推荐权重、预算策略、缺失厨具过滤、任务料理/收藏料理/收藏酒水置顶、带库存显示和名称/库存排序的排除材料/酒水、同基础料理展示数量、游戏界面置顶和厨具高亮。Android 伴随窗口只作为 B 设备 LAN 客户端，不提供桌面托盘、置顶、鼠标穿透、焦点切换、单实例控制和游戏关闭自动退出；桌面鼠标穿透必须通过 Tauri 原生窗口 `set_ignore_cursor_events` 控制，不能只用 CSS `pointer-events` 模拟。帮助页内容来自 `apps/companion/src/data/help-content.json`，由前端渲染为目录树和详情面板，修改文案时优先改 JSON。`日志` 页签、扫描状态、运行时来源、性能耗时、订单来源和内部 key 这类诊断信息只在 `设置 -> 显示调试信息` 开启后显示。正式 Tauri 客户端通过原生后端读取本地 API。
 
 伴随窗口的自动化能力只在前端 `设置` 页总开关开启后运行。稀客并发、普客并发、最大重试和最大回退都由 `CompanionPreferences` 配置控制，默认值分别为 `2`、`3`、`3`、`2`；稀客完成订单评价每轮仍最多执行 1 笔，普客按普客并发数处理。经营中订单排序支持点单顺序和稀客分组，必须同时影响经营中列表、专注模式、游戏界面置顶和自动化选单；料理/酒水排序配置会影响稀客页、经营中页、专注模式和自动化选单，新增排序或置顶规则时需要同时覆盖这些入口。同基础料理展示数量只裁剪页面推荐行，自动化必须从独立执行候选构造目标，不能因为页面隐藏了加料变体而跳过可执行方案。预算策略、订单级免费状态、任务料理/收藏料理/收藏酒水置顶、排除材料和排除酒水都必须进入推荐链路和缓存签名；预算可阻止、提示或忽略超预算方案，订单级 `isFreeOrder=true` 时不应用付款预算阻止，排除材料需要同时过滤基础配方和加料。任务料理置顶只在当前稀客有已接取投喂任务且目标料理通过解锁、库存、预算、排除项和缺失厨具过滤后生效；收藏料理置顶和收藏酒水置顶分别只影响对应列表，且不绕过硬过滤。偏好命中但不满足点单的料理/酒水直接进入统一推荐列表并标识为 `偏好备选`，自动化根据排序后的执行候选锁定目标；收藏限定开启时，锁定目标仍必须命中收藏。稀客与普客自动化的阶段配置必须独立保存和独立传参：稀客使用 `autoPrep*` 配置，普客使用 `autoNormal*` 配置；普客阶段包括送达酒水、开始料理、送达料理、完成订单和出错暂停，不能复用稀客送酒或完成订单开关。自动开始料理固定尝试完成原生 QTE 奖励结算，不提供跳过开关。普客自动化需要按订单 key 维护独立状态，非临时错误只暂停对应普客订单，不得暂停稀客自动化或其他普客订单；已进入制作中的普客料理必须绑定目标订单/桌位，后续轮询检测到 pending 后只能等待，不得在同类多个厨具上重复开始同一订单料理。普客订单变化需要立即触发一次处理，常规重复轮询仍需节流。C# pending target 必须优先保存并匹配 `OrderKey`，避免桌位复用或同料理多单时串单；如果游戏重建普客订单对象导致旧 key 失效，只能在桌号、料理和酒水仍一致时重匹配当前订单继续直送。稀客 pending target 必须保留 trace 与料理/酒水 Tag，避免旧稀客订单待办串到后续订单。稀客与普客的开锅请求必须经过前端同一轮厨具预约表，预约容量来自当前已摆放厨具快照；同类厨具容量不足时，普客待处理订单优先保留容量，稀客订单进入等待态并继续处理不占厨具的送酒/完成步骤。稀客和普客都必须支持料理和酒水单项先送达：送达提交必须同步顾客桌面显示和订单状态，只有 `get_IsFullfilled()` 为真时才能调用 `EvaluateOrder()`；`get_IsFullfilled()` 不是终态字段，普客快照还需要区分 `ReadyToEvaluate` 和 `HasEvaluated`。酒水创建对象后必须在送达提交成功后才扣库存；料理出锅后直接送达目标订单，送达失败时保留成品和 pending 以便下一轮重试。子选项默认关闭并记忆用户上次配置。临时失败例如厨具占用、运行时对象暂不可读、桌面显示暂不可写，应保持可重试，不应永久停止自动任务；非临时错误在对应订单类型的 `出错时暂停` 开启时才暂停当前订单。前端状态机只将送酒、开锅、单项送达提交和触发评价视为真实进展；稀客页下拉选项不再按存档进度集合过滤，只按经营场景、可读名称和可用 Tag 过滤。
 
@@ -536,13 +564,15 @@ Port = 32145
 
 总日志文件 `BepInEx/config/MystiaStewardCompanion/aggregate-mod.log` 默认关闭，由 `Diagnostics.EnableAggregateModLog` 或日志页“总日志”开关启用。启用后注册 BepInEx 全局 `ILogListener`，捕获所有日志源并按时间、级别、来源和线程标注；C# 侧开锅成功/失败、pending 直送、pending 移除、经营诊断和运行时固定数据诊断也写入该文件。连续相同 automation action、目标和消息会合并为 `repeat` 摘要，避免厨具冻结、订单对象短暂不可读等临时状态刷爆日志。单个文件达到 10 MB 后拆分为递增编号分片；默认保留 30 个文件，约 300 MB，超过上限时删除最旧分片。该服务不得调用插件日志源回写自身状态，避免递归；写入、分片和裁剪失败必须吞掉异常，不得影响游戏流程。
 
+上述分片只保护 `aggregate-mod.log`，不保护 BepInEx/Unity 共享的 `LogOutput.log`、`output_log.txt` 或 `Player.log`。后台 worker 不得用无限异常重试向插件日志源刷写；本插件也不得接管、截断或删除共享日志。
+
 代理工具注意事项：
 
 - 默认同机使用 `127.0.0.1`，不要改成 `localhost`。
 - LAN 连接只支持明确的私网 IPv4 endpoint，例如 `http://192.168.1.20:32145`；Tauri 代理会拒绝公网地址、`0.0.0.0` 和 HTTPS。
-- 若代理扩展或系统代理拦截本地请求，将 `127.0.0.1`、`localhost`、A 设备局域网 IP 和回环地址加入直连/绕过列表。
+- 正式 Tauri runtime 使用原生 TCP，不经过 WebView 或系统 HTTP 代理；只有浏览器开发模式需要考虑浏览器代理和 CORS。
 - 若同机伴随窗口无法连接，先确认日志中出现 `Local API loopback listener is available at http://127.0.0.1:32145`，再检查端口占用。
-- 若 B 设备无法连接，先在 A 设备设置页连接面板确认 LAN 状态和 LAN 地址，再检查 Windows 防火墙入站规则。
+- 若 B 设备无法连接，先在 A 设备设置页确认 LAN 状态并选择与 B 设备同网段的 endpoint；再用 B 设备浏览器访问 `/health`，据此区分地址/防火墙/AP 隔离与 Token 问题。
 - 受保护端点需要 token；调试伴随窗口时使用 Tauri 运行环境或显式携带 token 的本地客户端。
 
 ## 输入处理

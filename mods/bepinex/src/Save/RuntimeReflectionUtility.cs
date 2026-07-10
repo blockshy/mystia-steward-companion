@@ -6,33 +6,39 @@ namespace MystiaStewardCompanion.Save;
 
 internal static class RuntimeReflectionUtility
 {
-    private static readonly ConcurrentDictionary<string, CachedLookup<Type>> TypeCache = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, Type> TypeCache = new(StringComparer.Ordinal);
     private static readonly ConcurrentDictionary<MemberCacheKey, CachedLookup<PropertyInfo>> PropertyCache = new();
     private static readonly ConcurrentDictionary<MemberCacheKey, CachedLookup<FieldInfo>> FieldCache = new();
     private static readonly ConcurrentDictionary<MethodCacheKey, CachedLookup<MethodInfo>> MethodCache = new();
 
     public static Type? FindType(string fullName)
     {
-        return TypeCache.GetOrAdd(fullName, static key =>
+        if (TypeCache.TryGetValue(fullName, out var cachedType)) return cachedType;
+
+        var direct = Type.GetType(fullName, throwOnError: false);
+        if (direct != null)
         {
-            var direct = Type.GetType(key, throwOnError: false);
-            if (direct != null) return new CachedLookup<Type>(direct);
+            TypeCache.TryAdd(fullName, direct);
+            return direct;
+        }
 
-            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+        foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+        {
+            try
             {
-                try
-                {
-                    var type = assembly.GetType(key, throwOnError: false);
-                    if (type != null) return new CachedLookup<Type>(type);
-                }
-                catch
-                {
-                    // Ignore assemblies that cannot resolve unrelated IL2CPP types.
-                }
+                var type = assembly.GetType(fullName, throwOnError: false);
+                if (type == null) continue;
+                TypeCache.TryAdd(fullName, type);
+                return type;
             }
+            catch
+            {
+                // Ignore assemblies that cannot resolve unrelated IL2CPP types.
+            }
+        }
 
-            return new CachedLookup<Type>(null);
-        }).Value;
+        // Assemblies can load after plugin startup, so failed lookups must remain retryable.
+        return null;
     }
 
     public static object? GetSingletonInstance(Type type)

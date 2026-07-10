@@ -6,7 +6,7 @@
 //! 发来的请求转发到游戏进程内的本地 API。
 
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{self, ErrorKind, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -60,6 +60,85 @@ const DEFAULT_WINDOW_SWITCH_COOLDOWN_MS: u64 = 800;
 const MIN_WINDOW_SWITCH_COOLDOWN_MS: u64 = 250;
 const MAX_WINDOW_SWITCH_COOLDOWN_MS: u64 = 2000;
 const PROJECT_RELEASES_URL: &str = "https://github.com/blockshy/mystia-steward-companion/releases";
+
+type LocalApiResult<T> = Result<T, LocalApiError>;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LocalApiErrorCode {
+    InvalidEndpoint,
+    InvalidRequest,
+    ConnectTimeout,
+    ConnectionRefused,
+    ConnectFailed,
+    ReadTimeout,
+    ReadFailed,
+    WriteTimeout,
+    WriteFailed,
+    Unauthorized,
+    Forbidden,
+    HttpStatus,
+    InvalidResponse,
+    InternalError,
+}
+
+impl LocalApiErrorCode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidEndpoint => "invalid-endpoint",
+            Self::InvalidRequest => "invalid-request",
+            Self::ConnectTimeout => "connect-timeout",
+            Self::ConnectionRefused => "connection-refused",
+            Self::ConnectFailed => "connect-failed",
+            Self::ReadTimeout => "read-timeout",
+            Self::ReadFailed => "read-failed",
+            Self::WriteTimeout => "write-timeout",
+            Self::WriteFailed => "write-failed",
+            Self::Unauthorized => "unauthorized",
+            Self::Forbidden => "forbidden",
+            Self::HttpStatus => "http-status",
+            Self::InvalidResponse => "invalid-response",
+            Self::InternalError => "internal-error",
+        }
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct LocalApiError {
+    code: LocalApiErrorCode,
+    detail: String,
+}
+
+impl LocalApiError {
+    fn new(code: LocalApiErrorCode, detail: impl Into<String>) -> Self {
+        Self {
+            code,
+            detail: detail.into(),
+        }
+    }
+
+    fn encode(&self) -> String {
+        let detail = self
+            .detail
+            .chars()
+            .map(|character| match character {
+                '\r' | '\n' | '\0' => ' ',
+                _ => character,
+            })
+            .collect::<String>();
+        if detail.is_empty() {
+            format!("local-api:{}", self.code.as_str())
+        } else {
+            format!("local-api:{}:{detail}", self.code.as_str())
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum LocalApiIoStage {
+    Connect,
+    Read,
+    Write,
+}
 
 #[cfg(desktop)]
 struct GamePidState(Arc<Mutex<Option<u32>>>);
@@ -124,6 +203,7 @@ async fn request_local_api(
         client_label,
     )
     .await
+    .map_err(|error| error.encode())
 }
 
 async fn request_local_api_with_frontend_timeout_async(
@@ -134,7 +214,7 @@ async fn request_local_api_with_frontend_timeout_async(
     timeout_ms: Option<u64>,
     client_id: Option<String>,
     client_label: Option<String>,
-) -> Result<String, String> {
+) -> LocalApiResult<String> {
     tauri::async_runtime::spawn_blocking(move || {
         request_local_api_with_frontend_timeout(
             &method,
@@ -147,7 +227,12 @@ async fn request_local_api_with_frontend_timeout_async(
         )
     })
     .await
-    .map_err(|error| format!("local api task failed: {error}"))?
+    .map_err(|error| {
+        LocalApiError::new(
+            LocalApiErrorCode::InternalError,
+            format!("local api task failed: {error}"),
+        )
+    })?
 }
 
 fn request_local_api_with_frontend_timeout(
@@ -158,23 +243,35 @@ fn request_local_api_with_frontend_timeout(
     timeout_ms: Option<u64>,
     client_id: Option<&str>,
     client_label: Option<&str>,
-) -> Result<String, String> {
-    let timeout = normalize_local_api_timeout(timeout_ms);
+) -> LocalApiResult<String> {
+    let timeouts = normalize_local_api_timeouts(timeout_ms);
     request_local_api_with_timeout(
         method,
         endpoint,
         path_override,
         token,
-        timeout,
-        timeout,
-        Duration::from_millis(timeout.as_millis().min(1200) as u64),
+        timeouts.connect,
+        timeouts.read,
+        timeouts.write,
         client_id,
         client_label,
     )
 }
 
-fn normalize_local_api_timeout(timeout_ms: Option<u64>) -> Duration {
-    Duration::from_millis(timeout_ms.unwrap_or(1800).clamp(300, 5000))
+#[derive(Debug, PartialEq, Eq)]
+struct LocalApiTimeouts {
+    connect: Duration,
+    read: Duration,
+    write: Duration,
+}
+
+fn normalize_local_api_timeouts(timeout_ms: Option<u64>) -> LocalApiTimeouts {
+    let read_ms = timeout_ms.unwrap_or(1800).clamp(300, 60_000);
+    LocalApiTimeouts {
+        connect: Duration::from_millis(read_ms.min(5_000)),
+        read: Duration::from_millis(read_ms),
+        write: Duration::from_millis(read_ms.min(1_200)),
+    }
 }
 
 /// 使用最小 HTTP 客户端访问 Mod 本地 API。
@@ -191,7 +288,7 @@ fn request_local_api_with_timeout(
     write_timeout: Duration,
     client_id: Option<&str>,
     client_label: Option<&str>,
-) -> Result<String, String> {
+) -> LocalApiResult<String> {
     let target = LocalApiTarget::parse(&endpoint)?;
     let path = path_override.unwrap_or(&target.path);
     let method = normalize_http_method(method)?;
@@ -206,14 +303,24 @@ fn request_local_api_with_timeout(
 
     let address = SocketAddr::from((target.host, target.port));
     let mut stream = TcpStream::connect_timeout(&address, connect_timeout)
-        .map_err(|error| format!("connect failed: {error}"))?;
+        .map_err(|error| map_local_api_io_error(LocalApiIoStage::Connect, error))?;
 
     stream
         .set_read_timeout(Some(read_timeout))
-        .map_err(|error| format!("set read timeout failed: {error}"))?;
+        .map_err(|error| {
+            LocalApiError::new(
+                LocalApiErrorCode::ReadFailed,
+                format!("set read timeout failed: {error}"),
+            )
+        })?;
     stream
         .set_write_timeout(Some(write_timeout))
-        .map_err(|error| format!("set write timeout failed: {error}"))?;
+        .map_err(|error| {
+            LocalApiError::new(
+                LocalApiErrorCode::WriteFailed,
+                format!("set write timeout failed: {error}"),
+            )
+        })?;
 
     let auth_header = if token.trim().is_empty() {
         String::new()
@@ -236,14 +343,14 @@ fn request_local_api_with_timeout(
     );
     stream
         .write_all(request.as_bytes())
-        .map_err(|error| format!("request failed: {error}"))?;
+        .map_err(|error| map_local_api_io_error(LocalApiIoStage::Write, error))?;
 
     let mut response = String::new();
     stream
         .read_to_string(&mut response)
-        .map_err(|error| format!("response failed: {error}"))?;
+        .map_err(|error| map_local_api_io_error(LocalApiIoStage::Read, error))?;
 
-    parse_http_body(&response)
+    parse_http_response_body(&response)
 }
 
 #[tauri::command]
@@ -588,6 +695,7 @@ fn apply_window_transparent_background(window: &WebviewWindow) {
     let _ = window.set_background_color(Some(Color(0, 0, 0, 0)));
 }
 
+#[derive(Debug)]
 struct LocalApiTarget {
     host: Ipv4Addr,
     port: u16,
@@ -595,14 +703,18 @@ struct LocalApiTarget {
 }
 
 impl LocalApiTarget {
-    fn parse(input: &str) -> Result<Self, String> {
+    fn parse(input: &str) -> LocalApiResult<Self> {
         let trimmed = input.trim().trim_end_matches('/');
         let without_scheme = if let Some(rest) = trimmed.strip_prefix("http://") {
             rest
         } else if trimmed.starts_with("https://") {
-            return Err("local API only supports http endpoints".to_string());
+            return Err(invalid_local_api_endpoint(
+                "local API only supports http endpoints",
+            ));
         } else if trimmed.contains("://") {
-            return Err("invalid local API endpoint scheme".to_string());
+            return Err(invalid_local_api_endpoint(
+                "invalid local API endpoint scheme",
+            ));
         } else {
             trimmed
         };
@@ -632,67 +744,167 @@ impl LocalApiTarget {
     }
 }
 
-fn parse_authority(authority: &str) -> Result<(&str, u16), String> {
+fn invalid_local_api_endpoint(detail: impl Into<String>) -> LocalApiError {
+    LocalApiError::new(LocalApiErrorCode::InvalidEndpoint, detail)
+}
+
+fn parse_authority(authority: &str) -> LocalApiResult<(&str, u16)> {
     let (host, port_text) = authority
         .rsplit_once(':')
-        .ok_or_else(|| "missing local API port".to_string())?;
+        .ok_or_else(|| invalid_local_api_endpoint("missing local API port"))?;
     if host.trim().is_empty() {
-        return Err("missing local API host".to_string());
+        return Err(invalid_local_api_endpoint("missing local API host"));
     }
     let port = port_text
         .parse::<u16>()
-        .map_err(|_| "invalid local API port".to_string())?;
+        .map_err(|_| invalid_local_api_endpoint("invalid local API port"))?;
     Ok((host, port))
 }
 
-fn parse_local_api_host(host: &str) -> Result<Ipv4Addr, String> {
+fn parse_local_api_host(host: &str) -> LocalApiResult<Ipv4Addr> {
     if host.eq_ignore_ascii_case("localhost") {
         return Ok(Ipv4Addr::LOCALHOST);
     }
 
     let address = host.parse::<Ipv4Addr>().map_err(|_| {
-        "local API host must be 127.0.0.1 or a private LAN IPv4 address".to_string()
+        invalid_local_api_endpoint(
+            "local API host must be 127.0.0.1 or a private LAN IPv4 address",
+        )
     })?;
     if address == Ipv4Addr::UNSPECIFIED {
-        return Err(
-            "0.0.0.0 is a bind address and cannot be used as a connection endpoint".to_string(),
-        );
+        return Err(invalid_local_api_endpoint(
+            "0.0.0.0 is a bind address and cannot be used as a connection endpoint",
+        ));
     }
     if address.is_loopback() || address.is_private() || address.is_link_local() {
         return Ok(address);
     }
 
-    Err("only loopback or private LAN IPv4 endpoints are allowed".to_string())
+    Err(invalid_local_api_endpoint(
+        "only loopback or private LAN IPv4 endpoints are allowed",
+    ))
 }
 
-fn validate_http_fragment(value: &str, label: &str) -> Result<(), String> {
+fn validate_http_fragment(value: &str, label: &str) -> LocalApiResult<()> {
     if value.contains('\r') || value.contains('\n') {
-        return Err(format!("invalid {label}"));
+        return Err(LocalApiError::new(
+            LocalApiErrorCode::InvalidRequest,
+            format!("invalid {label}"),
+        ));
     }
 
     Ok(())
 }
 
-fn normalize_http_method(method: &str) -> Result<&'static str, String> {
+fn normalize_http_method(method: &str) -> LocalApiResult<&'static str> {
     if method.eq_ignore_ascii_case("GET") {
         return Ok("GET");
     }
     if method.eq_ignore_ascii_case("POST") {
         return Ok("POST");
     }
-    Err(format!("unsupported local api method: {method}"))
+    Err(LocalApiError::new(
+        LocalApiErrorCode::InvalidRequest,
+        format!("unsupported local api method: {method}"),
+    ))
 }
 
-fn parse_http_body(response: &str) -> Result<String, String> {
+fn map_local_api_io_error(stage: LocalApiIoStage, error: io::Error) -> LocalApiError {
+    let code = match (stage, error.kind()) {
+        (LocalApiIoStage::Connect, ErrorKind::TimedOut | ErrorKind::WouldBlock) => {
+            LocalApiErrorCode::ConnectTimeout
+        }
+        (LocalApiIoStage::Connect, ErrorKind::ConnectionRefused) => {
+            LocalApiErrorCode::ConnectionRefused
+        }
+        (LocalApiIoStage::Connect, _) => LocalApiErrorCode::ConnectFailed,
+        (LocalApiIoStage::Read, ErrorKind::TimedOut | ErrorKind::WouldBlock) => {
+            LocalApiErrorCode::ReadTimeout
+        }
+        (LocalApiIoStage::Read, ErrorKind::InvalidData) => {
+            LocalApiErrorCode::InvalidResponse
+        }
+        (LocalApiIoStage::Read, _) => LocalApiErrorCode::ReadFailed,
+        (LocalApiIoStage::Write, ErrorKind::TimedOut | ErrorKind::WouldBlock) => {
+            LocalApiErrorCode::WriteTimeout
+        }
+        (LocalApiIoStage::Write, _) => LocalApiErrorCode::WriteFailed,
+    };
+    LocalApiError::new(code, error.to_string())
+}
+
+fn invalid_http_response(detail: impl Into<String>) -> LocalApiError {
+    LocalApiError::new(LocalApiErrorCode::InvalidResponse, detail)
+}
+
+fn parse_http_response_body(response: &str) -> LocalApiResult<String> {
     let (head, body) = response
         .split_once("\r\n\r\n")
-        .ok_or_else(|| "invalid HTTP response".to_string())?;
-    let status = head.lines().next().unwrap_or_default();
-    if !status.contains(" 200 ") {
-        return Err(status.to_string());
+        .ok_or_else(|| invalid_http_response("missing HTTP header terminator"))?;
+    let mut lines = head.split("\r\n");
+    let status_line = lines
+        .next()
+        .ok_or_else(|| invalid_http_response("missing HTTP status line"))?;
+    let mut status_parts = status_line.split_ascii_whitespace();
+    let version = status_parts
+        .next()
+        .ok_or_else(|| invalid_http_response("missing HTTP version"))?;
+    if version != "HTTP/1.0" && version != "HTTP/1.1" {
+        return Err(invalid_http_response("unsupported HTTP version"));
+    }
+    let status_code = status_parts
+        .next()
+        .ok_or_else(|| invalid_http_response("missing HTTP status code"))?
+        .parse::<u16>()
+        .map_err(|_| invalid_http_response("invalid HTTP status code"))?;
+    if !(100..=599).contains(&status_code) {
+        return Err(invalid_http_response("HTTP status code is out of range"));
     }
 
-    Ok(body.to_string())
+    let mut content_length = None;
+    for line in lines {
+        let (name, value) = line
+            .split_once(':')
+            .ok_or_else(|| invalid_http_response("malformed HTTP header"))?;
+        if name.trim().is_empty() {
+            return Err(invalid_http_response("empty HTTP header name"));
+        }
+        if name.eq_ignore_ascii_case("content-length") {
+            let parsed = value
+                .trim()
+                .parse::<usize>()
+                .map_err(|_| invalid_http_response("invalid Content-Length"))?;
+            if content_length.replace(parsed).is_some() {
+                return Err(invalid_http_response("duplicate Content-Length"));
+            }
+        }
+        if name.eq_ignore_ascii_case("transfer-encoding")
+            && !value.trim().eq_ignore_ascii_case("identity")
+        {
+            return Err(invalid_http_response(
+                "unsupported HTTP transfer encoding",
+            ));
+        }
+    }
+    if content_length.is_some_and(|expected| expected != body.len()) {
+        return Err(invalid_http_response("HTTP body length does not match"));
+    }
+
+    match status_code {
+        200 => Ok(body.to_string()),
+        401 => Err(LocalApiError::new(
+            LocalApiErrorCode::Unauthorized,
+            status_code.to_string(),
+        )),
+        403 => Err(LocalApiError::new(
+            LocalApiErrorCode::Forbidden,
+            status_code.to_string(),
+        )),
+        _ => Err(LocalApiError::new(
+            LocalApiErrorCode::HttpStatus,
+            status_code.to_string(),
+        )),
+    }
 }
 
 fn validate_project_release_url(url: &str) -> Result<&str, String> {
@@ -1397,5 +1609,173 @@ mod windows_hotkey {
             wMsgFilterMin: Uint,
             wMsgFilterMax: Uint,
         ) -> Bool;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_loopback_and_private_lan_endpoints() {
+        let loopback = LocalApiTarget::parse("http://localhost:32145").unwrap();
+        assert_eq!(loopback.host, Ipv4Addr::LOCALHOST);
+        assert_eq!(loopback.port, 32145);
+        assert_eq!(loopback.path, "/snapshot");
+
+        let lan = LocalApiTarget::parse("http://192.168.50.12:42145/health?full=1").unwrap();
+        assert_eq!(lan.host, Ipv4Addr::new(192, 168, 50, 12));
+        assert_eq!(lan.port, 42145);
+        assert_eq!(lan.path, "/health?full=1");
+    }
+
+    #[test]
+    fn rejects_non_local_or_malformed_endpoints_with_stable_code() {
+        for endpoint in [
+            "https://192.168.1.8:32145",
+            "http://8.8.8.8:32145",
+            "http://0.0.0.0:32145",
+            "http://192.168.1.8",
+            "http://localhost:not-a-port",
+        ] {
+            let error = LocalApiTarget::parse(endpoint).unwrap_err();
+            assert_eq!(error.code, LocalApiErrorCode::InvalidEndpoint, "{endpoint}");
+            assert!(error.encode().starts_with("local-api:invalid-endpoint"));
+        }
+    }
+
+    #[test]
+    fn parses_valid_http_response_body() {
+        let body = r#"{"ok":true}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+
+        assert_eq!(parse_http_response_body(&response).unwrap(), body);
+    }
+
+    #[test]
+    fn maps_http_statuses_to_stable_error_codes() {
+        let cases = [
+            (401, LocalApiErrorCode::Unauthorized, "unauthorized"),
+            (403, LocalApiErrorCode::Forbidden, "forbidden"),
+            (503, LocalApiErrorCode::HttpStatus, "http-status"),
+        ];
+
+        for (status, expected_code, encoded_code) in cases {
+            let response = format!("HTTP/1.1 {status} Failure\r\nContent-Length: 0\r\n\r\n");
+            let error = parse_http_response_body(&response).unwrap_err();
+            assert_eq!(error.code, expected_code);
+            assert_eq!(error.detail, status.to_string());
+            assert_eq!(error.encode(), format!("local-api:{encoded_code}:{status}"));
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_http_responses_with_stable_code() {
+        for response in [
+            "not-http",
+            "NOT-HTTP 200 OK\r\n\r\n{}",
+            "HTTP/1.1 nope OK\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nBroken-Header\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nContent-Length: 99\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
+        ] {
+            let error = parse_http_response_body(response).unwrap_err();
+            assert_eq!(error.code, LocalApiErrorCode::InvalidResponse, "{response}");
+            assert!(error.encode().starts_with("local-api:invalid-response"));
+        }
+    }
+
+    #[test]
+    fn maps_io_stages_to_stable_error_codes() {
+        let cases = [
+            (
+                LocalApiIoStage::Connect,
+                ErrorKind::TimedOut,
+                LocalApiErrorCode::ConnectTimeout,
+            ),
+            (
+                LocalApiIoStage::Connect,
+                ErrorKind::ConnectionRefused,
+                LocalApiErrorCode::ConnectionRefused,
+            ),
+            (
+                LocalApiIoStage::Connect,
+                ErrorKind::NetworkUnreachable,
+                LocalApiErrorCode::ConnectFailed,
+            ),
+            (
+                LocalApiIoStage::Read,
+                ErrorKind::WouldBlock,
+                LocalApiErrorCode::ReadTimeout,
+            ),
+            (
+                LocalApiIoStage::Read,
+                ErrorKind::UnexpectedEof,
+                LocalApiErrorCode::ReadFailed,
+            ),
+            (
+                LocalApiIoStage::Read,
+                ErrorKind::InvalidData,
+                LocalApiErrorCode::InvalidResponse,
+            ),
+            (
+                LocalApiIoStage::Write,
+                ErrorKind::TimedOut,
+                LocalApiErrorCode::WriteTimeout,
+            ),
+            (
+                LocalApiIoStage::Write,
+                ErrorKind::BrokenPipe,
+                LocalApiErrorCode::WriteFailed,
+            ),
+        ];
+
+        for (stage, kind, expected_code) in cases {
+            let error = map_local_api_io_error(stage, io::Error::from(kind));
+            assert_eq!(error.code, expected_code);
+            assert!(error.encode().starts_with(&format!(
+                "local-api:{}",
+                expected_code.as_str()
+            )));
+        }
+    }
+
+    #[test]
+    fn keeps_local_api_stage_timeouts_independently_bounded() {
+        assert_eq!(
+            normalize_local_api_timeouts(None),
+            LocalApiTimeouts {
+                connect: Duration::from_millis(1_800),
+                read: Duration::from_millis(1_800),
+                write: Duration::from_millis(1_200),
+            }
+        );
+        assert_eq!(
+            normalize_local_api_timeouts(Some(8_000)),
+            LocalApiTimeouts {
+                connect: Duration::from_millis(5_000),
+                read: Duration::from_millis(8_000),
+                write: Duration::from_millis(1_200),
+            }
+        );
+        assert_eq!(
+            normalize_local_api_timeouts(Some(600_000)),
+            LocalApiTimeouts {
+                connect: Duration::from_millis(5_000),
+                read: Duration::from_millis(60_000),
+                write: Duration::from_millis(1_200),
+            }
+        );
+        assert_eq!(
+            normalize_local_api_timeouts(Some(1)),
+            LocalApiTimeouts {
+                connect: Duration::from_millis(300),
+                read: Duration::from_millis(300),
+                write: Duration::from_millis(300),
+            }
+        );
     }
 }

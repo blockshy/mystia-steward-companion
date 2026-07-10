@@ -249,7 +249,7 @@ internal static partial class RuntimeOrderPreparationService
             if (!IsMatchingNormalOrder(order, request)) continue;
 
             var controller = FindControllerForOrder(manager, order, request);
-            if (controller != null && SpecialBusinessOrderClassifier.Classify(order, controller).BlocksNormalAutomation)
+            if (controller != null && !SpecialBusinessOrderClassifier.Classify(order, controller).AutomationAllowed)
             {
                 continue;
             }
@@ -305,6 +305,7 @@ internal static partial class RuntimeOrderPreparationService
             ExtraIngredientIds = request.ExtraIngredientIds,
             PredictedFoodTags = request.PredictedFoodTags,
             WackyTargetFoodTags = request.WackyTargetFoodTags,
+            ExecutionMode = request.ExecutionMode,
             ExecutionReason = request.ExecutionReason,
             BeverageId = request.BeverageId,
             BeverageName = request.BeverageName,
@@ -387,7 +388,7 @@ internal static partial class RuntimeOrderPreparationService
     private static bool IsMatchingNormalOrder(object order, OrderPreparationRequest request, object? controller = null)
     {
         if (!IsNormalOrder(order)) return false;
-        if (SpecialBusinessOrderClassifier.Classify(order, controller).BlocksNormalAutomation) return false;
+        if (!SpecialBusinessOrderClassifier.Classify(order, controller).AutomationAllowed) return false;
         if (!string.IsNullOrWhiteSpace(request.OrderKey)
             && !string.Equals(BuildRuntimeOrderKey(order), request.OrderKey, StringComparison.Ordinal))
         {
@@ -712,7 +713,15 @@ internal static partial class RuntimeOrderPreparationService
         var tagId = ToInt(raw, int.MinValue);
         if (tagId != int.MinValue)
         {
-            var tagName = isFood ? TryReadFoodTagName(tagId) : TryReadBeverageTagName(tagId);
+            string tagName;
+            if (isFood)
+            {
+                _ = TryReadFoodTagName(tagId, out tagName);
+            }
+            else
+            {
+                tagName = TryReadBeverageTagName(tagId);
+            }
             if (!string.IsNullOrWhiteSpace(tagName)) return tagName;
         }
 

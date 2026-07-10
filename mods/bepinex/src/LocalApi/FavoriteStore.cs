@@ -1,4 +1,3 @@
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using BepInEx;
@@ -134,7 +133,8 @@ internal sealed class FavoriteStore
         }
     }
 
-    public List<ManualRecipeFavoriteSnapshot> ExtractManualRecipeFavorites()
+    // Temporary v1.1.x migration surface for CustomRecipeStore; remove in v1.2.0.
+    public List<ManualRecipeFavoriteSnapshot> ReadManualRecipeFavorites()
     {
         lock (_lock)
         {
@@ -151,16 +151,26 @@ internal sealed class FavoriteStore
                     entry.UpdatedAtUtc))
                 .ToList();
 
-            if (manualRecipes.Count == 0) return manualRecipes;
+            return manualRecipes;
+        }
+    }
 
-            data.Recipes.RemoveAll(entry => string.Equals(entry.Source, "manual", StringComparison.OrdinalIgnoreCase));
+    // Temporary v1.1.x migration surface for CustomRecipeStore; remove in v1.2.0.
+    public void RemoveManualRecipeFavorites()
+    {
+        lock (_lock)
+        {
+            var data = Load();
+            var removed = data.Recipes.RemoveAll(entry =>
+                string.Equals(entry.Source, "manual", StringComparison.OrdinalIgnoreCase));
+            if (removed == 0) return;
+
             foreach (var entry in data.Recipes)
             {
                 entry.Source = null;
             }
 
             Save(data);
-            return manualRecipes;
         }
     }
 
@@ -168,10 +178,12 @@ internal sealed class FavoriteStore
     {
         try
         {
-            if (!File.Exists(_path)) return new FavoriteData();
-            var json = File.ReadAllText(_path, Encoding.UTF8);
-            var data = JsonSerializer.Deserialize<FavoriteData>(json, JsonOptions) ?? new FavoriteData();
-            data.Version = Math.Max(1, data.Version);
+            var data = JsonFileStore.LoadOrCreate<FavoriteData>(_path, JsonOptions);
+            if (data.Version != 1)
+            {
+                throw new InvalidDataException($"Unsupported favorites schema version: {data.Version}.");
+            }
+
             data.Recipes ??= new List<FavoriteRecipeEntry>();
             data.Beverages ??= new List<FavoriteBeverageEntry>();
             foreach (var entry in data.Recipes)
@@ -183,41 +195,26 @@ internal sealed class FavoriteStore
         }
         catch (Exception ex)
         {
-            _log.LogWarning($"Failed to load favorites: {ex.Message}");
-            return new FavoriteData();
+            _log.LogError($"Failed to load favorites from '{_path}': {ex.Message}");
+            throw new InvalidDataException("The favorites file could not be read. The original file was not changed.", ex);
         }
     }
 
     private void Save(FavoriteData data)
     {
-        var directory = Path.GetDirectoryName(_path);
-        if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
-
         data.Version = 1;
-        var json = JsonSerializer.Serialize(data, JsonOptions);
-        var tempPath = $"{_path}.tmp";
-        File.WriteAllText(tempPath, json, new UTF8Encoding(false));
-        if (File.Exists(_path))
-        {
-            File.Replace(tempPath, _path, null);
-        }
-        else
-        {
-            File.Move(tempPath, _path);
-        }
+        JsonFileStore.Save(_path, data, JsonOptions);
     }
 
     private static string BuildMutationJson(bool ok, FavoriteData data, string? error)
     {
         PrepareClientData(data);
-        var favoritesJson = JsonSerializer.Serialize(data, JsonOptions);
-        return "{\"ok\":"
-            + (ok ? "true" : "false")
-            + ",\"favorites\":"
-            + favoritesJson
-            + ",\"error\":"
-            + (string.IsNullOrWhiteSpace(error) ? "null" : $"\"{EscapeJson(error)}\"")
-            + "}";
+        return JsonSerializer.Serialize(new LocalApiFavoriteMutationDto
+        {
+            Ok = ok,
+            Favorites = data,
+            Error = string.IsNullOrWhiteSpace(error) ? null : error,
+        }, JsonOptions);
     }
 
     private static void PrepareClientData(FavoriteData data)
@@ -231,19 +228,13 @@ internal sealed class FavoriteStore
         }
     }
 
-    private static List<int> NormalizeIds(IEnumerable<int> ids)
+    private static List<int> NormalizeIds(IEnumerable<int>? ids)
     {
-        return ids.Where(id => id >= 0).Distinct().OrderBy(id => id).ToList();
-    }
-
-    private static string EscapeJson(string value)
-    {
-        return value
-            .Replace("\\", "\\\\", StringComparison.Ordinal)
-            .Replace("\r", "\\r", StringComparison.Ordinal)
-            .Replace("\n", "\\n", StringComparison.Ordinal)
-            .Replace("\t", "\\t", StringComparison.Ordinal)
-            .Replace("\"", "\\\"", StringComparison.Ordinal);
+        return (ids ?? Array.Empty<int>())
+            .Where(id => id >= 0)
+            .Distinct()
+            .OrderBy(id => id)
+            .ToList();
     }
 }
 
@@ -252,6 +243,13 @@ internal sealed class FavoriteData
     public int Version { get; set; } = 1;
     public List<FavoriteRecipeEntry> Recipes { get; set; } = new();
     public List<FavoriteBeverageEntry> Beverages { get; set; } = new();
+}
+
+internal sealed class LocalApiFavoriteMutationDto
+{
+    public bool Ok { get; init; }
+    public FavoriteData Favorites { get; init; } = new();
+    public string? Error { get; init; }
 }
 
 internal sealed class FavoriteRecipeEntry

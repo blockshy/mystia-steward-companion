@@ -1064,12 +1064,6 @@ public static class RuntimeMissionSnapshotService
         }
     }
 
-    private static bool IsInitialAcceptCondition(object? condition)
-    {
-        return IsConditionType(condition, "TalkWithCharacter", 1)
-            || IsConditionType(condition, "InspectInteractable", 2);
-    }
-
     private static bool IsConditionType(object? condition, string expectedName, int expectedValue)
     {
         var conditionType = RuntimeReflectionUtility.GetMemberValue(condition, "conditionType");

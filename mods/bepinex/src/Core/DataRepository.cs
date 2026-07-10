@@ -9,8 +9,7 @@ public sealed class DataRepository
         List<NormalCustomer> normalCustomers,
         List<RareCustomer> rareCustomers,
         Dictionary<string, string> foodTagIdMap,
-        Dictionary<string, string> beverageTagIdMap,
-        List<TagPriorityRule> tagPriorityRules)
+        Dictionary<string, string> beverageTagIdMap)
     {
         Recipes = recipes;
         Ingredients = ingredients;
@@ -19,14 +18,6 @@ public sealed class DataRepository
         RareCustomers = rareCustomers;
         FoodTagIdMap = foodTagIdMap;
         BeverageTagIdMap = beverageTagIdMap;
-        TagPriorityRules = tagPriorityRules;
-        IngredientsByName = ingredients
-            .Where(i => !string.IsNullOrWhiteSpace(i.Name))
-            .GroupBy(i => i.Name, StringComparer.Ordinal)
-            .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
-        IngredientsById = ingredients
-            .GroupBy(i => i.Id)
-            .ToDictionary(group => group.Key, group => group.First());
         RecipeIdToId = recipes
             .GroupBy(r => r.RecipeId)
             .ToDictionary(group => group.Key, group => group.First().Id);
@@ -43,9 +34,6 @@ public sealed class DataRepository
     public IReadOnlyList<RareCustomer> RareCustomers { get; }
     public IReadOnlyDictionary<string, string> FoodTagIdMap { get; }
     public IReadOnlyDictionary<string, string> BeverageTagIdMap { get; }
-    public IReadOnlyList<TagPriorityRule> TagPriorityRules { get; }
-    public IReadOnlyDictionary<string, Ingredient> IngredientsByName { get; }
-    public IReadOnlyDictionary<int, Ingredient> IngredientsById { get; }
     public IReadOnlyDictionary<int, int> RecipeIdToId { get; }
     public IReadOnlyDictionary<int, RareCustomer> RareCustomersById { get; }
     public RareCustomerIdentityResolver RareCustomerIdentities { get; }
@@ -59,8 +47,7 @@ public sealed class DataRepository
             catalog.NormalCustomers.ToList(),
             catalog.RareCustomers.ToList(),
             new Dictionary<string, string>(catalog.FoodTagIdMap, StringComparer.Ordinal),
-            new Dictionary<string, string>(catalog.BeverageTagIdMap, StringComparer.Ordinal),
-            catalog.TagPriorityRules.ToList());
+            new Dictionary<string, string>(catalog.BeverageTagIdMap, StringComparer.Ordinal));
     }
 
     public static DataRepository Empty()
@@ -72,18 +59,7 @@ public sealed class DataRepository
             new List<NormalCustomer>(),
             new List<RareCustomer>(),
             new Dictionary<string, string>(StringComparer.Ordinal),
-            new Dictionary<string, string>(StringComparer.Ordinal),
-            new List<TagPriorityRule>());
-    }
-
-    public IReadOnlyList<NormalCustomer> GetNormalCustomersByPlace(string place)
-    {
-        return NormalCustomers.Where(c => c.Places.Contains(place)).ToList();
-    }
-
-    public IReadOnlyList<RareCustomer> GetRareCustomersByPlace(string place)
-    {
-        return RareCustomers.Where(c => c.Places.Contains(place)).ToList();
+            new Dictionary<string, string>(StringComparer.Ordinal));
     }
 
 }
