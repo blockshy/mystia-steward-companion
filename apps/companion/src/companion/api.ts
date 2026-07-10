@@ -383,8 +383,9 @@ export async function publishGameUiPinningTarget(
   enabled: boolean,
   highlightEnabled: boolean,
   target: GameUiPinningTarget | null,
+  signal?: AbortSignal,
 ): Promise<void> {
-  // 游戏界面置顶/高亮由 Mod 侧按当前 UI 面板反射处理；前端只发布“当前推荐目标”，不尝试直接操作游戏对象。
+  // 前端只发布当前推荐目标；Mod 在目标面板刷新作用域内复用游戏原生 pinned 排序，不直接操作 UI 列表。
   const params = new URLSearchParams({
     enabled: String(enabled),
     highlightEnabled: String(highlightEnabled),
@@ -396,12 +397,16 @@ export async function publishGameUiPinningTarget(
     cookerTypeId: target ? String(target.cookerTypeId) : '-1',
     cookerName: target?.cookerName ?? '',
   });
-  await writeLocalApiJsonWithTimeout<{ ok: boolean }>(
+  const response = await writeLocalApiJsonWithTimeout<{ ok: boolean; status?: string; error?: string | null }>(
     endpoint,
     apiToken,
     `/ui-pinning/target?${params.toString()}`,
     2200,
+    signal,
   );
+  if (!response.ok) {
+    throw new Error(response.error || response.status || '游戏界面置顶目标更新失败。');
+  }
 }
 
 export async function prepareNextRareOrder(

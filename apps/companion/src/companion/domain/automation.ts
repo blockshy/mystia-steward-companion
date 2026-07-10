@@ -876,7 +876,7 @@ export function buildGameUiPinningTarget(
     ...baseIngredientIds,
     ...(recipe?.extraIngredients.map((ingredient) => ingredient.id) ?? []),
   ]);
-  const recipeId = recipe?.recipe.id ?? -1;
+  const recipeId = recipe?.recipe.recipeId ?? -1;
   const beverageId = beverage?.beverage.id ?? -1;
   const cookerName = recipe?.recipe.cooker ?? '';
   const cookerTypeId = resolveCookerTypeId(cookerName);

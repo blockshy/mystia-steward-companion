@@ -53,14 +53,15 @@ const beverages = [
 ];
 
 const recipes = [
-  recipe(201, '豆腐味噌', ['黄瓜', '蘑菇'], ['家常', '素', '清淡'], '煮锅', 26),
-  recipe(202, '蜂蜜蛋糕', ['鸡蛋', '蜂蜜'], ['甜', '适合拍照', '招牌'], '料理台', 38),
-  recipe(203, '烤鲑鱼', ['鲑鱼', '辣椒'], ['水产', '鲜', '清淡'], '烧烤架', 42),
-  recipe(204, '牛肉火锅', ['牛肉', '辣椒', '蘑菇'], ['肉', '灼热', '力量涌现', '昂贵'], '煮锅', 62),
-  recipe(205, '蘑菇拼盘', ['蘑菇', '黄瓜'], ['菌类', '家常', '鲜'], '蒸锅', 31),
-  recipe(206, '月光团子', ['月光草', '蜂蜜'], ['梦幻', '甜', '高级'], '料理台', 78),
-  recipe(207, '香辣烤肉', ['牛肉', '辣椒'], ['肉', '灼热', '力量涌现'], '烧烤架', 55),
-  recipe(208, '清爽沙拉', ['黄瓜', '蜂蜜'], ['清爽', '素', '适合拍照'], '料理台', 22),
+  // foodId 与 Recipe.Id 故意不同，避免 Mock 再次掩盖运行时 ID 契约错误。
+  recipe(201, 1201, '豆腐味噌', ['黄瓜', '蘑菇'], ['家常', '素', '清淡'], '煮锅', 26),
+  recipe(202, 1202, '蜂蜜蛋糕', ['鸡蛋', '蜂蜜'], ['甜', '适合拍照', '招牌'], '料理台', 38),
+  recipe(203, 1203, '烤鲑鱼', ['鲑鱼', '辣椒'], ['水产', '鲜', '清淡'], '烧烤架', 42),
+  recipe(204, 1204, '牛肉火锅', ['牛肉', '辣椒', '蘑菇'], ['肉', '灼热', '力量涌现', '昂贵'], '煮锅', 62),
+  recipe(205, 1205, '蘑菇拼盘', ['蘑菇', '黄瓜'], ['菌类', '家常', '鲜'], '蒸锅', 31),
+  recipe(206, 1206, '月光团子', ['月光草', '蜂蜜'], ['梦幻', '甜', '高级'], '料理台', 78),
+  recipe(207, 1207, '香辣烤肉', ['牛肉', '辣椒'], ['肉', '灼热', '力量涌现'], '烧烤架', 55),
+  recipe(208, 1208, '清爽沙拉', ['黄瓜', '蜂蜜'], ['清爽', '素', '适合拍照'], '料理台', 22),
 ];
 
 const normalCustomers = [
@@ -108,12 +109,12 @@ const customRecipeData = {
   version: 1,
   recipes: [
     {
-      id: 'mock-custom-1001-all-202',
+      id: 'mock-custom-1001-all-1202',
       customerId: 1001,
       customerName: '米斯蒂娅',
       foodTag: null,
       foodId: 202,
-      recipeId: 202,
+      recipeId: 1202,
       recipeName: '蜂蜜蛋糕',
       extraIngredientIds: [7],
       enabled: true,
@@ -453,7 +454,7 @@ function buildSnapshot() {
     status: 'mock runtime snapshot',
     runtimeSource: 'mock-local-api',
     runtimeSceneReadinessStatus: 'ready',
-    runtimeUiPinningStatus: 'mock pinned target accepted',
+    runtimeUiPinningStatus: 'patches=checkPinnedPrefix:patched, cookingScope:patched, beverageScope:patched; pinning=on; cookerHighlight=on; target=recipe:1202/蜂蜜蛋糕, beverage:101/果味米酒, cooker:5/料理台, ingredients:2,7; highlight=active; listHighlight=hooks=patched; state=active; tracked=recipe:1, ingredients:2, beverage:1; missingImage=0; bindingErrors=0; visualErrors=0; restoreErrors=0; forcedTotal=recipe:1, ingredients:2, beverage:1; scopeImbalance=0',
     recommendationState: {
       availableRecipeIds: recipes.map((item) => item.id),
       availableBeverageIds: beverages.map((item) => item.id),
@@ -920,10 +921,10 @@ function beverage(id, name, tags, price) {
   };
 }
 
-function recipe(id, name, requiredIngredients, positiveTags, cooker, price) {
+function recipe(id, recipeId, name, requiredIngredients, positiveTags, cooker, price) {
   return {
     id,
-    recipeId: id,
+    recipeId,
     name,
     description: `Mock recipe: ${name}`,
     ingredients: requiredIngredients,

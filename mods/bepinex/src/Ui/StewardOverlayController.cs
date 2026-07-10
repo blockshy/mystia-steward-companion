@@ -436,11 +436,12 @@ internal sealed class StewardOverlayController
     }
 
     /// <summary>
-    /// Unity LateUpdate 入口，用于厨具高亮等需要等待普通 Update 后再执行的视觉效果。
+    /// Unity LateUpdate 入口，用于厨具和置顶列表项等需要等待普通 Update 后再执行的视觉效果。
     /// </summary>
     public void LateUpdate()
     {
         RuntimeCookerHighlightService.Tick();
+        RuntimePinnedListHighlightService.Tick();
     }
 
     /// <summary>
@@ -459,6 +460,7 @@ internal sealed class StewardOverlayController
         _localApiServer?.Dispose();
         _localApiServer = null;
         RuntimeCookerHighlightService.Clear();
+        RuntimePinnedListHighlightService.Clear();
         AggregateModLogService.Shutdown();
     }
 
@@ -2368,6 +2370,7 @@ internal sealed class StewardOverlayController
         NormalOrderRuntimeCapture.ClearOrders("runtime cleared");
         RuntimeOrderPreparationService.ClearPendingCookingCollections();
         RuntimeCookerHighlightService.Suspend(status);
+        RuntimePinnedListHighlightService.Suspend(status);
         _status = status;
     }
 
@@ -2389,6 +2392,7 @@ internal sealed class StewardOverlayController
         ResetNormalBusinessRefreshCache();
         ClearPlacedCookersFromCurrentState("not in night business scene");
         RuntimeCookerHighlightService.Suspend(status);
+        RuntimePinnedListHighlightService.Suspend(status);
         _status = status;
     }
 

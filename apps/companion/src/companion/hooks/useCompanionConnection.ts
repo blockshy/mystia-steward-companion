@@ -115,6 +115,7 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
     clearSnapshotCache();
     setManualRefreshing(false);
     setConnectionProbing(false);
+    setConnectionRevision((current) => current + 1);
   }, [apiTokenDraft, clearSnapshotCache, normalizedEndpointDraft]);
 
   const applyConnectionDetails = useCallback((nextEndpoint: string, nextToken: string) => {
@@ -402,6 +403,7 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
     connectionProbing,
     connectionPaused,
     connectionFailureCount,
+    connectionRevision,
     lastConnectedAt,
     normalizedEndpoint,
     applyEndpointConnection,

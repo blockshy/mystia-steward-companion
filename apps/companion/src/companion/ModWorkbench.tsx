@@ -4,6 +4,7 @@ import { WorkbenchHeader } from '@/companion/features/workbench/WorkbenchHeader'
 import { useCompanionConnection } from '@/companion/hooks/useCompanionConnection';
 import { useCustomRecipes } from '@/companion/hooks/useCustomRecipes';
 import { useFavorites } from '@/companion/hooks/useFavorites';
+import { useGameUiPinningPublisher } from '@/companion/hooks/useGameUiPinningPublisher';
 import { useOrderAutomationIntervals } from '@/companion/hooks/useOrderAutomationIntervals';
 import { useOrderRecommendations } from '@/companion/hooks/useOrderRecommendations';
 import { useRareGuestInvitations } from '@/companion/hooks/useRareGuestInvitations';
@@ -29,7 +30,6 @@ import {
   completeFirstRareOrder,
   dismissRuntimeRareOrder,
   prepareNextRareOrder,
-  publishGameUiPinningTarget,
   releaseAutomationLease,
 } from '@/companion/api';
 import {
@@ -1006,6 +1006,7 @@ export function ModWorkbench() {
     loading,
     connectionPaused,
     connectionFailureCount,
+    connectionRevision,
     lastConnectedAt,
     normalizedEndpoint,
     applyEndpointConnection,
@@ -1077,7 +1078,6 @@ export function ModWorkbench() {
   const lastAutoNormalOrderAtRef = useRef(0);
   const lastAutomationRuntimeEventSequenceRef = useRef(0);
   const automationCookerCycleRef = useRef<AutomationCookerCycle | null>(null);
-  const lastUiPinningSignatureRef = useRef('');
   const lastAutomationDecisionDiagnosticSignatureRef = useRef('');
   const automationRefreshTimerRef = useRef<number | null>(null);
   const automationUiVisible = !serviceFocusMode && tab === 'service';
@@ -1473,6 +1473,7 @@ export function ModWorkbench() {
     || companionPreferences.cookerHighlightEnabled;
   const orderRecommendations = useOrderRecommendations(orderRecommendationPayload, {
     enabled: orderRecommendationsEnabled,
+    inputSignature: orderRecommendationPayloadSignature,
   });
   const normalOrderDetails = useOrderRecommendations(normalOrderDetailPayload, {
     enabled: includeNormalOrderDetails,
@@ -1524,38 +1525,19 @@ export function ModWorkbench() {
       snapshot?.specialBusiness?.active,
     ],
   );
-  useEffect(() => {
-    if (!connectionReadyForActions) return;
-    const signature = `${companionPreferences.gameUiPinningEnabled ? '1' : '0'}|${companionPreferences.cookerHighlightEnabled ? '1' : '0'}|${gameUiPinningTarget?.signature ?? 'disabled'}`;
-    if (lastUiPinningSignatureRef.current === signature) return;
-
-    let cancelled = false;
-    publishGameUiPinningTarget(
-      normalizedEndpoint,
-      apiToken,
-      companionPreferences.gameUiPinningEnabled,
-      companionPreferences.cookerHighlightEnabled,
-      gameUiPinningTarget,
-    )
-      .then(() => {
-        if (!cancelled) lastUiPinningSignatureRef.current = signature;
-      })
-      .catch(() => {
-        if (!cancelled) lastUiPinningSignatureRef.current = '';
-        // 游戏尚未进入标题或存档前，本地 API 可能还没有启动。
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
+  useGameUiPinningPublisher({
+    endpoint: normalizedEndpoint,
     apiToken,
-    connectionReadyForActions,
-    companionPreferences.cookerHighlightEnabled,
-    companionPreferences.gameUiPinningEnabled,
-    gameUiPinningTarget,
-    normalizedEndpoint,
-  ]);
+    connectionRevision,
+    connectionReady: connectionReadyForActions,
+    pinningEnabled: companionPreferences.gameUiPinningEnabled,
+    cookerHighlightEnabled: companionPreferences.cookerHighlightEnabled,
+    target: gameUiPinningTarget,
+    recommendationIsCurrent: orderRecommendations.isCurrent,
+    recommendationPending: orderRecommendations.pending,
+    recommendationError: Boolean(orderRecommendations.error),
+    recommendationSuccessRevision: orderRecommendations.successRevision,
+  });
 
   const refreshRareOrderDiagnostics = useCallback((now = Date.now()) => {
     const diagnostics = Array.from(rareOrderDiagnosticItemsRef.current.values()).map((selection) => {

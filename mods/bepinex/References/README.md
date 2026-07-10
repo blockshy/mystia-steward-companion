@@ -12,6 +12,11 @@
 
 不需要复制额外的游戏业务 DLL。Mod 对游戏运行时状态的读取使用反射，编译只依赖上方列出的 BepInEx、Il2CppInterop 和 Unity 基础引用。
 
+运行 `tests/ui-pinning-runtime/UiPinningRuntimeSmoke.csproj` 的实际 Harmony wrapper 测试时，还需要从同一 BepInEx `core` 目录复制以下两个 HarmonyX 运行依赖；它们只用于该 smoke，不属于 Mod 编译或发布 preflight 的额外依赖：
+
+- `MonoMod.RuntimeDetour.dll`
+- `MonoMod.Utils.dll`
+
 常见来源：
 
 - `游戏根目录/BepInEx/core/`
@@ -31,6 +36,9 @@ dotnet build mods/bepinex/MystiaStewardCompanion.BepInEx.csproj -c Release
 ```powershell
 pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1 `
   -ReferenceDir "D:\path\to\mystia-steward-companion-references"
+
+dotnet run --project tests\ui-pinning-runtime\UiPinningRuntimeSmoke.csproj `
+  -c Release -p:ReferenceDir="D:\path\to\mystia-steward-companion-references"
 ```
 
 构建环境建议使用 .NET 6 SDK 或更新版本，项目目标框架为 `net6.0`。

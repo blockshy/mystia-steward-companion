@@ -1,5 +1,3 @@
-using System.Collections;
-using System.Runtime.CompilerServices;
 using System.Reflection;
 using BepInEx.Logging;
 using HarmonyLib;
@@ -10,8 +8,10 @@ internal static class RuntimeUiPinningService
 {
     private const string CookingSelectionPanelTypeName = "NightScene.UI.CookingUtility.WorkSceneCookingSelectionPannel";
     private const string StoragePanelTypeName = "NightScene.UI.CookingUtility.WorkSceneStoragePannel";
+    private const string RunTimePlayerDataTypeName = "GameData.RunTime.Common.RunTimePlayerData";
 
     private static readonly object SyncRoot = new();
+    private static readonly object TargetPublicationRoot = new();
     private static readonly HashSet<string> PatchedMethods = new(StringComparer.Ordinal);
     private static readonly int[] EmptyIngredientIds = Array.Empty<int>();
 
@@ -26,17 +26,38 @@ internal static class RuntimeUiPinningService
     private static string _recipeName = "";
     private static string _beverageName = "";
     private static string _cookerName = "";
-    private static string _status = "not attached";
-    private static string _lastAction = "";
+    private static string _checkPinnedPatchStatus = "not attached";
+    private static string _cookingScopePatchStatus = "not attached";
+    private static string _beverageScopePatchStatus = "not attached";
+    private static PinningTargetSnapshot _pinningTarget = PinningTargetSnapshot.Disabled;
+    private static long _recipeForces;
+    private static long _ingredientForces;
+    private static long _beverageForces;
+    private static long _scopeCleanupImbalances;
+
+    [ThreadStatic]
+    private static int _cookingRefreshDepth;
+
+    [ThreadStatic]
+    private static PinningTargetSnapshot? _cookingScopeTarget;
+
+    [ThreadStatic]
+    private static int _beverageRefreshDepth;
+
+    [ThreadStatic]
+    private static PinningTargetSnapshot? _beverageScopeTarget;
 
     public static string Status
     {
         get
         {
+            string coreStatus;
             lock (SyncRoot)
             {
-                return $"{_status}; pinning={(_enabled ? "on" : "off")}; cookerHighlight={(_highlightEnabled ? "on" : "off")}; target=recipe:{_recipeId}/{_recipeName}, beverage:{_beverageId}/{_beverageName}, cooker:{_cookerTypeId}/{_cookerName}, ingredients:{string.Join(",", _ingredientIds)}; highlight={RuntimeCookerHighlightService.Status}; last={_lastAction}";
+                coreStatus = $"patches=checkPinnedPrefix:{_checkPinnedPatchStatus}, cookingScope:{_cookingScopePatchStatus}, beverageScope:{_beverageScopePatchStatus}; pinning={(_enabled ? "on" : "off")}; cookerHighlight={(_highlightEnabled ? "on" : "off")}; target=recipe:{_recipeId}/{_recipeName}, beverage:{_beverageId}/{_beverageName}, cooker:{_cookerTypeId}/{_cookerName}, ingredients:{string.Join(",", _ingredientIds)}";
             }
+
+            return $"{coreStatus}; highlight={RuntimeCookerHighlightService.Status}; listHighlight={RuntimePinnedListHighlightService.Status}; forcedTotal=recipe:{Interlocked.Read(ref _recipeForces)}, ingredients:{Interlocked.Read(ref _ingredientForces)}, beverage:{Interlocked.Read(ref _beverageForces)}; scopeImbalance={Interlocked.Read(ref _scopeCleanupImbalances)}";
         }
     }
 
@@ -49,31 +70,53 @@ internal static class RuntimeUiPinningService
             var patchedNow = new List<string>();
             var missing = new List<string>();
 
-            PatchMethod(_harmony, CookingSelectionPanelTypeName, "UpdateRecipeField", 0, nameof(OnRecipeFieldUpdated), patchedNow, missing);
-            PatchMethod(_harmony, CookingSelectionPanelTypeName, "UpdateIngField", 0, nameof(OnIngredientFieldUpdated), patchedNow, missing);
-            PatchMethod(_harmony, StoragePanelTypeName, "UpdateBevField", 0, nameof(OnBeverageFieldUpdated), patchedNow, missing);
-
-            lock (SyncRoot)
-            {
-                _status = PatchedMethods.Count == 0
-                    ? $"unavailable: {string.Join(", ", missing.Take(4))}"
-                    : $"patched={PatchedMethods.Count}";
-            }
+            PatchScopeMethod(
+                _harmony,
+                CookingSelectionPanelTypeName,
+                "UpdateAllVisual",
+                0,
+                nameof(OnCookingRefreshStarted),
+                nameof(OnCookingRefreshFinalized),
+                PatchSlot.CookingScope,
+                patchedNow,
+                missing);
+            PatchPrefixMethod(
+                _harmony,
+                RunTimePlayerDataTypeName,
+                "CheckPinned",
+                2,
+                nameof(OnCheckPinned),
+                PatchSlot.CheckPinned,
+                patchedNow,
+                missing);
+            PatchScopeMethod(
+                _harmony,
+                StoragePanelTypeName,
+                "UpdateBevField",
+                0,
+                nameof(OnBeverageRefreshStarted),
+                nameof(OnBeverageRefreshFinalized),
+                PatchSlot.BeverageScope,
+                patchedNow,
+                missing);
 
             if (patchedNow.Count > 0)
             {
                 log.LogInfo($"Runtime UI pinning patched: {string.Join(", ", patchedNow)}.");
             }
-            else if (PatchedMethods.Count == 0)
+            if (missing.Count > 0)
             {
-                log.LogWarning($"Runtime UI pinning unavailable; game members were not found: {string.Join(", ", missing.Take(4))}.");
+                log.LogWarning($"Runtime UI pinning unavailable; game members were not found: {string.Join(", ", missing.Take(3))}.");
             }
         }
         catch (Exception ex)
         {
             lock (SyncRoot)
             {
-                _status = $"error: {ex.Message}";
+                var status = $"error:{ex.GetBaseException().Message}";
+                _checkPinnedPatchStatus = status;
+                _cookingScopePatchStatus = status;
+                _beverageScopePatchStatus = status;
             }
 
             log.LogWarning($"Runtime UI pinning attach failed: {ex.Message}");
@@ -91,422 +134,375 @@ internal static class RuntimeUiPinningService
         int cookerTypeId,
         string cookerName)
     {
+        lock (TargetPublicationRoot)
+        {
+            return PublishTarget(
+                enabled,
+                highlightEnabled,
+                recipeId,
+                beverageId,
+                ingredientIds,
+                recipeName,
+                beverageName,
+                cookerTypeId,
+                cookerName);
+        }
+    }
+
+    internal static PinningTargetSnapshot ReadPinningTarget()
+    {
+        return Volatile.Read(ref _pinningTarget);
+    }
+
+    private static string PublishTarget(
+        bool enabled,
+        bool highlightEnabled,
+        int recipeId,
+        int beverageId,
+        IEnumerable<int> ingredientIds,
+        string recipeName,
+        string beverageName,
+        int cookerTypeId,
+        string cookerName)
+    {
+        var hasTarget = enabled || highlightEnabled;
+        var normalizedIngredientIds = hasTarget
+            ? ingredientIds.Where(id => id >= 0).Distinct().Take(12).ToArray()
+            : EmptyIngredientIds;
+
+        ManualLogSource? log;
+        string logMessage;
+        int publishedCookerTypeId;
+        string publishedCookerName;
         lock (SyncRoot)
         {
-            var hasTarget = enabled || highlightEnabled;
             _enabled = enabled;
             _highlightEnabled = highlightEnabled;
             _recipeId = hasTarget ? recipeId : -1;
             _beverageId = hasTarget ? beverageId : -1;
             _cookerTypeId = hasTarget ? cookerTypeId : -1;
-            _ingredientIds = hasTarget
-                ? ingredientIds.Where(id => id >= 0).Distinct().Take(12).ToArray()
-                : EmptyIngredientIds;
+            _ingredientIds = normalizedIngredientIds;
             _recipeName = hasTarget ? recipeName.Trim() : "";
             _beverageName = hasTarget ? beverageName.Trim() : "";
             _cookerName = hasTarget ? cookerName.Trim() : "";
-            _lastAction = hasTarget ? "target updated" : "disabled";
-            _log?.LogInfo(hasTarget
+            var currentPinningTarget = Volatile.Read(ref _pinningTarget);
+            if (!currentPinningTarget.HasSameValues(enabled, _recipeId, _beverageId, normalizedIngredientIds))
+            {
+                Volatile.Write(
+                    ref _pinningTarget,
+                    new PinningTargetSnapshot(
+                        currentPinningTarget.Generation + 1,
+                        enabled,
+                        _recipeId,
+                        _beverageId,
+                        normalizedIngredientIds));
+            }
+            log = _log;
+            logMessage = hasTarget
                 ? $"Runtime UI target updated: pinning={enabled}, cookerHighlight={highlightEnabled}, recipe={_recipeId}/{_recipeName}, beverage={_beverageId}/{_beverageName}, cooker={_cookerTypeId}/{_cookerName}, ingredients={string.Join(",", _ingredientIds)}."
-                : "Runtime UI target disabled.");
-            RuntimeCookerHighlightService.UpdateTarget(highlightEnabled && hasTarget, _cookerTypeId, _cookerName);
-            return Status;
+                : "Runtime UI target disabled.";
+            publishedCookerTypeId = _cookerTypeId;
+            publishedCookerName = _cookerName;
         }
+
+        log?.LogInfo(logMessage);
+        RuntimeCookerHighlightService.UpdateTarget(highlightEnabled && hasTarget, publishedCookerTypeId, publishedCookerName);
+        return Status;
     }
 
-    private static void PatchMethod(
+    private static void PatchPrefixMethod(
         Harmony harmony,
         string typeName,
         string methodName,
         int parameterCount,
-        string postfixName,
+        string prefixName,
+        PatchSlot patchSlot,
         ICollection<string> patchedNow,
         ICollection<string> missing)
     {
         var key = $"{typeName}.{methodName}/{parameterCount}";
         lock (SyncRoot)
         {
-            if (PatchedMethods.Contains(key)) return;
+            if (PatchedMethods.Contains(key))
+            {
+                SetPatchStatusLocked(patchSlot, "patched");
+                return;
+            }
         }
 
-        var type = RuntimeReflectionUtility.FindType(typeName);
-        var target = type?.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static)
-            .FirstOrDefault(method => method.Name == methodName && method.GetParameters().Length == parameterCount);
-        var postfix = typeof(RuntimeUiPinningService).GetMethod(postfixName, BindingFlags.NonPublic | BindingFlags.Static);
-        if (target == null || postfix == null)
-        {
-            missing.Add(key);
-            return;
-        }
-
-        harmony.Patch(target, postfix: new HarmonyMethod(postfix));
-        lock (SyncRoot)
-        {
-            PatchedMethods.Add(key);
-        }
-
-        patchedNow.Add(key);
-    }
-
-    private static void OnRecipeFieldUpdated(object __instance)
-    {
-        var target = ReadTarget();
-        if (!target.Enabled || target.RecipeId < 0) return;
-        TryMoveFirst(__instance, "RecipeInstances", item => ReadObjectId(item) == target.RecipeId, "recipe");
-    }
-
-    private static void OnIngredientFieldUpdated(object __instance)
-    {
-        var target = ReadTarget();
-        if (!target.Enabled || target.IngredientIds.Length == 0) return;
-
-        foreach (var fieldName in new[]
-        {
-            "Ingredient_MeatInstances",
-            "Ingredient_OtherInstances",
-            "Ingredient_SeaFoodInstances",
-            "Ingredient_VeggiesInsatance",
-        })
-        {
-            TrySortPinnedIngredients(__instance, fieldName, target.IngredientIds);
-        }
-    }
-
-    private static void OnBeverageFieldUpdated(object __instance)
-    {
-        var target = ReadTarget();
-        if (!target.Enabled || target.BeverageId < 0) return;
-        TryMoveFirst(__instance, "Beverages", item => ReadObjectId(ReadPairKey(item) ?? item) == target.BeverageId, "beverage");
-    }
-
-    private static PinningTargetSnapshot ReadTarget()
-    {
-        lock (SyncRoot)
-        {
-            return new PinningTargetSnapshot(_enabled, _recipeId, _beverageId, _ingredientIds.ToArray());
-        }
-    }
-
-    private readonly record struct PinningTargetSnapshot(
-        bool Enabled,
-        int RecipeId,
-        int BeverageId,
-        int[] IngredientIds);
-
-    private static void TrySortPinnedIngredients(object target, string fieldName, int[] ingredientIds)
-    {
-        var list = ReadMember(target, fieldName);
-        if (list == null) return;
-
-        var priority = ingredientIds.Select((id, index) => new { id, index })
-            .ToDictionary(item => item.id, item => item.index);
-        ReorderList(list, item =>
-        {
-            var key = ReadPairKey(item) ?? item;
-            var id = ReadObjectId(key);
-            return priority.TryGetValue(id, out var index) ? index : int.MaxValue;
-        }, $"ingredient:{fieldName}", item => ReadObjectId(ReadPairKey(item) ?? item));
-    }
-
-    private static void TryMoveFirst(object target, string fieldName, Func<object, bool> match, string label)
-    {
-        var list = ReadMember(target, fieldName);
-        if (list == null)
-        {
-            NoteAction($"{label} list missing");
-            return;
-        }
-
-        ReorderList(list, item => match(item) ? 0 : int.MaxValue, label, item => ReadObjectId(ReadPairKey(item) ?? item));
-    }
-
-    private static void ReorderList(object list, Func<object, int> priority, string label, Func<object, int> describeId)
-    {
         try
         {
-            var items = ReadObjectEnumerable(list).ToList();
-            var count = items.Count;
-            if (count <= 1)
+            var type = RuntimeReflectionUtility.FindType(typeName);
+            var target = FindMethod(type, methodName, parameterCount);
+            var prefix = typeof(RuntimeUiPinningService).GetMethod(prefixName, BindingFlags.NonPublic | BindingFlags.Static);
+            if (target == null || prefix == null)
             {
-                NoteAction($"{label} skipped; count={count}");
-                return;
-            }
-
-            var ranked = items
-                .Select((item, index) => new { item, index, priority = priority(item) })
-                .ToList();
-            if (ranked.All(item => item.priority == int.MaxValue))
-            {
-                NoteAction($"{label} target missing; count={count}; ids={FormatIds(items, describeId)}");
-                return;
-            }
-
-            var reordered = ranked
-                .OrderBy(item => item.priority)
-                .ThenBy(item => item.index)
-                .Select(item => item.item)
-                .ToList();
-
-            if (reordered.SequenceEqual(items))
-            {
-                NoteAction($"{label} already first; count={count}; ids={FormatIds(items, describeId)}");
-                return;
-            }
-
-            if (!ClearList(list))
-            {
-                NoteAction($"{label} clear failed; count={count}");
-                return;
-            }
-
-            foreach (var item in reordered)
-            {
-                if (!AddListItem(list, item))
+                lock (SyncRoot)
                 {
-                    NoteAction($"{label} add failed; count={count}");
-                    return;
+                    SetPatchStatusLocked(patchSlot, target == null ? "method missing" : "prefix missing");
                 }
+
+                missing.Add(key);
+                return;
             }
 
-            NoteAction($"{label} reordered; count={count}; ids={FormatIds(reordered, describeId)}");
+            harmony.Patch(target, prefix: new HarmonyMethod(prefix));
+            lock (SyncRoot)
+            {
+                PatchedMethods.Add(key);
+                SetPatchStatusLocked(patchSlot, "patched");
+            }
+
+            patchedNow.Add(key);
         }
         catch (Exception ex)
         {
-            NoteAction($"{label} reorder failed: {ex.Message}");
-        }
-    }
-
-    private static IEnumerable<object> ReadObjectEnumerable(object? value)
-    {
-        if (value == null || value is string) yield break;
-
-        var seen = new HashSet<nint>();
-        foreach (var item in EnumerateManaged(value).Concat(EnumerateByIndexer(value)))
-        {
-            if (item == null) continue;
-            if (!seen.Add(ReadObjectPointer(item))) continue;
-            yield return item;
-        }
-    }
-
-    private static bool ClearList(object list)
-    {
-        if (list is IList ilist)
-        {
-            ilist.Clear();
-            return true;
-        }
-
-        return TryInvokeInstance(list, "Clear", Array.Empty<object?>());
-    }
-
-    private static bool AddListItem(object list, object item)
-    {
-        if (list is IList ilist)
-        {
-            ilist.Add(item);
-            return true;
-        }
-
-        return TryInvokeInstance(list, "Add", new object?[] { item });
-    }
-
-    private static object? ReadPairKey(object item)
-    {
-        return ReadMember(item, "Key") ?? ReadMember(item, "key");
-    }
-
-    private static int ReadObjectId(object? value)
-    {
-        if (value == null) return -1;
-        return ToInt(TryInvokeInstanceValue(value, "get_id")
-            ?? TryInvokeInstanceValue(value, "get_Id")
-            ?? TryInvokeInstanceValue(value, "get_foodID")
-            ?? ReadMember(value, "id")
-            ?? ReadMember(value, "Id")
-            ?? ReadMember(value, "foodID"));
-    }
-
-    private static string FormatIds(IReadOnlyList<object> items, Func<object, int> describeId)
-    {
-        var ids = items.Take(8).Select(describeId).ToArray();
-        var suffix = items.Count > ids.Length ? $".../{items.Count}" : "";
-        return string.Join(",", ids) + suffix;
-    }
-
-    private static void NoteAction(string action)
-    {
-        lock (SyncRoot)
-        {
-            _lastAction = action;
-        }
-    }
-
-    private static object? TryInvokeInstanceValue(object target, string methodName)
-    {
-        return TryInvokeInstanceValue(target, methodName, Array.Empty<object?>());
-    }
-
-    private static object? TryInvokeInstanceValue(object target, string methodName, object?[] args)
-    {
-        try
-        {
-            var value = InvokeInstance(target, methodName, args);
-            return value == Missing.Value ? null : value;
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private static IEnumerable<object?> EnumerateManaged(object value)
-    {
-        if (LooksLikeIl2CppObject(value)) yield break;
-        if (value is not IEnumerable enumerable) yield break;
-
-        foreach (var item in enumerable)
-        {
-            yield return item;
-        }
-    }
-
-    private static IEnumerable<object?> EnumerateByIndexer(object value)
-    {
-        var count = ToInt(TryInvokeInstanceValue(value, "get_Count")
-            ?? ReadMember(value, "Count")
-            ?? ReadMember(value, "Length")
-            ?? ReadMember(value, "_size"));
-        if (count <= 0) yield break;
-
-        for (var index = 0; index < Math.Min(count, 256); index++)
-        {
-            yield return TryInvokeInstanceValue(value, "get_Item", new object?[] { index });
-        }
-    }
-
-    private static bool LooksLikeIl2CppObject(object value)
-    {
-        var type = value.GetType();
-        var fullName = type.FullName ?? "";
-        if (fullName.StartsWith("Il2Cpp", StringComparison.Ordinal)) return true;
-        if (fullName.StartsWith("NightScene.", StringComparison.Ordinal)) return true;
-        if (fullName.StartsWith("GameData.", StringComparison.Ordinal)) return true;
-        return type.Assembly.GetName().Name?.Contains("Il2Cpp", StringComparison.OrdinalIgnoreCase) == true;
-    }
-
-    private static bool TryInvokeInstance(object target, string methodName, object?[] args)
-    {
-        try
-        {
-            var method = target.GetType().GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-                .FirstOrDefault(candidate => string.Equals(candidate.Name, methodName, StringComparison.Ordinal)
-                    && CanUseParameters(candidate.GetParameters(), args));
-            if (method == null) return false;
-            method.Invoke(target, args);
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private static object? InvokeInstance(object target, string methodName, object?[] args)
-    {
-        var method = target.GetType().GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-            .FirstOrDefault(candidate => string.Equals(candidate.Name, methodName, StringComparison.Ordinal)
-                && CanUseParameters(candidate.GetParameters(), args));
-        if (method == null) return Missing.Value;
-        var result = method.Invoke(target, args);
-        return method.ReturnType == typeof(void) ? Missing.Value : result;
-    }
-
-    private static object? ReadMember(object target, string name)
-    {
-        for (var type = target.GetType(); type != null; type = type.BaseType)
-        {
-            foreach (var fieldName in BuildFieldNameCandidates(name))
+            lock (SyncRoot)
             {
-                var field = type.GetField(fieldName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly);
-                if (field != null) return field.GetValue(target);
+                SetPatchStatusLocked(patchSlot, $"error:{ex.GetBaseException().Message}");
             }
 
-            var property = type.GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly);
-            if (property != null) return property.GetValue(target);
-        }
-
-        return null;
-    }
-
-    private static IEnumerable<string> BuildFieldNameCandidates(string name)
-    {
-        if (string.IsNullOrWhiteSpace(name)) yield break;
-
-        yield return name;
-        yield return $"m_{name}";
-        yield return $"_{name}";
-        yield return $"<{name}>k__BackingField";
-
-        var camelName = char.ToLowerInvariant(name[0]) + name[1..];
-        if (!string.Equals(camelName, name, StringComparison.Ordinal))
-        {
-            yield return camelName;
-            yield return $"m_{camelName}";
-            yield return $"_{camelName}";
-            yield return $"<{camelName}>k__BackingField";
+            missing.Add($"{key} (patch error)");
         }
     }
 
-    private static bool CanUseParameters(ParameterInfo[] parameters, object?[] args)
+    private static void PatchScopeMethod(
+        Harmony harmony,
+        string typeName,
+        string methodName,
+        int parameterCount,
+        string prefixName,
+        string finalizerName,
+        PatchSlot patchSlot,
+        ICollection<string> patchedNow,
+        ICollection<string> missing)
     {
-        if (parameters.Length != args.Length) return false;
-        for (var i = 0; i < parameters.Length; i++)
+        var key = $"{typeName}.{methodName}/{parameterCount}:{patchSlot}";
+        lock (SyncRoot)
         {
-            if (args[i] == null) continue;
-            if (!parameters[i].ParameterType.IsInstanceOfType(args[i])) return false;
+            if (PatchedMethods.Contains(key))
+            {
+                SetPatchStatusLocked(patchSlot, "patched");
+                return;
+            }
+        }
+
+        try
+        {
+            var type = RuntimeReflectionUtility.FindType(typeName);
+            var target = FindMethod(type, methodName, parameterCount);
+            var prefix = typeof(RuntimeUiPinningService).GetMethod(prefixName, BindingFlags.NonPublic | BindingFlags.Static);
+            var finalizer = typeof(RuntimeUiPinningService).GetMethod(finalizerName, BindingFlags.NonPublic | BindingFlags.Static);
+            if (target == null || prefix == null || finalizer == null)
+            {
+                lock (SyncRoot)
+                {
+                    SetPatchStatusLocked(patchSlot, target == null ? "method missing" : "hook missing");
+                }
+
+                missing.Add(key);
+                return;
+            }
+
+            harmony.Patch(target, prefix: new HarmonyMethod(prefix), finalizer: new HarmonyMethod(finalizer));
+            lock (SyncRoot)
+            {
+                PatchedMethods.Add(key);
+                SetPatchStatusLocked(patchSlot, "patched");
+            }
+
+            patchedNow.Add(key);
+        }
+        catch (Exception ex)
+        {
+            lock (SyncRoot)
+            {
+                SetPatchStatusLocked(patchSlot, $"error:{ex.GetBaseException().Message}");
+            }
+
+            missing.Add($"{key} (patch error)");
+        }
+    }
+
+    private static MethodInfo? FindMethod(Type? type, string methodName, int parameterCount)
+    {
+        return type?.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static)
+            .FirstOrDefault(method => method.Name == methodName && method.GetParameters().Length == parameterCount);
+    }
+
+    private static void OnCookingRefreshStarted()
+    {
+        if (_cookingRefreshDepth == 0)
+        {
+            _cookingScopeTarget = Volatile.Read(ref _pinningTarget);
+        }
+
+        _cookingRefreshDepth++;
+    }
+
+    private static Exception? OnCookingRefreshFinalized(Exception? __exception)
+    {
+        if (_cookingRefreshDepth > 0)
+        {
+            _cookingRefreshDepth--;
+            if (_cookingRefreshDepth == 0)
+            {
+                _cookingScopeTarget = null;
+            }
+        }
+        else
+        {
+            Interlocked.Increment(ref _scopeCleanupImbalances);
+        }
+
+        return __exception;
+    }
+
+    private static void OnBeverageRefreshStarted()
+    {
+        if (_beverageRefreshDepth == 0)
+        {
+            _beverageScopeTarget = Volatile.Read(ref _pinningTarget);
+        }
+
+        _beverageRefreshDepth++;
+    }
+
+    private static Exception? OnBeverageRefreshFinalized(Exception? __exception)
+    {
+        if (_beverageRefreshDepth > 0)
+        {
+            _beverageRefreshDepth--;
+            if (_beverageRefreshDepth == 0)
+            {
+                _beverageScopeTarget = null;
+            }
+        }
+        else
+        {
+            Interlocked.Increment(ref _scopeCleanupImbalances);
+        }
+
+        return __exception;
+    }
+
+    private static bool OnCheckPinned(int pinnedType, int pinnedID, ref bool __result)
+    {
+        if (pinnedID < 0) return true;
+
+        var cookingTarget = _cookingRefreshDepth > 0 ? _cookingScopeTarget : null;
+        var beverageTarget = _beverageRefreshDepth > 0 ? _beverageScopeTarget : null;
+        if (cookingTarget == null && beverageTarget == null) return true;
+
+        if (cookingTarget is { Enabled: true }
+            && pinnedType == (int)PinnedType.Recipes
+            && pinnedID == cookingTarget.RecipeId)
+        {
+            __result = true;
+            Interlocked.Increment(ref _recipeForces);
+            return false;
+        }
+
+        if (cookingTarget is { Enabled: true }
+            && IsIngredientType(pinnedType)
+            && cookingTarget.ContainsIngredient(pinnedID))
+        {
+            __result = true;
+            Interlocked.Increment(ref _ingredientForces);
+            return false;
+        }
+
+        if (beverageTarget is { Enabled: true }
+            && pinnedType == (int)PinnedType.Beverages
+            && pinnedID == beverageTarget.BeverageId)
+        {
+            __result = true;
+            Interlocked.Increment(ref _beverageForces);
+            return false;
         }
 
         return true;
     }
 
-    private static int ToInt(object? value)
+    private static bool IsIngredientType(int pinnedType)
     {
-        if (value == null || value == Missing.Value) return -1;
-        if (value is int number) return number;
-        if (value is Enum) return Convert.ToInt32(value);
-        if (value is IConvertible convertible)
-        {
-            try
-            {
-                return convertible.ToInt32(null);
-            }
-            catch
-            {
-                return -1;
-            }
-        }
-
-        return int.TryParse(value.ToString(), out var parsed) ? parsed : -1;
+        return pinnedType == (int)PinnedType.IngredientsSeafood
+            || pinnedType == (int)PinnedType.IngredientsMeat
+            || pinnedType == (int)PinnedType.IngredientsVegetable
+            || pinnedType == (int)PinnedType.IngredientsOther;
     }
 
-    private static nint ReadObjectPointer(object target)
+    private static void SetPatchStatusLocked(PatchSlot patchSlot, string status)
     {
-        var pointer = ReadMember(target, "Pointer") ?? ReadMember(target, "NativePointer") ?? ReadMember(target, "m_CachedPtr");
-        if (pointer is IntPtr intPtr) return intPtr;
-        if (pointer is nint native) return native;
-        if (pointer is IConvertible convertible)
+        switch (patchSlot)
         {
-            try
-            {
-                return new IntPtr(convertible.ToInt64(null));
-            }
-            catch
-            {
-                return new IntPtr(RuntimeHelpers.GetHashCode(target));
-            }
+            case PatchSlot.CheckPinned:
+                _checkPinnedPatchStatus = status;
+                break;
+            case PatchSlot.CookingScope:
+                _cookingScopePatchStatus = status;
+                break;
+            case PatchSlot.BeverageScope:
+                _beverageScopePatchStatus = status;
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(patchSlot), patchSlot, null);
+        }
+    }
+
+    internal sealed class PinningTargetSnapshot
+    {
+        private readonly int[] _ingredientIds;
+
+        public static readonly PinningTargetSnapshot Disabled = new(0, false, -1, -1, EmptyIngredientIds);
+
+        public PinningTargetSnapshot(long generation, bool enabled, int recipeId, int beverageId, int[] ingredientIds)
+        {
+            Generation = generation;
+            Enabled = enabled;
+            RecipeId = recipeId;
+            BeverageId = beverageId;
+            _ingredientIds = ingredientIds.ToArray();
         }
 
-        return new IntPtr(RuntimeHelpers.GetHashCode(target));
+        public long Generation { get; }
+
+        public bool Enabled { get; }
+
+        public int RecipeId { get; }
+
+        public int BeverageId { get; }
+
+        public bool ContainsIngredient(int ingredientId)
+        {
+            return Array.IndexOf(_ingredientIds, ingredientId) >= 0;
+        }
+
+        public bool HasSameValues(bool enabled, int recipeId, int beverageId, int[] ingredientIds)
+        {
+            if (Enabled != enabled) return false;
+            return !enabled
+                || RecipeId == recipeId
+                && BeverageId == beverageId
+                && _ingredientIds.SequenceEqual(ingredientIds);
+        }
+    }
+
+    private enum PatchSlot
+    {
+        CheckPinned,
+        CookingScope,
+        BeverageScope,
+    }
+
+    private enum PinnedType
+    {
+        IngredientsSeafood = 0,
+        Recipes = 1,
+        Beverages = 2,
+        Cookers = 3,
+        IngredientsMeat = 4,
+        IngredientsVegetable = 5,
+        IngredientsOther = 6,
     }
 }

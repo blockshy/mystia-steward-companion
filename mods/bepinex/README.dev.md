@@ -60,6 +60,8 @@ mods/bepinex/
 - `游戏根目录/BepInEx/core/`
 - `游戏根目录/BepInEx/interop/`
 
+`tests/ui-pinning-runtime/UiPinningRuntimeSmoke.csproj` 会使用真实 Harmony wrapper 验证 scoped prefix 返回传播，以及料理/材料/酒水列表元素 Hook、Food/Beverage 类型隔离、池化重绑恢复、后台目标发布、面板和场景生命周期，因此运行该 smoke 时还要从 `BepInEx/core` 复制 `MonoMod.RuntimeDetour.dll` 和 `MonoMod.Utils.dll`。这两个 DLL 是测试运行依赖，不加入 Mod 编译和发布 preflight；引用放在外部目录时，通过 `-p:ReferenceDir="..."` 传给 `dotnet run`。
+
 复制完成后运行前置检查：
 
 ```powershell
@@ -255,6 +257,16 @@ pnpm audit:ui
 ```
 
 报告和截图默认写到 `/tmp/mystia-companion-ui-audit`。如果使用 `pnpm preview`，把 `MYSTIA_APP_URL` 改成 Vite preview 输出的地址，通常是 `http://127.0.0.1:4173`。
+
+修改游戏界面置顶/列表高亮目标契约、连接重发或推荐 Worker 生命周期后，还要运行定向巡检：
+
+```bash
+MYSTIA_APP_URL=http://127.0.0.1:4173 \
+MYSTIA_API_URL=http://127.0.0.1:32145 \
+pnpm audit:ui-pinning
+```
+
+该巡检会验证 `POST /ui-pinning/target`、`Recipe.Id` 与 food ID 分离、业务失败退避重试、断线/连接代际重发、过期 Worker 结果不会下发，以及 Worker error 后空目标锁存只在新的 current 成功 revision 到达后解除。
 
 仅重新生成安装包：
 
@@ -459,7 +471,9 @@ Mod 会定期检查当前页面和游戏运行时状态。进入游戏并加载�
 
 为降低经营中掉帧风险，本地 API 快照发布会做轻量节流：Unity 主线程最多约每 0.35 秒刷新一次缓存 JSON；若快照内容签名未变化，会复用上一份缓存 JSON，不为了 `CapturedAtUtc` 或性能数字重复序列化。完整 `RuntimeDataCatalog` 不再放进 `/snapshot`；快照只发布目录是否完整、来源、状态和签名，伴随窗口仅在本地缓存为空或签名变化时通过 `/runtime-data` 读取完整目录。运行时固定数据已经完整读取后，会缓存稀客映射和静态目录快照，经营 provider 与经营诊断只消费缓存，不再从经营快照热路径反复触发静态数据扫描；读取未完整时也按约 5 秒间隔重试，避免 `runtimeData.staticData` 在每轮经营刷新里反复消耗主线程。伴随窗口需要按签名缓存最近一次完整运行时数据，不能把 `/runtime-data` 的临时读取失败当作主快照丢失。概览页和经营中页会显示 `performanceMs` 中最近约 12 秒内耗时最高的快照环节，排查卡顿时优先记录 `refresh.business`、`refresh.runtime`、`snapshot.serialize`、`runtimeData.serialize`、`automation.collect` 和 `snapshot.publish`。经营扫描还会细分 `business.rare.*`、`business.normal.*`、`runtime.cookerSnapshot`、`mission.serveTargets` 等子项；普客订单快照会在短时间内复用，避免同一轮 `/snapshot` 发布重复枚举 `OrderController`、HUD 和 `GuestsManager`。
 
-普客订单被动快照缓存约 1 秒。`NormalOrderRuntimeCapture` 通过 `GuestGroupController.PushToOrder` 和 `GuestsManager.SetManualControllerOrderInternal` 捕获订单与可执行客人控制器绑定，不能为了性能删除；常规快照先读取 live `OrderController` / HUD 可见订单来决定订单是否仍存在，再把仍与 live 订单 key 或桌位/料理/酒水槽位匹配的捕获缓存合并回来补充 controller 绑定。手动控制订单还会从 `NightSceneDirector.controlledGuest` 枚举 controller，用于怪诞料理大赛三阶段最终 BOSS 这类 HUD 可见但不在常规桌位集合中的普通订单。已不可见的捕获缓存会被剔除，避免经营中页残留旧订单；捕获为空且 Hook 已安装、捕获版本未变化时可复用上一次空结果，捕获不可用时才做 `GuestsManager` 启动扫描。捕获版本变化后只强制刷新普客订单快照，不重新扫描稀客经营上下文。pending 出锅直送没有待办项时不在 `Update()` 热路径轮询。游戏界面置顶只在料理、材料和酒水面板字段刷新后重排列表，不再 Hook `RunTimePlayerData.CheckPinned` 这类全局高频查询。
+普客订单被动快照缓存约 1 秒。`NormalOrderRuntimeCapture` 通过 `GuestGroupController.PushToOrder` 和 `GuestsManager.SetManualControllerOrderInternal` 捕获订单与可执行客人控制器绑定，不能为了性能删除；常规快照先读取 live `OrderController` / HUD 可见订单来决定订单是否仍存在，再把仍与 live 订单 key 或桌位/料理/酒水槽位匹配的捕获缓存合并回来补充 controller 绑定。手动控制订单还会从 `NightSceneDirector.controlledGuest` 枚举 controller，用于怪诞料理大赛三阶段最终 BOSS 这类 HUD 可见但不在常规桌位集合中的普通订单。已不可见的捕获缓存会被剔除，避免经营中页残留旧订单；捕获为空且 Hook 已安装、捕获版本未变化时可复用上一次空结果，捕获不可用时才做 `GuestsManager` 启动扫描。捕获版本变化后只强制刷新普客订单快照，不重新扫描稀客经营上下文。pending 出锅直送没有待办项时不在 `Update()` 热路径轮询。游戏界面置顶不再反射读写任何 UI 列表；`UpdateAllVisual` 与 `UpdateBevField` 只建立 ThreadStatic 刷新作用域，最外层 prefix 固定目标快照。`RunTimePlayerData.CheckPinned` 的 bool prefix 在对应作用域内遇到料理 `1 + Recipe.Id`、材料 `0/4/5/6 + Ingredient.Id`、酒水 `2 + Sellable.Id` 的精确目标时设置 `__result=true` 并返回 false 跳过原方法；非目标或作用域外调用完整执行游戏原逻辑，列表仍完全由游戏原生代码构造和排序。不得压制玩家真实收藏，cooker 类型 `3` 继续只由独立高亮服务处理；不得恢复 `m_*`、`ClassifyIngredientByType` 输出改写或 `set_Item/Clear/Add` 路径。
+
+`RuntimePinnedListHighlightService` 只 Hook `WorkSceneCookingSelectionPannel.OnRecipeElementEnabled/3`、`OnIngElementEnabled/3` 和 `WorkSceneStoragePannel.OnElementEnabled/3`，酒水还必须确认 `Sellable.Type=Beverage`。`RuntimeUiPinningService` 维护排序与列表高亮共用的唯一 immutable target/generation，并串行化完整目标发布；不得在视觉服务中再保存第二份目标。Local API 工作线程不得读取或写入 Unity 对象；列表 Image 着色只在元素回调和 `LateUpdate` 主线程执行，保留原始 alpha，并在池化重绑、panel close/destroy、场景 suspend 和插件 Dispose 时恢复。场景 suspend 只能由两个面板的 `OnPanelOpen/0` prefix 恢复，不得由网络目标重发解除。
 
 夜间经营中，`经营中 / Service` 页优先使用 `SpecialOrderRuntimeCapture` 捕获到的稀客订单缓存；捕获缓存为空、需要初始化校验或本轮可接受订单少于缓存数量时，再扫描 `GuestsManager`、稀客队列、`OrderController`、HUD、服务面板和桌位控制器补充业务缺失项。诊断开启时允许额外采样这些来源，但样本只写日志，不合入正式订单集合。捕获版本、场景和诊断状态都未变化时会复用已有经营上下文，并按较慢节奏重新校验。页面仍会读取桌位控制器中的活动稀客，用于显示当前稀客和 `GuestGroupController.GetFund`、`BaseFundCarry`、`MaxFundCarry` 等当前携带金钱信息。普客订单使用 `OrderController` / HUD 判断订单可见性，使用 `NormalOrderRuntimeCapture` 记录 `GuestGroupController.PushToOrder` 或 `SetManualControllerOrderInternal` 建立的订单归属；HUD / `OrderController` 单独存在时只能显示推荐和不可执行诊断，不能单独用于自动送达或评价。页面顶部只展示经营场景、扫描状态、推荐数据、厨具与置顶状态等通用信息，随后用 `稀客` / `普客` 页签分区展示各自功能。稀客点单后，工作台会按桌号列出稀客、料理词条和酒水词条，并复用稀客推荐算法计算候选料理、加料和酒水。普客订单读取到 `GameData.CoreLanguage.LanguageBase` 这类 IL2CPP 本地化对象时，必须过滤为无文本，不得把运行时类型名当作客人、料理或酒水名称展示。
 
@@ -536,7 +550,7 @@ Port = 32145
 - `POST /rare-guests/invite?guestId=ID&scope=current|all`：邀请单个当前可邀请稀客。
 - `POST /automation/lease/acquire`、`POST /automation/lease/release`：获取或释放当前客户端的自动化控制权。
 - `POST /diagnostics/automation-decision?...`：把伴随窗口的自动化候选决策写入总日志。
-- `POST /ui-pinning/target?...`：更新游戏内料理、食材、酒水置顶和厨具高亮目标。
+- `POST /ui-pinning/target?...`：更新游戏内料理、食材、酒水置顶和厨具高亮目标；`recipeId` 是游戏 `Recipe.Id`，与成品 food ID 分开。
 - `GET /favorites`：读取收藏料理和收藏酒水。
 - `POST /favorites/add-recipe?...`、`POST /favorites/remove-recipe?id=...`、`POST /favorites/add-beverage?...`、`POST /favorites/remove-beverage?id=...`：增删收藏数据。
 - `GET /custom-recipes`：读取自定义推荐料理。

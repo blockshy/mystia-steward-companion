@@ -650,7 +650,7 @@ export function ModSettingsPanel({
                 onCheckedChange={(gameUiPinningEnabled) => onPreferenceChange({ gameUiPinningEnabled })}
               />
               <div className="text-xs text-muted-foreground">
-                打开料理或酒水选择界面时，尝试把当前第一笔订单的推荐材料、料理和酒水排到前面；失败时只记录诊断，不修改库存。
+                打开料理或酒水选择界面时，尝试把当前第一笔订单的推荐材料、料理和酒水排到前面并显示黄色脉冲高亮；失败时只记录诊断，不修改库存。
               </div>
               <SwitchControl
                 label="目标厨具高亮（实验性）"
