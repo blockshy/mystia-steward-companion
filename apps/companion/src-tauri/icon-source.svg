@@ -1,46 +1,249 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="mystia-steward-companion icon">
-  <defs>
-    <linearGradient id="bg" x1="128" y1="96" x2="896" y2="928" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#17323a"/>
-      <stop offset="0.58" stop-color="#12242d"/>
-      <stop offset="1" stop-color="#0d1820"/>
-    </linearGradient>
-    <linearGradient id="panel" x1="256" y1="210" x2="790" y2="828" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#fff4d0"/>
-      <stop offset="1" stop-color="#f4c95b"/>
-    </linearGradient>
-    <linearGradient id="accent" x1="266" y1="735" x2="860" y2="332" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#2bd4a5"/>
-      <stop offset="1" stop-color="#70d6ff"/>
-    </linearGradient>
-    <filter id="soft-shadow" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="28" stdDeviation="32" flood-color="#061016" flood-opacity="0.45"/>
-    </filter>
-  </defs>
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="1024" height="1024" viewBox="0 0 1024 1024"
+     preserveAspectRatio="xMidYMid meet"
+     data-icon-background="#0E1F3B"
+     data-android-background="#173054"
+     fill="none" shape-rendering="geometricPrecision">
+  <title>Isometric modular solids icon — reconstructed vector</title>
+  <desc>Five editable 3D solids on a rounded navy square. Hidden portions are preserved as full faces and are naturally occluded by later layers.</desc>
 
-  <rect x="72" y="72" width="880" height="880" fill="url(#bg)"/>
-  <path d="M156 741 741 156c116 59 198 181 198 325v84L565 939h-84c-139 0-259-78-325-198Z" fill="#23434a" opacity="0.42"/>
+  <metadata>
+    <![CDATA[
+    {
+      "solids": [
+        {"id":"solid-top-blue-cube","type":"cube / rectangular hexahedron","faces":["top","front-left","right"],"occluded":["part of right face by upper white hook prism"]},
+        {"id":"solid-upper-white-hook-prism","type":"extruded concave hook-profile prism","faces":["top extrusion face","front profile face","right/end face"]},
+        {"id":"solid-middle-blue-slab","type":"thin rectangular prism","faces":["top","front","right"]},
+        {"id":"solid-lower-dark-cuboid","type":"rectangular cuboid","faces":["top","front","right"],"occluded":["top face by middle blue slab","right face edge by lower white D prism"]},
+        {"id":"solid-lower-white-d-prism","type":"extruded D-profile prism","faces":["top extrusion face","left/end face","front D-profile face"]}
+      ],
+      "seams":"Adjacent faces reuse identical coordinates; pale compound underlays prevent antialiasing hairlines when rasterized.",
+      "curves":"Rounded profiles use continuous cubic Bezier segments."
+    }
+    ]]>
+  </metadata>
+  <g transform="matrix(0.9037952339 0 0 0.9037952339 -54.6796116505 -55.1315092674)">
+    <g id="icon-background">
+      <rect x="62" y="61" width="1130" height="1133" rx="207" ry="207" fill="#0E1F3B"/>
+      <rect x="62" y="61" width="1130" height="1133" rx="207" ry="207" fill="#173054" fill-opacity="0.04"/>
+    </g>
 
-  <g filter="url(#soft-shadow)">
-    <rect x="220" y="202" width="584" height="620" fill="#0b151d" opacity="0.32"/>
-    <rect x="202" y="180" width="584" height="620" fill="url(#panel)"/>
-    <rect x="254" y="252" width="480" height="74" fill="#19333b"/>
-    <circle cx="306" cy="289" r="16" fill="#2bd4a5"/>
-    <rect x="348" y="274" width="260" height="30" fill="#fdf6df"/>
+    <g id="icon-foreground">
+      <!-- Complete lower cuboid; the slab and lower white prism occlude it later. -->
+      <g id="solid-lower-dark-cuboid">
+        <title>Lower dark blue rectangular cuboid</title>
+        <desc>Full top, front and right faces are present. The top is partially hidden by the middle slab.</desc>
+        <path id="lower-dark-right-face"
+              d="M580 891 L684 830 L684 972 L580 1035 Z"
+              fill="#293A5C"/>
+        <path id="lower-dark-front-face"
+              d="M364 767 L580 891 L580 1035 L364 911 Z"
+              fill="#324772"/>
+        <path id="lower-dark-top-face"
+              d="M364 767 L468 707 L684 830 L580 891 Z"
+              fill="#3D5585"/>
+        <path d="M364 767 L580 891" stroke="#7692C3" stroke-opacity="0.12"
+              stroke-width="0.8" vector-effect="non-scaling-stroke"/>
+      </g>
 
-    <rect x="278" y="392" width="112" height="112" fill="#19333b"/>
-    <path d="m309 449 28 28 63-72" fill="none" stroke="#2bd4a5" stroke-width="30" stroke-linecap="square" stroke-linejoin="miter"/>
-    <rect x="432" y="400" width="214" height="28" fill="#19333b"/>
-    <rect x="432" y="458" width="258" height="28" fill="#7a6426" opacity="0.62"/>
+      <!-- Complete top cube; the upper white hook prism covers part of its right face. -->
+      <g id="solid-top-blue-cube">
+        <title>Top blue cube</title>
+        <desc>Three visible faces; the right face is drawn in full and then occluded by the upper white prism.</desc>
+        <path id="top-cube-right-face"
+              d="M536 416 L698 320 L698 478 L536 573 Z"
+              fill="#345FA9"/>
+        <path id="top-cube-front-face"
+              d="M373 324 L536 416 L536 573 L373 481 Z"
+              fill="#4A88F1"/>
+        <path id="top-cube-top-face"
+              d="M373 324 L536 229 L698 320 L536 416 Z"
+              fill="#A9CEFE"/>
+        <path d="M373 324 L536 416 L698 320"
+              stroke="#E6F1FF" stroke-opacity="0.15" stroke-width="0.8"
+              vector-effect="non-scaling-stroke"/>
+      </g>
 
-    <rect x="278" y="560" width="112" height="112" fill="#19333b"/>
-    <circle cx="334" cy="616" r="32" fill="none" stroke="#70d6ff" stroke-width="24"/>
-    <rect x="432" y="568" width="258" height="28" fill="#19333b"/>
-    <rect x="432" y="626" width="176" height="28" fill="#7a6426" opacity="0.62"/>
+      <!-- Thin blue rectangular prism, painted over the lower cuboid. -->
+      <g id="solid-middle-blue-slab">
+        <title>Middle blue rectangular slab</title>
+        <desc>Thin cuboid with top, front and right faces.</desc>
+        <path id="middle-slab-right-face"
+              d="M599 684 L642 659 L642 807 L599 834 Z"
+              fill="#3462B0"/>
+        <path id="middle-slab-front-face"
+              d="M365 552 L599 684 L599 834 L365 703 Z"
+              fill="#417DED"/>
+        <path id="middle-slab-top-face"
+              d="M365 552 L407 528 L642 659 L599 684 Z"
+              fill="#6DA4FC"/>
+        <path d="M365 552 L599 684 L642 659"
+              stroke="#D9E9FF" stroke-opacity="0.16" stroke-width="0.8"
+              vector-effect="non-scaling-stroke"/>
+      </g>
+
+      <!-- Upper white concave hook-profile prism. -->
+      <g id="solid-upper-white-hook-prism">
+        <title>Upper white hook-profile prism</title>
+        <desc>Extruded concave hook profile with a rounded outer end and a rounded inner notch.</desc>
+
+        <!-- Seam underlay: a shared silhouette behind all faces prevents
+             background-colored antialiasing cracks at raster sizes. -->
+        <path id="upper-hook-seam-underlay"
+              d="M862 476
+                 L917 443
+                 C920 451 922 459 922 468
+                 L922 554
+                 C922 568 915 579 904 588
+                 L835 631
+                 C854 621 864 608 864 594
+                 L864 495
+                 C864 489 864 483 862 476 Z
+                 M672 353
+                 L841 451
+                 C853 458 860 467 862 476
+                 C864 483 864 489 864 495
+                 L864 594
+                 C864 608 854 621 835 631
+                 C831 633 827 633 823 630
+                 L811 623
+                 C806 620 803 616 803 611
+                 L803 576
+                 C803 570 800 565 795 562
+                 L677 494
+                 C673 492 671 489 671 485
+                 L671 359
+                 C671 356 671 355 672 353 Z
+                 M672 353
+                 L724 321
+                 C728 318 732 318 736 321
+                 L887 407
+                 C902 415 913 429 917 443
+                 L862 476
+                 C860 469 856 462 850 457
+                 C847 455 844 453 841 451
+                 Z"
+              fill="#EEF0F2"/>
+
+        <!-- right/end face -->
+        <path id="upper-hook-side-face"
+              d="M862 476
+                 L917 443
+                 C920 451 922 459 922 468
+                 L922 554
+                 C922 568 915 579 904 588
+                 L835 631
+                 C854 621 864 608 864 594
+                 L864 495
+                 C864 489 864 483 862 476 Z"
+              fill="#E1E4E7"/>
+
+        <!-- planar concave front profile -->
+        <path id="upper-hook-front-face"
+              d="M672 353
+                 L841 451
+                 C853 458 860 467 862 476
+                 C864 483 864 489 864 495
+                 L864 594
+                 C864 608 854 621 835 631
+                 C831 633 827 633 823 630
+                 L811 623
+                 C806 620 803 616 803 611
+                 L803 576
+                 C803 570 800 565 795 562
+                 L677 494
+                 C673 492 671 489 671 485
+                 L671 359
+                 C671 356 671 355 672 353 Z"
+              fill="#EFF1F2"/>
+
+        <!-- top/extrusion face; painted last to close the seams cleanly -->
+        <path id="upper-hook-top-face"
+              d="M672 353
+                 L724 321
+                 C728 318 732 318 736 321
+                 L887 407
+                 C902 415 913 429 917 443
+                 L862 476
+                 C860 469 856 462 850 457
+                 C847 455 844 453 841 451
+                 Z"
+              fill="#FEFEFF"/>
+
+      </g>
+
+      <!-- Lower white D-profile prism; adjacent to and partly in front of the lower cuboid. -->
+      <g id="solid-lower-white-d-prism">
+        <title>Lower white D-profile prism</title>
+        <desc>Extruded D-shaped prism. Its broad front face has a continuously rounded outer contour.</desc>
+
+        <!-- Seam underlay: a shared silhouette behind all faces prevents
+             background-colored antialiasing cracks at raster sizes. -->
+        <path id="lower-d-seam-underlay"
+              d="M745 754
+                 L850 694
+                 C862 687 878 685 892 691
+                 C906 698 915 714 915 733
+                 L915 804
+                 C915 830 902 851 878 869
+                 L715 968
+                 C734 957 745 943 745 927
+                 Z
+                 M684 718
+                 L745 754
+                 L745 927
+                 C745 943 734 957 715 968
+                 C711 971 707 972 703 970
+                 L691 963
+                 C686 960 684 956 684 951
+                 Z
+                 M684 718
+                 L799 650
+                 C803 647 808 647 812 650
+                 L892 691
+                 C878 685 862 687 850 694
+                 L745 754
+                 Z"
+              fill="#F1F2F4"/>
+
+        <!-- broad D-shaped front face -->
+        <path id="lower-d-main-face"
+              d="M745 754
+                 L850 694
+                 C862 687 878 685 892 691
+                 C906 698 915 714 915 733
+                 L915 804
+                 C915 830 902 851 878 869
+                 L715 968
+                 C734 957 745 943 745 927
+                 Z"
+              fill="#EDEFF1"/>
+
+        <!-- left/end face -->
+        <path id="lower-d-left-face"
+              d="M684 718
+                 L745 754
+                 L745 927
+                 C745 943 734 957 715 968
+                 C711 971 707 972 703 970
+                 L691 963
+                 C686 960 684 956 684 951
+                 Z"
+              fill="#F2F3F4"/>
+
+        <!-- top/extrusion face -->
+        <path id="lower-d-top-face"
+              d="M684 718
+                 L799 650
+                 C803 647 808 647 812 650
+                 L892 691
+                 C878 685 862 687 850 694
+                 L745 754
+                 Z"
+              fill="#FEFEFF"/>
+
+      </g>
+    </g>
   </g>
-
-  <path d="M746 612c70 0 126 56 126 126s-56 126-126 126-126-56-126-126 56-126 126-126Z" fill="#0d1820" opacity="0.28"/>
-  <circle cx="724" cy="716" r="122" fill="url(#accent)"/>
-  <path d="M654 718h140M724 648v140" stroke="#0d1820" stroke-width="42" stroke-linecap="square"/>
-  <circle cx="724" cy="716" r="88" fill="none" stroke="#fff4d0" stroke-width="28" opacity="0.9"/>
 </svg>

@@ -9,6 +9,8 @@
     "dev": "vite --config apps/companion/vite.config.ts",
     "build": "tsc -b apps/companion/tsconfig.json && vite build --config apps/companion/vite.config.ts",
     "lint": "eslint .",
+    "icons:generate": "node scripts/generate-icon-assets.mjs",
+    "icons:check": "node scripts/generate-icon-assets.mjs --check",
     "mock:api": "node scripts/mock-local-api.mjs",
     "audit:ui": "node scripts/playwright-ui-audit.mjs",
     "audit:ui-pinning": "node tests/ui-pinning/frontend-ui-pinning-audit.mjs",
