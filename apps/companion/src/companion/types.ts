@@ -513,6 +513,7 @@ export interface FavoriteMutationResponse {
 
 export interface CustomRecipeData {
   version: number;
+  enabled: boolean;
   recipes: CustomRecipeEntry[];
 }
 
@@ -541,9 +542,23 @@ export interface CustomRecipeUpsertInput {
   recipeId: number;
   recipeName: string;
   extraIngredientIds: number[];
-  enabled: boolean;
-  pinToTop: boolean;
+  enabled?: boolean;
+  pinToTop?: boolean;
   sortOrder?: number;
+}
+
+export type CustomRecipeGroupMode = 'customer' | 'recipe';
+
+export type CustomRecipeSelection =
+  | { scope: 'all' }
+  | { scope: 'customer'; customerId: number }
+  | { scope: 'recipe'; foodId: number }
+  | { scope: 'entry'; id: string };
+
+export interface CustomRecipeFlagUpdateInput {
+  selection: CustomRecipeSelection;
+  enabled?: boolean;
+  pinToTop?: boolean;
 }
 
 export interface CustomRecipeMutationResponse {

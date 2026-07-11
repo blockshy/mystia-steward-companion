@@ -13,6 +13,7 @@
     "icons:check": "node scripts/generate-icon-assets.mjs --check",
     "mock:api": "node scripts/mock-local-api.mjs",
     "audit:ui": "node scripts/playwright-ui-audit.mjs",
+    "audit:custom-recipes": "node tests/custom-recipes/frontend-custom-recipes-audit.mjs",
     "audit:ui-pinning": "node tests/ui-pinning/frontend-ui-pinning-audit.mjs",
     "audit:gamepad": "node scripts/playwright-gamepad-audit.mjs",
     "preview": "vite preview --config apps/companion/vite.config.ts",

@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useGamepadNavigation } from '@/companion/use-gamepad-navigation';
+import {
+  createEmptyCustomRecipeForm,
+  type CustomRecipeFormState,
+} from '@/companion/custom-recipe-editor';
 import { WorkbenchHeader } from '@/companion/features/workbench/WorkbenchHeader';
 import { useCompanionConnection } from '@/companion/hooks/useCompanionConnection';
 import { useCustomRecipes } from '@/companion/hooks/useCustomRecipes';
@@ -121,6 +125,7 @@ import {
 } from '@/companion/preferences';
 import {
   normalizeRareGuestInvitationLevels,
+  persistCustomRecipeGroupMode,
   persistFocusBeverageLimit,
   persistFocusCompact,
   persistFocusRecipeLimit,
@@ -128,12 +133,14 @@ import {
   readStoredFocusBeverageLimit,
   readStoredFocusCompact,
   readStoredFocusRecipeLimit,
+  readStoredCustomRecipeGroupMode,
   readStoredTab,
 } from '@/companion/storage';
 import type {
   AutomationRuntimeEvent,
   AutomationCookerCycle,
   CustomRecipeData,
+  CustomRecipeGroupMode,
   FavoriteData,
   LocalApiAutomationLease,
   ModTab,
@@ -170,7 +177,7 @@ type CompanionPlatform = 'desktop' | 'mobile';
 const MOD_TABS: ModTab[] = ['overview', 'normal', 'rare', 'custom-recipes', 'service', 'tasks', 'inventory', 'help', 'logs', 'settings'];
 const BASIC_MOD_TABS: ModTab[] = MOD_TABS.filter((tab) => tab !== 'logs');
 const EMPTY_WORKER_FAVORITES: FavoriteData = { version: 0, recipes: [], beverages: [] };
-const EMPTY_WORKER_CUSTOM_RECIPES: CustomRecipeData = { version: 0, recipes: [] };
+const EMPTY_WORKER_CUSTOM_RECIPES: CustomRecipeData = { version: 0, enabled: false, recipes: [] };
 
 interface NormalOrderDetailInput {
   include: boolean;
@@ -465,6 +472,7 @@ function buildFavoriteDataSignature(favorites: FavoriteData): string {
 function buildCustomRecipeDataSignature(customRecipes: CustomRecipeData): string {
   return [
     customRecipes.version,
+    customRecipes.enabled ? 1 : 0,
     [...customRecipes.recipes]
       .sort((left, right) =>
         left.customerId - right.customerId
@@ -988,6 +996,10 @@ export function ModWorkbench() {
   const [serviceFocusCompact, setServiceFocusCompact] = useState(readStoredFocusCompact);
   const [serviceFocusRecipeLimit, setServiceFocusRecipeLimit] = useState(readStoredFocusRecipeLimit);
   const [serviceFocusBeverageLimit, setServiceFocusBeverageLimit] = useState(readStoredFocusBeverageLimit);
+  const [customRecipeGroupMode, setCustomRecipeGroupMode] = useState<CustomRecipeGroupMode>(
+    readStoredCustomRecipeGroupMode,
+  );
+  const [customRecipeForm, setCustomRecipeForm] = useState<CustomRecipeFormState>(createEmptyCustomRecipeForm);
   const [companionPreferences, setCompanionPreferences] = useState<CompanionPreferences>(() =>
     readStoredCompanionPreferences(),
   );
@@ -1027,9 +1039,22 @@ export function ModWorkbench() {
     customRecipeBusyKey,
     upsertCustomRecipeEntry,
     removeCustomRecipeEntry,
-    toggleCustomRecipeEntry,
+    setCustomRecipesEnabledState,
+    updateCustomRecipeFlagsState,
     moveCustomRecipeEntry,
   } = useCustomRecipes({ apiToken, connectionPaused, normalizedEndpoint });
+  const customRecipeDraftEndpointRef = useRef(normalizedEndpoint);
+
+  useEffect(() => {
+    if (customRecipeDraftEndpointRef.current === normalizedEndpoint) return;
+    customRecipeDraftEndpointRef.current = normalizedEndpoint;
+    setCustomRecipeForm(createEmptyCustomRecipeForm());
+  }, [normalizedEndpoint]);
+
+  const updateCustomRecipeGroupMode = useCallback((mode: CustomRecipeGroupMode) => {
+    setCustomRecipeGroupMode(mode);
+    persistCustomRecipeGroupMode(mode);
+  }, []);
   const {
     rareGuestInvitationScope,
     setRareGuestInvitationScope,
@@ -3077,13 +3102,18 @@ export function ModWorkbench() {
               customRecipes={customRecipes}
               customRecipeBusyKey={customRecipeBusyKey}
               customRecipeError={customRecipeError}
+              form={customRecipeForm}
+              groupMode={customRecipeGroupMode}
               runtimeSets={runtimeSets}
               runtimeRareCustomers={runtimeRareCustomers}
               data={recommendationData}
               onUpsertCustomRecipe={upsertCustomRecipeEntry}
               onRemoveCustomRecipe={removeCustomRecipeEntry}
-              onToggleCustomRecipe={toggleCustomRecipeEntry}
+              onSetCustomRecipesEnabled={setCustomRecipesEnabledState}
+              onUpdateCustomRecipeFlags={updateCustomRecipeFlagsState}
               onMoveCustomRecipe={moveCustomRecipeEntry}
+              onFormChange={setCustomRecipeForm}
+              onGroupModeChange={updateCustomRecipeGroupMode}
             />
           )}
         </TabsContent>

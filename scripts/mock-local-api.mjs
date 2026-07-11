@@ -107,6 +107,7 @@ const favoriteData = {
 
 const customRecipeData = {
   version: 1,
+  enabled: true,
   recipes: [
     {
       id: 'mock-custom-1001-all-1202',
@@ -120,6 +121,51 @@ const customRecipeData = {
       enabled: true,
       pinToTop: true,
       sortOrder: 100,
+      createdAtUtc: nowIso(),
+      updatedAtUtc: nowIso(),
+    },
+    {
+      id: 'mock-custom-1001-all-1206',
+      customerId: 1001,
+      customerName: '米斯蒂娅',
+      foodTag: null,
+      foodId: 206,
+      recipeId: 1206,
+      recipeName: '月光团子',
+      extraIngredientIds: [],
+      enabled: false,
+      pinToTop: false,
+      sortOrder: 200,
+      createdAtUtc: nowIso(),
+      updatedAtUtc: nowIso(),
+    },
+    {
+      id: 'mock-custom-1002-tag-1202',
+      customerId: 1002,
+      customerName: '露米娅',
+      foodTag: '肉',
+      foodId: 202,
+      recipeId: 1202,
+      recipeName: '蜂蜜蛋糕',
+      extraIngredientIds: [],
+      enabled: true,
+      pinToTop: false,
+      sortOrder: 300,
+      createdAtUtc: nowIso(),
+      updatedAtUtc: nowIso(),
+    },
+    {
+      id: 'mock-custom-1002-all-1207',
+      customerId: 1002,
+      customerName: '露米娅',
+      foodTag: null,
+      foodId: 207,
+      recipeId: 1207,
+      recipeName: '香辣烤肉',
+      extraIngredientIds: [],
+      enabled: true,
+      pinToTop: true,
+      sortOrder: 400,
       createdAtUtc: nowIso(),
       updatedAtUtc: nowIso(),
     },
@@ -282,8 +328,13 @@ const server = http.createServer((request, response) => {
         return;
       }
 
-      if (path === '/custom-recipes/toggle') {
-        sendJson(response, 200, toggleCustomRecipe(requestUrl.searchParams));
+      if (path === '/custom-recipes/settings') {
+        sendJson(response, 200, setCustomRecipesEnabled(requestUrl.searchParams));
+        return;
+      }
+
+      if (path === '/custom-recipes/update-flags') {
+        sendJson(response, 200, updateCustomRecipeFlags(requestUrl.searchParams));
         return;
       }
 
@@ -771,6 +822,10 @@ function upsertCustomRecipe(params) {
   }
 
   const now = nowIso();
+  const existingIndex = customRecipeData.recipes.findIndex((item) => item.id === id);
+  const existing = existingIndex >= 0 ? customRecipeData.recipes[existingIndex] : null;
+  const enabled = parseOptionalBoolean(params.get('enabled'));
+  const pinToTop = parseOptionalBoolean(params.get('pinToTop'));
   const entry = {
     id: id || `mock-custom-${Date.now()}`,
     customerId,
@@ -780,14 +835,13 @@ function upsertCustomRecipe(params) {
     recipeId: Number(params.get('recipeId') || -1),
     recipeName: params.get('recipeName') || '',
     extraIngredientIds: parseIdList(params.get('extraIngredientIds') || ''),
-    enabled: normalizeBoolean(params.get('enabled'), true),
-    pinToTop: normalizeBoolean(params.get('pinToTop'), true),
+    enabled: enabled ?? existing?.enabled ?? true,
+    pinToTop: pinToTop ?? existing?.pinToTop ?? true,
     sortOrder: Number(params.get('sortOrder') || nextCustomRecipeSortOrder()),
     createdAtUtc: now,
     updatedAtUtc: now,
   };
 
-  const existingIndex = customRecipeData.recipes.findIndex((item) => item.id === entry.id);
   if (existingIndex >= 0) {
     entry.createdAtUtc = customRecipeData.recipes[existingIndex].createdAtUtc;
     customRecipeData.recipes[existingIndex] = entry;
@@ -798,19 +852,55 @@ function upsertCustomRecipe(params) {
   return { ok: true, customRecipes: customRecipeData, error: null };
 }
 
-function toggleCustomRecipe(params) {
-  const entry = customRecipeData.recipes.find((item) => item.id === params.get('id'));
-  if (!entry) return { ok: false, customRecipes: customRecipeData, error: 'custom recipe not found' };
-  entry.enabled = normalizeBoolean(params.get('enabled'), true);
-  entry.updatedAtUtc = nowIso();
+function setCustomRecipesEnabled(params) {
+  const enabled = parseOptionalBoolean(params.get('enabled'));
+  if (enabled === null) {
+    return { ok: false, customRecipes: customRecipeData, error: 'invalid custom recipe enabled setting' };
+  }
+  customRecipeData.enabled = enabled;
+  return { ok: true, customRecipes: customRecipeData, error: null };
+}
+
+function updateCustomRecipeFlags(params) {
+  const scope = params.get('scope');
+  const entries = customRecipeData.recipes.filter((entry) => {
+    if (scope === 'all') return true;
+    if (scope === 'entry') return entry.id === params.get('id');
+    if (scope === 'customer') return entry.customerId === Number(params.get('customerId'));
+    if (scope === 'recipe') return entry.foodId === Number(params.get('foodId'));
+    return false;
+  });
+  const enabled = parseOptionalBoolean(params.get('enabled'));
+  const pinToTop = parseOptionalBoolean(params.get('pinToTop'));
+  if (entries.length === 0) {
+    return { ok: false, customRecipes: customRecipeData, error: 'custom recipe selection matched no entries' };
+  }
+  if (enabled === null && pinToTop === null) {
+    return { ok: false, customRecipes: customRecipeData, error: 'no custom recipe flags specified' };
+  }
+
+  const updatedAtUtc = nowIso();
+  for (const entry of entries) {
+    if (enabled !== null) entry.enabled = enabled;
+    if (pinToTop !== null) entry.pinToTop = pinToTop;
+    entry.updatedAtUtc = updatedAtUtc;
+  }
   return { ok: true, customRecipes: customRecipeData, error: null };
 }
 
 function moveCustomRecipe(params) {
-  const ordered = [...customRecipeData.recipes].sort(compareCustomRecipeEntries);
-  const index = ordered.findIndex((item) => item.id === params.get('id'));
+  const entry = customRecipeData.recipes.find((item) => item.id === params.get('id'));
+  if (!entry) return { ok: false, customRecipes: customRecipeData, error: 'custom recipe not found' };
+  const ordered = customRecipeData.recipes
+    .filter((item) => item.customerId === entry.customerId)
+    .sort(compareCustomRecipeEntries);
+  const index = ordered.findIndex((item) => item.id === entry.id);
   if (index < 0) return { ok: false, customRecipes: customRecipeData, error: 'custom recipe not found' };
-  const targetIndex = params.get('direction') === 'up' ? index - 1 : index + 1;
+  const direction = params.get('direction');
+  if (direction !== 'up' && direction !== 'down') {
+    return { ok: false, customRecipes: customRecipeData, error: 'invalid custom recipe move direction' };
+  }
+  const targetIndex = direction === 'up' ? index - 1 : index + 1;
   if (targetIndex >= 0 && targetIndex < ordered.length) {
     [ordered[index].sortOrder, ordered[targetIndex].sortOrder] = [ordered[targetIndex].sortOrder, ordered[index].sortOrder];
     ordered[index].updatedAtUtc = nowIso();
@@ -818,6 +908,12 @@ function moveCustomRecipe(params) {
   }
   normalizeCustomRecipeSortOrders();
   return { ok: true, customRecipes: customRecipeData, error: null };
+}
+
+function parseOptionalBoolean(value) {
+  if (value === 'true' || value === '1') return true;
+  if (value === 'false' || value === '0') return false;
+  return null;
 }
 
 function nextCustomRecipeSortOrder() {

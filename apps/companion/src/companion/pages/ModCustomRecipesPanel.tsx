@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import type { ReactNode } from 'react';
+import { useMemo } from 'react';
+import type { Dispatch, ReactNode, SetStateAction } from 'react';
 import {
   Badge,
   Button,
@@ -9,6 +9,7 @@ import {
   EmptyState,
   ListPanel,
   MultiSelectBox,
+  SegmentedControl,
   SelectBox,
   SwitchField,
 } from '@/components/ui-kit';
@@ -16,6 +17,11 @@ import {
   compareCustomRecipeEntries,
   normalizeIdList,
 } from '@/companion/domain/custom-recipes';
+import {
+  CUSTOM_RECIPE_ALL_FOOD_TAG_VALUE,
+  createEmptyCustomRecipeForm,
+  type CustomRecipeFormState,
+} from '@/companion/custom-recipe-editor';
 import {
   isOrderableRareFoodTag,
   isUsableRareCustomer,
@@ -28,6 +34,9 @@ import {
 import type {
   CustomRecipeData,
   CustomRecipeEntry,
+  CustomRecipeFlagUpdateInput,
+  CustomRecipeGroupMode,
+  CustomRecipeSelection,
   CustomRecipeUpsertInput,
   RuntimeSets,
 } from '@/companion/types';
@@ -39,7 +48,6 @@ import {
 } from '@/lib/recommendation-data';
 import type { IngredientCatalogItem, RareCustomerCatalogItem, RecipeCatalogItem } from '@/lib/catalog-types';
 
-const ALL_FOOD_TAG_VALUE = '__all_food_tags__';
 const MAX_FOOD_INGREDIENT_COUNT = 5;
 
 interface ModCustomRecipesPanelProps {
@@ -47,24 +55,25 @@ interface ModCustomRecipesPanelProps {
   customRecipes: CustomRecipeData;
   customRecipeBusyKey: string;
   customRecipeError: string;
+  form: CustomRecipeFormState;
+  groupMode: CustomRecipeGroupMode;
   runtimeSets: RuntimeSets | null;
   runtimeRareCustomers: RareCustomerCatalogItem[];
   data: RecommendationDataSet;
   onUpsertCustomRecipe: (input: CustomRecipeUpsertInput) => Promise<boolean>;
   onRemoveCustomRecipe: (id: string) => Promise<boolean>;
-  onToggleCustomRecipe: (id: string, enabled: boolean) => Promise<boolean>;
+  onSetCustomRecipesEnabled: (enabled: boolean) => Promise<boolean>;
+  onUpdateCustomRecipeFlags: (input: CustomRecipeFlagUpdateInput) => Promise<boolean>;
   onMoveCustomRecipe: (id: string, direction: 'up' | 'down') => Promise<boolean>;
+  onFormChange: Dispatch<SetStateAction<CustomRecipeFormState>>;
+  onGroupModeChange: (mode: CustomRecipeGroupMode) => void;
 }
 
-interface CustomRecipeFormState {
-  editingId: string;
-  customerId: string;
-  foodTagValue: string;
-  foodId: string;
-  extraIngredientIds: string[];
-  enabled: boolean;
-  pinToTop: boolean;
-  sortOrder?: number;
+interface CustomRecipeGroup {
+  key: string;
+  label: string;
+  selection: CustomRecipeSelection;
+  entries: CustomRecipeEntry[];
 }
 
 export function ModCustomRecipesPanel({
@@ -72,13 +81,18 @@ export function ModCustomRecipesPanel({
   customRecipes,
   customRecipeBusyKey,
   customRecipeError,
+  form,
+  groupMode,
   runtimeSets,
   runtimeRareCustomers,
   data,
   onUpsertCustomRecipe,
   onRemoveCustomRecipe,
-  onToggleCustomRecipe,
+  onSetCustomRecipesEnabled,
+  onUpdateCustomRecipeFlags,
   onMoveCustomRecipe,
+  onFormChange,
+  onGroupModeChange,
 }: ModCustomRecipesPanelProps) {
   const dataIndexes = useMemo(() => buildRecommendationDataIndexes(data), [data]);
   const customers = useMemo(
@@ -88,7 +102,6 @@ export function ModCustomRecipesPanel({
     ).sort((left, right) => left.name.localeCompare(right.name, 'zh-Hans-CN')),
     [data, runtimeRareCustomers],
   );
-  const [form, setForm] = useState<CustomRecipeFormState>(() => createInitialForm(customers[0] ?? null));
   const selectedCustomer = customers.find((customer) => String(customer.id) === form.customerId) ?? customers[0] ?? null;
   const selectedRecipe = dataIndexes.recipeByFoodId.get(Number(form.foodId)) ?? null;
   const baseIngredientIds = useMemo(
@@ -109,6 +122,10 @@ export function ModCustomRecipesPanel({
   const entries = useMemo(
     () => [...customRecipes.recipes].sort(compareCustomRecipeEntries),
     [customRecipes.recipes],
+  );
+  const groups = useMemo(
+    () => buildCustomRecipeGroups(entries, groupMode, customers, dataIndexes.recipeByFoodId),
+    [customers, dataIndexes.recipeByFoodId, entries, groupMode],
   );
   const recipeOptions = useMemo(
     () => buildRecipeOptions(data.recipes, runtimeSets),
@@ -136,7 +153,7 @@ export function ModCustomRecipesPanel({
   );
   const foodTagOptions = useMemo(
     () => [
-      { value: ALL_FOOD_TAG_VALUE, label: '全部点单料理 Tag' },
+      { value: CUSTOM_RECIPE_ALL_FOOD_TAG_VALUE, label: '全部点单料理 Tag' },
       ...(selectedCustomer?.positiveTags ?? [])
         .filter(isOrderableRareFoodTag)
         .map((tag) => ({ value: tag, label: tag })),
@@ -144,7 +161,8 @@ export function ModCustomRecipesPanel({
     [selectedCustomer],
   );
   const totalIngredientCount = (selectedRecipe?.ingredients.length ?? 0) + selectedExtraIds.length;
-  const formBusy = customRecipeBusyKey === (form.editingId || `new:${selectedCustomer?.id ?? form.customerId}:${form.foodId}`);
+  const busy = Boolean(customRecipeBusyKey);
+  const summary = summarizeEntries(entries);
   const formError = buildFormError({
     apiToken,
     selectedCustomer,
@@ -152,20 +170,21 @@ export function ModCustomRecipesPanel({
     totalIngredientCount,
   });
 
-  const resetForm = () => setForm(createInitialForm(selectedCustomer));
+  const resetForm = () => onFormChange(createInitialForm(selectedCustomer));
   const saveForm = async () => {
     if (!selectedCustomer || !selectedRecipe || formError) return;
+    const creating = !form.editingId;
     const ok = await onUpsertCustomRecipe({
       id: form.editingId || undefined,
       customerId: selectedCustomer.id,
       customerName: selectedCustomer.name,
-      foodTag: form.foodTagValue === ALL_FOOD_TAG_VALUE ? null : form.foodTagValue,
+      foodTag: form.foodTagValue === CUSTOM_RECIPE_ALL_FOOD_TAG_VALUE ? null : form.foodTagValue,
       foodId: selectedRecipe.id,
       recipeId: selectedRecipe.recipeId,
       recipeName: selectedRecipe.name,
       extraIngredientIds: selectedExtraIds,
-      enabled: form.enabled,
-      pinToTop: form.pinToTop,
+      enabled: creating ? form.enabled : undefined,
+      pinToTop: creating ? form.pinToTop : undefined,
       sortOrder: form.sortOrder,
     });
     if (ok) resetForm();
@@ -177,6 +196,30 @@ export function ModCustomRecipesPanel({
 
   return (
     <div className="space-y-4">
+      <div className="steward-inline-panel space-y-3 px-3 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <SwitchField
+            label="启用自定义推荐料理"
+            checked={customRecipes.enabled}
+            disabled={busy || !apiToken}
+            onCheckedChange={(enabled) => void onSetCustomRecipesEnabled(enabled)}
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant={customRecipes.enabled ? 'secondary' : 'outline'}>
+              {customRecipes.enabled ? '功能已启用' : '功能已停用'}
+            </Badge>
+            <Badge variant="outline">共 {summary.total}</Badge>
+            <Badge variant="outline">启用 {summary.enabled}</Badge>
+            <Badge variant="outline">置顶 {summary.pinned}</Badge>
+          </div>
+        </div>
+        {customRecipeError && (
+          <div className="border border-destructive/30 px-3 py-2 text-sm text-destructive">
+            {customRecipeError}
+          </div>
+        )}
+      </div>
+
       <Card>
         <CardContent className="space-y-4 p-4 text-sm">
           <div className={DENSE_TWO_COLUMN_GRID}>
@@ -185,11 +228,11 @@ export function ModCustomRecipesPanel({
                 value={selectedCustomer ? String(selectedCustomer.id) : ''}
                 options={customers.map((customer) => ({ value: String(customer.id), label: customer.name }))}
                 searchable
-                disabled={customers.length === 0}
-                onValueChange={(value) => setForm((current) => ({
+                disabled={customers.length === 0 || busy}
+                onValueChange={(value) => onFormChange((current) => ({
                   ...current,
                   customerId: value,
-                  foodTagValue: ALL_FOOD_TAG_VALUE,
+                  foodTagValue: CUSTOM_RECIPE_ALL_FOOD_TAG_VALUE,
                 }))}
               />
             </LabeledControl>
@@ -198,8 +241,8 @@ export function ModCustomRecipesPanel({
                 value={form.foodTagValue}
                 options={foodTagOptions}
                 searchable
-                disabled={!selectedCustomer}
-                onValueChange={(value) => setForm((current) => ({ ...current, foodTagValue: value }))}
+                disabled={!selectedCustomer || busy}
+                onValueChange={(value) => onFormChange((current) => ({ ...current, foodTagValue: value }))}
               />
             </LabeledControl>
             <LabeledControl label="基础料理">
@@ -207,8 +250,8 @@ export function ModCustomRecipesPanel({
                 value={form.foodId}
                 options={recipeOptions}
                 searchable
-                disabled={recipeOptions.length === 0}
-                onValueChange={(value) => setForm((current) => ({
+                disabled={recipeOptions.length === 0 || busy}
+                onValueChange={(value) => onFormChange((current) => ({
                   ...current,
                   foodId: value,
                   extraIngredientIds: [],
@@ -219,27 +262,33 @@ export function ModCustomRecipesPanel({
               <MultiSelectBox
                 value={selectedExtraValues}
                 options={ingredientOptions}
-                disabled={!selectedRecipe || extraCapacity <= 0}
+                disabled={!selectedRecipe || extraCapacity <= 0 || busy}
                 placeholder={extraCapacity <= 0 ? '该料理已达到 5 个材料上限' : '选择额外材料'}
                 onValueChange={(values) => {
                   const nextIds = normalizeIdList(values.map((value) => Number(value))).slice(0, extraCapacity);
-                  setForm((current) => ({ ...current, extraIngredientIds: nextIds.map(String) }));
+                  onFormChange((current) => ({ ...current, extraIngredientIds: nextIds.map(String) }));
                 }}
               />
             </LabeledControl>
           </div>
 
           <div className="flex flex-wrap items-center gap-4">
-            <SwitchField
-              label="启用"
-              checked={form.enabled}
-              onCheckedChange={(enabled) => setForm((current) => ({ ...current, enabled }))}
-            />
-            <SwitchField
-              label="推荐置顶"
-              checked={form.pinToTop}
-              onCheckedChange={(pinToTop) => setForm((current) => ({ ...current, pinToTop }))}
-            />
+            {!form.editingId && (
+              <>
+                <SwitchField
+                  label="保存后启用"
+                  checked={form.enabled}
+                  disabled={busy}
+                  onCheckedChange={(enabled) => onFormChange((current) => ({ ...current, enabled }))}
+                />
+                <SwitchField
+                  label="保存后推荐置顶"
+                  checked={form.pinToTop}
+                  disabled={busy}
+                  onCheckedChange={(pinToTop) => onFormChange((current) => ({ ...current, pinToTop }))}
+                />
+              </>
+            )}
             <Badge variant="outline">
               材料 {totalIngredientCount}/{MAX_FOOD_INGREDIENT_COUNT}
             </Badge>
@@ -253,19 +302,19 @@ export function ModCustomRecipesPanel({
             ingredientIdByName={dataIndexes.ingredientIdByName}
           />
 
-          {(customRecipeError || formError) && (
+          {formError && (
             <div className="border border-destructive/30 px-3 py-2 text-sm text-destructive">
-              {formError || customRecipeError}
+              {formError}
             </div>
           )}
 
           <div className="flex flex-wrap items-center justify-end gap-2">
             {form.editingId && (
-              <Button type="button" size="sm" variant="outline" onClick={resetForm}>
+              <Button type="button" size="sm" variant="outline" disabled={busy} onClick={resetForm}>
                 取消编辑
               </Button>
             )}
-            <Button type="button" size="sm" disabled={Boolean(formError) || formBusy} onClick={saveForm}>
+            <Button type="button" size="sm" disabled={Boolean(formError) || busy} onClick={saveForm}>
               {form.editingId ? '保存配方' : '新增配方'}
             </Button>
           </div>
@@ -273,41 +322,101 @@ export function ModCustomRecipesPanel({
       </Card>
 
       <ListPanel title={`自定义推荐料理 (${entries.length})`}>
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2">
+          <SegmentedControl
+            value={groupMode}
+            options={[
+              { value: 'customer', label: '按稀客' },
+              { value: 'recipe', label: '按基础料理' },
+            ]}
+            onValueChange={onGroupModeChange}
+          />
+          <FlagActions
+            labelPrefix="全部"
+            summary={summary}
+            busy={busy}
+            onUpdate={(flags) => void onUpdateCustomRecipeFlags({ selection: { scope: 'all' }, ...flags })}
+          />
+        </div>
         {entries.length === 0 && <EmptyRow text="暂无自定义推荐料理" />}
-        <div className="space-y-2">
-          {entries.map((entry, index) => (
-            <CustomRecipeRow
-              key={entry.id}
-              entry={entry}
-              index={index}
-              total={entries.length}
-              runtimeSets={runtimeSets}
-              dataIndexes={dataIndexes}
-              busy={customRecipeBusyKey === entry.id}
-              onEdit={() => setForm(entryToForm(entry))}
-              onRemove={() => void onRemoveCustomRecipe(entry.id)}
-              onToggle={() => void onToggleCustomRecipe(entry.id, !entry.enabled)}
-              onTogglePin={() => {
-                const recipe = dataIndexes.recipeByFoodId.get(entry.foodId);
-                void onUpsertCustomRecipe({
-                  id: entry.id,
-                  customerId: entry.customerId,
-                  customerName: entry.customerName,
-                  foodTag: entry.foodTag,
-                  foodId: entry.foodId,
-                  recipeId: recipe?.recipeId ?? entry.recipeId,
-                  recipeName: recipe?.name ?? entry.recipeName,
-                  extraIngredientIds: entry.extraIngredientIds,
-                  enabled: entry.enabled,
-                  pinToTop: !entry.pinToTop,
-                  sortOrder: entry.sortOrder,
-                });
-              }}
-              onMove={onMoveCustomRecipe}
-            />
-          ))}
+        <div>
+          {groups.map((group) => {
+            const groupSummary = summarizeEntries(group.entries);
+            return (
+              <section key={group.key} className="border-b border-border last:border-b-0">
+                <div className="flex flex-wrap items-center justify-between gap-2 bg-muted/40 px-3 py-2">
+                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    <span className="font-medium">{group.label}</span>
+                    <Badge variant="outline">{groupSummary.total}</Badge>
+                    <Badge variant="outline">启用 {groupSummary.enabled}</Badge>
+                    <Badge variant="outline">置顶 {groupSummary.pinned}</Badge>
+                  </div>
+                  <FlagActions
+                    labelPrefix="本组"
+                    summary={groupSummary}
+                    busy={busy}
+                    onUpdate={(flags) => void onUpdateCustomRecipeFlags({ selection: group.selection, ...flags })}
+                  />
+                </div>
+                <div>
+                  {group.entries.map((entry, index) => (
+                    <CustomRecipeRow
+                      key={entry.id}
+                      entry={entry}
+                      index={index}
+                      total={group.entries.length}
+                      groupMode={groupMode}
+                      runtimeSets={runtimeSets}
+                      dataIndexes={dataIndexes}
+                      busy={busy}
+                      onEdit={() => onFormChange(entryToForm(entry))}
+                      onRemove={() => void onRemoveCustomRecipe(entry.id)}
+                      onToggle={() => void onUpdateCustomRecipeFlags({
+                        selection: { scope: 'entry', id: entry.id },
+                        enabled: !entry.enabled,
+                      })}
+                      onTogglePin={() => void onUpdateCustomRecipeFlags({
+                        selection: { scope: 'entry', id: entry.id },
+                        pinToTop: !entry.pinToTop,
+                      })}
+                      onMove={onMoveCustomRecipe}
+                    />
+                  ))}
+                </div>
+              </section>
+            );
+          })}
         </div>
       </ListPanel>
+    </div>
+  );
+}
+
+function FlagActions({
+  labelPrefix,
+  summary,
+  busy,
+  onUpdate,
+}: {
+  labelPrefix: '全部' | '本组';
+  summary: CustomRecipeSummary;
+  busy: boolean;
+  onUpdate: (flags: Pick<CustomRecipeFlagUpdateInput, 'enabled' | 'pinToTop'>) => void;
+}) {
+  return (
+    <div className="flex flex-wrap justify-end gap-1.5" data-gamepad-axis="x">
+      <Button type="button" size="xs" variant="outline" disabled={busy || summary.total === 0 || summary.enabled === summary.total} onClick={() => onUpdate({ enabled: true })}>
+        {labelPrefix}启用
+      </Button>
+      <Button type="button" size="xs" variant="outline" disabled={busy || summary.enabled === 0} onClick={() => onUpdate({ enabled: false })}>
+        {labelPrefix}停用
+      </Button>
+      <Button type="button" size="xs" variant="outline" disabled={busy || summary.total === 0 || summary.pinned === summary.total} onClick={() => onUpdate({ pinToTop: true })}>
+        {labelPrefix}置顶
+      </Button>
+      <Button type="button" size="xs" variant="outline" disabled={busy || summary.pinned === 0} onClick={() => onUpdate({ pinToTop: false })}>
+        取消{labelPrefix}置顶
+      </Button>
     </div>
   );
 }
@@ -353,6 +462,7 @@ function CustomRecipeRow({
   entry,
   index,
   total,
+  groupMode,
   runtimeSets,
   dataIndexes,
   busy,
@@ -365,6 +475,7 @@ function CustomRecipeRow({
   entry: CustomRecipeEntry;
   index: number;
   total: number;
+  groupMode: CustomRecipeGroupMode;
   runtimeSets: RuntimeSets;
   dataIndexes: ReturnType<typeof buildRecommendationDataIndexes>;
   busy: boolean;
@@ -389,15 +500,16 @@ function CustomRecipeRow({
         dataIndexes.ingredientIdByName,
       ))
       .join(', ');
+  const primaryLabel = groupMode === 'customer'
+    ? recipe?.name ?? (entry.recipeName || `料理 #${entry.foodId}`)
+    : entry.customerName || `稀客 #${entry.customerId}`;
 
   return (
     <div className="steward-data-row px-3 py-2 text-sm">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="font-medium">{entry.customerName || `稀客 #${entry.customerId}`}</span>
-            <span className="text-muted-foreground">·</span>
-            <span>{recipe?.name ?? (entry.recipeName || `料理 #${entry.foodId}`)}</span>
+            <span className="font-medium">{primaryLabel}</span>
             <Badge variant={entry.foodTag === null ? 'secondary' : 'outline'}>
               {entry.foodTag === null ? '全部点单' : entry.foodTag}
             </Badge>
@@ -407,16 +519,21 @@ function CustomRecipeRow({
             {entry.pinToTop && <Badge variant="secondary">置顶</Badge>}
           </div>
           <div className="mt-1 text-xs text-muted-foreground">
-            排序 {entry.sortOrder} · 厨具 {recipe?.cooker || '未知'} · 基础 {base} · 加料 {extras}
+            {groupMode === 'customer' ? `优先级 ${index + 1} · ` : ''}
+            厨具 {recipe?.cooker || '未知'} · 基础 {base} · 加料 {extras}
           </div>
         </div>
         <div className="flex flex-wrap justify-end gap-1.5" data-gamepad-axis="x">
-          <Button type="button" size="xs" variant="outline" disabled={busy || index === 0} onClick={() => void onMove(entry.id, 'up')}>
-            上移
-          </Button>
-          <Button type="button" size="xs" variant="outline" disabled={busy || index === total - 1} onClick={() => void onMove(entry.id, 'down')}>
-            下移
-          </Button>
+          {groupMode === 'customer' && (
+            <>
+              <Button type="button" size="xs" variant="outline" disabled={busy || index === 0} onClick={() => void onMove(entry.id, 'up')}>
+                上移
+              </Button>
+              <Button type="button" size="xs" variant="outline" disabled={busy || index === total - 1} onClick={() => void onMove(entry.id, 'down')}>
+                下移
+              </Button>
+            </>
+          )}
           <Button type="button" size="xs" variant="outline" disabled={busy} onClick={onTogglePin}>
             {entry.pinToTop ? '取消置顶' : '置顶'}
           </Button>
@@ -435,15 +552,70 @@ function CustomRecipeRow({
   );
 }
 
+function buildCustomRecipeGroups(
+  entries: CustomRecipeEntry[],
+  mode: CustomRecipeGroupMode,
+  customers: RareCustomerCatalogItem[],
+  recipesByFoodId: Map<number, RecipeCatalogItem>,
+): CustomRecipeGroup[] {
+  const customerNames = new Map(customers.map((customer) => [customer.id, customer.name]));
+  const groups = new Map<string, CustomRecipeGroup>();
+  for (const entry of entries) {
+    const customerMode = mode === 'customer';
+    const key = customerMode ? `customer:${entry.customerId}` : `recipe:${entry.foodId}`;
+    let group = groups.get(key);
+    if (!group) {
+      const recipe = recipesByFoodId.get(entry.foodId);
+      group = {
+        key,
+        label: customerMode
+          ? (customerNames.get(entry.customerId) ?? entry.customerName) || `稀客 #${entry.customerId}`
+          : (recipe?.name ?? entry.recipeName) || `料理 #${entry.foodId}`,
+        selection: customerMode
+          ? { scope: 'customer', customerId: entry.customerId }
+          : { scope: 'recipe', foodId: entry.foodId },
+        entries: [],
+      };
+      groups.set(key, group);
+    }
+    group.entries.push(entry);
+  }
+
+  for (const group of groups.values()) {
+    group.entries.sort(mode === 'customer'
+      ? compareCustomRecipeEntries
+      : (left, right) =>
+        (customerNames.get(left.customerId) ?? left.customerName).localeCompare(
+          customerNames.get(right.customerId) ?? right.customerName,
+          'zh-Hans-CN',
+        )
+        || (left.foodTag ?? '').localeCompare(right.foodTag ?? '', 'zh-Hans-CN')
+        || left.sortOrder - right.sortOrder
+        || left.id.localeCompare(right.id));
+  }
+
+  return [...groups.values()].sort((left, right) =>
+    left.label.localeCompare(right.label, 'zh-Hans-CN') || left.key.localeCompare(right.key));
+}
+
+interface CustomRecipeSummary {
+  total: number;
+  enabled: number;
+  pinned: number;
+}
+
+function summarizeEntries(entries: CustomRecipeEntry[]): CustomRecipeSummary {
+  return entries.reduce<CustomRecipeSummary>((summary, entry) => ({
+    total: summary.total + 1,
+    enabled: summary.enabled + Number(entry.enabled),
+    pinned: summary.pinned + Number(entry.pinToTop),
+  }), { total: 0, enabled: 0, pinned: 0 });
+}
+
 function createInitialForm(customer: RareCustomerCatalogItem | null): CustomRecipeFormState {
   return {
-    editingId: '',
+    ...createEmptyCustomRecipeForm(),
     customerId: customer ? String(customer.id) : '',
-    foodTagValue: ALL_FOOD_TAG_VALUE,
-    foodId: '',
-    extraIngredientIds: [],
-    enabled: true,
-    pinToTop: true,
   };
 }
 
@@ -451,7 +623,7 @@ function entryToForm(entry: CustomRecipeEntry): CustomRecipeFormState {
   return {
     editingId: entry.id,
     customerId: String(entry.customerId),
-    foodTagValue: entry.foodTag ?? ALL_FOOD_TAG_VALUE,
+    foodTagValue: entry.foodTag ?? CUSTOM_RECIPE_ALL_FOOD_TAG_VALUE,
     foodId: String(entry.foodId),
     extraIngredientIds: entry.extraIngredientIds.map(String),
     enabled: entry.enabled,

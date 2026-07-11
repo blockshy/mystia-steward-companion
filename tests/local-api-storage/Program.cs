@@ -14,6 +14,7 @@ try
     VerifyMutationJsonEscaping(root, log);
     VerifyCustomRecipeReadDoesNotWrite(root, log);
     VerifyCustomRecipeCrudDoesNotRunMigration(root, log);
+    VerifyCustomRecipeManagement(root, log);
     VerifyManualFavoriteMigration(root, log);
     VerifyInterruptedManualFavoriteMigrationRecovery(root, log);
     VerifyFailedManualFavoriteMigrationPreservesFiles(root, log);
@@ -147,7 +148,10 @@ static void VerifyCustomRecipeCrudDoesNotRunMigration(string root, ManualLogSour
     });
     using var upsertDocument = JsonDocument.Parse(upsertResponse);
     var id = upsertDocument.RootElement.GetProperty("customRecipes").GetProperty("recipes")[0].GetProperty("id").GetString() ?? "";
-    _ = store.Toggle(id, enabled: false);
+    _ = store.UpdateFlags(
+        new CustomRecipeSelection { Kind = CustomRecipeSelectionKind.Entry, Id = id },
+        enabled: false,
+        pinToTop: null);
     _ = store.Move(id, "up");
     _ = store.Remove(id);
 
@@ -155,6 +159,117 @@ static void VerifyCustomRecipeCrudDoesNotRunMigration(string root, ManualLogSour
     var manualRecipes = favorites.RootElement.GetProperty("recipes");
     AssertEqual(1, manualRecipes.GetArrayLength(), "A custom recipe CRUD operation removed the manual favorite.");
     AssertEqual("manual", manualRecipes[0].GetProperty("id").GetString(), "A custom recipe CRUD operation changed the manual favorite.");
+}
+
+static void VerifyCustomRecipeManagement(string root, ManualLogSource log)
+{
+    var favoritePath = Path.Combine(root, "favorites-for-custom-management.json");
+    var customPath = Path.Combine(root, "custom-management.json");
+    var store = new CustomRecipeStore(customPath, new FavoriteStore(favoritePath, log), log);
+
+    using (var initial = JsonDocument.Parse(store.GetJson()))
+    {
+        AssertEqual(true, initial.RootElement.GetProperty("enabled").GetBoolean(), "Custom recipes were not enabled by default.");
+    }
+    AssertMutationOk(store.SetEnabled(false), "Disabling all custom recipes failed.");
+    using (var disabled = JsonDocument.Parse(store.GetJson()))
+    {
+        AssertEqual(false, disabled.RootElement.GetProperty("enabled").GetBoolean(), "The global custom recipe setting was not persisted.");
+    }
+
+    var firstCustomerFirst = AddCustomRecipe(store, 1, 10, 100);
+    var secondCustomer = AddCustomRecipe(store, 2, 10, 200);
+    var firstCustomerSecond = AddCustomRecipe(store, 1, 20, 300);
+
+    AssertMutationOk(store.Move(secondCustomer, "down"), "Moving a single-entry customer group failed.");
+    AssertEqual(200, ReadCustomRecipe(store, secondCustomer).GetProperty("sortOrder").GetInt32(), "Move crossed a customer boundary.");
+    AssertMutationOk(store.Move(firstCustomerFirst, "down"), "Moving within a customer group failed.");
+    AssertEqual(300, ReadCustomRecipe(store, firstCustomerFirst).GetProperty("sortOrder").GetInt32(), "The source recipe was not moved within its customer group.");
+    AssertEqual(100, ReadCustomRecipe(store, firstCustomerSecond).GetProperty("sortOrder").GetInt32(), "The target recipe was not moved within its customer group.");
+    AssertEqual(200, ReadCustomRecipe(store, secondCustomer).GetProperty("sortOrder").GetInt32(), "Moving another customer changed an unrelated sort order.");
+
+    AssertMutationOk(store.UpdateFlags(
+        new CustomRecipeSelection { Kind = CustomRecipeSelectionKind.Customer, CustomerId = 1 },
+        enabled: false,
+        pinToTop: null), "Customer bulk disable failed.");
+    AssertEqual(false, ReadCustomRecipe(store, firstCustomerFirst).GetProperty("enabled").GetBoolean(), "Customer bulk disable missed the first entry.");
+    AssertEqual(false, ReadCustomRecipe(store, firstCustomerSecond).GetProperty("enabled").GetBoolean(), "Customer bulk disable missed the second entry.");
+    AssertEqual(true, ReadCustomRecipe(store, secondCustomer).GetProperty("enabled").GetBoolean(), "Customer bulk disable changed another customer.");
+
+    AssertMutationOk(store.UpdateFlags(
+        new CustomRecipeSelection { Kind = CustomRecipeSelectionKind.Recipe, FoodId = 10 },
+        enabled: null,
+        pinToTop: false), "Recipe bulk unpin failed.");
+    AssertEqual(false, ReadCustomRecipe(store, firstCustomerFirst).GetProperty("pinToTop").GetBoolean(), "Recipe bulk unpin missed the first entry.");
+    AssertEqual(false, ReadCustomRecipe(store, secondCustomer).GetProperty("pinToTop").GetBoolean(), "Recipe bulk unpin missed the second entry.");
+    AssertEqual(true, ReadCustomRecipe(store, firstCustomerSecond).GetProperty("pinToTop").GetBoolean(), "Recipe bulk unpin changed another recipe.");
+
+    AssertMutationOk(store.UpdateFlags(
+        new CustomRecipeSelection { Kind = CustomRecipeSelectionKind.All },
+        enabled: true,
+        pinToTop: true), "Updating all custom recipe flags failed.");
+    AssertEqual(true, ReadCustomRecipe(store, firstCustomerFirst).GetProperty("enabled").GetBoolean(), "Update-all did not restore enabled state.");
+    AssertEqual(true, ReadCustomRecipe(store, secondCustomer).GetProperty("pinToTop").GetBoolean(), "Update-all did not restore pin state.");
+
+    var beforeInvalidMutation = File.ReadAllText(customPath, Encoding.UTF8);
+    AssertMutationFailed(store.Move(firstCustomerFirst, "sideways"), "An invalid move direction unexpectedly succeeded.");
+    AssertMutationFailed(store.UpdateFlags(
+        new CustomRecipeSelection { Kind = CustomRecipeSelectionKind.Entry, Id = "missing" },
+        enabled: false,
+        pinToTop: null), "A missing entry update unexpectedly succeeded.");
+    AssertMutationFailed(store.UpdateFlags(
+        new CustomRecipeSelection { Kind = CustomRecipeSelectionKind.Entry, Id = firstCustomerFirst },
+        enabled: null,
+        pinToTop: null), "A flagless update unexpectedly succeeded.");
+    AssertEqual(beforeInvalidMutation, File.ReadAllText(customPath, Encoding.UTF8), "A rejected bulk mutation changed the custom recipe file.");
+
+    AssertMutationOk(store.SetEnabled(true), "Re-enabling all custom recipes failed.");
+}
+
+static string AddCustomRecipe(CustomRecipeStore store, int customerId, int foodId, int sortOrder)
+{
+    using var response = JsonDocument.Parse(store.Upsert(new CustomRecipeMutation
+    {
+        CustomerId = customerId,
+        CustomerName = $"guest-{customerId}",
+        FoodId = foodId,
+        RecipeId = foodId + 1000,
+        RecipeName = $"recipe-{foodId}",
+        Enabled = true,
+        PinToTop = true,
+        SortOrder = sortOrder,
+    }));
+    AssertEqual(true, response.RootElement.GetProperty("ok").GetBoolean(), "Adding a custom recipe failed.");
+    return response.RootElement
+        .GetProperty("customRecipes")
+        .GetProperty("recipes")
+        .EnumerateArray()
+        .Single(recipe => recipe.GetProperty("customerId").GetInt32() == customerId
+            && recipe.GetProperty("foodId").GetInt32() == foodId)
+        .GetProperty("id")
+        .GetString() ?? throw new InvalidOperationException("The added custom recipe has no ID.");
+}
+
+static JsonElement ReadCustomRecipe(CustomRecipeStore store, string id)
+{
+    using var document = JsonDocument.Parse(store.GetJson());
+    return document.RootElement
+        .GetProperty("recipes")
+        .EnumerateArray()
+        .Single(recipe => string.Equals(recipe.GetProperty("id").GetString(), id, StringComparison.Ordinal))
+        .Clone();
+}
+
+static void AssertMutationOk(string response, string message)
+{
+    using var document = JsonDocument.Parse(response);
+    AssertEqual(true, document.RootElement.GetProperty("ok").GetBoolean(), message);
+}
+
+static void AssertMutationFailed(string response, string message)
+{
+    using var document = JsonDocument.Parse(response);
+    AssertEqual(false, document.RootElement.GetProperty("ok").GetBoolean(), message);
 }
 
 static void VerifyInterruptedManualFavoriteMigrationRecovery(string root, ManualLogSource log)

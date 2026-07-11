@@ -10,6 +10,7 @@ import { serializeRareGuestInvitationLevels } from '@/companion/storage';
 import type {
   DiagnosticPackageResponse,
   CustomRecipeData,
+  CustomRecipeFlagUpdateInput,
   CustomRecipeMutationResponse,
   CustomRecipeUpsertInput,
   FavoriteData,
@@ -515,9 +516,9 @@ export async function upsertCustomRecipe(
     recipeId: String(input.recipeId),
     recipeName: input.recipeName,
     extraIngredientIds: input.extraIngredientIds.join(','),
-    enabled: String(input.enabled),
-    pinToTop: String(input.pinToTop),
   });
+  if (input.enabled != null) params.set('enabled', String(input.enabled));
+  if (input.pinToTop != null) params.set('pinToTop', String(input.pinToTop));
   if (input.sortOrder != null) params.set('sortOrder', String(input.sortOrder));
   return mutateCustomRecipe(endpoint, apiToken, `/custom-recipes/upsert?${params.toString()}`);
 }
@@ -531,14 +532,27 @@ export async function removeCustomRecipe(
   return mutateCustomRecipe(endpoint, apiToken, `/custom-recipes/remove?${params.toString()}`);
 }
 
-export async function toggleCustomRecipe(
+export async function setCustomRecipesEnabled(
   endpoint: string,
   apiToken: string,
-  id: string,
   enabled: boolean,
 ): Promise<CustomRecipeMutationResponse> {
-  const params = new URLSearchParams({ id, enabled: String(enabled) });
-  return mutateCustomRecipe(endpoint, apiToken, `/custom-recipes/toggle?${params.toString()}`);
+  const params = new URLSearchParams({ enabled: String(enabled) });
+  return mutateCustomRecipe(endpoint, apiToken, `/custom-recipes/settings?${params.toString()}`);
+}
+
+export async function updateCustomRecipeFlags(
+  endpoint: string,
+  apiToken: string,
+  input: CustomRecipeFlagUpdateInput,
+): Promise<CustomRecipeMutationResponse> {
+  const params = new URLSearchParams({ scope: input.selection.scope });
+  if (input.selection.scope === 'entry') params.set('id', input.selection.id);
+  if (input.selection.scope === 'customer') params.set('customerId', String(input.selection.customerId));
+  if (input.selection.scope === 'recipe') params.set('foodId', String(input.selection.foodId));
+  if (input.enabled != null) params.set('enabled', String(input.enabled));
+  if (input.pinToTop != null) params.set('pinToTop', String(input.pinToTop));
+  return mutateCustomRecipe(endpoint, apiToken, `/custom-recipes/update-flags?${params.toString()}`);
 }
 
 export async function moveCustomRecipe(

@@ -30,6 +30,7 @@ interface BuildCustomFoodCandidatesOptions {
 export function emptyCustomRecipeData(): CustomRecipeData {
   return {
     version: 1,
+    enabled: true,
     recipes: [],
   };
 }
@@ -37,6 +38,7 @@ export function emptyCustomRecipeData(): CustomRecipeData {
 export function normalizeCustomRecipeData(data: CustomRecipeData | null | undefined): CustomRecipeData {
   return {
     version: Math.max(1, data?.version ?? 1),
+    enabled: data?.enabled !== false,
     recipes: (data?.recipes ?? [])
       .map(normalizeCustomRecipeEntry)
       .filter((entry): entry is CustomRecipeEntry => Boolean(entry))
@@ -55,18 +57,10 @@ export function normalizeCustomRecipeUpsertInput(input: CustomRecipeUpsertInput)
     recipeId: normalizeNonNegativeInteger(input.recipeId, -1),
     recipeName: input.recipeName.trim(),
     extraIngredientIds: normalizeIdList(input.extraIngredientIds),
-    enabled: Boolean(input.enabled),
-    pinToTop: Boolean(input.pinToTop),
+    enabled: input.enabled == null ? undefined : Boolean(input.enabled),
+    pinToTop: input.pinToTop == null ? undefined : Boolean(input.pinToTop),
     sortOrder: input.sortOrder == null ? undefined : normalizeNonNegativeInteger(input.sortOrder, 0),
   };
-}
-
-export function customRecipeScopeKey(entry: Pick<CustomRecipeEntry, 'customerId' | 'foodTag'>): string {
-  return `${entry.customerId}:${entry.foodTag ?? '*'}`;
-}
-
-export function customRecipeResultKey(entry: Pick<CustomRecipeEntry, 'foodId' | 'extraIngredientIds'>): string {
-  return `${entry.foodId}:${normalizeIdList(entry.extraIngredientIds).join(',')}`;
 }
 
 export function compareCustomRecipeEntries(left: CustomRecipeEntry, right: CustomRecipeEntry): number {
@@ -82,7 +76,9 @@ export function getEffectiveCustomRecipeEntries(
   customerId: number,
   foodTag: string,
 ): CustomRecipeEntry[] {
-  return normalizeCustomRecipeData(customRecipes).recipes.filter((entry) =>
+  const normalized = normalizeCustomRecipeData(customRecipes);
+  if (!normalized.enabled) return [];
+  return normalized.recipes.filter((entry) =>
     entry.enabled
     && entry.customerId === customerId
     && (entry.foodTag === null || entry.foodTag === foodTag)
@@ -96,6 +92,7 @@ export function serializeCustomRecipeContext(
 ): string {
   return [
     'customRecipes',
+    customRecipes.enabled ? 'enabled' : 'disabled',
     ...getEffectiveCustomRecipeEntries(customRecipes, customerId, foodTag)
       .map((entry) => [
         entry.id,

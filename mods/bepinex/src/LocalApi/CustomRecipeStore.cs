@@ -37,6 +37,21 @@ internal sealed class CustomRecipeStore
         }
     }
 
+    public string SetEnabled(bool enabled)
+    {
+        lock (_lock)
+        {
+            var data = Load();
+            if (data.Enabled != enabled)
+            {
+                data.Enabled = enabled;
+                Save(data);
+            }
+
+            return BuildMutationJson(true, data, null);
+        }
+    }
+
     public string Upsert(CustomRecipeMutation mutation)
     {
         lock (_lock)
@@ -60,8 +75,8 @@ internal sealed class CustomRecipeStore
                     RecipeId = mutation.RecipeId,
                     RecipeName = mutation.RecipeName.Trim(),
                     ExtraIngredientIds = normalizedExtras,
-                    Enabled = mutation.Enabled,
-                    PinToTop = mutation.PinToTop,
+                    Enabled = mutation.Enabled ?? true,
+                    PinToTop = mutation.PinToTop ?? true,
                     SortOrder = mutation.SortOrder ?? NextSortOrder(data),
                     CreatedAtUtc = now,
                     UpdatedAtUtc = now,
@@ -76,8 +91,8 @@ internal sealed class CustomRecipeStore
                 existing.RecipeId = mutation.RecipeId;
                 existing.RecipeName = mutation.RecipeName.Trim();
                 existing.ExtraIngredientIds = normalizedExtras;
-                existing.Enabled = mutation.Enabled;
-                existing.PinToTop = mutation.PinToTop;
+                if (mutation.Enabled != null) existing.Enabled = mutation.Enabled.Value;
+                if (mutation.PinToTop != null) existing.PinToTop = mutation.PinToTop.Value;
                 if (mutation.SortOrder != null) existing.SortOrder = mutation.SortOrder.Value;
                 existing.UpdatedAtUtc = now;
             }
@@ -100,21 +115,51 @@ internal sealed class CustomRecipeStore
         }
     }
 
-    public string Toggle(string id, bool enabled)
+    public string UpdateFlags(
+        CustomRecipeSelection selection,
+        bool? enabled,
+        bool? pinToTop)
     {
         lock (_lock)
         {
             var data = Load();
-            var entry = data.Recipes.FirstOrDefault(item => string.Equals(item.Id, id, StringComparison.Ordinal));
-            if (entry != null)
+            if (enabled == null && pinToTop == null)
             {
-                entry.Enabled = enabled;
-                entry.UpdatedAtUtc = DateTime.UtcNow;
+                return BuildMutationJson(false, data, "no custom recipe flags specified");
             }
 
-            NormalizeData(data);
-            Save(data);
-            return BuildMutationJson(entry != null, data, entry == null ? "custom recipe not found" : null);
+            var entries = SelectEntries(data, selection);
+            if (entries.Count == 0)
+            {
+                return BuildMutationJson(false, data, "custom recipe selection matched no entries");
+            }
+
+            var now = DateTime.UtcNow;
+            var changed = false;
+            foreach (var entry in entries)
+            {
+                var entryChanged = false;
+                if (enabled != null && entry.Enabled != enabled.Value)
+                {
+                    entry.Enabled = enabled.Value;
+                    entryChanged = true;
+                }
+                if (pinToTop != null && entry.PinToTop != pinToTop.Value)
+                {
+                    entry.PinToTop = pinToTop.Value;
+                    entryChanged = true;
+                }
+                if (!entryChanged) continue;
+                entry.UpdatedAtUtc = now;
+                changed = true;
+            }
+
+            if (changed)
+            {
+                NormalizeData(data);
+                Save(data);
+            }
+            return BuildMutationJson(true, data, null);
         }
     }
 
@@ -123,7 +168,14 @@ internal sealed class CustomRecipeStore
         lock (_lock)
         {
             var data = Load();
+            var entry = data.Recipes.FirstOrDefault(item => string.Equals(item.Id, id, StringComparison.Ordinal));
+            if (entry == null)
+            {
+                return BuildMutationJson(false, data, "custom recipe not found");
+            }
+
             var ordered = data.Recipes
+                .Where(item => item.CustomerId == entry.CustomerId)
                 .OrderBy(entry => entry.SortOrder)
                 .ThenBy(entry => entry.CreatedAtUtc)
                 .ToList();
@@ -133,15 +185,17 @@ internal sealed class CustomRecipeStore
                 return BuildMutationJson(false, data, "custom recipe not found");
             }
 
-            var targetIndex = string.Equals(direction, "up", StringComparison.OrdinalIgnoreCase)
-                ? index - 1
-                : index + 1;
-            if (targetIndex >= 0 && targetIndex < ordered.Count)
-            {
-                (ordered[index].SortOrder, ordered[targetIndex].SortOrder) = (ordered[targetIndex].SortOrder, ordered[index].SortOrder);
-                ordered[index].UpdatedAtUtc = DateTime.UtcNow;
-                ordered[targetIndex].UpdatedAtUtc = DateTime.UtcNow;
-            }
+            var offset = string.Equals(direction, "up", StringComparison.OrdinalIgnoreCase)
+                ? -1
+                : string.Equals(direction, "down", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+            if (offset == 0) return BuildMutationJson(false, data, "invalid custom recipe move direction");
+
+            var targetIndex = index + offset;
+            if (targetIndex < 0 || targetIndex >= ordered.Count) return BuildMutationJson(true, data, null);
+
+            (ordered[index].SortOrder, ordered[targetIndex].SortOrder) = (ordered[targetIndex].SortOrder, ordered[index].SortOrder);
+            ordered[index].UpdatedAtUtc = DateTime.UtcNow;
+            ordered[targetIndex].UpdatedAtUtc = DateTime.UtcNow;
 
             NormalizeData(data);
             Save(data);
@@ -279,6 +333,26 @@ internal sealed class CustomRecipeStore
             .ToList();
     }
 
+    private static List<CustomRecipeEntry> SelectEntries(
+        CustomRecipeData data,
+        CustomRecipeSelection selection)
+    {
+        return selection.Kind switch
+        {
+            CustomRecipeSelectionKind.All => data.Recipes.ToList(),
+            CustomRecipeSelectionKind.Customer => data.Recipes
+                .Where(entry => entry.CustomerId == selection.CustomerId)
+                .ToList(),
+            CustomRecipeSelectionKind.Recipe => data.Recipes
+                .Where(entry => entry.FoodId == selection.FoodId)
+                .ToList(),
+            CustomRecipeSelectionKind.Entry => data.Recipes
+                .Where(entry => string.Equals(entry.Id, selection.Id, StringComparison.Ordinal))
+                .ToList(),
+            _ => new List<CustomRecipeEntry>(),
+        };
+    }
+
 }
 
 internal sealed class CustomRecipeMutation
@@ -291,14 +365,31 @@ internal sealed class CustomRecipeMutation
     public int RecipeId { get; init; }
     public string RecipeName { get; init; } = "";
     public IReadOnlyList<int> ExtraIngredientIds { get; init; } = Array.Empty<int>();
-    public bool Enabled { get; init; }
-    public bool PinToTop { get; init; }
+    public bool? Enabled { get; init; }
+    public bool? PinToTop { get; init; }
     public int? SortOrder { get; init; }
+}
+
+internal enum CustomRecipeSelectionKind
+{
+    All,
+    Customer,
+    Recipe,
+    Entry,
+}
+
+internal sealed class CustomRecipeSelection
+{
+    public CustomRecipeSelectionKind Kind { get; init; }
+    public string Id { get; init; } = "";
+    public int CustomerId { get; init; } = -1;
+    public int FoodId { get; init; } = -1;
 }
 
 internal sealed class CustomRecipeData
 {
     public int Version { get; set; } = 1;
+    public bool Enabled { get; set; } = true;
     public List<CustomRecipeEntry> Recipes { get; set; } = new();
 }
 

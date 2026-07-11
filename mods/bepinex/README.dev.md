@@ -268,6 +268,16 @@ pnpm audit:ui-pinning
 
 该巡检会验证 `POST /ui-pinning/target`、`Recipe.Id` 与 food ID 分离、业务失败退避重试、断线/连接代际重发、过期 Worker 结果不会下发，以及 Worker error 后空目标锁存只在新的 current 成功 revision 到达后解除。
 
+修改自定义推荐料理总开关、分组、批量状态或排序契约后，运行：
+
+```bash
+MYSTIA_APP_URL=http://127.0.0.1:4173 \
+MYSTIA_API_URL=http://127.0.0.1:32145 \
+pnpm audit:custom-recipes
+```
+
+该巡检会验证总开关持久化、草稿跨页签保留、稀客/基础料理分组记忆、页面级/分组级/单条状态更新、同稀客排序、单写者和最小窗口横向溢出。
+
 仅重新生成安装包：
 
 ```powershell
@@ -554,7 +564,9 @@ Port = 32145
 - `GET /favorites`：读取收藏料理和收藏酒水。
 - `POST /favorites/add-recipe?...`、`POST /favorites/remove-recipe?id=...`、`POST /favorites/add-beverage?...`、`POST /favorites/remove-beverage?id=...`：增删收藏数据。
 - `GET /custom-recipes`：读取自定义推荐料理。
-- `POST /custom-recipes/upsert?...`、`POST /custom-recipes/remove?id=...`、`POST /custom-recipes/toggle?id=...&enabled=true|false`、`POST /custom-recipes/move?id=...&direction=up|down`：维护自定义推荐料理。
+- `POST /custom-recipes/settings?enabled=true|false`：切换整个自定义推荐料理功能，不改写单条状态。
+- `POST /custom-recipes/update-flags?...`：按 `entry`、`customer`、`recipe` 或 `all` 作用域原子更新单条、分组或全部配方的启用/置顶状态。
+- `POST /custom-recipes/upsert?...`、`POST /custom-recipes/remove?id=...`、`POST /custom-recipes/move?id=...&direction=up|down`：新增/编辑、删除和调整同一稀客内的推荐优先级。
 - `POST /updates/status`：归并并返回当前更新检查、下载、暂存和安装程序状态；归并 updater 结果时可能写入或删除状态文件，因此不是只读查询。
 - `POST /updates/check`、`POST /updates/download`、`POST /updates/install-on-exit`：检查、下载或启动退出安装流程；更新服务按单操作串行。
 

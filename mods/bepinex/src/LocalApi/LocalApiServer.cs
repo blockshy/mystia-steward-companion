@@ -649,10 +649,11 @@ internal sealed class LocalApiServer : IDisposable
                     case "/custom-recipes/remove":
                         WriteResponse(stream, 200, "OK", _customRecipeStore.Remove(ReadStringQuery(query, "id")));
                         break;
-                    case "/custom-recipes/toggle":
-                        WriteResponse(stream, 200, "OK", _customRecipeStore.Toggle(
-                            ReadStringQuery(query, "id"),
-                            ReadBoolQuery(query, "enabled") ?? true));
+                    case "/custom-recipes/settings":
+                        WriteResponse(stream, 200, "OK", SetCustomRecipesEnabledJson(query));
+                        break;
+                    case "/custom-recipes/update-flags":
+                        WriteResponse(stream, 200, "OK", UpdateCustomRecipeFlagsJson(query));
                         break;
                     case "/custom-recipes/move":
                         WriteResponse(stream, 200, "OK", _customRecipeStore.Move(
@@ -1450,8 +1451,8 @@ internal sealed class LocalApiServer : IDisposable
                 RecipeId = ReadIntQuery(query, "recipeId", -1),
                 RecipeName = ReadStringQuery(query, "recipeName"),
                 ExtraIngredientIds = ReadIntListQuery(query, "extraIngredientIds"),
-                Enabled = ReadBoolQuery(query, "enabled") ?? true,
-                PinToTop = ReadBoolQuery(query, "pinToTop") ?? true,
+                Enabled = ReadBoolQuery(query, "enabled"),
+                PinToTop = ReadBoolQuery(query, "pinToTop"),
                 SortOrder = ReadNullableIntQuery(query, "sortOrder"),
             });
         }
@@ -1459,6 +1460,59 @@ internal sealed class LocalApiServer : IDisposable
         {
             return ToJson(new LocalApiCustomRecipeMutationDto { Ok = false, Error = ex.Message });
         }
+    }
+
+    private string SetCustomRecipesEnabledJson(string query)
+    {
+        var enabled = ReadBoolQuery(query, "enabled");
+        return enabled == null
+            ? ToJson(new LocalApiCustomRecipeMutationDto { Ok = false, Error = "invalid custom recipe enabled setting" })
+            : _customRecipeStore.SetEnabled(enabled.Value);
+    }
+
+    private string UpdateCustomRecipeFlagsJson(string query)
+    {
+        var scope = ReadStringQuery(query, "scope");
+        var selection = scope switch
+        {
+            "all" => new CustomRecipeSelection { Kind = CustomRecipeSelectionKind.All },
+            "customer" => new CustomRecipeSelection
+            {
+                Kind = CustomRecipeSelectionKind.Customer,
+                CustomerId = ReadIntQuery(query, "customerId", -1),
+            },
+            "recipe" => new CustomRecipeSelection
+            {
+                Kind = CustomRecipeSelectionKind.Recipe,
+                FoodId = ReadIntQuery(query, "foodId", -1),
+            },
+            "entry" => new CustomRecipeSelection
+            {
+                Kind = CustomRecipeSelectionKind.Entry,
+                Id = ReadStringQuery(query, "id"),
+            },
+            _ => null,
+        };
+        if (selection == null
+            || (selection.Kind == CustomRecipeSelectionKind.Customer && selection.CustomerId < 0)
+            || (selection.Kind == CustomRecipeSelectionKind.Recipe && selection.FoodId < 0)
+            || (selection.Kind == CustomRecipeSelectionKind.Entry && string.IsNullOrWhiteSpace(selection.Id)))
+        {
+            return ToJson(new LocalApiCustomRecipeMutationDto { Ok = false, Error = "invalid custom recipe selection" });
+        }
+
+        var enabled = ReadBoolQuery(query, "enabled");
+        var pinToTop = ReadBoolQuery(query, "pinToTop");
+        if ((HasQueryParameter(query, "enabled") && enabled == null)
+            || (HasQueryParameter(query, "pinToTop") && pinToTop == null))
+        {
+            return ToJson(new LocalApiCustomRecipeMutationDto { Ok = false, Error = "invalid custom recipe flags" });
+        }
+
+        return _customRecipeStore.UpdateFlags(
+            selection,
+            enabled,
+            pinToTop);
     }
 
     private static List<string> ReadLogTail(string path, int maxBytes, int maxLines)
@@ -1874,6 +1928,18 @@ internal sealed class LocalApiServer : IDisposable
         }
 
         return "";
+    }
+
+    private static bool HasQueryParameter(string query, string key)
+    {
+        if (string.IsNullOrWhiteSpace(query)) return false;
+        return query.Split('&', StringSplitOptions.RemoveEmptyEntries).Any(pair =>
+        {
+            var separator = pair.IndexOf('=');
+            var encodedName = separator < 0 ? pair : pair[..separator];
+            var name = Uri.UnescapeDataString(encodedName.Replace("+", " ", StringComparison.Ordinal));
+            return string.Equals(name, key, StringComparison.OrdinalIgnoreCase);
+        });
     }
 
     private static IReadOnlyList<string> ReadDiagnosticLines(string query, string key)
