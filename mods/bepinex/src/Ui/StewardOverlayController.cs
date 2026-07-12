@@ -926,7 +926,8 @@ internal sealed class StewardOverlayController
         {
             var normalCount = snapshot.NormalBusiness?.Orders.Count ?? -1;
             var rareCount = snapshot.NightBusiness?.Orders.Count ?? -1;
-            var specialActive = snapshot.SpecialBusiness?.Active == true;
+            var specialBusiness = snapshot.SpecialBusiness;
+            var specialActive = specialBusiness?.Active == true;
             var diagnosticSignature = string.Join(
                 "|",
                 outcome,
@@ -937,8 +938,11 @@ internal sealed class StewardOverlayController
                 normalCount,
                 rareCount,
                 specialActive,
-                snapshot.SpecialBusiness?.ChallengeType ?? "",
-                snapshot.SpecialBusiness?.Phase ?? "");
+                specialBusiness?.ChallengeType ?? "",
+                specialBusiness?.Phase ?? "",
+                specialBusiness?.DisplayName ?? "",
+                specialBusiness?.Source ?? "",
+                specialBusiness?.Error ?? "");
             if (string.Equals(diagnosticSignature, _lastLocalApiSnapshotDiagnosticSignature, StringComparison.Ordinal))
             {
                 return;
@@ -959,7 +963,10 @@ internal sealed class StewardOverlayController
                     $"nightOrders: {rareCount}",
                     $"normalOrders: {normalCount}",
                     $"specialActive: {specialActive}",
-                    $"special: {snapshot.SpecialBusiness?.ChallengeType ?? ""} {snapshot.SpecialBusiness?.Phase ?? ""}",
+                    $"special: {specialBusiness?.ChallengeType ?? ""} {specialBusiness?.Phase ?? ""}",
+                    $"specialDisplayName: {specialBusiness?.DisplayName ?? ""}",
+                    $"specialSource: {specialBusiness?.Source ?? ""}",
+                    $"specialError: {specialBusiness?.Error ?? ""}",
                     $"normalSource: {snapshot.NormalBusiness?.Source ?? ""}",
                     $"normalError: {snapshot.NormalBusiness?.Error ?? ""}"));
         }

@@ -47,14 +47,17 @@ export function SpecialBusinessNotice({
   showDebugDetails: boolean;
 }) {
   const targets = formatSpecialBusinessTargets(context);
+  const displayName = context.displayName || context.challengeType;
 
   return (
     <Card>
       <CardContent className="space-y-3 p-4 text-sm">
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant="secondary">特殊经营</Badge>
-          <span className="font-medium text-foreground">{context.displayName || context.challengeType}</span>
-          {context.challengeType && <span className="text-xs text-muted-foreground">{context.challengeType}</span>}
+          <span className="font-medium text-foreground">{displayName}</span>
+          {context.challengeType && context.challengeType !== displayName && (
+            <span className="text-xs text-muted-foreground">{context.challengeType}</span>
+          )}
         </div>
         <div className={DENSE_TWO_COLUMN_GRID}>
           <InfoLine label="挑战目标" value={targets || '暂无已捕获目标'} />

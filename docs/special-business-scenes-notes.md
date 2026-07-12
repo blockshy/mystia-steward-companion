@@ -8,7 +8,7 @@
 
 ## 当前支持边界
 
-- 后端读取 `NightScene.NightSceneDirector.ChallengeMode`，发布挑战类型、中文说明、推荐策略提示、自动化策略提示、HUD 目标和运行时进度。
+- 后端读取 `NightScene.NightSceneDirector.ChallengeMode`，并从同一游戏程序集的 `NightSceneDirector.ChallengeType` 枚举成员读取 `UnityEngine.InspectorNameAttribute` 固定中文元数据，再发布挑战类型、显示名称、规则说明、推荐策略提示、自动化策略提示、HUD 目标和运行时进度。该元数据不是游戏当前语言下的多语言标题，不会随语言切换。名称元数据不可读时不得恢复 Mod 中文映射；应发布空 `displayName`、保留有效 challenge type，在来源中保留原始 `ChallengeMode` 并写入明确诊断。`DataBaseLanguage.GetMissionLanguage(challengeType)` 对未知 key 也可能返回非空合成对象，禁止用它猜测挑战标题。
 - 后端只捕获已通过反编译资料确认的 HUD 目标：
   - `IncomeControllerChallenge.SetTargetFund(targetAmount)` / `UpdateSpellCount(current, total)`：妖梦试炼目标营业额与符卡计数。
   - `IncomeControllerYuuma.SetTargetTag(tag1String, tag2String, useEffect)`：饕餮尤魔双料理 Tag。

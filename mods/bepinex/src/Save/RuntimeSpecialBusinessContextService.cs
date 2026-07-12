@@ -1,13 +1,17 @@
 using System.Reflection;
 using BepInEx.Logging;
 using HarmonyLib;
+using Il2CppInterop.Runtime;
 using MystiaStewardCompanion.Core;
+using UnityEngine;
 
 namespace MystiaStewardCompanion.Save;
 
 internal static class RuntimeSpecialBusinessContextService
 {
     private const string NightSceneDirectorTypeName = "NightScene.NightSceneDirector";
+    private const string ChallengeTypeNestedName = "ChallengeType";
+    private const string ChallengeDisplayNameSource = "NightSceneDirector.ChallengeType.IL2CPPMetadata.InspectorName";
     private const string IncomeControllerYuumaTypeName = "NightScene.UI.HUDUtility.IncomeControllerYuuma";
     private const string IncomeControllerKoishiTypeName = "NightScene.UI.HUDUtility.IncomeControllerKoishi";
     private const string IncomeControllerYuyukoTypeName = "NightScene.UI.HUDUtility.IncomeControllerYuyuko";
@@ -19,8 +23,10 @@ internal static class RuntimeSpecialBusinessContextService
     private const string NoDifficultyMode = "None";
 
     private static readonly object SyncRoot = new();
+    private static readonly Dictionary<string, ChallengeDisplayNameResolution> ChallengeDisplayNameCache = new(StringComparer.Ordinal);
     private static readonly HashSet<string> PatchedMethods = new(StringComparer.Ordinal);
     private static readonly TimeSpan RetryInterval = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan ChallengeDisplayNameExceptionRetryInterval = TimeSpan.FromSeconds(30);
 
     private static Harmony? _harmony;
     private static ManualLogSource? _log;
@@ -44,6 +50,7 @@ internal static class RuntimeSpecialBusinessContextService
     private static int? _currentSpellCount;
     private static int? _targetSpellCount;
     private static DateTime? _lastTargetUpdatedUtc;
+    private static string _targetRawChallengeType = "";
     private static string _yuyukoRetakeEvidenceSource = "";
     private static long _changeVersion;
 
@@ -70,7 +77,7 @@ internal static class RuntimeSpecialBusinessContextService
                 var yuyukoVariant = _yuyukoRetakeEvidenceSource.Length == 0
                     ? ""
                     : $"; yuyukoRetakeEvidence={_yuyukoRetakeEvidenceSource}";
-                return $"{_status}; version={_changeVersion}; target={target}; last={_lastAction}{yuyukoVariant}";
+                return $"{_status}; version={_changeVersion}; owner={_targetRawChallengeType}; target={target}; last={_lastAction}{yuyukoVariant}";
             }
         }
     }
@@ -97,11 +104,11 @@ internal static class RuntimeSpecialBusinessContextService
 
     public static bool IsActiveWackyPhase(string phase)
     {
-        if (!string.Equals(CurrentChallengeType, SpecialBusinessChallengeTypes.WackyCookingCompetition, StringComparison.Ordinal)) return false;
+        if (!TryReadTargetOwner("koishi", out var rawChallengeType)) return false;
 
         lock (SyncRoot)
         {
-            return string.Equals(_targetKind, "koishi", StringComparison.Ordinal)
+            return TargetContextMatchesLocked(rawChallengeType, "koishi")
                 && string.Equals(_phase.Trim(), phase, StringComparison.Ordinal);
         }
     }
@@ -110,11 +117,11 @@ internal static class RuntimeSpecialBusinessContextService
     {
         get
         {
-            if (!string.Equals(CurrentChallengeType, SpecialBusinessChallengeTypes.WackyCookingCompetition, StringComparison.Ordinal)) return false;
+            if (!TryReadTargetOwner("koishi", out var rawChallengeType)) return false;
 
             lock (SyncRoot)
             {
-                return string.Equals(_targetKind, "koishi", StringComparison.Ordinal)
+                return TargetContextMatchesLocked(rawChallengeType, "koishi")
                     && _koishiShieldBroken == true;
             }
         }
@@ -122,15 +129,11 @@ internal static class RuntimeSpecialBusinessContextService
 
     public static bool IsActiveYuyukoPhase(string phase)
     {
-        var challengeType = CurrentChallengeType;
-        if (!IsYuyukoChallengeType(challengeType))
-        {
-            return false;
-        }
+        if (!TryReadTargetOwner("yuyuko", out var rawChallengeType)) return false;
 
         lock (SyncRoot)
         {
-            return string.Equals(_targetKind, "yuyuko", StringComparison.Ordinal)
+            return TargetContextMatchesLocked(rawChallengeType, "yuyuko")
                 && string.Equals(_phase.Trim(), phase, StringComparison.Ordinal);
         }
     }
@@ -156,11 +159,11 @@ internal static class RuntimeSpecialBusinessContextService
     {
         signature = "";
         tags = Array.Empty<string>();
-        if (!string.Equals(CurrentChallengeType, SpecialBusinessChallengeTypes.WackyCookingCompetition, StringComparison.Ordinal)) return false;
+        if (!TryReadTargetOwner("koishi", out var rawChallengeType)) return false;
 
         lock (SyncRoot)
         {
-            if (!string.Equals(_targetKind, "koishi", StringComparison.Ordinal)) return false;
+            if (!TargetContextMatchesLocked(rawChallengeType, "koishi")) return false;
 
             var normalized = NormalizeFoodTargetTagsLocked();
             tags = normalized;
@@ -201,17 +204,30 @@ internal static class RuntimeSpecialBusinessContextService
         TryAttach(_log, force: false);
 
         var challengeState = ReadChallengeTypeState(out var error);
+        if (challengeState.RawChallengeTypeAvailable
+            && string.Equals(challengeState.RawChallengeType, SpecialBusinessChallengeTypes.NotChallenge, StringComparison.Ordinal))
+        {
+            ClearTargetStateForInactiveChallenge();
+        }
+
         var challengeType = challengeState.EffectiveChallengeType;
         var active = IsActiveChallenge(challengeType);
         var rule = GetRule(challengeType, active);
-        var target = ReadTargetForChallenge(challengeType);
+        string? displayNameError = null;
+        var displayName = active ? ReadChallengeDisplayName(challengeType, out displayNameError) : "";
+        error = CombineErrors(error, displayNameError);
+        var target = ReadTargetForChallenge(challengeState.RawChallengeType, challengeType);
         var source = BuildSource(challengeState, target);
+        if (active)
+        {
+            source += $"; DisplayNameSource={(displayName.Length > 0 ? ChallengeDisplayNameSource : "unavailable")}";
+        }
 
         return new SpecialBusinessContext
         {
             Active = active,
             ChallengeType = challengeType,
-            DisplayName = rule.DisplayName,
+            DisplayName = displayName,
             Category = rule.Category,
             RuleSummary = rule.RuleSummary,
             FoodTargetTags = target.FoodTargetTags.ToList(),
@@ -449,9 +465,10 @@ internal static class RuntimeSpecialBusinessContextService
     {
         var broken = RuntimeReflectionUtility.ToBool(__0);
         var recover = RuntimeReflectionUtility.ToBool(__1);
+        if (!TryReadTargetOwner("koishi", out var rawChallengeType)) return;
         lock (SyncRoot)
         {
-            _targetKind = "koishi";
+            SwitchTargetContextLocked(rawChallengeType, "koishi");
             _koishiShieldBroken = recover ? false : broken;
             _lastTargetUpdatedUtc = DateTime.UtcNow;
             _lastAction = recover ? "koishi shield recovered" : $"koishi shield broken={broken}";
@@ -640,9 +657,10 @@ internal static class RuntimeSpecialBusinessContextService
         var total = RuntimeReflectionUtility.ToInt(__1, int.MinValue);
         if (current < 0 || total < 0) return;
 
+        if (!TryReadTargetOwner("challenge", out var rawChallengeType)) return;
         lock (SyncRoot)
         {
-            _targetKind = "challenge";
+            SwitchTargetContextLocked(rawChallengeType, "challenge");
             _currentSpellCount = current;
             _targetSpellCount = total;
             _lastTargetUpdatedUtc = DateTime.UtcNow;
@@ -661,9 +679,10 @@ internal static class RuntimeSpecialBusinessContextService
         var targetFund = RuntimeReflectionUtility.ToInt(value, int.MinValue);
         if (targetFund < 0) return;
 
+        if (!TryReadTargetOwner(kind, out var rawChallengeType)) return;
         lock (SyncRoot)
         {
-            _targetKind = kind;
+            SwitchTargetContextLocked(rawChallengeType, kind);
             _foodTargetTags = Array.Empty<string>();
             _targetFund = targetFund;
             _targetLabel = label;
@@ -685,9 +704,10 @@ internal static class RuntimeSpecialBusinessContextService
             .ToArray();
         if (normalized.Length == 0) return;
 
+        if (!TryReadTargetOwner(kind, out var rawChallengeType)) return;
         lock (SyncRoot)
         {
-            _targetKind = kind;
+            SwitchTargetContextLocked(rawChallengeType, kind);
             _foodTargetTags = normalized;
             _targetFund = null;
             _targetLabel = "目标料理 Tag";
@@ -703,22 +723,23 @@ internal static class RuntimeSpecialBusinessContextService
     {
         var current = RuntimeReflectionUtility.ToInt(currentValue, int.MinValue);
         var max = RuntimeReflectionUtility.ToInt(maxValue, int.MinValue);
+        if (!TryReadTargetOwner(kind, out var rawChallengeType)) return;
 
         lock (SyncRoot)
         {
-            var previousKind = _targetKind;
+            var previousContextMatches = TargetContextMatchesLocked(rawChallengeType, kind);
             var previousPhase = _phase;
-            var resetTargetValue = !string.Equals(_targetKind, kind, StringComparison.Ordinal)
-                || !string.Equals(_phase, phase, StringComparison.Ordinal);
-            _targetKind = kind;
+            var contextChanged = !previousContextMatches
+                || !string.Equals(previousPhase, phase, StringComparison.Ordinal);
+            SwitchTargetContextLocked(rawChallengeType, kind);
             _targetLabel = label;
             _currentValue = current == int.MinValue ? null : current;
             _maxValue = max == int.MinValue ? null : max;
             _phase = phase;
-            if (resetTargetValue)
+            if (contextChanged)
             {
                 _targetValue = null;
-                ResetTransientStateForContextLocked(previousKind, previousPhase, kind, phase);
+                ResetTransientStateForContextLocked(kind, phase);
             }
             _lastTargetUpdatedUtc = DateTime.UtcNow;
             _lastAction = $"{kind} context={label}; progress={_currentValue?.ToString() ?? ""}/{_maxValue?.ToString() ?? ""}; phase={phase}";
@@ -728,7 +749,67 @@ internal static class RuntimeSpecialBusinessContextService
         }
     }
 
-    private static void ResetTransientStateForContextLocked(string previousKind, string previousPhase, string kind, string phase)
+    private static bool TryReadTargetOwner(string expectedKind, out string rawChallengeType)
+    {
+        rawChallengeType = ReadRawChallengeType(out var error);
+        return string.IsNullOrWhiteSpace(error)
+            && rawChallengeType.Length > 0
+            && string.Equals(GetExpectedTargetKind(rawChallengeType), expectedKind, StringComparison.Ordinal);
+    }
+
+    private static void ClearTargetStateForInactiveChallenge()
+    {
+        lock (SyncRoot)
+        {
+            if (_targetRawChallengeType.Length == 0 && _targetKind.Length == 0) return;
+
+            ResetTargetStateLocked();
+            _lastAction = "target cleared: challenge inactive";
+            _changeVersion++;
+        }
+    }
+
+    private static void SwitchTargetContextLocked(string rawChallengeType, string kind)
+    {
+        if (TargetContextMatchesLocked(rawChallengeType, kind))
+        {
+            return;
+        }
+
+        ResetTargetStateLocked();
+        _targetRawChallengeType = rawChallengeType;
+        _targetKind = kind;
+    }
+
+    private static bool TargetContextMatchesLocked(string rawChallengeType, string kind)
+    {
+        return string.Equals(_targetRawChallengeType, rawChallengeType, StringComparison.Ordinal)
+            && string.Equals(_targetKind, kind, StringComparison.Ordinal);
+    }
+
+    private static void ResetTargetStateLocked()
+    {
+        _targetRawChallengeType = "";
+        _targetKind = "";
+        _foodTargetTags = Array.Empty<string>();
+        _targetFund = null;
+        _targetLabel = "";
+        _phase = "";
+        _currentValue = null;
+        _maxValue = null;
+        _targetValue = null;
+        _targetTimeProgress = null;
+        _targetTagTimeProgress = null;
+        _koishiShieldBroken = null;
+        _koishiFoodPreferenceTags = Array.Empty<string>();
+        _koishiFoodHateTags = Array.Empty<string>();
+        _koishiBeveragePreferenceTags = Array.Empty<string>();
+        _currentSpellCount = null;
+        _targetSpellCount = null;
+        _lastTargetUpdatedUtc = null;
+    }
+
+    private static void ResetTransientStateForContextLocked(string kind, string phase)
     {
         if (string.Equals(kind, "koishi", StringComparison.Ordinal))
         {
@@ -747,17 +828,13 @@ internal static class RuntimeSpecialBusinessContextService
             return;
         }
 
-        if (!string.Equals(previousKind, kind, StringComparison.Ordinal)
-            || !string.Equals(previousPhase, phase, StringComparison.Ordinal))
-        {
-            _foodTargetTags = Array.Empty<string>();
-            _targetTimeProgress = null;
-            _targetTagTimeProgress = null;
-            _koishiShieldBroken = null;
-            _koishiFoodPreferenceTags = Array.Empty<string>();
-            _koishiFoodHateTags = Array.Empty<string>();
-            _koishiBeveragePreferenceTags = Array.Empty<string>();
-        }
+        _foodTargetTags = Array.Empty<string>();
+        _targetTimeProgress = null;
+        _targetTagTimeProgress = null;
+        _koishiShieldBroken = null;
+        _koishiFoodPreferenceTags = Array.Empty<string>();
+        _koishiFoodHateTags = Array.Empty<string>();
+        _koishiBeveragePreferenceTags = Array.Empty<string>();
     }
 
     private static bool IsKoishiPhaseWithoutFoodTargetLocked(string phase)
@@ -775,9 +852,10 @@ internal static class RuntimeSpecialBusinessContextService
         var target = RuntimeReflectionUtility.ToInt(value, int.MinValue);
         if (target == int.MinValue) return;
 
+        if (!TryReadTargetOwner(kind, out var rawChallengeType)) return;
         lock (SyncRoot)
         {
-            _targetKind = kind;
+            SwitchTargetContextLocked(rawChallengeType, kind);
             _targetValue = target;
             _lastTargetUpdatedUtc = DateTime.UtcNow;
             _lastAction = $"{kind} target progress={target}";
@@ -792,9 +870,10 @@ internal static class RuntimeSpecialBusinessContextService
         var progress = ToDouble(value, double.NaN);
         if (double.IsNaN(progress)) return;
 
+        if (!TryReadTargetOwner(kind, out var rawChallengeType)) return;
         lock (SyncRoot)
         {
-            _targetKind = kind;
+            SwitchTargetContextLocked(rawChallengeType, kind);
             _targetTimeProgress = ClampProgress(progress);
             _lastTargetUpdatedUtc = DateTime.UtcNow;
             _lastAction = $"{kind} time={FormatProgress(_targetTimeProgress)}";
@@ -809,9 +888,10 @@ internal static class RuntimeSpecialBusinessContextService
         var progress = ToDouble(value, double.NaN);
         if (double.IsNaN(progress)) return;
 
+        if (!TryReadTargetOwner(kind, out var rawChallengeType)) return;
         lock (SyncRoot)
         {
-            _targetKind = kind;
+            SwitchTargetContextLocked(rawChallengeType, kind);
             _targetTagTimeProgress = ClampProgress(progress);
             _lastTargetUpdatedUtc = DateTime.UtcNow;
             _lastAction = $"{kind} tag time={FormatProgress(_targetTagTimeProgress)}";
@@ -825,9 +905,10 @@ internal static class RuntimeSpecialBusinessContextService
         IReadOnlyList<string> foodHateTags,
         IReadOnlyList<string> beveragePreferenceTags)
     {
+        if (!TryReadTargetOwner("koishi", out var rawChallengeType)) return;
         lock (SyncRoot)
         {
-            _targetKind = "koishi";
+            SwitchTargetContextLocked(rawChallengeType, "koishi");
             _koishiFoodPreferenceTags = NormalizeTagCollection(foodPreferenceTags);
             _koishiFoodHateTags = NormalizeTagCollection(foodHateTags);
             _koishiBeveragePreferenceTags = NormalizeTagCollection(beveragePreferenceTags);
@@ -1152,37 +1233,222 @@ internal static class RuntimeSpecialBusinessContextService
 
         lock (SyncRoot)
         {
-            if (!IsYuyukoChallengeType(rawChallengeType))
+            if (string.IsNullOrWhiteSpace(rawError))
             {
-                _yuyukoRetakeEvidenceSource = "";
-            }
-            else if (string.Equals(rawChallengeType, SpecialBusinessChallengeTypes.RetakeYuyuko, StringComparison.Ordinal))
-            {
-                effectiveChallengeType = SpecialBusinessChallengeTypes.RetakeYuyuko;
-                variantSource = "raw ChallengeMode";
-                _yuyukoRetakeEvidenceSource = variantSource;
-            }
-            else if (IsMeaningfulDifficultyMode(difficultyMode))
-            {
-                effectiveChallengeType = SpecialBusinessChallengeTypes.RetakeYuyuko;
-                variantSource = $"DifficultyMode={difficultyMode}";
-                _yuyukoRetakeEvidenceSource = variantSource;
-            }
-            else if (!string.IsNullOrWhiteSpace(_yuyukoRetakeEvidenceSource))
-            {
-                effectiveChallengeType = SpecialBusinessChallengeTypes.RetakeYuyuko;
-                variantSource = _yuyukoRetakeEvidenceSource;
-            }
-            else
-            {
-                effectiveChallengeType = SpecialBusinessChallengeTypes.StoryYuyuko;
-                variantSource = $"raw {SpecialBusinessChallengeTypes.StoryYuyuko}";
+                if (!IsYuyukoChallengeType(rawChallengeType))
+                {
+                    _yuyukoRetakeEvidenceSource = "";
+                }
+                else if (string.Equals(rawChallengeType, SpecialBusinessChallengeTypes.RetakeYuyuko, StringComparison.Ordinal))
+                {
+                    effectiveChallengeType = SpecialBusinessChallengeTypes.RetakeYuyuko;
+                    variantSource = "raw ChallengeMode";
+                    _yuyukoRetakeEvidenceSource = variantSource;
+                }
+                else if (IsMeaningfulDifficultyMode(difficultyMode))
+                {
+                    effectiveChallengeType = SpecialBusinessChallengeTypes.RetakeYuyuko;
+                    variantSource = $"DifficultyMode={difficultyMode}";
+                    _yuyukoRetakeEvidenceSource = variantSource;
+                }
+                else if (!string.IsNullOrWhiteSpace(_yuyukoRetakeEvidenceSource))
+                {
+                    effectiveChallengeType = SpecialBusinessChallengeTypes.RetakeYuyuko;
+                    variantSource = _yuyukoRetakeEvidenceSource;
+                }
+                else
+                {
+                    effectiveChallengeType = SpecialBusinessChallengeTypes.StoryYuyuko;
+                    variantSource = $"raw {SpecialBusinessChallengeTypes.StoryYuyuko}";
+                }
             }
         }
 
-        error = string.Join("; ", new[] { rawError, difficultyError }.Where(item => !string.IsNullOrWhiteSpace(item)));
-        if (string.IsNullOrWhiteSpace(error)) error = null;
-        return new ChallengeTypeState(rawChallengeType, effectiveChallengeType, difficultyMode, variantSource);
+        error = CombineErrors(rawError, difficultyError);
+        return new ChallengeTypeState(
+            rawChallengeType,
+            effectiveChallengeType,
+            difficultyMode,
+            variantSource,
+            string.IsNullOrWhiteSpace(rawError));
+    }
+
+    private static string ReadChallengeDisplayName(string challengeType, out string? error)
+    {
+        error = null;
+        if (string.IsNullOrWhiteSpace(challengeType))
+        {
+            error = "challenge type is empty while reading display name";
+            return "";
+        }
+
+        var now = DateTime.UtcNow;
+        lock (SyncRoot)
+        {
+            if (ChallengeDisplayNameCache.TryGetValue(challengeType, out var cached)
+                && !cached.ShouldRetry(now))
+            {
+                error = cached.Error;
+                return cached.DisplayName;
+            }
+        }
+
+        var resolution = ResolveChallengeDisplayName(challengeType, now);
+        lock (SyncRoot)
+        {
+            ChallengeDisplayNameCache[challengeType] = resolution;
+        }
+
+        error = resolution.Error;
+        return resolution.DisplayName;
+    }
+
+    private static ChallengeDisplayNameResolution ResolveChallengeDisplayName(string challengeType, DateTime now)
+    {
+        var stage = "type-discovery";
+        try
+        {
+            var directorType = RuntimeReflectionUtility.FindType(NightSceneDirectorTypeName);
+            if (directorType == null)
+            {
+                return ChallengeDisplayNameResolution.RetryableFailure(
+                    "NightSceneDirector proxy type not found while reading challenge display name",
+                    now + RetryInterval);
+            }
+
+            var challengeEnumType = directorType.GetNestedType(
+                ChallengeTypeNestedName,
+                BindingFlags.Public | BindingFlags.NonPublic);
+            if (challengeEnumType == null)
+            {
+                return ChallengeDisplayNameResolution.PermanentFailure(
+                    "NightSceneDirector.ChallengeType proxy enum not found");
+            }
+
+            var runtimeChallengeEnumType = Il2CppType.From(challengeEnumType, false);
+            if (runtimeChallengeEnumType is null)
+            {
+                return ChallengeDisplayNameResolution.PermanentFailure(
+                    "NightSceneDirector.ChallengeType IL2CPP type not found");
+            }
+
+            var field = runtimeChallengeEnumType.GetField(challengeType);
+            if (field is null)
+            {
+                return ChallengeDisplayNameResolution.PermanentFailure(
+                    $"ChallengeType IL2CPP field not found: {challengeType}");
+            }
+
+            var inspectorNameType = Il2CppType.Of<InspectorNameAttribute>(false);
+            if (inspectorNameType is null)
+            {
+                return ChallengeDisplayNameResolution.PermanentFailure(
+                    "UnityEngine.InspectorNameAttribute IL2CPP type not found");
+            }
+
+            stage = "custom-attributes";
+            Il2CppSystem.Reflection.CustomAttributeData? inspectorName = null;
+            var attributes = Il2CppSystem.Reflection.CustomAttributeData.GetCustomAttributes(field);
+            if (attributes is null)
+            {
+                return ChallengeDisplayNameResolution.PermanentFailure(
+                    $"ChallengeType IL2CPP custom attribute list not found: {challengeType}");
+            }
+
+            var attributeCount = attributes
+                .Cast<Il2CppSystem.Collections.Generic.ICollection<Il2CppSystem.Reflection.CustomAttributeData>>()
+                .Count;
+            for (var index = 0; index < attributeCount; index++)
+            {
+                var attribute = attributes[index];
+                if (attribute is null)
+                {
+                    return ChallengeDisplayNameResolution.PermanentFailure(
+                        $"ChallengeType IL2CPP custom attribute entry is null: {challengeType}[{index}]");
+                }
+
+                var attributeType = attribute.AttributeType;
+                if (attributeType is null)
+                {
+                    return ChallengeDisplayNameResolution.PermanentFailure(
+                        $"ChallengeType IL2CPP custom attribute type is null: {challengeType}[{index}]");
+                }
+
+                if (!attributeType.Equals(inspectorNameType)) continue;
+                inspectorName = attribute;
+                break;
+            }
+
+            if (inspectorName is null)
+            {
+                return ChallengeDisplayNameResolution.PermanentFailure(
+                    $"ChallengeType IL2CPP InspectorName metadata not found: {challengeType}");
+            }
+
+            stage = "constructor-arguments";
+            var constructorArguments = inspectorName.ConstructorArguments;
+            if (constructorArguments is null)
+            {
+                return ChallengeDisplayNameResolution.PermanentFailure(
+                    $"ChallengeType IL2CPP InspectorName constructor arguments not found: {challengeType}");
+            }
+
+            var constructorArgumentCount = constructorArguments
+                .Cast<Il2CppSystem.Collections.Generic.ICollection<Il2CppSystem.Reflection.CustomAttributeTypedArgument>>()
+                .Count;
+            if (constructorArgumentCount == 0)
+            {
+                return ChallengeDisplayNameResolution.PermanentFailure(
+                    $"ChallengeType IL2CPP InspectorName constructor argument is missing: {challengeType}");
+            }
+
+            var constructorArgument = constructorArguments[0];
+            if (constructorArgument is null)
+            {
+                return ChallengeDisplayNameResolution.PermanentFailure(
+                    $"ChallengeType IL2CPP InspectorName constructor argument is null: {challengeType}");
+            }
+
+            stage = "argument-value";
+            var argumentValue = constructorArgument.Value;
+            if (argumentValue is null)
+            {
+                return ChallengeDisplayNameResolution.PermanentFailure(
+                    $"ChallengeType IL2CPP InspectorName value is null: {challengeType}");
+            }
+
+            var valuePointer = argumentValue.Pointer;
+            if (valuePointer == IntPtr.Zero)
+            {
+                return ChallengeDisplayNameResolution.PermanentFailure(
+                    $"ChallengeType IL2CPP InspectorName string pointer is null: {challengeType}");
+            }
+
+            stage = "argument-class";
+            var stringClass = Il2CppClassPointerStore<string>.NativeClassPtr;
+            var valueClass = IL2CPP.il2cpp_object_get_class(valuePointer);
+            if (stringClass == IntPtr.Zero || valueClass != stringClass)
+            {
+                return ChallengeDisplayNameResolution.PermanentFailure(
+                    $"ChallengeType IL2CPP InspectorName value object is not System.String: {challengeType}");
+            }
+
+            stage = "string-decode";
+            var displayName = IL2CPP.Il2CppStringToManaged(valuePointer)?.Trim() ?? "";
+            if (displayName.Length == 0)
+            {
+                return ChallengeDisplayNameResolution.PermanentFailure(
+                    $"ChallengeType IL2CPP InspectorName metadata is empty: {challengeType}");
+            }
+
+            return ChallengeDisplayNameResolution.Success(displayName);
+        }
+        catch (Exception ex)
+        {
+            return ChallengeDisplayNameResolution.RetryableFailure(
+                $"challenge display name IL2CPP metadata read failed at stage={stage}: {ex.GetType().Name}: {ex.Message}",
+                now + ChallengeDisplayNameExceptionRetryInterval);
+        }
     }
 
     private static string ReadRawChallengeType(out string? error)
@@ -1198,8 +1464,20 @@ internal static class RuntimeSpecialBusinessContextService
             }
 
             var value = RuntimeReflectionUtility.GetStaticMemberValue(type, "ChallengeMode");
-            var text = NormalizeChallengeTypeText(CleanText(value));
-            return text.Length == 0 ? SpecialBusinessChallengeTypes.NotChallenge : text;
+            if (value is null)
+            {
+                error = "NightSceneDirector.ChallengeMode value not found";
+                return SpecialBusinessChallengeTypes.NotChallenge;
+            }
+
+            var text = CleanText(value);
+            if (text.Length == 0)
+            {
+                error = "NightSceneDirector.ChallengeMode value is empty";
+                return SpecialBusinessChallengeTypes.NotChallenge;
+            }
+
+            return NormalizeChallengeTypeText(text);
         }
         catch (Exception ex)
         {
@@ -1279,27 +1557,15 @@ internal static class RuntimeSpecialBusinessContextService
         };
     }
 
-    private static SpecialBusinessTarget ReadTargetForChallenge(string challengeType)
+    private static SpecialBusinessTarget ReadTargetForChallenge(string rawChallengeType, string challengeType)
     {
-        var expectedKind = challengeType switch
-        {
-            "Story_BloodPondHell" => "yuuma",
-            SpecialBusinessChallengeTypes.WackyCookingCompetition => "koishi",
-            "Story_Basic" => "challenge",
-            "Story_Advanced" => "challenge",
-            SpecialBusinessChallengeTypes.StoryYuyuko => "yuyuko",
-            SpecialBusinessChallengeTypes.RetakeYuyuko => "yuyuko",
-            "Story_Seiga_TempleCuisineCompetition" => "mausoleum",
-            "Story_Futo_TempleCuisineCompetition" => "mausoleum",
-            "Story_Tochiko_TempleCuisineCompetition" => "mausoleum",
-            _ => "",
-        };
+        var expectedKind = GetExpectedTargetKind(challengeType);
 
         if (expectedKind.Length == 0) return SpecialBusinessTarget.Empty;
 
         lock (SyncRoot)
         {
-            if (!string.Equals(_targetKind, expectedKind, StringComparison.Ordinal))
+            if (!TargetContextMatchesLocked(rawChallengeType, expectedKind))
             {
                 return SpecialBusinessTarget.Empty;
             }
@@ -1326,6 +1592,23 @@ internal static class RuntimeSpecialBusinessContextService
         }
     }
 
+    private static string GetExpectedTargetKind(string challengeType)
+    {
+        return challengeType switch
+        {
+            "Story_BloodPondHell" => "yuuma",
+            SpecialBusinessChallengeTypes.WackyCookingCompetition => "koishi",
+            "Story_Basic" => "challenge",
+            "Story_Advanced" => "challenge",
+            SpecialBusinessChallengeTypes.StoryYuyuko => "yuyuko",
+            SpecialBusinessChallengeTypes.RetakeYuyuko => "yuyuko",
+            "Story_Seiga_TempleCuisineCompetition" => "mausoleum",
+            "Story_Futo_TempleCuisineCompetition" => "mausoleum",
+            "Story_Tochiko_TempleCuisineCompetition" => "mausoleum",
+            _ => "",
+        };
+    }
+
     private static SpecialBusinessContextRule GetRule(string challengeType, bool active)
     {
         return SpecialBusinessContextRuleRegistry.GetRule(challengeType, active);
@@ -1339,7 +1622,7 @@ internal static class RuntimeSpecialBusinessContextService
 
     private static string BuildSource(ChallengeTypeState challengeState, SpecialBusinessTarget target)
     {
-        var source = $"ChallengeMode={challengeState.EffectiveChallengeType}; RawChallengeMode={challengeState.RawChallengeType}; DifficultyMode={challengeState.DifficultyMode}; VariantSource={challengeState.VariantSource}; Capture={Status}";
+        var source = $"ChallengeMode={challengeState.EffectiveChallengeType}; RawChallengeMode={challengeState.RawChallengeType}; DifficultyMode={challengeState.DifficultyMode}; VariantSource={challengeState.VariantSource}; Capture={BuildCaptureStatus(target)}";
         if (target.Source.Length > 0)
         {
             source += $"; TargetSource={target.Source}";
@@ -1348,11 +1631,63 @@ internal static class RuntimeSpecialBusinessContextService
         return source;
     }
 
+    private static string BuildCaptureStatus(SpecialBusinessTarget target)
+    {
+        lock (SyncRoot)
+        {
+            var targetDescription = target.Source.Length == 0
+                ? "none"
+                : $"{target.Source}; foodTags={string.Join(",", target.FoodTargetTags)}; targetFund={target.TargetFund?.ToString() ?? ""}; progress={target.CurrentValue?.ToString() ?? ""}/{target.MaxValue?.ToString() ?? ""}; target={target.TargetValue?.ToString() ?? ""}; time={FormatProgress(target.TargetTimeProgress)}; tagTime={FormatProgress(target.TargetTagTimeProgress)}; koishiShield={target.WackyKoishiShieldBroken?.ToString() ?? ""}; koishiFoodLikes={string.Join(",", target.WackyKoishiFoodPreferenceTags)}; koishiFoodHates={string.Join(",", target.WackyKoishiFoodHateTags)}; koishiBevLikes={string.Join(",", target.WackyKoishiBeveragePreferenceTags)}; spells={target.CurrentSpellCount?.ToString() ?? ""}/{target.TargetSpellCount?.ToString() ?? ""}; phase={target.Phase}";
+            var yuyukoVariant = _yuyukoRetakeEvidenceSource.Length == 0
+                ? ""
+                : $"; yuyukoRetakeEvidence={_yuyukoRetakeEvidenceSource}";
+            return $"{_status}; version={_changeVersion}; owner={_targetRawChallengeType}; target={targetDescription}; last={_lastAction}{yuyukoVariant}";
+        }
+    }
+
+    private static string? CombineErrors(params string?[] errors)
+    {
+        var combined = string.Join(
+            "; ",
+            errors
+                .Where(item => !string.IsNullOrWhiteSpace(item))
+                .Select(item => item!.Trim())
+                .Distinct(StringComparer.Ordinal));
+        return combined.Length == 0 ? null : combined;
+    }
+
     private readonly record struct ChallengeTypeState(
         string RawChallengeType,
         string EffectiveChallengeType,
         string DifficultyMode,
-        string VariantSource);
+        string VariantSource,
+        bool RawChallengeTypeAvailable);
+
+    private readonly record struct ChallengeDisplayNameResolution(
+        string DisplayName,
+        string? Error,
+        DateTime NextRetryUtc)
+    {
+        public bool ShouldRetry(DateTime now)
+        {
+            return DisplayName.Length == 0 && now >= NextRetryUtc;
+        }
+
+        public static ChallengeDisplayNameResolution Success(string displayName)
+        {
+            return new ChallengeDisplayNameResolution(displayName, null, DateTime.MaxValue);
+        }
+
+        public static ChallengeDisplayNameResolution PermanentFailure(string error)
+        {
+            return new ChallengeDisplayNameResolution("", error, DateTime.MaxValue);
+        }
+
+        public static ChallengeDisplayNameResolution RetryableFailure(string error, DateTime nextRetryUtc)
+        {
+            return new ChallengeDisplayNameResolution("", error, nextRetryUtc);
+        }
+    }
 
     private static double ToDouble(object? value, double fallback)
     {

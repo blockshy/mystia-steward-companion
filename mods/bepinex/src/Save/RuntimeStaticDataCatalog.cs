@@ -855,7 +855,7 @@ internal sealed class RuntimeStaticDataCatalog
         var stringId = GetMemberValue(guest, "StringId")?.ToString()
             ?? GetMemberValue(guest, "StrID")?.ToString()
             ?? "";
-        return $"id={FormatNullable(id)}; stringId={stringId}; name={ResolveSpecialGuestName(languageType, specialGuestNames, id, local?.Name)}; local={FormatLocalName(local?.Name)}; likeFood={FormatTagCollection(GetMemberValue(guest, "LikeFoodTag"), foodTags)}; likeFoodOriginal={FormatTagCollection(GetMemberValue(guest, "LikeFoodTagOriginal"), foodTags)}; likeFoodUnfolded={FormatTagCollection(GetMemberValue(guest, "LikeFoodTagUnfolded"), foodTags)}; hateFood={FormatTagCollection(GetMemberValue(guest, "HateFoodTag"), foodTags)}; hateFoodOriginal={FormatTagCollection(GetMemberValue(guest, "HateFoodTagOriginal"), foodTags)}; likeBev={FormatTagCollection(GetMemberValue(guest, "LikeBevTag"), beverageTags)}; likeBevOriginal={FormatTagCollection(GetMemberValue(guest, "LikeBevTagOriginal"), beverageTags)}; likeBevUnfolded={FormatTagCollection(GetMemberValue(guest, "LikeBevTagUnfolded"), beverageTags)}; specialFoodText={ResolveLanguageDictionary(languageType, "GetSpecialFoodTagLang", id, foodTags)}; specialBevText={ResolveLanguageDictionary(languageType, "GetSpecialBevTagLang", id, beverageTags)}; spawnType={FormatMember(guest, "SpawnType")}; destination={FormatMember(guest, "Destination")}; doNotShow={FormatMember(guest, "DoNotShowInNotebook")}; easter={FormatEasterData(GetMemberValue(guest, "GuestFoodEasterEggData"))}; localPlaces={FormatStringCollection(local?.Places)}; localPositive={FormatStringCollection(local?.PositiveTags)}; localNegative={FormatStringCollection(local?.NegativeTags)}; localBev={FormatStringCollection(local?.BeverageTags)}";
+        return $"id={FormatNullable(id)}; stringId={stringId}; name={ResolveSpecialGuestName(languageType, specialGuestNames, id, local?.Name)}; local={FormatLocalName(local?.Name)}; likeFood={FormatTagCollection(GetMemberValue(guest, "LikeFoodTag"), foodTags)}; likeFoodOriginal={FormatTagCollection(GetMemberValue(guest, "LikeFoodTagOriginal"), foodTags)}; likeFoodUnfolded={FormatTagCollection(GetMemberValue(guest, "LikeFoodTagUnfolded"), foodTags)}; hateFood={FormatTagCollection(GetMemberValue(guest, "HateFoodTag"), foodTags)}; hateFoodOriginal={FormatTagCollection(GetMemberValue(guest, "HateFoodTagOriginal"), foodTags)}; likeBev={FormatTagCollection(GetMemberValue(guest, "LikeBevTag"), beverageTags)}; likeBevOriginal={FormatTagCollection(GetMemberValue(guest, "LikeBevTagOriginal"), beverageTags)}; likeBevUnfolded={FormatTagCollection(GetMemberValue(guest, "LikeBevTagUnfolded"), beverageTags)}; spawnType={FormatMember(guest, "SpawnType")}; destination={FormatMember(guest, "Destination")}; doNotShow={FormatMember(guest, "DoNotShowInNotebook")}; easter={FormatEasterData(GetMemberValue(guest, "GuestFoodEasterEggData"))}; localPlaces={FormatStringCollection(local?.Places)}; localPositive={FormatStringCollection(local?.PositiveTags)}; localNegative={FormatStringCollection(local?.NegativeTags)}; localBev={FormatStringCollection(local?.BeverageTags)}";
     }
 
     private RareCustomer? ResolveMappedLocalCustomer(RuntimeMappedGuestCatalogSnapshot mappedGuestSnapshot, int? id, string? stringId)
@@ -1038,26 +1038,6 @@ internal sealed class RuntimeStaticDataCatalog
         }
 
         return ResolveLanguageName(languageType, "GetSpecialGuestLang", id, fallback);
-    }
-
-    private static string ResolveLanguageDictionary(
-        Type? languageType,
-        string methodName,
-        int? id,
-        IReadOnlyDictionary<int, string> tagNames)
-    {
-        if (languageType == null || !id.HasValue) return "[]";
-
-        var parts = EnumerateKeyValuePairs(InvokeStaticMethod(languageType, methodName, id.Value))
-            .Select(pair =>
-            {
-                var key = FormatTagKey(pair.Key, tagNames);
-                var value = CleanText(pair.Value);
-                return string.IsNullOrWhiteSpace(value) ? key : $"{key}={value}";
-            })
-            .Where(part => !string.IsNullOrWhiteSpace(part))
-            .ToList();
-        return parts.Count == 0 ? "[]" : $"[{string.Join(", ", parts)}]";
     }
 
     private static string FormatMember(object? instance, string memberName)

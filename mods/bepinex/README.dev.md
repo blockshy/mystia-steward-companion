@@ -288,6 +288,14 @@ pnpm audit:connection-recovery
 
 料理 job smoke 验证 `SetCook` generation 所有权、手动取走/同厨具复用、有效停滞时钟和 `StoreFood` 提交后有界复位；两个前端 audit 分别验证结构化 outcome、阶段计时、command epoch、运行时事件时序、mock 取消/接管，以及快照恢复、持续退避、连接身份幂等和 lease 会话绑定协议。
 
+修改特殊经营挑战名称来源、目标捕获状态、上下文规则注册表、运行时稀客目录或页面名称 fallback 后，运行：
+
+```bash
+pnpm audit:special-business
+```
+
+该审计会验证挑战名称使用游戏原生 IL2CPP `InspectorName` 固定中文元数据、永久失败缓存诊断且不重试、瞬时失败按固定间隔持续重试、规则注册表不再保存中文名称映射、名称不可用时页面只显示一次有效 challenge type；同时验证 HUD 目标按 raw challenge owner、target kind 和 inactive 会话边界隔离，并禁止运行时稀客目录重新调用未消费且会产生 Warning 的特殊请求语言 getter。它不能替代实机确认原生元数据可读、跨挑战目标不会残留，以及首次目录加载不再产生对应数字 ID Warning。
+
 修改快照内容签名或 `knownSignature` 协议后，运行：
 
 ```bash
