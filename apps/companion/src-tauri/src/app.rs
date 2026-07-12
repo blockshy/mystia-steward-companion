@@ -5,18 +5,16 @@
 //! React 前端负责业务 UI；本库负责桌面能力、Android 移动端入口，以及把 WebView
 //! 发来的请求转发到游戏进程内的本地 API。
 
-use std::fs;
 use std::io::{self, ErrorKind, Read, Write};
-use std::net::{Ipv4Addr, SocketAddr, TcpStream};
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 #[cfg(desktop)]
 use std::net::TcpListener;
+use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 #[cfg(desktop)]
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 #[cfg(desktop)]
 use std::thread;
+use std::time::{Duration, Instant};
 #[cfg(desktop)]
 use tauri::image::Image;
 #[cfg(desktop)]
@@ -25,13 +23,12 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 #[cfg(desktop)]
 use tauri::webview::Color;
-#[cfg(desktop)]
-use tauri::{
-    Emitter, Manager, Monitor, PhysicalPosition, PhysicalSize, Position, Size, WebviewWindow,
-    Window, WindowEvent,
-};
 #[cfg(not(desktop))]
 use tauri::Manager;
+#[cfg(desktop)]
+use tauri::{Emitter, Manager, WebviewWindow, WindowEvent};
+#[cfg(desktop)]
+use tauri_plugin_window_state::{StateFlags, WindowExt};
 
 /// Mod 本地 API 默认端口；真实值可由游戏启动伴随窗口时通过 `--api=` 覆盖。
 const DEFAULT_API_ENDPOINT: &str = "http://127.0.0.1:32145";
@@ -51,13 +48,7 @@ const CONNECTION_UPDATED_EVENT: &str = "connection-updated";
 #[cfg(desktop)]
 const CONNECTION_ACTIVATED_EVENT: &str = "connection-activation-requested";
 #[cfg(desktop)]
-const WINDOW_STATE_FILE: &str = "window-state.txt";
-#[cfg(desktop)]
 const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray-icon.png");
-#[cfg(desktop)]
-const MIN_WINDOW_WIDTH: u32 = 720;
-#[cfg(desktop)]
-const MIN_WINDOW_HEIGHT: u32 = 520;
 const DEFAULT_WINDOW_SWITCH_COOLDOWN_MS: u64 = 800;
 const MIN_WINDOW_SWITCH_COOLDOWN_MS: u64 = 250;
 const MAX_WINDOW_SWITCH_COOLDOWN_MS: u64 = 2000;
@@ -164,15 +155,6 @@ impl Default for CompanionPreferences {
             window_switch_cooldown_ms: DEFAULT_WINDOW_SWITCH_COOLDOWN_MS,
         }
     }
-}
-
-#[cfg(desktop)]
-#[derive(Clone, Copy)]
-struct PersistedWindowState {
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
 }
 
 #[derive(Clone, Default)]
@@ -788,9 +770,7 @@ fn parse_local_api_host(host: &str) -> LocalApiResult<Ipv4Addr> {
     }
 
     let address = host.parse::<Ipv4Addr>().map_err(|_| {
-        invalid_local_api_endpoint(
-            "local API host must be 127.0.0.1 or a private LAN IPv4 address",
-        )
+        invalid_local_api_endpoint("local API host must be 127.0.0.1 or a private LAN IPv4 address")
     })?;
     if address == Ipv4Addr::UNSPECIFIED {
         return Err(invalid_local_api_endpoint(
@@ -842,9 +822,7 @@ fn map_local_api_io_error(stage: LocalApiIoStage, error: io::Error) -> LocalApiE
         (LocalApiIoStage::Read, ErrorKind::TimedOut | ErrorKind::WouldBlock) => {
             LocalApiErrorCode::ReadTimeout
         }
-        (LocalApiIoStage::Read, ErrorKind::InvalidData) => {
-            LocalApiErrorCode::InvalidResponse
-        }
+        (LocalApiIoStage::Read, ErrorKind::InvalidData) => LocalApiErrorCode::InvalidResponse,
         (LocalApiIoStage::Read, _) => LocalApiErrorCode::ReadFailed,
         (LocalApiIoStage::Write, ErrorKind::TimedOut | ErrorKind::WouldBlock) => {
             LocalApiErrorCode::WriteTimeout
@@ -902,9 +880,7 @@ fn parse_http_response_body(response: &str) -> LocalApiResult<String> {
         if name.eq_ignore_ascii_case("transfer-encoding")
             && !value.trim().eq_ignore_ascii_case("identity")
         {
-            return Err(invalid_http_response(
-                "unsupported HTTP transfer encoding",
-            ));
+            return Err(invalid_http_response("unsupported HTTP transfer encoding"));
         }
     }
     if content_length.is_some_and(|expected| expected != body.len()) {
@@ -1129,134 +1105,9 @@ fn start_game_shutdown_monitor(
 }
 
 #[cfg(desktop)]
-fn window_state_path(app: &tauri::AppHandle) -> Option<PathBuf> {
-    app.path()
-        .app_data_dir()
-        .ok()
-        .map(|directory| directory.join(WINDOW_STATE_FILE))
-}
-
-#[cfg(desktop)]
-fn restore_window_state(window: &WebviewWindow) {
-    let Some(path) = window_state_path(window.app_handle()) else {
-        return;
-    };
-    let Ok(content) = fs::read_to_string(path) else {
-        return;
-    };
-    let Some(state) = parse_window_state(&content) else {
-        return;
-    };
-
-    let width = state.width.max(MIN_WINDOW_WIDTH);
-    let height = state.height.max(MIN_WINDOW_HEIGHT);
-    let _ = window.set_size(Size::Physical(PhysicalSize::new(width, height)));
-
-    if is_window_state_on_screen(window, state) {
-        let _ = window.set_position(Position::Physical(PhysicalPosition::new(state.x, state.y)));
-    }
-}
-
-#[cfg(desktop)]
-fn save_webview_window_state(window: &WebviewWindow) {
-    let Ok(position) = window.outer_position() else {
-        return;
-    };
-    let Ok(size) = window.inner_size() else {
-        return;
-    };
-    save_window_state_from_parts(window.app_handle(), position, size);
-}
-
-#[cfg(desktop)]
-fn save_window_state(window: &Window) {
-    let Ok(position) = window.outer_position() else {
-        return;
-    };
-    let Ok(size) = window.inner_size() else {
-        return;
-    };
-    save_window_state_from_parts(window.app_handle(), position, size);
-}
-
-#[cfg(desktop)]
-fn save_window_state_from_parts(
-    app: &tauri::AppHandle,
-    position: PhysicalPosition<i32>,
-    size: PhysicalSize<u32>,
-) {
-    if size.width < MIN_WINDOW_WIDTH || size.height < MIN_WINDOW_HEIGHT {
-        return;
-    }
-
-    let Some(path) = window_state_path(app) else {
-        return;
-    };
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-
-    let content = format!(
-        "x={}\ny={}\nwidth={}\nheight={}\n",
-        position.x, position.y, size.width, size.height
-    );
-    let _ = fs::write(path, content);
-}
-
-#[cfg(desktop)]
-fn parse_window_state(content: &str) -> Option<PersistedWindowState> {
-    let mut x = None;
-    let mut y = None;
-    let mut width = None;
-    let mut height = None;
-
-    for line in content.lines() {
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        match key.trim() {
-            "x" => x = value.trim().parse::<i32>().ok(),
-            "y" => y = value.trim().parse::<i32>().ok(),
-            "width" => width = value.trim().parse::<u32>().ok(),
-            "height" => height = value.trim().parse::<u32>().ok(),
-            _ => {}
-        }
-    }
-
-    Some(PersistedWindowState {
-        x: x?,
-        y: y?,
-        width: width?,
-        height: height?,
-    })
-}
-
-#[cfg(desktop)]
-fn is_window_state_on_screen(window: &WebviewWindow, state: PersistedWindowState) -> bool {
-    let Ok(monitors) = window.available_monitors() else {
-        return true;
-    };
-    if monitors.is_empty() {
-        return true;
-    }
-
-    is_state_inside_monitors(state, &monitors)
-}
-
-#[cfg(desktop)]
-fn is_state_inside_monitors(state: PersistedWindowState, monitors: &[Monitor]) -> bool {
-    let center_x = i64::from(state.x) + i64::from(state.width / 2);
-    let center_y = i64::from(state.y) + i64::from(state.height / 2);
-
-    monitors.iter().any(|monitor| {
-        let position = monitor.position();
-        let size = monitor.size();
-        let left = i64::from(position.x);
-        let top = i64::from(position.y);
-        let right = left + i64::from(size.width);
-        let bottom = top + i64::from(size.height);
-        center_x >= left && center_x <= right && center_y >= top && center_y <= bottom
-    })
+fn persisted_window_state_flags() -> StateFlags {
+    // Hidden and minimized are transient states; every launch must remain discoverable.
+    StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED
 }
 
 #[cfg(desktop)]
@@ -1352,7 +1203,6 @@ fn toggle_main_window(
 ) {
     if let Some(window) = app.get_webview_window("main") {
         if window.is_focused().unwrap_or(false) {
-            save_webview_window_state(&window);
             if !keep_visible_when_focused {
                 let _ = window.hide();
             }
@@ -1384,56 +1234,59 @@ pub fn run() {
     #[cfg(desktop)]
     let builder = builder
         .manage(GamePidState(Arc::new(Mutex::new(launch_game_pid()))))
-        .manage(TrayPassthroughMenuState(Arc::new(Mutex::new(None))));
+        .manage(TrayPassthroughMenuState(Arc::new(Mutex::new(None))))
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(persisted_window_state_flags())
+                .skip_initial_state("main")
+                .build(),
+        );
 
     #[cfg(desktop)]
-    let builder = builder
-        .setup(|app| {
-            setup_tray(app)?;
-            if let Some(window) = app.get_webview_window("main") {
-                apply_window_transparent_background(&window);
-                restore_window_state(&window);
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
-            let app_handle = app.handle().clone();
-            let game_pid = app.state::<GamePidState>().0.clone();
-            let connection_state = app.state::<LaunchConnectionState>().0.clone();
-            let switch_state = app.state::<WindowSwitchState>().0.clone();
-            let preferences = app.state::<CompanionPreferenceState>().0.clone();
-            let mouse_passthrough = app.state::<MousePassthroughState>().0.clone();
-            start_instance_control_server(
-                app_handle.clone(),
-                game_pid,
-                connection_state.clone(),
-                switch_state,
-                preferences,
-                mouse_passthrough.clone(),
-            );
-            start_mouse_passthrough_hotkey_monitor(app_handle.clone(), mouse_passthrough);
-            start_game_shutdown_monitor(
-                app_handle,
-                current_launch_connection(&connection_state)
-                    .endpoint
-                    .unwrap_or_else(|| DEFAULT_API_ENDPOINT.to_string()),
-                app.state::<GamePidState>().0.clone(),
-            );
-            Ok(())
-        });
+    let builder = builder.setup(|app| {
+        setup_tray(app)?;
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.restore_state(persisted_window_state_flags());
+            apply_window_transparent_background(&window);
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+        let app_handle = app.handle().clone();
+        let game_pid = app.state::<GamePidState>().0.clone();
+        let connection_state = app.state::<LaunchConnectionState>().0.clone();
+        let switch_state = app.state::<WindowSwitchState>().0.clone();
+        let preferences = app.state::<CompanionPreferenceState>().0.clone();
+        let mouse_passthrough = app.state::<MousePassthroughState>().0.clone();
+        start_instance_control_server(
+            app_handle.clone(),
+            game_pid,
+            connection_state.clone(),
+            switch_state,
+            preferences,
+            mouse_passthrough.clone(),
+        );
+        start_mouse_passthrough_hotkey_monitor(app_handle.clone(), mouse_passthrough);
+        start_game_shutdown_monitor(
+            app_handle,
+            current_launch_connection(&connection_state)
+                .endpoint
+                .unwrap_or_else(|| DEFAULT_API_ENDPOINT.to_string()),
+            app.state::<GamePidState>().0.clone(),
+        );
+        Ok(())
+    });
 
     #[cfg(not(desktop))]
     let builder = builder.setup(|_app| Ok(()));
 
     #[cfg(desktop)]
     let builder = builder.on_window_event(|window, event| match event {
-            WindowEvent::Moved(_) | WindowEvent::Resized(_) => save_window_state(window),
-            WindowEvent::CloseRequested { api, .. } => {
-                api.prevent_close();
-                save_window_state(window);
-                let _ = window.hide();
-            }
-            _ => {}
-        });
+        WindowEvent::CloseRequested { api, .. } => {
+            api.prevent_close();
+            let _ = window.hide();
+        }
+        _ => {}
+    });
 
     builder
         .invoke_handler(tauri::generate_handler![
@@ -1644,6 +1497,19 @@ mod windows_hotkey {
 mod tests {
     use super::*;
 
+    #[cfg(desktop)]
+    #[test]
+    fn persists_restorable_window_geometry_without_hidden_or_minimized_startup_state() {
+        let flags = persisted_window_state_flags();
+
+        assert!(flags.contains(StateFlags::SIZE));
+        assert!(flags.contains(StateFlags::POSITION));
+        assert!(flags.contains(StateFlags::MAXIMIZED));
+        assert!(!flags.contains(StateFlags::VISIBLE));
+        assert!(!flags.contains(StateFlags::DECORATIONS));
+        assert!(!flags.contains(StateFlags::FULLSCREEN));
+    }
+
     #[test]
     fn launch_connection_updates_only_when_identity_changes() {
         let current = Arc::new(Mutex::new(LaunchConnection {
@@ -1695,7 +1561,11 @@ mod tests {
             token: Some("stable-token".to_string()),
         };
 
-        assert!(!should_emit_connection_activation(CONTROL_SHOW, false, &empty));
+        assert!(!should_emit_connection_activation(
+            CONTROL_SHOW,
+            false,
+            &empty
+        ));
         assert!(!should_emit_connection_activation(
             CONTROL_SHOW,
             false,
@@ -1706,14 +1576,26 @@ mod tests {
             false,
             &token_only,
         ));
-        assert!(should_emit_connection_activation(CONTROL_SHOW, false, &complete));
+        assert!(should_emit_connection_activation(
+            CONTROL_SHOW,
+            false,
+            &complete
+        ));
         assert!(should_emit_connection_activation(
             CONTROL_TOGGLE,
             false,
             &complete,
         ));
-        assert!(!should_emit_connection_activation(CONTROL_SHOW, true, &complete));
-        assert!(!should_emit_connection_activation(CONTROL_EXIT, false, &complete));
+        assert!(!should_emit_connection_activation(
+            CONTROL_SHOW,
+            true,
+            &complete
+        ));
+        assert!(!should_emit_connection_activation(
+            CONTROL_EXIT,
+            false,
+            &complete
+        ));
     }
 
     #[test]
@@ -1836,10 +1718,9 @@ mod tests {
         for (stage, kind, expected_code) in cases {
             let error = map_local_api_io_error(stage, io::Error::from(kind));
             assert_eq!(error.code, expected_code);
-            assert!(error.encode().starts_with(&format!(
-                "local-api:{}",
-                expected_code.as_str()
-            )));
+            assert!(error
+                .encode()
+                .starts_with(&format!("local-api:{}", expected_code.as_str())));
         }
     }
 

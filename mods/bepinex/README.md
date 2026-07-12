@@ -115,7 +115,7 @@ BepInEx/plugins/
 - 收藏配方保存在 `BepInEx/config/MystiaStewardCompanion/favorites.json`，自定义推荐料理保存在 `BepInEx/config/MystiaStewardCompanion/custom-recipes.json`，只替换插件目录不会覆盖它们。
 - 自动更新使用 GitHub Release 中的 `update-manifest.json` 校验更新包 SHA256；该清单不包含本机打包路径。
 - 预览版 Release 不会被默认更新检查命中；只有手动开启 `Updates.IncludePrerelease` 的测试者会收到。
-- 窗口位置、大小、背景透明度、文字透明度等伴随窗口本地设置由桌面程序保存。若需要重置，可删除 `%LOCALAPPDATA%\com.tyukki.mystia-steward-companion`，下次启动会重新生成。
+- 普通窗口位置、大小、最大化状态等由桌面程序保存到 `%APPDATA%\com.tyukki.mystia-steward-companion`；背景透明度、文字透明度等界面偏好保存在 `%LOCALAPPDATA%\com.tyukki.mystia-steward-companion`。若需要完全重置，请先退出伴随窗口，再删除这两个目录，下次启动会重新生成。
 - Windows 可能缓存旧 exe 图标。若更新后图标看起来没变，通常是系统图标缓存问题，不影响 Mod 功能。
 
 `v1.1.x` 临时保留两项一次性升级迁移：当当前配置不存在时，从旧 GUID 配置 `BepInEx/config/com.tyukki.mystia-steward.cfg` 复制设置；Local API 启动阶段把 `favorites.json` 中旧 `source=manual` 料理迁移到 `custom-recipes.json`，成功后移除旧收藏条目。这两项迁移计划在 `v1.2.0` 删除。若从更早版本升级，请先启动任一 `v1.1.x` 版本并确认配置和自定义推荐料理正常，再升级到 `v1.2.0` 或更高版本。
@@ -399,7 +399,7 @@ Mod 会尽量使用游戏当前运行时数据读取稀客、普客、料理、�
 
 ## 独立伴随窗口
 
-伴随窗口会在 Mod 加载后自动启动。它是一个独立桌面窗口，可以移动、缩放和置顶，不受游戏窗口边界限制，并会保存上次的位置和大小。
+伴随窗口会在 Mod 加载后自动启动。它是一个独立桌面窗口，可以移动、缩放和置顶，不受游戏窗口边界限制，并会保存普通窗口的位置、大小和最大化状态。最小化或关闭到托盘只影响当前运行，不会让下次启动保持最小化或隐藏。
 
 窗口关闭按钮默认隐藏到系统托盘，而不是直接退出。可以通过以下方式重新打开：
 
@@ -546,6 +546,7 @@ Mod 只能在自身加载后切换 UTF-8，不能修复 BepInEx preloader 已经
 
 - 重置插件配置：`BepInEx/config/com.tyukki.mystia-steward-companion.cfg`
 - 重置收藏和自动化日志：`BepInEx/config/MystiaStewardCompanion/`
-- 重置伴随窗口位置、大小和本地偏好：`%LOCALAPPDATA%\com.tyukki.mystia-steward-companion`
+- 重置伴随窗口位置、大小和最大化状态：`%APPDATA%\com.tyukki.mystia-steward-companion`
+- 重置伴随窗口界面偏好：`%LOCALAPPDATA%\com.tyukki.mystia-steward-companion`
 
 删除后下次启动会重新生成默认配置。
