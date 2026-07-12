@@ -1,5 +1,4 @@
 using BepInEx;
-using BepInEx.Logging;
 using BepInEx.Unity.IL2CPP;
 using Il2CppInterop.Runtime.Injection;
 using MystiaStewardCompanion.Save;
@@ -19,8 +18,6 @@ namespace MystiaStewardCompanion.Plugin;
 [BepInPlugin(PluginGuid, PluginName, PluginVersion)]
 public sealed class MystiaStewardCompanionPlugin : BasePlugin
 {
-    private const string LegacyPluginGuid = "com.tyukki.mystia-steward";
-
     public const string PluginGuid = "com.tyukki.mystia-steward-companion";
     public const string PluginName = "mystia-steward-companion";
     public const string PluginVersion = "1.1.1";
@@ -29,17 +26,12 @@ public sealed class MystiaStewardCompanionPlugin : BasePlugin
     /// BepInEx 调用的插件加载入口。
     /// </summary>
     /// <remarks>
-    /// 这里会按固定顺序完成配置迁移、Harmony 捕获注册、IL2CPP 类型注册和常驻
+    /// 这里会按固定顺序完成配置读取、Harmony 捕获注册、IL2CPP 类型注册和常驻
     /// GameObject 创建。顺序不能随意调整：运行时捕获需要尽早挂接，Overlay 行为必须先注册到
     /// IL2CPP 运行时再添加到 Unity 对象上。
     /// </remarks>
     public override void Load()
     {
-        if (TryMigrateLegacyConfig(Log))
-        {
-            Config.Reload();
-        }
-
         var settings = StewardPluginConfig.Bind(Config);
         AggregateModLogService.Configure(
             settings.EnableAggregateModLog.Value,
@@ -69,34 +61,5 @@ public sealed class MystiaStewardCompanionPlugin : BasePlugin
         gameObject.AddComponent<StewardOverlayBehaviour>();
 
         Log.LogInfo($"{PluginName} {PluginVersion} loaded. Press {settings.ToggleKey.Value} to open or focus the companion window.");
-    }
-
-    /// <summary>
-    /// 将旧插件 GUID 对应的配置文件复制到当前 GUID，保留历史用户配置。
-    /// </summary>
-    /// <param name="log">用于记录迁移结果的 BepInEx 日志源。</param>
-    /// <returns>成功复制旧配置时返回 <c>true</c>，否则返回 <c>false</c>。</returns>
-    /// <remarks>
-    /// 这是仅供 v1.1.x 直接升级使用的一次性迁移入口，计划在 v1.2.0 连同
-    /// <see cref="LegacyPluginGuid"/> 一并删除。只复制、不移动旧文件，避免用户回退旧版本时丢失配置；
-    /// 新配置已存在时不会覆盖，防止把新版本配置还原成旧状态。
-    /// </remarks>
-    private static bool TryMigrateLegacyConfig(ManualLogSource log)
-    {
-        try
-        {
-            var oldPath = Path.Combine(Paths.ConfigPath, $"{LegacyPluginGuid}.cfg");
-            var newPath = Path.Combine(Paths.ConfigPath, $"{PluginGuid}.cfg");
-            if (!File.Exists(oldPath) || File.Exists(newPath)) return false;
-
-            File.Copy(oldPath, newPath);
-            log.LogInfo($"Migrated legacy config to {PluginGuid}.cfg.");
-            return true;
-        }
-        catch (Exception ex)
-        {
-            log.LogWarning($"Legacy config migration failed: {ex.Message}");
-            return false;
-        }
     }
 }

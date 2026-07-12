@@ -133,7 +133,7 @@ internal sealed class FavoriteStore
         }
     }
 
-    // Temporary v1.1.x migration surface for CustomRecipeStore; remove in v1.2.0.
+    // Bounded v1.2.x migration surface for CustomRecipeStore; remove in v1.3.0.
     public List<ManualRecipeFavoriteSnapshot> ReadManualRecipeFavorites()
     {
         lock (_lock)
@@ -155,7 +155,7 @@ internal sealed class FavoriteStore
         }
     }
 
-    // Temporary v1.1.x migration surface for CustomRecipeStore; remove in v1.2.0.
+    // Bounded v1.2.x migration surface for CustomRecipeStore; remove in v1.3.0.
     public void RemoveManualRecipeFavorites()
     {
         lock (_lock)

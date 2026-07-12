@@ -600,9 +600,9 @@ Port = 32145
 - `POST /updates/status`：归并并返回当前更新检查、下载、暂存和安装程序状态；归并 updater 结果时可能写入或删除状态文件，因此不是只读查询。
 - `POST /updates/check`、`POST /updates/download`、`POST /updates/install-on-exit`：检查、下载或启动退出安装流程；更新服务按单操作串行。
 
-### v1.1.x 一次性迁移边界
+### v1.2.x 一次性迁移边界
 
-`v1.1.x` 只保留两项明确的一次性迁移：当新 GUID 配置不存在时，把 `BepInEx/config/com.tyukki.mystia-steward.cfg` 复制为 `com.tyukki.mystia-steward-companion.cfg`；Local API 启动阶段先把 `favorites.json` 中 `source=manual` 的料理写入 `custom-recipes.json`，写入成功后再从收藏文件删除旧条目，使后续 `GET /custom-recipes` 保持只读。两项迁移都计划在 `v1.2.0` 删除，不是长期兼容层；除这两项外，不保留旧路径、旧类型或旧 API 路由别名。需要从更早版本升级的安装，应先启动任一 `v1.1.x` 版本并确认迁移完成，再升级到 `v1.2.0` 或更高版本。
+`v1.2.x` 只保留一项明确的一次性数据迁移：Local API 启动阶段先把 `favorites.json` 中 `source=manual` 的料理原子写入 `custom-recipes.json`，写入成功后再从收藏文件删除旧条目。目标料理按 `customerId + foodTag + foodId + extraIngredientIds` 去重，中断后重试不会重复生成；目标文件无法读取或写入时不删除来源条目。后续 `GET /custom-recipes` 和 CRUD 端点保持无隐式迁移副作用。该迁移计划在 `v1.3.0` 删除，不得扩大为旧 API、旧配置、旧类型或旧业务路径兼容层。自 `v1.2.0` 起不再读取旧 GUID 配置 `com.tyukki.mystia-steward.cfg`。
 
 除 `/health` 外，端点都需要 `X-Mystia-Steward-Companion-Token`。Token 由插件生成并保存在 BepInEx 配置中，同机启动伴随窗口时通过 `--token=` 参数传入 Tauri 后端；A 设备本机设置页可以复制或重置 Token。远程局域网连接时，用户需要在 B 设备伴随窗口顶部连接区手动输入 A 设备的 endpoint 和 token，点击 `连接` 后才开始轮询。Tauri 伴随窗口会显示实时 Mod 工作台，默认包含 `概览`、`普客`、`稀客`、`自定义推荐料理`、`经营中`、`任务`、`修改`、`帮助`、`设置` 九个页签；`概览` 内部按 `状态`、`库存`、`操作` 分栏，`设置` 内部按 `窗口`、`连接`、`推荐`、`自动化`、`更新` 分栏。窗口设置包含透明度、焦点切换、始终置顶、鼠标穿透锁定、手柄导航和显示调试信息；连接设置包含本地 API/LAN 连接配置并逐项展示可复制的 endpoint；推荐设置包含订单排序、推荐权重、预算策略、缺失厨具过滤、任务料理/收藏料理/收藏酒水置顶、带库存显示和名称/库存排序的排除材料/酒水、同基础料理展示数量、游戏界面置顶和厨具高亮。Android 伴随窗口只作为 B 设备 LAN 客户端，不提供桌面托盘、置顶、鼠标穿透、焦点切换、单实例控制和游戏关闭自动退出；桌面鼠标穿透必须通过 Tauri 原生窗口 `set_ignore_cursor_events` 控制，不能只用 CSS `pointer-events` 模拟。帮助页内容来自 `apps/companion/src/data/help-content.json`，由前端渲染为目录树和详情面板，修改文案时优先改 JSON。`日志` 页签、扫描状态、运行时来源、性能耗时、订单来源和内部 key 这类诊断信息只在 `设置 -> 显示调试信息` 开启后显示。正式 Tauri 客户端通过原生后端读取本地 API。
 

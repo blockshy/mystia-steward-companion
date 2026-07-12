@@ -118,7 +118,7 @@ BepInEx/plugins/
 - 普通窗口位置、大小、最大化状态等由桌面程序保存到 `%APPDATA%\com.tyukki.mystia-steward-companion`；背景透明度、文字透明度等界面偏好保存在 `%LOCALAPPDATA%\com.tyukki.mystia-steward-companion`。若需要完全重置，请先退出伴随窗口，再删除这两个目录，下次启动会重新生成。
 - Windows 可能缓存旧 exe 图标。若更新后图标看起来没变，通常是系统图标缓存问题，不影响 Mod 功能。
 
-`v1.1.x` 临时保留两项一次性升级迁移：当当前配置不存在时，从旧 GUID 配置 `BepInEx/config/com.tyukki.mystia-steward.cfg` 复制设置；Local API 启动阶段把 `favorites.json` 中旧 `source=manual` 料理迁移到 `custom-recipes.json`，成功后移除旧收藏条目。这两项迁移计划在 `v1.2.0` 删除。若从更早版本升级，请先启动任一 `v1.1.x` 版本并确认配置和自定义推荐料理正常，再升级到 `v1.2.0` 或更高版本。
+`v1.2.x` 保留一次性自定义料理迁移：Local API 启动时会把 `favorites.json` 中旧 `source=manual` 料理原子写入 `custom-recipes.json`，确认写入成功后再移除旧收藏条目。升级过程中断可在下次启动安全重试，不需要先安装中间版本。自 `v1.2.0` 起不再读取旧 GUID 配置 `com.tyukki.mystia-steward.cfg`；已正常启动过正式 `v1.1.x` 的安装不受影响。
 
 ## 快速开始
 
