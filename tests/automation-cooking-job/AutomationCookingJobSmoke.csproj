@@ -8,7 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="../../mods/bepinex/src/Ui/MainThreadCommand.cs" Link="MainThreadCommand.cs" />
-    <Compile Include="../../mods/bepinex/src/Ui/AutomationCommandEpochFence.cs" Link="AutomationCommandEpochFence.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/AutomationCookingJobLifecycle.cs" Link="AutomationCookingJobLifecycle.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/AutomationSafetyBarrierRegistry.cs" Link="AutomationSafetyBarrierRegistry.cs" />
   </ItemGroup>
 </Project>

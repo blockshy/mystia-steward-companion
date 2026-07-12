@@ -6,7 +6,8 @@ try
     VerifyRunningCommandReturnsDefinitiveResult();
     VerifyCancellationWakesWaiter();
     VerifyFailurePropagation();
-    Console.WriteLine("PASS: queued timeouts cancel, running commands return definitive results, cancellation wakes waiters, and failures propagate.");
+    VerifyEpochAdvanceWaitsForRunningCommand();
+    Console.WriteLine("PASS: queued timeouts cancel, running commands return definitive results, cancellation wakes waiters, failures propagate, and epoch changes wait for the current execution boundary.");
     return 0;
 }
 catch (Exception ex)
@@ -70,6 +71,35 @@ static void VerifyFailurePropagation()
     catch (InvalidOperationException ex) when (ex.Message == "expected failure")
     {
     }
+}
+
+static void VerifyEpochAdvanceWaitsForRunningCommand()
+{
+    var fence = new AutomationCommandEpochFence(initialEpoch: 4);
+    using var entered = new ManualResetEventSlim();
+    using var release = new ManualResetEventSlim();
+    var execution = Task.Run(() => fence.RunExclusive(currentEpoch =>
+    {
+        AssertEqual(4L, currentEpoch, "The command did not start in its validated epoch.");
+        entered.Set();
+        release.Wait(TimeSpan.FromSeconds(2));
+        return "executed";
+    }));
+    AssertEqual(true, entered.Wait(TimeSpan.FromSeconds(1)), "The command did not enter the epoch fence.");
+
+    var cancelledEpoch = 0L;
+    var advance = Task.Run(() => fence.Advance(5, nextEpoch =>
+    {
+        cancelledEpoch = nextEpoch;
+        return 3;
+    }));
+    AssertEqual(false, advance.Wait(TimeSpan.FromMilliseconds(50)), "The epoch advanced while an old command was still executing.");
+
+    release.Set();
+    AssertEqual("executed", execution.GetAwaiter().GetResult(), "The fenced command did not finish normally.");
+    AssertEqual(3, advance.GetAwaiter().GetResult(), "Queued-command cancellation result was not returned.");
+    AssertEqual(5L, cancelledEpoch, "The cancellation callback observed the wrong epoch.");
+    AssertEqual(5L, fence.CurrentEpoch, "The fence did not publish the new epoch after execution completed.");
 }
 
 static void AssertEqual<T>(T expected, T actual, string message)

@@ -2,7 +2,9 @@ import { useCallback, useEffect, useRef } from 'react';
 
 interface UseOrderAutomationIntervalsOptions {
   automationEnabled: boolean;
+  resetStateWhenDisabled: boolean;
   autoNormalOrderEnabled: boolean;
+  resetNormalStateWhenDisabled: boolean;
   normalOrderSignature: string;
   rareTickMs: number;
   normalTickMs: number;
@@ -21,7 +23,9 @@ interface UseOrderAutomationIntervalsOptions {
  */
 export function useOrderAutomationIntervals({
   automationEnabled,
+  resetStateWhenDisabled,
   autoNormalOrderEnabled,
+  resetNormalStateWhenDisabled,
   normalOrderSignature,
   rareTickMs,
   normalTickMs,
@@ -43,7 +47,7 @@ export function useOrderAutomationIntervals({
   useEffect(() => {
     if (!automationEnabled) {
       clearNormalSignatureTimer();
-      onAutomationDisabled();
+      if (resetStateWhenDisabled) onAutomationDisabled();
       return undefined;
     }
 
@@ -52,7 +56,7 @@ export function useOrderAutomationIntervals({
       void runAutoFirstOrder();
     }, rareTickMs);
     return () => window.clearInterval(timer);
-  }, [automationEnabled, clearNormalSignatureTimer, onAutomationDisabled, rareTickMs, runAutoFirstOrder]);
+  }, [automationEnabled, clearNormalSignatureTimer, onAutomationDisabled, rareTickMs, resetStateWhenDisabled, runAutoFirstOrder]);
 
   useEffect(() => {
     if (!automationEnabled || !autoNormalOrderEnabled) {
@@ -100,7 +104,7 @@ export function useOrderAutomationIntervals({
   ]);
 
   useEffect(() => {
-    if (automationEnabled && autoNormalOrderEnabled) return;
+    if (!resetNormalStateWhenDisabled) return;
     clearNormalSignatureTimer();
     onNormalAutomationDisabled();
   }, [
@@ -108,6 +112,7 @@ export function useOrderAutomationIntervals({
     autoNormalOrderEnabled,
     clearNormalSignatureTimer,
     onNormalAutomationDisabled,
+    resetNormalStateWhenDisabled,
   ]);
 
   useEffect(() => () => clearNormalSignatureTimer(), [clearNormalSignatureTimer]);

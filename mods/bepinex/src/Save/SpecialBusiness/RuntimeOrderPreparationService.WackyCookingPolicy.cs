@@ -231,7 +231,7 @@ internal static partial class RuntimeOrderPreparationService
             DescribeWackyKoishiExecutionMode(request),
             DescribeWackyKoishiEvaluationMode(request));
 
-        lock (PendingCookingLock)
+        lock (AutomationCookingJobLock)
         {
             if (RecentWackyBossRuntimeDiagnostics.TryGetValue(key, out var last)
                 && now - last < WackyBossRuntimeDiagnosticThrottle)
@@ -296,7 +296,7 @@ internal static partial class RuntimeOrderPreparationService
         var key = BuildWackyRejectedRecipeKey(target, targetTags);
         if (string.IsNullOrWhiteSpace(key)) return false;
 
-        lock (PendingCookingLock)
+        lock (AutomationCookingJobLock)
         {
             if (!RecentWackyRejectedRecipeKeys.Contains(key, StringComparer.Ordinal)) return false;
         }
@@ -312,7 +312,7 @@ internal static partial class RuntimeOrderPreparationService
         var key = BuildWackyRejectedRecipeKey(target, targetTags);
         if (string.IsNullOrWhiteSpace(key)) return;
 
-        lock (PendingCookingLock)
+        lock (AutomationCookingJobLock)
         {
             if (RecentWackyRejectedRecipeKeys.Contains(key, StringComparer.Ordinal)) return;
             RecentWackyRejectedRecipeKeys.Add(key);
@@ -372,18 +372,18 @@ internal static partial class RuntimeOrderPreparationService
         return "";
     }
 
-    private static void AppendWackyPendingDiagnostic(
+    private static void AppendWackyCookingJobDiagnostic(
         string eventName,
-        PendingCookingCollection pending,
+        AutomationCookingJob job,
         string decision,
         int actualFoodId = -1,
         IReadOnlyList<string>? targetTags = null,
         IReadOnlyList<string>? actualTags = null,
         string detail = "")
     {
-        if (!IsWackyTargetContext(pending.Target)) return;
+        if (!IsWackyTargetContext(job.Target)) return;
         RuntimeSpecialBusinessContextService.TryGetActiveWackyTargetSignature(out var activeTargetSignature, out var activeTargetTags);
-        var context = pending.Target.ToLogContext();
+        var context = job.Target.ToLogContext();
         SpecialBusinessDiagnostics.AppendWackySnapshot(
             "Wacky Cooking Pending Diagnostic",
             new[]
@@ -392,24 +392,24 @@ internal static partial class RuntimeOrderPreparationService
                 $"decision: {decision}",
                 $"detail: {detail}",
                 $"target: {SpecialBusinessDiagnostics.FormatOrderContext(context)}",
-                $"pendingRecipeName: {pending.RecipeName}",
-                $"specialBusinessRole: {pending.Target.SpecialBusinessRole}",
-                $"matchFood: {SpecialBusinessDiagnostics.FormatIdName(pending.Target.MatchFoodId, "")}",
-                $"matchBeverage: {SpecialBusinessDiagnostics.FormatIdName(pending.Target.MatchBeverageId, "")}",
-                $"targetFood: {SpecialBusinessDiagnostics.FormatIdName(pending.Target.FoodId, pending.Target.FoodName)}",
-                $"targetRecipeId: {pending.Target.RecipeId}",
-                $"targetExtraIngredientIds: {SpecialBusinessDiagnostics.FormatIds(pending.Target.ExtraIngredientIds)}",
-                $"predictedFoodTags: {SpecialBusinessDiagnostics.FormatTags(pending.Target.PredictedFoodTags)}",
-                $"targetBeverage: {SpecialBusinessDiagnostics.FormatIdName(pending.Target.BeverageId, pending.Target.BeverageName)}",
+                $"cookingJobRecipeName: {job.RecipeName}",
+                $"specialBusinessRole: {job.Target.SpecialBusinessRole}",
+                $"matchFood: {SpecialBusinessDiagnostics.FormatIdName(job.Target.MatchFoodId, "")}",
+                $"matchBeverage: {SpecialBusinessDiagnostics.FormatIdName(job.Target.MatchBeverageId, "")}",
+                $"targetFood: {SpecialBusinessDiagnostics.FormatIdName(job.Target.FoodId, job.Target.FoodName)}",
+                $"targetRecipeId: {job.Target.RecipeId}",
+                $"targetExtraIngredientIds: {SpecialBusinessDiagnostics.FormatIds(job.Target.ExtraIngredientIds)}",
+                $"predictedFoodTags: {SpecialBusinessDiagnostics.FormatTags(job.Target.PredictedFoodTags)}",
+                $"targetBeverage: {SpecialBusinessDiagnostics.FormatIdName(job.Target.BeverageId, job.Target.BeverageName)}",
                 $"actualFoodId: {actualFoodId}",
                 $"activeTargetTags: {SpecialBusinessDiagnostics.FormatTags(activeTargetTags)}",
                 $"activeTargetSignature: {activeTargetSignature}",
-                $"pendingTargetTags: {SpecialBusinessDiagnostics.FormatTags(pending.Target.WackyTargetFoodTags)}",
-                $"pendingTargetSignature: {pending.Target.WackyTargetSignature}",
+                $"cookingJobTargetTags: {SpecialBusinessDiagnostics.FormatTags(job.Target.WackyTargetFoodTags)}",
+                $"cookingJobTargetSignature: {job.Target.WackyTargetSignature}",
                 $"expectedTargetTags: {SpecialBusinessDiagnostics.FormatTags(targetTags)}",
                 $"actualFoodTags: {SpecialBusinessDiagnostics.FormatTags(actualTags)}",
-                $"cookController: {SpecialBusinessDiagnostics.DescribeObject(pending.CookController)}",
-                $"pendingAgeSeconds: {(DateTime.UtcNow - pending.CreatedAtUtc).TotalSeconds:0.0}",
+                $"cookController: {SpecialBusinessDiagnostics.DescribeObject(job.CookController)}",
+                $"cookingJobAgeSeconds: {(DateTime.UtcNow - job.CreatedAtUtc).TotalSeconds:0.0}",
                 $"specialBusinessStatus: {RuntimeSpecialBusinessContextService.Status}",
             });
     }

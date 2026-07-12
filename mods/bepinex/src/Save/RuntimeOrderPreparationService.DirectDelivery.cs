@@ -20,7 +20,7 @@ internal static partial class RuntimeOrderPreparationService
     /// <remarks>
     /// 只有桌面显示和订单状态都提交成功后才扣减库存，避免库存与订单状态不一致。
     /// </remarks>
-    private static (bool Ok, string Message) TryDeliverOrderBeverage(
+    private static (bool Ok, string Message, string Code) TryDeliverOrderBeverage(
         RuntimeOrderMatch runtimeOrder,
         int beverageId,
         string beverageName,
@@ -29,28 +29,38 @@ internal static partial class RuntimeOrderPreparationService
         var currentQuantity = GetBeverageQuantity(beverageId);
         if (currentQuantity == 0)
         {
-            return (false, $"{beverageName} 当前库存为 0，无法送达{orderLabel}。");
+            return (false, $"{beverageName} 当前库存为 0，无法送达{orderLabel}。", "");
         }
 
         var sellable = InvokeStatic(DataBaseCoreTypeName, "AsNewBeverage", new object?[] { beverageId });
         if (sellable == null)
         {
-            return (false, $"无法从游戏数据库创建酒水对象：{beverageName} #{beverageId}。");
+            return (false, $"无法从游戏数据库创建酒水对象：{beverageName} #{beverageId}。", "");
         }
 
         var delivery = TryCommitRuntimeDelivery(runtimeOrder, sellable, RuntimeDeliveryItemKind.Beverage, beverageName);
         if (!delivery.Ok)
         {
-            return (false, delivery.Message);
+            return (false, delivery.Message, delivery.Code);
         }
 
         if (currentQuantity > 0)
         {
-            InvokeRuntimeStorageOut("BeverageOut", beverageId);
+            try
+            {
+                InvokeRuntimeStorageOut("BeverageOut", beverageId);
+            }
+            catch (Exception ex)
+            {
+                return (
+                    false,
+                    $"{beverageName} 已确认送达{orderLabel}，但库存扣减结果无法确认；为避免重复扣库，自动化已停止：{ex.GetBaseException().Message}",
+                    OrderPreparationStepCodes.BeverageDeliveryCommitUncertain);
+            }
         }
 
         var quantityText = currentQuantity < 0 ? "无限库存" : $"剩余 {Math.Max(0, currentQuantity - 1)}";
-        return (true, $"{beverageName} 已送达{orderLabel}（{quantityText}）。");
+        return (true, $"{beverageName} 已送达{orderLabel}（{quantityText}）。", "");
     }
 
     private static object? ReadOrderServedFood(object order)
@@ -109,107 +119,121 @@ internal static partial class RuntimeOrderPreparationService
     /// <remarks>
     /// 订单或桌面对象暂不可写时保留成品供下一轮重试；非目标成品会放入游戏料理暂存容器，送达成功后会执行厨具清理。
     /// </remarks>
-    private static (bool Remove, string Message, string Code) TryDeliverPendingCookedFood(PendingCookingCollection pending, object cookedFood)
+    private static (bool Remove, string Message, string Code) TryDeliverAutomationCookedFood(AutomationCookingJob job, object cookedFood)
     {
-        var target = pending.Target;
+        if (job.FoodDeliveryCommitUncertain)
+        {
+            return BlockUncertainFoodDelivery(job, "料理送达提交状态已锁定为无法确认。");
+        }
+
+        if (job.FoodDeliveryCommitted)
+        {
+            return TryCompleteCommittedFoodDeliveryCleanup(job);
+        }
+
+        if (!IsAutomationCookingJobOwned(job, out var ownershipDiagnostic))
+        {
+            var ownershipMessage = $"{job.RecipeName} 自动料理任务在送达前检测到厨具已开始新一锅，旧任务已退出且不会操作当前成品。{ownershipDiagnostic}";
+            RecordAutomationRuntimeEvent(
+                OrderPreparationStepCodes.CookingControllerReused,
+                job,
+                ownershipMessage,
+                outcome: "interrupted",
+                reasonCode: "cooking-controller-reused",
+                terminal: true);
+            return (true, ownershipMessage, OrderPreparationStepCodes.CookingControllerReused);
+        }
+
+        var target = job.Target;
         if (target.FoodId >= 0 && !IsSellable(cookedFood, sellableType: 0, id: target.FoodId))
         {
             var actualFoodId = ReadSellableId(cookedFood);
             var actualText = actualFoodId >= 0 ? $"料理 #{actualFoodId}" : "未知成品";
             var actualFoodTags = ReadFoodTagNames(cookedFood).ToArray();
             var activeTargetTags = target.WackyTargetFoodTags;
-            AppendWackyPendingDiagnostic(
+            AppendWackyCookingJobDiagnostic(
                 "cooked-food-id-mismatch",
-                pending,
+                job,
                 "store-mismatched-food",
                 actualFoodId,
                 activeTargetTags,
                 actualFoodTags,
                 $"actual={actualText}; expected={target.FoodName}({target.FoodId})");
-            if (TryStoreMismatchedCookResultInWarmer(pending, cookedFood, actualFoodId, out var storeMessage))
+            var completion = new AutomationWarmerCompletion(
+                OrderPreparationStepCodes.CookingMismatchStored,
+                "interrupted",
+                "cooking-food-mismatch-stored",
+                $"{job.RecipeName} 已完成，但成品 {actualText} 不是目标料理 {target.FoodName}（料理 #{target.FoodId}），已放入保温箱并释放该自动料理任务，将在下一轮重试目标料理。",
+                actualFoodId,
+                activeTargetTags.ToArray(),
+                actualFoodTags,
+                "cooked-food-id-mismatch-stored");
+            if (TryStoreMismatchedCookResultInWarmer(
+                    job,
+                    cookedFood,
+                    completion,
+                    out var storeMessage,
+                    out var storeCommitted))
             {
-                var mismatchMessage = $"{pending.RecipeName} 已完成，但成品 {actualText} 不是目标料理 {target.FoodName}（料理 #{target.FoodId}），已放入保温箱并释放该自动化待办，将在下一轮重试目标料理。{storeMessage}";
-                AppendWackyPendingDiagnostic(
-                    "cooked-food-id-mismatch-stored",
-                    pending,
-                    "stored-in-warmer",
-                    actualFoodId,
-                    activeTargetTags,
-                    actualFoodTags,
-                    storeMessage);
-                RecordAutomationRuntimeEvent(
-                    OrderPreparationStepCodes.CookingMismatchStored,
-                    target,
-                    mismatchMessage,
-                    actualFoodId,
-                    actualFoodTags: actualFoodTags);
-                return (
-                    true,
-                    mismatchMessage,
-                    OrderPreparationStepCodes.CookingMismatchStored);
+                return CompleteCommittedWarmerStore(job, storeMessage);
             }
 
-            AppendWackyPendingDiagnostic(
-                "cooked-food-id-mismatch-store-failed",
-                pending,
-                "keep-on-cooker",
+            AppendWackyCookingJobDiagnostic(
+                storeCommitted ? "cooked-food-id-mismatch-reset-job" : "cooked-food-id-mismatch-store-failed",
+                job,
+                storeCommitted ? "retry-cooker-reset" : "keep-on-cooker",
                 actualFoodId,
                 activeTargetTags,
                 actualFoodTags,
                 storeMessage);
-            return ShouldStopPendingDirectDelivery(
-                pending,
-                $"{pending.RecipeName} 已完成，但成品 {actualText} 不是目标料理 {target.FoodName}（料理 #{target.FoodId}），且写入保温箱失败：{storeMessage}");
+            return ContinueOrBlockAutomationDelivery(
+                job,
+                $"{job.RecipeName} 已完成，但成品 {actualText} 不是目标料理 {target.FoodName}（料理 #{target.FoodId}），{FormatWarmerStoreJobState(storeCommitted, storeMessage)}");
         }
 
-        if (TryDetectWackyTargetSignatureChanged(pending, out var originalTargetSignature, out var currentTargetSignature, out var originalTargetTags, out var currentTargetTags))
+        if (TryDetectWackyTargetSignatureChanged(job, out var originalTargetSignature, out var currentTargetSignature, out var originalTargetTags, out var currentTargetTags))
         {
             var actualFoodId = ReadSellableId(cookedFood);
             var actualTagsForSignature = ReadFoodTagNames(cookedFood).ToArray();
-            var signatureMessage = $"{pending.RecipeName} 已完成，但怪诞料理目标已变化：开锅时 {FormatWackyTargetForMessage(originalTargetSignature, originalTargetTags)}，当前 {FormatWackyTargetForMessage(currentTargetSignature, currentTargetTags)}";
-            AppendWackyPendingDiagnostic(
+            var signatureMessage = $"{job.RecipeName} 已完成，但怪诞料理目标已变化：开锅时 {FormatWackyTargetForMessage(originalTargetSignature, originalTargetTags)}，当前 {FormatWackyTargetForMessage(currentTargetSignature, currentTargetTags)}";
+            AppendWackyCookingJobDiagnostic(
                 "wacky-target-signature-changed",
-                pending,
+                job,
                 "store-stale-target",
                 actualFoodId,
                 currentTargetTags,
                 actualTagsForSignature,
                 signatureMessage);
-            if (TryStoreMismatchedCookResultInWarmer(pending, cookedFood, actualFoodId, out var signatureStoreMessage))
+            var signatureCompletion = new AutomationWarmerCompletion(
+                OrderPreparationStepCodes.CookingMismatchStored,
+                "interrupted",
+                "cooking-target-changed-stored",
+                $"{signatureMessage}，已放入保温箱并释放该自动料理任务，将在下一轮按当前目标重新推荐并开锅。",
+                actualFoodId,
+                currentTargetTags.ToArray(),
+                actualTagsForSignature,
+                "wacky-target-signature-changed-stored");
+            if (TryStoreMismatchedCookResultInWarmer(
+                    job,
+                    cookedFood,
+                    signatureCompletion,
+                    out var signatureStoreMessage,
+                    out var signatureStoreCommitted))
             {
-                var staleMessage = $"{signatureMessage}，已放入保温箱并释放该自动化待办，将在下一轮按当前目标重新推荐并开锅。{signatureStoreMessage}";
-                AppendWackyPendingDiagnostic(
-                    "wacky-target-signature-changed-stored",
-                    pending,
-                    "stored-in-warmer",
-                    actualFoodId,
-                    currentTargetTags,
-                    actualTagsForSignature,
-                    signatureStoreMessage);
-                RecordAutomationRuntimeEvent(
-                    OrderPreparationStepCodes.CookingMismatchStored,
-                    target,
-                    staleMessage,
-                    actualFoodId,
-                    currentTargetTags,
-                    actualTagsForSignature);
-                return (
-                    true,
-                    staleMessage,
-                    OrderPreparationStepCodes.CookingMismatchStored);
+                return CompleteCommittedWarmerStore(job, signatureStoreMessage);
             }
 
-            AppendWackyPendingDiagnostic(
-                "wacky-target-signature-changed-store-failed",
-                pending,
-                "keep-on-cooker",
+            AppendWackyCookingJobDiagnostic(
+                signatureStoreCommitted ? "wacky-target-signature-changed-reset-job" : "wacky-target-signature-changed-store-failed",
+                job,
+                signatureStoreCommitted ? "retry-cooker-reset" : "keep-on-cooker",
                 actualFoodId,
                 currentTargetTags,
                 actualTagsForSignature,
                 signatureStoreMessage);
-            return ShouldStopPendingDirectDelivery(
-                pending,
-                $"{signatureMessage}，且写入保温箱失败：{signatureStoreMessage}");
+            return ContinueOrBlockAutomationDelivery(
+                job,
+                $"{signatureMessage}，{FormatWarmerStoreJobState(signatureStoreCommitted, signatureStoreMessage)}");
         }
 
         var wackyTagValidation = ValidateWackyTags(target, cookedFood, out var targetTags, out var actualTags);
@@ -222,62 +246,57 @@ internal static partial class RuntimeOrderPreparationService
                 : OrderPreparationStepCodes.CookingMismatchStored;
             var diagnosticPrefix = unreadableTags ? "cooked-food-tags-unreadable" : "cooked-food-tag-mismatch";
             var tagMessage = unreadableTags
-                ? $"{pending.RecipeName} 已完成，但无法读取成品 Tag，不能确认满足当前怪诞料理目标 Tag（{string.Join("、", targetTags)}）"
-                : $"{pending.RecipeName} 已完成，但成品 Tag（{string.Join("、", actualTags)}）不含当前怪诞料理目标 Tag（{string.Join("、", targetTags)}）";
-            AppendWackyPendingDiagnostic(
+                ? $"{job.RecipeName} 已完成，但无法读取成品 Tag，不能确认满足当前怪诞料理目标 Tag（{string.Join("、", targetTags)}）"
+                : $"{job.RecipeName} 已完成，但成品 Tag（{string.Join("、", actualTags)}）不含当前怪诞料理目标 Tag（{string.Join("、", targetTags)}）";
+            AppendWackyCookingJobDiagnostic(
                 diagnosticPrefix,
-                pending,
+                job,
                 unreadableTags ? "store-unreadable-tags" : "store-tag-mismatch",
                 actualFoodId,
                 targetTags,
                 actualTags,
                 tagMessage);
-            if (TryStoreMismatchedCookResultInWarmer(pending, cookedFood, actualFoodId, out var wackyStoreMessage))
+            var nextAction = unreadableTags
+                ? "已放入保温箱并暂停该订单自动化，请检查运行时 Tag 读取后再继续。"
+                : "已放入保温箱并释放该自动料理任务，将在下一轮重新推荐并重试。";
+            var tagCompletion = new AutomationWarmerCompletion(
+                resultCode,
+                unreadableTags ? "blocked" : "interrupted",
+                unreadableTags ? "cooking-tags-unreadable-stored" : "cooking-tags-mismatch-stored",
+                $"{tagMessage}，{nextAction}",
+                actualFoodId,
+                targetTags.ToArray(),
+                actualTags.ToArray(),
+                $"{diagnosticPrefix}-stored",
+                RememberRejectedRecipe: !unreadableTags);
+            if (TryStoreMismatchedCookResultInWarmer(
+                    job,
+                    cookedFood,
+                    tagCompletion,
+                    out var wackyStoreMessage,
+                    out var wackyStoreCommitted))
             {
-                var nextAction = unreadableTags
-                    ? "已放入保温箱并暂停该订单自动化，请检查运行时 Tag 读取后再继续。"
-                    : "已放入保温箱并释放该自动化待办，将在下一轮重新推荐并重试。";
-                var wackyMessage = $"{tagMessage}，{nextAction}{wackyStoreMessage}";
-                AppendWackyPendingDiagnostic(
-                    $"{diagnosticPrefix}-stored",
-                    pending,
-                    "stored-in-warmer",
-                    actualFoodId,
-                    targetTags,
-                    actualTags,
-                    wackyStoreMessage);
-                if (!unreadableTags) RememberRecentWackyRejectedRecipe(target, targetTags);
-                RecordAutomationRuntimeEvent(
-                    resultCode,
-                    target,
-                    wackyMessage,
-                    actualFoodId,
-                    targetTags,
-                    actualTags);
-                return (
-                    true,
-                    wackyMessage,
-                    resultCode);
+                return CompleteCommittedWarmerStore(job, wackyStoreMessage);
             }
 
-            AppendWackyPendingDiagnostic(
-                $"{diagnosticPrefix}-store-failed",
-                pending,
-                "keep-on-cooker",
+            AppendWackyCookingJobDiagnostic(
+                wackyStoreCommitted ? $"{diagnosticPrefix}-reset-job" : $"{diagnosticPrefix}-store-failed",
+                job,
+                wackyStoreCommitted ? "retry-cooker-reset" : "keep-on-cooker",
                 actualFoodId,
                 targetTags,
                 actualTags,
                 wackyStoreMessage);
-            return ShouldStopPendingDirectDelivery(
-                pending,
-                $"{tagMessage}，且写入保温箱失败：{wackyStoreMessage}");
+            return ContinueOrBlockAutomationDelivery(
+                job,
+                $"{tagMessage}，{FormatWarmerStoreJobState(wackyStoreCommitted, wackyStoreMessage)}");
         }
 
         if (wackyTagValidation == WackyTagValidation.Matched)
         {
-            AppendWackyPendingDiagnostic(
+            AppendWackyCookingJobDiagnostic(
                 "cooked-food-tag-match",
-                pending,
+                job,
                 "continue-delivery",
                 ReadSellableId(cookedFood),
                 targetTags,
@@ -292,39 +311,112 @@ internal static partial class RuntimeOrderPreparationService
         if (runtimeOrder.Order == null || runtimeOrder.Manager == null)
         {
             return HandleUndeliverableCookedFood(
-                pending,
+                job,
                 cookedFood,
-                PendingDeliveryFailureKind.MissingOrder,
+                AutomationDeliveryFailureKind.MissingOrder,
                 $"未找到目标订单对象。{runtimeOrder.Diagnostic}");
         }
 
         if (runtimeOrder.Controller == null)
         {
             return HandleUndeliverableCookedFood(
-                pending,
+                job,
                 cookedFood,
-                PendingDeliveryFailureKind.MissingController,
+                AutomationDeliveryFailureKind.MissingController,
                 $"已找到目标订单，但未读取到可执行客人控制器；该订单可能只残留在 HUD 中。{runtimeOrder.Diagnostic}");
         }
 
-        pending.ResetDeliveryFailures();
+        job.ResetDeliveryFailures();
 
-        if (ReadOrderServedFood(runtimeOrder.Order) != null)
+        if (!TryReadOrderServedItem(
+                runtimeOrder.Order,
+                RuntimeDeliveryItemKind.Food,
+                out var servedFood,
+                out var servedFoodDiagnostic))
         {
-            TryCompleteCookControllerAfterDirectDelivery(pending.CookController, cookedFood);
-            return (true, $"{pending.RecipeName} 已完成，但目标订单已有料理，已释放厨具。", "");
+            return ContinueOrBlockAutomationDelivery(
+                job,
+                $"无法确认目标订单的 ServFood，当前不执行送达或入保温箱：{servedFoodDiagnostic}");
         }
 
-        var pendingFood = ReadMember(runtimeOrder.Order, "ServedFoodInAir");
-        if (pendingFood != null && !IsSellable(pendingFood, sellableType: 0, id: target.FoodId))
+        var servedFoodIdentity = servedFood == null
+            ? RuntimeObjectIdentityComparison.Different
+            : CompareObjectIdentity(servedFood, cookedFood);
+        if (servedFoodIdentity == RuntimeObjectIdentityComparison.Same)
         {
-            return ShouldStopPendingDirectDelivery(pending, "订单已有其他待送达料理，暂不覆盖。");
+            if (!job.FoodDeliveryCleanupTracker.TryBeginCommit())
+            {
+                return BlockUncertainFoodDelivery(job, "同一成品已在订单中，但 job 无法锁定提交状态。");
+            }
+
+            job.FoodDeliveryCleanupTracker.ResolveCommit(AutomationCommitResolution.Committed);
+            job.DeliveredFood = cookedFood;
+            job.FoodDeliveryCompletion = BuildFoodDeliveryCompletionSafely(
+                job,
+                runtimeOrder,
+                request,
+                cookedFood,
+                targetTags,
+                actualTags,
+                $"{target.FoodName} 已存在于订单最终送达字段，本次未重复调用 setter。");
+            return TryCompleteCommittedFoodDeliveryCleanup(job);
+        }
+
+        if (servedFoodIdentity == RuntimeObjectIdentityComparison.Unknown)
+        {
+            return BlockUncertainFoodDelivery(
+                job,
+                "订单已有料理，但无法确认它是否为本 job 成品；未重复送达、写入保温箱或清理厨具。");
+        }
+
+        if (servedFood != null)
+        {
+            var actualFoodId = ReadSellableId(cookedFood);
+            var completion = new AutomationWarmerCompletion(
+                OrderPreparationStepCodes.CookingTargetAlreadyServedStored,
+                "completed",
+                "cooking-target-already-served",
+                $"{job.RecipeName} 已完成，但目标订单已有料理；自动化成品已放入保温箱。",
+                actualFoodId,
+                Array.Empty<string>(),
+                Array.Empty<string>());
+            if (TryStoreMismatchedCookResultInWarmer(
+                    job,
+                    cookedFood,
+                    completion,
+                    out var storeMessage,
+                    out var storeCommitted))
+            {
+                return CompleteCommittedWarmerStore(job, storeMessage);
+            }
+
+            return ContinueOrBlockAutomationDelivery(
+                job,
+                $"目标订单已有料理，但{FormatWarmerStoreJobState(storeCommitted, storeMessage)}");
+        }
+
+        if (!TryReadOrderInAirItem(
+                runtimeOrder.Order,
+                RuntimeDeliveryItemKind.Food,
+                out var pendingFood,
+                out var pendingFoodDiagnostic))
+        {
+            return ContinueOrBlockAutomationDelivery(
+                job,
+                $"无法确认订单待送达料理，本轮未执行送达副作用：{pendingFoodDiagnostic}");
+        }
+
+        if (pendingFood != null && !IsSameObject(pendingFood, cookedFood))
+        {
+            return ContinueOrBlockAutomationDelivery(
+                job,
+                "订单已有其他待送达料理；即使料理 ID 相同也不会覆盖非本 job 的对象。");
         }
 
         if (IsWackyKoishiBossTarget(target))
         {
             AppendWackyBossRuntimeDiagnostic(
-                "pending-food-delivery-before",
+                "cooking-job-delivery-before",
                 request,
                 runtimeOrder,
                 "commit-food",
@@ -333,189 +425,389 @@ internal static partial class RuntimeOrderPreparationService
         if (IsYuyukoBossTarget(target))
         {
             AppendYuyukoRuntimeDiagnostic(
-                "pending-food-delivery-before",
+                "cooking-job-delivery-before",
                 request,
                 runtimeOrder,
                 "commit-food",
                 $"food={target.FoodName}; cookedFood={SpecialBusinessDiagnostics.DescribeObject(cookedFood)}");
         }
 
-        var delivery = TryCommitRuntimeDelivery(runtimeOrder, cookedFood, RuntimeDeliveryItemKind.Food, target.FoodName);
-        if (!delivery.Ok)
+        if (!job.FoodDeliveryCleanupTracker.TryBeginCommit())
         {
-            return ShouldStopPendingDirectDelivery(pending, delivery.Message);
+            return BlockUncertainFoodDelivery(job, "料理送达提交状态已锁定，拒绝重复调用订单 setter。");
         }
 
-        TryCompleteCookControllerAfterDirectDelivery(pending.CookController, cookedFood);
-        var recoverSuffix = TryRecoverPatientAfterPartialDelivery(runtimeOrder, 1, out var recoverMessage) && !string.IsNullOrWhiteSpace(recoverMessage)
-            ? recoverMessage
-            : "";
+        RuntimeDeliveryCommitResult delivery;
+        try
+        {
+            delivery = TryCommitRuntimeDelivery(runtimeOrder, cookedFood, RuntimeDeliveryItemKind.Food, target.FoodName);
+        }
+        catch (Exception ex)
+        {
+            job.FoodDeliveryCleanupTracker.ResolveCommit(AutomationCommitResolution.Uncertain);
+            return BlockUncertainFoodDelivery(
+                job,
+                $"料理送达调用发生未分类异常，无法确认最终字段：{ex.GetBaseException().Message}");
+        }
+        if (delivery.State == RuntimeDeliveryCommitState.NotCommitted)
+        {
+            job.FoodDeliveryCleanupTracker.ResolveCommit(AutomationCommitResolution.NotCommitted);
+            return ContinueOrBlockAutomationDelivery(job, delivery.Message);
+        }
+
+        if (delivery.CommitUncertain)
+        {
+            job.FoodDeliveryCleanupTracker.ResolveCommit(AutomationCommitResolution.Uncertain);
+            return BlockUncertainFoodDelivery(job, delivery.Message);
+        }
+
+        job.FoodDeliveryCleanupTracker.ResolveCommit(AutomationCommitResolution.Committed);
+        job.DeliveredFood = cookedFood;
+        job.FoodDeliveryCompletion = BuildFoodDeliveryCompletionSafely(
+            job,
+            runtimeOrder,
+            request,
+            cookedFood,
+            targetTags,
+            actualTags,
+            delivery.Message);
+        return TryCompleteCommittedFoodDeliveryCleanup(job);
+    }
+
+    private static AutomationFoodDeliveryCompletion BuildFoodDeliveryCompletionSafely(
+        AutomationCookingJob job,
+        RuntimeOrderMatch runtimeOrder,
+        OrderPreparationRequest request,
+        object cookedFood,
+        IReadOnlyList<string> targetTags,
+        IReadOnlyList<string> actualTags,
+        string commitDetail)
+    {
+        try
+        {
+            return BuildFoodDeliveryCompletion(
+                job,
+                runtimeOrder,
+                request,
+                cookedFood,
+                targetTags,
+                actualTags,
+                commitDetail);
+        }
+        catch (Exception ex)
+        {
+            return new AutomationFoodDeliveryCompletion(
+                $"{job.Target.FoodName} 已确认送达订单；提交后处理发生异常且不会重复执行：{ex.GetBaseException().Message}。",
+                job.Target.FoodId,
+                targetTags.ToArray(),
+                actualTags.ToArray());
+        }
+    }
+
+    private static AutomationFoodDeliveryCompletion BuildFoodDeliveryCompletion(
+        AutomationCookingJob job,
+        RuntimeOrderMatch runtimeOrder,
+        OrderPreparationRequest request,
+        object cookedFood,
+        IReadOnlyList<string> targetTags,
+        IReadOnlyList<string> actualTags,
+        string commitDetail)
+    {
+        var target = job.Target;
+        var recoverSuffix = "";
+        try
+        {
+            recoverSuffix = TryRecoverPatientAfterPartialDelivery(runtimeOrder, 1, out var recoverMessage)
+                && !string.IsNullOrWhiteSpace(recoverMessage)
+                    ? recoverMessage
+                    : "";
+        }
+        catch (Exception ex)
+        {
+            recoverSuffix = $"料理已提交，但恢复顾客耐心时发生异常且不会重复执行：{ex.GetBaseException().Message}。";
+        }
+
         var label = target.Kind == CookingCollectionTargetKind.NormalOrder ? "普客订单" : "稀客订单";
-        var evaluationSuffix = "";
-        if (RequiresNativeWackyKoishiBossEvaluationEntry(request))
-        {
-            var evaluation = TryEvaluateWackyKoishiBossRuntimeOrderIfReady(request, runtimeOrder, $"当前{label}");
-            evaluationSuffix = string.IsNullOrWhiteSpace(evaluation.Message) ? "" : evaluation.Message;
-        }
-        else if (target.Kind == CookingCollectionTargetKind.NormalOrder && target.AutoCompleteOrder)
-        {
-            if (IsWackyKoishiBossTarget(target))
-            {
-                AppendWackyBossRuntimeDiagnostic(
-                    "pending-food-delivery-evaluate",
-                    request,
-                    runtimeOrder,
-                    "call-generic-evaluate",
-                    "Koishi boss clue-stage order uses regular order evaluation after direct food delivery.");
-            }
 
-            var evaluation = IsYuyukoBossTarget(target)
-                ? TryEvaluateYuyukoChallengeRuntimeOrderIfReady(request, runtimeOrder, "当前普客订单", reacquireLiveOrder: false, allowControllerMissing: true)
-                : TryEvaluateRuntimeOrderIfReady(runtimeOrder, "当前普客订单", allowControllerMissing: true);
-            evaluationSuffix = string.IsNullOrWhiteSpace(evaluation.Message) ? "" : evaluation.Message;
-        }
-
-        var message = $"{target.FoodName} 已直接送达{label}。";
+        var message = $"{target.FoodName} 已直接送达{label}。{commitDetail}";
         if (!string.IsNullOrWhiteSpace(recoverSuffix))
         {
             message += recoverSuffix;
         }
 
-        if (!string.IsNullOrWhiteSpace(evaluationSuffix))
-        {
-            message += evaluationSuffix;
-        }
-
         if (IsYuyukoBossTarget(target))
         {
             AppendYuyukoRuntimeDiagnostic(
-                "pending-food-delivery-after",
+                "cooking-job-delivery-after",
                 request,
                 runtimeOrder,
-                "food-delivered",
+                "food-delivered-committed",
                 message);
         }
 
-        AppendWackyPendingDiagnostic(
-            "cooked-food-delivered",
-            pending,
-            "delivered-to-order",
+        return new AutomationFoodDeliveryCompletion(
+            message,
             ReadSellableId(cookedFood),
-            targetTags,
-            actualTags,
+            targetTags.ToArray(),
+            actualTags.ToArray());
+    }
+
+    private static (bool Remove, string Message, string Code) TryCompleteCommittedFoodDeliveryCleanup(
+        AutomationCookingJob job)
+    {
+        if (job.DeliveredFood == null || job.FoodDeliveryCompletion == null)
+        {
+            return BlockCommittedFoodDeliveryCleanup(job, "料理送达提交上下文不完整，无法安全复位厨具。");
+        }
+
+        if (!IsAutomationCookingJobOwned(job, out var ownershipDiagnostic))
+        {
+            return BlockCommittedFoodDeliveryCleanup(
+                job,
+                $"厨具已进入其他锅次，禁止清理当前厨具。{ownershipDiagnostic}");
+        }
+
+        if (!job.FoodDeliveryCleanupTracker.TryBeginAttempt(eligible: true))
+        {
+            return job.FoodDeliveryCleanupTracker.Exhausted
+                ? BlockCommittedFoodDeliveryCleanup(job, "厨具复位重试次数已耗尽。")
+                : (false, "", OrderPreparationStepCodes.CookingPending);
+        }
+
+        var resetSucceeded = TryResetCookControllerAfterCommittedSideEffect(
+            job,
+            job.DeliveredFood,
+            out var resetMessage);
+        if (!resetSucceeded)
+        {
+            if (job.FoodDeliveryCleanupTracker.Exhausted)
+            {
+                return BlockCommittedFoodDeliveryCleanup(job, resetMessage);
+            }
+
+            return (
+                false,
+                $"{job.RecipeName} 已确认送达订单且不会重复送达，正在重试同一锅次厨具复位（{job.FoodDeliveryCleanupAttempts}/{job.FoodDeliveryCleanupTracker.MaxAttempts}）：{resetMessage}",
+                OrderPreparationStepCodes.CookingPending);
+        }
+
+        job.FoodDeliveryCleanupTracker.Complete();
+        var completion = job.FoodDeliveryCompletion;
+        var postResetMessage = CompleteCookerExtractionAfterReset(job);
+        var message = $"{completion.Message}{resetMessage}{postResetMessage}";
+        AppendWackyCookingJobDiagnostic(
+            "cooked-food-delivered",
+            job,
+            "delivered-to-order",
+            completion.ActualFoodId,
+            completion.TargetTags,
+            completion.ActualTags,
             message);
-        RecordAutomationRuntimeEvent(OrderPreparationStepCodes.FoodDelivered, target, message);
+        RecordAutomationRuntimeEvent(
+            OrderPreparationStepCodes.FoodDelivered,
+            job,
+            message,
+            outcome: "completed",
+            reasonCode: "food-delivered",
+            terminal: true);
         return (true, message, OrderPreparationStepCodes.FoodDelivered);
     }
 
-    private static (bool Remove, string Message, string Code) ShouldStopPendingDirectDelivery(PendingCookingCollection pending, string message)
+    private static string CompleteCookerExtractionAfterReset(AutomationCookingJob job)
     {
-        if (DateTime.UtcNow - pending.CreatedAtUtc >= PendingCookingIdleTimeout)
+        var parts = new List<string>();
+        try
         {
-            return (true, $"{pending.RecipeName} 自动送达已停止：{message} 成品保留在厨具中。", "");
+            var partnerManager = GetSingletonInstance(PartnerManagerTypeName);
+            if (partnerManager == null
+                || !TryInvokeInstance(partnerManager, "OnCookerAvailabilityUpdate", new object?[] { -1 }))
+            {
+                parts.Add("厨具已复位，但伙伴厨具可用性通知返回异常；该通知不会重复执行。");
+            }
+        }
+        catch (Exception ex)
+        {
+            parts.Add($"厨具已复位，但伙伴厨具可用性通知发生异常且不会重复执行：{ex.GetBaseException().Message}。");
         }
 
-        return (false, $"{pending.RecipeName} 已完成，等待直接送达：{message}", OrderPreparationStepCodes.CookingPending);
+        try
+        {
+            if (!TryInvokeInstance(job.CookController, "AfterPlayerExtract", Array.Empty<object?>()))
+            {
+                parts.Add("厨具出锅回调返回异常；为避免重复触发特殊厨具副作用，本 job 不会再次调用该回调。");
+            }
+        }
+        catch (Exception ex)
+        {
+            parts.Add($"厨具出锅回调发生异常且不会重复执行：{ex.GetBaseException().Message}。");
+        }
+
+        return string.Concat(parts);
+    }
+
+    private static (bool Remove, string Message, string Code) BlockCommittedFoodDeliveryCleanup(
+        AutomationCookingJob job,
+        string detail)
+    {
+        var message = $"{job.RecipeName} 已确认送达订单且不会重复送达，但同一锅次厨具无法严格复位；自动料理任务已停止并保留现场。{detail}";
+        RecordAutomationRuntimeEvent(
+            OrderPreparationStepCodes.CookingDeliveryCleanupBlocked,
+            job,
+            message,
+            job.FoodDeliveryCompletion?.ActualFoodId ?? -1,
+            job.FoodDeliveryCompletion?.TargetTags,
+            job.FoodDeliveryCompletion?.ActualTags,
+            outcome: "blocked",
+            reasonCode: "cooking-delivery-cleanup-failed",
+            terminal: true);
+        return (true, message, OrderPreparationStepCodes.CookingDeliveryCleanupBlocked);
+    }
+
+    private static (bool Remove, string Message, string Code) BlockUncertainFoodDelivery(
+        AutomationCookingJob job,
+        string detail)
+    {
+        var message = $"{job.RecipeName} 的订单送达提交状态无法确认；为避免重复送达或误清厨具，自动料理任务已停止并保留现场。{detail}";
+        RecordAutomationRuntimeEvent(
+            OrderPreparationStepCodes.CookingDeliveryCommitUncertain,
+            job,
+            message,
+            job.DeliveredFood == null ? -1 : ReadSellableId(job.DeliveredFood),
+            outcome: "blocked",
+            reasonCode: "cooking-delivery-commit-uncertain",
+            terminal: true);
+        return (true, message, OrderPreparationStepCodes.CookingDeliveryCommitUncertain);
+    }
+
+    private static (bool Remove, string Message, string Code) ContinueOrBlockAutomationDelivery(AutomationCookingJob job, string message)
+    {
+        if (job.WarmerStoreCommitUncertain)
+        {
+            return BlockUncertainWarmerStore(job, message);
+        }
+
+        if (job.FoodDeliveryCommitUncertain)
+        {
+            return BlockUncertainFoodDelivery(job, message);
+        }
+
+        if (job.WarmerStoreCommitted)
+        {
+            return (
+                false,
+                $"{job.RecipeName} 的成品已写入保温箱，等待同一锅次厨具复位：{message}",
+                OrderPreparationStepCodes.CookingPending);
+        }
+
+        if (job.DeliveryTimeoutClock.Elapsed >= CookingDeliveryTimeout)
+        {
+            var blockedMessage = $"{job.RecipeName} 自动送达达到有界重试上限：{message} 成品保留在厨具中，Mod 已释放所有权。";
+            RecordAutomationRuntimeEvent(
+                OrderPreparationStepCodes.CookingDeliveryBlocked,
+                job,
+                blockedMessage,
+                outcome: "blocked",
+                reasonCode: "cooking-delivery-timeout",
+                terminal: true);
+            return (true, blockedMessage, OrderPreparationStepCodes.CookingDeliveryBlocked);
+        }
+
+        return (false, $"{job.RecipeName} 已完成，等待直接送达：{message}", OrderPreparationStepCodes.CookingPending);
     }
 
     private static (bool Remove, string Message, string Code) HandleUndeliverableCookedFood(
-        PendingCookingCollection pending,
+        AutomationCookingJob job,
         object cookedFood,
-        PendingDeliveryFailureKind failureKind,
+        AutomationDeliveryFailureKind failureKind,
         string reason)
     {
-        var nowUtc = DateTime.UtcNow;
-        var failure = pending.RecordDeliveryFailure(failureKind, nowUtc);
-        var threshold = GetPendingFailureRetireAttempts(failureKind);
-        var delay = GetPendingFailureRetireDelay(failureKind);
-        var failureAge = nowUtc - failure.FirstAtUtc;
-        var failureDetail = FormatPendingDeliveryFailureDetail(failureKind, failure.Count, threshold, failureAge, delay);
+        var failure = job.RecordDeliveryFailure(failureKind, job.DeliveryTimeoutClock.Elapsed);
+        var threshold = GetDeliveryFailureRetireAttempts(failureKind);
+        var delay = GetDeliveryFailureRetireDelay(failureKind);
+        var failureAge = failure.EffectiveAge;
+        var failureDetail = FormatDeliveryFailureDetail(failureKind, failure.Count, threshold, failureAge, delay);
         if (failure.Count < threshold || failureAge < delay)
         {
-            return ShouldStopPendingDirectDelivery(pending, $"{reason}{failureDetail}");
+            return ContinueOrBlockAutomationDelivery(job, $"{reason}{failureDetail}");
         }
 
         var actualFoodId = ReadSellableId(cookedFood);
         var actualTags = ReadFoodTagNames(cookedFood).ToArray();
-        if (IsWackyTargetContext(pending.Target))
+        if (IsWackyTargetContext(job.Target))
         {
-            AppendWackyPendingDiagnostic(
+            AppendWackyCookingJobDiagnostic(
                 "wacky-undeliverable-target",
-                pending,
+                job,
                 "store-undeliverable-food",
                 actualFoodId,
-                pending.Target.WackyTargetFoodTags,
+                job.Target.WackyTargetFoodTags,
                 actualTags,
                 $"{reason}{failureDetail}");
         }
 
-        if (TryStoreMismatchedCookResultInWarmer(pending, cookedFood, actualFoodId, out var storeMessage))
+        var targetLabel = failureKind == AutomationDeliveryFailureKind.MissingController
+            ? "目标订单暂不可执行"
+            : "目标订单已不存在、已切换或暂不可达";
+        var completion = new AutomationWarmerCompletion(
+            OrderPreparationStepCodes.CookingTargetUnavailableStored,
+            "interrupted",
+            failureKind == AutomationDeliveryFailureKind.MissingController
+                ? "cooking-order-controller-unavailable-stored"
+                : "cooking-order-unavailable-stored",
+            $"{job.RecipeName} 已完成，但{targetLabel}，已放入保温箱并释放该自动料理任务。原因：{reason}{failureDetail} ",
+            actualFoodId,
+            job.Target.WackyTargetFoodTags.ToArray(),
+            actualTags,
+            IsWackyTargetContext(job.Target) ? "wacky-undeliverable-target-stored" : "");
+        if (TryStoreMismatchedCookResultInWarmer(
+                job,
+                cookedFood,
+                completion,
+                out var storeMessage,
+                out var storeCommitted))
         {
-            var targetLabel = failureKind == PendingDeliveryFailureKind.MissingController
-                ? "目标订单暂不可执行"
-                : "目标订单已不存在、已切换或暂不可达";
-            var message = $"{pending.RecipeName} 已完成，但{targetLabel}，已放入保温箱并释放该自动化待办。原因：{reason}{failureDetail} {storeMessage}";
-            if (IsWackyTargetContext(pending.Target))
-            {
-                AppendWackyPendingDiagnostic(
-                    "wacky-undeliverable-target-stored",
-                    pending,
-                    "stored-in-warmer",
-                    actualFoodId,
-                    pending.Target.WackyTargetFoodTags,
-                    actualTags,
-                    storeMessage);
-            }
-
-            RecordAutomationRuntimeEvent(
-                OrderPreparationStepCodes.CookingMismatchStored,
-                pending.Target,
-                message,
-                actualFoodId,
-                pending.Target.WackyTargetFoodTags,
-                actualTags);
-            return (true, message, OrderPreparationStepCodes.CookingMismatchStored);
+            return CompleteCommittedWarmerStore(job, storeMessage);
         }
 
-        if (IsWackyTargetContext(pending.Target))
+        if (IsWackyTargetContext(job.Target))
         {
-            AppendWackyPendingDiagnostic(
-                "wacky-undeliverable-target-store-failed",
-                pending,
-                "keep-on-cooker",
+            AppendWackyCookingJobDiagnostic(
+                storeCommitted ? "wacky-undeliverable-target-reset-job" : "wacky-undeliverable-target-store-failed",
+                job,
+                storeCommitted ? "retry-cooker-reset" : "keep-on-cooker",
                 actualFoodId,
-                pending.Target.WackyTargetFoodTags,
+                job.Target.WackyTargetFoodTags,
                 actualTags,
                 storeMessage);
         }
 
-        return ShouldStopPendingDirectDelivery(
-            pending,
-            $"{reason}{failureDetail} 已达到自动释放阈值，但写入保温箱失败：{storeMessage}");
+        return ContinueOrBlockAutomationDelivery(
+            job,
+            $"{reason}{failureDetail} 已达到自动释放阈值，但{FormatWarmerStoreJobState(storeCommitted, storeMessage)}");
     }
 
-    private static int GetPendingFailureRetireAttempts(PendingDeliveryFailureKind failureKind)
+    private static int GetDeliveryFailureRetireAttempts(AutomationDeliveryFailureKind failureKind)
     {
-        return failureKind == PendingDeliveryFailureKind.MissingController
-            ? PendingMissingControllerRetireAttempts
-            : PendingMissingTargetRetireAttempts;
+        return failureKind == AutomationDeliveryFailureKind.MissingController
+            ? MissingControllerRetireAttempts
+            : MissingTargetRetireAttempts;
     }
 
-    private static TimeSpan GetPendingFailureRetireDelay(PendingDeliveryFailureKind failureKind)
+    private static TimeSpan GetDeliveryFailureRetireDelay(AutomationDeliveryFailureKind failureKind)
     {
-        return failureKind == PendingDeliveryFailureKind.MissingController
-            ? PendingMissingControllerRetireDelay
-            : PendingMissingTargetRetireDelay;
+        return failureKind == AutomationDeliveryFailureKind.MissingController
+            ? MissingControllerRetireDelay
+            : MissingTargetRetireDelay;
     }
 
-    private static string FormatPendingDeliveryFailureDetail(
-        PendingDeliveryFailureKind failureKind,
+    private static string FormatDeliveryFailureDetail(
+        AutomationDeliveryFailureKind failureKind,
         int count,
         int threshold,
         TimeSpan age,
         TimeSpan delay)
     {
-        var reason = failureKind == PendingDeliveryFailureKind.MissingController
+        var reason = failureKind == AutomationDeliveryFailureKind.MissingController
             ? "控制器不可达"
             : "订单不可达";
         return $"（{reason}连续 {count}/{threshold} 次，持续 {age.TotalSeconds:F1}/{delay.TotalSeconds:F0}s）";
@@ -539,14 +831,14 @@ internal static partial class RuntimeOrderPreparationService
     }
 
     private static bool TryDetectWackyTargetSignatureChanged(
-        PendingCookingCollection pending,
+        AutomationCookingJob job,
         out string originalSignature,
         out string currentSignature,
         out IReadOnlyList<string> originalTags,
         out IReadOnlyList<string> currentTags)
     {
-        originalSignature = pending.Target.WackyTargetSignature;
-        originalTags = pending.Target.WackyTargetFoodTags;
+        originalSignature = job.Target.WackyTargetSignature;
+        originalTags = job.Target.WackyTargetFoodTags;
         currentSignature = "";
         currentTags = Array.Empty<string>();
         if (string.IsNullOrWhiteSpace(originalSignature)) return false;
@@ -612,171 +904,285 @@ internal static partial class RuntimeOrderPreparationService
         }
     }
 
-    private static bool TryStoreMismatchedCookResultInWarmer(PendingCookingCollection pending, object cookedFood, int actualFoodId, out string message)
+    private static bool TryStoreMismatchedCookResultInWarmer(
+        AutomationCookingJob job,
+        object cookedFood,
+        AutomationWarmerCompletion completion,
+        out string message,
+        out bool storeCommitted)
     {
+        storeCommitted = job.WarmerStoreCommitted;
         try
         {
-            var configure = GetSingletonInstance(IzakayaConfigureTypeName);
-            if (configure == null)
+            if (!IsAutomationCookingJobOwned(job, out var ownershipDiagnostic))
             {
-                message = "当前料理暂存容器不可用";
+                message = $"厨具锅次所有权已变化，拒绝操作当前成品。{ownershipDiagnostic}";
                 return false;
             }
 
-            var beforeCount = CountStoredFoods(configure, actualFoodId);
-            if (!TryInvokeStoreFood(configure, cookedFood, out var storeDiagnostic))
+            if (job.WarmerResetTracker.CanCommit)
             {
-                message = storeDiagnostic;
+                var configure = GetSingletonInstance(IzakayaConfigureTypeName);
+                if (configure == null)
+                {
+                    message = "当前料理暂存容器不可用";
+                    return false;
+                }
+
+                if (!job.WarmerResetTracker.TryBeginCommit())
+                {
+                    message = "保温箱提交状态已锁定，拒绝重复调用 StoreFood。";
+                    return false;
+                }
+
+                job.WarmerStoredFood = cookedFood;
+                job.WarmerCompletion = completion;
+
+                if (!TryInspectStoredFoodIdentity(configure, cookedFood, out var alreadyStored, out var beforeDiagnostic))
+                {
+                    job.WarmerResetTracker.ResolveCommit(AutomationCommitResolution.NotCommitted);
+                    message = $"调用 StoreFood 前无法读取 StoredFoods，本轮未执行任何保温箱或厨具副作用，将在有界送达时钟内重试：{beforeDiagnostic}";
+                    return false;
+                }
+
+                if (alreadyStored)
+                {
+                    job.WarmerResetTracker.ResolveCommit(AutomationCommitResolution.Committed);
+                    storeCommitted = true;
+                    job.WarmerStoreStatus = "同一成品对象已存在于保温箱，未重复调用 StoreFood。";
+                }
+                else
+                {
+                    // IDA: IzakayaConfigure.StoreFood adds to StoredFoods before UI and partner callbacks.
+                    // If a later callback throws, exact object identity is the only safe commit proof.
+                    var storeReturned = TryInvokeStoreFood(
+                        configure,
+                        cookedFood,
+                        out var invocationAttempted,
+                        out var storeDiagnostic);
+                    if (storeReturned)
+                    {
+                        job.WarmerResetTracker.ResolveCommit(AutomationCommitResolution.Committed);
+                        storeCommitted = true;
+                        job.WarmerStoreStatus = "StoreFood 已正常返回并确认提交。";
+                    }
+                    else if (!invocationAttempted)
+                    {
+                        job.WarmerResetTracker.ResolveCommit(AutomationCommitResolution.NotCommitted);
+                        message = storeDiagnostic;
+                        return false;
+                    }
+                    else if (!TryInspectStoredFoodIdentity(configure, cookedFood, out var storedAfterException, out var afterDiagnostic))
+                    {
+                        job.WarmerResetTracker.ResolveCommit(AutomationCommitResolution.Uncertain);
+                        message = $"{storeDiagnostic}；调用异常后无法读取 StoredFoods 确认同一成品对象，已禁止再次调用 StoreFood 或清理厨具：{afterDiagnostic}";
+                        return false;
+                    }
+                    else if (storedAfterException)
+                    {
+                        job.WarmerResetTracker.ResolveCommit(AutomationCommitResolution.Committed);
+                        storeCommitted = true;
+                        job.WarmerStoreStatus = $"StoreFood 后半段异常，但 StoredFoods 已包含同一成品对象，提交已确认。{storeDiagnostic}";
+                    }
+                    else
+                    {
+                        job.WarmerResetTracker.ResolveCommit(AutomationCommitResolution.Uncertain);
+                        message = $"{storeDiagnostic}；StoreFood 已实际进入原生方法。即使 StoredFoods 当前不含同一成品对象，也无法证明 Add、界面、伙伴或额外回调均未发生，已禁止再次调用 StoreFood 或清理厨具。";
+                        return false;
+                    }
+                }
+            }
+
+            if (!job.WarmerResetTracker.TryBeginAttempt(eligible: true))
+            {
+                message = $"{job.WarmerStoreStatus}厨具复位重试已达到 {job.WarmerResetAttempts}/{job.WarmerResetTracker.MaxAttempts} 次。";
                 return false;
             }
 
-            var afterCount = CountStoredFoods(configure, actualFoodId);
-            if (actualFoodId >= 0 && beforeCount >= 0 && afterCount >= 0 && afterCount <= beforeCount)
-            {
-                message = $"StoreFood 后未读取到保温箱数量增加（料理 #{actualFoodId}: {beforeCount}->{afterCount}）";
-                return false;
-            }
+            var resetSucceeded = TryResetCookControllerAfterCommittedSideEffect(
+                job,
+                cookedFood,
+                out var resetMessage);
+            message = $"{job.WarmerStoreStatus}{resetMessage}";
+            if (!resetSucceeded) return false;
 
-            var resetMessage = TryResetCookControllerAfterWarmerStore(pending.CookController, cookedFood);
-            var storeStatus = actualFoodId >= 0 && beforeCount >= 0 && afterCount >= 0
-                ? $"保温箱数量 {beforeCount}->{afterCount}。"
-                : "已调用游戏 StoreFood。";
-            message = string.IsNullOrWhiteSpace(resetMessage) ? storeStatus : $"{storeStatus}{resetMessage}";
+            job.WarmerResetTracker.Complete();
             return true;
         }
         catch (Exception ex)
         {
-            message = ex.GetBaseException().Message;
+            if (job.WarmerResetTracker.CommitAttemptInProgress)
+            {
+                job.WarmerResetTracker.ResolveCommit(AutomationCommitResolution.Uncertain);
+            }
+
+            message = job.WarmerStoreCommitUncertain
+                ? $"保温箱提交期间发生未分类异常且无法确认提交边界，已禁止再次调用 StoreFood：{ex.GetBaseException().Message}"
+                : ex.GetBaseException().Message;
+            storeCommitted = job.WarmerStoreCommitted;
             return false;
         }
     }
 
-    private static bool TryInvokeStoreFood(object configure, object cookedFood, out string diagnostic)
+    private static (bool Remove, string Message, string Code) TryCompleteCommittedWarmerReset(
+        AutomationCookingJob job)
     {
+        if (job.WarmerStoredFood == null || job.WarmerCompletion == null)
+        {
+            return BlockCommittedWarmerReset(
+                job,
+                "保温箱提交上下文不完整，无法安全继续复位厨具。");
+        }
+
+        if (!job.WarmerResetTracker.TryBeginAttempt(eligible: true))
+        {
+            return job.WarmerResetTracker.Exhausted
+                ? BlockCommittedWarmerReset(job, "厨具复位重试次数已耗尽。")
+                : (false, "", OrderPreparationStepCodes.CookingPending);
+        }
+
+        var resetSucceeded = TryResetCookControllerAfterCommittedSideEffect(
+            job,
+            job.WarmerStoredFood,
+            out var resetMessage);
+        var detail = $"{job.WarmerStoreStatus}{resetMessage}";
+        if (resetSucceeded)
+        {
+            job.WarmerResetTracker.Complete();
+            return CompleteCommittedWarmerStore(job, detail);
+        }
+
+        if (job.WarmerResetTracker.Exhausted)
+        {
+            return BlockCommittedWarmerReset(job, detail);
+        }
+
+        return (
+            false,
+            $"{job.RecipeName} 的成品已写入保温箱，正在重试同一锅次厨具复位（{job.WarmerResetAttempts}/{job.WarmerResetTracker.MaxAttempts}）：{detail}",
+            OrderPreparationStepCodes.CookingPending);
+    }
+
+    private static (bool Remove, string Message, string Code) CompleteCommittedWarmerStore(
+        AutomationCookingJob job,
+        string detail)
+    {
+        var completion = job.WarmerCompletion
+            ?? throw new InvalidOperationException("Warmer completion context is missing after StoreFood committed.");
+        var postResetMessage = CompleteCookerExtractionAfterReset(job);
+        var message = $"{completion.MessagePrefix}{detail}{postResetMessage}";
+        if (!string.IsNullOrWhiteSpace(completion.DiagnosticEvent))
+        {
+            AppendWackyCookingJobDiagnostic(
+                completion.DiagnosticEvent,
+                job,
+                "stored-in-warmer",
+                completion.ActualFoodId,
+                completion.TargetTags,
+                completion.ActualTags,
+                detail);
+        }
+
+        if (completion.RememberRejectedRecipe)
+        {
+            RememberRecentWackyRejectedRecipe(job.Target, completion.TargetTags);
+        }
+
+        RecordAutomationRuntimeEvent(
+            completion.Code,
+            job,
+            message,
+            completion.ActualFoodId,
+            completion.TargetTags,
+            completion.ActualTags,
+            outcome: completion.Outcome,
+            reasonCode: completion.ReasonCode,
+            terminal: true);
+        return (true, message, completion.Code);
+    }
+
+    private static (bool Remove, string Message, string Code) BlockCommittedWarmerReset(
+        AutomationCookingJob job,
+        string detail)
+    {
+        var message = $"{job.RecipeName} 的成品已写入保温箱，但同一锅次厨具连续无法复位；自动料理任务已停止，且不会再次写入保温箱。{detail}";
+        RecordAutomationRuntimeEvent(
+            OrderPreparationStepCodes.CookingWarmerResetBlocked,
+            job,
+            message,
+            job.WarmerCompletion?.ActualFoodId ?? -1,
+            job.WarmerCompletion?.TargetTags,
+            job.WarmerCompletion?.ActualTags,
+            outcome: "blocked",
+            reasonCode: "cooking-warmer-reset-failed",
+            terminal: true);
+        return (true, message, OrderPreparationStepCodes.CookingWarmerResetBlocked);
+    }
+
+    private static (bool Remove, string Message, string Code) BlockUncertainWarmerStore(
+        AutomationCookingJob job,
+        string detail)
+    {
+        var message = $"{job.RecipeName} 的保温箱提交状态无法确认；为避免重复写入或误清厨具，自动料理任务已停止并保留现场。{detail}";
+        RecordAutomationRuntimeEvent(
+            OrderPreparationStepCodes.CookingWarmerCommitUncertain,
+            job,
+            message,
+            job.WarmerCompletion?.ActualFoodId ?? -1,
+            job.WarmerCompletion?.TargetTags,
+            job.WarmerCompletion?.ActualTags,
+            outcome: "blocked",
+            reasonCode: "cooking-warmer-commit-uncertain",
+            terminal: true);
+        return (true, message, OrderPreparationStepCodes.CookingWarmerCommitUncertain);
+    }
+
+    private static string FormatWarmerStoreJobState(bool storeCommitted, string detail)
+    {
+        return storeCommitted
+            ? $"成品已写入保温箱，但厨具复位尚未完成且不会重复写入：{detail}"
+            : $"写入保温箱失败：{detail}";
+    }
+
+    private static bool TryInvokeStoreFood(
+        object configure,
+        object cookedFood,
+        out bool invocationAttempted,
+        out string diagnostic)
+    {
+        invocationAttempted = false;
         diagnostic = "";
         var methods = configure.GetType()
             .GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-            .Where(method => string.Equals(method.Name, "StoreFood", StringComparison.Ordinal))
-            .OrderByDescending(method => method.GetParameters().Length == 2)
-            .ThenBy(method => method.GetParameters().Length)
+            .Where(method =>
+            {
+                if (!string.Equals(method.Name, "StoreFood", StringComparison.Ordinal)) return false;
+                var parameters = method.GetParameters();
+                return parameters.Length == 2
+                    && parameters[0].ParameterType.IsInstanceOfType(cookedFood)
+                    && parameters[1].ParameterType == typeof(int);
+            })
             .ToArray();
-        if (methods.Length == 0)
+        if (methods.Length != 1)
         {
-            diagnostic = "未找到 StoreFood 方法";
+            diagnostic = methods.Length == 0
+                ? "未找到精确 StoreFood(Sellable, int) 方法"
+                : $"发现 {methods.Length} 个 StoreFood(Sellable, int) 方法，无法确定唯一原生入口";
             return false;
         }
 
-        var errors = new List<string>();
-        foreach (var method in methods)
-        {
-            if (!TryBuildStoreFoodArguments(method, cookedFood, out var args, out var skippedReason))
-            {
-                errors.Add($"{FormatMethodSignature(method)}: {skippedReason}");
-                continue;
-            }
-
-            try
-            {
-                method.Invoke(configure, args);
-                return true;
-            }
-            catch (Exception ex)
-            {
-                var root = ex.GetBaseException();
-                errors.Add($"{FormatMethodSignature(method)}: {root.GetType().Name}: {root.Message}");
-            }
-        }
-
-        diagnostic = errors.Count == 0
-            ? "未找到可用的 StoreFood 入口"
-            : $"StoreFood 调用失败：{string.Join("；", errors.Distinct(StringComparer.Ordinal))}";
-        return false;
-    }
-
-    private static bool TryBuildStoreFoodArguments(
-        MethodInfo method,
-        object cookedFood,
-        out object?[] args,
-        out string skippedReason)
-    {
-        args = Array.Empty<object?>();
-        skippedReason = "";
-        var parameters = method.GetParameters();
-        if (parameters.Length == 1)
-        {
-            if (!parameters[0].ParameterType.IsInstanceOfType(cookedFood))
-            {
-                skippedReason = $"第一个参数需要 {parameters[0].ParameterType.FullName}，实际为 {cookedFood.GetType().FullName}";
-                return false;
-            }
-
-            args = new object?[] { cookedFood };
-            return true;
-        }
-
-        if (parameters.Length == 2)
-        {
-            if (!parameters[0].ParameterType.IsInstanceOfType(cookedFood))
-            {
-                skippedReason = $"第一个参数需要 {parameters[0].ParameterType.FullName}，实际为 {cookedFood.GetType().FullName}";
-                return false;
-            }
-
-            if (!TryBuildStoreFoodSenderArgument(parameters[1].ParameterType, out var sender))
-            {
-                skippedReason = $"第二个参数不是可传入的整数类型：{parameters[1].ParameterType.FullName}";
-                return false;
-            }
-
-            args = new[] { cookedFood, sender };
-            return true;
-        }
-
-        skippedReason = $"参数数量不支持：{parameters.Length}";
-        return false;
-    }
-
-    private static bool TryBuildStoreFoodSenderArgument(Type parameterType, out object? value)
-    {
-        value = null;
-        if (parameterType.IsByRef)
-        {
-            parameterType = parameterType.GetElementType() ?? parameterType;
-        }
-
+        invocationAttempted = true;
         try
         {
-            if (parameterType.IsEnum)
-            {
-                value = Enum.ToObject(parameterType, -1);
-                return true;
-            }
-
-            if (parameterType == typeof(int))
-            {
-                value = -1;
-                return true;
-            }
-
-            if (parameterType.IsPrimitive)
-            {
-                value = Convert.ChangeType(-1, parameterType);
-                return true;
-            }
+            methods[0].Invoke(configure, new object?[] { cookedFood, -1 });
+            return true;
         }
-        catch
+        catch (Exception ex)
         {
-            value = null;
+            var root = ex.GetBaseException();
+            diagnostic = $"StoreFood(Sellable, int) 调用失败：{root.GetType().Name}: {root.Message}";
             return false;
         }
-
-        return false;
-    }
-
-    private static string FormatMethodSignature(MethodInfo method)
-    {
-        var parameters = string.Join(", ", method.GetParameters().Select(parameter => parameter.ParameterType.Name));
-        return $"{method.DeclaringType?.FullName ?? method.Name}.{method.Name}({parameters})";
     }
 
     private static object? ReadStoredFoodList(object configure)
@@ -786,49 +1192,241 @@ internal static partial class RuntimeOrderPreparationService
             ?? TryInvokeInstanceValue(configure, "GetStoredFoods");
     }
 
-    private static int CountStoredFoods(object configure, int foodId)
+    private static bool TryInspectStoredFoodIdentity(
+        object configure,
+        object cookedFood,
+        out bool found,
+        out string diagnostic)
     {
-        if (foodId < 0) return -1;
-
-        var storedFoods = ReadStoredFoodList(configure);
-        if (storedFoods == null) return -1;
-
-        var rawCount = ToInt(TryInvokeInstanceValue(storedFoods, "get_Count")
-            ?? ReadMember(storedFoods, "Count")
-            ?? ReadMember(storedFoods, "_size"), -1);
-        var count = 0;
-        var scanned = 0;
-        foreach (var food in ReadObjectEnumerable(storedFoods))
-        {
-            scanned++;
-            if (IsSellable(food, sellableType: 0, id: foodId))
-            {
-                count++;
-            }
-        }
-
-        return scanned == 0 && rawCount > 0 ? -1 : count;
-    }
-
-    private static string TryResetCookControllerAfterWarmerStore(object cookController, object cookedFood)
-    {
+        found = false;
+        diagnostic = "";
         try
         {
-            TryInvokeInstance(cookController, "CloseCookingVisual", Array.Empty<object?>());
-            TryClearCookController(cookController, cookedFood);
-
-            var phaseAfterClear = ToInt(TryInvokeInstanceValue(cookController, "get_Phase"), -1);
-            if (phaseAfterClear <= 0)
+            var storedFoods = ReadStoredFoodList(configure);
+            if (storedFoods == null)
             {
-                return "厨具阶段已恢复空闲。";
+                diagnostic = "无法读取 IzakayaConfigure.StoredFoods";
+                return false;
             }
 
-            return $"厨具复位状态异常（phase={phaseAfterClear}），成品已进入保温箱。";
+            if (!TryReadExactMemberValue(storedFoods, out var rawCount, out var countDiagnostic, "Count", "_size")
+                || !TryReadIntValue(rawCount, out var count)
+                || count < 0
+                || count > 4096)
+            {
+                diagnostic = $"无法可靠读取 StoredFoods.Count：{countDiagnostic}";
+                return false;
+            }
+
+            for (var index = 0; index < count; index++)
+            {
+                var item = InvokeInstance(storedFoods, "get_Item", new object?[] { index });
+                if (item == null) continue;
+
+                var identity = CompareObjectIdentity(item, cookedFood);
+                if (identity == RuntimeObjectIdentityComparison.Same)
+                {
+                    found = true;
+                    return true;
+                }
+
+                if (identity == RuntimeObjectIdentityComparison.Unknown)
+                {
+                    diagnostic = $"StoredFoods[{index}] 与目标成品的原生身份无法确认";
+                    return false;
+                }
+            }
+
+            return true;
         }
         catch (Exception ex)
         {
-            return $"厨具复位诊断：{ex.GetBaseException().Message}。";
+            diagnostic = ex.GetBaseException().Message;
+            return false;
         }
+    }
+
+    private static bool TryResetCookControllerAfterCommittedSideEffect(
+        AutomationCookingJob job,
+        object cookedFood,
+        out string message)
+    {
+        try
+        {
+            if (!IsAutomationCookingJobOwned(job, out var ownershipDiagnostic))
+            {
+                message = $"厨具已进入新锅次，未清理当前厨具。{ownershipDiagnostic}";
+                return false;
+            }
+
+            if (!TryReadCookControllerResetState(
+                    job.CookController,
+                    out var phaseBefore,
+                    out var resultBefore,
+                    out var chosenRecipeBefore,
+                    out var beforeDiagnostic))
+            {
+                message = $"无法在复位前可靠读取厨具状态：{beforeDiagnostic}";
+                return false;
+            }
+
+            if (phaseBefore == 0 && resultBefore == null && chosenRecipeBefore == null)
+            {
+                message = "厨具已严格确认处于空闲状态（Phase=0，Result/ChosenRecipe=null）。";
+                return true;
+            }
+
+            if (resultBefore != null && !IsSameObject(resultBefore, cookedFood))
+            {
+                message = "同一锅次厨具当前 Result 已变为其他对象，拒绝清理。";
+                return false;
+            }
+
+            if (!TryInvokeInstance(job.CookController, "CloseCookingVisual", Array.Empty<object?>()))
+            {
+                message = "无法关闭 CookController 料理视觉，厨具复位未执行。";
+                return false;
+            }
+            if (!WriteMember(job.CookController, "LastResult", cookedFood))
+            {
+                message = "无法写入 CookController.LastResult，厨具复位未确认。";
+                return false;
+            }
+
+            if (!WriteMember(job.CookController, "Result", null))
+            {
+                message = "无法清空 CookController.Result，厨具复位未确认。";
+                return false;
+            }
+
+            if (!WriteMember(job.CookController, "ChosenRecipe", null))
+            {
+                message = "无法清空 CookController.ChosenRecipe，厨具复位未确认。";
+                return false;
+            }
+
+            if (!TryCreateIdleCookPhaseValue(job.CookController, out var phaseValue))
+            {
+                message = "无法解析 CookController.Phase 的运行时类型，厨具复位未确认。";
+                return false;
+            }
+
+            if (!WriteMember(job.CookController, "Phase", phaseValue))
+            {
+                message = "无法写入 CookController.Phase=Idle，厨具复位未确认。";
+                return false;
+            }
+
+            if (!IsAutomationCookingJobOwned(job, out ownershipDiagnostic))
+            {
+                message = $"复位后厨具锅次所有权已变化，无法确认清理边界。{ownershipDiagnostic}";
+                return false;
+            }
+
+            if (!TryReadCookControllerResetState(
+                    job.CookController,
+                    out var phaseAfter,
+                    out var resultAfter,
+                    out var chosenRecipeAfter,
+                    out var afterDiagnostic))
+            {
+                message = $"复位写入后无法可靠读取厨具状态：{afterDiagnostic}";
+                return false;
+            }
+
+            if (phaseAfter != 0 || resultAfter != null || chosenRecipeAfter != null)
+            {
+                message = $"厨具复位严格校验失败（phase={phaseAfter}; resultNull={resultAfter == null}; chosenRecipeNull={chosenRecipeAfter == null}）。";
+                return false;
+            }
+
+            message = "厨具已严格复位（Phase=0，Result/ChosenRecipe=null）。";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            var attemptCount = Math.Max(job.WarmerResetAttempts, job.FoodDeliveryCleanupAttempts);
+            message = $"厨具复位诊断（尝试 {attemptCount} 次）：{ex.GetBaseException().Message}。";
+            return false;
+        }
+    }
+
+    private static bool TryReadCookControllerResetState(
+        object cookController,
+        out int phase,
+        out object? result,
+        out object? chosenRecipe,
+        out string diagnostic)
+    {
+        phase = -1;
+        result = null;
+        chosenRecipe = null;
+        diagnostic = "";
+        if (!TryReadExactMemberValue(
+                cookController,
+                out var rawPhase,
+                out var phaseDiagnostic,
+                "Phase",
+                "<Phase>k__BackingField")
+            || rawPhase == null
+            || (phase = ToInt(rawPhase, -1)) < 0)
+        {
+            diagnostic = $"Phase 不可读：{phaseDiagnostic}";
+            return false;
+        }
+
+        if (!TryReadExactMemberValue(
+                cookController,
+                out result,
+                out var resultDiagnostic,
+                "Result",
+                "<Result>k__BackingField"))
+        {
+            diagnostic = $"Result 不可读：{resultDiagnostic}";
+            return false;
+        }
+
+        if (!TryReadExactMemberValue(
+                cookController,
+                out chosenRecipe,
+                out var recipeDiagnostic,
+                "ChosenRecipe",
+                "<ChosenRecipe>k__BackingField"))
+        {
+            diagnostic = $"ChosenRecipe 不可读：{recipeDiagnostic}";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryCreateIdleCookPhaseValue(object cookController, out object value)
+    {
+        for (var type = cookController.GetType(); type != null; type = type.BaseType)
+        {
+            var property = type.GetProperty(
+                "Phase",
+                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly);
+            if (property != null)
+            {
+                value = property.PropertyType.IsEnum
+                    ? Enum.ToObject(property.PropertyType, 0)
+                    : Convert.ChangeType(0, property.PropertyType);
+                return true;
+            }
+
+            var field = type.GetField(
+                "<Phase>k__BackingField",
+                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly);
+            if (field == null) continue;
+            value = field.FieldType.IsEnum
+                ? Enum.ToObject(field.FieldType, 0)
+                : Convert.ChangeType(0, field.FieldType);
+            return true;
+        }
+
+        value = 0;
+        return false;
     }
 
     private static OrderPreparationRequest BuildOrderRequestFromCookingTarget(CookingCollectionTarget target)
@@ -859,17 +1457,15 @@ internal static partial class RuntimeOrderPreparationService
         };
     }
 
-    private static void TryCompleteCookControllerAfterDirectDelivery(object cookController, object cookedFood)
+    private static bool IsAutomationCookingJobOwned(AutomationCookingJob job, out string diagnostic)
     {
-        try
+        if (!RuntimeCookingGenerationTracker.TryGetGeneration(job.CookController, out var generation, out diagnostic))
         {
-            TryInvokeInstance(cookController, "AfterPlayerExtract", Array.Empty<object?>());
-            TryInvokeInstance(cookController, "CloseCookingVisual", Array.Empty<object?>());
-            TryClearCookController(cookController, cookedFood);
+            return false;
         }
-        catch
-        {
-            // 料理已成功送达订单；厨具清理失败只能留给后续轮询或玩家手动处理，不能回滚订单状态。
-        }
+
+        if (generation == job.Generation) return true;
+        diagnostic = $"expectedGeneration={job.Generation}; actualGeneration={generation}; {diagnostic}";
+        return false;
     }
 }

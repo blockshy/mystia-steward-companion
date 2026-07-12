@@ -2,6 +2,7 @@ namespace MystiaStewardCompanion.LocalApi;
 
 internal sealed class OrderPreparationRequest
 {
+    public long AutomationEpoch { get; init; }
     public string TraceId { get; init; } = "";
     public string OrderKey { get; init; } = "";
     public int DeskCode { get; init; }
@@ -47,7 +48,17 @@ internal sealed class OrderPreparationResult
     public bool ServedFood { get; set; }
     public bool ServedBeverage { get; set; }
     public bool CompletedOrder { get; set; }
+    public OrderAutomationStageResult Automation { get; } = new();
     public List<OrderPreparationStep> Steps { get; } = new();
+}
+
+internal sealed class OrderAutomationStageResult
+{
+    public string Outcome { get; set; } = "";
+    public string Stage { get; set; } = "";
+    public string ReasonCode { get; set; } = "";
+    public string JobId { get; set; } = "";
+    public int RetryAfterMs { get; set; }
 }
 
 internal sealed class OrderPreparationOrder
@@ -67,4 +78,14 @@ internal sealed class OrderPreparationStep
     public bool Ok { get; init; }
     public bool Skipped { get; init; }
     public string Message { get; init; } = "";
+}
+
+internal sealed class AutomationSafetyBarrierAckResult
+{
+    public bool Ok { get; init; }
+    public long Sequence { get; init; }
+    public int AcknowledgedCount { get; init; }
+    public IReadOnlyList<long> AcknowledgedSequences { get; init; } = Array.Empty<long>();
+    public string Status { get; init; } = "";
+    public string Error { get; init; } = "";
 }

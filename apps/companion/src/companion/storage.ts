@@ -17,6 +17,7 @@ const FOCUS_COMPACT_STORAGE_KEY = `${STORAGE_PREFIX}-service-focus-compact`;
 const FOCUS_RECIPE_LIMIT_STORAGE_KEY = `${STORAGE_PREFIX}-service-focus-recipe-limit`;
 const FOCUS_BEVERAGE_LIMIT_STORAGE_KEY = `${STORAGE_PREFIX}-service-focus-beverage-limit`;
 const CUSTOM_RECIPE_GROUP_MODE_STORAGE_KEY = `${STORAGE_PREFIX}-custom-recipe-group-mode`;
+const AUTOMATION_CANCELLATION_ENDPOINT_STORAGE_KEY = `${STORAGE_PREFIX}-automation-cancellation-endpoint`;
 const LEGACY_ENDPOINT_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-api-endpoint`;
 const LEGACY_TOKEN_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-api-token`;
 const LEGACY_TAB_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-tab`;
@@ -99,6 +100,20 @@ export function readStoredCustomRecipeGroupMode(): CustomRecipeGroupMode {
 
 export function persistCustomRecipeGroupMode(mode: CustomRecipeGroupMode) {
   localStorage.setItem(CUSTOM_RECIPE_GROUP_MODE_STORAGE_KEY, mode);
+}
+
+export function readStoredAutomationCancellationEndpoint(): string {
+  const endpoint = localStorage.getItem(AUTOMATION_CANCELLATION_ENDPOINT_STORAGE_KEY);
+  return endpoint ? normalizeEndpoint(endpoint) : '';
+}
+
+export function persistAutomationCancellationEndpoint(endpoint: string) {
+  if (endpoint) {
+    localStorage.setItem(AUTOMATION_CANCELLATION_ENDPOINT_STORAGE_KEY, normalizeEndpoint(endpoint));
+    return;
+  }
+
+  localStorage.removeItem(AUTOMATION_CANCELLATION_ENDPOINT_STORAGE_KEY);
 }
 
 export function normalizeEndpoint(value: string) {

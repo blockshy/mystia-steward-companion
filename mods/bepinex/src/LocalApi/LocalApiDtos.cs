@@ -149,6 +149,13 @@ internal sealed class LocalApiOrderActionErrorDto
     public string RecipeName { get; init; } = "";
     public int BeverageId { get; init; } = -1;
     public string BeverageName { get; init; } = "";
+    public OrderAutomationStageResult Automation { get; init; } = new()
+    {
+        Outcome = "retryable-failure",
+        Stage = "lease",
+        ReasonCode = "automation-lease-unavailable",
+        RetryAfterMs = 1000,
+    };
     public IReadOnlyList<OrderPreparationStep> Steps { get; init; } = Array.Empty<OrderPreparationStep>();
 }
 

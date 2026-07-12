@@ -14,7 +14,8 @@ var expectedGetRoutes = new HashSet<string>(StringComparer.Ordinal)
 var expectedPostRoutes = new HashSet<string>(StringComparer.Ordinal)
 {
     "/automation/lease/acquire",
-    "/automation/lease/release",
+    "/automation/jobs/cancel",
+    "/automation/barriers/ack",
     "/custom-recipes/move",
     "/custom-recipes/remove",
     "/custom-recipes/settings",
@@ -53,6 +54,25 @@ try
     AssertAbsent(source, "NormalizeApiPath", "Legacy API path normalization still exists.");
     AssertAbsent(source, "case \"/\":", "The root path still aliases another endpoint.");
     AssertAbsent(source, "StartsWith(\"/api/\"", "The /api/* path alias still exists.");
+    AssertAbsent(source, "case \"/automation/lease/release\":", "The obsolete lease release route still exists.");
+    AssertContains(source, "CancelAutomationAndReleaseLease(request)", "Automation cancellation is not an atomic cancel-and-release operation.");
+    AssertContains(
+        source,
+        "AcknowledgeAutomationSafetyBarrier(request, query)",
+        "Automation safety barriers do not expose an explicit lease-owned acknowledgement endpoint.");
+    AssertContains(
+        source,
+        "return _ackAutomationSafetyBarrier(sequence);",
+        "Safety barrier acknowledgement does not reach the authoritative Mod registry.");
+    AssertContains(source, "AutomationEpoch = automationEpoch", "Order commands are not stamped with the validated automation epoch.");
+    AssertContains(
+        source,
+        "_advanceAutomationCommandEpoch(_automationCommandEpoch);",
+        "A newly acquired automation lease does not immediately invalidate commands from the previous owner.");
+    AssertContains(
+        source,
+        "_automationCommandEpoch = Math.Max(1, automationCommandEpoch);",
+        "A recreated Local API server does not inherit the Unity command epoch.");
 
     var handleStart = RequireIndex(source, "private void HandleClient(TcpClient client)", 0);
     var postBranchStart = RequireIndex(source, "if (isPost)", handleStart);
@@ -66,6 +86,26 @@ try
     AssertRouteSet("POST", expectedPostRoutes, postRoutes);
     AssertNoDuplicates("GET", getRoutes);
     AssertNoDuplicates("POST", postRoutes);
+
+    var overlaySource = File.ReadAllText(FindOverlaySource());
+    var cancellationProcessIndex = RequireIndex(overlaySource, "ProcessPendingAutomationJobCancellations();", 0);
+    var orderProcessIndex = RequireIndex(overlaySource, "ProcessPendingOrderPreparations();", cancellationProcessIndex);
+    if (cancellationProcessIndex >= orderProcessIndex)
+    {
+        throw new InvalidOperationException("Automation cancellation must be processed before queued order commands each frame.");
+    }
+    AssertContains(
+        overlaySource,
+        "pending.AutomationEpoch != currentEpoch",
+        "Queued order commands are not rejected after the automation epoch advances.");
+    AssertContains(
+        overlaySource,
+        "_automationCommandFence.RunExclusive(currentEpoch =>",
+        "Order execution is not serialized with automation epoch changes.");
+    AssertContains(
+        overlaySource,
+        "result.Automation.ReasonCode = \"runtime-unavailable\";",
+        "Runtime-unavailable order responses do not participate in structured retry handling.");
 
     var overlappingRoutes = expectedGetRoutes.Intersect(expectedPostRoutes, StringComparer.Ordinal).ToArray();
     AssertEqual(
@@ -97,6 +137,23 @@ static string FindServerSource()
     }
 
     throw new FileNotFoundException("Could not locate mods/bepinex/src/LocalApi/LocalApiServer.cs.");
+}
+
+static string FindOverlaySource()
+{
+    for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory != null; directory = directory.Parent)
+    {
+        var candidate = Path.Combine(
+            directory.FullName,
+            "mods",
+            "bepinex",
+            "src",
+            "Ui",
+            "StewardOverlayController.cs");
+        if (File.Exists(candidate)) return candidate;
+    }
+
+    throw new FileNotFoundException("Could not locate mods/bepinex/src/Ui/StewardOverlayController.cs.");
 }
 
 static int RequireIndex(string source, string marker, int startIndex)
@@ -142,6 +199,11 @@ static void AssertNoDuplicates(string method, IReadOnlyCollection<string> routes
 static void AssertAbsent(string source, string value, string message)
 {
     if (source.Contains(value, StringComparison.Ordinal)) throw new InvalidOperationException(message);
+}
+
+static void AssertContains(string source, string value, string message)
+{
+    if (!source.Contains(value, StringComparison.Ordinal)) throw new InvalidOperationException(message);
 }
 
 static void AssertEqual(IReadOnlyList<string> expected, IReadOnlyList<string> actual, string message)

@@ -26,6 +26,7 @@ import { sortNightOrderRows, sortNightOrders } from '@/companion/domain/sorting'
 import { formatDesk, formatGuestFund, formatPerformanceMs } from '@/companion/formatters';
 import type { CompanionPreferences, ServiceOrderSortMode } from '@/companion/preferences';
 import type {
+  AutomationSafetyBarrierDiagnostic,
   CustomRecipeData,
   FavoriteData,
   GameUiPinningTarget,
@@ -167,6 +168,8 @@ export function ModServicePanel({
   normalOrderMessage,
   normalOrderPausedCount,
   normalOrderDiagnostics,
+  automationSafetyBarriers,
+  automationBarrierAckBusyKey,
   normalExecutionTargets,
   normalExecutionTargetsEnabled,
   normalExecutionTargetsPending,
@@ -186,6 +189,9 @@ export function ModServicePanel({
   onToggleBeverageFavorite,
   onRetryRareAutomationOrder,
   onResetRareAutomationOrder,
+  onRetryNormalAutomationOrder,
+  onResetNormalAutomationOrder,
+  onAcknowledgeAutomationBarrier,
   onDismissRareOrder,
   onEnterFocusMode,
   onServiceViewChange,
@@ -219,6 +225,8 @@ export function ModServicePanel({
   normalOrderMessage: string;
   normalOrderPausedCount: number;
   normalOrderDiagnostics: NormalAutoOrderDiagnostic[];
+  automationSafetyBarriers: AutomationSafetyBarrierDiagnostic[];
+  automationBarrierAckBusyKey: string;
   normalExecutionTargets: NormalExecutionTargetSelection[];
   normalExecutionTargetsEnabled: boolean;
   normalExecutionTargetsPending: boolean;
@@ -238,6 +246,9 @@ export function ModServicePanel({
   onToggleBeverageFavorite: ToggleBeverageFavorite;
   onRetryRareAutomationOrder: (orderKey: string) => void;
   onResetRareAutomationOrder: (orderKey: string) => void;
+  onRetryNormalAutomationOrder: (orderKey: string) => void;
+  onResetNormalAutomationOrder: (orderKey: string) => void;
+  onAcknowledgeAutomationBarrier: (sequence: number) => void;
   onDismissRareOrder: (order: NightBusinessOrder) => void;
   onEnterFocusMode: () => void;
   onServiceViewChange: (value: ServicePanelView) => void;
@@ -486,6 +497,13 @@ export function ModServicePanel({
 
       {activeServiceView === 'automation' && (
         <div className="space-y-4">
+          {automationSafetyBarriers.length > 0 && (
+            <AutomationSafetyBarrierPanel
+              diagnostics={automationSafetyBarriers}
+              busyKey={automationBarrierAckBusyKey}
+              onAcknowledge={onAcknowledgeAutomationBarrier}
+            />
+          )}
           {autoPrepPreferences.automationEnabled ? (
             <>
               <AutomationResourcePanel overview={automationResources} />
@@ -507,6 +525,7 @@ export function ModServicePanel({
                     message={autoPrepMessage}
                     paused={autoPrepPaused}
                     diagnostics={rareOrderDiagnostics}
+                    automationBarrierAckBusyKey={automationBarrierAckBusyKey}
                     showDebugDetails={showDebugDetails}
                     onPreferenceChange={onPreferenceChange}
                     onRetryOrder={onRetryRareAutomationOrder}
@@ -521,8 +540,11 @@ export function ModServicePanel({
                     message={normalOrderMessage}
                     pausedCount={normalOrderPausedCount}
                     diagnostics={normalOrderDiagnostics}
+                    automationBarrierAckBusyKey={automationBarrierAckBusyKey}
                     showDebugDetails={showDebugDetails}
                     onPreferenceChange={onPreferenceChange}
+                    onRetryOrder={onRetryNormalAutomationOrder}
+                    onResetOrder={onResetNormalAutomationOrder}
                   />
                 </TabsContent>
               </Tabs>
@@ -784,12 +806,64 @@ function CurrentOrderRecommendations({
   );
 }
 
+function AutomationSafetyBarrierPanel({
+  diagnostics,
+  busyKey,
+  onAcknowledge,
+}: {
+  diagnostics: AutomationSafetyBarrierDiagnostic[];
+  busyKey: string;
+  onAcknowledge: (sequence: number) => void;
+}) {
+  return (
+    <ListPanel title={`待人工确认 (${diagnostics.length})`}>
+      <div className="space-y-2">
+        {diagnostics.map((diagnostic) => {
+          const itemBusyKey = `barrier:${diagnostic.sequence}`;
+          const isBusy = busyKey === itemBusyKey;
+          const targetLabel = diagnostic.targetKind === 'normal' ? '普客' : diagnostic.targetKind === 'rare' ? '稀客' : diagnostic.targetKind;
+          return (
+            <div key={diagnostic.sequence} className="steward-data-row px-2.5 py-2 text-sm">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="font-medium text-foreground">{diagnostic.title}</div>
+                  <div className="mt-1 flex flex-wrap gap-1.5 text-xs">
+                    <Badge variant="destructive">{targetLabel || '未知目标'}</Badge>
+                    <Badge variant="outline">事件 #{diagnostic.sequence}</Badge>
+                    <Badge variant="outline">{diagnostic.code || '未知原因'}</Badge>
+                  </div>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={Boolean(busyKey)}
+                  onClick={() => onAcknowledge(diagnostic.sequence)}
+                  data-gamepad-focus-key={`automation-barrier:${diagnostic.sequence}:ack`}
+                >
+                  {isBusy ? '确认中' : '确认已处理'}
+                </Button>
+              </div>
+              <div className="mt-2 whitespace-pre-line text-xs text-muted-foreground">
+                {diagnostic.message}
+              </div>
+              {diagnostic.error && (
+                <div className="mt-1 text-xs text-destructive">确认失败：{diagnostic.error}</div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </ListPanel>
+  );
+}
+
 function RareServiceAutomationPanel({
   preferences,
   busy,
   message,
   paused,
   diagnostics,
+  automationBarrierAckBusyKey,
   showDebugDetails,
   onPreferenceChange,
   onRetryOrder,
@@ -800,6 +874,7 @@ function RareServiceAutomationPanel({
   message: string;
   paused: boolean;
   diagnostics: RareAutoOrderDiagnostic[];
+  automationBarrierAckBusyKey: string;
   showDebugDetails: boolean;
   onPreferenceChange: (next: Partial<CompanionPreferences>) => void;
   onRetryOrder: (orderKey: string) => void;
@@ -850,6 +925,7 @@ function RareServiceAutomationPanel({
         message={message}
         preferences={preferences}
         diagnostics={diagnostics}
+        automationBarrierAckBusyKey={automationBarrierAckBusyKey}
         showDebugDetails={showDebugDetails}
         onRetryOrder={onRetryOrder}
         onResetOrder={onResetOrder}
@@ -864,7 +940,10 @@ function NormalServiceAutomationPanel({
   message,
   pausedCount,
   diagnostics,
+  automationBarrierAckBusyKey,
   showDebugDetails,
+  onRetryOrder,
+  onResetOrder,
   onPreferenceChange,
 }: {
   preferences: CompanionPreferences;
@@ -872,7 +951,10 @@ function NormalServiceAutomationPanel({
   message: string;
   pausedCount: number;
   diagnostics: NormalAutoOrderDiagnostic[];
+  automationBarrierAckBusyKey: string;
   showDebugDetails: boolean;
+  onRetryOrder: (orderKey: string) => void;
+  onResetOrder: (orderKey: string) => void;
   onPreferenceChange: (next: Partial<CompanionPreferences>) => void;
 }) {
   return (
@@ -898,10 +980,7 @@ function NormalServiceAutomationPanel({
             <AutomationSwitchCell
               label="自动送达料理"
               checked={preferences.autoNormalDeliverFood}
-              onCheckedChange={(autoNormalDeliverFood) => onPreferenceChange({
-                autoNormalDeliverFood,
-                autoNormalCollectCooking: autoNormalDeliverFood,
-              })}
+              onCheckedChange={(autoNormalDeliverFood) => onPreferenceChange({ autoNormalDeliverFood })}
             />
             <AutomationSwitchCell
               label="自动完成订单"
@@ -922,7 +1001,10 @@ function NormalServiceAutomationPanel({
         message={message}
         preferences={preferences}
         diagnostics={diagnostics}
+        automationBarrierAckBusyKey={automationBarrierAckBusyKey}
         showDebugDetails={showDebugDetails}
+        onRetryOrder={onRetryOrder}
+        onResetOrder={onResetOrder}
       />
     </ListPanel>
   );
@@ -934,6 +1016,7 @@ function RareAutoPrepStatus({
   message,
   preferences,
   diagnostics,
+  automationBarrierAckBusyKey,
   showDebugDetails,
   onRetryOrder,
   onResetOrder,
@@ -943,6 +1026,7 @@ function RareAutoPrepStatus({
   message: string;
   preferences: CompanionPreferences;
   diagnostics: RareAutoOrderDiagnostic[];
+  automationBarrierAckBusyKey: string;
   showDebugDetails: boolean;
   onRetryOrder: (orderKey: string) => void;
   onResetOrder: (orderKey: string) => void;
@@ -970,7 +1054,7 @@ function RareAutoPrepStatus({
                     size="sm"
                     variant="outline"
                     onClick={() => onRetryOrder(diagnostic.orderKey)}
-                    disabled={busy || !diagnostic.paused}
+                    disabled={busy || !diagnostic.paused || diagnostic.manualResolutionRequired}
                     data-gamepad-focus-key={`rare-auto:${diagnostic.orderKey}:retry`}
                   >
                     重试
@@ -979,10 +1063,12 @@ function RareAutoPrepStatus({
                     size="sm"
                     variant="outline"
                     onClick={() => onResetOrder(diagnostic.orderKey)}
-                    disabled={busy}
+                    disabled={busy || (diagnostic.manualResolutionRequired && Boolean(automationBarrierAckBusyKey))}
                     data-gamepad-focus-key={`rare-auto:${diagnostic.orderKey}:reset`}
                   >
-                    重置
+                    {diagnostic.manualResolutionRequired && automationBarrierAckBusyKey === `rare:${diagnostic.orderKey}`
+                      ? '确认中'
+                      : diagnostic.manualResolutionRequired ? '确认已处理' : '重置'}
                   </Button>
                 </div>
               </div>
@@ -1003,6 +1089,9 @@ function RareAutoPrepStatus({
                 <Badge variant={diagnostic.paused ? 'destructive' : 'secondary'}>
                   {diagnostic.paused ? '暂停' : '运行'}
                 </Badge>
+                {diagnostic.manualResolutionRequired && (
+                  <Badge variant="destructive">需人工确认</Badge>
+                )}
                 <Badge variant={diagnostic.prepared ? 'secondary' : 'outline'}>
                   料理{diagnostic.prepared ? '已开锅' : '待处理'}
                 </Badge>
@@ -1052,14 +1141,20 @@ function NormalAutoPrepStatus({
   message,
   preferences,
   diagnostics,
+  automationBarrierAckBusyKey,
   showDebugDetails,
+  onRetryOrder,
+  onResetOrder,
 }: {
   busy: boolean;
   pausedCount: number;
   message: string;
   preferences: CompanionPreferences;
   diagnostics: NormalAutoOrderDiagnostic[];
+  automationBarrierAckBusyKey: string;
   showDebugDetails: boolean;
+  onRetryOrder: (orderKey: string) => void;
+  onResetOrder: (orderKey: string) => void;
 }) {
   return (
     <div className="steward-inline-panel mt-3 px-3 py-2 text-sm">
@@ -1079,9 +1174,31 @@ function NormalAutoPrepStatus({
                     料理 {diagnostic.foodName || '无'} · 酒水 {diagnostic.beverageName || '无'}
                   </div>
                 </div>
-                <Badge variant={diagnostic.paused ? 'destructive' : 'secondary'}>
-                  {diagnostic.paused ? '暂停' : '运行'}
-                </Badge>
+                <div className="flex shrink-0 items-center gap-1.5" data-gamepad-axis="x">
+                  <Badge variant={diagnostic.paused ? 'destructive' : 'secondary'}>
+                    {diagnostic.paused ? '暂停' : '运行'}
+                  </Badge>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => onRetryOrder(diagnostic.orderKey)}
+                    disabled={busy || !diagnostic.paused || diagnostic.manualResolutionRequired}
+                    data-gamepad-focus-key={`normal-auto:${diagnostic.orderKey}:retry`}
+                  >
+                    重试
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => onResetOrder(diagnostic.orderKey)}
+                    disabled={busy || (diagnostic.manualResolutionRequired && Boolean(automationBarrierAckBusyKey))}
+                    data-gamepad-focus-key={`normal-auto:${diagnostic.orderKey}:reset`}
+                  >
+                    {diagnostic.manualResolutionRequired && automationBarrierAckBusyKey === `normal:${diagnostic.orderKey}`
+                      ? '确认中'
+                      : diagnostic.manualResolutionRequired ? '确认已处理' : '重置'}
+                  </Button>
+                </div>
               </div>
               <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground max-[479px]:grid-cols-1 md:grid-cols-5">
                 <InfoLine label="步骤" value={`${diagnostic.stepLabel} · ${diagnostic.stepSeconds}秒`} />
@@ -1099,6 +1216,9 @@ function NormalAutoPrepStatus({
               </div>
               <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
                 <OrderTraceBadge traceId={diagnostic.traceId} />
+                {diagnostic.manualResolutionRequired && (
+                  <Badge variant="destructive">需人工确认</Badge>
+                )}
                 <Badge variant={diagnostic.beverageDeliveryRequested ? 'secondary' : 'outline'}>
                   酒水处理{diagnostic.hasServedBeverage ? '已确认' : diagnostic.beverageDeliveryRequested ? '待确认' : '待处理'}
                 </Badge>

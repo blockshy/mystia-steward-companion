@@ -8,7 +8,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="../../mods/bepinex/src/Ui/MainThreadCommand.cs" Link="MainThreadCommand.cs" />
-    <Compile Include="../../mods/bepinex/src/Ui/AutomationCommandEpochFence.cs" Link="AutomationCommandEpochFence.cs" />
+    <Compile Include="../../mods/bepinex/src/LocalApi/LocalApiSnapshotSignature.cs" Link="LocalApiSnapshotSignature.cs" />
   </ItemGroup>
 </Project>

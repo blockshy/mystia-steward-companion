@@ -8,6 +8,7 @@ interface UseGameUiPinningPublisherOptions {
   endpoint: string;
   apiToken: string;
   connectionRevision: number;
+  sessionId: string;
   connectionReady: boolean;
   pinningEnabled: boolean;
   cookerHighlightEnabled: boolean;
@@ -30,16 +31,14 @@ interface UiPinningPublication {
 interface UiPinningPublisherState {
   active: boolean;
   activeAbortController: AbortController | null;
-  connectionEpoch: number;
   connectionKey: string;
   desired: UiPinningPublication | null;
   disposed: boolean;
   failedAtSuccessRevision: number | null;
-  lastCurrentTarget: string | null;
+  lastCurrentTarget: GameUiPinningTarget | null;
   lastSuccessfulSignature: string;
   retryAttempt: number;
   retryTimer: number | null;
-  wasConnectionReady: boolean;
 }
 
 /**
@@ -52,6 +51,7 @@ export function useGameUiPinningPublisher({
   endpoint,
   apiToken,
   connectionRevision,
+  sessionId,
   connectionReady,
   pinningEnabled,
   cookerHighlightEnabled,
@@ -64,7 +64,6 @@ export function useGameUiPinningPublisher({
   const stateRef = useRef<UiPinningPublisherState>({
     active: false,
     activeAbortController: null,
-    connectionEpoch: 0,
     connectionKey: '',
     desired: null,
     disposed: false,
@@ -73,10 +72,9 @@ export function useGameUiPinningPublisher({
     lastSuccessfulSignature: '',
     retryAttempt: 0,
     retryTimer: null,
-    wasConnectionReady: false,
   });
 
-  const serializedTarget = JSON.stringify(target);
+  const serializedTarget = serializeGameUiPinningWireTarget(target);
 
   const pump = useCallback(function publishLatestTarget(): void {
     const state = stateRef.current;
@@ -140,29 +138,27 @@ export function useGameUiPinningPublisher({
 
   useEffect(() => {
     const state = stateRef.current;
-    const connectionKey = `${endpoint}\n${apiToken}\n${connectionRevision}`;
+    const connectionKey = `${endpoint}\n${apiToken}\n${connectionRevision}\n${sessionId}`;
     if (state.connectionKey !== connectionKey) {
       state.connectionKey = connectionKey;
-      state.connectionEpoch += 1;
       state.lastCurrentTarget = null;
       state.lastSuccessfulSignature = '';
+      state.failedAtSuccessRevision = null;
       state.retryAttempt = 0;
+      if (state.retryTimer !== null) {
+        window.clearTimeout(state.retryTimer);
+        state.retryTimer = null;
+      }
     }
 
     if (!connectionReady) {
-      if (state.wasConnectionReady) state.connectionEpoch += 1;
-      state.wasConnectionReady = false;
       state.desired = null;
-      state.lastCurrentTarget = null;
-      state.lastSuccessfulSignature = '';
-      state.retryAttempt = 0;
       if (state.retryTimer !== null) {
         window.clearTimeout(state.retryTimer);
         state.retryTimer = null;
       }
       return;
     }
-    state.wasConnectionReady = true;
 
     if (recommendationError) {
       state.failedAtSuccessRevision = recommendationSuccessRevision;
@@ -178,16 +174,13 @@ export function useGameUiPinningPublisher({
     if (!featureEnabled || recommendationFailed) {
       state.lastCurrentTarget = null;
     } else if (recommendationIsCurrent && !recommendationPending) {
-      state.lastCurrentTarget = serializedTarget;
+      state.lastCurrentTarget = deserializeGameUiPinningWireTarget(serializedTarget);
     }
 
-    const publicationTarget = state.lastCurrentTarget === null
-      ? null
-      : JSON.parse(state.lastCurrentTarget) as GameUiPinningTarget;
-    const publicationTargetSignature = state.lastCurrentTarget ?? 'null';
+    const publicationTarget = state.lastCurrentTarget;
+    const publicationTargetSignature = serializeGameUiPinningWireTarget(publicationTarget);
     const publicationSignature = [
       connectionKey,
-      state.connectionEpoch,
       pinningEnabled ? '1' : '0',
       cookerHighlightEnabled ? '1' : '0',
       publicationTargetSignature,
@@ -223,5 +216,25 @@ export function useGameUiPinningPublisher({
     recommendationPending,
     recommendationSuccessRevision,
     serializedTarget,
+    sessionId,
   ]);
+}
+
+function serializeGameUiPinningWireTarget(target: GameUiPinningTarget | null): string {
+  if (!target) return 'null';
+  return JSON.stringify({
+    recipeId: target.recipeId,
+    recipeName: target.recipeName,
+    ingredientIds: target.ingredientIds,
+    beverageId: target.beverageId,
+    beverageName: target.beverageName,
+    cookerTypeId: target.cookerTypeId,
+    cookerName: target.cookerName,
+  });
+}
+
+function deserializeGameUiPinningWireTarget(serialized: string): GameUiPinningTarget | null {
+  if (serialized === 'null') return null;
+  const target = JSON.parse(serialized) as Omit<GameUiPinningTarget, 'signature'>;
+  return { signature: '', ...target };
 }

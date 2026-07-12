@@ -141,13 +141,15 @@ internal static partial class RuntimeOrderPreparationService
         RuntimeOrderMatch runtimeOrder,
         string stepName,
         string orderLabel,
+        CookingCollectionTarget safetyTarget,
         bool reacquireLiveOrder = true,
         bool allowControllerMissing = false)
     {
         var evaluation = TryEvaluateYuyukoChallengeRuntimeOrderIfReady(request, runtimeOrder, orderLabel, reacquireLiveOrder, allowControllerMissing);
         if (!evaluation.Ok)
         {
-            AddFailure(result, stepName, evaluation.Message);
+            AddFailure(result, stepName, evaluation.Message, evaluation.Code);
+            RecordOrderSafetyBarrierIfNeeded(evaluation.Code, safetyTarget, evaluation.Message);
             return false;
         }
 
@@ -166,7 +168,7 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
-    private static (bool Ok, bool Completed, bool Skipped, string Message) TryEvaluateYuyukoChallengeRuntimeOrderIfReady(
+    private static RuntimeOrderEvaluationResult TryEvaluateYuyukoChallengeRuntimeOrderIfReady(
         OrderPreparationRequest request,
         RuntimeOrderMatch runtimeOrder,
         string orderLabel,
@@ -190,10 +192,10 @@ internal static partial class RuntimeOrderPreparationService
                     ? $"Yuyuko retake phase3 evaluation uses the native EvaluateOrder path after validating the _50/_70 progress callback. executionMode={executionMode}; reacquire={requiresLiveReacquire}; deliveryMatch={runtimeOrder.Diagnostic}"
                     : $"Yuyuko challenge order is checking whether the game evaluation path is ready before consuming the order. executionMode={executionMode}");
 
-        (bool Ok, bool Completed, bool Skipped, string Message) evaluation;
+        RuntimeOrderEvaluationResult evaluation;
         if (!TryValidateYuyukoPhase3NormalOrderTargetInvariant(request, evaluationOrder, out var normalOrderTargetDiagnostic))
         {
-            evaluation = (
+            evaluation = new(
                 false,
                 false,
                 false,
@@ -233,7 +235,7 @@ internal static partial class RuntimeOrderPreparationService
         return evaluation;
     }
 
-    private static (bool Ok, bool Completed, bool Skipped, string Message) TryEvaluateYuyukoPhase3RefreshOrderIfReady(
+    private static RuntimeOrderEvaluationResult TryEvaluateYuyukoPhase3RefreshOrderIfReady(
         OrderPreparationRequest request,
         RuntimeOrderMatch runtimeOrder,
         string orderLabel,
@@ -241,32 +243,39 @@ internal static partial class RuntimeOrderPreparationService
     {
         if (runtimeOrder.Order == null || runtimeOrder.Manager == null)
         {
-            return (false, false, false, "订单或客人管理器不可用，无法调用游戏评价流程。");
+            return new(false, false, false, "订单或客人管理器不可用，无法调用游戏评价流程。");
         }
 
         if (!ReadBool(InvokeInstance(runtimeOrder.Order, "get_IsFullfilled", Array.Empty<object?>())))
         {
-            return (true, false, true, "订单尚未同时满足料理和酒水，等待下一轮补齐。");
+            return new(true, false, true, "订单尚未同时满足料理和酒水，等待下一轮补齐。");
         }
 
         if (runtimeOrder.Controller == null)
         {
             if (allowControllerMissing)
             {
-                return (true, false, true, "幽幽子三阶段清理订单已满足，但暂未读取到客人控制器，等待下一轮触发评价。");
+                return new(true, false, true, "幽幽子三阶段清理订单已满足，但暂未读取到客人控制器，等待下一轮触发评价。");
             }
 
-            return (false, false, false, "已匹配幽幽子三阶段清理订单，但未找到对应客人控制器，无法确认原生评价回调。");
+            return new(false, false, false, "已匹配幽幽子三阶段清理订单，但未找到对应客人控制器，无法确认原生评价回调。");
         }
 
-        if (ReadBool(ReadMember(runtimeOrder.Controller, "HasEvaluated") ?? TryInvokeInstanceValue(runtimeOrder.Controller, "get_HasEvaluated")))
+        if (!TryReadRuntimeOrderEvaluated(runtimeOrder.Controller, out var evaluated, out var evaluatedDiagnostic))
         {
-            return (true, true, true, $"{orderLabel}已触发过评价，本次不重复调用。");
+            return new(false, false, false,
+                $"无法严格读取 {orderLabel} 的 HasEvaluated，已停止幽幽子评价：{evaluatedDiagnostic}",
+                OrderPreparationStepCodes.OrderEvaluationStateUnreadable);
+        }
+
+        if (evaluated)
+        {
+            return new(true, true, true, $"{orderLabel}已触发过评价，本次不重复调用。");
         }
 
         if (!TryValidateYuyukoPhase3ServedExactTarget(request, runtimeOrder, out var targetDiagnostic))
         {
-            return (
+            return new(
                 false,
                 false,
                 false,
@@ -279,7 +288,7 @@ internal static partial class RuntimeOrderPreparationService
         {
             if (!TryValidateYuyukoStoryPhase3RefreshEvaluation(runtimeOrder, out var storyDiagnostic))
             {
-                return (
+                return new(
                     false,
                     false,
                     false,
@@ -287,15 +296,25 @@ internal static partial class RuntimeOrderPreparationService
                     + $"诊断：{storyDiagnostic}; {targetDiagnostic}。请提供 aggregate-mod.log。");
             }
 
-            InvokeInstance(runtimeOrder.Manager, "EvaulateManualOrder", new object?[] { runtimeOrder.Controller, runtimeOrder.ManualEvaluationCallback });
-            return (true, true, false, $"已按幽幽子三阶段清理模式调用剧情版手动评价流程完成{orderLabel}，该订单不承诺推进进度。诊断：{targetDiagnostic}。");
+            var manualEvaluation = TryInvokeRuntimeOrderEvaluationOnce(
+                runtimeOrder.Manager,
+                runtimeOrder.Controller,
+                "EvaulateManualOrder",
+                new object?[] { runtimeOrder.Controller, runtimeOrder.ManualEvaluationCallback },
+                orderLabel);
+            return manualEvaluation.Ok && manualEvaluation.Completed && !manualEvaluation.Skipped
+                ? manualEvaluation with
+                {
+                    Message = $"已按幽幽子三阶段清理模式调用剧情版手动评价流程完成{orderLabel}，该订单不承诺推进进度。诊断：{targetDiagnostic}。",
+                }
+                : manualEvaluation;
         }
 
         if (evaluationMode == YuyukoPhase3EvaluationMode.RetakeNative)
         {
             if (!TryValidateYuyukoRetakePhase3RefreshEvaluation(runtimeOrder, out var retakeDiagnostic))
             {
-                return (
+                return new(
                     false,
                     false,
                     false,
@@ -305,40 +324,50 @@ internal static partial class RuntimeOrderPreparationService
 
             var evaluation = TryEvaluateRuntimeOrderIfReady(runtimeOrder, orderLabel, allowControllerMissing);
             return evaluation.Ok && evaluation.Completed && !evaluation.Skipped
-                ? (true, true, false, $"已按幽幽子三阶段清理模式调用重修版游戏评价流程完成{orderLabel}，该订单不承诺推进进度。{evaluation.Message} 诊断：{targetDiagnostic}。")
+                ? evaluation with
+                {
+                    Message = $"已按幽幽子三阶段清理模式调用重修版游戏评价流程完成{orderLabel}，该订单不承诺推进进度。{evaluation.Message} 诊断：{targetDiagnostic}。",
+                }
                 : evaluation;
         }
 
         return TryEvaluateRuntimeOrderIfReady(runtimeOrder, orderLabel, allowControllerMissing);
     }
 
-    private static (bool Ok, bool Completed, bool Skipped, string Message) TryEvaluateStoryYuyukoPhase3OrderIfReady(
+    private static RuntimeOrderEvaluationResult TryEvaluateStoryYuyukoPhase3OrderIfReady(
         RuntimeOrderMatch runtimeOrder,
         string orderLabel)
     {
         if (runtimeOrder.Order == null || runtimeOrder.Manager == null)
         {
-            return (false, false, false, "订单或客人管理器不可用，无法调用游戏评价流程。");
+            return new(false, false, false, "订单或客人管理器不可用，无法调用游戏评价流程。");
         }
 
         if (!ReadBool(InvokeInstance(runtimeOrder.Order, "get_IsFullfilled", Array.Empty<object?>())))
         {
-            return (true, false, true, "订单尚未同时满足料理和酒水，等待下一轮补齐。");
+            return new(true, false, true, "订单尚未同时满足料理和酒水，等待下一轮补齐。");
         }
 
         if (runtimeOrder.Controller == null)
         {
-            return (false, false, false, "已匹配幽幽子三阶段订单，但未找到对应客人控制器，无法确认手动评价回调链路。");
+            return new(false, false, false, "已匹配幽幽子三阶段订单，但未找到对应客人控制器，无法确认手动评价回调链路。");
         }
 
-        if (ReadBool(ReadMember(runtimeOrder.Controller, "HasEvaluated") ?? TryInvokeInstanceValue(runtimeOrder.Controller, "get_HasEvaluated")))
+        if (!TryReadRuntimeOrderEvaluated(runtimeOrder.Controller, out var evaluated, out var evaluatedDiagnostic))
         {
-            return (true, true, true, $"{orderLabel}已触发过评价，本次不重复调用。");
+            return new(false, false, false,
+                $"无法严格读取 {orderLabel} 的 HasEvaluated，已停止幽幽子手动评价：{evaluatedDiagnostic}",
+                OrderPreparationStepCodes.OrderEvaluationStateUnreadable);
+        }
+
+        if (evaluated)
+        {
+            return new(true, true, true, $"{orderLabel}已触发过评价，本次不重复调用。");
         }
 
         if (!TryValidateYuyukoStoryPhase3ProgressEvaluation(runtimeOrder, out var progressDiagnostic))
         {
-            return (
+            return new(
                 false,
                 false,
                 false,
@@ -346,43 +375,57 @@ internal static partial class RuntimeOrderPreparationService
                 + $"诊断：{progressDiagnostic}。请手动提交一笔能涨进度的订单后提供 aggregate-mod.log。");
         }
 
-        InvokeInstance(runtimeOrder.Manager, "EvaulateManualOrder", new object?[] { runtimeOrder.Controller, runtimeOrder.ManualEvaluationCallback });
-        return (true, true, false, $"已确认剧情版幽幽子三阶段手动进度回调并调用游戏手动评价流程完成{orderLabel}。");
+        var evaluation = TryInvokeRuntimeOrderEvaluationOnce(
+            runtimeOrder.Manager,
+            runtimeOrder.Controller,
+            "EvaulateManualOrder",
+            new object?[] { runtimeOrder.Controller, runtimeOrder.ManualEvaluationCallback },
+            orderLabel);
+        return evaluation.Ok && evaluation.Completed && !evaluation.Skipped
+            ? evaluation with { Message = $"已确认剧情版幽幽子三阶段手动进度回调并调用游戏手动评价流程完成{orderLabel}。" }
+            : evaluation;
     }
 
-    private static (bool Ok, bool Completed, bool Skipped, string Message) TryEvaluateRetakeYuyukoPhase3OrderIfReady(
+    private static RuntimeOrderEvaluationResult TryEvaluateRetakeYuyukoPhase3OrderIfReady(
         RuntimeOrderMatch runtimeOrder,
         string orderLabel,
         bool allowControllerMissing)
     {
         if (runtimeOrder.Order == null || runtimeOrder.Manager == null)
         {
-            return (false, false, false, "订单或客人管理器不可用，无法调用游戏评价流程。");
+            return new(false, false, false, "订单或客人管理器不可用，无法调用游戏评价流程。");
         }
 
         if (!ReadBool(InvokeInstance(runtimeOrder.Order, "get_IsFullfilled", Array.Empty<object?>())))
         {
-            return (true, false, true, "订单尚未同时满足料理和酒水，等待下一轮补齐。");
+            return new(true, false, true, "订单尚未同时满足料理和酒水，等待下一轮补齐。");
         }
 
         if (runtimeOrder.Controller == null)
         {
             if (allowControllerMissing)
             {
-                return (true, false, true, "重修版幽幽子订单已满足，但暂未读取到客人控制器，等待下一轮触发评价。");
+                return new(true, false, true, "重修版幽幽子订单已满足，但暂未读取到客人控制器，等待下一轮触发评价。");
             }
 
-            return (false, false, false, "已匹配重修版幽幽子三阶段订单，但未找到对应客人控制器，无法确认原生进度回调。");
+            return new(false, false, false, "已匹配重修版幽幽子三阶段订单，但未找到对应客人控制器，无法确认原生进度回调。");
         }
 
-        if (ReadBool(ReadMember(runtimeOrder.Controller, "HasEvaluated") ?? TryInvokeInstanceValue(runtimeOrder.Controller, "get_HasEvaluated")))
+        if (!TryReadRuntimeOrderEvaluated(runtimeOrder.Controller, out var evaluated, out var evaluatedDiagnostic))
         {
-            return (true, true, true, $"{orderLabel}已触发过评价，本次不重复调用。");
+            return new(false, false, false,
+                $"无法严格读取 {orderLabel} 的 HasEvaluated，已停止幽幽子评价：{evaluatedDiagnostic}",
+                OrderPreparationStepCodes.OrderEvaluationStateUnreadable);
+        }
+
+        if (evaluated)
+        {
+            return new(true, true, true, $"{orderLabel}已触发过评价，本次不重复调用。");
         }
 
         if (!TryValidateYuyukoRetakePhase3ProgressEvaluation(runtimeOrder, out var progressDiagnostic))
         {
-            return (
+            return new(
                 false,
                 false,
                 false,
@@ -392,7 +435,7 @@ internal static partial class RuntimeOrderPreparationService
 
         var evaluation = TryEvaluateRuntimeOrderIfReady(runtimeOrder, orderLabel, allowControllerMissing);
         return evaluation.Ok && evaluation.Completed && !evaluation.Skipped
-            ? (true, true, false, $"已确认重修版幽幽子三阶段 _50/_70 进度回调并调用游戏评价流程完成{orderLabel}。{evaluation.Message}")
+            ? evaluation with { Message = $"已确认重修版幽幽子三阶段 _50/_70 进度回调并调用游戏评价流程完成{orderLabel}。{evaluation.Message}" }
             : evaluation;
     }
 
@@ -840,7 +883,7 @@ internal static partial class RuntimeOrderPreparationService
             detail,
             RuntimeSpecialBusinessContextService.DescribeYuyukoProgressForDiagnostics());
 
-        lock (PendingCookingLock)
+        lock (AutomationCookingJobLock)
         {
             if (RecentYuyukoRuntimeDiagnostics.TryGetValue(key, out var last)
                 && now - last < YuyukoRuntimeDiagnosticThrottle)

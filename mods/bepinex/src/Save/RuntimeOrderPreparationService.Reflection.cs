@@ -47,6 +47,30 @@ internal static partial class RuntimeOrderPreparationService
     }
 
     /// <summary>
+    /// Reads only a native object identity. Automation ownership must never use a managed hash fallback.
+    /// </summary>
+    private static bool TryReadNativeObjectPointer(object target, out nint pointer)
+    {
+        pointer = 0;
+        try
+        {
+            var value = ReadMember(target, "Pointer") ?? ReadMember(target, "NativePointer") ?? ReadMember(target, "m_CachedPtr");
+            pointer = value switch
+            {
+                IntPtr intPtr => intPtr,
+                IConvertible convertible => new IntPtr(convertible.ToInt64(null)),
+                _ => 0,
+            };
+            return pointer != 0;
+        }
+        catch
+        {
+            pointer = 0;
+            return false;
+        }
+    }
+
+    /// <summary>
     /// 读取对象字段或属性，兼容 IL2CPP backing field 与常见私有字段命名。
     /// </summary>
     /// <remarks>
@@ -130,6 +154,62 @@ internal static partial class RuntimeOrderPreparationService
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Reads an exact property or field while preserving the distinction between a null value and a failed read.
+    /// </summary>
+    private static bool TryReadExactMemberValue(
+        object target,
+        out object? value,
+        out string diagnostic,
+        params string[] names)
+    {
+        value = null;
+        diagnostic = "";
+        var errors = new List<string>();
+        for (var type = target.GetType(); type != null; type = type.BaseType)
+        {
+            foreach (var name in names)
+            {
+                if (string.IsNullOrWhiteSpace(name)) continue;
+
+                var property = type.GetProperty(
+                    name,
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly);
+                if (property?.GetMethod != null)
+                {
+                    try
+                    {
+                        value = property.GetValue(target);
+                        return true;
+                    }
+                    catch (Exception ex)
+                    {
+                        errors.Add($"{type.FullName}.{name}: {ex.GetBaseException().Message}");
+                    }
+                }
+
+                var field = type.GetField(
+                    name,
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly);
+                if (field == null) continue;
+                try
+                {
+                    value = field.GetValue(target);
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    errors.Add($"{type.FullName}.{name}: {ex.GetBaseException().Message}");
+                }
+            }
+        }
+
+        diagnostic = errors.Count == 0
+            ? $"未找到精确成员：{string.Join("/", names)}"
+            : string.Join("；", errors.Distinct(StringComparer.Ordinal));
+        return false;
     }
 
     /// <summary>

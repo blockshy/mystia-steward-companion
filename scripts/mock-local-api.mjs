@@ -31,6 +31,7 @@ const AUTOMATION_LEASE_TTL_MS = 15000;
 
 const host = process.env.MOCK_API_HOST || DEFAULT_HOST;
 const port = Number(process.env.MOCK_API_PORT || DEFAULT_PORT);
+const automationSessionId = process.env.MOCK_AUTOMATION_SESSION_ID?.trim() || 'mock-automation-session';
 let mockToken = MOCK_TOKEN;
 
 const ingredients = [
@@ -229,6 +230,35 @@ const connectionConfig = {
   lanBindHost: 'auto',
 };
 let automationLease = null;
+let automationCommandEpoch = 1;
+let automationCookingJobs = [];
+const mockAutomationBarrierTarget = {
+  targetIdentity: 'rare:mock-trace-barrier',
+  traceId: 'mock-trace-barrier',
+  targetKind: 'rare',
+  orderKey: '',
+  deskCode: 1,
+  guestId: 1001,
+  guestName: '米斯蒂娅',
+  foodId: 202,
+  foodName: '蜂蜜蛋糕',
+  beverageId: 101,
+  beverageName: '果味米酒',
+};
+const automationSafetyBarriers = new Map([
+  [9000, {
+    ...mockAutomationBarrierTarget,
+    sequence: 9000,
+    code: 'cooking-manual-handoff-unreadable',
+    message: 'mock 无法确认手动接管后的托盘状态，请核对游戏现场。',
+  }],
+  [9001, {
+    ...mockAutomationBarrierTarget,
+    sequence: 9001,
+    code: 'order-evaluation-commit-uncertain',
+    message: 'mock 无法确认订单评价是否提交，请核对游戏现场。',
+  }],
+]);
 
 const server = http.createServer((request, response) => {
   setCorsHeaders(response);
@@ -249,8 +279,13 @@ const server = http.createServer((request, response) => {
         return;
       }
 
-      if (path === '/automation/lease/release') {
-        sendJson(response, 200, releaseAutomationLease(request));
+      if (path === '/automation/barriers/ack') {
+        sendJson(response, 200, acknowledgeAutomationSafetyBarrier(request, requestUrl.searchParams));
+        return;
+      }
+
+      if (path === '/automation/jobs/cancel') {
+        sendJson(response, 200, cancelAutomationAndReleaseLease(request));
         return;
       }
 
@@ -370,10 +405,32 @@ const server = http.createServer((request, response) => {
             ok: false,
             prepared: false,
             error: lease.error || (lease.ownerLabel ? `自动化当前由 ${lease.ownerLabel} 控制，本窗口仅查看。` : '自动化控制权不可用。'),
+            order: {
+              traceId: '',
+              deskCode: -1,
+              guestId: null,
+              guestName: '',
+              foodTag: '',
+              beverageTag: '',
+            },
+            recipeId: -1,
+            recipeName: '',
+            beverageId: -1,
+            beverageName: '',
+            automation: {
+              outcome: 'retryable-failure',
+              stage: 'lease',
+              reasonCode: 'automation-lease-unavailable',
+              jobId: '',
+              retryAfterMs: 1000,
+            },
+            steps: [],
           });
           return;
         }
-        sendJson(response, 200, buildOrderActionResponse(requestUrl.searchParams));
+        const actionResponse = buildOrderActionResponse(requestUrl.searchParams);
+        automationCookingJobs = [buildMockAutomationCookingJob(actionResponse, path, requestUrl.searchParams)];
+        sendJson(response, 200, actionResponse);
         return;
       }
 
@@ -497,6 +554,7 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
 function buildSnapshot() {
   const snapshot = {
     pluginVersion: '1.0.5-mock',
+    automationSessionId,
     capturedAtUtc: nowIso(),
     activeSceneName: 'NightScene.MockBusiness',
     activeDayMapLabel: '妖怪兽道',
@@ -635,6 +693,30 @@ function buildSnapshot() {
       beverageTags: customer.beverageTags,
       source: 'mock',
     })),
+    automationEvents: [...automationSafetyBarriers.values()].map((barrier) => ({
+      sequence: barrier.sequence,
+      createdAtUtc: nowIso(-5),
+      code: barrier.code,
+      jobId: '',
+      outcome: 'blocked',
+      reasonCode: barrier.code,
+      terminal: true,
+      generation: 0,
+      cookerPhase: -1,
+      cookerProgress: -1,
+      traceId: barrier.traceId,
+      targetKind: barrier.targetKind,
+      orderKey: barrier.orderKey,
+      deskCode: barrier.deskCode,
+      guestId: barrier.guestId,
+      guestName: barrier.guestName,
+      foodId: barrier.foodId,
+      foodName: barrier.foodName,
+      beverageId: barrier.beverageId,
+      beverageName: barrier.beverageName,
+      message: barrier.message,
+    })),
+    automationCookingJobs: automationCookingJobs.map((job) => ({ ...job })),
     runtimeDataComplete: true,
     runtimeDataSource: 'mock-local-api',
     runtimeDataStatus: 'mock runtime data complete',
@@ -660,6 +742,8 @@ function buildSnapshotSignature(snapshot) {
     snapshot.normalBusiness?.orders?.length ?? 0,
     snapshot.specialBusiness?.challengeType ?? '',
     snapshot.specialBusiness?.phase ?? '',
+    snapshot.automationCookingJobs.map((job) => `${job.jobId}:${job.state}:${job.reasonCode}`).join(','),
+    snapshot.automationEvents.map((event) => event.sequence).join(','),
   ].join('|');
 }
 
@@ -763,10 +847,55 @@ function buildOrderActionResponse(params) {
     recipeName,
     beverageId: Number(params.get('beverageId') || -1),
     beverageName,
+    automation: {
+      outcome: 'progressed',
+      stage: 'cooking-start',
+      reasonCode: 'cooking-started',
+      jobId: 'CJ-MOCK-000001',
+      retryAfterMs: 0,
+    },
     steps: [
-      { name: 'ensure-beverage', ok: true, skipped: false, message: `mock served ${beverageName}` },
-      { name: 'ensure-cooking', ok: true, skipped: false, message: `mock started ${recipeName}` },
+      { code: 'beverage-delivered', name: 'ensure-beverage', ok: true, skipped: false, message: `mock served ${beverageName}` },
+      { code: 'cooking-started', name: 'ensure-cooking', ok: true, skipped: false, message: `mock started ${recipeName}` },
     ],
+  };
+}
+
+function buildMockAutomationCookingJob(response, path, params) {
+  const now = nowIso();
+  return {
+    jobId: response.automation.jobId,
+    targetKind: path === '/orders/normal/complete-first' ? 'normal' : 'rare',
+    traceId: params.get('traceId') || '',
+    orderKey: params.get('orderKey') || '',
+    deskCode: response.order.deskCode,
+    guestId: response.order.guestId,
+    guestName: response.order.guestName,
+    foodId: Number(params.get('foodId') || -1),
+    foodName: response.recipeName,
+    recipeId: response.recipeId,
+    state: 'cooking',
+    outcome: 'progressed',
+    reasonCode: 'cooking-started',
+    autoDeliverFood: params.get('autoCollectCooking') === 'true' || params.get('autoDeliverFood') === 'true',
+    controllerId: 'mock-cooker-1',
+    resultId: 'mock-result-1',
+    generation: 1,
+    cookerPhase: 1,
+    cookerProgress: 0.25,
+    ownershipObservationFailures: 0,
+    regressiveObservations: 0,
+    deliveryFailureAttempts: 0,
+    manualHandoffReadFailures: 0,
+    warmerStoreCommitted: false,
+    warmerStoreCommitUncertain: false,
+    warmerResetAttempts: 0,
+    foodDeliveryCommitted: false,
+    foodDeliveryCommitUncertain: false,
+    foodDeliveryCleanupAttempts: 0,
+    startedAtUtc: now,
+    lastObservedAtUtc: now,
+    lastProgressAtUtc: now,
   };
 }
 
@@ -1190,6 +1319,7 @@ function acquireAutomationLease(request) {
   }
 
   const now = Date.now();
+  if (!automationLease) automationCommandEpoch += 1;
   automationLease = {
     clientId: identity.clientId,
     clientLabel: identity.clientLabel,
@@ -1199,12 +1329,88 @@ function acquireAutomationLease(request) {
   return buildAutomationLease(identity.clientId, identity.clientLabel, null);
 }
 
-function releaseAutomationLease(request) {
+function acknowledgeAutomationSafetyBarrier(request, params) {
   const identity = readClientIdentity(request);
-  if (!identity.error && automationLease?.clientId === identity.clientId) {
-    automationLease = null;
+  const sequence = Number(params.get('sequence') || 0);
+  pruneAutomationLease();
+  if (identity.error || automationLease?.clientId !== identity.clientId) {
+    return {
+      ok: false,
+      sequence,
+      acknowledgedCount: 0,
+      acknowledgedSequences: [],
+      status: '',
+      error: identity.error || 'automation lease is not owned',
+    };
   }
-  return readAutomationLease(request);
+  if (!Number.isSafeInteger(sequence) || sequence <= 0) {
+    return {
+      ok: false,
+      sequence,
+      acknowledgedCount: 0,
+      acknowledgedSequences: [],
+      status: '',
+      error: 'automation barrier sequence must be a positive integer',
+    };
+  }
+
+  const selected = automationSafetyBarriers.get(sequence);
+  if (!selected) {
+    return {
+      ok: false,
+      sequence,
+      acknowledgedCount: 0,
+      acknowledgedSequences: [],
+      status: '',
+      error: 'automation safety barrier was not found',
+    };
+  }
+
+  const acknowledgedSequences = [...automationSafetyBarriers.values()]
+    .filter((barrier) => barrier.targetIdentity === selected.targetIdentity && barrier.sequence <= sequence)
+    .map((barrier) => barrier.sequence)
+    .sort((left, right) => left - right);
+  for (const acknowledgedSequence of acknowledgedSequences) {
+    automationSafetyBarriers.delete(acknowledgedSequence);
+  }
+  return {
+    ok: true,
+    sequence,
+    acknowledgedCount: acknowledgedSequences.length,
+    acknowledgedSequences,
+    status: `mock acknowledged ${acknowledgedSequences.length} automation safety barriers`,
+    error: null,
+  };
+}
+
+function cancelAutomationAndReleaseLease(request) {
+  const identity = readClientIdentity(request);
+  pruneAutomationLease();
+  if (identity.error || automationLease?.clientId !== identity.clientId) {
+    return {
+      ok: false,
+      status: '',
+      error: identity.error || 'automation lease is not owned',
+      commandEpoch: automationCommandEpoch,
+      cancelledJobs: 0,
+      cancelledCommands: 0,
+      leaseReleased: false,
+    };
+  }
+
+  automationCommandEpoch += 1;
+  const cancelledJobs = automationCookingJobs.length;
+  automationCookingJobs = [];
+  automationLease = null;
+  return {
+    ok: true,
+    status: 'automation cancelled and lease released',
+    error: null,
+    commandEpoch: automationCommandEpoch,
+    cancelledJobs,
+    cancelledCommands: 0,
+    leaseReleased: true,
+  };
 }
 
 function buildAutomationLease(clientId, clientLabel, error) {

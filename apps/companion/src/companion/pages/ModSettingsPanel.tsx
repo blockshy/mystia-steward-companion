@@ -787,7 +787,7 @@ export function ModSettingsPanel({
               onCheckedChange={(automationEnabled) => onPreferenceChange({ automationEnabled })}
             />
             <div className="text-xs text-muted-foreground">
-              关闭时不会显示或执行任何自动化动作；开启后可在“经营中”页面配置具体子功能。
+              关闭时会取消 Mod 当前持有的料理任务和排队命令，但不会清空厨具、返还材料或改动玩家成品。
             </div>
             <div className="grid grid-cols-2 gap-4 max-[719px]:grid-cols-1">
               <AutomationSliderField
@@ -820,7 +820,7 @@ export function ModSettingsPanel({
               />
             </div>
             <div className="text-xs text-muted-foreground">
-              参数会在下一轮自动化轮询生效。并发过高可能抢占厨具；等待时间过短可能导致重复开锅。
+              参数会在下一轮自动化调度生效。最大重试限制阶段执行失败，最大回退限制外部操作或目标变化后的重新制作。
             </div>
           </div>
         </ListPanel>

@@ -17,7 +17,7 @@ let delayedTargetStartedAt = 0;
 let rejectedTarget = false;
 let abortNextSnapshot = false;
 let snapshotAbortedAt = 0;
-let recoveredHealthAt = 0;
+let recoveredSnapshotAt = 0;
 let mutateSnapshots = false;
 let mutatedSnapshotAt = 0;
 let mutatedSnapshot = null;
@@ -90,8 +90,8 @@ try {
       return;
     }
 
-    if (url.pathname === '/health' && snapshotAbortedAt > 0) {
-      recoveredHealthAt = Date.now();
+    if (url.pathname === '/snapshot' && snapshotAbortedAt > 0) {
+      recoveredSnapshotAt = Date.now();
     }
 
     await route.continue();
@@ -126,16 +126,17 @@ try {
   const acceptedTargetCount = recipeRequests.length;
   abortNextSnapshot = true;
   await waitFor(() => snapshotAbortedAt > 0, 8_000, '未触发模拟断线');
-  await waitFor(() => recoveredHealthAt > snapshotAbortedAt, 8_000, '模拟断线后未恢复健康检查');
-  await waitFor(
-    () => targetRequests.filter(hasRecipeTarget).length > acceptedTargetCount,
-    5_000,
-    '使用相同 endpoint/token 重连后未重发目标',
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert(
+    targetRequests.filter(hasRecipeTarget).length === acceptedTargetCount,
+    '快照连接尚未恢复时发布了置顶目标',
   );
-
-  const reconnectRequest = targetRequests.filter(hasRecipeTarget).at(-1);
-  assert(reconnectRequest.at > recoveredHealthAt, '目标重发早于连接恢复');
-  assert(sameTarget(acceptedRetry, reconnectRequest), '重连后没有重发当前目标');
+  await waitFor(() => recoveredSnapshotAt > snapshotAbortedAt, 8_000, '模拟断线后未恢复快照');
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  assert(
+    targetRequests.filter(hasRecipeTarget).length === acceptedTargetCount,
+    '同一游戏会话的短暂断线清除了成功发布签名并重复 POST',
+  );
 
   const identityTargetCount = targetRequests.filter(hasRecipeTarget).length;
   await page.evaluate(() => {
@@ -163,7 +164,32 @@ try {
   }
   const identityRequest = targetRequests.filter(hasRecipeTarget).at(-1);
   assert(identityRequest.at - mutatedSnapshotAt >= 1900, '推荐 Worker 结果就绪前发布了目标');
-  assert(sameTarget(reconnectRequest, identityRequest), '新连接身份未重发当前目标');
+  assert(sameTarget(acceptedRetry, identityRequest), '新连接身份未重发当前目标');
+
+  await page.evaluate(() => {
+    window.__uiPinningWorkerDelayMs = 0;
+  });
+  const signatureOnlyTargetCount = targetRequests.filter(hasRecipeTarget).length;
+  const signatureOnlySuccessCount = await page.evaluate(() =>
+    window.__uiPinningWorkerEvents.filter((event) => event.deliveredOk === true).length);
+  const signatureOnlyMutationServeCount = mutatedSnapshotServeCount;
+  mutateInternalTargetSignature();
+  await waitFor(
+    () => mutatedSnapshotServeCount > signatureOnlyMutationServeCount,
+    5_000,
+    '未获取仅修改内部 target.signature 的快照',
+  );
+  await waitFor(
+    async () => (await page.evaluate(() =>
+      window.__uiPinningWorkerEvents.filter((event) => event.deliveredOk === true).length)) > signatureOnlySuccessCount,
+    5_000,
+    '内部 target.signature 变化后推荐 Worker 未产生新成功结果',
+  );
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert(
+    targetRequests.filter(hasRecipeTarget).length === signatureOnlyTargetCount,
+    '内部 target.signature 变化但 wire 字段不变时重复 POST 了置顶目标',
+  );
 
   await page.evaluate(() => {
     window.__uiPinningWorkerDelayMs = 3200;
@@ -296,8 +322,9 @@ try {
     `- POST 方法：${acceptedRetry.method}`,
     `- ID 契约：foodId=${selectedRecipe.id}, recipeId=${selectedRecipe.recipeId}`,
     `- 失败重试：${acceptedRetry.at - rejectedRequest.at}ms`,
-    `- 断线重连后重发：${reconnectRequest.at - recoveredHealthAt}ms`,
+    `- 短暂断线：快照恢复后保留成功签名，目标 POST 仍为 ${acceptedTargetCount} 次`,
     `- 连接身份变更/Worker 新鲜度：${identityRequest.at - mutatedSnapshotAt}ms 后重发`,
+    '- 发布去重：内部 target.signature 变化但 wire 目标不变时未重复 POST',
     `- 单写者合并：最大并发 ${maxActiveTargetRequests}，延迟请求后补发最新 flags`,
     `- Worker error 清理：recipeId=${errorClearRequest.params.recipeId}, beverageId=${errorClearRequest.params.beverageId}`,
     '- Worker error 恢复：新成功 revision 后恢复当前厨具目标',
@@ -395,6 +422,13 @@ function mutateSnapshot(source) {
   assert(mutatedSnapshot?.nightBusiness?.orders?.[0], '缺少可变 Mock 快照');
   mutatedSnapshot.nightBusiness.orders[0].source = source;
   mutatedSnapshot.snapshotSignature = `${mutatedSnapshot.snapshotSignature}|${source}`;
+}
+
+function mutateInternalTargetSignature() {
+  assert(mutatedSnapshot?.nightBusiness?.orders?.[0], '缺少可变 Mock 稀客订单');
+  const order = mutatedSnapshot.nightBusiness.orders[0];
+  order.firstSeenAtUtc = new Date(Date.parse(order.firstSeenAtUtc) + 1000).toISOString();
+  mutatedSnapshot.snapshotSignature = `${mutatedSnapshot.snapshotSignature}|target-signature-only`;
 }
 
 function sameTarget(left, right) {

@@ -31,27 +31,53 @@ internal static partial class RuntimeOrderPreparationService
     private const string MatchedCookComboTypeName = "NightScene.UI.CookingUtility.WorkSceneCookingSelectionPannel+MatchedCookCombo";
     // 游戏料理最多只能携带五个食材槽位，重复材料也会占用多个槽位。
     private const int MaxFoodIngredientCount = 5;
-    private static readonly object PendingCookingLock = new();
-    // 自动开火后料理不会立即完成，需保存 CookController，后续轮询完成状态再直接送达。
-    private static readonly List<PendingCookingCollection> PendingCookingCollections = new();
+    private static readonly object AutomationCookingJobLock = new();
+    // Each job owns one exact SetCook generation. No operation may touch a later generation on the same cooker.
+    private static readonly List<AutomationCookingJob> AutomationCookingJobs = new();
     private static readonly List<AutomationRuntimeEvent> AutomationRuntimeEvents = new();
+    private static readonly AutomationSafetyBarrierRegistry UnresolvedAutomationSafetyBarriers = new();
+    private static readonly string AutomationRuntimeSessionId = Guid.NewGuid().ToString("N");
     private const int MaxAutomationRuntimeEvents = 64;
     private static long AutomationRuntimeEventSequence;
-    // 刚开始料理后给游戏一小段时间生成 CookController 结果，避免过早判定失败。
-    private static readonly TimeSpan PendingCookingCollectGrace = TimeSpan.FromSeconds(2);
-    private static readonly TimeSpan PendingCookingIdleTimeout = TimeSpan.FromSeconds(90);
-    private static readonly TimeSpan PendingMissingTargetRetireDelay = TimeSpan.FromSeconds(4);
-    private static readonly TimeSpan PendingMissingControllerRetireDelay = TimeSpan.FromSeconds(6);
-    private const int PendingMissingTargetRetireAttempts = 6;
-    private const int PendingMissingControllerRetireAttempts = 10;
+    private static long AutomationCookingJobSequence;
+    private static readonly TimeSpan CookingDeliveryTimeout = TimeSpan.FromSeconds(90);
+    private static readonly TimeSpan MissingTargetRetireDelay = TimeSpan.FromSeconds(4);
+    private static readonly TimeSpan MissingControllerRetireDelay = TimeSpan.FromSeconds(6);
+    private const int MissingTargetRetireAttempts = 6;
+    private const int MissingControllerRetireAttempts = 10;
+    private const int MaxCookerCleanupAttempts = 6;
+    private const int ManualHandoffReadFailureLimit = 3;
+    private static readonly TimeSpan ManualHandoffReadFailureGrace = TimeSpan.FromMilliseconds(500);
+
+    public static string AutomationSessionId => AutomationRuntimeSessionId;
 
     private static class OrderPreparationStepCodes
     {
         public const string BeverageDelivered = "beverage-delivered";
+        public const string BeverageDeliveryCommitUncertain = "beverage-delivery-commit-uncertain";
+        public const string FoodDeliveryCommitUncertain = "food-delivery-commit-uncertain";
         public const string CookingStarted = "cooking-started";
+        public const string CookingStartUnowned = "cooking-start-unowned";
         public const string CookingPending = "cooking-pending";
         public const string CookingMismatchStored = "cooking-mismatch-stored";
         public const string CookingTagsUnreadableStored = "cooking-tags-unreadable-stored";
+        public const string CookingResultRemoved = "cooking-result-removed";
+        public const string CookingControllerReused = "cooking-controller-reused";
+        public const string CookingProgressStalled = "cooking-progress-stalled";
+        public const string CookingProgressRegressed = "cooking-progress-regressed";
+        public const string CookingResultUnreadable = "cooking-result-unreadable";
+        public const string CookingTargetUnavailableStored = "cooking-target-unavailable-stored";
+        public const string CookingTargetAlreadyServedStored = "cooking-target-already-served-stored";
+        public const string CookingDeliveryBlocked = "cooking-delivery-blocked";
+        public const string CookingDeliveryCommitUncertain = "cooking-delivery-commit-uncertain";
+        public const string CookingDeliveryCleanupBlocked = "cooking-delivery-cleanup-blocked";
+        public const string CookingWarmerCommitUncertain = "cooking-warmer-commit-uncertain";
+        public const string CookingWarmerResetBlocked = "cooking-warmer-reset-blocked";
+        public const string CookingManualHandoffCompleted = "cooking-manual-handoff-completed";
+        public const string CookingManualHandoffUnreadable = "cooking-manual-handoff-unreadable";
+        public const string OrderEvaluationStateUnreadable = "order-evaluation-state-unreadable";
+        public const string OrderEvaluationCommitUncertain = "order-evaluation-commit-uncertain";
+        public const string CookingCancelled = "cooking-cancelled";
         public const string FoodDelivered = "food-delivered";
     }
 
@@ -61,28 +87,64 @@ internal static partial class RuntimeOrderPreparationService
         NormalOrder,
     }
 
-    private enum PendingDeliveryFailureKind
+    private enum AutomationDeliveryFailureKind
     {
         MissingOrder,
         MissingController,
     }
 
-    public static bool HasPendingCookingCollections
+    public static bool HasAutomationCookingJobs
     {
         get
         {
-            lock (PendingCookingLock)
+            lock (AutomationCookingJobLock)
             {
-                return PendingCookingCollections.Count > 0;
+                return AutomationCookingJobs.Count > 0;
             }
         }
     }
 
     public static IReadOnlyList<AutomationRuntimeEvent> SnapshotAutomationRuntimeEvents()
     {
-        lock (PendingCookingLock)
+        lock (AutomationCookingJobLock)
         {
             return AutomationRuntimeEvents.ToList();
+        }
+    }
+
+    public static IReadOnlyList<AutomationCookingJobSnapshot> SnapshotAutomationCookingJobs()
+    {
+        lock (AutomationCookingJobLock)
+        {
+            return AutomationCookingJobs.Select(job => job.ToSnapshot()).ToList();
+        }
+    }
+
+    public static AutomationSafetyBarrierAckResult AcknowledgeAutomationSafetyBarrier(long sequence)
+    {
+        lock (AutomationCookingJobLock)
+        {
+            var acknowledgement = UnresolvedAutomationSafetyBarriers.Acknowledge(sequence);
+            if (sequence <= 0 || !acknowledgement.Found)
+            {
+                return new AutomationSafetyBarrierAckResult
+                {
+                    Ok = false,
+                    Sequence = sequence,
+                    Error = "未找到对应的未确认自动化安全栅栏；不会解除订单阻断。",
+                };
+            }
+
+            var acknowledgedSequences = acknowledgement.Sequences.ToHashSet();
+            AutomationRuntimeEvents.RemoveAll(runtimeEvent => acknowledgedSequences.Contains(runtimeEvent.Sequence));
+            return new AutomationSafetyBarrierAckResult
+            {
+                Ok = true,
+                Sequence = sequence,
+                AcknowledgedCount = acknowledgement.Sequences.Count,
+                AcknowledgedSequences = acknowledgement.Sequences,
+                Status = $"已确认并解除 {acknowledgement.Sequences.Count} 个同订单自动化安全栅栏。",
+            };
         }
     }
 
@@ -117,6 +179,11 @@ internal static partial class RuntimeOrderPreparationService
             BeverageName = request.BeverageName,
         };
 
+        if (TryApplyUnresolvedAutomationSafetyBarrier(result, "rare", traceId, request.OrderKey))
+        {
+            return Finish(result);
+        }
+
         if (request.RecipeFavoritesOnly && request.AutoStartCooking && !request.RecipeFavorite)
         {
             return Fail(result, "收藏料理限定已开启，但当前订单没有匹配的收藏料理。");
@@ -140,9 +207,11 @@ internal static partial class RuntimeOrderPreparationService
             runtimeOrderCache ??= FindRuntimeOrder(request);
             return runtimeOrderCache;
         }
+        CookingCollectionTarget? actionTarget = null;
 
         if (request.AutoTakeBeverage)
         {
+            result.Automation.Stage = "beverage";
             if (request.BeverageId < 0)
             {
                 AddFailure(result, "自动送达酒水", "没有可用的推荐酒水。");
@@ -164,6 +233,7 @@ internal static partial class RuntimeOrderPreparationService
                 }
                 else
                 {
+                    actionTarget ??= BuildRareAutomationTarget(request);
                     var beverageResult = TryDeliverOrderBeverage(runtimeOrder, request.BeverageId, request.BeverageName, "稀客订单");
                     if (beverageResult.Ok)
                     {
@@ -178,8 +248,12 @@ internal static partial class RuntimeOrderPreparationService
                     }
                     else
                     {
-                        AddFailure(result, "自动送达酒水", beverageResult.Message);
-                        if (request.StopOnError) return Finish(result);
+                        AddFailure(result, "自动送达酒水", beverageResult.Message, beverageResult.Code);
+                        RecordOrderSafetyBarrierIfNeeded(
+                            beverageResult.Code,
+                            actionTarget,
+                            beverageResult.Message);
+                        if (request.StopOnError || IsAutomationSafetyBarrierCode(beverageResult.Code)) return Finish(result);
                     }
                 }
             }
@@ -191,6 +265,7 @@ internal static partial class RuntimeOrderPreparationService
 
         if (request.AutoStartCooking)
         {
+            result.Automation.Stage = "cooking-start";
             if (request.RecipeId < 0)
             {
                 AddFailure(result, "自动开始料理", "没有可用的推荐料理。");
@@ -199,42 +274,95 @@ internal static partial class RuntimeOrderPreparationService
             else
             {
                 var expectedFoodId = request.FoodId >= 0 ? request.FoodId : ResolveFoodIdFromRecipeId(request.RecipeId);
-                var target = CookingCollectionTarget.ForRareOrder(request, expectedFoodId);
-                if (TryGetRecentWackyRejectedCookingMessage(target, out var rejectedMessage))
+                var runtimeOrder = GetRuntimeOrder();
+                if (runtimeOrder.Order == null || runtimeOrder.Controller == null || runtimeOrder.Manager == null)
                 {
-                    AddSkipped(result, "自动开始料理", rejectedMessage);
+                    var diagnostic = string.IsNullOrWhiteSpace(runtimeOrder.Diagnostic) ? "" : $"（{runtimeOrder.Diagnostic}）";
+                    AddFailure(result, "自动开始料理", $"无法确认当前稀客订单、客人控制器或管理器，已在扣除材料前取消开锅。{diagnostic}");
+                    return Finish(result);
+                }
+
+                if (!TryReadOrderServedItem(
+                        runtimeOrder.Order,
+                        RuntimeDeliveryItemKind.Food,
+                        out var servedFood,
+                        out var servedFoodDiagnostic))
+                {
+                    AddFailure(
+                        result,
+                        "自动开始料理",
+                        $"无法确认订单是否已经送达料理，已在扣除材料前取消开锅：{servedFoodDiagnostic}");
+                    return Finish(result);
+                }
+
+                if (servedFood != null)
+                {
+                    result.ServedFood = true;
+                    AddSkipped(result, "自动开始料理", "订单已经送达料理，本次不重复开锅。");
                 }
                 else
                 {
-                    var cookingResult = TryStartCooking(request.RecipeId, request.RecipeName, request.ExtraIngredientIds, request.AutoCollectCooking, target);
-                    if (cookingResult.Ok)
+                    if (!TryReadOrderInAirItem(
+                            runtimeOrder.Order,
+                            RuntimeDeliveryItemKind.Food,
+                            out var pendingFood,
+                            out var pendingFoodDiagnostic))
                     {
-                        result.Steps.Add(new OrderPreparationStep
-                        {
-                            Code = cookingResult.ExistingPending
-                                ? OrderPreparationStepCodes.CookingPending
-                                : OrderPreparationStepCodes.CookingStarted,
-                            Name = "自动开始料理",
-                            Ok = true,
-                            Skipped = cookingResult.ExistingPending,
-                            Message = cookingResult.Message,
-                        });
+                        AddFailure(
+                            result,
+                            "自动开始料理",
+                            $"无法确认订单是否已有待送达料理，已在扣除材料前取消开锅：{pendingFoodDiagnostic}");
+                        return Finish(result);
+                    }
 
-                        if (!string.IsNullOrWhiteSpace(cookingResult.QteMessage))
-                        {
-                            result.Steps.Add(new OrderPreparationStep
-                            {
-                                Name = "料理 QTE",
-                                Ok = true,
-                                Skipped = cookingResult.QteSkipped,
-                                Message = cookingResult.QteMessage,
-                            });
-                        }
+                    if (pendingFood != null)
+                    {
+                        result.Automation.Stage = "cooking-delivery";
+                        AddSkipped(result, "自动开始料理", "订单已有待送达料理，本次不重复开锅，等待游戏送达流程确认。");
+                        return Finish(result);
+                    }
+
+                    var target = actionTarget ??= BuildRareAutomationTarget(request, expectedFoodId);
+                    if (TryGetRecentWackyRejectedCookingMessage(target, out var rejectedMessage))
+                    {
+                        AddSkipped(result, "自动开始料理", rejectedMessage);
                     }
                     else
                     {
-                        AddFailure(result, "自动开始料理", cookingResult.Message);
-                        if (request.StopOnError) return Finish(result);
+                        var cookingResult = TryStartCooking(request.RecipeId, request.RecipeName, request.ExtraIngredientIds, request.AutoCollectCooking, target);
+                        if (cookingResult.Ok)
+                        {
+                            result.Automation.Stage = cookingResult.ExistingJob
+                                ? "cooking-delivery"
+                                : "cooking-start";
+                            result.Automation.JobId = cookingResult.JobId;
+                            result.Steps.Add(new OrderPreparationStep
+                            {
+                                Code = cookingResult.ExistingJob
+                                    ? OrderPreparationStepCodes.CookingPending
+                                    : OrderPreparationStepCodes.CookingStarted,
+                                Name = "自动开始料理",
+                                Ok = true,
+                                Skipped = cookingResult.ExistingJob,
+                                Message = cookingResult.Message,
+                            });
+
+                            if (!string.IsNullOrWhiteSpace(cookingResult.QteMessage))
+                            {
+                                result.Steps.Add(new OrderPreparationStep
+                                {
+                                    Name = "料理 QTE",
+                                    Ok = true,
+                                    Skipped = cookingResult.QteSkipped,
+                                    Message = cookingResult.QteMessage,
+                                });
+                            }
+                        }
+                        else
+                        {
+                            AddFailure(result, "自动开始料理", cookingResult.Message, cookingResult.Code);
+                            if (request.StopOnError || IsAutomationSafetyBarrierCode(cookingResult.Code)) return Finish(result);
+                        }
                     }
                 }
             }
@@ -284,6 +412,11 @@ internal static partial class RuntimeOrderPreparationService
             BeverageId = request.BeverageId,
             BeverageName = request.BeverageName,
         };
+
+        if (TryApplyUnresolvedAutomationSafetyBarrier(result, "rare", traceId, request.OrderKey))
+        {
+            return Finish(result);
+        }
 
         result.Steps.Add(new OrderPreparationStep
         {
@@ -338,16 +471,26 @@ internal static partial class RuntimeOrderPreparationService
                 Message = "订单已有酒水，本次不重复送达。",
             });
         }
+        else if (!request.AutoTakeBeverage)
+        {
+            AddSkipped(result, "送达酒水", "自动送达酒水未开启，等待玩家处理或后续订单事实刷新。");
+        }
         else if (request.BeverageId < 0)
         {
             AddSkipped(result, "送达酒水", "当前订单没有可用的推荐酒水，等待推荐刷新。");
         }
         else
         {
+            result.Automation.Stage = "beverage";
+            var safetyTarget = BuildRareAutomationTarget(request);
             var beverageResult = TryDeliverOrderBeverage(runtimeOrder, request.BeverageId, request.BeverageName, "稀客订单");
             if (!beverageResult.Ok)
             {
-                AddFailure(result, "送达酒水", beverageResult.Message);
+                AddFailure(result, "送达酒水", beverageResult.Message, beverageResult.Code);
+                RecordOrderSafetyBarrierIfNeeded(
+                    beverageResult.Code,
+                    safetyTarget,
+                    beverageResult.Message);
                 return Finish(result);
             }
 
@@ -370,9 +513,11 @@ internal static partial class RuntimeOrderPreparationService
             return Finish(result);
         }
 
+        result.Automation.Stage = "order";
+        var evaluationTarget = BuildRareAutomationTarget(request);
         if (RequiresNativeWackyKoishiBossEvaluationEntry(request))
         {
-            if (!TryEvaluateWackyKoishiBossOrderIfReady(result, request, runtimeOrder, "触发上菜评价", "当前订单"))
+            if (!TryEvaluateWackyKoishiBossOrderIfReady(result, request, runtimeOrder, "触发上菜评价", "当前订单", evaluationTarget))
             {
                 return Finish(result);
             }
@@ -387,7 +532,7 @@ internal static partial class RuntimeOrderPreparationService
 
         if (IsYuyukoBossRequest(request))
         {
-            if (!TryEvaluateYuyukoChallengeOrderIfReady(result, request, runtimeOrder, "触发上菜评价", "当前订单"))
+            if (!TryEvaluateYuyukoChallengeOrderIfReady(result, request, runtimeOrder, "触发上菜评价", "当前订单", evaluationTarget))
             {
                 return Finish(result);
             }
@@ -395,7 +540,7 @@ internal static partial class RuntimeOrderPreparationService
             return Finish(result);
         }
 
-        if (!TryEvaluateOrderIfReady(result, runtimeOrder, "触发上菜评价", "当前订单"))
+        if (!TryEvaluateOrderIfReady(result, runtimeOrder, "触发上菜评价", "当前订单", evaluationTarget))
         {
             return Finish(result);
         }
@@ -431,6 +576,11 @@ internal static partial class RuntimeOrderPreparationService
             BeverageId = request.BeverageId,
             BeverageName = request.BeverageName,
         };
+
+        if (TryApplyUnresolvedAutomationSafetyBarrier(result, "normal", traceId, request.OrderKey))
+        {
+            return Finish(result);
+        }
 
         result.Steps.Add(new OrderPreparationStep
         {
@@ -482,13 +632,42 @@ internal static partial class RuntimeOrderPreparationService
         });
 
         var expectedFoodId = request.FoodId >= 0 ? request.FoodId : ResolveFoodIdFromRecipeId(request.RecipeId);
-        var foodAlreadyServed = ReadOrderServedFood(runtimeOrder.Order) != null;
+        if (!TryReadOrderServedItem(
+                runtimeOrder.Order,
+                RuntimeDeliveryItemKind.Beverage,
+                out var servedBeverage,
+                out var servedBeverageDiagnostic))
+        {
+            result.Automation.Stage = "beverage";
+            AddFailure(result, "读取普客订单", $"无法确认订单最终酒水字段，本轮未执行自动化副作用：{servedBeverageDiagnostic}");
+            return Finish(result);
+        }
+
+        if (!TryReadOrderServedItem(
+                runtimeOrder.Order,
+                RuntimeDeliveryItemKind.Food,
+                out var servedFood,
+                out var servedFoodDiagnostic))
+        {
+            result.Automation.Stage = "cooking-start";
+            AddFailure(result, "读取普客订单", $"无法确认订单最终料理字段，本轮未执行自动化副作用：{servedFoodDiagnostic}");
+            return Finish(result);
+        }
+
+        var foodAlreadyServed = servedFood != null;
         result.ServedFood = foodAlreadyServed;
-        result.ServedBeverage = ReadOrderServedBeverage(runtimeOrder.Order) != null;
+        result.ServedBeverage = servedBeverage != null;
+        var orderAutomationTarget = BuildNormalAutomationTarget(
+            request,
+            runtimeOrder.Order,
+            traceId,
+            result.Order.GuestName,
+            expectedFoodId);
         var deliveredNormalItemCount = 0;
 
         if (autoTakeBeverage)
         {
+            result.Automation.Stage = "beverage";
             if (result.ServedBeverage)
             {
                 AddSkipped(result, "普客送达酒水", "该订单已经送达酒水，本次不重复处理。");
@@ -500,7 +679,19 @@ internal static partial class RuntimeOrderPreparationService
             }
             else
             {
-                var pendingBeverage = ReadMember(runtimeOrder.Order, "ServedBeverageInAir");
+                if (!TryReadOrderInAirItem(
+                        runtimeOrder.Order,
+                        RuntimeDeliveryItemKind.Beverage,
+                        out var pendingBeverage,
+                        out var pendingBeverageDiagnostic))
+                {
+                    AddFailure(
+                        result,
+                        "普客送达酒水",
+                        $"无法确认订单待送达酒水字段，本轮未执行自动化副作用：{pendingBeverageDiagnostic}");
+                    return Finish(result);
+                }
+
                 if (pendingBeverage != null && IsSellable(pendingBeverage, sellableType: 1, id: request.BeverageId))
                 {
                     var delivery = TryCommitRuntimeDelivery(
@@ -522,8 +713,12 @@ internal static partial class RuntimeOrderPreparationService
                     }
                     else
                     {
-                        AddFailure(result, "普客送达酒水", delivery.Message);
-                        if (request.StopOnError) return Finish(result);
+                        AddFailure(result, "普客送达酒水", delivery.Message, delivery.Code);
+                        RecordOrderSafetyBarrierIfNeeded(
+                            delivery.Code,
+                            orderAutomationTarget,
+                            delivery.Message);
+                        if (request.StopOnError || IsAutomationSafetyBarrierCode(delivery.Code)) return Finish(result);
                     }
                 }
                 else if (pendingBeverage != null)
@@ -548,8 +743,12 @@ internal static partial class RuntimeOrderPreparationService
                     }
                     else
                     {
-                        AddFailure(result, "普客送达酒水", beverageResult.Message);
-                        if (request.StopOnError) return Finish(result);
+                        AddFailure(result, "普客送达酒水", beverageResult.Message, beverageResult.Code);
+                        RecordOrderSafetyBarrierIfNeeded(
+                            beverageResult.Code,
+                            orderAutomationTarget,
+                            beverageResult.Message);
+                        if (request.StopOnError || IsAutomationSafetyBarrierCode(beverageResult.Code)) return Finish(result);
                     }
                 }
             }
@@ -565,16 +764,31 @@ internal static partial class RuntimeOrderPreparationService
         }
         else if (expectedFoodId < 0)
         {
+            result.Automation.Stage = "cooking-start";
             AddFailure(result, "普客料理", "订单没有有效的料理 ID。");
             if (request.StopOnError) return Finish(result);
         }
         else
         {
-            var pendingFood = ReadMember(runtimeOrder.Order, "ServedFoodInAir");
+            if (!TryReadOrderInAirItem(
+                    runtimeOrder.Order,
+                    RuntimeDeliveryItemKind.Food,
+                    out var pendingFood,
+                    out var pendingFoodDiagnostic))
+            {
+                result.Automation.Stage = "cooking-delivery";
+                AddFailure(
+                    result,
+                    "普客料理",
+                    $"无法确认订单待送达料理字段，本轮未执行自动化副作用：{pendingFoodDiagnostic}");
+                return Finish(result);
+            }
+
             if (pendingFood != null && IsSellable(pendingFood, sellableType: 0, id: expectedFoodId))
             {
                 if (autoDeliverFood)
                 {
+                    result.Automation.Stage = "cooking-delivery";
                     var delivery = TryCommitRuntimeDelivery(
                         runtimeOrder,
                         pendingFood,
@@ -593,8 +807,12 @@ internal static partial class RuntimeOrderPreparationService
                     }
                     else
                     {
-                        AddFailure(result, "普客送达料理", delivery.Message);
-                        if (request.StopOnError) return Finish(result);
+                        AddFailure(result, "普客送达料理", delivery.Message, delivery.Code);
+                        RecordOrderSafetyBarrierIfNeeded(
+                            delivery.Code,
+                            orderAutomationTarget,
+                            delivery.Message);
+                        if (request.StopOnError || IsAutomationSafetyBarrierCode(delivery.Code)) return Finish(result);
                     }
                 }
                 else
@@ -604,46 +822,57 @@ internal static partial class RuntimeOrderPreparationService
             }
             else if (pendingFood != null)
             {
+                result.Automation.Stage = "cooking-delivery";
                 AddFailure(result, "普客料理", $"订单已有其他待送达料理，暂不自动制作 {request.RecipeName}。");
                 if (request.StopOnError) return Finish(result);
             }
-            else if (HasPendingNormalOrderCooking(request.OrderKey, runtimeOrder.Order, request.DeskCode, expectedFoodId, request.BeverageId, out var pendingMessage))
+            else if (HasNormalOrderCookingJob(request.OrderKey, runtimeOrder.Order, request.DeskCode, expectedFoodId, request.BeverageId, out var cookingJobMessage))
             {
-                var pendingResult = autoDeliverFood
-                    ? TryProcessPendingNormalOrderCooking(request.OrderKey, runtimeOrder.Order, request.DeskCode, expectedFoodId, request.BeverageId)
-                    : (Delivered: false, StepName: "普客开始料理", Message: pendingMessage, Code: OrderPreparationStepCodes.CookingPending);
-                if (pendingResult.Delivered)
+                result.Automation.Stage = "cooking-delivery";
+                var cookingJobResult = autoDeliverFood
+                    ? TryProcessNormalOrderCookingJob(request.OrderKey, runtimeOrder.Order, request.DeskCode, expectedFoodId, request.BeverageId)
+                    : (Delivered: false, StepName: "普客开始料理", Message: cookingJobMessage, Code: OrderPreparationStepCodes.CookingPending);
+                if (cookingJobResult.Delivered)
                 {
                     result.ServedFood = true;
                     result.Steps.Add(new OrderPreparationStep
                     {
-                        Code = pendingResult.Code,
+                        Code = cookingJobResult.Code,
                         Name = "普客送达料理",
                         Ok = true,
-                        Message = pendingResult.Message,
+                        Message = cookingJobResult.Message,
                     });
                 }
-                else if (pendingResult.Code is OrderPreparationStepCodes.CookingMismatchStored
-                    or OrderPreparationStepCodes.CookingTagsUnreadableStored)
+                else if (IsAutomationSafetyBarrierCode(cookingJobResult.Code))
                 {
                     AddFailure(
                         result,
-                        string.IsNullOrWhiteSpace(pendingResult.StepName) ? "普客送达料理" : pendingResult.StepName,
-                        string.IsNullOrWhiteSpace(pendingResult.Message) ? pendingMessage : pendingResult.Message,
-                        pendingResult.Code);
+                        string.IsNullOrWhiteSpace(cookingJobResult.StepName) ? "普客送达料理" : cookingJobResult.StepName,
+                        string.IsNullOrWhiteSpace(cookingJobResult.Message) ? cookingJobMessage : cookingJobResult.Message,
+                        cookingJobResult.Code);
+                    return Finish(result);
+                }
+                else if (cookingJobResult.Code == OrderPreparationStepCodes.CookingMismatchStored)
+                {
+                    AddFailure(
+                        result,
+                        string.IsNullOrWhiteSpace(cookingJobResult.StepName) ? "普客送达料理" : cookingJobResult.StepName,
+                        string.IsNullOrWhiteSpace(cookingJobResult.Message) ? cookingJobMessage : cookingJobResult.Message,
+                        cookingJobResult.Code);
                     if (request.StopOnError) return Finish(result);
                 }
                 else
                 {
                     AddSkipped(
                         result,
-                        string.IsNullOrWhiteSpace(pendingResult.StepName) ? "普客开始料理" : pendingResult.StepName,
-                        string.IsNullOrWhiteSpace(pendingResult.Message) ? pendingMessage : pendingResult.Message,
-                        pendingResult.Code);
+                        string.IsNullOrWhiteSpace(cookingJobResult.StepName) ? "普客开始料理" : cookingJobResult.StepName,
+                        string.IsNullOrWhiteSpace(cookingJobResult.Message) ? cookingJobMessage : cookingJobResult.Message,
+                        cookingJobResult.Code);
                 }
             }
             else if (request.AutoStartCooking)
             {
+                result.Automation.Stage = "cooking-start";
                 var recipeId = request.RecipeId >= 0 ? request.RecipeId : ResolveRecipeIdFromFoodId(expectedFoodId);
                 if (recipeId < 0)
                 {
@@ -652,26 +881,15 @@ internal static partial class RuntimeOrderPreparationService
                 }
                 else
                 {
-                    var target = CookingCollectionTarget.ForNormalOrder(
-                        runtimeOrder.Order,
-                        request.OrderKey,
-                        traceId,
-                        request.MatchFoodId,
-                        request.MatchBeverageId,
-                        expectedFoodId,
-                        request.RecipeName,
-                        request.DeskCode,
-                        result.Order.GuestName,
-                        request.BeverageId,
-                        request.BeverageName,
-                        recipeId,
-                        request.ExtraIngredientIds,
-                        request.PredictedFoodTags,
-                        request.WackyTargetFoodTags,
-                        request.SpecialBusinessRole,
-                        request.ExecutionMode,
-                        request.ExecutionReason,
-                        request.AutoCompleteOrder);
+                    var target = recipeId == orderAutomationTarget.RecipeId
+                        ? orderAutomationTarget
+                        : BuildNormalAutomationTarget(
+                            request,
+                            runtimeOrder.Order,
+                            traceId,
+                            result.Order.GuestName,
+                            expectedFoodId,
+                            recipeId);
                     var autoDeliverCookedFood = request.AutoCollectCooking && autoDeliverFood;
                     if (TryGetRecentWackyRejectedCookingMessage(target, out var rejectedMessage))
                     {
@@ -682,14 +900,18 @@ internal static partial class RuntimeOrderPreparationService
                         var cookingResult = TryStartCooking(recipeId, request.RecipeName, request.ExtraIngredientIds, autoDeliverCookedFood, target);
                         if (cookingResult.Ok)
                         {
+                            result.Automation.Stage = cookingResult.ExistingJob
+                                ? "cooking-delivery"
+                                : "cooking-start";
+                            result.Automation.JobId = cookingResult.JobId;
                             result.Steps.Add(new OrderPreparationStep
                             {
-                                Code = cookingResult.ExistingPending
+                                Code = cookingResult.ExistingJob
                                     ? OrderPreparationStepCodes.CookingPending
                                     : OrderPreparationStepCodes.CookingStarted,
                                 Name = "普客开始料理",
                                 Ok = true,
-                                Skipped = cookingResult.ExistingPending,
+                                Skipped = cookingResult.ExistingJob,
                                 Message = cookingResult.Message,
                             });
                             if (!string.IsNullOrWhiteSpace(cookingResult.QteMessage))
@@ -708,8 +930,8 @@ internal static partial class RuntimeOrderPreparationService
                         }
                         else
                         {
-                            AddFailure(result, "普客开始料理", cookingResult.Message);
-                            if (request.StopOnError) return Finish(result);
+                            AddFailure(result, "普客开始料理", cookingResult.Message, cookingResult.Code);
+                            if (request.StopOnError || IsAutomationSafetyBarrierCode(cookingResult.Code)) return Finish(result);
                         }
                     }
                 }
@@ -727,9 +949,14 @@ internal static partial class RuntimeOrderPreparationService
             return Finish(result);
         }
 
+        if (autoCompleteOrder)
+        {
+            result.Automation.Stage = "order";
+        }
+
         if (autoCompleteOrder && RequiresNativeWackyKoishiBossEvaluationEntry(request))
         {
-            if (!TryEvaluateWackyKoishiBossOrderIfReady(result, request, runtimeOrder, "触发普客评价", "当前普客订单"))
+            if (!TryEvaluateWackyKoishiBossOrderIfReady(result, request, runtimeOrder, "触发普客评价", "当前普客订单", orderAutomationTarget))
             {
                 return Finish(result);
             }
@@ -743,12 +970,12 @@ internal static partial class RuntimeOrderPreparationService
 
             if (IsYuyukoBossRequest(request))
             {
-                if (!TryEvaluateYuyukoChallengeOrderIfReady(result, request, runtimeOrder, "触发普客评价", "当前普客订单", reacquireLiveOrder: false))
+                if (!TryEvaluateYuyukoChallengeOrderIfReady(result, request, runtimeOrder, "触发普客评价", "当前普客订单", orderAutomationTarget, reacquireLiveOrder: false))
                 {
                     return Finish(result);
                 }
             }
-            else if (!TryEvaluateOrderIfReady(result, runtimeOrder, "触发普客评价", "当前普客订单"))
+            else if (!TryEvaluateOrderIfReady(result, runtimeOrder, "触发普客评价", "当前普客订单", orderAutomationTarget))
             {
                 return Finish(result);
             }
@@ -762,48 +989,74 @@ internal static partial class RuntimeOrderPreparationService
     }
 
     /// <summary>
-    /// 轮询自动开火后的待直送料理，并在料理完成时直接送达目标订单。
+    /// 轮询自动料理 job，并在本锅料理完成时直接送达目标订单。
     /// </summary>
     /// <returns>本轮产生的用户可见自动化消息。</returns>
     /// <remarks>
     /// 该方法由 Overlay 的 Update 循环调用，必须保持轻量且容忍游戏对象临时不可用。
-    /// 超过空闲超时仍无法直送的待办会被移除，避免永久占用自动化状态。
+    /// job 的锅次、成品可读性、制作进展和送达等待均有明确边界，终态只释放 Mod 所有权。
     /// </remarks>
-    public static IReadOnlyList<string> ProcessPendingCookingCollections()
+    public static AutomationCookingProcessResult ProcessAutomationCookingJobs(bool timeoutEligible = true)
     {
         var messages = new List<string>();
-        lock (PendingCookingLock)
+        var changed = false;
+        lock (AutomationCookingJobLock)
         {
-            for (var i = PendingCookingCollections.Count - 1; i >= 0; i--)
+            for (var i = AutomationCookingJobs.Count - 1; i >= 0; i--)
             {
-                var pending = PendingCookingCollections[i];
+                var job = AutomationCookingJobs[i];
+                var previousState = job.Tracker.State;
+                var previousOutcome = job.Tracker.Outcome;
+                var previousReason = job.Tracker.ReasonCode;
+                var previousProgressBucket = ToProgressBucket(job.Tracker.LastProgress);
+                var previousRetrySignature = job.BuildRetrySignature();
                 (bool Remove, string Message, string Code) result;
                 try
                 {
-                    result = TryCollectCookedFood(pending);
+                    result = TryProcessAutomationCookingJob(job, timeoutEligible);
                 }
                 catch (Exception ex)
                 {
-                    result = DateTime.UtcNow - pending.CreatedAtUtc >= PendingCookingIdleTimeout
-                        ? (true, $"{pending.RecipeName} 出锅直送已停止：{ex.GetBaseException().Message}", "")
-                        : (false, "", "");
+                    var message = $"{job.RecipeName} 自动料理任务发生未处理异常，已释放 Mod 所有权并保留厨具当前状态：{ex.GetBaseException().Message}";
+                    RecordAutomationRuntimeEvent(
+                        OrderPreparationStepCodes.CookingResultUnreadable,
+                        job,
+                        message,
+                        outcome: "blocked",
+                        reasonCode: "cooking-job-exception",
+                        terminal: true);
+                    result = (true, message, OrderPreparationStepCodes.CookingResultUnreadable);
                 }
 
                 if (!string.IsNullOrWhiteSpace(result.Message))
                 {
                     messages.Add(result.Message);
-                    AppendAutomationLog("pending", pending.Target, result.Message);
+                    AppendAutomationLog("job", job.Target, job.FormatLogContext(result.Message));
                 }
 
                 if (result.Remove)
                 {
-                    AppendAutomationLog("pending-remove", pending.Target, $"{pending.RecipeName}; age={(DateTime.UtcNow - pending.CreatedAtUtc).TotalSeconds:F1}s");
-                    PendingCookingCollections.RemoveAt(i);
+                    AppendAutomationLog("job-remove", job.Target, job.FormatLogContext($"age={(DateTime.UtcNow - job.CreatedAtUtc).TotalSeconds:F1}s; code={result.Code}"));
+                    AutomationCookingJobs.RemoveAt(i);
+                    changed = true;
+                }
+                else if (!string.Equals(previousState, job.Tracker.State, StringComparison.Ordinal)
+                         || !string.Equals(previousOutcome, job.Tracker.Outcome, StringComparison.Ordinal)
+                         || !string.Equals(previousReason, job.Tracker.ReasonCode, StringComparison.Ordinal)
+                         || previousProgressBucket != ToProgressBucket(job.Tracker.LastProgress)
+                         || !string.Equals(previousRetrySignature, job.BuildRetrySignature(), StringComparison.Ordinal))
+                {
+                    changed = true;
                 }
             }
         }
 
-        return messages;
+        return new AutomationCookingProcessResult(messages, changed);
+    }
+
+    private static int ToProgressBucket(float progress)
+    {
+        return progress < 0f ? -1 : Math.Clamp((int)Math.Floor(progress * 10f), 0, 10);
     }
 
     private static string FormatNormalSelectionMessage(OrderPreparationRequest request, string guestName)
@@ -841,15 +1094,25 @@ internal static partial class RuntimeOrderPreparationService
     }
 
     /// <summary>
-    /// 清理所有等待出锅后直接送达的料理任务。
+    /// 取消所有自动料理 job 的 Mod 所有权，不改动厨具、成品或库存。
     /// </summary>
-    /// <returns>被清理的缓存项数量。</returns>
-    public static int ClearPendingCookingCollections()
+    /// <returns>被取消的 job 数量。</returns>
+    public static int ClearAutomationCookingJobs(string reasonCode = "scene-ended")
     {
-        lock (PendingCookingLock)
+        lock (AutomationCookingJobLock)
         {
-            var count = PendingCookingCollections.Count;
-            PendingCookingCollections.Clear();
+            var count = AutomationCookingJobs.Count;
+            foreach (var job in AutomationCookingJobs)
+            {
+                RecordAutomationRuntimeEvent(
+                    OrderPreparationStepCodes.CookingCancelled,
+                    job,
+                    $"{job.RecipeName} 自动料理任务已取消；厨具和成品保持原状。",
+                    outcome: "cancelled",
+                    reasonCode: reasonCode,
+                    terminal: true);
+            }
+            AutomationCookingJobs.Clear();
             return count;
         }
     }
@@ -869,24 +1132,141 @@ internal static partial class RuntimeOrderPreparationService
         return RuntimeOrderTraceIdService.GetRequestTraceId(kind, request.TraceId, stableKey);
     }
 
+    private static CookingCollectionTarget BuildRareAutomationTarget(
+        OrderPreparationRequest request,
+        int? expectedFoodId = null)
+    {
+        var foodId = expectedFoodId ?? request.FoodId;
+        return CookingCollectionTarget.ForRareOrder(request, foodId);
+    }
+
+    private static CookingCollectionTarget BuildNormalAutomationTarget(
+        OrderPreparationRequest request,
+        object? order,
+        string traceId,
+        string guestName,
+        int expectedFoodId,
+        int? resolvedRecipeId = null)
+    {
+        var recipeId = resolvedRecipeId ?? request.RecipeId;
+        return CookingCollectionTarget.ForNormalOrder(
+            order,
+            request.OrderKey,
+            traceId,
+            request.MatchFoodId,
+            request.MatchBeverageId,
+            expectedFoodId,
+            request.RecipeName,
+            request.DeskCode,
+            guestName,
+            request.BeverageId,
+            request.BeverageName,
+            recipeId,
+            request.ExtraIngredientIds,
+            request.PredictedFoodTags,
+            request.WackyTargetFoodTags,
+            request.SpecialBusinessRole,
+            request.ExecutionMode,
+            request.ExecutionReason,
+            request.AutoCompleteOrder);
+    }
+
+    private static void RecordOrderSafetyBarrierIfNeeded(
+        string code,
+        CookingCollectionTarget target,
+        string message)
+    {
+        if (code is not (OrderPreparationStepCodes.BeverageDeliveryCommitUncertain
+            or OrderPreparationStepCodes.FoodDeliveryCommitUncertain
+            or OrderPreparationStepCodes.OrderEvaluationCommitUncertain))
+        {
+            return;
+        }
+
+        RecordAutomationRuntimeEvent(
+            code,
+            target,
+            message,
+            outcome: "blocked",
+            reasonCode: code,
+            terminal: true);
+    }
+
+    private static bool TryApplyUnresolvedAutomationSafetyBarrier(
+        OrderPreparationResult result,
+        string targetKind,
+        string traceId,
+        string orderKey)
+    {
+        var targetIdentity = BuildAutomationSafetyTargetIdentity(targetKind, traceId, orderKey);
+        AutomationSafetyBarrierRecord? barrier;
+        lock (AutomationCookingJobLock)
+        {
+            UnresolvedAutomationSafetyBarriers.TryGetLatest(targetIdentity, out barrier);
+        }
+
+        if (barrier == null) return false;
+        result.Automation.Stage = barrier.Stage;
+        AddFailure(
+            result,
+            "自动化安全栅栏",
+            $"该订单仍有未人工确认的游戏副作用（事件 #{barrier.Sequence}）：{barrier.Message} 请检查游戏状态并在伴随窗口点击“确认已处理”；Mod 确认 ACK 前不会再次执行该订单。",
+            barrier.Code);
+        return true;
+    }
+
+    private static bool TryGetUnresolvedAutomationSafetyBarrier(
+        CookingCollectionTarget target,
+        out AutomationSafetyBarrierRecord? barrier)
+    {
+        var targetKind = target.Kind == CookingCollectionTargetKind.RareOrder ? "rare" : "normal";
+        var targetIdentity = BuildAutomationSafetyTargetIdentity(targetKind, target.TraceId, target.OrderKey);
+        lock (AutomationCookingJobLock)
+        {
+            return UnresolvedAutomationSafetyBarriers.TryGetLatest(targetIdentity, out barrier);
+        }
+    }
+
+    private static string BuildAutomationSafetyTargetIdentity(string targetKind, string traceId, string orderKey)
+    {
+        if (string.Equals(targetKind, "normal", StringComparison.Ordinal)
+            && !string.IsNullOrWhiteSpace(orderKey))
+        {
+            return $"normal:order:{orderKey.Trim()}";
+        }
+
+        return $"{targetKind}:trace:{traceId.Trim()}";
+    }
+
     private static void RecordAutomationRuntimeEvent(
         string code,
         CookingCollectionTarget target,
         string message,
         int actualFoodId = -1,
         IReadOnlyList<string>? targetFoodTags = null,
-        IReadOnlyList<string>? actualFoodTags = null)
+        IReadOnlyList<string>? actualFoodTags = null,
+        AutomationCookingJob? job = null,
+        string outcome = "",
+        string reasonCode = "",
+        bool terminal = false)
     {
         if (string.IsNullOrWhiteSpace(code)) return;
 
-        lock (PendingCookingLock)
+        lock (AutomationCookingJobLock)
         {
             AutomationRuntimeEventSequence++;
-            AutomationRuntimeEvents.Add(new AutomationRuntimeEvent
+            var runtimeEvent = new AutomationRuntimeEvent
             {
                 Sequence = AutomationRuntimeEventSequence,
                 CreatedAtUtc = DateTime.UtcNow,
                 Code = code,
+                JobId = job?.JobId ?? "",
+                Outcome = outcome,
+                ReasonCode = string.IsNullOrWhiteSpace(reasonCode) ? code : reasonCode,
+                Terminal = terminal,
+                Generation = job?.Generation ?? 0,
+                CookerPhase = job?.Tracker.LastPhase ?? -1,
+                CookerProgress = job?.Tracker.LastProgress ?? -1f,
                 TargetKind = target.Kind == CookingCollectionTargetKind.RareOrder ? "rare" : "normal",
                 TraceId = target.TraceId,
                 OrderKey = target.OrderKey,
@@ -903,13 +1283,59 @@ internal static partial class RuntimeOrderPreparationService
                 TargetFoodTags = (targetFoodTags ?? Array.Empty<string>()).ToList(),
                 ActualFoodTags = (actualFoodTags ?? Array.Empty<string>()).ToList(),
                 Message = message,
-            });
+            };
+            AutomationRuntimeEvents.Add(runtimeEvent);
 
-            if (AutomationRuntimeEvents.Count > MaxAutomationRuntimeEvents)
+            if (terminal && string.Equals(outcome, "blocked", StringComparison.Ordinal)
+                && IsAutomationSafetyBarrierCode(code))
             {
-                AutomationRuntimeEvents.RemoveRange(0, AutomationRuntimeEvents.Count - MaxAutomationRuntimeEvents);
+                var targetKind = target.Kind == CookingCollectionTargetKind.RareOrder ? "rare" : "normal";
+                UnresolvedAutomationSafetyBarriers.Register(new AutomationSafetyBarrierRecord(
+                    runtimeEvent.Sequence,
+                    BuildAutomationSafetyTargetIdentity(targetKind, target.TraceId, target.OrderKey),
+                    code,
+                    code switch
+                    {
+                        OrderPreparationStepCodes.BeverageDeliveryCommitUncertain => "beverage",
+                        OrderPreparationStepCodes.CookingStartUnowned => "cooking-start",
+                        OrderPreparationStepCodes.OrderEvaluationCommitUncertain => "order",
+                        _ => "cooking-delivery",
+                    },
+                    message));
+            }
+
+            while (AutomationRuntimeEvents.Count > MaxAutomationRuntimeEvents)
+            {
+                var removableIndex = AutomationRuntimeEvents.FindIndex(candidate =>
+                    !UnresolvedAutomationSafetyBarriers.Contains(candidate.Sequence));
+                if (removableIndex < 0) break;
+                AutomationRuntimeEvents.RemoveAt(removableIndex);
             }
         }
+    }
+
+    private static void RecordAutomationRuntimeEvent(
+        string code,
+        AutomationCookingJob job,
+        string message,
+        int actualFoodId = -1,
+        IReadOnlyList<string>? targetFoodTags = null,
+        IReadOnlyList<string>? actualFoodTags = null,
+        string outcome = "",
+        string reasonCode = "",
+        bool terminal = false)
+    {
+        RecordAutomationRuntimeEvent(
+            code,
+            job.Target,
+            message,
+            actualFoodId,
+            targetFoodTags,
+            actualFoodTags,
+            job,
+            outcome,
+            reasonCode,
+            terminal);
     }
 
     private static OrderPreparationResult Fail(OrderPreparationResult result, string error)
@@ -917,6 +1343,9 @@ internal static partial class RuntimeOrderPreparationService
         result.Error = error;
         result.Ok = false;
         result.Prepared = false;
+        result.Automation.Outcome = "fatal";
+        result.Automation.Stage = "validation";
+        result.Automation.ReasonCode = "request-validation-failed";
         result.Steps.Add(new OrderPreparationStep
         {
             Name = "准备校验",
@@ -947,7 +1376,104 @@ internal static partial class RuntimeOrderPreparationService
             result.Error = result.Steps.FirstOrDefault(step => !step.Ok && !step.Skipped)?.Message;
         }
 
+        ApplyStructuredAutomationOutcome(result);
+
         return result;
+    }
+
+    private static void ApplyStructuredAutomationOutcome(OrderPreparationResult result)
+    {
+        var codes = result.Steps
+            .Select(step => step.Code)
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .ToHashSet(StringComparer.Ordinal);
+        var blockedCode = result.Steps
+            .Select(step => step.Code)
+            .FirstOrDefault(IsAutomationSafetyBarrierCode);
+        if (!string.IsNullOrWhiteSpace(blockedCode))
+        {
+            result.Automation.Outcome = "blocked";
+            result.Automation.Stage = blockedCode switch
+            {
+                OrderPreparationStepCodes.BeverageDeliveryCommitUncertain => "beverage",
+                OrderPreparationStepCodes.CookingStartUnowned => "cooking-start",
+                OrderPreparationStepCodes.OrderEvaluationCommitUncertain => "order",
+                _ => "cooking-delivery",
+            };
+            result.Automation.ReasonCode = blockedCode;
+            return;
+        }
+
+        var interruptedCode = new[]
+        {
+            OrderPreparationStepCodes.CookingResultRemoved,
+            OrderPreparationStepCodes.CookingControllerReused,
+            OrderPreparationStepCodes.CookingMismatchStored,
+            OrderPreparationStepCodes.CookingTargetUnavailableStored,
+        }.FirstOrDefault(codes.Contains);
+        if (!string.IsNullOrWhiteSpace(interruptedCode))
+        {
+            result.Automation.Outcome = "interrupted";
+            result.Automation.Stage = "cooking-delivery";
+            result.Automation.ReasonCode = interruptedCode;
+            result.Automation.RetryAfterMs = 500;
+            return;
+        }
+
+        if (result.CompletedOrder)
+        {
+            result.Automation.Outcome = "completed";
+            result.Automation.Stage = "order";
+            result.Automation.ReasonCode = "order-completed";
+            return;
+        }
+
+        var completedCookingCode = codes.Contains(OrderPreparationStepCodes.FoodDelivered)
+            ? OrderPreparationStepCodes.FoodDelivered
+            : codes.Contains(OrderPreparationStepCodes.CookingTargetAlreadyServedStored)
+                ? OrderPreparationStepCodes.CookingTargetAlreadyServedStored
+                : "";
+        if (!string.IsNullOrWhiteSpace(completedCookingCode))
+        {
+            result.Automation.Outcome = "completed";
+            result.Automation.Stage = "cooking-delivery";
+            result.Automation.ReasonCode = completedCookingCode;
+            return;
+        }
+
+        if (!result.Ok)
+        {
+            result.Automation.Outcome = "retryable-failure";
+            result.Automation.ReasonCode = result.Steps.FirstOrDefault(step => !step.Ok && !step.Skipped)?.Code
+                ?? "command-failed";
+            if (string.IsNullOrWhiteSpace(result.Automation.ReasonCode)) result.Automation.ReasonCode = "command-failed";
+            result.Automation.RetryAfterMs = 1000;
+            return;
+        }
+
+        if (codes.Contains(OrderPreparationStepCodes.CookingPending))
+        {
+            result.Automation.Outcome = "waiting";
+            result.Automation.Stage = "cooking-delivery";
+            result.Automation.ReasonCode = OrderPreparationStepCodes.CookingPending;
+            return;
+        }
+
+        if (codes.Contains(OrderPreparationStepCodes.CookingStarted)
+            || codes.Contains(OrderPreparationStepCodes.BeverageDelivered))
+        {
+            result.Automation.Outcome = "progressed";
+            result.Automation.ReasonCode = codes.Contains(OrderPreparationStepCodes.CookingStarted)
+                ? OrderPreparationStepCodes.CookingStarted
+                : OrderPreparationStepCodes.BeverageDelivered;
+            result.Automation.Stage = codes.Contains(OrderPreparationStepCodes.CookingStarted)
+                ? "cooking-start"
+                : "beverage";
+            return;
+        }
+
+        result.Automation.Outcome = "waiting";
+        result.Automation.ReasonCode = "no-action-required";
     }
 
     private static void AddFailure(OrderPreparationResult result, string name, string message, string code = "")
@@ -959,6 +1485,24 @@ internal static partial class RuntimeOrderPreparationService
             Ok = false,
             Message = message,
         });
+    }
+
+    private static bool IsAutomationSafetyBarrierCode(string code)
+    {
+        return code is OrderPreparationStepCodes.CookingTagsUnreadableStored
+            or OrderPreparationStepCodes.BeverageDeliveryCommitUncertain
+            or OrderPreparationStepCodes.FoodDeliveryCommitUncertain
+            or OrderPreparationStepCodes.CookingResultUnreadable
+            or OrderPreparationStepCodes.CookingDeliveryBlocked
+            or OrderPreparationStepCodes.CookingStartUnowned
+            or OrderPreparationStepCodes.CookingProgressStalled
+            or OrderPreparationStepCodes.CookingProgressRegressed
+            or OrderPreparationStepCodes.CookingDeliveryCommitUncertain
+            or OrderPreparationStepCodes.CookingDeliveryCleanupBlocked
+            or OrderPreparationStepCodes.CookingWarmerCommitUncertain
+            or OrderPreparationStepCodes.CookingWarmerResetBlocked
+            or OrderPreparationStepCodes.CookingManualHandoffUnreadable
+            or OrderPreparationStepCodes.OrderEvaluationCommitUncertain;
     }
 
     private static void AddSkipped(OrderPreparationResult result, string name, string message, string code = "")
@@ -973,44 +1517,151 @@ internal static partial class RuntimeOrderPreparationService
         });
     }
 
+    private sealed record AutomationWarmerCompletion(
+        string Code,
+        string Outcome,
+        string ReasonCode,
+        string MessagePrefix,
+        int ActualFoodId,
+        IReadOnlyList<string> TargetTags,
+        IReadOnlyList<string> ActualTags,
+        string DiagnosticEvent = "",
+        bool RememberRejectedRecipe = false);
+
+    private sealed record AutomationFoodDeliveryCompletion(
+        string Message,
+        int ActualFoodId,
+        IReadOnlyList<string> TargetTags,
+        IReadOnlyList<string> ActualTags);
+
+    private sealed record RuntimeOrderEvaluationResult(
+        bool Ok,
+        bool Completed,
+        bool Skipped,
+        string Message,
+        string Code = "");
+
+
     /// <summary>
     /// 等待料理完成并直接送达的上下文。
     /// </summary>
-    private sealed class PendingCookingCollection
+    private sealed class AutomationCookingJob
     {
+        public string JobId { get; init; } = "";
         public object CookController { get; init; } = new();
+        public nint ControllerPointer { get; init; }
+        public long Generation { get; init; }
         public string RecipeName { get; init; } = "";
         public DateTime CreatedAtUtc { get; init; }
         public CookingCollectionTarget Target { get; init; } = CookingCollectionTarget.ForRareOrder(new OrderPreparationRequest(), -1);
+        public AutomationCookingJobTracker Tracker { get; init; } = new(0, DateTime.UtcNow, -1, 0f);
+        public bool AutoDeliverFood { get; set; }
+        public bool ManualHandoffObserved { get; set; }
+        public int ManualHandoffMissingOrderCount { get; set; }
+        public int ManualHandoffReadFailureCount { get; set; }
+        public AutomationEffectiveTimeoutClock ManualHandoffMissingOrderClock { get; init; } = new(DateTime.UtcNow, initiallyEligible: false);
+        public AutomationEffectiveTimeoutClock ManualHandoffReadFailureClock { get; init; } = new(DateTime.UtcNow, initiallyEligible: false);
+        public AutomationEffectiveTimeoutClock DeliveryTimeoutClock { get; init; } = new(DateTime.UtcNow, initiallyEligible: false);
+        public nint CurrentResultPointer { get; set; }
+        public bool WarmerStoreCommitted => WarmerResetTracker.Committed;
+        public bool WarmerStoreCommitUncertain => WarmerResetTracker.CommitUncertain;
+        public string WarmerStoreStatus { get; set; } = "";
+        public object? WarmerStoredFood { get; set; }
+        public AutomationWarmerCompletion? WarmerCompletion { get; set; }
+        public AutomationBoundedCleanupTracker WarmerResetTracker { get; } = new(MaxCookerCleanupAttempts);
+        public int WarmerResetAttempts => WarmerResetTracker.AttemptCount;
+        public bool FoodDeliveryCommitted => FoodDeliveryCleanupTracker.Committed;
+        public bool FoodDeliveryCommitUncertain => FoodDeliveryCleanupTracker.CommitUncertain;
+        public object? DeliveredFood { get; set; }
+        public AutomationFoodDeliveryCompletion? FoodDeliveryCompletion { get; set; }
+        public AutomationBoundedCleanupTracker FoodDeliveryCleanupTracker { get; } = new(MaxCookerCleanupAttempts);
+        public int FoodDeliveryCleanupAttempts => FoodDeliveryCleanupTracker.AttemptCount;
         public int MissingTargetCount { get; private set; }
-        public DateTime? FirstMissingTargetAtUtc { get; private set; }
+        public TimeSpan? FirstMissingTargetAtEffectiveElapsed { get; private set; }
         public int MissingControllerCount { get; private set; }
-        public DateTime? FirstMissingControllerAtUtc { get; private set; }
+        public TimeSpan? FirstMissingControllerAtEffectiveElapsed { get; private set; }
 
-        public (int Count, DateTime FirstAtUtc) RecordDeliveryFailure(PendingDeliveryFailureKind kind, DateTime nowUtc)
+        public (int Count, TimeSpan EffectiveAge) RecordDeliveryFailure(
+            AutomationDeliveryFailureKind kind,
+            TimeSpan effectiveElapsed)
         {
-            if (kind == PendingDeliveryFailureKind.MissingController)
+            if (kind == AutomationDeliveryFailureKind.MissingController)
             {
-                FirstMissingControllerAtUtc ??= nowUtc;
+                FirstMissingControllerAtEffectiveElapsed ??= effectiveElapsed;
                 MissingControllerCount++;
                 MissingTargetCount = 0;
-                FirstMissingTargetAtUtc = null;
-                return (MissingControllerCount, FirstMissingControllerAtUtc.Value);
+                FirstMissingTargetAtEffectiveElapsed = null;
+                return (
+                    MissingControllerCount,
+                    effectiveElapsed - FirstMissingControllerAtEffectiveElapsed.Value);
             }
 
-            FirstMissingTargetAtUtc ??= nowUtc;
+            FirstMissingTargetAtEffectiveElapsed ??= effectiveElapsed;
             MissingTargetCount++;
             MissingControllerCount = 0;
-            FirstMissingControllerAtUtc = null;
-            return (MissingTargetCount, FirstMissingTargetAtUtc.Value);
+            FirstMissingControllerAtEffectiveElapsed = null;
+            return (
+                MissingTargetCount,
+                effectiveElapsed - FirstMissingTargetAtEffectiveElapsed.Value);
         }
 
         public void ResetDeliveryFailures()
         {
             MissingTargetCount = 0;
-            FirstMissingTargetAtUtc = null;
+            FirstMissingTargetAtEffectiveElapsed = null;
             MissingControllerCount = 0;
-            FirstMissingControllerAtUtc = null;
+            FirstMissingControllerAtEffectiveElapsed = null;
+        }
+
+        public string FormatLogContext(string detail)
+        {
+            return $"jobId={JobId}; generation={Generation}; controller=0x{(long)ControllerPointer:X}; result=0x{(long)CurrentResultPointer:X}; phase={Tracker.LastPhase}; progress={Tracker.LastProgress:F3}; {detail}";
+        }
+
+        public string BuildRetrySignature()
+        {
+            return $"{Tracker.OwnershipObservationFailures}:{Tracker.RegressiveObservations}:{AutoDeliverFood}:{ManualHandoffObserved}:"
+                + $"{MissingTargetCount + MissingControllerCount}:{WarmerStoreCommitted}:{WarmerStoreCommitUncertain}:"
+                + $"{WarmerResetAttempts}:{FoodDeliveryCommitted}:{FoodDeliveryCommitUncertain}:{FoodDeliveryCleanupAttempts}";
+        }
+
+        public AutomationCookingJobSnapshot ToSnapshot()
+        {
+            return new AutomationCookingJobSnapshot
+            {
+                JobId = JobId,
+                TargetKind = Target.Kind == CookingCollectionTargetKind.RareOrder ? "rare" : "normal",
+                TraceId = Target.TraceId,
+                OrderKey = Target.OrderKey,
+                DeskCode = Target.DeskCode,
+                GuestId = Target.GuestId,
+                GuestName = Target.GuestName,
+                FoodId = Target.FoodId,
+                FoodName = Target.FoodName,
+                RecipeId = Target.RecipeId,
+                State = Tracker.State,
+                Outcome = Tracker.Outcome,
+                ReasonCode = Tracker.ReasonCode,
+                AutoDeliverFood = AutoDeliverFood,
+                ControllerId = $"0x{(long)ControllerPointer:X}",
+                ResultId = CurrentResultPointer == 0 ? "" : $"0x{(long)CurrentResultPointer:X}",
+                Generation = Generation,
+                CookerPhase = Tracker.LastPhase,
+                CookerProgress = Tracker.LastProgress,
+                OwnershipObservationFailures = Tracker.OwnershipObservationFailures,
+                RegressiveObservations = Tracker.RegressiveObservations,
+                DeliveryFailureAttempts = MissingTargetCount + MissingControllerCount,
+                ManualHandoffReadFailures = ManualHandoffReadFailureCount,
+                WarmerStoreCommitted = WarmerStoreCommitted,
+                WarmerStoreCommitUncertain = WarmerStoreCommitUncertain,
+                WarmerResetAttempts = WarmerResetAttempts,
+                FoodDeliveryCommitted = FoodDeliveryCommitted,
+                FoodDeliveryCommitUncertain = FoodDeliveryCommitUncertain,
+                FoodDeliveryCleanupAttempts = FoodDeliveryCleanupAttempts,
+                StartedAtUtc = Tracker.StartedAtUtc,
+                LastObservedAtUtc = Tracker.LastObservedAtUtc,
+                LastProgressAtUtc = Tracker.LastProgressAtUtc,
+            };
         }
     }
 
@@ -1166,9 +1817,16 @@ internal static partial class RuntimeOrderPreparationService
         public string Message { get; private init; } = "";
         public string QteMessage { get; private init; } = "";
         public bool QteSkipped { get; private init; }
-        public bool ExistingPending { get; private init; }
+        public bool ExistingJob { get; private init; }
+        public string JobId { get; private init; } = "";
+        public string Code { get; private init; } = "";
 
-        public static CookingStartResult Succeeded(string message, string qteMessage, bool qteSkipped, bool existingPending = false)
+        public static CookingStartResult Succeeded(
+            string message,
+            string qteMessage,
+            bool qteSkipped,
+            bool existingJob = false,
+            string jobId = "")
         {
             return new CookingStartResult
             {
@@ -1176,16 +1834,18 @@ internal static partial class RuntimeOrderPreparationService
                 Message = message,
                 QteMessage = qteMessage,
                 QteSkipped = qteSkipped,
-                ExistingPending = existingPending,
+                ExistingJob = existingJob,
+                JobId = jobId,
             };
         }
 
-        public static CookingStartResult Failed(string message)
+        public static CookingStartResult Failed(string message, string code = "")
         {
             return new CookingStartResult
             {
                 Ok = false,
                 Message = message,
+                Code = code,
             };
         }
     }

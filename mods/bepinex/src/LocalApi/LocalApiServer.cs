@@ -55,6 +55,9 @@ internal sealed class LocalApiServer : IDisposable
     private readonly Func<OrderPreparationRequest, OrderPreparationResult> _prepareOrder;
     private readonly Func<OrderPreparationRequest, OrderPreparationResult> _completeOrder;
     private readonly Func<OrderPreparationRequest, OrderPreparationResult> _completeNormalOrder;
+    private readonly Func<long, int> _advanceAutomationCommandEpoch;
+    private readonly Func<long, AutomationCommandCancellationResult> _cancelAutomationJobs;
+    private readonly Func<long, AutomationSafetyBarrierAckResult> _ackAutomationSafetyBarrier;
     private readonly Func<string, string, RareGuestInvitationResult> _listRareGuestInvitations;
     private readonly Func<string, string, RareGuestInvitationResult> _inviteAllRareGuests;
     private readonly Func<int, string, RareGuestInvitationResult> _inviteRareGuest;
@@ -65,6 +68,7 @@ internal sealed class LocalApiServer : IDisposable
     private readonly List<LocalApiListenerWorker> _listeners = new();
     private readonly List<LanAddressCandidate> _activeLanCandidates = new();
     private AutomationLease? _automationLease;
+    private long _automationCommandEpoch;
     private bool _running;
     private bool _lanSettingsApplied;
     private string _snapshotJson = "{\"runtimeLoaded\":false,\"status\":\"Snapshot is not ready.\"}";
@@ -121,6 +125,10 @@ internal sealed class LocalApiServer : IDisposable
         Func<OrderPreparationRequest, OrderPreparationResult> prepareOrder,
         Func<OrderPreparationRequest, OrderPreparationResult> completeOrder,
         Func<OrderPreparationRequest, OrderPreparationResult> completeNormalOrder,
+        long automationCommandEpoch,
+        Func<long, int> advanceAutomationCommandEpoch,
+        Func<long, AutomationCommandCancellationResult> cancelAutomationJobs,
+        Func<long, AutomationSafetyBarrierAckResult> ackAutomationSafetyBarrier,
         Func<string, string, RareGuestInvitationResult> listRareGuestInvitations,
         Func<string, string, RareGuestInvitationResult> inviteAllRareGuests,
         Func<int, string, RareGuestInvitationResult> inviteRareGuest,
@@ -150,6 +158,10 @@ internal sealed class LocalApiServer : IDisposable
         _prepareOrder = prepareOrder;
         _completeOrder = completeOrder;
         _completeNormalOrder = completeNormalOrder;
+        _automationCommandEpoch = Math.Max(1, automationCommandEpoch);
+        _advanceAutomationCommandEpoch = advanceAutomationCommandEpoch;
+        _cancelAutomationJobs = cancelAutomationJobs;
+        _ackAutomationSafetyBarrier = ackAutomationSafetyBarrier;
         _listRareGuestInvitations = listRareGuestInvitations;
         _inviteAllRareGuests = inviteAllRareGuests;
         _inviteRareGuest = inviteRareGuest;
@@ -533,8 +545,11 @@ internal sealed class LocalApiServer : IDisposable
                     case "/automation/lease/acquire":
                         WriteResponse(stream, 200, "OK", ToJson(AcquireAutomationLease(request)));
                         break;
-                    case "/automation/lease/release":
-                        WriteResponse(stream, 200, "OK", ToJson(ReleaseAutomationLease(request)));
+                    case "/automation/jobs/cancel":
+                        WriteResponse(stream, 200, "OK", ToJson(CancelAutomationAndReleaseLease(request)));
+                        break;
+                    case "/automation/barriers/ack":
+                        WriteResponse(stream, 200, "OK", ToJson(AcknowledgeAutomationSafetyBarrier(request, query)));
                         break;
                     case "/local-api/config":
                         if (!isLoopbackClient)
@@ -593,28 +608,28 @@ internal sealed class LocalApiServer : IDisposable
                         WriteResponse(stream, 200, "OK", BuildInventoryBulkEditJson(query));
                         break;
                     case "/orders/prepare-next":
-                        if (!TryRequireAutomationLease(request, out var prepareLeaseError))
+                        if (!TryRequireAutomationLease(request, out var prepareLeaseError, out var prepareEpoch))
                         {
                             WriteResponse(stream, 200, "OK", ToJson(prepareLeaseError));
                             break;
                         }
-                        WriteResponse(stream, 200, "OK", BuildOrderActionJson(query, _prepareOrder));
+                        WriteResponse(stream, 200, "OK", BuildOrderActionJson(query, _prepareOrder, prepareEpoch));
                         break;
                     case "/orders/complete-first":
-                        if (!TryRequireAutomationLease(request, out var completeLeaseError))
+                        if (!TryRequireAutomationLease(request, out var completeLeaseError, out var completeEpoch))
                         {
                             WriteResponse(stream, 200, "OK", ToJson(completeLeaseError));
                             break;
                         }
-                        WriteResponse(stream, 200, "OK", BuildOrderActionJson(query, _completeOrder));
+                        WriteResponse(stream, 200, "OK", BuildOrderActionJson(query, _completeOrder, completeEpoch));
                         break;
                     case "/orders/normal/complete-first":
-                        if (!TryRequireAutomationLease(request, out var normalLeaseError))
+                        if (!TryRequireAutomationLease(request, out var normalLeaseError, out var normalEpoch))
                         {
                             WriteResponse(stream, 200, "OK", ToJson(normalLeaseError));
                             break;
                         }
-                        WriteResponse(stream, 200, "OK", BuildOrderActionJson(query, _completeNormalOrder));
+                        WriteResponse(stream, 200, "OK", BuildOrderActionJson(query, _completeNormalOrder, normalEpoch));
                         break;
                     case "/orders/rare/dismiss":
                         WriteResponse(stream, 200, "OK", BuildRareOrderDismissJson(query));
@@ -949,6 +964,12 @@ internal sealed class LocalApiServer : IDisposable
                     $"自动化当前由 {_automationLease.ClientLabel} 控制，本窗口仅查看。");
             }
 
+            if (_automationLease == null)
+            {
+                _automationCommandEpoch++;
+                _advanceAutomationCommandEpoch(_automationCommandEpoch);
+            }
+
             _automationLease = new AutomationLease
             {
                 ClientId = clientId,
@@ -960,17 +981,14 @@ internal sealed class LocalApiServer : IDisposable
         }
     }
 
-    private LocalApiAutomationLeaseDto ReleaseAutomationLease(string request)
+    private LocalApiAutomationCancellationDto CancelAutomationAndReleaseLease(string request)
     {
         var (clientId, clientLabel, error) = ReadClientIdentity(request);
         if (!string.IsNullOrWhiteSpace(error))
         {
-            return new LocalApiAutomationLeaseDto
+            return new LocalApiAutomationCancellationDto
             {
                 Ok = false,
-                ClientId = clientId,
-                ClientLabel = clientLabel,
-                TtlMs = (int)AutomationLeaseTtl.TotalMilliseconds,
                 Error = error,
             };
         }
@@ -978,35 +996,120 @@ internal sealed class LocalApiServer : IDisposable
         lock (_automationLeaseLock)
         {
             PruneExpiredAutomationLease(DateTime.UtcNow);
-            if (_automationLease != null
-                && string.Equals(_automationLease.ClientId, clientId, StringComparison.Ordinal))
+            if (_automationLease == null
+                || !string.Equals(_automationLease.ClientId, clientId, StringComparison.Ordinal))
             {
-                _automationLease = null;
+                return new LocalApiAutomationCancellationDto
+                {
+                    Ok = false,
+                    Error = _automationLease == null
+                        ? "自动化控制权已失效，无法确认取消屏障。"
+                        : $"自动化当前由 {_automationLease.ClientLabel} 控制，本窗口不能取消其任务。",
+                    CommandEpoch = _automationCommandEpoch,
+                };
             }
 
-            return BuildAutomationLeaseDto(clientId, clientLabel, null);
+            var cancellationEpoch = ++_automationCommandEpoch;
+            try
+            {
+                var result = _cancelAutomationJobs(cancellationEpoch);
+                _automationLease = null;
+                return new LocalApiAutomationCancellationDto
+                {
+                    Ok = true,
+                    Status = $"自动化已取消：job {result.CancelledJobs} 个，排队命令 {result.CancelledCommands} 个。",
+                    CommandEpoch = result.CommandEpoch,
+                    CancelledJobs = result.CancelledJobs,
+                    CancelledCommands = result.CancelledCommands,
+                    LeaseReleased = true,
+                };
+            }
+            catch (Exception ex)
+            {
+                return new LocalApiAutomationCancellationDto
+                {
+                    Ok = false,
+                    Error = ex.GetBaseException().Message,
+                    CommandEpoch = cancellationEpoch,
+                    LeaseReleased = false,
+                };
+            }
         }
     }
 
-    private bool TryRequireAutomationLease(string request, out LocalApiOrderActionErrorDto error)
+    private AutomationSafetyBarrierAckResult AcknowledgeAutomationSafetyBarrier(string request, string query)
     {
-        var status = ReadAutomationLease(request);
-        if (status.Ok && status.Owned)
+        if (!long.TryParse(ReadStringQuery(query, "sequence"), out var sequence) || sequence <= 0)
         {
-            error = new LocalApiOrderActionErrorDto();
-            return true;
+            return new AutomationSafetyBarrierAckResult
+            {
+                Ok = false,
+                Sequence = sequence,
+                Error = "automation barrier sequence must be a positive integer",
+            };
         }
 
-        error = new LocalApiOrderActionErrorDto
+        var (clientId, clientLabel, identityError) = ReadClientIdentity(request);
+        lock (_automationLeaseLock)
         {
-            Ok = false,
-            Prepared = false,
-            Error = status.Error
-                ?? (string.IsNullOrWhiteSpace(status.OwnerClientId)
-                    ? "自动化控制权不可用，请先在本窗口开启自动化。"
-                    : $"自动化当前由 {status.OwnerLabel} 控制，本窗口仅查看。"),
-        };
-        return false;
+            PruneExpiredAutomationLease(DateTime.UtcNow);
+            if (!string.IsNullOrWhiteSpace(identityError)
+                || _automationLease == null
+                || !string.Equals(_automationLease.ClientId, clientId, StringComparison.Ordinal))
+            {
+                return new AutomationSafetyBarrierAckResult
+                {
+                    Ok = false,
+                    Sequence = sequence,
+                    Error = !string.IsNullOrWhiteSpace(identityError)
+                        ? identityError
+                        : _automationLease == null
+                            ? "自动化控制权已失效，不能确认安全栅栏。"
+                            : $"自动化当前由 {_automationLease.ClientLabel} 控制，本窗口不能确认其安全栅栏。",
+                };
+            }
+
+            return _ackAutomationSafetyBarrier(sequence);
+        }
+    }
+
+    private bool TryRequireAutomationLease(
+        string request,
+        out LocalApiOrderActionErrorDto error,
+        out long automationEpoch)
+    {
+        automationEpoch = 0;
+        var (clientId, clientLabel, identityError) = ReadClientIdentity(request);
+        lock (_automationLeaseLock)
+        {
+            PruneExpiredAutomationLease(DateTime.UtcNow);
+            var status = string.IsNullOrWhiteSpace(identityError)
+                ? BuildAutomationLeaseDto(clientId, clientLabel, null)
+                : new LocalApiAutomationLeaseDto
+                {
+                    Ok = false,
+                    ClientId = clientId,
+                    ClientLabel = clientLabel,
+                    Error = identityError,
+                };
+            if (status.Ok && status.Owned)
+            {
+                automationEpoch = _automationCommandEpoch;
+                error = new LocalApiOrderActionErrorDto();
+                return true;
+            }
+
+            error = new LocalApiOrderActionErrorDto
+            {
+                Ok = false,
+                Prepared = false,
+                Error = status.Error
+                    ?? (string.IsNullOrWhiteSpace(status.OwnerClientId)
+                        ? "自动化控制权不可用，请先在本窗口开启自动化。"
+                        : $"自动化当前由 {status.OwnerLabel} 控制，本窗口仅查看。"),
+            };
+            return false;
+        }
     }
 
     private LocalApiAutomationLeaseDto BuildAutomationLeaseDto(string clientId, string clientLabel, string? error)
@@ -1270,12 +1373,16 @@ internal sealed class LocalApiServer : IDisposable
         });
     }
 
-    private string BuildOrderActionJson(string query, Func<OrderPreparationRequest, OrderPreparationResult> action)
+    private string BuildOrderActionJson(
+        string query,
+        Func<OrderPreparationRequest, OrderPreparationResult> action,
+        long automationEpoch)
     {
         try
         {
             var request = new OrderPreparationRequest
             {
+                AutomationEpoch = automationEpoch,
                 TraceId = ReadStringQuery(query, "traceId"),
                 OrderKey = ReadStringQuery(query, "orderKey"),
                 DeskCode = ReadIntQuery(query, "deskCode", -1),

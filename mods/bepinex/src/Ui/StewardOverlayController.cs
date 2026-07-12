@@ -28,7 +28,7 @@ internal sealed class StewardOverlayController
     private const float LocalApiSnapshotPublishMinIntervalSeconds = 0.35f;
     private const float RuntimeDataCatalogRetrySeconds = 5f;
     private const float PerformanceSnapshotMaxAgeSeconds = 12f;
-    private const float PendingCookingProcessIntervalSeconds = 0.5f;
+    private const float AutomationCookingJobProcessIntervalSeconds = 0.5f;
     private const float ActiveBusinessSnapshotRefreshSeconds = 0.75f;
     private const float NormalBusinessSnapshotCacheSeconds = 1f;
     private const float StableBusinessContextRescanSeconds = 5f;
@@ -50,9 +50,11 @@ internal sealed class StewardOverlayController
     // 后台 HTTP 线程提交的库存编辑请求，统一在 Unity 主线程处理。
     private readonly Queue<PendingInventoryEdit> _pendingInventoryEdits = new();
     private readonly Queue<PendingInventoryBulkEdit> _pendingInventoryBulkEdits = new();
-    private readonly object _orderPreparationLock = new();
     // 订单准备会读写运行时订单、厨具和库存，必须串行回到主线程执行。
     private readonly Queue<PendingOrderPreparation> _pendingOrderPreparations = new();
+    private readonly AutomationCommandEpochFence _automationCommandFence = new();
+    private readonly object _automationJobCommandLock = new();
+    private readonly Queue<PendingAutomationJobCancellation> _pendingAutomationJobCancellations = new();
     private readonly object _rareGuestInvitationLock = new();
     // 稀客邀请涉及日间场景候选和角色状态，同样不允许在 API 后台线程直接执行。
     private readonly Queue<PendingRareGuestInvitation> _pendingRareGuestInvitations = new();
@@ -71,7 +73,7 @@ internal sealed class StewardOverlayController
     private float _nextBusinessRefreshAt;
     private float _nextLocalApiSnapshotPublishAt;
     private float _nextRuntimeDataCatalogRefreshAt;
-    private float _nextPendingCookingProcessAt;
+    private float _nextAutomationCookingJobProcessAt;
     private float _nextActiveBusinessSnapshotRefreshAt;
     private float _nextNormalBusinessRefreshAt;
     private float _nextStableBusinessContextRescanAt;
@@ -137,6 +139,13 @@ internal sealed class StewardOverlayController
     {
         public OrderPreparationRequest Request { get; init; } = new();
         public OrderActionKind Action { get; init; }
+        public long AutomationEpoch { get; init; }
+    }
+
+    private sealed class PendingAutomationJobCancellation : MainThreadCommand<AutomationCommandCancellationResult>
+    {
+        public long AutomationEpoch { get; init; }
+        public int CancelledCommands { get; init; }
     }
 
     /// <summary>
@@ -217,9 +226,10 @@ internal sealed class StewardOverlayController
         RefreshOnRuntimeSceneReadinessChange();
         ProcessPendingInventoryEdits();
         ProcessPendingInventoryBulkEdits();
+        ProcessPendingAutomationJobCancellations();
         ProcessPendingOrderPreparations();
         ProcessPendingRareGuestInvitations();
-        ProcessPendingCookingCollections();
+        ProcessAutomationCookingJobs();
         RefreshBusinessContextOnOrderCaptureChange();
         MarkActiveBusinessSnapshotDirtyIfDue();
 
@@ -298,10 +308,16 @@ internal sealed class StewardOverlayController
         var sceneName = GetActiveSceneName();
         if (string.Equals(sceneName, _activeSceneName, StringComparison.Ordinal)) return;
 
+        if (RuntimeOrderPreparationService.HasAutomationCookingJobs)
+        {
+            RuntimeOrderPreparationService.ClearAutomationCookingJobs("scene-changed");
+        }
+
         _activeSceneName = sceneName;
         if (IsNonGameplayScene(sceneName) || IsNightBusinessScene(sceneName))
         {
             RuntimeSceneReadinessCapture.ClearForSceneChange(sceneName);
+            RuntimeCookingGenerationTracker.ClearForSceneChange();
         }
 
         _nextAutoRefreshAt = 0f;
@@ -455,7 +471,15 @@ internal sealed class StewardOverlayController
         CompanionProcessLauncher.TryNotifyExit(_log);
         CancelPendingMainThreadCommands(_pendingInventoryEdits, _inventoryEditLock);
         CancelPendingMainThreadCommands(_pendingInventoryBulkEdits, _inventoryEditLock);
-        CancelPendingMainThreadCommands(_pendingOrderPreparations, _orderPreparationLock);
+        _automationCommandFence.RunExclusive(_ =>
+        {
+            while (_pendingOrderPreparations.Count > 0)
+            {
+                _pendingOrderPreparations.Dequeue().Cancel(new ObjectDisposedException(nameof(StewardOverlayController)));
+            }
+            return 0;
+        });
+        CancelPendingMainThreadCommands(_pendingAutomationJobCancellations, _automationJobCommandLock);
         CancelPendingMainThreadCommands(_pendingRareGuestInvitations, _rareGuestInvitationLock);
         _localApiServer?.Dispose();
         _localApiServer = null;
@@ -773,6 +797,10 @@ internal sealed class StewardOverlayController
                 PrepareOrderFromLocalApi,
                 CompleteOrderFromLocalApi,
                 CompleteNormalOrderFromLocalApi,
+                GetAutomationCommandEpoch(),
+                AdvanceAutomationCommandEpoch,
+                CancelAutomationJobsFromLocalApi,
+                AcknowledgeAutomationSafetyBarrierFromLocalApi,
                 ListRareGuestInvitationsFromLocalApi,
                 InviteAllRareGuestsFromLocalApi,
                 InviteRareGuestFromLocalApi,
@@ -828,6 +856,7 @@ internal sealed class StewardOverlayController
             var snapshot = new LocalApiSnapshot
             {
                 PluginVersion = MystiaStewardCompanionPlugin.PluginVersion,
+                AutomationSessionId = RuntimeOrderPreparationService.AutomationSessionId,
                 CapturedAtUtc = DateTime.UtcNow,
                 ActiveSceneName = _activeSceneName,
                 ActiveDayMapLabel = dayMap.Label,
@@ -846,6 +875,7 @@ internal sealed class StewardOverlayController
                 NormalBusiness = Measure("snapshot.normalBusiness", ReadNormalBusinessForSnapshot),
                 RuntimeRareCustomers = _runtimeRareCustomers.ToList(),
                 AutomationEvents = RuntimeOrderPreparationService.SnapshotAutomationRuntimeEvents().ToList(),
+                AutomationCookingJobs = RuntimeOrderPreparationService.SnapshotAutomationCookingJobs().ToList(),
                 RuntimeDataComplete = runtimeDataInfo.IsComplete,
                 RuntimeDataSource = runtimeDataInfo.Source,
                 RuntimeDataStatus = runtimeDataInfo.Status,
@@ -1063,6 +1093,7 @@ internal sealed class StewardOverlayController
     {
         var builder = new StringBuilder(2048);
         AppendValue(builder, snapshot.PluginVersion);
+        AppendValue(builder, snapshot.AutomationSessionId);
         AppendValue(builder, snapshot.ActiveSceneName);
         AppendValue(builder, snapshot.ActiveDayMapLabel);
         AppendValue(builder, snapshot.ActiveDayMapName);
@@ -1078,22 +1109,57 @@ internal sealed class StewardOverlayController
         AppendNormalBusiness(builder, snapshot.NormalBusiness);
         AppendRuntimeRareCustomers(builder, snapshot.RuntimeRareCustomers);
         AppendAutomationRuntimeEvents(builder, snapshot.AutomationEvents);
+        AppendAutomationCookingJobs(builder, snapshot.AutomationCookingJobs);
         AppendValue(builder, snapshot.RuntimeDataComplete);
         AppendValue(builder, snapshot.RuntimeDataSource);
         AppendValue(builder, snapshot.RuntimeDataStatus);
         AppendValue(builder, snapshot.RuntimeDataSignature);
-        return builder.ToString();
+        return LocalApiSnapshotSignature.Compute(builder.ToString());
     }
 
     private static void AppendAutomationRuntimeEvents(StringBuilder builder, IEnumerable<AutomationRuntimeEvent> events)
     {
-        var lastSequence = 0L;
-        foreach (var item in events)
+        foreach (var item in events.OrderBy(item => item.Sequence))
         {
-            lastSequence = Math.Max(lastSequence, item.Sequence);
+            AppendValue(builder, item.Sequence);
+            AppendValue(builder, item.Code);
+            AppendValue(builder, item.Outcome);
+            AppendValue(builder, item.ReasonCode);
+            AppendValue(builder, item.Terminal);
+            AppendValue(builder, item.TargetKind);
+            AppendValue(builder, item.TraceId);
+            AppendValue(builder, item.OrderKey);
         }
+    }
 
-        AppendValue(builder, $"automation-events:{lastSequence}");
+    private static void AppendAutomationCookingJobs(
+        StringBuilder builder,
+        IEnumerable<AutomationCookingJobSnapshot> jobs)
+    {
+        foreach (var job in jobs.OrderBy(item => item.JobId, StringComparer.Ordinal))
+        {
+            AppendValue(builder, job.JobId);
+            AppendValue(builder, job.TargetKind);
+            AppendValue(builder, job.TraceId);
+            AppendValue(builder, job.OrderKey);
+            AppendValue(builder, job.State);
+            AppendValue(builder, job.Outcome);
+            AppendValue(builder, job.ReasonCode);
+            AppendValue(builder, job.AutoDeliverFood);
+            AppendValue(builder, job.Generation);
+            AppendValue(builder, job.CookerPhase);
+            AppendValue(builder, Math.Clamp((int)Math.Floor(job.CookerProgress * 10f), -1, 10));
+            AppendValue(builder, job.OwnershipObservationFailures);
+            AppendValue(builder, job.RegressiveObservations);
+            AppendValue(builder, job.DeliveryFailureAttempts);
+            AppendValue(builder, job.ManualHandoffReadFailures);
+            AppendValue(builder, job.WarmerStoreCommitted);
+            AppendValue(builder, job.WarmerStoreCommitUncertain);
+            AppendValue(builder, job.WarmerResetAttempts);
+            AppendValue(builder, job.FoodDeliveryCommitted);
+            AppendValue(builder, job.FoodDeliveryCommitUncertain);
+            AppendValue(builder, job.FoodDeliveryCleanupAttempts);
+        }
     }
 
     private static void AppendRecommendationSnapshot(StringBuilder builder, RecommendationStateSnapshot? snapshot)
@@ -1382,6 +1448,11 @@ internal sealed class StewardOverlayController
     private static void AppendValue(StringBuilder builder, int? value)
     {
         builder.Append(value?.ToString() ?? "<null>").Append('|');
+    }
+
+    private static void AppendValue(StringBuilder builder, long value)
+    {
+        builder.Append(value.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('|');
     }
 
     private static void AppendValue(StringBuilder builder, double? value)
@@ -1895,6 +1966,99 @@ internal sealed class StewardOverlayController
         return RunOrderActionFromLocalApi(request, OrderActionKind.CompleteNormal);
     }
 
+    private AutomationCommandCancellationResult CancelAutomationJobsFromLocalApi(long automationEpoch)
+    {
+        if (Thread.CurrentThread.ManagedThreadId == _mainThreadId)
+        {
+            var cancelledCommands = AdvanceAutomationCommandEpoch(automationEpoch);
+            return ApplyAutomationJobCancellation(automationEpoch, cancelledCommands);
+        }
+
+        var queuedCommandsCancelled = AdvanceAutomationCommandEpoch(automationEpoch);
+        using var pending = new PendingAutomationJobCancellation
+        {
+            AutomationEpoch = automationEpoch,
+            CancelledCommands = queuedCommandsCancelled,
+        };
+        lock (_automationJobCommandLock)
+        {
+            ThrowIfDisposed();
+            if (_pendingAutomationJobCancellations.Count >= MaxPendingMainThreadCommandsPerQueue)
+            {
+                throw new InvalidOperationException("Automation job cancellation queue is full. Retry after the game resumes processing frames.");
+            }
+            _pendingAutomationJobCancellations.Enqueue(pending);
+        }
+
+        return pending.WaitForResult(
+            TimeSpan.FromSeconds(2.5),
+            "Automation cancellation timed out before the Unity main thread started it.");
+    }
+
+    private AutomationSafetyBarrierAckResult AcknowledgeAutomationSafetyBarrierFromLocalApi(long sequence)
+    {
+        var result = RuntimeOrderPreparationService.AcknowledgeAutomationSafetyBarrier(sequence);
+        if (result.Ok)
+        {
+            MarkLocalApiSnapshotDirty(
+                LocalApiSnapshotDirtyDomain.Automation | LocalApiSnapshotDirtyDomain.RareBusiness | LocalApiSnapshotDirtyDomain.NormalBusiness,
+                "automation safety barrier acknowledged",
+                force: true);
+        }
+
+        return result;
+    }
+
+    private AutomationCommandCancellationResult ApplyAutomationJobCancellation(long automationEpoch, int cancelledCommands)
+    {
+        var cancelledJobs = RuntimeOrderPreparationService.ClearAutomationCookingJobs("user-cancelled");
+        MarkLocalApiSnapshotDirty(
+            LocalApiSnapshotDirtyDomain.Automation | LocalApiSnapshotDirtyDomain.RareBusiness | LocalApiSnapshotDirtyDomain.NormalBusiness,
+            "automation cooking jobs cancelled",
+            force: true);
+        return new AutomationCommandCancellationResult
+        {
+            CommandEpoch = automationEpoch,
+            CancelledJobs = cancelledJobs,
+            CancelledCommands = cancelledCommands,
+        };
+    }
+
+    private int AdvanceAutomationCommandEpoch(long automationEpoch)
+    {
+        return _automationCommandFence.Advance(automationEpoch, nextEpoch =>
+        {
+            var cancelled = 0;
+            var retained = new Queue<PendingOrderPreparation>();
+            while (_pendingOrderPreparations.Count > 0)
+            {
+                var command = _pendingOrderPreparations.Dequeue();
+                if (command.AutomationEpoch < nextEpoch)
+                {
+                    if (command.Cancel(new OperationCanceledException("Automation command was superseded by an ownership cancellation.")))
+                    {
+                        cancelled++;
+                    }
+                    continue;
+                }
+
+                retained.Enqueue(command);
+            }
+
+            while (retained.Count > 0)
+            {
+                _pendingOrderPreparations.Enqueue(retained.Dequeue());
+            }
+
+            return cancelled;
+        });
+    }
+
+    private long GetAutomationCommandEpoch()
+    {
+        return _automationCommandFence.CurrentEpoch;
+    }
+
     private RareGuestInvitationResult InviteAllRareGuestsFromLocalApi(string scope, string kizunaLevels)
     {
         return RunRareGuestInvitationFromLocalApi(RareGuestInvitationAction.InviteAll, scope: scope, kizunaLevels: kizunaLevels);
@@ -1953,35 +2117,60 @@ internal sealed class StewardOverlayController
     /// </remarks>
     private OrderPreparationResult RunOrderActionFromLocalApi(OrderPreparationRequest request, OrderActionKind action)
     {
+        AdvanceAutomationCommandEpoch(request.AutomationEpoch);
         if (Thread.CurrentThread.ManagedThreadId != _mainThreadId)
         {
             using var pending = new PendingOrderPreparation
             {
                 Request = request,
                 Action = action,
+                AutomationEpoch = request.AutomationEpoch,
             };
-            lock (_orderPreparationLock)
+            var enqueued = _automationCommandFence.RunExclusive(currentEpoch =>
             {
                 ThrowIfDisposed();
+                if (request.AutomationEpoch != currentEpoch)
+                {
+                    return false;
+                }
                 if (_pendingOrderPreparations.Count >= MaxPendingMainThreadCommandsPerQueue)
                 {
                     throw new InvalidOperationException("Order action queue is full. Retry after the game resumes processing frames.");
                 }
                 _pendingOrderPreparations.Enqueue(pending);
-            }
+                return true;
+            });
+            if (!enqueued) return BuildSupersededOrderResult(request);
 
             return pending.WaitForResult(
                 TimeSpan.FromSeconds(3.5),
                 "Order action timed out before the Unity main thread started it.");
         }
 
-        return action switch
+        return _automationCommandFence.RunExclusive(currentEpoch =>
         {
-            OrderActionKind.PrepareRare => ApplyOrderPreparation(request),
-            OrderActionKind.CompleteRare => ApplyOrderCompletion(request),
-            OrderActionKind.CompleteNormal => ApplyNormalOrderCompletion(request),
-            _ => ApplyOrderPreparation(request),
-        };
+            if (request.AutomationEpoch != currentEpoch)
+            {
+                return BuildSupersededOrderResult(request);
+            }
+
+            return action switch
+            {
+                OrderActionKind.PrepareRare => ApplyOrderPreparation(request),
+                OrderActionKind.CompleteRare => ApplyOrderCompletion(request),
+                OrderActionKind.CompleteNormal => ApplyNormalOrderCompletion(request),
+                _ => ApplyOrderPreparation(request),
+            };
+        });
+    }
+
+    private static OrderPreparationResult BuildSupersededOrderResult(OrderPreparationRequest request)
+    {
+        var result = BuildUnavailableOrderResult(request, "该自动化命令已被更新的取消屏障作废，未执行任何游戏操作。");
+        result.Automation.Outcome = "cancelled";
+        result.Automation.Stage = "command";
+        result.Automation.ReasonCode = "automation-command-superseded";
+        return result;
     }
 
     /// <summary>
@@ -2043,6 +2232,10 @@ internal sealed class StewardOverlayController
             BeverageId = request.BeverageId,
             BeverageName = request.BeverageName,
         };
+        result.Automation.Outcome = "retryable-failure";
+        result.Automation.Stage = "runtime";
+        result.Automation.ReasonCode = "runtime-unavailable";
+        result.Automation.RetryAfterMs = 1000;
         result.Steps.Add(new OrderPreparationStep
         {
             Name = "场景检查",
@@ -2088,32 +2281,36 @@ internal sealed class StewardOverlayController
     {
         while (true)
         {
-            PendingOrderPreparation? pending;
-            lock (_orderPreparationLock)
+            var processState = _automationCommandFence.RunExclusive(currentEpoch =>
             {
-                pending = _pendingOrderPreparations.Count == 0 ? null : _pendingOrderPreparations.Dequeue();
-            }
-
-            if (pending == null) return;
-            if (!pending.TryBegin()) continue;
-
-            try
-            {
-                var result = pending.Action switch
+                var pending = _pendingOrderPreparations.Count == 0 ? null : _pendingOrderPreparations.Dequeue();
+                if (pending == null) return 0;
+                if (pending.AutomationEpoch != currentEpoch)
                 {
-                    OrderActionKind.PrepareRare => ApplyOrderPreparation(pending.Request),
-                    OrderActionKind.CompleteRare => ApplyOrderCompletion(pending.Request),
-                    OrderActionKind.CompleteNormal => ApplyNormalOrderCompletion(pending.Request),
-                    _ => ApplyOrderPreparation(pending.Request),
-                };
-                pending.Complete(result);
-            }
-            catch (Exception ex)
-            {
-                pending.Fail(ex);
-            }
+                    pending.Cancel(new OperationCanceledException("Automation command was superseded before main-thread execution."));
+                    return 1;
+                }
+                if (!pending.TryBegin()) return 1;
 
-            return;
+                try
+                {
+                    var result = pending.Action switch
+                    {
+                        OrderActionKind.PrepareRare => ApplyOrderPreparation(pending.Request),
+                        OrderActionKind.CompleteRare => ApplyOrderCompletion(pending.Request),
+                        OrderActionKind.CompleteNormal => ApplyNormalOrderCompletion(pending.Request),
+                        _ => ApplyOrderPreparation(pending.Request),
+                    };
+                    pending.Complete(result);
+                }
+                catch (Exception ex)
+                {
+                    pending.Fail(ex);
+                }
+
+                return 2;
+            });
+            if (processState == 0 || processState == 2) return;
         }
     }
 
@@ -2188,29 +2385,72 @@ internal sealed class StewardOverlayController
     /// 轮询出锅直送队列并发布产生的自动化消息。
     /// </summary>
     /// <remarks>
-    /// 离开夜间经营场景时立即清理待直送队列，避免下一次经营复用旧厨具对象引用。
+    /// 离开夜间经营场景时立即取消自动料理 job，避免下一次经营复用旧厨具对象引用。
     /// </remarks>
-    private void ProcessPendingCookingCollections()
+    private void ProcessAutomationCookingJobs()
     {
-        if (!RuntimeOrderPreparationService.HasPendingCookingCollections) return;
+        if (!RuntimeOrderPreparationService.HasAutomationCookingJobs) return;
 
         if (!IsNightBusinessScene(_activeSceneName))
         {
-            RuntimeOrderPreparationService.ClearPendingCookingCollections();
+            RuntimeOrderPreparationService.ClearAutomationCookingJobs("scene-ended");
             return;
         }
 
-        if (Time.realtimeSinceStartup < _nextPendingCookingProcessAt) return;
-        _nextPendingCookingProcessAt = Time.realtimeSinceStartup + PendingCookingProcessIntervalSeconds;
+        if (Time.realtimeSinceStartup < _nextAutomationCookingJobProcessAt) return;
+        _nextAutomationCookingJobProcessAt = Time.realtimeSinceStartup + AutomationCookingJobProcessIntervalSeconds;
 
-        var messages = Measure(
+        var timeoutEligible = Time.timeScale > 0f
+            && _runtimeLoaded
+            && IsNightBusinessScene(_activeSceneName)
+            && !IsIzakayaPrepActive(_activeSceneName);
+        var processResult = Measure(
             "automation.collect",
-            RuntimeOrderPreparationService.ProcessPendingCookingCollections);
-        foreach (var message in messages)
+            () => RuntimeOrderPreparationService.ProcessAutomationCookingJobs(timeoutEligible));
+        foreach (var message in processResult.Messages)
         {
             _status = message;
             _log?.LogInfo(message);
-            MarkLocalApiSnapshotDirty(LocalApiSnapshotDirtyDomain.Automation | LocalApiSnapshotDirtyDomain.NormalBusiness | LocalApiSnapshotDirtyDomain.RareBusiness, "pending cooking collection processed");
+        }
+
+        if (processResult.Changed)
+        {
+            MarkLocalApiSnapshotDirty(
+                LocalApiSnapshotDirtyDomain.Automation | LocalApiSnapshotDirtyDomain.NormalBusiness | LocalApiSnapshotDirtyDomain.RareBusiness,
+                "automation cooking job changed");
+        }
+    }
+
+    /// <summary>
+    /// Consumes explicit automation ownership cancellation requests on the Unity main thread.
+    /// </summary>
+    private void ProcessPendingAutomationJobCancellations()
+    {
+        while (true)
+        {
+            PendingAutomationJobCancellation? pending;
+            lock (_automationJobCommandLock)
+            {
+                pending = _pendingAutomationJobCancellations.Count == 0
+                    ? null
+                    : _pendingAutomationJobCancellations.Dequeue();
+            }
+
+            if (pending == null) return;
+            if (!pending.TryBegin()) continue;
+
+            try
+            {
+                pending.Complete(ApplyAutomationJobCancellation(
+                    pending.AutomationEpoch,
+                    pending.CancelledCommands));
+            }
+            catch (Exception ex)
+            {
+                pending.Fail(ex);
+            }
+
+            return;
         }
     }
 
@@ -2368,7 +2608,8 @@ internal sealed class StewardOverlayController
         _lastRuntimeReadUtc = DateTime.MinValue;
         SpecialOrderRuntimeCapture.ClearOrders("runtime cleared");
         NormalOrderRuntimeCapture.ClearOrders("runtime cleared");
-        RuntimeOrderPreparationService.ClearPendingCookingCollections();
+        RuntimeOrderPreparationService.ClearAutomationCookingJobs("runtime-cleared");
+        RuntimeCookingGenerationTracker.ClearForSceneChange();
         RuntimeCookerHighlightService.Suspend(status);
         RuntimePinnedListHighlightService.Suspend(status);
         _status = status;
@@ -2381,7 +2622,8 @@ internal sealed class StewardOverlayController
     {
         SpecialOrderRuntimeCapture.ClearOrders("left night business scene");
         NormalOrderRuntimeCapture.ClearOrders("left night business scene");
-        RuntimeOrderPreparationService.ClearPendingCookingCollections();
+        RuntimeOrderPreparationService.ClearAutomationCookingJobs("scene-ended");
+        RuntimeCookingGenerationTracker.ClearForSceneChange();
         _businessContext = new NightBusinessContext
         {
             Source = status,

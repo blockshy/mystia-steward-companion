@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { readHealth, readRuntimeData, readSnapshot } from '@/companion/api';
+import { readRuntimeData, readSnapshot } from '@/companion/api';
+import {
+  getConnectionRetryDelayMs,
+  resolveCompanionConnectionIdentity,
+} from '@/companion/connection-recovery';
 import {
   normalizeEndpoint,
   persistApiToken,
@@ -11,13 +15,14 @@ import type { LocalApiSnapshot } from '@/companion/types';
 import { isTauriRuntime } from '@/lib/tauri-runtime';
 import type { RuntimeDataCatalogSnapshot } from '@/lib/recommendation-data';
 
-export const CONNECTION_RETRY_DELAYS_MS = [2000, 5000, 10000, 30000];
-const INITIAL_PROBE_TIMEOUT_MS = 700;
+export { CONNECTION_RETRY_DELAYS_MS } from '@/companion/connection-recovery';
+const INITIAL_SNAPSHOT_TIMEOUT_MS = 700;
 const AUTO_POLL_TIMEOUT_MS = 1800;
 const MANUAL_REFRESH_TIMEOUT_MS = 2800;
 const RUNTIME_DATA_TIMEOUT_MS = 6000;
 const CONNECTED_AT_UPDATE_INTERVAL_MS = 30_000;
 const CONNECTION_UPDATED_EVENT = 'connection-updated';
+const CONNECTION_ACTIVATED_EVENT = 'connection-activation-requested';
 
 /**
  * 维护伴随窗口与游戏内本地 API 的连接状态。
@@ -46,6 +51,12 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
   const snapshotSignatureRef = useRef('');
   const runtimeDataRequestIdRef = useRef(0);
   const runtimeDataInFlightSignatureRef = useRef('');
+  const snapshotRef = useRef<LocalApiSnapshot | null>(null);
+  const connectionPausedRef = useRef(false);
+  const connectionIdentityRef = useRef({
+    endpoint: normalizeEndpoint(endpoint),
+    apiToken,
+  });
 
   const normalizedEndpoint = useMemo(() => normalizeEndpoint(endpoint), [endpoint]);
   const normalizedEndpointDraft = useMemo(() => normalizeEndpoint(endpointDraft), [endpointDraft]);
@@ -56,6 +67,7 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
     snapshotSignatureRef.current = '';
     runtimeDataRequestIdRef.current += 1;
     runtimeDataInFlightSignatureRef.current = '';
+    snapshotRef.current = null;
     setSnapshot(null);
     setCachedRuntimeData(null);
   }, []);
@@ -67,22 +79,16 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
     setLastConnectedAt(new Date(now));
   }, []);
 
-  const applyRuntimeConnection = useCallback((launchEndpoint?: string | null, launchToken?: string | null) => {
-    if (!launchEndpoint && !launchToken) return;
-
-    // 启动参数或控制端口带来的连接信息代表当前游戏进程状态，收到后立即废弃旧请求和旧快照。
+  const resetConnection = useCallback((nextEndpoint: string, nextToken: string) => {
+    connectionIdentityRef.current = { endpoint: nextEndpoint, apiToken: nextToken };
     latestRequestIdRef.current += 1;
     inFlightRequestIdRef.current = null;
-    if (launchEndpoint) {
-      const normalizedLaunchEndpoint = normalizeEndpoint(launchEndpoint);
-      setEndpoint(normalizedLaunchEndpoint);
-      setEndpointDraft(normalizedLaunchEndpoint);
-    }
-    if (launchToken) {
-      setApiToken(launchToken);
-      setApiTokenDraft(launchToken);
-    }
+    setEndpoint(nextEndpoint);
+    setEndpointDraft(nextEndpoint);
+    setApiToken(nextToken);
+    setApiTokenDraft(nextToken);
     clearSnapshotCache();
+    connectionPausedRef.current = false;
     setConnectionPaused(false);
     setConnectionFailureCount(0);
     setError('');
@@ -90,6 +96,17 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
     setConnectionProbing(false);
     setConnectionRevision((current) => current + 1);
   }, [clearSnapshotCache]);
+
+  const applyRuntimeConnection = useCallback((launchEndpoint?: string | null, launchToken?: string | null) => {
+    const resolution = resolveCompanionConnectionIdentity(connectionIdentityRef.current, {
+      endpoint: launchEndpoint ? normalizeEndpoint(launchEndpoint) : null,
+      apiToken: launchToken,
+    });
+    if (!resolution.changed) return;
+
+    // 启动参数或控制端口确实切换连接身份时，旧请求和旧快照才失效。
+    resetConnection(resolution.identity.endpoint, resolution.identity.apiToken);
+  }, [resetConnection]);
 
   const readLaunchConnection = useCallback(async (shouldSkip?: () => boolean) => {
     const { invoke } = await import('@tauri-apps/api/core');
@@ -102,42 +119,18 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
   }, [applyRuntimeConnection]);
 
   const applyEndpointConnection = useCallback(() => {
-    // 递增请求序号会让已发出的旧请求响应失效，避免切换 endpoint 后旧响应覆盖新连接状态。
-    latestRequestIdRef.current += 1;
-    inFlightRequestIdRef.current = null;
-    setEndpoint(normalizedEndpointDraft);
-    setEndpointDraft(normalizedEndpointDraft);
-    setApiToken(apiTokenDraft.trim());
-    setApiTokenDraft(apiTokenDraft.trim());
-    setConnectionPaused(false);
-    setConnectionFailureCount(0);
-    setError('');
-    clearSnapshotCache();
-    setManualRefreshing(false);
-    setConnectionProbing(false);
-    setConnectionRevision((current) => current + 1);
-  }, [apiTokenDraft, clearSnapshotCache, normalizedEndpointDraft]);
+    resetConnection(normalizedEndpointDraft, apiTokenDraft.trim());
+  }, [apiTokenDraft, normalizedEndpointDraft, resetConnection]);
 
   const applyConnectionDetails = useCallback((nextEndpoint: string, nextToken: string) => {
     const normalizedNextEndpoint = normalizeEndpoint(nextEndpoint);
     const normalizedNextToken = nextToken.trim();
-    latestRequestIdRef.current += 1;
-    inFlightRequestIdRef.current = null;
-    setEndpoint(normalizedNextEndpoint);
-    setEndpointDraft(normalizedNextEndpoint);
-    setApiToken(normalizedNextToken);
-    setApiTokenDraft(normalizedNextToken);
-    setConnectionPaused(false);
-    setConnectionFailureCount(0);
-    setError('');
-    clearSnapshotCache();
-    setManualRefreshing(false);
-    setConnectionProbing(false);
-    setConnectionRevision((current) => current + 1);
-  }, [clearSnapshotCache]);
+    resetConnection(normalizedNextEndpoint, normalizedNextToken);
+  }, [resetConnection]);
   const pauseConnection = useCallback(() => {
     latestRequestIdRef.current += 1;
     inFlightRequestIdRef.current = null;
+    connectionPausedRef.current = true;
     setConnectionPaused(true);
     setManualRefreshing(false);
     setConnectionProbing(false);
@@ -222,41 +215,27 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
       setConnectionProbing(false);
       return;
     }
-    if (!manual && connectionPaused) return;
-    if (inFlightRequestIdRef.current !== null && !manual) return;
+    if (!manual && connectionPausedRef.current) return;
+    if (inFlightRequestIdRef.current !== null) return;
 
     const requestId = latestRequestIdRef.current + 1;
     latestRequestIdRef.current = requestId;
     inFlightRequestIdRef.current = requestId;
-    const shouldProbeHealth = !manual && Boolean(error);
-    const timeoutMs = shouldProbeHealth
-      ? INITIAL_PROBE_TIMEOUT_MS
-      : manual
+    const currentSnapshot = snapshotRef.current;
+    const timeoutMs = manual
       ? MANUAL_REFRESH_TIMEOUT_MS
-      : snapshot
+      : currentSnapshot
         ? AUTO_POLL_TIMEOUT_MS
-        : INITIAL_PROBE_TIMEOUT_MS;
+        : INITIAL_SNAPSHOT_TIMEOUT_MS;
     if (manual) {
       setManualRefreshing(true);
-    } else if (!snapshot) {
+    } else if (!currentSnapshot) {
       setConnectionProbing(true);
     }
     const abortController = new AbortController();
     const timeoutId = window.setTimeout(() => abortController.abort(), timeoutMs);
 
     try {
-      if (shouldProbeHealth) {
-        await readHealth(normalizedEndpoint, {
-          signal: abortController.signal,
-          timeoutMs,
-        });
-        if (latestRequestIdRef.current !== requestId) return;
-        setError('');
-        setConnectionFailureCount(0);
-        markConnected(manual);
-        return;
-      }
-
       const data = await readSnapshot(normalizedEndpoint, apiToken, {
         signal: abortController.signal,
         timeoutMs,
@@ -266,8 +245,9 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
       window.clearTimeout(timeoutId);
       if (isSnapshotUnchanged(data)) {
         snapshotSignatureRef.current = data.snapshotSignature;
-        if (snapshot) ensureRuntimeDataCache(snapshot);
+        if (currentSnapshot) ensureRuntimeDataCache(currentSnapshot);
         setError('');
+        connectionPausedRef.current = false;
         setConnectionPaused(false);
         setConnectionFailureCount(0);
         markConnected();
@@ -276,9 +256,11 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
 
       const nextSnapshotSignature = data.snapshotSignature ?? '';
       snapshotSignatureRef.current = nextSnapshotSignature;
+      snapshotRef.current = data;
       setSnapshot(data);
       ensureRuntimeDataCache(data);
       setError('');
+      connectionPausedRef.current = false;
       setConnectionPaused(false);
       setConnectionFailureCount(0);
       markConnected(true);
@@ -286,7 +268,7 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
       if (latestRequestIdRef.current !== requestId) return;
       const nextError = err instanceof Error ? err.message : String(err);
       setError((current) => current === nextError ? current : nextError);
-      setConnectionFailureCount((current) => Math.min(current + 1, CONNECTION_RETRY_DELAYS_MS.length));
+      setConnectionFailureCount((current) => current + 1);
     } finally {
       window.clearTimeout(timeoutId);
       if (inFlightRequestIdRef.current === requestId) {
@@ -294,10 +276,21 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
       }
       if (latestRequestIdRef.current === requestId) {
         if (manual) setManualRefreshing(false);
-        if (!manual && !snapshot) setConnectionProbing(false);
+        if (!manual && !snapshotRef.current) setConnectionProbing(false);
       }
     }
-  }, [apiToken, connectionPaused, ensureRuntimeDataCache, error, markConnected, normalizedEndpoint, snapshot]);
+  }, [apiToken, ensureRuntimeDataCache, markConnected, normalizedEndpoint]);
+
+  const resumePausedConnection = useCallback(() => {
+    if (!connectionPausedRef.current) return;
+    connectionPausedRef.current = false;
+    setConnectionPaused(false);
+    setConnectionFailureCount(0);
+    setError('正在验证游戏快照。');
+    setManualRefreshing(false);
+    setConnectionRevision((current) => current + 1);
+    void refresh();
+  }, [refresh]);
 
   useEffect(() => {
     persistEndpoint(normalizedEndpoint);
@@ -327,6 +320,38 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     import('@tauri-apps/api/event')
+      .then(({ listen }) => listen<boolean>(CONNECTION_ACTIVATED_EVENT, async () => {
+        if (disposed) return;
+        try {
+          await readLaunchConnection(() => disposed);
+        } catch {
+          return;
+        }
+        if (!disposed) resumePausedConnection();
+      }))
+      .then((nextUnlisten) => {
+        if (disposed) {
+          nextUnlisten();
+          return;
+        }
+        unlisten = nextUnlisten;
+      })
+      .catch(() => {
+        // 浏览器开发模式没有 Tauri 控制事件，暂停状态由页面上的连接开关恢复。
+      });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [readLaunchConnection, resumePausedConnection]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    import('@tauri-apps/api/event')
       .then(({ listen }) => listen<boolean>(CONNECTION_UPDATED_EVENT, () => {
         if (!disposed) void readLaunchConnection(() => disposed);
       }))
@@ -348,14 +373,6 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
   }, [readLaunchConnection]);
 
   useEffect(() => {
-    if (connectionRevision === 0 || !apiToken || connectionPaused) return;
-    const timer = window.setTimeout(() => {
-      void refresh();
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [apiToken, connectionPaused, connectionRevision, refresh]);
-
-  useEffect(() => {
     if (!apiToken || connectionPaused) return;
     if (!snapshot && !error) {
       const timer = window.setTimeout(() => {
@@ -365,11 +382,10 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
     }
 
     if (error) {
-      // 有错误时按固定退避序列重连。
-      const retryIndex = Math.max(0, Math.min(connectionFailureCount - 1, CONNECTION_RETRY_DELAYS_MS.length - 1));
+      // 失败状态只允许这一条定时器按固定退避序列重试完整快照。
       const timer = window.setTimeout(() => {
         void refresh();
-      }, CONNECTION_RETRY_DELAYS_MS[retryIndex]);
+      }, getConnectionRetryDelayMs(connectionFailureCount));
       return () => window.clearTimeout(timer);
     }
 
@@ -383,6 +399,7 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
     apiToken,
     connectionFailureCount,
     connectionPaused,
+    connectionRevision,
     error,
     refresh,
     snapshot,
@@ -393,7 +410,6 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
     endpointDraft,
     setEndpointDraft,
     apiToken,
-    setApiToken,
     apiTokenDraft,
     setApiTokenDraft,
     snapshot,

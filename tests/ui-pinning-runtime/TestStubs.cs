@@ -44,8 +44,11 @@ namespace BepInEx.Logging
 {
     internal sealed class ManualLogSource
     {
+        public static int InformationCount { get; private set; }
+
         public void LogInfo(object value)
         {
+            InformationCount += 1;
         }
 
         public void LogWarning(object value)
@@ -106,8 +109,11 @@ namespace MystiaStewardCompanion.Save
 
         public static bool LastEnabled { get; private set; }
 
+        public static int UpdateCount { get; private set; }
+
         public static void UpdateTarget(bool enabled, int cookerTypeId, string cookerName)
         {
+            UpdateCount += 1;
             LastEnabled = enabled;
         }
     }

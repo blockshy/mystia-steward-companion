@@ -8,6 +8,7 @@ using UnityEngine;
 try
 {
     VerifyPatchTargets();
+    VerifyIdenticalTargetPublicationIsIdempotent();
     VerifyScopedNativePinnedMatching();
     VerifyTargetUpdatePreservesForceTotals();
     VerifyScopePinsOneTargetSnapshot();
@@ -24,6 +25,70 @@ catch (Exception ex)
 {
     Console.Error.WriteLine($"FAIL: {ex}");
     return 1;
+}
+
+static void VerifyIdenticalTargetPublicationIsIdempotent()
+{
+    const bool enabled = true;
+    const bool highlightEnabled = true;
+    const int recipeId = 71;
+    const int beverageId = 72;
+    const int cookerTypeId = 3;
+    var ingredientIds = new[] { 11, 29 };
+
+    void Publish(
+        bool nextEnabled = enabled,
+        bool nextHighlightEnabled = highlightEnabled,
+        int nextRecipeId = recipeId,
+        int nextBeverageId = beverageId,
+        int[]? nextIngredientIds = null,
+        string recipeName = "recipe",
+        string beverageName = "beverage",
+        int nextCookerTypeId = cookerTypeId,
+        string cookerName = "cooker")
+    {
+        RuntimeUiPinningService.UpdateTarget(
+            nextEnabled,
+            nextHighlightEnabled,
+            nextRecipeId,
+            nextBeverageId,
+            nextIngredientIds ?? ingredientIds,
+            recipeName,
+            beverageName,
+            nextCookerTypeId,
+            cookerName);
+    }
+
+    void AssertPublishes(Action publish, string fieldName)
+    {
+        var logCount = ManualLogSource.InformationCount;
+        var highlightUpdateCount = RuntimeCookerHighlightService.UpdateCount;
+        publish();
+        AssertEqual(logCount + 1, ManualLogSource.InformationCount, $"Changing {fieldName} did not publish a target log.");
+        AssertEqual(highlightUpdateCount + 1, RuntimeCookerHighlightService.UpdateCount, $"Changing {fieldName} did not update cooker highlighting.");
+        Publish();
+    }
+
+    Publish();
+    var targetGeneration = RuntimeUiPinningService.ReadPinningTarget().Generation;
+    var initialLogCount = ManualLogSource.InformationCount;
+    var initialHighlightUpdateCount = RuntimeCookerHighlightService.UpdateCount;
+
+    Publish(nextIngredientIds: new[] { 11, 29 });
+
+    AssertEqual(targetGeneration, RuntimeUiPinningService.ReadPinningTarget().Generation, "An identical target advanced its generation.");
+    AssertEqual(initialLogCount, ManualLogSource.InformationCount, "An identical target wrote another information log.");
+    AssertEqual(initialHighlightUpdateCount, RuntimeCookerHighlightService.UpdateCount, "An identical target updated cooker highlighting again.");
+
+    AssertPublishes(() => Publish(nextEnabled: false), "enabled");
+    AssertPublishes(() => Publish(nextHighlightEnabled: false), "highlightEnabled");
+    AssertPublishes(() => Publish(nextRecipeId: recipeId + 1), "recipeId");
+    AssertPublishes(() => Publish(nextBeverageId: beverageId + 1), "beverageId");
+    AssertPublishes(() => Publish(nextIngredientIds: new[] { 11, 30 }), "ingredientIds");
+    AssertPublishes(() => Publish(recipeName: "recipe changed"), "recipeName");
+    AssertPublishes(() => Publish(beverageName: "beverage changed"), "beverageName");
+    AssertPublishes(() => Publish(nextCookerTypeId: cookerTypeId + 1), "cookerTypeId");
+    AssertPublishes(() => Publish(cookerName: "cooker changed"), "cookerName");
 }
 
 static void VerifyPatchTargets()

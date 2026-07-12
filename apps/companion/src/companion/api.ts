@@ -9,6 +9,8 @@ import { normalizeEditableQuantity } from '@/companion/preferences';
 import { serializeRareGuestInvitationLevels } from '@/companion/storage';
 import type {
   DiagnosticPackageResponse,
+  AutomationCancellationResponse,
+  AutomationSafetyBarrierAckResponse,
   CustomRecipeData,
   CustomRecipeFlagUpdateInput,
   CustomRecipeMutationResponse,
@@ -21,7 +23,6 @@ import type {
   LocalApiAutomationLease,
   LocalApiConnectionConfig,
   LocalApiFolderResponse,
-  LocalApiHealth,
   LocalApiLogSettings,
   LocalApiSnapshotResponse,
   LocalApiStatusResponse,
@@ -98,16 +99,6 @@ export async function readRuntimeData(
   options: { signal: AbortSignal; timeoutMs: number },
 ): Promise<RuntimeDataCatalogSnapshot> {
   return readLocalApiJson<RuntimeDataCatalogSnapshot>(endpoint, apiToken, '/runtime-data', {
-    signal: options.signal,
-    tauriTimeoutMs: options.timeoutMs,
-  });
-}
-
-export async function readHealth(
-  endpoint: string,
-  options: { signal: AbortSignal; timeoutMs: number },
-): Promise<LocalApiHealth> {
-  return readLocalApiJson<LocalApiHealth>(endpoint, '', '/health', {
     signal: options.signal,
     tauriTimeoutMs: options.timeoutMs,
   });
@@ -192,15 +183,29 @@ export async function acquireAutomationLease(
   );
 }
 
-export async function releaseAutomationLease(
+export async function cancelAutomationCookingJobs(
   endpoint: string,
   apiToken: string,
-): Promise<LocalApiAutomationLease> {
-  return writeLocalApiJsonWithTimeout<LocalApiAutomationLease>(
+): Promise<AutomationCancellationResponse> {
+  return writeLocalApiJsonWithTimeout<AutomationCancellationResponse>(
     endpoint,
     apiToken,
-    '/automation/lease/release',
-    2200,
+    '/automation/jobs/cancel',
+    2800,
+  );
+}
+
+export async function acknowledgeAutomationSafetyBarrier(
+  endpoint: string,
+  apiToken: string,
+  sequence: number,
+): Promise<AutomationSafetyBarrierAckResponse> {
+  const params = new URLSearchParams({ sequence: String(sequence) });
+  return writeLocalApiJsonWithTimeout<AutomationSafetyBarrierAckResponse>(
+    endpoint,
+    apiToken,
+    `/automation/barriers/ack?${params.toString()}`,
+    2800,
   );
 }
 
@@ -481,7 +486,7 @@ export async function completeFirstNormalOrder(
     beverageName: executionTarget?.beverageName || order.beverageName || indexes.beverageNameById.get(order.beverageId) || '',
     autoTakeBeverage: String(preferences.autoNormalTakeBeverage),
     autoStartCooking: String(preferences.autoNormalStartCooking),
-    autoCollectCooking: String(preferences.autoNormalCollectCooking),
+    autoCollectCooking: String(preferences.autoNormalDeliverFood),
     autoDeliverFood: String(preferences.autoNormalDeliverFood),
     autoCompleteOrder: String(preferences.autoNormalCompleteOrder),
     stopOnError: String(preferences.autoNormalStopOnError),

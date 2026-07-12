@@ -1,14 +1,17 @@
 import {
-  didCompleteStep,
   emptyNormalAutoOrderState,
   getAutomationStepLabel,
-  isAutomationTimestampStale,
+  type AutomationStep,
   type AutoFirstOrderState,
   type NormalAutoOrderState,
   type OrderPreparationResponse,
   type RareAutomationBeverageTarget,
   type RareAutomationRecipeTarget,
 } from '@/companion/automation-state';
+import {
+  resolveAutomationStepSeconds,
+  resolveAutomationStepStartedAtMs,
+} from '@/companion/automation-machine';
 import {
   buildAutomationCookerCapacity,
   getCookerSlotCapacity,
@@ -65,8 +68,6 @@ import {
 } from '@/lib/recommendation-data';
 import type { RareBeverageRecommendation, RareOrderRecommendationPlan, RareRecipeRecommendation } from '@/recommendation-engine';
 
-const NORMAL_AUTO_RECOVERABLE_PAUSE_RETRY_MS = 10000;
-const DIRECT_DELIVERY_RETRY_WAIT_MS = 90000;
 const DEFAULT_DATA_INDEXES = buildRecommendationDataIndexes(DEFAULT_RECOMMENDATION_DATA);
 
 type OrderPreparationSelection =
@@ -220,11 +221,12 @@ export function reconcileRareRecipeTargetForSpecialBusiness(
         recipeTarget: recommendedTarget,
         recipeTargetSignature: signature,
         prepared: false,
-        preparedAtMs: 0,
+        cookingJobId: '',
         step: 'ensure-cooking',
         stepStartedAtMs: now,
         lastProgressAtMs: now,
         retryCount: 0,
+        retryStage: '',
         rollbackCount: changedTarget ? state.rollbackCount + 1 : state.rollbackCount,
         lastError: changedTarget
           ? `怪诞料理目标 Tag 为 ${targetTags.join('、')}，已切换到命中该 Tag 的推荐料理 ${recommendedTarget.recipeName}。`
@@ -246,11 +248,12 @@ export function reconcileRareRecipeTargetForSpecialBusiness(
       recipeTarget: null,
       recipeTargetSignature: signature,
       prepared: false,
-      preparedAtMs: 0,
+      cookingJobId: '',
       step: 'ensure-cooking',
       stepStartedAtMs: now,
       lastProgressAtMs: now,
       retryCount: 0,
+      retryStage: '',
       rollbackCount: currentTarget ? state.rollbackCount + 1 : state.rollbackCount,
       lastError: `当前怪诞料理目标 Tag 为 ${targetTags.join('、')}，当前没有可执行且命中该 Tag 的推荐料理。`,
     },
@@ -475,16 +478,6 @@ export function buildAutomationResourceOverview({
 }
 
 /**
- * 判断普客订单是否已经拥有可送达料理。
- *
- * 游戏快照是直接送达后的事实来源，避免前端本地状态短暂落后时重复处理同一订单。
- */
-export function isNormalOrderCollected(order: NormalBusinessOrder, state: NormalAutoOrderState | undefined): boolean {
-  if (state?.collected) return true;
-  return Boolean(order.hasServedFood);
-}
-
-/**
  * 将普客自动化本地状态与最新 Mod 快照同步。
  *
  * 快照是最终事实来源：如果游戏已经显示送达、可评价或已评价，就推进本地状态并重置重试计数。
@@ -495,19 +488,17 @@ export function syncNormalOrderStateWithSnapshot(
   now: number,
   preferences: CompanionPreferences,
 ): NormalAutoOrderState | undefined {
-  const snapshotCollected = isNormalOrderCollected(order, state);
   const snapshotFoodDelivered = order.hasServedFood;
   const snapshotBeverageDelivered = order.hasServedBeverage;
   const snapshotReadyToEvaluate = order.readyToEvaluate;
   const snapshotCompleted = order.hasEvaluated;
-  if (!snapshotCollected && !snapshotFoodDelivered && !snapshotBeverageDelivered && !snapshotReadyToEvaluate && !snapshotCompleted) return state;
+  if (!snapshotFoodDelivered && !snapshotBeverageDelivered && !snapshotReadyToEvaluate && !snapshotCompleted) return state;
 
   const base = state ?? emptyNormalAutoOrderState(buildNormalAutoOrderKey(order), now);
-  const collected = base.collected;
   const foodDelivered = base.foodDelivered || snapshotFoodDelivered;
   const beverageHandled = base.beverageHandled || snapshotBeverageDelivered;
   const completed = base.completed || snapshotCompleted;
-  const prepared = base.prepared || collected || foodDelivered;
+  const prepared = base.prepared || foodDelivered;
   let step = base.step;
   if (completed) {
     step = 'done';
@@ -515,34 +506,49 @@ export function syncNormalOrderStateWithSnapshot(
     step = 'complete-order';
   } else if (foodDelivered && !beverageHandled && preferences.autoNormalTakeBeverage) {
     step = 'ensure-beverage';
+  } else if (beverageHandled && !foodDelivered) {
+    step = 'ensure-cooking';
   } else if (base.prepared && !foodDelivered) {
     step = 'deliver-food';
   }
 
   const madeProgress = prepared !== base.prepared
-    || collected !== base.collected
     || foodDelivered !== base.foodDelivered
     || beverageHandled !== base.beverageHandled
     || completed !== base.completed
     || step !== base.step;
+  const clearsPause = base.paused && !base.manualResolutionRequired && snapshotPassesPausedStage(
+    base.pausedStage,
+    foodDelivered,
+    beverageHandled,
+    snapshotReadyToEvaluate,
+    completed,
+  );
+  if (base.paused && !clearsPause) step = 'paused';
+  const resetsFailure = madeProgress && (!base.paused || clearsPause);
 
   return {
     ...base,
     prepared,
-    preparedAtMs: prepared && base.preparedAtMs <= 0 ? now : base.preparedAtMs,
+    cookingJobId: foodDelivered && !base.manualResolutionRequired ? '' : base.cookingJobId,
     beverageHandled,
     beverageHandledAtMs: beverageHandled && base.beverageHandledAtMs <= 0 ? now : base.beverageHandledAtMs,
-    collected,
     foodDelivered,
     foodDeliveredAtMs: foodDelivered && base.foodDeliveredAtMs <= 0 ? now : base.foodDeliveredAtMs,
     completed,
     completedAtMs: completed && base.completedAtMs <= 0 ? now : base.completedAtMs,
     step,
-    stepStartedAtMs: madeProgress ? now : base.stepStartedAtMs,
+    stepStartedAtMs: resolveAutomationStepStartedAtMs(base.step, step, base.stepStartedAtMs, now),
     lastProgressAtMs: madeProgress ? now : base.lastProgressAtMs,
-    retryCount: madeProgress ? 0 : base.retryCount,
-    rollbackCount: madeProgress ? 0 : base.rollbackCount,
-    lastError: madeProgress ? '' : base.lastError,
+    retryCount: resetsFailure ? 0 : base.retryCount,
+    retryStage: resetsFailure ? '' : base.retryStage,
+    nextAttemptAtMs: resetsFailure ? 0 : base.nextAttemptAtMs,
+    rollbackCount: base.rollbackCount,
+    lastError: clearsPause ? '' : base.lastError,
+    paused: clearsPause ? false : base.paused,
+    manualResolutionRequired: base.manualResolutionRequired,
+    pausedStage: clearsPause ? '' : base.pausedStage,
+    pauseReasonCode: clearsPause ? '' : base.pauseReasonCode,
   };
 }
 
@@ -557,9 +563,9 @@ export function shouldAttemptNormalCooking(
 ): boolean {
   if (!preferences.autoNormalStartCooking) return false;
   if (order.hasServedFood || order.foodId < 0) return false;
-  if (isNormalOrderCollected(order, state)) return false;
-  if (state?.paused && !isRecoverableNormalPausedState(state, now)) return false;
-  return !state?.prepared || isNormalOrderPreparedStale(state, now, preferences);
+  if (state?.paused) return false;
+  if ((state?.nextAttemptAtMs ?? 0) > now) return false;
+  return !state?.prepared;
 }
 
 /**
@@ -574,7 +580,8 @@ export function shouldAttemptNormalBeverage(
   if (!preferences.autoNormalTakeBeverage) return false;
   if (order.hasServedBeverage || order.beverageId < 0) return false;
   if (state?.beverageHandled) return false;
-  if (state?.paused && !isRecoverableNormalPausedState(state, now)) return false;
+  if (state?.paused) return false;
+  if ((state?.nextAttemptAtMs ?? 0) > now) return false;
   return true;
 }
 
@@ -589,7 +596,8 @@ export function shouldAttemptNormalCompletion(
 ): boolean {
   if (!preferences.autoNormalCompleteOrder) return false;
   if (order.hasEvaluated || state?.completed) return false;
-  if (state?.paused && !isRecoverableNormalPausedState(state, now)) return false;
+  if (state?.paused) return false;
+  if ((state?.nextAttemptAtMs ?? 0) > now) return false;
   const hasFood = order.hasServedFood || state?.foodDelivered;
   const hasBeverage = order.hasServedBeverage || state?.beverageHandled;
   return Boolean(order.readyToEvaluate || (hasFood && hasBeverage));
@@ -902,19 +910,6 @@ export function buildGameUiPinningTarget(
 }
 
 /**
- * 构建“直接完成订单”动作需要的临时偏好。
- */
-export function buildCompleteOrderPreferences(preferences: CompanionPreferences): CompanionPreferences {
-  return {
-    ...preferences,
-    autoPrepCompleteOrder: true,
-    autoPrepTakeBeverage: true,
-    autoPrepStartCooking: true,
-    autoPrepCollectCooking: true,
-  };
-}
-
-/**
  * 判断稀客自动化是否至少启用了一个动作。
  */
 export function hasAutomationActionEnabled(preferences: CompanionPreferences): boolean {
@@ -985,7 +980,7 @@ export function buildRareAutoOrderDiagnostic(
     recipeName: formatRareAutomationRecipeName(state.recipeTarget, selection.recipeTarget, selection.recipe),
     beverageName: state.beverageTarget?.beverageName ?? selection.beverageTarget?.beverageName ?? selection.beverage?.beverage.name ?? '',
     stepLabel: getAutomationStepLabel(state.step),
-    stepSeconds: state.stepStartedAtMs > 0 ? Math.max(0, Math.round((now - state.stepStartedAtMs) / 1000)) : 0,
+    stepSeconds: resolveAutomationStepSeconds(state.stepStartedAtMs, now),
     nextAction: getRareAutomationNextAction(state),
     retryCount: state.retryCount,
     rollbackCount: state.rollbackCount,
@@ -997,6 +992,7 @@ export function buildRareAutoOrderDiagnostic(
     hasServedFood: Boolean(order.hasServedFood),
     hasServedBeverage: Boolean(order.hasServedBeverage),
     paused: state.paused,
+    manualResolutionRequired: state.manualResolutionRequired,
   };
 }
 
@@ -1039,43 +1035,6 @@ export function buildNormalOrderAutomationSignature(orders: NormalBusinessOrder[
 export { buildNormalAutoOrderKey };
 
 /**
- * 判断普客开火后是否等待过久，需要重新确认或重试。
- */
-export function isNormalOrderPreparedStale(
-  state: NormalAutoOrderState | undefined,
-  now: number,
-  preferences: CompanionPreferences,
-): boolean {
-  if (!state?.prepared || state.foodDelivered) return false;
-  if (state.paused && !isRecoverableNormalPausedState(state, now)) return false;
-  void preferences;
-  return isAutomationTimestampStale(state.preparedAtMs, now, DIRECT_DELIVERY_RETRY_WAIT_MS);
-}
-
-/**
- * 判断稀客开火后是否等待过久，需要重新确认或重试。
- */
-export function isRareOrderPreparedStale(
-  state: AutoFirstOrderState | undefined,
-  now: number,
-  preferences: CompanionPreferences,
-): boolean {
-  if (!state?.prepared) return false;
-  if (state.paused) return false;
-  void preferences;
-  return isAutomationTimestampStale(state.preparedAtMs, now, DIRECT_DELIVERY_RETRY_WAIT_MS);
-}
-
-/**
- * 判断普客暂停状态是否属于可自动恢复的临时失败。
- */
-export function isRecoverableNormalPausedState(state: NormalAutoOrderState | undefined, now: number): boolean {
-  if (!state?.paused) return false;
-  if (!state.lastError.includes('目标料理长时间未直接送达')) return false;
-  return state.stepStartedAtMs <= 0 || now - state.stepStartedAtMs >= NORMAL_AUTO_RECOVERABLE_PAUSE_RETRY_MS;
-}
-
-/**
  * 用订单快照中的已送达字段推进稀客自动化本地状态。
  */
 export function syncRareStateWithOrderServedState(
@@ -1106,6 +1065,13 @@ export function syncRareStateWithOrderServedState(
       servedFood: order.hasServedFood,
       servedBeverage: order.hasServedBeverage,
       completedOrder: false,
+      automation: {
+        outcome: 'progressed',
+        stage: 'order',
+        reasonCode: 'order-snapshot-progressed',
+        jobId: '',
+        retryAfterMs: 0,
+      },
       steps: [],
     },
     now,
@@ -1123,24 +1089,77 @@ export function applyRareServedStateFromResponse(
 ): AutoFirstOrderState {
   const servedFood = Boolean(response.servedFood)
     || Boolean(order.hasServedFood)
-    || didCompleteStep(response, '送达料理');
+    || response.steps.some((step) => step.code === 'food-delivered' && step.ok);
   const servedBeverage = Boolean(response.servedBeverage)
     || Boolean(order.hasServedBeverage)
-    || didCompleteStep(response, '送达酒水');
-  if (!servedFood && !servedBeverage) return state;
+    || response.steps.some((step) => step.code === 'beverage-delivered' && step.ok);
+  const madeProgress = (servedFood && (!state.prepared || Boolean(state.cookingJobId)))
+    || (servedBeverage && !state.beverageHandled);
+  if (!madeProgress) return state;
 
   const nextPrepared = state.prepared || servedFood;
   const nextBeverageHandled = state.beverageHandled || servedBeverage;
+  const clearsPause = state.paused && !state.manualResolutionRequired && snapshotPassesPausedStage(
+    state.pausedStage,
+    servedFood,
+    servedBeverage,
+    servedFood && servedBeverage,
+    Boolean(response.completedOrder),
+  );
+  const nextStep: AutomationStep = state.paused && !clearsPause
+    ? 'paused'
+    : servedFood && servedBeverage
+      ? 'complete-order'
+      : servedFood
+        ? 'ensure-beverage'
+        : 'ensure-cooking';
   return {
     ...state,
     prepared: nextPrepared,
-    preparedAtMs: nextPrepared && !state.prepared ? now : state.preparedAtMs,
+    cookingJobId: servedFood && !state.manualResolutionRequired ? '' : state.cookingJobId,
     beverageHandled: nextBeverageHandled,
     beverageHandledAtMs: nextBeverageHandled && !state.beverageHandled ? now : state.beverageHandledAtMs,
     lastProgressAtMs: now,
-    step: servedFood && servedBeverage ? 'complete-order' : servedFood ? 'ensure-beverage' : 'ensure-cooking',
-    stepStartedAtMs: now,
+    step: nextStep,
+    stepStartedAtMs: resolveAutomationStepStartedAtMs(
+      state.step,
+      nextStep,
+      state.stepStartedAtMs,
+      now,
+    ),
+    retryCount: clearsPause || !state.paused ? 0 : state.retryCount,
+    retryStage: clearsPause || !state.paused ? '' : state.retryStage,
+    nextAttemptAtMs: clearsPause || !state.paused ? 0 : state.nextAttemptAtMs,
+    lastError: clearsPause ? '' : state.lastError,
+    paused: clearsPause ? false : state.paused,
+    manualResolutionRequired: state.manualResolutionRequired,
+    pausedStage: clearsPause ? '' : state.pausedStage,
+    pauseReasonCode: clearsPause ? '' : state.pauseReasonCode,
   };
+}
+
+function snapshotPassesPausedStage(
+  pausedStage: AutomationStep | '',
+  servedFood: boolean,
+  servedBeverage: boolean,
+  readyToEvaluate: boolean,
+  completed: boolean,
+): boolean {
+  if (completed) return true;
+  switch (pausedStage) {
+    case 'ensure-beverage':
+      return servedBeverage || readyToEvaluate;
+    case 'ensure-cooking':
+    case 'deliver-food':
+      return servedFood || readyToEvaluate;
+    case 'complete-order':
+      return completed;
+    case 'match-order':
+    case 'idle':
+      return servedFood || servedBeverage || readyToEvaluate;
+    default:
+      return false;
+  }
 }
 
 /**
@@ -1239,18 +1258,19 @@ function buildNormalAutoOrderDiagnostic(
     beverageName: order.beverageName || `#${order.beverageId}`,
     source: order.source || '',
     stepLabel: getAutomationStepLabel(state.step),
-    stepSeconds: state.stepStartedAtMs > 0 ? Math.max(0, Math.round((now - state.stepStartedAtMs) / 1000)) : 0,
+    stepSeconds: resolveAutomationStepSeconds(state.stepStartedAtMs, now),
     nextAction: getNormalAutomationNextAction(state, now),
     retryCount: state.retryCount,
     rollbackCount: state.rollbackCount,
     lastError: state.lastError,
     detailMessage: state.detailMessage,
     detailUpdatedAtMs: state.detailUpdatedAtMs,
-    prepared: state.prepared || isNormalOrderCollected(order, state),
+    prepared: state.prepared || order.hasServedFood,
     beverageDeliveryRequested: state.beverageHandled || order.hasServedBeverage,
     foodDeliveryRequested: state.foodDelivered || order.hasServedFood,
     completed: state.completed || order.hasEvaluated,
     paused: state.paused,
+    manualResolutionRequired: state.manualResolutionRequired,
     hasServedFood: order.hasServedFood,
     hasServedBeverage: order.hasServedBeverage,
     readyToEvaluate: order.readyToEvaluate,
@@ -1262,6 +1282,7 @@ function buildNormalAutoOrderDiagnostic(
 }
 
 function getRareAutomationNextAction(state: AutoFirstOrderState): string {
+  if (state.manualResolutionRequired) return '确认游戏状态后点击“确认已处理”';
   if (state.paused) return '等待手动重试或订单变化';
   if (state.step === 'complete-order') return '下一轮尝试完成订单';
   if (state.step === 'ensure-beverage') return '下一轮校验酒水送达';
@@ -1275,30 +1296,21 @@ function getNormalAutomationNextAction(
   state: NormalAutoOrderState,
   now: number,
 ): string {
+  if (state.manualResolutionRequired) return '确认游戏状态后点击“确认已处理”';
   if (state.paused) {
-    if (isRecoverableNormalPausedState(state, now)) return '下一轮自动恢复';
-    if (state.lastError.includes('目标料理长时间未直接送达')) {
-      return formatRemainingAction(state.stepStartedAtMs, now, NORMAL_AUTO_RECOVERABLE_PAUSE_RETRY_MS, '自动恢复');
-    }
+    void now;
     return '等待订单变化或手动处理';
   }
   if (state.completed || state.step === 'done') return '等待订单从列表移除';
   if (state.step === 'complete-order') return '下一轮尝试完成订单';
-  if (state.step === 'deliver-food') return formatRemainingAction(state.preparedAtMs, now, DIRECT_DELIVERY_RETRY_WAIT_MS, '直接送达确认');
+  if (state.step === 'deliver-food') return '等待 Mod 料理任务送达';
   if (state.step === 'ensure-beverage') return '下一轮校验酒水';
   if (state.prepared) {
-    return formatRemainingAction(state.preparedAtMs, now, DIRECT_DELIVERY_RETRY_WAIT_MS, '直接送达确认');
+    return '等待 Mod 料理任务送达';
   }
   if (state.step === 'ensure-cooking') return '下一轮校验厨具/开锅';
   if (state.step === 'match-order') return '下一轮匹配订单';
   return '下一轮刷新';
-}
-
-function formatRemainingAction(startedAtMs: number, now: number, timeoutMs: number, label: string): string {
-  if (startedAtMs <= 0) return `${label}等待中`;
-  const remainingMs = timeoutMs - (now - startedAtMs);
-  if (remainingMs <= 0) return `下一轮${label}`;
-  return `${label}约 ${Math.ceil(remainingMs / 1000)} 秒`;
 }
 
 function pickPlanForPreparation(

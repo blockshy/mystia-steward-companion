@@ -266,7 +266,7 @@ MYSTIA_API_URL=http://127.0.0.1:32145 \
 pnpm audit:ui-pinning
 ```
 
-该巡检会验证 `POST /ui-pinning/target`、`Recipe.Id` 与 food ID 分离、业务失败退避重试、断线/连接代际重发、过期 Worker 结果不会下发，以及 Worker error 后空目标锁存只在新的 current 成功 revision 到达后解除。
+该巡检会验证 `POST /ui-pinning/target`、`Recipe.Id` 与 food ID 分离、业务失败退避重试、短暂断线不重复发布、服务端会话或显式连接身份变化后重发、内部签名变化不污染 wire 去重、过期 Worker 结果不会下发，以及 Worker error 后空目标锁存只在新的 current 成功 revision 到达后解除。
 
 修改自定义推荐料理总开关、分组、批量状态或排序契约后，运行：
 
@@ -277,6 +277,24 @@ pnpm audit:custom-recipes
 ```
 
 该巡检会验证总开关持久化、草稿跨页签保留、稀客/基础料理分组记忆、页面级/分组级/单条状态更新、同稀客排序、单写者和最小窗口横向溢出。
+
+修改自动化阶段机、料理 job、控制权取消或断线接管协议后，运行：
+
+```bash
+dotnet run --project tests/automation-cooking-job/AutomationCookingJobSmoke.csproj -c Release
+pnpm audit:automation
+pnpm audit:connection-recovery
+```
+
+料理 job smoke 验证 `SetCook` generation 所有权、手动取走/同厨具复用、有效停滞时钟和 `StoreFood` 提交后有界复位；两个前端 audit 分别验证结构化 outcome、阶段计时、command epoch、运行时事件时序、mock 取消/接管，以及快照恢复、持续退避、连接身份幂等和 lease 会话绑定协议。
+
+修改快照内容签名或 `knownSignature` 协议后，运行：
+
+```bash
+dotnet run --project tests/snapshot-signature/SnapshotSignatureSmoke.csproj -c Release
+```
+
+该 smoke 使用超过 40 KB 的规范内容验证签名仍固定为 64 字符小写 SHA-256，避免规范原文进入查询串后触发 HTTP 431。
 
 仅重新生成安装包：
 
@@ -481,7 +499,9 @@ Mod 会定期检查当前页面和游戏运行时状态。进入游戏并加载�
 
 为降低经营中掉帧风险，本地 API 快照发布会做轻量节流：Unity 主线程最多约每 0.35 秒刷新一次缓存 JSON；若快照内容签名未变化，会复用上一份缓存 JSON，不为了 `CapturedAtUtc` 或性能数字重复序列化。完整 `RuntimeDataCatalog` 不再放进 `/snapshot`；快照只发布目录是否完整、来源、状态和签名，伴随窗口仅在本地缓存为空或签名变化时通过 `/runtime-data` 读取完整目录。运行时固定数据已经完整读取后，会缓存稀客映射和静态目录快照，经营 provider 与经营诊断只消费缓存，不再从经营快照热路径反复触发静态数据扫描；读取未完整时也按约 5 秒间隔重试，避免 `runtimeData.staticData` 在每轮经营刷新里反复消耗主线程。伴随窗口需要按签名缓存最近一次完整运行时数据，不能把 `/runtime-data` 的临时读取失败当作主快照丢失。概览页和经营中页会显示 `performanceMs` 中最近约 12 秒内耗时最高的快照环节，排查卡顿时优先记录 `refresh.business`、`refresh.runtime`、`snapshot.serialize`、`runtimeData.serialize`、`automation.collect` 和 `snapshot.publish`。经营扫描还会细分 `business.rare.*`、`business.normal.*`、`runtime.cookerSnapshot`、`mission.serveTargets` 等子项；普客订单快照会在短时间内复用，避免同一轮 `/snapshot` 发布重复枚举 `OrderController`、HUD 和 `GuestsManager`。
 
-普客订单被动快照缓存约 1 秒。`NormalOrderRuntimeCapture` 通过 `GuestGroupController.PushToOrder` 和 `GuestsManager.SetManualControllerOrderInternal` 捕获订单与可执行客人控制器绑定，不能为了性能删除；常规快照先读取 live `OrderController` / HUD 可见订单来决定订单是否仍存在，再把仍与 live 订单 key 或桌位/料理/酒水槽位匹配的捕获缓存合并回来补充 controller 绑定。手动控制订单还会从 `NightSceneDirector.controlledGuest` 枚举 controller，用于怪诞料理大赛三阶段最终 BOSS 这类 HUD 可见但不在常规桌位集合中的普通订单。已不可见的捕获缓存会被剔除，避免经营中页残留旧订单；捕获为空且 Hook 已安装、捕获版本未变化时可复用上一次空结果，捕获不可用时才做 `GuestsManager` 启动扫描。捕获版本变化后只强制刷新普客订单快照，不重新扫描稀客经营上下文。pending 出锅直送没有待办项时不在 `Update()` 热路径轮询。游戏界面置顶不再反射读写任何 UI 列表；`UpdateAllVisual` 与 `UpdateBevField` 只建立 ThreadStatic 刷新作用域，最外层 prefix 固定目标快照。`RunTimePlayerData.CheckPinned` 的 bool prefix 在对应作用域内遇到料理 `1 + Recipe.Id`、材料 `0/4/5/6 + Ingredient.Id`、酒水 `2 + Sellable.Id` 的精确目标时设置 `__result=true` 并返回 false 跳过原方法；非目标或作用域外调用完整执行游戏原逻辑，列表仍完全由游戏原生代码构造和排序。不得压制玩家真实收藏，cooker 类型 `3` 继续只由独立高亮服务处理；不得恢复 `m_*`、`ClassifyIngredientByType` 输出改写或 `set_Item/Clear/Add` 路径。
+普客订单被动快照缓存约 1 秒。`NormalOrderRuntimeCapture` 通过 `GuestGroupController.PushToOrder` 和 `GuestsManager.SetManualControllerOrderInternal` 捕获订单与可执行控制器绑定；常规快照先读取 live `OrderController` / HUD，再合并仍匹配订单 key 或桌位/料理/酒水槽位的捕获缓存。手动控制订单还需枚举 `NightSceneDirector.controlledGuest`。已不可见缓存必须剔除，捕获不可用时才做 `GuestsManager` 启动扫描；捕获版本变化只刷新普客订单快照。没有活动 `AutomationCookingJob` 时不在 `Update()` 热路径轮询料理 job。
+
+游戏界面置顶不反射读写 UI 列表；`UpdateAllVisual` 与 `UpdateBevField` 只建立 ThreadStatic 刷新作用域，最外层 prefix 固定目标快照。`RunTimePlayerData.CheckPinned` 的 bool prefix 只为精确目标设置 `__result=true` 并跳过原方法，非目标或作用域外完整执行游戏逻辑。不得压制玩家收藏，cooker 类型 `3` 只由独立高亮服务处理，也不得恢复列表改写路径。
 
 `RuntimePinnedListHighlightService` 只 Hook `WorkSceneCookingSelectionPannel.OnRecipeElementEnabled/3`、`OnIngElementEnabled/3` 和 `WorkSceneStoragePannel.OnElementEnabled/3`，酒水还必须确认 `Sellable.Type=Beverage`。`RuntimeUiPinningService` 维护排序与列表高亮共用的唯一 immutable target/generation，并串行化完整目标发布；不得在视觉服务中再保存第二份目标。Local API 工作线程不得读取或写入 Unity 对象；列表 Image 着色只在元素回调和 `LateUpdate` 主线程执行，保留原始 alpha，并在池化重绑、panel close/destroy、场景 suspend 和插件 Dispose 时恢复。场景 suspend 只能由两个面板的 `OnPanelOpen/0` prefix 恢复，不得由网络目标重发解除。
 
@@ -542,7 +562,7 @@ Port = 32145
 - `GET /local-api/config`：读取本机 endpoint、LAN listener 状态、结构化 LAN endpoint 候选和当前 Token；每个候选包含地址、接口、默认网关、link-local 和推荐状态，只允许回环客户端调用。
 - `POST /local-api/config?lanEnabled=true|false&lanHost=auto|IPv4`：由 A 设备本机伴随窗口保存 LAN 开关和监听地址，并动态启停 LAN listener；本机回环 listener 不重启也不关闭。
 - `POST /local-api/token/regenerate`：重置本地 API Token，返回新 Token 并立即更新当前 API 鉴权；只允许回环客户端调用。
-- `GET /snapshot?knownSignature=...`：读取最新运行态快照。快照由 Unity 主线程按自动刷新节奏生成，网络线程只返回缓存 JSON；签名未变化时返回轻量 unchanged 响应。快照包含推荐状态、夜间稀客订单、任务状态、经营投喂任务目标、普客订单诊断、运行时目录元信息和 `performanceMs` 快照耗时，不包含完整 `RuntimeDataCatalog`。
+- `GET /snapshot?knownSignature=...`：读取最新运行态快照。快照由 Unity 主线程按自动刷新节奏生成，网络线程只返回缓存 JSON；内容签名固定为规范内容的 64 字符小写 SHA-256，不能把随订单增长的规范原文放进查询串。签名未变化时返回轻量 unchanged 响应。快照包含推荐状态、稀客/普客订单、任务、活动 `automationCookingJobs`、递增序号 `automationEvents`、运行时目录元信息和 `performanceMs`，不包含完整 `RuntimeDataCatalog`。
 - `GET /runtime-data`：读取当前完整 `RuntimeDataCatalog`。伴随窗口只在本地没有目录缓存或 `/snapshot` 中的 `runtimeDataSignature` 变化时调用。
 - `GET /automation/lease`：读取当前自动化控制权状态。
 - `GET /logs/settings`：读取总日志开关、总日志路径、单文件分片大小、文件上限和总容量上限。
@@ -558,7 +578,9 @@ Port = 32145
 - `POST /rare-guests/invitations?scope=current|all`：排队到 Unity 主线程，返回指定范围内的稀客邀请候选、当前已邀请列表和禁用原因。候选扫描会通过 `GetOrGenerateSpecialNPCKizunaLevel()` 补齐运行时羁绊状态，因此不是纯读请求；结果应默认返回全量候选，前端再按羁绊等级筛选显示，避免切换筛选时丢失其他等级选项。
 - `POST /rare-guests/invite-all?scope=current|all&levels=2,3`：按同一套候选扫描和判定逻辑批量邀请可邀请稀客；`levels` 可选，只邀请指定羁绊等级的可邀请项。`current` 候选优先使用 `DayScene.SceneManager.CurrentActiveMapLabel`、`RunTimeDayScene.GetMapNPCs()`、`DaySceneMap.allCharacters` 和场景中的 `CharacterConditionComponent`，若这些实时对象还未填充，则按当前地图反查 `DataBaseDay.GetAllNPCKeys()`、`AllMappedNPCsMapping`、`AllNPCsMapping` 或 `allNPCs` 中的 NPC key，再通过 `RefNPC().possibleDestinations` 判断所在地图，并用 `RunTimeDayScene.RefTrackedNPCAvailability()` 判断当前范围内的运行时可见性。`all` 候选会合并当前场景候选和全部日间静态 NPC 候选；全部静态候选不使用当前时间可见性作为硬过滤，避免 `TrackedNPC.ShouldShown(RemainActions)` 误删跨场景候选。当前场景候选为空时直接失败，不回退到 `DataBaseCharacter.GetSpecialGuestsAndMappedGuests()` 执行全量邀请。每个候选会读取 `RunTimeAlbum.GetOrGenerateSpecialNPCKizunaLevel()`、检查 `StatusTracker.HasNPCInvited()` 和当前等级成功邀请对话包；符合条件后直接调用 `StatusTracker.RecordInvitedGuest()` 写入今晚邀请名单。该端点不调用 `DaySceneChatSelectionPannel.InviteSpecGuest()`，避免触发随机失败和消耗今日尝试次数；也不以 `HasTemptInvited()` 作为跳过条件，避免旧版本或手动失败尝试把可写入邀请卡住。该端点不直接刷出稀客，不推进时间，不写 `Story.SpecialGuestControlled`。
 - `POST /rare-guests/invite?guestId=ID&scope=current|all`：邀请单个当前可邀请稀客。
-- `POST /automation/lease/acquire`、`POST /automation/lease/release`：获取或释放当前客户端的自动化控制权。
+- `POST /automation/lease/acquire`：获取或续约当前客户端的自动化控制权；新所有者取得 lease 时会进入新的 command epoch。
+- `POST /automation/jobs/cancel`：由当前 lease 所有者原子取消全部自动料理 job 和旧 epoch 排队命令，确认取消屏障后释放控制权；响应返回 `commandEpoch`、`cancelledJobs`、`cancelledCommands` 和 `leaseReleased`。
+- `POST /automation/barriers/ack?sequence=SEQ`：由当前 lease 所有者确认已人工检查对应安全事件；后端按精确 sequence 解除同一订单截至该事件的未确认栅栏。找不到事件或不持有 lease 时不得清除前端人工状态。
 - `POST /diagnostics/automation-decision?...`：把伴随窗口的自动化候选决策写入总日志。
 - `POST /ui-pinning/target?...`：更新游戏内料理、食材、酒水置顶和厨具高亮目标；`recipeId` 是游戏 `Recipe.Id`，与成品 food ID 分开。
 - `GET /favorites`：读取收藏料理和收藏酒水。
@@ -576,19 +598,25 @@ Port = 32145
 
 除 `/health` 外，端点都需要 `X-Mystia-Steward-Companion-Token`。Token 由插件生成并保存在 BepInEx 配置中，同机启动伴随窗口时通过 `--token=` 参数传入 Tauri 后端；A 设备本机设置页可以复制或重置 Token。远程局域网连接时，用户需要在 B 设备伴随窗口顶部连接区手动输入 A 设备的 endpoint 和 token，点击 `连接` 后才开始轮询。Tauri 伴随窗口会显示实时 Mod 工作台，默认包含 `概览`、`普客`、`稀客`、`自定义推荐料理`、`经营中`、`任务`、`修改`、`帮助`、`设置` 九个页签；`概览` 内部按 `状态`、`库存`、`操作` 分栏，`设置` 内部按 `窗口`、`连接`、`推荐`、`自动化`、`更新` 分栏。窗口设置包含透明度、焦点切换、始终置顶、鼠标穿透锁定、手柄导航和显示调试信息；连接设置包含本地 API/LAN 连接配置并逐项展示可复制的 endpoint；推荐设置包含订单排序、推荐权重、预算策略、缺失厨具过滤、任务料理/收藏料理/收藏酒水置顶、带库存显示和名称/库存排序的排除材料/酒水、同基础料理展示数量、游戏界面置顶和厨具高亮。Android 伴随窗口只作为 B 设备 LAN 客户端，不提供桌面托盘、置顶、鼠标穿透、焦点切换、单实例控制和游戏关闭自动退出；桌面鼠标穿透必须通过 Tauri 原生窗口 `set_ignore_cursor_events` 控制，不能只用 CSS `pointer-events` 模拟。帮助页内容来自 `apps/companion/src/data/help-content.json`，由前端渲染为目录树和详情面板，修改文案时优先改 JSON。`日志` 页签、扫描状态、运行时来源、性能耗时、订单来源和内部 key 这类诊断信息只在 `设置 -> 显示调试信息` 开启后显示。正式 Tauri 客户端通过原生后端读取本地 API。
 
-伴随窗口的自动化能力只在前端 `设置` 页总开关开启后运行。稀客并发、普客并发、最大重试和最大回退都由 `CompanionPreferences` 配置控制，默认值分别为 `2`、`3`、`3`、`2`；稀客完成订单评价每轮仍最多执行 1 笔，普客按普客并发数处理。经营中订单排序支持点单顺序和稀客分组，必须同时影响经营中列表、专注模式、游戏界面置顶和自动化选单；料理/酒水排序配置会影响稀客页、经营中页、专注模式和自动化选单，新增排序或置顶规则时需要同时覆盖这些入口。同基础料理展示数量只裁剪页面推荐行，自动化必须从独立执行候选构造目标，不能因为页面隐藏了加料变体而跳过可执行方案。预算策略、订单级免费状态、任务料理/收藏料理/收藏酒水置顶、排除材料和排除酒水都必须进入推荐链路和缓存签名；预算可阻止、提示或忽略超预算方案，订单级 `isFreeOrder=true` 时不应用付款预算阻止，排除材料需要同时过滤基础配方和加料。任务料理置顶只在当前稀客有已接取投喂任务且目标料理通过解锁、库存、预算、排除项和缺失厨具过滤后生效；收藏料理置顶和收藏酒水置顶分别只影响对应列表，且不绕过硬过滤。偏好命中但不满足点单的料理/酒水直接进入统一推荐列表并标识为 `偏好备选`，自动化根据排序后的执行候选锁定目标；收藏限定开启时，锁定目标仍必须命中收藏。稀客与普客自动化的阶段配置必须独立保存和独立传参：稀客使用 `autoPrep*` 配置，普客使用 `autoNormal*` 配置；普客阶段包括送达酒水、开始料理、送达料理、完成订单和出错暂停，不能复用稀客送酒或完成订单开关。自动开始料理固定尝试完成原生 QTE 奖励结算，不提供跳过开关。普客自动化需要按订单 key 维护独立状态，非临时错误只暂停对应普客订单，不得暂停稀客自动化或其他普客订单；已进入制作中的普客料理必须绑定目标订单/桌位，后续轮询检测到 pending 后只能等待，不得在同类多个厨具上重复开始同一订单料理。普客订单变化需要立即触发一次处理，常规重复轮询仍需节流。C# pending target 必须优先保存并匹配 `OrderKey`，避免桌位复用或同料理多单时串单；如果游戏重建普客订单对象导致旧 key 失效，只能在桌号、料理和酒水仍一致时重匹配当前订单继续直送。稀客 pending target 必须保留 trace 与料理/酒水 Tag，避免旧稀客订单待办串到后续订单。稀客与普客的开锅请求必须经过前端同一轮厨具预约表，预约容量来自当前已摆放厨具快照；同类厨具容量不足时，普客待处理订单优先保留容量，稀客订单进入等待态并继续处理不占厨具的送酒/完成步骤。稀客和普客都必须支持料理和酒水单项先送达：送达提交必须同步顾客桌面显示和订单状态，只有 `get_IsFullfilled()` 为真时才能调用 `EvaluateOrder()`；`get_IsFullfilled()` 不是终态字段，普客快照还需要区分 `ReadyToEvaluate` 和 `HasEvaluated`。酒水创建对象后必须在送达提交成功后才扣库存；料理出锅后直接送达目标订单，送达失败时保留成品和 pending 以便下一轮重试。子选项默认关闭并记忆用户上次配置。临时失败例如厨具占用、运行时对象暂不可读、桌面显示暂不可写，应保持可重试，不应永久停止自动任务；非临时错误在对应订单类型的 `出错时暂停` 开启时才暂停当前订单。前端状态机只将送酒、开锅、单项送达提交和触发评价视为真实进展；稀客页下拉选项不再按存档进度集合过滤，只按经营场景、可读名称和可用 Tag 过滤。
+伴随窗口的自动化能力只在设置页总开关开启并持有 lease 时运行。稀客并发、普客并发、最大重试和最大回退由 `CompanionPreferences` 控制；订单排序、推荐过滤、收藏限定和厨具预约仍复用经营中推荐的同一输入。稀客 `autoPrep*` 与普客 `autoNormal*` 的送酒、开始料理、送达料理、完成订单和出错暂停完全独立保存、独立传参、独立推进。所有自动开锅都登记 `AutomationCookingJob` 作为服务端精确锅次回执，防止 HTTP 响应丢失后再次扣料；只开启“开始料理”时 job 进入手动交接模式，不送达、不入箱、不复位，直到订单送达、订单稳定消失、场景结束或显式取消。
 
-厨具出锅结果只能读取 `CookController.Result` 或其精确 backing field，并确认对象是料理 `Sellable` 后才能送达或传给 `IzakayaConfigure.StoreFood()`。`CookController.result` / `resultVisual` 是视觉 `SpriteRenderer`，不能作为成品对象；读到非 `Sellable` 时应记录来源类型并释放对应 pending，避免持续占用下一单调度。
+`AutomationCookingJob` 是料理跨帧状态的唯一来源。`RuntimeCookingGenerationTracker` 精确 Hook `CookController.SetCook(Sellable, Recipe, bool)`，每次 SetCook 分配 generation；job 绑定 controller 指针和该 generation。同 generation 内游戏原生完成流程替换 `Result` 可安全接续；Mod 不主动调用或重试非幂等的 `FinishCooking`，只等待原生 `Phase == Finished`，有效运行时间内长期不前进则进入人工确认。玩家手动取走成品会得到 `interrupted/cooking-result-removed`，立即复用同一厨具会因 generation 改变得到 `interrupted/cooking-controller-reused`，旧 job 不得送达、存储或 reset 新锅。快照 `automationCookingJobs` 暴露 jobId、目标、controller/result、generation、phase/progress、outcome/reason 和清理计数；`automationEvents` 用递增 sequence 发布终态，`automationSessionId` 标识当前 Mod 进程，断线后的同会话 lease 所有者据此接管。
+
+自动化响应使用 `waiting/progressed/completed/interrupted/retryable-failure/blocked/fatal/cancelled` outcome，并携带 `stage/reasonCode/jobId/retryAfterMs`。C# 返回的 `beverage/cooking-start/cooking-delivery/order` 真实阶段必须优先于前端请求前推测，避免同一请求先送酒、后开锅失败时把料理副作用归到酒水阶段。前端用 `retryStage` 绑定失败计数，切换或关闭普通失败阶段时清除旧阶段退避。只有真实送酒、开锅、料理进度前进、送达提交或评价触发能报告 progressed；waiting 和 interrupted 不清零当前阶段失败次数，retryable-failure 有界累加。副作用不确定的 blocked/fatal 必须设置人工确认栅栏并保留 `prepared`，不能被普通重试、阶段开关、总开关或无关订单事实清除。前端以 request epoch 和事件 sequence 丢弃取消前或终态事件前发出的迟到响应，不再解析中文文本或使用前端经过时长猜测恢复。烹饪与送达超时只累计游戏可推进的有效区间，暂停、断线、场景不可读和运行时不可达不消耗预算；进度停滞会保留旧锅，因此必须是 blocked，而不是自动重新开锅的 interrupted。
+
+正常料理直接送达订单；非目标成品、特殊经营目标签名变化、Tag 不符或目标连续不可达时才使用保温箱恢复。`IzakayaConfigure.StoreFood()` 是非幂等 commit-once 操作，IDA 显示它先 `StoredFoods.Add`，再调用 UI/伙伴回调；正常返回和异常后在 `StoredFoods` 中确认到同一 Sellable 对象都代表已提交。只要原生调用已经开始，异常后对象不存在或状态不可读都不能证明没有发生前置副作用，必须 blocked，且不得再次入箱或清厨具。`OrderBase.set_ServFood/set_ServBeverage` 同样先写最终字段再调用视觉回调；订单送达要以最终字段中的同一 Sellable 对象确认 commit，料理只做有界同 generation cleanup，酒水只在确认 commit 后扣一次库存。厨具 cleanup 必须同时确认 `Phase == Idle`、`Result == null`、`ChosenRecipe == null`，读取失败不得当作成功。普客 target 保存并严格匹配 `OrderKey`；key 缺失时只接受同一原生订单对象，不按桌号或料理回退。稀客 target 保存 trace 与料理/酒水 Tag。料理 job 不负责评价；后续订单阶段只在 `get_IsFullfilled()` 为真且严格读到 `HasEvaluated=false` 时调用一次评价。评价调用异常后只有严格回读为 true 才确认提交，否则登记未确认栅栏并禁止自动重试。
+
+厨具出锅结果只能读取 `CookController.Result` 或其精确 backing field，并确认对象是料理 `Sellable` 后才能送达或进入保温箱恢复。`CookController.result` / `resultVisual` 是视觉 `SpriteRenderer`，不能作为成品对象；连续读到非 `Sellable` 或无法确认 generation 所有权时必须形成有界 blocked/interrupted 终态，不能无限等待或触碰其他锅次。
 
 自动化在订单部分送达后恢复顾客耐心时，必须先读取同一 `GuestGroupController` 的 `CurrentPatient` 和 `MaxPatient`，再把 `AddPatient` 入参限制到剩余耐心空间内；若检测到当前耐心已经高于上限，只允许调用 `SetPatient(MaxPatient)` 做一次状态校正。游戏原生 `AddPatient` 不裁剪上限，而 `GuestTableDisplayer.UpdatePatient` 会先用 progress 索引贴图数组，因此不得恢复到 `MaxPatient` 以上。
 
-稀客自动化诊断由前端状态机维护，每个当前候选订单都要暴露当前步骤、下次动作、已开锅、已送酒、重试/回退次数、最近原因和暂停状态。普客自动化也要按订单 key 展示下次动作、送酒、开锅、送料理、完成订单和订单已有料理/酒水状态，避免只靠长文本判断卡住位置。订单级执行步骤必须保存在对应订单状态中，并在经营中页订单条目下方的 `自动化详情` 折叠区展示；默认全部折叠，底部全局消息只保留连接、候选跳过、调度等全局状态，不再堆叠单笔订单详情。`重试` 只解除该订单暂停并保留已完成阶段，`重置` 删除该订单本地状态并在下一轮重新判断；两者都不得影响其他稀客订单或普客订单状态。
+稀客自动化诊断由前端状态机维护，每个当前候选订单都要暴露当前步骤、下次动作、已开锅、已送酒、重试/回退次数、最近原因、暂停状态和人工确认栅栏。普客自动化也要按订单 key 展示下次动作、送酒、开锅、送料理、完成订单和订单已有料理/酒水状态，避免只靠长文本判断卡住位置。订单级执行步骤必须保存在对应订单状态中，并在经营中页订单条目下方的 `自动化详情` 折叠区展示；默认全部折叠。普通 `重试` 只解除该订单暂停并保留已完成阶段，普通 `重置` 让该订单重新判断；人工确认栅栏禁用重试，按钮改为 `确认已处理`。订单已从快照消失时仍必须通过独立待确认列表暴露事件。确认动作调用 `/automation/barriers/ack`，只有后端成功解除 sequence 后才清理本地状态；任何操作都不得影响其他订单。
 
-伴随窗口直接双击启动时通常没有本地 API Token。前端必须停留在未授权状态，不得高频请求 `/snapshot` 或日志端点；用户修改端点或 token 输入框时也不得立即重连，只有点击 `连接` 或从游戏启动参数收到新 token 后才恢复轮询。自动探测和失败重试必须使用较短本地 API 超时且不触发全局刷新 loading；手动刷新可使用稍长超时。连接失败后使用递增退避，允许用户点击 `停止` 暂停自动重连。
+伴随窗口直接双击启动时通常没有本地 API Token。前端必须停留在未授权状态，不得高频请求 `/snapshot` 或日志端点；用户修改端点或 token 输入框时也不得立即重连，只有点击 `连接` 或从游戏启动参数收到新的连接身份后才恢复轮询。相同 endpoint/token 的重复单实例通知必须幂等，不得清空快照或推进连接代际。自动探测和失败重试必须使用较短本地 API 超时且不触发全局刷新 loading；手动刷新可使用稍长超时。连接失败后只按递增退避重试 `/snapshot`，并且只有快照成功才能清除错误和恢复写操作；`/health` 成功不能建立已连接状态。允许用户点击 `停止` 暂停自动重连。
 
-普客订单自动化仍是实验性功能。伴随窗口会显示当前 UI 订单里识别到的普客桌位、料理、酒水、待评价和已评价状态；设置页开启自动化总开关后，还需要在经营中自动化面板开启“启用普客处理”，并至少开启送达酒水、自动开始料理、自动送达料理或自动完成订单中的一个阶段，之后会自动处理按首次出现时间排序的未评价普客订单，不再需要点击手动处理按钮。普客酒水和料理送达都走统一送达提交，在顾客桌面显示和订单状态同步后才调用 `EvaluateOrder()`。特殊经营场景通过模块化规则接入经营中推荐和自动化；已分析过的怪诞料理大赛、幽幽子挑战、饕餮尤魔挑战链路记录在 `docs/special-business-scenes-notes.md`。怪诞料理大赛可能把普客原订单目标与实际执行料理/酒水拆分；幽幽子挑战普客会保留原订单料理/酒水，只调整原料理加料方案。后端必须用原订单目标匹配运行时订单，跨帧 pending 出锅直送也要保存该 match 目标，再用执行目标校验成品和送达。幽幽子三阶段送达可使用当前有效 captured 原生订单对象，但评价必须重新取得当前 live controller，并复用 `SetManualControllerOrderInternal` 捕获的 `onEvaluate` 调用 `EvaulateManualOrder`，同时确认送达目标、等级合计和三阶段评分回调。怪诞小石本体破防前送齐后仍走通用 `EvaluateOrder()`；破防后的全力投食阶段才交由 Boss 原生回调评价。`ServedFoodInAir` / `ServedBeverageInAir` 只作为统一送达提交中的过渡状态，顾客桌面显示必须通过 `GuestTableDisplayer` 更新，是否可评价以 `ServFood` / `ServBeverage` 和 `get_IsFullfilled()` 为准，是否真正完成以 `HasEvaluated` 或订单移除为准。
+普客订单自动化仍是实验性功能。设置页总开关和经营中“启用普客处理”必须同时开启，并至少开启一个独立阶段；订单按首次出现顺序处理，不保留手动处理按钮。酒水和料理统一提交到顾客桌面，只有订单已满足才评价，最终完成以 `HasEvaluated` 或订单移除为准。特殊经营规则按模块接入：`AutomationCookingJob` 同时保存原订单 match 目标、实际执行目标和场景签名，出锅时不能用执行料理反查原订单。幽幽子三阶段评价必须重新取得 live controller 和所需回调；怪诞小石本体破防前走通用评价，破防后交给 Boss 原生回调。具体规则见 `docs/special-business-scenes-notes.md`。
 
-总日志文件 `BepInEx/config/MystiaStewardCompanion/aggregate-mod.log` 默认关闭，由 `Diagnostics.EnableAggregateModLog` 或日志页“总日志”开关启用。启用后注册 BepInEx 全局 `ILogListener`，捕获所有日志源并按时间、级别、来源和线程标注；C# 侧开锅成功/失败、pending 直送、pending 移除、经营诊断和运行时固定数据诊断也写入该文件。连续相同 automation action、目标和消息会合并为 `repeat` 摘要，避免厨具冻结、订单对象短暂不可读等临时状态刷爆日志。单个文件达到 10 MB 后拆分为递增编号分片；默认保留 30 个文件，约 300 MB，超过上限时删除最旧分片。该服务不得调用插件日志源回写自身状态，避免递归；写入、分片和裁剪失败必须吞掉异常，不得影响游戏流程。
+总日志文件 `BepInEx/config/MystiaStewardCompanion/aggregate-mod.log` 默认关闭，由 `Diagnostics.EnableAggregateModLog` 或日志页“总日志”开关启用。启用后注册 BepInEx 全局 `ILogListener`，捕获所有日志源并按时间、级别、来源和线程标注；自动化日志记录 jobId、trace、controller/result、generation、phase/progress、结构化 outcome/reason、StoreFood commit 和 reset 尝试。连续相同 automation action、目标和消息合并为 `repeat` 摘要。单个文件达到 10 MB 后拆分为递增编号分片；默认保留 30 个文件，约 300 MB。监听器不得回写自身状态，写入、分片和裁剪失败也不得影响游戏流程。
 
 上述分片只保护 `aggregate-mod.log`，不保护 BepInEx/Unity 共享的 `LogOutput.log`、`output_log.txt` 或 `Player.log`。后台 worker 不得用无限异常重试向插件日志源刷写；本插件也不得接管、截断或删除共享日志。
 

@@ -1,4 +1,5 @@
 using MystiaStewardCompanion.LocalApi;
+using System.Reflection;
 
 namespace MystiaStewardCompanion.Save;
 
@@ -10,6 +11,22 @@ internal static partial class RuntimeOrderPreparationService
     {
         Food,
         Beverage,
+    }
+
+    private enum RuntimeDeliveryCommitState
+    {
+        NotCommitted,
+        Committed,
+        Uncertain,
+    }
+
+    private readonly record struct RuntimeDeliveryCommitResult(
+        RuntimeDeliveryCommitState State,
+        string Message,
+        string Code = "")
+    {
+        public bool Ok => State == RuntimeDeliveryCommitState.Committed;
+        public bool CommitUncertain => State == RuntimeDeliveryCommitState.Uncertain;
     }
 
     /// <summary>
@@ -25,7 +42,7 @@ internal static partial class RuntimeOrderPreparationService
     /// 这里先验证桌面显示器和 Sprite，再设置 <c>Served*InAir</c>、更新桌面显示并提交最终字段。
     /// 如果中途失败，会尽力清理空中状态，避免订单残留半提交数据。
     /// </remarks>
-    private static (bool Ok, string Message) TryCommitRuntimeDelivery(
+    private static RuntimeDeliveryCommitResult TryCommitRuntimeDelivery(
         RuntimeOrderMatch runtimeOrder,
         object sellable,
         RuntimeDeliveryItemKind kind,
@@ -33,86 +50,313 @@ internal static partial class RuntimeOrderPreparationService
     {
         if (runtimeOrder.Order == null)
         {
-            return (false, $"无法送达 {itemName}：订单对象不可用。");
+            return NotCommittedDelivery($"无法送达 {itemName}：订单对象不可用。");
         }
 
         if (runtimeOrder.Controller == null)
         {
-            return (false, $"无法送达 {itemName}：客人控制器不可用。");
+            return NotCommittedDelivery($"无法送达 {itemName}：客人控制器不可用。");
+        }
+
+        if (!TryReadOrderServedItem(runtimeOrder.Order, kind, out var existingServedItem, out var existingDiagnostic))
+        {
+            return NotCommittedDelivery(
+                $"无法送达 {itemName}：无法确认订单当前最终送达字段，本轮未执行送达副作用。{existingDiagnostic}");
+        }
+
+        if (existingServedItem != null)
+        {
+            return CompareObjectIdentity(existingServedItem, sellable) switch
+            {
+                RuntimeObjectIdentityComparison.Same =>
+                    CommittedDelivery($"{itemName} 已存在于订单最终送达字段，本次未重复调用 setter。"),
+                RuntimeObjectIdentityComparison.Different =>
+                    NotCommittedDelivery($"无法送达 {itemName}：订单最终送达字段已有其他对象。"),
+                _ => NotCommittedDelivery(
+                    $"无法送达 {itemName}：订单最终送达对象身份不可确认，本轮未执行送达副作用。"),
+            };
         }
 
         if (!TryReadSellableSprite(sellable, out var sprite, out var spriteMessage))
         {
-            return (false, $"无法送达 {itemName}：{spriteMessage}");
+            return NotCommittedDelivery($"无法送达 {itemName}：{spriteMessage}");
         }
 
         if (!TryFindGuestTableDisplayer(runtimeOrder.Order, runtimeOrder.Controller, out var tableDisplayer, out var tableMessage))
         {
-            return (false, $"无法送达 {itemName}：{tableMessage}");
+            return NotCommittedDelivery($"无法送达 {itemName}：{tableMessage}");
         }
 
-        if (!TrySetOrderInAir(runtimeOrder.Order, kind, sellable, out var inAirMessage))
+        if (!TryReadOrderInAirItem(runtimeOrder.Order, kind, out var existingInAirItem, out var inAirDiagnostic))
         {
-            return (false, $"无法送达 {itemName}：{inAirMessage}");
+            return NotCommittedDelivery(
+                $"无法送达 {itemName}：无法确认订单待送达字段，本轮未执行送达副作用。{inAirDiagnostic}");
         }
 
+        if (existingInAirItem != null
+            && CompareObjectIdentity(existingInAirItem, sellable) != RuntimeObjectIdentityComparison.Same)
+        {
+            return NotCommittedDelivery($"无法送达 {itemName}：订单待送达字段已有其他对象，拒绝覆盖。");
+        }
+
+        if (existingInAirItem == null)
+        {
+            var inAirSetterName = kind == RuntimeDeliveryItemKind.Food
+                ? "set_ServedFoodInAir"
+                : "set_ServedBeverageInAir";
+            var inAirSetterReturned = TryInvokeDeliverySetter(
+                runtimeOrder.Order,
+                inAirSetterName,
+                sellable,
+                out var inAirSetterAttempted,
+                out var inAirSetterDiagnostic);
+            if (!inAirSetterAttempted)
+            {
+                return NotCommittedDelivery($"无法送达 {itemName}：{inAirSetterDiagnostic}");
+            }
+            if (!TryReadOrderInAirItem(
+                    runtimeOrder.Order,
+                    kind,
+                    out var writtenInAirItem,
+                    out var writtenInAirDiagnostic))
+            {
+                return UncertainDelivery(
+                    kind,
+                    $"{itemName} 的待送达 setter 已执行，但无法确认字段状态，已禁止重复写入。{writtenInAirDiagnostic}");
+            }
+
+            if (writtenInAirItem == null)
+            {
+                return UncertainDelivery(
+                    kind,
+                    inAirSetterReturned
+                        ? $"{itemName} 的待送达 setter 已执行，但字段仍为空，无法确认回调副作用，已禁止重试。"
+                        : $"{itemName} 的待送达 setter 已进入后发生异常且字段为空，无法确认回调副作用，已禁止重试。{inAirSetterDiagnostic}");
+            }
+
+            var writtenIdentity = CompareObjectIdentity(writtenInAirItem, sellable);
+            if (writtenIdentity == RuntimeObjectIdentityComparison.Unknown)
+            {
+                return UncertainDelivery(
+                    kind,
+                    $"{itemName} 的待送达 setter 已执行，但写入对象身份无法确认，已禁止重复写入。");
+            }
+
+            if (writtenIdentity == RuntimeObjectIdentityComparison.Different)
+            {
+                return UncertainDelivery(
+                    kind,
+                    $"{itemName} 的待送达 setter 已执行，但字段变为其他对象，无法确认副作用边界，已禁止重试。");
+            }
+        }
+
+        var finalSetterAttempted = false;
         try
         {
             if (!TryUpdateGuestTableVisual(tableDisplayer, kind, sprite, out var visualMessage))
             {
-                TryClearOrderInAir(runtimeOrder.Order, kind);
-                return (false, $"无法送达 {itemName}：{visualMessage}");
+                if (!TryClearOrderInAirAndVerify(runtimeOrder.Order, kind, out var clearDiagnostic))
+                {
+                    return UncertainDelivery(
+                        kind,
+                        $"无法送达 {itemName}：{visualMessage}；待送达字段清理状态无法确认，已禁止重试。{clearDiagnostic}");
+                }
+
+                return NotCommittedDelivery($"无法送达 {itemName}：{visualMessage}");
             }
 
-            TryClearOrderInAir(runtimeOrder.Order, kind);
-            if (!TrySetOrderServed(runtimeOrder.Order, kind, sellable, out var servedMessage))
+            if (!TryClearOrderInAirAndVerify(runtimeOrder.Order, kind, out var clearBeforeCommitDiagnostic))
+            {
+                return UncertainDelivery(
+                    kind,
+                    $"无法送达 {itemName}：最终提交前无法确认待送达字段已清空，已禁止继续。{clearBeforeCommitDiagnostic}");
+            }
+
+            var setterName = kind == RuntimeDeliveryItemKind.Food ? "set_ServFood" : "set_ServBeverage";
+            var setterReturned = TryInvokeDeliverySetter(
+                runtimeOrder.Order,
+                setterName,
+                sellable,
+                out finalSetterAttempted,
+                out var setterDiagnostic);
+            if (!finalSetterAttempted)
             {
                 TryUpdateGuestTableVisual(tableDisplayer, kind, null, out _);
-                return (false, $"无法送达 {itemName}：{servedMessage}");
+                return NotCommittedDelivery($"无法送达 {itemName}：{setterDiagnostic}");
             }
 
-            return (true, $"{itemName} 已按游戏送达流程提交。");
+            // IDA: both OrderBase setters write servFood/servBeverage before invoking the visual callback.
+            // A callback exception therefore cannot be treated as a failed commit or retried blindly.
+            if (!TryReadOrderServedItem(runtimeOrder.Order, kind, out var servedItem, out var servedDiagnostic))
+            {
+                return UncertainDelivery(kind,
+                    $"{itemName} 的订单 setter 已执行，但无法确认最终字段，已禁止重复送达。{servedDiagnostic}");
+            }
+
+            var servedIdentity = servedItem == null
+                ? RuntimeObjectIdentityComparison.Different
+                : CompareObjectIdentity(servedItem, sellable);
+            if (servedIdentity == RuntimeObjectIdentityComparison.Same)
+            {
+                var callbackSuffix = setterReturned ? "" : "视觉回调返回异常，但最终字段已确认写入；";
+                return CommittedDelivery($"{itemName} 已按游戏送达流程提交。{callbackSuffix}");
+            }
+
+            if (servedItem != null)
+            {
+                return UncertainDelivery(kind,
+                    servedIdentity == RuntimeObjectIdentityComparison.Unknown
+                        ? $"{itemName} 的订单 setter 已执行，但最终对象身份无法确认，已禁止重复送达。"
+                        : $"{itemName} 的订单 setter 已执行，但最终字段为其他对象，无法确认副作用边界，已禁止重复送达。");
+            }
+
+            TryUpdateGuestTableVisual(tableDisplayer, kind, null, out _);
+            return UncertainDelivery(
+                kind,
+                setterReturned
+                    ? $"{itemName} 的订单 setter 已执行，但最终字段仍为空，无法确认回调副作用，已禁止重复送达。"
+                    : $"{itemName} 的订单 setter 已进入后发生异常且最终字段为空，无法确认回调副作用，已禁止重复送达。{setterDiagnostic}");
         }
         catch (Exception ex)
         {
-            TryClearOrderInAir(runtimeOrder.Order, kind);
-            return (false, $"无法送达 {itemName}：{ex.GetBaseException().Message}");
+            TryClearOrderInAirAndVerify(runtimeOrder.Order, kind, out _);
+            return finalSetterAttempted
+                ? UncertainDelivery(
+                    kind,
+                    $"{itemName} 的订单 setter 已开始执行，但发生未分类异常且无法确认最终字段；已禁止重复送达。{ex.GetBaseException().Message}")
+                : NotCommittedDelivery($"无法送达 {itemName}：{ex.GetBaseException().Message}");
         }
     }
 
-    private static bool TrySetOrderInAir(object order, RuntimeDeliveryItemKind kind, object sellable, out string message)
+    private static RuntimeDeliveryCommitResult NotCommittedDelivery(string message)
     {
-        var setterName = kind == RuntimeDeliveryItemKind.Food ? "set_ServedFoodInAir" : "set_ServedBeverageInAir";
-        if (TryInvokeInstance(order, setterName, new object?[] { sellable }))
+        return new RuntimeDeliveryCommitResult(RuntimeDeliveryCommitState.NotCommitted, message);
+    }
+
+    private static RuntimeDeliveryCommitResult CommittedDelivery(string message)
+    {
+        return new RuntimeDeliveryCommitResult(RuntimeDeliveryCommitState.Committed, message);
+    }
+
+    private static RuntimeDeliveryCommitResult UncertainDelivery(
+        RuntimeDeliveryItemKind kind,
+        string message)
+    {
+        var code = kind == RuntimeDeliveryItemKind.Food
+            ? OrderPreparationStepCodes.FoodDeliveryCommitUncertain
+            : OrderPreparationStepCodes.BeverageDeliveryCommitUncertain;
+        return new RuntimeDeliveryCommitResult(RuntimeDeliveryCommitState.Uncertain, message, code);
+    }
+
+    private static bool TryReadOrderServedItem(
+        object order,
+        RuntimeDeliveryItemKind kind,
+        out object? value,
+        out string diagnostic)
+    {
+        return kind == RuntimeDeliveryItemKind.Food
+            ? TryReadExactMemberValue(order, out value, out diagnostic, "ServFood", "servFood")
+            : TryReadExactMemberValue(order, out value, out diagnostic, "ServBeverage", "servBeverage");
+    }
+
+    private static bool TryReadOrderInAirItem(
+        object order,
+        RuntimeDeliveryItemKind kind,
+        out object? value,
+        out string diagnostic)
+    {
+        return kind == RuntimeDeliveryItemKind.Food
+            ? TryReadExactMemberValue(order, out value, out diagnostic, "ServedFoodInAir", "m_ServedFoodInAir")
+            : TryReadExactMemberValue(order, out value, out diagnostic, "ServedBeverageInAir", "m_ServedBeverageInAir");
+    }
+
+    private static bool TryClearOrderInAirAndVerify(
+        object order,
+        RuntimeDeliveryItemKind kind,
+        out string diagnostic)
+    {
+        if (!TryReadOrderInAirItem(order, kind, out var before, out var beforeDiagnostic))
         {
-            message = "";
+            diagnostic = $"清理前字段不可读：{beforeDiagnostic}";
+            return false;
+        }
+
+        if (before == null)
+        {
+            diagnostic = "";
             return true;
         }
 
-        message = $"未找到或无法调用订单待送达字段入口 {setterName}。";
-        return false;
-    }
-
-    private static void TryClearOrderInAir(object order, RuntimeDeliveryItemKind kind)
-    {
         var setterName = kind == RuntimeDeliveryItemKind.Food ? "set_ServedFoodInAir" : "set_ServedBeverageInAir";
-        TryInvokeInstance(order, setterName, new object?[] { null });
-    }
-
-    private static bool TrySetOrderServed(object order, RuntimeDeliveryItemKind kind, object sellable, out string message)
-    {
-        var setterName = kind == RuntimeDeliveryItemKind.Food ? "set_ServFood" : "set_ServBeverage";
-        var readName = kind == RuntimeDeliveryItemKind.Food ? "ServFood" : "ServBeverage";
-        var getterName = kind == RuntimeDeliveryItemKind.Food ? "get_ServFood" : "get_ServBeverage";
-        if (TryInvokeInstance(order, setterName, new object?[] { sellable })
-            && (ReadMember(order, readName) ?? TryInvokeInstanceValue(order, getterName)) != null)
+        var setterReturned = TryInvokeDeliverySetter(
+            order,
+            setterName,
+            null,
+            out var setterAttempted,
+            out var setterDiagnostic);
+        if (!setterAttempted)
         {
-            message = "";
-            return true;
+            diagnostic = setterDiagnostic;
+            return false;
+        }
+        if (!TryReadOrderInAirItem(order, kind, out var current, out var readDiagnostic))
+        {
+            diagnostic = $"{setterName} 后字段不可读：{readDiagnostic}";
+            return false;
         }
 
-        message = $"未找到或无法调用订单最终送达字段入口 {setterName}。";
-        return false;
+        if (current != null)
+        {
+            diagnostic = $"{setterName} 后字段仍非空";
+            return false;
+        }
+
+        diagnostic = setterReturned
+            ? ""
+            : $"{setterName} 的视觉回调返回异常，但字段已确认清空：{setterDiagnostic}";
+        return true;
+    }
+
+    private static bool TryInvokeDeliverySetter(
+        object target,
+        string methodName,
+        object? value,
+        out bool invocationAttempted,
+        out string diagnostic)
+    {
+        invocationAttempted = false;
+        diagnostic = "";
+        var methods = target.GetType()
+            .GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+            .Where(candidate =>
+            {
+                if (!string.Equals(candidate.Name, methodName, StringComparison.Ordinal)) return false;
+                var parameters = candidate.GetParameters();
+                if (parameters.Length != 1) return false;
+                return value == null
+                    ? !parameters[0].ParameterType.IsValueType
+                    : parameters[0].ParameterType.IsInstanceOfType(value);
+            })
+            .ToArray();
+        if (methods.Length != 1)
+        {
+            diagnostic = methods.Length == 0
+                ? $"未找到精确 {methodName}(Sellable) setter"
+                : $"发现 {methods.Length} 个 {methodName}(Sellable) setter，无法确定唯一入口";
+            return false;
+        }
+
+        invocationAttempted = true;
+        try
+        {
+            methods[0].Invoke(target, new[] { value });
+            return true;
+        }
+        catch (Exception ex)
+        {
+            diagnostic = ex.GetBaseException().Message;
+            return false;
+        }
     }
 
     /// <summary>
@@ -254,12 +498,14 @@ internal static partial class RuntimeOrderPreparationService
         RuntimeOrderMatch runtimeOrder,
         string stepName,
         string orderLabel,
+        CookingCollectionTarget safetyTarget,
         bool allowControllerMissing = false)
     {
         var evaluation = TryEvaluateRuntimeOrderIfReady(runtimeOrder, orderLabel, allowControllerMissing);
         if (!evaluation.Ok)
         {
-            AddFailure(result, stepName, evaluation.Message);
+            AddFailure(result, stepName, evaluation.Message, evaluation.Code);
+            RecordOrderSafetyBarrierIfNeeded(evaluation.Code, safetyTarget, evaluation.Message);
             return false;
         }
 
@@ -283,12 +529,14 @@ internal static partial class RuntimeOrderPreparationService
         OrderPreparationRequest request,
         RuntimeOrderMatch runtimeOrder,
         string stepName,
-        string orderLabel)
+        string orderLabel,
+        CookingCollectionTarget safetyTarget)
     {
         var evaluation = TryEvaluateWackyKoishiBossRuntimeOrderIfReady(request, runtimeOrder, orderLabel);
         if (!evaluation.Ok)
         {
-            AddFailure(result, stepName, evaluation.Message);
+            AddFailure(result, stepName, evaluation.Message, evaluation.Code);
+            RecordOrderSafetyBarrierIfNeeded(evaluation.Code, safetyTarget, evaluation.Message);
             return false;
         }
 
@@ -307,7 +555,7 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
-    private static (bool Ok, bool Completed, bool Skipped, string Message) TryEvaluateWackyKoishiBossRuntimeOrderIfReady(
+    private static RuntimeOrderEvaluationResult TryEvaluateWackyKoishiBossRuntimeOrderIfReady(
         OrderPreparationRequest request,
         RuntimeOrderMatch runtimeOrder,
         string orderLabel)
@@ -327,7 +575,7 @@ internal static partial class RuntimeOrderPreparationService
                 runtimeOrder,
                 "blocked-native-evaluate-entry",
                 diagnostic);
-            return (false, false, false, $"怪诞料理三阶段小石本体订单缺少可执行原生评价条件：{diagnostic}");
+            return new(false, false, false, $"怪诞料理三阶段小石本体订单缺少可执行原生评价条件：{diagnostic}");
         }
 
         var evaluation = TryEvaluateRuntimeOrderIfReady(runtimeOrder, orderLabel);
@@ -345,38 +593,117 @@ internal static partial class RuntimeOrderPreparationService
         return evaluation;
     }
 
-    private static (bool Ok, bool Completed, bool Skipped, string Message) TryEvaluateRuntimeOrderIfReady(
+    private static RuntimeOrderEvaluationResult TryEvaluateRuntimeOrderIfReady(
         RuntimeOrderMatch runtimeOrder,
         string orderLabel,
         bool allowControllerMissing = false)
     {
         if (runtimeOrder.Order == null || runtimeOrder.Manager == null)
         {
-            return (false, false, false, "订单或客人管理器不可用，无法调用游戏评价流程。");
+            return new(false, false, false, "订单或客人管理器不可用，无法调用游戏评价流程。");
         }
 
         if (!ReadBool(InvokeInstance(runtimeOrder.Order, "get_IsFullfilled", Array.Empty<object?>())))
         {
-            return (true, false, true, "订单尚未同时满足料理和酒水，等待下一轮补齐。");
+            return new(true, false, true, "订单尚未同时满足料理和酒水，等待下一轮补齐。");
         }
 
         if (runtimeOrder.Controller == null)
         {
             if (allowControllerMissing)
             {
-                return (true, false, true, "订单已满足，但暂未读取到客人控制器，等待下一轮触发评价。");
+                return new(true, false, true, "订单已满足，但暂未读取到客人控制器，等待下一轮触发评价。");
             }
 
-            return (false, false, false, "已匹配订单，但未找到对应客人控制器，无法调用游戏评价流程。");
+            return new(false, false, false, "已匹配订单，但未找到对应客人控制器，无法调用游戏评价流程。");
         }
 
-        if (ReadBool(ReadMember(runtimeOrder.Controller, "HasEvaluated") ?? TryInvokeInstanceValue(runtimeOrder.Controller, "get_HasEvaluated")))
+        return TryInvokeRuntimeOrderEvaluationOnce(
+            runtimeOrder.Manager,
+            runtimeOrder.Controller,
+            "EvaluateOrder",
+            new object?[] { runtimeOrder.Controller, false, null },
+            orderLabel);
+    }
+
+    private static RuntimeOrderEvaluationResult TryInvokeRuntimeOrderEvaluationOnce(
+        object manager,
+        object controller,
+        string methodName,
+        object?[] args,
+        string orderLabel)
+    {
+        if (!TryReadRuntimeOrderEvaluated(controller, out var evaluatedBefore, out var beforeDiagnostic))
         {
-            return (true, true, true, $"{orderLabel}已触发过评价，本次不重复调用。");
+            return new(
+                false,
+                false,
+                false,
+                $"无法严格读取 {orderLabel} 的 HasEvaluated，已在调用游戏评价流程前停止：{beforeDiagnostic}",
+                OrderPreparationStepCodes.OrderEvaluationStateUnreadable);
         }
 
-        InvokeInstance(runtimeOrder.Manager, "EvaluateOrder", new object?[] { runtimeOrder.Controller, false, null });
-        return (true, true, false, $"已调用游戏评价流程完成{orderLabel}。");
+        if (evaluatedBefore)
+        {
+            return new(true, true, true, $"{orderLabel}已触发过评价，本次不重复调用。");
+        }
+
+        try
+        {
+            InvokeInstance(manager, methodName, args);
+            return new(true, true, false, $"已调用游戏评价流程完成{orderLabel}。");
+        }
+        catch (Exception ex)
+        {
+            if (TryReadRuntimeOrderEvaluated(controller, out var evaluatedAfter, out var afterDiagnostic)
+                && evaluatedAfter)
+            {
+                return new(
+                    true,
+                    true,
+                    false,
+                    $"{orderLabel} 的评价调用后半段发生异常，但 HasEvaluated=true 已确认评价提交；不会重复调用。异常：{ex.GetBaseException().Message}");
+            }
+
+            var confirmation = string.IsNullOrWhiteSpace(afterDiagnostic)
+                ? "HasEvaluated 仍为 false"
+                : $"HasEvaluated 无法严格回读：{afterDiagnostic}";
+            return new(
+                false,
+                false,
+                false,
+                $"{orderLabel} 的评价调用已开始但发生异常，且无法确认是否提交（{confirmation}）。为避免重复结算，已禁止自动重试，请人工确认订单状态：{ex.GetBaseException().Message}",
+                OrderPreparationStepCodes.OrderEvaluationCommitUncertain);
+        }
+    }
+
+    private static bool TryReadRuntimeOrderEvaluated(
+        object controller,
+        out bool evaluated,
+        out string diagnostic)
+    {
+        evaluated = false;
+        if (!TryReadExactMemberValue(
+                controller,
+                out var rawValue,
+                out diagnostic,
+                "HasEvaluated",
+                "<HasEvaluated>k__BackingField"))
+        {
+            return false;
+        }
+
+        if (rawValue is bool boolean)
+        {
+            evaluated = boolean;
+            diagnostic = "";
+            return true;
+        }
+
+        diagnostic = rawValue == null
+            ? "HasEvaluated 返回 null"
+            : $"HasEvaluated 返回了非布尔类型 {rawValue.GetType().FullName}";
+        return false;
     }
 
     private static bool IsManualControlledOrder(object order, object controller)

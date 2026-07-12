@@ -57,6 +57,7 @@ public sealed class MystiaStewardCompanionPlugin : BasePlugin
         YuyukoChallengeEvaluationTracker.Attach(Log);
         RuntimeUiPinningService.Attach(Log);
         RuntimePinnedListHighlightService.Attach(Log);
+        RuntimeCookingGenerationTracker.Attach(Log);
 
         StewardOverlayRuntimeContext.Configure(settings, Log);
         ClassInjector.RegisterTypeInIl2Cpp<StewardOverlayBehaviour>();

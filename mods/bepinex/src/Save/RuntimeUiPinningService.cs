@@ -166,48 +166,87 @@ internal static class RuntimeUiPinningService
         string cookerName)
     {
         var hasTarget = enabled || highlightEnabled;
+        var normalizedRecipeId = hasTarget ? recipeId : -1;
+        var normalizedBeverageId = hasTarget ? beverageId : -1;
+        var normalizedCookerTypeId = hasTarget ? cookerTypeId : -1;
         var normalizedIngredientIds = hasTarget
             ? ingredientIds.Where(id => id >= 0).Distinct().Take(12).ToArray()
             : EmptyIngredientIds;
+        var normalizedRecipeName = hasTarget ? recipeName.Trim() : "";
+        var normalizedBeverageName = hasTarget ? beverageName.Trim() : "";
+        var normalizedCookerName = hasTarget ? cookerName.Trim() : "";
 
-        ManualLogSource? log;
-        string logMessage;
-        int publishedCookerTypeId;
-        string publishedCookerName;
+        ManualLogSource? log = null;
+        string logMessage = "";
+        var targetChanged = false;
         lock (SyncRoot)
         {
-            _enabled = enabled;
-            _highlightEnabled = highlightEnabled;
-            _recipeId = hasTarget ? recipeId : -1;
-            _beverageId = hasTarget ? beverageId : -1;
-            _cookerTypeId = hasTarget ? cookerTypeId : -1;
-            _ingredientIds = normalizedIngredientIds;
-            _recipeName = hasTarget ? recipeName.Trim() : "";
-            _beverageName = hasTarget ? beverageName.Trim() : "";
-            _cookerName = hasTarget ? cookerName.Trim() : "";
-            var currentPinningTarget = Volatile.Read(ref _pinningTarget);
-            if (!currentPinningTarget.HasSameValues(enabled, _recipeId, _beverageId, normalizedIngredientIds))
+            if (!HasSamePublishedTargetLocked(
+                    enabled,
+                    highlightEnabled,
+                    normalizedRecipeId,
+                    normalizedBeverageId,
+                    normalizedCookerTypeId,
+                    normalizedIngredientIds,
+                    normalizedRecipeName,
+                    normalizedBeverageName,
+                    normalizedCookerName))
             {
-                Volatile.Write(
-                    ref _pinningTarget,
-                    new PinningTargetSnapshot(
-                        currentPinningTarget.Generation + 1,
-                        enabled,
-                        _recipeId,
-                        _beverageId,
-                        normalizedIngredientIds));
+                _enabled = enabled;
+                _highlightEnabled = highlightEnabled;
+                _recipeId = normalizedRecipeId;
+                _beverageId = normalizedBeverageId;
+                _cookerTypeId = normalizedCookerTypeId;
+                _ingredientIds = normalizedIngredientIds;
+                _recipeName = normalizedRecipeName;
+                _beverageName = normalizedBeverageName;
+                _cookerName = normalizedCookerName;
+                var currentPinningTarget = Volatile.Read(ref _pinningTarget);
+                if (!currentPinningTarget.HasSameValues(enabled, _recipeId, _beverageId, normalizedIngredientIds))
+                {
+                    Volatile.Write(
+                        ref _pinningTarget,
+                        new PinningTargetSnapshot(
+                            currentPinningTarget.Generation + 1,
+                            enabled,
+                            _recipeId,
+                            _beverageId,
+                            normalizedIngredientIds));
+                }
+                log = _log;
+                logMessage = hasTarget
+                    ? $"Runtime UI target updated: pinning={enabled}, cookerHighlight={highlightEnabled}, recipe={_recipeId}/{_recipeName}, beverage={_beverageId}/{_beverageName}, cooker={_cookerTypeId}/{_cookerName}, ingredients={string.Join(",", _ingredientIds)}."
+                    : "Runtime UI target disabled.";
+                targetChanged = true;
             }
-            log = _log;
-            logMessage = hasTarget
-                ? $"Runtime UI target updated: pinning={enabled}, cookerHighlight={highlightEnabled}, recipe={_recipeId}/{_recipeName}, beverage={_beverageId}/{_beverageName}, cooker={_cookerTypeId}/{_cookerName}, ingredients={string.Join(",", _ingredientIds)}."
-                : "Runtime UI target disabled.";
-            publishedCookerTypeId = _cookerTypeId;
-            publishedCookerName = _cookerName;
         }
 
+        if (!targetChanged) return Status;
         log?.LogInfo(logMessage);
-        RuntimeCookerHighlightService.UpdateTarget(highlightEnabled && hasTarget, publishedCookerTypeId, publishedCookerName);
+        RuntimeCookerHighlightService.UpdateTarget(highlightEnabled && hasTarget, normalizedCookerTypeId, normalizedCookerName);
         return Status;
+    }
+
+    private static bool HasSamePublishedTargetLocked(
+        bool enabled,
+        bool highlightEnabled,
+        int recipeId,
+        int beverageId,
+        int cookerTypeId,
+        int[] ingredientIds,
+        string recipeName,
+        string beverageName,
+        string cookerName)
+    {
+        return _enabled == enabled
+            && _highlightEnabled == highlightEnabled
+            && _recipeId == recipeId
+            && _beverageId == beverageId
+            && _cookerTypeId == cookerTypeId
+            && _ingredientIds.SequenceEqual(ingredientIds)
+            && string.Equals(_recipeName, recipeName, StringComparison.Ordinal)
+            && string.Equals(_beverageName, beverageName, StringComparison.Ordinal)
+            && string.Equals(_cookerName, cookerName, StringComparison.Ordinal);
     }
 
     private static void PatchPrefixMethod(

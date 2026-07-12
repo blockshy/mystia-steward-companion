@@ -262,6 +262,7 @@ export interface RuntimeRareCustomer {
  */
 export interface LocalApiSnapshot {
   pluginVersion: string;
+  automationSessionId: string;
   snapshotSignature?: string;
   capturedAtUtc: string;
   activeSceneName: string;
@@ -279,6 +280,7 @@ export interface LocalApiSnapshot {
   normalBusiness?: NormalBusinessContext | null;
   runtimeRareCustomers?: RuntimeRareCustomer[];
   automationEvents?: AutomationRuntimeEvent[];
+  automationCookingJobs: AutomationCookingJobSnapshot[];
   runtimeDataComplete?: boolean;
   runtimeDataSource?: string;
   runtimeDataStatus?: string;
@@ -297,6 +299,13 @@ export interface AutomationRuntimeEvent {
   sequence: number;
   createdAtUtc: string;
   code: 'cooking-mismatch-stored' | 'cooking-tags-unreadable-stored' | 'food-delivered' | string;
+  jobId: string;
+  outcome: AutomationJobOutcome | '';
+  reasonCode: string;
+  terminal: boolean;
+  generation: number;
+  cookerPhase: number;
+  cookerProgress: number;
   traceId?: string;
   targetKind: 'rare' | 'normal' | string;
   orderKey?: string;
@@ -313,6 +322,60 @@ export interface AutomationRuntimeEvent {
   targetFoodTags?: string[];
   actualFoodTags?: string[];
   message?: string;
+}
+
+export interface AutomationSafetyBarrierDiagnostic {
+  sequence: number;
+  targetKind: 'rare' | 'normal' | string;
+  title: string;
+  code: string;
+  message: string;
+  error: string;
+}
+
+export type AutomationJobOutcome =
+  | 'waiting'
+  | 'progressed'
+  | 'completed'
+  | 'interrupted'
+  | 'retryable-failure'
+  | 'blocked'
+  | 'fatal'
+  | 'cancelled';
+
+export interface AutomationCookingJobSnapshot {
+  jobId: string;
+  targetKind: 'rare' | 'normal';
+  traceId: string;
+  orderKey: string;
+  deskCode: number;
+  guestId: number | null;
+  guestName: string;
+  foodId: number;
+  foodName: string;
+  recipeId: number;
+  state: 'cooking' | 'ready' | 'manual-handoff';
+  outcome: AutomationJobOutcome;
+  reasonCode: string;
+  autoDeliverFood: boolean;
+  controllerId: string;
+  resultId: string;
+  generation: number;
+  cookerPhase: number;
+  cookerProgress: number;
+  ownershipObservationFailures: number;
+  regressiveObservations: number;
+  deliveryFailureAttempts: number;
+  manualHandoffReadFailures: number;
+  warmerStoreCommitted: boolean;
+  warmerStoreCommitUncertain: boolean;
+  warmerResetAttempts: number;
+  foodDeliveryCommitted: boolean;
+  foodDeliveryCommitUncertain: boolean;
+  foodDeliveryCleanupAttempts: number;
+  startedAtUtc: string;
+  lastObservedAtUtc: string;
+  lastProgressAtUtc: string;
 }
 
 /**
@@ -387,18 +450,6 @@ export interface LocalApiConnectionConfig {
   error: string | null;
 }
 
-export interface LocalApiHealth {
-  ok: boolean;
-  pluginVersion: string;
-  bindAddress: string;
-  port: number;
-  authRequired: boolean;
-  localEndpoint: string;
-  lanEnabled: boolean;
-  lanRunning: boolean;
-  lanError: string | null;
-}
-
 export interface LocalApiAutomationLease {
   ok: boolean;
   owned: boolean;
@@ -414,6 +465,25 @@ export interface LocalApiAutomationLease {
 
 export interface LocalApiStatusResponse {
   ok: boolean;
+  status: string;
+  error: string | null;
+}
+
+export interface AutomationCancellationResponse {
+  ok: boolean;
+  status: string;
+  error: string | null;
+  commandEpoch: number;
+  cancelledJobs: number;
+  cancelledCommands: number;
+  leaseReleased: boolean;
+}
+
+export interface AutomationSafetyBarrierAckResponse {
+  ok: boolean;
+  sequence: number;
+  acknowledgedCount: number;
+  acknowledgedSequences: number[];
   status: string;
   error: string | null;
 }
@@ -643,6 +713,7 @@ export interface RareAutoOrderDiagnostic {
   hasServedFood: boolean;
   hasServedBeverage: boolean;
   paused: boolean;
+  manualResolutionRequired: boolean;
 }
 
 export interface NormalAutoOrderDiagnostic {
@@ -665,6 +736,7 @@ export interface NormalAutoOrderDiagnostic {
   foodDeliveryRequested: boolean;
   completed: boolean;
   paused: boolean;
+  manualResolutionRequired: boolean;
   hasServedFood: boolean;
   hasServedBeverage: boolean;
   readyToEvaluate: boolean;

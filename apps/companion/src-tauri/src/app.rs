@@ -49,6 +49,8 @@ const CONTROL_MAX_MESSAGE_BYTES: usize = 1024;
 #[cfg(desktop)]
 const CONNECTION_UPDATED_EVENT: &str = "connection-updated";
 #[cfg(desktop)]
+const CONNECTION_ACTIVATED_EVENT: &str = "connection-activation-requested";
+#[cfg(desktop)]
 const WINDOW_STATE_FILE: &str = "window-state.txt";
 #[cfg(desktop)]
 const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray-icon.png");
@@ -534,7 +536,7 @@ fn parse_control_launch_connection(message: &[u8]) -> LaunchConnection {
 
 fn update_launch_connection(
     current: &Arc<Mutex<LaunchConnection>>,
-    next: LaunchConnection,
+    next: &LaunchConnection,
 ) -> bool {
     if next.endpoint.is_none() && next.token.is_none() {
         return false;
@@ -543,14 +545,21 @@ fn update_launch_connection(
     let Ok(mut current_connection) = current.lock() else {
         return false;
     };
-    if let Some(endpoint) = next.endpoint {
-        current_connection.endpoint = Some(endpoint);
+    let mut changed = false;
+    if let Some(endpoint) = next.endpoint.as_ref() {
+        if current_connection.endpoint.as_ref() != Some(endpoint) {
+            current_connection.endpoint = Some(endpoint.clone());
+            changed = true;
+        }
     }
-    if let Some(token) = next.token {
-        current_connection.token = Some(token);
+    if let Some(token) = next.token.as_ref() {
+        if current_connection.token.as_ref() != Some(token) {
+            current_connection.token = Some(token.clone());
+            changed = true;
+        }
     }
 
-    true
+    changed
 }
 
 fn current_launch_connection(current: &Arc<Mutex<LaunchConnection>>) -> LaunchConnection {
@@ -558,6 +567,18 @@ fn current_launch_connection(current: &Arc<Mutex<LaunchConnection>>) -> LaunchCo
         .lock()
         .map(|connection| connection.clone())
         .unwrap_or_default()
+}
+
+#[cfg(desktop)]
+fn should_emit_connection_activation(
+    message: &[u8],
+    connection_changed: bool,
+    next_connection: &LaunchConnection,
+) -> bool {
+    !connection_changed
+        && next_connection.endpoint.is_some()
+        && next_connection.token.is_some()
+        && (message.starts_with(CONTROL_SHOW) || message.starts_with(CONTROL_TOGGLE))
 }
 
 #[cfg(desktop)]
@@ -1024,9 +1045,16 @@ fn start_instance_control_server(
             };
             let message = &buffer[..size];
             update_game_pid(&game_pid, parse_control_game_pid(message));
-            if update_launch_connection(&connection_state, parse_control_launch_connection(message))
-            {
+            let next_connection = parse_control_launch_connection(message);
+            let connection_changed = update_launch_connection(&connection_state, &next_connection);
+            if connection_changed {
                 let _ = app.emit(CONNECTION_UPDATED_EVENT, true);
+            } else if should_emit_connection_activation(
+                message,
+                connection_changed,
+                &next_connection,
+            ) {
+                let _ = app.emit(CONNECTION_ACTIVATED_EVENT, true);
             }
             if message.starts_with(CONTROL_SHOW) {
                 show_main_window(&app, &mouse_passthrough);
@@ -1615,6 +1643,78 @@ mod windows_hotkey {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn launch_connection_updates_only_when_identity_changes() {
+        let current = Arc::new(Mutex::new(LaunchConnection {
+            endpoint: Some("http://127.0.0.1:32145".to_string()),
+            token: Some("stable-token".to_string()),
+        }));
+
+        assert!(!update_launch_connection(
+            &current,
+            &LaunchConnection {
+                endpoint: Some("http://127.0.0.1:32145".to_string()),
+                token: Some("stable-token".to_string()),
+            },
+        ));
+        assert!(!update_launch_connection(
+            &current,
+            &LaunchConnection {
+                endpoint: Some("http://127.0.0.1:32145".to_string()),
+                token: None,
+            },
+        ));
+        assert!(update_launch_connection(
+            &current,
+            &LaunchConnection {
+                endpoint: None,
+                token: Some("next-token".to_string()),
+            },
+        ));
+
+        let updated = current_launch_connection(&current);
+        assert_eq!(updated.endpoint.as_deref(), Some("http://127.0.0.1:32145"));
+        assert_eq!(updated.token.as_deref(), Some("next-token"));
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn identical_show_or_toggle_requests_connection_activation() {
+        let empty = LaunchConnection::default();
+        let endpoint_only = LaunchConnection {
+            endpoint: Some("http://127.0.0.1:32145".to_string()),
+            token: None,
+        };
+        let token_only = LaunchConnection {
+            endpoint: None,
+            token: Some("stable-token".to_string()),
+        };
+        let complete = LaunchConnection {
+            endpoint: Some("http://127.0.0.1:32145".to_string()),
+            token: Some("stable-token".to_string()),
+        };
+
+        assert!(!should_emit_connection_activation(CONTROL_SHOW, false, &empty));
+        assert!(!should_emit_connection_activation(
+            CONTROL_SHOW,
+            false,
+            &endpoint_only,
+        ));
+        assert!(!should_emit_connection_activation(
+            CONTROL_SHOW,
+            false,
+            &token_only,
+        ));
+        assert!(should_emit_connection_activation(CONTROL_SHOW, false, &complete));
+        assert!(should_emit_connection_activation(
+            CONTROL_TOGGLE,
+            false,
+            &complete,
+        ));
+        assert!(!should_emit_connection_activation(CONTROL_SHOW, true, &complete));
+        assert!(!should_emit_connection_activation(CONTROL_EXIT, false, &complete));
+    }
 
     #[test]
     fn parses_loopback_and_private_lan_endpoints() {

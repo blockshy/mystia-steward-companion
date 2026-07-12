@@ -6,10 +6,25 @@ import {
 } from '@/companion/custom-recipe-editor';
 import { WorkbenchHeader } from '@/companion/features/workbench/WorkbenchHeader';
 import { useCompanionConnection } from '@/companion/hooks/useCompanionConnection';
+import {
+  buildAutomationLeaseConnectionKey,
+  isAutomationLeaseOwnedForConnection,
+} from '@/companion/connection-recovery';
 import { useCustomRecipes } from '@/companion/hooks/useCustomRecipes';
 import { useFavorites } from '@/companion/hooks/useFavorites';
 import { useGameUiPinningPublisher } from '@/companion/hooks/useGameUiPinningPublisher';
 import { useOrderAutomationIntervals } from '@/companion/hooks/useOrderAutomationIntervals';
+import {
+  canAdvanceAutomationRuntimeEventSequence,
+  getAutomationStageFailureRetirement,
+  isAutomationResponseCurrent,
+  requiresManualAutomationResolution,
+  resolveAutomationResponseStage,
+  resolveAutomationWaitingStep,
+  selectAutomationRequestStage,
+  shouldRetireMissingManualBarrier,
+  type AutomationRequestStage,
+} from '@/companion/automation-machine';
 import { useOrderRecommendations } from '@/companion/hooks/useOrderRecommendations';
 import { useRareGuestInvitations } from '@/companion/hooks/useRareGuestInvitations';
 import { ModCustomRecipesPanel } from '@/companion/pages/ModCustomRecipesPanel';
@@ -28,18 +43,17 @@ import {
 import { ModSettingsPanel } from '@/companion/pages/ModSettingsPanel';
 import { ModTasksPanel } from '@/companion/pages/ModTasksPanel';
 import {
+  acknowledgeAutomationSafetyBarrier,
   acquireAutomationLease,
   appendAutomationDecisionDiagnostic,
+  cancelAutomationCookingJobs,
   completeFirstNormalOrder,
   completeFirstRareOrder,
   dismissRuntimeRareOrder,
   prepareNextRareOrder,
-  releaseAutomationLease,
 } from '@/companion/api';
 import {
-  didAcknowledgeStep,
   didCookingMismatchStored,
-  didCompleteStep,
   didCompleteStepCode,
   didNormalOrderComplete,
   didNormalOrderCookingStillPending,
@@ -51,17 +65,16 @@ import {
   formatAutomationState,
   isTransientAutoPreparationFailure,
   markAutomationWaiting,
-  pauseAutomationState,
   updateAutomationAfterResponse,
   type AutoFirstOrderState,
   type AutomationStep,
   type NormalAutoOrderState,
+  type OrderPreparationResponse,
   type RareAutomationRecipeTarget,
 } from '@/companion/automation-state';
 import {
   applyRareServedStateFromResponse,
   buildAutoOrderKey,
-  buildCompleteOrderPreferences,
   buildGameUiPinningTarget,
   buildNightBusinessOrderKey,
   buildNormalCookingTargetDecision,
@@ -76,10 +89,6 @@ import {
   getSpecialBusinessRareCookingDeferral,
   hasAutomationActionEnabled,
   hasNormalOrderActionEnabled,
-  isNormalOrderCollected,
-  isNormalOrderPreparedStale,
-  isRareOrderPreparedStale,
-  isRecoverableNormalPausedState,
   lockRareAutomationTargets,
   reconcileRareRecipeTargetForSpecialBusiness,
   reserveAutomationCookerSlot,
@@ -125,6 +134,7 @@ import {
 } from '@/companion/preferences';
 import {
   normalizeRareGuestInvitationLevels,
+  persistAutomationCancellationEndpoint,
   persistCustomRecipeGroupMode,
   persistFocusBeverageLimit,
   persistFocusCompact,
@@ -134,10 +144,14 @@ import {
   readStoredFocusCompact,
   readStoredFocusRecipeLimit,
   readStoredCustomRecipeGroupMode,
+  readStoredAutomationCancellationEndpoint,
   readStoredTab,
 } from '@/companion/storage';
 import type {
+  AutomationSafetyBarrierAckResponse,
+  AutomationSafetyBarrierDiagnostic,
   AutomationRuntimeEvent,
+  AutomationCookingJobSnapshot,
   AutomationCookerCycle,
   CustomRecipeData,
   CustomRecipeGroupMode,
@@ -207,6 +221,17 @@ interface NormalAutomationDecisionDiagnosticInput {
   targetSelection: NormalExecutionTargetSelection;
   requestPreferences: CompanionPreferences;
   flags: NormalAutomationDecisionFlags;
+}
+
+interface AutomationLeaseAcquireEntry {
+  key: string;
+  promise: Promise<LocalApiAutomationLease>;
+}
+
+interface AutomationBarrierAckEntry {
+  key: string;
+  sessionId: string;
+  sequence: number;
 }
 
 function useSignedValue<T>(value: T, signature: string): T {
@@ -685,7 +710,7 @@ function buildNormalAutomationDecisionOrderLine(input: NormalAutomationDecisionD
     `state=${state?.step ?? 'none'}/${state?.prepared ? 1 : 0}/${state?.beverageHandled ? 1 : 0}/${state?.foodDelivered ? 1 : 0}/${state?.completed ? 1 : 0}`,
     `needs=${flags.needsCooking ? 1 : 0}/${flags.needsBeverage ? 1 : 0}/${flags.needsCompletion ? 1 : 0}`,
     `actions=${flags.shouldStartCooking ? 1 : 0}/${flags.shouldHandleBeverage ? 1 : 0}/${flags.shouldCompleteOrder ? 1 : 0}`,
-    `request=${input.requestPreferences.autoNormalStartCooking ? 1 : 0}/${input.requestPreferences.autoNormalTakeBeverage ? 1 : 0}/${input.requestPreferences.autoNormalCollectCooking ? 1 : 0}/${input.requestPreferences.autoNormalDeliverFood ? 1 : 0}/${input.requestPreferences.autoNormalCompleteOrder ? 1 : 0}`,
+    `request=${input.requestPreferences.autoNormalStartCooking ? 1 : 0}/${input.requestPreferences.autoNormalTakeBeverage ? 1 : 0}/${input.requestPreferences.autoNormalDeliverFood ? 1 : 0}/${input.requestPreferences.autoNormalCompleteOrder ? 1 : 0}`,
     `forceKoishi=${flags.forceKoishiFullFeedAutomation ? 1 : 0}`,
     `targetBlockedCooking=${flags.targetBlockedCooking ? 1 : 0}`,
     `target=${formatNormalAutomationTarget(targetSelection.target)}`,
@@ -753,6 +778,7 @@ function buildRareAutomationDiagnosticsSignature(items: readonly RareAutoOrderDi
     item.hasServedFood ? 1 : 0,
     item.hasServedBeverage ? 1 : 0,
     item.paused ? 1 : 0,
+    item.manualResolutionRequired ? 1 : 0,
   ].join('~')).join('|');
 }
 
@@ -777,6 +803,7 @@ function buildNormalAutomationDiagnosticsSignature(items: readonly NormalAutoOrd
     item.foodDeliveryRequested ? 1 : 0,
     item.completed ? 1 : 0,
     item.paused ? 1 : 0,
+    item.manualResolutionRequired ? 1 : 0,
     item.hasServedFood ? 1 : 0,
     item.hasServedBeverage ? 1 : 0,
     item.readyToEvaluate ? 1 : 0,
@@ -793,6 +820,50 @@ function isCookingMismatchStoredEvent(event: AutomationRuntimeEvent): boolean {
 
 function isCookingTagsUnreadableStoredEvent(event: AutomationRuntimeEvent): boolean {
   return event.code === 'cooking-tags-unreadable-stored';
+}
+
+function isRecoverableCookingTerminalEvent(event: AutomationRuntimeEvent): boolean {
+  return event.terminal && event.outcome === 'interrupted';
+}
+
+function isBlockingCookingTerminalEvent(event: AutomationRuntimeEvent): boolean {
+  return event.terminal && (event.outcome === 'blocked' || event.outcome === 'fatal');
+}
+
+function isManualResolutionAutomationEvent(event: AutomationRuntimeEvent): boolean {
+  return event.terminal && requiresManualAutomationResolution(event.reasonCode, [event.code]);
+}
+
+function resolveAutomationEventStage(event: AutomationRuntimeEvent): AutomationStep {
+  const runtimeStage = event.code.startsWith('beverage-')
+    ? 'beverage'
+    : event.code.startsWith('order-')
+      ? 'order'
+      : event.code === 'cooking-start-unowned'
+        ? 'cooking-start'
+        : 'cooking-delivery';
+  return resolveAutomationResponseStage(runtimeStage, 'ensure-cooking');
+}
+
+function isCookingAutomationEvent(event: AutomationRuntimeEvent): boolean {
+  return event.code.startsWith('cooking-') || event.reasonCode.startsWith('cooking-');
+}
+
+function retainAutomationSafetyStates<T extends AutoFirstOrderState | NormalAutoOrderState>(
+  states: Map<string, T>,
+): void {
+  for (const [orderKey, state] of states) {
+    if (!state.manualResolutionRequired) states.delete(orderKey);
+  }
+}
+
+function retainRareManualResolutionDiagnosticItems(
+  states: ReadonlyMap<string, AutoFirstOrderState>,
+  items: Map<string, ValidOrderPreparationSelection>,
+): void {
+  for (const orderKey of items.keys()) {
+    if (!states.get(orderKey)?.manualResolutionRequired) items.delete(orderKey);
+  }
 }
 
 function trimRejectedRecipeKeys(keys: readonly string[]): string[] {
@@ -865,25 +936,152 @@ function enforceAutomationRollbackLimit<T extends AutoFirstOrderState | NormalAu
   return {
     ...state,
     paused: true,
+    pausedStage: state.step,
+    pauseReasonCode: 'rollback-limit-reached',
     step: 'paused',
     stepStartedAtMs: now,
     lastError: state.lastError ? `${state.lastError}；${limitMessage}` : limitMessage,
   };
 }
 
+function recordAutomationTransportFailure<T extends AutoFirstOrderState | NormalAutoOrderState>(
+  state: T,
+  now: number,
+  message: string,
+  requestStage: AutomationStep,
+  stopOnError: boolean,
+  maxStepRetries: number,
+): T {
+  const retryCount = (state.retryStage === requestStage ? state.retryCount : 0) + 1;
+  const paused = stopOnError && retryCount >= maxStepRetries;
+  return {
+    ...state,
+    retryCount,
+    retryStage: requestStage,
+    nextAttemptAtMs: now + 1000,
+    paused,
+    pausedStage: paused ? requestStage : state.pausedStage,
+    pauseReasonCode: paused ? 'transport-failure' : state.pauseReasonCode,
+    step: paused ? 'paused' : requestStage,
+    stepStartedAtMs: paused || state.step !== requestStage ? now : state.stepStartedAtMs,
+    lastError: message,
+  };
+}
+
+function retireDisabledRareAutomationFailure(
+  state: AutoFirstOrderState,
+  order: NightBusinessOrder,
+  preferences: CompanionPreferences,
+  now: number,
+  forceFullFeed = false,
+): AutoFirstOrderState {
+  if (state.manualResolutionRequired) return state;
+  const enabledStages: AutomationStep[] = ['idle', 'match-order', 'done'];
+  if (preferences.autoPrepTakeBeverage || forceFullFeed) enabledStages.push('ensure-beverage');
+  if (preferences.autoPrepStartCooking || forceFullFeed) enabledStages.push('ensure-cooking');
+  if (preferences.autoPrepCollectCooking || forceFullFeed) enabledStages.push('deliver-food');
+  if (preferences.autoPrepCompleteOrder && !forceFullFeed) enabledStages.push('complete-order');
+  const retirement = getAutomationStageFailureRetirement({ ...state, enabledStages });
+  if (!retirement.clearRetry && !retirement.clearPause) return state;
+
+  const nextStep: AutomationStep = (preferences.autoPrepTakeBeverage || forceFullFeed)
+    && !state.beverageHandled
+    && !order.hasServedBeverage
+    ? 'ensure-beverage'
+    : (preferences.autoPrepStartCooking || forceFullFeed) && !state.prepared && !order.hasServedFood
+      ? 'ensure-cooking'
+      : (preferences.autoPrepCollectCooking || forceFullFeed) && state.prepared && !order.hasServedFood
+        ? 'deliver-food'
+        : preferences.autoPrepCompleteOrder && !forceFullFeed
+          ? 'complete-order'
+          : 'idle';
+  return {
+    ...state,
+    retryCount: retirement.clearRetry || retirement.clearPause ? 0 : state.retryCount,
+    retryStage: retirement.clearRetry || retirement.clearPause ? '' : state.retryStage,
+    nextAttemptAtMs: retirement.clearRetry || retirement.clearPause ? 0 : state.nextAttemptAtMs,
+    paused: retirement.clearPause ? false : state.paused,
+    pausedStage: retirement.clearPause ? '' : state.pausedStage,
+    pauseReasonCode: retirement.clearPause ? '' : state.pauseReasonCode,
+    step: retirement.clearPause ? nextStep : state.step,
+    stepStartedAtMs: retirement.clearPause ? now : state.stepStartedAtMs,
+    lastError: retirement.clearPause || retirement.clearRetry ? '' : state.lastError,
+  };
+}
+
+function retireDisabledNormalAutomationFailure(
+  state: NormalAutoOrderState,
+  order: NormalBusinessOrder,
+  preferences: CompanionPreferences,
+  now: number,
+  forceFullFeed = false,
+): NormalAutoOrderState {
+  if (state.manualResolutionRequired) return state;
+  const enabledStages: AutomationStep[] = ['idle', 'match-order', 'done'];
+  if (preferences.autoNormalTakeBeverage || forceFullFeed) enabledStages.push('ensure-beverage');
+  if (preferences.autoNormalStartCooking || forceFullFeed) enabledStages.push('ensure-cooking');
+  if (preferences.autoNormalDeliverFood || forceFullFeed) enabledStages.push('deliver-food');
+  if (preferences.autoNormalCompleteOrder && !forceFullFeed) enabledStages.push('complete-order');
+  const retirement = getAutomationStageFailureRetirement({ ...state, enabledStages });
+  if (!retirement.clearRetry && !retirement.clearPause) return state;
+
+  const nextStep: AutomationStep = (preferences.autoNormalTakeBeverage || forceFullFeed)
+    && !state.beverageHandled
+    && !order.hasServedBeverage
+    ? 'ensure-beverage'
+    : (preferences.autoNormalStartCooking || forceFullFeed) && !state.prepared && !order.hasServedFood
+      ? 'ensure-cooking'
+      : (preferences.autoNormalDeliverFood || forceFullFeed) && state.prepared && !order.hasServedFood
+        ? 'deliver-food'
+        : preferences.autoNormalCompleteOrder && !forceFullFeed
+          && (order.readyToEvaluate
+            || ((state.foodDelivered || order.hasServedFood)
+              && (state.beverageHandled || order.hasServedBeverage)))
+          ? 'complete-order'
+          : 'idle';
+  return {
+    ...state,
+    retryCount: retirement.clearRetry || retirement.clearPause ? 0 : state.retryCount,
+    retryStage: retirement.clearRetry || retirement.clearPause ? '' : state.retryStage,
+    nextAttemptAtMs: retirement.clearRetry || retirement.clearPause ? 0 : state.nextAttemptAtMs,
+    paused: retirement.clearPause ? false : state.paused,
+    pausedStage: retirement.clearPause ? '' : state.pausedStage,
+    pauseReasonCode: retirement.clearPause ? '' : state.pauseReasonCode,
+    step: retirement.clearPause ? nextStep : state.step,
+    stepStartedAtMs: retirement.clearPause ? now : state.stepStartedAtMs,
+    lastError: retirement.clearPause || retirement.clearRetry ? '' : state.lastError,
+  };
+}
+
 function matchesRareAutomationEvent(
   event: AutomationRuntimeEvent,
-  selection: ValidOrderPreparationSelection,
+  item: OrderRecommendation,
   state: AutoFirstOrderState,
 ): boolean {
   if (event.targetKind !== 'rare') return false;
-  const order = selection.item.order;
+  if (state.cookingJobId && event.jobId) return state.cookingJobId === event.jobId;
+  const order = item.order;
   if (event.traceId && order.traceId) return event.traceId === order.traceId;
-  const recipeTarget = state.recipeTarget ?? selection.recipeTarget;
-  if (event.foodId >= 0 && recipeTarget?.foodId !== event.foodId) return false;
+  if (event.foodId >= 0 && state.recipeTarget && state.recipeTarget.foodId !== event.foodId) return false;
   if (event.deskCode >= 0 && order.deskCode !== event.deskCode) return false;
   if (event.guestId != null && order.guestId != null && event.guestId !== order.guestId) return false;
   return true;
+}
+
+function isAutomationLeaseUnavailableResponse(response: OrderPreparationResponse): boolean {
+  return response.automation.reasonCode === 'automation-lease-unavailable'
+    || response.automation.stage === 'lease';
+}
+
+function automationBarrierAckFailure(sequence: number, error: string): AutomationSafetyBarrierAckResponse {
+  return {
+    ok: false,
+    sequence,
+    acknowledgedCount: 0,
+    acknowledgedSequences: [],
+    status: '',
+    error,
+  };
 }
 
 function resetRareOrderStateAfterRuntimeMismatch(
@@ -894,14 +1092,19 @@ function resetRareOrderStateAfterRuntimeMismatch(
   return {
     ...state,
     prepared: false,
-    preparedAtMs: 0,
+    cookingJobId: '',
     paused: false,
     step: 'ensure-cooking',
     stepStartedAtMs: now,
-    lastProgressAtMs: now,
+    lastProgressAtMs: state.lastProgressAtMs,
     retryCount: 0,
+    retryStage: '',
     rollbackCount: state.rollbackCount + 1,
+    nextAttemptAtMs: now + 500,
     lastError: event.message || '非目标成品已放入保温箱，重新制作目标料理。',
+    lastRuntimeEventSequence: event.sequence,
+    pausedStage: '',
+    pauseReasonCode: '',
   };
 }
 
@@ -909,11 +1112,80 @@ function matchesNormalAutomationEvent(event: AutomationRuntimeEvent, order: Norm
   if (event.targetKind !== 'normal') return false;
   if (event.traceId && order.traceId) return event.traceId === order.traceId;
   const orderKey = buildNormalAutoOrderKey(order);
-  if (event.orderKey && event.orderKey === orderKey) return true;
+  if (event.orderKey && orderKey) return event.orderKey === orderKey;
   if (event.foodId >= 0 && order.foodId !== event.foodId) return false;
   if (event.deskCode >= 0 && order.deskCode !== event.deskCode) return false;
   if (event.guestName && order.guestName && event.guestName !== order.guestName) return false;
   return true;
+}
+
+function findRareAutomationCookingJob(
+  jobs: readonly AutomationCookingJobSnapshot[],
+  selection: ValidOrderPreparationSelection,
+  state?: AutoFirstOrderState,
+): AutomationCookingJobSnapshot | null {
+  const order = selection.item.order;
+  if (state?.cookingJobId) {
+    return jobs.find((job) => job.targetKind === 'rare' && job.jobId === state.cookingJobId) ?? null;
+  }
+
+  const recipeTarget = state?.recipeTarget ?? selection.recipeTarget;
+  return jobs.find((job) => {
+    if (job.targetKind !== 'rare') return false;
+    if (job.traceId && order.traceId) return job.traceId === order.traceId;
+    return job.deskCode === order.deskCode
+      && job.foodId === recipeTarget?.foodId
+      && (job.guestId == null || order.guestId == null || job.guestId === order.guestId);
+  }) ?? null;
+}
+
+function findNormalAutomationCookingJob(
+  jobs: readonly AutomationCookingJobSnapshot[],
+  order: NormalBusinessOrder,
+  state?: NormalAutoOrderState,
+): AutomationCookingJobSnapshot | null {
+  if (state?.cookingJobId) {
+    return jobs.find((job) => job.targetKind === 'normal' && job.jobId === state.cookingJobId) ?? null;
+  }
+
+  const orderKey = buildNormalAutoOrderKey(order);
+  return jobs.find((job) => {
+    if (job.targetKind !== 'normal') return false;
+    if (job.traceId && order.traceId) return job.traceId === order.traceId;
+    return Boolean(job.orderKey && job.orderKey === orderKey);
+  }) ?? null;
+}
+
+function reconcileStateWithActiveCookingJob<T extends AutoFirstOrderState | NormalAutoOrderState>(
+  state: T,
+  job: AutomationCookingJobSnapshot,
+  now: number,
+): T {
+  if (state.manualResolutionRequired) {
+    return {
+      ...state,
+      prepared: true,
+    };
+  }
+  const jobChanged = state.cookingJobId !== job.jobId;
+  const provesCookingProgress = state.paused
+    ? state.pausedStage === 'ensure-cooking' && jobChanged
+    : jobChanged;
+  return {
+    ...state,
+    prepared: true,
+    cookingJobId: job.jobId,
+    step: state.paused && !provesCookingProgress ? state.step : 'deliver-food',
+    stepStartedAtMs: jobChanged && (!state.paused || provesCookingProgress) ? now : state.stepStartedAtMs,
+    lastProgressAtMs: jobChanged ? now : state.lastProgressAtMs,
+    retryCount: provesCookingProgress ? 0 : state.retryCount,
+    retryStage: provesCookingProgress ? '' : state.retryStage,
+    nextAttemptAtMs: provesCookingProgress ? 0 : state.nextAttemptAtMs,
+    lastError: provesCookingProgress ? '' : state.lastError,
+    paused: provesCookingProgress ? false : state.paused,
+    pausedStage: provesCookingProgress ? '' : state.pausedStage,
+    pauseReasonCode: provesCookingProgress ? '' : state.pauseReasonCode,
+  };
 }
 
 function resetNormalOrderStateAfterRuntimeMismatch(
@@ -926,8 +1198,7 @@ function resetNormalOrderStateAfterRuntimeMismatch(
     ...state,
     orderKey,
     prepared: false,
-    preparedAtMs: 0,
-    collected: false,
+    cookingJobId: '',
     foodDelivered: false,
     foodDeliveredAtMs: 0,
     completed: false,
@@ -935,10 +1206,15 @@ function resetNormalOrderStateAfterRuntimeMismatch(
     paused: false,
     step: 'ensure-cooking',
     stepStartedAtMs: now,
-    lastProgressAtMs: now,
+    lastProgressAtMs: state.lastProgressAtMs,
     retryCount: 0,
+    retryStage: '',
     rollbackCount: state.rollbackCount + 1,
+    nextAttemptAtMs: now + 500,
     lastError: event.message || '非目标成品已放入保温箱，重新制作目标料理。',
+    lastRuntimeEventSequence: event.sequence,
+    pausedStage: '',
+    pauseReasonCode: '',
   };
 }
 
@@ -947,15 +1223,22 @@ function pauseRareOrderStateAfterRuntimeFailure(
   now: number,
   event: AutomationRuntimeEvent,
 ): AutoFirstOrderState {
+  const manualResolutionRequired = state.manualResolutionRequired || isManualResolutionAutomationEvent(event);
   return {
     ...state,
-    prepared: false,
-    preparedAtMs: 0,
+    prepared: manualResolutionRequired && isCookingAutomationEvent(event) ? true : state.prepared,
+    cookingJobId: manualResolutionRequired ? event.jobId || state.cookingJobId : '',
     paused: true,
+    manualResolutionRequired,
     step: 'paused',
     stepStartedAtMs: now,
     retryCount: 0,
-    lastError: event.message || '无法读取成品 Tag，已暂停自动化。',
+    retryStage: '',
+    nextAttemptAtMs: 0,
+    lastError: event.message || '运行时无法安全确认自动化副作用，已暂停该订单。',
+    lastRuntimeEventSequence: event.sequence,
+    pausedStage: manualResolutionRequired ? resolveAutomationEventStage(event) : state.step,
+    pauseReasonCode: event.reasonCode || event.code,
   };
 }
 
@@ -965,21 +1248,27 @@ function pauseNormalOrderStateAfterRuntimeFailure(
   now: number,
   event: AutomationRuntimeEvent,
 ): NormalAutoOrderState {
+  const manualResolutionRequired = state.manualResolutionRequired || isManualResolutionAutomationEvent(event);
   return {
     ...state,
     orderKey,
-    prepared: false,
-    preparedAtMs: 0,
-    collected: false,
+    prepared: manualResolutionRequired && isCookingAutomationEvent(event) ? true : state.prepared,
+    cookingJobId: manualResolutionRequired ? event.jobId || state.cookingJobId : '',
     foodDelivered: false,
     foodDeliveredAtMs: 0,
     completed: false,
     completedAtMs: 0,
     paused: true,
+    manualResolutionRequired,
     step: 'paused',
     stepStartedAtMs: now,
     retryCount: 0,
-    lastError: event.message || '无法读取成品 Tag，已暂停自动化。',
+    retryStage: '',
+    nextAttemptAtMs: 0,
+    lastError: event.message || '运行时无法安全确认自动化副作用，已暂停该订单。',
+    lastRuntimeEventSequence: event.sequence,
+    pausedStage: manualResolutionRequired ? resolveAutomationEventStage(event) : state.step,
+    pauseReasonCode: event.reasonCode || event.code,
   };
 }
 
@@ -1090,7 +1379,14 @@ export function ModWorkbench() {
   const [serviceView, setServiceView] = useState<ServicePanelView>('recommendations');
   const [serviceRecommendationTab, setServiceRecommendationTab] = useState<ServiceRecommendationTab>('rare');
   const [automationLease, setAutomationLease] = useState<LocalApiAutomationLease | null>(null);
+  const [automationLeaseBindingKey, setAutomationLeaseBindingKey] = useState('');
   const [automationLeaseError, setAutomationLeaseError] = useState('');
+  const [automationBarrierAckBusyKey, setAutomationBarrierAckBusyKey] = useState('');
+  const [automationBarrierAckErrors, setAutomationBarrierAckErrors] = useState<Record<number, string>>({});
+  const [automationCancellationEndpoint, setAutomationCancellationEndpoint] = useState(
+    readStoredAutomationCancellationEndpoint,
+  );
+  const [automationCancellationAttempt, setAutomationCancellationAttempt] = useState(0);
   const [specialBusinessRejectedRecipeKeys, setSpecialBusinessRejectedRecipeKeys] = useState<string[]>([]);
   const specialBusinessRejectedRecipeKeysRef = useRef(new Set<string>());
   // 自动化状态不放入 useState，是为了避免每个轮询 tick 都触发整页重渲染；页面只在诊断摘要变化时更新。
@@ -1101,9 +1397,16 @@ export function ModWorkbench() {
   const normalOrderBusyRef = useRef(false);
   const lastAutoFirstOrderAtRef = useRef(0);
   const lastAutoNormalOrderAtRef = useRef(0);
-  const lastAutomationRuntimeEventSequenceRef = useRef(0);
   const automationCookerCycleRef = useRef<AutomationCookerCycle | null>(null);
   const lastAutomationDecisionDiagnosticSignatureRef = useRef('');
+  const automationRequestEpochRef = useRef(0);
+  const automationLeaseAcquireRef = useRef<AutomationLeaseAcquireEntry | null>(null);
+  const automationLeaseRevalidationRequiredRef = useRef(true);
+  const automationStateSessionIdRef = useRef('');
+  const automationLeaseOwnedRef = useRef(false);
+  const automationBarrierAckRef = useRef<AutomationBarrierAckEntry | null>(null);
+  const previousAutomationRuntimeEnabledRef = useRef(false);
+  const automationRuntimeEnabledRef = useRef(false);
   const automationRefreshTimerRef = useRef<number | null>(null);
   const automationUiVisible = !serviceFocusMode && tab === 'service';
   const automationUiVisibleRef = useRef(automationUiVisible);
@@ -1195,6 +1498,31 @@ export function ModWorkbench() {
     }, 180);
   }, [refresh]);
 
+  const isAutomationRequestCurrent = useCallback((
+    requestEpoch: number,
+    responseStartEventSequence = 0,
+    currentEventSequence = 0,
+  ) => isAutomationResponseCurrent({
+    requestEpoch,
+    currentEpoch: automationRequestEpochRef.current,
+    runtimeEnabled: automationRuntimeEnabledRef.current,
+    responseStartEventSequence,
+    currentEventSequence,
+  }), []);
+
+  const handleAutomationControlPlaneResponse = useCallback((response: OrderPreparationResponse): boolean => {
+    if (!isAutomationLeaseUnavailableResponse(response)) return false;
+    automationRequestEpochRef.current += 1;
+    automationRuntimeEnabledRef.current = false;
+    automationLeaseRevalidationRequiredRef.current = true;
+    setAutomationLease(null);
+    setAutomationLeaseBindingKey('');
+    setAutomationLeaseError(response.error || '自动化控制权已失效，正在重新获取。');
+    lastAutoFirstOrderAtRef.current = 0;
+    lastAutoNormalOrderAtRef.current = 0;
+    return true;
+  }, []);
+
   useEffect(() => () => {
     if (automationRefreshTimerRef.current === null) return;
     window.clearTimeout(automationRefreshTimerRef.current);
@@ -1216,8 +1544,14 @@ export function ModWorkbench() {
   }, []);
 
   const updateCompanionPreferences = useCallback((next: Partial<CompanionPreferences>) => {
+    if (next.automationEnabled === false) {
+      automationRequestEpochRef.current += 1;
+      persistAutomationCancellationEndpoint(normalizedEndpoint);
+      setAutomationCancellationEndpoint(normalizedEndpoint);
+      setAutomationCancellationAttempt(0);
+    }
     setCompanionPreferences((current) => normalizeCompanionPreferences({ ...current, ...next }));
-  }, []);
+  }, [normalizedEndpoint]);
 
   useEffect(() => {
     if (!companionPreferences.showDebugDetails && tab === 'logs') {
@@ -1243,10 +1577,40 @@ export function ModWorkbench() {
 
   const runtime = snapshot?.recommendationState ?? null;
   const connectionReadyForActions = Boolean(apiToken && !connectionPaused && !error && snapshot);
-  const automationLeaseOwned = Boolean(automationLease?.ok && automationLease.owned);
+  if (!connectionReadyForActions) automationLeaseRevalidationRequiredRef.current = true;
+  const automationSessionId = snapshot?.automationSessionId.trim() ?? '';
+  const automationLeaseConnectionKey = buildAutomationLeaseConnectionKey(
+    { endpoint: normalizedEndpoint, apiToken },
+    automationSessionId,
+  );
+  const automationCancellationPending = Boolean(automationCancellationEndpoint);
+  const automationCancellationEndpointMatchesConnection = !automationCancellationPending
+    || automationCancellationEndpoint === normalizedEndpoint;
+  const automationLeaseOwned = isAutomationLeaseOwnedForConnection(
+    automationLease,
+    automationLeaseBindingKey,
+    automationLeaseConnectionKey,
+    automationLeaseRevalidationRequiredRef.current,
+  );
+  automationLeaseOwnedRef.current = automationLeaseOwned;
   const automationRuntimeEnabled = companionPreferences.automationEnabled
     && connectionReadyForActions
-    && automationLeaseOwned;
+    && Boolean(automationSessionId)
+    && automationLeaseOwned
+    && !automationCancellationPending;
+  if (previousAutomationRuntimeEnabledRef.current && !automationRuntimeEnabled) {
+    automationRequestEpochRef.current += 1;
+  }
+  previousAutomationRuntimeEnabledRef.current = automationRuntimeEnabled;
+  automationRuntimeEnabledRef.current = automationRuntimeEnabled;
+  useEffect(() => {
+    if (!automationCancellationPending || automationCancellationEndpointMatchesConnection) return;
+    setAutomationLeaseError(`仍需连接 ${automationCancellationEndpoint} 完成上次关闭自动化的取消确认。`);
+  }, [
+    automationCancellationEndpoint,
+    automationCancellationEndpointMatchesConnection,
+    automationCancellationPending,
+  ]);
   const night = snapshot?.nightBusiness ?? null;
   const detectedPlace = normalizePlace(night?.place);
   const selectedPlace = manualPlace ?? detectedPlace;
@@ -1267,23 +1631,58 @@ export function ModWorkbench() {
     [snapshot?.runtimeRareCustomers],
   );
 
-  useEffect(() => {
-    if (!companionPreferences.automationEnabled || !connectionReadyForActions) {
-      setAutomationLease(null);
-      setAutomationLeaseError('');
-      return undefined;
+  const acquireAutomationLeaseSingleFlight = useCallback((): Promise<LocalApiAutomationLease> => {
+    const key = automationLeaseConnectionKey;
+    if (!key) return Promise.reject(new Error('自动化运行实例尚未就绪。'));
+    const current = automationLeaseAcquireRef.current;
+    if (current?.key === key) return current.promise;
+
+    const promise = current
+      ? current.promise.catch(() => undefined).then(() => acquireAutomationLease(normalizedEndpoint, apiToken))
+      : acquireAutomationLease(normalizedEndpoint, apiToken);
+    const entry: AutomationLeaseAcquireEntry = { key, promise };
+    automationLeaseAcquireRef.current = entry;
+    const clearEntry = () => {
+      if (automationLeaseAcquireRef.current === entry) automationLeaseAcquireRef.current = null;
+    };
+    void promise.then(clearEntry, clearEntry);
+    return promise;
+  }, [apiToken, automationLeaseConnectionKey, normalizedEndpoint]);
+
+  const waitForAutomationLeaseAcquire = useCallback(async (): Promise<void> => {
+    while (automationLeaseAcquireRef.current) {
+      const entry = automationLeaseAcquireRef.current;
+      try {
+        await entry.promise;
+      } catch {
+        // Cancellation still has to run after a failed acquire attempt.
+      }
+      if (automationLeaseAcquireRef.current === entry) return;
     }
+  }, []);
+
+  useEffect(() => {
+    const shouldHoldLease = companionPreferences.automationEnabled || automationCancellationPending;
+    if (!shouldHoldLease
+      || !connectionReadyForActions
+      || !automationLeaseConnectionKey
+      || !automationCancellationEndpointMatchesConnection
+      || (automationCancellationPending && automationLeaseOwned)) return undefined;
 
     let cancelled = false;
     const renewLease = async () => {
       try {
-        const nextLease = await acquireAutomationLease(normalizedEndpoint, apiToken);
+        const nextLease = await acquireAutomationLeaseSingleFlight();
         if (cancelled) return;
+        automationLeaseRevalidationRequiredRef.current = false;
         setAutomationLease(nextLease);
+        setAutomationLeaseBindingKey(nextLease.owned ? automationLeaseConnectionKey : '');
         setAutomationLeaseError(nextLease.owned ? '' : nextLease.error || '自动化控制权当前不可用。');
       } catch (err) {
         if (cancelled) return;
+        automationLeaseRevalidationRequiredRef.current = true;
         setAutomationLease(null);
+        setAutomationLeaseBindingKey('');
         setAutomationLeaseError(err instanceof Error ? err.message : String(err));
       }
     };
@@ -1299,28 +1698,65 @@ export function ModWorkbench() {
     };
   }, [
     apiToken,
+    acquireAutomationLeaseSingleFlight,
+    automationCancellationPending,
+    automationCancellationEndpointMatchesConnection,
+    automationLeaseConnectionKey,
+    automationLeaseOwned,
     companionPreferences.automationEnabled,
     connectionReadyForActions,
     normalizedEndpoint,
   ]);
 
   useEffect(() => {
-    if (companionPreferences.automationEnabled) return;
+    if (!automationCancellationPending
+      || !automationLeaseOwned
+      || !apiToken
+      || !automationCancellationEndpointMatchesConnection
+      || !connectionReadyForActions) return undefined;
 
-    const lease = automationLease;
-    setAutomationLease(null);
-    setAutomationLeaseError('');
-    if (!lease?.owned || !apiToken || connectionPaused) return;
-
-    releaseAutomationLease(normalizedEndpoint, apiToken).catch(() => {
-      // 关闭自动化时释放租约是优化路径；失败后后端 TTL 会自动过期。
-    });
+    let disposed = false;
+    const retryDelayMs = Math.min(5000, automationCancellationAttempt * 1000);
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          await waitForAutomationLeaseAcquire();
+          if (disposed) return;
+          const response = await cancelAutomationCookingJobs(automationCancellationEndpoint, apiToken);
+          if (disposed) return;
+          if (!response.ok || !response.leaseReleased) {
+            setAutomationLease(null);
+            setAutomationLeaseBindingKey('');
+            throw new Error(response.error || 'Mod 未确认自动化取消屏障。');
+          }
+          persistAutomationCancellationEndpoint('');
+          setAutomationCancellationEndpoint('');
+          setAutomationCancellationAttempt(0);
+          setAutomationLease(null);
+          setAutomationLeaseBindingKey('');
+          setAutomationLeaseError('');
+          publishAutoPrepMessage(`自动化\n已取消 ${response.cancelledJobs} 个料理任务和 ${response.cancelledCommands} 个排队命令。`);
+        } catch (err) {
+          if (disposed) return;
+          setAutomationLeaseError(err instanceof Error ? err.message : String(err));
+          setAutomationCancellationAttempt((current) => current + 1);
+        }
+      })();
+    }, retryDelayMs);
+    return () => {
+      disposed = true;
+      window.clearTimeout(timer);
+    };
   }, [
     apiToken,
-    automationLease,
-    companionPreferences.automationEnabled,
-    connectionPaused,
-    normalizedEndpoint,
+    automationCancellationAttempt,
+    automationCancellationEndpoint,
+    automationCancellationEndpointMatchesConnection,
+    automationLeaseOwned,
+    automationCancellationPending,
+    connectionReadyForActions,
+    publishAutoPrepMessage,
+    waitForAutomationLeaseAcquire,
   ]);
 
   useEffect(() => {
@@ -1362,9 +1798,36 @@ export function ModWorkbench() {
 
   const runtimeSets = useMemo(() => buildRuntimeSets(runtime, recommendationData), [recommendationData, runtime]);
   const normalOrderSignature = useMemo(
-    () => buildNormalOrderAutomationSignature(snapshot?.normalBusiness?.orders ?? []),
-    [snapshot?.normalBusiness?.orders],
+    () => `${buildNormalOrderAutomationSignature(snapshot?.normalBusiness?.orders ?? [])}|jobs:${(snapshot?.automationCookingJobs ?? [])
+      .filter((job) => job.targetKind === 'normal')
+      .map((job) => `${job.jobId}:${job.state}:${job.reasonCode}`)
+      .join(',')}`,
+    [snapshot?.automationCookingJobs, snapshot?.normalBusiness?.orders],
   );
+  const automationSafetyBarriers = useMemo<AutomationSafetyBarrierDiagnostic[]>(() => {
+    const latestByTarget = new Map<string, AutomationRuntimeEvent>();
+    for (const event of snapshot?.automationEvents ?? []) {
+      if (!isManualResolutionAutomationEvent(event)) continue;
+      const targetIdentity = event.targetKind === 'normal' && event.orderKey
+        ? `normal:${event.orderKey}`
+        : event.traceId
+          ? `${event.targetKind}:${event.traceId}`
+          : `${event.targetKind}:sequence:${event.sequence}`;
+      const current = latestByTarget.get(targetIdentity);
+      if (!current || current.sequence < event.sequence) latestByTarget.set(targetIdentity, event);
+    }
+
+    return [...latestByTarget.values()]
+      .sort((left, right) => right.sequence - left.sequence)
+      .map((event) => ({
+        sequence: event.sequence,
+        targetKind: event.targetKind,
+        title: `${event.targetKind === 'normal' ? '普客' : '稀客'} · ${event.guestName || '未知客人'}${event.deskCode >= 0 ? ` · 桌 ${formatDesk(event.deskCode)}` : ''}`,
+        code: event.reasonCode || event.code,
+        message: event.message || 'Mod 无法确认自动化副作用，请检查游戏现场。',
+        error: automationBarrierAckErrors[event.sequence] ?? '',
+      }));
+  }, [automationBarrierAckErrors, snapshot?.automationEvents]);
   const specialBusinessFoodTargetSignature = useMemo(
     () => snapshot?.specialBusiness?.foodTargetTags.join('|') ?? '',
     [snapshot?.specialBusiness?.foodTargetTags],
@@ -1554,6 +2017,7 @@ export function ModWorkbench() {
     endpoint: normalizedEndpoint,
     apiToken,
     connectionRevision,
+    sessionId: snapshot?.automationSessionId.trim() ?? '',
     connectionReady: connectionReadyForActions,
     pinningEnabled: companionPreferences.gameUiPinningEnabled,
     cookerHighlightEnabled: companionPreferences.cookerHighlightEnabled,
@@ -1579,6 +2043,50 @@ export function ModWorkbench() {
     publishNormalOrderDiagnostics(diagnostics);
     publishNormalOrderPausedCount(diagnostics.filter((diagnostic) => diagnostic.paused).length);
   }, [publishNormalOrderDiagnostics, publishNormalOrderPausedCount, snapshot?.normalBusiness?.orders]);
+
+  useEffect(() => {
+    if (!automationUiVisible) return;
+    const refreshDiagnosticClock = () => {
+      const diagnosticNow = Date.now();
+      refreshRareOrderDiagnostics(diagnosticNow);
+      refreshNormalOrderDiagnostics(snapshot?.normalBusiness?.orders ?? [], diagnosticNow);
+    };
+    refreshDiagnosticClock();
+    const timer = window.setInterval(refreshDiagnosticClock, 1000);
+    return () => window.clearInterval(timer);
+  }, [
+    automationUiVisible,
+    refreshNormalOrderDiagnostics,
+    refreshRareOrderDiagnostics,
+    snapshot?.normalBusiness?.orders,
+  ]);
+
+  useEffect(() => {
+    if (!automationSessionId) return;
+    const previousSessionId = automationStateSessionIdRef.current;
+    automationStateSessionIdRef.current = automationSessionId;
+    if (!previousSessionId || previousSessionId === automationSessionId) return;
+
+    automationRequestEpochRef.current += 1;
+    automationRuntimeEnabledRef.current = false;
+    rareOrderStatesRef.current.clear();
+    rareOrderDiagnosticItemsRef.current.clear();
+    normalOrderStatesRef.current.clear();
+    automationBarrierAckRef.current = null;
+    setAutomationBarrierAckBusyKey('');
+    setAutomationBarrierAckErrors({});
+    setAutomationLease(null);
+    setAutomationLeaseBindingKey('');
+    lastAutoFirstOrderAtRef.current = 0;
+    lastAutoNormalOrderAtRef.current = 0;
+    refreshRareOrderDiagnostics();
+    refreshNormalOrderDiagnostics(snapshot?.normalBusiness?.orders ?? []);
+  }, [
+    automationSessionId,
+    refreshNormalOrderDiagnostics,
+    refreshRareOrderDiagnostics,
+    snapshot?.normalBusiness?.orders,
+  ]);
 
   const publishRareAutomationDecisionDiagnostic = useCallback((
     eventName: string,
@@ -1695,7 +2203,7 @@ export function ModWorkbench() {
       autoCompleteOrder: input.requestPreferences.autoNormalCompleteOrder,
       autoTakeBeverage: input.requestPreferences.autoNormalTakeBeverage,
       autoStartCooking: input.requestPreferences.autoNormalStartCooking,
-      autoCollectCooking: input.requestPreferences.autoNormalCollectCooking,
+      autoCollectCooking: input.requestPreferences.autoNormalDeliverFood,
       recipeFavoritesOnly: input.requestPreferences.autoPrepRecipeFavoritesOnly,
       beverageFavoritesOnly: input.requestPreferences.autoPrepBeverageFavoritesOnly,
       rareConcurrency: input.requestPreferences.autoRareConcurrency,
@@ -1721,18 +2229,67 @@ export function ModWorkbench() {
   ]);
 
   useEffect(() => {
+    const events = snapshot?.automationEvents;
+    if (!events || !automationSessionId || automationStateSessionIdRef.current !== automationSessionId) return;
+
+    const unresolvedBarrierSequences = new Set(
+      events.filter(isManualResolutionAutomationEvent).map((event) => event.sequence),
+    );
+    const now = Date.now();
+    let rareChanged = false;
+    let normalChanged = false;
+    for (const [orderKey, state] of rareOrderStatesRef.current) {
+      if (!shouldRetireMissingManualBarrier(
+        state.manualResolutionRequired,
+        state.lastRuntimeEventSequence,
+        unresolvedBarrierSequences,
+      )) continue;
+      rareOrderStatesRef.current.set(orderKey, {
+        ...emptyAutoFirstOrderState(orderKey, now),
+        lastRuntimeEventSequence: state.lastRuntimeEventSequence,
+        lastError: '安全栅栏已由其他自动化控制窗口确认，等待下一轮重新判断。',
+      });
+      rareChanged = true;
+    }
+    for (const [orderKey, state] of normalOrderStatesRef.current) {
+      if (!shouldRetireMissingManualBarrier(
+        state.manualResolutionRequired,
+        state.lastRuntimeEventSequence,
+        unresolvedBarrierSequences,
+      )) continue;
+      normalOrderStatesRef.current.set(orderKey, {
+        ...emptyNormalAutoOrderState(orderKey, now),
+        lastRuntimeEventSequence: state.lastRuntimeEventSequence,
+        lastError: '安全栅栏已由其他自动化控制窗口确认，等待下一轮重新判断。',
+      });
+      normalChanged = true;
+    }
+
+    if (rareChanged) {
+      lastAutoFirstOrderAtRef.current = 0;
+      refreshRareOrderDiagnostics(now);
+      publishAutoPrepMessage('自动化\n检测到安全栅栏已由其他控制窗口确认，本地稀客订单状态已重新同步。');
+    }
+    if (normalChanged) {
+      lastAutoNormalOrderAtRef.current = 0;
+      refreshNormalOrderDiagnostics(snapshot?.normalBusiness?.orders ?? [], now);
+      publishNormalOrderMessage('普客自动化\n检测到安全栅栏已由其他控制窗口确认，本地订单状态已重新同步。');
+    }
+  }, [
+    automationSessionId,
+    publishAutoPrepMessage,
+    publishNormalOrderMessage,
+    refreshNormalOrderDiagnostics,
+    refreshRareOrderDiagnostics,
+    snapshot?.automationEvents,
+    snapshot?.normalBusiness?.orders,
+  ]);
+
+  useEffect(() => {
     const events = snapshot?.automationEvents ?? [];
     if (events.length === 0) return;
 
-    const maxSequence = Math.max(...events.map((event) => event.sequence));
-    if (!automationRuntimeEnabled) {
-      lastAutomationRuntimeEventSequenceRef.current = Math.max(lastAutomationRuntimeEventSequenceRef.current, maxSequence);
-      return;
-    }
-
-    const nextEvents = events
-      .filter((event) => event.sequence > lastAutomationRuntimeEventSequenceRef.current)
-      .sort((left, right) => left.sequence - right.sequence);
+    const nextEvents = [...events].sort((left, right) => left.sequence - right.sequence);
     if (nextEvents.length === 0) return;
 
     const now = Date.now();
@@ -1743,9 +2300,13 @@ export function ModWorkbench() {
     const normalOrders = snapshot?.normalBusiness?.orders ?? [];
 
     for (const event of nextEvents) {
-      const tagsUnreadable = isCookingTagsUnreadableStoredEvent(event);
-      if (!isCookingMismatchStoredEvent(event) && !tagsUnreadable) continue;
-      if (!tagsUnreadable && isWackyTargetTagMismatchEvent(event)) {
+      const manualResolutionRequired = isManualResolutionAutomationEvent(event);
+      const blocking = manualResolutionRequired
+        || isBlockingCookingTerminalEvent(event)
+        || isCookingTagsUnreadableStoredEvent(event);
+      const recoverable = isRecoverableCookingTerminalEvent(event) || isCookingMismatchStoredEvent(event);
+      if (!recoverable && !blocking) continue;
+      if (!blocking && isWackyTargetTagMismatchEvent(event)) {
         const rejectedKey = buildWackyRejectedRecipeKeyFromEvent(event);
         if (rejectedKey) {
           rememberSpecialBusinessRejectedRecipeKey(rejectedKey);
@@ -1753,11 +2314,25 @@ export function ModWorkbench() {
       }
 
       if (event.targetKind === 'rare') {
-        for (const [orderKey, selection] of rareOrderDiagnosticItemsRef.current.entries()) {
-          const state = rareOrderStatesRef.current.get(orderKey);
-          if (!state || !matchesRareAutomationEvent(event, selection, state)) continue;
+        if (!orderRecommendations.isCurrent) continue;
+        for (const item of orderRecommendations.recommendations) {
+          const orderKey = buildAutoOrderKey(item);
+          const state = rareOrderStatesRef.current.get(orderKey)
+            ?? emptyAutoFirstOrderState(orderKey, now);
+          if (!matchesRareAutomationEvent(event, item, state)) continue;
+          if (event.sequence <= state.lastRuntimeEventSequence) continue;
+          if (state.manualResolutionRequired) {
+            if (!canAdvanceAutomationRuntimeEventSequence(state.manualResolutionRequired, manualResolutionRequired)) continue;
+            rareOrderStatesRef.current.set(orderKey, {
+              ...state,
+              lastRuntimeEventSequence: event.sequence,
+            });
+            rareChanged = true;
+            rarePaused = true;
+            break;
+          }
 
-          const nextState = tagsUnreadable
+          const nextState = blocking
             ? pauseRareOrderStateAfterRuntimeFailure(state, now, event)
             : enforceAutomationRollbackLimit(
               resetRareOrderStateAfterRuntimeMismatch(state, now, event),
@@ -1766,7 +2341,7 @@ export function ModWorkbench() {
             );
           rareOrderStatesRef.current.set(orderKey, nextState);
           rareChanged = true;
-          rarePaused ||= tagsUnreadable;
+          rarePaused ||= blocking;
           lastAutoFirstOrderAtRef.current = 0;
           break;
         }
@@ -1778,6 +2353,15 @@ export function ModWorkbench() {
         let matchedOrder = matchedKey
           ? normalOrders.find((order) => buildNormalAutoOrderKey(order) === matchedKey) ?? null
           : null;
+        if (matchedKey && matchedOrder && !matchesNormalAutomationEvent(event, matchedOrder)) {
+          matchedKey = '';
+          matchedOrder = null;
+        } else if (matchedKey && !matchedOrder) {
+          const keyedState = normalOrderStatesRef.current.get(matchedKey);
+          if (!event.jobId || keyedState?.cookingJobId !== event.jobId) {
+            matchedKey = '';
+          }
+        }
         if (!matchedKey) {
           for (const order of normalOrders) {
             if (!matchesNormalAutomationEvent(event, order)) continue;
@@ -1790,7 +2374,19 @@ export function ModWorkbench() {
 
         const state = normalOrderStatesRef.current.get(matchedKey)
           ?? emptyNormalAutoOrderState(matchedKey, now);
-        const nextState = tagsUnreadable
+        if (event.jobId && state.cookingJobId && event.jobId !== state.cookingJobId) continue;
+        if (event.sequence <= state.lastRuntimeEventSequence) continue;
+        if (state.manualResolutionRequired) {
+          if (!canAdvanceAutomationRuntimeEventSequence(state.manualResolutionRequired, manualResolutionRequired)) continue;
+          normalOrderStatesRef.current.set(matchedKey, {
+            ...state,
+            lastRuntimeEventSequence: event.sequence,
+          });
+          normalChanged = true;
+          normalPaused = true;
+          continue;
+        }
+        const nextState = blocking
           ? pauseNormalOrderStateAfterRuntimeFailure(state, matchedKey, now, event)
           : enforceAutomationRollbackLimit(
             resetNormalOrderStateAfterRuntimeMismatch(state, matchedKey, now, event),
@@ -1799,39 +2395,37 @@ export function ModWorkbench() {
           );
         normalOrderStatesRef.current.set(matchedKey, nextState);
         normalChanged = true;
-        normalPaused ||= tagsUnreadable;
+        normalPaused ||= blocking;
         lastAutoNormalOrderAtRef.current = 0;
-        if (matchedOrder && matchedOrder.hasEvaluated) {
+        if (matchedOrder && matchedOrder.hasEvaluated && !nextState.manualResolutionRequired) {
           normalOrderStatesRef.current.delete(matchedKey);
         }
       }
     }
 
-    lastAutomationRuntimeEventSequenceRef.current = Math.max(
-      lastAutomationRuntimeEventSequenceRef.current,
-      maxSequence,
-    );
-
     if (rareChanged) {
       refreshRareOrderDiagnostics(now);
       publishAutoPrepMessage(rarePaused
-        ? '自动化\n无法读取成品 Tag，成品已放入保温箱并暂停当前订单自动化。'
-        : '自动化\n非目标成品已放入保温箱，下一轮将重新制作目标料理。');
+        ? '自动化\n料理任务已进入阻塞终态，当前订单自动化已暂停；请展开诊断，并按订单提示重试或确认已处理。'
+        : '自动化\n料理任务被外部操作中断，下一轮将依据订单事实重新调度。');
     }
     if (normalChanged) {
       refreshNormalOrderDiagnostics(normalOrders, now);
       publishNormalOrderMessage(normalPaused
-        ? '普客自动化\n无法读取成品 Tag，成品已放入保温箱并暂停当前订单自动化。'
-        : '普客自动化\n非目标成品已放入保温箱，下一轮将重新制作目标料理。');
+        ? '普客自动化\n料理任务已进入阻塞终态，当前订单自动化已暂停；请展开诊断，并按订单提示重试或确认已处理。'
+        : '普客自动化\n料理任务被外部操作中断，下一轮将依据订单事实重新调度。');
     }
   }, [
-    automationRuntimeEnabled,
     companionPreferences.autoMaxRollbacks,
     publishAutoPrepMessage,
     publishNormalOrderMessage,
     refreshNormalOrderDiagnostics,
     refreshRareOrderDiagnostics,
     rememberSpecialBusinessRejectedRecipeKey,
+    automationSessionId,
+    orderRecommendations.isCurrent,
+    orderRecommendations.recommendations,
+    orderRecommendations.successRevision,
     snapshot?.automationEvents,
     snapshot?.normalBusiness?.orders,
   ]);
@@ -1862,12 +2456,20 @@ export function ModWorkbench() {
     const now = Date.now();
     const state = rareOrderStatesRef.current.get(orderKey);
     if (!state) return;
+    if (state.manualResolutionRequired) {
+      publishAutoPrepMessage('自动化\n该订单存在无法自动确认的游戏副作用，请检查游戏状态后点击“确认已处理”。');
+      return;
+    }
     rareOrderStatesRef.current.set(orderKey, {
       ...state,
       paused: false,
+      pausedStage: '',
+      pauseReasonCode: '',
       step: state.prepared || state.beverageHandled ? 'complete-order' : 'match-order',
       stepStartedAtMs: now,
       retryCount: 0,
+      retryStage: '',
+      nextAttemptAtMs: 0,
       lastError: '已手动重试，等待下一轮自动化继续。',
     });
     lastAutoFirstOrderAtRef.current = 0;
@@ -1875,13 +2477,275 @@ export function ModWorkbench() {
     refreshRareOrderDiagnostics(now);
   }, [publishAutoPrepMessage, refreshRareOrderDiagnostics]);
 
+  const requestAutomationBarrierAck = useCallback(async (
+    busyKey: string,
+    sequence: number,
+  ): Promise<AutomationSafetyBarrierAckResponse> => {
+    const sessionId = automationStateSessionIdRef.current;
+    if (sequence <= 0) {
+      return automationBarrierAckFailure(sequence, '该订单没有可确认的安全栅栏 sequence。');
+    }
+    if (!sessionId || !automationLeaseOwnedRef.current) {
+      return automationBarrierAckFailure(sequence, '当前未持有本游戏实例的自动化控制权，不能确认安全栅栏。');
+    }
+    if (automationBarrierAckRef.current) {
+      return automationBarrierAckFailure(sequence, '另一笔安全栅栏确认正在处理中，请稍后重试。');
+    }
+
+    const entry: AutomationBarrierAckEntry = { key: busyKey, sessionId, sequence };
+    automationBarrierAckRef.current = entry;
+    setAutomationBarrierAckBusyKey(busyKey);
+    setAutomationBarrierAckErrors((current) => {
+      if (!(sequence in current)) return current;
+      const next = { ...current };
+      delete next[sequence];
+      return next;
+    });
+    try {
+      const response = await acknowledgeAutomationSafetyBarrier(normalizedEndpoint, apiToken, sequence);
+      if (automationStateSessionIdRef.current !== sessionId) {
+        return automationBarrierAckFailure(sequence, '游戏自动化实例已切换，旧 sequence 的确认结果已作废。');
+      }
+      if (!response.ok) {
+        return automationBarrierAckFailure(sequence, response.error || 'Mod 未确认安全栅栏 ACK。');
+      }
+      if (response.sequence !== sequence || response.acknowledgedCount <= 0) {
+        return automationBarrierAckFailure(sequence, 'Mod 返回的安全栅栏 ACK 与当前 sequence 不一致。');
+      }
+      if (!response.acknowledgedSequences.includes(sequence)
+        || response.acknowledgedSequences.length !== response.acknowledgedCount) {
+        return automationBarrierAckFailure(sequence, 'Mod 返回的安全栅栏 ACK 序号集合无效。');
+      }
+      return response;
+    } catch (err) {
+      return automationBarrierAckFailure(sequence, err instanceof Error ? err.message : String(err));
+    } finally {
+      if (automationBarrierAckRef.current === entry) {
+        automationBarrierAckRef.current = null;
+        setAutomationBarrierAckBusyKey('');
+      }
+    }
+  }, [apiToken, normalizedEndpoint]);
+
+  const clearAcknowledgedAutomationBarriers = useCallback((
+    acknowledgedSequences: readonly number[],
+    updatedAt: number,
+    status: string,
+  ): { rareChanged: boolean; normalChanged: boolean } => {
+    const acknowledged = new Set(acknowledgedSequences);
+    let rareChanged = false;
+    let normalChanged = false;
+
+    for (const [orderKey, state] of rareOrderStatesRef.current) {
+      if (!state.manualResolutionRequired || !acknowledged.has(state.lastRuntimeEventSequence)) continue;
+      rareOrderStatesRef.current.set(orderKey, {
+        ...emptyAutoFirstOrderState(orderKey, updatedAt),
+        lastRuntimeEventSequence: state.lastRuntimeEventSequence,
+        lastError: status || '已确认游戏状态，等待下一轮重新判断。',
+      });
+      rareChanged = true;
+    }
+    for (const [orderKey, state] of normalOrderStatesRef.current) {
+      if (!state.manualResolutionRequired || !acknowledged.has(state.lastRuntimeEventSequence)) continue;
+      normalOrderStatesRef.current.set(orderKey, {
+        ...emptyNormalAutoOrderState(orderKey, updatedAt),
+        lastRuntimeEventSequence: state.lastRuntimeEventSequence,
+        lastError: status || '已确认游戏状态，等待下一轮重新判断。',
+      });
+      normalChanged = true;
+    }
+    setAutomationBarrierAckErrors((current) => {
+      const next = { ...current };
+      let changed = false;
+      for (const sequence of acknowledged) {
+        if (!(sequence in next)) continue;
+        delete next[sequence];
+        changed = true;
+      }
+      return changed ? next : current;
+    });
+    return { rareChanged, normalChanged };
+  }, []);
+
   const resetRareAutomationOrder = useCallback((orderKey: string) => {
     const now = Date.now();
-    rareOrderStatesRef.current.delete(orderKey);
-    lastAutoFirstOrderAtRef.current = 0;
-    publishAutoPrepMessage('自动化\n已重置该稀客订单状态，下一轮会重新判断料理、酒水和完成状态。');
-    refreshRareOrderDiagnostics(now);
-  }, [publishAutoPrepMessage, refreshRareOrderDiagnostics]);
+    const state = rareOrderStatesRef.current.get(orderKey);
+    if (!state?.manualResolutionRequired) {
+      rareOrderStatesRef.current.delete(orderKey);
+      lastAutoFirstOrderAtRef.current = 0;
+      publishAutoPrepMessage('自动化\n已重置该稀客订单状态，下一轮会重新判断料理、酒水和完成状态。');
+      refreshRareOrderDiagnostics(now);
+      return;
+    }
+
+    const sequence = state.lastRuntimeEventSequence;
+    void (async () => {
+      const response = await requestAutomationBarrierAck(`rare:${orderKey}`, sequence);
+      const updatedAt = Date.now();
+      const current = rareOrderStatesRef.current.get(orderKey);
+      if (!current?.manualResolutionRequired) return;
+      if (!response.ok) {
+        const errorMessage = `确认失败：${response.error || '未知错误'}`;
+        rareOrderStatesRef.current.set(orderKey, withAutomationDetail({
+          ...current,
+          lastError: errorMessage,
+        }, updatedAt, errorMessage));
+        publishAutoPrepMessage(`自动化\n${errorMessage}；安全栅栏仍保持。`);
+        refreshRareOrderDiagnostics(updatedAt);
+        return;
+      }
+      const acknowledged = new Set(response.acknowledgedSequences);
+      const cleared = clearAcknowledgedAutomationBarriers(
+        response.acknowledgedSequences,
+        updatedAt,
+        response.status,
+      );
+      if (cleared.normalChanged) {
+        refreshNormalOrderDiagnostics(snapshot?.normalBusiness?.orders ?? [], updatedAt);
+      }
+      if (!acknowledged.has(current.lastRuntimeEventSequence)) {
+        const errorMessage = `事件 #${sequence} 已确认，但检测到更新的安全栅栏 #${current.lastRuntimeEventSequence}，不会解除当前阻断。`;
+        const latest = rareOrderStatesRef.current.get(orderKey) ?? current;
+        rareOrderStatesRef.current.set(orderKey, withAutomationDetail({
+          ...latest,
+          lastError: errorMessage,
+        }, updatedAt, errorMessage));
+        publishAutoPrepMessage(`自动化\n${errorMessage}`);
+        refreshRareOrderDiagnostics(updatedAt);
+        return;
+      }
+      lastAutoFirstOrderAtRef.current = 0;
+      publishAutoPrepMessage(`自动化\n${response.status || '安全栅栏已确认，下一轮会按游戏当前事实重新判断。'}`);
+      refreshRareOrderDiagnostics(updatedAt);
+      scheduleAutomationRefresh();
+    })();
+  }, [
+    clearAcknowledgedAutomationBarriers,
+    publishAutoPrepMessage,
+    refreshNormalOrderDiagnostics,
+    refreshRareOrderDiagnostics,
+    requestAutomationBarrierAck,
+    scheduleAutomationRefresh,
+    snapshot?.normalBusiness?.orders,
+  ]);
+
+  const retryNormalAutomationOrder = useCallback((orderKey: string) => {
+    const now = Date.now();
+    const state = normalOrderStatesRef.current.get(orderKey);
+    if (!state) return;
+    if (state.manualResolutionRequired) {
+      publishNormalOrderMessage('普客自动化\n该订单存在无法自动确认的游戏副作用，请检查游戏状态后点击“确认已处理”。');
+      return;
+    }
+    normalOrderStatesRef.current.set(orderKey, {
+      ...state,
+      paused: false,
+      pausedStage: '',
+      pauseReasonCode: '',
+      step: state.prepared ? 'deliver-food' : 'match-order',
+      stepStartedAtMs: now,
+      retryCount: 0,
+      retryStage: '',
+      nextAttemptAtMs: 0,
+      lastError: '已手动重试，等待下一轮自动化继续。',
+    });
+    lastAutoNormalOrderAtRef.current = 0;
+    const orders = snapshot?.normalBusiness?.orders ?? [];
+    refreshNormalOrderDiagnostics(orders, now);
+    publishNormalOrderMessage('普客自动化\n已重新启用该普客订单，下一轮会继续处理。');
+  }, [publishNormalOrderMessage, refreshNormalOrderDiagnostics, snapshot?.normalBusiness?.orders]);
+
+  const resetNormalAutomationOrder = useCallback((orderKey: string) => {
+    const now = Date.now();
+    const state = normalOrderStatesRef.current.get(orderKey);
+    if (!state?.manualResolutionRequired) {
+      normalOrderStatesRef.current.delete(orderKey);
+      lastAutoNormalOrderAtRef.current = 0;
+      const orders = snapshot?.normalBusiness?.orders ?? [];
+      refreshNormalOrderDiagnostics(orders, now);
+      publishNormalOrderMessage('普客自动化\n已重置该普客订单状态，下一轮会按游戏当前订单事实重新判断。');
+      return;
+    }
+
+    const sequence = state.lastRuntimeEventSequence;
+    void (async () => {
+      const response = await requestAutomationBarrierAck(`normal:${orderKey}`, sequence);
+      const updatedAt = Date.now();
+      const current = normalOrderStatesRef.current.get(orderKey);
+      if (!current?.manualResolutionRequired) return;
+      const orders = snapshot?.normalBusiness?.orders ?? [];
+      if (!response.ok) {
+        const errorMessage = `确认失败：${response.error || '未知错误'}`;
+        normalOrderStatesRef.current.set(orderKey, withAutomationDetail({
+          ...current,
+          lastError: errorMessage,
+        }, updatedAt, errorMessage));
+        publishNormalOrderMessage(`普客自动化\n${errorMessage}；安全栅栏仍保持。`);
+        refreshNormalOrderDiagnostics(orders, updatedAt);
+        return;
+      }
+      const acknowledged = new Set(response.acknowledgedSequences);
+      const cleared = clearAcknowledgedAutomationBarriers(
+        response.acknowledgedSequences,
+        updatedAt,
+        response.status,
+      );
+      if (cleared.rareChanged) refreshRareOrderDiagnostics(updatedAt);
+      if (!acknowledged.has(current.lastRuntimeEventSequence)) {
+        const errorMessage = `事件 #${sequence} 已确认，但检测到更新的安全栅栏 #${current.lastRuntimeEventSequence}，不会解除当前阻断。`;
+        const latest = normalOrderStatesRef.current.get(orderKey) ?? current;
+        normalOrderStatesRef.current.set(orderKey, withAutomationDetail({
+          ...latest,
+          lastError: errorMessage,
+        }, updatedAt, errorMessage));
+        publishNormalOrderMessage(`普客自动化\n${errorMessage}`);
+        refreshNormalOrderDiagnostics(orders, updatedAt);
+        return;
+      }
+
+      lastAutoNormalOrderAtRef.current = 0;
+      publishNormalOrderMessage(`普客自动化\n${response.status || '安全栅栏已确认，下一轮会按游戏当前订单事实重新判断。'}`);
+      refreshNormalOrderDiagnostics(orders, updatedAt);
+      scheduleAutomationRefresh();
+    })();
+  }, [
+    clearAcknowledgedAutomationBarriers,
+    publishNormalOrderMessage,
+    refreshNormalOrderDiagnostics,
+    refreshRareOrderDiagnostics,
+    requestAutomationBarrierAck,
+    scheduleAutomationRefresh,
+    snapshot?.normalBusiness?.orders,
+  ]);
+
+  const acknowledgeAutomationBarrierEvent = useCallback((sequence: number) => {
+    void (async () => {
+      const response = await requestAutomationBarrierAck(`barrier:${sequence}`, sequence);
+      const updatedAt = Date.now();
+      if (!response.ok) {
+        const errorMessage = response.error || 'Mod 未确认安全栅栏 ACK。';
+        setAutomationBarrierAckErrors((current) => ({ ...current, [sequence]: errorMessage }));
+        publishAutoPrepMessage(`自动化\n确认事件 #${sequence} 失败：${errorMessage}`);
+        return;
+      }
+
+      clearAcknowledgedAutomationBarriers(response.acknowledgedSequences, updatedAt, response.status);
+      lastAutoFirstOrderAtRef.current = 0;
+      lastAutoNormalOrderAtRef.current = 0;
+      refreshRareOrderDiagnostics(updatedAt);
+      refreshNormalOrderDiagnostics(snapshot?.normalBusiness?.orders ?? [], updatedAt);
+      publishAutoPrepMessage(`自动化\n${response.status || `事件 #${sequence} 的安全栅栏已确认。`}`);
+      scheduleAutomationRefresh();
+    })();
+  }, [
+    clearAcknowledgedAutomationBarriers,
+    publishAutoPrepMessage,
+    refreshNormalOrderDiagnostics,
+    refreshRareOrderDiagnostics,
+    requestAutomationBarrierAck,
+    scheduleAutomationRefresh,
+    snapshot?.normalBusiness?.orders,
+  ]);
 
   const dismissRareOrder = useCallback(async (order: NightBusinessOrder) => {
     if (!apiToken) {
@@ -1907,7 +2771,8 @@ export function ModWorkbench() {
   }, [apiToken, normalizedEndpoint, refresh]);
 
   const runAutoFirstOrder = useCallback(async () => {
-    if (!companionPreferences.automationEnabled || autoFirstOrderBusyRef.current) return;
+    if (!automationRuntimeEnabledRef.current || autoFirstOrderBusyRef.current) return;
+    const requestEpoch = automationRequestEpochRef.current;
     const now = Date.now();
     if (now - lastAutoFirstOrderAtRef.current < AUTO_FIRST_ORDER_TICK_MS) return;
     if (!apiToken) {
@@ -1916,10 +2781,9 @@ export function ModWorkbench() {
     }
 
     if (!hasAutomationActionEnabled(companionPreferences)) {
-      rareOrderStatesRef.current.clear();
-      rareOrderDiagnosticItemsRef.current.clear();
-      publishRareOrderDiagnostics([]);
-      publishAutoPrepPaused(false);
+      retainAutomationSafetyStates(rareOrderStatesRef.current);
+      retainRareManualResolutionDiagnosticItems(rareOrderStatesRef.current, rareOrderDiagnosticItemsRef.current);
+      refreshRareOrderDiagnostics(now);
       if (!companionPreferences.autoNormalOrderEnabled || !hasNormalOrderActionEnabled(companionPreferences)) {
         publishAutoPrepMessage('自动化已开启，请在经营中页面启用至少一个子选项。');
       } else {
@@ -1938,9 +2802,7 @@ export function ModWorkbench() {
       return;
     }
 
-    const selectionPreferences = companionPreferences.autoPrepCompleteOrder
-      ? buildCompleteOrderPreferences(companionPreferences)
-      : companionPreferences;
+    const selectionPreferences = companionPreferences;
     const candidateResult = selectOrderPreparationCandidates(
       orderRecommendations.recommendations,
       favorites,
@@ -1950,10 +2812,13 @@ export function ModWorkbench() {
     );
     if (candidateResult.selections.length === 0) {
       publishRareAutomationDecisionDiagnostic('rare-candidate-empty', candidateResult, candidateResult.message, selectionPreferences);
-      rareOrderStatesRef.current.clear();
-      rareOrderDiagnosticItemsRef.current.clear();
-      publishRareOrderDiagnostics([]);
-      publishAutoPrepPaused(false);
+      if ((snapshot?.automationCookingJobs ?? []).some((job) => job.targetKind === 'rare')) {
+        publishAutoPrepMessage(`自动化\n${candidateResult.message}\nMod 中仍有活动料理任务，已保留订单状态并等待快照恢复。`);
+        return;
+      }
+      retainAutomationSafetyStates(rareOrderStatesRef.current);
+      retainRareManualResolutionDiagnosticItems(rareOrderStatesRef.current, rareOrderDiagnosticItemsRef.current);
+      refreshRareOrderDiagnostics(now);
       publishAutoPrepMessage(`自动化\n${candidateResult.message}`);
       return;
     }
@@ -1966,18 +2831,39 @@ export function ModWorkbench() {
       );
     }
 
+    const previousDiagnosticItems = new Map(rareOrderDiagnosticItemsRef.current);
     const activeKeys = new Set(candidateResult.selections.map((selection) => buildAutoOrderKey(selection.item)));
+    for (const [orderKey, selection] of previousDiagnosticItems) {
+      if (rareOrderStatesRef.current.get(orderKey)?.manualResolutionRequired || findRareAutomationCookingJob(
+        snapshot?.automationCookingJobs ?? [],
+        selection,
+        rareOrderStatesRef.current.get(orderKey),
+      )) {
+        activeKeys.add(orderKey);
+      }
+    }
     rareOrderDiagnosticItemsRef.current.clear();
     for (const selection of candidateResult.selections) {
       rareOrderDiagnosticItemsRef.current.set(buildAutoOrderKey(selection.item), selection);
     }
+    for (const [orderKey, selection] of previousDiagnosticItems) {
+      if (activeKeys.has(orderKey) && !rareOrderDiagnosticItemsRef.current.has(orderKey)) {
+        rareOrderDiagnosticItemsRef.current.set(orderKey, selection);
+      }
+    }
     for (const key of Array.from(rareOrderStatesRef.current.keys())) {
-      if (!activeKeys.has(key)) rareOrderStatesRef.current.delete(key);
+      const state = rareOrderStatesRef.current.get(key);
+      if (!activeKeys.has(key) && !state?.manualResolutionRequired) {
+        rareOrderStatesRef.current.delete(key);
+      }
     }
 
     autoFirstOrderBusyRef.current = true;
     lastAutoFirstOrderAtRef.current = now;
     publishAutoPrepBusy(true);
+    let activeRequestSelection: ValidOrderPreparationSelection | null = null;
+    let activeRequestEventSequence = 0;
+    let activeRequestStage: AutomationRequestStage = 'match-order';
     try {
       const globalMessages: string[] = [];
       let updatedOrderDetailCount = 0;
@@ -1996,6 +2882,7 @@ export function ModWorkbench() {
       );
 
       for (const selection of candidateResult.selections) {
+        activeRequestSelection = selection;
         const orderKey = buildAutoOrderKey(selection.item);
         let currentState = rareOrderStatesRef.current.get(orderKey) ?? emptyAutoFirstOrderState(orderKey, now);
         currentState = lockRareAutomationTargets(currentState, selection);
@@ -2010,63 +2897,105 @@ export function ModWorkbench() {
         currentState = targetReconciliation.state;
         const targetReconciliationMessage = targetReconciliation.message;
         currentState = syncRareStateWithOrderServedState(currentState, selection.item.order, now);
-        if (isRareOrderPreparedStale(currentState, now, companionPreferences)) {
-          currentState = {
-            ...currentState,
-            prepared: false,
-            preparedAtMs: 0,
-            step: 'ensure-cooking',
-            stepStartedAtMs: now,
-            lastProgressAtMs: now,
-            retryCount: 0,
-            rollbackCount: currentState.rollbackCount + 1,
-            lastError: '目标料理长时间未直接送达，已自动恢复并重新确认料理制作状态。',
-          };
+        const forceKoishiFullFeedAutomation = isWackyKoishiBossFullFeedContext(
+          snapshot?.specialBusiness,
+          selection.item.order.specialBusinessRole,
+        );
+        currentState = retireDisabledRareAutomationFailure(
+          currentState,
+          selection.item.order,
+          companionPreferences,
+          now,
+          forceKoishiFullFeedAutomation,
+        );
+        const activeCookingJob = findRareAutomationCookingJob(
+          snapshot?.automationCookingJobs ?? [],
+          selection,
+          currentState,
+        );
+        if (activeCookingJob && !selection.item.order.hasServedFood) {
+          currentState = reconcileStateWithActiveCookingJob(currentState, activeCookingJob, now);
         }
         currentState = enforceAutomationRollbackLimit(
           currentState,
           companionPreferences.autoMaxRollbacks,
           now,
         );
+        activeRequestEventSequence = currentState.lastRuntimeEventSequence;
+        rareOrderStatesRef.current.set(orderKey, currentState);
         if (currentState.paused) {
           rareOrderStatesRef.current.set(orderKey, withAutomationDetail(
             currentState,
             now,
             targetReconciliationMessage,
             formatAutomationState(currentState, companionPreferences),
-            '稀客自动化已暂停该订单，订单变化或重新开启后会继续。',
+            currentState.manualResolutionRequired
+              ? '游戏副作用无法自动确认；请核对料理、托盘、保温箱和订单后点击“确认已处理”。'
+              : '稀客自动化已暂停该订单，订单事实变化或手动重试后会继续。',
+          ));
+          updatedOrderDetailCount += 1;
+          continue;
+        }
+        if (currentState.nextAttemptAtMs > now) {
+          rareOrderStatesRef.current.set(orderKey, withAutomationDetail(
+            currentState,
+            now,
+            targetReconciliationMessage,
+            `当前阶段将在 ${Math.max(1, Math.ceil((currentState.nextAttemptAtMs - now) / 1000))} 秒后重试。`,
           ));
           updatedOrderDetailCount += 1;
           continue;
         }
 
-        const forceKoishiFullFeedAutomation = isWackyKoishiBossFullFeedContext(
-          snapshot?.specialBusiness,
-          selection.item.order.specialBusinessRole,
-        );
         let preflightMessage = '';
+        let preflightResponseStep: AutomationRequestStage | null = null;
         if (!forceKoishiFullFeedAutomation && companionPreferences.autoPrepCompleteOrder) {
+          activeRequestEventSequence = currentState.lastRuntimeEventSequence;
+          activeRequestStage = selectAutomationRequestStage({
+            needsBeverage: companionPreferences.autoPrepTakeBeverage
+              && !currentState.beverageHandled
+              && !selection.item.order.hasServedBeverage,
+            needsCooking: false,
+            needsDelivery: false,
+            needsCompletion: true,
+          });
           const completeResponse = await completeFirstRareOrder(
             normalizedEndpoint,
             apiToken,
             selection.item,
             currentState.recipeTarget,
             currentState.beverageTarget,
-            buildCompleteOrderPreferences(companionPreferences),
+            companionPreferences,
           );
+          const completeResponseAt = Date.now();
+          if (!isAutomationRequestCurrent(requestEpoch)) return;
+          if (handleAutomationControlPlaneResponse(completeResponse)) return;
+          preflightResponseStep = resolveAutomationResponseStage(
+            completeResponse.automation.stage,
+            activeRequestStage,
+          );
+          const stateAfterCompleteRequest = rareOrderStatesRef.current.get(orderKey);
+          if (!isAutomationRequestCurrent(
+            requestEpoch,
+            activeRequestEventSequence,
+            stateAfterCompleteRequest?.lastRuntimeEventSequence ?? 0,
+          )) {
+            continue;
+          }
 
           if (completeResponse.completedOrder) {
             rareOrderStatesRef.current.set(orderKey, withAutomationDetail(
               {
                 ...currentState,
                 step: 'done',
-                stepStartedAtMs: now,
-                lastProgressAtMs: now,
+                stepStartedAtMs: completeResponseAt,
+                lastProgressAtMs: completeResponseAt,
                 retryCount: 0,
+                retryStage: '',
                 lastError: '',
                 paused: false,
               },
-              now,
+              completeResponseAt,
               targetReconciliationMessage,
               formatOrderPreparationResponse(completeResponse),
             ));
@@ -2074,12 +3003,17 @@ export function ModWorkbench() {
             continue;
           }
 
-          currentState = applyRareServedStateFromResponse(currentState, selection.item.order, completeResponse, now);
+          currentState = applyRareServedStateFromResponse(
+            currentState,
+            selection.item.order,
+            completeResponse,
+            completeResponseAt,
+          );
           const nextState = updateAutomationAfterResponse(
             currentState,
             completeResponse,
-            now,
-            'complete-order',
+            completeResponseAt,
+            activeRequestStage,
             companionPreferences.autoPrepStopOnError,
             companionPreferences.autoMaxStepRetries,
           );
@@ -2092,7 +3026,20 @@ export function ModWorkbench() {
               targetReconciliationMessage,
               preflightMessage,
               formatAutomationState(currentState, companionPreferences),
-              '稀客自动化已暂停该订单，订单变化或重新开启后会继续。',
+              currentState.manualResolutionRequired
+                ? '游戏副作用无法自动确认；请核对料理、托盘、保温箱和订单后点击“确认已处理”。'
+                : '稀客自动化已暂停该订单，订单事实变化或手动重试后会继续。',
+            ));
+            updatedOrderDetailCount += 1;
+            continue;
+          }
+          if (currentState.nextAttemptAtMs > completeResponseAt) {
+            rareOrderStatesRef.current.set(orderKey, withAutomationDetail(
+              currentState,
+              completeResponseAt,
+              targetReconciliationMessage,
+              preflightMessage,
+              `当前阶段将在 ${Math.max(1, Math.ceil((currentState.nextAttemptAtMs - completeResponseAt) / 1000))} 秒后重试。`,
             ));
             updatedOrderDetailCount += 1;
             continue;
@@ -2147,12 +3094,15 @@ export function ModWorkbench() {
         }
 
         if (!shouldPrepareFood && !shouldPrepareBeverage) {
+          const waitingAt = Date.now();
           const waitingState = markAutomationWaiting(
             currentState,
-            schedulerNote.ok
-              ? companionPreferences.autoPrepCompleteOrder ? 'complete-order' : 'idle'
-              : 'ensure-cooking',
-            now,
+            resolveAutomationWaitingStep({
+              schedulerAvailable: schedulerNote.ok,
+              authoritativeResponseStep: preflightResponseStep,
+              completionEnabled: companionPreferences.autoPrepCompleteOrder,
+            }),
+            waitingAt,
             !schedulerNote.ok
               ? schedulerNote.message
               : cookingDeferralNote
@@ -2165,7 +3115,7 @@ export function ModWorkbench() {
           );
           rareOrderStatesRef.current.set(orderKey, withAutomationDetail(
             waitingState,
-            now,
+            waitingAt,
             targetReconciliationMessage,
             preflightMessage,
             formatAutomationState(waitingState, companionPreferences),
@@ -2178,12 +3128,20 @@ export function ModWorkbench() {
           ...companionPreferences,
           autoPrepTakeBeverage: shouldPrepareBeverage,
           autoPrepStartCooking: shouldPrepareFood,
-          autoPrepCollectCooking: true,
+          autoPrepCollectCooking: forceKoishiFullFeedAutomation
+            || companionPreferences.autoPrepCollectCooking,
           autoPrepCompleteOrder: forceKoishiFullFeedAutomation
             ? false
             : companionPreferences.autoPrepCompleteOrder,
         };
 
+        activeRequestEventSequence = currentState.lastRuntimeEventSequence;
+        activeRequestStage = selectAutomationRequestStage({
+          needsBeverage: shouldPrepareBeverage,
+          needsCooking: shouldPrepareFood,
+          needsDelivery: false,
+          needsCompletion: false,
+        });
         const prepareResponse = await prepareNextRareOrder(
           normalizedEndpoint,
           apiToken,
@@ -2192,72 +3150,125 @@ export function ModWorkbench() {
           shouldPrepareBeverage ? currentState.beverageTarget : null,
           preparePreferences,
         );
+        const prepareResponseAt = Date.now();
+        if (!isAutomationRequestCurrent(requestEpoch)) return;
+        if (handleAutomationControlPlaneResponse(prepareResponse)) return;
+        const stateAfterPrepareRequest = rareOrderStatesRef.current.get(orderKey);
+        if (!isAutomationRequestCurrent(
+          requestEpoch,
+          activeRequestEventSequence,
+          stateAfterPrepareRequest?.lastRuntimeEventSequence ?? 0,
+        )) {
+          continue;
+        }
 
-        const stateAfterPrepareDelivery = applyRareServedStateFromResponse(currentState, selection.item.order, prepareResponse, now);
-        const pendingRareCooking = didOrderCookingStillPending(prepareResponse, '自动开始料理');
-        const startedRareCooking = didCompleteStepCode(prepareResponse, 'cooking-started')
-          || didCompleteStep(prepareResponse, '自动开始料理');
+        const stateAfterPrepareDelivery = applyRareServedStateFromResponse(
+          currentState,
+          selection.item.order,
+          prepareResponse,
+          prepareResponseAt,
+        );
+        const pendingRareCooking = didOrderCookingStillPending(prepareResponse);
+        const startedRareCooking = didCompleteStepCode(prepareResponse, 'cooking-started');
         const cookingMismatchStored = didCookingMismatchStored(prepareResponse);
-        const nextPrepared = !cookingMismatchStored && (stateAfterPrepareDelivery.prepared
-          || startedRareCooking
-          || pendingRareCooking);
+        const cookingInterrupted = prepareResponse.automation.outcome === 'interrupted'
+          || prepareResponse.automation.outcome === 'blocked'
+          || prepareResponse.automation.outcome === 'fatal';
+        const responseStage = resolveAutomationResponseStage(
+          prepareResponse.automation.stage,
+          activeRequestStage,
+        );
+        const manualCookingResolution = requiresManualAutomationResolution(
+          prepareResponse.automation.reasonCode,
+          prepareResponse.steps.map((step) => step.code ?? ''),
+        ) && (responseStage === 'ensure-cooking' || responseStage === 'deliver-food');
+        const nextPrepared = manualCookingResolution
+          || (!cookingMismatchStored && !cookingInterrupted && (stateAfterPrepareDelivery.prepared
+            || startedRareCooking
+            || pendingRareCooking));
         const nextBeverageHandled = stateAfterPrepareDelivery.beverageHandled
           || didCompleteStepCode(prepareResponse, 'beverage-delivered')
-          || didCompleteStep(prepareResponse, '自动送达酒水');
+          || Boolean(prepareResponse.servedBeverage);
         const transientFailure = !prepareResponse.ok && isTransientAutoPreparationFailure(prepareResponse);
-        const preparedAtMs = cookingMismatchStored
-          ? 0
-          : startedRareCooking || pendingRareCooking || (nextPrepared && !currentState.prepared) ? now : currentState.preparedAtMs;
-        const beverageHandledAtMs = nextBeverageHandled && !currentState.beverageHandled ? now : currentState.beverageHandledAtMs;
-        const rollbackCount = cookingMismatchStored
-          ? currentState.rollbackCount
-          : startedRareCooking || pendingRareCooking ? 0 : currentState.rollbackCount;
+        const beverageHandledAtMs = nextBeverageHandled && !currentState.beverageHandled
+          ? prepareResponseAt
+          : currentState.beverageHandledAtMs;
+        const rollbackCount = currentState.rollbackCount;
         const nextState = enforceAutomationRollbackLimit(
           updateAutomationAfterResponse(
             {
               ...currentState,
               orderKey,
               prepared: nextPrepared,
-              preparedAtMs,
+              cookingJobId: nextPrepared
+                ? prepareResponse.automation.jobId || currentState.cookingJobId
+                : '',
               beverageHandled: nextBeverageHandled,
               beverageHandledAtMs,
               rollbackCount,
             },
             prepareResponse,
-            now,
-            shouldPrepareFood ? 'ensure-cooking' : shouldPrepareBeverage ? 'ensure-beverage' : 'match-order',
+            prepareResponseAt,
+            prepareResponse.automation.outcome === 'retryable-failure'
+              || prepareResponse.automation.outcome === 'interrupted'
+              || prepareResponse.automation.outcome === 'blocked'
+              || prepareResponse.automation.outcome === 'fatal'
+              ? activeRequestStage
+              : shouldPrepareFood
+                ? 'ensure-cooking'
+                : shouldPrepareBeverage
+                  ? 'ensure-beverage'
+                  : 'match-order',
             companionPreferences.autoPrepStopOnError,
             companionPreferences.autoMaxStepRetries,
           ),
           companionPreferences.autoMaxRollbacks,
-          now,
+          prepareResponseAt,
         );
         let finalState = nextState;
+        let finalStateUpdatedAt = prepareResponseAt;
         let followUpMessage = '';
         if (!forceKoishiFullFeedAutomation
           && companionPreferences.autoPrepCompleteOrder
           && nextBeverageHandled
-          && !currentState.beverageHandled) {
+          && !currentState.beverageHandled
+          && !finalState.paused
+          && finalState.nextAttemptAtMs <= prepareResponseAt) {
+          activeRequestEventSequence = finalState.lastRuntimeEventSequence;
+          activeRequestStage = 'complete-order';
           const immediateCompleteResponse = await completeFirstRareOrder(
             normalizedEndpoint,
             apiToken,
             selection.item,
             finalState.recipeTarget,
             finalState.beverageTarget,
-            buildCompleteOrderPreferences(companionPreferences),
+            companionPreferences,
           );
+          const immediateCompleteResponseAt = Date.now();
+          finalStateUpdatedAt = immediateCompleteResponseAt;
+          if (!isAutomationRequestCurrent(requestEpoch)) return;
+          if (handleAutomationControlPlaneResponse(immediateCompleteResponse)) return;
+          const stateAfterImmediateComplete = rareOrderStatesRef.current.get(orderKey);
+          if (!isAutomationRequestCurrent(
+            requestEpoch,
+            activeRequestEventSequence,
+            stateAfterImmediateComplete?.lastRuntimeEventSequence ?? 0,
+          )) {
+            continue;
+          }
           if (immediateCompleteResponse.completedOrder) {
             rareOrderStatesRef.current.set(orderKey, withAutomationDetail(
               {
                 ...finalState,
                 step: 'done',
-                stepStartedAtMs: now,
-                lastProgressAtMs: now,
+                stepStartedAtMs: immediateCompleteResponseAt,
+                lastProgressAtMs: immediateCompleteResponseAt,
                 retryCount: 0,
+                retryStage: '',
                 lastError: '',
                 paused: false,
               },
-              now,
+              immediateCompleteResponseAt,
               targetReconciliationMessage,
               preflightMessage,
               formatOrderPreparationResponse(prepareResponse),
@@ -2267,19 +3278,38 @@ export function ModWorkbench() {
             continue;
           }
 
-          finalState = applyRareServedStateFromResponse(finalState, selection.item.order, immediateCompleteResponse, now);
+          finalState = applyRareServedStateFromResponse(
+            finalState,
+            selection.item.order,
+            immediateCompleteResponse,
+            immediateCompleteResponseAt,
+          );
+          finalState = enforceAutomationRollbackLimit(
+            updateAutomationAfterResponse(
+              finalState,
+              immediateCompleteResponse,
+              immediateCompleteResponseAt,
+              'complete-order',
+              companionPreferences.autoPrepStopOnError,
+              companionPreferences.autoMaxStepRetries,
+            ),
+            companionPreferences.autoMaxRollbacks,
+            immediateCompleteResponseAt,
+          );
           followUpMessage = formatOrderPreparationResponse(immediateCompleteResponse);
         }
 
         const suffix = finalState.paused
-          ? '稀客自动化已暂停该订单，订单变化或重新开启后会继续。'
+          ? finalState.manualResolutionRequired
+            ? '游戏副作用无法自动确认；请核对料理、托盘、保温箱和订单后点击“确认已处理”。'
+            : '稀客自动化已暂停该订单，订单事实变化或手动重试后会继续。'
           : transientFailure
             ? '当前条件暂不可执行，将继续等待并自动重试。'
             : '';
         const schedulerSuffix = schedulerNote.ok ? '' : schedulerNote.message;
         rareOrderStatesRef.current.set(orderKey, withAutomationDetail(
           finalState,
-          now,
+          finalStateUpdatedAt,
           targetReconciliationMessage,
           preflightMessage,
           formatOrderPreparationResponse(prepareResponse),
@@ -2295,7 +3325,7 @@ export function ModWorkbench() {
         globalMessages.push(...candidateResult.messages.map((message) => `跳过\n${message}`));
       }
 
-      refreshRareOrderDiagnostics(now);
+      refreshRareOrderDiagnostics(Date.now());
       publishAutoPrepMessage(updatedOrderDetailCount > 0 || globalMessages.length > 0
         ? `自动化\n${[
           updatedOrderDetailCount > 0 ? `已更新 ${updatedOrderDetailCount} 笔订单详情，可展开对应订单查看。` : '',
@@ -2304,25 +3334,39 @@ export function ModWorkbench() {
         : '自动化\n当前没有需要执行的新步骤。');
       scheduleAutomationRefresh();
     } catch (err) {
+      const failureAt = Date.now();
       const message = err instanceof Error ? err.message : String(err);
-      if (companionPreferences.autoPrepStopOnError) {
-        for (const selection of candidateResult.selections) {
-          const orderKey = buildAutoOrderKey(selection.item);
-          const state = rareOrderStatesRef.current.get(orderKey) ?? emptyAutoFirstOrderState(orderKey, now);
-          rareOrderStatesRef.current.set(orderKey, withAutomationDetail(
-            pauseAutomationState(state, now, message),
-            now,
-            message,
-            '稀客自动化已暂停，订单变化或重新开启后会继续。',
-          ));
+      if (!isAutomationRequestCurrent(requestEpoch)) return;
+      let pausedCount = 0;
+      const failedSelections = activeRequestSelection ? [activeRequestSelection] : [];
+      for (const selection of failedSelections) {
+        const orderKey = buildAutoOrderKey(selection.item);
+        const state = rareOrderStatesRef.current.get(orderKey) ?? emptyAutoFirstOrderState(orderKey, failureAt);
+        if (!isAutomationRequestCurrent(
+          requestEpoch,
+          activeRequestEventSequence,
+          state.lastRuntimeEventSequence,
+        )) {
+          return;
         }
-        refreshRareOrderDiagnostics(now);
-        publishAutoPrepMessage(`自动化\n${message}\n稀客自动化已暂停，订单变化或重新开启后会继续。`);
-      } else {
-        publishAutoPrepPaused(false);
-        refreshRareOrderDiagnostics(now);
-        publishAutoPrepMessage(`自动化\n${message}`);
+        const failedState = recordAutomationTransportFailure(
+          state,
+          failureAt,
+          message,
+          activeRequestStage,
+          companionPreferences.autoPrepStopOnError,
+          companionPreferences.autoMaxStepRetries,
+        );
+        if (failedState.paused) pausedCount += 1;
+        rareOrderStatesRef.current.set(orderKey, withAutomationDetail(
+          failedState,
+          failureAt,
+          message,
+          failedState.paused ? '本阶段网络请求达到重试上限，当前订单已暂停。' : '本阶段网络请求失败，将按下一轮调度重试。',
+        ));
       }
+      refreshRareOrderDiagnostics(failureAt);
+      publishAutoPrepMessage(`自动化\n${message}\n${pausedCount > 0 ? `达到重试上限并暂停 ${pausedCount} 笔订单。` : '请求失败，将自动重试。'}`);
     } finally {
       autoFirstOrderBusyRef.current = false;
       publishAutoPrepBusy(false);
@@ -2339,26 +3383,29 @@ export function ModWorkbench() {
     orderRecommendations.recommendations,
     publishAutoPrepBusy,
     publishAutoPrepMessage,
-    publishAutoPrepPaused,
     publishRareAutomationDecisionDiagnostic,
-    publishRareOrderDiagnostics,
     recommendationData,
     refreshRareOrderDiagnostics,
     scheduleAutomationRefresh,
     getAutomationCookerCycle,
+    handleAutomationControlPlaneResponse,
+    isAutomationRequestCurrent,
     runtime,
     snapshot?.specialBusiness,
+    snapshot?.automationCookingJobs,
     snapshot?.normalBusiness?.orders,
   ]);
 
   const runAutoNormalOrder = useCallback(async () => {
-    if (!companionPreferences.automationEnabled || !companionPreferences.autoNormalOrderEnabled || normalOrderBusyRef.current) return;
+    if (!automationRuntimeEnabledRef.current
+      || !companionPreferences.autoNormalOrderEnabled
+      || normalOrderBusyRef.current) return;
+    const requestEpoch = automationRequestEpochRef.current;
     const now = Date.now();
     if (now - lastAutoNormalOrderAtRef.current < AUTO_NORMAL_ORDER_TICK_MS) return;
     if (!hasNormalOrderActionEnabled(companionPreferences)) {
-      normalOrderStatesRef.current.clear();
-      publishNormalOrderDiagnostics([]);
-      publishNormalOrderPausedCount(0);
+      retainAutomationSafetyStates(normalOrderStatesRef.current);
+      refreshNormalOrderDiagnostics(snapshot?.normalBusiness?.orders ?? [], now);
       publishNormalOrderMessage('普客自动化已开启，请至少启用一个处理阶段：送达酒水、自动制作料理、送达料理或完成订单。');
       return;
     }
@@ -2371,10 +3418,17 @@ export function ModWorkbench() {
     const orders = sortNormalOrders(snapshot?.normalBusiness?.orders ?? []).filter((item) => !item.hasEvaluated);
     const activeKeys = new Set(orders.map(buildNormalAutoOrderKey));
     for (const key of Array.from(normalOrderStatesRef.current.keys())) {
-      if (!activeKeys.has(key)) normalOrderStatesRef.current.delete(key);
+      const state = normalOrderStatesRef.current.get(key);
+      if (!activeKeys.has(key) && !state?.manualResolutionRequired) {
+        normalOrderStatesRef.current.delete(key);
+      }
     }
     for (const order of orders) {
       const orderKey = buildNormalAutoOrderKey(order);
+      const forceKoishiFullFeedAutomation = isWackyKoishiBossFullFeedContext(
+        snapshot?.specialBusiness,
+        order.specialBusinessRole,
+      );
       const syncedState = syncNormalOrderStateWithSnapshot(
         order,
         normalOrderStatesRef.current.get(orderKey),
@@ -2384,16 +3438,25 @@ export function ModWorkbench() {
       if (syncedState) {
         normalOrderStatesRef.current.set(
           orderKey,
-          enforceAutomationRollbackLimit(syncedState, companionPreferences.autoMaxRollbacks, now),
+          enforceAutomationRollbackLimit(
+            retireDisabledNormalAutomationFailure(
+              syncedState,
+              order,
+              companionPreferences,
+              now,
+              forceKoishiFullFeedAutomation,
+            ),
+            companionPreferences.autoMaxRollbacks,
+            now,
+          ),
         );
       }
     }
     refreshNormalOrderDiagnostics(orders, now);
 
     if (orders.length === 0) {
-      normalOrderStatesRef.current.clear();
-      publishNormalOrderDiagnostics([]);
-      publishNormalOrderPausedCount(0);
+      retainAutomationSafetyStates(normalOrderStatesRef.current);
+      refreshNormalOrderDiagnostics([], now);
       publishNormalOrderMessage('普客自动化\n当前没有可处理的普客订单。');
       lastAutoNormalOrderAtRef.current = now;
       return;
@@ -2432,12 +3495,34 @@ export function ModWorkbench() {
     for (const order of automationOrders) {
       if (order.canAutomate === false) continue;
 
-      const state = normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order));
-      if (state?.paused) continue;
+      const orderKey = buildNormalAutoOrderKey(order);
+      const storedState = normalOrderStatesRef.current.get(orderKey);
       const forceKoishiFullFeedAutomation = isWackyKoishiBossFullFeedContext(
         snapshot?.specialBusiness,
         order.specialBusinessRole,
       );
+      let state = syncNormalOrderStateWithSnapshot(order, storedState, now, companionPreferences) ?? storedState;
+      if (state) {
+        state = retireDisabledNormalAutomationFailure(
+          state,
+          order,
+          companionPreferences,
+          now,
+          forceKoishiFullFeedAutomation,
+        );
+        normalOrderStatesRef.current.set(orderKey, state);
+      }
+      const baseState = state ?? emptyNormalAutoOrderState(orderKey, now);
+      const activeCookingJob = findNormalAutomationCookingJob(
+        snapshot?.automationCookingJobs ?? [],
+        order,
+        baseState,
+      );
+      if (activeCookingJob && !order.hasServedFood) {
+        state = reconcileStateWithActiveCookingJob(baseState, activeCookingJob, now);
+        normalOrderStatesRef.current.set(orderKey, state);
+      }
+      if (state?.paused || (state?.nextAttemptAtMs ?? 0) > now) continue;
       const needsBeverage = shouldAttemptNormalBeverage(order, state, companionPreferences, now)
         || (forceKoishiFullFeedAutomation && !order.hasServedBeverage && state?.beverageHandled !== true);
       const needsCooking = shouldAttemptNormalCooking(order, state, companionPreferences, now)
@@ -2459,7 +3544,6 @@ export function ModWorkbench() {
           ...companionPreferences,
           autoNormalTakeBeverage: false,
           autoNormalStartCooking: false,
-          autoNormalCollectCooking: false,
           autoNormalDeliverFood: false,
           autoNormalCompleteOrder: false,
         };
@@ -2505,7 +3589,7 @@ export function ModWorkbench() {
     if (runnableOrders.length === 0) {
       const waitingCount = orders.filter((order) => {
         const state = normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order));
-        return state?.prepared && !isNormalOrderCollected(order, state);
+        return state?.prepared && !order.hasServedFood;
       }).length;
       const schedulerText = schedulerMessages.length > 0 ? `\n${schedulerMessages.join('\n\n')}` : '';
       publishNormalOrderMessage(waitingCount > 0 || pausedCount > 0
@@ -2519,30 +3603,35 @@ export function ModWorkbench() {
     normalOrderBusyRef.current = true;
     lastAutoNormalOrderAtRef.current = now;
     publishNormalOrderBusy(true);
+    let activeRequestOrder: NormalBusinessOrder | null = null;
+    let activeRequestEventSequence = 0;
+    let activeRequestStage: AutomationRequestStage = 'match-order';
     try {
       let updatedOrderDetailCount = 0;
       for (const order of runnableOrders) {
+        activeRequestOrder = order;
         const orderKey = buildNormalAutoOrderKey(order);
         const storedState = normalOrderStatesRef.current.get(orderKey) ?? emptyNormalAutoOrderState(orderKey, now);
-        const syncedState = syncNormalOrderStateWithSnapshot(order, storedState, now, companionPreferences) ?? storedState;
-        const recoveredState = isRecoverableNormalPausedState(syncedState, now)
-          ? {
-            ...syncedState,
-            paused: false,
-            step: 'deliver-food' as const,
-            stepStartedAtMs: now,
-            lastProgressAtMs: now,
-            retryCount: 0,
-            rollbackCount: 0,
-            lastError: '等待料理直接送达超时后已自动恢复，继续确认料理制作状态。',
-          }
-          : syncedState;
-        const currentState = recoveredState;
-        const shouldRetryPrepared = isNormalOrderPreparedStale(currentState, now, companionPreferences);
         const forceKoishiFullFeedAutomation = isWackyKoishiBossFullFeedContext(
           snapshot?.specialBusiness,
           order.specialBusinessRole,
         );
+        const syncedState = retireDisabledNormalAutomationFailure(
+          syncNormalOrderStateWithSnapshot(order, storedState, now, companionPreferences) ?? storedState,
+          order,
+          companionPreferences,
+          now,
+          forceKoishiFullFeedAutomation,
+        );
+        const activeCookingJob = findNormalAutomationCookingJob(
+          snapshot?.automationCookingJobs ?? [],
+          order,
+          syncedState,
+        );
+        const currentState = activeCookingJob && !order.hasServedFood
+          ? reconcileStateWithActiveCookingJob(syncedState, activeCookingJob, now)
+          : syncedState;
+        if (currentState.paused || currentState.nextAttemptAtMs > now) continue;
         const specialTargetSelection = getNormalAutomationTargetSelection(
           order,
           normalAutomationTargetsEnabled,
@@ -2557,7 +3646,6 @@ export function ModWorkbench() {
             ...companionPreferences,
             autoNormalTakeBeverage: false,
             autoNormalStartCooking: false,
-            autoNormalCollectCooking: false,
             autoNormalDeliverFood: false,
             autoNormalCompleteOrder: false,
           };
@@ -2590,7 +3678,7 @@ export function ModWorkbench() {
           : shouldAttemptNormalCompletion(order, currentState, companionPreferences, now)
           || (companionPreferences.autoNormalCompleteOrder
             && !order.hasEvaluated
-            && !(currentState.paused && !isRecoverableNormalPausedState(currentState, now))
+            && !currentState.paused
             && (order.readyToEvaluate || order.hasServedFood || currentState.foodDelivered)
             && (order.hasServedBeverage || currentState.beverageHandled || shouldHandleBeverage));
 
@@ -2598,7 +3686,6 @@ export function ModWorkbench() {
           ...companionPreferences,
           autoNormalTakeBeverage: (companionPreferences.autoNormalTakeBeverage || forceKoishiFullFeedAutomation) && shouldHandleBeverage,
           autoNormalStartCooking: (companionPreferences.autoNormalStartCooking || forceKoishiFullFeedAutomation) && shouldStartCooking,
-          autoNormalCollectCooking: (companionPreferences.autoNormalDeliverFood || forceKoishiFullFeedAutomation) && shouldStartCooking,
           autoNormalDeliverFood: companionPreferences.autoNormalDeliverFood || forceKoishiFullFeedAutomation,
           autoNormalCompleteOrder: !forceKoishiFullFeedAutomation
             && companionPreferences.autoNormalCompleteOrder
@@ -2628,12 +3715,26 @@ export function ModWorkbench() {
 
         if (!requestPreferences.autoNormalTakeBeverage
           && !requestPreferences.autoNormalStartCooking
-          && !requestPreferences.autoNormalCollectCooking
           && !requestPreferences.autoNormalDeliverFood
           && !requestPreferences.autoNormalCompleteOrder) {
           continue;
         }
 
+        activeRequestEventSequence = currentState.lastRuntimeEventSequence;
+        activeRequestStage = selectAutomationRequestStage({
+          needsBeverage: shouldHandleBeverage,
+          needsCooking: shouldStartCooking,
+          needsDelivery: requestPreferences.autoNormalDeliverFood
+            && currentState.prepared
+            && !order.hasServedFood,
+          needsCompletion: shouldCompleteOrder,
+          fallback: currentState.step === 'ensure-beverage'
+            || currentState.step === 'ensure-cooking'
+            || currentState.step === 'deliver-food'
+            || currentState.step === 'complete-order'
+            ? currentState.step
+            : 'match-order',
+        });
         const response = await completeFirstNormalOrder(
           normalizedEndpoint,
           apiToken,
@@ -2642,21 +3743,40 @@ export function ModWorkbench() {
           recommendationData,
           specialTargetSelection.target,
         );
+        const responseAt = Date.now();
+        if (!isAutomationRequestCurrent(requestEpoch)) return;
+        if (handleAutomationControlPlaneResponse(response)) return;
+        const stateAfterRequest = normalOrderStatesRef.current.get(orderKey);
+        if (!isAutomationRequestCurrent(
+          requestEpoch,
+          activeRequestEventSequence,
+          stateAfterRequest?.lastRuntimeEventSequence ?? 0,
+        )) {
+          continue;
+        }
+        const responseStage = resolveAutomationResponseStage(
+          response.automation.stage,
+          activeRequestStage,
+        );
         const transientFailure = !response.ok && isTransientAutoPreparationFailure(response);
         const cookingMismatchStored = didCookingMismatchStored(response);
         const pendingCooking = didNormalOrderCookingStillPending(response);
-        const startedCooking = didCompleteStepCode(response, 'cooking-started')
-          || didCompleteStep(response, '普客开始料理');
+        const startedCooking = didCompleteStepCode(response, 'cooking-started');
         const acknowledgedStart = !cookingMismatchStored && (startedCooking
           || pendingCooking
-          || didAcknowledgeStep(response, '普客料理'));
+          || (responseStage === 'ensure-cooking' && response.automation.outcome === 'progressed'));
         const beverageHandledNow = didNormalOrderDeliverBeverage(response);
         const foodDeliveredNow = didNormalOrderDeliverFood(response);
         const completedNow = didNormalOrderComplete(response);
-        const collected = false;
-        const prepared = cookingMismatchStored
-          ? false
-          : currentState.prepared || acknowledgedStart;
+        const cookingInterrupted = response.automation.outcome === 'interrupted'
+          || response.automation.outcome === 'blocked'
+          || response.automation.outcome === 'fatal';
+        const manualCookingResolution = requiresManualAutomationResolution(
+          response.automation.reasonCode,
+          response.steps.map((step) => step.code ?? ''),
+        ) && (responseStage === 'ensure-cooking' || responseStage === 'deliver-food');
+        const prepared = manualCookingResolution
+          || (!(cookingMismatchStored || cookingInterrupted) && (currentState.prepared || acknowledgedStart));
         const beverageHandled = currentState.beverageHandled || order.hasServedBeverage || beverageHandledNow;
         const foodDelivered = cookingMismatchStored
           ? false
@@ -2664,18 +3784,14 @@ export function ModWorkbench() {
         const completed = cookingMismatchStored
           ? false
           : currentState.completed || order.hasEvaluated || completedNow;
-        const rollbackCount = cookingMismatchStored
-          ? currentState.rollbackCount
-          : collected || pendingCooking || startedCooking || beverageHandledNow || foodDeliveredNow || completedNow
-          ? 0
-          : currentState.rollbackCount;
+        const rollbackCount = currentState.rollbackCount;
         let nextStep: AutomationStep = 'ensure-cooking';
         if (completed) {
           nextStep = 'done';
-        } else if (!cookingMismatchStored && (foodDelivered || order.readyToEvaluate)) {
-          nextStep = 'complete-order';
         } else if (!cookingMismatchStored && requestPreferences.autoNormalTakeBeverage && !beverageHandled) {
           nextStep = 'ensure-beverage';
+        } else if (!cookingMismatchStored && (foodDelivered || order.readyToEvaluate)) {
+          nextStep = 'complete-order';
         } else if (!cookingMismatchStored && prepared && !foodDelivered) {
           nextStep = 'deliver-food';
         }
@@ -2685,59 +3801,61 @@ export function ModWorkbench() {
               ...currentState,
               orderKey,
               prepared,
-              preparedAtMs: cookingMismatchStored
-                ? 0
-                : acknowledgedStart || (shouldRetryPrepared && transientFailure)
-                ? now
-                : prepared
-                  ? currentState.preparedAtMs
-                  : 0,
+              cookingJobId: prepared
+                ? response.automation.jobId || currentState.cookingJobId
+                : '',
               beverageHandled,
-              beverageHandledAtMs: beverageHandledNow && !currentState.beverageHandled ? now : currentState.beverageHandledAtMs,
-              collected,
+              beverageHandledAtMs: beverageHandledNow && !currentState.beverageHandled
+                ? responseAt
+                : currentState.beverageHandledAtMs,
               foodDelivered,
               foodDeliveredAtMs: cookingMismatchStored
                 ? 0
-                : foodDeliveredNow && !currentState.foodDelivered ? now : currentState.foodDeliveredAtMs,
+                : foodDeliveredNow && !currentState.foodDelivered ? responseAt : currentState.foodDeliveredAtMs,
               completed,
               completedAtMs: cookingMismatchStored
                 ? 0
-                : completedNow && !currentState.completed ? now : currentState.completedAtMs,
-              step: nextStep,
+                : completedNow && !currentState.completed ? responseAt : currentState.completedAtMs,
               rollbackCount,
             },
             response,
-            now,
-            nextStep,
+            responseAt,
+            response.automation.outcome === 'retryable-failure'
+              || response.automation.outcome === 'interrupted'
+              || response.automation.outcome === 'blocked'
+              || response.automation.outcome === 'fatal'
+              ? activeRequestStage
+              : nextStep,
             companionPreferences.autoNormalStopOnError,
             companionPreferences.autoMaxStepRetries,
           ),
           companionPreferences.autoMaxRollbacks,
-          now,
+          responseAt,
         );
         const normalizedNextState = {
           ...nextState,
           beverageHandled,
-          collected,
           foodDelivered,
           completed,
         };
 
         const suffix = normalizedNextState.paused
-          ? '普客自动化已暂停该订单，订单变化或重新开启后会继续。'
+          ? normalizedNextState.manualResolutionRequired
+            ? '游戏副作用无法自动确认；请核对料理、托盘、保温箱和订单后点击“确认已处理”。'
+            : '普客自动化已暂停该订单，订单事实变化或手动重试后会继续。'
           : transientFailure
             ? '当前条件暂不可执行，将继续等待并自动重试。'
             : '';
         normalOrderStatesRef.current.set(orderKey, withAutomationDetail(
           normalizedNextState,
-          now,
+          responseAt,
           formatOrderPreparationResponse(response),
           formatAutomationState(normalizedNextState, companionPreferences),
           suffix,
         ));
         updatedOrderDetailCount += 1;
       }
-      refreshNormalOrderDiagnostics(orders, now);
+      refreshNormalOrderDiagnostics(orders, Date.now());
       publishNormalOrderMessage(updatedOrderDetailCount > 0 || schedulerMessages.length > 0
         ? `普客自动化\n${[
           updatedOrderDetailCount > 0 ? `已更新 ${updatedOrderDetailCount} 笔订单详情，可展开对应订单查看。` : '',
@@ -2746,13 +3864,40 @@ export function ModWorkbench() {
         : '普客自动化\n当前没有需要执行的新步骤。');
       scheduleAutomationRefresh();
     } catch (err) {
+      const failureAt = Date.now();
       const message = err instanceof Error ? err.message : String(err);
-      if (companionPreferences.autoNormalStopOnError) {
-        refreshNormalOrderDiagnostics(orders, now);
-        publishNormalOrderMessage(`普客自动化\n${message}\n普客自动化已暂停，订单变化或重新开启后会继续。`);
-      } else {
-        publishNormalOrderMessage(`普客自动化\n${message}`);
+      if (!isAutomationRequestCurrent(requestEpoch)) return;
+      let pausedCount = 0;
+      const failedOrders = activeRequestOrder ? [activeRequestOrder] : [];
+      for (const order of failedOrders) {
+        const orderKey = buildNormalAutoOrderKey(order);
+        const state = normalOrderStatesRef.current.get(orderKey) ?? emptyNormalAutoOrderState(orderKey, failureAt);
+        if (!isAutomationRequestCurrent(
+          requestEpoch,
+          activeRequestEventSequence,
+          state.lastRuntimeEventSequence,
+        )) {
+          return;
+        }
+        const failedState = recordAutomationTransportFailure(
+          state,
+          failureAt,
+          message,
+          activeRequestStage,
+          companionPreferences.autoNormalStopOnError,
+          companionPreferences.autoMaxStepRetries,
+        );
+        if (failedState.paused) pausedCount += 1;
+        normalOrderStatesRef.current.set(orderKey, withAutomationDetail(
+          failedState,
+          failureAt,
+          message,
+          failedState.paused ? '本阶段网络请求达到重试上限，当前订单已暂停。' : '本阶段网络请求失败，将按下一轮调度重试。',
+        ));
       }
+      refreshNormalOrderDiagnostics(orders, failureAt);
+      publishNormalOrderPausedCount(orders.filter((order) => normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order))?.paused).length);
+      publishNormalOrderMessage(`普客自动化\n${message}\n${pausedCount > 0 ? `达到重试上限并暂停 ${pausedCount} 笔订单。` : '请求失败，将自动重试。'}`);
     } finally {
       normalOrderBusyRef.current = false;
       publishNormalOrderBusy(false);
@@ -2761,6 +3906,8 @@ export function ModWorkbench() {
     apiToken,
     companionPreferences,
     getAutomationCookerCycle,
+    handleAutomationControlPlaneResponse,
+    isAutomationRequestCurrent,
     normalizedEndpoint,
     normalAutomationTargetByKey,
     normalAutomationTargets.error,
@@ -2769,7 +3916,6 @@ export function ModWorkbench() {
     normalAutomationTargetsEnabled,
     publishNormalAutomationDecisionDiagnostic,
     publishNormalOrderBusy,
-    publishNormalOrderDiagnostics,
     publishNormalOrderMessage,
     publishNormalOrderPausedCount,
     recommendationData,
@@ -2777,6 +3923,7 @@ export function ModWorkbench() {
     scheduleAutomationRefresh,
     runtime,
     snapshot?.specialBusiness,
+    snapshot?.automationCookingJobs,
     snapshot?.normalBusiness?.orders,
   ]);
 
@@ -2861,24 +4008,21 @@ export function ModWorkbench() {
   ]);
 
   const handleAutomationDisabled = useCallback(() => {
-    rareOrderStatesRef.current.clear();
-    rareOrderDiagnosticItemsRef.current.clear();
-    publishRareOrderDiagnostics([]);
-    normalOrderStatesRef.current.clear();
-    publishNormalOrderDiagnostics([]);
+    retainAutomationSafetyStates(rareOrderStatesRef.current);
+    retainRareManualResolutionDiagnosticItems(rareOrderStatesRef.current, rareOrderDiagnosticItemsRef.current);
+    retainAutomationSafetyStates(normalOrderStatesRef.current);
+    refreshRareOrderDiagnostics();
+    refreshNormalOrderDiagnostics(snapshot?.normalBusiness?.orders ?? []);
     lastAutoFirstOrderAtRef.current = 0;
     lastAutoNormalOrderAtRef.current = 0;
     publishAutoPrepBusy(false);
-    publishAutoPrepPaused(false);
     publishNormalOrderBusy(false);
-    publishNormalOrderPausedCount(0);
   }, [
     publishAutoPrepBusy,
-    publishAutoPrepPaused,
     publishNormalOrderBusy,
-    publishNormalOrderDiagnostics,
-    publishNormalOrderPausedCount,
-    publishRareOrderDiagnostics,
+    refreshNormalOrderDiagnostics,
+    refreshRareOrderDiagnostics,
+    snapshot?.normalBusiness?.orders,
   ]);
 
   const handleNormalOrderSignatureChanged = useCallback(() => {
@@ -2886,22 +4030,24 @@ export function ModWorkbench() {
   }, []);
 
   const handleNormalAutomationDisabled = useCallback(() => {
-    normalOrderStatesRef.current.clear();
-    publishNormalOrderDiagnostics([]);
+    retainAutomationSafetyStates(normalOrderStatesRef.current);
+    refreshNormalOrderDiagnostics(snapshot?.normalBusiness?.orders ?? []);
     lastAutoNormalOrderAtRef.current = 0;
     publishNormalOrderBusy(false);
-    publishNormalOrderPausedCount(0);
     publishNormalOrderMessage('');
   }, [
     publishNormalOrderBusy,
-    publishNormalOrderDiagnostics,
     publishNormalOrderMessage,
-    publishNormalOrderPausedCount,
+    refreshNormalOrderDiagnostics,
+    snapshot?.normalBusiness?.orders,
   ]);
 
   useOrderAutomationIntervals({
     automationEnabled: automationRuntimeEnabled,
+    resetStateWhenDisabled: !companionPreferences.automationEnabled,
     autoNormalOrderEnabled: companionPreferences.autoNormalOrderEnabled,
+    resetNormalStateWhenDisabled: !companionPreferences.automationEnabled
+      || !companionPreferences.autoNormalOrderEnabled,
     normalOrderSignature,
     rareTickMs: AUTO_FIRST_ORDER_TICK_MS,
     normalTickMs: AUTO_NORMAL_ORDER_TICK_MS,
@@ -3148,6 +4294,8 @@ export function ModWorkbench() {
               normalOrderMessage={normalOrderMessage}
               normalOrderPausedCount={normalOrderPausedCount}
               normalOrderDiagnostics={normalOrderDiagnostics}
+              automationSafetyBarriers={automationSafetyBarriers}
+              automationBarrierAckBusyKey={automationBarrierAckBusyKey}
               normalExecutionTargets={normalAutomationTargets.normalExecutionTargets}
               normalExecutionTargetsEnabled={normalAutomationTargetsEnabled}
               normalExecutionTargetsPending={normalAutomationTargets.pending || !normalAutomationTargets.isCurrent}
@@ -3163,6 +4311,9 @@ export function ModWorkbench() {
               onToggleBeverageFavorite={toggleBeverageFavorite}
               onRetryRareAutomationOrder={retryRareAutomationOrder}
               onResetRareAutomationOrder={resetRareAutomationOrder}
+              onRetryNormalAutomationOrder={retryNormalAutomationOrder}
+              onResetNormalAutomationOrder={resetNormalAutomationOrder}
+              onAcknowledgeAutomationBarrier={acknowledgeAutomationBarrierEvent}
               dismissRareOrderBusyKey={dismissRareOrderBusyKey}
               dismissRareOrderError={dismissRareOrderError}
               onDismissRareOrder={dismissRareOrder}

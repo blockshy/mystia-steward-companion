@@ -137,41 +137,7 @@ internal static partial class RuntimeOrderPreparationService
 
     private static RuntimeOrderMatch FindRuntimeNormalOrder(OrderPreparationRequest request)
     {
-        var strictMatch = FindRuntimeNormalOrderCore(request);
-        if (strictMatch.Order != null && strictMatch.Controller != null)
-        {
-            return strictMatch;
-        }
-
-        if (RequiresLiveWackyKoishiBossController(request))
-        {
-            return strictMatch;
-        }
-
-        if (string.IsNullOrWhiteSpace(request.OrderKey) || request.DeskCode < 0 || GetNormalMatchFoodId(request) < 0 || GetNormalMatchBeverageId(request) < 0)
-        {
-            return strictMatch;
-        }
-
-        var relaxedRequest = CopyNormalOrderRequestWithoutOrderKey(request);
-        var relaxedMatch = FindRuntimeNormalOrderCore(relaxedRequest);
-        if (relaxedMatch.Order == null)
-        {
-            return strictMatch;
-        }
-
-        if (relaxedMatch.Controller == null && strictMatch.Order != null)
-        {
-            return strictMatch;
-        }
-
-        return new RuntimeOrderMatch
-        {
-            Manager = relaxedMatch.Manager,
-            Controller = relaxedMatch.Controller,
-            Order = relaxedMatch.Order,
-            Diagnostic = $"orderKeyFallback strict=({strictMatch.Diagnostic}) relaxed=({relaxedMatch.Diagnostic})",
-        };
+        return FindRuntimeNormalOrderCore(request);
     }
 
     private static RuntimeOrderMatch FindRuntimeNormalOrderCore(OrderPreparationRequest request)
@@ -283,42 +249,6 @@ internal static partial class RuntimeOrderPreparationService
         return new RuntimeOrderMatch
         {
             Diagnostic = $"controllers={scannedControllers}, controllerOrders={scannedControllerOrders}, captured=({captured.Diagnostic}), uiOrders={scannedUiOrders}",
-        };
-    }
-
-    private static OrderPreparationRequest CopyNormalOrderRequestWithoutOrderKey(OrderPreparationRequest request)
-    {
-        return new OrderPreparationRequest
-        {
-            TraceId = request.TraceId,
-            DeskCode = request.DeskCode,
-            GuestId = request.GuestId,
-            GuestName = request.GuestName,
-            SpecialBusinessRole = request.SpecialBusinessRole,
-            FoodTag = request.FoodTag,
-            BeverageTag = request.BeverageTag,
-            MatchFoodId = request.MatchFoodId,
-            MatchBeverageId = request.MatchBeverageId,
-            FoodId = request.FoodId,
-            RecipeId = request.RecipeId,
-            RecipeName = request.RecipeName,
-            ExtraIngredientIds = request.ExtraIngredientIds,
-            PredictedFoodTags = request.PredictedFoodTags,
-            WackyTargetFoodTags = request.WackyTargetFoodTags,
-            ExecutionMode = request.ExecutionMode,
-            ExecutionReason = request.ExecutionReason,
-            BeverageId = request.BeverageId,
-            BeverageName = request.BeverageName,
-            AutoTakeBeverage = request.AutoTakeBeverage,
-            AutoStartCooking = request.AutoStartCooking,
-            AutoCollectCooking = request.AutoCollectCooking,
-            AutoDeliverFood = request.AutoDeliverFood,
-            AutoCompleteOrder = request.AutoCompleteOrder,
-            RecipeFavoritesOnly = request.RecipeFavoritesOnly,
-            BeverageFavoritesOnly = request.BeverageFavoritesOnly,
-            StopOnError = request.StopOnError,
-            RecipeFavorite = request.RecipeFavorite,
-            BeverageFavorite = request.BeverageFavorite,
         };
     }
 
@@ -464,16 +394,29 @@ internal static partial class RuntimeOrderPreparationService
         return ToInt(fallback, -1);
     }
 
+    private enum RuntimeObjectIdentityComparison
+    {
+        Same,
+        Different,
+        Unknown,
+    }
+
+    private static RuntimeObjectIdentityComparison CompareObjectIdentity(object left, object right)
+    {
+        if (ReferenceEquals(left, right)) return RuntimeObjectIdentityComparison.Same;
+
+        var leftReadable = TryReadNativeObjectPointer(left, out var leftPointer);
+        var rightReadable = TryReadNativeObjectPointer(right, out var rightPointer);
+        if (!leftReadable || !rightReadable) return RuntimeObjectIdentityComparison.Unknown;
+
+        return leftPointer == rightPointer
+            ? RuntimeObjectIdentityComparison.Same
+            : RuntimeObjectIdentityComparison.Different;
+    }
+
     private static bool IsSameObject(object left, object right)
     {
-        try
-        {
-            return ReadObjectPointer(left) == ReadObjectPointer(right);
-        }
-        catch
-        {
-            return ReferenceEquals(left, right);
-        }
+        return CompareObjectIdentity(left, right) == RuntimeObjectIdentityComparison.Same;
     }
 
     private static RuntimeOrderMatch FindCapturedRuntimeOrder(OrderPreparationRequest request, object manager)
