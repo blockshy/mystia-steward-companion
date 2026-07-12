@@ -231,7 +231,7 @@ function buildYuyukoProgressBlockDetails(plan: RareOrderRecommendationPlan): str
     const evaluationScore = estimateYuyukoEvaluationScore(food, beverage);
     if (evaluationScore < YUYUKO_GOOD_EVALUATION_SCORE) {
       details.push(
-        `预计${formatYuyukoEvaluationScore(evaluationScore)}，未达橙评/粉评`
+        `预计${formatYuyukoEvaluationScore(evaluationScore)}，未达满意（Good）/完美（ExGood）`
         + `（等级合计 ${getYuyukoLevelSum(food, beverage)}，喜好命中 ${getYuyukoPreferenceScore(food, beverage)}）`,
       );
     }
@@ -260,11 +260,10 @@ function formatExtraIngredientIds(ids: number[]): string {
 }
 
 function formatYuyukoEvaluationScore(score: number): string {
-  if (score >= YUYUKO_EXGOOD_EVALUATION_SCORE) return '粉评';
-  if (score >= YUYUKO_GOOD_EVALUATION_SCORE) return '橙评';
-  if (score >= 2) return '绿评';
-  if (score >= 1) return '普评';
-  return '失败评价';
+  if (score >= YUYUKO_EXGOOD_EVALUATION_SCORE) return '完美（ExGood）';
+  if (score >= YUYUKO_GOOD_EVALUATION_SCORE) return '满意（Good）';
+  if (score >= 2) return '普通（Normal）';
+  return '未形成可推进评价';
 }
 
 function getYuyukoBaseDemandScore(
@@ -282,9 +281,9 @@ function buildYuyukoReasonCore(
 ): string {
   const evaluationScore = estimateYuyukoEvaluationScore(food, beverage);
   const evaluationText = evaluationScore >= YUYUKO_EXGOOD_EVALUATION_SCORE
-    ? '粉评'
+    ? '完美（ExGood）'
     : evaluationScore >= YUYUKO_GOOD_EVALUATION_SCORE
-      ? '橙评'
+      ? '满意（Good）'
       : '未达稳定推进评价';
   const foodLevel = food?.recipe.level ?? 0;
   const beverageLevel = beverage?.beverage.level ?? 0;

@@ -622,7 +622,7 @@ Port = 32145
 
 伴随窗口直接双击启动时通常没有本地 API Token。前端必须停留在未授权状态，不得高频请求 `/snapshot` 或日志端点；用户修改端点或 token 输入框时也不得立即重连，只有点击 `连接` 或从游戏启动参数收到新的连接身份后才恢复轮询。相同 endpoint/token 的重复单实例通知必须幂等，不得清空快照或推进连接代际。自动探测和失败重试必须使用较短本地 API 超时且不触发全局刷新 loading；手动刷新可使用稍长超时。连接失败后只按递增退避重试 `/snapshot`，并且只有快照成功才能清除错误和恢复写操作；`/health` 成功不能建立已连接状态。允许用户点击 `停止` 暂停自动重连。
 
-普客订单自动化仍是实验性功能。设置页总开关和经营中“启用普客处理”必须同时开启，并至少开启一个独立阶段；订单按首次出现顺序处理，不保留手动处理按钮。酒水和料理统一提交到顾客桌面，只有订单已满足才评价，最终完成以 `HasEvaluated` 或订单移除为准。特殊经营规则按模块接入：`AutomationCookingJob` 同时保存原订单 match 目标、实际执行目标和场景签名，出锅时不能用执行料理反查原订单。幽幽子三阶段评价必须重新取得 live controller 和所需回调；怪诞小石本体破防前走通用评价，破防后交给 Boss 原生回调。具体规则见 `docs/special-business-scenes-notes.md`。
+普客订单自动化仍是实验性功能。设置页总开关和经营中“启用普客处理”必须同时开启，并至少开启一个独立阶段；订单按首次出现顺序处理，不保留手动处理按钮。酒水和料理统一提交到顾客桌面，只有订单已满足才评价，最终完成以 `HasEvaluated` 或订单移除为准。特殊经营规则按模块接入：`AutomationCookingJob` 同时保存原订单 match 目标、实际执行目标和场景签名，出锅时不能用执行料理反查原订单。幽幽子三阶段评价必须重新取得 live controller 和所需回调；怪诞料理大赛中的古明地恋本体在护盾期走通用评价，破防后交给 Boss 原生回调。具体规则见 `docs/special-business-scenes-notes.md`。
 
 总日志文件 `BepInEx/config/MystiaStewardCompanion/aggregate-mod.log` 默认关闭，由 `Diagnostics.EnableAggregateModLog` 或日志页“总日志”开关启用。启用后注册 BepInEx 全局 `ILogListener`，捕获所有日志源并按时间、级别、来源和线程标注；自动化日志记录 jobId、trace、controller/result、generation、phase/progress、结构化 outcome/reason、StoreFood commit 和 reset 尝试。连续相同 automation action、目标和消息合并为 `repeat` 摘要。单个文件达到 10 MB 后拆分为递增编号分片；默认保留 30 个文件，约 300 MB。监听器不得回写自身状态，写入、分片和裁剪失败也不得影响游戏流程。
 

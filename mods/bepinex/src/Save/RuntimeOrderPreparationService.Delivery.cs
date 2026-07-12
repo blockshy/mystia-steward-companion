@@ -575,7 +575,7 @@ internal static partial class RuntimeOrderPreparationService
                 runtimeOrder,
                 "blocked-native-evaluate-entry",
                 diagnostic);
-            return new(false, false, false, $"怪诞料理三阶段小石本体订单缺少可执行原生评价条件：{diagnostic}");
+            return new(false, false, false, $"怪诞料理三阶段古明地恋本体订单缺少可执行原生评价条件：{diagnostic}");
         }
 
         var evaluation = TryEvaluateRuntimeOrderIfReady(runtimeOrder, orderLabel);

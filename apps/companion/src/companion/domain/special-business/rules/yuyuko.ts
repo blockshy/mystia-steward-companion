@@ -37,10 +37,10 @@ export function buildYuyukoChallengeOrderRule(
     preferYuyukoProgress: requiresProgress,
     reason: requiresProgress
       ? storyChallenge
-        ? '剧情版幽幽子第三阶段需要满足原订单，避开幽幽子厌恶 Tag，并优先选择等级合计可触发橙评/粉评的组合；仅能达到绿评的原订单可清理但不承诺推进。'
-        : '重修版幽幽子第三阶段需要满足原订单，避开幽幽子厌恶 Tag，并优先选择等级合计可触发橙评/粉评的组合；仅能达到绿评的原订单可清理但不承诺推进。'
+        ? '剧情版幽幽子第三阶段需要满足原订单，避开幽幽子厌恶 Tag，并优先选择等级合计可达到满意（Good）/完美（ExGood）的组合；仅能达到普通（Normal）的原订单可清理但不承诺推进。'
+        : '重修版幽幽子第三阶段需要满足原订单，避开幽幽子厌恶 Tag，并优先选择等级合计可达到满意（Good）/完美（ExGood）的组合；仅能达到普通（Normal）的原订单可清理但不承诺推进。'
       : phaseTwo && yuyukoOrder
-        ? '幽幽子第二阶段会周期性触发负面符卡，自动化只选择满足原订单、避开幽幽子厌恶 Tag 且预计可达橙评/粉评的组合。'
+        ? '幽幽子第二阶段会周期性触发负面符卡，自动化只选择满足原订单、避开幽幽子厌恶 Tag 且预计可达满意（Good）/完美（ExGood）的组合。'
       : '',
   };
 }

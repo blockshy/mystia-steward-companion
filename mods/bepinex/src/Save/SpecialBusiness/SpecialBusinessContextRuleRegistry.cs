@@ -62,7 +62,7 @@ internal static class SpecialBusinessContextRuleRegistry
         return new SpecialBusinessContextRule(
             "boss",
             "剧情版 P2/P3 的自动化必须避开幽幽子的实际厌恶 Tag；P3 还必须复用游戏手动订单评价链路推进进度。",
-            "P2 会优先保证安全高评价；P3 会先满足原订单料理和酒水，再优先选择无厌恶 Tag 且可预测触发橙评/粉评的组合，并记录手动评价前后进度。",
+            "P2 会优先保证安全高评价；P3 会先满足原订单料理和酒水，再优先选择无厌恶 Tag 且可预测达到满意（Good）/完美（ExGood）的组合，并记录手动评价前后进度。",
             "剧情版幽幽子订单只有在确认 live controller、送达目标、手动 onEvaluate 回调和三阶段评分回调后才会自动提交；回调链路不完整时会暂停评价，避免订单被消耗但进度不涨。");
     }
 
@@ -71,7 +71,7 @@ internal static class SpecialBusinessContextRuleRegistry
         return new SpecialBusinessContextRule(
             "boss",
             "重修版 P2 会周期性触发负面符卡；P3 包含血量、分身耐心和厨具锁定，分身订单需要 Good/ExGood 才能稳定推进。",
-            "P2 会优先保证安全高评价；P3 会先满足原订单料理和酒水，再优先选择可触发橙评/粉评且无厌恶 Tag 的料理、加料与酒水组合。",
+            "P2 会优先保证安全高评价；P3 会先满足原订单料理和酒水，再优先选择可达到满意（Good）/完美（ExGood）且无厌恶 Tag 的料理、加料与酒水组合。",
             "重修版幽幽子订单只有在确认 live controller、送达目标和 _50/_70 原生进度回调后才会调用游戏评价流程；回调链路不完整时会暂停评价，避免订单被消耗但进度不涨。");
     }
 
@@ -88,9 +88,9 @@ internal static class SpecialBusinessContextRuleRegistry
     {
         return new SpecialBusinessContextRule(
             "tag-target",
-            "游戏会随机指定一个料理 Tag，命中会影响挑战分数；该 Tag 会按倒计时刷新，P3 还会按料理和酒水等级影响结算。",
-            "优先命中游戏 HUD 指定的目标 Tag；P3 捕获到阶段信息时，会同时偏向高等级料理与酒水；若目标 Tag 倒计时过低，自动化会等待下一轮目标。",
-            "怪诞料理大赛订单会标记特殊经营归属，并按当前目标 Tag 与剩余时间决定是否开锅。");
+            "第一阶段按喜好 Tag 命中数评价；第二阶段先要求完美（ExGood）再检查轮换目标 Tag；第三阶段分身另有改判规则，古明地恋本体使用揭示 Tag、护盾和投食进度机制。",
+            "Mod 对第二阶段和第三阶段分身使用更严格的保守策略：保留原订单，并同时要求预估完美（ExGood）和当前目标 Tag；本体则按护盾与揭示状态选择。",
+            "订单会标记特殊经营归属。开锅前检查阶段、目标 Tag 和剩余时间；出锅后再校验成品，无法确认原生评价链时暂停。");
     }
 
     private static SpecialBusinessContextRule TagTarget(string summary)

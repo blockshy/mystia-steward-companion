@@ -49,7 +49,7 @@ export function buildKoishiBrokenShieldPlanReason(plan: RareOrderRecommendationP
   const budgetText = buildKoishiBrokenShieldBudgetText(plan);
 
   return [
-    `小石破防：先满足原订单料理/酒水要求，再按预算内总分规划；料理 Lv.${foodLevel}`,
+    `古明地恋破防：先满足原订单料理/酒水要求，再按预算内总分规划；料理 Lv.${foodLevel}`,
     `酒水 Lv.${beverageLevel}`,
     `等级参考 ${levelHint}`,
     `投食分估算 ${estimatedFeedScore}`,

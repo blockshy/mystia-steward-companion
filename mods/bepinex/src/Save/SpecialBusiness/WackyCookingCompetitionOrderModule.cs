@@ -29,7 +29,7 @@ internal sealed class WackyCookingCompetitionOrderModule : ISpecialBusinessOrder
         {
             classification = SpecialBusinessModuleRegistry.AllowedSpecialOrder(
                 SpecialBusinessOrderRoles.WackyKoishiBoss,
-                "怪诞料理大赛 · 小石订单");
+                "怪诞料理大赛 · 古明地恋订单");
             reason = "phase3 order has explicit Koishi boss evidence";
         }
         else if (order != null || controller != null)
@@ -63,7 +63,7 @@ internal sealed class WackyCookingCompetitionOrderModule : ISpecialBusinessOrder
         string source)
     {
         if (!RuntimeSpecialBusinessContextService.IsActiveWackyPhase("Phase3")) return false;
-        if (!guest.IsGuest(KoishiBossGuestId, "Koishi", "古明地恋", "小石")) return false;
+        if (!guest.IsGuest(KoishiBossGuestId, "Koishi", "古明地恋")) return false;
         if (SpecialBusinessOrderProbe.HasControllerSpawnType(controller, "GhostInChallenge")) return false;
 
         if (ReadBoolMember(order, "ManualOrder", "manualOrder")) return true;

@@ -261,7 +261,7 @@ function buildYuyukoNormalBlockMessage({
     const evaluationScore = estimateYuyukoEvaluationScore(food, beverage);
     if (evaluationScore < YUYUKO_GOOD_EVALUATION_SCORE) {
       details.push(
-        `预计${formatYuyukoEvaluationScore(evaluationScore)}，未达橙评/粉评`
+        `预计${formatYuyukoEvaluationScore(evaluationScore)}，未达满意（Good）/完美（ExGood）`
         + `（料理 Lv.${food.recipe.level}，酒水 Lv.${beverage.beverage.level}，等级合计 ${getYuyukoLevelSum(food, beverage)}）`,
       );
     }
@@ -294,9 +294,8 @@ function selectDiagnosticPair(
 }
 
 function formatYuyukoEvaluationScore(score: number): string {
-  if (score >= YUYUKO_EXGOOD_EVALUATION_SCORE) return '粉评';
-  if (score >= YUYUKO_GOOD_EVALUATION_SCORE) return '橙评';
-  if (score >= 2) return '绿评';
-  if (score >= 1) return '普评';
-  return '失败评价';
+  if (score >= YUYUKO_EXGOOD_EVALUATION_SCORE) return '完美（ExGood）';
+  if (score >= YUYUKO_GOOD_EVALUATION_SCORE) return '满意（Good）';
+  if (score >= 2) return '普通（Normal）';
+  return '未形成可推进评价';
 }

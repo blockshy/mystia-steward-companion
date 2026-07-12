@@ -183,7 +183,7 @@ function selectWackyKoishiBossNormalTarget(
     return {
       target: null,
       message: [
-        '怪诞料理三阶段小石本体需要先读取场上揭示的正面料理 Tag 和酒水 Tag，暂不自动提交，避免继续触发差评。',
+        '怪诞料理三阶段古明地恋本体需要先读取场上揭示的正面料理 Tag 和酒水 Tag，暂不自动提交，避免继续触发差评。',
         `已读取：正面料理 ${foodPreferenceTags.length ? foodPreferenceTags.join('、') : '无'}；厌恶料理 ${foodHateTags.length ? foodHateTags.join('、') : '无'}；酒水 ${beveragePreferenceTags.length ? beveragePreferenceTags.join('、') : '无'}。`,
       ].join('\n'),
     };
@@ -214,7 +214,7 @@ function selectWackyKoishiBossNormalTarget(
   if (!best) {
     return {
       target: null,
-      message: `怪诞料理三阶段小石本体当前揭示：正面料理 ${foodPreferenceTags.join('、')}，厌恶料理 ${foodHateTags.length ? foodHateTags.join('、') : '无'}，酒水 ${beveragePreferenceTags.join('、')}；没有可制作且可稳定高评价的料理/酒水组合。`,
+      message: `怪诞料理三阶段古明地恋本体当前揭示：正面料理 ${foodPreferenceTags.join('、')}，厌恶料理 ${foodHateTags.length ? foodHateTags.join('、') : '无'}，酒水 ${beveragePreferenceTags.join('、')}；没有可制作且可稳定高评价的料理/酒水组合。`,
     };
   }
 
@@ -223,7 +223,7 @@ function selectWackyKoishiBossNormalTarget(
       order,
       best.food,
       best.beverage,
-      `小石本体：命中正面料理 ${best.food.matchedPositiveTags.join('、')}，酒水 ${best.beverage.matchedTags.join('、')}，避开厌恶 Tag${foodHateTags.length ? ` ${foodHateTags.join('、')}` : ''}`,
+      `古明地恋本体：命中正面料理 ${best.food.matchedPositiveTags.join('、')}，酒水 ${best.beverage.matchedTags.join('、')}，避开厌恶 Tag${foodHateTags.length ? ` ${foodHateTags.join('、')}` : ''}`,
     ),
     message: '',
   };
@@ -237,12 +237,12 @@ function selectWackyKoishiBrokenShieldTarget(
 ): SpecialBusinessNormalTargetSelection {
   const originalRecipe = findOrderRecipe(order, data);
   if (!originalRecipe) {
-    return { target: null, message: `怪诞料理三阶段小石本体已破防，但无法找到原订单料理 ${order.foodName || `#${order.foodId}`} 的配方数据。` };
+    return { target: null, message: `怪诞料理三阶段古明地恋本体已破防，但无法找到原订单料理 ${order.foodName || `#${order.foodId}`} 的配方数据。` };
   }
 
   const originalBeverage = data.beverages.find((beverage) => beverage.id === order.beverageId) ?? null;
   if (!originalBeverage) {
-    return { target: null, message: `怪诞料理三阶段小石本体已破防，但无法找到原订单酒水 ${order.beverageName || `#${order.beverageId}`} 的数据。` };
+    return { target: null, message: `怪诞料理三阶段古明地恋本体已破防，但无法找到原订单酒水 ${order.beverageName || `#${order.beverageId}`} 的数据。` };
   }
 
   const syntheticCustomer = buildSyntheticCustomer(order, data, {
@@ -273,7 +273,7 @@ function selectWackyKoishiBrokenShieldTarget(
   });
 
   if (!best) {
-    return { target: null, message: `怪诞料理三阶段小石本体已破防，但 ${originalRecipe.name} / ${originalBeverage.name} 当前没有可制作且满足原订单的方案。` };
+    return { target: null, message: `怪诞料理三阶段古明地恋本体已破防，但 ${originalRecipe.name} / ${originalBeverage.name} 当前没有可制作且满足原订单的方案。` };
   }
 
   const estimatedPrice = estimateOrderPrice(best.food, best.beverage);
@@ -295,7 +295,7 @@ function selectWackyKoishiBrokenShieldTarget(
       order,
       best.food,
       best.beverage,
-      `小石破防：保持原订单 ${originalRecipe.name} / ${originalBeverage.name}，按预算内总分规划，料理 Lv.${best.food.recipe.level} / 酒水 Lv.${best.beverage.beverage.level}${budgetReason}`,
+      `古明地恋破防：保持原订单 ${originalRecipe.name} / ${originalBeverage.name}，按预算内总分规划，料理 Lv.${best.food.recipe.level} / 酒水 Lv.${best.beverage.beverage.level}${budgetReason}`,
     ),
     message: '',
   };
@@ -399,7 +399,7 @@ function buildKoishiBossSyntheticCustomer(
 ): RareCustomerCatalogItem {
   return {
     id: order.guestId ?? -1,
-    name: order.guestName || '怪诞料理大赛 · 小石本体',
+    name: order.guestName || '怪诞料理大赛 · 古明地恋本体',
     description: '',
     dlc: 0,
     places: ALL_PLACES,

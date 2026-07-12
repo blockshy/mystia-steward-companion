@@ -42,8 +42,8 @@ export function buildWackyCookingCompetitionOrderRule(
       preferYuyukoSafeEvaluation: false,
       preferYuyukoProgress: false,
       reason: shieldBroken
-        ? '怪诞料理三阶段小石本体已破防，需要先满足原订单料理和酒水要求，再按破防期预计伤害优先选择。'
-        : '怪诞料理三阶段小石本体需要按场上揭示的正面/厌恶/酒水 Tag 选择高评价组合。',
+        ? '怪诞料理三阶段古明地恋本体已破防，需要先满足原订单料理和酒水要求，再按破防期预计伤害优先选择。'
+        : '怪诞料理三阶段古明地恋本体需要按场上揭示的正面/厌恶/酒水 Tag 选择高评价组合。',
     };
   }
 
