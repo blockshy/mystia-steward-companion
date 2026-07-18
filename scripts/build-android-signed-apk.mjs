@@ -1,4 +1,14 @@
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+} from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -13,6 +23,7 @@ const androidJavaSourcesDir = path.join(androidDir, 'app', 'src', 'main', 'java'
 const keystorePropertiesPath = path.join(androidDir, 'keystore.properties');
 const apkOutputDir = path.join(androidDir, 'app', 'build', 'outputs', 'apk');
 const distDir = path.join(repoRoot, 'mods', 'bepinex', 'dist');
+const buildArtifactManager = path.join(repoRoot, 'scripts', 'manage-build-artifacts.mjs');
 const releaseApkTargets = [
   {
     target: 'aarch64',
@@ -33,25 +44,189 @@ const androidReleaseProfileEnv = {
   CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '1',
 };
 
-assertSigningConfig();
-cleanGeneratedAndroidSources();
-rmSync(apkOutputDir, { recursive: true, force: true });
-runTauriAndroidApkBuild();
-
-const signedApks = findSignedApks();
-const apkSigner = findApkSignerCommand();
-
-mkdirSync(distDir, { recursive: true });
-for (const item of signedApks) {
-  run(apkSigner.command, [...apkSigner.args, 'verify', '--verbose', '--print-certs', item.apkPath], { cwd: repoRoot });
-  const releaseAssetPath = path.join(distDir, item.target.assetName);
-  copyFileSync(item.apkPath, releaseAssetPath);
-  console.log(`Signed Android APK verified: ${item.apkPath}`);
-  console.log(`Release asset copied to: ${releaseAssetPath}`);
+if (isMainModule()) {
+  main();
 }
 
-console.log('');
-console.log(`Built ${signedApks.length} signed Android APKs.`);
+function main() {
+  assertSigningConfig();
+  mkdirSync(distDir, { recursive: true });
+  assertRealDirectory(distDir, 'Android release dist');
+  assertNoPendingAndroidStages();
+  pruneBuildArtifacts();
+  cleanGeneratedAndroidSources();
+  rmSync(apkOutputDir, { recursive: true, force: true });
+  runTauriAndroidApkBuild();
+
+  const signedApks = findSignedApks();
+  const apkSigner = findApkSignerCommand();
+
+  const stagedApks = stageAndVerifyAndroidApks(signedApks, apkSigner);
+  pruneThenCommitAndroidApks(stagedApks);
+
+  console.log('');
+  console.log(`Built ${signedApks.length} signed Android APKs.`);
+}
+
+function isMainModule() {
+  return Boolean(process.argv[1])
+    && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+}
+
+function assertRealDirectory(directoryPath, description) {
+  const stats = lstatSync(directoryPath);
+  if (!stats.isDirectory() || stats.isSymbolicLink()) {
+    throw new Error(`${description} must be a real directory, not a file, symlink, or junction: ${directoryPath}`);
+  }
+}
+
+function assertNoPendingAndroidStages() {
+  const pendingStages = readdirSync(distDir, { withFileTypes: true })
+    .filter((entry) => entry.name.startsWith('.android-apk-stage-'))
+    .map((entry) => path.join(distDir, entry.name));
+  if (pendingStages.length === 0) return;
+
+  throw new Error(
+    [
+      'A previous Android APK transaction was not completed.',
+      'Inspect and remove or restore these paths before building again:',
+      ...pendingStages.map((stagePath) => `  - ${stagePath}`),
+    ].join('\n'),
+  );
+}
+
+function stageAndVerifyAndroidApks(signedApksToStage, signer) {
+  const stagingDir = mkdtempSync(path.join(distDir, '.android-apk-stage-'));
+
+  try {
+    const items = signedApksToStage.map((item) => {
+      const stagedPath = path.join(stagingDir, item.target.assetName);
+      copyFileSync(item.apkPath, stagedPath);
+      run(signer.command, [...signer.args, 'verify', '--verbose', '--print-certs', stagedPath], { cwd: repoRoot });
+      console.log(`Signed Android APK verified: ${item.apkPath}`);
+      return {
+        ...item,
+        stagedPath,
+        releaseAssetPath: path.join(distDir, item.target.assetName),
+      };
+    });
+
+    return { stagingDir, items };
+  } catch (error) {
+    rmSync(stagingDir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function commitStagedAndroidApks(stagedApksToCommit) {
+  const installedPaths = [];
+  const backups = [];
+  let removeStagingDirectory = true;
+
+  try {
+    for (const item of stagedApksToCommit.items) {
+      if (!existsSync(item.releaseAssetPath)) continue;
+
+      const backupPath = path.join(stagedApksToCommit.stagingDir, `.previous-${item.target.assetName}`);
+      renameSync(item.releaseAssetPath, backupPath);
+      backups.push({ releaseAssetPath: item.releaseAssetPath, backupPath });
+    }
+
+    for (const item of stagedApksToCommit.items) {
+      renameSync(item.stagedPath, item.releaseAssetPath);
+      installedPaths.push(item.releaseAssetPath);
+    }
+
+    for (const item of stagedApksToCommit.items) {
+      console.log(`Release asset installed: ${item.releaseAssetPath}`);
+    }
+  } catch (error) {
+    const rollbackErrors = [];
+
+    for (const installedPath of installedPaths.reverse()) {
+      try {
+        rmSync(installedPath, { force: true });
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
+    }
+
+    for (const backup of backups.reverse()) {
+      try {
+        if (existsSync(backup.backupPath)) {
+          renameSync(backup.backupPath, backup.releaseAssetPath);
+        }
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
+    }
+
+    if (rollbackErrors.length > 0) {
+      removeStagingDirectory = false;
+      throw new AggregateError([error, ...rollbackErrors], 'Failed to install Android APK assets and restore the previous assets.');
+    }
+
+    throw error;
+  } finally {
+    if (removeStagingDirectory) {
+      rmSync(stagedApksToCommit.stagingDir, { recursive: true, force: true });
+    } else {
+      console.error(`Android APK rollback files were preserved at: ${stagedApksToCommit.stagingDir}`);
+    }
+  }
+}
+
+function pruneThenCommitAndroidApks(stagedApksToCommit, prune = pruneBuildArtifacts) {
+  try {
+    prune();
+  } catch (error) {
+    rmSync(stagedApksToCommit.stagingDir, { recursive: true, force: true });
+    throw error;
+  }
+
+  commitStagedAndroidApks(stagedApksToCommit);
+}
+
+function pruneBuildArtifacts() {
+  if (readBooleanEnvironmentVariable('MYSTIA_SKIP_BUILD_CACHE_CLEANUP', false)) {
+    console.log('Build cache cleanup skipped by MYSTIA_SKIP_BUILD_CACHE_CLEANUP.');
+    return;
+  }
+
+  const limitGiB = readPositiveIntegerEnvironmentVariable('MYSTIA_BUILD_CACHE_LIMIT_GIB', 12);
+  const targetGiB = readPositiveIntegerEnvironmentVariable('MYSTIA_BUILD_CACHE_TARGET_GIB', 8);
+  if (targetGiB >= limitGiB) {
+    throw new Error(
+      `MYSTIA_BUILD_CACHE_TARGET_GIB must be less than MYSTIA_BUILD_CACHE_LIMIT_GIB. Actual: target=${targetGiB}, limit=${limitGiB}`,
+    );
+  }
+
+  run(
+    process.execPath,
+    [buildArtifactManager, 'prune', '--limit-gib', String(limitGiB), '--target-gib', String(targetGiB)],
+    { cwd: repoRoot },
+  );
+}
+
+function readPositiveIntegerEnvironmentVariable(name, defaultValue) {
+  const rawValue = process.env[name];
+  if (rawValue === undefined || rawValue.trim() === '') return defaultValue;
+
+  const value = Number(rawValue);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer. Actual: ${rawValue}`);
+  }
+
+  return value;
+}
+
+function readBooleanEnvironmentVariable(name, defaultValue) {
+  const rawValue = process.env[name];
+  if (rawValue === undefined || rawValue.trim() === '') return defaultValue;
+  if (/^(1|true)$/iu.test(rawValue)) return true;
+  if (/^(0|false)$/iu.test(rawValue)) return false;
+  throw new Error(`${name} must be 1, 0, true, or false. Actual: ${rawValue}`);
+}
 
 function assertSigningConfig() {
   if (!existsSync(keystorePropertiesPath)) {
@@ -326,3 +501,9 @@ function quoteWindowsCommandArg(value) {
   if (!/[\s"&()<>^|]/u.test(text)) return text;
   return `"${text.replace(/"/g, '\\"')}"`;
 }
+
+export {
+  assertRealDirectory,
+  commitStagedAndroidApks,
+  pruneThenCommitAndroidApks,
+};

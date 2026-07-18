@@ -148,6 +148,17 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
   -Notes "版本更新说明"
 ```
 
+发布构建默认管理仓库内可再生缓存：超过 12 GiB 时以完整 Cargo profile/target triple、Gradle build 或 .NET `bin/obj` 为单位清理到 8 GiB，Android 和 .NET 分类上限分别为 1.5 GiB 和 0.5 GiB。发布资产 `mods/bepinex/dist`、本机引用和签名材料不计入配额。可在构建前查看实际占用：
+
+```powershell
+pnpm artifacts:report
+pnpm artifacts:prune -- --dry-run
+```
+
+需要调整发布机预算时传入 `-BuildCacheLimitGiB` 和 `-BuildCacheTargetGiB`；`-SkipBuildCacheCleanup` 只用于保留中间目录排查构建问题，不应作为常规发布参数。
+
+配额按文件逻辑大小统计，因此可能高于磁盘工具显示的实际分配块大小。手动运行 `prune`/`clean` 前必须退出 Cargo、Gradle、Vite 和 dotnet 构建进程；清理器只互斥其他清理进程，不会终止或接管正在运行的构建。
+
 如果引用 DLL 不在 `mods\bepinex\References`，传入同一个目录：
 
 ```powershell
@@ -158,7 +169,7 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
   -ReferenceDir "D:\path\to\mystia-steward-companion-references"
 ```
 
-脚本会先运行 `build-release.ps1`，然后上传 Mod 压缩包、自动更新清单和供其他设备直接使用的独立伴随窗口 EXE：
+脚本会先运行 `build-release.ps1`。正常构建通过 staging 完整重建 `mods/bepinex/dist`，旧 APK、manifest、tar、zip 和旧目录不会进入本次资产；随后脚本生成本次 update manifest，并上传 Mod 压缩包、自动更新清单和供其他设备直接使用的独立伴随窗口 EXE：
 
 - `mods/bepinex/dist/mystia-steward-companion-bepinex.zip`
 - `mods/bepinex/dist/update-manifest.json`
@@ -185,6 +196,8 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
 ```
 
 没有 `-BuildAndroidApk` 时，Windows 发布流程继续只构建 Mod 主包、更新清单和 Windows 独立伴随窗口 EXE，不强制依赖 Android SDK/NDK/JDK 或 keystore，也不会启用 Android APK 专用的 Rust LTO 体积优化。
+
+`-BuildAndroidApk` 不能与 `-SkipBuild` 或 `-AndroidApkPath` 同时使用：前者要求本次实际构建，后者表示使用调用者提供的外部 APK，资产来源必须唯一。覆盖已有 Release 时，脚本会对账两个 canonical Android APK；本次不再发布的旧 APK 只有在显式使用 `-Clobber` 时才会于基础资产上传成功后删除，否则发布会停止并列出差异。
 
 Android APK 也可以在具备 Android 工具链的机器上单独构建。仓库已包含 `apps/companion/src-tauri/gen/android/` 工程；签名配置、keystore、Gradle 缓存和 build 输出不能提交：
 
@@ -228,7 +241,7 @@ keyPassword=<key 密码>
 storeFile=C:\\Users\\Administrator\\.android\\mystia-steward-companion-release.jks
 ```
 
-构建、验签并复制发布资产：
+构建、验签并原子复制发布资产：
 
 ```powershell
 pnpm tauri:android:apk:signed
@@ -236,7 +249,7 @@ pnpm tauri:android:apk:signed
 
 签名 APK 脚本会在 Android 构建进程内注入 `CARGO_PROFILE_RELEASE_STRIP=symbols`、`CARGO_PROFILE_RELEASE_LTO=thin` 和 `CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1`，用于降低 APK 体积。该优化不会写入全局 Cargo release profile，避免普通 Windows 发布构建在 Rust 链接优化阶段耗时过长。
 
-成功后会生成：
+只有全部目标 APK 均构建并验签成功后才会替换 `dist` 中的 Android 资产；随后可按空间配额清理 Android Gradle/Cargo 中间产物。成功后会生成：
 
 ```text
 mods\bepinex\dist\mystia-steward-companion-android-arm64-v8a.apk
@@ -285,6 +298,10 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
 ```
 
 `-Clobber` 会覆盖同名 Release 资产。
+
+`-SkipBuild` 会显式复用当前 `dist`，不会重建目录或自动移除已有 APK。执行前必须用脚本输出的资产清单确认这些文件确实属于目标 tag；常规发布不要依赖上一次构建残留。
+
+正常打包若检测到 `mods\bepinex\dist.staging-*` 或 `dist.backup-*`，会停止而不会生成新的事务目录。先检查 canonical `dist` 是否完整；确认后再恢复唯一有效备份或删除已无用的 staging/backup，避免失败事务继续累积。
 
 ## 注意事项
 

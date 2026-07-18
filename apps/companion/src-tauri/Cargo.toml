@@ -28,5 +28,12 @@ tauri-plugin-opener = "2"
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-window-state = "2"
 
+[profile.dev]
+debug = 1
+incremental = true
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 strip = "symbols"

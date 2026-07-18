@@ -20,6 +20,11 @@ param(
     [switch]$SkipPackage,
     [switch]$BuildAndroidApk,
     [switch]$NoFrozenLockfile,
+    [ValidateRange(1, 1024)]
+    [int]$BuildCacheLimitGiB = 12,
+    [ValidateRange(1, 1024)]
+    [int]$BuildCacheTargetGiB = 8,
+    [switch]$SkipBuildCacheCleanup,
     [string]$ReferenceDir = $env:MYSTIA_REFERENCE_DIR
 )
 
@@ -32,6 +37,7 @@ $RepoRoot = (Resolve-Path (Join-Path $RootDir "../..")).Path
 $ProjectPath = Join-Path $RootDir "MystiaStewardCompanion.BepInEx.csproj"
 $PreflightScript = Join-Path $ToolDir "preflight.ps1"
 $PackageScript = Join-Path $ToolDir "package-release.ps1"
+$BuildArtifactManager = Join-Path $RepoRoot "scripts/manage-build-artifacts.mjs"
 $EffectiveReferenceDir = if ([string]::IsNullOrWhiteSpace($ReferenceDir)) {
     Join-Path $RootDir "References"
 } else {
@@ -106,6 +112,67 @@ function Invoke-Pnpm {
     Invoke-Checked -Title $Title -FilePath $Command.FilePath -Arguments @($Command.Prefix + $Arguments)
 }
 
+function Invoke-BuildCachePrune {
+    param([Parameter(Mandatory = $true)][string]$Title)
+
+    if (-not (Test-Path -LiteralPath $BuildArtifactManager -PathType Leaf)) {
+        throw "Build artifact manager was not found: $BuildArtifactManager"
+    }
+
+    $Node = Get-Command "node" -ErrorAction SilentlyContinue
+    if ($null -eq $Node) {
+        throw "node was not found. Install Node.js 20+ before enforcing the build cache limit."
+    }
+
+    Invoke-Checked `
+        -Title $Title `
+        -FilePath $Node.Source `
+        -Arguments @(
+            $BuildArtifactManager,
+            "prune",
+            "--limit-gib",
+            $BuildCacheLimitGiB.ToString(),
+            "--target-gib",
+            $BuildCacheTargetGiB.ToString()
+        )
+}
+
+function Invoke-AndroidApkBuild {
+    $PreviousLimit = $env:MYSTIA_BUILD_CACHE_LIMIT_GIB
+    $PreviousTarget = $env:MYSTIA_BUILD_CACHE_TARGET_GIB
+    $PreviousSkipCleanup = $env:MYSTIA_SKIP_BUILD_CACHE_CLEANUP
+
+    try {
+        $env:MYSTIA_BUILD_CACHE_LIMIT_GIB = $BuildCacheLimitGiB.ToString()
+        $env:MYSTIA_BUILD_CACHE_TARGET_GIB = $BuildCacheTargetGiB.ToString()
+        # -SkipPackage means the caller intentionally keeps raw Tauri outputs for later use.
+        $env:MYSTIA_SKIP_BUILD_CACHE_CLEANUP = if ($SkipBuildCacheCleanup -or $SkipPackage) { "1" } else { "0" }
+        Invoke-Pnpm -Title "Build signed Android APK" -Arguments @("tauri:android:apk:signed")
+    }
+    finally {
+        if ($null -eq $PreviousLimit) {
+            Remove-Item Env:MYSTIA_BUILD_CACHE_LIMIT_GIB -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:MYSTIA_BUILD_CACHE_LIMIT_GIB = $PreviousLimit
+        }
+
+        if ($null -eq $PreviousTarget) {
+            Remove-Item Env:MYSTIA_BUILD_CACHE_TARGET_GIB -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:MYSTIA_BUILD_CACHE_TARGET_GIB = $PreviousTarget
+        }
+
+        if ($null -eq $PreviousSkipCleanup) {
+            Remove-Item Env:MYSTIA_SKIP_BUILD_CACHE_CLEANUP -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:MYSTIA_SKIP_BUILD_CACHE_CLEANUP = $PreviousSkipCleanup
+        }
+    }
+}
+
 function Assert-BuildReferences {
     <#
     .SYNOPSIS
@@ -146,9 +213,21 @@ function Assert-BuildReferences {
     }
 }
 
+if ($BuildCacheTargetGiB -ge $BuildCacheLimitGiB) {
+    throw "BuildCacheTargetGiB must be less than BuildCacheLimitGiB. Actual: target=$BuildCacheTargetGiB, limit=$BuildCacheLimitGiB"
+}
+
+$PreviousBuildCacheSkipEnvironment = $env:MYSTIA_SKIP_BUILD_CACHE_CLEANUP
+$env:MYSTIA_SKIP_BUILD_CACHE_CLEANUP = if ($SkipBuildCacheCleanup) { "1" } else { "0" }
+
 Push-Location $RepoRoot
 try {
     Assert-BuildReferences
+
+    # A new Tauri build does not depend on a reused frontend build, so it is safe to prune stale buckets first.
+    if (-not $SkipBuildCacheCleanup -and -not $SkipTauriBuild) {
+        Invoke-BuildCachePrune -Title "Prune stale build artifacts before compilation"
+    }
 
     if (-not $SkipInstall) {
         $InstallArgs = @("install")
@@ -201,11 +280,21 @@ try {
     }
 
     if ($BuildAndroidApk) {
-        Invoke-Pnpm -Title "Build signed Android APK" -Arguments @("tauri:android:apk:signed")
+        Invoke-AndroidApkBuild
+    }
+
+    if (-not $SkipBuildCacheCleanup -and -not $SkipPackage) {
+        Invoke-BuildCachePrune -Title "Enforce build cache limit after packaging"
     }
 }
 finally {
     Pop-Location
+    if ($null -eq $PreviousBuildCacheSkipEnvironment) {
+        Remove-Item Env:MYSTIA_SKIP_BUILD_CACHE_CLEANUP -ErrorAction SilentlyContinue
+    }
+    else {
+        $env:MYSTIA_SKIP_BUILD_CACHE_CLEANUP = $PreviousBuildCacheSkipEnvironment
+    }
 }
 
 Write-Host ""

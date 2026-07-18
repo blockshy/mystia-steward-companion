@@ -121,6 +121,28 @@ pnpm tauri:build
 dotnet build mods/bepinex/MystiaStewardCompanion.BepInEx.csproj -c Release
 ```
 
+## 构建产物空间管理
+
+仓库内的 Tauri/Cargo 多目标缓存和 Android Gradle 中间目录可能在多次桌面、Android ABI 与检查构建后持续增长。使用统一命令查看和治理，不要手工删除 Cargo `deps` 或单个 hash 文件：
+
+```bash
+# 只报告各类产物大小
+pnpm artifacts:report
+
+# 默认超过 12 GiB 时清理到 8 GiB；Android/.NET 分类上限为 1.5/0.5 GiB
+pnpm artifacts:prune
+
+# 预览完整清理清单；确认后去掉 --dry-run 执行
+pnpm artifacts:clean -- --dry-run
+pnpm artifacts:clean
+```
+
+清理器以完整 Cargo profile/target triple、Gradle build 目录或单个 .NET 项目的 `bin/obj` 为单位，并拒绝白名单外路径和符号链接。`mods/bepinex/dist`、`References`、`temp`、`node_modules`、`.playwright-cli`、keystore 和签名配置永远不在自动清理范围。首次清理后 Rust/Gradle 会完整重建，耗时增加属于预期。
+
+统计和配额使用文件逻辑大小，保证 Windows/Linux 口径一致并保守预留磁盘空间。`pnpm tauri:dev`、`tauri:build` 和普通 Android 构建会在启动前清理旧缓存；直接运行 Cargo/dotnet 后使用 `pnpm artifacts:report` 检查。`prune`/`clean` 之间有独占锁，但无法接管直接启动的 Cargo、Gradle、Vite 或 dotnet 进程；不要在任何构建仍运行时手动执行清理。
+
+`build-release.ps1` 默认在安全边界执行配额检查，可通过 `-BuildCacheLimitGiB` 和 `-BuildCacheTargetGiB` 调整高低水位；仅在诊断时使用 `-SkipBuildCacheCleanup`。完整发布完成后才会清理已经复制到 `dist` 的中间产物；使用 `-SkipPackage` 生成裸构建输出时不会执行事后清理。
+
 ## Android 伴随窗口
 
 Android 版是给 B 设备使用的移动端伴随窗口，只通过可信局域网连接 A 设备上的游戏和 Mod。它不是 Windows EXE 的转换产物，也不包含托盘、置顶、鼠标穿透、焦点切换、单实例控制和游戏关闭自动退出等桌面能力。
@@ -187,7 +209,7 @@ storeFile=C:\\Users\\Administrator\\.android\\mystia-steward-companion-release.j
 pnpm tauri:android:apk:signed
 ```
 
-该命令会构建 release APK、调用 `apksigner verify --verbose --print-certs` 验签，并复制发布资产到：
+该命令会构建 release APK、调用 `apksigner verify --verbose --print-certs` 验签，并在全部目标验证通过后原子复制发布资产到：
 
 ```text
 mods/bepinex/dist/mystia-steward-companion-android-arm64-v8a.apk
@@ -196,7 +218,7 @@ mods/bepinex/dist/mystia-steward-companion-android-armeabi-v7a.apk
 
 签名 APK 脚本会在 Android 构建进程内注入 `CARGO_PROFILE_RELEASE_STRIP=symbols`、`CARGO_PROFILE_RELEASE_LTO=thin` 和 `CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1`，用于降低 APK 体积。该优化不会写入全局 Cargo release profile，避免普通 Windows 发布构建在 Rust 链接优化阶段耗时过长。
 
-也可以通过 `build-release.ps1 -BuildAndroidApk` 或 `publish-release.ps1 -BuildAndroidApk` 在本地构建/发布流程中自动生成这些文件。如果 APK 放在其他位置，发布时通过 `publish-release.ps1 -AndroidApkPath "D:\path\android-apks"` 指定 APK 文件或所在目录。APK 只作为 GitHub Release 的独立下载资产，不写入 `update-manifest.json`，也不参与 Mod 自动更新。
+全部 APK 已落入 `dist` 后，脚本才允许按统一空间配额清理 Android Gradle/Cargo 中间产物。也可以通过 `build-release.ps1 -BuildAndroidApk` 或 `publish-release.ps1 -BuildAndroidApk` 在本地构建/发布流程中自动生成这些文件。如果 APK 放在其他位置，发布时通过 `publish-release.ps1 -AndroidApkPath "D:\path\android-apks"` 指定 APK 文件或所在目录。APK 只作为 GitHub Release 的独立下载资产，不写入 `update-manifest.json`，也不参与 Mod 自动更新。
 
 Windows 下如果 `pnpm tauri:android:apk` 出现 `this and base files have different roots: C:\... and D:\...`，这是 Kotlin 增量编译缓存跨盘符相对路径问题。仓库已在 Android Gradle 配置中关闭 Kotlin incremental compilation；若本机仍复用旧 daemon 或旧缓存，先执行：
 
@@ -351,7 +373,7 @@ mods/bepinex/dist/mystia-steward-companion-android-arm64-v8a.apk
 mods/bepinex/dist/mystia-steward-companion-android-armeabi-v7a.apk
 ```
 
-PowerShell 7 脚本固定生成 Mod 主包 `.zip`；bash 脚本在系统没有 `zip` 时会改为生成 `.tar.gz`。打包脚本会在检测到 `apps/companion/src-tauri/target/release/mystia-steward-companion(.exe)` 时自动复制到安装包的 `companion/` 子目录，并把 `mystia-steward-companion-updater(.exe)` 放在插件目录根部。检测到 Windows `.exe` 时，还会在 `dist` 根目录复制一份 `mystia-steward-companion-companion-windows-x64.exe`，供其他设备只下载伴随窗口并通过 LAN 连接。Android APK 由 Tauri mobile/Android 工具链单独构建和签名，打包脚本不会从 Windows EXE 派生 APK。Windows 下该 updater 会显示独立更新窗口，负责提示关闭游戏、展示阶段进度并在游戏退出后替换插件目录。
+PowerShell 7 和 bash 脚本都固定生成 canonical Mod 主包 `.zip`；bash 环境缺少 `zip` 时会在触碰现有 `dist` 前失败，不再生成不同格式的 tar 回退。打包脚本会先校验输入，再在 staging 中生成本次完整资产并替换 `dist`，因此正常打包会移除上次残留的 APK、manifest、tar、zip 和旧目录；失败时保留上一套有效 `dist`。若异常终止留下 `dist.staging-*` 或 `dist.backup-*`，下一次打包会停止并列出路径，必须先确认当前 `dist` 后人工恢复或删除，不能继续堆叠事务备份。脚本在检测到 `apps/companion/src-tauri/target/release/mystia-steward-companion(.exe)` 时自动复制到安装包的 `companion/` 子目录，并把 `mystia-steward-companion-updater(.exe)` 放在插件目录根部。检测到 Windows `.exe` 时，还会在 `dist` 根目录复制一份 `mystia-steward-companion-companion-windows-x64.exe`，供其他设备只下载伴随窗口并通过 LAN 连接。Android APK 由 Tauri mobile/Android 工具链单独构建和签名，打包脚本不会从 Windows EXE 派生 APK。Windows 下该 updater 会显示独立更新窗口，负责提示关闭游戏、展示阶段进度并在游戏退出后替换插件目录。
 
 ## 本地发布
 

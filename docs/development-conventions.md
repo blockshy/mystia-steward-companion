@@ -39,6 +39,18 @@ pnpm lint
 pnpm build
 ```
 
+构建产物空间检查和清理：
+
+```bash
+pnpm artifacts:report
+pnpm artifacts:prune
+pnpm artifacts:clean -- --dry-run
+```
+
+产物管理器只操作仓库内白名单中的可再生 Cargo、Gradle、Vite 和 .NET 构建目录；默认在总量超过 12 GiB 时清理到 8 GiB，Android 与 .NET 分类上限分别为 1.5 GiB 和 0.5 GiB，并优先移除超过 14 天的非活动完整缓存单元。不得按单个 Cargo hash、`deps` 文件或文件数量裁剪缓存，也不得自动删除 `mods/bepinex/dist`、`mods/bepinex/References`、`temp`、`node_modules`、`.playwright-cli` 或 Android 签名材料。完整发布资产复制完成后才允许清理对应中间目录。
+
+配额使用文件逻辑大小，不依赖平台特有的磁盘块统计。常用 Tauri 桌面/Android 命令会在启动构建前执行 prune；直接运行 Cargo 或 dotnet 命令后仍需显式检查。`prune`/`clean` 自身使用独占锁，但手动调用时仍必须确认 Cargo、Gradle、Vite 和 dotnet 构建均已退出。发布目录事务与缓存清理审计分别运行 `pnpm audit:release-package` 和 `pnpm audit:build-artifacts`。
+
 伴随窗口：
 
 ```bash
@@ -66,6 +78,8 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 - 版本发布采用本机 Windows 构建后通过 `gh` 上传，详细说明见 `docs/local-release.md`。
 - 自动更新发布只支持稳定版 `X.Y.Z` 和预览版 `X.Y.Z-preview.N`。预览版必须发布为 GitHub Prerelease，用于 `dev` 上验证自动更新链路；稳定版确认后再合并 `main` 并发布普通 Release。
 - GitHub Release 需要上传 Mod 主包、`update-manifest.json` 和独立 Windows x64 伴随窗口 EXE：`mystia-steward-companion-companion-windows-x64.exe`；如发布机已配置 Android 工具链和签名配置，可通过 `build-release.ps1 -BuildAndroidApk` 或 `publish-release.ps1 -BuildAndroidApk` 生成并上传按 ABI 拆分的 Android APK，默认资产为 `mystia-steward-companion-android-arm64-v8a.apk` 和 `mystia-steward-companion-android-armeabi-v7a.apk`。`update-manifest.json` 只服务 Mod 自动更新，必须继续指向 `mystia-steward-companion-bepinex.zip`，不要把独立伴随窗口 EXE 或 Android APK 纳入自动更新清单。
+- `mods/bepinex/dist` 是本次发布资产的生成目录。正常 package/build 必须先在 staging 中完成并验证本次资产，再替换旧目录，不能保留上次 APK、manifest、tar、zip 或旧目录混入新发布；`publish-release.ps1 -SkipBuild` 是显式复用已有完整资产的唯一例外。构建缓存配额不包含 `dist`，也不得为了达成配额静默删除发布资产。
+- package/APK 事务遗留的 `dist.staging-*`、`dist.backup-*` 或 `.android-apk-stage-*` 不能自动覆盖或继续叠加；后续构建必须 fail-closed 并列出路径，由开发者确认 canonical `dist` 后恢复或删除。覆盖已有 GitHub Release 时还要对账两个 canonical Android APK，本次不再发布的旧资产只有显式 `-Clobber` 时才能删除。
 - 不要主动创建 tag 或发布 Release；版本构建必须等待用户明确指令。
 - 用户和测试文档中的 BepInEx 安装版本优先固定到已验证的 `BepInEx-Unity.IL2CPP-win-x64-6.0.0-be.783+c58c42d.zip`。不要笼统推荐最新 Bleeding Edge；#784 及之后构建若要恢复支持，需要先通过实测和运行时日志确认。
 - Android APK 不是 Windows 伴随窗口 EXE 的转换产物。Android 版按 Tauri mobile 目标维护，只作为 B 设备 LAN 伴随窗口；桌面托盘、置顶、鼠标穿透、焦点切换、单实例控制和游戏关闭自动退出必须继续隔离在桌面平台代码中。Android applicationId 固定为 `com.tyukki.mystia.steward.companion`；不要使用带连字符的产品名作为 Android 包名。桌面 Tauri identifier 继续使用既有值，Android 通过 `apps/companion/src-tauri/tauri.android.conf.json` 单独覆盖 identifier，避免影响桌面端本地数据目录。仓库保留 `apps/companion/src-tauri/gen/android/` 工程，Gradle Rust 插件必须通过 Corepack 调用 pnpm。Android 发布 APK 默认通过 `--split-per-abi --target aarch64 armv7` 构建，避免 universal fat APK；`pnpm tauri:android:apk:signed` 读取被 Git 忽略的 `apps/companion/src-tauri/gen/android/keystore.properties`，构建后用 `apksigner verify` 验签并复制 `mods/bepinex/dist/mystia-steward-companion-android-arm64-v8a.apk` 和 `mods/bepinex/dist/mystia-steward-companion-android-armeabi-v7a.apk`；`build-release.ps1 -BuildAndroidApk` 和 `publish-release.ps1 -BuildAndroidApk` 只是复用该签名构建流程，不允许把 keystore、密码和签名配置提交。Android Gradle 已关闭 Kotlin incremental compilation，避免 Windows 上 Cargo registry 与项目分属不同盘符时出现 Kotlin daemon 相对路径报错。APK 需要 Android 工具链构建、签名和真机验证，作为独立 Release 资产上传，不参与 Mod 自动更新。

@@ -21,6 +21,11 @@ param(
     [switch]$SkipVersionCheck,
     [switch]$Clobber,
     [switch]$BuildAndroidApk,
+    [ValidateRange(1, 1024)]
+    [int]$BuildCacheLimitGiB = 12,
+    [ValidateRange(1, 1024)]
+    [int]$BuildCacheTargetGiB = 8,
+    [switch]$SkipBuildCacheCleanup,
     [string]$ReferenceDir = "",
     [string]$AndroidApkPath = "",
     [string]$Repo = "blockshy/mystia-steward-companion"
@@ -37,6 +42,10 @@ $DistRoot = Join-Path $RootDir "dist"
 $ModZip = Join-Path $DistRoot "mystia-steward-companion-bepinex.zip"
 $CompanionExe = Join-Path $DistRoot "mystia-steward-companion-companion-windows-x64.exe"
 $DefaultAndroidApkPattern = "mystia-steward-companion-android-*.apk"
+$CurrentAndroidApkNames = @(
+    "mystia-steward-companion-android-arm64-v8a.apk",
+    "mystia-steward-companion-android-armeabi-v7a.apk"
+)
 $ManifestPath = Join-Path $DistRoot "update-manifest.json"
 
 function Invoke-Checked {
@@ -222,6 +231,56 @@ function Test-GhReleaseExists {
     }
 }
 
+function Get-GhReleaseAssetNames {
+    param(
+        [Parameter(Mandatory = $true)][string]$Gh,
+        [Parameter(Mandatory = $true)][string]$Tag,
+        [Parameter(Mandatory = $true)][string]$Repo
+    )
+
+    $RawJson = & $Gh release view $Tag --repo $Repo --json assets
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to read existing release assets for $Tag."
+    }
+
+    $Release = $RawJson | ConvertFrom-Json
+    return @(
+        $Release.assets |
+            ForEach-Object { [string]$_.name } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+}
+
+function Get-StaleCanonicalAndroidAssets {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [string[]]$ExistingAssetNames,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [string[]]$DesiredAssetNames
+    )
+
+    $Existing = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($AssetName in $ExistingAssetNames) {
+        [void]$Existing.Add($AssetName)
+    }
+
+    $Desired = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($AssetName in $DesiredAssetNames) {
+        [void]$Desired.Add($AssetName)
+    }
+
+    return @(
+        $CurrentAndroidApkNames |
+            Where-Object { $Existing.Contains($_) -and -not $Desired.Contains($_) }
+    )
+}
+
 function Resolve-OptionalAndroidApks {
     param([string]$ConfiguredPath)
 
@@ -257,8 +316,32 @@ function Resolve-OptionalAndroidApks {
     return @((Resolve-Path -LiteralPath $CandidatePath).Path)
 }
 
+function Resolve-CurrentAndroidApks {
+    $ResolvedPaths = @()
+    foreach ($AssetName in $CurrentAndroidApkNames) {
+        $AssetPath = Join-Path $DistRoot $AssetName
+        if (-not (Test-Path -LiteralPath $AssetPath -PathType Leaf)) {
+            throw "Missing Android APK produced by the current build: $AssetPath"
+        }
+        $ResolvedPaths += $AssetPath
+    }
+
+    return $ResolvedPaths
+}
+
 Push-Location $RepoRoot
 try {
+    if ($SkipBuild -and $BuildAndroidApk) {
+        throw "-SkipBuild and -BuildAndroidApk cannot be used together. Remove -SkipBuild to build APKs in this invocation."
+    }
+    if ($BuildAndroidApk -and -not [string]::IsNullOrWhiteSpace($AndroidApkPath)) {
+        throw "-BuildAndroidApk and -AndroidApkPath cannot be used together. Choose generated APKs or caller-supplied APKs."
+    }
+
+    if ($BuildCacheTargetGiB -ge $BuildCacheLimitGiB) {
+        throw "BuildCacheTargetGiB must be less than BuildCacheLimitGiB. Actual: target=$BuildCacheTargetGiB, limit=$BuildCacheLimitGiB"
+    }
+
     $ExpectedVersion = Get-VersionFromTag -Tag $Tag
     $ReleaseChannel = Get-ReleaseChannel -Version $ExpectedVersion
     Assert-ReleaseMode -Channel $ReleaseChannel -IsPrerelease $Prerelease.IsPresent
@@ -280,6 +363,13 @@ try {
         }
         if ($BuildAndroidApk) {
             $BuildArgs += "-BuildAndroidApk"
+        }
+        $BuildArgs += "-BuildCacheLimitGiB"
+        $BuildArgs += $BuildCacheLimitGiB.ToString()
+        $BuildArgs += "-BuildCacheTargetGiB"
+        $BuildArgs += $BuildCacheTargetGiB.ToString()
+        if ($SkipBuildCacheCleanup) {
+            $BuildArgs += "-SkipBuildCacheCleanup"
         }
 
         $Pwsh = Get-PwshCommand
@@ -310,7 +400,18 @@ try {
     $Manifest | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $ManifestPath
 
     [string[]]$AssetPaths = @($ModZip, $ManifestPath, $CompanionExe)
-    [string[]]$ResolvedAndroidApks = @(Resolve-OptionalAndroidApks -ConfiguredPath $AndroidApkPath)
+    [string[]]$ResolvedAndroidApks = @()
+    if (-not [string]::IsNullOrWhiteSpace($AndroidApkPath)) {
+        $ResolvedAndroidApks = @(Resolve-OptionalAndroidApks -ConfiguredPath $AndroidApkPath)
+    }
+    elseif ($SkipBuild) {
+        # -SkipBuild explicitly reuses the caller-managed dist directory, including any APKs already in it.
+        $ResolvedAndroidApks = @(Resolve-OptionalAndroidApks -ConfiguredPath "")
+    }
+    elseif ($BuildAndroidApk) {
+        # A normal build publishes exactly the two APKs produced in this invocation, never stale wildcard matches.
+        $ResolvedAndroidApks = @(Resolve-CurrentAndroidApks)
+    }
     foreach ($ResolvedAndroidApk in $ResolvedAndroidApks) {
         if ([string]::IsNullOrWhiteSpace($ResolvedAndroidApk)) {
             continue
@@ -321,6 +422,28 @@ try {
 
     $Gh = Get-GhCommand
     $ReleaseExists = Test-GhReleaseExists -Gh $Gh -Tag $Tag -Repo $Repo
+    [string[]]$StaleCanonicalAndroidAssets = @()
+    if ($ReleaseExists) {
+        [string[]]$ExistingAssetNames = @(Get-GhReleaseAssetNames -Gh $Gh -Tag $Tag -Repo $Repo)
+        [string[]]$DesiredAndroidAssetNames = @(
+            $ResolvedAndroidApks |
+                ForEach-Object { Split-Path $_ -Leaf }
+        )
+        $StaleCanonicalAndroidAssets = @(
+            Get-StaleCanonicalAndroidAssets `
+                -ExistingAssetNames $ExistingAssetNames `
+                -DesiredAssetNames $DesiredAndroidAssetNames
+        )
+
+        if ($StaleCanonicalAndroidAssets.Count -gt 0 -and -not $Clobber) {
+            $Details = ($StaleCanonicalAndroidAssets | ForEach-Object { "  - $_" }) -join [Environment]::NewLine
+            throw @(
+                "The existing release contains canonical Android APK assets that are not part of this publish operation.",
+                $Details,
+                "Re-run with -Clobber to upload the desired assets and remove these stale APKs."
+            ) -join [Environment]::NewLine
+        }
+    }
 
     if ($ReleaseExists) {
         [string[]]$UploadArgs = @("release", "upload", $Tag)
@@ -334,6 +457,18 @@ try {
         }
 
         Invoke-Checked -FilePath $Gh -Arguments $UploadArgs
+
+        foreach ($StaleAssetName in $StaleCanonicalAndroidAssets) {
+            Invoke-Checked -FilePath $Gh -Arguments @(
+                "release",
+                "delete-asset",
+                $Tag,
+                $StaleAssetName,
+                "--repo",
+                $Repo,
+                "--yes"
+            )
+        }
 
         if ($ReleaseChannel -eq "preview") {
             Invoke-Checked -FilePath $Gh -Arguments @("release", "edit", $Tag, "--repo", $Repo, "--prerelease", "--latest=false")
