@@ -9,8 +9,6 @@ use std::io::{self, ErrorKind, Read, Write};
 #[cfg(desktop)]
 use std::net::TcpListener;
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
-#[cfg(desktop)]
-use std::process::Command;
 use std::sync::{Arc, Mutex};
 #[cfg(desktop)]
 use std::thread;
@@ -52,7 +50,6 @@ const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray-icon.png");
 const DEFAULT_WINDOW_SWITCH_COOLDOWN_MS: u64 = 800;
 const MIN_WINDOW_SWITCH_COOLDOWN_MS: u64 = 250;
 const MAX_WINDOW_SWITCH_COOLDOWN_MS: u64 = 2000;
-const PROJECT_RELEASES_URL: &str = "https://github.com/blockshy/mystia-steward-companion/releases";
 
 type LocalApiResult<T> = Result<T, LocalApiError>;
 
@@ -442,12 +439,6 @@ fn set_mouse_passthrough(
 #[tauri::command]
 fn get_mouse_passthrough(mouse_passthrough_state: tauri::State<'_, MousePassthroughState>) -> bool {
     current_mouse_passthrough(&mouse_passthrough_state.0)
-}
-
-#[tauri::command]
-fn open_external_url(url: String) -> Result<(), String> {
-    let url = validate_project_release_url(&url)?;
-    open_url_in_system_browser(url)
 }
 
 #[tauri::command]
@@ -904,57 +895,6 @@ fn parse_http_response_body(response: &str) -> LocalApiResult<String> {
     }
 }
 
-fn validate_project_release_url(url: &str) -> Result<&str, String> {
-    let url = url.trim();
-    if url.is_empty() || url.contains('\r') || url.contains('\n') || url.contains('\0') {
-        return Err("invalid release url".to_string());
-    }
-
-    // 该 command 由前端“发布页”按钮调用，只允许打开本项目 GitHub Release，
-    // 避免把通用外链打开能力暴露给 WebView 中的任意输入。
-    if url == PROJECT_RELEASES_URL
-        || url
-            .strip_prefix(PROJECT_RELEASES_URL)
-            .is_some_and(|suffix| suffix.starts_with('/'))
-    {
-        return Ok(url);
-    }
-
-    Err("only project release urls are allowed".to_string())
-}
-
-#[cfg(all(desktop, target_os = "windows"))]
-fn open_url_in_system_browser(url: &str) -> Result<(), String> {
-    Command::new("cmd")
-        .args(["/C", "start", "", url])
-        .spawn()
-        .map_err(|error| format!("open browser failed: {error}"))?;
-    Ok(())
-}
-
-#[cfg(all(desktop, target_os = "macos"))]
-fn open_url_in_system_browser(url: &str) -> Result<(), String> {
-    Command::new("open")
-        .arg(url)
-        .spawn()
-        .map_err(|error| format!("open browser failed: {error}"))?;
-    Ok(())
-}
-
-#[cfg(all(desktop, not(target_os = "windows"), not(target_os = "macos")))]
-fn open_url_in_system_browser(url: &str) -> Result<(), String> {
-    Command::new("xdg-open")
-        .arg(url)
-        .spawn()
-        .map_err(|error| format!("open browser failed: {error}"))?;
-    Ok(())
-}
-
-#[cfg(not(desktop))]
-fn open_url_in_system_browser(_url: &str) -> Result<(), String> {
-    Err("opening external URLs is not available in the mobile companion build".to_string())
-}
-
 #[cfg(desktop)]
 fn notify_existing_instance() -> bool {
     let address = SocketAddr::from((Ipv4Addr::LOCALHOST, CONTROL_PORT));
@@ -1224,6 +1164,7 @@ pub fn run() {
     let launch_connection = Arc::new(Mutex::new(launch_connection_from_args()));
 
     let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
         .manage(LaunchConnectionState(launch_connection.clone()))
         .manage(WindowSwitchState(Arc::new(Mutex::new(None))))
         .manage(CompanionPreferenceState(Arc::new(Mutex::new(
@@ -1297,7 +1238,6 @@ pub fn run() {
             apply_companion_preferences,
             set_mouse_passthrough,
             get_mouse_passthrough,
-            open_external_url,
             companion_platform
         ])
         .run(tauri::generate_context!())

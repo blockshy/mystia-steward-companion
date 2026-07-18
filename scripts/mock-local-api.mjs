@@ -212,7 +212,10 @@ const updateStatus = {
   latestVersion: '1.0.10',
   latestTag: 'v1.0.10',
   hasUpdate: true,
-  checkedAtUtc: nowIso(),
+  lastAttemptAtUtc: nowIso(),
+  lastSuccessAtUtc: nowIso(),
+  nextCheckAtUtc: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+  consecutiveFailures: 0,
   publishedAtUtc: nowIso(),
   releaseUrl: 'https://github.com/blockshy/mystia-steward-companion/releases/tag/v1.0.10',
   packageAsset: 'mystia-steward-companion-bepinex.zip',
@@ -441,7 +444,10 @@ const server = http.createServer((request, response) => {
 
       if (path === '/updates/check') {
         updateStatus.state = 'available';
-        updateStatus.checkedAtUtc = nowIso();
+        updateStatus.lastAttemptAtUtc = nowIso();
+        updateStatus.lastSuccessAtUtc = nowIso();
+        updateStatus.nextCheckAtUtc = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+        updateStatus.consecutiveFailures = 0;
         updateStatus.hasUpdate = true;
         updateStatus.error = null;
         sendJson(response, 200, updateStatus);

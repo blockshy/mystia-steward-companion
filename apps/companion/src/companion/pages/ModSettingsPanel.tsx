@@ -2,17 +2,13 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { IconCopy, IconDownload, IconExternalLink, IconKey, IconPackageImport, IconRefresh } from '@tabler/icons-react';
 import { Button, InfoLine, Input, ListPanel, MultiSelectBox, NumberInput, Slider, SwitchField, Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui-kit';
 import {
-  checkForUpdates,
-  downloadUpdate,
-  installUpdateOnExit,
   readLocalApiConnectionConfig,
-  refreshUpdateStatus,
   regenerateLocalApiToken,
   writeLocalApiConnectionConfig,
 } from '@/companion/api';
 import { buildInventorySelectOptions, type InventorySortMode } from '@/companion/domain/inventory-sorting';
+import type { UpdateManager } from '@/companion/features/updates/useUpdateManager';
 import { formatBytes } from '@/companion/formatters';
-import { openProjectReleaseUrl } from '@/lib/external-url';
 import {
   MAX_RECIPE_VARIANT_LIMIT_PER_BASE,
   MAX_AUTO_ROLLBACKS_LIMIT,
@@ -56,8 +52,11 @@ export function ModSettingsPanel({
   runtimeSets,
   themeMode,
   serviceFocusCompact,
+  settingsTab,
+  updateManager,
   onPreferenceChange,
   onConnectionConfigApplied,
+  onSettingsTabChange,
   onThemeModeChange,
   onServiceFocusCompactChange,
   supportsDesktopWindowControls,
@@ -69,8 +68,11 @@ export function ModSettingsPanel({
   runtimeSets: RuntimeSets | null;
   themeMode: ThemeMode;
   serviceFocusCompact: boolean;
+  settingsTab: SettingsTab;
+  updateManager: UpdateManager;
   onPreferenceChange: (next: Partial<CompanionPreferences>) => void;
   onConnectionConfigApplied: (endpoint: string, apiToken: string) => void;
+  onSettingsTabChange: (tab: SettingsTab) => void;
   onThemeModeChange: (mode: ThemeMode) => void;
   onServiceFocusCompactChange: (value: boolean) => void;
   supportsDesktopWindowControls: boolean;
@@ -81,10 +83,6 @@ export function ModSettingsPanel({
   const [connectionBusy, setConnectionBusy] = useState<'refresh' | 'apply' | 'token' | 'copy' | null>(null);
   const [connectionError, setConnectionError] = useState('');
   const [connectionTokenVisible, setConnectionTokenVisible] = useState(false);
-  const [updateStatus, setUpdateStatus] = useState<UpdateStatusResponse | null>(null);
-  const [updateBusy, setUpdateBusy] = useState<'check' | 'download' | 'install' | null>(null);
-  const [updateError, setUpdateError] = useState('');
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>('window');
   const [ingredientExclusionSortMode, setIngredientExclusionSortMode] = useState<InventorySortMode>('name');
   const [beverageExclusionSortMode, setBeverageExclusionSortMode] = useState<InventorySortMode>('name');
   const ingredientOptions = useMemo(
@@ -221,62 +219,28 @@ export function ModSettingsPanel({
     }
   }, [connectionBusy]);
 
-  const refreshDisplayedUpdateStatus = useCallback(async () => {
-    if (!apiToken) {
-      setUpdateStatus(null);
-      return;
-    }
-
-    try {
-      const status = await refreshUpdateStatus(endpoint, apiToken);
-      setUpdateStatus(status);
-      setUpdateError('');
-    } catch (err) {
-      setUpdateError(err instanceof Error ? err.message : String(err));
-    }
-  }, [apiToken, endpoint]);
-
-  const runUpdateAction = useCallback(async (
-    action: 'check' | 'download' | 'install',
-    request: () => Promise<UpdateStatusResponse>,
-  ) => {
-    if (!apiToken || updateBusy) return;
-    setUpdateBusy(action);
-    try {
-      const status = await request();
-      setUpdateStatus(status);
-      setUpdateError(status.error ?? '');
-    } catch (err) {
-      setUpdateError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setUpdateBusy(null);
-    }
-  }, [apiToken, updateBusy]);
-
-  const openReleasePage = useCallback(async () => {
-    const url = updateStatus?.releaseUrl;
-    if (!url) return;
-    try {
-      setUpdateError('');
-      await openProjectReleaseUrl(url);
-    } catch (err) {
-      setUpdateError(`无法打开发布页：${err instanceof Error ? err.message : String(err)}`);
-    }
-  }, [updateStatus?.releaseUrl]);
-
-  useEffect(() => {
-    refreshDisplayedUpdateStatus();
-  }, [refreshDisplayedUpdateStatus]);
-
   useEffect(() => {
     if (settingsTab !== 'connection') return;
     refreshConnectionConfig();
   }, [refreshConnectionConfig, settingsTab]);
 
+  const updateStatus = updateManager.status;
   const updateStateLabel = formatUpdateState(updateStatus);
-  const updateDetail = updateError || updateStatus?.error || updateStatus?.installMessage || '';
-  const canDownloadUpdate = Boolean(updateStatus?.hasUpdate && updateStatus.enabled);
-  const canInstallUpdate = Boolean(updateStatus?.staged && updateStatus.enabled);
+  const updateDetail = updateManager.error || updateStatus?.error || updateStatus?.installMessage || '';
+  const remoteUpdateBusy = updateStatus?.state === 'checking'
+    || updateStatus?.state === 'downloading'
+    || isActiveUpdateInstallState(updateStatus?.installState ?? '');
+  const canDownloadUpdate = Boolean(
+    updateStatus?.hasUpdate
+    && updateStatus.enabled
+    && !updateStatus.staged
+    && !remoteUpdateBusy,
+  );
+  const canInstallUpdate = Boolean(
+    updateStatus?.staged
+    && updateStatus.enabled
+    && !remoteUpdateBusy,
+  );
   const hostDraftDirty = connectionConfig
     ? normalizeLanHostDraft(connectionLanHost) !== normalizeLanHostDraft(connectionConfig.lanBindHost)
     : false;
@@ -304,7 +268,7 @@ export function ModSettingsPanel({
   const tokenDisplayValue = connectionTokenVisible ? tokenValue : maskToken(tokenValue);
 
   return (
-    <Tabs value={settingsTab} onValueChange={(value) => setSettingsTab(value as SettingsTab)} className="space-y-4">
+    <Tabs value={settingsTab} onValueChange={(value) => onSettingsTabChange(value as SettingsTab)} className="space-y-4">
       <TabsList scrollable className="grid h-9 w-full grid-cols-5">
         <TabsTrigger value="window" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
           窗口
@@ -559,6 +523,13 @@ export function ModSettingsPanel({
               <InfoLine label="当前版本" value={updateStatus?.currentVersion || '未知'} />
               <InfoLine label="最新版本" value={updateStatus?.latestVersion || '未检查'} />
               <InfoLine label="状态" value={updateStateLabel} />
+              <InfoLine label="自动检查" value={!updateStatus ? '未读取' : updateStatus.autoCheck ? '已开启' : '已关闭'} />
+              <InfoLine label="更新通道" value={!updateStatus ? '未读取' : updateStatus.includePrerelease ? '含预发布版本' : '仅正式版本'} />
+              <InfoLine label="最近成功检查" value={!updateStatus ? '未读取' : formatUpdateDateTime(updateStatus.lastSuccessAtUtc)} />
+              <InfoLine label="下次自动检查" value={formatNextUpdateCheck(updateStatus)} />
+              {(updateStatus?.consecutiveFailures ?? 0) > 0 && (
+                <InfoLine label="连续检查失败" value={`${updateStatus?.consecutiveFailures} 次`} />
+              )}
               <InfoLine label="更新包" value={updateStatus?.packageSize ? formatBytes(updateStatus.packageSize) : '未知'} />
             </div>
             {updateDetail && (
@@ -577,9 +548,9 @@ export function ModSettingsPanel({
                 size="sm"
                 variant="outline"
                 leftSection={<IconRefresh size={14} />}
-                loading={updateBusy === 'check'}
-                disabled={!apiToken || Boolean(updateBusy)}
-                onClick={() => runUpdateAction('check', () => checkForUpdates(endpoint, apiToken))}
+                loading={updateManager.busy === 'check'}
+                disabled={!updateManager.connected || Boolean(updateManager.busy) || remoteUpdateBusy}
+                onClick={() => void updateManager.check()}
               >
                 检查
               </Button>
@@ -588,9 +559,9 @@ export function ModSettingsPanel({
                 size="sm"
                 variant="outline"
                 leftSection={<IconDownload size={14} />}
-                loading={updateBusy === 'download'}
-                disabled={!apiToken || Boolean(updateBusy) || !canDownloadUpdate}
-                onClick={() => runUpdateAction('download', () => downloadUpdate(endpoint, apiToken))}
+                loading={updateManager.busy === 'download'}
+                disabled={!updateManager.connected || Boolean(updateManager.busy) || !canDownloadUpdate}
+                onClick={() => void updateManager.download()}
               >
                 下载
               </Button>
@@ -599,9 +570,9 @@ export function ModSettingsPanel({
                 size="sm"
                 variant="outline"
                 leftSection={<IconPackageImport size={14} />}
-                loading={updateBusy === 'install'}
-                disabled={!apiToken || Boolean(updateBusy) || !canInstallUpdate}
-                onClick={() => runUpdateAction('install', () => installUpdateOnExit(endpoint, apiToken))}
+                loading={updateManager.busy === 'install'}
+                disabled={!updateManager.connected || Boolean(updateManager.busy) || !canInstallUpdate}
+                onClick={() => void updateManager.install()}
               >
                 打开安装程序
               </Button>
@@ -611,7 +582,7 @@ export function ModSettingsPanel({
                 variant="outline"
                 leftSection={<IconExternalLink size={14} />}
                 disabled={!updateStatus?.releaseUrl}
-                onClick={() => void openReleasePage()}
+                onClick={() => void updateManager.openReleasePage()}
               >
                 发布页
               </Button>
@@ -971,6 +942,8 @@ function formatUpdateState(status: UpdateStatusResponse | null): string {
   switch (status.installState) {
     case 'waiting':
       return '更新程序已打开';
+    case 'preparing':
+      return '正在准备安装';
     case 'closing-companion':
       return '正在关闭伴随窗口';
     case 'waiting-game':
@@ -1007,11 +980,26 @@ function formatUpdateState(status: UpdateStatusResponse | null): string {
       return '检查失败';
     case 'disabled':
       return '已关闭';
-    case 'manifestMissing':
-      return '等待首个自动更新版本';
     default:
       return '未检查';
   }
+}
+
+function isActiveUpdateInstallState(state: UpdateStatusResponse['installState']): boolean {
+  return state !== '' && state !== 'succeeded' && state !== 'failed' && state !== 'cancelled';
+}
+
+function formatUpdateDateTime(value: string | null | undefined): string {
+  if (!value) return '未记录';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return '未记录';
+  return parsed.toLocaleString('zh-CN', { hour12: false });
+}
+
+function formatNextUpdateCheck(status: UpdateStatusResponse | null): string {
+  if (!status) return '未读取';
+  if (!status.enabled || !status.autoCheck) return '未计划';
+  return formatUpdateDateTime(status.nextCheckAtUtc);
 }
 
 function parseSelectedIds(values: string[]): number[] {

@@ -276,20 +276,36 @@ export async function exportDiagnosticPackage(
   );
 }
 
-export async function refreshUpdateStatus(endpoint: string, apiToken: string): Promise<UpdateStatusResponse> {
-  return writeLocalApiJsonWithTimeout<UpdateStatusResponse>(endpoint, apiToken, '/updates/status', 2800);
+export async function refreshUpdateStatus(
+  endpoint: string,
+  apiToken: string,
+  signal?: AbortSignal,
+): Promise<UpdateStatusResponse> {
+  return writeLocalApiJsonWithTimeout<UpdateStatusResponse>(endpoint, apiToken, '/updates/status', 2800, signal);
 }
 
-export async function checkForUpdates(endpoint: string, apiToken: string): Promise<UpdateStatusResponse> {
-  return writeLocalApiJsonWithTimeout<UpdateStatusResponse>(endpoint, apiToken, '/updates/check', 15000);
+export async function checkForUpdates(
+  endpoint: string,
+  apiToken: string,
+  signal?: AbortSignal,
+): Promise<UpdateStatusResponse> {
+  return writeLocalApiJsonWithTimeout<UpdateStatusResponse>(endpoint, apiToken, '/updates/check', 15000, signal);
 }
 
-export async function downloadUpdate(endpoint: string, apiToken: string): Promise<UpdateStatusResponse> {
-  return writeLocalApiJsonWithTimeout<UpdateStatusResponse>(endpoint, apiToken, '/updates/download', 60000);
+export async function downloadUpdate(
+  endpoint: string,
+  apiToken: string,
+  signal?: AbortSignal,
+): Promise<UpdateStatusResponse> {
+  return writeLocalApiJsonWithTimeout<UpdateStatusResponse>(endpoint, apiToken, '/updates/download', 60000, signal);
 }
 
-export async function installUpdateOnExit(endpoint: string, apiToken: string): Promise<UpdateStatusResponse> {
-  return writeLocalApiJsonWithTimeout<UpdateStatusResponse>(endpoint, apiToken, '/updates/install-on-exit', 5000);
+export async function installUpdateOnExit(
+  endpoint: string,
+  apiToken: string,
+  signal?: AbortSignal,
+): Promise<UpdateStatusResponse> {
+  return writeLocalApiJsonWithTimeout<UpdateStatusResponse>(endpoint, apiToken, '/updates/install-on-exit', 5000, signal);
 }
 
 export async function inviteAllAvailableRareGuests(

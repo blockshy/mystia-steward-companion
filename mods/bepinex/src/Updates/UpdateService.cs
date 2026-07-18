@@ -20,7 +20,7 @@ namespace MystiaStewardCompanion.Updates;
 /// BepInEx DLL 和伴随窗口 exe 在运行中可能被游戏或窗口进程锁定，因此本服务不直接替换当前插件目录。
 /// 它只完成网络与校验阶段，真正替换由独立 updater 在游戏和伴随窗口退出后执行。
 /// </remarks>
-internal sealed class UpdateService
+internal sealed class UpdateService : IDisposable
 {
     private const string RepoWeb = "https://github.com/blockshy/mystia-steward-companion";
     private const string ManifestAssetName = "update-manifest.json";
@@ -34,7 +34,13 @@ internal sealed class UpdateService
     private const string RequiredWindowsCompanion = "companion/mystia-steward-companion.exe";
     private const string RequiredWindowsUpdater = "mystia-steward-companion-updater.exe";
     private const int SupportedManifestSchemaVersion = 1;
+    private static readonly TimeSpan SchedulerMaximumWait = TimeSpan.FromHours(1);
+    private static readonly TimeSpan SchedulerOperationRetryDelay = TimeSpan.FromMinutes(1);
+    private static readonly TimeSpan SchedulerStopTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan PackageDownloadTimeout = TimeSpan.FromMinutes(5);
+    private static readonly Regex PendingDownloadDirectoryPattern = new(
+        @"^\.(?<version>.+)\.(?<operationId>[0-9a-fA-F]{32})\.tmp$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly HttpClient Http = CreateHttpClient(TimeSpan.FromSeconds(12));
     private static readonly HttpClient DownloadHttp = CreateHttpClient(PackageDownloadTimeout);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -46,21 +52,52 @@ internal sealed class UpdateService
     private readonly ManualLogSource _log;
     private readonly object _lock = new();
     private readonly object _operationLock = new();
+    private readonly object _disposeLock = new();
+    private readonly ManualResetEventSlim _operationsIdle = new(true);
+    private readonly CancellationTokenSource _lifetimeCancellation = new();
     private readonly string _updatesRoot;
     private readonly string _statePath;
     private readonly string _installStatusPath;
+    private readonly TimeSpan _shutdownTimeout;
+    private readonly Func<DateTime> _utcNow;
+    private readonly Func<TimeSpan, CancellationToken, bool> _waitForScheduler;
+    private readonly Func<CancellationToken, UpdateCandidate> _fetchUpdateCandidate;
+    private readonly Action<string, string, long, CancellationToken> _downloadFile;
     private UpdateState _state;
-    private bool _autoCheckStarted;
+    private Thread? _schedulerThread;
+    private int _activeOperationCount;
+    private bool _shutdownStarted;
+    private bool _disposeCompleted;
 
     public UpdateService(UpdateServiceSettings settings, ManualLogSource log)
+        : this(settings, log, ResolveUpdatesRoot(), static () => DateTime.UtcNow, null)
+    {
+    }
+
+    internal UpdateService(
+        UpdateServiceSettings settings,
+        ManualLogSource log,
+        string updatesRoot,
+        Func<DateTime> utcNow,
+        Func<CancellationToken, UpdateCandidate>? fetchUpdateCandidate,
+        Func<TimeSpan, CancellationToken, bool>? waitForScheduler = null,
+        Action<string, string, long, CancellationToken>? downloadFile = null,
+        TimeSpan? shutdownTimeout = null)
     {
         _settings = settings;
         _log = log;
-        _updatesRoot = ResolveUpdatesRoot();
+        _updatesRoot = updatesRoot;
         _statePath = Path.Combine(_updatesRoot, "update-state.json");
         _installStatusPath = Path.Combine(_updatesRoot, "install-status.json");
+        _shutdownTimeout = shutdownTimeout ?? SchedulerStopTimeout;
+        if (_shutdownTimeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(shutdownTimeout));
+        _utcNow = utcNow;
+        _waitForScheduler = waitForScheduler ?? WaitForCancellation;
+        _fetchUpdateCandidate = fetchUpdateCandidate ?? FetchUpdateCandidate;
+        _downloadFile = downloadFile ?? DownloadFile;
         _state = LoadState();
         RefreshInstallStatus();
+        RecoverStartupState();
     }
 
     /// <summary>
@@ -76,63 +113,85 @@ internal sealed class UpdateService
         }
     }
 
+    internal bool IsDisposeComplete
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _disposeCompleted;
+            }
+        }
+    }
+
     /// <summary>
-    /// 按配置启动一次后台自动检查。
+    /// 按配置启动持续运行的后台自动检查调度器。
     /// </summary>
     /// <remarks>
-    /// 自动检查只启动一个后台线程，并受上次检查时间限制。网络失败不会影响 Mod 主流程，只写入状态供 UI 展示。
+    /// 调度器只启动一个后台线程。成功后按配置间隔再次检查，失败后按指数退避重试；网络失败不会影响 Mod 主流程。
     /// </remarks>
-    public void StartAutoCheck()
+    public void StartAutoCheckScheduler()
     {
         if (!_settings.Enabled || !_settings.AutoCheck) return;
+
         lock (_lock)
         {
-            if (_autoCheckStarted) return;
-            _autoCheckStarted = true;
-        }
+            ThrowIfShuttingDown();
+            if (_schedulerThread != null) return;
 
-        var thread = new Thread(() =>
-        {
+            EnsureNextCheckScheduled(_utcNow());
+            var cancellationToken = _lifetimeCancellation.Token;
+            _schedulerThread = new Thread(() => RunAutoCheckScheduler(cancellationToken))
+            {
+                IsBackground = true,
+                Name = "mystia-steward-companion update scheduler",
+            };
             try
             {
-                CheckForUpdates(force: false);
+                _schedulerThread.Start();
             }
-            catch (Exception ex)
+            catch
             {
-                _log.LogWarning($"Update auto-check failed: {ex.Message}");
+                _schedulerThread = null;
+                throw;
             }
-        })
-        {
-            IsBackground = true,
-            Name = "mystia-steward-companion update check",
-        };
-        thread.Start();
+        }
+
+        _log.LogInfo("Automatic update scheduler started.");
     }
 
     /// <summary>
     /// 检查 GitHub Release 是否存在可安装的新版本。
     /// </summary>
-    /// <param name="force">为 <c>true</c> 时忽略检查间隔，通常由用户手动点击触发。</param>
     /// <returns>检查后的更新状态；网络、清单或校验信息异常时会返回失败状态而不是向 API 层抛出。</returns>
     /// <remarks>
     /// 稳定版默认读取 <c>releases/latest/download/update-manifest.json</c>，避免 GitHub REST API
     /// 未认证请求的 rate limit。开启预发布检查时读取 <c>releases.atom</c> 中的公开 tag，
     /// 再按固定资产下载地址读取 manifest，避免测试通道耗尽 GitHub REST API 限额。
     /// </remarks>
-    public UpdateStatus CheckForUpdates(bool force)
+    public UpdateStatus CheckForUpdates()
     {
-        if (!Monitor.TryEnter(_operationLock)) return BusyStatus();
+        var enterResult = TryEnterOperation(out var cancellationToken);
+        if (enterResult == UpdateOperationEnterResult.Busy) return BusyStatus();
+        if (enterResult == UpdateOperationEnterResult.ShuttingDown) return ShuttingDownStatus();
         try
         {
-            return CheckForUpdatesCore(force);
+            return CheckForUpdatesCore(force: true, cancellationToken, "manual");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return ShuttingDownStatus();
         }
         finally
         {
-            Monitor.Exit(_operationLock);
+            ExitOperation();
         }
     }
 
-    private UpdateStatus CheckForUpdatesCore(bool force)
+    private UpdateStatus CheckForUpdatesCore(
+        bool force,
+        CancellationToken cancellationToken,
+        string trigger)
     {
         if (!_settings.Enabled)
         {
@@ -145,27 +204,43 @@ internal sealed class UpdateService
             }
         }
 
+        string previousState;
+        string? previousError;
         lock (_lock)
         {
-            if (!force && !IsCheckDue())
+            var now = _utcNow().ToUniversalTime();
+            if (!force && !IsCheckDue(now))
             {
                 return BuildStatus(null);
             }
 
+            previousState = _state.State;
+            previousError = _state.Error;
             _state.State = "checking";
+            _state.LastAttemptAtUtc = now;
+            _state.NextCheckAtUtc = null;
             _state.Error = null;
             SaveState();
         }
 
         try
         {
-            var candidate = FetchUpdateCandidate();
+            _log.LogInfo($"Update check started (trigger={trigger}).");
+            var candidate = _fetchUpdateCandidate(cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
             var manifest = candidate.Manifest;
             var hasUpdate = CompareVersion(manifest.Version, MystiaStewardCompanionPlugin.PluginVersion) > 0;
             lock (_lock)
             {
+                var completedAtUtc = _utcNow().ToUniversalTime();
                 _state.State = hasUpdate ? "available" : "current";
-                _state.CheckedAtUtc = DateTime.UtcNow;
+                _state.LastSuccessAtUtc = completedAtUtc;
+                _state.ConsecutiveFailures = 0;
+                _state.NextCheckAtUtc = CalculateNextCheckAtUtc(
+                    completedAtUtc,
+                    succeeded: true,
+                    consecutiveFailures: 0,
+                    checkIntervalHours: _settings.CheckIntervalHours);
                 _state.LatestVersion = manifest.Version;
                 _state.LatestTag = manifest.Tag;
                 _state.ReleaseUrl = string.IsNullOrWhiteSpace(manifest.ReleaseUrl) ? candidate.ReleaseUrl : manifest.ReleaseUrl;
@@ -176,17 +251,35 @@ internal sealed class UpdateService
                 _state.PackageDownloadUrl = candidate.PackageDownloadUrl;
                 _state.Error = null;
                 SaveState();
+                _log.LogInfo(
+                    $"Update check completed (trigger={trigger}, result={_state.State}, latest={manifest.Version}, next={_state.NextCheckAtUtc.Value:O}).");
                 return BuildStatus(null);
             }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            RestoreStableStateAfterCancellation(
+                scheduleImmediateCheck: true,
+                previousState: previousState,
+                previousError: previousError);
+            throw;
         }
         catch (Exception ex)
         {
             lock (_lock)
             {
+                var completedAtUtc = _utcNow().ToUniversalTime();
                 _state.State = "failed";
-                _state.CheckedAtUtc = DateTime.UtcNow;
+                _state.ConsecutiveFailures = Math.Max(0, _state.ConsecutiveFailures) + 1;
+                _state.NextCheckAtUtc = CalculateNextCheckAtUtc(
+                    completedAtUtc,
+                    succeeded: false,
+                    consecutiveFailures: _state.ConsecutiveFailures,
+                    checkIntervalHours: _settings.CheckIntervalHours);
                 _state.Error = FormatUpdateError(ex);
                 SaveState();
+                _log.LogWarning(
+                    $"Update check failed (trigger={trigger}, failures={_state.ConsecutiveFailures}, next={_state.NextCheckAtUtc.Value:O}): {_state.Error}");
                 return BuildStatus(_state.Error);
             }
         }
@@ -201,18 +294,24 @@ internal sealed class UpdateService
     /// </remarks>
     public UpdateStatus DownloadUpdate()
     {
-        if (!Monitor.TryEnter(_operationLock)) return BusyStatus();
+        var enterResult = TryEnterOperation(out var cancellationToken);
+        if (enterResult == UpdateOperationEnterResult.Busy) return BusyStatus();
+        if (enterResult == UpdateOperationEnterResult.ShuttingDown) return ShuttingDownStatus();
         try
         {
-            return DownloadUpdateCore();
+            return DownloadUpdateCore(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return ShuttingDownStatus();
         }
         finally
         {
-            Monitor.Exit(_operationLock);
+            ExitOperation();
         }
     }
 
-    private UpdateStatus DownloadUpdateCore()
+    private UpdateStatus DownloadUpdateCore(CancellationToken cancellationToken)
     {
         if (!_settings.Enabled)
         {
@@ -233,7 +332,7 @@ internal sealed class UpdateService
 
         if (!HasAvailableUpdate(snapshot))
         {
-            var checkedStatus = CheckForUpdates(force: true);
+            var checkedStatus = CheckForUpdatesCore(force: true, cancellationToken, "download");
             lock (_lock)
             {
                 snapshot = _state.Clone();
@@ -262,17 +361,20 @@ internal sealed class UpdateService
             var extractRoot = Path.Combine(pendingRoot, "extract");
             Directory.CreateDirectory(pendingRoot);
 
-            DownloadFile(snapshot.PackageDownloadUrl, packagePath, snapshot.PackageSize);
+            _downloadFile(snapshot.PackageDownloadUrl, packagePath, snapshot.PackageSize, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
 
             var actualHash = ComputeSha256(packagePath);
+            cancellationToken.ThrowIfCancellationRequested();
             if (!string.Equals(actualHash, snapshot.PackageSha256, StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidOperationException($"更新包校验失败：期望 {snapshot.PackageSha256}，实际 {actualHash}。");
             }
 
-            ExtractPackage(packagePath, extractRoot);
+            ExtractPackage(packagePath, extractRoot, cancellationToken);
             var stagedPluginDirectory = Path.Combine(extractRoot, PackageRootDirectoryName);
             ValidatePackageDirectory(stagedPluginDirectory);
+            cancellationToken.ThrowIfCancellationRequested();
             PromoteDownloadDirectory(pendingRoot, versionRoot);
             pendingRoot = null;
             stagedPluginDirectory = Path.Combine(versionRoot, "extract", PackageRootDirectoryName);
@@ -287,6 +389,15 @@ internal sealed class UpdateService
                 SaveState();
                 return BuildStatus(null);
             }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            TryDeleteDirectory(pendingRoot);
+            RestoreStableStateAfterCancellation(
+                scheduleImmediateCheck: false,
+                previousState: snapshot.State,
+                previousError: snapshot.Error);
+            throw;
         }
         catch (Exception ex)
         {
@@ -311,19 +422,26 @@ internal sealed class UpdateService
     /// </remarks>
     public UpdateStatus InstallOnExit()
     {
-        if (!Monitor.TryEnter(_operationLock)) return BusyStatus();
+        var enterResult = TryEnterOperation(out var cancellationToken);
+        if (enterResult == UpdateOperationEnterResult.Busy) return BusyStatus();
+        if (enterResult == UpdateOperationEnterResult.ShuttingDown) return ShuttingDownStatus();
         try
         {
-            return InstallOnExitCore();
+            return InstallOnExitCore(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return ShuttingDownStatus();
         }
         finally
         {
-            Monitor.Exit(_operationLock);
+            ExitOperation();
         }
     }
 
-    private UpdateStatus InstallOnExitCore()
+    private UpdateStatus InstallOnExitCore(CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (!_settings.Enabled)
         {
             return ErrorStatus("自动更新已关闭。");
@@ -388,9 +506,11 @@ internal sealed class UpdateService
             startInfo.ArgumentList.Add(_installStatusPath);
             startInfo.ArgumentList.Add("--control-port");
             startInfo.ArgumentList.Add("32146");
+            cancellationToken.ThrowIfCancellationRequested();
 
             lock (_lock)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 const string waitingMessage = "已启动独立更新程序，请在弹窗中确认关闭游戏并完成安装。";
                 AtomicFile.WriteAllText(_installStatusPath, JsonSerializer.Serialize(new UpdateInstallStatus
                 {
@@ -409,6 +529,10 @@ internal sealed class UpdateService
                 SaveState();
                 return BuildStatus(null);
             }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -447,6 +571,68 @@ internal sealed class UpdateService
         }
     }
 
+    /// <summary>
+    /// 阻止新更新操作并取消当前检查或下载；调用方随后可等待请求处理器退出，再调用 <see cref="Dispose"/>。
+    /// </summary>
+    public void BeginShutdown()
+    {
+        var cancel = false;
+        lock (_lock)
+        {
+            if (!_shutdownStarted)
+            {
+                _shutdownStarted = true;
+                cancel = true;
+            }
+        }
+
+        if (cancel) _lifetimeCancellation.Cancel();
+    }
+
+    public void Dispose()
+    {
+        lock (_disposeLock)
+        {
+            if (_disposeCompleted) return;
+            BeginShutdown();
+
+            Thread? thread;
+            lock (_lock)
+            {
+                thread = _schedulerThread;
+            }
+
+            if (ReferenceEquals(thread, Thread.CurrentThread))
+            {
+                _log.LogWarning("Update service disposal was requested from its scheduler thread; final cleanup must be retried by the owner.");
+                return;
+            }
+
+            var stopwatch = Stopwatch.StartNew();
+            if (thread != null && !thread.Join(_shutdownTimeout))
+            {
+                _log.LogWarning("Automatic update scheduler did not stop within the shutdown timeout; cleanup can be retried.");
+                return;
+            }
+
+            var remaining = _shutdownTimeout - stopwatch.Elapsed;
+            if (remaining < TimeSpan.Zero) remaining = TimeSpan.Zero;
+            if (!_operationsIdle.Wait(remaining))
+            {
+                _log.LogWarning("Active update operations did not stop within the shutdown timeout; cleanup can be retried.");
+                return;
+            }
+
+            lock (_lock)
+            {
+                _schedulerThread = null;
+                _disposeCompleted = true;
+            }
+            _operationsIdle.Dispose();
+            _lifetimeCancellation.Dispose();
+        }
+    }
+
     private static HttpClient CreateHttpClient(TimeSpan timeout)
     {
         var client = new HttpClient
@@ -457,18 +643,192 @@ internal sealed class UpdateService
         return client;
     }
 
-    private bool IsCheckDue()
+    private UpdateOperationEnterResult TryEnterOperation(out CancellationToken cancellationToken)
     {
-        if (_state.CheckedAtUtc == null) return true;
-        var interval = TimeSpan.FromHours(Math.Clamp(_settings.CheckIntervalHours, 1, 168));
-        return DateTime.UtcNow - _state.CheckedAtUtc.Value.ToUniversalTime() >= interval;
+        lock (_lock)
+        {
+            if (_shutdownStarted)
+            {
+                cancellationToken = default;
+                return UpdateOperationEnterResult.ShuttingDown;
+            }
+            cancellationToken = _lifetimeCancellation.Token;
+        }
+
+        if (!Monitor.TryEnter(_operationLock)) return UpdateOperationEnterResult.Busy;
+
+        lock (_lock)
+        {
+            if (_shutdownStarted)
+            {
+                Monitor.Exit(_operationLock);
+                cancellationToken = default;
+                return UpdateOperationEnterResult.ShuttingDown;
+            }
+
+            _activeOperationCount += 1;
+            if (_activeOperationCount == 1) _operationsIdle.Reset();
+            return UpdateOperationEnterResult.Entered;
+        }
     }
 
-    private UpdateCandidate FetchUpdateCandidate()
+    private void ExitOperation()
+    {
+        try
+        {
+            lock (_lock)
+            {
+                _activeOperationCount -= 1;
+                if (_activeOperationCount < 0)
+                {
+                    _activeOperationCount = 0;
+                    throw new InvalidOperationException("Update operation ownership became unbalanced.");
+                }
+                if (_activeOperationCount == 0) _operationsIdle.Set();
+            }
+        }
+        finally
+        {
+            Monitor.Exit(_operationLock);
+        }
+    }
+
+    private void RunAutoCheckScheduler(CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                try
+                {
+                    DateTime nextCheckAtUtc;
+                    var now = _utcNow().ToUniversalTime();
+                    lock (_lock)
+                    {
+                        EnsureNextCheckScheduled(now);
+                        nextCheckAtUtc = _state.NextCheckAtUtc ?? now;
+                    }
+
+                    var delay = nextCheckAtUtc - now;
+                    if (delay > TimeSpan.Zero)
+                    {
+                        var wait = delay > SchedulerMaximumWait ? SchedulerMaximumWait : delay;
+                        if (_waitForScheduler(wait, cancellationToken)) return;
+                        continue;
+                    }
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    var enterResult = TryEnterOperation(out var operationCancellationToken);
+                    if (enterResult == UpdateOperationEnterResult.ShuttingDown) return;
+                    if (enterResult == UpdateOperationEnterResult.Busy)
+                    {
+                        if (_waitForScheduler(SchedulerOperationRetryDelay, cancellationToken)) return;
+                        continue;
+                    }
+
+                    try
+                    {
+                        CheckForUpdatesCore(force: false, operationCancellationToken, "automatic");
+                    }
+                    finally
+                    {
+                        ExitOperation();
+                    }
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    _log.LogWarning($"Automatic update scheduler iteration failed: {ex.Message}");
+                    if (_waitForScheduler(SchedulerOperationRetryDelay, cancellationToken)) return;
+                }
+            }
+        }
+        finally
+        {
+            lock (_lock)
+            {
+                if (ReferenceEquals(_schedulerThread, Thread.CurrentThread))
+                {
+                    _schedulerThread = null;
+                }
+            }
+            _log.LogInfo("Automatic update scheduler stopped.");
+        }
+    }
+
+    private bool IsCheckDue(DateTime nowUtc)
+    {
+        return _state.NextCheckAtUtc == null
+            || nowUtc.ToUniversalTime() >= _state.NextCheckAtUtc.Value.ToUniversalTime();
+    }
+
+    private void EnsureNextCheckScheduled(DateTime nowUtc)
+    {
+        if (_state.NextCheckAtUtc != null) return;
+
+        if (_state.ConsecutiveFailures > 0 && _state.LastAttemptAtUtc != null)
+        {
+            _state.NextCheckAtUtc = CalculateNextCheckAtUtc(
+                _state.LastAttemptAtUtc.Value,
+                succeeded: false,
+                consecutiveFailures: _state.ConsecutiveFailures,
+                checkIntervalHours: _settings.CheckIntervalHours);
+        }
+        else if (_state.LastSuccessAtUtc != null)
+        {
+            _state.NextCheckAtUtc = CalculateNextCheckAtUtc(
+                _state.LastSuccessAtUtc.Value,
+                succeeded: true,
+                consecutiveFailures: 0,
+                checkIntervalHours: _settings.CheckIntervalHours);
+        }
+        else
+        {
+            _state.NextCheckAtUtc = nowUtc.ToUniversalTime();
+        }
+
+        SaveState();
+    }
+
+    internal static DateTime CalculateNextCheckAtUtc(
+        DateTime completedAtUtc,
+        bool succeeded,
+        int consecutiveFailures,
+        int checkIntervalHours)
+    {
+        var normalizedCompletedAtUtc = completedAtUtc.ToUniversalTime();
+        var delay = succeeded
+            ? TimeSpan.FromHours(Math.Clamp(checkIntervalHours, 1, 168))
+            : CalculateFailureRetryDelay(consecutiveFailures);
+        return normalizedCompletedAtUtc + delay;
+    }
+
+    internal static TimeSpan CalculateFailureRetryDelay(int consecutiveFailures)
+    {
+        return Math.Max(1, consecutiveFailures) switch
+        {
+            1 => TimeSpan.FromMinutes(15),
+            2 => TimeSpan.FromMinutes(30),
+            3 => TimeSpan.FromHours(1),
+            4 => TimeSpan.FromHours(2),
+            5 => TimeSpan.FromHours(4),
+            _ => TimeSpan.FromHours(6),
+        };
+    }
+
+    private static bool WaitForCancellation(TimeSpan delay, CancellationToken cancellationToken)
+    {
+        return cancellationToken.WaitHandle.WaitOne(delay);
+    }
+
+    private UpdateCandidate FetchUpdateCandidate(CancellationToken cancellationToken)
     {
         return _settings.IncludePrerelease
-            ? FetchPrereleaseAwareCandidate()
-            : FetchStableCandidateFromLatestAssets();
+            ? FetchPrereleaseAwareCandidate(cancellationToken)
+            : FetchStableCandidateFromLatestAssets(cancellationToken);
     }
 
     /// <summary>
@@ -478,9 +838,9 @@ internal sealed class UpdateService
     /// 该路径直接访问 Release 固定资产下载地址，绕过 GitHub API 频率限制。下载更新包时会使用
     /// manifest 中 tag 推导出的版本固定地址，避免检查与下载之间 latest 指向发生变化。
     /// </remarks>
-    private static UpdateCandidate FetchStableCandidateFromLatestAssets()
+    private static UpdateCandidate FetchStableCandidateFromLatestAssets(CancellationToken cancellationToken)
     {
-        var manifest = DownloadManifest(LatestManifestDownloadUrl);
+        var manifest = DownloadManifest(LatestManifestDownloadUrl, cancellationToken);
         return new UpdateCandidate
         {
             Manifest = manifest,
@@ -498,16 +858,17 @@ internal sealed class UpdateService
     /// 再按版本从高到低尝试读取每个 tag 下的 update-manifest.json。Atom 不走 REST API，
     /// 可以避免未认证请求触发 rate limit。
     /// </remarks>
-    private static UpdateCandidate FetchPrereleaseAwareCandidate()
+    private static UpdateCandidate FetchPrereleaseAwareCandidate(CancellationToken cancellationToken)
     {
-        var releases = FetchReleaseFeedCandidates();
+        var releases = FetchReleaseFeedCandidates(cancellationToken);
         foreach (var release in releases)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var manifestUrl = BuildVersionedAssetDownloadUrl(release.TagName, ManifestAssetName);
             UpdateManifest manifest;
             try
             {
-                manifest = DownloadManifest(manifestUrl);
+                manifest = DownloadManifest(manifestUrl, cancellationToken);
             }
             catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
             {
@@ -532,9 +893,9 @@ internal sealed class UpdateService
         throw new InvalidOperationException("未找到带自动更新清单的可用 Release。");
     }
 
-    private static List<ReleaseInfo> FetchReleaseFeedCandidates()
+    private static List<ReleaseInfo> FetchReleaseFeedCandidates(CancellationToken cancellationToken)
     {
-        return ParseReleaseFeed(ReadString(ReleasesAtomUrl));
+        return ParseReleaseFeed(ReadString(ReleasesAtomUrl, cancellationToken));
     }
 
     internal static List<ReleaseInfo> ParseReleaseFeed(string xml)
@@ -580,9 +941,9 @@ internal sealed class UpdateService
             .ToList();
     }
 
-    private static UpdateManifest DownloadManifest(string url)
+    private static UpdateManifest DownloadManifest(string url, CancellationToken cancellationToken)
     {
-        var json = ReadString(url);
+        var json = ReadString(url, cancellationToken);
         var manifest = JsonSerializer.Deserialize<UpdateManifest>(json, JsonOptions)
             ?? throw new InvalidOperationException("update-manifest.json 解析失败。");
         ValidateManifest(manifest);
@@ -641,18 +1002,25 @@ internal sealed class UpdateService
         }
     }
 
-    private static string ReadString(string url)
+    private static string ReadString(string url, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(url)) throw new InvalidOperationException("下载地址为空。");
-        return Http.GetStringAsync(url).GetAwaiter().GetResult();
+        return Http.GetStringAsync(url, cancellationToken).GetAwaiter().GetResult();
     }
 
-    private static void DownloadFile(string url, string path, long expectedSize)
+    private static void DownloadFile(
+        string url,
+        string path,
+        long expectedSize,
+        CancellationToken serviceCancellationToken)
     {
         if (string.IsNullOrWhiteSpace(url)) throw new InvalidOperationException("更新包下载地址为空。");
         if (expectedSize <= 0) throw new InvalidOperationException("更新包声明大小必须大于 0。");
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        using var cancellation = new CancellationTokenSource(PackageDownloadTimeout);
+        using var timeoutCancellation = new CancellationTokenSource(PackageDownloadTimeout);
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            serviceCancellationToken,
+            timeoutCancellation.Token);
         DownloadFileAsync(url, path, expectedSize, cancellation.Token).GetAwaiter().GetResult();
     }
 
@@ -731,7 +1099,10 @@ internal sealed class UpdateService
     /// <param name="packagePath">已通过 SHA256 校验的 zip 文件。</param>
     /// <param name="extractRoot">解压目标根目录。</param>
     /// <exception cref="InvalidOperationException">当压缩包条目试图写出目标根目录时抛出。</exception>
-    private static void ExtractPackage(string packagePath, string extractRoot)
+    private static void ExtractPackage(
+        string packagePath,
+        string extractRoot,
+        CancellationToken cancellationToken)
     {
         if (Directory.Exists(extractRoot)) Directory.Delete(extractRoot, recursive: true);
         Directory.CreateDirectory(extractRoot);
@@ -739,6 +1110,7 @@ internal sealed class UpdateService
         using var archive = ZipFile.OpenRead(packagePath);
         foreach (var entry in archive.Entries)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var destination = Path.GetFullPath(Path.Combine(extractRoot, entry.FullName));
             if (!destination.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase))
             {
@@ -860,6 +1232,76 @@ internal sealed class UpdateService
             _log.LogWarning($"Read update state failed: {ex.Message}");
             return new UpdateState();
         }
+    }
+
+    private void RecoverStartupState()
+    {
+        var cleanup = CleanupPendingDownloadDirectories();
+        if (cleanup.Removed > 0)
+        {
+            _log.LogInfo($"Removed {cleanup.Removed} pending update download directories during startup.");
+        }
+        if (!cleanup.Completed)
+        {
+            _log.LogWarning("Pending update download cleanup was incomplete; matching directories will be retried on next startup.");
+        }
+
+        if (!IsTransientUpdateState(_state.State)) return;
+
+        var interruptedState = _state.State;
+        _state.State = ResolveStableState();
+        _state.NextCheckAtUtc = _utcNow().ToUniversalTime();
+        _state.Error = null;
+        try
+        {
+            SaveState();
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning($"Persist interrupted update recovery failed: {ex.Message}");
+        }
+
+        _log.LogInfo(
+            $"Recovered interrupted update state (from={interruptedState}, to={_state.State}, pendingRemoved={cleanup.Removed}, next={_state.NextCheckAtUtc.Value:O}).");
+    }
+
+    private (int Removed, bool Completed) CleanupPendingDownloadDirectories()
+    {
+        var downloadsRoot = Path.Combine(_updatesRoot, "downloads");
+        if (!Directory.Exists(downloadsRoot)) return (0, true);
+
+        string[] directories;
+        try
+        {
+            directories = Directory.GetDirectories(downloadsRoot, "*", SearchOption.TopDirectoryOnly);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning($"Enumerate interrupted update downloads failed: {ex.Message}");
+            return (0, false);
+        }
+
+        var removed = 0;
+        var completed = true;
+        foreach (var directory in directories)
+        {
+            var name = Path.GetFileName(directory);
+            var match = PendingDownloadDirectoryPattern.Match(name);
+            if (!match.Success || !SemanticVersion.TryParse(match.Groups["version"].Value, out _)) continue;
+
+            try
+            {
+                if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0) continue;
+                Directory.Delete(directory, recursive: true);
+                removed += 1;
+            }
+            catch (Exception ex)
+            {
+                completed = false;
+                _log.LogWarning($"Delete interrupted update download '{name}' failed: {ex.Message}");
+            }
+        }
+        return (removed, completed);
     }
 
     private void SaveState()
@@ -1008,6 +1450,49 @@ internal sealed class UpdateService
         }
     }
 
+    private UpdateStatus ShuttingDownStatus()
+    {
+        lock (_lock)
+        {
+            return BuildStatus("更新服务正在关闭，已取消当前操作。");
+        }
+    }
+
+    private void RestoreStableStateAfterCancellation(
+        bool scheduleImmediateCheck,
+        string previousState,
+        string? previousError)
+    {
+        lock (_lock)
+        {
+            _state.State = string.IsNullOrWhiteSpace(previousState) || IsTransientUpdateState(previousState)
+                ? ResolveStableState()
+                : previousState;
+            if (scheduleImmediateCheck) _state.NextCheckAtUtc = _utcNow().ToUniversalTime();
+            _state.Error = previousError;
+            try
+            {
+                SaveState();
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning($"Persist cancelled update state failed: {ex.Message}");
+            }
+        }
+    }
+
+    private string ResolveStableState()
+    {
+        if (HasInstallableStagedUpdate(_state)) return "downloaded";
+        if (HasAvailableUpdate(_state)) return "available";
+        return _state.LastSuccessAtUtc != null ? "current" : "idle";
+    }
+
+    private static bool IsTransientUpdateState(string state)
+    {
+        return state is "checking" or "downloading";
+    }
+
     private UpdateStatus BuildStatus(string? error)
     {
         var hasUpdate = HasAvailableUpdate(_state);
@@ -1022,7 +1507,12 @@ internal sealed class UpdateService
             LatestVersion = _state.LatestVersion,
             LatestTag = _state.LatestTag,
             HasUpdate = hasUpdate,
-            CheckedAtUtc = _state.CheckedAtUtc?.ToString("O") ?? "",
+            LastAttemptAtUtc = _state.LastAttemptAtUtc?.ToString("O") ?? "",
+            LastSuccessAtUtc = _state.LastSuccessAtUtc?.ToString("O") ?? "",
+            NextCheckAtUtc = _settings.Enabled && _settings.AutoCheck
+                ? _state.NextCheckAtUtc?.ToString("O") ?? ""
+                : "",
+            ConsecutiveFailures = _state.ConsecutiveFailures,
             PublishedAtUtc = _state.PublishedAtUtc?.ToString("O") ?? "",
             ReleaseUrl = string.IsNullOrWhiteSpace(_state.ReleaseUrl) ? AllReleasesUrl : _state.ReleaseUrl,
             PackageAsset = _state.PackageAsset,
@@ -1101,6 +1591,18 @@ internal sealed class UpdateService
     {
         return DateTime.TryParse(value, out var parsed) ? parsed.ToUniversalTime() : null;
     }
+
+    private void ThrowIfShuttingDown()
+    {
+        if (_shutdownStarted) throw new ObjectDisposedException(nameof(UpdateService));
+    }
+}
+
+internal enum UpdateOperationEnterResult
+{
+    Entered,
+    Busy,
+    ShuttingDown,
 }
 
 internal sealed class UpdateServiceSettings
@@ -1122,7 +1624,10 @@ internal sealed class UpdateStatus
     public string LatestVersion { get; init; } = "";
     public string LatestTag { get; init; } = "";
     public bool HasUpdate { get; init; }
-    public string CheckedAtUtc { get; init; } = "";
+    public string LastAttemptAtUtc { get; init; } = "";
+    public string LastSuccessAtUtc { get; init; } = "";
+    public string NextCheckAtUtc { get; init; } = "";
+    public int ConsecutiveFailures { get; init; }
     public string PublishedAtUtc { get; init; } = "";
     public string ReleaseUrl { get; init; } = "";
     public string PackageAsset { get; init; } = "";
@@ -1138,7 +1643,10 @@ internal sealed class UpdateStatus
 internal sealed class UpdateState
 {
     public string State { get; set; } = "idle";
-    public DateTime? CheckedAtUtc { get; set; }
+    public DateTime? LastAttemptAtUtc { get; set; }
+    public DateTime? LastSuccessAtUtc { get; set; }
+    public DateTime? NextCheckAtUtc { get; set; }
+    public int ConsecutiveFailures { get; set; }
     public string LatestVersion { get; set; } = "";
     public string LatestTag { get; set; } = "";
     public string ReleaseUrl { get; set; } = "";
@@ -1160,7 +1668,10 @@ internal sealed class UpdateState
         return new UpdateState
         {
             State = State,
-            CheckedAtUtc = CheckedAtUtc,
+            LastAttemptAtUtc = LastAttemptAtUtc,
+            LastSuccessAtUtc = LastSuccessAtUtc,
+            NextCheckAtUtc = NextCheckAtUtc,
+            ConsecutiveFailures = ConsecutiveFailures,
             LatestVersion = LatestVersion,
             LatestTag = LatestTag,
             ReleaseUrl = ReleaseUrl,

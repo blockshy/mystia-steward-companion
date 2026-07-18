@@ -809,10 +809,10 @@ internal sealed class StewardOverlayController
                 customRecipeStore,
                 _log);
             _localApiServer.Start();
-            updateService.StartAutoCheck();
         }
         catch (Exception ex)
         {
+            _localApiServer?.Dispose();
             _localApiServer = null;
             _status = L(
                 $"本地 API 启动失败：{ex.Message}",

@@ -502,17 +502,46 @@ export interface DiagnosticPackageResponse {
   error: string | null;
 }
 
+export type UpdateCheckState =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'current'
+  | 'downloading'
+  | 'downloaded'
+  | 'installed'
+  | 'failed'
+  | 'disabled';
+
+export type UpdateInstallState =
+  | ''
+  | 'waiting'
+  | 'preparing'
+  | 'closing-companion'
+  | 'waiting-game'
+  | 'terminating-game'
+  | 'game-closed'
+  | 'backing-up'
+  | 'installing'
+  | 'verifying'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled';
+
 export interface UpdateStatusResponse {
   ok: boolean;
   currentVersion: string;
   enabled: boolean;
   autoCheck: boolean;
   includePrerelease: boolean;
-  state: string;
+  state: UpdateCheckState;
   latestVersion: string;
   latestTag: string;
   hasUpdate: boolean;
-  checkedAtUtc: string;
+  lastAttemptAtUtc: string;
+  lastSuccessAtUtc: string;
+  nextCheckAtUtc: string;
+  consecutiveFailures: number;
   publishedAtUtc: string;
   releaseUrl: string;
   packageAsset: string;
@@ -520,7 +549,7 @@ export interface UpdateStatusResponse {
   downloadedVersion: string;
   downloadedAtUtc: string;
   staged: boolean;
-  installState: string;
+  installState: UpdateInstallState;
   installMessage: string;
   error: string | null;
 }

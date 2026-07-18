@@ -3,5 +3,18 @@
   "identifier": "default",
   "description": "Default permissions for the companion window.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        {
+          "url": "https://github.com/blockshy/mystia-steward-companion/releases"
+        },
+        {
+          "url": "https://github.com/blockshy/mystia-steward-companion/releases/*"
+        }
+      ]
+    }
+  ]
 }

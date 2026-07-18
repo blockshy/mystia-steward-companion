@@ -208,6 +208,7 @@ internal sealed class LocalApiServer : IDisposable
                 _clientHandlers.StartAccepting();
                 StartListener("loopback", BindAddress, lanCandidate: null);
                 ApplyLanSettingsCore(_lanEnabled, _lanBindHost);
+                _updateService.StartAutoCheckScheduler();
                 _log.LogInfo($"Local API loopback listener is available at {BaseUrl}. LAN listener is an optional add-on for trusted private networks.");
             }
             catch
@@ -252,6 +253,7 @@ internal sealed class LocalApiServer : IDisposable
             _running = false;
             _lanSettingsApplied = false;
             _clientHandlers.StopAccepting();
+            _updateService.BeginShutdown();
             StopAllListeners();
         }
 
@@ -259,6 +261,8 @@ internal sealed class LocalApiServer : IDisposable
         {
             _log.LogWarning("Local API client handlers did not stop within three seconds.");
         }
+
+        _updateService.Dispose();
     }
 
     public void ApplyLanSettings(bool lanEnabled, string lanBindHost)
@@ -578,7 +582,7 @@ internal sealed class LocalApiServer : IDisposable
                         WriteResponse(stream, 200, "OK", ToJson(_updateService.GetStatus()));
                         break;
                     case "/updates/check":
-                        WriteResponse(stream, 200, "OK", ToJson(_updateService.CheckForUpdates(force: true)));
+                        WriteResponse(stream, 200, "OK", ToJson(_updateService.CheckForUpdates()));
                         break;
                     case "/updates/download":
                         WriteResponse(stream, 200, "OK", ToJson(_updateService.DownloadUpdate()));

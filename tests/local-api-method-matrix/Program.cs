@@ -74,6 +74,19 @@ try
         "_automationCommandEpoch = Math.Max(1, automationCommandEpoch);",
         "A recreated Local API server does not inherit the Unity command epoch.");
 
+    var disposeStart = RequireIndex(source, "public void Dispose()", 0);
+    var stopAcceptingIndex = RequireIndex(source, "_clientHandlers.StopAccepting();", disposeStart);
+    var beginUpdateShutdownIndex = RequireIndex(source, "_updateService.BeginShutdown();", stopAcceptingIndex);
+    var waitForHandlersIndex = RequireIndex(source, "_clientHandlers.WaitForIdle(ClientHandlerStopTimeout)", beginUpdateShutdownIndex);
+    var disposeUpdateServiceIndex = RequireIndex(source, "_updateService.Dispose();", waitForHandlersIndex);
+    if (!(stopAcceptingIndex < beginUpdateShutdownIndex
+          && beginUpdateShutdownIndex < waitForHandlersIndex
+          && waitForHandlersIndex < disposeUpdateServiceIndex))
+    {
+        throw new InvalidOperationException(
+            "Local API shutdown must stop new clients, cancel update operations, wait for handlers, then release the update service.");
+    }
+
     var handleStart = RequireIndex(source, "private void HandleClient(TcpClient client)", 0);
     var postBranchStart = RequireIndex(source, "if (isPost)", handleStart);
     var postSwitchStart = RequireIndex(source, "switch (path)", postBranchStart);

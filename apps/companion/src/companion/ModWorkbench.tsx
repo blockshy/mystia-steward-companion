@@ -5,6 +5,8 @@ import {
   type CustomRecipeFormState,
 } from '@/companion/custom-recipe-editor';
 import { WorkbenchHeader } from '@/companion/features/workbench/WorkbenchHeader';
+import { UpdateNoticeBar } from '@/companion/features/updates/UpdateNoticeBar';
+import { useUpdateManager } from '@/companion/features/updates/useUpdateManager';
 import { useCompanionConnection } from '@/companion/hooks/useCompanionConnection';
 import {
   buildAutomationLeaseConnectionKey,
@@ -164,6 +166,7 @@ import type {
   OrderRecommendation,
   RareAutoOrderDiagnostic,
   RecommendationStateSnapshot,
+  SettingsTab,
   SpecialBusinessContext,
 } from '@/companion/types';
 import type {
@@ -1281,6 +1284,7 @@ function pauseNormalOrderStateAfterRuntimeFailure(
 export function ModWorkbench() {
   const { mode: themeMode, setMode: setThemeMode } = useThemeMode();
   const [tab, setTab] = useState<ModTab>(() => readStoredTab());
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('window');
   const [serviceFocusMode, setServiceFocusMode] = useState(false);
   const [serviceFocusCompact, setServiceFocusCompact] = useState(readStoredFocusCompact);
   const [serviceFocusRecipeLimit, setServiceFocusRecipeLimit] = useState(readStoredFocusRecipeLimit);
@@ -1332,6 +1336,12 @@ export function ModWorkbench() {
     updateCustomRecipeFlagsState,
     moveCustomRecipeEntry,
   } = useCustomRecipes({ apiToken, connectionPaused, normalizedEndpoint });
+  const updateManager = useUpdateManager({
+    endpoint: normalizedEndpoint,
+    apiToken,
+    connectionRevision,
+    connected: Boolean(apiToken && !connectionPaused && !error && snapshot),
+  });
   const customRecipeDraftEndpointRef = useRef(normalizedEndpoint);
 
   useEffect(() => {
@@ -4127,6 +4137,14 @@ export function ModWorkbench() {
         snapshot={snapshot}
       />
 
+      <UpdateNoticeBar
+        manager={updateManager}
+        onViewUpdate={() => {
+          setSettingsTab('updates');
+          setTab('settings');
+        }}
+      />
+
       <Tabs value={tab} onValueChange={(value) => setTab(value as ModTab)} className="space-y-3">
         <TabsList
           scrollable
@@ -4388,8 +4406,11 @@ export function ModWorkbench() {
               runtimeSets={runtimeSets}
               themeMode={themeMode}
               serviceFocusCompact={serviceFocusCompact}
+              settingsTab={settingsTab}
+              updateManager={updateManager}
               onPreferenceChange={updateCompanionPreferences}
               onConnectionConfigApplied={applyConnectionDetails}
+              onSettingsTabChange={setSettingsTab}
               onThemeModeChange={setThemeMode}
               onServiceFocusCompactChange={setServiceFocusCompact}
               supportsDesktopWindowControls={companionPlatform === 'desktop'}
