@@ -34,6 +34,7 @@ function SelectBox({
   return (
     <MantineSelect
       data-slot="select"
+      data-gamepad-control="select"
       value={value}
       data={options}
       placeholder={placeholder}

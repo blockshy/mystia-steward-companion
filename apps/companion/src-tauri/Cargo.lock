@@ -2061,6 +2061,7 @@ dependencies = [
 name = "mystia-steward-companion"
 version = "1.2.0"
 dependencies = [
+ "serde",
  "tauri",
  "tauri-build",
  "tauri-plugin-opener",

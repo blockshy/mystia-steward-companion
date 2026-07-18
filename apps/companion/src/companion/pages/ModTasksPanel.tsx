@@ -86,7 +86,6 @@ function RareGuestInvitationPanel({
             disabled={isBusy}
             aria-label="稀客邀请范围"
             className="h-8 min-w-0"
-            data-gamepad-clickable="true"
           />
           <Button
             type="button"
@@ -95,6 +94,7 @@ function RareGuestInvitationPanel({
             onClick={onRefreshRareGuestInvitations}
             disabled={!runtimeLoaded || isBusy}
             data-gamepad-clickable="true"
+            data-gamepad-focus-key="tasks:rare-invitations:refresh"
           >
             <IconRefresh className={isListBusy ? 'size-4 animate-spin' : 'size-4'} />
             刷新
@@ -139,6 +139,7 @@ function RareGuestInvitationPanel({
                   onClick={() => onInviteLevelsChange([])}
                   disabled={isBusy}
                   data-gamepad-clickable="true"
+                  data-gamepad-focus-key="tasks:rare-invitations:level:all"
                 >
                   全部羁绊
                 </Button>
@@ -152,6 +153,7 @@ function RareGuestInvitationPanel({
                     onClick={() => onInviteLevelsChange(toggleNumberInList(inviteLevels, level))}
                     disabled={isBusy}
                     data-gamepad-clickable="true"
+                    data-gamepad-focus-key={`tasks:rare-invitations:level:${level}`}
                   >
                     羁绊 {level}
                   </Button>
@@ -163,6 +165,7 @@ function RareGuestInvitationPanel({
                   onClick={onInviteAllRareGuests}
                   disabled={!runtimeLoaded || isBusy || filteredAvailableEntries.length === 0}
                   data-gamepad-clickable="true"
+                  data-gamepad-focus-key="tasks:rare-invitations:invite-all"
                 >
                   {isAllBusy ? '邀请中...' : '邀请全部'}
                 </Button>
@@ -195,6 +198,7 @@ function RareGuestInvitationPanel({
                       onClick={() => onInviteRareGuest(entry.id)}
                       disabled={!runtimeLoaded || isBusy || !canInvite}
                       data-gamepad-clickable="true"
+                      data-gamepad-focus-key={`tasks:rare-invitations:guest:${entry.id}`}
                     >
                       {busy ? '邀请中' : '邀请'}
                     </Button>
@@ -326,6 +330,7 @@ export function ModTasksPanel({
                 className="h-8 px-2.5"
                 aria-pressed={showExtraInfo}
                 data-gamepad-clickable="true"
+                data-gamepad-focus-key="tasks:missions:show-extra"
                 onClick={() => setShowExtraInfo((value) => !value)}
               >
                 显示额外信息
@@ -339,6 +344,7 @@ export function ModTasksPanel({
                 variant={statusFilters.includes(filter) ? 'default' : 'outline'}
                 className="h-8 px-2.5"
                 data-gamepad-clickable="true"
+                data-gamepad-focus-key={`tasks:missions:filter:${filter}`}
                 onClick={() => toggleStatusFilter(filter)}
               >
                 {getMissionStatusFilterLabel(filter)} {statusCounts[filter]}

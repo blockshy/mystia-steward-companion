@@ -27,6 +27,7 @@ function SegmentedControl<TValue extends string>({
   return (
     <MantineSegmentedControl
       data-slot="segmented-control"
+      data-gamepad-control="segmented-control"
       data-gamepad-axis="x"
       value={value}
       data={options}

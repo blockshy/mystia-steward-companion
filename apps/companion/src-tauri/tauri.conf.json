@@ -17,7 +17,7 @@
         "url": "/",
         "width": 1040,
         "height": 760,
-        "minWidth": 720,
+        "minWidth": 640,
         "minHeight": 520,
         "resizable": true,
         "fullscreen": false,

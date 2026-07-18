@@ -38,7 +38,7 @@ function createUpdateStatus(overrides = {}) {
 
 await mkdir(outputDir, { recursive: true });
 const browser = await chromium.launch({ headless: true });
-const page = await browser.newPage({ viewport: { width: 720, height: 760 } });
+const page = await browser.newPage({ viewport: { width: 640, height: 760 } });
 await page.addInitScript(({ endpoint, token }) => {
   localStorage.setItem('mystia-steward-companion-mod-api-endpoint', endpoint);
   localStorage.setItem('mystia-steward-companion-mod-api-token', token);
@@ -250,7 +250,7 @@ try {
   }));
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.getByText('游戏端更新 v1.2.1 安装失败', { exact: true }).waitFor();
-  await page.getByText('模拟安装失败，请重新打开安装程序。', { exact: true }).waitFor();
+  await notice.getByText('模拟安装失败，请重新打开安装程序。', { exact: true }).waitFor();
   await page.screenshot({ path: `${outputDir}/install-failed-minimum.png`, fullPage: true });
 } finally {
   await page.close();

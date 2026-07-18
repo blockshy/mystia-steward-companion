@@ -79,13 +79,27 @@ function ListPanel({
   children,
   contentClassName = '',
   className,
+  gamepadScrollKey,
+  gamepadScrollLabel,
 }: {
   title: string;
   action?: ReactNode;
   children: ReactNode;
   contentClassName?: string;
   className?: string;
+  gamepadScrollKey?: string;
+  gamepadScrollLabel?: string;
 }) {
+  const scrollRegionProps = gamepadScrollKey
+    ? {
+      'aria-label': gamepadScrollLabel ?? title,
+      'data-gamepad-scroll-key': gamepadScrollKey,
+      'data-gamepad-scroll-region': 'true',
+      role: 'region' as const,
+      tabIndex: -1,
+    }
+    : {};
+
   return (
     <Card className={composeClassNames('steward-list-panel min-w-0', className)}>
       <CardContent className="flex min-h-0 min-w-0 flex-1 flex-col p-0">
@@ -94,8 +108,8 @@ function ListPanel({
           {action}
         </div>
         {contentClassName
-          ? <div className={composeClassNames('min-w-0 px-3 py-3', contentClassName)}>{children}</div>
-          : <div className="min-w-0 px-3 py-3">{children}</div>}
+          ? <div className={composeClassNames('min-w-0 px-3 py-3', contentClassName)} {...scrollRegionProps}>{children}</div>
+          : <div className="min-w-0 px-3 py-3" {...scrollRegionProps}>{children}</div>}
       </CardContent>
     </Card>
   );

@@ -5,6 +5,7 @@
 //! React 前端负责业务 UI；本库负责桌面能力、Android 移动端入口，以及把 WebView
 //! 发来的请求转发到游戏进程内的本地 API。
 
+use serde::Serialize;
 use std::io::{self, ErrorKind, Read, Write};
 #[cfg(desktop)]
 use std::net::TcpListener;
@@ -133,7 +134,7 @@ enum LocalApiIoStage {
 #[cfg(desktop)]
 struct GamePidState(Arc<Mutex<Option<u32>>>);
 struct LaunchConnectionState(Arc<Mutex<LaunchConnection>>);
-struct WindowSwitchState(Arc<Mutex<Option<Instant>>>);
+struct WindowSwitchState(Arc<Mutex<WindowSwitchGate>>);
 struct CompanionPreferenceState(Arc<Mutex<CompanionPreferences>>);
 struct MousePassthroughState(Arc<Mutex<bool>>);
 #[cfg(desktop)]
@@ -143,6 +144,58 @@ struct TrayPassthroughMenuState(Arc<Mutex<Option<MenuItem<tauri::Wry>>>>);
 struct CompanionPreferences {
     keep_visible_when_focused: bool,
     window_switch_cooldown_ms: u64,
+}
+
+#[derive(Default)]
+struct WindowSwitchGate {
+    last_applied_at: Option<Instant>,
+    in_flight: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum WindowSwitchStatus {
+    Applied,
+    Throttled,
+    Busy,
+    NoGamePid,
+    FocusFailed,
+    ShowFailed,
+    HideFailed,
+    StateUnavailable,
+    #[cfg(not(desktop))]
+    Unsupported,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowSwitchOutcome {
+    status: WindowSwitchStatus,
+    applied: bool,
+}
+
+impl WindowSwitchOutcome {
+    fn rejected(status: WindowSwitchStatus) -> Self {
+        Self {
+            status,
+            applied: false,
+        }
+    }
+
+    fn applied(status: WindowSwitchStatus) -> Self {
+        Self {
+            status,
+            applied: true,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WindowSwitchAdmission {
+    Started,
+    Throttled,
+    Busy,
+    StateUnavailable,
 }
 
 impl Default for CompanionPreferences {
@@ -356,20 +409,16 @@ fn toggle_companion_focus(
     mouse_passthrough_state: tauri::State<'_, MousePassthroughState>,
     keep_visible_when_focused: Option<bool>,
     window_switch_cooldown_ms: Option<u64>,
-) {
+) -> WindowSwitchOutcome {
     let preferences = current_companion_preferences(&preference_state.0);
-    if !try_begin_window_switch(
-        &switch_state.0,
-        window_switch_cooldown_ms.unwrap_or(preferences.window_switch_cooldown_ms),
-    ) {
-        return;
-    }
-    toggle_main_window(
+    request_window_switch(
         &app,
         current_game_pid(&game_pid_state.0),
         keep_visible_when_focused.unwrap_or(preferences.keep_visible_when_focused),
         &mouse_passthrough_state.0,
-    );
+        &switch_state.0,
+        window_switch_cooldown_ms.unwrap_or(preferences.window_switch_cooldown_ms),
+    )
 }
 
 #[tauri::command]
@@ -381,7 +430,8 @@ fn toggle_companion_focus(
     _mouse_passthrough_state: tauri::State<'_, MousePassthroughState>,
     _keep_visible_when_focused: Option<bool>,
     _window_switch_cooldown_ms: Option<u64>,
-) {
+) -> WindowSwitchOutcome {
+    WindowSwitchOutcome::rejected(WindowSwitchStatus::Unsupported)
 }
 
 #[tauri::command]
@@ -667,21 +717,86 @@ fn start_mouse_passthrough_hotkey_monitor(
 ) {
 }
 
-fn try_begin_window_switch(switch_state: &Arc<Mutex<Option<Instant>>>, cooldown_ms: u64) -> bool {
-    let Ok(mut last_switch) = switch_state.lock() else {
-        return true;
+fn begin_window_switch(
+    switch_state: &Arc<Mutex<WindowSwitchGate>>,
+    cooldown_ms: u64,
+    now: Instant,
+) -> WindowSwitchAdmission {
+    let Ok(mut gate) = switch_state.lock() else {
+        return WindowSwitchAdmission::StateUnavailable;
     };
-    let cooldown = Duration::from_millis(normalize_window_switch_cooldown_ms(cooldown_ms));
-    let now = Instant::now();
-    if last_switch.is_some_and(|previous| now.duration_since(previous) < cooldown) {
-        return false;
+    if gate.in_flight {
+        return WindowSwitchAdmission::Busy;
     }
-    *last_switch = Some(now);
+
+    let cooldown = Duration::from_millis(normalize_window_switch_cooldown_ms(cooldown_ms));
+    if gate
+        .last_applied_at
+        .is_some_and(|previous| now.duration_since(previous) < cooldown)
+    {
+        return WindowSwitchAdmission::Throttled;
+    }
+
+    gate.in_flight = true;
+    WindowSwitchAdmission::Started
+}
+
+fn complete_window_switch(
+    switch_state: &Arc<Mutex<WindowSwitchGate>>,
+    applied: bool,
+    now: Instant,
+) -> bool {
+    let Ok(mut gate) = switch_state.lock() else {
+        return false;
+    };
+    gate.in_flight = false;
+    if applied {
+        gate.last_applied_at = Some(now);
+    }
     true
+}
+
+#[cfg(desktop)]
+fn request_window_switch(
+    app: &tauri::AppHandle,
+    game_pid: Option<u32>,
+    keep_visible_when_focused: bool,
+    mouse_passthrough: &Arc<Mutex<bool>>,
+    switch_state: &Arc<Mutex<WindowSwitchGate>>,
+    cooldown_ms: u64,
+) -> WindowSwitchOutcome {
+    let admission = begin_window_switch(switch_state, cooldown_ms, Instant::now());
+    let rejection = match admission {
+        WindowSwitchAdmission::Started => None,
+        WindowSwitchAdmission::Throttled => Some(WindowSwitchStatus::Throttled),
+        WindowSwitchAdmission::Busy => Some(WindowSwitchStatus::Busy),
+        WindowSwitchAdmission::StateUnavailable => Some(WindowSwitchStatus::StateUnavailable),
+    };
+    if let Some(status) = rejection {
+        return WindowSwitchOutcome::rejected(status);
+    }
+
+    let outcome = toggle_main_window(app, game_pid, keep_visible_when_focused, mouse_passthrough);
+    if !complete_window_switch(switch_state, outcome.applied, Instant::now()) {
+        return WindowSwitchOutcome {
+            status: WindowSwitchStatus::StateUnavailable,
+            applied: outcome.applied,
+        };
+    }
+    outcome
 }
 
 fn normalize_window_switch_cooldown_ms(value: u64) -> u64 {
     value.clamp(MIN_WINDOW_SWITCH_COOLDOWN_MS, MAX_WINDOW_SWITCH_COOLDOWN_MS)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn foreground_switch_applied(
+    request_accepted: bool,
+    foreground_process_id: Option<u32>,
+    expected_process_id: u32,
+) -> bool {
+    request_accepted || foreground_process_id == Some(expected_process_id)
 }
 
 #[cfg(desktop)]
@@ -916,6 +1031,24 @@ fn notify_existing_instance() -> bool {
 }
 
 #[cfg(desktop)]
+fn claim_instance_control_listener() -> Option<TcpListener> {
+    let address = SocketAddr::from((Ipv4Addr::LOCALHOST, CONTROL_PORT));
+    match TcpListener::bind(address) {
+        Ok(listener) => Some(listener),
+        Err(error) if error.kind() == ErrorKind::AddrInUse => {
+            if !notify_existing_instance() {
+                eprintln!("companion control port is owned but the existing instance could not be notified");
+            }
+            None
+        }
+        Err(error) => {
+            eprintln!("failed to claim companion control port: {error}");
+            None
+        }
+    }
+}
+
+#[cfg(desktop)]
 fn build_control_message(
     command: &str,
     game_pid: Option<u32>,
@@ -938,19 +1071,15 @@ fn build_control_message(
 
 #[cfg(desktop)]
 fn start_instance_control_server(
+    listener: TcpListener,
     app: tauri::AppHandle,
     game_pid: Arc<Mutex<Option<u32>>>,
     connection_state: Arc<Mutex<LaunchConnection>>,
-    switch_state: Arc<Mutex<Option<Instant>>>,
+    switch_state: Arc<Mutex<WindowSwitchGate>>,
     preferences: Arc<Mutex<CompanionPreferences>>,
     mouse_passthrough: Arc<Mutex<bool>>,
 ) {
     thread::spawn(move || {
-        let address = SocketAddr::from((Ipv4Addr::LOCALHOST, CONTROL_PORT));
-        let Ok(listener) = TcpListener::bind(address) else {
-            return;
-        };
-
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else {
                 continue;
@@ -976,15 +1105,25 @@ fn start_instance_control_server(
                 show_main_window(&app, &mouse_passthrough);
             } else if message.starts_with(CONTROL_TOGGLE) {
                 let preferences = current_companion_preferences(&preferences);
-                if !try_begin_window_switch(&switch_state, preferences.window_switch_cooldown_ms) {
-                    continue;
-                }
-                toggle_main_window(
+                let outcome = request_window_switch(
                     &app,
                     current_game_pid(&game_pid),
                     preferences.keep_visible_when_focused,
                     &mouse_passthrough,
+                    &switch_state,
+                    preferences.window_switch_cooldown_ms,
                 );
+                if !matches!(
+                    outcome.status,
+                    WindowSwitchStatus::Applied
+                        | WindowSwitchStatus::Busy
+                        | WindowSwitchStatus::Throttled
+                ) {
+                    eprintln!(
+                        "companion window focus switch rejected: {:?}",
+                        outcome.status
+                    );
+                }
             } else if message.starts_with(CONTROL_EXIT) {
                 app.exit(0);
                 break;
@@ -1120,18 +1259,64 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
 }
 
 #[cfg(desktop)]
-fn show_main_window(app: &tauri::AppHandle, mouse_passthrough: &Arc<Mutex<bool>>) {
-    let _ = set_mouse_passthrough_internal(app, mouse_passthrough, false);
-    show_main_window_without_passthrough_state(app);
+fn show_main_window(app: &tauri::AppHandle, mouse_passthrough: &Arc<Mutex<bool>>) -> bool {
+    if let Err(error) = set_mouse_passthrough_internal(app, mouse_passthrough, false) {
+        eprintln!("failed to disable mouse passthrough while showing companion: {error}");
+    }
+    show_main_window_without_passthrough_state(app)
 }
 
 #[cfg(desktop)]
-fn show_main_window_without_passthrough_state(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
+fn show_main_window_without_passthrough_state(app: &tauri::AppHandle) -> bool {
+    let Some(window) = app.get_webview_window("main") else {
+        return false;
+    };
+
+    #[cfg(target_os = "windows")]
+    {
+        let Ok(hwnd) = window.hwnd() else {
+            return false;
+        };
+        return windows_focus::show_and_focus_window(hwnd.0);
     }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let shown = window.show().is_ok();
+        let restored = match window.is_minimized() {
+            Ok(true) => window.unminimize().is_ok(),
+            Ok(false) => true,
+            Err(_) => false,
+        };
+        let focused = window.set_focus().is_ok();
+        shown && restored && focused
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn is_main_window_focused(window: &WebviewWindow) -> Option<bool> {
+    window
+        .hwnd()
+        .ok()
+        .map(|hwnd| windows_focus::is_foreground_window(hwnd.0))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_main_window_focused(window: &WebviewWindow) -> Option<bool> {
+    window.is_focused().ok()
+}
+
+#[cfg(target_os = "windows")]
+fn hide_main_window(window: &WebviewWindow) -> bool {
+    window
+        .hwnd()
+        .ok()
+        .is_some_and(|hwnd| windows_focus::hide_window(hwnd.0))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn hide_main_window(window: &WebviewWindow) -> bool {
+    window.hide().is_ok()
 }
 
 #[cfg(desktop)]
@@ -1140,33 +1325,49 @@ fn toggle_main_window(
     game_pid: Option<u32>,
     keep_visible_when_focused: bool,
     mouse_passthrough: &Arc<Mutex<bool>>,
-) {
-    if let Some(window) = app.get_webview_window("main") {
-        if window.is_focused().unwrap_or(false) {
-            if !keep_visible_when_focused {
-                let _ = window.hide();
-            }
-            focus_game_window(game_pid);
-            return;
+) -> WindowSwitchOutcome {
+    let Some(window) = app.get_webview_window("main") else {
+        return WindowSwitchOutcome::rejected(WindowSwitchStatus::ShowFailed);
+    };
+    let Some(companion_focused) = is_main_window_focused(&window) else {
+        return WindowSwitchOutcome::rejected(WindowSwitchStatus::FocusFailed);
+    };
+
+    if companion_focused {
+        let Some(game_pid) = game_pid else {
+            return WindowSwitchOutcome::rejected(WindowSwitchStatus::NoGamePid);
+        };
+        if !focus_game_window(game_pid) {
+            return WindowSwitchOutcome::rejected(WindowSwitchStatus::FocusFailed);
         }
+        if !keep_visible_when_focused && !hide_main_window(&window) {
+            return WindowSwitchOutcome::applied(WindowSwitchStatus::HideFailed);
+        }
+        return WindowSwitchOutcome::applied(WindowSwitchStatus::Applied);
     }
 
-    show_main_window(app, mouse_passthrough);
+    if show_main_window(app, mouse_passthrough) {
+        WindowSwitchOutcome::applied(WindowSwitchStatus::Applied)
+    } else {
+        WindowSwitchOutcome::rejected(WindowSwitchStatus::ShowFailed)
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(desktop)]
-    if notify_existing_instance() {
+    let Some(instance_control_listener) = claim_instance_control_listener() else {
         return;
-    }
+    };
 
     let launch_connection = Arc::new(Mutex::new(launch_connection_from_args()));
 
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(LaunchConnectionState(launch_connection.clone()))
-        .manage(WindowSwitchState(Arc::new(Mutex::new(None))))
+        .manage(WindowSwitchState(Arc::new(Mutex::new(
+            WindowSwitchGate::default(),
+        ))))
         .manage(CompanionPreferenceState(Arc::new(Mutex::new(
             CompanionPreferences::default(),
         ))))
@@ -1184,7 +1385,7 @@ pub fn run() {
         );
 
     #[cfg(desktop)]
-    let builder = builder.setup(|app| {
+    let builder = builder.setup(move |app| {
         setup_tray(app)?;
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.restore_state(persisted_window_state_flags());
@@ -1199,6 +1400,7 @@ pub fn run() {
         let preferences = app.state::<CompanionPreferenceState>().0.clone();
         let mouse_passthrough = app.state::<MousePassthroughState>().0.clone();
         start_instance_control_server(
+            instance_control_listener,
             app_handle.clone(),
             game_pid,
             connection_state.clone(),
@@ -1245,12 +1447,14 @@ pub fn run() {
 }
 
 #[cfg(target_os = "windows")]
-fn focus_game_window(game_pid: Option<u32>) {
-    windows_focus::focus_process_window(game_pid);
+fn focus_game_window(game_pid: u32) -> bool {
+    windows_focus::focus_process_window(game_pid)
 }
 
 #[cfg(not(target_os = "windows"))]
-fn focus_game_window(_game_pid: Option<u32>) {}
+fn focus_game_window(_game_pid: u32) -> bool {
+    false
+}
 
 #[cfg(target_os = "windows")]
 fn is_process_running(pid: u32) -> bool {
@@ -1297,6 +1501,7 @@ mod windows_process {
 
 #[cfg(target_os = "windows")]
 mod windows_focus {
+    use super::foreground_switch_applied;
     use std::ffi::c_void;
 
     type Bool = i32;
@@ -1305,6 +1510,8 @@ mod windows_focus {
     type Lparam = isize;
 
     const SW_RESTORE: i32 = 9;
+    const SW_SHOW: i32 = 5;
+    const SW_HIDE: i32 = 0;
 
     #[repr(C)]
     struct EnumState {
@@ -1312,11 +1519,7 @@ mod windows_focus {
         hwnd: Hwnd,
     }
 
-    pub fn focus_process_window(pid: Option<u32>) {
-        let Some(pid) = pid else {
-            return;
-        };
-
+    pub fn focus_process_window(pid: u32) -> bool {
         let mut state = EnumState {
             pid,
             hwnd: std::ptr::null_mut(),
@@ -1325,11 +1528,71 @@ mod windows_focus {
         unsafe {
             EnumWindows(enum_windows_proc, &mut state as *mut EnumState as Lparam);
             if state.hwnd.is_null() {
-                return;
+                return false;
             }
 
-            ShowWindow(state.hwnd, SW_RESTORE);
-            SetForegroundWindow(state.hwnd);
+            if IsIconic(state.hwnd) != 0 {
+                ShowWindow(state.hwnd, SW_RESTORE);
+            }
+            let request_accepted = SetForegroundWindow(state.hwnd) != 0;
+            foreground_switch_applied(request_accepted, foreground_process_id(), pid)
+        }
+    }
+
+    pub fn show_and_focus_window(hwnd: Hwnd) -> bool {
+        if hwnd.is_null() {
+            return false;
+        }
+
+        let Some(process_id) = window_process_id(hwnd) else {
+            return false;
+        };
+
+        unsafe {
+            ShowWindow(
+                hwnd,
+                if IsIconic(hwnd) != 0 {
+                    SW_RESTORE
+                } else {
+                    SW_SHOW
+                },
+            );
+            let request_accepted = SetForegroundWindow(hwnd) != 0;
+            IsWindowVisible(hwnd) != 0
+                && foreground_switch_applied(request_accepted, foreground_process_id(), process_id)
+        }
+    }
+
+    pub fn is_foreground_window(hwnd: Hwnd) -> bool {
+        !hwnd.is_null() && unsafe { GetForegroundWindow() == hwnd }
+    }
+
+    pub fn hide_window(hwnd: Hwnd) -> bool {
+        if hwnd.is_null() {
+            return false;
+        }
+
+        unsafe {
+            ShowWindow(hwnd, SW_HIDE);
+            IsWindowVisible(hwnd) == 0
+        }
+    }
+
+    fn foreground_process_id() -> Option<u32> {
+        unsafe { window_process_id(GetForegroundWindow()) }
+    }
+
+    fn window_process_id(hwnd: Hwnd) -> Option<u32> {
+        if hwnd.is_null() {
+            return None;
+        }
+
+        unsafe {
+            let mut process_id: Dword = 0;
+            if GetWindowThreadProcessId(hwnd, &mut process_id) == 0 || process_id == 0 {
+                return None;
+            }
+            Some(process_id)
         }
     }
 
@@ -1356,7 +1619,9 @@ mod windows_focus {
             lParam: Lparam,
         ) -> Bool;
         fn GetWindowThreadProcessId(hWnd: Hwnd, lpdwProcessId: *mut Dword) -> Dword;
+        fn IsIconic(hWnd: Hwnd) -> Bool;
         fn IsWindowVisible(hWnd: Hwnd) -> Bool;
+        fn GetForegroundWindow() -> Hwnd;
         fn SetForegroundWindow(hWnd: Hwnd) -> Bool;
         fn ShowWindow(hWnd: Hwnd, nCmdShow: i32) -> Bool;
     }
@@ -1448,6 +1713,76 @@ mod tests {
         assert!(!flags.contains(StateFlags::VISIBLE));
         assert!(!flags.contains(StateFlags::DECORATIONS));
         assert!(!flags.contains(StateFlags::FULLSCREEN));
+    }
+
+    #[test]
+    fn window_switch_gate_commits_cooldown_only_after_applied_switch() {
+        let state = Arc::new(Mutex::new(WindowSwitchGate::default()));
+        let started_at = Instant::now();
+
+        assert_eq!(
+            begin_window_switch(&state, 800, started_at),
+            WindowSwitchAdmission::Started
+        );
+        assert_eq!(
+            begin_window_switch(&state, 800, started_at),
+            WindowSwitchAdmission::Busy
+        );
+        assert!(complete_window_switch(&state, false, started_at));
+        assert_eq!(
+            begin_window_switch(&state, 800, started_at),
+            WindowSwitchAdmission::Started
+        );
+        assert!(complete_window_switch(&state, true, started_at));
+
+        assert_eq!(
+            begin_window_switch(&state, 800, started_at + Duration::from_millis(799)),
+            WindowSwitchAdmission::Throttled
+        );
+        assert_eq!(
+            begin_window_switch(&state, 800, started_at + Duration::from_millis(800)),
+            WindowSwitchAdmission::Started
+        );
+        assert!(complete_window_switch(
+            &state,
+            true,
+            started_at + Duration::from_millis(800)
+        ));
+    }
+
+    #[test]
+    fn foreground_switch_uses_win32_result_or_target_process_identity() {
+        const TARGET_PROCESS_ID: u32 = 42;
+
+        assert!(foreground_switch_applied(true, None, TARGET_PROCESS_ID));
+        assert!(foreground_switch_applied(
+            false,
+            Some(TARGET_PROCESS_ID),
+            TARGET_PROCESS_ID,
+        ));
+        assert!(foreground_switch_applied(true, Some(99), TARGET_PROCESS_ID));
+        assert!(!foreground_switch_applied(
+            false,
+            Some(99),
+            TARGET_PROCESS_ID,
+        ));
+        assert!(!foreground_switch_applied(false, None, TARGET_PROCESS_ID));
+    }
+
+    #[test]
+    fn window_switch_gate_fails_closed_when_state_is_poisoned() {
+        let state = Arc::new(Mutex::new(WindowSwitchGate::default()));
+        let poisoned = state.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoned.lock().unwrap();
+            panic!("poison switch state");
+        })
+        .join();
+
+        assert_eq!(
+            begin_window_switch(&state, 800, Instant::now()),
+            WindowSwitchAdmission::StateUnavailable
+        );
     }
 
     #[test]

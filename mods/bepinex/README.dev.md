@@ -256,7 +256,29 @@ MYSTIA_API_URL=http://127.0.0.1:32145 \
 pnpm audit:ui
 ```
 
-报告和截图默认写到 `/tmp/mystia-companion-ui-audit`。如果使用 `pnpm preview`，把 `MYSTIA_APP_URL` 改成 Vite preview 输出的地址，通常是 `http://127.0.0.1:4173`。
+报告和截图默认写到 `/tmp/mystia-companion-ui-audit`。通用 UI 巡检覆盖 1280x900、900x760 和 640x760 三组视口；640px 用于验证 Tauri 桌面最小宽度下核心内容保持双列、顶部状态保持三列、一级导航以五列两行完整显示，并检查连接和页面工具条的紧凑布局。如果使用 `pnpm preview`，把 `MYSTIA_APP_URL` 改成 Vite preview 输出的地址，通常是 `http://127.0.0.1:4173`。
+
+修改手柄输入状态机、复合控件焦点语义、动态回焦、局部滚动或游戏/伴随窗口焦点切换后，运行：
+
+```bash
+MYSTIA_APP_URL=http://127.0.0.1:4173 \
+MYSTIA_API_URL=http://127.0.0.1:32145 \
+pnpm audit:gamepad
+cargo test --manifest-path apps/companion/src-tauri/Cargo.toml
+dotnet run --project tests/controller-toggle-state/ControllerToggleStateSmoke.csproj -c Release
+```
+
+`audit:gamepad` 先验证纯输入状态机的 standard mapping、活动设备所有权、中立门控、按键模拟量、摇杆滞回、方向仲裁、重复节奏和 RS 隔离，再用 Playwright 验证 A/B/X/Y、LB/RB、LT/RT、Select/MultiSelect、Tabs、SegmentedControl、NumberInput、Slider、Dialog、动态回焦、局部滚动，以及 1280x900/100%、640x520/130%、390x844/90% 三组窗口和字号组合。Rust 单测验证所有切换来源共用的 applied-only cooldown gate；C# smoke 验证 RS 持续按住、迟到边沿和物理释放后的重新武装。
+
+修改字体 token、字号偏好、更新状态协议或全局更新提示后，在同一 mock API 与 preview 环境中运行：
+
+```bash
+MYSTIA_APP_URL=http://127.0.0.1:4173 MYSTIA_API_URL=http://127.0.0.1:32145 pnpm audit:font-scale
+pnpm audit:updates
+MYSTIA_APP_URL=http://127.0.0.1:4173 MYSTIA_API_URL=http://127.0.0.1:32145 pnpm audit:updates:ui
+```
+
+字号巡检覆盖 90%/100%/130%、非法值归一化、鼠标/键盘操作、刷新持久化、恢复默认、640x520、390x844、全部页签、设置五个分栏、稀客订单专注模式和 Select Portal；截图写入 `/tmp/mystia-companion-font-scale-audit`。更新协议审计覆盖启动 `idle -> checking -> available` 收敛、状态读取失败退避、请求代际、endpoint/tag 延后键、安装提示和 Release URL 限制；提示巡检覆盖动作中断连、连接身份切换、迟到响应隔离、首帧延后状态和安装失败，截图写入 `/tmp/mystia-companion-update-ui-audit`。
 
 修改游戏界面置顶/列表高亮目标契约、连接重发或推荐 Worker 生命周期后，还要运行定向巡检：
 
@@ -597,14 +619,14 @@ Port = 32145
 - `POST /custom-recipes/settings?enabled=true|false`：切换整个自定义推荐料理功能，不改写单条状态。
 - `POST /custom-recipes/update-flags?...`：按 `entry`、`customer`、`recipe` 或 `all` 作用域原子更新单条、分组或全部配方的启用/置顶状态。
 - `POST /custom-recipes/upsert?...`、`POST /custom-recipes/remove?id=...`、`POST /custom-recipes/move?id=...&direction=up|down`：新增/编辑、删除和调整同一稀客内的推荐优先级。
-- `POST /updates/status`：归并并返回当前更新检查、下载、暂存和安装程序状态；归并 updater 结果时可能写入或删除状态文件，因此不是只读查询。
-- `POST /updates/check`、`POST /updates/download`、`POST /updates/install-on-exit`：检查、下载或启动退出安装流程；更新服务按单操作串行。
+- `POST /updates/status`：归并并返回当前更新检查、下载、暂存和安装程序状态，以及 `lastAttemptAtUtc`、`lastSuccessAtUtc`、`nextCheckAtUtc`、`consecutiveFailures`；归并 updater 结果时可能写入或删除状态文件，因此不是只读查询。
+- `POST /updates/check`、`POST /updates/download`、`POST /updates/install-on-exit`：手动检查、下载或启动退出安装流程；更新服务按单操作串行。后台调度成功后按配置间隔续检，失败按 15m/30m/1h/2h/4h/6h 退避。Local API 关闭时先阻止新操作，再通过统一生命周期令牌取消自动/手动检查和下载，等待 handler、活动操作及调度器退出；取消检查恢复稳定状态并立即到期。下次启动会恢复强制退出留下的瞬时状态，并只清理下载一级目录内严格符合本服务语义版本/GUID 格式的临时目录。
 
 ### v1.2.x 一次性迁移边界
 
 `v1.2.x` 只保留一项明确的一次性数据迁移：Local API 启动阶段先把 `favorites.json` 中 `source=manual` 的料理原子写入 `custom-recipes.json`，写入成功后再从收藏文件删除旧条目。目标料理按 `customerId + foodTag + foodId + extraIngredientIds` 去重，中断后重试不会重复生成；目标文件无法读取或写入时不删除来源条目。后续 `GET /custom-recipes` 和 CRUD 端点保持无隐式迁移副作用。该迁移计划在 `v1.3.0` 删除，不得扩大为旧 API、旧配置、旧类型或旧业务路径兼容层。自 `v1.2.0` 起不再读取旧 GUID 配置 `com.tyukki.mystia-steward.cfg`。
 
-除 `/health` 外，端点都需要 `X-Mystia-Steward-Companion-Token`。Token 由插件生成并保存在 BepInEx 配置中，同机启动伴随窗口时通过 `--token=` 参数传入 Tauri 后端；A 设备本机设置页可以复制或重置 Token。远程局域网连接时，用户需要在 B 设备伴随窗口顶部连接区手动输入 A 设备的 endpoint 和 token，点击 `连接` 后才开始轮询。Tauri 伴随窗口会显示实时 Mod 工作台，默认包含 `概览`、`普客`、`稀客`、`自定义推荐料理`、`经营中`、`任务`、`修改`、`帮助`、`设置` 九个页签；`概览` 内部按 `状态`、`库存`、`操作` 分栏，`设置` 内部按 `窗口`、`连接`、`推荐`、`自动化`、`更新` 分栏。窗口设置包含透明度、焦点切换、始终置顶、鼠标穿透锁定、手柄导航和显示调试信息；连接设置包含本地 API/LAN 连接配置并逐项展示可复制的 endpoint；推荐设置包含订单排序、推荐权重、预算策略、缺失厨具过滤、任务料理/收藏料理/收藏酒水置顶、带库存显示和名称/库存排序的排除材料/酒水、同基础料理展示数量、游戏界面置顶和厨具高亮。Android 伴随窗口只作为 B 设备 LAN 客户端，不提供桌面托盘、置顶、鼠标穿透、焦点切换、单实例控制和游戏关闭自动退出；桌面鼠标穿透必须通过 Tauri 原生窗口 `set_ignore_cursor_events` 控制，不能只用 CSS `pointer-events` 模拟。帮助页内容来自 `apps/companion/src/data/help-content.json`，由前端渲染为目录树和详情面板，修改文案时优先改 JSON。`日志` 页签、扫描状态、运行时来源、性能耗时、订单来源和内部 key 这类诊断信息只在 `设置 -> 显示调试信息` 开启后显示。正式 Tauri 客户端通过原生后端读取本地 API。
+除 `/health` 外，端点都需要 `X-Mystia-Steward-Companion-Token`。Token 由插件生成并保存在 BepInEx 配置中，同机启动伴随窗口时通过 `--token=` 参数传入 Tauri 后端；A 设备本机设置页可以复制或重置 Token。远程局域网连接时，用户需要在 B 设备伴随窗口顶部连接区手动输入 A 设备的 endpoint 和 token，点击 `连接` 后才开始轮询。Tauri 伴随窗口会显示实时 Mod 工作台，默认包含 `概览`、`普客`、`稀客`、`自定义推荐料理`、`经营中`、`任务`、`修改`、`帮助`、`设置` 九个页签；`概览` 内部按 `状态`、`库存`、`操作` 分栏，`设置` 内部按 `窗口`、`连接`、`推荐`、`自动化`、`更新` 分栏。窗口设置包含透明度、90% 至 130% 字体大小、焦点切换、始终置顶、鼠标穿透锁定、手柄导航和显示调试信息；连接设置包含本地 API/LAN 连接配置并逐项展示可复制的 endpoint；推荐设置包含订单排序、推荐权重、预算策略、缺失厨具过滤、任务料理/收藏料理/收藏酒水置顶、带库存显示和名称/库存排序的排除材料/酒水、同基础料理展示数量、游戏界面置顶和厨具高亮。工作台级更新控制器只读取 Mod 更新状态，活动状态 2 秒、稳定状态 60 秒轮询；发现新版时显示非模态提示，并按 endpoint + tag 保存 24 小时延后状态。Tauri opener 只允许打开本项目 Release URL。Android 伴随窗口只作为 B 设备 LAN 客户端，不提供桌面托盘、置顶、鼠标穿透、焦点切换、单实例控制和游戏关闭自动退出；独立 Windows 伴随窗口和 Android APK 不参与 Mod 主包自动更新。桌面鼠标穿透必须通过 Tauri 原生窗口 `set_ignore_cursor_events` 控制，不能只用 CSS `pointer-events` 模拟。帮助页内容来自 `apps/companion/src/data/help-content.json`，由前端渲染为目录树和详情面板，修改文案时优先改 JSON。`日志` 页签、扫描状态、运行时来源、性能耗时、订单来源和内部 key 这类诊断信息只在 `设置 -> 显示调试信息` 开启后显示。正式 Tauri 客户端通过原生后端读取本地 API。
 
 伴随窗口的自动化能力只在设置页总开关开启并持有 lease 时运行。稀客并发、普客并发、最大重试和最大回退由 `CompanionPreferences` 控制；订单排序、推荐过滤、收藏限定和厨具预约仍复用经营中推荐的同一输入。稀客 `autoPrep*` 与普客 `autoNormal*` 的送酒、开始料理、送达料理、完成订单和出错暂停完全独立保存、独立传参、独立推进。所有自动开锅都登记 `AutomationCookingJob` 作为服务端精确锅次回执，防止 HTTP 响应丢失后再次扣料；只开启“开始料理”时 job 进入手动交接模式，不送达、不入箱、不复位，直到订单送达、订单稳定消失、场景结束或显式取消。
 
@@ -639,7 +661,11 @@ Port = 32145
 
 ## 输入处理
 
-游戏内不再保留 IMGUI 面板。Mod 在游戏侧只处理 F8/RS Click 热键、后台读取、本地 API 和自动化执行；用户交互全部放在 Tauri 独立伴随窗口中。伴随窗口获得焦点时由独立进程消费鼠标、键盘和手柄输入，不需要拦截游戏内 IMGUI 事件。Tauri 侧 `F10` 全局热键用于切换鼠标穿透锁定；`F8`、`RS Click`、单实例 `show` 控制消息和托盘显示/重连菜单必须自动关闭穿透，防止用户找回窗口后仍无法点击。
+游戏内不再保留 IMGUI 面板。默认 `RS Click` 在游戏侧同时读取 Unity legacy `JoystickButton9` 和 Unity Input System `Gamepad.current.rightStickButton`，并由 `ControllerToggleState` 锁存到物理释放；首次观察到 held 即锁存，迟到 edge 不得在释放前触发，也不得再叠加独立定时防抖。控制端口不可达时，`CompanionProcessLauncher` 只允许一个启动流程在途，并保持到新进程控制端口可连接或明确超时。
+
+Tauri 进程必须在初始化窗口前原子绑定控制端口，再把预绑定 listener 移交控制线程；绑定失败的并发实例只通知端口所有者并退出。`F8`、游戏侧 `RS Click`、伴随窗口侧 `RS Click` 和 TCP `toggle` 共用 Tauri `WindowSwitchGate`；同一时刻只允许一个切换，冷却从 `applied` 结果开始，失败不提交冷却。切回游戏时必须先确认 `SetForegroundWindow` 成功，再按设置隐藏伴随窗口；Win32 非零返回值本身就是成功证据，返回零时只允许用当前前台窗口属于目标进程确认幂等成功，不能要求激活转换期的 `GetForegroundWindow` 与枚举 HWND 立即精确相等。失败返回明确 outcome，不能静默当成成功。Tauri 侧 `F10` 全局热键用于切换鼠标穿透锁定；`F8`、`RS Click`、单实例 `show` 控制消息和托盘显示/重连菜单必须自动关闭穿透。
+
+前端只接受 Gamepad API `standard` 映射。`GamepadInputEngine` 负责设备所有权、neutral rearm、按键边沿/重复、摇杆滞回与单方向仲裁；`GamepadFocusManager` 负责可见焦点、控件语义、弹窗边界、局部滚动和 DOM 变化后的回焦；`useGamepadNavigation` 只编排 React 生命周期与业务动作。
 
 ## 调试建议
 

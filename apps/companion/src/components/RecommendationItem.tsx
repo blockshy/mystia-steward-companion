@@ -28,6 +28,7 @@ interface RecommendationItemProps {
   compact?: boolean;
   favorite?: RecommendationFavoriteAction;
   gamepadRowKey?: string;
+  gamepadOccurrenceKey?: string;
   className?: string;
 }
 
@@ -49,9 +50,16 @@ function RecommendationItem({
   compact = false,
   favorite,
   gamepadRowKey,
+  gamepadOccurrenceKey,
   className,
 }: RecommendationItemProps) {
   const favoriteLabel = favorite?.active ? favorite.activeLabel : favorite?.inactiveLabel;
+  const scopedRowKey = gamepadOccurrenceKey && gamepadRowKey
+    ? `${gamepadOccurrenceKey}:${gamepadRowKey}`
+    : gamepadRowKey;
+  const scopedFavoriteFocusKey = gamepadOccurrenceKey && favorite
+    ? `${gamepadOccurrenceKey}:${favorite.focusKey}`
+    : favorite?.focusKey;
 
   return (
     <div
@@ -63,7 +71,7 @@ function RecommendationItem({
       data-gamepad-focusable={favorite ? 'true' : undefined}
       data-gamepad-favorite-scope={favorite ? 'true' : undefined}
       data-gamepad-row={favorite ? 'true' : undefined}
-      data-gamepad-row-key={favorite && gamepadRowKey ? gamepadRowKey : undefined}
+      data-gamepad-row-key={favorite && scopedRowKey ? scopedRowKey : undefined}
       tabIndex={favorite ? 0 : undefined}
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -85,7 +93,7 @@ function RecommendationItem({
             disabled={favorite.disabled}
             aria-label={favoriteLabel}
             data-gamepad-favorite="true"
-            data-gamepad-focus-key={favorite.focusKey}
+            data-gamepad-focus-key={scopedFavoriteFocusKey}
             title={favoriteLabel}
             onClick={favorite.onToggle}
           >

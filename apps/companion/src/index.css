@@ -45,18 +45,31 @@
 :root {
   --radius: 0;
   --companion-background-opacity-percent: 100%;
-  --companion-window-opacity-percent: var(--companion-background-opacity-percent);
-  --companion-content-opacity: 1;
   --companion-content-opacity-percent: 100%;
+  --companion-font-scale: 1;
+  --text-xs: calc(0.75rem * var(--companion-font-scale));
+  --text-xs--line-height: calc(1rem * var(--companion-font-scale));
+  --text-sm: calc(0.875rem * var(--companion-font-scale));
+  --text-sm--line-height: calc(1.25rem * var(--companion-font-scale));
+  --text-base: calc(1rem * var(--companion-font-scale));
+  --text-base--line-height: calc(1.5rem * var(--companion-font-scale));
+  --text-lg: calc(1.125rem * var(--companion-font-scale));
+  --text-lg--line-height: calc(1.75rem * var(--companion-font-scale));
+  --text-xl: calc(1.25rem * var(--companion-font-scale));
+  --text-xl--line-height: calc(1.75rem * var(--companion-font-scale));
+  --text-2xl: calc(1.5rem * var(--companion-font-scale));
+  --text-2xl--line-height: calc(2rem * var(--companion-font-scale));
+  --text-3xl: calc(1.875rem * var(--companion-font-scale));
+  --text-3xl--line-height: calc(2.25rem * var(--companion-font-scale));
   --steward-control-height-xs: 1.75rem;
   --steward-control-height-sm: 2rem;
   --steward-control-height-md: 2.25rem;
-  --steward-control-font-xs: 0.75rem;
-  --steward-control-font-sm: 0.8125rem;
-  --steward-control-font-md: 0.875rem;
-  --steward-control-line-xs: 1rem;
-  --steward-control-line-sm: 1.125rem;
-  --steward-control-line-md: 1.25rem;
+  --steward-control-font-xs: calc(0.75rem * var(--companion-font-scale));
+  --steward-control-font-sm: calc(0.8125rem * var(--companion-font-scale));
+  --steward-control-font-md: calc(0.875rem * var(--companion-font-scale));
+  --steward-control-line-xs: calc(1rem * var(--companion-font-scale));
+  --steward-control-line-sm: calc(1.125rem * var(--companion-font-scale));
+  --steward-control-line-md: calc(1.25rem * var(--companion-font-scale));
   --background: #d7c29d;
   --foreground-base: #4f2d1f;
   --foreground: color-mix(in srgb, var(--foreground-base) var(--companion-content-opacity-percent), transparent);
@@ -517,10 +530,18 @@ html::-webkit-scrollbar-thumb:hover,
   padding-left: max(0.5rem, env(safe-area-inset-left, 0px));
 }
 
+[data-companion-surface='workbench'] {
+  font-size: calc(1rem * var(--companion-font-scale));
+}
+
 @media (max-width: 719px) {
   [data-companion-surface='workbench'] {
-    font-size: 0.9375rem;
+    font-size: calc(0.9375rem * var(--companion-font-scale));
   }
+}
+
+.steward-workbench-header h1 {
+  font-size: calc(1.45rem * var(--companion-font-scale));
 }
 
 .steward-button {
@@ -875,6 +896,12 @@ html::-webkit-scrollbar-thumb:hover,
   line-height: var(--steward-control-line-sm);
 }
 
+@media (max-width: 719px) {
+  .steward-settings-segmented-control {
+    --sc-padding: 0 0.125rem !important;
+  }
+}
+
 .steward-segmented-control .mantine-SegmentedControl-label[data-active] {
   color: var(--foreground);
 }
@@ -926,6 +953,26 @@ html::-webkit-scrollbar-thumb:hover,
   }
 }
 
+@media (min-width: 640px) and (max-width: 719px) {
+  .steward-primary-tabs-list[data-scrollable-tabs='true'] {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    height: auto;
+    overflow: hidden;
+  }
+
+  .steward-primary-tabs-list[data-scrollable-tabs='true'] .steward-tabs-trigger {
+    width: 100%;
+    min-width: 0;
+    height: auto;
+    min-height: var(--steward-control-height-md);
+    padding-block: 0.25rem;
+    padding-inline: 0.25rem;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+}
+
 .steward-tabs-trigger {
   height: var(--steward-control-height-md);
   min-height: var(--steward-control-height-md);
@@ -964,7 +1011,8 @@ html::-webkit-scrollbar-thumb:hover,
 
 .steward-switch-field {
   min-width: 0;
-  height: var(--steward-control-height-sm);
+  min-height: var(--steward-control-height-sm);
+  padding-block: 0.375rem;
   padding-inline: 0.625rem;
   cursor: pointer;
   font-size: var(--steward-control-font-sm);
@@ -1003,6 +1051,11 @@ html::-webkit-scrollbar-thumb:hover,
 .steward-slider .mantine-Slider-track::before {
   background-color: var(--companion-muted-surface);
   transition: background-color 120ms ease;
+}
+
+.steward-slider,
+.steward-slider .mantine-Slider-trackContainer {
+  height: 1.75rem;
 }
 
 .steward-slider .mantine-Slider-bar,

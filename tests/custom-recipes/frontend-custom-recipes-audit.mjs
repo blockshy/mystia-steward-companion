@@ -13,7 +13,7 @@ let delayNextFlagsMs = 0;
 
 await mkdir(OUTPUT_DIR, { recursive: true });
 const browser = await chromium.launch({ headless: true });
-const page = await browser.newPage({ viewport: { width: 720, height: 760 } });
+const page = await browser.newPage({ viewport: { width: 640, height: 760 } });
 
 try {
   await page.route(`${API_URL}/**`, async (route) => {
@@ -60,7 +60,45 @@ try {
   await waitForRecipes((data) => data.enabled === false, '功能总开关没有持久化关闭状态');
   await page.getByText('功能已停用', { exact: true }).waitFor();
   await activateTab('稀客');
-  await page.getByRole('button', { name: '查看生效的自定义配方 (0)', exact: true }).waitFor();
+  const rareCustomRecipeTrigger = page.locator('[data-effective-custom-recipes-trigger="true"]:visible').first();
+  await rareCustomRecipeTrigger.waitFor();
+  assert(
+    await rareCustomRecipeTrigger.innerText() === '生效配方 (0)',
+    '功能停用后稀客页自定义配方计数没有归零',
+  );
+  assert(
+    await rareCustomRecipeTrigger.getAttribute('aria-label') === '查看生效的自定义配方 (0)',
+    '稀客页自定义配方按钮缺少完整的无障碍名称',
+  );
+  const rareRecipePanel = rareCustomRecipeTrigger.locator('xpath=ancestor::*[contains(@class,"steward-list-panel")][1]');
+  await assertHeaderActionSameLine(
+    rareCustomRecipeTrigger,
+    '稀客页自定义配方按钮没有与料理推荐标题保持同行',
+  );
+  await rareCustomRecipeTrigger.click();
+  const rareCustomRecipeDetails = rareRecipePanel.locator('[data-effective-custom-recipes-details="true"]');
+  await rareCustomRecipeDetails.waitFor();
+  assert(await rareCustomRecipeTrigger.innerText() === '收起配方', '展开后按钮没有切换为收起状态');
+  assert(
+    await rareCustomRecipeTrigger.getAttribute('aria-label') === '收起生效的自定义配方',
+    '展开后按钮的无障碍名称没有切换为收起状态',
+  );
+  assert(
+    await rareRecipePanel.locator('.steward-panel-header [data-effective-custom-recipes-details="true"]').count() === 0,
+    '稀客页自定义配方详情错误地渲染到了面板标题区',
+  );
+
+  await activateTab('经营中');
+  const serviceCustomRecipeTriggers = page.locator('[data-effective-custom-recipes-trigger="true"]:visible');
+  await serviceCustomRecipeTriggers.first().waitFor();
+  const serviceCustomRecipeTriggerCount = await serviceCustomRecipeTriggers.count();
+  assert(serviceCustomRecipeTriggerCount > 0, '经营中页没有渲染自定义配方入口');
+  for (let index = 0; index < serviceCustomRecipeTriggerCount; index += 1) {
+    await assertHeaderActionSameLine(
+      serviceCustomRecipeTriggers.nth(index),
+      `经营中第 ${index + 1} 个自定义配方按钮没有与推荐料理标题保持同行`,
+    );
+  }
   await activateTab('自定义推荐料理');
   await page.getByText('启用自定义推荐料理', { exact: true }).click();
   await waitForRecipes((data) => data.enabled === true, '功能总开关没有恢复开启状态');
@@ -113,7 +151,7 @@ try {
 
   await page.screenshot({ path: `${OUTPUT_DIR}/minimum-custom-recipes.png`, fullPage: true });
   const overflow = await page.evaluate(() => Math.max(0, document.documentElement.scrollWidth - document.documentElement.clientWidth));
-  assert(overflow === 0, `720px 视口出现 ${overflow}px 横向溢出`);
+  assert(overflow === 0, `640px 视口出现 ${overflow}px 横向溢出`);
   assert(mutationRequests.every((request) => request.method === 'POST'), '自定义料理 mutation 没有全部使用 POST');
   assert(!mutationRequests.some((request) => request.path === '/custom-recipes/toggle'), '前端仍在调用已删除的 toggle 路径');
 
@@ -131,6 +169,30 @@ try {
 
 function groupSection(label) {
   return page.locator('section').filter({ has: page.getByText(label, { exact: true }) }).first();
+}
+
+async function assertHeaderActionSameLine(action, message) {
+  const layout = await action.evaluate((element) => {
+    const header = element.closest('[data-effective-custom-recipes-header="true"], .steward-panel-header');
+    const title = header?.querySelector('h2, h3');
+    if (!(title instanceof HTMLElement) || !(element instanceof HTMLElement)) return null;
+    const titleBox = title.getBoundingClientRect();
+    const actionBox = element.getBoundingClientRect();
+    return {
+      centerDifference: Math.abs(
+        titleBox.y + titleBox.height / 2 - (actionBox.y + actionBox.height / 2),
+      ),
+      overlaps: titleBox.x + titleBox.width > actionBox.x,
+      titleBox: { x: titleBox.x, y: titleBox.y, width: titleBox.width, height: titleBox.height },
+      actionBox: { x: actionBox.x, y: actionBox.y, width: actionBox.width, height: actionBox.height },
+    };
+  });
+  assert(layout, `${message}：标题或按钮不可见`);
+  assert(
+    layout.centerDifference <= 4,
+    `${message}：中心线偏差 ${layout.centerDifference.toFixed(2)}px，布局 ${JSON.stringify(layout)}`,
+  );
+  assert(!layout.overlaps, `${message}：按钮与标题发生重叠`);
 }
 
 async function activateTab(label) {

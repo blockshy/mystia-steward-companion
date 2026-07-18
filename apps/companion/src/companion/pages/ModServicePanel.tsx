@@ -601,7 +601,7 @@ function ServiceRecommendationHeaderActions({
     <div className="flex flex-wrap items-center justify-end gap-2">
       <FocusLimitInput label="料理" value={recipeLimit} onChange={onRecipeLimitChange} />
       <FocusLimitInput label="酒水" value={beverageLimit} onChange={onBeverageLimitChange} />
-      <Button size="sm" onClick={onEnterFocusMode}>
+      <Button size="sm" data-gamepad-focus-key="service:focus:enter" onClick={onEnterFocusMode}>
         稀客订单专注模式
       </Button>
     </div>
@@ -652,30 +652,33 @@ export function ServiceFocusPage({
   const hasOrders = recommendations.length > 0 || recommendationIssues.length > 0;
 
   return (
-    <div className="flex min-h-[calc(100dvh-1rem)] flex-col gap-4" data-gamepad-scope="content">
-      <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold text-foreground">稀客订单专注模式</h1>
-          <p className="mt-1 text-sm text-muted-foreground">只显示当前稀客点单推荐。</p>
-        </div>
-        <div className="flex flex-wrap items-center justify-end gap-3">
-          <SwitchControl
-            label="精简模式"
-            checked={compact}
-            onCheckedChange={onCompactChange}
-          />
-          <FocusLimitInput
-            label="料理"
-            value={recipeLimit}
-            onChange={onRecipeLimitChange}
-          />
-          <FocusLimitInput
-            label="酒水"
-            value={beverageLimit}
-            onChange={onBeverageLimitChange}
-          />
-          <Button size="sm" onClick={onExit}>退出专注模式</Button>
-        </div>
+    <div
+      className="flex min-h-[calc(100dvh-1rem)] flex-col gap-4"
+      role="region"
+      aria-label="稀客订单专注模式"
+      data-gamepad-scope="content"
+      data-service-focus-page="true"
+    >
+      <div
+        className="flex w-full shrink-0 flex-wrap items-center justify-end gap-3"
+        data-service-focus-toolbar="true"
+      >
+        <SwitchControl
+          label="精简模式"
+          checked={compact}
+          onCheckedChange={onCompactChange}
+        />
+        <FocusLimitInput
+          label="料理"
+          value={recipeLimit}
+          onChange={onRecipeLimitChange}
+        />
+        <FocusLimitInput
+          label="酒水"
+          value={beverageLimit}
+          onChange={onBeverageLimitChange}
+        />
+        <Button size="sm" data-gamepad-focus-key="service-focus:exit" onClick={onExit}>退出专注模式</Button>
       </div>
 
       {hasOrders ? (
@@ -754,6 +757,8 @@ function CurrentOrderRecommendations({
       title="当前点单推荐"
       action={action}
       className={fillAvailableHeight ? 'min-h-0 flex-1' : undefined}
+      gamepadScrollKey={fillAvailableHeight ? 'service-focus:recommendations' : 'service:recommendations'}
+      gamepadScrollLabel={fillAvailableHeight ? '专注模式当前点单推荐' : '经营中当前点单推荐'}
       contentClassName={
         fillAvailableHeight
           ? `${SCROLL_FADE_CLASS} min-h-0 flex-1 overflow-auto pb-4 pr-1`
@@ -783,6 +788,8 @@ function CurrentOrderRecommendations({
             );
           }
 
+          const orderOccurrenceKey = row.item.order.traceId
+            || `${row.item.order.deskCode}:${row.item.order.guestId ?? 'unknown'}:${row.item.order.foodTagId}:${row.item.order.beverageTagId}`;
           return (
             <OrderRecommendationPanel
               key={`${row.item.order.deskCode}-${row.item.order.guestId}-${row.item.order.foodTagId}-${row.item.order.beverageTagId}`}
@@ -791,6 +798,7 @@ function CurrentOrderRecommendations({
               dataIndexes={dataIndexes}
               favorites={favorites}
               customRecipes={customRecipes}
+              gamepadOccurrenceKey={`${fillAvailableHeight ? 'service-focus' : 'service'}:order:${orderOccurrenceKey}`}
               favoriteBusyKey={favoriteBusyKey}
               compact={compact}
               recipeLimit={recipeLimit}

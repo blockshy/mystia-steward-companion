@@ -16,6 +16,7 @@ const STORAGE_PREFIX = 'mystia-steward-companion';
 
 const BACKGROUND_OPACITY_STORAGE_KEY = `${STORAGE_PREFIX}-background-opacity`;
 const CONTENT_OPACITY_STORAGE_KEY = `${STORAGE_PREFIX}-content-opacity`;
+const FONT_SCALE_PERCENT_STORAGE_KEY = `${STORAGE_PREFIX}-font-scale-percent`;
 // v1.0.7 之前窗口透明度只有一个字段，读取时兼容、保存时删除旧 key。
 const LEGACY_WINDOW_OPACITY_STORAGE_KEY = `${STORAGE_PREFIX}-window-opacity`;
 const FOCUS_SWITCH_BEHAVIOR_STORAGE_KEY = `${STORAGE_PREFIX}-focus-switch-behavior`;
@@ -63,6 +64,10 @@ export const DEFAULT_BACKGROUND_OPACITY = 0.96;
 export const DEFAULT_CONTENT_OPACITY = 1;
 export const MIN_BACKGROUND_OPACITY = 0.2;
 export const MIN_CONTENT_OPACITY = 0.35;
+export const DEFAULT_FONT_SCALE_PERCENT = 100;
+export const MIN_FONT_SCALE_PERCENT = 90;
+export const MAX_FONT_SCALE_PERCENT = 130;
+export const FONT_SCALE_PERCENT_STEP = 5;
 export const DEFAULT_FOCUS_SWITCH_COOLDOWN_MS = 800;
 export const MIN_FOCUS_SWITCH_COOLDOWN_MS = 250;
 export const MAX_FOCUS_SWITCH_COOLDOWN_MS = 2000;
@@ -96,6 +101,7 @@ export type ServiceOrderSortMode = 'ordered' | 'guest';
 export interface CompanionPreferences {
   backgroundOpacity: number;
   contentOpacity: number;
+  fontScalePercent: number;
   focusSwitchBehavior: FocusSwitchBehavior;
   focusSwitchCooldownMs: number;
   alwaysOnTop: boolean;
@@ -153,6 +159,7 @@ export function readStoredCompanionPreferences(): CompanionPreferences {
       readStoredNumber(LEGACY_WINDOW_OPACITY_STORAGE_KEY, DEFAULT_BACKGROUND_OPACITY),
     ),
     contentOpacity: readStoredNumber(CONTENT_OPACITY_STORAGE_KEY, DEFAULT_CONTENT_OPACITY),
+    fontScalePercent: readStoredNumber(FONT_SCALE_PERCENT_STORAGE_KEY, DEFAULT_FONT_SCALE_PERCENT),
     focusSwitchBehavior: readStoredFocusSwitchBehavior(),
     focusSwitchCooldownMs: Number(
       localStorage.getItem(FOCUS_SWITCH_COOLDOWN_STORAGE_KEY) ?? DEFAULT_FOCUS_SWITCH_COOLDOWN_MS,
@@ -216,6 +223,7 @@ export function normalizeCompanionPreferences(
   return {
     backgroundOpacity: normalizeBackgroundOpacity(legacyBackgroundOpacity),
     contentOpacity: normalizeContentOpacity(value.contentOpacity ?? DEFAULT_CONTENT_OPACITY),
+    fontScalePercent: normalizeFontScalePercent(value.fontScalePercent ?? DEFAULT_FONT_SCALE_PERCENT),
     focusSwitchBehavior: value.focusSwitchBehavior === 'keep-visible' ? 'keep-visible' : 'hide',
     focusSwitchCooldownMs: normalizeFocusSwitchCooldownMs(value.focusSwitchCooldownMs ?? DEFAULT_FOCUS_SWITCH_COOLDOWN_MS),
     alwaysOnTop: Boolean(value.alwaysOnTop),
@@ -264,6 +272,12 @@ export function normalizeContentOpacity(value: number) {
   return Math.max(MIN_CONTENT_OPACITY, Math.min(1, value));
 }
 
+export function normalizeFontScalePercent(value: number) {
+  if (!Number.isFinite(value)) return DEFAULT_FONT_SCALE_PERCENT;
+  const stepped = Math.round(value / FONT_SCALE_PERCENT_STEP) * FONT_SCALE_PERCENT_STEP;
+  return Math.max(MIN_FONT_SCALE_PERCENT, Math.min(MAX_FONT_SCALE_PERCENT, stepped));
+}
+
 export function normalizeFocusSwitchCooldownMs(value: number) {
   if (!Number.isFinite(value)) return DEFAULT_FOCUS_SWITCH_COOLDOWN_MS;
   return Math.max(
@@ -306,6 +320,7 @@ export function persistCompanionPreferences(preferences: CompanionPreferences) {
   const normalized = normalizeCompanionPreferences(preferences);
   localStorage.setItem(BACKGROUND_OPACITY_STORAGE_KEY, String(normalized.backgroundOpacity));
   localStorage.setItem(CONTENT_OPACITY_STORAGE_KEY, String(normalized.contentOpacity));
+  localStorage.setItem(FONT_SCALE_PERCENT_STORAGE_KEY, String(normalized.fontScalePercent));
   localStorage.removeItem(LEGACY_WINDOW_OPACITY_STORAGE_KEY);
   localStorage.setItem(FOCUS_SWITCH_BEHAVIOR_STORAGE_KEY, normalized.focusSwitchBehavior);
   localStorage.setItem(FOCUS_SWITCH_COOLDOWN_STORAGE_KEY, String(normalized.focusSwitchCooldownMs));
@@ -356,18 +371,17 @@ export function persistCompanionPreferences(preferences: CompanionPreferences) {
 }
 
 /**
- * 将视觉透明度偏好写入 CSS 变量。
+ * 将视觉偏好写入 CSS 变量。
  */
 export function applyCompanionVisualPreferences(preferences: CompanionPreferences) {
   const backgroundOpacity = normalizeBackgroundOpacity(preferences.backgroundOpacity);
   const backgroundPercent = `${Math.round(backgroundOpacity * 100)}%`;
-  const contentOpacity = normalizeContentOpacity(preferences.contentOpacity);
-  const contentPercent = `${Math.round(contentOpacity * 100)}%`;
+  const contentPercent = `${Math.round(normalizeContentOpacity(preferences.contentOpacity) * 100)}%`;
+  const fontScale = normalizeFontScalePercent(preferences.fontScalePercent) / 100;
 
   document.documentElement.style.setProperty('--companion-background-opacity-percent', backgroundPercent);
-  document.documentElement.style.setProperty('--companion-window-opacity-percent', backgroundPercent);
-  document.documentElement.style.setProperty('--companion-content-opacity', String(contentOpacity));
   document.documentElement.style.setProperty('--companion-content-opacity-percent', contentPercent);
+  document.documentElement.style.setProperty('--companion-font-scale', String(fontScale));
 }
 
 /**

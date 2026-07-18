@@ -10,6 +10,7 @@ function Accordion({ className, defaultValue, value, ...props }: AccordionProps)
   return (
     <MantineAccordion
       data-slot="accordion"
+      data-gamepad-control="accordion"
       className={composeClassNames('steward-accordion', className)}
       defaultValue={defaultValue}
       value={value}
@@ -37,6 +38,7 @@ function AccordionTrigger({
   return (
     <MantineAccordion.Control
       data-slot="accordion-trigger"
+      data-gamepad-control="accordion-trigger"
       className={composeClassNames('steward-accordion-trigger', className)}
       {...props}
     >

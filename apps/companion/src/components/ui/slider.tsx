@@ -6,7 +6,6 @@ import { composeClassNames } from '@/components/ui/style';
 type SliderProps = Omit<MantineSliderProps, 'value' | 'onChange'> & {
   value: number;
   onValueChange: (value: number) => void;
-  gamepadStep?: number;
 };
 
 function Slider({
@@ -17,13 +16,21 @@ function Slider({
   step = 1,
   disabled,
   onValueChange,
-  gamepadStep = step,
   ...props
 }: SliderProps) {
+  const {
+    'aria-label': ariaLabel,
+    'aria-valuetext': ariaValueText,
+    thumbLabel,
+    thumbValueText,
+    ...sliderProps
+  } = props;
+
   return (
     <div
       data-slot="slider"
-      className={composeClassNames('relative py-2', className)}
+      data-gamepad-control="slider"
+      className={composeClassNames('relative', className)}
     >
       <MantineSlider
         color="steward"
@@ -35,23 +42,11 @@ function Slider({
         max={max}
         step={step}
         disabled={disabled}
-        thumbLabel={props['aria-label']}
+        thumbLabel={thumbLabel ?? ariaLabel}
+        thumbValueText={thumbValueText ?? ariaValueText}
         onChange={onValueChange}
         className="steward-slider"
-        {...props}
-      />
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        disabled={disabled}
-        aria-label={props['aria-label']}
-        data-gamepad-slider="true"
-        data-gamepad-step={gamepadStep}
-        onChange={(event) => onValueChange(Number(event.target.value))}
-        className="absolute inset-0 h-full w-full cursor-pointer opacity-0 disabled:cursor-not-allowed"
+        {...sliderProps}
       />
     </div>
   );
@@ -89,7 +84,7 @@ function SliderField({
         value={value}
         onValueChange={onChange}
         aria-label={label}
-        gamepadStep={step}
+        aria-valuetext={valueText}
       />
       {description && <div className="mt-1 text-xs text-muted-foreground">{description}</div>}
     </div>

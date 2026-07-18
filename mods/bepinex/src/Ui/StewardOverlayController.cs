@@ -82,12 +82,17 @@ internal sealed class StewardOverlayController
     private long _normalBusinessContextCaptureVersion = long.MinValue;
     private bool _localApiSnapshotErrorLogged;
     private volatile bool _disposed;
-    private bool _controllerToggleLatched;
+    private readonly ControllerToggleState _controllerToggleState = new();
+    private System.Reflection.PropertyInfo? _inputSystemCurrentProperty;
+    private System.Reflection.PropertyInfo? _inputSystemRightStickButtonProperty;
+    private System.Reflection.PropertyInfo? _inputSystemWasPressedProperty;
+    private System.Reflection.PropertyInfo? _inputSystemIsPressedProperty;
+    private bool _inputSystemReflectionReady;
+    private bool _inputSystemReadFailureLogged;
     private bool _specialOrderRefreshPending;
     private bool _normalOrderRefreshPending;
     private bool _localApiSnapshotPublishPending;
     private bool _localApiSnapshotForcePending;
-    private float _nextControllerToggleAt;
     private float _nextSpecialOrderRefreshAt;
     private float _nextNormalOrderCaptureRefreshAt;
     private long _lastRuntimeSceneReadinessVersion;
@@ -392,64 +397,60 @@ internal sealed class StewardOverlayController
         if (_config == null) return false;
         if (Input.GetKeyDown(_config.ToggleKey.Value)) return true;
 
-        var controllerHeld = IsControllerToggleHeld(_config.ControllerToggleKey.Value);
-        if (!controllerHeld)
-        {
-            _controllerToggleLatched = false;
-            return false;
-        }
-
-        if (_controllerToggleLatched || Time.realtimeSinceStartup < _nextControllerToggleAt) return false;
-        if (!IsControllerTogglePressedThisFrame(_config.ControllerToggleKey.Value)) return false;
-
-        _controllerToggleLatched = true;
-        _nextControllerToggleAt = Time.realtimeSinceStartup + 1.2f;
-        return true;
+        var legacyHeld = Input.GetKey(_config.ControllerToggleKey.Value);
+        var legacyPressed = Input.GetKeyDown(_config.ControllerToggleKey.Value);
+        var inputSystem = _config.ControllerToggleKey.Value == KeyCode.JoystickButton9
+            ? CaptureInputSystemRightStick()
+            : default;
+        return _controllerToggleState.Update(
+            legacyHeld || inputSystem.Held,
+            legacyPressed || inputSystem.PressedThisFrame);
     }
 
-    private static bool IsControllerTogglePressedThisFrame(KeyCode key)
-    {
-        if (Input.GetKeyDown(key)) return true;
-        return key == KeyCode.JoystickButton9 && IsInputSystemRightStickWasPressed();
-    }
-
-    private static bool IsControllerToggleHeld(KeyCode key)
-    {
-        if (Input.GetKey(key)) return true;
-        return key == KeyCode.JoystickButton9 && IsInputSystemRightStickHeld();
-    }
-
-    private static bool IsInputSystemRightStickWasPressed()
+    private ControllerButtonSnapshot CaptureInputSystemRightStick()
     {
         try
         {
-            var gamepadType = Type.GetType("UnityEngine.InputSystem.Gamepad, Unity.InputSystem");
-            var current = gamepadType?.GetProperty("current")?.GetValue(null);
-            var rightStickButton = current?.GetType().GetProperty("rightStickButton")?.GetValue(current);
-            var pressed = rightStickButton?.GetType().GetProperty("wasPressedThisFrame")?.GetValue(rightStickButton);
-            return pressed is bool isPressed && isPressed;
+            if (!TryResolveInputSystemRightStick()) return default;
+
+            var current = _inputSystemCurrentProperty?.GetValue(null);
+            if (current == null) return default;
+            var rightStickButton = _inputSystemRightStickButtonProperty?.GetValue(current);
+            if (rightStickButton == null) return default;
+
+            return new ControllerButtonSnapshot(
+                _inputSystemIsPressedProperty?.GetValue(rightStickButton) is true,
+                _inputSystemWasPressedProperty?.GetValue(rightStickButton) is true);
         }
-        catch
+        catch (Exception ex)
         {
-            return false;
+            if (!_inputSystemReadFailureLogged)
+            {
+                _inputSystemReadFailureLogged = true;
+                _log?.LogDebug($"Input System right-stick read failed; legacy input remains active: {ex.Message}");
+            }
+            return default;
         }
     }
 
-    private static bool IsInputSystemRightStickHeld()
+    private bool TryResolveInputSystemRightStick()
     {
-        try
-        {
-            var gamepadType = Type.GetType("UnityEngine.InputSystem.Gamepad, Unity.InputSystem");
-            var current = gamepadType?.GetProperty("current")?.GetValue(null);
-            var rightStickButton = current?.GetType().GetProperty("rightStickButton")?.GetValue(current);
-            var pressed = rightStickButton?.GetType().GetProperty("isPressed")?.GetValue(rightStickButton);
-            return pressed is bool isPressed && isPressed;
-        }
-        catch
-        {
-            return false;
-        }
+        if (_inputSystemReflectionReady) return true;
+
+        var gamepadType = Type.GetType("UnityEngine.InputSystem.Gamepad, Unity.InputSystem");
+        _inputSystemCurrentProperty = gamepadType?.GetProperty("current");
+        _inputSystemRightStickButtonProperty = gamepadType?.GetProperty("rightStickButton");
+        var buttonType = _inputSystemRightStickButtonProperty?.PropertyType;
+        _inputSystemWasPressedProperty = buttonType?.GetProperty("wasPressedThisFrame");
+        _inputSystemIsPressedProperty = buttonType?.GetProperty("isPressed");
+        _inputSystemReflectionReady = _inputSystemCurrentProperty != null
+            && _inputSystemRightStickButtonProperty != null
+            && _inputSystemWasPressedProperty != null
+            && _inputSystemIsPressedProperty != null;
+        return _inputSystemReflectionReady;
     }
+
+    private readonly record struct ControllerButtonSnapshot(bool Held, bool PressedThisFrame);
 
     /// <summary>
     /// Unity LateUpdate 入口，用于厨具和置顶列表项等需要等待普通 Update 后再执行的视觉效果。

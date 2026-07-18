@@ -30,7 +30,7 @@ function StatusMetric({
       : 'text-foreground';
 
   return (
-    <div className="min-w-0 border-l border-border/45 px-3 py-2 first:border-l-0 max-[719px]:border-l-0 max-[719px]:border-t max-[719px]:first:border-t-0">
+    <div className="min-w-0 border-t border-border/45 px-3 py-2 first:border-t-0 min-[640px]:border-l min-[640px]:border-t-0 min-[640px]:first:border-l-0">
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className={composeClassNames('mt-0.5 truncate text-sm font-semibold', toneClass)} title={value}>
         {value}
@@ -112,7 +112,7 @@ export function WorkbenchHeader({
           )}
         </div>
 
-        <div className="flex min-w-0 flex-nowrap items-center justify-end gap-2 max-[719px]:flex-wrap max-[719px]:justify-start">
+        <div className="flex min-w-0 flex-nowrap items-center justify-end gap-2 max-[639px]:flex-wrap max-[639px]:justify-start">
           <Input
             value={endpointDraft}
             onChange={(event) => onEndpointDraftChange(event.target.value)}
@@ -120,7 +120,7 @@ export function WorkbenchHeader({
               if (event.key === 'Enter') onApplyEndpointConnection();
             }}
             spellCheck={false}
-            className="min-w-[8.5rem] max-w-[15rem] flex-1 basis-[12rem] max-[719px]:max-w-none max-[719px]:basis-full"
+            className="min-w-[8.5rem] max-w-[15rem] flex-1 basis-[12rem] max-[719px]:max-w-none max-[639px]:basis-full"
             inputClassName="font-mono"
           />
           <Input
@@ -155,7 +155,7 @@ export function WorkbenchHeader({
         </div>
       </div>
 
-      <div className="mt-3 grid grid-cols-3 overflow-hidden border border-border/45 steward-background-surface-45 max-[719px]:grid-cols-1">
+      <div className="mt-3 grid grid-cols-1 overflow-hidden border border-border/45 steward-background-surface-45 min-[640px]:grid-cols-3">
         <StatusMetric
           label="连接状态"
           value={connectionValue}

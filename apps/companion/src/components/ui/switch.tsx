@@ -48,8 +48,8 @@ function SwitchField({
       title={title}
       {...props}
     >
-      <Switch checked={checked} onCheckedChange={onCheckedChange} disabled={disabled} />
-      <span className="min-w-0 truncate">{label}</span>
+      <Switch className="shrink-0" checked={checked} onCheckedChange={onCheckedChange} disabled={disabled} />
+      <span className="min-w-0 flex-1 break-words">{label}</span>
     </label>
   );
 }

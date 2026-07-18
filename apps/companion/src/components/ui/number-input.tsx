@@ -21,6 +21,7 @@ function NumberInput({
   return (
     <MantineNumberInput
       data-slot="number-input"
+      data-gamepad-control="number-input"
       value={value}
       size={size}
       allowDecimal={false}

@@ -11,6 +11,7 @@ function Tree({ className, levelOffset = 'md', ...props }: MantineTreeProps) {
   return (
     <MantineTree
       data-slot="tree"
+      data-gamepad-control="tree"
       levelOffset={levelOffset}
       className={composeClassNames('steward-tree', className)}
       {...props}

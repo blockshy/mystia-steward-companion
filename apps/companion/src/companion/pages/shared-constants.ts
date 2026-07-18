@@ -1,8 +1,9 @@
 export const MAX_RECOMMENDATION_ROWS = 8;
-export const DENSE_TWO_COLUMN_GRID = 'grid grid-cols-2 gap-3 max-[719px]:grid-cols-1';
-export const DENSE_TWO_COLUMN_GRID_TIGHT = 'grid grid-cols-2 gap-2 max-[719px]:grid-cols-1';
-export const DENSE_THREE_COLUMN_GRID = 'grid grid-cols-3 gap-3 max-[719px]:grid-cols-1';
-export const DENSE_FOUR_COLUMN_GRID = 'grid grid-cols-4 gap-3 max-[719px]:grid-cols-2 max-[479px]:grid-cols-1';
+export const MINIMUM_MULTICOLUMN_GRID_CLASS = 'steward-minimum-multicolumn-grid';
+export const DENSE_TWO_COLUMN_GRID = `${MINIMUM_MULTICOLUMN_GRID_CLASS} grid grid-cols-1 gap-3 min-[640px]:grid-cols-2`;
+export const DENSE_TWO_COLUMN_GRID_TIGHT = `${MINIMUM_MULTICOLUMN_GRID_CLASS} grid grid-cols-1 gap-2 min-[640px]:grid-cols-2`;
+export const DENSE_THREE_COLUMN_GRID = `${MINIMUM_MULTICOLUMN_GRID_CLASS} grid grid-cols-1 gap-3 min-[640px]:grid-cols-2 min-[720px]:grid-cols-3`;
+export const DENSE_FOUR_COLUMN_GRID = `${MINIMUM_MULTICOLUMN_GRID_CLASS} grid grid-cols-1 gap-3 min-[480px]:grid-cols-2 min-[720px]:grid-cols-4`;
 export const DENSE_CARD_HEADER_GRID = 'grid grid-cols-[minmax(0,1fr)_auto] gap-3';
 export const DENSE_ITEM_GRID = 'grid grid-cols-[repeat(auto-fit,minmax(11rem,1fr))] gap-2';
 export const AUTOMATION_SWITCH_GRID = 'grid grid-cols-2 gap-2 max-[479px]:grid-cols-1 xl:grid-cols-3';

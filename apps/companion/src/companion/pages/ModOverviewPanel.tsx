@@ -105,7 +105,7 @@ export function ModOverviewPanel({
               <InfoLine label="F8" value="在游戏与独立窗口之间切换焦点或重新显示伴随窗口" />
               <InfoLine label="F10" value="开启或关闭鼠标穿透锁定；穿透后可用它恢复窗口操作" />
               <InfoLine label="RS Click" value="手柄默认在游戏与独立窗口之间切换" />
-              <InfoLine label="手柄导航" value="左摇杆/十字键移动，A 确认，B 返回，LB/RB 切换页面，LT/RT 滚动" />
+              <InfoLine label="手柄导航" value="左摇杆/十字键移动，A 确认，B 关闭/返回，X 收藏，Y 专注模式，LB/RB 切页，LT/RT 滚动" />
               <InfoLine label="专注模式" value="Y 进入专注模式或切换精简模式，X 收藏当前推荐项" />
               <InfoLine label="窗口关闭" value="关闭按钮会隐藏到托盘；托盘菜单可重新显示或退出" />
             </div>

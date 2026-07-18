@@ -3,6 +3,7 @@ import { IconArchive, IconFolderOpen, IconPower, IconRefresh } from '@tabler/ico
 import { Button, Card, CardContent, InfoLine, NumberInput } from '@/components/ui-kit';
 import { exportDiagnosticPackage, openLogFolder, readLogSettings, writeLogSettings } from '@/companion/api';
 import { formatBytes } from '@/companion/formatters';
+import { MINIMUM_MULTICOLUMN_GRID_CLASS } from '@/companion/pages/shared-constants';
 import type { DiagnosticPackageResponse, LocalApiLogSettings } from '@/companion/types';
 
 const DEFAULT_AGGREGATE_LOG_MAX_FILE_COUNT = 30;
@@ -148,19 +149,38 @@ export function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToke
               variant={aggregateEnabled ? 'default' : 'outline'}
               onClick={() => setAggregateLogEnabled(!aggregateEnabled)}
               disabled={!apiToken || actionLoading}
+              data-gamepad-focus-key="logs:toggle-aggregate"
             >
               <IconPower className="size-4" />
               {aggregateEnabled ? '关闭总日志' : '开启总日志'}
             </Button>
-            <Button size="sm" variant="outline" onClick={openAggregateFolder} disabled={!apiToken || actionLoading}>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!apiToken || actionLoading}
+              data-gamepad-focus-key="logs:open-folder"
+              onClick={openAggregateFolder}
+            >
               <IconFolderOpen className="size-4" />
               打开目录
             </Button>
-            <Button size="sm" variant="outline" onClick={exportDiagnostics} disabled={!apiToken || actionLoading}>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!apiToken || actionLoading}
+              data-gamepad-focus-key="logs:export-diagnostics"
+              onClick={exportDiagnostics}
+            >
               <IconArchive className="size-4" />
               导出诊断包
             </Button>
-            <Button size="sm" variant="outline" onClick={refreshLogSettings} disabled={loading}>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={loading}
+              data-gamepad-focus-key="logs:refresh"
+              onClick={refreshLogSettings}
+            >
               <IconRefresh className={loading ? 'size-4 animate-spin' : 'size-4'} />
               刷新
             </Button>
@@ -169,7 +189,7 @@ export function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToke
       </Card>
 
       <Card>
-        <CardContent className="grid grid-cols-2 gap-x-4 gap-y-3 p-4 text-sm max-[719px]:grid-cols-1">
+        <CardContent className={`${MINIMUM_MULTICOLUMN_GRID_CLASS} grid grid-cols-1 gap-x-4 gap-y-3 p-4 text-sm min-[640px]:grid-cols-2`}>
           <InfoLine label="本地 API 授权" value={apiToken ? '已接收' : '未收到'} />
           <InfoLine label="总日志" value={aggregateEnabled ? '开启' : '关闭'} />
           <InfoLine label="单文件大小" value={formatBytes(settings?.aggregateModLogMaxFileBytes ?? 10 * 1024 * 1024)} />

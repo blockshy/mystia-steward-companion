@@ -12,9 +12,17 @@ import {
   mergeRareCustomers,
 } from '@/companion/domain/service-recommendations';
 import { usePageRecommendations } from '@/companion/hooks/usePageRecommendations';
+import { useEffectiveCustomRecipesDisclosure } from '@/companion/hooks/useEffectiveCustomRecipesDisclosure';
 import type { CompanionPreferences } from '@/companion/preferences';
 import type { CustomRecipeData, FavoriteData, RecommendationStateSnapshot, RuntimeSets, ToggleBeverageFavorite, ToggleRecipeFavorite } from '@/companion/types';
-import { BeverageRecommendationRow, EffectiveCustomRecipesViewer, PlaceToolbar, RecipeRecommendationRow, RuntimeUnavailable } from '@/companion/pages/shared';
+import {
+  BeverageRecommendationRow,
+  EffectiveCustomRecipesDetails,
+  EffectiveCustomRecipesTrigger,
+  PlaceToolbar,
+  RecipeRecommendationRow,
+  RuntimeUnavailable,
+} from '@/companion/pages/shared';
 import { DENSE_THREE_COLUMN_GRID, DENSE_TWO_COLUMN_GRID, RECOMMENDATION_SCROLL_AREA } from '@/companion/pages/shared-constants';
 import { buildRecommendationDataIndexes, getRareCustomersByPlace, type RecommendationDataSet } from '@/lib/recommendation-data';
 import type { RareCustomerCatalogItem, PlaceName } from '@/lib/catalog-types';
@@ -153,6 +161,11 @@ export function ModRarePanel({
     || (pageRecommendations.pending && recipes.length === 0 ? '推荐计算中' : '暂无可推荐料理');
   const beverageEmptyText = pageRecommendations.error
     || (pageRecommendations.pending && beverages.length === 0 ? '推荐计算中' : '暂无可推荐酒水');
+  const customRecipeDisclosure = useEffectiveCustomRecipesDisclosure(
+    selectedCustomer?.id ?? null,
+    foodTag,
+    customRecipes,
+  );
 
   if (!runtime || !runtimeSets) return <RuntimeUnavailable />;
 
@@ -217,15 +230,30 @@ export function ModRarePanel({
           )}
 
           <div className={DENSE_TWO_COLUMN_GRID}>
-            <ListPanel title={`料理推荐 (${recipes.length})`} contentClassName={RECOMMENDATION_SCROLL_AREA}>
-              {recipes.length === 0 && <EmptyRow text={recipeEmptyText} />}
-              <EffectiveCustomRecipesViewer
+            <ListPanel
+              title={`料理推荐 (${recipes.length})`}
+              action={customRecipeDisclosure.available ? (
+                <EffectiveCustomRecipesTrigger
+                  open={customRecipeDisclosure.open}
+                  count={customRecipeDisclosure.entries.length}
+                  gamepadFocusKey={`rare:${selectedCustomer.id}:${foodTag}:custom-recipes:toggle`}
+                  gamepadConfirmFocusKey={`rare:${selectedCustomer.id}:${foodTag}:custom-recipes`}
+                  onToggle={customRecipeDisclosure.toggle}
+                />
+              ) : undefined}
+              contentClassName={RECOMMENDATION_SCROLL_AREA}
+              gamepadScrollKey={`rare:${selectedCustomer.id}:${foodTag}:recipes`}
+              gamepadScrollLabel={`${selectedCustomer.name}料理推荐`}
+            >
+              <EffectiveCustomRecipesDetails
+                open={customRecipeDisclosure.open}
+                entries={customRecipeDisclosure.entries}
                 customer={selectedCustomer}
-                foodTag={foodTag}
-                customRecipes={customRecipes}
                 runtimeSets={runtimeSets}
                 dataIndexes={dataIndexes}
+                gamepadScrollKey={`rare:${selectedCustomer.id}:${foodTag}:custom-recipes`}
               />
+              {recipes.length === 0 && <EmptyRow text={recipeEmptyText} />}
               <div className="space-y-2">
                 {recipes.map((recipe, index) => (
                   <RecipeRecommendationRow
@@ -237,13 +265,19 @@ export function ModRarePanel({
                     favorite={findRecipeFavorite(favorites, selectedCustomer.id, foodTag, recipe)}
                     favoriteKey={recipeFavoriteKey(selectedCustomer.id, foodTag, recipe)}
                     favoriteBusyKey={favoriteBusyKey}
+                    gamepadOccurrenceKey={`rare:${selectedCustomer.id}:${foodTag}:recipes`}
                     onToggleFavorite={() => onToggleRecipeFavorite(selectedCustomer, foodTag, recipe)}
                   />
                 ))}
               </div>
             </ListPanel>
 
-            <ListPanel title={`酒水推荐 (${beverages.length})`} contentClassName={RECOMMENDATION_SCROLL_AREA}>
+            <ListPanel
+              title={`酒水推荐 (${beverages.length})`}
+              contentClassName={RECOMMENDATION_SCROLL_AREA}
+              gamepadScrollKey={`rare:${selectedCustomer.id}:${beverageTag}:beverages`}
+              gamepadScrollLabel={`${selectedCustomer.name}酒水推荐`}
+            >
               {beverages.length === 0 && <EmptyRow text={beverageEmptyText} />}
               <div className="space-y-2">
                 {beverages.map((beverage, index) => (
@@ -255,6 +289,7 @@ export function ModRarePanel({
                     favorite={findBeverageFavorite(favorites, selectedCustomer.id, beverageTag, beverage)}
                     favoriteKey={beverageFavoriteKey(selectedCustomer.id, beverageTag, beverage)}
                     favoriteBusyKey={favoriteBusyKey}
+                    gamepadOccurrenceKey={`rare:${selectedCustomer.id}:${beverageTag}:beverages`}
                     onToggleFavorite={() => onToggleBeverageFavorite(selectedCustomer, beverageTag, beverage)}
                   />
                 ))}

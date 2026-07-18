@@ -70,7 +70,12 @@ export function ModNormalPanel({
 
       {selectedPlace && (
         <div className={DENSE_TWO_COLUMN_GRID}>
-          <ListPanel title={`料理推荐 (${recipes.length})`} contentClassName={RECOMMENDATION_SCROLL_AREA}>
+          <ListPanel
+            title={`料理推荐 (${recipes.length})`}
+            contentClassName={RECOMMENDATION_SCROLL_AREA}
+            gamepadScrollKey={`normal:${selectedPlace}:recipes`}
+            gamepadScrollLabel={`${selectedPlace}普客料理推荐`}
+          >
             {recipes.length === 0 && <EmptyRow text={recipeEmptyText} />}
             <div className="space-y-2">
               {recipes.map((recipe, index) => (
@@ -85,7 +90,12 @@ export function ModNormalPanel({
             </div>
           </ListPanel>
 
-          <ListPanel title={`酒水推荐 (${beverages.length})`} contentClassName={RECOMMENDATION_SCROLL_AREA}>
+          <ListPanel
+            title={`酒水推荐 (${beverages.length})`}
+            contentClassName={RECOMMENDATION_SCROLL_AREA}
+            gamepadScrollKey={`normal:${selectedPlace}:beverages`}
+            gamepadScrollLabel={`${selectedPlace}普客酒水推荐`}
+          >
             {beverages.length === 0 && <EmptyRow text={beverageEmptyText} />}
             <div className="space-y-2">
               {beverages.map((beverage, index) => (

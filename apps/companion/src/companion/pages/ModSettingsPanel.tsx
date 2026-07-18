@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { IconCopy, IconDownload, IconExternalLink, IconKey, IconPackageImport, IconRefresh } from '@tabler/icons-react';
-import { Button, InfoLine, Input, ListPanel, MultiSelectBox, NumberInput, Slider, SwitchField, Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui-kit';
+import { Button, Dialog, InfoLine, Input, ListPanel, MultiSelectBox, NumberInput, Slider, SwitchField, Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui-kit';
 import {
   readLocalApiConnectionConfig,
   regenerateLocalApiToken,
@@ -10,6 +10,7 @@ import { buildInventorySelectOptions, type InventorySortMode } from '@/companion
 import type { UpdateManager } from '@/companion/features/updates/useUpdateManager';
 import { formatBytes } from '@/companion/formatters';
 import {
+  DEFAULT_FONT_SCALE_PERCENT,
   MAX_RECIPE_VARIANT_LIMIT_PER_BASE,
   MAX_AUTO_ROLLBACKS_LIMIT,
   MAX_AUTO_STEP_RETRIES_LIMIT,
@@ -37,12 +38,13 @@ import {
   AutomationSliderField,
   BackgroundOpacitySlider,
   ContentOpacitySlider,
+  FontScaleSlider,
   FocusSwitchCooldownInput,
   InventorySortControl,
   SettingSegmentedControl,
   SwitchControl,
 } from '@/companion/pages/shared';
-import { DENSE_TWO_COLUMN_GRID, INNER_TAB_TRIGGER_CLASS } from '@/companion/pages/shared-constants';
+import { DENSE_TWO_COLUMN_GRID, INNER_TAB_TRIGGER_CLASS, MINIMUM_MULTICOLUMN_GRID_CLASS } from '@/companion/pages/shared-constants';
 
 export function ModSettingsPanel({
   endpoint,
@@ -83,6 +85,7 @@ export function ModSettingsPanel({
   const [connectionBusy, setConnectionBusy] = useState<'refresh' | 'apply' | 'token' | 'copy' | null>(null);
   const [connectionError, setConnectionError] = useState('');
   const [connectionTokenVisible, setConnectionTokenVisible] = useState(false);
+  const [tokenResetDialogOpen, setTokenResetDialogOpen] = useState(false);
   const [ingredientExclusionSortMode, setIngredientExclusionSortMode] = useState<InventorySortMode>('name');
   const [beverageExclusionSortMode, setBeverageExclusionSortMode] = useState<InventorySortMode>('name');
   const ingredientOptions = useMemo(
@@ -189,7 +192,6 @@ export function ModSettingsPanel({
 
   const regenerateConnectionToken = useCallback(async () => {
     if (!apiToken || connectionBusy) return;
-    if (!window.confirm('重置后其他设备需要重新输入新 Token。继续？')) return;
 
     setConnectionBusy('token');
     try {
@@ -268,7 +270,8 @@ export function ModSettingsPanel({
   const tokenDisplayValue = connectionTokenVisible ? tokenValue : maskToken(tokenValue);
 
   return (
-    <Tabs value={settingsTab} onValueChange={(value) => onSettingsTabChange(value as SettingsTab)} className="space-y-4">
+    <>
+      <Tabs value={settingsTab} onValueChange={(value) => onSettingsTabChange(value as SettingsTab)} className="space-y-4">
       <TabsList scrollable className="grid h-9 w-full grid-cols-5">
         <TabsTrigger value="window" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
           窗口
@@ -348,13 +351,32 @@ export function ModSettingsPanel({
                 ]}
                 onChange={onThemeModeChange}
               />
+              <div className="flex items-end gap-2">
+                <div className="min-w-0 flex-1">
+                  <FontScaleSlider
+                    value={preferences.fontScalePercent}
+                    onChange={(fontScalePercent) => onPreferenceChange({ fontScalePercent })}
+                  />
+                </div>
+                <Button
+                  type="button"
+                  size="icon-sm"
+                  variant="ghost"
+                  aria-label="恢复默认字体大小"
+                  title="恢复默认字体大小"
+                  disabled={preferences.fontScalePercent === DEFAULT_FONT_SCALE_PERCENT}
+                  onClick={() => onPreferenceChange({ fontScalePercent: DEFAULT_FONT_SCALE_PERCENT })}
+                >
+                  <IconRefresh size={14} aria-hidden="true" />
+                </Button>
+              </div>
               <SwitchControl
                 label="手柄导航"
                 checked={preferences.gamepadNavigationEnabled}
                 onCheckedChange={(gamepadNavigationEnabled) => onPreferenceChange({ gamepadNavigationEnabled })}
               />
               <div className="text-xs text-muted-foreground">
-                关闭手柄导航只影响伴随窗口内的手柄操作；F8 仍可在伴随窗口聚焦时切回游戏。
+                关闭手柄导航只影响伴随窗口内的方向、确认、返回、切页、滚动和收藏操作；F8 / RS Click 的窗口焦点切换仍然有效。
               </div>
               <SwitchControl
                 label="显示调试信息"
@@ -431,6 +453,7 @@ export function ModSettingsPanel({
                         aria-label={`复制 ${lanEndpoint.endpoint}`}
                         title="复制此地址"
                         disabled={Boolean(connectionBusy)}
+                        data-gamepad-focus-key={`settings:connection:copy-lan:${lanEndpoint.address}`}
                         onClick={() => void copyConnectionText(lanEndpoint.endpoint, '无法复制 LAN 地址。')}
                       >
                         <IconCopy size={14} />
@@ -463,6 +486,7 @@ export function ModSettingsPanel({
                 leftSection={<IconRefresh size={14} />}
                 loading={connectionBusy === 'refresh'}
                 disabled={!apiToken || Boolean(connectionBusy)}
+                data-gamepad-focus-key="settings:connection:refresh"
                 onClick={refreshConnectionConfig}
               >
                 刷新
@@ -472,6 +496,7 @@ export function ModSettingsPanel({
                 size="sm"
                 variant="outline"
                 disabled={!apiToken || Boolean(connectionBusy) || !connectionDraftDirty}
+                data-gamepad-focus-key="settings:connection:apply"
                 onClick={applyConnectionConfig}
               >
                 应用
@@ -482,6 +507,7 @@ export function ModSettingsPanel({
                 variant="outline"
                 leftSection={<IconCopy size={14} />}
                 disabled={!tokenValue || Boolean(connectionBusy)}
+                data-gamepad-focus-key="settings:connection:copy-token"
                 onClick={() => void copyConnectionText(tokenValue, '无法复制 Token。')}
               >
                 复制 Token
@@ -490,6 +516,7 @@ export function ModSettingsPanel({
                 type="button"
                 size="sm"
                 variant="outline"
+                data-gamepad-focus-key="settings:connection:toggle-token-visibility"
                 onClick={() => setConnectionTokenVisible((current) => !current)}
               >
                 {connectionTokenVisible ? '隐藏 Token' : '显示 Token'}
@@ -501,7 +528,12 @@ export function ModSettingsPanel({
                 leftSection={<IconKey size={14} />}
                 loading={connectionBusy === 'token'}
                 disabled={!apiToken || Boolean(connectionBusy)}
-                onClick={regenerateConnectionToken}
+                aria-controls="token-reset-dialog"
+                aria-expanded={tokenResetDialogOpen}
+                aria-haspopup="dialog"
+                data-gamepad-dialog-trigger="true"
+                data-gamepad-focus-key="settings:connection:reset-token"
+                onClick={() => setTokenResetDialogOpen(true)}
               >
                 重置 Token
               </Button>
@@ -550,6 +582,7 @@ export function ModSettingsPanel({
                 leftSection={<IconRefresh size={14} />}
                 loading={updateManager.busy === 'check'}
                 disabled={!updateManager.connected || Boolean(updateManager.busy) || remoteUpdateBusy}
+                data-gamepad-focus-key="settings:updates:check"
                 onClick={() => void updateManager.check()}
               >
                 检查
@@ -561,6 +594,7 @@ export function ModSettingsPanel({
                 leftSection={<IconDownload size={14} />}
                 loading={updateManager.busy === 'download'}
                 disabled={!updateManager.connected || Boolean(updateManager.busy) || !canDownloadUpdate}
+                data-gamepad-focus-key="settings:updates:download"
                 onClick={() => void updateManager.download()}
               >
                 下载
@@ -572,6 +606,7 @@ export function ModSettingsPanel({
                 leftSection={<IconPackageImport size={14} />}
                 loading={updateManager.busy === 'install'}
                 disabled={!updateManager.connected || Boolean(updateManager.busy) || !canInstallUpdate}
+                data-gamepad-focus-key="settings:updates:install"
                 onClick={() => void updateManager.install()}
               >
                 打开安装程序
@@ -582,6 +617,7 @@ export function ModSettingsPanel({
                 variant="outline"
                 leftSection={<IconExternalLink size={14} />}
                 disabled={!updateStatus?.releaseUrl}
+                data-gamepad-focus-key="settings:updates:release-page"
                 onClick={() => void updateManager.openReleasePage()}
               >
                 发布页
@@ -728,6 +764,7 @@ export function ModSettingsPanel({
                 type="button"
                 size="sm"
                 variant="outline"
+                data-gamepad-focus-key="settings:recommendation:clear-exclusions"
                 onClick={() => updateExclusions({ excludedIngredientIds: [], excludedBeverageIds: [] })}
                 disabled={
                   preferences.recommendationExclusions.excludedIngredientIds.length === 0
@@ -760,7 +797,7 @@ export function ModSettingsPanel({
             <div className="text-xs text-muted-foreground">
               关闭时会取消 Mod 当前持有的料理任务和排队命令，但不会清空厨具、返还材料或改动玩家成品。
             </div>
-            <div className="grid grid-cols-2 gap-4 max-[719px]:grid-cols-1">
+            <div className={`${MINIMUM_MULTICOLUMN_GRID_CLASS} grid grid-cols-1 gap-4 min-[640px]:grid-cols-2`}>
               <AutomationSliderField
                 label="稀客并发"
                 value={preferences.autoRareConcurrency}
@@ -796,7 +833,45 @@ export function ModSettingsPanel({
           </div>
         </ListPanel>
       </TabsContent>
-    </Tabs>
+      </Tabs>
+
+      <Dialog
+        id="token-reset-dialog"
+        opened={tokenResetDialogOpen}
+        onClose={() => setTokenResetDialogOpen(false)}
+        returnFocusKey="settings:connection:reset-token"
+        title="重置连接 Token"
+      >
+        <p className="text-muted-foreground">
+          重置后，其他设备需要重新输入新 Token 才能连接。确定继续？
+        </p>
+        <div className="flex justify-end gap-2" data-gamepad-axis="x">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            data-autofocus
+            data-gamepad-dialog-default="true"
+            data-gamepad-focus-key="settings:connection:reset-token:cancel"
+            onClick={() => setTokenResetDialogOpen(false)}
+          >
+            取消
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="destructive"
+            data-gamepad-focus-key="settings:connection:reset-token:confirm"
+            onClick={() => {
+              setTokenResetDialogOpen(false);
+              void regenerateConnectionToken();
+            }}
+          >
+            重置 Token
+          </Button>
+        </div>
+      </Dialog>
+    </>
   );
 }
 

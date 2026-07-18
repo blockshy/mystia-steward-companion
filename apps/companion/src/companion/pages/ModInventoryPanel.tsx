@@ -156,7 +156,7 @@ export function ModInventoryPanel({
               placeholder="搜索名称或 ID"
               className="min-w-[10rem] flex-1 basis-[12rem] max-[479px]:basis-full"
             />
-            <Button size="sm" onClick={onRefresh}>
+            <Button size="sm" onClick={onRefresh} data-gamepad-focus-key="inventory:refresh">
               <IconRefresh className="size-4" />
               刷新
             </Button>

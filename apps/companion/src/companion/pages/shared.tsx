@@ -1,28 +1,32 @@
-import { useMemo, useState } from 'react';
 import { PlaceSelect } from '@/components/controls/PlaceSelect';
 import { RecommendationItem, RecommendationMetaBadge, RecommendationTagPills } from '@/components/RecommendationItem';
 import { CustomerCoverageBadges } from '@/components/recommendation/CustomerCoverageBadges';
 import { TagPill, TagPillGroup } from '@/components/recommendation/TagPillGroup';
 import { Badge, Button, EmptyRow, EmptyState, NumberInput, SegmentedControl, SliderField, SwitchField } from '@/components/ui-kit';
-import { getEffectiveCustomRecipeEntries } from '@/companion/domain/custom-recipes';
 import { findBeverageFavorite, findRecipeFavorite, beverageFavoriteKey, recipeFavoriteKey } from '@/companion/domain/favorites';
 import { INVENTORY_SORT_OPTIONS, type InventorySortMode } from '@/companion/domain/inventory-sorting';
 import { formatDesk, formatIngredientNamesWithQty, formatIngredientWithQty, formatQtySuffix } from '@/companion/formatters';
+import { useEffectiveCustomRecipesDisclosure } from '@/companion/hooks/useEffectiveCustomRecipesDisclosure';
 import {
   MAX_FOCUS_RECOMMENDATION_ROWS,
+  MAX_FONT_SCALE_PERCENT,
   MAX_FOCUS_SWITCH_COOLDOWN_MS,
+  MIN_FONT_SCALE_PERCENT,
   MIN_BACKGROUND_OPACITY,
   MIN_CONTENT_OPACITY,
   MIN_FOCUS_SWITCH_COOLDOWN_MS,
+  FONT_SCALE_PERCENT_STEP,
   clampInteger,
   normalizeBackgroundOpacity,
   normalizeContentOpacity,
+  normalizeFontScalePercent,
   normalizeFocusRecommendationLimit,
   normalizeFocusSwitchCooldownMs,
 } from '@/companion/preferences';
 import type {
   FavoriteBeverageEntry,
   CustomRecipeData,
+  CustomRecipeEntry,
   FavoriteData,
   FavoriteRecipeEntry,
   OrderRecommendation,
@@ -250,6 +254,28 @@ export function ContentOpacitySlider({
   );
 }
 
+export function FontScaleSlider({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  const percent = normalizeFontScalePercent(value);
+
+  return (
+    <SliderField
+      label="字体大小"
+      value={percent}
+      min={MIN_FONT_SCALE_PERCENT}
+      max={MAX_FONT_SCALE_PERCENT}
+      step={FONT_SCALE_PERCENT_STEP}
+      valueText={`${percent}%`}
+      onChange={(nextPercent) => onChange(normalizeFontScalePercent(nextPercent))}
+    />
+  );
+}
+
 export type SettingSegmentedOption<TValue extends string> = {
   value: TValue;
   label: string;
@@ -273,7 +299,7 @@ export function SettingSegmentedControl<TValue extends string>({
         value={value}
         options={options}
         onValueChange={onChange}
-        className="max-w-full"
+        className="steward-settings-segmented-control max-w-full"
       />
     </div>
   );
@@ -401,6 +427,7 @@ export function OrderRecommendationPanel({
   beverageLimit = MAX_RECOMMENDATION_ROWS,
   showDebugDetails = false,
   customRecipes,
+  gamepadOccurrenceKey,
   onToggleRecipeFavorite,
   onToggleBeverageFavorite,
 }: {
@@ -409,6 +436,7 @@ export function OrderRecommendationPanel({
   dataIndexes: ReturnType<typeof buildRecommendationDataIndexes>;
   favorites: FavoriteData;
   customRecipes: CustomRecipeData;
+  gamepadOccurrenceKey: string;
   favoriteBusyKey: string;
   compact?: boolean;
   recipeLimit?: number;
@@ -420,6 +448,11 @@ export function OrderRecommendationPanel({
   const visibleRecipes = item.recipes.slice(0, normalizeFocusRecommendationLimit(recipeLimit));
   const visibleBeverages = item.beverages.slice(0, normalizeFocusRecommendationLimit(beverageLimit));
   const targetCookerName = visibleRecipes[0]?.recipe.cooker ?? '';
+  const customRecipeDisclosure = useEffectiveCustomRecipesDisclosure(
+    item.customer.id,
+    item.order.foodTag,
+    customRecipes,
+  );
 
   return (
     <div className={compact ? 'steward-data-row p-2' : 'steward-data-row p-3'}>
@@ -457,16 +490,35 @@ export function OrderRecommendationPanel({
 
       <div className={compact ? `mt-2 ${DENSE_TWO_COLUMN_GRID_TIGHT}` : `mt-3 ${DENSE_TWO_COLUMN_GRID}`}>
         <div>
-          <h3 className={compact ? 'mb-1 text-xs font-semibold' : 'mb-2 text-sm font-semibold'}>推荐料理</h3>
-          {visibleRecipes.length === 0 && <EmptyRow text="暂无可推荐料理" />}
-          <EffectiveCustomRecipesViewer
+          <div
+            className={compact
+              ? 'mb-1 flex min-w-0 items-center justify-between gap-2'
+              : 'mb-2 flex min-w-0 items-center justify-between gap-2'}
+            data-effective-custom-recipes-header="true"
+          >
+            <h3 className={compact ? 'shrink-0 text-xs font-semibold' : 'shrink-0 text-sm font-semibold'}>
+              推荐料理
+            </h3>
+            {customRecipeDisclosure.available && (
+              <EffectiveCustomRecipesTrigger
+                open={customRecipeDisclosure.open}
+                count={customRecipeDisclosure.entries.length}
+                gamepadFocusKey={`${gamepadOccurrenceKey}:custom-recipes:toggle`}
+                gamepadConfirmFocusKey={`${gamepadOccurrenceKey}:custom-recipes`}
+                onToggle={customRecipeDisclosure.toggle}
+              />
+            )}
+          </div>
+          <EffectiveCustomRecipesDetails
+            open={customRecipeDisclosure.open}
+            entries={customRecipeDisclosure.entries}
             customer={item.customer}
-            foodTag={item.order.foodTag}
-            customRecipes={customRecipes}
             runtimeSets={runtimeSets}
             dataIndexes={dataIndexes}
             compact={compact}
+            gamepadScrollKey={`${gamepadOccurrenceKey}:custom-recipes`}
           />
+          {visibleRecipes.length === 0 && <EmptyRow text="暂无可推荐料理" />}
           <div className={compact ? 'space-y-1.5' : 'space-y-2'}>
             {visibleRecipes.map((recipe, index) => (
               <RecipeRecommendationRow
@@ -479,6 +531,7 @@ export function OrderRecommendationPanel({
                 favoriteKey={recipeFavoriteKey(item.customer.id, item.order.foodTag, recipe)}
                 favoriteBusyKey={favoriteBusyKey}
                 compact={compact}
+                gamepadOccurrenceKey={gamepadOccurrenceKey}
                 onToggleFavorite={() => onToggleRecipeFavorite(item.customer, item.order.foodTag, recipe)}
               />
             ))}
@@ -499,6 +552,7 @@ export function OrderRecommendationPanel({
                 favoriteKey={beverageFavoriteKey(item.customer.id, item.order.beverageTag, beverage)}
                 favoriteBusyKey={favoriteBusyKey}
                 compact={compact}
+                gamepadOccurrenceKey={gamepadOccurrenceKey}
                 onToggleFavorite={() => onToggleBeverageFavorite(item.customer, item.order.beverageTag, beverage)}
               />
             ))}
@@ -509,83 +563,114 @@ export function OrderRecommendationPanel({
   );
 }
 
-export function EffectiveCustomRecipesViewer({
+export function EffectiveCustomRecipesTrigger({
+  open,
+  count,
+  gamepadFocusKey,
+  gamepadConfirmFocusKey,
+  onToggle,
+}: {
+  open: boolean;
+  count: number;
+  gamepadFocusKey: string;
+  gamepadConfirmFocusKey: string;
+  onToggle: () => void;
+}) {
+  const accessibleLabel = open
+    ? '收起生效的自定义配方'
+    : `查看生效的自定义配方 (${count})`;
+
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="xs"
+      className="shrink-0"
+      aria-label={accessibleLabel}
+      aria-expanded={open}
+      title={accessibleLabel}
+      data-effective-custom-recipes-trigger="true"
+      data-gamepad-focus-key={gamepadFocusKey}
+      data-gamepad-confirm-focus-key={gamepadConfirmFocusKey}
+      onClick={onToggle}
+    >
+      {open ? '收起配方' : `生效配方 (${count})`}
+    </Button>
+  );
+}
+
+export function EffectiveCustomRecipesDetails({
+  open,
+  entries,
   customer,
-  foodTag,
-  customRecipes,
   runtimeSets,
   dataIndexes,
   compact = false,
+  gamepadScrollKey,
 }: {
+  open: boolean;
+  entries: CustomRecipeEntry[];
   customer: RareCustomerCatalogItem;
-  foodTag: string;
-  customRecipes: CustomRecipeData;
   runtimeSets: RuntimeSets | null;
   dataIndexes: ReturnType<typeof buildRecommendationDataIndexes>;
   compact?: boolean;
+  gamepadScrollKey: string;
 }) {
-  const [open, setOpen] = useState(false);
-  const entries = useMemo(
-    () => getEffectiveCustomRecipeEntries(customRecipes, customer.id, foodTag),
-    [customRecipes, customer.id, foodTag],
-  );
-
-  if (!foodTag) return null;
+  if (!open) return null;
 
   return (
-    <div className={compact ? 'mb-1.5' : 'mb-2'}>
-      <Button
-        type="button"
-        variant="outline"
-        size="xs"
-        onClick={() => setOpen((value) => !value)}
+    <div
+      className={compact ? 'steward-inline-panel mb-1.5 p-2' : 'steward-inline-panel mb-2 p-2'}
+      data-effective-custom-recipes-details="true"
+    >
+      <div
+        className="max-h-72 space-y-1.5 overflow-auto pr-1"
+        role="region"
+        aria-label={`${customer.name}生效的自定义配方`}
+        data-gamepad-scroll-key={gamepadScrollKey}
+        data-gamepad-scroll-region="true"
+        data-gamepad-focus-key={gamepadScrollKey}
+        tabIndex={-1}
       >
-        {open ? '收起自定义配方' : `查看生效的自定义配方 (${entries.length})`}
-      </Button>
-      {open && (
-        <div className="steward-inline-panel mt-2 p-2">
-          <div className="mt-2 max-h-72 space-y-1.5 overflow-auto pr-1">
-            {entries.length === 0 && <EmptyRow text="当前稀客和点单料理 Tag 没有生效的自定义配方" />}
-            {entries.map((entry) => {
-              const recipe = dataIndexes.recipeByFoodId.get(entry.foodId);
-              const extras = entry.extraIngredientIds.length === 0
-                ? '不加料'
-                : entry.extraIngredientIds
-                  .map((id) => formatIngredientWithQty(
-                    dataIndexes.ingredientNameById.get(id) ?? `#${id}`,
-                    runtimeSets?.ownedIngredientQty ?? {},
-                    dataIndexes.ingredientIdByName,
-                  ))
-                  .join(', ');
-              const baseRecipe = formatIngredientNamesWithQty(
-                recipe?.ingredients ?? [],
+        {entries.length === 0 && <EmptyRow text="当前稀客和点单料理 Tag 没有生效的自定义配方" />}
+        {entries.map((entry) => {
+          const recipe = dataIndexes.recipeByFoodId.get(entry.foodId);
+          const extras = entry.extraIngredientIds.length === 0
+            ? '不加料'
+            : entry.extraIngredientIds
+              .map((id) => formatIngredientWithQty(
+                dataIndexes.ingredientNameById.get(id) ?? `#${id}`,
                 runtimeSets?.ownedIngredientQty ?? {},
                 dataIndexes.ingredientIdByName,
-              ) || '无';
+              ))
+              .join(', ');
+          const baseRecipe = formatIngredientNamesWithQty(
+            recipe?.ingredients ?? [],
+            runtimeSets?.ownedIngredientQty ?? {},
+            dataIndexes.ingredientIdByName,
+          ) || '无';
 
-              return (
-                <div
-                  key={entry.id}
-                  className="steward-data-row flex flex-wrap items-start justify-between gap-2 px-2 py-2 text-sm"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="font-medium">{recipe?.name ?? `料理 #${entry.foodId}`}</span>
-                      <Badge variant={entry.foodTag === null ? 'secondary' : 'outline'}>
-                        {entry.foodTag === null ? '全部点单' : entry.foodTag}
-                      </Badge>
-                      {entry.pinToTop && <Badge variant="secondary">置顶</Badge>}
-                    </div>
-                    <div className="mt-1 text-xs text-muted-foreground">
-                      排序 {entry.sortOrder} · 厨具 {recipe?.cooker || '未知'} · 基础 {baseRecipe} · 加料 {extras}
-                    </div>
-                  </div>
+          return (
+            <div
+              key={entry.id}
+              className="steward-data-row flex flex-wrap items-start justify-between gap-2 px-2 py-2 text-sm"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="font-medium">{recipe?.name ?? `料理 #${entry.foodId}`}</span>
+                  <Badge variant={entry.foodTag === null ? 'secondary' : 'outline'}>
+                    {entry.foodTag === null ? '全部点单' : entry.foodTag}
+                  </Badge>
+                  {entry.pinToTop && <Badge variant="secondary">置顶</Badge>}
                 </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
+                <div className="mt-1 text-xs text-muted-foreground">
+                  排序 {entry.sortOrder} · 厨具 {recipe?.cooker || '未知'} · 基础 {baseRecipe} · 加料 {extras}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -612,6 +697,7 @@ export function RecipeRecommendationRow({
   favoriteKey = '',
   favoriteBusyKey = '',
   compact = false,
+  gamepadOccurrenceKey,
   onToggleFavorite,
 }: {
   recipe: RareRecipeRecommendation;
@@ -622,6 +708,7 @@ export function RecipeRecommendationRow({
   favoriteKey?: string;
   favoriteBusyKey?: string;
   compact?: boolean;
+  gamepadOccurrenceKey: string;
   onToggleFavorite?: () => void;
 }) {
   const totalCost = recipe.baseCost + recipe.extraCost;
@@ -679,6 +766,7 @@ export function RecipeRecommendationRow({
         onToggle: onToggleFavorite,
       } : undefined}
       gamepadRowKey={`recipe:${favoriteKey}`}
+      gamepadOccurrenceKey={gamepadOccurrenceKey}
     >
       {!compact && <TagSummary tags={recipe.allTags} cancelledTags={recipe.cancelledTags} />}
     </RecommendationItem>
@@ -693,6 +781,7 @@ export function BeverageRecommendationRow({
   favoriteKey = '',
   favoriteBusyKey = '',
   compact = false,
+  gamepadOccurrenceKey,
   onToggleFavorite,
 }: {
   beverage: RareBeverageRecommendation;
@@ -702,6 +791,7 @@ export function BeverageRecommendationRow({
   favoriteKey?: string;
   favoriteBusyKey?: string;
   compact?: boolean;
+  gamepadOccurrenceKey: string;
   onToggleFavorite?: () => void;
 }) {
   const busy = favoriteBusyKey === (favorite?.id ?? favoriteKey);
@@ -727,6 +817,7 @@ export function BeverageRecommendationRow({
         onToggle: onToggleFavorite,
       } : undefined}
       gamepadRowKey={`beverage:${favoriteKey}`}
+      gamepadOccurrenceKey={gamepadOccurrenceKey}
     >
       {!compact && <RecommendationTagPills tags={beverage.beverage.tags} matchedTags={beverage.matchedTags} />}
     </RecommendationItem>

@@ -310,11 +310,24 @@ export function ModCustomRecipesPanel({
 
           <div className="flex flex-wrap items-center justify-end gap-2">
             {form.editingId && (
-              <Button type="button" size="sm" variant="outline" disabled={busy} onClick={resetForm}>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={busy}
+                data-gamepad-focus-key={`custom-recipes:form:${form.editingId}:cancel`}
+                onClick={resetForm}
+              >
                 取消编辑
               </Button>
             )}
-            <Button type="button" size="sm" disabled={Boolean(formError) || busy} onClick={saveForm}>
+            <Button
+              type="button"
+              size="sm"
+              disabled={Boolean(formError) || busy}
+              data-gamepad-focus-key={`custom-recipes:form:${form.editingId || 'new'}:save`}
+              onClick={saveForm}
+            >
               {form.editingId ? '保存配方' : '新增配方'}
             </Button>
           </div>
@@ -333,6 +346,7 @@ export function ModCustomRecipesPanel({
           />
           <FlagActions
             labelPrefix="全部"
+            focusScope="custom-recipes:all"
             summary={summary}
             busy={busy}
             onUpdate={(flags) => void onUpdateCustomRecipeFlags({ selection: { scope: 'all' }, ...flags })}
@@ -353,6 +367,7 @@ export function ModCustomRecipesPanel({
                   </div>
                   <FlagActions
                     labelPrefix="本组"
+                    focusScope={`custom-recipes:group:${group.key}`}
                     summary={groupSummary}
                     busy={busy}
                     onUpdate={(flags) => void onUpdateCustomRecipeFlags({ selection: group.selection, ...flags })}
@@ -394,27 +409,57 @@ export function ModCustomRecipesPanel({
 
 function FlagActions({
   labelPrefix,
+  focusScope,
   summary,
   busy,
   onUpdate,
 }: {
   labelPrefix: '全部' | '本组';
+  focusScope: string;
   summary: CustomRecipeSummary;
   busy: boolean;
   onUpdate: (flags: Pick<CustomRecipeFlagUpdateInput, 'enabled' | 'pinToTop'>) => void;
 }) {
   return (
     <div className="flex flex-wrap justify-end gap-1.5" data-gamepad-axis="x">
-      <Button type="button" size="xs" variant="outline" disabled={busy || summary.total === 0 || summary.enabled === summary.total} onClick={() => onUpdate({ enabled: true })}>
+      <Button
+        type="button"
+        size="xs"
+        variant="outline"
+        disabled={busy || summary.total === 0 || summary.enabled === summary.total}
+        data-gamepad-focus-key={`${focusScope}:enable`}
+        onClick={() => onUpdate({ enabled: true })}
+      >
         {labelPrefix}启用
       </Button>
-      <Button type="button" size="xs" variant="outline" disabled={busy || summary.enabled === 0} onClick={() => onUpdate({ enabled: false })}>
+      <Button
+        type="button"
+        size="xs"
+        variant="outline"
+        disabled={busy || summary.enabled === 0}
+        data-gamepad-focus-key={`${focusScope}:disable`}
+        onClick={() => onUpdate({ enabled: false })}
+      >
         {labelPrefix}停用
       </Button>
-      <Button type="button" size="xs" variant="outline" disabled={busy || summary.total === 0 || summary.pinned === summary.total} onClick={() => onUpdate({ pinToTop: true })}>
+      <Button
+        type="button"
+        size="xs"
+        variant="outline"
+        disabled={busy || summary.total === 0 || summary.pinned === summary.total}
+        data-gamepad-focus-key={`${focusScope}:pin`}
+        onClick={() => onUpdate({ pinToTop: true })}
+      >
         {labelPrefix}置顶
       </Button>
-      <Button type="button" size="xs" variant="outline" disabled={busy || summary.pinned === 0} onClick={() => onUpdate({ pinToTop: false })}>
+      <Button
+        type="button"
+        size="xs"
+        variant="outline"
+        disabled={busy || summary.pinned === 0}
+        data-gamepad-focus-key={`${focusScope}:unpin`}
+        onClick={() => onUpdate({ pinToTop: false })}
+      >
         取消{labelPrefix}置顶
       </Button>
     </div>
@@ -505,7 +550,11 @@ function CustomRecipeRow({
     : entry.customerName || `稀客 #${entry.customerId}`;
 
   return (
-    <div className="steward-data-row px-3 py-2 text-sm">
+    <div
+      className="steward-data-row px-3 py-2 text-sm"
+      data-gamepad-row="true"
+      data-gamepad-row-key={`custom-recipe:${entry.id}`}
+    >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
@@ -526,24 +575,66 @@ function CustomRecipeRow({
         <div className="flex flex-wrap justify-end gap-1.5" data-gamepad-axis="x">
           {groupMode === 'customer' && (
             <>
-              <Button type="button" size="xs" variant="outline" disabled={busy || index === 0} onClick={() => void onMove(entry.id, 'up')}>
+              <Button
+                type="button"
+                size="xs"
+                variant="outline"
+                disabled={busy || index === 0}
+                data-gamepad-focus-key={`custom-recipe:${entry.id}:up`}
+                onClick={() => void onMove(entry.id, 'up')}
+              >
                 上移
               </Button>
-              <Button type="button" size="xs" variant="outline" disabled={busy || index === total - 1} onClick={() => void onMove(entry.id, 'down')}>
+              <Button
+                type="button"
+                size="xs"
+                variant="outline"
+                disabled={busy || index === total - 1}
+                data-gamepad-focus-key={`custom-recipe:${entry.id}:down`}
+                onClick={() => void onMove(entry.id, 'down')}
+              >
                 下移
               </Button>
             </>
           )}
-          <Button type="button" size="xs" variant="outline" disabled={busy} onClick={onTogglePin}>
+          <Button
+            type="button"
+            size="xs"
+            variant="outline"
+            disabled={busy}
+            data-gamepad-focus-key={`custom-recipe:${entry.id}:pin`}
+            onClick={onTogglePin}
+          >
             {entry.pinToTop ? '取消置顶' : '置顶'}
           </Button>
-          <Button type="button" size="xs" variant="outline" disabled={busy} onClick={onToggle}>
+          <Button
+            type="button"
+            size="xs"
+            variant="outline"
+            disabled={busy}
+            data-gamepad-focus-key={`custom-recipe:${entry.id}:toggle`}
+            onClick={onToggle}
+          >
             {entry.enabled ? '停用' : '启用'}
           </Button>
-          <Button type="button" size="xs" variant="outline" disabled={busy} onClick={onEdit}>
+          <Button
+            type="button"
+            size="xs"
+            variant="outline"
+            disabled={busy}
+            data-gamepad-focus-key={`custom-recipe:${entry.id}:edit`}
+            onClick={onEdit}
+          >
             编辑
           </Button>
-          <Button type="button" size="xs" variant="destructive" disabled={busy} onClick={onRemove}>
+          <Button
+            type="button"
+            size="xs"
+            variant="destructive"
+            disabled={busy}
+            data-gamepad-focus-key={`custom-recipe:${entry.id}:remove`}
+            onClick={onRemove}
+          >
             删除
           </Button>
         </div>

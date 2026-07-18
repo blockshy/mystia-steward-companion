@@ -11,11 +11,11 @@ internal static class CompanionProcessLauncher
     private const string ControlShow = "mystia-steward-companion:show";
     private const string ControlToggle = "mystia-steward-companion:toggle";
     private const string ControlExit = "mystia-steward-companion:exit";
-    private static readonly object RequestLock = new();
+    private static readonly TimeSpan ControlReadyTimeout = TimeSpan.FromSeconds(8);
     private static readonly object LifecycleLock = new();
-    private static DateTime _lastRequestUtc = DateTime.MinValue;
     private static int _generation;
     private static bool _stopping;
+    private static bool _launchPending;
 
     public static void BeginSession()
     {
@@ -23,6 +23,7 @@ internal static class CompanionProcessLauncher
         {
             _generation += 1;
             _stopping = false;
+            _launchPending = false;
         }
     }
 
@@ -35,7 +36,6 @@ internal static class CompanionProcessLauncher
 
     public static void TryToggleOrLaunch(StewardPluginConfig config, ManualLogSource log, string localApiToken)
     {
-        if (IsRequestThrottled()) return;
         var options = CaptureLaunchOptions(config, log, localApiToken);
         if (options != null) QueueControlOrLaunch(ControlToggle, options);
     }
@@ -75,7 +75,16 @@ internal static class CompanionProcessLauncher
                 }
                 return;
             }
-            TryLaunch(options);
+            if (!TryBeginLaunch(options.Generation)) return;
+            try
+            {
+                if (SendControlMessage(message, options.ApiEndpoint, options.LocalApiToken)) return;
+                if (TryLaunch(options)) WaitForControlServer(options);
+            }
+            finally
+            {
+                CompleteLaunch(options.Generation);
+            }
         }))
         {
             return;
@@ -104,16 +113,15 @@ internal static class CompanionProcessLauncher
             generation);
     }
 
-    private static void TryLaunch(CompanionLaunchOptions options)
+    private static bool TryLaunch(CompanionLaunchOptions options)
     {
         try
         {
-            RecordRequestTime();
             var executablePath = ResolveExecutablePath(options.ConfiguredExecutablePath);
             if (string.IsNullOrWhiteSpace(executablePath))
             {
                 options.Log.LogInfo("Companion launch skipped: companion executable was not found.");
-                return;
+                return false;
             }
 
             var startInfo = new ProcessStartInfo
@@ -131,15 +139,32 @@ internal static class CompanionProcessLauncher
 
             lock (LifecycleLock)
             {
-                if (_stopping || options.Generation != _generation) return;
+                if (_stopping || options.Generation != _generation) return false;
                 using var process = Process.Start(startInfo)
                     ?? throw new InvalidOperationException("Companion process could not be started.");
             }
             options.Log.LogInfo($"Companion launch/focus requested: {executablePath}");
+            return true;
         }
         catch (Exception ex)
         {
             options.Log.LogWarning($"Companion launch failed: {ex.Message}");
+            return false;
+        }
+    }
+
+    private static void WaitForControlServer(CompanionLaunchOptions options)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        while (IsActiveGeneration(options.Generation) && stopwatch.Elapsed < ControlReadyTimeout)
+        {
+            if (SendControlMessage(ControlShow, options.ApiEndpoint, options.LocalApiToken)) return;
+            Thread.Sleep(50);
+        }
+
+        if (IsActiveGeneration(options.Generation))
+        {
+            options.Log.LogWarning("Companion process started but did not claim the control port in time.");
         }
     }
 
@@ -209,26 +234,21 @@ internal static class CompanionProcessLauncher
         }
     }
 
-    private static bool IsRequestThrottled()
+    private static bool TryBeginLaunch(int generation)
     {
-        lock (RequestLock)
+        lock (LifecycleLock)
         {
-            var now = DateTime.UtcNow;
-            if (now - _lastRequestUtc < TimeSpan.FromMilliseconds(800))
-            {
-                return true;
-            }
-
-            _lastRequestUtc = now;
-            return false;
+            if (_stopping || generation != _generation || _launchPending) return false;
+            _launchPending = true;
+            return true;
         }
     }
 
-    private static void RecordRequestTime()
+    private static void CompleteLaunch(int generation)
     {
-        lock (RequestLock)
+        lock (LifecycleLock)
         {
-            _lastRequestUtc = DateTime.UtcNow;
+            if (generation == _generation) _launchPending = false;
         }
     }
 

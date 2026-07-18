@@ -35,6 +35,7 @@ function MultiSelectBox({
   return (
     <MantineMultiSelect
       data-slot="multi-select"
+      data-gamepad-control="multi-select"
       value={value}
       data={options}
       placeholder={placeholder}

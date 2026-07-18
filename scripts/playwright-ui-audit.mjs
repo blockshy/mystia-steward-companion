@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright';
+import { inspectMinimumPrimaryTabsLayout } from '../tests/ui-layout/primary-tabs-layout.mjs';
 
 /**
  * 伴随窗口 UI 巡检脚本。
@@ -17,7 +18,7 @@ const STORAGE_PREFIX = 'mystia-steward-companion';
 const viewports = [
   { name: 'desktop', width: 1280, height: 900 },
   { name: 'compact', width: 900, height: 760 },
-  { name: 'minimum', width: 720, height: 760 },
+  { name: 'minimum', width: 640, height: 760 },
 ];
 
 const tabs = [
@@ -162,11 +163,12 @@ async function auditPage(page, viewport, tab) {
 async function auditMinimumViewportLayout(page, viewport, tab) {
   if (viewport.name !== 'minimum') return;
 
-  await auditMinimumTwoColumnGrids(page, viewport, tab);
+  await auditMinimumMulticolumnGrids(page, viewport, tab);
 
   if (tab.value === 'overview') {
     await auditMinimumShellGutter(page, viewport, tab);
     await auditMinimumHeaderLayout(page, viewport, tab);
+    await auditMinimumPrimaryTabsLayout(page, viewport, tab);
   }
 
   if (tab.value === 'settings') {
@@ -174,45 +176,25 @@ async function auditMinimumViewportLayout(page, viewport, tab) {
   }
 }
 
-async function auditMinimumTwoColumnGrids(page, viewport, tab) {
+async function auditMinimumMulticolumnGrids(page, viewport, tab) {
   const result = await page.evaluate(({ tabValue }) => {
-    const expectedTabs = new Set(['overview', 'normal', 'rare', 'custom-recipes', 'service', 'tasks', 'inventory', 'settings']);
-    const candidates = Array.from(document.querySelectorAll('*'))
+    const expectedTabs = new Set(['overview', 'normal', 'rare', 'custom-recipes', 'service', 'tasks', 'inventory', 'settings', 'logs']);
+    const candidates = Array.from(document.querySelectorAll('.steward-minimum-multicolumn-grid'))
       .filter((node) => node instanceof HTMLElement)
-      .filter((element) => {
-        const className = element.getAttribute('class') || '';
-        return className.includes('grid-cols-2')
-          && className.includes('max-[719px]:grid-cols-1')
-          && isVisible(element);
-      });
+      .filter((element) => isVisible(element));
 
     const checked = [];
     const failures = [];
     for (const element of candidates) {
-      const children = Array.from(element.children)
-        .filter((node) => node instanceof HTMLElement && isVisible(node));
-      if (children.length < 2) continue;
-
-      const [first, second] = children;
-      const firstRect = first.getBoundingClientRect();
-      const secondRect = second.getBoundingClientRect();
       const gridStyle = window.getComputedStyle(element);
-      const sameRow = Math.abs(firstRect.top - secondRect.top) <= 2 && secondRect.left > firstRect.left + 8;
-      const usableWidth = firstRect.width >= 120 && secondRect.width >= 120;
+      const columnCount = countGridTracks(gridStyle.gridTemplateColumns);
       const summary = {
         text: normalizeText(element.textContent || '').slice(0, 40),
         columns: gridStyle.gridTemplateColumns,
-        firstTop: Math.round(firstRect.top),
-        secondTop: Math.round(secondRect.top),
-        firstLeft: Math.round(firstRect.left),
-        secondLeft: Math.round(secondRect.left),
-        firstWidth: Math.round(firstRect.width),
-        secondWidth: Math.round(secondRect.width),
+        columnCount,
       };
       checked.push(summary);
-      if (!sameRow || !usableWidth) {
-        failures.push({ ...summary, sameRow, usableWidth });
-      }
+      if (columnCount < 2) failures.push(summary);
     }
 
     return {
@@ -235,16 +217,34 @@ async function auditMinimumTwoColumnGrids(page, viewport, tab) {
     function normalizeText(value) {
       return value.replace(/\s+/g, ' ').trim();
     }
+
+    function countGridTracks(template) {
+      if (!template || template === 'none') return 0;
+      let depth = 0;
+      let tracks = 0;
+      let inTrack = false;
+      for (const character of template.trim()) {
+        if (character === '(') depth += 1;
+        if (character === ')') depth = Math.max(0, depth - 1);
+        if (/\s/.test(character) && depth === 0) {
+          if (inTrack) tracks += 1;
+          inTrack = false;
+        } else {
+          inTrack = true;
+        }
+      }
+      return tracks + (inTrack ? 1 : 0);
+    }
   }, { tabValue: tab.value });
 
   if (!result.ok) {
     issues.push({
       viewport: viewport.name,
       tab: tab.label,
-      component: 'TwoColumnLayout',
+      component: 'MulticolumnLayout',
       message: result.checkedCount === 0 && result.expected
-        ? '最小宽度下未找到应保持双列的可见网格。'
-        : `最小宽度双列网格异常：${JSON.stringify(result.failures).slice(0, 300)}`,
+        ? '最小宽度下未找到带 steward-minimum-multicolumn-grid 语义标记的可见网格。'
+        : `最小宽度多列网格未保持至少双列：${JSON.stringify(result.failures).slice(0, 300)}`,
     });
   }
 }
@@ -300,25 +300,70 @@ async function auditMinimumHeaderLayout(page, viewport, tab) {
     const gridChildren = Array.from(headerGrid.children).filter((node) => node instanceof HTMLElement);
     const toolbarChildren = Array.from(toolbar.children).filter((node) => node instanceof HTMLElement);
     const statusChildren = Array.from(statusGrid.children).filter((node) => node instanceof HTMLElement);
-    if (gridChildren.length < 2 || toolbarChildren.length < 3 || statusChildren.length !== 3) {
+    if (gridChildren.length < 2 || toolbarChildren.length !== 4 || statusChildren.length !== 3) {
       return { ok: false, reason: 'Header 工具条或状态摘要项目数量不符合预期。' };
     }
 
     const [brandRect, toolbarRect] = gridChildren.map((node) => node.getBoundingClientRect());
+    const headerRect = header.getBoundingClientRect();
     const toolbarRects = toolbarChildren.map((node) => node.getBoundingClientRect());
     const statusRects = statusChildren.map((node) => node.getBoundingClientRect());
-    const toolbarTop = toolbarRects[0].top;
-    const statusTop = statusRects[0].top;
-    const toolbarSameLine = Math.abs(brandRect.top - toolbarRect.top) <= 4
-      && toolbarRects.every((rect) => Math.abs(rect.top - toolbarTop) <= 4);
-    const statusSameLine = statusRects.every((rect) => Math.abs(rect.top - statusTop) <= 4);
-    const statusUsableWidth = statusRects.every((rect) => rect.width >= 120);
+    const viewportWidth = document.documentElement.clientWidth;
+    const toolbarStacked = toolbarRect.top >= brandRect.bottom - 1;
+    const toolbarSameRow = toolbarRects.every((rect) => (
+      Math.abs(rect.top - toolbarRects[0].top) <= 2
+      && Math.abs(rect.bottom - toolbarRects[0].bottom) <= 2
+    ));
+    const toolbarOrdered = toolbarRects.slice(1).every((rect, index) => (
+      rect.left >= toolbarRects[index].right - 1
+    ));
+    const toolbarContained = toolbar.scrollWidth <= toolbar.clientWidth + 1
+      && toolbar.scrollHeight <= toolbar.clientHeight + 1;
+    const statusSameRow = statusRects.every((rect) => (
+      Math.abs(rect.top - statusRects[0].top) <= 2
+      && Math.abs(rect.bottom - statusRects[0].bottom) <= 2
+    ));
+    const statusOrdered = statusRects.slice(1).every((rect, index) => (
+      rect.left >= statusRects[index].right - 1
+    ));
+    const statusColumnCount = getComputedStyle(statusGrid).gridTemplateColumns.trim().split(/\s+/).filter(Boolean).length;
+    const statusContained = statusGrid.scrollWidth <= statusGrid.clientWidth + 1
+      && statusGrid.scrollHeight <= statusGrid.clientHeight + 1;
+    const containedRects = [brandRect, toolbarRect, ...toolbarRects, ...statusRects];
+    const contained = containedRects.every((rect) => (
+      rect.left >= headerRect.left - 1
+      && rect.right <= headerRect.right + 1
+      && rect.left >= -1
+      && rect.right <= viewportWidth + 1
+    ));
+    const usable = toolbarRects[0].width >= 136
+      && toolbarRects[1].width >= 112
+      && toolbarRects.slice(2).every((rect) => rect.width >= 32 && rect.height >= 24)
+      && statusRects.every((rect) => rect.width >= 150 && rect.height >= 24);
 
     return {
-      ok: toolbarSameLine && statusSameLine && statusUsableWidth,
-      toolbarSameLine,
-      statusSameLine,
-      statusUsableWidth,
+      ok: toolbarStacked
+        && toolbarSameRow
+        && toolbarOrdered
+        && toolbarContained
+        && statusSameRow
+        && statusOrdered
+        && statusColumnCount === 3
+        && statusContained
+        && contained
+        && usable,
+      toolbarStacked,
+      toolbarSameRow,
+      toolbarOrdered,
+      toolbarContained,
+      statusSameRow,
+      statusOrdered,
+      statusColumnCount,
+      statusContained,
+      contained,
+      usable,
+      brandBottom: Math.round(brandRect.bottom),
+      toolbarTop: Math.round(toolbarRect.top),
       toolbarTops: toolbarRects.map((rect) => Math.round(rect.top)),
       statusTops: statusRects.map((rect) => Math.round(rect.top)),
       statusWidths: statusRects.map((rect) => Math.round(rect.width)),
@@ -330,26 +375,51 @@ async function auditMinimumHeaderLayout(page, viewport, tab) {
       viewport: viewport.name,
       tab: tab.label,
       component: 'ResponsiveHeader',
-      message: result.reason || `最小宽度 Header 未保持同行或状态三列异常：toolbarSameLine=${result.toolbarSameLine}，statusSameLine=${result.statusSameLine}，statusWidths=${result.statusWidths?.join('/')}`,
+      message: result.reason || `最小宽度 Header 紧凑布局异常：toolbarStacked=${result.toolbarStacked}，toolbarSameRow=${result.toolbarSameRow}，toolbarOrdered=${result.toolbarOrdered}，toolbarContained=${result.toolbarContained}，statusSameRow=${result.statusSameRow}，statusOrdered=${result.statusOrdered}，statusColumns=${result.statusColumnCount}，statusContained=${result.statusContained}，contained=${result.contained}，usable=${result.usable}，brandBottom/toolbarTop=${result.brandBottom}/${result.toolbarTop}，toolbarTops=${result.toolbarTops?.join('/')}，statusWidths=${result.statusWidths?.join('/')}`,
+    });
+  }
+}
+
+async function auditMinimumPrimaryTabsLayout(page, viewport, tab) {
+  const result = await inspectMinimumPrimaryTabsLayout(page);
+
+  if (!result.ok) {
+    issues.push({
+      viewport: viewport.name,
+      tab: tab.label,
+      component: 'PrimaryTabsLayout',
+      message: result.reason || `最小宽度一级导航未完整显示：count=${result.triggerCount}，missing=${result.missingValues?.join('/')}，unexpected=${result.unexpectedValues?.join('/')}，display=${result.display}，columns/rows=${result.columnCount}/${result.rowCount}，contained=${result.failures?.length === 0}，internalOverflow=${!result.noInternalOverflow}，client=${result.clientSize?.join('x')}，scroll=${result.scrollSize?.join('x')}。`,
     });
   }
 }
 
 async function auditMinimumRecommendationSettingsLayout(page, viewport, tab) {
+  const windowTab = page.getByRole('tab', { name: '窗口', exact: true }).first();
   const recommendationTab = page.getByRole('tab', { name: '推荐', exact: true }).first();
-  if (!(await recommendationTab.count())) {
+  if (!(await windowTab.count()) || !(await recommendationTab.count())) {
     issues.push({
       viewport: viewport.name,
       tab: tab.label,
       component: 'SettingsRecommendation',
-      message: '未找到设置页推荐分栏入口。',
+      message: '未找到设置页窗口或推荐分栏入口。',
     });
     return;
   }
 
+  await windowTab.click();
+  await page.waitForTimeout(100);
+  await auditMinimumSettingSegmentedControls(page, viewport, tab, '窗口', ['焦点切换', '主题']);
+
   await recommendationTab.click();
   await page.waitForTimeout(200);
-  await auditMinimumTwoColumnGrids(page, viewport, { ...tab, label: `${tab.label} 推荐` });
+  await auditMinimumMulticolumnGrids(page, viewport, { ...tab, label: `${tab.label} 推荐` });
+  await auditMinimumSettingSegmentedControls(
+    page,
+    viewport,
+    tab,
+    '推荐',
+    ['经营中订单排序', '预算处理', '权重方案'],
+  );
 
   const result = await page.evaluate(() => {
     const visibleContent = Array.from(document.querySelectorAll('[data-slot="tabs-content"]'))
@@ -415,6 +485,97 @@ async function auditMinimumRecommendationSettingsLayout(page, viewport, tab) {
   const screenshotPath = path.join(OUTPUT_DIR, `${viewport.name}-${tab.value}-recommendation.png`);
   await page.screenshot({ path: screenshotPath, fullPage: true });
   screenshots.push({ tab: `${tab.label} 推荐`, viewport: viewport.name, path: screenshotPath });
+}
+
+async function auditMinimumSettingSegmentedControls(page, viewport, tab, section, expectedLabels) {
+  const result = await page.evaluate(({ labels }) => {
+    const controls = Array.from(document.querySelectorAll('.steward-settings-segmented-control'))
+      .filter((node) => node instanceof HTMLElement)
+      .filter((element) => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+      });
+
+    const summaries = controls.map((control) => {
+      const field = control.parentElement;
+      const label = field?.firstElementChild?.textContent?.trim() || '';
+      const items = Array.from(control.querySelectorAll('.mantine-SegmentedControl-control'))
+        .filter((node) => node instanceof HTMLElement);
+      const itemLabels = items.map((item) => item.querySelector('.mantine-SegmentedControl-label'));
+      const innerLabels = items.map((item) => item.querySelector('.mantine-SegmentedControl-innerLabel'));
+      const activeItem = items.find((item) => item.getAttribute('data-active') === 'true');
+      const indicator = control.querySelector('.mantine-SegmentedControl-indicator');
+      const controlRect = control.getBoundingClientRect();
+      const itemRects = items.map((item) => item.getBoundingClientRect());
+      const labelRects = itemLabels.map((item) => item?.getBoundingClientRect());
+      const activeRect = activeItem?.getBoundingClientRect();
+      const indicatorRect = indicator?.getBoundingClientRect();
+      const within = (left, right, tolerance = 1) => left >= controlRect.left - tolerance
+        && right <= controlRect.right + tolerance;
+      const same = (left, right, tolerance = 2) => Math.abs(left - right) <= tolerance;
+      const ordered = itemRects.slice(1).every((rect, index) => rect.left >= itemRects[index].right - 1);
+      const labelsMatchItems = labelRects.every((rect, index) => rect
+        && same(rect.left, itemRects[index].left)
+        && same(rect.right, itemRects[index].right)
+        && same(rect.top, itemRects[index].top)
+        && same(rect.bottom, itemRects[index].bottom));
+      const singleLine = innerLabels.every((inner) => {
+        if (!(inner instanceof HTMLElement)) return false;
+        const rect = inner.getBoundingClientRect();
+        const lineHeight = Number.parseFloat(getComputedStyle(inner).lineHeight);
+        return getComputedStyle(inner).whiteSpace === 'nowrap'
+          && rect.height <= lineHeight + 1
+          && inner.scrollWidth <= inner.clientWidth + 1
+          && inner.scrollHeight <= inner.clientHeight + 1;
+      });
+      const indicatorMatchesActive = activeRect && indicatorRect
+        ? same(indicatorRect.left, activeRect.left)
+          && same(indicatorRect.right, activeRect.right)
+          && same(indicatorRect.top, activeRect.top)
+          && same(indicatorRect.bottom, activeRect.bottom)
+        : false;
+
+      return {
+        label,
+        optionCount: items.length,
+        width: Math.round(controlRect.width),
+        noOverflow: control.scrollWidth <= control.clientWidth + 1
+          && control.scrollHeight <= control.clientHeight + 1,
+        contained: itemRects.every((rect) => within(rect.left, rect.right)),
+        ordered,
+        labelsMatchItems,
+        singleLine,
+        indicatorMatchesActive,
+      };
+    });
+    const actualLabels = summaries.map((summary) => summary.label);
+    const failures = summaries.filter((summary) => !summary.noOverflow
+      || !summary.contained
+      || !summary.ordered
+      || !summary.labelsMatchItems
+      || !summary.singleLine
+      || !summary.indicatorMatchesActive);
+
+    return {
+      ok: actualLabels.length === labels.length
+        && labels.every((label, index) => actualLabels[index] === label)
+        && failures.length === 0,
+      expectedLabels: labels,
+      actualLabels,
+      summaries,
+      failures,
+    };
+  }, { labels: expectedLabels });
+
+  if (!result.ok) {
+    issues.push({
+      viewport: viewport.name,
+      tab: tab.label,
+      component: 'SettingsSegmentedControl',
+      message: `设置-${section}分段控件最小宽度布局异常：expected=${result.expectedLabels.join('/')}，actual=${result.actualLabels.join('/')}，failures=${JSON.stringify(result.failures).slice(0, 500)}`,
+    });
+  }
 }
 
 /**

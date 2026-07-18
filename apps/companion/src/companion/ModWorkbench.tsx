@@ -4070,7 +4070,6 @@ export function ModWorkbench() {
 
   useGamepadNavigation({
     enabled: companionPreferences.gamepadNavigationEnabled,
-    toggleCooldownMs: companionPreferences.focusSwitchCooldownMs,
     activeTab: tab,
     tabs: visibleTabs,
     focusMode: serviceFocusMode,
@@ -4148,7 +4147,7 @@ export function ModWorkbench() {
       <Tabs value={tab} onValueChange={(value) => setTab(value as ModTab)} className="space-y-3">
         <TabsList
           scrollable
-          className="h-9 !w-full max-w-full justify-stretch"
+          className="steward-primary-tabs-list h-9 !w-full max-w-full justify-stretch"
           data-gamepad-scope="tabs"
         >
           <TabsTrigger value="overview" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="overview">
@@ -4430,11 +4429,28 @@ async function toggleCompanionFocus(
 
   try {
     const { invoke } = await import('@tauri-apps/api/core');
-    await invoke('toggle_companion_focus', {
+    const outcome = await invoke<WindowSwitchOutcome>('toggle_companion_focus', {
       keepVisibleWhenFocused: focusSwitchBehavior === 'keep-visible',
       windowSwitchCooldownMs: normalizeFocusSwitchCooldownMs(focusSwitchCooldownMs),
     });
-  } catch {
-    // 浏览器开发模式和旧版伴随窗口不一定暴露该 command。
+    if (!['applied', 'busy', 'throttled'].includes(outcome.status)) {
+      console.warn(`Window focus switch rejected: ${outcome.status}`);
+    }
+  } catch (error) {
+    console.warn('Window focus switch command failed.', error);
   }
+}
+
+interface WindowSwitchOutcome {
+  applied: boolean;
+  status:
+    | 'applied'
+    | 'throttled'
+    | 'busy'
+    | 'no-game-pid'
+    | 'focus-failed'
+    | 'show-failed'
+    | 'hide-failed'
+    | 'state-unavailable'
+    | 'unsupported';
 }

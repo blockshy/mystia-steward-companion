@@ -15,6 +15,7 @@ function Tabs({
   return (
     <MantineTabs
       data-slot="tabs"
+      data-gamepad-control="tabs"
       data-orientation={orientation}
       variant="default"
       color="steward"
@@ -85,6 +86,7 @@ function TabsTrigger({ className, ...props }: ComponentProps<typeof MantineTabs.
   return (
     <MantineTabs.Tab
       data-slot="tabs-trigger"
+      data-gamepad-control="tab"
       className={composeClassNames('steward-tabs-trigger', className)}
       {...props}
     />

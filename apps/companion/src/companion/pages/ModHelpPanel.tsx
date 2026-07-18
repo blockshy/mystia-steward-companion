@@ -91,7 +91,6 @@ export function ModHelpPanel() {
             'steward-tree-label flex min-w-0 items-center gap-2 px-2 py-1 text-sm',
             selected && 'font-medium',
           )}
-          data-gamepad-clickable="true"
           onClick={(event) => {
             onClick(event);
             if (meta?.type === 'item') {
@@ -198,6 +197,10 @@ function HelpTreeNavigation({
       renderNode={renderNode}
       withLines
       className="max-h-[min(58vh,34rem)] overflow-y-auto pr-1"
+      aria-label="帮助目录"
+      data-gamepad-scroll-key="help:navigation"
+      data-gamepad-scroll-region="true"
+      tabIndex={-1}
     />
   );
 }
