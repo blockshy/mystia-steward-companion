@@ -6,6 +6,12 @@ import {
 } from '@/companion/domain/custom-recipes';
 import { normalizeIdList, recipeResultKey } from '@/companion/domain/favorites';
 import {
+  buildPrimaryExecutionPlanPolicy,
+  getPrimaryExecutionPlan,
+  normalizePrimaryExecutionPlans,
+  serializePrimaryExecutionPlanPolicy,
+} from '@/companion/domain/primary-execution-plan';
+import {
   buildKoishiBrokenShieldPlanReason,
   compareKoishiBrokenShieldRecommendationPlans,
   getKoishiRemainingTargetScore,
@@ -13,12 +19,19 @@ import {
 import {
   buildYuyukoProgressBlockedMessages,
   buildYuyukoPlanReason,
-  buildYuyukoSafeEvaluationBlockedMessages,
-  buildYuyukoSafeEvaluationPlanReason,
   compareYuyukoPlans,
+  getYuyukoChallengeNegativeTags,
   isYuyukoProgressPlan,
-  isYuyukoSafeEvaluationPlan,
 } from '@/companion/domain/special-business/yuyuko-challenge';
+import {
+  buildYuyukoPositiveSpellBlockedMessages,
+  buildYuyukoPositiveSpellPlanReason,
+  compareYuyukoPositiveSpellPlans,
+  getYuyukoPositiveSpellBeverageCandidateRank,
+  getYuyukoPositiveSpellFoodCandidateRank,
+  getYuyukoPositiveSpellNegativeTags,
+  isYuyukoPositiveSpellPlan,
+} from '@/companion/domain/special-business/yuyuko-positive-spell';
 import { sortNightOrders } from '@/companion/domain/sorting';
 import {
   MAX_FOCUS_RECOMMENDATION_ROWS,
@@ -77,8 +90,8 @@ import {
 const NON_ORDERABLE_RARE_FOOD_TAGS = new Set(['流行喜爱', '流行厌恶']);
 const EXECUTION_FOOD_CANDIDATE_LIMIT = 24;
 const EXECUTION_BEVERAGE_CANDIDATE_LIMIT = 16;
-const DAMAGE_EXECUTION_FOOD_CANDIDATE_LIMIT = 96;
-const DAMAGE_EXECUTION_BEVERAGE_CANDIDATE_LIMIT = 48;
+const EXPANDED_EXECUTION_FOOD_CANDIDATE_LIMIT = 96;
+const EXPANDED_EXECUTION_BEVERAGE_CANDIDATE_LIMIT = 48;
 const EXECUTION_PLAN_LIMIT = 80;
 const AUTOMATION_EXECUTION_PLAN_LIMIT = 32;
 const AUTOMATION_RECOMMENDATION_ROW_LIMIT = 4;
@@ -174,6 +187,12 @@ export function buildOrderRecommendations(
       specialBusiness,
       order.specialBusinessRole,
       order,
+      foodTag,
+      beverageTag,
+    );
+    const primaryExecutionPlanPolicy = buildPrimaryExecutionPlanPolicy(
+      preferences,
+      order.automationAllowed !== false,
     );
     const foodCandidateKey = buildFoodCandidateCacheKey(data, customer, foodTag, candidateContext, specialFoodTargetTags);
     const beverageCandidateKey = buildBeverageCandidateCacheKey(data, customer, beverageTag, candidateContext);
@@ -209,6 +228,7 @@ export function buildOrderRecommendations(
       mergeCustomFoodCandidates(foodCandidates, customFoodCandidates),
       specialBusinessRule,
       rejectedRecipeKeys,
+      foodTag,
     );
     const combinedBeverageCandidates = filterSpecialBusinessBeverageCandidates(
       beverageCandidates,
@@ -240,6 +260,7 @@ export function buildOrderRecommendations(
       `recipeVariantLimit:${preferences.recipeVariantLimitPerBase}`,
       `specialRule:${serializeSpecialBusinessOrderRule(specialBusinessRule)}`,
       `specialRejected:${[...rejectedRecipeKeys].sort().join(';')}`,
+      `primaryPolicy:${serializePrimaryExecutionPlanPolicy(primaryExecutionPlanPolicy)}`,
       `usage:${usage}`,
     ].join('|');
     let cached = caches.orders.get(cacheKey);
@@ -287,7 +308,12 @@ export function buildOrderRecommendations(
         order,
         budgetContext,
       );
-      const preparationPlan = findPreparationPlan(plans);
+      const executionPlans = normalizePrimaryExecutionPlans(
+        plans.filter((plan) => plan.bucket !== 'blocked'),
+        sortContext,
+        primaryExecutionPlanPolicy,
+      );
+      const primaryPlan = getPrimaryExecutionPlan(executionPlans);
       const recipeRows = deriveRecipeRowsFromCandidates(combinedFoodCandidates, combinedBeverageCandidates, {
         variantLimitPerBase: preferences.recipeVariantLimitPerBase,
         limit: recommendationRowLimit,
@@ -303,24 +329,23 @@ export function buildOrderRecommendations(
         sortProfile: preferences.recommendationSortProfile,
         sortContext,
       });
-      const pinnedRows = pinSpecialBusinessExecutionPlanRows(
+      const primaryRows = projectPrimaryExecutionPlanRows(
         recipeRows,
         beverageRows,
-        preparationPlan,
-        specialBusinessRule,
+        primaryPlan,
         recommendationRowLimit,
+        preferences.recipeVariantLimitPerBase,
       );
       cached = {
         customer,
-        preparationPlan,
-        executionPlans: plans.filter((plan) => plan.bucket !== 'blocked').slice(0, executionPlanLimit),
-        budget: findRecommendationBudget(plans, preparationPlan),
+        executionPlans: executionPlans.slice(0, executionPlanLimit),
+        budget: findRecommendationBudget(plans, primaryPlan),
         blockedMessages: [
           ...buildSpecialBusinessBlockedMessages(rawPlans, plans, specialBusinessRule),
           ...buildBlockedPlanMessages(plans, orderRuntimeContext.budget, orderRuntimeContext.budgetPolicy),
         ],
-        recipes: pinnedRows.recipes,
-        beverages: pinnedRows.beverages,
+        recipes: primaryRows.recipes,
+        beverages: primaryRows.beverages,
       };
       caches.orders.set(cacheKey, cached);
       trimCache(caches.orders, ORDER_RECOMMENDATION_CACHE_LIMIT);
@@ -331,7 +356,6 @@ export function buildOrderRecommendations(
     recommendations.push({
       order,
       customer: cached.customer,
-      preparationPlan: cached.preparationPlan,
       executionPlans: cached.executionPlans,
       budget: cached.budget,
       blockedMessages: cached.blockedMessages,
@@ -438,6 +462,8 @@ function buildSpecialBusinessSortContext(
   specialBusiness: SpecialBusinessContext | null,
   role: string | null | undefined,
   order?: Pick<NightBusinessOrder, 'remainingOrderCount'> | null,
+  requiredFoodTag?: string,
+  requiredBeverageTag?: string,
 ): RecommendationPlanSortContext {
   if (!specialBusiness?.active) return base;
 
@@ -449,7 +475,7 @@ function buildSpecialBusinessSortContext(
     && !rule.preferHighFoodLevel
     && !rule.preferHighBeverageLevel
     && !rule.preferKoishiDamage
-    && !rule.preferYuyukoSafeEvaluation
+    && !rule.preferYuyukoPositiveSpell
     && !rule.preferYuyukoProgress) {
     return base;
   }
@@ -461,7 +487,10 @@ function buildSpecialBusinessSortContext(
     specialPreferHighFoodLevel: rule.preferHighFoodLevel,
     specialPreferHighBeverageLevel: rule.preferHighBeverageLevel,
     specialPreferDamageLevel: rule.preferKoishiDamage,
+    specialPreferYuyukoPositiveSpell: rule.preferYuyukoPositiveSpell,
     specialPreferYuyukoProgress: rule.preferYuyukoProgress,
+    specialYuyukoRequiredFoodTag: rule.preferYuyukoPositiveSpell ? requiredFoodTag : undefined,
+    specialYuyukoRequiredBeverageTag: rule.preferYuyukoPositiveSpell ? requiredBeverageTag : undefined,
     specialKoishiRemainingScore: rule.preferKoishiDamage ? getKoishiRemainingTargetScore(specialBusiness) : null,
     specialKoishiRemainingOrderCount: rule.preferKoishiDamage ? normalizeNonNegativeInt(order?.remainingOrderCount) : null,
   };
@@ -476,10 +505,15 @@ function filterSpecialBusinessFoodCandidates(
   candidates: FoodCandidate[],
   rule: ReturnType<typeof buildSpecialBusinessOrderRule>,
   rejectedRecipeKeys: Set<string>,
+  requiredFoodTag: string,
 ): FoodCandidate[] {
   return candidates.filter((candidate) => {
     if (rule.requiresBaseOrderMatch && !candidate.meetsRequiredFood) return false;
-    if (rule.requiresHighEvaluation && candidate.matchedNegativeTags.length > 0) return false;
+    if (rule.preferYuyukoPositiveSpell
+      && getYuyukoPositiveSpellNegativeTags(candidate, requiredFoodTag).length > 0) return false;
+    if (rule.requiresHighEvaluation
+      && !rule.preferYuyukoPositiveSpell
+      && candidate.matchedNegativeTags.length > 0) return false;
     if (rule.preferKoishiDamage && candidate.matchedNegativeTags.length > 0) return false;
     if (!rule.requiresWackyFoodTarget || rule.foodTargetTags.length === 0) return true;
     if (!hasMatchingSpecialBusinessTag(candidate.activeTags, rule.foodTargetTags)) return false;
@@ -519,8 +553,8 @@ function sortSpecialBusinessExecutionPlans(
   if (rule.preferYuyukoProgress) {
     return [...plans].sort((left, right) => compareYuyukoPlans(left, right));
   }
-  if (rule.preferYuyukoSafeEvaluation) {
-    return [...plans].sort((left, right) => compareYuyukoPlans(left, right));
+  if (rule.preferYuyukoPositiveSpell) {
+    return [...plans].sort((left, right) => compareYuyukoPositiveSpellPlans(left, right));
   }
   if (!rule.preferKoishiDamage) return plans;
   return [...plans].sort((left, right) => compareKoishiBrokenShieldRecommendationPlans(left, right, {
@@ -530,37 +564,61 @@ function sortSpecialBusinessExecutionPlans(
   }));
 }
 
-function pinSpecialBusinessExecutionPlanRows(
+function projectPrimaryExecutionPlanRows(
   recipes: RareRecipeRecommendation[],
   beverages: RareBeverageRecommendation[],
   plan: RareOrderRecommendationPlan | null,
-  rule: ReturnType<typeof buildSpecialBusinessOrderRule>,
   limit: number,
+  recipeVariantLimitPerBase: number,
 ): {
   recipes: RareRecipeRecommendation[];
   beverages: RareBeverageRecommendation[];
 } {
-  if ((!rule.preferKoishiDamage && !rule.preferYuyukoSafeEvaluation && !rule.preferYuyukoProgress) || !plan?.food || !plan.beverage || plan.bucket === 'blocked') {
+  if (!plan || plan.bucket === 'blocked') {
     return { recipes, beverages };
   }
 
   const rowLimit = normalizeDerivedRowLimit(limit);
-  const pinnedRecipe = toRareRecipeResult(plan.food);
-  const pinnedRecipeKey = recipeResultKey(pinnedRecipe);
-  const pinnedBeverage = toRareBeverageResult(plan.beverage);
-  const nextRecipes = [
-    pinnedRecipe,
-    ...recipes.filter((recipe) => recipeResultKey(recipe) !== pinnedRecipeKey),
-  ].slice(0, rowLimit);
-  const nextBeverages = [
-    pinnedBeverage,
-    ...beverages.filter((beverage) => beverage.beverage.id !== pinnedBeverage.beverage.id),
-  ].slice(0, rowLimit);
+  const primaryRecipe = plan.food ? toRareRecipeResult(plan.food) : null;
+  const primaryRecipeKey = primaryRecipe ? recipeResultKey(primaryRecipe) : '';
+  const primaryBeverage = plan.beverage ? toRareBeverageResult(plan.beverage) : null;
+  const nextRecipes = primaryRecipe
+    ? limitProjectedRecipeRows(
+      [primaryRecipe, ...recipes.filter((recipe) => recipeResultKey(recipe) !== primaryRecipeKey)],
+      rowLimit,
+      recipeVariantLimitPerBase,
+    )
+    : recipes;
+  const nextBeverages = primaryBeverage
+    ? [
+      primaryBeverage,
+      ...beverages.filter((beverage) => beverage.beverage.id !== primaryBeverage.beverage.id),
+    ].slice(0, rowLimit)
+    : beverages;
 
   return {
     recipes: nextRecipes,
     beverages: nextBeverages,
   };
+}
+
+function limitProjectedRecipeRows(
+  recipes: RareRecipeRecommendation[],
+  rowLimit: number,
+  variantLimitPerBase: number,
+): RareRecipeRecommendation[] {
+  const variantLimit = normalizeDerivedRowLimit(variantLimitPerBase);
+  if (rowLimit <= 0 || variantLimit <= 0) return [];
+  const countsByBase = new Map<number, number>();
+  const result: RareRecipeRecommendation[] = [];
+  for (const recipe of recipes) {
+    const currentCount = countsByBase.get(recipe.recipe.id) ?? 0;
+    if (currentCount >= variantLimit) continue;
+    countsByBase.set(recipe.recipe.id, currentCount + 1);
+    result.push(recipe);
+    if (result.length >= rowLimit) break;
+  }
+  return result;
 }
 
 function withSpecialBusinessPlanReasons(
@@ -577,10 +635,10 @@ function withSpecialBusinessPlanReasons(
       };
     });
   }
-  if (rule.preferYuyukoSafeEvaluation) {
+  if (rule.preferYuyukoPositiveSpell) {
     return plans.map((plan) => {
       if (!plan.food || !plan.beverage || plan.bucket === 'blocked') return plan;
-      const reason = buildYuyukoSafeEvaluationPlanReason(plan);
+      const reason = buildYuyukoPositiveSpellPlanReason(plan);
       return {
         ...plan,
         reasons: [reason, ...plan.reasons.filter((item) => item !== reason)],
@@ -609,8 +667,8 @@ function isSpecialBusinessSafeExecutionPlan(
   if (rule.preferYuyukoProgress) {
     return isYuyukoProgressPlan(plan);
   }
-  if (rule.preferYuyukoSafeEvaluation) {
-    return isYuyukoSafeEvaluationPlan(plan);
+  if (rule.preferYuyukoPositiveSpell) {
+    return isYuyukoPositiveSpellPlan(plan);
   }
   if (!rule.requiresHighEvaluation) return true;
   if (food.matchedNegativeTags.length > 0) return false;
@@ -626,10 +684,10 @@ function buildSpecialBusinessBlockedMessages(
   safePlans: RareOrderRecommendationPlan[],
   rule: ReturnType<typeof buildSpecialBusinessOrderRule>,
 ): string[] {
-  if ((!rule.requiresBaseOrderMatch && !rule.requiresHighEvaluation && !rule.preferYuyukoSafeEvaluation && !rule.preferYuyukoProgress) || safePlans.some((plan) => plan.bucket !== 'blocked')) return [];
+  if ((!rule.requiresBaseOrderMatch && !rule.requiresHighEvaluation && !rule.preferYuyukoPositiveSpell && !rule.preferYuyukoProgress) || safePlans.some((plan) => plan.bucket !== 'blocked')) return [];
   if (rawPlans.length === 0) return [];
   if (rule.preferYuyukoProgress) return buildYuyukoProgressBlockedMessages(rawPlans);
-  if (rule.preferYuyukoSafeEvaluation) return buildYuyukoSafeEvaluationBlockedMessages(rawPlans);
+  if (rule.preferYuyukoPositiveSpell) return buildYuyukoPositiveSpellBlockedMessages(rawPlans);
 
   const messages: string[] = [];
   if (rule.requiresBaseOrderMatch) {
@@ -651,7 +709,7 @@ function serializeSpecialBusinessOrderRule(rule: ReturnType<typeof buildSpecialB
     rule.preferHighFoodLevel ? 'highFood=1' : 'highFood=0',
     rule.preferHighBeverageLevel ? 'highBev=1' : 'highBev=0',
     rule.preferKoishiDamage ? 'koishiDamage=1' : 'koishiDamage=0',
-    rule.preferYuyukoSafeEvaluation ? 'yuyukoSafe=1' : 'yuyukoSafe=0',
+    rule.preferYuyukoPositiveSpell ? 'yuyukoPositiveSpell=1' : 'yuyukoPositiveSpell=0',
     rule.preferYuyukoProgress ? 'yuyukoProgress=1' : 'yuyukoProgress=0',
   ].join(';');
 }
@@ -773,8 +831,8 @@ function selectExecutionFoodCandidates(
     candidateHasNoHardFailures(food.conditionResults)
     && canPairFoodWithinBudget(food, beverageCandidates, budget, budgetPolicy),
   );
-  const limit = sortContext.specialPreferDamageLevel || sortContext.specialPreferYuyukoProgress
-    ? DAMAGE_EXECUTION_FOOD_CANDIDATE_LIMIT
+  const limit = usesExpandedExecutionCandidateSearch(sortContext)
+    ? EXPANDED_EXECUTION_FOOD_CANDIDATE_LIMIT
     : EXECUTION_FOOD_CANDIDATE_LIMIT;
   return limitCandidatesByPinRank(
     eligible,
@@ -794,8 +852,8 @@ function selectExecutionBeverageCandidates(
     candidateHasNoHardFailures(beverage.conditionResults)
     && canPairBeverageWithinBudget(beverage, foodCandidates, budget, budgetPolicy),
   );
-  const limit = sortContext.specialPreferDamageLevel || sortContext.specialPreferYuyukoProgress
-    ? DAMAGE_EXECUTION_BEVERAGE_CANDIDATE_LIMIT
+  const limit = usesExpandedExecutionCandidateSearch(sortContext)
+    ? EXPANDED_EXECUTION_BEVERAGE_CANDIDATE_LIMIT
     : EXECUTION_BEVERAGE_CANDIDATE_LIMIT;
   return limitCandidatesByPinRank(
     eligible,
@@ -832,12 +890,24 @@ function limitCandidatesByPinRank<TCandidate>(
   return rows;
 }
 
+function usesExpandedExecutionCandidateSearch(sortContext: RecommendationPlanSortContext): boolean {
+  return sortContext.specialPreferDamageLevel === true
+    || sortContext.specialPreferYuyukoPositiveSpell === true
+    || sortContext.specialPreferYuyukoProgress === true;
+}
+
 function getFoodCandidatePinRank(
   food: FoodCandidate,
   sortContext: RecommendationPlanSortContext,
 ): number {
   let rank = 0;
   if (sortContext.specialPreferDamageLevel) rank = Math.max(rank, getFoodDamageCandidateRank(food));
+  if (sortContext.specialPreferYuyukoPositiveSpell) {
+    rank = Math.max(rank, getYuyukoPositiveSpellFoodCandidateRank(
+      food,
+      sortContext.specialYuyukoRequiredFoodTag,
+    ));
+  }
   if (sortContext.specialPreferYuyukoProgress) rank = Math.max(rank, getFoodYuyukoCandidateRank(food));
   if (sortContext.pinMissionRecipe && sortContext.missionRecipeId === food.recipe.id) rank = Math.max(rank, 50);
   if (food.customRecipePinned) rank = Math.max(rank, 40);
@@ -867,6 +937,12 @@ function getBeverageCandidatePinRank(
 ): number {
   let rank = 0;
   if (sortContext.specialPreferDamageLevel) rank = Math.max(rank, getBeverageDamageCandidateRank(beverage));
+  if (sortContext.specialPreferYuyukoPositiveSpell) {
+    rank = Math.max(rank, getYuyukoPositiveSpellBeverageCandidateRank(
+      beverage,
+      sortContext.specialYuyukoRequiredBeverageTag,
+    ));
+  }
   if (sortContext.specialPreferYuyukoProgress) rank = Math.max(rank, getBeverageYuyukoCandidateRank(beverage));
   const specialBusinessRank = getBeverageSpecialBusinessRank(beverage, sortContext);
   if (specialBusinessRank > 0) rank = Math.max(rank, 20 + specialBusinessRank);
@@ -893,7 +969,7 @@ function getBeverageDamageCandidateRank(beverage: BeverageCandidate): number {
 }
 
 function getFoodYuyukoCandidateRank(food: FoodCandidate): number {
-  if (!food.meetsRequiredFood || food.matchedNegativeTags.length > 0) return 0;
+  if (!food.meetsRequiredFood || getYuyukoChallengeNegativeTags(food).length > 0) return 0;
   return 10_000
     + food.recipe.level * 1_000
     + food.matchedPositiveTags.length * 500
@@ -939,15 +1015,11 @@ function getBeverageExecutionCandidateRank(
   return Math.max(getBeverageCandidatePinRank(beverage, sortContext), favoriteRank);
 }
 
-function findPreparationPlan(plans: RareOrderRecommendationPlan[]): RareOrderRecommendationPlan | null {
-  return plans.find((plan) => plan.bucket !== 'blocked') ?? null;
-}
-
 function findRecommendationBudget(
   plans: RareOrderRecommendationPlan[],
-  preparationPlan: RareOrderRecommendationPlan | null,
+  primaryPlan: RareOrderRecommendationPlan | null,
 ): RecommendationBudgetResult | null {
-  return preparationPlan?.budget ?? plans.find((plan) => plan.budget)?.budget ?? null;
+  return primaryPlan?.budget ?? plans.find((plan) => plan.budget)?.budget ?? null;
 }
 
 function buildBlockedPlanMessages(
@@ -1169,6 +1241,12 @@ function compareFoodSpecialBusinessPriority(
     if (levelDiff !== 0) return levelDiff;
   }
 
+  if (sortContext.specialPreferYuyukoPositiveSpell) {
+    const rankDiff = getYuyukoPositiveSpellFoodCandidateRank(right, sortContext.specialYuyukoRequiredFoodTag)
+      - getYuyukoPositiveSpellFoodCandidateRank(left, sortContext.specialYuyukoRequiredFoodTag);
+    if (rankDiff !== 0) return rankDiff;
+  }
+
   if (sortContext.specialPreferYuyukoProgress) {
     const requiredDiff = Number(right.meetsRequiredFood) - Number(left.meetsRequiredFood);
     if (requiredDiff !== 0) return requiredDiff;
@@ -1207,6 +1285,12 @@ function compareBeverageSpecialBusinessPriority(
     if (preferenceDiff !== 0) return preferenceDiff;
     const levelDiff = right.beverage.level - left.beverage.level;
     if (levelDiff !== 0) return levelDiff;
+  }
+
+  if (sortContext.specialPreferYuyukoPositiveSpell) {
+    const rankDiff = getYuyukoPositiveSpellBeverageCandidateRank(right, sortContext.specialYuyukoRequiredBeverageTag)
+      - getYuyukoPositiveSpellBeverageCandidateRank(left, sortContext.specialYuyukoRequiredBeverageTag);
+    if (rankDiff !== 0) return rankDiff;
   }
 
   if (sortContext.specialPreferYuyukoProgress) {
@@ -1529,7 +1613,10 @@ function serializeRecommendationPlanSortContext(context: RecommendationPlanSortC
     `specialHighFoodLevel:${context.specialPreferHighFoodLevel ? '1' : '0'}`,
     `specialHighBeverageLevel:${context.specialPreferHighBeverageLevel ? '1' : '0'}`,
     `specialDamageLevel:${context.specialPreferDamageLevel ? '1' : '0'}`,
+    `specialYuyukoPositiveSpell:${context.specialPreferYuyukoPositiveSpell ? '1' : '0'}`,
     `specialYuyukoProgress:${context.specialPreferYuyukoProgress ? '1' : '0'}`,
+    `specialYuyukoRequiredFoodTag:${context.specialYuyukoRequiredFoodTag ?? ''}`,
+    `specialYuyukoRequiredBeverageTag:${context.specialYuyukoRequiredBeverageTag ?? ''}`,
     `specialKoishiRemainingScore:${context.specialKoishiRemainingScore ?? ''}`,
     `specialKoishiRemainingOrderCount:${context.specialKoishiRemainingOrderCount ?? ''}`,
   ].join('|');

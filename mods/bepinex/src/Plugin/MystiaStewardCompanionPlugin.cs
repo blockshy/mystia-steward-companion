@@ -42,6 +42,7 @@ public sealed class MystiaStewardCompanionPlugin : BasePlugin
             ConsoleEncodingHelper.TryUseUtf8(Log);
         }
 
+        RuntimeNightBusinessLifecycle.Attach(Log);
         SpecialOrderRuntimeCapture.Attach(Log);
         NormalOrderRuntimeCapture.Attach(Log);
         RuntimeSceneReadinessCapture.Attach(Log);

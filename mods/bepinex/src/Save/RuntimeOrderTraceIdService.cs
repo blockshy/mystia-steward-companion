@@ -23,12 +23,9 @@ internal static class RuntimeOrderTraceIdService
         var stableKey = BuildRareStableKey(
             order.FirstSeenAtUtc,
             order.DeskCode,
-            order.GuestId,
-            order.GuestName,
+            order.RuntimeGuestId,
             order.FoodTagId,
-            order.FoodTag,
             order.BeverageTagId,
-            order.BeverageTag,
             order.IsFreeOrder);
         return GetOrCreate("rare", "R", stableKey);
     }
@@ -79,22 +76,17 @@ internal static class RuntimeOrderTraceIdService
     private static string BuildRareStableKey(
         DateTime? firstSeenAtUtc,
         int deskCode,
-        int? guestId,
-        string guestName,
-        int foodTagId,
-        string foodTag,
-        int beverageTagId,
-        string beverageTag,
+        int? runtimeGuestId,
+        int? foodTagId,
+        int? beverageTagId,
         bool isFreeOrder)
     {
         var builder = new StringBuilder("rare:");
         AppendIso(builder, firstSeenAtUtc);
         Append(builder, deskCode);
-        Append(builder, guestId?.ToString() ?? guestName);
+        Append(builder, runtimeGuestId);
         Append(builder, foodTagId);
-        Append(builder, foodTag);
         Append(builder, beverageTagId);
-        Append(builder, beverageTag);
         Append(builder, isFreeOrder ? "free" : "paid");
         return builder.ToString();
     }

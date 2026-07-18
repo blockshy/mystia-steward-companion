@@ -25,6 +25,7 @@ import {
   normalizeIdList,
 } from '@/companion/domain/favorites';
 import { buildNormalAutoOrderKey } from '@/companion/domain/normal-order-key';
+import { getPrimaryExecutionPlan } from '@/companion/domain/primary-execution-plan';
 import { toRareRecipeResult } from '@/companion/domain/service-recommendations';
 import {
   sortNightOrderRows,
@@ -91,6 +92,7 @@ export type ValidOrderPreparationSelection = Extract<OrderPreparationSelection, 
 
 export type OrderPreparationSkipReason =
   | 'automation-blocked'
+  | 'runtime-identity-missing'
   | 'recipe-favorite-missing'
   | 'recipe-target-missing'
   | 'beverage-favorite-missing'
@@ -681,6 +683,24 @@ export function selectOrderPreparationCandidates(
   for (const row of rows) {
     const item = row.item;
     const label = formatRareAutomationPrefix(item);
+    const missingIdentityFields = [
+      item.order.deskCode < 0 ? '桌位' : '',
+      item.order.runtimeGuestId == null ? '运行时稀客 ID' : '',
+      item.order.foodTagId == null ? '料理 Tag ID' : '',
+      item.order.beverageTagId == null ? '酒水 Tag ID' : '',
+    ].filter(Boolean);
+    if (missingIdentityFields.length > 0) {
+      const skip = buildOrderPreparationSkip(
+        item,
+        label,
+        'runtime-identity-missing',
+        `运行时订单身份不完整（缺少${missingIdentityFields.join('、')}），自动化不会使用展示文本推测目标。`,
+      );
+      skips.push(skip);
+      messages.push(skip.message);
+      continue;
+    }
+
     if (item.order.automationAllowed === false) {
       const skip = buildOrderPreparationSkip(
         item,
@@ -844,7 +864,7 @@ export function lockRareAutomationTargets(
 /**
  * 构建发送给 Mod 的游戏内目标厨具/材料高亮目标。
  *
- * 特殊经营可要求目标来自自动化可执行计划，避免推荐页展示候选与实际可执行目标分叉。
+ * 目标只来自推荐结果的唯一主执行计划，避免页面、自动化与游戏内高亮分叉。
  * 签名包含订单、料理、材料、酒水和厨具，便于 Mod 判断是否需要更新高亮。
  */
 export function buildGameUiPinningTarget(
@@ -858,21 +878,13 @@ export function buildGameUiPinningTarget(
     orderSortMode,
   );
   const item = options.requireExecutablePlan
-    ? rows.find((row) => row.recommendation.executionPlans.length > 0)?.recommendation
+    ? rows.find((row) => getPrimaryExecutionPlan(row.recommendation.executionPlans))?.recommendation
     : rows[0]?.recommendation;
   if (!item) return null;
-  const executablePlan = item.executionPlans[0] ?? null;
-  if (options.requireExecutablePlan && !executablePlan) return null;
-
-  let recipe: RareRecipeRecommendation | null = null;
-  let beverage: RareBeverageRecommendation | null = null;
-  if (executablePlan) {
-    recipe = executablePlan.food ? getRecipeRowForPlan(item, executablePlan) : null;
-    beverage = executablePlan.beverage ? getBeverageRowForPlan(item, executablePlan) : null;
-  } else {
-    recipe = item.recipes[0] ?? null;
-    beverage = item.beverages[0] ?? null;
-  }
+  const primaryPlan = getPrimaryExecutionPlan(item.executionPlans);
+  if (!primaryPlan) return null;
+  const recipe = primaryPlan.food ? getRecipeRowForPlan(item, primaryPlan) : null;
+  const beverage = primaryPlan.beverage ? getBeverageRowForPlan(item, primaryPlan) : null;
   if (!recipe && !beverage) return null;
 
   const baseIngredientIds = recipe
@@ -929,16 +941,17 @@ export function hasNormalOrderActionEnabled(preferences: CompanionPreferences): 
 /**
  * 构建稀客自动化状态键。
  *
- * 键中包含首次出现时间、桌号、稀客和 Tag，尽量避免同桌后续新订单复用旧状态。
+ * 键中包含首次出现时间、桌号、稀客和原始 Tag ID，避免展示文本变化重建自动化状态。
  */
 export function buildAutoOrderKey(item: OrderRecommendation): string {
   const order = item.order;
+  if (order.traceId?.trim()) return `trace:${order.traceId.trim()}`;
   return [
     order.firstSeenAtUtc ?? order.lastSeenAtUtc ?? '',
     order.deskCode,
-    order.guestId ?? order.guestName,
-    order.foodTag,
-    order.beverageTag,
+    order.runtimeGuestId ?? 'unknown-runtime-guest',
+    order.foodTagId ?? 'unknown-food-tag',
+    order.beverageTagId ?? 'unknown-beverage-tag',
     order.isFreeOrder ? 'free' : 'paid',
   ].join('|');
 }
@@ -947,14 +960,13 @@ export function buildAutoOrderKey(item: OrderRecommendation): string {
  * 构建夜间稀客订单快照键。
  */
 export function buildNightBusinessOrderKey(order: NightBusinessOrder): string {
+  if (order.traceId?.trim()) return `trace:${order.traceId.trim()}`;
   return [
     order.firstSeenAtUtc ?? order.lastSeenAtUtc ?? '',
     order.deskCode,
-    order.guestId ?? order.guestName,
+    order.runtimeGuestId ?? 'unknown-runtime-guest',
     order.foodTagId,
-    order.foodTag,
     order.beverageTagId,
-    order.beverageTag,
     order.source,
     order.isFreeOrder ? 'free' : 'paid',
   ].join('|');
@@ -1330,40 +1342,29 @@ function pickPlanForPreparation(
     return emptyPlanPick();
   }
 
-  const plans = item.executionPlans.length > 0 ? item.executionPlans : [];
-  if (plans.length === 0) {
+  const plan = getPrimaryExecutionPlan(item.executionPlans);
+  if (!plan) {
     return emptyPlanPick();
   }
 
-  for (const plan of plans) {
-    const recipe = plan.food ? getRecipeRowForPlan(item, plan) : null;
-    const beverage = plan.beverage ? getBeverageRowForPlan(item, plan) : null;
-    const recipeFavorite = recipe ? findRecipeFavorite(favorites, item.customer.id, item.order.foodTag, recipe) : null;
-    const beverageFavorite = beverage ? findBeverageFavorite(favorites, item.customer.id, item.order.beverageTag, beverage) : null;
-
-    if (needsRecipe && !recipe) {
-      continue;
-    }
-    if (needsBeverage && !beverage) {
-      continue;
-    }
-    if (preferences.autoPrepRecipeFavoritesOnly && needsRecipe && !recipeFavorite) {
-      continue;
-    }
-    if (preferences.autoPrepBeverageFavoritesOnly && needsBeverage && !beverageFavorite) {
-      continue;
-    }
-
-    return {
-      recipe: needsRecipe ? recipe : null,
-      beverage: needsBeverage ? beverage : null,
-      recipeFavorite,
-      beverageFavorite,
-      preferenceFallback: Boolean(recipe && !recipe.meetsRequiredFood),
-    };
+  const recipe = plan.food ? getRecipeRowForPlan(item, plan) : null;
+  const beverage = plan.beverage ? getBeverageRowForPlan(item, plan) : null;
+  const recipeFavorite = recipe ? findRecipeFavorite(favorites, item.customer.id, item.order.foodTag, recipe) : null;
+  const beverageFavorite = beverage ? findBeverageFavorite(favorites, item.customer.id, item.order.beverageTag, beverage) : null;
+  if (needsRecipe && (!recipe || (preferences.autoPrepRecipeFavoritesOnly && !recipeFavorite))) {
+    return emptyPlanPick();
+  }
+  if (needsBeverage && (!beverage || (preferences.autoPrepBeverageFavoritesOnly && !beverageFavorite))) {
+    return emptyPlanPick();
   }
 
-  return emptyPlanPick();
+  return {
+    recipe: needsRecipe ? recipe : null,
+    beverage: needsBeverage ? beverage : null,
+    recipeFavorite: needsRecipe ? recipeFavorite : null,
+    beverageFavorite: needsBeverage ? beverageFavorite : null,
+    preferenceFallback: Boolean(needsRecipe && recipe && !recipe.meetsRequiredFood),
+  };
 }
 
 function emptyPlanPick() {

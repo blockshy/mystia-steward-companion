@@ -63,6 +63,7 @@ export function ModOverviewPanel({
               <InfoLine label="运行时状态" value={snapshot?.status || '暂无快照'} />
               {showDebugDetails && <InfoLine label="运行时来源" value={snapshot?.runtimeSource || '未知'} />}
               {showDebugDetails && <InfoLine label="场景就绪" value={snapshot?.runtimeSceneReadinessStatus || '暂无'} mono />}
+              {showDebugDetails && <InfoLine label="经营生命周期" value={snapshot?.runtimeNightBusinessLifecycleStatus || '暂无'} mono />}
               <InfoLine
                 label="推荐数据"
                 value={data.source === 'runtime' ? `游戏运行时 (${data.status})` : `等待游戏运行时数据 (${data.status})`}

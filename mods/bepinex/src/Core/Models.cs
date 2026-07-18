@@ -130,14 +130,15 @@ public sealed class NightBusinessOrder
     public string TraceId { get; init; } = "";
     public int DeskCode { get; init; }
     public int? GuestId { get; init; }
+    public int? RuntimeGuestId { get; init; }
     public string GuestName { get; init; } = "";
     public string SpecialBusinessRole { get; init; } = "";
     public string SpecialBusinessRoleLabel { get; init; } = "";
     public bool AutomationAllowed { get; init; } = true;
     public string AutomationBlockReason { get; init; } = "";
-    public int FoodTagId { get; init; }
+    public int? FoodTagId { get; init; }
     public string FoodTag { get; init; } = "";
-    public int BeverageTagId { get; init; }
+    public int? BeverageTagId { get; init; }
     public string BeverageTag { get; init; } = "";
     public string Source { get; init; } = "";
     public DateTime? FirstSeenAtUtc { get; init; }

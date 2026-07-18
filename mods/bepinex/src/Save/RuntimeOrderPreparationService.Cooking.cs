@@ -409,8 +409,21 @@ internal static partial class RuntimeOrderPreparationService
         CookingCollectionTarget target,
         bool autoDeliverFood)
     {
+        var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+        if (!lifecycle.IsActive)
+        {
+            throw new InvalidOperationException("Night-business session ended before cooking job registration.");
+        }
+
+        var sessionGeneration = lifecycle.Generation;
         lock (AutomationCookingJobLock)
         {
+            lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+            if (!lifecycle.IsActive || lifecycle.Generation != sessionGeneration)
+            {
+                throw new InvalidOperationException("Night-business session changed before cooking job registration.");
+            }
+
             var replacedJobs = AutomationCookingJobs
                 .Where(job => job.ControllerPointer == controllerPointer || IsSameCookingCollectionTarget(job.Target, target))
                 .ToArray();
@@ -430,6 +443,12 @@ internal static partial class RuntimeOrderPreparationService
             var phase = ToInt(TryInvokeInstanceValue(cookController, "get_Phase") ?? ReadMember(cookController, "Phase"), -1);
             var progress = ToFloat(TryInvokeInstanceValue(cookController, "get_CookingProgress") ?? ReadMember(cookController, "CookingProgress"), 0f);
             TryReadNativeObjectPointer(initialResult, out var resultPointer);
+            lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+            if (!lifecycle.IsActive || lifecycle.Generation != sessionGeneration)
+            {
+                throw new InvalidOperationException("Night-business session changed during cooking job registration.");
+            }
+
             AutomationCookingJobSequence++;
             var job = new AutomationCookingJob
             {
@@ -486,6 +505,13 @@ internal static partial class RuntimeOrderPreparationService
 
     private static (bool Delivered, string StepName, string Message, string Code) TryProcessNormalOrderCookingJob(string orderKey, object order, int deskCode, int foodId, int beverageId)
     {
+        var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+        if (!lifecycle.IsActive)
+        {
+            return (false, "普客送达料理", "夜间经营会话已结束，已停止料理任务处理。", OrderPreparationStepCodes.NightBusinessLifecycleUnavailable);
+        }
+
+        var sessionGeneration = lifecycle.Generation;
         lock (AutomationCookingJobLock)
         {
             for (var i = AutomationCookingJobs.Count - 1; i >= 0; i--)
@@ -494,6 +520,15 @@ internal static partial class RuntimeOrderPreparationService
                 if (!IsMatchingNormalOrderCookingJob(job, orderKey, order, deskCode, foodId, beverageId)) continue;
 
                 var result = TryProcessAutomationCookingJob(job);
+                lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+                if (!lifecycle.IsActive
+                    || lifecycle.Generation != sessionGeneration
+                    || i >= AutomationCookingJobs.Count
+                    || !ReferenceEquals(AutomationCookingJobs[i], job))
+                {
+                    return (false, "普客送达料理", "夜间经营会话已结束，已停止料理任务处理。", OrderPreparationStepCodes.NightBusinessLifecycleUnavailable);
+                }
+
                 if (!string.IsNullOrWhiteSpace(result.Message))
                 {
                     AppendAutomationLog("job", job.Target, job.FormatLogContext(result.Message));
@@ -588,33 +623,13 @@ internal static partial class RuntimeOrderPreparationService
         if (left.Kind != right.Kind) return false;
         if (left.Kind == CookingCollectionTargetKind.RareOrder)
         {
-            if (!string.IsNullOrWhiteSpace(left.TraceId)
-                && !string.IsNullOrWhiteSpace(right.TraceId)
-                && !string.Equals(left.TraceId, right.TraceId, StringComparison.Ordinal))
-            {
-                return false;
-            }
-
-            if (!string.IsNullOrWhiteSpace(left.FoodTag)
-                && !string.IsNullOrWhiteSpace(right.FoodTag)
-                && !TextMatches(left.FoodTag, right.FoodTag))
-            {
-                return false;
-            }
-
-            if (!string.IsNullOrWhiteSpace(left.BeverageTag)
-                && !string.IsNullOrWhiteSpace(right.BeverageTag)
-                && !TextMatches(left.BeverageTag, right.BeverageTag))
-            {
-                return false;
-            }
-
-            if (left.FoodId != right.FoodId) return false;
-            if (left.DeskCode >= 0 && right.DeskCode >= 0 && left.DeskCode != right.DeskCode) return false;
-            if (left.GuestId.HasValue && right.GuestId.HasValue) return left.GuestId.Value == right.GuestId.Value;
-            return !string.IsNullOrWhiteSpace(left.GuestName)
-                && !string.IsNullOrWhiteSpace(right.GuestName)
-                && string.Equals(left.GuestName, right.GuestName, StringComparison.Ordinal);
+            return RareOrderIdentityMatcher.IsSameCookingTarget(
+                left.TraceId,
+                left.FoodId,
+                new RareOrderIdentity(left.DeskCode >= 0 ? left.DeskCode : null, left.RuntimeGuestId, left.FoodTagId, left.BeverageTagId),
+                right.TraceId,
+                right.FoodId,
+                new RareOrderIdentity(right.DeskCode >= 0 ? right.DeskCode : null, right.RuntimeGuestId, right.FoodTagId, right.BeverageTagId));
         }
 
         if (left.Kind != CookingCollectionTargetKind.NormalOrder) return false;
@@ -830,7 +845,7 @@ internal static partial class RuntimeOrderPreparationService
             var request = BuildOrderRequestFromCookingTarget(job.Target);
             var runtimeOrder = job.Target.Kind == CookingCollectionTargetKind.NormalOrder
                 ? FindRuntimeNormalOrder(request)
-                : FindRuntimeOrder(request);
+                : FindRuntimeOrder(request, RuntimeOrderLookupPurpose.Completion);
             if (runtimeOrder.Order == null)
             {
                 job.ManualHandoffReadFailureCount = 0;

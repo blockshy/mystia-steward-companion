@@ -109,11 +109,6 @@ internal static partial class RuntimeOrderPreparationService
         return string.IsNullOrWhiteSpace(value) ? "" : value.Trim();
     }
 
-    private static string BuildYuyukoPhase3CaptureSkippedDiagnostic(string prefix)
-    {
-        return $"{prefix}: yuyuko phase3 boss order requires a live controller so callback diagnostics reflect the current order";
-    }
-
     private static bool IsYuyukoChallengeType(string challengeType)
     {
         return string.Equals(challengeType, SpecialBusinessChallengeTypes.StoryYuyuko, StringComparison.Ordinal)
@@ -175,11 +170,66 @@ internal static partial class RuntimeOrderPreparationService
         bool reacquireLiveOrder = true,
         bool allowControllerMissing = false)
     {
+        if (!TryCaptureActiveNightBusinessGeneration(out var sessionGeneration))
+        {
+            return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: false);
+        }
+
         var evaluationMode = ResolveYuyukoPhase3EvaluationMode(request);
         var requiresLiveReacquire = reacquireLiveOrder && evaluationMode != YuyukoPhase3EvaluationMode.None;
+        if (requiresLiveReacquire)
+        {
+            if (runtimeOrder.Manager == null)
+            {
+                return new(false, false, false,
+                    $"客人管理器不可用，无法检查{orderLabel}是否已满足。诊断：{runtimeOrder.Diagnostic}");
+            }
+
+            if (runtimeOrder.Order == null)
+            {
+                return new(false, false, false,
+                    $"当前精确匹配的{orderLabel}对象不可用，无法进入幽幽子评价流程。诊断：{runtimeOrder.Diagnostic}");
+            }
+
+            var deliveryOrderFullfilledValue = TryInvokeInstanceValue(runtimeOrder.Order, "get_IsFullfilled")
+                ?? ReadMember(runtimeOrder.Order, "IsFullfilled");
+            if (deliveryOrderFullfilledValue == null)
+            {
+                return new(false, false, false,
+                    $"无法读取当前精确匹配的{orderLabel}满足状态，已停止幽幽子评价。诊断：{runtimeOrder.Diagnostic}");
+            }
+
+            var deliveryOrderFullfilled = ReadBool(deliveryOrderFullfilledValue);
+            if (!IsNightBusinessGenerationActive(sessionGeneration))
+            {
+                return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: false);
+            }
+
+            if (!deliveryOrderFullfilled)
+            {
+                var waiting = new RuntimeOrderEvaluationResult(
+                    true,
+                    false,
+                    true,
+                    "订单尚未同时满足料理和酒水，等待下一轮补齐。");
+                AppendYuyukoRuntimeDiagnostic(
+                    "yuyuko-native-evaluate-after",
+                    request,
+                    runtimeOrder,
+                    "native-evaluate-entry-skipped",
+                    waiting.Message);
+                return waiting;
+            }
+        }
+
         var evaluationOrder = requiresLiveReacquire
             ? FindRuntimeOrder(request, RuntimeOrderLookupPurpose.NativeEvaluation)
             : runtimeOrder;
+        if (!IsNightBusinessGenerationActive(sessionGeneration))
+        {
+            return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: false);
+        }
+
         var executionMode = NormalizeYuyukoNormalExecutionMode(request.ExecutionMode);
         AppendYuyukoRuntimeDiagnostic(
             "yuyuko-native-evaluate-before",
@@ -191,9 +241,22 @@ internal static partial class RuntimeOrderPreparationService
                 : evaluationMode == YuyukoPhase3EvaluationMode.RetakeNative
                     ? $"Yuyuko retake phase3 evaluation uses the native EvaluateOrder path after validating the _50/_70 progress callback. executionMode={executionMode}; reacquire={requiresLiveReacquire}; deliveryMatch={runtimeOrder.Diagnostic}"
                     : $"Yuyuko challenge order is checking whether the game evaluation path is ready before consuming the order. executionMode={executionMode}");
+        if (!IsNightBusinessGenerationActive(sessionGeneration))
+        {
+            return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: false);
+        }
 
         RuntimeOrderEvaluationResult evaluation;
-        if (!TryValidateYuyukoPhase3NormalOrderTargetInvariant(request, evaluationOrder, out var normalOrderTargetDiagnostic))
+        var normalOrderTargetValid = TryValidateYuyukoPhase3NormalOrderTargetInvariant(
+            request,
+            evaluationOrder,
+            out var normalOrderTargetDiagnostic);
+        if (!IsNightBusinessGenerationActive(sessionGeneration))
+        {
+            return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: false);
+        }
+
+        if (!normalOrderTargetValid)
         {
             evaluation = new(
                 false,
@@ -206,15 +269,31 @@ internal static partial class RuntimeOrderPreparationService
         {
             if (IsYuyukoPhase3NormalRefreshRequest(request))
             {
-                evaluation = TryEvaluateYuyukoPhase3RefreshOrderIfReady(request, evaluationOrder, orderLabel, allowControllerMissing);
+                evaluation = TryEvaluateYuyukoPhase3RefreshOrderIfReady(
+                    request,
+                    evaluationOrder,
+                    orderLabel,
+                    allowControllerMissing,
+                    sessionGeneration);
             }
             else
             {
                 evaluation = evaluationMode switch
                 {
-                    YuyukoPhase3EvaluationMode.StoryManual => TryEvaluateStoryYuyukoPhase3OrderIfReady(evaluationOrder, orderLabel),
-                    YuyukoPhase3EvaluationMode.RetakeNative => TryEvaluateRetakeYuyukoPhase3OrderIfReady(evaluationOrder, orderLabel, allowControllerMissing),
-                    _ => TryEvaluateRuntimeOrderIfReady(evaluationOrder, orderLabel, allowControllerMissing),
+                    YuyukoPhase3EvaluationMode.StoryManual => TryEvaluateStoryYuyukoPhase3OrderIfReady(
+                        evaluationOrder,
+                        orderLabel,
+                        sessionGeneration),
+                    YuyukoPhase3EvaluationMode.RetakeNative => TryEvaluateRetakeYuyukoPhase3OrderIfReady(
+                        evaluationOrder,
+                        orderLabel,
+                        allowControllerMissing,
+                        sessionGeneration),
+                    _ => TryEvaluateRuntimeOrderIfReady(
+                        evaluationOrder,
+                        orderLabel,
+                        allowControllerMissing,
+                        sessionGeneration),
                 };
             }
         }
@@ -226,12 +305,15 @@ internal static partial class RuntimeOrderPreparationService
             : evaluationMode != YuyukoPhase3EvaluationMode.None
                 ? "native-evaluate-entry-blocked"
                 : "native-evaluate-entry-failed";
-        AppendYuyukoRuntimeDiagnostic(
-            "yuyuko-native-evaluate-after",
-            request,
-            evaluationOrder,
-            decision,
-            evaluation.Message);
+        if (IsNightBusinessGenerationActive(sessionGeneration))
+        {
+            AppendYuyukoRuntimeDiagnostic(
+                "yuyuko-native-evaluate-after",
+                request,
+                evaluationOrder,
+                decision,
+                evaluation.Message);
+        }
         return evaluation;
     }
 
@@ -239,14 +321,33 @@ internal static partial class RuntimeOrderPreparationService
         OrderPreparationRequest request,
         RuntimeOrderMatch runtimeOrder,
         string orderLabel,
-        bool allowControllerMissing)
+        bool allowControllerMissing,
+        long sessionGeneration)
     {
-        if (runtimeOrder.Order == null || runtimeOrder.Manager == null)
+        if (!IsNightBusinessGenerationActive(sessionGeneration))
         {
-            return new(false, false, false, "订单或客人管理器不可用，无法调用游戏评价流程。");
+            return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: false);
         }
 
-        if (!ReadBool(InvokeInstance(runtimeOrder.Order, "get_IsFullfilled", Array.Empty<object?>())))
+        if (runtimeOrder.Manager == null)
+        {
+            return new(false, false, false,
+                $"客人管理器不可用，无法调用游戏评价流程。诊断：{runtimeOrder.Diagnostic}");
+        }
+
+        if (runtimeOrder.Order == null)
+        {
+            return new(false, false, false,
+                $"未找到与当前原始身份一致的幽幽子订单，无法调用游戏评价流程。诊断：{runtimeOrder.Diagnostic}");
+        }
+
+        var isFullfilled = ReadBool(InvokeInstance(runtimeOrder.Order, "get_IsFullfilled", Array.Empty<object?>()));
+        if (!IsNightBusinessGenerationActive(sessionGeneration))
+        {
+            return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: false);
+        }
+
+        if (!isFullfilled)
         {
             return new(true, false, true, "订单尚未同时满足料理和酒水，等待下一轮补齐。");
         }
@@ -261,7 +362,16 @@ internal static partial class RuntimeOrderPreparationService
             return new(false, false, false, "已匹配幽幽子三阶段清理订单，但未找到对应客人控制器，无法确认原生评价回调。");
         }
 
-        if (!TryReadRuntimeOrderEvaluated(runtimeOrder.Controller, out var evaluated, out var evaluatedDiagnostic))
+        var evaluationReadable = TryReadRuntimeOrderEvaluated(
+            runtimeOrder.Controller,
+            out var evaluated,
+            out var evaluatedDiagnostic);
+        if (!IsNightBusinessGenerationActive(sessionGeneration))
+        {
+            return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: false);
+        }
+
+        if (!evaluationReadable)
         {
             return new(false, false, false,
                 $"无法严格读取 {orderLabel} 的 HasEvaluated，已停止幽幽子评价：{evaluatedDiagnostic}",
@@ -273,7 +383,13 @@ internal static partial class RuntimeOrderPreparationService
             return new(true, true, true, $"{orderLabel}已触发过评价，本次不重复调用。");
         }
 
-        if (!TryValidateYuyukoPhase3ServedExactTarget(request, runtimeOrder, out var targetDiagnostic))
+        var targetValid = TryValidateYuyukoPhase3ServedExactTarget(request, runtimeOrder, out var targetDiagnostic);
+        if (!IsNightBusinessGenerationActive(sessionGeneration))
+        {
+            return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: false);
+        }
+
+        if (!targetValid)
         {
             return new(
                 false,
@@ -286,7 +402,15 @@ internal static partial class RuntimeOrderPreparationService
         var evaluationMode = ResolveYuyukoPhase3EvaluationMode(request);
         if (evaluationMode == YuyukoPhase3EvaluationMode.StoryManual)
         {
-            if (!TryValidateYuyukoStoryPhase3RefreshEvaluation(runtimeOrder, out var storyDiagnostic))
+            var storyEvaluationValid = TryValidateYuyukoStoryPhase3RefreshEvaluation(
+                runtimeOrder,
+                out var storyDiagnostic);
+            if (!IsNightBusinessGenerationActive(sessionGeneration))
+            {
+                return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: false);
+            }
+
+            if (!storyEvaluationValid)
             {
                 return new(
                     false,
@@ -301,7 +425,8 @@ internal static partial class RuntimeOrderPreparationService
                 runtimeOrder.Controller,
                 "EvaulateManualOrder",
                 new object?[] { runtimeOrder.Controller, runtimeOrder.ManualEvaluationCallback },
-                orderLabel);
+                orderLabel,
+                sessionGeneration);
             return manualEvaluation.Ok && manualEvaluation.Completed && !manualEvaluation.Skipped
                 ? manualEvaluation with
                 {
@@ -312,7 +437,15 @@ internal static partial class RuntimeOrderPreparationService
 
         if (evaluationMode == YuyukoPhase3EvaluationMode.RetakeNative)
         {
-            if (!TryValidateYuyukoRetakePhase3RefreshEvaluation(runtimeOrder, out var retakeDiagnostic))
+            var retakeEvaluationValid = TryValidateYuyukoRetakePhase3RefreshEvaluation(
+                runtimeOrder,
+                out var retakeDiagnostic);
+            if (!IsNightBusinessGenerationActive(sessionGeneration))
+            {
+                return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: false);
+            }
+
+            if (!retakeEvaluationValid)
             {
                 return new(
                     false,
@@ -322,7 +455,11 @@ internal static partial class RuntimeOrderPreparationService
                     + $"诊断：{retakeDiagnostic}; {targetDiagnostic}。请提供 aggregate-mod.log。");
             }
 
-            var evaluation = TryEvaluateRuntimeOrderIfReady(runtimeOrder, orderLabel, allowControllerMissing);
+            var evaluation = TryEvaluateRuntimeOrderIfReady(
+                runtimeOrder,
+                orderLabel,
+                allowControllerMissing,
+                sessionGeneration);
             return evaluation.Ok && evaluation.Completed && !evaluation.Skipped
                 ? evaluation with
                 {
@@ -331,19 +468,42 @@ internal static partial class RuntimeOrderPreparationService
                 : evaluation;
         }
 
-        return TryEvaluateRuntimeOrderIfReady(runtimeOrder, orderLabel, allowControllerMissing);
+        return TryEvaluateRuntimeOrderIfReady(
+            runtimeOrder,
+            orderLabel,
+            allowControllerMissing,
+            sessionGeneration);
     }
 
     private static RuntimeOrderEvaluationResult TryEvaluateStoryYuyukoPhase3OrderIfReady(
         RuntimeOrderMatch runtimeOrder,
-        string orderLabel)
+        string orderLabel,
+        long sessionGeneration)
     {
-        if (runtimeOrder.Order == null || runtimeOrder.Manager == null)
+        if (!IsNightBusinessGenerationActive(sessionGeneration))
         {
-            return new(false, false, false, "订单或客人管理器不可用，无法调用游戏评价流程。");
+            return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: false);
         }
 
-        if (!ReadBool(InvokeInstance(runtimeOrder.Order, "get_IsFullfilled", Array.Empty<object?>())))
+        if (runtimeOrder.Manager == null)
+        {
+            return new(false, false, false,
+                $"客人管理器不可用，无法调用游戏手动评价流程。诊断：{runtimeOrder.Diagnostic}");
+        }
+
+        if (runtimeOrder.Order == null)
+        {
+            return new(false, false, false,
+                $"未找到与当前原始身份一致的幽幽子订单，无法调用游戏手动评价流程。诊断：{runtimeOrder.Diagnostic}");
+        }
+
+        var isFullfilled = ReadBool(InvokeInstance(runtimeOrder.Order, "get_IsFullfilled", Array.Empty<object?>()));
+        if (!IsNightBusinessGenerationActive(sessionGeneration))
+        {
+            return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: false);
+        }
+
+        if (!isFullfilled)
         {
             return new(true, false, true, "订单尚未同时满足料理和酒水，等待下一轮补齐。");
         }
@@ -353,7 +513,16 @@ internal static partial class RuntimeOrderPreparationService
             return new(false, false, false, "已匹配幽幽子三阶段订单，但未找到对应客人控制器，无法确认手动评价回调链路。");
         }
 
-        if (!TryReadRuntimeOrderEvaluated(runtimeOrder.Controller, out var evaluated, out var evaluatedDiagnostic))
+        var evaluationReadable = TryReadRuntimeOrderEvaluated(
+            runtimeOrder.Controller,
+            out var evaluated,
+            out var evaluatedDiagnostic);
+        if (!IsNightBusinessGenerationActive(sessionGeneration))
+        {
+            return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: false);
+        }
+
+        if (!evaluationReadable)
         {
             return new(false, false, false,
                 $"无法严格读取 {orderLabel} 的 HasEvaluated，已停止幽幽子手动评价：{evaluatedDiagnostic}",
@@ -365,7 +534,15 @@ internal static partial class RuntimeOrderPreparationService
             return new(true, true, true, $"{orderLabel}已触发过评价，本次不重复调用。");
         }
 
-        if (!TryValidateYuyukoStoryPhase3ProgressEvaluation(runtimeOrder, out var progressDiagnostic))
+        var progressEvaluationValid = TryValidateYuyukoStoryPhase3ProgressEvaluation(
+            runtimeOrder,
+            out var progressDiagnostic);
+        if (!IsNightBusinessGenerationActive(sessionGeneration))
+        {
+            return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: false);
+        }
+
+        if (!progressEvaluationValid)
         {
             return new(
                 false,
@@ -380,7 +557,8 @@ internal static partial class RuntimeOrderPreparationService
             runtimeOrder.Controller,
             "EvaulateManualOrder",
             new object?[] { runtimeOrder.Controller, runtimeOrder.ManualEvaluationCallback },
-            orderLabel);
+            orderLabel,
+            sessionGeneration);
         return evaluation.Ok && evaluation.Completed && !evaluation.Skipped
             ? evaluation with { Message = $"已确认剧情版幽幽子三阶段手动进度回调并调用游戏手动评价流程完成{orderLabel}。" }
             : evaluation;
@@ -389,14 +567,33 @@ internal static partial class RuntimeOrderPreparationService
     private static RuntimeOrderEvaluationResult TryEvaluateRetakeYuyukoPhase3OrderIfReady(
         RuntimeOrderMatch runtimeOrder,
         string orderLabel,
-        bool allowControllerMissing)
+        bool allowControllerMissing,
+        long sessionGeneration)
     {
-        if (runtimeOrder.Order == null || runtimeOrder.Manager == null)
+        if (!IsNightBusinessGenerationActive(sessionGeneration))
         {
-            return new(false, false, false, "订单或客人管理器不可用，无法调用游戏评价流程。");
+            return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: false);
         }
 
-        if (!ReadBool(InvokeInstance(runtimeOrder.Order, "get_IsFullfilled", Array.Empty<object?>())))
+        if (runtimeOrder.Manager == null)
+        {
+            return new(false, false, false,
+                $"客人管理器不可用，无法调用游戏评价流程。诊断：{runtimeOrder.Diagnostic}");
+        }
+
+        if (runtimeOrder.Order == null)
+        {
+            return new(false, false, false,
+                $"未找到与当前原始身份一致的幽幽子订单，无法调用游戏评价流程。诊断：{runtimeOrder.Diagnostic}");
+        }
+
+        var isFullfilled = ReadBool(InvokeInstance(runtimeOrder.Order, "get_IsFullfilled", Array.Empty<object?>()));
+        if (!IsNightBusinessGenerationActive(sessionGeneration))
+        {
+            return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: false);
+        }
+
+        if (!isFullfilled)
         {
             return new(true, false, true, "订单尚未同时满足料理和酒水，等待下一轮补齐。");
         }
@@ -411,7 +608,16 @@ internal static partial class RuntimeOrderPreparationService
             return new(false, false, false, "已匹配重修版幽幽子三阶段订单，但未找到对应客人控制器，无法确认原生进度回调。");
         }
 
-        if (!TryReadRuntimeOrderEvaluated(runtimeOrder.Controller, out var evaluated, out var evaluatedDiagnostic))
+        var evaluationReadable = TryReadRuntimeOrderEvaluated(
+            runtimeOrder.Controller,
+            out var evaluated,
+            out var evaluatedDiagnostic);
+        if (!IsNightBusinessGenerationActive(sessionGeneration))
+        {
+            return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: false);
+        }
+
+        if (!evaluationReadable)
         {
             return new(false, false, false,
                 $"无法严格读取 {orderLabel} 的 HasEvaluated，已停止幽幽子评价：{evaluatedDiagnostic}",
@@ -423,7 +629,15 @@ internal static partial class RuntimeOrderPreparationService
             return new(true, true, true, $"{orderLabel}已触发过评价，本次不重复调用。");
         }
 
-        if (!TryValidateYuyukoRetakePhase3ProgressEvaluation(runtimeOrder, out var progressDiagnostic))
+        var progressEvaluationValid = TryValidateYuyukoRetakePhase3ProgressEvaluation(
+            runtimeOrder,
+            out var progressDiagnostic);
+        if (!IsNightBusinessGenerationActive(sessionGeneration))
+        {
+            return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: false);
+        }
+
+        if (!progressEvaluationValid)
         {
             return new(
                 false,
@@ -433,7 +647,11 @@ internal static partial class RuntimeOrderPreparationService
                 + $"诊断：{progressDiagnostic}。请提供 aggregate-mod.log。");
         }
 
-        var evaluation = TryEvaluateRuntimeOrderIfReady(runtimeOrder, orderLabel, allowControllerMissing);
+        var evaluation = TryEvaluateRuntimeOrderIfReady(
+            runtimeOrder,
+            orderLabel,
+            allowControllerMissing,
+            sessionGeneration);
         return evaluation.Ok && evaluation.Completed && !evaluation.Skipped
             ? evaluation with { Message = $"已确认重修版幽幽子三阶段 _50/_70 进度回调并调用游戏评价流程完成{orderLabel}。{evaluation.Message}" }
             : evaluation;

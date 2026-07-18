@@ -29,6 +29,19 @@ internal static partial class RuntimeOrderPreparationService
         public bool CommitUncertain => State == RuntimeDeliveryCommitState.Uncertain;
     }
 
+    private static bool TryCaptureActiveNightBusinessGeneration(out long generation)
+    {
+        var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+        generation = lifecycle.Generation;
+        return lifecycle.IsActive;
+    }
+
+    private static bool IsNightBusinessGenerationActive(long expectedGeneration)
+    {
+        var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+        return lifecycle.IsActive && lifecycle.Generation == expectedGeneration;
+    }
+
     /// <summary>
     /// 按游戏原生上菜顺序提交一项料理或酒水。
     /// </summary>
@@ -48,6 +61,11 @@ internal static partial class RuntimeOrderPreparationService
         RuntimeDeliveryItemKind kind,
         string itemName)
     {
+        if (!TryCaptureActiveNightBusinessGeneration(out var sessionGeneration))
+        {
+            return NotCommittedDelivery($"无法送达 {itemName}：夜间经营会话已结束。");
+        }
+
         if (runtimeOrder.Order == null)
         {
             return NotCommittedDelivery($"无法送达 {itemName}：订单对象不可用。");
@@ -110,6 +128,12 @@ internal static partial class RuntimeOrderPreparationService
                 sellable,
                 out var inAirSetterAttempted,
                 out var inAirSetterDiagnostic);
+            if (!IsNightBusinessGenerationActive(sessionGeneration))
+            {
+                return UncertainDelivery(
+                    kind,
+                    $"{itemName} 的待送达 setter 执行期间夜间经营会话已结束，已停止后续订单对象访问。");
+            }
             if (!inAirSetterAttempted)
             {
                 return NotCommittedDelivery($"无法送达 {itemName}：{inAirSetterDiagnostic}");
@@ -153,9 +177,29 @@ internal static partial class RuntimeOrderPreparationService
         var finalSetterAttempted = false;
         try
         {
-            if (!TryUpdateGuestTableVisual(tableDisplayer, kind, sprite, out var visualMessage))
+            var visualUpdated = TryUpdateGuestTableVisual(tableDisplayer, kind, sprite, out var visualMessage);
+            if (!IsNightBusinessGenerationActive(sessionGeneration))
             {
-                if (!TryClearOrderInAirAndVerify(runtimeOrder.Order, kind, out var clearDiagnostic))
+                return UncertainDelivery(
+                    kind,
+                    $"{itemName} 的桌面显示更新期间夜间经营会话已结束，已停止后续订单对象访问。");
+            }
+
+            if (!visualUpdated)
+            {
+                var cleared = TryClearOrderInAirAndVerify(
+                    runtimeOrder.Order,
+                    kind,
+                    sessionGeneration,
+                    out var clearDiagnostic);
+                if (!IsNightBusinessGenerationActive(sessionGeneration))
+                {
+                    return UncertainDelivery(
+                        kind,
+                        $"{itemName} 的待送达字段清理期间夜间经营会话已结束，已停止后续订单对象访问。");
+                }
+
+                if (!cleared)
                 {
                     return UncertainDelivery(
                         kind,
@@ -165,7 +209,19 @@ internal static partial class RuntimeOrderPreparationService
                 return NotCommittedDelivery($"无法送达 {itemName}：{visualMessage}");
             }
 
-            if (!TryClearOrderInAirAndVerify(runtimeOrder.Order, kind, out var clearBeforeCommitDiagnostic))
+            var clearedBeforeCommit = TryClearOrderInAirAndVerify(
+                runtimeOrder.Order,
+                kind,
+                sessionGeneration,
+                out var clearBeforeCommitDiagnostic);
+            if (!IsNightBusinessGenerationActive(sessionGeneration))
+            {
+                return UncertainDelivery(
+                    kind,
+                    $"{itemName} 的最终提交准备期间夜间经营会话已结束，已停止后续订单对象访问。");
+            }
+
+            if (!clearedBeforeCommit)
             {
                 return UncertainDelivery(
                     kind,
@@ -179,9 +235,21 @@ internal static partial class RuntimeOrderPreparationService
                 sellable,
                 out finalSetterAttempted,
                 out var setterDiagnostic);
+            if (!IsNightBusinessGenerationActive(sessionGeneration))
+            {
+                return UncertainDelivery(
+                    kind,
+                    $"{itemName} 的订单 setter 执行期间夜间经营会话已结束，已停止后续订单对象访问。");
+            }
             if (!finalSetterAttempted)
             {
                 TryUpdateGuestTableVisual(tableDisplayer, kind, null, out _);
+                if (!IsNightBusinessGenerationActive(sessionGeneration))
+                {
+                    return UncertainDelivery(
+                        kind,
+                        $"{itemName} 的桌面显示回收期间夜间经营会话已结束，已停止后续订单对象访问。");
+                }
                 return NotCommittedDelivery($"无法送达 {itemName}：{setterDiagnostic}");
             }
 
@@ -211,6 +279,12 @@ internal static partial class RuntimeOrderPreparationService
             }
 
             TryUpdateGuestTableVisual(tableDisplayer, kind, null, out _);
+            if (!IsNightBusinessGenerationActive(sessionGeneration))
+            {
+                return UncertainDelivery(
+                    kind,
+                    $"{itemName} 的桌面显示回收期间夜间经营会话已结束，已停止后续订单对象访问。");
+            }
             return UncertainDelivery(
                 kind,
                 setterReturned
@@ -219,7 +293,20 @@ internal static partial class RuntimeOrderPreparationService
         }
         catch (Exception ex)
         {
-            TryClearOrderInAirAndVerify(runtimeOrder.Order, kind, out _);
+            if (!IsNightBusinessGenerationActive(sessionGeneration))
+            {
+                return UncertainDelivery(
+                    kind,
+                    $"{itemName} 的送达入口执行期间夜间经营会话已结束，已跳过订单清理并停止后续对象访问。");
+            }
+
+            TryClearOrderInAirAndVerify(runtimeOrder.Order, kind, sessionGeneration, out _);
+            if (!IsNightBusinessGenerationActive(sessionGeneration))
+            {
+                return UncertainDelivery(
+                    kind,
+                    $"{itemName} 的异常清理期间夜间经营会话已结束，已停止后续订单对象访问。");
+            }
             return finalSetterAttempted
                 ? UncertainDelivery(
                     kind,
@@ -273,8 +360,15 @@ internal static partial class RuntimeOrderPreparationService
     private static bool TryClearOrderInAirAndVerify(
         object order,
         RuntimeDeliveryItemKind kind,
+        long sessionGeneration,
         out string diagnostic)
     {
+        if (!IsNightBusinessGenerationActive(sessionGeneration))
+        {
+            diagnostic = "夜间经营会话已结束，未访问订单待送达字段";
+            return false;
+        }
+
         if (!TryReadOrderInAirItem(order, kind, out var before, out var beforeDiagnostic))
         {
             diagnostic = $"清理前字段不可读：{beforeDiagnostic}";
@@ -294,6 +388,11 @@ internal static partial class RuntimeOrderPreparationService
             null,
             out var setterAttempted,
             out var setterDiagnostic);
+        if (!IsNightBusinessGenerationActive(sessionGeneration))
+        {
+            diagnostic = $"{setterName} 执行期间夜间经营会话已结束，未继续读取订单字段";
+            return false;
+        }
         if (!setterAttempted)
         {
             diagnostic = setterDiagnostic;
@@ -560,14 +659,32 @@ internal static partial class RuntimeOrderPreparationService
         RuntimeOrderMatch runtimeOrder,
         string orderLabel)
     {
+        if (!TryCaptureActiveNightBusinessGeneration(out var sessionGeneration))
+        {
+            return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: false);
+        }
+
         AppendWackyBossRuntimeDiagnostic(
             "koishi-native-evaluate-before",
             request,
             runtimeOrder,
             "call-native-evaluate-entry",
             "Koishi boss full-feed order enters the game EvaluateOrder pipeline so the boss OverrideEvaluationCallback can score it.");
+        if (!IsNightBusinessGenerationActive(sessionGeneration))
+        {
+            return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: false);
+        }
 
-        if (!IsExecutableWackyKoishiBossRuntimeOrder(runtimeOrder.Controller, runtimeOrder.Order, out var diagnostic))
+        var executable = IsExecutableWackyKoishiBossRuntimeOrder(
+            runtimeOrder.Controller,
+            runtimeOrder.Order,
+            out var diagnostic);
+        if (!IsNightBusinessGenerationActive(sessionGeneration))
+        {
+            return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: false);
+        }
+
+        if (!executable)
         {
             AppendWackyBossRuntimeDiagnostic(
                 "koishi-native-evaluate-after",
@@ -578,32 +695,53 @@ internal static partial class RuntimeOrderPreparationService
             return new(false, false, false, $"怪诞料理三阶段古明地恋本体订单缺少可执行原生评价条件：{diagnostic}");
         }
 
-        var evaluation = TryEvaluateRuntimeOrderIfReady(runtimeOrder, orderLabel);
+        var evaluation = TryEvaluateRuntimeOrderIfReady(
+            runtimeOrder,
+            orderLabel,
+            expectedSessionGeneration: sessionGeneration);
         var decision = evaluation.Ok
             ? evaluation.Skipped
                 ? "native-evaluate-entry-skipped"
                 : "native-evaluate-entry-called"
             : "native-evaluate-entry-failed";
-        AppendWackyBossRuntimeDiagnostic(
-            "koishi-native-evaluate-after",
-            request,
-            runtimeOrder,
-            decision,
-            evaluation.Message);
+        if (IsNightBusinessGenerationActive(sessionGeneration))
+        {
+            AppendWackyBossRuntimeDiagnostic(
+                "koishi-native-evaluate-after",
+                request,
+                runtimeOrder,
+                decision,
+                evaluation.Message);
+        }
         return evaluation;
     }
 
     private static RuntimeOrderEvaluationResult TryEvaluateRuntimeOrderIfReady(
         RuntimeOrderMatch runtimeOrder,
         string orderLabel,
-        bool allowControllerMissing = false)
+        bool allowControllerMissing = false,
+        long? expectedSessionGeneration = null)
     {
+        var sessionGeneration = expectedSessionGeneration ?? RuntimeNightBusinessLifecycle.Generation;
+        if (expectedSessionGeneration.HasValue
+            ? !IsNightBusinessGenerationActive(sessionGeneration)
+            : !TryCaptureActiveNightBusinessGeneration(out sessionGeneration))
+        {
+            return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: false);
+        }
+
         if (runtimeOrder.Order == null || runtimeOrder.Manager == null)
         {
             return new(false, false, false, "订单或客人管理器不可用，无法调用游戏评价流程。");
         }
 
-        if (!ReadBool(InvokeInstance(runtimeOrder.Order, "get_IsFullfilled", Array.Empty<object?>())))
+        var isFullfilled = ReadBool(InvokeInstance(runtimeOrder.Order, "get_IsFullfilled", Array.Empty<object?>()));
+        if (!IsNightBusinessGenerationActive(sessionGeneration))
+        {
+            return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: false);
+        }
+
+        if (!isFullfilled)
         {
             return new(true, false, true, "订单尚未同时满足料理和酒水，等待下一轮补齐。");
         }
@@ -623,7 +761,8 @@ internal static partial class RuntimeOrderPreparationService
             runtimeOrder.Controller,
             "EvaluateOrder",
             new object?[] { runtimeOrder.Controller, false, null },
-            orderLabel);
+            orderLabel,
+            sessionGeneration);
     }
 
     private static RuntimeOrderEvaluationResult TryInvokeRuntimeOrderEvaluationOnce(
@@ -631,9 +770,24 @@ internal static partial class RuntimeOrderPreparationService
         object controller,
         string methodName,
         object?[] args,
-        string orderLabel)
+        string orderLabel,
+        long? expectedSessionGeneration = null)
     {
-        if (!TryReadRuntimeOrderEvaluated(controller, out var evaluatedBefore, out var beforeDiagnostic))
+        var sessionGeneration = expectedSessionGeneration ?? RuntimeNightBusinessLifecycle.Generation;
+        if (expectedSessionGeneration.HasValue
+            ? !IsNightBusinessGenerationActive(sessionGeneration)
+            : !TryCaptureActiveNightBusinessGeneration(out sessionGeneration))
+        {
+            return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: false);
+        }
+
+        var readBefore = TryReadRuntimeOrderEvaluated(controller, out var evaluatedBefore, out var beforeDiagnostic);
+        if (!IsNightBusinessGenerationActive(sessionGeneration))
+        {
+            return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: false);
+        }
+
+        if (!readBefore)
         {
             return new(
                 false,
@@ -651,12 +805,27 @@ internal static partial class RuntimeOrderPreparationService
         try
         {
             InvokeInstance(manager, methodName, args);
+            if (!IsNightBusinessGenerationActive(sessionGeneration))
+            {
+                return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: true);
+            }
+
             return new(true, true, false, $"已调用游戏评价流程完成{orderLabel}。");
         }
         catch (Exception ex)
         {
-            if (TryReadRuntimeOrderEvaluated(controller, out var evaluatedAfter, out var afterDiagnostic)
-                && evaluatedAfter)
+            if (!IsNightBusinessGenerationActive(sessionGeneration))
+            {
+                return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: true, ex);
+            }
+
+            var readAfter = TryReadRuntimeOrderEvaluated(controller, out var evaluatedAfter, out var afterDiagnostic);
+            if (!IsNightBusinessGenerationActive(sessionGeneration))
+            {
+                return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: true, ex);
+            }
+
+            if (readAfter && evaluatedAfter)
             {
                 return new(
                     true,
@@ -675,6 +844,32 @@ internal static partial class RuntimeOrderPreparationService
                 $"{orderLabel} 的评价调用已开始但发生异常，且无法确认是否提交（{confirmation}）。为避免重复结算，已禁止自动重试，请人工确认订单状态：{ex.GetBaseException().Message}",
                 OrderPreparationStepCodes.OrderEvaluationCommitUncertain);
         }
+    }
+
+    private static RuntimeOrderEvaluationResult BuildEndedNightBusinessEvaluation(
+        string orderLabel,
+        bool commitMayHaveStarted,
+        Exception? exception = null)
+    {
+        var exceptionSuffix = exception == null
+            ? ""
+            : $" 原始异常：{exception.GetBaseException().Message}";
+        if (commitMayHaveStarted)
+        {
+            return new(
+                false,
+                false,
+                false,
+                $"{orderLabel} 的评价调用期间夜间经营会话已结束，提交结果无法确认。已停止访问订单对象并禁止自动重试，请人工确认订单状态。{exceptionSuffix}",
+                OrderPreparationStepCodes.OrderEvaluationCommitUncertain);
+        }
+
+        return new(
+            false,
+            false,
+            false,
+            $"夜间经营会话已结束，未访问 {orderLabel} 的评价对象。",
+            OrderPreparationStepCodes.NightBusinessLifecycleUnavailable);
     }
 
     private static bool TryReadRuntimeOrderEvaluated(

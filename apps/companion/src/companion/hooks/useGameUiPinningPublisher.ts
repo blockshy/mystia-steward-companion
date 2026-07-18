@@ -9,6 +9,8 @@ interface UseGameUiPinningPublisherOptions {
   apiToken: string;
   connectionRevision: number;
   sessionId: string;
+  businessGeneration: number;
+  businessActive: boolean;
   connectionReady: boolean;
   pinningEnabled: boolean;
   cookerHighlightEnabled: boolean;
@@ -23,6 +25,7 @@ interface UiPinningPublication {
   signature: string;
   endpoint: string;
   apiToken: string;
+  businessGeneration: number;
   pinningEnabled: boolean;
   cookerHighlightEnabled: boolean;
   target: GameUiPinningTarget | null;
@@ -52,6 +55,8 @@ export function useGameUiPinningPublisher({
   apiToken,
   connectionRevision,
   sessionId,
+  businessGeneration,
+  businessActive,
   connectionReady,
   pinningEnabled,
   cookerHighlightEnabled,
@@ -90,6 +95,7 @@ export function useGameUiPinningPublisher({
     void publishGameUiPinningTarget(
       publication.endpoint,
       publication.apiToken,
+      publication.businessGeneration,
       publication.pinningEnabled,
       publication.cookerHighlightEnabled,
       publication.target,
@@ -138,7 +144,7 @@ export function useGameUiPinningPublisher({
 
   useEffect(() => {
     const state = stateRef.current;
-    const connectionKey = `${endpoint}\n${apiToken}\n${connectionRevision}\n${sessionId}`;
+    const connectionKey = `${endpoint}\n${apiToken}\n${connectionRevision}\n${sessionId}\n${businessGeneration}`;
     if (state.connectionKey !== connectionKey) {
       state.connectionKey = connectionKey;
       state.lastCurrentTarget = null;
@@ -151,8 +157,10 @@ export function useGameUiPinningPublisher({
       }
     }
 
-    if (!connectionReady) {
+    if (!connectionReady || !businessActive || businessGeneration <= 0) {
       state.desired = null;
+      state.lastCurrentTarget = null;
+      state.activeAbortController?.abort();
       if (state.retryTimer !== null) {
         window.clearTimeout(state.retryTimer);
         state.retryTimer = null;
@@ -190,6 +198,7 @@ export function useGameUiPinningPublisher({
       signature: publicationSignature,
       endpoint,
       apiToken,
+      businessGeneration,
       pinningEnabled,
       cookerHighlightEnabled,
       target: publicationTarget,
@@ -205,6 +214,8 @@ export function useGameUiPinningPublisher({
     pump();
   }, [
     apiToken,
+    businessActive,
+    businessGeneration,
     connectionReady,
     connectionRevision,
     cookerHighlightEnabled,

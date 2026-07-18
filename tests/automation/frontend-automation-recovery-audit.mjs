@@ -286,6 +286,10 @@ async function assertStageAndCancellationContracts() {
   assert.ok(servicePanel.includes('diagnostic.manualResolutionRequired ? \'确认已处理\' : \'重置\''));
   assert.ok(servicePanel.includes('!diagnostic.paused || diagnostic.manualResolutionRequired'));
   assert.ok(api.includes('/automation/barriers/ack?${params.toString()}'), 'The frontend must use the canonical safety-barrier ACK endpoint.');
+  assert.ok(api.includes("params.set('runtimeGuestId', String(item.order.runtimeGuestId))"), 'Rare automation must send the raw runtime guest identity.');
+  assert.ok(api.includes("params.set('foodTagId', String(item.order.foodTagId))"), 'Rare automation must send the raw food Tag identity.');
+  assert.ok(api.includes("params.set('beverageTagId', String(item.order.beverageTagId))"), 'Rare automation must send the raw beverage Tag identity.');
+  assert.ok(domain.includes("'runtime-identity-missing'"), 'Orders with incomplete runtime identity must be skipped before automation requests.');
   assert.ok(types.includes('acknowledgedSequences: number[];'), 'The ACK response must expose every barrier sequence cleared by the Mod.');
   assert.ok(workbench.includes('automationLeaseOwnedRef.current'), 'ACK must require the current-session automation lease.');
   assert.ok(workbench.includes('clearAcknowledgedAutomationBarriers(response.acknowledgedSequences'), 'ACK success must clear every frontend latch acknowledged by the Mod.');

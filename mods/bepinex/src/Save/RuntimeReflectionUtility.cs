@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Reflection;
+using Il2CppInterop.Runtime.InteropTypes;
 
 namespace MystiaStewardCompanion.Save;
 
@@ -39,6 +40,31 @@ internal static class RuntimeReflectionUtility
 
         // Assemblies can load after plugin startup, so failed lookups must remain retryable.
         return null;
+    }
+
+    public static object? TryCastRuntimeObject(object? value, string targetTypeName)
+    {
+        if (value is not Il2CppObjectBase il2CppObject) return null;
+
+        var targetType = FindType(targetTypeName);
+        if (targetType == null) return null;
+        if (targetType.IsInstanceOfType(value)) return value;
+
+        var tryCast = typeof(Il2CppObjectBase)
+            .GetMethods(BindingFlags.Public | BindingFlags.Instance)
+            .FirstOrDefault(method => method.Name == "TryCast"
+                && method.IsGenericMethodDefinition
+                && method.GetParameters().Length == 0);
+        if (tryCast == null) return null;
+
+        try
+        {
+            return tryCast.MakeGenericMethod(targetType).Invoke(il2CppObject, Array.Empty<object?>());
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     public static object? GetSingletonInstance(Type type)

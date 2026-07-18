@@ -102,6 +102,8 @@ public static class NormalOrderRuntimeCapture
     /// <returns>按首次捕获时间排序的捕获记录副本。</returns>
     public static IReadOnlyList<CapturedRuntimeNormalOrder> Snapshot(TimeSpan maxAge)
     {
+        if (!RuntimeNightBusinessLifecycle.IsActive) return Array.Empty<CapturedRuntimeNormalOrder>();
+
         TryAttach(_log, false);
         var now = DateTime.UtcNow;
         lock (SyncRoot)
@@ -163,6 +165,8 @@ public static class NormalOrderRuntimeCapture
 
     private static void TryAttach(ManualLogSource? log, bool force)
     {
+        if (!force && !RuntimeNightBusinessLifecycle.IsActive) return;
+
         lock (SyncRoot)
         {
             if (!force && DateTime.UtcNow - _lastAttachAttemptUtc < RetryInterval) return;
@@ -258,34 +262,63 @@ public static class NormalOrderRuntimeCapture
 
     private static void OnControllerOrderAdded(object __instance, object __0)
     {
-        lock (SyncRoot) _addCallbacks++;
-        AddOrder(ParseOrder(__0, "ControllerOrderAdd", __instance));
+        RunCaptureCallback("ControllerOrderAdd", () =>
+        {
+            lock (SyncRoot) _addCallbacks++;
+            AddOrder(ParseOrder(__0, "ControllerOrderAdd", __instance));
+        });
     }
 
     private static void OnManualControllerOrderSet(object __0, object __2)
     {
-        lock (SyncRoot) _addCallbacks++;
-        AddOrder(ParseOrder(__2, "ManualOrderSet", __0));
+        RunCaptureCallback("ManualOrderSet", () =>
+        {
+            lock (SyncRoot) _addCallbacks++;
+            AddOrder(ParseOrder(__2, "ManualOrderSet", __0));
+        });
     }
 
     private static void OnOrderRemoved(object __0)
     {
-        lock (SyncRoot) _removeCallbacks++;
-        RemoveOrder(ParseOrder(__0, "OrderRemove"));
+        RunCaptureCallback("OrderRemove", () =>
+        {
+            lock (SyncRoot) _removeCallbacks++;
+            RemoveOrder(ParseOrder(__0, "OrderRemove"));
+        });
     }
 
     private static void OnOrderEvaluating(object __0)
     {
-        lock (SyncRoot) _removeCallbacks++;
-        var order = ParseControllerCurrentOrder(__0, "EvaluateOrder");
-        if (order != null) RemoveOrder(order);
+        RunCaptureCallback("EvaluateOrder", () =>
+        {
+            lock (SyncRoot) _removeCallbacks++;
+            var order = ParseControllerCurrentOrder(__0, "EvaluateOrder");
+            if (order != null) RemoveOrder(order);
+        });
     }
 
     private static void OnManualOrderEvaluating(object __0)
     {
-        lock (SyncRoot) _removeCallbacks++;
-        var order = ParseControllerCurrentOrder(__0, "ManualOrderEvaluate");
-        if (order != null) RemoveOrder(order);
+        RunCaptureCallback("ManualOrderEvaluate", () =>
+        {
+            lock (SyncRoot) _removeCallbacks++;
+            var order = ParseControllerCurrentOrder(__0, "ManualOrderEvaluate");
+            if (order != null) RemoveOrder(order);
+        });
+    }
+
+    private static void RunCaptureCallback(string source, Action callback)
+    {
+        if (!RuntimeNightBusinessLifecycle.IsActive) return;
+
+        try
+        {
+            callback();
+        }
+        catch (Exception ex)
+        {
+            NoteParseFailure(source, $"capture callback failed: {ex.GetBaseException().Message}");
+        }
     }
 
     private static CapturedRuntimeNormalOrder? ParseControllerCurrentOrder(object? controller, string source)

@@ -345,11 +345,10 @@ export async function dismissRuntimeRareOrder(
 ): Promise<RareOrderDismissResponse> {
   const params = new URLSearchParams({
     deskCode: String(order.deskCode),
-    guestName: order.guestName,
-    foodTagId: String(order.foodTagId),
-    beverageTagId: String(order.beverageTagId),
   });
-  if (order.guestId != null) params.set('guestId', String(order.guestId));
+  if (order.runtimeGuestId != null) params.set('runtimeGuestId', String(order.runtimeGuestId));
+  if (order.foodTagId != null) params.set('foodTagId', String(order.foodTagId));
+  if (order.beverageTagId != null) params.set('beverageTagId', String(order.beverageTagId));
 
   return writeLocalApiJsonWithTimeout<RareOrderDismissResponse>(
     endpoint,
@@ -402,6 +401,7 @@ export async function writeInventoryBulkQuantity(
 export async function publishGameUiPinningTarget(
   endpoint: string,
   apiToken: string,
+  businessGeneration: number,
   enabled: boolean,
   highlightEnabled: boolean,
   target: GameUiPinningTarget | null,
@@ -409,6 +409,7 @@ export async function publishGameUiPinningTarget(
 ): Promise<void> {
   // 前端只发布当前推荐目标；Mod 在目标面板刷新作用域内复用游戏原生 pinned 排序，不直接操作 UI 列表。
   const params = new URLSearchParams({
+    businessGeneration: String(businessGeneration),
     enabled: String(enabled),
     highlightEnabled: String(highlightEnabled),
     recipeId: target ? String(target.recipeId) : '-1',
@@ -687,6 +688,9 @@ async function rareOrderAction(
     recipeFavorite: String(Boolean(recipeTarget?.favorite)),
     beverageFavorite: String(Boolean(beverageTarget?.favorite)),
   });
+  if (item.order.runtimeGuestId != null) params.set('runtimeGuestId', String(item.order.runtimeGuestId));
+  if (item.order.foodTagId != null) params.set('foodTagId', String(item.order.foodTagId));
+  if (item.order.beverageTagId != null) params.set('beverageTagId', String(item.order.beverageTagId));
   return writeLocalApiJsonWithTimeout<OrderPreparationResponse>(
     endpoint,
     apiToken,
@@ -715,8 +719,9 @@ function findRareOrderExecutionPlanReason(
   recipeTarget: RareAutomationRecipeTarget | null,
   beverageTarget: RareAutomationBeverageTarget | null,
 ): string {
-  const matchedPlan = item.executionPlans.find((plan) => rareOrderPlanMatchesTargets(plan, recipeTarget, beverageTarget))
-    ?? (rareOrderPlanMatchesTargets(item.preparationPlan, recipeTarget, beverageTarget) ? item.preparationPlan : null);
+  const matchedPlan = item.executionPlans.find((plan) =>
+    rareOrderPlanMatchesTargets(plan, recipeTarget, beverageTarget)
+  ) ?? null;
   return matchedPlan?.reasons[0] ?? '';
 }
 

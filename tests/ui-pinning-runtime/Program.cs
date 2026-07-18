@@ -18,6 +18,7 @@ try
     VerifyDangerousListHooksAreAbsent();
     VerifyManagedHarmonyReturnPropagation();
     VerifyManagedPinnedListHighlighting();
+    VerifyLifecycleGenerationGuards();
     Console.WriteLine("PASS: scoped pinning and pinned-list highlighting propagate through Harmony without mutating IL2CPP lists.");
     return 0;
 }
@@ -27,18 +28,101 @@ catch (Exception ex)
     return 1;
 }
 
+static void VerifyLifecycleGenerationGuards()
+{
+    var firstGeneration = RuntimeNightBusinessLifecycle.Generation;
+    RuntimeUiPinningService.UpdateTarget(
+        firstGeneration,
+        enabled: true,
+        highlightEnabled: true,
+        recipeId: 90,
+        beverageId: 91,
+        ingredientIds: new[] { 92 },
+        recipeName: "first-generation",
+        beverageName: "first-generation",
+        cookerTypeId: 3,
+        cookerName: "first-generation");
+
+    InvokePrivate("OnCookingRefreshStarted");
+    try
+    {
+        AssertTrue(InvokeCheckPinned(1, 90), "The active generation did not force its recipe target.");
+        RuntimeNightBusinessLifecycle.BeginClosing();
+        AssertTrue(InvokeCheckPinnedPrefix(1, 90).RunOriginal, "A scope captured before Closing still skipped native CheckPinned.");
+        AssertFalse(RuntimeUiPinningService.ReadPinningTarget().Enabled, "Closing exposed the stale generation target.");
+    }
+    finally
+    {
+        InvokePrivate("OnCookingRefreshFinalized", new object?[] { null });
+    }
+
+    AssertThrows<InvalidOperationException>(
+        () => RuntimeUiPinningService.UpdateTarget(
+            firstGeneration,
+            enabled: true,
+            highlightEnabled: false,
+            recipeId: 93,
+            beverageId: 94,
+            ingredientIds: Array.Empty<int>(),
+            recipeName: "closing",
+            beverageName: "closing",
+            cookerTypeId: 3,
+            cookerName: "closing"),
+        "Closing accepted a UI target publication.");
+
+    RuntimeUiPinningService.InvalidateTarget(firstGeneration, "test closing");
+    AssertFalse(RuntimeUiPinningService.ReadPinningTarget().Enabled, "Invalidation left pinning enabled.");
+
+    RuntimeNightBusinessLifecycle.ActivateNextGeneration();
+    var secondGeneration = RuntimeNightBusinessLifecycle.Generation;
+    AssertEqual(firstGeneration + 1, secondGeneration, "The next business session did not advance its generation.");
+    AssertThrows<InvalidOperationException>(
+        () => RuntimeUiPinningService.UpdateTarget(
+            firstGeneration,
+            enabled: true,
+            highlightEnabled: false,
+            recipeId: 95,
+            beverageId: 96,
+            ingredientIds: Array.Empty<int>(),
+            recipeName: "stale",
+            beverageName: "stale",
+            cookerTypeId: 3,
+            cookerName: "stale"),
+        "A stale generation target was accepted by the next business session.");
+
+    RunOnWorkerThread(() => RuntimeUiPinningService.UpdateTarget(
+        secondGeneration,
+        enabled: true,
+        highlightEnabled: false,
+        recipeId: 97,
+        beverageId: 98,
+        ingredientIds: new[] { 99 },
+        recipeName: "second-generation",
+        beverageName: "second-generation",
+        cookerTypeId: 3,
+        cookerName: "second-generation"));
+    InvokePrivate("OnCookingRefreshStarted");
+    try
+    {
+        AssertTrue(InvokeCheckPinned(1, 97), "The next generation did not accept its fresh target.");
+        AssertFalse(InvokeCheckPinned(1, 90), "The next generation reused the previous target.");
+    }
+    finally
+    {
+        InvokePrivate("OnCookingRefreshFinalized", new object?[] { null });
+    }
+}
+
 static void VerifyIdenticalTargetPublicationIsIdempotent()
 {
-    const bool enabled = true;
-    const bool highlightEnabled = true;
     const int recipeId = 71;
     const int beverageId = 72;
     const int cookerTypeId = 3;
     var ingredientIds = new[] { 11, 29 };
 
     void Publish(
-        bool nextEnabled = enabled,
-        bool nextHighlightEnabled = highlightEnabled,
+        bool nextEnabled = true,
+        bool nextHighlightEnabled = true,
         int nextRecipeId = recipeId,
         int nextBeverageId = beverageId,
         int[]? nextIngredientIds = null,
@@ -48,6 +132,7 @@ static void VerifyIdenticalTargetPublicationIsIdempotent()
         string cookerName = "cooker")
     {
         RuntimeUiPinningService.UpdateTarget(
+            RuntimeNightBusinessLifecycle.Generation,
             nextEnabled,
             nextHighlightEnabled,
             nextRecipeId,
@@ -207,6 +292,7 @@ static void VerifyPatchTargets()
 static void VerifyScopedNativePinnedMatching()
 {
     RuntimeUiPinningService.UpdateTarget(
+        RuntimeNightBusinessLifecycle.Generation,
         enabled: true,
         highlightEnabled: false,
         recipeId: 34,
@@ -270,6 +356,7 @@ static void VerifyScopedNativePinnedMatching()
 static void VerifyNestedScopeFinalizers()
 {
     RuntimeUiPinningService.UpdateTarget(
+        RuntimeNightBusinessLifecycle.Generation,
         enabled: true,
         highlightEnabled: false,
         recipeId: 35,
@@ -294,6 +381,7 @@ static void VerifyNestedScopeFinalizers()
 static void VerifyTargetUpdatePreservesForceTotals()
 {
     RuntimeUiPinningService.UpdateTarget(
+        RuntimeNightBusinessLifecycle.Generation,
         enabled: true,
         highlightEnabled: false,
         recipeId: 34,
@@ -315,6 +403,7 @@ static void VerifyTargetUpdatePreservesForceTotals()
 
     var forcesBeforeUpdate = ReadForcedTotal("recipe");
     RuntimeUiPinningService.UpdateTarget(
+        RuntimeNightBusinessLifecycle.Generation,
         enabled: true,
         highlightEnabled: false,
         recipeId: 35,
@@ -330,6 +419,7 @@ static void VerifyTargetUpdatePreservesForceTotals()
 static void VerifyThreadLocalScopeIsolation()
 {
     RuntimeUiPinningService.UpdateTarget(
+        RuntimeNightBusinessLifecycle.Generation,
         enabled: true,
         highlightEnabled: false,
         recipeId: 34,
@@ -386,6 +476,7 @@ static void VerifyThreadLocalScopeIsolation()
 static void VerifyScopePinsOneTargetSnapshot()
 {
     RuntimeUiPinningService.UpdateTarget(
+        RuntimeNightBusinessLifecycle.Generation,
         enabled: true,
         highlightEnabled: false,
         recipeId: 34,
@@ -399,6 +490,7 @@ static void VerifyScopePinsOneTargetSnapshot()
     try
     {
         RuntimeUiPinningService.UpdateTarget(
+            RuntimeNightBusinessLifecycle.Generation,
             enabled: true,
             highlightEnabled: false,
             recipeId: 35,
@@ -430,6 +522,7 @@ static void VerifyScopePinsOneTargetSnapshot()
 static void VerifyPinningAndHighlightRemainIndependent()
 {
     RuntimeUiPinningService.UpdateTarget(
+        RuntimeNightBusinessLifecycle.Generation,
         enabled: false,
         highlightEnabled: true,
         recipeId: 34,
@@ -452,6 +545,7 @@ static void VerifyPinningAndHighlightRemainIndependent()
     }
 
     RuntimeUiPinningService.UpdateTarget(
+        RuntimeNightBusinessLifecycle.Generation,
         enabled: true,
         highlightEnabled: false,
         recipeId: 34,
@@ -492,6 +586,7 @@ static void VerifyDangerousListHooksAreAbsent()
 static void VerifyManagedHarmonyReturnPropagation()
 {
     RuntimeUiPinningService.UpdateTarget(
+        RuntimeNightBusinessLifecycle.Generation,
         enabled: true,
         highlightEnabled: false,
         recipeId: 34,
@@ -568,6 +663,7 @@ static void VerifyManagedPinnedListHighlighting()
     Time.realtimeSinceStartup = 0.25f;
 
     RuntimeUiPinningService.UpdateTarget(
+        RuntimeNightBusinessLifecycle.Generation,
         enabled: true,
         highlightEnabled: false,
         recipeId: 34,
@@ -628,6 +724,7 @@ static void VerifyManagedPinnedListHighlighting()
         RuntimePinnedListHighlightService.Tick();
         var setterCountBeforeWorkerUpdate = recipeButton.image.SetterCount;
         RunOnWorkerThread(() => RuntimeUiPinningService.UpdateTarget(
+            RuntimeNightBusinessLifecycle.Generation,
             enabled: true,
             highlightEnabled: false,
             recipeId: 35,
@@ -656,6 +753,7 @@ static void VerifyManagedPinnedListHighlighting()
         AssertContains(RuntimePinnedListHighlightService.Status, "state=suspended: test scene exit", "Scene suspension state was not retained.");
 
         RuntimeUiPinningService.UpdateTarget(
+            RuntimeNightBusinessLifecycle.Generation,
             enabled: true,
             highlightEnabled: false,
             recipeId: 35,
@@ -674,6 +772,7 @@ static void VerifyManagedPinnedListHighlighting()
         AssertContains(RuntimePinnedListHighlightService.Status, "tracked=recipe:0", "A late element callback was tracked while the scene was suspended.");
 
         RunOnWorkerThread(() => RuntimeUiPinningService.UpdateTarget(
+            RuntimeNightBusinessLifecycle.Generation,
             enabled: true,
             highlightEnabled: false,
             recipeId: 36,
@@ -710,6 +809,7 @@ static void VerifyManagedPinnedListHighlighting()
         RuntimePinnedListHighlightService.Tick();
         var setterCountBeforeDisable = recipeButton.image.SetterCount;
         RuntimeUiPinningService.UpdateTarget(
+            RuntimeNightBusinessLifecycle.Generation,
             enabled: false,
             highlightEnabled: true,
             recipeId: 36,
@@ -726,6 +826,7 @@ static void VerifyManagedPinnedListHighlighting()
         AssertTrue(RuntimeCookerHighlightService.LastEnabled, "Cooker-only highlighting was disabled alongside list highlighting.");
 
         RuntimeUiPinningService.UpdateTarget(
+            RuntimeNightBusinessLifecycle.Generation,
             enabled: true,
             highlightEnabled: false,
             recipeId: 37,
@@ -752,6 +853,7 @@ static void VerifyManagedPinnedListHighlighting()
                 }
 
                 RuntimeUiPinningService.UpdateTarget(
+                    RuntimeNightBusinessLifecycle.Generation,
                     enabled: true,
                     highlightEnabled: false,
                     recipeId: 38,
@@ -798,7 +900,7 @@ static void VerifyManagedPinnedListHighlighting()
     }
     finally
     {
-        RuntimePinnedListHighlightService.Clear();
+        RuntimePinnedListHighlightService.Suspend("test cleanup");
         CookingSelectionPanelProbe.ApplyIngredientBoundColor = false;
         CookingSelectionPanelProbe.OpenAction = null;
         CookingSelectionPanelProbe.RecipeBoundColor = new Color(0.8f, 0.8f, 0.8f, 0.5f);
@@ -949,6 +1051,21 @@ static void AssertTrue(bool actual, string message)
 static void AssertFalse(bool actual, string message)
 {
     if (actual) throw new InvalidOperationException(message);
+}
+
+static void AssertThrows<TException>(Action action, string message)
+    where TException : Exception
+{
+    try
+    {
+        action();
+    }
+    catch (TException)
+    {
+        return;
+    }
+
+    throw new InvalidOperationException(message);
 }
 
 static void AssertEqual<T>(T expected, T actual, string message)

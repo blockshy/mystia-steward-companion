@@ -70,14 +70,15 @@ export interface NightBusinessOrder {
   traceId?: string;
   deskCode: number;
   guestId: number | null;
+  runtimeGuestId: number | null;
   guestName: string;
   specialBusinessRole?: string;
   specialBusinessRoleLabel?: string;
   automationAllowed?: boolean;
   automationBlockReason?: string;
-  foodTagId: number;
+  foodTagId: number | null;
   foodTag: string;
-  beverageTagId: number;
+  beverageTagId: number | null;
   beverageTag: string;
   source: string;
   firstSeenAtUtc?: string | null;
@@ -263,6 +264,9 @@ export interface RuntimeRareCustomer {
 export interface LocalApiSnapshot {
   pluginVersion: string;
   automationSessionId: string;
+  nightBusinessGeneration: number;
+  nightBusinessLifecyclePhase: 'Inactive' | 'Active' | 'Closing' | 'Destroyed';
+  runtimeNightBusinessLifecycleStatus?: string;
   snapshotSignature?: string;
   capturedAtUtc: string;
   activeSceneName: string;
@@ -398,7 +402,6 @@ export interface RuntimeSets {
  */
 export interface CachedRecommendation {
   customer: RareCustomerCatalogItem;
-  preparationPlan: RareOrderRecommendationPlan | null;
   executionPlans: RareOrderRecommendationPlan[];
   budget: RecommendationBudgetResult | null;
   blockedMessages: string[];

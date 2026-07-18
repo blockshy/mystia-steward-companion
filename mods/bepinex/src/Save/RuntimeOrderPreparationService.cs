@@ -25,6 +25,7 @@ internal static partial class RuntimeOrderPreparationService
     private const string CookSystemManagerTypeName = "NightScene.CookingUtility.CookSystemManager";
     private const string QteRewardManagerTypeName = "NightScene.CookingUtility.QTERewardManager";
     private const string GuestsManagerTypeName = "NightScene.GuestManagementUtility.GuestsManager";
+    private const string SpecialOrderTypeName = "NightScene.GuestManagementUtility.GuestsManager+SpecialOrder";
     private const string NightSceneDirectorTypeName = "NightScene.NightSceneDirector";
     private const string OrderControllerTypeName = "Night.UI.HUD.Ordering.OrderController";
     private const string SellablePropertyHelperTypeName = "GameData.Core.Collections.SellablePropertyHelper";
@@ -78,6 +79,7 @@ internal static partial class RuntimeOrderPreparationService
         public const string OrderEvaluationStateUnreadable = "order-evaluation-state-unreadable";
         public const string OrderEvaluationCommitUncertain = "order-evaluation-commit-uncertain";
         public const string CookingCancelled = "cooking-cancelled";
+        public const string NightBusinessLifecycleUnavailable = "night-business-lifecycle-unavailable";
         public const string FoodDelivered = "food-delivered";
     }
 
@@ -159,6 +161,9 @@ internal static partial class RuntimeOrderPreparationService
     /// </remarks>
     public static OrderPreparationResult Prepare(OrderPreparationRequest request)
     {
+        if (!RuntimeNightBusinessLifecycle.IsActive) return BuildLifecycleUnavailableResult(request, "rare");
+        var sessionGeneration = RuntimeNightBusinessLifecycle.Generation;
+
         var traceId = ResolveRequestTraceId(OrderTraceKind.Rare, request);
         AppendWackyRequestDiagnostic("rare-prepare-start", request, traceId, "rare");
         AppendYuyukoRequestDiagnostic("rare-prepare-start", request, traceId, "rare");
@@ -262,6 +267,8 @@ internal static partial class RuntimeOrderPreparationService
         {
             AddSkipped(result, "自动送达酒水", "设置已关闭。");
         }
+
+        if (!EnsureLifecycleSessionActive(result, sessionGeneration, "送达酒水后")) return Finish(result);
 
         if (request.AutoStartCooking)
         {
@@ -372,6 +379,8 @@ internal static partial class RuntimeOrderPreparationService
             AddSkipped(result, "自动开始料理", "设置已关闭。");
         }
 
+        if (!EnsureLifecycleSessionActive(result, sessionGeneration, "开始料理后")) return Finish(result);
+
         if (request.AutoCollectCooking)
         {
             AddSkipped(result, "自动送达料理", "料理完成后会自动尝试直接送达顾客。");
@@ -394,6 +403,9 @@ internal static partial class RuntimeOrderPreparationService
     /// </remarks>
     public static OrderPreparationResult CompleteFirst(OrderPreparationRequest request)
     {
+        if (!RuntimeNightBusinessLifecycle.IsActive) return BuildLifecycleUnavailableResult(request, "rare");
+        var sessionGeneration = RuntimeNightBusinessLifecycle.Generation;
+
         var traceId = ResolveRequestTraceId(OrderTraceKind.Rare, request);
         AppendYuyukoRequestDiagnostic("rare-complete-start", request, traceId, "rare");
         var result = new OrderPreparationResult
@@ -425,7 +437,7 @@ internal static partial class RuntimeOrderPreparationService
             Message = $"桌 {request.DeskCode + 1} · {request.GuestName} · 料理 {request.FoodTag} · 酒水 {request.BeverageTag}",
         });
 
-        var runtimeOrder = FindRuntimeOrder(request);
+        var runtimeOrder = FindRuntimeOrder(request, RuntimeOrderLookupPurpose.Completion);
         if (runtimeOrder.Order == null || runtimeOrder.Controller == null || runtimeOrder.Manager == null)
         {
             var diagnostic = string.IsNullOrWhiteSpace(runtimeOrder.Diagnostic) ? "" : $"（{runtimeOrder.Diagnostic}）";
@@ -505,6 +517,8 @@ internal static partial class RuntimeOrderPreparationService
             });
         }
 
+        if (!EnsureLifecycleSessionActive(result, sessionGeneration, "送达酒水后")) return Finish(result);
+
         result.ServedFood = ReadOrderServedFood(runtimeOrder.Order) != null;
         result.ServedBeverage = ReadOrderServedBeverage(runtimeOrder.Order) != null;
 
@@ -512,6 +526,8 @@ internal static partial class RuntimeOrderPreparationService
         {
             return Finish(result);
         }
+
+        if (!EnsureLifecycleSessionActive(result, sessionGeneration, "恢复耐心后")) return Finish(result);
 
         result.Automation.Stage = "order";
         var evaluationTarget = BuildRareAutomationTarget(request);
@@ -522,6 +538,7 @@ internal static partial class RuntimeOrderPreparationService
                 return Finish(result);
             }
 
+            EnsureLifecycleSessionActive(result, sessionGeneration, "触发评价后");
             return Finish(result);
         }
 
@@ -537,6 +554,7 @@ internal static partial class RuntimeOrderPreparationService
                 return Finish(result);
             }
 
+            EnsureLifecycleSessionActive(result, sessionGeneration, "触发评价后");
             return Finish(result);
         }
 
@@ -545,6 +563,7 @@ internal static partial class RuntimeOrderPreparationService
             return Finish(result);
         }
 
+        EnsureLifecycleSessionActive(result, sessionGeneration, "触发评价后");
         return Finish(result);
     }
 
@@ -558,6 +577,9 @@ internal static partial class RuntimeOrderPreparationService
     /// </remarks>
     public static OrderPreparationResult CompleteNormalFirst(OrderPreparationRequest request)
     {
+        if (!RuntimeNightBusinessLifecycle.IsActive) return BuildLifecycleUnavailableResult(request, "normal");
+        var sessionGeneration = RuntimeNightBusinessLifecycle.Generation;
+
         var traceId = ResolveRequestTraceId(OrderTraceKind.Normal, request);
         AppendWackyRequestDiagnostic("normal-complete-start", request, traceId, "normal");
         AppendYuyukoRequestDiagnostic("normal-complete-start", request, traceId, "normal");
@@ -758,6 +780,8 @@ internal static partial class RuntimeOrderPreparationService
             AddSkipped(result, "普客送达酒水", "设置已关闭。");
         }
 
+        if (!EnsureLifecycleSessionActive(result, sessionGeneration, "普客送达酒水后")) return Finish(result);
+
         if (foodAlreadyServed)
         {
             AddSkipped(result, "普客料理", "该订单已经送达料理，不再自动处理。");
@@ -942,12 +966,16 @@ internal static partial class RuntimeOrderPreparationService
             }
         }
 
+        if (!EnsureLifecycleSessionActive(result, sessionGeneration, "普客料理处理后")) return Finish(result);
+
         result.ServedFood = ReadOrderServedFood(runtimeOrder.Order) != null;
         result.ServedBeverage = ReadOrderServedBeverage(runtimeOrder.Order) != null;
         if (!AddPatientRecoveryStepIfNeeded(result, runtimeOrder, deliveredNormalItemCount))
         {
             return Finish(result);
         }
+
+        if (!EnsureLifecycleSessionActive(result, sessionGeneration, "普客恢复耐心后")) return Finish(result);
 
         if (autoCompleteOrder)
         {
@@ -985,6 +1013,7 @@ internal static partial class RuntimeOrderPreparationService
             AddSkipped(result, "触发普客评价", "设置已关闭。");
         }
 
+        EnsureLifecycleSessionActive(result, sessionGeneration, "普客触发评价后");
         return Finish(result);
     }
 
@@ -998,6 +1027,12 @@ internal static partial class RuntimeOrderPreparationService
     /// </remarks>
     public static AutomationCookingProcessResult ProcessAutomationCookingJobs(bool timeoutEligible = true)
     {
+        if (!RuntimeNightBusinessLifecycle.IsActive)
+        {
+            return new AutomationCookingProcessResult(Array.Empty<string>(), false);
+        }
+
+        var sessionGeneration = RuntimeNightBusinessLifecycle.Generation;
         var messages = new List<string>();
         var changed = false;
         lock (AutomationCookingJobLock)
@@ -1026,6 +1061,16 @@ internal static partial class RuntimeOrderPreparationService
                         reasonCode: "cooking-job-exception",
                         terminal: true);
                     result = (true, message, OrderPreparationStepCodes.CookingResultUnreadable);
+                }
+
+                var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+                if (!lifecycle.IsActive
+                    || lifecycle.Generation != sessionGeneration
+                    || i >= AutomationCookingJobs.Count
+                    || !ReferenceEquals(AutomationCookingJobs[i], job))
+                {
+                    changed = true;
+                    break;
                 }
 
                 if (!string.IsNullOrWhiteSpace(result.Message))
@@ -1117,6 +1162,59 @@ internal static partial class RuntimeOrderPreparationService
         }
     }
 
+    private static OrderPreparationResult BuildLifecycleUnavailableResult(OrderPreparationRequest request, string targetKind)
+    {
+        var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+        var message = $"夜间经营运行时不可用（阶段 {lifecycle.Phase}，会话 {lifecycle.Generation}），未执行任何游戏操作。";
+        var result = new OrderPreparationResult
+        {
+            Ok = false,
+            Error = message,
+            Order = new OrderPreparationOrder
+            {
+                TraceId = request.TraceId,
+                DeskCode = request.DeskCode,
+                GuestId = request.GuestId,
+                GuestName = request.GuestName,
+                FoodTag = request.FoodTag,
+                BeverageTag = request.BeverageTag,
+            },
+            RecipeId = request.RecipeId,
+            RecipeName = request.RecipeName,
+            BeverageId = request.BeverageId,
+            BeverageName = request.BeverageName,
+        };
+        result.Automation.Outcome = "cancelled";
+        result.Automation.Stage = "runtime";
+        result.Automation.ReasonCode = "night-business-lifecycle-unavailable";
+        result.Steps.Add(new OrderPreparationStep
+        {
+            Code = OrderPreparationStepCodes.NightBusinessLifecycleUnavailable,
+            Name = targetKind == "normal" ? "普客经营会话检查" : "稀客经营会话检查",
+            Ok = false,
+            Message = message,
+        });
+        return result;
+    }
+
+    private static bool EnsureLifecycleSessionActive(
+        OrderPreparationResult result,
+        long expectedGeneration,
+        string checkpoint)
+    {
+        var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+        if (lifecycle.IsActive && lifecycle.Generation == expectedGeneration) return true;
+
+        var message = $"夜间经营会话在{checkpoint}进入 {lifecycle.Phase}；已停止后续游戏对象读写。";
+        AddFailure(
+            result,
+            "经营会话检查",
+            message,
+            OrderPreparationStepCodes.NightBusinessLifecycleUnavailable);
+        result.Error = message;
+        return false;
+    }
+
     private static void AppendAutomationLog(string action, CookingCollectionTarget? target, string message)
     {
         AggregateModLogService.AppendAutomation(action, target?.ToLogContext(), message);
@@ -1128,8 +1226,16 @@ internal static partial class RuntimeOrderPreparationService
             ? string.IsNullOrWhiteSpace(request.OrderKey)
                 ? $"normal:{request.DeskCode}|{request.GuestName}|{(request.MatchFoodId >= 0 ? request.MatchFoodId : request.FoodId)}|{(request.MatchBeverageId >= 0 ? request.MatchBeverageId : request.BeverageId)}"
                 : $"normal:{request.OrderKey}"
-            : $"rare:{request.DeskCode}|{request.GuestId?.ToString() ?? request.GuestName}|{request.FoodTag}|{request.BeverageTag}";
+            : BuildRareOrderStableKey(request);
         return RuntimeOrderTraceIdService.GetRequestTraceId(kind, request.TraceId, stableKey);
+    }
+
+    private static string BuildRareOrderStableKey(OrderPreparationRequest request)
+    {
+        var foodTagId = request.FoodTagId?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unknown";
+        var beverageTagId = request.BeverageTagId?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unknown";
+        var guestIdentity = request.RuntimeGuestId?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unknown";
+        return $"rare:{request.DeskCode}|{guestIdentity}|{foodTagId}|{beverageTagId}";
     }
 
     private static CookingCollectionTarget BuildRareAutomationTarget(
@@ -1404,6 +1510,15 @@ internal static partial class RuntimeOrderPreparationService
             return;
         }
 
+        if (codes.Contains(OrderPreparationStepCodes.NightBusinessLifecycleUnavailable))
+        {
+            result.Automation.Outcome = "cancelled";
+            result.Automation.Stage = "runtime";
+            result.Automation.ReasonCode = OrderPreparationStepCodes.NightBusinessLifecycleUnavailable;
+            result.Automation.RetryAfterMs = 0;
+            return;
+        }
+
         var interruptedCode = new[]
         {
             OrderPreparationStepCodes.CookingResultRemoved,
@@ -1675,7 +1790,10 @@ internal static partial class RuntimeOrderPreparationService
         public object? Order { get; private init; }
         public string OrderKey { get; private init; } = "";
         public int? GuestId { get; private init; }
+        public int? RuntimeGuestId { get; private init; }
+        public int? FoodTagId { get; private init; }
         public string FoodTag { get; private init; } = "";
+        public int? BeverageTagId { get; private init; }
         public string BeverageTag { get; private init; } = "";
         public int MatchFoodId { get; private init; } = -1;
         public int MatchBeverageId { get; private init; } = -1;
@@ -1711,9 +1829,12 @@ internal static partial class RuntimeOrderPreparationService
                 TraceId = RuntimeOrderTraceIdService.GetRequestTraceId(
                     OrderTraceKind.Rare,
                     request.TraceId,
-                    $"rare:{request.DeskCode}|{request.GuestId?.ToString() ?? request.GuestName}|{request.FoodTag}|{request.BeverageTag}"),
+                    BuildRareOrderStableKey(request)),
                 GuestId = request.GuestId,
+                RuntimeGuestId = request.RuntimeGuestId,
+                FoodTagId = request.FoodTagId,
                 FoodTag = request.FoodTag,
+                BeverageTagId = request.BeverageTagId,
                 BeverageTag = request.BeverageTag,
                 FoodId = foodId,
                 FoodName = request.RecipeName,

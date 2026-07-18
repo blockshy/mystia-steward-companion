@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <LangVersion>10.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <ReferenceDir Condition="'$(ReferenceDir)' == ''">../../mods/bepinex/References</ReferenceDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../../mods/bepinex/src/Save/RareOrderIdentityMatcher.cs" Link="RareOrderIdentityMatcher.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeReflectionUtility.cs" Link="RuntimeReflectionUtility.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/SpecialOrderRuntimeCapture.cs" Link="SpecialOrderRuntimeCapture.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="0Harmony">
+      <HintPath>$(ReferenceDir)/0Harmony.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="BepInEx.Core">
+      <HintPath>$(ReferenceDir)/BepInEx.Core.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="Il2CppInterop.Runtime">
+      <HintPath>$(ReferenceDir)/Il2CppInterop.Runtime.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(ReferenceDir)/UnityEngine.CoreModule.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+</Project>

@@ -81,9 +81,18 @@ assert.equal((service.match(/_targetKind\s*=(?!=)/g) ?? []).length, 3,
 assert.equal((service.match(/_targetRawChallengeType\s*=(?!=)/g) ?? []).length, 3,
   'Target owner writes must stay confined to initialization, full reset, and the switch helper.');
 
+for (const [wrapperName, captureName] of [
+  ['OnKoishiShieldModeChanged', 'CaptureKoishiShieldModeChanged'],
+  ['OnChallengeSpellCountUpdated', 'CaptureChallengeSpellCountUpdated'],
+]) {
+  const body = methodBody(service, wrapperName);
+  assert.ok(body.includes('RunCaptureCallback('), `${wrapperName} must isolate diagnostics from the game callback.`);
+  assert.ok(body.includes(`${captureName}(`), `${wrapperName} must delegate to ${captureName}.`);
+}
+
 for (const [methodName, expectedKind, firstWrite] of [
-  ['OnKoishiShieldModeChanged', '"koishi"', '_koishiShieldBroken ='],
-  ['OnChallengeSpellCountUpdated', '"challenge"', '_currentSpellCount ='],
+  ['CaptureKoishiShieldModeChanged', '"koishi"', '_koishiShieldBroken ='],
+  ['CaptureChallengeSpellCountUpdated', '"challenge"', '_currentSpellCount ='],
   ['UpdateTargetFund', 'kind', '_foodTargetTags ='],
   ['UpdateFoodTarget', 'kind', '_foodTargetTags ='],
   ['UpdateProgressContext', 'kind', '_targetLabel ='],

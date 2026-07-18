@@ -9,12 +9,14 @@ internal static class RuntimeCookerHighlightService
 {
     private const float ScanIntervalSeconds = 1.25f;
 
-    private static readonly object SyncRoot = new();
+    private static readonly object DesiredRoot = new();
+    private static readonly object VisualRoot = new();
     private static readonly Dictionary<nint, HighlightedRenderer> HighlightedRenderers = new();
 
-    private static bool _enabled;
-    private static int _targetCookerTypeId = -1;
-    private static string _targetCookerName = "";
+    private static CookerHighlightTargetSnapshot _desiredTarget = CookerHighlightTargetSnapshot.Disabled;
+    private static long _appliedTargetGeneration;
+    private static bool _suspended = true;
+    private static string _suspendReason = "night business inactive";
     private static float _nextScanAt;
     private static string _status = "disabled";
 
@@ -22,87 +24,118 @@ internal static class RuntimeCookerHighlightService
     {
         get
         {
-            lock (SyncRoot)
+            var desired = Volatile.Read(ref _desiredTarget);
+            lock (VisualRoot)
             {
-                return _status;
+                return $"{_status}; desired={desired.Generation}/session:{desired.SessionGeneration}/cooker:{desired.CookerTypeId}/{desired.CookerName}; applied={_appliedTargetGeneration}; suspended={_suspended}";
             }
         }
     }
 
-    public static void UpdateTarget(bool enabled, int cookerTypeId, string cookerName)
+    /// <summary>
+    /// Publishes managed desired state only. Unity objects are reconciled later by <see cref="Tick"/>.
+    /// </summary>
+    public static void UpdateTarget(long sessionGeneration, bool enabled, int cookerTypeId, string cookerName)
     {
-        lock (SyncRoot)
+        var normalizedEnabled = enabled && sessionGeneration > 0 && cookerTypeId > 0;
+        var normalizedCookerTypeId = normalizedEnabled ? cookerTypeId : -1;
+        var normalizedCookerName = normalizedEnabled ? cookerName.Trim() : "";
+        lock (DesiredRoot)
         {
-            var nextEnabled = enabled && cookerTypeId > 0;
-            var changed = _enabled != nextEnabled
-                || _targetCookerTypeId != cookerTypeId
-                || !string.Equals(_targetCookerName, cookerName, StringComparison.Ordinal);
+            var current = Volatile.Read(ref _desiredTarget);
+            if (current.HasSameValues(sessionGeneration, normalizedEnabled, normalizedCookerTypeId, normalizedCookerName)) return;
 
-            _enabled = nextEnabled;
-            _targetCookerTypeId = nextEnabled ? cookerTypeId : -1;
-            _targetCookerName = nextEnabled ? cookerName.Trim() : "";
-            if (changed) _nextScanAt = 0f;
-            if (!nextEnabled)
-            {
-                RestoreAllLocked();
-                _status = "disabled";
-            }
+            Volatile.Write(
+                ref _desiredTarget,
+                new CookerHighlightTargetSnapshot(
+                    checked(current.Generation + 1),
+                    sessionGeneration,
+                    normalizedEnabled,
+                    normalizedCookerTypeId,
+                    normalizedCookerName));
         }
     }
 
     public static void Tick()
     {
-        bool enabled;
-        int targetCookerTypeId;
-        lock (SyncRoot)
+        var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+        var desired = Volatile.Read(ref _desiredTarget);
+        lock (VisualRoot)
         {
-            enabled = _enabled;
-            targetCookerTypeId = _targetCookerTypeId;
-        }
+            if (_suspended || !lifecycle.IsActive) return;
 
-        if (!enabled || targetCookerTypeId <= 0)
-        {
-            return;
+            var desiredEnabled = desired.Enabled
+                && desired.SessionGeneration == lifecycle.Generation
+                && desired.CookerTypeId > 0;
+            if (_appliedTargetGeneration != desired.Generation)
+            {
+                RestoreAllLocked();
+                _appliedTargetGeneration = desired.Generation;
+                _nextScanAt = 0f;
+            }
+
+            if (!desiredEnabled)
+            {
+                _status = desired.Enabled
+                    ? "waiting: target belongs to a different night-business session"
+                    : "disabled";
+                return;
+            }
         }
 
         if (Time.realtimeSinceStartup >= _nextScanAt)
         {
-            ScanAndApply(targetCookerTypeId);
+            ScanAndApply(desired);
         }
 
-        PulseHighlightedRenderers();
-    }
-
-    public static void Clear()
-    {
-        lock (SyncRoot)
-        {
-            RestoreAllLocked();
-            _enabled = false;
-            _targetCookerTypeId = -1;
-            _targetCookerName = "";
-            _status = "disabled";
-        }
+        PulseHighlightedRenderers(desired);
     }
 
     public static void Suspend(string reason)
     {
-        lock (SyncRoot)
+        lock (VisualRoot)
         {
+            _suspended = true;
+            _suspendReason = NormalizeReason(reason);
             RestoreAllLocked();
             _nextScanAt = 0f;
-            _status = _enabled
-                ? $"suspended: {reason}"
+            _status = Volatile.Read(ref _desiredTarget).Enabled
+                ? $"suspended: {_suspendReason}"
                 : "disabled";
         }
     }
 
-    private static void ScanAndApply(int targetCookerTypeId)
+    public static void Resume(string reason)
     {
-        lock (SyncRoot)
+        lock (VisualRoot)
         {
-            _nextScanAt = Time.realtimeSinceStartup + ScanIntervalSeconds;
+            _suspended = false;
+            _suspendReason = NormalizeReason(reason);
+            _nextScanAt = 0f;
+            _status = Volatile.Read(ref _desiredTarget).Enabled
+                ? "waiting for main-thread reconcile"
+                : "disabled";
         }
+    }
+
+    /// <summary>
+    /// Drops wrappers after native scene destruction without dereferencing their Unity objects.
+    /// </summary>
+    public static void Abandon(string reason)
+    {
+        lock (VisualRoot)
+        {
+            HighlightedRenderers.Clear();
+            _suspended = true;
+            _suspendReason = NormalizeReason(reason);
+            _nextScanAt = 0f;
+            _status = $"abandoned: {_suspendReason}";
+        }
+    }
+
+    private static void ScanAndApply(CookerHighlightTargetSnapshot target)
+    {
+        lock (VisualRoot) _nextScanAt = Time.realtimeSinceStartup + ScanIntervalSeconds;
 
         var renderers = new List<SpriteRenderer>();
         var controllerCount = 0;
@@ -128,7 +161,7 @@ internal static class RuntimeCookerHighlightService
                 if (cooker == null) continue;
 
                 var typeIds = RuntimeCookerReflection.ReadCookerTypeIds(cooker);
-                if (!typeIds.Contains(targetCookerTypeId)) continue;
+                if (!typeIds.Contains(target.CookerTypeId)) continue;
 
                 matchedControllerCount++;
                 renderers.AddRange(ReadCookerRenderers(controller));
@@ -139,8 +172,11 @@ internal static class RuntimeCookerHighlightService
             error = ex.InnerException?.Message ?? ex.Message;
         }
 
-        lock (SyncRoot)
+        if (!IsTargetCurrent(target)) return;
+
+        lock (VisualRoot)
         {
+            if (_suspended || !IsTargetCurrent(target)) return;
             if (!string.IsNullOrWhiteSpace(error))
             {
                 _status = $"error: {error}";
@@ -177,8 +213,8 @@ internal static class RuntimeCookerHighlightService
             }
 
             _status = matchedControllerCount == 0
-                ? $"target missing; controllers={controllerCount}; {sourceStatus}; cooker={_targetCookerTypeId}/{_targetCookerName}"
-                : $"active; controllers={controllerCount}; matched={matchedControllerCount}; renderers={HighlightedRenderers.Count}; {sourceStatus}; cooker={_targetCookerTypeId}/{_targetCookerName}";
+                ? $"target missing; controllers={controllerCount}; {sourceStatus}; cooker={target.CookerTypeId}/{target.CookerName}"
+                : $"active; controllers={controllerCount}; matched={matchedControllerCount}; renderers={HighlightedRenderers.Count}; {sourceStatus}; cooker={target.CookerTypeId}/{target.CookerName}";
         }
     }
 
@@ -268,29 +304,30 @@ internal static class RuntimeCookerHighlightService
         }
     }
 
-    private static void PulseHighlightedRenderers()
+    private static void PulseHighlightedRenderers(CookerHighlightTargetSnapshot target)
     {
         List<HighlightedRenderer> renderers;
-        lock (SyncRoot)
+        lock (VisualRoot)
         {
+            if (_suspended || !IsTargetCurrent(target)) return;
             renderers = HighlightedRenderers.Values.ToList();
         }
 
         var pulse = 0.55f + (Mathf.Sin(Time.realtimeSinceStartup * 5.5f) + 1f) * 0.225f;
-        var target = new Color(1f, 0.86f, 0.18f, 1f);
+        var highlightColor = new Color(1f, 0.86f, 0.18f, 1f);
         foreach (var item in renderers)
         {
             try
             {
                 if (item.Renderer == null) continue;
-                var color = Color.Lerp(item.OriginalColor, target, pulse);
+                var color = Color.Lerp(item.OriginalColor, highlightColor, pulse);
                 color.a = Mathf.Max(item.OriginalColor.a, 0.85f);
                 item.Renderer.enabled = true;
                 item.Renderer.color = color;
             }
             catch
             {
-                lock (SyncRoot)
+                lock (VisualRoot)
                 {
                     HighlightedRenderers.Remove(item.Pointer);
                 }
@@ -530,10 +567,25 @@ internal static class RuntimeCookerHighlightService
 
     private static void SetStatus(string status)
     {
-        lock (SyncRoot)
+        lock (VisualRoot)
         {
             _status = status;
         }
+    }
+
+    private static bool IsTargetCurrent(CookerHighlightTargetSnapshot target)
+    {
+        var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+        var desired = Volatile.Read(ref _desiredTarget);
+        return lifecycle.IsActive
+            && target.Enabled
+            && target.SessionGeneration == lifecycle.Generation
+            && ReferenceEquals(desired, target);
+    }
+
+    private static string NormalizeReason(string reason)
+    {
+        return string.IsNullOrWhiteSpace(reason) ? "night business unavailable" : reason.Trim();
     }
 
     private sealed class HighlightedRenderer
@@ -550,5 +602,38 @@ internal static class RuntimeCookerHighlightService
         public nint Pointer { get; }
         public Color OriginalColor { get; }
         public bool OriginalEnabled { get; }
+    }
+
+    private sealed class CookerHighlightTargetSnapshot
+    {
+        public static readonly CookerHighlightTargetSnapshot Disabled = new(0, 0, false, -1, "");
+
+        public CookerHighlightTargetSnapshot(
+            long generation,
+            long sessionGeneration,
+            bool enabled,
+            int cookerTypeId,
+            string cookerName)
+        {
+            Generation = generation;
+            SessionGeneration = sessionGeneration;
+            Enabled = enabled;
+            CookerTypeId = cookerTypeId;
+            CookerName = cookerName;
+        }
+
+        public long Generation { get; }
+        public long SessionGeneration { get; }
+        public bool Enabled { get; }
+        public int CookerTypeId { get; }
+        public string CookerName { get; }
+
+        public bool HasSameValues(long sessionGeneration, bool enabled, int cookerTypeId, string cookerName)
+        {
+            return SessionGeneration == sessionGeneration
+                && Enabled == enabled
+                && CookerTypeId == cookerTypeId
+                && string.Equals(CookerName, cookerName, StringComparison.Ordinal);
+        }
     }
 }

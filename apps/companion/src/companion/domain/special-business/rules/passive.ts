@@ -20,7 +20,7 @@ export function buildPassiveSpecialBusinessOrderRule(
     preferHighFoodLevel: false,
     preferHighBeverageLevel: false,
     preferKoishiDamage: false,
-    preferYuyukoSafeEvaluation: false,
+    preferYuyukoPositiveSpell: false,
     preferYuyukoProgress: false,
     reason: `特殊经营目标 Tag：${targetTags.join('、')}`,
   };

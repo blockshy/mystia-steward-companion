@@ -25,6 +25,7 @@ internal static class RuntimeSpecialBusinessContextService
     private static readonly object SyncRoot = new();
     private static readonly Dictionary<string, ChallengeDisplayNameResolution> ChallengeDisplayNameCache = new(StringComparer.Ordinal);
     private static readonly HashSet<string> PatchedMethods = new(StringComparer.Ordinal);
+    private static readonly HashSet<string> CaptureFailureDiagnostics = new(StringComparer.Ordinal);
     private static readonly TimeSpan RetryInterval = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan ChallengeDisplayNameExceptionRetryInterval = TimeSpan.FromSeconds(30);
 
@@ -82,14 +83,20 @@ internal static class RuntimeSpecialBusinessContextService
         }
     }
 
-    public static string CurrentChallengeType => ReadChallengeTypeState(out _).EffectiveChallengeType;
+    public static string CurrentChallengeType => RuntimeNightBusinessLifecycle.IsActive
+        ? ReadChallengeTypeState(out _).EffectiveChallengeType
+        : SpecialBusinessChallengeTypes.NotChallenge;
 
-    public static string CurrentRawChallengeType => ReadRawChallengeType(out _);
+    public static string CurrentRawChallengeType => RuntimeNightBusinessLifecycle.IsActive
+        ? ReadRawChallengeType(out _)
+        : SpecialBusinessChallengeTypes.NotChallenge;
 
     public static bool IsRetakeYuyukoChallenge => string.Equals(CurrentChallengeType, SpecialBusinessChallengeTypes.RetakeYuyuko, StringComparison.Ordinal);
 
     public static void MarkYuyukoRetakeEvidence(string source)
     {
+        if (!RuntimeNightBusinessLifecycle.IsActive) return;
+
         var rawChallengeType = ReadRawChallengeType(out _);
         if (!IsYuyukoChallengeType(rawChallengeType)) return;
 
@@ -104,6 +111,7 @@ internal static class RuntimeSpecialBusinessContextService
 
     public static bool IsActiveWackyPhase(string phase)
     {
+        if (!RuntimeNightBusinessLifecycle.IsActive) return false;
         if (!TryReadTargetOwner("koishi", out var rawChallengeType)) return false;
 
         lock (SyncRoot)
@@ -117,6 +125,7 @@ internal static class RuntimeSpecialBusinessContextService
     {
         get
         {
+            if (!RuntimeNightBusinessLifecycle.IsActive) return false;
             if (!TryReadTargetOwner("koishi", out var rawChallengeType)) return false;
 
             lock (SyncRoot)
@@ -129,6 +138,7 @@ internal static class RuntimeSpecialBusinessContextService
 
     public static bool IsActiveYuyukoPhase(string phase)
     {
+        if (!RuntimeNightBusinessLifecycle.IsActive) return false;
         if (!TryReadTargetOwner("yuyuko", out var rawChallengeType)) return false;
 
         lock (SyncRoot)
@@ -159,6 +169,7 @@ internal static class RuntimeSpecialBusinessContextService
     {
         signature = "";
         tags = Array.Empty<string>();
+        if (!RuntimeNightBusinessLifecycle.IsActive) return false;
         if (!TryReadTargetOwner("koishi", out var rawChallengeType)) return false;
 
         lock (SyncRoot)
@@ -199,8 +210,32 @@ internal static class RuntimeSpecialBusinessContextService
         TryAttach(log, force: true);
     }
 
+    public static void ClearForBusinessEnd(string reason)
+    {
+        lock (SyncRoot)
+        {
+            var hadState = _targetRawChallengeType.Length > 0
+                || _targetKind.Length > 0
+                || _yuyukoRetakeEvidenceSource.Length > 0;
+            ResetTargetStateLocked();
+            _yuyukoRetakeEvidenceSource = "";
+            _lastAction = $"target cleared: {reason}";
+            if (hadState) _changeVersion++;
+        }
+    }
+
     public static SpecialBusinessContext Snapshot()
     {
+        if (!RuntimeNightBusinessLifecycle.IsActive)
+        {
+            return new SpecialBusinessContext
+            {
+                Active = false,
+                ChallengeType = SpecialBusinessChallengeTypes.NotChallenge,
+                Source = $"NightBusinessLifecycle={RuntimeNightBusinessLifecycle.Status}",
+            };
+        }
+
         TryAttach(_log, force: false);
 
         var challengeState = ReadChallengeTypeState(out var error);
@@ -256,6 +291,8 @@ internal static class RuntimeSpecialBusinessContextService
 
     private static void TryAttach(ManualLogSource? log, bool force)
     {
+        if (!force && !RuntimeNightBusinessLifecycle.IsActive) return;
+
         lock (SyncRoot)
         {
             if (!force && DateTime.UtcNow - _lastAttachAttemptUtc < RetryInterval) return;
@@ -423,48 +460,53 @@ internal static class RuntimeSpecialBusinessContextService
 
     private static void OnYuumaTargetTagSet(object? __0, object? __1)
     {
-        UpdateFoodTarget("yuuma", CleanText(__0), CleanText(__1));
+        RunCaptureCallback("yuuma target tags", () => UpdateFoodTarget("yuuma", CleanText(__0), CleanText(__1)));
     }
 
     private static void OnYuumaContextSet(object? __0, object? __1, object? __2)
     {
-        UpdateProgressContext("yuuma", CleanText(__0), __1, __2, phase: "");
+        RunCaptureCallback("yuuma context", () => UpdateProgressContext("yuuma", CleanText(__0), __1, __2, phase: ""));
     }
 
     private static void OnYuumaTargetProgressSet(object? __0)
     {
-        UpdateTargetValue("yuuma", __0);
+        RunCaptureCallback("yuuma target progress", () => UpdateTargetValue("yuuma", __0));
     }
 
     private static void OnKoishiTargetTagSet(object? __0)
     {
-        UpdateFoodTarget("koishi", CleanText(__0));
+        RunCaptureCallback("koishi target tags", () => UpdateFoodTarget("koishi", CleanText(__0)));
     }
 
     private static void OnKoishiContextSet(object? __0, object? __1, object? __2, object? __3)
     {
-        UpdateProgressContext("koishi", CleanText(__0), __1, __2, CleanText(__3));
+        RunCaptureCallback("koishi context", () => UpdateProgressContext("koishi", CleanText(__0), __1, __2, CleanText(__3)));
     }
 
     private static void OnKoishiTargetProgressSet(object? __0)
     {
-        UpdateTargetValue("koishi", __0);
+        RunCaptureCallback("koishi target progress", () => UpdateTargetValue("koishi", __0));
     }
 
     private static void OnKoishiTargetTimeSet(object? __0)
     {
-        UpdateTargetTime("koishi", __0);
+        RunCaptureCallback("koishi target time", () => UpdateTargetTime("koishi", __0));
     }
 
     private static void OnKoishiTargetTagTimeSet(object? __0)
     {
-        UpdateTargetTagTime("koishi", __0);
+        RunCaptureCallback("koishi target tag time", () => UpdateTargetTagTime("koishi", __0));
     }
 
     private static void OnKoishiShieldModeChanged(object? __0, object? __1)
     {
-        var broken = RuntimeReflectionUtility.ToBool(__0);
-        var recover = RuntimeReflectionUtility.ToBool(__1);
+        RunCaptureCallback("koishi shield", () => CaptureKoishiShieldModeChanged(__0, __1));
+    }
+
+    private static void CaptureKoishiShieldModeChanged(object? brokenValue, object? recoverValue)
+    {
+        var broken = RuntimeReflectionUtility.ToBool(brokenValue);
+        var recover = RuntimeReflectionUtility.ToBool(recoverValue);
         if (!TryReadTargetOwner("koishi", out var rawChallengeType)) return;
         lock (SyncRoot)
         {
@@ -479,16 +521,21 @@ internal static class RuntimeSpecialBusinessContextService
 
     private static void OnKoishiClueTagsGenerated(object? __instance, object[] __args)
     {
+        RunCaptureCallback("koishi clue tags", () => CaptureKoishiClueTagsGenerated(__instance, __args));
+    }
+
+    private static void CaptureKoishiClueTagsGenerated(object? instance, object[] args)
+    {
         if (!string.Equals(CurrentChallengeType, SpecialBusinessChallengeTypes.WackyCookingCompetition, StringComparison.Ordinal)) return;
 
-        var context = ResolveKoishiGenerationContext(__instance, __args);
+        var context = ResolveKoishiGenerationContext(instance, args);
         if (context == null)
         {
             LogKoishiGeneratedClues(
                 "failed",
                 "DisplayClass13_0 context not found",
-                __instance,
-                __args,
+                instance,
+                args,
                 Array.Empty<int>(),
                 Array.Empty<string>(),
                 Array.Empty<string>(),
@@ -516,7 +563,7 @@ internal static class RuntimeSpecialBusinessContextService
                 "failed",
                 failureReason,
                 context,
-                __args,
+                args,
                 Array.Empty<int>(),
                 Array.Empty<string>(),
                 Array.Empty<string>(),
@@ -533,7 +580,7 @@ internal static class RuntimeSpecialBusinessContextService
             "captured",
             "",
             context,
-            __args,
+            args,
             tagIds,
             foodPreferenceTags,
             foodHateTags,
@@ -633,28 +680,33 @@ internal static class RuntimeSpecialBusinessContextService
 
     private static void OnYuyukoContextSet(object? __0, object? __1, object? __2, object? __3)
     {
-        UpdateProgressContext("yuyuko", CleanText(__0), __1, __2, CleanText(__3));
+        RunCaptureCallback("yuyuko context", () => UpdateProgressContext("yuyuko", CleanText(__0), __1, __2, CleanText(__3)));
     }
 
     private static void OnYuyukoTargetProgressSet(object? __0)
     {
-        UpdateTargetValue("yuyuko", __0);
+        RunCaptureCallback("yuyuko target progress", () => UpdateTargetValue("yuyuko", __0));
     }
 
     private static void OnYuyukoTargetTimeSet(object? __0)
     {
-        UpdateTargetTime("yuyuko", __0);
+        RunCaptureCallback("yuyuko target time", () => UpdateTargetTime("yuyuko", __0));
     }
 
     private static void OnChallengeTargetFundSet(object? __0)
     {
-        UpdateTargetFund("challenge", __0, "目标营业额");
+        RunCaptureCallback("challenge target fund", () => UpdateTargetFund("challenge", __0, "目标营业额"));
     }
 
     private static void OnChallengeSpellCountUpdated(object? __0, object? __1)
     {
-        var current = RuntimeReflectionUtility.ToInt(__0, int.MinValue);
-        var total = RuntimeReflectionUtility.ToInt(__1, int.MinValue);
+        RunCaptureCallback("challenge spell count", () => CaptureChallengeSpellCountUpdated(__0, __1));
+    }
+
+    private static void CaptureChallengeSpellCountUpdated(object? currentValue, object? totalValue)
+    {
+        var current = RuntimeReflectionUtility.ToInt(currentValue, int.MinValue);
+        var total = RuntimeReflectionUtility.ToInt(totalValue, int.MinValue);
         if (current < 0 || total < 0) return;
 
         if (!TryReadTargetOwner("challenge", out var rawChallengeType)) return;
@@ -671,11 +723,37 @@ internal static class RuntimeSpecialBusinessContextService
 
     private static void OnMausoleumTargetFundSet(object? __0)
     {
-        UpdateTargetFund("mausoleum", __0, "目标营业额");
+        RunCaptureCallback("mausoleum target fund", () => UpdateTargetFund("mausoleum", __0, "目标营业额"));
+    }
+
+    private static void RunCaptureCallback(string source, Action callback)
+    {
+        if (!RuntimeNightBusinessLifecycle.IsActive) return;
+
+        try
+        {
+            callback();
+        }
+        catch (Exception ex)
+        {
+            var diagnostic = $"{source}: {ex.GetType().Name}: {ex.GetBaseException().Message}";
+            var firstOccurrence = false;
+            lock (SyncRoot)
+            {
+                firstOccurrence = CaptureFailureDiagnostics.Add(diagnostic);
+                if (firstOccurrence) _lastAction = $"{source} capture failed: {ex.GetBaseException().Message}";
+            }
+            if (firstOccurrence)
+            {
+                _log?.LogWarning($"Special-business {source} capture failed without affecting the game method: {ex.GetBaseException().Message}");
+            }
+        }
     }
 
     private static void UpdateTargetFund(string kind, object? value, string label)
     {
+        if (!RuntimeNightBusinessLifecycle.IsActive) return;
+
         var targetFund = RuntimeReflectionUtility.ToInt(value, int.MinValue);
         if (targetFund < 0) return;
 
@@ -697,6 +775,8 @@ internal static class RuntimeSpecialBusinessContextService
 
     private static void UpdateFoodTarget(string kind, params string[] tags)
     {
+        if (!RuntimeNightBusinessLifecycle.IsActive) return;
+
         var normalized = tags
             .Select(CleanText)
             .Where(tag => tag.Length > 0)
@@ -721,6 +801,8 @@ internal static class RuntimeSpecialBusinessContextService
 
     private static void UpdateProgressContext(string kind, string label, object? currentValue, object? maxValue, string phase)
     {
+        if (!RuntimeNightBusinessLifecycle.IsActive) return;
+
         var current = RuntimeReflectionUtility.ToInt(currentValue, int.MinValue);
         var max = RuntimeReflectionUtility.ToInt(maxValue, int.MinValue);
         if (!TryReadTargetOwner(kind, out var rawChallengeType)) return;
@@ -751,6 +833,12 @@ internal static class RuntimeSpecialBusinessContextService
 
     private static bool TryReadTargetOwner(string expectedKind, out string rawChallengeType)
     {
+        if (!RuntimeNightBusinessLifecycle.IsActive)
+        {
+            rawChallengeType = SpecialBusinessChallengeTypes.NotChallenge;
+            return false;
+        }
+
         rawChallengeType = ReadRawChallengeType(out var error);
         return string.IsNullOrWhiteSpace(error)
             && rawChallengeType.Length > 0
@@ -849,6 +937,8 @@ internal static class RuntimeSpecialBusinessContextService
 
     private static void UpdateTargetValue(string kind, object? value)
     {
+        if (!RuntimeNightBusinessLifecycle.IsActive) return;
+
         var target = RuntimeReflectionUtility.ToInt(value, int.MinValue);
         if (target == int.MinValue) return;
 
@@ -867,6 +957,8 @@ internal static class RuntimeSpecialBusinessContextService
 
     private static void UpdateTargetTime(string kind, object? value)
     {
+        if (!RuntimeNightBusinessLifecycle.IsActive) return;
+
         var progress = ToDouble(value, double.NaN);
         if (double.IsNaN(progress)) return;
 
@@ -885,6 +977,8 @@ internal static class RuntimeSpecialBusinessContextService
 
     private static void UpdateTargetTagTime(string kind, object? value)
     {
+        if (!RuntimeNightBusinessLifecycle.IsActive) return;
+
         var progress = ToDouble(value, double.NaN);
         if (double.IsNaN(progress)) return;
 
@@ -905,6 +999,8 @@ internal static class RuntimeSpecialBusinessContextService
         IReadOnlyList<string> foodHateTags,
         IReadOnlyList<string> beveragePreferenceTags)
     {
+        if (!RuntimeNightBusinessLifecycle.IsActive) return;
+
         if (!TryReadTargetOwner("koishi", out var rawChallengeType)) return;
         lock (SyncRoot)
         {

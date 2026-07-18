@@ -560,6 +560,9 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
 function buildSnapshot() {
   const snapshot = {
     pluginVersion: '1.0.5-mock',
+    nightBusinessGeneration: 1,
+    nightBusinessLifecyclePhase: 'Active',
+    runtimeNightBusinessLifecycleStatus: 'mock active generation=1',
     automationSessionId,
     capturedAtUtc: nowIso(),
     activeSceneName: 'NightScene.MockBusiness',
@@ -600,6 +603,7 @@ function buildSnapshot() {
         {
           deskCode: 1,
           guestId: 1001,
+          runtimeGuestId: 1001,
           guestName: '米斯蒂娅',
           foodTagId: 11,
           foodTag: '甜',
@@ -615,6 +619,7 @@ function buildSnapshot() {
         {
           deskCode: 3,
           guestId: 1002,
+          runtimeGuestId: 1002,
           guestName: '露米娅',
           foodTagId: 12,
           foodTag: '肉',
@@ -1479,6 +1484,9 @@ function buildHealth() {
   return {
     ok: true,
     pluginVersion: '0.0.0-mock',
+    nightBusinessGeneration: 0,
+    nightBusinessLifecyclePhase: 'Inactive',
+    runtimeNightBusinessLifecycleStatus: 'mock inactive',
     bindAddress: '127.0.0.1',
     port,
     authRequired: true,

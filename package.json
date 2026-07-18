@@ -18,6 +18,7 @@
     "audit:ui": "node scripts/playwright-ui-audit.mjs",
     "audit:custom-recipes": "node tests/custom-recipes/frontend-custom-recipes-audit.mjs",
     "audit:automation": "node --experimental-strip-types tests/automation/frontend-automation-recovery-audit.mjs && node tests/automation/runtime-side-effect-audit.mjs",
+    "audit:recommendations": "node --experimental-strip-types tests/recommendations/primary-execution-plan-audit.mjs && node --experimental-strip-types tests/recommendations/yuyuko-phase-evaluation-audit.mjs",
     "audit:connection-recovery": "node --experimental-strip-types tests/connection-recovery/connection-recovery-audit.mjs",
     "audit:font-scale": "node tests/font-scale/font-scale-playwright.mjs",
     "audit:updates": "node --experimental-strip-types tests/update-ui/update-ui-audit.mjs",

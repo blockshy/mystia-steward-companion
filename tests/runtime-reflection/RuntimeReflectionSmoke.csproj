@@ -20,5 +20,9 @@
       <HintPath>$(ReferenceDir)/UnityEngine.CoreModule.dll</HintPath>
       <Private>true</Private>
     </Reference>
+    <Reference Include="Il2CppInterop.Runtime">
+      <HintPath>$(ReferenceDir)/Il2CppInterop.Runtime.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
   </ItemGroup>
 </Project>

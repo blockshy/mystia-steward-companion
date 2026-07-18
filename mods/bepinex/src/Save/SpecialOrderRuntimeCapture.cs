@@ -1,7 +1,6 @@
 using System.Reflection;
 using BepInEx.Logging;
 using HarmonyLib;
-using Il2CppInterop.Runtime.InteropTypes;
 
 namespace MystiaStewardCompanion.Save;
 
@@ -10,7 +9,7 @@ namespace MystiaStewardCompanion.Save;
 /// </summary>
 /// <remarks>
 /// 游戏没有稳定的“当前稀客订单列表”公开接口，因此这里通过 Harmony 监听订单生成、加入、移除和状态更新等关键点。
-/// 捕获结果只保存在内存中，并通过运行时对象指针、桌号、稀客和 Tag 信息合并多次回调，避免同一订单在不同 Hook 中重复出现。
+/// 捕获结果只保存在内存中，并通过运行时对象指针、桌号、稀客和原始 Tag ID 合并多次回调，避免同一订单在不同 Hook 中重复出现。
 /// </remarks>
 public static class SpecialOrderRuntimeCapture
 {
@@ -103,6 +102,8 @@ public static class SpecialOrderRuntimeCapture
     /// </remarks>
     public static IReadOnlyList<CapturedRuntimeSpecialOrder> Snapshot(TimeSpan maxAge)
     {
+        if (!RuntimeNightBusinessLifecycle.IsActive) return Array.Empty<CapturedRuntimeSpecialOrder>();
+
         TryAttach(_log, false);
         var now = DateTime.UtcNow;
         lock (SyncRoot)
@@ -126,17 +127,16 @@ public static class SpecialOrderRuntimeCapture
     /// 根据前端操作主动从捕获列表中移除一个订单。
     /// </summary>
     /// <param name="deskCode">游戏桌号，未知时为负数。</param>
-    /// <param name="guestId">稀客运行时 ID，未知时为 <c>null</c>。</param>
-    /// <param name="guestName">稀客名称，作为 ID 缺失时的辅助匹配条件。</param>
-    /// <param name="foodTagId">料理 Tag ID，未指定时使用 <see cref="int.MinValue"/>。</param>
-    /// <param name="beverageTagId">酒水 Tag ID，未指定时使用 <see cref="int.MinValue"/>。</param>
+    /// <param name="runtimeGuestId">稀客运行时原始 ID，未知时为 <c>null</c>。</param>
+    /// <param name="foodTagId">料理原始 Tag ID，未指定时为 <c>null</c>。</param>
+    /// <param name="beverageTagId">酒水原始 Tag ID，未指定时为 <c>null</c>。</param>
     /// <returns>被移除的捕获记录数量。</returns>
-    public static int DismissOrder(int deskCode, int? guestId, string guestName, int foodTagId, int beverageTagId)
+    public static int DismissOrder(int deskCode, int? runtimeGuestId, int? foodTagId, int? beverageTagId)
     {
         lock (SyncRoot)
         {
-            var removed = Orders.RemoveAll(order => IsDismissRequestMatch(order, deskCode, guestId, guestName, foodTagId, beverageTagId));
-            _lastCapture = $"dismissed: desk={deskCode}, guestId={guestId?.ToString() ?? ""}, foodTagId={foodTagId}, bevTagId={beverageTagId}";
+            var removed = Orders.RemoveAll(order => IsDismissRequestMatch(order, deskCode, runtimeGuestId, foodTagId, beverageTagId));
+            _lastCapture = $"dismissed: desk={deskCode}, runtimeGuestId={runtimeGuestId?.ToString() ?? "missing"}, foodTagId={foodTagId?.ToString() ?? "missing"}, bevTagId={beverageTagId?.ToString() ?? "missing"}";
             if (removed > 0)
             {
                 _changeVersion++;
@@ -192,6 +192,8 @@ public static class SpecialOrderRuntimeCapture
     /// </remarks>
     private static void TryAttach(ManualLogSource? log, bool force)
     {
+        if (!force && !RuntimeNightBusinessLifecycle.IsActive) return;
+
         lock (SyncRoot)
         {
             if (!force && DateTime.UtcNow - _lastAttachAttemptUtc < RetryInterval) return;
@@ -305,64 +307,105 @@ public static class SpecialOrderRuntimeCapture
 
     private static void OnOrderAdded(object __0)
     {
-        lock (SyncRoot) _addCallbacks++;
-        AddOrder(ParseOrder(__0, "OrderAdd"));
+        RunCaptureCallback("OrderAdd", () =>
+        {
+            lock (SyncRoot) _addCallbacks++;
+            AddOrder(ParseOrder(__0, "OrderAdd"));
+        });
     }
 
     private static void OnControllerOrderAdded(object __instance, object __0)
     {
-        lock (SyncRoot) _addCallbacks++;
-        AddOrder(ParseOrder(__0, "ControllerOrderAdd", __instance));
+        RunCaptureCallback("ControllerOrderAdd", () =>
+        {
+            lock (SyncRoot) _addCallbacks++;
+            AddOrder(ParseOrder(__0, "ControllerOrderAdd", __instance));
+        });
     }
 
     private static void OnOrderRemoved(object __0)
     {
-        lock (SyncRoot) _removeCallbacks++;
-        RemoveOrder(ParseOrder(__0, "OrderRemove"));
+        RunCaptureCallback("OrderRemove", () =>
+        {
+            lock (SyncRoot) _removeCallbacks++;
+            RemoveOrder(ParseOrder(__0, "OrderRemove"));
+        });
     }
 
     private static void OnOrderStatusUpdated(object __0, object __1)
     {
-        lock (SyncRoot) _statusCallbacks++;
-        UpdateOrderStatus(ParseOrder(__0, "OrderStatusUpdate"), __1);
+        RunCaptureCallback("OrderStatusUpdate", () =>
+        {
+            lock (SyncRoot) _statusCallbacks++;
+            UpdateOrderStatus(ParseOrder(__0, "OrderStatusUpdate"), __1);
+        });
     }
 
     private static void OnOrderSystemChanged(object __0, object __1, object __2)
     {
-        lock (SyncRoot) _statusCallbacks++;
-        UpdateOrderStatus(ParseOrder(__2, "OrderSystemChanged"), __1);
+        RunCaptureCallback("OrderSystemChanged", () =>
+        {
+            lock (SyncRoot) _statusCallbacks++;
+            UpdateOrderStatus(ParseOrder(__2, "OrderSystemChanged"), __1);
+        });
     }
 
     private static void OnGeneratedSpecialOrder(object __instance, object __result)
     {
-        lock (SyncRoot) _generatedCallbacks++;
-        AddOrder(ParseOrder(__result, "PostGenerateOrder", __instance));
+        RunCaptureCallback("PostGenerateOrder", () =>
+        {
+            lock (SyncRoot) _generatedCallbacks++;
+            AddOrder(ParseOrder(__result, "PostGenerateOrder", __instance));
+        });
     }
 
     private static void OnManualControllerOrderSet(object __0, object __1, object __2)
     {
-        lock (SyncRoot) _generatedCallbacks++;
-        var order = ParseOrder(__2, "ManualOrderSet", __0);
-        AddOrder(order == null ? null : order with { ManualEvaluationCallback = __1 });
+        RunCaptureCallback("ManualOrderSet", () =>
+        {
+            lock (SyncRoot) _generatedCallbacks++;
+            var order = ParseOrder(__2, "ManualOrderSet", __0);
+            AddOrder(order == null ? null : order with { ManualEvaluationCallback = __1 });
+        });
     }
 
     private static void OnManualOrderEvaluating(object __0)
     {
-        lock (SyncRoot) _statusCallbacks++;
-        var order = ParseControllerCurrentOrder(__0, "ManualOrderEvaluate");
-        if (order is { IsFulfilled: true })
+        RunCaptureCallback("ManualOrderEvaluate", () =>
         {
-            RemoveOrder(order with { CaptureSource = "ManualOrderEvaluate" });
-        }
+            lock (SyncRoot) _statusCallbacks++;
+            var order = ParseControllerCurrentOrder(__0, "ManualOrderEvaluate");
+            if (order is { IsFulfilled: true })
+            {
+                RemoveOrder(order with { CaptureSource = "ManualOrderEvaluate" });
+            }
+        });
     }
 
     private static void OnManualOrderEnded(object __0)
     {
-        lock (SyncRoot) _removeCallbacks++;
-        var order = ParseControllerCurrentOrder(__0, "ManualOrderEnd");
-        if (order is { IsFulfilled: true })
+        RunCaptureCallback("ManualOrderEnd", () =>
         {
-            RemoveOrder(order with { CaptureSource = "ManualOrderEnd" });
+            lock (SyncRoot) _removeCallbacks++;
+            var order = ParseControllerCurrentOrder(__0, "ManualOrderEnd");
+            if (order is { IsFulfilled: true })
+            {
+                RemoveOrder(order with { CaptureSource = "ManualOrderEnd" });
+            }
+        });
+    }
+
+    private static void RunCaptureCallback(string source, Action callback)
+    {
+        if (!RuntimeNightBusinessLifecycle.IsActive) return;
+
+        try
+        {
+            callback();
+        }
+        catch (Exception ex)
+        {
+            NoteParseFailure(source, $"capture callback failed: {ex.GetBaseException().Message}");
         }
     }
 
@@ -385,7 +428,7 @@ public static class SpecialOrderRuntimeCapture
             var next = existing.Aggregate(order, MergeCapturedOrder);
             Orders.Add(next);
             _capturedOrders++;
-            _lastCapture = $"{next.CaptureSource}: desk={next.DeskCode}, guestId={next.GuestId?.ToString() ?? ""}, food={next.FoodTag}({next.FoodTagId}), bev={next.BeverageTag}({next.BeverageTagId}), free={next.IsFreeOrder}, manualCallback={(next.ManualEvaluationCallback == null ? "no" : "yes")}";
+            _lastCapture = $"{next.CaptureSource}: desk={next.DeskCode}, guestId={next.GuestId?.ToString() ?? ""}, foodId={(next.HasFoodTagId ? next.FoodTagId.ToString() : "missing")}, foodText={next.FoodTagDisplayText}, bevId={(next.HasBeverageTagId ? next.BeverageTagId.ToString() : "missing")}, bevText={next.BeverageTagDisplayText}, free={next.IsFreeOrder}, manualCallback={(next.ManualEvaluationCallback == null ? "no" : "yes")}";
             _changeVersion++;
             if (Orders.Count > MaxOrders)
             {
@@ -413,10 +456,11 @@ public static class SpecialOrderRuntimeCapture
     }
 
     /// <summary>
-    /// 处理订单状态更新回调，只在明确移除或已完成送达时清理捕获记录。
+    /// 处理订单状态更新回调：明确移除时清理，送达完成时刷新并保留捕获记录。
     /// </summary>
     /// <remarks>
-    /// 游戏部分状态更新只表示 UI 或伙伴系统刷新，不代表订单结束。这里保守识别完成上下文，避免订单刚生成后被误删。
+    /// 游戏部分状态更新只表示 UI 或伙伴系统刷新，不代表订单结束。`IsFullfilled` 仍需进入评价阶段，
+    /// 因此不能把料理和酒水均已送达当作订单移除。
     /// </remarks>
     private static void UpdateOrderStatus(CapturedRuntimeSpecialOrder? order, object? context)
     {
@@ -433,13 +477,9 @@ public static class SpecialOrderRuntimeCapture
         if (!IsOrderDeliveryContext(contextName)) return;
         if (!order.IsFulfilled) return;
 
-        if (HasMatchingManualEvaluationCallback(order))
-        {
-            AddOrder(order with { CaptureSource = MergeCaptureSource(order.CaptureSource, "Fulfilled") });
-            return;
-        }
-
-        RemoveOrder(order with { CaptureSource = "OrderFulfilled" });
+        // IsFullfilled only means that food and beverage were served. The order must remain
+        // available for the completion/evaluation stage until an explicit removal callback.
+        AddOrder(order with { CaptureSource = MergeCaptureSource(order.CaptureSource, "Fulfilled") });
     }
 
     private static bool IsOrderDeliveryContext(string contextName)
@@ -451,7 +491,7 @@ public static class SpecialOrderRuntimeCapture
     }
 
     /// <summary>
-    /// 从运行时订单对象和可选控制器中解析稀客、桌号、料理 Tag 与酒水 Tag。
+    /// 从运行时订单对象和可选控制器中解析稀客、桌号、原始 Tag ID 与最终展示文本。
     /// </summary>
     /// <param name="order">游戏订单对象，可能是 IL2CPP 基类或具体 SpecialOrder。</param>
     /// <param name="source">触发解析的 Hook 名称，用于诊断。</param>
@@ -465,7 +505,7 @@ public static class SpecialOrderRuntimeCapture
             return null;
         }
 
-        var readableOrder = TryCastOrder(order, SpecialOrderTypeName) ?? order;
+        var readableOrder = RuntimeReflectionUtility.TryCastRuntimeObject(order, SpecialOrderTypeName) ?? order;
         var textParts = ParseOrderText(SafeToString(readableOrder));
         var orderTypeValue = GetMemberValue(readableOrder, "Type");
         var orderType = FormatValue(orderTypeValue);
@@ -490,7 +530,7 @@ public static class SpecialOrderRuntimeCapture
             ?? GetMemberValue(controller, "SpecialGuest")
             ?? GetMemberValue(controller, "OrderingGuest");
         var foodTagId = ToNullableInt(GetMemberValue(readableOrder, "RequestFoodTag"));
-        var beverageTagId = NormalizeBeverageTagId(ToNullableInt(GetMemberValue(readableOrder, "RequestBeverageTag")));
+        var beverageTagId = ToNullableInt(GetMemberValue(readableOrder, "RequestBeverageTag"));
         var isFreeOrder = ReadOrderFreeState(readableOrder, textParts.FreeOrder);
         var deskCode = ToNullableInt(GetMemberValue(readableOrder, "DeskCode"))
             ?? ToNullableInt(GetMemberValue(controller, "DeskCode"))
@@ -524,31 +564,8 @@ public static class SpecialOrderRuntimeCapture
         string source)
     {
         var guestId = ToNullableInt(GetMemberValue(specialGuest, "Id"));
-        var foodTag = NormalizeTag(textFoodTag);
-        if (string.IsNullOrWhiteSpace(foodTag) && !foodTagId.HasValue)
-        {
-            foodTag = NormalizeTag(InvokeInstanceMethod(controller, "GetOrderFoodText", order)?.ToString());
-        }
-
-        if (string.IsNullOrWhiteSpace(foodTag) && !foodTagId.HasValue)
-        {
-            var fallbackFoodTagId = ToNullableInt(GetMemberValue(order, "foodRequest"));
-            if (fallbackFoodTagId.HasValue)
-            {
-                foodTag = NormalizeTag(InvokeInstanceMethod(specialGuest, "GetFoodTagText", fallbackFoodTagId.Value)?.ToString());
-            }
-        }
-
-        var beverageTag = NormalizeTag(textBeverageTag);
-        if (string.IsNullOrWhiteSpace(beverageTag))
-        {
-            beverageTag = NormalizeTag(InvokeInstanceMethod(controller, "GetOrderBevText", order)?.ToString());
-        }
-
-        if (string.IsNullOrWhiteSpace(beverageTag) && beverageTagId.HasValue && beverageTagId.Value >= 0)
-        {
-            beverageTag = NormalizeTag(InvokeInstanceMethod(specialGuest, "GetBevTagText", beverageTagId.Value)?.ToString());
-        }
+        var foodTagDisplayText = ResolveOrderTagText(controller, order, "GetOrderFoodText", textFoodTag);
+        var beverageTagDisplayText = ResolveOrderTagText(controller, order, "GetOrderBevText", textBeverageTag);
 
         var guestName = NormalizeGuestName(textGuestName);
         if (string.IsNullOrWhiteSpace(guestName) && specialGuest != null)
@@ -558,8 +575,8 @@ public static class SpecialOrderRuntimeCapture
 
         if (!foodTagId.HasValue
             && !beverageTagId.HasValue
-            && string.IsNullOrWhiteSpace(foodTag)
-            && string.IsNullOrWhiteSpace(beverageTag))
+            && string.IsNullOrWhiteSpace(foodTagDisplayText)
+            && string.IsNullOrWhiteSpace(beverageTagDisplayText))
         {
             NoteParseFailure(source, "empty food/beverage tag", order);
             return null;
@@ -578,10 +595,10 @@ public static class SpecialOrderRuntimeCapture
             string.IsNullOrWhiteSpace(guestName) ? "Special guest" : guestName,
             foodTagId ?? 0,
             foodTagId.HasValue,
-            foodTag,
+            foodTagDisplayText,
             beverageTagId ?? 0,
             beverageTagId.HasValue,
-            beverageTag,
+            beverageTagDisplayText,
             isFreeOrder,
             IsOrderFulfilled(order),
             capturedAt,
@@ -592,6 +609,25 @@ public static class SpecialOrderRuntimeCapture
             OrderObject = order,
             ControllerObject = controller,
         };
+    }
+
+    /// <summary>
+    /// 读取游戏针对当前订单最终展示的 Tag 文本。
+    /// </summary>
+    /// <remarks>
+    /// 稀客订单允许使用不在全局 Tag 目录中的 ID（例如无酒精为 -1），控制器方法还会应用
+    /// 订单文本 override，因此它是有控制器上下文时的权威来源。无控制器的回调继续使用订单自身文本。
+    /// </remarks>
+    private static string ResolveOrderTagText(
+        object? controller,
+        object? order,
+        string controllerMethodName,
+        string orderTextTag)
+    {
+        var controllerTag = NormalizeTag(InvokeInstanceMethod(controller, controllerMethodName, order)?.ToString());
+        return string.IsNullOrWhiteSpace(controllerTag)
+            ? NormalizeTag(orderTextTag)
+            : controllerTag;
     }
 
     /// <summary>
@@ -665,10 +701,9 @@ public static class SpecialOrderRuntimeCapture
     private static bool IsSameOrderSlot(CapturedRuntimeSpecialOrder left, CapturedRuntimeSpecialOrder right)
     {
         if (!string.IsNullOrWhiteSpace(left.RuntimeKey)
-            && !string.IsNullOrWhiteSpace(right.RuntimeKey)
-            && string.Equals(left.RuntimeKey, right.RuntimeKey, StringComparison.Ordinal))
+            && !string.IsNullOrWhiteSpace(right.RuntimeKey))
         {
-            return true;
+            return string.Equals(left.RuntimeKey, right.RuntimeKey, StringComparison.Ordinal);
         }
 
         if (left.DeskCode >= 0 && right.DeskCode >= 0 && left.DeskCode != right.DeskCode) return false;
@@ -700,52 +735,35 @@ public static class SpecialOrderRuntimeCapture
     private static bool IsDismissRequestMatch(
         CapturedRuntimeSpecialOrder existing,
         int deskCode,
-        int? guestId,
-        string guestName,
-        int foodTagId,
-        int beverageTagId)
+        int? runtimeGuestId,
+        int? foodTagId,
+        int? beverageTagId)
     {
-        if (deskCode >= 0 && existing.DeskCode >= 0 && existing.DeskCode != deskCode) return false;
-
-        var guestMatches = false;
-        if (guestId.HasValue && existing.GuestId.HasValue && existing.GuestId.Value == guestId.Value)
-        {
-            guestMatches = true;
-        }
-
-        if (!guestMatches
-            && !string.IsNullOrWhiteSpace(guestName)
-            && string.Equals(existing.GuestName, guestName, StringComparison.Ordinal))
-        {
-            guestMatches = true;
-        }
-
-        var requestedFoodTag = foodTagId != int.MinValue;
-        var requestedBeverageTag = beverageTagId != int.MinValue;
-        var foodMatches = !requestedFoodTag
-            || (existing.HasFoodTagId && existing.FoodTagId == foodTagId);
-        var beverageMatches = !requestedBeverageTag
-            || (existing.HasBeverageTagId && existing.BeverageTagId == beverageTagId);
-        var detailsMatch = foodMatches && beverageMatches && (requestedFoodTag || requestedBeverageTag);
-
-        if (detailsMatch) return true;
-        return guestMatches && deskCode >= 0;
+        if (deskCode < 0 || existing.DeskCode != deskCode) return false;
+        if (!runtimeGuestId.HasValue && !foodTagId.HasValue && !beverageTagId.HasValue) return false;
+        if (runtimeGuestId.HasValue
+            && (!existing.GuestId.HasValue || existing.GuestId.Value != runtimeGuestId.Value)) return false;
+        if (foodTagId.HasValue
+            && (!existing.HasFoodTagId || existing.FoodTagId != foodTagId.Value)) return false;
+        if (beverageTagId.HasValue
+            && (!existing.HasBeverageTagId || existing.BeverageTagId != beverageTagId.Value)) return false;
+        return true;
     }
 
     private static bool HasAnyOrderDetail(CapturedRuntimeSpecialOrder order)
     {
         return order.HasFoodTagId
             || order.HasBeverageTagId
-            || !string.IsNullOrWhiteSpace(order.FoodTag)
-            || !string.IsNullOrWhiteSpace(order.BeverageTag);
+            || !string.IsNullOrWhiteSpace(order.FoodTagDisplayText)
+            || !string.IsNullOrWhiteSpace(order.BeverageTagDisplayText);
     }
 
     /// <summary>
     /// 合并两次 Hook 捕获到的同一订单信息。
     /// </summary>
     /// <remarks>
-    /// 不同来源的记录可能分别拥有文本 Tag、数值 Tag、稀客 ID 或控制器对象。合并时保留更完整字段，
-    /// 但如果料理或酒水 Tag 明显冲突，就不把两条记录视为同一订单。
+    /// 不同来源的记录可能分别拥有展示文本、原始 Tag ID、稀客 ID 或控制器对象。合并时独立保留
+    /// 原始身份与展示文本；原始 ID 明确冲突时，不把两条记录视为同一订单。
     /// </remarks>
     private static CapturedRuntimeSpecialOrder MergeCapturedOrder(
         CapturedRuntimeSpecialOrder incoming,
@@ -758,20 +776,20 @@ public static class SpecialOrderRuntimeCapture
                 : existing with { CapturedAt = incoming.CapturedAt };
         }
 
-        var food = SelectTagParts(
+        var food = MergeTagParts(
             incoming.FoodTagId,
             incoming.HasFoodTagId,
-            incoming.FoodTag,
+            incoming.FoodTagDisplayText,
             existing.FoodTagId,
             existing.HasFoodTagId,
-            existing.FoodTag);
-        var beverage = SelectTagParts(
+            existing.FoodTagDisplayText);
+        var beverage = MergeTagParts(
             incoming.BeverageTagId,
             incoming.HasBeverageTagId,
-            incoming.BeverageTag,
+            incoming.BeverageTagDisplayText,
             existing.BeverageTagId,
             existing.HasBeverageTagId,
-            existing.BeverageTag);
+            existing.BeverageTagDisplayText);
 
         return incoming with
         {
@@ -781,10 +799,10 @@ public static class SpecialOrderRuntimeCapture
                 : incoming.GuestName,
             FoodTagId = food.TagId,
             HasFoodTagId = food.HasTagId,
-            FoodTag = food.Tag,
+            FoodTagDisplayText = food.DisplayText,
             BeverageTagId = beverage.TagId,
             HasBeverageTagId = beverage.HasTagId,
-            BeverageTag = beverage.Tag,
+            BeverageTagDisplayText = beverage.DisplayText,
             IsFreeOrder = incoming.IsFreeOrder || existing.IsFreeOrder,
             IsFulfilled = incoming.IsFulfilled || existing.IsFulfilled,
             FirstCapturedAt = existing.FirstCapturedAt < incoming.FirstCapturedAt ? existing.FirstCapturedAt : incoming.FirstCapturedAt,
@@ -796,17 +814,6 @@ public static class SpecialOrderRuntimeCapture
         };
     }
 
-    private static bool HasMatchingManualEvaluationCallback(CapturedRuntimeSpecialOrder order)
-    {
-        lock (SyncRoot)
-        {
-            return Orders.Any(existing =>
-                existing.ManualEvaluationCallback != null
-                && IsSameOrderSlot(existing, order)
-                && CanMergeCapturedOrderDetails(existing, order));
-        }
-    }
-
     private static bool CanMergeCapturedOrderDetails(CapturedRuntimeSpecialOrder left, CapturedRuntimeSpecialOrder right)
     {
         if (!string.IsNullOrWhiteSpace(left.RuntimeKey)
@@ -816,12 +823,12 @@ public static class SpecialOrderRuntimeCapture
             return true;
         }
 
-        if (HaveConflictingTags(left.FoodTag, left.HasFoodTagId, left.FoodTagId, right.FoodTag, right.HasFoodTagId, right.FoodTagId))
+        if (HaveConflictingTagIds(left.HasFoodTagId, left.FoodTagId, right.HasFoodTagId, right.FoodTagId))
         {
             return false;
         }
 
-        if (HaveConflictingTags(left.BeverageTag, left.HasBeverageTagId, left.BeverageTagId, right.BeverageTag, right.HasBeverageTagId, right.BeverageTagId))
+        if (HaveConflictingTagIds(left.HasBeverageTagId, left.BeverageTagId, right.HasBeverageTagId, right.BeverageTagId))
         {
             return false;
         }
@@ -829,50 +836,42 @@ public static class SpecialOrderRuntimeCapture
         return true;
     }
 
-    private static bool HaveConflictingTags(
-        string leftTag,
+    private static bool HaveConflictingTagIds(
         bool leftHasTagId,
         int leftTagId,
-        string rightTag,
         bool rightHasTagId,
         int rightTagId)
     {
-        if (!string.IsNullOrWhiteSpace(leftTag)
-            && !string.IsNullOrWhiteSpace(rightTag)
-            && !string.Equals(leftTag, rightTag, StringComparison.Ordinal))
-        {
-            return true;
-        }
-
         return leftHasTagId && rightHasTagId && leftTagId != rightTagId;
     }
 
-    private static (int TagId, bool HasTagId, string Tag) SelectTagParts(
+    private static (int TagId, bool HasTagId, string DisplayText) MergeTagParts(
         int incomingTagId,
         bool incomingHasTagId,
-        string incomingTag,
+        string incomingDisplayText,
         int existingTagId,
         bool existingHasTagId,
-        string existingTag)
+        string existingDisplayText)
     {
-        var incomingScore = GetTagCompletenessScore(incomingHasTagId, incomingTag);
-        var existingScore = GetTagCompletenessScore(existingHasTagId, existingTag);
-        return incomingScore >= existingScore
-            ? (incomingTagId, incomingHasTagId, incomingTag)
-            : (existingTagId, existingHasTagId, existingTag);
+        var hasTagId = incomingHasTagId || existingHasTagId;
+        var tagId = incomingHasTagId ? incomingTagId : existingTagId;
+        var displayText = string.IsNullOrWhiteSpace(incomingDisplayText)
+            ? existingDisplayText
+            : incomingDisplayText;
+        return (tagId, hasTagId, displayText);
     }
 
     private static int GetCapturedOrderCompletenessScore(CapturedRuntimeSpecialOrder order)
     {
-        return GetTagCompletenessScore(order.HasFoodTagId, order.FoodTag)
-            + GetTagCompletenessScore(order.HasBeverageTagId, order.BeverageTag)
+        return GetTagCompletenessScore(order.HasFoodTagId, order.FoodTagDisplayText)
+            + GetTagCompletenessScore(order.HasBeverageTagId, order.BeverageTagDisplayText)
             + (order.GuestId.HasValue ? 2 : 0)
             + (order.DeskCode >= 0 ? 1 : 0);
     }
 
-    private static int GetTagCompletenessScore(bool hasTagId, string tag)
+    private static int GetTagCompletenessScore(bool hasTagId, string displayText)
     {
-        return (!string.IsNullOrWhiteSpace(tag) ? 8 : 0) + (hasTagId ? 2 : 0);
+        return (!string.IsNullOrWhiteSpace(displayText) ? 8 : 0) + (hasTagId ? 2 : 0);
     }
 
     private static string MergeCaptureSource(string existing, string incoming)
@@ -996,37 +995,6 @@ public static class SpecialOrderRuntimeCapture
         }
 
         return null;
-    }
-
-    /// <summary>
-    /// 尝试将 IL2CPP 基类对象转换为指定的游戏订单类型。
-    /// </summary>
-    /// <remarks>
-    /// Harmony 回调参数有时是基类或接口视角，直接反射字段会缺少子类成员。通过 TryCast 后再读取可提高解析成功率。
-    /// </remarks>
-    private static object? TryCastOrder(object? order, string targetTypeName)
-    {
-        if (order is not Il2CppObjectBase il2CppObject) return null;
-
-        var targetType = FindType(targetTypeName);
-        if (targetType == null) return null;
-        if (order.GetType() == targetType) return order;
-
-        var tryCast = typeof(Il2CppObjectBase)
-            .GetMethods(BindingFlags.Public | BindingFlags.Instance)
-            .FirstOrDefault(method => method.Name == "TryCast"
-                && method.IsGenericMethodDefinition
-                && method.GetParameters().Length == 0);
-        if (tryCast == null) return null;
-
-        try
-        {
-            return tryCast.MakeGenericMethod(targetType).Invoke(il2CppObject, Array.Empty<object?>());
-        }
-        catch
-        {
-            return null;
-        }
     }
 
     /// <summary>
@@ -1172,7 +1140,7 @@ public static class SpecialOrderRuntimeCapture
     {
         if (order == null) return "";
 
-        var typedOrder = TryCastOrder(order, SpecialOrderTypeName);
+        var typedOrder = RuntimeReflectionUtility.TryCastRuntimeObject(order, SpecialOrderTypeName);
         var readableOrder = typedOrder ?? order;
         var text = textParts ?? ParseOrderText(SafeToString(readableOrder));
         var parts = new List<string>
@@ -1316,10 +1284,6 @@ public static class SpecialOrderRuntimeCapture
         return int.TryParse(value.ToString(), out var parsed) ? parsed : null;
     }
 
-    private static int? NormalizeBeverageTagId(int? value)
-    {
-        return value.HasValue && value.Value >= 0 ? value : null;
-    }
 }
 
 internal readonly record struct ParsedOrderText(
@@ -1346,7 +1310,7 @@ internal readonly record struct ParsedOrderText(
 /// 一条从游戏运行时捕获到的稀客订单。
 /// </summary>
 /// <remarks>
-/// 公开字段用于 JSON 快照和自动上菜匹配；运行时对象引用仅在 Mod 内部用于再次定位订单，不会序列化给前端。
+/// 原始请求 Tag ID 用于订单身份匹配，展示文本只用于 UI 与诊断；运行时对象引用仅在 Mod 内部用于再次定位订单，不会序列化给前端。
 /// </remarks>
 public sealed record CapturedRuntimeSpecialOrder(
     int DeskCode,
@@ -1354,10 +1318,10 @@ public sealed record CapturedRuntimeSpecialOrder(
     string GuestName,
     int FoodTagId,
     bool HasFoodTagId,
-    string FoodTag,
+    string FoodTagDisplayText,
     int BeverageTagId,
     bool HasBeverageTagId,
-    string BeverageTag,
+    string BeverageTagDisplayText,
     bool IsFreeOrder,
     bool IsFulfilled,
     DateTime FirstCapturedAt,

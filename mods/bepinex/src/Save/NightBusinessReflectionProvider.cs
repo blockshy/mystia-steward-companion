@@ -1,5 +1,4 @@
 using System.Reflection;
-using Il2CppInterop.Runtime.InteropTypes;
 using MystiaStewardCompanion.Core;
 using UnityEngine;
 using static MystiaStewardCompanion.Save.RuntimeReflectionUtility;
@@ -682,7 +681,7 @@ internal sealed class NightBusinessReflectionProvider
             return null;
         }
 
-        var readableOrder = TryCastOrder(order, SpecialOrderTypeName) ?? order;
+        var readableOrder = TryCastRuntimeObject(order, SpecialOrderTypeName) ?? order;
         var classification = SpecialBusinessOrderClassifier.Classify(readableOrder, controller, source);
         var classifiedSpecialBusinessOrder = !string.IsNullOrWhiteSpace(classification.Role)
             && !string.Equals(classification.Role, SpecialBusinessOrderRoles.WackyTarget, StringComparison.Ordinal);
@@ -723,19 +722,22 @@ internal sealed class NightBusinessReflectionProvider
             : ResolveOrderingGuestRareCustomerIdentity(specialGuest, classifiedSpecialBusinessOrder);
         var foodTag = ResolveOrderTagText(readableOrder, controller, specialGuest, "GetOrderFoodText", "GetFoodTagText", "RequestFoodTag", "ReqFoodTag", useFoodTagMap: true);
         var beverageTag = ResolveOrderTagText(readableOrder, controller, specialGuest, "GetOrderBevText", "GetBevTagText", "RequestBeverageTag", "ReqBevTag", useFoodTagMap: false);
-        var foodTagId = ResolveTagId(foodTag, GetMemberValue(readableOrder, "RequestFoodTag"), useFoodTagMap: true);
-        var beverageTagId = ResolveTagId(beverageTag, GetMemberValue(readableOrder, "RequestBeverageTag"), useFoodTagMap: false);
-        if (foodTagId == 0 && beverageTagId == 0 && string.IsNullOrWhiteSpace(foodTag) && string.IsNullOrWhiteSpace(beverageTag))
+        var foodTagId = ToNullableInt(GetMemberValue(readableOrder, "RequestFoodTag"));
+        var beverageTagId = ToNullableInt(GetMemberValue(readableOrder, "RequestBeverageTag"));
+        if (!foodTagId.HasValue && !beverageTagId.HasValue && string.IsNullOrWhiteSpace(foodTag) && string.IsNullOrWhiteSpace(beverageTag))
         {
             RecordCandidate("Order", source, accepted: false, "empty food and beverage tag", () => DescribeOrderCandidate(readableOrder, controller));
             return null;
         }
 
-        var deskCode = ToInt(GetMemberValue(readableOrder, "DeskCode") ?? GetMemberValue(controller, "DeskCode"));
+        var deskCode = ToNullableInt(GetMemberValue(readableOrder, "DeskCode"))
+            ?? ToNullableInt(GetMemberValue(controller, "DeskCode"))
+            ?? -1;
         var result = new NightBusinessOrder
         {
             DeskCode = deskCode,
             GuestId = identity?.Id ?? guestId,
+            RuntimeGuestId = guestId,
             GuestName = identity?.Name ?? ReadGuestName(specialGuest, guestId),
             SpecialBusinessRole = classification.Role,
             SpecialBusinessRoleLabel = classification.RoleLabel,
@@ -827,25 +829,26 @@ internal sealed class NightBusinessReflectionProvider
                 ? captured.GuestName
                 : activeGuest?.GuestName ?? "";
             var foodTag = ResolveCapturedTagText(
-                captured.FoodTag,
+                captured.FoodTagDisplayText,
                 captured.HasFoodTagId ? captured.FoodTagId : null,
                 useFoodTagMap: true);
             var beverageTag = ResolveCapturedTagText(
-                captured.BeverageTag,
+                captured.BeverageTagDisplayText,
                 captured.HasBeverageTagId ? captured.BeverageTagId : null,
                 useFoodTagMap: false);
             var order = new NightBusinessOrder
             {
                 DeskCode = captured.DeskCode,
                 GuestId = guestId,
+                RuntimeGuestId = captured.GuestId,
                 GuestName = identity?.Name ?? ResolveRareGuestName(guestId, fallbackGuestName),
                 SpecialBusinessRole = classification.Role,
                 SpecialBusinessRoleLabel = classification.RoleLabel,
                 AutomationAllowed = classification.AutomationAllowed,
                 AutomationBlockReason = classification.AutomationBlockReason,
-                FoodTagId = ResolveTagId(foodTag, captured.HasFoodTagId ? captured.FoodTagId : null, useFoodTagMap: true),
+                FoodTagId = captured.HasFoodTagId ? captured.FoodTagId : null,
                 FoodTag = foodTag,
-                BeverageTagId = ResolveTagId(beverageTag, captured.HasBeverageTagId ? captured.BeverageTagId : null, useFoodTagMap: false),
+                BeverageTagId = captured.HasBeverageTagId ? captured.BeverageTagId : null,
                 BeverageTag = beverageTag,
                 Source = string.IsNullOrWhiteSpace(captured.CaptureSource) ? "RuntimeCapture" : $"RuntimeCapture:{captured.CaptureSource}",
                 FirstSeenAtUtc = captured.FirstCapturedAt,
@@ -857,6 +860,10 @@ internal sealed class NightBusinessReflectionProvider
                 ExtraFundByBuff = activeGuest?.ExtraFundByBuff ?? ReadNullableIntMember(captured.ControllerObject, "ExtraFundByBuff"),
                 WillPayMoney = activeGuest?.WillPayMoney ?? ReadNullableBoolMember(captured.ControllerObject, "WillPayMoney"),
                 RemainingOrderCount = ReadNullableIntMember(captured.ControllerObject, "RemainOrderCount"),
+                HasServedFood = captured.IsFulfilled
+                    || (captured.OrderObject != null && ReadOrderServedState(captured.OrderObject, "ServFood", "ServedFoodInAir")),
+                HasServedBeverage = captured.IsFulfilled
+                    || (captured.OrderObject != null && ReadOrderServedState(captured.OrderObject, "ServBeverage", "ServedBeverageInAir")),
             };
 
             if (ShouldKeepCapturedOrder(order, captured, activeGuests, now))
@@ -939,8 +946,8 @@ internal sealed class NightBusinessReflectionProvider
     {
         return captured.HasFoodTagId
             || captured.HasBeverageTagId
-            || !string.IsNullOrWhiteSpace(captured.FoodTag)
-            || !string.IsNullOrWhiteSpace(captured.BeverageTag);
+            || !string.IsNullOrWhiteSpace(captured.FoodTagDisplayText)
+            || !string.IsNullOrWhiteSpace(captured.BeverageTagDisplayText);
     }
 
     private bool IsCapturedRuntimeOrderStillLive(CapturedRuntimeSpecialOrder captured)
@@ -949,19 +956,16 @@ internal sealed class NightBusinessReflectionProvider
 
         try
         {
-            if (IsRuntimeOrderFulfilled(captured.OrderObject)) return false;
-
             foreach (var currentOrder in EnumerateControllerOrders(captured.ControllerObject))
             {
                 if (currentOrder == null) continue;
-                var readableCurrentOrder = TryCastOrder(currentOrder, SpecialOrderTypeName) ?? currentOrder;
+                var readableCurrentOrder = TryCastRuntimeObject(currentOrder, SpecialOrderTypeName) ?? currentOrder;
                 if (!IsSameRuntimeObject(readableCurrentOrder, captured.OrderObject)
                     && !IsSameRuntimeObject(currentOrder, captured.OrderObject))
                 {
                     continue;
                 }
 
-                if (IsRuntimeOrderFulfilled(readableCurrentOrder)) return false;
                 return ReadOrder(readableCurrentOrder, captured.ControllerObject, "RuntimeCaptureLive") != null;
             }
         }
@@ -971,31 +975,6 @@ internal sealed class NightBusinessReflectionProvider
         }
 
         return false;
-    }
-
-    private static object? TryCastOrder(object? order, string targetTypeName)
-    {
-        if (order is not Il2CppObjectBase il2CppObject) return null;
-
-        var targetType = FindType(targetTypeName);
-        if (targetType == null) return null;
-        if (targetType.IsInstanceOfType(order)) return order;
-
-        var tryCast = typeof(Il2CppObjectBase)
-            .GetMethods(BindingFlags.Public | BindingFlags.Instance)
-            .FirstOrDefault(method => method.Name == "TryCast"
-                && method.IsGenericMethodDefinition
-                && method.GetParameters().Length == 0);
-        if (tryCast == null) return null;
-
-        try
-        {
-            return tryCast.MakeGenericMethod(targetType).Invoke(il2CppObject, Array.Empty<object?>());
-        }
-        catch
-        {
-            return null;
-        }
     }
 
     private static bool IsSameRuntimeObject(object left, object right)
@@ -1008,13 +987,6 @@ internal sealed class NightBusinessReflectionProvider
         {
             return ReferenceEquals(left, right);
         }
-    }
-
-    private static bool IsRuntimeOrderFulfilled(object order)
-    {
-        var value = GetMemberValue(order, "IsFullfilled");
-        if (value is bool boolValue) return boolValue;
-        return string.Equals(value?.ToString(), "true", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool MatchesActiveGuest(NightBusinessOrder order, IReadOnlyList<NightBusinessGuest> activeGuests)
@@ -1046,7 +1018,7 @@ internal sealed class NightBusinessReflectionProvider
 
         foreach (var order in orders)
         {
-            var key = $"{order.DeskCode}:{order.GuestId}";
+            var key = $"{order.DeskCode}:{order.RuntimeGuestId?.ToString() ?? "missing"}:{order.FoodTagId?.ToString() ?? "missing"}:{order.BeverageTagId?.ToString() ?? "missing"}";
             if (!bySlot.TryGetValue(key, out var existing))
             {
                 bySlot[key] = order;
@@ -1096,6 +1068,7 @@ internal sealed class NightBusinessReflectionProvider
             TraceId = string.IsNullOrWhiteSpace(traceId) ? order.TraceId : traceId,
             DeskCode = order.DeskCode,
             GuestId = order.GuestId,
+            RuntimeGuestId = order.RuntimeGuestId ?? fallbackOrder?.RuntimeGuestId,
             GuestName = order.GuestName,
             SpecialBusinessRole = order.SpecialBusinessRole,
             SpecialBusinessRoleLabel = order.SpecialBusinessRoleLabel,
@@ -1139,8 +1112,8 @@ internal sealed class NightBusinessReflectionProvider
         var score = 0;
         if (!string.IsNullOrWhiteSpace(order.FoodTag)) score += 8;
         if (!string.IsNullOrWhiteSpace(order.BeverageTag)) score += 8;
-        if (order.FoodTagId != 0) score += 2;
-        if (order.BeverageTagId != 0) score += 2;
+        if (order.FoodTagId.HasValue) score += 2;
+        if (order.BeverageTagId.HasValue) score += 2;
         if (order.HasServedFood) score += 1;
         if (order.HasServedBeverage) score += 1;
         if (string.Equals(order.Source, "OrderController", StringComparison.Ordinal)) score += 2;
@@ -1822,29 +1795,6 @@ internal sealed class NightBusinessReflectionProvider
             .OrderByDescending(value => value.Length)
             .ThenBy(value => value, StringComparer.Ordinal)
             .ToList();
-    }
-
-    private int ResolveTagId(string tagText, object? fallbackValue, bool useFoodTagMap)
-    {
-        if (!string.IsNullOrWhiteSpace(tagText))
-        {
-            var tagMap = useFoodTagMap
-                ? _repository.FoodTagIdMap
-                : _repository.BeverageTagIdMap;
-            foreach (var item in tagMap)
-            {
-                var mapped = NormalizeTagText(item.Value) ?? item.Value;
-                if (string.Equals(mapped, tagText, StringComparison.Ordinal) && int.TryParse(item.Key, out var parsed))
-                {
-                    return parsed;
-                }
-            }
-        }
-
-        var fallbackId = ToNullableInt(fallbackValue);
-        if (!fallbackId.HasValue) return 0;
-        if (fallbackId.Value < 0 && !TryResolveTagTextFromMap(fallbackId.Value, useFoodTagMap, out _)) return 0;
-        return fallbackId.Value;
     }
 
     private static string ReadGuestName(object specialGuest, int? guestId)

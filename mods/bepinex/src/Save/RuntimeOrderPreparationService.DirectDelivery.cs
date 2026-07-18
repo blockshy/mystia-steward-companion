@@ -26,6 +26,11 @@ internal static partial class RuntimeOrderPreparationService
         string beverageName,
         string orderLabel)
     {
+        if (!TryCaptureActiveNightBusinessGeneration(out var sessionGeneration))
+        {
+            return (false, "夜间经营会话已结束，未执行酒水送达。", OrderPreparationStepCodes.NightBusinessLifecycleUnavailable);
+        }
+
         var currentQuantity = GetBeverageQuantity(beverageId);
         if (currentQuantity == 0)
         {
@@ -39,6 +44,14 @@ internal static partial class RuntimeOrderPreparationService
         }
 
         var delivery = TryCommitRuntimeDelivery(runtimeOrder, sellable, RuntimeDeliveryItemKind.Beverage, beverageName);
+        if (!IsNightBusinessGenerationActive(sessionGeneration))
+        {
+            return (
+                false,
+                $"{beverageName} 的订单送达入口执行期间夜间经营会话已结束，已跳过库存扣减。",
+                OrderPreparationStepCodes.BeverageDeliveryCommitUncertain);
+        }
+
         if (!delivery.Ok)
         {
             return (false, delivery.Message, delivery.Code);
@@ -121,6 +134,11 @@ internal static partial class RuntimeOrderPreparationService
     /// </remarks>
     private static (bool Remove, string Message, string Code) TryDeliverAutomationCookedFood(AutomationCookingJob job, object cookedFood)
     {
+        if (!TryCaptureActiveNightBusinessGeneration(out var sessionGeneration))
+        {
+            return StopAutomationFoodDeliveryForEndedSession(job, resolveCommit: false);
+        }
+
         if (job.FoodDeliveryCommitUncertain)
         {
             return BlockUncertainFoodDelivery(job, "料理送达提交状态已锁定为无法确认。");
@@ -344,6 +362,11 @@ internal static partial class RuntimeOrderPreparationService
             : CompareObjectIdentity(servedFood, cookedFood);
         if (servedFoodIdentity == RuntimeObjectIdentityComparison.Same)
         {
+            if (!IsNightBusinessGenerationActive(sessionGeneration))
+            {
+                return StopAutomationFoodDeliveryForEndedSession(job, resolveCommit: false);
+            }
+
             if (!job.FoodDeliveryCleanupTracker.TryBeginCommit())
             {
                 return BlockUncertainFoodDelivery(job, "同一成品已在订单中，但 job 无法锁定提交状态。");
@@ -359,6 +382,10 @@ internal static partial class RuntimeOrderPreparationService
                 targetTags,
                 actualTags,
                 $"{target.FoodName} 已存在于订单最终送达字段，本次未重复调用 setter。");
+            if (!IsNightBusinessGenerationActive(sessionGeneration))
+            {
+                return StopAutomationFoodDeliveryForEndedSession(job, resolveCommit: false);
+            }
             return TryCompleteCommittedFoodDeliveryCleanup(job);
         }
 
@@ -444,11 +471,21 @@ internal static partial class RuntimeOrderPreparationService
         }
         catch (Exception ex)
         {
+            if (!IsNightBusinessGenerationActive(sessionGeneration))
+            {
+                return StopAutomationFoodDeliveryForEndedSession(job, resolveCommit: true);
+            }
+
             job.FoodDeliveryCleanupTracker.ResolveCommit(AutomationCommitResolution.Uncertain);
             return BlockUncertainFoodDelivery(
                 job,
                 $"料理送达调用发生未分类异常，无法确认最终字段：{ex.GetBaseException().Message}");
         }
+        if (!IsNightBusinessGenerationActive(sessionGeneration))
+        {
+            return StopAutomationFoodDeliveryForEndedSession(job, resolveCommit: true);
+        }
+
         if (delivery.State == RuntimeDeliveryCommitState.NotCommitted)
         {
             job.FoodDeliveryCleanupTracker.ResolveCommit(AutomationCommitResolution.NotCommitted);
@@ -471,7 +508,26 @@ internal static partial class RuntimeOrderPreparationService
             targetTags,
             actualTags,
             delivery.Message);
+        if (!IsNightBusinessGenerationActive(sessionGeneration))
+        {
+            return StopAutomationFoodDeliveryForEndedSession(job, resolveCommit: false);
+        }
         return TryCompleteCommittedFoodDeliveryCleanup(job);
+    }
+
+    private static (bool Remove, string Message, string Code) StopAutomationFoodDeliveryForEndedSession(
+        AutomationCookingJob job,
+        bool resolveCommit)
+    {
+        if (resolveCommit)
+        {
+            job.FoodDeliveryCleanupTracker.ResolveCommit(AutomationCommitResolution.Uncertain);
+        }
+
+        return (
+            true,
+            "夜间经营会话已结束，已停止料理送达和厨具后处理。",
+            OrderPreparationStepCodes.NightBusinessLifecycleUnavailable);
     }
 
     private static AutomationFoodDeliveryCompletion BuildFoodDeliveryCompletionSafely(
@@ -1437,9 +1493,12 @@ internal static partial class RuntimeOrderPreparationService
             OrderKey = target.OrderKey,
             DeskCode = target.DeskCode,
             GuestId = target.GuestId,
+            RuntimeGuestId = target.RuntimeGuestId,
             GuestName = target.GuestName,
             SpecialBusinessRole = target.SpecialBusinessRole,
+            FoodTagId = target.FoodTagId,
             FoodTag = target.FoodTag,
+            BeverageTagId = target.BeverageTagId,
             BeverageTag = target.BeverageTag,
             MatchFoodId = target.MatchFoodId,
             MatchBeverageId = target.MatchBeverageId,

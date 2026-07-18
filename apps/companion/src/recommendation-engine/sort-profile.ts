@@ -62,7 +62,10 @@ export interface RecommendationPlanSortContext {
   specialPreferHighFoodLevel?: boolean;
   specialPreferHighBeverageLevel?: boolean;
   specialPreferDamageLevel?: boolean;
+  specialPreferYuyukoPositiveSpell?: boolean;
   specialPreferYuyukoProgress?: boolean;
+  specialYuyukoRequiredFoodTag?: string;
+  specialYuyukoRequiredBeverageTag?: string;
   specialKoishiRemainingScore?: number | null;
   specialKoishiRemainingOrderCount?: number | null;
 }

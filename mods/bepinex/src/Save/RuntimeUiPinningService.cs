@@ -19,6 +19,7 @@ internal static class RuntimeUiPinningService
     private static ManualLogSource? _log;
     private static bool _enabled;
     private static bool _highlightEnabled;
+    private static long _sessionGeneration;
     private static int _recipeId = -1;
     private static int _beverageId = -1;
     private static int[] _ingredientIds = EmptyIngredientIds;
@@ -54,7 +55,7 @@ internal static class RuntimeUiPinningService
             string coreStatus;
             lock (SyncRoot)
             {
-                coreStatus = $"patches=checkPinnedPrefix:{_checkPinnedPatchStatus}, cookingScope:{_cookingScopePatchStatus}, beverageScope:{_beverageScopePatchStatus}; pinning={(_enabled ? "on" : "off")}; cookerHighlight={(_highlightEnabled ? "on" : "off")}; target=recipe:{_recipeId}/{_recipeName}, beverage:{_beverageId}/{_beverageName}, cooker:{_cookerTypeId}/{_cookerName}, ingredients:{string.Join(",", _ingredientIds)}";
+                coreStatus = $"patches=checkPinnedPrefix:{_checkPinnedPatchStatus}, cookingScope:{_cookingScopePatchStatus}, beverageScope:{_beverageScopePatchStatus}; session={_sessionGeneration}; pinning={(_enabled ? "on" : "off")}; cookerHighlight={(_highlightEnabled ? "on" : "off")}; target=recipe:{_recipeId}/{_recipeName}, beverage:{_beverageId}/{_beverageName}, cooker:{_cookerTypeId}/{_cookerName}, ingredients:{string.Join(",", _ingredientIds)}";
             }
 
             return $"{coreStatus}; highlight={RuntimeCookerHighlightService.Status}; listHighlight={RuntimePinnedListHighlightService.Status}; forcedTotal=recipe:{Interlocked.Read(ref _recipeForces)}, ingredients:{Interlocked.Read(ref _ingredientForces)}, beverage:{Interlocked.Read(ref _beverageForces)}; scopeImbalance={Interlocked.Read(ref _scopeCleanupImbalances)}";
@@ -124,6 +125,7 @@ internal static class RuntimeUiPinningService
     }
 
     public static string UpdateTarget(
+        long sessionGeneration,
         bool enabled,
         bool highlightEnabled,
         int recipeId,
@@ -134,9 +136,13 @@ internal static class RuntimeUiPinningService
         int cookerTypeId,
         string cookerName)
     {
+        ValidateSession(sessionGeneration);
+
         lock (TargetPublicationRoot)
         {
+            ValidateSession(sessionGeneration);
             return PublishTarget(
+                sessionGeneration,
                 enabled,
                 highlightEnabled,
                 recipeId,
@@ -151,10 +157,48 @@ internal static class RuntimeUiPinningService
 
     internal static PinningTargetSnapshot ReadPinningTarget()
     {
-        return Volatile.Read(ref _pinningTarget);
+        var target = Volatile.Read(ref _pinningTarget);
+        var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+        return lifecycle.IsActive && target.SessionGeneration == lifecycle.Generation
+            ? target
+            : PinningTargetSnapshot.Disabled;
+    }
+
+    internal static void InvalidateTarget(long sessionGeneration, string reason)
+    {
+        lock (TargetPublicationRoot)
+        {
+            var current = Volatile.Read(ref _pinningTarget);
+            lock (SyncRoot)
+            {
+                _enabled = false;
+                _highlightEnabled = false;
+                _sessionGeneration = 0;
+                _recipeId = -1;
+                _beverageId = -1;
+                _ingredientIds = EmptyIngredientIds;
+                _cookerTypeId = -1;
+                _recipeName = "";
+                _beverageName = "";
+                _cookerName = "";
+                Volatile.Write(
+                    ref _pinningTarget,
+                    new PinningTargetSnapshot(
+                        checked(current.Generation + 1),
+                        sessionGeneration,
+                        false,
+                        -1,
+                        -1,
+                        EmptyIngredientIds));
+            }
+
+            RuntimeCookerHighlightService.UpdateTarget(sessionGeneration, false, -1, "");
+            _log?.LogInfo($"Runtime UI target invalidated: generation={sessionGeneration}; reason={reason}.");
+        }
     }
 
     private static string PublishTarget(
+        long sessionGeneration,
         bool enabled,
         bool highlightEnabled,
         int recipeId,
@@ -182,6 +226,7 @@ internal static class RuntimeUiPinningService
         lock (SyncRoot)
         {
             if (!HasSamePublishedTargetLocked(
+                    sessionGeneration,
                     enabled,
                     highlightEnabled,
                     normalizedRecipeId,
@@ -192,6 +237,7 @@ internal static class RuntimeUiPinningService
                     normalizedBeverageName,
                     normalizedCookerName))
             {
+                _sessionGeneration = sessionGeneration;
                 _enabled = enabled;
                 _highlightEnabled = highlightEnabled;
                 _recipeId = normalizedRecipeId;
@@ -202,12 +248,18 @@ internal static class RuntimeUiPinningService
                 _beverageName = normalizedBeverageName;
                 _cookerName = normalizedCookerName;
                 var currentPinningTarget = Volatile.Read(ref _pinningTarget);
-                if (!currentPinningTarget.HasSameValues(enabled, _recipeId, _beverageId, normalizedIngredientIds))
+                if (!currentPinningTarget.HasSameValues(
+                        sessionGeneration,
+                        enabled,
+                        _recipeId,
+                        _beverageId,
+                        normalizedIngredientIds))
                 {
                     Volatile.Write(
                         ref _pinningTarget,
                         new PinningTargetSnapshot(
                             currentPinningTarget.Generation + 1,
+                            sessionGeneration,
                             enabled,
                             _recipeId,
                             _beverageId,
@@ -223,11 +275,25 @@ internal static class RuntimeUiPinningService
 
         if (!targetChanged) return Status;
         log?.LogInfo(logMessage);
-        RuntimeCookerHighlightService.UpdateTarget(highlightEnabled && hasTarget, normalizedCookerTypeId, normalizedCookerName);
+        RuntimeCookerHighlightService.UpdateTarget(
+            sessionGeneration,
+            highlightEnabled && hasTarget,
+            normalizedCookerTypeId,
+            normalizedCookerName);
         return Status;
     }
 
+    private static void ValidateSession(long sessionGeneration)
+    {
+        var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+        if (lifecycle.IsActive && sessionGeneration > 0 && sessionGeneration == lifecycle.Generation) return;
+
+        throw new InvalidOperationException(
+            $"Night-business UI target rejected: requested generation={sessionGeneration}, current generation={lifecycle.Generation}, phase={lifecycle.Phase}.");
+    }
+
     private static bool HasSamePublishedTargetLocked(
+        long sessionGeneration,
         bool enabled,
         bool highlightEnabled,
         int recipeId,
@@ -238,7 +304,8 @@ internal static class RuntimeUiPinningService
         string beverageName,
         string cookerName)
     {
-        return _enabled == enabled
+        return _sessionGeneration == sessionGeneration
+            && _enabled == enabled
             && _highlightEnabled == highlightEnabled
             && _recipeId == recipeId
             && _beverageId == beverageId
@@ -429,8 +496,13 @@ internal static class RuntimeUiPinningService
     {
         if (pinnedID < 0) return true;
 
+        var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+        if (!lifecycle.IsActive) return true;
+
         var cookingTarget = _cookingRefreshDepth > 0 ? _cookingScopeTarget : null;
         var beverageTarget = _beverageRefreshDepth > 0 ? _beverageScopeTarget : null;
+        if (cookingTarget?.SessionGeneration != lifecycle.Generation) cookingTarget = null;
+        if (beverageTarget?.SessionGeneration != lifecycle.Generation) beverageTarget = null;
         if (cookingTarget == null && beverageTarget == null) return true;
 
         if (cookingTarget is { Enabled: true }
@@ -493,11 +565,18 @@ internal static class RuntimeUiPinningService
     {
         private readonly int[] _ingredientIds;
 
-        public static readonly PinningTargetSnapshot Disabled = new(0, false, -1, -1, EmptyIngredientIds);
+        public static readonly PinningTargetSnapshot Disabled = new(0, 0, false, -1, -1, EmptyIngredientIds);
 
-        public PinningTargetSnapshot(long generation, bool enabled, int recipeId, int beverageId, int[] ingredientIds)
+        public PinningTargetSnapshot(
+            long generation,
+            long sessionGeneration,
+            bool enabled,
+            int recipeId,
+            int beverageId,
+            int[] ingredientIds)
         {
             Generation = generation;
+            SessionGeneration = sessionGeneration;
             Enabled = enabled;
             RecipeId = recipeId;
             BeverageId = beverageId;
@@ -505,6 +584,8 @@ internal static class RuntimeUiPinningService
         }
 
         public long Generation { get; }
+
+        public long SessionGeneration { get; }
 
         public bool Enabled { get; }
 
@@ -517,9 +598,14 @@ internal static class RuntimeUiPinningService
             return Array.IndexOf(_ingredientIds, ingredientId) >= 0;
         }
 
-        public bool HasSameValues(bool enabled, int recipeId, int beverageId, int[] ingredientIds)
+        public bool HasSameValues(
+            long sessionGeneration,
+            bool enabled,
+            int recipeId,
+            int beverageId,
+            int[] ingredientIds)
         {
-            if (Enabled != enabled) return false;
+            if (SessionGeneration != sessionGeneration || Enabled != enabled) return false;
             return !enabled
                 || RecipeId == recipeId
                 && BeverageId == beverageId

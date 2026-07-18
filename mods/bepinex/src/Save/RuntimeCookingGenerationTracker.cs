@@ -31,11 +31,13 @@ internal static class RuntimeCookingGenerationTracker
     public static void Attach(ManualLogSource log)
     {
         lock (SyncRoot) _log = log;
-        EnsureAttached();
+        EnsureAttached(force: true);
     }
 
-    public static bool EnsureAttached()
+    public static bool EnsureAttached(bool force = false)
     {
+        if (!force && !RuntimeNightBusinessLifecycle.IsActive) return false;
+
         lock (SyncRoot)
         {
             if (_patched) return true;
@@ -77,6 +79,12 @@ internal static class RuntimeCookingGenerationTracker
     public static bool TryGetGeneration(object cookController, out long generation, out string diagnostic)
     {
         generation = 0;
+        if (!RuntimeNightBusinessLifecycle.IsActive)
+        {
+            diagnostic = $"night business unavailable: {RuntimeNightBusinessLifecycle.Status}";
+            return false;
+        }
+
         if (!EnsureAttached())
         {
             diagnostic = Status;
@@ -109,6 +117,8 @@ internal static class RuntimeCookingGenerationTracker
 
     private static void OnSetCookStarting(object __instance)
     {
+        if (!RuntimeNightBusinessLifecycle.IsActive) return;
+
         if (!TryReadNativePointer(__instance, out var pointer))
         {
             lock (SyncRoot) _status = "patched=1; last=SetCook controller pointer unavailable";

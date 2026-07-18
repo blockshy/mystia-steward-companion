@@ -101,6 +101,8 @@ internal static class RuntimePinnedListHighlightService
 
     public static void Tick()
     {
+        if (!RuntimeNightBusinessLifecycle.IsActive) return;
+
         List<TrackedImage> staleImages;
         List<TrackedImage> candidates;
         var target = RuntimeUiPinningService.ReadPinningTarget();
@@ -166,18 +168,29 @@ internal static class RuntimePinnedListHighlightService
         RestoreTrackedImages(images);
     }
 
-    public static void Clear()
+    public static void Resume(string reason)
     {
-        List<TrackedImage> images;
+        var target = RuntimeUiPinningService.ReadPinningTarget();
         lock (SyncRoot)
         {
-            images = TakeAllTrackedImagesLocked();
-            _suspended = true;
-            _suspendReason = "cleared";
-            _state = "disabled";
+            _suspended = false;
+            _suspendReason = string.IsNullOrWhiteSpace(reason) ? "night business active" : reason.Trim();
+            _state = target.Enabled ? "waiting for target elements" : "disabled";
         }
+    }
 
-        RestoreTrackedImages(images);
+    /// <summary>
+    /// Drops destroyed IL2CPP image wrappers without calling their getters or setters.
+    /// </summary>
+    public static void Abandon(string reason)
+    {
+        lock (SyncRoot)
+        {
+            TrackedImages.Clear();
+            _suspended = true;
+            _suspendReason = string.IsNullOrWhiteSpace(reason) ? "night business destroyed" : reason.Trim();
+            _state = $"abandoned: {_suspendReason}";
+        }
     }
 
     private static void PatchElementMethod(
@@ -270,6 +283,8 @@ internal static class RuntimePinnedListHighlightService
 
     private static void BeforePanelOpen()
     {
+        if (!RuntimeNightBusinessLifecycle.IsActive) return;
+
         var target = RuntimeUiPinningService.ReadPinningTarget();
         lock (SyncRoot)
         {
@@ -281,6 +296,8 @@ internal static class RuntimePinnedListHighlightService
 
     private static void BeforeItemEnabled(object __2)
     {
+        if (!RuntimeNightBusinessLifecycle.IsActive) return;
+
         try
         {
             var image = ReadButtonImage(__2);
@@ -320,16 +337,18 @@ internal static class RuntimePinnedListHighlightService
 
     private static void BeforeCookingPanelTeardown()
     {
-        RestorePanel(PanelKind.Cooking);
+        ReconcilePanelTeardown(PanelKind.Cooking);
     }
 
     private static void BeforeStoragePanelTeardown()
     {
-        RestorePanel(PanelKind.Storage);
+        ReconcilePanelTeardown(PanelKind.Storage);
     }
 
     private static void TryRegister(object data, object button, PanelKind panelKind, ItemKind itemKind)
     {
+        if (!RuntimeNightBusinessLifecycle.IsActive) return;
+
         try
         {
             var item = itemKind == ItemKind.Recipe
@@ -570,6 +589,26 @@ internal static class RuntimePinnedListHighlightService
         }
 
         RestoreTrackedImages(images);
+    }
+
+    private static void ReconcilePanelTeardown(PanelKind panelKind)
+    {
+        if (RuntimeNightBusinessLifecycle.Snapshot.Phase == NightBusinessLifecyclePhase.Destroyed)
+        {
+            lock (SyncRoot)
+            {
+                foreach (var pointer in TrackedImages
+                             .Where(pair => pair.Value.PanelKind == panelKind)
+                             .Select(pair => pair.Key)
+                             .ToList())
+                {
+                    TrackedImages.Remove(pointer);
+                }
+            }
+            return;
+        }
+
+        RestorePanel(panelKind);
     }
 
     private static List<TrackedImage> TakeAllTrackedImagesLocked()

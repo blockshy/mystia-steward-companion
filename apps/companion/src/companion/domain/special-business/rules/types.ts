@@ -7,7 +7,7 @@ export interface SpecialBusinessOrderRule {
   preferHighFoodLevel: boolean;
   preferHighBeverageLevel: boolean;
   preferKoishiDamage: boolean;
-  preferYuyukoSafeEvaluation: boolean;
+  preferYuyukoPositiveSpell: boolean;
   preferYuyukoProgress: boolean;
   reason: string;
 }
@@ -22,7 +22,7 @@ export function emptySpecialBusinessOrderRule(): SpecialBusinessOrderRule {
     preferHighFoodLevel: false,
     preferHighBeverageLevel: false,
     preferKoishiDamage: false,
-    preferYuyukoSafeEvaluation: false,
+    preferYuyukoPositiveSpell: false,
     preferYuyukoProgress: false,
     reason: '',
   };

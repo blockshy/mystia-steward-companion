@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <LangVersion>10.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../../mods/bepinex/src/Save/NightBusinessLifecycleTracker.cs" Link="NightBusinessLifecycleTracker.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeNightBusinessLifecycle.cs" Link="RuntimeNightBusinessLifecycle.cs" />
+    <EmbeddedResource Include="../../mods/bepinex/src/Save/RuntimeNightBusinessLifecycle.cs" LogicalName="RuntimeNightBusinessLifecycle.cs" />
+  </ItemGroup>
+</Project>

@@ -57,7 +57,9 @@ export function isYuyukoProgressPair(
   food: FoodCandidate | null | undefined,
   beverage: BeverageCandidate | null | undefined,
 ): boolean {
-  return isYuyukoSafeEvaluationPair(food, beverage);
+  if (!food || !beverage) return false;
+  if (!food.meetsRequiredFood || !beverage.meetsRequiredBeverage) return false;
+  return isYuyukoProgressEvaluationPair(food, beverage);
 }
 
 export function isYuyukoProgressEvaluationPair(
@@ -70,27 +72,11 @@ export function isYuyukoProgressEvaluationPair(
   return estimateYuyukoEvaluationScore(food, beverage) >= YUYUKO_GOOD_EVALUATION_SCORE;
 }
 
-export function isYuyukoSafeEvaluationPair(
-  food: FoodCandidate | null | undefined,
-  beverage: BeverageCandidate | null | undefined,
-): boolean {
-  if (!food || !beverage) return false;
-  if (!food.meetsRequiredFood || !beverage.meetsRequiredBeverage) return false;
-  return isYuyukoProgressEvaluationPair(food, beverage);
-}
-
 export function isYuyukoProgressPlan(
   plan: RareOrderRecommendationPlan,
 ): boolean {
   if (plan.bucket === 'blocked') return false;
   return isYuyukoProgressPair(plan.food, plan.beverage);
-}
-
-export function isYuyukoSafeEvaluationPlan(
-  plan: RareOrderRecommendationPlan,
-): boolean {
-  if (plan.bucket === 'blocked') return false;
-  return isYuyukoSafeEvaluationPair(plan.food, plan.beverage);
 }
 
 export function scoreYuyukoPair(
@@ -134,12 +120,6 @@ export function buildYuyukoPlanReason(
   return buildYuyukoReasonCore(plan.food, plan.beverage, '幽幽子三阶段');
 }
 
-export function buildYuyukoSafeEvaluationPlanReason(
-  plan: RareOrderRecommendationPlan,
-): string {
-  return buildYuyukoReasonCore(plan.food, plan.beverage, '幽幽子二阶段安全评价', '安全评价阈值');
-}
-
 export function buildYuyukoProgressBlockedMessages(
   plans: readonly RareOrderRecommendationPlan[],
   limit = 3,
@@ -155,34 +135,10 @@ export function buildYuyukoProgressBlockedMessages(
   return ['幽幽子第三阶段没有可预测推进进度的执行方案。'];
 }
 
-export function buildYuyukoSafeEvaluationBlockedMessages(
-  plans: readonly RareOrderRecommendationPlan[],
-  limit = 3,
-): string[] {
-  const messages = [...plans]
-    .filter((plan) => !isYuyukoSafeEvaluationPlan(plan))
-    .sort((left, right) => compareYuyukoPlans(left, right))
-    .map(buildYuyukoSafeEvaluationBlockReason)
-    .filter((message): message is string => Boolean(message));
-  const uniqueMessages = uniqueTags(messages);
-  if (uniqueMessages.length > 0) return uniqueMessages.slice(0, Math.max(1, limit));
-  if (plans.length === 0) return [];
-  return ['幽幽子第二阶段没有可预测稳定高评价的执行方案。'];
-}
-
 export function buildYuyukoProgressBlockReason(
   plan: RareOrderRecommendationPlan,
 ): string | null {
   if (isYuyukoProgressPlan(plan)) return null;
-  const details = buildYuyukoProgressBlockDetails(plan);
-  if (details.length === 0) return null;
-  return `${formatYuyukoPlanTarget(plan)}：${details.join('；')}`;
-}
-
-export function buildYuyukoSafeEvaluationBlockReason(
-  plan: RareOrderRecommendationPlan,
-): string | null {
-  if (isYuyukoSafeEvaluationPlan(plan)) return null;
   const details = buildYuyukoProgressBlockDetails(plan);
   if (details.length === 0) return null;
   return `${formatYuyukoPlanTarget(plan)}：${details.join('；')}`;

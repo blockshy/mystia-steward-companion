@@ -59,6 +59,43 @@ namespace BepInEx.Logging
 
 namespace MystiaStewardCompanion.Save
 {
+    internal static class RuntimeNightBusinessLifecycle
+    {
+        private static readonly NightBusinessLifecycleTracker Tracker = new();
+        private static NightBusinessLifecycleSnapshot _snapshot;
+
+        static RuntimeNightBusinessLifecycle()
+        {
+            Tracker.TryActivate("test active", DateTime.UtcNow, Environment.CurrentManagedThreadId, out _snapshot);
+        }
+
+        public static NightBusinessLifecycleSnapshot Snapshot => Volatile.Read(ref _snapshot);
+
+        public static bool IsActive => Snapshot.IsActive;
+
+        public static long Generation => Snapshot.Generation;
+
+        public static void BeginClosing()
+        {
+            if (Tracker.TryBeginClosing("test closing", DateTime.UtcNow, Environment.CurrentManagedThreadId, out var snapshot))
+            {
+                Volatile.Write(ref _snapshot, snapshot);
+            }
+        }
+
+        public static void ActivateNextGeneration()
+        {
+            if (Tracker.TryMarkDestroyed("test destroyed", DateTime.UtcNow, Environment.CurrentManagedThreadId, out var destroyed))
+            {
+                Volatile.Write(ref _snapshot, destroyed);
+            }
+            if (Tracker.TryActivate("test active next", DateTime.UtcNow, Environment.CurrentManagedThreadId, out var active))
+            {
+                Volatile.Write(ref _snapshot, active);
+            }
+        }
+    }
+
     internal static class RuntimeReflectionUtility
     {
         public static Type? FindType(string fullName)
@@ -111,7 +148,7 @@ namespace MystiaStewardCompanion.Save
 
         public static int UpdateCount { get; private set; }
 
-        public static void UpdateTarget(bool enabled, int cookerTypeId, string cookerName)
+        public static void UpdateTarget(long sessionGeneration, bool enabled, int cookerTypeId, string cookerName)
         {
             UpdateCount += 1;
             LastEnabled = enabled;

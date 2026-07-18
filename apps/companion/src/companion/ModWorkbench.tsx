@@ -114,6 +114,10 @@ import {
   normalizePlace,
   toRuntimeRareCustomer,
 } from '@/companion/domain/service-recommendations';
+import {
+  buildPrimaryExecutionPlanPolicy,
+  serializePrimaryExecutionPlanPolicy,
+} from '@/companion/domain/primary-execution-plan';
 import { sortNormalOrders } from '@/companion/domain/sorting';
 import {
   buildSpecialBusinessOrderRule,
@@ -419,14 +423,16 @@ function buildNightBusinessOrderSignature(orders: readonly NightBusinessOrder[])
     .sort((left, right) =>
       left.deskCode - right.deskCode
       || (left.guestId ?? -1) - (right.guestId ?? -1)
+      || (left.runtimeGuestId ?? Number.MIN_SAFE_INTEGER) - (right.runtimeGuestId ?? Number.MIN_SAFE_INTEGER)
       || left.guestName.localeCompare(right.guestName)
-      || left.foodTagId - right.foodTagId
-      || left.beverageTagId - right.beverageTagId
+      || (left.foodTagId ?? Number.MIN_SAFE_INTEGER) - (right.foodTagId ?? Number.MIN_SAFE_INTEGER)
+      || (left.beverageTagId ?? Number.MIN_SAFE_INTEGER) - (right.beverageTagId ?? Number.MIN_SAFE_INTEGER)
     )
     .map((order) => [
       order.traceId ?? '',
       order.deskCode,
       order.guestId ?? '',
+      order.runtimeGuestId ?? '',
       order.guestName,
       order.specialBusinessRole ?? '',
       order.specialBusinessRoleLabel ?? '',
@@ -530,8 +536,7 @@ function buildOrderRecommendationPreferenceSignature(preferences: CompanionPrefe
     preferences.pinMissionRecipeEnabled ? 1 : 0,
     preferences.pinFavoriteRecipeEnabled ? 1 : 0,
     preferences.pinFavoriteBeverageEnabled ? 1 : 0,
-    preferences.autoPrepRecipeFavoritesOnly ? 1 : 0,
-    preferences.autoPrepBeverageFavoritesOnly ? 1 : 0,
+    serializePrimaryExecutionPlanPolicy(buildPrimaryExecutionPlanPolicy(preferences)),
     preferences.recommendationBudgetPolicy,
     preferences.recipeVariantLimitPerBase,
     stableNumberArraySignature(preferences.recommendationExclusions.excludedIngredientIds),
@@ -622,7 +627,6 @@ function buildAutomationDecisionDiagnosticSignature(
   eventName: string,
   message: string,
   specialBusiness: SpecialBusinessContext | null,
-  snapshotSignature: string,
   orderLines: readonly string[],
   selectionLines: readonly string[],
   skipLines: readonly string[],
@@ -632,7 +636,6 @@ function buildAutomationDecisionDiagnosticSignature(
   return hashDiagnosticSignature([
     eventName,
     message,
-    snapshotSignature,
     buildNormalOrderDetailSpecialBusinessSignature(specialBusiness),
     buildOrderRecommendationPreferenceSignature(preferences),
     leaseOwned ? 1 : 0,
@@ -656,7 +659,7 @@ function buildAutomationDecisionOrderLine(item: OrderRecommendation): string {
     `blocked=${item.blockedMessages.length}`,
     `blockedDetail=${formatRecommendationBlockedMessages(item)}`,
     `top=${formatRecommendationTopTarget(item)}`,
-    `plan=${formatRecommendationPlanTarget(item.executionPlans[0] ?? item.preparationPlan ?? null)}`,
+    `primary=${formatRecommendationPlanTarget(item.executionPlans[0] ?? null)}`,
   ].join('; ');
 }
 
@@ -730,7 +733,23 @@ function formatRecommendationTopTarget(item: OrderRecommendation): string {
   ].filter(Boolean).join('/');
 }
 
-function formatRecommendationPlanTarget(plan: OrderRecommendation['preparationPlan']): string {
+function formatRecommendationPrimaryTarget(item: OrderRecommendation): string {
+  const plan = item.executionPlans[0] ?? null;
+  if (!plan) return '';
+  return [
+    plan.food ? `${plan.food.recipe.name}#${plan.food.recipe.id}+${plan.food.extraIngredients.map((ingredient) => ingredient.id).join(',')}` : '',
+    plan.beverage ? `${plan.beverage.beverage.name}#${plan.beverage.beverage.id}` : '',
+  ].filter(Boolean).join('/');
+}
+
+function hasPrimaryRecommendationMismatch(recommendations: readonly OrderRecommendation[]): boolean {
+  return recommendations.some((item) => {
+    const primaryTarget = formatRecommendationPrimaryTarget(item);
+    return primaryTarget.length > 0 && formatRecommendationTopTarget(item) !== primaryTarget;
+  });
+}
+
+function formatRecommendationPlanTarget(plan: OrderRecommendation['executionPlans'][number] | null): string {
   if (!plan) return '';
   return [
     plan.food ? `${plan.food.recipe.name}#${plan.food.recipe.id}+${plan.food.extraIngredients.map((ingredient) => ingredient.id).join(',')}` : '',
@@ -2028,6 +2047,8 @@ export function ModWorkbench() {
     apiToken,
     connectionRevision,
     sessionId: snapshot?.automationSessionId.trim() ?? '',
+    businessGeneration: snapshot?.nightBusinessGeneration ?? 0,
+    businessActive: snapshot?.nightBusinessLifecyclePhase === 'Active',
     connectionReady: connectionReadyForActions,
     pinningEnabled: companionPreferences.gameUiPinningEnabled,
     cookerHighlightEnabled: companionPreferences.cookerHighlightEnabled,
@@ -2107,7 +2128,16 @@ export function ModWorkbench() {
     if (!connectionReadyForActions || !apiToken) return;
 
     const specialBusiness = snapshot?.specialBusiness ?? null;
-    if (!specialBusiness?.active && candidateResult.skips.length === 0 && candidateResult.selections.length > 0) return;
+    const primaryTargetMismatch = hasPrimaryRecommendationMismatch(orderRecommendations.recommendations);
+    if (!specialBusiness?.active
+      && candidateResult.skips.length === 0
+      && candidateResult.selections.length > 0
+      && !primaryTargetMismatch) return;
+
+    const diagnosticEventName = primaryTargetMismatch ? 'rare-primary-target-mismatch' : eventName;
+    const diagnosticMessage = primaryTargetMismatch
+      ? `页面首项与唯一主执行计划不一致；${message || candidateResult.message}`
+      : message;
 
     const orderLines = orderRecommendations.recommendations
       .slice(0, 8)
@@ -2120,12 +2150,11 @@ export function ModWorkbench() {
       .map(buildAutomationDecisionSkipLine);
     const specialBusinessRole = orderRecommendations.recommendations
       .find((item) => item.order.specialBusinessRole)?.order.specialBusinessRole ?? '';
-    const normalizedMessage = compactDiagnosticText(message || candidateResult.message);
+    const normalizedMessage = compactDiagnosticText(diagnosticMessage || candidateResult.message);
     const signature = buildAutomationDecisionDiagnosticSignature(
-      eventName,
+      diagnosticEventName,
       normalizedMessage,
       specialBusiness,
-      snapshot?.snapshotSignature ?? '',
       orderLines,
       selectionLines,
       skipLines,
@@ -2137,7 +2166,7 @@ export function ModWorkbench() {
 
     void appendAutomationDecisionDiagnostic(normalizedEndpoint, apiToken, {
       signature,
-      eventName,
+      eventName: diagnosticEventName,
       message: normalizedMessage,
       scene: snapshot?.activeSceneName ?? '',
       challengeType: specialBusiness?.challengeType ?? '',
@@ -2173,7 +2202,6 @@ export function ModWorkbench() {
     normalizedEndpoint,
     orderRecommendations.recommendations,
     snapshot?.activeSceneName,
-    snapshot?.snapshotSignature,
     snapshot?.specialBusiness,
   ]);
 
@@ -2187,7 +2215,6 @@ export function ModWorkbench() {
       input.eventName,
       normalizedMessage,
       specialBusiness,
-      snapshot?.snapshotSignature ?? '',
       [orderLine],
       [],
       [],
@@ -2234,7 +2261,6 @@ export function ModWorkbench() {
     connectionReadyForActions,
     normalizedEndpoint,
     snapshot?.activeSceneName,
-    snapshot?.snapshotSignature,
     snapshot?.specialBusiness,
   ]);
 

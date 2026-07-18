@@ -390,10 +390,10 @@ export function ModServicePanel({
                         </div>
                         <div className="mt-1 flex flex-wrap gap-1.5">
                           <Badge variant="outline">
-                            料理 {order.foodTag || '无'}{showDebugDetails ? ` (${order.foodTagId})` : ''}
+                            料理 {order.foodTag || '无'}{showDebugDetails ? ` (${order.foodTagId ?? 'missing'})` : ''}
                           </Badge>
                           <Badge variant="outline">
-                            酒水 {order.beverageTag || '无'}{showDebugDetails ? ` (${order.beverageTagId})` : ''}
+                            酒水 {order.beverageTag || '无'}{showDebugDetails ? ` (${order.beverageTagId ?? 'missing'})` : ''}
                           </Badge>
                           <OrderTraceBadge traceId={order.traceId} />
                           {order.specialBusinessRoleLabel && (
@@ -777,9 +777,11 @@ function CurrentOrderRecommendations({
         {rows.map((row) => {
           if (row.kind === 'issue') {
             const issue = row.issue;
+            const issueOccurrenceKey = issue.order.traceId
+              || `${issue.order.deskCode}:${issue.order.runtimeGuestId ?? 'unknown'}:${issue.order.foodTagId ?? 'missing'}:${issue.order.beverageTagId ?? 'missing'}`;
             return (
               <div
-                key={`${issue.order.deskCode}-${issue.order.guestId}-issue`}
+                key={`${issueOccurrenceKey}:issue`}
                 className={compact ? 'steward-data-row p-2 text-xs' : 'steward-data-row p-3 text-sm'}
               >
                 <div className="font-medium">{issue.order.guestName} · 桌 {formatDesk(issue.order.deskCode)}</div>
@@ -789,10 +791,10 @@ function CurrentOrderRecommendations({
           }
 
           const orderOccurrenceKey = row.item.order.traceId
-            || `${row.item.order.deskCode}:${row.item.order.guestId ?? 'unknown'}:${row.item.order.foodTagId}:${row.item.order.beverageTagId}`;
+            || `${row.item.order.deskCode}:${row.item.order.runtimeGuestId ?? 'unknown'}:${row.item.order.foodTagId ?? 'missing'}:${row.item.order.beverageTagId ?? 'missing'}`;
           return (
             <OrderRecommendationPanel
-              key={`${row.item.order.deskCode}-${row.item.order.guestId}-${row.item.order.foodTagId}-${row.item.order.beverageTagId}`}
+              key={orderOccurrenceKey}
               item={row.item}
               runtimeSets={runtimeSets}
               dataIndexes={dataIndexes}

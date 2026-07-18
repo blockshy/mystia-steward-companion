@@ -68,6 +68,12 @@ internal static class YuyukoChallengeEvaluationTracker
 
     public static bool TryFindYuyukoStoryPhase3ScoreCallback(object? callback, out string detail)
     {
+        if (!RuntimeNightBusinessLifecycle.IsActive)
+        {
+            detail = "night business unavailable";
+            return false;
+        }
+
         detail = "callback missing";
         if (callback == null) return false;
 
@@ -92,6 +98,12 @@ internal static class YuyukoChallengeEvaluationTracker
 
     public static bool TryFindYuyukoRetakePhase3ProgressCallback(object? callback, out string detail)
     {
+        if (!RuntimeNightBusinessLifecycle.IsActive)
+        {
+            detail = "night business unavailable";
+            return false;
+        }
+
         detail = "callback missing";
         if (callback == null) return false;
 
@@ -117,6 +129,12 @@ internal static class YuyukoChallengeEvaluationTracker
 
     public static bool TryFindYuyukoPhase3ManualProgressCallback(object? callback, out string detail)
     {
+        if (!RuntimeNightBusinessLifecycle.IsActive)
+        {
+            detail = "night business unavailable";
+            return false;
+        }
+
         detail = "callback missing";
         if (callback == null) return false;
 
@@ -141,6 +159,7 @@ internal static class YuyukoChallengeEvaluationTracker
 
     public static string DescribeCallback(object? callback)
     {
+        if (!RuntimeNightBusinessLifecycle.IsActive) return "night business unavailable";
         if (callback == null) return "null";
         var entries = EnumerateCallbackEntries(callback).ToArray();
         if (entries.Length <= 1) return DescribeCallbackEntry(callback);
@@ -192,32 +211,46 @@ internal static class YuyukoChallengeEvaluationTracker
 
     private static void OnManualOrderEvaluating(object? __0, object? __1)
     {
-        AppendNativeEvaluationTrace(
-            "GuestsManager.EvaulateManualOrder",
-            __0,
-            __1,
-            "manualEvaluation: true");
+        RunEvaluationCallback(() => AppendNativeEvaluationTrace(
+                "GuestsManager.EvaulateManualOrder",
+                __0,
+                __1,
+                "manualEvaluation: true"));
     }
 
     private static void OnRuntimeOrderEvaluating(object? __0, object? __1, object? __2)
     {
-        AppendNativeEvaluationTrace(
+        RunEvaluationCallback(() => AppendNativeEvaluationTrace(
             "GuestsManager.EvaluateOrder",
             __0,
             __2,
             "manualEvaluation: false",
-            $"finishedByPartner: {FormatValue(__1)}");
+            $"finishedByPartner: {FormatValue(__1)}"));
     }
 
     private static void OnSpecialPostEvaluation(object? __instance, object? __0, object? __1, object? __2, object? __3)
     {
-        AppendNativeEvaluationTrace(
+        RunEvaluationCallback(() => AppendNativeEvaluationTrace(
             "SpecialGuestsController.PostEvaluation",
             __instance,
             __1,
             $"evaluationType: {FormatValue(__0)}",
             $"finishedByPartner: {FormatValue(__2)}",
-            $"obtainedExGoodRatingWithModifiers: {FormatValue(__3)}");
+            $"obtainedExGoodRatingWithModifiers: {FormatValue(__3)}"));
+    }
+
+    private static void RunEvaluationCallback(Action callback)
+    {
+        if (!RuntimeNightBusinessLifecycle.IsActive) return;
+
+        try
+        {
+            callback();
+        }
+        catch
+        {
+            // Harmony diagnostics must never affect the game's evaluation path.
+        }
     }
 
     private static void AppendNativeEvaluationTrace(

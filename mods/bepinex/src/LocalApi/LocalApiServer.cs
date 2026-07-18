@@ -1391,9 +1391,12 @@ internal sealed class LocalApiServer : IDisposable
                 OrderKey = ReadStringQuery(query, "orderKey"),
                 DeskCode = ReadIntQuery(query, "deskCode", -1),
                 GuestId = ReadNullableIntQuery(query, "guestId"),
+                RuntimeGuestId = ReadNullableIntQuery(query, "runtimeGuestId"),
                 GuestName = ReadStringQuery(query, "guestName"),
                 SpecialBusinessRole = ReadStringQuery(query, "specialBusinessRole"),
+                FoodTagId = ReadNullableIntQuery(query, "foodTagId"),
                 FoodTag = ReadStringQuery(query, "foodTag"),
+                BeverageTagId = ReadNullableIntQuery(query, "beverageTagId"),
                 BeverageTag = ReadStringQuery(query, "beverageTag"),
                 MatchFoodId = ReadIntQuery(query, "matchFoodId", -1),
                 MatchBeverageId = ReadIntQuery(query, "matchBeverageId", -1),
@@ -1458,10 +1461,9 @@ internal sealed class LocalApiServer : IDisposable
         {
             var removed = SpecialOrderRuntimeCapture.DismissOrder(
                 ReadIntQuery(query, "deskCode", -1),
-                ReadNullableIntQuery(query, "guestId"),
-                ReadStringQuery(query, "guestName"),
-                ReadIntQuery(query, "foodTagId", int.MinValue),
-                ReadIntQuery(query, "beverageTagId", int.MinValue));
+                ReadNullableIntQuery(query, "runtimeGuestId"),
+                ReadNullableIntQuery(query, "foodTagId"),
+                ReadNullableIntQuery(query, "beverageTagId"));
             var status = removed > 0
                 ? $"已删除 {removed} 条稀客订单缓存。"
                 : "未找到匹配的稀客订单缓存。";
@@ -1480,6 +1482,7 @@ internal sealed class LocalApiServer : IDisposable
             var enabled = ReadBoolQuery(query, "enabled") ?? false;
             var highlightEnabled = ReadBoolQuery(query, "highlightEnabled") ?? false;
             var status = RuntimeUiPinningService.UpdateTarget(
+                ReadLongQuery(query, "businessGeneration", 0),
                 enabled,
                 highlightEnabled,
                 ReadIntQuery(query, "recipeId", -1),
@@ -2017,6 +2020,11 @@ internal sealed class LocalApiServer : IDisposable
     private static int ReadIntQuery(string query, string key, int fallback)
     {
         return int.TryParse(ReadStringQuery(query, key), out var value) ? value : fallback;
+    }
+
+    private static long ReadLongQuery(string query, string key, long fallback)
+    {
+        return long.TryParse(ReadStringQuery(query, key), out var value) ? value : fallback;
     }
 
     private static int? ReadNullableIntQuery(string query, string key)

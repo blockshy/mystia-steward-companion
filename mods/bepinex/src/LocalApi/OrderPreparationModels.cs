@@ -7,9 +7,12 @@ internal sealed class OrderPreparationRequest
     public string OrderKey { get; init; } = "";
     public int DeskCode { get; init; }
     public int? GuestId { get; init; }
+    public int? RuntimeGuestId { get; init; }
     public string GuestName { get; init; } = "";
     public string SpecialBusinessRole { get; init; } = "";
+    public int? FoodTagId { get; init; }
     public string FoodTag { get; init; } = "";
+    public int? BeverageTagId { get; init; }
     public string BeverageTag { get; init; } = "";
     public int MatchFoodId { get; init; } = -1;
     public int MatchBeverageId { get; init; } = -1;

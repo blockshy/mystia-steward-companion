@@ -43,7 +43,7 @@ internal static class NightBusinessDiagnosticFormatter
         foreach (var order in orders.Take(24))
         {
             builder.AppendLine(
-                $"  - source={order.Source}; desk={order.DeskCode}; guestId={FormatNullable(order.GuestId)}; guest={order.GuestName}; food={order.FoodTag}({order.FoodTagId}); beverage={order.BeverageTag}({order.BeverageTagId}); freeOrder={FormatNullableBool(order.IsFreeOrder)}; fund={FormatNullable(order.Fund)}; baseFund={FormatNullable(order.BaseFundCarry)}; maxFund={FormatNullable(order.MaxFundCarry)}; extraFund={FormatNullable(order.ExtraFundByBuff)}; remainingOrderCount={FormatNullable(order.RemainingOrderCount)}; willPayMoney={FormatNullableBool(order.WillPayMoney)}");
+                $"  - source={order.Source}; desk={order.DeskCode}; guestId={FormatNullable(order.GuestId)}; runtimeGuestId={FormatNullable(order.RuntimeGuestId)}; guest={order.GuestName}; food={order.FoodTag}({FormatNullable(order.FoodTagId)}); beverage={order.BeverageTag}({FormatNullable(order.BeverageTagId)}); freeOrder={FormatNullableBool(order.IsFreeOrder)}; fund={FormatNullable(order.Fund)}; baseFund={FormatNullable(order.BaseFundCarry)}; maxFund={FormatNullable(order.MaxFundCarry)}; extraFund={FormatNullable(order.ExtraFundByBuff)}; remainingOrderCount={FormatNullable(order.RemainingOrderCount)}; willPayMoney={FormatNullableBool(order.WillPayMoney)}");
         }
     }
 

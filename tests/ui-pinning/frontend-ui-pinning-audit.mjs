@@ -121,7 +121,20 @@ try {
     `下发的 recipeId=${acceptedRetry.params.recipeId}，期望 ${selectedRecipe.recipeId}`);
   assert(acceptedRetry.params.enabled === 'true', '定向巡检未启用游戏界面置顶');
   assert(acceptedRetry.params.ingredientIds, '置顶目标缺少材料 ID');
+  assert(acceptedRetry.params.businessGeneration === '1', '置顶目标缺少当前经营 generation');
   assert(Number(acceptedRetry.params.beverageId) >= 0, '置顶目标缺少酒水 ID');
+
+  await page.locator('[data-gamepad-tab-value="service"]').click();
+  const firstRecipeRow = page.locator('[data-gamepad-row-key*="service:order:"][data-gamepad-row-key*=":recipe:"]').first();
+  const firstBeverageRow = page.locator('[data-gamepad-row-key*="service:order:"][data-gamepad-row-key*=":beverage:"]').first();
+  await waitFor(async () => await firstRecipeRow.count() > 0 && await firstBeverageRow.count() > 0,
+    8_000, '经营中页面未显示稀客推荐首项');
+  const firstRecipeText = await firstRecipeRow.innerText();
+  const firstBeverageText = await firstBeverageRow.innerText();
+  assert(firstRecipeText.includes('#1') && firstRecipeText.includes(acceptedRetry.params.recipeName),
+    `游戏内料理目标未对应页面料理首项：${firstRecipeText}`);
+  assert(firstBeverageText.includes('#1') && firstBeverageText.includes(acceptedRetry.params.beverageName),
+    `游戏内酒水目标未对应页面酒水首项：${firstBeverageText}`);
 
   const acceptedTargetCount = recipeRequests.length;
   abortNextSnapshot = true;

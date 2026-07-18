@@ -6,6 +6,9 @@ internal sealed class LocalApiSnapshot
 {
     public string PluginVersion { get; init; } = "";
     public string AutomationSessionId { get; init; } = "";
+    public long NightBusinessGeneration { get; init; }
+    public string NightBusinessLifecyclePhase { get; init; } = "Inactive";
+    public string RuntimeNightBusinessLifecycleStatus { get; init; } = "";
     public string SnapshotSignature { get; set; } = "";
     public DateTime CapturedAtUtc { get; init; }
     public string ActiveSceneName { get; init; } = "";
