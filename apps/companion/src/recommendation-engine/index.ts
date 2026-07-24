@@ -12,6 +12,8 @@ export {
   buildRareOrderPlansFromCandidates,
   compareBeverageCandidates,
   compareFoodCandidates,
+  diagnoseRareBeverageCandidateSearch,
+  diagnoseRareFoodCandidateSearch,
   sortRareOrderPlans,
 } from '@/recommendation-engine/rare-orders';
 export {
@@ -37,6 +39,8 @@ export type {
   NormalBeverageRecommendation,
   NormalRecipeRecommendation,
   RareBeverageRecommendation,
+  RareBeverageCandidateSearchDiagnostic,
+  RareFoodCandidateSearchDiagnostic,
   RareOrderRecommendationPlan,
   RareRecipeRecommendation,
   RareTagOrderDemand,

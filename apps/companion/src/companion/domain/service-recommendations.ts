@@ -38,6 +38,10 @@ import {
   type CompanionPreferences,
 } from '@/companion/preferences';
 import {
+  cappedInventoryQuantityRank,
+  inventoryQuantityRankValue,
+} from '@/lib/inventory-quantity';
+import {
   buildSpecialBusinessOrderRule,
   buildWackyRejectedRecipeKeyForRareRecipe,
   hasMatchingSpecialBusinessTag,
@@ -50,10 +54,10 @@ import type {
   NightBusinessGuest,
   NightBusinessOrder,
   OrderRecommendation,
+  RecommendationBlockedDiagnostic,
+  RecommendationCandidateStageCounts,
   RecommendationIssue,
   RecommendationStateSnapshot,
-  RuntimeMissionServeTarget,
-  RuntimeRareCustomer,
   RuntimeSets,
   SpecialBusinessContext,
 } from '@/companion/types';
@@ -70,6 +74,8 @@ import {
   buildRareOrderPlansFromCandidates,
   compareBeverageCandidates,
   compareFoodCandidates,
+  diagnoseRareBeverageCandidateSearch,
+  diagnoseRareFoodCandidateSearch,
   normalizeRecommendationSortProfile,
   RECOMMENDATION_OBJECTIVE_DEFINITIONS,
   serializeRecommendationSortProfile,
@@ -80,6 +86,7 @@ import {
   type RecommendationBudgetPolicy,
   type RecommendationBudgetResult,
   type RareBeverageRecommendation,
+  type RareTagOrderDemand,
   type RareOrderRecommendationPlan,
   type RareRecipeRecommendation,
   type RecommendationPlanSortContext,
@@ -128,7 +135,6 @@ export function buildOrderRecommendations(
   customRecipes: CustomRecipeData,
   preferences: CompanionPreferences,
   activeRareGuests: NightBusinessGuest[] = [],
-  missionServeTargets: RuntimeMissionServeTarget[] = [],
   specialBusiness: SpecialBusinessContext | null = null,
   specialBusinessRejectedRecipeKeys: readonly string[] = [],
   data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
@@ -170,7 +176,6 @@ export function buildOrderRecommendations(
       continue;
     }
 
-    const missionTarget = findMissionServeTargetForOrder(order, missionServeTargets);
     const specialBusinessRule = buildSpecialBusinessOrderRule(specialBusiness, order.specialBusinessRole);
     const specialFoodTargetTags = specialBusinessRule.requiresWackyFoodTarget ? specialBusinessRule.foodTargetTags : [];
     const rareDemand = buildRareTagOrderDemand(customer, foodTag, beverageTag, specialFoodTargetTags);
@@ -181,7 +186,6 @@ export function buildOrderRecommendations(
         customer.id,
         foodTag,
         beverageTag,
-        missionTarget?.recipeId ?? null,
         preferences,
       ),
       specialBusiness,
@@ -224,8 +228,9 @@ export function buildOrderRecommendations(
       requiredBeverageTag: beverageTag,
       context: candidateContext,
     });
+    const mergedFoodCandidates = mergeCustomFoodCandidates(foodCandidates, customFoodCandidates);
     const combinedFoodCandidates = filterSpecialBusinessFoodCandidates(
-      mergeCustomFoodCandidates(foodCandidates, customFoodCandidates),
+      mergedFoodCandidates,
       specialBusinessRule,
       rejectedRecipeKeys,
       foodTag,
@@ -234,20 +239,6 @@ export function buildOrderRecommendations(
       beverageCandidates,
       specialBusinessRule,
     );
-    if (combinedFoodCandidates.length === 0 && specialBusinessRule.requiresWackyFoodTarget) {
-      recommendationIssues.push({
-        order,
-        message: `${specialBusinessRule.reason}，当前没有可执行且未被实机判定失败的料理方案。`,
-      });
-      continue;
-    }
-    if (combinedBeverageCandidates.length === 0 && specialBusinessRule.requiresBaseOrderMatch) {
-      recommendationIssues.push({
-        order,
-        message: `${specialBusinessRule.reason}，当前没有满足原订单酒水要求的可用酒水。`,
-      });
-      continue;
-    }
     const cacheKey = [
       foodCandidateKey,
       beverageCandidateKey,
@@ -336,14 +327,33 @@ export function buildOrderRecommendations(
         recommendationRowLimit,
         preferences.recipeVariantLimitPerBase,
       );
+      const blockedDiagnostic = executionPlans.length === 0
+        ? buildRecommendationBlockedDiagnostic({
+          data,
+          demand: rareDemand,
+          context: orderRuntimeContext,
+          runtimeSets,
+          generatedFoodCandidates: foodCandidates,
+          combinedFoodCandidatesBeforeSpecialRule: mergedFoodCandidates,
+          combinedFoodCandidates,
+          combinedBeverageCandidates,
+          rawPlans,
+          safePlans: plans,
+          executionPlans,
+          specialBusinessRule,
+        })
+        : null;
+      const blockedMessages = uniqueMessages([
+        ...(blockedDiagnostic ? [blockedDiagnostic.message] : []),
+        ...buildSpecialBusinessBlockedMessages(rawPlans, plans, specialBusinessRule),
+        ...buildBlockedPlanMessages(plans, orderRuntimeContext.budget, orderRuntimeContext.budgetPolicy),
+      ]);
       cached = {
         customer,
         executionPlans: executionPlans.slice(0, executionPlanLimit),
         budget: findRecommendationBudget(plans, primaryPlan),
-        blockedMessages: [
-          ...buildSpecialBusinessBlockedMessages(rawPlans, plans, specialBusinessRule),
-          ...buildBlockedPlanMessages(plans, orderRuntimeContext.budget, orderRuntimeContext.budgetPolicy),
-        ],
+        blockedMessages,
+        blockedDiagnostic,
         recipes: primaryRows.recipes,
         beverages: primaryRows.beverages,
       };
@@ -351,44 +361,19 @@ export function buildOrderRecommendations(
       trimCache(caches.orders, ORDER_RECOMMENDATION_CACHE_LIMIT);
     }
 
-    const recipeRows = markMissionRecipeRows(cached.recipes, missionTarget?.recipeId ?? null);
-
     recommendations.push({
       order,
       customer: cached.customer,
       executionPlans: cached.executionPlans,
       budget: cached.budget,
       blockedMessages: cached.blockedMessages,
-      recipes: recipeRows,
+      blockedDiagnostic: cached.blockedDiagnostic,
+      recipes: cached.recipes,
       beverages: cached.beverages,
     });
   }
 
   return { recommendations, recommendationIssues };
-}
-
-export function toRuntimeRareCustomer(customer: RuntimeRareCustomer): RareCustomerCatalogItem {
-  const name = (customer.name || '').trim();
-  return {
-    id: customer.id,
-    name,
-    description: `运行时稀客数据: ${customer.runtimeStringId || customer.source || customer.id}`,
-    dlc: 0,
-    places: normalizeRuntimePlaces(customer.places),
-    price: [0, 0],
-    enduranceLimit: 1,
-    positiveTags: dedupeStrings(customer.positiveTags).filter(isOrderableRareFoodTag),
-    negativeTags: dedupeStrings(customer.negativeTags),
-    beverageTags: dedupeStrings(customer.beverageTags),
-    positiveTagMapping: {},
-    beverageTagMapping: {},
-    collection: false,
-    evaluation: {},
-    spellCards: {
-      positive: [],
-      negative: [],
-    },
-  };
 }
 
 export function isUsableRareCustomer(customer: RareCustomerCatalogItem): boolean {
@@ -402,25 +387,9 @@ export function isSelectableRareCustomer(customer: RareCustomerCatalogItem): boo
 }
 
 export function buildRareCustomerMap(
-  runtimeRareCustomers: RareCustomerCatalogItem[],
   data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
 ): Map<number, RareCustomerCatalogItem> {
-  const map = new Map(getAllRareCustomers(data).map((customer) => [customer.id, customer]));
-  for (const customer of runtimeRareCustomers) {
-    if (!map.has(customer.id)) map.set(customer.id, customer);
-  }
-  return map;
-}
-
-export function mergeRareCustomers(localCustomers: RareCustomerCatalogItem[], runtimeRareCustomers: RareCustomerCatalogItem[]): RareCustomerCatalogItem[] {
-  const seen = new Set<number>();
-  const result: RareCustomerCatalogItem[] = [];
-  for (const customer of [...localCustomers, ...runtimeRareCustomers]) {
-    if (seen.has(customer.id)) continue;
-    seen.add(customer.id);
-    result.push(customer);
-  }
-  return result;
+  return new Map(getAllRareCustomers(data).map((customer) => [customer.id, customer]));
 }
 
 export function normalizePlace(value: string | null | undefined): PlaceName | null {
@@ -436,7 +405,6 @@ export function buildRecommendationPlanSortContext(
   customerId: number,
   foodTag: string,
   beverageTag: string,
-  missionRecipeId: number | null,
   preferences: CompanionPreferences,
 ): RecommendationPlanSortContext {
   return {
@@ -450,8 +418,6 @@ export function buildRecommendationPlanSortContext(
         .filter((favorite) => favorite.customerId === customerId && favorite.beverageTag === beverageTag)
         .map((favorite) => favorite.beverageId),
     ),
-    missionRecipeId,
-    pinMissionRecipe: preferences.pinMissionRecipeEnabled,
     pinFavoriteRecipe: preferences.pinFavoriteRecipeEnabled,
     pinFavoriteBeverage: preferences.pinFavoriteBeverageEnabled,
   };
@@ -508,13 +474,8 @@ function filterSpecialBusinessFoodCandidates(
   requiredFoodTag: string,
 ): FoodCandidate[] {
   return candidates.filter((candidate) => {
-    if (rule.requiresBaseOrderMatch && !candidate.meetsRequiredFood) return false;
-    if (rule.preferYuyukoPositiveSpell
-      && getYuyukoPositiveSpellNegativeTags(candidate, requiredFoodTag).length > 0) return false;
-    if (rule.requiresHighEvaluation
-      && !rule.preferYuyukoPositiveSpell
-      && candidate.matchedNegativeTags.length > 0) return false;
-    if (rule.preferKoishiDamage && candidate.matchedNegativeTags.length > 0) return false;
+    if (!isSpecialBusinessFoodBaseMatchCandidate(candidate, rule)) return false;
+    if (!isSpecialBusinessFoodNegativeSafeCandidate(candidate, rule, requiredFoodTag)) return false;
     if (!rule.requiresWackyFoodTarget || rule.foodTargetTags.length === 0) return true;
     if (!hasMatchingSpecialBusinessTag(candidate.activeTags, rule.foodTargetTags)) return false;
     const key = buildWackyRejectedRecipeKeyForRareRecipe(
@@ -525,6 +486,26 @@ function filterSpecialBusinessFoodCandidates(
     );
     return !key || !rejectedRecipeKeys.has(key);
   });
+}
+
+function isSpecialBusinessFoodBaseMatchCandidate(
+  candidate: FoodCandidate,
+  rule: ReturnType<typeof buildSpecialBusinessOrderRule>,
+): boolean {
+  return !rule.requiresBaseOrderMatch || candidate.meetsRequiredFood;
+}
+
+function isSpecialBusinessFoodNegativeSafeCandidate(
+  candidate: FoodCandidate,
+  rule: ReturnType<typeof buildSpecialBusinessOrderRule>,
+  requiredFoodTag: string,
+): boolean {
+  if (rule.preferYuyukoPositiveSpell) {
+    return getYuyukoPositiveSpellNegativeTags(candidate, requiredFoodTag).length === 0;
+  }
+  if ((rule.requiresHighEvaluation || rule.preferKoishiDamage)
+    && candidate.matchedNegativeTags.length > 0) return false;
+  return true;
 }
 
 function filterSpecialBusinessBeverageCandidates(
@@ -723,21 +704,6 @@ function findRareCustomer(order: NightBusinessOrder, rareCustomersById: Map<numb
   return [...rareCustomersById.values()].find((customer) => customer.name === order.guestName) ?? null;
 }
 
-function findMissionServeTargetForOrder(
-  order: NightBusinessOrder,
-  targets: RuntimeMissionServeTarget[],
-): RuntimeMissionServeTarget | null {
-  if (!targets.length) return null;
-  return targets.find((target) =>
-    target.status !== 'finished'
-    && target.recipeId >= 0
-    && (
-      (order.guestId != null && target.guestId === order.guestId)
-      || (!!target.guestName && target.guestName === order.guestName)
-    )
-  ) ?? null;
-}
-
 function findBudgetContextForOrder(
   order: NightBusinessOrder,
   activeRareGuests: NightBusinessGuest[],
@@ -780,15 +746,6 @@ function normalizeGuestName(value: string): string {
 function normalizeRemainingBudget(value: number | null | undefined): number | null {
   if (!Number.isFinite(value)) return null;
   return Math.max(0, Math.trunc(value ?? 0));
-}
-
-function markMissionRecipeRows(rows: RareRecipeRecommendation[], recipeId: number | null): RareRecipeRecommendation[] {
-  if (recipeId == null) return rows;
-  return rows.map((row) => (row.recipe.id === recipeId ? markMissionPriorityRecipe(row) : row));
-}
-
-function markMissionPriorityRecipe(recipe: RareRecipeRecommendation): RareRecipeRecommendation {
-  return recipe.missionPriority ? recipe : { ...recipe, missionPriority: true };
 }
 
 export function buildRecommendationRuntimeContext(
@@ -909,7 +866,6 @@ function getFoodCandidatePinRank(
     ));
   }
   if (sortContext.specialPreferYuyukoProgress) rank = Math.max(rank, getFoodYuyukoCandidateRank(food));
-  if (sortContext.pinMissionRecipe && sortContext.missionRecipeId === food.recipe.id) rank = Math.max(rank, 50);
   if (food.customRecipePinned) rank = Math.max(rank, 40);
   const specialBusinessRank = getFoodSpecialBusinessRank(food, sortContext);
   if (specialBusinessRank > 0) rank = Math.max(rank, 30 + specialBusinessRank);
@@ -965,7 +921,7 @@ function getBeverageDamageCandidateRank(beverage: BeverageCandidate): number {
     + beverage.matchedTags.length * 1_000
     + beverage.beverage.level * 100
     - Math.min(beverage.beverage.price, 999)
-    + Math.min(beverage.ownedQuantity, 99);
+    + cappedInventoryQuantityRank(beverage.ownedQuantity, 99);
 }
 
 function getFoodYuyukoCandidateRank(food: FoodCandidate): number {
@@ -984,7 +940,7 @@ function getBeverageYuyukoCandidateRank(beverage: BeverageCandidate): number {
     + beverage.beverage.level * 1_000
     + beverage.matchedTags.length * 500
     + Math.min(beverage.beverage.price, 999)
-    + Math.min(beverage.ownedQuantity, 99);
+    + cappedInventoryQuantityRank(beverage.ownedQuantity, 99);
 }
 
 function getFoodSpecialBusinessRank(
@@ -1040,6 +996,340 @@ function buildBlockedPlanMessages(
       .map((result) => result.detail),
   );
   return [...new Set(messages)].slice(0, 3);
+}
+
+interface BuildRecommendationBlockedDiagnosticOptions {
+  data: RecommendationDataSet;
+  demand: RareTagOrderDemand;
+  context: RecommendationRuntimeContext;
+  runtimeSets: RuntimeSets;
+  generatedFoodCandidates: FoodCandidate[];
+  combinedFoodCandidatesBeforeSpecialRule: FoodCandidate[];
+  combinedFoodCandidates: FoodCandidate[];
+  combinedBeverageCandidates: BeverageCandidate[];
+  rawPlans: RareOrderRecommendationPlan[];
+  safePlans: RareOrderRecommendationPlan[];
+  executionPlans: RareOrderRecommendationPlan[];
+  specialBusinessRule: ReturnType<typeof buildSpecialBusinessOrderRule>;
+}
+
+function buildRecommendationBlockedDiagnostic({
+  data,
+  demand,
+  context,
+  runtimeSets,
+  generatedFoodCandidates,
+  combinedFoodCandidatesBeforeSpecialRule,
+  combinedFoodCandidates,
+  combinedBeverageCandidates,
+  rawPlans,
+  safePlans,
+  executionPlans,
+  specialBusinessRule,
+}: BuildRecommendationBlockedDiagnosticOptions): RecommendationBlockedDiagnostic {
+  const foodSearch = diagnoseRareFoodCandidateSearch(
+    data,
+    demand,
+    context,
+    generatedFoodCandidates,
+  );
+  const beverageSearch = diagnoseRareBeverageCandidateSearch(data, demand, context);
+  const foodBaseMatchedCandidates = combinedFoodCandidatesBeforeSpecialRule.filter((candidate) =>
+    isSpecialBusinessFoodBaseMatchCandidate(candidate, specialBusinessRule)
+  );
+  const foodNegativeSafeCandidates = foodBaseMatchedCandidates.filter((candidate) =>
+    isSpecialBusinessFoodNegativeSafeCandidate(
+      candidate,
+      specialBusinessRule,
+      demand.requiredFoodTag,
+    )
+  );
+  const rawExecutablePlanCount = rawPlans.filter((plan) => plan.bucket !== 'blocked').length;
+  const specialSafePlanCount = safePlans.filter((plan) => plan.bucket !== 'blocked').length;
+  const counts: RecommendationCandidateStageCounts = {
+    foodRecipeEligibility: {
+      catalog: foodSearch.catalogRecipeCount,
+      requiredTagReachable: foodSearch.requiredTagReachableRecipeCount,
+      requiredTagReachableUnlocked: foodSearch.requiredTagReachableUnlockedRecipeCount,
+      requiredTagReachableBaseIngredientsReady:
+        foodSearch.requiredTagReachableBaseIngredientsReadyRecipeCount,
+      requiredTagReachableCookerReady: foodSearch.requiredTagReachableCookerReadyRecipeCount,
+    },
+    foodCandidates: {
+      generated: foodSearch.generatedCandidateCount,
+      generatedRequiredTagMatched: foodSearch.generatedRequiredTagMatchedCandidateCount,
+      merged: combinedFoodCandidatesBeforeSpecialRule.length,
+      baseOrderMatched: foodBaseMatchedCandidates.length,
+      negativeSafe: foodNegativeSafeCandidates.length,
+      specialRuleMatched: combinedFoodCandidates.length,
+      executable: combinedFoodCandidates.filter((candidate) =>
+        candidateHasNoHardFailures(candidate.conditionResults)
+      ).length,
+    },
+    beverageCandidates: {
+      catalog: beverageSearch.catalogBeverageCount,
+      available: beverageSearch.availableBeverageCount,
+      allowed: beverageSearch.allowedBeverageCount,
+      requiredTagMatched: beverageSearch.requiredTagBeverageCount,
+      specialRuleMatched: combinedBeverageCandidates.length,
+    },
+    plans: {
+      rawExecutable: rawExecutablePlanCount,
+      specialRuleSafe: specialSafePlanCount,
+      executable: executionPlans.length,
+    },
+  };
+  const remainingBudget = normalizeDiagnosticBudget(context.budget?.remainingBudget);
+  const minimumPairPrice = findMinimumExecutablePairPrice(
+    combinedFoodCandidates,
+    combinedBeverageCandidates,
+  );
+  const reason = selectRecommendationBlockedReason({
+    demand,
+    context,
+    counts,
+    specialBusinessRule,
+    missingIngredientNames: foodSearch.missingIngredientNames,
+    missingCookerNames: foodSearch.missingCookerNames,
+    placedCookerNames: [...runtimeSets.placedCookerNames].sort(),
+    remainingBudget,
+    minimumPairPrice,
+  });
+  const diagnosticWithoutSignature = {
+    ...reason,
+    counts,
+    missingIngredientNames: foodSearch.missingIngredientNames,
+    requiredCookerNames: foodSearch.missingCookerNames,
+    placedCookerNames: [...runtimeSets.placedCookerNames].sort(),
+    remainingBudget,
+    minimumPairPrice,
+  };
+
+  return {
+    ...diagnosticWithoutSignature,
+    stateSignature: buildRecommendationBlockedStateSignature(diagnosticWithoutSignature),
+  };
+}
+
+function selectRecommendationBlockedReason({
+  demand,
+  context,
+  counts,
+  specialBusinessRule,
+  missingIngredientNames,
+  missingCookerNames,
+  placedCookerNames,
+  remainingBudget,
+  minimumPairPrice,
+}: {
+  demand: RareTagOrderDemand;
+  context: RecommendationRuntimeContext;
+  counts: RecommendationCandidateStageCounts;
+  specialBusinessRule: ReturnType<typeof buildSpecialBusinessOrderRule>;
+  missingIngredientNames: string[];
+  missingCookerNames: string[];
+  placedCookerNames: string[];
+  remainingBudget: number | null;
+  minimumPairPrice: number | null;
+}): Pick<RecommendationBlockedDiagnostic, 'code' | 'firstEmptyStage' | 'message'> {
+  const foodRecipes = counts.foodRecipeEligibility;
+  const foodCandidates = counts.foodCandidates;
+  const beverageCandidates = counts.beverageCandidates;
+  const plans = counts.plans;
+
+  if (foodCandidates.baseOrderMatched === 0) {
+    if (foodRecipes.requiredTagReachable === 0) {
+      return {
+        code: 'food-tag-not-supported',
+        firstEmptyStage: 'food-tag-reachability',
+        message: `当前配方目录在现有加料上限与 Tag 规则下无法构成料理点单 Tag「${demand.requiredFoodTag}」。`,
+      };
+    }
+    if (foodRecipes.requiredTagReachableUnlocked === 0) {
+      return {
+        code: 'food-recipe-locked',
+        firstEmptyStage: 'food-recipe-unlocked',
+        message: `能满足料理点单 Tag「${demand.requiredFoodTag}」的配方尚未解锁。`,
+      };
+    }
+    if (foodRecipes.requiredTagReachableBaseIngredientsReady === 0) {
+      return {
+        code: 'food-base-ingredient-missing',
+        firstEmptyStage: 'food-base-ingredients',
+        message: `满足料理点单 Tag「${demand.requiredFoodTag}」的已解锁配方缺少基础材料`
+          + `${formatDiagnosticNameList(missingIngredientNames)}。`,
+      };
+    }
+    if (foodRecipes.requiredTagReachableCookerReady === 0) {
+      return {
+        code: 'food-cooker-missing',
+        firstEmptyStage: 'food-cooker',
+        message: `满足料理点单 Tag「${demand.requiredFoodTag}」的配方缺少可用厨具`
+          + `${formatDiagnosticNameList(missingCookerNames)}；当前摆放`
+          + `${formatDiagnosticNameList(placedCookerNames, '无')}。`,
+      };
+    }
+    if (foodCandidates.generatedRequiredTagMatched === 0) {
+      return {
+        code: 'food-required-tag-not-generated',
+        firstEmptyStage: 'food-candidate-generation',
+        message: `满足料理点单 Tag「${demand.requiredFoodTag}」的配方已具备运行资格，`
+          + '但当前可用加料未生成对应料理候选。',
+      };
+    }
+  }
+
+  if (foodCandidates.executable === 0
+    && foodRecipes.requiredTagReachableBaseIngredientsReady > 0
+    && foodRecipes.requiredTagReachableCookerReady === 0
+    && missingCookerNames.length > 0) {
+    return {
+      code: 'food-cooker-missing',
+      firstEmptyStage: 'food-cooker',
+      message: `满足料理点单 Tag「${demand.requiredFoodTag}」的配方缺少可用厨具`
+        + `${formatDiagnosticNameList(missingCookerNames)}；当前摆放`
+        + `${formatDiagnosticNameList(placedCookerNames, '无')}。`,
+    };
+  }
+
+  if (foodCandidates.negativeSafe === 0
+    && foodCandidates.baseOrderMatched > 0) {
+    return {
+      code: 'food-negative-tag',
+      firstEmptyStage: 'food-negative-safe',
+      message: '满足原订单的料理候选均包含当前稀客厌恶 Tag，已停止自动执行。',
+    };
+  }
+  if (foodCandidates.specialRuleMatched === 0) {
+    return {
+      code: 'food-special-rule-mismatch',
+      firstEmptyStage: 'food-special-rule',
+      message: `${specialBusinessRule.reason || '当前经营规则'}下没有可安全执行的料理候选。`,
+    };
+  }
+
+  if (beverageCandidates.specialRuleMatched === 0) {
+    if (beverageCandidates.available === 0) {
+      return {
+        code: 'beverage-unavailable',
+        firstEmptyStage: 'beverage-available',
+        message: '当前库存中没有可用酒水。',
+      };
+    }
+    if (beverageCandidates.allowed === 0) {
+      return {
+        code: 'beverage-excluded',
+        firstEmptyStage: 'beverage-allowed',
+        message: '当前库存中的酒水均被推荐排除设置过滤。',
+      };
+    }
+    if (beverageCandidates.requiredTagMatched === 0) {
+      return {
+        code: 'beverage-tag-mismatch',
+        firstEmptyStage: 'beverage-required-tag',
+        message: `当前可用酒水无法满足酒水点单 Tag「${demand.requiredBeverageTag}」。`,
+      };
+    }
+    return {
+      code: 'beverage-tag-mismatch',
+      firstEmptyStage: 'beverage-required-tag',
+      message: `${specialBusinessRule.reason || '当前经营规则'}下没有可安全执行的酒水候选。`,
+    };
+  }
+
+  if (context.budgetPolicy === 'block'
+    && (context.budget?.willPayMoney === false
+      || (remainingBudget != null
+        && minimumPairPrice != null
+        && minimumPairPrice > remainingBudget))) {
+    return {
+      code: 'budget-unavailable',
+      firstEmptyStage: 'budget',
+      message: context.budget?.willPayMoney === false
+        ? '稀客当前不会付款，预算阻止了自动执行。'
+        : `最低可执行组合价格 ${minimumPairPrice}，超过剩余预算 ${remainingBudget}。`,
+    };
+  }
+
+  if (plans.specialRuleSafe === 0
+    && (specialBusinessRule.preferYuyukoPositiveSpell
+      || specialBusinessRule.requiresHighEvaluation
+      || specialBusinessRule.preferYuyukoProgress)) {
+    return {
+      code: 'special-evaluation-unmet',
+      firstEmptyStage: 'special-evaluation',
+      message: specialBusinessRule.preferYuyukoPositiveSpell
+        ? '当前资源下没有可预测触发正面符卡的完美（ExGood）组合。'
+        : `${specialBusinessRule.reason || '特殊经营'}下没有满足评价要求的安全组合。`,
+    };
+  }
+
+  return {
+    code: 'execution-plan-missing',
+    firstEmptyStage: 'execution-plan',
+    message: '候选已生成，但当前没有可直接执行的完整料理/酒水组合。',
+  };
+}
+
+function findMinimumExecutablePairPrice(
+  foodCandidates: FoodCandidate[],
+  beverageCandidates: BeverageCandidate[],
+): number | null {
+  let minimum = Number.POSITIVE_INFINITY;
+  for (const food of foodCandidates) {
+    if (!candidateHasNoHardFailures(food.conditionResults)) continue;
+    for (const beverage of beverageCandidates) {
+      if (!candidateHasNoHardFailures(beverage.conditionResults)) continue;
+      minimum = Math.min(
+        minimum,
+        Math.max(0, food.recipe.price) + Math.max(0, beverage.beverage.price),
+      );
+    }
+  }
+  return Number.isFinite(minimum) ? minimum : null;
+}
+
+function normalizeDiagnosticBudget(value: number | null | undefined): number | null {
+  if (!Number.isFinite(value)) return null;
+  return Math.max(0, Math.trunc(value ?? 0));
+}
+
+function formatDiagnosticNameList(values: readonly string[], empty = '未识别'): string {
+  const normalized = [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+  if (normalized.length === 0) return `：${empty}`;
+  const visible = normalized.slice(0, 4);
+  const suffix = normalized.length > visible.length ? `等 ${normalized.length} 项` : '';
+  return `：${visible.join('、')}${suffix}`;
+}
+
+function buildRecommendationBlockedStateSignature(
+  diagnostic: Omit<RecommendationBlockedDiagnostic, 'stateSignature'>,
+): string {
+  return [
+    diagnostic.code,
+    diagnostic.firstEmptyStage,
+    `foodRecipes:${serializeDiagnosticCounts(diagnostic.counts.foodRecipeEligibility)}`,
+    `foodCandidates:${serializeDiagnosticCounts(diagnostic.counts.foodCandidates)}`,
+    `beverageCandidates:${serializeDiagnosticCounts(diagnostic.counts.beverageCandidates)}`,
+    `plans:${serializeDiagnosticCounts(diagnostic.counts.plans)}`,
+    `ingredients:${diagnostic.missingIngredientNames.join(',')}`,
+    `requiredCookers:${diagnostic.requiredCookerNames.join(',')}`,
+    `placedCookers:${diagnostic.placedCookerNames.join(',')}`,
+    `budget:${diagnostic.remainingBudget ?? ''}`,
+    `minimum:${diagnostic.minimumPairPrice ?? ''}`,
+  ].join('|');
+}
+
+function serializeDiagnosticCounts<TCounts extends { [Key in keyof TCounts]: number }>(
+  values: TCounts,
+): string {
+  return Object.entries(values)
+    .map(([key, value]) => `${key}:${value}`)
+    .join(',');
+}
+
+function uniqueMessages(messages: readonly string[]): string[] {
+  return [...new Set(messages.map((message) => message.trim()).filter(Boolean))];
 }
 
 export function deriveRecipeRowsFromCandidates(
@@ -1142,7 +1432,6 @@ function buildRecipeRowSortContext(sortContext: RecommendationPlanSortContext): 
 function buildBeverageRowSortContext(sortContext: RecommendationPlanSortContext): RecommendationPlanSortContext {
   return {
     ...sortContext,
-    pinMissionRecipe: false,
     pinFavoriteRecipe: false,
   };
 }
@@ -1276,7 +1565,8 @@ function compareBeverageSpecialBusinessPriority(
     if (preferenceDiff !== 0) return preferenceDiff;
     const priceDiff = right.beverage.price - left.beverage.price;
     if (priceDiff !== 0) return priceDiff;
-    const stockDiff = right.ownedQuantity - left.ownedQuantity;
+    const stockDiff = inventoryQuantityRankValue(right.ownedQuantity)
+      - inventoryQuantityRankValue(left.ownedQuantity);
     if (stockDiff !== 0) return stockDiff;
   }
 
@@ -1384,7 +1674,7 @@ function getBeverageCandidateObjectiveValue(
     case 'profit':
       return beverage.beverage.price;
     case 'beverageStock':
-      return beverage.ownedQuantity;
+      return inventoryQuantityRankValue(beverage.ownedQuantity);
     case 'foodPreference':
     case 'negativeRisk':
     case 'extraCount':
@@ -1602,10 +1892,8 @@ function serializeNumberRecord(values: Record<number, number>): string {
 
 function serializeRecommendationPlanSortContext(context: RecommendationPlanSortContext): string {
   return [
-    `mission:${context.missionRecipeId ?? ''}`,
     `recipeFav:${[...(context.favoriteRecipeKeys ?? [])].sort().join(';')}`,
     `bevFav:${[...(context.favoriteBeverageIds ?? [])].sort((left, right) => left - right).join(',')}`,
-    `pinMission:${context.pinMissionRecipe ? '1' : '0'}`,
     `pinRecipeFav:${context.pinFavoriteRecipe ? '1' : '0'}`,
     `pinBevFav:${context.pinFavoriteBeverage ? '1' : '0'}`,
     `specialFood:${[...(context.specialTargetFoodTags ?? [])].sort().join(';')}`,
@@ -1654,17 +1942,6 @@ function trimCache<TValue>(cache: Map<string, TValue>, maxSize: number) {
     if (key === undefined) return;
     cache.delete(key);
   }
-}
-
-function normalizeRuntimePlaces(places: string[]): PlaceName[] {
-  const normalized = places
-    .map((place) => normalizePlace(place))
-    .filter((place): place is PlaceName => Boolean(place));
-  return [...new Set(normalized)];
-}
-
-function dedupeStrings(values: string[]): string[] {
-  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
 
 function isUsableRareCustomerName(value: string): boolean {

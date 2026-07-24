@@ -12,7 +12,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeConcreteCollectionReader.cs" Link="RuntimeConcreteCollectionReader.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeCoreMappingProjection.cs" Link="RuntimeCoreMappingProjection.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeDaySceneReadinessState.cs" Link="RuntimeDaySceneReadinessState.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeReflectionUtility.cs" Link="RuntimeReflectionUtility.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeStorageStateProjection.cs" Link="RuntimeStorageStateProjection.cs" />
   </ItemGroup>
 
   <ItemGroup>
@@ -22,6 +26,10 @@
     </Reference>
     <Reference Include="Il2CppInterop.Runtime">
       <HintPath>$(ReferenceDir)/Il2CppInterop.Runtime.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="Il2Cppmscorlib">
+      <HintPath>$(ReferenceDir)/Il2Cppmscorlib.dll</HintPath>
       <Private>true</Private>
     </Reference>
   </ItemGroup>

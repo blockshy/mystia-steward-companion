@@ -1,18 +1,13 @@
-using System.Collections;
 using System.Reflection;
 using System.Runtime.ExceptionServices;
+using Il2CppInterop.Runtime.InteropTypes.Arrays;
 using MystiaStewardCompanion.Core;
 
 namespace MystiaStewardCompanion.Save;
 
 /// <summary>
-/// 通过反射读取游戏运行时数据，并转换为推荐引擎使用的 <see cref="RecommendationState"/>。
+/// Reads live player state through exact per-ID game getters.
 /// </summary>
-/// <remarks>
-/// 该 Provider 运行在游戏进程内。库存和解锁料理使用运行时存储快照作为权威来源，
-/// 玩家等级、流行标签和日间开关使用游戏公开的运行时静态方法读取。
-/// 所有反射访问都需要容忍字段缺失、DLC 差异和场景未就绪。
-/// </remarks>
 public sealed class RuntimeReflectionRecommendationStateProvider
 {
     private const string RuntimeStorageTypeName = "GameData.RunTime.Common.RunTimeStorage";
@@ -38,74 +33,104 @@ public sealed class RuntimeReflectionRecommendationStateProvider
     public string Description => "Game runtime live data";
     public IReadOnlyDictionary<string, double> PerformanceMs => _performanceMs;
 
-    /// <summary>
-    /// 检查当前游戏域是否已经加载推荐所需的运行时类型和基础方法。
-    /// </summary>
-    /// <param name="reason">不可读取时给 UI 或日志展示的原因。</param>
-    /// <returns>基础类型和入口方法均可用时返回 <c>true</c>。</returns>
     public static bool CanReadRuntimeState(out string reason)
     {
         reason = "";
-
-        var runtimeStorage = FindType(RuntimeStorageTypeName);
-        if (runtimeStorage == null)
+        var storageType = RuntimeReflectionUtility.FindType(RuntimeStorageTypeName);
+        if (storageType == null)
         {
             reason = "RunTimeStorage type is not loaded.";
             return false;
         }
 
-        var runtimePlayerData = FindType(RuntimePlayerDataTypeName);
-        if (runtimePlayerData == null)
+        var playerDataType = RuntimeReflectionUtility.FindType(RuntimePlayerDataTypeName);
+        if (playerDataType == null)
         {
             reason = "RunTimePlayerData type is not loaded.";
             return false;
         }
 
-        if (FindStaticMethod(runtimeStorage, "GenerateSaveData") == null)
+        if (FindExactStaticMethod(storageType, "HaveRecipe", typeof(bool), typeof(int)) == null
+            || FindExactStaticMethod(storageType, "GetIngredientCountById", typeof(int), typeof(int)) == null
+            || FindExactStaticMethod(storageType, "GetBeverageCountById", typeof(int), typeof(int)) == null)
         {
-            reason = "RunTimeStorage save-data snapshot method is not available.";
+            reason = "RunTimeStorage exact inventory getters are not available.";
             return false;
         }
 
-        if (FindStaticMethod(runtimePlayerData, "GetLevel") == null
-            || FindStaticMethod(runtimePlayerData, "GetPopFoodTags") == null)
+        if (FindExactStaticMethod(playerDataType, "GetLevel", typeof(int)) == null
+            || FindExactIntArrayStaticMethod(playerDataType, "GetPopFoodTags") == null)
         {
-            reason = "RunTimePlayerData live-data methods are not available.";
+            reason = "RunTimePlayerData exact live-data getters are not available.";
             return false;
         }
 
         return true;
     }
 
-    /// <summary>
-    /// 读取当前存档的推荐状态快照。
-    /// </summary>
-    /// <returns>包含已解锁料理、库存、流行 Tag、稀客可用性和厨具快照的推荐状态。</returns>
-    /// <exception cref="InvalidOperationException">游戏尚未载入存档或运行时返回空数据时抛出。</exception>
     public RecommendationState LoadState()
     {
         _performanceMs.Clear();
-        var storagePartial = Measure("storage.saveData", () => InvokeStaticSafely(RuntimeStorageTypeName, "GenerateSaveData"));
-        var recipeGameIds = Measure("storage.recipes", () => ReadStorageRecipeIds(storagePartial));
-        var ingredients = Measure("storage.ingredients", () => ReadStorageIngredients(storagePartial));
-        var beverages = Measure("storage.beverages", () => ReadStorageBeverages(storagePartial));
+        EnsureCompleteRepository();
+
+        var storageType = RequireType(RuntimeStorageTypeName);
+        var haveRecipeMethod = RequireExactStaticMethod(
+            storageType,
+            "HaveRecipe",
+            typeof(bool),
+            typeof(int));
+        var ingredientQuantityMethod = RequireExactStaticMethod(
+            storageType,
+            "GetIngredientCountById",
+            typeof(int),
+            typeof(int));
+        var beverageQuantityMethod = RequireExactStaticMethod(
+            storageType,
+            "GetBeverageCountById",
+            typeof(int),
+            typeof(int));
+
+        var recipeIds = Measure(
+            "storage.recipes",
+            () => RuntimeStorageStateProjection.ReadAvailableRecipeIds(
+                _repository.Recipes.Select(recipe => recipe.RecipeId),
+                recipeId => InvokeRequiredBoolean(haveRecipeMethod, recipeId)));
+        var ingredients = Measure(
+            "storage.ingredients",
+            () => RuntimeStorageStateProjection.ReadIngredientQuantities(
+                _repository.Ingredients.Select(ingredient => ingredient.Id),
+                ingredientId => InvokeRequiredInt32(ingredientQuantityMethod, ingredientId)));
+        var beverages = Measure(
+            "storage.beverages",
+            () => RuntimeStorageStateProjection.ReadBeverageQuantities(
+                _repository.Beverages.Select(beverage => beverage.Id),
+                beverageId => InvokeRequiredInt32(beverageQuantityMethod, beverageId)));
+
+        var playerDataType = RequireType(RuntimePlayerDataTypeName);
+        var getLevelMethod = RequireExactStaticMethod(playerDataType, "GetLevel", typeof(int));
+        var getFoodTagsMethod = RequireExactIntArrayStaticMethod(playerDataType, "GetPopFoodTags");
         var famousShopEnabled = _includeDaySceneState
             && Measure("player.famousShop", () => ReadTrackedSwitch(FamousShopSwitchKey));
-        var popularFoodTag = Measure("player.popularFood", () => ResolveFoodTag(ReadPopularFoodTags("Like")));
-        var playerLevel = Measure("player.level", ReadPlayerLevel);
+        var popularFoodTag = Measure(
+            "player.popularFood",
+            () => ResolveFoodTag(ReadPopularFoodTags(getFoodTagsMethod, "Like")));
+        var popularHateFoodTag = Measure(
+            "player.popularHateFood",
+            () => ResolveFoodTag(ReadPopularFoodTags(getFoodTagsMethod, "Hate")));
+        var playerLevel = Measure("player.level", () => InvokeRequiredInt32(getLevelMethod));
 
-        if (recipeGameIds.Count == 0 || (ingredients.Count == 0 && beverages.Count == 0 && playerLevel <= 0))
+        if (recipeIds.Count == 0 || (ingredients.Count == 0 && beverages.Count == 0 && playerLevel <= 0))
         {
             throw new InvalidOperationException("Game runtime data is empty; game progress may not be loaded.");
         }
 
         var parsed = new ParsedSaveData
         {
-            RecipeGameIds = recipeGameIds,
+            RecipeGameIds = recipeIds,
             Ingredients = ingredients,
             Beverages = beverages,
             PopularFoodTag = famousShopEnabled && popularFoodTag == "招牌" ? null : popularFoodTag,
-            PopularHateFoodTag = Measure("player.popularHateFood", () => ResolveFoodTag(ReadPopularFoodTags("Hate"))),
+            PopularHateFoodTag = popularHateFoodTag,
             FamousShopEnabled = famousShopEnabled,
         };
 
@@ -122,12 +147,18 @@ public sealed class RuntimeReflectionRecommendationStateProvider
         return state;
     }
 
-    /// <summary>
-    /// 执行一段运行时读取并记录耗时。
-    /// </summary>
-    /// <remarks>
-    /// 耗时会随本地 API 快照发布到伴随窗口，用于定位某个反射读取点导致的卡顿。
-    /// </remarks>
+    private void EnsureCompleteRepository()
+    {
+        if (_repository.Recipes.Count == 0
+            || _repository.Ingredients.Count == 0
+            || _repository.Beverages.Count == 0
+            || _repository.FoodTagIdMap.Count == 0
+            || _repository.BeverageTagIdMap.Count == 0)
+        {
+            throw new InvalidOperationException("Runtime data catalog is incomplete.");
+        }
+    }
+
     private T Measure<T>(string key, Func<T> action)
     {
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -154,89 +185,41 @@ public sealed class RuntimeReflectionRecommendationStateProvider
         }
     }
 
-    private static List<int> ReadStorageRecipeIds(object? storagePartial)
+    private static IReadOnlyList<int> ReadPopularFoodTags(MethodInfo method, string popTypeName)
     {
-        return ReadIntCollection(GetMemberValue(storagePartial, "recipes")).ToList();
-    }
-
-    private static Dictionary<int, int> ReadStorageBeverages(object? storagePartial)
-    {
-        return ReadIntDictionary(GetMemberValue(storagePartial, "beverages"));
-    }
-
-    private static Dictionary<int, int> ReadStorageIngredients(object? storagePartial)
-    {
-        return ReadIntDictionary(GetMemberValue(storagePartial, "ingredients"));
-    }
-
-    private static int ReadPlayerLevel()
-    {
-        return ToInt(InvokeStaticSafely(RuntimePlayerDataTypeName, "GetLevel"));
-    }
-
-    private static IEnumerable<int> ReadPopularFoodTags(string popTypeName)
-    {
-        var type = FindType(RuntimePlayerDataTypeName);
-        var method = type == null ? null : FindStaticMethod(type, "GetPopFoodTags");
-        if (method != null)
+        var parameterType = method.GetParameters()[0].ParameterType;
+        var popType = Enum.Parse(parameterType, popTypeName, ignoreCase: false);
+        var value = InvokeMethod(method, popType);
+        if (!RuntimeConcreteCollectionReader.TryReadIntArray(value, out var tags, out var failure))
         {
-            var parameters = method.GetParameters();
-            if (parameters.Length == 1 && parameters[0].ParameterType.IsEnum)
-            {
-                object? popType = null;
-                try
-                {
-                    popType = Enum.Parse(parameters[0].ParameterType, popTypeName);
-                }
-                catch
-                {
-                    popType = popTypeName == "Like"
-                        ? Enum.ToObject(parameters[0].ParameterType, 0)
-                        : Enum.ToObject(parameters[0].ParameterType, 1);
-                }
-
-                try
-                {
-                    var result = InvokeMethod(method, null, new[] { popType });
-                    var values = ReadIntCollection(result).ToList();
-                    if (values.Count > 0) return values;
-                }
-                catch
-                {
-                    // Let the next refresh retry the live getter.
-                }
-            }
+            throw new InvalidOperationException(
+                $"{method.DeclaringType?.FullName}.{method.Name} returned an unreadable int array: {failure}.");
         }
 
-        return Enumerable.Empty<int>();
+        return tags;
     }
 
     private static bool ReadTrackedSwitch(string key)
     {
-        var type = FindType(RuntimeDaySceneTypeName);
-        var method = type == null ? null : FindStaticMethod(type, "GetTrackedSwitch");
-        if (method != null)
-        {
-            try
-            {
-                var result = InvokeMethod(method, null, new object?[] { key, false });
-                return ToBool(result);
-            }
-            catch
-            {
-                // Let the next refresh retry the live getter.
-            }
-        }
-
-        return false;
+        var type = RequireType(RuntimeDaySceneTypeName);
+        var method = RequireExactStaticMethod(
+            type,
+            "GetTrackedSwitch",
+            typeof(bool),
+            typeof(string),
+            typeof(bool));
+        return InvokeRequiredBoolean(method, key, false);
     }
 
     private string? ResolveFoodTag(IEnumerable<int> tagIds)
     {
         foreach (var tagId in tagIds)
         {
-            var key = tagId.ToString();
-            if (!_repository.FoodTagIdMap.TryGetValue(key, out var tag)) continue;
+            if (!_repository.FoodTagIdMap.TryGetValue(tagId.ToString(), out var tag))
+            {
+                throw new InvalidOperationException(
+                    $"Popular food tag ID {tagId} is missing from the runtime tag map.");
+            }
 
             var normalized = FoodTags.NormalizeName(tag);
             if (normalized != null && FoodTags.All.Contains(normalized)) return normalized;
@@ -245,27 +228,94 @@ public sealed class RuntimeReflectionRecommendationStateProvider
         return null;
     }
 
-    private static object? InvokeStaticSafely(string typeName, string methodName)
+    private static Type RequireType(string fullName)
     {
-        try
-        {
-            var type = FindType(typeName);
-            if (type == null) return null;
-
-            var method = FindStaticMethod(type, methodName);
-            return method == null ? null : InvokeMethod(method, null, Array.Empty<object?>());
-        }
-        catch
-        {
-            return null;
-        }
+        return RuntimeReflectionUtility.FindType(fullName)
+            ?? throw new InvalidOperationException($"{fullName} is not loaded.");
     }
 
-    private static object? InvokeMethod(MethodInfo method, object? instance, object?[] args)
+    private static MethodInfo RequireExactStaticMethod(
+        Type type,
+        string name,
+        Type returnType,
+        params Type[] parameterTypes)
+    {
+        return FindExactStaticMethod(type, name, returnType, parameterTypes)
+            ?? throw new MissingMethodException(
+                type.FullName,
+                $"{name}({string.Join(", ", parameterTypes.Select(parameter => parameter.Name))}): {returnType.Name}");
+    }
+
+    private static MethodInfo? FindExactStaticMethod(
+        Type type,
+        string name,
+        Type returnType,
+        params Type[] parameterTypes)
+    {
+        var matches = type
+            .GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+            .Where(method => string.Equals(method.Name, name, StringComparison.Ordinal)
+                && method.ReturnType == returnType
+                && method.GetParameters().Select(parameter => parameter.ParameterType).SequenceEqual(parameterTypes))
+            .Take(2)
+            .ToList();
+        return matches.Count == 1 ? matches[0] : null;
+    }
+
+    private static MethodInfo RequireExactIntArrayStaticMethod(Type type, string name)
+    {
+        return FindExactIntArrayStaticMethod(type, name)
+            ?? throw new MissingMethodException(type.FullName, $"{name}(PopType): int[]");
+    }
+
+    private static MethodInfo? FindExactIntArrayStaticMethod(Type type, string name)
+    {
+        var matches = type
+            .GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+            .Where(method =>
+            {
+                if (!string.Equals(method.Name, name, StringComparison.Ordinal)
+                    || !IsExactIntArrayType(method.ReturnType))
+                {
+                    return false;
+                }
+
+                var parameters = method.GetParameters();
+                return parameters.Length == 1 && parameters[0].ParameterType.IsEnum;
+            })
+            .Take(2)
+            .ToList();
+        return matches.Count == 1 ? matches[0] : null;
+    }
+
+    private static bool IsExactIntArrayType(Type type)
+    {
+        return type == typeof(int[]) || type == typeof(Il2CppStructArray<int>);
+    }
+
+    private static int InvokeRequiredInt32(MethodInfo method, params object?[] args)
+    {
+        var value = InvokeMethod(method, args);
+        return value is int result
+            ? result
+            : throw new InvalidOperationException(
+                $"{method.DeclaringType?.FullName}.{method.Name} returned {DescribeType(value)} instead of System.Int32.");
+    }
+
+    private static bool InvokeRequiredBoolean(MethodInfo method, params object?[] args)
+    {
+        var value = InvokeMethod(method, args);
+        return value is bool result
+            ? result
+            : throw new InvalidOperationException(
+                $"{method.DeclaringType?.FullName}.{method.Name} returned {DescribeType(value)} instead of System.Boolean.");
+    }
+
+    private static object? InvokeMethod(MethodInfo method, params object?[] args)
     {
         try
         {
-            return method.Invoke(instance, args);
+            return method.Invoke(null, args);
         }
         catch (TargetInvocationException ex) when (ex.InnerException != null)
         {
@@ -274,252 +324,8 @@ public sealed class RuntimeReflectionRecommendationStateProvider
         }
     }
 
-    private static MethodInfo? FindStaticMethod(Type type, string name)
+    private static string DescribeType(object? value)
     {
-        return type.GetMethod(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
-    }
-
-    private static Type? FindType(string fullName)
-    {
-        var direct = Type.GetType(fullName, false);
-        if (direct != null) return direct;
-
-        foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
-        {
-            Type? type = null;
-            try
-            {
-                type = assembly.GetType(fullName, false);
-            }
-            catch
-            {
-                // Some IL2CPP interop assemblies can throw while resolving unrelated types.
-            }
-
-            if (type != null) return type;
-        }
-
-        return null;
-    }
-
-    private static object? GetMemberValue(object? instance, string name)
-    {
-        if (instance == null) return null;
-        var type = instance.GetType();
-
-        var property = type.GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-        if (property != null) return property.GetValue(instance);
-
-        var field = type.GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-        if (field != null) return field.GetValue(instance);
-
-        var pascalName = char.ToUpperInvariant(name[0]) + name[1..];
-        property = type.GetProperty(pascalName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-        if (property != null) return property.GetValue(instance);
-
-        field = type.GetField(pascalName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-        return field?.GetValue(instance);
-    }
-
-    private static IEnumerable<int> ReadIntCollection(object? value)
-    {
-        foreach (var item in EnumerateObjects(value))
-        {
-            yield return ToInt(item);
-        }
-    }
-
-    private static Dictionary<int, int> ReadIntDictionary(object? value)
-    {
-        var result = new Dictionary<int, int>();
-        if (value == null) return result;
-
-        if (value is IDictionary dictionary)
-        {
-            foreach (DictionaryEntry entry in dictionary)
-            {
-                result[ToInt(entry.Key)] = ToInt(entry.Value);
-            }
-
-            return result;
-        }
-
-        foreach (var item in EnumerateObjects(value))
-        {
-            var key = GetMemberValue(item, "Key") ?? GetMemberValue(item, "key");
-            var itemValue = GetMemberValue(item, "Value") ?? GetMemberValue(item, "value");
-            if (key == null || itemValue == null) continue;
-            result[ToInt(key)] = ToInt(itemValue);
-        }
-
-        if (result.Count > 0) return result;
-
-        var keys = GetMemberValue(value, "Keys");
-        if (keys == null) return result;
-
-        foreach (var key in EnumerateObjects(keys))
-        {
-            var itemValue = ReadIndexedValue(value, key);
-            if (itemValue == null) continue;
-            result[ToInt(key)] = ToInt(itemValue);
-        }
-
-        return result;
-    }
-
-    private static IEnumerable<object?> EnumerateObjects(object? value)
-    {
-        if (value == null) yield break;
-
-        if (value is IEnumerable enumerable && value is not string)
-        {
-            foreach (var item in enumerable)
-            {
-                yield return item;
-            }
-
-            yield break;
-        }
-
-        var reflected = false;
-        foreach (var item in EnumerateObjectsByReflection(value))
-        {
-            reflected = true;
-            yield return item;
-        }
-
-        if (reflected) yield break;
-
-        var count = ReadCount(value);
-        if (count <= 0) yield break;
-
-        var indexer = FindIntIndexer(value.GetType());
-        var getItem = FindIntGetItem(value.GetType());
-        if (indexer == null && getItem == null) yield break;
-
-        for (var i = 0; i < count; i++)
-        {
-            yield return indexer != null
-                ? indexer.GetValue(value, new object[] { i })
-                : getItem?.Invoke(value, new object[] { i });
-        }
-    }
-
-    private static PropertyInfo? FindIntIndexer(Type type)
-    {
-        foreach (var property in type.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
-        {
-            if (property.Name != "Item") continue;
-
-            var parameters = property.GetIndexParameters();
-            if (parameters is { Length: 1 } && parameters[0].ParameterType == typeof(int)) return property;
-        }
-
-        return null;
-    }
-
-    private static MethodInfo? FindIntGetItem(Type type)
-    {
-        foreach (var method in type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
-        {
-            if (method.Name != "get_Item") continue;
-
-            var parameters = method.GetParameters();
-            if (parameters is { Length: 1 } && parameters[0].ParameterType == typeof(int)) return method;
-        }
-
-        return null;
-    }
-
-    private static object? ReadIndexedValue(object instance, object? key)
-    {
-        var type = instance.GetType();
-        foreach (var property in type.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
-        {
-            if (property.Name != "Item") continue;
-
-            var parameters = property.GetIndexParameters();
-            if (parameters is not { Length: 1 } || !CanUseIndexParameter(parameters[0].ParameterType, key)) continue;
-
-            try
-            {
-                return property.GetValue(instance, new[] { key });
-            }
-            catch
-            {
-                // Try the next overload or get_Item method.
-            }
-        }
-
-        foreach (var method in type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
-        {
-            if (method.Name != "get_Item") continue;
-
-            var parameters = method.GetParameters();
-            if (parameters is not { Length: 1 } || !CanUseIndexParameter(parameters[0].ParameterType, key)) continue;
-
-            try
-            {
-                return method.Invoke(instance, new[] { key });
-            }
-            catch
-            {
-                // Try the next overload.
-            }
-        }
-
-        return null;
-    }
-
-    private static bool CanUseIndexParameter(Type parameterType, object? key)
-    {
-        if (key == null) return !parameterType.IsValueType;
-
-        var keyType = key.GetType();
-        if (parameterType.IsAssignableFrom(keyType)) return true;
-
-        return parameterType.IsPrimitive && key is IConvertible;
-    }
-
-    private static IEnumerable<object?> EnumerateObjectsByReflection(object value)
-    {
-        var getEnumerator = value.GetType().GetMethod("GetEnumerator", Type.EmptyTypes);
-        if (getEnumerator == null) yield break;
-
-        var enumerator = getEnumerator.Invoke(value, Array.Empty<object?>());
-        if (enumerator == null) yield break;
-
-        var moveNext = enumerator.GetType().GetMethod("MoveNext", Type.EmptyTypes);
-        var current = enumerator.GetType().GetProperty("Current");
-        if (moveNext == null || current == null) yield break;
-
-        while (moveNext.Invoke(enumerator, Array.Empty<object?>()) is bool next && next)
-        {
-            yield return current.GetValue(enumerator);
-        }
-    }
-
-    private static int ReadCount(object value)
-    {
-        var count = GetMemberValue(value, "Count") ?? GetMemberValue(value, "Length");
-        return ToInt(count);
-    }
-
-    private static int ToInt(object? value)
-    {
-        if (value == null) return 0;
-        if (value is int intValue) return intValue;
-        if (value is long longValue) return (int)longValue;
-        if (value is short shortValue) return shortValue;
-        if (int.TryParse(value.ToString(), out var parsed)) return parsed;
-        return 0;
-    }
-
-    private static bool ToBool(object? value)
-    {
-        if (value == null) return false;
-        if (value is bool boolValue) return boolValue;
-        if (bool.TryParse(value.ToString(), out var parsed)) return parsed;
-        return false;
+        return value?.GetType().FullName ?? "null";
     }
 }

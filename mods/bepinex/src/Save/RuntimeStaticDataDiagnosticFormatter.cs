@@ -104,8 +104,6 @@ internal static class RuntimeStaticDataDiagnosticFormatter
                 .Append(entry.SourceGuestId?.ToString() ?? "")
                 .Append('/')
                 .Append(entry.LocalRareCustomerId?.ToString() ?? "")
-                .Append('/')
-                .Append(entry.RuntimeCustomer?.Id.ToString() ?? "")
                 .Append(';');
         }
 
@@ -159,16 +157,16 @@ internal static class RuntimeStaticDataDiagnosticFormatter
     private static string FormatMappedSpecialGuestsContent(RuntimeMappedGuestCatalogSnapshot snapshot)
     {
         var builder = new StringBuilder();
-        builder.AppendLine("Source: DataBaseCharacter.GetAllMappedGuests() + GetSpecialGuestsAndMappedGuests()");
+        builder.AppendLine("Source: DataBaseCharacter base and mapped guest identity metadata");
         builder.AppendLine($"ReadAtUtc: {snapshot.CapturedAtUtc:O}");
         builder.AppendLine($"Status: {snapshot.Status}");
-        builder.AppendLine($"RuntimeGuestAliases: {snapshot.Entries.Count}");
+        builder.AppendLine($"BaseGuestIdentities: {snapshot.Entries.Count(entry => entry.AliasSource == "base-identity")}");
+        builder.AppendLine($"MappedGuestAliases: {snapshot.Entries.Count(entry => entry.AliasSource != "base-identity")}");
         builder.AppendLine($"ResolvedLocalGuests: {snapshot.LocalResolvedCount}");
-        builder.AppendLine($"RuntimeSyntheticGuests: {snapshot.RuntimeSyntheticCount}");
         foreach (var entry in snapshot.Entries)
         {
             builder.AppendLine(
-                $"  - runtimeId={FormatNullable(entry.RuntimeId)}; strId={entry.RuntimeStringId}; sourceGuestId={FormatNullable(entry.SourceGuestId)}; sourceStringId={entry.SourceStringId}; sourceName={entry.SourceDisplayName}; localId={FormatNullable(entry.LocalRareCustomerId)}; localName={entry.LocalRareCustomerName}; runtimeCustomer={FormatRuntimeCustomer(entry.RuntimeCustomer)}; aliasSource={entry.AliasSource}; overrideDestination={entry.OverrideDestination}; type={entry.RuntimeTypeName}");
+                $"  - runtimeId={FormatNullable(entry.RuntimeId)}; strId={entry.RuntimeStringId}; sourceGuestId={FormatNullable(entry.SourceGuestId)}; sourceStringId={entry.SourceStringId}; sourceName={entry.SourceDisplayName}; localId={FormatNullable(entry.LocalRareCustomerId)}; localName={entry.LocalRareCustomerName}; aliasSource={entry.AliasSource}; type={entry.RuntimeTypeName}");
         }
 
         return builder.ToString();
@@ -177,12 +175,6 @@ internal static class RuntimeStaticDataDiagnosticFormatter
     private static string FormatNullable(int? value)
     {
         return value.HasValue ? value.Value.ToString() : "";
-    }
-
-    private static string FormatRuntimeCustomer(RuntimeRareCustomer? customer)
-    {
-        if (customer == null) return "";
-        return $"{customer.Name}({customer.Id}); food=[{string.Join(",", customer.PositiveTags)}]; hate=[{string.Join(",", customer.NegativeTags)}]; bev=[{string.Join(",", customer.BeverageTags)}]";
     }
 }
 

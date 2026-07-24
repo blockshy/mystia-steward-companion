@@ -36,7 +36,7 @@ workerScope.onmessage = (event) => {
       data,
     };
     const startedAt = now();
-    const rareCustomersById = buildRareCustomerMap(payload.runtimeRareCustomers, payload.data);
+    const rareCustomersById = buildRareCustomerMap(payload.data);
     const recommendationStartedAt = now();
     const recommendationResult = buildOrderRecommendations(
       payload.orders,
@@ -47,7 +47,6 @@ workerScope.onmessage = (event) => {
       payload.customRecipes,
       payload.preferences,
       payload.activeRareGuests,
-      payload.missionServeTargets,
       payload.specialBusiness ?? null,
       payload.specialBusinessRejectedRecipeKeys ?? [],
       payload.data,
@@ -159,6 +158,7 @@ function buildResultSignature(result: OrderRecommendationResult): string {
       item.order.hasServedFood ? 1 : 0,
       item.order.hasServedBeverage ? 1 : 0,
       item.blockedMessages.join('~'),
+      item.blockedDiagnostic?.stateSignature ?? '',
       item.executionPlans.map((plan) => [
         plan.bucket,
         plan.food?.recipe.id ?? '',

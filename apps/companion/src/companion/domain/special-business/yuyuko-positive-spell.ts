@@ -4,6 +4,7 @@ import type {
   RareOrderRecommendationPlan,
   RareTagOrderDemand,
 } from '@/recommendation-engine';
+import { cappedInventoryQuantityRank } from '@/lib/inventory-quantity';
 
 export const YUYUKO_POSITIVE_SPELL_EXGOOD_SCORE = 4;
 export const YUYUKO_POSITIVE_SPELL_MIN_EXTRA_PREFERENCE_MATCHES = YUYUKO_POSITIVE_SPELL_EXGOOD_SCORE - 2;
@@ -127,7 +128,7 @@ export function getYuyukoPositiveSpellBeverageCandidateRank(
   return 10_000
     + extraPreferenceScore * 10_000
     - Math.min(beverage.beverage.price, 999)
-    + Math.min(beverage.ownedQuantity, 99);
+    + cappedInventoryQuantityRank(beverage.ownedQuantity, 99);
 }
 
 function scoreYuyukoPositiveSpellPlan(plan: RareOrderRecommendationPlan): number {
@@ -138,7 +139,7 @@ function scoreYuyukoPositiveSpellPlan(plan: RareOrderRecommendationPlan): number
     + evaluation.extraPreferenceScore * 1_000_000
     + evaluation.baseDemandScore * 100_000
     + Math.min(plan.food.recipe.price + plan.beverage.beverage.price, 999) * 10
-    + Math.min(plan.beverage.ownedQuantity, 99)
+    + cappedInventoryQuantityRank(plan.beverage.ownedQuantity, 99)
     - evaluation.negativeTags.length * 100_000_000
     - Math.ceil(plan.food.resourcePressure * 100)
     - plan.food.extraIngredients.length;

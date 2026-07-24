@@ -1,3 +1,5 @@
+import type { RuntimeDataCatalogSnapshot } from '@/lib/recommendation-data';
+
 export const CONNECTION_RETRY_DELAYS_MS = [2000, 5000, 10000, 30000] as const;
 
 export interface CompanionConnectionIdentity {
@@ -39,6 +41,25 @@ export function resolveCompanionConnectionIdentity(
 export function getConnectionRetryDelayMs(failureCount: number): number {
   const retryIndex = Math.max(0, Math.min(failureCount - 1, CONNECTION_RETRY_DELAYS_MS.length - 1));
   return CONNECTION_RETRY_DELAYS_MS[retryIndex];
+}
+
+export function updateUnavailableRuntimeData(
+  current: RuntimeDataCatalogSnapshot | null,
+  source: string,
+  status: string,
+): RuntimeDataCatalogSnapshot {
+  if (current?.isComplete) return current;
+  if (current && current.source === source && current.status === status) return current;
+  return {
+    isComplete: false,
+    source,
+    status,
+    recipes: [],
+    ingredients: [],
+    beverages: [],
+    normalCustomers: [],
+    rareCustomers: [],
+  };
 }
 
 export function buildAutomationLeaseConnectionKey(

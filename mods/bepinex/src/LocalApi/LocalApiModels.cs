@@ -15,6 +15,8 @@ internal sealed class LocalApiSnapshot
     public string ActiveDayMapLabel { get; init; } = "";
     public string ActiveDayMapName { get; init; } = "";
     public bool RuntimeLoaded { get; init; }
+    public long RuntimeDaySceneGeneration { get; init; }
+    public bool RuntimeDaySceneReady { get; init; }
     public string Status { get; init; } = "";
     public string RuntimeSource { get; init; } = "";
     public string RuntimeSceneReadinessStatus { get; init; } = "";
@@ -22,9 +24,7 @@ internal sealed class LocalApiSnapshot
     public RecommendationStateSnapshot? RecommendationState { get; init; }
     public NightBusinessContext? NightBusiness { get; init; }
     public SpecialBusinessContext? SpecialBusiness { get; init; }
-    public RuntimeMissionContext? RuntimeMissions { get; init; }
     public NormalBusinessContext? NormalBusiness { get; init; }
-    public List<RuntimeRareCustomer> RuntimeRareCustomers { get; init; } = new();
     public List<AutomationRuntimeEvent> AutomationEvents { get; init; } = new();
     public List<AutomationCookingJobSnapshot> AutomationCookingJobs { get; init; } = new();
     public bool RuntimeDataComplete { get; init; }

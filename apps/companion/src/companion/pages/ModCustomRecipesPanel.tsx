@@ -25,7 +25,6 @@ import {
 import {
   isOrderableRareFoodTag,
   isUsableRareCustomer,
-  mergeRareCustomers,
 } from '@/companion/domain/service-recommendations';
 import {
   formatIngredientNamesWithQty,
@@ -58,7 +57,6 @@ interface ModCustomRecipesPanelProps {
   form: CustomRecipeFormState;
   groupMode: CustomRecipeGroupMode;
   runtimeSets: RuntimeSets | null;
-  runtimeRareCustomers: RareCustomerCatalogItem[];
   data: RecommendationDataSet;
   onUpsertCustomRecipe: (input: CustomRecipeUpsertInput) => Promise<boolean>;
   onRemoveCustomRecipe: (id: string) => Promise<boolean>;
@@ -84,7 +82,6 @@ export function ModCustomRecipesPanel({
   form,
   groupMode,
   runtimeSets,
-  runtimeRareCustomers,
   data,
   onUpsertCustomRecipe,
   onRemoveCustomRecipe,
@@ -96,11 +93,10 @@ export function ModCustomRecipesPanel({
 }: ModCustomRecipesPanelProps) {
   const dataIndexes = useMemo(() => buildRecommendationDataIndexes(data), [data]);
   const customers = useMemo(
-    () => mergeRareCustomers(
-      getAllRareCustomers(data).filter(isUsableRareCustomer),
-      runtimeRareCustomers.filter(isUsableRareCustomer),
-    ).sort((left, right) => left.name.localeCompare(right.name, 'zh-Hans-CN')),
-    [data, runtimeRareCustomers],
+    () => getAllRareCustomers(data)
+      .filter(isUsableRareCustomer)
+      .sort((left, right) => left.name.localeCompare(right.name, 'zh-Hans-CN')),
+    [data],
   );
   const selectedCustomer = customers.find((customer) => String(customer.id) === form.customerId) ?? customers[0] ?? null;
   const selectedRecipe = dataIndexes.recipeByFoodId.get(Number(form.foodId)) ?? null;

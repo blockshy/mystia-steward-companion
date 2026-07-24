@@ -1,3 +1,9 @@
+import {
+  formatInventoryQuantityValue,
+  inventoryQuantityRankValue,
+  isInfiniteInventoryQuantity,
+} from '@/lib/inventory-quantity';
+
 export type InventorySortMode = 'name' | 'stock';
 
 export const INVENTORY_SORT_OPTIONS: Array<{ value: InventorySortMode; label: string }> = [
@@ -54,8 +60,7 @@ export function resolveInventoryQuantity(
 }
 
 export function formatInventoryQuantity(quantity: number | null): string {
-  if (quantity == null) return '--';
-  return quantity < 0 ? '无限' : String(quantity);
+  return formatInventoryQuantityValue(quantity);
 }
 
 function compareInventoryItems<TItem extends InventorySortableItem>(
@@ -84,6 +89,8 @@ function compareInventoryQuantities(left: number | null, right: number | null): 
 }
 
 function normalizeQuantitySortValue(quantity: number | null): number {
-  if (quantity == null || quantity < 0) return Number.POSITIVE_INFINITY;
-  return quantity;
+  if (quantity == null || quantity < 0 && !isInfiniteInventoryQuantity(quantity)) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return inventoryQuantityRankValue(quantity);
 }

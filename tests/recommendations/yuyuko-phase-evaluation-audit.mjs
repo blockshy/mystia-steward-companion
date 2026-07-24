@@ -1,8 +1,21 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import {
-  evaluateYuyukoPositiveSpellPair,
-} from '../../apps/companion/src/companion/domain/special-business/yuyuko-positive-spell.ts';
+import { createServer } from 'vite';
+
+const vite = await createServer({
+  configFile: 'apps/companion/vite.config.ts',
+  server: { middlewareMode: true },
+  appType: 'custom',
+});
+let yuyukoModule;
+try {
+  yuyukoModule = await vite.ssrLoadModule(
+    '/src/companion/domain/special-business/yuyuko-positive-spell.ts',
+  );
+} finally {
+  await vite.close();
+}
+const { evaluateYuyukoPositiveSpellPair } = yuyukoModule;
 
 const root = new URL('../../', import.meta.url);
 const demand = {

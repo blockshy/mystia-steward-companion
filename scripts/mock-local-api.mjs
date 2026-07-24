@@ -46,6 +46,7 @@ const ingredients = [
 ];
 
 const beverages = [
+  beverage(0, '绿茶', ['无酒精', '可加热'], 1),
   beverage(101, '果味米酒', ['水果', '低酒精'], 18),
   beverage(102, '冰镇啤酒', ['可加冰', '中酒精'], 24),
   beverage(103, '月都清酒', ['高级', '清酒'], 58),
@@ -185,6 +186,7 @@ const inventory = {
     8: 16,
   },
   beverage: {
+    0: -1,
     101: 9,
     102: 4,
     103: 2,
@@ -381,7 +383,7 @@ const server = http.createServer((request, response) => {
         return;
       }
 
-      if (path === '/rare-guests/invitations' || path === '/rare-guests/invite-all' || path === '/rare-guests/invite') {
+      if (path === '/rare-guests/invite-all' || path === '/rare-guests/invite') {
         sendJson(response, 200, buildInvitationResponse(path, requestUrl.searchParams));
         return;
       }
@@ -535,6 +537,11 @@ const server = http.createServer((request, response) => {
       return;
     }
 
+    if (path === '/rare-guests/invitations') {
+      sendJson(response, 200, buildInvitationResponse(path, requestUrl.searchParams));
+      return;
+    }
+
     if (path === '/logs/settings') {
       sendJson(response, 200, logSettings);
       return;
@@ -569,6 +576,8 @@ function buildSnapshot() {
     activeDayMapLabel: '妖怪兽道',
     activeDayMapName: '妖怪兽道',
     runtimeLoaded: true,
+    runtimeDaySceneGeneration: 1,
+    runtimeDaySceneReady: true,
     status: 'mock runtime snapshot',
     runtimeSource: 'mock-local-api',
     runtimeSceneReadinessStatus: 'ready',
@@ -672,38 +681,6 @@ function buildSnapshot() {
       source: 'mock-normal-business',
       error: null,
     },
-    runtimeMissions: {
-      availableMissions: [
-        mission('兽道试营业', '米斯蒂娅', ['妖怪兽道'], 'available', 202, '蜂蜜蛋糕'),
-        mission('夜间巡回', '慧音', ['人间之里', '妖怪兽道'], 'tracking', 201, '豆腐味噌'),
-        mission('食材宣传', '莉格露', ['妖怪兽道'], 'fulfilled', 205, '蘑菇拼盘'),
-      ],
-      serveTargets: [
-        {
-          guestId: 1001,
-          guestName: '米斯蒂娅',
-          guestLabel: '米斯蒂娅',
-          missionLabel: '兽道试营业',
-          missionTitle: '兽道试营业',
-          recipeId: 202,
-          recipeName: '蜂蜜蛋糕',
-          status: 'available',
-          source: 'mock',
-        },
-      ],
-      source: 'mock-runtime-missions',
-      error: null,
-    },
-    runtimeRareCustomers: rareCustomers.map((customer) => ({
-      id: customer.id,
-      runtimeStringId: `mock-${customer.id}`,
-      name: customer.name,
-      places: customer.places,
-      positiveTags: customer.positiveTags,
-      negativeTags: customer.negativeTags,
-      beverageTags: customer.beverageTags,
-      source: 'mock',
-    })),
     automationEvents: [...automationSafetyBarriers.values()].map((barrier) => ({
       sequence: barrier.sequence,
       createdAtUtc: nowIso(-5),
@@ -801,6 +778,7 @@ function buildInvitationResponse(path, params) {
     invitation(1002, '露米娅', true, 3, '当前场景满足羁绊条件', true),
     invitation(1003, '慧音', false, 5, '非当前场景，但全部场景可邀请', true),
     invitation(1004, '莉格露', true, 2, '当前场景满足羁绊条件', true),
+    invitation(10, '雾雨魔理沙', false, 5, '映射身份使用原生角色 ID', true, 'DLC1_Marisa'),
   ];
   const candidates = scope === 'all' ? allCandidates : allCandidates.filter((entry) => entry.isCurrentScene);
   const available = candidates.filter((entry) => entry.canInvite);
@@ -1207,27 +1185,11 @@ function rareCustomer(id, name, places, positiveTags, beverageTags, negativeTags
   };
 }
 
-function mission(title, characterName, places, status, targetRecipeId, targetRecipeName) {
-  return {
-    label: title,
-    title,
-    characterLabel: characterName,
-    characterName,
-    places,
-    source: 'mock',
-    status,
-    started: status !== 'available',
-    finished: status === 'fulfilled',
-    targetRecipeId,
-    targetRecipeName,
-  };
-}
-
-function invitation(id, name, isCurrentScene, kizunaLevel, reason, canInvite) {
+function invitation(id, name, isCurrentScene, kizunaLevel, reason, canInvite, runtimeName = name) {
   return {
     id,
     name,
-    runtimeName: name,
+    runtimeName,
     reason,
     status: canInvite ? '可邀请' : '已在队列/座位中',
     canInvite,

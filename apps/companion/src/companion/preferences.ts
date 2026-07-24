@@ -45,7 +45,6 @@ const AUTO_NORMAL_CONCURRENCY_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-concu
 const AUTO_MAX_STEP_RETRIES_STORAGE_KEY = `${STORAGE_PREFIX}-auto-max-step-retries`;
 const AUTO_MAX_ROLLBACKS_STORAGE_KEY = `${STORAGE_PREFIX}-auto-max-rollbacks`;
 const FILTER_MISSING_COOKERS_STORAGE_KEY = `${STORAGE_PREFIX}-filter-missing-cookers`;
-const PIN_MISSION_RECIPE_STORAGE_KEY = `${STORAGE_PREFIX}-pin-mission-recipe`;
 const PIN_FAVORITE_RECIPE_STORAGE_KEY = `${STORAGE_PREFIX}-pin-favorite-recipe`;
 const PIN_FAVORITE_BEVERAGE_STORAGE_KEY = `${STORAGE_PREFIX}-pin-favorite-beverage`;
 const GAME_UI_PINNING_STORAGE_KEY = `${STORAGE_PREFIX}-game-ui-pinning`;
@@ -126,7 +125,6 @@ export interface CompanionPreferences {
   autoMaxStepRetries: number;
   autoMaxRollbacks: number;
   filterMissingCookers: boolean;
-  pinMissionRecipeEnabled: boolean;
   pinFavoriteRecipeEnabled: boolean;
   pinFavoriteBeverageEnabled: boolean;
   gameUiPinningEnabled: boolean;
@@ -192,7 +190,6 @@ export function readStoredCompanionPreferences(): CompanionPreferences {
     autoMaxStepRetries: readStoredNumber(AUTO_MAX_STEP_RETRIES_STORAGE_KEY, DEFAULT_AUTO_STEP_RETRIES),
     autoMaxRollbacks: readStoredNumber(AUTO_MAX_ROLLBACKS_STORAGE_KEY, DEFAULT_AUTO_ROLLBACKS),
     filterMissingCookers: readStoredBoolean(FILTER_MISSING_COOKERS_STORAGE_KEY, true),
-    pinMissionRecipeEnabled: readStoredBoolean(PIN_MISSION_RECIPE_STORAGE_KEY, false),
     pinFavoriteRecipeEnabled: readStoredBoolean(PIN_FAVORITE_RECIPE_STORAGE_KEY, false),
     pinFavoriteBeverageEnabled: readStoredBoolean(PIN_FAVORITE_BEVERAGE_STORAGE_KEY, false),
     gameUiPinningEnabled: readStoredBoolean(GAME_UI_PINNING_STORAGE_KEY, false),
@@ -248,7 +245,6 @@ export function normalizeCompanionPreferences(
     autoMaxStepRetries: normalizeAutoStepRetries(value.autoMaxStepRetries ?? DEFAULT_AUTO_STEP_RETRIES),
     autoMaxRollbacks: normalizeAutoRollbacks(value.autoMaxRollbacks ?? DEFAULT_AUTO_ROLLBACKS),
     filterMissingCookers: value.filterMissingCookers !== false,
-    pinMissionRecipeEnabled: Boolean(value.pinMissionRecipeEnabled),
     pinFavoriteRecipeEnabled: Boolean(value.pinFavoriteRecipeEnabled),
     pinFavoriteBeverageEnabled: Boolean(value.pinFavoriteBeverageEnabled),
     gameUiPinningEnabled: Boolean(value.gameUiPinningEnabled),
@@ -347,7 +343,6 @@ export function persistCompanionPreferences(preferences: CompanionPreferences) {
   localStorage.setItem(AUTO_MAX_STEP_RETRIES_STORAGE_KEY, String(normalized.autoMaxStepRetries));
   localStorage.setItem(AUTO_MAX_ROLLBACKS_STORAGE_KEY, String(normalized.autoMaxRollbacks));
   localStorage.setItem(FILTER_MISSING_COOKERS_STORAGE_KEY, normalized.filterMissingCookers ? '1' : '0');
-  localStorage.setItem(PIN_MISSION_RECIPE_STORAGE_KEY, normalized.pinMissionRecipeEnabled ? '1' : '0');
   localStorage.setItem(PIN_FAVORITE_RECIPE_STORAGE_KEY, normalized.pinFavoriteRecipeEnabled ? '1' : '0');
   localStorage.setItem(PIN_FAVORITE_BEVERAGE_STORAGE_KEY, normalized.pinFavoriteBeverageEnabled ? '1' : '0');
   localStorage.setItem(GAME_UI_PINNING_STORAGE_KEY, normalized.gameUiPinningEnabled ? '1' : '0');

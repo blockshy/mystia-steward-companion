@@ -11,11 +11,15 @@ import type {
 /**
  * 工作台一级 Tab。值会持久化到 localStorage，并用于手柄导航定位。
  */
-export type ModTab = 'overview' | 'normal' | 'rare' | 'custom-recipes' | 'service' | 'tasks' | 'inventory' | 'help' | 'logs' | 'settings';
+export type ModTab = 'overview' | 'normal' | 'rare' | 'custom-recipes' | 'service' | 'rare-invitations' | 'inventory' | 'help' | 'logs' | 'settings';
 export type OverviewTab = 'status' | 'inventory' | 'actions';
 export type SettingsTab = 'window' | 'connection' | 'recommendation' | 'automation' | 'updates';
 export type RareGuestInvitationScope = 'current' | 'all';
-export type MissionStatusFilter = 'available' | 'tracking' | 'fulfilled';
+
+export interface RareGuestInvitationWriteContext {
+  expectedDaySceneGeneration: number;
+  expectedMapLabel: string;
+}
 
 /**
  * Mod 发布给前端的推荐基础状态快照。
@@ -139,48 +143,6 @@ export interface SpecialBusinessContext {
 }
 
 /**
- * 游戏运行时任务信息。
- */
-export interface RuntimeMissionInfo {
-  label: string;
-  title: string;
-  characterLabel: string;
-  characterName: string;
-  places?: string[];
-  source: string;
-  status?: MissionStatusFilter | 'finished';
-  started: boolean;
-  finished: boolean;
-  targetRecipeId?: number | null;
-  targetRecipeName?: string | null;
-}
-
-/**
- * 可直接关联到稀客/料理推荐的任务上菜目标。
- */
-export interface RuntimeMissionServeTarget {
-  guestId: number;
-  guestName: string;
-  guestLabel: string;
-  missionLabel: string;
-  missionTitle: string;
-  recipeId: number;
-  recipeName: string;
-  status: MissionStatusFilter | 'finished';
-  source: string;
-}
-
-/**
- * 任务面板运行时快照。
- */
-export interface RuntimeMissionContext {
-  availableMissions: RuntimeMissionInfo[];
-  serveTargets?: RuntimeMissionServeTarget[];
-  source: string;
-  error: string | null;
-}
-
-/**
  * 夜间经营中的普客订单快照。
  */
 export interface NormalBusinessOrder {
@@ -243,20 +205,6 @@ export interface NormalBusinessContext {
 }
 
 /**
- * 从游戏运行时映射出的稀客目录项。
- */
-export interface RuntimeRareCustomer {
-  id: number;
-  runtimeStringId: string;
-  name: string;
-  places: string[];
-  positiveTags: string[];
-  negativeTags: string[];
-  beverageTags: string[];
-  source: string;
-}
-
-/**
  * 本地 API `/snapshot` 返回的轻量实时快照。
  *
  * 快照是前端的实时状态入口；体积较大的运行时目录通过 `/runtime-data` 按签名单独读取。
@@ -273,6 +221,8 @@ export interface LocalApiSnapshot {
   activeDayMapLabel?: string;
   activeDayMapName?: string;
   runtimeLoaded: boolean;
+  runtimeDaySceneGeneration: number;
+  runtimeDaySceneReady: boolean;
   status: string;
   runtimeSource: string;
   runtimeSceneReadinessStatus?: string;
@@ -280,9 +230,7 @@ export interface LocalApiSnapshot {
   recommendationState: RecommendationStateSnapshot | null;
   nightBusiness: NightBusinessContext | null;
   specialBusiness?: SpecialBusinessContext | null;
-  runtimeMissions?: RuntimeMissionContext | null;
   normalBusiness?: NormalBusinessContext | null;
-  runtimeRareCustomers?: RuntimeRareCustomer[];
   automationEvents?: AutomationRuntimeEvent[];
   automationCookingJobs: AutomationCookingJobSnapshot[];
   runtimeDataComplete?: boolean;
@@ -397,6 +345,95 @@ export interface RuntimeSets {
   hasCookerSnapshot: boolean;
 }
 
+export type RecommendationBlockReasonCode =
+  | 'food-tag-not-supported'
+  | 'food-recipe-locked'
+  | 'food-base-ingredient-missing'
+  | 'food-cooker-missing'
+  | 'food-required-tag-not-generated'
+  | 'food-special-rule-mismatch'
+  | 'food-negative-tag'
+  | 'beverage-unavailable'
+  | 'beverage-excluded'
+  | 'beverage-tag-mismatch'
+  | 'budget-unavailable'
+  | 'special-evaluation-unmet'
+  | 'execution-plan-missing';
+
+export type RecommendationCandidateStage =
+  | 'food-tag-reachability'
+  | 'food-recipe-unlocked'
+  | 'food-base-ingredients'
+  | 'food-cooker'
+  | 'food-candidate-generation'
+  | 'food-special-rule'
+  | 'food-negative-safe'
+  | 'beverage-available'
+  | 'beverage-allowed'
+  | 'beverage-required-tag'
+  | 'budget'
+  | 'special-evaluation'
+  | 'execution-plan';
+
+export interface RecommendationFoodRecipeEligibilityCounts {
+  catalog: number;
+  requiredTagReachable: number;
+  requiredTagReachableUnlocked: number;
+  requiredTagReachableBaseIngredientsReady: number;
+  requiredTagReachableCookerReady: number;
+}
+
+export interface RecommendationFoodCandidateCounts {
+  generated: number;
+  generatedRequiredTagMatched: number;
+  merged: number;
+  baseOrderMatched: number;
+  negativeSafe: number;
+  specialRuleMatched: number;
+  executable: number;
+}
+
+export interface RecommendationBeverageCandidateCounts {
+  catalog: number;
+  available: number;
+  allowed: number;
+  requiredTagMatched: number;
+  specialRuleMatched: number;
+}
+
+export interface RecommendationPlanCounts {
+  rawExecutable: number;
+  specialRuleSafe: number;
+  executable: number;
+}
+
+/**
+ * 诊断计数按单位分组：配方资格使用“配方数”，候选与计划分别使用对应对象数。
+ * 这些计数只解释推荐阻塞原因，不参与排序或自动化目标选择。
+ */
+export interface RecommendationCandidateStageCounts {
+  foodRecipeEligibility: RecommendationFoodRecipeEligibilityCounts;
+  foodCandidates: RecommendationFoodCandidateCounts;
+  beverageCandidates: RecommendationBeverageCandidateCounts;
+  plans: RecommendationPlanCounts;
+}
+
+/**
+ * 推荐无可执行计划时的结构化首个清零原因。
+ */
+export interface RecommendationBlockedDiagnostic {
+  code: RecommendationBlockReasonCode;
+  firstEmptyStage: RecommendationCandidateStage;
+  message: string;
+  counts: RecommendationCandidateStageCounts;
+  missingIngredientNames: string[];
+  requiredCookerNames: string[];
+  placedCookerNames: string[];
+  remainingBudget: number | null;
+  minimumPairPrice: number | null;
+  stateSignature: string;
+}
+
 /**
  * 已按稀客需求计算好的推荐结果缓存。
  */
@@ -405,6 +442,7 @@ export interface CachedRecommendation {
   executionPlans: RareOrderRecommendationPlan[];
   budget: RecommendationBudgetResult | null;
   blockedMessages: string[];
+  blockedDiagnostic: RecommendationBlockedDiagnostic | null;
   recipes: RareRecipeRecommendation[];
   beverages: RareBeverageRecommendation[];
 }

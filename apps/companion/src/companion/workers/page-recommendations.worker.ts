@@ -137,7 +137,6 @@ function buildRarePageRecommendations(payload: RarePageRecommendationPayload) {
     payload.selectedCustomer.id,
     payload.foodTag,
     payload.beverageTag,
-    null,
     payload.preferences,
   );
   const demand = {

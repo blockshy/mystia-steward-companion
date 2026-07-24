@@ -6,7 +6,7 @@ import type { ResolvedTags } from '@/recommendation-engine/types';
 /**
  * 项目内已验证的基础 Tag 压制规则。
  *
- * 当 Mod 暂时无法从游戏运行时读取 Tag 优先级时，推荐引擎使用这组规则保持结果稳定。
+ * 当前运行时目录不投影复杂 Tag 规则容器，推荐引擎使用这组规则保持结果稳定。
  */
 export const PROJECT_VERIFIED_TAG_PRIORITY_RULES: RuntimeTagPriorityRule[] = [
   { id: 1, tagIds: [], tags: ['肉', '素'] },

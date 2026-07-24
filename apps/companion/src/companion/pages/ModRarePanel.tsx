@@ -9,7 +9,6 @@ import {
 import {
   isOrderableRareFoodTag,
   isSelectableRareCustomer,
-  mergeRareCustomers,
 } from '@/companion/domain/service-recommendations';
 import { usePageRecommendations } from '@/companion/hooks/usePageRecommendations';
 import { useEffectiveCustomRecipesDisclosure } from '@/companion/hooks/useEffectiveCustomRecipesDisclosure';
@@ -25,12 +24,11 @@ import {
 } from '@/companion/pages/shared';
 import { DENSE_THREE_COLUMN_GRID, DENSE_TWO_COLUMN_GRID, RECOMMENDATION_SCROLL_AREA } from '@/companion/pages/shared-constants';
 import { buildRecommendationDataIndexes, getRareCustomersByPlace, type RecommendationDataSet } from '@/lib/recommendation-data';
-import type { RareCustomerCatalogItem, PlaceName } from '@/lib/catalog-types';
+import type { PlaceName } from '@/lib/catalog-types';
 
 export function ModRarePanel({
   runtime,
   runtimeSets,
-  runtimeRareCustomers,
   selectedPlace,
   detectedPlace,
   data,
@@ -53,7 +51,6 @@ export function ModRarePanel({
 }: {
   runtime: RecommendationStateSnapshot | null;
   runtimeSets: RuntimeSets | null;
-  runtimeRareCustomers: RareCustomerCatalogItem[];
   selectedPlace: PlaceName | null;
   detectedPlace: PlaceName | null;
   data: RecommendationDataSet;
@@ -77,15 +74,10 @@ export function ModRarePanel({
   const dataIndexes = useMemo(() => buildRecommendationDataIndexes(data), [data]);
   const customers = useMemo(() => {
     if (!selectedPlace) return [];
-    return mergeRareCustomers(
-      getRareCustomersByPlace(selectedPlace, data).filter((customer) =>
-        isSelectableRareCustomer(customer),
-      ),
-      runtimeRareCustomers.filter((customer) => (
-        customer.places.includes(selectedPlace) && isSelectableRareCustomer(customer)
-      )),
+    return getRareCustomersByPlace(selectedPlace, data).filter((customer) =>
+      isSelectableRareCustomer(customer),
     );
-  }, [data, runtimeRareCustomers, selectedPlace]);
+  }, [data, selectedPlace]);
   const selectedCustomer = useMemo(
     () => customers.find((customer) => customer.id === rareCustomerId) ?? customers[0] ?? null,
     [customers, rareCustomerId],

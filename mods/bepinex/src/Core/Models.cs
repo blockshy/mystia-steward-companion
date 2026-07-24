@@ -100,31 +100,6 @@ public sealed class RareCustomer
     public List<string> BeverageTags { get; set; } = new();
 }
 
-public sealed class RuntimeRareCustomer
-{
-    public int Id { get; init; }
-    public string RuntimeStringId { get; init; } = "";
-    public string Name { get; init; } = "";
-    public List<string> Places { get; init; } = new();
-    public List<string> PositiveTags { get; init; } = new();
-    public List<string> NegativeTags { get; init; } = new();
-    public List<string> BeverageTags { get; init; } = new();
-    public string Source { get; init; } = "";
-
-    public RareCustomer ToRareCustomer()
-    {
-        return new RareCustomer
-        {
-            Id = Id,
-            Name = Name,
-            Places = Places.ToList(),
-            PositiveTags = PositiveTags.ToList(),
-            NegativeTags = NegativeTags.ToList(),
-            BeverageTags = BeverageTags.ToList(),
-        };
-    }
-}
-
 public sealed class NightBusinessOrder
 {
     public string TraceId { get; init; } = "";
@@ -205,42 +180,6 @@ public sealed class SpecialBusinessContext
     public string Source { get; init; } = "";
     public string? Error { get; init; }
     public DateTime? LastTargetUpdatedUtc { get; init; }
-}
-
-public sealed class RuntimeMissionInfo
-{
-    public string Label { get; init; } = "";
-    public string Title { get; init; } = "";
-    public string CharacterLabel { get; init; } = "";
-    public string CharacterName { get; init; } = "";
-    public List<string> Places { get; init; } = new();
-    public string Source { get; init; } = "";
-    public string Status { get; init; } = "available";
-    public bool Started { get; init; }
-    public bool Finished { get; init; }
-    public int? TargetRecipeId { get; init; }
-    public string? TargetRecipeName { get; init; }
-}
-
-public sealed class RuntimeMissionServeTarget
-{
-    public int GuestId { get; init; }
-    public string GuestName { get; init; } = "";
-    public string GuestLabel { get; init; } = "";
-    public string MissionLabel { get; init; } = "";
-    public string MissionTitle { get; init; } = "";
-    public int RecipeId { get; init; }
-    public string RecipeName { get; init; } = "";
-    public string Status { get; init; } = "tracking";
-    public string Source { get; init; } = "";
-}
-
-public sealed class RuntimeMissionContext
-{
-    public List<RuntimeMissionInfo> AvailableMissions { get; init; } = new();
-    public List<RuntimeMissionServeTarget> ServeTargets { get; init; } = new();
-    public string Source { get; init; } = "";
-    public string? Error { get; init; }
 }
 
 public sealed class NormalBusinessOrder

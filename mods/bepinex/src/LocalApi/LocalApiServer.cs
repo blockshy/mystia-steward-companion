@@ -59,8 +59,8 @@ internal sealed class LocalApiServer : IDisposable
     private readonly Func<long, AutomationCommandCancellationResult> _cancelAutomationJobs;
     private readonly Func<long, AutomationSafetyBarrierAckResult> _ackAutomationSafetyBarrier;
     private readonly Func<string, string, RareGuestInvitationResult> _listRareGuestInvitations;
-    private readonly Func<string, string, RareGuestInvitationResult> _inviteAllRareGuests;
-    private readonly Func<int, string, RareGuestInvitationResult> _inviteRareGuest;
+    private readonly Func<string, string, RareGuestInvitationWriteExpectation, RareGuestInvitationResult> _inviteAllRareGuests;
+    private readonly Func<int, string, RareGuestInvitationWriteExpectation, RareGuestInvitationResult> _inviteRareGuest;
     private readonly UpdateService _updateService;
     private readonly FavoriteStore _favoriteStore;
     private readonly CustomRecipeStore _customRecipeStore;
@@ -130,8 +130,8 @@ internal sealed class LocalApiServer : IDisposable
         Func<long, AutomationCommandCancellationResult> cancelAutomationJobs,
         Func<long, AutomationSafetyBarrierAckResult> ackAutomationSafetyBarrier,
         Func<string, string, RareGuestInvitationResult> listRareGuestInvitations,
-        Func<string, string, RareGuestInvitationResult> inviteAllRareGuests,
-        Func<int, string, RareGuestInvitationResult> inviteRareGuest,
+        Func<string, string, RareGuestInvitationWriteExpectation, RareGuestInvitationResult> inviteAllRareGuests,
+        Func<int, string, RareGuestInvitationWriteExpectation, RareGuestInvitationResult> inviteRareGuest,
         UpdateService updateService,
         FavoriteStore favoriteStore,
         CustomRecipeStore customRecipeStore,
@@ -638,14 +638,25 @@ internal sealed class LocalApiServer : IDisposable
                     case "/orders/rare/dismiss":
                         WriteResponse(stream, 200, "OK", BuildRareOrderDismissJson(query));
                         break;
-                    case "/rare-guests/invitations":
-                        WriteResponse(stream, 200, "OK", BuildRareGuestInvitationJson(() => _listRareGuestInvitations(ReadStringQuery(query, "scope"), ReadStringQuery(query, "levels"))));
-                        break;
                     case "/rare-guests/invite-all":
-                        WriteResponse(stream, 200, "OK", BuildRareGuestInvitationJson(() => _inviteAllRareGuests(ReadStringQuery(query, "scope"), ReadStringQuery(query, "levels"))));
+                        WriteResponse(
+                            stream,
+                            200,
+                            "OK",
+                            BuildRareGuestInvitationJson(() => _inviteAllRareGuests(
+                                ReadStringQuery(query, "scope"),
+                                ReadStringQuery(query, "levels"),
+                                ReadRareGuestInvitationWriteExpectation(query))));
                         break;
                     case "/rare-guests/invite":
-                        WriteResponse(stream, 200, "OK", BuildRareGuestInvitationJson(() => _inviteRareGuest(ReadIntQuery(query, "guestId", -1), ReadStringQuery(query, "scope"))));
+                        WriteResponse(
+                            stream,
+                            200,
+                            "OK",
+                            BuildRareGuestInvitationJson(() => _inviteRareGuest(
+                                ReadIntQuery(query, "guestId", -1),
+                                ReadStringQuery(query, "scope"),
+                                ReadRareGuestInvitationWriteExpectation(query))));
                         break;
                     case "/ui-pinning/target":
                         WriteResponse(stream, 200, "OK", UpdateUiPinningTargetJson(query));
@@ -716,6 +727,16 @@ internal sealed class LocalApiServer : IDisposable
                     break;
                 case "/custom-recipes":
                     WriteResponse(stream, 200, "OK", _customRecipeStore.GetJson());
+                    break;
+                case "/rare-guests/invitations":
+                    WriteResponse(
+                        stream,
+                        200,
+                        "OK",
+                        BuildRareGuestInvitationJson(
+                            () => _listRareGuestInvitations(
+                                ReadStringQuery(query, "scope"),
+                                ReadStringQuery(query, "levels"))));
                     break;
                 default:
                     WriteResponse(stream, 404, "Not Found", ToJson(new LocalApiErrorDto { Error = "not found" }));
@@ -2025,6 +2046,14 @@ internal sealed class LocalApiServer : IDisposable
     private static long ReadLongQuery(string query, string key, long fallback)
     {
         return long.TryParse(ReadStringQuery(query, key), out var value) ? value : fallback;
+    }
+
+    private static RareGuestInvitationWriteExpectation ReadRareGuestInvitationWriteExpectation(
+        string query)
+    {
+        return new RareGuestInvitationWriteExpectation(
+            ReadLongQuery(query, "expectedDaySceneGeneration", 0),
+            ReadStringQuery(query, "expectedMapLabel"));
     }
 
     private static int? ReadNullableIntQuery(string query, string key)

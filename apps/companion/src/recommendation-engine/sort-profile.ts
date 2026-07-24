@@ -48,13 +48,11 @@ export interface RecommendationSortProfile {
 /**
  * 排序时额外注入的运行时置顶上下文。
  *
- * 收藏、任务料理和酒水收藏置顶属于硬性排序边界，不写入 objective 权重，避免用户误以为调权重能覆盖置顶规则。
+ * 料理和酒水收藏置顶属于硬性排序边界，不写入 objective 权重，避免用户误以为调权重能覆盖置顶规则。
  */
 export interface RecommendationPlanSortContext {
   favoriteRecipeKeys?: Set<string>;
   favoriteBeverageIds?: Set<number>;
-  missionRecipeId?: number | null;
-  pinMissionRecipe?: boolean;
   pinFavoriteRecipe?: boolean;
   pinFavoriteBeverage?: boolean;
   specialTargetFoodTags?: Set<string>;

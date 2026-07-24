@@ -8,6 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="../../mods/bepinex/src/LocalApi/LocalApiRuntimeDataPayload.cs" Link="LocalApiRuntimeDataPayload.cs" />
     <Compile Include="../../mods/bepinex/src/LocalApi/LocalApiSnapshotSignature.cs" Link="LocalApiSnapshotSignature.cs" />
   </ItemGroup>
 </Project>

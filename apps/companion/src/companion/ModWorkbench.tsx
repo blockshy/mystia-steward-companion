@@ -43,7 +43,7 @@ import {
   type ServiceRecommendationTab,
 } from '@/companion/pages/ModServicePanel';
 import { ModSettingsPanel } from '@/companion/pages/ModSettingsPanel';
-import { ModTasksPanel } from '@/companion/pages/ModTasksPanel';
+import { ModRareGuestInvitationsPanel } from '@/companion/pages/ModRareGuestInvitationsPanel';
 import {
   acknowledgeAutomationSafetyBarrier,
   acquireAutomationLease,
@@ -110,9 +110,7 @@ import {
   getRareCookerRequirement,
 } from '@/companion/domain/cookers';
 import {
-  isUsableRareCustomer,
   normalizePlace,
-  toRuntimeRareCustomer,
 } from '@/companion/domain/service-recommendations';
 import {
   buildPrimaryExecutionPlanPolicy,
@@ -192,10 +190,11 @@ const AUTO_FIRST_ORDER_TICK_MS = 1500;
 const AUTO_NORMAL_ORDER_TICK_MS = 800;
 const AUTOMATION_LEASE_RENEW_INTERVAL_MS = 3000;
 const MAX_SPECIAL_BUSINESS_REJECTED_RECIPE_KEYS = 64;
+const MAX_AUTOMATION_DECISION_DIAGNOSTIC_SIGNATURES = 64;
 const MOD_TAB_TRIGGER_CLASS = 'min-w-[4.75rem] flex-none min-[720px]:min-w-0 min-[720px]:flex-1';
 type CompanionPlatform = 'desktop' | 'mobile';
 
-const MOD_TABS: ModTab[] = ['overview', 'normal', 'rare', 'custom-recipes', 'service', 'tasks', 'inventory', 'help', 'logs', 'settings'];
+const MOD_TABS: ModTab[] = ['overview', 'normal', 'rare', 'custom-recipes', 'service', 'rare-invitations', 'inventory', 'help', 'logs', 'settings'];
 const BASIC_MOD_TABS: ModTab[] = MOD_TABS.filter((tab) => tab !== 'logs');
 const EMPTY_WORKER_FAVORITES: FavoriteData = { version: 0, recipes: [], beverages: [] };
 const EMPTY_WORKER_CUSTOM_RECIPES: CustomRecipeData = { version: 0, enabled: false, recipes: [] };
@@ -298,12 +297,10 @@ function buildNormalOrderWorkerPayload(
     includeNormalOrderDetails: input.include && includeDetails,
     includeNormalExecutionTargets: input.include && includeExecutionTargets,
     runtime: input.runtime,
-    runtimeRareCustomers: [],
     favorites: EMPTY_WORKER_FAVORITES,
     customRecipes: EMPTY_WORKER_CUSTOM_RECIPES,
     preferences: input.preferences,
     activeRareGuests: [],
-    missionServeTargets: [],
     specialBusiness: input.specialBusiness,
     specialBusinessRejectedRecipeKeys: input.rejectedRecipeKeys,
     data,
@@ -406,12 +403,10 @@ function buildOrderRecommendationPayloadSignature(payload: OrderRecommendationWo
     payload.usage ?? 'display',
     buildNightBusinessOrderSignature(payload.orders),
     buildNormalOrderDetailRuntimeSignature(payload.runtime),
-    buildRuntimeRareCustomerSignature(payload.runtimeRareCustomers),
     buildFavoriteDataSignature(payload.favorites),
     buildCustomRecipeDataSignature(payload.customRecipes),
     buildOrderRecommendationPreferenceSignature(payload.preferences),
     buildActiveRareGuestSignature(payload.activeRareGuests),
-    buildMissionServeTargetSignature(payload.missionServeTargets),
     buildNormalOrderDetailSpecialBusinessSignature(payload.specialBusiness ?? null),
     stableStringArraySignature(payload.specialBusinessRejectedRecipeKeys),
     buildRecommendationDataSignature(payload.data),
@@ -454,20 +449,6 @@ function buildNightBusinessOrderSignature(orders: readonly NightBusinessOrder[])
       order.remainingOrderCount ?? '',
       order.hasServedFood ? 1 : 0,
       order.hasServedBeverage ? 1 : 0,
-    ].join('~'))
-    .join('|');
-}
-
-function buildRuntimeRareCustomerSignature(customers: readonly OrderRecommendationWorkerPayload['runtimeRareCustomers'][number][]): string {
-  return [...customers]
-    .sort((left, right) => left.id - right.id || left.name.localeCompare(right.name))
-    .map((customer) => [
-      customer.id,
-      customer.name,
-      stableStringArraySignature(customer.places),
-      stableStringArraySignature(customer.positiveTags),
-      stableStringArraySignature(customer.negativeTags),
-      stableStringArraySignature(customer.beverageTags),
     ].join('~'))
     .join('|');
 }
@@ -533,7 +514,6 @@ function buildOrderRecommendationPreferenceSignature(preferences: CompanionPrefe
   return [
     preferences.serviceOrderSortMode,
     preferences.filterMissingCookers ? 1 : 0,
-    preferences.pinMissionRecipeEnabled ? 1 : 0,
     preferences.pinFavoriteRecipeEnabled ? 1 : 0,
     preferences.pinFavoriteBeverageEnabled ? 1 : 0,
     serializePrimaryExecutionPlanPolicy(buildPrimaryExecutionPlanPolicy(preferences)),
@@ -562,27 +542,6 @@ function buildActiveRareGuestSignature(guests: readonly OrderRecommendationWorke
       guest.maxFundCarry ?? '',
       guest.extraFundByBuff ?? '',
       guest.willPayMoney ?? '',
-    ].join('~'))
-    .join('|');
-}
-
-function buildMissionServeTargetSignature(targets: readonly OrderRecommendationWorkerPayload['missionServeTargets'][number][]): string {
-  return [...targets]
-    .sort((left, right) =>
-      left.guestId - right.guestId
-      || left.recipeId - right.recipeId
-      || left.missionLabel.localeCompare(right.missionLabel)
-    )
-    .map((target) => [
-      target.guestId,
-      target.guestName,
-      target.guestLabel,
-      target.missionLabel,
-      target.missionTitle,
-      target.recipeId,
-      target.recipeName,
-      target.status,
-      target.source,
     ].join('~'))
     .join('|');
 }
@@ -647,6 +606,7 @@ function buildAutomationDecisionDiagnosticSignature(
 
 function buildAutomationDecisionOrderLine(item: OrderRecommendation): string {
   const order = item.order;
+  const diagnostic = item.blockedDiagnostic;
   return [
     `trace=${order.traceId ?? ''}`,
     `desk=${formatDesk(order.deskCode)}`,
@@ -658,9 +618,56 @@ function buildAutomationDecisionOrderLine(item: OrderRecommendation): string {
     `plans=${item.executionPlans.length}`,
     `blocked=${item.blockedMessages.length}`,
     `blockedDetail=${formatRecommendationBlockedMessages(item)}`,
+    `blockedStage=${diagnostic ? `${diagnostic.code}/${diagnostic.firstEmptyStage}` : ''}`,
+    `blockedState=${diagnostic ? hashDiagnosticSignature(diagnostic.stateSignature) : ''}`,
+    `candidateStages=${formatRecommendationCandidateStages(diagnostic)}`,
+    `blockedResources=${formatRecommendationBlockedResources(diagnostic)}`,
     `top=${formatRecommendationTopTarget(item)}`,
     `primary=${formatRecommendationPlanTarget(item.executionPlans[0] ?? null)}`,
   ].join('; ');
+}
+
+function formatRecommendationCandidateStages(
+  diagnostic: OrderRecommendation['blockedDiagnostic'],
+): string {
+  if (!diagnostic) return '';
+  const counts = diagnostic.counts;
+  const recipes = counts.foodRecipeEligibility;
+  const food = counts.foodCandidates;
+  const beverage = counts.beverageCandidates;
+  const plans = counts.plans;
+  return [
+    `foodRecipes=catalog:${recipes.catalog},tagReachable:${recipes.requiredTagReachable},`
+      + `unlocked:${recipes.requiredTagReachableUnlocked},`
+      + `baseReady:${recipes.requiredTagReachableBaseIngredientsReady},`
+      + `cookerReady:${recipes.requiredTagReachableCookerReady}`,
+    `foodCandidates=generated:${food.generated},requiredTag:${food.generatedRequiredTagMatched},`
+      + `merged:${food.merged},baseMatch:${food.baseOrderMatched},`
+      + `negativeSafe:${food.negativeSafe},specialRule:${food.specialRuleMatched},`
+      + `executable:${food.executable}`,
+    `beverageCandidates=catalog:${beverage.catalog},available:${beverage.available},`
+      + `allowed:${beverage.allowed},requiredTag:${beverage.requiredTagMatched},`
+      + `specialRule:${beverage.specialRuleMatched}`,
+    `plans=rawExecutable:${plans.rawExecutable},specialRuleSafe:${plans.specialRuleSafe},`
+      + `executable:${plans.executable}`,
+  ].join('/');
+}
+
+function formatRecommendationBlockedResources(
+  diagnostic: OrderRecommendation['blockedDiagnostic'],
+): string {
+  if (!diagnostic) return '';
+  return [
+    diagnostic.missingIngredientNames.length > 0
+      ? `ingredients=${diagnostic.missingIngredientNames.join(',')}`
+      : '',
+    diagnostic.requiredCookerNames.length > 0
+      ? `requiredCookers=${diagnostic.requiredCookerNames.join(',')}`
+      : '',
+    `placedCookers=${diagnostic.placedCookerNames.join(',') || 'none'}`,
+    `budget=${diagnostic.remainingBudget ?? 'unknown'}`,
+    `minimumPair=${diagnostic.minimumPairPrice ?? 'unknown'}`,
+  ].filter(Boolean).join('/');
 }
 
 function buildAutomationDecisionSelectionLine(selection: ValidOrderPreparationSelection): string {
@@ -776,6 +783,20 @@ function hashDiagnosticSignature(value: string): string {
     hash = Math.imul(hash, 16777619);
   }
   return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+function rememberBoundedDiagnosticSignature(
+  signatures: Set<string>,
+  signature: string,
+): boolean {
+  if (signatures.has(signature)) return false;
+  signatures.add(signature);
+  while (signatures.size > MAX_AUTOMATION_DECISION_DIAGNOSTIC_SIGNATURES) {
+    const oldest = signatures.values().next().value;
+    if (oldest == null) break;
+    signatures.delete(oldest);
+  }
+  return true;
 }
 
 function buildRareAutomationDiagnosticsSignature(items: readonly RareAutoOrderDiagnostic[]): string {
@@ -1381,15 +1402,18 @@ export function ModWorkbench() {
     rareGuestInvitationResult,
     rareGuestInvitationError,
     rareGuestInvitationBusyKey,
+    rareGuestInvitationContextReady,
     loadRareGuestInvitations,
     inviteAllRareGuests,
     inviteRareGuest,
   } = useRareGuestInvitations({
     apiToken,
+    connected: Boolean(apiToken && !connectionPaused && !error && snapshot),
+    connectionRevision,
     normalizedEndpoint,
+    refresh,
     snapshot,
     tab,
-    refresh,
   });
   const [manualPlace, setManualPlace] = useState<PlaceName | null>(null);
   const [rareCustomerId, setRareCustomerId] = useState<number | null>(null);
@@ -1427,7 +1451,8 @@ export function ModWorkbench() {
   const lastAutoFirstOrderAtRef = useRef(0);
   const lastAutoNormalOrderAtRef = useRef(0);
   const automationCookerCycleRef = useRef<AutomationCookerCycle | null>(null);
-  const lastAutomationDecisionDiagnosticSignatureRef = useRef('');
+  const rareAutomationDecisionDiagnosticSignaturesRef = useRef(new Set<string>());
+  const normalAutomationDecisionDiagnosticSignaturesRef = useRef(new Set<string>());
   const automationRequestEpochRef = useRef(0);
   const automationLeaseAcquireRef = useRef<AutomationLeaseAcquireEntry | null>(null);
   const automationLeaseRevalidationRequiredRef = useRef(true);
@@ -1653,13 +1678,6 @@ export function ModWorkbench() {
     () => buildRecommendationDataIndexes(recommendationData),
     [recommendationData],
   );
-  const runtimeRareCustomers = useMemo(
-    () => (snapshot?.runtimeRareCustomers ?? [])
-      .map(toRuntimeRareCustomer)
-      .filter(isUsableRareCustomer),
-    [snapshot?.runtimeRareCustomers],
-  );
-
   const acquireAutomationLeaseSingleFlight = useCallback((): Promise<LocalApiAutomationLease> => {
     const key = automationLeaseConnectionKey;
     if (!key) return Promise.reject(new Error('自动化运行实例尚未就绪。'));
@@ -1875,12 +1893,10 @@ export function ModWorkbench() {
     () => ({
       orders: night?.orders ?? [],
       runtime,
-      runtimeRareCustomers,
       favorites,
       customRecipes,
       preferences: companionPreferences,
       activeRareGuests: night?.activeRareGuests ?? [],
-      missionServeTargets: snapshot?.runtimeMissions?.serveTargets ?? [],
       specialBusiness: snapshot?.specialBusiness ?? null,
       specialBusinessRejectedRecipeKeys,
       data: recommendationData,
@@ -1894,10 +1910,8 @@ export function ModWorkbench() {
       night?.orders,
       recommendationData,
       runtime,
-      runtimeRareCustomers,
       specialBusinessRejectedRecipeKeys,
       snapshot?.specialBusiness,
-      snapshot?.runtimeMissions?.serveTargets,
       orderRecommendationUsage,
     ],
   );
@@ -2096,6 +2110,10 @@ export function ModWorkbench() {
     if (!automationSessionId) return;
     const previousSessionId = automationStateSessionIdRef.current;
     automationStateSessionIdRef.current = automationSessionId;
+    if (previousSessionId !== automationSessionId) {
+      rareAutomationDecisionDiagnosticSignaturesRef.current.clear();
+      normalAutomationDecisionDiagnosticSignaturesRef.current.clear();
+    }
     if (!previousSessionId || previousSessionId === automationSessionId) return;
 
     automationRequestEpochRef.current += 1;
@@ -2161,8 +2179,10 @@ export function ModWorkbench() {
       selectionPreferences,
       automationLeaseOwned,
     );
-    if (lastAutomationDecisionDiagnosticSignatureRef.current === signature) return;
-    lastAutomationDecisionDiagnosticSignatureRef.current = signature;
+    if (!rememberBoundedDiagnosticSignature(
+      rareAutomationDecisionDiagnosticSignaturesRef.current,
+      signature,
+    )) return;
 
     void appendAutomationDecisionDiagnostic(normalizedEndpoint, apiToken, {
       signature,
@@ -2189,9 +2209,7 @@ export function ModWorkbench() {
       selectionLines,
       skipLines,
     }).catch(() => {
-      if (lastAutomationDecisionDiagnosticSignatureRef.current === signature) {
-        lastAutomationDecisionDiagnosticSignatureRef.current = '';
-      }
+      rareAutomationDecisionDiagnosticSignaturesRef.current.delete(signature);
     });
   }, [
     apiToken,
@@ -2221,8 +2239,10 @@ export function ModWorkbench() {
       input.requestPreferences,
       automationLeaseOwned,
     );
-    if (lastAutomationDecisionDiagnosticSignatureRef.current === signature) return;
-    lastAutomationDecisionDiagnosticSignatureRef.current = signature;
+    if (!rememberBoundedDiagnosticSignature(
+      normalAutomationDecisionDiagnosticSignaturesRef.current,
+      signature,
+    )) return;
 
     void appendAutomationDecisionDiagnostic(normalizedEndpoint, apiToken, {
       signature,
@@ -2249,9 +2269,7 @@ export function ModWorkbench() {
       selectionLines: input.targetSelection.target ? [formatNormalAutomationTarget(input.targetSelection.target)] : [],
       skipLines: input.targetSelection.message ? [compactDiagnosticText(input.targetSelection.message)] : [],
     }).catch(() => {
-      if (lastAutomationDecisionDiagnosticSignatureRef.current === signature) {
-        lastAutomationDecisionDiagnosticSignatureRef.current = '';
-      }
+      normalAutomationDecisionDiagnosticSignaturesRef.current.delete(signature);
     });
   }, [
     apiToken,
@@ -4191,8 +4209,8 @@ export function ModWorkbench() {
           <TabsTrigger value="service" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="service">
             经营中
           </TabsTrigger>
-          <TabsTrigger value="tasks" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="tasks">
-            任务
+          <TabsTrigger value="rare-invitations" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="rare-invitations">
+            稀客邀请
           </TabsTrigger>
           <TabsTrigger value="inventory" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="inventory">
             修改
@@ -4246,7 +4264,6 @@ export function ModWorkbench() {
             <ModRarePanel
               runtime={runtime}
               runtimeSets={runtimeSets}
-              runtimeRareCustomers={runtimeRareCustomers}
               selectedPlace={selectedPlace}
               detectedPlace={detectedPlace}
               data={recommendationData}
@@ -4294,7 +4311,6 @@ export function ModWorkbench() {
               form={customRecipeForm}
               groupMode={customRecipeGroupMode}
               runtimeSets={runtimeSets}
-              runtimeRareCustomers={runtimeRareCustomers}
               data={recommendationData}
               onUpsertCustomRecipe={upsertCustomRecipeEntry}
               onRemoveCustomRecipe={removeCustomRecipeEntry}
@@ -4371,14 +4387,14 @@ export function ModWorkbench() {
           )}
         </TabsContent>
 
-        <TabsContent value="tasks" data-gamepad-scope="content">
-          {tab === 'tasks' && (
-            <ModTasksPanel
+        <TabsContent value="rare-invitations" data-gamepad-scope="content">
+          {tab === 'rare-invitations' && (
+            <ModRareGuestInvitationsPanel
               runtimeLoaded={snapshot?.runtimeLoaded ?? false}
+              runtimeDaySceneReady={snapshot?.runtimeDaySceneReady ?? false}
+              invitationContextReady={rareGuestInvitationContextReady}
               activeDayMapName={snapshot?.activeDayMapName ?? ''}
               activeDayMapLabel={snapshot?.activeDayMapLabel ?? ''}
-              missions={snapshot?.runtimeMissions ?? null}
-              data={recommendationData}
               inviteScope={rareGuestInvitationScope}
               inviteLevels={rareGuestInvitationLevels}
               inviteBusyKey={rareGuestInvitationBusyKey}

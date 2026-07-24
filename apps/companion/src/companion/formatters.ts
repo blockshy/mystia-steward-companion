@@ -1,4 +1,5 @@
 import type { NightBusinessGuest } from '@/companion/types';
+import { formatInventoryQuantitySuffix } from '@/lib/inventory-quantity';
 
 export function formatGuestFund(guest: NightBusinessGuest): string {
   if (typeof guest.fund !== 'number' || !Number.isFinite(guest.fund)) return '';
@@ -72,5 +73,5 @@ export function formatIngredientWithQty(
 }
 
 export function formatQtySuffix(qty: number | undefined) {
-  return `(${qty == null || qty < 0 ? '?' : qty})`;
+  return formatInventoryQuantitySuffix(qty);
 }

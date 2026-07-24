@@ -8,6 +8,7 @@ import type {
   FoodCandidate,
   RareOrderRecommendationPlan,
 } from '@/recommendation-engine';
+import { cappedInventoryQuantityRank } from '@/lib/inventory-quantity';
 
 export const YUYUKO_GOOD_EVALUATION_SCORE = 3;
 export const YUYUKO_EXGOOD_EVALUATION_SCORE = 4;
@@ -98,7 +99,7 @@ export function scoreYuyukoPair(
     + baseDemandScore * 100_000
     + preferenceScore * 10_000
     + Math.min(food.recipe.price + beverage.beverage.price, 999) * 10
-    + Math.min(beverage.ownedQuantity, 99)
+    + cappedInventoryQuantityRank(beverage.ownedQuantity, 99)
     - negativeTags.length * 100_000_000
     - Math.ceil(food.resourcePressure * 100)
     - food.extraIngredients.length;

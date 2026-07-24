@@ -8,13 +8,11 @@ import type {
   OrderRecommendation,
   RecommendationIssue,
   RecommendationStateSnapshot,
-  RuntimeMissionServeTarget,
   NormalOrderExecutionTarget,
   SpecialBusinessContext,
 } from '@/companion/types';
 import type { NormalOrderDetailPlan } from '@/companion/domain/normal-order-details';
 import type { RecommendationDataSet } from '@/lib/recommendation-data';
-import type { RareCustomerCatalogItem } from '@/lib/catalog-types';
 import type { OrderRecommendationUsage } from '@/companion/domain/service-recommendations';
 
 export interface OrderRecommendationResult {
@@ -34,7 +32,6 @@ export interface NormalExecutionTargetSelection {
 export interface OrderRecommendationWorkerPayload {
   orders: NightBusinessOrder[];
   runtime: RecommendationStateSnapshot | null;
-  runtimeRareCustomers: RareCustomerCatalogItem[];
   favorites: FavoriteData;
   customRecipes: CustomRecipeData;
   preferences: CompanionPreferences;
@@ -42,7 +39,6 @@ export interface OrderRecommendationWorkerPayload {
   normalOrders?: NormalBusinessOrder[];
   includeNormalOrderDetails?: boolean;
   includeNormalExecutionTargets?: boolean;
-  missionServeTargets: RuntimeMissionServeTarget[];
   specialBusiness?: SpecialBusinessContext | null;
   specialBusinessRejectedRecipeKeys?: string[];
   data: RecommendationDataSet;

@@ -5,6 +5,7 @@ import type {
 } from '@/companion/types';
 import type { RecommendationDataSet } from '@/lib/recommendation-data';
 import type { IngredientCatalogItem, RareCustomerCatalogItem, RecipeCatalogItem } from '@/lib/catalog-types';
+import { inventoryShortage } from '@/lib/inventory-quantity';
 import {
   compareFoodCandidates,
   hasForbiddenIngredientTag,
@@ -415,7 +416,7 @@ function calculateResourcePressure(
 ): number {
   return ingredients.reduce((sum, ingredient) => {
     const qty = ownedIngredientQty[ingredient.id] ?? 0;
-    return sum + Math.max(0, LOW_STOCK_THRESHOLD - qty);
+    return sum + inventoryShortage(qty, LOW_STOCK_THRESHOLD);
   }, 0);
 }
 

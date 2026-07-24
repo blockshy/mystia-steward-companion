@@ -4,9 +4,250 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const catalog = fs.readFileSync(
-  path.join(root, 'mods/bepinex/src/Save/RuntimeStaticDataCatalog.cs'),
-  'utf8',
+const readSource = (relativePath) => fs.readFileSync(path.join(root, relativePath), 'utf8');
+
+function listFilesRecursively(directory) {
+  return fs.readdirSync(directory, { withFileTypes: true })
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .flatMap((entry) => {
+      const absolutePath = path.join(directory, entry.name);
+      return entry.isDirectory() ? listFilesRecursively(absolutePath) : [absolutePath];
+    });
+}
+
+const catalog = readSource('mods/bepinex/src/Save/RuntimeStaticDataCatalog.cs');
+const mappedGuests = readSource('mods/bepinex/src/Save/RuntimeMappedGuestCatalog.cs');
+const recommendationState = readSource(
+  'mods/bepinex/src/Save/RuntimeReflectionRecommendationStateProvider.cs',
+);
+const nightBusinessProvider = readSource(
+  'mods/bepinex/src/Save/NightBusinessReflectionProvider.cs',
+);
+const overlayController = readSource(
+  'mods/bepinex/src/Ui/StewardOverlayController.cs',
+);
+const rareGuestInvitations = readSource(
+  'mods/bepinex/src/Save/RuntimeRareGuestInvitationService.cs',
+);
+const rareGuestInvitationHook = readSource(
+  'apps/companion/src/companion/hooks/useRareGuestInvitations.ts',
+);
+const companionConnection = readSource(
+  'apps/companion/src/companion/hooks/useCompanionConnection.ts',
+);
+const coreProjection = readSource('mods/bepinex/src/Save/RuntimeCoreMappingProjection.cs');
+const storageProjection = readSource('mods/bepinex/src/Save/RuntimeStorageStateProjection.cs');
+const modCSharpSources = listFilesRecursively(path.join(root, 'mods/bepinex/src'))
+  .filter((filePath) => filePath.endsWith('.cs'))
+  .map((filePath) => ({
+    filePath: path.relative(root, filePath),
+    source: fs.readFileSync(filePath, 'utf8'),
+  }));
+
+for (const forbiddenRuntimeMissionPath of [
+  'RuntimeMission',
+  'AllNodesMapping',
+  'GetAllNodes',
+  'GetAllMissionData',
+  'trackingMissions',
+  'trackingMissionBuffer',
+  'scheduledEvents',
+]) {
+  const offendingFiles = modCSharpSources
+    .filter(({ source }) => source.includes(forbiddenRuntimeMissionPath))
+    .map(({ filePath }) => filePath);
+  assert.deepEqual(
+    offendingFiles,
+    [],
+    `Mod source restored forbidden runtime mission path ${forbiddenRuntimeMissionPath}: ${offendingFiles.join(', ')}`,
+  );
+}
+
+for (const mappingName of [
+  'IngredientsMapping',
+  'BeveragesMapping',
+  'FoodsMapping',
+  'RecipesMapping',
+]) {
+  assert.ok(
+    catalog.includes(
+      `"${mappingName}",\n                RuntimeCoreMappingIdDomain.NonNegativeContent)`,
+    ),
+    `Runtime catalog must project DataBaseCore.${mappingName} through the non-negative content domain.`,
+  );
+}
+assert.ok(
+  catalog.includes(
+    '"IzakayasMapping",\n                RuntimeCoreMappingIdDomain.Signed)',
+  ),
+  'Runtime catalog must preserve the complete signed DataBaseCore.IzakayasMapping domain.',
+);
+
+for (const requiredContract of [
+  [catalog, 'RuntimeCoreMappingProjection.ReadIds(entries, memberName, idDomain)'],
+  [mappedGuests, 'InvokeRequiredStatic(methods.GetAllMappedGuests)'],
+  [mappedGuests, 'ReadBaseGuestIdentities(methods.GetAllSpecialGuests)'],
+  [mappedGuests, 'AliasSource = "base-identity"'],
+  [mappedGuests, 'ResolveCanonicalSourceId(mapping, mappingsById, baseGuestsById)'],
+  [mappedGuests, 'private static RuntimeMappedGuestMethodSet? _cachedMethods'],
+  [catalog, 'allowNegativeIds: true'],
+  [catalog, 'ReadRequiredIntArrayMember(runtime, "RawTags")'],
+  [catalog, 'private static RuntimeStaticMethodSet? _cachedMethods'],
+  [recommendationState, 'RuntimeStorageStateProjection.ReadAvailableRecipeIds('],
+  [recommendationState, 'RuntimeStorageStateProjection.ReadIngredientQuantities('],
+  [recommendationState, 'RuntimeStorageStateProjection.ReadBeverageQuantities('],
+  [recommendationState, '"HaveRecipe"'],
+  [recommendationState, '"GetIngredientCountById"'],
+  [recommendationState, '"GetBeverageCountById"'],
+  [coreProjection, 'entries.Count > MaxMappingItems'],
+  [
+    coreProjection,
+    'idDomain == RuntimeCoreMappingIdDomain.NonNegativeContent && id < 0',
+  ],
+  [storageProjection, 'quantity < -1'],
+]) {
+  const [source, marker] = requiredContract;
+  assert.ok(source.includes(marker), `Runtime catalog contract is missing: ${marker}`);
+}
+
+assert.ok(
+  !storageProjection.includes('allowInfinite')
+  && !storageProjection.includes('var minimum'),
+  'Ingredient and beverage inventory must share the exact -1 native infinite sentinel.',
+);
+assert.ok(
+  overlayController.includes('LocalApiRuntimeDataPayload.Create(_runtimeDataCatalog, LocalApiJsonOptions)')
+  && overlayController.includes('ReferenceEquals(_runtimeDataPayloadCatalog, _runtimeDataCatalog)'),
+  'Runtime data publication must hash the complete serialized catalog once per catalog generation.',
+);
+assert.ok(
+  !overlayController.includes('BuildRuntimeDataSignature')
+  && !companionConnection.includes('buildRuntimeDataCatalogCacheSignature'),
+  'Count/edge runtime-data signatures must not replace the authoritative payload hash.',
+);
+
+assert.ok(
+  !catalog.includes('ReadRequiredIntArrayMember(runtime, "tags")'),
+  'Runtime catalog must not read the computed Sellable.Tags projection.',
+);
+
+const forbiddenSources = [catalog, mappedGuests, recommendationState].join('\n');
+for (const forbiddenPath of [
+  'GetSpecialGuestsAndMappedGuests',
+  'GenerateDummy',
+  'GenerateSaveData',
+  'GetAllIngredients',
+  'GetAllBeverages',
+  'GetAllFoods',
+  'GetAllRecipes',
+  'GetAllIzakayas',
+]) {
+  assert.ok(
+    !forbiddenSources.includes(forbiddenPath),
+    `Runtime catalog restored a forbidden whole-database or save-generation path: ${forbiddenPath}`,
+  );
+}
+
+assert.ok(
+  nightBusinessProvider.includes('ResolveCachedMappedGuestIdentity('),
+  'Night-business identity must resolve through the verified mapped identity snapshot.',
+);
+for (const forbiddenIdentityPath of [
+  'RareCustomerIdentityResolver',
+  '"IsSpecialGuestMapped"',
+  '"MappedID2TargetID"',
+  '"RefSGuest"',
+  'ReadGuestDisplayName(',
+  'Tewi_HardSell',
+  'Remilia',
+]) {
+  assert.ok(
+    !nightBusinessProvider.includes(forbiddenIdentityPath),
+    `Night-business refresh restored a side-effecting or hard-coded identity path: ${forbiddenIdentityPath}`,
+  );
+}
+
+for (const forbiddenMappedGuestGetter of [
+  '"LikeFoodTag"',
+  '"LikeFoodTagOriginal"',
+  '"HateFoodTag"',
+  '"HateFoodTagOriginal"',
+  '"LikeBevTag"',
+  '"LikeBevTagOriginal"',
+]) {
+  assert.ok(
+    !mappedGuests.includes(forbiddenMappedGuestGetter),
+    `Mapped guest identity must not evaluate preference getter: ${forbiddenMappedGuestGetter}`,
+  );
+}
+
+for (const requiredInvitationContract of [
+  'new RuntimeMappedGuestCatalog(repository).Snapshot()',
+  'mappedGuestSnapshot.Entries',
+  'RequireExactStaticMethod(\n            dataBaseCharacterType,\n            "GetAllSpecialGuests"',
+  'RuntimeConcreteCollectionReader.TryReadReferenceArray(source, out var guests, out var failure)',
+  'RuntimeRareGuestInvitationIdentity.Resolve(',
+  'baseGuestsById.TryGetValue(invitationIdentity.CanonicalGuestId, out var guest)',
+  'RuntimeRareGuestInvitationCandidates.Deduplicate(candidates)',
+  'ReadRequiredStaticDictionaryProperty(',
+  '"allNPCs",',
+  '"trackedNPCs",',
+  '"RecordedSpecialNPCs",',
+  'IsClosedIl2CppDictionary(valueType, typeof(string), trackedNpcType)',
+  'RuntimeTrackedNpcAvailability.Evaluate',
+  '"defaultDestination"',
+  'RuntimeConcreteCollectionReader.TryGetDictionaryValue',
+]) {
+  assert.ok(
+    rareGuestInvitations.includes(requiredInvitationContract),
+    `Rare-guest invitations must consume verified base and mapped identity data: ${requiredInvitationContract}`,
+  );
+}
+
+for (const forbiddenInvitationPath of [
+  '"RefSGuest"',
+  'GetSpecialGuestsAndMappedGuests',
+  'GenerateDummy',
+  'TryRefreshNPCs',
+  'GetMapNPCs',
+  'RefTrackedNPCAvailability',
+  'GetOrGenerateSpecialNPCKizunaLevel',
+  'RuntimeReflectionUtility.EnumerateObjects',
+  '"ShouldShown"',
+  '"RefNPC"',
+  '"None"',
+  'ReadRequiredStaticField',
+  'GetMapLabelFromSpawnMarker',
+]) {
+  assert.ok(
+    !rareGuestInvitations.includes(forbiddenInvitationPath),
+    `Rare-guest invitations restored a side-effecting identity path: ${forbiddenInvitationPath}`,
+  );
+}
+
+assert.ok(
+  rareGuestInvitations.includes('HasNpcDayDestination(\n                    npc,')
+    && rareGuestInvitations.includes('RuntimeConcreteCollectionReader.TryReadReferenceArray(\n                possibleDestinations'),
+  'All-scene invitation candidates must require a non-empty exact day-destination array without reverse lookup.',
+);
+
+for (const requiredAutomaticInvitationLoad of [
+  'buildRareGuestInvitationRefreshIdentity',
+  'requestGenerationRef',
+  'listAbortControllerRef',
+  'snapshot: LocalApiSnapshot',
+  'tab: ModTab',
+]) {
+  assert.ok(
+    rareGuestInvitationHook.includes(requiredAutomaticInvitationLoad),
+    `Passive invitation refresh is missing context or stale-request isolation: ${requiredAutomaticInvitationLoad}`,
+  );
+}
+
+assert.ok(
+  overlayController.includes('if (_runtimeMappedGuestSnapshot?.IsComplete != true)')
+    && overlayController.includes('_runtimeMappedGuestSnapshot = null;\n        RuntimeMappedGuestCatalog.ResetSnapshot();'),
+  'Completed mapped identity must survive ordinary scene changes and be invalidated with loaded runtime state.',
 );
 
 for (const removedProbe of [
@@ -16,22 +257,12 @@ for (const removedProbe of [
   'specialBevText=',
   'ResolveLanguageDictionary(',
 ]) {
-  assert.ok(!catalog.includes(removedProbe),
-    `Runtime catalog must not call the unused warning-producing probe: ${removedProbe}`);
+  assert.ok(
+    !catalog.includes(removedProbe),
+    `Runtime catalog must not call the unused warning-producing probe: ${removedProbe}`,
+  );
 }
 
-for (const requiredRuntimeField of [
-  'GetMemberValue(guest, "LikeFoodTag")',
-  'GetMemberValue(guest, "LikeFoodTagOriginal")',
-  'GetMemberValue(guest, "HateFoodTag")',
-  'GetMemberValue(guest, "HateFoodTagOriginal")',
-  'GetMemberValue(guest, "LikeBevTag")',
-  'FormatMember(guest, "SpawnType")',
-  'localPlaces=',
-  'ParseSectionRows(guestLines, "SpecialGuests")',
-]) {
-  assert.ok(catalog.includes(requiredRuntimeField),
-    `Runtime catalog lost a functional rare-guest data source: ${requiredRuntimeField}`);
-}
-
-console.log('PASS: runtime catalog avoids unused language probes while retaining functional rare-guest tags.');
+console.log(
+  'PASS: runtime catalog and passive invitation reads avoid broad, synthetic, refreshing, or generating guest paths.',
+);

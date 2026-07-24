@@ -46,6 +46,7 @@ import {
   DEFAULT_RECOMMENDATION_DATA,
   type RecommendationDataSet,
 } from '@/lib/recommendation-data';
+import { cappedInventoryQuantityRank } from '@/lib/inventory-quantity';
 import {
   buildRareBeverageCandidates,
   buildRareFoodCandidates,
@@ -428,7 +429,7 @@ function scorePreferenceBeverage(candidate: BeverageCandidate): number {
   return candidate.matchedTags.length * 300
     + candidate.beverage.level * 20
     + candidate.beverage.price
-    + Math.min(candidate.ownedQuantity, 20);
+    + cappedInventoryQuantityRank(candidate.ownedQuantity, 20);
 }
 
 function scoreWackyPair(food: FoodCandidate, beverage: BeverageCandidate, targetTags: readonly string[]): number {
@@ -454,7 +455,7 @@ function scoreKoishiBodyBeverage(candidate: BeverageCandidate): number {
   return candidate.matchedTags.length * 3500
     + candidate.beverage.level * 100
     + candidate.beverage.price
-    + Math.min(candidate.ownedQuantity, 20);
+    + cappedInventoryQuantityRank(candidate.ownedQuantity, 20);
 }
 
 function scoreKoishiBodyPair(food: FoodCandidate, beverage: BeverageCandidate): number {
@@ -474,7 +475,7 @@ function scoreKoishiBrokenShieldBeverage(candidate: BeverageCandidate): number {
   return candidate.matchedTags.length * 10_000
     + candidate.beverage.level * 500
     - candidate.beverage.price
-    + Math.min(candidate.ownedQuantity, 20);
+    + cappedInventoryQuantityRank(candidate.ownedQuantity, 20);
 }
 
 function scoreKoishiBrokenShieldPair(

@@ -37,6 +37,7 @@ import {
   DEFAULT_RECOMMENDATION_DATA,
   type RecommendationDataSet,
 } from '@/lib/recommendation-data';
+import { cappedInventoryQuantityRank } from '@/lib/inventory-quantity';
 
 const YUYUKO_REFRESH_EVALUATION_SCORE = 2;
 
@@ -211,7 +212,7 @@ function scoreYuyukoBeverage(candidate: BeverageCandidate): number {
   return candidate.beverage.level * 1_000
     + candidate.matchedTags.length * 500
     + candidate.beverage.price
-    + Math.min(candidate.ownedQuantity, 20);
+    + cappedInventoryQuantityRank(candidate.ownedQuantity, 20);
 }
 
 function scoreYuyukoExactNormalPair(food: FoodCandidate, beverage: BeverageCandidate): number {
@@ -222,7 +223,7 @@ function scoreYuyukoExactNormalPair(food: FoodCandidate, beverage: BeverageCandi
     + levelSum * 1_000_000
     + preferenceScore * 10_000
     + Math.min(food.recipe.price + beverage.beverage.price, 999) * 10
-    + Math.min(beverage.ownedQuantity, 99)
+    + cappedInventoryQuantityRank(beverage.ownedQuantity, 99)
     - Math.ceil(food.resourcePressure * 100)
     - food.extraIngredients.length;
 }

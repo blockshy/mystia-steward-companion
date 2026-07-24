@@ -919,19 +919,41 @@ async function auditSlider(page) {
 }
 
 async function auditAxisGroup(page) {
-  await activateTopTab(page, 'tasks');
+  await activateTopTab(page, 'rare-invitations');
   await page.waitForTimeout(300);
 
-  const filterButton = page.getByRole('button', { name: /可接取/ }).first();
-  if (!(await filterButton.count())) return;
+  const rangeControl = page.locator('[data-slot="segmented-control"]:visible')
+    .filter({ hasText: '当前场景' })
+    .first();
+  if (!(await rangeControl.count())) {
+    issues.push('稀客邀请页未找到邀请范围选项组。');
+    return;
+  }
 
-  await filterButton.scrollIntoViewIfNeeded();
-  await filterButton.focus();
+  await rangeControl.scrollIntoViewIfNeeded();
+  const focused = await rangeControl.evaluate((element) => {
+    const option = Array.from(element.querySelectorAll('label'))
+      .find((label) =>
+        label instanceof HTMLLabelElement
+        && label.textContent?.includes('当前场景')
+        && label.control instanceof HTMLInputElement
+        && !label.control.disabled
+      );
+    if (!(option instanceof HTMLElement)) return false;
+    if (!option.matches('[tabindex]')) option.tabIndex = -1;
+    option.focus();
+    return true;
+  });
+  if (!focused) {
+    issues.push('稀客邀请页无法聚焦“当前场景”范围选项。');
+    return;
+  }
+
   await page.waitForTimeout(80);
   await pressButton(page, BUTTON_DPAD_RIGHT, { holdMs: 70 });
   const afterRight = await readFocusedSummary(page);
-  if (!afterRight?.text.includes('进行中')) {
-    issues.push(`任务筛选按钮组按右键后未聚焦“进行中”，实际为 ${afterRight?.text || '空'}。`);
+  if (!afterRight?.segmented || !afterRight.text.includes('全部场景')) {
+    issues.push(`稀客邀请范围按右键后未聚焦“全部场景”，实际为 ${afterRight?.text || '空'}。`);
   }
 }
 
@@ -1001,7 +1023,7 @@ async function auditResponsiveProfiles(browser) {
 
       await profilePage.locator('[data-gamepad-tab-value="service"]').first().focus();
       await pressButton(profilePage, BUTTON_DPAD_RIGHT);
-      await expectFocusedTopTab(profilePage, 'tasks', `[${profile.name}] 一级导航跨行焦点移动失败`);
+      await expectFocusedTopTab(profilePage, 'rare-invitations', `[${profile.name}] 一级导航跨行焦点移动失败`);
       const focusedTabContained = await profilePage.evaluate(() => {
         const active = document.activeElement;
         const list = active?.closest('.steward-primary-tabs-list');
@@ -1017,7 +1039,7 @@ async function auditResponsiveProfiles(browser) {
         issues.push(`[${profile.name}] 一级导航跨行后的焦点页签不在导航容器内。`);
       }
       await pressButton(profilePage, BUTTON_A);
-      await expectTopTab(profilePage, 'tasks', `[${profile.name}] A 键未激活跨行后的顶部 Tab`);
+      await expectTopTab(profilePage, 'rare-invitations', `[${profile.name}] A 键未激活跨行后的顶部 Tab`);
     }
 
     await profilePage.locator('[data-gamepad-tab-value="overview"]').first().focus();

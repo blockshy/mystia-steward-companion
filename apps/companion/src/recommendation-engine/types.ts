@@ -174,7 +174,6 @@ export interface NormalBeverageRecommendation {
 export interface RareRecipeRecommendation {
   recipe: RecipeCatalogItem;
   extraIngredients: IngredientCatalogItem[];
-  missionPriority?: boolean;
   customRecipe?: boolean;
   customRecipePinned?: boolean;
   customRecipeSortOrder?: number;
@@ -232,6 +231,34 @@ export interface BeverageCandidate {
   meetsRequiredBeverage: boolean;
   ownedQuantity: number;
   conditionResults: ConditionResult[];
+}
+
+/**
+ * 稀客料理候选前置过滤的只读诊断。
+ *
+ * 配方资格计数使用轻量 Tag 可达性检查；生成候选计数直接消费正式候选结果，
+ * 不为诊断重新执行组合搜索，也不参与正式候选选择。
+ */
+export interface RareFoodCandidateSearchDiagnostic {
+  catalogRecipeCount: number;
+  requiredTagReachableRecipeCount: number;
+  requiredTagReachableUnlockedRecipeCount: number;
+  requiredTagReachableBaseIngredientsReadyRecipeCount: number;
+  requiredTagReachableCookerReadyRecipeCount: number;
+  generatedCandidateCount: number;
+  generatedRequiredTagMatchedCandidateCount: number;
+  missingIngredientNames: string[];
+  missingCookerNames: string[];
+}
+
+/**
+ * 稀客酒水候选前置过滤的只读诊断。
+ */
+export interface RareBeverageCandidateSearchDiagnostic {
+  catalogBeverageCount: number;
+  availableBeverageCount: number;
+  allowedBeverageCount: number;
+  requiredTagBeverageCount: number;
 }
 
 /**

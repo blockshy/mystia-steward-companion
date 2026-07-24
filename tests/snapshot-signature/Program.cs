@@ -1,3 +1,4 @@
+using System.Text.Json;
 using MystiaStewardCompanion.LocalApi;
 
 try
@@ -22,13 +23,63 @@ try
         empty,
         "The signature helper does not match the SHA-256 reference vector.");
 
-    Console.WriteLine("PASS: canonical snapshot content produces stable 64-character lowercase SHA-256 signatures.");
+    var firstCatalog = BuildRuntimeDataCatalog("绿茶");
+    var equivalentCatalog = BuildRuntimeDataCatalog("绿茶");
+    var changedCatalog = BuildRuntimeDataCatalog("高级绿茶");
+    var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+    var firstPayload = LocalApiRuntimeDataPayload.Create(firstCatalog, options);
+    var equivalentPayload = LocalApiRuntimeDataPayload.Create(equivalentCatalog, options);
+    var changedPayload = LocalApiRuntimeDataPayload.Create(changedCatalog, options);
+
+    AssertEqual(
+        firstPayload.Signature,
+        equivalentPayload.Signature,
+        "Equivalent runtime catalogs produced unstable payload signatures.");
+    AssertNotEqual(
+        firstPayload.Signature,
+        changedPayload.Signature,
+        "A same-count runtime catalog content change did not change the payload signature.");
+    AssertNotEqual(
+        firstPayload.Json,
+        changedPayload.Json,
+        "A runtime catalog content change did not change the published JSON.");
+    AssertEqual(
+        64,
+        firstPayload.Signature.Length,
+        "Runtime catalog payload signatures must have a fixed SHA-256 length.");
+
+    Console.WriteLine("PASS: snapshot and full runtime-data payloads use stable content SHA-256 signatures.");
     return 0;
 }
 catch (Exception ex)
 {
     Console.Error.WriteLine($"FAIL: {ex}");
     return 1;
+}
+
+static object BuildRuntimeDataCatalog(string beverageName)
+{
+    return new
+    {
+        isComplete = true,
+        source = "test-runtime",
+        status = "ready",
+        beverages = new[]
+        {
+            new
+            {
+                id = 0,
+                name = beverageName,
+                tags = new[] { "无酒精" },
+                level = 1,
+                price = 1,
+            },
+        },
+        beverageTagIdMap = new Dictionary<string, string>
+        {
+            ["0"] = "无酒精",
+        },
+    };
 }
 
 static void AssertTrue(bool actual, string message)

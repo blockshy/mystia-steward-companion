@@ -7,6 +7,7 @@ import {
   getConnectionRetryDelayMs,
   isAutomationLeaseOwnedForConnection,
   resolveCompanionConnectionIdentity,
+  updateUnavailableRuntimeData,
 } from '../../apps/companion/src/companion/connection-recovery.ts';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
@@ -48,6 +49,51 @@ assert.deepEqual(
   [2000, 5000, 10000, 30000, 30000, 30000],
 );
 
+const completeRuntimeData = {
+  isComplete: true,
+  source: 'game-runtime',
+  status: 'complete',
+  recipes: [{ id: 1 }],
+  ingredients: [],
+  beverages: [],
+  normalCustomers: [],
+  rareCustomers: [],
+};
+assert.equal(
+  updateUnavailableRuntimeData(completeRuntimeData, 'next-source', 'temporary failure'),
+  completeRuntimeData,
+  'A complete runtime catalog must survive a transient incomplete snapshot.',
+);
+assert.deepEqual(
+  updateUnavailableRuntimeData({
+    isComplete: false,
+    source: 'waiting',
+    status: 'initial placeholder',
+    recipes: [],
+    ingredients: [],
+    beverages: [],
+    normalCustomers: [],
+    rareCustomers: [],
+  }, 'game-runtime', 'read-izakaya-places failed'),
+  {
+    isComplete: false,
+    source: 'game-runtime',
+    status: 'read-izakaya-places failed',
+    recipes: [],
+    ingredients: [],
+    beverages: [],
+    normalCustomers: [],
+    rareCustomers: [],
+  },
+  'An incomplete runtime catalog placeholder must update to the latest server status.',
+);
+const stableUnavailableRuntimeData = updateUnavailableRuntimeData(null, 'game-runtime', 'still loading');
+assert.equal(
+  updateUnavailableRuntimeData(stableUnavailableRuntimeData, 'game-runtime', 'still loading'),
+  stableUnavailableRuntimeData,
+  'An unchanged incomplete runtime catalog status must preserve referential identity.',
+);
+
 const stableLeaseKey = buildAutomationLeaseConnectionKey(stableIdentity, 'mod-session-1');
 assert.equal(
   stableLeaseKey,
@@ -82,6 +128,11 @@ assert.ok(hook.includes('INITIAL_SNAPSHOT_TIMEOUT_MS'));
 assert.match(hook, /const data = await readSnapshot\(/, 'Every connection attempt must read an authenticated snapshot.');
 assert.match(hook, /setConnectionFailureCount\(\(current\) => current \+ 1\)/, 'Every failed attempt must advance the retry scheduler, including after the delay cap.');
 assert.match(hook, /getConnectionRetryDelayMs\(connectionFailureCount\)/, 'The sole failure timer must use the fixed backoff sequence.');
+assert.equal(
+  hook.includes('if (current) return current;'),
+  false,
+  'An incomplete runtime catalog placeholder must update to the latest server failure status.',
+);
 assert.equal(hook.includes('connectionRevision === 0'), false, 'A refresh callback identity change must not trigger an initialization retry loop.');
 assert.ok(hook.includes("const CONNECTION_ACTIVATED_EVENT = 'connection-activation-requested'"));
 const resumeStart = hook.indexOf('const resumePausedConnection = useCallback');

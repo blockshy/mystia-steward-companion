@@ -8,6 +8,7 @@ var expectedGetRoutes = new HashSet<string>(StringComparer.Ordinal)
     "/health",
     "/local-api/config",
     "/logs/settings",
+    "/rare-guests/invitations",
     "/runtime-data",
     "/snapshot",
 };
@@ -37,7 +38,6 @@ var expectedPostRoutes = new HashSet<string>(StringComparer.Ordinal)
     "/orders/normal/complete-first",
     "/orders/prepare-next",
     "/orders/rare/dismiss",
-    "/rare-guests/invitations",
     "/rare-guests/invite",
     "/rare-guests/invite-all",
     "/ui-pinning/target",
@@ -73,6 +73,14 @@ try
         source,
         "_automationCommandEpoch = Math.Max(1, automationCommandEpoch);",
         "A recreated Local API server does not inherit the Unity command epoch.");
+    AssertContains(
+        source,
+        "ReadLongQuery(query, \"expectedDaySceneGeneration\", 0)",
+        "Rare-guest invitation writes do not require the expected day-scene generation.");
+    AssertContains(
+        source,
+        "ReadStringQuery(query, \"expectedMapLabel\")",
+        "Rare-guest invitation writes do not require the expected map label.");
 
     var disposeStart = RequireIndex(source, "public void Dispose()", 0);
     var stopAcceptingIndex = RequireIndex(source, "_clientHandlers.StopAccepting();", disposeStart);
@@ -99,6 +107,18 @@ try
     AssertRouteSet("POST", expectedPostRoutes, postRoutes);
     AssertNoDuplicates("GET", getRoutes);
     AssertNoDuplicates("POST", postRoutes);
+
+    var inviteAllRouteStart = RequireIndex(source, "case \"/rare-guests/invite-all\":", postSwitchStart);
+    var inviteRouteStart = RequireIndex(source, "case \"/rare-guests/invite\":", inviteAllRouteStart);
+    var nextPostRouteStart = RequireIndex(source, "case \"/ui-pinning/target\":", inviteRouteStart);
+    AssertContains(
+        source[inviteAllRouteStart..inviteRouteStart],
+        "ReadRareGuestInvitationWriteExpectation(query)",
+        "Invite-all does not forward its captured day-scene context.");
+    AssertContains(
+        source[inviteRouteStart..nextPostRouteStart],
+        "ReadRareGuestInvitationWriteExpectation(query)",
+        "Invite-one does not forward its captured day-scene context.");
 
     var overlaySource = File.ReadAllText(FindOverlaySource());
     var cancellationProcessIndex = RequireIndex(overlaySource, "ProcessPendingAutomationJobCancellations();", 0);

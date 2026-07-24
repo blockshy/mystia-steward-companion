@@ -1,17 +1,15 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { IconRefresh } from '@tabler/icons-react';
-import { Badge, Button, Card, CardContent, EmptyRow, InfoLine, Input, ListPanel, SegmentedControl } from '@/components/ui-kit';
+import { Badge, Button, EmptyRow, InfoLine, Input, ListPanel, SegmentedControl } from '@/components/ui-kit';
 import { toggleNumberInList } from '@/companion/storage';
-import type { MissionStatusFilter, RareGuestInvitationEntry, RareGuestInvitationResponse, RareGuestInvitationScope, RuntimeMissionContext, RuntimeMissionInfo } from '@/companion/types';
+import type { RareGuestInvitationEntry, RareGuestInvitationResponse, RareGuestInvitationScope } from '@/companion/types';
 import { RuntimeUnavailable } from '@/companion/pages/shared';
-import { DENSE_THREE_COLUMN_GRID, DENSE_TWO_COLUMN_GRID_TIGHT } from '@/companion/pages/shared-constants';
-import { buildRecommendationDataIndexes, type RecommendationDataSet } from '@/lib/recommendation-data';
-
-const DEFAULT_MISSION_STATUS_FILTERS: MissionStatusFilter[] = ['available', 'fulfilled'];
-const MISSION_STATUS_FILTER_OPTIONS: MissionStatusFilter[] = ['available', 'tracking', 'fulfilled'];
+import { DENSE_TWO_COLUMN_GRID_TIGHT } from '@/companion/pages/shared-constants';
 
 function RareGuestInvitationPanel({
   runtimeLoaded,
+  runtimeDaySceneReady,
+  invitationContextReady,
   activeDayMapName,
   activeDayMapLabel,
   inviteScope,
@@ -27,6 +25,8 @@ function RareGuestInvitationPanel({
   onInviteRareGuest,
 }: {
   runtimeLoaded: boolean;
+  runtimeDaySceneReady: boolean;
+  invitationContextReady: boolean;
   activeDayMapName: string;
   activeDayMapLabel: string;
   inviteScope: RareGuestInvitationScope;
@@ -69,6 +69,7 @@ function RareGuestInvitationPanel({
   const isBusy = inviteBusyKey !== '';
   const isListBusy = inviteBusyKey === 'list';
   const isAllBusy = inviteBusyKey === 'all';
+  const invitationRuntimeReady = runtimeLoaded && runtimeDaySceneReady && invitationContextReady;
   const currentMapText = inviteAllResult?.currentMapName || activeDayMapName || inviteAllResult?.currentMapLabel || activeDayMapLabel || '未知';
 
   return (
@@ -92,9 +93,9 @@ function RareGuestInvitationPanel({
             size="sm"
             className="h-8 px-2.5"
             onClick={onRefreshRareGuestInvitations}
-            disabled={!runtimeLoaded || isBusy}
+            disabled={!invitationRuntimeReady || isBusy}
             data-gamepad-clickable="true"
-            data-gamepad-focus-key="tasks:rare-invitations:refresh"
+            data-gamepad-focus-key="rare-invitations:refresh"
           >
             <IconRefresh className={isListBusy ? 'size-4 animate-spin' : 'size-4'} />
             刷新
@@ -105,9 +106,12 @@ function RareGuestInvitationPanel({
       <div className="grid min-w-0 gap-3 text-sm">
         <div className={DENSE_TWO_COLUMN_GRID_TIGHT}>
           <InfoLine label="范围" value={inviteScope === 'all' ? '所有日间场景' : `当前: ${currentMapText}`} />
-          <InfoLine label="状态" value={runtimeLoaded ? '按原生羁绊条件判定' : '等待存档加载'} />
+          <InfoLine
+            label="状态"
+            value={invitationRuntimeReady ? '按原生羁绊条件判定' : '等待日间场景稳定'}
+          />
         </div>
-        {!inviteAllResult && inviteAllError && <EmptyRow text={inviteAllError} />}
+        {inviteAllError && <EmptyRow text={inviteAllError} />}
         {inviteAllResult ? (
           <div className="max-w-full min-w-0 overflow-hidden steward-muted-surface-25 p-2">
             <div className="grid gap-1 text-xs text-muted-foreground sm:grid-cols-2">
@@ -139,7 +143,7 @@ function RareGuestInvitationPanel({
                   onClick={() => onInviteLevelsChange([])}
                   disabled={isBusy}
                   data-gamepad-clickable="true"
-                  data-gamepad-focus-key="tasks:rare-invitations:level:all"
+                  data-gamepad-focus-key="rare-invitations:level:all"
                 >
                   全部羁绊
                 </Button>
@@ -153,7 +157,7 @@ function RareGuestInvitationPanel({
                     onClick={() => onInviteLevelsChange(toggleNumberInList(inviteLevels, level))}
                     disabled={isBusy}
                     data-gamepad-clickable="true"
-                    data-gamepad-focus-key={`tasks:rare-invitations:level:${level}`}
+                    data-gamepad-focus-key={`rare-invitations:level:${level}`}
                   >
                     羁绊 {level}
                   </Button>
@@ -163,9 +167,9 @@ function RareGuestInvitationPanel({
                   size="xs"
                   className="ml-auto h-7 px-2"
                   onClick={onInviteAllRareGuests}
-                  disabled={!runtimeLoaded || isBusy || filteredAvailableEntries.length === 0}
+                  disabled={!invitationRuntimeReady || isBusy || filteredAvailableEntries.length === 0}
                   data-gamepad-clickable="true"
-                  data-gamepad-focus-key="tasks:rare-invitations:invite-all"
+                  data-gamepad-focus-key="rare-invitations:invite-all"
                 >
                   {isAllBusy ? '邀请中...' : '邀请全部'}
                 </Button>
@@ -196,9 +200,9 @@ function RareGuestInvitationPanel({
                       type="button"
                       size="xs"
                       onClick={() => onInviteRareGuest(entry.id)}
-                      disabled={!runtimeLoaded || isBusy || !canInvite}
+                      disabled={!invitationRuntimeReady || isBusy || !canInvite}
                       data-gamepad-clickable="true"
-                      data-gamepad-focus-key={`tasks:rare-invitations:guest:${entry.id}`}
+                      data-gamepad-focus-key={`rare-invitations:guest:${entry.id}`}
                     >
                       {busy ? '邀请中' : '邀请'}
                     </Button>
@@ -230,20 +234,20 @@ function RareGuestInvitationPanel({
               </div>
             )}
           </div>
-        ) : (
-          <EmptyRow text="尚未执行邀请" />
+        ) : !inviteAllError && (
+          <EmptyRow text={invitationRuntimeReady ? '正在读取稀客候选' : '等待日间场景稳定'} />
         )}
       </div>
     </ListPanel>
   );
 }
 
-export function ModTasksPanel({
+export function ModRareGuestInvitationsPanel({
   runtimeLoaded,
+  runtimeDaySceneReady,
+  invitationContextReady,
   activeDayMapName,
   activeDayMapLabel,
-  missions,
-  data,
   inviteScope,
   inviteLevels,
   inviteBusyKey,
@@ -257,10 +261,10 @@ export function ModTasksPanel({
   onInviteRareGuest,
 }: {
   runtimeLoaded: boolean;
+  runtimeDaySceneReady: boolean;
+  invitationContextReady: boolean;
   activeDayMapName: string;
   activeDayMapLabel: string;
-  missions: RuntimeMissionContext | null;
-  data: RecommendationDataSet;
   inviteScope: RareGuestInvitationScope;
   inviteLevels: number[];
   inviteBusyKey: string;
@@ -273,133 +277,29 @@ export function ModTasksPanel({
   onInviteAllRareGuests: () => void;
   onInviteRareGuest: (guestId: number) => void;
 }) {
-  const [statusFilters, setStatusFilters] = useState<MissionStatusFilter[]>(DEFAULT_MISSION_STATUS_FILTERS);
-  const [showExtraInfo, setShowExtraInfo] = useState(false);
-  const recipeByFoodId = useMemo(() => buildRecommendationDataIndexes(data).recipeByFoodId, [data]);
-
   if (!runtimeLoaded) {
     return <RuntimeUnavailable />;
   }
 
-  const rows = missions?.availableMissions ?? [];
-  const statusCounts = countMissionStatuses(rows);
-  const filteredRows = rows.filter((mission) => matchesMissionStatusFilter(mission, statusFilters));
-  const toggleStatusFilter = (filter: MissionStatusFilter) => {
-    setStatusFilters((current) => {
-      if (current.includes(filter)) return current.filter((item) => item !== filter);
-      return [...current, filter];
-    });
-  };
-
   return (
-    <div className="space-y-4">
-      <RareGuestInvitationPanel
-        runtimeLoaded={runtimeLoaded}
-        activeDayMapName={activeDayMapName}
-        activeDayMapLabel={activeDayMapLabel}
-        inviteScope={inviteScope}
-        inviteLevels={inviteLevels}
-        inviteBusyKey={inviteBusyKey}
-        inviteAllResult={inviteAllResult}
-        inviteAllError={inviteAllError}
-        showDebugDetails={showDebugDetails}
-        onInviteScopeChange={onInviteScopeChange}
-        onInviteLevelsChange={onInviteLevelsChange}
-        onRefreshRareGuestInvitations={onRefreshRareGuestInvitations}
-        onInviteAllRareGuests={onInviteAllRareGuests}
-        onInviteRareGuest={onInviteRareGuest}
-      />
-
-      <Card>
-        <CardContent className={`${DENSE_THREE_COLUMN_GRID} p-4 text-sm`}>
-          <InfoLine label="任务数据" value={missions ? '已读取' : '暂不可用'} />
-          <InfoLine label="可推进任务" value={`${filteredRows.length}/${rows.length} 个`} />
-          {showDebugDetails && <InfoLine label="扫描状态" value={missions?.source || missions?.error || '暂无'} />}
-        </CardContent>
-      </Card>
-
-      <ListPanel
-        title={`可推进任务 (${filteredRows.length})`}
-        action={(
-          <div className="flex flex-wrap gap-1.5" data-gamepad-axis="x">
-            {showDebugDetails && (
-              <Button
-                type="button"
-                size="sm"
-                variant={showExtraInfo ? 'default' : 'outline'}
-                className="h-8 px-2.5"
-                aria-pressed={showExtraInfo}
-                data-gamepad-clickable="true"
-                data-gamepad-focus-key="tasks:missions:show-extra"
-                onClick={() => setShowExtraInfo((value) => !value)}
-              >
-                显示额外信息
-              </Button>
-            )}
-            {MISSION_STATUS_FILTER_OPTIONS.map((filter) => (
-              <Button
-                key={filter}
-                type="button"
-                size="sm"
-                variant={statusFilters.includes(filter) ? 'default' : 'outline'}
-                className="h-8 px-2.5"
-                data-gamepad-clickable="true"
-                data-gamepad-focus-key={`tasks:missions:filter:${filter}`}
-                onClick={() => toggleStatusFilter(filter)}
-              >
-                {getMissionStatusFilterLabel(filter)} {statusCounts[filter]}
-              </Button>
-            ))}
-          </div>
-        )}
-      >
-        {!missions && <EmptyRow text="任务快照暂不可用" />}
-        {missions?.error && <EmptyRow text={missions.error} />}
-        {rows.length === 0 && missions && !missions.error && (
-          <EmptyRow text="当前进度未读取到可接或正在推进的任务" />
-        )}
-        {rows.length > 0 && filteredRows.length === 0 && (
-          <EmptyRow text="当前筛选条件下没有任务" />
-        )}
-        {filteredRows.map((mission) => {
-          const places = mission.places?.filter(Boolean) ?? [];
-          const status = normalizeMissionStatus(mission);
-          const shouldShowMissingPlace = places.length === 0 && status === 'available';
-          const displayTitle = getMissionDisplayTitle(mission, showDebugDetails && showExtraInfo);
-          return (
-          <div
-            key={`${mission.characterLabel}-${mission.label}`}
-            className="border-b py-2 text-sm last:border-b-0"
-            data-gamepad-row="true"
-            data-gamepad-row-key={`task:${mission.characterLabel}:${mission.label}`}
-          >
-            <div className="flex items-center justify-between gap-3">
-              <span className="min-w-0 truncate font-medium" title={showDebugDetails && showExtraInfo ? mission.title || mission.label : displayTitle}>
-                {displayTitle}
-              </span>
-              <span className="shrink-0 text-muted-foreground">{mission.characterName || mission.characterLabel}</span>
-            </div>
-            <div className="mt-1 flex flex-wrap gap-1.5">
-              {showDebugDetails && showExtraInfo && (
-                <>
-                  <Badge variant="outline">{mission.label}</Badge>
-                  <Badge variant="secondary">{mission.source}</Badge>
-                </>
-              )}
-              <Badge variant={status === 'fulfilled' ? 'default' : status === 'tracking' ? 'secondary' : 'outline'}>
-                {getMissionStatusFilterLabel(status)}
-              </Badge>
-              {mission.targetRecipeId != null && (
-                <Badge variant="outline">料理 {mission.targetRecipeName || recipeByFoodId.get(mission.targetRecipeId)?.name || `#${mission.targetRecipeId}`}</Badge>
-              )}
-              {places.map((place) => <Badge key={place} variant="outline">场景 {place}</Badge>)}
-              {shouldShowMissingPlace && <Badge variant="outline">场景 未读取</Badge>}
-            </div>
-          </div>
-          );
-        })}
-      </ListPanel>
-    </div>
+    <RareGuestInvitationPanel
+      runtimeLoaded={runtimeLoaded}
+      runtimeDaySceneReady={runtimeDaySceneReady}
+      invitationContextReady={invitationContextReady}
+      activeDayMapName={activeDayMapName}
+      activeDayMapLabel={activeDayMapLabel}
+      inviteScope={inviteScope}
+      inviteLevels={inviteLevels}
+      inviteBusyKey={inviteBusyKey}
+      inviteAllResult={inviteAllResult}
+      inviteAllError={inviteAllError}
+      showDebugDetails={showDebugDetails}
+      onInviteScopeChange={onInviteScopeChange}
+      onInviteLevelsChange={onInviteLevelsChange}
+      onRefreshRareGuestInvitations={onRefreshRareGuestInvitations}
+      onInviteAllRareGuests={onInviteAllRareGuests}
+      onInviteRareGuest={onInviteRareGuest}
+    />
   );
 }
 
@@ -512,56 +412,4 @@ function formatInvitationStatus(entry: RareGuestInvitationEntry): string {
   if (entry.status === 'unavailable') return '不可见';
   if (entry.status === 'missing-dialog') return '无邀请对话';
   return entry.reason || '不可邀请';
-}
-
-function matchesMissionStatusFilter(mission: RuntimeMissionInfo, filters: MissionStatusFilter[]): boolean {
-  if (filters.length === 0) return false;
-  if (mission.finished || mission.status === 'finished') return false;
-  return filters.includes(normalizeMissionStatus(mission));
-}
-
-function countMissionStatuses(rows: RuntimeMissionInfo[]): Record<MissionStatusFilter, number> {
-  return rows.reduce<Record<MissionStatusFilter, number>>((counts, mission) => {
-    if (mission.finished || mission.status === 'finished') return counts;
-    counts[normalizeMissionStatus(mission)] += 1;
-    return counts;
-  }, { available: 0, tracking: 0, fulfilled: 0 });
-}
-
-function getMissionStatusFilterLabel(filter: MissionStatusFilter): string {
-  switch (filter) {
-    case 'available':
-      return '可接取';
-    case 'tracking':
-      return '进行中';
-    case 'fulfilled':
-      return '可完成';
-  }
-}
-
-function getMissionDisplayTitle(mission: RuntimeMissionInfo, showExtraInfo: boolean): string {
-  const title = mission.title?.trim() || '';
-  if (showExtraInfo || !isTechnicalMissionText(title)) {
-    return title || mission.label || '未解析任务';
-  }
-
-  if (mission.targetRecipeName) return `料理任务：${mission.targetRecipeName}`;
-  return '未解析任务';
-}
-
-function isTechnicalMissionText(value: string | null | undefined): boolean {
-  const text = value?.trim();
-  if (!text) return false;
-  if (text.includes('ScheduledEventMission:')) return true;
-  if (text.includes('_Mission') || text.includes('_Event')) return /^[A-Za-z0-9_:.+-]+$/.test(text);
-  if (text.startsWith('DLC') && /^[A-Za-z0-9_:.+-]+$/.test(text)) return true;
-  return false;
-}
-
-function normalizeMissionStatus(mission: RuntimeMissionInfo): MissionStatusFilter {
-  if (mission.status === 'available' || mission.status === 'tracking' || mission.status === 'fulfilled') {
-    return mission.status;
-  }
-  if (mission.finished || mission.status === 'finished') return 'fulfilled';
-  return mission.started ? 'tracking' : 'available';
 }

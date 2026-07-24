@@ -17,7 +17,6 @@ internal sealed class NightBusinessReflectionProvider
     private const string OrderingElementTypeName = "NightScene.UI.GuestManagementUtility.OrderingElement";
     private const string WorkSceneServePannelTypeName = "NightScene.UI.GuestManagementUtility.WorkSceneServePannel";
     private const string IzakayaConfigureTypeName = "GameData.RunTime.NightSceneUtility.IzakayaConfigure";
-    private const string DataBaseCharacterTypeName = "GameData.Core.Collections.CharacterUtility.DataBaseCharacter";
     private const int MaxCandidateDiagnostics = 80;
     private static readonly (string MemberName, string Source)[] ManagerControllerSources =
     {
@@ -29,7 +28,6 @@ internal sealed class NightBusinessReflectionProvider
     };
 
     private readonly DataRepository _repository;
-    private readonly RareCustomerIdentityResolver _rareIdentityResolver;
     private readonly RuntimeMappedGuestCatalogSnapshot? _mappedGuestSnapshot;
     private readonly RuntimeStaticDataSnapshot? _staticDataSnapshot;
     private readonly bool _diagnosticsEnabled;
@@ -49,7 +47,6 @@ internal sealed class NightBusinessReflectionProvider
         RuntimeStaticDataSnapshot? staticDataSnapshot = null)
     {
         _repository = repository;
-        _rareIdentityResolver = repository.RareCustomerIdentities;
         _mappedGuestSnapshot = mappedGuestSnapshot;
         _staticDataSnapshot = staticDataSnapshot;
         _diagnosticsEnabled = diagnosticsEnabled;
@@ -1207,13 +1204,11 @@ internal sealed class NightBusinessReflectionProvider
 
         var guestId = ReadGuestId(guest);
         var stringId = ReadGuestStringId(guest);
-        var displayName = ReadGuestDisplayName(guest);
         var sourceGuestId = ReadSourceGuestId(guest);
 
         if (sourceGuestId.HasValue)
         {
-            return ResolveRareCustomerIdentity(sourceGuestId, stringId)
-                ?? ResolveRareCustomerIdentity(sourceGuestId, displayName);
+            return ResolveRareCustomerIdentity(sourceGuestId, stringId);
         }
 
         if (!string.IsNullOrWhiteSpace(stringId))
@@ -1223,7 +1218,7 @@ internal sealed class NightBusinessReflectionProvider
 
         if (allowIdOnly && guestId.HasValue)
         {
-            return ResolveRareCustomerIdentity(guestId, displayName);
+            return ResolveRareCustomerIdentity(guestId, stringId);
         }
 
         return null;
@@ -1244,29 +1239,16 @@ internal sealed class NightBusinessReflectionProvider
     private RareCustomerIdentity? ResolveRareCustomerIdentity(object? guest)
     {
         if (guest == null) return null;
-
-        var identity = ResolveRareCustomerIdentityFromFields(guest);
-        if (identity != null) return identity;
-
-        var guestId = ReadGuestId(guest);
-        if (!guestId.HasValue) return null;
-
-        return ResolveRareCustomerIdentityFromFields(ReadMappedSpecialGuest(guestId.Value));
+        return ResolveRareCustomerIdentityFromFields(guest);
     }
 
-    private RareCustomerIdentity? ResolveRareCustomerIdentity(int? guestId, string? runtimeNameOrStringId)
+    private RareCustomerIdentity? ResolveRareCustomerIdentity(int? guestId, string? runtimeStringId)
     {
-        return ResolveCachedMappedGuestIdentity(guestId, runtimeNameOrStringId)
-            ?? _rareIdentityResolver.Resolve(guestId, runtimeNameOrStringId);
+        return ResolveCachedMappedGuestIdentity(guestId, runtimeStringId);
     }
 
-    private RareCustomerIdentity? ResolveCachedMappedGuestIdentity(int? guestId, string? runtimeNameOrStringId)
+    private RareCustomerIdentity? ResolveCachedMappedGuestIdentity(int? guestId, string? runtimeStringId)
     {
-        if (guestId.HasValue && _repository.RareCustomersById.TryGetValue(guestId.Value, out var directCustomer))
-        {
-            return new RareCustomerIdentity(directCustomer.Id, directCustomer.Name);
-        }
-
         if (_mappedGuestSnapshot == null) return null;
 
         RuntimeMappedGuestEntry? entry = null;
@@ -1275,9 +1257,9 @@ internal sealed class NightBusinessReflectionProvider
             _mappedGuestSnapshot.ByRuntimeId.TryGetValue(guestId.Value, out entry);
         }
 
-        if (entry == null && !string.IsNullOrWhiteSpace(runtimeNameOrStringId))
+        if (entry == null && !string.IsNullOrWhiteSpace(runtimeStringId))
         {
-            _mappedGuestSnapshot.ByRuntimeStringId.TryGetValue(runtimeNameOrStringId.Trim(), out entry);
+            _mappedGuestSnapshot.ByRuntimeStringId.TryGetValue(runtimeStringId.Trim(), out entry);
         }
 
         if (entry == null) return null;
@@ -1287,19 +1269,7 @@ internal sealed class NightBusinessReflectionProvider
             return new RareCustomerIdentity(entry.LocalRareCustomerId.Value, entry.LocalRareCustomerName);
         }
 
-        if (entry.RuntimeId.HasValue && _repository.RareCustomersById.TryGetValue(entry.RuntimeId.Value, out var runtimeCustomer))
-        {
-            return new RareCustomerIdentity(runtimeCustomer.Id, runtimeCustomer.Name);
-        }
-
-        if (entry.SourceGuestId.HasValue && _repository.RareCustomersById.TryGetValue(entry.SourceGuestId.Value, out var sourceCustomer))
-        {
-            return new RareCustomerIdentity(sourceCustomer.Id, sourceCustomer.Name);
-        }
-
-        return entry.RuntimeCustomer == null
-            ? null
-            : new RareCustomerIdentity(entry.RuntimeCustomer.Id, entry.RuntimeCustomer.Name);
+        return null;
     }
 
     private RareCustomerIdentity? ResolveRareCustomerIdentityFromFields(object? guest)
@@ -1308,13 +1278,10 @@ internal sealed class NightBusinessReflectionProvider
 
         var guestId = ReadGuestId(guest);
         var stringId = ReadGuestStringId(guest);
-        var name = ReadGuestDisplayName(guest);
         var sourceGuestId = ReadSourceGuestId(guest);
 
         return ResolveRareCustomerIdentity(guestId, stringId)
-            ?? ResolveRareCustomerIdentity(guestId, name)
-            ?? ResolveRareCustomerIdentity(sourceGuestId, stringId)
-            ?? ResolveRareCustomerIdentity(sourceGuestId, name);
+            ?? ResolveRareCustomerIdentity(sourceGuestId, stringId);
     }
 
     private static int? ReadGuestId(object? guest)
@@ -1328,30 +1295,9 @@ internal sealed class NightBusinessReflectionProvider
             ?? GetMemberValue(guest, "StrID")?.ToString();
     }
 
-    private static string? ReadGuestDisplayName(object? guest)
-    {
-        return GetMemberValue(guest, "Name")?.ToString()
-            ?? GetMemberValue(guest, "DisplayName")?.ToString()
-            ?? GetMemberValue(guest, "CharacterName")?.ToString();
-    }
-
     private static int? ReadSourceGuestId(object? guest)
     {
         return ToNullableInt(GetMemberValue(guest, "SourceGuestID") ?? GetMemberValue(guest, "SourceGuestId"));
-    }
-
-    private static object? ReadMappedSpecialGuest(int id)
-    {
-        var dataBaseCharacterType = FindType(DataBaseCharacterTypeName);
-        if (dataBaseCharacterType == null) return null;
-
-        var isMapped = InvokeStaticMethod(dataBaseCharacterType, "IsSpecialGuestMapped", id);
-        var targetId = ToBool(isMapped) ? ToNullableInt(InvokeStaticMethod(dataBaseCharacterType, "MappedID2TargetID", id)) : null;
-        var refGuestId = targetId ?? id;
-        var specialExists = InvokeStaticMethod(dataBaseCharacterType, "SpecialGuestExists", refGuestId);
-        if (!ToBool(specialExists) && !targetId.HasValue) return null;
-
-        return InvokeStaticMethod(dataBaseCharacterType, "RefSGuest", refGuestId);
     }
 
     private void RecordCandidate(string kind, string source, bool accepted, string reason, Func<string>? detailsFactory)
@@ -1487,21 +1433,16 @@ internal sealed class NightBusinessReflectionProvider
 
     private string DescribeSpecialGuestMapping(int id)
     {
-        var dataBaseCharacterType = FindType(DataBaseCharacterTypeName);
-        if (dataBaseCharacterType == null) return "DataBaseCharacter not found";
+        if (_mappedGuestSnapshot == null) return "identity snapshot unavailable";
+        if (!_mappedGuestSnapshot.ByRuntimeId.TryGetValue(id, out var entry)) return "identity missing";
 
-        var isMapped = InvokeStaticMethod(dataBaseCharacterType, "IsSpecialGuestMapped", id);
-        var specialExists = InvokeStaticMethod(dataBaseCharacterType, "SpecialGuestExists", id);
-        var targetId = ToBool(isMapped) ? InvokeStaticMethod(dataBaseCharacterType, "MappedID2TargetID", id) : null;
-        var refGuestId = ToNullableInt(targetId) ?? id;
-        var refGuest = (ToBool(specialExists) || ToNullableInt(targetId).HasValue)
-            ? InvokeStaticMethod(dataBaseCharacterType, "RefSGuest", refGuestId)
-            : null;
         return string.Join(",",
-            $"isMapped={ShortValue(isMapped)}",
-            $"specialExists={ShortValue(specialExists)}",
-            $"targetId={ShortValue(targetId)}",
-            $"refGuest=[{DescribeGuestObject(refGuest, includeMapping: false)}]");
+            $"runtimeId={entry.RuntimeId?.ToString() ?? ""}",
+            $"runtimeStringId={TrimDiagnostic(entry.RuntimeStringId, 80)}",
+            $"sourceGuestId={entry.SourceGuestId?.ToString() ?? ""}",
+            $"sourceStringId={TrimDiagnostic(entry.SourceStringId, 80)}",
+            $"localGuestId={entry.LocalRareCustomerId?.ToString() ?? ""}",
+            $"aliasSource={entry.AliasSource}");
     }
 
     private static int SafeCount(object? value)

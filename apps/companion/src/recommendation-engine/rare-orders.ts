@@ -1,6 +1,10 @@
 import type { RecommendationDataSet } from '@/lib/recommendation-data';
 import type { RareCustomerCatalogItem, IngredientCatalogItem, RecipeCatalogItem } from '@/lib/catalog-types';
 import {
+  inventoryQuantityRankValue,
+  inventoryShortage,
+} from '@/lib/inventory-quantity';
+import {
   normalizeRecommendationSortProfile,
   type RecommendationObjectiveKey,
   type RecommendationPlanSortContext,
@@ -24,6 +28,8 @@ import type {
   RecommendationBudgetContext,
   RecommendationBudgetPolicy,
   RecommendationBudgetResult,
+  RareBeverageCandidateSearchDiagnostic,
+  RareFoodCandidateSearchDiagnostic,
   RareOrderRecommendationPlan,
   RareTagOrderDemand,
   RecommendationBucket,
@@ -183,36 +189,117 @@ export function buildRareFoodCandidates(
     if (!context.availableRecipeIds.has(recipe.id)) continue;
     if (!hasAvailableBaseIngredients(recipe, ingredientsByName, context)) continue;
     if (context.filterMissingCookers && !isCookerAvailable(recipe, context)) continue;
-
-    // extraSlots 使用配方原始材料数量计算，不能用去重后的材料集合，否则重复材料配方会错误地允许继续加料。
-    const extraSlots = getAvailableExtraIngredientSlots(recipe, context);
-    const baseIngredientIds = new Set(recipe.ingredients
-      .map((name) => ingredientsByName.get(name)?.id ?? -1)
-      .filter((id) => id >= 0));
-    const baseState = evaluateIngredientState(recipe, [], demand, context);
-    const ingredientPool = buildRelevantIngredientPool({
+    candidates.push(...buildFoodCandidatesForRecipe(
       recipe,
       usableIngredients,
-      baseState,
-      demand,
-      baseIngredientIds,
-      tagPriorityRules: context.tagPriorityRules,
-    });
-    const bestStates = searchIngredientStates({
-      recipe,
-      baseState,
-      ingredientPool,
-      extraSlots,
+      ingredientsByName,
       demand,
       context,
-    });
-
-    for (const state of bestStates) {
-      candidates.push(buildFoodCandidate(recipe, state, demand, context, ingredientsByName));
-    }
+    ));
   }
 
   return candidates.sort(compareFoodCandidates);
+}
+
+/**
+ * 在推荐已无可执行方案时定位料理候选首次归零的运行时边界。
+ *
+ * 诊断只对配方做轻量资格检查，并复用已经生成的正式候选。未解锁、缺基础材料
+ * 或缺厨具的配方绝不会为了诊断执行加料 beam search。
+ */
+export function diagnoseRareFoodCandidateSearch(
+  data: RecommendationDataSet,
+  demand: RareTagOrderDemand,
+  context: RecommendationRuntimeContext,
+  generatedCandidates: readonly FoodCandidate[],
+): RareFoodCandidateSearchDiagnostic {
+  const ingredientsByName = new Map(data.ingredients.map((ingredient) => [ingredient.name, ingredient]));
+  const missingIngredientNames = new Set<string>();
+  const missingCookerNames = new Set<string>();
+  let requiredTagReachableRecipeCount = 0;
+  let requiredTagReachableUnlockedRecipeCount = 0;
+  let requiredTagReachableBaseIngredientsReadyRecipeCount = 0;
+  let requiredTagReachableCookerReadyRecipeCount = 0;
+
+  for (const recipe of data.recipes) {
+    if (!canRecipeReachRequiredTagWithoutSearch(
+      recipe,
+      data.ingredients,
+      ingredientsByName,
+      demand,
+      context,
+    )) continue;
+    requiredTagReachableRecipeCount += 1;
+
+    const unlocked = context.availableRecipeIds.has(recipe.id);
+    if (!unlocked) continue;
+    requiredTagReachableUnlockedRecipeCount += 1;
+
+    const baseIngredientsAvailable = hasAvailableBaseIngredients(recipe, ingredientsByName, context);
+    if (!baseIngredientsAvailable) {
+      for (const ingredientName of findUnavailableBaseIngredientNames(recipe, ingredientsByName, context)) {
+        missingIngredientNames.add(ingredientName);
+      }
+      continue;
+    }
+    requiredTagReachableBaseIngredientsReadyRecipeCount += 1;
+
+    const cookerAvailable = isCookerAvailable(recipe, context);
+    if (!cookerAvailable) {
+      if (recipe.cooker.trim()) missingCookerNames.add(recipe.cooker.trim());
+      continue;
+    }
+    requiredTagReachableCookerReadyRecipeCount += 1;
+  }
+
+  return {
+    catalogRecipeCount: data.recipes.length,
+    requiredTagReachableRecipeCount,
+    requiredTagReachableUnlockedRecipeCount,
+    requiredTagReachableBaseIngredientsReadyRecipeCount,
+    requiredTagReachableCookerReadyRecipeCount,
+    generatedCandidateCount: generatedCandidates.length,
+    generatedRequiredTagMatchedCandidateCount: generatedCandidates
+      .filter((candidate) => candidate.meetsRequiredFood).length,
+    missingIngredientNames: [...missingIngredientNames].sort(),
+    missingCookerNames: [...missingCookerNames].sort(),
+  };
+}
+
+function canRecipeReachRequiredTagWithoutSearch(
+  recipe: RecipeCatalogItem,
+  catalogIngredients: readonly IngredientCatalogItem[],
+  ingredientsByName: Map<string, IngredientCatalogItem>,
+  demand: RareTagOrderDemand,
+  context: RecommendationRuntimeContext,
+): boolean {
+  const baseState = evaluateIngredientState(recipe, [], demand, context);
+  if (baseState.meetsRequiredFood) return true;
+
+  const extraSlots = getAvailableExtraIngredientSlots(recipe, context);
+  if (extraSlots <= 0) return false;
+  const baseIngredientIds = new Set(recipe.ingredients
+    .map((name) => ingredientsByName.get(name)?.id ?? -1)
+    .filter((id) => id >= 0));
+  const allowedCatalogIngredients = catalogIngredients.filter((ingredient) =>
+    !baseIngredientIds.has(ingredient.id)
+    && !hasForbiddenIngredientTag(ingredient, recipe)
+  );
+  for (const ingredient of allowedCatalogIngredients) {
+    if (evaluateIngredientState(recipe, [ingredient], demand, context).meetsRequiredFood) return true;
+  }
+
+  const largePortionExtraCount = MAX_FOOD_INGREDIENT_COUNT - recipe.ingredients.length;
+  if (demand.requiredFoodTag !== '大份'
+    || largePortionExtraCount <= 1
+    || largePortionExtraCount > extraSlots
+    || allowedCatalogIngredients.length < largePortionExtraCount) return false;
+  return evaluateIngredientState(
+    recipe,
+    allowedCatalogIngredients.slice(0, largePortionExtraCount),
+    demand,
+    context,
+  ).meetsRequiredFood;
 }
 
 /**
@@ -265,6 +352,72 @@ export function buildRareBeverageCandidates(
   }
 
   return rows.sort(compareBeverageCandidates);
+}
+
+/**
+ * 酒水候选的只读分阶段计数。筛选条件与 `buildRareBeverageCandidates` 保持一致。
+ */
+export function diagnoseRareBeverageCandidateSearch(
+  data: RecommendationDataSet,
+  demand: RareTagOrderDemand,
+  context: RecommendationRuntimeContext,
+): RareBeverageCandidateSearchDiagnostic {
+  let availableBeverageCount = 0;
+  let allowedBeverageCount = 0;
+  let requiredTagBeverageCount = 0;
+
+  for (const beverage of data.beverages) {
+    if (!context.availableBeverageIds.has(beverage.id)) continue;
+    availableBeverageCount += 1;
+    if (context.excludedBeverageIds.has(beverage.id)) continue;
+    allowedBeverageCount += 1;
+    const resolved = resolveTagPriority(beverage.tags, context.tagPriorityRules);
+    if (resolved.activeTags.includes(demand.requiredBeverageTag)) {
+      requiredTagBeverageCount += 1;
+    }
+  }
+
+  return {
+    catalogBeverageCount: data.beverages.length,
+    availableBeverageCount,
+    allowedBeverageCount,
+    requiredTagBeverageCount,
+  };
+}
+
+function buildFoodCandidatesForRecipe(
+  recipe: RecipeCatalogItem,
+  usableIngredients: IngredientCatalogItem[],
+  ingredientsByName: Map<string, IngredientCatalogItem>,
+  demand: RareTagOrderDemand,
+  context: RecommendationRuntimeContext,
+): FoodCandidate[] {
+  // extraSlots 使用配方原始材料数量计算，不能用去重后的材料集合，否则重复材料配方会错误地允许继续加料。
+  const extraSlots = getAvailableExtraIngredientSlots(recipe, context);
+  const baseIngredientIds = new Set(recipe.ingredients
+    .map((name) => ingredientsByName.get(name)?.id ?? -1)
+    .filter((id) => id >= 0));
+  const baseState = evaluateIngredientState(recipe, [], demand, context);
+  const ingredientPool = buildRelevantIngredientPool({
+    recipe,
+    usableIngredients,
+    baseState,
+    demand,
+    baseIngredientIds,
+    tagPriorityRules: context.tagPriorityRules,
+  });
+  const bestStates = searchIngredientStates({
+    recipe,
+    baseState,
+    ingredientPool,
+    extraSlots,
+    demand,
+    context,
+  });
+
+  return bestStates.map((state) =>
+    buildFoodCandidate(recipe, state, demand, context, ingredientsByName)
+  );
 }
 
 function buildRarePlan(
@@ -373,6 +526,19 @@ function hasAvailableBaseIngredients(
       && context.availableIngredientIds.has(ingredient.id)
       && !isIngredientExcluded(ingredient.id, context);
   });
+}
+
+function findUnavailableBaseIngredientNames(
+  recipe: RecipeCatalogItem,
+  ingredientsByName: Map<string, IngredientCatalogItem>,
+  context: RecommendationRuntimeContext,
+): string[] {
+  return [...new Set(recipe.ingredients.filter((name) => {
+    const ingredient = ingredientsByName.get(name);
+    return ingredient === undefined
+      || !context.availableIngredientIds.has(ingredient.id)
+      || isIngredientExcluded(ingredient.id, context);
+  }))];
 }
 
 function isIngredientExcluded(id: number, context: RecommendationRuntimeContext): boolean {
@@ -762,7 +928,7 @@ function calculateResourcePressure(
 ): number {
   return ingredients.reduce((sum, ingredient) => {
     const qty = ownedIngredientQty[ingredient.id] ?? 0;
-    return sum + Math.max(0, LOW_STOCK_THRESHOLD - qty);
+    return sum + inventoryShortage(qty, LOW_STOCK_THRESHOLD);
   }, 0);
 }
 
@@ -823,7 +989,9 @@ export function compareBeverageCandidates(left: BeverageCandidate, right: Bevera
   const rightRequired = right.meetsRequiredBeverage ? 1 : 0;
   if (leftRequired !== rightRequired) return rightRequired - leftRequired;
   if (left.matchedTags.length !== right.matchedTags.length) return right.matchedTags.length - left.matchedTags.length;
-  if (left.ownedQuantity !== right.ownedQuantity) return right.ownedQuantity - left.ownedQuantity;
+  const stockDiff = inventoryQuantityRankValue(right.ownedQuantity)
+    - inventoryQuantityRankValue(left.ownedQuantity);
+  if (stockDiff !== 0) return stockDiff;
   if (left.beverage.price !== right.beverage.price) return right.beverage.price - left.beverage.price;
   return left.beverage.id - right.beverage.id;
 }
@@ -943,7 +1111,7 @@ function getPlanObjectiveValue(
       return (food ? food.recipe.price - food.baseCost - food.extraCost : 0)
         + (beverage?.beverage.price ?? 0);
     case 'beverageStock':
-      return beverage?.ownedQuantity ?? 0;
+      return beverage ? inventoryQuantityRankValue(beverage.ownedQuantity) : 0;
     case 'cookerAvailable':
       return food?.cookerAvailable ? 1 : 0;
   }
@@ -956,7 +1124,6 @@ function getPlanPinRank(
   if (plan.bucket === 'blocked') return 0;
   let rank = 0;
   if (sortContext.specialPreferDamageLevel) rank = Math.max(rank, getPlanDamagePinRank(plan));
-  if (sortContext.pinMissionRecipe && plan.food && sortContext.missionRecipeId === plan.food.recipe.id) rank = Math.max(rank, 50);
   if (plan.food?.customRecipePinned) rank = Math.max(rank, 40);
   if (sortContext.pinFavoriteRecipe && plan.food && sortContext.favoriteRecipeKeys?.has(buildPlanRecipeKey(plan.food))) rank = Math.max(rank, 20);
   if (sortContext.pinFavoriteBeverage && plan.beverage && sortContext.favoriteBeverageIds?.has(plan.beverage.beverage.id)) rank = Math.max(rank, 10);

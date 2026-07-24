@@ -3,6 +3,7 @@ import { readRuntimeData, readSnapshot } from '@/companion/api';
 import {
   getConnectionRetryDelayMs,
   resolveCompanionConnectionIdentity,
+  updateUnavailableRuntimeData,
 } from '@/companion/connection-recovery';
 import {
   normalizeEndpoint,
@@ -161,8 +162,7 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
           if (!runtimeData.isComplete) {
             throw new Error(runtimeData.status || '运行时目录尚未完整加载。');
           }
-          const cacheSignature = runtimeDataSignature || buildRuntimeDataCatalogCacheSignature(runtimeData);
-          cachedRuntimeDataSignatureRef.current = cacheSignature;
+          cachedRuntimeDataSignatureRef.current = runtimeDataSignature;
           setCachedRuntimeData(runtimeData);
         })
         .catch((runtimeDataError) => {
@@ -170,16 +170,11 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
           const runtimeDataStatus = runtimeDataError instanceof Error
             ? runtimeDataError.message
             : String(runtimeDataError);
-          setCachedRuntimeData((current) => current ?? {
-            isComplete: false,
-            source: sourceSnapshot.runtimeDataSource || sourceSnapshot.runtimeSource || '',
-            status: runtimeDataStatus || sourceSnapshot.runtimeDataStatus || '运行时目录读取失败，等待下一轮重试。',
-            recipes: [],
-            ingredients: [],
-            beverages: [],
-            normalCustomers: [],
-            rareCustomers: [],
-          });
+          setCachedRuntimeData((current) => updateUnavailableRuntimeData(
+            current,
+            sourceSnapshot.runtimeDataSource || sourceSnapshot.runtimeSource || '',
+            runtimeDataStatus || sourceSnapshot.runtimeDataStatus || '运行时目录读取失败，等待下一轮重试。',
+          ));
         })
         .finally(() => {
           window.clearTimeout(runtimeDataTimeoutId);
@@ -192,19 +187,11 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
 
     if (!sourceSnapshot.runtimeDataComplete && !cachedRuntimeDataSignatureRef.current) {
       const status = sourceSnapshot.runtimeDataStatus || sourceSnapshot.status || '等待游戏运行时数据';
-      setCachedRuntimeData((current) => {
-        if (current) return current;
-        return {
-          isComplete: false,
-          source: sourceSnapshot.runtimeDataSource || sourceSnapshot.runtimeSource || '',
-          status,
-          recipes: [],
-          ingredients: [],
-          beverages: [],
-          normalCustomers: [],
-          rareCustomers: [],
-        };
-      });
+      setCachedRuntimeData((current) => updateUnavailableRuntimeData(
+        current,
+        sourceSnapshot.runtimeDataSource || sourceSnapshot.runtimeSource || '',
+        status,
+      ));
     }
   }, [apiToken, normalizedEndpoint]);
 
@@ -433,48 +420,4 @@ function isSnapshotUnchanged(
   data: Awaited<ReturnType<typeof readSnapshot>>,
 ): data is { unchanged: true; snapshotSignature: string } {
   return 'unchanged' in data && data.unchanged === true;
-}
-
-function buildRuntimeDataCatalogCacheSignature(runtimeData: RuntimeDataCatalogSnapshot): string {
-  return [
-    runtimeData.source,
-    runtimeData.status,
-    buildCatalogEdgeSignature(runtimeData.recipes),
-    buildCatalogEdgeSignature(runtimeData.ingredients),
-    buildCatalogEdgeSignature(runtimeData.beverages),
-    buildCatalogEdgeSignature(runtimeData.normalCustomers),
-    buildCatalogEdgeSignature(runtimeData.rareCustomers),
-    buildRecordEdgeSignature(runtimeData.foodTagIdMap),
-    buildRecordEdgeSignature(runtimeData.beverageTagIdMap),
-    runtimeData.tagPriorityRules?.length ?? 0,
-  ].join('|');
-}
-
-function buildCatalogEdgeSignature(items: ReadonlyArray<{ id: number; name: string; recipeId?: number }>): string {
-  if (items.length === 0) return '0';
-  const first = items[0];
-  const last = items[items.length - 1];
-  return [
-    items.length,
-    first?.id ?? '',
-    first?.recipeId ?? '',
-    first?.name ?? '',
-    last?.id ?? '',
-    last?.recipeId ?? '',
-    last?.name ?? '',
-  ].join(':');
-}
-
-function buildRecordEdgeSignature(record: Record<string, string> | undefined): string {
-  if (!record) return '0';
-  const entries = Object.entries(record).sort(([left], [right]) => left.localeCompare(right));
-  const first = entries[0];
-  const last = entries[entries.length - 1];
-  return [
-    entries.length,
-    first?.[0] ?? '',
-    first?.[1] ?? '',
-    last?.[0] ?? '',
-    last?.[1] ?? '',
-  ].join(':');
 }

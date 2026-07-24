@@ -11,6 +11,7 @@ internal static class RuntimeReflectionUtility
     private static readonly ConcurrentDictionary<MemberCacheKey, CachedLookup<PropertyInfo>> PropertyCache = new();
     private static readonly ConcurrentDictionary<MemberCacheKey, CachedLookup<FieldInfo>> FieldCache = new();
     private static readonly ConcurrentDictionary<MethodCacheKey, CachedLookup<MethodInfo>> MethodCache = new();
+    private static readonly ConcurrentDictionary<Type, CachedLookup<MethodInfo>> TryCastMethodCache = new();
 
     public static Type? FindType(string fullName)
     {
@@ -50,16 +51,34 @@ internal static class RuntimeReflectionUtility
         if (targetType == null) return null;
         if (targetType.IsInstanceOfType(value)) return value;
 
-        var tryCast = typeof(Il2CppObjectBase)
-            .GetMethods(BindingFlags.Public | BindingFlags.Instance)
-            .FirstOrDefault(method => method.Name == "TryCast"
-                && method.IsGenericMethodDefinition
-                && method.GetParameters().Length == 0);
+        var tryCast = TryCastMethodCache.GetOrAdd(
+            targetType,
+            static type => new CachedLookup<MethodInfo>(ResolveTryCastMethod(type))).Value;
         if (tryCast == null) return null;
 
         try
         {
-            return tryCast.MakeGenericMethod(targetType).Invoke(il2CppObject, Array.Empty<object?>());
+            return tryCast.Invoke(il2CppObject, Array.Empty<object?>());
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static MethodInfo? ResolveTryCastMethod(Type targetType)
+    {
+        var definition = typeof(Il2CppObjectBase)
+            .GetMethods(BindingFlags.Public | BindingFlags.Instance)
+            .FirstOrDefault(method => method.Name == "TryCast"
+                && method.IsGenericMethodDefinition
+                && method.GetGenericArguments().Length == 1
+                && method.GetParameters().Length == 0);
+        if (definition == null) return null;
+
+        try
+        {
+            return definition.MakeGenericMethod(targetType);
         }
         catch
         {

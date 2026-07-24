@@ -32,6 +32,7 @@ import type {
   OrderRecommendation,
   RareGuestInvitationResponse,
   RareGuestInvitationScope,
+  RareGuestInvitationWriteContext,
   RareOrderDismissResponse,
   UpdateStatusResponse,
 } from '@/companion/types';
@@ -313,8 +314,13 @@ export async function inviteAllAvailableRareGuests(
   apiToken: string,
   scope: RareGuestInvitationScope,
   levels: number[],
+  context: RareGuestInvitationWriteContext,
 ): Promise<RareGuestInvitationResponse> {
-  const params = new URLSearchParams({ scope });
+  const params = new URLSearchParams({
+    scope,
+    expectedDaySceneGeneration: String(context.expectedDaySceneGeneration),
+    expectedMapLabel: context.expectedMapLabel,
+  });
   appendRareGuestInvitationLevels(params, levels);
   return mutateRareGuestInvitation(endpoint, apiToken, `/rare-guests/invite-all?${params.toString()}`);
 }
@@ -323,9 +329,18 @@ export async function fetchAvailableRareGuestInvitations(
   endpoint: string,
   apiToken: string,
   scope: RareGuestInvitationScope,
+  signal: AbortSignal,
 ): Promise<RareGuestInvitationResponse> {
   const params = new URLSearchParams({ scope });
-  return mutateRareGuestInvitation(endpoint, apiToken, `/rare-guests/invitations?${params.toString()}`);
+  return readLocalApiJson<RareGuestInvitationResponse>(
+    endpoint,
+    apiToken,
+    `/rare-guests/invitations?${params.toString()}`,
+    {
+      signal,
+      tauriTimeoutMs: 5000,
+    },
+  );
 }
 
 export async function inviteAvailableRareGuest(
@@ -333,8 +348,14 @@ export async function inviteAvailableRareGuest(
   apiToken: string,
   guestId: number,
   scope: RareGuestInvitationScope,
+  context: RareGuestInvitationWriteContext,
 ): Promise<RareGuestInvitationResponse> {
-  const params = new URLSearchParams({ guestId: String(guestId), scope });
+  const params = new URLSearchParams({
+    guestId: String(guestId),
+    scope,
+    expectedDaySceneGeneration: String(context.expectedDaySceneGeneration),
+    expectedMapLabel: context.expectedMapLabel,
+  });
   return mutateRareGuestInvitation(endpoint, apiToken, `/rare-guests/invite?${params.toString()}`);
 }
 

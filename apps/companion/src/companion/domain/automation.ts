@@ -790,7 +790,7 @@ export function formatRareAutomationMissingRecipeTargetMessage(
     return appendRecommendationBlockedDetails('推荐页已有料理候选，但没有可直接执行的完整自动化方案。', item);
   }
 
-  return '没有可用的推荐料理。';
+  return item.blockedDiagnostic?.message ?? '没有可用的推荐料理。';
 }
 
 export function formatRareAutomationMissingBeverageTargetMessage(
@@ -811,7 +811,7 @@ export function formatRareAutomationMissingBeverageTargetMessage(
     return appendRecommendationBlockedDetails('推荐页已有酒水候选，但没有可直接执行的完整自动化方案。', item);
   }
 
-  return '没有可用的推荐酒水。';
+  return item.blockedDiagnostic?.message ?? '没有可用的推荐酒水。';
 }
 
 function appendRecommendationBlockedDetails(message: string, item: OrderRecommendation): string {

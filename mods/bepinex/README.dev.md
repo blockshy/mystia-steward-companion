@@ -278,7 +278,7 @@ MYSTIA_API_URL=http://127.0.0.1:32145 \
 pnpm audit:ui
 ```
 
-报告和截图默认写到 `/tmp/mystia-companion-ui-audit`。通用 UI 巡检覆盖 1280x900、900x760 和 640x760 三组视口；640px 用于验证 Tauri 桌面最小宽度下核心内容保持双列、顶部状态保持三列、一级导航以五列两行完整显示，并检查连接和页面工具条的紧凑布局。如果使用 `pnpm preview`，把 `MYSTIA_APP_URL` 改成 Vite preview 输出的地址，通常是 `http://127.0.0.1:4173`。
+报告和截图默认写到 `/tmp/mystia-companion-ui-audit`。通用 UI 巡检覆盖 1280x900、900x760 和 640x760 三组视口；640px 用于验证 Tauri 桌面最小宽度下核心内容保持双列、顶部状态保持三列、一级导航以五列两行完整显示，并检查连接工具栏四项保持单行、设置五组分段标签不变形、专注工具栏右对齐和自定义配方入口与料理标题同行。如果使用 `pnpm preview`，把 `MYSTIA_APP_URL` 改成 Vite preview 输出的地址，通常是 `http://127.0.0.1:4173`。
 
 修改手柄输入状态机、复合控件焦点语义、动态回焦、局部滚动或游戏/伴随窗口焦点切换后，运行：
 
@@ -290,7 +290,7 @@ cargo test --manifest-path apps/companion/src-tauri/Cargo.toml
 dotnet run --project tests/controller-toggle-state/ControllerToggleStateSmoke.csproj -c Release
 ```
 
-`audit:gamepad` 先验证纯输入状态机的 standard mapping、活动设备所有权、中立门控、按键模拟量、摇杆滞回、方向仲裁、重复节奏和 RS 隔离，再用 Playwright 验证 A/B/X/Y、LB/RB、LT/RT、Select/MultiSelect、Tabs、SegmentedControl、NumberInput、Slider、Dialog、动态回焦、局部滚动，以及 1280x900/100%、640x520/130%、390x844/90% 三组窗口和字号组合。Rust 单测验证所有切换来源共用的 applied-only cooldown gate；C# smoke 验证 RS 持续按住、迟到边沿和物理释放后的重新武装。
+`audit:gamepad` 先验证纯输入状态机的 standard mapping、活动设备所有权、中立门控、按键模拟量、摇杆滞回、方向仲裁、重复节奏和 RS 隔离，再用 Playwright 验证 A/B/X/Y、LB/RB、LT/RT、Select/MultiSelect、Tabs、SegmentedControl、NumberInput、Slider、Dialog、动态回焦、局部滚动，以及生效自定义配方入口展开后进入详情滚动区的声明式确认焦点。响应式巡检覆盖 1280x900/100%、640x520/130%、390x844/90% 三组窗口和字号组合。Rust 单测验证所有切换来源共用的 applied-only cooldown gate；C# smoke 验证 RS 持续按住、迟到边沿和物理释放后的重新武装。
 
 修改字体 token、字号偏好、更新状态协议或全局更新提示后，在同一 mock API 与 preview 环境中运行：
 
@@ -300,15 +300,15 @@ pnpm audit:updates
 MYSTIA_APP_URL=http://127.0.0.1:4173 MYSTIA_API_URL=http://127.0.0.1:32145 pnpm audit:updates:ui
 ```
 
-字号巡检覆盖 90%/100%/130%、非法值归一化、鼠标/键盘操作、刷新持久化、恢复默认、640x520、390x844、全部页签、设置五个分栏、稀客订单专注模式和 Select Portal；截图写入 `/tmp/mystia-companion-font-scale-audit`。更新协议审计覆盖启动 `idle -> checking -> available` 收敛、状态读取失败退避、请求代际、endpoint/tag 延后键、安装提示和 Release URL 限制；提示巡检覆盖动作中断连、连接身份切换、迟到响应隔离、首帧延后状态和安装失败，截图写入 `/tmp/mystia-companion-update-ui-audit`。
+字号巡检覆盖 90%/100%/130%、非法值归一化、鼠标/键盘操作、刷新持久化、恢复默认、640x520、390x844、全部页签、设置五个分栏、设置分段控件单行几何、连接工具栏单行、稀客订单专注工具栏右对齐、生效配方入口与料理标题同行和 Select Portal；截图写入 `/tmp/mystia-companion-font-scale-audit`。更新协议审计覆盖启动 `idle -> checking -> available` 收敛、状态读取失败退避、请求代际、endpoint/tag 延后键、安装提示和 Release URL 限制；提示巡检覆盖动作中断连、连接身份切换、迟到响应隔离、首帧延后状态和安装失败，截图写入 `/tmp/mystia-companion-update-ui-audit`。
 
-修改经营中推荐主计划、页面首项投影、自动化初始目标或收藏限定后，先运行：
+修改经营中推荐主计划、页面首项投影、无计划阻塞诊断、自动化初始目标或收藏限定后，先运行：
 
 ```bash
 pnpm audit:recommendations
 ```
 
-该审计验证完整候选先生成唯一 `executionPlans[0]` 主计划，收藏限定在执行计划截断前归一化，页面料理/酒水首项投影该计划，自动化与游戏界面辅助不再扫描后续计划。
+该审计验证完整候选先生成唯一 `executionPlans[0]` 主计划，收藏限定在执行计划截断前归一化，页面料理/酒水首项投影该计划，自动化与游戏界面辅助不再扫描后续计划；还验证只有零计划结果才生成 `blockedDiagnostic`，缺厨具、缺基础材料、酒水 Tag、预算和幽幽子二阶段 `ExGood` 不足能定位到各自首个清零阶段，诊断不会改变候选、排序或自动化目标。
 
 修改游戏界面置顶/列表高亮目标契约、连接重发或推荐 Worker 生命周期后，还要运行定向巡检：
 
@@ -357,6 +357,19 @@ pnpm audit:special-business
 ```
 
 该审计会验证挑战名称使用游戏原生 IL2CPP `InspectorName` 固定中文元数据、永久失败缓存诊断且不重试、瞬时失败按固定间隔持续重试、规则注册表不再保存中文名称映射、名称不可用时页面只显示一次有效 challenge type；同时验证 HUD 目标按 raw challenge owner、target kind 和 inactive 会话边界隔离，并禁止运行时稀客目录重新调用未消费且会产生 Warning 的特殊请求语言 getter。它不能替代实机确认原生元数据可读、跨挑战目标不会残留，以及首次目录加载不再产生对应数字 ID Warning。
+
+修改稀客邀请候选读取、GET/POST 方法边界、日间刷新代际或邀请页面请求生命周期后，运行：
+
+```bash
+dotnet run --project tests/rare-guest-invitation-readonly/RareGuestInvitationReadOnlySmoke.csproj -c Release
+dotnet run --project tests/local-api-method-matrix/LocalApiMethodMatrixSmoke.csproj -c Release
+pnpm audit:rare-guest-invitations
+MYSTIA_APP_URL=http://127.0.0.1:4173 \
+MYSTIA_API_URL=http://127.0.0.1:32145 \
+pnpm audit:rare-guest-invitations:ui
+```
+
+只读 smoke 按 BepInEx 783 实际元数据验证同名静态属性、closed generic 具体字典的 `ContainsKey`/indexer 精确查键、错误 key/容器形态拒绝、non-blittable struct boxing、`possibleDestinations` 精确引用数组非空门禁，以及基于现有 `NPC` / `TrackedNPC` / 玩家状态字段的可见性判定。blittable `SchedulerNode.Character` 被装箱后，`characterIdentity` 必须按 exact public declared field 读取并只接受 `Special=0` / `Normal=1`；不得改用属性或 field/property fallback。non-blittable `NPC.Destination` 仍按 Il2CppInterop wrapper 的精确属性读取 `spawnMarker`。`StatusTracker` 和 `DayScene.SceneManager` 只能分别从各自直接泛型基类的精确静态 `Instance` 属性取得，并且 readiness 未通过前不得读取。生产源码扫描同时禁止 NPC 刷新、羁绊生成、全量字典枚举、`GetMapLabelFromSpawnMarker`、`RefNPC`、`TrackedNPC.ShouldShown`、`NPC.Destination.None`、`RuntimeReflectionUtility.GetSingletonInstance`、本地泛型单例扫描和 `FindUnityObject`。同一 C# 审计锁定 `expectedDaySceneGeneration` / `expectedMapLabel` 必填、主线程入口复核以及每次 `RecordInvitedGuest` 前复核；方法矩阵锁定列表 GET-only、单独/批量邀请 POST-only。前端静态审计验证刷新身份和写入上下文包含连接代际、endpoint、范围、日间 generation 和地图，非法日间上下文不会读取或发送写入，API 使用 GET，`runtimeAvailable=false` 或传输失败只按 500/1000/2000/4000ms 有界重试，旧请求由 AbortController/请求 generation 隔离；Playwright 巡检验证默认 `current` 首次自动加载、范围/页签身份变化、瞬时不可用恢复、确定性失败显示、失败写入提示持久化和手动强制刷新，不替代后端写入栅栏 smoke。
 
 修改快照内容签名或 `knownSignature` 协议后，运行：
 
@@ -553,21 +566,21 @@ git push --force origin v1.1.0
 
 ## 运行时数据源
 
-推荐、库存名称、任务目标和自动化目标解析使用游戏运行时读取到的 `RuntimeDataCatalog`。伴随窗口未连接游戏、游戏数据库未初始化或 `/snapshot` 返回的 `runtimeDataComplete=false` 时，页面会显示等待运行时数据。
+推荐、库存名称和自动化目标解析使用游戏运行时读取到的 `RuntimeDataCatalog`。伴随窗口未连接游戏、游戏数据库未初始化或 `/snapshot` 返回的 `runtimeDataComplete=false` 时，页面会显示等待运行时数据。
 
-发布包包含 Mod DLL 和伴随窗口程序，推荐、库存、任务和自动化目标都来自游戏当前运行时。
+发布包包含 Mod DLL 和伴随窗口程序，推荐、库存和自动化目标都来自游戏当前运行时。
 
 ## 运行时刷新行为
 
 Mod 会定期检查当前页面和游戏运行时状态。进入游戏并加载进度后，推荐状态来自当前内存中的运行时对象，不读取 `.memory` 存档文件。
 
-运行时固定数据读取成功后，C# 会把 `DataBaseCore`、`DataBaseCharacter` 和 `DataBaseLanguage` 中的料理、食材、酒水、普客、稀客和 tag 映射构造成 `RuntimeDataCatalog`，写入本地 API 快照并切换 C# 推荐仓库到运行时仓库。伴随窗口概览页的“推荐数据”显示“游戏运行时”时，表示前端推荐算法已经获得完整运行时数据。
+运行时固定数据读取成功后，C# 会把 `DataBaseCore`、`DataBaseCharacter` 和 `DataBaseLanguage` 中的料理、食材、酒水、普客、稀客和 tag 映射构造成 `RuntimeDataCatalog`，发布到独立的 `/runtime-data` 缓存与端点，并切换 C# 推荐仓库到运行时仓库。核心目录 ID 只枚举 `DataBaseCore.IngredientsMapping`、`BeveragesMapping`、`FoodsMapping`、`RecipesMapping` 和 `IzakayasMapping` 五张精确 `Dictionary<int,string>`。所有 mapping 条目先严格验证 CLR `Int32` 键、非空 CLR `String` 值、原始 ID 唯一性和容量；材料、酒水、料理和配方显式使用非负内容 ID 域，负数内部键在核心业务投影边界排除且不会调用对应 `Ref*`，排除后没有非负 ID 时整轮读取失败。`IzakayasMapping` 显式保留完整 signed ID，再逐项调用 `RefIzakaya`；允许 signed ID 的料理/酒水 Tag 字典也保持独立规则。Izakaya 条目先精确读取 `DaySceneMapLabel`，只有空标签占位允许跳过；非空标签必须严格读取原生 `DaySceneMapName`，读取失败令整轮失败，合法但不属于支持日间经营地点的条目才记录 skipped。确认支持地点后再严格读取普通/稀客池，不读取特殊经营和占位条目中与推荐无关的合法空池。基础稀客从 `GetAllSpecialGuests()` 的精确引用数组读取，喜好、厌恶和酒水 Tag 只取声明的原始字段，不调用生成或计算型入口。核心目录与基础/映射稀客 identity 快照独立记录完成状态；二者均完整前不构造推荐状态 provider。普通地图或就绪变化复用已完成的静态身份，只让未完成读取立即重试。进入主菜单等非游戏场景清空存档运行态后，identity 会独立重建，不能被仍完整的核心目录短路。伴随窗口概览页的“推荐数据”显示“游戏运行时”时，表示前端推荐算法已经获得完整运行时数据。
 
-运行态读取不再依赖固定秒数等待。日间任务列表、当前日间地图和稀客邀请通过 `DayScene.SceneManager.CurrentActiveMapLabel` / `TargetMapLabel`、`RunTimeDayScene.GetMapNPCs()`、`RunTimeDayScene.RefTrackedNPCAvailability()`、`DaySceneMap.allCharacters` 和 `RunTimeScheduler` 等运行态入口读取，不再把 `DaySceneSustainedPannel` 面板激活状态作为总门禁；夜间经营准备读取要求 `PrepNightScene.UI.IzakayaConfigPannel.OnPanelOpen` / `GoToSpecific` 已触发，且 `WorkPrepScenePannelRoot` 下的 `IzakayaConfigPannelNew` 仍激活。准备阶段只读取库存、已解锁、流行 Tag 等基础玩家运行态，因此 `修改`、`普客` 和 `稀客` 页面可以提前使用；任务列表、当前日间地图和稀客邀请仍只在日间场景读取。
+运行态读取不依赖固定秒数等待。`DaySceneSustainedPannel.OnPannelPostOpen` 只表示日间面板已出现，是独立最终门闩而不是 ready 信号；manager/Action 链可在面板前后捕获。普通读档必须从 `DayScene.SceneManager.OnFirstEnterDaySceneFinish` 捕获同一 manager 的 `RunTimeScheduler.OnEnterDayScene` 外层 Action，等该 Action 进入匹配的 `DefaultOnFinish` 后再捕获 `OnEnterDaySceneMap` 最终 Action，并只在最终 Action 返回且面板已打开后解锁。手动经营返回只接受入口前明确读取到的 `NightSceneDirector.IsManualWorkSceneSession` 分支。每次读取仍要求同一原生 manager、`IsMapSwapping=false`、`m_HasTriggerOnEnterDaySceneEvent=false`、`RunTimeScheduler.isExecuting=false`、`SceneDirector.IsInEvent=false`、manager 的 `isExecutingScheduledActions=false`、`UniversalGameManager.IsSwitchScene=false` 且当前地图 label 有效；任一 Hook 或字段不可验证时保持 fail-closed。夜间经营准备读取要求 `PrepNightScene.UI.IzakayaConfigPannel.OnPanelOpen` / `GoToSpecific` 已触发，且 `WorkPrepScenePannelRoot` 下的 `IzakayaConfigPannelNew` 仍激活。准备阶段只读取库存、已解锁、流行 Tag 等基础玩家运行态，因此 `修改`、`普客` 和 `稀客` 页面可以提前使用；当前日间地图和稀客邀请仍只在完成上述解锁的日间场景读取。
 
-推荐状态中的库存、酒水和已解锁料理使用 `RunTimeStorage.GenerateSaveData()` 生成的一份当前运行时存储快照作为权威来源；玩家等级、流行喜好/厌恶 Tag 和明星店开关继续使用轻量 getter 读取。若存储快照中的 `recipes` 为空，Mod 会等待下一轮运行时读取，不会向伴随窗口发布空的可用料理集合。
+推荐状态以完整运行时静态目录的 ID 闭包为边界：料理逐 ID 调用 `RunTimeStorage.HaveRecipe(int)`，材料逐 ID 调用 `GetIngredientCountById(int)`，酒水逐 ID 调用 `GetBeverageCountById(int)`，不生成存储快照或解析其 IL2CPP 容器。材料和酒水数量都保留精确 `-1` 作为无限，`0` 不发布，低于 `-1` 失败。玩家等级、流行喜好/厌恶 Tag 和明星店开关继续使用轻量 getter 读取；没有任何已解锁料理时等待下一轮，不发布空的可用料理集合。
 
-为降低经营中掉帧风险，本地 API 快照发布会做轻量节流：Unity 主线程最多约每 0.35 秒刷新一次缓存 JSON；若快照内容签名未变化，会复用上一份缓存 JSON，不为了 `CapturedAtUtc` 或性能数字重复序列化。完整 `RuntimeDataCatalog` 不再放进 `/snapshot`；快照只发布目录是否完整、来源、状态和签名，伴随窗口仅在本地缓存为空或签名变化时通过 `/runtime-data` 读取完整目录。运行时固定数据已经完整读取后，会缓存稀客映射和静态目录快照，经营 provider 与经营诊断只消费缓存，不再从经营快照热路径反复触发静态数据扫描；读取未完整时也按约 5 秒间隔重试，避免 `runtimeData.staticData` 在每轮经营刷新里反复消耗主线程。伴随窗口需要按签名缓存最近一次完整运行时数据，不能把 `/runtime-data` 的临时读取失败当作主快照丢失。概览页和经营中页会显示 `performanceMs` 中最近约 12 秒内耗时最高的快照环节，排查卡顿时优先记录 `refresh.business`、`refresh.runtime`、`snapshot.serialize`、`runtimeData.serialize`、`automation.collect` 和 `snapshot.publish`。经营扫描还会细分 `business.rare.*`、`business.normal.*`、`runtime.cookerSnapshot`、`mission.serveTargets` 等子项；普客订单快照会在短时间内复用，避免同一轮 `/snapshot` 发布重复枚举 `OrderController`、HUD 和 `GuestsManager`。
+为降低经营中掉帧风险，本地 API 快照发布会做轻量节流：Unity 主线程最多约每 0.35 秒刷新一次缓存 JSON；若快照内容签名未变化，会复用上一份缓存 JSON，不为了 `CapturedAtUtc` 或性能数字重复序列化。完整 `RuntimeDataCatalog` 不再放进 `/snapshot`；快照只发布目录是否完整、来源、状态和签名，伴随窗口仅在本地缓存为空或签名变化时通过 `/runtime-data` 读取完整目录。`runtimeDataComplete/runtimeDataStatus` 使用 core+identity 组合状态；core JSON 可以提前序列化，但 identity 未完成时前端不会消费。运行时固定数据已经完整读取后，会缓存稀客映射和静态目录快照，经营 provider 与经营诊断只消费缓存，不再从经营快照热路径反复触发静态数据扫描；读取未完整时只由控制器按约 5 秒间隔重试，目录对象不叠加第二套时钟。目录或 identity 未完整时直接发布带阶段的精确状态，不再继续调用 provider 产生泛化的“目录不完整”异常。伴随窗口按签名缓存最近一次完整运行时数据，不能把 `/runtime-data` 的临时读取失败当作主快照丢失；未完整占位则必须随新快照更新，不能锁存首次等待文本。总日志的 `[snapshot]` 段包含 `runtimeSceneReadiness`、`runtimeDataComplete`、`runtimeDataSource` 和 `runtimeDataStatus`，可直接定位日间目录失败阶段。概览页和经营中页会显示 `performanceMs` 中最近约 12 秒内耗时最高的快照环节，排查卡顿时优先记录 `refresh.business`、`refresh.runtime`、`snapshot.serialize`、`runtimeData.serialize`、`automation.collect` 和 `snapshot.publish`。经营扫描还会细分 `business.rare.*`、`business.normal.*` 和 `runtime.cookerSnapshot` 等子项；普客订单快照会在短时间内复用，避免同一轮 `/snapshot` 发布重复枚举 `OrderController`、HUD 和 `GuestsManager`。
 
 夜间经营运行时由 `RuntimeNightBusinessLifecycle` 的精确 generation 管理。只有 `WorkSceneSustainedPannel.OnPannelPostOpen`、`GuestsManager.CloseIzakayaDelayed`、`CloseIzakayaAndLeaveChallengeMode`、`NightScene.SceneManager.ToResult` 和 `OnInstanceDestroyed` 五个 Hook 全部成功后才允许进入 Active；任一成员缺失时保持 fail-closed。`TryCloseIzakaya` 只在倒计时结束后停止接客、遣散排队顾客并等待在座顾客完成服务，不得进入 Closing；清桌期间保持同一 Active generation，继续处理订单、自动化和界面目标。最后一桌离席后创建 `CloseIzakayaDelayed`，或特殊经营退出/结果转换时，才进入 Closing，同步停止运行时访问、失效界面目标并清理稀客/普客捕获、特殊经营上下文、料理 generation 和自动料理 job；`OnInstanceDestroyed` 进入 Destroyed。Closing 后不能重新 Active，只有 Destroyed 后下一次工作面板打开才能递增 generation。
 
@@ -583,7 +596,7 @@ Mod 会定期检查当前页面和游戏运行时状态。进入游戏并加载�
 
 幽幽子第三阶段的 NativeEvaluation 先复用精确捕获的 order/controller，并在调用原生评价前重新校验强身份、controller 当前所有权、fulfilled、已送达目标与对应评价回调；只有 capture 失效或校验不通过时，才扫描 `GuestsManager` 的当前集合并执行同一验证器。剧情版的 `onEvaluate` 必须来自最终选中的同一原生 order/controller 捕获记录，不能只按相同请求身份借用其他记录的回调；重修版仍要求 `_50` / `_70` 回调。古明地恋本体继续要求 manager 可发现的 live controller，不使用本段 capture 优先策略。
 
-稀客推荐结果会按角色、点单词条、库存状态、厨具快照、排序配置、置顶开关、同基础料理展示数量、自动化收藏限定和加料上限缓存。经营中先从完整排序候选池构造执行计划，`executionPlans[0]` 是订单唯一主执行计划，再把该计划的料理和酒水投影为页面首项；同基础料理展示数量只裁剪其余行。自动化开始时、游戏界面置顶、列表高亮和厨具高亮只消费同一主计划，不得扫描后续计划。收藏限定只在自动化总开关、对应料理/酒水阶段和当前订单自动化权限都开启时参与主计划归一化，并且必须在执行计划数量截断前处理；找不到满足限定的方案时保留推荐展示，但对应自动化动作不执行。自动化锁定后，即使开锅或送酒引起库存重算并改变页面主计划，也继续处理原锁定目标。自动刷新没有检测到相关变化时，不会在每个刷新周期重复枚举加料组合；所有影响主计划的设置都必须进入缓存签名。
+稀客推荐结果会按角色、点单词条、库存状态、厨具快照、排序配置、置顶开关、同基础料理展示数量、自动化收藏限定和加料上限缓存。经营中先从完整排序候选池构造执行计划，`executionPlans[0]` 是订单唯一主执行计划，再把该计划的料理和酒水投影为页面首项；同基础料理展示数量只裁剪其余行。自动化开始时、游戏界面置顶、列表高亮和厨具高亮只消费同一主计划，不得扫描后续计划。收藏限定只在自动化总开关、对应料理/酒水阶段和当前订单自动化权限都开启时参与主计划归一化，并且必须在执行计划数量截断前处理；找不到满足限定的方案时保留推荐展示，但对应自动化动作不执行。自动化锁定后，即使开锅或送酒引起库存重算并改变页面主计划，也继续处理原锁定目标。自动刷新没有检测到相关变化时，不会在每个刷新周期重复枚举加料组合；所有影响主计划的设置都必须进入缓存签名。只有最终没有执行计划时才生成 `blockedDiagnostic`，并复用正式候选管线记录料理、酒水、预算和特殊评价各阶段的首个清零位置及资源证据；该诊断不参与业务缓存身份、候选选择或排序。幽幽子二阶段没有可预测 `ExGood` 的完整组合时保持无计划，不得降级执行。
 
 收藏数据由 Mod 本地 API 持久化到 `BepInEx/config/MystiaStewardCompanion/favorites.json`。前端只通过 `/favorites`、`/favorites/add-recipe`、`/favorites/remove-recipe`、`/favorites/add-beverage`、`/favorites/remove-beverage` 读写，不使用 localStorage 存储收藏，避免版本更新或 WebView 数据迁移时丢失。
 
@@ -595,13 +608,13 @@ Mod 会定期检查当前页面和游戏运行时状态。进入游戏并加载�
 
 总日志还会输出运行时固定数据快照：
 
-- `runtime-static-data`：`DataBaseCharacter.GetAllMappedGuests()` 固定映射和 `GetSpecialGuestsAndMappedGuests()` 运行时同名别名，日志中的 `aliasSource` 会标明归一化来源。
-- `runtime-tags`：`DataBaseLanguage` 的料理/酒水标签文本、DLC 标签映射，以及 `DataBaseCore.TagRules`。
-- `runtime-database`：`DataBaseCore` 食材、酒水、菜品、料理运行时表；每个表会记录 `GetAllX` 方法读取结果，以及游戏静态字典 fallback 的读取结果。
-- `runtime-guests`：`DataBaseCharacter` 普客、稀客、映射稀客、原始稀客映射和 `GuestFoodEasterEggData` 类型/简单字段。
-- `runtime-izakayas`：`DataBaseCore.GetAllIzakayas()` 或静态 `Izakayas` 字典读取到的经营场景标签、等级、普通/稀客池和刷新参数。
+- `runtime-static-data`：`DataBaseCharacter.GetAllMappedGuests()` 的 `ID` / `StrID` / `SourceGuestID` 原始映射，以及 `GetAllSpecialGuests()` 的基础 `id` / `stringId`。两者都按 Assembly-CSharp 声明的精确引用数组通过 Length/indexer 读取；映射项只沿已验证的 source ID 链归一到基础稀客，不生成临时稀客、不按名称猜测，也不调用喜好/厌恶计算入口。身份快照保留全部基础与映射原生身份，即使某项不属于当前可推荐目录也不会从身份域删除；日志中的 `aliasSource` 会区分直接来源与 source chain。
+- `runtime-tags`：`DataBaseLanguage` 的料理/酒水标签文本与 DLC 标签映射；运行时目录不投影 Tag 压制规则，伴随窗口使用项目已验证的固定规则。
+- `runtime-database`：`DataBaseCore` 五张精确 int/string Mapping 提供目录 ID，再逐 ID 调用对应 `Ref*` 得到的食材、酒水、菜品和料理运行时表。
+- `runtime-guests`：`DataBaseCharacter` 普客与基础稀客的名称、地点和原始喜好/厌恶 Tag；映射稀客身份单独记录在 `runtime-static-data`。
+- `runtime-izakayas`：`DataBaseCore.IzakayasMapping` 提供场景 ID，再逐 ID 调用 `RefIzakaya` 读取的经营场景标签与普通/稀客池。
 
-固定数据快照由基础运行时目录刷新路径读取并缓存；总日志开启且 `NightBusinessReflectionProvider.LoadContext()` 被调用时，经营诊断只把已缓存的目录快照写入总日志，不会在经营热路径重新扫描 `DataBaseCore`、`DataBaseLanguage` 或 `DataBaseCharacter`。若游戏数据库尚未初始化，目录刷新会按 5 秒间隔重试。判断读取成功时优先看 section 里的 `Complete: True` 和 `Status` 中各类计数是否大于 0。
+固定数据快照由基础运行时目录刷新路径读取并缓存；核心目录与基础/映射稀客 identity 使用独立完成状态和重试路径。普通地图或就绪变化复用完整静态身份，未完成读取可立即重试；进入非游戏场景清空存档运行态后会使 identity 失效并独立重建，不能因核心目录已完整而跳过。总日志开启且 `NightBusinessReflectionProvider.LoadContext()` 被调用时，经营诊断只把已缓存的目录快照写入总日志，不会在经营热路径重新扫描 `DataBaseCore`、`DataBaseLanguage` 或 `DataBaseCharacter`。若游戏数据库尚未初始化，目录刷新会按 5 秒间隔重试。判断读取成功时优先看 section 里的 `Complete: True` 和 `Status` 中各类计数是否大于 0。
 
 ## 本地 API 与伴随窗口
 
@@ -636,8 +649,8 @@ Port = 32145
 - `GET /local-api/config`：读取本机 endpoint、LAN listener 状态、结构化 LAN endpoint 候选和当前 Token；每个候选包含地址、接口、默认网关、link-local 和推荐状态，只允许回环客户端调用。
 - `POST /local-api/config?lanEnabled=true|false&lanHost=auto|IPv4`：由 A 设备本机伴随窗口保存 LAN 开关和监听地址，并动态启停 LAN listener；本机回环 listener 不重启也不关闭。
 - `POST /local-api/token/regenerate`：重置本地 API Token，返回新 Token 并立即更新当前 API 鉴权；只允许回环客户端调用。
-- `GET /snapshot?knownSignature=...`：读取最新运行态快照。快照由 Unity 主线程按自动刷新节奏生成，网络线程只返回缓存 JSON；内容签名固定为规范内容的 64 字符小写 SHA-256，不能把随订单增长的规范原文放进查询串。签名未变化时返回轻量 unchanged 响应。快照包含推荐状态、稀客/普客订单、任务、活动 `automationCookingJobs`、递增序号 `automationEvents`、运行时目录元信息和 `performanceMs`，不包含完整 `RuntimeDataCatalog`。
-- `GET /runtime-data`：读取当前完整 `RuntimeDataCatalog`。伴随窗口只在本地没有目录缓存或 `/snapshot` 中的 `runtimeDataSignature` 变化时调用。
+- `GET /snapshot?knownSignature=...`：读取最新运行态快照。快照由 Unity 主线程按自动刷新节奏生成，网络线程只返回缓存 JSON；内容签名固定为规范内容的 64 字符小写 SHA-256，不能把随订单增长的规范原文放进查询串。签名未变化时返回轻量 unchanged 响应。快照包含推荐状态、稀客/普客订单、活动 `automationCookingJobs`、递增序号 `automationEvents`、运行时目录元信息、日间 `runtimeDaySceneReady` / `runtimeDaySceneGeneration` 和 `performanceMs`，不包含完整 `RuntimeDataCatalog`，也不包含旧的 `runtimeRareCustomers` 合成目录；可推荐稀客只来自 `/runtime-data.rareCustomers`。
+- `GET /runtime-data`：读取当前完整 `RuntimeDataCatalog`。`runtimeDataSignature` 是完整响应 JSON 的固定 SHA-256，而不是集合计数；伴随窗口只在本地没有目录缓存或该签名变化时调用。
 - `GET /automation/lease`：读取当前自动化控制权状态。
 - `GET /logs/settings`：读取总日志开关、总日志路径、单文件分片大小、文件上限和总容量上限。
 - `POST /logs/config?aggregateLog=true|false&aggregateLogMaxFiles=30`：由伴随窗口回写总日志开关和文件上限；`aggregateLog` 会即时注册或移除 BepInEx 全局日志监听器。
@@ -649,9 +662,9 @@ Port = 32145
 - `POST /orders/complete-first?...`：按伴随窗口传入的稀客订单确认直接送达状态，必要时补送酒水，并在订单满足后触发评价；调用方必须持有自动化 lease，且沿用 nullable `runtimeGuestId`、`foodTagId`、`beverageTagId` 原始数值身份定位同一订单，不使用归一化 `guestId` 或文本兜底。
 - `POST /orders/rare/dismiss?...`：按桌号及已知的 `runtimeGuestId` / 原始 Tag ID 全维度匹配并删除运行时稀客订单捕获缓存；缺少桌位或全部原始身份时拒绝删除，避免跨订单误清理。
 - `POST /orders/normal/complete-first?...`：按请求中的订单 key、桌位、原订单目标和实际执行目标处理一笔普客订单；调用方必须持有自动化 lease。普客自动化可按 `autoNormal*` 阶段配置送达酒水、开始料理、出锅后直接送达料理，并在订单 `get_IsFullfilled()` 为真后调用 `EvaluateOrder()` 完成评价；该字段只表示订单已满足并可评价，前端仍需以 `HasEvaluated` 或订单消失判断真正完成。若订单只存在于 HUD / `OrderController`，但没有可执行 `GuestGroupController`，后端必须拒绝自动送达并返回不可执行诊断。
-- `POST /rare-guests/invitations?scope=current|all`：排队到 Unity 主线程，返回指定范围内的稀客邀请候选、当前已邀请列表和禁用原因。候选扫描会通过 `GetOrGenerateSpecialNPCKizunaLevel()` 补齐运行时羁绊状态，因此不是纯读请求；结果应默认返回全量候选，前端再按羁绊等级筛选显示，避免切换筛选时丢失其他等级选项。
-- `POST /rare-guests/invite-all?scope=current|all&levels=2,3`：按同一套候选扫描和判定逻辑批量邀请可邀请稀客；`levels` 可选，只邀请指定羁绊等级的可邀请项。`current` 候选优先使用 `DayScene.SceneManager.CurrentActiveMapLabel`、`RunTimeDayScene.GetMapNPCs()`、`DaySceneMap.allCharacters` 和场景中的 `CharacterConditionComponent`，若这些实时对象还未填充，则按当前地图反查 `DataBaseDay.GetAllNPCKeys()`、`AllMappedNPCsMapping`、`AllNPCsMapping` 或 `allNPCs` 中的 NPC key，再通过 `RefNPC().possibleDestinations` 判断所在地图，并用 `RunTimeDayScene.RefTrackedNPCAvailability()` 判断当前范围内的运行时可见性。`all` 候选会合并当前场景候选和全部日间静态 NPC 候选；全部静态候选不使用当前时间可见性作为硬过滤，避免 `TrackedNPC.ShouldShown(RemainActions)` 误删跨场景候选。当前场景候选为空时直接失败，不回退到 `DataBaseCharacter.GetSpecialGuestsAndMappedGuests()` 执行全量邀请。每个候选会读取 `RunTimeAlbum.GetOrGenerateSpecialNPCKizunaLevel()`、检查 `StatusTracker.HasNPCInvited()` 和当前等级成功邀请对话包；符合条件后直接调用 `StatusTracker.RecordInvitedGuest()` 写入今晚邀请名单。该端点不调用 `DaySceneChatSelectionPannel.InviteSpecGuest()`，避免触发随机失败和消耗今日尝试次数；也不以 `HasTemptInvited()` 作为跳过条件，避免旧版本或手动失败尝试把可写入邀请卡住。该端点不直接刷出稀客，不推进时间，不写 `Story.SpecialGuestControlled`。
-- `POST /rare-guests/invite?guestId=ID&scope=current|all`：邀请单个当前可邀请稀客。
+- `GET /rare-guests/invitations?scope=current|all`：排队到 Unity 主线程执行严格纯读查询，返回候选、当前已邀请列表和禁用原因，不接受 POST。BepInEx 783 将目标原生静态成员暴露为同名托管静态属性，因此候选只从已完成的 base+mapped identity 快照 `Entries` 出发，严格读取并校验 `DataBaseDay.allNPCs` 与 `RunTimeAlbum.RecordedSpecialNPCs` 的 closed generic 字典形态。`RuntimeId` / `RuntimeStringId` 只用于精确定位 base 或 mapped 日间 NPC；取得 NPC 后必须严格验证 `NPC.identity.characterId ==` 已解析到最终基础稀客的 `SourceGuestId`。该 canonical character ID 是候选 API、羁绊字典、`HasNPCInvited` 和 `RecordInvitedGuest` 的唯一身份，同一 canonical 稀客的 base/mapped 形态必须先合并为一个候选；不得用 RuntimeId 查写羁绊/邀请，也不得做 runtime/source 双查或双写。`all` 要求每个 `RuntimeStringId` 在 `allNPCs` 中精确存在，并要求该 NPC 的 `possibleDestinations` 精确引用数组非空，再按 canonical character ID 精确查羁绊。目的地数组只作为“存在日间落点”的结构门禁，不读取 marker、不反查或展示地点名称。`current` 额外严格读取 `RunTimeDayScene.trackedNPCs`，只接受 `trackedNPCs[currentMap][RuntimeStringId]` 精确存在的当前地图候选，并基于已取得对象纯读 `overridePosition`、角色身份、`RunTimePlayerData.ShouldShowSpecialGuestsInDay`、`TrackedNPC.currentDestination.spawnMarker`、`NPC.defaultDestination.spawnMarker`、`openStatus`、`restDays`、`NPC.showTime` 和 `RunTimeDayScene.RemainActions` 重建 IDA 字段级可见性判断。`NPC.identity` 是外层 wrapper 属性，其值为 boxed blittable `SchedulerNode.Character`；内部 `characterIdentity` 只能读 exact public declared field，并严格解释 `Special=0` / `Normal=1`。两个 destination 是 non-blittable wrapper，`spawnMarker` 保持 exact property；不得把这些不同元数据形态合并成 property/field 兼容读取。单个候选的可见性字段读取失败时只禁用该候选并写入诊断，全部当前候选均失败时整轮标记为运行时不可用并进入有限重试。不得调用会转入 `DataBaseDay.RefNPC` 的 `TrackedNPC.ShouldShown`，也不得用 `NPC.Destination.None` 或硬编码隐藏标记替代 `NPC.defaultDestination.spawnMarker`。`DataBaseDay.GetMapLabelFromSpawnMarker` 会对未知 marker 执行抛异常的 `First` 查找，该方法和地点 label 匹配均不得进入候选链，地点展示也不得决定资格。合法缺少羁绊项返回 `kizuna-uninitialized`，不生成记录。列表禁止全量字典枚举、NPC 刷新、tracked NPC 创建、羁绊生成、`RefNPC()`、场景对象扫描和 dummy/组合稀客来源。readiness 未通过时不得解析单例；通过后 `StatusTracker` 只从直接基类 `DEYU.Singletons.Singleton<StatusTracker>.Instance` 读取，`DayScene.SceneManager` 只从直接基类 `DEYU.Singletons.MonoSingleton<SceneManager>.Instance` 读取，类型或属性不精确即 fail-closed，不使用通用单例解析或单对象场景扫描。
+- `POST /rare-guests/invite-all?scope=current|all&levels=2,3&expectedDaySceneGeneration=GEN&expectedMapLabel=LABEL`：两项场景身份参数必填；缺少、generation 非正数、主线程开始执行时 generation/地图不匹配，或批处理中任一 `RecordInvitedGuest()` 前 readiness、generation、地图发生变化，都会拒绝继续写入并提示刷新。通过场景栅栏后重新构造最新纯读上下文，按范围、可见性、羁绊、当前等级成功邀请对话和已邀请状态复核，再逐项调用 `StatusTracker.RecordInvitedGuest()`；`levels` 可选，只邀请指定羁绊等级的可邀请项。不得信任前端旧列表，不调用 `DaySceneChatSelectionPannel.InviteSpecGuest()`，不使用 `HasTemptInvited()` 跳过候选，不直接刷客、推进时间或写 `Story.SpecialGuestControlled`。
+- `POST /rare-guests/invite?guestId=ID&scope=current|all&expectedDaySceneGeneration=GEN&expectedMapLabel=LABEL`：同样要求发起时的正数日间 generation 和非空地图 label，在 Unity 主线程入口及 `RecordInvitedGuest()` 前复核，再按最新上下文重新校验指定稀客后写入今晚邀请名单；任何缺参或上下文变化都拒绝写入，不保留无场景身份的旧调用方式。
 - `POST /automation/lease/acquire`：获取或续约当前客户端的自动化控制权；新所有者取得 lease 时会进入新的 command epoch。
 - `POST /automation/jobs/cancel`：由当前 lease 所有者原子取消全部自动料理 job 和旧 epoch 排队命令，确认取消屏障后释放控制权；响应返回 `commandEpoch`、`cancelledJobs`、`cancelledCommands` 和 `leaseReleased`。
 - `POST /automation/barriers/ack?sequence=SEQ`：由当前 lease 所有者确认已人工检查对应安全事件；后端按精确 sequence 解除同一订单截至该事件的未确认栅栏。找不到事件或不持有 lease 时不得清除前端人工状态。
@@ -666,11 +679,13 @@ Port = 32145
 - `POST /updates/status`：归并并返回当前更新检查、下载、暂存和安装程序状态，以及 `lastAttemptAtUtc`、`lastSuccessAtUtc`、`nextCheckAtUtc`、`consecutiveFailures`；归并 updater 结果时可能写入或删除状态文件，因此不是只读查询。
 - `POST /updates/check`、`POST /updates/download`、`POST /updates/install-on-exit`：手动检查、下载或启动退出安装流程；更新服务按单操作串行。后台调度成功后按配置间隔续检，失败按 15m/30m/1h/2h/4h/6h 退避。Local API 关闭时先阻止新操作，再通过统一生命周期令牌取消自动/手动检查和下载，等待 handler、活动操作及调度器退出；取消检查恢复稳定状态并立即到期。下次启动会恢复强制退出留下的瞬时状态，并只清理下载一级目录内严格符合本服务语义版本/GUID 格式的临时目录。
 
+稀客邀请页面的自动列表读取以连接代际、规范 endpoint、`current|all` 范围、`runtimeDaySceneGeneration` 和当前地图 label 组成稳定身份，只在页面可见、连接成功、`runtimeLoaded=true`、`runtimeDaySceneReady=true`、generation 为正数且地图有效时发起 GET。首次进入、范围变化、换图、同地图新 generation、重连和邀请完成后各读取一次，无关快照变化不会重复读取。同一身份收到结构化 `ok=false/runtimeAvailable=false` 结果或传输失败时只按 500/1000/2000/4000ms 重试四次；成功或确定性业务结果立即停止，耗尽后保留后端 `error/status` 并等待手动刷新或身份变化，失败响应不得渲染成普通空列表，也不能以未记录尝试形成热循环。单独/批量邀请从同一有效快照固定 `expectedDaySceneGeneration` 和 `expectedMapLabel`，没有有效写入上下文时前端不发 POST；后端场景栅栏负责阻止已经排队但延迟执行的旧写入。身份失效时立即取消请求、重试计时器并清空旧结果；Hook 同时使用 `AbortController`、请求 generation 和操作 ID，确保旧响应或旧 `finally` 不能覆盖新场景的结果与 busy 状态。手动刷新保留，但只强制重读当前有效身份。后端整批读取异常记录 scope、读取阶段和完整异常；上下文拒绝或成功结果记录可用的状态与候选诊断，便于从总日志定位实机 IL2CPP 差异。
+
 ### v1.2.x 一次性迁移边界
 
 `v1.2.x` 只保留一项明确的一次性数据迁移：Local API 启动阶段先把 `favorites.json` 中 `source=manual` 的料理原子写入 `custom-recipes.json`，写入成功后再从收藏文件删除旧条目。目标料理按 `customerId + foodTag + foodId + extraIngredientIds` 去重，中断后重试不会重复生成；目标文件无法读取或写入时不删除来源条目。后续 `GET /custom-recipes` 和 CRUD 端点保持无隐式迁移副作用。该迁移计划在 `v1.3.0` 删除，不得扩大为旧 API、旧配置、旧类型或旧业务路径兼容层。自 `v1.2.0` 起不再读取旧 GUID 配置 `com.tyukki.mystia-steward.cfg`。
 
-除 `/health` 外，端点都需要 `X-Mystia-Steward-Companion-Token`。Token 由插件生成并保存在 BepInEx 配置中，同机启动伴随窗口时通过 `--token=` 参数传入 Tauri 后端；A 设备本机设置页可以复制或重置 Token。远程局域网连接时，用户需要在 B 设备伴随窗口顶部连接区手动输入 A 设备的 endpoint 和 token，点击 `连接` 后才开始轮询。Tauri 伴随窗口会显示实时 Mod 工作台，默认包含 `概览`、`普客`、`稀客`、`自定义推荐料理`、`经营中`、`任务`、`修改`、`帮助`、`设置` 九个页签；`概览` 内部按 `状态`、`库存`、`操作` 分栏，`设置` 内部按 `窗口`、`连接`、`推荐`、`自动化`、`更新` 分栏。窗口设置包含透明度、90% 至 130% 字体大小、焦点切换、始终置顶、鼠标穿透锁定、手柄导航和显示调试信息；连接设置包含本地 API/LAN 连接配置并逐项展示可复制的 endpoint；推荐设置包含订单排序、推荐权重、预算策略、缺失厨具过滤、任务料理/收藏料理/收藏酒水置顶、带库存显示和名称/库存排序的排除材料/酒水、同基础料理展示数量、游戏界面置顶和厨具高亮。工作台级更新控制器只读取 Mod 更新状态，活动状态 2 秒、稳定状态 60 秒轮询；发现新版时显示非模态提示，并按 endpoint + tag 保存 24 小时延后状态。Tauri opener 只允许打开本项目 Release URL。Android 伴随窗口只作为 B 设备 LAN 客户端，不提供桌面托盘、置顶、鼠标穿透、焦点切换、单实例控制和游戏关闭自动退出；独立 Windows 伴随窗口和 Android APK 不参与 Mod 主包自动更新。桌面鼠标穿透必须通过 Tauri 原生窗口 `set_ignore_cursor_events` 控制，不能只用 CSS `pointer-events` 模拟。帮助页内容来自 `apps/companion/src/data/help-content.json`，由前端渲染为目录树和详情面板，修改文案时优先改 JSON。`日志` 页签、扫描状态、运行时来源、性能耗时、订单来源和内部 key 这类诊断信息只在 `设置 -> 显示调试信息` 开启后显示。正式 Tauri 客户端通过原生后端读取本地 API。
+除 `/health` 外，端点都需要 `X-Mystia-Steward-Companion-Token`。Token 由插件生成并保存在 BepInEx 配置中，同机启动伴随窗口时通过 `--token=` 参数传入 Tauri 后端；A 设备本机设置页可以复制或重置 Token。远程局域网连接时，用户需要在 B 设备伴随窗口顶部连接区手动输入 A 设备的 endpoint 和 token，点击 `连接` 后才开始轮询。Tauri 伴随窗口会显示实时 Mod 工作台，默认包含 `概览`、`普客`、`稀客`、`自定义推荐料理`、`经营中`、`稀客邀请`、`修改`、`帮助`、`设置` 九个页签；`概览` 内部按 `状态`、`库存`、`操作` 分栏，`设置` 内部按 `窗口`、`连接`、`推荐`、`自动化`、`更新` 分栏。窗口设置包含透明度、90% 至 130% 字体大小、焦点切换、始终置顶、鼠标穿透锁定、手柄导航和显示调试信息；连接设置包含本地 API/LAN 连接配置并逐项展示可复制的 endpoint；推荐设置包含订单排序、推荐权重、预算策略、缺失厨具过滤、收藏料理/收藏酒水置顶、带库存显示和名称/库存排序的排除材料/酒水、同基础料理展示数量、游戏界面置顶和厨具高亮。工作台级更新控制器只读取 Mod 更新状态，活动状态 2 秒、稳定状态 60 秒轮询；发现新版时显示非模态提示，并按 endpoint + tag 保存 24 小时延后状态。Tauri opener 只允许打开本项目 Release URL。Android 伴随窗口只作为 B 设备 LAN 客户端，不提供桌面托盘、置顶、鼠标穿透、焦点切换、单实例控制和游戏关闭自动退出；独立 Windows 伴随窗口和 Android APK 不参与 Mod 主包自动更新。桌面鼠标穿透必须通过 Tauri 原生窗口 `set_ignore_cursor_events` 控制，不能只用 CSS `pointer-events` 模拟。帮助页内容来自 `apps/companion/src/data/help-content.json`，由前端渲染为目录树和详情面板，修改文案时优先改 JSON。`日志` 页签、扫描状态、运行时来源、性能耗时、订单来源和内部 key 这类诊断信息只在 `设置 -> 显示调试信息` 开启后显示。正式 Tauri 客户端通过原生后端读取本地 API。
 
 伴随窗口的自动化能力只在设置页总开关开启、持有 lease 且当前经营 generation 为 Active 时运行。稀客并发、普客并发、最大重试和最大回退由 `CompanionPreferences` 控制；订单排序、推荐过滤、收藏限定和厨具预约仍复用经营中推荐的同一输入。稀客 `autoPrep*` 与普客 `autoNormal*` 的送酒、开始料理、送达料理、完成订单和出错暂停完全独立保存、独立传参、独立推进。所有自动开锅都登记 `AutomationCookingJob` 作为服务端精确锅次回执，防止 HTTP 响应丢失后再次扣料；只开启“开始料理”时 job 进入手动交接模式，不送达、不入箱、不复位，直到订单送达、订单稳定消失、显式取消或 Closing 边界同步取消。Closing/Destroyed 后所有后续检查停止访问该场已释放或正在释放的游戏对象。
 
@@ -684,7 +699,7 @@ Port = 32145
 
 自动化在订单部分送达后恢复顾客耐心时，必须先读取同一 `GuestGroupController` 的 `CurrentPatient` 和 `MaxPatient`，再把 `AddPatient` 入参限制到剩余耐心空间内；若检测到当前耐心已经高于上限，只允许调用 `SetPatient(MaxPatient)` 做一次状态校正。游戏原生 `AddPatient` 不裁剪上限，而 `GuestTableDisplayer.UpdatePatient` 会先用 progress 索引贴图数组，因此不得恢复到 `MaxPatient` 以上。
 
-稀客自动化诊断由前端状态机维护，每个当前候选订单都要暴露当前步骤、下次动作、已开锅、已送酒、重试/回退次数、最近原因、暂停状态和人工确认栅栏。普客自动化也要按订单 key 展示下次动作、送酒、开锅、送料理、完成订单和订单已有料理/酒水状态，避免只靠长文本判断卡住位置。订单级执行步骤必须保存在对应订单状态中，并在经营中页订单条目下方的 `自动化详情` 折叠区展示；默认全部折叠。普通 `重试` 只解除该订单暂停并保留已完成阶段，普通 `重置` 让该订单重新判断；人工确认栅栏禁用重试，按钮改为 `确认已处理`。订单已从快照消失时仍必须通过独立待确认列表暴露事件。确认动作调用 `/automation/barriers/ack`，只有后端成功解除 sequence 后才清理本地状态；任何操作都不得影响其他订单。
+稀客自动化诊断由前端状态机维护，每个当前候选订单都要暴露当前步骤、下次动作、已开锅、已送酒、重试/回退次数、最近原因、暂停状态和人工确认栅栏。普客自动化也要按订单 key 展示下次动作、送酒、开锅、送料理、完成订单和订单已有料理/酒水状态，避免只靠长文本判断卡住位置。订单级执行步骤必须保存在对应订单状态中，并在经营中页订单条目下方的 `自动化详情` 折叠区展示；默认全部折叠。普通 `重试` 只解除该订单暂停并保留已完成阶段，普通 `重置` 让该订单重新判断；人工确认栅栏禁用重试，按钮改为 `确认已处理`。订单已从快照消失时仍必须通过独立待确认列表暴露事件。确认动作调用 `/automation/barriers/ack`，只有后端成功解除 sequence 后才清理本地状态；任何操作都不得影响其他订单。无执行计划时优先显示 `blockedDiagnostic.message`，总日志额外记录 code、首个阶段、分阶段计数、资源证据和稳定状态签名；稀客与普客分别使用当前自动化会话内最多 64 条的有界签名集合去重，切换会话清空，避免两类订单互相覆盖签名或同一状态重复刷日志。
 
 伴随窗口直接双击启动时通常没有本地 API Token。前端必须停留在未授权状态，不得高频请求 `/snapshot` 或日志端点；用户修改端点或 token 输入框时也不得立即重连，只有点击 `连接` 或从游戏启动参数收到新的连接身份后才恢复轮询。相同 endpoint/token 的重复单实例通知必须幂等，不得清空快照或推进连接代际。自动探测和失败重试必须使用较短本地 API 超时且不触发全局刷新 loading；手动刷新可使用稍长超时。连接失败后只按递增退避重试 `/snapshot`，并且只有快照成功才能清除错误和恢复写操作；`/health` 成功不能建立已连接状态。允许用户点击 `停止` 暂停自动重连。
 
@@ -723,4 +738,5 @@ Tauri 进程必须在初始化窗口前原子绑定控制端口，再把预绑�
 
 - 构建依赖本机 `References/` 中的 BepInEx、Il2CppInterop 和 Unity DLL；这些 DLL 不提交到仓库。
 - 运行时反射依赖游戏版本中的类型和字段名；如果游戏更新导致字段变化，需要核对并调整 provider 中的运行时类型名、字段名和方法名。
+- 当前不发布结构化任务快照或任务料理置顶。BepInEx 783 下的全量任务/节点和动态 tracking 集合没有经验证的无副作用完整读取入口，窄入口也无法恢复读档时已存在的全部状态，因此不得恢复 `AllNodesMapping`、`GetAllNodes()`、`GetAllMissionData()`、`ParseActiveMissionData()` 或相关动态枚举作为兼容性扫描。
 - 伴随窗口是唯一用户界面；游戏内不再提供备用 IMGUI 面板。

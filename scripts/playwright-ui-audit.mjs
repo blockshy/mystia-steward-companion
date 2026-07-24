@@ -27,7 +27,7 @@ const tabs = [
   { value: 'rare', label: '稀客' },
   { value: 'custom-recipes', label: '自定义推荐料理' },
   { value: 'service', label: '经营中' },
-  { value: 'tasks', label: '任务' },
+  { value: 'rare-invitations', label: '稀客邀请' },
   { value: 'inventory', label: '修改' },
   { value: 'help', label: '帮助' },
   { value: 'logs', label: '日志' },
@@ -178,7 +178,7 @@ async function auditMinimumViewportLayout(page, viewport, tab) {
 
 async function auditMinimumMulticolumnGrids(page, viewport, tab) {
   const result = await page.evaluate(({ tabValue }) => {
-    const expectedTabs = new Set(['overview', 'normal', 'rare', 'custom-recipes', 'service', 'tasks', 'inventory', 'settings', 'logs']);
+    const expectedTabs = new Set(['overview', 'normal', 'rare', 'custom-recipes', 'service', 'rare-invitations', 'inventory', 'settings', 'logs']);
     const candidates = Array.from(document.querySelectorAll('.steward-minimum-multicolumn-grid'))
       .filter((node) => node instanceof HTMLElement)
       .filter((element) => isVisible(element));

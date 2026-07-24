@@ -4,7 +4,7 @@ export const EXPECTED_PRIMARY_TAB_VALUES = Object.freeze([
   'rare',
   'custom-recipes',
   'service',
-  'tasks',
+  'rare-invitations',
   'inventory',
   'help',
   'logs',

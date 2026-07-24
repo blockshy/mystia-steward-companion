@@ -730,11 +730,6 @@ export function RecipeRecommendationRow({
       title={recipe.recipe.name}
       badges={(
         <>
-          {recipe.missionPriority && (
-            <Badge className="steward-meta-cooker">
-              任务
-            </Badge>
-          )}
           {recipe.customRecipe && (
             <Badge variant={recipe.customRecipePinned ? 'secondary' : 'outline'}>
               {recipe.customRecipePinned ? '自定义置顶' : '自定义'}

@@ -24,7 +24,6 @@ public sealed class DataRepository
         RareCustomersById = rareCustomers
             .GroupBy(c => c.Id)
             .ToDictionary(group => group.Key, group => group.First());
-        RareCustomerIdentities = new RareCustomerIdentityResolver(RareCustomersById, rareCustomers);
     }
 
     public IReadOnlyList<Recipe> Recipes { get; }
@@ -36,7 +35,6 @@ public sealed class DataRepository
     public IReadOnlyDictionary<string, string> BeverageTagIdMap { get; }
     public IReadOnlyDictionary<int, int> RecipeIdToId { get; }
     public IReadOnlyDictionary<int, RareCustomer> RareCustomersById { get; }
-    public RareCustomerIdentityResolver RareCustomerIdentities { get; }
 
     public static DataRepository FromRuntime(RuntimeDataCatalog catalog)
     {

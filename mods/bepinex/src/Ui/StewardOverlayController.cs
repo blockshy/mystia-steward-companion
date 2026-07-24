@@ -98,12 +98,15 @@ internal sealed class StewardOverlayController
     private float _nextNormalOrderCaptureRefreshAt;
     private long _lastRuntimeSceneReadinessVersion;
     private long _lastNormalOrderChangeVersion;
+    private RuntimeDataCatalog? _runtimeDataPayloadCatalog;
+    private string _runtimeDataPayloadJson = "";
+    private string _runtimeDataPayloadSignature = "";
     private string _lastPublishedRuntimeDataSignature = "";
+    private string _lastRuntimeCatalogLogStatus = "";
     private string _lastLocalApiSnapshotContentSignature = "";
     private string _localApiSnapshotDirtyReason = "";
     private string _lastLocalApiSnapshotDiagnosticSignature = "";
     private LocalApiSnapshotDirtyDomain _localApiSnapshotDirtyDomains = LocalApiSnapshotDirtyDomain.None;
-    private readonly List<RuntimeRareCustomer> _runtimeRareCustomers = new();
     private readonly Dictionary<string, double> _performanceMs = new(StringComparer.Ordinal);
     private readonly Dictionary<string, float> _performanceUpdatedAt = new(StringComparer.Ordinal);
 
@@ -113,6 +116,15 @@ internal sealed class StewardOverlayController
         public string Source { get; init; } = "";
         public string Status { get; init; } = "";
         public string Signature { get; init; } = "";
+    }
+
+    private readonly record struct RuntimeCatalogRefreshResult(
+        bool CoreReady,
+        bool IdentityReady,
+        bool Attempted,
+        string Status)
+    {
+        public bool IsReady => CoreReady && IdentityReady;
     }
 
     /// <summary>
@@ -163,6 +175,7 @@ internal sealed class StewardOverlayController
         public int GuestId { get; init; } = -1;
         public string Scope { get; init; } = "";
         public string KizunaLevels { get; init; } = "";
+        public RareGuestInvitationWriteExpectation WriteExpectation { get; init; }
     }
 
     private enum OrderActionKind
@@ -188,10 +201,9 @@ internal sealed class StewardOverlayController
         NormalBusiness = 1 << 2,
         SpecialBusiness = 1 << 3,
         Automation = 1 << 4,
-        Missions = 1 << 5,
-        Scene = 1 << 6,
-        RuntimeData = 1 << 7,
-        All = Runtime | RareBusiness | NormalBusiness | SpecialBusiness | Automation | Missions | Scene | RuntimeData,
+        Scene = 1 << 5,
+        RuntimeData = 1 << 6,
+        All = Runtime | RareBusiness | NormalBusiness | SpecialBusiness | Automation | Scene | RuntimeData,
     }
 
     /// <summary>
@@ -382,7 +394,6 @@ internal sealed class StewardOverlayController
         ResetRuntimeRetryDelays();
         _lastPublishedRuntimeDataSignature = "";
         _businessFallbackState = null;
-        RuntimeMissionSnapshotService.ClearCache();
         _normalBusinessContext = null;
         _nextNormalBusinessRefreshAt = 0f;
         ResetNightBusinessRefreshCache();
@@ -413,7 +424,7 @@ internal sealed class StewardOverlayController
     }
 
     /// <summary>
-    /// 响应运行时场景就绪探针变化，强制下一轮重新读取目录和快照。
+    /// 响应运行时场景就绪探针变化，使未完成的目录读取立即重试并清理动态快照缓存。
     /// </summary>
     private void RefreshOnRuntimeSceneReadinessChange()
     {
@@ -424,15 +435,22 @@ internal sealed class StewardOverlayController
         _nextAutoRefreshAt = 0f;
         ResetRuntimeRetryDelays();
         _lastPublishedRuntimeDataSignature = "";
-        RuntimeMissionSnapshotService.ClearCache();
         MarkLocalApiSnapshotDirty(LocalApiSnapshotDirtyDomain.Scene | LocalApiSnapshotDirtyDomain.RuntimeData, "runtime scene readiness changed", force: true);
     }
 
     private void ResetRuntimeRetryDelays()
     {
         _nextRuntimeDataCatalogRefreshAt = 0f;
-        RuntimeMappedGuestCatalog.ResetRetryDelay();
-        RuntimeStaticDataCatalog.ResetRetryDelay();
+        if (_runtimeMappedGuestSnapshot?.IsComplete != true)
+        {
+            RuntimeMappedGuestCatalog.ResetSnapshot();
+        }
+
+        if (!_runtimeDataCatalog.IsComplete)
+        {
+            RuntimeStaticDataCatalog.ResetSnapshot();
+        }
+
         SpecialOrderRuntimeCapture.ResetAttachRetryDelay();
         NormalOrderRuntimeCapture.ResetAttachRetryDelay();
     }
@@ -600,9 +618,9 @@ internal sealed class StewardOverlayController
             ResetNormalBusinessRefreshCache();
             _runtimeSource = "";
             _lastRuntimeErrorMessage = "";
+            _lastRuntimeCatalogLogStatus = "";
             _runtimeStateSignature = "";
             _lastRuntimeReadUtc = DateTime.MinValue;
-            _runtimeRareCustomers.Clear();
             _status = L(
                 "等待游戏运行时数据；当前页面需要运行时数据就绪。",
                 "Waiting for live game runtime data; this page requires runtime data to be ready.");
@@ -651,7 +669,12 @@ internal sealed class StewardOverlayController
 
             if (RuntimeReflectionRecommendationStateProvider.CanReadRuntimeState(out var runtimeReason))
             {
-                TryRefreshRuntimeDataCatalog();
+                var catalogRefresh = TryRefreshRuntimeDataCatalog();
+                if (!catalogRefresh.IsReady)
+                {
+                    SetRuntimeCatalogWaitingState(catalogRefresh);
+                    return;
+                }
 
                 var includePlacedCookers = !IsIzakayaPrepActive(_activeSceneName) && IsNightBusinessScene(_activeSceneName);
                 var includeDaySceneState = ShouldReadDaySceneRuntimeState();
@@ -940,6 +963,8 @@ internal sealed class StewardOverlayController
                 ActiveDayMapLabel = dayMap.Label,
                 ActiveDayMapName = dayMap.Name,
                 RuntimeLoaded = runtimeBasicsLoaded,
+                RuntimeDaySceneGeneration = RuntimeSceneReadinessCapture.DaySceneGeneration,
+                RuntimeDaySceneReady = RuntimeSceneReadinessCapture.CanReadDaySceneRuntime(),
                 Status = _status,
                 RuntimeSource = _runtimeSource,
                 RuntimeSceneReadinessStatus = RuntimeSceneReadinessCapture.Status,
@@ -956,13 +981,9 @@ internal sealed class StewardOverlayController
                         Source = $"NightBusinessLifecycle={lifecycle.Phase}",
                     }
                     : Measure("snapshot.specialBusiness", RuntimeSpecialBusinessContextService.Snapshot),
-                RuntimeMissions = nightRuntimeGated
-                    ? new RuntimeMissionContext { Source = "夜间经营正在初始化或结束；未读取游戏运行时对象。" }
-                    : Measure("snapshot.missions", ReadRuntimeMissionsForSnapshot),
                 NormalBusiness = nightRuntimeGated
                     ? null
                     : Measure("snapshot.normalBusiness", ReadNormalBusinessForSnapshot),
-                RuntimeRareCustomers = nightRuntimeGated ? new List<RuntimeRareCustomer>() : _runtimeRareCustomers.ToList(),
                 AutomationEvents = RuntimeOrderPreparationService.SnapshotAutomationRuntimeEvents().ToList(),
                 AutomationCookingJobs = RuntimeOrderPreparationService.SnapshotAutomationCookingJobs().ToList(),
                 RuntimeDataComplete = runtimeDataInfo.IsComplete,
@@ -1024,6 +1045,11 @@ internal sealed class StewardOverlayController
                 dirtyReason,
                 signature,
                 snapshot.ActiveSceneName,
+                snapshot.RuntimeLoaded,
+                snapshot.RuntimeSceneReadinessStatus,
+                snapshot.RuntimeDataComplete,
+                snapshot.RuntimeDataSource,
+                snapshot.RuntimeDataStatus,
                 normalCount,
                 rareCount,
                 specialActive,
@@ -1049,6 +1075,10 @@ internal sealed class StewardOverlayController
                     $"signature: {signature}",
                     $"scene: {snapshot.ActiveSceneName}",
                     $"runtimeLoaded: {snapshot.RuntimeLoaded}",
+                    $"runtimeSceneReadiness: {snapshot.RuntimeSceneReadinessStatus}",
+                    $"runtimeDataComplete: {snapshot.RuntimeDataComplete}",
+                    $"runtimeDataSource: {snapshot.RuntimeDataSource}",
+                    $"runtimeDataStatus: {snapshot.RuntimeDataStatus}",
                     $"nightOrders: {rareCount}",
                     $"normalOrders: {normalCount}",
                     $"specialActive: {specialActive}",
@@ -1147,37 +1177,34 @@ internal sealed class StewardOverlayController
 
     private RuntimeDataCatalogInfo PublishRuntimeDataCatalogForLocalApi(bool force)
     {
-        var signature = BuildRuntimeDataSignature(_runtimeDataCatalog);
-        if (force || !string.Equals(signature, _lastPublishedRuntimeDataSignature, StringComparison.Ordinal))
+        if (!ReferenceEquals(_runtimeDataPayloadCatalog, _runtimeDataCatalog))
         {
-            _lastPublishedRuntimeDataSignature = signature;
-            _localApiServer?.SetRuntimeDataJson(Measure(
+            var payload = Measure(
                 "runtimeData.serialize",
-                () => JsonSerializer.Serialize(_runtimeDataCatalog, LocalApiJsonOptions)));
+                () => LocalApiRuntimeDataPayload.Create(_runtimeDataCatalog, LocalApiJsonOptions));
+            _runtimeDataPayloadCatalog = _runtimeDataCatalog;
+            _runtimeDataPayloadJson = payload.Json;
+            _runtimeDataPayloadSignature = payload.Signature;
         }
 
+        if (force
+            || !string.Equals(
+                _runtimeDataPayloadSignature,
+                _lastPublishedRuntimeDataSignature,
+                StringComparison.Ordinal))
+        {
+            _lastPublishedRuntimeDataSignature = _runtimeDataPayloadSignature;
+            _localApiServer?.SetRuntimeDataJson(_runtimeDataPayloadJson);
+        }
+
+        var catalogReadiness = CurrentRuntimeCatalogRefreshResult(attempted: false);
         return new RuntimeDataCatalogInfo
         {
-            IsComplete = _runtimeDataCatalog.IsComplete,
+            IsComplete = catalogReadiness.IsReady,
             Source = _runtimeDataCatalog.Source,
-            Status = _runtimeDataCatalog.Status,
-            Signature = signature,
+            Status = catalogReadiness.Status,
+            Signature = _runtimeDataPayloadSignature,
         };
-    }
-
-    private static string BuildRuntimeDataSignature(RuntimeDataCatalog catalog)
-    {
-        return string.Join(
-            "|",
-            catalog.IsComplete ? "1" : "0",
-            catalog.Source,
-            catalog.Status,
-            catalog.Recipes.Count,
-            catalog.Ingredients.Count,
-            catalog.Beverages.Count,
-            catalog.NormalCustomers.Count,
-            catalog.RareCustomers.Count,
-            catalog.FoodTagIdMap.Count);
     }
 
     /// <summary>
@@ -1198,6 +1225,8 @@ internal sealed class StewardOverlayController
         AppendValue(builder, snapshot.ActiveDayMapLabel);
         AppendValue(builder, snapshot.ActiveDayMapName);
         AppendValue(builder, snapshot.RuntimeLoaded);
+        AppendValue(builder, snapshot.RuntimeDaySceneGeneration);
+        AppendValue(builder, snapshot.RuntimeDaySceneReady);
         AppendValue(builder, snapshot.Status);
         AppendValue(builder, snapshot.RuntimeSource);
         AppendValue(builder, snapshot.RuntimeSceneReadinessStatus);
@@ -1205,9 +1234,7 @@ internal sealed class StewardOverlayController
         AppendRecommendationSnapshot(builder, snapshot.RecommendationState);
         AppendNightBusiness(builder, snapshot.NightBusiness);
         AppendSpecialBusiness(builder, snapshot.SpecialBusiness);
-        AppendRuntimeMissions(builder, snapshot.RuntimeMissions);
         AppendNormalBusiness(builder, snapshot.NormalBusiness);
-        AppendRuntimeRareCustomers(builder, snapshot.RuntimeRareCustomers);
         AppendAutomationRuntimeEvents(builder, snapshot.AutomationEvents);
         AppendAutomationCookingJobs(builder, snapshot.AutomationCookingJobs);
         AppendValue(builder, snapshot.RuntimeDataComplete);
@@ -1391,50 +1418,6 @@ internal sealed class StewardOverlayController
         AppendValue(builder, context.LastTargetUpdatedUtc?.ToString("O"));
     }
 
-    private static void AppendRuntimeMissions(StringBuilder builder, RuntimeMissionContext? context)
-    {
-        if (context == null)
-        {
-            AppendValue(builder, "<missions:null>");
-            return;
-        }
-
-        AppendValue(builder, context.Source);
-        AppendValue(builder, context.Error);
-        foreach (var mission in context.AvailableMissions
-                     .OrderBy(mission => mission.Label, StringComparer.Ordinal)
-                     .ThenBy(mission => mission.Title, StringComparer.Ordinal))
-        {
-            AppendValue(builder, mission.Label);
-            AppendValue(builder, mission.Title);
-            AppendValue(builder, mission.CharacterLabel);
-            AppendValue(builder, mission.CharacterName);
-            AppendStrings(builder, mission.Places);
-            AppendValue(builder, mission.Source);
-            AppendValue(builder, mission.Status);
-            AppendValue(builder, mission.Started);
-            AppendValue(builder, mission.Finished);
-            AppendValue(builder, mission.TargetRecipeId);
-            AppendValue(builder, mission.TargetRecipeName);
-        }
-
-        foreach (var target in context.ServeTargets
-                     .OrderBy(target => target.GuestId)
-                     .ThenBy(target => target.MissionLabel, StringComparer.Ordinal)
-                     .ThenBy(target => target.RecipeId))
-        {
-            AppendValue(builder, target.GuestId);
-            AppendValue(builder, target.GuestName);
-            AppendValue(builder, target.GuestLabel);
-            AppendValue(builder, target.MissionLabel);
-            AppendValue(builder, target.MissionTitle);
-            AppendValue(builder, target.RecipeId);
-            AppendValue(builder, target.RecipeName);
-            AppendValue(builder, target.Status);
-            AppendValue(builder, target.Source);
-        }
-    }
-
     private static void AppendNormalBusiness(StringBuilder builder, NormalBusinessContext? context)
     {
         if (context == null)
@@ -1477,21 +1460,6 @@ internal sealed class StewardOverlayController
             AppendValue(builder, order.ActionBlockReason);
             AppendValue(builder, order.FirstSeenAtUtc?.ToString("O"));
             AppendValue(builder, order.Source);
-        }
-    }
-
-    private static void AppendRuntimeRareCustomers(StringBuilder builder, IEnumerable<RuntimeRareCustomer> customers)
-    {
-        foreach (var customer in customers.OrderBy(customer => customer.Id).ThenBy(customer => customer.Name, StringComparer.Ordinal))
-        {
-            AppendValue(builder, customer.Id);
-            AppendValue(builder, customer.RuntimeStringId);
-            AppendValue(builder, customer.Name);
-            AppendStrings(builder, customer.Places);
-            AppendStrings(builder, customer.PositiveTags);
-            AppendStrings(builder, customer.NegativeTags);
-            AppendStrings(builder, customer.BeverageTags);
-            AppendValue(builder, customer.Source);
         }
     }
 
@@ -1618,109 +1586,116 @@ internal sealed class StewardOverlayController
     /// 推荐引擎的料理、酒水、材料和稀客目录最终以游戏运行时为准。读取成功后替换当前仓库数据源；
     /// 失败时保留空目录状态并按重试间隔再次尝试。
     /// </remarks>
-    private void TryRefreshRuntimeDataCatalog()
+    private RuntimeCatalogRefreshResult TryRefreshRuntimeDataCatalog()
     {
-        if (_repository == null) return;
-        if (_runtimeDataCatalog.IsComplete) return;
-        if (Time.realtimeSinceStartup < _nextRuntimeDataCatalogRefreshAt) return;
+        if (_repository == null)
+        {
+            return new RuntimeCatalogRefreshResult(
+                CoreReady: false,
+                IdentityReady: false,
+                Attempted: false,
+                Status: "runtime data repository is unavailable");
+        }
+
+        if (_runtimeDataCatalog.IsComplete
+            && _runtimeMappedGuestSnapshot?.IsComplete == true)
+        {
+            return new RuntimeCatalogRefreshResult(
+                CoreReady: true,
+                IdentityReady: true,
+                Attempted: false,
+                Status: _runtimeDataCatalog.Status);
+        }
+
+        if (Time.realtimeSinceStartup < _nextRuntimeDataCatalogRefreshAt)
+        {
+            return CurrentRuntimeCatalogRefreshResult(attempted: false);
+        }
+
         _nextRuntimeDataCatalogRefreshAt = Time.realtimeSinceStartup + RuntimeDataCatalogRetrySeconds;
 
         try
         {
-            var mappedGuestSnapshot = Measure("runtimeData.mappedGuests", () => new RuntimeMappedGuestCatalog(_repository).Snapshot());
-            _runtimeMappedGuestSnapshot = mappedGuestSnapshot;
-            _runtimeRareCustomers.Clear();
-            _runtimeRareCustomers.AddRange(mappedGuestSnapshot.RuntimeRareCustomers);
-            var staticDataSnapshot = Measure("runtimeData.staticData", () => new RuntimeStaticDataCatalog(_repository).Snapshot(mappedGuestSnapshot));
-            _runtimeStaticDataSnapshot = staticDataSnapshot;
-            _runtimeDataCatalog = staticDataSnapshot.DataCatalog;
-            if (!_runtimeDataCatalog.IsComplete) return;
+            if (!_runtimeDataCatalog.IsComplete)
+            {
+                var staticDataSnapshot = Measure(
+                    "runtimeData.staticData",
+                    () => new RuntimeStaticDataCatalog().Snapshot());
+                _runtimeStaticDataSnapshot = staticDataSnapshot;
+                _runtimeDataCatalog = staticDataSnapshot.DataCatalog;
+                if (!_runtimeDataCatalog.IsComplete)
+                {
+                    return CurrentRuntimeCatalogRefreshResult(attempted: true);
+                }
 
-            _repository = DataRepository.FromRuntime(_runtimeDataCatalog);
+                _repository = DataRepository.FromRuntime(_runtimeDataCatalog);
+            }
+
+            var mappedGuestSnapshot = Measure(
+                "runtimeData.mappedGuests",
+                () => new RuntimeMappedGuestCatalog(_repository).Snapshot());
+            _runtimeMappedGuestSnapshot = mappedGuestSnapshot;
+            if (!mappedGuestSnapshot.IsComplete)
+            {
+                return CurrentRuntimeCatalogRefreshResult(attempted: true);
+            }
+
             _businessFallbackState = null;
             _nextRuntimeDataCatalogRefreshAt = 0f;
+            _lastRuntimeCatalogLogStatus = "";
             _runtimeSource = string.IsNullOrWhiteSpace(_runtimeSource)
                 ? "game-runtime-static-data"
                 : $"{_runtimeSource}; runtime-static-data";
+            return CurrentRuntimeCatalogRefreshResult(attempted: true);
         }
         catch (Exception ex)
         {
-            _runtimeDataCatalog = RuntimeDataCatalog.Empty($"runtime data unavailable: {ex.Message}");
+            if (_runtimeDataCatalog.IsComplete)
+            {
+                _runtimeMappedGuestSnapshot = RuntimeMappedGuestCatalogSnapshot.Empty(
+                    $"mapped guest catalog unavailable: {ex.Message}");
+            }
+            else
+            {
+                _runtimeDataCatalog = RuntimeDataCatalog.Empty($"runtime data unavailable: {ex.Message}");
+            }
+
+            return CurrentRuntimeCatalogRefreshResult(attempted: true);
         }
     }
 
-    /// <summary>
-    /// 读取任务面板快照，并补充经营订单相关的上菜目标。
-    /// </summary>
-    /// <remarks>
-    /// 任务和稀客邀请只在日间场景读取；夜间经营时仍会把当前订单目标合并到任务上下文，便于 UI 展示。
-    /// </remarks>
-    private RuntimeMissionContext? ReadRuntimeMissionsForSnapshot()
+    private RuntimeCatalogRefreshResult CurrentRuntimeCatalogRefreshResult(bool attempted)
     {
-        if (!HasRuntimeBasicsLoaded()) return null;
+        var coreReady = _runtimeDataCatalog.IsComplete;
+        var identityReady = _runtimeMappedGuestSnapshot?.IsComplete == true;
+        var status = !coreReady
+            ? _runtimeStaticDataSnapshot?.Status ?? _runtimeDataCatalog.Status
+            : !identityReady
+                ? $"mapped guest catalog unavailable: {_runtimeMappedGuestSnapshot?.Status ?? "not loaded"}"
+                : _runtimeDataCatalog.Status;
+        return new RuntimeCatalogRefreshResult(coreReady, identityReady, attempted, status);
+    }
 
-        if (IsNonGameplayScene(_activeSceneName))
-        {
-            return new RuntimeMissionContext
-            {
-                Source = "任务数据等待存档加载完成。",
-            };
-        }
+    private void SetRuntimeCatalogWaitingState(RuntimeCatalogRefreshResult result)
+    {
+        _runtimeLoaded = false;
+        _state = null;
+        _businessFallbackState = null;
+        _runtimeStateSignature = "";
+        _runtimeSource = "";
+        _lastRuntimeReadUtc = DateTime.MinValue;
+        _status = L(
+            $"游戏运行时目录尚未就绪：{RuntimeReasonZh(result.Status)}。Mod 将自动重试。",
+            $"Game runtime catalog is not ready: {result.Status}. The Mod will retry automatically.");
 
-        if (ShouldBlockDaySceneRuntimeReads(_activeSceneName))
+        if (!result.Attempted
+            || string.Equals(_lastRuntimeCatalogLogStatus, result.Status, StringComparison.Ordinal))
         {
-            return new RuntimeMissionContext
-            {
-                Source = "任务数据等待经营准备界面初始化完成。",
-            };
-        }
-
-        if (IsNightBusinessScene(_activeSceneName))
-        {
-            var context = new RuntimeMissionContext
-            {
-                Source = "任务数据只在日间场景读取；当前处于夜间经营。",
-            };
-            return Measure("mission.serveTargets", () => RuntimeMissionSnapshotService.WithServeTargets(
-                context,
-                _repository,
-                _businessContext?.ActiveRareGuests ?? Enumerable.Empty<NightBusinessGuest>(),
-                _businessContext?.Orders ?? Enumerable.Empty<NightBusinessOrder>()));
+            return;
         }
 
-        if (!IsDaySceneRuntimeScene(_activeSceneName))
-        {
-            return new RuntimeMissionContext
-            {
-                Source = "任务数据只在日间场景读取。",
-            };
-        }
-
-        if (!CanReadDaySceneTaskRuntime(out var daySceneWaitReason))
-        {
-            return new RuntimeMissionContext
-            {
-                Source = daySceneWaitReason,
-            };
-        }
-
-        try
-        {
-            var missions = Measure("mission.load", RuntimeMissionSnapshotService.Load);
-            return Measure("mission.serveTargets", () => RuntimeMissionSnapshotService.WithServeTargets(
-                missions,
-                _repository,
-                _businessContext?.ActiveRareGuests ?? Enumerable.Empty<NightBusinessGuest>(),
-                _businessContext?.Orders ?? Enumerable.Empty<NightBusinessOrder>()));
-        }
-        catch (Exception ex)
-        {
-            return new RuntimeMissionContext
-            {
-                Source = "error",
-                Error = ex.Message,
-            };
-        }
+        _lastRuntimeCatalogLogStatus = result.Status;
+        _log?.LogWarning($"Runtime catalog not ready: {result.Status}");
     }
 
     private bool ShouldReadDaySceneRuntimeState()
@@ -1731,10 +1706,10 @@ internal sealed class StewardOverlayController
     }
 
     /// <summary>
-    /// 判断当前是否允许读取日间任务与可邀请稀客。
+    /// 判断当前是否允许读取可邀请稀客。
     /// </summary>
     /// <param name="reason">不可读取时返回面向 UI 的等待或错误原因。</param>
-    private bool CanReadDaySceneTaskRuntime(out string reason)
+    private bool CanReadRareGuestInvitationRuntime(out string reason)
     {
         reason = "";
         if (!HasRuntimeBasicsLoaded())
@@ -1745,31 +1720,31 @@ internal sealed class StewardOverlayController
 
         if (IsNonGameplayScene(_activeSceneName))
         {
-            reason = "当前未进入存档，无法读取日间任务和可邀请稀客。";
+            reason = "当前未进入存档，无法读取可邀请稀客。";
             return false;
         }
 
         if (ShouldBlockDaySceneRuntimeReads(_activeSceneName))
         {
-            reason = "经营准备界面正在初始化，暂不读取日间任务和可邀请稀客。";
+            reason = "经营准备界面正在初始化，暂不读取可邀请稀客。";
             return false;
         }
 
         if (IsNightBusinessScene(_activeSceneName))
         {
-            reason = "当前处于夜间经营，日间任务和稀客邀请只支持日间场景。";
+            reason = "当前处于夜间经营，稀客邀请只支持日间场景。";
             return false;
         }
 
         if (!IsDaySceneRuntimeScene(_activeSceneName))
         {
-            reason = "当前不在日间场景，无法读取日间任务和可邀请稀客。";
+            reason = "当前不在日间场景，无法读取可邀请稀客。";
             return false;
         }
 
         if (!IsDayScenePanelReady())
         {
-            reason = "日间场景 UI 正在初始化，暂不读取日间任务和可邀请稀客。";
+            reason = "日间场景 UI 正在初始化，暂不读取可邀请稀客。";
             return false;
         }
 
@@ -1779,14 +1754,21 @@ internal sealed class StewardOverlayController
     private bool HasRuntimeBasicsLoaded()
     {
         if (IsNonGameplayScene(_activeSceneName)) return false;
-        return _runtimeLoaded || _state != null || _runtimeDataCatalog.IsComplete;
+        return IsRuntimeCatalogReady();
     }
 
     private bool CanPublishRecommendationState()
     {
         if (IsNonGameplayScene(_activeSceneName)) return false;
+        if (!IsRuntimeCatalogReady()) return false;
         if (_state != null) return true;
         return HasActiveNightBusinessContext(_businessContext);
+    }
+
+    private bool IsRuntimeCatalogReady()
+    {
+        return _runtimeDataCatalog.IsComplete
+            && _runtimeMappedGuestSnapshot?.IsComplete == true;
     }
 
     private bool CanReadNormalBusinessSnapshot()
@@ -2176,9 +2158,16 @@ internal sealed class StewardOverlayController
         return _automationCommandFence.CurrentEpoch;
     }
 
-    private RareGuestInvitationResult InviteAllRareGuestsFromLocalApi(string scope, string kizunaLevels)
+    private RareGuestInvitationResult InviteAllRareGuestsFromLocalApi(
+        string scope,
+        string kizunaLevels,
+        RareGuestInvitationWriteExpectation writeExpectation)
     {
-        return RunRareGuestInvitationFromLocalApi(RareGuestInvitationAction.InviteAll, scope: scope, kizunaLevels: kizunaLevels);
+        return RunRareGuestInvitationFromLocalApi(
+            RareGuestInvitationAction.InviteAll,
+            scope: scope,
+            kizunaLevels: kizunaLevels,
+            writeExpectation: writeExpectation);
     }
 
     private RareGuestInvitationResult ListRareGuestInvitationsFromLocalApi(string scope, string kizunaLevels)
@@ -2186,9 +2175,16 @@ internal sealed class StewardOverlayController
         return RunRareGuestInvitationFromLocalApi(RareGuestInvitationAction.List, scope: scope, kizunaLevels: kizunaLevels);
     }
 
-    private RareGuestInvitationResult InviteRareGuestFromLocalApi(int guestId, string scope)
+    private RareGuestInvitationResult InviteRareGuestFromLocalApi(
+        int guestId,
+        string scope,
+        RareGuestInvitationWriteExpectation writeExpectation)
     {
-        return RunRareGuestInvitationFromLocalApi(RareGuestInvitationAction.InviteOne, guestId, scope);
+        return RunRareGuestInvitationFromLocalApi(
+            RareGuestInvitationAction.InviteOne,
+            guestId,
+            scope,
+            writeExpectation: writeExpectation);
     }
 
     /// <summary>
@@ -2197,7 +2193,12 @@ internal sealed class StewardOverlayController
     /// <remarks>
     /// 稀客邀请读取依赖日间场景运行时对象。后台线程调用时会入队并等待主线程返回结果。
     /// </remarks>
-    private RareGuestInvitationResult RunRareGuestInvitationFromLocalApi(RareGuestInvitationAction action, int guestId = -1, string scope = "", string kizunaLevels = "")
+    private RareGuestInvitationResult RunRareGuestInvitationFromLocalApi(
+        RareGuestInvitationAction action,
+        int guestId = -1,
+        string scope = "",
+        string kizunaLevels = "",
+        RareGuestInvitationWriteExpectation writeExpectation = default)
     {
         if (ShouldGateNightBusinessRuntime())
         {
@@ -2214,7 +2215,12 @@ internal sealed class StewardOverlayController
 
         if (Thread.CurrentThread.ManagedThreadId == _mainThreadId)
         {
-            return ApplyRareGuestInvitation(action, guestId, scope, kizunaLevels);
+            return ApplyRareGuestInvitation(
+                action,
+                guestId,
+                scope,
+                kizunaLevels,
+                writeExpectation);
         }
 
         using var pending = new PendingRareGuestInvitation
@@ -2223,6 +2229,7 @@ internal sealed class StewardOverlayController
             GuestId = guestId,
             Scope = scope,
             KizunaLevels = kizunaLevels,
+            WriteExpectation = writeExpectation,
         };
         lock (_rareGuestInvitationLock)
         {
@@ -2485,7 +2492,12 @@ internal sealed class StewardOverlayController
 
             try
             {
-                pending.Complete(ApplyRareGuestInvitation(pending.Action, pending.GuestId, pending.Scope, pending.KizunaLevels));
+                pending.Complete(ApplyRareGuestInvitation(
+                    pending.Action,
+                    pending.GuestId,
+                    pending.Scope,
+                    pending.KizunaLevels,
+                    pending.WriteExpectation));
             }
             catch (Exception ex)
             {
@@ -2499,7 +2511,12 @@ internal sealed class StewardOverlayController
     /// <summary>
     /// 执行稀客邀请列表读取或邀请动作。
     /// </summary>
-    private RareGuestInvitationResult ApplyRareGuestInvitation(RareGuestInvitationAction action, int guestId, string scope, string kizunaLevels = "")
+    private RareGuestInvitationResult ApplyRareGuestInvitation(
+        RareGuestInvitationAction action,
+        int guestId,
+        string scope,
+        string kizunaLevels = "",
+        RareGuestInvitationWriteExpectation writeExpectation = default)
     {
         if (!CanRunRareGuestInvitationAction(out var waitReason))
         {
@@ -2513,25 +2530,50 @@ internal sealed class StewardOverlayController
             };
         }
 
+        if (action != RareGuestInvitationAction.List
+            && !RuntimeRareGuestInvitationService.TryValidateWriteExpectation(
+                writeExpectation,
+                out var staleReason))
+        {
+            return new RareGuestInvitationResult
+            {
+                Ok = false,
+                RuntimeAvailable = false,
+                Status = staleReason,
+                Error = staleReason,
+                Scope = string.IsNullOrWhiteSpace(scope) ? "current" : scope.Trim(),
+            };
+        }
+
         var result = action switch
         {
             RareGuestInvitationAction.List => RuntimeRareGuestInvitationService.ListAvailable(_repository, _log, scope, kizunaLevels),
-            RareGuestInvitationAction.InviteOne => RuntimeRareGuestInvitationService.InviteOne(_repository, guestId, _log, scope),
-            _ => RuntimeRareGuestInvitationService.InviteAllAvailable(_repository, _log, scope, kizunaLevels),
+            RareGuestInvitationAction.InviteOne => RuntimeRareGuestInvitationService.InviteOne(
+                _repository,
+                guestId,
+                _log,
+                scope,
+                writeExpectation),
+            _ => RuntimeRareGuestInvitationService.InviteAllAvailable(
+                _repository,
+                _log,
+                scope,
+                kizunaLevels,
+                writeExpectation),
         };
         if (action != RareGuestInvitationAction.List)
         {
             _status = result.Ok
                 ? result.Status
                 : L($"邀请稀客失败：{result.Error ?? result.Status}", $"Rare guest invitation failed: {result.Error ?? result.Status}");
-            MarkLocalApiSnapshotDirty(LocalApiSnapshotDirtyDomain.Runtime | LocalApiSnapshotDirtyDomain.Missions, "rare guest invitation changed");
+            MarkLocalApiSnapshotDirty(LocalApiSnapshotDirtyDomain.Runtime, "rare guest invitation changed");
         }
         return result;
     }
 
     private bool CanRunRareGuestInvitationAction(out string reason)
     {
-        return CanReadDaySceneTaskRuntime(out reason);
+        return CanReadRareGuestInvitationRuntime(out reason);
     }
 
     /// <summary>
@@ -2755,7 +2797,7 @@ internal sealed class StewardOverlayController
         ResetNightBusinessRefreshCache();
         ResetNormalBusinessRefreshCache();
         _runtimeMappedGuestSnapshot = null;
-        _runtimeStaticDataSnapshot = null;
+        RuntimeMappedGuestCatalog.ResetSnapshot();
         _runtimeSource = "";
         _runtimeStateSignature = "";
         _lastRuntimeReadUtc = DateTime.MinValue;
@@ -3074,7 +3116,7 @@ internal sealed class StewardOverlayController
 
     private static bool IsDayScenePanelReady()
     {
-        return RuntimeSceneReadinessCapture.DaySceneReady && IsDayScenePanelActive();
+        return RuntimeSceneReadinessCapture.CanReadDaySceneRuntime() && IsDayScenePanelActive();
     }
 
     private static bool IsIzakayaPrepPanelReady()
@@ -3132,7 +3174,7 @@ internal sealed class StewardOverlayController
     /// 判断日间运行时读取是否应被经营准备面板阻塞。
     /// </summary>
     /// <remarks>
-    /// 部分场景名仍像日间场景，但经营准备面板已经激活，此时读取日间任务或稀客候选容易拿到过期对象。
+    /// 部分场景名仍像日间场景，但经营准备面板已经激活，此时读取稀客候选容易拿到过期对象。
     /// </remarks>
     private static bool ShouldBlockDaySceneRuntimeReads(string sceneName)
     {

@@ -686,11 +686,6 @@ export function ModSettingsPanel({
                 进入经营场景后，若读取到已摆放厨具，推荐列表会隐藏当前场景无法制作的料理。
               </div>
               <SwitchControl
-                label="任务料理置顶"
-                checked={preferences.pinMissionRecipeEnabled}
-                onCheckedChange={(pinMissionRecipeEnabled) => onPreferenceChange({ pinMissionRecipeEnabled })}
-              />
-              <SwitchControl
                 label="收藏料理置顶"
                 checked={preferences.pinFavoriteRecipeEnabled}
                 onCheckedChange={(pinFavoriteRecipeEnabled) => onPreferenceChange({ pinFavoriteRecipeEnabled })}
@@ -701,7 +696,7 @@ export function ModSettingsPanel({
                 onCheckedChange={(pinFavoriteBeverageEnabled) => onPreferenceChange({ pinFavoriteBeverageEnabled })}
               />
               <div className="text-xs text-muted-foreground">
-                置顶只在解锁、库存、预算和厨具等硬条件通过后生效；任务料理优先于收藏料理，收藏酒水独立影响酒水排序。
+                置顶只在解锁、库存、预算和厨具等硬条件通过后生效；收藏料理和收藏酒水分别影响对应列表的排序。
               </div>
               <label className="flex items-center justify-between gap-3 text-sm">
                 <span className="min-w-0 text-muted-foreground">同基础料理显示</span>
