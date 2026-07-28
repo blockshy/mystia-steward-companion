@@ -21,6 +21,7 @@ internal sealed class OrderPreparationRequest
     public string RecipeName { get; init; } = "";
     public IReadOnlyList<int> ExtraIngredientIds { get; init; } = Array.Empty<int>();
     public IReadOnlyList<string> PredictedFoodTags { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> ExpectedFoodModifierTags { get; init; } = Array.Empty<string>();
     public IReadOnlyList<string> WackyTargetFoodTags { get; init; } = Array.Empty<string>();
     public string ExecutionMode { get; init; } = "";
     public string ExecutionReason { get; init; } = "";

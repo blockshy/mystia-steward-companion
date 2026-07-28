@@ -40,7 +40,7 @@ export function buildWackyCookingCompetitionOrderRule(
       preferHighBeverageLevel: true,
       preferKoishiDamage: shieldBroken,
       preferYuyukoPositiveSpell: false,
-      preferYuyukoProgress: false,
+      yuyukoProgressEvaluationMode: 'none',
       reason: shieldBroken
         ? '怪诞料理三阶段古明地恋本体已破防，需要先满足原订单料理和酒水要求，再按破防期预计伤害优先选择。'
         : '怪诞料理三阶段古明地恋本体需要按场上揭示的正面/厌恶/酒水 Tag 选择高评价组合。',
@@ -60,7 +60,7 @@ export function buildWackyCookingCompetitionOrderRule(
     preferHighBeverageLevel: preferHighEvaluation,
     preferKoishiDamage: false,
     preferYuyukoPositiveSpell: false,
-    preferYuyukoProgress: false,
+    yuyukoProgressEvaluationMode: 'none',
     reason: requiresTarget
       ? `怪诞料理目标 Tag：${targetTags.join('、')}${preferHighEvaluation ? '，需要满足原订单并获得最高评价' : ''}`
       : preferHighEvaluation

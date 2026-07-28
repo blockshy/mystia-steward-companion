@@ -35,6 +35,47 @@ catch (Exception ex)
 
 static void AssertBepInEx783CollectionMetadata()
 {
+    var enumerableType = typeof(Il2CppSystem.Collections.Generic.IEnumerable<int>);
+    AssertEqual(
+        "Il2CppSystem.Collections.Generic.IEnumerable`1",
+        enumerableType.GetGenericTypeDefinition().FullName,
+        "BepInEx 783 generic IEnumerable wrapper changed.");
+    AssertTrue(
+        enumerableType.GetConstructor(new[] { typeof(IntPtr) }) != null,
+        "Generic IEnumerable wrapper no longer exposes its native-pointer constructor.");
+
+    var genericEnumeratorType = RequireMethod(enumerableType, "GetEnumerator", Type.EmptyTypes).ReturnType;
+    AssertEqual(
+        "Il2CppSystem.Collections.Generic.IEnumerator`1",
+        genericEnumeratorType.GetGenericTypeDefinition().FullName,
+        "Generic IEnumerable did not return the matching generic IEnumerator.");
+    AssertTypeArguments(genericEnumeratorType, typeof(int));
+    AssertTrue(
+        genericEnumeratorType.GetConstructor(new[] { typeof(IntPtr) }) != null,
+        "Generic IEnumerator wrapper no longer exposes its native-pointer constructor.");
+    AssertEqual(
+        typeof(int),
+        RequireMethod(genericEnumeratorType, "get_Current", Type.EmptyTypes).ReturnType,
+        "Generic IEnumerator Current no longer returns its exact element type.");
+
+    var nonGenericEnumeratorType = typeof(Il2CppSystem.Collections.IEnumerator);
+    AssertTrue(
+        nonGenericEnumeratorType.GetConstructor(new[] { typeof(IntPtr) }) != null,
+        "Non-generic IEnumerator wrapper no longer exposes its native-pointer constructor.");
+    AssertEqual(
+        typeof(bool),
+        RequireMethod(nonGenericEnumeratorType, "MoveNext", Type.EmptyTypes).ReturnType,
+        "Non-generic IEnumerator MoveNext is not Boolean.");
+
+    var disposableType = typeof(Il2CppSystem.IDisposable);
+    AssertTrue(
+        disposableType.GetConstructor(new[] { typeof(IntPtr) }) != null,
+        "IL2CPP IDisposable wrapper no longer exposes its native-pointer constructor.");
+    AssertEqual(
+        typeof(void),
+        RequireMethod(disposableType, "Dispose", Type.EmptyTypes).ReturnType,
+        "IL2CPP IDisposable Dispose is not Void.");
+
     var dictionaryType = typeof(Il2CppSystem.Collections.Generic.Dictionary<int, string>);
     AssertEqual(
         "Il2CppSystem.Collections.Generic.Dictionary`2",

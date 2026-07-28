@@ -190,6 +190,7 @@ export interface NormalOrderExecutionTarget {
   beverageName: string;
   cookerName: string;
   foodTags: string[];
+  expectedFoodModifierTags: string[];
   beverageTags: string[];
   wackyTargetFoodTags?: string[];
   reason: string;

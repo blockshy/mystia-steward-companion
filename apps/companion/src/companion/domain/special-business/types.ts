@@ -19,6 +19,7 @@ export interface SpecialBusinessNormalTargetArgs {
   specialBusiness: SpecialBusinessContext | null | undefined;
   runtime: RecommendationStateSnapshot | null | undefined;
   preferences: CompanionPreferences;
+  dataSignature: string;
   data?: RecommendationDataSet;
   rejectedRecipeKeys?: readonly string[];
 }

@@ -1,3 +1,8 @@
+export type YuyukoProgressEvaluationMode =
+  | 'none'
+  | 'story-level-sum'
+  | 'retake-tag-order';
+
 export interface SpecialBusinessOrderRule {
   requiresWackyFoodTarget: boolean;
   foodTargetTags: string[];
@@ -8,7 +13,7 @@ export interface SpecialBusinessOrderRule {
   preferHighBeverageLevel: boolean;
   preferKoishiDamage: boolean;
   preferYuyukoPositiveSpell: boolean;
-  preferYuyukoProgress: boolean;
+  yuyukoProgressEvaluationMode: YuyukoProgressEvaluationMode;
   reason: string;
 }
 
@@ -23,7 +28,7 @@ export function emptySpecialBusinessOrderRule(): SpecialBusinessOrderRule {
     preferHighBeverageLevel: false,
     preferKoishiDamage: false,
     preferYuyukoPositiveSpell: false,
-    preferYuyukoProgress: false,
+    yuyukoProgressEvaluationMode: 'none',
     reason: '',
   };
 }

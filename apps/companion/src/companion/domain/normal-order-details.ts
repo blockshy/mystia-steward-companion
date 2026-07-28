@@ -52,6 +52,7 @@ export function buildNormalOrderDetailPlans({
   specialBusiness,
   runtime,
   preferences,
+  dataSignature,
   data,
   rejectedRecipeKeys = [],
 }: {
@@ -59,6 +60,7 @@ export function buildNormalOrderDetailPlans({
   specialBusiness: SpecialBusinessContext | null | undefined;
   runtime: RecommendationStateSnapshot | null | undefined;
   preferences: CompanionPreferences;
+  dataSignature: string;
   data: RecommendationDataSet;
   rejectedRecipeKeys?: readonly string[];
 }): NormalOrderDetailPlan[] {
@@ -94,6 +96,7 @@ export function buildNormalOrderDetailPlans({
       specialBusiness,
       runtime,
       preferences,
+      dataSignature,
       data,
       rejectedRecipeKeys,
     });

@@ -79,7 +79,7 @@
 
 相关数据类型为 `GameData.Profile.YuyukoBossData`。第二阶段的目标数来自 `phase2TargetPositiveSpells`。`SpecialGuestsController.PostEvaluation`（`180514F20`）只在稀客标准评价为 `ExGood` 时调用 `TriggerPositiveBuff`；挑战将 `GuestsManager.OnPositiveSpellTriggered` 接入 `AddPositiveSpellCount`（`18078A2D0`），由后者增加计数并更新 HUD 进度。因此，第二阶段取决于每位稀客自身的标准评价，不使用幽幽子第三阶段的固定厌恶 Tag 或料理与酒水等级合计规则。
 
-伪代码 `18078A590` 附近的三阶段评价回调按已送达料理等级与酒水等级之和分档：
+剧情版 `Story_Yuyuko` 的三阶段主幽幽子使用 `YuyukoOverrideEvaluationCallback_33`。伪代码 `18078A590` 直接读取已送达料理与酒水的等级之和并分档：
 
 | 等级合计 | 评价 | 回调系数 |
 | --- | --- | --- |
@@ -88,15 +88,22 @@
 | `>= 2` | `Normal` | `1.0` |
 | `< 2` | `Null` | 不进入上述评价档 |
 
-`18078AFF0` 和 `18078B760` 附近的路径说明 `Good` / `ExGood` 会按数据资产中的配置推进三阶段血量；`Bad` / `Exbad` 可能触发处罚，重修版包括厨具锁定相关路径。具体扣血数值来自运行时 `phase3FoodLevelToYuyukoHpData` 等字段，不写死在 Mod 或用户文档中。
+重修版 `Challenge_Yuyuko` 的三阶段分身不使用该等级合计表，并且运行时存在两种订单形态：
+
+- 稀客 `GuestsManager.SpecialOrder` 使用游戏标准点单评价。满足 `RequestFoodTag` 与 `RequestBeverageTag` 后形成基础 `Normal=2`，再按最终料理和酒水完整 `Tags` 中点单外的当前稀客喜好/厌恶调整评价；这类订单不是精确料理/酒水订单，也不是 modifier-only。
+- 精确料理/酒水的 `OrderBase/NormalOrder` 先由原料理与原酒水匹配建立 `Normal=2`，后续才只统计实际生效的厨具/价格/大份等动态料理 Tag，以及由游戏列入 modifier、且相对原配方新增的额外材料 Tag。原料理自身的基础 Tag 不属于 modifier，不能再计一次喜好或厌恶。
+
+`18078AFF0` 和 `18078B760` 附近的结果处理路径保留传入的原生评价：`Good` / `ExGood` 会按数据资产配置推进三阶段血量，`Normal` 会正常清理订单但不推进，`Bad` / `Exbad` 可能触发厨具锁定等处罚。具体扣血数值来自运行时字段，不写死在 Mod 或用户文档中。
 
 ### Mod 执行策略
 
 - 第二阶段必须满足当前稀客的料理/酒水点单、避开该稀客自身的厌恶 Tag，并在排除点单 Tag 后命中至少 `2` 个额外喜好 Tag，以预估标准评价达到 `ExGood`。该阶段不得使用幽幽子的固定厌恶 Tag 或等级合计门槛筛选候选；没有满足条件的完整料理/酒水组合时保持无执行计划并输出候选阶段诊断，不得降级为 `Good`、`Normal` 或其他较低评价方案。
-- 第三阶段 `progress` 模式必须保留原订单料理/酒水、避开挑战厌恶 Tag，并且等级合计至少为 `5`。等级合计至少为 `8` 的 `ExGood` 组合优先。
-- `refresh` 模式只允许已送达成品精确等于请求的原订单目标，且评价链完整。它可清理只能达到 `Normal` 的卡住订单，但不承诺推进挑战进度。
-- 原生评价前先用已精确匹配的 Completion 对象确认 `IsFullfilled`；未送齐只等待下一轮。评价定位优先重新验证 capture 的强身份、controller 所有权、已送达目标和回调，失败后才扫描 `GuestsManager` 当前集合并执行同一验证器。剧情版必须从最终选中的同一原生 order/controller 捕获记录复用 `SetManualControllerOrderInternal` 的 `onEvaluate`，通过该 controller 调用 `EvaulateManualOrder`，不能按相同请求身份借用另一对象的回调。重修版必须确认 `_50` / `_70` 原生进度回调后调用游戏 `EvaluateOrder()`，不复用剧情版手动评价路径。
-- controller、对应版本的评价回调、已送达目标或进度门槛任一不可确认时，Mod 暂停送达或评价，不消耗订单来伪造完成。
+- 剧情版三阶段使用 `story-level-sum` 模式；`progress` 保留原订单料理/酒水，并要求等级合计至少为 `5`，等级合计至少为 `8` 的 `ExGood` 组合优先。只能达到 `Normal` 时按精确原订单清理，不承诺推进。
+- 重修版稀客 `SpecialOrder` 使用 `retake-tag-order`。推荐必须满足料理/酒水点单，避开当前稀客厌恶，并至少额外命中一个当前稀客喜好，使保守评价从基础 `2` 达到 `Good>=3`；额外命中两个喜好的 `ExGood>=4` 方案优先。评价依据是最终料理与酒水的完整 Tag，不得把候选收窄到某个精确原料理/酒水，也不得要求 `expectedFoodModifierTags`。
+- 重修版精确 `NormalOrder` 使用 `retake-food-modifiers`。候选在搜索前只保留订单指定的原料理和原酒水，并将单独生成的无加料原菜合并回候选集；只从实际生效的动态料理 Tag 与相对原配方新增的额外材料 Tag 判断能否把 `Normal=2` 提升到 `Good` / `ExGood`。没有可推进 modifier、但无加料方案仍保持 `Normal=2` 时，使用该精确订单清理桌位；任何会让结果低于 `Normal=2` 的 modifier 组合都必须拒绝。
+- `NormalOrder` 开锅确认后锁存完整 execution target。评价前要求实际 `Sellable.Modifier` 加料 ID 与请求 extras 精确全等，并用 `Sellable.Tags.Except(RawTags)` 重建原生 `addedTags`，与锁存的 `expectedFoodModifierTags` 精确全等；库存变化不能替换已开锅目标，读取失败或不一致时暂停评价。`SpecialOrder` 不使用该 modifier-only 契约：门禁精确校验已锁定执行目标和实际加料，并确认两个请求 Tag 存在于实送料理/酒水的完整 Tag 数组；额外喜恶与最终档位由游戏原生评价计算。
+- 原生评价前先用已匹配的 Completion 对象确认 `IsFullfilled`；未送齐只等待下一轮。评价定位优先重新验证 capture 的强身份、controller 所有权、已送达目标和回调，失败后才扫描 `GuestsManager` 当前集合并执行同一验证器。剧情版必须从最终选中的同一原生 order/controller 捕获记录复用 `SetManualControllerOrderInternal` 的 `onEvaluate`，通过该 controller 调用 `EvaulateManualOrder`，不能按相同请求身份借用另一对象的回调。重修版必须确认 `_50` / `_70` 原生进度回调后调用游戏 `EvaluateOrder()`，不复用剧情版手动评价路径。
+- controller、对应版本的评价回调、已送达执行目标或订单形态对应的评价条件任一不可确认时，Mod 暂停送达或评价，不消耗订单来伪造完成。
 
 ## 其他挑战
 

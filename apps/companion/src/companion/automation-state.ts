@@ -12,6 +12,7 @@ import {
   resolveAutomationStepStartedAtMs,
   type AutomationRequestStage,
 } from '@/companion/automation-machine';
+import type { NormalOrderExecutionTarget } from '@/companion/types';
 
 export type AutomationStep =
   | 'idle'
@@ -68,6 +69,7 @@ export interface AutoFirstOrderState {
 
 export interface NormalAutoOrderState {
   orderKey: string;
+  executionTarget: NormalOrderExecutionTarget | null;
   prepared: boolean;
   cookingJobId: string;
   beverageHandled: boolean;
@@ -189,6 +191,7 @@ export function emptyAutoFirstOrderState(orderKey = '', now = 0): AutoFirstOrder
 export function emptyNormalAutoOrderState(orderKey: string, now = 0): NormalAutoOrderState {
   return {
     orderKey,
+    executionTarget: null,
     prepared: false,
     cookingJobId: '',
     beverageHandled: false,

@@ -1270,6 +1270,7 @@ internal static partial class RuntimeOrderPreparationService
             recipeId,
             request.ExtraIngredientIds,
             request.PredictedFoodTags,
+            request.ExpectedFoodModifierTags,
             request.WackyTargetFoodTags,
             request.SpecialBusinessRole,
             request.ExecutionMode,
@@ -1804,6 +1805,7 @@ internal static partial class RuntimeOrderPreparationService
         public int RecipeId { get; private init; } = -1;
         public IReadOnlyList<int> ExtraIngredientIds { get; private init; } = Array.Empty<int>();
         public IReadOnlyList<string> PredictedFoodTags { get; private init; } = Array.Empty<string>();
+        public IReadOnlyList<string> ExpectedFoodModifierTags { get; private init; } = Array.Empty<string>();
         public IReadOnlyList<string> WackyTargetFoodTags { get; private init; } = Array.Empty<string>();
         public string WackyTargetSignature { get; private init; } = "";
         public string SpecialBusinessRole { get; private init; } = "";
@@ -1843,6 +1845,7 @@ internal static partial class RuntimeOrderPreparationService
                 RecipeId = request.RecipeId,
                 ExtraIngredientIds = request.ExtraIngredientIds.ToList(),
                 PredictedFoodTags = WackyCookingCompetitionRuntimePolicy.NormalizeTags(request.PredictedFoodTags).ToList(),
+                ExpectedFoodModifierTags = WackyCookingCompetitionRuntimePolicy.NormalizeTags(request.ExpectedFoodModifierTags).ToList(),
                 WackyTargetFoodTags = wackyTargetFoodTags.ToList(),
                 WackyTargetSignature = wackyTargetSignature,
                 SpecialBusinessRole = request.SpecialBusinessRole,
@@ -1868,6 +1871,7 @@ internal static partial class RuntimeOrderPreparationService
             int recipeId,
             IReadOnlyList<int> extraIngredientIds,
             IReadOnlyList<string> predictedFoodTags,
+            IReadOnlyList<string> expectedFoodModifierTags,
             IReadOnlyList<string> wackyTargetFoodTags,
             string specialBusinessRole,
             string executionMode,
@@ -1897,6 +1901,7 @@ internal static partial class RuntimeOrderPreparationService
                 RecipeId = recipeId,
                 ExtraIngredientIds = extraIngredientIds.ToList(),
                 PredictedFoodTags = WackyCookingCompetitionRuntimePolicy.NormalizeTags(predictedFoodTags).ToList(),
+                ExpectedFoodModifierTags = WackyCookingCompetitionRuntimePolicy.NormalizeTags(expectedFoodModifierTags).ToList(),
                 WackyTargetFoodTags = normalizedWackyTargetFoodTags.ToList(),
                 WackyTargetSignature = wackyTargetSignature,
                 SpecialBusinessRole = specialBusinessRole,

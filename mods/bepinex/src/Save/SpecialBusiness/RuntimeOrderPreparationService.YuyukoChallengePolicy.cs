@@ -6,7 +6,7 @@ namespace MystiaStewardCompanion.Save;
 
 internal static partial class RuntimeOrderPreparationService
 {
-    private const int YuyukoPhase3ProgressEvaluationMinLevelSum = 5;
+    private const int YuyukoStoryPhase3ProgressEvaluationMinLevelSum = 5;
     private const string YuyukoNormalExecutionModeRefresh = "refresh";
     private static readonly Dictionary<string, DateTime> RecentYuyukoRuntimeDiagnostics = new(StringComparer.Ordinal);
     private static readonly TimeSpan YuyukoRuntimeDiagnosticThrottle = TimeSpan.FromSeconds(3);
@@ -47,6 +47,7 @@ internal static partial class RuntimeOrderPreparationService
                 $"recipeName: {request.RecipeName}",
                 $"extraIngredientIds: {SpecialBusinessDiagnostics.FormatIds(request.ExtraIngredientIds)}",
                 $"predictedFoodTags: {SpecialBusinessDiagnostics.FormatTags(request.PredictedFoodTags)}",
+                $"expectedFoodModifierTags: {SpecialBusinessDiagnostics.FormatTags(request.ExpectedFoodModifierTags)}",
                 $"beverageId: {request.BeverageId}",
                 $"beverageName: {request.BeverageName}",
                 $"executionMode: {NormalizeYuyukoNormalExecutionMode(request.ExecutionMode)}",
@@ -285,6 +286,7 @@ internal static partial class RuntimeOrderPreparationService
                         orderLabel,
                         sessionGeneration),
                     YuyukoPhase3EvaluationMode.RetakeNative => TryEvaluateRetakeYuyukoPhase3OrderIfReady(
+                        request,
                         evaluationOrder,
                         orderLabel,
                         allowControllerMissing,
@@ -565,6 +567,7 @@ internal static partial class RuntimeOrderPreparationService
     }
 
     private static RuntimeOrderEvaluationResult TryEvaluateRetakeYuyukoPhase3OrderIfReady(
+        OrderPreparationRequest request,
         RuntimeOrderMatch runtimeOrder,
         string orderLabel,
         bool allowControllerMissing,
@@ -630,6 +633,7 @@ internal static partial class RuntimeOrderPreparationService
         }
 
         var progressEvaluationValid = TryValidateYuyukoRetakePhase3ProgressEvaluation(
+            request,
             runtimeOrder,
             out var progressDiagnostic);
         if (!IsNightBusinessGenerationActive(sessionGeneration))
@@ -643,7 +647,7 @@ internal static partial class RuntimeOrderPreparationService
                 false,
                 false,
                 false,
-                "重修版幽幽子三阶段订单已送齐，但未确认当前 live 订单具备 _50/_70 原生进度回调，已暂停自动提交，避免订单被消耗但进度不涨。"
+                "重修版幽幽子三阶段订单已送齐，但送达目标不精确或未确认当前 live 订单具备 _50/_70 原生进度回调，已暂停自动提交，避免错误消耗订单。"
                 + $"诊断：{progressDiagnostic}。请提供 aggregate-mod.log。");
         }
 
@@ -680,7 +684,7 @@ internal static partial class RuntimeOrderPreparationService
             return false;
         }
 
-        if (!TryValidateYuyukoPhase3ServedProgressTarget(runtimeOrder, out var targetDiagnostic))
+        if (!TryValidateYuyukoStoryPhase3ServedProgressTarget(runtimeOrder, out var targetDiagnostic))
         {
             diagnostic = $"{targetDiagnostic}; manualCallback={manualProgressDetail}; scoreCallback={YuyukoChallengeEvaluationTracker.DescribeCallback(evaluationCallback)}; tracker={YuyukoChallengeEvaluationTracker.Status}";
             return false;
@@ -696,7 +700,10 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
-    private static bool TryValidateYuyukoRetakePhase3ProgressEvaluation(RuntimeOrderMatch runtimeOrder, out string diagnostic)
+    private static bool TryValidateYuyukoRetakePhase3ProgressEvaluation(
+        OrderPreparationRequest request,
+        RuntimeOrderMatch runtimeOrder,
+        out string diagnostic)
     {
         var evaluationCallback = ReadControllerCallback(runtimeOrder.Controller, "OverrideEvaluationCallback");
         if (evaluationCallback == null)
@@ -705,7 +712,7 @@ internal static partial class RuntimeOrderPreparationService
             return false;
         }
 
-        if (!TryValidateYuyukoPhase3ServedProgressTarget(runtimeOrder, out var targetDiagnostic))
+        if (!TryValidateYuyukoPhase3ServedExactTarget(request, runtimeOrder, out var targetDiagnostic))
         {
             diagnostic = $"{targetDiagnostic}; retakeCallback={YuyukoChallengeEvaluationTracker.DescribeCallback(evaluationCallback)}; tracker={YuyukoChallengeEvaluationTracker.Status}";
             return false;
@@ -828,9 +835,10 @@ internal static partial class RuntimeOrderPreparationService
         RuntimeOrderMatch runtimeOrder,
         out string diagnostic)
     {
-        var servedFood = runtimeOrder.Order == null ? null : ReadOrderServedFood(runtimeOrder.Order);
-        var servedBeverage = runtimeOrder.Order == null ? null : ReadOrderServedBeverage(runtimeOrder.Order);
-        if (servedFood == null || servedBeverage == null)
+        var order = runtimeOrder.Order;
+        var servedFood = order == null ? null : ReadOrderServedFood(order);
+        var servedBeverage = order == null ? null : ReadOrderServedBeverage(order);
+        if (order == null || servedFood == null || servedBeverage == null)
         {
             diagnostic = $"served target missing; food={SpecialBusinessDiagnostics.DescribeObject(servedFood)}; beverage={SpecialBusinessDiagnostics.DescribeObject(servedBeverage)}";
             return false;
@@ -840,6 +848,22 @@ internal static partial class RuntimeOrderPreparationService
         var servedBeverageId = ReadSellableId(servedBeverage);
         var foodMatched = request.FoodId >= 0 && servedFoodId == request.FoodId;
         var beverageMatched = request.BeverageId >= 0 && servedBeverageId == request.BeverageId;
+        var retakeContractMatched = true;
+        var retakeContractDiagnostic = "not required";
+        if (ResolveYuyukoPhase3EvaluationMode(request) == YuyukoPhase3EvaluationMode.RetakeNative)
+        {
+            retakeContractMatched = IsSpecialOrder(order)
+                ? TryValidateYuyukoRetakeSpecialOrderServedContract(
+                    request,
+                    servedFood,
+                    servedBeverage,
+                    out retakeContractDiagnostic)
+                : TryValidateYuyukoRetakeNormalOrderServedContract(
+                    request,
+                    servedFood,
+                    out retakeContractDiagnostic);
+        }
+
         var servedFoodLevel = ReadSellableLevel(servedFood);
         var servedBeverageLevel = ReadSellableLevel(servedBeverage);
         var levelSum = servedFoodLevel >= 0 && servedBeverageLevel >= 0
@@ -850,13 +874,295 @@ internal static partial class RuntimeOrderPreparationService
             + $"served={servedFoodId}/{servedBeverageId}; "
             + $"foodMatched={foodMatched}; "
             + $"beverageMatched={beverageMatched}; "
+            + $"retakeOrderType={(IsSpecialOrder(order) ? "SpecialOrder" : "NormalOrder")}; "
+            + $"retakeContractMatched={retakeContractMatched}; "
+            + $"retakeContract={retakeContractDiagnostic}; "
             + $"levelSum={levelSum}; "
             + $"food={DescribeSellableForYuyukoDiagnostics(servedFood)}; "
             + $"beverage={DescribeSellableForYuyukoDiagnostics(servedBeverage)}";
-        return foodMatched && beverageMatched;
+        return foodMatched && beverageMatched && retakeContractMatched;
     }
 
-    private static bool TryValidateYuyukoPhase3ServedProgressTarget(RuntimeOrderMatch runtimeOrder, out string diagnostic)
+    private static bool TryValidateYuyukoRetakeSpecialOrderServedContract(
+        OrderPreparationRequest request,
+        object servedFood,
+        object servedBeverage,
+        out string diagnostic)
+    {
+        if (!TryValidateYuyukoRetakeServedExtraIngredients(
+                request,
+                servedFood,
+                out var actualExtraIngredientIds,
+                out var ingredientDiagnostic))
+        {
+            diagnostic = ingredientDiagnostic;
+            return false;
+        }
+
+        if (!request.FoodTagId.HasValue)
+        {
+            diagnostic = "special order request FoodTagId is missing";
+            return false;
+        }
+
+        if (!request.BeverageTagId.HasValue)
+        {
+            diagnostic = "special order request BeverageTagId is missing";
+            return false;
+        }
+
+        if (!TryReadYuyukoSellableTagIds(
+                servedFood,
+                "food",
+                out var actualFoodTagIds,
+                out var foodTagDiagnostic))
+        {
+            diagnostic =
+                $"extraIngredients={SpecialBusinessDiagnostics.FormatIds(actualExtraIngredientIds)}; "
+                + foodTagDiagnostic;
+            return false;
+        }
+
+        if (!TryReadYuyukoSellableTagIds(
+                servedBeverage,
+                "beverage",
+                out var actualBeverageTagIds,
+                out var beverageTagDiagnostic))
+        {
+            diagnostic =
+                $"extraIngredients={SpecialBusinessDiagnostics.FormatIds(actualExtraIngredientIds)}; "
+                + beverageTagDiagnostic;
+            return false;
+        }
+
+        var foodTagMatched = actualFoodTagIds.Contains(request.FoodTagId.Value);
+        var beverageTagMatched = actualBeverageTagIds.Contains(request.BeverageTagId.Value);
+        diagnostic =
+            $"extraIngredients={SpecialBusinessDiagnostics.FormatIds(actualExtraIngredientIds)}; "
+            + $"requestedTags={request.FoodTagId.Value}/{request.BeverageTagId.Value}; "
+            + $"actualFoodTags={SpecialBusinessDiagnostics.FormatIds(actualFoodTagIds)}; "
+            + $"actualBeverageTags={SpecialBusinessDiagnostics.FormatIds(actualBeverageTagIds)}; "
+            + $"foodTagMatched={foodTagMatched}; "
+            + $"beverageTagMatched={beverageTagMatched}";
+        return foodTagMatched && beverageTagMatched;
+    }
+
+    private static bool TryValidateYuyukoRetakeNormalOrderServedContract(
+        OrderPreparationRequest request,
+        object servedFood,
+        out string diagnostic)
+    {
+        if (!TryValidateYuyukoRetakeServedExtraIngredients(
+                request,
+                servedFood,
+                out var actualExtraIngredientIds,
+                out var ingredientDiagnostic))
+        {
+            diagnostic = ingredientDiagnostic;
+            return false;
+        }
+
+        var expectedModifierTags = request.ExpectedFoodModifierTags
+            .Select(tag => FoodTags.NormalizeName(tag) ?? tag.Trim())
+            .Where(tag => !string.IsNullOrWhiteSpace(tag))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(tag => tag, StringComparer.Ordinal)
+            .ToArray();
+        if (expectedModifierTags.Length == 0)
+        {
+            diagnostic = "normal order ExpectedFoodModifierTags is empty";
+            return false;
+        }
+
+        if (!TryReadYuyukoNormalOrderFoodModifierTags(servedFood, out var actualModifierTags, out var tagDiagnostic))
+        {
+            diagnostic =
+                $"extra ingredients matched={SpecialBusinessDiagnostics.FormatIds(actualExtraIngredientIds)}; "
+                + $"actual modifier tags unreadable: {tagDiagnostic}";
+            return false;
+        }
+
+        if (!actualModifierTags.SequenceEqual(expectedModifierTags))
+        {
+            diagnostic =
+                $"modifier tags mismatch; expected={SpecialBusinessDiagnostics.FormatTags(expectedModifierTags)}; "
+                + $"actual={SpecialBusinessDiagnostics.FormatTags(actualModifierTags)}; "
+                + $"extraIngredients={SpecialBusinessDiagnostics.FormatIds(actualExtraIngredientIds)}";
+            return false;
+        }
+
+        diagnostic =
+            $"extraIngredients={SpecialBusinessDiagnostics.FormatIds(actualExtraIngredientIds)}; "
+            + $"modifierTags={SpecialBusinessDiagnostics.FormatTags(actualModifierTags)}";
+        return true;
+    }
+
+    private static bool TryValidateYuyukoRetakeServedExtraIngredients(
+        OrderPreparationRequest request,
+        object servedFood,
+        out IReadOnlyList<int> actualExtraIngredientIds,
+        out string diagnostic)
+    {
+        actualExtraIngredientIds = Array.Empty<int>();
+        if (!TryReadExactMemberValue(
+                servedFood,
+                out var rawModifier,
+                out var modifierReadDiagnostic,
+                "Modifier")
+            || rawModifier == null)
+        {
+            diagnostic = $"actual extra ingredients unreadable; member={modifierReadDiagnostic}";
+            return false;
+        }
+
+        if (!RuntimeConcreteCollectionReader.TryReadIntArray(
+                rawModifier,
+                out var rawActualExtraIngredientIds,
+                out var modifierArrayFailure))
+        {
+            diagnostic = $"actual extra ingredients array unreadable: {modifierArrayFailure}";
+            return false;
+        }
+
+        if (rawActualExtraIngredientIds.Any(id => id < 0)
+            || rawActualExtraIngredientIds.Distinct().Count() != rawActualExtraIngredientIds.Count)
+        {
+            diagnostic =
+                $"actual extra ingredients contain invalid or duplicate ids: "
+                + $"{SpecialBusinessDiagnostics.FormatIds(rawActualExtraIngredientIds)}";
+            return false;
+        }
+
+        if (request.ExtraIngredientIds.Any(id => id < 0)
+            || request.ExtraIngredientIds.Distinct().Count() != request.ExtraIngredientIds.Count)
+        {
+            diagnostic =
+                $"requested extra ingredients contain invalid or duplicate ids: "
+                + $"{SpecialBusinessDiagnostics.FormatIds(request.ExtraIngredientIds)}";
+            return false;
+        }
+
+        var expectedExtraIngredientIds = request.ExtraIngredientIds
+            .OrderBy(id => id)
+            .ToArray();
+        var normalizedActualExtraIngredientIds = rawActualExtraIngredientIds
+            .OrderBy(id => id)
+            .ToArray();
+        if (!normalizedActualExtraIngredientIds.SequenceEqual(expectedExtraIngredientIds))
+        {
+            diagnostic =
+                $"extra ingredients mismatch; expected={SpecialBusinessDiagnostics.FormatIds(expectedExtraIngredientIds)}; "
+                + $"actual={SpecialBusinessDiagnostics.FormatIds(normalizedActualExtraIngredientIds)}";
+            return false;
+        }
+
+        actualExtraIngredientIds = normalizedActualExtraIngredientIds;
+        diagnostic = $"extraIngredients={SpecialBusinessDiagnostics.FormatIds(actualExtraIngredientIds)}";
+        return true;
+    }
+
+    private static bool TryReadYuyukoSellableTagIds(
+        object sellable,
+        string sellableLabel,
+        out IReadOnlyList<int> tagIds,
+        out string diagnostic)
+    {
+        tagIds = Array.Empty<int>();
+        if (!TryReadExactMemberValue(sellable, out var rawTags, out var readDiagnostic, "Tags")
+            || rawTags == null)
+        {
+            diagnostic = $"{sellableLabel} Tags unreadable; member={readDiagnostic}";
+            return false;
+        }
+
+        if (!RuntimeConcreteCollectionReader.TryReadIntArray(
+                rawTags,
+                out var actualTagIds,
+                out var arrayFailure))
+        {
+            diagnostic = $"{sellableLabel} Tags array unreadable: {arrayFailure}";
+            return false;
+        }
+
+        tagIds = actualTagIds;
+        diagnostic = $"{sellableLabel}TagIds={SpecialBusinessDiagnostics.FormatIds(tagIds)}";
+        return true;
+    }
+
+    private static bool TryReadYuyukoNormalOrderFoodModifierTags(
+        object servedFood,
+        out IReadOnlyList<string> modifierTags,
+        out string diagnostic)
+    {
+        modifierTags = Array.Empty<string>();
+        diagnostic = "";
+        if (!TryReadExactMemberValue(servedFood, out var rawFinalTags, out var finalReadDiagnostic, "Tags")
+            || rawFinalTags == null)
+        {
+            diagnostic = $"Tags unreadable; member={finalReadDiagnostic}";
+            return false;
+        }
+
+        if (!RuntimeConcreteCollectionReader.TryReadIntArray(
+                rawFinalTags,
+                out var finalTagIds,
+                out var finalArrayFailure))
+        {
+            diagnostic = $"Tags array unreadable: {finalArrayFailure}";
+            return false;
+        }
+
+        if (!TryReadExactMemberValue(servedFood, out var rawBaseTags, out var baseReadDiagnostic, "RawTags")
+            || rawBaseTags == null)
+        {
+            diagnostic = $"RawTags unreadable; member={baseReadDiagnostic}";
+            return false;
+        }
+
+        if (!RuntimeConcreteCollectionReader.TryReadIntArray(
+                rawBaseTags,
+                out var baseTagIds,
+                out var baseArrayFailure))
+        {
+            diagnostic = $"RawTags array unreadable: {baseArrayFailure}";
+            return false;
+        }
+
+        var modifierTagIds = finalTagIds
+            .Except(baseTagIds)
+            .Distinct()
+            .OrderBy(id => id)
+            .ToArray();
+        var normalizedTags = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var tagId in modifierTagIds)
+        {
+            if (!TryReadFoodTagName(tagId, out var tagName))
+            {
+                diagnostic = $"GetFoodTag({tagId}) returned no readable name";
+                return false;
+            }
+
+            var normalized = FoodTags.NormalizeName(tagName) ?? tagName.Trim();
+            if (string.IsNullOrWhiteSpace(normalized))
+            {
+                diagnostic = $"GetFoodTag({tagId}) normalized to an empty name";
+                return false;
+            }
+
+            normalizedTags.Add(normalized);
+        }
+
+        modifierTags = normalizedTags
+            .OrderBy(tag => tag, StringComparer.Ordinal)
+            .ToArray();
+        diagnostic =
+            $"finalTagIds={SpecialBusinessDiagnostics.FormatIds(finalTagIds)}; "
+            + $"rawTagIds={SpecialBusinessDiagnostics.FormatIds(baseTagIds)}; "
+            + $"modifierTagIds={SpecialBusinessDiagnostics.FormatIds(modifierTagIds)}";
+        return true;
+    }
+
+    private static bool TryValidateYuyukoStoryPhase3ServedProgressTarget(RuntimeOrderMatch runtimeOrder, out string diagnostic)
     {
         var servedFood = runtimeOrder.Order == null ? null : ReadOrderServedFood(runtimeOrder.Order);
         var servedBeverage = runtimeOrder.Order == null ? null : ReadOrderServedBeverage(runtimeOrder.Order);
@@ -875,13 +1181,13 @@ internal static partial class RuntimeOrderPreparationService
         }
 
         var levelSum = servedFoodLevel + servedBeverageLevel;
-        if (levelSum < YuyukoPhase3ProgressEvaluationMinLevelSum)
+        if (levelSum < YuyukoStoryPhase3ProgressEvaluationMinLevelSum)
         {
-            diagnostic = $"served target level sum below progress threshold; levelSum={levelSum}; threshold={YuyukoPhase3ProgressEvaluationMinLevelSum}; food={DescribeSellableForYuyukoDiagnostics(servedFood)}; beverage={DescribeSellableForYuyukoDiagnostics(servedBeverage)}";
+            diagnostic = $"served target level sum below story progress threshold; levelSum={levelSum}; threshold={YuyukoStoryPhase3ProgressEvaluationMinLevelSum}; food={DescribeSellableForYuyukoDiagnostics(servedFood)}; beverage={DescribeSellableForYuyukoDiagnostics(servedBeverage)}";
             return false;
         }
 
-        diagnostic = $"served target ready; levelSum={levelSum}; threshold={YuyukoPhase3ProgressEvaluationMinLevelSum}; food={DescribeSellableForYuyukoDiagnostics(servedFood)}; beverage={DescribeSellableForYuyukoDiagnostics(servedBeverage)}";
+        diagnostic = $"story served target ready; levelSum={levelSum}; threshold={YuyukoStoryPhase3ProgressEvaluationMinLevelSum}; food={DescribeSellableForYuyukoDiagnostics(servedFood)}; beverage={DescribeSellableForYuyukoDiagnostics(servedBeverage)}";
         return true;
     }
 
@@ -951,6 +1257,7 @@ internal static partial class RuntimeOrderPreparationService
                 $"normalOrderTargetInvariant: {normalOrderTargetInvariant.Diagnostic}",
                 $"extraIngredientIds: {SpecialBusinessDiagnostics.FormatIds(request.ExtraIngredientIds)}",
                 $"predictedFoodTags: {SpecialBusinessDiagnostics.FormatTags(request.PredictedFoodTags)}",
+                $"expectedFoodModifierTags: {SpecialBusinessDiagnostics.FormatTags(request.ExpectedFoodModifierTags)}",
                 $"executionReason: {request.ExecutionReason}",
                 $"controller: {SpecialBusinessDiagnostics.DescribeObject(runtimeOrder.Controller)}",
                 $"order: {SpecialBusinessDiagnostics.DescribeObject(runtimeOrder.Order)}",

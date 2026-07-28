@@ -1,13 +1,17 @@
 import type { SpecialBusinessContext } from '@/companion/types';
 import {
   isPhaseThreeContext,
+  RETAKE_YUYUKO_CHALLENGE_TYPE,
+  STORY_YUYUKO_CHALLENGE_TYPE,
   YUYUKO_CHALLENGE_TYPES,
 } from '@/companion/domain/special-business/rules/shared';
-import type {
-  BeverageCandidate,
-  FoodCandidate,
-  RareOrderRecommendationPlan,
+import {
+  type BeverageCandidate,
+  type FoodCandidate,
+  type RareOrderRecommendationPlan,
 } from '@/recommendation-engine';
+import type { YuyukoProgressEvaluationMode } from '@/companion/domain/special-business/rules/types';
+import { evaluateYuyukoTagOrderPair } from '@/companion/domain/special-business/yuyuko-positive-spell';
 import { cappedInventoryQuantityRank } from '@/lib/inventory-quantity';
 
 export const YUYUKO_GOOD_EVALUATION_SCORE = 3;
@@ -15,8 +19,38 @@ export const YUYUKO_EXGOOD_EVALUATION_SCORE = 4;
 export const YUYUKO_GOOD_LEVEL_SUM = 5;
 export const YUYUKO_EXGOOD_LEVEL_SUM = 8;
 
-const YUYUKO_CHALLENGE_FOOD_HATE_TAGS = ['素', '小巧', '清淡'] as const;
-const YUYUKO_CHALLENGE_FOOD_HATE_TAG_SET = new Set<string>(YUYUKO_CHALLENGE_FOOD_HATE_TAGS);
+const YUYUKO_NORMAL_EVALUATION_SCORE = 2;
+
+export type YuyukoNormalOrderEvaluationMode =
+  | 'story-level-sum'
+  | 'retake-food-modifiers'
+  | 'unsupported';
+
+export interface YuyukoNormalOrderEvaluation {
+  mode: YuyukoNormalOrderEvaluationMode;
+  evaluationScore: number;
+  levelSum: number;
+  effectiveModifierTags: string[];
+  positiveModifierTags: string[];
+  negativeModifierTags: string[];
+}
+
+export interface YuyukoNormalOrderModifierPreferences {
+  positiveTags: readonly string[];
+  negativeTags: readonly string[];
+}
+
+export interface YuyukoRareOrderEvaluation {
+  mode: YuyukoProgressEvaluationMode;
+  evaluationScore: number;
+  levelSum: number;
+  baseDemandScore: number;
+  extraPreferenceScore: number;
+  foodExtraPreferenceTags: string[];
+  beverageExtraPreferenceTags: string[];
+  negativeTags: string[];
+  canProgress: boolean;
+}
 
 export function isYuyukoPhaseThreeContext(
   specialBusiness: SpecialBusinessContext | null | undefined,
@@ -26,18 +60,135 @@ export function isYuyukoPhaseThreeContext(
     && isPhaseThreeContext(specialBusiness.phase);
 }
 
-export function estimateYuyukoEvaluationScore(
+/**
+ * 估算幽幽子第三阶段普通形态订单的原生评价。
+ *
+ * 剧情版回调只读取料理和酒水等级和；重修版分身先取得 Normal，
+ * 再只用实际生效的料理修饰 Tag 按幽幽子偏好逐项增减评价。
+ */
+export function evaluateYuyukoNormalOrderPair(
+  challengeType: string,
   food: FoodCandidate | null | undefined,
   beverage: BeverageCandidate | null | undefined,
-): number {
-  if (!food || !beverage) return 0;
-  if (getYuyukoChallengeNegativeTags(food).length > 0) return 0;
-
+  modifierPreferences: YuyukoNormalOrderModifierPreferences | null,
+): YuyukoNormalOrderEvaluation {
   const levelSum = getYuyukoLevelSum(food, beverage);
-  if (levelSum >= YUYUKO_EXGOOD_LEVEL_SUM) return YUYUKO_EXGOOD_EVALUATION_SCORE;
-  if (levelSum >= YUYUKO_GOOD_LEVEL_SUM) return YUYUKO_GOOD_EVALUATION_SCORE;
-  if (levelSum >= 2) return 2;
-  return levelSum > 0 ? 1 : 0;
+  if (challengeType === STORY_YUYUKO_CHALLENGE_TYPE) {
+    return {
+      mode: 'story-level-sum',
+      evaluationScore: food && beverage ? estimateYuyukoStoryLevelEvaluationScore(levelSum) : 0,
+      levelSum,
+      effectiveModifierTags: [],
+      positiveModifierTags: [],
+      negativeModifierTags: [],
+    };
+  }
+
+  if (challengeType === RETAKE_YUYUKO_CHALLENGE_TYPE) {
+    if (!food || !beverage || !modifierPreferences) {
+      return {
+        mode: modifierPreferences ? 'retake-food-modifiers' : 'unsupported',
+        evaluationScore: 0,
+        levelSum,
+        effectiveModifierTags: [],
+        positiveModifierTags: [],
+        negativeModifierTags: [],
+      };
+    }
+
+    const effectiveModifierTags = getEffectiveYuyukoNormalOrderModifierTags(food);
+    const positiveModifierTags = intersectTags(
+      effectiveModifierTags,
+      modifierPreferences.positiveTags,
+    );
+    const negativeModifierTags = intersectTags(
+      effectiveModifierTags,
+      modifierPreferences.negativeTags,
+    );
+    return {
+      mode: 'retake-food-modifiers',
+      evaluationScore: clampYuyukoEvaluationScore(
+        YUYUKO_NORMAL_EVALUATION_SCORE
+          + positiveModifierTags.length
+          - negativeModifierTags.length,
+      ),
+      levelSum,
+      effectiveModifierTags,
+      positiveModifierTags,
+      negativeModifierTags,
+    };
+  }
+
+  return {
+    mode: 'unsupported',
+    evaluationScore: 0,
+    levelSum,
+    effectiveModifierTags: [],
+    positiveModifierTags: [],
+    negativeModifierTags: [],
+  };
+}
+
+export function evaluateYuyukoRareOrderPair(
+  mode: YuyukoProgressEvaluationMode,
+  food: FoodCandidate | null | undefined,
+  beverage: BeverageCandidate | null | undefined,
+  demand: RareOrderRecommendationPlan['demand'],
+): YuyukoRareOrderEvaluation {
+  const levelSum = getYuyukoLevelSum(food, beverage);
+  const baseDemandScore = Number(food?.meetsRequiredFood === true)
+    + Number(beverage?.meetsRequiredBeverage === true);
+  if (mode === 'story-level-sum') {
+    const evaluationScore = food && beverage
+      ? estimateYuyukoStoryLevelEvaluationScore(levelSum)
+      : 0;
+    return {
+      mode,
+      evaluationScore,
+      levelSum,
+      baseDemandScore,
+      extraPreferenceScore: 0,
+      foodExtraPreferenceTags: [],
+      beverageExtraPreferenceTags: [],
+      negativeTags: [],
+      canProgress: baseDemandScore === 2
+        && evaluationScore >= YUYUKO_GOOD_EVALUATION_SCORE,
+    };
+  }
+
+  if (mode === 'retake-tag-order') {
+    const tagEvaluation = evaluateYuyukoTagOrderPair(food, beverage, demand);
+    const evaluationScore = clampYuyukoEvaluationScore(
+      tagEvaluation.evaluationScore - tagEvaluation.negativeTags.length,
+    );
+    return {
+      mode,
+      evaluationScore,
+      levelSum,
+      baseDemandScore: tagEvaluation.baseDemandScore,
+      extraPreferenceScore: tagEvaluation.extraPreferenceScore,
+      foodExtraPreferenceTags: tagEvaluation.foodExtraPreferenceTags,
+      beverageExtraPreferenceTags: tagEvaluation.beverageExtraPreferenceTags,
+      negativeTags: tagEvaluation.negativeTags,
+      canProgress: food != null
+        && beverage != null
+        && tagEvaluation.baseDemandScore === 2
+        && tagEvaluation.negativeTags.length === 0
+        && evaluationScore >= YUYUKO_GOOD_EVALUATION_SCORE,
+    };
+  }
+
+  return {
+    mode,
+    evaluationScore: 0,
+    levelSum,
+    baseDemandScore,
+    extraPreferenceScore: 0,
+    foodExtraPreferenceTags: [],
+    beverageExtraPreferenceTags: [],
+    negativeTags: [],
+    canProgress: false,
+  };
 }
 
 export function getYuyukoLevelSum(
@@ -47,60 +198,31 @@ export function getYuyukoLevelSum(
   return Math.max(0, food?.recipe.level ?? 0) + Math.max(0, beverage?.beverage.level ?? 0);
 }
 
-export function getYuyukoPreferenceScore(
-  food: FoodCandidate | null | undefined,
-  beverage: BeverageCandidate | null | undefined,
-): number {
-  return (food?.matchedPositiveTags.length ?? 0) + (beverage?.matchedTags.length ?? 0);
-}
-
-export function isYuyukoProgressPair(
-  food: FoodCandidate | null | undefined,
-  beverage: BeverageCandidate | null | undefined,
-): boolean {
-  if (!food || !beverage) return false;
-  if (!food.meetsRequiredFood || !beverage.meetsRequiredBeverage) return false;
-  return isYuyukoProgressEvaluationPair(food, beverage);
-}
-
-export function isYuyukoProgressEvaluationPair(
-  food: FoodCandidate | null | undefined,
-  beverage: BeverageCandidate | null | undefined,
-): boolean {
-  if (!food || !beverage) return false;
-  if (getYuyukoChallengeNegativeTags(food).length > 0) return false;
-
-  return estimateYuyukoEvaluationScore(food, beverage) >= YUYUKO_GOOD_EVALUATION_SCORE;
-}
-
 export function isYuyukoProgressPlan(
   plan: RareOrderRecommendationPlan,
+  mode: YuyukoProgressEvaluationMode,
 ): boolean {
   if (plan.bucket === 'blocked') return false;
-  return isYuyukoProgressPair(plan.food, plan.beverage);
+  return evaluateYuyukoRareOrderPair(mode, plan.food, plan.beverage, plan.demand).canProgress;
 }
 
 export function scoreYuyukoPair(
+  mode: YuyukoProgressEvaluationMode,
   food: FoodCandidate,
   beverage: BeverageCandidate,
+  demand: RareOrderRecommendationPlan['demand'],
 ): number {
-  const negativeTags = getYuyukoChallengeNegativeTags(food);
-  const evaluationScore = estimateYuyukoEvaluationScore(food, beverage);
-  const levelSum = getYuyukoLevelSum(food, beverage);
-  const progressReady = isYuyukoProgressPair(food, beverage) ? 1 : 0;
-  const exGoodReady = evaluationScore >= YUYUKO_EXGOOD_EVALUATION_SCORE ? 1 : 0;
-  const baseDemandScore = getYuyukoBaseDemandScore(food, beverage);
-  const preferenceScore = getYuyukoPreferenceScore(food, beverage);
+  const evaluation = evaluateYuyukoRareOrderPair(mode, food, beverage, demand);
+  const exGoodReady = evaluation.evaluationScore >= YUYUKO_EXGOOD_EVALUATION_SCORE ? 1 : 0;
 
-  return progressReady * 1_000_000_000
+  return Number(evaluation.canProgress) * 1_000_000_000
     + exGoodReady * 100_000_000
-    + evaluationScore * 10_000_000
-    + levelSum * 1_000_000
-    + baseDemandScore * 100_000
-    + preferenceScore * 10_000
+    + evaluation.evaluationScore * 10_000_000
+    + (mode === 'story-level-sum' ? evaluation.levelSum : evaluation.extraPreferenceScore) * 1_000_000
+    + evaluation.baseDemandScore * 100_000
     + Math.min(food.recipe.price + beverage.beverage.price, 999) * 10
     + cappedInventoryQuantityRank(beverage.ownedQuantity, 99)
-    - negativeTags.length * 100_000_000
+    - evaluation.negativeTags.length * 100_000_000
     - Math.ceil(food.resourcePressure * 100)
     - food.extraIngredients.length;
 }
@@ -108,27 +230,30 @@ export function scoreYuyukoPair(
 export function compareYuyukoPlans(
   left: RareOrderRecommendationPlan,
   right: RareOrderRecommendationPlan,
+  mode: YuyukoProgressEvaluationMode,
 ): number {
-  const leftScore = scoreYuyukoPlan(left);
-  const rightScore = scoreYuyukoPlan(right);
+  const leftScore = scoreYuyukoPlan(left, mode);
+  const rightScore = scoreYuyukoPlan(right, mode);
   if (leftScore !== rightScore) return rightScore - leftScore;
   return left.estimatedPrice - right.estimatedPrice;
 }
 
 export function buildYuyukoPlanReason(
   plan: RareOrderRecommendationPlan,
+  mode: YuyukoProgressEvaluationMode,
 ): string {
-  return buildYuyukoReasonCore(plan.food, plan.beverage, '幽幽子三阶段');
+  return buildYuyukoReasonCore(plan, mode, '幽幽子三阶段');
 }
 
 export function buildYuyukoProgressBlockedMessages(
   plans: readonly RareOrderRecommendationPlan[],
+  mode: YuyukoProgressEvaluationMode,
   limit = 3,
 ): string[] {
   const messages = [...plans]
-    .filter((plan) => !isYuyukoProgressPlan(plan))
-    .sort((left, right) => compareYuyukoPlans(left, right))
-    .map(buildYuyukoProgressBlockReason)
+    .filter((plan) => !isYuyukoProgressPlan(plan, mode))
+    .sort((left, right) => compareYuyukoPlans(left, right, mode))
+    .map((plan) => buildYuyukoProgressBlockReason(plan, mode))
     .filter((message): message is string => Boolean(message));
   const uniqueMessages = uniqueTags(messages);
   if (uniqueMessages.length > 0) return uniqueMessages.slice(0, Math.max(1, limit));
@@ -138,44 +263,38 @@ export function buildYuyukoProgressBlockedMessages(
 
 export function buildYuyukoProgressBlockReason(
   plan: RareOrderRecommendationPlan,
+  mode: YuyukoProgressEvaluationMode,
 ): string | null {
-  if (isYuyukoProgressPlan(plan)) return null;
-  const details = buildYuyukoProgressBlockDetails(plan);
+  if (isYuyukoProgressPlan(plan, mode)) return null;
+  const details = buildYuyukoProgressBlockDetails(plan, mode);
   if (details.length === 0) return null;
   return `${formatYuyukoPlanTarget(plan)}：${details.join('；')}`;
 }
 
-export function buildYuyukoTargetReason(
-  food: FoodCandidate,
-  beverage: BeverageCandidate,
-): string {
-  return buildYuyukoReasonCore(food, beverage, '幽幽子三阶段执行方案');
-}
-
-export function getYuyukoChallengeNegativeTags(food: FoodCandidate | null | undefined): string[] {
-  if (!food) return [];
-  return uniqueTags([
-    ...food.matchedNegativeTags,
-    ...food.activeTags.filter((tag) => YUYUKO_CHALLENGE_FOOD_HATE_TAG_SET.has(tag)),
-  ]);
-}
-
-function scoreYuyukoPlan(plan: RareOrderRecommendationPlan): number {
+function scoreYuyukoPlan(
+  plan: RareOrderRecommendationPlan,
+  mode: YuyukoProgressEvaluationMode,
+): number {
   if (!plan.food || !plan.beverage || plan.bucket === 'blocked') return Number.NEGATIVE_INFINITY;
-  return scoreYuyukoPair(plan.food, plan.beverage);
+  return scoreYuyukoPair(mode, plan.food, plan.beverage, plan.demand);
 }
 
-function buildYuyukoProgressBlockDetails(plan: RareOrderRecommendationPlan): string[] {
+function buildYuyukoProgressBlockDetails(
+  plan: RareOrderRecommendationPlan,
+  mode: YuyukoProgressEvaluationMode,
+): string[] {
   const food = plan.food;
   const beverage = plan.beverage;
+  const evaluation = evaluateYuyukoRareOrderPair(mode, food, beverage, plan.demand);
   const details: string[] = [];
 
   if (!food) {
     details.push('缺少料理候选');
   } else {
     if (!food.meetsRequiredFood) details.push(`料理未满足点单 ${plan.demand.requiredFoodTag || '未知'}`);
-    const negativeTags = getYuyukoChallengeNegativeTags(food);
-    if (negativeTags.length > 0) details.push(`包含幽幽子厌恶 Tag ${negativeTags.join('、')}`);
+    if (evaluation.negativeTags.length > 0) {
+      details.push(`包含当前稀客厌恶 Tag ${evaluation.negativeTags.join('、')}`);
+    }
   }
 
   if (!beverage) {
@@ -185,12 +304,11 @@ function buildYuyukoProgressBlockDetails(plan: RareOrderRecommendationPlan): str
   }
 
   if (food && beverage) {
-    const evaluationScore = estimateYuyukoEvaluationScore(food, beverage);
-    if (evaluationScore < YUYUKO_GOOD_EVALUATION_SCORE) {
-      details.push(
-        `预计${formatYuyukoEvaluationScore(evaluationScore)}，未达满意（Good）/完美（ExGood）`
-        + `（等级合计 ${getYuyukoLevelSum(food, beverage)}，喜好命中 ${getYuyukoPreferenceScore(food, beverage)}）`,
-      );
+    if (evaluation.evaluationScore < YUYUKO_GOOD_EVALUATION_SCORE) {
+      const evidence = mode === 'story-level-sum'
+        ? `等级合计 ${evaluation.levelSum}`
+        : `点单基础 ${evaluation.baseDemandScore}，额外喜好 ${evaluation.extraPreferenceScore}`;
+      details.push(`预计${formatYuyukoEvaluationScore(evaluation.evaluationScore)}，未达满意（Good）/完美（ExGood）（${evidence}）`);
     }
   }
 
@@ -223,39 +341,63 @@ function formatYuyukoEvaluationScore(score: number): string {
   return '未形成可推进评价';
 }
 
-function getYuyukoBaseDemandScore(
-  food: FoodCandidate | null | undefined,
-  beverage: BeverageCandidate | null | undefined,
-): number {
-  return (food?.meetsRequiredFood ? 1 : 0) + (beverage?.meetsRequiredBeverage ? 1 : 0);
-}
-
 function buildYuyukoReasonCore(
-  food: FoodCandidate | null | undefined,
-  beverage: BeverageCandidate | null | undefined,
+  plan: RareOrderRecommendationPlan,
+  mode: YuyukoProgressEvaluationMode,
   prefix: string,
-  thresholdLabel = '推进阈值',
 ): string {
-  const evaluationScore = estimateYuyukoEvaluationScore(food, beverage);
-  const evaluationText = evaluationScore >= YUYUKO_EXGOOD_EVALUATION_SCORE
+  const evaluation = evaluateYuyukoRareOrderPair(mode, plan.food, plan.beverage, plan.demand);
+  const evaluationText = evaluation.evaluationScore >= YUYUKO_EXGOOD_EVALUATION_SCORE
     ? '完美（ExGood）'
-    : evaluationScore >= YUYUKO_GOOD_EVALUATION_SCORE
+    : evaluation.evaluationScore >= YUYUKO_GOOD_EVALUATION_SCORE
       ? '满意（Good）'
       : '未达稳定推进评价';
-  const foodLevel = food?.recipe.level ?? 0;
-  const beverageLevel = beverage?.beverage.level ?? 0;
-  const preferenceScore = getYuyukoPreferenceScore(food, beverage);
-  const negativeTags = getYuyukoChallengeNegativeTags(food);
+  if (mode === 'story-level-sum') {
+    return [
+      `${prefix}剧情版：预计 ${evaluationText}`,
+      `推进阈值等级合计 >= ${YUYUKO_GOOD_LEVEL_SUM}`,
+      `料理 Lv.${plan.food?.recipe.level ?? 0}`,
+      `酒水 Lv.${plan.beverage?.beverage.level ?? 0}`,
+      `等级合计 ${evaluation.levelSum}`,
+    ].join('，');
+  }
 
+  const preferenceTags = [
+    ...evaluation.foodExtraPreferenceTags,
+    ...evaluation.beverageExtraPreferenceTags,
+  ];
   return [
-    `${prefix}：预计 ${evaluationText}`,
-    `${thresholdLabel} 等级合计 >= ${YUYUKO_GOOD_LEVEL_SUM}`,
-    `料理 Lv.${foodLevel}`,
-    `酒水 Lv.${beverageLevel}`,
-    `等级合计 ${foodLevel + beverageLevel}`,
-    `喜好命中 ${preferenceScore}（排序参考）`,
-    negativeTags.length > 0 ? `厌恶 ${negativeTags.join('、')}` : '无厌恶 Tag',
+    `${prefix}重修版：预计 ${evaluationText}`,
+    `点单基础 ${evaluation.baseDemandScore}`,
+    `额外喜好 ${evaluation.extraPreferenceScore}${preferenceTags.length > 0 ? `（${preferenceTags.join('、')}）` : ''}`,
+    evaluation.negativeTags.length > 0
+      ? `当前稀客厌恶 ${evaluation.negativeTags.join('、')}`
+      : '无当前稀客厌恶 Tag',
   ].join('，');
+}
+
+function estimateYuyukoStoryLevelEvaluationScore(levelSum: number): number {
+  if (levelSum >= YUYUKO_EXGOOD_LEVEL_SUM) return YUYUKO_EXGOOD_EVALUATION_SCORE;
+  if (levelSum >= YUYUKO_GOOD_LEVEL_SUM) return YUYUKO_GOOD_EVALUATION_SCORE;
+  if (levelSum >= 2) return YUYUKO_NORMAL_EVALUATION_SCORE;
+  return levelSum > 0 ? 1 : 0;
+}
+
+function getEffectiveYuyukoNormalOrderModifierTags(food: FoodCandidate): string[] {
+  const baseTags = new Set(food.recipe.positiveTags);
+  return uniqueTags([
+    food.recipe.cooker,
+    ...food.activeTags,
+  ]).filter((tag) => !baseTags.has(tag));
+}
+
+function intersectTags(source: readonly string[], target: readonly string[]): string[] {
+  const targetSet = new Set(target);
+  return source.filter((tag) => targetSet.has(tag));
+}
+
+function clampYuyukoEvaluationScore(score: number): number {
+  return Math.max(0, Math.min(YUYUKO_EXGOOD_EVALUATION_SCORE, score));
 }
 
 function uniqueTags(tags: string[]): string[] {

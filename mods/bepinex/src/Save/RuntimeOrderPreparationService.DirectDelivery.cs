@@ -1507,6 +1507,7 @@ internal static partial class RuntimeOrderPreparationService
             RecipeName = target.FoodName,
             ExtraIngredientIds = target.ExtraIngredientIds,
             PredictedFoodTags = target.PredictedFoodTags,
+            ExpectedFoodModifierTags = target.ExpectedFoodModifierTags,
             WackyTargetFoodTags = target.WackyTargetFoodTags,
             ExecutionMode = target.ExecutionMode,
             ExecutionReason = target.ExecutionReason,

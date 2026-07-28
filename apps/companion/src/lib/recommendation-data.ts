@@ -16,11 +16,20 @@ export interface RecommendationDataSet {
   beverages: BeverageCatalogItem[];
   normalCustomers: NormalCustomerCatalogItem[];
   rareCustomers: RareCustomerCatalogItem[];
+  rareCustomerProfiles: RareCustomerPreferenceProfile[];
   foodTagIdMap: Record<string, string>;
   beverageTagIdMap: Record<string, string>;
   tagPriorityRules: RuntimeTagPriorityRule[];
   source: 'runtime' | 'unavailable';
   status: string;
+}
+
+export interface RareCustomerPreferenceProfile {
+  id: number;
+  name: string;
+  positiveTags: string[];
+  negativeTags: string[];
+  beverageTags: string[];
 }
 
 export interface RuntimeTagPriorityRule {
@@ -35,6 +44,7 @@ export const DEFAULT_RECOMMENDATION_DATA: RecommendationDataSet = {
   beverages: [],
   normalCustomers: [],
   rareCustomers: [],
+  rareCustomerProfiles: [],
   foodTagIdMap: {},
   beverageTagIdMap: {},
   tagPriorityRules: [],
@@ -76,6 +86,9 @@ export function buildRecommendationDataSet(
   const rareCustomers = runtimeData.rareCustomers
     .map(normalizeRuntimeRareCustomerData)
     .filter((item): item is RareCustomerCatalogItem => item !== null);
+  const rareCustomerProfiles = runtimeData.rareCustomers
+    .map(normalizeRuntimeRareCustomerProfile)
+    .filter((item): item is RareCustomerPreferenceProfile => item !== null);
 
   if (
     recipes.length === 0
@@ -96,6 +109,7 @@ export function buildRecommendationDataSet(
     beverages,
     normalCustomers,
     rareCustomers,
+    rareCustomerProfiles,
     foodTagIdMap: normalizeStringRecord(runtimeData.foodTagIdMap),
     beverageTagIdMap: normalizeStringRecord(runtimeData.beverageTagIdMap),
     tagPriorityRules: normalizeRuntimeTagPriorityRules(runtimeData.tagPriorityRules),
@@ -160,6 +174,13 @@ export function buildRecommendationDataSignature(data: RecommendationDataSet): s
       stableStringArraySignature(customer.positiveTags),
       stableStringArraySignature(customer.negativeTags),
       stableStringArraySignature(customer.beverageTags),
+    ].join(':')).join(','),
+    data.rareCustomerProfiles.map((profile) => [
+      profile.id,
+      profile.name,
+      stableStringArraySignature(profile.positiveTags),
+      stableStringArraySignature(profile.negativeTags),
+      stableStringArraySignature(profile.beverageTags),
     ].join(':')).join(','),
     data.tagPriorityRules
       .map((rule) => `${rule.id}:${stableNumberArraySignature(rule.tagIds)}:${stableStringArraySignature(rule.tags)}`)
@@ -273,6 +294,23 @@ function normalizeRuntimeRareCustomerData(
     collection: value.collection ?? false,
     evaluation: value.evaluation ?? {},
     spellCards: value.spellCards ?? { positive: [], negative: [] },
+  };
+}
+
+function normalizeRuntimeRareCustomerProfile(
+  value: RuntimeDataCatalogSnapshot['rareCustomers'][number],
+): RareCustomerPreferenceProfile | null {
+  if (!Number.isFinite(value.id) || !isUsableRuntimeName(value.name)) return null;
+  const positiveTags = normalizeDistinctStringArray(value.positiveTags).filter(isOrderableRareFoodTag);
+  const beverageTags = normalizeDistinctStringArray(value.beverageTags);
+  if (positiveTags.length === 0 || beverageTags.length === 0) return null;
+
+  return {
+    id: value.id,
+    name: value.name,
+    positiveTags,
+    negativeTags: normalizeDistinctStringArray(value.negativeTags),
+    beverageTags,
   };
 }
 

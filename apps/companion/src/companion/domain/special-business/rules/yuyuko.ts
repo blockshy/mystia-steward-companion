@@ -25,6 +25,11 @@ export function buildYuyukoChallengeOrderRule(
   const requiresQualifiedEvaluation = (phaseTwo || phaseThree) && yuyukoOrder;
   const requiresProgress = phaseThree && yuyukoOrder;
   const storyChallenge = specialBusiness.challengeType === STORY_YUYUKO_CHALLENGE_TYPE;
+  const progressEvaluationMode = requiresProgress
+    ? storyChallenge
+      ? 'story-level-sum'
+      : 'retake-tag-order'
+    : 'none';
   return {
     requiresWackyFoodTarget: false,
     foodTargetTags: [],
@@ -33,15 +38,15 @@ export function buildYuyukoChallengeOrderRule(
     highEvaluationMinPreferenceMatches: phaseTwo && yuyukoOrder
       ? YUYUKO_POSITIVE_SPELL_MIN_EXTRA_PREFERENCE_MATCHES
       : 0,
-    preferHighFoodLevel: requiresProgress,
-    preferHighBeverageLevel: requiresProgress,
+    preferHighFoodLevel: progressEvaluationMode === 'story-level-sum',
+    preferHighBeverageLevel: progressEvaluationMode === 'story-level-sum',
     preferKoishiDamage: false,
     preferYuyukoPositiveSpell: phaseTwo && yuyukoOrder,
-    preferYuyukoProgress: requiresProgress,
+    yuyukoProgressEvaluationMode: progressEvaluationMode,
     reason: requiresProgress
       ? storyChallenge
-        ? '剧情版幽幽子第三阶段需要满足原订单，避开幽幽子厌恶 Tag，并优先选择等级合计可达到满意（Good）/完美（ExGood）的组合；仅能达到普通（Normal）的原订单可清理但不承诺推进。'
-        : '重修版幽幽子第三阶段需要满足原订单，避开幽幽子厌恶 Tag，并优先选择等级合计可达到满意（Good）/完美（ExGood）的组合；仅能达到普通（Normal）的原订单可清理但不承诺推进。'
+        ? '剧情版幽幽子第三阶段需要满足料理与酒水点单，并选择等级合计可达到满意（Good）/完美（ExGood）的组合。'
+        : '重修版幽幽子第三阶段使用稀客原生 Tag 评价：料理与酒水先满足点单，再避开当前稀客厌恶，并至少额外命中一个当前稀客喜好以达到满意（Good）并推进。'
       : phaseTwo && yuyukoOrder
         ? '幽幽子第二阶段需要稀客触发正面符卡；自动化只选择满足当前稀客点单、避开该稀客厌恶 Tag，且排除点单 Tag 后仍预计可达完美（ExGood）的组合。'
       : '',

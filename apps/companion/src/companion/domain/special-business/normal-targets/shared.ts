@@ -26,6 +26,7 @@ export const CANDIDATE_PAIR_BEVERAGE_LIMIT = 32;
 
 interface BuildExecutionTargetOptions {
   executionMode?: NormalOrderExecutionMode;
+  expectedFoodModifierTags?: readonly string[];
   wackyTargetFoodTags?: readonly string[];
 }
 
@@ -139,6 +140,7 @@ export function buildExecutionTarget(
   options: BuildExecutionTargetOptions = {},
 ): NormalOrderExecutionTarget {
   const executionMode = options.executionMode;
+  const expectedFoodModifierTags = options.expectedFoodModifierTags ?? [];
   const wackyTargetFoodTags = options.wackyTargetFoodTags ?? [];
   return {
     matchFoodId: order.foodId,
@@ -152,6 +154,7 @@ export function buildExecutionTarget(
     beverageName: beverage.beverage.name,
     cookerName: food.recipe.cooker,
     foodTags: food.activeTags,
+    expectedFoodModifierTags: normalizeSpecialBusinessTags(expectedFoodModifierTags),
     beverageTags: beverage.activeTags,
     wackyTargetFoodTags: normalizeSpecialBusinessTags(wackyTargetFoodTags),
     reason,

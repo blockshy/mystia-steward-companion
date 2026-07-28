@@ -319,7 +319,8 @@ export function buildNormalCookerDemand(
   preferences: CompanionPreferences,
   runtime: RecommendationStateSnapshot | null | undefined,
   now: number,
-  data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
+  data: RecommendationDataSet,
+  dataSignature: string,
   specialBusiness: SpecialBusinessContext | null | undefined = null,
   specialBusinessRejectedRecipeKeys: readonly string[] = [],
 ): NormalCookerDemand {
@@ -332,18 +333,26 @@ export function buildNormalCookerDemand(
   const capacity = buildAutomationCookerCapacity(runtime);
   let reservedOrders = 0;
   for (const order of sortNormalOrders(orders).filter((item) => !item.hasEvaluated)) {
-    const state = states.get(buildNormalAutoOrderKey(order));
+    const orderKey = buildNormalAutoOrderKey(order);
+    const state = states.get(orderKey);
     if (!shouldAttemptNormalCooking(order, state, preferences, now)) continue;
-    const specialTargetSelection = selectSpecialBusinessNormalExecutionTarget({
-      order,
-      specialBusiness,
-      runtime,
-      preferences,
-      data,
-      rejectedRecipeKeys: specialBusinessRejectedRecipeKeys,
-    });
+    const specialTargetSelection = state?.executionTarget
+      ? {
+          orderKey,
+          target: state.executionTarget,
+          message: '',
+        }
+      : selectSpecialBusinessNormalExecutionTarget({
+          order,
+          specialBusiness,
+          runtime,
+          preferences,
+          dataSignature,
+          data,
+          rejectedRecipeKeys: specialBusinessRejectedRecipeKeys,
+        });
     const targetDecision = buildNormalCookingTargetDecision(order, data, {
-      orderKey: buildNormalAutoOrderKey(order),
+      orderKey,
       target: specialTargetSelection.target,
       message: specialTargetSelection.message,
     });

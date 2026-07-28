@@ -1,5 +1,8 @@
 export type RecommendationSortPresetId = 'balanced' | 'resources' | 'profit' | 'simple';
 export type RecommendationObjectiveDirection = 'asc' | 'desc';
+export type SpecialYuyukoProgressEvaluationMode =
+  | 'story-level-sum'
+  | 'retake-tag-order';
 
 /**
  * 稀客推荐方案排序目标。
@@ -61,7 +64,7 @@ export interface RecommendationPlanSortContext {
   specialPreferHighBeverageLevel?: boolean;
   specialPreferDamageLevel?: boolean;
   specialPreferYuyukoPositiveSpell?: boolean;
-  specialPreferYuyukoProgress?: boolean;
+  specialYuyukoProgressEvaluationMode?: SpecialYuyukoProgressEvaluationMode;
   specialYuyukoRequiredFoodTag?: string;
   specialYuyukoRequiredBeverageTag?: string;
   specialKoishiRemainingScore?: number | null;

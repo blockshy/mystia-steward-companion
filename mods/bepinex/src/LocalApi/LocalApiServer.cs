@@ -1426,6 +1426,7 @@ internal sealed class LocalApiServer : IDisposable
                 RecipeName = ReadStringQuery(query, "recipeName"),
                 ExtraIngredientIds = ReadIntListQuery(query, "extraIngredientIds"),
                 PredictedFoodTags = ReadStringListQuery(query, "predictedFoodTags"),
+                ExpectedFoodModifierTags = ReadStringListQuery(query, "expectedFoodModifierTags"),
                 WackyTargetFoodTags = ReadStringListQuery(query, "wackyTargetFoodTags"),
                 ExecutionMode = ReadStringQuery(query, "executionMode"),
                 ExecutionReason = ReadStringQuery(query, "executionReason"),

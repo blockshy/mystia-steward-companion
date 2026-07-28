@@ -517,6 +517,7 @@ export async function completeFirstNormalOrder(
     recipeName: executionTarget?.recipeName || order.foodName || recipe?.name || '',
     extraIngredientIds: executionTarget ? executionTarget.extraIngredientIds.join(',') : '',
     predictedFoodTags: executionTarget ? executionTarget.foodTags.join(',') : '',
+    expectedFoodModifierTags: executionTarget ? executionTarget.expectedFoodModifierTags.join(',') : '',
     wackyTargetFoodTags: executionTarget ? (executionTarget.wackyTargetFoodTags ?? []).join(',') : '',
     executionMode: executionTarget?.executionMode ?? '',
     executionReason: executionTarget?.reason ?? '',

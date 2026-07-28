@@ -9,21 +9,28 @@ import { cappedInventoryQuantityRank } from '@/lib/inventory-quantity';
 export const YUYUKO_POSITIVE_SPELL_EXGOOD_SCORE = 4;
 export const YUYUKO_POSITIVE_SPELL_MIN_EXTRA_PREFERENCE_MATCHES = YUYUKO_POSITIVE_SPELL_EXGOOD_SCORE - 2;
 
-export interface YuyukoPositiveSpellEvaluation {
+export interface YuyukoTagOrderEvaluation {
   baseDemandScore: number;
   extraPreferenceScore: number;
   evaluationScore: number;
   foodExtraPreferenceTags: string[];
   beverageExtraPreferenceTags: string[];
   negativeTags: string[];
+}
+
+export interface YuyukoPositiveSpellEvaluation extends YuyukoTagOrderEvaluation {
   canTriggerPositiveSpell: boolean;
 }
 
-export function evaluateYuyukoPositiveSpellPair(
+/**
+ * Mirrors the native SpecialOrder evaluation inputs used by Yuyuko's phase-two
+ * spell and Retake phase-three progress orders.
+ */
+export function evaluateYuyukoTagOrderPair(
   food: FoodCandidate | null | undefined,
   beverage: BeverageCandidate | null | undefined,
   demand: Pick<RareTagOrderDemand, 'requiredFoodTag' | 'requiredBeverageTag'>,
-): YuyukoPositiveSpellEvaluation {
+): YuyukoTagOrderEvaluation {
   const baseDemandScore = Number(food?.meetsRequiredFood === true)
     + Number(beverage?.meetsRequiredBeverage === true);
   const foodExtraPreferenceTags = withoutRequiredTag(
@@ -45,11 +52,22 @@ export function evaluateYuyukoPositiveSpellPair(
     foodExtraPreferenceTags,
     beverageExtraPreferenceTags,
     negativeTags,
+  };
+}
+
+export function evaluateYuyukoPositiveSpellPair(
+  food: FoodCandidate | null | undefined,
+  beverage: BeverageCandidate | null | undefined,
+  demand: Pick<RareTagOrderDemand, 'requiredFoodTag' | 'requiredBeverageTag'>,
+): YuyukoPositiveSpellEvaluation {
+  const evaluation = evaluateYuyukoTagOrderPair(food, beverage, demand);
+  return {
+    ...evaluation,
     canTriggerPositiveSpell: food != null
       && beverage != null
-      && baseDemandScore === 2
-      && negativeTags.length === 0
-      && evaluationScore >= YUYUKO_POSITIVE_SPELL_EXGOOD_SCORE,
+      && evaluation.baseDemandScore === 2
+      && evaluation.negativeTags.length === 0
+      && evaluation.evaluationScore >= YUYUKO_POSITIVE_SPELL_EXGOOD_SCORE,
   };
 }
 

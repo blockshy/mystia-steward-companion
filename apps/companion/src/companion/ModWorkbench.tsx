@@ -259,10 +259,18 @@ function buildNormalOrderDetailInputSignature(input: NormalOrderDetailInput): st
 
 function getNormalAutomationTargetSelection(
   order: NormalBusinessOrder,
+  state: NormalAutoOrderState | undefined,
   enabled: boolean,
   selections: ReadonlyMap<string, NormalExecutionTargetSelection>,
 ): NormalExecutionTargetSelection {
   const orderKey = buildNormalAutoOrderKey(order);
+  if (state?.executionTarget) {
+    return {
+      orderKey,
+      target: state.executionTarget,
+      message: '',
+    };
+  }
   if (!enabled) {
     return {
       orderKey,
@@ -705,6 +713,7 @@ function formatNormalAutomationTarget(target: NormalExecutionTargetSelection['ta
     target.executionMode ? `mode=${target.executionMode}` : '',
     `match=${target.matchFoodId}/${target.matchBeverageId}`,
     `extras=${target.extraIngredientIds.join(',')}`,
+    `modifiers=${target.expectedFoodModifierTags.join(',')}`,
     target.reason,
   ].filter(Boolean).join('/');
 }
@@ -897,6 +906,16 @@ function retainAutomationSafetyStates<T extends AutoFirstOrderState | NormalAuto
 ): void {
   for (const [orderKey, state] of states) {
     if (!state.manualResolutionRequired) states.delete(orderKey);
+  }
+}
+
+function retainNormalAutomationExecutionStates(
+  states: Map<string, NormalAutoOrderState>,
+): void {
+  for (const [orderKey, state] of states) {
+    if (!state.manualResolutionRequired && !state.executionTarget && !state.cookingJobId) {
+      states.delete(orderKey);
+    }
   }
 }
 
@@ -1240,6 +1259,7 @@ function resetNormalOrderStateAfterRuntimeMismatch(
   return {
     ...state,
     orderKey,
+    executionTarget: null,
     prepared: false,
     cookingJobId: '',
     foodDelivered: false,
@@ -1673,6 +1693,10 @@ export function ModWorkbench() {
   const recommendationData = useMemo(
     () => buildRecommendationDataSet(effectiveRuntimeData),
     [effectiveRuntimeData],
+  );
+  const recommendationDataSignature = useMemo(
+    () => buildRecommendationDataSignature(recommendationData),
+    [recommendationData],
   );
   const recommendationIndexes = useMemo(
     () => buildRecommendationDataIndexes(recommendationData),
@@ -2931,6 +2955,7 @@ export function ModWorkbench() {
         runtime,
         now,
         recommendationData,
+        recommendationDataSignature,
         snapshot?.specialBusiness,
         effectiveSpecialBusinessRejectedRecipeKeys,
       );
@@ -3439,6 +3464,7 @@ export function ModWorkbench() {
     publishAutoPrepMessage,
     publishRareAutomationDecisionDiagnostic,
     recommendationData,
+    recommendationDataSignature,
     refreshRareOrderDiagnostics,
     scheduleAutomationRefresh,
     getAutomationCookerCycle,
@@ -3458,7 +3484,7 @@ export function ModWorkbench() {
     const now = Date.now();
     if (now - lastAutoNormalOrderAtRef.current < AUTO_NORMAL_ORDER_TICK_MS) return;
     if (!hasNormalOrderActionEnabled(companionPreferences)) {
-      retainAutomationSafetyStates(normalOrderStatesRef.current);
+      retainNormalAutomationExecutionStates(normalOrderStatesRef.current);
       refreshNormalOrderDiagnostics(snapshot?.normalBusiness?.orders ?? [], now);
       publishNormalOrderMessage('普客自动化已开启，请至少启用一个处理阶段：送达酒水、自动制作料理、送达料理或完成订单。');
       return;
@@ -3473,7 +3499,13 @@ export function ModWorkbench() {
     const activeKeys = new Set(orders.map(buildNormalAutoOrderKey));
     for (const key of Array.from(normalOrderStatesRef.current.keys())) {
       const state = normalOrderStatesRef.current.get(key);
-      if (!activeKeys.has(key) && !state?.manualResolutionRequired) {
+      const hasActiveCookingJob = Boolean(
+        state?.cookingJobId
+        && (snapshot?.automationCookingJobs ?? []).some(
+          (job) => job.targetKind === 'normal' && job.jobId === state.cookingJobId,
+        ),
+      );
+      if (!activeKeys.has(key) && !state?.manualResolutionRequired && !hasActiveCookingJob) {
         normalOrderStatesRef.current.delete(key);
       }
     }
@@ -3509,7 +3541,7 @@ export function ModWorkbench() {
     refreshNormalOrderDiagnostics(orders, now);
 
     if (orders.length === 0) {
-      retainAutomationSafetyStates(normalOrderStatesRef.current);
+      retainNormalAutomationExecutionStates(normalOrderStatesRef.current);
       refreshNormalOrderDiagnostics([], now);
       publishNormalOrderMessage('普客自动化\n当前没有可处理的普客订单。');
       lastAutoNormalOrderAtRef.current = now;
@@ -3586,6 +3618,7 @@ export function ModWorkbench() {
         : shouldAttemptNormalCompletion(order, state, companionPreferences, now);
       const specialTargetSelection = getNormalAutomationTargetSelection(
         order,
+        baseState,
         normalAutomationTargetsEnabled,
         normalAutomationTargetByKey,
       );
@@ -3688,6 +3721,7 @@ export function ModWorkbench() {
         if (currentState.paused || currentState.nextAttemptAtMs > now) continue;
         const specialTargetSelection = getNormalAutomationTargetSelection(
           order,
+          currentState,
           normalAutomationTargetsEnabled,
           normalAutomationTargetByKey,
         );
@@ -3854,6 +3888,10 @@ export function ModWorkbench() {
             {
               ...currentState,
               orderKey,
+              executionTarget: cookingMismatchStored
+                ? null
+                : currentState.executionTarget
+                  ?? (acknowledgedStart ? specialTargetSelection.target : null),
               prepared,
               cookingJobId: prepared
                 ? response.automation.jobId || currentState.cookingJobId
@@ -4084,7 +4122,7 @@ export function ModWorkbench() {
   }, []);
 
   const handleNormalAutomationDisabled = useCallback(() => {
-    retainAutomationSafetyStates(normalOrderStatesRef.current);
+    retainNormalAutomationExecutionStates(normalOrderStatesRef.current);
     refreshNormalOrderDiagnostics(snapshot?.normalBusiness?.orders ?? []);
     lastAutoNormalOrderAtRef.current = 0;
     publishNormalOrderBusy(false);

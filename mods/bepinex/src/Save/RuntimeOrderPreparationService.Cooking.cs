@@ -92,7 +92,7 @@ internal static partial class RuntimeOrderPreparationService
                 jobId: existingJob?.JobId ?? "");
         }
 
-        var cookerSelection = TryGetCookerForOrder(baseFood, recipe);
+        var cookerSelection = TryGetCookerFromCookSystem(recipe);
         if (!cookerSelection.Ok || cookerSelection.CookController == null)
         {
             AppendAutomationLog("start-failed", collectionTarget, $"{recipeName}: {cookerSelection.Message}");
@@ -141,6 +141,17 @@ internal static partial class RuntimeOrderPreparationService
         if (!TryReadNativeObjectPointer(cookController, out var controllerPointer))
         {
             return CookingStartResult.Failed("无法读取厨具原生身份，已在扣除材料前取消自动开火。");
+        }
+
+        var recipeCookerType = ToInt(ReadMember(recipe, "cookerType"), -1);
+        if (!TryRevalidateCookerBeforeStart(
+                cookController,
+                cooker,
+                recipeCookerType,
+                out var cookerValidationMessage))
+        {
+            AppendAutomationLog("start-failed", collectionTarget, $"{recipeName}: {cookerValidationMessage}");
+            return CookingStartResult.Failed(cookerValidationMessage);
         }
 
         var ingredientIds = baseIngredientIds.Concat(extraIngredientIds).ToArray();
@@ -1070,134 +1081,172 @@ internal static partial class RuntimeOrderPreparationService
     }
 
     /// <summary>
-    /// 选择可用于当前配方的厨具控制器。
-    /// </summary>
-    /// <remarks>
-    /// 优先使用伙伴管理器入口，因为它包含游戏原生的订单厨具选择规则；失败后再扫描玩家厨具列表，
-    /// 并排除已有自动料理 job 持有的厨具，避免同一个灶台被并发复用。
-    /// </remarks>
-    private static (bool Ok, object? CookController, string Message) TryGetCookerForOrder(object baseFood, object recipe)
-    {
-        string? partnerMessage = null;
-        var partnerManager = GetSingletonInstance(PartnerManagerTypeName);
-        if (partnerManager != null)
-        {
-            var method = partnerManager.GetType().GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-                .FirstOrDefault(candidate =>
-                {
-                    if (!string.Equals(candidate.Name, "TryGetCookerForOrder", StringComparison.Ordinal)) return false;
-                    var parameters = candidate.GetParameters();
-                    return parameters.Length == 4
-                        && !parameters[0].ParameterType.IsByRef
-                        && parameters[1].ParameterType.IsByRef
-                        && parameters[2].ParameterType.IsByRef;
-                });
-            if (method != null)
-            {
-                foreach (var canUsedCooker in BuildIntArrayArgumentCandidates(method.GetParameters()[3].ParameterType, Array.Empty<int>()))
-                {
-                    var args = new object?[] { baseFood, null, null, canUsedCooker };
-                    try
-                    {
-                        var status = ToInt(method.Invoke(partnerManager, args));
-                        var selectedController = args[1];
-                        if (status == 3 && selectedController != null)
-                        {
-                            if (!IsCookControllerReserved(selectedController))
-                            {
-                                return (true, selectedController, "已通过伙伴厨具入口找到空闲可用厨具。");
-                            }
-
-                            partnerMessage = "伙伴厨具入口返回的厨具已有自动料理任务。";
-                            break;
-                        }
-
-                        partnerMessage = status switch
-                        {
-                            0 => "伙伴厨具入口未返回空闲厨具。",
-                            1 => "伙伴厨具入口判断当前经营环境无法制作该料理。",
-                            2 => "伙伴厨具入口未匹配到该料理的可用配方。",
-                            _ => $"伙伴厨具入口返回状态 {status}。",
-                        };
-                        break;
-                    }
-                    catch
-                    {
-                        partnerMessage = "伙伴厨具入口调用失败。";
-                    }
-                }
-            }
-            else
-            {
-                partnerMessage = "未找到伙伴厨具入口 TryGetCookerForOrder。";
-            }
-        }
-        else
-        {
-            partnerMessage = "当前经营伙伴管理器不可用。";
-        }
-
-        var cookSystemResult = TryGetCookerFromCookSystem(recipe);
-        if (cookSystemResult.Ok)
-        {
-            return cookSystemResult;
-        }
-
-        return (false, null, $"{cookSystemResult.Message}（{partnerMessage}）");
-    }
-
-    /// <summary>
-    /// 从厨具系统中扫描空闲且支持配方类型的厨具。
+    /// 从当前厨具系统的精确 AllCookers 集合选择空闲且支持配方类型的厨具。
     /// </summary>
     private static (bool Ok, object? CookController, string Message) TryGetCookerFromCookSystem(object recipe)
     {
-        var cookSystem = GetSingletonInstance(CookSystemManagerTypeName);
+        var cookSystem = RuntimeCookerReflection.GetCookSystemManager();
         if (cookSystem == null)
         {
             return (false, null, "当前厨具管理器不可用，请确认已进入夜晚经营页面。");
         }
 
-        var controllers = InvokeInstance(cookSystem, "get_AllCookerControllers", Array.Empty<object?>());
         var recipeCookerType = ToInt(ReadMember(recipe, "cookerType"));
-        var totalCount = 0;
-        var openCount = 0;
-        var matchingCount = 0;
-
-        foreach (var cookController in ReadObjectEnumerable(controllers))
+        if (recipeCookerType <= 0)
         {
-            totalCount++;
-            if (IsCookControllerReserved(cookController))
+            return (false, null, $"配方厨具类型无效：{recipeCookerType}。");
+        }
+
+        var controllers = RuntimeCookerReflection.ReadCookerControllersFromCookSystem(cookSystem, out var controllerStatus);
+        var totalCount = controllers.Count;
+        var readableCount = 0;
+        var matchingCount = 0;
+        var reservedCount = 0;
+        var busyCount = 0;
+        var lockedCount = 0;
+        var unreadableCount = 0;
+        var availableCount = 0;
+        string? unreadableSample = null;
+        object? selectedController = null;
+
+        foreach (var cookController in controllers)
+        {
+            if (!RuntimeCookerReflection.TryReadCookerControllerState(
+                    cookController,
+                    out var controllerState,
+                    out var stateStatus))
             {
+                unreadableCount++;
+                unreadableSample ??= stateStatus;
                 continue;
             }
 
-            if (!ReadBool(InvokeInstance(cookController, "get_CouldCookerOpen", Array.Empty<object?>())))
-            {
-                continue;
-            }
-
-            openCount++;
-            var cooker = InvokeInstance(cookController, "get_Cooker", Array.Empty<object?>());
-            if (cooker == null || !CookerSupportsRecipe(cooker, recipeCookerType))
+            readableCount++;
+            if (!controllerState.TypeIds.Contains(recipeCookerType))
             {
                 continue;
             }
 
             matchingCount++;
-            return (true, cookController, $"已通过玩家厨具列表找到空闲可用厨具（共 {totalCount} 个，空闲 {openCount} 个）。");
+            if (IsCookControllerReserved(cookController))
+            {
+                reservedCount++;
+                continue;
+            }
+
+            if (!controllerState.CouldOpen)
+            {
+                lockedCount++;
+                continue;
+            }
+
+            if (controllerState.Phase != 0
+                || !controllerState.ResultEmpty
+                || !controllerState.ChosenRecipeEmpty)
+            {
+                busyCount++;
+                continue;
+            }
+
+            availableCount++;
+            selectedController ??= cookController;
         }
 
         if (totalCount == 0)
         {
-            return (false, null, "当前没有读取到任何厨具。");
+            return (false, null, $"当前没有读取到经营厨具（{controllerStatus}）。");
         }
 
-        if (openCount == 0)
+        var cookerTypeName = RuntimeCookerReflection.ResolveCookerTypeName(recipeCookerType);
+        if (selectedController != null)
         {
-            return (false, null, $"当前没有空闲厨具（读取到 {totalCount} 个厨具）。");
+            return (true, selectedController,
+                $"已从玩家厨具字典找到空闲可用厨具（共 {totalCount} 个，同类型 {matchingCount} 个，可用 {availableCount} 个；{controllerStatus}）。");
         }
 
-        return (false, null, $"当前有 {openCount} 个空闲厨具，但没有符合配方厨具类型 {recipeCookerType} 的厨具。");
+        if (matchingCount == 0)
+        {
+            return (false, null,
+                $"读取到 {totalCount} 个经营厨具，其中 {readableCount} 个可识别，但没有支持配方厨具类型 {cookerTypeName}（{recipeCookerType}）的厨具"
+                + (unreadableCount > 0 ? $"；另有 {unreadableCount} 个厨具对象无法读取，样本：{unreadableSample}" : "")
+                + $"（{controllerStatus}）。");
+        }
+
+        var unavailableParts = new List<string>();
+        if (reservedCount > 0)
+        {
+            unavailableParts.Add($"{reservedCount} 个已被 Mod 自动料理任务预约");
+        }
+
+        if (busyCount > 0)
+        {
+            unavailableParts.Add($"{busyCount} 个处于装料、烹饪或待收取状态");
+        }
+
+        if (lockedCount > 0)
+        {
+            unavailableParts.Add($"{lockedCount} 个被特殊经营暂时锁定");
+        }
+
+        if (unreadableCount > 0)
+        {
+            unavailableParts.Add($"{unreadableCount} 个厨具对象无法完整读取（样本：{unreadableSample}）");
+        }
+
+        var unavailableSummary = unavailableParts.Count > 0
+            ? string.Join("，", unavailableParts)
+            : "状态读取失败";
+        return (false, null,
+            $"已找到 {matchingCount} 个支持 {cookerTypeName}（{recipeCookerType}）的厨具，但{unavailableSummary}（{controllerStatus}）。");
+    }
+
+    private static bool TryRevalidateCookerBeforeStart(
+        object cookController,
+        object selectedCooker,
+        int recipeCookerType,
+        out string message)
+    {
+        if (recipeCookerType <= 0)
+        {
+            message = $"配方厨具类型无效：{recipeCookerType}。";
+            return false;
+        }
+
+        if (IsCookControllerReserved(cookController))
+        {
+            message = "所选厨具已被另一个 Mod 自动料理任务预约，已在扣除材料前取消开火。";
+            return false;
+        }
+
+        if (!RuntimeCookerReflection.TryReadCookerControllerState(
+                cookController,
+                out var state,
+                out var stateStatus))
+        {
+            message = $"所选厨具状态无法完整复核，已在扣除材料前取消开火（{stateStatus}）。";
+            return false;
+        }
+
+        if (!IsSameObject(selectedCooker, state.Cooker))
+        {
+            message = "所选厨具控制器已经换绑到其他厨具，已在扣除材料前取消开火。";
+            return false;
+        }
+
+        if (!state.TypeIds.Contains(recipeCookerType))
+        {
+            message = $"所选厨具已不再支持配方厨具类型 {RuntimeCookerReflection.ResolveCookerTypeName(recipeCookerType)}（{recipeCookerType}），已在扣除材料前取消开火。";
+            return false;
+        }
+
+        if (!state.IsIdle)
+        {
+            message = $"所选厨具已被占用或暂时锁定，已在扣除材料前取消开火（{stateStatus}）。";
+            return false;
+        }
+
+        message = "";
+        return true;
     }
 
     private static bool IsCookControllerReserved(object cookController)
@@ -1208,12 +1257,6 @@ internal static partial class RuntimeOrderPreparationService
                 ReferenceEquals(job.CookController, cookController)
                 || IsSameObject(job.CookController, cookController));
         }
-    }
-
-    private static bool CookerSupportsRecipe(object cooker, int recipeCookerType)
-    {
-        var cookerTypes = InvokeInstance(cooker, "get_AllAvailableCookerType", Array.Empty<object?>());
-        return ReadIntEnumerable(cookerTypes).Contains(recipeCookerType);
     }
 
     private static string DescribeCookController(object cookController)

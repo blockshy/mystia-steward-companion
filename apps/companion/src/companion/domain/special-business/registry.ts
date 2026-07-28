@@ -28,6 +28,7 @@ const modules: readonly SpecialBusinessRuleModule[] = [
 ];
 const NORMAL_TARGET_CACHE_LIMIT = 64;
 const normalTargetCache = new Map<string, SpecialBusinessNormalTargetSelection>();
+let normalTargetDataSignature = '';
 
 export function resolveSpecialBusinessModule(
   specialBusiness: SpecialBusinessContext | null | undefined,
@@ -65,6 +66,11 @@ export function buildSpecialBusinessFoodTargetSignature(
 export function selectSpecialBusinessNormalExecutionTarget(
   args: SpecialBusinessNormalTargetArgs,
 ): SpecialBusinessNormalTargetSelection {
+  if (normalTargetDataSignature !== args.dataSignature) {
+    normalTargetCache.clear();
+    normalTargetDataSignature = args.dataSignature;
+  }
+
   const cacheKey = buildNormalTargetCacheKey(args);
   const cached = normalTargetCache.get(cacheKey);
   if (cached) return cached;
@@ -96,7 +102,6 @@ function buildNormalTargetCacheKey({
   specialBusiness,
   runtime,
   preferences,
-  data,
   rejectedRecipeKeys,
 }: SpecialBusinessNormalTargetArgs): string {
   return [
@@ -104,7 +109,6 @@ function buildNormalTargetCacheKey({
     buildSpecialBusinessSignature(specialBusiness),
     buildRuntimeSignature(runtime),
     buildPreferenceSignature(preferences),
-    data?.source ?? '',
     stableStringArraySignature(rejectedRecipeKeys),
   ].join('\n');
 }

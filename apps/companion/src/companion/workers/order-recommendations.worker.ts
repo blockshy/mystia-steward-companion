@@ -61,6 +61,7 @@ workerScope.onmessage = (event) => {
         specialBusiness: payload.specialBusiness ?? null,
         runtime: payload.runtime,
         preferences: payload.preferences,
+        dataSignature: runtimePayload.dataSignature,
         data: payload.data,
         rejectedRecipeKeys: payload.specialBusinessRejectedRecipeKeys ?? [],
       })
@@ -69,7 +70,7 @@ workerScope.onmessage = (event) => {
 
     const executionTargetStartedAt = now();
     const normalExecutionTargets = payload.includeNormalExecutionTargets === true
-      ? buildNormalExecutionTargets(payload)
+      ? buildNormalExecutionTargets(payload, runtimePayload.dataSignature)
       : [];
     const finishedAt = now();
 
@@ -104,6 +105,11 @@ function resolveRecommendationData(
   payload: OrderRecommendationWorkerRequest['payload'],
 ): RecommendationDataSet {
   if (payload.data) {
+    if (cachedData && cachedDataSignature !== payload.dataSignature) {
+      recommendationCaches.orders.clear();
+      recommendationCaches.foodCandidates.clear();
+      recommendationCaches.beverageCandidates.clear();
+    }
     cachedData = payload.data;
     cachedDataSignature = payload.dataSignature;
     return payload.data;
@@ -122,6 +128,7 @@ function now(): number {
 
 function buildNormalExecutionTargets(
   payload: OrderRecommendationWorkerPayload,
+  dataSignature: string,
 ): NormalExecutionTargetSelection[] {
   return sortNormalOrders(payload.normalOrders ?? [])
     .filter((order) => !order.hasEvaluated)
@@ -131,6 +138,7 @@ function buildNormalExecutionTargets(
         specialBusiness: payload.specialBusiness ?? null,
         runtime: payload.runtime,
         preferences: payload.preferences,
+        dataSignature,
         data: payload.data,
         rejectedRecipeKeys: payload.specialBusinessRejectedRecipeKeys ?? [],
       });
@@ -203,6 +211,7 @@ function buildResultSignature(result: OrderRecommendationResult): string {
       item.target?.beverageName ?? '',
       item.target?.reason ?? '',
       item.target?.foodTags.join(',') ?? '',
+      item.target?.expectedFoodModifierTags.join(',') ?? '',
       item.target?.beverageTags.join(',') ?? '',
       item.target?.wackyTargetFoodTags?.join(',') ?? '',
     ].join('|')).join('\n'),

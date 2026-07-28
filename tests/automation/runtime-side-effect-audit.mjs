@@ -11,6 +11,8 @@ const cooking = read('mods/bepinex/src/Save/RuntimeOrderPreparationService.Cooki
 const delivery = read('mods/bepinex/src/Save/RuntimeOrderPreparationService.Delivery.cs');
 const directDelivery = read('mods/bepinex/src/Save/RuntimeOrderPreparationService.DirectDelivery.cs');
 const cookerHighlight = read('mods/bepinex/src/Save/RuntimeCookerHighlightService.cs');
+const cookerSnapshot = read('mods/bepinex/src/Save/RuntimeCookerSnapshotService.cs');
+const cookerReflection = read('mods/bepinex/src/Save/RuntimeCookerReflection.cs');
 const matching = read('mods/bepinex/src/Save/RuntimeOrderPreparationService.OrderMatching.cs');
 const runtimeReflection = read('mods/bepinex/src/Save/RuntimeReflectionUtility.cs');
 const service = read('mods/bepinex/src/Save/RuntimeOrderPreparationService.cs');
@@ -138,6 +140,174 @@ assert.match(service, /AcknowledgeAutomationSafetyBarrier[\s\S]*AcknowledgedSequ
 assert.match(service, /TryProcessAutomationCookingJob\(job, timeoutEligible\)[\s\S]*ReferenceEquals\(AutomationCookingJobs\[i\], job\)/);
 assert.match(cooking, /TryProcessNormalOrderCookingJob[\s\S]*ReferenceEquals\(AutomationCookingJobs\[i\], job\)/);
 
+const sharedCookerControllerReader = 'RuntimeCookerReflection.ReadCookerControllersFromCookSystem(';
+for (const [label, source] of [
+  ['cooking', cooking],
+  ['snapshot', cookerSnapshot],
+  ['highlight', cookerHighlight],
+]) {
+  assert.ok(source.includes(sharedCookerControllerReader),
+    `${label} must consume the shared exact AllCookers controller reader.`);
+}
+
+const cookerTypeEntry = methodSource(
+  cookerReflection,
+  'public static List<int> ReadCookerTypeIds(',
+);
+assert.match(
+  cookerTypeEntry,
+  /TryReadExactCookerTypeSequence\(/,
+  'Cooker type consumers must require the complete AllAvailableCookerType sequence.',
+);
+assert.doesNotMatch(
+  cookerTypeEntry,
+  /get_Type|EnumerateObjects/,
+  'The authoritative cooker type entry must not fall back to a base type or broad object enumeration.',
+);
+const exactCookerTypeReader = methodSource(
+  cookerReflection,
+  'private static bool TryReadExactCookerTypeSequence(',
+);
+for (const requiredToken of [
+  '"get_AllAvailableCookerType"',
+  'Il2CppEnumerableTypeName',
+  'Il2CppGenericEnumeratorTypeName',
+  '"get_Current"',
+  'typeof(Il2CppSystem.Collections.IEnumerator)',
+  'typeof(Il2CppSystem.IDisposable)',
+  'moveNext.Invoke(',
+  'getCurrent.Invoke(',
+  'if (typeId == 0) continue;',
+  'CookerTypeNames.ContainsKey(typeId)',
+  'dispose.Invoke(',
+  'return valid && completed && typeIds.Count > 0;',
+]) {
+  assert.ok(
+    exactCookerTypeReader.includes(requiredToken),
+    `Exact cooker type enumeration is missing ${requiredToken}.`,
+  );
+}
+assert.doesNotMatch(
+  exactCookerTypeReader,
+  /get_Type|EnumerateObjects|ReadIntEnumerable/,
+  'Complete cooker type reads must not retain base-type or broad enumerable fallbacks.',
+);
+assert.ok(
+  cookerSnapshot.includes('RuntimeCookerReflection.TryReadCookerControllerState(')
+    && cookerHighlight.includes('RuntimeCookerReflection.ReadCookerTypeIds(')
+    && cooking.includes('RuntimeCookerReflection.TryReadCookerControllerState('),
+  'Snapshot, highlight, and cooking must share the complete cooker type reader.',
+);
+const exactControllerStateReader = methodSource(
+  cookerReflection,
+  'public static bool TryReadCookerControllerState(',
+);
+for (const getter of [
+  '"get_Cooker"',
+  '"get_Phase"',
+  '"get_Result"',
+  '"get_ChosenRecipe"',
+  '"get_CouldCookerOpen"',
+]) {
+  assert.ok(
+    exactControllerStateReader.includes(getter),
+    `Exact cooker availability is missing ${getter}.`,
+  );
+}
+assert.match(
+  cookerReflection,
+  /public bool IsIdle => Phase == 0 && ResultEmpty && ChosenRecipeEmpty && CouldOpen;/,
+  'Automation availability must require the exact idle/result/recipe/open state.',
+);
+const fallbackCookerSelection = methodSource(
+  cooking,
+  'private static (bool Ok, object? CookController, string Message) TryGetCookerFromCookSystem(',
+);
+assert.ok(
+  fallbackCookerSelection.includes('RuntimeCookerReflection.GetCookSystemManager()')
+    && fallbackCookerSelection.includes('RuntimeCookerReflection.TryReadCookerControllerState('),
+  'Fallback cooking must share the exact manager and full controller state reader.',
+);
+assert.doesNotMatch(
+  fallbackCookerSelection,
+  /GetSingletonInstance\(CookSystemManagerTypeName\)|get_CouldCookerOpen/,
+  'Fallback cooking must not independently scan a manager or treat CouldCookerOpen as complete availability.',
+);
+assert.doesNotMatch(
+  cooking,
+  /TryGetCookerForOrder/,
+  'Cooking must not accept a second controller source outside the exact AllCookers dictionary.',
+);
+const cookerStart = methodSource(
+  cooking,
+  'private static CookingStartResult TryStartCooking(',
+);
+const cookerRevalidationIndex = cookerStart.indexOf('TryRevalidateCookerBeforeStart(');
+const materialDeductionIndex = cookerStart.indexOf('InvokeRuntimeStorageOut("IngredientOut"');
+assert.ok(
+  cookerRevalidationIndex >= 0
+    && materialDeductionIndex >= 0
+    && cookerRevalidationIndex < materialDeductionIndex,
+  'The selected cooker must be fully revalidated before the first material deduction.',
+);
+const snapshotReader = methodSource(
+  cookerSnapshot,
+  'private static List<PlacedCookerInfo> ReadCookSystemCookers(',
+);
+assert.ok(
+  snapshotReader.includes('RuntimeCookerReflection.TryReadCookerControllerState(')
+    && snapshotReader.includes('status = $"manager incomplete; controller=')
+    && snapshotReader.includes('return new List<PlacedCookerInfo>();'),
+  'Placed-cooker snapshots must fail the whole batch when any controller is unreadable.',
+);
+assert.doesNotMatch(
+  snapshotReader,
+  /single stale controller|if \(cooker == null\) continue|if \(typeIds\.Count == 0\) continue/,
+  'Placed-cooker snapshots must not publish a partial controller/type projection.',
+);
+
+const exactAllCookersReader = methodSource(
+  cookerReflection,
+  'public static IReadOnlyList<object> ReadCookerControllersFromCookSystem(',
+);
+assert.match(
+  cookerReflection,
+  /BindingFlags\.Public \| BindingFlags\.NonPublic \| BindingFlags\.Instance \| BindingFlags\.DeclaredOnly/,
+  'The exact member reader must include NonPublic because CookSystemManager.AllCookers is private.',
+);
+assert.match(
+  exactAllCookersReader,
+  /TryGetSingleDeclaredMethod\([\s\S]*"get_AllCookers"[\s\S]*getAllCookers\.Invoke\(cookSystem/,
+  'The shared controller reader must use the declared CookSystemManager.get_AllCookers member.',
+);
+assert.match(
+  exactAllCookersReader,
+  /RuntimeConcreteCollectionReader\.TryReadDictionary\(/,
+  'The shared controller reader must use the BepInEx 783 concrete dictionary reader.',
+);
+assert.ok(
+  cookerReflection.includes('Il2CppDictionaryTypeName')
+    && !cookerReflection.includes('ManagedDictionaryTypeName'),
+  'CookSystemManager.AllCookers must accept only the exact BepInEx 783 IL2CPP dictionary shape.',
+);
+assert.doesNotMatch(
+  exactAllCookersReader,
+  /AllCookerControllers|UnityFind|FindUnityObjects|ReadDictionaryValues|ReadObjectPointer|IDictionary|DictionaryEntry|NormalizeKeyValueValue|"(?:entries|_entries|m_Entries)"/,
+  'The exact AllCookers reader must not retain alternate controller discovery or ad-hoc dictionary paths.',
+);
+
+const deprecatedCookerDiscoveryPattern =
+  /AllCookerControllers|UnityFind|FindUnityObjects|ReadDictionaryValues|DictionaryEntry|NormalizeDictionaryItem|NormalizeKeyValueValue|"(?:entries|_entries|m_Entries)"/;
+for (const [label, source] of [
+  ['shared cooker reflection', cookerReflection],
+  ['cooking', cooking],
+  ['snapshot', cookerSnapshot],
+  ['highlight', cookerHighlight],
+]) {
+  assert.doesNotMatch(source, deprecatedCookerDiscoveryPattern,
+    `${label} must not retain deprecated cooker discovery or dictionary parsing paths.`);
+}
+
 const publishCookerTarget = sourceSlice(cookerHighlight, 'public static void UpdateTarget(', 'public static void Tick()');
 assert.ok(!/SpriteRenderer|UnityEngine|Time\.|Restore|ScanAndApply|PulseHighlightedRenderers/.test(publishCookerTarget),
   'Background cooker-target publication must only replace managed desired state.');
@@ -157,4 +327,21 @@ function sourceSlice(source, startMarker, endMarker) {
   assert.ok(start >= 0, `Source marker not found: ${startMarker}`);
   assert.ok(end > start, `Source boundary not found: ${startMarker} -> ${endMarker}`);
   return source.slice(start, end);
+}
+
+function methodSource(source, marker) {
+  const start = source.indexOf(marker);
+  assert.ok(start >= 0, `Method marker not found: ${marker}`);
+  const bodyStart = source.indexOf('{', start + marker.length);
+  assert.ok(bodyStart > start, `Method body not found: ${marker}`);
+
+  let depth = 0;
+  for (let index = bodyStart; index < source.length; index++) {
+    if (source[index] === '{') depth++;
+    if (source[index] !== '}') continue;
+    depth--;
+    if (depth === 0) return source.slice(start, index + 1);
+  }
+
+  assert.fail(`Method body is not balanced: ${marker}`);
 }
