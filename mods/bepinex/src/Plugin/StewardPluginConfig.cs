@@ -30,6 +30,7 @@ public sealed class StewardPluginConfig
     public ConfigEntry<bool> CompanionAutoLaunch { get; private init; } = null!;
     public ConfigEntry<string> CompanionExecutablePath { get; private init; } = null!;
     public ConfigEntry<bool> SetConsoleUtf8 { get; private init; } = null!;
+    public ConfigEntry<bool> ShowBepInExConsoleOnStartup { get; private init; } = null!;
     public ConfigEntry<bool> EnableAggregateModLog { get; private init; } = null!;
     public ConfigEntry<string> AggregateModLogPath { get; private init; } = null!;
     public ConfigEntry<int> AggregateModLogMaxFileCount { get; private init; } = null!;
@@ -68,6 +69,7 @@ public sealed class StewardPluginConfig
             CompanionAutoLaunch = config.Bind("Companion", "AutoLaunch", true, "Launch the external companion window when the plugin loads if the executable exists."),
             CompanionExecutablePath = config.Bind("Companion", "ExecutablePath", "", "Optional companion executable path. Empty searches beside the plugin DLL."),
             SetConsoleUtf8 = config.Bind("Ui", "SetConsoleUtf8", true, "Set the Windows console code page and .NET console encoding to UTF-8 after the plugin loads."),
+            ShowBepInExConsoleOnStartup = config.Bind("Diagnostics", "ShowBepInExConsoleOnStartup", false, "Show the BepInEx console window when the plugin loads for local troubleshooting. Disabled by default."),
             EnableAggregateModLog = config.Bind("Diagnostics", "EnableAggregateModLog", false, "Write a troubleshooting aggregate log that captures all BepInEx log sources while enabled."),
             AggregateModLogPath = config.Bind("Diagnostics", "AggregateModLogPath", "", "Optional aggregate log path. Empty uses BepInEx/config/MystiaStewardCompanion/aggregate-mod.log."),
             AggregateModLogMaxFileCount = config.Bind("Diagnostics", "AggregateModLogMaxFileCount", AggregateModLogService.DefaultMaxFileCount, "Maximum aggregate log files to keep, including the active file. Default 30 keeps about 300 MB because each file rotates at 10 MB."),

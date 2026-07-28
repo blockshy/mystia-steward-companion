@@ -202,7 +202,13 @@ const logSettings = {
   aggregateModLogMaxFileBytes: 10 * 1024 * 1024,
   aggregateModLogMaxFileCount: 30,
   aggregateModLogMaxTotalBytes: 300 * 1024 * 1024,
+  bepInExConsoleSupported: true,
+  bepInExConsoleConfiguredVisible: false,
+  bepInExConsoleActive: false,
+  bepInExConsoleVisible: false,
+  bepInExConsoleStatus: 'inactive',
 };
+let nextBepInExConsoleFailure = null;
 
 const updateStatus = {
   ok: true,
@@ -315,6 +321,31 @@ const server = http.createServer((request, response) => {
       if (path === '/logs/config') {
         applyLogSettings(requestUrl.searchParams);
         sendJson(response, 200, logSettings);
+        return;
+      }
+
+      if (path === '/mock/logs/console-failure') {
+        nextBepInExConsoleFailure = {
+          error: requestUrl.searchParams.get('message') || 'mock console action failed',
+          reportedVisible: readOptionalMockBoolean(requestUrl.searchParams.get('reportedVisible')),
+        };
+        sendJson(response, 200, { ok: true });
+        return;
+      }
+
+      if (path === '/logs/console') {
+        if (nextBepInExConsoleFailure) {
+          const failure = nextBepInExConsoleFailure;
+          nextBepInExConsoleFailure = null;
+          if (failure.reportedVisible !== null) {
+            applyBepInExConsoleVisibility(
+              new URLSearchParams({ visible: String(failure.reportedVisible) }),
+            );
+          }
+          sendJson(response, 200, buildBepInExConsoleVisibilityResponse(false, failure.error));
+          return;
+        }
+        sendJson(response, 200, applyBepInExConsoleVisibility(requestUrl.searchParams));
         return;
       }
 
@@ -1106,6 +1137,52 @@ function applyLogSettings(params) {
       logSettings.aggregateModLogMaxTotalBytes = logSettings.aggregateModLogMaxFileBytes * logSettings.aggregateModLogMaxFileCount;
     }
   }
+}
+
+function readOptionalMockBoolean(value) {
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  return null;
+}
+
+function applyBepInExConsoleVisibility(params) {
+  const visible = params.get('visible');
+  if (visible !== 'true' && visible !== 'false') {
+    return buildBepInExConsoleVisibilityResponse(
+      false,
+      'visible 必须为 true 或 false。',
+    );
+  }
+
+  if (!logSettings.bepInExConsoleSupported) {
+    return buildBepInExConsoleVisibilityResponse(
+      false,
+      '当前平台不支持 BepInEx 控制台窗口。',
+    );
+  }
+
+  const nextVisible = visible === 'true';
+  logSettings.bepInExConsoleConfiguredVisible = nextVisible;
+  logSettings.bepInExConsoleActive ||= nextVisible;
+  logSettings.bepInExConsoleVisible = nextVisible;
+  logSettings.bepInExConsoleStatus = nextVisible
+    ? 'visible'
+    : logSettings.bepInExConsoleActive
+      ? 'hidden'
+      : 'inactive';
+  return buildBepInExConsoleVisibilityResponse(true, null);
+}
+
+function buildBepInExConsoleVisibilityResponse(ok, error) {
+  return {
+    ok,
+    supported: logSettings.bepInExConsoleSupported,
+    configuredVisible: logSettings.bepInExConsoleConfiguredVisible,
+    active: logSettings.bepInExConsoleActive,
+    visible: logSettings.bepInExConsoleVisible,
+    status: logSettings.bepInExConsoleStatus,
+    error,
+  };
 }
 
 function ingredient(id, name, tags, price, type) {

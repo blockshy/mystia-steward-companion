@@ -280,6 +280,18 @@ pnpm audit:ui
 
 报告和截图默认写到 `/tmp/mystia-companion-ui-audit`。通用 UI 巡检覆盖 1280x900、900x760 和 640x760 三组视口；640px 用于验证 Tauri 桌面最小宽度下核心内容保持双列、顶部状态保持三列、一级导航以五列两行完整显示，并检查连接工具栏四项保持单行、设置五组分段标签不变形、专注工具栏右对齐和自定义配方入口与料理标题同行。如果使用 `pnpm preview`，把 `MYSTIA_APP_URL` 改成 Vite preview 输出的地址，通常是 `http://127.0.0.1:4173`。
 
+修改 BepInEx 控制台显隐、日志设置协议或日志页按钮后，在同一 mock API 与 preview 环境运行：
+
+```bash
+dotnet run --project tests/bepinex-console-window/BepInExConsoleWindowSmoke.csproj -c Release
+dotnet run --project tests/local-api-method-matrix/LocalApiMethodMatrixSmoke.csproj -c Release
+MYSTIA_APP_URL=http://127.0.0.1:4173 \
+MYSTIA_API_URL=http://127.0.0.1:32145 \
+pnpm audit:logs:console
+```
+
+控制台 smoke 锁定默认关闭、Windows-only、BepInEx driver/Win32 窗口/真实可见性三态分离、仅 Mod 本次新建窗口禁用关闭命令、唯一 `ConsoleLogListener`、无焦点显示、hide-only，以及显隐/启动偏好的同锁提交；方法矩阵锁定 `/logs/console` 只接受 POST。前端审计验证 IPv4 回环端点限制、远程禁用、迟到读取隔离、动作错误保持、显示/隐藏与刷新持久化、键盘和模拟标准手柄 `A` 激活，以及 640px 布局。Linux 测试不能替代 Windows 实机的 Win32 窗口、重复切换和持续日志验证。
+
 修改手柄输入状态机、复合控件焦点语义、动态回焦、局部滚动或游戏/伴随窗口焦点切换后，运行：
 
 ```bash
@@ -656,8 +668,9 @@ Port = 32145
 - `GET /snapshot?knownSignature=...`：读取最新运行态快照。快照由 Unity 主线程按自动刷新节奏生成，网络线程只返回缓存 JSON；内容签名固定为规范内容的 64 字符小写 SHA-256，不能把随订单增长的规范原文放进查询串。签名未变化时返回轻量 unchanged 响应。快照包含推荐状态、稀客/普客订单、活动 `automationCookingJobs`、递增序号 `automationEvents`、运行时目录元信息、日间 `runtimeDaySceneReady` / `runtimeDaySceneGeneration` 和 `performanceMs`，不包含完整 `RuntimeDataCatalog`，也不包含旧的 `runtimeRareCustomers` 合成目录；可推荐稀客只来自 `/runtime-data.rareCustomers`。
 - `GET /runtime-data`：读取当前完整 `RuntimeDataCatalog`。`runtimeDataSignature` 是完整响应 JSON 的固定 SHA-256，而不是集合计数；伴随窗口只在本地没有目录缓存或该签名变化时调用。
 - `GET /automation/lease`：读取当前自动化控制权状态。
-- `GET /logs/settings`：读取总日志开关、总日志路径、单文件分片大小、文件上限和总容量上限。
+- `GET /logs/settings`：读取总日志开关、总日志路径、单文件分片大小、文件上限、总容量上限，以及 BepInEx 控制台的平台支持、启动设置、活动和可见状态。
 - `POST /logs/config?aggregateLog=true|false&aggregateLogMaxFiles=30`：由伴随窗口回写总日志开关和文件上限；`aggregateLog` 会即时注册或移除 BepInEx 全局日志监听器。
+- `POST /logs/console?visible=true|false`：仅允许游戏电脑回环客户端调用。显示时使用 BepInEx #783 `ConsoleManager.CreateConsole()`，以调用前后 `GetConsoleWindow()` 是否从空变为非空判定 Mod 本次新建窗口，并仅对该窗口删除 `SC_CLOSE`、补充唯一 `ConsoleLogListener`；driver active、窗口存在和真实可见性分别读取，隐藏及失败回滚只按真实窗口可见性调用 Win32 `ShowWindow(SW_HIDE)`。显隐、`Diagnostics.ShowBepInExConsoleOnStartup` 和响应快照在同一服务锁内提交，不得 `DetachConsole()`、改写全局 `BepInEx.cfg` 或影响总日志开关。
 - `POST /logs/open-folder?target=aggregate`：打开总日志目录。
 - `POST /inventory/set?type=ingredient|beverage&id=ID&qty=数量`：在 Unity 主线程通过 `RunTimeStorage` 原生 Range API 修改当前运行时材料或酒水库存，并回读校验最终数量；原生调用失败时不会绕过 callback 直写私有字典。
 - `POST /inventory/bulk-set?type=ingredient|beverage&ids=ID1,ID2&qty=数量`：批量修改当前运行时材料或酒水库存；用于修改页的材料/酒水批量设为 `99`，只在批量结束后刷新一次运行时快照。

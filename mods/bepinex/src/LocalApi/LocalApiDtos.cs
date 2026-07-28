@@ -46,6 +46,22 @@ internal sealed class LocalApiLogSettingsDto
     public long AggregateModLogMaxFileBytes { get; init; }
     public int AggregateModLogMaxFileCount { get; init; }
     public long AggregateModLogMaxTotalBytes { get; init; }
+    public bool BepInExConsoleSupported { get; init; }
+    public bool BepInExConsoleConfiguredVisible { get; init; }
+    public bool BepInExConsoleActive { get; init; }
+    public bool BepInExConsoleVisible { get; init; }
+    public string BepInExConsoleStatus { get; init; } = "";
+}
+
+internal sealed class LocalApiBepInExConsoleActionDto
+{
+    public bool Ok { get; init; }
+    public bool Supported { get; init; }
+    public bool ConfiguredVisible { get; init; }
+    public bool Active { get; init; }
+    public bool Visible { get; init; }
+    public string Status { get; init; } = "";
+    public string? Error { get; init; }
 }
 
 internal sealed class LocalApiConnectionConfigDto

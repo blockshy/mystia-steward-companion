@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.IO.Compression;
 using BepInEx;
 using BepInEx.Logging;
+using MystiaStewardCompanion.Plugin;
 using MystiaStewardCompanion.Save;
 using MystiaStewardCompanion.Updates;
 
@@ -46,6 +47,7 @@ internal sealed class LocalApiServer : IDisposable
     private string _lanError = "";
     private readonly Func<LocalApiLogSettings> _getLogSettings;
     private readonly Action<bool?, int?> _updateLogSettings;
+    private readonly Func<bool, BepInExConsoleWindowState> _updateBepInExConsoleVisibility;
     private readonly Func<LocalApiConnectionConfigDto> _getConnectionConfig;
     private readonly Func<LocalApiConnectionConfigUpdate, LocalApiConnectionConfigDto> _updateConnectionConfig;
     private readonly Func<LocalApiConnectionConfigDto> _regenerateLocalApiToken;
@@ -116,6 +118,7 @@ internal sealed class LocalApiServer : IDisposable
         string token,
         Func<LocalApiLogSettings> getLogSettings,
         Action<bool?, int?> updateLogSettings,
+        Func<bool, BepInExConsoleWindowState> updateBepInExConsoleVisibility,
         Func<LocalApiConnectionConfigDto> getConnectionConfig,
         Func<LocalApiConnectionConfigUpdate, LocalApiConnectionConfigDto> updateConnectionConfig,
         Func<LocalApiConnectionConfigDto> regenerateLocalApiToken,
@@ -149,6 +152,7 @@ internal sealed class LocalApiServer : IDisposable
         _lanBindHost = NormalizeLanBindHost(lanBindHost);
         _getLogSettings = getLogSettings;
         _updateLogSettings = updateLogSettings;
+        _updateBepInExConsoleVisibility = updateBepInExConsoleVisibility;
         _getConnectionConfig = getConnectionConfig;
         _updateConnectionConfig = updateConnectionConfig;
         _regenerateLocalApiToken = regenerateLocalApiToken;
@@ -601,6 +605,14 @@ internal sealed class LocalApiServer : IDisposable
                             ReadBoolQuery(query, "aggregateLog"),
                             ReadNullableIntQuery(query, "aggregateLogMaxFiles"));
                         WriteResponse(stream, 200, "OK", BuildLogSettingsJson());
+                        break;
+                    case "/logs/console":
+                        if (!isLoopbackClient)
+                        {
+                            WriteResponse(stream, 403, "Forbidden", ToJson(new LocalApiErrorDto { Error = "BepInEx console control is only allowed from the game PC" }));
+                            break;
+                        }
+                        WriteResponse(stream, 200, "OK", BuildBepInExConsoleActionJson(query));
                         break;
                     case "/logs/open-folder":
                         WriteResponse(stream, 200, "OK", OpenLogFolderJson(ReadStringQuery(query, "target")));
@@ -1264,6 +1276,42 @@ internal sealed class LocalApiServer : IDisposable
             AggregateModLogMaxFileBytes = settings.AggregateModLogMaxFileBytes,
             AggregateModLogMaxFileCount = settings.AggregateModLogMaxFileCount,
             AggregateModLogMaxTotalBytes = settings.AggregateModLogMaxTotalBytes,
+            BepInExConsoleSupported = settings.BepInExConsoleSupported,
+            BepInExConsoleConfiguredVisible = settings.BepInExConsoleConfiguredVisible,
+            BepInExConsoleActive = settings.BepInExConsoleActive,
+            BepInExConsoleVisible = settings.BepInExConsoleVisible,
+            BepInExConsoleStatus = settings.BepInExConsoleStatus,
+        });
+    }
+
+    private string BuildBepInExConsoleActionJson(string query)
+    {
+        var visible = ReadBoolQuery(query, "visible");
+        if (!visible.HasValue)
+        {
+            var current = _getLogSettings();
+            return ToJson(new LocalApiBepInExConsoleActionDto
+            {
+                Ok = false,
+                Supported = current.BepInExConsoleSupported,
+                ConfiguredVisible = current.BepInExConsoleConfiguredVisible,
+                Active = current.BepInExConsoleActive,
+                Visible = current.BepInExConsoleVisible,
+                Status = current.BepInExConsoleStatus,
+                Error = "invalid BepInEx console visibility",
+            });
+        }
+
+        var state = _updateBepInExConsoleVisibility(visible.Value);
+        return ToJson(new LocalApiBepInExConsoleActionDto
+        {
+            Ok = state.Ok,
+            Supported = state.Supported,
+            ConfiguredVisible = state.ConfiguredVisible,
+            Active = state.Active,
+            Visible = state.Visible,
+            Status = state.Status,
+            Error = state.Error,
         });
     }
 
@@ -2164,4 +2212,9 @@ internal sealed class LocalApiLogSettings
     public long AggregateModLogMaxFileBytes { get; init; } = AggregateModLogService.MaxFileBytes;
     public int AggregateModLogMaxFileCount { get; init; } = AggregateModLogService.DefaultMaxFileCount;
     public long AggregateModLogMaxTotalBytes { get; init; } = AggregateModLogService.GetMaxTotalBytes(AggregateModLogService.DefaultMaxFileCount);
+    public bool BepInExConsoleSupported { get; init; }
+    public bool BepInExConsoleConfiguredVisible { get; init; }
+    public bool BepInExConsoleActive { get; init; }
+    public bool BepInExConsoleVisible { get; init; }
+    public string BepInExConsoleStatus { get; init; } = "";
 }

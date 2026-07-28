@@ -169,8 +169,8 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 - 自动开始料理固定尝试完成原生 QTE 奖励结算，不再提供跳过或完成 QTE 的配置开关。该功能不打开游戏音游面板，只尝试调用游戏 QTE 成功奖励入口；运行时失败时返回诊断信息，不应中断已开始的料理。
 - 游戏内料理/材料/酒水列表置顶及目标列表项高亮是实验性功能，只允许在对应面板刷新作用域内影响游戏原生 `CheckPinned` 判定，并在精确元素绑定回调中增加可见提示；不得直接改写 IL2CPP 列表、自动点击或绕过游戏自身筛选。本地 API 更新置顶目标失败时必须静默降级。
 - 普客订单被动快照应保持约 1 秒级缓存；普客自动化动作后只强制刷新普客订单快照。没有活动 `AutomationCookingJob` 时不要在 `Update()` 热路径轮询料理 job。
-- 伴随窗口 `日志` 页只控制总日志 `aggregate-mod.log` 和诊断包导出，不再读取 `BepInEx/LogOutput.log`、自动化独立日志或经营诊断独立日志。总日志分片上限不保护 BepInEx/Unity 共享 output log；任何后台 worker 都不得用无限异常重试向共享日志持续写入，Mod 也不得接管、截断或删除共享日志。
-- Mod 不得改写全局 `BepInEx.cfg` 或主动隐藏宿主控制台，避免影响同进程中的其他插件；控制台是否启用由 BepInEx/用户配置决定。`SetConsoleUtf8` 只负责用户显式启用时的当前控制台编码。
+- 伴随窗口 `日志` 页控制总日志 `aggregate-mod.log`、诊断包导出和本机 BepInEx 控制台可见性，不读取 `BepInEx/LogOutput.log`、自动化独立日志或经营诊断独立日志。总日志分片上限不保护 BepInEx/Unity 共享 output log；任何后台 worker 都不得用无限异常重试向共享日志持续写入，Mod 也不得接管、截断或删除共享日志。
+- Mod 不得改写全局 `BepInEx.cfg`。控制台启动自动显示默认关闭；默认关闭时不得隐藏用户已由 BepInEx 全局配置开启的窗口。仅回环客户端的显式请求可显示或隐藏当前进程窗口：显示按需调用 #783 `ConsoleManager.CreateConsole()`，以调用前后真实 Win32 window handle 从无到有判定本次新建窗口，只对该窗口删除 `SC_CLOSE`，并保证唯一 `ConsoleLogListener`；BepInEx driver active、窗口存在和真实可见性必须分别读取，隐藏及失败回滚只按真实可见性调用 `ShowWindow(SW_HIDE)`，绝不调用 `DetachConsole()`。窗口切换、Mod 启动偏好写入和响应状态读取必须在同一服务锁内提交，前端按连接身份、请求代际和 Abort 隔离迟到 GET，并把读取错误与动作错误分开保存。`SetConsoleUtf8` 只处理当前已创建控制台的编码。
 - 本地 API 提交到 Unity 主线程的库存、订单和稀客邀请读写命令必须有排队上限和明确状态。GET 邀请列表即使回到 Unity 主线程也必须保持严格纯读；POST 单独/批量邀请才允许在重校验后写入。尚未开始的命令超时后必须原子取消，主线程不得晚到执行；已经开始的命令必须返回确定结果，避免客户端在副作用已发生时重试。控制器销毁时先取消并唤醒排队命令，再停止并等待有界的 HTTP handler；每类队列每帧最多执行一个有效命令。
 - 运行时库存修改只允许调用当前游戏的 `RunTimeStorage.IngredientInRange/IngredientOutRange/BeverageInRange/BeverageOutRange` 原生入口，并在调用后读取最终数量做精确校验。不得在原生调用异常时直接写 `Ingredients`/`Beverages` 私有字典绕过 callback。
 - 诊断开关只能增加采样和日志，不得改变推荐、订单或自动化的权威业务输入。夜间经营在有 runtime capture 时始终以 capture 为正式来源；反射探针结果只进入诊断快照。

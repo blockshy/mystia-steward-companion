@@ -884,6 +884,7 @@ internal sealed class StewardOverlayController
                 _localApiToken,
                 GetLocalApiLogSettings,
                 UpdateLocalApiLogSettings,
+                UpdateBepInExConsoleVisibility,
                 GetLocalApiConnectionConfig,
                 UpdateLocalApiConnectionConfig,
                 RegenerateLocalApiToken,
@@ -1905,6 +1906,7 @@ internal sealed class StewardOverlayController
 
     private LocalApiLogSettings GetLocalApiLogSettings()
     {
+        var consoleState = BepInExConsoleWindow.Instance.ReadState();
         if (_config == null)
         {
             return new LocalApiLogSettings
@@ -1913,6 +1915,11 @@ internal sealed class StewardOverlayController
                 AggregateModLogMaxFileBytes = AggregateModLogService.MaxFileBytes,
                 AggregateModLogMaxFileCount = AggregateModLogService.DefaultMaxFileCount,
                 AggregateModLogMaxTotalBytes = AggregateModLogService.GetMaxTotalBytes(AggregateModLogService.DefaultMaxFileCount),
+                BepInExConsoleSupported = consoleState.Supported,
+                BepInExConsoleConfiguredVisible = consoleState.ConfiguredVisible,
+                BepInExConsoleActive = consoleState.Active,
+                BepInExConsoleVisible = consoleState.Visible,
+                BepInExConsoleStatus = consoleState.Status,
             };
         }
 
@@ -1924,6 +1931,11 @@ internal sealed class StewardOverlayController
             AggregateModLogMaxFileBytes = AggregateModLogService.MaxFileBytes,
             AggregateModLogMaxFileCount = maxFileCount,
             AggregateModLogMaxTotalBytes = AggregateModLogService.GetMaxTotalBytes(maxFileCount),
+            BepInExConsoleSupported = consoleState.Supported,
+            BepInExConsoleConfiguredVisible = consoleState.ConfiguredVisible,
+            BepInExConsoleActive = consoleState.Active,
+            BepInExConsoleVisible = consoleState.Visible,
+            BepInExConsoleStatus = consoleState.Status,
         };
     }
 
@@ -1944,6 +1956,20 @@ internal sealed class StewardOverlayController
             _config.EnableAggregateModLog.Value,
             _config.AggregateModLogPath.Value,
             _config.AggregateModLogMaxFileCount.Value);
+    }
+
+    private BepInExConsoleWindowState UpdateBepInExConsoleVisibility(bool visible)
+    {
+        var state = BepInExConsoleWindow.Instance.ApplyVisibility(visible);
+        if (state.Ok
+            && visible
+            && _config?.SetConsoleUtf8.Value == true
+            && _log != null)
+        {
+            ConsoleEncodingHelper.TryUseUtf8(_log);
+        }
+
+        return state;
     }
 
     private string OpenLocalApiLogFolder(string target)

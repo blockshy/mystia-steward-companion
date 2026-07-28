@@ -467,6 +467,21 @@ export interface LocalApiLogSettings {
   aggregateModLogMaxFileBytes: number;
   aggregateModLogMaxFileCount: number;
   aggregateModLogMaxTotalBytes: number;
+  bepInExConsoleSupported: boolean;
+  bepInExConsoleConfiguredVisible: boolean;
+  bepInExConsoleActive: boolean;
+  bepInExConsoleVisible: boolean;
+  bepInExConsoleStatus: string;
+}
+
+export interface BepInExConsoleVisibilityResponse {
+  ok: boolean;
+  supported: boolean;
+  configuredVisible: boolean;
+  active: boolean;
+  visible: boolean;
+  status: string;
+  error: string | null;
 }
 
 export interface LocalApiLanEndpoint {

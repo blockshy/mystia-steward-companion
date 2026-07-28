@@ -33,6 +33,18 @@ public sealed class MystiaStewardCompanionPlugin : BasePlugin
     public override void Load()
     {
         var settings = StewardPluginConfig.Bind(Config);
+        BepInExConsoleWindow.Instance.ConfigurePreference(
+            () => settings.ShowBepInExConsoleOnStartup.Value,
+            visible => settings.ShowBepInExConsoleOnStartup.Value = visible);
+        if (settings.ShowBepInExConsoleOnStartup.Value)
+        {
+            var consoleState = BepInExConsoleWindow.Instance.ApplyVisibility(visible: true);
+            if (!consoleState.Ok)
+            {
+                Log.LogWarning($"Failed to show the BepInEx console on startup: {consoleState.Error}");
+            }
+        }
+
         AggregateModLogService.Configure(
             settings.EnableAggregateModLog.Value,
             settings.AggregateModLogPath.Value,

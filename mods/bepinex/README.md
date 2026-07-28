@@ -259,6 +259,7 @@ Windows 下可直接使用 WebView2 识别为 `standard` 映射的 Xbox 手柄�
 - 可开启/关闭总日志。
 - 可打开总日志目录。
 - 可导出诊断包。
+- 可在游戏电脑本机显示或隐藏当前进程的 BepInEx 控制台；显隐成功后会立即保存为下次启动偏好，默认关闭，局域网设备不能远程操作。
 - 总日志默认关闭，开启后统一记录 BepInEx/Unity 事件、自动化、经营诊断和运行时数据诊断。
 - 经营中页订单和自动化状态中的 `日志 R-0001` / `日志 N-0001` 对应总日志里的 `trace=R-0001` / `trace=N-0001`，排查单笔订单时优先按这个标识搜索。
 - 最终没有可执行推荐方案时，订单提示和总日志会记录首个候选清零阶段、阶段计数、缺失材料/厨具及预算证据；同一经营会话中的相同状态有界去重，诊断不会改变候选或自动化目标。
@@ -490,6 +491,7 @@ BepInEx/config/MystiaStewardCompanion/aggregate-mod.log
 | `Diagnostics.EnableAggregateModLog` | `false` | 是否写入总日志。启用后统一记录 BepInEx/Unity 事件、自动化、经营诊断和运行时数据诊断。 |
 | `Diagnostics.AggregateModLogPath` | 空 | 总日志路径；留空时写入 `BepInEx/config/MystiaStewardCompanion/aggregate-mod.log`。 |
 | `Diagnostics.AggregateModLogMaxFileCount` | `30` | 总日志最多保留的文件数，包含当前文件；每个文件 10 MB，默认约 300 MB。 |
+| `Diagnostics.ShowBepInExConsoleOnStartup` | `false` | 是否在 Mod 加载时自动显示 BepInEx 控制台，仅用于本机排查。 |
 | `SetConsoleUtf8` | `true` | Mod 加载后尝试把 Windows 控制台切换到 UTF-8。 |
 
 如果从旧版本升级，Mod 会在新配置不存在时自动复制旧配置到当前文件名。
@@ -506,6 +508,8 @@ BepInEx/config/MystiaStewardCompanion/aggregate-mod.log
 总日志默认关闭。开启后会监听 BepInEx 的所有日志源，每条记录带时间、级别、来源和线程标注，并写入 `BepInEx/config/MystiaStewardCompanion/aggregate-mod.log`。自动化动作、前端自动化候选跳过原因、经营扫描候选、运行时固定数据快照都会以不同 channel 写入同一组总日志文件。订单相关自动化日志会带 `trace=` 字段；该字段与经营中页显示的订单日志标识一致。单个文件达到 10 MB 后会拆分为 `aggregate-mod.1.log`、`aggregate-mod.2.log` 等递增文件；默认保留 30 个文件，约 300 MB，可在日志页或 `Diagnostics.AggregateModLogMaxFileCount` 调整。排查结束后建议关闭，避免长期写入占用磁盘。
 
 `aggregate-mod.log` 的分片上限不适用于 BepInEx/Unity 共享的 `BepInEx/LogOutput.log`、`output_log.txt` 或 `Player.log`。如果共享日志异常变大，先退出游戏，再保留末尾少量日志用于排查并删除大文件；Mod 不会擅自截断其他 Mod 共同使用的日志。
+
+日志页的控制台按钮只在游戏电脑本机可用。显示时会按需创建控制台并保持 BepInEx 日志监听；隐藏时只隐藏窗口，不释放共享控制台或中断日志。每次显隐成功后会立即写入 `Diagnostics.ShowBepInExConsoleOnStartup`，作为下次启动偏好，但不会修改全局 `BepInEx.cfg`。如果全局配置已经要求 BepInEx 启动时显示控制台，Mod 默认设置不会覆盖它。为避免误关闭游戏进程，由 Mod 新建的控制台会禁用窗口关闭命令，请使用日志页按钮隐藏。
 
 ## 故障排查
 
@@ -541,7 +545,7 @@ BepInEx/plugins/mystia-steward-companion/companion/
 
 ### 启动时仍短暂出现控制台
 
-控制台由 BepInEx 在 Mod 加载前创建，是否显示由 BepInEx/用户配置决定。本 Mod 不隐藏宿主控制台，也不改写全局 `BepInEx.cfg`；需要关闭时请修改 BepInEx 自身配置。排查运行期问题时优先使用日志页的总日志和诊断包。
+控制台可能由 BepInEx 在 Mod 加载前创建，因此 Mod 无法阻止 preloader 阶段的窗口或早期输出。进入伴随窗口后，可在本机日志页隐藏当前控制台；若希望下次从进程启动起不创建窗口，需要关闭 BepInEx 全局控制台配置。Mod 不改写全局 `BepInEx.cfg`，也不会释放其他插件共用的控制台。
 
 ### 控制台早期中文乱码
 

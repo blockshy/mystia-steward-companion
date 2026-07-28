@@ -11,6 +11,7 @@ import type {
   DiagnosticPackageResponse,
   AutomationCancellationResponse,
   AutomationSafetyBarrierAckResponse,
+  BepInExConsoleVisibilityResponse,
   CustomRecipeData,
   CustomRecipeFlagUpdateInput,
   CustomRecipeMutationResponse,
@@ -122,6 +123,21 @@ export async function writeLogSettings(
     endpoint,
     apiToken,
     `/logs/config?${params.toString()}`,
+    2800,
+    signal,
+  );
+}
+
+export async function setBepInExConsoleVisibility(
+  endpoint: string,
+  apiToken: string,
+  visible: boolean,
+  signal: AbortSignal,
+): Promise<BepInExConsoleVisibilityResponse> {
+  return writeLocalApiJsonWithTimeout<BepInExConsoleVisibilityResponse>(
+    endpoint,
+    apiToken,
+    `/logs/console?visible=${String(visible)}`,
     2800,
     signal,
   );

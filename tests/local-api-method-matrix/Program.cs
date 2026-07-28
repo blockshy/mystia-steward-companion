@@ -32,6 +32,7 @@ var expectedPostRoutes = new HashSet<string>(StringComparer.Ordinal)
     "/local-api/config",
     "/local-api/token/regenerate",
     "/logs/config",
+    "/logs/console",
     "/logs/export-diagnostics",
     "/logs/open-folder",
     "/orders/complete-first",
@@ -119,6 +120,17 @@ try
         source[inviteRouteStart..nextPostRouteStart],
         "ReadRareGuestInvitationWriteExpectation(query)",
         "Invite-one does not forward its captured day-scene context.");
+
+    var consoleRouteStart = RequireIndex(source, "case \"/logs/console\":", postSwitchStart);
+    var consoleRouteEnd = RequireIndex(source, "case \"/logs/open-folder\":", consoleRouteStart);
+    AssertContains(
+        source[consoleRouteStart..consoleRouteEnd],
+        "if (!isLoopbackClient)",
+        "BepInEx console control is not restricted to the game PC.");
+    AssertContains(
+        source[consoleRouteStart..consoleRouteEnd],
+        "BepInEx console control is only allowed from the game PC",
+        "BepInEx console LAN rejection is not explicit.");
 
     var overlaySource = File.ReadAllText(FindOverlaySource());
     var cancellationProcessIndex = RequireIndex(overlaySource, "ProcessPendingAutomationJobCancellations();", 0);
