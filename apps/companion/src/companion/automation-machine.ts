@@ -39,6 +39,25 @@ export interface AutomationStageTransition extends AutomationStageCounters {
   paused: boolean;
 }
 
+const RECOVERABLE_COOKING_TERMINAL_CODES = new Set([
+  'cooking-ownership-lost',
+  'cooking-controller-reused',
+  'cooking-mismatch-stored',
+  'cooking-target-unavailable-stored',
+]);
+
+export function isRecoverableCookingTerminalEvent(event: {
+  code: string;
+  reasonCode: string;
+  outcome: AutomationJobOutcome | '';
+  terminal: boolean;
+}): boolean {
+  return event.terminal
+    && event.outcome === 'interrupted'
+    && (RECOVERABLE_COOKING_TERMINAL_CODES.has(event.code)
+      || RECOVERABLE_COOKING_TERMINAL_CODES.has(event.reasonCode));
+}
+
 export function resolveAutomationStepStartedAtMs(
   currentStep: string,
   nextStep: string,
@@ -101,7 +120,9 @@ export function resolveAutomationNextAttemptAtMs(
   now: number,
   retryAfterMs: number,
 ): number {
-  if (outcome === 'retryable-failure' || outcome === 'interrupted') {
+  if (outcome === 'retryable-failure'
+    || outcome === 'interrupted'
+    || (outcome === 'waiting' && retryAfterMs > 0)) {
     return now + Math.max(250, retryAfterMs);
   }
   return outcome === 'progressed' || outcome === 'completed' ? 0 : current;

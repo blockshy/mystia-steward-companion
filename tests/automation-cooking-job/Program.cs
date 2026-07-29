@@ -1,10 +1,16 @@
+using System.Runtime.CompilerServices;
+using HarmonyLib;
 using MystiaStewardCompanion.Save;
 
 try
 {
+    VerifyHarmonyMutationCompletionSemantics();
+    VerifyCookerStartAvailabilityPolicy();
+    VerifyCookControllerFoodResultIdentityDomain();
     VerifySameGenerationCanAdoptFinalResult();
     VerifyControllerReuseNeverProducesASideEffect();
-    VerifyTwoMissingObservationsInterruptTheJob();
+    VerifyExplicitOwnershipLossInterruptsTheJob();
+    VerifyPersistentMissingResultBlocksTheJob();
     VerifyProgressStallBlocksTheJob();
     VerifyNativeFinalizeWaitNeverRequestsASideEffect();
     VerifyManualHandoffSuspendsCookingSideEffects();
@@ -20,14 +26,292 @@ try
     VerifyCommittedCleanupRetriesAreBounded();
     VerifySafetyBarriersRequireExactAcknowledgement();
     Console.WriteLine(
-        "PASS: cooking jobs accept same-generation final results, reject reused cookers without side effects, "
-        + "block stalled progress, lock uncertain/committed side effects, and bound committed cleanup retries.");
+        "PASS: cooking jobs reuse only strict-idle or completed-Extract cookers, accept same-generation final "
+        + "results, reject reused cookers without side effects, block stalled progress, lock uncertain/committed "
+        + "side effects, and bound committed cleanup retries.");
     return 0;
 }
 catch (Exception ex)
 {
     Console.Error.WriteLine($"FAIL: {ex}");
     return 1;
+}
+
+static void VerifyHarmonyMutationCompletionSemantics()
+{
+    const string harmonyId = "mystia-steward-companion.tests.automation-cooking-mutation";
+    var harmony = new Harmony(harmonyId);
+    var prefix = new HarmonyMethod(AccessTools.Method(
+        typeof(HarmonyMutationReceiptProbe),
+        nameof(HarmonyMutationReceiptProbe.Prefix)))
+    {
+        priority = Priority.First,
+    };
+    var postfix = new HarmonyMethod(AccessTools.Method(
+        typeof(HarmonyMutationReceiptProbe),
+        nameof(HarmonyMutationReceiptProbe.Postfix)));
+
+    try
+    {
+        HarmonyMutationReceiptProbe.Reset();
+        HarmonyMutationReceiptProbe.Postfix(default, __runOriginal: true);
+        AssertHarmonyMutationReceipt(
+            originalCalls: 0,
+            postfixCalls: 1,
+            completed: false,
+            "A default mutation token incorrectly completed a receipt.");
+
+        PatchMutationProbe(harmony, nameof(HarmonyMutationTargetProbe.Normal), prefix, postfix);
+        HarmonyMutationReceiptProbe.Reset();
+        new HarmonyMutationTargetProbe().Normal();
+        AssertHarmonyMutationReceipt(
+            originalCalls: 1,
+            postfixCalls: 1,
+            completed: true,
+            "A normally returned original did not complete its matching mutation receipt.");
+
+        PatchMutationProbe(harmony, nameof(HarmonyMutationTargetProbe.Throwing), prefix, postfix);
+        HarmonyMutationReceiptProbe.Reset();
+        try
+        {
+            new HarmonyMutationTargetProbe().Throwing();
+            throw new InvalidOperationException("The throwing Harmony probe unexpectedly returned.");
+        }
+        catch (InvalidOperationException ex) when (ex.Message == HarmonyMutationTargetProbe.ThrowMessage)
+        {
+            // Expected: an original exception bypasses the ordinary postfix.
+        }
+
+        AssertHarmonyMutationReceipt(
+            originalCalls: 1,
+            postfixCalls: 0,
+            completed: false,
+            "A throwing original incorrectly completed its mutation receipt.");
+
+        PatchMutationProbe(harmony, nameof(HarmonyMutationTargetProbe.NestedMutation), prefix, postfix);
+        HarmonyMutationReceiptProbe.Reset();
+        new HarmonyMutationTargetProbe().NestedMutation();
+        AssertHarmonyMutationReceipt(
+            originalCalls: 1,
+            postfixCalls: 1,
+            completed: false,
+            "A stale outer postfix overwrote a newer nested mutation revision.");
+
+        PatchMutationProbe(harmony, nameof(HarmonyMutationTargetProbe.Skipped), prefix, postfix);
+        harmony.Patch(
+            AccessTools.Method(typeof(HarmonyMutationTargetProbe), nameof(HarmonyMutationTargetProbe.Skipped)),
+            prefix: new HarmonyMethod(AccessTools.Method(
+                typeof(HarmonyMutationSkipProbe),
+                nameof(HarmonyMutationSkipProbe.Prefix)))
+            {
+                priority = Priority.Last,
+            });
+        HarmonyMutationReceiptProbe.Reset();
+        new HarmonyMutationTargetProbe().Skipped();
+        AssertHarmonyMutationReceipt(
+            originalCalls: 0,
+            postfixCalls: 1,
+            completed: false,
+            "A skipped original incorrectly completed its mutation receipt.");
+    }
+    finally
+    {
+        harmony.UnpatchSelf();
+    }
+}
+
+static void PatchMutationProbe(
+    Harmony harmony,
+    string methodName,
+    HarmonyMethod prefix,
+    HarmonyMethod postfix)
+{
+    harmony.Patch(
+        AccessTools.Method(typeof(HarmonyMutationTargetProbe), methodName),
+        prefix: prefix,
+        postfix: postfix);
+}
+
+static void AssertHarmonyMutationReceipt(
+    int originalCalls,
+    int postfixCalls,
+    bool completed,
+    string message)
+{
+    if (HarmonyMutationTargetProbe.OriginalCalls != originalCalls
+        || HarmonyMutationReceiptProbe.PostfixCalls != postfixCalls
+        || HarmonyMutationReceiptProbe.Completed != completed)
+    {
+        throw new InvalidOperationException(
+            $"{message} original={HarmonyMutationTargetProbe.OriginalCalls}/{originalCalls}; "
+            + $"postfix={HarmonyMutationReceiptProbe.PostfixCalls}/{postfixCalls}; "
+            + $"completed={HarmonyMutationReceiptProbe.Completed}/{completed}.");
+    }
+}
+
+static void VerifyCookerStartAvailabilityPolicy()
+{
+    AssertCookerStartAvailability(
+        phase: 0,
+        resultEmpty: true,
+        chosenRecipeEmpty: true,
+        couldOpen: true,
+        completedExtractObserved: false,
+        AutomationCookerStartAvailability.StrictIdle,
+        "An exact native-idle cooker was not startable.");
+    AssertCookerStartAvailability(
+        phase: 0,
+        resultEmpty: true,
+        chosenRecipeEmpty: false,
+        couldOpen: true,
+        completedExtractObserved: true,
+        AutomationCookerStartAvailability.ExtractedResidual,
+        "A normally completed Extract with only residual recipe metadata was not reusable.");
+
+    foreach (var unavailable in new[]
+    {
+        (Phase: 0, ResultEmpty: true, ChosenRecipeEmpty: false, CouldOpen: true, CompletedExtract: false),
+        (Phase: 1, ResultEmpty: true, ChosenRecipeEmpty: false, CouldOpen: true, CompletedExtract: true),
+        (Phase: 0, ResultEmpty: false, ChosenRecipeEmpty: false, CouldOpen: true, CompletedExtract: true),
+        (Phase: 0, ResultEmpty: true, ChosenRecipeEmpty: false, CouldOpen: false, CompletedExtract: true),
+    })
+    {
+        AssertCookerStartAvailability(
+            unavailable.Phase,
+            unavailable.ResultEmpty,
+            unavailable.ChosenRecipeEmpty,
+            unavailable.CouldOpen,
+            unavailable.CompletedExtract,
+            AutomationCookerStartAvailability.Unavailable,
+            "A cooker without the exact strict-idle or completed-Extract proof became startable.");
+    }
+}
+
+static void AssertCookerStartAvailability(
+    int phase,
+    bool resultEmpty,
+    bool chosenRecipeEmpty,
+    bool couldOpen,
+    bool completedExtractObserved,
+    AutomationCookerStartAvailability expected,
+    string message)
+{
+    var actual = AutomationCookerStartPolicy.Classify(
+        phase,
+        resultEmpty,
+        chosenRecipeEmpty,
+        couldOpen,
+        completedExtractObserved);
+    if (actual != expected)
+    {
+        throw new InvalidOperationException($"{message} Expected {expected}, got {actual}.");
+    }
+}
+
+static void VerifyCookControllerFoodResultIdentityDomain()
+{
+    if (!CookControllerFoodResultIdentityPolicy.TryCreate(
+            CookControllerFoodResultIdentity.ExactManagedTypeName,
+            sellableType: 0,
+            foodId: 14,
+            out var catalogFood,
+            out var catalogDiagnostic)
+        || catalogFood.Kind != CookControllerFoodResultKind.CatalogFood
+        || catalogFood.FoodId != 14
+        || catalogFood.IsDarkCuisine)
+    {
+        throw new InvalidOperationException(
+            $"A non-negative catalog food was rejected or misclassified: {catalogDiagnostic}");
+    }
+
+    if (!CookControllerFoodResultIdentityPolicy.TryCreate(
+            CookControllerFoodResultIdentity.ExactManagedTypeName,
+            sellableType: 0,
+            foodId: -1,
+            out var darkCuisine,
+            out var darkCuisineDiagnostic)
+        || darkCuisine.Kind != CookControllerFoodResultKind.DarkCuisine
+        || darkCuisine.FoodId != -1
+        || !darkCuisine.IsDarkCuisine)
+    {
+        throw new InvalidOperationException(
+            $"The game's exact Food/-1 dark-cuisine result was rejected: {darkCuisineDiagnostic}");
+    }
+
+    var startedAt = Utc(11, 50, 0);
+    var tracker = NewTracker(expectedGeneration: 39, startedAt, phase: 2, progress: 0.9f);
+    var nativeFinalizeWait = tracker.Observe(Observe(
+        startedAt.AddSeconds(1),
+        generation: 39,
+        AutomationCookingObservationKind.Owned,
+        phase: 2,
+        progress: 1f,
+        detail: $"result={darkCuisine.SellableType}/{darkCuisine.FoodId}"));
+    AssertTransition(
+        nativeFinalizeWait,
+        outcome: "progressed",
+        reason: "cooking-native-finalize-waiting",
+        state: "cooking",
+        directive: AutomationCookingJobDirective.None,
+        terminal: false,
+        progressed: true,
+        "A Phase 2 Food/-1 result bypassed the native finalization boundary.");
+
+    var readyForMismatchRecovery = tracker.Observe(Observe(
+        startedAt.AddSeconds(2),
+        generation: 39,
+        AutomationCookingObservationKind.Owned,
+        phase: 3,
+        progress: 1f,
+        detail: $"result={darkCuisine.SellableType}/{darkCuisine.FoodId}"));
+    AssertTransition(
+        readyForMismatchRecovery,
+        outcome: "progressed",
+        reason: "cooking-result-ready",
+        state: "ready",
+        directive: AutomationCookingJobDirective.DeliverOwnedResult,
+        terminal: false,
+        progressed: true,
+        "A Phase 3 Food/-1 result did not enter the existing mismatch recovery boundary.");
+
+    AssertCookControllerFoodResultRejected(
+        managedTypeName: "Tests.FakeSellable",
+        sellableType: 0,
+        foodId: -1,
+        "An arbitrary object exposing Type/Id escaped the exact Sellable type boundary.");
+    AssertCookControllerFoodResultRejected(
+        managedTypeName: CookControllerFoodResultIdentity.ExactManagedTypeName,
+        sellableType: 1,
+        foodId: -1,
+        "A Beverage/-1 result escaped the cooker food boundary.");
+    AssertCookControllerFoodResultRejected(
+        managedTypeName: CookControllerFoodResultIdentity.ExactManagedTypeName,
+        sellableType: 0,
+        foodId: -2,
+        "An unknown negative food id escaped the cooker result boundary.");
+    AssertCookControllerFoodResultRejected(
+        managedTypeName: CookControllerFoodResultIdentity.ExactManagedTypeName,
+        sellableType: -1,
+        foodId: -1,
+        "A missing/unreadable Sellable.Type sentinel was treated as dark cuisine.");
+}
+
+static void AssertCookControllerFoodResultRejected(
+    string? managedTypeName,
+    int sellableType,
+    int foodId,
+    string message)
+{
+    if (CookControllerFoodResultIdentityPolicy.TryCreate(
+            managedTypeName,
+            sellableType,
+            foodId,
+            out _,
+            out var diagnostic)
+        || string.IsNullOrWhiteSpace(diagnostic))
+    {
+        throw new InvalidOperationException(message);
+    }
 }
 
 static void VerifySameGenerationCanAdoptFinalResult()
@@ -95,42 +379,58 @@ static void VerifyControllerReuseNeverProducesASideEffect()
         "A reused cooker was not retired safely.");
 }
 
-static void VerifyTwoMissingObservationsInterruptTheJob()
+static void VerifyExplicitOwnershipLossInterruptsTheJob()
 {
     var startedAt = Utc(12, 20, 0);
     var tracker = NewTracker(expectedGeneration: 7, startedAt, phase: 2, progress: 0.6f);
 
-    var first = tracker.Observe(Observe(
+    var ownershipLost = tracker.Observe(Observe(
         startedAt.AddMilliseconds(100),
         generation: 7,
-        AutomationCookingObservationKind.Missing,
+        AutomationCookingObservationKind.OwnershipLost,
         phase: 0,
         progress: 0f));
     AssertTransition(
-        first,
-        outcome: "waiting",
-        reason: "cooking-result-temporarily-missing",
-        state: "cooking",
-        directive: AutomationCookingJobDirective.None,
-        terminal: false,
-        progressed: false,
-        "The first missing observation should be tolerated.");
-
-    var second = tracker.Observe(Observe(
-        startedAt.AddMilliseconds(600),
-        generation: 7,
-        AutomationCookingObservationKind.Missing,
-        phase: 0,
-        progress: 0f));
-    AssertTransition(
-        second,
+        ownershipLost,
         outcome: "interrupted",
-        reason: "cooking-result-removed",
+        reason: "cooking-ownership-lost",
         state: "terminal",
         directive: AutomationCookingJobDirective.None,
         terminal: true,
         progressed: false,
-        "Two missing observations after the grace period did not interrupt the job.");
+        "An exact controller-content ownership loss did not interrupt the old job.");
+}
+
+static void VerifyPersistentMissingResultBlocksTheJob()
+{
+    var startedAt = Utc(12, 21, 0);
+    var tracker = NewTracker(expectedGeneration: 8, startedAt, phase: 2, progress: 0.6f);
+
+    AutomationCookingTransition transition = default;
+    for (var attempt = 1; attempt <= 6; attempt++)
+    {
+        transition = tracker.Observe(Observe(
+            startedAt.AddMilliseconds(attempt * 600),
+            generation: 8,
+            AutomationCookingObservationKind.Missing,
+            phase: 2,
+            progress: 0.6f));
+        if (attempt < 6 && transition.Terminal)
+        {
+            throw new InvalidOperationException(
+                $"A transient non-idle missing result was blocked at observation {attempt}.");
+        }
+    }
+
+    AssertTransition(
+        transition,
+        outcome: "blocked",
+        reason: "cooking-result-missing",
+        state: "terminal",
+        directive: AutomationCookingJobDirective.None,
+        terminal: true,
+        progressed: false,
+        "A persistently missing result in a non-idle cooker did not enter a bounded blocked state.");
 }
 
 static void VerifyProgressStallBlocksTheJob()
@@ -321,9 +621,19 @@ static void VerifyAlternatingOwnershipFailuresAreBounded()
 {
     var startedAt = Utc(12, 45, 0);
     var tracker = NewTracker(expectedGeneration: 29, startedAt, phase: 2, progress: 0.3f);
-    tracker.Observe(Observe(startedAt.AddMilliseconds(200), 29, AutomationCookingObservationKind.Missing, 0, 0f));
-    tracker.Observe(Observe(startedAt.AddMilliseconds(400), 29, AutomationCookingObservationKind.Unreadable, -1, 0f));
-    var terminal = tracker.Observe(Observe(startedAt.AddMilliseconds(700), 29, AutomationCookingObservationKind.Missing, 0, 0f));
+    AutomationCookingTransition terminal = default;
+    for (var attempt = 1; attempt <= 6; attempt++)
+    {
+        terminal = tracker.Observe(Observe(
+            startedAt.AddMilliseconds(attempt * 600),
+            29,
+            attempt % 2 == 0
+                ? AutomationCookingObservationKind.Unreadable
+                : AutomationCookingObservationKind.Missing,
+            attempt % 2 == 0 ? -1 : 2,
+            0.3f));
+    }
+
     if (!terminal.Terminal)
     {
         throw new InvalidOperationException("Alternating missing and unreadable observations were allowed to wait forever.");
@@ -635,5 +945,98 @@ static void AssertTransition(
     if (actual != expected)
     {
         throw new InvalidOperationException($"{message} Expected '{expected}', actual '{actual}'.");
+    }
+}
+
+internal readonly record struct HarmonyMutationProbeToken(long Revision);
+
+internal sealed class HarmonyMutationTargetProbe
+{
+    internal const string ThrowMessage = "expected Harmony mutation probe failure";
+
+    public static int OriginalCalls { get; private set; }
+
+    public static void Reset()
+    {
+        OriginalCalls = 0;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public void Normal()
+    {
+        OriginalCalls++;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public void Throwing()
+    {
+        OriginalCalls++;
+        throw new InvalidOperationException(ThrowMessage);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public void NestedMutation()
+    {
+        OriginalCalls++;
+        HarmonyMutationReceiptProbe.RecordNestedMutation();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public void Skipped()
+    {
+        OriginalCalls++;
+    }
+}
+
+internal static class HarmonyMutationReceiptProbe
+{
+    private static long _nextRevision;
+    private static long _currentRevision;
+
+    public static int PostfixCalls { get; private set; }
+
+    public static bool Completed { get; private set; }
+
+    public static void Reset()
+    {
+        _nextRevision = 0;
+        _currentRevision = 0;
+        PostfixCalls = 0;
+        Completed = false;
+        HarmonyMutationTargetProbe.Reset();
+    }
+
+    public static void Prefix(out HarmonyMutationProbeToken __state)
+    {
+        _nextRevision++;
+        _currentRevision = _nextRevision;
+        Completed = false;
+        __state = new HarmonyMutationProbeToken(_currentRevision);
+    }
+
+    public static void Postfix(HarmonyMutationProbeToken __state, bool __runOriginal)
+    {
+        PostfixCalls++;
+        if (!__runOriginal || __state.Revision <= 0 || __state.Revision != _currentRevision)
+        {
+            return;
+        }
+
+        Completed = true;
+    }
+
+    public static void RecordNestedMutation()
+    {
+        _nextRevision++;
+        _currentRevision = _nextRevision;
+        Completed = false;
+    }
+}
+
+internal static class HarmonyMutationSkipProbe
+{
+    public static bool Prefix()
+    {
+        return false;
     }
 }

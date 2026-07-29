@@ -206,8 +206,9 @@ internal sealed class NightBusinessReflectionProvider
         }
 
         var activeOrders = Measure("deduplicate.orders", () => DeduplicateOrders(orders));
-        var place = Measure("place.name", ReadCurrentPlace);
-        var placeLabel = Measure("place.label", ReadCurrentPlaceLabel);
+        var placeIdentity = Measure("place.identity", ReadCurrentPlaceIdentity);
+        var place = placeIdentity.Place;
+        var placeLabel = placeIdentity.Label;
         var recentRuntimeParseFailures = !_diagnosticsEnabled
             ? Array.Empty<string>()
             : Measure("runtimeCapture.failures", () => SpecialOrderRuntimeCapture.RecentParseFailuresSnapshot(TimeSpan.FromMinutes(5)));
@@ -761,20 +762,16 @@ internal sealed class NightBusinessReflectionProvider
         return result;
     }
 
-    private string? ReadCurrentPlace()
+    private CurrentPlaceIdentity ReadCurrentPlaceIdentity()
     {
         var izakayaData = ReadIzakayaData();
+        var label = GetMemberValue(izakayaData, "DaySceneMapLabel")?.ToString();
+        if (string.IsNullOrWhiteSpace(label)) return new CurrentPlaceIdentity(null, label);
+
         var name = GetMemberValue(izakayaData, "DaySceneMapName")?.ToString();
-        var normalized = NormalizePlace(name);
-        if (normalized != null) return normalized;
-
-        return NormalizePlace(GetMemberValue(izakayaData, "DaySceneMapLabel")?.ToString());
-    }
-
-    private string? ReadCurrentPlaceLabel()
-    {
-        var izakayaData = ReadIzakayaData();
-        return GetMemberValue(izakayaData, "DaySceneMapLabel")?.ToString();
+        return new CurrentPlaceIdentity(
+            NormalizePlace(name) ?? NormalizePlace(label),
+            label);
     }
 
     private static object? ReadIzakayaData()
@@ -792,6 +789,8 @@ internal sealed class NightBusinessReflectionProvider
         if (guestsManagerType == null) return null;
         return GetSingletonInstance(guestsManagerType) ?? FindUnityObject(guestsManagerType);
     }
+
+    private readonly record struct CurrentPlaceIdentity(string? Place, string? Label);
 
     private static string ReadManagerStatus()
     {

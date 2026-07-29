@@ -20,11 +20,6 @@ interface PrimaryExecutionPlanRecommendation {
   executionPlans: readonly RareOrderRecommendationPlan[];
 }
 
-export interface PrimaryExecutionPlanRecommendationOptions {
-  prioritizeMissionRecipe: boolean;
-  requireExecutablePlan: boolean;
-}
-
 type PrimaryExecutionPlanPreferences = Pick<
   CompanionPreferences,
   | 'automationEnabled'
@@ -115,24 +110,6 @@ export function isVerifiedMissionPrimaryExecutionPlan(
   return sortContext != null
     && primaryPlan != null
     && isMissionRecipeExecutionPlan(primaryPlan, sortContext);
-}
-
-export function selectPrimaryExecutionPlanRecommendation<
-  TRecommendation extends PrimaryExecutionPlanRecommendation,
->(
-  recommendations: readonly TRecommendation[],
-  options: PrimaryExecutionPlanRecommendationOptions,
-): TRecommendation | null {
-  if (options.prioritizeMissionRecipe) {
-    const missionRecommendation = recommendations.find(isVerifiedMissionPrimaryExecutionPlan);
-    if (missionRecommendation) return missionRecommendation;
-  }
-  if (options.requireExecutablePlan) {
-    return recommendations.find((recommendation) =>
-      getPrimaryExecutionPlan(recommendation.executionPlans) != null
-    ) ?? null;
-  }
-  return recommendations[0] ?? null;
 }
 
 function isFavoriteRecipePlan(

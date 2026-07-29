@@ -60,9 +60,10 @@ internal static partial class RuntimeOrderPreparationService
         public const string CookingStarted = "cooking-started";
         public const string CookingStartUnowned = "cooking-start-unowned";
         public const string CookingPending = "cooking-pending";
+        public const string CookingCookerWaiting = "cooking-cooker-waiting";
         public const string CookingMismatchStored = "cooking-mismatch-stored";
         public const string CookingTagsUnreadableStored = "cooking-tags-unreadable-stored";
-        public const string CookingResultRemoved = "cooking-result-removed";
+        public const string CookingOwnershipLost = "cooking-ownership-lost";
         public const string CookingControllerReused = "cooking-controller-reused";
         public const string CookingProgressStalled = "cooking-progress-stalled";
         public const string CookingProgressRegressed = "cooking-progress-regressed";
@@ -367,8 +368,15 @@ internal static partial class RuntimeOrderPreparationService
                         }
                         else
                         {
-                            AddFailure(result, "自动开始料理", cookingResult.Message, cookingResult.Code);
-                            if (request.StopOnError || IsAutomationSafetyBarrierCode(cookingResult.Code)) return Finish(result);
+                            if (cookingResult.Waiting)
+                            {
+                                AddSkipped(result, "自动开始料理", cookingResult.Message, cookingResult.Code);
+                            }
+                            else
+                            {
+                                AddFailure(result, "自动开始料理", cookingResult.Message, cookingResult.Code);
+                                if (request.StopOnError || IsAutomationSafetyBarrierCode(cookingResult.Code)) return Finish(result);
+                            }
                         }
                     }
                 }
@@ -954,8 +962,15 @@ internal static partial class RuntimeOrderPreparationService
                         }
                         else
                         {
-                            AddFailure(result, "普客开始料理", cookingResult.Message, cookingResult.Code);
-                            if (request.StopOnError || IsAutomationSafetyBarrierCode(cookingResult.Code)) return Finish(result);
+                            if (cookingResult.Waiting)
+                            {
+                                AddSkipped(result, "普客开始料理", cookingResult.Message, cookingResult.Code);
+                            }
+                            else
+                            {
+                                AddFailure(result, "普客开始料理", cookingResult.Message, cookingResult.Code);
+                                if (request.StopOnError || IsAutomationSafetyBarrierCode(cookingResult.Code)) return Finish(result);
+                            }
                         }
                     }
                 }
@@ -1522,7 +1537,7 @@ internal static partial class RuntimeOrderPreparationService
 
         var interruptedCode = new[]
         {
-            OrderPreparationStepCodes.CookingResultRemoved,
+            OrderPreparationStepCodes.CookingOwnershipLost,
             OrderPreparationStepCodes.CookingControllerReused,
             OrderPreparationStepCodes.CookingMismatchStored,
             OrderPreparationStepCodes.CookingTargetUnavailableStored,
@@ -1533,6 +1548,15 @@ internal static partial class RuntimeOrderPreparationService
             result.Automation.Stage = "cooking-delivery";
             result.Automation.ReasonCode = interruptedCode;
             result.Automation.RetryAfterMs = 500;
+            return;
+        }
+
+        if (codes.Contains(OrderPreparationStepCodes.CookingCookerWaiting))
+        {
+            result.Automation.Outcome = "waiting";
+            result.Automation.Stage = "cooking-start";
+            result.Automation.ReasonCode = OrderPreparationStepCodes.CookingCookerWaiting;
+            result.Automation.RetryAfterMs = 1000;
             return;
         }
 
@@ -1667,6 +1691,8 @@ internal static partial class RuntimeOrderPreparationService
         public object CookController { get; init; } = new();
         public nint ControllerPointer { get; init; }
         public long Generation { get; init; }
+        public long ContentRevision { get; init; }
+        public nint ChosenRecipePointer { get; init; }
         public string RecipeName { get; init; } = "";
         public DateTime CreatedAtUtc { get; init; }
         public CookingCollectionTarget Target { get; init; } = CookingCollectionTarget.ForRareOrder(new OrderPreparationRequest(), -1);
@@ -1731,7 +1757,10 @@ internal static partial class RuntimeOrderPreparationService
 
         public string FormatLogContext(string detail)
         {
-            return $"jobId={JobId}; generation={Generation}; controller=0x{(long)ControllerPointer:X}; result=0x{(long)CurrentResultPointer:X}; phase={Tracker.LastPhase}; progress={Tracker.LastProgress:F3}; {detail}";
+            return $"jobId={JobId}; generation={Generation}; contentRevision={ContentRevision}; "
+                + $"recipe=0x{(long)ChosenRecipePointer:X}; "
+                + $"controller=0x{(long)ControllerPointer:X}; result=0x{(long)CurrentResultPointer:X}; "
+                + $"phase={Tracker.LastPhase}; progress={Tracker.LastProgress:F3}; {detail}";
         }
 
         public string BuildRetrySignature()
@@ -1762,6 +1791,7 @@ internal static partial class RuntimeOrderPreparationService
                 ControllerId = $"0x{(long)ControllerPointer:X}",
                 ResultId = CurrentResultPointer == 0 ? "" : $"0x{(long)CurrentResultPointer:X}",
                 Generation = Generation,
+                ContentRevision = ContentRevision,
                 CookerPhase = Tracker.LastPhase,
                 CookerProgress = Tracker.LastProgress,
                 OwnershipObservationFailures = Tracker.OwnershipObservationFailures,
@@ -1944,6 +1974,7 @@ internal static partial class RuntimeOrderPreparationService
         public string QteMessage { get; private init; } = "";
         public bool QteSkipped { get; private init; }
         public bool ExistingJob { get; private init; }
+        public bool Waiting { get; private init; }
         public string JobId { get; private init; } = "";
         public string Code { get; private init; } = "";
 
@@ -1972,6 +2003,16 @@ internal static partial class RuntimeOrderPreparationService
                 Ok = false,
                 Message = message,
                 Code = code,
+            };
+        }
+
+        public static CookingStartResult WaitForCooker(string message)
+        {
+            return new CookingStartResult
+            {
+                Waiting = true,
+                Message = message,
+                Code = OrderPreparationStepCodes.CookingCookerWaiting,
             };
         }
     }

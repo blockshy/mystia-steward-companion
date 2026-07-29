@@ -6,6 +6,7 @@ import {
   canAdvanceAutomationRuntimeEventSequence,
   getAutomationStageFailureRetirement,
   isAutomationResponseCurrent,
+  isRecoverableCookingTerminalEvent,
   reduceAutomationStageOutcome,
   requiresManualAutomationResolution,
   resolveAutomationNextAttemptAtMs,
@@ -79,7 +80,38 @@ assert.equal(requiresManualAutomationResolution('cooking-manual-handoff-unreadab
 assert.equal(requiresManualAutomationResolution('order-evaluation-state-unreadable'), false);
 assert.equal(requiresManualAutomationResolution('order-evaluation-commit-uncertain'), true);
 assert.equal(requiresManualAutomationResolution('', ['cooking-warmer-commit-uncertain']), true);
-assert.equal(requiresManualAutomationResolution('cooking-result-removed'), false);
+assert.equal(requiresManualAutomationResolution('cooking-ownership-lost'), false);
+for (const code of [
+  'cooking-ownership-lost',
+  'cooking-controller-reused',
+  'cooking-mismatch-stored',
+  'cooking-target-unavailable-stored',
+]) {
+  assert.equal(isRecoverableCookingTerminalEvent({
+    code,
+    reasonCode: code,
+    outcome: 'interrupted',
+    terminal: true,
+  }), true, `${code} must remain an explicit cooking requeue event.`);
+}
+assert.equal(isRecoverableCookingTerminalEvent({
+  code: 'future-interruption',
+  reasonCode: 'future-interruption',
+  outcome: 'interrupted',
+  terminal: true,
+}), false, 'An unknown interrupted event must fail closed instead of requeueing a cooking job.');
+assert.equal(isRecoverableCookingTerminalEvent({
+  code: 'cooking-ownership-lost',
+  reasonCode: 'cooking-ownership-lost',
+  outcome: 'waiting',
+  terminal: true,
+}), false, 'A non-interrupted ownership observation must not enter terminal recovery.');
+assert.equal(isRecoverableCookingTerminalEvent({
+  code: 'cooking-ownership-lost',
+  reasonCode: 'cooking-ownership-lost',
+  outcome: 'interrupted',
+  terminal: false,
+}), false, 'A non-terminal ownership observation must not enter terminal recovery.');
 assert.equal(selectAutomationRequestStage({
   needsBeverage: true,
   needsCooking: true,
@@ -107,6 +139,16 @@ assert.equal(isAutomationResponseCurrent({
   currentEventSequence: 11,
 }), true);
 assert.equal(resolveAutomationNextAttemptAtMs(0, 'interrupted', 5000, 750), 5750);
+assert.equal(
+  resolveAutomationNextAttemptAtMs(0, 'waiting', 5000, 750),
+  5750,
+  'A structured cooker wait must honor the runtime retry delay without becoming a failure.',
+);
+assert.equal(
+  resolveAutomationNextAttemptAtMs(0, 'waiting', 5000, 1),
+  5250,
+  'A positive cooker-wait delay must retain the minimum scheduling interval.',
+);
 assert.equal(resolveAutomationNextAttemptAtMs(5750, 'waiting', 5100, 0), 5750);
 assert.equal(resolveAutomationNextAttemptAtMs(5750, 'progressed', 5200, 0), 0);
 const waitingStepStartedAt = resolveAutomationStepStartedAtMs(
@@ -216,6 +258,7 @@ async function assertStageAndCancellationContracts() {
   const delivery = await readFile(new URL('mods/bepinex/src/Save/RuntimeOrderPreparationService.Delivery.cs', root), 'utf8');
   const directDelivery = await readFile(new URL('mods/bepinex/src/Save/RuntimeOrderPreparationService.DirectDelivery.cs', root), 'utf8');
   const cooking = await readFile(new URL('mods/bepinex/src/Save/RuntimeOrderPreparationService.Cooking.cs', root), 'utf8');
+  const cookingLifecycle = await readFile(new URL('mods/bepinex/src/Save/AutomationCookingJobLifecycle.cs', root), 'utf8');
   const orderMatching = await readFile(new URL('mods/bepinex/src/Save/RuntimeOrderPreparationService.OrderMatching.cs', root), 'utf8');
   const generationTracker = await readFile(new URL('mods/bepinex/src/Save/RuntimeCookingGenerationTracker.cs', root), 'utf8');
 
@@ -240,8 +283,42 @@ async function assertStageAndCancellationContracts() {
   const extractIndex = directDelivery.indexOf('CompleteCookerExtractionAfterReset(job);', resetIndex);
   assert.ok(resetIndex >= 0 && extractIndex > resetIndex, 'Special-cooker extraction callbacks must run only after the old generation is strictly reset.');
   assert.ok(directDelivery.includes('"OnCookerAvailabilityUpdate", new object?[] { -1 }'), 'Direct extraction must publish the native cooker-availability notification.');
-  assert.ok(generationTracker.includes('_harmony.Patch(target, prefix: new HarmonyMethod(prefix));'), 'SetCook generation must advance before an original method can partially commit and throw.');
-  assert.equal(generationTracker.includes('postfix: new HarmonyMethod'), false, 'SetCook generation still relies on an after-the-fact postfix.');
+  for (const [methodName, prefixName, postfixName] of [
+    ['setCook', 'setCookPrefix', 'setCookPostfix'],
+    ['extract', 'extractPrefix', 'extractPostfix'],
+    ['store', 'storePrefix', 'storePostfix'],
+  ]) {
+    assert.match(
+      generationTracker,
+      new RegExp(`_harmony\\.Patch\\(\\s*${methodName},[\\s\\S]*?prefix: new HarmonyMethod\\(${prefixName}\\),[\\s\\S]*?postfix: new HarmonyMethod\\(${postfixName}\\)\\)`),
+      `Cooking ownership must observe entry and normal completion for ${methodName}.`,
+    );
+  }
+  assert.ok(
+    generationTracker.includes('public static bool TryGetOwnershipSnapshot('),
+    'Cooking jobs must read the generation and content revision through the exact ownership snapshot.',
+  );
+  assert.match(
+    generationTracker,
+    /TryRecordContentMutation\([\s\S]*catch \(Exception ex\)[\s\S]*return default;[\s\S]*TryCompleteContentMutation\([\s\S]*catch \(Exception ex\)[\s\S]*ReportHookFailure/,
+    'Cooking ownership callbacks must remain no-throw.',
+  );
+  assert.match(
+    generationTracker,
+    /bool __runOriginal[\s\S]*CompleteContentMutation\(__state, __runOriginal\)[\s\S]*if \(!originalRan \|\| token\.ControllerPointer == 0 \|\| token\.ContentRevision <= 0\) return;[\s\S]*current\.ContentRevision != token\.ContentRevision[\s\S]*current\.LastMutation != token\.Mutation/,
+    'Only a normally executed current native mutation may become completed.',
+  );
+  assert.equal(
+    [generationTracker, cooking, directDelivery].some((source) => source.includes('TryGetGeneration')),
+    false,
+    'The generation-only ownership read must not remain after content-revision tracking is enabled.',
+  );
+  assert.equal(
+    [stateMachine, workbench, cookingLifecycle, cooking, directDelivery]
+      .some((source) => source.includes('cooking-result-removed')),
+    false,
+    'The removed ambiguous cooking-result code must not remain in the frontend or runtime ownership contract.',
+  );
   assert.ok(workbench.includes('retireDisabledRareAutomationFailure'));
   assert.ok(workbench.includes('retireDisabledNormalAutomationFailure'));
   assert.ok(workbench.includes('window.setInterval(refreshDiagnosticClock, 1000)'), 'Visible automation diagnostics need a one-second display clock.');
@@ -300,7 +377,19 @@ async function assertStageAndCancellationContracts() {
   assert.ok(stateMachine.includes("'order-evaluation-state-unreadable'"));
   assert.ok(stateMachine.includes("'order-evaluation-commit-uncertain'"));
   assert.ok(stateMachine.includes("'cooking-manual-handoff-unreadable'"));
+  assert.ok(stateMachine.includes("'cooking-cooker-waiting'"));
+  assert.ok(stateMachine.includes("'cooking-ownership-lost'"));
+  assert.equal(stateMachine.includes("'cooking-result-removed'"), false);
   assert.ok(automationMachine.includes("'cooking-manual-handoff-unreadable'"));
+  assert.ok(
+    automationMachine.includes("(outcome === 'waiting' && retryAfterMs > 0)"),
+    'A structured waiting response with a delay must schedule the next attempt.',
+  );
+  assert.equal(workbench.includes("'cooking-result-removed'"), false);
+  assert.ok(
+    workbench.includes('const recoverable = isRecoverableCookingTerminalEvent(event);'),
+    'Runtime events must use the tested explicit cooking-recovery classifier.',
+  );
   assert.ok(servicePanel.includes('title={`待人工确认 (${diagnostics.length})`}'), 'Unresolved barriers need an order-independent panel.');
   assert.ok(servicePanel.includes('automation-barrier:${diagnostic.sequence}:ack'));
   assert.ok(servicePanel.includes("isBusy ? '确认中' : '确认已处理'"));

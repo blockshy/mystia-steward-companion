@@ -4,6 +4,7 @@ internal enum AutomationCookingObservationKind
 {
     Owned,
     Missing,
+    OwnershipLost,
     Foreign,
     Unreadable,
 }
@@ -147,12 +148,12 @@ internal enum AutomationCommitState
 /// </summary>
 internal sealed class AutomationCookingJobTracker
 {
-    private const int MissingObservationLimit = 2;
+    private const int MissingObservationLimit = 6;
     private const int UnreadableObservationLimit = 3;
-    private const int OwnershipObservationFailureLimit = 3;
+    private const int OwnershipObservationFailureLimit = 6;
     private const int RegressiveObservationLimit = 3;
     private const float ProgressEpsilon = 0.0001f;
-    private static readonly TimeSpan MissingObservationGrace = TimeSpan.FromMilliseconds(500);
+    private static readonly TimeSpan MissingObservationGrace = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan ProgressStallTimeout = TimeSpan.FromSeconds(90);
 
     private int _missingObservations;
@@ -220,16 +221,28 @@ internal sealed class AutomationCookingJobTracker
                 progressed: false);
         }
 
+        if (observation.Kind == AutomationCookingObservationKind.OwnershipLost)
+        {
+            return Transition(
+                "interrupted",
+                "cooking-ownership-lost",
+                "terminal",
+                AutomationCookingJobDirective.None,
+                terminal: true,
+                progressed: false);
+        }
+
         if (observation.Kind == AutomationCookingObservationKind.Missing)
         {
             _ownershipObservationFailures++;
             _missingObservations++;
-            if (_missingObservations >= MissingObservationLimit
+            if ((_missingObservations >= MissingObservationLimit
+                    || _ownershipObservationFailures >= OwnershipObservationFailureLimit)
                 && _stallClock.Elapsed >= MissingObservationGrace)
             {
                 return Transition(
-                    "interrupted",
-                    "cooking-result-removed",
+                    "blocked",
+                    "cooking-result-missing",
                     "terminal",
                     AutomationCookingJobDirective.None,
                     terminal: true,

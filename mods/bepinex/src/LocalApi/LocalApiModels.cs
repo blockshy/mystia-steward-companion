@@ -84,6 +84,7 @@ internal sealed class AutomationCookingJobSnapshot
     public string ControllerId { get; init; } = "";
     public string ResultId { get; init; } = "";
     public long Generation { get; init; }
+    public long ContentRevision { get; init; }
     public int CookerPhase { get; init; } = -1;
     public float CookerProgress { get; init; } = -1f;
     public int OwnershipObservationFailures { get; init; }

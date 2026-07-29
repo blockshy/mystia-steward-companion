@@ -336,6 +336,7 @@ export interface AutomationCookingJobSnapshot {
   controllerId: string;
   resultId: string;
   generation: number;
+  contentRevision: number;
   cookerPhase: number;
   cookerProgress: number;
   ownershipObservationFailures: number;
@@ -857,6 +858,7 @@ export interface RareOrderDismissResponse {
 
 export interface GameUiPinningTarget {
   signature: string;
+  sourceOrderKey: string;
   recipeId: number;
   recipeName: string;
   ingredientIds: number[];

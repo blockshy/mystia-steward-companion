@@ -13,6 +13,8 @@ const directDelivery = read('mods/bepinex/src/Save/RuntimeOrderPreparationServic
 const cookerHighlight = read('mods/bepinex/src/Save/RuntimeCookerHighlightService.cs');
 const cookerSnapshot = read('mods/bepinex/src/Save/RuntimeCookerSnapshotService.cs');
 const cookerReflection = read('mods/bepinex/src/Save/RuntimeCookerReflection.cs');
+const cookingOwnership = read('mods/bepinex/src/Save/RuntimeCookingGenerationTracker.cs');
+const cookerStartPolicy = read('mods/bepinex/src/Save/AutomationCookerStartPolicy.cs');
 const matching = read('mods/bepinex/src/Save/RuntimeOrderPreparationService.OrderMatching.cs');
 const runtimeReflection = read('mods/bepinex/src/Save/RuntimeReflectionUtility.cs');
 const service = read('mods/bepinex/src/Save/RuntimeOrderPreparationService.cs');
@@ -119,6 +121,21 @@ assert.match(directDelivery, /parameters\.Length == 2[\s\S]*parameters\[1\]\.Par
 assert.match(directDelivery, /methods\[0\]\.Invoke\(configure, new object\?\[\] \{ cookedFood, -1 \}\)/);
 assert.ok(!directDelivery.includes('TryBuildStoreFoodArguments'));
 assert.match(directDelivery, /storedAfterException[\s\S]*AutomationCommitResolution\.Committed[\s\S]*AutomationCommitResolution\.Uncertain/);
+assert.match(
+  directDelivery,
+  /if \(target\.FoodId < 0\)[\s\S]*目标料理 ID 无效/,
+  'Automation delivery must reject an invalid negative target before any delivery or warmer write.',
+);
+assert.match(
+  directDelivery,
+  /if \(cookedFoodIdentity\.FoodId != target\.FoodId\)[\s\S]*TryStoreMismatchedCookResultInWarmer/,
+  'A valid target with an exact Food/-1 result must enter mismatch warmer recovery.',
+);
+assert.doesNotMatch(
+  directDelivery,
+  /if \(target\.FoodId >= 0 && cookedFoodIdentity\.FoodId != target\.FoodId\)/,
+  'Negative targets must not bypass the exact result comparison.',
+);
 
 assert.match(delivery, /TryReadRuntimeOrderEvaluated[\s\S]*InvokeInstance\(manager, methodName, args\)[\s\S]*OrderEvaluationCommitUncertain/);
 assert.match(delivery, /InvokeInstance\(manager, methodName, args\)[\s\S]*IsNightBusinessGenerationActive\(sessionGeneration\)[\s\S]*BuildEndedNightBusinessEvaluation\(orderLabel, commitMayHaveStarted: true\)/);
@@ -217,11 +234,16 @@ for (const getter of [
 assert.match(
   cookerReflection,
   /public bool IsIdle => Phase == 0 && ResultEmpty && ChosenRecipeEmpty && CouldOpen;/,
-  'Automation availability must require the exact idle/result/recipe/open state.',
+  'The shared native state must retain its strict idle/result/recipe/open definition.',
+);
+assert.match(
+  cookerStartPolicy,
+  /if \(phase != 0 \|\| !resultEmpty \|\| !couldOpen\)[\s\S]*if \(chosenRecipeEmpty\)[\s\S]*StrictIdle[\s\S]*completedExtractObserved[\s\S]*ExtractedResidual[\s\S]*Unavailable/,
+  'Cooker reuse must allow only strict idle or a completed Extract with residual recipe metadata.',
 );
 const fallbackCookerSelection = methodSource(
   cooking,
-  'private static (bool Ok, object? CookController, string Message) TryGetCookerFromCookSystem(',
+  'private static (bool Ok, bool Waiting, object? CookController, string Message) TryGetCookerFromCookSystem(',
 );
 assert.ok(
   fallbackCookerSelection.includes('RuntimeCookerReflection.GetCookSystemManager()')
@@ -233,10 +255,25 @@ assert.doesNotMatch(
   /GetSingletonInstance\(CookSystemManagerTypeName\)|get_CouldCookerOpen/,
   'Fallback cooking must not independently scan a manager or treat CouldCookerOpen as complete availability.',
 );
+assert.match(
+  fallbackCookerSelection,
+  /ClassifyCookerStartAvailability\([\s\S]*AutomationCookerStartAvailability\.Unavailable[\s\S]*AutomationCookerStartAvailability\.ExtractedResidual/,
+  'Cooker selection must use the exact start-availability classifier.',
+);
 assert.doesNotMatch(
   cooking,
   /TryGetCookerForOrder/,
   'Cooking must not accept a second controller source outside the exact AllCookers dictionary.',
+);
+assert.match(
+  fallbackCookerSelection,
+  /return \(false, true, null,[\s\S]*自动化将等待空闲厨具，不计入失败重试/,
+  'Natively busy compatible cookers must stay in a local waiting outcome.',
+);
+assert.match(
+  service,
+  /CookingCookerWaiting = "cooking-cooker-waiting"[\s\S]*result\.Automation\.Outcome = "waiting"[\s\S]*result\.Automation\.RetryAfterMs = 1000/,
+  'Cooker contention must not enter the retryable-failure budget.',
 );
 const cookerStart = methodSource(
   cooking,
@@ -249,6 +286,124 @@ assert.ok(
     && materialDeductionIndex >= 0
     && cookerRevalidationIndex < materialDeductionIndex,
   'The selected cooker must be fully revalidated before the first material deduction.',
+);
+const setCookIndex = cookerStart.indexOf('InvokeInstance(cookController, "SetCook"');
+const immediateOwnershipIndex = cookerStart.indexOf(
+  'RuntimeCookingGenerationTracker.TryGetOwnershipSnapshot(',
+  setCookIndex,
+);
+const startCallbackIndex = cookerStart.indexOf('CallCookerStartCallback', immediateOwnershipIndex);
+const validatedOwnershipIndex = cookerStart.indexOf(
+  'out var validatedOwnership',
+  startCallbackIndex,
+);
+const registerCookingJobIndex = cookerStart.indexOf(
+  'RegisterAutomationCookingJob(',
+  validatedOwnershipIndex,
+);
+assert.ok(
+  setCookIndex >= 0
+    && immediateOwnershipIndex > setCookIndex
+    && startCallbackIndex > immediateOwnershipIndex
+    && validatedOwnershipIndex > startCallbackIndex
+    && registerCookingJobIndex > validatedOwnershipIndex,
+  'The Mod must claim its SetCook snapshot before callbacks, revalidate it afterwards, then register.',
+);
+assert.match(
+  cookerStart,
+  /ownershipSnapshot\.LastMutation != RuntimeCookingContentMutation\.SetCook[\s\S]*!ownershipSnapshot\.MutationCompleted/,
+  'A job must not claim an incomplete SetCook or an Extract/Store snapshot as its own start.',
+);
+const cookerRevalidation = methodSource(
+  cooking,
+  'private static bool TryRevalidateCookerBeforeStart(',
+);
+assert.match(
+  cookerRevalidation,
+  /ClassifyCookerStartAvailability\([\s\S]*AutomationCookerStartAvailability\.Unavailable/,
+  'The pre-material revalidation must repeat the same fresh start-availability classification.',
+);
+const cookerStartAvailability = methodSource(
+  cooking,
+  'private static AutomationCookerStartAvailability ClassifyCookerStartAvailability(',
+);
+assert.match(
+  cookerStartAvailability,
+  /state\.Phase == 0[\s\S]*state\.ResultEmpty[\s\S]*!state\.ChosenRecipeEmpty[\s\S]*state\.CouldOpen[\s\S]*TryGetOwnershipSnapshot\([\s\S]*LastMutation == RuntimeCookingContentMutation\.Extract[\s\S]*ownershipSnapshot\.MutationCompleted[\s\S]*AutomationCookerStartPolicy\.Classify/,
+  'Residual recipe metadata must be reusable only after an exact normally completed Extract.',
+);
+assert.doesNotMatch(
+  cookerStartAvailability,
+  /InvokeInstance|AfterPlayerExtract|ReleaseCooker|IzakayaTray|ChosenRecipe\s*=/,
+  'Start classification must remain passive and must not mutate native cooker or tray state.',
+);
+const cookingJobRegistration = methodSource(
+  cooking,
+  'private static AutomationCookingJob RegisterAutomationCookingJob(',
+);
+assert.match(
+  cookingJobRegistration,
+  /TryGetOwnershipSnapshot\([\s\S]*registrationOwnership != ownershipSnapshot[\s\S]*throw new InvalidOperationException/,
+  'Job registration must retain the final exact ownership fence.',
+);
+assert.match(
+  cookingJobRegistration,
+  /IsSameCookingCollectionTarget\(job\.Target, target\)[\s\S]*!job\.ManualHandoffObserved && job\.ControllerPointer == controllerPointer/,
+  'A reused controller must not delete a target-bound manual-handoff receipt.',
+);
+const cookerReservation = methodSource(
+  cooking,
+  'private static bool IsCookControllerReserved(',
+);
+assert.match(
+  cookerReservation,
+  /!job\.ManualHandoffObserved[\s\S]*ReferenceEquals\(job\.CookController, cookController\)/,
+  'A passive manual-handoff receipt must not reserve an otherwise idle cooker.',
+);
+for (const [methodName, prefixName, postfixName] of [
+  ['setCook', 'setCookPrefix', 'setCookPostfix'],
+  ['extract', 'extractPrefix', 'extractPostfix'],
+  ['store', 'storePrefix', 'storePostfix'],
+]) {
+  assert.match(
+    cookingOwnership,
+    new RegExp(`_harmony\\.Patch\\(\\s*${methodName},[\\s\\S]*?prefix: new HarmonyMethod\\(${prefixName}\\),[\\s\\S]*?postfix: new HarmonyMethod\\(${postfixName}\\)\\)`),
+    `Cooking ownership must observe both entry and normal completion for ${methodName}.`,
+  );
+}
+assert.match(
+  cookingOwnership,
+  /RuntimeCookingOwnershipSnapshot\([\s\S]*Generation,[\s\S]*ContentRevision,[\s\S]*LastMutation,[\s\S]*MutationCompleted/,
+  'Cooking ownership must bind generation, content revision, mutation, and normal completion.',
+);
+assert.match(
+  cookingOwnership,
+  /OnSetCookCompleted\([\s\S]*bool __runOriginal[\s\S]*OnExtractCompleted\([\s\S]*bool __runOriginal[\s\S]*OnStoreCompleted\([\s\S]*bool __runOriginal[\s\S]*RecordContentMutation\([\s\S]*MutationCompleted: false[\s\S]*CompleteContentMutation\([\s\S]*!originalRan[\s\S]*current\.ContentRevision != token\.ContentRevision[\s\S]*MutationCompleted = true/,
+  'A native mutation may become completed only when its original ran and its matching postfix still owns the same revision.',
+);
+assert.match(
+  cooking,
+  /ownershipBeforeReadable[\s\S]*TryReadCookerContentState\([\s\S]*ownershipAfterReadable[\s\S]*ownershipStable/,
+  'Cooking result reads must be fenced by stable ownership snapshots.',
+);
+const cookingJobProcessor = methodSource(
+  cooking,
+  'private static (bool Remove, string Message, string Code) TryProcessAutomationCookingJob(',
+);
+assert.match(
+  cookingJobProcessor,
+  /ownershipAlreadyLost[\s\S]*if \(!ownershipAlreadyLost\)[\s\S]*TryReadCookerContentState\(/,
+  'A job must not inspect cooker content after the first snapshot already proves foreign ownership.',
+);
+assert.match(
+  directDelivery,
+  /ownership\.Generation == job\.Generation[\s\S]*ownership\.ContentRevision == job\.ContentRevision/,
+  'Committed delivery cleanup must retain both ownership fences.',
+);
+assert.doesNotMatch(
+  cooking,
+  /InvokeInstance\([^;]*(?:"Extract"|"Store"|"FinishCooking")/,
+  'Ownership recovery must not replay native cooker mutation entries.',
 );
 const snapshotReader = methodSource(
   cookerSnapshot,

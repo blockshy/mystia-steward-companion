@@ -64,6 +64,11 @@ const runtimeMissionDiagnosticFiles = new Set([
 ]);
 const runtimeMissionBusinessFiles = new Set([
   runtimeMissionRecipePriorityProjectionPath,
+  'mods/bepinex/src/LocalApi/LocalApiAvailableMissionsPayload.cs',
+  'mods/bepinex/src/LocalApi/LocalApiTrackedMissionsPayload.cs',
+  'mods/bepinex/src/Save/RuntimeAvailableMissionCapture.cs',
+  'mods/bepinex/src/Save/RuntimeMissionPresentation.cs',
+  'mods/bepinex/src/Save/RuntimeMissionPresentationReader.cs',
   'mods/bepinex/src/Ui/StewardOverlayController.cs',
 ]);
 for (const forbiddenRuntimeMissionPath of [
@@ -279,6 +284,69 @@ for (const forbiddenPath of [
 assert.ok(
   nightBusinessProvider.includes('ResolveCachedMappedGuestIdentity('),
   'Night-business identity must resolve through the verified mapped identity snapshot.',
+);
+
+const currentPlaceStart = nightBusinessProvider.indexOf(
+  'private CurrentPlaceIdentity ReadCurrentPlaceIdentity()',
+);
+const currentPlaceEnd = nightBusinessProvider.indexOf(
+  'private static object? ReadIzakayaData()',
+  currentPlaceStart,
+);
+assert.ok(
+  currentPlaceStart >= 0 && currentPlaceEnd > currentPlaceStart,
+  'Night-business place identity must use one explicit read boundary.',
+);
+const currentPlaceSource = nightBusinessProvider.slice(currentPlaceStart, currentPlaceEnd);
+const currentPlaceLabelRead = currentPlaceSource.indexOf('"DaySceneMapLabel"');
+const currentPlaceBlankGate = currentPlaceSource.indexOf(
+  'if (string.IsNullOrWhiteSpace(label))',
+);
+const currentPlaceNameRead = currentPlaceSource.indexOf('"DaySceneMapName"');
+assert.ok(
+  currentPlaceLabelRead >= 0
+    && currentPlaceBlankGate > currentPlaceLabelRead
+    && currentPlaceNameRead > currentPlaceBlankGate,
+  'Night-business place reads must enforce label -> blank gate -> localized name ordering.',
+);
+assert.equal(
+  currentPlaceSource.match(/ReadIzakayaData\(\)/g)?.length ?? 0,
+  1,
+  'Night-business place identity must reuse one IzakayaData object.',
+);
+assert.ok(
+  !nightBusinessProvider.includes('ReadCurrentPlaceLabel'),
+  'The removed independent place-label read path must not return.',
+);
+assert.ok(
+  nightBusinessProvider.includes(
+    'var placeIdentity = Measure("place.identity", ReadCurrentPlaceIdentity);',
+  ),
+  'Night-business context must acquire one measured place identity.',
+);
+
+const catalogPlaceStart = catalog.indexOf(
+  'private static string ResolveIzakayaPlaceName(object izakaya)',
+);
+const catalogPlaceEnd = catalog.indexOf(
+  'private static string? ReadExactStringProperty(',
+  catalogPlaceStart,
+);
+assert.ok(
+  catalogPlaceStart >= 0 && catalogPlaceEnd > catalogPlaceStart,
+  'Runtime catalog must keep one explicit Izakaya place-name boundary.',
+);
+const catalogPlaceSource = catalog.slice(catalogPlaceStart, catalogPlaceEnd);
+const catalogPlaceLabelRead = catalogPlaceSource.indexOf('"DaySceneMapLabel"');
+const catalogPlaceBlankGate = catalogPlaceSource.indexOf(
+  'if (string.IsNullOrWhiteSpace(mapLabel))',
+);
+const catalogPlaceNameRead = catalogPlaceSource.indexOf('"DaySceneMapName"');
+assert.ok(
+  catalogPlaceLabelRead >= 0
+    && catalogPlaceBlankGate > catalogPlaceLabelRead
+    && catalogPlaceNameRead > catalogPlaceBlankGate,
+  'Runtime catalog place reads must retain label -> blank gate -> localized name ordering.',
 );
 for (const forbiddenIdentityPath of [
   'RareCustomerIdentityResolver',

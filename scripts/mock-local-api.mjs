@@ -1022,6 +1022,7 @@ function buildMockAutomationCookingJob(response, path, params) {
     controllerId: 'mock-cooker-1',
     resultId: 'mock-result-1',
     generation: 1,
+    contentRevision: 1,
     cookerPhase: 1,
     cookerProgress: 0.25,
     ownershipObservationFailures: 0,

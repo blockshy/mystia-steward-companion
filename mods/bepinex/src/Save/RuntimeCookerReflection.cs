@@ -8,11 +8,22 @@ internal sealed class RuntimeCookerControllerState
     public object Cooker { get; init; } = null!;
     public IReadOnlyList<int> TypeIds { get; init; } = Array.Empty<int>();
     public int Phase { get; init; } = -1;
-    public bool ResultEmpty { get; init; }
-    public bool ChosenRecipeEmpty { get; init; }
+    public object? Result { get; init; }
+    public object? ChosenRecipe { get; init; }
     public bool CouldOpen { get; init; }
 
+    public bool ResultEmpty => Result == null;
+    public bool ChosenRecipeEmpty => ChosenRecipe == null;
     public bool IsIdle => Phase == 0 && ResultEmpty && ChosenRecipeEmpty && CouldOpen;
+}
+
+internal sealed class RuntimeCookerContentState
+{
+    public int Phase { get; init; } = -1;
+    public object? Result { get; init; }
+    public object? ChosenRecipe { get; init; }
+
+    public bool IsExactReset => Phase == 0 && Result == null && ChosenRecipe == null;
 }
 
 internal static class RuntimeCookerReflection
@@ -56,6 +67,74 @@ internal static class RuntimeCookerReflection
         return TryReadExactCookerTypeSequence(cooker, out var typeIds)
             ? typeIds
             : new List<int>();
+    }
+
+    public static bool TryReadCookerContentState(
+        object controller,
+        out RuntimeCookerContentState state,
+        out string status)
+    {
+        state = new RuntimeCookerContentState();
+        var controllerType = controller.GetType();
+        if (!TryGetExactControllerGetter(controllerType, "get_Phase", CookPhaseTypeName, out var getPhase)
+            || !getPhase.ReturnType.IsEnum
+            || !TryGetExactControllerGetter(controllerType, "get_Result", SellableTypeName, out var getResult)
+            || !TryGetExactControllerGetter(controllerType, "get_ChosenRecipe", RecipeTypeName, out var getChosenRecipe))
+        {
+            status = $"cooker-content=unsupported-shape; type={controllerType.FullName}";
+            return false;
+        }
+
+        object? phaseValue;
+        object? result;
+        object? chosenRecipe;
+        try
+        {
+            phaseValue = getPhase.Invoke(controller, Array.Empty<object?>());
+            result = getResult.Invoke(controller, Array.Empty<object?>());
+            chosenRecipe = getChosenRecipe.Invoke(controller, Array.Empty<object?>());
+        }
+        catch (Exception ex)
+        {
+            status = $"cooker-content=invoke-failed; type={controllerType.FullName}; error={ex.GetBaseException().Message}";
+            return false;
+        }
+
+        if (phaseValue == null
+            || phaseValue.GetType() != getPhase.ReturnType
+            || result != null && !getResult.ReturnType.IsInstanceOfType(result)
+            || chosenRecipe != null && !getChosenRecipe.ReturnType.IsInstanceOfType(chosenRecipe))
+        {
+            status = $"cooker-content=value-type-mismatch; type={controllerType.FullName}";
+            return false;
+        }
+
+        int phase;
+        try
+        {
+            phase = Convert.ToInt32(phaseValue);
+        }
+        catch
+        {
+            status = $"cooker-content=phase-invalid; type={controllerType.FullName}";
+            return false;
+        }
+
+        if (phase is < 0 or > 3)
+        {
+            status = $"cooker-content=phase-out-of-range; value={phase}; type={controllerType.FullName}";
+            return false;
+        }
+
+        state = new RuntimeCookerContentState
+        {
+            Phase = phase,
+            Result = result,
+            ChosenRecipe = chosenRecipe,
+        };
+        status = $"cooker-content=ok; phase={phase}; resultEmpty={result == null}; "
+            + $"chosenRecipeEmpty={chosenRecipe == null}";
+        return true;
     }
 
     private static bool TryReadExactCookerTypeSequence(object cooker, out List<int> typeIds)
@@ -277,8 +356,8 @@ internal static class RuntimeCookerReflection
             Cooker = cooker,
             TypeIds = typeIds,
             Phase = phase,
-            ResultEmpty = result == null,
-            ChosenRecipeEmpty = chosenRecipe == null,
+            Result = result,
+            ChosenRecipe = chosenRecipe,
             CouldOpen = couldOpen,
         };
         status = $"controller-state=ok; phase={phase}; resultEmpty={state.ResultEmpty}; chosenRecipeEmpty={state.ChosenRecipeEmpty}; couldOpen={couldOpen}; types={string.Join(",", typeIds)}";

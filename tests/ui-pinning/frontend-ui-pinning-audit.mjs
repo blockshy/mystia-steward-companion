@@ -22,6 +22,7 @@ let mutateSnapshots = false;
 let mutatedSnapshotAt = 0;
 let mutatedSnapshot = null;
 let mutatedSnapshotServeCount = 0;
+let deferredSecondOrder = null;
 
 try {
   await page.route(`${API_URL}/**`, async (route) => {
@@ -122,7 +123,8 @@ try {
   assert(acceptedRetry.params.enabled === 'true', '定向巡检未启用游戏界面置顶');
   assert(acceptedRetry.params.ingredientIds, '置顶目标缺少材料 ID');
   assert(acceptedRetry.params.businessGeneration === '1', '置顶目标缺少当前经营 generation');
-  assert(Number(acceptedRetry.params.beverageId) >= 0, '置顶目标缺少酒水 ID');
+  assert(Number(acceptedRetry.params.beverageId) < 0, '已经送达的酒水仍进入了游戏界面目标');
+  assert(!acceptedRetry.params.beverageName, '已经送达的酒水仍保留了目标名称');
 
   await page.locator('[data-gamepad-tab-value="service"]').click();
   const firstRecipeRow = page.locator('[data-gamepad-row-key*="service:order:"][data-gamepad-row-key*=":recipe:"]').first();
@@ -133,8 +135,7 @@ try {
   const firstBeverageText = await firstBeverageRow.innerText();
   assert(firstRecipeText.includes('#1') && firstRecipeText.includes(acceptedRetry.params.recipeName),
     `游戏内料理目标未对应页面料理首项：${firstRecipeText}`);
-  assert(firstBeverageText.includes('#1') && firstBeverageText.includes(acceptedRetry.params.beverageName),
-    `游戏内酒水目标未对应页面酒水首项：${firstBeverageText}`);
+  assert(firstBeverageText.includes('#1'), `经营中页面酒水首项缺失：${firstBeverageText}`);
 
   const acceptedTargetCount = recipeRequests.length;
   abortNextSnapshot = true;
@@ -204,10 +205,117 @@ try {
     '内部 target.signature 变化但 wire 字段不变时重复 POST 了置顶目标',
   );
 
+  const singleOrderMutationServeCount = mutatedSnapshotServeCount;
+  const singleOrderSuccessCount = await deliveredWorkerSuccessCount(page);
+  retainOnlyFirstPendingOrder();
+  await waitFor(
+    () => mutatedSnapshotServeCount > singleOrderMutationServeCount,
+    5_000,
+    '未获取用于订单完成空窗巡检的单订单快照',
+  );
+  await waitFor(
+    async () => await deliveredWorkerSuccessCount(page) > singleOrderSuccessCount,
+    5_000,
+    '单订单快照的推荐 Worker 未完成',
+  );
+  await waitFor(
+    () => targetRequests.some((entry) =>
+      hasRecipeTarget(entry) && Number(entry.params.beverageId) >= 0),
+    5_000,
+    '单订单快照未发布料理与酒水均待处理的 A 目标',
+  );
+  const activeOrderTarget = targetRequests
+    .filter((entry) => hasRecipeTarget(entry) && Number(entry.params.beverageId) >= 0)
+    .at(-1);
+  assert(activeOrderTarget, '缺少用于订单完成空窗巡检的 A 目标');
+
+  await page.evaluate(() => {
+    window.__uiPinningWorkerDelayMs = 3200;
+  });
+  const validPendingMutationServeCount = mutatedSnapshotServeCount;
+  const validPendingRequestCount = targetRequests.length;
+  mutateSnapshot('mock-ui-pinning-valid-source-pending-audit');
+  await waitFor(
+    () => mutatedSnapshotServeCount > validPendingMutationServeCount,
+    5_000,
+    '未获取源订单仍有效的 pending 快照',
+  );
+  await waitFor(
+    async () => (await page.evaluate(() => window.__uiPinningWorkerEvents.at(-1)?.delayMs)) === 3200,
+    3_000,
+    '源订单仍有效时推荐 Worker 未进入延迟 pending 状态',
+  );
+  await new Promise((resolve) => setTimeout(resolve, 450));
+  assert(
+    targetRequests.length === validPendingRequestCount,
+    '源订单仍有效的普通 pending 错误清空或重复发布了目标',
+  );
+
+  const completionMutationServeCount = mutatedSnapshotServeCount;
+  const completionStartCount = targetRequests.length;
+  const completionBaseSuccessCount = await deliveredWorkerSuccessCount(page);
+  const completionStartedAt = Date.now();
+  completeOnlyOrder();
+  await waitFor(
+    () => mutatedSnapshotServeCount > completionMutationServeCount,
+    5_000,
+    '未获取 A 订单双送达快照',
+  );
+  await waitFor(
+    () => targetRequests.slice(completionStartCount).some(isEnabledClearTarget),
+    2_800,
+    'A 订单双送达后未在 Worker pending 期间立即下发空目标',
+  );
+  const completionClearRequest = targetRequests
+    .slice(completionStartCount)
+    .find(isEnabledClearTarget);
+  assert(completionClearRequest, '缺少 A 订单双送达后的空目标请求');
+  assert(
+    completionClearRequest.at - completionStartedAt < 2800,
+    `A 订单空目标发布过慢：${completionClearRequest.at - completionStartedAt}ms`,
+  );
+
+  await page.evaluate(() => {
+    window.__uiPinningWorkerDelayMs = 0;
+  });
+  await waitFor(
+    async () => await deliveredWorkerSuccessCount(page) >= completionBaseSuccessCount + 2,
+    8_000,
+    'A 订单完成前后的延迟 Worker 响应未全部派发',
+  );
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  assert(
+    !targetRequests
+      .slice(targetRequests.indexOf(completionClearRequest) + 1)
+      .some(hasRecipeTarget),
+    '迟到 Worker 响应重新发布了已经双送达的 A 目标',
+  );
+
+  const secondOrderMutationServeCount = mutatedSnapshotServeCount;
+  const secondOrderStartCount = targetRequests.length;
+  injectDeferredSecondOrder();
+  await waitFor(
+    () => mutatedSnapshotServeCount > secondOrderMutationServeCount,
+    5_000,
+    '未获取后续 B 订单快照',
+  );
+  await waitFor(
+    () => targetRequests.slice(secondOrderStartCount).some(hasRecipeTarget),
+    5_000,
+    'B 订单出现后未发布新的游戏界面目标',
+  );
+  const secondOrderTarget = targetRequests.slice(secondOrderStartCount).find(hasRecipeTarget);
+  assert(secondOrderTarget, '缺少 B 订单出现后的目标请求');
+  assert(
+    !sameTarget(activeOrderTarget, secondOrderTarget),
+    'B 订单出现后仍发布了 A 订单的旧目标',
+  );
+
   await page.evaluate(() => {
     window.__uiPinningWorkerDelayMs = 3200;
   });
   const pendingMutationServeCount = mutatedSnapshotServeCount;
+  const pendingStartCount = targetRequests.length;
   mutateSnapshot('mock-ui-pinning-pending-audit');
   await waitFor(
     () => mutatedSnapshotServeCount > pendingMutationServeCount,
@@ -218,6 +326,11 @@ try {
     async () => (await page.evaluate(() => window.__uiPinningWorkerEvents.at(-1)?.delayMs)) === 3200,
     3_000,
     '推荐 Worker 未进入延迟 pending 状态',
+  );
+  await new Promise((resolve) => setTimeout(resolve, 450));
+  assert(
+    targetRequests.length === pendingStartCount,
+    'B 源订单仍有效的普通 pending 错误清空或重复发布了目标',
   );
 
   await page.locator('[data-gamepad-tab-value="settings"]').first().click();
@@ -338,6 +451,8 @@ try {
     `- 短暂断线：快照恢复后保留成功签名，目标 POST 仍为 ${acceptedTargetCount} 次`,
     `- 连接身份变更/Worker 新鲜度：${identityRequest.at - mutatedSnapshotAt}ms 后重发`,
     '- 发布去重：内部 target.signature 变化但 wire 目标不变时未重复 POST',
+    `- 订单完成空窗：${completionClearRequest.at - completionStartedAt}ms 内清空 A 目标，迟到结果未复活`,
+    '- 后续订单切换：B 订单就绪后发布新目标，普通 Worker pending 保留有效目标',
     `- 单写者合并：最大并发 ${maxActiveTargetRequests}，延迟请求后补发最新 flags`,
     `- Worker error 清理：recipeId=${errorClearRequest.params.recipeId}, beverageId=${errorClearRequest.params.beverageId}`,
     '- Worker error 恢复：新成功 revision 后恢复当前厨具目标',
@@ -442,6 +557,39 @@ function mutateInternalTargetSignature() {
   const order = mutatedSnapshot.nightBusiness.orders[0];
   order.firstSeenAtUtc = new Date(Date.parse(order.firstSeenAtUtc) + 1000).toISOString();
   mutatedSnapshot.snapshotSignature = `${mutatedSnapshot.snapshotSignature}|target-signature-only`;
+}
+
+function retainOnlyFirstPendingOrder() {
+  assert(mutatedSnapshot?.nightBusiness?.orders?.length >= 2, '缺少用于单订单巡检的 Mock 稀客订单');
+  const [firstOrder, secondOrder] = mutatedSnapshot.nightBusiness.orders;
+  deferredSecondOrder = structuredClone(secondOrder);
+  firstOrder.hasServedFood = false;
+  firstOrder.hasServedBeverage = false;
+  mutatedSnapshot.nightBusiness.orders = [firstOrder];
+  mutatedSnapshot.snapshotSignature = `${mutatedSnapshot.snapshotSignature}|single-pending-order`;
+}
+
+function completeOnlyOrder() {
+  assert(mutatedSnapshot?.nightBusiness?.orders?.length === 1, '订单完成巡检要求只有一个 Mock 稀客订单');
+  const [order] = mutatedSnapshot.nightBusiness.orders;
+  order.hasServedFood = true;
+  order.hasServedBeverage = true;
+  mutatedSnapshot.snapshotSignature = `${mutatedSnapshot.snapshotSignature}|single-order-completed`;
+}
+
+function injectDeferredSecondOrder() {
+  assert(mutatedSnapshot?.nightBusiness?.orders, '缺少可变 Mock 夜间订单');
+  assert(deferredSecondOrder, '缺少暂存的后续 B 订单');
+  mutatedSnapshot.nightBusiness.orders = [
+    ...mutatedSnapshot.nightBusiness.orders,
+    structuredClone(deferredSecondOrder),
+  ];
+  mutatedSnapshot.snapshotSignature = `${mutatedSnapshot.snapshotSignature}|second-order-arrived`;
+}
+
+async function deliveredWorkerSuccessCount(page) {
+  return page.evaluate(() =>
+    window.__uiPinningWorkerEvents.filter((event) => event.deliveredOk === true).length);
 }
 
 function sameTarget(left, right) {

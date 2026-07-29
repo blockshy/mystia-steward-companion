@@ -15,6 +15,7 @@ interface UseGameUiPinningPublisherOptions {
   pinningEnabled: boolean;
   cookerHighlightEnabled: boolean;
   target: GameUiPinningTarget | null;
+  targetSourceValid: boolean;
   recommendationIsCurrent: boolean;
   recommendationPending: boolean;
   recommendationError: boolean;
@@ -61,6 +62,7 @@ export function useGameUiPinningPublisher({
   pinningEnabled,
   cookerHighlightEnabled,
   target,
+  targetSourceValid,
   recommendationIsCurrent,
   recommendationPending,
   recommendationError,
@@ -80,6 +82,7 @@ export function useGameUiPinningPublisher({
   });
 
   const serializedTarget = serializeGameUiPinningWireTarget(target);
+  const targetSourceOrderKey = target?.sourceOrderKey ?? '';
 
   const pump = useCallback(function publishLatestTarget(): void {
     const state = stateRef.current;
@@ -179,10 +182,13 @@ export function useGameUiPinningPublisher({
 
     const featureEnabled = pinningEnabled || cookerHighlightEnabled;
     const recommendationFailed = recommendationError || state.failedAtSuccessRevision !== null;
-    if (!featureEnabled || recommendationFailed) {
+    if (!featureEnabled || recommendationFailed || !targetSourceValid) {
       state.lastCurrentTarget = null;
     } else if (recommendationIsCurrent && !recommendationPending) {
-      state.lastCurrentTarget = deserializeGameUiPinningWireTarget(serializedTarget);
+      state.lastCurrentTarget = deserializeGameUiPinningWireTarget(
+        serializedTarget,
+        targetSourceOrderKey,
+      );
     }
 
     const publicationTarget = state.lastCurrentTarget;
@@ -228,6 +234,8 @@ export function useGameUiPinningPublisher({
     recommendationSuccessRevision,
     serializedTarget,
     sessionId,
+    targetSourceOrderKey,
+    targetSourceValid,
   ]);
 }
 
@@ -244,8 +252,11 @@ function serializeGameUiPinningWireTarget(target: GameUiPinningTarget | null): s
   });
 }
 
-function deserializeGameUiPinningWireTarget(serialized: string): GameUiPinningTarget | null {
+function deserializeGameUiPinningWireTarget(
+  serialized: string,
+  sourceOrderKey: string,
+): GameUiPinningTarget | null {
   if (serialized === 'null') return null;
-  const target = JSON.parse(serialized) as Omit<GameUiPinningTarget, 'signature'>;
-  return { signature: '', ...target };
+  const target = JSON.parse(serialized) as Omit<GameUiPinningTarget, 'signature' | 'sourceOrderKey'>;
+  return { signature: '', sourceOrderKey, ...target };
 }

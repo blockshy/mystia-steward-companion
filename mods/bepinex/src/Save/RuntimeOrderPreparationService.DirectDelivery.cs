@@ -93,13 +93,6 @@ internal static partial class RuntimeOrderPreparationService
         return item != null && ReadSellableType(item) == sellableType && ReadSellableId(item) == id;
     }
 
-    private static bool IsFoodSellable(object? item)
-    {
-        return TryReadSellableIdentity(item, out var sellableType, out var id)
-            && sellableType == 0
-            && id >= 0;
-    }
-
     private static bool TryReadSellableIdentity(object? item, out int sellableType, out int id)
     {
         sellableType = -1;
@@ -163,10 +156,30 @@ internal static partial class RuntimeOrderPreparationService
         }
 
         var target = job.Target;
-        if (target.FoodId >= 0 && !IsSellable(cookedFood, sellableType: 0, id: target.FoodId))
+        if (!TryReadCookControllerFoodResultIdentity(
+                cookedFood,
+                "CookController.Result",
+                out var cookedFoodIdentity,
+                out var cookedFoodIdentityDiagnostic))
         {
-            var actualFoodId = ReadSellableId(cookedFood);
-            var actualText = actualFoodId >= 0 ? $"料理 #{actualFoodId}" : "未知成品";
+            return ContinueOrBlockAutomationDelivery(
+                job,
+                $"成品身份在送达前无法安全复核，本轮未执行送达、入箱或厨具复位：{cookedFoodIdentityDiagnostic}");
+        }
+
+        if (target.FoodId < 0)
+        {
+            return ContinueOrBlockAutomationDelivery(
+                job,
+                $"目标料理 ID 无效（{target.FoodId}），本轮未执行送达、入箱或厨具复位。");
+        }
+
+        if (cookedFoodIdentity.FoodId != target.FoodId)
+        {
+            var actualFoodId = cookedFoodIdentity.FoodId;
+            var actualText = cookedFoodIdentity.IsDarkCuisine
+                ? "黑暗料理（料理 #-1）"
+                : $"料理 #{actualFoodId}";
             var actualFoodTags = ReadFoodTagNames(cookedFood).ToArray();
             var activeTargetTags = target.WackyTargetFoodTags;
             AppendWackyCookingJobDiagnostic(
@@ -1519,13 +1532,23 @@ internal static partial class RuntimeOrderPreparationService
 
     private static bool IsAutomationCookingJobOwned(AutomationCookingJob job, out string diagnostic)
     {
-        if (!RuntimeCookingGenerationTracker.TryGetGeneration(job.CookController, out var generation, out diagnostic))
+        if (!RuntimeCookingGenerationTracker.TryGetOwnershipSnapshot(
+                job.CookController,
+                out var ownership,
+                out diagnostic))
         {
             return false;
         }
 
-        if (generation == job.Generation) return true;
-        diagnostic = $"expectedGeneration={job.Generation}; actualGeneration={generation}; {diagnostic}";
+        if (ownership.Generation == job.Generation
+            && ownership.ContentRevision == job.ContentRevision)
+        {
+            return true;
+        }
+
+        diagnostic = $"expectedGeneration={job.Generation}; actualGeneration={ownership.Generation}; "
+            + $"expectedContentRevision={job.ContentRevision}; actualContentRevision={ownership.ContentRevision}; "
+            + diagnostic;
         return false;
     }
 }

@@ -12,10 +12,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="../../mods/bepinex/src/Save/AutomationCookerStartPolicy.cs" Link="AutomationCookerStartPolicy.cs" />
-    <Compile Include="../../mods/bepinex/src/Save/AutomationCookingJobLifecycle.cs" Link="AutomationCookingJobLifecycle.cs" />
-    <Compile Include="../../mods/bepinex/src/Save/AutomationSafetyBarrierRegistry.cs" Link="AutomationSafetyBarrierRegistry.cs" />
-    <Compile Include="../../mods/bepinex/src/Save/CookControllerFoodResultIdentity.cs" Link="CookControllerFoodResultIdentity.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeStorageSentinelDiagnostic.cs" Link="RuntimeStorageSentinelDiagnostic.cs" />
+    <EmbeddedResource Include="../../mods/bepinex/src/Save/RuntimeStorageSentinelDiagnostic.cs" LogicalName="RuntimeStorageSentinelDiagnostic.cs" />
   </ItemGroup>
 
   <ItemGroup>

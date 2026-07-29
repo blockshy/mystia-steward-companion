@@ -19,6 +19,7 @@ try
     VerifyDangerousListHooksAreAbsent();
     VerifyManagedHarmonyReturnPropagation();
     VerifyManagedPinnedListHighlighting();
+    VerifyEnabledEmptyTargetClearsVisuals();
     VerifyLifecycleGenerationGuards();
     Console.WriteLine("PASS: scoped pinning and pinned-list highlighting propagate through Harmony without mutating IL2CPP lists.");
     return 0;
@@ -27,6 +28,102 @@ catch (Exception ex)
 {
     Console.Error.WriteLine($"FAIL: {ex}");
     return 1;
+}
+
+static void VerifyEnabledEmptyTargetClearsVisuals()
+{
+    const int recipeId = 81;
+    const int beverageId = 82;
+    const int cookerTypeId = 3;
+    var baseColor = new Color(0.62f, 0.66f, 0.72f, 0.55f);
+    var businessGeneration = RuntimeNightBusinessLifecycle.Generation;
+    CookingSelectionPanelProbe.ResetRefreshProbe();
+    StoragePanelProbe.ResetRefreshProbe();
+    CookingSelectionPanelProbe.RecipeBoundColor = baseColor;
+    RunTimePlayerDataProbe.Reset(nativeResult: false);
+
+    RuntimeUiPinningService.UpdateTarget(
+        businessGeneration,
+        enabled: true,
+        highlightEnabled: true,
+        recipeId,
+        beverageId,
+        ingredientIds: new[] { 83 },
+        recipeName: "active-recipe",
+        beverageName: "active-beverage",
+        cookerTypeId,
+        cookerName: "active-cooker");
+
+    var cookingPanel = new CookingSelectionPanelProbe();
+    var storagePanel = new StoragePanelProbe();
+    var recipeButton = new UIButtonSimpleProbe(baseColor);
+    CookingSelectionPanelProbe.RefreshAction = () =>
+        RunTimePlayerDataProbe.CheckPinned(PlayerSaveFileDefaultPropProbe.Recipes, recipeId);
+    StoragePanelProbe.RefreshAction = () =>
+        RunTimePlayerDataProbe.CheckPinned(PlayerSaveFileDefaultPropProbe.Beverages, beverageId);
+
+    try
+    {
+        cookingPanel.OnPanelOpen();
+        storagePanel.OnPanelOpen();
+        cookingPanel.OnRecipeElementEnabled(new RecipeProbe(recipeId), new object(), recipeButton);
+        RuntimePinnedListHighlightService.Tick();
+
+        AssertTrue(CookingSelectionPanelProbe.LastResult == true, "The active recipe target did not use scoped pinning.");
+        AssertTrue(StoragePanelProbe.LastResult == true, "The active beverage target did not use scoped pinning.");
+        AssertEqual(0, RunTimePlayerDataProbe.NativeCallCount, "The active Mod targets called the native pinned probe.");
+        AssertHighlighted(baseColor, recipeButton.image.get_color(), "The active recipe target was not highlighted.");
+        AssertTrue(RuntimeCookerHighlightService.LastEnabled, "The active cooker target did not enable the cooker stub.");
+        AssertEqual(cookerTypeId, RuntimeCookerHighlightService.LastCookerTypeId, "The cooker stub did not retain the active cooker type.");
+
+        var activeTargetGeneration = RuntimeUiPinningService.ReadPinningTarget().Generation;
+        var cookingRefreshCount = CookingSelectionPanelProbe.RefreshCount;
+        var storageRefreshCount = StoragePanelProbe.RefreshCount;
+        var setterCountBeforeClear = recipeButton.image.SetterCount;
+
+        RunOnWorkerThread(() => RuntimeUiPinningService.UpdateTarget(
+            businessGeneration,
+            enabled: true,
+            highlightEnabled: true,
+            recipeId: -1,
+            beverageId: -1,
+            ingredientIds: Array.Empty<int>(),
+            recipeName: "",
+            beverageName: "",
+            cookerTypeId: -1,
+            cookerName: ""));
+
+        var emptyTarget = RuntimeUiPinningService.ReadPinningTarget();
+        AssertTrue(emptyTarget.Enabled, "An empty target disabled the still-enabled list-pinning feature.");
+        AssertEqual(activeTargetGeneration + 1, emptyTarget.Generation, "An empty target did not advance the target generation.");
+        AssertEqual(setterCountBeforeClear, recipeButton.image.SetterCount, "Publishing an empty target touched Unity color off the main thread.");
+        AssertHighlighted(baseColor, recipeButton.image.get_color(), "Publishing an empty target restored the list highlight off the main thread.");
+        AssertFalse(RuntimeCookerHighlightService.LastEnabled, "An empty cooker target left the cooker stub enabled.");
+        AssertEqual(-1, RuntimeCookerHighlightService.LastCookerTypeId, "An empty cooker target retained the prior cooker type.");
+        AssertEqual(businessGeneration, RuntimeCookerHighlightService.LastSessionGeneration, "An empty cooker target changed the business generation.");
+
+        RuntimeUiPinningService.Tick();
+        AssertEqual(cookingRefreshCount + 1, CookingSelectionPanelProbe.RefreshCount, "An open cooking panel did not refresh once for the empty target.");
+        AssertEqual(storageRefreshCount + 1, StoragePanelProbe.RefreshCount, "An open storage panel did not refresh once for the empty target.");
+        AssertTrue(CookingSelectionPanelProbe.LastResult == false, "The empty recipe target did not restore the native pinned result.");
+        AssertTrue(StoragePanelProbe.LastResult == false, "The empty beverage target did not restore the native pinned result.");
+        AssertEqual(2, RunTimePlayerDataProbe.NativeCallCount, "The empty target did not execute both native pinned probes.");
+
+        RuntimePinnedListHighlightService.Tick();
+        AssertColor(baseColor, recipeButton.image.get_color(), "The empty target did not restore the recipe highlight color.");
+        AssertContains(RuntimePinnedListHighlightService.Status, "tracked=recipe:0", "The empty target kept the old recipe image tracked.");
+
+        RuntimeUiPinningService.Tick();
+        AssertEqual(cookingRefreshCount + 1, CookingSelectionPanelProbe.RefreshCount, "The empty target refreshed the cooking panel more than once.");
+        AssertEqual(storageRefreshCount + 1, StoragePanelProbe.RefreshCount, "The empty target refreshed the storage panel more than once.");
+    }
+    finally
+    {
+        CookingSelectionPanelProbe.RefreshAction = null;
+        StoragePanelProbe.RefreshAction = null;
+        cookingPanel.OnPanelClose();
+        storagePanel.OnPanelClose();
+    }
 }
 
 static void VerifyOpenPanelRefreshScheduling()

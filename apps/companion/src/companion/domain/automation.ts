@@ -27,7 +27,7 @@ import {
 import { buildNormalAutoOrderKey } from '@/companion/domain/normal-order-key';
 import {
   getPrimaryExecutionPlan,
-  selectPrimaryExecutionPlanRecommendation,
+  isVerifiedMissionPrimaryExecutionPlan,
 } from '@/companion/domain/primary-execution-plan';
 import { toRareRecipeResult } from '@/companion/domain/service-recommendations';
 import {
@@ -885,26 +885,39 @@ export function buildGameUiPinningTarget(
   indexes: ReturnType<typeof buildRecommendationDataIndexes> = DEFAULT_DATA_INDEXES,
   options: {
     prioritizeMissionRecipe?: boolean;
-    requireExecutablePlan?: boolean;
   } = {},
 ): GameUiPinningTarget | null {
   const rows = sortNightOrderRows(
     recommendations.map((recommendation) => ({ order: recommendation.order, recommendation })),
     orderSortMode,
   );
-  const item = selectPrimaryExecutionPlanRecommendation(
-    rows.map((row) => row.recommendation),
-    {
-      prioritizeMissionRecipe: options.prioritizeMissionRecipe === true,
-      requireExecutablePlan: options.requireExecutablePlan === true,
-    },
-  );
-  if (!item) return null;
-  const primaryPlan = getPrimaryExecutionPlan(item.executionPlans);
-  if (!primaryPlan) return null;
-  const recipe = primaryPlan.food ? getRecipeRowForPlan(item, primaryPlan) : null;
-  const beverage = primaryPlan.beverage ? getBeverageRowForPlan(item, primaryPlan) : null;
-  if (!recipe && !beverage) return null;
+  const candidates: Array<{
+    item: OrderRecommendation;
+    recipe: RareRecipeRecommendation | null;
+    beverage: RareBeverageRecommendation | null;
+  }> = [];
+  for (const row of rows) {
+    const item = row.recommendation;
+    const primaryPlan = getPrimaryExecutionPlan(item.executionPlans);
+    if (!primaryPlan) continue;
+
+    const recipe = !item.order.hasServedFood && primaryPlan.food
+      ? getRecipeRowForPlan(item, primaryPlan)
+      : null;
+    const beverage = !item.order.hasServedBeverage && primaryPlan.beverage
+      ? getBeverageRowForPlan(item, primaryPlan)
+      : null;
+    if (!recipe && !beverage) continue;
+    candidates.push({ item, recipe, beverage });
+  }
+
+  const selected = options.prioritizeMissionRecipe
+    ? candidates.find(({ item, recipe }) =>
+      recipe != null && isVerifiedMissionPrimaryExecutionPlan(item)
+    ) ?? candidates[0]
+    : candidates[0];
+  if (!selected) return null;
+  const { item, recipe, beverage } = selected;
 
   const baseIngredientIds = recipe
     ? recipe.recipe.ingredients
@@ -919,17 +932,17 @@ export function buildGameUiPinningTarget(
   const beverageId = beverage?.beverage.id ?? -1;
   const cookerName = recipe?.recipe.cooker ?? '';
   const cookerTypeId = resolveCookerTypeId(cookerName);
+  const sourceOrderKey = buildNightBusinessOrderKey(item.order);
 
   return {
     signature: [
-      item.order.firstSeenAtUtc ?? item.order.lastSeenAtUtc ?? '',
-      item.order.deskCode,
-      item.order.guestId ?? item.order.guestName,
+      sourceOrderKey,
       recipeId,
       ingredientIds.join(','),
       beverageId,
       cookerTypeId,
     ].join('|'),
+    sourceOrderKey,
     recipeId,
     recipeName: recipe?.recipe.name ?? '',
     ingredientIds,

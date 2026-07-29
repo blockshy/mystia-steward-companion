@@ -146,12 +146,18 @@ namespace MystiaStewardCompanion.Save
 
         public static bool LastEnabled { get; private set; }
 
+        public static long LastSessionGeneration { get; private set; }
+
+        public static int LastCookerTypeId { get; private set; } = -1;
+
         public static int UpdateCount { get; private set; }
 
         public static void UpdateTarget(long sessionGeneration, bool enabled, int cookerTypeId, string cookerName)
         {
             UpdateCount += 1;
-            LastEnabled = enabled;
+            LastSessionGeneration = sessionGeneration;
+            LastEnabled = enabled && sessionGeneration > 0 && cookerTypeId > 0;
+            LastCookerTypeId = LastEnabled ? cookerTypeId : -1;
         }
     }
 

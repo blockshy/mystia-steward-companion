@@ -55,6 +55,7 @@ public sealed class MystiaStewardCompanionPlugin : BasePlugin
         }
 
         RuntimeNightBusinessLifecycle.Attach(Log);
+        RuntimeStorageSentinelDiagnostic.Attach(Log);
         SpecialOrderRuntimeCapture.Attach(Log);
         NormalOrderRuntimeCapture.Attach(Log);
         RuntimeSceneReadinessCapture.Attach(Log);

@@ -20,6 +20,7 @@ import {
   canAdvanceAutomationRuntimeEventSequence,
   getAutomationStageFailureRetirement,
   isAutomationResponseCurrent,
+  isRecoverableCookingTerminalEvent,
   requiresManualAutomationResolution,
   resolveAutomationResponseStage,
   resolveAutomationWaitingStep,
@@ -162,6 +163,7 @@ import type {
   CustomRecipeData,
   CustomRecipeGroupMode,
   FavoriteData,
+  GameUiPinningTarget,
   LocalApiAutomationLease,
   MissionPanelView,
   ModTab,
@@ -474,6 +476,22 @@ function buildNightBusinessOrderSignature(orders: readonly NightBusinessOrder[])
         : '',
     ].join('~'))
     .join('|');
+}
+
+function isGameUiPinningTargetSourceValid(
+  target: GameUiPinningTarget | null,
+  orders: readonly NightBusinessOrder[],
+): boolean {
+  if (!target) return true;
+
+  const matchingOrders = orders.filter(
+    (order) => buildNightBusinessOrderKey(order) === target.sourceOrderKey,
+  );
+  if (matchingOrders.length !== 1) return false;
+
+  const [sourceOrder] = matchingOrders;
+  return !(target.recipeId >= 0 && sourceOrder.hasServedFood === true)
+    && !(target.beverageId >= 0 && sourceOrder.hasServedBeverage === true);
 }
 
 function buildFavoriteDataSignature(favorites: FavoriteData): string {
@@ -882,16 +900,8 @@ function buildNormalAutomationDiagnosticsSignature(items: readonly NormalAutoOrd
   ].join('~')).join('|');
 }
 
-function isCookingMismatchStoredEvent(event: AutomationRuntimeEvent): boolean {
-  return event.code === 'cooking-mismatch-stored';
-}
-
 function isCookingTagsUnreadableStoredEvent(event: AutomationRuntimeEvent): boolean {
   return event.code === 'cooking-tags-unreadable-stored';
-}
-
-function isRecoverableCookingTerminalEvent(event: AutomationRuntimeEvent): boolean {
-  return event.terminal && event.outcome === 'interrupted';
 }
 
 function isBlockingCookingTerminalEvent(event: AutomationRuntimeEvent): boolean {
@@ -2116,7 +2126,6 @@ export function ModWorkbench() {
         {
           prioritizeMissionRecipe: companionPreferences.missionRecipePriorityEnabled
             && !snapshot?.specialBusiness?.active,
-          requireExecutablePlan: Boolean(snapshot?.specialBusiness?.active),
         },
       )
       : null,
@@ -2130,6 +2139,10 @@ export function ModWorkbench() {
       snapshot?.specialBusiness?.active,
     ],
   );
+  const gameUiPinningTargetSourceValid = useMemo(
+    () => isGameUiPinningTargetSourceValid(gameUiPinningTarget, night?.orders ?? []),
+    [gameUiPinningTarget, night?.orders],
+  );
   useGameUiPinningPublisher({
     endpoint: normalizedEndpoint,
     apiToken,
@@ -2141,6 +2154,7 @@ export function ModWorkbench() {
     pinningEnabled: companionPreferences.gameUiPinningEnabled,
     cookerHighlightEnabled: companionPreferences.cookerHighlightEnabled,
     target: gameUiPinningTarget,
+    targetSourceValid: gameUiPinningTargetSourceValid,
     recommendationIsCurrent: orderRecommendations.isCurrent,
     recommendationPending: orderRecommendations.pending,
     recommendationError: Boolean(orderRecommendations.error),
@@ -2432,7 +2446,7 @@ export function ModWorkbench() {
       const blocking = manualResolutionRequired
         || isBlockingCookingTerminalEvent(event)
         || isCookingTagsUnreadableStoredEvent(event);
-      const recoverable = isRecoverableCookingTerminalEvent(event) || isCookingMismatchStoredEvent(event);
+      const recoverable = isRecoverableCookingTerminalEvent(event);
       if (!recoverable && !blocking) continue;
       if (!blocking && isWackyTargetTagMismatchEvent(event)) {
         const rejectedKey = buildWackyRejectedRecipeKeyFromEvent(event);
