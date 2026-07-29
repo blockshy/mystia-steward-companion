@@ -35,6 +35,7 @@ import type {
   RecommendationBucket,
   RecommendationRuntimeContext,
 } from '@/recommendation-engine/types';
+import { isMissionRecipeExecutionPlan } from '@/recommendation-engine/mission-recipe-priority';
 
 const DEFAULT_BEAM_WIDTH = 64;
 const DEFAULT_FOOD_PLAN_CANDIDATE_LIMIT = 80;
@@ -117,7 +118,7 @@ export function buildRareOrderPlans({
 /**
  * 从已筛选的料理/酒水候选构造完整推荐方案。
  *
- * 该入口供经营中订单复用已算好的候选，保证收藏置顶、任务置顶和兜底候选在最终组合排序中走同一套规则。
+ * 该入口供经营中订单复用已算好的候选，保证收藏、自定义料理置顶和兜底候选走同一套组合排序。
  */
 export function buildRareOrderPlansFromCandidates({
   data,
@@ -1003,7 +1004,7 @@ function compareRarePlans(
   sortContext: RecommendationPlanSortContext,
   ranges: Map<RecommendationObjectiveKey, ObjectiveRange>,
 ): number {
-  // 强制置顶和方案分桶属于硬优先级，必须先于权重分数；否则收藏/任务置顶会被收益或库存权重冲掉。
+  // 强制置顶和方案分桶属于硬优先级，必须先于权重分数，避免收藏或自定义料理置顶被权重冲掉。
   const pinDiff = getPlanPinRank(right, sortContext) - getPlanPinRank(left, sortContext);
   if (pinDiff !== 0) return pinDiff;
   const customOrderDiff = comparePinnedCustomPlanOrder(left, right);
@@ -1124,9 +1125,10 @@ function getPlanPinRank(
   if (plan.bucket === 'blocked') return 0;
   let rank = 0;
   if (sortContext.specialPreferDamageLevel) rank = Math.max(rank, getPlanDamagePinRank(plan));
+  if (isMissionRecipeExecutionPlan(plan, sortContext)) rank = Math.max(rank, 50);
   if (plan.food?.customRecipePinned) rank = Math.max(rank, 40);
   if (sortContext.pinFavoriteRecipe && plan.food && sortContext.favoriteRecipeKeys?.has(buildPlanRecipeKey(plan.food))) rank = Math.max(rank, 20);
-  if (sortContext.pinFavoriteBeverage && plan.beverage && sortContext.favoriteBeverageIds?.has(plan.beverage.beverage.id)) rank = Math.max(rank, 10);
+  if (sortContext.pinFavoriteBeverage && plan.beverage && sortContext.favoriteBeverageIds?.has(plan.beverage.beverage.id)) rank = Math.max(rank, 20);
   return rank;
 }
 

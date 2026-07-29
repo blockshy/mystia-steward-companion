@@ -17,6 +17,7 @@ internal sealed class LocalApiSnapshot
     public bool RuntimeLoaded { get; init; }
     public long RuntimeDaySceneGeneration { get; init; }
     public bool RuntimeDaySceneReady { get; init; }
+    public long MissionGeneration { get; init; }
     public string Status { get; init; } = "";
     public string RuntimeSource { get; init; } = "";
     public string RuntimeSceneReadinessStatus { get; init; } = "";

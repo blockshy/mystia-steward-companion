@@ -58,6 +58,8 @@ export interface RecommendationPlanSortContext {
   favoriteBeverageIds?: Set<number>;
   pinFavoriteRecipe?: boolean;
   pinFavoriteBeverage?: boolean;
+  missionRecipeFoodId?: number;
+  missionRecipeId?: number;
   specialTargetFoodTags?: Set<string>;
   specialTargetBeverageTags?: Set<string>;
   specialPreferHighFoodLevel?: boolean;

@@ -16,30 +16,29 @@ import {
 } from '@/companion/storage';
 import type {
   LocalApiSnapshot,
-  ModTab,
   RareGuestInvitationResponse,
   RareGuestInvitationScope,
   RareGuestInvitationWriteContext,
 } from '@/companion/types';
 
 interface UseRareGuestInvitationsOptions {
+  active: boolean;
   apiToken: string;
   connected: boolean;
   connectionRevision: number;
   normalizedEndpoint: string;
   refresh: (manual?: boolean) => Promise<void>;
   snapshot: LocalApiSnapshot | null;
-  tab: ModTab;
 }
 
 export function useRareGuestInvitations({
+  active,
   apiToken,
   connected,
   connectionRevision,
   normalizedEndpoint,
   refresh,
   snapshot,
-  tab,
 }: UseRareGuestInvitationsOptions) {
   const [rareGuestInvitationScope, setRareGuestInvitationScopeState] = useState<RareGuestInvitationScope>(() =>
     readStoredRareGuestInvitationScope(),
@@ -67,20 +66,20 @@ export function useRareGuestInvitations({
 
   const refreshIdentity = useMemo(
     () => buildRareGuestInvitationRefreshIdentity({
+      active,
       connected,
       connectionRevision,
       normalizedEndpoint,
       scope: rareGuestInvitationScope,
       snapshot,
-      tab,
     }),
     [
+      active,
       connected,
       connectionRevision,
       normalizedEndpoint,
       rareGuestInvitationScope,
       snapshot,
-      tab,
     ],
   );
   const writeContext = useMemo<RareGuestInvitationWriteContext | null>(() => {

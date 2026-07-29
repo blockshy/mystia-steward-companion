@@ -53,6 +53,8 @@ namespace MystiaStewardCompanion.Save
         public static int SpecialBusinessClearCount { get; set; }
         public static int CookingGenerationClearCount { get; set; }
         public static int CookingJobClearCount { get; set; }
+        public static int ServeInWorkBoundaryCount { get; set; }
+        public static NightBusinessLifecyclePhase LastServeInWorkPhase { get; set; }
 
         public static void Reset()
         {
@@ -69,6 +71,8 @@ namespace MystiaStewardCompanion.Save
             SpecialBusinessClearCount = 0;
             CookingGenerationClearCount = 0;
             CookingJobClearCount = 0;
+            ServeInWorkBoundaryCount = 0;
+            LastServeInWorkPhase = NightBusinessLifecyclePhase.Inactive;
         }
     }
 
@@ -82,6 +86,17 @@ namespace MystiaStewardCompanion.Save
         public static void Resume(string reason) => RuntimeBoundaryProbe.CookerResumeCount++;
         public static void Suspend(string reason) => RuntimeBoundaryProbe.CookerSuspendCount++;
         public static void Abandon(string reason) => RuntimeBoundaryProbe.CookerAbandonCount++;
+    }
+
+    internal static class RuntimeServeInWorkMissionDiagnosticCapture
+    {
+        public static void ApplyBusinessBoundary(
+            NightBusinessLifecycleSnapshot snapshot,
+            DateTime changedAtUtc)
+        {
+            RuntimeBoundaryProbe.ServeInWorkBoundaryCount++;
+            RuntimeBoundaryProbe.LastServeInWorkPhase = snapshot.Phase;
+        }
     }
 
     internal static class RuntimePinnedListHighlightService

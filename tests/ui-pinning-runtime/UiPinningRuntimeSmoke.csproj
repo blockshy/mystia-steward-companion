@@ -28,5 +28,8 @@
     <Reference Include="MonoMod.Utils">
       <HintPath>$(ReferenceDir)\MonoMod.Utils.dll</HintPath>
     </Reference>
+    <Reference Include="Il2CppInterop.Runtime">
+      <HintPath>$(ReferenceDir)\Il2CppInterop.Runtime.dll</HintPath>
+    </Reference>
   </ItemGroup>
 </Project>

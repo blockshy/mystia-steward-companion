@@ -44,22 +44,150 @@ const modCSharpSources = listFilesRecursively(path.join(root, 'mods/bepinex/src'
     source: fs.readFileSync(filePath, 'utf8'),
   }));
 
+const runtimeMissionDiagnosticCapturePath =
+  'mods/bepinex/src/Save/RuntimeMissionDiagnosticCapture.cs';
+const runtimeScheduledEventDiagnosticCapturePath =
+  'mods/bepinex/src/Save/RuntimeScheduledEventDiagnosticCapture.cs';
+const runtimeScheduledMissionSourceReaderPath =
+  'mods/bepinex/src/Save/RuntimeScheduledMissionSourceReader.cs';
+const runtimeMissionRecipePriorityProjectionPath =
+  'mods/bepinex/src/Save/RuntimeMissionRecipePriorityProjection.cs';
+const runtimeMissionDiagnosticFiles = new Set([
+  runtimeMissionDiagnosticCapturePath,
+  runtimeScheduledEventDiagnosticCapturePath,
+  runtimeScheduledMissionSourceReaderPath,
+  'mods/bepinex/src/Save/RuntimeMissionDiagnosticState.cs',
+  'mods/bepinex/src/Save/RuntimeMissionLoadSeedParser.cs',
+  'mods/bepinex/src/Save/RuntimeMissionDefinitionDiagnosticReader.cs',
+  'mods/bepinex/src/Save/RuntimeServeInWorkMissionDiagnosticCapture.cs',
+  'mods/bepinex/src/Save/RuntimeServeInWorkMissionDiagnosticState.cs',
+]);
+const runtimeMissionBusinessFiles = new Set([
+  runtimeMissionRecipePriorityProjectionPath,
+  'mods/bepinex/src/Ui/StewardOverlayController.cs',
+]);
 for (const forbiddenRuntimeMissionPath of [
-  'RuntimeMission',
   'AllNodesMapping',
   'GetAllNodes',
   'GetAllMissionData',
-  'trackingMissions',
-  'trackingMissionBuffer',
   'scheduledEvents',
 ]) {
+  const allowedFiles = forbiddenRuntimeMissionPath === 'scheduledEvents'
+    ? new Set([runtimeScheduledMissionSourceReaderPath])
+    : new Set();
   const offendingFiles = modCSharpSources
-    .filter(({ source }) => source.includes(forbiddenRuntimeMissionPath))
+    .filter(({ filePath, source }) => source.includes(forbiddenRuntimeMissionPath)
+      && !allowedFiles.has(filePath))
     .map(({ filePath }) => filePath);
   assert.deepEqual(
     offendingFiles,
     [],
     `Mod source restored forbidden runtime mission path ${forbiddenRuntimeMissionPath}: ${offendingFiles.join(', ')}`,
+  );
+}
+
+const unauthorizedRuntimeMissionFiles = modCSharpSources
+  .filter(({ filePath, source }) => source.includes('RuntimeMission')
+    && !runtimeMissionDiagnosticFiles.has(filePath)
+    && !runtimeMissionBusinessFiles.has(filePath)
+    && source
+      .replaceAll(/RuntimeMissionDiagnostic[A-Za-z0-9_]*/g, '')
+      .includes('RuntimeMission'))
+  .map(({ filePath }) => filePath);
+assert.deepEqual(
+  unauthorizedRuntimeMissionFiles,
+  [],
+  `Mod source added an unauthorized runtime mission business path: ${unauthorizedRuntimeMissionFiles.join(', ')}`,
+);
+
+const runtimeMissionRecipePriorityProjection = readSource(
+  runtimeMissionRecipePriorityProjectionPath,
+);
+for (const requiredPriorityGate of [
+  'catalog.IsComplete',
+  'business.IsActive',
+  'business.Generation > 0',
+  'mission.Ready',
+  'mission.RuntimeAvailable',
+  'mission.Generation > 0',
+  'serveInWork.MissionGeneration == mission.Generation',
+  'serveInWork.BusinessGeneration == business.Generation',
+  'serveInWork.NightPhase, ActivePhase',
+  'Active: false',
+  'Error: null',
+  'SpecialBusinessChallengeTypes.NotChallenge',
+  'order.GuestId != signal.CanonicalGuestId',
+  'order.RuntimeGuestId != signal.RawGuestId',
+  'order.HasServedFood',
+  'string.IsNullOrWhiteSpace(order.TraceId)',
+  'if (matchingOrderIndex >= 0)',
+  'matchedRecipe.RecipeId < 0',
+]) {
+  assert.ok(
+    runtimeMissionRecipePriorityProjection.includes(requiredPriorityGate),
+    `Mission recipe priority must retain gate: ${requiredPriorityGate}.`,
+  );
+}
+assert.ok(
+  overlayController.includes('RuntimeMissionRecipePriorityProjection.Enrich('),
+  'The snapshot publisher must use the single mission recipe priority projection.',
+);
+for (const forbiddenActiveMissionCall of [
+  'ContainsSpecialNPCServeInWorkMission',
+  'UpdateFinishStates',
+  'HasFulfilled',
+]) {
+  assert.ok(
+    !runtimeMissionRecipePriorityProjection.includes(forbiddenActiveMissionCall),
+    `Mission recipe projection must not call ${forbiddenActiveMissionCall}.`,
+  );
+  assert.ok(
+    !overlayController.includes(forbiddenActiveMissionCall),
+    `Snapshot publication must not call ${forbiddenActiveMissionCall}.`,
+  );
+}
+
+for (const countOnlyRuntimeMember of [
+  'trackingMissions',
+  'trackingMissionBuffer',
+]) {
+  const offendingFiles = modCSharpSources
+    .filter(({ filePath, source }) => source.includes(countOnlyRuntimeMember)
+      && filePath !== runtimeMissionDiagnosticCapturePath)
+    .map(({ filePath }) => filePath);
+  assert.deepEqual(
+    offendingFiles,
+    [],
+    `Only the diagnostic capture may inspect ${countOnlyRuntimeMember}: ${offendingFiles.join(', ')}`,
+  );
+}
+
+const runtimeMissionDiagnosticCapture = readSource(runtimeMissionDiagnosticCapturePath);
+assert.ok(
+  runtimeMissionDiagnosticCapture.includes(
+    'RuntimeConcreteCollectionReader.TryReadDictionaryCount(\n'
+      + '                trackingMissions,',
+  ),
+  'Runtime mission diagnostics must read only the tracking dictionary Count.',
+);
+assert.ok(
+  !runtimeMissionDiagnosticCapture.includes(
+    'RuntimeConcreteCollectionReader.TryReadDictionary(\n'
+      + '                trackingMissions,',
+  ),
+  'Runtime mission diagnostics must never enumerate the complex tracking dictionary.',
+);
+for (const forbiddenDiagnosticCall of [
+  'GetEnumerator',
+  'ParseActiveMissionData',
+  'HasFulfilled',
+  'GetAllMissionData',
+  'GetAllNodes',
+  'AllNodesMapping',
+]) {
+  assert.ok(
+    !runtimeMissionDiagnosticCapture.includes(forbiddenDiagnosticCall),
+    `Runtime mission diagnostics restored forbidden call ${forbiddenDiagnosticCall}.`,
   );
 }
 
@@ -236,7 +364,7 @@ for (const requiredAutomaticInvitationLoad of [
   'requestGenerationRef',
   'listAbortControllerRef',
   'snapshot: LocalApiSnapshot',
-  'tab: ModTab',
+  'active: boolean',
 ]) {
   assert.ok(
     rareGuestInvitationHook.includes(requiredAutomaticInvitationLoad),

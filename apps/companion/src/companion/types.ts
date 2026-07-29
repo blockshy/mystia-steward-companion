@@ -11,10 +11,19 @@ import type {
 /**
  * 工作台一级 Tab。值会持久化到 localStorage，并用于手柄导航定位。
  */
-export type ModTab = 'overview' | 'normal' | 'rare' | 'custom-recipes' | 'service' | 'rare-invitations' | 'inventory' | 'help' | 'logs' | 'settings';
+export type ModTab = 'overview' | 'normal' | 'rare' | 'custom-recipes' | 'service' | 'missions' | 'inventory' | 'help' | 'logs' | 'settings';
 export type OverviewTab = 'status' | 'inventory' | 'actions';
 export type SettingsTab = 'window' | 'connection' | 'recommendation' | 'automation' | 'updates';
 export type RareGuestInvitationScope = 'current' | 'all';
+export type MissionPanelView = 'tasks' | 'invitations';
+export type TrackedMissionStatus = 'unverified' | 'tracking' | 'fulfilled';
+export type TrackedMissionRuntimeStatus =
+  | 'not-attached'
+  | 'waiting-for-load'
+  | 'loading'
+  | 'ready'
+  | 'runtime-unavailable'
+  | 'mission-data-incomplete';
 
 export interface RareGuestInvitationWriteContext {
   expectedDaySceneGeneration: number;
@@ -67,6 +76,17 @@ export interface NightBusinessGuest {
   willPayMoney?: boolean | null;
 }
 
+export interface MissionRecipePriority {
+  traceId: string;
+  deskCode: number;
+  guestId: number;
+  runtimeGuestId: number;
+  foodId: number;
+  recipeId: number;
+  missionGeneration: number;
+  businessGeneration: number;
+}
+
 /**
  * 夜间经营稀客订单快照。
  */
@@ -96,6 +116,7 @@ export interface NightBusinessOrder {
   remainingOrderCount?: number | null;
   hasServedFood?: boolean;
   hasServedBeverage?: boolean;
+  missionRecipePriority?: MissionRecipePriority | null;
 }
 
 /**
@@ -224,6 +245,7 @@ export interface LocalApiSnapshot {
   runtimeLoaded: boolean;
   runtimeDaySceneGeneration: number;
   runtimeDaySceneReady: boolean;
+  missionGeneration: number;
   status: string;
   runtimeSource: string;
   runtimeSceneReadinessStatus?: string;
@@ -759,6 +781,72 @@ export interface RareGuestInvitationResponse {
   invited: RareGuestInvitationEntry[];
   skipped: RareGuestInvitationEntry[];
 }
+
+export interface MissionPresentationMetadata {
+  receiverLabel: string;
+  characterName: string;
+  sceneNames: string[];
+  presentationStatus: string;
+}
+
+export interface TrackedMissionEntry extends MissionPresentationMetadata {
+  label: string;
+  title: string;
+  status: TrackedMissionStatus;
+  conditionCount: number;
+  completedConditionCount: number | null;
+  conditionStates: Array<boolean | null>;
+}
+
+export interface TrackedMissionsResponse {
+  ok: boolean;
+  runtimeAvailable: boolean;
+  generation: number;
+  status: TrackedMissionRuntimeStatus;
+  contentSignature: string;
+  unchanged?: false;
+  unverifiedCount: number;
+  trackingCount: number;
+  fulfilledCount: number;
+  missions: TrackedMissionEntry[];
+  error?: string | null;
+}
+
+export interface TrackedMissionsUnchangedResponse {
+  unchanged: true;
+  contentSignature: string;
+}
+
+export type TrackedMissionsApiResponse =
+  | TrackedMissionsResponse
+  | TrackedMissionsUnchangedResponse;
+
+export interface AvailableMissionEntry extends MissionPresentationMetadata {
+  label: string;
+  title: string;
+}
+
+export interface AvailableMissionsResponse {
+  ok: boolean;
+  runtimeAvailable: boolean;
+  status: TrackedMissionRuntimeStatus;
+  missionGeneration: number;
+  daySceneGeneration: number;
+  contentSignature: string;
+  unchanged?: false;
+  availableCount: number;
+  missions: AvailableMissionEntry[];
+  error?: string | null;
+}
+
+export interface AvailableMissionsUnchangedResponse {
+  unchanged: true;
+  contentSignature: string;
+}
+
+export type AvailableMissionsApiResponse =
+  | AvailableMissionsResponse
+  | AvailableMissionsUnchangedResponse;
 
 export interface RareOrderDismissResponse {
   ok: boolean;

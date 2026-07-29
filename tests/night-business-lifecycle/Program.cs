@@ -117,6 +117,10 @@ static void AssertRuntimeLifecycleCallbacks()
         "Panel open unexpectedly invalidated the active target.");
     AssertEqual(0, RuntimeBoundaryProbe.CookingJobClearCount,
         "Panel open unexpectedly cleared active cooking jobs.");
+    AssertEqual(1, RuntimeBoundaryProbe.ServeInWorkBoundaryCount,
+        "Panel open did not update ServeInWork diagnostic scope.");
+    AssertEqual(NightBusinessLifecyclePhase.Active, RuntimeBoundaryProbe.LastServeInWorkPhase,
+        "ServeInWork diagnostics received the wrong active phase.");
 
     AssertTrue(runtimeType.GetMethod("OnNormalBusinessClosing", BindingFlags.NonPublic | BindingFlags.Static) == null,
         "Business-time expiry callback still exists.");
@@ -143,6 +147,8 @@ static void AssertRuntimeLifecycleCallbacks()
     AssertEqual(1, RuntimeBoundaryProbe.NormalOrderClearCount, "Closing did not clear normal orders once.");
     AssertEqual(1, RuntimeBoundaryProbe.SpecialOrderClearCount, "Closing did not clear special orders once.");
     AssertEqual(1, RuntimeBoundaryProbe.CookingJobClearCount, "Closing did not clear cooking jobs once.");
+    AssertEqual(NightBusinessLifecyclePhase.Closing, RuntimeBoundaryProbe.LastServeInWorkPhase,
+        "ServeInWork diagnostics did not receive Closing.");
 
     InvokeRuntimeCallback(runtimeType, "OnResultTransitionStarting");
     AssertEqual(1, RuntimeBoundaryProbe.TargetInvalidationCount,

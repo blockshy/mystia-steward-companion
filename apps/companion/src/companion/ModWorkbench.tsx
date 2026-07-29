@@ -29,10 +29,13 @@ import {
 } from '@/companion/automation-machine';
 import { useOrderRecommendations } from '@/companion/hooks/useOrderRecommendations';
 import { useRareGuestInvitations } from '@/companion/hooks/useRareGuestInvitations';
+import { useTrackedMissions } from '@/companion/hooks/useTrackedMissions';
+import { useAvailableMissions } from '@/companion/hooks/useAvailableMissions';
 import { ModCustomRecipesPanel } from '@/companion/pages/ModCustomRecipesPanel';
 import { ModHelpPanel } from '@/companion/pages/ModHelpPanel';
 import { ModInventoryPanel } from '@/companion/pages/ModInventoryPanel';
 import { ModLogsPanel } from '@/companion/pages/ModLogsPanel';
+import { ModMissionsPanel } from '@/companion/pages/ModMissionsPanel';
 import { ModNormalPanel } from '@/companion/pages/ModNormalPanel';
 import { ModOverviewPanel } from '@/companion/pages/ModOverviewPanel';
 import { ModRarePanel } from '@/companion/pages/ModRarePanel';
@@ -43,7 +46,6 @@ import {
   type ServiceRecommendationTab,
 } from '@/companion/pages/ModServicePanel';
 import { ModSettingsPanel } from '@/companion/pages/ModSettingsPanel';
-import { ModRareGuestInvitationsPanel } from '@/companion/pages/ModRareGuestInvitationsPanel';
 import {
   acknowledgeAutomationSafetyBarrier,
   acquireAutomationLease,
@@ -161,6 +163,7 @@ import type {
   CustomRecipeGroupMode,
   FavoriteData,
   LocalApiAutomationLease,
+  MissionPanelView,
   ModTab,
   NightBusinessOrder,
   NormalAutoOrderDiagnostic,
@@ -194,7 +197,7 @@ const MAX_AUTOMATION_DECISION_DIAGNOSTIC_SIGNATURES = 64;
 const MOD_TAB_TRIGGER_CLASS = 'min-w-[4.75rem] flex-none min-[720px]:min-w-0 min-[720px]:flex-1';
 type CompanionPlatform = 'desktop' | 'mobile';
 
-const MOD_TABS: ModTab[] = ['overview', 'normal', 'rare', 'custom-recipes', 'service', 'rare-invitations', 'inventory', 'help', 'logs', 'settings'];
+const MOD_TABS: ModTab[] = ['overview', 'normal', 'rare', 'custom-recipes', 'service', 'missions', 'inventory', 'help', 'logs', 'settings'];
 const BASIC_MOD_TABS: ModTab[] = MOD_TABS.filter((tab) => tab !== 'logs');
 const EMPTY_WORKER_FAVORITES: FavoriteData = { version: 0, recipes: [], beverages: [] };
 const EMPTY_WORKER_CUSTOM_RECIPES: CustomRecipeData = { version: 0, enabled: false, recipes: [] };
@@ -457,6 +460,18 @@ function buildNightBusinessOrderSignature(orders: readonly NightBusinessOrder[])
       order.remainingOrderCount ?? '',
       order.hasServedFood ? 1 : 0,
       order.hasServedBeverage ? 1 : 0,
+      order.missionRecipePriority
+        ? [
+          order.missionRecipePriority.traceId,
+          order.missionRecipePriority.deskCode,
+          order.missionRecipePriority.guestId,
+          order.missionRecipePriority.runtimeGuestId,
+          order.missionRecipePriority.foodId,
+          order.missionRecipePriority.recipeId,
+          order.missionRecipePriority.missionGeneration,
+          order.missionRecipePriority.businessGeneration,
+        ].join(':')
+        : '',
     ].join('~'))
     .join('|');
 }
@@ -522,6 +537,7 @@ function buildOrderRecommendationPreferenceSignature(preferences: CompanionPrefe
   return [
     preferences.serviceOrderSortMode,
     preferences.filterMissingCookers ? 1 : 0,
+    preferences.missionRecipePriorityEnabled ? 1 : 0,
     preferences.pinFavoriteRecipeEnabled ? 1 : 0,
     preferences.pinFavoriteBeverageEnabled ? 1 : 0,
     serializePrimaryExecutionPlanPolicy(buildPrimaryExecutionPlanPolicy(preferences)),
@@ -1345,6 +1361,7 @@ export function ModWorkbench() {
   const { mode: themeMode, setMode: setThemeMode } = useThemeMode();
   const [tab, setTab] = useState<ModTab>(() => readStoredTab());
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('window');
+  const [missionPanelView, setMissionPanelView] = useState<MissionPanelView>('tasks');
   const [serviceFocusMode, setServiceFocusMode] = useState(false);
   const [serviceFocusCompact, setServiceFocusCompact] = useState(readStoredFocusCompact);
   const [serviceFocusRecipeLimit, setServiceFocusRecipeLimit] = useState(readStoredFocusRecipeLimit);
@@ -1379,6 +1396,7 @@ export function ModWorkbench() {
     pauseConnection,
     refresh,
   } = useCompanionConnection(snapshotRefreshIntervalMs);
+  const companionConnected = Boolean(apiToken && !connectionPaused && !error && snapshot);
   const {
     favorites,
     favoriteError,
@@ -1400,7 +1418,7 @@ export function ModWorkbench() {
     endpoint: normalizedEndpoint,
     apiToken,
     connectionRevision,
-    connected: Boolean(apiToken && !connectionPaused && !error && snapshot),
+    connected: companionConnected,
   });
   const customRecipeDraftEndpointRef = useRef(normalizedEndpoint);
 
@@ -1415,6 +1433,33 @@ export function ModWorkbench() {
     persistCustomRecipeGroupMode(mode);
   }, []);
   const {
+    trackedMissions,
+    trackedMissionsError,
+    trackedMissionsLoading,
+    refreshTrackedMissions,
+  } = useTrackedMissions({
+    active: tab === 'missions' && missionPanelView === 'tasks',
+    apiToken,
+    connected: companionConnected,
+    connectionRevision,
+    normalizedEndpoint,
+  });
+  const {
+    availableMissions,
+    availableMissionsError,
+    availableMissionsLoading,
+    refreshAvailableMissions,
+  } = useAvailableMissions({
+    active: tab === 'missions' && missionPanelView === 'tasks',
+    apiToken,
+    connected: companionConnected,
+    connectionRevision,
+    daySceneGeneration: snapshot?.runtimeDaySceneGeneration ?? 0,
+    daySceneReady: snapshot?.runtimeDaySceneReady ?? false,
+    missionGeneration: snapshot?.missionGeneration ?? 0,
+    normalizedEndpoint,
+  });
+  const {
     rareGuestInvitationScope,
     setRareGuestInvitationScope,
     rareGuestInvitationLevels,
@@ -1427,13 +1472,13 @@ export function ModWorkbench() {
     inviteAllRareGuests,
     inviteRareGuest,
   } = useRareGuestInvitations({
+    active: tab === 'missions' && missionPanelView === 'invitations',
     apiToken,
-    connected: Boolean(apiToken && !connectionPaused && !error && snapshot),
+    connected: companionConnected,
     connectionRevision,
     normalizedEndpoint,
     refresh,
     snapshot,
-    tab,
   });
   const [manualPlace, setManualPlace] = useState<PlaceName | null>(null);
   const [rareCustomerId, setRareCustomerId] = useState<number | null>(null);
@@ -2068,12 +2113,17 @@ export function ModWorkbench() {
         orderRecommendations.recommendations,
         companionPreferences.serviceOrderSortMode,
         recommendationIndexes,
-        { requireExecutablePlan: Boolean(snapshot?.specialBusiness?.active) },
+        {
+          prioritizeMissionRecipe: companionPreferences.missionRecipePriorityEnabled
+            && !snapshot?.specialBusiness?.active,
+          requireExecutablePlan: Boolean(snapshot?.specialBusiness?.active),
+        },
       )
       : null,
     [
       companionPreferences.cookerHighlightEnabled,
       companionPreferences.gameUiPinningEnabled,
+      companionPreferences.missionRecipePriorityEnabled,
       companionPreferences.serviceOrderSortMode,
       orderRecommendations.recommendations,
       recommendationIndexes,
@@ -4247,8 +4297,8 @@ export function ModWorkbench() {
           <TabsTrigger value="service" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="service">
             经营中
           </TabsTrigger>
-          <TabsTrigger value="rare-invitations" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="rare-invitations">
-            稀客邀请
+          <TabsTrigger value="missions" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="missions">
+            任务
           </TabsTrigger>
           <TabsTrigger value="inventory" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="inventory">
             修改
@@ -4425,9 +4475,22 @@ export function ModWorkbench() {
           )}
         </TabsContent>
 
-        <TabsContent value="rare-invitations" data-gamepad-scope="content">
-          {tab === 'rare-invitations' && (
-            <ModRareGuestInvitationsPanel
+        <TabsContent value="missions" data-gamepad-scope="content">
+          {tab === 'missions' && (
+            <ModMissionsPanel
+              view={missionPanelView}
+              connected={companionConnected}
+              availableContextReady={
+                (snapshot?.runtimeDaySceneReady ?? false)
+                && (snapshot?.runtimeDaySceneGeneration ?? 0) > 0
+                && (snapshot?.missionGeneration ?? 0) > 0
+              }
+              availableMissions={availableMissions}
+              availableMissionsError={availableMissionsError}
+              availableMissionsLoading={availableMissionsLoading}
+              trackedMissions={trackedMissions}
+              trackedMissionsError={trackedMissionsError}
+              trackedMissionsLoading={trackedMissionsLoading}
               runtimeLoaded={snapshot?.runtimeLoaded ?? false}
               runtimeDaySceneReady={snapshot?.runtimeDaySceneReady ?? false}
               invitationContextReady={rareGuestInvitationContextReady}
@@ -4439,6 +4502,11 @@ export function ModWorkbench() {
               inviteAllResult={rareGuestInvitationResult}
               inviteAllError={rareGuestInvitationError}
               showDebugDetails={companionPreferences.showDebugDetails}
+              onViewChange={setMissionPanelView}
+              onRefreshMissions={() => {
+                refreshAvailableMissions();
+                refreshTrackedMissions();
+              }}
               onInviteScopeChange={(scope) => {
                 setRareGuestInvitationScope(scope);
               }}

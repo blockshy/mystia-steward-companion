@@ -179,6 +179,7 @@ export interface RareRecipeRecommendation {
   customRecipeSortOrder?: number;
   customRecipeScope?: 'tag' | 'all';
   customRecipeId?: string;
+  missionTarget?: boolean;
   extraIngredientReasonTags: Record<number, string[]>;
   allTags: string[];
   cancelledTags: string[];

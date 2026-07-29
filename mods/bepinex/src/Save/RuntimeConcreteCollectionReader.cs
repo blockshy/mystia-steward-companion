@@ -21,12 +21,97 @@ internal static class RuntimeConcreteCollectionReader
     private const BindingFlags InstanceFlags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
     private const string ManagedDictionaryTypeName = "System.Collections.Generic.Dictionary`2";
     private const string Il2CppDictionaryTypeName = "Il2CppSystem.Collections.Generic.Dictionary`2";
+    private const string ManagedListTypeName = "System.Collections.Generic.List`1";
+    private const string Il2CppListTypeName = "Il2CppSystem.Collections.Generic.List`1";
+    private const string ManagedHashSetTypeName = "System.Collections.Generic.HashSet`1";
+    private const string Il2CppHashSetTypeName = "Il2CppSystem.Collections.Generic.HashSet`1";
     private const string Il2CppReferenceArrayTypeName = "Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppReferenceArray`1";
     private const string Il2CppStructArrayTypeName = "Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStructArray`1";
+    private const string Il2CppStringArrayTypeName =
+        "Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStringArray";
 
     private static readonly ConcurrentDictionary<Type, DictionaryShape> DictionaryShapes = new();
+    private static readonly ConcurrentDictionary<Type, DictionaryContainsShape> DictionaryContainsShapes = new();
     private static readonly ConcurrentDictionary<Type, DictionaryLookupShape> DictionaryLookupShapes = new();
+    private static readonly ConcurrentDictionary<Type, ListShape> ListShapes = new();
     private static readonly ConcurrentDictionary<Type, ArrayShape> ArrayShapes = new();
+    private static readonly ConcurrentDictionary<Type, StringArrayShape> StringArrayShapes = new();
+
+    public static bool TryReadDictionaryCount(
+        object? dictionary,
+        out int count,
+        out RuntimeCollectionReadFailure failure)
+    {
+        count = 0;
+        if (dictionary == null)
+        {
+            failure = RuntimeCollectionReadFailure.Missing;
+            return false;
+        }
+
+        if (!TryResolveDictionaryHeader(dictionary.GetType(), out var countProperty))
+        {
+            failure = RuntimeCollectionReadFailure.UnsupportedShape;
+            return false;
+        }
+
+        if (!TryReadIntProperty(dictionary, countProperty, out count))
+        {
+            count = 0;
+            failure = RuntimeCollectionReadFailure.InvocationFailed;
+            return false;
+        }
+
+        if (!IsSaneCount(count))
+        {
+            count = 0;
+            failure = RuntimeCollectionReadFailure.CountMismatch;
+            return false;
+        }
+
+        failure = RuntimeCollectionReadFailure.None;
+        return true;
+    }
+
+    public static bool TryReadHashSetCount(
+        object? set,
+        out int count,
+        out RuntimeCollectionReadFailure failure)
+    {
+        count = 0;
+        if (set == null)
+        {
+            failure = RuntimeCollectionReadFailure.Missing;
+            return false;
+        }
+
+        var type = set.GetType();
+        if (!TryGetClosedGenericDefinition(type, out var definitionName, out var arguments)
+            || arguments.Length != 1
+            || (definitionName != ManagedHashSetTypeName && definitionName != Il2CppHashSetTypeName))
+        {
+            failure = RuntimeCollectionReadFailure.UnsupportedShape;
+            return false;
+        }
+
+        var countProperty = FindProperty(type, "Count", typeof(int));
+        if (countProperty == null || !TryReadIntProperty(set, countProperty, out count))
+        {
+            count = 0;
+            failure = RuntimeCollectionReadFailure.InvocationFailed;
+            return false;
+        }
+
+        if (!IsSaneCount(count))
+        {
+            count = 0;
+            failure = RuntimeCollectionReadFailure.CountMismatch;
+            return false;
+        }
+
+        failure = RuntimeCollectionReadFailure.None;
+        return true;
+    }
 
     public static bool TryGetDictionaryValue(
         object? dictionary,
@@ -93,6 +178,68 @@ internal static class RuntimeConcreteCollectionReader
         if (finalCount != initialCount)
         {
             value = null;
+            failure = RuntimeCollectionReadFailure.CountMismatch;
+            return false;
+        }
+
+        found = containsKey;
+        failure = RuntimeCollectionReadFailure.None;
+        return true;
+    }
+
+    public static bool TryContainsDictionaryKey(
+        object? dictionary,
+        object? key,
+        out bool found,
+        out RuntimeCollectionReadFailure failure)
+    {
+        found = false;
+        if (dictionary == null)
+        {
+            failure = RuntimeCollectionReadFailure.Missing;
+            return false;
+        }
+
+        var dictionaryType = dictionary.GetType();
+        if (!TryResolveDictionaryContainsShape(dictionaryType, out var shape))
+        {
+            failure = RuntimeCollectionReadFailure.UnsupportedShape;
+            return false;
+        }
+
+        if (key == null || key.GetType() != shape.KeyType)
+        {
+            failure = RuntimeCollectionReadFailure.ElementTypeMismatch;
+            return false;
+        }
+
+        if (!TryReadIntProperty(dictionary, shape.Count, out var initialCount))
+        {
+            failure = RuntimeCollectionReadFailure.InvocationFailed;
+            return false;
+        }
+
+        if (!IsSaneCount(initialCount))
+        {
+            failure = RuntimeCollectionReadFailure.CountMismatch;
+            return false;
+        }
+
+        if (!TryInvoke(shape.ContainsKey, dictionary, new[] { key }, out var rawFound)
+            || rawFound is not bool containsKey)
+        {
+            failure = RuntimeCollectionReadFailure.InvocationFailed;
+            return false;
+        }
+
+        if (!TryReadIntProperty(dictionary, shape.Count, out var finalCount))
+        {
+            failure = RuntimeCollectionReadFailure.InvocationFailed;
+            return false;
+        }
+
+        if (finalCount != initialCount)
+        {
             failure = RuntimeCollectionReadFailure.CountMismatch;
             return false;
         }
@@ -241,6 +388,27 @@ internal static class RuntimeConcreteCollectionReader
         return true;
     }
 
+    public static bool TryReadList(
+        object? list,
+        out IReadOnlyList<object?> values,
+        out RuntimeCollectionReadFailure failure)
+    {
+        values = Array.Empty<object?>();
+        if (list == null)
+        {
+            failure = RuntimeCollectionReadFailure.Missing;
+            return false;
+        }
+
+        if (!TryResolveListShape(list.GetType(), out var shape))
+        {
+            failure = RuntimeCollectionReadFailure.UnsupportedShape;
+            return false;
+        }
+
+        return TryReadIndexedCollection(list, shape.Count, shape.Indexer, out values, out failure);
+    }
+
     public static bool TryReadReferenceArray(
         object? array,
         out IReadOnlyList<object?> values,
@@ -275,6 +443,51 @@ internal static class RuntimeConcreteCollectionReader
             }
 
             result[index] = value;
+        }
+
+        values = result;
+        failure = RuntimeCollectionReadFailure.None;
+        return true;
+    }
+
+    public static bool TryReadStringArray(
+        object? array,
+        out IReadOnlyList<string?> values,
+        out RuntimeCollectionReadFailure failure)
+    {
+        values = Array.Empty<string?>();
+        if (array == null)
+        {
+            failure = RuntimeCollectionReadFailure.Missing;
+            return false;
+        }
+
+        if (!TryResolveStringArrayShape(array.GetType(), out var shape))
+        {
+            failure = RuntimeCollectionReadFailure.UnsupportedShape;
+            return false;
+        }
+
+        if (!TryReadIndexedCollection(
+                array,
+                shape.Length,
+                shape.Indexer,
+                out var rawValues,
+                out failure))
+        {
+            return false;
+        }
+
+        var result = new string?[rawValues.Count];
+        for (var index = 0; index < rawValues.Count; index++)
+        {
+            if (rawValues[index] != null && rawValues[index] is not string)
+            {
+                failure = RuntimeCollectionReadFailure.ElementTypeMismatch;
+                return false;
+            }
+
+            result[index] = rawValues[index] as string;
         }
 
         values = result;
@@ -400,6 +613,22 @@ internal static class RuntimeConcreteCollectionReader
         return true;
     }
 
+    private static bool TryResolveDictionaryContainsShape(Type type, out DictionaryContainsShape shape)
+    {
+        if (DictionaryContainsShapes.TryGetValue(type, out shape!)) return true;
+        if (!TryBuildDictionaryContainsShape(type, out shape)) return false;
+        shape = DictionaryContainsShapes.GetOrAdd(type, shape);
+        return true;
+    }
+
+    private static bool TryResolveListShape(Type type, out ListShape shape)
+    {
+        if (ListShapes.TryGetValue(type, out shape!)) return true;
+        if (!TryBuildListShape(type, out shape)) return false;
+        shape = ListShapes.GetOrAdd(type, shape);
+        return true;
+    }
+
     private static bool TryBuildDictionaryLookupShape(Type type, out DictionaryLookupShape shape)
     {
         shape = null!;
@@ -416,6 +645,24 @@ internal static class RuntimeConcreteCollectionReader
         if (containsKey == null || indexer == null) return false;
 
         shape = new DictionaryLookupShape(count, arguments[0], containsKey, indexer);
+        return true;
+    }
+
+    private static bool TryBuildDictionaryContainsShape(Type type, out DictionaryContainsShape shape)
+    {
+        shape = null!;
+        if (!TryGetClosedGenericDefinition(type, out var definitionName, out var arguments)
+            || arguments.Length != 2
+            || (definitionName != ManagedDictionaryTypeName && definitionName != Il2CppDictionaryTypeName)
+            || !TryResolveDictionaryHeader(type, out var count))
+        {
+            return false;
+        }
+
+        var containsKey = FindMethod(type, "ContainsKey", new[] { arguments[0] }, typeof(bool));
+        if (containsKey == null) return false;
+
+        shape = new DictionaryContainsShape(count, arguments[0], containsKey);
         return true;
     }
 
@@ -485,11 +732,54 @@ internal static class RuntimeConcreteCollectionReader
         return count != null;
     }
 
+    private static bool TryBuildListShape(Type type, out ListShape shape)
+    {
+        shape = null!;
+        if (!TryGetClosedGenericDefinition(type, out var definitionName, out var arguments)
+            || arguments.Length != 1
+            || (definitionName != ManagedListTypeName && definitionName != Il2CppListTypeName))
+        {
+            return false;
+        }
+
+        var count = FindProperty(type, "Count", typeof(int));
+        var indexer = FindMethod(type, "get_Item", new[] { typeof(int) }, arguments[0]);
+        if (count == null || indexer == null) return false;
+
+        shape = new ListShape(count, indexer);
+        return true;
+    }
+
     private static bool TryResolveArrayShape(Type type, out ArrayShape shape)
     {
         if (ArrayShapes.TryGetValue(type, out shape!)) return true;
         if (!TryBuildArrayShape(type, out shape)) return false;
         shape = ArrayShapes.GetOrAdd(type, shape);
+        return true;
+    }
+
+    private static bool TryResolveStringArrayShape(Type type, out StringArrayShape shape)
+    {
+        if (StringArrayShapes.TryGetValue(type, out shape!)) return true;
+        if (!TryBuildStringArrayShape(type, out shape)) return false;
+        shape = StringArrayShapes.GetOrAdd(type, shape);
+        return true;
+    }
+
+    private static bool TryBuildStringArrayShape(Type type, out StringArrayShape shape)
+    {
+        shape = null!;
+        if (type.IsGenericType
+            || !string.Equals(type.FullName, Il2CppStringArrayTypeName, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var length = FindProperty(type, "Length", typeof(int));
+        var indexer = FindMethod(type, "get_Item", new[] { typeof(int) }, typeof(string));
+        if (length == null || indexer == null) return false;
+
+        shape = new StringArrayShape(length, indexer);
         return true;
     }
 
@@ -731,9 +1021,20 @@ internal static class RuntimeConcreteCollectionReader
         MethodInfo ContainsKey,
         MethodInfo Indexer);
 
+    private sealed record DictionaryContainsShape(
+        PropertyInfo Count,
+        Type KeyType,
+        MethodInfo ContainsKey);
+
+    private sealed record ListShape(PropertyInfo Count, MethodInfo Indexer);
+
     private sealed record ArrayShape(
         RuntimeArrayKind Kind,
         Type ElementType,
+        PropertyInfo Length,
+        MethodInfo Indexer);
+
+    private sealed record StringArrayShape(
         PropertyInfo Length,
         MethodInfo Indexer);
 }

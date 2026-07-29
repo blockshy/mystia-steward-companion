@@ -8,6 +8,7 @@ using UnityEngine;
 try
 {
     VerifyPatchTargets();
+    VerifyOpenPanelRefreshScheduling();
     VerifyIdenticalTargetPublicationIsIdempotent();
     VerifyScopedNativePinnedMatching();
     VerifyTargetUpdatePreservesForceTotals();
@@ -28,6 +29,129 @@ catch (Exception ex)
     return 1;
 }
 
+static void VerifyOpenPanelRefreshScheduling()
+{
+    var mainThreadId = Environment.CurrentManagedThreadId;
+    CookingSelectionPanelProbe.ResetRefreshProbe();
+    StoragePanelProbe.ResetRefreshProbe();
+
+    void Publish(int recipeId, int beverageId, bool enabled = true)
+    {
+        RuntimeUiPinningService.UpdateTarget(
+            RuntimeNightBusinessLifecycle.Generation,
+            enabled,
+            highlightEnabled: false,
+            recipeId,
+            beverageId,
+            ingredientIds: enabled ? new[] { recipeId + 1000 } : Array.Empty<int>(),
+            recipeName: enabled ? $"recipe-{recipeId}" : "",
+            beverageName: enabled ? $"beverage-{beverageId}" : "",
+            cookerTypeId: enabled ? 3 : -1,
+            cookerName: enabled ? "cooker" : "");
+    }
+
+    try
+    {
+        Publish(300, 400);
+        var naturallyRefreshedCookingPanel = new CookingSelectionPanelProbe();
+        var naturallyRefreshedStoragePanel = new StoragePanelProbe();
+        naturallyRefreshedCookingPanel.OnPanelOpen();
+        naturallyRefreshedStoragePanel.OnPanelOpen();
+        AssertEqual(1, CookingSelectionPanelProbe.RefreshCount, "Cooking panel did not naturally apply an existing target.");
+        AssertEqual(1, StoragePanelProbe.RefreshCount, "Storage panel did not naturally apply an existing target.");
+        RuntimeUiPinningService.Tick();
+        AssertEqual(1, CookingSelectionPanelProbe.RefreshCount, "Cooking panel repeated a target already applied during open.");
+        AssertEqual(1, StoragePanelProbe.RefreshCount, "Storage panel repeated a target already applied during open.");
+        naturallyRefreshedCookingPanel.OnPanelClose();
+        naturallyRefreshedStoragePanel.OnPanelDestroyed();
+        CookingSelectionPanelProbe.ResetRefreshProbe();
+        StoragePanelProbe.ResetRefreshProbe();
+
+        Publish(-1, -1, enabled: false);
+        var cookingPanel = new CookingSelectionPanelProbe();
+        var storagePanel = new StoragePanelProbe();
+        cookingPanel.OnPanelOpen();
+        storagePanel.OnPanelOpen();
+        AssertEqual(1, CookingSelectionPanelProbe.RefreshCount, "Cooking panel open did not perform its natural refresh.");
+        AssertEqual(1, StoragePanelProbe.RefreshCount, "Storage panel open did not perform its natural refresh.");
+
+        RunOnWorkerThread(() => Publish(301, 401));
+        AssertEqual(1, CookingSelectionPanelProbe.RefreshCount, "Worker target publication refreshed the cooking panel.");
+        AssertEqual(1, StoragePanelProbe.RefreshCount, "Worker target publication refreshed the storage panel.");
+        RuntimeUiPinningService.Tick();
+        AssertEqual(2, CookingSelectionPanelProbe.RefreshCount, "An open cooking panel did not consume the new target once.");
+        AssertEqual(2, StoragePanelProbe.RefreshCount, "An open storage panel did not consume the new target once.");
+        RuntimeUiPinningService.Tick();
+        AssertEqual(2, CookingSelectionPanelProbe.RefreshCount, "Cooking panel refreshed twice for one target generation.");
+        AssertEqual(2, StoragePanelProbe.RefreshCount, "Storage panel refreshed twice for one target generation.");
+
+        RunOnWorkerThread(() => Publish(301, 401));
+        RuntimeUiPinningService.Tick();
+        AssertEqual(2, CookingSelectionPanelProbe.RefreshCount, "An identical target refreshed the cooking panel.");
+        AssertEqual(2, StoragePanelProbe.RefreshCount, "An identical target refreshed the storage panel.");
+
+        RunOnWorkerThread(() => Publish(302, 402));
+        RuntimeUiPinningService.Tick();
+        AssertEqual(3, CookingSelectionPanelProbe.RefreshCount, "A new target did not refresh the cooking panel exactly once.");
+        AssertEqual(3, StoragePanelProbe.RefreshCount, "A new target did not refresh the storage panel exactly once.");
+
+        cookingPanel.OnPanelClose();
+        RunOnWorkerThread(() => Publish(303, 403));
+        RuntimeUiPinningService.Tick();
+        AssertEqual(3, CookingSelectionPanelProbe.RefreshCount, "A closed cooking panel was refreshed.");
+        AssertEqual(4, StoragePanelProbe.RefreshCount, "The still-open storage panel did not refresh.");
+
+        storagePanel.OnPanelDestroyed();
+        RunOnWorkerThread(() => Publish(304, 404));
+        RuntimeUiPinningService.Tick();
+        AssertEqual(3, CookingSelectionPanelProbe.RefreshCount, "A closed cooking panel returned after another target.");
+        AssertEqual(4, StoragePanelProbe.RefreshCount, "A destroyed storage panel was refreshed.");
+
+        var staleCookingPanel = new CookingSelectionPanelProbe();
+        var staleStoragePanel = new StoragePanelProbe();
+        staleCookingPanel.OnPanelOpen();
+        staleStoragePanel.OnPanelOpen();
+        AssertEqual(4, CookingSelectionPanelProbe.RefreshCount, "Generation-mismatch cooking setup did not open.");
+        AssertEqual(5, StoragePanelProbe.RefreshCount, "Generation-mismatch storage setup did not open.");
+        RuntimeNightBusinessLifecycle.ActivateNextGeneration();
+        RunOnWorkerThread(() => Publish(305, 405));
+        RuntimeUiPinningService.Tick();
+        AssertEqual(4, CookingSelectionPanelProbe.RefreshCount, "A prior-generation cooking panel was refreshed.");
+        AssertEqual(5, StoragePanelProbe.RefreshCount, "A prior-generation storage panel was refreshed.");
+        staleCookingPanel.OnPanelClose();
+        staleStoragePanel.OnPanelDestroyed();
+
+        var failingCookingPanel = new CookingSelectionPanelProbe();
+        failingCookingPanel.OnPanelOpen();
+        AssertEqual(5, CookingSelectionPanelProbe.RefreshCount, "Failure-path cooking setup did not open.");
+        RunOnWorkerThread(() => Publish(306, 406));
+        CookingSelectionPanelProbe.ThrowOnRefresh = true;
+        RuntimeUiPinningService.Tick();
+        AssertEqual(6, CookingSelectionPanelProbe.RefreshCount, "The failing cooking refresh was not attempted once.");
+        RuntimeUiPinningService.Tick();
+        AssertEqual(6, CookingSelectionPanelProbe.RefreshCount, "A failed cooking refresh retried without a new target.");
+        AssertContains(RuntimeUiPinningService.Status, "failures:1", "Panel refresh failure diagnostics were not retained.");
+
+        CookingSelectionPanelProbe.ThrowOnRefresh = false;
+        RunOnWorkerThread(() => Publish(307, 407));
+        RuntimeUiPinningService.Tick();
+        AssertEqual(7, CookingSelectionPanelProbe.RefreshCount, "A later target did not recover after the one-shot failure.");
+        failingCookingPanel.OnPanelClose();
+
+        AssertTrue(
+            CookingSelectionPanelProbe.RefreshThreadIds.All(threadId => threadId == mainThreadId),
+            "A cooking panel refresh ran outside the Unity main thread.");
+        AssertTrue(
+            StoragePanelProbe.RefreshThreadIds.All(threadId => threadId == mainThreadId),
+            "A storage panel refresh ran outside the Unity main thread.");
+    }
+    finally
+    {
+        CookingSelectionPanelProbe.ThrowOnRefresh = false;
+        StoragePanelProbe.ThrowOnRefresh = false;
+    }
+}
+
 static void VerifyLifecycleGenerationGuards()
 {
     var firstGeneration = RuntimeNightBusinessLifecycle.Generation;
@@ -43,7 +167,7 @@ static void VerifyLifecycleGenerationGuards()
         cookerTypeId: 3,
         cookerName: "first-generation");
 
-    InvokePrivate("OnCookingRefreshStarted");
+    InvokePrivate("OnCookingRefreshStarted", new CookingSelectionPanelProbe());
     try
     {
         AssertTrue(InvokeCheckPinned(1, 90), "The active generation did not force its recipe target.");
@@ -101,7 +225,7 @@ static void VerifyLifecycleGenerationGuards()
         beverageName: "second-generation",
         cookerTypeId: 3,
         cookerName: "second-generation"));
-    InvokePrivate("OnCookingRefreshStarted");
+    InvokePrivate("OnCookingRefreshStarted", new CookingSelectionPanelProbe());
     try
     {
         AssertTrue(InvokeCheckPinned(1, 97), "The next generation did not accept its fresh target.");
@@ -210,6 +334,42 @@ static void VerifyPatchTargets()
     AssertPatch(
         typeof(CookingSelectionPanelProbe),
         nameof(CookingSelectionPanelProbe.OnPanelOpen),
+        prefix: "BeforeCookingPanelOpen",
+        postfix: "AfterCookingPanelOpen",
+        finalizer: null);
+    AssertPatch(
+        typeof(CookingSelectionPanelProbe),
+        nameof(CookingSelectionPanelProbe.OnPanelClose),
+        prefix: "BeforeCookingPanelTeardown",
+        postfix: null,
+        finalizer: null);
+    AssertPatch(
+        typeof(CookingSelectionPanelProbe),
+        nameof(CookingSelectionPanelProbe.OnPanelDestroyed),
+        prefix: "BeforeCookingPanelTeardown",
+        postfix: null,
+        finalizer: null);
+    AssertPatch(
+        typeof(StoragePanelProbe),
+        nameof(StoragePanelProbe.OnPanelOpen),
+        prefix: "BeforeStoragePanelOpen",
+        postfix: "AfterStoragePanelOpen",
+        finalizer: null);
+    AssertPatch(
+        typeof(StoragePanelProbe),
+        nameof(StoragePanelProbe.OnPanelClose),
+        prefix: "BeforeStoragePanelTeardown",
+        postfix: null,
+        finalizer: null);
+    AssertPatch(
+        typeof(StoragePanelProbe),
+        nameof(StoragePanelProbe.OnPanelDestroyed),
+        prefix: "BeforeStoragePanelTeardown",
+        postfix: null,
+        finalizer: null);
+    AssertPatch(
+        typeof(CookingSelectionPanelProbe),
+        nameof(CookingSelectionPanelProbe.OnPanelOpen),
         prefix: "BeforePanelOpen",
         postfix: null,
         finalizer: null,
@@ -285,6 +445,8 @@ static void VerifyPatchTargets()
     AssertContains(RuntimeUiPinningService.Status, "checkPinnedPrefix:patched", "CheckPinned prefix patch status is missing.");
     AssertContains(RuntimeUiPinningService.Status, "cookingScope:patched", "Cooking scope patch status is missing.");
     AssertContains(RuntimeUiPinningService.Status, "beverageScope:patched", "Beverage scope patch status is missing.");
+    AssertContains(RuntimeUiPinningService.Status, "cookingPanel:patched", "Cooking panel lifecycle patch status is missing.");
+    AssertContains(RuntimeUiPinningService.Status, "storagePanel:patched", "Storage panel lifecycle patch status is missing.");
     AssertContains(RuntimePinnedListHighlightService.Status, "hooks=patched", "Pinned-list highlight patch status is missing.");
     AssertContains(RuntimeUiPinningService.Status, "listHighlight=hooks=patched", "Pinned-list highlight diagnostics are missing from pinning status.");
 }
@@ -307,7 +469,7 @@ static void VerifyScopedNativePinnedMatching()
     AssertFalse(InvokeCheckPinned(1, 34), "CheckPinned was changed outside a panel refresh scope.");
     AssertTrue(InvokeCheckPinned(1, 99, originalResult: true), "The prefix changed an unrelated native pinned result.");
 
-    InvokePrivate("OnCookingRefreshStarted");
+    InvokePrivate("OnCookingRefreshStarted", new CookingSelectionPanelProbe());
     try
     {
         var recipeCall = InvokeCheckPinnedPrefix(1, 34);
@@ -333,7 +495,7 @@ static void VerifyScopedNativePinnedMatching()
         InvokePrivate("OnCookingRefreshFinalized", new object?[] { null });
     }
 
-    InvokePrivate("OnBeverageRefreshStarted");
+    InvokePrivate("OnBeverageRefreshStarted", new StoragePanelProbe());
     try
     {
         AssertTrue(InvokeCheckPinned(2, 16), "Beverage target was not pinned in beverage scope.");
@@ -367,8 +529,9 @@ static void VerifyNestedScopeFinalizers()
         cookerTypeId: 3,
         cookerName: "cooker");
     var expectedException = new InvalidOperationException("expected original failure");
-    InvokePrivate("OnCookingRefreshStarted");
-    InvokePrivate("OnCookingRefreshStarted");
+    var nestedPanel = new CookingSelectionPanelProbe();
+    InvokePrivate("OnCookingRefreshStarted", nestedPanel);
+    InvokePrivate("OnCookingRefreshStarted", nestedPanel);
     var firstResult = InvokePrivate("OnCookingRefreshFinalized", expectedException);
     AssertEqual(expectedException, firstResult, "Cooking finalizer did not preserve the original exception.");
     AssertTrue(InvokeCheckPinned(1, 35), "Nested cooking scope ended too early.");
@@ -391,7 +554,7 @@ static void VerifyTargetUpdatePreservesForceTotals()
         beverageName: "counter-first",
         cookerTypeId: 3,
         cookerName: "cooker");
-    InvokePrivate("OnCookingRefreshStarted");
+    InvokePrivate("OnCookingRefreshStarted", new CookingSelectionPanelProbe());
     try
     {
         AssertTrue(InvokeCheckPinned(1, 34), "Counter precondition did not match the recipe target.");
@@ -438,7 +601,7 @@ static void VerifyThreadLocalScopeIsolation()
     {
         try
         {
-            InvokePrivate("OnCookingRefreshStarted");
+            InvokePrivate("OnCookingRefreshStarted", new CookingSelectionPanelProbe());
             scopeEntered.Set();
             releaseScope.Wait();
             workerMatched = InvokeCheckPinned(1, 34);
@@ -486,7 +649,7 @@ static void VerifyScopePinsOneTargetSnapshot()
         beverageName: "first",
         cookerTypeId: 3,
         cookerName: "cooker");
-    InvokePrivate("OnCookingRefreshStarted");
+    InvokePrivate("OnCookingRefreshStarted", new CookingSelectionPanelProbe());
     try
     {
         RuntimeUiPinningService.UpdateTarget(
@@ -508,7 +671,7 @@ static void VerifyScopePinsOneTargetSnapshot()
         InvokePrivate("OnCookingRefreshFinalized", new object?[] { null });
     }
 
-    InvokePrivate("OnCookingRefreshStarted");
+    InvokePrivate("OnCookingRefreshStarted", new CookingSelectionPanelProbe());
     try
     {
         AssertTrue(InvokeCheckPinned(1, 35), "A new cooking refresh did not capture the latest target.");
@@ -533,7 +696,7 @@ static void VerifyPinningAndHighlightRemainIndependent()
         cookerTypeId: 3,
         cookerName: "cooker");
     AssertTrue(RuntimeCookerHighlightService.LastEnabled, "Highlight-only target did not enable cooker highlighting.");
-    InvokePrivate("OnCookingRefreshStarted");
+    InvokePrivate("OnCookingRefreshStarted", new CookingSelectionPanelProbe());
     try
     {
         AssertTrue(InvokeCheckPinnedPrefix(1, 34).RunOriginal, "Highlight-only mode skipped the native CheckPinned method.");
@@ -556,7 +719,7 @@ static void VerifyPinningAndHighlightRemainIndependent()
         cookerTypeId: 3,
         cookerName: "cooker");
     AssertFalse(RuntimeCookerHighlightService.LastEnabled, "Pinning-only target unexpectedly enabled cooker highlighting.");
-    InvokePrivate("OnCookingRefreshStarted");
+    InvokePrivate("OnCookingRefreshStarted", new CookingSelectionPanelProbe());
     try
     {
         AssertTrue(InvokeCheckPinned(1, 34), "Pinning-only target did not enable native pinned matching.");

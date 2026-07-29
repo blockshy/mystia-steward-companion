@@ -60,6 +60,8 @@ internal sealed class LocalApiServer : IDisposable
     private readonly Func<long, int> _advanceAutomationCommandEpoch;
     private readonly Func<long, AutomationCommandCancellationResult> _cancelAutomationJobs;
     private readonly Func<long, AutomationSafetyBarrierAckResult> _ackAutomationSafetyBarrier;
+    private readonly Func<RuntimeAvailableMissionSnapshot> _readAvailableMissions;
+    private readonly Func<RuntimeAvailableMissionSnapshot> _getAvailableMissionSnapshot;
     private readonly Func<string, string, RareGuestInvitationResult> _listRareGuestInvitations;
     private readonly Func<string, string, RareGuestInvitationWriteExpectation, RareGuestInvitationResult> _inviteAllRareGuests;
     private readonly Func<int, string, RareGuestInvitationWriteExpectation, RareGuestInvitationResult> _inviteRareGuest;
@@ -132,6 +134,8 @@ internal sealed class LocalApiServer : IDisposable
         Func<long, int> advanceAutomationCommandEpoch,
         Func<long, AutomationCommandCancellationResult> cancelAutomationJobs,
         Func<long, AutomationSafetyBarrierAckResult> ackAutomationSafetyBarrier,
+        Func<RuntimeAvailableMissionSnapshot> readAvailableMissions,
+        Func<RuntimeAvailableMissionSnapshot> getAvailableMissionSnapshot,
         Func<string, string, RareGuestInvitationResult> listRareGuestInvitations,
         Func<string, string, RareGuestInvitationWriteExpectation, RareGuestInvitationResult> inviteAllRareGuests,
         Func<int, string, RareGuestInvitationWriteExpectation, RareGuestInvitationResult> inviteRareGuest,
@@ -166,6 +170,8 @@ internal sealed class LocalApiServer : IDisposable
         _advanceAutomationCommandEpoch = advanceAutomationCommandEpoch;
         _cancelAutomationJobs = cancelAutomationJobs;
         _ackAutomationSafetyBarrier = ackAutomationSafetyBarrier;
+        _readAvailableMissions = readAvailableMissions;
+        _getAvailableMissionSnapshot = getAvailableMissionSnapshot;
         _listRareGuestInvitations = listRareGuestInvitations;
         _inviteAllRareGuests = inviteAllRareGuests;
         _inviteRareGuest = inviteRareGuest;
@@ -728,6 +734,12 @@ internal sealed class LocalApiServer : IDisposable
                 case "/runtime-data":
                     WriteResponse(stream, 200, "OK", GetRuntimeDataJson());
                     break;
+                case "/missions/tracked":
+                    WriteResponse(stream, 200, "OK", GetTrackedMissionsJson(query));
+                    break;
+                case "/missions/available":
+                    WriteResponse(stream, 200, "OK", GetAvailableMissionsJson(query));
+                    break;
                 case "/automation/lease":
                     WriteResponse(stream, 200, "OK", ToJson(ReadAutomationLease(request)));
                     break;
@@ -806,6 +818,37 @@ internal sealed class LocalApiServer : IDisposable
         }
 
         return responseJson;
+    }
+
+    private static string GetTrackedMissionsJson(string query)
+    {
+        return LocalApiTrackedMissionsPayload.BuildJson(
+            RuntimeMissionDiagnosticCapture.ReadTrackedMissions(),
+            ReadStringQuery(query, "knownSignature"),
+            JsonOptions);
+    }
+
+    private string GetAvailableMissionsJson(string query)
+    {
+        RuntimeAvailableMissionSnapshot snapshot;
+        try
+        {
+            snapshot = _readAvailableMissions();
+        }
+        catch (Exception ex)
+        {
+            var current = _getAvailableMissionSnapshot();
+            snapshot = RuntimeAvailableMissionSnapshot.Unavailable(
+                current.MissionGeneration,
+                current.DaySceneGeneration,
+                RuntimeAvailableMissionSnapshot.MissionDataIncompleteStatus,
+                $"available-mission-command-failed:{ex.GetType().Name}:{ex.GetBaseException().Message}");
+        }
+
+        return LocalApiAvailableMissionsPayload.BuildJson(
+            snapshot,
+            ReadStringQuery(query, "knownSignature"),
+            JsonOptions);
     }
 
     private void AppendSnapshotRequestDiagnostic(
@@ -1345,6 +1388,26 @@ internal sealed class LocalApiServer : IDisposable
                 AddTextEntry(archive, "manifest.json", BuildDiagnosticManifestJson(settings), added);
                 AddTextEntry(archive, "snapshot/current-snapshot.json", GetSnapshotJson(logRequest: false), added);
                 AddTextEntry(archive, "snapshot/runtime-data.json", GetRuntimeDataJson(), added);
+                AddTextEntry(
+                    archive,
+                    "snapshot/runtime-mission-diagnostic.json",
+                    ToJson(RuntimeMissionDiagnosticCapture.Report()),
+                    added);
+                AddTextEntry(
+                    archive,
+                    "snapshot/runtime-scheduled-event-diagnostic.json",
+                    ToJson(RuntimeScheduledEventDiagnosticCapture.Report()),
+                    added);
+                AddTextEntry(
+                    archive,
+                    "snapshot/runtime-available-missions.json",
+                    ToJson(_getAvailableMissionSnapshot()),
+                    added);
+                AddTextEntry(
+                    archive,
+                    "snapshot/runtime-mission-serve-in-work-diagnostic.json",
+                    ToJson(RuntimeServeInWorkMissionDiagnosticCapture.Snapshot()),
+                    added);
                 AddAggregateLogEntries(archive, settings.AggregateModLogPath, DiagnosticTailMaxBytes, DiagnosticTailMaxLines, added);
             }
 

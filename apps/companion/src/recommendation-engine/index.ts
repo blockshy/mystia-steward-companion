@@ -17,6 +17,11 @@ export {
   sortRareOrderPlans,
 } from '@/recommendation-engine/rare-orders';
 export {
+  getVerifiedMissionRecipeSortContext,
+  isMissionRecipeFoodCandidate,
+  isMissionRecipeExecutionPlan,
+} from '@/recommendation-engine/mission-recipe-priority';
+export {
   PROJECT_VERIFIED_TAG_PRIORITY_RULES,
   findTagsThatCanSuppress,
   hasForbiddenIngredientTag,

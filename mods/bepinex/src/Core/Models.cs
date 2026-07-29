@@ -100,6 +100,18 @@ public sealed class RareCustomer
     public List<string> BeverageTags { get; set; } = new();
 }
 
+public sealed class MissionRecipePriority
+{
+    public string TraceId { get; init; } = "";
+    public int DeskCode { get; init; }
+    public int GuestId { get; init; }
+    public int RuntimeGuestId { get; init; }
+    public int FoodId { get; init; }
+    public int RecipeId { get; init; }
+    public long MissionGeneration { get; init; }
+    public long BusinessGeneration { get; init; }
+}
+
 public sealed class NightBusinessOrder
 {
     public string TraceId { get; init; } = "";
@@ -127,6 +139,7 @@ public sealed class NightBusinessOrder
     public int? RemainingOrderCount { get; init; }
     public bool HasServedFood { get; init; }
     public bool HasServedBeverage { get; init; }
+    public MissionRecipePriority? MissionRecipePriority { get; init; }
 }
 
 public sealed class NightBusinessGuest

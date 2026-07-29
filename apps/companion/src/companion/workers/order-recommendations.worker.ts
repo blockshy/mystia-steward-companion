@@ -181,6 +181,7 @@ function buildResultSignature(result: OrderRecommendationResult): string {
         recipe.recipe.recipeId,
         recipe.extraIngredients.map((ingredient) => ingredient.id).join(','),
         recipe.meetsRequiredFood ? 1 : 0,
+        recipe.missionTarget ? 1 : 0,
         recipe.allTags.join(','),
       ].join(':')).join(';'),
       item.beverages.map((beverage) => [

@@ -1,16 +1,15 @@
 import type {
   LocalApiSnapshot,
-  ModTab,
   RareGuestInvitationScope,
 } from '@/companion/types';
 
 export interface RareGuestInvitationRefreshContext {
+  active: boolean;
   connected: boolean;
   connectionRevision: number;
   normalizedEndpoint: string;
   scope: RareGuestInvitationScope;
   snapshot: LocalApiSnapshot | null;
-  tab: ModTab;
 }
 
 export const RARE_GUEST_INVITATION_TRANSIENT_RETRY_DELAYS_MS = [
@@ -40,15 +39,15 @@ export function getRareGuestInvitationTransientRetryDelayMs(
  * transition cannot reuse an earlier candidate list.
  */
 export function buildRareGuestInvitationRefreshIdentity({
+  active,
   connected,
   connectionRevision,
   normalizedEndpoint,
   scope,
   snapshot,
-  tab,
 }: RareGuestInvitationRefreshContext): string | null {
-  if (!connected
-      || tab !== 'rare-invitations'
+  if (!active
+      || !connected
       || !snapshot?.runtimeLoaded
       || !snapshot.runtimeDaySceneReady
       || snapshot.runtimeDaySceneGeneration < 1) {

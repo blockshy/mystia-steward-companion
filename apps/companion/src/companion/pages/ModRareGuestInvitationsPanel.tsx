@@ -95,7 +95,7 @@ function RareGuestInvitationPanel({
             onClick={onRefreshRareGuestInvitations}
             disabled={!invitationRuntimeReady || isBusy}
             data-gamepad-clickable="true"
-            data-gamepad-focus-key="rare-invitations:refresh"
+            data-gamepad-focus-key="missions:invitations:refresh"
           >
             <IconRefresh className={isListBusy ? 'size-4 animate-spin' : 'size-4'} />
             刷新
@@ -143,7 +143,7 @@ function RareGuestInvitationPanel({
                   onClick={() => onInviteLevelsChange([])}
                   disabled={isBusy}
                   data-gamepad-clickable="true"
-                  data-gamepad-focus-key="rare-invitations:level:all"
+                  data-gamepad-focus-key="missions:invitations:level:all"
                 >
                   全部羁绊
                 </Button>
@@ -157,7 +157,7 @@ function RareGuestInvitationPanel({
                     onClick={() => onInviteLevelsChange(toggleNumberInList(inviteLevels, level))}
                     disabled={isBusy}
                     data-gamepad-clickable="true"
-                    data-gamepad-focus-key={`rare-invitations:level:${level}`}
+                    data-gamepad-focus-key={`missions:invitations:level:${level}`}
                   >
                     羁绊 {level}
                   </Button>
@@ -169,7 +169,7 @@ function RareGuestInvitationPanel({
                   onClick={onInviteAllRareGuests}
                   disabled={!invitationRuntimeReady || isBusy || filteredAvailableEntries.length === 0}
                   data-gamepad-clickable="true"
-                  data-gamepad-focus-key="rare-invitations:invite-all"
+                  data-gamepad-focus-key="missions:invitations:invite-all"
                 >
                   {isAllBusy ? '邀请中...' : '邀请全部'}
                 </Button>
@@ -186,7 +186,7 @@ function RareGuestInvitationPanel({
                     key={`${entry.id}-${entry.runtimeName || entry.name}`}
                     className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 steward-background-surface-45 px-2 py-1.5"
                     data-gamepad-row="true"
-                    data-gamepad-row-key={`rare-invitation:${entry.id}:${entry.runtimeName || entry.name}`}
+                    data-gamepad-row-key={`mission-invitation:${entry.id}:${entry.runtimeName || entry.name}`}
                   >
                     <div className="min-w-0">
                       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
@@ -202,7 +202,7 @@ function RareGuestInvitationPanel({
                       onClick={() => onInviteRareGuest(entry.id)}
                       disabled={!invitationRuntimeReady || isBusy || !canInvite}
                       data-gamepad-clickable="true"
-                      data-gamepad-focus-key={`rare-invitations:guest:${entry.id}`}
+                      data-gamepad-focus-key={`missions:invitations:guest:${entry.id}`}
                     >
                       {busy ? '邀请中' : '邀请'}
                     </Button>
@@ -242,6 +242,25 @@ function RareGuestInvitationPanel({
   );
 }
 
+export interface ModRareGuestInvitationsPanelProps {
+  runtimeLoaded: boolean;
+  runtimeDaySceneReady: boolean;
+  invitationContextReady: boolean;
+  activeDayMapName: string;
+  activeDayMapLabel: string;
+  inviteScope: RareGuestInvitationScope;
+  inviteLevels: number[];
+  inviteBusyKey: string;
+  inviteAllResult: RareGuestInvitationResponse | null;
+  inviteAllError: string;
+  showDebugDetails: boolean;
+  onInviteScopeChange: (scope: RareGuestInvitationScope) => void;
+  onInviteLevelsChange: (levels: number[]) => void;
+  onRefreshRareGuestInvitations: () => void;
+  onInviteAllRareGuests: () => void;
+  onInviteRareGuest: (guestId: number) => void;
+}
+
 export function ModRareGuestInvitationsPanel({
   runtimeLoaded,
   runtimeDaySceneReady,
@@ -259,24 +278,7 @@ export function ModRareGuestInvitationsPanel({
   onRefreshRareGuestInvitations,
   onInviteAllRareGuests,
   onInviteRareGuest,
-}: {
-  runtimeLoaded: boolean;
-  runtimeDaySceneReady: boolean;
-  invitationContextReady: boolean;
-  activeDayMapName: string;
-  activeDayMapLabel: string;
-  inviteScope: RareGuestInvitationScope;
-  inviteLevels: number[];
-  inviteBusyKey: string;
-  inviteAllResult: RareGuestInvitationResponse | null;
-  inviteAllError: string;
-  showDebugDetails: boolean;
-  onInviteScopeChange: (scope: RareGuestInvitationScope) => void;
-  onInviteLevelsChange: (levels: number[]) => void;
-  onRefreshRareGuestInvitations: () => void;
-  onInviteAllRareGuests: () => void;
-  onInviteRareGuest: (guestId: number) => void;
-}) {
+}: ModRareGuestInvitationsPanelProps) {
   if (!runtimeLoaded) {
     return <RuntimeUnavailable />;
   }

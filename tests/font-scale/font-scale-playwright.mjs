@@ -16,7 +16,7 @@ const tabs = [
   'rare',
   'custom-recipes',
   'service',
-  'rare-invitations',
+  'missions',
   'inventory',
   'help',
   'logs',

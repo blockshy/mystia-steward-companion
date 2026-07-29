@@ -3,10 +3,26 @@ import type {
   RareOrderRecommendationPlan,
   RecommendationPlanSortContext,
 } from '@/recommendation-engine';
+// eslint-disable-next-line no-restricted-imports -- Node's type-strip audit cannot resolve the Vite alias.
+import {
+  getVerifiedMissionRecipeSortContext,
+  isMissionRecipeExecutionPlan,
+  type MissionRecipeOrderSnapshot,
+} from '../../recommendation-engine/mission-recipe-priority.ts';
 
 export interface PrimaryExecutionPlanPolicy {
   requireRecipeFavorite: boolean;
   requireBeverageFavorite: boolean;
+}
+
+interface PrimaryExecutionPlanRecommendation {
+  order: MissionRecipeOrderSnapshot;
+  executionPlans: readonly RareOrderRecommendationPlan[];
+}
+
+export interface PrimaryExecutionPlanRecommendationOptions {
+  prioritizeMissionRecipe: boolean;
+  requireExecutablePlan: boolean;
 }
 
 type PrimaryExecutionPlanPreferences = Pick<
@@ -38,8 +54,9 @@ export function serializePrimaryExecutionPlanPolicy(policy: PrimaryExecutionPlan
 }
 
 /**
- * Moves the first plan that satisfies the active automation favorite policy to the front.
- * The remaining plans retain their relative order so the recommendation profile remains stable.
+ * Promotes the verified mission recipe when it also satisfies the active automation
+ * favorite policy. If it cannot, the existing favorite-only policy remains authoritative.
+ * Remaining plans retain their relative order.
  */
 export function normalizePrimaryExecutionPlans(
   plans: readonly RareOrderRecommendationPlan[],
@@ -47,24 +64,75 @@ export function normalizePrimaryExecutionPlans(
   policy: PrimaryExecutionPlanPolicy,
 ): RareOrderRecommendationPlan[] {
   const normalizedPlans = [...plans];
-  if (!policy.requireRecipeFavorite && !policy.requireBeverageFavorite) return normalizedPlans;
+  const missionIndex = normalizedPlans.findIndex((plan) =>
+    isMissionRecipeExecutionPlan(plan, sortContext)
+    && satisfiesPrimaryPolicy(plan, sortContext, policy)
+  );
+  if (missionIndex >= 0) {
+    return movePlanToFront(normalizedPlans, missionIndex);
+  }
+  if (!policy.requireRecipeFavorite && !policy.requireBeverageFavorite) {
+    return normalizedPlans;
+  }
 
   const primaryIndex = normalizedPlans.findIndex((plan) =>
-    plan.bucket !== 'blocked'
-    && (!policy.requireRecipeFavorite || isFavoriteRecipePlan(plan, sortContext))
-    && (!policy.requireBeverageFavorite || isFavoriteBeveragePlan(plan, sortContext))
+    satisfiesPrimaryPolicy(plan, sortContext, policy)
   );
-  if (primaryIndex <= 0) return normalizedPlans;
+  return movePlanToFront(normalizedPlans, primaryIndex);
+}
 
-  const [primary] = normalizedPlans.splice(primaryIndex, 1);
-  normalizedPlans.unshift(primary);
-  return normalizedPlans;
+function movePlanToFront(
+  plans: RareOrderRecommendationPlan[],
+  index: number,
+): RareOrderRecommendationPlan[] {
+  if (index <= 0) return plans;
+  const [primary] = plans.splice(index, 1);
+  plans.unshift(primary);
+  return plans;
+}
+
+function satisfiesPrimaryPolicy(
+  plan: RareOrderRecommendationPlan,
+  sortContext: RecommendationPlanSortContext,
+  policy: PrimaryExecutionPlanPolicy,
+): boolean {
+  return plan.bucket !== 'blocked'
+    && (!policy.requireRecipeFavorite || isFavoriteRecipePlan(plan, sortContext))
+    && (!policy.requireBeverageFavorite || isFavoriteBeveragePlan(plan, sortContext));
 }
 
 export function getPrimaryExecutionPlan(
   plans: readonly RareOrderRecommendationPlan[],
 ): RareOrderRecommendationPlan | null {
   return plans[0] ?? null;
+}
+
+export function isVerifiedMissionPrimaryExecutionPlan(
+  recommendation: PrimaryExecutionPlanRecommendation,
+): boolean {
+  const sortContext = getVerifiedMissionRecipeSortContext(recommendation.order);
+  const primaryPlan = getPrimaryExecutionPlan(recommendation.executionPlans);
+  return sortContext != null
+    && primaryPlan != null
+    && isMissionRecipeExecutionPlan(primaryPlan, sortContext);
+}
+
+export function selectPrimaryExecutionPlanRecommendation<
+  TRecommendation extends PrimaryExecutionPlanRecommendation,
+>(
+  recommendations: readonly TRecommendation[],
+  options: PrimaryExecutionPlanRecommendationOptions,
+): TRecommendation | null {
+  if (options.prioritizeMissionRecipe) {
+    const missionRecommendation = recommendations.find(isVerifiedMissionPrimaryExecutionPlan);
+    if (missionRecommendation) return missionRecommendation;
+  }
+  if (options.requireExecutablePlan) {
+    return recommendations.find((recommendation) =>
+      getPrimaryExecutionPlan(recommendation.executionPlans) != null
+    ) ?? null;
+  }
+  return recommendations[0] ?? null;
 }
 
 function isFavoriteRecipePlan(

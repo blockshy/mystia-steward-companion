@@ -686,6 +686,16 @@ export function ModSettingsPanel({
                 进入经营场景后，若读取到已摆放厨具，推荐列表会隐藏当前场景无法制作的料理。
               </div>
               <SwitchControl
+                label="任务料理置顶"
+                checked={preferences.missionRecipePriorityEnabled}
+                onCheckedChange={(missionRecipePriorityEnabled) => onPreferenceChange({
+                  missionRecipePriorityEnabled,
+                })}
+              />
+              <div className="text-xs text-muted-foreground">
+                已追踪任务的目标料理通过库存、预算、厨具和酒水点单条件后置顶；若启用相应自动化收藏限定也必须满足。任务料理无需匹配本次料理点单 Tag，游戏内列表仍由上方实验性开关单独控制。
+              </div>
+              <SwitchControl
                 label="收藏料理置顶"
                 checked={preferences.pinFavoriteRecipeEnabled}
                 onCheckedChange={(pinFavoriteRecipeEnabled) => onPreferenceChange({ pinFavoriteRecipeEnabled })}

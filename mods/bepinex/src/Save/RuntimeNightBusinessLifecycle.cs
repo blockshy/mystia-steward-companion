@@ -204,6 +204,11 @@ internal static class RuntimeNightBusinessLifecycle
     private static void ApplyRuntimeBoundary(NightBusinessLifecycleSnapshot snapshot)
     {
         var reason = $"night-business-{snapshot.Phase.ToString().ToLowerInvariant()}:{snapshot.Source}";
+        RunBoundaryAction(
+            "update ServeInWork mission diagnostics",
+            () => RuntimeServeInWorkMissionDiagnosticCapture.ApplyBusinessBoundary(
+                snapshot,
+                DateTime.UtcNow));
         if (snapshot.Phase == NightBusinessLifecyclePhase.Active)
         {
             RunBoundaryAction("resume cooker highlight", () => RuntimeCookerHighlightService.Resume(reason));

@@ -160,7 +160,7 @@ try {
 
   await page.goto(APP_URL, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => document.body.innerText.includes('1.0.5'), null, { timeout: 10_000 });
-  await activateTab('rare-invitations');
+  await activateInvitationPanel();
   await waitForListRequestCount(2);
   await page.getByText('mock invitation candidates loaded', { exact: true }).waitFor();
   assertRequest(0, 'current');
@@ -176,7 +176,7 @@ try {
   await waitForListRequestCount(3);
   assertRequest(2, 'all');
   await page.getByText('慧音', { exact: true }).waitFor();
-  const mappedGuestRow = page.locator('[data-gamepad-row-key="rare-invitation:10:DLC1_Marisa"]');
+  const mappedGuestRow = page.locator('[data-gamepad-row-key="mission-invitation:10:DLC1_Marisa"]');
   await mappedGuestRow.getByRole('button', { name: '邀请', exact: true }).click();
   await waitFor(() => singleInviteRequests.length === 1, 10_000);
   assert.deepEqual(singleInviteRequests[0], {
@@ -196,7 +196,7 @@ try {
   assertRequest(3, 'all');
 
   await activateTab('overview');
-  await activateTab('rare-invitations');
+  await activateInvitationPanel();
   await waitForListRequestCount(5);
   assertRequest(4, 'all');
 
@@ -256,6 +256,13 @@ function assertRequest(index, scope) {
 
 async function activateTab(value) {
   const trigger = page.locator(`[data-gamepad-tab-value="${value}"]`).first();
+  await trigger.scrollIntoViewIfNeeded();
+  await trigger.click();
+}
+
+async function activateInvitationPanel() {
+  await activateTab('missions');
+  const trigger = page.getByRole('tab', { name: '稀客邀请', exact: true }).first();
   await trigger.scrollIntoViewIfNeeded();
   await trigger.click();
 }

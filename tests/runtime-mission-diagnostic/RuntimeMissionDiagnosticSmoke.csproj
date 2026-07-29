@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <LangVersion>10.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <ReferenceDir Condition="'$(ReferenceDir)' == ''">../../mods/bepinex/References</ReferenceDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeConcreteCollectionReader.cs" Link="RuntimeConcreteCollectionReader.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeMissionDefinitionDiagnosticReader.cs" Link="RuntimeMissionDefinitionDiagnosticReader.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeMissionDiagnosticState.cs" Link="RuntimeMissionDiagnosticState.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeMissionPresentation.cs" Link="RuntimeMissionPresentation.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeReflectionUtility.cs" Link="RuntimeReflectionUtility.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeTrackedMissionSnapshot.cs" Link="RuntimeTrackedMissionSnapshot.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(ReferenceDir)/UnityEngine.CoreModule.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="Il2CppInterop.Runtime">
+      <HintPath>$(ReferenceDir)/Il2CppInterop.Runtime.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="Il2Cppmscorlib">
+      <HintPath>$(ReferenceDir)/Il2Cppmscorlib.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+</Project>

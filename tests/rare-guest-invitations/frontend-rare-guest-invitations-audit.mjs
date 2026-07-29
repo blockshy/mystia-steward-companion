@@ -13,20 +13,20 @@ const baseSnapshot = {
   activeDayMapLabel: 'YoukaiTrail',
 };
 const baseContext = {
+  active: true,
   connected: true,
   connectionRevision: 3,
   normalizedEndpoint: 'http://127.0.0.1:32145',
   scope: 'current',
   snapshot: baseSnapshot,
-  tab: 'rare-invitations',
 };
 
 const identity = buildRareGuestInvitationRefreshIdentity(baseContext);
 assert.ok(identity, 'A stable day scene must produce an invitation refresh identity.');
 
 for (const context of [
+  { ...baseContext, active: false },
   { ...baseContext, connected: false },
-  { ...baseContext, tab: 'overview' },
   { ...baseContext, snapshot: null },
   { ...baseContext, snapshot: { ...baseSnapshot, runtimeLoaded: false } },
   { ...baseContext, snapshot: { ...baseSnapshot, runtimeDaySceneReady: false } },
@@ -83,11 +83,19 @@ assert.equal(getRareGuestInvitationTransientRetryDelayMs(4), null);
 assert.equal(getRareGuestInvitationTransientRetryDelayMs(1.5), null);
 
 const root = new URL('../../', import.meta.url);
-const [apiSource, hookSource, workbenchSource, panelSource, mockSource] = await Promise.all([
+const [
+  apiSource,
+  hookSource,
+  workbenchSource,
+  panelSource,
+  missionsPanelSource,
+  mockSource,
+] = await Promise.all([
   readFile(new URL('apps/companion/src/companion/api.ts', root), 'utf8'),
   readFile(new URL('apps/companion/src/companion/hooks/useRareGuestInvitations.ts', root), 'utf8'),
   readFile(new URL('apps/companion/src/companion/ModWorkbench.tsx', root), 'utf8'),
   readFile(new URL('apps/companion/src/companion/pages/ModRareGuestInvitationsPanel.tsx', root), 'utf8'),
+  readFile(new URL('apps/companion/src/companion/pages/ModMissionsPanel.tsx', root), 'utf8'),
   readFile(new URL('scripts/mock-local-api.mjs', root), 'utf8'),
 ]);
 
@@ -144,8 +152,11 @@ for (const contract of [
   assert.ok(hookSource.includes(contract), `Invitation Hook is missing stale-request contract: ${contract}`);
 }
 assert.ok(workbenchSource.includes('connectionRevision,'));
+assert.ok(workbenchSource.includes("active: tab === 'missions' && missionPanelView === 'invitations'"));
 assert.ok(workbenchSource.includes('runtimeDaySceneReady={snapshot?.runtimeDaySceneReady ?? false}'));
 assert.ok(workbenchSource.includes('invitationContextReady={rareGuestInvitationContextReady}'));
+assert.ok(missionsPanelSource.includes('<TabsTrigger value="invitations"'));
+assert.ok(missionsPanelSource.includes('<ModRareGuestInvitationsPanel {...invitationProps} />'));
 assert.ok(panelSource.includes('{inviteAllError && <EmptyRow text={inviteAllError} />}'));
 assert.ok(panelSource.includes(') : !inviteAllError && ('));
 assert.ok(panelSource.includes('const busy = inviteBusyKey === `guest:${entry.id}`;'));

@@ -8,6 +8,8 @@ var expectedGetRoutes = new HashSet<string>(StringComparer.Ordinal)
     "/health",
     "/local-api/config",
     "/logs/settings",
+    "/missions/available",
+    "/missions/tracked",
     "/rare-guests/invitations",
     "/runtime-data",
     "/snapshot",

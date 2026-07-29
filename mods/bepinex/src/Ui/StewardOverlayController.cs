@@ -58,6 +58,10 @@ internal sealed class StewardOverlayController
     private readonly object _rareGuestInvitationLock = new();
     // 稀客邀请涉及日间场景候选和角色状态，同样不允许在 API 后台线程直接执行。
     private readonly Queue<PendingRareGuestInvitation> _pendingRareGuestInvitations = new();
+    private readonly object _availableMissionReadLock = new();
+    // 可接取任务会 fresh 读取 IL2CPP 调度数据，只能由 Unity 主线程按请求执行。
+    private readonly Queue<PendingAvailableMissionRead> _pendingAvailableMissionReads = new();
+    private readonly RuntimeAvailableMissionState _availableMissionState = new();
     private bool _runtimeLoaded;
     private int _mainThreadId;
     private long _lastSpecialOrderChangeVersion;
@@ -67,6 +71,7 @@ internal sealed class StewardOverlayController
     private string _activeSceneName = "";
     private string _status = "Not initialized.";
     private string _lastRuntimeErrorMessage = "";
+    private string _lastAvailableMissionLogSignature = "";
     private string _runtimeStateSignature = "";
     private string _localApiToken = "";
     private DateTime _lastRuntimeReadUtc = DateTime.MinValue;
@@ -178,6 +183,10 @@ internal sealed class StewardOverlayController
         public RareGuestInvitationWriteExpectation WriteExpectation { get; init; }
     }
 
+    private sealed class PendingAvailableMissionRead : MainThreadCommand<RuntimeAvailableMissionSnapshot>
+    {
+    }
+
     private enum OrderActionKind
     {
         PrepareRare,
@@ -242,6 +251,8 @@ internal sealed class StewardOverlayController
         if (_disposed || _config == null) return;
         ProcessNightBusinessLifecycleChange();
         RefreshOnSceneChange();
+        RuntimeScheduledEventDiagnosticCapture.Tick(_mainThreadId);
+        ProcessPendingAvailableMissionReads();
         if (ShouldGateNightBusinessRuntime())
         {
             ProcessToggleInput();
@@ -314,6 +325,7 @@ internal sealed class StewardOverlayController
             return 0;
         });
         CancelPendingMainThreadCommands(_pendingAutomationJobCancellations, _automationJobCommandLock, cancellation);
+        CancelPendingMainThreadCommands(_pendingAvailableMissionReads, _availableMissionReadLock, cancellation);
         CancelPendingMainThreadCommands(_pendingRareGuestInvitations, _rareGuestInvitationLock, cancellation);
     }
 
@@ -383,6 +395,15 @@ internal sealed class StewardOverlayController
         if (string.Equals(sceneName, _activeSceneName, StringComparison.Ordinal)) return;
 
         _activeSceneName = sceneName;
+        CancelPendingMainThreadCommands(
+            _pendingAvailableMissionReads,
+            _availableMissionReadLock,
+            new OperationCanceledException("Scene changed before the available-mission read started."));
+        _availableMissionState.SetUnavailable(
+            RuntimeMissionDiagnosticCapture.Snapshot().Generation,
+            RuntimeSceneReadinessCapture.DaySceneGeneration,
+            RuntimeAvailableMissionSnapshot.WaitingForLoadStatus,
+            "scene-changed");
         if (IsNonGameplayScene(sceneName) || IsNightBusinessScene(sceneName))
         {
             RuntimeSceneReadinessCapture.ClearForSceneChange(sceneName);
@@ -432,6 +453,16 @@ internal sealed class StewardOverlayController
         if (version == _lastRuntimeSceneReadinessVersion) return;
 
         _lastRuntimeSceneReadinessVersion = version;
+        CancelPendingMainThreadCommands(
+            _pendingAvailableMissionReads,
+            _availableMissionReadLock,
+            new OperationCanceledException(
+                "Day-scene readiness changed before the available-mission read started."));
+        _availableMissionState.SetUnavailable(
+            RuntimeMissionDiagnosticCapture.Snapshot().Generation,
+            RuntimeSceneReadinessCapture.DaySceneGeneration,
+            RuntimeAvailableMissionSnapshot.WaitingForLoadStatus,
+            "day-scene-readiness-changed");
         _nextAutoRefreshAt = 0f;
         ResetRuntimeRetryDelays();
         _lastPublishedRuntimeDataSignature = "";
@@ -527,6 +558,7 @@ internal sealed class StewardOverlayController
     public void LateUpdate()
     {
         if (_disposed || ShouldGateNightBusinessRuntime()) return;
+        RuntimeUiPinningService.Tick();
         RuntimeCookerHighlightService.Tick();
         RuntimePinnedListHighlightService.Tick();
     }
@@ -552,9 +584,11 @@ internal sealed class StewardOverlayController
             return 0;
         });
         CancelPendingMainThreadCommands(_pendingAutomationJobCancellations, _automationJobCommandLock, disposedException);
+        CancelPendingMainThreadCommands(_pendingAvailableMissionReads, _availableMissionReadLock, disposedException);
         CancelPendingMainThreadCommands(_pendingRareGuestInvitations, _rareGuestInvitationLock, disposedException);
         _localApiServer?.Dispose();
         _localApiServer = null;
+        RuntimeUiPinningService.Abandon("controller disposed");
         RuntimeCookerHighlightService.Abandon("controller disposed");
         RuntimePinnedListHighlightService.Abandon("controller disposed");
         AggregateModLogService.Shutdown();
@@ -676,6 +710,7 @@ internal sealed class StewardOverlayController
                     return;
                 }
 
+                RefreshMissionPresentations();
                 var includePlacedCookers = !IsIzakayaPrepActive(_activeSceneName) && IsNightBusinessScene(_activeSceneName);
                 var includeDaySceneState = ShouldReadDaySceneRuntimeState();
                 var runtimeProvider = new RuntimeReflectionRecommendationStateProvider(
@@ -898,6 +933,8 @@ internal sealed class StewardOverlayController
                 AdvanceAutomationCommandEpoch,
                 CancelAutomationJobsFromLocalApi,
                 AcknowledgeAutomationSafetyBarrierFromLocalApi,
+                ReadAvailableMissionsFromLocalApi,
+                _availableMissionState.Snapshot,
                 ListRareGuestInvitationsFromLocalApi,
                 InviteAllRareGuestsFromLocalApi,
                 InviteRareGuestFromLocalApi,
@@ -952,6 +989,29 @@ internal sealed class StewardOverlayController
                 : null;
             var dayMap = nightRuntimeGated ? (Label: "", Name: "") : ReadActiveDayMapForSnapshot();
             var runtimeDataInfo = PublishRuntimeDataCatalogForLocalApi(force);
+            var specialBusiness = nightRuntimeGated
+                ? new SpecialBusinessContext
+                {
+                    Active = false,
+                    ChallengeType = SpecialBusinessChallengeTypes.NotChallenge,
+                    Source = $"NightBusinessLifecycle={lifecycle.Phase}",
+                }
+                : Measure("snapshot.specialBusiness", RuntimeSpecialBusinessContextService.Snapshot);
+            var mission = RuntimeMissionDiagnosticCapture.Snapshot();
+            var publishedNightBusiness = nightRuntimeGated
+                ? _businessContext
+                : Measure(
+                    "snapshot.missionRecipePriority",
+                    () => RuntimeMissionRecipePriorityProjection.Enrich(
+                        _businessContext,
+                        _runtimeDataCatalog,
+                        lifecycle,
+                        new RuntimeMissionRecipePriorityMissionBoundary(
+                            mission.Generation,
+                            mission.RuntimeAvailable,
+                            mission.Phase == RuntimeMissionDiagnosticPhase.Ready),
+                        RuntimeServeInWorkMissionDiagnosticCapture.Snapshot(),
+                        specialBusiness));
             var snapshot = new LocalApiSnapshot
             {
                 PluginVersion = MystiaStewardCompanionPlugin.PluginVersion,
@@ -966,6 +1026,7 @@ internal sealed class StewardOverlayController
                 RuntimeLoaded = runtimeBasicsLoaded,
                 RuntimeDaySceneGeneration = RuntimeSceneReadinessCapture.DaySceneGeneration,
                 RuntimeDaySceneReady = RuntimeSceneReadinessCapture.CanReadDaySceneRuntime(),
+                MissionGeneration = mission.Generation,
                 Status = _status,
                 RuntimeSource = _runtimeSource,
                 RuntimeSceneReadinessStatus = RuntimeSceneReadinessCapture.Status,
@@ -973,15 +1034,8 @@ internal sealed class StewardOverlayController
                 RecommendationState = Measure(
                     "snapshot.recommendationState",
                     () => publishedState == null ? null : RecommendationStateSnapshot.From(publishedState)),
-                NightBusiness = _businessContext,
-                SpecialBusiness = nightRuntimeGated
-                    ? new SpecialBusinessContext
-                    {
-                        Active = false,
-                        ChallengeType = SpecialBusinessChallengeTypes.NotChallenge,
-                        Source = $"NightBusinessLifecycle={lifecycle.Phase}",
-                    }
-                    : Measure("snapshot.specialBusiness", RuntimeSpecialBusinessContextService.Snapshot),
+                NightBusiness = publishedNightBusiness,
+                SpecialBusiness = specialBusiness,
                 NormalBusiness = nightRuntimeGated
                     ? null
                     : Measure("snapshot.normalBusiness", ReadNormalBusinessForSnapshot),
@@ -1228,6 +1282,7 @@ internal sealed class StewardOverlayController
         AppendValue(builder, snapshot.RuntimeLoaded);
         AppendValue(builder, snapshot.RuntimeDaySceneGeneration);
         AppendValue(builder, snapshot.RuntimeDaySceneReady);
+        AppendValue(builder, snapshot.MissionGeneration);
         AppendValue(builder, snapshot.Status);
         AppendValue(builder, snapshot.RuntimeSource);
         AppendValue(builder, snapshot.RuntimeSceneReadinessStatus);
@@ -1380,6 +1435,21 @@ internal sealed class StewardOverlayController
             AppendValue(builder, order.RemainingOrderCount);
             AppendValue(builder, order.HasServedFood);
             AppendValue(builder, order.HasServedBeverage);
+            var missionPriority = order.MissionRecipePriority;
+            if (missionPriority == null)
+            {
+                AppendValue(builder, "<mission-recipe-priority:null>");
+                continue;
+            }
+
+            AppendValue(builder, missionPriority.TraceId);
+            AppendValue(builder, missionPriority.DeskCode);
+            AppendValue(builder, missionPriority.GuestId);
+            AppendValue(builder, missionPriority.RuntimeGuestId);
+            AppendValue(builder, missionPriority.FoodId);
+            AppendValue(builder, missionPriority.RecipeId);
+            AppendValue(builder, missionPriority.MissionGeneration);
+            AppendValue(builder, missionPriority.BusinessGeneration);
         }
     }
 
@@ -2184,6 +2254,303 @@ internal sealed class StewardOverlayController
         return _automationCommandFence.CurrentEpoch;
     }
 
+    private RuntimeAvailableMissionSnapshot ReadAvailableMissionsFromLocalApi()
+    {
+        if (Thread.CurrentThread.ManagedThreadId == _mainThreadId)
+        {
+            return CaptureAvailableMissions();
+        }
+
+        using var pending = new PendingAvailableMissionRead();
+        lock (_availableMissionReadLock)
+        {
+            ThrowIfDisposed();
+            if (_pendingAvailableMissionReads.Count >= MaxPendingMainThreadCommandsPerQueue)
+            {
+                throw new InvalidOperationException(
+                    "Available mission read queue is full. Retry after the game resumes processing frames.");
+            }
+            _pendingAvailableMissionReads.Enqueue(pending);
+        }
+
+        return pending.WaitForResult(
+            TimeSpan.FromSeconds(3.5),
+            "Available mission read timed out before the Unity main thread started it.");
+    }
+
+    private RuntimeAvailableMissionSnapshot CaptureAvailableMissions()
+    {
+        var missionBefore = RuntimeMissionDiagnosticCapture.Snapshot();
+        var dayGeneration = RuntimeSceneReadinessCapture.DaySceneGeneration;
+        if (Environment.CurrentManagedThreadId != _mainThreadId)
+        {
+            return PublishAvailableMissionUnavailable(
+                missionBefore.Generation,
+                dayGeneration,
+                RuntimeAvailableMissionSnapshot.MissionDataIncompleteStatus,
+                "available-mission-owner-thread-mismatch");
+        }
+        if (!RuntimeScheduledMissionSourceReader.TryResolve(out var readerFailure))
+        {
+            return PublishAvailableMissionUnavailable(
+                missionBefore.Generation,
+                dayGeneration,
+                RuntimeAvailableMissionSnapshot.NotAttachedStatus,
+                readerFailure);
+        }
+        if (missionBefore.Phase != RuntimeMissionDiagnosticPhase.Ready
+            || !missionBefore.RuntimeAvailable
+            || missionBefore.Generation < 1)
+        {
+            var status = missionBefore.Phase switch
+            {
+                RuntimeMissionDiagnosticPhase.Detached =>
+                    RuntimeAvailableMissionSnapshot.NotAttachedStatus,
+                RuntimeMissionDiagnosticPhase.Unavailable =>
+                    RuntimeAvailableMissionSnapshot.MissionDataIncompleteStatus,
+                RuntimeMissionDiagnosticPhase.WaitingForLoad =>
+                    RuntimeAvailableMissionSnapshot.WaitingForLoadStatus,
+                _ => RuntimeAvailableMissionSnapshot.LoadingStatus,
+            };
+            return PublishAvailableMissionUnavailable(
+                missionBefore.Generation,
+                dayGeneration,
+                status,
+                $"mission-runtime-not-ready:{missionBefore.Phase}:{missionBefore.LastError}");
+        }
+        if (missionBefore.OwnerThreadId != _mainThreadId)
+        {
+            return PublishAvailableMissionUnavailable(
+                missionBefore.Generation,
+                dayGeneration,
+                RuntimeAvailableMissionSnapshot.MissionDataIncompleteStatus,
+                "mission-runtime-owner-thread-mismatch");
+        }
+        if (dayGeneration < 1
+            || !RuntimeSceneReadinessCapture.CanReadDaySceneRuntime())
+        {
+            return PublishAvailableMissionUnavailable(
+                missionBefore.Generation,
+                dayGeneration,
+                RuntimeAvailableMissionSnapshot.WaitingForLoadStatus,
+                "day-scene-runtime-not-ready");
+        }
+        if (!RuntimeMappedGuestCatalog.TryGetLoadedSnapshot(
+                out var mappedGuestSnapshot)
+            || !mappedGuestSnapshot.IsComplete)
+        {
+            return PublishAvailableMissionUnavailable(
+                missionBefore.Generation,
+                dayGeneration,
+                RuntimeAvailableMissionSnapshot.WaitingForLoadStatus,
+                "mapped-guest-runtime-not-ready");
+        }
+
+        try
+        {
+            var source = RuntimeScheduledMissionSourceReader.ReadFresh(
+                missionBefore,
+                dayGeneration,
+                mappedGuestSnapshot);
+            IReadOnlyDictionary<string, RuntimeMissionPresentation> presentations;
+            try
+            {
+                presentations = RuntimeMissionPresentationReader.ReadMany(
+                    source.MissionReferences
+                        .Where(reference => reference.HasReceiver)
+                        .Select(reference => reference.Receiver)
+                        .Distinct(StringComparer.Ordinal)
+                        .ToArray(),
+                    mappedGuestSnapshot,
+                    missionBefore.Generation,
+                    dayGeneration);
+            }
+            catch
+            {
+                presentations =
+                    new Dictionary<string, RuntimeMissionPresentation>(
+                        StringComparer.Ordinal);
+            }
+            var missionAfter = RuntimeMissionDiagnosticCapture.Snapshot();
+            if (Environment.CurrentManagedThreadId != _mainThreadId
+                || missionAfter.Generation != missionBefore.Generation
+                || missionAfter.ChangeVersion != missionBefore.ChangeVersion
+                || missionAfter.OwnerThreadId != _mainThreadId
+                || missionAfter.Phase != RuntimeMissionDiagnosticPhase.Ready
+                || !missionAfter.RuntimeAvailable
+                || source.SourceMissionChangeVersion != missionBefore.ChangeVersion
+                || RuntimeSceneReadinessCapture.DaySceneGeneration != dayGeneration
+                || !RuntimeSceneReadinessCapture.CanReadDaySceneRuntime()
+                || !RuntimeMappedGuestCatalog.TryGetLoadedSnapshot(
+                    out var mappedGuestSnapshotAfter)
+                || !ReferenceEquals(
+                    mappedGuestSnapshotAfter,
+                    mappedGuestSnapshot))
+            {
+                return PublishAvailableMissionUnavailable(
+                    missionBefore.Generation,
+                    dayGeneration,
+                    RuntimeAvailableMissionSnapshot.MissionDataIncompleteStatus,
+                    "runtime-identity-changed-during-available-mission-read");
+            }
+
+            var candidates = source.Complete
+                ? BuildAvailableMissionCandidates(source, presentations)
+                : Array.Empty<RuntimeAvailableMissionCandidate>();
+            var snapshot = _availableMissionState.Publish(
+                new RuntimeAvailableMissionCaptureInput(
+                    Complete: source.Complete,
+                    MissionGeneration: missionBefore.Generation,
+                    DaySceneGeneration: dayGeneration,
+                    SourceMissionChangeVersion: source.SourceMissionChangeVersion,
+                    FinishedEvents: source.FinishedEvents,
+                    FinishedMissions: source.FinishedMissions,
+                    Candidates: candidates,
+                    Error: source.Error));
+            LogAvailableMissionSnapshot(snapshot);
+            return snapshot;
+        }
+        catch (Exception ex)
+        {
+            return PublishAvailableMissionUnavailable(
+                missionBefore.Generation,
+                dayGeneration,
+                RuntimeAvailableMissionSnapshot.MissionDataIncompleteStatus,
+                $"available-mission-read-failed:{ex.GetType().Name}:{ex.GetBaseException().Message}");
+        }
+    }
+
+    private static IReadOnlyList<RuntimeAvailableMissionCandidate>
+        BuildAvailableMissionCandidates(
+            RuntimeScheduledMissionSourceReadResult source,
+            IReadOnlyDictionary<string, RuntimeMissionPresentation> presentations)
+    {
+        var eventsByIdentity = new Dictionary<
+            (string Label, int Bucket),
+            RuntimeScheduledEventDiagnosticEntry>();
+        foreach (var scheduledEvent in source.Events)
+        {
+            var key = (scheduledEvent.Label, scheduledEvent.Bucket);
+            if (!eventsByIdentity.TryAdd(key, scheduledEvent))
+            {
+                throw new InvalidOperationException(
+                    $"duplicate-scheduled-event-identity:{scheduledEvent.Label}:{scheduledEvent.Bucket}");
+            }
+        }
+
+        var candidates =
+            new List<RuntimeAvailableMissionCandidate>(
+                source.MissionReferences.Count);
+        foreach (var reference in source.MissionReferences)
+        {
+            if (!eventsByIdentity.TryGetValue(
+                    (reference.EventLabel, reference.EventBucket),
+                    out var scheduledEvent))
+            {
+                throw new InvalidOperationException(
+                    $"mission-source-event-missing:{reference.EventLabel}:{reference.EventBucket}");
+            }
+
+            var presentation = reference.HasReceiver
+                && presentations.TryGetValue(
+                    reference.Receiver,
+                    out var resolvedPresentation)
+                    ? resolvedPresentation
+                    : reference.HasReceiver
+                        ? RuntimeMissionPresentation.Pending(reference.Receiver)
+                        : RuntimeMissionPresentation.NoReceiver;
+            candidates.Add(
+                new RuntimeAvailableMissionCandidate(
+                    SourceEventLabel: reference.EventLabel,
+                    TriggerType: scheduledEvent.Trigger?.TriggerType ?? int.MinValue,
+                    EligibilityDisposition:
+                        reference.SourceEventEligibilityDisposition,
+                    ReferenceSource: reference.Source,
+                    MissionLabel: reference.MissionLabel,
+                    DefinitionAvailable: reference.DefinitionAvailable,
+                    Title: reference.Title,
+                    HasReceiver: reference.HasReceiver,
+                    ReceiverLabel: presentation.ReceiverLabel,
+                    CharacterName: presentation.CharacterName,
+                    SceneNames: presentation.SceneNames.ToArray(),
+                    PresentationStatus: presentation.PresentationStatus,
+                    DefinitionConditionCount:
+                        reference.DefinitionConditionCount,
+                    PreNodes: reference.PreNodes.ToArray(),
+                    LoopedMission: reference.LoopedMission,
+                    Active: reference.Active,
+                    Finished: reference.Finished));
+        }
+        return candidates;
+    }
+
+    private void RefreshMissionPresentations()
+    {
+        var daySceneGeneration = RuntimeSceneReadinessCapture.DaySceneGeneration;
+        if (daySceneGeneration < 1
+            || !RuntimeSceneReadinessCapture.CanReadDaySceneRuntime()
+            || _runtimeMappedGuestSnapshot is not { IsComplete: true } mappedGuests)
+        {
+            return;
+        }
+
+        RuntimeMissionDiagnosticCapture.RefreshPresentations(
+            daySceneGeneration,
+            mappedGuests);
+    }
+
+    private RuntimeAvailableMissionSnapshot PublishAvailableMissionUnavailable(
+        long missionGeneration,
+        long daySceneGeneration,
+        string status,
+        string error)
+    {
+        var snapshot = _availableMissionState.SetUnavailable(
+            missionGeneration,
+            daySceneGeneration,
+            status,
+            error);
+        LogAvailableMissionSnapshot(snapshot);
+        return snapshot;
+    }
+
+    private void LogAvailableMissionSnapshot(
+        RuntimeAvailableMissionSnapshot snapshot)
+    {
+        var signature = string.Join(
+            "|",
+            snapshot.RuntimeAvailable,
+            snapshot.MissionGeneration,
+            snapshot.DaySceneGeneration,
+            snapshot.Status,
+            snapshot.Error,
+            string.Join(",", snapshot.Missions.Select(mission => mission.Label)));
+        if (string.Equals(
+                signature,
+                _lastAvailableMissionLogSignature,
+                StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _lastAvailableMissionLogSignature = signature;
+        var message =
+            $"Available mission read: available={snapshot.RuntimeAvailable}; "
+            + $"missionGeneration={snapshot.MissionGeneration}; "
+            + $"daySceneGeneration={snapshot.DaySceneGeneration}; "
+            + $"status={snapshot.Status}; count={snapshot.Missions.Count}; "
+            + $"labels=[{string.Join(",", snapshot.Missions.Select(mission => mission.Label))}]; "
+            + $"error={snapshot.Error}";
+        if (snapshot.RuntimeAvailable)
+        {
+            _log?.LogInfo(message);
+        }
+        else
+        {
+            _log?.LogDebug(message);
+        }
+    }
+
     private RareGuestInvitationResult InviteAllRareGuestsFromLocalApi(
         string scope,
         string kizunaLevels,
@@ -2497,6 +2864,34 @@ internal sealed class StewardOverlayController
                 return 2;
             });
             if (processState == 0 || processState == 2) return;
+        }
+    }
+
+    private void ProcessPendingAvailableMissionReads()
+    {
+        while (true)
+        {
+            PendingAvailableMissionRead? pending;
+            lock (_availableMissionReadLock)
+            {
+                pending = _pendingAvailableMissionReads.Count == 0
+                    ? null
+                    : _pendingAvailableMissionReads.Dequeue();
+            }
+
+            if (pending == null) return;
+            if (!pending.TryBegin()) continue;
+
+            try
+            {
+                pending.Complete(CaptureAvailableMissions());
+            }
+            catch (Exception ex)
+            {
+                pending.Fail(ex);
+            }
+
+            return;
         }
     }
 

@@ -30,6 +30,15 @@ internal sealed class RuntimeMappedGuestCatalog
         }
     }
 
+    public static bool TryGetLoadedSnapshot(out RuntimeMappedGuestCatalogSnapshot snapshot)
+    {
+        lock (SyncRoot)
+        {
+            snapshot = _snapshot;
+            return _loaded && snapshot.IsComplete;
+        }
+    }
+
     public static void ResetSnapshot()
     {
         lock (SyncRoot)

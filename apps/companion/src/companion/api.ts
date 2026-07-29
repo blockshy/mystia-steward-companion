@@ -11,6 +11,7 @@ import type {
   DiagnosticPackageResponse,
   AutomationCancellationResponse,
   AutomationSafetyBarrierAckResponse,
+  AvailableMissionsApiResponse,
   BepInExConsoleVisibilityResponse,
   CustomRecipeData,
   CustomRecipeFlagUpdateInput,
@@ -35,6 +36,7 @@ import type {
   RareGuestInvitationScope,
   RareGuestInvitationWriteContext,
   RareOrderDismissResponse,
+  TrackedMissionsApiResponse,
   UpdateStatusResponse,
 } from '@/companion/types';
 import {
@@ -357,6 +359,38 @@ export async function fetchAvailableRareGuestInvitations(
       tauriTimeoutMs: 5000,
     },
   );
+}
+
+export async function readTrackedMissions(
+  endpoint: string,
+  apiToken: string,
+  options: { signal: AbortSignal; timeoutMs: number; knownSignature?: string },
+): Promise<TrackedMissionsApiResponse> {
+  const params = new URLSearchParams();
+  if (options.knownSignature) params.set('knownSignature', options.knownSignature);
+  const path = params.size > 0
+    ? `/missions/tracked?${params.toString()}`
+    : '/missions/tracked';
+  return readLocalApiJson<TrackedMissionsApiResponse>(endpoint, apiToken, path, {
+    signal: options.signal,
+    tauriTimeoutMs: options.timeoutMs,
+  });
+}
+
+export async function readAvailableMissions(
+  endpoint: string,
+  apiToken: string,
+  options: { signal: AbortSignal; timeoutMs: number; knownSignature?: string },
+): Promise<AvailableMissionsApiResponse> {
+  const params = new URLSearchParams();
+  if (options.knownSignature) params.set('knownSignature', options.knownSignature);
+  const path = params.size > 0
+    ? `/missions/available?${params.toString()}`
+    : '/missions/available';
+  return readLocalApiJson<AvailableMissionsApiResponse>(endpoint, apiToken, path, {
+    signal: options.signal,
+    tauriTimeoutMs: options.timeoutMs,
+  });
 }
 
 export async function inviteAvailableRareGuest(

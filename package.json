@@ -29,6 +29,8 @@
     "audit:rare-guest-invitations:ui": "node tests/rare-guest-invitations/rare-guest-invitations-playwright.mjs",
     "audit:gamepad": "node --experimental-strip-types tests/gamepad-input/gamepad-input-engine-audit.mjs && node scripts/playwright-gamepad-audit.mjs",
     "audit:logs:console": "node --experimental-strip-types tests/console-window/loopback-endpoint-audit.mjs && node tests/console-window/bepinex-console-playwright.mjs",
+    "audit:runtime-missions": "node tests/runtime-mission-diagnostic/runtime-mission-diagnostic-audit.mjs && node tests/runtime-available-missions/runtime-available-missions-audit.mjs && node --experimental-strip-types tests/tracked-missions/tracked-missions-audit.mjs && node --experimental-strip-types tests/available-missions/available-missions-audit.mjs",
+    "audit:runtime-missions:ui": "node tests/tracked-missions/tracked-missions-playwright.mjs",
     "audit:build-artifacts": "node tests/build-artifacts/build-artifacts-audit.mjs",
     "audit:release-package": "bash tests/build-artifacts/release-package-transaction-audit.sh",
     "audit:android-apk-transaction": "node tests/build-artifacts/android-apk-transaction-audit.mjs",

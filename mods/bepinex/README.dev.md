@@ -60,7 +60,7 @@ mods/bepinex/
 - `游戏根目录/BepInEx/core/`
 - `游戏根目录/BepInEx/interop/`
 
-`tests/ui-pinning-runtime/UiPinningRuntimeSmoke.csproj` 会使用真实 Harmony wrapper 验证 scoped prefix 返回传播，以及料理/材料/酒水列表元素 Hook、Food/Beverage 类型隔离、经营 generation 校验、Closing 旧目标失效、下一场隔离、池化重绑恢复和后台目标发布，因此运行该 smoke 时还要从 `BepInEx/core` 复制 `MonoMod.RuntimeDetour.dll` 和 `MonoMod.Utils.dll`。这两个 DLL 是测试运行依赖，不加入 Mod 编译和发布 preflight；引用放在外部目录时，通过 `-p:ReferenceDir="..."` 传给 `dotnet run`。
+`tests/ui-pinning-runtime/UiPinningRuntimeSmoke.csproj` 会使用真实 Harmony wrapper 验证 scoped prefix 返回传播，以及料理/材料/酒水列表元素 Hook、Food/Beverage 类型隔离、经营 generation 校验、Closing 旧目标失效、下一场隔离、池化重绑恢复、后台目标发布和已打开列表按目标代际单次主线程刷新，因此运行该 smoke 时还要从 `BepInEx/core` 复制 `MonoMod.RuntimeDetour.dll` 和 `MonoMod.Utils.dll`。这两个 DLL 是测试运行依赖，不加入 Mod 编译和发布 preflight；引用放在外部目录时，通过 `-p:ReferenceDir="..."` 传给 `dotnet run`。
 
 复制完成后运行前置检查：
 
@@ -292,6 +292,26 @@ pnpm audit:logs:console
 
 控制台 smoke 锁定默认关闭、Windows-only、BepInEx driver/Win32 窗口/真实可见性三态分离、仅 Mod 本次新建窗口禁用关闭命令、唯一 `ConsoleLogListener`、无焦点显示、hide-only，以及显隐/启动偏好的同锁提交；方法矩阵锁定 `/logs/console` 只接受 POST。前端审计验证 IPv4 回环端点限制、远程禁用、迟到读取隔离、动作错误保持、显示/隐藏与刷新持久化、键盘和模拟标准手柄 `A` 激活，以及 640px 布局。Linux 测试不能替代 Windows 实机的 Win32 窗口、重复切换和持续日志验证。
 
+修改任务生命周期诊断、BepInEx 783 任务容器形态或诊断包任务状态后，运行：
+
+```bash
+dotnet run --project tests/runtime-reflection/RuntimeReflectionSmoke.csproj -c Release
+dotnet run --project tests/runtime-mission-load-seed/RuntimeMissionLoadSeedSmoke.csproj -c Release
+dotnet run --project tests/runtime-mission-definition/RuntimeMissionDefinitionSmoke.csproj -c Release
+dotnet run --project tests/runtime-mission-diagnostic/RuntimeMissionDiagnosticSmoke.csproj -c Release
+dotnet run --project tests/runtime-scheduled-event-diagnostic/RuntimeScheduledEventDiagnosticSmoke.csproj -c Release
+dotnet run --project tests/runtime-available-missions/RuntimeAvailableMissionsSmoke.csproj -c Release
+dotnet run --project tests/runtime-serve-in-work-diagnostic/RuntimeServeInWorkMissionDiagnosticSmoke.csproj -c Release
+dotnet run --project tests/runtime-tracked-missions/RuntimeTrackedMissionsSmoke.csproj -c Release
+dotnet run --project tests/runtime-mission-recipe-priority/RuntimeMissionRecipePrioritySmoke.csproj -c Release
+pnpm audit:runtime-missions
+pnpm audit:runtime-missions:ui
+pnpm audit:recommendations
+pnpm audit:special-business
+```
+
+读档种子 smoke 验证有界 JSON 结构、实际 DLC 选择、日期偏移、bucket 合并、tracking 标签唯一性、finished 标签重复频次和畸形输入 fail-closed；定义审计锁定 `TargetNodeExists -> RefMission`、精确条件数组和语言字典；状态 smoke 验证存档 bool 只作诊断证据，读档初始化按已验证 bucket 和顺序绑定精确原任务 identity 后各执行一次 `UpdateFinishStates`，新任务在 `GenerateTrackingData` 捕获对象并等待 `StartMission` 完成列表插入，只在同一 `Ready + runtimeAvailable` generation、所有者线程和定义预读门禁内按需补做一次刷新，并要求条件数量与静态定义一致后才投影为 `Tracking/Fulfilled`，后续游戏自然刷新继续更新同一 identity；scheduled-event smoke 验证 frozen 诊断、当天与永久 bucket 精确查键、BepInEx 783 `Il2CppStringArray`、两类 post mission 来源、finished 完整序列、type 3/5 eligibility 和生成/触发入口禁令；available missions smoke 验证每请求 fresh read、type 5 + `postMissionsAfterPerformance` 唯一业务边界、`preNodes`、active、looped/finished、任务/日间/mapped 代际、稳定签名和 unchanged 响应，且不调用原生推进。ServeInWork smoke 验证被动查询结果受任务/经营 generation、canonical 稀客身份和静态定义约束，并锁定成功任务生命周期按 active canonical/food pair 精确复核、无关刷新保留、完成/移除删除、失败全清和有界诊断。tracked missions smoke 另验证 active-only 业务投影、受控初始刷新、零条件任务、`Unverified/Tracking/Fulfilled` 三态条件、后续自然刷新形态 fail-closed/恢复、不可用状态和稳定内容签名；recipe priority smoke 验证普通经营、唯一未送餐订单、精确 `foodId + recipeId`、任务/经营 generation 与特殊经营门禁，以及复核保留和失效后清理。源码审计继续锁定 TryUpgrade 后单次 `GenerateSaveString(None)`、Initialize 实际 DLC 字典的 `Count + ContainsKey` 与已知 bucket 精确查键、具体 List 索引、两个且仅两个主动刷新调用边界、新任务三重代际门禁、刷新前后容器与 identity 不变量、`FinishNodeExtern` append-only 快照、原生异常透传，以及任务完成、奖励、移除和宽泛枚举禁止清单；前端审计验证 `全部 / 可接取 / 可完成 / 进行中 / 待确认` 互斥页签、稳定排序、零计数空态、窄屏横向滚动和手柄焦点。
+
 修改手柄输入状态机、复合控件焦点语义、动态回焦、局部滚动或游戏/伴随窗口焦点切换后，运行：
 
 ```bash
@@ -320,7 +340,7 @@ MYSTIA_APP_URL=http://127.0.0.1:4173 MYSTIA_API_URL=http://127.0.0.1:32145 pnpm 
 pnpm audit:recommendations
 ```
 
-该审计验证完整候选先生成唯一 `executionPlans[0]` 主计划，收藏限定在执行计划截断前归一化，页面料理/酒水首项投影该计划，自动化与游戏界面辅助不再扫描后续计划；还验证只有零计划结果才生成 `blockedDiagnostic`，缺厨具、缺基础材料、酒水 Tag、预算和幽幽子二阶段 `ExGood` 不足能定位到各自首个清零阶段，诊断不会改变候选、排序或自动化目标。
+该审计验证完整候选按硬过滤、任务料理置顶、自定义置顶、收藏料理/酒水置顶和普通权重生成唯一 `executionPlans[0]` 主计划；exact active ServeInWork 任务料理只跳过普通 food Tag 和料理厌恶判断，酒水与全部硬门禁继续生效。收藏限定在执行计划截断前归一化，页面料理/酒水首项投影该计划，自动化与游戏界面辅助不再扫描后续计划；还验证多订单全局界面目标优先任务计划，以及只有零计划结果才生成 `blockedDiagnostic`，缺厨具、缺基础材料、酒水 Tag、预算和幽幽子二阶段 `ExGood` 不足能定位到各自首个清零阶段，诊断不会改变候选、排序或自动化目标。
 
 修改游戏界面置顶/列表高亮目标契约、连接重发或推荐 Worker 生命周期后，还要运行定向巡检：
 
@@ -330,7 +350,7 @@ MYSTIA_API_URL=http://127.0.0.1:32145 \
 pnpm audit:ui-pinning
 ```
 
-该巡检会验证 `POST /ui-pinning/target` 携带当前 `businessGeneration`、`Recipe.Id` 与 food ID 分离、主计划目标与页面首项一致、非 Active 经营不发布、业务失败退避重试、短暂断线不重复发布、服务端会话或显式连接身份变化后重发、内部签名变化不污染 wire 去重、过期 Worker 结果不会下发，以及 Worker error 后空目标锁存只在新的 current 成功 revision 到达后解除。
+该巡检会验证 `POST /ui-pinning/target` 携带当前 `businessGeneration`、`Recipe.Id` 与 food ID 分离、主计划目标与页面首项一致、多订单全局目标优先任务计划、非 Active 经营不发布、业务失败退避重试、短暂断线不重复发布、服务端会话或显式连接身份变化后重发、内部签名变化不污染 wire 去重、过期 Worker 结果不会下发，以及 Worker error 后空目标锁存只在新的 current 成功 revision 到达后解除。
 
 修改自定义推荐料理总开关、分组、批量状态或排序契约后，运行：
 
@@ -600,7 +620,7 @@ Mod 会定期检查当前页面和游戏运行时状态。进入游戏并加载�
 
 普客订单被动快照缓存约 1 秒，且只在当前为 Work 场景并处于 Active generation 时读取。`NormalOrderRuntimeCapture` 通过 `GuestGroupController.PushToOrder` 和 `GuestsManager.SetManualControllerOrderInternal` 捕获订单与可执行控制器绑定；常规快照先读取 live `OrderController` / HUD，再合并仍匹配订单 key 或桌位/料理/酒水槽位的捕获缓存。手动控制订单还需枚举 `NightSceneDirector.controlledGuest`。已不可见缓存必须剔除，捕获不可用时才做 `GuestsManager` 启动扫描；捕获版本变化只刷新普客订单快照。没有活动 `AutomationCookingJob` 时不在 `Update()` 热路径轮询料理 job。
 
-游戏界面置顶不反射读写 UI 列表；`UpdateAllVisual` 与 `UpdateBevField` 只建立 ThreadStatic 刷新作用域，最外层 prefix 固定目标快照。`RunTimePlayerData.CheckPinned` 的 bool prefix 只为精确目标设置 `__result=true` 并跳过原方法，非目标或作用域外完整执行游戏逻辑。不得压制玩家收藏，cooker 类型 `3` 只由独立高亮服务处理，也不得恢复列表改写路径。
+游戏界面置顶不反射读写 UI 列表；`UpdateAllVisual` 与 `UpdateBevField` 只建立 ThreadStatic 刷新作用域，最外层 prefix 固定目标快照。`RunTimePlayerData.CheckPinned` 的 bool prefix 只为精确目标设置 `__result=true` 并跳过原方法，非目标或作用域外完整执行游戏逻辑。目标内容代际变化且对应列表已经打开时，只能按代际去重后在 Unity 主线程执行一次安全刷新。Harmony 可以只读观察精确 `OnPanelOpen` / close / destroyed 生命周期来登记或清理面板实例；不得主动调用或重调 `OnPanelOpen` 触发刷新，也不得扫描场景/面板或轮询。不得压制玩家收藏，cooker 类型 `3` 只由独立高亮服务处理，也不得恢复列表改写路径。
 
 `RuntimePinnedListHighlightService` 只 Hook `WorkSceneCookingSelectionPannel.OnRecipeElementEnabled/3`、`OnIngElementEnabled/3` 和 `WorkSceneStoragePannel.OnElementEnabled/3`，酒水还必须确认 `Sellable.Type=Beverage`。`RuntimeUiPinningService` 维护排序与列表高亮共用的唯一 immutable target，并要求发布携带当前 Active 的经营 generation；不得在视觉服务中再保存第二份业务目标。Local API 工作线程只能发布 immutable desired state，不得读取或写入 Unity 对象；列表 Image 和厨具 renderer 的着色、恢复及目标协调只能在元素回调、`Tick` 或 `LateUpdate` 主线程执行。进入 Closing 时，在对象仍有效的主线程边界恢复原色并挂起视觉服务；进入 Destroyed 后只丢弃 wrapper 引用，不再调用 Unity setter。新的 Active generation 才能恢复服务，网络重发不能解除挂起或复用上一场目标。
 
@@ -612,7 +632,7 @@ Mod 会定期检查当前页面和游戏运行时状态。进入游戏并加载�
 
 幽幽子第三阶段的 NativeEvaluation 先复用精确捕获的 order/controller，并在调用原生评价前重新校验强身份、controller 当前所有权、fulfilled、已送达目标与对应评价回调；只有 capture 失效或校验不通过时，才扫描 `GuestsManager` 的当前集合并执行同一验证器。剧情版的 `onEvaluate` 必须来自最终选中的同一原生 order/controller 捕获记录，不能只按相同请求身份借用其他记录的回调；重修版仍要求 `_50` / `_70` 回调。重修门禁还必须按实际订单形态分流：稀客 `SpecialOrder` 校验请求料理/酒水 Tag 存在于实送完整 `Tags`，按标准点单喜恶评价，不读取 `expectedFoodModifierTags`；精确料理/酒水 `NormalOrder` 才校验实际加料和 `Tags.Except(RawTags)` modifier Tag。不得用字段为空、预测 Tag 或等级合计规则在两种形态之间兜底。古明地恋本体继续要求 manager 可发现的 live controller，不使用本段 capture 优先策略。
 
-稀客推荐结果会按角色、点单词条、库存状态、厨具快照、排序配置、置顶开关、同基础料理展示数量、自动化收藏限定和加料上限缓存。经营中先从完整排序候选池构造执行计划，`executionPlans[0]` 是订单唯一主执行计划，再把该计划的料理和酒水投影为页面首项；同基础料理展示数量只裁剪其余行。自动化开始时、游戏界面置顶、列表高亮和厨具高亮只消费同一主计划，不得扫描后续计划。收藏限定只在自动化总开关、对应料理/酒水阶段和当前订单自动化权限都开启时参与主计划归一化，并且必须在执行计划数量截断前处理；找不到满足限定的方案时保留推荐展示，但对应自动化动作不执行。自动化锁定后，即使开锅或送酒引起库存重算并改变页面主计划，也继续处理原锁定目标。自动刷新没有检测到相关变化时，不会在每个刷新周期重复枚举加料组合；所有影响主计划的设置都必须进入缓存签名。只有最终没有执行计划时才生成 `blockedDiagnostic`，并复用正式候选管线记录料理、酒水、预算和特殊评价各阶段的首个清零位置及资源证据；该诊断不参与业务缓存身份、候选选择或排序。幽幽子二阶段没有可预测 `ExGood` 的完整组合时保持无计划，不得降级执行。
+稀客推荐结果会按角色、点单词条、库存状态、厨具快照、排序配置、置顶开关、同基础料理展示数量、自动化收藏限定和加料上限缓存。经营中先对完整候选应用硬过滤，再依次应用任务料理置顶、自定义置顶、收藏料理/酒水置顶和普通权重，构造执行计划；`executionPlans[0]` 是订单唯一主执行计划，再把该计划的料理和酒水投影为页面首项。exact active ServeInWork 任务料理可以跳过普通 food Tag 与料理厌恶判断，但配对酒水和全部硬门禁仍须通过。同基础料理展示数量只裁剪其余行。自动化开始时、游戏界面置顶、列表高亮和厨具高亮只消费同一主计划，不得扫描后续计划；普通经营多订单全局界面目标优先选择主计划为任务计划的订单。收藏限定只在自动化总开关、对应料理/酒水阶段和当前订单自动化权限都开启时参与主计划归一化，并且必须在执行计划数量截断前处理；找不到满足限定的方案时保留推荐展示，但对应自动化动作不执行。自动化锁定后，即使开锅或送酒引起库存重算并改变页面主计划，也继续处理原锁定目标。自动刷新没有检测到相关变化时，不会在每个刷新周期重复枚举加料组合；所有影响主计划的设置都必须进入缓存签名。只有最终没有执行计划时才生成 `blockedDiagnostic`，并复用正式候选管线记录料理、酒水、预算和特殊评价各阶段的首个清零位置及资源证据；该诊断不参与业务缓存身份、候选选择或排序。幽幽子二阶段没有可预测 `ExGood` 的完整组合时保持无计划，不得降级执行。
 
 收藏数据由 Mod 本地 API 持久化到 `BepInEx/config/MystiaStewardCompanion/favorites.json`。前端只通过 `/favorites`、`/favorites/add-recipe`、`/favorites/remove-recipe`、`/favorites/add-beverage`、`/favorites/remove-beverage` 读写，不使用 localStorage 存储收藏，避免版本更新或 WebView 数据迁移时丢失。
 
@@ -667,6 +687,8 @@ Port = 32145
 - `POST /local-api/token/regenerate`：重置本地 API Token，返回新 Token 并立即更新当前 API 鉴权；只允许回环客户端调用。
 - `GET /snapshot?knownSignature=...`：读取最新运行态快照。快照由 Unity 主线程按自动刷新节奏生成，网络线程只返回缓存 JSON；内容签名固定为规范内容的 64 字符小写 SHA-256，不能把随订单增长的规范原文放进查询串。签名未变化时返回轻量 unchanged 响应。快照包含推荐状态、稀客/普客订单、活动 `automationCookingJobs`、递增序号 `automationEvents`、运行时目录元信息、日间 `runtimeDaySceneReady` / `runtimeDaySceneGeneration` 和 `performanceMs`，不包含完整 `RuntimeDataCatalog`，也不包含旧的 `runtimeRareCustomers` 合成目录；可推荐稀客只来自 `/runtime-data.rareCustomers`。
 - `GET /runtime-data`：读取当前完整 `RuntimeDataCatalog`。`runtimeDataSignature` 是完整响应 JSON 的固定 SHA-256，而不是集合计数；伴随窗口只在本地没有目录缓存或该签名变化时调用。
+- `GET /missions/tracked?knownSignature=...`：读取当前 generation 中 active-only 的已追踪任务。响应投影稳定的任务 label、游戏当前语言标题、`unverified|tracking|fulfilled` 三态、条件总数和 nullable 条件状态，并为每项携带原始 receiver、游戏语言角色名、静态相关场景和展示读取状态；状态来自读档初始化或新任务创建边界的一次受控原生刷新，以及之后游戏自身的自然刷新。任一 active 任务定义、标题或条件形态不完整时整轮 `runtimeAvailable=false`，但角色或场景展示失败只清空未确认字段，不得使任务业务状态不可用。完整响应使用规范内容 SHA-256；签名未变化时只返回 `unchanged + contentSignature`。该端点自身不进入 Unity 主线程、不发布未接取任务，也不调用任务状态或写入方法。
+- `GET /missions/available?knownSignature=...`：每个请求排队到 Unity 主线程执行 fresh read，只发布实机闭环验证的 type 5 `KizunaCheckPoint` 且来源为 `postMissionsAfterPerformance` 的可接取任务。读取严格复核 `preNodes`、active labels、`loopedMission`、finished history、任务 generation、日间 generation 和 mapped identity snapshot；任务展示元数据使用同一 receiver 和静态相关场景协议，相关场景不表示角色实时位置。`knownSignature` 只压缩响应，不能省略 fresh read。端点不复用 frozen scheduled 诊断，不调用事件触发、任务接取或其他推进方法。
 - `GET /automation/lease`：读取当前自动化控制权状态。
 - `GET /logs/settings`：读取总日志开关、总日志路径、单文件分片大小、文件上限、总容量上限，以及 BepInEx 控制台的平台支持、启动设置、活动和可见状态。
 - `POST /logs/config?aggregateLog=true|false&aggregateLogMaxFiles=30`：由伴随窗口回写总日志开关和文件上限；`aggregateLog` 会即时注册或移除 BepInEx 全局日志监听器。
@@ -675,7 +697,7 @@ Port = 32145
 - `POST /inventory/set?type=ingredient|beverage&id=ID&qty=数量`：在 Unity 主线程通过 `RunTimeStorage` 原生 Range API 修改当前运行时材料或酒水库存，并回读校验最终数量；原生调用失败时不会绕过 callback 直写私有字典。
 - `POST /inventory/bulk-set?type=ingredient|beverage&ids=ID1,ID2&qty=数量`：批量修改当前运行时材料或酒水库存；用于修改页的材料/酒水批量设为 `99`，只在批量结束后刷新一次运行时快照。
 - `POST /orders/prepare-next?...`：按伴随窗口传入的稀客订单执行准备步骤，可组合送达酒水、开始料理、出锅后直送和收藏限定；调用方必须持有自动化 lease。请求必须携带 nullable `runtimeGuestId`、`foodTagId`、`beverageTagId` 原始数值身份，归一化 `guestId` 和 `foodTag` / `beverageTag` 只用于推荐、展示和诊断，不能作为对象匹配兜底。
-- `POST /logs/export-diagnostics?open=true`：生成诊断 zip，包含 manifest、当前 snapshot、运行时目录和总日志分片尾部；`open=true` 会打开诊断包目录。
+- `POST /logs/export-diagnostics?open=true`：生成诊断 zip，包含 manifest、当前 snapshot、运行时目录、只含托管状态的 `snapshot/runtime-mission-diagnostic.json`、首次稳定日间采集的 `snapshot/runtime-scheduled-event-diagnostic.json`、`snapshot/runtime-mission-serve-in-work-diagnostic.json`、最近一次 `GET /missions/available` 形成的 `snapshot/runtime-available-missions.json`，以及总日志分片尾部；`open=true` 会打开诊断包目录。前三个任务文件只用于诊断，available 文件是最近一次独立业务读取的托管快照副本，四者都不能替代实时 API 读取。scheduled/post/active node label 与 nullable Trigger ID 是游戏的不透明精确身份，导出和读取均不得 `Trim()`、大小写归一化或建立修剪别名；node label 必须是非 null 且 `Length > 0`，Trigger ID 要区分 null、空字符串、纯空白、边缘空白和其他原始字符串。finished history 是非 null 的有界原始字符串，采集期间保留空字符串、纯空白、边缘空白、重复项和完整顺序，只用 Ordinal membership 判断，不将历史列表投影为业务数据。scheduled 报告另外包含事件级 `eligibility`、eligible/ineligible/not-applicable/excluded 四类计数、单独的 eligibility failure 计数，以及每个任务引用对应的 source-event eligibility；这些字段与 structural candidate 分开，资格读取失败也不会伪装成定义失败或抹掉已读结构证据，整份报告仍会 fail-closed。它不能直接作为业务可接取列表。scheduled 诊断失败不影响 tracked 任务、任务料理主计划、推荐、自动化、置顶或高亮。
 - `POST /orders/complete-first?...`：按伴随窗口传入的稀客订单确认直接送达状态，必要时补送酒水，并在订单满足后触发评价；调用方必须持有自动化 lease，且沿用 nullable `runtimeGuestId`、`foodTagId`、`beverageTagId` 原始数值身份定位同一订单，不使用归一化 `guestId` 或文本兜底。
 - `POST /orders/rare/dismiss?...`：按桌号及已知的 `runtimeGuestId` / 原始 Tag ID 全维度匹配并删除运行时稀客订单捕获缓存；缺少桌位或全部原始身份时拒绝删除，避免跨订单误清理。
 - `POST /orders/normal/complete-first?...`：按请求中的订单 key、桌位、原订单目标和实际执行目标处理一笔普客订单；调用方必须持有自动化 lease。普客自动化可按 `autoNormal*` 阶段配置送达酒水、开始料理、出锅后直接送达料理，并在订单 `get_IsFullfilled()` 为真后调用 `EvaluateOrder()` 完成评价；该字段只表示订单已满足并可评价，前端仍需以 `HasEvaluated` 或订单消失判断真正完成。若订单只存在于 HUD / `OrderController`，但没有可执行 `GuestGroupController`，后端必须拒绝自动送达并返回不可执行诊断。
@@ -696,13 +718,15 @@ Port = 32145
 - `POST /updates/status`：归并并返回当前更新检查、下载、暂存和安装程序状态，以及 `lastAttemptAtUtc`、`lastSuccessAtUtc`、`nextCheckAtUtc`、`consecutiveFailures`；归并 updater 结果时可能写入或删除状态文件，因此不是只读查询。
 - `POST /updates/check`、`POST /updates/download`、`POST /updates/install-on-exit`：手动检查、下载或启动退出安装流程；更新服务按单操作串行。后台调度成功后按配置间隔续检，失败按 15m/30m/1h/2h/4h/6h 退避。Local API 关闭时先阻止新操作，再通过统一生命周期令牌取消自动/手动检查和下载，等待 handler、活动操作及调度器退出；取消检查恢复稳定状态并立即到期。下次启动会恢复强制退出留下的瞬时状态，并只清理下载一级目录内严格符合本服务语义版本/GUID 格式的临时目录。
 
-稀客邀请页面的自动列表读取以连接代际、规范 endpoint、`current|all` 范围、`runtimeDaySceneGeneration` 和当前地图 label 组成稳定身份，只在页面可见、连接成功、`runtimeLoaded=true`、`runtimeDaySceneReady=true`、generation 为正数且地图有效时发起 GET。首次进入、范围变化、换图、同地图新 generation、重连和邀请完成后各读取一次，无关快照变化不会重复读取。同一身份收到结构化 `ok=false/runtimeAvailable=false` 结果或传输失败时只按 500/1000/2000/4000ms 重试四次；成功或确定性业务结果立即停止，耗尽后保留后端 `error/status` 并等待手动刷新或身份变化，失败响应不得渲染成普通空列表，也不能以未记录尝试形成热循环。单独/批量邀请从同一有效快照固定 `expectedDaySceneGeneration` 和 `expectedMapLabel`，没有有效写入上下文时前端不发 POST；后端场景栅栏负责阻止已经排队但延迟执行的旧写入。身份失效时立即取消请求、重试计时器并清空旧结果；Hook 同时使用 `AbortController`、请求 generation 和操作 ID，确保旧响应或旧 `finally` 不能覆盖新场景的结果与 busy 状态。手动刷新保留，但只强制重读当前有效身份。后端整批读取异常记录 scope、读取阶段和完整异常；上下文拒绝或成功结果记录可用的状态与候选诊断，便于从总日志定位实机 IL2CPP 差异。
+`任务 -> 稀客邀请` 的自动列表读取以连接代际、规范 endpoint、`current|all` 范围、`runtimeDaySceneGeneration` 和当前地图 label 组成稳定身份，只在对应分栏可见、连接成功、`runtimeLoaded=true`、`runtimeDaySceneReady=true`、generation 为正数且地图有效时发起 GET。首次进入、范围变化、换图、同地图新 generation、重连和邀请完成后各读取一次，无关快照变化不会重复读取。同一身份收到结构化 `ok=false/runtimeAvailable=false` 结果或传输失败时只按 500/1000/2000/4000ms 重试四次；成功或确定性业务结果立即停止，耗尽后保留后端 `error/status` 并等待手动刷新或身份变化，失败响应不得渲染成普通空列表，也不能以未记录尝试形成热循环。单独/批量邀请从同一有效快照固定 `expectedDaySceneGeneration` 和 `expectedMapLabel`，没有有效写入上下文时前端不发 POST；后端场景栅栏负责阻止已经排队但延迟执行的旧写入。身份失效时立即取消请求、重试计时器并清空旧结果；Hook 同时使用 `AbortController`、请求 generation 和操作 ID，确保旧响应或旧 `finally` 不能覆盖新场景的结果与 busy 状态。手动刷新保留，但只强制重读当前有效身份。后端整批读取异常记录 scope、读取阶段和完整异常；上下文拒绝或成功结果记录可用的状态与候选诊断，便于从总日志定位实机 IL2CPP 差异。
+
+`任务` 一级页默认打开 `任务列表`，另含 `稀客邀请` 分栏。任务列表并行读取 tracked 与 available，以连接代际、endpoint、日间代际和任务代际组成各自请求身份；切换页面、断开连接或身份变化会中止旧请求并拒绝迟到结果。后端 `runtimeAvailable=false` 必须显示对应的明确用户状态，完整技术原因保留在日志、API 和诊断包中，不能渲染为普通空列表。列表使用 `全部 / 可接取 / 可完成 / 进行中 / 待确认` 互斥页签，计数始终包含零值；同 label 重叠时 active tracked 项优先，`全部` 按 `available -> fulfilled -> tracking -> unverified`、中文标题和 label 稳定排序，单状态页签只渲染对应列表。窄屏页签只在自身横向滚动，不允许页面溢出。available 只用于列表展示，不得进入任务料理置顶、推荐、自动化、置顶或高亮。
 
 ### v1.2.x 一次性迁移边界
 
 `v1.2.x` 只保留一项明确的一次性数据迁移：Local API 启动阶段先把 `favorites.json` 中 `source=manual` 的料理原子写入 `custom-recipes.json`，写入成功后再从收藏文件删除旧条目。目标料理按 `customerId + foodTag + foodId + extraIngredientIds` 去重，中断后重试不会重复生成；目标文件无法读取或写入时不删除来源条目。后续 `GET /custom-recipes` 和 CRUD 端点保持无隐式迁移副作用。该迁移计划在 `v1.3.0` 删除，不得扩大为旧 API、旧配置、旧类型或旧业务路径兼容层。自 `v1.2.0` 起不再读取旧 GUID 配置 `com.tyukki.mystia-steward.cfg`。
 
-除 `/health` 外，端点都需要 `X-Mystia-Steward-Companion-Token`。Token 由插件生成并保存在 BepInEx 配置中，同机启动伴随窗口时通过 `--token=` 参数传入 Tauri 后端；A 设备本机设置页可以复制或重置 Token。远程局域网连接时，用户需要在 B 设备伴随窗口顶部连接区手动输入 A 设备的 endpoint 和 token，点击 `连接` 后才开始轮询。Tauri 伴随窗口会显示实时 Mod 工作台，默认包含 `概览`、`普客`、`稀客`、`自定义推荐料理`、`经营中`、`稀客邀请`、`修改`、`帮助`、`设置` 九个页签；`概览` 内部按 `状态`、`库存`、`操作` 分栏，`设置` 内部按 `窗口`、`连接`、`推荐`、`自动化`、`更新` 分栏。窗口设置包含透明度、90% 至 130% 字体大小、焦点切换、始终置顶、鼠标穿透锁定、手柄导航和显示调试信息；连接设置包含本地 API/LAN 连接配置并逐项展示可复制的 endpoint；推荐设置包含订单排序、推荐权重、预算策略、缺失厨具过滤、收藏料理/收藏酒水置顶、带库存显示和名称/库存排序的排除材料/酒水、同基础料理展示数量、游戏界面置顶和厨具高亮。工作台级更新控制器只读取 Mod 更新状态，活动状态 2 秒、稳定状态 60 秒轮询；发现新版时显示非模态提示，并按 endpoint + tag 保存 24 小时延后状态。Tauri opener 只允许打开本项目 Release URL。Android 伴随窗口只作为 B 设备 LAN 客户端，不提供桌面托盘、置顶、鼠标穿透、焦点切换、单实例控制和游戏关闭自动退出；独立 Windows 伴随窗口和 Android APK 不参与 Mod 主包自动更新。桌面鼠标穿透必须通过 Tauri 原生窗口 `set_ignore_cursor_events` 控制，不能只用 CSS `pointer-events` 模拟。帮助页内容来自 `apps/companion/src/data/help-content.json`，由前端渲染为目录树和详情面板，修改文案时优先改 JSON。`日志` 页签、扫描状态、运行时来源、性能耗时、订单来源和内部 key 这类诊断信息只在 `设置 -> 显示调试信息` 开启后显示。正式 Tauri 客户端通过原生后端读取本地 API。
+除 `/health` 外，端点都需要 `X-Mystia-Steward-Companion-Token`。Token 由插件生成并保存在 BepInEx 配置中，同机启动伴随窗口时通过 `--token=` 参数传入 Tauri 后端；A 设备本机设置页可以复制或重置 Token。远程局域网连接时，用户需要在 B 设备伴随窗口顶部连接区手动输入 A 设备的 endpoint 和 token，点击 `连接` 后才开始轮询。Tauri 伴随窗口会显示实时 Mod 工作台，默认包含 `概览`、`普客`、`稀客`、`自定义推荐料理`、`经营中`、`任务`、`修改`、`帮助`、`设置` 九个页签；`任务` 内部按 `任务列表`、`稀客邀请` 分栏，`概览` 内部按 `状态`、`库存`、`操作` 分栏，`设置` 内部按 `窗口`、`连接`、`推荐`、`自动化`、`更新` 分栏。窗口设置包含透明度、90% 至 130% 字体大小、焦点切换、始终置顶、鼠标穿透锁定、手柄导航和显示调试信息；连接设置包含本地 API/LAN 连接配置并逐项展示可复制的 endpoint；推荐设置包含订单排序、推荐权重、预算策略、缺失厨具过滤、任务料理置顶、收藏料理/收藏酒水置顶、带库存显示和名称/库存排序的排除材料/酒水、同基础料理展示数量、游戏界面置顶和厨具高亮。工作台级更新控制器只读取 Mod 更新状态，活动状态 2 秒、稳定状态 60 秒轮询；发现新版时显示非模态提示，并按 endpoint + tag 保存 24 小时延后状态。Tauri opener 只允许打开本项目 Release URL。Android 伴随窗口只作为 B 设备 LAN 客户端，不提供桌面托盘、置顶、鼠标穿透、焦点切换、单实例控制和游戏关闭自动退出；独立 Windows 伴随窗口和 Android APK 不参与 Mod 主包自动更新。桌面鼠标穿透必须通过 Tauri 原生窗口 `set_ignore_cursor_events` 控制，不能只用 CSS `pointer-events` 模拟。帮助页内容来自 `apps/companion/src/data/help-content.json`，由前端渲染为目录树和详情面板，修改文案时优先改 JSON。`日志` 页签、扫描状态、运行时来源、性能耗时、订单来源和内部 key 这类诊断信息只在 `设置 -> 显示调试信息` 开启后显示。正式 Tauri 客户端通过原生后端读取本地 API。
 
 伴随窗口的自动化能力只在设置页总开关开启、持有 lease 且当前经营 generation 为 Active 时运行。稀客并发、普客并发、最大重试和最大回退由 `CompanionPreferences` 控制；订单排序、推荐过滤、收藏限定和厨具预约仍复用经营中推荐的同一输入。稀客 `autoPrep*` 与普客 `autoNormal*` 的送酒、开始料理、送达料理、完成订单和出错暂停完全独立保存、独立传参、独立推进。所有自动开锅都登记 `AutomationCookingJob` 作为服务端精确锅次回执，防止 HTTP 响应丢失后再次扣料；只开启“开始料理”时 job 进入手动交接模式，不送达、不入箱、不复位，直到订单送达、订单稳定消失、显式取消或 Closing 边界同步取消。Closing/Destroyed 后所有后续检查停止访问该场已释放或正在释放的游戏对象。
 
@@ -755,5 +779,9 @@ Tauri 进程必须在初始化窗口前原子绑定控制端口，再把预绑�
 
 - 构建依赖本机 `References/` 中的 BepInEx、Il2CppInterop 和 Unity DLL；这些 DLL 不提交到仓库。
 - 运行时反射依赖游戏版本中的类型和字段名；如果游戏更新导致字段变化，需要核对并调整 provider 中的运行时类型名、字段名和方法名。
-- 当前不发布结构化任务快照或任务料理置顶。BepInEx 783 下的全量任务/节点和动态 tracking 集合没有经验证的无副作用完整读取入口，窄入口也无法恢复读档时已存在的全部状态，因此不得恢复 `AllNodesMapping`、`GetAllNodes()`、`GetAllMissionData()`、`ParseActiveMissionData()` 或相关动态枚举作为兼容性扫描。
+- 结构化任务能力发布 active-only tracked 与首版 type 5 available 两条独立业务链。`RuntimeMissionDiagnosticCapture` 的有界读档种子、Initialize 具体 DLC 校验、受控初始刷新和自然状态观察仍只服务 active tracked；type 3 角色互动、当日计划和限时任务仍不在 available 支持范围。
+- `RuntimeScheduledMissionSourceReader` 由 frozen scheduled 诊断和 fresh available capture 共用，只读取 `scheduledEvents[CorrectedDay]` / `[-1]`、具体 List、精确 `Il2CppStringArray`、定义、active labels 和 finished 历史。frozen 诊断每个稳定 day generation 只采集一次；available 每次 GET 都在 Unity 主线程重新读取，开始和提交时复核同一任务 generation、day generation、mapped identity snapshot、当前日及容器序列。业务投影只接受 type 5 `KizunaCheckPoint` + `postMissionsAfterPerformance`，按 exact NPC/canonical 羁绊状态重建经验门禁，并严格检查任务 `preNodes`、active、`loopedMission` 和 finished 状态。所有 label 保持原始 Ordinal identity，不枚举 scheduled 字典，不复用冻结报告。
+- available 读取严格纯读。严禁调用 `CanContinue`、`StartMission`、`RefNPC`、`CheckCharacterInteractEvent`、`HasSpecialNPCKizunaExpFull`、`RefOrGenerateSpecialRunTimeData`、`GetOrGenerateSpecialNPCKizunaLevel` 和任何触发、生成或推进任务的入口。available 结果只进入任务列表，不进入任务料理置顶、推荐、自动化、置顶或高亮。
+- 存档中的任务 bool 只作诊断证据，`conditionFinishStates` 合法为空且不要求与静态定义条件数一致，不得直接发布为当前进度。每次加载最多同步读取 512 条静态定义，超限即令本代诊断 fail-closed；反射元数据可以缓存，但不得跨 generation 缓存 native 任务或语言对象。静态定义仅在 Unity 主线程按 `DataBaseScheduler.TargetNodeExists(label) -> RefMission(label)` 读取精确 `finishCondition` 引用数组、原始 `reciever`、独立 `hasReciever` 诊断值、`conditionType` 和 `amount`；标题只从语言 `Missions` 具体字典精确查键后读取 `LanguageBase.Name`，标题不可用时保留明确状态而不回退 `GetMissionLanguage`。`RunTimeScheduler.Initialize` 原方法成功返回后，Mod 只按已验证的 merged bucket 和任务顺序，对 `trackingMissions` 使用已知 int key 精确查值并按具体 List Count/indexer 绑定全部原 `TrackedMissionData`；label、数量或 identity 不唯一即整代 fail-closed。首次主动调用前必须确认 bucket 数、空 buffer、finished 多重集，并为全部唯一 label 完成上述核心定义预读；任一失败时不得调用任何任务对象。每个通过预读的读档任务对象只主动执行一次 `UpdateFinishStates`，随后要求 tracking bucket 数、buffer Count、finished 标签完整序列以及逐项任务 label/identity 与刷新前一致，并要求刷新结果数量与预读定义条件数一致，才原子提交当前状态。`GenerateTrackingData` Postfix 只捕获该次返回的精确新任务对象；`StartMission` 原方法完成、对象已经插入全局任务列表后，先预读该任务的精确定义，并在预读前、主动刷新后和提交前分别确认状态仍属于同一所有者线程上的 `Ready + runtimeAvailable` generation；若期间没有捕获该对象的自然刷新，才执行一次同样的 `UpdateFinishStates`，并立即复核 label、identity 和条件数量。旧 frame 一旦失去代际所有权，只允许清理，不得调用或提交。除这两个边界外，Mod 不主动刷新或轮询任务；后续变化只观察游戏自身的自然 `UpdateFinishStates` 及稳定生命周期 Hook。禁止调用 `HasFulfilled`、`ParseActiveMissionData`、任务完成/奖励/移除写入或宽泛枚举；`FinishNodeExtern` 只接受 finished 列表不变或保持原前缀的尾部追加，循环任务重复完成按频次保留。所有 Harmony 入口必须以 no-throw 外壳隔离诊断异常，finalizer 无条件返回原生异常；inactive 指针转移时清除旧身份，active 冲突和迟到旧指针回调 fail-closed。
+- `RuntimeServeInWorkMissionDiagnosticCapture` 只被动观察游戏原本调用的 `ContainsSpecialNPCServeInWorkMission` 返回值和 `out foodId`，并按已加载 canonical 稀客身份、静态 ServeInWork 定义、任务/夜间经营 generation 交叉校验；Mod 不得主动调用该方法。任务/经营 generation 变化、经营 Closing/Destroyed、Hook/任务读取失败和原生异常全量清除信号；成功任务生命周期从当前完整定义构造 active、非 `Fulfilled` 的 `(canonicalGuestId, foodId)` 集合并精确复核现有信号，无关任务刷新不得清空其他有效信号，定义、目录、receiver 或 food ID 不完整时整轮 fail-closed。只有普通经营、同一 canonical/runtime 稀客恰好匹配一笔未送餐活动订单，且 food ID 在完整目录中唯一解析出非负 recipe ID 时，才向该订单投影 `MissionRecipePriority`；前端只有在默认开启的 `missionRecipePriorityEnabled` 为 true 时，才从正式候选中匹配同一 `foodId + recipeId`。exact active ServeInWork 任务料理可以跳过普通 food Tag 和料理厌恶判断；配对酒水仍须满足当前点单，料理解锁与库存、材料、厨具、预算、排除项、自动化收藏限定和其他硬门禁均继续决定能否成为主计划。合法任务计划排在自定义置顶、收藏料理/酒水和普通权重之前；页面、自动化、游戏界面置顶、列表高亮和厨具高亮统一消费 `executionPlans[0]`，普通经营多订单全局目标优先选择任务计划。关闭设置只从 sort context 移除任务目标，不关闭后端被动捕获；特殊经营、歧义、字段缺失或代际不一致一律不投影。任务主方案的料理行显示 `任务目标`，游戏列表发布仍由 `gameUiPinningEnabled` 独立控制。已打开列表收到新目标后，只能按目标内容代际在 Unity 主线程执行一次安全刷新；允许 Harmony 只读观察精确 `OnPanelOpen` / close / destroyed 生命周期来登记或清理面板实例，禁止主动调用或重调 `OnPanelOpen` 触发刷新，也禁止场景/面板扫描或轮询。tracked、ServeInWork 与 scheduled-event 三份任务 JSON 仍只用于诊断，available JSON 仅保存最近一次业务读取结果。不得恢复 `AllNodesMapping`、`GetAllNodes()`、`GetAllMissionData()`、`GetTrackedMissionData()`、`ParseActiveMissionData()`、主动 `HasFulfilled`、在上述两个精确边界之外主动 `UpdateFinishStates`、编译器生成 Hook、managed/field 兼容读取、复杂 tracking Enumerator 或 scheduled 字典全量枚举。
 - 伴随窗口是唯一用户界面；游戏内不再提供备用 IMGUI 面板。

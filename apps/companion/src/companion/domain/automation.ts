@@ -25,7 +25,10 @@ import {
   normalizeIdList,
 } from '@/companion/domain/favorites';
 import { buildNormalAutoOrderKey } from '@/companion/domain/normal-order-key';
-import { getPrimaryExecutionPlan } from '@/companion/domain/primary-execution-plan';
+import {
+  getPrimaryExecutionPlan,
+  selectPrimaryExecutionPlanRecommendation,
+} from '@/companion/domain/primary-execution-plan';
 import { toRareRecipeResult } from '@/companion/domain/service-recommendations';
 import {
   sortNightOrderRows,
@@ -880,15 +883,22 @@ export function buildGameUiPinningTarget(
   recommendations: OrderRecommendation[],
   orderSortMode: ServiceOrderSortMode,
   indexes: ReturnType<typeof buildRecommendationDataIndexes> = DEFAULT_DATA_INDEXES,
-  options: { requireExecutablePlan?: boolean } = {},
+  options: {
+    prioritizeMissionRecipe?: boolean;
+    requireExecutablePlan?: boolean;
+  } = {},
 ): GameUiPinningTarget | null {
   const rows = sortNightOrderRows(
     recommendations.map((recommendation) => ({ order: recommendation.order, recommendation })),
     orderSortMode,
   );
-  const item = options.requireExecutablePlan
-    ? rows.find((row) => getPrimaryExecutionPlan(row.recommendation.executionPlans))?.recommendation
-    : rows[0]?.recommendation;
+  const item = selectPrimaryExecutionPlanRecommendation(
+    rows.map((row) => row.recommendation),
+    {
+      prioritizeMissionRecipe: options.prioritizeMissionRecipe === true,
+      requireExecutablePlan: options.requireExecutablePlan === true,
+    },
+  );
   if (!item) return null;
   const primaryPlan = getPrimaryExecutionPlan(item.executionPlans);
   if (!primaryPlan) return null;

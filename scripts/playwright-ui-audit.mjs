@@ -27,7 +27,7 @@ const tabs = [
   { value: 'rare', label: '稀客' },
   { value: 'custom-recipes', label: '自定义推荐料理' },
   { value: 'service', label: '经营中' },
-  { value: 'rare-invitations', label: '稀客邀请' },
+  { value: 'missions', label: '任务' },
   { value: 'inventory', label: '修改' },
   { value: 'help', label: '帮助' },
   { value: 'logs', label: '日志' },
@@ -152,6 +152,7 @@ async function auditPage(page, viewport, tab) {
   }
 
   await auditMinimumViewportLayout(page, viewport, tab);
+  await auditMissionRecipePriorityMarker(page, viewport, tab);
 
   for (const target of hoverTargets) {
     await auditHoverTarget(page, viewport, tab, target);
@@ -178,7 +179,7 @@ async function auditMinimumViewportLayout(page, viewport, tab) {
 
 async function auditMinimumMulticolumnGrids(page, viewport, tab) {
   const result = await page.evaluate(({ tabValue }) => {
-    const expectedTabs = new Set(['overview', 'normal', 'rare', 'custom-recipes', 'service', 'rare-invitations', 'inventory', 'settings', 'logs']);
+    const expectedTabs = new Set(['overview', 'normal', 'rare', 'custom-recipes', 'service', 'missions', 'inventory', 'settings', 'logs']);
     const candidates = Array.from(document.querySelectorAll('.steward-minimum-multicolumn-grid'))
       .filter((node) => node instanceof HTMLElement)
       .filter((element) => isVisible(element));
@@ -485,6 +486,104 @@ async function auditMinimumRecommendationSettingsLayout(page, viewport, tab) {
   const screenshotPath = path.join(OUTPUT_DIR, `${viewport.name}-${tab.value}-recommendation.png`);
   await page.screenshot({ path: screenshotPath, fullPage: true });
   screenshots.push({ tab: `${tab.label} 推荐`, viewport: viewport.name, path: screenshotPath });
+
+  await auditMissionRecipePriorityToggle(page, viewport, tab, recommendationTab);
+}
+
+async function auditMissionRecipePriorityMarker(page, viewport, tab) {
+  if (tab.value !== 'service') return;
+
+  try {
+    await page.getByText('任务目标', { exact: true }).first().waitFor({
+      state: 'visible',
+      timeout: 5000,
+    });
+    await waitForPrimaryRecipe(page, '牛肉火锅');
+  } catch {
+    issues.push({
+      viewport: viewport.name,
+      tab: tab.label,
+      component: 'MissionRecipePriority',
+      message: '默认开启任务料理置顶时，任务目标未成为带标识的主计划。',
+    });
+  }
+}
+
+async function auditMissionRecipePriorityToggle(page, viewport, tab, recommendationTab) {
+  const storageKey = `${STORAGE_PREFIX}-mission-recipe-priority`;
+  const field = page.locator('label.steward-switch-field').filter({ hasText: '任务料理置顶' }).first();
+  const input = field.locator('input[type="checkbox"]').first();
+  if (!(await field.count()) || !(await input.count())) {
+    issues.push({
+      viewport: viewport.name,
+      tab: tab.label,
+      component: 'MissionRecipePriority',
+      message: '推荐设置中未找到“任务料理置顶”开关。',
+    });
+    return;
+  }
+  if (!(await input.isChecked())) {
+    issues.push({
+      viewport: viewport.name,
+      tab: tab.label,
+      component: 'MissionRecipePriority',
+      message: '“任务料理置顶”首次读取未保持默认开启。',
+    });
+    return;
+  }
+
+  await field.click();
+  await page.waitForFunction((key) => localStorage.getItem(key) === '0', storageKey);
+  await activateTab(page, { value: 'service', label: '经营中' });
+  await page.getByText('推荐料理', { exact: true }).first().waitFor({ state: 'visible' });
+  await page.waitForTimeout(600);
+  if (await page.getByText('任务目标', { exact: true }).count()) {
+    issues.push({
+      viewport: viewport.name,
+      tab: tab.label,
+      component: 'MissionRecipePriority',
+      message: '关闭任务料理置顶后，主计划仍显示“任务目标”标识。',
+    });
+  }
+  try {
+    await waitForPrimaryRecipe(page, '蜂蜜蛋糕');
+  } catch {
+    issues.push({
+      viewport: viewport.name,
+      tab: tab.label,
+      component: 'MissionRecipePriority',
+      message: '关闭任务料理置顶后，主计划未恢复原有自定义置顶排序。',
+    });
+  }
+
+  await activateTab(page, { value: 'settings', label: '设置' });
+  await recommendationTab.click();
+  const restoredField = page.locator('label.steward-switch-field').filter({ hasText: '任务料理置顶' }).first();
+  await restoredField.click();
+  await page.waitForFunction((key) => localStorage.getItem(key) === '1', storageKey);
+  await activateTab(page, { value: 'service', label: '经营中' });
+  try {
+    await page.getByText('任务目标', { exact: true }).first().waitFor({
+      state: 'visible',
+      timeout: 5000,
+    });
+    await waitForPrimaryRecipe(page, '牛肉火锅');
+  } catch {
+    issues.push({
+      viewport: viewport.name,
+      tab: tab.label,
+      component: 'MissionRecipePriority',
+      message: '重新开启任务料理置顶后，Worker 未恢复带标识的任务主计划。',
+    });
+  }
+}
+
+async function waitForPrimaryRecipe(page, expectedName) {
+  await page.waitForFunction((name) => {
+    const primaryRow = Array.from(document.querySelectorAll('.steward-data-row'))
+      .find((element) => element.textContent?.trim().startsWith('#1'));
+    return primaryRow?.textContent?.includes(name) === true;
+  }, expectedName, { timeout: 5000 });
 }
 
 async function auditMinimumSettingSegmentedControls(page, viewport, tab, section, expectedLabels) {

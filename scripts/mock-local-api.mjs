@@ -9,6 +9,8 @@ import http from 'node:http';
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 32145;
 const MOCK_TOKEN = 'mock-token';
+const MOCK_TRACKED_MISSIONS_SIGNATURE = 'a'.repeat(64);
+const MOCK_AVAILABLE_MISSIONS_SIGNATURE = 'b'.repeat(64);
 const MOCK_LAN_ENDPOINTS = [
   {
     address: '192.168.1.20',
@@ -59,7 +61,8 @@ const recipes = [
   recipe(201, 1201, '豆腐味噌', ['黄瓜', '蘑菇'], ['家常', '素', '清淡'], '煮锅', 26),
   recipe(202, 1202, '蜂蜜蛋糕', ['鸡蛋', '蜂蜜'], ['甜', '适合拍照', '招牌'], '料理台', 38),
   recipe(203, 1203, '烤鲑鱼', ['鲑鱼', '辣椒'], ['水产', '鲜', '清淡'], '烧烤架', 42),
-  recipe(204, 1204, '牛肉火锅', ['牛肉', '辣椒', '蘑菇'], ['肉', '灼热', '力量涌现', '昂贵'], '煮锅', 62),
+  // 五种基础材料不留加料槽；作为任务目标时，明确无法补出 Mock 订单的“甜”Tag，且命中米斯蒂娅的“肉”厌恶。
+  recipe(204, 1204, '牛肉火锅', ['牛肉', '辣椒', '蘑菇', '黄瓜', '鲑鱼'], ['肉', '灼热', '力量涌现', '昂贵'], '煮锅', 62),
   recipe(205, 1205, '蘑菇拼盘', ['蘑菇', '黄瓜'], ['菌类', '家常', '鲜'], '蒸锅', 31),
   recipe(206, 1206, '月光团子', ['月光草', '蜂蜜'], ['梦幻', '甜', '高级'], '料理台', 78),
   recipe(207, 1207, '香辣烤肉', ['牛肉', '辣椒'], ['肉', '灼热', '力量涌现'], '烧烤架', 55),
@@ -568,6 +571,16 @@ const server = http.createServer((request, response) => {
       return;
     }
 
+    if (path === '/missions/tracked') {
+      sendJson(response, 200, buildTrackedMissionsResponse(requestUrl.searchParams));
+      return;
+    }
+
+    if (path === '/missions/available') {
+      sendJson(response, 200, buildAvailableMissionsResponse(requestUrl.searchParams));
+      return;
+    }
+
     if (path === '/rare-guests/invitations') {
       sendJson(response, 200, buildInvitationResponse(path, requestUrl.searchParams));
       return;
@@ -609,6 +622,7 @@ function buildSnapshot() {
     runtimeLoaded: true,
     runtimeDaySceneGeneration: 1,
     runtimeDaySceneReady: true,
+    missionGeneration: 1,
     status: 'mock runtime snapshot',
     runtimeSource: 'mock-local-api',
     runtimeSceneReadinessStatus: 'ready',
@@ -641,6 +655,7 @@ function buildSnapshot() {
       ],
       orders: [
         {
+          traceId: 'R-MOCK-0001',
           deskCode: 1,
           guestId: 1001,
           runtimeGuestId: 1001,
@@ -655,6 +670,16 @@ function buildSnapshot() {
           isFreeOrder: false,
           hasServedFood: false,
           hasServedBeverage: true,
+          missionRecipePriority: {
+            traceId: 'R-MOCK-0001',
+            deskCode: 1,
+            guestId: 1001,
+            runtimeGuestId: 1001,
+            foodId: 204,
+            recipeId: 1204,
+            missionGeneration: 1,
+            businessGeneration: 1,
+          },
         },
         {
           deskCode: 3,
@@ -799,6 +824,102 @@ function buildRuntimeDataSignature() {
     rareCustomers.length,
     6,
   ].join('|');
+}
+
+function buildTrackedMissionsResponse(params) {
+  if (params.get('knownSignature') === MOCK_TRACKED_MISSIONS_SIGNATURE) {
+    return {
+      unchanged: true,
+      contentSignature: MOCK_TRACKED_MISSIONS_SIGNATURE,
+    };
+  }
+
+  return {
+    ok: true,
+    runtimeAvailable: true,
+    generation: 1,
+    status: 'ready',
+    contentSignature: MOCK_TRACKED_MISSIONS_SIGNATURE,
+    unverifiedCount: 1,
+    trackingCount: 1,
+    fulfilledCount: 1,
+    missions: [
+      {
+        label: 'CORE_MOCK_FULFILLED',
+        title: '琪露诺的招待练习',
+        receiverLabel: 'Cirno',
+        characterName: '琪露诺',
+        sceneNames: ['雾之湖'],
+        presentationStatus: 'ready',
+        status: 'fulfilled',
+        conditionCount: 2,
+        completedConditionCount: 2,
+        conditionStates: [true, true],
+      },
+      {
+        label: 'CORE_MOCK_TRACKING',
+        title: '阿求的料理委托',
+        receiverLabel: 'Akyuu',
+        characterName: '稗田阿求',
+        sceneNames: ['人间之里', '博丽神社'],
+        presentationStatus: 'ready',
+        status: 'tracking',
+        conditionCount: 3,
+        completedConditionCount: 1,
+        conditionStates: [true, false, false],
+      },
+      {
+        label: 'CORE_MOCK_UNVERIFIED',
+        title: '待确认的夜间任务',
+        receiverLabel: '',
+        characterName: '',
+        sceneNames: [],
+        presentationStatus: 'no-receiver',
+        status: 'unverified',
+        conditionCount: 2,
+        completedConditionCount: null,
+        conditionStates: [null, null],
+      },
+    ],
+  };
+}
+
+function buildAvailableMissionsResponse(params) {
+  if (params.get('knownSignature') === MOCK_AVAILABLE_MISSIONS_SIGNATURE) {
+    return {
+      unchanged: true,
+      contentSignature: MOCK_AVAILABLE_MISSIONS_SIGNATURE,
+    };
+  }
+
+  return {
+    ok: true,
+    runtimeAvailable: true,
+    status: 'ready',
+    missionGeneration: 1,
+    daySceneGeneration: 1,
+    contentSignature: MOCK_AVAILABLE_MISSIONS_SIGNATURE,
+    availableCount: 2,
+    missions: [
+      {
+        label: 'Kizuna_Meirin_LV2_Upgrade_Mission',
+        title: '请美铃小姐品尝一下「白果萝卜排骨汤」吧！',
+        receiverLabel: 'Meirin',
+        characterName: '红美铃',
+        sceneNames: ['红魔馆'],
+        presentationStatus: 'ready',
+      },
+      {
+        label: 'CORE_MOCK_TRACKING',
+        title: '这条可接取记录应由已追踪任务覆盖',
+        receiverLabel: 'Akyuu',
+        characterName: '稗田阿求',
+        sceneNames: ['人间之里', '博丽神社'],
+        presentationStatus: 'ready',
+      },
+    ],
+    error: null,
+  };
 }
 
 function buildInvitationResponse(path, params) {

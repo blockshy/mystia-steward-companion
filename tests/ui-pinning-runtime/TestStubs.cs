@@ -157,6 +157,8 @@ namespace MystiaStewardCompanion.Save
 
     internal sealed class CookingSelectionPanelProbe
     {
+        private static long _nextPointer = 1000;
+
         public static UnityEngine.Color RecipeBoundColor { get; set; } = new(0.8f, 0.8f, 0.8f, 0.5f);
 
         public static bool ApplyIngredientBoundColor { get; set; }
@@ -169,15 +171,36 @@ namespace MystiaStewardCompanion.Save
 
         public static bool? LastResult { get; private set; }
 
+        public static bool ThrowOnRefresh { get; set; }
+
+        public static int RefreshCount { get; private set; }
+
+        public static List<int> RefreshThreadIds { get; } = new();
+
+        public nint m_CachedPtr { get; private set; } = new IntPtr(Interlocked.Increment(ref _nextPointer));
+
+        public static void ResetRefreshProbe()
+        {
+            ThrowOnRefresh = false;
+            RefreshCount = 0;
+            RefreshThreadIds.Clear();
+            RefreshAction = null;
+            LastResult = null;
+        }
+
         [MethodImpl(MethodImplOptions.NoInlining)]
         public void UpdateAllVisual()
         {
+            RefreshCount++;
+            RefreshThreadIds.Add(Environment.CurrentManagedThreadId);
+            if (ThrowOnRefresh) throw new InvalidOperationException("cooking refresh failed");
             LastResult = RefreshAction?.Invoke();
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
         public void OnPanelOpen()
         {
+            UpdateAllVisual();
             OpenAction?.Invoke();
         }
 
@@ -201,11 +224,14 @@ namespace MystiaStewardCompanion.Save
         [MethodImpl(MethodImplOptions.NoInlining)]
         public void OnPanelDestroyed()
         {
+            m_CachedPtr = 0;
         }
     }
 
     internal sealed class StoragePanelProbe
     {
+        private static long _nextPointer = 2000;
+
         public static UnityEngine.Color BoundColor { get; set; } = new(0.35f, 0.55f, 0.75f, 0.6f);
 
         public static Func<bool>? RefreshAction { get; set; }
@@ -214,15 +240,36 @@ namespace MystiaStewardCompanion.Save
 
         public static bool? LastResult { get; private set; }
 
+        public static bool ThrowOnRefresh { get; set; }
+
+        public static int RefreshCount { get; private set; }
+
+        public static List<int> RefreshThreadIds { get; } = new();
+
+        public nint m_CachedPtr { get; private set; } = new IntPtr(Interlocked.Increment(ref _nextPointer));
+
+        public static void ResetRefreshProbe()
+        {
+            ThrowOnRefresh = false;
+            RefreshCount = 0;
+            RefreshThreadIds.Clear();
+            RefreshAction = null;
+            LastResult = null;
+        }
+
         [MethodImpl(MethodImplOptions.NoInlining)]
         public void UpdateBevField()
         {
+            RefreshCount++;
+            RefreshThreadIds.Add(Environment.CurrentManagedThreadId);
+            if (ThrowOnRefresh) throw new InvalidOperationException("storage refresh failed");
             LastResult = RefreshAction?.Invoke();
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
         public void OnPanelOpen()
         {
+            UpdateBevField();
             OpenAction?.Invoke();
         }
 
@@ -240,6 +287,7 @@ namespace MystiaStewardCompanion.Save
         [MethodImpl(MethodImplOptions.NoInlining)]
         public void OnPanelDestroyed()
         {
+            m_CachedPtr = 0;
         }
     }
 

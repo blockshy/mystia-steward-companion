@@ -102,6 +102,17 @@ static void AssertBepInEx783CollectionMetadata()
     AssertEqual(typeof(int), RequireProperty(keyValuePairType, "Key").PropertyType, "KeyValuePair Key type changed.");
     AssertEqual(typeof(string), RequireProperty(keyValuePairType, "Value").PropertyType, "KeyValuePair Value type changed.");
 
+    var listType = typeof(Il2CppSystem.Collections.Generic.List<bool>);
+    AssertEqual(
+        "Il2CppSystem.Collections.Generic.List`1",
+        listType.GetGenericTypeDefinition().FullName,
+        "BepInEx 783 list wrapper changed.");
+    AssertEqual(typeof(int), RequireProperty(listType, "Count").PropertyType, "List Count is not Int32.");
+    AssertEqual(
+        typeof(bool),
+        RequireMethod(listType, "get_Item", new[] { typeof(int) }).ReturnType,
+        "List indexer no longer returns its exact element type.");
+
     AssertArrayMetadata(
         typeof(Il2CppReferenceArray<Il2CppSystem.Object>),
         "Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppReferenceArray`1",
@@ -110,6 +121,10 @@ static void AssertBepInEx783CollectionMetadata()
         typeof(Il2CppStructArray<int>),
         "Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStructArray`1",
         typeof(int));
+    AssertArrayMetadata(
+        typeof(Il2CppStringArray),
+        "Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStringArray",
+        typeof(string));
 }
 
 static void AssertRuntimeCoreMappingProjection()
@@ -319,6 +334,49 @@ static void AssertConcreteCollectionReader()
     AssertEqual(1, entries.Count, "A concrete dictionary returned the wrong entry count.");
     AssertEqual(7, entries[0].Key, "A concrete dictionary changed its key.");
     AssertEqual("seven", entries[0].Value, "A concrete dictionary changed its value.");
+    AssertTrue(
+        RuntimeConcreteCollectionReader.TryReadDictionaryCount(
+            dictionary,
+            out var dictionaryCount,
+            out var dictionaryCountFailure),
+        "A concrete dictionary count was rejected.");
+    AssertEqual(RuntimeCollectionReadFailure.None, dictionaryCountFailure, "A concrete dictionary count reported a failure.");
+    AssertEqual(1, dictionaryCount, "A concrete dictionary count changed.");
+    AssertTrue(
+        RuntimeConcreteCollectionReader.TryContainsDictionaryKey(
+            dictionary,
+            7,
+            out var containsSeven,
+            out var containsSevenFailure),
+        "A concrete dictionary ContainsKey read was rejected.");
+    AssertTrue(containsSeven, "A present dictionary key was reported missing.");
+    AssertEqual(
+        RuntimeCollectionReadFailure.None,
+        containsSevenFailure,
+        "A concrete dictionary ContainsKey read reported a failure.");
+    AssertTrue(
+        RuntimeConcreteCollectionReader.TryContainsDictionaryKey(
+            dictionary,
+            8,
+            out var containsEight,
+            out var containsEightFailure),
+        "A missing concrete dictionary key could not be checked.");
+    AssertFalse(containsEight, "A missing dictionary key was reported present.");
+    AssertEqual(
+        RuntimeCollectionReadFailure.None,
+        containsEightFailure,
+        "A missing dictionary key check reported a failure.");
+    AssertFalse(
+        RuntimeConcreteCollectionReader.TryContainsDictionaryKey(
+            dictionary,
+            "7",
+            out _,
+            out var wrongKeyFailure),
+        "A dictionary key with the wrong exact CLR type was accepted.");
+    AssertEqual(
+        RuntimeCollectionReadFailure.ElementTypeMismatch,
+        wrongKeyFailure,
+        "A wrong dictionary key type reported the wrong failure.");
 
     AssertTrue(
         RuntimeConcreteCollectionReader.TryReadDictionary(
@@ -328,6 +386,49 @@ static void AssertConcreteCollectionReader()
         "An empty concrete dictionary was rejected.");
     AssertEqual(RuntimeCollectionReadFailure.None, emptyFailure, "An empty concrete dictionary reported a failure.");
     AssertEqual(0, emptyEntries.Count, "An empty concrete dictionary returned stale entries.");
+
+    var list = new List<bool> { true, false, true };
+    AssertTrue(
+        RuntimeConcreteCollectionReader.TryReadList(
+            list,
+            out var listValues,
+            out var listFailure),
+        "A concrete list was rejected.");
+    AssertEqual(RuntimeCollectionReadFailure.None, listFailure, "A concrete list reported a failure.");
+    AssertSequenceEqual(
+        new object?[] { true, false, true },
+        listValues,
+        "A concrete list changed its indexed values.");
+    AssertFalse(
+        RuntimeConcreteCollectionReader.TryReadList(
+            new LinkedList<bool>(),
+            out _,
+            out var linkedListFailure),
+        "A linked-list compatibility shape was accepted.");
+    AssertEqual(
+        RuntimeCollectionReadFailure.UnsupportedShape,
+        linkedListFailure,
+        "An unsupported list shape reported the wrong failure.");
+
+    var hashSet = new HashSet<FakeReference> { new("first"), new("second") };
+    AssertTrue(
+        RuntimeConcreteCollectionReader.TryReadHashSetCount(
+            hashSet,
+            out var hashSetCount,
+            out var hashSetFailure),
+        "A concrete HashSet count was rejected.");
+    AssertEqual(RuntimeCollectionReadFailure.None, hashSetFailure, "A concrete HashSet reported a failure.");
+    AssertEqual(2, hashSetCount, "A concrete HashSet count changed.");
+    AssertFalse(
+        RuntimeConcreteCollectionReader.TryReadHashSetCount(
+            new SortedSet<int>(),
+            out _,
+            out var sortedSetFailure),
+        "A sorted-set compatibility shape was accepted.");
+    AssertEqual(
+        RuntimeCollectionReadFailure.UnsupportedShape,
+        sortedSetFailure,
+        "An unsupported set shape reported the wrong failure.");
 
     AssertTrue(
         RuntimeConcreteCollectionReader.TryReadIntArray(
@@ -358,6 +459,29 @@ static void AssertConcreteCollectionReader()
         RuntimeCollectionReadFailure.Missing,
         nullIntegerFailure,
         "A missing Int32 array reported the wrong failure.");
+
+    AssertFalse(
+        RuntimeConcreteCollectionReader.TryReadStringArray(
+            new[] { "first", "second" },
+            out var managedStrings,
+            out var managedStringFailure),
+        "A managed String array was accepted as an Il2CppStringArray compatibility shape.");
+    AssertEqual(0, managedStrings.Count, "A rejected managed String array returned stale values.");
+    AssertEqual(
+        RuntimeCollectionReadFailure.UnsupportedShape,
+        managedStringFailure,
+        "A managed String array reported the wrong Il2CppStringArray failure.");
+    AssertFalse(
+        RuntimeConcreteCollectionReader.TryReadStringArray(
+            null,
+            out var missingStrings,
+            out var missingStringFailure),
+        "A missing Il2CppStringArray was accepted.");
+    AssertEqual(0, missingStrings.Count, "A missing Il2CppStringArray returned stale values.");
+    AssertEqual(
+        RuntimeCollectionReadFailure.Missing,
+        missingStringFailure,
+        "A missing Il2CppStringArray reported the wrong failure.");
 
     var first = new FakeReference("first");
     var second = new FakeReference("second");
