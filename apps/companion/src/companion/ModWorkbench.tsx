@@ -16,6 +16,7 @@ import { useCustomRecipes } from '@/companion/hooks/useCustomRecipes';
 import { useFavorites } from '@/companion/hooks/useFavorites';
 import { useGameUiPinningPublisher } from '@/companion/hooks/useGameUiPinningPublisher';
 import { useOrderAutomationIntervals } from '@/companion/hooks/useOrderAutomationIntervals';
+import { getNightBusinessAutomationPauseMessage } from '@/companion/domain/automation-runtime';
 import {
   canAdvanceAutomationRuntimeEventSequence,
   getAutomationStageFailureRetirement,
@@ -1667,6 +1668,7 @@ export function ModWorkbench() {
   const automationBarrierAckRef = useRef<AutomationBarrierAckEntry | null>(null);
   const previousAutomationRuntimeEnabledRef = useRef(false);
   const automationRuntimeEnabledRef = useRef(false);
+  const previousAutomationRuntimePauseMessageRef = useRef('');
   const automationRefreshTimerRef = useRef<number | null>(null);
   const automationUiVisible = !serviceFocusMode && tab === 'service';
   const automationUiVisibleRef = useRef(automationUiVisible);
@@ -1863,11 +1865,17 @@ export function ModWorkbench() {
     automationLeaseRevalidationRequiredRef.current,
   );
   automationLeaseOwnedRef.current = automationLeaseOwned;
+  const nightBusinessAutomationAllowed = snapshot?.nightBusinessAutomationAllowed === true;
+  const nightBusinessAutomationBlockReason = snapshot?.nightBusinessAutomationBlockReason ?? '';
+  const automationRuntimePauseMessage = getNightBusinessAutomationPauseMessage(
+    nightBusinessAutomationBlockReason,
+  );
   const automationRuntimeEnabled = companionPreferences.automationEnabled
     && connectionReadyForActions
     && Boolean(automationSessionId)
     && automationLeaseOwned
-    && !automationCancellationPending;
+    && !automationCancellationPending
+    && nightBusinessAutomationAllowed;
   if (previousAutomationRuntimeEnabledRef.current && !automationRuntimeEnabled) {
     automationRequestEpochRef.current += 1;
   }
@@ -2060,6 +2068,36 @@ export function ModWorkbench() {
     companionPreferences.automationEnabled,
     connectionReadyForActions,
     publishAutoPrepMessage,
+    publishNormalOrderMessage,
+  ]);
+
+  useEffect(() => {
+    const previousPauseMessage = previousAutomationRuntimePauseMessageRef.current;
+    previousAutomationRuntimePauseMessageRef.current = companionPreferences.automationEnabled
+      ? automationRuntimePauseMessage
+      : '';
+
+    if (companionPreferences.automationEnabled && automationRuntimePauseMessage) {
+      publishAutoPrepBusy(false);
+      publishNormalOrderBusy(false);
+      publishAutoPrepMessage(`自动化\n${automationRuntimePauseMessage}`);
+      publishNormalOrderMessage(`普客自动化\n${automationRuntimePauseMessage}`);
+      return;
+    }
+
+    if (!previousPauseMessage) return;
+    if (autoPrepMessageValueRef.current === `自动化\n${previousPauseMessage}`) {
+      publishAutoPrepMessage('');
+    }
+    if (normalOrderMessageValueRef.current === `普客自动化\n${previousPauseMessage}`) {
+      publishNormalOrderMessage('');
+    }
+  }, [
+    automationRuntimePauseMessage,
+    companionPreferences.automationEnabled,
+    publishAutoPrepBusy,
+    publishAutoPrepMessage,
+    publishNormalOrderBusy,
     publishNormalOrderMessage,
   ]);
 
@@ -5039,6 +5077,9 @@ export function ModWorkbench() {
               normalOrderMessage={normalOrderMessage}
               normalOrderPausedCount={normalOrderPausedCount}
               normalOrderDiagnostics={normalOrderDiagnostics}
+              automationRuntimeAllowed={nightBusinessAutomationAllowed}
+              automationRuntimeBlockReason={nightBusinessAutomationBlockReason}
+              automationRuntimeStatus={snapshot?.runtimeNightBusinessAutomationStatus ?? ''}
               automationSafetyBarriers={automationSafetyBarriers}
               automationBarrierAckBusyKey={automationBarrierAckBusyKey}
               normalExecutionTargets={normalAutomationTargets.normalExecutionTargets}

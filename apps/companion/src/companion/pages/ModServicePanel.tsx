@@ -21,6 +21,10 @@ import {
   TabsTrigger,
 } from '@/components/ui-kit';
 import { buildAutomationResourceOverview, buildNightBusinessOrderKey } from '@/companion/domain/automation';
+import {
+  getNightBusinessAutomationPauseLabel,
+  getNightBusinessAutomationSummary,
+} from '@/companion/domain/automation-runtime';
 import type { NormalOrderDetailPlan } from '@/companion/domain/normal-order-details';
 import { sortNightOrderRows, sortNightOrders } from '@/companion/domain/sorting';
 import { formatDesk, formatGuestFund, formatPerformanceMs } from '@/companion/formatters';
@@ -194,6 +198,9 @@ export function ModServicePanel({
   normalOrderMessage,
   normalOrderPausedCount,
   normalOrderDiagnostics,
+  automationRuntimeAllowed,
+  automationRuntimeBlockReason,
+  automationRuntimeStatus,
   automationSafetyBarriers,
   automationBarrierAckBusyKey,
   normalExecutionTargets,
@@ -255,6 +262,9 @@ export function ModServicePanel({
   normalOrderMessage: string;
   normalOrderPausedCount: number;
   normalOrderDiagnostics: NormalAutoOrderDiagnostic[];
+  automationRuntimeAllowed: boolean;
+  automationRuntimeBlockReason: string;
+  automationRuntimeStatus: string;
   automationSafetyBarriers: AutomationSafetyBarrierDiagnostic[];
   automationBarrierAckBusyKey: string;
   normalExecutionTargets: NormalExecutionTargetSelection[];
@@ -328,11 +338,13 @@ export function ModServicePanel({
     : 'recommendations';
   const serviceViewOptions = showDebugDetails ? SERVICE_PANEL_VIEW_OPTIONS : SERVICE_PANEL_DEFAULT_VIEW_OPTIONS;
   const automationTrackedCount = rareOrderDiagnostics.length + normalOrderDiagnostics.length;
-  const automationStatus = !autoPrepPreferences.automationEnabled
-    ? '未开启'
-    : automationTrackedCount > 0
-    ? `已开启 · 跟踪 ${automationTrackedCount} 笔`
-    : '已开启';
+  const automationStatus = getNightBusinessAutomationSummary({
+    configured: autoPrepPreferences.automationEnabled,
+    allowed: automationRuntimeAllowed,
+    blockReason: automationRuntimeBlockReason,
+    trackedCount: automationTrackedCount,
+  });
+  const automationRuntimePauseLabel = getNightBusinessAutomationPauseLabel(automationRuntimeBlockReason);
   return (
     <div className="space-y-4">
       <Card>
@@ -358,7 +370,7 @@ export function ModServicePanel({
         />
         {activeServiceView === 'recommendations' && autoPrepPreferences.automationEnabled && (
           <Badge variant="secondary">
-            自动化{automationTrackedCount > 0 ? `跟踪 ${automationTrackedCount} 笔` : '已开启'}
+            自动化{automationStatus}
           </Badge>
         )}
       </div>
@@ -554,6 +566,7 @@ export function ModServicePanel({
                     busy={autoPrepBusy}
                     message={autoPrepMessage}
                     paused={autoPrepPaused}
+                    runtimePauseLabel={automationRuntimePauseLabel}
                     diagnostics={rareOrderDiagnostics}
                     automationBarrierAckBusyKey={automationBarrierAckBusyKey}
                     showDebugDetails={showDebugDetails}
@@ -569,6 +582,7 @@ export function ModServicePanel({
                     busy={normalOrderBusy}
                     message={normalOrderMessage}
                     pausedCount={normalOrderPausedCount}
+                    runtimePauseLabel={automationRuntimePauseLabel}
                     diagnostics={normalOrderDiagnostics}
                     automationBarrierAckBusyKey={automationBarrierAckBusyKey}
                     showDebugDetails={showDebugDetails}
@@ -605,6 +619,7 @@ export function ModServicePanel({
               <InfoLine label="性能耗时" value={formatPerformanceMs(performanceMs)} mono />
               <InfoLine label="前端推荐耗时" value={formatPerformanceMs(orderRecommendationPerformanceMs)} mono />
               <InfoLine label="界面置顶" value={uiPinningStatus || '暂无'} />
+              <InfoLine label="自动化门禁" value={automationRuntimeStatus || '暂无'} mono />
               <InfoLine label="普客来源" value={normalBusiness?.source || normalBusiness?.error || '暂无'} />
             </div>
           </ListPanel>
@@ -955,6 +970,7 @@ function RareServiceAutomationPanel({
   busy,
   message,
   paused,
+  runtimePauseLabel,
   diagnostics,
   automationBarrierAckBusyKey,
   showDebugDetails,
@@ -966,6 +982,7 @@ function RareServiceAutomationPanel({
   busy: boolean;
   message: string;
   paused: boolean;
+  runtimePauseLabel: string;
   diagnostics: RareAutoOrderDiagnostic[];
   automationBarrierAckBusyKey: string;
   showDebugDetails: boolean;
@@ -1015,6 +1032,7 @@ function RareServiceAutomationPanel({
       <RareAutoPrepStatus
         busy={busy}
         paused={paused}
+        runtimePauseLabel={runtimePauseLabel}
         message={message}
         preferences={preferences}
         diagnostics={diagnostics}
@@ -1032,6 +1050,7 @@ function NormalServiceAutomationPanel({
   busy,
   message,
   pausedCount,
+  runtimePauseLabel,
   diagnostics,
   automationBarrierAckBusyKey,
   showDebugDetails,
@@ -1043,6 +1062,7 @@ function NormalServiceAutomationPanel({
   busy: boolean;
   message: string;
   pausedCount: number;
+  runtimePauseLabel: string;
   diagnostics: NormalAutoOrderDiagnostic[];
   automationBarrierAckBusyKey: string;
   showDebugDetails: boolean;
@@ -1091,6 +1111,7 @@ function NormalServiceAutomationPanel({
       <NormalAutoPrepStatus
         busy={busy}
         pausedCount={pausedCount}
+        runtimePauseLabel={runtimePauseLabel}
         message={message}
         preferences={preferences}
         diagnostics={diagnostics}
@@ -1106,6 +1127,7 @@ function NormalServiceAutomationPanel({
 function RareAutoPrepStatus({
   busy,
   paused,
+  runtimePauseLabel,
   message,
   preferences,
   diagnostics,
@@ -1116,6 +1138,7 @@ function RareAutoPrepStatus({
 }: {
   busy: boolean;
   paused: boolean;
+  runtimePauseLabel: string;
   message: string;
   preferences: CompanionPreferences;
   diagnostics: RareAutoOrderDiagnostic[];
@@ -1180,7 +1203,7 @@ function RareAutoPrepStatus({
               <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
                 <OrderTraceBadge traceId={diagnostic.traceId} />
                 <Badge variant={diagnostic.paused ? 'destructive' : 'secondary'}>
-                  {diagnostic.paused ? '暂停' : '运行'}
+                  {diagnostic.paused ? '订单暂停' : '订单可执行'}
                 </Badge>
                 {diagnostic.manualResolutionRequired && (
                   <Badge variant="destructive">需人工确认</Badge>
@@ -1214,7 +1237,8 @@ function RareAutoPrepStatus({
         {message || '等待稀客订单或自动化条件。'}
       </div>
       <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
-        <Badge variant={paused ? 'destructive' : 'secondary'}>{paused ? '已暂停' : '运行中'}</Badge>
+        {runtimePauseLabel && <Badge variant="destructive">{runtimePauseLabel}</Badge>}
+        <Badge variant={paused ? 'destructive' : 'secondary'}>{paused ? '订单存在暂停' : '订单无暂停'}</Badge>
         <Badge variant="outline">每轮最多 {preferences.autoRareConcurrency}</Badge>
         <Badge variant={preferences.autoPrepCompleteOrder ? 'secondary' : 'outline'}>完成 {preferences.autoPrepCompleteOrder ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepTakeBeverage ? 'secondary' : 'outline'}>送酒 {preferences.autoPrepTakeBeverage ? '开' : '关'}</Badge>
@@ -1231,6 +1255,7 @@ function RareAutoPrepStatus({
 function NormalAutoPrepStatus({
   busy,
   pausedCount,
+  runtimePauseLabel,
   message,
   preferences,
   diagnostics,
@@ -1241,6 +1266,7 @@ function NormalAutoPrepStatus({
 }: {
   busy: boolean;
   pausedCount: number;
+  runtimePauseLabel: string;
   message: string;
   preferences: CompanionPreferences;
   diagnostics: NormalAutoOrderDiagnostic[];
@@ -1269,7 +1295,7 @@ function NormalAutoPrepStatus({
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5" data-gamepad-axis="x">
                   <Badge variant={diagnostic.paused ? 'destructive' : 'secondary'}>
-                    {diagnostic.paused ? '暂停' : '运行'}
+                    {diagnostic.paused ? '订单暂停' : '订单可执行'}
                   </Badge>
                   <Button
                     size="sm"
@@ -1350,6 +1376,7 @@ function NormalAutoPrepStatus({
         {message || '等待普客订单或自动化条件。'}
       </div>
       <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
+        {runtimePauseLabel && <Badge variant="destructive">{runtimePauseLabel}</Badge>}
         <Badge variant={pausedCount > 0 ? 'destructive' : 'secondary'}>暂停订单 {pausedCount}</Badge>
         <Badge variant="outline">每轮最多 {preferences.autoNormalConcurrency}</Badge>
         <Badge variant={preferences.autoNormalOrderEnabled ? 'secondary' : 'outline'}>启用 {preferences.autoNormalOrderEnabled ? '开' : '关'}</Badge>

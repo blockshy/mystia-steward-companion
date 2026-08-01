@@ -82,7 +82,9 @@ internal static partial class RuntimeOrderPreparationService
         public const string OrderEvaluationStateUnreadable = "order-evaluation-state-unreadable";
         public const string OrderEvaluationCommitUncertain = "order-evaluation-commit-uncertain";
         public const string CookingCancelled = "cooking-cancelled";
-        public const string NightBusinessLifecycleUnavailable = "night-business-lifecycle-unavailable";
+        public const string NightBusinessLifecycleUnavailable = RuntimeNightBusinessAutomationGate.LifecycleUnavailableReason;
+        public const string NightBusinessTutorialActive = RuntimeNightBusinessAutomationGate.TutorialActiveReason;
+        public const string NightBusinessTutorialStateUnavailable = RuntimeNightBusinessAutomationGate.TutorialStateUnavailableReason;
         public const string FoodDelivered = "food-delivered";
     }
 
@@ -178,8 +180,9 @@ internal static partial class RuntimeOrderPreparationService
     /// </remarks>
     public static OrderPreparationResult Prepare(OrderPreparationRequest request)
     {
-        if (!RuntimeNightBusinessLifecycle.IsActive) return BuildLifecycleUnavailableResult(request, "rare");
-        var sessionGeneration = RuntimeNightBusinessLifecycle.Generation;
+        var automationGate = RuntimeNightBusinessAutomationGate.Refresh();
+        if (!automationGate.Allowed) return BuildAutomationGateUnavailableResult(request, "rare", automationGate);
+        var sessionGeneration = automationGate.Generation;
 
         var traceId = ResolveRequestTraceId(OrderTraceKind.Rare, request);
         AppendWackyRequestDiagnostic("rare-prepare-start", request, traceId, "rare");
@@ -372,7 +375,7 @@ internal static partial class RuntimeOrderPreparationService
             AddSkipped(result, "自动送达酒水", "设置已关闭。");
         }
 
-        if (!EnsureLifecycleSessionActive(result, sessionGeneration, "送达酒水后")) return Finish(result);
+        if (!EnsureAutomationSessionActive(result, sessionGeneration, "送达酒水后")) return Finish(result);
 
         if (request.AutoStartCooking)
         {
@@ -501,7 +504,7 @@ internal static partial class RuntimeOrderPreparationService
             AddSkipped(result, "自动开始料理", "设置已关闭。");
         }
 
-        if (!EnsureLifecycleSessionActive(result, sessionGeneration, "开始料理后")) return Finish(result);
+        if (!EnsureAutomationSessionActive(result, sessionGeneration, "开始料理后")) return Finish(result);
 
         var rareCookingTarget = actionTarget ?? BuildRareAutomationTarget(request);
         if (WillAutomaticallyDeliverCookingTarget(
@@ -534,8 +537,9 @@ internal static partial class RuntimeOrderPreparationService
     /// </remarks>
     public static OrderPreparationResult CompleteFirst(OrderPreparationRequest request)
     {
-        if (!RuntimeNightBusinessLifecycle.IsActive) return BuildLifecycleUnavailableResult(request, "rare");
-        var sessionGeneration = RuntimeNightBusinessLifecycle.Generation;
+        var automationGate = RuntimeNightBusinessAutomationGate.Refresh();
+        if (!automationGate.Allowed) return BuildAutomationGateUnavailableResult(request, "rare", automationGate);
+        var sessionGeneration = automationGate.Generation;
 
         var traceId = ResolveRequestTraceId(OrderTraceKind.Rare, request);
         AppendYuyukoRequestDiagnostic("rare-complete-start", request, traceId, "rare");
@@ -742,7 +746,7 @@ internal static partial class RuntimeOrderPreparationService
             if (IsYuumaBossRequest(request)) return Finish(result);
         }
 
-        if (!EnsureLifecycleSessionActive(result, sessionGeneration, "送达酒水后")) return Finish(result);
+        if (!EnsureAutomationSessionActive(result, sessionGeneration, "送达酒水后")) return Finish(result);
 
         result.ServedFood = ReadOrderServedFood(runtimeOrder.Order) != null;
         result.ServedBeverage = ReadOrderServedBeverage(runtimeOrder.Order) != null;
@@ -752,7 +756,7 @@ internal static partial class RuntimeOrderPreparationService
             return Finish(result);
         }
 
-        if (!EnsureLifecycleSessionActive(result, sessionGeneration, "恢复耐心后")) return Finish(result);
+        if (!EnsureAutomationSessionActive(result, sessionGeneration, "恢复耐心后")) return Finish(result);
 
         result.Automation.Stage = "order";
         var evaluationTarget = BuildRareAutomationTarget(request);
@@ -763,7 +767,7 @@ internal static partial class RuntimeOrderPreparationService
                 return Finish(result);
             }
 
-            EnsureLifecycleSessionActive(result, sessionGeneration, "触发评价后");
+            EnsureAutomationSessionActive(result, sessionGeneration, "触发评价后");
             return Finish(result);
         }
 
@@ -779,7 +783,7 @@ internal static partial class RuntimeOrderPreparationService
                 return Finish(result);
             }
 
-            EnsureLifecycleSessionActive(result, sessionGeneration, "触发评价后");
+            EnsureAutomationSessionActive(result, sessionGeneration, "触发评价后");
             return Finish(result);
         }
 
@@ -798,7 +802,7 @@ internal static partial class RuntimeOrderPreparationService
             return Finish(result);
         }
 
-        EnsureLifecycleSessionActive(result, sessionGeneration, "触发评价后");
+        EnsureAutomationSessionActive(result, sessionGeneration, "触发评价后");
         return Finish(result);
     }
 
@@ -813,8 +817,9 @@ internal static partial class RuntimeOrderPreparationService
     /// </remarks>
     public static OrderPreparationResult CompleteNormalFirst(OrderPreparationRequest request)
     {
-        if (!RuntimeNightBusinessLifecycle.IsActive) return BuildLifecycleUnavailableResult(request, "normal");
-        var sessionGeneration = RuntimeNightBusinessLifecycle.Generation;
+        var automationGate = RuntimeNightBusinessAutomationGate.Refresh();
+        if (!automationGate.Allowed) return BuildAutomationGateUnavailableResult(request, "normal", automationGate);
+        var sessionGeneration = automationGate.Generation;
 
         var traceId = ResolveRequestTraceId(OrderTraceKind.Normal, request);
         AppendWackyRequestDiagnostic("normal-complete-start", request, traceId, "normal");
@@ -1113,7 +1118,7 @@ internal static partial class RuntimeOrderPreparationService
             AddSkipped(result, "普客送达酒水", "设置已关闭。");
         }
 
-        if (!EnsureLifecycleSessionActive(result, sessionGeneration, "普客送达酒水后")) return Finish(result);
+        if (!EnsureAutomationSessionActive(result, sessionGeneration, "普客送达酒水后")) return Finish(result);
 
         if (foodDeliveryStarted)
         {
@@ -1343,7 +1348,7 @@ internal static partial class RuntimeOrderPreparationService
             }
         }
 
-        if (!EnsureLifecycleSessionActive(result, sessionGeneration, "普客料理处理后")) return Finish(result);
+        if (!EnsureAutomationSessionActive(result, sessionGeneration, "普客料理处理后")) return Finish(result);
 
         result.ServedFood = ReadOrderServedFood(runtimeOrder.Order) != null;
         result.ServedBeverage = ReadOrderServedBeverage(runtimeOrder.Order) != null;
@@ -1352,7 +1357,7 @@ internal static partial class RuntimeOrderPreparationService
             return Finish(result);
         }
 
-        if (!EnsureLifecycleSessionActive(result, sessionGeneration, "普客恢复耐心后")) return Finish(result);
+        if (!EnsureAutomationSessionActive(result, sessionGeneration, "普客恢复耐心后")) return Finish(result);
 
         if (autoCompleteOrder)
         {
@@ -1398,7 +1403,7 @@ internal static partial class RuntimeOrderPreparationService
             AddSkipped(result, "触发普客评价", "设置已关闭。");
         }
 
-        EnsureLifecycleSessionActive(result, sessionGeneration, "普客触发评价后");
+        EnsureAutomationSessionActive(result, sessionGeneration, "普客触发评价后");
         return Finish(result);
     }
 
@@ -1412,18 +1417,27 @@ internal static partial class RuntimeOrderPreparationService
     /// </remarks>
     public static AutomationCookingProcessResult ProcessAutomationCookingJobs(bool timeoutEligible = true)
     {
-        if (!RuntimeNightBusinessLifecycle.IsActive)
+        var automationGate = RuntimeNightBusinessAutomationGate.Refresh();
+        if (!automationGate.Allowed)
         {
-            return new AutomationCookingProcessResult(Array.Empty<string>(), false);
+            return HandleBlockedAutomationCookingJobs(automationGate);
         }
 
-        var sessionGeneration = RuntimeNightBusinessLifecycle.Generation;
+        var sessionGeneration = automationGate.Generation;
         var messages = new List<string>();
         var changed = false;
+        RuntimeNightBusinessAutomationGateSnapshot? interruptedGate = null;
         lock (AutomationCookingJobLock)
         {
             for (var i = AutomationCookingJobs.Count - 1; i >= 0; i--)
             {
+                var currentGate = RuntimeNightBusinessAutomationGate.Refresh();
+                if (!currentGate.Allowed || currentGate.Generation != sessionGeneration)
+                {
+                    interruptedGate = currentGate;
+                    break;
+                }
+
                 var job = AutomationCookingJobs[i];
                 var previousState = job.Tracker.State;
                 var previousOutcome = job.Tracker.Outcome;
@@ -1449,11 +1463,18 @@ internal static partial class RuntimeOrderPreparationService
                 }
 
                 var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
-                if (!lifecycle.IsActive
+                var checkpointGate = RuntimeNightBusinessAutomationGate.Refresh();
+                if (!checkpointGate.Allowed
+                    || checkpointGate.Generation != sessionGeneration
+                    || !lifecycle.IsActive
                     || lifecycle.Generation != sessionGeneration
                     || i >= AutomationCookingJobs.Count
                     || !ReferenceEquals(AutomationCookingJobs[i], job))
                 {
+                    if (!checkpointGate.Allowed || checkpointGate.Generation != sessionGeneration)
+                    {
+                        interruptedGate = checkpointGate;
+                    }
                     changed = true;
                     break;
                 }
@@ -1481,7 +1502,52 @@ internal static partial class RuntimeOrderPreparationService
             }
         }
 
+        if (interruptedGate.HasValue)
+        {
+            var blockedResult = HandleBlockedAutomationCookingJobs(interruptedGate.Value);
+            if (blockedResult.Messages.Count > 0) messages.AddRange(blockedResult.Messages);
+            changed |= blockedResult.Changed;
+        }
+
         return new AutomationCookingProcessResult(messages, changed);
+    }
+
+    private static AutomationCookingProcessResult HandleBlockedAutomationCookingJobs(
+        RuntimeNightBusinessAutomationGateSnapshot automationGate)
+    {
+        if (!string.Equals(
+                automationGate.BlockReason,
+                RuntimeNightBusinessAutomationGate.TutorialActiveReason,
+                StringComparison.Ordinal))
+        {
+            SuspendAutomationCookingJobClocks();
+            return new AutomationCookingProcessResult(Array.Empty<string>(), false);
+        }
+
+        var released = ClearAutomationCookingJobs(RuntimeNightBusinessAutomationGate.TutorialActiveReason);
+        if (released <= 0)
+        {
+            return new AutomationCookingProcessResult(Array.Empty<string>(), false);
+        }
+
+        return new AutomationCookingProcessResult(
+            new[] { $"当前为教学经营，自动化已暂停；已释放 {released} 个自动料理任务的 Mod 所有权，厨具和成品保持原状。" },
+            true);
+    }
+
+    private static void SuspendAutomationCookingJobClocks()
+    {
+        var observedAtUtc = DateTime.UtcNow;
+        lock (AutomationCookingJobLock)
+        {
+            foreach (var job in AutomationCookingJobs)
+            {
+                job.DeliveryTimeoutClock.Observe(observedAtUtc, eligible: false);
+                job.ManualHandoffMissingOrderClock.Observe(observedAtUtc, eligible: false);
+                job.ManualHandoffReadFailureClock.Observe(observedAtUtc, eligible: false);
+                job.Tracker.Suspend(observedAtUtc);
+            }
+        }
     }
 
     private static int ToProgressBucket(float progress)
@@ -1550,10 +1616,15 @@ internal static partial class RuntimeOrderPreparationService
         }
     }
 
-    private static OrderPreparationResult BuildLifecycleUnavailableResult(OrderPreparationRequest request, string targetKind)
+    private static OrderPreparationResult BuildAutomationGateUnavailableResult(
+        OrderPreparationRequest request,
+        string targetKind,
+        RuntimeNightBusinessAutomationGateSnapshot automationGate)
     {
-        var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
-        var message = $"夜间经营运行时不可用（阶段 {lifecycle.Phase}，会话 {lifecycle.Generation}），未执行任何游戏操作。";
+        var message = BuildAutomationGateMessage(automationGate);
+        var reasonCode = string.IsNullOrWhiteSpace(automationGate.BlockReason)
+            ? RuntimeNightBusinessAutomationGate.TutorialStateUnavailableReason
+            : automationGate.BlockReason;
         var result = new OrderPreparationResult
         {
             Ok = false,
@@ -1572,12 +1643,18 @@ internal static partial class RuntimeOrderPreparationService
             BeverageId = request.BeverageId,
             BeverageName = request.BeverageName,
         };
-        result.Automation.Outcome = "cancelled";
+        result.Automation.Outcome = string.Equals(
+                reasonCode,
+                RuntimeNightBusinessAutomationGate.LifecycleUnavailableReason,
+                StringComparison.Ordinal)
+            ? "cancelled"
+            : "interrupted";
         result.Automation.Stage = "runtime";
-        result.Automation.ReasonCode = "night-business-lifecycle-unavailable";
+        result.Automation.ReasonCode = reasonCode;
+        result.Automation.RetryAfterMs = 0;
         result.Steps.Add(new OrderPreparationStep
         {
-            Code = OrderPreparationStepCodes.NightBusinessLifecycleUnavailable,
+            Code = reasonCode,
             Name = targetKind == "normal" ? "普客经营会话检查" : "稀客经营会话检查",
             Ok = false,
             Message = message,
@@ -1585,22 +1662,38 @@ internal static partial class RuntimeOrderPreparationService
         return result;
     }
 
-    private static bool EnsureLifecycleSessionActive(
+    private static bool EnsureAutomationSessionActive(
         OrderPreparationResult result,
         long expectedGeneration,
         string checkpoint)
     {
-        var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
-        if (lifecycle.IsActive && lifecycle.Generation == expectedGeneration) return true;
+        var automationGate = RuntimeNightBusinessAutomationGate.Refresh();
+        if (automationGate.Allowed && automationGate.Generation == expectedGeneration) return true;
 
-        var message = $"夜间经营会话在{checkpoint}进入 {lifecycle.Phase}；已停止后续游戏对象读写。";
+        var reasonCode = string.IsNullOrWhiteSpace(automationGate.BlockReason)
+            ? RuntimeNightBusinessAutomationGate.TutorialStateUnavailableReason
+            : automationGate.BlockReason;
+        var message = $"{BuildAutomationGateMessage(automationGate)}（检查点：{checkpoint}）";
         AddFailure(
             result,
-            "经营会话检查",
+            "自动化运行时检查",
             message,
-            OrderPreparationStepCodes.NightBusinessLifecycleUnavailable);
+            reasonCode);
         result.Error = message;
         return false;
+    }
+
+    private static string BuildAutomationGateMessage(RuntimeNightBusinessAutomationGateSnapshot automationGate)
+    {
+        return automationGate.BlockReason switch
+        {
+            RuntimeNightBusinessAutomationGate.TutorialActiveReason =>
+                $"当前为教学经营（会话 {automationGate.Generation}），自动化已暂停，未执行后续游戏操作。",
+            RuntimeNightBusinessAutomationGate.TutorialStateUnavailableReason =>
+                $"暂时无法严格确认教学状态（会话 {automationGate.Generation}），自动化保持暂停，未执行后续游戏操作。",
+            _ =>
+                $"夜间经营运行时不可用（阶段 {RuntimeNightBusinessLifecycle.Snapshot.Phase}，会话 {automationGate.Generation}），未执行后续游戏操作。",
+        };
     }
 
     private static void AppendAutomationLog(string action, CookingCollectionTarget? target, string message)
@@ -1936,6 +2029,20 @@ internal static partial class RuntimeOrderPreparationService
                 _ => "cooking-delivery",
             };
             result.Automation.ReasonCode = blockedCode;
+            return;
+        }
+
+        var automationGateInterruptedCode = new[]
+        {
+            OrderPreparationStepCodes.NightBusinessTutorialActive,
+            OrderPreparationStepCodes.NightBusinessTutorialStateUnavailable,
+        }.FirstOrDefault(codes.Contains);
+        if (!string.IsNullOrWhiteSpace(automationGateInterruptedCode))
+        {
+            result.Automation.Outcome = "interrupted";
+            result.Automation.Stage = "runtime";
+            result.Automation.ReasonCode = automationGateInterruptedCode;
+            result.Automation.RetryAfterMs = 0;
             return;
         }
 

@@ -274,6 +274,9 @@ export interface LocalApiSnapshot {
   nightBusinessGeneration: number;
   nightBusinessLifecyclePhase: 'Inactive' | 'Active' | 'Closing' | 'Destroyed';
   runtimeNightBusinessLifecycleStatus?: string;
+  nightBusinessAutomationAllowed: boolean;
+  nightBusinessAutomationBlockReason: string;
+  runtimeNightBusinessAutomationStatus: string;
   snapshotSignature?: string;
   capturedAtUtc: string;
   activeSceneName: string;

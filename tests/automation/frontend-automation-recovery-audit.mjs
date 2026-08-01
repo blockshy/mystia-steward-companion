@@ -24,6 +24,14 @@ import {
   shouldRetainAutomationStateWithoutCandidate,
   shouldRetireMissingManualBarrier,
 } from '../../apps/companion/src/companion/automation-machine.ts';
+import {
+  getNightBusinessAutomationPauseMessage,
+  getNightBusinessAutomationPauseLabel,
+  getNightBusinessAutomationSummary,
+  NIGHT_BUSINESS_LIFECYCLE_UNAVAILABLE,
+  NIGHT_BUSINESS_TUTORIAL_ACTIVE,
+  NIGHT_BUSINESS_TUTORIAL_STATE_UNAVAILABLE,
+} from '../../apps/companion/src/companion/domain/automation-runtime.ts';
 
 const root = new URL('../../', import.meta.url);
 const initial = { retryCount: 2, lastProgressAtMs: 1000, retryStage: 'ensure-beverage' };
@@ -33,6 +41,41 @@ const allCookingJobStagesEnabled = {
   autoNormalDeliverFood: true,
   autoNormalCompleteOrder: true,
 };
+
+assert.equal(
+  getNightBusinessAutomationPauseMessage(NIGHT_BUSINESS_TUTORIAL_ACTIVE),
+  '教学经营中，自动化已暂停。',
+);
+assert.equal(getNightBusinessAutomationPauseLabel(NIGHT_BUSINESS_TUTORIAL_ACTIVE), '教学暂停');
+assert.equal(getNightBusinessAutomationPauseLabel(NIGHT_BUSINESS_TUTORIAL_STATE_UNAVAILABLE), '状态待确认');
+assert.equal(getNightBusinessAutomationPauseLabel(NIGHT_BUSINESS_LIFECYCLE_UNAVAILABLE), '');
+assert.equal(
+  getNightBusinessAutomationPauseMessage(NIGHT_BUSINESS_TUTORIAL_STATE_UNAVAILABLE),
+  '暂时无法确认教学状态，自动化已暂停。',
+);
+assert.equal(
+  getNightBusinessAutomationPauseMessage(NIGHT_BUSINESS_LIFECYCLE_UNAVAILABLE),
+  '',
+  'A day scene or inactive business must keep the existing waiting-for-business wording.',
+);
+assert.equal(getNightBusinessAutomationSummary({
+  configured: true,
+  allowed: false,
+  blockReason: NIGHT_BUSINESS_TUTORIAL_ACTIVE,
+  trackedCount: 2,
+}), '已暂停 · 教学经营');
+assert.equal(getNightBusinessAutomationSummary({
+  configured: true,
+  allowed: false,
+  blockReason: NIGHT_BUSINESS_LIFECYCLE_UNAVAILABLE,
+  trackedCount: 2,
+}), '已开启 · 等待经营');
+assert.equal(getNightBusinessAutomationSummary({
+  configured: true,
+  allowed: true,
+  blockReason: '',
+  trackedCount: 2,
+}), '已开启 · 跟踪 2 笔');
 
 for (const [field, label] of [
   ['autoPrepCollectCooking', 'rare food delivery'],
@@ -456,6 +499,11 @@ assert.equal(isAutomationResponseCurrent({
 assert.equal(isAutomationResponseCurrent({
   requestEpoch: 5,
   currentEpoch: 5,
+  runtimeEnabled: false,
+}), false, 'A response arriving after the tutorial gate closes must be ignored.');
+assert.equal(isAutomationResponseCurrent({
+  requestEpoch: 5,
+  currentEpoch: 5,
   runtimeEnabled: true,
   responseStartEventSequence: 10,
   currentEventSequence: 11,
@@ -824,6 +872,20 @@ async function assertStageAndCancellationContracts() {
   assert.ok(domain.includes("'runtime-identity-missing'"), 'Orders with incomplete runtime identity must be skipped before automation requests.');
   assert.ok(types.includes('acknowledgedSequences: number[];'), 'The ACK response must expose every barrier sequence cleared by the Mod.');
   assert.ok(workbench.includes('automationLeaseOwnedRef.current'), 'ACK must require the current-session automation lease.');
+  assert.ok(workbench.includes('&& nightBusinessAutomationAllowed;'),
+    'Frontend automation scheduling must consume the authoritative tutorial gate from the snapshot.');
+  assert.ok(workbench.includes('previousAutomationRuntimeEnabledRef.current && !automationRuntimeEnabled'),
+    'Closing the runtime tutorial gate must advance the request epoch and isolate late responses.');
+  assert.ok(workbench.includes('resetStateWhenDisabled: !companionPreferences.automationEnabled'),
+    'A runtime-only tutorial pause must preserve rare-order automation state.');
+  assert.ok(workbench.includes('resetNormalStateWhenDisabled: !companionPreferences.automationEnabled'),
+    'A runtime-only tutorial pause must preserve normal-order automation state.');
+  assert.ok(workbench.includes('getNightBusinessAutomationPauseMessage('),
+    'The UI must explain a tutorial pause without changing the stored automation preference.');
+  assert.ok(servicePanel.includes('runtimePauseLabel && <Badge variant="destructive">'),
+    'Rare and normal automation status rows must show the runtime gate separately from order pauses.');
+  assert.equal(servicePanel.includes("{paused ? '已暂停' : '运行中'}"), false,
+    'The rare global status must not claim automation is running while the tutorial gate is closed.');
   assert.ok(workbench.includes('clearAcknowledgedAutomationBarriers(response.acknowledgedSequences'), 'ACK success must clear every frontend latch acknowledged by the Mod.');
   assert.ok(workbench.match(/canAdvanceAutomationRuntimeEventSequence\(state\.manualResolutionRequired, manualResolutionRequired\)/g)?.length >= 2, 'Rare and normal reducers must both preserve manual barrier sequences.');
   assert.ok(workbench.includes('events.filter(isManualResolutionAutomationEvent)'), 'Same-session barrier convergence must use the unresolved manual-event set from the snapshot.');
@@ -914,6 +976,9 @@ async function assertMockProtocol() {
 
     const snapshot = await getJson(`http://127.0.0.1:${port}/snapshot`);
     assert.equal(snapshot.automationSessionId, 'automation-audit-session');
+    assert.equal(snapshot.nightBusinessAutomationAllowed, true);
+    assert.equal(snapshot.nightBusinessAutomationBlockReason, '');
+    assert.equal(snapshot.runtimeNightBusinessAutomationStatus, 'mock automation allowed generation=1');
     assert.ok(Array.isArray(snapshot.automationCookingJobs));
     assert.ok(Array.isArray(snapshot.automationEvents));
     assert.deepEqual(snapshot.automationEvents.map((event) => event.sequence), [9000, 9001]);

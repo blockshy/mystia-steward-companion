@@ -736,6 +736,10 @@ Port = 32145
 
 血池地狱的订单准备/完成请求必须额外携带当前 `specialTargetRevision`。它独立于规范 target signature，只接受运行时同锁发布的正 revision；怪诞料理和空策略使用 `0`。后端不会因 `A -> B -> A` 的 signature 再次相同而接受第一轮 A 的迟到请求。BOSS `NormalOrder` 的受控推进另以 `allowYuumaControlledProgression` 显式传递；请求必须提供完整预测 Tag，且预测确实未满足当前双 Tag，预测已全命中却标记受控时拒绝。该许可不修改 policy/signature/revision，但必须进入 execution target、后端 job 和快照 identity，严格与受控动作不得复用。
 
+### 教学经营自动化门禁
+
+教学经营使用独立的自动化门禁。`RuntimeNightBusinessAutomationGate` 在 Unity 主线程只读取 `MonoSingleton<NightSceneDirector>.Instance.IsInTutorial`；本 generation 一旦确认教学即单调锁存到经营结束，不用第一天、新存档、对话、场景名、订单内容或 `NotChallenge` 猜测。状态不可读时 fail-closed；前端快照门禁仅停止调度并作废迟到响应，后端在命令入口和不可逆边界重新校验。暂停不改写用户总开关、订单状态或推荐/置顶展示。
+
 ### v1.2.x 一次性迁移边界
 
 `v1.2.x` 只保留一项明确的一次性数据迁移：Local API 启动阶段先把 `favorites.json` 中 `source=manual` 的料理原子写入 `custom-recipes.json`，写入成功后再从收藏文件删除旧条目。目标料理按 `customerId + foodTag + foodId + extraIngredientIds` 去重，中断后重试不会重复生成；目标文件无法读取或写入时不删除来源条目。后续 `GET /custom-recipes` 和 CRUD 端点保持无隐式迁移副作用。该迁移计划在 `v1.3.0` 删除，不得扩大为旧 API、旧配置、旧类型或旧业务路径兼容层。自 `v1.2.0` 起不再读取旧 GUID 配置 `com.tyukki.mystia-steward.cfg`。
@@ -769,6 +773,8 @@ Port = 32145
 总日志文件 `BepInEx/config/MystiaStewardCompanion/aggregate-mod.log` 默认关闭，由 `Diagnostics.EnableAggregateModLog` 或日志页“总日志”开关启用。启用后注册 BepInEx 全局 `ILogListener`，捕获所有日志源并按时间、级别、来源和线程标注；自动化日志记录 jobId、trace、controller/result、generation/content revision、phase/progress、结构化 outcome/reason、厨具暂忙证据、StoreFood commit 和 reset 尝试。连续相同 automation action、目标和消息合并为 `repeat` 摘要。单个文件达到 10 MB 后拆分为递增编号分片；默认保留 30 个文件，约 300 MB。监听器不得回写自身状态，写入、分片和裁剪失败也不得影响游戏流程。
 
 上述分片只保护 `aggregate-mod.log`，不保护 BepInEx/Unity 共享的 `LogOutput.log`、`output_log.txt` 或 `Player.log`。后台 worker 不得用无限异常重试向插件日志源刷写；本插件也不得接管、截断或删除共享日志。
+
+每个总日志集中写入入口都在原有服务锁内确认活动路径仍存在；外部删除或移走当前文件后，下一条日志写入会释放旧句柄、重建原路径、写入恢复边界并重置当前文件的去重诊断签名。它不使用 `FileSystemWatcher` 或后台磁盘轮询，没有后续日志事件时不主动生成空文件。
 
 代理工具注意事项：
 

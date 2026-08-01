@@ -36,6 +36,7 @@ internal static class AggregateModLogService
     private static int _lastAutomationRepeatCount;
     private static int _lastAutomationReportedCount;
     private static DateTime _lastAutomationFirstAt = DateTime.MinValue;
+    private static string _pendingWriterRecoveryReason = "";
 
     public static bool Enabled
     {
@@ -95,6 +96,18 @@ internal static class AggregateModLogService
                 && string.Equals(_path, path, StringComparison.OrdinalIgnoreCase)
                 && _maxFileCount == normalizedMaxFileCount)
             {
+                if (_enabled)
+                {
+                    try
+                    {
+                        EnsureWriterLocked();
+                    }
+                    catch
+                    {
+                        // Keep the listener enabled so a later log event can retry the writer.
+                    }
+                }
+
                 return;
             }
 
@@ -154,6 +167,7 @@ internal static class AggregateModLogService
             lock (SyncRoot)
             {
                 if (!_enabled) return;
+                EnsureWriterLocked();
 
                 var now = DateTime.Now;
                 var contextText = FormatContext(context);
@@ -232,15 +246,20 @@ internal static class AggregateModLogService
         {
             _enabled = false;
             CloseWriterLocked();
-            ResetAutomationRepeatStateLocked();
-            RuntimeStaticDataDiagnosticFormatter.Reset();
-            SpecialBusinessDiagnostics.Reset();
+            _pendingWriterRecoveryReason = "";
+            ResetDiagnosticStateLocked();
         }
     }
 
     private static void EnsureWriterLocked()
     {
-        if (_writer != null) return;
+        if (_writer != null)
+        {
+            if (File.Exists(_path)) return;
+
+            CloseWriterLocked();
+            _pendingWriterRecoveryReason = "active log path was removed externally";
+        }
 
         var directory = Path.GetDirectoryName(_path);
         if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
@@ -255,6 +274,16 @@ internal static class AggregateModLogService
         {
             AutoFlush = true,
         };
+
+        if (_pendingWriterRecoveryReason.Length > 0)
+        {
+            var recoveryReason = _pendingWriterRecoveryReason;
+            ResetDiagnosticStateLocked();
+            WriteRawLineLocked(
+                $"==== {FormatTimestamp()} [service] aggregate log writer recovered; reason={recoveryReason}; path={_path} ====");
+            _pendingWriterRecoveryReason = "";
+        }
+
         PruneFileCountLocked();
     }
 
@@ -274,8 +303,32 @@ internal static class AggregateModLogService
             EnsureWriterLocked();
         }
 
-        _writer!.Write(text);
-        _currentBytes += bytes;
+        try
+        {
+            _writer!.Write(text);
+            _currentBytes += bytes;
+        }
+        catch
+        {
+            CloseWriterLocked();
+            _pendingWriterRecoveryReason = "previous writer failed during append";
+            throw;
+        }
+    }
+
+    private static void WriteRawLineLocked(string line)
+    {
+        var text = line + Environment.NewLine;
+        try
+        {
+            _writer!.Write(text);
+            _currentBytes += Utf8NoBom.GetByteCount(text);
+        }
+        catch
+        {
+            CloseWriterLocked();
+            throw;
+        }
     }
 
     private static void RotateFileLocked()
@@ -384,6 +437,13 @@ internal static class AggregateModLogService
         _lastAutomationRepeatCount = 0;
         _lastAutomationReportedCount = 0;
         _lastAutomationFirstAt = DateTime.MinValue;
+    }
+
+    private static void ResetDiagnosticStateLocked()
+    {
+        ResetAutomationRepeatStateLocked();
+        RuntimeStaticDataDiagnosticFormatter.Reset();
+        SpecialBusinessDiagnostics.Reset();
     }
 
     private static void WriteAutomationLineLocked(string action, OrderLogContext? context, string message)

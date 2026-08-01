@@ -16,6 +16,8 @@
 
 ## 夜间经营订单
 
+自动化在经营生命周期之外还有独立的教学门禁。`RuntimeNightBusinessAutomationGate` 只在 Unity 主线程从精确 `MonoSingleton<NightSceneDirector>.Instance` 读取 `IsInTutorial`；当前 Active generation 一旦读到 true，到本场结束都不再开放自动化。单例、属性或经营代际无法精确确认时返回结构化阻断，不用新档、第一天、场景名、教程对话或订单内容回退。`/snapshot` 发布 `nightBusinessAutomationAllowed`、`nightBusinessAutomationBlockReason` 和 `runtimeNightBusinessAutomationStatus`，仅供伴随窗口停止调度与显示原因；所有自动化写入边界仍必须由 Mod 再次校验门禁。
+
 `NightBusinessReflectionProvider` 用于 `经营中 / Service` 页。它同样只读当前运行时对象，不读存档文件：
 
 1. 从 `Night.UI.HUD.Ordering.OrderController.GetShowInUIOrders()` 和 `OrderController.m_Orders[].ActiveOrder` 读取普客补充可见行；这些来源不提供自动化 controller 所有权，也不得过滤已就绪捕获。

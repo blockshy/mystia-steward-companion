@@ -9,6 +9,9 @@ internal sealed class LocalApiSnapshot
     public long NightBusinessGeneration { get; init; }
     public string NightBusinessLifecyclePhase { get; init; } = "Inactive";
     public string RuntimeNightBusinessLifecycleStatus { get; init; } = "";
+    public bool NightBusinessAutomationAllowed { get; init; }
+    public string NightBusinessAutomationBlockReason { get; init; } = "";
+    public string RuntimeNightBusinessAutomationStatus { get; init; } = "";
     public string SnapshotSignature { get; set; } = "";
     public DateTime CapturedAtUtc { get; init; }
     public string ActiveSceneName { get; init; } = "";

@@ -119,6 +119,9 @@
 - 血池地狱特殊目标 revision 是独立于规范 signature 的动作代际。它必须从同锁运行时快照原样进入前端状态、Worker、回滚目标、本地 API、后端 target 和 cooking job；血池目标只接受正 revision，其他策略使用 `0`。受控推进许可不改变该策略 identity，但必须进入 execution target 和 cooking job identity，严格与受控动作不得复用。`A -> B -> A` 后旧 A 动作不得命中新 A。酒水事务固定为 `BeverageOut -> fresh order -> final setter -> fresh order -> 未 fulfilled 时恢复耐心 -> fresh order -> range 调整 -> fresh order -> consume/status/desk`；每个原生回调后都复核当前 generation/policy/revision 并重新取得同一订单，最后才创建记账上下文。任一不可逆边界后的失败进入安全栅栏，禁止重放。
 - 血池地狱专用 lookup 不信任 capture 中旧的 `ManualOrder` 值；每次都从当前 order wrapper 精确读取路由，并在当前为手动控制订单时按同一 order/controller 找回原始回调。酒水初始状态和四次 fresh reacquire 都把 `ServedBeverageInAir` 作为零副作用/不确定边界，最终料理也同时门禁 food/beverage in-air；非手动订单只送达酒水时恢复一次原生耐心并再次重取订单。任一稀客/普客的料理送达或订单完成开关从 true 变为 false 时，复用现有取消端点作废排队命令和未进入不可逆阶段的 cooking job，避免锁存旧阶段意图。
 
+- 教学经营不执行自动化。Mod 只在 Unity 主线程精确读取 `NightSceneDirector.Instance.IsInTutorial`；当前 Active generation 一旦确认教学，即锁存至本场结束。状态不可读时 fail-closed，不使用场景、日期、对话、订单或挑战标志兼容猜测。快照的 `nightBusinessAutomationAllowed`、`nightBusinessAutomationBlockReason` 和 `runtimeNightBusinessAutomationStatus` 供前端暂停调度和显示原因；从 true 切换为 false 时必须推进 request epoch 并隔离迟到响应，但不清空用户偏好或订单状态。后端动作入口和 cooking job 仍按同一门禁复核，不信任前端。
+- 总日志的活动路径若被外部删除或移走，下一条日志在同一服务锁内释放失路径旧句柄、重建原路径、写入恢复边界并重置当前文件的重复摘要/诊断签名；不启动 watcher 或后台磁盘轮询。
+
 ## 推荐排序口径
 
 - 经营中/稀客推荐排序可由伴随窗口 `设置` 页的任务料理、收藏料理、收藏酒水置顶开关、自定义推荐料理单条置顶和推荐权重共同控制。固定顺序是硬过滤、任务料理置顶、自定义推荐料理置顶、收藏料理/酒水置顶，最后进入普通权重排序；默认均衡预设综合稀客偏好、厌恶风险、加料数量、资源压力、成本、利润、酒水库存和当前厨具可做等目标。

@@ -67,6 +67,7 @@ internal sealed class StewardOverlayController
     private long _lastSpecialOrderChangeVersion;
     private long _lastSpecialBusinessChangeVersion;
     private long _lastNightBusinessLifecycleVersion = long.MinValue;
+    private long _lastNightBusinessAutomationGateVersion = long.MinValue;
     private string _runtimeSource = "";
     private string _activeSceneName = "";
     private string _status = "Not initialized.";
@@ -227,6 +228,8 @@ internal sealed class StewardOverlayController
         _config = config;
         _log = log;
         _mainThreadId = Thread.CurrentThread.ManagedThreadId;
+        RuntimeNightBusinessAutomationGate.Initialize(_mainThreadId, log);
+        RuntimeNightBusinessAutomationGate.Refresh();
         _activeSceneName = GetActiveSceneName();
         LoadRepository();
         _localApiToken = EnsureLocalApiToken(config);
@@ -251,6 +254,7 @@ internal sealed class StewardOverlayController
         if (_disposed || _config == null) return;
         ProcessNightBusinessLifecycleChange();
         RefreshOnSceneChange();
+        ProcessNightBusinessAutomationGateChange();
         RuntimeScheduledEventDiagnosticCapture.Tick(_mainThreadId);
         ProcessPendingAvailableMissionReads();
         if (ShouldGateNightBusinessRuntime())
@@ -332,6 +336,38 @@ internal sealed class StewardOverlayController
     private bool ShouldGateNightBusinessRuntime()
     {
         return IsNightBusinessScene(_activeSceneName) && !RuntimeNightBusinessLifecycle.IsActive;
+    }
+
+    private void ProcessNightBusinessAutomationGateChange()
+    {
+        var gate = RuntimeNightBusinessAutomationGate.Refresh();
+        if (gate.Version == _lastNightBusinessAutomationGateVersion) return;
+
+        _lastNightBusinessAutomationGateVersion = gate.Version;
+        if (string.Equals(
+                gate.BlockReason,
+                RuntimeNightBusinessAutomationGate.TutorialActiveReason,
+                StringComparison.Ordinal))
+        {
+            var releasedJobs = RuntimeOrderPreparationService.ClearAutomationCookingJobs(
+                RuntimeNightBusinessAutomationGate.TutorialActiveReason);
+            _status = releasedJobs > 0
+                ? $"当前为教学经营，自动化已暂停；已释放 {releasedJobs} 个自动料理任务的 Mod 所有权。"
+                : "当前为教学经营，自动化已暂停。";
+        }
+        else if (string.Equals(
+                     gate.BlockReason,
+                     RuntimeNightBusinessAutomationGate.TutorialStateUnavailableReason,
+                     StringComparison.Ordinal)
+                 && RuntimeNightBusinessLifecycle.IsActive)
+        {
+            _status = "暂时无法严格确认教学状态，自动化保持暂停，厨具和成品未被改动。";
+        }
+
+        MarkLocalApiSnapshotDirty(
+            LocalApiSnapshotDirtyDomain.Automation | LocalApiSnapshotDirtyDomain.Scene,
+            "night business automation gate changed",
+            force: true);
     }
 
     /// <summary>
@@ -982,6 +1018,7 @@ internal sealed class StewardOverlayController
         {
             _nextLocalApiSnapshotPublishAt = Time.realtimeSinceStartup + LocalApiSnapshotPublishMinIntervalSeconds;
             var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+            var automationGate = RuntimeNightBusinessAutomationGate.Refresh();
             var nightRuntimeGated = IsNightBusinessScene(_activeSceneName) && !lifecycle.IsActive;
             var runtimeBasicsLoaded = !nightRuntimeGated && HasRuntimeBasicsLoaded();
             var publishedState = !nightRuntimeGated && CanPublishRecommendationState()
@@ -1019,6 +1056,9 @@ internal sealed class StewardOverlayController
                 NightBusinessGeneration = lifecycle.Generation,
                 NightBusinessLifecyclePhase = lifecycle.Phase.ToString(),
                 RuntimeNightBusinessLifecycleStatus = RuntimeNightBusinessLifecycle.Status,
+                NightBusinessAutomationAllowed = automationGate.Allowed,
+                NightBusinessAutomationBlockReason = automationGate.BlockReason,
+                RuntimeNightBusinessAutomationStatus = automationGate.Status,
                 CapturedAtUtc = DateTime.UtcNow,
                 ActiveSceneName = _activeSceneName,
                 ActiveDayMapLabel = dayMap.Label,
@@ -1276,6 +1316,9 @@ internal sealed class StewardOverlayController
         AppendValue(builder, snapshot.NightBusinessGeneration);
         AppendValue(builder, snapshot.NightBusinessLifecyclePhase);
         AppendValue(builder, snapshot.RuntimeNightBusinessLifecycleStatus);
+        AppendValue(builder, snapshot.NightBusinessAutomationAllowed);
+        AppendValue(builder, snapshot.NightBusinessAutomationBlockReason);
+        AppendValue(builder, snapshot.RuntimeNightBusinessAutomationStatus);
         AppendValue(builder, snapshot.ActiveSceneName);
         AppendValue(builder, snapshot.ActiveDayMapLabel);
         AppendValue(builder, snapshot.ActiveDayMapName);
@@ -2650,7 +2693,10 @@ internal sealed class StewardOverlayController
     {
         if (ShouldGateNightBusinessRuntime())
         {
-            return BuildUnavailableOrderResult(request, "当前夜间经营会话正在初始化或结束，未执行任何游戏操作。");
+            return BuildUnavailableOrderResult(
+                request,
+                "当前夜间经营会话正在初始化或结束，未执行任何游戏操作。",
+                RuntimeNightBusinessAutomationGate.LifecycleUnavailableReason);
         }
 
         AdvanceAutomationCommandEpoch(request.AutomationEpoch);
@@ -2677,7 +2723,15 @@ internal sealed class StewardOverlayController
                 _pendingOrderPreparations.Enqueue(pending);
                 return true;
             });
-            if (!enqueued) return BuildSupersededOrderResult(request);
+            if (!enqueued)
+            {
+                return ShouldGateNightBusinessRuntime()
+                    ? BuildUnavailableOrderResult(
+                        request,
+                        "当前夜间经营会话正在初始化或结束，未执行任何游戏操作。",
+                        RuntimeNightBusinessAutomationGate.LifecycleUnavailableReason)
+                    : BuildSupersededOrderResult(request);
+            }
 
             return pending.WaitForResult(
                 TimeSpan.FromSeconds(3.5),
@@ -2715,7 +2769,10 @@ internal sealed class StewardOverlayController
     /// </summary>
     private OrderPreparationResult ApplyOrderPreparation(OrderPreparationRequest request)
     {
-        if (!CanRunNightBusinessOrderAction(out var reason)) return BuildUnavailableOrderResult(request, reason);
+        if (!CanRunNightBusinessOrderAction(out var reason, out var reasonCode))
+        {
+            return BuildUnavailableOrderResult(request, reason, reasonCode);
+        }
 
         var sessionGeneration = RuntimeNightBusinessLifecycle.Generation;
         var result = RuntimeOrderPreparationService.Prepare(request);
@@ -2730,13 +2787,15 @@ internal sealed class StewardOverlayController
     /// <summary>
     /// 检查是否允许执行夜间经营订单自动化。
     /// </summary>
-    private bool CanRunNightBusinessOrderAction(out string reason)
+    private bool CanRunNightBusinessOrderAction(out string reason, out string reasonCode)
     {
         reason = "";
+        reasonCode = "";
         _activeSceneName = GetActiveSceneName();
         if (ShouldGateNightBusinessRuntime())
         {
             reason = "当前夜间经营会话正在初始化或结束，暂不执行订单自动化。";
+            reasonCode = RuntimeNightBusinessAutomationGate.LifecycleUnavailableReason;
             return false;
         }
         if (IsIzakayaPrepActive(_activeSceneName))
@@ -2751,13 +2810,34 @@ internal sealed class StewardOverlayController
             return false;
         }
 
+        var automationGate = RuntimeNightBusinessAutomationGate.Refresh();
+        if (!automationGate.Allowed)
+        {
+            reasonCode = automationGate.BlockReason;
+            reason = string.Equals(
+                    automationGate.BlockReason,
+                    RuntimeNightBusinessAutomationGate.TutorialActiveReason,
+                    StringComparison.Ordinal)
+                ? "当前为教学经营，自动化已暂停，未执行任何游戏操作。"
+                : string.Equals(
+                    automationGate.BlockReason,
+                    RuntimeNightBusinessAutomationGate.TutorialStateUnavailableReason,
+                    StringComparison.Ordinal)
+                    ? "暂时无法严格确认教学状态，自动化保持暂停，未执行任何游戏操作。"
+                    : "当前夜间经营会话不可用，自动化已暂停，未执行任何游戏操作。";
+            return false;
+        }
+
         return true;
     }
 
     /// <summary>
     /// 在当前场景不允许执行订单自动化时构造统一失败结果。
     /// </summary>
-    private static OrderPreparationResult BuildUnavailableOrderResult(OrderPreparationRequest request, string reason)
+    private static OrderPreparationResult BuildUnavailableOrderResult(
+        OrderPreparationRequest request,
+        string reason,
+        string reasonCode = "")
     {
         var result = new OrderPreparationResult
         {
@@ -2776,12 +2856,23 @@ internal sealed class StewardOverlayController
             BeverageId = request.BeverageId,
             BeverageName = request.BeverageName,
         };
-        result.Automation.Outcome = "retryable-failure";
+        var automationGateInterrupted = reasonCode is RuntimeNightBusinessAutomationGate.TutorialActiveReason
+            or RuntimeNightBusinessAutomationGate.TutorialStateUnavailableReason;
+        var lifecycleUnavailable = string.Equals(
+            reasonCode,
+            RuntimeNightBusinessAutomationGate.LifecycleUnavailableReason,
+            StringComparison.Ordinal);
+        result.Automation.Outcome = automationGateInterrupted
+            ? "interrupted"
+            : lifecycleUnavailable
+                ? "cancelled"
+                : "retryable-failure";
         result.Automation.Stage = "runtime";
-        result.Automation.ReasonCode = "runtime-unavailable";
-        result.Automation.RetryAfterMs = 1000;
+        result.Automation.ReasonCode = string.IsNullOrWhiteSpace(reasonCode) ? "runtime-unavailable" : reasonCode;
+        result.Automation.RetryAfterMs = automationGateInterrupted || lifecycleUnavailable ? 0 : 1000;
         result.Steps.Add(new OrderPreparationStep
         {
+            Code = result.Automation.ReasonCode,
             Name = "场景检查",
             Ok = false,
             Message = reason,
@@ -2791,7 +2882,10 @@ internal sealed class StewardOverlayController
 
     private OrderPreparationResult ApplyOrderCompletion(OrderPreparationRequest request)
     {
-        if (!CanRunNightBusinessOrderAction(out var reason)) return BuildUnavailableOrderResult(request, reason);
+        if (!CanRunNightBusinessOrderAction(out var reason, out var reasonCode))
+        {
+            return BuildUnavailableOrderResult(request, reason, reasonCode);
+        }
 
         var sessionGeneration = RuntimeNightBusinessLifecycle.Generation;
         var result = RuntimeOrderPreparationService.CompleteFirst(request);
@@ -2806,7 +2900,10 @@ internal sealed class StewardOverlayController
 
     private OrderPreparationResult ApplyNormalOrderCompletion(OrderPreparationRequest request)
     {
-        if (!CanRunNightBusinessOrderAction(out var reason)) return BuildUnavailableOrderResult(request, reason);
+        if (!CanRunNightBusinessOrderAction(out var reason, out var reasonCode))
+        {
+            return BuildUnavailableOrderResult(request, reason, reasonCode);
+        }
 
         var sessionGeneration = RuntimeNightBusinessLifecycle.Generation;
         var result = RuntimeOrderPreparationService.CompleteNormalFirst(request);
