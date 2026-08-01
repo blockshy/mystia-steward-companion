@@ -96,7 +96,7 @@ internal static class YuyukoChallengeEvaluationTracker
         return false;
     }
 
-    public static bool TryFindYuyukoRetakePhase3ProgressCallback(object? callback, out string detail)
+    public static bool TryFindYuyukoRetakePhase3BossProgressCallback(object? callback, out string detail)
     {
         if (!RuntimeNightBusinessLifecycle.IsActive)
         {
@@ -115,10 +115,71 @@ internal static class YuyukoChallengeEvaluationTracker
 
         foreach (var entry in entries)
         {
-            if (IsYuyukoRetakeProgressCallbackEntry(entry))
+            if (IsYuyukoRetakeBossProgressCallbackEntry(entry))
             {
-                detail = $"matched retake progress callback: {DescribeCallbackEntry(entry)}";
+                detail = $"matched retake boss progress callback: {DescribeCallbackEntry(entry)}";
                 RuntimeSpecialBusinessContextService.MarkYuyukoRetakeEvidence(RuntimeReflectionUtility.Trim(detail, 220));
+                return true;
+            }
+        }
+
+        detail = string.Join(" | ", entries.Select(DescribeCallbackEntry).Take(6));
+        return false;
+    }
+
+    public static bool TryFindYuyukoRetakePhase3GroupProgressCallback(object? callback, out string detail)
+    {
+        if (!RuntimeNightBusinessLifecycle.IsActive)
+        {
+            detail = "night business unavailable";
+            return false;
+        }
+
+        detail = "callback missing";
+        if (callback == null) return false;
+
+        var entries = EnumerateCallbackEntries(callback).ToArray();
+        if (entries.Length == 0)
+        {
+            entries = new[] { callback };
+        }
+
+        foreach (var entry in entries)
+        {
+            if (IsYuyukoRetakeGroupProgressCallbackEntry(entry))
+            {
+                detail = $"matched retake group progress callback: {DescribeCallbackEntry(entry)}";
+                RuntimeSpecialBusinessContextService.MarkYuyukoRetakeEvidence(RuntimeReflectionUtility.Trim(detail, 220));
+                return true;
+            }
+        }
+
+        detail = string.Join(" | ", entries.Select(DescribeCallbackEntry).Take(6));
+        return false;
+    }
+
+    public static bool TryFindYuyukoRetakePhase3ManualProgressCallback(object? callback, out string detail)
+    {
+        if (!RuntimeNightBusinessLifecycle.IsActive)
+        {
+            detail = "night business unavailable";
+            return false;
+        }
+
+        detail = "callback missing";
+        if (callback == null) return false;
+
+        var entries = EnumerateCallbackEntries(callback).ToArray();
+        if (entries.Length == 0)
+        {
+            entries = new[] { callback };
+        }
+
+        foreach (var entry in entries)
+        {
+            if (IsYuyukoRetakePhase3ManualProgressCallbackEntry(entry))
+            {
+                detail = $"matched retake manual progress callback: {DescribeCallbackEntry(entry)}";
                 return true;
             }
         }
@@ -270,8 +331,10 @@ internal static class YuyukoChallengeEvaluationTracker
             var onExtraFinishEvaluationCallback = ReadControllerCallback(controller, "OnExtraFinishEvaluationCallback");
             var onFinishOrderCallback = ReadControllerCallback(controller, "OnFinishOrderCallback");
             var hasScoreCallback = TryFindYuyukoStoryPhase3ScoreCallback(evaluationCallback, out var scoreCallbackDetail);
-            var hasRetakeProgressCallback = TryFindYuyukoRetakePhase3ProgressCallback(evaluationCallback, out var retakeProgressCallbackDetail);
-            var hasManualProgressCallback = TryFindYuyukoPhase3ManualProgressCallback(callback, out var manualProgressCallbackDetail);
+            var hasRetakeBossProgressCallback = TryFindYuyukoRetakePhase3BossProgressCallback(evaluationCallback, out var retakeBossProgressCallbackDetail);
+            var hasRetakeGroupProgressCallback = TryFindYuyukoRetakePhase3GroupProgressCallback(evaluationCallback, out var retakeGroupProgressCallbackDetail);
+            var hasStoryManualProgressCallback = TryFindYuyukoPhase3ManualProgressCallback(callback, out var storyManualProgressCallbackDetail);
+            var hasRetakeManualProgressCallback = TryFindYuyukoRetakePhase3ManualProgressCallback(callback, out var retakeManualProgressCallbackDetail);
 
             var lines = new List<string>
             {
@@ -293,14 +356,18 @@ internal static class YuyukoChallengeEvaluationTracker
                 $"servBeverage: {SpecialBusinessDiagnostics.DescribeObject(ReadMember(order, "ServBeverage"))}",
                 $"callbackArgument: {SpecialBusinessDiagnostics.DescribeObject(callback)}",
                 $"callbackArgumentDetail: {DescribeCallback(callback)}",
-                $"hasYuyukoManualProgressCallback: {hasManualProgressCallback}",
-                $"manualProgressCallbackDetail: {manualProgressCallbackDetail}",
+                $"hasYuyukoStoryManualProgressCallback: {hasStoryManualProgressCallback}",
+                $"storyManualProgressCallbackDetail: {storyManualProgressCallbackDetail}",
+                $"hasYuyukoRetakeManualProgressCallback: {hasRetakeManualProgressCallback}",
+                $"retakeManualProgressCallbackDetail: {retakeManualProgressCallbackDetail}",
                 $"evaluationCallback: {SpecialBusinessDiagnostics.DescribeObject(evaluationCallback)}",
                 $"evaluationCallbackDetail: {DescribeCallback(evaluationCallback)}",
                 $"hasYuyukoScoreCallback: {hasScoreCallback}",
                 $"scoreCallbackDetail: {scoreCallbackDetail}",
-                $"hasYuyukoRetakeProgressCallback: {hasRetakeProgressCallback}",
-                $"retakeProgressCallbackDetail: {retakeProgressCallbackDetail}",
+                $"hasYuyukoRetakeBossProgressCallback: {hasRetakeBossProgressCallback}",
+                $"retakeBossProgressCallbackDetail: {retakeBossProgressCallbackDetail}",
+                $"hasYuyukoRetakeGroupProgressCallback: {hasRetakeGroupProgressCallback}",
+                $"retakeGroupProgressCallbackDetail: {retakeGroupProgressCallbackDetail}",
                 $"onEvalFinishCallback: {SpecialBusinessDiagnostics.DescribeObject(onEvalFinishCallback)}",
                 $"onEvalFinishCallbackDetail: {DescribeCallback(onEvalFinishCallback)}",
                 $"onExtraFinishEvaluationCallback: {SpecialBusinessDiagnostics.DescribeObject(onExtraFinishEvaluationCallback)}",
@@ -316,7 +383,7 @@ internal static class YuyukoChallengeEvaluationTracker
             lock (SyncRoot)
             {
                 _traceEvents++;
-                _lastTrace = $"{eventName}; controller={SpecialBusinessDiagnostics.DescribeObject(controller)}; callback={SpecialBusinessDiagnostics.DescribeObject(callback)}; manualProgress={hasManualProgressCallback}; score={hasScoreCallback}; retakeProgress={hasRetakeProgressCallback}";
+                _lastTrace = $"{eventName}; controller={SpecialBusinessDiagnostics.DescribeObject(controller)}; callback={SpecialBusinessDiagnostics.DescribeObject(callback)}; storyManual={hasStoryManualProgressCallback}; retakeManual={hasRetakeManualProgressCallback}; score={hasScoreCallback}; retakeBoss={hasRetakeBossProgressCallback}; retakeGroup={hasRetakeGroupProgressCallback}";
                 _status = PatchedMethods.Count == 0 ? _status : $"patched={PatchedMethods.Count}";
             }
         }
@@ -375,6 +442,16 @@ internal static class YuyukoChallengeEvaluationTracker
                 || text.Contains("b__37", StringComparison.Ordinal));
     }
 
+    private static bool IsYuyukoRetakePhase3ManualProgressCallbackEntry(object? entry)
+    {
+        if (entry == null) return false;
+        var text = DescribeCallbackEntry(entry);
+        return text.Contains("YuyukoBossData", StringComparison.Ordinal)
+            && text.Contains("DisplayClass16_10", StringComparison.Ordinal)
+            && (text.Contains("<MainChallengeLoop>b__77", StringComparison.Ordinal)
+                || text.Contains("<MainChallengeLoop>b__78", StringComparison.Ordinal));
+    }
+
     private static bool IsYuyukoStoryScoreCallbackEntry(object? entry)
     {
         if (entry == null) return false;
@@ -384,18 +461,26 @@ internal static class YuyukoChallengeEvaluationTracker
                 && text.Contains("DisplayClass16_0", StringComparison.Ordinal));
     }
 
-    private static bool IsYuyukoRetakeProgressCallbackEntry(object? entry)
+    private static bool IsYuyukoRetakeBossProgressCallbackEntry(object? entry)
     {
         if (entry == null) return false;
         var text = DescribeCallbackEntry(entry);
         return text.Contains("YuyukoOverrideEvaluationCallback_50", StringComparison.Ordinal)
-            || text.Contains("GroupOverrideEvaluationCallback_70", StringComparison.Ordinal)
             || (text.Contains("YuyukoBossData", StringComparison.Ordinal)
                 && text.Contains("DisplayClass16_6", StringComparison.Ordinal)
-                && text.Contains("YuyukoOverrideEvaluationCallback", StringComparison.Ordinal))
+                && text.Contains("YuyukoOverrideEvaluationCallback", StringComparison.Ordinal)
+                && text.Contains("|50", StringComparison.Ordinal));
+    }
+
+    private static bool IsYuyukoRetakeGroupProgressCallbackEntry(object? entry)
+    {
+        if (entry == null) return false;
+        var text = DescribeCallbackEntry(entry);
+        return text.Contains("GroupOverrideEvaluationCallback_70", StringComparison.Ordinal)
             || (text.Contains("YuyukoBossData", StringComparison.Ordinal)
                 && text.Contains("DisplayClass16_9", StringComparison.Ordinal)
-                && text.Contains("GroupOverrideEvaluationCallback", StringComparison.Ordinal));
+                && text.Contains("GroupOverrideEvaluationCallback", StringComparison.Ordinal)
+                && text.Contains("|70", StringComparison.Ordinal));
     }
 
     private static IEnumerable<object> EnumerateCallbackEntries(object? callback)

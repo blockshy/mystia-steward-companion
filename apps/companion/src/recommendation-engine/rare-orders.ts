@@ -61,6 +61,10 @@ interface BuildRareOrderPlansFromCandidatesOptions extends BuildRareOrderPlansOp
   beverageCandidates: BeverageCandidate[];
 }
 
+interface BuildRareFoodCandidatesOptions {
+  preserveTwoTagSpecialTargetReachability?: boolean;
+}
+
 interface IngredientSearchState {
   ingredients: IngredientCatalogItem[];
   activeTags: string[];
@@ -178,6 +182,7 @@ export function buildRareFoodCandidates(
   data: RecommendationDataSet,
   demand: RareTagOrderDemand,
   context: RecommendationRuntimeContext,
+  options: BuildRareFoodCandidatesOptions = {},
 ): FoodCandidate[] {
   const ingredientsByName = new Map(data.ingredients.map((ingredient) => [ingredient.name, ingredient]));
   const ingredientsById = new Map(data.ingredients.map((ingredient) => [ingredient.id, ingredient]));
@@ -197,6 +202,7 @@ export function buildRareFoodCandidates(
       ingredientsByName,
       demand,
       context,
+      options,
     ));
   }
 
@@ -393,6 +399,7 @@ function buildFoodCandidatesForRecipe(
   ingredientsByName: Map<string, IngredientCatalogItem>,
   demand: RareTagOrderDemand,
   context: RecommendationRuntimeContext,
+  options: BuildRareFoodCandidatesOptions,
 ): FoodCandidate[] {
   // extraSlots 使用配方原始材料数量计算，不能用去重后的材料集合，否则重复材料配方会错误地允许继续加料。
   const extraSlots = getAvailableExtraIngredientSlots(recipe, context);
@@ -415,6 +422,9 @@ function buildFoodCandidatesForRecipe(
     extraSlots,
     demand,
     context,
+    preserveSpecialTargetReachability:
+      options.preserveTwoTagSpecialTargetReachability === true
+      && getSpecialFoodTarget(demand).tags.length === 2,
   });
 
   return bestStates.map((state) =>
@@ -603,6 +613,7 @@ function searchIngredientStates({
   extraSlots,
   demand,
   context,
+  preserveSpecialTargetReachability,
 }: {
   recipe: RecipeCatalogItem;
   baseState: IngredientSearchState;
@@ -610,6 +621,7 @@ function searchIngredientStates({
   extraSlots: number;
   demand: RareTagOrderDemand;
   context: RecommendationRuntimeContext;
+  preserveSpecialTargetReachability: boolean;
 }): IngredientSearchState[] {
   const states = new Map<string, IngredientSearchState>([[stateKey(baseState), baseState]]);
   let frontier = [baseState];
@@ -626,12 +638,21 @@ function searchIngredientStates({
 
     if (expanded.length === 0) break;
     // Beam search 保留每层最优的一小批状态，兼顾推荐质量和经营中多订单实时计算性能。
-    const nextFrontier = keepBestStates(expanded, DEFAULT_BEAM_WIDTH);
+    const nextFrontier = preserveSpecialTargetReachability
+      ? keepBestStatesBySpecialTargetReachability(
+        expanded,
+        DEFAULT_BEAM_WIDTH,
+        demand,
+        context,
+      )
+      : keepBestStates(expanded, DEFAULT_BEAM_WIDTH);
     for (const state of nextFrontier) states.set(stateKey(state), state);
     frontier = nextFrontier;
   }
 
-  return keepBestStates([...states.values()], 16);
+  return preserveSpecialTargetReachability
+    ? keepBestStatesBySpecialTargetReachability([...states.values()], 16, demand, context)
+    : keepBestStates([...states.values()], 16);
 }
 
 function evaluateIngredientState(
@@ -956,6 +977,52 @@ function keepBestStates(states: IngredientSearchState[], limit: number): Ingredi
   return [...new Map(states.map((state) => [stateKey(state), state])).values()]
     .sort(compareIngredientStates)
     .slice(0, limit);
+}
+
+function keepBestStatesBySpecialTargetReachability(
+  states: IngredientSearchState[],
+  limit: number,
+  demand: RareTagOrderDemand,
+  context: RecommendationRuntimeContext,
+): IngredientSearchState[] {
+  // 血池地狱固定为双 Tag。原始 Tag 随加料单调累积；较强 Tag 一旦压制目标，后续加料无法撤销；
+  // 因此同一深度为 matched/reachable/blocked 的每种组合保留一个代表，就能保留所有可达分支。
+  // 双 Tag 最多产生 3^2 个分桶，低于每层和最终候选上限。
+  const sorted = [...new Map(states.map((state) => [stateKey(state), state])).values()]
+    .sort(compareIngredientStates);
+  const representatives = new Map<string, IngredientSearchState>();
+  for (const state of sorted) {
+    const signature = buildSpecialTargetReachabilitySignature(state, demand, context);
+    if (!representatives.has(signature)) representatives.set(signature, state);
+  }
+
+  const selected = [...representatives.values()]
+    .sort(compareIngredientStates)
+    .slice(0, limit);
+  const selectedKeys = new Set(selected.map(stateKey));
+  for (const state of sorted) {
+    if (selected.length >= limit) break;
+    const key = stateKey(state);
+    if (selectedKeys.has(key)) continue;
+    selected.push(state);
+    selectedKeys.add(key);
+  }
+  return selected;
+}
+
+function buildSpecialTargetReachabilitySignature(
+  state: IngredientSearchState,
+  demand: RareTagOrderDemand,
+  context: RecommendationRuntimeContext,
+): string {
+  return getSpecialFoodTarget(demand).tags.map((targetTag) => {
+    if (state.activeTags.includes(targetTag)) return 'matched';
+    const withTarget = resolveTagPriority(
+      [...state.activeTags, targetTag],
+      context.tagPriorityRules,
+    );
+    return withTarget.activeTags.includes(targetTag) ? 'reachable' : 'blocked';
+  }).join('|');
 }
 
 function compareIngredientStates(left: IngredientSearchState, right: IngredientSearchState): number {

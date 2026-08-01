@@ -66,23 +66,19 @@ internal sealed class WackyCookingCompetitionOrderModule : ISpecialBusinessOrder
         if (!guest.IsGuest(KoishiBossGuestId, "Koishi", "古明地恋")) return false;
         if (SpecialBusinessOrderProbe.HasControllerSpawnType(controller, "GhostInChallenge")) return false;
 
-        if (ReadBoolMember(order, "ManualOrder", "manualOrder")) return true;
+        if (TryReadExactManualOrder(order, out var manualOrder) && manualOrder) return true;
         if (IsManualOrderSource(source)) return true;
-        if (LooksLikeKoishiSpecialOrder(order)) return true;
+        if (IsExactSpecialOrder(order)) return true;
 
         return controller != null
             && SpecialBusinessOrderProbe.ReadControllerBool(controller, "IsControlled", "isControlled")
             && SpecialBusinessOrderProbe.ReadControllerBool(controller, "IsHerself", "isHerself");
     }
 
-    private static bool LooksLikeKoishiSpecialOrder(object? order)
+    private static bool IsExactSpecialOrder(object? order)
     {
-        if (order == null) return false;
-
-        var typeName = order.GetType().FullName ?? order.GetType().Name;
-        return typeName.IndexOf("GuestsManager+SpecialOrder", StringComparison.OrdinalIgnoreCase) >= 0
-            || typeName.EndsWith(".SpecialOrder", StringComparison.OrdinalIgnoreCase)
-            || typeName.EndsWith("+SpecialOrder", StringComparison.OrdinalIgnoreCase);
+        var resolution = RuntimeOrderTypeResolver.Resolve(order);
+        return resolution.Resolved && resolution.Kind == RuntimeOrderKind.Special;
     }
 
     private static bool IsManualOrderSource(string source)
@@ -92,29 +88,25 @@ internal sealed class WackyCookingCompetitionOrderModule : ISpecialBusinessOrder
             || source.IndexOf("ManualDesk", StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
-    private static bool ReadBoolMember(object? value, params string[] members)
+    private static bool TryReadExactManualOrder(object? order, out bool manualOrder)
     {
-        foreach (var member in members)
+        manualOrder = false;
+        var resolution = RuntimeOrderTypeResolver.Resolve(order);
+        if (!resolution.Resolved || resolution.ReadableOrder == null) return false;
+
+        try
         {
-            var raw = ReadFirstMember(value, member);
-            if (raw is bool boolean) return boolean;
-
-            var text = raw?.ToString()?.Trim();
-            if (bool.TryParse(text, out var parsed)) return parsed;
+            var property = resolution.ReadableOrder.GetType().GetProperty(
+                "ManualOrder",
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+            if (property == null || property.PropertyType != typeof(bool)) return false;
+            if (property.GetValue(resolution.ReadableOrder) is not bool value) return false;
+            manualOrder = value;
+            return true;
         }
-
-        return false;
-    }
-
-    private static object? ReadFirstMember(object? value, params string[] members)
-    {
-        foreach (var member in members)
+        catch
         {
-            var result = RuntimeReflectionUtility.GetMemberValue(value, member)
-                ?? RuntimeReflectionUtility.InvokeMethod(value, $"get_{member}");
-            if (result != null) return result;
+            return false;
         }
-
-        return null;
     }
 }

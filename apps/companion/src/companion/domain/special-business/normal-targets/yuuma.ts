@@ -5,6 +5,7 @@ import {
   emptySelection,
   findOrderRecipe,
   hasNoHardFailures,
+  hasNoHardFailuresExcept,
   selectBestPair,
 } from '@/companion/domain/special-business/normal-targets/shared';
 import { resolveExactSpecialBusinessCustomer } from '@/companion/domain/special-business/customer-profile';
@@ -20,7 +21,10 @@ import type {
   SpecialBusinessNormalTargetArgs,
   SpecialBusinessNormalTargetSelection,
 } from '@/companion/domain/special-business/types';
-import { DEFAULT_RECOMMENDATION_DATA } from '@/lib/recommendation-data';
+import {
+  DEFAULT_RECOMMENDATION_DATA,
+  type RecommendationDataSet,
+} from '@/lib/recommendation-data';
 import {
   buildRareBeverageCandidates,
   buildRareFoodCandidates,
@@ -89,36 +93,117 @@ export function selectYuumaNormalExecutionTarget({
     recipes: [originalRecipe],
     beverages: [originalBeverage],
   };
-  const foodCandidates = buildRareFoodCandidates(exactOrderData, demand, context)
-    .filter(hasNoHardFailures)
+  const searchedFoodCandidates = buildRareFoodCandidates(exactOrderData, demand, context, {
+    preserveTwoTagSpecialTargetReachability: true,
+  })
     .filter((candidate) => candidate.recipe.id === originalRecipe.id);
   const beverageCandidates = buildRareBeverageCandidates(exactOrderData, demand, context)
     .filter(hasNoHardFailures)
     .filter((candidate) => candidate.beverage.id === originalBeverage.id);
-  const best = selectBestPair({
-    foodCandidates,
+  const strictBest = selectBestPair({
+    foodCandidates: searchedFoodCandidates.filter(hasNoHardFailures),
     beverageCandidates,
     scoreFood: scoreYuumaFood,
     scoreBeverage: scoreYuumaBeverage,
     scorePair: (food, beverage) => scoreYuumaFood(food) + scoreYuumaBeverage(beverage),
   });
-  if (!best) {
+  if (strictBest) {
     return {
-      target: null,
-      message: `原订单料理 ${originalRecipe.name} 无法通过现有材料同时满足目标 Tag：${rule.foodTarget.tags.join('、')}。`,
+      target: buildExecutionTarget(
+        order,
+        strictBest.food,
+        strictBest.beverage,
+        `保持原订单料理与酒水，并同时满足${challengeLabel}目标 Tag：${rule.foodTarget.tags.join('、')}`,
+        { specialTargetFoodTags: rule.foodTarget.tags },
+      ),
+      message: '',
     };
   }
 
+  const controlledBest = selectBestPair({
+    foodCandidates: searchedFoodCandidates
+      .filter((candidate) => hasNoHardFailuresExcept(candidate, 'food.special-target-tag')),
+    beverageCandidates,
+    scoreFood: scoreYuumaFood,
+    scoreBeverage: scoreYuumaBeverage,
+    scorePair: (food, beverage) => scoreYuumaFood(food) + scoreYuumaBeverage(beverage),
+  });
+  if (!controlledBest) {
+    return {
+      target: null,
+      message: buildYuumaHardBlockMessage({
+        challengeLabel,
+        originalRecipe,
+        originalBeverage,
+        context,
+        data,
+        targetTags: rule.foodTarget.tags,
+      }),
+    };
+  }
+
+  const matchedTags = controlledBest.food.matchedSpecialFoodTargetTags;
+  const matchText = matchedTags.length > 0
+    ? `仅命中 ${matchedTags.length}/${rule.foodTarget.tags.length} 个目标 Tag：${matchedTags.join('、')}`
+    : `未命中当前目标 Tag：${rule.foodTarget.tags.join('、')}`;
   return {
     target: buildExecutionTarget(
       order,
-      best.food,
-      best.beverage,
-      `保持原订单料理与酒水，并同时满足${challengeLabel}目标 Tag：${rule.foodTarget.tags.join('、')}`,
-      { specialTargetFoodTags: rule.foodTarget.tags },
+      controlledBest.food,
+      controlledBest.beverage,
+      `保持原订单料理与酒水；当前无法同时满足${challengeLabel}目标 Tag，改用受控推进方案（${matchText}）。该方案会交由游戏原生低收益结算，可能造成较低伤害并增加狂暴。`,
+      {
+        allowYuumaControlledProgression: true,
+        specialTargetFoodTags: rule.foodTarget.tags,
+      },
     ),
     message: '',
   };
+}
+
+function buildYuumaHardBlockMessage({
+  challengeLabel,
+  originalRecipe,
+  originalBeverage,
+  context,
+  data,
+  targetTags,
+}: {
+  challengeLabel: string;
+  originalRecipe: RecommendationDataSet['recipes'][number];
+  originalBeverage: RecommendationDataSet['beverages'][number];
+  context: NonNullable<ReturnType<typeof buildNormalTargetRuntimeContext>>;
+  data: RecommendationDataSet;
+  targetTags: readonly string[];
+}): string {
+  if (!context.availableRecipeIds.has(originalRecipe.id)) {
+    return `${challengeLabel}原订单料理 ${originalRecipe.name} 尚未解锁，不能生成受控推进方案。`;
+  }
+
+  const ingredientsByName = new Map(data.ingredients.map((ingredient) => [ingredient.name, ingredient]));
+  const unavailableBaseIngredients = [...new Set(originalRecipe.ingredients.filter((name) => {
+    const ingredient = ingredientsByName.get(name);
+    return !ingredient
+      || !context.availableIngredientIds.has(ingredient.id)
+      || context.disabledIngredientIds.has(ingredient.id)
+      || context.excludedIngredientIds.has(ingredient.id);
+  }))];
+  if (unavailableBaseIngredients.length > 0) {
+    return `${challengeLabel}原订单料理 ${originalRecipe.name} 的基础材料当前不可用或已排除：${unavailableBaseIngredients.join('、')}。`;
+  }
+
+  if (context.hasCookerSnapshot && !context.placedCookerNames.has(originalRecipe.cooker)) {
+    return `${challengeLabel}原订单料理 ${originalRecipe.name} 所需厨具 ${originalRecipe.cooker || '未知'} 当前不可用，不能生成受控推进方案。`;
+  }
+
+  if (!context.availableBeverageIds.has(originalBeverage.id)) {
+    return `${challengeLabel}原订单酒水 ${originalBeverage.name} 当前不可用，不能生成受控推进方案。`;
+  }
+  if (context.excludedBeverageIds.has(originalBeverage.id)) {
+    return `${challengeLabel}原订单酒水 ${originalBeverage.name} 已被排除，不能生成受控推进方案。`;
+  }
+
+  return `${challengeLabel}原订单 ${originalRecipe.name} / ${originalBeverage.name} 没有通过料理、酒水与厨具硬门禁的受控推进方案；当前目标 Tag：${targetTags.join('、')}。`;
 }
 
 function scoreYuumaFood(candidate: FoodCandidate): number {

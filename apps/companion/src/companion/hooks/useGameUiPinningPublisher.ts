@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { publishGameUiPinningTarget } from '@/companion/api';
+import {
+  reconcileGameUiPinningTarget,
+  type GameUiPinningSourceOrderState,
+} from '@/companion/domain/automation';
 import type { GameUiPinningTarget } from '@/companion/types';
 
 const UI_PINNING_RETRY_DELAYS_MS = [750, 2000, 5000] as const;
@@ -15,12 +19,12 @@ interface UseGameUiPinningPublisherOptions {
   pinningEnabled: boolean;
   cookerHighlightEnabled: boolean;
   target: GameUiPinningTarget | null;
-  targetSourceValid: boolean;
+  sourceOrders: readonly GameUiPinningSourceOrderState[];
   recommendationIsCurrent: boolean;
   recommendationPending: boolean;
   recommendationError: boolean;
   recommendationSuccessRevision: number;
-  targetContextSignature: string;
+  targetPolicySignature: string;
 }
 
 interface UiPinningPublication {
@@ -37,6 +41,7 @@ interface UiPinningPublisherState {
   active: boolean;
   activeAbortController: AbortController | null;
   connectionKey: string;
+  targetPolicySignature: string;
   desired: UiPinningPublication | null;
   disposed: boolean;
   failedAtSuccessRevision: number | null;
@@ -63,17 +68,18 @@ export function useGameUiPinningPublisher({
   pinningEnabled,
   cookerHighlightEnabled,
   target,
-  targetSourceValid,
+  sourceOrders,
   recommendationIsCurrent,
   recommendationPending,
   recommendationError,
   recommendationSuccessRevision,
-  targetContextSignature,
+  targetPolicySignature,
 }: UseGameUiPinningPublisherOptions): void {
   const stateRef = useRef<UiPinningPublisherState>({
     active: false,
     activeAbortController: null,
     connectionKey: '',
+    targetPolicySignature: '',
     desired: null,
     disposed: false,
     failedAtSuccessRevision: null,
@@ -82,9 +88,6 @@ export function useGameUiPinningPublisher({
     retryAttempt: 0,
     retryTimer: null,
   });
-
-  const serializedTarget = serializeGameUiPinningWireTarget(target);
-  const targetSourceOrderKey = target?.sourceOrderKey ?? '';
 
   const pump = useCallback(function publishLatestTarget(): void {
     const state = stateRef.current;
@@ -155,12 +158,24 @@ export function useGameUiPinningPublisher({
       connectionRevision,
       sessionId,
       businessGeneration,
-      targetContextSignature,
     ].join('\n');
-    if (state.connectionKey !== connectionKey) {
+    const connectionChanged = state.connectionKey !== connectionKey;
+    if (connectionChanged) {
       state.connectionKey = connectionKey;
       state.lastCurrentTarget = null;
       state.lastSuccessfulSignature = '';
+      state.failedAtSuccessRevision = null;
+      state.retryAttempt = 0;
+      if (state.retryTimer !== null) {
+        window.clearTimeout(state.retryTimer);
+        state.retryTimer = null;
+      }
+    }
+
+    const targetPolicyChanged = state.targetPolicySignature !== targetPolicySignature;
+    if (targetPolicyChanged) {
+      state.targetPolicySignature = targetPolicySignature;
+      state.lastCurrentTarget = null;
       state.failedAtSuccessRevision = null;
       state.retryAttempt = 0;
       if (state.retryTimer !== null) {
@@ -191,19 +206,22 @@ export function useGameUiPinningPublisher({
 
     const featureEnabled = pinningEnabled || cookerHighlightEnabled;
     const recommendationFailed = recommendationError || state.failedAtSuccessRevision !== null;
-    if (!featureEnabled || recommendationFailed || !targetSourceValid) {
+    if (!featureEnabled || recommendationFailed) {
       state.lastCurrentTarget = null;
-    } else if (recommendationIsCurrent && !recommendationPending) {
-      state.lastCurrentTarget = deserializeGameUiPinningWireTarget(
-        serializedTarget,
-        targetSourceOrderKey,
-      );
+    } else if (!connectionChanged
+      && !targetPolicyChanged
+      && recommendationIsCurrent
+      && !recommendationPending) {
+      state.lastCurrentTarget = reconcileGameUiPinningTarget(target, sourceOrders);
+    } else {
+      state.lastCurrentTarget = reconcileGameUiPinningTarget(state.lastCurrentTarget, sourceOrders);
     }
 
     const publicationTarget = state.lastCurrentTarget;
     const publicationTargetSignature = serializeGameUiPinningWireTarget(publicationTarget);
     const publicationSignature = [
       connectionKey,
+      targetPolicySignature,
       pinningEnabled ? '1' : '0',
       cookerHighlightEnabled ? '1' : '0',
       publicationTargetSignature,
@@ -241,11 +259,10 @@ export function useGameUiPinningPublisher({
     recommendationIsCurrent,
     recommendationPending,
     recommendationSuccessRevision,
-    serializedTarget,
     sessionId,
-    targetSourceOrderKey,
-    targetSourceValid,
-    targetContextSignature,
+    sourceOrders,
+    target,
+    targetPolicySignature,
   ]);
 }
 
@@ -260,13 +277,4 @@ function serializeGameUiPinningWireTarget(target: GameUiPinningTarget | null): s
     cookerTypeId: target.cookerTypeId,
     cookerName: target.cookerName,
   });
-}
-
-function deserializeGameUiPinningWireTarget(
-  serialized: string,
-  sourceOrderKey: string,
-): GameUiPinningTarget | null {
-  if (serialized === 'null') return null;
-  const target = JSON.parse(serialized) as Omit<GameUiPinningTarget, 'signature' | 'sourceOrderKey'>;
-  return { signature: '', sourceOrderKey, ...target };
 }

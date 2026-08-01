@@ -14,6 +14,8 @@ let preferencesModule;
 let dataModule;
 let automationModule;
 let automationStateModule;
+let recommendationModule;
+let normalTargetSharedModule;
 try {
   [
     serviceModule,
@@ -22,6 +24,8 @@ try {
     dataModule,
     automationModule,
     automationStateModule,
+    recommendationModule,
+    normalTargetSharedModule,
   ] = await Promise.all([
     vite.ssrLoadModule('/src/companion/domain/service-recommendations.ts'),
     vite.ssrLoadModule('/src/companion/domain/special-business/registry.ts'),
@@ -29,6 +33,8 @@ try {
     vite.ssrLoadModule('/src/lib/recommendation-data.ts'),
     vite.ssrLoadModule('/src/companion/domain/automation.ts'),
     vite.ssrLoadModule('/src/companion/automation-state.ts'),
+    vite.ssrLoadModule('/src/recommendation-engine/index.ts'),
+    vite.ssrLoadModule('/src/companion/domain/special-business/normal-targets/shared.ts'),
   ]);
 } finally {
   await vite.close();
@@ -51,6 +57,11 @@ const {
   selectOrderPreparationCandidates,
 } = automationModule;
 const { emptyAutoFirstOrderState } = automationStateModule;
+const { buildRareFoodCandidates } = recommendationModule;
+const {
+  buildNormalTargetRuntimeContext,
+  buildSyntheticDemand,
+} = normalTargetSharedModule;
 const root = new URL('../../', import.meta.url);
 
 const baseIngredient = buildIngredient(11, '基础肉', ['下酒']);
@@ -551,6 +562,8 @@ const normalSelection = selectSpecialBusinessNormalExecutionTarget({
 assert.ok(normalSelection.target);
 assert.equal(normalSelection.target.foodId, normalOrder.foodId);
 assert.equal(normalSelection.target.beverageId, normalOrder.beverageId);
+assert.equal(normalSelection.target.allowYuumaControlledProgression, false,
+  'A strict all-Tag plan must not carry controlled-progression permission.');
 assert.deepEqual(normalSelection.target.specialTargetFoodTags, ['目标甲', '目标乙']);
 assert.deepEqual(
   buildSpecialFoodTargetWirePolicy(specialBusiness, normalOrder.specialBusinessRole, 7),
@@ -568,6 +581,196 @@ assert.deepEqual(
   normalSelection.target.extraIngredientIds.sort((left, right) => left - right),
   [targetAIngredient.id, targetBIngredient.id],
 );
+const controlledProgressionSelection = selectSpecialBusinessNormalExecutionTarget({
+  order: normalOrder,
+  specialBusiness,
+  runtime: {
+    ...runtime,
+    availableIngredientIds: [baseIngredient.id, targetAIngredient.id],
+  },
+  preferences,
+  dataSignature: buildRecommendationDataSignature(data),
+  data,
+});
+assert.ok(controlledProgressionSelection.target,
+  'A buildable original order must remain executable when only the all-Tag challenge bonus is impossible.');
+assert.equal(controlledProgressionSelection.target.allowYuumaControlledProgression, true);
+assert.deepEqual(controlledProgressionSelection.target.extraIngredientIds, [targetAIngredient.id],
+  'Controlled progression must still maximize reachable target Tags with the same special-target demand.');
+assert.deepEqual(controlledProgressionSelection.target.specialTargetFoodTags, ['目标甲', '目标乙'],
+  'Controlled progression must retain the complete active target policy for runtime revision checks.');
+assert.match(controlledProgressionSelection.target.reason, /受控推进方案/);
+assert.match(controlledProgressionSelection.target.reason, /较低伤害并增加狂暴/);
+assert.equal(controlledProgressionSelection.message, '');
+
+const missingCookerSelection = selectSpecialBusinessNormalExecutionTarget({
+  order: normalOrder,
+  specialBusiness,
+  runtime: {
+    ...runtime,
+    placedCookerTypeIds: [],
+    placedCookers: [],
+    placedCookerControllerCount: 0,
+  },
+  preferences,
+  dataSignature: buildRecommendationDataSignature(data),
+  data,
+});
+assert.equal(missingCookerSelection.target, null,
+  'Controlled progression must not bypass the original recipe cooker gate.');
+assert.match(missingCookerSelection.message, /所需厨具 烧烤架 当前不可用/);
+
+const negativeTargetVariant = selectYuumaNormalVariant({
+  recipeOverrides: {
+    id: 301,
+    recipeId: 401,
+    name: '负面目标料理',
+    negativeTags: ['目标乙'],
+  },
+  ingredients: [baseIngredient, targetAIngredient, targetBIngredient],
+  targetTags: ['目标甲', '目标乙'],
+});
+assertControlledOriginalOrder(negativeTargetVariant,
+  'A target Tag forbidden by the original recipe must use controlled progression.');
+assert.equal(negativeTargetVariant.selection.target.foodTags.includes('目标乙'), false);
+
+const hotBaseIngredient = buildIngredient(14, '凉爽材料', ['凉爽']);
+const saltyIngredient = buildIngredient(15, '咸味材料', ['咸']);
+const suppressedTargetVariant = selectYuumaNormalVariant({
+  recipeOverrides: {
+    id: 302,
+    recipeId: 402,
+    name: '灼热基础料理',
+    positiveTags: ['灼热'],
+  },
+  ingredients: [baseIngredient, hotBaseIngredient, saltyIngredient],
+  targetTags: ['凉爽', '咸'],
+});
+assertControlledOriginalOrder(suppressedTargetVariant,
+  'A base hot Tag suppressing the cool target must use controlled progression.');
+assert.equal(suppressedTargetVariant.selection.target.foodTags.includes('凉爽'), false);
+assert.equal(suppressedTargetVariant.selection.target.foodTags.includes('灼热'), true);
+
+const fullSlotIngredients = Array.from({ length: 5 }, (_, index) =>
+  buildIngredient(31 + index, `满槽材料 ${index + 1}`, []));
+const fullSlotVariant = selectYuumaNormalVariant({
+  recipeOverrides: {
+    id: 303,
+    recipeId: 403,
+    name: '五材料满槽料理',
+    ingredients: fullSlotIngredients.map((ingredient) => ingredient.name),
+    positiveTags: [],
+  },
+  ingredients: [...fullSlotIngredients, targetAIngredient, targetBIngredient],
+  targetTags: ['目标甲', '目标乙'],
+});
+assertControlledOriginalOrder(fullSlotVariant,
+  'An original recipe with all five ingredient slots occupied must use controlled progression.');
+assert.deepEqual(fullSlotVariant.selection.target.extraIngredientIds, []);
+
+const beamTargetIngredient = buildIngredient(9999, '唯一可达目标材料', ['目标甲']);
+const beamFillers = Array.from({ length: 80 }, (_, index) =>
+  buildIngredient(100 + index, `高优先候选 ${index + 1}`, ['下酒']));
+const wideBeamVariant = selectYuumaNormalVariant({
+  recipeOverrides: {
+    id: 304,
+    recipeId: 404,
+    name: '宽候选池料理',
+  },
+  ingredients: [baseIngredient, ...beamFillers, beamTargetIngredient],
+  targetTags: ['目标甲', '目标乙'],
+});
+assertControlledOriginalOrder(wideBeamVariant,
+  'Controlled progression must survive a candidate pool wider than the ingredient beam.');
+assert.equal(wideBeamVariant.selection.target.extraIngredientIds.includes(beamTargetIngredient.id), true,
+  'The beam must retain the state with the greatest reachable special-target coverage.');
+assert.equal(wideBeamVariant.selection.target.foodTags.includes('目标甲'), true);
+
+const blockingSaltyIngredients = Array.from({ length: 80 }, (_, index) =>
+  buildIngredient(200 + index, `阻断凉爽的咸味材料 ${index + 1}`, ['咸', '灼热']));
+const safeSaltyIngredient = buildIngredient(9998, '安全咸味材料', ['咸']);
+const coolIngredient = buildIngredient(9999, '凉爽材料', ['凉爽']);
+const strictReachabilityVariant = selectYuumaNormalVariant({
+  recipeOverrides: {
+    id: 305,
+    recipeId: 405,
+    name: '严格可达性料理',
+    positiveTags: [],
+  },
+  ingredients: [
+    baseIngredient,
+    ...blockingSaltyIngredients,
+    safeSaltyIngredient,
+    coolIngredient,
+  ],
+  targetTags: ['凉爽', '咸'],
+});
+assert.equal(strictReachabilityVariant.selection.target.allowYuumaControlledProgression, false,
+  'Yuuma must not fall back to controlled progression while a strict two-Tag combination remains reachable.');
+assert.deepEqual(
+  strictReachabilityVariant.selection.target.extraIngredientIds.sort((left, right) => left - right),
+  [safeSaltyIngredient.id, coolIngredient.id],
+  'The Yuuma-only search must preserve the safe intermediate state beyond the common 64-state beam.',
+);
+
+const strictReachabilityContext = buildNormalTargetRuntimeContext(
+  strictReachabilityVariant.runtime,
+  preferences,
+  strictReachabilityVariant.data,
+);
+assert.ok(strictReachabilityContext);
+const commonBeamCandidates = buildRareFoodCandidates(
+  strictReachabilityVariant.data,
+  buildSyntheticDemand(customer, '', '', {
+    enforcement: 'require',
+    match: 'all',
+    tags: strictReachabilityVariant.targetTags,
+  }),
+  strictReachabilityContext,
+);
+assert.equal(
+  commonBeamCandidates.some((candidate) => candidate.meetsSpecialFoodTarget),
+  false,
+  'The regression fixture must actually exceed and defeat the unchanged common beam.',
+);
+
+const wackyPreferenceIngredients = Array.from({ length: 80 }, (_, index) =>
+  buildIngredient(400 + index, `怪诞偏好材料 ${index + 1}`, ['目标甲', '偏好']));
+const wackyDualTargetIngredient = buildIngredient(9997, '怪诞双目标材料', ['目标甲', '目标乙']);
+const wackyStyleData = {
+  ...data,
+  recipes: [{
+    ...recipe,
+    id: 306,
+    recipeId: 406,
+    name: '怪诞默认排序料理',
+    positiveTags: [],
+  }],
+  ingredients: [baseIngredient, ...wackyPreferenceIngredients, wackyDualTargetIngredient],
+};
+const wackyStyleRuntime = {
+  ...runtime,
+  availableRecipeIds: [306],
+  availableIngredientIds: wackyStyleData.ingredients.map((ingredient) => ingredient.id),
+  ownedIngredientQty: Object.fromEntries(wackyStyleData.ingredients.map((ingredient) => [ingredient.id, 10])),
+};
+const wackyStyleContext = buildNormalTargetRuntimeContext(wackyStyleRuntime, preferences, wackyStyleData);
+assert.ok(wackyStyleContext);
+const wackyStyleCandidates = buildRareFoodCandidates(
+  wackyStyleData,
+  buildSyntheticDemand({ ...customer, positiveTags: ['偏好'] }, '偏好', '', {
+    enforcement: 'require',
+    match: 'any',
+    tags: ['目标甲', '目标乙'],
+  }),
+  wackyStyleContext,
+);
+assert.equal(
+  wackyStyleCandidates.some((candidate) => candidate.matchedSpecialFoodTargetTags.length === 2),
+  false,
+  'The default Wacky-style any-Tag search must retain its original preference-first beam ordering.',
+);
+
 const missingRuntimeIdentitySelection = selectSpecialBusinessNormalExecutionTarget({
   order: {
     ...normalOrder,
@@ -662,7 +865,7 @@ assert.deepEqual(
 );
 
 await assertSourceContracts();
-console.log('PASS: Yuuma recommendation rules require the exact role, original order, and both runtime target tags.');
+console.log('PASS: Yuuma NormalOrder planning is strict-first and uses explicit controlled progression only when the original order remains executable.');
 
 function buildRareRecommendation(options = {}) {
   const result = buildRecommendations(options);
@@ -711,6 +914,67 @@ function buildIngredient(id, name, tags) {
   };
 }
 
+function selectYuumaNormalVariant({ recipeOverrides, ingredients, targetTags }) {
+  const variantRecipe = {
+    ...recipe,
+    ...recipeOverrides,
+  };
+  const variantData = {
+    ...data,
+    recipes: [variantRecipe],
+    ingredients,
+  };
+  const variantOrder = {
+    ...normalOrder,
+    traceId: `N-YUUMA-${variantRecipe.id}`,
+    orderKey: `N-YUUMA-${variantRecipe.id}`,
+    foodId: variantRecipe.id,
+    foodName: variantRecipe.name,
+  };
+  const variantSpecialBusiness = {
+    ...specialBusiness,
+    foodTargetTags: targetTags,
+    yuumaFoodTargetRevision: variantRecipe.id,
+  };
+  const variantRuntime = {
+    ...runtime,
+    availableRecipeIds: [variantRecipe.id],
+    availableIngredientIds: ingredients.map((ingredient) => ingredient.id),
+    ownedIngredientQty: Object.fromEntries(ingredients.map((ingredient) => [ingredient.id, 10])),
+  };
+  const selection = selectSpecialBusinessNormalExecutionTarget({
+    order: variantOrder,
+    specialBusiness: variantSpecialBusiness,
+    runtime: variantRuntime,
+    preferences,
+    dataSignature: buildRecommendationDataSignature(variantData),
+    data: variantData,
+  });
+  assert.ok(selection.target);
+  return {
+    selection,
+    order: variantOrder,
+    beverage,
+    data: variantData,
+    runtime: variantRuntime,
+    targetTags,
+  };
+}
+
+function assertControlledOriginalOrder(variant, message) {
+  const { target } = variant.selection;
+  assert.ok(target, message);
+  assert.equal(target.foodId, variant.order.foodId, message);
+  assert.equal(target.beverageId, variant.beverage.id, message);
+  assert.equal(target.allowYuumaControlledProgression, true, message);
+  assert.equal(
+    target.specialTargetFoodTags.every((tag) => target.foodTags.includes(tag)),
+    false,
+    'A controlled target must not be misclassified as a strict all-Tag plan.',
+  );
+  assert.match(target.reason, /受控推进方案/);
+}
+
 async function assertSourceContracts() {
   const [
     types,
@@ -723,6 +987,10 @@ async function assertSourceContracts() {
     publisher,
     recommendationTypes,
     registry,
+    worker,
+    rareOrders,
+    yuumaNormalTarget,
+    wackyNormalTarget,
     normalSnapshot,
     yuumaOrderModule,
   ] = await Promise.all([
@@ -736,6 +1004,10 @@ async function assertSourceContracts() {
     readFile(new URL('apps/companion/src/companion/hooks/useGameUiPinningPublisher.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/recommendation-engine/types.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/domain/special-business/registry.ts', root), 'utf8'),
+    readFile(new URL('apps/companion/src/companion/workers/order-recommendations.worker.ts', root), 'utf8'),
+    readFile(new URL('apps/companion/src/recommendation-engine/rare-orders.ts', root), 'utf8'),
+    readFile(new URL('apps/companion/src/companion/domain/special-business/normal-targets/yuuma.ts', root), 'utf8'),
+    readFile(new URL('apps/companion/src/companion/domain/special-business/normal-targets/wacky.ts', root), 'utf8'),
     readFile(new URL('mods/bepinex/src/Save/RuntimeNormalOrderSnapshotService.cs', root), 'utf8'),
     readFile(new URL('mods/bepinex/src/Save/SpecialBusiness/YuumaChallengeOrderModule.cs', root), 'utf8'),
   ]);
@@ -758,11 +1030,29 @@ async function assertSourceContracts() {
     assert.match(api, new RegExp(`${field}:`));
   }
   assert.match(workbench, /buildOrderRecommendationPresentation\(/);
+  assert.match(workbench, /yuumaControlled=\$\{target\.allowYuumaControlledProgression \? 1 : 0\}/,
+    'Normal automation diagnostics must distinguish strict and controlled Yuuma targets.');
   assert.equal(workbench.includes('visibleOrderRecommendations = orderRecommendationsPending'), false);
-  assert.match(publisher, /targetContextSignature/);
+  assert.match(publisher, /targetPolicySignature/);
+  assert.equal(publisher.includes('targetContextSignature'), false);
+  assert.match(publisher, /reconcileGameUiPinningTarget\(state\.lastCurrentTarget, sourceOrders\)/);
   assert.equal(recommendationTypes.includes("'prefer'"), false);
   assert.match(registry, /challengeTypeAvailable !== true/);
   assert.match(companionTypes, /interface NormalBusinessOrder[\s\S]*runtimeGuestId: number \| null/);
+  assert.match(companionTypes, /interface NormalOrderExecutionTarget[\s\S]*allowYuumaControlledProgression: boolean/);
+  assert.match(companionTypes, /interface AutomationCookingJobSnapshot[\s\S]*allowYuumaControlledProgression: boolean/);
+  assert.match(worker, /item\.target\?\.allowYuumaControlledProgression \? 1 : 0/,
+    'The worker result signature must change when a Yuuma target switches execution policy.');
+  assert.match(yuumaNormalTarget, /preserveTwoTagSpecialTargetReachability: true/,
+    'Only the Yuuma strict-first selector must request reachability-preserving ingredient search.');
+  assert.equal(wackyNormalTarget.includes('preserveTwoTagSpecialTargetReachability'), false,
+    'Wacky candidate ordering must remain on the common beam.');
+  const commonIngredientComparator = rareOrders.slice(
+    rareOrders.indexOf('function compareIngredientStates('),
+    rareOrders.indexOf('export function compareFoodCandidates('),
+  );
+  assert.equal(commonIngredientComparator.includes('matchedSpecialFoodTargetTags'), false,
+    'Partial special-target coverage must not globally change the common beam ordering.');
   const normalOrderAction = api.slice(
     api.indexOf('export async function completeFirstNormalOrder('),
     api.indexOf('export async function readFavorites('),
@@ -771,6 +1061,11 @@ async function assertSourceContracts() {
     normalOrderAction,
     /if \(order\.runtimeGuestId != null\) params\.set\('runtimeGuestId', String\(order\.runtimeGuestId\)\)/,
     'Normal-order automation must transmit the verified runtime identity.',
+  );
+  assert.match(
+    normalOrderAction,
+    /allowYuumaControlledProgression: String\(executionTarget\?\.allowYuumaControlledProgression === true\)/,
+    'Normal-order automation must transmit controlled progression as an explicit boolean.',
   );
   assert.match(
     normalSnapshot,

@@ -8,6 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeOrderTypeResolver.cs" Link="RuntimeOrderTypeResolver.cs" />
     <Compile Include="../../mods/bepinex/src/Save/SpecialBusiness/SpecialBusinessIds.cs" Link="SpecialBusinessIds.cs" />
     <Compile Include="../../mods/bepinex/src/Save/SpecialBusiness/YuumaChallengeOrderModule.cs" Link="YuumaChallengeOrderModule.cs" />
     <Compile Include="../../mods/bepinex/src/Save/SpecialBusiness/YuumaSettlementTransactionTracker.cs" Link="YuumaSettlementTransactionTracker.cs" />

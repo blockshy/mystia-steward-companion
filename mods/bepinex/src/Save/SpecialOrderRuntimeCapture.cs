@@ -8,21 +8,23 @@ namespace MystiaStewardCompanion.Save;
 /// 捕获游戏运行时产生的稀客订单，并为本地 API 和自动上菜流程提供可复用的订单快照。
 /// </summary>
 /// <remarks>
-/// 游戏没有稳定的“当前稀客订单列表”公开接口，因此这里通过 Harmony 监听订单生成、加入、移除和状态更新等关键点。
-/// 捕获结果只保存在内存中，并通过运行时对象指针、桌号、稀客和原始 Tag ID 合并多次回调，避免同一订单在不同 Hook 中重复出现。
+/// 游戏没有稳定的“当前稀客订单列表”公开接口，因此这里通过 Harmony 监听订单与控制器的绑定、清理和状态更新等关键点。
+/// 捕获结果只保存在内存中；只有原生绑定成功的订单会进入缓存，后续回调按运行时对象指针更新或移除该绑定。
 /// </remarks>
 public static class SpecialOrderRuntimeCapture
 {
     private const string GuestsManagerTypeName = "NightScene.GuestManagementUtility.GuestsManager";
-    private const string OrderBaseTypeName = "NightScene.GuestManagementUtility.GuestsManager+OrderBase";
-    private const string SpecialOrderTypeName = "NightScene.GuestManagementUtility.GuestsManager+SpecialOrder";
     private const string GuestGroupControllerTypeName = "NightScene.GuestManagementUtility.GuestGroupController";
     private const string EvaluationResultTypeName =
         "NightScene.GuestManagementUtility.GuestGroupController+EvaluationResult";
+    private const string LeaveTypeName =
+        "NightScene.GuestManagementUtility.GuestGroupController+LeaveType";
     private const string Il2CppActionGenericTypeName = "Il2CppSystem.Action`1";
-    private const string SpecialGuestsControllerTypeName = "NightScene.GuestManagementUtility.SpecialGuestsController";
-    private const string OrderControllerTypeName = "Night.UI.HUD.Ordering.OrderController";
+    private const string Il2CppActionTypeName = "Il2CppSystem.Action";
     private const string PartnerManagerTypeName = "NightScene.PartnerUtility.PartnerManager";
+    private const string OrderChangeContextTypeName =
+        "NightScene.PartnerUtility.PartnerManager+OrderChangeContext";
+    private const string Il2CppObjectTypeName = "Il2CppSystem.Object";
     // 只保留最近的运行时订单，避免长时间经营或 Hook 异常时诊断缓存无限增长。
     private const int MaxOrders = 32;
 
@@ -30,14 +32,30 @@ public static class SpecialOrderRuntimeCapture
     private static readonly List<CapturedRuntimeSpecialOrder> Orders = new();
     private static readonly List<RuntimeParseFailureDiagnostic> RecentParseFailures = new();
     private static readonly HashSet<string> PatchedMethods = new(StringComparer.Ordinal);
+    private static readonly string[] RequiredPatchKeys =
+    {
+        PatchKey(GuestGroupControllerTypeName, "PushToOrder", 1, false),
+        PatchKey(GuestsManagerTypeName, "SetManualControllerOrderInternal", 3, false),
+        PatchKey(GuestsManagerTypeName, "EvaluateOrder", 3, false),
+        PatchKey(GuestsManagerTypeName, "EvaulateManualOrder", 2, false),
+        PatchKey(GuestsManagerTypeName, "CleanOrderInfo", 1, false),
+        PatchKey(GuestsManagerTypeName, "RemoveFromOrder", 1, false),
+        PatchKey(GuestsManagerTypeName, "RepellInternal", 4, false),
+    };
+    private static readonly string[] ObserverPatchKeys =
+    {
+        PatchKey(PartnerManagerTypeName, "OnOrderBaseStatusUpdate", 3, false),
+        PatchKey(PartnerManagerTypeName, "NotifySystemChanged", 4, false),
+    };
     private static readonly TimeSpan RetryInterval = TimeSpan.FromSeconds(5);
     private static Harmony? _harmony;
     private static ManualLogSource? _log;
     private static DateTime _lastAttachAttemptUtc = DateTime.MinValue;
     private static string _status = "not attached";
+    private static long _firstCoveredBusinessGeneration = long.MaxValue;
     private static int _addCallbacks;
     private static int _removeCallbacks;
-    private static int _generatedCallbacks;
+    private static int _manualCallbacks;
     private static int _statusCallbacks;
     private static int _capturedOrders;
     private static int _parseFailures;
@@ -71,7 +89,22 @@ public static class SpecialOrderRuntimeCapture
         {
             lock (SyncRoot)
             {
-                return _status;
+                return _status.StartsWith("error:", StringComparison.Ordinal)
+                    ? _status
+                    : BuildStatusLocked();
+            }
+        }
+    }
+
+    public static bool IsBusinessReady
+    {
+        get
+        {
+            lock (SyncRoot)
+            {
+                return RequiredPatchKeys.All(PatchedMethods.Contains)
+                    && (!RuntimeNightBusinessLifecycle.IsActive
+                        || RuntimeNightBusinessLifecycle.Generation >= _firstCoveredBusinessGeneration);
             }
         }
     }
@@ -161,10 +194,9 @@ public static class SpecialOrderRuntimeCapture
     {
         lock (SyncRoot)
         {
-            if (Orders.Count == 0) return;
+            if (Orders.Count > 0) _changeVersion++;
             Orders.Clear();
             _lastCapture = $"cleared: {reason}";
-            _changeVersion++;
             _status = BuildStatusLocked();
         }
     }
@@ -193,8 +225,8 @@ public static class SpecialOrderRuntimeCapture
     /// 安装所有已知稀客订单生命周期 Hook。
     /// </summary>
     /// <remarks>
-    /// 不同 DLC、普通订单和稀客手动订单会走不同游戏入口。这里一次性尝试多个方法，并允许部分缺失，
-    /// 以便当前游戏版本只要暴露其中一条链路就能捕获订单。
+    /// 不同 DLC、普通订单和稀客手动订单会走不同游戏入口。这里允许缺失入口后续重试安装，
+    /// 但只有全部权威创建与退出入口在经营开始前就绪时，捕获结果才会进入业务链路。
     /// </remarks>
     private static void TryAttach(ManualLogSource? log, bool force)
     {
@@ -212,8 +244,17 @@ public static class SpecialOrderRuntimeCapture
         {
             _harmony ??= new Harmony("com.tyukki.mystia-steward-companion.special-order-runtime-capture");
 
-            PatchMethod(_harmony, GuestGroupControllerTypeName, "PushToOrder", 1, false, nameof(OnControllerOrderAdded), null, patchedNow, missing);
-            PatchMethod(_harmony, SpecialGuestsControllerTypeName, "PostGenerateOrder", 2, false, null, nameof(OnGeneratedSpecialOrder), patchedNow, missing);
+            PatchMethod(
+                _harmony,
+                GuestGroupControllerTypeName,
+                "PushToOrder",
+                1,
+                false,
+                null,
+                nameof(OnControllerOrderAdded),
+                patchedNow,
+                missing,
+                exactMethodPredicate: IsExactOrderBaseMethod);
             PatchMethod(
                 _harmony,
                 GuestsManagerTypeName,
@@ -225,27 +266,93 @@ public static class SpecialOrderRuntimeCapture
                 patchedNow,
                 missing,
                 requireExactManualOrderSetter: true);
-            PatchMethod(_harmony, GuestsManagerTypeName, "EvaulateManualOrder", 2, false, nameof(OnManualOrderEvaluating), null, patchedNow, missing);
-            PatchMethod(_harmony, GuestsManagerTypeName, "EndDlc4SpecialManualOrder", 1, false, nameof(OnManualOrderEnded), null, patchedNow, missing);
-            PatchMethod(_harmony, GuestsManagerTypeName, "AddToOrder", 1, false, nameof(OnOrderAdded), null, patchedNow, missing);
-            PatchMethod(_harmony, GuestsManagerTypeName, "RemoveFromOrder", 1, false, nameof(OnOrderRemoved), null, patchedNow, missing);
-            PatchMethod(_harmony, OrderControllerTypeName, "AddOrder", 1, true, nameof(OnOrderAdded), null, patchedNow, missing);
-            PatchMethod(_harmony, PartnerManagerTypeName, "OnOrderBaseAdd", 1, false, nameof(OnOrderAdded), null, patchedNow, missing);
-            PatchMethod(_harmony, PartnerManagerTypeName, "OnOrderBaseStatusUpdate", 3, false, null, nameof(OnOrderStatusUpdated), patchedNow, missing);
-            PatchMethod(_harmony, PartnerManagerTypeName, "NotifySystemChanged", 4, false, null, nameof(OnOrderSystemChanged), patchedNow, missing);
+            PatchMethod(
+                _harmony,
+                GuestsManagerTypeName,
+                "EvaluateOrder",
+                3,
+                false,
+                nameof(CaptureControllerOrderBeforeCompletion),
+                nameof(OnOrderCompletionSucceeded),
+                patchedNow,
+                missing,
+                exactMethodPredicate: IsExactEvaluateOrder);
+            PatchMethod(
+                _harmony,
+                GuestsManagerTypeName,
+                "EvaulateManualOrder",
+                2,
+                false,
+                nameof(CaptureControllerOrderBeforeCompletion),
+                nameof(OnOrderCompletionSucceeded),
+                patchedNow,
+                missing,
+                exactMethodPredicate: IsExactManualEvaluateOrder);
+            PatchMethod(
+                _harmony,
+                GuestsManagerTypeName,
+                "CleanOrderInfo",
+                1,
+                false,
+                nameof(CaptureControllerOrderBeforeCompletion),
+                nameof(OnOrderCleanupSucceeded),
+                patchedNow,
+                missing,
+                exactMethodPredicate: IsExactControllerOnlyMethod);
+            PatchMethod(
+                _harmony,
+                GuestsManagerTypeName,
+                "RepellInternal",
+                4,
+                false,
+                nameof(CaptureControllerOrderBeforeRepell),
+                nameof(OnOrderRepellSucceeded),
+                patchedNow,
+                missing,
+                exactMethodPredicate: IsExactRepellInternal);
+            PatchMethod(
+                _harmony,
+                GuestsManagerTypeName,
+                "RemoveFromOrder",
+                1,
+                false,
+                nameof(CaptureOrderBeforeRemoval),
+                nameof(OnOrderRemovalSucceeded),
+                patchedNow,
+                missing,
+                exactMethodPredicate: IsExactOrderBaseMethod);
+            PatchOptionalObserver(
+                _harmony,
+                "OnOrderBaseStatusUpdate",
+                3,
+                nameof(OnOrderStatusUpdated),
+                patchedNow,
+                missing,
+                IsExactOrderStatusUpdate);
+            PatchOptionalObserver(
+                _harmony,
+                "NotifySystemChanged",
+                4,
+                nameof(OnOrderSystemChanged),
+                patchedNow,
+                missing,
+                IsExactNotifySystemChanged);
 
             lock (SyncRoot)
             {
-                _status = PatchedMethods.Count == 0
-                    ? $"waiting: {string.Join(", ", missing.Take(4))}"
-                    : BuildStatusLocked();
+                if (_firstCoveredBusinessGeneration == long.MaxValue
+                    && RequiredPatchKeys.All(PatchedMethods.Contains))
+                {
+                    _firstCoveredBusinessGeneration = checked(RuntimeNightBusinessLifecycle.Generation + 1);
+                }
+                _status = BuildStatusLocked();
             }
 
             if (patchedNow.Count > 0)
             {
                 log?.LogInfo($"Special order runtime capture patched: {string.Join(", ", patchedNow)}.");
             }
-            else if (force && PatchedMethods.Count == 0)
+            else if (force && !IsBusinessReady)
             {
                 log?.LogWarning($"Special order runtime capture waiting for game types: {string.Join(", ", missing.Take(4))}.");
             }
@@ -283,9 +390,10 @@ public static class SpecialOrderRuntimeCapture
         string? postfixName,
         ICollection<string> patchedNow,
         ICollection<string> missing,
-        bool requireExactManualOrderSetter = false)
+        bool requireExactManualOrderSetter = false,
+        Func<MethodInfo, bool>? exactMethodPredicate = null)
     {
-        var key = $"{typeName}.{methodName}/{parameterCount}/{(isStatic ? "static" : "instance")}";
+        var key = PatchKey(typeName, methodName, parameterCount, isStatic);
         lock (SyncRoot)
         {
             if (PatchedMethods.Contains(key)) return;
@@ -303,8 +411,10 @@ public static class SpecialOrderRuntimeCapture
             .GetMethods(flags)
             .Where(method => method.Name == methodName && method.GetParameters().Length == parameterCount)
             .Where(method => !requireExactManualOrderSetter || IsExactManualOrderSetter(method))
+            .Where(method => exactMethodPredicate == null || exactMethodPredicate(method))
             .ToArray();
-        var target = requireExactManualOrderSetter
+        var requiresUniqueMatch = requireExactManualOrderSetter || exactMethodPredicate != null;
+        var target = requiresUniqueMatch
             ? candidates.Length == 1 ? candidates[0] : null
             : candidates.FirstOrDefault();
         var prefix = prefixName == null ? null : typeof(SpecialOrderRuntimeCapture).GetMethod(prefixName, BindingFlags.NonPublic | BindingFlags.Static);
@@ -327,6 +437,37 @@ public static class SpecialOrderRuntimeCapture
         patchedNow.Add(key);
     }
 
+    private static void PatchOptionalObserver(
+        Harmony harmony,
+        string methodName,
+        int parameterCount,
+        string postfixName,
+        ICollection<string> patchedNow,
+        ICollection<string> missing,
+        Func<MethodInfo, bool> exactMethodPredicate)
+    {
+        try
+        {
+            PatchMethod(
+                harmony,
+                PartnerManagerTypeName,
+                methodName,
+                parameterCount,
+                false,
+                null,
+                postfixName,
+                patchedNow,
+                missing,
+                exactMethodPredicate: exactMethodPredicate);
+        }
+        catch (Exception ex)
+        {
+            var diagnostic = $"{PartnerManagerTypeName}.{methodName}/{parameterCount}: {ex.GetBaseException().Message}";
+            missing.Add(diagnostic);
+            _log?.LogWarning($"Optional special-order status observer was not installed: {diagnostic}");
+        }
+    }
+
     private static bool IsExactManualOrderSetter(MethodInfo method)
     {
         if (method.ReturnType != typeof(void)) return false;
@@ -339,7 +480,7 @@ public static class SpecialOrderRuntimeCapture
                 StringComparison.Ordinal)
             || !string.Equals(
                 parameters[2].ParameterType.FullName,
-                OrderBaseTypeName,
+                RuntimeOrderTypeResolver.OrderBaseTypeName,
                 StringComparison.Ordinal))
         {
             return false;
@@ -363,17 +504,105 @@ public static class SpecialOrderRuntimeCapture
                 StringComparison.Ordinal);
     }
 
-    private static void OnOrderAdded(object __0)
+    private static bool IsExactOrderBaseMethod(MethodInfo method)
     {
-        RunCaptureCallback("OrderAdd", () =>
-        {
-            lock (SyncRoot) _addCallbacks++;
-            AddOrder(ParseOrder(__0, "OrderAdd"));
-        });
+        return HasExactVoidSignature(method, RuntimeOrderTypeResolver.OrderBaseTypeName);
     }
 
-    private static void OnControllerOrderAdded(object __instance, object __0)
+    private static bool IsExactControllerOnlyMethod(MethodInfo method)
     {
+        return HasExactVoidSignature(method, GuestGroupControllerTypeName);
+    }
+
+    private static bool IsExactEvaluateOrder(MethodInfo method)
+    {
+        return HasExactVoidSignature(
+            method,
+            GuestGroupControllerTypeName,
+            typeof(bool).FullName!,
+            Il2CppActionTypeName);
+    }
+
+    private static bool IsExactManualEvaluateOrder(MethodInfo method)
+    {
+        if (method.ReturnType != typeof(void)) return false;
+        var parameters = method.GetParameters();
+        if (parameters.Length != 2
+            || !string.Equals(parameters[0].ParameterType.FullName, GuestGroupControllerTypeName, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var callbackType = parameters[1].ParameterType;
+        if (!callbackType.IsGenericType
+            || !string.Equals(callbackType.GetGenericTypeDefinition().FullName, Il2CppActionGenericTypeName, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var arguments = callbackType.GetGenericArguments();
+        return arguments.Length == 1
+            && string.Equals(arguments[0].FullName, EvaluationResultTypeName, StringComparison.Ordinal);
+    }
+
+    private static bool IsExactRepellInternal(MethodInfo method)
+    {
+        if (method.ReturnType != typeof(void)) return false;
+        var parameters = method.GetParameters();
+        return parameters.Length == 4
+            && string.Equals(parameters[0].ParameterType.FullName, GuestGroupControllerTypeName, StringComparison.Ordinal)
+            && parameters[1].IsOut
+            && parameters[1].ParameterType.IsByRef
+            && parameters[1].ParameterType.GetElementType() == typeof(bool)
+            && string.Equals(parameters[2].ParameterType.FullName, LeaveTypeName, StringComparison.Ordinal)
+            && parameters[3].ParameterType == typeof(bool);
+    }
+
+    private static bool IsExactOrderStatusUpdate(MethodInfo method)
+    {
+        return HasExactVoidSignature(
+            method,
+            RuntimeOrderTypeResolver.OrderBaseTypeName,
+            OrderChangeContextTypeName,
+            typeof(int).FullName!);
+    }
+
+    private static bool IsExactNotifySystemChanged(MethodInfo method)
+    {
+        return HasExactVoidSignature(
+            method,
+            typeof(int).FullName!,
+            OrderChangeContextTypeName,
+            RuntimeOrderTypeResolver.OrderBaseTypeName,
+            Il2CppObjectTypeName);
+    }
+
+    private static string PatchKey(string typeName, string methodName, int parameterCount, bool isStatic)
+    {
+        return $"{typeName}.{methodName}/{parameterCount}/{(isStatic ? "static" : "instance")}";
+    }
+
+    private static bool HasExactVoidSignature(MethodInfo method, params string[] parameterTypeNames)
+    {
+        if (method.ReturnType != typeof(void)) return false;
+        var parameters = method.GetParameters();
+        if (parameters.Length != parameterTypeNames.Length) return false;
+
+        for (var index = 0; index < parameters.Length; index++)
+        {
+            if (!string.Equals(parameters[index].ParameterType.FullName, parameterTypeNames[index], StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static void OnControllerOrderAdded(object __instance, object __0, bool __runOriginal)
+    {
+        if (!__runOriginal) return;
+
         RunCaptureCallback("ControllerOrderAdd", () =>
         {
             lock (SyncRoot) _addCallbacks++;
@@ -381,12 +610,24 @@ public static class SpecialOrderRuntimeCapture
         });
     }
 
-    private static void OnOrderRemoved(object __0)
+    private static void CaptureOrderBeforeRemoval(object __0, out CapturedRuntimeSpecialOrder? __state)
     {
-        RunCaptureCallback("OrderRemove", () =>
+        CapturedRuntimeSpecialOrder? state = null;
+        RunCaptureCallback("OrderRemove.Before", () =>
+        {
+            state = ParseOrder(__0, "OrderRemove.Before");
+        });
+        __state = state;
+    }
+
+    private static void OnOrderRemovalSucceeded(CapturedRuntimeSpecialOrder? __state, bool __runOriginal)
+    {
+        if (!__runOriginal || __state == null) return;
+
+        RunCaptureCallback("OrderRemove.After", () =>
         {
             lock (SyncRoot) _removeCallbacks++;
-            RemoveOrder(ParseOrder(__0, "OrderRemove"));
+            RemoveOrder(__state with { CaptureSource = "OrderRemove" });
         });
     }
 
@@ -413,15 +654,6 @@ public static class SpecialOrderRuntimeCapture
         });
     }
 
-    private static void OnGeneratedSpecialOrder(object __instance, object __result)
-    {
-        RunCaptureCallback("PostGenerateOrder", () =>
-        {
-            lock (SyncRoot) _generatedCallbacks++;
-            AddOrder(ParseOrder(__result, "PostGenerateOrder", __instance));
-        });
-    }
-
     private static void OnManualControllerOrderSet(
         object __0,
         object? __1,
@@ -432,7 +664,7 @@ public static class SpecialOrderRuntimeCapture
 
         RunCaptureCallback("ManualOrderSet", () =>
         {
-            lock (SyncRoot) _generatedCallbacks++;
+            lock (SyncRoot) _manualCallbacks++;
             var order = ParseOrder(__2, "ManualOrderSet", __0);
             if (order is not { ManualOrder: true })
             {
@@ -445,34 +677,72 @@ public static class SpecialOrderRuntimeCapture
                 NoteParseFailure("ManualOrderSet", "manual evaluation callback is null", __2);
             }
 
-            AddOrder(order with { ManualEvaluationCallback = __1 });
-        });
-    }
-
-    private static void OnManualOrderEvaluating(object __0)
-    {
-        RunCaptureCallback("ManualOrderEvaluate", () =>
-        {
-            lock (SyncRoot) _statusCallbacks++;
-            var order = ParseControllerCurrentOrder(__0, "ManualOrderEvaluate");
-            if (order is { IsFulfilled: true })
+            AddOrder(order with
             {
-                RemoveOrder(order with { CaptureSource = "ManualOrderEvaluate" });
-            }
+                ManualEvaluationCallback = __1,
+                ManualEvaluationBindingObserved = true,
+                ManualEvaluationBindingCallback = __1,
+            });
         });
     }
 
-    private static void OnManualOrderEnded(object __0)
+    private static void CaptureControllerOrderBeforeCompletion(
+        object __0,
+        MethodBase __originalMethod,
+        out CapturedRuntimeSpecialOrder? __state)
     {
-        RunCaptureCallback("ManualOrderEnd", () =>
+        CapturedRuntimeSpecialOrder? state = null;
+        var source = $"{__originalMethod.Name}.Before";
+        RunCaptureCallback(source, () =>
+        {
+            state = ParseControllerCurrentOrder(__0, source);
+        });
+        __state = state;
+    }
+
+    private static void OnOrderCompletionSucceeded(
+        CapturedRuntimeSpecialOrder? __state,
+        MethodBase __originalMethod,
+        bool __runOriginal)
+    {
+        if (!__runOriginal || __state is not { IsFulfilled: true }) return;
+
+        RunCaptureCallback($"{__originalMethod.Name}.After", () =>
         {
             lock (SyncRoot) _removeCallbacks++;
-            var order = ParseControllerCurrentOrder(__0, "ManualOrderEnd");
-            if (order is { IsFulfilled: true })
-            {
-                RemoveOrder(order with { CaptureSource = "ManualOrderEnd" });
-            }
+            RemoveOrder(__state with { CaptureSource = __originalMethod.Name });
         });
+    }
+
+    private static void OnOrderCleanupSucceeded(
+        CapturedRuntimeSpecialOrder? __state,
+        MethodBase __originalMethod,
+        bool __runOriginal)
+    {
+        if (!__runOriginal || __state == null) return;
+
+        RunCaptureCallback($"{__originalMethod.Name}.After", () =>
+        {
+            lock (SyncRoot) _removeCallbacks++;
+            RemoveOrder(__state with { CaptureSource = __originalMethod.Name });
+        });
+    }
+
+    private static void CaptureControllerOrderBeforeRepell(
+        object __0,
+        MethodBase __originalMethod,
+        out CapturedRuntimeSpecialOrder? __state)
+    {
+        CaptureControllerOrderBeforeCompletion(__0, __originalMethod, out __state);
+    }
+
+    private static void OnOrderRepellSucceeded(
+        CapturedRuntimeSpecialOrder? __state,
+        MethodBase __originalMethod,
+        bool __runOriginal)
+    {
+        if (!__runOriginal || __state == null) return;
+        OnOrderCleanupSucceeded(__state, __originalMethod, true);
     }
 
     private static void RunCaptureCallback(string source, Action callback)
@@ -493,12 +763,20 @@ public static class SpecialOrderRuntimeCapture
     /// 合并一条新捕获的订单记录。
     /// </summary>
     /// <remarks>
-    /// 同一稀客订单可能先由生成 Hook 捕获到 Tag，又由控制器 Hook 捕获到桌号或 guest 对象。
+    /// 同一稀客订单可能先由控制器绑定捕获，后续再由状态回调补充送达信息。
     /// 因此这里按运行时对象、桌号和稀客维度合并，并优先保留信息更完整的一份记录。
     /// </remarks>
     private static void AddOrder(CapturedRuntimeSpecialOrder? order)
     {
         if (order == null) return;
+        if (!HasExactControllerBinding(order))
+        {
+            NoteParseFailure(
+                order.CaptureSource,
+                "native order/controller binding is incomplete",
+                order.OrderObject);
+            return;
+        }
 
         lock (SyncRoot)
         {
@@ -508,7 +786,7 @@ public static class SpecialOrderRuntimeCapture
             var next = existing.Aggregate(order, MergeCapturedOrder);
             Orders.Add(next);
             _capturedOrders++;
-            _lastCapture = $"{next.CaptureSource}: desk={next.DeskCode}, guestId={next.GuestId?.ToString() ?? ""}, foodId={(next.HasFoodTagId ? next.FoodTagId.ToString() : "missing")}, foodText={next.FoodTagDisplayText}, bevId={(next.HasBeverageTagId ? next.BeverageTagId.ToString() : "missing")}, bevText={next.BeverageTagDisplayText}, free={next.IsFreeOrder}, manual={next.ManualOrder}, manualCallback={(next.ManualEvaluationCallback == null ? "no" : "yes")}";
+            _lastCapture = $"{next.CaptureSource}: desk={next.DeskCode}, guestId={next.GuestId?.ToString() ?? ""}, foodId={(next.HasFoodTagId ? next.FoodTagId.ToString() : "missing")}, foodText={next.FoodTagDisplayText}, bevId={(next.HasBeverageTagId ? next.BeverageTagId.ToString() : "missing")}, bevText={next.BeverageTagDisplayText}, free={next.IsFreeOrder}, manual={next.ManualOrder}, manualCallback={(next.ManualEvaluationCallback == null ? "no" : "yes")}, manualBinding={DescribeManualEvaluationBinding(next.ManualEvaluationBindingObserved, next.ManualEvaluationBindingConflict, next.ManualEvaluationBindingCallback)}";
             _changeVersion++;
             if (Orders.Count > MaxOrders)
             {
@@ -525,6 +803,11 @@ public static class SpecialOrderRuntimeCapture
     private static void RemoveOrder(CapturedRuntimeSpecialOrder? order)
     {
         if (order == null) return;
+        if (string.IsNullOrWhiteSpace(order.RuntimeKey))
+        {
+            NoteParseFailure(order.CaptureSource, "native order key is unavailable for removal", order.OrderObject);
+            return;
+        }
 
         lock (SyncRoot)
         {
@@ -559,7 +842,38 @@ public static class SpecialOrderRuntimeCapture
 
         // IsFullfilled only means that food and beverage were served. The order must remain
         // available for the completion/evaluation stage until an explicit removal callback.
-        AddOrder(order with { CaptureSource = MergeCaptureSource(order.CaptureSource, "Fulfilled") });
+        UpdateExistingOrder(order with { CaptureSource = MergeCaptureSource(order.CaptureSource, "Fulfilled") });
+    }
+
+    private static void UpdateExistingOrder(CapturedRuntimeSpecialOrder order)
+    {
+        lock (SyncRoot)
+        {
+            var existing = Orders.Where(current => CanMergeCapturedOrders(current, order)).ToList();
+            if (existing.Count == 0) return;
+
+            Orders.RemoveAll(current => CanMergeCapturedOrders(current, order));
+            var next = existing.Aggregate(order, MergeCapturedOrder);
+            if (!HasExactControllerBinding(next))
+            {
+                Orders.AddRange(existing);
+                NoteParseFailure(order.CaptureSource, "status update lost the confirmed controller binding", order.OrderObject);
+                return;
+            }
+
+            Orders.Add(next);
+            _capturedOrders++;
+            _lastCapture = $"updated:{next.CaptureSource}: runtimeKey={next.RuntimeKey}";
+            _changeVersion++;
+            _status = BuildStatusLocked();
+        }
+    }
+
+    private static bool HasExactControllerBinding(CapturedRuntimeSpecialOrder order)
+    {
+        return order.OrderObject != null
+            && order.ControllerObject != null
+            && !string.IsNullOrWhiteSpace(order.RuntimeKey);
     }
 
     private static bool IsOrderDeliveryContext(string contextName)
@@ -585,28 +899,41 @@ public static class SpecialOrderRuntimeCapture
             return null;
         }
 
-        var readableOrder = RuntimeReflectionUtility.TryCastRuntimeObject(order, SpecialOrderTypeName) ?? order;
-        var textParts = ParseOrderText(SafeToString(readableOrder));
-        var orderTypeValue = GetMemberValue(readableOrder, "Type");
-        var orderType = FormatValue(orderTypeValue);
-        var hasExactManualOrder = TryReadExactManualOrder(readableOrder, out var manualOrder);
-        var isManualSpecialOrder = hasExactManualOrder
-            && manualOrder
-            && IsManualSpecialOrder(readableOrder, controller);
-        var looksLikeSpecialOrder = IsSpecialOrderType(orderTypeValue, orderType)
-            || string.Equals(textParts.OrderType, "Special", StringComparison.OrdinalIgnoreCase)
-            || readableOrder.GetType().Name.IndexOf("SpecialOrder", StringComparison.OrdinalIgnoreCase) >= 0
-            || textParts.LooksLikeSpecialOrder
-            || isManualSpecialOrder;
-        if (!looksLikeSpecialOrder)
+        var resolution = RuntimeOrderTypeResolver.Resolve(order);
+        if (!resolution.RecognizedOrderType)
         {
             NoteNotApplicable(source, order.GetType().FullName ?? order.GetType().Name);
             return null;
         }
 
+        if (!resolution.Resolved)
+        {
+            NoteParseFailure(source, resolution.Reason, order);
+            return null;
+        }
+
+        if (resolution.Kind != RuntimeOrderKind.Special || resolution.ReadableOrder == null)
+        {
+            NoteNotApplicable(source, resolution.KindName);
+            return null;
+        }
+
+        var readableOrder = resolution.ReadableOrder;
+        var hasExactManualOrder = TryReadExactManualOrder(readableOrder, out var manualOrder);
         if (!hasExactManualOrder)
         {
             NoteParseFailure(source, "exact OrderBase.ManualOrder bool property is unavailable", readableOrder);
+            return null;
+        }
+
+        if (!TryReadExactOrderBool(readableOrder, "FreeOrder", out var isFreeOrder))
+        {
+            NoteParseFailure(source, "exact OrderBase.FreeOrder bool property is unavailable", readableOrder);
+            return null;
+        }
+        if (!TryReadExactOrderBool(readableOrder, "IsFullfilled", out var isFulfilled))
+        {
+            NoteParseFailure(source, "exact OrderBase.IsFullfilled bool property is unavailable", readableOrder);
             return null;
         }
 
@@ -615,21 +942,17 @@ public static class SpecialOrderRuntimeCapture
             ?? GetMemberValue(controller, "OrderingGuest");
         var foodTagId = ToNullableInt(GetMemberValue(readableOrder, "RequestFoodTag"));
         var beverageTagId = ToNullableInt(GetMemberValue(readableOrder, "RequestBeverageTag"));
-        var isFreeOrder = ReadOrderFreeState(readableOrder, textParts.FreeOrder);
         var deskCode = ToNullableInt(GetMemberValue(readableOrder, "DeskCode"))
             ?? ToNullableInt(GetMemberValue(controller, "DeskCode"))
-            ?? textParts.DeskCode
             ?? -1;
         return ParseSpecialOrderParts(
             specialGuest,
             foodTagId,
-            textParts.FoodTag,
             beverageTagId,
-            textParts.BeverageTag,
-            textParts.GuestName,
             deskCode,
             isFreeOrder,
             manualOrder,
+            isFulfilled,
             readableOrder,
             controller,
             source);
@@ -638,26 +961,20 @@ public static class SpecialOrderRuntimeCapture
     private static CapturedRuntimeSpecialOrder? ParseSpecialOrderParts(
         object? specialGuest,
         int? foodTagId,
-        string textFoodTag,
         int? beverageTagId,
-        string textBeverageTag,
-        string textGuestName,
         int deskCode,
         bool isFreeOrder,
         bool manualOrder,
+        bool isFulfilled,
         object? order,
         object? controller,
         string source)
     {
         var guestId = ToNullableInt(GetMemberValue(specialGuest, "Id"));
-        var foodTagDisplayText = ResolveOrderTagText(controller, order, "GetOrderFoodText", textFoodTag);
-        var beverageTagDisplayText = ResolveOrderTagText(controller, order, "GetOrderBevText", textBeverageTag);
+        var foodTagDisplayText = ResolveOrderTagText(controller, order, "GetOrderFoodText");
+        var beverageTagDisplayText = ResolveOrderTagText(controller, order, "GetOrderBevText");
 
-        var guestName = NormalizeGuestName(textGuestName);
-        if (string.IsNullOrWhiteSpace(guestName) && specialGuest != null)
-        {
-            guestName = ReadGuestName(specialGuest, guestId);
-        }
+        var guestName = specialGuest == null ? "" : ReadGuestName(specialGuest, guestId);
 
         if (!foodTagId.HasValue
             && !beverageTagId.HasValue
@@ -686,7 +1003,7 @@ public static class SpecialOrderRuntimeCapture
             beverageTagId.HasValue,
             beverageTagDisplayText,
             isFreeOrder,
-            IsOrderFulfilled(order),
+            isFulfilled,
             capturedAt,
             capturedAt,
             GetRuntimeObjectKey(order),
@@ -703,27 +1020,20 @@ public static class SpecialOrderRuntimeCapture
     /// </summary>
     /// <remarks>
     /// 稀客订单允许使用不在全局 Tag 目录中的 ID（例如无酒精为 -1），控制器方法还会应用
-    /// 订单文本 override，因此它是有控制器上下文时的权威来源。无控制器的回调继续使用订单自身文本。
+    /// 订单文本 override，因此它是有控制器上下文时的唯一展示文本来源。订单原始 ID 独立保留，
+    /// 无控制器时不调用订单文本 getter 或 <c>ToString()</c> 猜测展示内容。
     /// </remarks>
     private static string ResolveOrderTagText(
         object? controller,
         object? order,
-        string controllerMethodName,
-        string orderTextTag)
+        string controllerMethodName)
     {
-        var controllerTag = NormalizeTag(InvokeInstanceMethod(controller, controllerMethodName, order)?.ToString());
-        return string.IsNullOrWhiteSpace(controllerTag)
-            ? NormalizeTag(orderTextTag)
-            : controllerTag;
+        return NormalizeTag(InvokeInstanceMethod(controller, controllerMethodName, order)?.ToString());
     }
 
     /// <summary>
-    /// 在订单对象不可直接读取时，从控制器当前订单或控制器自身字段构造移除匹配记录。
+    /// 在原生完成调用前，从控制器当前订单锁存精确稀客订单身份。
     /// </summary>
-    /// <remarks>
-    /// 手动稀客订单结束时，游戏回调里不一定仍能拿到完整订单对象。这个降级记录只用于移除匹配，
-    /// 因此允许缺失 Tag，但必须至少能确定稀客或桌号。
-    /// </remarks>
     private static CapturedRuntimeSpecialOrder? ParseControllerCurrentOrder(object? controller, string source)
     {
         if (controller == null)
@@ -739,63 +1049,21 @@ public static class SpecialOrderRuntimeCapture
             if (parsed != null) return parsed;
         }
 
-        var removal = BuildControllerRemovalOrder(controller, source);
-        if (removal != null) return removal;
-
-        NoteParseFailure(source, "controller order missing", controller);
+        NoteParseFailure(source, "exact current SpecialOrder is unavailable", controller);
         return null;
     }
 
-    private static CapturedRuntimeSpecialOrder? BuildControllerRemovalOrder(object? controller, string source)
-    {
-        if (controller == null) return null;
-
-        var specialGuest = GetMemberValue(controller, "SpecialGuest")
-            ?? GetMemberValue(controller, "OrderingGuest");
-        var guestId = ToNullableInt(GetMemberValue(specialGuest, "Id"));
-        var guestName = specialGuest == null ? "" : ReadGuestName(specialGuest, guestId);
-        if (string.IsNullOrWhiteSpace(guestName) && !guestId.HasValue) return null;
-
-        var deskCode = ToNullableInt(GetMemberValue(controller, "DeskCode")) ?? -1;
-        var capturedAt = DateTime.UtcNow;
-        return new CapturedRuntimeSpecialOrder(
-            deskCode,
-            guestId,
-            string.IsNullOrWhiteSpace(guestName) ? "Special guest" : guestName,
-            0,
-            false,
-            "",
-            0,
-            false,
-            "",
-            false,
-            false,
-            capturedAt,
-            capturedAt,
-            "",
-            source)
-        {
-            ControllerObject = controller,
-        };
-    }
-
     /// <summary>
-    /// 判断两个捕获记录是否指向同一个订单槽位。
+    /// 判断两个捕获记录是否指向同一个原生订单。
     /// </summary>
     /// <remarks>
-    /// 运行时对象指针最可靠；指针不可用时退化为桌号与稀客信息匹配，避免不同桌的同名订单被合并。
+    /// 捕获创建已经强制要求原生指针；指针缺失时必须拒绝，不能按桌号或稀客身份重绑。
     /// </remarks>
     private static bool IsSameOrderSlot(CapturedRuntimeSpecialOrder left, CapturedRuntimeSpecialOrder right)
     {
-        if (!string.IsNullOrWhiteSpace(left.RuntimeKey)
-            && !string.IsNullOrWhiteSpace(right.RuntimeKey))
-        {
-            return string.Equals(left.RuntimeKey, right.RuntimeKey, StringComparison.Ordinal);
-        }
-
-        if (left.DeskCode >= 0 && right.DeskCode >= 0 && left.DeskCode != right.DeskCode) return false;
-        if (left.GuestId.HasValue && right.GuestId.HasValue) return left.GuestId.Value == right.GuestId.Value;
-        return string.Equals(left.GuestName, right.GuestName, StringComparison.Ordinal);
+        return !string.IsNullOrWhiteSpace(left.RuntimeKey)
+            && !string.IsNullOrWhiteSpace(right.RuntimeKey)
+            && string.Equals(left.RuntimeKey, right.RuntimeKey, StringComparison.Ordinal);
     }
 
     private static bool CanMergeCapturedOrders(CapturedRuntimeSpecialOrder left, CapturedRuntimeSpecialOrder right)
@@ -805,18 +1073,7 @@ public static class SpecialOrderRuntimeCapture
 
     private static bool IsSameOrderRemovalMatch(CapturedRuntimeSpecialOrder existing, CapturedRuntimeSpecialOrder removed)
     {
-        if (!string.IsNullOrWhiteSpace(existing.RuntimeKey)
-            && !string.IsNullOrWhiteSpace(removed.RuntimeKey))
-        {
-            return string.Equals(existing.RuntimeKey, removed.RuntimeKey, StringComparison.Ordinal);
-        }
-
-        var removedHasDetails = HasAnyOrderDetail(removed);
-        if (!removedHasDetails) return false;
-
-        if (!IsSameOrderSlot(existing, removed)) return false;
-
-        return CanMergeCapturedOrderDetails(existing, removed);
+        return IsSameOrderSlot(existing, removed);
     }
 
     private static bool IsDismissRequestMatch(
@@ -835,14 +1092,6 @@ public static class SpecialOrderRuntimeCapture
         if (beverageTagId.HasValue
             && (!existing.HasBeverageTagId || existing.BeverageTagId != beverageTagId.Value)) return false;
         return true;
-    }
-
-    private static bool HasAnyOrderDetail(CapturedRuntimeSpecialOrder order)
-    {
-        return order.HasFoodTagId
-            || order.HasBeverageTagId
-            || !string.IsNullOrWhiteSpace(order.FoodTagDisplayText)
-            || !string.IsNullOrWhiteSpace(order.BeverageTagDisplayText);
     }
 
     /// <summary>
@@ -878,6 +1127,13 @@ public static class SpecialOrderRuntimeCapture
             existing.HasBeverageTagId,
             existing.BeverageTagDisplayText);
 
+        var manualBindingConflict = incoming.ManualEvaluationBindingConflict
+            || existing.ManualEvaluationBindingConflict
+            || HaveConflictingManualEvaluationBindings(incoming, existing);
+        var manualBindingCallback = incoming.ManualEvaluationBindingObserved
+            ? incoming.ManualEvaluationBindingCallback ?? existing.ManualEvaluationBindingCallback
+            : existing.ManualEvaluationBindingCallback;
+
         return incoming with
         {
             GuestId = incoming.GuestId ?? existing.GuestId,
@@ -902,7 +1158,46 @@ public static class SpecialOrderRuntimeCapture
                 ? incoming.ManualEvaluationCallback
                     ?? (existing.ManualOrder ? existing.ManualEvaluationCallback : null)
                 : null,
+            ManualEvaluationBindingObserved = incoming.ManualEvaluationBindingObserved
+                || existing.ManualEvaluationBindingObserved,
+            ManualEvaluationBindingConflict = manualBindingConflict,
+            ManualEvaluationBindingCallback = manualBindingCallback,
         };
+    }
+
+    private static bool HaveConflictingManualEvaluationBindings(
+        CapturedRuntimeSpecialOrder incoming,
+        CapturedRuntimeSpecialOrder existing)
+    {
+        if (!incoming.ManualEvaluationBindingObserved
+            || !existing.ManualEvaluationBindingObserved)
+        {
+            return false;
+        }
+
+        var incomingCallback = incoming.ManualEvaluationBindingCallback;
+        var existingCallback = existing.ManualEvaluationBindingCallback;
+        if (incomingCallback == null || existingCallback == null)
+        {
+            return incomingCallback != null || existingCallback != null;
+        }
+
+        if (ReferenceEquals(incomingCallback, existingCallback)) return false;
+        return !RuntimeReflectionUtility.TryReadNativeObjectPointer(incomingCallback, out var incomingPointer)
+            || !RuntimeReflectionUtility.TryReadNativeObjectPointer(existingCallback, out var existingPointer)
+            || incomingPointer == 0
+            || existingPointer == 0
+            || incomingPointer != existingPointer;
+    }
+
+    private static string DescribeManualEvaluationBinding(
+        bool observed,
+        bool conflict,
+        object? callback)
+    {
+        if (conflict) return "conflict";
+        if (!observed) return "absent";
+        return callback == null ? "invalid" : "captured";
     }
 
     private static bool CanMergeCapturedOrderDetails(CapturedRuntimeSpecialOrder left, CapturedRuntimeSpecialOrder right)
@@ -973,34 +1268,14 @@ public static class SpecialOrderRuntimeCapture
         return $"{existing}+{incoming}";
     }
 
-    private static bool IsOrderFulfilled(object? order)
-    {
-        var value = GetMemberValue(order, "IsFullfilled");
-        if (value is bool boolValue) return boolValue;
-        return string.Equals(value?.ToString(), "true", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool ReadOrderFreeState(object? order, bool? textValue)
-    {
-        var value = GetMemberValue(order, "FreeOrder");
-        if (value is bool boolValue) return boolValue;
-        if (bool.TryParse(value?.ToString(), out var parsed)) return parsed;
-        return textValue ?? false;
-    }
-
-    private static bool IsManualSpecialOrder(object? order, object? controller)
-    {
-        if (!HasManualSpecialOrderTag(order)) return false;
-
-        var specialGuest = GetMemberValue(order, "SpecialGuests")
-            ?? GetMemberValue(controller, "SpecialGuest")
-            ?? GetMemberValue(controller, "OrderingGuest");
-        return IsExplicitSpecialGuest(specialGuest) || ToNullableInt(GetMemberValue(specialGuest, "Id")).HasValue;
-    }
-
     private static bool TryReadExactManualOrder(object order, out bool manualOrder)
     {
-        manualOrder = false;
+        return TryReadExactOrderBool(order, "ManualOrder", out manualOrder);
+    }
+
+    private static bool TryReadExactOrderBool(object order, string propertyName, out bool result)
+    {
+        result = false;
         const BindingFlags flags = BindingFlags.Public
             | BindingFlags.NonPublic
             | BindingFlags.Instance
@@ -1008,14 +1283,14 @@ public static class SpecialOrderRuntimeCapture
 
         for (var type = order.GetType(); type != null; type = type.BaseType)
         {
-            var property = type.GetProperty("ManualOrder", flags);
+            var property = type.GetProperty(propertyName, flags);
             if (property == null) continue;
             if (property.PropertyType != typeof(bool)) return false;
 
             try
             {
                 if (property.GetValue(order) is not bool value) return false;
-                manualOrder = value;
+                result = value;
                 return true;
             }
             catch
@@ -1025,19 +1300,6 @@ public static class SpecialOrderRuntimeCapture
         }
 
         return false;
-    }
-
-    private static bool HasManualSpecialOrderTag(object? order)
-    {
-        return ToNullableInt(GetMemberValue(order, "RequestFoodTag")).HasValue
-            || ToNullableInt(GetMemberValue(order, "RequestBeverageTag")).HasValue;
-    }
-
-    private static bool IsExplicitSpecialGuest(object? guest)
-    {
-        var typeName = guest?.GetType().FullName ?? "";
-        return typeName.IndexOf("NightSceneUtility.SpecialGuest", StringComparison.OrdinalIgnoreCase) >= 0
-            || typeName.IndexOf("NightSceneUtility.MappedSpecialGuest", StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
     private static string ReadGuestName(object specialGuest, int? guestId)
@@ -1116,9 +1378,9 @@ public static class SpecialOrderRuntimeCapture
     /// <remarks>
     /// 解析失败不抛出异常，避免 Hook 影响游戏原始流程；诊断通过本地 API 暴露给调试面板。
     /// </remarks>
-    private static void NoteParseFailure(string source, string reason, object? order = null, ParsedOrderText? textParts = null)
+    private static void NoteParseFailure(string source, string reason, object? order = null)
     {
-        var shape = DescribeOrderShape(order, textParts);
+        var shape = DescribeOrderShape(order);
         lock (SyncRoot)
         {
             _parseFailures++;
@@ -1158,124 +1420,35 @@ public static class SpecialOrderRuntimeCapture
 
     private static string BuildStatusLocked()
     {
-        return $"patched={PatchedMethods.Count}; version={_changeVersion}; callbacks=add:{_addCallbacks},remove:{_removeCallbacks},generated:{_generatedCallbacks},statusUpdate:{_statusCallbacks}; captured={_capturedOrders}; notApplicable={_notApplicableCallbacks}; parseFailures={_parseFailures}; lastCapture={_lastCapture}; lastNotApplicable={_lastNotApplicable}; lastParseFailure={_lastParseFailure}; lastOrderShape={_lastOrderShape}";
+        var missing = RequiredPatchKeys.Where(key => !PatchedMethods.Contains(key)).Select(ShortPatchKey).ToArray();
+        var observers = ObserverPatchKeys.Count(PatchedMethods.Contains);
+        var covered = missing.Length == 0
+            && (!RuntimeNightBusinessLifecycle.IsActive
+                || RuntimeNightBusinessLifecycle.Generation >= _firstCoveredBusinessGeneration);
+        return $"ready={(covered ? "yes" : "no")}; required={RequiredPatchKeys.Length - missing.Length}/{RequiredPatchKeys.Length}; observers={observers}/{ObserverPatchKeys.Length}; firstCoveredGeneration={(_firstCoveredBusinessGeneration == long.MaxValue ? "pending" : _firstCoveredBusinessGeneration)}; currentGeneration={RuntimeNightBusinessLifecycle.Generation}; missing=[{string.Join(",", missing)}]; patched={PatchedMethods.Count}; version={_changeVersion}; callbacks=add:{_addCallbacks},remove:{_removeCallbacks},manual:{_manualCallbacks},statusUpdate:{_statusCallbacks}; captured={_capturedOrders}; bound={Orders.Count}; notApplicable={_notApplicableCallbacks}; parseFailures={_parseFailures}; lastCapture={_lastCapture}; lastNotApplicable={_lastNotApplicable}; lastParseFailure={_lastParseFailure}; lastOrderShape={_lastOrderShape}";
     }
 
-    private static ParsedOrderText ParseOrderText(string? text)
+    private static string ShortPatchKey(string key)
     {
-        if (string.IsNullOrWhiteSpace(text)) return ParsedOrderText.Empty;
-
-        var lines = text.Replace('\r', '\n').Split('\n');
-        return new ParsedOrderText(
-            ReadLabeledInt(lines, "DeskCode"),
-            ReadLabeledValue(lines, "OrderType"),
-            ReadLabeledValue(lines, "ReqFoodTag"),
-            ReadLabeledValue(lines, "ReqBevTag"),
-            ReadLabeledValue(lines, "Guest"),
-            ReadLabeledBool(lines, "IsFreeOrder?"));
+        var separator = key.LastIndexOf('.');
+        return separator >= 0 ? key[(separator + 1)..] : key;
     }
 
-    private static bool? ReadLabeledBool(IReadOnlyList<string> lines, string label)
-    {
-        var value = ReadLabeledValue(lines, label);
-        return bool.TryParse(value, out var parsed) ? parsed : null;
-    }
-
-    private static int? ReadLabeledInt(IReadOnlyList<string> lines, string label)
-    {
-        var value = ReadLabeledValue(lines, label);
-        return int.TryParse(value, out var parsed) ? parsed : null;
-    }
-
-    private static string ReadLabeledValue(IReadOnlyList<string> lines, string label)
-    {
-        for (var i = 0; i < lines.Count; i++)
-        {
-            var line = lines[i].Trim();
-            if (!line.StartsWith(label, StringComparison.OrdinalIgnoreCase)) continue;
-
-            var sameLineValue = NormalizeLabelValue(line[label.Length..]);
-            if (!string.IsNullOrWhiteSpace(sameLineValue)) return sameLineValue;
-
-            for (var j = i + 1; j < lines.Count; j++)
-            {
-                var candidateLine = lines[j].Trim();
-                if (IsOrderTextFieldLine(candidateLine)) break;
-
-                var candidate = NormalizeTag(candidateLine);
-                if (!string.IsNullOrWhiteSpace(candidate)) return candidate;
-            }
-        }
-
-        return "";
-    }
-
-    private static string NormalizeLabelValue(string value)
-    {
-        var trimmed = value.Trim();
-        if (trimmed.StartsWith(":", StringComparison.Ordinal)) trimmed = trimmed[1..].Trim();
-        return NormalizeTag(trimmed);
-    }
-
-    private static bool IsOrderTextFieldLine(string value)
-    {
-        if (value.Length == 0) return false;
-        if (value.Length > 8 && value.All(c => c == '/' || char.IsWhiteSpace(c))) return true;
-
-        return value.StartsWith("DeskCode:", StringComparison.OrdinalIgnoreCase)
-            || value.StartsWith("OrderType:", StringComparison.OrdinalIgnoreCase)
-            || value.StartsWith("ServFood:", StringComparison.OrdinalIgnoreCase)
-            || value.StartsWith("ServBev:", StringComparison.OrdinalIgnoreCase)
-            || value.StartsWith("Price:", StringComparison.OrdinalIgnoreCase)
-            || value.StartsWith("IsFreeOrder?", StringComparison.OrdinalIgnoreCase)
-            || value.StartsWith("ReqFoodTag:", StringComparison.OrdinalIgnoreCase)
-            || value.StartsWith("ReqBevTag:", StringComparison.OrdinalIgnoreCase)
-            || value.StartsWith("Guest:", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string SafeToString(object? value)
-    {
-        if (value == null) return "";
-
-        try
-        {
-            return value.ToString() ?? "";
-        }
-        catch
-        {
-            return "";
-        }
-    }
-
-    private static string NormalizeGuestName(string? value)
-    {
-        var normalized = NormalizeTag(value);
-        return string.IsNullOrWhiteSpace(normalized) ? "" : normalized;
-    }
-
-    private static bool IsSpecialOrderType(object? value, string formatted)
-    {
-        if (string.Equals(formatted, "Special", StringComparison.OrdinalIgnoreCase)) return true;
-        return ToNullableInt(value) == 1;
-    }
-
-    private static string DescribeOrderShape(object? order, ParsedOrderText? textParts)
+    private static string DescribeOrderShape(object? order)
     {
         if (order == null) return "";
 
-        var typedOrder = RuntimeReflectionUtility.TryCastRuntimeObject(order, SpecialOrderTypeName);
-        var readableOrder = typedOrder ?? order;
-        var text = textParts ?? ParseOrderText(SafeToString(readableOrder));
+        var resolution = RuntimeOrderTypeResolver.Resolve(order);
+        var readableOrder = resolution.ReadableOrder ?? order;
         var parts = new List<string>
         {
             $"type={order.GetType().FullName}",
-            $"cast={typedOrder?.GetType().FullName ?? ""}",
+            $"resolved={resolution.Resolved}:{resolution.KindName}:{resolution.Reason}",
             $"Type={ShortValue(GetMemberValue(readableOrder, "Type"))}",
             $"DeskCode={ShortValue(GetMemberValue(readableOrder, "DeskCode"))}",
             $"RequestFoodTag={ShortValue(GetMemberValue(readableOrder, "RequestFoodTag"))}",
             $"RequestBeverageTag={ShortValue(GetMemberValue(readableOrder, "RequestBeverageTag"))}",
             $"SpecialGuests={ShortValue(GetMemberValue(readableOrder, "SpecialGuests"))}",
-            $"text={text.ToDiagnosticString()}",
         };
 
         return TrimStatus(string.Join("|", parts), 700);
@@ -1363,9 +1536,9 @@ public static class SpecialOrderRuntimeCapture
 
     private static string GetRuntimeObjectKey(object? value)
     {
-        var pointer = GetMemberValue(value, "Pointer");
-        if (pointer is IntPtr intPtr && intPtr != IntPtr.Zero) return $"ptr:{intPtr.ToInt64():x}";
-        return "";
+        return RuntimeReflectionUtility.TryReadNativeObjectPointer(value, out var pointer)
+            ? $"ptr:{pointer:x}"
+            : "";
     }
 
     private static Type? FindType(string fullName)
@@ -1409,31 +1582,12 @@ public static class SpecialOrderRuntimeCapture
 
 }
 
-internal readonly record struct ParsedOrderText(
-    int? DeskCode,
-    string OrderType,
-    string FoodTag,
-    string BeverageTag,
-    string GuestName,
-    bool? FreeOrder)
-{
-    public static ParsedOrderText Empty { get; } = new(null, "", "", "", "", null);
-
-    public bool LooksLikeSpecialOrder =>
-        !string.IsNullOrWhiteSpace(GuestName)
-        && (!string.IsNullOrWhiteSpace(FoodTag) || !string.IsNullOrWhiteSpace(BeverageTag));
-
-    public string ToDiagnosticString()
-    {
-        return $"desk={DeskCode?.ToString() ?? ""},type={OrderType},food={FoodTag},bev={BeverageTag},guest={GuestName},free={FreeOrder?.ToString() ?? ""}";
-    }
-}
-
 /// <summary>
 /// 一条从游戏运行时捕获到的稀客订单。
 /// </summary>
 /// <remarks>
 /// 原始请求 Tag ID 用于订单身份匹配，展示文本只用于 UI 与诊断；运行时对象引用仅在 Mod 内部用于再次定位订单，不会序列化给前端。
+/// <c>ManualOrder</c> 表示最近一次读取的瞬时属性，手动评价绑定字段则保存精确 setter 在该活动订单生命周期内建立的不可变证据。
 /// </remarks>
 public sealed record CapturedRuntimeSpecialOrder(
     int DeskCode,
@@ -1456,6 +1610,9 @@ public sealed record CapturedRuntimeSpecialOrder(
     internal object? ControllerObject { get; init; }
     public bool ManualOrder { get; init; }
     internal object? ManualEvaluationCallback { get; init; }
+    public bool ManualEvaluationBindingObserved { get; init; }
+    public bool ManualEvaluationBindingConflict { get; init; }
+    internal object? ManualEvaluationBindingCallback { get; init; }
 }
 
 /// <summary>

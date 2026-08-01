@@ -26,7 +26,6 @@ internal static partial class RuntimeOrderPreparationService
     private const string CookSystemManagerTypeName = "NightScene.CookingUtility.CookSystemManager";
     private const string QteRewardManagerTypeName = "NightScene.CookingUtility.QTERewardManager";
     private const string GuestsManagerTypeName = "NightScene.GuestManagementUtility.GuestsManager";
-    private const string SpecialOrderTypeName = "NightScene.GuestManagementUtility.GuestsManager+SpecialOrder";
     private const string NightSceneDirectorTypeName = "NightScene.NightSceneDirector";
     private const string OrderControllerTypeName = "Night.UI.HUD.Ordering.OrderController";
     private const string SellablePropertyHelperTypeName = "GameData.Core.Collections.SellablePropertyHelper";
@@ -208,7 +207,11 @@ internal static partial class RuntimeOrderPreparationService
             return Finish(result);
         }
 
-        if (!TryValidateRequestedSpecialFoodTargetPolicy(request, out _, out var specialTargetError))
+        if (!TryValidateRequestedSpecialFoodTargetPolicy(
+                request,
+                CookingCollectionTargetKind.RareOrder,
+                out _,
+                out var specialTargetError))
         {
             result.Automation.Stage = "special-target";
             AddFailure(result, "校验特殊料理目标", specialTargetError);
@@ -559,7 +562,11 @@ internal static partial class RuntimeOrderPreparationService
             return Finish(result);
         }
 
-        if (!TryValidateRequestedSpecialFoodTargetPolicy(request, out _, out var specialTargetError))
+        if (!TryValidateRequestedSpecialFoodTargetPolicy(
+                request,
+                CookingCollectionTargetKind.RareOrder,
+                out _,
+                out var specialTargetError))
         {
             result.Automation.Stage = "special-target";
             AddFailure(result, "校验特殊料理目标", specialTargetError);
@@ -834,7 +841,11 @@ internal static partial class RuntimeOrderPreparationService
             return Finish(result);
         }
 
-        if (!TryValidateRequestedSpecialFoodTargetPolicy(request, out _, out var specialTargetError))
+        if (!TryValidateRequestedSpecialFoodTargetPolicy(
+                request,
+                CookingCollectionTargetKind.NormalOrder,
+                out _,
+                out var specialTargetError))
         {
             result.Automation.Stage = "special-target";
             AddFailure(result, "校验特殊料理目标", specialTargetError);
@@ -1650,6 +1661,7 @@ internal static partial class RuntimeOrderPreparationService
             request.ExpectedFoodModifierTags,
             ReadRequestedSpecialFoodTargetPolicy(request),
             request.SpecialTargetRevision,
+            request.AllowYuumaControlledProgression,
             request.SpecialBusinessRole,
             request.ExecutionMode,
             request.ExecutionReason,
@@ -2104,6 +2116,7 @@ internal static partial class RuntimeOrderPreparationService
         public AutomationCookingJobTracker Tracker { get; init; } = new(0, DateTime.UtcNow, -1, 0f);
         public bool AutoDeliverFood { get; set; }
         public bool AutoCompleteOrder { get; set; }
+        public bool AllowYuumaControlledProgression => Target.AllowYuumaControlledProgression;
         public bool ManualHandoffObserved { get; set; }
         public bool ManualHandoffExpired { get; set; }
         public long SpecialFoodTargetRevision { get; init; }
@@ -2175,7 +2188,9 @@ internal static partial class RuntimeOrderPreparationService
                 + $"@{CookerReservation.GridPosition}; result=0x{(long)CurrentResultPointer:X}; "
                 + $"phase={Tracker.LastPhase}; progress={Tracker.LastProgress:F3}; "
                 + $"autoDeliver={AutoDeliverFood}; autoComplete={AutoCompleteOrder}; "
-                + $"specialTargetRevision={SpecialFoodTargetRevision}; handoffExpired={ManualHandoffExpired}; {detail}";
+                + $"specialTargetRevision={SpecialFoodTargetRevision}; "
+                + $"allowYuumaControlledProgression={AllowYuumaControlledProgression}; "
+                + $"handoffExpired={ManualHandoffExpired}; {detail}";
         }
 
         public string BuildRetrySignature()
@@ -2206,6 +2221,7 @@ internal static partial class RuntimeOrderPreparationService
                 Outcome = Tracker.Outcome,
                 ReasonCode = Tracker.ReasonCode,
                 SpecialTargetRevision = SpecialFoodTargetRevision,
+                AllowYuumaControlledProgression = AllowYuumaControlledProgression,
                 AutoDeliverFood = AutoDeliverFood,
                 ControllerId = $"0x{(long)ControllerPointer:X}",
                 ResultId = CurrentResultPointer == 0 ? "" : $"0x{(long)CurrentResultPointer:X}",
@@ -2257,6 +2273,7 @@ internal static partial class RuntimeOrderPreparationService
         public IReadOnlyList<string> ExpectedFoodModifierTags { get; private init; } = Array.Empty<string>();
         public SpecialFoodTargetPolicy? SpecialFoodTargetPolicy { get; private init; }
         public long SpecialFoodTargetRevision { get; private init; }
+        public bool AllowYuumaControlledProgression { get; private init; }
         public IReadOnlyList<string> SpecialTargetFoodTags =>
             SpecialFoodTargetPolicy?.FoodTags ?? Array.Empty<string>();
         public string SpecialBusinessRole { get; private init; } = "";
@@ -2291,6 +2308,7 @@ internal static partial class RuntimeOrderPreparationService
                 ExpectedFoodModifierTags = SpecialFoodTargetPolicy.NormalizeTags(request.ExpectedFoodModifierTags),
                 SpecialFoodTargetPolicy = specialFoodTargetPolicy,
                 SpecialFoodTargetRevision = request.SpecialTargetRevision,
+                AllowYuumaControlledProgression = false,
                 SpecialBusinessRole = request.SpecialBusinessRole,
                 ExecutionMode = request.ExecutionMode,
                 ExecutionReason = request.ExecutionReason,
@@ -2317,6 +2335,7 @@ internal static partial class RuntimeOrderPreparationService
             IReadOnlyList<string> expectedFoodModifierTags,
             SpecialFoodTargetPolicy? specialFoodTargetPolicy,
             long specialFoodTargetRevision,
+            bool allowYuumaControlledProgression,
             string specialBusinessRole,
             string executionMode,
             string executionReason,
@@ -2352,6 +2371,7 @@ internal static partial class RuntimeOrderPreparationService
                 ExpectedFoodModifierTags = SpecialFoodTargetPolicy.NormalizeTags(expectedFoodModifierTags),
                 SpecialFoodTargetPolicy = specialFoodTargetPolicy,
                 SpecialFoodTargetRevision = specialFoodTargetRevision,
+                AllowYuumaControlledProgression = allowYuumaControlledProgression,
                 SpecialBusinessRole = specialBusinessRole,
                 ExecutionMode = executionMode,
                 ExecutionReason = executionReason,

@@ -1001,6 +1001,11 @@ internal static partial class RuntimeOrderPreparationService
             return false;
         }
 
+        if (left.AllowYuumaControlledProgression != right.AllowYuumaControlledProgression)
+        {
+            return false;
+        }
+
         if (left.Kind == CookingCollectionTargetKind.RareOrder)
         {
             return RareOrderIdentityMatcher.IsSameCookingTarget(

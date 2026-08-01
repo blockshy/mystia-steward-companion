@@ -7,11 +7,19 @@ internal static partial class RuntimeOrderPreparationService
 {
     private static bool TryValidateRequestedSpecialFoodTargetPolicy(
         OrderPreparationRequest request,
+        CookingCollectionTargetKind requestKind,
         out SpecialFoodTargetPolicy? policy,
         out string error)
     {
         policy = null;
         error = "";
+        if (request.AllowYuumaControlledProgression
+            && (requestKind != CookingCollectionTargetKind.NormalOrder || !IsYuumaBossRequest(request)))
+        {
+            error = "血池地狱受控推进只允许精确的 Yuuma BOSS 普客订单。";
+            return false;
+        }
+
         var hasRequestPolicy = HasRequestedSpecialFoodTargetPolicy(request);
         var requiresActivePolicy = RequestRequiresActiveSpecialFoodTargetPolicy(request);
         if (!hasRequestPolicy)
@@ -72,6 +80,12 @@ internal static partial class RuntimeOrderPreparationService
             {
                 error = $"血池地狱特殊料理目标已经变化：请求={DescribeSpecialFoodTargetPolicy(policy)}; revision={request.SpecialTargetRevision}；"
                     + $"当前={DescribeSpecialFoodTargetPolicy(activeYuumaPolicy)}; revision={activeYuumaRevision}。";
+                return false;
+            }
+
+            if (request.AllowYuumaControlledProgression
+                && !TryValidateYuumaControlledProgressionRequest(request, requestKind, policy, out error))
+            {
                 return false;
             }
 
@@ -325,6 +339,64 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
+    private static bool TryValidateYuumaControlledProgressionRequest(
+        OrderPreparationRequest request,
+        CookingCollectionTargetKind requestKind,
+        SpecialFoodTargetPolicy policy,
+        out string error)
+    {
+        if (requestKind != CookingCollectionTargetKind.NormalOrder
+            || !IsYuumaBossRequest(request)
+            || !IsValidYuumaFoodTargetPolicy(policy, out _))
+        {
+            error = "血池地狱受控推进只允许携带完整当前目标策略的 Yuuma BOSS 普客订单。";
+            return false;
+        }
+
+        if (request.MatchFoodId < 0
+            || request.MatchBeverageId < 0
+            || request.FoodId != request.MatchFoodId
+            || request.BeverageId != request.MatchBeverageId)
+        {
+            error = "血池地狱受控推进必须精确使用原订单料理和酒水，不能替换订单项目。";
+            return false;
+        }
+
+        if (!request.PredictedFoodTagsProvided)
+        {
+            error = "血池地狱受控推进请求未显式携带完整预测 Tag 列表。";
+            return false;
+        }
+
+        var normalizedPredictedTags = SpecialFoodTargetPolicy.NormalizeTags(
+            request.PredictedFoodTags.Select(tag => FoodTags.NormalizeName(tag) ?? tag));
+        if (policy.Matches(normalizedPredictedTags))
+        {
+            error = "血池地狱请求的预测 Tag 已满足当前双 Tag，不能标记为受控推进。";
+            return false;
+        }
+
+        error = "";
+        return true;
+    }
+
+    private static bool IsYuumaControlledProgressionTarget(CookingCollectionTarget target)
+    {
+        var policy = target.SpecialFoodTargetPolicy;
+        var normalizedPredictedTags = SpecialFoodTargetPolicy.NormalizeTags(
+            target.PredictedFoodTags.Select(tag => FoodTags.NormalizeName(tag) ?? tag));
+        return target.AllowYuumaControlledProgression
+            && target.Kind == CookingCollectionTargetKind.NormalOrder
+            && IsYuumaBossTarget(target)
+            && policy != null
+            && IsValidYuumaFoodTargetPolicy(policy, out _)
+            && !policy.Matches(normalizedPredictedTags)
+            && target.MatchFoodId >= 0
+            && target.MatchBeverageId >= 0
+            && target.FoodId == target.MatchFoodId
+            && target.BeverageId == target.MatchBeverageId;
+    }
+
     private static bool SpecialTargetMatchesPredictedFoodTags(
         CookingCollectionTarget target,
         out string message)
@@ -342,6 +414,17 @@ internal static partial class RuntimeOrderPreparationService
         var normalizedPredictedTags = SpecialFoodTargetPolicy.NormalizeTags(
             target.PredictedFoodTags.Select(tag => FoodTags.NormalizeName(tag) ?? tag));
         if (policy.Matches(normalizedPredictedTags)) return true;
+
+        if (IsYuumaControlledProgressionTarget(target))
+        {
+            AppendAutomationLog(
+                "yuuma-controlled-progression-predicted-tag-bypass",
+                target,
+                $"{target.FoodName} uses the exact original-order food/beverage while predicted tags "
+                + $"({string.Join(",", normalizedPredictedTags)}) do not satisfy the current dual-Tag target "
+                + $"({string.Join(",", policy.FoodTags)}); continuing under the explicit controlled progression policy.");
+            return true;
+        }
 
         message = $"{target.FoodName} 的预测 Tag（{string.Join("、", normalizedPredictedTags)}）不满足当前特殊目标 "
             + $"{policy.MatchModeValue}（{string.Join("、", policy.FoodTags)}）。";
@@ -400,6 +483,7 @@ internal static partial class RuntimeOrderPreparationService
                 $"recipeId: {request.RecipeId}",
                 $"autoDeliverFood: {request.AutoDeliverFood}",
                 $"autoCompleteOrder: {request.AutoCompleteOrder}",
+                $"allowYuumaControlledProgression: {request.AllowYuumaControlledProgression}",
                 $"predictedFoodTags: {SpecialBusinessDiagnostics.FormatTags(request.PredictedFoodTags)}",
                 $"requestedTarget: {request.SpecialTargetSignature}",
                 $"requestedTargetRevision: {request.SpecialTargetRevision}",
@@ -409,6 +493,7 @@ internal static partial class RuntimeOrderPreparationService
             },
             $"{RuntimeNightBusinessLifecycle.Generation}|automation|{eventName}|{traceId}|{decision}|"
             + $"{request.AutoDeliverFood}|{request.AutoCompleteOrder}|"
+            + $"{request.AllowYuumaControlledProgression}|"
             + $"{request.SpecialTargetSignature}|{request.SpecialTargetRevision}|{detail}");
     }
 }

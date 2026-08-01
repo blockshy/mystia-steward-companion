@@ -20,6 +20,10 @@ const yuumaModule = fs.readFileSync(
   path.join(root, 'mods/bepinex/src/Save/SpecialBusiness/YuumaChallengeOrderModule.cs'),
   'utf8',
 );
+const orderTypes = fs.readFileSync(
+  path.join(root, 'mods/bepinex/src/Save/RuntimeOrderTypeResolver.cs'),
+  'utf8',
+);
 const diagnostics = fs.readFileSync(
   path.join(root, 'mods/bepinex/src/Save/SpecialBusiness/SpecialBusinessDiagnostics.cs'),
   'utf8',
@@ -342,9 +346,22 @@ assert.equal(
   'Blood Pond Hell consumers must use the centralized challenge constant.',
 );
 
+assert.match(
+  orderTypes,
+  /NormalOrderTypeName\s*=\s*\n?\s*"NightScene\.GuestManagementUtility\.GuestsManager\+NormalOrder"/,
+  'Shared order identity must retain the exact NormalOrder declaration.',
+);
+assert.match(
+  orderTypes,
+  /SpecialOrderTypeName\s*=\s*\n?\s*"NightScene\.GuestManagementUtility\.GuestsManager\+SpecialOrder"/,
+  'Shared order identity must retain the exact SpecialOrder declaration.',
+);
+assert.ok(
+  orderTypes.includes('hasNormalOrder == hasSpecialOrder'),
+  'Shared OrderBase resolution must require exactly one concrete conversion.',
+);
 for (const requiredIdentityContract of [
-  'NormalOrderTypeName = "NightScene.GuestManagementUtility.GuestsManager+NormalOrder"',
-  'SpecialOrderTypeName = "NightScene.GuestManagementUtility.GuestsManager+SpecialOrder"',
+  'RuntimeOrderTypeResolver.Resolve(order)',
   'BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly',
   '"GameData.Core.Collections.NightSceneUtility.GuestBase"',
   'idProperty.PropertyType != typeof(int)',

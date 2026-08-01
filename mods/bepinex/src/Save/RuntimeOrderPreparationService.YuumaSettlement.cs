@@ -255,14 +255,23 @@ internal static partial class RuntimeOrderPreparationService
                 == YuumaOrderEvaluationRoute.ManualControlled
                     ? "manual-controlled"
                     : "standard";
+            var controlledProgression = job.AllowYuumaControlledProgression;
+            var progressionMessage = controlledProgression
+                ? "本订单按受控推进执行：仍精确使用原订单料理和酒水，但不承诺成品满足当前双 Tag；伤害与狂暴由游戏原生规则结算。"
+                : "";
             var message = $"{job.Target.FoodName} 已送达血池地狱订单，并按订单原生路由完成评价与状态通知。"
                 + resetDiagnostic
                 + extractionDiagnostic
-                + $"评价路由={evaluationRoute}。";
+                + $"评价路由={evaluationRoute}。"
+                + progressionMessage;
             AppendSpecialFoodTargetCookingJobDiagnostic(
-                "yuuma-settlement-completed",
+                controlledProgression
+                    ? "yuuma-controlled-progression-settlement-completed"
+                    : "yuuma-settlement-completed",
                 job,
-                "evaluated-and-notified",
+                controlledProgression
+                    ? "evaluated-and-notified-controlled-progression"
+                    : "evaluated-and-notified",
                 actualFoodId,
                 targetTags,
                 actualTags,
@@ -275,7 +284,9 @@ internal static partial class RuntimeOrderPreparationService
                 targetTags,
                 actualTags,
                 outcome: "completed",
-                reasonCode: "yuuma-order-settled",
+                reasonCode: controlledProgression
+                    ? "yuuma-order-settled-controlled-progression"
+                    : "yuuma-order-settled",
                 terminal: true);
             return (true, message, OrderPreparationStepCodes.FoodDelivered);
         }

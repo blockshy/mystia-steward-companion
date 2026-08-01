@@ -13,6 +13,7 @@ try
     AssertRuntimeStorageStateProjection();
     AssertConcreteCollectionReader();
     AssertDaySceneReadinessState();
+    AssertNativePointerIdentity();
 
     AssertEqual<Type?>(null, RuntimeReflectionUtility.FindType(typeName), "Unknown type unexpectedly resolved.");
 
@@ -32,6 +33,25 @@ catch (Exception ex)
 {
     Console.Error.WriteLine($"FAIL: {ex}");
     return 1;
+}
+
+static void AssertNativePointerIdentity()
+{
+    var valid = new NativePointerProbe(new IntPtr(0x1234));
+    AssertTrue(
+        RuntimeReflectionUtility.TryReadNativeObjectPointer(valid, out var pointer),
+        "A non-zero native Pointer was rejected.");
+    AssertEqual<nint>((nint)0x1234, pointer, "The exact native Pointer value changed.");
+
+    AssertFalse(
+        RuntimeReflectionUtility.TryReadNativeObjectPointer(new NativePointerProbe(IntPtr.Zero), out _),
+        "A zero native Pointer was accepted as an order identity.");
+    AssertFalse(
+        RuntimeReflectionUtility.TryReadNativeObjectPointer(new object(), out _),
+        "A managed hash fallback was accepted as an order identity.");
+    AssertFalse(
+        RuntimeReflectionUtility.TryReadNativeObjectPointer(null, out _),
+        "A null object was accepted as an order identity.");
 }
 
 static void AssertCookerTypeSequenceReader()
@@ -191,6 +211,7 @@ static CookerTypeReadResult ReadCookerTypesWithProbe(CookerTypeSequenceProbe pro
 static void AssertBepInEx783CollectionMetadata()
 {
     var enumerableType = typeof(Il2CppSystem.Collections.Generic.IEnumerable<int>);
+    AssertFalse(enumerableType.IsInterface, "BepInEx 783 generic IEnumerable unexpectedly became a CLR interface.");
     AssertEqual(
         "Il2CppSystem.Collections.Generic.IEnumerable`1",
         enumerableType.GetGenericTypeDefinition().FullName,
@@ -198,7 +219,12 @@ static void AssertBepInEx783CollectionMetadata()
     AssertTrue(
         enumerableType.GetConstructor(new[] { typeof(IntPtr) }) != null,
         "Generic IEnumerable wrapper no longer exposes its native-pointer constructor.");
-
+    AssertFalse(
+        enumerableType.IsAssignableFrom(typeof(Il2CppSystem.Collections.Generic.List<int>)),
+        "The IL2CPP IEnumerable wrapper unexpectedly became CLR-assignable from List.");
+    AssertFalse(
+        enumerableType.IsAssignableFrom(typeof(Il2CppSystem.Collections.Generic.Stack<int>)),
+        "The IL2CPP IEnumerable wrapper unexpectedly became CLR-assignable from Stack.");
     var genericEnumeratorType = RequireMethod(enumerableType, "GetEnumerator", Type.EmptyTypes).ReturnType;
     AssertEqual(
         "Il2CppSystem.Collections.Generic.IEnumerator`1",
@@ -994,6 +1020,8 @@ static void AssertContains(string value, string expected, string message)
 }
 
 internal sealed record FakeReference(string Label);
+
+internal sealed record NativePointerProbe(IntPtr Pointer);
 
 internal readonly record struct FakeNonBlittableStruct(int Id, string Label);
 

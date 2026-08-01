@@ -24,6 +24,7 @@ import {
   isRecoverableCookingTerminalEvent,
   reconcileAutomationRollbackTarget,
   reduceAutomationCookingRollbackBudget,
+  reduceAutomationManualRetry,
   requiresManualAutomationResolution,
   resolveAutomationResponseStage,
   resolveAutomationWaitingStep,
@@ -89,6 +90,7 @@ import {
   applyRareServedStateFromResponse,
   buildAutoOrderKey,
   buildGameUiPinningTarget,
+  buildGameUiPinningSourceOrderState,
   buildNightBusinessOrderKey,
   buildNormalCookingTargetDecision,
   buildNormalAutoOrderDiagnostics,
@@ -178,7 +180,6 @@ import type {
   CustomRecipeData,
   CustomRecipeGroupMode,
   FavoriteData,
-  GameUiPinningTarget,
   LocalApiAutomationLease,
   MissionPanelView,
   ModTab,
@@ -582,22 +583,6 @@ function buildNightBusinessOrderSignature(orders: readonly NightBusinessOrder[])
     .join('|');
 }
 
-function isGameUiPinningTargetSourceValid(
-  target: GameUiPinningTarget | null,
-  orders: readonly NightBusinessOrder[],
-): boolean {
-  if (!target) return true;
-
-  const matchingOrders = orders.filter(
-    (order) => buildNightBusinessOrderKey(order) === target.sourceOrderKey,
-  );
-  if (matchingOrders.length !== 1) return false;
-
-  const [sourceOrder] = matchingOrders;
-  return !(target.recipeId >= 0 && sourceOrder.hasServedFood === true)
-    && !(target.beverageId >= 0 && sourceOrder.hasServedBeverage === true);
-}
-
 function buildFavoriteDataSignature(favorites: FavoriteData): string {
   return [
     favorites.version,
@@ -865,6 +850,7 @@ function formatNormalAutomationTarget(target: NormalExecutionTargetSelection['ta
     `${target.recipeName}#${target.recipeId}->${target.foodId}`,
     `${target.beverageName}#${target.beverageId}`,
     target.executionMode ? `mode=${target.executionMode}` : '',
+    `yuumaControlled=${target.allowYuumaControlledProgression ? 1 : 0}`,
     `match=${target.matchFoodId}/${target.matchBeverageId}`,
     `extras=${target.extraIngredientIds.join(',')}`,
     `modifiers=${target.expectedFoodModifierTags.join(',')}`,
@@ -2348,19 +2334,9 @@ export function ModWorkbench() {
       snapshot?.specialBusiness?.active,
     ],
   );
-  const gameUiPinningTargetSourceValid = useMemo(
-    () => isGameUiPinningTargetSourceValid(gameUiPinningTarget, night?.orders ?? []),
-    [gameUiPinningTarget, night?.orders],
-  );
-  const gameUiPinningContextSignature = useMemo(
-    () => [
-      buildUiPinningSpecialBusinessSignature(snapshot?.specialBusiness),
-      [...(night?.orders ?? [])]
-        .map((order) => `${buildNightBusinessOrderKey(order)}:${order.specialBusinessRole ?? ''}`)
-        .sort()
-        .join(','),
-    ].join('\n'),
-    [night?.orders, snapshot?.specialBusiness],
+  const gameUiPinningSourceOrders = useMemo(
+    () => (night?.orders ?? []).map(buildGameUiPinningSourceOrderState),
+    [night?.orders],
   );
   useGameUiPinningPublisher({
     endpoint: normalizedEndpoint,
@@ -2373,12 +2349,12 @@ export function ModWorkbench() {
     pinningEnabled: companionPreferences.gameUiPinningEnabled,
     cookerHighlightEnabled: companionPreferences.cookerHighlightEnabled,
     target: gameUiPinningTarget,
-    targetSourceValid: gameUiPinningTargetSourceValid,
+    sourceOrders: gameUiPinningSourceOrders,
     recommendationIsCurrent: orderRecommendations.isCurrent,
     recommendationPending: orderRecommendations.pending,
     recommendationError: Boolean(orderRecommendations.error),
     recommendationSuccessRevision: orderRecommendations.successRevision,
-    targetContextSignature: gameUiPinningContextSignature,
+    targetPolicySignature: buildUiPinningSpecialBusinessSignature(snapshot?.specialBusiness),
   });
 
   const refreshRareOrderDiagnostics = useCallback((now = Date.now()) => {
@@ -3011,24 +2987,21 @@ export function ModWorkbench() {
     const now = Date.now();
     const state = rareOrderStatesRef.current.get(orderKey);
     if (!state) return;
-    if (state.manualResolutionRequired) {
+    const transition = reduceAutomationManualRetry(
+      state,
+      state.prepared || state.beverageHandled ? 'complete-order' : 'match-order',
+      now,
+    );
+    if (!transition.resumed) {
+      if (!state.manualResolutionRequired) return;
       publishAutoPrepMessage('自动化\n该订单存在无法自动确认的游戏副作用，请检查游戏状态后点击“确认已处理”。');
       return;
     }
-    rareOrderStatesRef.current.set(orderKey, {
-      ...state,
-      paused: false,
-      pausedStage: '',
-      pauseReasonCode: '',
-      step: state.prepared || state.beverageHandled ? 'complete-order' : 'match-order',
-      stepStartedAtMs: now,
-      retryCount: 0,
-      retryStage: '',
-      nextAttemptAtMs: 0,
-      lastError: '已手动重试，等待下一轮自动化继续。',
-    });
+    rareOrderStatesRef.current.set(orderKey, transition.state);
     lastAutoFirstOrderAtRef.current = 0;
-    publishAutoPrepMessage('自动化\n已重新启用该稀客订单，下一轮会继续处理。');
+    publishAutoPrepMessage(transition.rollbackBudgetReset
+      ? '自动化\n已重新启用该稀客订单，并重新开放一轮自动回退额度。'
+      : '自动化\n已重新启用该稀客订单，下一轮会继续处理。');
     refreshRareOrderDiagnostics(now);
   }, [publishAutoPrepMessage, refreshRareOrderDiagnostics]);
 
@@ -3188,26 +3161,23 @@ export function ModWorkbench() {
     const now = Date.now();
     const state = normalOrderStatesRef.current.get(orderKey);
     if (!state) return;
-    if (state.manualResolutionRequired) {
+    const transition = reduceAutomationManualRetry(
+      state,
+      state.prepared ? 'deliver-food' : 'match-order',
+      now,
+    );
+    if (!transition.resumed) {
+      if (!state.manualResolutionRequired) return;
       publishNormalOrderMessage('普客自动化\n该订单存在无法自动确认的游戏副作用，请检查游戏状态后点击“确认已处理”。');
       return;
     }
-    normalOrderStatesRef.current.set(orderKey, {
-      ...state,
-      paused: false,
-      pausedStage: '',
-      pauseReasonCode: '',
-      step: state.prepared ? 'deliver-food' : 'match-order',
-      stepStartedAtMs: now,
-      retryCount: 0,
-      retryStage: '',
-      nextAttemptAtMs: 0,
-      lastError: '已手动重试，等待下一轮自动化继续。',
-    });
+    normalOrderStatesRef.current.set(orderKey, transition.state);
     lastAutoNormalOrderAtRef.current = 0;
     const orders = snapshot?.normalBusiness?.orders ?? [];
     refreshNormalOrderDiagnostics(orders, now);
-    publishNormalOrderMessage('普客自动化\n已重新启用该普客订单，下一轮会继续处理。');
+    publishNormalOrderMessage(transition.rollbackBudgetReset
+      ? '普客自动化\n已重新启用该普客订单，并重新开放一轮自动回退额度。'
+      : '普客自动化\n已重新启用该普客订单，下一轮会继续处理。');
   }, [publishNormalOrderMessage, refreshNormalOrderDiagnostics, snapshot?.normalBusiness?.orders]);
 
   const resetNormalAutomationOrder = useCallback((orderKey: string) => {

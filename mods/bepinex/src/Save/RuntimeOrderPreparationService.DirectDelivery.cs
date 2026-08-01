@@ -10,6 +10,7 @@ internal static partial class RuntimeOrderPreparationService
     {
         NotRequired,
         Matched,
+        ControlledProgression,
         Mismatched,
         Unreadable,
     }
@@ -366,6 +367,17 @@ internal static partial class RuntimeOrderPreparationService
                 targetTags,
                 actualTags,
                 "cooked food tags matched the active special-food target policy");
+        }
+        else if (specialTagValidation == SpecialFoodTargetTagValidation.ControlledProgression)
+        {
+            AppendSpecialFoodTargetCookingJobDiagnostic(
+                "yuuma-controlled-progression-actual-tag-bypass",
+                job,
+                "continue-delivery-with-original-order-items",
+                ReadSellableId(cookedFood),
+                targetTags,
+                actualTags,
+                "explicit controlled progression accepted an exact original-order food whose readable tags do not satisfy the current dual-Tag target");
         }
 
         var request = BuildOrderRequestFromCookingTarget(target);
@@ -1037,8 +1049,9 @@ internal static partial class RuntimeOrderPreparationService
         if (policy == null) return SpecialFoodTargetTagValidation.NotRequired;
 
         if (!TryReadFoodTagNames(cookedFood, out actualTags)) return SpecialFoodTargetTagValidation.Unreadable;
-        return policy.Matches(actualTags)
-            ? SpecialFoodTargetTagValidation.Matched
+        if (policy.Matches(actualTags)) return SpecialFoodTargetTagValidation.Matched;
+        return IsYuumaControlledProgressionTarget(target)
+            ? SpecialFoodTargetTagValidation.ControlledProgression
             : SpecialFoodTargetTagValidation.Mismatched;
     }
 
@@ -1710,6 +1723,7 @@ internal static partial class RuntimeOrderPreparationService
             RecipeName = target.FoodName,
             ExtraIngredientIds = target.ExtraIngredientIds,
             PredictedFoodTags = target.PredictedFoodTags,
+            PredictedFoodTagsProvided = true,
             ExpectedFoodModifierTags = target.ExpectedFoodModifierTags,
             SpecialTargetChallenge = target.SpecialFoodTargetPolicy?.ChallengeType ?? "",
             SpecialTargetOwner = target.SpecialFoodTargetPolicy?.Owner ?? "",
@@ -1718,6 +1732,7 @@ internal static partial class RuntimeOrderPreparationService
             SpecialTargetFoodTags = target.SpecialTargetFoodTags,
             SpecialTargetMatchMode = target.SpecialFoodTargetPolicy?.MatchModeValue ?? "",
             SpecialTargetSignature = target.SpecialFoodTargetPolicy?.Signature ?? "",
+            AllowYuumaControlledProgression = target.AllowYuumaControlledProgression,
             ExecutionMode = target.ExecutionMode,
             ExecutionReason = target.ExecutionReason,
             BeverageId = target.BeverageId,

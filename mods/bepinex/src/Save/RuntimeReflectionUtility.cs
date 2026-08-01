@@ -45,10 +45,9 @@ internal static class RuntimeReflectionUtility
 
     public static object? TryCastRuntimeObject(object? value, string targetTypeName)
     {
-        if (value is not Il2CppObjectBase il2CppObject) return null;
-
         var targetType = FindType(targetTypeName);
         if (targetType == null) return null;
+        if (value is not Il2CppObjectBase il2CppObject) return null;
         if (targetType.IsInstanceOfType(value)) return value;
 
         var tryCast = TryCastMethodCache.GetOrAdd(
@@ -406,6 +405,31 @@ internal static class RuntimeReflectionUtility
         }
 
         return new IntPtr(System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(target));
+    }
+
+    public static bool TryReadNativeObjectPointer(object? target, out nint pointer)
+    {
+        pointer = 0;
+        if (target == null) return false;
+
+        try
+        {
+            var value = GetMemberValue(target, "Pointer")
+                ?? GetMemberValue(target, "NativePointer")
+                ?? GetMemberValue(target, "m_CachedPtr");
+            pointer = value switch
+            {
+                IntPtr intPtr => intPtr,
+                IConvertible convertible => new IntPtr(convertible.ToInt64(null)),
+                _ => 0,
+            };
+            return pointer != 0;
+        }
+        catch
+        {
+            pointer = 0;
+            return false;
+        }
     }
 
     private static IEnumerable<string> BuildMemberNameCandidates(string name)

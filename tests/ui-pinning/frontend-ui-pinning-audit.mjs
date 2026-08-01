@@ -153,11 +153,17 @@ try {
   );
 
   const identityTargetCount = targetRequests.filter(hasRecipeTarget).length;
+  const connectionIsolationStartCount = targetRequests.length;
   await page.evaluate(() => {
     window.__uiPinningWorkerDelayMs = 2200;
   });
   mutateSnapshots = true;
   await page.locator('.steward-workbench-header input').first().press('Enter');
+  await waitFor(
+    () => targetRequests.slice(connectionIsolationStartCount).some(isEnabledClearTarget),
+    2_800,
+    '仅连接 revision 变化时未先发布空目标隔离旧连接目标',
+  );
   await waitFor(() => mutatedSnapshotAt > 0, 5_000, '应用连接身份后未获取新快照');
   await new Promise((resolve) => setTimeout(resolve, 1000));
   assert(
@@ -251,6 +257,53 @@ try {
     '源订单仍有效的普通 pending 错误清空或重复发布了目标',
   );
 
+  const unrelatedOrderMutationServeCount = mutatedSnapshotServeCount;
+  showDeferredSecondOrderAlongsideActive();
+  await waitFor(
+    () => mutatedSnapshotServeCount > unrelatedOrderMutationServeCount,
+    5_000,
+    '未获取无关 B 订单新增快照',
+  );
+  await new Promise((resolve) => setTimeout(resolve, 450));
+  assert(
+    targetRequests.length === validPendingRequestCount,
+    '无关 B 订单新增导致 A 的有效目标被清空或重复发布',
+  );
+  const unrelatedOrderRemovalServeCount = mutatedSnapshotServeCount;
+  hideDeferredSecondOrder();
+  await waitFor(
+    () => mutatedSnapshotServeCount > unrelatedOrderRemovalServeCount,
+    5_000,
+    '未获取无关 B 订单移除快照',
+  );
+  await new Promise((resolve) => setTimeout(resolve, 450));
+  assert(
+    targetRequests.length === validPendingRequestCount,
+    '无关 B 订单移除导致 A 的有效目标被清空或重复发布',
+  );
+
+  const foodDeliveryMutationServeCount = mutatedSnapshotServeCount;
+  const foodDeliveryStartCount = targetRequests.length;
+  serveOnlyOrderFood();
+  await waitFor(
+    () => mutatedSnapshotServeCount > foodDeliveryMutationServeCount,
+    5_000,
+    '未获取 A 订单料理单独送达快照',
+  );
+  await waitFor(
+    () => targetRequests.slice(foodDeliveryStartCount).some(isBeverageOnlyTarget),
+    2_800,
+    'A 订单料理送达后未在 Worker pending 期间保留酒水并移除料理目标',
+  );
+  const beverageOnlyTarget = targetRequests.slice(foodDeliveryStartCount).find(isBeverageOnlyTarget);
+  assert(beverageOnlyTarget, '缺少料理送达后的酒水单组件目标');
+  assert(!beverageOnlyTarget.params.ingredientIds, '料理送达后仍保留材料目标');
+  assert(Number(beverageOnlyTarget.params.cookerTypeId) < 0, '料理送达后仍保留厨具目标');
+  assert(
+    !targetRequests.slice(foodDeliveryStartCount).some(isEnabledClearTarget),
+    '料理单独送达时错误清空了仍未送达的酒水目标',
+  );
+
   const completionMutationServeCount = mutatedSnapshotServeCount;
   const completionStartCount = targetRequests.length;
   const completionBaseSuccessCount = await deliveredWorkerSuccessCount(page);
@@ -331,6 +384,24 @@ try {
   assert(
     targetRequests.length === pendingStartCount,
     'B 源订单仍有效的普通 pending 错误清空或重复发布了目标',
+  );
+
+  const beverageDeliveryMutationServeCount = mutatedSnapshotServeCount;
+  const beverageDeliveryStartCount = targetRequests.length;
+  serveOnlyOrderBeverage();
+  await waitFor(
+    () => mutatedSnapshotServeCount > beverageDeliveryMutationServeCount,
+    5_000,
+    '未获取 B 订单酒水单独送达快照',
+  );
+  await waitFor(
+    () => targetRequests.slice(beverageDeliveryStartCount).some(isRecipeOnlyTarget),
+    2_800,
+    'B 订单酒水送达后未在 Worker pending 期间保留料理并移除酒水目标',
+  );
+  assert(
+    !targetRequests.slice(beverageDeliveryStartCount).some(isEnabledClearTarget),
+    '酒水单独送达时错误清空了仍未送达的料理和厨具目标',
   );
 
   await page.locator('[data-gamepad-tab-value="settings"]').first().click();
@@ -443,19 +514,154 @@ try {
     'Worker 成功恢复后未解除空目标锁存',
   );
 
+  const policyBaselineTarget = targetRequests.filter(hasRecipeTarget).at(-1);
+  assert(policyBaselineTarget, '缺少用于特殊经营策略 revision 巡检的基线目标');
+  await page.evaluate(() => {
+    window.__uiPinningWorkerDelayMs = 3200;
+    window.__uiPinningWorkerHoldSuccess = true;
+  });
+  const policyStartCount = targetRequests.length;
+  const policyStartedAt = Date.now();
+  const policyRevisionOneServeCount = mutatedSnapshotServeCount;
+  setYuumaTargetPolicyRevision(1);
+  await waitFor(
+    () => mutatedSnapshotServeCount > policyRevisionOneServeCount,
+    5_000,
+    '未获取血池地狱目标策略 revision 1 快照',
+  );
+  await waitFor(
+    () => targetRequests.slice(policyStartCount).some(isHighlightOnlyClearTarget),
+    2_800,
+    '目标策略变化后未立即清空旧目标',
+  );
+  const policyClearRequest = targetRequests
+    .slice(policyStartCount)
+    .find(isHighlightOnlyClearTarget);
+  assert(policyClearRequest, '缺少目标策略变化后的空目标请求');
+  assert(
+    policyClearRequest.at - policyStartedAt < 2800,
+    `目标策略空目标发布过慢：${policyClearRequest.at - policyStartedAt}ms`,
+  );
+  await waitFor(
+    async () => page.evaluate(() => window.__uiPinningWorkerHeldResponses.length > 0),
+    6_000,
+    '目标策略 revision 1 的延迟 Worker 响应未被暂存',
+  );
+
+  const policyRevisionTwoServeCount = mutatedSnapshotServeCount;
+  setYuumaTargetPolicyRevision(2);
+  await waitFor(
+    () => mutatedSnapshotServeCount > policyRevisionTwoServeCount,
+    5_000,
+    '未获取血池地狱目标策略 revision 2 快照',
+  );
+  const policySuccessBeforeRelease = await deliveredWorkerSuccessCount(page);
+  await page.evaluate(() => {
+    window.__uiPinningWorkerDelayMs = 1200;
+    window.__releaseUiPinningWorkerHeldResponses();
+  });
+  await waitFor(
+    async () => await deliveredWorkerSuccessCount(page) > policySuccessBeforeRelease,
+    3_000,
+    '迟到的 revision 1 Worker 响应未完成派发',
+  );
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  assert(
+    !targetRequests
+      .slice(targetRequests.indexOf(policyClearRequest) + 1)
+      .some(hasRecipeTarget),
+    '迟到的 revision 1 Worker 响应恢复了旧策略目标',
+  );
+  await waitFor(
+    () => targetRequests
+      .slice(targetRequests.indexOf(policyClearRequest) + 1)
+      .some(hasRecipeTarget),
+    6_000,
+    'revision 2 的 current Worker 结果未恢复目标',
+  );
+  const policyRecoveredTarget = targetRequests
+    .slice(targetRequests.indexOf(policyClearRequest) + 1)
+    .find(hasRecipeTarget);
+  assert(policyRecoveredTarget, '缺少 revision 2 恢复目标');
+  assert(
+    sameWireTarget(policyBaselineTarget, policyRecoveredTarget),
+    '目标策略 revision 更新后的普通订单 wire 目标发生了非预期变化',
+  );
+  await page.evaluate(() => {
+    window.__uiPinningWorkerDelayMs = 0;
+  });
+
+  await page.evaluate(() => {
+    window.__uiPinningWorkerDelayMs = 3200;
+  });
+  const ambiguousMutationServeCount = mutatedSnapshotServeCount;
+  const ambiguousStartCount = targetRequests.length;
+  duplicateCurrentSourceOrder();
+  await waitFor(
+    () => mutatedSnapshotServeCount > ambiguousMutationServeCount,
+    5_000,
+    '未获取源订单歧义快照',
+  );
+  await waitFor(
+    () => targetRequests.slice(ambiguousStartCount).some(isHighlightOnlyClearTarget),
+    2_800,
+    '源订单出现歧义后未立即清空目标',
+  );
+
+  const uniqueMutationServeCount = mutatedSnapshotServeCount;
+  const uniqueStartCount = targetRequests.length;
+  restoreUniqueSourceOrder();
+  await page.evaluate(() => {
+    window.__uiPinningWorkerDelayMs = 0;
+  });
+  await waitFor(
+    () => mutatedSnapshotServeCount > uniqueMutationServeCount,
+    5_000,
+    '未获取恢复唯一源订单的快照',
+  );
+  await waitFor(
+    () => targetRequests.slice(uniqueStartCount).some(hasRecipeTarget),
+    8_000,
+    '唯一源订单恢复后未发布新的当前目标',
+  );
+
+  await page.evaluate(() => {
+    window.__uiPinningWorkerDelayMs = 3200;
+  });
+  const identityMutationServeCount = mutatedSnapshotServeCount;
+  const identityStartCount = targetRequests.length;
+  mutateCurrentSourceIdentity();
+  await waitFor(
+    () => mutatedSnapshotServeCount > identityMutationServeCount,
+    5_000,
+    '未获取源订单身份变化快照',
+  );
+  await waitFor(
+    () => targetRequests.slice(identityStartCount).some(isHighlightOnlyClearTarget),
+    2_800,
+    '源订单不可变身份变化后未立即清空旧目标',
+  );
+  await page.evaluate(() => {
+    window.__uiPinningWorkerDelayMs = 0;
+  });
+
   console.log([
     '游戏界面置顶定向巡检通过：',
     `- POST 方法：${acceptedRetry.method}`,
     `- ID 契约：foodId=${selectedRecipe.id}, recipeId=${selectedRecipe.recipeId}`,
     `- 失败重试：${acceptedRetry.at - rejectedRequest.at}ms`,
     `- 短暂断线：快照恢复后保留成功签名，目标 POST 仍为 ${acceptedTargetCount} 次`,
-    `- 连接身份变更/Worker 新鲜度：${identityRequest.at - mutatedSnapshotAt}ms 后重发`,
+    `- 连接 revision：先发布空目标隔离旧连接，${identityRequest.at - mutatedSnapshotAt}ms 后重发同一 wire 目标`,
     '- 发布去重：内部 target.signature 变化但 wire 目标不变时未重复 POST',
+    '- 无关订单变化：A 的源身份与未送达组件有效时不清空目标',
+    '- 组件归约：料理送达保留酒水，酒水送达保留料理与厨具',
     `- 订单完成空窗：${completionClearRequest.at - completionStartedAt}ms 内清空 A 目标，迟到结果未复活`,
     '- 后续订单切换：B 订单就绪后发布新目标，普通 Worker pending 保留有效目标',
     `- 单写者合并：最大并发 ${maxActiveTargetRequests}，延迟请求后补发最新 flags`,
     `- Worker error 清理：recipeId=${errorClearRequest.params.recipeId}, beverageId=${errorClearRequest.params.beverageId}`,
     '- Worker error 恢复：新成功 revision 后恢复当前厨具目标',
+    `- 策略 revision：${policyClearRequest.at - policyStartedAt}ms 内清空，迟到旧结果未恢复，新 current 恢复`,
+    '- 源订单边界：重复和不可变身份变化立即清空，唯一身份恢复后重新发布',
   ].join('\n'));
 } finally {
   await page.close();
@@ -546,6 +752,28 @@ function isEnabledClearTarget(entry) {
     && !entry.params.ingredientIds;
 }
 
+function isHighlightOnlyClearTarget(entry) {
+  return entry.params.enabled === 'false'
+    && entry.params.highlightEnabled === 'true'
+    && Number(entry.params.recipeId) < 0
+    && Number(entry.params.beverageId) < 0
+    && !entry.params.ingredientIds;
+}
+
+function isBeverageOnlyTarget(entry) {
+  return entry.params.enabled === 'true'
+    && entry.params.highlightEnabled === 'true'
+    && Number(entry.params.recipeId) < 0
+    && Number(entry.params.beverageId) >= 0;
+}
+
+function isRecipeOnlyTarget(entry) {
+  return entry.params.enabled === 'true'
+    && entry.params.highlightEnabled === 'true'
+    && Number(entry.params.recipeId) >= 0
+    && Number(entry.params.beverageId) < 0;
+}
+
 function mutateSnapshot(recommendationSignal) {
   assert(mutatedSnapshot?.nightBusiness?.orders?.[0], '缺少可变 Mock 快照');
   mutatedSnapshot.nightBusiness.orders[0].automationBlockReason = recommendationSignal;
@@ -577,13 +805,85 @@ function completeOnlyOrder() {
   mutatedSnapshot.snapshotSignature = `${mutatedSnapshot.snapshotSignature}|single-order-completed`;
 }
 
-function injectDeferredSecondOrder() {
-  assert(mutatedSnapshot?.nightBusiness?.orders, '缺少可变 Mock 夜间订单');
-  assert(deferredSecondOrder, '缺少暂存的后续 B 订单');
+function serveOnlyOrderFood() {
+  assert(mutatedSnapshot?.nightBusiness?.orders?.length === 1, '料理送达巡检要求只有一个 Mock 稀客订单');
+  const [order] = mutatedSnapshot.nightBusiness.orders;
+  order.hasServedFood = true;
+  order.hasServedBeverage = false;
+  mutatedSnapshot.snapshotSignature = `${mutatedSnapshot.snapshotSignature}|single-order-food-served`;
+}
+
+function serveOnlyOrderBeverage() {
+  assert(mutatedSnapshot?.nightBusiness?.orders?.length === 1, '酒水送达巡检要求只有一个 Mock 稀客订单');
+  const [order] = mutatedSnapshot.nightBusiness.orders;
+  order.hasServedFood = false;
+  order.hasServedBeverage = true;
+  mutatedSnapshot.snapshotSignature = `${mutatedSnapshot.snapshotSignature}|single-order-beverage-served`;
+}
+
+function showDeferredSecondOrderAlongsideActive() {
+  assert(mutatedSnapshot?.nightBusiness?.orders?.length === 1, '无关订单新增巡检要求只有一个活动订单');
+  assert(deferredSecondOrder, '缺少暂存的无关 B 订单');
   mutatedSnapshot.nightBusiness.orders = [
     ...mutatedSnapshot.nightBusiness.orders,
     structuredClone(deferredSecondOrder),
   ];
+  mutatedSnapshot.snapshotSignature = `${mutatedSnapshot.snapshotSignature}|unrelated-order-added`;
+}
+
+function hideDeferredSecondOrder() {
+  assert(mutatedSnapshot?.nightBusiness?.orders?.length === 2, '无关订单移除巡检缺少两笔订单');
+  mutatedSnapshot.nightBusiness.orders = [mutatedSnapshot.nightBusiness.orders[0]];
+  mutatedSnapshot.snapshotSignature = `${mutatedSnapshot.snapshotSignature}|unrelated-order-removed`;
+}
+
+function duplicateCurrentSourceOrder() {
+  assert(mutatedSnapshot?.nightBusiness?.orders?.length === 1, '源订单歧义巡检要求唯一活动订单');
+  mutatedSnapshot.nightBusiness.orders.push(structuredClone(mutatedSnapshot.nightBusiness.orders[0]));
+  mutatedSnapshot.snapshotSignature = `${mutatedSnapshot.snapshotSignature}|source-order-duplicated`;
+}
+
+function restoreUniqueSourceOrder() {
+  assert(mutatedSnapshot?.nightBusiness?.orders?.length === 2, '恢复唯一源订单巡检要求重复订单');
+  mutatedSnapshot.nightBusiness.orders = [mutatedSnapshot.nightBusiness.orders[0]];
+  mutatedSnapshot.snapshotSignature = `${mutatedSnapshot.snapshotSignature}|source-order-unique`;
+}
+
+function mutateCurrentSourceIdentity() {
+  assert(mutatedSnapshot?.nightBusiness?.orders?.length === 1, '源订单身份巡检要求唯一活动订单');
+  const [order] = mutatedSnapshot.nightBusiness.orders;
+  order.firstSeenAtUtc = new Date(Date.parse(order.firstSeenAtUtc) + 5000).toISOString();
+  mutatedSnapshot.snapshotSignature = `${mutatedSnapshot.snapshotSignature}|source-order-identity-changed`;
+}
+
+function setYuumaTargetPolicyRevision(revision) {
+  assert(mutatedSnapshot, '缺少可变 Mock 快照');
+  mutatedSnapshot.specialBusiness = {
+    active: true,
+    challengeTypeAvailable: true,
+    challengeType: 'Story_BloodPondHell',
+    displayName: '血池地狱',
+    category: 'challenge',
+    ruleSummary: 'mock target policy revision audit',
+    foodTargetTags: ['甜', '肉'],
+    beverageTargetTags: [],
+    yuumaFoodTargetRevision: revision,
+    phase: 'Phase 1',
+    currentAnger: 0,
+    maxAnger: 100,
+    targetAnger: 80,
+    recommendationPolicy: 'yuuma-target',
+    automationPolicy: 'manual',
+    source: 'mock-ui-pinning-policy-audit',
+    error: null,
+  };
+  mutatedSnapshot.snapshotSignature = `${mutatedSnapshot.snapshotSignature}|yuuma-policy:${revision}`;
+}
+
+function injectDeferredSecondOrder() {
+  assert(mutatedSnapshot?.nightBusiness?.orders, '缺少可变 Mock 夜间订单');
+  assert(deferredSecondOrder, '缺少暂存的后续 B 订单');
+  mutatedSnapshot.nightBusiness.orders = [structuredClone(deferredSecondOrder)];
   mutatedSnapshot.snapshotSignature = `${mutatedSnapshot.snapshotSignature}|second-order-arrived`;
 }
 
@@ -596,6 +896,16 @@ function sameTarget(left, right) {
   return left.params.enabled === right.params.enabled
     && left.params.highlightEnabled === right.params.highlightEnabled
     && left.params.recipeId === right.params.recipeId
+    && left.params.recipeName === right.params.recipeName
+    && left.params.ingredientIds === right.params.ingredientIds
+    && left.params.beverageId === right.params.beverageId
+    && left.params.beverageName === right.params.beverageName
+    && left.params.cookerTypeId === right.params.cookerTypeId
+    && left.params.cookerName === right.params.cookerName;
+}
+
+function sameWireTarget(left, right) {
+  return left.params.recipeId === right.params.recipeId
     && left.params.recipeName === right.params.recipeName
     && left.params.ingredientIds === right.params.ingredientIds
     && left.params.beverageId === right.params.beverageId

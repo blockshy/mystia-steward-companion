@@ -478,6 +478,13 @@ static void VerifySourceContracts()
         "src",
         "LocalApi",
         "LocalApiModels.cs"));
+    var settlementSource = File.ReadAllText(Path.Combine(
+        root,
+        "mods",
+        "bepinex",
+        "src",
+        "Save",
+        "RuntimeOrderPreparationService.YuumaSettlement.cs"));
 
     VerifyExactHudHooks(contextSource);
     VerifyChallengeMapping(contextSource, idsSource);
@@ -502,6 +509,15 @@ static void VerifySourceContracts()
         localApiServerSource,
         orderPreparationModelsSource,
         localApiModelsSource);
+    VerifyYuumaControlledProgressionContract(
+        serviceSource,
+        cookingSource,
+        directDeliverySource,
+        policySource,
+        localApiServerSource,
+        orderPreparationModelsSource,
+        localApiModelsSource,
+        settlementSource);
     VerifyYuumaSettlementContract(
         serviceSource,
         cookingSource,
@@ -512,13 +528,7 @@ static void VerifySourceContracts()
         specialCaptureSource,
         normalCaptureSource,
         matchingSource,
-        File.ReadAllText(Path.Combine(
-            root,
-            "mods",
-            "bepinex",
-            "src",
-            "Save",
-            "RuntimeOrderPreparationService.YuumaSettlement.cs")),
+        settlementSource,
         File.ReadAllText(Path.Combine(
             root,
             "mods",
@@ -527,6 +537,259 @@ static void VerifySourceContracts()
             "Save",
             "SpecialBusiness",
             "YuumaSettlementTransactionTracker.cs")));
+}
+
+static void VerifyYuumaControlledProgressionContract(
+    string serviceSource,
+    string cookingSource,
+    string directDeliverySource,
+    string policySource,
+    string localApiServerSource,
+    string orderPreparationModelsSource,
+    string localApiModelsSource,
+    string settlementSource)
+{
+    AssertContains(
+        Normalize(orderPreparationModelsSource),
+        "publicboolAllowYuumaControlledProgression{get;init;}",
+        "The explicit controlled-progression request flag was removed.");
+    var requestParser = Normalize(ExtractMethod(
+        localApiServerSource,
+        "private string BuildOrderActionJson("));
+    AssertContains(
+        requestParser,
+        "AllowYuumaControlledProgression=ReadBoolQuery(query,\"allowYuumaControlledProgression\")??false",
+        "The Local API no longer parses the explicit controlled-progression flag as a safe false default.");
+    AssertContains(
+        requestParser,
+        "PredictedFoodTagsProvided=HasQueryParameter(query,\"predictedFoodTags\")",
+        "The Local API can no longer distinguish a legal explicit empty predicted-tag list from a missing parameter.");
+
+    var rarePrepare = Normalize(ExtractMethod(
+        serviceSource,
+        "public static OrderPreparationResult Prepare("));
+    var rareComplete = Normalize(ExtractMethod(
+        serviceSource,
+        "public static OrderPreparationResult CompleteFirst("));
+    var normalComplete = Normalize(ExtractMethod(
+        serviceSource,
+        "public static OrderPreparationResult CompleteNormalFirst("));
+    AssertContains(
+        rarePrepare,
+        "TryValidateRequestedSpecialFoodTargetPolicy(request,CookingCollectionTargetKind.RareOrder",
+        "Rare-order preparation no longer tells policy validation its exact target kind.");
+    AssertContains(
+        rareComplete,
+        "TryValidateRequestedSpecialFoodTargetPolicy(request,CookingCollectionTargetKind.RareOrder",
+        "Rare-order completion no longer tells policy validation its exact target kind.");
+    AssertContains(
+        normalComplete,
+        "TryValidateRequestedSpecialFoodTargetPolicy(request,CookingCollectionTargetKind.NormalOrder",
+        "Normal-order completion no longer tells policy validation its exact target kind.");
+
+    var requestValidation = Normalize(ExtractMethod(
+        policySource,
+        "private static bool TryValidateRequestedSpecialFoodTargetPolicy("));
+    AssertContains(
+        requestValidation,
+        "request.AllowYuumaControlledProgression&&(requestKind!=CookingCollectionTargetKind.NormalOrder||!IsYuumaBossRequest(request))",
+        "A rare order or non-Yuuma role can request controlled progression.");
+    AssertContains(
+        requestValidation,
+        "!policy.HasSameIdentity(activeYuumaPolicy)||request.SpecialTargetRevision!=activeYuumaRevision",
+        "Controlled progression no longer retains exact active policy and revision validation.");
+    AssertContains(
+        requestValidation,
+        "TryValidateYuumaControlledProgressionRequest(request,requestKind,policy,outerror)",
+        "Controlled progression is not validated after the exact active Yuuma policy is established.");
+
+    var controlledRequestValidation = Normalize(ExtractMethod(
+        policySource,
+        "private static bool TryValidateYuumaControlledProgressionRequest("));
+    foreach (var required in new[]
+             {
+                 "requestKind!=CookingCollectionTargetKind.NormalOrder",
+                 "!IsYuumaBossRequest(request)",
+                 "!IsValidYuumaFoodTargetPolicy(policy,out_)",
+                 "request.MatchFoodId<0",
+                 "request.MatchBeverageId<0",
+                 "request.FoodId!=request.MatchFoodId",
+                 "request.BeverageId!=request.MatchBeverageId",
+                 "!request.PredictedFoodTagsProvided",
+                 "policy.Matches(normalizedPredictedTags)",
+             })
+    {
+        AssertContains(
+            controlledRequestValidation,
+            required,
+            $"Controlled progression lost the fail-closed request gate '{required}'.");
+    }
+
+    var rareTargetFactory = Normalize(ExtractMethod(
+        serviceSource,
+        "public static CookingCollectionTarget ForRareOrder("));
+    AssertContains(
+        rareTargetFactory,
+        "AllowYuumaControlledProgression=false",
+        "Rare-order targets can retain the controlled-progression permission.");
+    var normalTargetFactory = Normalize(ExtractMethod(
+        serviceSource,
+        "public static CookingCollectionTarget ForNormalOrder("));
+    AssertContains(
+        normalTargetFactory,
+        "boolallowYuumaControlledProgression",
+        "Normal-order target construction no longer accepts the controlled-progression permission.");
+    AssertContains(
+        normalTargetFactory,
+        "AllowYuumaControlledProgression=allowYuumaControlledProgression",
+        "Normal-order targets no longer latch the controlled-progression permission.");
+    var normalTargetBuild = Normalize(ExtractMethod(
+        serviceSource,
+        "private static CookingCollectionTarget BuildNormalAutomationTarget("));
+    AssertContains(
+        normalTargetBuild,
+        "request.AllowYuumaControlledProgression",
+        "The validated controlled-progression permission is lost before target construction.");
+
+    var syntheticRequest = Normalize(ExtractMethod(
+        directDeliverySource,
+        "private static OrderPreparationRequest BuildOrderRequestFromCookingTarget("));
+    AssertContains(
+        syntheticRequest,
+        "AllowYuumaControlledProgression=target.AllowYuumaControlledProgression",
+        "Fresh runtime-order lookups no longer retain the controlled-progression identity.");
+    AssertContains(
+        syntheticRequest,
+        "PredictedFoodTagsProvided=true",
+        "A validated target no longer retains that its predicted-tag list was explicitly supplied.");
+    var cookingJob = Normalize(ExtractMethod(
+        serviceSource,
+        "private sealed class AutomationCookingJob"));
+    AssertContains(
+        cookingJob,
+        "publicboolAllowYuumaControlledProgression=>Target.AllowYuumaControlledProgression",
+        "The cooking job no longer exposes its immutable target's controlled-progression permission.");
+    var jobSnapshot = Normalize(ExtractMethod(
+        serviceSource,
+        "public AutomationCookingJobSnapshot ToSnapshot("));
+    AssertContains(
+        jobSnapshot,
+        "AllowYuumaControlledProgression=AllowYuumaControlledProgression",
+        "Automation diagnostics no longer publish controlled-progression state.");
+    AssertContains(
+        Normalize(localApiModelsSource),
+        "publicboolAllowYuumaControlledProgression{get;init;}",
+        "The automation snapshot model no longer exposes controlled-progression state.");
+    var sameTarget = Normalize(ExtractMethod(
+        cookingSource,
+        "private static bool IsSameCookingCollectionTarget("));
+    AssertContains(
+        sameTarget,
+        "left.AllowYuumaControlledProgression!=right.AllowYuumaControlledProgression",
+        "Strict and controlled targets can incorrectly reuse one cooking job.");
+
+    var controlledTargetValidation = Normalize(ExtractMethod(
+        policySource,
+        "private static bool IsYuumaControlledProgressionTarget("));
+    foreach (var required in new[]
+             {
+                 "target.AllowYuumaControlledProgression",
+                 "target.Kind==CookingCollectionTargetKind.NormalOrder",
+                 "IsYuumaBossTarget(target)",
+                 "IsValidYuumaFoodTargetPolicy(policy,out_)",
+                 "!policy.Matches(normalizedPredictedTags)",
+                 "target.FoodId==target.MatchFoodId",
+                 "target.BeverageId==target.MatchBeverageId",
+             })
+    {
+        AssertContains(
+            controlledTargetValidation,
+            required,
+            $"The latched controlled target lost invariant '{required}'.");
+    }
+
+    var predictedTagValidation = Normalize(ExtractMethod(
+        policySource,
+        "private static bool SpecialTargetMatchesPredictedFoodTags("));
+    var currentTargetGate = predictedTagValidation.IndexOf(
+        "TryValidateCurrentSpecialFoodTargetPolicy(target,out_,outvarvalidationError)",
+        StringComparison.Ordinal);
+    var strictPredictedMatch = predictedTagValidation.IndexOf(
+        "policy.Matches(normalizedPredictedTags)",
+        StringComparison.Ordinal);
+    var controlledPredictedBypass = predictedTagValidation.IndexOf(
+        "IsYuumaControlledProgressionTarget(target)",
+        StringComparison.Ordinal);
+    AssertTrue(
+        currentTargetGate >= 0
+        && strictPredictedMatch > currentTargetGate
+        && controlledPredictedBypass > strictPredictedMatch,
+        "Predicted-tag bypass must run only after current-policy validation and strict matching fail.");
+    AssertContains(
+        predictedTagValidation,
+        "yuuma-controlled-progression-predicted-tag-bypass",
+        "Predicted-tag controlled progression is no longer explicitly diagnosed.");
+
+    var actualTagValidation = Normalize(ExtractMethod(
+        directDeliverySource,
+        "private static SpecialFoodTargetTagValidation ValidateSpecialFoodTargetTags("));
+    var readableGate = actualTagValidation.IndexOf("TryReadFoodTagNames(cookedFood,outactualTags)", StringComparison.Ordinal);
+    var strictActualMatch = actualTagValidation.IndexOf("policy.Matches(actualTags)", StringComparison.Ordinal);
+    var controlledActualBypass = actualTagValidation.IndexOf("IsYuumaControlledProgressionTarget(target)", StringComparison.Ordinal);
+    AssertTrue(
+        readableGate >= 0
+        && strictActualMatch > readableGate
+        && controlledActualBypass > strictActualMatch,
+        "Actual-tag bypass must not accept unreadable tags and must run only after strict matching fails.");
+    AssertContains(
+        actualTagValidation,
+        "SpecialFoodTargetTagValidation.ControlledProgression",
+        "Actual-tag controlled progression no longer has a distinct result.");
+    var directDelivery = Normalize(ExtractMethod(
+        directDeliverySource,
+        "private static (bool Remove, string Message, string Code) TryDeliverAutomationCookedFood("));
+    AssertContains(
+        directDelivery,
+        "specialTagValidationisSpecialFoodTargetTagValidation.MismatchedorSpecialFoodTargetTagValidation.Unreadable",
+        "Strict mismatch and unreadable actual tags are no longer fail-closed.");
+    AssertContains(
+        directDelivery,
+        "yuuma-controlled-progression-actual-tag-bypass",
+        "Actual-tag controlled progression is no longer explicitly diagnosed.");
+
+    var settlementValidation = Normalize(ExtractMethod(
+        settlementSource,
+        "private static bool TryValidateYuumaSettlementOrder("));
+    AssertContains(
+        settlementValidation,
+        "TryValidateCurrentYuumaFoodTarget(job,outdiagnostic)",
+        "Settlement no longer revalidates the active challenge identity and revision.");
+    AssertContains(
+        settlementValidation,
+        "TryValidateYuumaDeliveredItemAgainstOriginalOrder(job.Target,cookedFood,RuntimeDeliveryItemKind.Food,outdiagnostic)",
+        "Settlement no longer validates the actual cooked item against the original order.");
+    AssertContains(
+        settlementValidation,
+        "TryValidateYuumaDeliveredItemAgainstOriginalOrder(job.Target,servedBeverage,RuntimeDeliveryItemKind.Beverage,outdiagnostic)",
+        "Settlement no longer validates the served beverage against the original order.");
+    AssertDoesNotContain(
+        settlementValidation,
+        "AllowYuumaControlledProgression",
+        "Controlled progression can bypass settlement identity or original-item validation.");
+    var finalization = Normalize(ExtractMethod(
+        settlementSource,
+        "private static (bool Remove, string Message, string Code) TryFinalizeYuumaCookingJob("));
+    var bookkeepingCommitted = finalization.IndexOf("MarkBookkeepingCommitted()", StringComparison.Ordinal);
+    var controlledDiagnostic = finalization.IndexOf(
+        "varcontrolledProgression=job.AllowYuumaControlledProgression",
+        StringComparison.Ordinal);
+    AssertTrue(
+        bookkeepingCommitted >= 0 && controlledDiagnostic > bookkeepingCommitted,
+        "Controlled progression must not alter the irreversible settlement transaction; it may only label the completed outcome.");
+    AssertContains(
+        finalization,
+        "yuuma-order-settled-controlled-progression",
+        "Completed controlled progression is no longer distinguishable in runtime diagnostics.");
 }
 
 static void VerifyActiveYuumaGenerationAndOrderStatusContracts(
@@ -2413,6 +2676,18 @@ static void VerifyYuumaManualOrderCaptureContract(
             normalized,
             "internalobject?ManualEvaluationCallback{get;init;}",
             $"The {label} capture does not retain the exact native manual-evaluation callback.");
+        AssertContains(
+            normalized,
+            "publicboolManualEvaluationBindingObserved{get;init;}",
+            $"The {label} capture does not separate stable setter evidence from transient ManualOrder state.");
+        AssertContains(
+            normalized,
+            "publicboolManualEvaluationBindingConflict{get;init;}",
+            $"The {label} capture cannot retain conflicting setter evidence.");
+        AssertContains(
+            normalized,
+            "internalobject?ManualEvaluationBindingCallback{get;init;}",
+            $"The {label} capture does not retain the stable setter callback.");
 
         var manualSetter = Normalize(ExtractMethod(
             source,
@@ -2427,8 +2702,8 @@ static void VerifyYuumaManualOrderCaptureContract(
             $"The {label} manual setter accepts an order without exact ManualOrder=true.");
         AssertContains(
             manualSetter,
-            "orderwith{ManualEvaluationCallback=__1}",
-            $"The {label} manual setter does not bind its callback to the same captured order.");
+            "ManualEvaluationCallback=__1,ManualEvaluationBindingObserved=true,ManualEvaluationBindingCallback=__1",
+            $"The {label} manual setter does not bind its callback and stable lifecycle evidence to the same captured order.");
         AssertContains(
             normalized,
             "requireExactManualOrderSetter:true",
@@ -2457,9 +2732,17 @@ static void VerifyYuumaManualOrderCaptureContract(
         var exactManualRead = Normalize(ExtractMethod(
             source,
             "private static bool TryReadExactManualOrder("));
+        AssertContains(
+            exactManualRead,
+            "TryReadExactOrderBool(order,\"ManualOrder\",outmanualOrder)",
+            $"The {label} capture does not route ManualOrder through its exact bool-property reader.");
+        exactManualRead = Normalize(ExtractMethod(
+            source,
+            "private static bool TryReadExactOrderBool("));
+
         foreach (var required in new[]
                  {
-                     "GetProperty(\"ManualOrder\",flags)",
+                     "GetProperty(propertyName,flags)",
                      "property.PropertyType!=typeof(bool)",
                      "property.GetValue(order)isnotboolvalue",
                  })
@@ -2482,11 +2765,11 @@ static void VerifyYuumaManualOrderCaptureContract(
         "RuntimeOrderMatch does not carry the exact manual-order identity.");
     AssertContains(
         normalizedMatching,
-        "ManualOrder=requiresYuumaSettlementManualContext&&manualOrder",
+        "ManualOrder=requiresYuumaSettlementManualContext?manualOrder:",
         "Yuuma settlement matches no longer project the fresh wrapper ManualOrder state.");
     AssertContains(
         normalizedMatching,
-        "ManualEvaluationCallback=requiresYuumaSettlementManualContext?manualOrder?manualEvaluationCallback:null",
+        "ManualEvaluationCallback=requiresYuumaSettlementManualContext?manualOrder?manualEvaluationCallback:null:",
         "Yuuma settlement matches no longer project the callback resolved for the current wrapper state.");
     AssertDoesNotContain(
         normalizedMatching,
@@ -2521,7 +2804,7 @@ static void VerifyYuumaManualOrderCaptureContract(
         matchingSource,
         "FindCapturedRuntimeNormalOrder"));
     var capturedNormalOwnershipGate = capturedNormalLookup.IndexOf(
-        "EnumerateControllerOrders(",
+        "TryInvokeInstanceValue(captured.ControllerObject,\"PeekOrders\")",
         StringComparison.Ordinal);
     var capturedNormalIdentityGate = capturedNormalLookup.IndexOf(
         "IsMatchingNormalOrder(",
@@ -2591,17 +2874,33 @@ static void VerifyYuumaManualOrderCaptureContract(
         "if(requiresYuumaSettlementManualContext&&!TryResolveNormalManualContext(",
         "Normal-order callback validation is no longer scoped to Yuuma settlement.");
     AssertContains(
-        normalizedMatching,
-        "if(requiresYuumaSettlementManualContext){try{varownedByController=EnumerateControllerOrders(captured.ControllerObject).Any(order=>CompareObjectIdentity(order,captured.OrderObject)==RuntimeObjectIdentityComparison.Same);if(!ownedByController)continue;}catch{continue;}}",
-        "Captured normal Yuuma settlement orders can outlive their exact controller ownership.");
+        capturedNormalLookup,
+        "try{varcurrentOrder=TryInvokeInstanceValue(captured.ControllerObject,\"PeekOrders\");varownedByController=currentOrder!=null&&CompareObjectIdentity(currentOrder,captured.OrderObject)==RuntimeObjectIdentityComparison.Same;if(!ownedByController)continue;}catch{continue;}",
+        "Captured normal orders can outlive their exact controller ownership.");
+    AssertDoesNotContain(
+        capturedNormalLookup,
+        "if(requiresYuumaSettlementManualContext){try{varcurrentOrder=TryInvokeInstanceValue(captured.ControllerObject,\"PeekOrders\")",
+        "Exact controller ownership is still checked only for Yuuma settlement.");
     AssertContains(
         normalizedMatching,
-        "requiresYuyukoStoryManualEvaluation",
-        "The established Yuyuko story manual-evaluation boundary was removed.");
+        "requiresYuyukoManualBinding=purpose==RuntimeOrderLookupPurpose.NativeEvaluation&&RequiresLiveYuyukoPhase3BossController(request)",
+        "Yuyuko native evaluation no longer resolves exact per-order manual binding evidence.");
     AssertContains(
         normalizedMatching,
-        "FindCapturedYuyukoPhase3ManualEvaluationCallback(",
-        "The established Yuyuko story callback lookup was replaced by the Yuuma settlement path.");
+        "TryResolveCapturedYuyukoPhase3ManualEvaluationBinding(",
+        "Yuyuko callback lookup was replaced by transient ManualOrder state or a broad request-identity fallback.");
+    AssertContains(
+        normalizedMatching,
+        "candidate.ManualEvaluationBindingConflict",
+        "Yuyuko callback lookup no longer rejects conflicting stable setter evidence.");
+    AssertContains(
+        normalizedMatching,
+        "candidate.ManualEvaluationBindingObserved",
+        "Yuyuko callback lookup no longer distinguishes a confirmed absent binding from transient ManualOrder=false.");
+    AssertContains(
+        normalizedMatching,
+        "YuyukoManualBindingResolved=requiresYuyukoManualBinding",
+        "Captured Yuyuko matches do not preserve whether the current capture generation resolved binding state.");
 }
 
 static string FindRepositoryRoot()

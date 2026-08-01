@@ -15,8 +15,14 @@ const vite = await createServer({
   logLevel: 'silent',
 });
 let buildGameUiPinningTarget;
+let buildGameUiPinningSourceOrderState;
+let reconcileGameUiPinningTarget;
 try {
-  ({ buildGameUiPinningTarget } = await vite.ssrLoadModule('/src/companion/domain/automation.ts'));
+  ({
+    buildGameUiPinningTarget,
+    buildGameUiPinningSourceOrderState,
+    reconcileGameUiPinningTarget,
+  } = await vite.ssrLoadModule('/src/companion/domain/automation.ts'));
 } finally {
   await vite.close();
 }
@@ -291,6 +297,50 @@ function assertGameUiPinningCompletionContracts() {
     'The next actionable order must own the recipe target.');
   assert.equal(nextTarget?.beverageId, secondPlan.beverage.beverage.id,
     'The next actionable order must own the beverage target.');
+
+  const activeSecondSource = buildGameUiPinningSourceOrderState(activeSecond.order);
+  assert.equal(
+    reconcileGameUiPinningTarget(nextTarget, [
+      activeSecondSource,
+      buildGameUiPinningSourceOrderState(servedFirst.order),
+    ]),
+    nextTarget,
+    'An unrelated order state must not invalidate the current target.',
+  );
+
+  const foodDeliveredDuringPending = reconcileGameUiPinningTarget(nextTarget, [{
+    ...activeSecondSource,
+    hasServedFood: true,
+  }]);
+  assert.equal(foodDeliveredDuringPending?.recipeId, -1,
+    'Pending reconciliation must remove a delivered recipe immediately.');
+  assert.deepEqual(foodDeliveredDuringPending?.ingredientIds, []);
+  assert.equal(foodDeliveredDuringPending?.cookerTypeId, -1);
+  assert.equal(foodDeliveredDuringPending?.beverageId, secondPlan.beverage.beverage.id,
+    'Pending reconciliation must retain an unserved beverage.');
+
+  const beverageDeliveredDuringPending = reconcileGameUiPinningTarget(nextTarget, [{
+    ...activeSecondSource,
+    hasServedBeverage: true,
+  }]);
+  assert.equal(beverageDeliveredDuringPending?.recipeId, secondPlan.food.recipe.recipeId,
+    'Pending reconciliation must retain an unserved recipe.');
+  assert.equal(beverageDeliveredDuringPending?.beverageId, -1,
+    'Pending reconciliation must remove a delivered beverage immediately.');
+
+  assert.equal(reconcileGameUiPinningTarget(nextTarget, []), null,
+    'A missing source order must clear the target.');
+  assert.equal(reconcileGameUiPinningTarget(nextTarget, [activeSecondSource, activeSecondSource]), null,
+    'An ambiguous source order must clear the target.');
+  assert.equal(reconcileGameUiPinningTarget(nextTarget, [{
+    ...activeSecondSource,
+    sourceOrderSignature: `${activeSecondSource.sourceOrderSignature}|changed`,
+  }]), null, 'An immutable source identity change must clear the target.');
+  assert.equal(reconcileGameUiPinningTarget(nextTarget, [{
+    ...activeSecondSource,
+    hasServedFood: true,
+    hasServedBeverage: true,
+  }]), null, 'A fully delivered source order must clear the target.');
 
   const foodServedTarget = buildGameUiPinningTarget([
     buildUiPinningRecommendation('R-FOOD-SERVED', 1, firstPlan, { hasServedFood: true }),

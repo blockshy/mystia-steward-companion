@@ -7,12 +7,10 @@ namespace MystiaStewardCompanion.Save;
 
 internal sealed class NightBusinessReflectionProvider
 {
-    private static readonly TimeSpan UnmatchedCapturedOrderGrace = TimeSpan.FromSeconds(8);
     private static readonly TimeSpan RuntimeCapturedOrderMaxAge = TimeSpan.FromHours(6);
 
     private const string GuestGroupControllerTypeName = "NightScene.GuestManagementUtility.GuestGroupController";
     private const string GuestsManagerTypeName = "NightScene.GuestManagementUtility.GuestsManager";
-    private const string SpecialOrderTypeName = "NightScene.GuestManagementUtility.GuestsManager+SpecialOrder";
     private const string OrderControllerTypeName = "Night.UI.HUD.Ordering.OrderController";
     private const string OrderingElementTypeName = "NightScene.UI.GuestManagementUtility.OrderingElement";
     private const string WorkSceneServePannelTypeName = "NightScene.UI.GuestManagementUtility.WorkSceneServePannel";
@@ -85,15 +83,15 @@ internal sealed class NightBusinessReflectionProvider
             errors.Add($"runtime capture: {ex.Message}");
         }
 
-        var preferRuntimeCapturedOrders = runtimeOrders.Count > 0;
-        sourceStats.Add(preferRuntimeCapturedOrders ? "OrderReadMode=RuntimeCapture" : "OrderReadMode=Reflection");
+        var runtimeCaptureReady = SpecialOrderRuntimeCapture.IsBusinessReady;
+        sourceStats.Add(runtimeCaptureReady ? "OrderReadMode=RuntimeCapture" : "OrderReadMode=Unavailable");
 
         try
         {
             var servePanelContexts = Measure("rare.servePanel.contexts", () => ReadServePanelContexts().ToList());
             sourceStats.Add($"ServePanel={servePanelContexts.Count}");
             guests.AddRange(Measure("rare.servePanel.guests", () => ReadServePanelRareGuests(servePanelContexts).ToList()));
-            if (_diagnosticsEnabled || !preferRuntimeCapturedOrders)
+            if (_diagnosticsEnabled)
             {
                 reflectionOrders.AddRange(Measure("rare.servePanel.orders", () => ReadServePanelOrders(servePanelContexts).ToList()));
             }
@@ -104,7 +102,7 @@ internal sealed class NightBusinessReflectionProvider
             errors.Add($"serve panel: {ex.Message}");
         }
 
-        if (_diagnosticsEnabled || !preferRuntimeCapturedOrders)
+        if (_diagnosticsEnabled)
         {
             try
             {
@@ -141,10 +139,6 @@ internal sealed class NightBusinessReflectionProvider
                 var controllers = Measure($"controllers.{source.Source}", () => ReadManagerControllers(source.MemberName).ToList());
                 sourceStats.Add($"{source.Source}={controllers.Count}");
                 guests.AddRange(Measure($"rare.guests.{source.Source}", () => ReadRareGuests(controllers, source.Source).ToList()));
-                if (_diagnosticsEnabled || !preferRuntimeCapturedOrders)
-                {
-                    reflectionOrders.AddRange(Measure($"rare.orders.{source.Source}", () => ReadControllerOrders(controllers, source.Source).ToList()));
-                }
             }
             catch (Exception ex)
             {
@@ -158,10 +152,6 @@ internal sealed class NightBusinessReflectionProvider
             var queuedControllers = Measure("controllers.Queue", () => ReadQueuedControllers().ToList());
             sourceStats.Add($"Queue={queuedControllers.Count}");
             guests.AddRange(Measure("rare.guests.Queue", () => ReadRareGuests(queuedControllers, "Queue").ToList()));
-            if (_diagnosticsEnabled || !preferRuntimeCapturedOrders)
-            {
-                reflectionOrders.AddRange(Measure("rare.orders.Queue", () => ReadControllerOrders(queuedControllers, "Queue").ToList()));
-            }
         }
         catch (Exception ex)
         {
@@ -170,39 +160,27 @@ internal sealed class NightBusinessReflectionProvider
         }
 
         var activeGuests = Measure("deduplicate.guests", () => DeduplicateGuests(guests));
-        if (!preferRuntimeCapturedOrders)
-        {
-            orders.AddRange(reflectionOrders);
-        }
-
         var rawLiveOrders = reflectionOrders.ToList();
         var acceptedRuntimeOrders = new List<NightBusinessOrder>();
-        var reflectionFallbackOrders = new List<NightBusinessOrder>();
-        if (runtimeOrders.Count > 0)
+        if (runtimeCaptureReady)
         {
-            acceptedRuntimeOrders = Measure("runtimeCapture.accept", () => ReadRuntimeCapturedOrders(runtimeOrders, activeGuests).ToList());
+            acceptedRuntimeOrders = Measure(
+                "runtimeCapture.accept",
+                () => ReadRuntimeCapturedOrders(runtimeOrders, activeGuests).ToList());
             sourceStats.Add($"RuntimeCapture={acceptedRuntimeOrders.Count}/{runtimeOrders.Count}");
+            sourceStats.Add($"RuntimeBinding=confirmed:{acceptedRuntimeOrders.Count},invalid:{runtimeOrders.Count - acceptedRuntimeOrders.Count}");
             sourceStats.Add($"RuntimeCaptureStatus={SpecialOrderRuntimeCapture.Status}");
             sourceStats.Add($"UiPinning={RuntimeUiPinningService.Status}");
             orders.AddRange(acceptedRuntimeOrders);
-            if (preferRuntimeCapturedOrders && acceptedRuntimeOrders.Count < runtimeOrders.Count)
-            {
-                reflectionFallbackOrders = Measure(
-                    "runtimeCapture.reflectionFallback",
-                    () => ReadReflectionFallbackOrders(sourceStats, errors).ToList());
-                sourceStats.Add($"ReflectionFallback={reflectionFallbackOrders.Count}");
-                orders.AddRange(reflectionFallbackOrders);
-            }
-            else
-            {
-                sourceStats.Add("ReflectionFallback=skipped");
-            }
+            sourceStats.Add("ReflectionFallback=disabled");
         }
         else
         {
+            sourceStats.Add($"RuntimeBinding=not-ready; ignored={runtimeOrders.Count}");
             sourceStats.Add($"RuntimeCaptureStatus={SpecialOrderRuntimeCapture.Status}");
             sourceStats.Add($"UiPinning={RuntimeUiPinningService.Status}");
-            sourceStats.Add("ReflectionFallback=not-needed");
+            sourceStats.Add("ReflectionFallback=disabled");
+            errors.Add("稀客订单生命周期 Hook 尚未完整就绪，本轮读取已停止。");
         }
 
         var activeOrders = Measure("deduplicate.orders", () => DeduplicateOrders(orders));
@@ -338,78 +316,6 @@ internal sealed class NightBusinessReflectionProvider
         }
     }
 
-    private IReadOnlyList<NightBusinessOrder> ReadReflectionFallbackOrders(
-        ICollection<string> sourceStats,
-        ICollection<string> errors)
-    {
-        var result = new List<NightBusinessOrder>();
-
-        try
-        {
-            var servePanelContexts = Measure("fallback.rare.servePanel.contexts", () => ReadServePanelContexts().ToList());
-            sourceStats.Add($"FallbackServePanel={servePanelContexts.Count}");
-            result.AddRange(Measure("fallback.rare.servePanel.orders", () => ReadServePanelOrders(servePanelContexts).ToList()));
-        }
-        catch (Exception ex)
-        {
-            sourceStats.Add("FallbackServePanel=err");
-            errors.Add($"fallback serve panel: {ex.Message}");
-        }
-
-        try
-        {
-            var orderControllerOrders = Measure("fallback.rare.orderController", () => ReadOrderControllerOrders().ToList());
-            sourceStats.Add($"FallbackOrderController={orderControllerOrders.Count}");
-            result.AddRange(orderControllerOrders);
-        }
-        catch (Exception ex)
-        {
-            sourceStats.Add("FallbackOrderController=err");
-            errors.Add($"fallback order controller: {ex.Message}");
-        }
-
-        try
-        {
-            var hudOrders = Measure("fallback.rare.hud", () => ReadHudOrders().ToList());
-            sourceStats.Add($"FallbackHUD={hudOrders.Count}");
-            result.AddRange(hudOrders);
-        }
-        catch (Exception ex)
-        {
-            sourceStats.Add("FallbackHUD=err");
-            errors.Add($"fallback HUD orders: {ex.Message}");
-        }
-
-        foreach (var source in ManagerControllerSources)
-        {
-            try
-            {
-                var controllers = Measure($"fallback.controllers.{source.Source}", () => ReadManagerControllers(source.MemberName).ToList());
-                sourceStats.Add($"Fallback{source.Source}={controllers.Count}");
-                result.AddRange(Measure($"fallback.rare.orders.{source.Source}", () => ReadControllerOrders(controllers, source.Source).ToList()));
-            }
-            catch (Exception ex)
-            {
-                sourceStats.Add($"Fallback{source.Source}=err");
-                errors.Add($"fallback {source.Source}: {ex.Message}");
-            }
-        }
-
-        try
-        {
-            var queuedControllers = Measure("fallback.controllers.Queue", () => ReadQueuedControllers().ToList());
-            sourceStats.Add($"FallbackQueue={queuedControllers.Count}");
-            result.AddRange(Measure("fallback.rare.orders.Queue", () => ReadControllerOrders(queuedControllers, "Queue").ToList()));
-        }
-        catch (Exception ex)
-        {
-            sourceStats.Add("FallbackQueue=err");
-            errors.Add($"fallback Queue: {ex.Message}");
-        }
-
-        return result;
-    }
-
     private IEnumerable<NightBusinessOrder> ReadOrderControllerOrders()
     {
         var orderControllerType = FindType(OrderControllerTypeName);
@@ -417,7 +323,7 @@ internal sealed class NightBusinessReflectionProvider
 
         foreach (var order in EnumerateObjects(InvokeStaticMethod(orderControllerType, "GetShowInUIOrders")))
         {
-            var parsed = ReadOrder(order, FindControllerForOrder(order), "OrderController");
+            var parsed = ReadOrder(order, null, "OrderController");
             if (parsed != null) yield return parsed;
         }
 
@@ -427,7 +333,7 @@ internal sealed class NightBusinessReflectionProvider
         foreach (var element in EnumerateObjects(GetMemberValue(controller, "m_Orders")))
         {
             var order = GetMemberValue(element, "ActiveOrder");
-            var parsed = ReadOrder(order, FindControllerForOrder(order), "OrderControllerElement");
+            var parsed = ReadOrder(order, null, "OrderControllerElement");
             if (parsed != null) yield return parsed;
         }
     }
@@ -440,7 +346,7 @@ internal sealed class NightBusinessReflectionProvider
         foreach (var element in FindUnityObjects(orderingElementType))
         {
             var order = GetMemberValue(element, "ActiveOrder");
-            var parsed = ReadOrder(order, FindControllerForOrder(order), "HUD");
+            var parsed = ReadOrder(order, null, "HUD");
             if (parsed != null) yield return parsed;
         }
     }
@@ -502,86 +408,6 @@ internal sealed class NightBusinessReflectionProvider
         }
     }
 
-    private object? FindControllerForOrder(object? order)
-    {
-        if (order == null) return null;
-        var manager = FindGuestsManager();
-        if (manager == null) return null;
-
-        foreach (var controller in EnumerateAllKnownControllers(manager))
-        {
-            if (controller == null) continue;
-            foreach (var candidate in EnumerateControllerOrders(controller))
-            {
-                if (candidate != null && IsSameRuntimeObject(candidate, order)) return controller;
-            }
-        }
-
-        var deskCode = ToNullableInt(GetMemberValue(order, "DeskCode"));
-        if (!deskCode.HasValue || deskCode.Value < 0) return null;
-        return EnumerateAllKnownControllers(manager)
-            .FirstOrDefault(controller => ToNullableInt(GetMemberValue(controller, "DeskCode")) == deskCode);
-    }
-
-    private static IEnumerable<object?> EnumerateAllKnownControllers(object manager)
-    {
-        foreach (var (memberName, _) in ManagerControllerSources)
-        {
-            foreach (var item in EnumerateObjects(GetMemberValue(manager, memberName)))
-            {
-                var controller = NormalizeKeyValueValue(item);
-                if (controller != null) yield return controller;
-            }
-        }
-
-        var guestGroupControllerType = FindType(GuestGroupControllerTypeName);
-        if (guestGroupControllerType == null) yield break;
-
-        foreach (var item in EnumerateObjects(GetStaticMemberValue(guestGroupControllerType, "QueuedGuestControllers")))
-        {
-            var controller = NormalizeKeyValueValue(item);
-            if (controller != null) yield return controller;
-        }
-    }
-
-    private IEnumerable<NightBusinessOrder> ReadControllerOrders(IEnumerable<object?> controllers, string source)
-    {
-        foreach (var controller in controllers)
-        {
-            if (!IsRareGuestController(controller, AllowOrderingGuestIdResolution(source)))
-            {
-                RecordCandidate("Controller", source, accepted: false, "not recognized as rare guest controller", () => DescribeControllerCandidate(controller));
-                continue;
-            }
-
-            RecordCandidate("Controller", source, accepted: true, "rare guest controller", () => DescribeControllerCandidate(controller));
-
-            foreach (var order in EnumerateControllerOrders(controller))
-            {
-                var parsed = ReadOrder(order, controller, source);
-                if (parsed != null) yield return parsed;
-            }
-        }
-    }
-
-    private static IEnumerable<object?> EnumerateControllerOrders(object? controller)
-    {
-        if (controller == null) yield break;
-
-        foreach (var order in EnumerateObjects(GetMemberValue(controller, "AllOrders")))
-        {
-            yield return order;
-        }
-
-        foreach (var order in EnumerateObjects(GetMemberValue(controller, "AllOrdersData")))
-        {
-            yield return order;
-        }
-
-        var peekOrder = InvokeMethod(controller, "PeekOrders");
-        if (peekOrder != null) yield return peekOrder;
-    }
-
     private IEnumerable<NightBusinessGuest> ReadRareGuests(IEnumerable<object?> controllers, string source)
     {
         foreach (var controller in controllers)
@@ -638,11 +464,20 @@ internal sealed class NightBusinessReflectionProvider
     {
         if (order == null) return null;
 
-        var specialGuest = GetMemberValue(order, "SpecialGuests") ?? GetMemberValue(controller, "SpecialGuest");
+        var resolution = RuntimeOrderTypeResolver.Resolve(order);
+        if (!resolution.Resolved
+            || resolution.Kind != RuntimeOrderKind.Special
+            || resolution.ReadableOrder == null)
+        {
+            return null;
+        }
+
+        var readableOrder = resolution.ReadableOrder;
+        var specialGuest = GetMemberValue(readableOrder, "SpecialGuests") ?? GetMemberValue(controller, "SpecialGuest");
         var orderingGuest = GetMemberValue(controller, "OrderingGuest");
         if (specialGuest == null
             && (IsSpecialGuestObject(orderingGuest)
-                || ResolveOrderingGuestRareCustomerIdentity(orderingGuest, IsSpecialOrder(order) || IsManualSpecialOrder(order, controller)) != null))
+                || ResolveOrderingGuestRareCustomerIdentity(orderingGuest, allowIdOnly: true) != null))
         {
             specialGuest = orderingGuest;
         }
@@ -657,7 +492,7 @@ internal sealed class NightBusinessReflectionProvider
         var identity = ResolveRareCustomerIdentity(specialGuest);
         var result = new NightBusinessGuest
         {
-            DeskCode = ToInt(GetMemberValue(order, "DeskCode") ?? GetMemberValue(controller, "DeskCode")),
+            DeskCode = ToInt(GetMemberValue(readableOrder, "DeskCode") ?? GetMemberValue(controller, "DeskCode")),
             GuestId = identity?.Id ?? guestId,
             GuestName = identity?.Name ?? ReadGuestName(specialGuest, guestId),
             Source = source,
@@ -679,17 +514,23 @@ internal sealed class NightBusinessReflectionProvider
             return null;
         }
 
-        var readableOrder = TryCastRuntimeObject(order, SpecialOrderTypeName) ?? order;
+        var resolution = RuntimeOrderTypeResolver.Resolve(order);
+        if (!resolution.Resolved)
+        {
+            RecordCandidate("Order", source, accepted: false, resolution.Reason, () => DescribeOrderCandidate(order, controller));
+            return null;
+        }
+
+        if (resolution.Kind != RuntimeOrderKind.Special || resolution.ReadableOrder == null)
+        {
+            RecordCandidate("Order", source, accepted: false, "exact concrete type is not SpecialOrder", () => DescribeOrderCandidate(order, controller));
+            return null;
+        }
+
+        var readableOrder = resolution.ReadableOrder;
         var classification = SpecialBusinessOrderClassifier.Classify(readableOrder, controller, source);
         var classifiedSpecialBusinessOrder = !string.IsNullOrWhiteSpace(classification.Role)
             && !string.Equals(classification.Role, SpecialBusinessOrderRoles.WackyTarget, StringComparison.Ordinal);
-        if (!IsSpecialOrder(readableOrder)
-            && !IsManualSpecialOrder(readableOrder, controller)
-            && !classifiedSpecialBusinessOrder)
-        {
-            RecordCandidate("Order", source, accepted: false, "not a special order by current rules", () => DescribeOrderCandidate(readableOrder, controller));
-            return null;
-        }
 
         var now = DateTime.UtcNow;
 
@@ -703,7 +544,7 @@ internal sealed class NightBusinessReflectionProvider
 
         if (specialGuest == null
             && (IsSpecialGuestObject(orderingGuest)
-                || ResolveOrderingGuestRareCustomerIdentity(orderingGuest, IsManualSpecialOrder(readableOrder, controller) || classifiedSpecialBusinessOrder) != null))
+                || ResolveOrderingGuestRareCustomerIdentity(orderingGuest, allowIdOnly: true) != null))
         {
             specialGuest = orderingGuest;
         }
@@ -718,8 +559,8 @@ internal sealed class NightBusinessReflectionProvider
         var identity = IsSpecialGuestObject(specialGuest)
             ? ResolveRareCustomerIdentity(specialGuest)
             : ResolveOrderingGuestRareCustomerIdentity(specialGuest, classifiedSpecialBusinessOrder);
-        var foodTag = ResolveOrderTagText(readableOrder, controller, specialGuest, "GetOrderFoodText", "GetFoodTagText", "RequestFoodTag", "ReqFoodTag", useFoodTagMap: true);
-        var beverageTag = ResolveOrderTagText(readableOrder, controller, specialGuest, "GetOrderBevText", "GetBevTagText", "RequestBeverageTag", "ReqBevTag", useFoodTagMap: false);
+        var foodTag = ResolveOrderTagText(readableOrder, controller, specialGuest, "GetOrderFoodText", "GetFoodTagText", "RequestFoodTag", useFoodTagMap: true);
+        var beverageTag = ResolveOrderTagText(readableOrder, controller, specialGuest, "GetOrderBevText", "GetBevTagText", "RequestBeverageTag", useFoodTagMap: false);
         var foodTagId = ToNullableInt(GetMemberValue(readableOrder, "RequestFoodTag"));
         var beverageTagId = ToNullableInt(GetMemberValue(readableOrder, "RequestBeverageTag"));
         if (!foodTagId.HasValue && !beverageTagId.HasValue && string.IsNullOrWhiteSpace(foodTag) && string.IsNullOrWhiteSpace(beverageTag))
@@ -814,9 +655,16 @@ internal sealed class NightBusinessReflectionProvider
         IReadOnlyList<CapturedRuntimeSpecialOrder> capturedOrders,
         IReadOnlyList<NightBusinessGuest> activeGuests)
     {
-        var now = DateTime.UtcNow;
         foreach (var captured in capturedOrders)
         {
+            if (!HasCapturedOrderDetails(captured)
+                || captured.OrderObject == null
+                || captured.ControllerObject == null
+                || string.IsNullOrWhiteSpace(captured.RuntimeKey))
+            {
+                continue;
+            }
+
             var activeGuest = FindActiveGuestForCapturedOrder(captured, activeGuests);
             var identity = ResolveRareCustomerIdentity(captured.GuestId, captured.GuestName);
             var classification = SpecialBusinessOrderClassifier.Classify(captured.OrderObject, captured.ControllerObject);
@@ -862,10 +710,7 @@ internal sealed class NightBusinessReflectionProvider
                     || (captured.OrderObject != null && ReadOrderServedState(captured.OrderObject, "ServBeverage", "ServedBeverageInAir")),
             };
 
-            if (ShouldKeepCapturedOrder(order, captured, activeGuests, now))
-            {
-                yield return order;
-            }
+            yield return order;
         }
     }
 
@@ -926,80 +771,12 @@ internal sealed class NightBusinessReflectionProvider
         return tagId.HasValue ? ResolveTagTextFromMap(tagId.Value, useFoodTagMap) : "";
     }
 
-    private bool ShouldKeepCapturedOrder(
-        NightBusinessOrder order,
-        CapturedRuntimeSpecialOrder captured,
-        IReadOnlyList<NightBusinessGuest> activeGuests,
-        DateTime nowUtc)
-    {
-        if (!HasCapturedOrderDetails(captured)) return false;
-        if (MatchesActiveGuest(order, activeGuests)) return true;
-        if (IsCapturedRuntimeOrderStillLive(captured)) return true;
-        return nowUtc - captured.CapturedAt <= UnmatchedCapturedOrderGrace;
-    }
-
     private static bool HasCapturedOrderDetails(CapturedRuntimeSpecialOrder captured)
     {
         return captured.HasFoodTagId
             || captured.HasBeverageTagId
             || !string.IsNullOrWhiteSpace(captured.FoodTagDisplayText)
             || !string.IsNullOrWhiteSpace(captured.BeverageTagDisplayText);
-    }
-
-    private bool IsCapturedRuntimeOrderStillLive(CapturedRuntimeSpecialOrder captured)
-    {
-        if (captured.OrderObject == null || captured.ControllerObject == null) return false;
-
-        try
-        {
-            foreach (var currentOrder in EnumerateControllerOrders(captured.ControllerObject))
-            {
-                if (currentOrder == null) continue;
-                var readableCurrentOrder = TryCastRuntimeObject(currentOrder, SpecialOrderTypeName) ?? currentOrder;
-                if (!IsSameRuntimeObject(readableCurrentOrder, captured.OrderObject)
-                    && !IsSameRuntimeObject(currentOrder, captured.OrderObject))
-                {
-                    continue;
-                }
-
-                return ReadOrder(readableCurrentOrder, captured.ControllerObject, "RuntimeCaptureLive") != null;
-            }
-        }
-        catch
-        {
-            return false;
-        }
-
-        return false;
-    }
-
-    private static bool IsSameRuntimeObject(object left, object right)
-    {
-        try
-        {
-            return ReadObjectPointer(left) == ReadObjectPointer(right);
-        }
-        catch
-        {
-            return ReferenceEquals(left, right);
-        }
-    }
-
-    private static bool MatchesActiveGuest(NightBusinessOrder order, IReadOnlyList<NightBusinessGuest> activeGuests)
-    {
-        foreach (var guest in activeGuests)
-        {
-            if (!IsCompatibleDesk(order.DeskCode, guest.DeskCode)) continue;
-
-            if (order.GuestId.HasValue && guest.GuestId.HasValue && order.GuestId.Value == guest.GuestId.Value) return true;
-            if (!string.IsNullOrWhiteSpace(order.GuestName)
-                && string.Equals(order.GuestName, guest.GuestName, StringComparison.Ordinal))
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     private static bool IsCompatibleDesk(int orderDeskCode, int guestDeskCode)
@@ -1131,8 +908,7 @@ internal sealed class NightBusinessReflectionProvider
     {
         var value = GetMemberValue(order, "FreeOrder");
         if (value is bool boolValue) return boolValue;
-        if (bool.TryParse(value?.ToString(), out var parsed)) return parsed;
-        return bool.TryParse(ResolveOrderTextValue(SafeToString(order), "IsFreeOrder?"), out var textParsed) && textParsed;
+        return false;
     }
 
     private static List<NightBusinessGuest> DeduplicateGuests(IEnumerable<NightBusinessGuest> guests)
@@ -1173,13 +949,6 @@ internal sealed class NightBusinessReflectionProvider
         return score;
     }
 
-    private static bool IsSpecialOrder(object order)
-    {
-        var type = GetMemberValue(order, "Type")?.ToString();
-        if (string.Equals(type, "Special", StringComparison.OrdinalIgnoreCase)) return true;
-        return order.GetType().Name.IndexOf("SpecialOrder", StringComparison.OrdinalIgnoreCase) >= 0;
-    }
-
     private bool IsRareGuestController(object? controller, bool allowOrderingGuestId = false)
     {
         if (controller == null) return false;
@@ -1187,13 +956,6 @@ internal sealed class NightBusinessReflectionProvider
 
         var guest = GetMemberValue(controller, "OrderingGuest");
         return IsSpecialGuestObject(guest) || ResolveOrderingGuestRareCustomerIdentity(guest, allowOrderingGuestId) != null;
-    }
-
-    private bool IsManualSpecialOrder(object order, object? controller)
-    {
-        if (!ToBool(GetMemberValue(order, "ManualOrder"))) return false;
-        if (IsSpecialGuestObject(GetMemberValue(order, "SpecialGuests"))) return true;
-        return IsRareGuestController(controller, allowOrderingGuestId: true);
     }
 
     private RareCustomerIdentity? ResolveOrderingGuestRareCustomerIdentity(object? guest, bool allowIdOnly = false)
@@ -1330,8 +1092,6 @@ internal sealed class NightBusinessReflectionProvider
             $"isControlled={ShortValue(GetMemberValue(controller, "IsControlled"))}",
             $"specialGuest=[{DescribeGuestObject(specialGuest)}]",
             $"orderingGuest=[{DescribeGuestObject(orderingGuest)}]",
-            $"allOrders={SafeCount(GetMemberValue(controller, "AllOrders"))}",
-            $"allOrdersData={SafeCount(GetMemberValue(controller, "AllOrdersData"))}",
         };
 
         return string.Join("; ", parts);
@@ -1363,7 +1123,6 @@ internal sealed class NightBusinessReflectionProvider
             $"guest=[{DescribeGuestObject(orderGuest ?? orderingGuest, includeMapping: !isNormalOrder)}]",
             $"specialGuest=[{DescribeGuestObject(specialGuest)}]",
             $"controller=[{DescribeControllerCandidate(controller)}]",
-            $"text={TrimDiagnostic(SafeToString(order) ?? "", 260)}",
         };
 
         return string.Join("; ", parts);
@@ -1371,11 +1130,8 @@ internal sealed class NightBusinessReflectionProvider
 
     private static bool IsNormalOrderCandidate(object? order)
     {
-        if (order == null) return false;
-        var typeName = order.GetType().Name;
-        if (typeName.IndexOf("NormalOrder", StringComparison.OrdinalIgnoreCase) >= 0) return true;
-        var type = GetMemberValue(order, "Type");
-        return string.Equals(type?.ToString(), "Normal", StringComparison.OrdinalIgnoreCase) || ToNullableInt(type) == 0;
+        var resolution = RuntimeOrderTypeResolver.Resolve(order);
+        return resolution.Resolved && resolution.Kind == RuntimeOrderKind.Normal;
     }
 
     private string DescribeGuestObject(object? guest, bool includeMapping = true)
@@ -1442,18 +1198,6 @@ internal sealed class NightBusinessReflectionProvider
             $"sourceStringId={TrimDiagnostic(entry.SourceStringId, 80)}",
             $"localGuestId={entry.LocalRareCustomerId?.ToString() ?? ""}",
             $"aliasSource={entry.AliasSource}");
-    }
-
-    private static int SafeCount(object? value)
-    {
-        try
-        {
-            return CountObjects(value);
-        }
-        catch
-        {
-            return -1;
-        }
     }
 
     private static string ShortType(object? value)
@@ -1546,89 +1290,17 @@ internal sealed class NightBusinessReflectionProvider
         string controllerMethodName,
         string guestMethodName,
         string orderPropertyName,
-        string orderTextLabel,
         bool useFoodTagMap)
     {
         var tagValue = GetMemberValue(order, orderPropertyName);
         var tagId = ToNullableInt(tagValue);
         if (tagId.HasValue && TryResolveTagTextFromMap(tagId.Value, useFoodTagMap, out var mapped)) return mapped;
 
-        var normalized = CanonicalizeTagText(ResolveOrderTagFromText(SafeToString(order), orderTextLabel), useFoodTagMap);
-        if (!string.IsNullOrWhiteSpace(normalized)) return normalized;
-
         var controllerValue = InvokeMethod(controller, controllerMethodName, order)?.ToString();
-        normalized = CanonicalizeTagText(controllerValue, useFoodTagMap);
+        var normalized = CanonicalizeTagText(controllerValue, useFoodTagMap);
         if (!string.IsNullOrWhiteSpace(normalized)) return normalized;
 
         return tagId.HasValue ? ResolveTagText(specialGuest, guestMethodName, tagId.Value, useFoodTagMap) : "";
-    }
-
-    private static string ResolveOrderTagFromText(string? orderText, string label)
-    {
-        return ResolveOrderTextValue(orderText, label);
-    }
-
-    private static string ResolveOrderTextValue(string? orderText, string label)
-    {
-        if (string.IsNullOrWhiteSpace(orderText)) return "";
-
-        var lines = orderText.Replace('\r', '\n').Split('\n');
-        for (var i = 0; i < lines.Length; i++)
-        {
-            var line = lines[i].Trim();
-            if (!line.StartsWith(label, StringComparison.OrdinalIgnoreCase)) continue;
-
-            var sameLineValue = NormalizeLabelValue(line[label.Length..]);
-            if (!string.IsNullOrWhiteSpace(sameLineValue)) return sameLineValue;
-
-            for (var j = i + 1; j < lines.Length; j++)
-            {
-                var candidateLine = lines[j].Trim();
-                if (IsOrderTextFieldLine(candidateLine)) break;
-
-                var candidate = NormalizeTagText(candidateLine);
-                if (!string.IsNullOrWhiteSpace(candidate)) return candidate;
-            }
-        }
-
-        return "";
-    }
-
-    private static string? SafeToString(object? value)
-    {
-        if (value == null) return null;
-
-        try
-        {
-            return value.ToString();
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private static bool IsOrderTextFieldLine(string value)
-    {
-        if (value.Length == 0) return false;
-        if (value.Length > 8 && value.All(c => c == '/' || char.IsWhiteSpace(c))) return true;
-
-        return value.StartsWith("DeskCode:", StringComparison.OrdinalIgnoreCase)
-            || value.StartsWith("OrderType:", StringComparison.OrdinalIgnoreCase)
-            || value.StartsWith("ServFood:", StringComparison.OrdinalIgnoreCase)
-            || value.StartsWith("ServBev:", StringComparison.OrdinalIgnoreCase)
-            || value.StartsWith("Price:", StringComparison.OrdinalIgnoreCase)
-            || value.StartsWith("IsFreeOrder?", StringComparison.OrdinalIgnoreCase)
-            || value.StartsWith("ReqFoodTag:", StringComparison.OrdinalIgnoreCase)
-            || value.StartsWith("ReqBevTag:", StringComparison.OrdinalIgnoreCase)
-            || value.StartsWith("Guest:", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string? NormalizeLabelValue(string value)
-    {
-        var trimmed = value.Trim();
-        if (trimmed.StartsWith(":", StringComparison.Ordinal)) trimmed = trimmed[1..].Trim();
-        return NormalizeTagText(trimmed);
     }
 
     private static string? NormalizeTagText(string? value)

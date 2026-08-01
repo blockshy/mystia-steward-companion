@@ -24,11 +24,15 @@ const cookingOwnership = read('mods/bepinex/src/Save/RuntimeCookingGenerationTra
 const cookerStartPolicy = read('mods/bepinex/src/Save/AutomationCookerStartPolicy.cs');
 const matching = read('mods/bepinex/src/Save/RuntimeOrderPreparationService.OrderMatching.cs');
 const runtimeReflection = read('mods/bepinex/src/Save/RuntimeReflectionUtility.cs');
+const runtimeOrderTypes = read('mods/bepinex/src/Save/RuntimeOrderTypeResolver.cs');
 const service = read('mods/bepinex/src/Save/RuntimeOrderPreparationService.cs');
 const specialTargetPolicy = read(
   'mods/bepinex/src/Save/SpecialBusiness/RuntimeOrderPreparationService.SpecialFoodTargetPolicy.cs',
 );
 const yuyukoPolicy = read('mods/bepinex/src/Save/SpecialBusiness/RuntimeOrderPreparationService.YuyukoChallengePolicy.cs');
+const yuyukoEvaluationTracker = read(
+  'mods/bepinex/src/Save/SpecialBusiness/YuyukoChallengeEvaluationTracker.cs',
+);
 const capture = read('mods/bepinex/src/Save/SpecialOrderRuntimeCapture.cs');
 const normalCapture = read('mods/bepinex/src/Save/NormalOrderRuntimeCapture.cs');
 const provider = read('mods/bepinex/src/Save/NightBusinessReflectionProvider.cs');
@@ -45,6 +49,31 @@ const specialBusinessContext = read(
   'mods/bepinex/src/Save/RuntimeSpecialBusinessContextService.cs',
 );
 const normalOrderSnapshot = read('mods/bepinex/src/Save/RuntimeNormalOrderSnapshotService.cs');
+const wackyOrderModule = read(
+  'mods/bepinex/src/Save/SpecialBusiness/WackyCookingCompetitionOrderModule.cs',
+);
+const plugin = read('mods/bepinex/src/Plugin/MystiaStewardCompanionPlugin.cs');
+
+const productionSourceRoot = path.join(root, 'mods/bepinex/src');
+const storageOutHookSources = fs.readdirSync(productionSourceRoot, { recursive: true })
+  .filter((relativePath) => typeof relativePath === 'string' && relativePath.endsWith('.cs'))
+  .filter((relativePath) => {
+    const source = fs.readFileSync(path.join(productionSourceRoot, relativePath), 'utf8');
+    return /RunTimeStorage/.test(source)
+      && /(?:Object|Badge|Beverage|Cooker|Food|Ingredient|Item)Out(?:Range)?/.test(source)
+      && /(?:HarmonyPatch|HarmonyMethod|new Harmony|\.Patch\s*\()/.test(source);
+  });
+
+assert.deepEqual(
+  storageOutHookSources,
+  [],
+  'Production code must not install Harmony hooks on RunTimeStorage *Out/ObjectOut entries.',
+);
+assert.doesNotMatch(
+  plugin,
+  /RuntimeStorageSentinelDiagnostic/,
+  'The plugin must not restore the removed RunTimeStorage sentinel diagnostic.',
+);
 
 assert.ok(!cooking.includes('"FinishCooking"'), 'The Mod must not invoke the non-idempotent FinishCooking entry.');
 assert.ok(!lifecycle.includes('FinalizeOwnedResult'), 'The cooking tracker still exposes the removed active-finalize directive.');
@@ -57,7 +86,9 @@ assert.ok(!matching.includes('CopyNormalOrderRequestWithoutOrderKey'));
 assert.ok(!matching.includes('orderKeyFallback'));
 assert.match(matching, /BuildRequestOrderIdentity[\s\S]*request\.RuntimeGuestId[\s\S]*request\.FoodTagId[\s\S]*request\.BeverageTagId/);
 assert.match(matching, /TryReadGuestId[\s\S]*TryReadInt\([\s\S]*get_Id[\s\S]*ReadMember\(guest, "Id"\)/);
-assert.match(matching, /ReadControllerOrderCollection[\s\S]*HasIl2CppEnumerator\(value\)[\s\S]*EnumerateIl2Cpp\(value\)/);
+assert.match(matching, /private static IEnumerable<object> EnumerateControllerOrders\(object controller\)[\s\S]*TryInvokeInstanceValue\(controller, "PeekOrders"\)/);
+assert.doesNotMatch(matching, /"AllOrders"|"AllOrdersData"/,
+  'Automation must not treat the historical controller order stack as current ownership.');
 assert.match(matching, /Delivery,[\s\S]*Completion,[\s\S]*NativeEvaluation/);
 assert.match(service, /FindRuntimeOrder\(request, RuntimeOrderLookupPurpose\.Completion\)/);
 assert.match(cooking, /FindRuntimeOrder\(request, RuntimeOrderLookupPurpose\.Completion\)/);
@@ -98,27 +129,36 @@ assert.ok(!rareLookup.includes('BuildYuyukoPhase3CaptureSkippedDiagnostic'),
   'Yuyuko phase-three native evaluation must not unconditionally skip an exact captured order.');
 assert.match(rareLookup, /requiresLiveYuyukoPhase3Boss[\s\S]*IsMatchingYuyukoPhase3EvaluationOrder\([\s\S]*captured\.Order[\s\S]*captured\.Controller/,
   'A captured Yuyuko phase-three order must pass the same live callback and served-target validator before evaluation.');
+assert.match(
+  rareLookup,
+  /if \(!requiresLiveKoishiBoss && !requiresLiveYuyukoPhase3Boss\)[\s\S]*exact capture unavailable[\s\S]*foreach \(var controller in EnumerateGuestControllers\(manager\)\)/,
+  'General special-order lookup must fail closed before the named Koishi/Yuyuko manager scan.',
+);
 
 const capturedSpecialLiveness = sourceSlice(
   matching,
   'private static bool IsCapturedSpecialOrderLive(',
   'private static IEnumerable<object> EnumerateGuestControllers(');
-assert.match(capturedSpecialLiveness, /EnumerateControllerOrders\(controllerObject\)[\s\S]*CompareObjectIdentity\(order, orderObject\)/,
+assert.match(capturedSpecialLiveness, /TryInvokeInstanceValue\(controllerObject, "PeekOrders"\)[\s\S]*CompareObjectIdentity\(currentOrder, orderObject\)/,
   'Captured-order liveness must still prove current controller ownership.');
 assert.match(capturedSpecialLiveness, /RareOrderIdentityMatcher\.IsExecutableCapturedOrder/);
 assert.match(capturedSpecialLiveness, /return IsMatchingSpecialOrder\(orderObject!, controllerObject!, request, purpose, out rejectReason\)/,
   'Captured orders must still pass the complete raw runtime identity matcher.');
 
-assert.match(rareLookup, /foreach \(var enumeratedOrder in EnumerateControllerOrders\(controller\)\)[\s\S]*var order = NormalizeRuntimeSpecialOrder\(enumeratedOrder\);[\s\S]*IsMatching(?:YuyukoPhase3EvaluationOrder|SpecialOrder)\(order/,
-  'Orders enumerated through OrderBase must be normalized to SpecialOrder before raw Tag IDs are read.');
-const specialOrderNormalizer = sourceSlice(
+assert.match(
+  rareLookup,
+  /foreach \(var enumeratedOrder in EnumerateControllerOrders\(controller\)\)[\s\S]*TryResolveRuntimeOrder\([\s\S]*enumeratedOrder,[\s\S]*RuntimeOrderKind\.Special,[\s\S]*out var order,[\s\S]*out var typeRejectReason\)[\s\S]*IsMatching(?:YuyukoPhase3EvaluationOrder|SpecialOrder)\(order/,
+  'Orders enumerated through OrderBase must resolve uniquely to SpecialOrder before raw Tag IDs are read.',
+);
+assert.doesNotMatch(
   matching,
-  'private static object NormalizeRuntimeSpecialOrder(',
-  'private static int? TryReadSpecialOrderTagId(');
-assert.match(specialOrderNormalizer, /RuntimeReflectionUtility\.TryCastRuntimeObject\(order, SpecialOrderTypeName\) \?\? order/,
-  'The live-order normalizer must use the shared runtime-object cast entry.');
-assert.match(runtimeReflection, /TryCastRuntimeObject\([\s\S]*value is not Il2CppObjectBase[\s\S]*FindType\(targetTypeName\)[\s\S]*typeof\(Il2CppObjectBase\)[\s\S]*method\.Name == "TryCast"[\s\S]*MakeGenericMethod\(targetType\)/,
-  'The shared runtime-object cast entry must resolve and invoke the concrete runtime cast.');
+  /NormalizeRuntimeSpecialOrder|TryCastRuntimeObject\(order, SpecialOrderTypeName\) \?\? order/,
+  'Automation matching must not restore the unresolved-wrapper passthrough normalizer.',
+);
+assert.match(runtimeReflection, /TryCastRuntimeObject\(object\? value, string targetTypeName\)[\s\S]*FindType\(targetTypeName\)[\s\S]*value is not Il2CppObjectBase[\s\S]*TryCastMethodCache\.GetOrAdd\([\s\S]*ResolveTryCastMethod/,
+  'The runtime-object cast entry must resolve one exact named IL2CPP type and cast method.');
+assert.match(runtimeReflection, /ResolveTryCastMethod\(Type targetType\)[\s\S]*typeof\(Il2CppObjectBase\)[\s\S]*method\.Name == "TryCast"[\s\S]*MakeGenericMethod\(targetType\)/,
+  'The shared runtime-object cast entry must invoke the concrete generic runtime cast.');
 
 const storyManualCallbackLookup = namedMethodSource(matching, 'TryResolveSpecialManualContext');
 assert.match(storyManualCallbackLookup, /CompareObjectIdentity\(captured\.OrderObject, order\) == RuntimeObjectIdentityComparison\.Same/,
@@ -132,18 +172,49 @@ assert.ok(!storyManualCallbackLookup.includes('TryMatchCapturedOrderIdentity'),
 assert.doesNotMatch(storyManualCallbackLookup, /OrderPreparationRequest\s+request/,
   'Manual callback lookup must accept the matched order/controller pair, not a request identity.');
 
-const yuyukoManualCallbackLookup = namedMethodSource(
+const yuyukoManualBindingLookup = namedMethodSource(
   matching,
-  'FindCapturedYuyukoPhase3ManualEvaluationCallback',
+  'TryResolveCapturedYuyukoPhase3ManualEvaluationBinding',
 );
-assert.match(yuyukoManualCallbackLookup, /CompareObjectIdentity\(captured\.OrderObject, order\)/,
-  'Yuyuko story evaluation must keep its original exact-order callback lookup.');
-assert.match(rareLookup, /requiresYuumaSettlementManualContext\s*=\s*purpose == RuntimeOrderLookupPurpose\.YuumaSettlement/,
+assert.match(
+  yuyukoManualBindingLookup,
+  /RuntimeOrderTypeResolver\.Resolve\(order\)[\s\S]*TryResolveCapturedYuyukoPhase3SpecialManualEvaluationBinding\([\s\S]*TryResolveCapturedYuyukoPhase3NormalManualEvaluationBinding\(/,
+  'Yuyuko manual binding lookup must resolve one concrete order type before reading its capture.',
+);
+const yuyukoSpecialBindingLookup = namedMethodSource(
+  matching,
+  'TryResolveCapturedYuyukoPhase3SpecialManualEvaluationBinding',
+);
+const yuyukoNormalBindingLookup = namedMethodSource(
+  matching,
+  'TryResolveCapturedYuyukoPhase3NormalManualEvaluationBinding',
+);
+for (const [label, lookup, captureName] of [
+  ['special', yuyukoSpecialBindingLookup, 'SpecialOrderRuntimeCapture'],
+  ['normal', yuyukoNormalBindingLookup, 'NormalOrderRuntimeCapture'],
+]) {
+  assert.match(lookup, new RegExp(`if \\(!${captureName}\\.IsBusinessReady\\)[\\s\\S]*return false`),
+    `Yuyuko ${label} binding must not consume a partially covered capture generation.`);
+  assert.match(lookup, /CompareObjectIdentity\(captured\.OrderObject, order\) == RuntimeObjectIdentityComparison\.Same/,
+    `Yuyuko ${label} binding must belong to the exact current order object.`);
+  assert.match(lookup, /CompareObjectIdentity\(captured\.ControllerObject, controller\) == RuntimeObjectIdentityComparison\.Same/,
+    `Yuyuko ${label} binding must belong to the exact current controller object.`);
+  assert.match(lookup, /candidate\.ManualEvaluationBindingConflict[\s\S]*candidate\.ManualEvaluationBindingObserved[\s\S]*candidate\.ManualEvaluationBindingCallback == null[\s\S]*HasCaptureSource\(candidate\.CaptureSource, "ManualOrderSet"\)/,
+    `Yuyuko ${label} manual binding must require stable, non-conflicting ManualOrderSet evidence.`);
+  assert.doesNotMatch(lookup, /TryReadExactManualOrder\(/,
+    `Yuyuko ${label} routing must not discard captured setter evidence using the transient ManualOrder property.`);
+}
+const capturedSpecialManualLookup = namedMethodSource(matching, 'FindCapturedRuntimeOrder');
+assert.match(capturedSpecialManualLookup, /requiresYuumaSettlementManualContext\s*=\s*purpose == RuntimeOrderLookupPurpose\.YuumaSettlement/,
   'Strict Yuuma manual-order resolution must have a dedicated lookup purpose.');
-assert.match(rareLookup, /if \(requiresYuumaSettlementManualContext[\s\S]*!TryResolveSpecialManualContext\(/,
-  'Special-order ManualOrder/callback fail-closed validation must be scoped to Yuuma settlement.');
-assert.match(rareLookup, /requiresYuyukoStoryManualEvaluation[\s\S]*FindCapturedYuyukoPhase3ManualEvaluationCallback\(/,
-  'The Yuuma lookup scope must not replace the established Yuyuko story callback path.');
+assert.match(capturedSpecialManualLookup, /if \(requiresYuumaSettlementManualContext[\s\S]*!TryResolveSpecialManualContext\(/,
+  'Captured special-order ManualOrder/callback fail-closed validation must be scoped to Yuuma settlement.');
+assert.doesNotMatch(rareLookup, /requiresYuumaSettlementManualContext|TryResolveSpecialManualContext/,
+  'Yuuma settlement must not restore a manager-scan manual-context fallback.');
+assert.match(rareLookup, /requiresLiveYuyukoPhase3Boss[\s\S]*TryResolveCapturedYuyukoPhase3ManualEvaluationBinding\(/,
+  'Every live Yuyuko phase-3 native-evaluation match must resolve the exact captured manual binding.');
+assert.match(rareLookup, /YuyukoManualBindingResolved = requiresLiveYuyukoPhase3Boss[\s\S]*YuyukoManualBindingCaptured = requiresLiveYuyukoPhase3Boss && manualBindingCaptured/,
+  'The live Yuyuko match must preserve whether the current capture proves a manual binding or its absence.');
 
 const normalLookup = sourceSlice(
   matching,
@@ -152,13 +223,23 @@ const normalLookup = sourceSlice(
 );
 assert.match(normalLookup, /RuntimeOrderLookupPurpose purpose = RuntimeOrderLookupPurpose\.Delivery/,
   'Normal-order lookup must retain Delivery as its default behavior.');
-assert.match(normalLookup, /requiresYuumaSettlementManualContext\s*=\s*purpose == RuntimeOrderLookupPurpose\.YuumaSettlement/,
+const capturedNormalManualLookup = namedMethodSource(matching, 'FindCapturedRuntimeNormalOrder');
+assert.match(capturedNormalManualLookup, /requiresYuumaSettlementManualContext\s*=\s*purpose == RuntimeOrderLookupPurpose\.YuumaSettlement/,
   'Normal-order strict manual context must have the same dedicated Yuuma purpose.');
-assert.match(normalLookup, /if \(requiresYuumaSettlementManualContext[\s\S]*!TryResolveNormalManualContext\(/,
-  'Normal-order ManualOrder/callback fail-closed validation must be scoped to Yuuma settlement.');
+assert.match(capturedNormalManualLookup, /if \(requiresYuumaSettlementManualContext[\s\S]*!TryResolveNormalManualContext\(/,
+  'Captured normal-order ManualOrder/callback fail-closed validation must be scoped to Yuuma settlement.');
+assert.match(capturedNormalManualLookup, /requiresYuyukoManualBinding[\s\S]*TryResolveCapturedYuyukoPhase3ManualEvaluationBinding\(/,
+  'A captured Yuyuko normal order must resolve its exact manual binding for NativeEvaluation.');
+assert.doesNotMatch(normalLookup, /requiresYuumaSettlementManualContext|TryResolveNormalManualContext/,
+  'Yuuma settlement must not restore a manager-scan normal-order manual-context fallback.');
+assert.match(
+  normalLookup,
+  /if \(!requiresLiveKoishiBoss\)[\s\S]*exact normal capture unavailable[\s\S]*foreach \(var controller in EnumerateGuestControllers\(manager\)\)/,
+  'General normal-order lookup must fail closed before the named Koishi manager scan.',
+);
 assert.match(matching,
-  /if \(requiresYuumaSettlementManualContext\)[\s\S]*EnumerateControllerOrders\(captured\.ControllerObject\)[\s\S]*CompareObjectIdentity\(order, captured\.OrderObject\)[\s\S]*RuntimeObjectIdentityComparison\.Same/,
-  'Captured normal Yuuma settlement orders must remain owned by the exact controller.');
+  /FindCapturedRuntimeNormalOrder\([\s\S]*TryInvokeInstanceValue\(captured\.ControllerObject, "PeekOrders"\)[\s\S]*CompareObjectIdentity\(currentOrder, captured\.OrderObject\)[\s\S]*RuntimeObjectIdentityComparison\.Same/,
+  'Every captured normal order must remain owned by the exact controller.');
 
 const yuyukoEvaluationReadiness = sourceSlice(
   yuyukoPolicy,
@@ -173,13 +254,340 @@ assert.ok(fulfilledReadIndex >= 0 && fulfilledReadIndex < nativeEvaluationLookup
   'The exact completion match must be checked for fulfillment before native-evaluation reacquisition.');
 assert.ok(unfulfilledWaitIndex > fulfilledReadIndex && unfulfilledWaitIndex < nativeEvaluationLookupIndex,
   'An unfulfilled Yuyuko order must return a normal wait outcome before native-evaluation reacquisition.');
+assert.match(
+  yuyukoEvaluationReadiness,
+  /reacquireLiveOrder[\s\S]*FindRuntimeOrder\(request, RuntimeOrderLookupPurpose\.NativeEvaluation\)[\s\S]*FindRuntimeNormalOrder\(request, RuntimeOrderLookupPurpose\.NativeEvaluation\)/,
+  'Yuyuko phase-3 evaluation must fresh-read both special and normal current-order paths.',
+);
 
-assert.match(capture, /IsOrderDeliveryContext[\s\S]*order\.IsFulfilled[\s\S]*AddOrder\(order with[\s\S]*"Fulfilled"/);
+const yuyukoRetakeRoute = namedMethodSource(
+  yuyukoPolicy,
+  'TryResolveYuyukoRetakePhase3EvaluationRoute',
+);
+assert.match(
+  yuyukoRetakeRoute,
+  /TryInvokeInstanceValue\(runtimeOrder\.Controller, "PeekOrders"\)[\s\S]*CompareObjectIdentity\(currentOrder, runtimeOrder\.Order\)[\s\S]*RuntimeObjectIdentityComparison\.Same/,
+  'The retake route must prove fresh exact controller ownership immediately before evaluation.',
+);
+assert.match(
+  yuyukoRetakeRoute,
+  /!runtimeOrder\.YuyukoManualBindingResolved[\s\S]*return false/,
+  'The retake route must fail closed when the current capture generation did not resolve manual binding state.',
+);
+assert.match(
+  yuyukoRetakeRoute,
+  /!resolution\.Resolved \|\| resolution\.ReadableOrder == null[\s\S]*return false/,
+  'The retake route must fail closed unless OrderBase resolves uniquely to an exact NormalOrder or SpecialOrder.',
+);
+assert.match(
+  yuyukoRetakeRoute,
+  /resolution\.Kind != RuntimeOrderKind\.Normal[\s\S]*resolution\.Kind != RuntimeOrderKind\.Special[\s\S]*return false/,
+  'The native-evaluation route must explicitly allow only exact NormalOrder and SpecialOrder resolutions.',
+);
+assert.match(
+  yuyukoRetakeRoute,
+  /YuyukoManualBindingCaptured[\s\S]*TryFindYuyukoRetakePhase3ManualProgressCallback\([\s\S]*!hasBossProgress \|\| hasGroupProgress[\s\S]*ManualBoss/,
+  'Manual retake orders require the exact b__77/b__78 binding together with boss _50 and no group _70.',
+);
+assert.match(
+  yuyukoRetakeRoute,
+  /ManualEvaluationCallback != null[\s\S]*route=conflict[\s\S]*hasBossProgress \|\| !hasGroupProgress[\s\S]*StandardGroup/,
+  'Standard retake evaluation requires an exact resolved order, an explicitly absent manual binding, group _70, and no boss _50.',
+);
+const yuyukoRuntimeDiagnostic = namedMethodSource(
+  yuyukoPolicy,
+  'AppendYuyukoRuntimeDiagnostic',
+);
+assert.match(
+  yuyukoRuntimeDiagnostic,
+  /!AggregateModLogService\.Enabled[\s\S]*try[\s\S]*AppendYuyukoRuntimeDiagnosticCore[\s\S]*catch/,
+  'Yuyuko diagnostics must be disabled without runtime reads and must never interrupt native evaluation.',
+);
+const yuyukoRuntimeDiagnosticCore = namedMethodSource(
+  yuyukoPolicy,
+  'AppendYuyukoRuntimeDiagnosticCore',
+);
+assert.match(
+  yuyukoRuntimeDiagnosticCore,
+  /BuildYuyukoRuntimeDiagnosticOnceKey\([\s\S]*SpecialBusinessDiagnostics\.AppendYuyukoSnapshot\([\s\S]*onceKey/,
+  'Repeated native-evaluation diagnostics must be deduplicated only at the final bounded snapshot writer.',
+);
+const yuyukoRuntimeDiagnosticOnceKey = namedMethodSource(
+  yuyukoPolicy,
+  'BuildYuyukoRuntimeDiagnosticOnceKey',
+);
+assert.match(
+  yuyukoRuntimeDiagnosticOnceKey,
+  /native-evaluate-entry-blocked[\s\S]*RuntimeNightBusinessLifecycle\.Generation[\s\S]*DescribeObject\(runtimeOrder\.Order\)[\s\S]*DescribeObject\(runtimeOrder\.Controller\)[\s\S]*LocalApiSnapshotSignature\.Compute\(detail\)/,
+  'Blocked native-evaluation diagnostics must bind their once key to generation, exact runtime objects, and the route evidence hash.',
+);
+assert.doesNotMatch(
+  yuyukoRuntimeDiagnosticOnceKey,
+  /yuyuko-native-evaluate-before/,
+  'Pre-evaluation snapshots must remain periodically observable while runtime evidence changes.',
+);
+const yuyukoRuntimeDiagnosticThrottle = namedMethodSource(
+  yuyukoPolicy,
+  'ShouldThrottleYuyukoRuntimeDiagnostic',
+);
+assert.match(
+  yuyukoRuntimeDiagnosticThrottle,
+  /RuntimeNightBusinessLifecycle\.Generation/,
+  'Yuyuko diagnostic throttling must be scoped to the current business generation.',
+);
+assert.match(
+  yuyukoRuntimeDiagnosticThrottle,
+  /yuyuko-native-evaluate-before[\s\S]*YuyukoNativeEvaluationAttemptDiagnosticThrottle[\s\S]*YuyukoRuntimeDiagnosticThrottle[\s\S]*now - last < throttle/,
+  'Pre-evaluation snapshots must use a dedicated low-frequency throttle without changing business retries.',
+);
+assert.match(
+  yuyukoRuntimeDiagnosticThrottle,
+  /BuildYuyukoNativeEvaluationDiagnosticEvidence\(runtimeOrder\)/,
+  'Pre-evaluation throttling must immediately reopen when fresh native identity, binding, callback, fulfilled, or evaluated evidence changes.',
+);
+const yuyukoNativeEvaluationDiagnosticEvidence = namedMethodSource(
+  yuyukoPolicy,
+  'BuildYuyukoNativeEvaluationDiagnosticEvidence',
+);
+assert.match(
+  yuyukoNativeEvaluationDiagnosticEvidence,
+  /try[\s\S]*DescribeObject\(runtimeOrder\.Order\)[\s\S]*DescribeObject\(runtimeOrder\.Controller\)[\s\S]*YuyukoManualBindingResolved[\s\S]*YuyukoManualBindingCaptured[\s\S]*DescribeObject\(runtimeOrder\.ManualEvaluationCallback\)[\s\S]*OverrideEvaluationCallback[\s\S]*IsRuntimeOrderFulfilledForYuyukoDiagnostic\(runtimeOrder\)[\s\S]*HasEvaluated[\s\S]*catch \(Exception ex\)[\s\S]*evidence-unreadable/,
+  'Fresh native diagnostic evidence must be complete and convert reflection failures into a stable no-throw identity.',
+);
+assert.doesNotMatch(
+  yuyukoRuntimeDiagnosticThrottle,
+  /DescribeYuyukoProgressForDiagnostics/,
+  'Unrelated challenge progress changes must not bypass per-order diagnostic throttling.',
+);
+assert.doesNotMatch(
+  yuyukoPolicy,
+  /TryFindYuyukoRetakePhase3ProgressCallback|RetakeNative/,
+  'Retake routing must not restore the old challenge-wide _50/_70 classifier or fixed EvaluateOrder mode.',
+);
+
+const retakeEvaluation = namedMethodSource(
+  yuyukoPolicy,
+  'TryEvaluateRetakeYuyukoPhase3OrderIfReady',
+);
+const targetGateIndex = retakeEvaluation.indexOf('TryValidateYuyukoPhase3ServedExactTarget(');
+const routeIndex = retakeEvaluation.indexOf('TryResolveYuyukoRetakePhase3EvaluationRoute(');
+const manualInvokeIndex = retakeEvaluation.indexOf('"EvaulateManualOrder"');
+const standardInvokeIndex = retakeEvaluation.indexOf('TryEvaluateRuntimeOrderIfReady(');
+assert.ok(targetGateIndex >= 0 && routeIndex > targetGateIndex,
+  'Retake routing must run only after the exact served target gate.');
+assert.ok(manualInvokeIndex > routeIndex && standardInvokeIndex > routeIndex,
+  'Retake routing must expose exactly the manual and standard native entries after route resolution.');
+assert.match(
+  retakeEvaluation,
+  /evaluationRoute == YuyukoRetakePhase3EvaluationRoute\.ManualBoss[\s\S]*TryInvokeRuntimeOrderEvaluationOnce\([\s\S]*"EvaulateManualOrder"[\s\S]*:[\s\S]*TryEvaluateRuntimeOrderIfReady\(/,
+  'Each resolved retake route must call only its corresponding native evaluation entry.',
+);
+
+const retakeRefreshEvaluation = namedMethodSource(
+  yuyukoPolicy,
+  'TryEvaluateYuyukoPhase3RefreshOrderIfReady',
+);
+assert.match(
+  retakeRefreshEvaluation,
+  /YuyukoPhase3EvaluationContract\.Retake[\s\S]*TryResolveYuyukoRetakePhase3EvaluationRoute\([\s\S]*YuyukoRetakePhase3EvaluationRoute\.ManualBoss[\s\S]*"EvaulateManualOrder"[\s\S]*TryEvaluateRuntimeOrderIfReady\(/,
+  'Retake refresh orders must reuse the same per-order native route.',
+);
+
+const retakeManualClassifier = namedMethodSource(
+  yuyukoEvaluationTracker,
+  'IsYuyukoRetakePhase3ManualProgressCallbackEntry',
+);
+assert.match(retakeManualClassifier, /DisplayClass16_10[\s\S]*<MainChallengeLoop>b__77[\s\S]*<MainChallengeLoop>b__78/,
+  'Retake manual callbacks must be limited to the observed DisplayClass16_10 b__77/b__78 methods.');
+const retakeBossClassifier = namedMethodSource(
+  yuyukoEvaluationTracker,
+  'IsYuyukoRetakeBossProgressCallbackEntry',
+);
+assert.match(retakeBossClassifier, /YuyukoOverrideEvaluationCallback_50[\s\S]*DisplayClass16_6[\s\S]*\|50/,
+  'Retake boss progress must use the exact _50 callback shape.');
+assert.doesNotMatch(retakeBossClassifier, /GroupOverrideEvaluationCallback|DisplayClass16_9|\|70/,
+  'The boss classifier must not also accept group _70.');
+const retakeGroupClassifier = namedMethodSource(
+  yuyukoEvaluationTracker,
+  'IsYuyukoRetakeGroupProgressCallbackEntry',
+);
+assert.match(retakeGroupClassifier, /GroupOverrideEvaluationCallback_70[\s\S]*DisplayClass16_9[\s\S]*\|70/,
+  'Retake group progress must use the exact _70 callback shape.');
+assert.doesNotMatch(retakeGroupClassifier, /YuyukoOverrideEvaluationCallback_50|DisplayClass16_6|\|50/,
+  'The group classifier must not also accept boss _50.');
+
+assert.match(capture, /IsOrderDeliveryContext[\s\S]*order\.IsFulfilled[\s\S]*UpdateExistingOrder\(order with[\s\S]*"Fulfilled"/);
 assert.match(provider, /HasServedFood = captured\.IsFulfilled[\s\S]*HasServedBeverage = captured\.IsFulfilled/);
-const capturedLivenessStart = provider.indexOf('private bool IsCapturedRuntimeOrderStillLive');
-const capturedLivenessEnd = provider.indexOf('private static bool IsSameRuntimeObject', capturedLivenessStart);
-assert.ok(capturedLivenessStart >= 0 && capturedLivenessEnd > capturedLivenessStart);
-assert.ok(!provider.slice(capturedLivenessStart, capturedLivenessEnd).includes('IsRuntimeOrderFulfilled'));
+assert.match(
+  provider,
+  /captured\.OrderObject == null[\s\S]*captured\.ControllerObject == null[\s\S]*string\.IsNullOrWhiteSpace\(captured\.RuntimeKey\)[\s\S]*continue;/,
+  'Only a capture created with an exact order/controller/native-key binding may be projected.',
+);
+assert.match(
+  capture,
+  /"PushToOrder"[\s\S]*null,[\s\S]*nameof\(OnControllerOrderAdded\)[\s\S]*exactMethodPredicate: IsExactOrderBaseMethod/,
+  'Special-order ownership must be committed only by the successful PushToOrder postfix.',
+);
+assert.match(
+  capture,
+  /OnControllerOrderAdded\(object __instance, object __0, bool __runOriginal\)[\s\S]*if \(!__runOriginal\) return;[\s\S]*AddOrder\(ParseOrder\(__0, "ControllerOrderAdd", __instance\)\)/,
+  'A skipped PushToOrder call must not create a controller binding.',
+);
+assert.match(
+  capture,
+  /"CleanOrderInfo"[\s\S]*nameof\(CaptureControllerOrderBeforeCompletion\)[\s\S]*nameof\(OnOrderCleanupSucceeded\)/,
+  'The exact native cleanup path must retire its latched current order after success.',
+);
+for (const [label, source, callbackName] of [
+  ['special', capture, 'OnOrderRepellSucceeded'],
+  ['normal', normalCapture, 'OnControllerOrderRepellSucceeded'],
+]) {
+  const repellPredicate = methodSource(source, 'private static bool IsExactRepellInternal(');
+  assert.match(
+    repellPredicate,
+    /parameters\[1\]\.IsOut[\s\S]*ParameterType\.IsByRef[\s\S]*GetElementType\(\) == typeof\(bool\)[\s\S]*LeaveTypeName/,
+    `${label} capture must select the exact RepellInternal out-bool signature.`,
+  );
+  const repellPostfix = methodSource(source, `private static void ${callbackName}(`);
+  assert.match(
+    repellPostfix,
+    /if \(!__runOriginal \|\| __state == null\) return;[\s\S]*On(?:Controller)?OrderCleanupSucceeded\(__state, __originalMethod, true\)/,
+    `${label} capture must retire a latched order whenever RepellInternal returns normally.`,
+  );
+  assert.doesNotMatch(
+    repellPostfix,
+    /__1|haveSeated/,
+    `${label} capture must not treat RepellInternal.haveSeated as order-specific cleanup evidence.`,
+  );
+}
+assert.doesNotMatch(provider, /"AllOrders"|"AllOrdersData"|RuntimeSpecialOrderOwnership/,
+  'Night-business projection must not restore historical-stack ownership polling.');
+assert.doesNotMatch(normalOrderSnapshot, /"AllOrders"|"AllOrdersData"/,
+  'Normal-order projection must not publish historical controller orders.');
+assert.doesNotMatch(
+  normalOrderSnapshot,
+  /PruneMissing|CopyWithOrderKey|BuildRuntimeOrderSlotKey|desk\|food\|beverage/,
+  'Normal-order capture must not be rebound or retired through a transient HUD slot identity.',
+);
+assert.doesNotMatch(
+  normalOrderSnapshot,
+  /ReconcileRuntimeCapturedOrders|RuntimeCaptureMerged|RuntimeCaptureLive/,
+  'Transient HUD visibility must not filter authoritative runtime captures.',
+);
+const normalSnapshotLoad = methodSource(normalOrderSnapshot, 'public NormalBusinessContext Load(');
+assert.match(
+  normalSnapshotLoad,
+  /if \(runtimeCaptureReady\)[\s\S]*normalOrderMode=authoritativeCapture[\s\S]*BuildContext\(visibleOrders\.Concat\(runtimeCapturedOrders\), source, errors\)/,
+  'A ready normal-order snapshot must publish authoritative captures even during a transient HUD gap.',
+);
+assert.doesNotMatch(
+  provider,
+  /MatchesActiveGuest|UnmatchedCapturedOrderGrace/,
+  'An active guest or fixed grace period must not keep a retired special order visible.',
+);
+assert.match(
+  runtimeOrderTypes,
+  /OrderBaseTypeName[\s\S]*NormalOrderTypeName[\s\S]*SpecialOrderTypeName[\s\S]*hasNormalOrder == hasSpecialOrder/,
+  'Concrete order types must use the shared exact OrderBase XOR resolver.',
+);
+const normalOrderProjection = sourceSlice(
+  normalOrderSnapshot,
+  'private NormalBusinessOrder? ReadNormalOrder(',
+  'private static string BuildRuntimeOrderKey(',
+);
+const normalCaptureOrderKey = methodSource(normalCapture, 'private static string RuntimeOrderKey(');
+const specialCaptureOrderKey = methodSource(capture, 'private static string GetRuntimeObjectKey(');
+const normalSnapshotOrderKey = methodSource(normalOrderSnapshot, 'private static string BuildRuntimeOrderKey(');
+const normalActionOrderKey = methodSource(matching, 'private static string BuildRuntimeOrderKey(');
+for (const [label, keyReader] of [
+  ['normal capture', normalCaptureOrderKey],
+  ['special capture', specialCaptureOrderKey],
+  ['normal snapshot', normalSnapshotOrderKey],
+  ['normal action', normalActionOrderKey],
+]) {
+  assert.match(
+    keyReader,
+    /TryReadNativeObjectPointer\([^,]+, out var pointer\)[\s\S]*\? \$?"ptr:\{pointer:x\}"[\s\S]*: ""/,
+    `${label} key must come only from a readable nonzero native pointer.`,
+  );
+  assert.doesNotMatch(
+    keyReader,
+    /ReadObjectPointer|RuntimeHelpers|GetHashCode|RuntimeHelpers\.GetHashCode/,
+    `${label} key restored a managed hash or throwing pointer fallback.`,
+  );
+}
+const exactNativePointerReader = methodSource(
+  runtimeReflection,
+  'public static bool TryReadNativeObjectPointer(',
+);
+assert.match(
+  exactNativePointerReader,
+  /pointer = 0[\s\S]*Pointer[\s\S]*NativePointer[\s\S]*m_CachedPtr[\s\S]*return pointer != 0[\s\S]*catch[\s\S]*return false/,
+  'The shared native pointer reader must reject missing, zero, and unreadable identities.',
+);
+assert.doesNotMatch(
+  exactNativePointerReader,
+  /ReadObjectPointer|RuntimeHelpers|GetHashCode/,
+  'The shared native pointer reader restored a managed identity fallback.',
+);
+assert.match(
+  normalOrderProjection,
+  /RuntimeOrderTypeResolver\.Resolve\(order\)[\s\S]*resolution\.Kind != RuntimeOrderKind\.Normal[\s\S]*var readableOrder = resolution\.ReadableOrder/,
+  'The normal-order business projection must use the shared exact resolver and its concrete wrapper.',
+);
+assert.doesNotMatch(
+  normalOrderProjection,
+  /GetType\(\)\.Name|SafeGet\(order, "Type"\)|\.ToString\(\).*Normal/,
+  'The normal-order business projection restored a text or enum-value type fallback.',
+);
+const runtimeOrderResolver = methodSource(
+  matching,
+  'private static bool TryResolveRuntimeOrder(',
+);
+assert.match(
+  runtimeOrderResolver,
+  /RuntimeOrderTypeResolver\.Resolve\(order\)[\s\S]*!resolution\.Resolved[\s\S]*resolution\.Kind != expectedKind[\s\S]*readableOrder = resolution\.ReadableOrder/,
+  'Automation matching must fail closed unless the shared resolver returns the expected concrete kind.',
+);
+assert.doesNotMatch(
+  matching,
+  /NormalizeRuntimeSpecialOrder|GetType\(\)\.Name[\s\S]{0,180}NormalOrder|SpecialGuests[\s\S]{0,180}Contains\("Special"/,
+  'Automation matching restored a local broad order-type inference path.',
+);
+const yuyukoTargetInvariant = methodSource(
+  yuyukoPolicy,
+  'private static (bool Applies, bool FoodMatched, bool BeverageMatched, string Diagnostic) BuildYuyukoPhase3NormalOrderTargetInvariant(',
+);
+assert.match(
+  yuyukoTargetInvariant,
+  /RuntimeOrderTypeResolver\.Resolve\(runtimeOrder\.Order\)[\s\S]*!resolution\.Resolved[\s\S]*resolution\.Kind == RuntimeOrderKind\.Special/,
+  'Yuyuko order branching must reject unresolved wrappers before selecting normal or special behavior.',
+);
+assert.doesNotMatch(yuyukoPolicy, /IsSpecialOrder\(/);
+assert.match(
+  methodSource(wackyOrderModule, 'private static bool IsExactSpecialOrder('),
+  /RuntimeOrderTypeResolver\.Resolve\(order\)[\s\S]*resolution\.Resolved && resolution\.Kind == RuntimeOrderKind\.Special/,
+  'Wacky phase-3 order evidence must use the shared exact concrete type resolver.',
+);
+const wackyManualOrder = methodSource(
+  wackyOrderModule,
+  'private static bool TryReadExactManualOrder(',
+);
+assert.match(
+  wackyManualOrder,
+  /RuntimeOrderTypeResolver\.Resolve\(order\)[\s\S]*GetProperty\([\s\S]*"ManualOrder"[\s\S]*PropertyType != typeof\(bool\)[\s\S]*GetValue\(resolution\.ReadableOrder\) is not bool/,
+  'Wacky manual-order evidence must use the exact bool property on a resolved concrete order.',
+);
+assert.doesNotMatch(
+  wackyOrderModule,
+  /LooksLikeKoishiSpecialOrder|GetType\(\)\.FullName|bool\.TryParse|raw\?\.ToString/,
+  'Wacky classification restored type-name or stringified-bool compatibility inference.',
+);
+assert.doesNotMatch(
+  capture,
+  /ParseOrderText|SafeToString|LooksLikeSpecialOrder|IsSpecialOrderType|BuildControllerRemovalOrder/,
+  'Special-order capture restored text inference or an identity-incomplete removal fallback.',
+);
 
 assert.match(directDelivery, /parameters\.Length == 2[\s\S]*parameters\[1\]\.ParameterType == typeof\(int\)/);
 assert.match(directDelivery, /methods\[0\]\.Invoke\(configure, new object\?\[\] \{ cookedFood, -1 \}\)/);
@@ -316,9 +724,18 @@ for (const [label, source] of [['special', capture], ['normal', normalCapture]])
     `${label} capture must retain exact OrderBase.ManualOrder.`);
   assert.match(source, /internal object\? ManualEvaluationCallback \{ get; init; \}/,
     `${label} capture must retain the exact native manual callback.`);
+  assert.match(source, /public bool ManualEvaluationBindingObserved \{ get; init; \}/,
+    `${label} capture must distinguish a stable setter binding from transient ManualOrder state.`);
+  assert.match(source, /public bool ManualEvaluationBindingConflict \{ get; init; \}/,
+    `${label} capture must retain conflicting setter evidence for fail-closed routing.`);
+  assert.match(source, /internal object\? ManualEvaluationBindingCallback \{ get; init; \}/,
+    `${label} capture must retain the stable setter callback until order retirement.`);
   const manualSetter = methodSource(source, 'private static void OnManualControllerOrderSet(');
-  assert.match(manualSetter, /object\? __1[\s\S]*order is not \{ ManualOrder: true \}[\s\S]*order with \{ ManualEvaluationCallback = __1 \}/,
-    `${label} manual setter must bind a nullable callback only to exact ManualOrder=true.`);
+  assert.match(manualSetter, /object\? __1[\s\S]*order is not \{ ManualOrder: true \}[\s\S]*ManualEvaluationCallback = __1[\s\S]*ManualEvaluationBindingObserved = true[\s\S]*ManualEvaluationBindingCallback = __1/,
+    `${label} manual setter must bind its exact nullable callback as stable lifecycle evidence only after ManualOrder=true.`);
+  const mergeCapturedOrder = namedMethodSource(source, 'MergeCapturedOrder');
+  assert.match(mergeCapturedOrder, /ManualEvaluationBindingConflict[\s\S]*HaveConflictingManualEvaluationBindings[\s\S]*ManualEvaluationBindingObserved[\s\S]*ManualEvaluationBindingCallback/,
+    `${label} capture must keep setter evidence across later status merges and detect conflicts.`);
   assert.match(source, /requireExactManualOrderSetter: true/,
     `${label} capture must request the exact BepInEx 783 manual-order setter signature.`);
   const exactManualSetter = methodSource(source, 'private static bool IsExactManualOrderSetter(');
@@ -329,16 +746,29 @@ for (const [label, source] of [['special', capture], ['normal', normalCapture]])
     /GetGenericTypeDefinition\(\)\.FullName[\s\S]*Il2CppActionGenericTypeName[\s\S]*callbackArguments\[0\]\.FullName[\s\S]*EvaluationResultTypeName/,
     `${label} capture must match only Il2CppSystem.Action<GuestGroupController.EvaluationResult>.`);
   const exactManualOrder = methodSource(source, 'private static bool TryReadExactManualOrder(');
-  assert.match(exactManualOrder, /GetProperty\("ManualOrder", flags\)[\s\S]*PropertyType != typeof\(bool\)[\s\S]*GetValue\(order\) is not bool/,
+  assert.match(
+    exactManualOrder,
+    /TryReadExactOrderBool\(order, "ManualOrder", out manualOrder\)/,
+    `${label} capture must route ManualOrder through the exact bool-property reader.`,
+  );
+  const exactOrderBool = methodSource(source, 'private static bool TryReadExactOrderBool(');
+  assert.match(
+    exactOrderBool,
+    /GetProperty\(propertyName, flags\)[\s\S]*PropertyType != typeof\(bool\)[\s\S]*GetValue\(order\) is not bool/,
     `${label} capture must read the exact bool ManualOrder property.`);
-  assert.doesNotMatch(exactManualOrder, /ReadMember|GetMemberValue|InvokeMethod/,
+  assert.doesNotMatch(exactOrderBool, /ReadMember|GetMemberValue|InvokeMethod/,
     `${label} ManualOrder capture restored a broad reflection fallback.`);
+  assert.match(
+    source,
+    /TryReadExactOrderBool\([^,\n]+, "IsFullfilled", out var \w+\)/,
+    `${label} completion capture must read the exact OrderBase.IsFullfilled bool property.`,
+  );
 }
 assert.match(matching, /public bool ManualOrder \{ get; init; \}/);
-assert.match(matching, /ManualOrder = requiresYuumaSettlementManualContext && manualOrder/);
+assert.match(matching, /ManualOrder = requiresYuumaSettlementManualContext[\s\S]*\? manualOrder[\s\S]*: requiresYuyukoManualBinding/);
 assert.match(
   matching,
-  /ManualEvaluationCallback = requiresYuumaSettlementManualContext[\s\S]*manualOrder \? manualEvaluationCallback : null/,
+  /ManualEvaluationCallback = requiresYuumaSettlementManualContext[\s\S]*\? manualOrder \? manualEvaluationCallback : null[\s\S]*: requiresYuyukoManualBinding/,
   'Yuuma settlement matches must project the fresh wrapper ManualOrder/callback state.',
 );
 assert.doesNotMatch(
@@ -365,12 +795,12 @@ assert.ok(
 );
 assert.match(
   capturedSpecialLookup.slice(capturedSpecialManualRefresh, capturedSpecialProjection + 800),
-  /out manualOrder[\s\S]*out manualEvaluationCallback[\s\S]*ManualOrder = requiresYuumaSettlementManualContext && manualOrder/,
+  /out manualOrder[\s\S]*out manualEvaluationCallback[\s\S]*ManualOrder = requiresYuumaSettlementManualContext[\s\S]*\? manualOrder[\s\S]*: requiresYuyukoManualBinding/,
   'Captured special Yuuma projection must use only current wrapper manual state.',
 );
 
 const capturedNormalLookup = namedMethodSource(matching, 'FindCapturedRuntimeNormalOrder');
-const capturedNormalOwnershipGate = capturedNormalLookup.indexOf('EnumerateControllerOrders(');
+const capturedNormalOwnershipGate = capturedNormalLookup.indexOf('TryInvokeInstanceValue(captured.ControllerObject, "PeekOrders")');
 const capturedNormalIdentityGate = capturedNormalLookup.indexOf(
   'IsMatchingNormalOrder(',
   capturedNormalOwnershipGate,
@@ -392,7 +822,7 @@ assert.ok(
 );
 assert.match(
   capturedNormalLookup.slice(capturedNormalManualRefresh, capturedNormalProjection + 800),
-  /out manualOrder[\s\S]*out manualEvaluationCallback[\s\S]*ManualOrder = requiresYuumaSettlementManualContext && manualOrder/,
+  /out manualOrder[\s\S]*out manualEvaluationCallback[\s\S]*ManualOrder = requiresYuumaSettlementManualContext[\s\S]*\? manualOrder[\s\S]*: requiresYuyukoManualBinding/,
   'Captured normal Yuuma projection must use only current wrapper manual state.',
 );
 
@@ -401,6 +831,13 @@ for (const [label, resolver] of [
   ['special', storyManualCallbackLookup],
   ['normal', normalManualContextLookup],
 ]) {
+  assert.match(
+    resolver,
+    label === 'special'
+      ? /if \(!SpecialOrderRuntimeCapture\.IsBusinessReady\)[\s\S]*return false/
+      : /if \(!NormalOrderRuntimeCapture\.IsBusinessReady\)[\s\S]*return false/,
+    `${label} manual callback lookup must reject a partially covered capture generation.`,
+  );
   assert.match(
     resolver,
     /TryReadExactManualOrder\([\s\S]*if \(!manualOrder\)[\s\S]*manualCallback=not-required[\s\S]*return true/,

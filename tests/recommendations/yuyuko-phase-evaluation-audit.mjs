@@ -1425,8 +1425,8 @@ async function assertSourceContracts() {
 
   const retakeProgressValidation = sourceSlice(
     yuyukoRuntimePolicy,
-    'private static bool TryValidateYuyukoRetakePhase3ProgressEvaluation(',
-    'private static bool TryValidateYuyukoStoryPhase3RefreshEvaluation(',
+    'private static RuntimeOrderEvaluationResult TryEvaluateRetakeYuyukoPhase3OrderIfReady(',
+    'private static bool TryValidateYuyukoStoryPhase3ProgressEvaluation(',
   );
   assert.ok(retakeProgressValidation.includes('TryValidateYuyukoPhase3ServedExactTarget('),
     '重修版进度回调前必须校验实际送出的料理和酒水仍是精确目标。');
@@ -1439,8 +1439,8 @@ async function assertSourceContracts() {
   );
   assert.match(
     servedTargetDispatcher,
-    /retakeContractMatched\s*=\s*IsSpecialOrder\(order\)\s*\?\s*TryValidateYuyukoRetakeSpecialOrderServedContract\(\s*request,\s*servedFood,\s*servedBeverage,\s*out retakeContractDiagnostic\)\s*:\s*TryValidateYuyukoRetakeNormalOrderServedContract\(\s*request,\s*servedFood,\s*out retakeContractDiagnostic\)\s*;/,
-    '重修版 dispatcher 必须严格保持 IsSpecialOrder(order) ? Special : Normal 的分支顺序。',
+    /RuntimeOrderTypeResolver\.Resolve\(runtimeOrder\.Order\)[\s\S]*!resolution\.Resolved \|\| resolution\.ReadableOrder == null[\s\S]*return false;[\s\S]*retakeContractMatched\s*=\s*orderKind == RuntimeOrderKind\.Special\s*\?\s*TryValidateYuyukoRetakeSpecialOrderServedContract\(\s*request,\s*servedFood,\s*servedBeverage,\s*out retakeContractDiagnostic\)\s*:\s*TryValidateYuyukoRetakeNormalOrderServedContract\(\s*request,\s*servedFood,\s*out retakeContractDiagnostic\)\s*;/,
+    '重修版 dispatcher 必须先唯一解析具体订单类型，再严格分流 Special/Normal 契约。',
   );
   assert.match(
     servedTargetDispatcher,

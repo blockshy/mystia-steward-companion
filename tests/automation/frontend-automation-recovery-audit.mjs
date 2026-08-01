@@ -11,6 +11,7 @@ import {
   isRecoverableCookingTerminalEvent,
   reconcileAutomationRollbackTarget,
   reduceAutomationCookingRollbackBudget,
+  reduceAutomationManualRetry,
   reduceAutomationStageOutcome,
   requiresManualAutomationResolution,
   resolveAutomationNextAttemptAtMs,
@@ -244,6 +245,105 @@ assert.deepEqual(
   },
   'A target-change terminal event alone must retain the old budget until a different nonempty target is observed.',
 );
+const manualRetryState = {
+  rollbackCount: 2,
+  paused: true,
+  manualResolutionRequired: false,
+  pauseReasonCode: 'rollback-limit-reached',
+  pausedStage: 'ensure-cooking',
+  step: 'paused',
+  stepStartedAtMs: 1000,
+  retryCount: 3,
+  retryStage: 'ensure-cooking',
+  nextAttemptAtMs: 9000,
+  lastError: 'limit',
+  orderKey: 'normal:desk-3:guest-5',
+  prepared: true,
+  cookingJobId: 'job-17',
+  beverageHandled: true,
+  foodDelivered: true,
+  completed: false,
+  executionTarget: { foodId: 23, recipeId: 17 },
+  rollbackTargetSignature: 'target-a',
+  rollbackTargetRevision: 4,
+  lastRuntimeEventSequence: 37,
+  lastProgressAtMs: 4200,
+  detailMessage: '已确认的订单事实必须保留。',
+};
+const rollbackLimitRetry = reduceAutomationManualRetry(
+  manualRetryState,
+  'complete-order',
+  5000,
+);
+assert.equal(rollbackLimitRetry.resumed, true);
+assert.equal(rollbackLimitRetry.rollbackBudgetReset, true);
+assert.deepEqual(rollbackLimitRetry.state, {
+  ...manualRetryState,
+  rollbackCount: 0,
+  paused: false,
+  pauseReasonCode: '',
+  pausedStage: '',
+  step: 'ensure-cooking',
+  stepStartedAtMs: 5000,
+  retryCount: 0,
+  retryStage: '',
+  nextAttemptAtMs: 0,
+  lastError: '已手动重试，自动回退计数已从 2 重开为 0，等待下一轮自动化继续。',
+}, 'A deliberate retry after the rollback limit must open a new bounded budget without rebuilding order state.');
+assert.equal(rollbackLimitRetry.state.rollbackTargetSignature, 'target-a');
+assert.equal(rollbackLimitRetry.state.rollbackTargetRevision, 4);
+assert.equal(rollbackLimitRetry.state.lastRuntimeEventSequence, 37);
+assert.equal(rollbackLimitRetry.state.prepared, true);
+assert.equal(rollbackLimitRetry.state.beverageHandled, true);
+assert.equal(rollbackLimitRetry.state.orderKey, 'normal:desk-3:guest-5');
+assert.equal(rollbackLimitRetry.state.cookingJobId, 'job-17');
+assert.equal(rollbackLimitRetry.state.lastProgressAtMs, 4200);
+assert.equal(rollbackLimitRetry.state.detailMessage, '已确认的订单事实必须保留。');
+assert.equal(rollbackLimitRetry.state.foodDelivered, true);
+assert.equal(rollbackLimitRetry.state.completed, false);
+assert.deepEqual(rollbackLimitRetry.state.executionTarget, { foodId: 23, recipeId: 17 });
+const transportRetry = reduceAutomationManualRetry({
+  ...manualRetryState,
+  pauseReasonCode: 'transport-failure',
+}, 'complete-order', 6000);
+assert.equal(transportRetry.resumed, true);
+assert.equal(transportRetry.rollbackBudgetReset, false);
+assert.equal(transportRetry.state.rollbackCount, 2,
+  'Retrying an unrelated pause must not silently replenish rollback budget.');
+assert.equal(transportRetry.state.step, 'ensure-cooking',
+  'A manual retry must resume the exact executable stage recorded when the order paused.');
+const invalidPausedStageRetry = reduceAutomationManualRetry({
+  ...manualRetryState,
+  pausedStage: 'paused',
+}, 'complete-order', 6500);
+assert.equal(invalidPausedStageRetry.state.step, 'complete-order',
+  'A non-executable paused stage must use the caller\'s current-facts fallback.');
+const manualBarrierState = {
+  ...manualRetryState,
+  manualResolutionRequired: true,
+  pauseReasonCode: 'cooking-delivery-commit-uncertain',
+};
+const manualBarrierRetry = reduceAutomationManualRetry(
+  manualBarrierState,
+  'complete-order',
+  7000,
+);
+assert.equal(manualBarrierRetry.resumed, false);
+assert.equal(manualBarrierRetry.rollbackBudgetReset, false);
+assert.strictEqual(manualBarrierRetry.state, manualBarrierState,
+  'A normal Retry must leave a manual safety barrier object untouched.');
+assert.strictEqual(manualBarrierRetry.state.manualResolutionRequired, true);
+assert.equal(manualBarrierRetry.state.rollbackCount, 2,
+  'A normal Retry must never clear the rollback count or manual safety latch of an uncertain side effect.');
+const activeRetry = reduceAutomationManualRetry({
+  ...manualRetryState,
+  paused: false,
+  pauseReasonCode: '',
+}, 'complete-order', 8000);
+assert.equal(activeRetry.resumed, false);
+assert.equal(activeRetry.rollbackBudgetReset, false);
+assert.equal(activeRetry.state.rollbackCount, 2,
+  'An inactive Retry action must not mutate a running order.');
 assert.equal(hasAutomationSpecialTargetRotated('', 0, 'target-a', 1), false,
   'Initial target acquisition must not be treated as retirement of an earlier budget.');
 assert.equal(hasAutomationSpecialTargetRotated('target-a', 1, 'target-a', 1), false);
@@ -640,6 +740,11 @@ async function assertStageAndCancellationContracts() {
   'Stage-only cancellation must apply to an active automation session, while master shutdown retains its existing path.');
   assert.ok(workbench.includes('retryNormalAutomationOrder'));
   assert.ok(workbench.includes('resetNormalAutomationOrder'));
+  assert.equal(
+    (workbench.match(/reduceAutomationManualRetry\(/g) ?? []).length,
+    2,
+    'Rare and normal Retry buttons must share the same pure state transition.',
+  );
   assert.ok(servicePanel.includes('normal-auto:${diagnostic.orderKey}:retry'));
   assert.ok(servicePanel.includes('normal-auto:${diagnostic.orderKey}:reset'));
   assert.ok(stateMachine.includes('manualResolutionRequired: true'));

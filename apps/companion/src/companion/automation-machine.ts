@@ -141,6 +141,72 @@ export interface AutomationRollbackTargetState {
   pausedStage: string;
 }
 
+export interface AutomationManualRetryState {
+  rollbackCount: number;
+  paused: boolean;
+  manualResolutionRequired: boolean;
+  pauseReasonCode: string;
+  pausedStage: string;
+  step: string;
+  stepStartedAtMs: number;
+  retryCount: number;
+  retryStage: string;
+  nextAttemptAtMs: number;
+  lastError: string;
+}
+
+export interface AutomationManualRetryTransition<T> {
+  state: T;
+  resumed: boolean;
+  rollbackBudgetReset: boolean;
+}
+
+const AUTOMATION_MANUAL_RETRY_STEPS = new Set([
+  'match-order',
+  'ensure-beverage',
+  'ensure-cooking',
+  'deliver-food',
+  'complete-order',
+]);
+
+export function reduceAutomationManualRetry<T extends AutomationManualRetryState>(
+  state: T,
+  nextStep: T['step'],
+  now: number,
+): AutomationManualRetryTransition<T> {
+  if (!state.paused || state.manualResolutionRequired) {
+    return {
+      state,
+      resumed: false,
+      rollbackBudgetReset: false,
+    };
+  }
+
+  const rollbackBudgetReset = state.pauseReasonCode === 'rollback-limit-reached';
+  const resumeStep = AUTOMATION_MANUAL_RETRY_STEPS.has(state.pausedStage)
+    ? state.pausedStage as T['step']
+    : nextStep;
+  return {
+    state: {
+      ...state,
+      rollbackCount: rollbackBudgetReset ? 0 : state.rollbackCount,
+      paused: false,
+      pausedStage: '',
+      pauseReasonCode: '',
+      step: resumeStep,
+      stepStartedAtMs: now,
+      retryCount: 0,
+      retryStage: '',
+      nextAttemptAtMs: 0,
+      lastError: rollbackBudgetReset
+        ? `已手动重试，自动回退计数已从 ${state.rollbackCount} 重开为 0，等待下一轮自动化继续。`
+        : '已手动重试，等待下一轮自动化继续。',
+    },
+    resumed: true,
+    rollbackBudgetReset,
+  };
+}
+
 export interface AutomationRollbackTargetReconciliation<T> {
   state: T;
   rotated: boolean;

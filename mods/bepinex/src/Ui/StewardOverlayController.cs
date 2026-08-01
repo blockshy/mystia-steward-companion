@@ -1901,15 +1901,6 @@ internal sealed class StewardOverlayController
         }
 
         var captureVersion = NormalOrderRuntimeCapture.ChangeVersion;
-        if (!force
-            && NormalOrderRuntimeCapture.IsAttached
-            && _normalBusinessContext != null
-            && _normalBusinessContext.Orders.Count == 0
-            && _normalBusinessContextCaptureVersion == captureVersion)
-        {
-            _nextNormalBusinessRefreshAt = Time.realtimeSinceStartup + NormalBusinessSnapshotCacheSeconds;
-            return _normalBusinessContext;
-        }
 
         try
         {

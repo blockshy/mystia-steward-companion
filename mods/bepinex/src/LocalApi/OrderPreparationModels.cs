@@ -21,6 +21,7 @@ internal sealed class OrderPreparationRequest
     public string RecipeName { get; init; } = "";
     public IReadOnlyList<int> ExtraIngredientIds { get; init; } = Array.Empty<int>();
     public IReadOnlyList<string> PredictedFoodTags { get; init; } = Array.Empty<string>();
+    public bool PredictedFoodTagsProvided { get; init; }
     public IReadOnlyList<string> ExpectedFoodModifierTags { get; init; } = Array.Empty<string>();
     public string SpecialTargetChallenge { get; init; } = "";
     public string SpecialTargetOwner { get; init; } = "";
@@ -29,6 +30,7 @@ internal sealed class OrderPreparationRequest
     public IReadOnlyList<string> SpecialTargetFoodTags { get; init; } = Array.Empty<string>();
     public string SpecialTargetMatchMode { get; init; } = "";
     public string SpecialTargetSignature { get; init; } = "";
+    public bool AllowYuumaControlledProgression { get; init; }
     public string ExecutionMode { get; init; } = "";
     public string ExecutionReason { get; init; } = "";
     public int BeverageId { get; init; } = -1;

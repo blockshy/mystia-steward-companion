@@ -81,6 +81,7 @@ internal sealed class AutomationCookingJobSnapshot
     public string Outcome { get; init; } = "";
     public string ReasonCode { get; init; } = "";
     public long SpecialTargetRevision { get; init; }
+    public bool AllowYuumaControlledProgression { get; init; }
     public bool AutoDeliverFood { get; init; }
     public string ControllerId { get; init; } = "";
     public string ResultId { get; init; } = "";

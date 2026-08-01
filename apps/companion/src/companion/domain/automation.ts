@@ -85,6 +85,13 @@ import type { RareBeverageRecommendation, RareOrderRecommendationPlan, RareRecip
 
 const DEFAULT_DATA_INDEXES = buildRecommendationDataIndexes(DEFAULT_RECOMMENDATION_DATA);
 
+export interface GameUiPinningSourceOrderState {
+  sourceOrderKey: string;
+  sourceOrderSignature: string;
+  hasServedFood: boolean;
+  hasServedBeverage: boolean;
+}
+
 type OrderPreparationSelection =
   | {
       ok: true;
@@ -1120,16 +1127,19 @@ export function buildGameUiPinningTarget(
   const cookerName = recipe?.recipe.cooker ?? '';
   const cookerTypeId = resolveCookerTypeId(cookerName);
   const sourceOrderKey = buildNightBusinessOrderKey(item.order);
+  const sourceOrderSignature = buildGameUiPinningSourceOrderSignature(item.order);
 
   return {
-    signature: [
+    signature: buildGameUiPinningTargetSignature(
       sourceOrderKey,
+      sourceOrderSignature,
       recipeId,
-      ingredientIds.join(','),
+      ingredientIds,
       beverageId,
       cookerTypeId,
-    ].join('|'),
+    ),
     sourceOrderKey,
+    sourceOrderSignature,
     recipeId,
     recipeName: recipe?.recipe.name ?? '',
     ingredientIds,
@@ -1138,6 +1148,99 @@ export function buildGameUiPinningTarget(
     cookerTypeId,
     cookerName,
   };
+}
+
+/**
+ * 投影目标发布所需的最小订单状态。签名同时锁定原生订单身份与当前分类语义；
+ * 任一部分变化都应清空旧目标并等待新的 current 推荐结果。
+ */
+export function buildGameUiPinningSourceOrderState(
+  order: NightBusinessOrder,
+): GameUiPinningSourceOrderState {
+  return {
+    sourceOrderKey: buildNightBusinessOrderKey(order),
+    sourceOrderSignature: buildGameUiPinningSourceOrderSignature(order),
+    hasServedFood: order.hasServedFood === true,
+    hasServedBeverage: order.hasServedBeverage === true,
+  };
+}
+
+/**
+ * 在推荐 Worker pending 时，按最新订单事实单向删除已经送达的目标组件。
+ */
+export function reconcileGameUiPinningTarget(
+  target: GameUiPinningTarget | null,
+  sourceOrders: readonly GameUiPinningSourceOrderState[],
+): GameUiPinningTarget | null {
+  if (!target) return null;
+
+  const matchingSources = sourceOrders.filter((source) =>
+    source.sourceOrderKey === target.sourceOrderKey
+    && source.sourceOrderSignature === target.sourceOrderSignature
+  );
+  if (matchingSources.length !== 1) return null;
+
+  const [source] = matchingSources;
+  const recipeId = source.hasServedFood ? -1 : target.recipeId;
+  const recipeName = source.hasServedFood ? '' : target.recipeName;
+  const ingredientIds = source.hasServedFood ? [] : target.ingredientIds;
+  const cookerTypeId = source.hasServedFood ? -1 : target.cookerTypeId;
+  const cookerName = source.hasServedFood ? '' : target.cookerName;
+  const beverageId = source.hasServedBeverage ? -1 : target.beverageId;
+  const beverageName = source.hasServedBeverage ? '' : target.beverageName;
+  if (recipeId < 0 && beverageId < 0) return null;
+
+  if (recipeId === target.recipeId && beverageId === target.beverageId) return target;
+  return {
+    ...target,
+    signature: buildGameUiPinningTargetSignature(
+      target.sourceOrderKey,
+      target.sourceOrderSignature,
+      recipeId,
+      ingredientIds,
+      beverageId,
+      cookerTypeId,
+    ),
+    recipeId,
+    recipeName,
+    ingredientIds,
+    beverageId,
+    beverageName,
+    cookerTypeId,
+    cookerName,
+  };
+}
+
+function buildGameUiPinningSourceOrderSignature(order: NightBusinessOrder): string {
+  return [
+    order.traceId?.trim() ?? '',
+    order.firstSeenAtUtc ?? '',
+    order.deskCode,
+    order.guestId ?? '',
+    order.runtimeGuestId ?? '',
+    order.specialBusinessRole ?? '',
+    order.foodTagId ?? '',
+    order.beverageTagId ?? '',
+    order.isFreeOrder ? 1 : 0,
+  ].join('|');
+}
+
+function buildGameUiPinningTargetSignature(
+  sourceOrderKey: string,
+  sourceOrderSignature: string,
+  recipeId: number,
+  ingredientIds: readonly number[],
+  beverageId: number,
+  cookerTypeId: number,
+): string {
+  return [
+    sourceOrderKey,
+    sourceOrderSignature,
+    recipeId,
+    ingredientIds.join(','),
+    beverageId,
+    cookerTypeId,
+  ].join('|');
 }
 
 /**

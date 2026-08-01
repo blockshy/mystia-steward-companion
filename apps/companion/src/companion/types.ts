@@ -242,6 +242,7 @@ export interface NormalOrderExecutionTarget extends SpecialFoodTargetWirePolicy 
   foodId: number;
   recipeId: number;
   executionMode?: NormalOrderExecutionMode;
+  allowYuumaControlledProgression: boolean;
   recipeName: string;
   extraIngredientIds: number[];
   beverageId: number;
@@ -369,6 +370,7 @@ export interface AutomationCookingJobSnapshot {
   outcome: AutomationJobOutcome;
   reasonCode: string;
   specialTargetRevision: number;
+  allowYuumaControlledProgression: boolean;
   autoDeliverFood: boolean;
   controllerId: string;
   resultId: string;
@@ -901,6 +903,7 @@ export interface RareOrderDismissResponse {
 export interface GameUiPinningTarget {
   signature: string;
   sourceOrderKey: string;
+  sourceOrderSignature: string;
   recipeId: number;
   recipeName: string;
   ingredientIds: number[];

@@ -433,7 +433,7 @@ async function assertSourceContracts() {
   ]);
   const orderSignature = workbench.slice(
     workbench.indexOf('function buildNightBusinessOrderSignature'),
-    workbench.indexOf('function isGameUiPinningTargetSourceValid'),
+    workbench.indexOf('function buildFavoriteDataSignature'),
   );
   assert.equal(orderSignature.includes('lastSeenAtUtc'), false);
   assert.equal(orderSignature.includes('order.source'), false);

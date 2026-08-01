@@ -18,35 +18,38 @@
 
 `NightBusinessReflectionProvider` 用于 `经营中 / Service` 页。它同样只读当前运行时对象，不读存档文件：
 
-1. 从 `Night.UI.HUD.Ordering.OrderController.GetShowInUIOrders()` 读取当前 HUD 订单。
-2. 从 `OrderController.m_Orders` 中的 `OrderingElement.ActiveOrder` 补充读取 UI 订单元素。
-3. 从 `NightScene.UI.GuestManagementUtility.OrderingElement.ActiveOrder` 读取 HUD 上可见的稀客点单。
-4. 从 `NightScene.UI.GuestManagementUtility.WorkSceneServePannel` 的 `OpenContext`、`operatingOrder` 和 `currentGuestController` 读取当前上菜服务面板。
-5. 从 `NightScene.GuestManagementUtility.GuestsManager` 读取稀客控制器集合，包括 `AllPresentedGuestGroupController`、`AllGuestInDeskController`、`AllGuestsControllersInDesk`、`CanPlayerRepellGuest` 和 `ManualDesksDic`。
-6. 从 `NightScene.GuestManagementUtility.GuestGroupController.QueuedGuestControllers` 补充读取排队中的稀客。
-7. 对稀客控制器优先读取 `SpecialGuest`。只有当 `OrderingGuest` 本身是 `SpecialGuest`，或带有明确的稀客 `StringId` / `SourceGuestID` 时，才把它作为稀客候选；普通 `GuestBase` 的数字 ID 不参与稀客识别，避免普通客 ID 与稀客 ID 重叠导致幽灵稀客。候选只能命中已验证的完整身份快照，不能按显示名称或硬编码别名猜测。
-8. 对 `SpecialOrder` 读取 `RequestFoodTag`、`RequestBeverageTag`、`DeskCode` 和 `SpecialGuests`。其中两个 `Request*Tag` 原始数值属于订单身份；合法负数必须保留，读取失败必须显式标记为缺失，不能用负数哨兵折叠两种状态。
-9. 如果 `GuestGroupController.AllOrders` 读不到订单，则继续读取 `AllOrdersData`，并用 `PeekOrders()` 读取栈顶订单兜底。
-10. 默认不依赖 BepInEx/Unity 日志识别点单。运行时捕获、Provider 和自动化实时扫描都会将 IL2CPP 暴露的 `OrderBase` 通过共享的 `TryCast<SpecialOrder>()` 入口重新包装为真实特殊订单，再读取身份和展示数据：`RequestFoodTag` / `RequestBeverageTag` 原始数值与桌位、运行时原始稀客 ID 组成强身份；归一化 `guestId` 只供推荐与特殊经营规则使用，独立 nullable `runtimeGuestId` 才参与对象定位。`SpecialGuestsController.GetOrderFoodText(...)` / `GetOrderBevText(...)` 是游戏服务面板和投掷送达面板使用的最终展示文本，会应用订单文本 override。override 句子可能完全不包含标准 Tag 名，因此其原文保留在捕获诊断；页面优先按原始 ID 显示规范 Tag，ID 没有目录映射时才把捕获文本规范化后用于显示。所有文本都绝不用于相等、包含或宽松订单匹配。没有 controller 上下文时，`SpecialOrder.ToString()` 只能补充展示文本。`0` 和 `-1` 等值只要属性读取成功都必须作为有效身份保存；读取失败用 nullable / `Has*TagId=false` 表达。同一订单被多个 hook 捕获时，原始 ID 和展示文本按各自完整性独立合并，缺失字段不能覆盖有效值。不要用基类 `foodRequest` / `beverageRequest` 作为特殊订单身份兜底，这两个字段在错误订单视角下可能对应普通食物或酒水请求。
-11. 订单删除不再根据 `OrderController.GetShowInUIOrders()` 的空列表全量清空；HUD 订单列表会在点单、服务或刷新期间短暂为空。`FoodDelivered` / `BeverageDelivered` 后的 `IsFullfilled=true` 只表示料理与酒水均已送达，捕获记录必须保留给完成/评价阶段；只有 `RemoveFromOrder`、`PartnerManager` 的 `OrderRemove`、明确评价或手动订单结束等生命周期回调才能删除对应订单。
-12. 运行时稀客身份只组合 `GetAllSpecialGuests()` 的基础 `id` / `stringId` 与 `GetAllMappedGuests()` 的 `ID` / `StrID` / `SourceGuestID`。每个映射项必须沿无环、无缺口的 source chain 收敛到基础稀客；重复 ID/StringId、缺来源或循环会让整轮身份读取 fail-closed。身份快照保留所有基础与映射原生身份，即使某项不属于当前可推荐目录，也不通过名称、语言 getter、喜好计算属性、dummy 或手工别名补齐。
-13. 捕获路径与 `GuestsManager` 实时扫描路径统一按桌位、`runtimeGuestId`、料理原始 Tag ID、酒水原始 Tag ID 强匹配；必要身份缺失或冲突时 fail-closed。带具体桌号的运行时捕获订单只能匹配同一桌活跃稀客；未入座或排队状态的 `desk=-1` 稀客不能保活旧订单，避免同一稀客再次出现时复活上一次经营的历史点单。自动送达前还要确认捕获订单对象仍由同一 controller 持有且未满足；满足这些校验后，即使经营末尾 manager 集合暂时枚举不到该 controller，也可以继续使用捕获对象完成最后一单。完成定位仍检查 controller 所有权和强身份并允许 `IsFullfilled=true`；原生评价查找必须先用该精确对象确认 fulfilled，未送齐返回正常等待。幽幽子三阶段评价优先严格复核同一捕获对象，失败后才把 manager 扫描作为同一验证器的第二发现来源，不把 manager 集合可枚举性当作 capture 存活的必要条件。
-14. 从 `GameData.RunTime.NightSceneUtility.IzakayaConfigure.IzakayaData` 尝试识别当前经营场景。
-15. 游戏内部 `DeskCode` 从 0 开始；数据层保留原值用于去重，UI 显示时统一加 1。
+1. 从 `Night.UI.HUD.Ordering.OrderController.GetShowInUIOrders()` 和 `OrderController.m_Orders[].ActiveOrder` 读取普客补充可见行；这些来源不提供自动化 controller 所有权，也不得过滤已就绪捕获。
+2. 从 `NightScene.UI.GuestManagementUtility.OrderingElement.ActiveOrder`、`WorkSceneServePannel`、`GuestsManager` 各控制器集合和 `GuestGroupController.QueuedGuestControllers` 采集稀客/订单诊断，并读取活动稀客与预算展示。诊断订单不得合入稀客业务集合。
+3. 对稀客控制器优先读取 `SpecialGuest`。只有当 `OrderingGuest` 本身是 `SpecialGuest`，或带有明确的稀客 `StringId` / `SourceGuestID` 时，才把它作为稀客候选；普通 `GuestBase` 的数字 ID 不参与稀客识别，避免普通客 ID 与稀客 ID 重叠导致幽灵稀客。候选只能命中已验证的完整身份快照，不能按显示名称或硬编码别名猜测。
+4. 对 `SpecialOrder` 读取 `RequestFoodTag`、`RequestBeverageTag`、`DeskCode` 和 `SpecialGuests`。其中两个 `Request*Tag` 原始数值属于订单身份；合法负数必须保留，读取失败必须显式标记为缺失，不能用负数哨兵折叠两种状态。
+5. `GuestGroupController.AllOrders` 与 `AllOrdersData` 指向只累积历史订单的同一 `Stack<OrderBase>`，不是活动订单集合，Provider、普客快照、诊断业务判断和自动化均不得枚举它们。`PeekOrders()` 只用于动作前复核已经精确捕获的订单，或古明地恋/幽幽子显式专用 live-controller 路径；不得用它在空捕获时创建一般业务订单。
+6. 默认不依赖 BepInEx/Unity 日志识别点单。成功返回的 `GuestGroupController.PushToOrder` 或 `SetManualControllerOrderInternal` 是建立 order/controller/native-key 绑定的唯一入口；native key 只接受非零 IL2CPP 原生对象指针，读取不到时拒绝捕获，不得回退到 managed hash 或其他派生值。生成、HUD、伙伴与状态回调只能按同一 native key 更新或移除既有绑定。运行时捕获、Provider 和自动化都会将 IL2CPP 暴露的当前 `OrderBase` 通过共享的具体类型解析入口重新包装为唯一订单类型，再读取身份：`RequestFoodTag` / `RequestBeverageTag` 原始数值与桌位、运行时原始稀客 ID 组成强身份；归一化 `guestId` 只供推荐与特殊经营规则使用。controller 的订单文本 getter 只提供最终展示文本；没有 controller 时不调用订单文本 getter 或 `SpecialOrder.ToString()` 补齐。所有文本都绝不用于订单匹配。
+7. 捕获业务就绪要求 `PushToOrder`、`SetManualControllerOrderInternal`、`RemoveFromOrder`、`EvaluateOrder`、`EvaulateManualOrder`、`CleanOrderInfo`、`RepellInternal` 七个精确 Hook 全部安装，并要求当前 Active generation 从开始时已被覆盖。Hook 在经营中途才补齐时，本场保持 fail-closed，下一场才可消费捕获。标准/手动评价只在调用前订单已 fulfilled 且原调用成功时退休；`RemoveFromOrder` / `CleanOrderInfo` 成功后退休；成功返回的 `RepellInternal` 无论 `out haveSeated` 为何值都退休调用前捕获的订单。`EndDlc4SpecialManualOrder` 只移除 arrival event，不是订单退出边界。
+8. 运行时稀客身份只组合 `GetAllSpecialGuests()` 的基础 `id` / `stringId` 与 `GetAllMappedGuests()` 的 `ID` / `StrID` / `SourceGuestID`。每个映射项必须沿无环、无缺口的 source chain 收敛到基础稀客；重复 ID/StringId、缺来源或循环会让整轮身份读取 fail-closed。身份快照保留所有基础与映射原生身份，即使某项不属于当前可推荐目录，也不通过名称、语言 getter、喜好计算属性、dummy 或手工别名补齐。
+9. 一般订单动作只接受已就绪精确捕获，并按桌位、`runtimeGuestId`、料理原始 Tag ID、酒水原始 Tag ID 强匹配；必要身份缺失或冲突时 fail-closed。自动送达前确认捕获对象仍是其 controller 的 `PeekOrders()` 当前栈顶且未满足；完成定位执行同一当前栈顶与强身份复核，并允许 `IsFullfilled=true` 进入评价。一般路径不得扫描 `GuestsManager` 回退；只有幽幽子三阶段和古明地恋 BOSS 两个显式命名路径在各自额外原生门禁下读取 manager 当前 controller。
+10. 从 `GameData.RunTime.NightSceneUtility.IzakayaConfigure.IzakayaData` 尝试识别当前经营场景。
+11. 游戏内部 `DeskCode` 从 0 开始；数据层保留原值用于去重，UI 显示时统一加 1。
 
 `NightBusinessReflectionProvider` 会优先读取 auto-property backing field。IL2CPP 数组和列表按精确 Length/Count 与 indexer 读取；确需全量遍历的已知静态字典才校验同泛参 Enumerator 与 KeyValuePair 后枚举；运行时 tracking/scheduled 字典只对已验证 key 调用 `TryGetValue`，并校验前后 Count 与缓冲区状态。任何形状、元素或数量不一致都会丢弃整组结果，不使用会静默跳项的通用 object 枚举器。`NightBusinessContext.Source` 会记录扫描摘要，例如 `OrderController=1; ServePanel=1; manager=ok; Presented=1; Desk=0; Queue=1; guests=1; orders=1`，用于判断是管理器未找到、集合为空，还是只缺少订单数据。如果当前游戏版本字段名变化，优先核对以上路径；无法映射稀客 ID 时，检查 `aggregate-mod.log` 中的 `runtime-static-data` 和 `runtime-guests` section。
 
 运行时捕获订单维护 `SpecialOrderRuntimeCapture.ChangeVersion`。当订单新增、合并或移除时，UI 控制器会在 Unity 主线程等待 0.2 秒防抖后强制刷新经营数据并发布本地 API 快照；捕获版本、场景和诊断状态都未变化时复用已有经营上下文，并按较慢节奏重新校验，避免 750ms 快照轮询带动完整经营扫描。基础运行时库存仍按 `AutoRefreshSeconds` 慢刷新，避免恢复高频反射扫描导致掉帧。伴随窗口在 `经营中` 和稀客专注模式下以 750ms 轮询缓存快照，其他页面保持 2 秒。
 
-幽幽子剧情版三阶段手动评价回调必须绑定最终选中的同一原生 order/controller 对象，不能只按相同桌位、稀客和 Tag 身份从另一条捕获记录借用；重修版仍要求当前 controller 的 `_50` / `_70` 原生进度回调、已送达目标和等级门槛全部通过后调用 `EvaluateOrder()`。古明地恋本体的 live-controller 规则保持独立，仍跳过 capture 并从 manager 当前集合定位。
+幽幽子剧情版三阶段手动评价回调必须绑定最终选中的同一原生 order/controller 对象，不能只按相同桌位、稀客和 Tag 身份从另一条捕获记录借用。重修版不能把 `_50` / `_70` 合并成挑战级统一入口：精确 `ManualOrderSet` 回调绑定与瞬时 `OrderBase.ManualOrder` 分开保存，同一活动订单的后续状态更新不得清除绑定；绑定只随订单移除、过期或经营代际清理退休，空回调、不同回调或来源冲突均停止。同订单稳定绑定的 `DisplayClass16_10 + b__77/b__78` 与主幽幽子 `_50` 同时成立时只调用 `EvaulateManualOrder`；当前 capture 明确无手动绑定、具体订单已唯一解析为 `NormalOrder` 或 `SpecialOrder`，且仅有组订单 `_70`、没有 `_50` 时只调用 `EvaluateOrder(controller, false, null)`。两种入口都要求 fresh `PeekOrders()` 所有权、当前经营 generation、fulfilled 和已送达目标；证据缺失或冲突时停止，不跨入口重试。幽幽子三阶段与古明地恋 BOSS 的 live-controller 规则保持独立；精确捕获不可用或不满足专用门禁时，只有这两个命名路径的 `SpecialOrder` 可扫描 manager 当前 controller，并继续执行同一严格身份验证。
 
-普客订单快照每轮先读取 live `OrderController` / HUD 可见订单确认订单仍存在，再把仍能按 `orderKey` 或桌位/料理/酒水槽位对上的 `NormalOrderRuntimeCapture` 绑定合并回来；正常来源摘要标记 `normalOrderMode=liveCaptureReconciled`。捕获缓存不单独证明订单仍存在。只有 capture 不可用时才扫描 `GuestsManager` 控制器集合和队列建立启动绑定，并标记 `normalOrderMode=reflectionBootstrap`。
+七 Hook 与当前经营 generation 就绪后，普客订单快照标记 `normalOrderMode=authoritativeCapture`：`NormalOrderRuntimeCapture` 的精确捕获是业务和执行权威，live `OrderController` / HUD 只追加没有捕获绑定的不可执行可见行。同一非零 native `orderKey` 的记录必须去重为捕获订单；不得按桌位、料理或酒水槽位重绑。单轮 HUD 空窗或读取错误不得过滤、隐藏或退休捕获。捕获未通过门禁时标记 `normalOrderMode=visibleFailClosed`，仅显示 HUD 行并禁止自动化，不扫描 `GuestsManager` 或队列建立启动绑定。
 
 启用总日志后，稀客别名和运行时固定数据会写入 `aggregate-mod.log` 的 `runtime-static-data`、`runtime-tags`、`runtime-database`、`runtime-guests` 和 `runtime-izakayas` section。诊断只复用已缓存的运行时目录快照并标记 `aliasSource`，内容只在快照变化时追加；关闭、重开或更换总日志后会重置诊断签名，使新文件能得到完整首份快照。
 
 `/snapshot` 只发布运行时目录状态和签名，不再发布 `runtimeRareCustomers` 或合成稀客模型。伴随窗口中可用于推荐的稀客目录唯一来自按签名缓存的 `/runtime-data.rareCustomers`；完整身份快照只留在 Mod 内部用于运行时订单归一化。
 
-诊断开关不改变正式订单来源。有运行时捕获订单时，推荐和自动化始终使用捕获数据及既有缺失项反射补充；为诊断额外枚举到的 HUD/controller 订单只进入诊断快照，不合入业务订单集合。
+诊断开关不改变正式订单来源。稀客推荐和自动化只使用当前 generation 已就绪且完整绑定的捕获数据；捕获已就绪但为空时就是权威空集合，缺少绑定的反射/HUD/controller 样本仅进入诊断快照。普客捕获就绪后同样是业务和执行权威；HUD 样本只追加不可执行可见行，同 native key 与捕获去重，任何单轮 HUD 缺口或错误都不得裁剪捕获。
+
+## 血池地狱受控推进
+
+- 血池地狱仅在挑战类型、具体订单形态、订单顾客与 controller 顾客都精确确认为 BOSS `1003` 时接管。`SpecialOrder` 保持原点单和动态双 Tag 全命中的严格规则；只有显示在普客区域的 BOSS `NormalOrder` 可以在严格方案为空时考虑受控推进。
+- 受控推进仍必须保持游戏原始料理与原始酒水，并通过料理/酒水解锁、库存、材料、厨具、排除项、订单绑定和经营 generation 等全部候选硬门禁。动态目标策略仍是 `owner=yuuma + match=all + 2 tags`；受控推进不是 `Any`，也不能在目标缺失或不可读时生成执行计划。
+- 前端通过 `/orders/normal/complete-first` 的 `allowYuumaControlledProgression` 显式传递该许可。Mod 只接受精确 BOSS `NormalOrder`，并要求 `foodId == matchFoodId`、`beverageId == matchBeverageId`；请求还必须显式携带完整预测 Tag，且该预测确实未满足当前双 Tag，预测已全命中却标记受控时拒绝。许可同时进入后端 target、cooking job 和快照 identity，严格 job 与受控 job 不得复用。该布尔值不参与特殊目标 policy/signature/revision。
+- 出锅后仍要重新读取当前策略、订单/controller、原订单项目、实际料理 ID、厨具锅次和成品 Tag。受控许可只允许在 Tag 可读但未全命中时继续专用结算；Tag 不可读、策略轮换、成品 ID 不符或其他门禁失败仍 fail-closed。受控方案交由游戏原生评价，可能造成较低伤害并增加狂暴，状态和诊断必须明确标记，不能表述为完整双 Tag 或最高收益方案。
 
 ## 回退行为
 

@@ -28,6 +28,7 @@ export const CANDIDATE_PAIR_BEVERAGE_LIMIT = 32;
 
 interface BuildExecutionTargetOptions {
   executionMode?: NormalOrderExecutionMode;
+  allowYuumaControlledProgression?: boolean;
   expectedFoodModifierTags?: readonly string[];
   specialTargetFoodTags?: readonly string[];
 }
@@ -158,6 +159,7 @@ export function buildExecutionTarget(
     foodId: food.recipe.id,
     recipeId: food.recipe.recipeId,
     ...(executionMode ? { executionMode } : {}),
+    allowYuumaControlledProgression: options.allowYuumaControlledProgression === true,
     recipeName: food.recipe.name,
     extraIngredientIds: food.extraIngredients.map((ingredient) => ingredient.id),
     beverageId: beverage.beverage.id,

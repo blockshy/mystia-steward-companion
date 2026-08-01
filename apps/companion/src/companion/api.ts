@@ -588,6 +588,7 @@ export async function completeFirstNormalOrder(
     specialTargetMatchMode: specialTargetPolicy.specialTargetMatchMode,
     specialTargetSignature: specialTargetPolicy.specialTargetSignature,
     executionMode: executionTarget?.executionMode ?? '',
+    allowYuumaControlledProgression: String(executionTarget?.allowYuumaControlledProgression === true),
     executionReason: executionTarget?.reason ?? '',
     beverageId: String(targetBeverageId),
     beverageName: executionTarget?.beverageName || order.beverageName || indexes.beverageNameById.get(order.beverageId) || '',

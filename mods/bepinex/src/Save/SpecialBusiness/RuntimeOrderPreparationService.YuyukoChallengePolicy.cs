@@ -10,12 +10,19 @@ internal static partial class RuntimeOrderPreparationService
     private const string YuyukoNormalExecutionModeRefresh = "refresh";
     private static readonly Dictionary<string, DateTime> RecentYuyukoRuntimeDiagnostics = new(StringComparer.Ordinal);
     private static readonly TimeSpan YuyukoRuntimeDiagnosticThrottle = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan YuyukoNativeEvaluationAttemptDiagnosticThrottle = TimeSpan.FromSeconds(30);
 
-    private enum YuyukoPhase3EvaluationMode
+    private enum YuyukoPhase3EvaluationContract
     {
         None,
-        StoryManual,
-        RetakeNative,
+        Story,
+        Retake,
+    }
+
+    private enum YuyukoRetakePhase3EvaluationRoute
+    {
+        ManualBoss,
+        StandardGroup,
     }
 
     private static void AppendYuyukoRequestDiagnostic(
@@ -60,7 +67,7 @@ internal static partial class RuntimeOrderPreparationService
                 $"requiresLiveController: {RequiresLiveYuyukoPhase3BossController(request)}",
                 $"challengeType: {RuntimeSpecialBusinessContextService.CurrentChallengeType}",
                 $"rawChallengeType: {RuntimeSpecialBusinessContextService.CurrentRawChallengeType}",
-                $"phase3EvaluationMode: {ResolveYuyukoPhase3EvaluationMode(request)}",
+                $"phase3EvaluationContract: {ResolveYuyukoPhase3EvaluationContract(request)}",
                 $"phase3Active: {RuntimeSpecialBusinessContextService.IsActiveYuyukoPhase("Phase3")}",
                 $"yuyukoProgress: {RuntimeSpecialBusinessContextService.DescribeYuyukoProgressForDiagnostics()}",
                 $"specialBusinessStatus: {RuntimeSpecialBusinessContextService.Status}",
@@ -116,19 +123,14 @@ internal static partial class RuntimeOrderPreparationService
             || string.Equals(challengeType, SpecialBusinessChallengeTypes.RetakeYuyuko, StringComparison.Ordinal);
     }
 
-    private static YuyukoPhase3EvaluationMode ResolveYuyukoPhase3EvaluationMode(OrderPreparationRequest request)
+    private static YuyukoPhase3EvaluationContract ResolveYuyukoPhase3EvaluationContract(OrderPreparationRequest request)
     {
-        if (!RequiresLiveYuyukoPhase3BossController(request)) return YuyukoPhase3EvaluationMode.None;
+        if (!RequiresLiveYuyukoPhase3BossController(request)) return YuyukoPhase3EvaluationContract.None;
 
         var challengeType = RuntimeSpecialBusinessContextService.CurrentChallengeType;
-        if (string.Equals(challengeType, SpecialBusinessChallengeTypes.RetakeYuyuko, StringComparison.Ordinal)) return YuyukoPhase3EvaluationMode.RetakeNative;
-        if (string.Equals(challengeType, SpecialBusinessChallengeTypes.StoryYuyuko, StringComparison.Ordinal)) return YuyukoPhase3EvaluationMode.StoryManual;
-        return YuyukoPhase3EvaluationMode.None;
-    }
-
-    private static bool RequiresStoryYuyukoPhase3ManualEvaluation(OrderPreparationRequest request)
-    {
-        return ResolveYuyukoPhase3EvaluationMode(request) == YuyukoPhase3EvaluationMode.StoryManual;
+        if (string.Equals(challengeType, SpecialBusinessChallengeTypes.RetakeYuyuko, StringComparison.Ordinal)) return YuyukoPhase3EvaluationContract.Retake;
+        if (string.Equals(challengeType, SpecialBusinessChallengeTypes.StoryYuyuko, StringComparison.Ordinal)) return YuyukoPhase3EvaluationContract.Story;
+        return YuyukoPhase3EvaluationContract.None;
     }
 
     private static bool TryEvaluateYuyukoChallengeOrderIfReady(
@@ -176,9 +178,9 @@ internal static partial class RuntimeOrderPreparationService
             return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: false);
         }
 
-        var evaluationMode = ResolveYuyukoPhase3EvaluationMode(request);
-        var requiresLiveReacquire = reacquireLiveOrder && evaluationMode != YuyukoPhase3EvaluationMode.None;
-        if (requiresLiveReacquire)
+        var evaluationContract = ResolveYuyukoPhase3EvaluationContract(request);
+        var requiresNativeEvaluationMatch = evaluationContract != YuyukoPhase3EvaluationContract.None;
+        if (requiresNativeEvaluationMatch)
         {
             if (runtimeOrder.Manager == null)
             {
@@ -223,8 +225,10 @@ internal static partial class RuntimeOrderPreparationService
             }
         }
 
-        var evaluationOrder = requiresLiveReacquire
-            ? FindRuntimeOrder(request, RuntimeOrderLookupPurpose.NativeEvaluation)
+        var evaluationOrder = requiresNativeEvaluationMatch
+            ? reacquireLiveOrder
+                ? FindRuntimeOrder(request, RuntimeOrderLookupPurpose.NativeEvaluation)
+                : FindRuntimeNormalOrder(request, RuntimeOrderLookupPurpose.NativeEvaluation)
             : runtimeOrder;
         if (!IsNightBusinessGenerationActive(sessionGeneration))
         {
@@ -237,10 +241,10 @@ internal static partial class RuntimeOrderPreparationService
             request,
             evaluationOrder,
             "call-native-evaluate-entry",
-            evaluationMode == YuyukoPhase3EvaluationMode.StoryManual
-                ? $"Yuyuko story phase3 evaluation uses EvaulateManualOrder after validating the manual progress callback chain. executionMode={executionMode}; reacquire={requiresLiveReacquire}; deliveryMatch={runtimeOrder.Diagnostic}"
-                : evaluationMode == YuyukoPhase3EvaluationMode.RetakeNative
-                    ? $"Yuyuko retake phase3 evaluation uses the native EvaluateOrder path after validating the _50/_70 progress callback. executionMode={executionMode}; reacquire={requiresLiveReacquire}; deliveryMatch={runtimeOrder.Diagnostic}"
+            evaluationContract == YuyukoPhase3EvaluationContract.Story
+                ? $"Yuyuko story phase3 evaluation uses EvaulateManualOrder after validating the manual progress callback chain. executionMode={executionMode}; freshMatch={requiresNativeEvaluationMatch}; deliveryMatch={runtimeOrder.Diagnostic}"
+                : evaluationContract == YuyukoPhase3EvaluationContract.Retake
+                    ? $"Yuyuko retake phase3 evaluation selects one native entry from the exact captured manual binding and the _50/_70 controller callback. executionMode={executionMode}; freshMatch={requiresNativeEvaluationMatch}; deliveryMatch={runtimeOrder.Diagnostic}"
                     : $"Yuyuko challenge order is checking whether the game evaluation path is ready before consuming the order. executionMode={executionMode}");
         if (!IsNightBusinessGenerationActive(sessionGeneration))
         {
@@ -279,13 +283,13 @@ internal static partial class RuntimeOrderPreparationService
             }
             else
             {
-                evaluation = evaluationMode switch
+                evaluation = evaluationContract switch
                 {
-                    YuyukoPhase3EvaluationMode.StoryManual => TryEvaluateStoryYuyukoPhase3OrderIfReady(
+                    YuyukoPhase3EvaluationContract.Story => TryEvaluateStoryYuyukoPhase3OrderIfReady(
                         evaluationOrder,
                         orderLabel,
                         sessionGeneration),
-                    YuyukoPhase3EvaluationMode.RetakeNative => TryEvaluateRetakeYuyukoPhase3OrderIfReady(
+                    YuyukoPhase3EvaluationContract.Retake => TryEvaluateRetakeYuyukoPhase3OrderIfReady(
                         request,
                         evaluationOrder,
                         orderLabel,
@@ -304,7 +308,7 @@ internal static partial class RuntimeOrderPreparationService
             ? evaluation.Skipped
                 ? "native-evaluate-entry-skipped"
                 : "native-evaluate-entry-called"
-            : evaluationMode != YuyukoPhase3EvaluationMode.None
+            : evaluationContract != YuyukoPhase3EvaluationContract.None
                 ? "native-evaluate-entry-blocked"
                 : "native-evaluate-entry-failed";
         if (IsNightBusinessGenerationActive(sessionGeneration))
@@ -401,8 +405,8 @@ internal static partial class RuntimeOrderPreparationService
                 + $"诊断：{targetDiagnostic}。请提供 aggregate-mod.log。");
         }
 
-        var evaluationMode = ResolveYuyukoPhase3EvaluationMode(request);
-        if (evaluationMode == YuyukoPhase3EvaluationMode.StoryManual)
+        var evaluationContract = ResolveYuyukoPhase3EvaluationContract(request);
+        if (evaluationContract == YuyukoPhase3EvaluationContract.Story)
         {
             var storyEvaluationValid = TryValidateYuyukoStoryPhase3RefreshEvaluation(
                 runtimeOrder,
@@ -437,10 +441,12 @@ internal static partial class RuntimeOrderPreparationService
                 : manualEvaluation;
         }
 
-        if (evaluationMode == YuyukoPhase3EvaluationMode.RetakeNative)
+        if (evaluationContract == YuyukoPhase3EvaluationContract.Retake)
         {
-            var retakeEvaluationValid = TryValidateYuyukoRetakePhase3RefreshEvaluation(
+            var retakeEvaluationValid = TryResolveYuyukoRetakePhase3EvaluationRoute(
                 runtimeOrder,
+                out var evaluationRoute,
+                out var manualEvaluationCallback,
                 out var retakeDiagnostic);
             if (!IsNightBusinessGenerationActive(sessionGeneration))
             {
@@ -453,19 +459,27 @@ internal static partial class RuntimeOrderPreparationService
                     false,
                     false,
                     false,
-                    "重修版幽幽子三阶段清理订单已送齐，但未确认当前 live 订单具备 _50/_70 原生回调链路，已暂停自动提交。"
+                    "重修版幽幽子三阶段清理订单已送齐，但当前订单的原生评价入口无法严格确认，已暂停自动提交。"
                     + $"诊断：{retakeDiagnostic}; {targetDiagnostic}。请提供 aggregate-mod.log。");
             }
 
-            var evaluation = TryEvaluateRuntimeOrderIfReady(
-                runtimeOrder,
-                orderLabel,
-                allowControllerMissing,
-                sessionGeneration);
+            var evaluation = evaluationRoute == YuyukoRetakePhase3EvaluationRoute.ManualBoss
+                ? TryInvokeRuntimeOrderEvaluationOnce(
+                    runtimeOrder.Manager,
+                    runtimeOrder.Controller,
+                    "EvaulateManualOrder",
+                    new object?[] { runtimeOrder.Controller, manualEvaluationCallback },
+                    orderLabel,
+                    sessionGeneration)
+                : TryEvaluateRuntimeOrderIfReady(
+                    runtimeOrder,
+                    orderLabel,
+                    allowControllerMissing,
+                    sessionGeneration);
             return evaluation.Ok && evaluation.Completed && !evaluation.Skipped
                 ? evaluation with
                 {
-                    Message = $"已按幽幽子三阶段清理模式调用重修版游戏评价流程完成{orderLabel}，该订单不承诺推进进度。{evaluation.Message} 诊断：{targetDiagnostic}。",
+                    Message = $"已按幽幽子三阶段清理模式和逐订单路由 {evaluationRoute} 调用唯一原生评价入口完成{orderLabel}，该订单不承诺推进进度。{evaluation.Message} 诊断：{retakeDiagnostic}; {targetDiagnostic}。",
                 }
                 : evaluation;
         }
@@ -632,32 +646,62 @@ internal static partial class RuntimeOrderPreparationService
             return new(true, true, true, $"{orderLabel}已触发过评价，本次不重复调用。");
         }
 
-        var progressEvaluationValid = TryValidateYuyukoRetakePhase3ProgressEvaluation(
+        var targetValid = TryValidateYuyukoPhase3ServedExactTarget(
             request,
             runtimeOrder,
-            out var progressDiagnostic);
+            out var targetDiagnostic);
         if (!IsNightBusinessGenerationActive(sessionGeneration))
         {
             return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: false);
         }
 
-        if (!progressEvaluationValid)
+        if (!targetValid)
         {
             return new(
                 false,
                 false,
                 false,
-                "重修版幽幽子三阶段订单已送齐，但送达目标不精确或未确认当前 live 订单具备 _50/_70 原生进度回调，已暂停自动提交，避免错误消耗订单。"
-                + $"诊断：{progressDiagnostic}。请提供 aggregate-mod.log。");
+                "重修版幽幽子三阶段订单已送齐，但送达目标不精确，已暂停自动提交，避免错误消耗订单。"
+                + $"诊断：{targetDiagnostic}。请提供 aggregate-mod.log。");
         }
 
-        var evaluation = TryEvaluateRuntimeOrderIfReady(
-            runtimeOrder,
-            orderLabel,
-            allowControllerMissing,
-            sessionGeneration);
+        if (!TryResolveYuyukoRetakePhase3EvaluationRoute(
+                runtimeOrder,
+                out var evaluationRoute,
+                out var manualEvaluationCallback,
+                out var routeDiagnostic))
+        {
+            return new(
+                false,
+                false,
+                false,
+                "重修版幽幽子三阶段订单已送齐，但当前订单的原生评价入口无法严格确认，已暂停自动提交。"
+                + $"诊断：{routeDiagnostic}; {targetDiagnostic}。请提供 aggregate-mod.log。");
+        }
+
+        if (!IsNightBusinessGenerationActive(sessionGeneration))
+        {
+            return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: false);
+        }
+
+        var evaluation = evaluationRoute == YuyukoRetakePhase3EvaluationRoute.ManualBoss
+            ? TryInvokeRuntimeOrderEvaluationOnce(
+                runtimeOrder.Manager,
+                runtimeOrder.Controller,
+                "EvaulateManualOrder",
+                new object?[] { runtimeOrder.Controller, manualEvaluationCallback },
+                orderLabel,
+                sessionGeneration)
+            : TryEvaluateRuntimeOrderIfReady(
+                runtimeOrder,
+                orderLabel,
+                allowControllerMissing,
+                sessionGeneration);
         return evaluation.Ok && evaluation.Completed && !evaluation.Skipped
-            ? evaluation with { Message = $"已确认重修版幽幽子三阶段 _50/_70 进度回调并调用游戏评价流程完成{orderLabel}。{evaluation.Message}" }
+            ? evaluation with
+            {
+                Message = $"已按重修版幽幽子三阶段逐订单路由 {evaluationRoute} 调用唯一原生评价入口完成{orderLabel}。{evaluation.Message} 诊断：{routeDiagnostic}",
+            }
             : evaluation;
     }
 
@@ -700,31 +744,110 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
-    private static bool TryValidateYuyukoRetakePhase3ProgressEvaluation(
-        OrderPreparationRequest request,
+    private static bool TryResolveYuyukoRetakePhase3EvaluationRoute(
         RuntimeOrderMatch runtimeOrder,
+        out YuyukoRetakePhase3EvaluationRoute route,
+        out object? manualEvaluationCallback,
         out string diagnostic)
     {
+        route = default;
+        manualEvaluationCallback = null;
+        if (runtimeOrder.Controller == null || runtimeOrder.Order == null)
+        {
+            diagnostic = $"route=unresolved, order/controller missing; runtime={runtimeOrder.Diagnostic}";
+            return false;
+        }
+
+        if (!runtimeOrder.YuyukoManualBindingResolved)
+        {
+            diagnostic = $"route=unresolved, exact ManualOrderSet binding state was not read from the current capture generation; runtime={runtimeOrder.Diagnostic}";
+            return false;
+        }
+
+        var currentOrder = TryInvokeInstanceValue(runtimeOrder.Controller, "PeekOrders");
+        if (currentOrder == null
+            || CompareObjectIdentity(currentOrder, runtimeOrder.Order)
+                != RuntimeObjectIdentityComparison.Same)
+        {
+            diagnostic = $"route=unresolved, controller no longer owns the exact order at PeekOrders; current={SpecialBusinessDiagnostics.DescribeObject(currentOrder)}; matched={SpecialBusinessDiagnostics.DescribeObject(runtimeOrder.Order)}";
+            return false;
+        }
+
+        var resolution = RuntimeOrderTypeResolver.Resolve(runtimeOrder.Order);
+        if (!resolution.Resolved || resolution.ReadableOrder == null)
+        {
+            diagnostic = $"route=unresolved, concrete order type unavailable: {resolution.Reason}";
+            return false;
+        }
+
+        if (resolution.Kind != RuntimeOrderKind.Normal
+            && resolution.Kind != RuntimeOrderKind.Special)
+        {
+            diagnostic = $"route=unresolved, unsupported concrete order type {resolution.Kind}";
+            return false;
+        }
+
         var evaluationCallback = ReadControllerCallback(runtimeOrder.Controller, "OverrideEvaluationCallback");
         if (evaluationCallback == null)
         {
-            diagnostic = $"OverrideEvaluationCallback 为空；runtime={runtimeOrder.Diagnostic}; tracker={YuyukoChallengeEvaluationTracker.Status}";
+            diagnostic = $"route=unresolved, OverrideEvaluationCallback missing; runtime={runtimeOrder.Diagnostic}; tracker={YuyukoChallengeEvaluationTracker.Status}";
             return false;
         }
 
-        if (!TryValidateYuyukoPhase3ServedExactTarget(request, runtimeOrder, out var targetDiagnostic))
+        var hasBossProgress = YuyukoChallengeEvaluationTracker.TryFindYuyukoRetakePhase3BossProgressCallback(
+            evaluationCallback,
+            out var bossProgressDetail);
+        var hasGroupProgress = YuyukoChallengeEvaluationTracker.TryFindYuyukoRetakePhase3GroupProgressCallback(
+            evaluationCallback,
+            out var groupProgressDetail);
+        if (hasBossProgress == hasGroupProgress)
         {
-            diagnostic = $"{targetDiagnostic}; retakeCallback={YuyukoChallengeEvaluationTracker.DescribeCallback(evaluationCallback)}; tracker={YuyukoChallengeEvaluationTracker.Status}";
+            diagnostic = $"route=unresolved, controller progress callback is missing or ambiguous; boss={hasBossProgress} ({bossProgressDetail}); group={hasGroupProgress} ({groupProgressDetail}); runtime={runtimeOrder.Diagnostic}";
             return false;
         }
 
-        if (!YuyukoChallengeEvaluationTracker.TryFindYuyukoRetakePhase3ProgressCallback(evaluationCallback, out var retakeDetail))
+        if (runtimeOrder.YuyukoManualBindingCaptured)
         {
-            diagnostic = $"OverrideEvaluationCallback 未识别到重修版幽幽子三阶段 _50/_70 进度回调；retakeCallback={retakeDetail}; {targetDiagnostic}; tracker={YuyukoChallengeEvaluationTracker.Status}";
+            manualEvaluationCallback = runtimeOrder.ManualEvaluationCallback;
+            if (manualEvaluationCallback == null)
+            {
+                diagnostic = $"route=unresolved, captured manual binding has no callback; runtime={runtimeOrder.Diagnostic}";
+                return false;
+            }
+
+            if (!YuyukoChallengeEvaluationTracker.TryFindYuyukoRetakePhase3ManualProgressCallback(
+                    manualEvaluationCallback,
+                    out var manualProgressDetail))
+            {
+                diagnostic = $"route=unresolved, ManualOrderSet callback is not the exact b__77/b__78 retake callback; manual={manualProgressDetail}; boss={bossProgressDetail}; group={groupProgressDetail}; runtime={runtimeOrder.Diagnostic}";
+                return false;
+            }
+
+            if (!hasBossProgress || hasGroupProgress)
+            {
+                diagnostic = $"route=conflict, manual binding requires the exact boss _50 callback; manual={manualProgressDetail}; boss={bossProgressDetail}; group={groupProgressDetail}; runtime={runtimeOrder.Diagnostic}";
+                return false;
+            }
+
+            route = YuyukoRetakePhase3EvaluationRoute.ManualBoss;
+            diagnostic = $"route={route}, orderType={resolution.KindName}, manual={manualProgressDetail}, boss={bossProgressDetail}";
+            return true;
+        }
+
+        if (runtimeOrder.ManualEvaluationCallback != null)
+        {
+            diagnostic = $"route=conflict, binding is absent but a manual callback was propagated; callback={YuyukoChallengeEvaluationTracker.DescribeCallback(runtimeOrder.ManualEvaluationCallback)}; runtime={runtimeOrder.Diagnostic}";
             return false;
         }
 
-        diagnostic = $"retakeCallback={retakeDetail}; {targetDiagnostic}";
+        if (hasBossProgress || !hasGroupProgress)
+        {
+            diagnostic = $"route=unresolved, standard evaluation requires an exact resolved order + group _70 + no boss _50 + no manual binding; orderType={resolution.KindName}; boss={bossProgressDetail}; group={groupProgressDetail}; runtime={runtimeOrder.Diagnostic}";
+            return false;
+        }
+
+        route = YuyukoRetakePhase3EvaluationRoute.StandardGroup;
+        diagnostic = $"route={route}, orderType={resolution.KindName}, manualBinding=absent, group={groupProgressDetail}";
         return true;
     }
 
@@ -761,25 +884,6 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
-    private static bool TryValidateYuyukoRetakePhase3RefreshEvaluation(RuntimeOrderMatch runtimeOrder, out string diagnostic)
-    {
-        var evaluationCallback = ReadControllerCallback(runtimeOrder.Controller, "OverrideEvaluationCallback");
-        if (evaluationCallback == null)
-        {
-            diagnostic = $"OverrideEvaluationCallback 为空；runtime={runtimeOrder.Diagnostic}; tracker={YuyukoChallengeEvaluationTracker.Status}";
-            return false;
-        }
-
-        if (!YuyukoChallengeEvaluationTracker.TryFindYuyukoRetakePhase3ProgressCallback(evaluationCallback, out var retakeDetail))
-        {
-            diagnostic = $"OverrideEvaluationCallback 未识别到重修版幽幽子三阶段 _50/_70 进度回调；retakeCallback={retakeDetail}; tracker={YuyukoChallengeEvaluationTracker.Status}";
-            return false;
-        }
-
-        diagnostic = $"retakeCallback={retakeDetail}";
-        return true;
-    }
-
     private static bool TryValidateYuyukoPhase3NormalOrderTargetInvariant(
         OrderPreparationRequest request,
         RuntimeOrderMatch runtimeOrder,
@@ -799,18 +903,20 @@ internal static partial class RuntimeOrderPreparationService
             return (false, true, true, "not yuyuko phase3 boss request");
         }
 
-        if (runtimeOrder.Order == null)
+        var resolution = RuntimeOrderTypeResolver.Resolve(runtimeOrder.Order);
+        if (!resolution.Resolved || resolution.ReadableOrder == null)
         {
-            return (false, true, true, "runtime order unavailable");
+            return (true, false, false, $"runtime order type unavailable: {resolution.Reason}");
         }
 
-        if (IsSpecialOrder(runtimeOrder.Order))
+        if (resolution.Kind == RuntimeOrderKind.Special)
         {
             return (false, true, true, "special order target uses tag evaluation");
         }
 
-        var servedFood = ReadOrderServedFood(runtimeOrder.Order);
-        var servedBeverage = ReadOrderServedBeverage(runtimeOrder.Order);
+        var readableOrder = resolution.ReadableOrder;
+        var servedFood = ReadOrderServedFood(readableOrder);
+        var servedBeverage = ReadOrderServedBeverage(readableOrder);
         var servedFoodId = servedFood == null ? -1 : ReadSellableId(servedFood);
         var servedBeverageId = servedBeverage == null ? -1 : ReadSellableId(servedBeverage);
         var foodMatched = request.MatchFoodId >= 0
@@ -835,10 +941,18 @@ internal static partial class RuntimeOrderPreparationService
         RuntimeOrderMatch runtimeOrder,
         out string diagnostic)
     {
-        var order = runtimeOrder.Order;
-        var servedFood = order == null ? null : ReadOrderServedFood(order);
-        var servedBeverage = order == null ? null : ReadOrderServedBeverage(order);
-        if (order == null || servedFood == null || servedBeverage == null)
+        var resolution = RuntimeOrderTypeResolver.Resolve(runtimeOrder.Order);
+        if (!resolution.Resolved || resolution.ReadableOrder == null)
+        {
+            diagnostic = $"served target order type unavailable: {resolution.Reason}";
+            return false;
+        }
+
+        var orderKind = resolution.Kind;
+        var readableOrder = resolution.ReadableOrder;
+        var servedFood = ReadOrderServedFood(readableOrder);
+        var servedBeverage = ReadOrderServedBeverage(readableOrder);
+        if (servedFood == null || servedBeverage == null)
         {
             diagnostic = $"served target missing; food={SpecialBusinessDiagnostics.DescribeObject(servedFood)}; beverage={SpecialBusinessDiagnostics.DescribeObject(servedBeverage)}";
             return false;
@@ -850,9 +964,9 @@ internal static partial class RuntimeOrderPreparationService
         var beverageMatched = request.BeverageId >= 0 && servedBeverageId == request.BeverageId;
         var retakeContractMatched = true;
         var retakeContractDiagnostic = "not required";
-        if (ResolveYuyukoPhase3EvaluationMode(request) == YuyukoPhase3EvaluationMode.RetakeNative)
+        if (ResolveYuyukoPhase3EvaluationContract(request) == YuyukoPhase3EvaluationContract.Retake)
         {
-            retakeContractMatched = IsSpecialOrder(order)
+            retakeContractMatched = orderKind == RuntimeOrderKind.Special
                 ? TryValidateYuyukoRetakeSpecialOrderServedContract(
                     request,
                     servedFood,
@@ -874,7 +988,7 @@ internal static partial class RuntimeOrderPreparationService
             + $"served={servedFoodId}/{servedBeverageId}; "
             + $"foodMatched={foodMatched}; "
             + $"beverageMatched={beverageMatched}; "
-            + $"retakeOrderType={(IsSpecialOrder(order) ? "SpecialOrder" : "NormalOrder")}; "
+            + $"retakeOrderType={(orderKind == RuntimeOrderKind.Special ? "SpecialOrder" : "NormalOrder")}; "
             + $"retakeContractMatched={retakeContractMatched}; "
             + $"retakeContract={retakeContractDiagnostic}; "
             + $"levelSum={levelSum}; "
@@ -1198,9 +1312,34 @@ internal static partial class RuntimeOrderPreparationService
         string decision,
         string detail = "")
     {
+        if (!AggregateModLogService.Enabled) return;
+
+        try
+        {
+            AppendYuyukoRuntimeDiagnosticCore(eventName, request, runtimeOrder, decision, detail);
+        }
+        catch
+        {
+            // Diagnostics must never interrupt native order evaluation.
+        }
+    }
+
+    private static void AppendYuyukoRuntimeDiagnosticCore(
+        string eventName,
+        OrderPreparationRequest request,
+        RuntimeOrderMatch runtimeOrder,
+        string decision,
+        string detail)
+    {
         if (!IsYuyukoRequestContext(request)) return;
         if (ShouldSkipRoutineYuyukoRuntimeDiagnostic(eventName, runtimeOrder, decision)) return;
-        if (ShouldThrottleYuyukoRuntimeDiagnostic(eventName, request, decision, detail)) return;
+        if (ShouldThrottleYuyukoRuntimeDiagnostic(eventName, request, runtimeOrder, decision, detail)) return;
+        var onceKey = BuildYuyukoRuntimeDiagnosticOnceKey(
+            eventName,
+            request,
+            runtimeOrder,
+            decision,
+            detail);
         if (!ShouldWriteFullYuyukoRuntimeDiagnostic(eventName, decision))
         {
             AppendYuyukoRuntimeSummaryDiagnostic(eventName, request, runtimeOrder, decision, detail);
@@ -1222,10 +1361,12 @@ internal static partial class RuntimeOrderPreparationService
         var onFinishEatingCallbackWithParam = ReadControllerCallback(runtimeOrder.Controller, "OnFinishEatingCallbackWithParam");
         var onFinishOrderCallback = ReadControllerCallback(runtimeOrder.Controller, "OnFinishOrderCallback");
         var manualEvaluationCallback = runtimeOrder.ManualEvaluationCallback;
-        var evaluationMode = ResolveYuyukoPhase3EvaluationMode(request);
+        var evaluationContract = ResolveYuyukoPhase3EvaluationContract(request);
         var hasYuyukoScoreCallback = YuyukoChallengeEvaluationTracker.TryFindYuyukoStoryPhase3ScoreCallback(evaluationCallback, out var yuyukoScoreCallbackDetail);
-        var hasYuyukoRetakeProgressCallback = YuyukoChallengeEvaluationTracker.TryFindYuyukoRetakePhase3ProgressCallback(evaluationCallback, out var yuyukoRetakeProgressCallbackDetail);
-        var hasYuyukoManualProgressCallback = YuyukoChallengeEvaluationTracker.TryFindYuyukoPhase3ManualProgressCallback(manualEvaluationCallback, out var yuyukoManualProgressCallbackDetail);
+        var hasYuyukoRetakeBossProgressCallback = YuyukoChallengeEvaluationTracker.TryFindYuyukoRetakePhase3BossProgressCallback(evaluationCallback, out var yuyukoRetakeBossProgressCallbackDetail);
+        var hasYuyukoRetakeGroupProgressCallback = YuyukoChallengeEvaluationTracker.TryFindYuyukoRetakePhase3GroupProgressCallback(evaluationCallback, out var yuyukoRetakeGroupProgressCallbackDetail);
+        var hasYuyukoStoryManualProgressCallback = YuyukoChallengeEvaluationTracker.TryFindYuyukoPhase3ManualProgressCallback(manualEvaluationCallback, out var yuyukoStoryManualProgressCallbackDetail);
+        var hasYuyukoRetakeManualProgressCallback = YuyukoChallengeEvaluationTracker.TryFindYuyukoRetakePhase3ManualProgressCallback(manualEvaluationCallback, out var yuyukoRetakeManualProgressCallbackDetail);
 
         SpecialBusinessDiagnostics.AppendYuyukoSnapshot(
             "Yuyuko Challenge Runtime Diagnostic",
@@ -1236,7 +1377,7 @@ internal static partial class RuntimeOrderPreparationService
                 $"detail: {detail}",
                 $"challengeType: {RuntimeSpecialBusinessContextService.CurrentChallengeType}",
                 $"rawChallengeType: {RuntimeSpecialBusinessContextService.CurrentRawChallengeType}",
-                $"phase3EvaluationMode: {evaluationMode}",
+                $"phase3EvaluationContract: {evaluationContract}",
                 $"phase3Active: {RuntimeSpecialBusinessContextService.IsActiveYuyukoPhase("Phase3")}",
                 $"desk: {(request.DeskCode >= 0 ? request.DeskCode + 1 : -1)}",
                 $"orderKey: {request.OrderKey}",
@@ -1262,18 +1403,24 @@ internal static partial class RuntimeOrderPreparationService
                 $"controller: {SpecialBusinessDiagnostics.DescribeObject(runtimeOrder.Controller)}",
                 $"order: {SpecialBusinessDiagnostics.DescribeObject(runtimeOrder.Order)}",
                 $"runtimeDiagnostic: {runtimeOrder.Diagnostic}",
+                $"yuyukoManualBindingResolved: {runtimeOrder.YuyukoManualBindingResolved}",
+                $"yuyukoManualBindingCaptured: {runtimeOrder.YuyukoManualBindingCaptured}",
                 $"manualEvaluationCallback: {SpecialBusinessDiagnostics.DescribeObject(manualEvaluationCallback)}",
                 $"manualEvaluationCallbackDetail: {DescribeCallbackForYuyukoDiagnostics(manualEvaluationCallback)}",
-                $"hasYuyukoManualProgressCallback: {hasYuyukoManualProgressCallback}",
-                $"yuyukoManualProgressCallbackDetail: {yuyukoManualProgressCallbackDetail}",
+                $"hasYuyukoStoryManualProgressCallback: {hasYuyukoStoryManualProgressCallback}",
+                $"yuyukoStoryManualProgressCallbackDetail: {yuyukoStoryManualProgressCallbackDetail}",
+                $"hasYuyukoRetakeManualProgressCallback: {hasYuyukoRetakeManualProgressCallback}",
+                $"yuyukoRetakeManualProgressCallbackDetail: {yuyukoRetakeManualProgressCallbackDetail}",
                 $"orderGenerationCallback: {SpecialBusinessDiagnostics.DescribeObject(orderGenerationCallback)}",
                 $"orderGenerationCallbackDetail: {DescribeCallbackForYuyukoDiagnostics(orderGenerationCallback)}",
                 $"evaluationCallback: {SpecialBusinessDiagnostics.DescribeObject(evaluationCallback)}",
                 $"evaluationCallbackDetail: {DescribeCallbackForYuyukoDiagnostics(evaluationCallback)}",
                 $"hasYuyukoScoreCallback: {hasYuyukoScoreCallback}",
                 $"yuyukoScoreCallbackDetail: {yuyukoScoreCallbackDetail}",
-                $"hasYuyukoRetakeProgressCallback: {hasYuyukoRetakeProgressCallback}",
-                $"yuyukoRetakeProgressCallbackDetail: {yuyukoRetakeProgressCallbackDetail}",
+                $"hasYuyukoRetakeBossProgressCallback: {hasYuyukoRetakeBossProgressCallback}",
+                $"yuyukoRetakeBossProgressCallbackDetail: {yuyukoRetakeBossProgressCallbackDetail}",
+                $"hasYuyukoRetakeGroupProgressCallback: {hasYuyukoRetakeGroupProgressCallback}",
+                $"yuyukoRetakeGroupProgressCallbackDetail: {yuyukoRetakeGroupProgressCallbackDetail}",
                 $"onEvalFinishCallback: {SpecialBusinessDiagnostics.DescribeObject(onEvalFinishCallback)}",
                 $"onEvalFinishCallbackDetail: {DescribeCallbackForYuyukoDiagnostics(onEvalFinishCallback)}",
                 $"onExtraFinishEvaluationCallback: {SpecialBusinessDiagnostics.DescribeObject(onExtraFinishEvaluationCallback)}",
@@ -1301,7 +1448,8 @@ internal static partial class RuntimeOrderPreparationService
                 $"yuyukoProgress: {RuntimeSpecialBusinessContextService.DescribeYuyukoProgressForDiagnostics()}",
                 $"specialBusinessStatus: {RuntimeSpecialBusinessContextService.Status}",
                 $"nativeEvaluationTracker: {YuyukoChallengeEvaluationTracker.Status}",
-            });
+            },
+            onceKey);
     }
 
     private static bool ShouldSkipRoutineYuyukoRuntimeDiagnostic(
@@ -1370,7 +1518,7 @@ internal static partial class RuntimeOrderPreparationService
                 $"detail: {RuntimeReflectionUtility.Trim(detail, 240)}",
                 $"challengeType: {RuntimeSpecialBusinessContextService.CurrentChallengeType}",
                 $"rawChallengeType: {RuntimeSpecialBusinessContextService.CurrentRawChallengeType}",
-                $"phase3EvaluationMode: {ResolveYuyukoPhase3EvaluationMode(request)}",
+                $"phase3EvaluationContract: {ResolveYuyukoPhase3EvaluationContract(request)}",
                 $"phase3Active: {RuntimeSpecialBusinessContextService.IsActiveYuyukoPhase("Phase3")}",
                 $"desk: {(request.DeskCode >= 0 ? request.DeskCode + 1 : -1)}",
                 $"traceId: {request.TraceId}",
@@ -1381,6 +1529,8 @@ internal static partial class RuntimeOrderPreparationService
                 $"targetFood: {SpecialBusinessDiagnostics.FormatIdName(request.FoodId, request.RecipeName)}",
                 $"targetBeverage: {SpecialBusinessDiagnostics.FormatIdName(request.BeverageId, request.BeverageName)}",
                 $"runtimeDiagnostic: {RuntimeReflectionUtility.Trim(runtimeOrder.Diagnostic, 240)}",
+                $"yuyukoManualBindingResolved: {runtimeOrder.YuyukoManualBindingResolved}",
+                $"yuyukoManualBindingCaptured: {runtimeOrder.YuyukoManualBindingCaptured}",
                 $"manualEvaluationCallback: {SpecialBusinessDiagnostics.DescribeObject(runtimeOrder.ManualEvaluationCallback)}",
                 $"controller: {SpecialBusinessDiagnostics.DescribeObject(runtimeOrder.Controller)}",
                 $"order: {SpecialBusinessDiagnostics.DescribeObject(runtimeOrder.Order)}",
@@ -1392,10 +1542,21 @@ internal static partial class RuntimeOrderPreparationService
     private static bool ShouldThrottleYuyukoRuntimeDiagnostic(
         string eventName,
         OrderPreparationRequest request,
+        RuntimeOrderMatch runtimeOrder,
         string decision,
         string detail)
     {
         var now = DateTime.UtcNow;
+        var isNativeEvaluationAttempt = string.Equals(
+            eventName,
+            "yuyuko-native-evaluate-before",
+            StringComparison.Ordinal);
+        var throttle = isNativeEvaluationAttempt
+            ? YuyukoNativeEvaluationAttemptDiagnosticThrottle
+            : YuyukoRuntimeDiagnosticThrottle;
+        var nativeEvaluationEvidence = isNativeEvaluationAttempt
+            ? BuildYuyukoNativeEvaluationDiagnosticEvidence(runtimeOrder)
+            : "";
         var key = string.Join(
             "|",
             eventName,
@@ -1406,12 +1567,13 @@ internal static partial class RuntimeOrderPreparationService
             request.GuestId?.ToString() ?? "",
             NormalizeYuyukoNormalExecutionMode(request.ExecutionMode),
             detail,
-            RuntimeSpecialBusinessContextService.DescribeYuyukoProgressForDiagnostics());
+            RuntimeNightBusinessLifecycle.Generation,
+            nativeEvaluationEvidence);
 
         lock (AutomationCookingJobLock)
         {
             if (RecentYuyukoRuntimeDiagnostics.TryGetValue(key, out var last)
-                && now - last < YuyukoRuntimeDiagnosticThrottle)
+                && now - last < throttle)
             {
                 return true;
             }
@@ -1430,6 +1592,57 @@ internal static partial class RuntimeOrderPreparationService
         }
 
         return false;
+    }
+
+    private static string BuildYuyukoNativeEvaluationDiagnosticEvidence(RuntimeOrderMatch runtimeOrder)
+    {
+        try
+        {
+            return string.Join(
+                "|",
+                SpecialBusinessDiagnostics.DescribeObject(runtimeOrder.Order),
+                SpecialBusinessDiagnostics.DescribeObject(runtimeOrder.Controller),
+                runtimeOrder.YuyukoManualBindingResolved,
+                runtimeOrder.YuyukoManualBindingCaptured,
+                SpecialBusinessDiagnostics.DescribeObject(runtimeOrder.ManualEvaluationCallback),
+                SpecialBusinessDiagnostics.DescribeObject(
+                    ReadControllerCallback(runtimeOrder.Controller, "OverrideEvaluationCallback")),
+                IsRuntimeOrderFulfilledForYuyukoDiagnostic(runtimeOrder),
+                ReadRuntimeText(runtimeOrder.Controller, "HasEvaluated"));
+        }
+        catch (Exception ex)
+        {
+            return $"evidence-unreadable:{ex.GetType().FullName ?? ex.GetType().Name}";
+        }
+    }
+
+    private static string? BuildYuyukoRuntimeDiagnosticOnceKey(
+        string eventName,
+        OrderPreparationRequest request,
+        RuntimeOrderMatch runtimeOrder,
+        string decision,
+        string detail)
+    {
+        var isBlockedNativeEvaluation = string.Equals(
+            decision,
+            "native-evaluate-entry-blocked",
+            StringComparison.Ordinal);
+        if (!isBlockedNativeEvaluation) return null;
+
+        return string.Join(
+            "|",
+            "runtime-evaluation",
+            RuntimeNightBusinessLifecycle.Generation,
+            eventName,
+            decision,
+            request.TraceId,
+            request.OrderKey,
+            request.DeskCode,
+            request.GuestId?.ToString() ?? "",
+            NormalizeYuyukoNormalExecutionMode(request.ExecutionMode),
+            SpecialBusinessDiagnostics.DescribeObject(runtimeOrder.Order),
+            SpecialBusinessDiagnostics.DescribeObject(runtimeOrder.Controller),
+            LocalApiSnapshotSignature.Compute(detail));
     }
 
     private static object? ReadControllerCallback(object? controller, string name)

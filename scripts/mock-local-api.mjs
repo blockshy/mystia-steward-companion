@@ -1027,6 +1027,8 @@ function buildMockAutomationCookingJob(response, path, params) {
     outcome: 'progressed',
     reasonCode: 'cooking-started',
     specialTargetRevision: 0,
+    allowYuumaControlledProgression:
+      params.get('allowYuumaControlledProgression') === 'true',
     autoDeliverFood: params.get('autoCollectCooking') === 'true' || params.get('autoDeliverFood') === 'true',
     controllerId: 'mock-cooker-1',
     resultId: 'mock-result-1',

@@ -206,6 +206,7 @@ function buildResultSignature(result: OrderRecommendationResult): string {
       item.target?.foodId ?? '',
       item.target?.recipeId ?? '',
       item.target?.executionMode ?? '',
+      item.target?.allowYuumaControlledProgression ? 1 : 0,
       item.target?.recipeName ?? '',
       item.target?.extraIngredientIds.join(',') ?? '',
       item.target?.beverageId ?? '',

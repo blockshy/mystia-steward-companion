@@ -369,6 +369,7 @@ internal static partial class RuntimeOrderPreparationService
                 $"target: {SpecialBusinessDiagnostics.FormatOrderContext(context)}",
                 $"cookingJobRecipeName: {job.RecipeName}",
                 $"specialBusinessRole: {job.Target.SpecialBusinessRole}",
+                $"allowYuumaControlledProgression: {job.AllowYuumaControlledProgression}",
                 $"matchFood: {SpecialBusinessDiagnostics.FormatIdName(job.Target.MatchFoodId, "")}",
                 $"matchBeverage: {SpecialBusinessDiagnostics.FormatIdName(job.Target.MatchBeverageId, "")}",
                 $"targetFood: {SpecialBusinessDiagnostics.FormatIdName(job.Target.FoodId, job.Target.FoodName)}",

@@ -59,62 +59,17 @@ internal sealed record YuumaChallengeOrderIdentity(
     int? ControllerGuestId,
     string Reason)
 {
-    private const string OrderBaseTypeName = "NightScene.GuestManagementUtility.GuestsManager+OrderBase";
-    private const string NormalOrderTypeName = "NightScene.GuestManagementUtility.GuestsManager+NormalOrder";
-    private const string SpecialOrderTypeName = "NightScene.GuestManagementUtility.GuestsManager+SpecialOrder";
-
     public static YuumaChallengeOrderIdentity Read(object? order, object? controller)
     {
-        if (order == null)
+        var resolution = RuntimeOrderTypeResolver.Resolve(order);
+        if (!resolution.Resolved || resolution.ReadableOrder == null)
         {
-            return new YuumaChallengeOrderIdentity(false, "", null, null, "order is null");
+            return new YuumaChallengeOrderIdentity(false, "", null, null, resolution.Reason);
         }
 
-        var orderTypeName = order.GetType().FullName ?? "";
-        object readableOrder;
-        string orderKind;
-        switch (orderTypeName)
-        {
-            case NormalOrderTypeName:
-                readableOrder = order;
-                orderKind = "NormalOrder";
-                break;
-            case SpecialOrderTypeName:
-                readableOrder = order;
-                orderKind = "SpecialOrder";
-                break;
-            case OrderBaseTypeName:
-                var normalOrder = RuntimeReflectionUtility.TryCastRuntimeObject(order, NormalOrderTypeName);
-                var specialOrder = RuntimeReflectionUtility.TryCastRuntimeObject(order, SpecialOrderTypeName);
-                var hasNormalOrder = HasExactType(normalOrder, NormalOrderTypeName);
-                var hasSpecialOrder = HasExactType(specialOrder, SpecialOrderTypeName);
-                if (hasNormalOrder == hasSpecialOrder)
-                {
-                    var castStatus = hasNormalOrder
-                        ? "both NormalOrder and SpecialOrder conversions succeeded"
-                        : "neither NormalOrder nor SpecialOrder conversion succeeded";
-                    return new YuumaChallengeOrderIdentity(
-                        false,
-                        "",
-                        null,
-                        null,
-                        $"OrderBase runtime type is unresolved: {castStatus}");
-                }
-
-                readableOrder = hasNormalOrder ? normalOrder! : specialOrder!;
-                orderKind = hasNormalOrder ? "NormalOrder" : "SpecialOrder";
-                break;
-            default:
-                return new YuumaChallengeOrderIdentity(
-                    false,
-                    "",
-                    null,
-                    null,
-                    $"unsupported order type {orderTypeName}");
-        }
-
-        var guestProperty = orderKind == "NormalOrder" ? "Guest" : "SpecialGuests";
-        if (!TryReadDeclaredGuestId(readableOrder, guestProperty, out var orderGuestId, out var orderError))
+        var orderKind = resolution.KindName;
+        var guestProperty = resolution.Kind == RuntimeOrderKind.Normal ? "Guest" : "SpecialGuests";
+        if (!TryReadDeclaredGuestId(resolution.ReadableOrder, guestProperty, out var orderGuestId, out var orderError))
         {
             return new YuumaChallengeOrderIdentity(false, orderKind, null, null, orderError);
         }
@@ -159,12 +114,6 @@ internal sealed record YuumaChallengeOrderIdentity(
             orderGuestId,
             controllerGuestId,
             "order and controller identities match");
-    }
-
-    private static bool HasExactType(object? value, string expectedTypeName)
-    {
-        return value != null
-            && string.Equals(value.GetType().FullName, expectedTypeName, StringComparison.Ordinal);
     }
 
     private static bool TryReadDeclaredGuestId(
