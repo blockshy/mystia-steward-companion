@@ -80,6 +80,7 @@ internal sealed class AutomationCookingJobSnapshot
     public string State { get; init; } = "";
     public string Outcome { get; init; } = "";
     public string ReasonCode { get; init; } = "";
+    public long SpecialTargetRevision { get; init; }
     public bool AutoDeliverFood { get; init; }
     public string ControllerId { get; init; } = "";
     public string ResultId { get; init; } = "";
@@ -129,6 +130,11 @@ internal sealed class RecommendationStateSnapshot
     public Dictionary<int, int> OwnedBeverageQty { get; init; } = new();
     public List<int> PlacedCookerTypeIds { get; init; } = new();
     public List<PlacedCookerInfo> PlacedCookers { get; init; } = new();
+    public bool PlacedCookerSnapshotComplete { get; init; }
+    public int PlacedCookerControllerCount { get; init; }
+    public int PlacedCookerEmptyControllerCount { get; init; }
+    public int PlacedCookerLockedControllerCount { get; init; }
+    public int PlacedCookerReadFailureCount { get; init; }
     public string PlacedCookerStatus { get; init; } = "";
     public string? PopularFoodTag { get; init; }
     public string? PopularHateFoodTag { get; init; }
@@ -150,7 +156,32 @@ internal sealed class RecommendationStateSnapshot
             PlacedCookerTypeIds = state.PlacedCookerTypeIds.OrderBy(id => id).ToList(),
             PlacedCookers = state.PlacedCookers
                 .OrderBy(cooker => cooker.ControllerIndex)
+                .Select(cooker => new PlacedCookerInfo
+                {
+                    ControllerIndex = cooker.ControllerIndex,
+                    GridPosition = new CookerGridPosition
+                    {
+                        X = cooker.GridPosition.X,
+                        Y = cooker.GridPosition.Y,
+                        Z = cooker.GridPosition.Z,
+                    },
+                    ControllerIdentity = cooker.ControllerIdentity,
+                    TypeIds = cooker.TypeIds.ToList(),
+                    TypeNames = cooker.TypeNames.ToList(),
+                    Name = cooker.Name,
+                    ChallengeLocked = cooker.ChallengeLocked,
+                    CouldOpen = cooker.CouldOpen,
+                    AutomationAvailable = cooker.AutomationAvailable,
+                    AutomationAvailability = cooker.AutomationAvailability,
+                    AutomationAvailabilityDiagnostic = cooker.AutomationAvailabilityDiagnostic,
+                    Source = cooker.Source,
+                })
                 .ToList(),
+            PlacedCookerSnapshotComplete = state.PlacedCookerSnapshotComplete,
+            PlacedCookerControllerCount = state.PlacedCookerControllerCount,
+            PlacedCookerEmptyControllerCount = state.PlacedCookerEmptyControllerCount,
+            PlacedCookerLockedControllerCount = state.PlacedCookerLockedControllerCount,
+            PlacedCookerReadFailureCount = state.PlacedCookerReadFailureCount,
             PlacedCookerStatus = state.PlacedCookerStatus,
             PopularFoodTag = state.PopularFoodTag,
             PopularHateFoodTag = state.PopularHateFoodTag,

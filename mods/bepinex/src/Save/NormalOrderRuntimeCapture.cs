@@ -17,6 +17,10 @@ public static class NormalOrderRuntimeCapture
 {
     private const string GuestGroupControllerTypeName = "NightScene.GuestManagementUtility.GuestGroupController";
     private const string GuestsManagerTypeName = "NightScene.GuestManagementUtility.GuestsManager";
+    private const string OrderBaseTypeName = "NightScene.GuestManagementUtility.GuestsManager+OrderBase";
+    private const string EvaluationResultTypeName =
+        "NightScene.GuestManagementUtility.GuestGroupController+EvaluationResult";
+    private const string Il2CppActionGenericTypeName = "Il2CppSystem.Action`1";
     private const int MaxOrders = 64;
 
     private static readonly object SyncRoot = new();
@@ -180,7 +184,17 @@ public static class NormalOrderRuntimeCapture
             _harmony ??= new Harmony("com.tyukki.mystia-steward-companion.normal-order-runtime-capture");
 
             PatchMethod(_harmony, GuestGroupControllerTypeName, "PushToOrder", 1, false, nameof(OnControllerOrderAdded), null, patchedNow, missing);
-            PatchMethod(_harmony, GuestsManagerTypeName, "SetManualControllerOrderInternal", 3, false, null, nameof(OnManualControllerOrderSet), patchedNow, missing);
+            PatchMethod(
+                _harmony,
+                GuestsManagerTypeName,
+                "SetManualControllerOrderInternal",
+                3,
+                false,
+                null,
+                nameof(OnManualControllerOrderSet),
+                patchedNow,
+                missing,
+                requireExactManualOrderSetter: true);
             PatchMethod(_harmony, GuestsManagerTypeName, "RemoveFromOrder", 1, false, nameof(OnOrderRemoved), null, patchedNow, missing);
             PatchMethod(_harmony, GuestsManagerTypeName, "EvaluateOrder", 3, false, nameof(OnOrderEvaluating), null, patchedNow, missing);
             PatchMethod(_harmony, GuestsManagerTypeName, "EvaulateManualOrder", 2, false, nameof(OnManualOrderEvaluating), null, patchedNow, missing);
@@ -221,7 +235,8 @@ public static class NormalOrderRuntimeCapture
         string? prefixName,
         string? postfixName,
         ICollection<string> patchedNow,
-        ICollection<string> missing)
+        ICollection<string> missing,
+        bool requireExactManualOrderSetter = false)
     {
         var key = $"{typeName}.{methodName}/{parameterCount}/{(isStatic ? "static" : "instance")}";
         lock (SyncRoot)
@@ -237,9 +252,14 @@ public static class NormalOrderRuntimeCapture
         }
 
         var flags = BindingFlags.Public | BindingFlags.NonPublic | (isStatic ? BindingFlags.Static : BindingFlags.Instance);
-        var target = type
+        var candidates = type
             .GetMethods(flags)
-            .FirstOrDefault(method => method.Name == methodName && method.GetParameters().Length == parameterCount);
+            .Where(method => method.Name == methodName && method.GetParameters().Length == parameterCount)
+            .Where(method => !requireExactManualOrderSetter || IsExactManualOrderSetter(method))
+            .ToArray();
+        var target = requireExactManualOrderSetter
+            ? candidates.Length == 1 ? candidates[0] : null
+            : candidates.FirstOrDefault();
         var prefix = prefixName == null ? null : typeof(NormalOrderRuntimeCapture).GetMethod(prefixName, BindingFlags.NonPublic | BindingFlags.Static);
         var postfix = postfixName == null ? null : typeof(NormalOrderRuntimeCapture).GetMethod(postfixName, BindingFlags.NonPublic | BindingFlags.Static);
         if (target == null || (prefixName != null && prefix == null) || (postfixName != null && postfix == null))
@@ -260,6 +280,42 @@ public static class NormalOrderRuntimeCapture
         patchedNow.Add(key);
     }
 
+    private static bool IsExactManualOrderSetter(MethodInfo method)
+    {
+        if (method.ReturnType != typeof(void)) return false;
+
+        var parameters = method.GetParameters();
+        if (parameters.Length != 3
+            || !string.Equals(
+                parameters[0].ParameterType.FullName,
+                GuestGroupControllerTypeName,
+                StringComparison.Ordinal)
+            || !string.Equals(
+                parameters[2].ParameterType.FullName,
+                OrderBaseTypeName,
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var callbackType = parameters[1].ParameterType;
+        if (!callbackType.IsGenericType
+            || !string.Equals(
+                callbackType.GetGenericTypeDefinition().FullName,
+                Il2CppActionGenericTypeName,
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var callbackArguments = callbackType.GetGenericArguments();
+        return callbackArguments.Length == 1
+            && string.Equals(
+                callbackArguments[0].FullName,
+                EvaluationResultTypeName,
+                StringComparison.Ordinal);
+    }
+
     private static void OnControllerOrderAdded(object __instance, object __0)
     {
         RunCaptureCallback("ControllerOrderAdd", () =>
@@ -269,12 +325,30 @@ public static class NormalOrderRuntimeCapture
         });
     }
 
-    private static void OnManualControllerOrderSet(object __0, object __2)
+    private static void OnManualControllerOrderSet(
+        object __0,
+        object? __1,
+        object __2,
+        bool __runOriginal)
     {
+        if (!__runOriginal) return;
+
         RunCaptureCallback("ManualOrderSet", () =>
         {
             lock (SyncRoot) _addCallbacks++;
-            AddOrder(ParseOrder(__2, "ManualOrderSet", __0));
+            var order = ParseOrder(__2, "ManualOrderSet", __0);
+            if (order is not { ManualOrder: true })
+            {
+                NoteParseFailure("ManualOrderSet", "OrderBase.ManualOrder was not true after the native setter");
+                return;
+            }
+
+            if (__1 == null)
+            {
+                NoteParseFailure("ManualOrderSet", "manual evaluation callback is null");
+            }
+
+            AddOrder(order with { ManualEvaluationCallback = __1 });
         });
     }
 
@@ -346,6 +420,12 @@ public static class NormalOrderRuntimeCapture
             return null;
         }
 
+        if (!TryReadExactManualOrder(order, out var manualOrder))
+        {
+            NoteParseFailure(source, "exact OrderBase.ManualOrder bool property is unavailable");
+            return null;
+        }
+
         var requestFood = RuntimeReflectionUtility.GetMemberValue(order, "RequestFood")
             ?? RuntimeReflectionUtility.InvokeMethod(order, "get_RequestFood");
         var requestBeverage = RuntimeReflectionUtility.GetMemberValue(order, "RequestBeverage")
@@ -379,6 +459,7 @@ public static class NormalOrderRuntimeCapture
         {
             OrderObject = order,
             ControllerObject = controller,
+            ManualOrder = manualOrder,
         };
     }
 
@@ -393,7 +474,7 @@ public static class NormalOrderRuntimeCapture
             var next = existing.Aggregate(order, MergeCapturedOrder);
             Orders.Add(next);
             _capturedOrders++;
-            _lastCapture = $"{next.CaptureSource}: desk={next.DeskCode + 1}, food={next.FoodId}, beverage={next.BeverageId}, obj={(next.OrderObject == null ? "no" : "yes")}/{(next.ControllerObject == null ? "no" : "yes")}";
+            _lastCapture = $"{next.CaptureSource}: desk={next.DeskCode + 1}, food={next.FoodId}, beverage={next.BeverageId}, manual={next.ManualOrder}, manualCallback={(next.ManualEvaluationCallback == null ? "no" : "yes")}, obj={(next.OrderObject == null ? "no" : "yes")}/{(next.ControllerObject == null ? "no" : "yes")}";
             _changeVersion++;
             if (Orders.Count > MaxOrders)
             {
@@ -431,7 +512,41 @@ public static class NormalOrderRuntimeCapture
             CaptureSource = MergeCaptureSource(existing.CaptureSource, incoming.CaptureSource),
             OrderObject = incoming.OrderObject ?? existing.OrderObject,
             ControllerObject = incoming.ControllerObject ?? existing.ControllerObject,
+            ManualOrder = incoming.ManualOrder,
+            ManualEvaluationCallback = incoming.ManualOrder
+                ? incoming.ManualEvaluationCallback
+                    ?? (existing.ManualOrder ? existing.ManualEvaluationCallback : null)
+                : null,
         };
+    }
+
+    private static bool TryReadExactManualOrder(object order, out bool manualOrder)
+    {
+        manualOrder = false;
+        const BindingFlags flags = BindingFlags.Public
+            | BindingFlags.NonPublic
+            | BindingFlags.Instance
+            | BindingFlags.DeclaredOnly;
+
+        for (var type = order.GetType(); type != null; type = type.BaseType)
+        {
+            var property = type.GetProperty("ManualOrder", flags);
+            if (property == null) continue;
+            if (property.PropertyType != typeof(bool)) return false;
+
+            try
+            {
+                if (property.GetValue(order) is not bool value) return false;
+                manualOrder = value;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        return false;
     }
 
     private static bool IsSameOrderSlot(CapturedRuntimeNormalOrder left, CapturedRuntimeNormalOrder right)
@@ -580,4 +695,6 @@ public sealed record CapturedRuntimeNormalOrder(
 {
     internal object? OrderObject { get; init; }
     internal object? ControllerObject { get; init; }
+    public bool ManualOrder { get; init; }
+    internal object? ManualEvaluationCallback { get; init; }
 }

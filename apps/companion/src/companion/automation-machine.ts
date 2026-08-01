@@ -7,6 +7,42 @@ export type AutomationRequestStage =
   | 'deliver-food'
   | 'complete-order';
 
+export interface AutomationCookingJobStagePreferences {
+  autoPrepCollectCooking: boolean;
+  autoPrepCompleteOrder: boolean;
+  autoNormalDeliverFood: boolean;
+  autoNormalCompleteOrder: boolean;
+}
+
+export interface NormalOrderCompletionRequestInput {
+  completionEnabled: boolean;
+  completionReady: boolean;
+  foodDeliveryEnabled: boolean;
+  forceKoishiFullFeedAutomation: boolean;
+  startsCooking: boolean;
+  yuumaBossSettlement: boolean;
+}
+
+export function shouldRequestNormalOrderCompletion(
+  input: NormalOrderCompletionRequestInput,
+): boolean {
+  if (input.forceKoishiFullFeedAutomation || !input.completionEnabled) return false;
+  if (input.completionReady) return true;
+  return input.yuumaBossSettlement
+    && input.foodDeliveryEnabled
+    && input.startsCooking;
+}
+
+export function hasAutomationCookingJobStageBeenDisabled(
+  previous: AutomationCookingJobStagePreferences,
+  next: AutomationCookingJobStagePreferences,
+): boolean {
+  return (previous.autoPrepCollectCooking && !next.autoPrepCollectCooking)
+    || (previous.autoPrepCompleteOrder && !next.autoPrepCompleteOrder)
+    || (previous.autoNormalDeliverFood && !next.autoNormalDeliverFood)
+    || (previous.autoNormalCompleteOrder && !next.autoNormalCompleteOrder);
+}
+
 const MANUAL_RESOLUTION_REASON_CODES = new Set([
   'beverage-delivery-commit-uncertain',
   'food-delivery-commit-uncertain',
@@ -46,6 +82,8 @@ const RECOVERABLE_COOKING_TERMINAL_CODES = new Set([
   'cooking-target-unavailable-stored',
 ]);
 
+const COOKING_TARGET_CHANGED_STORED_REASON = 'cooking-target-changed-stored';
+
 export function isRecoverableCookingTerminalEvent(event: {
   code: string;
   reasonCode: string;
@@ -56,6 +94,117 @@ export function isRecoverableCookingTerminalEvent(event: {
     && event.outcome === 'interrupted'
     && (RECOVERABLE_COOKING_TERMINAL_CODES.has(event.code)
       || RECOVERABLE_COOKING_TERMINAL_CODES.has(event.reasonCode));
+}
+
+export interface AutomationRollbackBudgetTransition {
+  rollbackCount: number;
+  action: 'consumed' | 'deferred';
+}
+
+export function reduceAutomationCookingRollbackBudget(
+  currentRollbackCount: number,
+  event: { reasonCode: string },
+): AutomationRollbackBudgetTransition {
+  const targetRotationPending = event.reasonCode === COOKING_TARGET_CHANGED_STORED_REASON;
+  return {
+    rollbackCount: targetRotationPending ? currentRollbackCount : currentRollbackCount + 1,
+    action: targetRotationPending ? 'deferred' : 'consumed',
+  };
+}
+
+export function hasAutomationSpecialTargetRotated(
+  previousSignature: string,
+  previousRevision: number,
+  nextSignature: string,
+  nextRevision: number,
+): boolean {
+  return Boolean(
+    previousSignature
+      && nextSignature
+      && (previousSignature !== nextSignature || previousRevision !== nextRevision),
+  );
+}
+
+export interface AutomationRollbackTargetState {
+  rollbackCount: number;
+  rollbackTargetSignature: string;
+  rollbackTargetRevision: number;
+  paused: boolean;
+  manualResolutionRequired: boolean;
+  pauseReasonCode: string;
+  step: string;
+  stepStartedAtMs: number;
+  retryCount: number;
+  retryStage: string;
+  nextAttemptAtMs: number;
+  lastError: string;
+  pausedStage: string;
+}
+
+export interface AutomationRollbackTargetReconciliation<T> {
+  state: T;
+  rotated: boolean;
+}
+
+export function reconcileAutomationRollbackTarget<T extends AutomationRollbackTargetState>(
+  state: T,
+  nextSignature: string,
+  nextRevision: number,
+  now: number,
+): AutomationRollbackTargetReconciliation<T> {
+  if (!nextSignature) {
+    return { state, rotated: false };
+  }
+
+  const previousSignature = state.rollbackTargetSignature;
+  if (!previousSignature) {
+    return {
+      state: {
+        ...state,
+        rollbackTargetSignature: nextSignature,
+        rollbackTargetRevision: nextRevision,
+      },
+      rotated: false,
+    };
+  }
+  if (!hasAutomationSpecialTargetRotated(
+    previousSignature,
+    state.rollbackTargetRevision,
+    nextSignature,
+    nextRevision,
+  )) {
+    return { state, rotated: false };
+  }
+
+  const resumeRollbackPause = state.paused
+    && !state.manualResolutionRequired
+    && state.pauseReasonCode === 'rollback-limit-reached';
+  return {
+    state: {
+      ...state,
+      rollbackCount: 0,
+      rollbackTargetSignature: nextSignature,
+      rollbackTargetRevision: nextRevision,
+      paused: resumeRollbackPause ? false : state.paused,
+      step: resumeRollbackPause ? 'ensure-cooking' : state.step,
+      stepStartedAtMs: resumeRollbackPause ? now : state.stepStartedAtMs,
+      retryCount: resumeRollbackPause ? 0 : state.retryCount,
+      retryStage: resumeRollbackPause ? '' : state.retryStage,
+      nextAttemptAtMs: resumeRollbackPause ? 0 : state.nextAttemptAtMs,
+      lastError: resumeRollbackPause ? '' : state.lastError,
+      pausedStage: resumeRollbackPause ? '' : state.pausedStage,
+      pauseReasonCode: resumeRollbackPause ? '' : state.pauseReasonCode,
+    },
+    rotated: true,
+  };
+}
+
+export function shouldRetainAutomationStateWithoutCandidate(
+  state: Pick<AutomationRollbackTargetState, 'manualResolutionRequired' | 'rollbackTargetSignature'>,
+  orderStillActive: boolean,
+): boolean {
+  return state.manualResolutionRequired
+    || (orderStillActive && Boolean(state.rollbackTargetSignature));
 }
 
 export function resolveAutomationStepStartedAtMs(

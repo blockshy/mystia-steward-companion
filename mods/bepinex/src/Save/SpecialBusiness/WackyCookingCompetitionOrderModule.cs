@@ -11,11 +11,11 @@ internal sealed class WackyCookingCompetitionOrderModule : ISpecialBusinessOrder
 
     public SpecialBusinessOrderClassification Classify(
         string challengeType,
-        SpecialBusinessOrderProbe guest,
         object? order,
         object? controller,
         string source)
     {
+        var guest = SpecialBusinessOrderProbe.Read(order, controller);
         SpecialBusinessOrderClassification classification;
         var reason = "";
         if (SpecialBusinessOrderProbe.HasControllerSpawnType(controller, "GhostInChallenge"))

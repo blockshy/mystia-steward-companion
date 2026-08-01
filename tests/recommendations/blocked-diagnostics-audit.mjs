@@ -83,6 +83,13 @@ const data = {
   beverages: [beverage],
   normalCustomers: [],
   rareCustomers: [customer],
+  rareCustomerProfiles: [{
+    id: customer.id,
+    name: customer.name,
+    positiveTags: customer.positiveTags,
+    negativeTags: customer.negativeTags,
+    beverageTags: customer.beverageTags,
+  }],
   foodTagIdMap: { 1: '烧烤' },
   beverageTagIdMap: { 2: '水果' },
   tagPriorityRules: [],
@@ -107,6 +114,7 @@ const order = {
 };
 const specialBusiness = {
   active: true,
+  challengeTypeAvailable: true,
   challengeType: 'Challenge_Yuyuko',
   displayName: '幽幽子重修',
   category: 'boss',
@@ -114,6 +122,9 @@ const specialBusiness = {
   foodTargetTags: [],
   beverageTargetTags: [],
   phase: 'Phase 2',
+  currentAnger: null,
+  maxAnger: null,
+  targetAnger: null,
 };
 const favorites = { version: 1, recipes: [], beverages: [] };
 const customRecipes = { version: 1, enabled: true, recipes: [] };
@@ -253,6 +264,80 @@ const ordinaryMissingCooker = build({
 assert.equal(ordinaryMissingCooker.blockedDiagnostic?.code, 'food-cooker-missing');
 assert.deepEqual(ordinaryMissingCooker.blockedDiagnostic?.requiredCookerNames, ['烧烤架']);
 
+const missingCookerPreferenceDisabled = build({
+  availableIngredientIds: [ingredient.id],
+  placedCookerTypeIds: [5],
+  preferenceOverrides: { filterMissingCookers: false },
+  specialBusinessContext: null,
+});
+assert.equal(missingCookerPreferenceDisabled.blockedDiagnostic, null);
+assert.equal(missingCookerPreferenceDisabled.executionPlans.length > 0, true,
+  'A physically missing cooker remains governed by the existing user preference.');
+
+const oneLockedOneOpen = build({
+  availableIngredientIds: [ingredient.id],
+  placedCookerTypeIds: [2],
+  cookerSnapshotOverrides: {
+    placedCookers: [
+      buildCooker(1, 2),
+    ],
+    placedCookerControllerCount: 2,
+    placedCookerLockedControllerCount: 1,
+  },
+  preferenceOverrides: { filterMissingCookers: false },
+  specialBusinessContext: null,
+});
+assert.equal(oneLockedOneOpen.blockedDiagnostic, null);
+assert.equal(oneLockedOneOpen.executionPlans.length > 0, true,
+  'A cooker type remains executable while at least one physical controller can open.');
+
+const allLocked = build({
+  availableIngredientIds: [ingredient.id],
+  placedCookerTypeIds: [],
+  cookerSnapshotOverrides: {
+    placedCookers: [],
+    placedCookerControllerCount: 2,
+    placedCookerLockedControllerCount: 2,
+  },
+  preferenceOverrides: { filterMissingCookers: false },
+  specialBusinessContext: null,
+});
+assert.equal(allLocked.executionPlans.length, 0);
+assert.equal(allLocked.blockedDiagnostic?.code, 'food-cooker-runtime-unavailable');
+assert.deepEqual(allLocked.blockedDiagnostic?.placedCookerNames, []);
+assert.deepEqual(allLocked.blockedDiagnostic?.usableCookerNames, []);
+assert.deepEqual(allLocked.blockedDiagnostic?.runtimeUnavailableCookerNames, ['烧烤架']);
+assert.match(allLocked.blockedDiagnostic?.message ?? '', /游戏机制锁定/);
+
+const unlockedAfterLocked = build({
+  availableIngredientIds: [ingredient.id],
+  placedCookerTypeIds: [2],
+  cookerSnapshotOverrides: {
+    placedCookers: [buildCooker(0, 2)],
+  },
+  preferenceOverrides: { filterMissingCookers: false },
+  specialBusinessContext: null,
+});
+assert.equal(unlockedAfterLocked.blockedDiagnostic, null);
+assert.equal(unlockedAfterLocked.executionPlans.length > 0, true,
+  'A later complete snapshot with an open controller must restore the recommendation.');
+
+const partialLockedRead = build({
+  availableIngredientIds: [ingredient.id],
+  placedCookerTypeIds: [],
+  cookerSnapshotOverrides: {
+    placedCookers: [],
+    placedCookerSnapshotComplete: false,
+    placedCookerControllerCount: 2,
+    placedCookerLockedControllerCount: 1,
+    placedCookerReadFailureCount: 1,
+  },
+  specialBusinessContext: null,
+});
+assert.equal(partialLockedRead.blockedDiagnostic, null);
+assert.equal(partialLockedRead.executionPlans.length > 0, true,
+  'A diagnostic locked count in an unavailable snapshot must not infer a runtime-unavailable cooker type.');
+
 const blockedBudget = build({
   availableIngredientIds: [ingredient.id],
   orderOverrides: { fund: 100, willPayMoney: true },
@@ -349,18 +434,29 @@ function build({
   customerOverrides = {},
   orderOverrides = {},
   placedCookerTypeIds,
+  cookerSnapshotOverrides = {},
   preferenceOverrides = {},
   recommendationData = data,
   specialBusinessContext = specialBusiness,
 }) {
   const effectiveCustomer = { ...customer, ...customerOverrides };
+  const effectiveRecommendationData = {
+    ...recommendationData,
+    rareCustomerProfiles: [{
+      id: effectiveCustomer.id,
+      name: effectiveCustomer.name,
+      positiveTags: effectiveCustomer.positiveTags,
+      negativeTags: effectiveCustomer.negativeTags,
+      beverageTags: effectiveCustomer.beverageTags,
+    }],
+  };
   const runtime = {
     availableRecipeIds,
     availableBeverageIds,
     availableIngredientIds,
     ownedIngredientQty: { [ingredient.id]: 10 },
     ownedBeverageQty: { [beverage.id]: 10 },
-    placedCookerTypeIds,
+    ...buildCookerSnapshot(placedCookerTypeIds, cookerSnapshotOverrides),
     popularFoodTag: null,
     popularHateFoodTag: null,
     famousShopEnabled: false,
@@ -380,11 +476,50 @@ function build({
     [],
     specialBusinessContext,
     [],
-    recommendationData,
+    effectiveRecommendationData,
     { usage: 'automation' },
   );
   assert.equal(result.recommendations.length, 1);
   return result.recommendations[0];
+}
+
+function buildCookerSnapshot(typeIds, overrides = {}) {
+  return {
+    placedCookerTypeIds: typeIds,
+    placedCookers: typeIds.map((typeId, controllerIndex) => buildCooker(controllerIndex, typeId)),
+    placedCookerSnapshotComplete: true,
+    placedCookerControllerCount: typeIds.length,
+    placedCookerEmptyControllerCount: 0,
+    placedCookerLockedControllerCount: 0,
+    placedCookerReadFailureCount: 0,
+    placedCookerStatus: 'test',
+    ...overrides,
+  };
+}
+
+function buildCooker(controllerIndex, typeId, overrides = {}) {
+  const typeNames = new Map([
+    [1, '煮锅'],
+    [2, '烧烤架'],
+    [3, '油锅'],
+    [4, '蒸锅'],
+    [5, '料理台'],
+  ]);
+  return {
+    controllerIndex,
+    gridPosition: { x: controllerIndex, y: 0, z: 0 },
+    controllerIdentity: `0x${(0x2000 + controllerIndex).toString(16).toUpperCase()}`,
+    typeIds: [typeId],
+    typeNames: [typeNames.get(typeId)],
+    name: typeNames.get(typeId),
+    challengeLocked: overrides.couldOpen === false,
+    couldOpen: true,
+    automationAvailable: overrides.couldOpen !== false,
+    automationAvailability: overrides.couldOpen === false ? 'Unavailable' : 'StrictIdle',
+    automationAvailabilityDiagnostic: 'recommendation audit',
+    source: 'test',
+    ...overrides,
+  };
 }
 
 async function assertSourceContracts() {
@@ -400,6 +535,15 @@ async function assertSourceContracts() {
     '结构化诊断只应在最终没有执行计划时构建。');
   assert.ok(service.includes('diagnoseRareFoodCandidateSearch('),
     '料理首次清零必须复用候选搜索诊断入口。');
+  assert.ok(
+    service.includes('preferences.filterMissingCookers || hasRuntimeUnavailableCookers'),
+    '完整快照确认的运行时锁锅必须独立于缺失厨具设置进入硬过滤。',
+  );
+  assert.ok(
+    service.includes("requiredFoodTag.trim()")
+      && service.includes(": '当前订单'"),
+    '运行时锁锅诊断不得为缺少点单 Tag 的订单生成空 Tag 文案。',
+  );
   assert.ok(automation.includes("item.blockedDiagnostic?.message ?? '没有可用的推荐料理。'"),
     '自动化无料理目标时应优先显示结构化首个清零原因。');
   assert.ok(worker.includes("item.blockedDiagnostic?.stateSignature ?? ''"),

@@ -3,12 +3,12 @@ import type {
   SpecialBusinessContext,
 } from '@/companion/types';
 import {
-  hasMatchingSpecialBusinessTag,
   isPhaseThreeContext,
   isPhaseTwoContext,
   KOISHI_BOSS_ROLE,
   normalizeRole,
   normalizeSpecialBusinessTags,
+  matchesSpecialBusinessTags,
   WACKY_CHALLENGE_TYPE,
   WACKY_GHOST_ROLE,
   WACKY_TARGET_ROLE,
@@ -31,8 +31,12 @@ export function buildWackyCookingCompetitionOrderRule(
   if (normalizedRole === KOISHI_BOSS_ROLE && phaseThree) {
     const shieldBroken = specialBusiness.wackyKoishiShieldBroken === true;
     return {
-      requiresWackyFoodTarget: false,
-      foodTargetTags: [],
+      foodTarget: {
+        enforcement: 'none',
+        match: 'any',
+        tags: [],
+      },
+      blockingReason: '',
       requiresBaseOrderMatch: shieldBroken,
       requiresHighEvaluation: !shieldBroken,
       highEvaluationMinPreferenceMatches: shieldBroken ? 0 : 3,
@@ -51,8 +55,12 @@ export function buildWackyCookingCompetitionOrderRule(
   const requiresTarget = targetTags.length > 0;
   const preferHighEvaluation = phaseTwo || phaseThree;
   return {
-    requiresWackyFoodTarget: requiresTarget,
-    foodTargetTags: requiresTarget ? targetTags : [],
+    foodTarget: {
+      enforcement: requiresTarget ? 'require' : 'none',
+      match: 'any',
+      tags: requiresTarget ? targetTags : [],
+    },
+    blockingReason: '',
     requiresBaseOrderMatch: preferHighEvaluation,
     requiresHighEvaluation: preferHighEvaluation,
     highEvaluationMinPreferenceMatches: preferHighEvaluation ? 2 : 0,
@@ -96,7 +104,7 @@ export function isWackyTargetTagMismatchEvent(event: AutomationRuntimeEvent): bo
     && event.targetFoodTags.length > 0
     && event.actualFoodTags != null
     && event.actualFoodTags.length > 0
-    && !hasMatchingSpecialBusinessTag(event.actualFoodTags, event.targetFoodTags);
+    && !matchesSpecialBusinessTags(event.actualFoodTags, event.targetFoodTags, 'any');
 }
 
 export function buildWackyRejectedRecipeKeyFromEvent(event: AutomationRuntimeEvent): string {

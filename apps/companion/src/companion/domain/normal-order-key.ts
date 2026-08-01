@@ -8,6 +8,7 @@ export function buildNormalAutoOrderKey(order: NormalBusinessOrder): string {
   return [
     order.firstSeenAtUtc ?? '',
     order.deskCode,
+    order.runtimeGuestId ?? 'unknown-runtime-guest',
     order.guestName,
     order.foodId,
     order.beverageId,

@@ -12,6 +12,15 @@ export type RecommendationDemand =
   | NormalExactOrderDemand
   | NormalCoverageDemand;
 
+export type SpecialBusinessTargetEnforcement = 'none' | 'require';
+export type SpecialBusinessTagMatch = 'any' | 'all';
+
+export interface SpecialBusinessFoodTargetPolicy {
+  enforcement: SpecialBusinessTargetEnforcement;
+  match: SpecialBusinessTagMatch;
+  tags: string[];
+}
+
 /**
  * 稀客点单需求：料理与酒水都以 Tag 形式表达，推荐引擎需要寻找可满足 Tag 的候选。
  */
@@ -20,7 +29,7 @@ export interface RareTagOrderDemand {
   customer: RareCustomerCatalogItem;
   requiredFoodTag: string;
   requiredBeverageTag: string;
-  specialFoodTargetTags?: string[];
+  specialFoodTarget?: SpecialBusinessFoodTargetPolicy;
 }
 
 /**

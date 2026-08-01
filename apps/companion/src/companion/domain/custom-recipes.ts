@@ -14,6 +14,7 @@ import {
   type FoodCandidate,
   type RareTagOrderDemand,
   type RecommendationRuntimeContext,
+  type SpecialBusinessFoodTargetPolicy,
 } from '@/recommendation-engine';
 
 const MAX_FOOD_INGREDIENT_COUNT = 5;
@@ -25,6 +26,7 @@ interface BuildCustomFoodCandidatesOptions {
   customer: RareCustomerCatalogItem;
   requiredFoodTag: string;
   requiredBeverageTag: string;
+  specialFoodTarget?: SpecialBusinessFoodTargetPolicy;
   context: RecommendationRuntimeContext;
 }
 
@@ -113,6 +115,7 @@ export function buildCustomFoodCandidates({
   customer,
   requiredFoodTag,
   requiredBeverageTag,
+  specialFoodTarget,
   context,
 }: BuildCustomFoodCandidatesOptions): FoodCandidate[] {
   const demand: RareTagOrderDemand = {
@@ -120,6 +123,7 @@ export function buildCustomFoodCandidates({
     customer,
     requiredFoodTag,
     requiredBeverageTag,
+    specialFoodTarget,
   };
   const recipesById = new Map(data.recipes.map((recipe) => [recipe.id, recipe]));
   const ingredientsByName = new Map(data.ingredients.map((ingredient) => [ingredient.name, ingredient]));
@@ -214,9 +218,14 @@ function buildCustomFoodCandidate(
   });
   const matchedPositiveTags = resolved.activeTags.filter((tag) => demand.customer.positiveTags.includes(tag));
   const matchedNegativeTags = resolved.activeTags.filter((tag) => demand.customer.negativeTags.includes(tag));
-  const matchedSpecialFoodTargetTags = getSpecialFoodTargetTags(demand)
+  const specialFoodTarget = getSpecialFoodTarget(demand);
+  const matchedSpecialFoodTargetTags = specialFoodTarget.tags
     .filter((tag) => resolved.activeTags.includes(tag));
-  const meetsSpecialFoodTarget = getSpecialFoodTargetTags(demand).length === 0 || matchedSpecialFoodTargetTags.length > 0;
+  const meetsSpecialFoodTarget = specialFoodTarget.enforcement === 'none'
+    || (specialFoodTarget.tags.length > 0
+      && (specialFoodTarget.match === 'all'
+        ? matchedSpecialFoodTargetTags.length === specialFoodTarget.tags.length
+        : matchedSpecialFoodTargetTags.length > 0));
   const meetsRequiredFood = resolved.activeTags.includes(demand.requiredFoodTag);
   const cookerAvailable = isCookerAvailable(recipe, context);
   const baseCost = recipe.ingredients.reduce((sum, name) => sum + (ingredientsByName.get(name)?.price ?? 0), 0);
@@ -301,8 +310,11 @@ function buildCustomFoodConditionResults({
         : `未满足点单料理 ${demand.requiredFoodTag}`,
     },
   ];
-  const specialTargetTags = getSpecialFoodTargetTags(demand);
-  if (specialTargetTags.length > 0) {
+  const specialFoodTarget = getSpecialFoodTarget(demand);
+  const specialTargetTags = specialFoodTarget.tags;
+  if (specialFoodTarget.enforcement !== 'none') {
+    const missingTags = specialTargetTags.filter((tag) => !matchedSpecialFoodTargetTags.includes(tag));
+    const requiresAll = specialFoodTarget.match === 'all';
     results.push({
       id: 'food.special-target-tag',
       target: 'food',
@@ -310,8 +322,10 @@ function buildCustomFoodConditionResults({
       severity: 'hard',
       label: '特殊目标 Tag',
       detail: meetsSpecialFoodTarget
-        ? `满足特殊目标 Tag ${matchedSpecialFoodTargetTags.join('、')}`
-        : `未满足特殊目标 Tag ${specialTargetTags.join('、')}`,
+        ? `${requiresAll ? '同时满足' : '满足'}特殊目标 Tag ${matchedSpecialFoodTargetTags.join('、')}`
+        : specialTargetTags.length === 0
+          ? '特殊目标 Tag 尚未完整读取'
+          : `${requiresAll ? '未同时满足' : '未满足'}特殊目标 Tag ${missingTags.join('、')}`,
     });
   }
 
@@ -389,7 +403,7 @@ function buildExtraIngredientReasons(
   const relevantTags = new Set([
     demand.requiredFoodTag,
     ...demand.customer.positiveTags,
-    ...getSpecialFoodTargetTags(demand),
+    ...getSpecialFoodTarget(demand).tags,
   ]);
   for (const ingredient of extraIngredients) {
     const reasons = ingredient.tags.filter((tag) => relevantTags.has(tag));
@@ -398,16 +412,20 @@ function buildExtraIngredientReasons(
   return result;
 }
 
-function getSpecialFoodTargetTags(demand: RareTagOrderDemand): string[] {
+function getSpecialFoodTarget(demand: RareTagOrderDemand): SpecialBusinessFoodTargetPolicy {
   const seen = new Set<string>();
-  const result: string[] = [];
-  for (const tag of demand.specialFoodTargetTags ?? []) {
+  const tags: string[] = [];
+  for (const tag of demand.specialFoodTarget?.tags ?? []) {
     const text = tag.trim();
     if (!text || seen.has(text)) continue;
     seen.add(text);
-    result.push(text);
+    tags.push(text);
   }
-  return result;
+  return {
+    enforcement: demand.specialFoodTarget?.enforcement ?? 'none',
+    match: demand.specialFoodTarget?.match ?? 'any',
+    tags,
+  };
 }
 
 function calculateResourcePressure(

@@ -12,13 +12,16 @@ interface AsyncOrderRecommendationResult extends OrderRecommendationResult {
   pending: boolean;
   isCurrent: boolean;
   sourceSignature: string;
+  resultContextSignature: string;
   successRevision: number;
+  retainedAfterError: boolean;
   error: string | null;
 }
 
 interface UseOrderRecommendationsOptions {
   enabled?: boolean;
   inputSignature?: string;
+  contextSignature?: string;
 }
 
 const EMPTY_RECOMMENDATIONS: OrderRecommendationResult = {
@@ -33,7 +36,9 @@ const EMPTY_ASYNC_RECOMMENDATIONS: AsyncOrderRecommendationResult = {
   pending: false,
   isCurrent: true,
   sourceSignature: '',
+  resultContextSignature: '',
   successRevision: 0,
+  retainedAfterError: false,
   error: null,
 };
 const DATA_CACHE_MISS_MESSAGE = '推荐数据集尚未初始化';
@@ -47,7 +52,11 @@ const DATA_CACHE_MISS_MESSAGE = '推荐数据集尚未初始化';
  */
 export function useOrderRecommendations(
   payload: OrderRecommendationWorkerPayload,
-  { enabled = true, inputSignature = '' }: UseOrderRecommendationsOptions = {},
+  {
+    enabled = true,
+    inputSignature = '',
+    contextSignature = '',
+  }: UseOrderRecommendationsOptions = {},
 ): AsyncOrderRecommendationResult {
   const [state, setState] = useState<AsyncOrderRecommendationResult>(EMPTY_ASYNC_RECOMMENDATIONS);
   const workerRef = useRef<Worker | null>(null);
@@ -58,6 +67,7 @@ export function useOrderRecommendations(
   const queuedRequestRef = useRef<OrderRecommendationWorkerRequest | null>(null);
   const payloadRef = useRef(payload);
   const inputSignatureRef = useRef(inputSignature);
+  const contextSignatureRef = useRef(contextSignature);
   const lastResultSignatureRef = useRef('');
   const postedDataSignatureRef = useRef('');
   const successRevisionRef = useRef(0);
@@ -65,11 +75,13 @@ export function useOrderRecommendations(
   useEffect(() => {
     payloadRef.current = payload;
     inputSignatureRef.current = inputSignature;
-  }, [inputSignature, payload]);
+    contextSignatureRef.current = contextSignature;
+  }, [contextSignature, inputSignature, payload]);
 
   const createRequest = useCallback((
     nextPayload: OrderRecommendationWorkerPayload,
     sourceSignature: string,
+    requestContextSignature: string,
   ): OrderRecommendationWorkerRequest => {
     requestSequenceRef.current += 1;
     const dataSignature = buildRecommendationDataSignature(nextPayload.data);
@@ -77,6 +89,7 @@ export function useOrderRecommendations(
     return {
       requestId: requestSequenceRef.current,
       sourceSignature,
+      contextSignature: requestContextSignature,
       payload: buildRuntimePayload(nextPayload, dataSignature, includeData),
     };
   }, []);
@@ -127,9 +140,15 @@ export function useOrderRecommendations(
         if (activeRequest.payload.data) {
           postedDataSignatureRef.current = activeRequest.payload.dataSignature;
         }
-      } else if (activeRequest.payload.data || isDataCacheMiss(response.error)) {
+      } else if (isDataCacheMiss(response.error) && !activeRequest.payload.data) {
         postedDataSignatureRef.current = '';
-        queuedRequest = createRequest(payloadRef.current, inputSignatureRef.current);
+        queuedRequest = createRequest(
+          payloadRef.current,
+          inputSignatureRef.current,
+          contextSignatureRef.current,
+        );
+      } else if (activeRequest.payload.data) {
+        postedDataSignatureRef.current = '';
       }
 
       if (queuedRequest) {
@@ -146,13 +165,16 @@ export function useOrderRecommendations(
         const pending = hasQueuedRequest && !queueError;
         const isCurrent = !hasQueuedRequest || queueError !== null;
         const sourceSignature = activeRequest.sourceSignature;
+        const resultContextSignature = activeRequest.contextSignature;
         if (lastResultSignatureRef.current === response.signature) {
           setState((current) => ({
             ...current,
             pending,
             isCurrent,
             sourceSignature,
+            resultContextSignature,
             successRevision,
+            retainedAfterError: Boolean(queueError),
             error: queueError,
           }));
           return;
@@ -164,19 +186,48 @@ export function useOrderRecommendations(
           pending,
           isCurrent,
           sourceSignature,
+          resultContextSignature,
           successRevision,
+          retainedAfterError: Boolean(queueError),
           error: queueError,
         });
         return;
       }
 
-      setState((current) => ({
-        ...current,
-        pending: queuedRequest !== null && !queueError,
-        isCurrent: queuedRequest === null || queueError !== null,
-        sourceSignature: activeRequest.sourceSignature,
-        error: queueError ?? response.error,
-      }));
+      setState((current) => {
+        const retryPending = queuedRequest !== null && !queueError;
+        if (retryPending) {
+          return {
+            ...current,
+            pending: true,
+            isCurrent: false,
+            retainedAfterError: false,
+            error: response.error,
+          };
+        }
+        const canRetainPrevious = current.successRevision > 0
+          && current.resultContextSignature === activeRequest.contextSignature;
+        if (canRetainPrevious && !queueError) {
+          return {
+            ...current,
+            pending: false,
+            isCurrent: false,
+            retainedAfterError: true,
+            error: response.error,
+          };
+        }
+        const failurePayload = queueError ? payloadRef.current : activeRequest.payload;
+        return {
+          ...buildFailureResult(failurePayload, queueError ?? response.error),
+          pending: false,
+          isCurrent: true,
+          sourceSignature: queueError ? inputSignatureRef.current : activeRequest.sourceSignature,
+          resultContextSignature: queueError ? contextSignatureRef.current : activeRequest.contextSignature,
+          successRevision: current.successRevision,
+          retainedAfterError: false,
+          error: queueError ?? response.error,
+        };
+      });
     };
 
     worker.onerror = (event) => {
@@ -185,12 +236,15 @@ export function useOrderRecommendations(
       activeRequestRef.current = null;
       queuedRequestRef.current = null;
       postedDataSignatureRef.current = '';
+      lastResultSignatureRef.current = '';
       setState({
         ...buildFailureResult(payloadRef.current, message),
         pending: false,
         isCurrent: true,
         sourceSignature: inputSignatureRef.current,
+        resultContextSignature: contextSignatureRef.current,
         successRevision: successRevisionRef.current,
+        retainedAfterError: false,
         error: message,
       });
     };
@@ -239,13 +293,15 @@ export function useOrderRecommendations(
         pending: false,
         isCurrent: true,
         sourceSignature: inputSignature,
+        resultContextSignature: contextSignature,
         successRevision: successRevisionRef.current,
+        retainedAfterError: false,
         error: '推荐计算 Worker 尚未初始化。',
       }));
       return;
     }
 
-    const request = createRequest(payload, inputSignature);
+    const request = createRequest(payload, inputSignature, contextSignature);
     if (activeRequestIdRef.current === null) {
       try {
         postRequest(worker, request);
@@ -256,7 +312,9 @@ export function useOrderRecommendations(
           pending: false,
           isCurrent: true,
           sourceSignature: inputSignature,
+          resultContextSignature: contextSignature,
           successRevision: successRevisionRef.current,
+          retainedAfterError: false,
           error: message,
         }));
         return;
@@ -273,10 +331,11 @@ export function useOrderRecommendations(
         ...current,
         pending: true,
         isCurrent: false,
+        retainedAfterError: false,
         error: null,
       };
     });
-  }, [createRequest, enabled, inputSignature, payload, postRequest]);
+  }, [contextSignature, createRequest, enabled, inputSignature, payload, postRequest]);
 
   const sourceIsCurrent = !enabled
     || !hasOrderRecommendationWork(payload)
@@ -298,7 +357,7 @@ function buildRuntimePayload(
 }
 
 function buildFailureResult(
-  payload: OrderRecommendationWorkerPayload,
+  payload: Pick<OrderRecommendationWorkerPayload, 'orders'>,
   message: string,
 ): OrderRecommendationResult {
   return {

@@ -54,6 +54,7 @@ export type OrderRecommendationWorkerRuntimePayload =
 export interface OrderRecommendationWorkerRequest {
   requestId: number;
   sourceSignature: string;
+  contextSignature: string;
   payload: OrderRecommendationWorkerRuntimePayload;
 }
 

@@ -1,6 +1,6 @@
 # 特殊经营场景规则与实现边界
 
-更新日期：2026-07-12
+更新日期：2026-07-30
 
 本文档记录特殊经营的游戏原生规则、Mod 执行策略和已验证边界。三者必须分开表述，不得把 Mod 的保守约束写成游戏原生门槛。
 
@@ -26,7 +26,7 @@
 | `Story_Yuyuko` | 幽幽子挑战 |
 | `Challenge_Yuyuko` | 幽幽子重修 |
 | `AnyChallenge` | 任何挑战 |
-| `Story_BloodPondHell` | 血池地狱挑战 |
+| `Story_BloodPondHell` | 血池地狱 |
 | `Story_WackyCookingCompetition` | 怪诞料理大赛挑战 |
 | `Story_Seiga_TempleCuisineCompetition` | 青娥 料理挑战 |
 | `Story_Futo_TempleCuisineCompetition` | 布都 料理挑战 |
@@ -46,7 +46,7 @@
 后端只发布已确认的目标来源：
 
 - `IncomeControllerChallenge.SetTargetFund` / `UpdateSpellCount`：妖梦科目一、科目二的目标营业额与符卡计数。
-- `IncomeControllerYuuma.SetTargetTag`：血池地狱挑战的双料理 Tag。
+- `IncomeControllerYuuma.SetTargetTag` / `SetContext` / `SetTargetProgress` / `SetAngerProgress` / `SetTargetTime` / `SetTargetProgressImmediate`：血池地狱的双料理 Tag、进度、怒气和时间状态。
 - `IncomeControllerKoishi.SetContext` / `SetTargetProgress` / `SetTargetTag` / `SetTargetTagTime*`：怪诞料理大赛的阶段、进度、单料理 Tag 和刷新倒计时比例。
 - `IncomeControllerYuyuko.SetContext` / `SetTargetProgress` / `SetTargetTime`：幽幽子挑战的阶段、进度和目标时间。
 - `IncomeControllerMausoleumCuisineCompetition.SetTargetFund`：青娥、布都、屠自古料理挑战的目标营业额。
@@ -101,14 +101,42 @@
 - 剧情版三阶段使用 `story-level-sum` 模式；`progress` 保留原订单料理/酒水，并要求等级合计至少为 `5`，等级合计至少为 `8` 的 `ExGood` 组合优先。只能达到 `Normal` 时按精确原订单清理，不承诺推进。
 - 重修版稀客 `SpecialOrder` 使用 `retake-tag-order`。推荐必须满足料理/酒水点单，避开当前稀客厌恶，并至少额外命中一个当前稀客喜好，使保守评价从基础 `2` 达到 `Good>=3`；额外命中两个喜好的 `ExGood>=4` 方案优先。评价依据是最终料理与酒水的完整 Tag，不得把候选收窄到某个精确原料理/酒水，也不得要求 `expectedFoodModifierTags`。
 - 重修版精确 `NormalOrder` 使用 `retake-food-modifiers`。候选在搜索前只保留订单指定的原料理和原酒水，并将单独生成的无加料原菜合并回候选集；只从实际生效的动态料理 Tag 与相对原配方新增的额外材料 Tag 判断能否把 `Normal=2` 提升到 `Good` / `ExGood`。没有可推进 modifier、但无加料方案仍保持 `Normal=2` 时，使用该精确订单清理桌位；任何会让结果低于 `Normal=2` 的 modifier 组合都必须拒绝。
-- `NormalOrder` 开锅确认后锁存完整 execution target。评价前要求实际 `Sellable.Modifier` 加料 ID 与请求 extras 精确全等，并用 `Sellable.Tags.Except(RawTags)` 重建原生 `addedTags`，与锁存的 `expectedFoodModifierTags` 精确全等；库存变化不能替换已开锅目标，读取失败或不一致时暂停评价。`SpecialOrder` 不使用该 modifier-only 契约：门禁精确校验已锁定执行目标和实际加料，并确认两个请求 Tag 存在于实送料理/酒水的完整 Tag 数组；额外喜恶与最终档位由游戏原生评价计算。
+- `NormalOrder` 在调用可能开锅的本地 API 前按经营 generation 锁存完整 execution target。评价前要求实际 `Sellable.Modifier` 加料 ID 与请求 extras 精确全等，并用 `Sellable.Tags.Except(RawTags)` 重建原生 `addedTags`，与锁存的 `expectedFoodModifierTags` 精确全等；响应时序和库存变化都不能替换已锁存目标，读取失败或不一致时暂停评价。`SpecialOrder` 不使用该 modifier-only 契约：门禁精确校验已锁定执行目标和实际加料，并确认两个请求 Tag 存在于实送料理/酒水的完整 Tag 数组；额外喜恶与最终档位由游戏原生评价计算。
 - 原生评价前先用已匹配的 Completion 对象确认 `IsFullfilled`；未送齐只等待下一轮。评价定位优先重新验证 capture 的强身份、controller 所有权、已送达目标和回调，失败后才扫描 `GuestsManager` 当前集合并执行同一验证器。剧情版必须从最终选中的同一原生 order/controller 捕获记录复用 `SetManualControllerOrderInternal` 的 `onEvaluate`，通过该 controller 调用 `EvaulateManualOrder`，不能按相同请求身份借用另一对象的回调。重修版必须确认 `_50` / `_70` 原生进度回调后调用游戏 `EvaluateOrder()`，不复用剧情版手动评价路径。
 - controller、对应版本的评价回调、已送达执行目标或订单形态对应的评价条件任一不可确认时，Mod 暂停送达或评价，不消耗订单来伪造完成。
+
+## 血池地狱
+
+### 游戏原生规则
+
+相关数据类型为 `GameData.Profile.DLC1_YuumaBossData`，挑战类型为 `Story_BloodPondHell`，挑战 BOSS 的 canonical 角色 ID 为 `1003`。当前反编译与 Native 伪代码可确认：
+
+- 第二阶段混合生成 `NormalOrder` 与 `SpecialOrder`，第三阶段生成 `NormalOrder`。订单生成和集合委托的声明返回类型为 `OrderBase`，因此 BepInEx 回调看到基础包装类型不代表订单实际形态未知，也不能据此把它当作普通顾客订单。
+- 原订单条件始终是第一层门禁。`SpecialOrder` 需要实送料理和酒水分别满足原始 `RequestFoodTag` / `RequestBeverageTag`；`NormalOrder` 需要先通过游戏对原料理和原酒水的原生匹配与评价。动态目标 Tag 不能替代原订单。
+- HUD 每轮发布两个料理目标 Tag；两个 Tag 使用同时满足语义，任意一个缺失都不属于完整命中。
+- 原订单不满足时走最低评价并触发订单不满足相关怒气与原生挑战副作用。原订单满足但双目标 Tag 未全部命中时保留普通评价并使用较低伤害，同时可能触发目标 Tag 不满足怒气；原订单和两个目标 Tag 都满足时进入最高评价并使用较高伤害。
+- 伤害、怒气、阶段阈值和剩余时间由当前游戏运行时数据资产决定。Mod 不写死这些数值，也不直接调用伤害、怒气、目标刷新或阶段推进入口。
+
+### Mod 执行策略
+
+- 只在挑战类型精确等于 `Story_BloodPondHell` 时，通过共享 IL2CPP cast 入口分别尝试把声明为 `OrderBase` 的对象转换成 `NormalOrder` 和 `SpecialOrder`；只有恰好一种转换成功，并且具体订单角色与 controller 的 `OrderingGuest` 都能通过 `GuestBase.Id` 精确确认 canonical ID `1003` 时，才分类为血池地狱 BOSS 订单。双重成功、均失败、成员不可读或身份冲突全部 fail-closed；名称、显示文本、模糊类型判断和所有 `OrderBase` 放行不参与匹配。
+- 保留原订单料理和酒水约束，在可用料理及安全加料组合中搜索能同时提供两个动态目标 Tag 的方案。缺少任一目标、目标未完整读取或没有同时满足的合法组合时不生成执行计划，不降级为只命中一个 Tag。
+- `executionPlans[0]` 是页面首项、自动化初始锁、游戏界面置顶、列表高亮和厨具高亮的唯一目标。第二、第三阶段显示在普客区域的 BOSS `NormalOrder` 仍应用双 Tag 规则；只有精确确认不属于 BOSS 的普通顾客订单保持普通规则。
+- 前端与 Mod 使用同一规范特殊料理目标策略：`challenge=Story_BloodPondHell`、`owner=yuuma`、当前正数经营 generation、Ordinal 排序后的两个 Tag、`match=all` 及由这些字段生成的签名。缺少任一字段、目标数量不是两个、请求与实时策略不一致或策略绑定到非 BOSS 订单时 fail-closed；不保留旧 Wacky 专用签名或请求回退。
+- 自动化仅接管精确 `yuuma-boss-order`。开锅前验证主计划预测 Tag，出锅后读取实际 `Sellable` Tag；job 仍拥有厨具成品且最终送达副作用尚未开始时，确认完整策略变化、Tag 不可读或不满足全部目标才进入既有 commit-once `StoreFood` 和同 generation 厨具复位链，无法确认提交或复位时保留人工确认栅栏。匹配成品在料理送达与订单完成双开关同时开启时进入专用精确无界面结算，任一开关关闭时进入手动交接；手动交接后不再送达、入箱或复位该锅，专用结算的最终 setter 开始后也不得回到恢复链。跨帧状态保存订单强身份、角色、特殊目标签名和厨具的稳定预约/pointer/锅次标量，不保存 `CookController` wrapper；每次读取、送达、复位和出锅回调前都从当前物理目录重新取得同一厨具。稀客和普客各自保存最后一个非空回退预算所有者，目标短暂清空时保留，下一不同非空签名到达后退休旧预算；黑暗料理或同一签名下的非目标成品仍正常消耗预算。挑战事件通过公开 `LockCookers` / `LockCookers_Forever` 与 `OnCookerAvailabilityUpdate` 更新物理拓扑时，只在这些方法同步执行期间阻止副作用；方法返回后必须先确认新的完整 `AllCookers + LockedCookers` 拓扑 revision。被锁、移除、替换、坐标漂移或锅次变化的旧 job 按一次 `cooking-ownership-lost` 释放并重新规划，未受影响的开放厨具不因永久锁锅长期停用。物理快照先读取 `LockedCookers`；锁定字典条目只确认 key 与 native identity 并计数，禁止读取 controller 坐标、状态、类型或 renderer。未锁条目仍精确交叉确认字典坐标、controller `GridPosition` 和 `CouldOpen`；被锁实体退出推荐、自动化预约和高亮。料理请求携带 index + native identity + grid，并在紧邻 `SetCook` 前复核，漂移时等待新快照而不改选。不得主动解锁、恢复、重建或扫描替代 controller。
+- `AllCookers` 中原生确认的未摆放空位与事件锁定条目是两种独立状态。空位只闭合 controller 总数并保留原始 index，不进入已摆类型、推荐、自动化预约或高亮；锁定条目只保留字典位置、pointer identity 和数量，不读取或缓存其旧物理类型。存在锁定条目时，只有仍开放控制器证明的类型保留为可用，其余类型按零开放容量退出当前方案。两者都不能作为其他控制器的兼容替代来源。
+- 酒水可由自动化或玩家送达；Mod 自动开锅后按经营 generation、订单形态、原始 nullable Tag 或 `NormalOrder` 精确 ID、桌位、canonical BOSS `1003`、目标签名与 revision、厨具锅次和实际成品严格复核。匹配成品只有在料理送达与订单完成双开关开启时才自动结算，否则保留在原锅并交给玩家。`EventManager.ShouldPlayerThrowDeliver` 只反映 `registeredTimedBuff` 中的玩家投掷送餐能力，不代表订单已有送餐动作在飞行中，因此不作为专用无界面结算门禁；真实并发只按当前订单的 `ServedFoodInAir` / `ServedBeverageInAir` 精确字段无副作用等待，且不生成、驱动或模拟投掷送餐界面与协程。
+- 专用结算预检必须一次性确认同一经营 generation、订单与控制器原生指针、`OrderBase.ManualOrder` 精确 bool、最终料理 setter、fulfilled getter、订单对应评价入口，以及消费统计、Partner 状态和桌位通知入口。手动控制订单只允许使用同一次 `SetManualControllerOrderInternal` 为同一订单捕获的回调调用 `EvaulateManualOrder(controller, callback)`；标准订单只允许调用 `EvaluateOrder(controller, false, null)`，缺少回调、形态不匹配或身份漂移时 fail-closed，禁止把手动订单降级为标准评价。
+- 在锁定不可逆料理提交前，必须 fresh 取得当前同一厨具并确认预约、pointer、未锁定、phase 3、实际 Result、ChosenRecipe 与 SetCook 所有权；预约位置已锁定时必须在读取 controller 状态前终止。随后执行顺序固定为最终料理 setter、第一次重新取得同一原生订单并完整确认其精确成品/路由/双身份/经营代际、fresh 同锅次复位、再次 fresh 后调用 `OnCookerAvailabilityUpdate(-1)`、回调返回后再次 fresh 并调用该控制器的 `AfterPlayerExtract()`、第二次 `FindYuumaRuntimeOrder` 与同等完整复核、fresh fulfilled、按订单形态评价、`StatusTracker.AddBussinessFoodConsumes`、`PartnerManager.OnOrderBaseStatusUpdate(FoodDelivered)` 和 `TryAddPlayerOccupiedDeskCode`。`AfterPlayerExtract()` 可合法在内部为 PureHellFryer 开下一锅，因此正常返回后不校验旧 Extract receipt；回调异常仍属于不可逆不确定。酒水专用入口从稳定 target 内部 fresh lookup，不接受外层通用 order wrapper；其库存序列对所有非零值（包括无限哨兵 `-1`）都调用缓存的精确 `BeverageOut(int,bool)` 和 `BeverageInRange/BeverageOutRange(IEnumerable<int>,bool)`，由游戏 API 保持无限哨兵，有限库存显示按免费净零或额外消耗全量计算。实际项目 `get_Tags()` 只接受 `Il2CppStructArray<int>`。酒水送达同样补齐 `AddBussinessBeverageConsumes`、`BeverageDelivered` 和桌位通知。所有记账对象、精确方法、枚举上下文和桌位必须在评价前缓存；评价返回后禁止重新读取可能已经释放的 IL2CPP wrapper，缓存 order 仅作为 Partner 状态通知的不透明参数。
+- 每次 captured/live 专用查询都从当前订单精确读取 `ManualOrder` 并重新绑定同一 order/controller 的评价回调，不能沿用捕获时的旧路由。酒水事务在扣库前和每次 fresh reacquire 都读取 `ServedBeverageInAir`；初始非空只等待，不执行副作用，任何不可逆步骤后出现则进入不重放栅栏。最终料理同时拒绝 `ServedFoodInAir` 与 `ServedBeverageInAir`。酒水是唯一已送达项且订单尚未 fulfilled 时，标准订单在 final setter 后、range 库存调整前恢复一次原生耐心，手动控制订单不恢复；耐心回调和 range 回调后都重新复核目标 revision、订单和精确酒水。经营中任一料理送达或订单完成阶段开关从开启变为关闭时，现有取消栅栏立即撤销未进入不可逆步骤的 job，不能让开锅时锁存的旧开关继续结算。
+- 每个 cooking job 只使用小型单调 `YuumaSettlementTransactionTracker` 记录不可重放阶段；最终 setter、评价或记账任一阶段进入后结果不确定即转为终止人工确认栅栏，不得自动重试或跨路由补做。此前导致第三阶段无订单的是缺少完整原生顺序与订单路由复核的通用直评；评价只允许存在于上述专用入口。不得恢复旧的大范围 Yuuma finalization gate/coordinator、consumed/ACK 特例、HUD 进度 identity、送餐面板/UI 模拟、手动回调兼容分支、托盘、生成闭包、协程或 `MoveNext` 路径。
+- HUD、挑战类型、订单分类和料理 job 诊断均按当前夜间经营 generation 隔离并有界去重；挑战类型无法读取时立即清除旧目标，使推荐、置顶、高亮和自动化 fail-closed，不把该场景当作普通经营继续处理。
+- 规范 signature 不包含运行时 revision；revision 必须作为独立正数从同锁快照原样透传到前端 wire policy、本地 API、后端 target 和 cooking job，并在每个副作用边界与当前值精确比较。怪诞料理和空策略使用 `0`。因此 `A -> B -> A` 后第一轮 A 的迟到动作不能在第二轮 A 生效，缺失 revision 不按签名兼容放行。
+- 酒水基础扣库返回后，必须先复核 generation/policy/revision 并 fresh reacquire 同一未提交订单，再从 fresh order 解析最终 setter；setter 和 range 调整返回后也分别重新复核。只有最后一次 fresh order 可以建立并执行经营记账上下文，任何一步不确定都不得重放扣库或 setter。
 
 ## 其他挑战
 
 - `Story_Basic` / `Story_Advanced`：展示目标营业额和符卡计数，不改变推荐排序。
-- `Story_BloodPondHell`：展示血池地狱挑战的双料理 Tag；由于 BOSS 怒气、伤害和评价副作用未完整验证，其特殊订单不交给标准自动化。
 - 青娥、布都、屠自古料理挑战：展示目标营业额，不改变推荐排序。
 - 云居一轮、村纱水蜜、寅丸星音游挑战、芙兰朵露的笼女游戏和 `Rogue Like`：不接入料理/酒水推荐。
 - 瑞灵相关挑战：当前只提示挑战存在；抓捕、错误料理/酒水 Tag 和辣椒等副作用尚未有完整实机证据，不推断规则，不改变自动化。
@@ -118,7 +146,7 @@
 - C# 挑战上下文、订单分类、运行时匹配和场景策略放在 `mods/bepinex/src/Save/SpecialBusiness/`。前端规则、普客执行目标和失败组合处理放在 `apps/companion/src/companion/domain/special-business/`，由 registry 按 `challengeType` 分发。
 - 挑战/BOSS 订单可能以 `OrderBase/Normal` 或 `SpecialOrder` 形态出现。“原订单匹配目标”用于找到真实运行时订单，“实际执行目标”用于开锅和送达，两者不得混用；`AllOrders` / `AllOrdersData` / `PeekOrders()` 返回的 `OrderBase` 必须通过共享 IL2CPP cast 入口规范为 `SpecialOrder` 后再读取特殊订单身份。古明地恋本体继续使用 manager 可发现的 live-controller 专用定位，不复用幽幽子三阶段的 capture 优先路径。
 - 特殊经营规则完成计划排序后，`executionPlans[0]` 是该稀客订单唯一主执行计划。页面料理/酒水首项、自动化初始锁、游戏界面置顶、列表高亮和厨具高亮必须消费同一计划，不得按场景再实现第二套目标选择。订单层可以跳过没有主计划的订单，但选中订单后不能扫描其后续计划。
-- 任何跨帧待办和 `AutomationCookingJob` 都必须保留挑战类型、阶段、订单角色、原订单目标、执行目标、Tag 签名和当前夜间经营 generation，防止旧订单或旧目标串到新订单。进入 Closing 时清理特殊经营上下文和未完成 job，Destroyed 后不得再访问已失效的 Unity wrapper。
+- 任何跨帧待办和 `AutomationCookingJob` 都必须保留挑战类型、owner、订单角色、原订单目标、执行目标、匹配模式、规范 Tag 签名和当前夜间经营 generation，防止旧订单或旧目标串到新订单。阶段文本不单独进入 wire 身份；阶段导致目标 Tag 或匹配规则变化时，规范签名自然变化。进入 Closing 时清理特殊经营上下文和未完成 job，Destroyed 后不得再访问已失效的 Unity wrapper。
 - 总日志必须记录原始/有效挑战类型、阶段、订单角色、match/execution 目标、评价回调证据、结构化 outcome 和阻断原因。用户帮助页只说明可观察行为，不暴露内部 hook 名称或伪代码地址。
 
 ## 重新验证清单
@@ -129,3 +157,4 @@
 2. 用 IDA 索引、调用交叉引用和伪代码重新确认 Native 副作用。
 3. 用实机总日志确认 HUD 目标、订单归属、送达、评价和挑战进度。
 4. 同步检查前端推荐首项、自动化初始锁、游戏界面置顶、高亮与诊断文案是否使用同一主执行计划和同一夜间经营 generation。
+5. 血池地狱至少覆盖第一、第二、第三阶段，多笔 BOSS 订单并发、`ManualOrder=true/false` 两条评价路由、同名料理但不同原始 Tag、相同/不同 Tag 目标刷新、成品 Tag 不匹配、黑暗料理、玩家投掷送餐模式持续生效、真实料理/酒水 in-air、事件锁锅/毁锅、分别关闭自动送达料理与自动完成、取消、手动接管和场景退出；确认双开关开启时 Mod 完成送酒、开锅、料理提交、评价和原生状态通知，任一开关关闭时稳定进入人工交接，玩家投掷模式不阻断无界面结算而真实 in-air 期间无副作用等待，第三阶段持续生成并处理订单。锁定厨具应退出推荐、预约和高亮；任一不可逆阶段不确定后通用栅栏仍按现有 ACK 流程验证且不重放。

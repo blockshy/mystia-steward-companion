@@ -1,11 +1,13 @@
+import type { SpecialBusinessFoodTargetPolicy } from '@/recommendation-engine';
+
 export type YuyukoProgressEvaluationMode =
   | 'none'
   | 'story-level-sum'
   | 'retake-tag-order';
 
 export interface SpecialBusinessOrderRule {
-  requiresWackyFoodTarget: boolean;
-  foodTargetTags: string[];
+  foodTarget: SpecialBusinessFoodTargetPolicy;
+  blockingReason: string;
   requiresBaseOrderMatch: boolean;
   requiresHighEvaluation: boolean;
   highEvaluationMinPreferenceMatches: number;
@@ -19,8 +21,12 @@ export interface SpecialBusinessOrderRule {
 
 export function emptySpecialBusinessOrderRule(): SpecialBusinessOrderRule {
   return {
-    requiresWackyFoodTarget: false,
-    foodTargetTags: [],
+    foodTarget: {
+      enforcement: 'none',
+      match: 'any',
+      tags: [],
+    },
+    blockingReason: '',
     requiresBaseOrderMatch: false,
     requiresHighEvaluation: false,
     highEvaluationMinPreferenceMatches: 0,

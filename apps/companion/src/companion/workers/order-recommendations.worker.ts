@@ -214,7 +214,13 @@ function buildResultSignature(result: OrderRecommendationResult): string {
       item.target?.foodTags.join(',') ?? '',
       item.target?.expectedFoodModifierTags.join(',') ?? '',
       item.target?.beverageTags.join(',') ?? '',
-      item.target?.wackyTargetFoodTags?.join(',') ?? '',
+      item.target?.specialTargetChallenge ?? '',
+      item.target?.specialTargetOwner ?? '',
+      item.target?.specialTargetGeneration ?? '',
+      item.target?.specialTargetRevision ?? '',
+      item.target?.specialTargetFoodTags.join(',') ?? '',
+      item.target?.specialTargetMatchMode ?? '',
+      item.target?.specialTargetSignature ?? '',
     ].join('|')).join('\n'),
   ].join('\n---\n');
 }

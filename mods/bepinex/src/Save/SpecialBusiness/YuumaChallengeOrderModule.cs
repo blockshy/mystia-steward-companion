@@ -1,27 +1,280 @@
+using System.Reflection;
+
 namespace MystiaStewardCompanion.Save;
 
 internal sealed class YuumaChallengeOrderModule : ISpecialBusinessOrderModule
 {
-    private const string ChallengeType = "Story_BloodPondHell";
-    private const int YuumaBossGuestId = 1003;
-
     public bool MatchesChallenge(string challengeType)
     {
-        return string.Equals(challengeType, ChallengeType, StringComparison.Ordinal);
+        return string.Equals(challengeType, SpecialBusinessChallengeTypes.BloodPondHell, StringComparison.Ordinal);
     }
 
     public SpecialBusinessOrderClassification Classify(
         string challengeType,
-        SpecialBusinessOrderProbe guest,
         object? order,
         object? controller,
         string source)
     {
-        return guest.IsGuest(YuumaBossGuestId, "Yuuma", "Toutetsu", "饕餮", "尤魔")
-            ? SpecialBusinessModuleRegistry.Blocked(
-                SpecialBusinessOrderRoles.YuumaBoss,
-                "饕餮尤魔挑战订单",
-                "饕餮尤魔挑战订单需要走原生怒气和伤害评价流程，已阻止标准自动化接管。")
-            : SpecialBusinessOrderClassification.Standard;
+        var identity = YuumaChallengeOrderIdentity.Read(order, controller);
+        if (!identity.Verified)
+        {
+            var blocked = SpecialBusinessModuleRegistry.Blocked(
+                SpecialBusinessOrderRoles.YuumaUnverified,
+                "血池地狱订单",
+                $"血池地狱订单身份无法精确确认，已阻止自动化接管：{identity.Reason}");
+            SpecialBusinessDiagnostics.AppendYuumaOrderClassification(
+                challengeType,
+                blocked,
+                identity,
+                order,
+                controller,
+                source);
+            return blocked;
+        }
+
+        if (identity.OrderGuestId != SpecialBusinessGuestIds.YuumaBoss)
+        {
+            return SpecialBusinessOrderClassification.Standard;
+        }
+
+        var classification = SpecialBusinessModuleRegistry.AllowedSpecialOrder(
+            SpecialBusinessOrderRoles.YuumaBoss,
+            "血池地狱 BOSS 订单",
+            identity.OrderGuestId.Value);
+        SpecialBusinessDiagnostics.AppendYuumaOrderClassification(
+            challengeType,
+            classification,
+            identity,
+            order,
+            controller,
+            source);
+        return classification;
+    }
+}
+
+internal sealed record YuumaChallengeOrderIdentity(
+    bool Verified,
+    string OrderKind,
+    int? OrderGuestId,
+    int? ControllerGuestId,
+    string Reason)
+{
+    private const string OrderBaseTypeName = "NightScene.GuestManagementUtility.GuestsManager+OrderBase";
+    private const string NormalOrderTypeName = "NightScene.GuestManagementUtility.GuestsManager+NormalOrder";
+    private const string SpecialOrderTypeName = "NightScene.GuestManagementUtility.GuestsManager+SpecialOrder";
+
+    public static YuumaChallengeOrderIdentity Read(object? order, object? controller)
+    {
+        if (order == null)
+        {
+            return new YuumaChallengeOrderIdentity(false, "", null, null, "order is null");
+        }
+
+        var orderTypeName = order.GetType().FullName ?? "";
+        object readableOrder;
+        string orderKind;
+        switch (orderTypeName)
+        {
+            case NormalOrderTypeName:
+                readableOrder = order;
+                orderKind = "NormalOrder";
+                break;
+            case SpecialOrderTypeName:
+                readableOrder = order;
+                orderKind = "SpecialOrder";
+                break;
+            case OrderBaseTypeName:
+                var normalOrder = RuntimeReflectionUtility.TryCastRuntimeObject(order, NormalOrderTypeName);
+                var specialOrder = RuntimeReflectionUtility.TryCastRuntimeObject(order, SpecialOrderTypeName);
+                var hasNormalOrder = HasExactType(normalOrder, NormalOrderTypeName);
+                var hasSpecialOrder = HasExactType(specialOrder, SpecialOrderTypeName);
+                if (hasNormalOrder == hasSpecialOrder)
+                {
+                    var castStatus = hasNormalOrder
+                        ? "both NormalOrder and SpecialOrder conversions succeeded"
+                        : "neither NormalOrder nor SpecialOrder conversion succeeded";
+                    return new YuumaChallengeOrderIdentity(
+                        false,
+                        "",
+                        null,
+                        null,
+                        $"OrderBase runtime type is unresolved: {castStatus}");
+                }
+
+                readableOrder = hasNormalOrder ? normalOrder! : specialOrder!;
+                orderKind = hasNormalOrder ? "NormalOrder" : "SpecialOrder";
+                break;
+            default:
+                return new YuumaChallengeOrderIdentity(
+                    false,
+                    "",
+                    null,
+                    null,
+                    $"unsupported order type {orderTypeName}");
+        }
+
+        var guestProperty = orderKind == "NormalOrder" ? "Guest" : "SpecialGuests";
+        if (!TryReadDeclaredGuestId(readableOrder, guestProperty, out var orderGuestId, out var orderError))
+        {
+            return new YuumaChallengeOrderIdentity(false, orderKind, null, null, orderError);
+        }
+
+        if (controller == null)
+        {
+            return orderGuestId == SpecialBusinessGuestIds.YuumaBoss
+                ? new YuumaChallengeOrderIdentity(
+                    false,
+                    orderKind,
+                    orderGuestId,
+                    null,
+                    "boss order controller is unavailable")
+                : new YuumaChallengeOrderIdentity(
+                    true,
+                    orderKind,
+                    orderGuestId,
+                    null,
+                    "verified non-boss order; controller unavailable");
+        }
+
+        if (!TryReadControllerGuestId(controller, out var controllerGuestId, out var controllerError))
+        {
+            return orderGuestId == SpecialBusinessGuestIds.YuumaBoss
+                ? new YuumaChallengeOrderIdentity(false, orderKind, orderGuestId, null, controllerError)
+                : new YuumaChallengeOrderIdentity(true, orderKind, orderGuestId, null, controllerError);
+        }
+
+        if (controllerGuestId != orderGuestId)
+        {
+            return new YuumaChallengeOrderIdentity(
+                false,
+                orderKind,
+                orderGuestId,
+                controllerGuestId,
+                $"order guest ID {orderGuestId} does not match controller OrderingGuest ID {controllerGuestId}");
+        }
+
+        return new YuumaChallengeOrderIdentity(
+            true,
+            orderKind,
+            orderGuestId,
+            controllerGuestId,
+            "order and controller identities match");
+    }
+
+    private static bool HasExactType(object? value, string expectedTypeName)
+    {
+        return value != null
+            && string.Equals(value.GetType().FullName, expectedTypeName, StringComparison.Ordinal);
+    }
+
+    private static bool TryReadDeclaredGuestId(
+        object order,
+        string propertyName,
+        out int guestId,
+        out string error)
+    {
+        guestId = -1;
+        error = "";
+        try
+        {
+            var property = order.GetType().GetProperty(
+                propertyName,
+                BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly);
+            if (property == null || property.GetIndexParameters().Length != 0)
+            {
+                error = $"{order.GetType().FullName}.{propertyName} exact property not found";
+                return false;
+            }
+
+            return TryReadGuestId(property.GetValue(order), $"{order.GetType().FullName}.{propertyName}", out guestId, out error);
+        }
+        catch (Exception ex)
+        {
+            error = $"{order.GetType().FullName}.{propertyName} read failed: {ex.GetBaseException().GetType().Name}: {ex.GetBaseException().Message}";
+            return false;
+        }
+    }
+
+    private static bool TryReadControllerGuestId(
+        object? controller,
+        out int guestId,
+        out string error)
+    {
+        guestId = -1;
+        error = "";
+        if (controller == null)
+        {
+            error = "controller is null";
+            return false;
+        }
+
+        try
+        {
+            var property = controller.GetType().GetProperty(
+                "OrderingGuest",
+                BindingFlags.Public | BindingFlags.Instance);
+            if (property == null || property.GetIndexParameters().Length != 0)
+            {
+                error = $"{controller.GetType().FullName}.OrderingGuest exact property not found";
+                return false;
+            }
+
+            return TryReadGuestId(
+                property.GetValue(controller),
+                $"{controller.GetType().FullName}.OrderingGuest",
+                out guestId,
+                out error);
+        }
+        catch (Exception ex)
+        {
+            error = $"{controller.GetType().FullName}.OrderingGuest read failed: {ex.GetBaseException().GetType().Name}: {ex.GetBaseException().Message}";
+            return false;
+        }
+    }
+
+    private static bool TryReadGuestId(
+        object? guest,
+        string source,
+        out int guestId,
+        out string error)
+    {
+        guestId = -1;
+        error = "";
+        if (guest == null)
+        {
+            error = $"{source} is null";
+            return false;
+        }
+
+        try
+        {
+            var idProperty = guest.GetType().GetProperty("Id", BindingFlags.Public | BindingFlags.Instance);
+            if (idProperty == null
+                || idProperty.PropertyType != typeof(int)
+                || !string.Equals(
+                    idProperty.DeclaringType?.FullName,
+                    "GameData.Core.Collections.NightSceneUtility.GuestBase",
+                    StringComparison.Ordinal)
+                || idProperty.GetIndexParameters().Length != 0)
+            {
+                error = $"{source}.Id exact int property not found";
+                return false;
+            }
+
+            var value = idProperty.GetValue(guest);
+            if (value is not int id)
+            {
+                error = $"{source}.Id did not return System.Int32";
+                return false;
+            }
+
+            guestId = id;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = $"{source}.Id read failed: {ex.GetBaseException().GetType().Name}: {ex.GetBaseException().Message}";
+            return false;
+        }
     }
 }

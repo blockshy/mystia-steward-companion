@@ -1,6 +1,7 @@
 import { buildRuntimeSets } from '@/companion/domain/cookers';
 import { buildRecommendationRuntimeContext } from '@/companion/domain/service-recommendations';
 import { normalizeSpecialBusinessTags } from '@/companion/domain/special-business/rules';
+import { emptySpecialFoodTargetWirePolicy } from '@/companion/domain/special-business/target-policy';
 import type { CompanionPreferences } from '@/companion/preferences';
 import type {
   NormalBusinessOrder,
@@ -19,6 +20,7 @@ import type {
   FoodCandidate,
   RareTagOrderDemand,
   RecommendationRuntimeContext,
+  SpecialBusinessFoodTargetPolicy,
 } from '@/recommendation-engine';
 
 export const CANDIDATE_PAIR_FOOD_LIMIT = 48;
@@ -27,7 +29,7 @@ export const CANDIDATE_PAIR_BEVERAGE_LIMIT = 32;
 interface BuildExecutionTargetOptions {
   executionMode?: NormalOrderExecutionMode;
   expectedFoodModifierTags?: readonly string[];
-  wackyTargetFoodTags?: readonly string[];
+  specialTargetFoodTags?: readonly string[];
 }
 
 export function buildNormalTargetRuntimeContext(
@@ -92,14 +94,21 @@ export function buildSyntheticDemand(
   customer: RareCustomerCatalogItem,
   requiredFoodTag: string,
   requiredBeverageTag: string,
-  specialFoodTargetTags: readonly string[] = [],
+  specialFoodTarget?: SpecialBusinessFoodTargetPolicy,
 ): RareTagOrderDemand {
   return {
     type: 'rare-tag-order',
     customer,
     requiredFoodTag,
     requiredBeverageTag,
-    specialFoodTargetTags: normalizeSpecialBusinessTags(specialFoodTargetTags),
+    ...(specialFoodTarget
+      ? {
+        specialFoodTarget: {
+          ...specialFoodTarget,
+          tags: normalizeSpecialBusinessTags(specialFoodTarget.tags),
+        },
+      }
+      : {}),
   };
 }
 
@@ -141,8 +150,9 @@ export function buildExecutionTarget(
 ): NormalOrderExecutionTarget {
   const executionMode = options.executionMode;
   const expectedFoodModifierTags = options.expectedFoodModifierTags ?? [];
-  const wackyTargetFoodTags = options.wackyTargetFoodTags ?? [];
+  const specialTargetFoodTags = options.specialTargetFoodTags ?? [];
   return {
+    ...emptySpecialFoodTargetWirePolicy(),
     matchFoodId: order.foodId,
     matchBeverageId: order.beverageId,
     foodId: food.recipe.id,
@@ -156,7 +166,7 @@ export function buildExecutionTarget(
     foodTags: food.activeTags,
     expectedFoodModifierTags: normalizeSpecialBusinessTags(expectedFoodModifierTags),
     beverageTags: beverage.activeTags,
-    wackyTargetFoodTags: normalizeSpecialBusinessTags(wackyTargetFoodTags),
+    specialTargetFoodTags: normalizeSpecialBusinessTags(specialTargetFoodTags),
     reason,
   };
 }

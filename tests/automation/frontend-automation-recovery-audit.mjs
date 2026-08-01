@@ -5,8 +5,12 @@ import { once } from 'node:events';
 import {
   canAdvanceAutomationRuntimeEventSequence,
   getAutomationStageFailureRetirement,
+  hasAutomationCookingJobStageBeenDisabled,
+  hasAutomationSpecialTargetRotated,
   isAutomationResponseCurrent,
   isRecoverableCookingTerminalEvent,
+  reconcileAutomationRollbackTarget,
+  reduceAutomationCookingRollbackBudget,
   reduceAutomationStageOutcome,
   requiresManualAutomationResolution,
   resolveAutomationNextAttemptAtMs,
@@ -15,11 +19,104 @@ import {
   resolveAutomationStepStartedAtMs,
   resolveAutomationWaitingStep,
   selectAutomationRequestStage,
+  shouldRequestNormalOrderCompletion,
+  shouldRetainAutomationStateWithoutCandidate,
   shouldRetireMissingManualBarrier,
 } from '../../apps/companion/src/companion/automation-machine.ts';
 
 const root = new URL('../../', import.meta.url);
 const initial = { retryCount: 2, lastProgressAtMs: 1000, retryStage: 'ensure-beverage' };
+const allCookingJobStagesEnabled = {
+  autoPrepCollectCooking: true,
+  autoPrepCompleteOrder: true,
+  autoNormalDeliverFood: true,
+  autoNormalCompleteOrder: true,
+};
+
+for (const [field, label] of [
+  ['autoPrepCollectCooking', 'rare food delivery'],
+  ['autoPrepCompleteOrder', 'rare order completion'],
+  ['autoNormalDeliverFood', 'normal food delivery'],
+  ['autoNormalCompleteOrder', 'normal order completion'],
+]) {
+  assert.equal(
+    hasAutomationCookingJobStageBeenDisabled(
+      allCookingJobStagesEnabled,
+      { ...allCookingJobStagesEnabled, [field]: false },
+    ),
+    true,
+    `Disabling ${label} must cancel cooking jobs that captured the old stage intent.`,
+  );
+}
+assert.equal(
+  hasAutomationCookingJobStageBeenDisabled(
+    { ...allCookingJobStagesEnabled, autoPrepCollectCooking: false },
+    allCookingJobStagesEnabled,
+  ),
+  false,
+  'Enabling an automation stage must not manufacture a cancellation barrier.',
+);
+assert.equal(
+  hasAutomationCookingJobStageBeenDisabled(allCookingJobStagesEnabled, allCookingJobStagesEnabled),
+  false,
+  'Unchanged stage preferences must not cancel active cooking jobs.',
+);
+assert.equal(shouldRequestNormalOrderCompletion({
+  completionEnabled: true,
+  completionReady: false,
+  foodDeliveryEnabled: true,
+  forceKoishiFullFeedAutomation: false,
+  startsCooking: true,
+  yuumaBossSettlement: true,
+}), true, 'A Blood Pond Hell normal cooking job must capture the enabled completion intent before food is served.');
+assert.equal(shouldRequestNormalOrderCompletion({
+  completionEnabled: false,
+  completionReady: false,
+  foodDeliveryEnabled: true,
+  forceKoishiFullFeedAutomation: false,
+  startsCooking: true,
+  yuumaBossSettlement: true,
+}), false, 'A disabled completion stage must keep Blood Pond Hell cooking jobs in manual handoff.');
+assert.equal(shouldRequestNormalOrderCompletion({
+  completionEnabled: true,
+  completionReady: false,
+  foodDeliveryEnabled: false,
+  forceKoishiFullFeedAutomation: false,
+  startsCooking: true,
+  yuumaBossSettlement: true,
+}), false, 'Blood Pond Hell settlement must still require automatic food delivery.');
+assert.equal(shouldRequestNormalOrderCompletion({
+  completionEnabled: true,
+  completionReady: false,
+  foodDeliveryEnabled: true,
+  forceKoishiFullFeedAutomation: false,
+  startsCooking: true,
+  yuumaBossSettlement: false,
+}), false, 'Ordinary normal orders must not request completion before they are ready.');
+assert.equal(shouldRequestNormalOrderCompletion({
+  completionEnabled: true,
+  completionReady: true,
+  foodDeliveryEnabled: false,
+  forceKoishiFullFeedAutomation: false,
+  startsCooking: false,
+  yuumaBossSettlement: false,
+}), true, 'An ordinary normal order may request completion after becoming ready.');
+assert.equal(shouldRequestNormalOrderCompletion({
+  completionEnabled: true,
+  completionReady: false,
+  foodDeliveryEnabled: true,
+  forceKoishiFullFeedAutomation: false,
+  startsCooking: false,
+  yuumaBossSettlement: true,
+}), false, 'Blood Pond Hell must not request completion without a cooking job action to bind it to.');
+assert.equal(shouldRequestNormalOrderCompletion({
+  completionEnabled: true,
+  completionReady: true,
+  foodDeliveryEnabled: true,
+  forceKoishiFullFeedAutomation: true,
+  startsCooking: true,
+  yuumaBossSettlement: false,
+}), false, 'The Koishi full-feed path must not enter the ordinary completion action.');
 
 const waiting = reduceAutomationStageOutcome(initial, 'waiting', 'ensure-beverage', 5000, true, 3);
 assert.deepEqual(waiting, {
@@ -76,6 +173,11 @@ assert.equal(requiresManualAutomationResolution('beverage-delivery-commit-uncert
 assert.equal(requiresManualAutomationResolution('future-uncertain'), false);
 assert.equal(requiresManualAutomationResolution('food-delivery-commit-uncertain'), true);
 assert.equal(requiresManualAutomationResolution('cooking-delivery-cleanup-failed'), true);
+assert.equal(
+  requiresManualAutomationResolution('cooking-manual-handoff'),
+  false,
+  'A deterministic final-food handoff must remain a waiting state, not an ACK barrier.',
+);
 assert.equal(requiresManualAutomationResolution('cooking-manual-handoff-unreadable'), true);
 assert.equal(requiresManualAutomationResolution('order-evaluation-state-unreadable'), false);
 assert.equal(requiresManualAutomationResolution('order-evaluation-commit-uncertain'), true);
@@ -112,13 +214,140 @@ assert.equal(isRecoverableCookingTerminalEvent({
   outcome: 'interrupted',
   terminal: false,
 }), false, 'A non-terminal ownership observation must not enter terminal recovery.');
+assert.deepEqual(
+  reduceAutomationCookingRollbackBudget(1, {
+    reasonCode: 'cooking-food-mismatch-stored',
+  }),
+  {
+    rollbackCount: 2,
+    action: 'consumed',
+  },
+  'A dark or otherwise mismatched result under the same execution target must consume rollback budget.',
+);
+assert.deepEqual(
+  reduceAutomationCookingRollbackBudget(0, {
+    reasonCode: 'cooking-ownership-lost',
+  }),
+  {
+    rollbackCount: 1,
+    action: 'consumed',
+  },
+  'A native or player Extract is one bounded external-intervention rollback; later locked-cooker waits do not add another.',
+);
+assert.deepEqual(
+  reduceAutomationCookingRollbackBudget(2, {
+    reasonCode: 'cooking-target-changed-stored',
+  }),
+  {
+    rollbackCount: 2,
+    action: 'deferred',
+  },
+  'A target-change terminal event alone must retain the old budget until a different nonempty target is observed.',
+);
+assert.equal(hasAutomationSpecialTargetRotated('', 0, 'target-a', 1), false,
+  'Initial target acquisition must not be treated as retirement of an earlier budget.');
+assert.equal(hasAutomationSpecialTargetRotated('target-a', 1, 'target-a', 1), false);
+assert.equal(hasAutomationSpecialTargetRotated('target-a', 1, 'target-b', 2), true);
+assert.equal(hasAutomationSpecialTargetRotated('target-a', 1, 'target-a', 3), true,
+  'A -> B -> A must still rotate by runtime revision when the canonical A signature returns.');
+assert.equal(hasAutomationSpecialTargetRotated('target-a', 1, '', 0), false,
+  'Ending a target action must not manufacture a target-rotation recovery.');
+const rollbackState = {
+  rollbackCount: 2,
+  rollbackTargetSignature: 'target-a',
+  rollbackTargetRevision: 1,
+  paused: true,
+  manualResolutionRequired: false,
+  pauseReasonCode: 'rollback-limit-reached',
+  step: 'paused',
+  stepStartedAtMs: 1000,
+  retryCount: 3,
+  retryStage: 'ensure-cooking',
+  nextAttemptAtMs: 9000,
+  lastError: 'limit',
+  pausedStage: 'ensure-cooking',
+};
+const emptyTarget = reconcileAutomationRollbackTarget(rollbackState, '', 0, 5000);
+assert.equal(emptyTarget.state.rollbackTargetSignature, 'target-a',
+  'A temporary empty target must retain the last nonempty rollback owner.');
+assert.equal(emptyTarget.rotated, false);
+const returnedCanonicalTarget = reconcileAutomationRollbackTarget(
+  emptyTarget.state,
+  'target-a',
+  3,
+  5750,
+);
+assert.equal(returnedCanonicalTarget.rotated, true,
+  'A returned canonical signature must retire stale rollback state when its runtime revision advanced.');
+assert.equal(returnedCanonicalTarget.state.rollbackTargetRevision, 3);
+const targetUnavailableEvent = reduceAutomationCookingRollbackBudget(1, {
+  reasonCode: 'cooking-target-changed-stored',
+});
+const emptyAfterRuntimeEvent = reconcileAutomationRollbackTarget({
+  ...rollbackState,
+  rollbackCount: targetUnavailableEvent.rollbackCount,
+  paused: false,
+  pauseReasonCode: '',
+}, '', 0, 5500);
+assert.equal(emptyAfterRuntimeEvent.state.rollbackCount, 1,
+  'A -> empty plus the runtime storage event must preserve A budget.');
+assert.equal(emptyAfterRuntimeEvent.state.rollbackTargetSignature, 'target-a');
+const rotatedAfterRuntimeEvent = reconcileAutomationRollbackTarget(
+  emptyAfterRuntimeEvent.state,
+  'target-b',
+  2,
+  6000,
+);
+assert.equal(rotatedAfterRuntimeEvent.state.rollbackCount, 0);
+assert.equal(rotatedAfterRuntimeEvent.rotated, true,
+  'Only a different nonempty target may retire the retained A budget.');
+assert.equal(
+  shouldRetainAutomationStateWithoutCandidate(emptyAfterRuntimeEvent.state, true),
+  true,
+  'An active order must retain its last nonempty rollback owner while the special target is empty.',
+);
+assert.equal(
+  shouldRetainAutomationStateWithoutCandidate(emptyAfterRuntimeEvent.state, false),
+  false,
+  'A removed order must not keep a stale rollback owner.',
+);
+assert.equal(
+  shouldRetainAutomationStateWithoutCandidate({
+    ...emptyAfterRuntimeEvent.state,
+    manualResolutionRequired: true,
+    rollbackTargetSignature: '',
+  }, false),
+  true,
+  'A manual safety barrier must survive even after its order disappears from the current recommendation set.',
+);
+const rotatedTarget = reconcileAutomationRollbackTarget(emptyTarget.state, 'target-b', 2, 6000);
+assert.equal(rotatedTarget.rotated, true);
+assert.equal(rotatedTarget.state.rollbackCount, 0);
+assert.equal(rotatedTarget.state.rollbackTargetSignature, 'target-b');
+assert.equal(rotatedTarget.state.rollbackTargetRevision, 2);
+assert.equal(rotatedTarget.state.paused, false,
+  'A rollback-limit pause must resume when a different nonempty target arrives.');
+assert.equal(rotatedTarget.state.step, 'ensure-cooking');
+const manualBarrier = reconcileAutomationRollbackTarget({
+  ...rollbackState,
+  manualResolutionRequired: true,
+  pauseReasonCode: 'cooking-delivery-commit-uncertain',
+}, 'target-b', 2, 6000);
+assert.equal(manualBarrier.state.paused, true);
+assert.equal(manualBarrier.state.manualResolutionRequired, true,
+  'Target rotation must not release a manual safety barrier.');
+const unrelatedPause = reconcileAutomationRollbackTarget({
+  ...rollbackState,
+  pauseReasonCode: 'stage-retry-limit-reached',
+}, 'target-b', 2, 6000);
+assert.equal(unrelatedPause.state.paused, true,
+  'Target rotation must not release an unrelated pause.');
 assert.equal(selectAutomationRequestStage({
   needsBeverage: true,
   needsCooking: true,
   needsDelivery: true,
   needsCompletion: true,
 }), 'ensure-beverage', 'The request stage must follow the C# beverage-first execution order.');
-
 assert.equal(isAutomationResponseCurrent({
   requestEpoch: 4,
   currentEpoch: 5,
@@ -257,13 +486,76 @@ async function assertStageAndCancellationContracts() {
   const runtime = await readFile(new URL('mods/bepinex/src/Save/RuntimeOrderPreparationService.cs', root), 'utf8');
   const delivery = await readFile(new URL('mods/bepinex/src/Save/RuntimeOrderPreparationService.Delivery.cs', root), 'utf8');
   const directDelivery = await readFile(new URL('mods/bepinex/src/Save/RuntimeOrderPreparationService.DirectDelivery.cs', root), 'utf8');
+  const yuumaSettlement = await readFile(new URL('mods/bepinex/src/Save/RuntimeOrderPreparationService.YuumaSettlement.cs', root), 'utf8');
   const cooking = await readFile(new URL('mods/bepinex/src/Save/RuntimeOrderPreparationService.Cooking.cs', root), 'utf8');
+  const specialTargetPolicy = await readFile(
+    new URL('mods/bepinex/src/Save/SpecialBusiness/RuntimeOrderPreparationService.SpecialFoodTargetPolicy.cs', root),
+    'utf8',
+  );
   const cookingLifecycle = await readFile(new URL('mods/bepinex/src/Save/AutomationCookingJobLifecycle.cs', root), 'utf8');
   const orderMatching = await readFile(new URL('mods/bepinex/src/Save/RuntimeOrderPreparationService.OrderMatching.cs', root), 'utf8');
   const generationTracker = await readFile(new URL('mods/bepinex/src/Save/RuntimeCookingGenerationTracker.cs', root), 'utf8');
 
   assert.equal(domain.includes('buildCompleteOrderPreferences'), false, 'Completion must not force unrelated rare stages.');
   assert.ok(runtime.includes('else if (!request.AutoTakeBeverage)'), 'Rare completion must honor the beverage switch.');
+  assert.match(
+    workbench,
+    /autoNormalCompleteOrder: shouldRequestNormalOrderCompletion\(\{/,
+    'Normal completion requests must separate immediate evaluation from Blood Pond Hell cooking-job intent.',
+  );
+  assert.match(
+    workbench,
+    /const yuumaBossSettlement = specialTargetSelection\.specialTargetPolicy\.specialTargetOwner === 'yuuma';[\s\S]*const yuumaCompletionIntent = !forceKoishiFullFeedAutomation[\s\S]*companionPreferences\.autoNormalDeliverFood[\s\S]*companionPreferences\.autoNormalCompleteOrder[\s\S]*shouldStartCooking/,
+    'Only a validated Blood Pond Hell target may capture completion in the request that starts its cooking job.',
+  );
+  assert.match(api, /autoCompleteOrder: String\(preferences\.autoNormalCompleteOrder\)/);
+  assert.match(api, /autoCompleteOrder: String\(preferences\.autoPrepCompleteOrder\)/);
+  assert.equal(
+    `${automationMachine}\n${workbench}\n${api}\n${types}\n${runtime}`.includes('AutoFinalizeCookingJob')
+      || `${automationMachine}\n${workbench}\n${api}\n${types}\n${runtime}`.includes('autoFinalizeCookingJob')
+      || `${automationMachine}\n${workbench}\n${api}\n${types}\n${runtime}`.includes('resolveAutomationCompletionIntent'),
+    false,
+    'The removed Blood Pond Hell direct-finalization protocol must not remain as a no-op field.',
+  );
+  const directYuumaDelivery = directDelivery.indexOf('private static (bool Remove, string Message, string Code) TryDeliverAutomationCookedFood(');
+  const directYuumaFinalizeGate = directDelivery.indexOf(
+    'if (job.AutoDeliverFood && job.AutoCompleteOrder)',
+    directYuumaDelivery,
+  );
+  const directYuumaFinalize = directDelivery.indexOf(
+    'return TryFinalizeYuumaCookingJob(job, cookedFood);',
+    directYuumaFinalizeGate,
+  );
+  const directYuumaHandoffReturn = directDelivery.indexOf(
+    'return EnterManualHandoff(job, DateTime.UtcNow);',
+    directYuumaFinalizeGate,
+  );
+  assert.ok(
+    directYuumaDelivery >= 0
+      && directYuumaFinalizeGate > directYuumaDelivery
+      && directYuumaFinalize > directYuumaFinalizeGate
+      && directYuumaHandoffReturn > directYuumaFinalize,
+    'Blood Pond Hell cooked food must use controlled settlement only when delivery and completion are both enabled; either disabled action must fall through to manual handoff.',
+  );
+  assert.ok(
+    yuumaSettlement.includes('TryFinalizeYuumaCookingJob(')
+      && yuumaSettlement.includes('TryInvokeYuumaEvaluation('),
+    'The guarded Blood Pond Hell automatic path must use the dedicated settlement transaction before evaluation.',
+  );
+  assert.equal(
+    automationMachine.includes("'yuuma-settlement-state-uncertain'"),
+    false,
+    'The frontend still exposes the removed Blood Pond Hell settlement ACK path.',
+  );
+  assert.ok(
+    specialTargetPolicy.includes('$"autoDeliverFood: {request.AutoDeliverFood}"')
+      && specialTargetPolicy.includes('$"autoCompleteOrder: {request.AutoCompleteOrder}"'),
+    'Blood Pond Hell request diagnostics must expose the current staged actions.',
+  );
+  assert.ok(
+    specialTargetPolicy.includes('$"{request.AutoDeliverFood}|{request.AutoCompleteOrder}|"'),
+    'Blood Pond Hell diagnostic deduplication must distinguish current action transitions.',
+  );
   assert.equal(stateMachine.includes("response.automation.stage === 'cooking'"), false, 'The removed generic cooking stage is still accepted.');
   assert.ok(stateMachine.includes("response.automation.stage === 'cooking-delivery'"));
   assert.equal(automationMachine.includes("case 'cooking':"), false, 'The frontend still carries the removed generic cooking-stage contract.');
@@ -328,6 +620,24 @@ async function assertStageAndCancellationContracts() {
   assert.ok(storage.includes('AUTOMATION_CANCELLATION_ENDPOINT_STORAGE_KEY'));
   assert.ok(workbench.includes('readStoredAutomationCancellationEndpoint'));
   assert.ok(workbench.includes("persistAutomationCancellationEndpoint('')"));
+  const cancellationRequest = workbench.slice(
+    workbench.indexOf('const requestAutomationCancellation = useCallback('),
+    workbench.indexOf('const updateCompanionPreferences = useCallback('),
+  );
+  const preferenceUpdate = workbench.slice(
+    workbench.indexOf('const updateCompanionPreferences = useCallback('),
+    workbench.indexOf('useEffect(() => {', workbench.indexOf('const updateCompanionPreferences = useCallback(')),
+  );
+  assert.ok(cancellationRequest.includes('automationRequestEpochRef.current += 1')
+    && cancellationRequest.includes('persistAutomationCancellationEndpoint(normalizedEndpoint)')
+    && cancellationRequest.includes('setAutomationCancellationEndpoint(normalizedEndpoint)'),
+  'Stage shutdown must reuse the durable automation cancellation barrier and invalidate in-flight requests.');
+  assert.ok(preferenceUpdate.includes('hasAutomationCookingJobStageBeenDisabled(current, normalized)')
+    && preferenceUpdate.includes('requestAutomationCancellation()'),
+  'Preference updates must route delivery/completion true -> false transitions through the existing cancellation barrier.');
+  assert.ok(preferenceUpdate.includes('current.automationEnabled')
+    && preferenceUpdate.includes('normalized.automationEnabled'),
+  'Stage-only cancellation must apply to an active automation session, while master shutdown retains its existing path.');
   assert.ok(workbench.includes('retryNormalAutomationOrder'));
   assert.ok(workbench.includes('resetNormalAutomationOrder'));
   assert.ok(servicePanel.includes('normal-auto:${diagnostic.orderKey}:retry'));
@@ -340,6 +650,39 @@ async function assertStageAndCancellationContracts() {
   assert.ok(workbench.includes('retainAutomationSafetyStates(normalOrderStatesRef.current)'));
   assert.ok(workbench.includes('if (!state.manualResolutionRequired) states.delete(orderKey);'), 'Only manual-resolution latches may survive an explicit automation reset.');
   assert.ok(workbench.includes('lastRuntimeEventSequence: state.lastRuntimeEventSequence'));
+  assert.equal(
+    (workbench.match(/reduceAutomationCookingRollbackBudget\(state\.rollbackCount, event\)/g) ?? []).length,
+    2,
+    'Rare and normal runtime mismatch recovery must share the structured rollback-budget policy.',
+  );
+  assert.ok(workbench.includes("'automation-rollback-budget-retired'"),
+    'Target-rotation budget retirement must be written through the existing structured automation diagnostic endpoint.');
+  assert.ok(workbench.includes('publishAutomationTargetRotationDiagnostic({'),
+    'A pure signature rotation must publish a bounded structured retirement diagnostic.');
+  assert.ok(workbench.includes('previousRevision=${input.previousRevision}')
+    && workbench.includes('nextRevision=${input.nextRevision}'),
+    'Target-rotation diagnostics must distinguish an A -> B -> A return by runtime revision.');
+  assert.ok(workbench.includes('retainRareAutomationContinuityStates('),
+    'A temporary zero-candidate recommendation pass must preserve an active order rollback owner.');
+  assert.ok(workbench.includes('orderRecommendations.recommendations.map(buildAutoOrderKey)'),
+    'Zero-candidate retention must be bounded by orders that still exist in the current recommendation result.');
+  assert.ok(workbench.includes('source=target-signature-reconciliation'),
+    'Target-signature retirement diagnostics must identify their non-runtime-event source.');
+  assert.equal(workbench.includes('selectionCount: 1,\n      skipCount: 0,'), false,
+    'Rollback diagnostics must not claim a selection when selectionLines is empty.');
+  assert.ok(domain.includes('reconcileAutomationRollbackTarget('),
+    'Rare special-target reconciliation must retire an old budget even before the terminal event snapshot arrives.');
+  assert.equal(
+    (workbench.match(/reconcileAutomationRollbackTarget\(/g) ?? []).length >= 2,
+    true,
+    'Normal-order scheduling and execution must reconcile target ownership before paused orders are skipped.',
+  );
+  assert.ok(stateMachine.includes('rollbackTargetSignature: string;'),
+    'Rare and normal automation states must retain the last nonempty rollback-owner signature.');
+  assert.ok(stateMachine.includes('rollbackTargetRevision: number;'),
+    'Rare and normal automation states must retain the independent runtime target revision.');
+  assert.ok(domain.includes('state.recipeTargetRevision !== revision'),
+    'Rare target locking must invalidate an A -> B -> A return even when its canonical signature matches.');
   assert.ok(workbench.includes('acquireAutomationLeaseSingleFlight'));
   assert.ok(workbench.includes('isAutomationLeaseOwnedForConnection('), 'A cached lease must be bound to the current connection and Mod session.');
   assert.ok(workbench.includes('buildAutomationLeaseConnectionKey('), 'The lease binding must use the endpoint, token, and authoritative Mod session.');
@@ -364,6 +707,13 @@ async function assertStageAndCancellationContracts() {
   assert.ok(servicePanel.includes('!diagnostic.paused || diagnostic.manualResolutionRequired'));
   assert.ok(api.includes('/automation/barriers/ack?${params.toString()}'), 'The frontend must use the canonical safety-barrier ACK endpoint.');
   assert.ok(api.includes("params.set('runtimeGuestId', String(item.order.runtimeGuestId))"), 'Rare automation must send the raw runtime guest identity.');
+  const normalOrderActionStart = api.indexOf('export async function completeFirstNormalOrder(');
+  const normalOrderActionEnd = api.indexOf('export async function readFavorites(', normalOrderActionStart);
+  const normalOrderAction = api.slice(normalOrderActionStart, normalOrderActionEnd);
+  assert.ok(
+    normalOrderAction.includes("if (order.runtimeGuestId != null) params.set('runtimeGuestId', String(order.runtimeGuestId))"),
+    'Normal automation must send the classifier-verified runtime guest identity.',
+  );
   assert.ok(api.includes("params.set('foodTagId', String(item.order.foodTagId))"), 'Rare automation must send the raw food Tag identity.');
   assert.ok(api.includes("params.set('beverageTagId', String(item.order.beverageTagId))"), 'Rare automation must send the raw beverage Tag identity.');
   assert.ok(domain.includes("'runtime-identity-missing'"), 'Orders with incomplete runtime identity must be skipped before automation requests.');
@@ -377,10 +727,41 @@ async function assertStageAndCancellationContracts() {
   assert.ok(stateMachine.includes("'order-evaluation-state-unreadable'"));
   assert.ok(stateMachine.includes("'order-evaluation-commit-uncertain'"));
   assert.ok(stateMachine.includes("'cooking-manual-handoff-unreadable'"));
+  assert.ok(stateMachine.includes("'cooking-manual-handoff-expired'"));
+  assert.ok(stateMachine.includes("'cooking-manual-handoff-resolved'"));
   assert.ok(stateMachine.includes("'cooking-cooker-waiting'"));
   assert.ok(stateMachine.includes("'cooking-ownership-lost'"));
   assert.equal(stateMachine.includes("'cooking-result-removed'"), false);
   assert.ok(automationMachine.includes("'cooking-manual-handoff-unreadable'"));
+  assert.equal(
+    automationMachine.includes("'cooking-manual-handoff-target-changed'"),
+    false,
+    'A rotated handoff must no longer be treated as a recoverable terminal that starts another cook.',
+  );
+  assert.ok(
+    workbench.match(/activeCookingJob\?\.state === 'manual-handoff-expired'/g)?.length >= 2,
+    'Rare and normal automation must both retain an expired handoff without issuing another food request.',
+  );
+  const normalAdmissionStart = workbench.indexOf('const runnableOrders: NormalBusinessOrder[] = [];');
+  const normalExpiredGate = workbench.indexOf(
+    "activeCookingJob?.state === 'manual-handoff-expired'",
+    normalAdmissionStart,
+  );
+  const normalAdmission = workbench.indexOf('runnableOrders.push(order);', normalAdmissionStart);
+  assert.ok(
+    normalAdmissionStart >= 0
+      && normalExpiredGate > normalAdmissionStart
+      && normalAdmission > normalExpiredGate,
+    'An expired normal-order handoff must be excluded before it can consume a concurrency slot.',
+  );
+  assert.ok(
+    workbench.includes('if (detailMessage === state.detailMessage) return state;'),
+    'An unchanged automation detail must preserve its timestamp instead of refreshing every poll.',
+  );
+  assert.ok(
+    workbench.includes('if (expiredHandoffState !== currentState)'),
+    'An unchanged rare-order expired-handoff detail must not increment the updated-order count.',
+  );
   assert.ok(
     automationMachine.includes("(outcome === 'waiting' && retryAfterMs > 0)"),
     'A structured waiting response with a delay must schedule the next attempt.',
@@ -461,6 +842,7 @@ async function assertMockProtocol() {
     const activeSnapshot = await getJson(`http://127.0.0.1:${port}/snapshot`);
     const activeJob = activeSnapshot.automationCookingJobs.find((job) => job.jobId === response.automation.jobId);
     assert.ok(activeJob, 'Mock snapshot must expose the cooking job created by the action response.');
+    assert.equal('autoFinalizeCookingJob' in activeJob, false);
     assert.equal(activeJob.warmerStoreCommitUncertain, false);
     assert.equal(activeJob.foodDeliveryCommitted, false);
     assert.equal(activeJob.foodDeliveryCommitUncertain, false);

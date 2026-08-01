@@ -141,6 +141,11 @@ public sealed class RuntimeReflectionRecommendationStateProvider
         }
         else
         {
+            state.PlacedCookerSnapshotComplete = false;
+            state.PlacedCookerControllerCount = 0;
+            state.PlacedCookerEmptyControllerCount = 0;
+            state.PlacedCookerLockedControllerCount = 0;
+            state.PlacedCookerReadFailureCount = 0;
             state.PlacedCookerStatus = "not in night business scene";
         }
 

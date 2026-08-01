@@ -60,6 +60,7 @@ public sealed class MystiaStewardCompanionPlugin : BasePlugin
         NormalOrderRuntimeCapture.Attach(Log);
         RuntimeSceneReadinessCapture.Attach(Log);
         RuntimeSpecialBusinessContextService.Attach(Log);
+        YuumaCookerTopologyObserver.Attach(Log);
         RuntimeScheduledEventDiagnosticCapture.Attach(Log);
         RuntimeMissionDiagnosticCapture.Attach(Log);
         RuntimeServeInWorkMissionDiagnosticCapture.Attach(Log);

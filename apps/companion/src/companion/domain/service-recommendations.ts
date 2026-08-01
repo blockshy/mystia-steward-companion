@@ -1,4 +1,7 @@
-import { buildRuntimeSets } from '@/companion/domain/cookers';
+import {
+  buildRecommendationCookerNameSet,
+  buildRuntimeSets,
+} from '@/companion/domain/cookers';
 import {
   buildCustomFoodCandidates,
   mergeCustomFoodCandidates,
@@ -32,6 +35,7 @@ import {
   getYuyukoPositiveSpellNegativeTags,
   isYuyukoPositiveSpellPlan,
 } from '@/companion/domain/special-business/yuyuko-positive-spell';
+import { resolveExactSpecialBusinessCustomer } from '@/companion/domain/special-business/customer-profile';
 import { sortNightOrders } from '@/companion/domain/sorting';
 import {
   MAX_FOCUS_RECOMMENDATION_ROWS,
@@ -44,8 +48,10 @@ import {
 import {
   buildSpecialBusinessOrderRule,
   buildWackyRejectedRecipeKeyForRareRecipe,
-  hasMatchingSpecialBusinessTag,
+  isSpecialBusinessOrderRole,
+  matchesSpecialBusinessFoodTarget,
   normalizeSpecialBusinessTags,
+  WACKY_CHALLENGE_TYPE,
 } from '@/companion/domain/special-business';
 import type {
   CachedRecommendation,
@@ -95,6 +101,7 @@ import {
   type RecommendationPlanSortContext,
   type RecommendationRuntimeContext,
   type RecommendationSortProfile,
+  type SpecialBusinessFoodTargetPolicy,
 } from '@/recommendation-engine';
 
 const NON_ORDERABLE_RARE_FOOD_TAGS = new Set(['流行喜爱', '流行厌恶']);
@@ -158,7 +165,11 @@ export function buildOrderRecommendations(
   const recommendations: OrderRecommendation[] = [];
   const recommendationIssues: RecommendationIssue[] = [];
   const candidateContext = buildRecommendationRuntimeContext(runtime, runtimeSets, preferences, data);
-  const rejectedRecipeKeys = new Set(specialBusinessRejectedRecipeKeys);
+  const rejectedRecipeKeys = specialBusiness?.active === true
+    && specialBusiness.challengeTypeAvailable
+    && specialBusiness.challengeType === WACKY_CHALLENGE_TYPE
+    ? new Set(specialBusinessRejectedRecipeKeys)
+    : new Set<string>();
   const usage = options.usage ?? 'display';
   const executionPlanLimit = usage === 'automation' ? AUTOMATION_EXECUTION_PLAN_LIMIT : EXECUTION_PLAN_LIMIT;
   const recommendationRowLimit = usage === 'automation'
@@ -166,7 +177,7 @@ export function buildOrderRecommendations(
     : MAX_FOCUS_RECOMMENDATION_ROWS;
 
   for (const order of sortedOrders) {
-    const customer = findRareCustomer(order, rareCustomersById);
+    const customer = findRareCustomer(order, rareCustomersById, data);
     const foodTag = order.foodTag.trim();
     const beverageTag = order.beverageTag.trim();
 
@@ -180,8 +191,10 @@ export function buildOrderRecommendations(
     }
 
     const specialBusinessRule = buildSpecialBusinessOrderRule(specialBusiness, order.specialBusinessRole);
-    const specialFoodTargetTags = specialBusinessRule.requiresWackyFoodTarget ? specialBusinessRule.foodTargetTags : [];
-    const rareDemand = buildRareTagOrderDemand(customer, foodTag, beverageTag, specialFoodTargetTags);
+    const specialFoodTarget = specialBusinessRule.foodTarget.enforcement === 'none'
+      ? undefined
+      : specialBusinessRule.foodTarget;
+    const rareDemand = buildRareTagOrderDemand(customer, foodTag, beverageTag, specialFoodTarget);
     const budgetContext = findBudgetContextForOrder(order, activeRareGuests);
     const sortContext = buildMissionRecipeSortContext(
       buildSpecialBusinessSortContext(
@@ -206,7 +219,7 @@ export function buildOrderRecommendations(
       preferences,
       order.automationAllowed !== false,
     );
-    const foodCandidateKey = buildFoodCandidateCacheKey(data, customer, foodTag, candidateContext, specialFoodTargetTags);
+    const foodCandidateKey = buildFoodCandidateCacheKey(data, customer, foodTag, candidateContext, specialFoodTarget);
     const beverageCandidateKey = buildBeverageCandidateCacheKey(data, customer, beverageTag, candidateContext);
     let foodCandidates = caches.foodCandidates.get(foodCandidateKey);
     if (!foodCandidates) {
@@ -234,6 +247,7 @@ export function buildOrderRecommendations(
       customer,
       requiredFoodTag: foodTag,
       requiredBeverageTag: beverageTag,
+      specialFoodTarget,
       context: candidateContext,
     });
     const mergedFoodCandidates = mergeCustomFoodCandidates(foodCandidates, customFoodCandidates);
@@ -309,7 +323,7 @@ export function buildOrderRecommendations(
           context: planRuntimeContext,
           foodCandidates: executionFoodCandidates,
           beverageCandidates: executionBeverageCandidates,
-          specialFoodTargetTags,
+          specialFoodTarget,
           sortProfile: preferences.recommendationSortProfile,
           sortContext,
         }), specialBusinessRule),
@@ -458,7 +472,7 @@ function buildSpecialBusinessSortContext(
   if (!specialBusiness?.active) return base;
 
   const rule = buildSpecialBusinessOrderRule(specialBusiness, role);
-  const foodTargetTags = rule.foodTargetTags;
+  const foodTargetTags = rule.foodTarget.tags;
   const beverageTargetTags = normalizeSpecialBusinessTags(specialBusiness.beverageTargetTags);
   if (foodTargetTags.length === 0
     && beverageTargetTags.length === 0
@@ -524,10 +538,11 @@ function filterSpecialBusinessFoodCandidates(
   return candidates.filter((candidate) => {
     if (!isSpecialBusinessFoodBaseMatchCandidate(candidate, rule)) return false;
     if (!isSpecialBusinessFoodNegativeSafeCandidate(candidate, rule, requiredFoodTag)) return false;
-    if (!rule.requiresWackyFoodTarget || rule.foodTargetTags.length === 0) return true;
-    if (!hasMatchingSpecialBusinessTag(candidate.activeTags, rule.foodTargetTags)) return false;
+    if (rule.blockingReason) return false;
+    if (rule.foodTarget.enforcement !== 'require') return true;
+    if (!matchesSpecialBusinessFoodTarget(candidate.activeTags, rule.foodTarget)) return false;
     const key = buildWackyRejectedRecipeKeyForRareRecipe(
-      rule.foodTargetTags,
+      rule.foodTarget.tags,
       candidate.recipe.id,
       candidate.recipe.recipeId,
       candidate.extraIngredients.map((ingredient) => ingredient.id),
@@ -564,6 +579,7 @@ function filterSpecialBusinessBeverageCandidates(
   candidates: BeverageCandidate[],
   rule: ReturnType<typeof buildSpecialBusinessOrderRule>,
 ): BeverageCandidate[] {
+  if (rule.blockingReason) return [];
   if (!rule.requiresBaseOrderMatch && !rule.requiresHighEvaluation) return candidates;
   return candidates.filter((candidate) => candidate.meetsRequiredBeverage);
 }
@@ -572,7 +588,10 @@ function filterSpecialBusinessExecutionPlans(
   plans: RareOrderRecommendationPlan[],
   rule: ReturnType<typeof buildSpecialBusinessOrderRule>,
 ): RareOrderRecommendationPlan[] {
-  if (!rule.requiresBaseOrderMatch && !rule.requiresHighEvaluation) return plans;
+  if (rule.blockingReason) return [];
+  if (rule.foodTarget.enforcement !== 'require'
+    && !rule.requiresBaseOrderMatch
+    && !rule.requiresHighEvaluation) return plans;
   return plans.filter((plan) => isSpecialBusinessSafeExecutionPlan(plan, rule));
 }
 
@@ -668,6 +687,19 @@ function withSpecialBusinessPlanReasons(
   plans: RareOrderRecommendationPlan[],
   rule: ReturnType<typeof buildSpecialBusinessOrderRule>,
 ): RareOrderRecommendationPlan[] {
+  if (rule.foodTarget.enforcement !== 'none') {
+    return plans.map((plan) => {
+      if (!plan.food || !plan.beverage || plan.bucket === 'blocked') return plan;
+      const targetTags = rule.foodTarget.tags;
+      const reason = rule.foodTarget.match === 'all'
+        ? `特殊经营目标：同时满足 ${targetTags.join('、')}`
+        : `特殊经营目标：满足 ${targetTags.join('、')} 中至少一个`;
+      return {
+        ...plan,
+        reasons: [reason, ...plan.reasons.filter((item) => item !== reason)],
+      };
+    });
+  }
   if (rule.yuyukoProgressEvaluationMode !== 'none') {
     return plans.map((plan) => {
       if (!plan.food || !plan.beverage || plan.bucket === 'blocked') return plan;
@@ -723,6 +755,9 @@ function isSpecialBusinessSafeExecutionPlan(
   const food = plan.food;
   const beverage = plan.beverage;
   if (!food || !beverage || plan.bucket === 'blocked') return false;
+  if (rule.blockingReason) return false;
+  if (rule.foodTarget.enforcement === 'require'
+    && !matchesSpecialBusinessFoodTarget(food.activeTags, rule.foodTarget)) return false;
   if (rule.requiresBaseOrderMatch && (!food.meetsRequiredFood || !beverage.meetsRequiredBeverage)) return false;
   if (rule.yuyukoProgressEvaluationMode !== 'none') {
     return isYuyukoProgressPlan(plan, rule.yuyukoProgressEvaluationMode);
@@ -744,7 +779,9 @@ function buildSpecialBusinessBlockedMessages(
   safePlans: RareOrderRecommendationPlan[],
   rule: ReturnType<typeof buildSpecialBusinessOrderRule>,
 ): string[] {
-  if ((!rule.requiresBaseOrderMatch
+  if (rule.blockingReason) return [rule.blockingReason];
+  if ((rule.foodTarget.enforcement !== 'require'
+      && !rule.requiresBaseOrderMatch
       && !rule.requiresHighEvaluation
       && !rule.preferYuyukoPositiveSpell
       && rule.yuyukoProgressEvaluationMode === 'none')
@@ -756,6 +793,11 @@ function buildSpecialBusinessBlockedMessages(
   if (rule.preferYuyukoPositiveSpell) return buildYuyukoPositiveSpellBlockedMessages(rawPlans);
 
   const messages: string[] = [];
+  if (rule.foodTarget.enforcement === 'require') {
+    messages.push(rule.foodTarget.match === 'all'
+      ? `特殊经营要求料理同时满足目标 Tag：${rule.foodTarget.tags.join('、')}。`
+      : `特殊经营要求料理满足以下任一目标 Tag：${rule.foodTarget.tags.join('、')}。`);
+  }
   if (rule.requiresBaseOrderMatch) {
     messages.push('特殊经营要求先满足原订单料理和酒水。');
   }
@@ -767,8 +809,8 @@ function buildSpecialBusinessBlockedMessages(
 
 function serializeSpecialBusinessOrderRule(rule: ReturnType<typeof buildSpecialBusinessOrderRule>): string {
   return [
-    rule.requiresWackyFoodTarget ? 'wacky=1' : 'wacky=0',
-    `food=${rule.foodTargetTags.join(',')}`,
+    `foodTarget=${rule.foodTarget.enforcement}/${rule.foodTarget.match}/${rule.foodTarget.tags.join(',')}`,
+    `blocking=${rule.blockingReason}`,
     rule.requiresBaseOrderMatch ? 'base=1' : 'base=0',
     rule.requiresHighEvaluation ? 'highest=1' : 'highest=0',
     `minPref=${rule.highEvaluationMinPreferenceMatches}`,
@@ -780,7 +822,16 @@ function serializeSpecialBusinessOrderRule(rule: ReturnType<typeof buildSpecialB
   ].join(';');
 }
 
-function findRareCustomer(order: NightBusinessOrder, rareCustomersById: Map<number, RareCustomerCatalogItem>) {
+function findRareCustomer(
+  order: NightBusinessOrder,
+  rareCustomersById: Map<number, RareCustomerCatalogItem>,
+  data: RecommendationDataSet,
+): RareCustomerCatalogItem | null {
+  if (isSpecialBusinessOrderRole(order.specialBusinessRole)) {
+    if (order.guestId == null) return null;
+    return resolveExactSpecialBusinessCustomer(data, order.guestId);
+  }
+
   if (order.guestId != null) {
     const byId = rareCustomersById.get(order.guestId);
     if (byId) return byId;
@@ -840,6 +891,8 @@ export function buildRecommendationRuntimeContext(
   data: RecommendationDataSet,
   options: { budget?: RecommendationBudgetContext | null } = {},
 ): RecommendationRuntimeContext {
+  const hasRuntimeUnavailableCookers =
+    runtimeSets.hasCookerSnapshot && runtimeSets.runtimeUnavailableCookerNames.size > 0;
   return {
     availableRecipeIds: runtimeSets.recipeIds,
     availableIngredientIds: runtimeSets.ingredientIds,
@@ -849,14 +902,17 @@ export function buildRecommendationRuntimeContext(
     excludedBeverageIds: new Set(preferences.recommendationExclusions.excludedBeverageIds),
     ownedIngredientQty: runtimeSets.ownedIngredientQty,
     ownedBeverageQty: runtimeSets.ownedBeverageQty,
-    placedCookerNames: runtimeSets.placedCookerNames,
+    placedCookerNames: buildRecommendationCookerNameSet(
+      runtimeSets,
+      preferences.filterMissingCookers,
+    ),
     hasCookerSnapshot: runtimeSets.hasCookerSnapshot,
     popularFoodTag: runtime.popularFoodTag,
     popularHateFoodTag: runtime.popularHateFoodTag,
     famousShopEnabled: runtime.famousShopEnabled,
     tagPriorityRules: data.tagPriorityRules,
     maxExtraIngredients: 4,
-    filterMissingCookers: preferences.filterMissingCookers,
+    filterMissingCookers: preferences.filterMissingCookers || hasRuntimeUnavailableCookers,
     budget: options.budget ?? null,
     budgetPolicy: preferences.recommendationBudgetPolicy,
   };
@@ -1246,6 +1302,10 @@ function buildRecommendationBlockedDiagnostic({
     combinedFoodCandidates,
     combinedBeverageCandidates,
   );
+  const runtimeUnavailableCookerNames = foodSearch.missingCookerNames
+    .filter((name) => runtimeSets.runtimeUnavailableCookerNames.has(name))
+    .sort();
+  const usableCookerNames = [...runtimeSets.usableCookerNames].sort();
   const reason = selectRecommendationBlockedReason({
     demand,
     context,
@@ -1254,6 +1314,8 @@ function buildRecommendationBlockedDiagnostic({
     missingIngredientNames: foodSearch.missingIngredientNames,
     missingCookerNames: foodSearch.missingCookerNames,
     placedCookerNames: [...runtimeSets.placedCookerNames].sort(),
+    usableCookerNames,
+    runtimeUnavailableCookerNames,
     remainingBudget,
     minimumPairPrice,
   });
@@ -1263,6 +1325,8 @@ function buildRecommendationBlockedDiagnostic({
     missingIngredientNames: foodSearch.missingIngredientNames,
     requiredCookerNames: foodSearch.missingCookerNames,
     placedCookerNames: [...runtimeSets.placedCookerNames].sort(),
+    usableCookerNames,
+    runtimeUnavailableCookerNames,
     remainingBudget,
     minimumPairPrice,
   };
@@ -1281,6 +1345,8 @@ function selectRecommendationBlockedReason({
   missingIngredientNames,
   missingCookerNames,
   placedCookerNames,
+  usableCookerNames,
+  runtimeUnavailableCookerNames,
   remainingBudget,
   minimumPairPrice,
 }: {
@@ -1291,6 +1357,8 @@ function selectRecommendationBlockedReason({
   missingIngredientNames: string[];
   missingCookerNames: string[];
   placedCookerNames: string[];
+  usableCookerNames: string[];
+  runtimeUnavailableCookerNames: string[];
   remainingBudget: number | null;
   minimumPairPrice: number | null;
 }): Pick<RecommendationBlockedDiagnostic, 'code' | 'firstEmptyStage' | 'message'> {
@@ -1323,6 +1391,13 @@ function selectRecommendationBlockedReason({
       };
     }
     if (foodRecipes.requiredTagReachableCookerReady === 0) {
+      if (runtimeUnavailableCookerNames.length > 0) {
+        return buildRuntimeUnavailableCookerReason(
+          demand.requiredFoodTag,
+          runtimeUnavailableCookerNames,
+          usableCookerNames,
+        );
+      }
       return {
         code: 'food-cooker-missing',
         firstEmptyStage: 'food-cooker',
@@ -1345,6 +1420,13 @@ function selectRecommendationBlockedReason({
     && foodRecipes.requiredTagReachableBaseIngredientsReady > 0
     && foodRecipes.requiredTagReachableCookerReady === 0
     && missingCookerNames.length > 0) {
+    if (runtimeUnavailableCookerNames.length > 0) {
+      return buildRuntimeUnavailableCookerReason(
+        demand.requiredFoodTag,
+        runtimeUnavailableCookerNames,
+        usableCookerNames,
+      );
+    }
     return {
       code: 'food-cooker-missing',
       firstEmptyStage: 'food-cooker',
@@ -1433,6 +1515,23 @@ function selectRecommendationBlockedReason({
   };
 }
 
+function buildRuntimeUnavailableCookerReason(
+  requiredFoodTag: string,
+  runtimeUnavailableCookerNames: string[],
+  usableCookerNames: string[],
+): Pick<RecommendationBlockedDiagnostic, 'code' | 'firstEmptyStage' | 'message'> {
+  const orderLabel = requiredFoodTag.trim()
+    ? `料理点单 Tag「${requiredFoodTag}」`
+    : '当前订单';
+  return {
+    code: 'food-cooker-runtime-unavailable',
+    firstEmptyStage: 'food-cooker',
+    message: `满足${orderLabel}所需的已摆放厨具当前被游戏机制锁定`
+      + `${formatDiagnosticNameList(runtimeUnavailableCookerNames)}；当前可开厨具`
+      + `${formatDiagnosticNameList(usableCookerNames, '无')}。`,
+  };
+}
+
 function findMinimumExecutablePairPrice(
   foodCandidates: FoodCandidate[],
   beverageCandidates: BeverageCandidate[],
@@ -1477,6 +1576,8 @@ function buildRecommendationBlockedStateSignature(
     `ingredients:${diagnostic.missingIngredientNames.join(',')}`,
     `requiredCookers:${diagnostic.requiredCookerNames.join(',')}`,
     `placedCookers:${diagnostic.placedCookerNames.join(',')}`,
+    `usableCookers:${diagnostic.usableCookerNames.join(',')}`,
+    `runtimeUnavailableCookers:${diagnostic.runtimeUnavailableCookerNames.join(',')}`,
     `budget:${diagnostic.remainingBudget ?? ''}`,
     `minimum:${diagnostic.minimumPairPrice ?? ''}`,
   ].join('|');
@@ -1949,14 +2050,21 @@ function buildRareTagOrderDemand(
   customer: RareCustomerCatalogItem,
   requiredFoodTag: string,
   requiredBeverageTag: string,
-  specialFoodTargetTags: readonly string[] = [],
+  specialFoodTarget?: SpecialBusinessFoodTargetPolicy,
 ) {
   return {
     type: 'rare-tag-order' as const,
     customer,
     requiredFoodTag,
     requiredBeverageTag,
-    specialFoodTargetTags: normalizeSpecialBusinessTags(specialFoodTargetTags),
+    ...(specialFoodTarget
+      ? {
+        specialFoodTarget: {
+          ...specialFoodTarget,
+          tags: normalizeSpecialBusinessTags(specialFoodTarget.tags),
+        },
+      }
+      : {}),
   };
 }
 
@@ -1965,14 +2073,14 @@ function buildFoodCandidateCacheKey(
   customer: RareCustomerCatalogItem,
   requiredFoodTag: string,
   context: RecommendationRuntimeContext,
-  specialFoodTargetTags: readonly string[] = [],
+  specialFoodTarget?: SpecialBusinessFoodTargetPolicy,
 ): string {
   return [
     'foodCandidates',
     serializeDataSignature(data),
     serializeRareCustomerFoodProfile(customer),
     `requiredFood:${requiredFoodTag}`,
-    `specialFood:${normalizeSpecialBusinessTags(specialFoodTargetTags).sort().join(';')}`,
+    `specialFood:${serializeSpecialBusinessFoodTarget(specialFoodTarget)}`,
     `recipes:${serializeNumberSet(context.availableRecipeIds)}`,
     `ingredients:${serializeNumberSet(context.availableIngredientIds)}`,
     `excludedIngredients:${serializeNumberSet(context.excludedIngredientIds)}`,
@@ -1986,6 +2094,17 @@ function buildFoodCandidateCacheKey(
     `tagRules:${serializeTagPriorityRules(context.tagPriorityRules)}`,
     `extraSlots:${context.maxExtraIngredients}`,
   ].join('|');
+}
+
+function serializeSpecialBusinessFoodTarget(
+  target: SpecialBusinessFoodTargetPolicy | null | undefined,
+): string {
+  if (!target) return 'none/any/';
+  return [
+    target.enforcement,
+    target.match,
+    normalizeSpecialBusinessTags(target.tags).sort().join(';'),
+  ].join('/');
 }
 
 function buildBeverageCandidateCacheKey(

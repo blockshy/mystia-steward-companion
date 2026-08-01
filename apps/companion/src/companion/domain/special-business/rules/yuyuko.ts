@@ -21,7 +21,7 @@ export function buildYuyukoChallengeOrderRule(
 
   const phaseThree = isPhaseThreeContext(specialBusiness.phase);
   const phaseTwo = isPhaseTwoContext(specialBusiness.phase);
-  const yuyukoOrder = normalizeRole(role) === YUYUKO_BOSS_ROLE || specialBusiness.category === 'boss';
+  const yuyukoOrder = normalizeRole(role) === YUYUKO_BOSS_ROLE;
   const requiresQualifiedEvaluation = (phaseTwo || phaseThree) && yuyukoOrder;
   const requiresProgress = phaseThree && yuyukoOrder;
   const storyChallenge = specialBusiness.challengeType === STORY_YUYUKO_CHALLENGE_TYPE;
@@ -31,8 +31,12 @@ export function buildYuyukoChallengeOrderRule(
       : 'retake-tag-order'
     : 'none';
   return {
-    requiresWackyFoodTarget: false,
-    foodTargetTags: [],
+    foodTarget: {
+      enforcement: 'none',
+      match: 'any',
+      tags: [],
+    },
+    blockingReason: '',
     requiresBaseOrderMatch: requiresQualifiedEvaluation,
     requiresHighEvaluation: requiresQualifiedEvaluation,
     highEvaluationMinPreferenceMatches: phaseTwo && yuyukoOrder

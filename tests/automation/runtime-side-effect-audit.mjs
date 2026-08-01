@@ -10,18 +10,41 @@ const lifecycle = read('mods/bepinex/src/Save/AutomationCookingJobLifecycle.cs')
 const cooking = read('mods/bepinex/src/Save/RuntimeOrderPreparationService.Cooking.cs');
 const delivery = read('mods/bepinex/src/Save/RuntimeOrderPreparationService.Delivery.cs');
 const directDelivery = read('mods/bepinex/src/Save/RuntimeOrderPreparationService.DirectDelivery.cs');
+const yuumaSettlement = read('mods/bepinex/src/Save/RuntimeOrderPreparationService.YuumaSettlement.cs');
+const yuumaSettlementTracker = read(
+  'mods/bepinex/src/Save/SpecialBusiness/YuumaSettlementTransactionTracker.cs',
+);
 const cookerHighlight = read('mods/bepinex/src/Save/RuntimeCookerHighlightService.cs');
 const cookerSnapshot = read('mods/bepinex/src/Save/RuntimeCookerSnapshotService.cs');
+const cookerSnapshotSignature = read('mods/bepinex/src/Save/RuntimeCookerSnapshotContentSignature.cs');
 const cookerReflection = read('mods/bepinex/src/Save/RuntimeCookerReflection.cs');
+const cookerTypeSequenceReader = read('mods/bepinex/src/Save/RuntimeCookerTypeSequenceReader.cs');
+const cookerStartAvailabilityService = read('mods/bepinex/src/Save/RuntimeCookerStartAvailabilityService.cs');
 const cookingOwnership = read('mods/bepinex/src/Save/RuntimeCookingGenerationTracker.cs');
 const cookerStartPolicy = read('mods/bepinex/src/Save/AutomationCookerStartPolicy.cs');
 const matching = read('mods/bepinex/src/Save/RuntimeOrderPreparationService.OrderMatching.cs');
 const runtimeReflection = read('mods/bepinex/src/Save/RuntimeReflectionUtility.cs');
 const service = read('mods/bepinex/src/Save/RuntimeOrderPreparationService.cs');
+const specialTargetPolicy = read(
+  'mods/bepinex/src/Save/SpecialBusiness/RuntimeOrderPreparationService.SpecialFoodTargetPolicy.cs',
+);
 const yuyukoPolicy = read('mods/bepinex/src/Save/SpecialBusiness/RuntimeOrderPreparationService.YuyukoChallengePolicy.cs');
 const capture = read('mods/bepinex/src/Save/SpecialOrderRuntimeCapture.cs');
+const normalCapture = read('mods/bepinex/src/Save/NormalOrderRuntimeCapture.cs');
 const provider = read('mods/bepinex/src/Save/NightBusinessReflectionProvider.cs');
 const overlay = read('mods/bepinex/src/Ui/StewardOverlayController.cs');
+const localApiServer = read('mods/bepinex/src/LocalApi/LocalApiServer.cs');
+const localApiModels = read('mods/bepinex/src/LocalApi/LocalApiModels.cs');
+const orderPreparationModels = read('mods/bepinex/src/LocalApi/OrderPreparationModels.cs');
+const frontendApi = read('apps/companion/src/companion/api.ts');
+const frontendTypes = read('apps/companion/src/companion/types.ts');
+const frontendTargetPolicy = read(
+  'apps/companion/src/companion/domain/special-business/target-policy.ts',
+);
+const specialBusinessContext = read(
+  'mods/bepinex/src/Save/RuntimeSpecialBusinessContextService.cs',
+);
+const normalOrderSnapshot = read('mods/bepinex/src/Save/RuntimeNormalOrderSnapshotService.cs');
 
 assert.ok(!cooking.includes('"FinishCooking"'), 'The Mod must not invoke the non-idempotent FinishCooking entry.');
 assert.ok(!lifecycle.includes('FinalizeOwnedResult'), 'The cooking tracker still exposes the removed active-finalize directive.');
@@ -39,6 +62,20 @@ assert.match(matching, /Delivery,[\s\S]*Completion,[\s\S]*NativeEvaluation/);
 assert.match(service, /FindRuntimeOrder\(request, RuntimeOrderLookupPurpose\.Completion\)/);
 assert.match(cooking, /FindRuntimeOrder\(request, RuntimeOrderLookupPurpose\.Completion\)/);
 assert.match(service, /RuntimeGuestId = request\.RuntimeGuestId/);
+const normalFrontendAction = sourceSlice(
+  frontendApi,
+  'export async function completeFirstNormalOrder(',
+  'export async function readFavorites(');
+assert.match(
+  normalFrontendAction,
+  /if \(order\.runtimeGuestId != null\) params\.set\('runtimeGuestId', String\(order\.runtimeGuestId\)\)/,
+  'Normal-order automation must send the verified runtime guest identity to the backend target.',
+);
+assert.match(
+  normalOrderSnapshot,
+  /RuntimeGuestId = classification\.RuntimeGuestId/,
+  'Normal-order runtime identity must come from the exact special-business classifier.',
+);
 assert.match(directDelivery, /RuntimeGuestId = target\.RuntimeGuestId[\s\S]*FoodTagId = target\.FoodTagId[\s\S]*BeverageTagId = target\.BeverageTagId/);
 const rareTargetMatchStart = cooking.indexOf('private static bool IsSameCookingCollectionTarget');
 const rareTargetMatchEnd = cooking.indexOf('private static (bool Remove, string Message, string Code) TryProcessAutomationCookingJob', rareTargetMatchStart);
@@ -83,18 +120,45 @@ assert.match(specialOrderNormalizer, /RuntimeReflectionUtility\.TryCastRuntimeOb
 assert.match(runtimeReflection, /TryCastRuntimeObject\([\s\S]*value is not Il2CppObjectBase[\s\S]*FindType\(targetTypeName\)[\s\S]*typeof\(Il2CppObjectBase\)[\s\S]*method\.Name == "TryCast"[\s\S]*MakeGenericMethod\(targetType\)/,
   'The shared runtime-object cast entry must resolve and invoke the concrete runtime cast.');
 
-const storyManualCallbackLookup = sourceSlice(
-  matching,
-  'private static object? FindCapturedYuyukoPhase3ManualEvaluationCallback(',
-  'private static RuntimeOrderMatch FindCapturedRuntimeNormalOrder(');
+const storyManualCallbackLookup = namedMethodSource(matching, 'TryResolveSpecialManualContext');
 assert.match(storyManualCallbackLookup, /CompareObjectIdentity\(captured\.OrderObject, order\) == RuntimeObjectIdentityComparison\.Same/,
-  'A story callback must belong to the exact captured order object selected by the live lookup.');
+  'A manual callback must belong to the exact captured order object selected by the live lookup.');
 assert.match(storyManualCallbackLookup, /CompareObjectIdentity\(captured\.ControllerObject, controller\) == RuntimeObjectIdentityComparison\.Same/,
-  'A story callback must belong to the exact captured controller object selected by the live lookup.');
+  'A manual callback must belong to the exact captured controller object selected by the live lookup.');
+assert.match(storyManualCallbackLookup, /captured\.ManualOrder[\s\S]*ManualEvaluationCallback != null[\s\S]*HasCaptureSource\(candidate\.CaptureSource, "ManualOrderSet"\)/,
+  'A manual callback must come from the exact ManualOrderSet capture for a ManualOrder=true order.');
 assert.ok(!storyManualCallbackLookup.includes('TryMatchCapturedOrderIdentity'),
-  'Story callbacks must not be selected from the first request-identity capture.');
+  'Manual callbacks must not be selected from the first request-identity capture.');
 assert.doesNotMatch(storyManualCallbackLookup, /OrderPreparationRequest\s+request/,
-  'Story callback lookup must accept the matched order/controller pair, not a request identity.');
+  'Manual callback lookup must accept the matched order/controller pair, not a request identity.');
+
+const yuyukoManualCallbackLookup = namedMethodSource(
+  matching,
+  'FindCapturedYuyukoPhase3ManualEvaluationCallback',
+);
+assert.match(yuyukoManualCallbackLookup, /CompareObjectIdentity\(captured\.OrderObject, order\)/,
+  'Yuyuko story evaluation must keep its original exact-order callback lookup.');
+assert.match(rareLookup, /requiresYuumaSettlementManualContext\s*=\s*purpose == RuntimeOrderLookupPurpose\.YuumaSettlement/,
+  'Strict Yuuma manual-order resolution must have a dedicated lookup purpose.');
+assert.match(rareLookup, /if \(requiresYuumaSettlementManualContext[\s\S]*!TryResolveSpecialManualContext\(/,
+  'Special-order ManualOrder/callback fail-closed validation must be scoped to Yuuma settlement.');
+assert.match(rareLookup, /requiresYuyukoStoryManualEvaluation[\s\S]*FindCapturedYuyukoPhase3ManualEvaluationCallback\(/,
+  'The Yuuma lookup scope must not replace the established Yuyuko story callback path.');
+
+const normalLookup = sourceSlice(
+  matching,
+  'private static RuntimeOrderMatch FindRuntimeNormalOrder(',
+  'private static IEnumerable<object> EnumerateOrderControllerOrders(',
+);
+assert.match(normalLookup, /RuntimeOrderLookupPurpose purpose = RuntimeOrderLookupPurpose\.Delivery/,
+  'Normal-order lookup must retain Delivery as its default behavior.');
+assert.match(normalLookup, /requiresYuumaSettlementManualContext\s*=\s*purpose == RuntimeOrderLookupPurpose\.YuumaSettlement/,
+  'Normal-order strict manual context must have the same dedicated Yuuma purpose.');
+assert.match(normalLookup, /if \(requiresYuumaSettlementManualContext[\s\S]*!TryResolveNormalManualContext\(/,
+  'Normal-order ManualOrder/callback fail-closed validation must be scoped to Yuuma settlement.');
+assert.match(matching,
+  /if \(requiresYuumaSettlementManualContext\)[\s\S]*EnumerateControllerOrders\(captured\.ControllerObject\)[\s\S]*CompareObjectIdentity\(order, captured\.OrderObject\)[\s\S]*RuntimeObjectIdentityComparison\.Same/,
+  'Captured normal Yuuma settlement orders must remain owned by the exact controller.');
 
 const yuyukoEvaluationReadiness = sourceSlice(
   yuyukoPolicy,
@@ -146,9 +210,1311 @@ assert.ok(!delivery.includes('TryInvokeInstance(runtimeOrder.Order, setterName')
 const completionStart = directDelivery.indexOf('private static AutomationFoodDeliveryCompletion BuildFoodDeliveryCompletion(');
 const completionEnd = directDelivery.indexOf('private static (bool Remove, string Message, string Code) TryCompleteCommittedFoodDeliveryCleanup', completionStart);
 assert.ok(completionStart >= 0 && completionEnd > completionStart);
-assert.ok(!directDelivery.slice(completionStart, completionEnd).includes('TryEvaluate'), 'Cooking-job cleanup must not evaluate an order.');
+assert.ok(
+  !directDelivery.slice(completionStart, completionEnd).includes('TryEvaluate'),
+  'The food-delivery metadata builder must not evaluate an order.',
+);
+assert.match(service, /public bool AutoCompleteOrder \{ get; set; \}/,
+  'Cooking jobs must retain the caller\'s explicit auto-complete intent.');
+assert.match(cooking, /AutoCompleteOrder = autoCompleteOrder/,
+  'Cooking-job registration must latch auto-complete intent.');
 
-assert.match(cooking, /RegisterAutomationCookingJob\([\s\S]*autoCollect\)/);
+const directFoodDelivery = methodSource(
+  directDelivery,
+  'private static (bool Remove, string Message, string Code) TryDeliverAutomationCookedFood(',
+);
+const foodIdentityValidation = directFoodDelivery.indexOf('TryReadCookControllerFoodResultIdentity(');
+const targetIdentityValidation = directFoodDelivery.indexOf('TryDetectSpecialFoodTargetPolicyChanged(');
+const targetUnavailableGate = directFoodDelivery.indexOf('if (!specialTargetComparisonAvailable)');
+const targetChangedGate = directFoodDelivery.indexOf('if (specialTargetChanged)');
+const tagValidation = directFoodDelivery.indexOf('ValidateSpecialFoodTargetTags(');
+const yuumaSettlementCall = directFoodDelivery.indexOf('TryFinalizeYuumaCookingJob(job, cookedFood)');
+assert.ok(
+  foodIdentityValidation >= 0
+    && targetIdentityValidation > foodIdentityValidation
+    && targetUnavailableGate > targetIdentityValidation
+    && targetChangedGate > targetUnavailableGate
+    && tagValidation > targetIdentityValidation
+    && yuumaSettlementCall > tagValidation,
+  'Blood Pond Hell cooked food must validate ID, target identity, and exact Tags before entering its settlement transaction.',
+);
+assert.match(
+  directFoodDelivery,
+  /if \(!specialTargetComparisonAvailable\)[\s\S]*本轮未送达、入箱或复位厨具，等待权威目标恢复。[\s\S]*if \(specialTargetChanged\)/,
+  'An unavailable special target must wait without being treated as a confirmed target rotation.',
+);
+assert.match(
+  directFoodDelivery,
+  /TryFinalizeYuumaCookingJob\(job, cookedFood\)/,
+  'Validated Blood Pond Hell food does not enter its dedicated settlement transaction.',
+);
+assert.match(
+  directFoodDelivery,
+  /YuumaSettlementTracker\.Stage[\s\S]*!=[\s\S]*YuumaSettlementTransactionStage\.Ready[\s\S]*TryFinalizeYuumaCookingJob\([\s\S]*if \(job\.AutoDeliverFood && job\.AutoCompleteOrder\)[\s\S]*TryFinalizeYuumaCookingJob\([\s\S]*return EnterManualHandoff\(/,
+  'Only a previously started transaction may resume without both switches; a Ready job must require delivery and completion or enter manual handoff.',
+);
+
+const cookingProcessor = methodSource(
+  cooking,
+  'private static (bool Remove, string Message, string Code) TryProcessAutomationCookingJob(',
+);
+const validatedYuumaPath = cookingProcessor.indexOf(
+  'if (IsYuumaBossTarget(job.Target))',
+);
+const genericManualHandoff = cookingProcessor.indexOf(
+  'if (!job.AutoDeliverFood)',
+  validatedYuumaPath,
+);
+assert.ok(
+  validatedYuumaPath >= 0
+    && cookingProcessor.indexOf(
+      'return TryDeliverAutomationCookedFood(job, cookedFood);',
+      validatedYuumaPath,
+    ) > validatedYuumaPath
+    && genericManualHandoff > validatedYuumaPath,
+  'Blood Pond Hell must enter its validated settlement boundary before generic manual handoff.',
+);
+assert.match(
+  cookingProcessor,
+  /!IsYuumaBossTarget\(job\.Target\)[\s\S]*&& !job\.AutoDeliverFood/,
+  'Blood Pond Hell must not create a handoff receipt after cooker ownership was lost.',
+);
+
+const yuumaRequestIdentity = methodSource(
+  specialTargetPolicy,
+  'private static bool IsYuumaBossRequest(',
+);
+assert.match(
+  yuumaRequestIdentity,
+  /string\.Equals\([\s\S]*request\.SpecialBusinessRole,[\s\S]*SpecialBusinessOrderRoles\.YuumaBoss,[\s\S]*StringComparison\.Ordinal\)/,
+  'Yuuma request identity must use the exact Ordinal boss role.',
+);
+assert.doesNotMatch(yuumaRequestIdentity, /IgnoreCase|Contains|StartsWith|EndsWith/);
+const yuumaTargetIdentity = methodSource(
+  specialTargetPolicy,
+  'private static bool IsYuumaBossTarget(',
+);
+assert.match(
+  yuumaTargetIdentity,
+  /string\.Equals\([\s\S]*target\.SpecialBusinessRole,[\s\S]*SpecialBusinessOrderRoles\.YuumaBoss,[\s\S]*StringComparison\.Ordinal\)/,
+  'Yuuma cooking-target identity must use the exact Ordinal boss role.',
+);
+assert.doesNotMatch(yuumaTargetIdentity, /IgnoreCase|Contains|StartsWith|EndsWith/);
+
+const yuumaDeliveryState = methodSource(
+  service,
+  'private static bool TryReadYuumaOrderDeliveryState(',
+);
+assert.match(
+  yuumaDeliveryState,
+  /TryReadOrderServedItem\([\s\S]*RuntimeDeliveryItemKind\.Food[\s\S]*TryReadOrderInAirItem\([\s\S]*RuntimeDeliveryItemKind\.Food[\s\S]*TryReadOrderServedItem\([\s\S]*RuntimeDeliveryItemKind\.Beverage[\s\S]*TryReadOrderInAirItem\([\s\S]*RuntimeDeliveryItemKind\.Beverage[\s\S]*return foodRead && foodInAirRead && beverageRead && beverageInAirRead;/,
+  'The final-item gate must strictly read final and in-air food and beverage fields.',
+);
+
+for (const [label, source] of [['special', capture], ['normal', normalCapture]]) {
+  assert.match(source, /public bool ManualOrder \{ get; init; \}/,
+    `${label} capture must retain exact OrderBase.ManualOrder.`);
+  assert.match(source, /internal object\? ManualEvaluationCallback \{ get; init; \}/,
+    `${label} capture must retain the exact native manual callback.`);
+  const manualSetter = methodSource(source, 'private static void OnManualControllerOrderSet(');
+  assert.match(manualSetter, /object\? __1[\s\S]*order is not \{ ManualOrder: true \}[\s\S]*order with \{ ManualEvaluationCallback = __1 \}/,
+    `${label} manual setter must bind a nullable callback only to exact ManualOrder=true.`);
+  assert.match(source, /requireExactManualOrderSetter: true/,
+    `${label} capture must request the exact BepInEx 783 manual-order setter signature.`);
+  const exactManualSetter = methodSource(source, 'private static bool IsExactManualOrderSetter(');
+  assert.match(exactManualSetter,
+    /parameters\[0\]\.ParameterType\.FullName[\s\S]*GuestGroupControllerTypeName[\s\S]*parameters\[2\]\.ParameterType\.FullName[\s\S]*OrderBaseTypeName/,
+    `${label} capture must match the exact controller and OrderBase wrapper names.`);
+  assert.match(exactManualSetter,
+    /GetGenericTypeDefinition\(\)\.FullName[\s\S]*Il2CppActionGenericTypeName[\s\S]*callbackArguments\[0\]\.FullName[\s\S]*EvaluationResultTypeName/,
+    `${label} capture must match only Il2CppSystem.Action<GuestGroupController.EvaluationResult>.`);
+  const exactManualOrder = methodSource(source, 'private static bool TryReadExactManualOrder(');
+  assert.match(exactManualOrder, /GetProperty\("ManualOrder", flags\)[\s\S]*PropertyType != typeof\(bool\)[\s\S]*GetValue\(order\) is not bool/,
+    `${label} capture must read the exact bool ManualOrder property.`);
+  assert.doesNotMatch(exactManualOrder, /ReadMember|GetMemberValue|InvokeMethod/,
+    `${label} ManualOrder capture restored a broad reflection fallback.`);
+}
+assert.match(matching, /public bool ManualOrder \{ get; init; \}/);
+assert.match(matching, /ManualOrder = requiresYuumaSettlementManualContext && manualOrder/);
+assert.match(
+  matching,
+  /ManualEvaluationCallback = requiresYuumaSettlementManualContext[\s\S]*manualOrder \? manualEvaluationCallback : null/,
+  'Yuuma settlement matches must project the fresh wrapper ManualOrder/callback state.',
+);
+assert.doesNotMatch(
+  matching,
+  /ManualOrder = requiresYuumaSettlementManualContext && captured\.ManualOrder/,
+  'Captured ManualOrder must not be trusted as current executable state.',
+);
+
+const capturedSpecialLookup = namedMethodSource(matching, 'FindCapturedRuntimeOrder');
+const capturedSpecialLivenessGate = capturedSpecialLookup.indexOf('IsCapturedSpecialOrderLive(');
+const capturedSpecialManualRefresh = capturedSpecialLookup.indexOf(
+  'TryResolveSpecialManualContext(',
+  capturedSpecialLivenessGate,
+);
+const capturedSpecialProjection = capturedSpecialLookup.indexOf(
+  'return new RuntimeOrderMatch',
+  capturedSpecialManualRefresh,
+);
+assert.ok(
+  capturedSpecialLivenessGate >= 0
+    && capturedSpecialManualRefresh > capturedSpecialLivenessGate
+    && capturedSpecialProjection > capturedSpecialManualRefresh,
+  'A captured special Yuuma candidate must refresh manual state after liveness/identity and before projection.',
+);
+assert.match(
+  capturedSpecialLookup.slice(capturedSpecialManualRefresh, capturedSpecialProjection + 800),
+  /out manualOrder[\s\S]*out manualEvaluationCallback[\s\S]*ManualOrder = requiresYuumaSettlementManualContext && manualOrder/,
+  'Captured special Yuuma projection must use only current wrapper manual state.',
+);
+
+const capturedNormalLookup = namedMethodSource(matching, 'FindCapturedRuntimeNormalOrder');
+const capturedNormalOwnershipGate = capturedNormalLookup.indexOf('EnumerateControllerOrders(');
+const capturedNormalIdentityGate = capturedNormalLookup.indexOf(
+  'IsMatchingNormalOrder(',
+  capturedNormalOwnershipGate,
+);
+const capturedNormalManualRefresh = capturedNormalLookup.indexOf(
+  'TryResolveNormalManualContext(',
+  capturedNormalIdentityGate,
+);
+const capturedNormalProjection = capturedNormalLookup.indexOf(
+  'return new RuntimeOrderMatch',
+  capturedNormalManualRefresh,
+);
+assert.ok(
+  capturedNormalOwnershipGate >= 0
+    && capturedNormalIdentityGate > capturedNormalOwnershipGate
+    && capturedNormalManualRefresh > capturedNormalIdentityGate
+    && capturedNormalProjection > capturedNormalManualRefresh,
+  'A captured normal Yuuma candidate must refresh manual state after ownership/identity and before projection.',
+);
+assert.match(
+  capturedNormalLookup.slice(capturedNormalManualRefresh, capturedNormalProjection + 800),
+  /out manualOrder[\s\S]*out manualEvaluationCallback[\s\S]*ManualOrder = requiresYuumaSettlementManualContext && manualOrder/,
+  'Captured normal Yuuma projection must use only current wrapper manual state.',
+);
+
+const normalManualContextLookup = namedMethodSource(matching, 'TryResolveNormalManualContext');
+for (const [label, resolver] of [
+  ['special', storyManualCallbackLookup],
+  ['normal', normalManualContextLookup],
+]) {
+  assert.match(
+    resolver,
+    /TryReadExactManualOrder\([\s\S]*if \(!manualOrder\)[\s\S]*manualCallback=not-required[\s\S]*return true/,
+    `${label} captured candidates must accept current ManualOrder=false regardless of captured ManualOrder=true.`,
+  );
+  assert.match(
+    resolver,
+    /if \(!manualOrder\)[\s\S]*callbackCandidate[\s\S]*if \(callbackCandidate == null\)[\s\S]*manualCallback=missing[\s\S]*return false/,
+    `${label} captured candidates must reject current ManualOrder=true when no exact current callback can be recovered.`,
+  );
+}
+
+const yuumaFinalization = namedMethodSource(yuumaSettlement, 'TryFinalizeYuumaCookingJob');
+assert.doesNotMatch(
+  yuumaFinalization,
+  /ShouldPlayerThrowDeliver/,
+  'The player ThrowDeliver buff capability must not block dedicated headless food settlement.',
+);
+assert.doesNotMatch(
+  yuumaSettlement,
+  /TryReadShouldPlayerThrowDeliver/,
+  'The removed ThrowDeliver capability reader was restored to the Yuuma settlement service.',
+);
+const yuumaSettlementOrderValidation = namedMethodSource(
+  yuumaSettlement,
+  'TryValidateYuumaSettlementOrder',
+);
+assert.match(
+  yuumaSettlementOrderValidation,
+  /TryReadYuumaOrderDeliveryState\([\s\S]*out var foodInAir,[\s\S]*out var servedBeverage,[\s\S]*out var beverageInAir,[\s\S]*if \(servedFood != null \|\| foodInAir != null\)[\s\S]*if \(beverageInAir != null\)[\s\S]*return false;[\s\S]*if \(servedBeverage == null\)/,
+  'Final-food settlement must reject both FoodInAir and BeverageInAir before committing food.',
+);
+const yuumaIdentityGate = yuumaFinalization.indexOf('!IsYuumaBossTarget(job.Target)');
+const deliverySwitchGate = yuumaFinalization.indexOf('!job.AutoDeliverFood');
+const completionSwitchGate = yuumaFinalization.indexOf('!job.AutoCompleteOrder');
+const settlementPreflight = yuumaFinalization.indexOf('TryPreflightYuumaSettlement(');
+const settlementOrderValidation = yuumaFinalization.indexOf('TryValidateYuumaSettlementOrder(');
+const settlementFreshCooker = yuumaFinalization.indexOf(
+  'TryValidateYuumaCookerBeforeFoodCommit(',
+);
+const settlementIrreversibleClaim = yuumaFinalization.indexOf('TryBeginFoodCommit()');
+const settlementCommit = yuumaFinalization.indexOf(
+  'finalFoodSetter.Invoke(runtimeOrder.Order, new[] { cookedFood })',
+);
+const firstOrderReacquire = yuumaFinalization.indexOf(
+  'FindYuumaRuntimeOrder(job.Target, request)',
+  settlementCommit,
+);
+const firstReacquireValidation = yuumaFinalization.indexOf(
+  'TryValidateReacquiredYuumaSettlementOrder(',
+  firstOrderReacquire,
+);
+const settlementCookerReset = yuumaFinalization.indexOf(
+  'TryResetCookControllerAfterCommittedSideEffect(job, cookedFood, out var resetDiagnostic)',
+  firstReacquireValidation,
+);
+const settlementExtraction = yuumaFinalization.indexOf(
+  'TryCompleteYuumaCookerExtraction(',
+  settlementCookerReset,
+);
+const settlementCleanup = yuumaFinalization.indexOf('MarkCleanupCommitted(');
+const secondOrderReacquire = yuumaFinalization.indexOf(
+  'FindYuumaRuntimeOrder(job.Target, request)',
+  firstOrderReacquire + 1,
+);
+const secondReacquireValidation = yuumaFinalization.indexOf(
+  'TryValidateReacquiredYuumaSettlementOrder(',
+  firstReacquireValidation + 1,
+);
+const settlementEvaluation = yuumaFinalization.indexOf('TryInvokeYuumaEvaluation(');
+const settlementBookkeeping = yuumaFinalization.indexOf('TryApplyYuumaDeliveryBookkeeping(');
+assert.ok(
+  [yuumaIdentityGate, deliverySwitchGate, completionSwitchGate]
+    .every((index) => index >= 0 && index < settlementCommit)
+    && settlementOrderValidation >= 0
+    && settlementOrderValidation < settlementPreflight
+    && settlementPreflight >= 0
+    && settlementFreshCooker > settlementPreflight
+    && settlementIrreversibleClaim > settlementFreshCooker
+    && settlementCommit > settlementIrreversibleClaim
+    && firstOrderReacquire > settlementCommit
+    && firstReacquireValidation > firstOrderReacquire
+    && settlementCookerReset > firstReacquireValidation
+    && settlementExtraction > settlementCookerReset
+    && settlementCleanup > settlementExtraction
+    && secondOrderReacquire > settlementCleanup
+    && secondReacquireValidation > secondOrderReacquire
+    && settlementEvaluation > secondReacquireValidation
+    && settlementBookkeeping > settlementEvaluation,
+  'Yuuma settlement must fresh-bind the cooker before the irreversible claim, commit the final setter, revalidate, reset the cooker, run exact extraction callbacks, reacquire and fully revalidate a second time, then evaluate and apply bookkeeping.',
+);
+assert.doesNotMatch(
+  yuumaFinalization.slice(settlementFreshCooker, settlementIrreversibleClaim),
+  /MarkUncertain/,
+  'A side-effect-free fresh-cooker rejection must not become an uncertain native commit.',
+);
+assert.doesNotMatch(
+  yuumaFinalization,
+  /TryCommitRuntimeDelivery\(/,
+  'Yuuma settlement must not restore the generic in-air/table-visual delivery path.',
+);
+const evaluationReturned = yuumaFinalization.indexOf(
+  'if (!job.YuumaSettlementTracker.MarkEvaluationCommitted())',
+  settlementEvaluation,
+);
+assert.ok(evaluationReturned > settlementEvaluation,
+  'The post-evaluation source boundary is missing.');
+const postEvaluationSettlement = yuumaFinalization.slice(evaluationReturned);
+assert.doesNotMatch(
+  postEvaluationSettlement,
+  /FindYuumaRuntimeOrder|TryRead[A-Z]|ReadSellableId|CompareObjectIdentity|runtimeOrder\.|committedOrder\.|cookedFood/,
+  'After native evaluation returns, settlement must not reacquire or inspect any order/item wrapper.',
+);
+assert.match(
+  postEvaluationSettlement,
+  /TryApplyYuumaDeliveryBookkeeping\(bookkeepingContext, out var bookkeepingDiagnostic\)/,
+  'Post-evaluation bookkeeping must consume only the opaque context cached before evaluation.',
+);
+
+const yuumaEvaluation = namedMethodSource(yuumaSettlement, 'TryInvokeYuumaEvaluation');
+const yuumaContextCreation = namedMethodSource(yuumaSettlement, 'TryCreateYuumaSettlementContext');
+assert.match(yuumaContextCreation, /runtimeOrder\.ManualOrder[\s\S]*YuumaOrderEvaluationRoute\.ManualControlled[\s\S]*YuumaOrderEvaluationRoute\.Standard/,
+  'Yuuma evaluation route must derive only from the exact runtime match ManualOrder bit.');
+assert.match(yuumaEvaluation, /get_IsFullfilled/,
+  'Yuuma evaluation must fresh-check fulfillment after the delivery setter.');
+assert.match(yuumaEvaluation, /YuumaOrderEvaluationRoute\.ManualControlled[\s\S]*ManualEvaluationCallback == null[\s\S]*manualMethod\.Invoke/,
+  'Manual-controlled Yuuma orders must require their exact callback and use EvaulateManualOrder.');
+assert.match(yuumaEvaluation, /YuumaOrderEvaluationRoute\.Standard[\s\S]*standardMethod\.Invoke/,
+  'Standard Yuuma orders must use EvaluateOrder.');
+assert.match(yuumaEvaluation, /manualMethod\.Invoke\([\s\S]*runtimeOrder\.Controller, runtimeOrder\.ManualEvaluationCallback/,
+  'Manual-controlled evaluation must invoke the unique two-argument entry with the exact captured callback.');
+assert.match(yuumaEvaluation, /standardMethod\.Invoke\([\s\S]*runtimeOrder\.Controller, false, null/,
+  'Standard evaluation must invoke the unique three-argument entry with partner=false and no callback.');
+const yuumaEvaluationResolver = namedMethodSource(yuumaSettlement, 'TryResolveYuumaEvaluationMethod');
+assert.match(yuumaEvaluationResolver, /"EvaulateManualOrder"[\s\S]*"EvaluateOrder"/,
+  'The exact evaluation resolver must name both native evaluation routes.');
+assert.match(
+  yuumaEvaluationResolver,
+  /parameters\[0\]\.ParameterType\.FullName[\s\S]*YuumaGuestGroupControllerTypeName[\s\S]*parameters\[0\]\.ParameterType\.IsInstanceOfType\(runtimeOrder\.Controller\)/,
+  'Both Yuuma evaluation routes must require the exact GuestGroupController FullName and wrapper instance.',
+);
+assert.match(yuumaEvaluationResolver, /parameters\.Length == 2[\s\S]*parameters\[1\]\.ParameterType == context\.ManualEvaluationCallback\.GetType\(\)[\s\S]*IsExactYuumaManualEvaluationCallbackType\(parameters\[1\]\.ParameterType\)/,
+  'The manual route must validate the exact controller and callback parameter shapes.');
+assert.match(yuumaEvaluationResolver, /parameters\.Length == 3[\s\S]*parameters\[1\]\.ParameterType == typeof\(bool\)[\s\S]*parameters\[2\]\.ParameterType == typeof\(Il2CppSystem\.Action\)/,
+  'The standard route must validate controller, bool, and Il2CppSystem.Action parameter shapes.');
+assert.doesNotMatch(yuumaEvaluation, /ManualEvaluationCallback\s*\?\?/,
+  'A missing manual callback must never fall back to standard evaluation.');
+assert.doesNotMatch(yuumaEvaluation, /IsManualControlledOrder|CaptureSource|ToString\(/,
+  'Yuuma evaluation must not re-infer the exact captured route from broad runtime heuristics.');
+const yuumaManualCallbackType = namedMethodSource(
+  yuumaSettlement,
+  'IsExactYuumaManualEvaluationCallbackType',
+);
+assert.match(
+  yuumaManualCallbackType,
+  /type\.IsGenericType[\s\S]*type\.GetGenericTypeDefinition\(\)\.FullName[\s\S]*Il2CppActionGenericTypeName[\s\S]*arguments\.Length == 1[\s\S]*arguments\[0\]\.FullName[\s\S]*YuumaEvaluationResultTypeName/,
+  'Manual Yuuma evaluation must accept only the closed Il2CppSystem.Action<EvaluationResult> callback type.',
+);
+const yuumaReacquire = namedMethodSource(yuumaSettlement, 'TryValidateReacquiredYuumaSettlementOrder');
+assert.match(yuumaReacquire, /currentRoute != context\.EvaluationRoute[\s\S]*ReferenceEquals\(runtimeOrder\.ManualEvaluationCallback, context\.ManualEvaluationCallback\)/,
+  'Reacquisition must preserve both the exact route and callback object across the delivery boundary.');
+for (const [label, pattern] of [
+  ['order pointer', /orderPointer != context\.OrderPointer/],
+  ['controller pointer', /controllerPointer != context\.ControllerPointer/],
+  ['complete delivery state', /TryReadYuumaOrderDeliveryState\([\s\S]*out var servedFood[\s\S]*out var foodInAir[\s\S]*out var servedBeverage[\s\S]*out var beverageInAir/],
+  ['no native item in air', /foodInAir != null \|\| beverageInAir != null/],
+  ['final cooked food', /CompareObjectIdentity\(servedFood, cookedFood\) != RuntimeObjectIdentityComparison\.Same/],
+  ['final beverage', /servedBeverage == null[\s\S]*TryValidateYuumaDeliveredItemAgainstOriginalOrder\([\s\S]*job\.Target[\s\S]*servedBeverage[\s\S]*RuntimeDeliveryItemKind\.Beverage/],
+  ['canonical Yuuma identity', /YuumaChallengeOrderIdentity\.Read\(runtimeOrder\.Order, runtimeOrder\.Controller\)[\s\S]*identity\.OrderGuestId != SpecialBusinessGuestIds\.YuumaBoss[\s\S]*identity\.ControllerGuestId != SpecialBusinessGuestIds\.YuumaBoss/],
+  ['active business generation', /IsNightBusinessGenerationActive\(context\.BusinessGeneration\)/],
+]) {
+  assert.match(yuumaReacquire, pattern,
+    `Yuuma order reacquisition is missing strict post-callback ${label} validation.`);
+}
+
+const yuumaRuntimeOrderLookup = namedMethodSource(yuumaSettlement, 'FindYuumaRuntimeOrder');
+const yuumaGenerationGate = yuumaRuntimeOrderLookup.indexOf(
+  'policy == null || !IsNightBusinessGenerationActive(policy.BusinessGeneration)',
+);
+const yuumaNormalOrderScan = yuumaRuntimeOrderLookup.indexOf(
+  'FindRuntimeNormalOrder(request, RuntimeOrderLookupPurpose.YuumaSettlement)',
+);
+const yuumaSpecialOrderScan = yuumaRuntimeOrderLookup.indexOf(
+  'FindRuntimeOrder(request, RuntimeOrderLookupPurpose.YuumaSettlement)',
+);
+assert.ok(
+  yuumaGenerationGate >= 0
+    && yuumaNormalOrderScan > yuumaGenerationGate
+    && yuumaSpecialOrderScan > yuumaGenerationGate,
+  'Yuuma runtime-order lookup must reject an inactive target generation before scanning either order shape.',
+);
+assert.match(
+  yuumaRuntimeOrderLookup,
+  /target\.Kind == CookingCollectionTargetKind\.NormalOrder[\s\S]*FindRuntimeNormalOrder\(request, RuntimeOrderLookupPurpose\.YuumaSettlement\)[\s\S]*FindRuntimeOrder\(request, RuntimeOrderLookupPurpose\.YuumaSettlement\)/,
+  'Rare and normal Yuuma orders must share the dedicated settlement lookup before the beverage transaction.',
+);
+
+const yuumaFinalSetterResolver = namedMethodSource(yuumaSettlement, 'TryResolveYuumaFinalSetter');
+assert.match(
+  yuumaFinalSetterResolver,
+  /parameters\[0\]\.ParameterType\.FullName[\s\S]*YuumaSellableTypeName[\s\S]*parameters\[0\]\.ParameterType\.IsInstanceOfType\(deliveredItem\)/,
+  'Yuuma final setters must require the exact Sellable FullName and delivered wrapper instance.',
+);
+
+const yuumaPreCommitCookerValidation = namedMethodSource(
+  yuumaSettlement,
+  'TryValidateYuumaCookerBeforeFoodCommit',
+);
+assert.match(
+  yuumaPreCommitCookerValidation,
+  /TryReacquireAutomationCooker\([\s\S]*\.State\.Result[\s\S]*IsSameObject\(current\.State\.Result, cookedFood\)/,
+  'Yuuma final food commit must compare cookedFood with the result of a fresh exact cooker binding.',
+);
+assert.doesNotMatch(
+  yuumaPreCommitCookerValidation,
+  /job\.CookController/,
+  'Yuuma pre-commit validation must not read a retained cooker wrapper.',
+);
+
+const yuumaExtractionPreflight = namedMethodSource(
+  yuumaSettlement,
+  'TryCreateYuumaCookerExtractionContext',
+);
+assert.match(
+  yuumaExtractionPreflight,
+  /"OnCookerAvailabilityUpdate"[\s\S]*method\.ReturnType == typeof\(void\)[\s\S]*parameters\.Length == 1[\s\S]*parameters\[0\]\.ParameterType == typeof\(int\)/,
+  'Yuuma extraction must resolve the unique exact PartnerManager availability callback.',
+);
+assert.match(
+  yuumaExtractionPreflight,
+  /"AfterPlayerExtract"[\s\S]*method\.ReturnType == typeof\(void\)[\s\S]*method\.GetParameters\(\)\.Length == 0/,
+  'Yuuma extraction must resolve the unique exact CookController AfterPlayerExtract callback.',
+);
+assert.match(yuumaExtractionPreflight, /availabilityMethods\.Length != 1 \|\| extractionMethods\.Length != 1/,
+  'Yuuma extraction must fail closed unless both callback shapes are unique.');
+assert.doesNotMatch(yuumaExtractionPreflight, /TryInvokeInstance/,
+  'Yuuma extraction restored a broad reflective invocation fallback.');
+const yuumaExtractionContext = sourceSlice(
+  yuumaSettlement,
+  'private sealed record YuumaCookerExtractionContext(',
+  'private sealed record YuumaBeverageStorageContext(',
+);
+assert.doesNotMatch(
+  yuumaExtractionContext,
+  /object (?:CookController|PartnerManager)/,
+  'Yuuma extraction context must not retain native wrappers across callbacks.',
+);
+
+const yuumaExtraction = namedMethodSource(yuumaSettlement, 'TryCompleteYuumaCookerExtraction');
+const firstExtractionBinding = yuumaExtraction.indexOf('TryReacquireAutomationCooker(');
+const availabilityCallback = yuumaExtraction.indexOf('context.AvailabilityMethod.Invoke(');
+const availabilityMinusOne = yuumaExtraction.indexOf('new object?[] { -1 }', availabilityCallback);
+const secondExtractionBinding = yuumaExtraction.indexOf(
+  'TryReacquireAutomationCooker(',
+  firstExtractionBinding + 1,
+);
+const afterPlayerExtractCallback = yuumaExtraction.indexOf(
+  'context.ExtractionMethod.Invoke(',
+  secondExtractionBinding,
+);
+const thirdExtractionBinding = yuumaExtraction.indexOf(
+  'TryReacquireAutomationCooker(',
+  secondExtractionBinding + 1,
+);
+assert.ok(
+  firstExtractionBinding >= 0
+    && availabilityCallback > firstExtractionBinding
+    && availabilityMinusOne > availabilityCallback
+    && secondExtractionBinding > availabilityMinusOne
+    && afterPlayerExtractCallback > secondExtractionBinding,
+  'Yuuma cooker cleanup must fresh-bind before availability(-1), then rebind before AfterPlayerExtract.',
+);
+assert.equal(
+  thirdExtractionBinding,
+  -1,
+  'AfterPlayerExtract may legally start the next PureHellFryer batch and must not reacquire the old cooker generation.',
+);
+assert.doesNotMatch(
+  yuumaExtraction.slice(afterPlayerExtractCallback),
+  /RuntimeCookingContentMutation\.Extract/,
+  'A legal post-extract cooker takeover must not be rejected for replacing the old Extract receipt.',
+);
+assert.doesNotMatch(
+  yuumaExtraction,
+  /context\.CookController|job\.CookController/,
+  'Yuuma cooker cleanup invoked a wrapper cached before a native callback.',
+);
+assert.doesNotMatch(yuumaExtraction, /TryInvokeInstance/,
+  'Yuuma extraction completion restored a broad reflective invocation fallback.');
+const generalExtraction = namedMethodSource(directDelivery, 'CompleteCookerExtractionAfterReset');
+const generalFirstExtractionBinding = generalExtraction.indexOf('TryReacquireAutomationCooker(');
+const generalAvailabilityCallback = generalExtraction.indexOf(
+  'OnCookerAvailabilityUpdate',
+  generalFirstExtractionBinding,
+);
+const generalSecondExtractionBinding = generalExtraction.indexOf(
+  'TryReacquireAutomationCooker(',
+  generalFirstExtractionBinding + 1,
+);
+const generalAfterPlayerExtract = generalExtraction.indexOf(
+  'AfterPlayerExtract',
+  generalSecondExtractionBinding,
+);
+const generalThirdExtractionBinding = generalExtraction.indexOf(
+  'TryReacquireAutomationCooker(',
+  generalSecondExtractionBinding + 1,
+);
+assert.ok(
+  generalFirstExtractionBinding >= 0
+    && generalAvailabilityCallback > generalFirstExtractionBinding
+    && generalSecondExtractionBinding > generalAvailabilityCallback
+    && generalAfterPlayerExtract > generalSecondExtractionBinding
+    && generalThirdExtractionBinding < 0,
+  'General committed cleanup must fresh-bind before each callback without reading the old cooker after AfterPlayerExtract.',
+);
+assert.doesNotMatch(
+  generalExtraction.slice(generalAfterPlayerExtract),
+  /RuntimeCookingContentMutation\.Extract/,
+  'General committed cleanup must allow AfterPlayerExtract to start the next cooker generation.',
+);
+const extractionCall = yuumaFinalization.indexOf('TryCompleteYuumaCookerExtraction(');
+const cleanupCommit = yuumaFinalization.indexOf('MarkCleanupCommitted()', extractionCall);
+const postExtractTargetValidation = yuumaFinalization.indexOf(
+  'TryValidateCurrentYuumaFoodTarget(',
+  cleanupCommit,
+);
+const postExtractOrderReacquire = yuumaFinalization.indexOf(
+  'FindYuumaRuntimeOrder(job.Target, request)',
+  postExtractTargetValidation,
+);
+const postExtractOrderValidation = yuumaFinalization.indexOf(
+  'TryValidateReacquiredYuumaSettlementOrder(',
+  postExtractOrderReacquire,
+);
+assert.ok(
+  extractionCall >= 0
+    && cleanupCommit > extractionCall
+    && postExtractTargetValidation > cleanupCommit
+    && postExtractOrderReacquire > postExtractTargetValidation
+    && postExtractOrderValidation > postExtractOrderReacquire,
+  'A normal AfterPlayerExtract return must be followed by fresh business-target and exact-order validation before evaluation.',
+);
+
+const yuumaBeverageDelivery = namedMethodSource(yuumaSettlement, 'TryDeliverYuumaOrderBeverage');
+assert.doesNotMatch(
+  yuumaBeverageDelivery,
+  /ShouldPlayerThrowDeliver/,
+  'The player ThrowDeliver buff capability must not block the dedicated headless beverage transaction.',
+);
+assert.match(
+  yuumaBeverageDelivery,
+  /TryDeliverYuumaOrderBeverage\(\s*CookingCollectionTarget target,\s*int beverageId,\s*string beverageName,\s*string orderLabel\)/,
+  'The Yuuma beverage entry must accept only its stable target identity and item inputs.',
+);
+assert.doesNotMatch(
+  yuumaBeverageDelivery,
+  /TryDeliverYuumaOrderBeverage\([\s\S]*RuntimeOrderMatch\s+runtimeOrder/,
+  'The Yuuma beverage entry must not trust a generic runtime-order wrapper supplied by its caller.',
+);
+const beverageRequestBuild = yuumaBeverageDelivery.indexOf('BuildOrderRequestFromCookingTarget(target)');
+const beverageInitialLookup = yuumaBeverageDelivery.indexOf(
+  'FindYuumaRuntimeOrder(target, request)',
+  beverageRequestBuild,
+);
+const beverageInitialStateRead = yuumaBeverageDelivery.indexOf(
+  'TryReadYuumaOrderDeliveryState(',
+  beverageInitialLookup,
+);
+const beverageInAirGate = yuumaBeverageDelivery.indexOf(
+  'if (beverageInAir != null)',
+  beverageInitialStateRead,
+);
+const foodInAirGate = yuumaBeverageDelivery.indexOf(
+  'if (servedFood != null || foodInAir != null)',
+  beverageInAirGate,
+);
+const beverageQuantityRead = yuumaBeverageDelivery.indexOf(
+  'GetBeverageQuantity(beverageId)',
+  foodInAirGate,
+);
+const beverageStoragePreflight = yuumaBeverageDelivery.indexOf(
+  'TryCreateYuumaBeverageStorageContext(',
+);
+const beverageOut = yuumaBeverageDelivery.indexOf('storageContext.BeverageOutMethod.Invoke(');
+const deductedTargetValidation = yuumaBeverageDelivery.indexOf(
+  'TryValidateCurrentYuumaTarget(target, out var deductedTargetDiagnostic)',
+  beverageOut,
+);
+const deductedOrderLookup = yuumaBeverageDelivery.indexOf(
+  'var deductedOrder = FindYuumaRuntimeOrder(target, request)',
+  deductedTargetValidation,
+);
+const deductedOrderValidation = yuumaBeverageDelivery.indexOf(
+  'TryValidateReacquiredYuumaBeverageOrder(',
+  deductedOrderLookup,
+);
+const freshSetterResolution = yuumaBeverageDelivery.indexOf(
+  'TryResolveYuumaFinalSetter(',
+  deductedOrderValidation,
+);
+const beverageSetter = yuumaBeverageDelivery.indexOf(
+  'freshFinalBeverageSetter.Invoke(deductedOrder.Order, new[] { sellable })',
+  freshSetterResolution,
+);
+const committedTargetValidation = yuumaBeverageDelivery.indexOf(
+  'TryValidateCurrentYuumaTarget(target, out var committedTargetDiagnostic)',
+  beverageSetter,
+);
+const committedOrderLookup = yuumaBeverageDelivery.indexOf(
+  'var committedOrder = FindYuumaRuntimeOrder(target, request)',
+  committedTargetValidation,
+);
+const committedOrderValidation = yuumaBeverageDelivery.indexOf(
+  'TryValidateReacquiredYuumaBeverageOrder(',
+  committedOrderLookup,
+);
+const beveragePatientRecovery = yuumaBeverageDelivery.indexOf(
+  'TryRecoverPatientAfterPartialDelivery(',
+  committedOrderValidation,
+);
+const recoveredTargetValidation = yuumaBeverageDelivery.indexOf(
+  'TryValidateCurrentYuumaTarget(target, out var recoveredTargetDiagnostic)',
+  beveragePatientRecovery,
+);
+const recoveredOrderLookup = yuumaBeverageDelivery.indexOf(
+  'var recoveredOrder = FindYuumaRuntimeOrder(target, request)',
+  recoveredTargetValidation,
+);
+const recoveredOrderValidation = yuumaBeverageDelivery.indexOf(
+  'TryValidateReacquiredYuumaBeverageOrder(',
+  recoveredOrderLookup,
+);
+const beverageRangeAdjustment = yuumaBeverageDelivery.indexOf(
+  'ApplyYuumaBeverageCostPolicy(',
+  recoveredOrderValidation,
+);
+const adjustedTargetValidation = yuumaBeverageDelivery.indexOf(
+  'TryValidateCurrentYuumaTarget(target, out var adjustedTargetDiagnostic)',
+  beverageRangeAdjustment,
+);
+const adjustedOrderLookup = yuumaBeverageDelivery.indexOf(
+  'var adjustedOrder = FindYuumaRuntimeOrder(target, request)',
+  adjustedTargetValidation,
+);
+const adjustedOrderValidation = yuumaBeverageDelivery.indexOf(
+  'TryValidateReacquiredYuumaBeverageOrder(',
+  adjustedOrderLookup,
+);
+const freshBookkeepingContext = yuumaBeverageDelivery.indexOf(
+  'TryCreateYuumaBookkeepingContext(',
+  adjustedOrderValidation,
+);
+const beverageBookkeeping = yuumaBeverageDelivery.indexOf(
+  'TryApplyYuumaDeliveryBookkeeping(freshBookkeepingContext,',
+  freshBookkeepingContext,
+);
+assert.ok(
+  beverageRequestBuild >= 0
+    && beverageInitialLookup > beverageRequestBuild
+    && beverageInitialStateRead > beverageInitialLookup
+    && beverageInAirGate > beverageInitialStateRead
+    && foodInAirGate > beverageInAirGate
+    && beverageQuantityRead > foodInAirGate
+    && beverageStoragePreflight > beverageQuantityRead
+    && beverageOut > beverageStoragePreflight
+    && deductedTargetValidation > beverageOut
+    && deductedOrderLookup > deductedTargetValidation
+    && deductedOrderValidation > deductedOrderLookup
+    && freshSetterResolution > deductedOrderValidation
+    && beverageSetter > freshSetterResolution
+    && committedTargetValidation > beverageSetter
+    && committedOrderLookup > committedTargetValidation
+    && committedOrderValidation > committedOrderLookup
+    && beveragePatientRecovery > committedOrderValidation
+    && recoveredTargetValidation > beveragePatientRecovery
+    && recoveredOrderLookup > recoveredTargetValidation
+    && recoveredOrderValidation > recoveredOrderLookup
+    && beverageRangeAdjustment > recoveredOrderValidation
+    && adjustedTargetValidation > beverageRangeAdjustment
+    && adjustedOrderLookup > adjustedTargetValidation
+    && adjustedOrderValidation > adjustedOrderLookup
+    && freshBookkeepingContext > adjustedOrderValidation
+    && beverageBookkeeping > freshBookkeepingContext,
+  'Each irreversible Yuuma beverage step, including patient recovery, must be followed by target/revision validation and a fresh exact-order lookup before bookkeeping.',
+);
+assert.match(
+  yuumaBeverageDelivery.slice(beverageInAirGate, foodInAirGate),
+  /OrderPreparationStepCodes\.CookingPending/,
+  'A native BeverageInAir must stop the shared rare/normal Yuuma beverage entry as a retryable CookingPending state.',
+);
+assert.match(
+  yuumaBeverageDelivery.slice(foodInAirGate, beverageQuantityRead),
+  /OrderPreparationStepCodes\.CookingPending/,
+  'A native FoodInAir must stop the Yuuma beverage transaction before inventory can be consumed.',
+);
+assert.doesNotMatch(
+  yuumaBeverageDelivery.slice(beverageInitialLookup, beverageQuantityRead),
+  /BeverageOutMethod\.Invoke|freshFinalBeverageSetter\.Invoke|ApplyYuumaBeverageCostPolicy|TryRecoverPatientAfterPartialDelivery|TryApplyYuumaDeliveryBookkeeping/,
+  'The shared rare/normal in-air preflight performs an irreversible side effect before rejecting the transaction.',
+);
+const afterBeverageOut = yuumaBeverageDelivery.slice(beverageOut);
+assert.doesNotMatch(
+  afterBeverageOut,
+  /runtimeOrder\.Order|runtimeOrder\.Controller|runtimeOrder\.Manager/,
+  'The preflight runtime-order wrapper must never cross the irreversible BeverageOut boundary.',
+);
+assert.match(
+  yuumaBeverageDelivery.slice(deductedOrderValidation, beverageSetter),
+  /expectCommitted: false[\s\S]*freshFinalBeverageSetter/,
+  'The post-BeverageOut lookup must prove the order is still uncommitted before resolving a fresh setter.',
+);
+assert.match(
+  yuumaBeverageDelivery.slice(committedOrderValidation, recoveredTargetValidation),
+  /expectCommitted: true[\s\S]*TryRecoverPatientAfterPartialDelivery\([\s\S]*committedOrder,[\s\S]*deliveredItemCount: 1/,
+  'The post-setter lookup must prove the exact committed order before one-item patient recovery.',
+);
+assert.match(
+  yuumaBeverageDelivery.slice(recoveredOrderValidation, beverageRangeAdjustment),
+  /expectCommitted: true/,
+  'The post-recovery lookup must prove the exact committed order before range adjustment.',
+);
+assert.match(
+  yuumaBeverageDelivery.slice(adjustedOrderValidation, beverageBookkeeping),
+  /expectCommitted: true[\s\S]*adjustedOrder[\s\S]*freshBookkeepingContext/,
+  'The post-range lookup must prove the exact committed order before building fresh bookkeeping.',
+);
+assert.doesNotMatch(
+  yuumaBeverageDelivery.slice(beveragePatientRecovery, beverageBookkeeping),
+  /committedOrder\.(?:Order|Controller|Manager)/,
+  'The pre-recovery order wrapper must not cross the patient-recovery callback boundary.',
+);
+assert.doesNotMatch(
+  yuumaBeverageDelivery.slice(beverageRangeAdjustment, beverageBookkeeping),
+  /recoveredOrder\.(?:Order|Controller|Manager)/,
+  'The pre-range order wrapper must not cross the inventory callback boundary.',
+);
+const beverageReacquireValidation = namedMethodSource(
+  yuumaSettlement,
+  'TryValidateReacquiredYuumaBeverageOrder',
+);
+assert.match(
+  beverageReacquireValidation,
+  /TryReadYuumaOrderDeliveryState\([\s\S]*out var beverageInAir[\s\S]*if \(beverageInAir != null\)[\s\S]*return false;/,
+  'Every fresh Yuuma beverage order must reject a native BeverageInAir before another transaction step.',
+);
+const reacquiredBeverageInAirGate = beverageReacquireValidation.indexOf(
+  'if (beverageInAir != null)',
+);
+const reacquiredFoodGate = beverageReacquireValidation.indexOf(
+  'if (servedFood != null || foodInAir != null)',
+);
+const reacquiredCommitGate = beverageReacquireValidation.indexOf(
+  'if (!expectCommitted && servedBeverage != null)',
+);
+assert.ok(
+  reacquiredBeverageInAirGate >= 0
+    && reacquiredFoodGate > reacquiredBeverageInAirGate
+    && reacquiredCommitGate > reacquiredBeverageInAirGate,
+  'The fresh-order BeverageInAir gate must run before food and committed-beverage state validation.',
+);
+assert.equal(
+  [...yuumaBeverageDelivery.matchAll(/TryValidateReacquiredYuumaBeverageOrder\(/g)].length,
+  4,
+  'All four fresh Yuuma beverage reacquisitions must pass the BeverageInAir validator.',
+);
+assert.match(
+  beverageReacquireValidation,
+  /!expectCommitted && servedBeverage != null[\s\S]*expectCommitted[\s\S]*CompareObjectIdentity\(servedBeverage, deliveredBeverage\)[\s\S]*RuntimeObjectIdentityComparison\.Same/,
+  'The beverage reacquire validator must distinguish uncommitted state from the exact committed item.',
+);
+const patientRecovery = namedMethodSource(
+  delivery,
+  'TryRecoverPatientAfterPartialDelivery',
+);
+const manualControlledSkip = patientRecovery.indexOf('IsManualControlledOrder(');
+const patientBoundsRead = patientRecovery.indexOf('TryReadPatientBounds(');
+const patientMutation = patientRecovery.indexOf('TryInvokeInstance(', patientBoundsRead);
+assert.ok(
+  manualControlledSkip >= 0
+    && patientBoundsRead > manualControlledSkip
+    && patientMutation > patientBoundsRead,
+  'Manual-controlled orders must return from the shared recovery helper before patient reads or mutations.',
+);
+assert.match(
+  patientRecovery.slice(manualControlledSkip, patientBoundsRead),
+  /message = "";[\s\S]*return true;/,
+  'The manual-controlled patient-recovery path must remain an explicit successful no-op.',
+);
+assert.equal(
+  [...yuumaBeverageDelivery.matchAll(/currentQuantity > 0/g)].length,
+  1,
+  'Infinite beverage stock must still execute the native inventory sequence; only finite sufficiency may branch on currentQuantity > 0.',
+);
+assert.match(yuumaBeverageDelivery, /currentQuantity < 0[\s\S]*\? "无限库存"/,
+  'Infinite beverage stock must retain its native -1 result display.');
+assert.match(
+  yuumaBeverageDelivery,
+  /currentQuantity - \(isFreeBeverage \? 0 : extraCostBeverages\)/,
+  'Finite beverage result text must show zero net cost for free service and the full extra-cost quantity otherwise.',
+);
+
+const yuumaBeverageCostPolicy = namedMethodSource(yuumaSettlement, 'ApplyYuumaBeverageCostPolicy');
+assert.match(
+  yuumaBeverageCostPolicy,
+  /if \(isFreeBeverage\)[\s\S]*InvokeExactRuntimeStorageRange\([\s\S]*storageContext\.BeverageInRangeMethod,[\s\S]*beverageId,[\s\S]*1\)[\s\S]*return/,
+  'Free beverage service must reverse the base BeverageOut exactly once.',
+);
+assert.match(
+  yuumaBeverageCostPolicy,
+  /var additionalCost = extraCostBeverages - 1[\s\S]*additionalCost > 0[\s\S]*InvokeExactRuntimeStorageRange\([\s\S]*storageContext\.BeverageOutRangeMethod,[\s\S]*beverageId,[\s\S]*additionalCost\)/,
+  'Extra-cost beverage service must apply the remaining native range cost after the base BeverageOut.',
+);
+
+const yuumaBeverageStoragePreflight = namedMethodSource(
+  yuumaSettlement,
+  'TryCreateYuumaBeverageStorageContext',
+);
+assert.match(
+  yuumaBeverageStoragePreflight,
+  /"BeverageOut"[\s\S]*method\.ReturnType == typeof\(void\)[\s\S]*parameters\.Length == 2[\s\S]*parameters\[0\]\.ParameterType == typeof\(int\)[\s\S]*parameters\[1\]\.ParameterType == typeof\(bool\)/,
+  'Yuuma beverage storage must uniquely preflight BeverageOut(int,bool).',
+);
+assert.match(
+  yuumaBeverageStoragePreflight,
+  /FindYuumaBeverageRangeMethods\([\s\S]*"BeverageInRange"[\s\S]*FindYuumaBeverageRangeMethods\([\s\S]*"BeverageOutRange"/,
+  'Yuuma beverage storage must preflight both exact range methods before any write.',
+);
+assert.match(
+  yuumaBeverageStoragePreflight,
+  /beverageOutMethods\.Length != 1[\s\S]*beverageInRangeMethods\.Length != 1[\s\S]*beverageOutRangeMethods\.Length != 1/,
+  'Yuuma beverage storage must fail closed unless all three native entry shapes are unique.',
+);
+const yuumaBeverageRangeResolver = namedMethodSource(
+  yuumaSettlement,
+  'FindYuumaBeverageRangeMethods',
+);
+assert.match(
+  yuumaBeverageRangeResolver,
+  /parameters\[0\]\.ParameterType[\s\S]*typeof\(Il2CppSystem\.Collections\.Generic\.IEnumerable<int>\)[\s\S]*parameters\[1\]\.ParameterType == typeof\(bool\)/,
+  'Yuuma range storage must resolve only the exact IEnumerable<int>,bool signature.',
+);
+const yuumaBeverageRangeInvoke = namedMethodSource(
+  yuumaSettlement,
+  'InvokeExactRuntimeStorageRange',
+);
+assert.match(
+  yuumaBeverageRangeInvoke,
+  /new Il2CppStructArray<int>\(count\)[\s\S]*Cast<Il2CppSystem\.Collections\.Generic\.IEnumerable<int>>\(\)[\s\S]*method\.Invoke\(null, new object\?\[\] \{ enumerable, false \}\)/,
+  'Yuuma range storage must build the exact IL2CPP array and invoke the cached MethodInfo.',
+);
+
+const yuumaTagReader = namedMethodSource(yuumaSettlement, 'TryReadExactSellableTagIds');
+assert.match(
+  yuumaTagReader,
+  /FindExactInstanceMethod\([\s\S]*"get_Tags",[\s\S]*0,[\s\S]*typeof\(Il2CppStructArray<int>\)\)/,
+  'Yuuma item Tags getter must declare the exact Il2CppStructArray<int> return type before invocation.',
+);
+assert.match(yuumaTagReader, /rawTags is Il2CppStructArray<int> il2CppTags/,
+  'Yuuma item Tags must accept only the BepInEx 783 Il2CppStructArray<int> container.');
+assert.match(yuumaTagReader, /get_Tags\(\) 返回未验证的容器/,
+  'Yuuma item Tags must fail closed on an unverified container shape.');
+assert.doesNotMatch(
+  yuumaTagReader,
+  /rawTags is (?:int\[\]|IEnumerable)|EnumerateIl2Cpp|TryReadIntSequence/,
+  'Yuuma item Tags restored an unsupported array/enumerable compatibility fallback.',
+);
+
+const normalYuumaCookingJob = namedMethodSource(cooking, 'TryProcessNormalOrderCookingJob');
+const normalYuumaTerminal = normalYuumaCookingJob.indexOf(
+  'if (result.Remove && IsYuumaBossTarget(job.Target))',
+);
+const normalServedFoodFallback = normalYuumaCookingJob.indexOf('ReadOrderServedFood(order)');
+assert.ok(normalYuumaTerminal >= 0 && normalServedFoodFallback > normalYuumaTerminal,
+  'A terminal normal-order Yuuma job must return before reading the potentially invalidated order wrapper\'s served food.');
+
+const yuumaBookkeepingPreflight = namedMethodSource(
+  yuumaSettlement,
+  'TryCreateYuumaBookkeepingContext',
+);
+assert.match(
+  yuumaBookkeepingPreflight,
+  /parameters\[0\]\.ParameterType[\s\S]*typeof\(Il2CppSystem\.Collections\.Generic\.IEnumerable<int>\)/,
+  'Yuuma consume bookkeeping must require the exact generic IEnumerable<int> parameter.',
+);
+assert.match(
+  yuumaBookkeepingPreflight,
+  /parameters\[0\]\.ParameterType\.FullName[\s\S]*YuumaOrderBaseTypeName[\s\S]*parameters\[0\]\.ParameterType\.IsInstanceOfType\(runtimeOrder\.Order\)[\s\S]*parameters\[1\]\.ParameterType\.FullName[\s\S]*YuumaOrderChangeContextTypeName[\s\S]*parameters\[2\]\.ParameterType == typeof\(int\)/,
+  'Yuuma Partner status bookkeeping must require exact OrderBase, OrderChangeContext, and int parameter identities.',
+);
+
+const yuumaBookkeeping = namedMethodSource(yuumaSettlement, 'TryApplyYuumaDeliveryBookkeeping');
+assert.match(
+  yuumaBookkeeping,
+  /TryApplyYuumaDeliveryBookkeeping\(\s*YuumaDeliveryBookkeepingContext context,\s*out string diagnostic\)/,
+  'Post-evaluation bookkeeping accepts live order/item inputs instead of only its cached context.',
+);
+const consumeUpdate = yuumaBookkeeping.indexOf('AddBussinessFoodConsumes');
+const statusUpdate = yuumaBookkeeping.indexOf('OnOrderBaseStatusUpdate');
+const deskUpdate = yuumaBookkeeping.indexOf('TryAddPlayerOccupiedDeskCode');
+const consumeInvoke = yuumaBookkeeping.indexOf('context.ConsumeMethod.Invoke');
+const statusInvoke = yuumaBookkeeping.indexOf('context.StatusMethod.Invoke');
+const deskInvoke = yuumaBookkeeping.indexOf('context.DeskMethod.Invoke');
+assert.ok(consumeUpdate >= 0 && statusUpdate > consumeUpdate && deskUpdate > statusUpdate,
+  'Yuuma bookkeeping must mirror native consume -> FoodDelivered -> occupied-desk order.');
+assert.ok(consumeInvoke >= 0 && statusInvoke > consumeInvoke && deskInvoke > statusInvoke,
+  'Yuuma bookkeeping invocation order must remain consume -> status -> occupied desk.');
+assert.match(yuumaBookkeeping, /FoodDelivered/);
+assert.doesNotMatch(
+  yuumaBookkeeping,
+  /RuntimeOrderMatch|deliveredItem|FindExact|GetType\(|ReadMember|ReadSellable|get_DeskCode|TryReadNativeObjectPointer|FindYuumaRuntimeOrder/,
+  'Post-evaluation bookkeeping must consume only the opaque context cached before native evaluation.',
+);
+
+assert.match(yuumaSettlementTracker, /Ready[\s\S]*Attempting[\s\S]*Committed[\s\S]*Uncertain/,
+  'Yuuma settlement tracker must expose monotonic irreversible states.');
+assert.match(yuumaSettlementTracker, /TryBegin/,
+  'Yuuma settlement tracker must atomically claim an attempt.');
+assert.match(yuumaSettlementTracker, /MarkUncertain/,
+  'Yuuma settlement tracker must permanently quarantine an uncertain native call.');
+const uncertainYuumaSettlement = namedMethodSource(yuumaSettlement, 'BlockUncertainYuumaSettlement');
+assert.match(yuumaFinalization, /MarkUncertain/,
+  'An irreversible Yuuma exception must latch the transaction as uncertain.');
+assert.match(uncertainYuumaSettlement, /OrderEvaluationCommitUncertain[\s\S]*yuuma-settlement-uncertain[\s\S]*terminal: true/,
+  'An irreversible Yuuma exception must become an acknowledged non-replay barrier.');
+
+assert.doesNotMatch(
+  `${yuumaSettlement}\n${yuumaSettlementTracker}`,
+  /WorkSceneServePannel|WorkSceneThrowDeliverPanel|OpenThrowDeliverPanel|OnThrowDelivering|ExecuteThrowDeliver|ThrowDeliver\(|ShowOrder|ShowManualOrder|FinishOrderStatus|InvokeOrderUpdate|DisplayClass|MoveNext|CookController\.Extract|YuumaFinalizationTransactionGate|YuumaOrderSettlementCoordinator|YuumaSettlementProgressState|TryClaimYuumaSettlement/,
+  'Yuuma settlement restored a UI/generated callback or the removed oversized transaction path.',
+);
+
+const manualHandoffReceipt = methodSource(
+  cooking,
+  'private static (bool Remove, string Message, string Code) TryProcessManualHandoffReceipt(',
+);
+assert.match(
+  manualHandoffReceipt,
+  /TryDetectSpecialFoodTargetPolicyChanged\([\s\S]*CookingManualHandoffExpired[\s\S]*terminal: false[\s\S]*FindRuntimeOrder\(request, RuntimeOrderLookupPurpose\.Completion\)/,
+  'A rotated Blood Pond Hell target does not retain its stale handoff receipt before order polling.',
+);
+assert.match(
+  manualHandoffReceipt,
+  /ManualHandoffMissingOrderCount < MissingTargetRetireAttempts[\s\S]*ManualHandoffMissingOrderClock\.Elapsed < MissingTargetRetireDelay[\s\S]*TryReadOrderServedItem\([\s\S]*RuntimeDeliveryItemKind\.Food[\s\S]*if \(servedFood == null\)[\s\S]*CookingManualHandoffCompleted/,
+  'Manual handoff receipt retirement no longer requires bounded missing-order or exact final-food evidence.',
+);
+assert.match(
+  manualHandoffReceipt,
+  /HandleManualHandoffReadFailure\([\s\S]*CookingPending/,
+  'Manual handoff read failures no longer remain side-effect-free and bounded.',
+);
+
+for (const removedSettlementFile of [
+  'mods/bepinex/src/Save/SpecialBusiness/YuumaFinalizationTransactionGate.cs',
+  'mods/bepinex/src/Save/YuumaOrderSettlementCoordinator.cs',
+  'mods/bepinex/src/Save/YuumaSettlementProgressState.cs',
+]) {
+  assert.equal(
+    fs.existsSync(path.join(root, removedSettlementFile)),
+    false,
+    `Removed Blood Pond Hell finalization file was restored: ${removedSettlementFile}`,
+  );
+}
+
+assert.match(
+  orderPreparationModels,
+  /public long SpecialTargetRevision \{ get; init; \}/,
+  'The order request must expose the exact Blood Pond Hell target revision.',
+);
+assert.match(
+  localApiServer,
+  /SpecialTargetRevision = ReadLongQuery\(query, "specialTargetRevision", 0\)/,
+  'The Local API parser must read target revision as a long and default non-Yuuma requests to zero.',
+);
+const frontendWirePolicy = sourceSlice(
+  frontendTypes,
+  'export interface SpecialFoodTargetWirePolicy',
+  'export interface NormalOrderExecutionTarget',
+);
+assert.match(
+  frontendWirePolicy,
+  /specialTargetRevision: number/,
+  'The frontend wire contract must carry the target revision.',
+);
+const createWirePolicy = methodSource(
+  frontendTargetPolicy,
+  'export function createSpecialFoodTargetWirePolicy(',
+);
+assert.match(
+  createWirePolicy,
+  /const yuumaRevision = specialBusiness\?\.yuumaFoodTargetRevision[\s\S]*owner === 'yuuma'[\s\S]*typeof yuumaRevision === 'number'[\s\S]*Number\.isSafeInteger\(yuumaRevision\)[\s\S]*yuumaRevision > 0[\s\S]*specialTargetRevision: revision/,
+  'Blood Pond Hell must publish only a positive, safe runtime revision into the wire policy.',
+);
+const emptyWirePolicy = methodSource(
+  frontendTargetPolicy,
+  'export function emptySpecialFoodTargetWirePolicy(',
+);
+assert.match(
+  emptyWirePolicy,
+  /specialTargetRevision: 0/,
+  'Ordinary and non-revision special-business requests must use revision zero.',
+);
+assert.equal(
+  [...frontendApi.matchAll(/specialTargetRevision: String\(specialTargetPolicy\.specialTargetRevision\)/g)].length,
+  2,
+  'Rare and normal order actions must both serialize the exact wire-policy revision.',
+);
+
+const rareTargetFactory = methodSource(
+  service,
+  'public static CookingCollectionTarget ForRareOrder(',
+);
+assert.match(
+  rareTargetFactory,
+  /SpecialFoodTargetRevision = request\.SpecialTargetRevision/,
+  'Rare-order targets must retain the request revision.',
+);
+const normalTargetFactory = methodSource(
+  service,
+  'public static CookingCollectionTarget ForNormalOrder(',
+);
+assert.match(
+  normalTargetFactory,
+  /SpecialFoodTargetRevision = specialFoodTargetRevision/,
+  'Normal-order targets must retain the request revision.',
+);
+const syntheticOrderRequest = methodSource(
+  directDelivery,
+  'private static OrderPreparationRequest BuildOrderRequestFromCookingTarget(',
+);
+assert.match(
+  syntheticOrderRequest,
+  /SpecialTargetRevision = target\.SpecialFoodTargetRevision/,
+  'Fresh runtime-order lookups must reconstruct the exact target revision.',
+);
+const cookingJobSource = sourceSlice(
+  service,
+  'private sealed class AutomationCookingJob',
+  'private sealed class CookingCollectionTarget',
+);
+assert.match(
+  cookingJobSource,
+  /public long SpecialFoodTargetRevision \{ get; init; \}/,
+  'The automation job must latch the exact revision captured before cooking side effects.',
+);
+assert.match(
+  cookingJobSource,
+  /public RuntimeCookerReservation CookerReservation \{ get; init; \}/,
+  'The automation job must retain the exact managed cooker reservation.',
+);
+assert.doesNotMatch(
+  cookingJobSource,
+  /object CookController/,
+  'The automation job must not retain an IL2CPP cooker wrapper.',
+);
+assert.match(
+  cookingJobSource,
+  /SpecialTargetRevision = SpecialFoodTargetRevision/,
+  'The job snapshot must publish the latched revision.',
+);
+assert.match(
+  localApiModels,
+  /class AutomationCookingJobSnapshot[\s\S]*public long SpecialTargetRevision \{ get; init; \}/,
+  'The Local API job snapshot schema must retain target revision.',
+);
+const revisionAwareTargetMatch = methodSource(
+  cooking,
+  'private static bool IsSameCookingCollectionTarget(',
+);
+assert.match(
+  revisionAwareTargetMatch,
+  /left\.SpecialFoodTargetRevision != right\.SpecialFoodTargetRevision[\s\S]*return false/,
+  'Cooking jobs from different target revisions must never be reused as the same target.',
+);
+
+const requestedTargetValidation = methodSource(
+  specialTargetPolicy,
+  'private static bool TryValidateRequestedSpecialFoodTargetPolicy(',
+);
+assert.match(
+  requestedTargetValidation,
+  /request\.SpecialTargetRevision <= 0[\s\S]*request\.SpecialTargetRevision != activeYuumaRevision/,
+  'A Yuuma request must carry a positive revision exactly equal to the current runtime revision.',
+);
+assert.match(
+  requestedTargetValidation,
+  /request\.SpecialTargetRevision != 0[\s\S]*非血池地狱特殊料理目标不能携带 target revision/,
+  'Ordinary and Yuyuko paths must remain isolated from the Yuuma revision protocol.',
+);
+const currentTargetValidation = methodSource(
+  specialTargetPolicy,
+  'private static bool TryValidateCurrentSpecialFoodTargetPolicy(',
+);
+assert.match(
+  currentTargetValidation,
+  /target\.SpecialFoodTargetRevision <= 0[\s\S]*target\.SpecialFoodTargetRevision != currentRevision/,
+  'A running Yuuma target must still match the exact current revision.',
+);
+assert.match(
+  currentTargetValidation,
+  /target\.SpecialFoodTargetRevision != 0[\s\S]*非血池地狱自动料理目标不能携带 target revision/,
+  'Non-Yuuma cooking targets must keep revision zero.',
+);
+const revisionCapture = methodSource(
+  specialTargetPolicy,
+  'private static bool TryCaptureYuumaFoodTargetRevision(',
+);
+assert.match(
+  revisionCapture,
+  /expectedRevision <= 0[\s\S]*expectedRevision != currentRevision[\s\S]*revision = expectedRevision/,
+  'Job registration must capture only the exact positive current revision.',
+);
+const revisionUpdate = methodSource(
+  specialBusinessContext,
+  'private static void UpdateYuumaFoodTarget(',
+);
+assert.match(
+  revisionUpdate,
+  /!string\.Equals\([\s\S]*_yuumaFoodTargetIdentity,[\s\S]*identity,[\s\S]*StringComparison\.Ordinal\)[\s\S]*_yuumaFoodTargetRevision\+\+[\s\S]*_yuumaFoodTargetIdentity = identity/,
+  'Every complete A -> B or B -> A identity transition must advance the monotonic revision.',
+);
+const currentYuumaTargetValidation = namedMethodSource(
+  yuumaSettlement,
+  'TryValidateCurrentYuumaTarget',
+);
+assert.match(
+  currentYuumaTargetValidation,
+  /target\.SpecialFoodTargetRevision <= 0[\s\S]*!expectedPolicy\.HasSameIdentity\(currentPolicy\)[\s\S]*target\.SpecialFoodTargetRevision != currentRevision/,
+  'A stale A revision must be rejected after A -> B -> A even when policy identity returns to A.',
+);
+
+const rarePrepare = methodSource(
+  service,
+  'public static OrderPreparationResult Prepare(',
+);
+assert.match(
+  rarePrepare,
+  /var yuumaRequest = IsYuumaBossRequest\(request\)[\s\S]*runtimeOrderCache \?\?= yuumaRequest[\s\S]*FindRuntimeOrder\(request, RuntimeOrderLookupPurpose\.YuumaSettlement\)[\s\S]*: FindRuntimeOrder\(request\)/,
+  'Rare prepare must use the strict Yuuma settlement lookup while ordinary and Yuyuko requests retain their original lookup.',
+);
+const rarePrepareLookup = rarePrepare.indexOf('RuntimeOrderMatch GetRuntimeOrder()');
+assert.ok(
+  rarePrepareLookup >= 0
+    && rarePrepareLookup < rarePrepare.indexOf('if (request.AutoTakeBeverage)')
+    && rarePrepareLookup < rarePrepare.indexOf('if (request.AutoStartCooking)'),
+  'Rare prepare must select strict Yuuma lookup before beverage state reads or cooking side effects.',
+);
+assert.match(
+  rarePrepare,
+  /existingBeverage != null[\s\S]*yuumaRequest[\s\S]*TryValidateYuumaDeliveredItemAgainstOriginalOrder\([\s\S]*RuntimeDeliveryItemKind\.Beverage/,
+  'Rare prepare must revalidate an outer-layer existing Yuuma beverage against the original Tag identity.',
+);
+
+const rareComplete = methodSource(
+  service,
+  'public static OrderPreparationResult CompleteFirst(',
+);
+assert.match(
+  rareComplete,
+  /IsYuumaBossRequest\(request\)[\s\S]*FindRuntimeOrder\(request, RuntimeOrderLookupPurpose\.YuumaSettlement\)[\s\S]*: FindRuntimeOrder\(request, RuntimeOrderLookupPurpose\.Completion\)/,
+  'Rare completion must reserve settlement lookup for Yuuma and retain Completion lookup for ordinary and Yuyuko orders.',
+);
+assert.match(
+  rareComplete,
+  /currentBeverage != null[\s\S]*TryValidateYuumaDeliveredItemAgainstOriginalOrder\([\s\S]*RuntimeDeliveryItemKind\.Beverage/,
+  'Rare completion must revalidate an existing Yuuma beverage against the original Tag identity.',
+);
+
+const normalComplete = methodSource(
+  service,
+  'public static OrderPreparationResult CompleteNormalFirst(',
+);
+assert.match(
+  normalComplete,
+  /var yuumaSettlement = IsYuumaBossRequest\(request\)[\s\S]*yuumaSettlement[\s\S]*FindRuntimeNormalOrder\(request, RuntimeOrderLookupPurpose\.YuumaSettlement\)[\s\S]*: FindRuntimeNormalOrder\(request\)/,
+  'Normal completion must reserve settlement lookup for Yuuma and retain the original lookup for ordinary and Yuyuko orders.',
+);
+assert.match(
+  normalComplete,
+  /servedBeverage != null[\s\S]*TryValidateYuumaDeliveredItemAgainstOriginalOrder\([\s\S]*RuntimeDeliveryItemKind\.Beverage/,
+  'Normal completion must revalidate an existing Yuuma beverage against the original item ID.',
+);
+const normalJobResult = normalComplete.indexOf('var cookingJobResult = autoDeliverFood');
+const normalJobDelivered = normalComplete.indexOf(
+  'if (cookingJobResult.Delivered)',
+  normalJobResult,
+);
+const normalYuumaCompletion = normalComplete.indexOf(
+  'if (yuumaSettlement)',
+  normalJobDelivered,
+);
+const normalCompletedOrder = normalComplete.indexOf(
+  'result.CompletedOrder = true',
+  normalYuumaCompletion,
+);
+const normalImmediateFinish = normalComplete.indexOf(
+  'return Finish(result)',
+  normalCompletedOrder,
+);
+const normalLegacyServedRead = normalComplete.indexOf(
+  'result.ServedFood = ReadOrderServedFood(runtimeOrder.Order)',
+  normalImmediateFinish,
+);
+assert.ok(
+  normalJobResult >= 0
+    && normalJobDelivered > normalJobResult
+    && normalYuumaCompletion > normalJobDelivered
+    && normalCompletedOrder > normalYuumaCompletion
+    && normalImmediateFinish > normalCompletedOrder
+    && normalLegacyServedRead > normalImmediateFinish,
+  'A delivered normal Yuuma cooking job must mark the order completed and immediately finish before stale served-item reads.',
+);
+const normalYuumaEvaluationGate = normalComplete.indexOf(
+  'if (yuumaSettlement)',
+  normalLegacyServedRead,
+);
+const normalYuyukoEvaluation = normalComplete.indexOf(
+  'TryEvaluateYuyukoChallengeOrderIfReady(',
+  normalYuumaEvaluationGate,
+);
+const normalGenericEvaluation = normalComplete.indexOf(
+  'TryEvaluateOrderIfReady(',
+  normalYuumaEvaluationGate,
+);
+assert.ok(
+  normalYuumaEvaluationGate > normalLegacyServedRead
+    && normalYuyukoEvaluation > normalYuumaEvaluationGate
+    && normalGenericEvaluation > normalYuyukoEvaluation,
+  'Normal evaluation must intercept Yuuma before the independent Yuyuko and generic evaluation branches.',
+);
+assert.doesNotMatch(
+  normalComplete.slice(normalYuumaEvaluationGate, normalYuyukoEvaluation),
+  /TryEvaluate(?:OrderIfReady|YuyukoChallengeOrderIfReady)/,
+  'The Yuuma evaluation intercept must remain side-effect-free while no completed cooking transaction is available.',
+);
+const normalCookingJobProcessor = namedMethodSource(
+  cooking,
+  'TryProcessNormalOrderCookingJob',
+);
+const normalFoodDeliveredResult = normalCookingJobProcessor.indexOf(
+  'result.Code == OrderPreparationStepCodes.FoodDelivered',
+);
+const normalYuumaRemovedResult = normalCookingJobProcessor.indexOf(
+  'result.Remove && IsYuumaBossTarget(job.Target)',
+  normalFoodDeliveredResult,
+);
+const normalLegacyJobServedRead = normalCookingJobProcessor.indexOf(
+  'ReadOrderServedFood(order)',
+  normalYuumaRemovedResult,
+);
+assert.ok(
+  normalFoodDeliveredResult >= 0
+    && normalYuumaRemovedResult > normalFoodDeliveredResult
+    && normalLegacyJobServedRead > normalYuumaRemovedResult,
+  'A Yuuma normal cooking job may report Delivered only from exact FoodDelivered, never from the legacy served-field fallback.',
+);
+
+const directYuumaLookup = directFoodDelivery.indexOf(
+  'var runtimeOrder = yuumaTarget',
+);
+const directYuumaStateRead = directFoodDelivery.indexOf(
+  'TryReadYuumaOrderDeliveryState(',
+  directYuumaLookup,
+);
+assert.match(
+  directFoodDelivery,
+  /var yuumaTarget = IsYuumaBossTarget\(target\)[\s\S]*yuumaTarget[\s\S]*FindYuumaRuntimeOrder\(target, request\)[\s\S]*FindRuntimeNormalOrder\(request\)[\s\S]*FindRuntimeOrder\(request\)/,
+  'Cooking-job delivery must use settlement lookup only for Yuuma and preserve ordinary/Yuyuko lookup paths.',
+);
+assert.ok(
+  directYuumaLookup >= 0
+    && directYuumaStateRead > directYuumaLookup
+    && directYuumaLookup < directFoodDelivery.indexOf('StoreCookedFoodForAlreadyHandledTarget(', directYuumaLookup)
+    && directYuumaLookup < directFoodDelivery.indexOf('TryFinalizeYuumaCookingJob(', directYuumaLookup),
+  'The strict Yuuma order must be acquired before order-state reads, release/store decisions, or final settlement.',
+);
+
+const manualHandoffLookup = manualHandoffReceipt.indexOf('FindYuumaRuntimeOrder(job.Target, request)');
+assert.match(
+  manualHandoffReceipt,
+  /IsYuumaBossTarget\(job\.Target\)[\s\S]*FindYuumaRuntimeOrder\(job\.Target, request\)[\s\S]*FindRuntimeNormalOrder\(request\)[\s\S]*FindRuntimeOrder\(request, RuntimeOrderLookupPurpose\.Completion\)/,
+  'Yuuma cooking-job handoff must use settlement lookup while ordinary and Yuyuko receipts retain their original purposes.',
+);
+assert.ok(
+  manualHandoffLookup >= 0
+    && manualHandoffLookup < manualHandoffReceipt.indexOf('if (runtimeOrder.Order == null)')
+    && manualHandoffLookup < manualHandoffReceipt.indexOf('TryReadOrderServedItem('),
+  'Yuuma handoff must acquire the strict order before deciding to release a receipt or reading delivered state.',
+);
+
+assert.equal(
+  [...yuumaBeverageDelivery.matchAll(/TryValidateYuumaDeliveredItemAgainstOriginalOrder\(/g)].length,
+  2,
+  'Dedicated Yuuma beverage delivery must validate both an existing beverage and the new candidate against the original order.',
+);
+const deliveredItemIdentity = namedMethodSource(
+  yuumaSettlement,
+  'TryValidateYuumaDeliveredItemAgainstOriginalOrder',
+);
+assert.match(
+  deliveredItemIdentity,
+  /target\.Kind == CookingCollectionTargetKind\.NormalOrder[\s\S]*target\.MatchFoodId[\s\S]*target\.MatchBeverageId[\s\S]*actualId != expectedId/,
+  'Normal Yuuma orders must validate delivered food/beverage by the exact original item ID.',
+);
+assert.match(
+  deliveredItemIdentity,
+  /target\.FoodTagId[\s\S]*target\.BeverageTagId[\s\S]*TryReadExactSellableTagIds[\s\S]*tagIds\.Contains\(expectedTagId\.Value\)/,
+  'Rare Yuuma orders must validate delivered food/beverage by the exact original Tag ID.',
+);
+
+assert.match(
+  cooking,
+  /RegisterAutomationCookingJob\([\s\S]*autoCollect,[\s\S]*autoCompleteOrder,[\s\S]*specialFoodTargetRevision\)/,
+  'Cooking-job registration must carry both collection and completion intent to the final settlement boundary.',
+);
 assert.match(cooking, /ManualHandoffObserved[\s\S]*TryProcessManualHandoffReceipt/);
 assert.match(cooking, /TryGetUnresolvedAutomationSafetyBarrier\(job\.Target[\s\S]*job\.Tracker\.Suspend/);
 assert.match(service, /TryApplyUnresolvedAutomationSafetyBarrier\(result, "rare"/);
@@ -157,7 +1523,8 @@ assert.match(service, /AcknowledgeAutomationSafetyBarrier[\s\S]*AcknowledgedSequ
 assert.match(service, /TryProcessAutomationCookingJob\(job, timeoutEligible\)[\s\S]*ReferenceEquals\(AutomationCookingJobs\[i\], job\)/);
 assert.match(cooking, /TryProcessNormalOrderCookingJob[\s\S]*ReferenceEquals\(AutomationCookingJobs\[i\], job\)/);
 
-const sharedCookerControllerReader = 'RuntimeCookerReflection.ReadCookerControllersFromCookSystem(';
+const sharedCookerControllerReader =
+  'RuntimeCookerReflection.TryReadCookerControllerEntriesFromCookSystem(';
 for (const [label, source] of [
   ['cooking', cooking],
   ['snapshot', cookerSnapshot],
@@ -169,7 +1536,7 @@ for (const [label, source] of [
 
 const cookerTypeEntry = methodSource(
   cookerReflection,
-  'public static List<int> ReadCookerTypeIds(',
+  'public static bool TryReadCookerTypeIds(',
 );
 assert.match(
   cookerTypeEntry,
@@ -194,24 +1561,60 @@ for (const requiredToken of [
   'typeof(Il2CppSystem.IDisposable)',
   'moveNext.Invoke(',
   'getCurrent.Invoke(',
-  'if (typeId == 0) continue;',
-  'CookerTypeNames.ContainsKey(typeId)',
+  'RuntimeCookerTypeSequenceReader.TryRead(',
   'dispose.Invoke(',
-  'return valid && completed && typeIds.Count > 0;',
 ]) {
   assert.ok(
     exactCookerTypeReader.includes(requiredToken),
-    `Exact cooker type enumeration is missing ${requiredToken}.`,
+    `Exact cooker type wrapper enumeration is missing ${requiredToken}.`,
+  );
+}
+for (const requiredToken of [
+  'if (typeId == 0)',
+  'observedEmpty = true;',
+  'if (failure.Length == 0 && !observedAny)',
+  '"cooker-types=sequence-empty"',
+  'if (typeId is < 1 or > 5)',
+  'dispose();',
+  'MaxExceptionDiagnosticLength',
+]) {
+  assert.ok(
+    cookerTypeSequenceReader.includes(requiredToken),
+    `Bounded cooker type sequence behavior is missing ${requiredToken}.`,
   );
 }
 assert.doesNotMatch(
-  exactCookerTypeReader,
-  /get_Type|EnumerateObjects|ReadIntEnumerable/,
+  `${exactCookerTypeReader}\n${cookerTypeSequenceReader}`,
+  /get_Type|EnumerateObjects|ReadIntEnumerable|typeIds\.Count > 0/,
   'Complete cooker type reads must not retain base-type or broad enumerable fallbacks.',
 );
+const controllerStateReader = methodSource(
+  cookerReflection,
+  'public static bool TryReadCookerControllerState(',
+);
+for (const requiredToken of [
+  '"get_IsEmptyDesk"',
+  'RuntimeCookerTypeSequenceReader.TryValidateControllerState(',
+  'IsEmptyDesk = isEmptyDesk',
+]) {
+  assert.ok(
+    controllerStateReader.includes(requiredToken),
+    `Exact empty-desk validation is missing ${requiredToken}.`,
+  );
+}
+for (const requiredToken of [
+  'isEmptyDesk && (!observedEmpty || capabilityCount != 0)',
+  'isEmptyDesk && (phase != 0 || !resultEmpty || !chosenRecipeEmpty)',
+  '!isEmptyDesk && capabilityCount == 0',
+]) {
+  assert.ok(
+    cookerTypeSequenceReader.includes(requiredToken),
+    `Exact empty-desk consistency validation is missing ${requiredToken}.`,
+  );
+}
 assert.ok(
   cookerSnapshot.includes('RuntimeCookerReflection.TryReadCookerControllerState(')
-    && cookerHighlight.includes('RuntimeCookerReflection.ReadCookerTypeIds(')
+    && cookerHighlight.includes('RuntimeCookerReflection.TryReadCookerControllerState(')
     && cooking.includes('RuntimeCookerReflection.TryReadCookerControllerState('),
   'Snapshot, highlight, and cooking must share the complete cooker type reader.',
 );
@@ -231,34 +1634,54 @@ for (const getter of [
     `Exact cooker availability is missing ${getter}.`,
   );
 }
-assert.match(
+assert.doesNotMatch(
   cookerReflection,
-  /public bool IsIdle => Phase == 0 && ResultEmpty && ChosenRecipeEmpty && CouldOpen;/,
-  'The shared native state must retain its strict idle/result/recipe/open definition.',
+  /public bool IsIdle/,
+  'The shared native state must not expose an idle shortcut that can classify an empty desk as capacity.',
+);
+assert.match(
+  cookerStartAvailabilityService,
+  /state\.IsEmptyDesk \|\| state\.TypeIds\.Count == 0[\s\S]*AutomationCookerStartAvailability\.Unavailable/,
+  'Exact empty desks and zero-capability controllers must remain unavailable before idle classification.',
 );
 assert.match(
   cookerStartPolicy,
   /if \(phase != 0 \|\| !resultEmpty \|\| !couldOpen\)[\s\S]*if \(chosenRecipeEmpty\)[\s\S]*StrictIdle[\s\S]*completedExtractObserved[\s\S]*ExtractedResidual[\s\S]*Unavailable/,
   'Cooker reuse must allow only strict idle or a completed Extract with residual recipe metadata.',
 );
-const fallbackCookerSelection = methodSource(
+const reservedCookerSelection = methodSource(
   cooking,
-  'private static (bool Ok, bool Waiting, object? CookController, string Message) TryGetCookerFromCookSystem(',
+  'string Message) TryGetCookerFromCookSystem(',
 );
 assert.ok(
-  fallbackCookerSelection.includes('RuntimeCookerReflection.GetCookSystemManager()')
-    && fallbackCookerSelection.includes('RuntimeCookerReflection.TryReadCookerControllerState('),
-  'Fallback cooking must share the exact manager and full controller state reader.',
+  reservedCookerSelection.includes('RuntimeCookerReflection.GetCookSystemManager()')
+    && reservedCookerSelection.includes('RuntimeCookerReflection.TryReadCookerControllerState('),
+  'Reserved cooking must share the exact manager and full controller state reader.',
 );
 assert.doesNotMatch(
-  fallbackCookerSelection,
-  /GetSingletonInstance\(CookSystemManagerTypeName\)|get_CouldCookerOpen/,
-  'Fallback cooking must not independently scan a manager or treat CouldCookerOpen as complete availability.',
+  reservedCookerSelection,
+  /GetSingletonInstance\(CookSystemManagerTypeName\)|get_CouldCookerOpen|foreach\s*\(|selectedController|\?\?=\s*cookController/,
+  'Reserved cooking must not scan for an alternate controller or treat CouldCookerOpen as complete availability.',
 );
 assert.match(
-  fallbackCookerSelection,
-  /ClassifyCookerStartAvailability\([\s\S]*AutomationCookerStartAvailability\.Unavailable[\s\S]*AutomationCookerStartAvailability\.ExtractedResidual/,
-  'Cooker selection must use the exact start-availability classifier.',
+  reservedCookerSelection,
+  /RuntimeCookerStartAvailabilityService\.Classify\([\s\S]*AutomationCookerStartAvailability\.Unavailable/,
+  'Reserved cooker validation must use the shared exact start-availability classifier.',
+);
+assert.match(
+  reservedCookerSelection,
+  /TryReadLockedCookerPositions\([\s\S]*if \(!RuntimeCookerReflection\.TryReadCookerControllerEntriesFromCookSystem\(\s*cookSystem,\s*lockedPositions,[\s\S]*return \(false, true, null, null,[\s\S]*经营厨具来源暂时无法读取/,
+  'AllCookers source failures must remain a local waiting outcome instead of proving the target cooker absent.',
+);
+assert.match(
+  reservedCookerSelection,
+  /TryReadLockedCookerPositions\([\s\S]*reservation\.TryMatch\([\s\S]*lockedPositions\.Contains\(reservation\.GridPosition\)[\s\S]*var cookController = controllerEntry\.Controller/,
+  'Cooking must reject a locked exact index, identity, and grid position before touching its controller state.',
+);
+assert.match(
+  reservedCookerSelection,
+  /lockedPositions\.Contains\(reservation\.GridPosition\)[\s\S]*TryReadCookerControllerState\([\s\S]*reservation\.EvaluateChallengeGate\([\s\S]*RuntimeCookerChallengeGateState\.Inconsistent[\s\S]*controllerState\.TypeIds\.Contains\(recipeCookerType\)[\s\S]*不会改选其他厨具[\s\S]*IsCookControllerReserved\(cookController\)[\s\S]*RuntimeCookerStartAvailabilityService\.Classify/,
+  'Only an unlocked exact controller may be checked for readability, open gate, type, Mod reservation, and shared availability.',
 );
 assert.doesNotMatch(
   cooking,
@@ -266,9 +1689,24 @@ assert.doesNotMatch(
   'Cooking must not accept a second controller source outside the exact AllCookers dictionary.',
 );
 assert.match(
-  fallbackCookerSelection,
-  /return \(false, true, null,[\s\S]*自动化将等待空闲厨具，不计入失败重试/,
-  'Natively busy compatible cookers must stay in a local waiting outcome.',
+  reservedCookerSelection,
+  /AutomationCookerStartAvailability\.Unavailable[\s\S]*return \(false, true, null,[\s\S]*不会改选其他厨具/,
+  'A reserved controller that becomes natively unavailable must stay in a local waiting outcome.',
+);
+assert.match(
+  orderPreparationModels,
+  /public int CookerControllerIndex \{ get; init; \} = -1;[\s\S]*public string CookerControllerIdentity \{ get; init; \} = "";[\s\S]*public int\? CookerGridX[\s\S]*public int\? CookerGridY[\s\S]*public int\? CookerGridZ/,
+  'The order request must carry the exact reserved cooker identity and coordinates.',
+);
+assert.match(
+  localApiServer,
+  /CookerControllerIndex = ReadIntQuery\(query, "cookerControllerIndex", -1\)[\s\S]*CookerControllerIdentity = ReadStringQuery\(query, "cookerControllerIdentity"\)[\s\S]*CookerGridX = ReadNullableIntQuery\(query, "cookerGridX"\)[\s\S]*CookerGridY = ReadNullableIntQuery\(query, "cookerGridY"\)[\s\S]*CookerGridZ = ReadNullableIntQuery\(query, "cookerGridZ"\)/,
+  'The Local API parser must read every exact cooker reservation field without aliases.',
+);
+assert.match(
+  service,
+  /TryStartCooking\([\s\S]*request\.CookerControllerIndex[\s\S]*request\.CookerControllerIdentity[\s\S]*request\.CookerGridX[\s\S]*request\.CookerGridY[\s\S]*request\.CookerGridZ[\s\S]*TryStartCooking\([\s\S]*request\.CookerControllerIndex[\s\S]*request\.CookerControllerIdentity[\s\S]*request\.CookerGridX[\s\S]*request\.CookerGridY[\s\S]*request\.CookerGridZ/,
+  'Rare and normal cooking starts must both forward the parsed reserved controller triple.',
 );
 assert.match(
   service,
@@ -279,15 +1717,34 @@ const cookerStart = methodSource(
   cooking,
   'private static CookingStartResult TryStartCooking(',
 );
+assert.match(
+  cookerStart,
+  /RuntimeCookerReservation\.TryCreate\([\s\S]*cookerControllerIndex[\s\S]*cookerControllerIdentity[\s\S]*cookerGridX[\s\S]*cookerGridY[\s\S]*cookerGridZ[\s\S]*TryGetCookerFromCookSystem\([\s\S]*recipeCookerType,[\s\S]*cookerReservation/,
+  'Cooking must build one complete reservation triple before exact cooker selection.',
+);
 const cookerRevalidationIndex = cookerStart.indexOf('TryRevalidateCookerBeforeStart(');
 const materialDeductionIndex = cookerStart.indexOf('InvokeRuntimeStorageOut("IngredientOut"');
+const finalCookerRevalidationIndex = cookerStart.indexOf(
+  'TryRevalidateCookerBeforeStart(',
+  cookerRevalidationIndex + 1,
+);
 assert.ok(
   cookerRevalidationIndex >= 0
     && materialDeductionIndex >= 0
-    && cookerRevalidationIndex < materialDeductionIndex,
-  'The selected cooker must be fully revalidated before the first material deduction.',
+    && cookerRevalidationIndex < materialDeductionIndex
+    && finalCookerRevalidationIndex > materialDeductionIndex,
+  'The exact reservation must be fully revalidated before material deduction and again after it.',
 );
 const setCookIndex = cookerStart.indexOf('InvokeInstance(cookController, "SetCook"');
+assert.ok(
+  setCookIndex > finalCookerRevalidationIndex,
+  'The final exact identity/grid/lock validation must immediately precede SetCook.',
+);
+assert.match(
+  cookerStart.slice(finalCookerRevalidationIndex, setCookIndex),
+  /BlockCookingStartUnowned\([\s\S]*Mod 未调用 SetCook/,
+  'Post-deduction reservation drift must stop before SetCook behind an authoritative safety barrier.',
+);
 const immediateOwnershipIndex = cookerStart.indexOf(
   'RuntimeCookingGenerationTracker.TryGetOwnershipSnapshot(',
   setCookIndex,
@@ -320,12 +1777,12 @@ const cookerRevalidation = methodSource(
 );
 assert.match(
   cookerRevalidation,
-  /ClassifyCookerStartAvailability\([\s\S]*AutomationCookerStartAvailability\.Unavailable/,
-  'The pre-material revalidation must repeat the same fresh start-availability classification.',
+  /TryGetCookerFromCookSystem\([\s\S]*reservation[\s\S]*IsSameObject\(cookController, current\.CookController\)[\s\S]*IsSameObject\(selectedCooker, current\.ControllerState\.Cooker\)/,
+  'Every repeated validation must fresh-read the reservation and preserve controller and bound-cooker identity.',
 );
 const cookerStartAvailability = methodSource(
-  cooking,
-  'private static AutomationCookerStartAvailability ClassifyCookerStartAvailability(',
+  cookerStartAvailabilityService,
+  'public static AutomationCookerStartAvailability Classify(',
 );
 assert.match(
   cookerStartAvailability,
@@ -343,13 +1800,71 @@ const cookingJobRegistration = methodSource(
 );
 assert.match(
   cookingJobRegistration,
+  /long specialFoodTargetRevision[\s\S]*SpecialFoodTargetRevision = specialFoodTargetRevision/,
+  'Cooking-job registration must persist the exact revision captured before ingredient side effects.',
+);
+assert.match(
+  cookingJobRegistration,
   /TryGetOwnershipSnapshot\([\s\S]*registrationOwnership != ownershipSnapshot[\s\S]*throw new InvalidOperationException/,
   'Job registration must retain the final exact ownership fence.',
 );
 assert.match(
   cookingJobRegistration,
-  /IsSameCookingCollectionTarget\(job\.Target, target\)[\s\S]*!job\.ManualHandoffObserved && job\.ControllerPointer == controllerPointer/,
+  /!job\.ManualHandoffObserved[\s\S]*IsSameCookingCollectionTarget\(job\.Target, target\)[\s\S]*job\.ControllerPointer == controllerPointer/,
   'A reused controller must not delete a target-bound manual-handoff receipt.',
+);
+const cookingJobLookup = methodSource(
+  cooking,
+  'private static bool TryFindAutomationCookingJob(',
+);
+assert.match(
+  cookingJobLookup,
+  /IsYuumaBossTarget\(target\)[\s\S]*job\.ManualHandoffObserved[\s\S]*IsSameCookingOrderIdentity\(job\.Target, target\)/,
+  'Blood Pond Hell must keep one manual-handoff slot per exact order across target rotations.',
+);
+assert.match(
+  cookerStart,
+  /TryFindAutomationCookingJob\([\s\S]*TryCaptureYuumaFoodTargetRevision\([\s\S]*InvokeRuntimeStorageOut\("IngredientOut"/,
+  'The exact-order handoff slot and Yuuma target revision must be checked before material side effects.',
+);
+assert.match(
+  manualHandoffReceipt,
+  /!job\.ManualHandoffExpired[\s\S]*TryDetectSpecialFoodTargetPolicyChanged\([\s\S]*targetComparisonAvailable && targetChanged[\s\S]*job\.ManualHandoffExpired = true[\s\S]*MarkManualHandoffExpired\([\s\S]*terminal: false/,
+  'A rotated handoff must be latched once as non-terminal instead of being released for another cook.',
+);
+const targetComparison = methodSource(
+  directDelivery,
+  'private static bool TryDetectSpecialFoodTargetPolicyChanged(',
+);
+assert.match(
+  targetComparison,
+  /if \(currentPolicy == null\)[\s\S]*comparisonAvailable = false;[\s\S]*return false;/,
+  'A missing current target policy must remain unavailable instead of becoming a confirmed rotation.',
+);
+assert.match(
+  targetComparison,
+  /TryGetActiveYuumaFoodTargetState\([\s\S]*currentYuumaPolicy\.BusinessGeneration != expectedPolicy\.BusinessGeneration[\s\S]*comparisonAvailable = false;[\s\S]*return !expectedPolicy\.HasSameIdentity\(currentYuumaPolicy\)[\s\S]*currentRevision != originalRevision;/,
+  'A Yuuma policy and revision must be read atomically in the exact generation before they can confirm rotation.',
+);
+assert.match(
+  manualHandoffReceipt,
+  /TryReadNativeObjectPointer\(servedFood,[\s\S]*servedPointer == job\.CurrentResultPointer[\s\S]*CookingManualHandoffResolved/,
+  'Manual handoff completion must distinguish the exact job result from another final food.',
+);
+assert.match(
+  manualHandoffReceipt,
+  /TryReadCookControllerFoodResultIdentity\(\s*servedFood,\s*"OrderBase\.ServFood"[\s\S]*actualIdentity\.FoodId == job\.Target\.FoodId/,
+  'Manual handoff source diagnostics must use the exact managed Sellable identity reader.',
+);
+assert.doesNotMatch(
+  manualHandoffReceipt,
+  /ReadSellable(?:Type|Id)\(servedFood\)/,
+  'Manual handoff source diagnostics must not fall back to broad Sellable reflection.',
+);
+assert.doesNotMatch(
+  manualHandoffReceipt,
+  /CookingManualHandoffTargetChanged|cooking-manual-handoff-target-changed/,
+  'The removed target-change terminal/restart path was restored.',
 );
 const cookerReservation = methodSource(
   cooking,
@@ -357,7 +1872,7 @@ const cookerReservation = methodSource(
 );
 assert.match(
   cookerReservation,
-  /!job\.ManualHandoffObserved[\s\S]*ReferenceEquals\(job\.CookController, cookController\)/,
+  /TryReadNativeObjectPointer\(cookController, out var controllerPointer\)[\s\S]*!job\.ManualHandoffObserved[\s\S]*job\.ControllerPointer == controllerPointer/,
   'A passive manual-handoff receipt must not reserve an otherwise idle cooker.',
 );
 for (const [methodName, prefixName, postfixName] of [
@@ -381,24 +1896,69 @@ assert.match(
   /OnSetCookCompleted\([\s\S]*bool __runOriginal[\s\S]*OnExtractCompleted\([\s\S]*bool __runOriginal[\s\S]*OnStoreCompleted\([\s\S]*bool __runOriginal[\s\S]*RecordContentMutation\([\s\S]*MutationCompleted: false[\s\S]*CompleteContentMutation\([\s\S]*!originalRan[\s\S]*current\.ContentRevision != token\.ContentRevision[\s\S]*MutationCompleted = true/,
   'A native mutation may become completed only when its original ran and its matching postfix still owns the same revision.',
 );
-assert.match(
-  cooking,
-  /ownershipBeforeReadable[\s\S]*TryReadCookerContentState\([\s\S]*ownershipAfterReadable[\s\S]*ownershipStable/,
-  'Cooking result reads must be fenced by stable ownership snapshots.',
-);
 const cookingJobProcessor = methodSource(
   cooking,
   'private static (bool Remove, string Message, string Code) TryProcessAutomationCookingJob(',
 );
 assert.match(
   cookingJobProcessor,
-  /ownershipAlreadyLost[\s\S]*if \(!ownershipAlreadyLost\)[\s\S]*TryReadCookerContentState\(/,
-  'A job must not inspect cooker content after the first snapshot already proves foreign ownership.',
+  /TryReacquireAutomationCooker\([\s\S]*cookerBinding\.State[\s\S]*cookerBinding\.Ownership/,
+  'A job must fresh-bind its exact reservation before reading cooker content or ownership.',
+);
+assert.doesNotMatch(
+  cookingJobProcessor,
+  /job\.CookController/,
+  'An existing job still reads its start-time cooker wrapper.',
+);
+const freshCookerBinding = methodSource(
+  cooking,
+  'private static bool TryReacquireAutomationCooker(',
 );
 assert.match(
+  freshCookerBinding,
+  /TryReadLockedCookerPositions\([\s\S]*TryReadCookerControllerEntriesFromCookSystem\(\s*cookSystem,\s*lockedPositions,[\s\S]*job\.CookerReservation\.TryMatch\([\s\S]*lockedPositions\.Contains\(job\.CookerReservation\.GridPosition\)[\s\S]*controllerPointer != job\.ControllerPointer[\s\S]*TryReadCookerControllerState\([\s\S]*job\.CookerReservation\.EvaluateChallengeGate\(/,
+  'Fresh job binding must reject a challenge-locked exact reservation before reading its controller state.',
+);
+assert.match(
+  freshCookerBinding,
+  /ownershipBefore != ownershipAfter[\s\S]*ownershipAfter\.Generation == job\.Generation[\s\S]*ownershipAfter\.ContentRevision == job\.ContentRevision[\s\S]*if \(!ownershipMatches\)/,
+  'Fresh job binding must reject ownership changes before publishing a wrapper.',
+);
+assert.match(
+  freshCookerBinding,
+  /expectedCompletedMutation\.HasValue[\s\S]*ownershipAfter\.LastMutation == expectedCompletedMutation\.Value[\s\S]*ownershipAfter\.MutationCompleted/,
+  'Fresh post-callback binding must require the exact completed native mutation receipt.',
+);
+assert.match(
+  cookingJobSource,
+  /public string CookerBindingFailureCode \{ get; set; \}/,
+  'The job snapshot must retain a managed diagnostic for fresh-binding failure without caching a wrapper.',
+);
+const committedCookerReset = methodSource(
   directDelivery,
-  /ownership\.Generation == job\.Generation[\s\S]*ownership\.ContentRevision == job\.ContentRevision/,
-  'Committed delivery cleanup must retain both ownership fences.',
+  'private static bool TryResetCookControllerAfterCommittedSideEffect(',
+);
+const resetFreshBinding = committedCookerReset.indexOf('TryReacquireAutomationCooker(');
+const resetFirstMutation = Math.min(
+  ...[
+    committedCookerReset.indexOf('CloseCookingVisual'),
+    committedCookerReset.indexOf('WriteMember('),
+  ].filter((index) => index >= 0),
+);
+const resetConfirmationBinding = committedCookerReset.indexOf(
+  'TryReacquireAutomationCooker(',
+  resetFreshBinding + 1,
+);
+assert.ok(
+  resetFreshBinding >= 0
+    && resetFirstMutation > resetFreshBinding
+    && resetConfirmationBinding > resetFirstMutation,
+  'Committed cooker cleanup must fresh-bind before mutation and rebind before confirming reset.',
+);
+assert.doesNotMatch(
+  committedCookerReset,
+  /job\.CookController/,
+  'Committed cooker cleanup still mutates a retained wrapper.',
 );
 assert.doesNotMatch(
   cooking,
@@ -407,23 +1967,65 @@ assert.doesNotMatch(
 );
 const snapshotReader = methodSource(
   cookerSnapshot,
-  'private static List<PlacedCookerInfo> ReadCookSystemCookers(',
+  'private static RuntimeCookerSnapshotReadResult ReadPlacedCookers()',
 );
-assert.ok(
-  snapshotReader.includes('RuntimeCookerReflection.TryReadCookerControllerState(')
-    && snapshotReader.includes('status = $"manager incomplete; controller=')
-    && snapshotReader.includes('return new List<PlacedCookerInfo>();'),
-  'Placed-cooker snapshots must fail the whole batch when any controller is unreadable.',
-);
-assert.doesNotMatch(
+assert.match(
   snapshotReader,
-  /single stale controller|if \(cooker == null\) continue|if \(typeIds\.Count == 0\) continue/,
-  'Placed-cooker snapshots must not publish a partial controller/type projection.',
+  /TryReadLockedCookerPositions\([\s\S]*TryReadCookerControllerEntriesFromCookSystem\(\s*cookSystem,\s*lockedPositions,[\s\S]*lockedControllerCount = controllerEntries\.Count\([\s\S]*for \(var controllerIndex = 0; controllerIndex < controllerEntries\.Count; controllerIndex\+\+\)[\s\S]*lockedPositions\.Contains\(entry\.GridPosition\)[\s\S]*continue;[\s\S]*TryReadCookerControllerState\([\s\S]*RuntimeCookerSnapshotReadResult\.Unavailable\([\s\S]*if \(!controllerState\.CouldOpen\)[\s\S]*RuntimeCookerSnapshotReadResult\.Unavailable[\s\S]*controllerState\.IsEmptyDesk[\s\S]*emptyControllerCount\+\+[\s\S]*continue/,
+  'Placed-cooker snapshots must classify locked keys before touching only unlocked controllers and fail the whole round on any remaining uncertainty.',
+);
+assert.match(
+  cooking,
+  /if \(controllerState\.IsEmptyDesk\)[\s\S]*已变为空厨具位[\s\S]*等待最新快照重新调度/,
+  'An action-time reservation that became an empty desk must wait without selecting another controller.',
+);
+assert.match(
+  cookerHighlight,
+  /if \(state\.IsEmptyDesk\) continue;[\s\S]*openRenderers\.AddRange\(controllerRenderers\);[\s\S]*if \(target\.Enabled && state\.TypeIds\.Contains\(target\.CookerTypeId\)\)/,
+  'Cooker highlighting must skip empty desks, retain every fresh open renderer for restoration, and then filter the target type.',
+);
+assert.match(
+  cookerHighlight,
+  /RestoreRetainedBaselinesLocked\(openRenderers\);[\s\S]*if \(!target\.Enabled\)[\s\S]*foreach \(var renderer in targetRenderers\)/,
+  'Cooker highlighting must restore post-event baselines before disabling or applying a replacement target.',
+);
+assert.match(
+  snapshotReader,
+  /cookers\.Count \+ emptyControllerCount \+ lockedControllerCount != controllerEntries\.Count[\s\S]*Complete = true[\s\S]*ControllerCount = controllerEntries\.Count[\s\S]*EmptyControllerCount = emptyControllerCount[\s\S]*LockedControllerCount = lockedControllerCount[\s\S]*ReadFailureCount = 0/,
+  'A published cooker snapshot must be fully complete with no partial controller capacity.',
+);
+assert.match(
+  snapshotReader,
+  /RuntimeCookerStartAvailabilityService\.Classify\([\s\S]*out var automationAvailabilityDiagnostic[\s\S]*GridPosition = new CookerGridPosition[\s\S]*ControllerIdentity = entry\.ControllerIdentity[\s\S]*ChallengeLocked = false[\s\S]*CouldOpen = controllerState\.CouldOpen[\s\S]*AutomationAvailable = automationAvailability != AutomationCookerStartAvailability\.Unavailable/,
+  'Readable unlocked cooker snapshots must publish exact identity/grid and distinguish start availability.',
+);
+const snapshotApply = methodSource(
+  cookerSnapshot,
+  'public static void ApplyTo(RecommendationState state)',
+);
+assert.match(
+  snapshotApply,
+  /PlacedCookers\.Clear\(\)[\s\S]*PlacedCookerTypeIds\.Clear\(\)[\s\S]*PlacedCookerSnapshotComplete = snapshot\.Complete[\s\S]*PlacedCookerControllerCount = snapshot\.ControllerCount[\s\S]*PlacedCookerEmptyControllerCount = snapshot\.EmptyControllerCount[\s\S]*PlacedCookerLockedControllerCount = snapshot\.LockedControllerCount[\s\S]*PlacedCookerReadFailureCount = snapshot\.ReadFailureCount/,
+  'Each cooker snapshot read must replace prior entries and structured read state.',
+);
+assert.match(
+  cookerSnapshotSignature,
+  /PlacedCookerSnapshotComplete[\s\S]*PlacedCookerControllerCount[\s\S]*PlacedCookerEmptyControllerCount[\s\S]*PlacedCookerLockedControllerCount[\s\S]*PlacedCookerReadFailureCount[\s\S]*cooker\.GridPosition\.X[\s\S]*cooker\.GridPosition\.Y[\s\S]*cooker\.GridPosition\.Z[\s\S]*cooker\.ControllerIdentity[\s\S]*cooker\.ChallengeLocked[\s\S]*cooker\.CouldOpen[\s\S]*cooker\.AutomationAvailable/,
+  'Cooker content signatures must include exact grid, native identity, challenge lock, gate, and availability.',
+);
+const clearPlacedCookers = methodSource(
+  overlay,
+  'private void ClearPlacedCookersFromCurrentState(string status)',
+);
+assert.match(
+  clearPlacedCookers,
+  /PlacedCookers\.Clear\(\)[\s\S]*PlacedCookerTypeIds\.Clear\(\)[\s\S]*PlacedCookerSnapshotComplete = false[\s\S]*PlacedCookerControllerCount = 0[\s\S]*PlacedCookerEmptyControllerCount = 0[\s\S]*PlacedCookerLockedControllerCount = 0[\s\S]*PlacedCookerReadFailureCount = 0[\s\S]*PlacedCookerStatus = status/,
+  'Leaving night business must clear cooker entries, physical types, and all structured snapshot fields.',
 );
 
 const exactAllCookersReader = methodSource(
   cookerReflection,
-  'public static IReadOnlyList<object> ReadCookerControllersFromCookSystem(',
+  'public static bool TryReadCookerControllerEntriesFromCookSystem(',
 );
 assert.match(
   cookerReflection,
@@ -437,8 +2039,8 @@ assert.match(
 );
 assert.match(
   exactAllCookersReader,
-  /RuntimeConcreteCollectionReader\.TryReadDictionary\(/,
-  'The shared controller reader must use the BepInEx 783 concrete dictionary reader.',
+  /IReadOnlySet<RuntimeCookerGridPosition> lockedPositions[\s\S]*RuntimeConcreteCollectionReader\.TryReadDictionary\([\s\S]*TryReadExactVector3Int\(entry\.Key,[\s\S]*locked-grid-missing[\s\S]*if \(lockedPositions\.Contains\(entry\.GridPosition\)\)[\s\S]*continue;[\s\S]*TryReadControllerGridPosition\([\s\S]*entry\.GridPosition != controllerPosition/,
+  'The shared controller reader must skip unsafe getters for exact locked keys and match every unlocked dictionary key to its controller GridPosition.',
 );
 assert.ok(
   cookerReflection.includes('Il2CppDictionaryTypeName')
@@ -449,6 +2051,25 @@ assert.doesNotMatch(
   exactAllCookersReader,
   /AllCookerControllers|UnityFind|FindUnityObjects|ReadDictionaryValues|ReadObjectPointer|IDictionary|DictionaryEntry|NormalizeKeyValueValue|"(?:entries|_entries|m_Entries)"/,
   'The exact AllCookers reader must not retain alternate controller discovery or ad-hoc dictionary paths.',
+);
+assert.doesNotMatch(
+  cookerReflection,
+  /TryReadCookerControllersFromCookSystem/,
+  'The removed index-only controller projection must not remain in production.',
+);
+const exactLockedCookersReader = methodSource(
+  cookerReflection,
+  'public static bool TryReadLockedCookerPositions(',
+);
+assert.match(
+  exactLockedCookersReader,
+  /TryGetExactMonoSingletonInstance\([\s\S]*"get_LockedCookers"[\s\S]*TryGetClosedStructArrayElementType\([\s\S]*TryReadExactVector3IntArray\(/,
+  'Challenge locks must use the exact EventManager singleton and Il2CppStructArray<Vector3Int> getter.',
+);
+assert.doesNotMatch(
+  exactLockedCookersReader,
+  /LockedCookersRaw|GetStaticMemberValue|IEnumerable|Enumerate/,
+  'Challenge lock reads must not restore raw, broad singleton, or generic enumeration paths.',
 );
 
 const deprecatedCookerDiscoveryPattern =
@@ -499,4 +2120,12 @@ function methodSource(source, marker) {
   }
 
   assert.fail(`Method body is not balanced: ${marker}`);
+}
+
+function namedMethodSource(source, methodName) {
+  const declaration = new RegExp(
+    `(?:private|internal|public)\\s+static[^{;]*\\b${methodName}\\s*\\(`,
+  ).exec(source);
+  assert.ok(declaration, `Named method not found: ${methodName}`);
+  return methodSource(source, declaration[0]);
 }

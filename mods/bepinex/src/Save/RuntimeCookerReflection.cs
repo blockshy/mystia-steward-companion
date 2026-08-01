@@ -7,6 +7,7 @@ internal sealed class RuntimeCookerControllerState
 {
     public object Cooker { get; init; } = null!;
     public IReadOnlyList<int> TypeIds { get; init; } = Array.Empty<int>();
+    public bool IsEmptyDesk { get; init; }
     public int Phase { get; init; } = -1;
     public object? Result { get; init; }
     public object? ChosenRecipe { get; init; }
@@ -14,7 +15,21 @@ internal sealed class RuntimeCookerControllerState
 
     public bool ResultEmpty => Result == null;
     public bool ChosenRecipeEmpty => ChosenRecipe == null;
-    public bool IsIdle => Phase == 0 && ResultEmpty && ChosenRecipeEmpty && CouldOpen;
+}
+
+internal readonly record struct RuntimeCookerGridPosition(int X, int Y, int Z)
+{
+    public override string ToString()
+    {
+        return $"{X},{Y},{Z}";
+    }
+}
+
+internal sealed class RuntimeCookerControllerEntry
+{
+    public object Controller { get; init; } = null!;
+    public RuntimeCookerGridPosition GridPosition { get; init; }
+    public string ControllerIdentity { get; init; } = "";
 }
 
 internal sealed class RuntimeCookerContentState
@@ -28,7 +43,6 @@ internal sealed class RuntimeCookerContentState
 
 internal static class RuntimeCookerReflection
 {
-    private const int MaxCookerTypeCount = 32;
     public const string CookSystemManagerTypeName = "NightScene.CookingUtility.CookSystemManager";
     public const string CookControllerTypeName = "NightScene.CookingUtility.CookController";
 
@@ -38,9 +52,14 @@ internal static class RuntimeCookerReflection
     private const string SellableTypeName = "GameData.Core.Collections.Sellable";
     private const string RecipeTypeName = "GameData.Core.Collections.Recipe";
     private const string Vector3IntTypeName = "UnityEngine.Vector3Int";
+    private const string EventManagerTypeName = "NightScene.EventUtility.EventManager";
     private const string Il2CppDictionaryTypeName = "Il2CppSystem.Collections.Generic.Dictionary`2";
     private const string Il2CppEnumerableTypeName = "Il2CppSystem.Collections.Generic.IEnumerable`1";
     private const string Il2CppGenericEnumeratorTypeName = "Il2CppSystem.Collections.Generic.IEnumerator`1";
+    private const string Il2CppStructArrayTypeName =
+        "Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStructArray`1";
+    private const string MonoSingletonTypeName = "DEYU.Singletons.MonoSingleton`1";
+    private const int MaxLockedCookerCount = 256;
     private const BindingFlags DeclaredInstanceFlags =
         BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly;
 
@@ -57,89 +76,46 @@ internal static class RuntimeCookerReflection
     {
         var type = RuntimeReflectionUtility.FindType(CookSystemManagerTypeName);
         if (type == null) return null;
-        var manager = RuntimeReflectionUtility.GetStaticMemberValue(type, "Instance");
-        return manager != null && type.IsInstanceOfType(manager) ? manager : null;
+        return TryGetExactMonoSingletonInstance(type, out var manager)
+            ? manager
+            : null;
     }
 
-    public static List<int> ReadCookerTypeIds(object? cooker)
-    {
-        if (cooker == null) return new List<int>();
-        return TryReadExactCookerTypeSequence(cooker, out var typeIds)
-            ? typeIds
-            : new List<int>();
-    }
-
-    public static bool TryReadCookerContentState(
-        object controller,
-        out RuntimeCookerContentState state,
+    public static bool TryReadCookerTypeIds(
+        object? cooker,
+        out IReadOnlyList<int> typeIds,
+        out bool observedEmpty,
         out string status)
     {
-        state = new RuntimeCookerContentState();
-        var controllerType = controller.GetType();
-        if (!TryGetExactControllerGetter(controllerType, "get_Phase", CookPhaseTypeName, out var getPhase)
-            || !getPhase.ReturnType.IsEnum
-            || !TryGetExactControllerGetter(controllerType, "get_Result", SellableTypeName, out var getResult)
-            || !TryGetExactControllerGetter(controllerType, "get_ChosenRecipe", RecipeTypeName, out var getChosenRecipe))
+        typeIds = Array.Empty<int>();
+        observedEmpty = false;
+        if (cooker == null)
         {
-            status = $"cooker-content=unsupported-shape; type={controllerType.FullName}";
+            status = "cooker-types=cooker-missing";
             return false;
         }
 
-        object? phaseValue;
-        object? result;
-        object? chosenRecipe;
-        try
+        if (!TryReadExactCookerTypeSequence(
+                cooker,
+                out var exactTypeIds,
+                out observedEmpty,
+                out status))
         {
-            phaseValue = getPhase.Invoke(controller, Array.Empty<object?>());
-            result = getResult.Invoke(controller, Array.Empty<object?>());
-            chosenRecipe = getChosenRecipe.Invoke(controller, Array.Empty<object?>());
-        }
-        catch (Exception ex)
-        {
-            status = $"cooker-content=invoke-failed; type={controllerType.FullName}; error={ex.GetBaseException().Message}";
             return false;
         }
 
-        if (phaseValue == null
-            || phaseValue.GetType() != getPhase.ReturnType
-            || result != null && !getResult.ReturnType.IsInstanceOfType(result)
-            || chosenRecipe != null && !getChosenRecipe.ReturnType.IsInstanceOfType(chosenRecipe))
-        {
-            status = $"cooker-content=value-type-mismatch; type={controllerType.FullName}";
-            return false;
-        }
-
-        int phase;
-        try
-        {
-            phase = Convert.ToInt32(phaseValue);
-        }
-        catch
-        {
-            status = $"cooker-content=phase-invalid; type={controllerType.FullName}";
-            return false;
-        }
-
-        if (phase is < 0 or > 3)
-        {
-            status = $"cooker-content=phase-out-of-range; value={phase}; type={controllerType.FullName}";
-            return false;
-        }
-
-        state = new RuntimeCookerContentState
-        {
-            Phase = phase,
-            Result = result,
-            ChosenRecipe = chosenRecipe,
-        };
-        status = $"cooker-content=ok; phase={phase}; resultEmpty={result == null}; "
-            + $"chosenRecipeEmpty={chosenRecipe == null}";
+        typeIds = exactTypeIds;
         return true;
     }
 
-    private static bool TryReadExactCookerTypeSequence(object cooker, out List<int> typeIds)
+    private static bool TryReadExactCookerTypeSequence(
+        object cooker,
+        out List<int> typeIds,
+        out bool observedEmpty,
+        out string status)
     {
         typeIds = new List<int>();
+        observedEmpty = false;
         if (!TryGetSingleDeclaredMethod(
                 cooker.GetType(),
                 "get_AllAvailableCookerType",
@@ -151,6 +127,7 @@ internal static class RuntimeCookerReflection
                 CookerTypeTypeName,
                 out var cookerType))
         {
+            status = $"cooker-types=getter-shape-invalid; cookerType={cooker.GetType().FullName}";
             return false;
         }
 
@@ -159,14 +136,20 @@ internal static class RuntimeCookerReflection
         {
             sequence = getter.Invoke(cooker, Array.Empty<object?>());
         }
-        catch
+        catch (Exception ex)
         {
+            status = $"cooker-types=getter-invoke-failed; error={RuntimeCookerTypeSequenceReader.FormatException(ex)}";
             return false;
         }
 
-        if (sequence is not Il2CppObjectBase
-            || !getter.ReturnType.IsInstanceOfType(sequence)
-            || !TryGetSingleDeclaredMethod(
+        if (sequence is not Il2CppObjectBase || !getter.ReturnType.IsInstanceOfType(sequence))
+        {
+            status = $"cooker-types=sequence-shape-invalid; declared={getter.ReturnType.FullName}; "
+                + $"actual={sequence?.GetType().FullName ?? "null"}";
+            return false;
+        }
+
+        if (!TryGetSingleDeclaredMethod(
                 getter.ReturnType,
                 "GetEnumerator",
                 Type.EmptyTypes,
@@ -196,6 +179,7 @@ internal static class RuntimeCookerReflection
                 out var dispose)
             || dispose.ReturnType != typeof(void))
         {
+            status = $"cooker-types=enumerator-contract-invalid; sequenceType={getter.ReturnType.FullName}";
             return false;
         }
 
@@ -204,77 +188,65 @@ internal static class RuntimeCookerReflection
         {
             enumerator = getEnumerator.Invoke(sequence, Array.Empty<object?>());
         }
-        catch
+        catch (Exception ex)
         {
+            status = $"cooker-types=get-enumerator-failed; error={RuntimeCookerTypeSequenceReader.FormatException(ex)}";
             return false;
         }
 
         if (enumerator is not Il2CppObjectBase
             || !getEnumerator.ReturnType.IsInstanceOfType(enumerator))
         {
+            status = $"cooker-types=enumerator-shape-invalid; declared={getEnumerator.ReturnType.FullName}; "
+                + $"actual={enumerator?.GetType().FullName ?? "null"}";
             return false;
         }
 
         var disposable = RuntimeReflectionUtility.TryCastRuntimeObject(
             enumerator,
             typeof(Il2CppSystem.IDisposable).FullName!);
-        if (disposable == null) return false;
+        if (disposable == null)
+        {
+            status = $"cooker-types=dispose-cast-failed; enumeratorType={enumerator.GetType().FullName}";
+            return false;
+        }
 
         var moveNextEnumerator = RuntimeReflectionUtility.TryCastRuntimeObject(
             enumerator,
             typeof(Il2CppSystem.Collections.IEnumerator).FullName!);
-        var seen = new HashSet<int>();
-        var completed = false;
-        var valid = moveNextEnumerator != null;
-        try
+        if (moveNextEnumerator == null)
         {
-            for (var index = 0; valid && index < MaxCookerTypeCount; index++)
-            {
-                if (moveNext.Invoke(moveNextEnumerator, Array.Empty<object?>()) is not bool hasNext)
-                {
-                    valid = false;
-                    break;
-                }
-
-                if (!hasNext)
-                {
-                    completed = true;
-                    break;
-                }
-
-                var current = getCurrent.Invoke(enumerator, Array.Empty<object?>());
-                if (current == null || current.GetType() != cookerType)
-                {
-                    valid = false;
-                    break;
-                }
-
-                var typeId = Convert.ToInt32(current);
-                if (typeId == 0) continue;
-                if (!CookerTypeNames.ContainsKey(typeId))
-                {
-                    valid = false;
-                    break;
-                }
-
-                if (seen.Add(typeId)) typeIds.Add(typeId);
-            }
-        }
-        catch
-        {
-            valid = false;
+            TryDisposeCookerTypeEnumerator(dispose, disposable);
+            status = $"cooker-types=move-next-cast-failed; enumeratorType={enumerator.GetType().FullName}";
+            return false;
         }
 
+        if (!RuntimeCookerTypeSequenceReader.TryRead(
+                () => moveNext.Invoke(moveNextEnumerator, Array.Empty<object?>()),
+                () => getCurrent.Invoke(enumerator, Array.Empty<object?>()),
+                cookerType,
+                () => dispose.Invoke(disposable, Array.Empty<object?>()),
+                out var exactTypeIds,
+                out observedEmpty,
+                out status))
+        {
+            return false;
+        }
+
+        typeIds.AddRange(exactTypeIds);
+        return true;
+    }
+
+    private static void TryDisposeCookerTypeEnumerator(MethodInfo dispose, object disposable)
+    {
         try
         {
             dispose.Invoke(disposable, Array.Empty<object?>());
         }
         catch
         {
-            valid = false;
+            // The caller reports the earlier interface conversion failure.
         }
-
-        return valid && completed && typeIds.Count > 0;
     }
 
     public static bool TryReadCookerControllerState(
@@ -284,7 +256,9 @@ internal static class RuntimeCookerReflection
     {
         state = new RuntimeCookerControllerState();
         var controllerType = controller.GetType();
-        if (!TryGetExactControllerGetter(controllerType, "get_Cooker", CookerTypeName, out var getCooker)
+        if (!TryGetSingleDeclaredMethod(controllerType, "get_IsEmptyDesk", Type.EmptyTypes, out var getIsEmptyDesk)
+            || getIsEmptyDesk.ReturnType != typeof(bool)
+            || !TryGetExactControllerGetter(controllerType, "get_Cooker", CookerTypeName, out var getCooker)
             || !TryGetExactControllerGetter(controllerType, "get_Phase", CookPhaseTypeName, out var getPhase)
             || !getPhase.ReturnType.IsEnum
             || !TryGetExactControllerGetter(controllerType, "get_Result", SellableTypeName, out var getResult)
@@ -301,8 +275,10 @@ internal static class RuntimeCookerReflection
         object? result;
         object? chosenRecipe;
         object? couldOpenValue;
+        object? isEmptyDeskValue;
         try
         {
+            isEmptyDeskValue = getIsEmptyDesk.Invoke(controller, Array.Empty<object?>());
             cooker = getCooker.Invoke(controller, Array.Empty<object?>());
             phaseValue = getPhase.Invoke(controller, Array.Empty<object?>());
             result = getResult.Invoke(controller, Array.Empty<object?>());
@@ -321,7 +297,8 @@ internal static class RuntimeCookerReflection
             || phaseValue.GetType() != getPhase.ReturnType
             || result != null && !getResult.ReturnType.IsInstanceOfType(result)
             || chosenRecipe != null && !getChosenRecipe.ReturnType.IsInstanceOfType(chosenRecipe)
-            || couldOpenValue is not bool couldOpen)
+            || couldOpenValue is not bool couldOpen
+            || isEmptyDeskValue is not bool isEmptyDesk)
         {
             status = $"controller-state=value-type-mismatch; type={controllerType.FullName}";
             return false;
@@ -344,10 +321,29 @@ internal static class RuntimeCookerReflection
             return false;
         }
 
-        var typeIds = ReadCookerTypeIds(cooker);
-        if (typeIds.Count == 0)
+        if (!TryReadCookerTypeIds(
+                cooker,
+                out var typeIds,
+                out var observedEmpty,
+                out var typeStatus))
         {
-            status = $"controller-state=cooker-types-unavailable; type={controllerType.FullName}";
+            status = $"controller-state=cooker-types-unavailable; {typeStatus}; "
+                + $"controllerType={controllerType.FullName}; cookerType={cooker.GetType().FullName}";
+            return false;
+        }
+
+        if (!RuntimeCookerTypeSequenceReader.TryValidateControllerState(
+                isEmptyDesk,
+                observedEmpty,
+                typeIds.Count,
+                phase,
+                result == null,
+                chosenRecipe == null,
+                out var consistencyStatus))
+        {
+            status = $"controller-state={consistencyStatus}; phase={phase}; "
+                + $"resultEmpty={result == null}; chosenRecipeEmpty={chosenRecipe == null}; {typeStatus}; "
+                + $"controllerType={controllerType.FullName}; cookerType={cooker.GetType().FullName}";
             return false;
         }
 
@@ -355,12 +351,15 @@ internal static class RuntimeCookerReflection
         {
             Cooker = cooker,
             TypeIds = typeIds,
+            IsEmptyDesk = isEmptyDesk,
             Phase = phase,
             Result = result,
             ChosenRecipe = chosenRecipe,
             CouldOpen = couldOpen,
         };
-        status = $"controller-state=ok; phase={phase}; resultEmpty={state.ResultEmpty}; chosenRecipeEmpty={state.ChosenRecipeEmpty}; couldOpen={couldOpen}; types={string.Join(",", typeIds)}";
+        status = $"controller-state={consistencyStatus}; phase={phase}; "
+            + $"resultEmpty={state.ResultEmpty}; chosenRecipeEmpty={state.ChosenRecipeEmpty}; "
+            + $"couldOpen={couldOpen}; {typeStatus}";
         return true;
     }
 
@@ -369,12 +368,18 @@ internal static class RuntimeCookerReflection
         return CookerTypeNames.TryGetValue(typeId, out var name) ? name : $"#{typeId}";
     }
 
-    public static IReadOnlyList<object> ReadCookerControllersFromCookSystem(object? cookSystem, out string status)
+    public static bool TryReadCookerControllerEntriesFromCookSystem(
+        object? cookSystem,
+        IReadOnlySet<RuntimeCookerGridPosition> lockedPositions,
+        out IReadOnlyList<RuntimeCookerControllerEntry> controllerEntries,
+        out string status)
     {
+        ArgumentNullException.ThrowIfNull(lockedPositions);
+        controllerEntries = Array.Empty<RuntimeCookerControllerEntry>();
         if (cookSystem == null)
         {
             status = "allCookers=manager-missing";
-            return Array.Empty<object>();
+            return false;
         }
 
         if (!TryGetSingleDeclaredMethod(
@@ -385,7 +390,7 @@ internal static class RuntimeCookerReflection
             || !TryGetExactAllCookersShape(getAllCookers.ReturnType, out var keyType, out var valueType))
         {
             status = $"allCookers=unsupported-getter; managerType={cookSystem.GetType().FullName}";
-            return Array.Empty<object>();
+            return false;
         }
 
         object? allCookers;
@@ -396,29 +401,30 @@ internal static class RuntimeCookerReflection
         catch (Exception ex)
         {
             status = $"allCookers=getter-failed; error={ex.GetBaseException().Message}";
-            return Array.Empty<object>();
+            return false;
         }
 
         if (allCookers == null)
         {
             status = "allCookers=uninitialized";
-            return Array.Empty<object>();
+            return false;
         }
 
         if (allCookers.GetType() != getAllCookers.ReturnType)
         {
             status = $"allCookers=value-type-mismatch; declared={getAllCookers.ReturnType.FullName}; actual={allCookers.GetType().FullName}";
-            return Array.Empty<object>();
+            return false;
         }
 
         if (!RuntimeConcreteCollectionReader.TryReadDictionary(allCookers, out var entries, out var failure))
         {
             status = $"allCookers=read-failed; failure={failure}; type={allCookers.GetType().FullName}";
-            return Array.Empty<object>();
+            return false;
         }
 
-        var result = new List<object>(entries.Count);
-        var seen = new HashSet<nint>();
+        var result = new List<RuntimeCookerControllerEntry>(entries.Count);
+        var seenPointers = new HashSet<nint>();
+        var seenPositions = new HashSet<RuntimeCookerGridPosition>();
         foreach (var entry in entries)
         {
             if (entry.Key == null
@@ -427,28 +433,397 @@ internal static class RuntimeCookerReflection
                 || !valueType.IsInstanceOfType(entry.Value))
             {
                 status = $"allCookers=element-type-mismatch; type={allCookers.GetType().FullName}";
-                return Array.Empty<object>();
+                return false;
             }
 
             if (entry.Value is not Il2CppObjectBase controller
                 || controller.Pointer == IntPtr.Zero)
             {
                 status = "allCookers=controller-pointer-unavailable";
-                return Array.Empty<object>();
+                return false;
             }
 
             var pointer = (nint)controller.Pointer;
-            if (pointer == 0 || !seen.Add(pointer))
+            if (pointer == 0 || !seenPointers.Add(pointer))
             {
                 status = $"allCookers=invalid-controller-identity; pointer=0x{(long)pointer:X}";
-                return Array.Empty<object>();
+                return false;
             }
 
-            result.Add(entry.Value);
+            if (!TryReadExactVector3Int(entry.Key, keyType, out var dictionaryPosition)
+                || !seenPositions.Add(dictionaryPosition))
+            {
+                status = $"allCookers=invalid-grid-key; pointer=0x{(long)pointer:X}";
+                return false;
+            }
+
+            result.Add(new RuntimeCookerControllerEntry
+            {
+                Controller = entry.Value,
+                GridPosition = dictionaryPosition,
+                ControllerIdentity = $"0x{unchecked((ulong)(long)pointer):X}",
+            });
         }
 
-        status = $"allCookers=ok; entries={entries.Count}; controllers={result.Count}; type={allCookers.GetType().FullName}";
-        return result;
+        var missingLockedPosition = lockedPositions
+            .Where(position => !seenPositions.Contains(position))
+            .OrderBy(position => position.X)
+            .ThenBy(position => position.Y)
+            .ThenBy(position => position.Z)
+            .FirstOrDefault();
+        if (lockedPositions.Any(position => !seenPositions.Contains(position)))
+        {
+            status = $"allCookers=locked-grid-missing; position={missingLockedPosition}";
+            return false;
+        }
+
+        foreach (var entry in result)
+        {
+            if (lockedPositions.Contains(entry.GridPosition))
+            {
+                continue;
+            }
+
+            if (!TryReadControllerGridPosition(
+                    entry.Controller,
+                    keyType,
+                    out var controllerPosition,
+                    out var positionStatus))
+            {
+                status = $"allCookers=controller-grid-unavailable; pointer={entry.ControllerIdentity}; {positionStatus}";
+                return false;
+            }
+
+            if (entry.GridPosition != controllerPosition)
+            {
+                status = $"allCookers=controller-grid-mismatch; pointer={entry.ControllerIdentity}; "
+                    + $"key={entry.GridPosition}; controller={controllerPosition}";
+                return false;
+            }
+        }
+
+        result.Sort(static (left, right) =>
+        {
+            var compare = left.GridPosition.X.CompareTo(right.GridPosition.X);
+            if (compare != 0) return compare;
+            compare = left.GridPosition.Y.CompareTo(right.GridPosition.Y);
+            if (compare != 0) return compare;
+            compare = left.GridPosition.Z.CompareTo(right.GridPosition.Z);
+            if (compare != 0) return compare;
+            return string.CompareOrdinal(left.ControllerIdentity, right.ControllerIdentity);
+        });
+        status = $"allCookers=ok; entries={entries.Count}; controllers={result.Count}; "
+            + $"lockedKeys={result.Count(entry => lockedPositions.Contains(entry.GridPosition))}; "
+            + $"type={allCookers.GetType().FullName}";
+        controllerEntries = result;
+        return true;
+    }
+
+    public static bool TryReadLockedCookerPositions(
+        out IReadOnlySet<RuntimeCookerGridPosition> positions,
+        out string status)
+    {
+        positions = new HashSet<RuntimeCookerGridPosition>();
+        var eventManagerType = RuntimeReflectionUtility.FindType(EventManagerTypeName);
+        if (eventManagerType == null)
+        {
+            status = "lockedCookers=event-manager-type-missing";
+            return false;
+        }
+
+        if (!TryGetExactMonoSingletonInstance(eventManagerType, out var eventManager))
+        {
+            status = "lockedCookers=event-manager-instance-missing";
+            return false;
+        }
+
+        if (!TryGetSingleDeclaredMethod(
+                eventManagerType,
+                "get_LockedCookers",
+                Type.EmptyTypes,
+                out var getLockedCookers)
+            || !TryGetClosedStructArrayElementType(
+                getLockedCookers.ReturnType,
+                Vector3IntTypeName,
+                out var vectorType))
+        {
+            status = $"lockedCookers=unsupported-getter; managerType={eventManagerType.FullName}";
+            return false;
+        }
+
+        object? array;
+        try
+        {
+            array = getLockedCookers.Invoke(eventManager, Array.Empty<object?>());
+        }
+        catch (Exception ex)
+        {
+            status = $"lockedCookers=getter-failed; error={ex.GetBaseException().Message}";
+            return false;
+        }
+
+        if (array == null || array.GetType() != getLockedCookers.ReturnType)
+        {
+            status = $"lockedCookers=value-type-mismatch; declared={getLockedCookers.ReturnType.FullName}; "
+                + $"actual={array?.GetType().FullName ?? "null"}";
+            return false;
+        }
+
+        if (!TryReadExactVector3IntArray(array, vectorType, out var values, out status))
+        {
+            return false;
+        }
+
+        positions = values.ToHashSet();
+        status = $"lockedCookers=ok; entries={values.Count}; unique={positions.Count}";
+        return true;
+    }
+
+    private static bool TryReadControllerGridPosition(
+        object controller,
+        Type vectorType,
+        out RuntimeCookerGridPosition position,
+        out string status)
+    {
+        position = default;
+        var controllerType = controller.GetType();
+        if (!TryGetExactControllerGetter(
+                controllerType,
+                "get_GridPosition",
+                Vector3IntTypeName,
+                out var getGridPosition)
+            || getGridPosition.ReturnType != vectorType)
+        {
+            status = $"controller-grid=unsupported-shape; type={controllerType.FullName}";
+            return false;
+        }
+
+        object? value;
+        try
+        {
+            value = getGridPosition.Invoke(controller, Array.Empty<object?>());
+        }
+        catch (Exception ex)
+        {
+            status = $"controller-grid=invoke-failed; type={controllerType.FullName}; "
+                + $"error={ex.GetBaseException().Message}";
+            return false;
+        }
+
+        if (!TryReadExactVector3Int(value, vectorType, out position))
+        {
+            status = $"controller-grid=value-invalid; type={controllerType.FullName}";
+            return false;
+        }
+
+        status = $"controller-grid=ok; position={position}";
+        return true;
+    }
+
+    private static bool TryReadExactVector3Int(
+        object? value,
+        Type vectorType,
+        out RuntimeCookerGridPosition position)
+    {
+        position = default;
+        if (value == null || value.GetType() != vectorType)
+        {
+            return false;
+        }
+
+        if (!TryGetSingleDeclaredMethod(vectorType, "get_x", Type.EmptyTypes, out var getX)
+            || getX.ReturnType != typeof(int)
+            || !TryGetSingleDeclaredMethod(vectorType, "get_y", Type.EmptyTypes, out var getY)
+            || getY.ReturnType != typeof(int)
+            || !TryGetSingleDeclaredMethod(vectorType, "get_z", Type.EmptyTypes, out var getZ)
+            || getZ.ReturnType != typeof(int))
+        {
+            return false;
+        }
+
+        try
+        {
+            if (getX.Invoke(value, Array.Empty<object?>()) is not int x
+                || getY.Invoke(value, Array.Empty<object?>()) is not int y
+                || getZ.Invoke(value, Array.Empty<object?>()) is not int z)
+            {
+                return false;
+            }
+
+            position = new RuntimeCookerGridPosition(x, y, z);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryReadExactVector3IntArray(
+        object array,
+        Type vectorType,
+        out IReadOnlyList<RuntimeCookerGridPosition> positions,
+        out string status)
+    {
+        positions = Array.Empty<RuntimeCookerGridPosition>();
+        var arrayType = array.GetType();
+        var length = arrayType.GetProperty(
+            "Length",
+            BindingFlags.Public | BindingFlags.Instance);
+        var indexers = arrayType
+            .GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+            .Where(method => method.Name == "get_Item"
+                && method.ReturnType == vectorType
+                && method.GetParameters()
+                    .Select(parameter => parameter.ParameterType)
+                    .SequenceEqual(new[] { typeof(int) }))
+            .ToArray();
+        if (length == null
+            || length.PropertyType != typeof(int)
+            || length.GetIndexParameters().Length != 0
+            || indexers.Length != 1)
+        {
+            status = $"lockedCookers=unsupported-array-shape; type={arrayType.FullName}";
+            return false;
+        }
+
+        int count;
+        try
+        {
+            if (length.GetValue(array) is not int value)
+            {
+                status = $"lockedCookers=length-type-mismatch; type={arrayType.FullName}";
+                return false;
+            }
+
+            count = value;
+        }
+        catch (Exception ex)
+        {
+            status = $"lockedCookers=length-failed; error={ex.GetBaseException().Message}";
+            return false;
+        }
+
+        if (count is < 0 or > MaxLockedCookerCount)
+        {
+            status = $"lockedCookers=count-out-of-range; count={count}";
+            return false;
+        }
+
+        var result = new RuntimeCookerGridPosition[count];
+        try
+        {
+            for (var index = 0; index < count; index++)
+            {
+                var value = indexers[0].Invoke(array, new object?[] { index });
+                if (!TryReadExactVector3Int(value, vectorType, out result[index]))
+                {
+                    status = $"lockedCookers=element-invalid; index={index}";
+                    return false;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            status = $"lockedCookers=indexer-failed; error={ex.GetBaseException().Message}";
+            return false;
+        }
+
+        positions = result;
+        status = $"lockedCookers=array-ok; entries={result.Length}";
+        return true;
+    }
+
+    private static bool TryGetClosedStructArrayElementType(
+        Type type,
+        string expectedElementName,
+        out Type elementType)
+    {
+        elementType = typeof(void);
+        if (!type.IsGenericType || type.ContainsGenericParameters) return false;
+
+        Type definition;
+        Type[] arguments;
+        try
+        {
+            definition = type.GetGenericTypeDefinition();
+            arguments = type.GetGenericArguments();
+        }
+        catch
+        {
+            return false;
+        }
+
+        if (definition.FullName != Il2CppStructArrayTypeName
+            || arguments.Length != 1
+            || arguments[0].FullName != expectedElementName
+            || !arguments[0].IsValueType)
+        {
+            return false;
+        }
+
+        elementType = arguments[0];
+        return true;
+    }
+
+    private static bool TryGetExactMonoSingletonInstance(
+        Type concreteType,
+        out object instance)
+    {
+        instance = null!;
+        var baseType = concreteType.BaseType;
+        if (baseType == null
+            || !baseType.IsGenericType
+            || baseType.ContainsGenericParameters)
+        {
+            return false;
+        }
+
+        Type definition;
+        Type[] arguments;
+        try
+        {
+            definition = baseType.GetGenericTypeDefinition();
+            arguments = baseType.GetGenericArguments();
+        }
+        catch
+        {
+            return false;
+        }
+
+        if (definition.FullName != MonoSingletonTypeName
+            || arguments.Length != 1
+            || arguments[0] != concreteType)
+        {
+            return false;
+        }
+
+        var getters = baseType
+            .GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.DeclaredOnly)
+            .Where(method => method.Name == "get_Instance"
+                && method.ReturnType == concreteType
+                && method.GetParameters().Length == 0)
+            .ToArray();
+        if (getters.Length != 1)
+        {
+            return false;
+        }
+
+        try
+        {
+            var value = getters[0].Invoke(null, Array.Empty<object?>());
+            if (value == null || !concreteType.IsInstanceOfType(value))
+            {
+                return false;
+            }
+
+            instance = value;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static bool TryGetExactAllCookersShape(Type dictionaryType, out Type keyType, out Type valueType)

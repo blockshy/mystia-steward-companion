@@ -55,6 +55,11 @@ internal static partial class RuntimeOrderPreparationService
     /// <param name="recipeName">用于用户提示和自动化日志的料理名称。</param>
     /// <param name="extraIngredientIds">推荐算法选择的额外加料材料 ID。</param>
     /// <param name="autoCollect">料理完成后是否由 job 直接送达；关闭时 job 只保留手动交接回执。</param>
+    /// <param name="cookerControllerIndex">前端根据同轮运行时快照预约的精确厨具控制器索引。</param>
+    /// <param name="cookerControllerIdentity">同一快照中的厨具控制器原生身份。</param>
+    /// <param name="cookerGridX">同一快照中的厨具网格 X 坐标。</param>
+    /// <param name="cookerGridY">同一快照中的厨具网格 Y 坐标。</param>
+    /// <param name="cookerGridZ">同一快照中的厨具网格 Z 坐标。</param>
     /// <param name="collectionTarget">料理完成后的直接送达目标；未指定时仅按料理名称登记稀客目标。</param>
     /// <returns>开火结果以及原生 QTE 处理状态。</returns>
     /// <remarks>
@@ -66,6 +71,12 @@ internal static partial class RuntimeOrderPreparationService
         string recipeName,
         IReadOnlyList<int> extraIngredientIds,
         bool autoCollect,
+        bool autoCompleteOrder,
+        int cookerControllerIndex,
+        string cookerControllerIdentity,
+        int? cookerGridX,
+        int? cookerGridY,
+        int? cookerGridZ,
         CookingCollectionTarget? collectionTarget = null)
     {
         var recipe = InvokeStatic(DataBaseCoreTypeName, "RefRecipe", new object?[] { recipeId });
@@ -82,7 +93,12 @@ internal static partial class RuntimeOrderPreparationService
 
         var targetFoodId = ToInt(ReadMember(recipe, "foodID"));
         var target = collectionTarget ?? CookingCollectionTarget.ForRareOrder(new OrderPreparationRequest { RecipeName = recipeName }, targetFoodId);
-        if (TryFindAutomationCookingJob(target, autoCollect, out var existingJob, out var existingJobMessage))
+        if (TryFindAutomationCookingJob(
+                target,
+                autoCollect,
+                autoCompleteOrder,
+                out var existingJob,
+                out var existingJobMessage))
         {
             return CookingStartResult.Succeeded(
                 existingJobMessage,
@@ -92,8 +108,40 @@ internal static partial class RuntimeOrderPreparationService
                 jobId: existingJob?.JobId ?? "");
         }
 
-        var cookerSelection = TryGetCookerFromCookSystem(recipe);
-        if (!cookerSelection.Ok || cookerSelection.CookController == null)
+        YuumaCookerTopologyLease? yuumaTopologyLease = null;
+        if (IsYuumaBossTarget(target)
+            && !YuumaCookerTopologyObserver.TryAcquireFreshLease(
+                out yuumaTopologyLease,
+                out var topologyLeaseDiagnostic))
+        {
+            var message = "血池地狱厨具拓扑暂不可完整确认，自动化不会扣料或开锅："
+                + topologyLeaseDiagnostic;
+            AppendAutomationLog("start-waiting", collectionTarget, $"{recipeName}: {message}");
+            return CookingStartResult.WaitForCooker(message);
+        }
+
+        if (!RuntimeCookerReservation.TryCreate(
+                cookerControllerIndex,
+                cookerControllerIdentity,
+                cookerGridX,
+                cookerGridY,
+                cookerGridZ,
+                out var cookerReservation,
+                out var reservationError))
+        {
+            var message = $"本次开锅请求缺少完整的厨具预约身份，自动化将等待最新快照重新调度"
+                + $"（{reservationError}）。";
+            AppendAutomationLog("start-waiting", collectionTarget, $"{recipeName}: {message}");
+            return CookingStartResult.WaitForCooker(message);
+        }
+
+        var recipeCookerType = ToInt(ReadMember(recipe, "cookerType"), -1);
+        var cookerSelection = TryGetCookerFromCookSystem(
+            recipeCookerType,
+            cookerReservation);
+        if (!cookerSelection.Ok
+            || cookerSelection.CookController == null
+            || cookerSelection.ControllerState == null)
         {
             AppendAutomationLog(
                 cookerSelection.Waiting ? "start-waiting" : "start-failed",
@@ -105,12 +153,7 @@ internal static partial class RuntimeOrderPreparationService
         }
 
         var cookController = cookerSelection.CookController;
-        var cooker = InvokeInstance(cookController, "get_Cooker", Array.Empty<object?>());
-        if (cooker == null)
-        {
-            AppendAutomationLog("start-failed", collectionTarget, $"{recipeName}: controller has no cooker");
-            return CookingStartResult.Failed("已找到可用厨具控制器，但无法读取厨具数据。");
-        }
+        var cooker = cookerSelection.ControllerState.Cooker;
 
         var baseIngredientIds = ReadRecipeIngredientIds(recipe);
         if (baseIngredientIds.Length + extraIngredientIds.Count > MaxFoodIngredientCount)
@@ -153,8 +196,8 @@ internal static partial class RuntimeOrderPreparationService
             return CookingStartResult.Failed("无法读取配方原生身份，已在扣除材料前取消自动开火。");
         }
 
-        var recipeCookerType = ToInt(ReadMember(recipe, "cookerType"), -1);
         if (!TryRevalidateCookerBeforeStart(
+                cookerReservation,
                 cookController,
                 cooker,
                 recipeCookerType,
@@ -177,6 +220,29 @@ internal static partial class RuntimeOrderPreparationService
             return CookingStartResult.Failed($"材料不足，缺少材料 #{missingIngredientId}。");
         }
 
+        if (!TryCaptureYuumaFoodTargetRevision(
+                target,
+                out var specialFoodTargetRevision,
+                out var specialFoodTargetRevisionError))
+        {
+            AppendAutomationLog(
+                "start-waiting",
+                collectionTarget,
+                $"{recipeName}: {specialFoodTargetRevisionError}");
+            return CookingStartResult.Failed(specialFoodTargetRevisionError);
+        }
+
+        if (yuumaTopologyLease != null
+            && !YuumaCookerTopologyObserver.TryValidateFreshLease(
+                yuumaTopologyLease,
+                out var preDeductionTopologyDiagnostic))
+        {
+            var message = "血池地狱厨具拓扑在扣料前发生变化，自动化将等待新快照重新规划："
+                + preDeductionTopologyDiagnostic;
+            AppendAutomationLog("start-waiting", collectionTarget, $"{recipeName}: {message}");
+            return CookingStartResult.WaitForCooker(message);
+        }
+
         if (ingredientIds.Length > 0)
         {
             try
@@ -194,6 +260,42 @@ internal static partial class RuntimeOrderPreparationService
                     target,
                     $"扣除料理材料时游戏入口执行异常，当前库存结果无法安全确认；为避免重复扣料，自动化已暂停：{message}");
             }
+        }
+
+        if (!TryRevalidateCookerBeforeStart(
+                cookerReservation,
+                cookController,
+                cooker,
+                recipeCookerType,
+                out _,
+                out var finalCookerValidationMessage))
+        {
+            AppendAutomationLog(
+                "start-unowned",
+                collectionTarget,
+                $"{recipeName}: cooker reservation changed after ingredient deduction: "
+                + finalCookerValidationMessage);
+            return BlockCookingStartUnowned(
+                target,
+                "材料已扣除，但精确预约的厨具身份、位置或挑战锁定状态在开火前发生变化；"
+                + "Mod 未调用 SetCook，自动化已暂停以避免重复扣料："
+                + finalCookerValidationMessage);
+        }
+
+        if (yuumaTopologyLease != null
+            && !YuumaCookerTopologyObserver.TryValidateFreshLease(
+                yuumaTopologyLease,
+                out var preSetCookTopologyDiagnostic))
+        {
+            AppendAutomationLog(
+                "start-unowned",
+                collectionTarget,
+                $"{recipeName}: topology changed after ingredient deduction: {preSetCookTopologyDiagnostic}");
+            return BlockCookingStartUnowned(
+                target,
+                "材料已扣除，但血池地狱厨具拓扑在 SetCook 前发生变化；"
+                + "Mod 未调用 SetCook，自动化已暂停以避免重复扣料："
+                + preSetCookTopologyDiagnostic);
         }
 
         try
@@ -228,6 +330,22 @@ internal static partial class RuntimeOrderPreparationService
         }
 
         var qteResult = TryHandleCookingQte();
+        if (yuumaTopologyLease != null
+            && !YuumaCookerTopologyObserver.TryValidateFreshLease(
+                yuumaTopologyLease,
+                out var preCountdownTopologyDiagnostic))
+        {
+            AppendAutomationLog(
+                "start-unowned",
+                collectionTarget,
+                $"{recipeName}: topology changed after SetCook: {preCountdownTopologyDiagnostic}");
+            return BlockCookingStartUnowned(
+                target,
+                "料理已经写入厨具，但血池地狱厨具拓扑在倒计时前发生变化；"
+                + "自动化已停止且不会继续访问原厨具："
+                + preCountdownTopologyDiagnostic);
+        }
+
         try
         {
             InvokeInstance(cookController, "StartCookCountDown", new object?[] { 1f, false });
@@ -245,10 +363,26 @@ internal static partial class RuntimeOrderPreparationService
                     $"料理已经写入厨具，但游戏倒计时入口执行异常；自动化已暂停并保留该厨具供玩家处理：{message}");
         }
 
-        var cookSystem = GetSingletonInstance(CookSystemManagerTypeName);
+        var cookSystem = RuntimeCookerReflection.GetCookSystemManager();
         if (cookSystem != null)
         {
             TryInvokeInstance(cookSystem, "CallCookerStartCallback", new object?[] { finalFood, recipe });
+        }
+
+        if (yuumaTopologyLease != null
+            && !YuumaCookerTopologyObserver.TryValidateFreshLease(
+                yuumaTopologyLease,
+                out var postStartTopologyDiagnostic))
+        {
+            AppendAutomationLog(
+                "start-unowned",
+                collectionTarget,
+                $"{recipeName}: topology changed during native start callbacks: {postStartTopologyDiagnostic}");
+            return BlockCookingStartUnowned(
+                target,
+                "料理已经开火，但血池地狱厨具拓扑在原生开锅回调期间发生变化；"
+                + "自动化已停止且不会读取或操作原厨具："
+                + postStartTopologyDiagnostic);
         }
 
         if (!TryValidateCookerStart(cookController, recipe, targetFoodId, out var startDiagnostic))
@@ -281,13 +415,16 @@ internal static partial class RuntimeOrderPreparationService
         {
             cookingJob = RegisterAutomationCookingJob(
                 cookController,
+                cookerReservation,
                 controllerPointer,
                 ownershipSnapshot,
                 recipePointer,
                 finalFood,
                 recipeName,
                 target,
-                autoCollect);
+                autoCollect,
+                autoCompleteOrder,
+                specialFoodTargetRevision);
         }
         catch (Exception ex)
         {
@@ -465,13 +602,16 @@ internal static partial class RuntimeOrderPreparationService
     /// </remarks>
     private static AutomationCookingJob RegisterAutomationCookingJob(
         object cookController,
+        RuntimeCookerReservation cookerReservation,
         nint controllerPointer,
         RuntimeCookingOwnershipSnapshot ownershipSnapshot,
         nint chosenRecipePointer,
         object initialResult,
         string recipeName,
         CookingCollectionTarget target,
-        bool autoDeliverFood)
+        bool autoDeliverFood,
+        bool autoCompleteOrder,
+        long specialFoodTargetRevision)
     {
         var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
         if (!lifecycle.IsActive)
@@ -500,8 +640,9 @@ internal static partial class RuntimeOrderPreparationService
             }
 
             var replacedJobs = AutomationCookingJobs
-                .Where(job => IsSameCookingCollectionTarget(job.Target, target)
-                    || !job.ManualHandoffObserved && job.ControllerPointer == controllerPointer)
+                .Where(job => !job.ManualHandoffObserved
+                    && (IsSameCookingCollectionTarget(job.Target, target)
+                        || job.ControllerPointer == controllerPointer))
                 .ToArray();
             foreach (var replacedJob in replacedJobs)
             {
@@ -529,7 +670,7 @@ internal static partial class RuntimeOrderPreparationService
             var job = new AutomationCookingJob
             {
                 JobId = $"CJ-{AutomationCookingJobSequence:D6}",
-                CookController = cookController,
+                CookerReservation = cookerReservation,
                 ControllerPointer = controllerPointer,
                 Generation = ownershipSnapshot.Generation,
                 ContentRevision = ownershipSnapshot.ContentRevision,
@@ -538,6 +679,8 @@ internal static partial class RuntimeOrderPreparationService
                 CreatedAtUtc = nowUtc,
                 Target = target,
                 AutoDeliverFood = autoDeliverFood,
+                AutoCompleteOrder = autoCompleteOrder,
+                SpecialFoodTargetRevision = specialFoodTargetRevision,
                 Tracker = new AutomationCookingJobTracker(ownershipSnapshot.Generation, nowUtc, phase, progress),
                 DeliveryTimeoutClock = new AutomationEffectiveTimeoutClock(nowUtc, initiallyEligible: false),
                 ManualHandoffMissingOrderClock = new AutomationEffectiveTimeoutClock(nowUtc, initiallyEligible: false),
@@ -545,10 +688,13 @@ internal static partial class RuntimeOrderPreparationService
                 CurrentResultPointer = resultPointer,
             };
             AutomationCookingJobs.Add(job);
-            AppendAutomationLog("job-add", target, job.FormatLogContext($"recipe={recipeName}; autoDeliver={autoDeliverFood}; replaced={replacedJobs.Length}"));
-            if (IsWackyTargetContext(target))
+            AppendAutomationLog(
+                "job-add",
+                target,
+                job.FormatLogContext($"recipe={recipeName}; replaced={replacedJobs.Length}"));
+            if (target.SpecialFoodTargetPolicy != null)
             {
-                AppendWackyCookingJobDiagnostic(
+                AppendSpecialFoodTargetCookingJobDiagnostic(
                     "job-add",
                     job,
                     "registered",
@@ -575,13 +721,20 @@ internal static partial class RuntimeOrderPreparationService
                 message = FormatNormalOrderCookingJobMessage(job, deskCode);
                 return true;
             }
+
         }
 
         message = "";
         return false;
     }
 
-    private static (bool Delivered, string StepName, string Message, string Code) TryProcessNormalOrderCookingJob(string orderKey, object order, int deskCode, int foodId, int beverageId)
+    private static (bool Delivered, string StepName, string Message, string Code)
+        TryProcessNormalOrderCookingJob(
+            string orderKey,
+            object order,
+            int deskCode,
+            int foodId,
+            int beverageId)
     {
         var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
         if (!lifecycle.IsActive)
@@ -597,7 +750,23 @@ internal static partial class RuntimeOrderPreparationService
                 var job = AutomationCookingJobs[i];
                 if (!IsMatchingNormalOrderCookingJob(job, orderKey, order, deskCode, foodId, beverageId)) continue;
 
-                var result = TryProcessAutomationCookingJob(job);
+                (bool Remove, string Message, string Code) result;
+                try
+                {
+                    result = TryProcessAutomationCookingJob(job);
+                }
+                catch (Exception ex)
+                {
+                    var message = $"{job.RecipeName} 自动料理任务发生未处理异常，已释放 Mod 所有权并保留厨具当前状态：{ex.GetBaseException().Message}";
+                    RecordAutomationRuntimeEvent(
+                        OrderPreparationStepCodes.CookingResultUnreadable,
+                        job,
+                        message,
+                        outcome: "blocked",
+                        reasonCode: "cooking-job-exception",
+                        terminal: true);
+                    result = (true, message, OrderPreparationStepCodes.CookingResultUnreadable);
+                }
                 lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
                 if (!lifecycle.IsActive
                     || lifecycle.Generation != sessionGeneration
@@ -618,9 +787,20 @@ internal static partial class RuntimeOrderPreparationService
                     AutomationCookingJobs.RemoveAt(i);
                 }
 
-                var delivered = ReadOrderServedFood(order) != null
-                    || result.Code == OrderPreparationStepCodes.FoodDelivered;
-                if (delivered)
+                if (result.Code == OrderPreparationStepCodes.FoodDelivered)
+                {
+                    return (true, "普客送达料理", string.IsNullOrWhiteSpace(result.Message)
+                        ? $"{job.Target.FoodName} 已直接送达普客订单。"
+                        : result.Message,
+                        string.IsNullOrWhiteSpace(result.Code) ? OrderPreparationStepCodes.FoodDelivered : result.Code);
+                }
+
+                if (result.Remove && IsYuumaBossTarget(job.Target))
+                {
+                    return (false, "普客送达料理", result.Message, result.Code);
+                }
+
+                if (ReadOrderServedFood(order) != null)
                 {
                     return (true, "普客送达料理", string.IsNullOrWhiteSpace(result.Message)
                         ? $"{job.Target.FoodName} 已直接送达普客订单。"
@@ -658,14 +838,31 @@ internal static partial class RuntimeOrderPreparationService
         var targetText = job.Target.DeskCode == deskCode
             ? $"桌 {deskCode + 1} 的目标料理 {job.Target.FoodName}"
             : $"目标料理 {job.Target.FoodName}";
-        return job.AutoDeliverFood
+        return WillAutomaticallyDeliverCookingJob(job)
             ? $"{targetText} 已在制作中，等待完成后会自动直接送达。"
             : $"{targetText} 已登记手动交接回执；Mod 不会送达、入箱或复位厨具。";
+    }
+
+    private static bool WillAutomaticallyDeliverCookingJob(AutomationCookingJob job)
+    {
+        return WillAutomaticallyDeliverCookingTarget(
+            job.AutoDeliverFood,
+            job.AutoCompleteOrder,
+            job.Target);
+    }
+
+    private static bool WillAutomaticallyDeliverCookingTarget(
+        bool autoDeliverFood,
+        bool autoCompleteOrder,
+        CookingCollectionTarget target)
+    {
+        return autoDeliverFood && (!IsYuumaBossTarget(target) || autoCompleteOrder);
     }
 
     private static bool TryFindAutomationCookingJob(
         CookingCollectionTarget target,
         bool requestAutoDelivery,
+        bool requestAutoCompletion,
         out AutomationCookingJob? existingJob,
         out string message)
     {
@@ -680,11 +877,40 @@ internal static partial class RuntimeOrderPreparationService
                     job.AutoDeliverFood = true;
                 }
 
+                if (requestAutoCompletion && !job.AutoCompleteOrder && !job.ManualHandoffObserved)
+                {
+                    job.AutoCompleteOrder = true;
+                }
+
                 existingJob = job;
-                message = job.AutoDeliverFood
+                message = job.ManualHandoffExpired
+                    ? $"同一订单仍有过期目标料理 {job.Target.FoodName} 等待玩家处理；"
+                        + "当前目标不会重复开锅，其他订单不受影响。"
+                    : WillAutomaticallyDeliverCookingJob(job)
                     ? $"目标料理 {job.Target.FoodName} 已在制作中，等待完成后会自动直接送达。"
                     : $"目标料理 {job.Target.FoodName} 已进入手动交接，Mod 只保留防重复开锅回执，不会送达、入箱或复位厨具。";
                 return true;
+            }
+
+            if (IsYuumaBossTarget(target))
+            {
+                foreach (var job in AutomationCookingJobs)
+                {
+                    if (!job.ManualHandoffObserved
+                        || !IsYuumaBossTarget(job.Target)
+                        || !IsSameCookingOrderIdentity(job.Target, target))
+                    {
+                        continue;
+                    }
+
+                    existingJob = job;
+                    message = job.ManualHandoffExpired
+                        ? $"同一订单仍有过期目标料理 {job.Target.FoodName} 等待玩家处理；"
+                            + "当前目标不会重复开锅，其他订单不受影响。"
+                        : $"同一订单的目标料理 {job.Target.FoodName} 已进入手动交接；"
+                            + "交接完成前不会为该订单的目标变化重复开锅。";
+                    return true;
+                }
             }
         }
 
@@ -693,12 +919,88 @@ internal static partial class RuntimeOrderPreparationService
         return false;
     }
 
+    private static bool IsSameCookingOrderIdentity(
+        CookingCollectionTarget left,
+        CookingCollectionTarget right)
+    {
+        if (left.Kind != right.Kind
+            || !string.Equals(
+                left.SpecialBusinessRole,
+                right.SpecialBusinessRole,
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (left.Kind == CookingCollectionTargetKind.RareOrder)
+        {
+            var leftHasTrace = !string.IsNullOrWhiteSpace(left.TraceId);
+            var rightHasTrace = !string.IsNullOrWhiteSpace(right.TraceId);
+            if (leftHasTrace != rightHasTrace
+                || leftHasTrace
+                && !string.Equals(left.TraceId, right.TraceId, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            return RareOrderIdentityMatcher.Matches(
+                new RareOrderIdentity(
+                    left.DeskCode >= 0 ? left.DeskCode : null,
+                    left.RuntimeGuestId,
+                    left.FoodTagId,
+                    left.BeverageTagId),
+                new RareOrderIdentity(
+                    right.DeskCode >= 0 ? right.DeskCode : null,
+                    right.RuntimeGuestId,
+                    right.FoodTagId,
+                    right.BeverageTagId),
+                out _);
+        }
+
+        if (!string.IsNullOrWhiteSpace(left.OrderKey)
+            && !string.IsNullOrWhiteSpace(right.OrderKey))
+        {
+            return string.Equals(left.OrderKey, right.OrderKey, StringComparison.Ordinal);
+        }
+
+        return left.Order != null
+            && right.Order != null
+            && IsSameObject(left.Order, right.Order);
+    }
+
     /// <summary>
-    /// 判断两个出锅直送目标是否代表同一个业务目标。
+    /// 判断两个出锅处理目标是否代表同一个业务目标。
     /// </summary>
     private static bool IsSameCookingCollectionTarget(CookingCollectionTarget left, CookingCollectionTarget right)
     {
         if (left.Kind != right.Kind) return false;
+        if (!string.Equals(
+                left.SpecialBusinessRole,
+                right.SpecialBusinessRole,
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var leftSpecialPolicy = left.SpecialFoodTargetPolicy;
+        var rightSpecialPolicy = right.SpecialFoodTargetPolicy;
+        if ((leftSpecialPolicy == null) != (rightSpecialPolicy == null))
+        {
+            return false;
+        }
+
+        if (leftSpecialPolicy != null
+            && rightSpecialPolicy != null
+            && !leftSpecialPolicy.HasSameIdentity(rightSpecialPolicy))
+        {
+            return false;
+        }
+
+        if (left.SpecialFoodTargetRevision != right.SpecialFoodTargetRevision)
+        {
+            return false;
+        }
+
         if (left.Kind == CookingCollectionTargetKind.RareOrder)
         {
             return RareOrderIdentityMatcher.IsSameCookingTarget(
@@ -721,7 +1023,247 @@ internal static partial class RuntimeOrderPreparationService
     }
 
     /// <summary>
-    /// 读取一个自动料理 job 的本锅成品并尝试直接送达目标订单。
+    /// 从当前物理厨具目录重新绑定一个自动料理 job。
+    /// </summary>
+    /// <remarks>
+    /// 返回的 controller 只允许在当前同步调用栈使用；job 不保存 IL2CPP wrapper。
+    /// </remarks>
+    private static bool TryReacquireAutomationCooker(
+        AutomationCookingJob job,
+        out RuntimeAutomationCookerBinding binding,
+        out AutomationCookerReacquireFailureKind failureKind,
+        out string diagnostic,
+        RuntimeCookingContentMutation? expectedCompletedMutation = null,
+        long minimumContentRevision = 0)
+    {
+        binding = null!;
+        failureKind = AutomationCookerReacquireFailureKind.TransientUnavailable;
+
+        YuumaCookerTopologyLease? yuumaTopologyLease = null;
+        if (IsYuumaBossTarget(job.Target)
+            && !YuumaCookerTopologyObserver.TryAcquireFreshLease(
+                out yuumaTopologyLease,
+                out var topologyLeaseDiagnostic))
+        {
+            diagnostic = $"yuuma-topology-lease-unavailable; {topologyLeaseDiagnostic}";
+            return false;
+        }
+
+        var cookSystem = RuntimeCookerReflection.GetCookSystemManager();
+        if (cookSystem == null)
+        {
+            diagnostic = "cook-system-manager-unavailable";
+            return false;
+        }
+
+        if (!RuntimeCookerReflection.TryReadLockedCookerPositions(
+                out var lockedPositions,
+                out var lockedStatus))
+        {
+            diagnostic = $"locked-cookers-unavailable; {lockedStatus}";
+            return false;
+        }
+
+        if (!RuntimeCookerReflection.TryReadCookerControllerEntriesFromCookSystem(
+                cookSystem,
+                lockedPositions,
+                out var entries,
+                out var entriesStatus))
+        {
+            diagnostic = $"all-cookers-unavailable; {entriesStatus}; {lockedStatus}";
+            return false;
+        }
+
+        if (!job.CookerReservation.TryMatch(entries, out var entry, out var reservationError))
+        {
+            failureKind = AutomationCookerReacquireFailureKind.Invalidated;
+            diagnostic = $"reservation-invalidated; {reservationError}; {entriesStatus}; {lockedStatus}";
+            return false;
+        }
+
+        if (lockedPositions.Contains(job.CookerReservation.GridPosition))
+        {
+            failureKind = AutomationCookerReacquireFailureKind.Invalidated;
+            diagnostic = $"controller-challenge-locked; reservation={job.CookerReservation}; "
+                + $"{entriesStatus}; {lockedStatus}";
+            return false;
+        }
+
+        if (!TryReadNativeObjectPointer(entry.Controller, out var controllerPointer))
+        {
+            diagnostic = $"controller-pointer-unavailable; reservation={job.CookerReservation}; {entriesStatus}";
+            return false;
+        }
+
+        if (controllerPointer != job.ControllerPointer)
+        {
+            failureKind = AutomationCookerReacquireFailureKind.Invalidated;
+            diagnostic = $"controller-pointer-changed; expected=0x{(long)job.ControllerPointer:X}; "
+                + $"actual=0x{(long)controllerPointer:X}; reservation={job.CookerReservation}";
+            return false;
+        }
+
+        if (!RuntimeCookingGenerationTracker.TryGetOwnershipSnapshot(
+                entry.Controller,
+                out var ownershipBefore,
+                out var ownershipBeforeDiagnostic))
+        {
+            diagnostic = $"ownership-before-unavailable; {ownershipBeforeDiagnostic}";
+            return false;
+        }
+
+        if (!RuntimeCookerReflection.TryReadCookerControllerState(
+                entry.Controller,
+                out var state,
+                out var stateStatus))
+        {
+            diagnostic = $"controller-state-unavailable; {stateStatus}; {entriesStatus}; {lockedStatus}";
+            return false;
+        }
+
+        var challengeGate = job.CookerReservation.EvaluateChallengeGate(
+            lockedPositions,
+            state.CouldOpen);
+        if (challengeGate == RuntimeCookerChallengeGateState.Inconsistent)
+        {
+            diagnostic = $"challenge-gate-inconsistent; reservation={job.CookerReservation}; "
+                + $"couldOpen={state.CouldOpen}; {stateStatus}; {lockedStatus}";
+            return false;
+        }
+
+        if (state.IsEmptyDesk)
+        {
+            failureKind = AutomationCookerReacquireFailureKind.Invalidated;
+            diagnostic = $"controller-became-empty-slot; reservation={job.CookerReservation}; {stateStatus}";
+            return false;
+        }
+
+        object? rawProgress;
+        try
+        {
+            rawProgress = TryInvokeInstanceValue(entry.Controller, "get_CookingProgress")
+                ?? ReadMember(entry.Controller, "CookingProgress");
+        }
+        catch (Exception ex)
+        {
+            diagnostic = $"cooking-progress-unavailable; {ex.GetBaseException().Message}";
+            return false;
+        }
+
+        if (rawProgress == null)
+        {
+            diagnostic = "cooking-progress-missing";
+            return false;
+        }
+
+        var progress = ToFloat(rawProgress, float.NaN);
+        if (float.IsNaN(progress) || float.IsInfinity(progress))
+        {
+            diagnostic = $"cooking-progress-invalid; value={rawProgress}";
+            return false;
+        }
+
+        if (!RuntimeCookingGenerationTracker.TryGetOwnershipSnapshot(
+                entry.Controller,
+                out var ownershipAfter,
+                out var ownershipAfterDiagnostic))
+        {
+            diagnostic = $"ownership-after-unavailable; {ownershipAfterDiagnostic}";
+            return false;
+        }
+
+        if (ownershipBefore != ownershipAfter)
+        {
+            failureKind = AutomationCookerReacquireFailureKind.Invalidated;
+            diagnostic = $"ownership-changed-during-rebind; before={ownershipBeforeDiagnostic}; "
+                + $"after={ownershipAfterDiagnostic}";
+            return false;
+        }
+
+        var ownershipMatches = expectedCompletedMutation.HasValue
+            ? ownershipAfter.Generation == job.Generation
+                && ownershipAfter.ContentRevision > minimumContentRevision
+                && ownershipAfter.LastMutation == expectedCompletedMutation.Value
+                && ownershipAfter.MutationCompleted
+            : ownershipAfter.Generation == job.Generation
+                && ownershipAfter.ContentRevision == job.ContentRevision;
+        if (!ownershipMatches)
+        {
+            failureKind = AutomationCookerReacquireFailureKind.Invalidated;
+            var expected = expectedCompletedMutation.HasValue
+                ? $"generation={job.Generation}; mutation={expectedCompletedMutation}; "
+                    + $"completed=true; contentRevision>{minimumContentRevision}"
+                : $"generation={job.Generation}; contentRevision={job.ContentRevision}";
+            diagnostic = $"ownership-invalidated; expected={expected}; "
+                + $"actual={ownershipAfter.Generation}/{ownershipAfter.ContentRevision}; "
+                + $"mutation={ownershipAfter.LastMutation}; completed={ownershipAfter.MutationCompleted}; "
+                + $"{ownershipAfterDiagnostic}";
+            return false;
+        }
+
+        if (yuumaTopologyLease != null
+            && !YuumaCookerTopologyObserver.TryValidateFreshLease(
+                yuumaTopologyLease,
+                out var topologyValidationDiagnostic))
+        {
+            failureKind = AutomationCookerReacquireFailureKind.TransientUnavailable;
+            diagnostic = $"yuuma-topology-lease-invalidated; {topologyValidationDiagnostic}";
+            return false;
+        }
+
+        binding = new RuntimeAutomationCookerBinding(
+            entry.Controller,
+            state,
+            ownershipAfter,
+            progress);
+        failureKind = AutomationCookerReacquireFailureKind.None;
+        diagnostic = $"fresh-binding-ok; reservation={job.CookerReservation}; "
+            + $"ownership={ownershipAfter.Generation}/{ownershipAfter.ContentRevision}; "
+            + $"{stateStatus}; {entriesStatus}; {lockedStatus}";
+        return true;
+    }
+
+    private static (bool Remove, string Message, string Code) HandleAutomationCookerReacquireFailure(
+        AutomationCookingJob job,
+        DateTime observedAtUtc,
+        AutomationCookerReacquireFailureKind failureKind,
+        string diagnostic)
+    {
+        var failureCode = failureKind == AutomationCookerReacquireFailureKind.Invalidated
+            ? "cooking-cooker-invalidated"
+            : "cooking-cooker-rebind-unavailable";
+        var changed = !string.Equals(job.CookerBindingFailureCode, failureCode, StringComparison.Ordinal)
+            || !string.Equals(job.CookerBindingDiagnostic, diagnostic, StringComparison.Ordinal);
+        job.CookerBindingFailureCode = failureCode;
+        job.CookerBindingDiagnostic = diagnostic;
+        job.DeliveryTimeoutClock.Observe(observedAtUtc, eligible: false);
+        job.Tracker.Suspend(observedAtUtc);
+
+        if (failureKind != AutomationCookerReacquireFailureKind.Invalidated)
+        {
+            return (
+                false,
+                changed
+                    ? $"{job.RecipeName} 的物理厨具快照暂不可完整复核，本轮不会读取成品、送达、入箱或复位厨具：{diagnostic}"
+                    : "",
+                OrderPreparationStepCodes.CookingPending);
+        }
+
+        var message = $"{job.RecipeName} 的原厨具已被挑战锁定、移除、替换或进入其他锅次；"
+            + "旧自动料理任务已退出且不会访问旧厨具对象，将由当前物理厨具快照重新规划。"
+            + diagnostic;
+        RecordAutomationRuntimeEvent(
+            OrderPreparationStepCodes.CookingOwnershipLost,
+            job,
+            message,
+            outcome: "interrupted",
+            reasonCode: failureCode,
+            terminal: true);
+        return (true, message, OrderPreparationStepCodes.CookingOwnershipLost);
+    }
+
+    /// <summary>
+    /// 读取一个自动料理 job 的本锅成品并按场景策略处理。
     /// </summary>
     /// <returns>
     /// <c>Remove</c> 表示该 job 是否应从集合删除；<c>Message</c> 是需要展示或记录的处理结果。
@@ -759,54 +1301,36 @@ internal static partial class RuntimeOrderPreparationService
             return TryProcessManualHandoffReceipt(job, nowUtc);
         }
 
-        var ownershipBeforeReadable = RuntimeCookingGenerationTracker.TryGetOwnershipSnapshot(
-            job.CookController,
-            out var ownershipBefore,
-            out var ownershipBeforeDiagnostic);
-        var ownershipAlreadyLost = ownershipBeforeReadable
-            && (ownershipBefore.Generation != job.Generation
-                || ownershipBefore.ContentRevision != job.ContentRevision);
-        var contentState = new RuntimeCookerContentState();
-        var contentReadable = false;
-        var contentDiagnostic = ownershipAlreadyLost
-            ? "cooker-content=skipped; ownership already belongs to another content revision"
-            : "";
-        var phase = -1;
-        var progress = 0f;
-        var ownershipAfter = ownershipBefore;
-        var ownershipAfterReadable = ownershipBeforeReadable;
-        var ownershipAfterDiagnostic = ownershipBeforeDiagnostic;
-        if (!ownershipAlreadyLost)
+        if (!TryReacquireAutomationCooker(
+                job,
+                out var cookerBinding,
+                out var reacquireFailure,
+                out var reacquireDiagnostic))
         {
-            contentReadable = RuntimeCookerReflection.TryReadCookerContentState(
-                job.CookController,
-                out contentState,
-                out contentDiagnostic);
-            phase = contentReadable ? contentState.Phase : -1;
-            progress = ToFloat(
-                TryInvokeInstanceValue(job.CookController, "get_CookingProgress")
-                ?? ReadMember(job.CookController, "CookingProgress"),
-                0f);
-            ownershipAfterReadable = RuntimeCookingGenerationTracker.TryGetOwnershipSnapshot(
-                job.CookController,
-                out ownershipAfter,
-                out ownershipAfterDiagnostic);
+            return HandleAutomationCookerReacquireFailure(
+                job,
+                nowUtc,
+                reacquireFailure,
+                reacquireDiagnostic);
         }
 
-        var ownershipStable = ownershipBeforeReadable
-            && ownershipAfterReadable
-            && ownershipBefore == ownershipAfter;
-        var ownsCurrentContent = ownershipStable
-            && ownershipAfter.Generation == job.Generation
-            && ownershipAfter.ContentRevision == job.ContentRevision;
-        var ownershipDiagnostic =
-            $"expectedGeneration={job.Generation}; expectedContentRevision={job.ContentRevision}; "
-            + $"before={ownershipBeforeDiagnostic}; after={ownershipAfterDiagnostic}; stable={ownershipStable}";
+        job.CookerBindingFailureCode = "";
+        job.CookerBindingDiagnostic = reacquireDiagnostic;
+        var contentState = new RuntimeCookerContentState
+        {
+            Phase = cookerBinding.State.Phase,
+            Result = cookerBinding.State.Result,
+            ChosenRecipe = cookerBinding.State.ChosenRecipe,
+        };
+        var contentDiagnostic = reacquireDiagnostic;
+        var phase = contentState.Phase;
+        var progress = cookerBinding.Progress;
+        var ownershipAfter = cookerBinding.Ownership;
         var invalidResultDiagnostic = "";
 
         job.DeliveryTimeoutClock.Observe(
             nowUtc,
-            timeoutEligible && ownsCurrentContent && phase == 3);
+            timeoutEligible && phase == 3);
         if (job.WarmerStoreCommitUncertain)
         {
             return BlockUncertainWarmerStore(job, "保温箱提交状态无法确认，禁止继续处理厨具。");
@@ -819,13 +1343,6 @@ internal static partial class RuntimeOrderPreparationService
 
         if (job.WarmerStoreCommitted)
         {
-            if (!ownsCurrentContent)
-            {
-                return BlockCommittedWarmerReset(
-                    job,
-                    $"无法确认原锅次内容所有权，禁止复位当前厨具。{ownershipDiagnostic}");
-            }
-
             return timeoutEligible
                 ? TryCompleteCommittedWarmerReset(job)
                 : (false, "", OrderPreparationStepCodes.CookingPending);
@@ -833,13 +1350,6 @@ internal static partial class RuntimeOrderPreparationService
 
         if (job.FoodDeliveryCommitted)
         {
-            if (!ownsCurrentContent)
-            {
-                return BlockCommittedFoodDeliveryCleanup(
-                    job,
-                    $"无法确认原锅次内容所有权，禁止复位当前厨具。{ownershipDiagnostic}");
-            }
-
             return timeoutEligible
                 ? TryCompleteCommittedFoodDeliveryCleanup(job)
                 : (false, "", OrderPreparationStepCodes.CookingPending);
@@ -856,40 +1366,9 @@ internal static partial class RuntimeOrderPreparationService
         }
 
         object? cookedFood = null;
-        var observedGeneration = ownershipAfterReadable
-            ? ownershipAfter.Generation
-            : job.Generation;
+        var observedGeneration = ownershipAfter.Generation;
         AutomationCookingObservationKind observationKind;
-        if (!ownershipBeforeReadable || !ownershipAfterReadable)
-        {
-            observationKind = AutomationCookingObservationKind.Unreadable;
-            invalidResultDiagnostic = ownershipDiagnostic;
-        }
-        else if (!ownershipStable)
-        {
-            observationKind = ownershipAfter.Generation != job.Generation
-                ? AutomationCookingObservationKind.Foreign
-                : ownershipAfter.ContentRevision != job.ContentRevision
-                    ? AutomationCookingObservationKind.OwnershipLost
-                    : AutomationCookingObservationKind.Unreadable;
-            invalidResultDiagnostic = ownershipDiagnostic;
-        }
-        else if (ownershipAfter.Generation != job.Generation)
-        {
-            observationKind = AutomationCookingObservationKind.Foreign;
-            invalidResultDiagnostic = ownershipDiagnostic;
-        }
-        else if (ownershipAfter.ContentRevision != job.ContentRevision)
-        {
-            observationKind = AutomationCookingObservationKind.OwnershipLost;
-            invalidResultDiagnostic = ownershipDiagnostic;
-        }
-        else if (!contentReadable)
-        {
-            observationKind = AutomationCookingObservationKind.Unreadable;
-            invalidResultDiagnostic = contentDiagnostic;
-        }
-        else if (contentState.IsExactReset)
+        if (contentState.IsExactReset)
         {
             observationKind = AutomationCookingObservationKind.OwnershipLost;
             invalidResultDiagnostic = $"{contentDiagnostic}; exact native cooker reset observed";
@@ -944,7 +1423,8 @@ internal static partial class RuntimeOrderPreparationService
 
         if (transition.Terminal)
         {
-            if (!job.AutoDeliverFood
+            if (!IsYuumaBossTarget(job.Target)
+                && !job.AutoDeliverFood
                 && transition.ReasonCode is "cooking-controller-reused" or "cooking-ownership-lost")
             {
                 return EnterManualHandoff(job, nowUtc);
@@ -985,6 +1465,11 @@ internal static partial class RuntimeOrderPreparationService
 
         if (transition.Directive == AutomationCookingJobDirective.DeliverOwnedResult && cookedFood != null)
         {
+            if (IsYuumaBossTarget(job.Target))
+            {
+                return TryDeliverAutomationCookedFood(job, cookedFood);
+            }
+
             if (!job.AutoDeliverFood)
             {
                 return EnterManualHandoff(job, nowUtc);
@@ -1014,10 +1499,47 @@ internal static partial class RuntimeOrderPreparationService
     {
         try
         {
+            var targetChangedMessage = "";
+            if (IsYuumaBossTarget(job.Target)
+                && !job.ManualHandoffExpired)
+            {
+                var targetChanged = TryDetectSpecialFoodTargetPolicyChanged(
+                    job,
+                    out var originalSignature,
+                    out var currentSignature,
+                    out var originalTags,
+                    out var currentTags,
+                    out var originalRevision,
+                    out var currentRevision,
+                    out var targetComparisonAvailable);
+                if (targetComparisonAvailable && targetChanged)
+                {
+                    job.ManualHandoffExpired = true;
+                    job.Tracker.MarkManualHandoffExpired(observedAtUtc);
+                    targetChangedMessage =
+                        $"桌 {job.Target.DeskCode + 1} 的 {job.RecipeName} 已成为过期交接成品："
+                        + $"开锅目标 revision={originalRevision} "
+                        + $"{FormatSpecialFoodTargetForMessage(originalSignature, originalTags)}，"
+                        + $"当前目标 revision={currentRevision} "
+                        + $"{FormatSpecialFoodTargetForMessage(currentSignature, currentTags)}。"
+                        + "同一订单在该成品处理完前不会重复开锅；请勿将它作为当前目标料理送达。"
+                        + "Mod 未操作托盘、厨具或成品。";
+                    RecordAutomationRuntimeEvent(
+                        OrderPreparationStepCodes.CookingManualHandoffExpired,
+                        job,
+                        targetChangedMessage,
+                        outcome: "waiting",
+                        reasonCode: "cooking-manual-handoff-expired",
+                        terminal: false);
+                }
+            }
+
             var request = BuildOrderRequestFromCookingTarget(job.Target);
-            var runtimeOrder = job.Target.Kind == CookingCollectionTargetKind.NormalOrder
-                ? FindRuntimeNormalOrder(request)
-                : FindRuntimeOrder(request, RuntimeOrderLookupPurpose.Completion);
+            var runtimeOrder = IsYuumaBossTarget(job.Target)
+                ? FindYuumaRuntimeOrder(job.Target, request)
+                : job.Target.Kind == CookingCollectionTargetKind.NormalOrder
+                    ? FindRuntimeNormalOrder(request)
+                    : FindRuntimeOrder(request, RuntimeOrderLookupPurpose.Completion);
             if (runtimeOrder.Order == null)
             {
                 job.ManualHandoffReadFailureCount = 0;
@@ -1027,7 +1549,7 @@ internal static partial class RuntimeOrderPreparationService
                 if (job.ManualHandoffMissingOrderCount < MissingTargetRetireAttempts
                     || job.ManualHandoffMissingOrderClock.Elapsed < MissingTargetRetireDelay)
                 {
-                    return (false, "", OrderPreparationStepCodes.CookingPending);
+                    return (false, targetChangedMessage, OrderPreparationStepCodes.CookingPending);
                 }
 
                 var missingMessage = $"{job.RecipeName} 的手动交接目标订单已连续不可见，防重复开锅回执已释放；Mod 未操作厨具或成品。";
@@ -1056,18 +1578,48 @@ internal static partial class RuntimeOrderPreparationService
             job.ManualHandoffReadFailureClock.Reset(observedAtUtc, eligible: false);
             if (servedFood == null)
             {
-                return (false, "", OrderPreparationStepCodes.CookingPending);
+                return (false, targetChangedMessage, OrderPreparationStepCodes.CookingPending);
             }
 
-            var deliveredMessage = $"{job.RecipeName} 的目标订单已确认存在送达料理，手动交接完成；Mod 未操作厨具或成品。";
+            var servedPointerReadable = TryReadNativeObjectPointer(servedFood, out var servedPointer);
+            var exactJobResult = servedPointerReadable
+                && job.CurrentResultPointer != 0
+                && servedPointer == job.CurrentResultPointer;
+            var actualIdentityReadable = TryReadCookControllerFoodResultIdentity(
+                servedFood,
+                "OrderBase.ServFood",
+                out var actualIdentity,
+                out _);
+            var resolution = exactJobResult
+                ? "本 job 的精确成品"
+                : servedPointerReadable && actualIdentityReadable
+                    ? actualIdentity.FoodId == job.Target.FoodId
+                        ? "同料理的其他原生对象"
+                        : $"其他料理（id={actualIdentity.FoodId}）"
+                    : "来源身份未知的最终料理";
+            var deliveredMessage =
+                $"桌 {job.Target.DeskCode + 1} 的目标订单已存在最终料理，手动交接槽已释放；"
+                + $"完成来源：{resolution}；expectedResult=0x{(long)job.CurrentResultPointer:X}; "
+                + $"actualResult={(servedPointerReadable ? $"0x{(long)servedPointer:X}" : "unavailable")}。"
+                + "Mod 未送达、评价、操作托盘、入箱或复位厨具。";
+            var completionCode = exactJobResult
+                ? OrderPreparationStepCodes.CookingManualHandoffCompleted
+                : OrderPreparationStepCodes.CookingManualHandoffResolved;
+            var completionReason = exactJobResult
+                ? "cooking-manual-handoff-delivered-exact"
+                : servedPointerReadable && actualIdentityReadable
+                    ? actualIdentity.FoodId == job.Target.FoodId
+                        ? "cooking-manual-handoff-equivalent-food"
+                        : "cooking-manual-handoff-different-food"
+                    : "cooking-manual-handoff-food-identity-unavailable";
             RecordAutomationRuntimeEvent(
-                OrderPreparationStepCodes.CookingManualHandoffCompleted,
+                completionCode,
                 job,
                 deliveredMessage,
                 outcome: "completed",
-                reasonCode: "cooking-manual-handoff-delivered",
+                reasonCode: completionReason,
                 terminal: true);
-            return (true, deliveredMessage, OrderPreparationStepCodes.CookingManualHandoffCompleted);
+            return (true, deliveredMessage, completionCode);
         }
         catch (Exception ex)
         {
@@ -1312,151 +1864,140 @@ internal static partial class RuntimeOrderPreparationService
     }
 
     /// <summary>
-    /// 从当前厨具系统的精确 AllCookers 集合选择空闲且支持配方类型的厨具。
+    /// 从当前厨具系统的精确 AllCookers 集合复核前端已预约的控制器。
     /// </summary>
-    private static (bool Ok, bool Waiting, object? CookController, string Message) TryGetCookerFromCookSystem(object recipe)
+    private static (
+        bool Ok,
+        bool Waiting,
+        object? CookController,
+        RuntimeCookerControllerState? ControllerState,
+        string Message) TryGetCookerFromCookSystem(
+        int recipeCookerType,
+        RuntimeCookerReservation reservation)
     {
+        if (recipeCookerType <= 0)
+        {
+            return (false, false, null, null, $"配方厨具类型无效：{recipeCookerType}。");
+        }
+
         var cookSystem = RuntimeCookerReflection.GetCookSystemManager();
         if (cookSystem == null)
         {
-            return (false, true, null, "当前厨具管理器暂不可用，自动化将等待经营厨具完成初始化。");
+            return (false, true, null, null, "当前厨具管理器暂不可用，自动化将等待经营厨具完成初始化。");
         }
 
-        var recipeCookerType = ToInt(ReadMember(recipe, "cookerType"));
-        if (recipeCookerType <= 0)
+        if (!RuntimeCookerReflection.TryReadLockedCookerPositions(
+                out var lockedPositions,
+                out var lockedStatus))
         {
-            return (false, false, null, $"配方厨具类型无效：{recipeCookerType}。");
+            return (false, true, null, null,
+                $"挑战锁定厨具来源暂时无法读取，自动化将等待状态恢复，不计入失败重试"
+                + $"（{lockedStatus}）。");
         }
 
-        var controllers = RuntimeCookerReflection.ReadCookerControllersFromCookSystem(cookSystem, out var controllerStatus);
-        var totalCount = controllers.Count;
-        var readableCount = 0;
-        var matchingCount = 0;
-        var reservedCount = 0;
-        var busyCount = 0;
-        var lockedCount = 0;
-        var unreadableCount = 0;
-        var availableCount = 0;
-        var extractedResidualCount = 0;
-        string? unreadableSample = null;
-        string? unavailableSample = null;
-        object? selectedController = null;
-
-        foreach (var cookController in controllers)
+        if (!RuntimeCookerReflection.TryReadCookerControllerEntriesFromCookSystem(
+                cookSystem,
+                lockedPositions,
+                out var controllerEntries,
+                out var controllerStatus))
         {
-            if (!RuntimeCookerReflection.TryReadCookerControllerState(
-                    cookController,
-                    out var controllerState,
-                    out var stateStatus))
-            {
-                unreadableCount++;
-                unreadableSample ??= stateStatus;
-                continue;
-            }
+            return (false, true, null, null,
+                $"经营厨具来源暂时无法读取，自动化将等待状态恢复，不计入失败重试"
+                + $"（{controllerStatus}；{lockedStatus}）。");
+        }
 
-            readableCount++;
-            if (!controllerState.TypeIds.Contains(recipeCookerType))
-            {
-                continue;
-            }
+        if (!reservation.TryMatch(
+                controllerEntries,
+                out var controllerEntry,
+                out var reservationError))
+        {
+            return (false, true, null, null,
+                $"预约的厨具控制器已发生身份或位置漂移，自动化不会改选其他厨具，将等待最新快照重新调度"
+                + $"（{reservationError}；{controllerStatus}；{lockedStatus}）。");
+        }
 
-            matchingCount++;
-            var startAvailability = ClassifyCookerStartAvailability(
+        if (lockedPositions.Contains(reservation.GridPosition))
+        {
+            return (false, true, null, null,
+                $"预约的厨具控制器 #{reservation.ControllerIndex}/{reservation.ControllerIdentity} "
+                + $"在位置 {reservation.GridPosition} 已被挑战机制锁定，"
+                + "自动化不会读取该控制器，将等待最新快照重新调度"
+                + $"（{controllerStatus}；{lockedStatus}）。");
+        }
+
+        var cookController = controllerEntry.Controller;
+        if (!RuntimeCookerReflection.TryReadCookerControllerState(
                 cookController,
-                controllerState,
-                out var startAvailabilityDiagnostic);
-            if (IsCookControllerReserved(cookController))
-            {
-                reservedCount++;
-                unavailableSample ??= DescribeUnavailableCooker(
-                    cookController,
-                    controllerState,
-                    stateStatus,
-                    "mod-reserved",
-                    startAvailabilityDiagnostic);
-                continue;
-            }
-
-            if (startAvailability == AutomationCookerStartAvailability.Unavailable)
-            {
-                if (controllerState.CouldOpen)
-                {
-                    busyCount++;
-                }
-                else
-                {
-                    lockedCount++;
-                }
-
-                unavailableSample ??= DescribeUnavailableCooker(
-                    cookController,
-                    controllerState,
-                    stateStatus,
-                    controllerState.CouldOpen ? "native-busy" : "native-locked",
-                    startAvailabilityDiagnostic);
-                continue;
-            }
-
-            availableCount++;
-            if (startAvailability == AutomationCookerStartAvailability.ExtractedResidual)
-            {
-                extractedResidualCount++;
-            }
-
-            selectedController ??= cookController;
+                out var controllerState,
+                out var stateStatus))
+        {
+            return (false, true, null, null,
+                $"预约的厨具控制器 #{reservation.ControllerIndex}/{reservation.ControllerIdentity} "
+                + "状态无法完整读取，自动化将等待最新快照重新调度"
+                + $"（{stateStatus}；{controllerStatus}；{lockedStatus}）。");
         }
 
-        if (totalCount == 0)
+        var challengeGate = reservation.EvaluateChallengeGate(
+            lockedPositions,
+            controllerState.CouldOpen);
+        if (challengeGate == RuntimeCookerChallengeGateState.Inconsistent)
         {
-            return (false, true, null, $"当前尚未读取到经营厨具，自动化将继续等待（{controllerStatus}）。");
+            return (false, true, null, null,
+                $"预约的厨具控制器 #{reservation.ControllerIndex}/{reservation.ControllerIdentity} "
+                + $"在位置 {reservation.GridPosition} 的 LockedCookers 与 CouldCookerOpen 结果互相矛盾，"
+                + "自动化将等待同一轮完整状态恢复"
+                + $"（{stateStatus}；{controllerStatus}；{lockedStatus}）。");
+        }
+
+        if (controllerState.IsEmptyDesk)
+        {
+            return (false, true, null, null,
+                $"预约的厨具控制器 #{reservation.ControllerIndex}/{reservation.ControllerIdentity} "
+                + $"在位置 {reservation.GridPosition} 已变为空厨具位，"
+                + "自动化不会改选其他厨具，将等待最新快照重新调度"
+                + $"（{stateStatus}；{controllerStatus}；{lockedStatus}）。");
         }
 
         var cookerTypeName = RuntimeCookerReflection.ResolveCookerTypeName(recipeCookerType);
-        if (selectedController != null)
+        if (!controllerState.TypeIds.Contains(recipeCookerType))
         {
-            return (true, false, selectedController,
-                $"已从玩家厨具字典找到空闲可用厨具（共 {totalCount} 个，同类型 {matchingCount} 个，"
-                + $"可用 {availableCount} 个，其中已完成取走残留 {extractedResidualCount} 个；{controllerStatus}）。");
+            return (false, true, null, null,
+                $"预约的厨具控制器 #{reservation.ControllerIndex}/{reservation.ControllerIdentity} "
+                + "已不再支持配方厨具类型 "
+                + $"{cookerTypeName}（{recipeCookerType}），自动化不会改选其他厨具，将等待最新快照重新调度"
+                + $"（{stateStatus}；{controllerStatus}；{lockedStatus}）。");
         }
 
-        if (matchingCount == 0)
+        if (IsCookControllerReserved(cookController))
         {
-            return (false, false, null,
-                $"读取到 {totalCount} 个经营厨具，其中 {readableCount} 个可识别，但没有支持配方厨具类型 {cookerTypeName}（{recipeCookerType}）的厨具"
-                + (unreadableCount > 0 ? $"；另有 {unreadableCount} 个厨具对象无法读取，样本：{unreadableSample}" : "")
-                + $"（{controllerStatus}）。");
+            return (false, true, null, null,
+                $"预约的厨具控制器 #{reservation.ControllerIndex}/{reservation.ControllerIdentity} "
+                + "已被另一个 Mod 自动料理任务预约，"
+                + "自动化不会改选其他厨具，将等待最新快照重新调度。");
         }
 
-        var unavailableParts = new List<string>();
-        if (reservedCount > 0)
+        var startAvailability = RuntimeCookerStartAvailabilityService.Classify(
+            cookController,
+            controllerState,
+            out var startAvailabilityDiagnostic);
+        if (startAvailability == AutomationCookerStartAvailability.Unavailable)
         {
-            unavailableParts.Add($"{reservedCount} 个已被 Mod 自动料理任务预约");
+            return (false, true, null, null,
+                $"预约的厨具控制器 #{reservation.ControllerIndex}/{reservation.ControllerIdentity} "
+                + "已不再可用于自动开锅，"
+                + "自动化不会改选其他厨具，将等待最新快照重新调度"
+                + $"（{stateStatus}；{startAvailabilityDiagnostic}；{controllerStatus}；{lockedStatus}）。");
         }
 
-        if (busyCount > 0)
-        {
-            unavailableParts.Add($"{busyCount} 个处于装料、烹饪或待收取状态");
-        }
-
-        if (lockedCount > 0)
-        {
-            unavailableParts.Add($"{lockedCount} 个被特殊经营暂时锁定");
-        }
-
-        if (unreadableCount > 0)
-        {
-            unavailableParts.Add($"{unreadableCount} 个厨具对象无法完整读取（样本：{unreadableSample}）");
-        }
-
-        var unavailableSummary = unavailableParts.Count > 0
-            ? string.Join("，", unavailableParts)
-            : "状态读取失败";
-        return (false, true, null,
-            $"已找到 {matchingCount} 个支持 {cookerTypeName}（{recipeCookerType}）的厨具，但{unavailableSummary}；"
-            + $"自动化将等待空闲厨具，不计入失败重试（样本：{unavailableSample ?? "unavailable"}；{controllerStatus}）。");
+        return (true, false, cookController, controllerState,
+            $"已复核预约厨具控制器 #{reservation.ControllerIndex}/{reservation.ControllerIdentity} "
+            + $"@{reservation.GridPosition}，支持 {cookerTypeName}（{recipeCookerType}），"
+            + $"startAvailability={startAvailability}"
+            + $"（{stateStatus}；{controllerStatus}；{lockedStatus}）。");
     }
 
     private static bool TryRevalidateCookerBeforeStart(
+        RuntimeCookerReservation reservation,
         object cookController,
         object selectedCooker,
         int recipeCookerType,
@@ -1470,109 +2011,48 @@ internal static partial class RuntimeOrderPreparationService
             return false;
         }
 
-        if (IsCookControllerReserved(cookController))
+        var current = TryGetCookerFromCookSystem(
+            recipeCookerType,
+            reservation);
+        waiting = current.Waiting;
+        if (!current.Ok
+            || current.CookController == null
+            || current.ControllerState == null)
         {
-            waiting = true;
-            message = "所选厨具已被另一个 Mod 自动料理任务预约，已在扣除材料前取消开火。";
+            message = current.Message;
             return false;
         }
 
-        if (!RuntimeCookerReflection.TryReadCookerControllerState(
-                cookController,
-                out var state,
-                out var stateStatus))
+        if (!IsSameObject(cookController, current.CookController))
         {
             waiting = true;
-            message = $"所选厨具状态无法完整复核，已在扣除材料前取消开火（{stateStatus}）。";
+            message = "精确预约的厨具控制器原生对象已发生变化，自动化不会改选其他厨具。";
             return false;
         }
 
-        if (!IsSameObject(selectedCooker, state.Cooker))
+        if (!IsSameObject(selectedCooker, current.ControllerState.Cooker))
         {
             waiting = true;
-            message = "所选厨具控制器已经换绑到其他厨具，已在扣除材料前取消开火。";
+            message = "精确预约的厨具控制器已经换绑到其他厨具，自动化不会改选其他厨具。";
             return false;
         }
 
-        if (!state.TypeIds.Contains(recipeCookerType))
-        {
-            waiting = true;
-            message = $"所选厨具已不再支持配方厨具类型 {RuntimeCookerReflection.ResolveCookerTypeName(recipeCookerType)}（{recipeCookerType}），已在扣除材料前取消开火。";
-            return false;
-        }
-
-        var startAvailability = ClassifyCookerStartAvailability(
-            cookController,
-            state,
-            out var startAvailabilityDiagnostic);
-        if (startAvailability == AutomationCookerStartAvailability.Unavailable)
-        {
-            waiting = true;
-            message = $"所选厨具已被占用或暂时锁定，已在扣除材料前取消开火"
-                + $"（{stateStatus}；{startAvailabilityDiagnostic}）。";
-            return false;
-        }
-
-        message = startAvailability == AutomationCookerStartAvailability.ExtractedResidual
-            ? $"cooker-start=extracted-residual; {startAvailabilityDiagnostic}"
-            : "cooker-start=strict-idle";
+        message = current.Message;
         return true;
-    }
-
-    private static AutomationCookerStartAvailability ClassifyCookerStartAvailability(
-        object cookController,
-        RuntimeCookerControllerState state,
-        out string diagnostic)
-    {
-        var completedExtractObserved = false;
-        var ownershipDiagnostic = "ownership=not-required";
-        if (state.Phase == 0
-            && state.ResultEmpty
-            && !state.ChosenRecipeEmpty
-            && state.CouldOpen)
-        {
-            var ownershipReadable = RuntimeCookingGenerationTracker.TryGetOwnershipSnapshot(
-                cookController,
-                out var ownershipSnapshot,
-                out ownershipDiagnostic);
-            completedExtractObserved = ownershipReadable
-                && ownershipSnapshot.LastMutation == RuntimeCookingContentMutation.Extract
-                && ownershipSnapshot.MutationCompleted;
-        }
-
-        var availability = AutomationCookerStartPolicy.Classify(
-            state.Phase,
-            state.ResultEmpty,
-            state.ChosenRecipeEmpty,
-            state.CouldOpen,
-            completedExtractObserved);
-        diagnostic = $"startAvailability={availability}; {ownershipDiagnostic}";
-        return availability;
-    }
-
-    private static string DescribeUnavailableCooker(
-        object cookController,
-        RuntimeCookerControllerState state,
-        string stateStatus,
-        string reason,
-        string startAvailabilityDiagnostic)
-    {
-        var resultPointer = state.Result != null
-            && TryReadNativeObjectPointer(state.Result, out var pointer)
-                ? $"0x{(long)pointer:X}"
-                : "null";
-        return $"reason={reason}; controller={DescribeCookController(cookController)}; "
-            + $"result={resultPointer}; {stateStatus}; {startAvailabilityDiagnostic}";
     }
 
     private static bool IsCookControllerReserved(object cookController)
     {
+        if (!TryReadNativeObjectPointer(cookController, out var controllerPointer))
+        {
+            return true;
+        }
+
         lock (AutomationCookingJobLock)
         {
             return AutomationCookingJobs.Any(job =>
                 !job.ManualHandoffObserved
-                && (ReferenceEquals(job.CookController, cookController)
-                    || IsSameObject(job.CookController, cookController)));
+                && job.ControllerPointer == controllerPointer);
         }
     }
 

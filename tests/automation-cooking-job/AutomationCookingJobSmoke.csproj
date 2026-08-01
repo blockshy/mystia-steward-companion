@@ -16,6 +16,8 @@
     <Compile Include="../../mods/bepinex/src/Save/AutomationCookingJobLifecycle.cs" Link="AutomationCookingJobLifecycle.cs" />
     <Compile Include="../../mods/bepinex/src/Save/AutomationSafetyBarrierRegistry.cs" Link="AutomationSafetyBarrierRegistry.cs" />
     <Compile Include="../../mods/bepinex/src/Save/CookControllerFoodResultIdentity.cs" Link="CookControllerFoodResultIdentity.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeCookerReservation.cs" Link="RuntimeCookerReservation.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/SpecialBusiness/SpecialFoodTargetPolicy.cs" Link="SpecialFoodTargetPolicy.cs" />
   </ItemGroup>
 
   <ItemGroup>

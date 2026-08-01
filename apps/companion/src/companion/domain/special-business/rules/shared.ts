@@ -1,7 +1,7 @@
 import type {
-  NightBusinessOrder,
-  NormalBusinessOrder,
-} from '@/companion/types';
+  SpecialBusinessFoodTargetPolicy,
+  SpecialBusinessTagMatch,
+} from '@/recommendation-engine';
 
 export const WACKY_CHALLENGE_TYPE = 'Story_WackyCookingCompetition';
 export const WACKY_TARGET_TAG_COOKING_MIN_PROGRESS = 0.35;
@@ -15,15 +15,31 @@ export const KOISHI_BOSS_ROLE = 'wacky-koishi-boss';
 export const WACKY_GHOST_ROLE = 'wacky-ghost-order';
 export const WACKY_TARGET_ROLE = 'wacky-target-order';
 export const YUYUKO_BOSS_ROLE = 'yuyuko-boss-order';
+export const BLOOD_POND_HELL_CHALLENGE_TYPE = 'Story_BloodPondHell';
+export const YUUMA_BOSS_ROLE = 'yuuma-boss-order';
+export const YUUMA_UNVERIFIED_ROLE = 'yuuma-order-unverified';
+export const YUUMA_CHARACTER_ID = 1003;
 
-export function hasMatchingSpecialBusinessTag(tags: readonly string[], targetTags: readonly string[]): boolean {
-  if (tags.length === 0 || targetTags.length === 0) return false;
+export function matchesSpecialBusinessTags(
+  tags: readonly string[],
+  targetTags: readonly string[],
+  match: SpecialBusinessTagMatch,
+): boolean {
+  if (targetTags.length === 0) return false;
   const normalized = new Set(normalizeSpecialBusinessTags(tags));
-  return normalizeSpecialBusinessTags(targetTags).some((tag) => normalized.has(tag));
+  const targets = normalizeSpecialBusinessTags(targetTags);
+  if (targets.length === 0) return false;
+  return match === 'all'
+    ? targets.every((tag) => normalized.has(tag))
+    : targets.some((tag) => normalized.has(tag));
 }
 
-export function getOrderSpecialBusinessRole(order: NightBusinessOrder | NormalBusinessOrder): string {
-  return normalizeRole(order.specialBusinessRole);
+export function matchesSpecialBusinessFoodTarget(
+  tags: readonly string[],
+  target: SpecialBusinessFoodTargetPolicy,
+): boolean {
+  if (target.enforcement === 'none') return true;
+  return matchesSpecialBusinessTags(tags, target.tags, target.match);
 }
 
 export function normalizeSpecialBusinessTags(tags: readonly string[] | null | undefined): string[] {

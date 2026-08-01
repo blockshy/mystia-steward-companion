@@ -20,6 +20,7 @@ interface UseGameUiPinningPublisherOptions {
   recommendationPending: boolean;
   recommendationError: boolean;
   recommendationSuccessRevision: number;
+  targetContextSignature: string;
 }
 
 interface UiPinningPublication {
@@ -67,6 +68,7 @@ export function useGameUiPinningPublisher({
   recommendationPending,
   recommendationError,
   recommendationSuccessRevision,
+  targetContextSignature,
 }: UseGameUiPinningPublisherOptions): void {
   const stateRef = useRef<UiPinningPublisherState>({
     active: false,
@@ -147,7 +149,14 @@ export function useGameUiPinningPublisher({
 
   useEffect(() => {
     const state = stateRef.current;
-    const connectionKey = `${endpoint}\n${apiToken}\n${connectionRevision}\n${sessionId}\n${businessGeneration}`;
+    const connectionKey = [
+      endpoint,
+      apiToken,
+      connectionRevision,
+      sessionId,
+      businessGeneration,
+      targetContextSignature,
+    ].join('\n');
     if (state.connectionKey !== connectionKey) {
       state.connectionKey = connectionKey;
       state.lastCurrentTarget = null;
@@ -236,6 +245,7 @@ export function useGameUiPinningPublisher({
     sessionId,
     targetSourceOrderKey,
     targetSourceValid,
+    targetContextSignature,
   ]);
 }
 

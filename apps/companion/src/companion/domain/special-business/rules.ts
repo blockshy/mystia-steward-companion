@@ -1,4 +1,5 @@
 export {
+  BLOOD_POND_HELL_CHALLENGE_TYPE,
   KOISHI_BOSS_ROLE,
   WACKY_CHALLENGE_TYPE,
   WACKY_GHOST_ROLE,
@@ -8,8 +9,11 @@ export {
   RETAKE_YUYUKO_CHALLENGE_TYPE,
   YUYUKO_BOSS_ROLE,
   YUYUKO_CHALLENGE_TYPES,
-  getOrderSpecialBusinessRole,
-  hasMatchingSpecialBusinessTag,
+  YUUMA_BOSS_ROLE,
+  YUUMA_UNVERIFIED_ROLE,
+  YUUMA_CHARACTER_ID,
+  matchesSpecialBusinessFoodTarget,
+  matchesSpecialBusinessTags,
   isPhaseThreeContext,
   isPhaseTwoContext,
   normalizeRole,
@@ -36,3 +40,7 @@ export {
   buildYuyukoChallengeOrderRule,
   isYuyukoChallengeOrderRole,
 } from '@/companion/domain/special-business/rules/yuyuko';
+export {
+  buildYuumaChallengeOrderRule,
+  isYuumaChallengeOrderRole,
+} from '@/companion/domain/special-business/rules/yuuma';

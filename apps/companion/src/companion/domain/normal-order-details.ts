@@ -128,7 +128,7 @@ export function buildNormalOrderDetailPlans({
       extraIngredientIds: target.extraIngredientIds,
       ingredientById,
       fallbackTags: target.foodTags,
-      targetTags: target.wackyTargetFoodTags ?? [],
+      targetTags: target.specialTargetFoodTags,
     });
     const executionBeverageDetail = buildBeverageDetail({
       data,

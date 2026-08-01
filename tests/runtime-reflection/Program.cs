@@ -8,6 +8,7 @@ const string typeName = "MystiaStewardCompanion.Tests.LateLoadedProbe";
 try
 {
     AssertBepInEx783CollectionMetadata();
+    AssertCookerTypeSequenceReader();
     AssertRuntimeCoreMappingProjection();
     AssertRuntimeStorageStateProjection();
     AssertConcreteCollectionReader();
@@ -24,13 +25,167 @@ try
     AssertEqual(expected, RuntimeReflectionUtility.FindType(typeName), "A type loaded after the first lookup remained negatively cached.");
     AssertEqual(expected, RuntimeReflectionUtility.FindType(typeName), "Successful type lookup was not stable.");
 
-    Console.WriteLine("PASS: BepInEx 783 dictionary/array metadata is exact, core/storage reads fail closed, day-scene readiness is gated, and reflection lookups retry late types.");
+    Console.WriteLine("PASS: BepInEx 783 collection metadata and cooker type sequences are exact, core/storage reads fail closed, day-scene readiness is gated, and reflection lookups retry late types.");
     return 0;
 }
 catch (Exception ex)
 {
     Console.Error.WriteLine($"FAIL: {ex}");
     return 1;
+}
+
+static void AssertCookerTypeSequenceReader()
+{
+    var emptyOnly = ReadCookerTypes(TestCookerType.Empty);
+    AssertTrue(emptyOnly.Success, "An exact Empty-only cooker type sequence failed.");
+    AssertTrue(emptyOnly.ObservedEmpty, "The Empty sentinel was not retained.");
+    AssertSequenceEqual(Array.Empty<int>(), emptyOnly.TypeIds, "An empty desk created cooker capacity.");
+    AssertEqual(1, emptyOnly.DisposeCalls, "An Empty-only sequence was not disposed exactly once.");
+
+    var upgraded = ReadCookerTypes(
+        TestCookerType.Empty,
+        TestCookerType.Boil,
+        TestCookerType.Steam,
+        TestCookerType.Boil);
+    AssertTrue(upgraded.Success, "A valid Empty + capability sequence failed.");
+    AssertTrue(upgraded.ObservedEmpty, "A mixed sequence lost its Empty sentinel.");
+    AssertSequenceEqual(new[] { 1, 4 }, upgraded.TypeIds, "Capabilities were not unique and sorted.");
+    AssertEqual(1, upgraded.DisposeCalls, "A valid mixed sequence was not disposed exactly once.");
+
+    var emptySequence = ReadCookerTypes();
+    AssertFalse(emptySequence.Success, "A sequence with no elements was accepted.");
+    AssertContains(emptySequence.Status, "cooker-types=sequence-empty", "Empty sequence diagnostics changed.");
+    AssertEqual(1, emptySequence.DisposeCalls, "An empty sequence was not disposed exactly once.");
+
+    var invalidValue = ReadCookerTypes((TestCookerType)6);
+    AssertFalse(invalidValue.Success, "An undefined cooker type was accepted.");
+    AssertContains(invalidValue.Status, "cooker-types=value-out-of-range", "Invalid enum diagnostics changed.");
+    AssertEqual(1, invalidValue.DisposeCalls, "An invalid-value sequence was not disposed exactly once.");
+
+    var wrongCurrent = ReadCookerTypesWithProbe(new CookerTypeSequenceProbe(new object?[] { 1 }));
+    AssertFalse(wrongCurrent.Success, "A Current value with the wrong exact CLR type was accepted.");
+    AssertContains(wrongCurrent.Status, "cooker-types=current-shape-invalid", "Current shape diagnostics changed.");
+    AssertEqual(1, wrongCurrent.DisposeCalls, "A wrong-Current sequence was not disposed exactly once.");
+
+    var moveNextFailure = ReadCookerTypesWithProbe(new CookerTypeSequenceProbe(
+        new object?[] { TestCookerType.Boil })
+    {
+        ThrowOnMoveNext = true,
+    });
+    AssertFalse(moveNextFailure.Success, "A MoveNext exception was accepted.");
+    AssertContains(moveNextFailure.Status, "cooker-types=move-next-invoke-failed", "MoveNext diagnostics changed.");
+    AssertEqual(1, moveNextFailure.DisposeCalls, "A MoveNext failure was not disposed exactly once.");
+
+    var currentFailure = ReadCookerTypesWithProbe(new CookerTypeSequenceProbe(
+        new object?[] { TestCookerType.Boil })
+    {
+        ThrowOnCurrent = true,
+    });
+    AssertFalse(currentFailure.Success, "A Current exception was accepted.");
+    AssertContains(currentFailure.Status, "cooker-types=current-invoke-failed", "Current diagnostics changed.");
+    AssertEqual(1, currentFailure.DisposeCalls, "A Current failure was not disposed exactly once.");
+
+    var disposeFailure = ReadCookerTypesWithProbe(new CookerTypeSequenceProbe(
+        new object?[] { TestCookerType.Boil })
+    {
+        ThrowOnDispose = true,
+    });
+    AssertFalse(disposeFailure.Success, "A Dispose exception was accepted.");
+    AssertContains(disposeFailure.Status, "cooker-types=dispose-failed", "Dispose diagnostics changed.");
+    AssertEqual(1, disposeFailure.DisposeCalls, "A failing Dispose was invoked more than once.");
+
+    var maximum = ReadCookerTypes(
+        Enumerable.Repeat(TestCookerType.Boil, 32).ToArray());
+    AssertTrue(maximum.Success, "The documented cooker type sequence limit was not accepted.");
+    var overflow = ReadCookerTypes(
+        Enumerable.Repeat(TestCookerType.Boil, 33).ToArray());
+    AssertFalse(overflow.Success, "An oversized cooker type sequence was accepted.");
+    AssertContains(overflow.Status, "cooker-types=sequence-limit-exceeded", "Sequence limit diagnostics changed.");
+    AssertEqual(1, overflow.DisposeCalls, "An oversized sequence was not disposed exactly once.");
+
+    AssertTrue(
+        RuntimeCookerTypeSequenceReader.TryValidateControllerState(
+            isEmptyDesk: true,
+            observedEmpty: true,
+            capabilityCount: 0,
+            phase: 0,
+            resultEmpty: true,
+            chosenRecipeEmpty: true,
+            out var exactEmptyStatus),
+        "An exact empty desk was rejected.");
+    AssertEqual("ok-empty-desk", exactEmptyStatus, "Exact empty-desk status changed.");
+    AssertFalse(
+        RuntimeCookerTypeSequenceReader.TryValidateControllerState(
+            isEmptyDesk: false,
+            observedEmpty: true,
+            capabilityCount: 0,
+            phase: 0,
+            resultEmpty: true,
+            chosenRecipeEmpty: true,
+            out var nonEmptyMissingStatus),
+        "An Empty-only non-empty controller was accepted.");
+    AssertEqual("non-empty-desk-types-missing", nonEmptyMissingStatus, "Non-empty mismatch status changed.");
+    AssertFalse(
+        RuntimeCookerTypeSequenceReader.TryValidateControllerState(
+            isEmptyDesk: true,
+            observedEmpty: true,
+            capabilityCount: 1,
+            phase: 0,
+            resultEmpty: true,
+            chosenRecipeEmpty: true,
+            out var emptyTypeMismatchStatus),
+        "An empty controller with cooker capacity was accepted.");
+    AssertEqual("empty-desk-type-mismatch", emptyTypeMismatchStatus, "Empty type mismatch status changed.");
+    AssertFalse(
+        RuntimeCookerTypeSequenceReader.TryValidateControllerState(
+            isEmptyDesk: true,
+            observedEmpty: true,
+            capabilityCount: 0,
+            phase: 1,
+            resultEmpty: true,
+            chosenRecipeEmpty: true,
+            out var emptyContentMismatchStatus),
+        "A non-reset empty controller was accepted.");
+    AssertEqual("empty-desk-content-mismatch", emptyContentMismatchStatus, "Empty content mismatch status changed.");
+    AssertTrue(
+        RuntimeCookerTypeSequenceReader.TryValidateControllerState(
+            isEmptyDesk: false,
+            observedEmpty: true,
+            capabilityCount: 2,
+            phase: 0,
+            resultEmpty: true,
+            chosenRecipeEmpty: true,
+            out var upgradedStatus),
+        "A non-empty upgraded cooker with an Empty base sentinel was rejected.");
+    AssertEqual("ok", upgradedStatus, "Upgraded cooker status changed.");
+
+    var formatted = RuntimeCookerTypeSequenceReader.FormatException(
+        new InvalidOperationException(new string('x', 512)));
+    AssertTrue(formatted.Length <= 160, "Cooker type exception diagnostics are not bounded.");
+    AssertFalse(formatted.Contains('\n') || formatted.Contains('\r'), "Cooker type diagnostics retained newlines.");
+}
+
+static CookerTypeReadResult ReadCookerTypes(params TestCookerType[] values)
+{
+    return ReadCookerTypesWithProbe(new CookerTypeSequenceProbe(values.Cast<object?>().ToArray()));
+}
+
+static CookerTypeReadResult ReadCookerTypesWithProbe(CookerTypeSequenceProbe probe)
+{
+    var success = RuntimeCookerTypeSequenceReader.TryRead(
+        probe.MoveNext,
+        probe.GetCurrent,
+        typeof(TestCookerType),
+        probe.Dispose,
+        out var typeIds,
+        out var observedEmpty,
+        out var status);
+    return new CookerTypeReadResult(
+        success,
+        typeIds,
+        observedEmpty,
+        status,
+        probe.DisposeCalls);
 }
 
 static void AssertBepInEx783CollectionMetadata()
@@ -841,3 +996,52 @@ static void AssertContains(string value, string expected, string message)
 internal sealed record FakeReference(string Label);
 
 internal readonly record struct FakeNonBlittableStruct(int Id, string Label);
+
+internal enum TestCookerType
+{
+    Empty = 0,
+    Boil = 1,
+    Steam = 4,
+}
+
+internal sealed class CookerTypeSequenceProbe
+{
+    private readonly IReadOnlyList<object?> values;
+    private int index = -1;
+
+    public CookerTypeSequenceProbe(IReadOnlyList<object?> values)
+    {
+        this.values = values;
+    }
+
+    public bool ThrowOnMoveNext { get; init; }
+    public bool ThrowOnCurrent { get; init; }
+    public bool ThrowOnDispose { get; init; }
+    public int DisposeCalls { get; private set; }
+
+    public object? MoveNext()
+    {
+        if (ThrowOnMoveNext) throw new InvalidOperationException("move-next failed");
+        index++;
+        return index < values.Count;
+    }
+
+    public object? GetCurrent()
+    {
+        if (ThrowOnCurrent) throw new InvalidOperationException("current failed");
+        return values[index];
+    }
+
+    public void Dispose()
+    {
+        DisposeCalls++;
+        if (ThrowOnDispose) throw new InvalidOperationException("dispose failed");
+    }
+}
+
+internal sealed record CookerTypeReadResult(
+    bool Success,
+    IReadOnlyList<int> TypeIds,
+    bool ObservedEmpty,
+    string Status,
+    int DisposeCalls);

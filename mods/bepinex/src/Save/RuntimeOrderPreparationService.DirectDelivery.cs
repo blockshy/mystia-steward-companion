@@ -6,7 +6,7 @@ namespace MystiaStewardCompanion.Save;
 
 internal static partial class RuntimeOrderPreparationService
 {
-    private enum WackyTagValidation
+    private enum SpecialFoodTargetTagValidation
     {
         NotRequired,
         Matched,
@@ -24,8 +24,18 @@ internal static partial class RuntimeOrderPreparationService
         RuntimeOrderMatch runtimeOrder,
         int beverageId,
         string beverageName,
-        string orderLabel)
+        string orderLabel,
+        CookingCollectionTarget? target = null)
     {
+        if (target != null && IsYuumaBossTarget(target))
+        {
+            return TryDeliverYuumaOrderBeverage(
+                target,
+                beverageId,
+                beverageName,
+                orderLabel);
+        }
+
         if (!TryCaptureActiveNightBusinessGeneration(out var sessionGeneration))
         {
             return (false, "夜间经营会话已结束，未执行酒水送达。", OrderPreparationStepCodes.NightBusinessLifecycleUnavailable);
@@ -181,8 +191,8 @@ internal static partial class RuntimeOrderPreparationService
                 ? "黑暗料理（料理 #-1）"
                 : $"料理 #{actualFoodId}";
             var actualFoodTags = ReadFoodTagNames(cookedFood).ToArray();
-            var activeTargetTags = target.WackyTargetFoodTags;
-            AppendWackyCookingJobDiagnostic(
+            var activeTargetTags = target.SpecialTargetFoodTags;
+            AppendSpecialFoodTargetCookingJobDiagnostic(
                 "cooked-food-id-mismatch",
                 job,
                 "store-mismatched-food",
@@ -209,7 +219,7 @@ internal static partial class RuntimeOrderPreparationService
                 return CompleteCommittedWarmerStore(job, storeMessage);
             }
 
-            AppendWackyCookingJobDiagnostic(
+            AppendSpecialFoodTargetCookingJobDiagnostic(
                 storeCommitted ? "cooked-food-id-mismatch-reset-job" : "cooked-food-id-mismatch-store-failed",
                 job,
                 storeCommitted ? "retry-cooker-reset" : "keep-on-cooker",
@@ -222,13 +232,36 @@ internal static partial class RuntimeOrderPreparationService
                 $"{job.RecipeName} 已完成，但成品 {actualText} 不是目标料理 {target.FoodName}（料理 #{target.FoodId}），{FormatWarmerStoreJobState(storeCommitted, storeMessage)}");
         }
 
-        if (TryDetectWackyTargetSignatureChanged(job, out var originalTargetSignature, out var currentTargetSignature, out var originalTargetTags, out var currentTargetTags))
+        var specialTargetChanged = TryDetectSpecialFoodTargetPolicyChanged(
+                job,
+                out var originalTargetSignature,
+                out var currentTargetSignature,
+                out var originalTargetTags,
+                out var currentTargetTags,
+                out var originalTargetRevision,
+                out var currentTargetRevision,
+                out var specialTargetComparisonAvailable);
+        if (!specialTargetComparisonAvailable)
+        {
+            return ContinueOrBlockAutomationDelivery(
+                job,
+                $"{job.RecipeName} 已完成，但当前特殊料理目标暂不可用；"
+                + $"开锅目标 revision={originalTargetRevision} "
+                + $"{FormatSpecialFoodTargetForMessage(originalTargetSignature, originalTargetTags)}。"
+                + "本轮未送达、入箱或复位厨具，等待权威目标恢复。");
+        }
+
+        if (specialTargetChanged)
         {
             var actualFoodId = ReadSellableId(cookedFood);
             var actualTagsForSignature = ReadFoodTagNames(cookedFood).ToArray();
-            var signatureMessage = $"{job.RecipeName} 已完成，但怪诞料理目标已变化：开锅时 {FormatWackyTargetForMessage(originalTargetSignature, originalTargetTags)}，当前 {FormatWackyTargetForMessage(currentTargetSignature, currentTargetTags)}";
-            AppendWackyCookingJobDiagnostic(
-                "wacky-target-signature-changed",
+            var signatureMessage = $"{job.RecipeName} 已完成，但特殊料理目标已变化："
+                + $"开锅时 revision={originalTargetRevision} "
+                + $"{FormatSpecialFoodTargetForMessage(originalTargetSignature, originalTargetTags)}，"
+                + $"当前 revision={currentTargetRevision} "
+                + $"{FormatSpecialFoodTargetForMessage(currentTargetSignature, currentTargetTags)}";
+            AppendSpecialFoodTargetCookingJobDiagnostic(
+                "special-target-signature-changed",
                 job,
                 "store-stale-target",
                 actualFoodId,
@@ -243,7 +276,7 @@ internal static partial class RuntimeOrderPreparationService
                 actualFoodId,
                 currentTargetTags.ToArray(),
                 actualTagsForSignature,
-                "wacky-target-signature-changed-stored");
+                "special-target-signature-changed-stored");
             if (TryStoreMismatchedCookResultInWarmer(
                     job,
                     cookedFood,
@@ -254,8 +287,8 @@ internal static partial class RuntimeOrderPreparationService
                 return CompleteCommittedWarmerStore(job, signatureStoreMessage);
             }
 
-            AppendWackyCookingJobDiagnostic(
-                signatureStoreCommitted ? "wacky-target-signature-changed-reset-job" : "wacky-target-signature-changed-store-failed",
+            AppendSpecialFoodTargetCookingJobDiagnostic(
+                signatureStoreCommitted ? "special-target-signature-changed-reset-job" : "special-target-signature-changed-store-failed",
                 job,
                 signatureStoreCommitted ? "retry-cooker-reset" : "keep-on-cooker",
                 actualFoodId,
@@ -267,19 +300,19 @@ internal static partial class RuntimeOrderPreparationService
                 $"{signatureMessage}，{FormatWarmerStoreJobState(signatureStoreCommitted, signatureStoreMessage)}");
         }
 
-        var wackyTagValidation = ValidateWackyTags(target, cookedFood, out var targetTags, out var actualTags);
-        if (wackyTagValidation is WackyTagValidation.Mismatched or WackyTagValidation.Unreadable)
+        var specialTagValidation = ValidateSpecialFoodTargetTags(target, cookedFood, out var targetTags, out var actualTags);
+        if (specialTagValidation is SpecialFoodTargetTagValidation.Mismatched or SpecialFoodTargetTagValidation.Unreadable)
         {
             var actualFoodId = ReadSellableId(cookedFood);
-            var unreadableTags = wackyTagValidation == WackyTagValidation.Unreadable;
+            var unreadableTags = specialTagValidation == SpecialFoodTargetTagValidation.Unreadable;
             var resultCode = unreadableTags
                 ? OrderPreparationStepCodes.CookingTagsUnreadableStored
                 : OrderPreparationStepCodes.CookingMismatchStored;
             var diagnosticPrefix = unreadableTags ? "cooked-food-tags-unreadable" : "cooked-food-tag-mismatch";
             var tagMessage = unreadableTags
-                ? $"{job.RecipeName} 已完成，但无法读取成品 Tag，不能确认满足当前怪诞料理目标 Tag（{string.Join("、", targetTags)}）"
-                : $"{job.RecipeName} 已完成，但成品 Tag（{string.Join("、", actualTags)}）不含当前怪诞料理目标 Tag（{string.Join("、", targetTags)}）";
-            AppendWackyCookingJobDiagnostic(
+                ? $"{job.RecipeName} 已完成，但无法读取成品 Tag，不能确认满足当前特殊料理目标 Tag（{string.Join("、", targetTags)}）"
+                : $"{job.RecipeName} 已完成，但成品 Tag（{string.Join("、", actualTags)}）不满足当前特殊料理目标 {target.SpecialFoodTargetPolicy?.MatchModeValue}（{string.Join("、", targetTags)}）";
+            AppendSpecialFoodTargetCookingJobDiagnostic(
                 diagnosticPrefix,
                 job,
                 unreadableTags ? "store-unreadable-tags" : "store-tag-mismatch",
@@ -304,41 +337,44 @@ internal static partial class RuntimeOrderPreparationService
                     job,
                     cookedFood,
                     tagCompletion,
-                    out var wackyStoreMessage,
-                    out var wackyStoreCommitted))
+                    out var targetStoreMessage,
+                    out var targetStoreCommitted))
             {
-                return CompleteCommittedWarmerStore(job, wackyStoreMessage);
+                return CompleteCommittedWarmerStore(job, targetStoreMessage);
             }
 
-            AppendWackyCookingJobDiagnostic(
-                wackyStoreCommitted ? $"{diagnosticPrefix}-reset-job" : $"{diagnosticPrefix}-store-failed",
+            AppendSpecialFoodTargetCookingJobDiagnostic(
+                targetStoreCommitted ? $"{diagnosticPrefix}-reset-job" : $"{diagnosticPrefix}-store-failed",
                 job,
-                wackyStoreCommitted ? "retry-cooker-reset" : "keep-on-cooker",
+                targetStoreCommitted ? "retry-cooker-reset" : "keep-on-cooker",
                 actualFoodId,
                 targetTags,
                 actualTags,
-                wackyStoreMessage);
+                targetStoreMessage);
             return ContinueOrBlockAutomationDelivery(
                 job,
-                $"{tagMessage}，{FormatWarmerStoreJobState(wackyStoreCommitted, wackyStoreMessage)}");
+                $"{tagMessage}，{FormatWarmerStoreJobState(targetStoreCommitted, targetStoreMessage)}");
         }
 
-        if (wackyTagValidation == WackyTagValidation.Matched)
+        if (specialTagValidation == SpecialFoodTargetTagValidation.Matched)
         {
-            AppendWackyCookingJobDiagnostic(
+            AppendSpecialFoodTargetCookingJobDiagnostic(
                 "cooked-food-tag-match",
                 job,
                 "continue-delivery",
                 ReadSellableId(cookedFood),
                 targetTags,
                 actualTags,
-                "cooked food tags matched active wacky target tags");
+                "cooked food tags matched the active special-food target policy");
         }
 
         var request = BuildOrderRequestFromCookingTarget(target);
-        var runtimeOrder = target.Kind == CookingCollectionTargetKind.NormalOrder
-            ? FindRuntimeNormalOrder(request)
-            : FindRuntimeOrder(request);
+        var yuumaTarget = IsYuumaBossTarget(target);
+        var runtimeOrder = yuumaTarget
+            ? FindYuumaRuntimeOrder(target, request)
+            : target.Kind == CookingCollectionTargetKind.NormalOrder
+                ? FindRuntimeNormalOrder(request)
+                : FindRuntimeOrder(request);
         if (runtimeOrder.Order == null || runtimeOrder.Manager == null)
         {
             return HandleUndeliverableCookedFood(
@@ -358,6 +394,71 @@ internal static partial class RuntimeOrderPreparationService
         }
 
         job.ResetDeliveryFailures();
+        if (yuumaTarget)
+        {
+            if (!TryReadYuumaOrderDeliveryState(
+                    runtimeOrder.Order,
+                    out var yuumaServedFood,
+                    out var yuumaFoodInAir,
+                    out var yuumaServedBeverage,
+                    out _,
+                    out var yuumaDeliveryStateDiagnostic))
+            {
+                return ContinueOrBlockAutomationDelivery(
+                    job,
+                    "无法精确确认血池地狱订单当前料理、待送达料理与酒水状态，"
+                    + $"本轮未进入手动交接：{yuumaDeliveryStateDiagnostic}");
+            }
+
+            var activeOrderFood = yuumaServedFood ?? yuumaFoodInAir;
+            if (job.YuumaSettlementTracker.Stage
+                != SpecialBusiness.YuumaSettlementTransactionStage.Ready)
+            {
+                return TryFinalizeYuumaCookingJob(job, cookedFood);
+            }
+
+            if (activeOrderFood != null)
+            {
+                var activeFoodIdentity = CompareObjectIdentity(activeOrderFood, cookedFood);
+                if (activeFoodIdentity == RuntimeObjectIdentityComparison.Unknown)
+                {
+                    return ContinueOrBlockAutomationDelivery(
+                        job,
+                        "血池地狱订单已有料理或料理正在送达，但无法确认是否为本 job 成品；"
+                        + "本轮未进入手动交接、入箱或复位厨具。");
+                }
+
+                if (activeFoodIdentity == RuntimeObjectIdentityComparison.Same)
+                {
+                    var deliveryStartedMessage =
+                        $"{job.RecipeName} 的成品已进入游戏原生订单送达流程；"
+                        + "旧 cooking job 已释放，Mod 未送达、入箱或复位厨具。";
+                    RecordAutomationRuntimeEvent(
+                        OrderPreparationStepCodes.CookingOwnershipLost,
+                        job,
+                        deliveryStartedMessage,
+                        outcome: "interrupted",
+                        reasonCode: "cooking-native-food-delivery-started",
+                        terminal: true);
+                    return (
+                        true,
+                        deliveryStartedMessage,
+                        OrderPreparationStepCodes.CookingOwnershipLost);
+                }
+
+                return StoreCookedFoodForAlreadyHandledTarget(
+                    job,
+                    cookedFood,
+                    "血池地狱订单已有其他料理或料理正在由游戏送达");
+            }
+
+            if (job.AutoDeliverFood && job.AutoCompleteOrder)
+            {
+                return TryFinalizeYuumaCookingJob(job, cookedFood);
+            }
+
+            return EnterManualHandoff(job, DateTime.UtcNow);
+        }
 
         if (!TryReadOrderServedItem(
                 runtimeOrder.Order,
@@ -411,28 +512,10 @@ internal static partial class RuntimeOrderPreparationService
 
         if (servedFood != null)
         {
-            var actualFoodId = ReadSellableId(cookedFood);
-            var completion = new AutomationWarmerCompletion(
-                OrderPreparationStepCodes.CookingTargetAlreadyServedStored,
-                "completed",
-                "cooking-target-already-served",
-                $"{job.RecipeName} 已完成，但目标订单已有料理；自动化成品已放入保温箱。",
-                actualFoodId,
-                Array.Empty<string>(),
-                Array.Empty<string>());
-            if (TryStoreMismatchedCookResultInWarmer(
-                    job,
-                    cookedFood,
-                    completion,
-                    out var storeMessage,
-                    out var storeCommitted))
-            {
-                return CompleteCommittedWarmerStore(job, storeMessage);
-            }
-
-            return ContinueOrBlockAutomationDelivery(
+            return StoreCookedFoodForAlreadyHandledTarget(
                 job,
-                $"目标订单已有料理，但{FormatWarmerStoreJobState(storeCommitted, storeMessage)}");
+                cookedFood,
+                "目标订单已有料理");
         }
 
         if (!TryReadOrderInAirItem(
@@ -526,6 +609,35 @@ internal static partial class RuntimeOrderPreparationService
             return StopAutomationFoodDeliveryForEndedSession(job, resolveCommit: false);
         }
         return TryCompleteCommittedFoodDeliveryCleanup(job);
+    }
+
+    private static (bool Remove, string Message, string Code) StoreCookedFoodForAlreadyHandledTarget(
+        AutomationCookingJob job,
+        object cookedFood,
+        string targetState)
+    {
+        var actualFoodId = ReadSellableId(cookedFood);
+        var completion = new AutomationWarmerCompletion(
+            OrderPreparationStepCodes.CookingTargetAlreadyServedStored,
+            "completed",
+            "cooking-target-already-served",
+            $"{job.RecipeName} 已完成，但{targetState}；自动化成品已放入保温箱。",
+            actualFoodId,
+            Array.Empty<string>(),
+            Array.Empty<string>());
+        if (TryStoreMismatchedCookResultInWarmer(
+                job,
+                cookedFood,
+                completion,
+                out var storeMessage,
+                out var storeCommitted))
+        {
+            return CompleteCommittedWarmerStore(job, storeMessage);
+        }
+
+        return ContinueOrBlockAutomationDelivery(
+            job,
+            $"{targetState}，但{FormatWarmerStoreJobState(storeCommitted, storeMessage)}");
     }
 
     private static (bool Remove, string Message, string Code) StopAutomationFoodDeliveryForEndedSession(
@@ -664,7 +776,7 @@ internal static partial class RuntimeOrderPreparationService
         var completion = job.FoodDeliveryCompletion;
         var postResetMessage = CompleteCookerExtractionAfterReset(job);
         var message = $"{completion.Message}{resetMessage}{postResetMessage}";
-        AppendWackyCookingJobDiagnostic(
+        AppendSpecialFoodTargetCookingJobDiagnostic(
             "cooked-food-delivered",
             job,
             "delivered-to-order",
@@ -685,6 +797,16 @@ internal static partial class RuntimeOrderPreparationService
     private static string CompleteCookerExtractionAfterReset(AutomationCookingJob job)
     {
         var parts = new List<string>();
+        if (!TryReacquireAutomationCooker(
+                job,
+                out _,
+                out var bindingFailure,
+                out var bindingDiagnostic))
+        {
+            return "厨具已复位，但可用性通知执行前无法从当前物理目录重新取得同一厨具，"
+                + $"不会进入原生出锅事务（{bindingFailure}）：{bindingDiagnostic}。";
+        }
+
         try
         {
             var partnerManager = GetSingletonInstance(PartnerManagerTypeName);
@@ -701,10 +823,31 @@ internal static partial class RuntimeOrderPreparationService
 
         try
         {
-            if (!TryInvokeInstance(job.CookController, "AfterPlayerExtract", Array.Empty<object?>()))
+            if (!TryReacquireAutomationCooker(
+                    job,
+                    out var binding,
+                    out bindingFailure,
+                    out bindingDiagnostic))
             {
-                parts.Add("厨具出锅回调返回异常；为避免重复触发特殊厨具副作用，本 job 不会再次调用该回调。");
+                parts.Add("厨具可用性通知后无法从当前物理目录重新取得同一厨具，"
+                    + $"未执行出锅回调（{bindingFailure}）：{bindingDiagnostic}。");
+                return string.Concat(parts);
             }
+
+            var extractionMethods = binding.Controller
+                .GetType()
+                .GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                .Where(method => string.Equals(method.Name, "AfterPlayerExtract", StringComparison.Ordinal)
+                    && method.ReturnType == typeof(void)
+                    && method.GetParameters().Length == 0)
+                .ToArray();
+            if (extractionMethods.Length != 1)
+            {
+                parts.Add("厨具出锅回调与 BepInEx 783 精确形态不一致，本 job 不会尝试调用。");
+                return string.Concat(parts);
+            }
+
+            extractionMethods[0].Invoke(binding.Controller, Array.Empty<object?>());
         }
         catch (Exception ex)
         {
@@ -802,14 +945,14 @@ internal static partial class RuntimeOrderPreparationService
 
         var actualFoodId = ReadSellableId(cookedFood);
         var actualTags = ReadFoodTagNames(cookedFood).ToArray();
-        if (IsWackyTargetContext(job.Target))
+        if (job.Target.SpecialFoodTargetPolicy != null)
         {
-            AppendWackyCookingJobDiagnostic(
-                "wacky-undeliverable-target",
+            AppendSpecialFoodTargetCookingJobDiagnostic(
+                "special-target-undeliverable",
                 job,
                 "store-undeliverable-food",
                 actualFoodId,
-                job.Target.WackyTargetFoodTags,
+                job.Target.SpecialTargetFoodTags,
                 actualTags,
                 $"{reason}{failureDetail}");
         }
@@ -825,9 +968,9 @@ internal static partial class RuntimeOrderPreparationService
                 : "cooking-order-unavailable-stored",
             $"{job.RecipeName} 已完成，但{targetLabel}，已放入保温箱并释放该自动料理任务。原因：{reason}{failureDetail} ",
             actualFoodId,
-            job.Target.WackyTargetFoodTags.ToArray(),
+            job.Target.SpecialTargetFoodTags.ToArray(),
             actualTags,
-            IsWackyTargetContext(job.Target) ? "wacky-undeliverable-target-stored" : "");
+            job.Target.SpecialFoodTargetPolicy != null ? "special-target-undeliverable-stored" : "");
         if (TryStoreMismatchedCookResultInWarmer(
                 job,
                 cookedFood,
@@ -838,14 +981,14 @@ internal static partial class RuntimeOrderPreparationService
             return CompleteCommittedWarmerStore(job, storeMessage);
         }
 
-        if (IsWackyTargetContext(job.Target))
+        if (job.Target.SpecialFoodTargetPolicy != null)
         {
-            AppendWackyCookingJobDiagnostic(
-                storeCommitted ? "wacky-undeliverable-target-reset-job" : "wacky-undeliverable-target-store-failed",
+            AppendSpecialFoodTargetCookingJobDiagnostic(
+                storeCommitted ? "special-target-undeliverable-reset-job" : "special-target-undeliverable-store-failed",
                 job,
                 storeCommitted ? "retry-cooker-reset" : "keep-on-cooker",
                 actualFoodId,
-                job.Target.WackyTargetFoodTags,
+                job.Target.SpecialTargetFoodTags,
                 actualTags,
                 storeMessage);
         }
@@ -882,43 +1025,78 @@ internal static partial class RuntimeOrderPreparationService
         return $"（{reason}连续 {count}/{threshold} 次，持续 {age.TotalSeconds:F1}/{delay.TotalSeconds:F0}s）";
     }
 
-    private static WackyTagValidation ValidateWackyTags(
+    private static SpecialFoodTargetTagValidation ValidateSpecialFoodTargetTags(
         CookingCollectionTarget target,
         object cookedFood,
         out IReadOnlyList<string> targetTags,
         out IReadOnlyList<string> actualTags)
     {
-        var activeTargetTags = target.WackyTargetFoodTags;
-        targetTags = activeTargetTags;
+        var policy = target.SpecialFoodTargetPolicy;
+        targetTags = policy?.FoodTags ?? Array.Empty<string>();
         actualTags = Array.Empty<string>();
-        if (targetTags.Count == 0) return WackyTagValidation.NotRequired;
+        if (policy == null) return SpecialFoodTargetTagValidation.NotRequired;
 
-        if (!TryReadFoodTagNames(cookedFood, out actualTags)) return WackyTagValidation.Unreadable;
-        return actualTags.Any(tag => activeTargetTags.Contains(tag, StringComparer.Ordinal))
-            ? WackyTagValidation.Matched
-            : WackyTagValidation.Mismatched;
+        if (!TryReadFoodTagNames(cookedFood, out actualTags)) return SpecialFoodTargetTagValidation.Unreadable;
+        return policy.Matches(actualTags)
+            ? SpecialFoodTargetTagValidation.Matched
+            : SpecialFoodTargetTagValidation.Mismatched;
     }
 
-    private static bool TryDetectWackyTargetSignatureChanged(
+    private static bool TryDetectSpecialFoodTargetPolicyChanged(
         AutomationCookingJob job,
         out string originalSignature,
         out string currentSignature,
         out IReadOnlyList<string> originalTags,
-        out IReadOnlyList<string> currentTags)
+        out IReadOnlyList<string> currentTags,
+        out long originalRevision,
+        out long currentRevision,
+        out bool comparisonAvailable)
     {
-        originalSignature = job.Target.WackyTargetSignature;
-        originalTags = job.Target.WackyTargetFoodTags;
+        var expectedPolicy = job.Target.SpecialFoodTargetPolicy;
+        originalSignature = expectedPolicy?.Signature ?? "";
+        originalTags = expectedPolicy?.FoodTags ?? Array.Empty<string>();
         currentSignature = "";
         currentTags = Array.Empty<string>();
-        if (string.IsNullOrWhiteSpace(originalSignature)) return false;
+        originalRevision = job.SpecialFoodTargetRevision;
+        currentRevision = 0;
+        comparisonAvailable = true;
+        if (expectedPolicy == null) return false;
 
-        RuntimeSpecialBusinessContextService.TryGetActiveWackyTargetSignature(out currentSignature, out currentTags);
-        return !string.Equals(originalSignature, currentSignature, StringComparison.Ordinal);
+        if (IsYuumaBossTarget(job.Target))
+        {
+            if (!RuntimeSpecialBusinessContextService.TryGetActiveYuumaFoodTargetState(
+                    out var currentYuumaPolicy,
+                    out currentRevision)
+                || currentYuumaPolicy == null
+                || currentYuumaPolicy.BusinessGeneration != expectedPolicy.BusinessGeneration
+                || originalRevision <= 0
+                || currentRevision <= 0)
+            {
+                comparisonAvailable = false;
+                return false;
+            }
+
+            currentSignature = currentYuumaPolicy.Signature;
+            currentTags = currentYuumaPolicy.FoodTags;
+            return !expectedPolicy.HasSameIdentity(currentYuumaPolicy)
+                || currentRevision != originalRevision;
+        }
+
+        RuntimeSpecialBusinessContextService.TryGetActiveSpecialFoodTargetPolicy(out var currentPolicy);
+        currentSignature = currentPolicy?.Signature ?? "";
+        currentTags = currentPolicy?.FoodTags ?? Array.Empty<string>();
+        if (currentPolicy == null)
+        {
+            comparisonAvailable = false;
+            return false;
+        }
+
+        return !expectedPolicy.HasSameIdentity(currentPolicy);
     }
 
-    private static string FormatWackyTargetForMessage(string signature, IReadOnlyList<string> tags)
+    private static string FormatSpecialFoodTargetForMessage(string signature, IReadOnlyList<string> tags)
     {
-        if (string.IsNullOrWhiteSpace(signature)) return "非怪诞料理目标";
+        if (string.IsNullOrWhiteSpace(signature)) return "无有效特殊料理目标";
         return tags.Count == 0 ? signature : $"{signature}（Tag {string.Join("、", tags)}）";
     }
 
@@ -1142,7 +1320,7 @@ internal static partial class RuntimeOrderPreparationService
         var message = $"{completion.MessagePrefix}{detail}{postResetMessage}";
         if (!string.IsNullOrWhiteSpace(completion.DiagnosticEvent))
         {
-            AppendWackyCookingJobDiagnostic(
+            AppendSpecialFoodTargetCookingJobDiagnostic(
                 completion.DiagnosticEvent,
                 job,
                 "stored-in-warmer",
@@ -1322,14 +1500,21 @@ internal static partial class RuntimeOrderPreparationService
     {
         try
         {
-            if (!IsAutomationCookingJobOwned(job, out var ownershipDiagnostic))
+            if (!TryReacquireAutomationCooker(
+                    job,
+                    out var bindingBefore,
+                    out var bindingFailure,
+                    out var ownershipDiagnostic))
             {
-                message = $"厨具已进入新锅次，未清理当前厨具。{ownershipDiagnostic}";
+                message = $"无法从当前物理厨具目录重新取得同一锅次，未清理当前厨具"
+                    + $"（{bindingFailure}）：{ownershipDiagnostic}";
                 return false;
             }
 
+            var cookController = bindingBefore.Controller;
+
             if (!TryReadCookControllerResetState(
-                    job.CookController,
+                    cookController,
                     out var phaseBefore,
                     out var resultBefore,
                     out var chosenRecipeBefore,
@@ -1351,49 +1536,54 @@ internal static partial class RuntimeOrderPreparationService
                 return false;
             }
 
-            if (!TryInvokeInstance(job.CookController, "CloseCookingVisual", Array.Empty<object?>()))
+            if (!TryInvokeInstance(cookController, "CloseCookingVisual", Array.Empty<object?>()))
             {
                 message = "无法关闭 CookController 料理视觉，厨具复位未执行。";
                 return false;
             }
-            if (!WriteMember(job.CookController, "LastResult", cookedFood))
+            if (!WriteMember(cookController, "LastResult", cookedFood))
             {
                 message = "无法写入 CookController.LastResult，厨具复位未确认。";
                 return false;
             }
 
-            if (!WriteMember(job.CookController, "Result", null))
+            if (!WriteMember(cookController, "Result", null))
             {
                 message = "无法清空 CookController.Result，厨具复位未确认。";
                 return false;
             }
 
-            if (!WriteMember(job.CookController, "ChosenRecipe", null))
+            if (!WriteMember(cookController, "ChosenRecipe", null))
             {
                 message = "无法清空 CookController.ChosenRecipe，厨具复位未确认。";
                 return false;
             }
 
-            if (!TryCreateIdleCookPhaseValue(job.CookController, out var phaseValue))
+            if (!TryCreateIdleCookPhaseValue(cookController, out var phaseValue))
             {
                 message = "无法解析 CookController.Phase 的运行时类型，厨具复位未确认。";
                 return false;
             }
 
-            if (!WriteMember(job.CookController, "Phase", phaseValue))
+            if (!WriteMember(cookController, "Phase", phaseValue))
             {
                 message = "无法写入 CookController.Phase=Idle，厨具复位未确认。";
                 return false;
             }
 
-            if (!IsAutomationCookingJobOwned(job, out ownershipDiagnostic))
+            if (!TryReacquireAutomationCooker(
+                    job,
+                    out var bindingAfter,
+                    out bindingFailure,
+                    out ownershipDiagnostic))
             {
-                message = $"复位后厨具锅次所有权已变化，无法确认清理边界。{ownershipDiagnostic}";
+                message = $"复位后无法从当前物理目录严格确认同一厨具"
+                    + $"（{bindingFailure}）：{ownershipDiagnostic}";
                 return false;
             }
 
             if (!TryReadCookControllerResetState(
-                    job.CookController,
+                    bindingAfter.Controller,
                     out var phaseAfter,
                     out var resultAfter,
                     out var chosenRecipeAfter,
@@ -1521,34 +1711,32 @@ internal static partial class RuntimeOrderPreparationService
             ExtraIngredientIds = target.ExtraIngredientIds,
             PredictedFoodTags = target.PredictedFoodTags,
             ExpectedFoodModifierTags = target.ExpectedFoodModifierTags,
-            WackyTargetFoodTags = target.WackyTargetFoodTags,
+            SpecialTargetChallenge = target.SpecialFoodTargetPolicy?.ChallengeType ?? "",
+            SpecialTargetOwner = target.SpecialFoodTargetPolicy?.Owner ?? "",
+            SpecialTargetGeneration = target.SpecialFoodTargetPolicy?.BusinessGeneration ?? 0,
+            SpecialTargetRevision = target.SpecialFoodTargetRevision,
+            SpecialTargetFoodTags = target.SpecialTargetFoodTags,
+            SpecialTargetMatchMode = target.SpecialFoodTargetPolicy?.MatchModeValue ?? "",
+            SpecialTargetSignature = target.SpecialFoodTargetPolicy?.Signature ?? "",
             ExecutionMode = target.ExecutionMode,
             ExecutionReason = target.ExecutionReason,
             BeverageId = target.BeverageId,
             BeverageName = target.BeverageName,
-            AutoCompleteOrder = target.AutoCompleteOrder,
         };
     }
 
     private static bool IsAutomationCookingJobOwned(AutomationCookingJob job, out string diagnostic)
     {
-        if (!RuntimeCookingGenerationTracker.TryGetOwnershipSnapshot(
-                job.CookController,
-                out var ownership,
+        if (!TryReacquireAutomationCooker(
+                job,
+                out _,
+                out var failureKind,
                 out diagnostic))
         {
+            diagnostic = $"fresh cooker rebind failed ({failureKind}): {diagnostic}";
             return false;
         }
 
-        if (ownership.Generation == job.Generation
-            && ownership.ContentRevision == job.ContentRevision)
-        {
-            return true;
-        }
-
-        diagnostic = $"expectedGeneration={job.Generation}; actualGeneration={ownership.Generation}; "
-            + $"expectedContentRevision={job.ContentRevision}; actualContentRevision={ownership.ContentRevision}; "
-            + diagnostic;
-        return false;
+        return true;
     }
 }

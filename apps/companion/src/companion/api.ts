@@ -17,6 +17,7 @@ import type {
   CustomRecipeFlagUpdateInput,
   CustomRecipeMutationResponse,
   CustomRecipeUpsertInput,
+  CookerControllerReservation,
   FavoriteData,
   FavoriteMutationResponse,
   GameUiPinningTarget,
@@ -36,6 +37,7 @@ import type {
   RareGuestInvitationScope,
   RareGuestInvitationWriteContext,
   RareOrderDismissResponse,
+  SpecialFoodTargetWirePolicy,
   TrackedMissionsApiResponse,
   UpdateStatusResponse,
 } from '@/companion/types';
@@ -507,18 +509,22 @@ export async function prepareNextRareOrder(
   endpoint: string,
   apiToken: string,
   item: OrderRecommendation,
+  specialTargetPolicy: SpecialFoodTargetWirePolicy,
   recipeTarget: RareAutomationRecipeTarget | null,
   beverageTarget: RareAutomationBeverageTarget | null,
   preferences: CompanionPreferences,
+  cookerReservation: CookerControllerReservation | null,
 ): Promise<OrderPreparationResponse> {
   return rareOrderAction(
     endpoint,
     apiToken,
     '/orders/prepare-next',
     item,
+    specialTargetPolicy,
     recipeTarget,
     beverageTarget,
     preferences,
+    cookerReservation,
   );
 }
 
@@ -526,18 +532,22 @@ export async function completeFirstRareOrder(
   endpoint: string,
   apiToken: string,
   item: OrderRecommendation,
+  specialTargetPolicy: SpecialFoodTargetWirePolicy,
   recipeTarget: RareAutomationRecipeTarget | null,
   beverageTarget: RareAutomationBeverageTarget | null,
   preferences: CompanionPreferences,
+  cookerReservation: CookerControllerReservation | null,
 ): Promise<OrderPreparationResponse> {
   return rareOrderAction(
     endpoint,
     apiToken,
     '/orders/complete-first',
     item,
+    specialTargetPolicy,
     recipeTarget,
     beverageTarget,
     preferences,
+    cookerReservation,
   );
 }
 
@@ -545,7 +555,9 @@ export async function completeFirstNormalOrder(
   endpoint: string,
   apiToken: string,
   order: NormalBusinessOrder,
+  specialTargetPolicy: SpecialFoodTargetWirePolicy,
   preferences: CompanionPreferences,
+  cookerReservation: CookerControllerReservation | null,
   data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
   executionTarget: NormalOrderExecutionTarget | null = null,
 ): Promise<OrderPreparationResponse> {
@@ -568,7 +580,13 @@ export async function completeFirstNormalOrder(
     extraIngredientIds: executionTarget ? executionTarget.extraIngredientIds.join(',') : '',
     predictedFoodTags: executionTarget ? executionTarget.foodTags.join(',') : '',
     expectedFoodModifierTags: executionTarget ? executionTarget.expectedFoodModifierTags.join(',') : '',
-    wackyTargetFoodTags: executionTarget ? (executionTarget.wackyTargetFoodTags ?? []).join(',') : '',
+    specialTargetChallenge: specialTargetPolicy.specialTargetChallenge,
+    specialTargetOwner: specialTargetPolicy.specialTargetOwner,
+    specialTargetGeneration: String(specialTargetPolicy.specialTargetGeneration),
+    specialTargetRevision: String(specialTargetPolicy.specialTargetRevision),
+    specialTargetFoodTags: specialTargetPolicy.specialTargetFoodTags.join(','),
+    specialTargetMatchMode: specialTargetPolicy.specialTargetMatchMode,
+    specialTargetSignature: specialTargetPolicy.specialTargetSignature,
     executionMode: executionTarget?.executionMode ?? '',
     executionReason: executionTarget?.reason ?? '',
     beverageId: String(targetBeverageId),
@@ -580,6 +598,8 @@ export async function completeFirstNormalOrder(
     autoCompleteOrder: String(preferences.autoNormalCompleteOrder),
     stopOnError: String(preferences.autoNormalStopOnError),
   });
+  if (order.runtimeGuestId != null) params.set('runtimeGuestId', String(order.runtimeGuestId));
+  appendCookerReservation(params, cookerReservation);
   return writeLocalApiJsonWithTimeout<OrderPreparationResponse>(
     endpoint,
     apiToken,
@@ -728,9 +748,11 @@ async function rareOrderAction(
   apiToken: string,
   path: string,
   item: OrderRecommendation,
+  specialTargetPolicy: SpecialFoodTargetWirePolicy,
   recipeTarget: RareAutomationRecipeTarget | null,
   beverageTarget: RareAutomationBeverageTarget | null,
   preferences: CompanionPreferences,
+  cookerReservation: CookerControllerReservation | null,
 ): Promise<OrderPreparationResponse> {
   // 订单自动化需要把本次推荐锁定的料理、加料和酒水传给 Mod，避免轮询刷新后前端列表变化影响正在执行的订单。
   const params = new URLSearchParams({
@@ -746,6 +768,13 @@ async function rareOrderAction(
     recipeName: recipeTarget?.recipeName ?? '',
     extraIngredientIds: recipeTarget ? recipeTarget.extraIngredientIds.join(',') : '',
     predictedFoodTags: recipeTarget ? recipeTarget.foodTags.join(',') : '',
+    specialTargetChallenge: specialTargetPolicy.specialTargetChallenge,
+    specialTargetOwner: specialTargetPolicy.specialTargetOwner,
+    specialTargetGeneration: String(specialTargetPolicy.specialTargetGeneration),
+    specialTargetRevision: String(specialTargetPolicy.specialTargetRevision),
+    specialTargetFoodTags: specialTargetPolicy.specialTargetFoodTags.join(','),
+    specialTargetMatchMode: specialTargetPolicy.specialTargetMatchMode,
+    specialTargetSignature: specialTargetPolicy.specialTargetSignature,
     executionReason: buildRareOrderExecutionReason(item, recipeTarget, beverageTarget),
     beverageId: beverageTarget ? String(beverageTarget.beverageId) : '-1',
     beverageName: beverageTarget?.beverageName ?? '',
@@ -760,6 +789,7 @@ async function rareOrderAction(
     recipeFavorite: String(Boolean(recipeTarget?.favorite)),
     beverageFavorite: String(Boolean(beverageTarget?.favorite)),
   });
+  appendCookerReservation(params, cookerReservation);
   if (item.order.runtimeGuestId != null) params.set('runtimeGuestId', String(item.order.runtimeGuestId));
   if (item.order.foodTagId != null) params.set('foodTagId', String(item.order.foodTagId));
   if (item.order.beverageTagId != null) params.set('beverageTagId', String(item.order.beverageTagId));
@@ -769,6 +799,17 @@ async function rareOrderAction(
     `${path}?${params.toString()}`,
     5000,
   );
+}
+
+function appendCookerReservation(
+  params: URLSearchParams,
+  reservation: CookerControllerReservation | null,
+) {
+  params.set('cookerControllerIndex', reservation ? String(reservation.controllerIndex) : '-1');
+  params.set('cookerControllerIdentity', reservation?.controllerIdentity ?? '');
+  params.set('cookerGridX', reservation ? String(reservation.gridPosition.x) : '');
+  params.set('cookerGridY', reservation ? String(reservation.gridPosition.y) : '');
+  params.set('cookerGridZ', reservation ? String(reservation.gridPosition.z) : '');
 }
 
 function buildRareOrderExecutionReason(

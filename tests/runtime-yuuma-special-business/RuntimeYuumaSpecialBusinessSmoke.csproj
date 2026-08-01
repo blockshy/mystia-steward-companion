@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <LangVersion>10.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../../mods/bepinex/src/Save/SpecialBusiness/SpecialBusinessIds.cs" Link="SpecialBusinessIds.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/SpecialBusiness/YuumaChallengeOrderModule.cs" Link="YuumaChallengeOrderModule.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/SpecialBusiness/YuumaSettlementTransactionTracker.cs" Link="YuumaSettlementTransactionTracker.cs" />
+  </ItemGroup>
+</Project>

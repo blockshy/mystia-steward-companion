@@ -12,7 +12,7 @@ import {
 import {
   buildWackyRejectedRecipeKeyForRareRecipe,
   getWackyTargetTagCountdownDeferral,
-  hasMatchingSpecialBusinessTag,
+  matchesSpecialBusinessTags,
   isPhaseTwoContext,
   isPhaseThreeContext,
   KOISHI_BOSS_ROLE,
@@ -106,7 +106,11 @@ function selectWackyNormalTarget(
     syntheticCustomer,
     firstTag(syntheticCustomer.positiveTags) || targetTags[0] || '',
     firstTag(syntheticCustomer.beverageTags),
-    targetTags,
+    {
+      enforcement: targetTags.length > 0 ? 'require' : 'none',
+      match: 'any',
+      tags: targetTags,
+    },
   );
   let foodCandidates = buildRareFoodCandidates(data, demand, context)
     .filter(hasNoHardFailures);
@@ -116,7 +120,7 @@ function selectWackyNormalTarget(
   if (targetTags.length > 0) {
     const rejected = new Set(rejectedRecipeKeys);
     foodCandidates = foodCandidates.filter((candidate) => {
-      if (!hasMatchingSpecialBusinessTag(candidate.activeTags, targetTags)) return false;
+      if (!matchesSpecialBusinessTags(candidate.activeTags, targetTags, 'any')) return false;
       const key = buildWackyRejectedRecipeKeyForRareRecipe(
         targetTags,
         candidate.recipe.id,
@@ -161,7 +165,7 @@ function selectWackyNormalTarget(
       targetTags.length > 0
         ? `怪诞目标 Tag：${targetTags.join('、')}，高评价命中 ${matchCount} 个喜好 Tag`
         : `怪诞高评价命中 ${matchCount} 个喜好 Tag`,
-      { wackyTargetFoodTags: targetTags },
+      { specialTargetFoodTags: targetTags },
     ),
     message: '',
   };
@@ -328,7 +332,11 @@ function selectWackyExactNormalTarget(
     syntheticCustomer,
     firstTag(syntheticCustomer.positiveTags) || originalRecipe.positiveTags[0] || targetTags[0] || '',
     firstTag(syntheticCustomer.beverageTags) || originalBeverage.tags[0] || '',
-    targetTags,
+    {
+      enforcement: targetTags.length > 0 ? 'require' : 'none',
+      match: 'any',
+      tags: targetTags,
+    },
   );
   const rejected = new Set(rejectedRecipeKeys);
   const foodCandidates = buildRareFoodCandidates(data, demand, context)
@@ -336,7 +344,7 @@ function selectWackyExactNormalTarget(
     .filter((candidate) => candidate.recipe.id === originalRecipe.id)
     .filter((candidate) => candidate.matchedNegativeTags.length === 0)
     .filter((candidate) => {
-      if (targetTags.length > 0 && !hasMatchingSpecialBusinessTag(candidate.activeTags, targetTags)) return false;
+      if (targetTags.length > 0 && !matchesSpecialBusinessTags(candidate.activeTags, targetTags, 'any')) return false;
       const key = buildWackyRejectedRecipeKeyForRareRecipe(
         targetTags,
         candidate.recipe.id,
@@ -381,7 +389,7 @@ function selectWackyExactNormalTarget(
       targetTags.length > 0
         ? `怪诞高评价：保持原订单，目标 Tag ${targetTags.join('、')}，命中 ${matchCount} 个喜好 Tag`
         : `怪诞高评价：保持原订单，命中 ${matchCount} 个喜好 Tag`,
-      { wackyTargetFoodTags: targetTags },
+      { specialTargetFoodTags: targetTags },
     ),
     message: '',
   };
@@ -416,7 +424,7 @@ function buildKoishiBossSyntheticCustomer(
 }
 
 function scoreWackyFood(candidate: FoodCandidate, targetTags: readonly string[]): number {
-  const targetScore = targetTags.length > 0 && hasMatchingSpecialBusinessTag(candidate.activeTags, targetTags) ? 10000 : 0;
+  const targetScore = targetTags.length > 0 && matchesSpecialBusinessTags(candidate.activeTags, targetTags, 'any') ? 10000 : 0;
   return targetScore
     + candidate.matchedPositiveTags.length * 600
     - candidate.matchedNegativeTags.length * 5000
@@ -434,7 +442,7 @@ function scorePreferenceBeverage(candidate: BeverageCandidate): number {
 
 function scoreWackyPair(food: FoodCandidate, beverage: BeverageCandidate, targetTags: readonly string[]): number {
   const matchCount = food.matchedPositiveTags.length + beverage.matchedTags.length;
-  const targetScore = targetTags.length > 0 && hasMatchingSpecialBusinessTag(food.activeTags, targetTags) ? 20000 : 0;
+  const targetScore = targetTags.length > 0 && matchesSpecialBusinessTags(food.activeTags, targetTags, 'any') ? 20000 : 0;
   return targetScore
     + matchCount * 1200
     - food.matchedNegativeTags.length * 8000
@@ -566,7 +574,7 @@ function buildKoishiBrokenShieldBudgetReason(
 }
 
 function scoreWackyExactFood(candidate: FoodCandidate, targetTags: readonly string[]): number {
-  const targetScore = targetTags.length > 0 && hasMatchingSpecialBusinessTag(candidate.activeTags, targetTags) ? 10000 : 0;
+  const targetScore = targetTags.length > 0 && matchesSpecialBusinessTags(candidate.activeTags, targetTags, 'any') ? 10000 : 0;
   return targetScore
     + estimateWackyExactEvaluationScore(candidate, null) * 1000
     + candidate.recipe.level * 40

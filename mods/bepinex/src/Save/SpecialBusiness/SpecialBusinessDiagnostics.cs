@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Text;
+using Il2CppInterop.Runtime.InteropTypes;
 
 namespace MystiaStewardCompanion.Save;
 
@@ -60,6 +61,63 @@ internal static class SpecialBusinessDiagnostics
         AppendProgressSnapshot("special-business.yuyuko", key, progress, title, lines, bucketCount);
     }
 
+    public static void AppendYuumaSnapshot(
+        string title,
+        IEnumerable<string> lines,
+        string? onceKey = null)
+    {
+        AppendSnapshot("special-business.yuuma", title, lines, onceKey);
+    }
+
+    public static void AppendYuumaProgressSnapshot(
+        string key,
+        double? progress,
+        string title,
+        IEnumerable<string> lines,
+        int bucketCount = 20)
+    {
+        AppendProgressSnapshot("special-business.yuuma", key, progress, title, lines, bucketCount);
+    }
+
+    public static void AppendYuumaOrderClassification(
+        string challengeType,
+        SpecialBusinessOrderClassification classification,
+        YuumaChallengeOrderIdentity identity,
+        object? order,
+        object? controller,
+        string source)
+    {
+        if (!AggregateModLogService.Enabled) return;
+        try
+        {
+            var generation = RuntimeNightBusinessLifecycle.Generation;
+            AppendYuumaSnapshot(
+                "Blood Pond Hell Order Classified",
+                new[]
+                {
+                    $"generation: {generation}",
+                    $"challengeType: {challengeType}",
+                    $"source: {source}",
+                    $"role: {classification.Role}",
+                    $"roleLabel: {classification.RoleLabel}",
+                    $"automationAllowed: {classification.AutomationAllowed}",
+                    $"automationBlockReason: {classification.AutomationBlockReason}",
+                    $"identityVerified: {identity.Verified}",
+                    $"orderKind: {identity.OrderKind}",
+                    $"orderGuestId: {identity.OrderGuestId?.ToString() ?? ""}",
+                    $"controllerGuestId: {identity.ControllerGuestId?.ToString() ?? ""}",
+                    $"identityReason: {identity.Reason}",
+                    $"order: {DescribeObject(order)}",
+                    $"controller: {DescribeObject(controller)}",
+                },
+                $"classify|gen:{generation}|{classification.Role}|{identity.OrderKind}|{identity.OrderGuestId}|{identity.ControllerGuestId}|{ObjectKey(order)}|{ObjectKey(controller)}");
+        }
+        catch
+        {
+            // Diagnostics must never affect order classification.
+        }
+    }
+
     public static void AppendWackyOrderClassification(
         string challengeType,
         string role,
@@ -70,33 +128,41 @@ internal static class SpecialBusinessDiagnostics
         string source,
         string reason)
     {
-        AppendWackySnapshot(
-            "Wacky Cooking Order Classified",
-            new[]
-            {
-                $"challengeType: {challengeType}",
-                $"role: {role}",
-                $"roleLabel: {roleLabel}",
-                $"source: {source}",
-                $"reason: {reason}",
-                $"guestId: {guest.Id?.ToString() ?? ""}",
-                $"guestText: {guest.Text}",
-                $"order: {DescribeObject(order)}",
-                $"controller: {DescribeObject(controller)}",
-                $"deskCode: {ReadIntMember(order, "DeskCode", "deskCode")}",
-                $"controllerDeskCode: {ReadIntMember(controller, "DeskCode", "deskCode", "DeskIndex", "deskIndex")}",
-                $"controllerSpawnType: {SpecialBusinessOrderProbe.ReadControllerSpawnType(controller)}",
-                $"rawSpawnType: {ReadTextMember(controller, "SpawnType", "spawnType")}",
-                $"isHerself: {ReadTextMember(controller, "IsHerself", "isHerself")}",
-                $"isControlled: {ReadTextMember(controller, "IsControlled", "isControlled")}",
-            },
-            $"wacky-classify|{role}|{source}|{ObjectKey(order)}|{ObjectKey(controller)}|{guest.Id?.ToString() ?? guest.Text}");
+        if (!AggregateModLogService.Enabled) return;
+        try
+        {
+            AppendWackySnapshot(
+                "Wacky Cooking Order Classified",
+                new[]
+                {
+                    $"challengeType: {challengeType}",
+                    $"role: {role}",
+                    $"roleLabel: {roleLabel}",
+                    $"source: {source}",
+                    $"reason: {reason}",
+                    $"guestId: {guest.Id?.ToString() ?? ""}",
+                    $"guestText: {guest.Text}",
+                    $"order: {DescribeObject(order)}",
+                    $"controller: {DescribeObject(controller)}",
+                    $"deskCode: {ReadIntMember(order, "DeskCode", "deskCode")}",
+                    $"controllerDeskCode: {ReadIntMember(controller, "DeskCode", "deskCode", "DeskIndex", "deskIndex")}",
+                    $"controllerSpawnType: {SpecialBusinessOrderProbe.ReadControllerSpawnType(controller)}",
+                    $"rawSpawnType: {ReadTextMember(controller, "SpawnType", "spawnType")}",
+                    $"isHerself: {ReadTextMember(controller, "IsHerself", "isHerself")}",
+                    $"isControlled: {ReadTextMember(controller, "IsControlled", "isControlled")}",
+                },
+                $"wacky-classify|{role}|{source}|{ObjectKey(order)}|{ObjectKey(controller)}|{guest.Id?.ToString() ?? guest.Text}");
+        }
+        catch
+        {
+            // Diagnostics must never affect order classification.
+        }
     }
 
     public static string DescribeObject(object? value)
     {
         if (value == null) return "null";
-        return $"{value.GetType().FullName}@0x{RuntimeHelpers.GetHashCode(value):X}";
+        return $"{value.GetType().FullName}@{ObjectKey(value)}";
     }
 
     public static string FormatIdName(int id, string name)
@@ -218,7 +284,21 @@ internal static class SpecialBusinessDiagnostics
 
     private static string ObjectKey(object? value)
     {
-        return value == null ? "null" : RuntimeHelpers.GetHashCode(value).ToString("X");
+        if (value == null) return "null";
+        try
+        {
+            if (value is Il2CppObjectBase nativeObject)
+            {
+                var pointer = nativeObject.Pointer;
+                if (pointer != IntPtr.Zero) return $"native:0x{pointer.ToInt64():X}";
+            }
+        }
+        catch
+        {
+            // A stale IL2CPP wrapper must not turn diagnostics into a gameplay failure.
+        }
+
+        return $"managed:0x{RuntimeHelpers.GetHashCode(value):X}";
     }
 
     private static string ReadIntMember(object? value, params string[] members)

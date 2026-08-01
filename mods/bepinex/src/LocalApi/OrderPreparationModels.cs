@@ -22,13 +22,24 @@ internal sealed class OrderPreparationRequest
     public IReadOnlyList<int> ExtraIngredientIds { get; init; } = Array.Empty<int>();
     public IReadOnlyList<string> PredictedFoodTags { get; init; } = Array.Empty<string>();
     public IReadOnlyList<string> ExpectedFoodModifierTags { get; init; } = Array.Empty<string>();
-    public IReadOnlyList<string> WackyTargetFoodTags { get; init; } = Array.Empty<string>();
+    public string SpecialTargetChallenge { get; init; } = "";
+    public string SpecialTargetOwner { get; init; } = "";
+    public long SpecialTargetGeneration { get; init; }
+    public long SpecialTargetRevision { get; init; }
+    public IReadOnlyList<string> SpecialTargetFoodTags { get; init; } = Array.Empty<string>();
+    public string SpecialTargetMatchMode { get; init; } = "";
+    public string SpecialTargetSignature { get; init; } = "";
     public string ExecutionMode { get; init; } = "";
     public string ExecutionReason { get; init; } = "";
     public int BeverageId { get; init; } = -1;
     public string BeverageName { get; init; } = "";
     public bool AutoTakeBeverage { get; init; }
     public bool AutoStartCooking { get; init; }
+    public int CookerControllerIndex { get; init; } = -1;
+    public string CookerControllerIdentity { get; init; } = "";
+    public int? CookerGridX { get; init; }
+    public int? CookerGridY { get; init; }
+    public int? CookerGridZ { get; init; }
     public bool AutoCollectCooking { get; init; }
     public bool AutoDeliverFood { get; init; }
     public bool AutoCompleteOrder { get; init; }

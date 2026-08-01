@@ -833,7 +833,7 @@ export function ModSettingsPanel({
               />
             </div>
             <div className="text-xs text-muted-foreground">
-              参数会在下一轮自动化调度生效。最大重试限制阶段执行失败，最大回退限制外部操作或目标变化后的重新制作。
+              参数会在下一轮自动化调度生效。最大重试限制阶段执行失败，最大回退限制同一执行目标下因外部操作或成品不符产生的重新制作；特殊经营目标轮换会启用新的回退预算。
             </div>
           </div>
         </ListPanel>

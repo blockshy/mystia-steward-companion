@@ -6,7 +6,6 @@ internal interface ISpecialBusinessOrderModule
 
     SpecialBusinessOrderClassification Classify(
         string challengeType,
-        SpecialBusinessOrderProbe guest,
         object? order,
         object? controller,
         string source);
@@ -29,7 +28,6 @@ internal static class SpecialBusinessModuleRegistry
 
     public static SpecialBusinessOrderClassification Classify(
         string challengeType,
-        SpecialBusinessOrderProbe guest,
         object? order,
         object? controller,
         string source)
@@ -37,7 +35,7 @@ internal static class SpecialBusinessModuleRegistry
         foreach (var module in Modules)
         {
             if (!module.MatchesChallenge(challengeType)) continue;
-            var classification = module.Classify(challengeType, guest, order, controller, source);
+            var classification = module.Classify(challengeType, order, controller, source);
             if (classification != SpecialBusinessOrderClassification.Standard)
             {
                 return classification;
@@ -47,13 +45,17 @@ internal static class SpecialBusinessModuleRegistry
         return SpecialBusinessOrderClassification.Standard;
     }
 
-    public static SpecialBusinessOrderClassification AllowedSpecialOrder(string role, string label)
+    public static SpecialBusinessOrderClassification AllowedSpecialOrder(
+        string role,
+        string label,
+        int? runtimeGuestId = null)
     {
         return new SpecialBusinessOrderClassification(
             AutomationAllowed: true,
             Role: role,
             RoleLabel: label,
-            AutomationBlockReason: "");
+            AutomationBlockReason: "",
+            RuntimeGuestId: runtimeGuestId);
     }
 
     public static SpecialBusinessOrderClassification Blocked(string role, string label, string reason)
@@ -62,6 +64,7 @@ internal static class SpecialBusinessModuleRegistry
             AutomationAllowed: false,
             Role: role,
             RoleLabel: label,
-            AutomationBlockReason: reason);
+            AutomationBlockReason: reason,
+            RuntimeGuestId: null);
     }
 }

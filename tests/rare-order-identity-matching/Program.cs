@@ -8,6 +8,7 @@ try
     VerifyMappedGuestUsesRuntimeIdentity();
     VerifyMissingIdentityFailsClosed();
     VerifyConcurrentYuyukoRetakeOrdersRemainIsolated();
+    VerifyConcurrentYuumaOrdersRemainIsolated();
     VerifyCapturedControllerOwnershipDoesNotDependOnManagerScan();
     VerifyFulfilledCapturedOrderDependsOnLookupPurpose();
     VerifyCookingTargetIdentity();
@@ -75,6 +76,25 @@ static void VerifyConcurrentYuyukoRetakeOrdersRemainIsolated()
     AssertReject(r0083, r0082, "desk mismatch");
     AssertReject(r0082, r0082 with { RuntimeGuestId = 23 }, "runtime guest id mismatch");
     AssertReject(r0083, r0083 with { FoodTagId = 14 }, "food tag id mismatch");
+}
+
+static void VerifyConcurrentYuumaOrdersRemainIsolated()
+{
+    const int yuumaRuntimeId = 1003;
+    var firstDesk = new RareOrderIdentity(0, yuumaRuntimeId, 3, 21);
+    var secondDesk = new RareOrderIdentity(1, yuumaRuntimeId, 3, 21);
+    var changedRequest = new RareOrderIdentity(0, yuumaRuntimeId, 4, 21);
+
+    AssertMatch(
+        firstDesk,
+        new RareOrderIdentity(0, yuumaRuntimeId, 3, 21),
+        "A Yuuma order lost its exact desk/runtime/tag identity.");
+    AssertReject(firstDesk, secondDesk, "desk mismatch");
+    AssertReject(firstDesk, changedRequest, "food tag id mismatch");
+    AssertReject(
+        firstDesk,
+        firstDesk with { RuntimeGuestId = null },
+        "candidate runtime guest id missing");
 }
 
 static void VerifyCapturedControllerOwnershipDoesNotDependOnManagerScan()

@@ -19,12 +19,17 @@ import { useOrderAutomationIntervals } from '@/companion/hooks/useOrderAutomatio
 import {
   canAdvanceAutomationRuntimeEventSequence,
   getAutomationStageFailureRetirement,
+  hasAutomationCookingJobStageBeenDisabled,
   isAutomationResponseCurrent,
   isRecoverableCookingTerminalEvent,
+  reconcileAutomationRollbackTarget,
+  reduceAutomationCookingRollbackBudget,
   requiresManualAutomationResolution,
   resolveAutomationResponseStage,
   resolveAutomationWaitingStep,
   selectAutomationRequestStage,
+  shouldRequestNormalOrderCompletion,
+  shouldRetainAutomationStateWithoutCandidate,
   shouldRetireMissingManualBarrier,
   type AutomationRequestStage,
 } from '@/companion/automation-machine';
@@ -58,6 +63,7 @@ import {
   prepareNextRareOrder,
 } from '@/companion/api';
 import {
+  clearNormalOrderExecutionTarget,
   didCookingMismatchStored,
   didCompleteStepCode,
   didNormalOrderComplete,
@@ -68,7 +74,9 @@ import {
   emptyAutoFirstOrderState,
   emptyNormalAutoOrderState,
   formatAutomationState,
+  getCurrentNormalOrderExecutionTarget,
   isTransientAutoPreparationFailure,
+  lockNormalOrderExecutionTarget,
   markAutomationWaiting,
   updateAutomationAfterResponse,
   type AutoFirstOrderState,
@@ -91,7 +99,7 @@ import {
   formatRareAutomationMissingBeverageTargetMessage,
   formatRareAutomationMissingRecipeTargetMessage,
   formatOrderPreparationResponse,
-  getSpecialBusinessRareCookingDeferral,
+  getWackyRareCookingDeferral,
   hasAutomationActionEnabled,
   hasNormalOrderActionEnabled,
   lockRareAutomationTargets,
@@ -108,7 +116,7 @@ import {
   type ValidOrderPreparationSelection,
 } from '@/companion/domain/automation';
 import {
-  buildAutomationCookerCapacity,
+  buildAutomationCookerPool,
   buildRuntimeSets,
   getRareCookerRequirement,
 } from '@/companion/domain/cookers';
@@ -119,14 +127,19 @@ import {
   buildPrimaryExecutionPlanPolicy,
   serializePrimaryExecutionPlanPolicy,
 } from '@/companion/domain/primary-execution-plan';
+import { buildOrderRecommendationPresentation } from '@/companion/domain/order-recommendation-presentation';
 import { sortNormalOrders } from '@/companion/domain/sorting';
 import {
+  applySpecialFoodTargetWirePolicy,
+  buildSpecialBusinessRecommendationSignature,
+  buildSpecialFoodTargetWirePolicy,
   buildSpecialBusinessOrderRule,
   buildWackyRejectedRecipeKeyForRareRecipe,
   buildWackyRejectedRecipeKeyFromEvent,
   isWackyKoishiBossFullFeedContext,
   isWackyTargetTagMismatchEvent,
-  WACKY_TARGET_TAG_COOKING_MIN_PROGRESS,
+  requiresSpecialBusinessNormalExecutionTarget,
+  WACKY_CHALLENGE_TYPE,
 } from '@/companion/domain/special-business';
 import { formatDesk } from '@/companion/formatters';
 import {
@@ -160,6 +173,8 @@ import type {
   AutomationRuntimeEvent,
   AutomationCookingJobSnapshot,
   AutomationCookerCycle,
+  CookerControllerReservation,
+  CookerReservationResult,
   CustomRecipeData,
   CustomRecipeGroupMode,
   FavoriteData,
@@ -175,6 +190,7 @@ import type {
   RecommendationStateSnapshot,
   SettingsTab,
   SpecialBusinessContext,
+  SpecialFoodTargetWirePolicy,
 } from '@/companion/types';
 import type {
   NormalExecutionTargetSelection,
@@ -220,6 +236,8 @@ interface NormalAutomationDecisionFlags {
   shouldHandleBeverage: boolean;
   shouldStartCooking: boolean;
   shouldCompleteOrder: boolean;
+  completionConfigured: boolean;
+  yuumaCompletionIntent: boolean;
   forceKoishiFullFeedAutomation: boolean;
   targetBlockedCooking: boolean;
 }
@@ -232,6 +250,11 @@ interface NormalAutomationDecisionDiagnosticInput {
   targetSelection: NormalExecutionTargetSelection;
   requestPreferences: CompanionPreferences;
   flags: NormalAutomationDecisionFlags;
+}
+
+interface NormalAutomationTargetSelection extends NormalExecutionTargetSelection {
+  specialTargetPolicy: SpecialFoodTargetWirePolicy;
+  policyError: string;
 }
 
 interface AutomationLeaseAcquireEntry {
@@ -267,27 +290,105 @@ function getNormalAutomationTargetSelection(
   state: NormalAutoOrderState | undefined,
   enabled: boolean,
   selections: ReadonlyMap<string, NormalExecutionTargetSelection>,
-): NormalExecutionTargetSelection {
+  specialBusiness: SpecialBusinessContext | null | undefined,
+  businessGeneration: number,
+  requiresRecipeTarget: boolean,
+  workerError: string | null,
+): NormalAutomationTargetSelection {
   const orderKey = buildNormalAutoOrderKey(order);
-  if (state?.executionTarget) {
+  const targetPolicy = buildSpecialFoodTargetWirePolicy(
+    specialBusiness,
+    order.specialBusinessRole,
+    businessGeneration,
+  );
+  const rule = buildSpecialBusinessOrderRule(specialBusiness, order.specialBusinessRole);
+  const requiresSpecialTarget = requiresSpecialBusinessNormalExecutionTarget(
+    specialBusiness,
+    order.specialBusinessRole,
+  );
+  const policyError = specialBusiness?.active === true
+    && specialBusiness.challengeTypeAvailable !== true
+    ? specialBusiness.error?.trim() || '特殊经营类型暂时无法读取，自动化已暂停该订单。'
+    : requiresSpecialTarget && businessGeneration <= 0
+    ? '特殊经营料理执行目标缺少有效经营代际，自动化已暂停该订单。'
+    : requiresSpecialTarget
+      && rule.foodTarget.enforcement === 'require'
+      && rule.foodTarget.tags.length > 0
+      && !targetPolicy.specialTargetSignature
+      ? '特殊经营料理目标缺少有效经营代际或目标身份，自动化已暂停该订单。'
+      : '';
+  if (policyError) {
     return {
       orderKey,
-      target: state.executionTarget,
+      target: null,
+      message: policyError,
+      specialTargetPolicy: targetPolicy,
+      policyError,
+    };
+  }
+  if (!requiresSpecialTarget) {
+    return {
+      orderKey,
+      target: null,
       message: '',
+      specialTargetPolicy: targetPolicy,
+      policyError: '',
+    };
+  }
+  const currentExecutionTarget = getCurrentNormalOrderExecutionTarget(
+    state,
+    businessGeneration,
+    targetPolicy.specialTargetSignature,
+    targetPolicy.specialTargetRevision,
+  );
+  if (currentExecutionTarget) {
+    return {
+      orderKey,
+      target: applySpecialFoodTargetWirePolicy(currentExecutionTarget, targetPolicy),
+      message: '',
+      specialTargetPolicy: targetPolicy,
+      policyError: '',
+    };
+  }
+  if (!requiresRecipeTarget) {
+    const missingTargetMessage = '特殊经营料理执行目标未在执行前锁存，自动化已暂停该订单。';
+    return {
+      orderKey,
+      target: null,
+      message: missingTargetMessage,
+      specialTargetPolicy: targetPolicy,
+      policyError: missingTargetMessage,
     };
   }
   if (!enabled) {
     return {
       orderKey,
       target: null,
-      message: '',
+      message: '特殊经营料理执行目标尚未启用，等待下一轮。',
+      specialTargetPolicy: targetPolicy,
+      policyError: '',
     };
   }
-  return selections.get(orderKey) ?? {
+  const workerSelection = selections.get(orderKey);
+  const selected = workerSelection ?? {
     orderKey,
     target: null,
-    message: '特殊经营执行目标计算中，等待下一轮。',
+    message: workerError
+      ? `特殊经营执行目标计算失败：${workerError}`
+      : '特殊经营执行目标计算中，等待下一轮。',
   };
+  return selected.target
+    ? {
+        ...selected,
+        target: applySpecialFoodTargetWirePolicy(selected.target, targetPolicy),
+        specialTargetPolicy: targetPolicy,
+        policyError: '',
+      }
+    : {
+        ...selected,
+        specialTargetPolicy: targetPolicy,
+        policyError: '',
+      };
 }
 
 function buildNormalOrderWorkerPayload(
@@ -328,6 +429,7 @@ function buildNormalOrderDetailOrdersSignature(orders: readonly NormalBusinessOr
       order.traceId ?? '',
       order.deskCode,
       order.guestId ?? '',
+      order.runtimeGuestId ?? '',
       order.guestName,
       order.specialBusinessRole ?? '',
       order.specialBusinessRoleLabel ?? '',
@@ -366,6 +468,11 @@ function buildNormalOrderDetailRuntimeSignature(runtime: RecommendationStateSnap
     stableNumberRecordSignature(runtime.ownedBeverageQty),
     stableNumberArraySignature(runtime.placedCookerTypeIds),
     buildPlacedCookerSignature(runtime.placedCookers),
+    runtime.placedCookerSnapshotComplete ? 1 : 0,
+    runtime.placedCookerControllerCount,
+    runtime.placedCookerEmptyControllerCount,
+    runtime.placedCookerLockedControllerCount,
+    runtime.placedCookerReadFailureCount,
     runtime.popularFoodTag ?? '',
     runtime.popularHateFoodTag ?? '',
     runtime.famousShopEnabled ? 1 : 0,
@@ -373,24 +480,13 @@ function buildNormalOrderDetailRuntimeSignature(runtime: RecommendationStateSnap
 }
 
 function buildNormalOrderDetailSpecialBusinessSignature(specialBusiness: SpecialBusinessContext | null): string {
-  if (!specialBusiness?.active) return 'special:none';
-  return [
-    specialBusiness.challengeType,
-    specialBusiness.phase ?? '',
-    stableStringArraySignature(specialBusiness.foodTargetTags),
-    stableStringArraySignature(specialBusiness.beverageTargetTags),
-    specialBusiness.targetFund ?? '',
-    specialBusiness.currentValue ?? '',
-    specialBusiness.maxValue ?? '',
-    specialBusiness.targetValue ?? '',
-    buildTargetTagProgressSignature(specialBusiness.targetTagTimeProgress),
-    specialBusiness.wackyKoishiShieldBroken ?? '',
-    stableStringArraySignature(specialBusiness.wackyKoishiFoodPreferenceTags),
-    stableStringArraySignature(specialBusiness.wackyKoishiFoodHateTags),
-    stableStringArraySignature(specialBusiness.wackyKoishiBeveragePreferenceTags),
-    specialBusiness.recommendationPolicy,
-    specialBusiness.automationPolicy,
-  ].join('|');
+  return buildSpecialBusinessRecommendationSignature(specialBusiness, true);
+}
+
+function buildUiPinningSpecialBusinessSignature(
+  specialBusiness: SpecialBusinessContext | null | undefined,
+): string {
+  return buildSpecialBusinessRecommendationSignature(specialBusiness);
 }
 
 function buildNormalOrderDetailPreferenceSignature(preferences: CompanionPreferences): string {
@@ -404,13 +500,6 @@ function buildNormalOrderDetailPreferenceSignature(preferences: CompanionPrefere
   ].join('|');
 }
 
-function buildTargetTagProgressSignature(value: number | null | undefined): string {
-  if (!Number.isFinite(value)) return '';
-  const progress = Math.max(0, Math.min(1, value ?? 0));
-  if (progress >= WACKY_TARGET_TAG_COOKING_MIN_PROGRESS) return 'safe';
-  return `wait:${Math.round(progress * 100)}`;
-}
-
 function buildOrderRecommendationPayloadSignature(payload: OrderRecommendationWorkerPayload): string {
   return [
     payload.usage ?? 'display',
@@ -420,9 +509,27 @@ function buildOrderRecommendationPayloadSignature(payload: OrderRecommendationWo
     buildCustomRecipeDataSignature(payload.customRecipes),
     buildOrderRecommendationPreferenceSignature(payload.preferences),
     buildActiveRareGuestSignature(payload.activeRareGuests),
-    buildNormalOrderDetailSpecialBusinessSignature(payload.specialBusiness ?? null),
+    buildSpecialBusinessRecommendationSignature(payload.specialBusiness ?? null),
     stableStringArraySignature(payload.specialBusinessRejectedRecipeKeys),
     buildRecommendationDataSignature(payload.data),
+  ].join('\n');
+}
+
+function buildOrderRecommendationPresentationContextSignature(
+  connectionRevision: number,
+  automationSessionId: string,
+  businessGeneration: number,
+  lifecyclePhase: string,
+  specialBusiness: SpecialBusinessContext | null | undefined,
+  dataSignature: string,
+): string {
+  return [
+    `connection:${connectionRevision}`,
+    `session:${automationSessionId}`,
+    `business:${businessGeneration}`,
+    `lifecycle:${lifecyclePhase}`,
+    buildSpecialBusinessRecommendationSignature(specialBusiness),
+    `data:${dataSignature}`,
   ].join('\n');
 }
 
@@ -443,16 +550,13 @@ function buildNightBusinessOrderSignature(orders: readonly NightBusinessOrder[])
       order.runtimeGuestId ?? '',
       order.guestName,
       order.specialBusinessRole ?? '',
-      order.specialBusinessRoleLabel ?? '',
       order.automationAllowed === false ? 0 : 1,
       order.automationBlockReason ?? '',
       order.foodTagId,
       order.foodTag,
       order.beverageTagId,
       order.beverageTag,
-      order.source,
       order.firstSeenAtUtc ?? '',
-      order.lastSeenAtUtc ?? '',
       order.isFreeOrder ? 1 : 0,
       order.fund ?? '',
       order.baseFundCarry ?? '',
@@ -578,7 +682,6 @@ function buildActiveRareGuestSignature(guests: readonly OrderRecommendationWorke
       guest.deskCode,
       guest.guestId ?? '',
       guest.guestName,
-      guest.source,
       guest.fund ?? '',
       guest.baseFundCarry ?? '',
       guest.maxFundCarry ?? '',
@@ -589,16 +692,33 @@ function buildActiveRareGuestSignature(guests: readonly OrderRecommendationWorke
 }
 
 function buildPlacedCookerSignature(cookers: RecommendationStateSnapshot['placedCookers']): string {
-  return [...(cookers ?? [])]
-    .sort((left, right) => left.controllerIndex - right.controllerIndex || left.name.localeCompare(right.name))
-    .map((cooker) => [
-      cooker.controllerIndex,
-      cooker.isOpen ? 1 : 0,
-      cooker.name,
-      stableNumberArraySignature(cooker.typeIds),
-      stableStringArraySignature(cooker.typeNames),
-    ].join(':'))
-    .join(',');
+  return [...new Set((cookers ?? []).map((cooker) => [
+    cooker.controllerIndex,
+    cooker.controllerIdentity,
+    cooker.gridPosition.x,
+    cooker.gridPosition.y,
+    cooker.gridPosition.z,
+    cooker.challengeLocked ? 1 : 0,
+    cooker.couldOpen ? 1 : 0,
+    cooker.name.trim(),
+    stableNumberArraySignature(cooker.typeIds),
+    stableStringArraySignature(cooker.typeNames),
+  ].join(':')))].sort().join(',');
+}
+
+function toCookerControllerReservation(
+  result: CookerReservationResult,
+): CookerControllerReservation | null {
+  if (result.controllerIndex == null
+    || !result.controllerIdentity
+    || !result.gridPosition) {
+    return null;
+  }
+  return {
+    controllerIndex: result.controllerIndex,
+    controllerIdentity: result.controllerIdentity,
+    gridPosition: { ...result.gridPosition },
+  };
 }
 
 function stableNumberArraySignature(values: readonly number[] | undefined): string {
@@ -767,6 +887,7 @@ function buildNormalAutomationDecisionOrderLine(input: NormalAutomationDecisionD
     `needs=${flags.needsCooking ? 1 : 0}/${flags.needsBeverage ? 1 : 0}/${flags.needsCompletion ? 1 : 0}`,
     `actions=${flags.shouldStartCooking ? 1 : 0}/${flags.shouldHandleBeverage ? 1 : 0}/${flags.shouldCompleteOrder ? 1 : 0}`,
     `request=${input.requestPreferences.autoNormalStartCooking ? 1 : 0}/${input.requestPreferences.autoNormalTakeBeverage ? 1 : 0}/${input.requestPreferences.autoNormalDeliverFood ? 1 : 0}/${input.requestPreferences.autoNormalCompleteOrder ? 1 : 0}`,
+    `completion=${flags.completionConfigured ? 1 : 0}/${flags.yuumaCompletionIntent ? 1 : 0}/${input.requestPreferences.autoNormalCompleteOrder ? 1 : 0}`,
     `forceKoishi=${flags.forceKoishiFullFeedAutomation ? 1 : 0}`,
     `targetBlockedCooking=${flags.targetBlockedCooking ? 1 : 0}`,
     `target=${formatNormalAutomationTarget(targetSelection.target)}`,
@@ -935,6 +1056,20 @@ function retainAutomationSafetyStates<T extends AutoFirstOrderState | NormalAuto
   }
 }
 
+function retainRareAutomationContinuityStates(
+  states: Map<string, AutoFirstOrderState>,
+  activeOrderKeys: ReadonlySet<string>,
+): void {
+  for (const [orderKey, state] of states) {
+    if (!shouldRetainAutomationStateWithoutCandidate(
+      state,
+      activeOrderKeys.has(orderKey),
+    )) {
+      states.delete(orderKey);
+    }
+  }
+}
+
 function retainNormalAutomationExecutionStates(
   states: Map<string, NormalAutoOrderState>,
 ): void {
@@ -983,10 +1118,11 @@ function buildRejectedRecipeKeyForRareTarget(
   target: RareAutomationRecipeTarget | null,
 ): string {
   if (!target) return '';
+  if (specialBusiness?.challengeType !== WACKY_CHALLENGE_TYPE) return '';
   const rule = buildSpecialBusinessOrderRule(specialBusiness, order.specialBusinessRole);
-  if (!rule.requiresWackyFoodTarget || rule.foodTargetTags.length === 0) return '';
+  if (rule.foodTarget.enforcement !== 'require' || rule.foodTarget.tags.length === 0) return '';
   return buildWackyRejectedRecipeKeyForRareRecipe(
-    rule.foodTargetTags,
+    rule.foodTarget.tags,
     target.foodId,
     target.recipeId,
     target.extraIngredientIds,
@@ -1007,6 +1143,7 @@ function withAutomationDetail<T extends AutoFirstOrderState | NormalAutoOrderSta
 ): T {
   const detailMessage = composeAutomationDetail(...parts);
   if (!detailMessage) return state;
+  if (detailMessage === state.detailMessage) return state;
   return {
     ...state,
     detailMessage,
@@ -1177,6 +1314,7 @@ function resetRareOrderStateAfterRuntimeMismatch(
   now: number,
   event: AutomationRuntimeEvent,
 ): AutoFirstOrderState {
+  const rollback = reduceAutomationCookingRollbackBudget(state.rollbackCount, event);
   return {
     ...state,
     prepared: false,
@@ -1187,9 +1325,11 @@ function resetRareOrderStateAfterRuntimeMismatch(
     lastProgressAtMs: state.lastProgressAtMs,
     retryCount: 0,
     retryStage: '',
-    rollbackCount: state.rollbackCount + 1,
+    rollbackCount: rollback.rollbackCount,
     nextAttemptAtMs: now + 500,
-    lastError: event.message || '非目标成品已放入保温箱，重新制作目标料理。',
+    lastError: rollback.action === 'deferred'
+      ? `${event.message || '特殊经营料理目标暂时不可用或已变化。'} 已保留旧目标回退预算，等待新的非空目标身份后再确认轮换。`
+      : event.message || '非目标成品已放入保温箱，重新制作目标料理。',
     lastRuntimeEventSequence: event.sequence,
     pausedStage: '',
     pauseReasonCode: '',
@@ -1282,10 +1422,12 @@ function resetNormalOrderStateAfterRuntimeMismatch(
   now: number,
   event: AutomationRuntimeEvent,
 ): NormalAutoOrderState {
+  const rollback = reduceAutomationCookingRollbackBudget(state.rollbackCount, event);
   return {
     ...state,
     orderKey,
     executionTarget: null,
+    executionTargetBusinessGeneration: 0,
     prepared: false,
     cookingJobId: '',
     foodDelivered: false,
@@ -1298,9 +1440,11 @@ function resetNormalOrderStateAfterRuntimeMismatch(
     lastProgressAtMs: state.lastProgressAtMs,
     retryCount: 0,
     retryStage: '',
-    rollbackCount: state.rollbackCount + 1,
+    rollbackCount: rollback.rollbackCount,
     nextAttemptAtMs: now + 500,
-    lastError: event.message || '非目标成品已放入保温箱，重新制作目标料理。',
+    lastError: rollback.action === 'deferred'
+      ? `${event.message || '特殊经营料理目标暂时不可用或已变化。'} 已保留旧目标回退预算，等待新的非空目标身份后再确认轮换。`
+      : event.message || '非目标成品已放入保温箱，重新制作目标料理。',
     lastRuntimeEventSequence: event.sequence,
     pausedStage: '',
     pauseReasonCode: '',
@@ -1529,6 +1673,7 @@ export function ModWorkbench() {
   const rareAutomationDecisionDiagnosticSignaturesRef = useRef(new Set<string>());
   const normalAutomationDecisionDiagnosticSignaturesRef = useRef(new Set<string>());
   const automationRequestEpochRef = useRef(0);
+  const companionPreferencesRef = useRef(companionPreferences);
   const automationLeaseAcquireRef = useRef<AutomationLeaseAcquireEntry | null>(null);
   const automationLeaseRevalidationRequiredRef = useRef(true);
   const automationStateSessionIdRef = useRef('');
@@ -1672,15 +1817,25 @@ export function ModWorkbench() {
     ]));
   }, []);
 
-  const updateCompanionPreferences = useCallback((next: Partial<CompanionPreferences>) => {
-    if (next.automationEnabled === false) {
-      automationRequestEpochRef.current += 1;
-      persistAutomationCancellationEndpoint(normalizedEndpoint);
-      setAutomationCancellationEndpoint(normalizedEndpoint);
-      setAutomationCancellationAttempt(0);
-    }
-    setCompanionPreferences((current) => normalizeCompanionPreferences({ ...current, ...next }));
+  const requestAutomationCancellation = useCallback(() => {
+    automationRequestEpochRef.current += 1;
+    persistAutomationCancellationEndpoint(normalizedEndpoint);
+    setAutomationCancellationEndpoint(normalizedEndpoint);
+    setAutomationCancellationAttempt(0);
   }, [normalizedEndpoint]);
+
+  const updateCompanionPreferences = useCallback((next: Partial<CompanionPreferences>) => {
+    const current = companionPreferencesRef.current;
+    const normalized = normalizeCompanionPreferences({ ...current, ...next });
+    const disablesCookingJobStage = current.automationEnabled
+      && normalized.automationEnabled
+      && hasAutomationCookingJobStageBeenDisabled(current, normalized);
+    if (next.automationEnabled === false || disablesCookingJobStage) {
+      requestAutomationCancellation();
+    }
+    companionPreferencesRef.current = normalized;
+    setCompanionPreferences(normalized);
+  }, [requestAutomationCancellation]);
 
   useEffect(() => {
     if (!companionPreferences.showDebugDetails && tab === 'logs') {
@@ -1961,10 +2116,16 @@ export function ModWorkbench() {
   const visibleTabs = companionPreferences.showDebugDetails ? MOD_TABS : BASIC_MOD_TABS;
   const serviceRecommendationsVisible = tab === 'service' && serviceView === 'recommendations';
   const includeNormalOrderDetails = serviceRecommendationsVisible && serviceRecommendationTab === 'normal';
+  const normalOrdersRequireSpecialExecutionTarget = (snapshot?.normalBusiness?.orders ?? []).some(
+    (order) => requiresSpecialBusinessNormalExecutionTarget(
+      snapshot?.specialBusiness,
+      order.specialBusinessRole,
+    ),
+  );
   const normalAutomationTargetsEnabled = automationRuntimeEnabled
     && companionPreferences.autoNormalOrderEnabled
     && hasNormalOrderActionEnabled(companionPreferences)
-    && Boolean(snapshot?.specialBusiness?.active);
+    && normalOrdersRequireSpecialExecutionTarget;
   const rareAutomationNeedsRecommendations = automationRuntimeEnabled
     && hasAutomationActionEnabled(companionPreferences);
   const orderRecommendationUsage = tab === 'service' || serviceFocusMode ? 'display' : 'automation';
@@ -1997,6 +2158,24 @@ export function ModWorkbench() {
   const orderRecommendationPayloadSignature = useMemo(
     () => buildOrderRecommendationPayloadSignature(orderRecommendationPayloadValue),
     [orderRecommendationPayloadValue],
+  );
+  const orderRecommendationPresentationContextSignature = useMemo(
+    () => buildOrderRecommendationPresentationContextSignature(
+      connectionRevision,
+      snapshot?.automationSessionId ?? '',
+      snapshot?.nightBusinessGeneration ?? 0,
+      snapshot?.nightBusinessLifecyclePhase ?? 'Inactive',
+      snapshot?.specialBusiness,
+      recommendationDataSignature,
+    ),
+    [
+      connectionRevision,
+      recommendationDataSignature,
+      snapshot?.automationSessionId,
+      snapshot?.nightBusinessGeneration,
+      snapshot?.nightBusinessLifecyclePhase,
+      snapshot?.specialBusiness,
+    ],
   );
   const orderRecommendationPayload = useSignedValue(
     orderRecommendationPayloadValue,
@@ -2084,7 +2263,37 @@ export function ModWorkbench() {
   const orderRecommendations = useOrderRecommendations(orderRecommendationPayload, {
     enabled: orderRecommendationsEnabled,
     inputSignature: orderRecommendationPayloadSignature,
+    contextSignature: orderRecommendationPresentationContextSignature,
   });
+  const orderRecommendationPresentation = useMemo(
+    () => buildOrderRecommendationPresentation({
+      orders: night?.orders ?? [],
+      recommendations: orderRecommendations.recommendations,
+      recommendationIssues: orderRecommendations.recommendationIssues,
+      pending: orderRecommendations.pending,
+      isCurrent: orderRecommendations.isCurrent,
+      resultContextSignature: orderRecommendations.resultContextSignature,
+      currentContextSignature: orderRecommendationPresentationContextSignature,
+      error: orderRecommendations.error,
+      retainedAfterError: orderRecommendations.retainedAfterError,
+    }),
+    [
+      night?.orders,
+      orderRecommendationPresentationContextSignature,
+      orderRecommendations.isCurrent,
+      orderRecommendations.pending,
+      orderRecommendations.error,
+      orderRecommendations.recommendationIssues,
+      orderRecommendations.recommendations,
+      orderRecommendations.retainedAfterError,
+      orderRecommendations.resultContextSignature,
+    ],
+  );
+  const visibleOrderRecommendations = orderRecommendationPresentation.recommendations;
+  const visibleOrderRecommendationIssues = orderRecommendationPresentation.recommendationIssues;
+  const visibleOrderRecommendationPendingOrders = orderRecommendationPresentation.pendingOrders;
+  const visibleOrderRecommendationsUpdating = orderRecommendationPresentation.updating;
+  const visibleOrderRecommendationUpdateError = orderRecommendationPresentation.updateError;
   const normalOrderDetails = useOrderRecommendations(normalOrderDetailPayload, {
     enabled: includeNormalOrderDetails,
   });
@@ -2143,6 +2352,16 @@ export function ModWorkbench() {
     () => isGameUiPinningTargetSourceValid(gameUiPinningTarget, night?.orders ?? []),
     [gameUiPinningTarget, night?.orders],
   );
+  const gameUiPinningContextSignature = useMemo(
+    () => [
+      buildUiPinningSpecialBusinessSignature(snapshot?.specialBusiness),
+      [...(night?.orders ?? [])]
+        .map((order) => `${buildNightBusinessOrderKey(order)}:${order.specialBusinessRole ?? ''}`)
+        .sort()
+        .join(','),
+    ].join('\n'),
+    [night?.orders, snapshot?.specialBusiness],
+  );
   useGameUiPinningPublisher({
     endpoint: normalizedEndpoint,
     apiToken,
@@ -2159,6 +2378,7 @@ export function ModWorkbench() {
     recommendationPending: orderRecommendations.pending,
     recommendationError: Boolean(orderRecommendations.error),
     recommendationSuccessRevision: orderRecommendations.successRevision,
+    targetContextSignature: gameUiPinningContextSignature,
   });
 
   const refreshRareOrderDiagnostics = useCallback((now = Date.now()) => {
@@ -2370,6 +2590,177 @@ export function ModWorkbench() {
     snapshot?.specialBusiness,
   ]);
 
+  const publishAutomationRollbackDiagnostic = useCallback((
+    event: AutomationRuntimeEvent,
+    previousRollbackCount: number,
+    nextRollbackCount: number,
+    specialBusinessRole: string,
+  ) => {
+    const rollback = reduceAutomationCookingRollbackBudget(previousRollbackCount, event);
+    if (rollback.action === 'deferred') return;
+    if (!connectionReadyForActions || !apiToken) return;
+    const eventName = 'automation-rollback-budget-consumed';
+    const message = `同一料理执行目标发生可恢复中断，回退预算 ${previousRollbackCount} -> ${nextRollbackCount}。`;
+    const specialBusiness = snapshot?.specialBusiness ?? null;
+    const orderLine = [
+      `sequence=${event.sequence}`,
+      `targetKind=${event.targetKind}`,
+      `trace=${event.traceId ?? ''}`,
+      `orderKey=${event.orderKey ?? ''}`,
+      `job=${event.jobId}`,
+      `desk=${event.deskCode}`,
+      `guestId=${event.guestId ?? ''}`,
+      `code=${event.code}`,
+      `reason=${event.reasonCode}`,
+      `rollback=${previousRollbackCount}->${nextRollbackCount}`,
+      'action=consumed',
+    ].join('; ');
+    const signature = buildAutomationDecisionDiagnosticSignature(
+      eventName,
+      message,
+      specialBusiness,
+      [orderLine],
+      [],
+      [],
+      companionPreferences,
+      automationLeaseOwned,
+    );
+    const signatures = event.targetKind === 'rare'
+      ? rareAutomationDecisionDiagnosticSignaturesRef.current
+      : normalAutomationDecisionDiagnosticSignaturesRef.current;
+    if (!rememberBoundedDiagnosticSignature(signatures, signature)) return;
+
+    void appendAutomationDecisionDiagnostic(normalizedEndpoint, apiToken, {
+      signature,
+      eventName,
+      message,
+      scene: snapshot?.activeSceneName ?? '',
+      challengeType: specialBusiness?.challengeType ?? '',
+      phase: specialBusiness?.phase ?? '',
+      specialBusinessRole,
+      orderCount: 1,
+      selectionCount: 0,
+      skipCount: 0,
+      automationEnabled: companionPreferences.automationEnabled,
+      leaseOwned: automationLeaseOwned,
+      autoCompleteOrder: event.targetKind === 'rare'
+        ? companionPreferences.autoPrepCompleteOrder
+        : companionPreferences.autoNormalCompleteOrder,
+      autoTakeBeverage: event.targetKind === 'rare'
+        ? companionPreferences.autoPrepTakeBeverage
+        : companionPreferences.autoNormalTakeBeverage,
+      autoStartCooking: event.targetKind === 'rare'
+        ? companionPreferences.autoPrepStartCooking
+        : companionPreferences.autoNormalStartCooking,
+      autoCollectCooking: event.targetKind === 'rare'
+        ? companionPreferences.autoPrepCollectCooking
+        : companionPreferences.autoNormalDeliverFood,
+      recipeFavoritesOnly: companionPreferences.autoPrepRecipeFavoritesOnly,
+      beverageFavoritesOnly: companionPreferences.autoPrepBeverageFavoritesOnly,
+      rareConcurrency: companionPreferences.autoRareConcurrency,
+      leaseMessage: automationLeaseError || automationLease?.error || '',
+      orderLines: [orderLine],
+      selectionLines: [],
+      skipLines: [],
+    }).catch(() => {
+      signatures.delete(signature);
+    });
+  }, [
+    apiToken,
+    automationLease,
+    automationLeaseError,
+    automationLeaseOwned,
+    companionPreferences,
+    connectionReadyForActions,
+    normalizedEndpoint,
+    snapshot?.activeSceneName,
+    snapshot?.specialBusiness,
+  ]);
+
+  const publishAutomationTargetRotationDiagnostic = useCallback((input: {
+    targetKind: 'rare' | 'normal';
+    orderIdentity: string;
+    previousSignature: string;
+    previousRevision: number;
+    nextSignature: string;
+    nextRevision: number;
+    previousRollbackCount: number;
+    specialBusinessRole: string;
+  }) => {
+    if (!connectionReadyForActions || !apiToken) return;
+    const eventName = 'automation-rollback-budget-retired';
+    const message = `特殊经营料理目标已轮换，旧目标回退预算 ${input.previousRollbackCount} 已退休，新目标从 0 开始。`;
+    const specialBusiness = snapshot?.specialBusiness ?? null;
+    const orderLine = [
+      `targetKind=${input.targetKind}`,
+      `order=${input.orderIdentity}`,
+      `previousTarget=${input.previousSignature}; previousRevision=${input.previousRevision}`,
+      `nextTarget=${input.nextSignature}; nextRevision=${input.nextRevision}`,
+      `rollback=${input.previousRollbackCount}->0`,
+      'source=target-signature-reconciliation',
+    ].join('; ');
+    const signature = buildAutomationDecisionDiagnosticSignature(
+      eventName,
+      message,
+      specialBusiness,
+      [orderLine],
+      [],
+      [],
+      companionPreferences,
+      automationLeaseOwned,
+    );
+    const signatures = input.targetKind === 'rare'
+      ? rareAutomationDecisionDiagnosticSignaturesRef.current
+      : normalAutomationDecisionDiagnosticSignaturesRef.current;
+    if (!rememberBoundedDiagnosticSignature(signatures, signature)) return;
+
+    void appendAutomationDecisionDiagnostic(normalizedEndpoint, apiToken, {
+      signature,
+      eventName,
+      message,
+      scene: snapshot?.activeSceneName ?? '',
+      challengeType: specialBusiness?.challengeType ?? '',
+      phase: specialBusiness?.phase ?? '',
+      specialBusinessRole: input.specialBusinessRole,
+      orderCount: 1,
+      selectionCount: 0,
+      skipCount: 0,
+      automationEnabled: companionPreferences.automationEnabled,
+      leaseOwned: automationLeaseOwned,
+      autoCompleteOrder: input.targetKind === 'rare'
+        ? companionPreferences.autoPrepCompleteOrder
+        : companionPreferences.autoNormalCompleteOrder,
+      autoTakeBeverage: input.targetKind === 'rare'
+        ? companionPreferences.autoPrepTakeBeverage
+        : companionPreferences.autoNormalTakeBeverage,
+      autoStartCooking: input.targetKind === 'rare'
+        ? companionPreferences.autoPrepStartCooking
+        : companionPreferences.autoNormalStartCooking,
+      autoCollectCooking: input.targetKind === 'rare'
+        ? companionPreferences.autoPrepCollectCooking
+        : companionPreferences.autoNormalDeliverFood,
+      recipeFavoritesOnly: companionPreferences.autoPrepRecipeFavoritesOnly,
+      beverageFavoritesOnly: companionPreferences.autoPrepBeverageFavoritesOnly,
+      rareConcurrency: companionPreferences.autoRareConcurrency,
+      leaseMessage: automationLeaseError || automationLease?.error || '',
+      orderLines: [orderLine],
+      selectionLines: [],
+      skipLines: [],
+    }).catch(() => {
+      signatures.delete(signature);
+    });
+  }, [
+    apiToken,
+    automationLease,
+    automationLeaseError,
+    automationLeaseOwned,
+    companionPreferences,
+    connectionReadyForActions,
+    normalizedEndpoint,
+    snapshot?.activeSceneName,
+    snapshot?.specialBusiness,
+  ]);
+
   useEffect(() => {
     const events = snapshot?.automationEvents;
     if (!events || !automationSessionId || automationStateSessionIdRef.current !== automationSessionId) return;
@@ -2448,7 +2839,10 @@ export function ModWorkbench() {
         || isCookingTagsUnreadableStoredEvent(event);
       const recoverable = isRecoverableCookingTerminalEvent(event);
       if (!recoverable && !blocking) continue;
-      if (!blocking && isWackyTargetTagMismatchEvent(event)) {
+      if (!blocking
+        && snapshot?.specialBusiness?.active === true
+        && snapshot.specialBusiness.challengeType === WACKY_CHALLENGE_TYPE
+        && isWackyTargetTagMismatchEvent(event)) {
         const rejectedKey = buildWackyRejectedRecipeKeyFromEvent(event);
         if (rejectedKey) {
           rememberSpecialBusinessRejectedRecipeKey(rejectedKey);
@@ -2482,6 +2876,14 @@ export function ModWorkbench() {
               now,
             );
           rareOrderStatesRef.current.set(orderKey, nextState);
+          if (!blocking) {
+            publishAutomationRollbackDiagnostic(
+              event,
+              state.rollbackCount,
+              nextState.rollbackCount,
+              item.order.specialBusinessRole ?? '',
+            );
+          }
           rareChanged = true;
           rarePaused ||= blocking;
           lastAutoFirstOrderAtRef.current = 0;
@@ -2536,6 +2938,14 @@ export function ModWorkbench() {
             now,
           );
         normalOrderStatesRef.current.set(matchedKey, nextState);
+        if (!blocking) {
+          publishAutomationRollbackDiagnostic(
+            event,
+            state.rollbackCount,
+            nextState.rollbackCount,
+            matchedOrder?.specialBusinessRole ?? '',
+          );
+        }
         normalChanged = true;
         normalPaused ||= blocking;
         lastAutoNormalOrderAtRef.current = 0;
@@ -2561,6 +2971,7 @@ export function ModWorkbench() {
     companionPreferences.autoMaxRollbacks,
     publishAutoPrepMessage,
     publishNormalOrderMessage,
+    publishAutomationRollbackDiagnostic,
     refreshNormalOrderDiagnostics,
     refreshRareOrderDiagnostics,
     rememberSpecialBusinessRejectedRecipeKey,
@@ -2570,6 +2981,8 @@ export function ModWorkbench() {
     orderRecommendations.successRevision,
     snapshot?.automationEvents,
     snapshot?.normalBusiness?.orders,
+    snapshot?.specialBusiness?.active,
+    snapshot?.specialBusiness?.challengeType,
   ]);
 
   useEffect(() => {
@@ -2586,8 +2999,8 @@ export function ModWorkbench() {
     if (!automationCookerCycleRef.current || automationCookerCycleRef.current.bucket !== bucket) {
       automationCookerCycleRef.current = {
         bucket,
-        used: new Map<string, number>(),
-        labels: new Map<string, string[]>(),
+        usedControllerIndexes: new Set<number>(),
+        labelsByControllerIndex: new Map<number, string>(),
       };
     }
 
@@ -2949,7 +3362,6 @@ export function ModWorkbench() {
       orderRecommendations.recommendations,
       favorites,
       selectionPreferences,
-      companionPreferences.autoRareConcurrency,
       rareOrderStatesRef.current,
     );
     if (candidateResult.selections.length === 0) {
@@ -2958,7 +3370,13 @@ export function ModWorkbench() {
         publishAutoPrepMessage(`自动化\n${candidateResult.message}\nMod 中仍有活动料理任务，已保留订单状态并等待快照恢复。`);
         return;
       }
-      retainAutomationSafetyStates(rareOrderStatesRef.current);
+      const activeOrderKeys = new Set(
+        orderRecommendations.recommendations.map(buildAutoOrderKey),
+      );
+      retainRareAutomationContinuityStates(
+        rareOrderStatesRef.current,
+        activeOrderKeys,
+      );
       retainRareManualResolutionDiagnosticItems(rareOrderStatesRef.current, rareOrderDiagnosticItemsRef.current);
       refreshRareOrderDiagnostics(now);
       publishAutoPrepMessage(`自动化\n${candidateResult.message}`);
@@ -3010,7 +3428,7 @@ export function ModWorkbench() {
       const globalMessages: string[] = [];
       let updatedOrderDetailCount = 0;
       const cookerCycle = getAutomationCookerCycle(now);
-      const cookerCapacity = buildAutomationCookerCapacity(runtime);
+      const cookerPool = buildAutomationCookerPool(runtime);
       const effectiveSpecialBusinessRejectedRecipeKeys = getSpecialBusinessRejectedRecipeKeys();
       const normalCookerDemand = buildNormalCookerDemand(
         snapshot?.normalBusiness?.orders ?? [],
@@ -3020,41 +3438,67 @@ export function ModWorkbench() {
         now,
         recommendationData,
         recommendationDataSignature,
+        snapshot?.nightBusinessGeneration ?? 0,
         snapshot?.specialBusiness,
         effectiveSpecialBusinessRejectedRecipeKeys,
       );
 
+      let admittedCandidateCount = 0;
       for (const selection of candidateResult.selections) {
         activeRequestSelection = selection;
         const orderKey = buildAutoOrderKey(selection.item);
         let currentState = rareOrderStatesRef.current.get(orderKey) ?? emptyAutoFirstOrderState(orderKey, now);
         currentState = lockRareAutomationTargets(currentState, selection);
-        const targetReconciliation = reconcileRareRecipeTargetForSpecialBusiness(
-          snapshot?.specialBusiness,
-          selection.item,
-          currentState,
-          selection.recipeTarget,
-          now,
-          effectiveSpecialBusinessRejectedRecipeKeys,
-        );
-        currentState = targetReconciliation.state;
-        const targetReconciliationMessage = targetReconciliation.message;
-        currentState = syncRareStateWithOrderServedState(currentState, selection.item.order, now);
         const forceKoishiFullFeedAutomation = isWackyKoishiBossFullFeedContext(
           snapshot?.specialBusiness,
           selection.item.order.specialBusinessRole,
         );
+        const activeCookingJob = findRareAutomationCookingJob(
+          snapshot?.automationCookingJobs ?? [],
+          selection,
+          currentState,
+        );
+        const requiresRecipeTarget = !selection.item.order.hasServedFood
+          && (
+            activeCookingJob !== null
+            || Boolean(currentState.cookingJobId)
+            || ((companionPreferences.autoPrepStartCooking || forceKoishiFullFeedAutomation)
+              && !currentState.prepared)
+            || ((companionPreferences.autoPrepCollectCooking || forceKoishiFullFeedAutomation)
+              && currentState.prepared)
+          );
+        const targetReconciliation = reconcileRareRecipeTargetForSpecialBusiness(
+          snapshot?.specialBusiness,
+          snapshot?.nightBusinessGeneration ?? 0,
+          selection.item,
+          currentState,
+          selection.recipeTarget,
+          requiresRecipeTarget,
+          now,
+          effectiveSpecialBusinessRejectedRecipeKeys,
+        );
+        if (targetReconciliation.rollbackTargetRotated) {
+          publishAutomationTargetRotationDiagnostic({
+            targetKind: 'rare',
+            orderIdentity: orderKey,
+            previousSignature: currentState.rollbackTargetSignature,
+            previousRevision: currentState.rollbackTargetRevision,
+            nextSignature: targetReconciliation.state.rollbackTargetSignature,
+            nextRevision: targetReconciliation.state.rollbackTargetRevision,
+            previousRollbackCount: currentState.rollbackCount,
+            specialBusinessRole: selection.item.order.specialBusinessRole ?? '',
+          });
+        }
+        currentState = targetReconciliation.state;
+        const targetReconciliationMessage = targetReconciliation.message;
+        const specialTargetPolicy = targetReconciliation.specialTargetPolicy;
+        currentState = syncRareStateWithOrderServedState(currentState, selection.item.order, now);
         currentState = retireDisabledRareAutomationFailure(
           currentState,
           selection.item.order,
           companionPreferences,
           now,
           forceKoishiFullFeedAutomation,
-        );
-        const activeCookingJob = findRareAutomationCookingJob(
-          snapshot?.automationCookingJobs ?? [],
-          selection,
-          currentState,
         );
         if (activeCookingJob && !selection.item.order.hasServedFood) {
           currentState = reconcileStateWithActiveCookingJob(currentState, activeCookingJob, now);
@@ -3066,6 +3510,20 @@ export function ModWorkbench() {
         );
         activeRequestEventSequence = currentState.lastRuntimeEventSequence;
         rareOrderStatesRef.current.set(orderKey, currentState);
+        if (activeCookingJob?.state === 'manual-handoff-expired'
+          && !selection.item.order.hasServedFood) {
+          const expiredHandoffState = withAutomationDetail(
+            currentState,
+            now,
+            '旧目标成品仍在等待处理；同一订单不会按当前目标重复开锅。',
+            '请先在游戏中处理该订单的过期交接成品。其他订单会继续自动化。',
+          );
+          if (expiredHandoffState !== currentState) {
+            rareOrderStatesRef.current.set(orderKey, expiredHandoffState);
+            updatedOrderDetailCount += 1;
+          }
+          continue;
+        }
         if (currentState.paused) {
           rareOrderStatesRef.current.set(orderKey, withAutomationDetail(
             currentState,
@@ -3075,6 +3533,15 @@ export function ModWorkbench() {
             currentState.manualResolutionRequired
               ? '游戏副作用无法自动确认；请核对料理、托盘、保温箱和订单后点击“确认已处理”。'
               : '稀客自动化已暂停该订单，订单事实变化或手动重试后会继续。',
+          ));
+          updatedOrderDetailCount += 1;
+          continue;
+        }
+        if (targetReconciliation.policyError) {
+          rareOrderStatesRef.current.set(orderKey, withAutomationDetail(
+            currentState,
+            now,
+            targetReconciliation.policyError,
           ));
           updatedOrderDetailCount += 1;
           continue;
@@ -3090,14 +3557,82 @@ export function ModWorkbench() {
           continue;
         }
 
+        let shouldPrepareFood = (companionPreferences.autoPrepStartCooking || forceKoishiFullFeedAutomation)
+          && !currentState.prepared;
+        let shouldPrepareBeverage = (companionPreferences.autoPrepTakeBeverage || forceKoishiFullFeedAutomation)
+          && !currentState.beverageHandled;
+        let cookingDeferralNote = '';
+        let targetAvailabilityNote = '';
+        const rejectedRecipeKey = buildRejectedRecipeKeyForRareTarget(
+          snapshot?.specialBusiness,
+          selection.item.order,
+          currentState.recipeTarget,
+        );
+        if (shouldPrepareFood && rejectedRecipeKey && effectiveSpecialBusinessRejectedRecipeKeys.includes(rejectedRecipeKey)) {
+          shouldPrepareFood = false;
+          cookingDeferralNote = '当前目标 Tag 下该料理加料组合已被实机判定不匹配，等待推荐刷新或目标 Tag 更新后再制作。';
+        }
+        const specialBusinessCookingDeferral = getWackyRareCookingDeferral(
+          snapshot?.specialBusiness,
+          selection.item,
+          currentState.recipeTarget,
+          selection.recipe,
+        );
+        if (shouldPrepareFood && specialBusinessCookingDeferral) {
+          shouldPrepareFood = false;
+          cookingDeferralNote = specialBusinessCookingDeferral;
+        }
+        if (shouldPrepareFood && !currentState.recipeTarget) {
+          shouldPrepareFood = false;
+          targetAvailabilityNote = targetReconciliationMessage
+            || formatRareAutomationMissingRecipeTargetMessage(selection.item, companionPreferences.autoPrepRecipeFavoritesOnly);
+        }
+        if (shouldPrepareBeverage && !currentState.beverageTarget) {
+          shouldPrepareBeverage = false;
+          targetAvailabilityNote = formatRareAutomationMissingBeverageTargetMessage(selection.item, companionPreferences.autoPrepBeverageFavoritesOnly);
+        }
+        const canAttemptCompletionPreflight = !forceKoishiFullFeedAutomation
+          && companionPreferences.autoPrepCompleteOrder
+          && (
+            currentState.prepared
+            || activeCookingJob !== null
+            || selection.item.order.hasServedFood
+          );
+        if (
+          admittedCandidateCount >= companionPreferences.autoRareConcurrency
+          && (shouldPrepareFood || shouldPrepareBeverage || canAttemptCompletionPreflight)
+        ) {
+          break;
+        }
+        const schedulerNote: CookerReservationResult = shouldPrepareFood
+          ? reserveRareCookerSlot(
+            cookerCycle,
+            getRareCookerRequirement(currentState.recipeTarget),
+            `稀客 ${selection.item.order.guestName || '当前订单'} · 桌 ${formatDesk(selection.item.order.deskCode)}`,
+            cookerPool,
+            normalCookerDemand,
+          )
+          : { ok: true, message: '' };
+        let cookerReservation = shouldPrepareFood
+          ? toCookerControllerReservation(schedulerNote)
+          : null;
+        if (!schedulerNote.ok || (shouldPrepareFood && cookerReservation == null)) {
+          shouldPrepareFood = false;
+          cookerReservation = null;
+        }
+        const hasExecutableCandidateAction = shouldPrepareFood
+          || shouldPrepareBeverage
+          || canAttemptCompletionPreflight;
+        if (hasExecutableCandidateAction) {
+          admittedCandidateCount += 1;
+        }
+
         let preflightMessage = '';
         let preflightResponseStep: AutomationRequestStage | null = null;
-        if (!forceKoishiFullFeedAutomation && companionPreferences.autoPrepCompleteOrder) {
+        if (canAttemptCompletionPreflight) {
           activeRequestEventSequence = currentState.lastRuntimeEventSequence;
           activeRequestStage = selectAutomationRequestStage({
-            needsBeverage: companionPreferences.autoPrepTakeBeverage
-              && !currentState.beverageHandled
-              && !selection.item.order.hasServedBeverage,
+            needsBeverage: shouldPrepareBeverage,
             needsCooking: false,
             needsDelivery: false,
             needsCompletion: true,
@@ -3106,9 +3641,15 @@ export function ModWorkbench() {
             normalizedEndpoint,
             apiToken,
             selection.item,
+            specialTargetPolicy,
             currentState.recipeTarget,
             currentState.beverageTarget,
-            companionPreferences,
+            {
+              ...companionPreferences,
+              autoPrepStartCooking: false,
+              autoPrepTakeBeverage: shouldPrepareBeverage,
+            },
+            null,
           );
           const completeResponseAt = Date.now();
           if (!isAutomationRequestCurrent(requestEpoch)) return;
@@ -3187,53 +3728,8 @@ export function ModWorkbench() {
             updatedOrderDetailCount += 1;
             continue;
           }
-        }
-
-        let shouldPrepareFood = (companionPreferences.autoPrepStartCooking || forceKoishiFullFeedAutomation)
-          && !currentState.prepared;
-        let shouldPrepareBeverage = (companionPreferences.autoPrepTakeBeverage || forceKoishiFullFeedAutomation)
-          && !currentState.beverageHandled;
-        let cookingDeferralNote = '';
-        let targetAvailabilityNote = '';
-        const rejectedRecipeKey = buildRejectedRecipeKeyForRareTarget(
-          snapshot?.specialBusiness,
-          selection.item.order,
-          currentState.recipeTarget,
-        );
-        if (shouldPrepareFood && rejectedRecipeKey && effectiveSpecialBusinessRejectedRecipeKeys.includes(rejectedRecipeKey)) {
-          shouldPrepareFood = false;
-          cookingDeferralNote = '当前目标 Tag 下该料理加料组合已被实机判定不匹配，等待推荐刷新或目标 Tag 更新后再制作。';
-        }
-        const specialBusinessCookingDeferral = getSpecialBusinessRareCookingDeferral(
-          snapshot?.specialBusiness,
-          selection.item,
-          currentState.recipeTarget,
-          selection.recipe,
-        );
-        if (shouldPrepareFood && specialBusinessCookingDeferral) {
-          shouldPrepareFood = false;
-          cookingDeferralNote = specialBusinessCookingDeferral;
-        }
-        if (shouldPrepareFood && !currentState.recipeTarget) {
-          shouldPrepareFood = false;
-          targetAvailabilityNote = targetReconciliationMessage
-            || formatRareAutomationMissingRecipeTargetMessage(selection.item, companionPreferences.autoPrepRecipeFavoritesOnly);
-        }
-        if (shouldPrepareBeverage && !currentState.beverageTarget) {
-          shouldPrepareBeverage = false;
-          targetAvailabilityNote = formatRareAutomationMissingBeverageTargetMessage(selection.item, companionPreferences.autoPrepBeverageFavoritesOnly);
-        }
-        const schedulerNote = shouldPrepareFood
-          ? reserveRareCookerSlot(
-            cookerCycle,
-            getRareCookerRequirement(currentState.recipeTarget),
-            `稀客 ${selection.item.order.guestName || '当前订单'} · 桌 ${formatDesk(selection.item.order.deskCode)}`,
-            cookerCapacity,
-            normalCookerDemand,
-          )
-          : { ok: true, message: '' };
-        if (!schedulerNote.ok) {
-          shouldPrepareFood = false;
+          shouldPrepareFood &&= !currentState.prepared;
+          shouldPrepareBeverage &&= !currentState.beverageHandled;
         }
 
         if (!shouldPrepareFood && !shouldPrepareBeverage) {
@@ -3289,9 +3785,11 @@ export function ModWorkbench() {
           normalizedEndpoint,
           apiToken,
           selection.item,
+          specialTargetPolicy,
           shouldPrepareFood ? currentState.recipeTarget : null,
           shouldPrepareBeverage ? currentState.beverageTarget : null,
           preparePreferences,
+          shouldPrepareFood ? cookerReservation : null,
         );
         const prepareResponseAt = Date.now();
         if (!isAutomationRequestCurrent(requestEpoch)) return;
@@ -3383,9 +3881,14 @@ export function ModWorkbench() {
             normalizedEndpoint,
             apiToken,
             selection.item,
+            specialTargetPolicy,
             finalState.recipeTarget,
             finalState.beverageTarget,
-            companionPreferences,
+            {
+              ...companionPreferences,
+              autoPrepStartCooking: false,
+            },
+            null,
           );
           const immediateCompleteResponseAt = Date.now();
           finalStateUpdatedAt = immediateCompleteResponseAt;
@@ -3526,6 +4029,7 @@ export function ModWorkbench() {
     orderRecommendations.recommendations,
     publishAutoPrepBusy,
     publishAutoPrepMessage,
+    publishAutomationTargetRotationDiagnostic,
     publishRareAutomationDecisionDiagnostic,
     recommendationData,
     recommendationDataSignature,
@@ -3535,6 +4039,7 @@ export function ModWorkbench() {
     handleAutomationControlPlaneResponse,
     isAutomationRequestCurrent,
     runtime,
+    snapshot?.nightBusinessGeneration,
     snapshot?.specialBusiness,
     snapshot?.automationCookingJobs,
     snapshot?.normalBusiness?.orders,
@@ -3612,20 +4117,9 @@ export function ModWorkbench() {
       return;
     }
 
-    if (normalAutomationTargetsEnabled && (normalAutomationTargets.pending || !normalAutomationTargets.isCurrent)) {
-      publishNormalOrderMessage('普客自动化\n特殊经营执行目标计算中，等待下一轮。');
-      lastAutoNormalOrderAtRef.current = now;
-      return;
-    }
-
-    if (normalAutomationTargetsEnabled && normalAutomationTargets.error) {
-      publishNormalOrderMessage(`普客自动化\n特殊经营执行目标计算失败：${normalAutomationTargets.error}`);
-      lastAutoNormalOrderAtRef.current = now;
-      return;
-    }
-
     const cookerCycle = getAutomationCookerCycle(now);
-    const cookerCapacity = buildAutomationCookerCapacity(runtime);
+    const cookerPool = buildAutomationCookerPool(runtime);
+    const cookerReservationByOrderKey = new Map<string, CookerControllerReservation>();
     const schedulerMessages: string[] = [];
     const blockedOrders = orders.filter((order) => order.canAutomate === false);
     const blockedText = blockedOrders.length > 0
@@ -3662,15 +4156,52 @@ export function ModWorkbench() {
         );
         normalOrderStatesRef.current.set(orderKey, state);
       }
-      const baseState = state ?? emptyNormalAutoOrderState(orderKey, now);
+      let baseState = state ?? emptyNormalAutoOrderState(orderKey, now);
       const activeCookingJob = findNormalAutomationCookingJob(
         snapshot?.automationCookingJobs ?? [],
         order,
         baseState,
       );
       if (activeCookingJob && !order.hasServedFood) {
-        state = reconcileStateWithActiveCookingJob(baseState, activeCookingJob, now);
-        normalOrderStatesRef.current.set(orderKey, state);
+        baseState = reconcileStateWithActiveCookingJob(baseState, activeCookingJob, now);
+      }
+      const rollbackTarget = buildSpecialFoodTargetWirePolicy(
+        snapshot?.specialBusiness,
+        order.specialBusinessRole,
+        snapshot?.nightBusinessGeneration ?? 0,
+      );
+      const rollbackReconciliation = reconcileAutomationRollbackTarget(
+        baseState,
+        rollbackTarget.specialTargetSignature,
+        rollbackTarget.specialTargetRevision,
+        now,
+      );
+      if (rollbackReconciliation.rotated) {
+        publishAutomationTargetRotationDiagnostic({
+          targetKind: 'normal',
+          orderIdentity: orderKey,
+          previousSignature: baseState.rollbackTargetSignature,
+          previousRevision: baseState.rollbackTargetRevision,
+          nextSignature: rollbackReconciliation.state.rollbackTargetSignature,
+          nextRevision: rollbackReconciliation.state.rollbackTargetRevision,
+          previousRollbackCount: baseState.rollbackCount,
+          specialBusinessRole: order.specialBusinessRole ?? '',
+        });
+      }
+      state = rollbackReconciliation.state;
+      normalOrderStatesRef.current.set(orderKey, state);
+      if (activeCookingJob?.state === 'manual-handoff-expired'
+        && !order.hasServedFood) {
+        normalOrderStatesRef.current.set(orderKey, withAutomationDetail(
+          state,
+          now,
+          '旧目标成品仍在等待处理；同一订单不会按当前目标重复开锅。',
+          '请先在游戏中处理该订单的过期交接成品。其他订单会继续自动化。',
+        ));
+        schedulerMessages.push(
+          `桌 ${formatDesk(order.deskCode)}\n旧目标成品等待人工处理；该订单不占用自动化并发名额。`,
+        );
+        continue;
       }
       if (state?.paused || (state?.nextAttemptAtMs ?? 0) > now) continue;
       const needsBeverage = shouldAttemptNormalBeverage(order, state, companionPreferences, now)
@@ -3680,15 +4211,27 @@ export function ModWorkbench() {
       const needsCompletion = forceKoishiFullFeedAutomation
         ? false
         : shouldAttemptNormalCompletion(order, state, companionPreferences, now);
+      const needsDelivery = (companionPreferences.autoNormalDeliverFood || forceKoishiFullFeedAutomation)
+        && !order.hasServedFood
+        && Boolean(state?.prepared || activeCookingJob);
+      const requiresRecipeTarget = needsCooking
+        || needsDelivery
+        || activeCookingJob !== null
+        || Boolean(state?.cookingJobId);
       const specialTargetSelection = getNormalAutomationTargetSelection(
         order,
-        baseState,
+        state,
         normalAutomationTargetsEnabled,
         normalAutomationTargetByKey,
+        snapshot?.specialBusiness,
+        snapshot?.nightBusinessGeneration ?? 0,
+        requiresRecipeTarget,
+        normalAutomationTargets.error,
       );
       const cookingDecision = buildNormalCookingTargetDecision(order, recommendationData, specialTargetSelection);
       const specialBusinessCookingDeferral = cookingDecision.blockedReason;
-      const targetBlockedCooking = needsCooking && Boolean(specialBusinessCookingDeferral);
+      const targetBlockedCooking = Boolean(specialTargetSelection.policyError)
+        || (requiresRecipeTarget && Boolean(specialBusinessCookingDeferral));
       if (targetBlockedCooking) {
         schedulerMessages.push(`${cookingDecision.label}\n${specialBusinessCookingDeferral}`);
         const requestPreferences: CompanionPreferences = {
@@ -3712,6 +4255,8 @@ export function ModWorkbench() {
             shouldHandleBeverage: false,
             shouldStartCooking: false,
             shouldCompleteOrder: false,
+            completionConfigured: companionPreferences.autoNormalCompleteOrder,
+            yuumaCompletionIntent: false,
             forceKoishiFullFeedAutomation,
             targetBlockedCooking,
           },
@@ -3725,12 +4270,20 @@ export function ModWorkbench() {
           cookerCycle,
           cookingDecision.cooker,
           cookingDecision.label,
-          cookerCapacity,
+          cookerPool,
         );
         if (!reservation.ok) {
           schedulerMessages.push(`${cookingDecision.label}\n${reservation.message}`);
           continue;
         }
+        const exactReservation = toCookerControllerReservation(reservation);
+        if (exactReservation == null) {
+          schedulerMessages.push(
+            `${cookingDecision.label}\n等待厨具 ${cookingDecision.cooker?.label || '未知'}：本轮未取得精确控制器预约。`,
+          );
+          continue;
+        }
+        cookerReservationByOrderKey.set(orderKey, exactReservation);
       }
 
       runnableOrders.push(order);
@@ -3779,20 +4332,61 @@ export function ModWorkbench() {
           order,
           syncedState,
         );
-        const currentState = activeCookingJob && !order.hasServedFood
+        let currentState = activeCookingJob && !order.hasServedFood
           ? reconcileStateWithActiveCookingJob(syncedState, activeCookingJob, now)
           : syncedState;
+        const rollbackTarget = buildSpecialFoodTargetWirePolicy(
+          snapshot?.specialBusiness,
+          order.specialBusinessRole,
+          snapshot?.nightBusinessGeneration ?? 0,
+        );
+        currentState = reconcileAutomationRollbackTarget(
+          currentState,
+          rollbackTarget.specialTargetSignature,
+          rollbackTarget.specialTargetRevision,
+          now,
+        ).state;
+        normalOrderStatesRef.current.set(orderKey, currentState);
         if (currentState.paused || currentState.nextAttemptAtMs > now) continue;
+        const wantsCooking = shouldAttemptNormalCooking(order, currentState, companionPreferences, now)
+          || (forceKoishiFullFeedAutomation && !order.hasServedFood && !currentState.prepared && !currentState.foodDelivered);
+        const shouldHandleBeverage = shouldAttemptNormalBeverage(order, currentState, companionPreferences, now)
+          || (forceKoishiFullFeedAutomation && !order.hasServedBeverage && !currentState.beverageHandled);
+        const shouldStartCooking = wantsCooking;
+        const shouldCompleteOrder = forceKoishiFullFeedAutomation
+          ? false
+          : shouldAttemptNormalCompletion(order, currentState, companionPreferences, now)
+          || (companionPreferences.autoNormalCompleteOrder
+            && !order.hasEvaluated
+            && !currentState.paused
+            && (order.readyToEvaluate || order.hasServedFood || currentState.foodDelivered)
+            && (order.hasServedBeverage || currentState.beverageHandled || shouldHandleBeverage));
+        const shouldDeliverFood = (companionPreferences.autoNormalDeliverFood || forceKoishiFullFeedAutomation)
+          && currentState.prepared
+          && !order.hasServedFood;
+        const requiresRecipeTarget = shouldStartCooking
+          || shouldDeliverFood
+          || activeCookingJob !== null
+          || Boolean(currentState.cookingJobId);
         const specialTargetSelection = getNormalAutomationTargetSelection(
           order,
           currentState,
           normalAutomationTargetsEnabled,
           normalAutomationTargetByKey,
+          snapshot?.specialBusiness,
+          snapshot?.nightBusinessGeneration ?? 0,
+          requiresRecipeTarget,
+          normalAutomationTargets.error,
         );
         const cookingDecision = buildNormalCookingTargetDecision(order, recommendationData, specialTargetSelection);
-        const wantsCooking = shouldAttemptNormalCooking(order, currentState, companionPreferences, now)
-          || (forceKoishiFullFeedAutomation && !order.hasServedFood && !currentState.prepared && !currentState.foodDelivered);
-        const targetBlockedCooking = wantsCooking && Boolean(cookingDecision.blockedReason);
+        const targetBlockedCooking = Boolean(specialTargetSelection.policyError)
+          || (requiresRecipeTarget && Boolean(cookingDecision.blockedReason));
+        const yuumaBossSettlement = specialTargetSelection.specialTargetPolicy.specialTargetOwner === 'yuuma';
+        const yuumaCompletionIntent = !forceKoishiFullFeedAutomation
+          && yuumaBossSettlement
+          && companionPreferences.autoNormalDeliverFood
+          && companionPreferences.autoNormalCompleteOrder
+          && shouldStartCooking;
         if (targetBlockedCooking) {
           const requestPreferences: CompanionPreferences = {
             ...companionPreferences,
@@ -3809,39 +4403,34 @@ export function ModWorkbench() {
             targetSelection: specialTargetSelection,
             requestPreferences,
             flags: {
-              needsBeverage: shouldAttemptNormalBeverage(order, currentState, companionPreferences, now)
-                || (forceKoishiFullFeedAutomation && !order.hasServedBeverage && !currentState.beverageHandled),
+              needsBeverage: shouldHandleBeverage,
               needsCooking: wantsCooking,
-              needsCompletion: shouldAttemptNormalCompletion(order, currentState, companionPreferences, now),
+              needsCompletion: shouldCompleteOrder,
               shouldHandleBeverage: false,
               shouldStartCooking: false,
               shouldCompleteOrder: false,
+              completionConfigured: companionPreferences.autoNormalCompleteOrder,
+              yuumaCompletionIntent: false,
               forceKoishiFullFeedAutomation,
               targetBlockedCooking,
             },
           });
           continue;
         }
-        const shouldHandleBeverage = shouldAttemptNormalBeverage(order, currentState, companionPreferences, now)
-          || (forceKoishiFullFeedAutomation && !order.hasServedBeverage && !currentState.beverageHandled);
-        const shouldStartCooking = wantsCooking;
-        const shouldCompleteOrder = forceKoishiFullFeedAutomation
-          ? false
-          : shouldAttemptNormalCompletion(order, currentState, companionPreferences, now)
-          || (companionPreferences.autoNormalCompleteOrder
-            && !order.hasEvaluated
-            && !currentState.paused
-            && (order.readyToEvaluate || order.hasServedFood || currentState.foodDelivered)
-            && (order.hasServedBeverage || currentState.beverageHandled || shouldHandleBeverage));
 
         const requestPreferences: CompanionPreferences = {
           ...companionPreferences,
           autoNormalTakeBeverage: (companionPreferences.autoNormalTakeBeverage || forceKoishiFullFeedAutomation) && shouldHandleBeverage,
           autoNormalStartCooking: (companionPreferences.autoNormalStartCooking || forceKoishiFullFeedAutomation) && shouldStartCooking,
           autoNormalDeliverFood: companionPreferences.autoNormalDeliverFood || forceKoishiFullFeedAutomation,
-          autoNormalCompleteOrder: !forceKoishiFullFeedAutomation
-            && companionPreferences.autoNormalCompleteOrder
-            && shouldCompleteOrder,
+          autoNormalCompleteOrder: shouldRequestNormalOrderCompletion({
+            completionEnabled: companionPreferences.autoNormalCompleteOrder,
+            completionReady: shouldCompleteOrder,
+            foodDeliveryEnabled: companionPreferences.autoNormalDeliverFood,
+            forceKoishiFullFeedAutomation,
+            startsCooking: shouldStartCooking,
+            yuumaBossSettlement,
+          }),
         };
 
         if (order.specialBusinessRole || specialTargetSelection.target || specialTargetSelection.message) {
@@ -3859,6 +4448,8 @@ export function ModWorkbench() {
               shouldHandleBeverage,
               shouldStartCooking,
               shouldCompleteOrder,
+              completionConfigured: companionPreferences.autoNormalCompleteOrder,
+              yuumaCompletionIntent,
               forceKoishiFullFeedAutomation,
               targetBlockedCooking,
             },
@@ -3872,6 +4463,14 @@ export function ModWorkbench() {
           continue;
         }
 
+        if (requiresRecipeTarget && specialTargetSelection.target) {
+          currentState = lockNormalOrderExecutionTarget(
+            currentState,
+            specialTargetSelection.target,
+            snapshot?.nightBusinessGeneration ?? 0,
+          );
+          normalOrderStatesRef.current.set(orderKey, currentState);
+        }
         activeRequestEventSequence = currentState.lastRuntimeEventSequence;
         activeRequestStage = selectAutomationRequestStage({
           needsBeverage: shouldHandleBeverage,
@@ -3891,7 +4490,11 @@ export function ModWorkbench() {
           normalizedEndpoint,
           apiToken,
           order,
+          specialTargetSelection.specialTargetPolicy,
           requestPreferences,
+          requestPreferences.autoNormalStartCooking
+            ? cookerReservationByOrderKey.get(orderKey) ?? null
+            : null,
           recommendationData,
           specialTargetSelection.target,
         );
@@ -3937,6 +4540,9 @@ export function ModWorkbench() {
           ? false
           : currentState.completed || order.hasEvaluated || completedNow;
         const rollbackCount = currentState.rollbackCount;
+        const responseState = cookingMismatchStored
+          ? clearNormalOrderExecutionTarget(currentState)
+          : currentState;
         let nextStep: AutomationStep = 'ensure-cooking';
         if (completed) {
           nextStep = 'done';
@@ -3950,12 +4556,8 @@ export function ModWorkbench() {
         const nextState = enforceAutomationRollbackLimit(
           updateAutomationAfterResponse(
             {
-              ...currentState,
+              ...responseState,
               orderKey,
-              executionTarget: cookingMismatchStored
-                ? null
-                : currentState.executionTarget
-                  ?? (acknowledgedStart ? specialTargetSelection.target : null),
               prepared,
               cookingJobId: prepared
                 ? response.automation.jobId || currentState.cookingJobId
@@ -3988,12 +4590,15 @@ export function ModWorkbench() {
           companionPreferences.autoMaxRollbacks,
           responseAt,
         );
-        const normalizedNextState = {
+        const stateWithSnapshotFacts = {
           ...nextState,
           beverageHandled,
           foodDelivered,
           completed,
         };
+        const normalizedNextState = completed
+          ? clearNormalOrderExecutionTarget(stateWithSnapshotFacts)
+          : stateWithSnapshotFacts;
 
         const suffix = normalizedNextState.paused
           ? normalizedNextState.manualResolutionRequired
@@ -4067,10 +4672,9 @@ export function ModWorkbench() {
     normalizedEndpoint,
     normalAutomationTargetByKey,
     normalAutomationTargets.error,
-    normalAutomationTargets.isCurrent,
-    normalAutomationTargets.pending,
     normalAutomationTargetsEnabled,
     publishNormalAutomationDecisionDiagnostic,
+    publishAutomationTargetRotationDiagnostic,
     publishNormalOrderBusy,
     publishNormalOrderMessage,
     publishNormalOrderPausedCount,
@@ -4078,6 +4682,7 @@ export function ModWorkbench() {
     refreshNormalOrderDiagnostics,
     scheduleAutomationRefresh,
     runtime,
+    snapshot?.nightBusinessGeneration,
     snapshot?.specialBusiness,
     snapshot?.automationCookingJobs,
     snapshot?.normalBusiness?.orders,
@@ -4100,6 +4705,7 @@ export function ModWorkbench() {
   }, [serviceFocusBeverageLimit]);
 
   useEffect(() => {
+    companionPreferencesRef.current = companionPreferences;
     persistCompanionPreferences(companionPreferences);
     applyCompanionVisualPreferences(companionPreferences);
   }, [companionPreferences]);
@@ -4237,8 +4843,11 @@ export function ModWorkbench() {
   if (serviceFocusMode) {
     return (
       <ServiceFocusPage
-        recommendations={orderRecommendations.recommendations}
-        recommendationIssues={orderRecommendations.recommendationIssues}
+        recommendations={visibleOrderRecommendations}
+        recommendationIssues={visibleOrderRecommendationIssues}
+        recommendationPendingOrders={visibleOrderRecommendationPendingOrders}
+        recommendationsPending={visibleOrderRecommendationsUpdating}
+        recommendationUpdateError={visibleOrderRecommendationUpdateError}
         runtimeSets={runtimeSets}
         dataIndexes={recommendationIndexes}
         favorites={favorites}
@@ -4429,11 +5038,16 @@ export function ModWorkbench() {
           {tab === 'service' && (
             <ModServicePanel
               runtime={runtime}
+              nightBusinessActive={snapshot?.nightBusinessLifecyclePhase === 'Active'
+                || snapshot?.nightBusinessLifecyclePhase === 'Closing'}
               night={night}
               specialBusiness={snapshot?.specialBusiness ?? null}
               detectedPlace={detectedPlace}
-              recommendations={orderRecommendations.recommendations}
-              recommendationIssues={orderRecommendations.recommendationIssues}
+              recommendations={visibleOrderRecommendations}
+              recommendationIssues={visibleOrderRecommendationIssues}
+              recommendationPendingOrders={visibleOrderRecommendationPendingOrders}
+              recommendationsPending={visibleOrderRecommendationsUpdating}
+              recommendationUpdateError={visibleOrderRecommendationUpdateError}
               data={recommendationData}
               performanceMs={snapshot?.performanceMs}
               orderRecommendationPerformanceMs={orderRecommendationPerformanceMs}

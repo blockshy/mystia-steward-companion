@@ -21,11 +21,13 @@ internal static class RuntimeSpecialBusinessContextService
     private const string KoishiClueGenerationPatchKey = "GameData.Profile.DLC2_KoishiBossData.DisplayClass13_0.KoishiClueTagsGenerated";
     private const string KoishiClueGenerationRuntimeMethodName = "Method_Internal_Void_2";
     private const string NoDifficultyMode = "None";
+    private const int MaxCaptureFailureDiagnostics = 128;
 
     private static readonly object SyncRoot = new();
     private static readonly Dictionary<string, ChallengeDisplayNameResolution> ChallengeDisplayNameCache = new(StringComparer.Ordinal);
     private static readonly HashSet<string> PatchedMethods = new(StringComparer.Ordinal);
     private static readonly HashSet<string> CaptureFailureDiagnostics = new(StringComparer.Ordinal);
+    private static readonly Queue<string> CaptureFailureDiagnosticOrder = new();
     private static readonly TimeSpan RetryInterval = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan ChallengeDisplayNameExceptionRetryInterval = TimeSpan.FromSeconds(30);
 
@@ -42,6 +44,9 @@ internal static class RuntimeSpecialBusinessContextService
     private static int? _currentValue;
     private static int? _maxValue;
     private static int? _targetValue;
+    private static int? _currentAnger;
+    private static int? _maxAnger;
+    private static int? _targetAnger;
     private static double? _targetTimeProgress;
     private static double? _targetTagTimeProgress;
     private static bool? _koishiShieldBroken;
@@ -52,6 +57,9 @@ internal static class RuntimeSpecialBusinessContextService
     private static int? _targetSpellCount;
     private static DateTime? _lastTargetUpdatedUtc;
     private static string _targetRawChallengeType = "";
+    private static long _targetBusinessGeneration;
+    private static long _yuumaFoodTargetRevision;
+    private static string _yuumaFoodTargetIdentity = "";
     private static string _yuyukoRetakeEvidenceSource = "";
     private static long _changeVersion;
 
@@ -74,11 +82,11 @@ internal static class RuntimeSpecialBusinessContextService
             {
                 var target = _targetKind.Length == 0
                     ? "none"
-                    : $"{_targetKind}; foodTags={string.Join(",", _foodTargetTags)}; targetFund={_targetFund?.ToString() ?? ""}; progress={_currentValue?.ToString() ?? ""}/{_maxValue?.ToString() ?? ""}; target={_targetValue?.ToString() ?? ""}; time={FormatProgress(_targetTimeProgress)}; tagTime={FormatProgress(_targetTagTimeProgress)}; koishiShield={_koishiShieldBroken?.ToString() ?? ""}; koishiFoodLikes={string.Join(",", _koishiFoodPreferenceTags)}; koishiFoodHates={string.Join(",", _koishiFoodHateTags)}; koishiBevLikes={string.Join(",", _koishiBeveragePreferenceTags)}; spells={_currentSpellCount?.ToString() ?? ""}/{_targetSpellCount?.ToString() ?? ""}; phase={_phase}";
+                    : $"{_targetKind}; foodTags={string.Join(",", _foodTargetTags)}; yuumaTargetRevision={_yuumaFoodTargetRevision}; targetFund={_targetFund?.ToString() ?? ""}; progress={_currentValue?.ToString() ?? ""}/{_maxValue?.ToString() ?? ""}; target={_targetValue?.ToString() ?? ""}; anger={_currentAnger?.ToString() ?? ""}/{_maxAnger?.ToString() ?? ""}; targetAnger={_targetAnger?.ToString() ?? ""}; time={FormatProgress(_targetTimeProgress)}; tagTime={FormatProgress(_targetTagTimeProgress)}; koishiShield={_koishiShieldBroken?.ToString() ?? ""}; koishiFoodLikes={string.Join(",", _koishiFoodPreferenceTags)}; koishiFoodHates={string.Join(",", _koishiFoodHateTags)}; koishiBevLikes={string.Join(",", _koishiBeveragePreferenceTags)}; spells={_currentSpellCount?.ToString() ?? ""}/{_targetSpellCount?.ToString() ?? ""}; phase={_phase}";
                 var yuyukoVariant = _yuyukoRetakeEvidenceSource.Length == 0
                     ? ""
                     : $"; yuyukoRetakeEvidence={_yuyukoRetakeEvidenceSource}";
-                return $"{_status}; version={_changeVersion}; owner={_targetRawChallengeType}; target={target}; last={_lastAction}{yuyukoVariant}";
+                return $"{_status}; version={_changeVersion}; owner={_targetRawChallengeType}; ownerGeneration={_targetBusinessGeneration}; target={target}; last={_lastAction}{yuyukoVariant}";
             }
         }
     }
@@ -90,6 +98,81 @@ internal static class RuntimeSpecialBusinessContextService
     public static string CurrentRawChallengeType => RuntimeNightBusinessLifecycle.IsActive
         ? ReadRawChallengeType(out _)
         : SpecialBusinessChallengeTypes.NotChallenge;
+
+    public static bool TryGetCurrentChallengeType(out string challengeType, out string? error)
+    {
+        if (!RuntimeNightBusinessLifecycle.IsActive)
+        {
+            challengeType = SpecialBusinessChallengeTypes.NotChallenge;
+            error = null;
+            return true;
+        }
+
+        var state = ReadChallengeTypeState(out error);
+        challengeType = state.EffectiveChallengeType;
+        return state.RawChallengeTypeAvailable;
+    }
+
+    internal static bool TryGetActiveYuumaGeneration(out long generation)
+    {
+        generation = 0;
+        if (!RuntimeNightBusinessLifecycle.IsActive) return false;
+
+        var activeGeneration = RuntimeNightBusinessLifecycle.Generation;
+        lock (SyncRoot)
+        {
+            if (activeGeneration <= 0
+                || _targetBusinessGeneration != activeGeneration
+                || !string.Equals(
+                    _targetRawChallengeType,
+                    SpecialBusinessChallengeTypes.BloodPondHell,
+                    StringComparison.Ordinal)
+                || !string.Equals(_targetKind, "yuuma", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            generation = activeGeneration;
+            return true;
+        }
+    }
+
+    internal static bool TryGetActiveYuumaFoodTargetState(
+        out SpecialFoodTargetPolicy? policy,
+        out long revision)
+    {
+        policy = null;
+        revision = 0;
+        if (!RuntimeNightBusinessLifecycle.IsActive) return false;
+
+        var generation = RuntimeNightBusinessLifecycle.Generation;
+        lock (SyncRoot)
+        {
+            if (generation <= 0
+                || _targetBusinessGeneration != generation
+                || !string.Equals(
+                    _targetRawChallengeType,
+                    SpecialBusinessChallengeTypes.BloodPondHell,
+                    StringComparison.Ordinal)
+                || !string.Equals(_targetKind, "yuuma", StringComparison.Ordinal)
+                || _yuumaFoodTargetRevision <= 0)
+            {
+                return false;
+            }
+
+            var normalized = NormalizeFoodTargetTagsLocked();
+            if (normalized.Length != 2) return false;
+
+            policy = SpecialFoodTargetPolicy.CreateActive(
+                SpecialBusinessChallengeTypes.BloodPondHell,
+                "yuuma",
+                generation,
+                normalized,
+                SpecialFoodTargetMatchMode.All);
+            revision = _yuumaFoodTargetRevision;
+            return true;
+        }
+    }
 
     public static bool IsRetakeYuyukoChallenge => string.Equals(CurrentChallengeType, SpecialBusinessChallengeTypes.RetakeYuyuko, StringComparison.Ordinal);
 
@@ -156,29 +239,40 @@ internal static class RuntimeSpecialBusinessContextService
         }
     }
 
-    public static bool TryGetActiveWackyFoodTargetTags(out IReadOnlyList<string> tags)
+    public static bool TryGetActiveSpecialFoodTargetPolicy(out SpecialFoodTargetPolicy? policy)
     {
-        tags = Array.Empty<string>();
-        if (!TryGetActiveWackyTargetSignature(out _, out var activeTags) || activeTags.Count == 0) return false;
-
-        tags = activeTags;
-        return true;
-    }
-
-    public static bool TryGetActiveWackyTargetSignature(out string signature, out IReadOnlyList<string> tags)
-    {
-        signature = "";
-        tags = Array.Empty<string>();
+        policy = null;
         if (!RuntimeNightBusinessLifecycle.IsActive) return false;
-        if (!TryReadTargetOwner("koishi", out var rawChallengeType)) return false;
+
+        var rawChallengeType = ReadRawChallengeType(out var error);
+        if (!string.IsNullOrWhiteSpace(error)) return false;
+        var owner = GetExpectedTargetKind(rawChallengeType);
+        var matchMode = rawChallengeType switch
+        {
+            SpecialBusinessChallengeTypes.WackyCookingCompetition => SpecialFoodTargetMatchMode.Any,
+            SpecialBusinessChallengeTypes.BloodPondHell => SpecialFoodTargetMatchMode.All,
+            _ => (SpecialFoodTargetMatchMode?)null,
+        };
+        if (!matchMode.HasValue || owner.Length == 0) return false;
 
         lock (SyncRoot)
         {
-            if (!TargetContextMatchesLocked(rawChallengeType, "koishi")) return false;
+            if (!TargetContextMatchesLocked(rawChallengeType, owner)) return false;
 
             var normalized = NormalizeFoodTargetTagsLocked();
-            tags = normalized;
-            signature = BuildWackyTargetSignatureLocked(normalized);
+            if (normalized.Length == 0) return false;
+            if (string.Equals(rawChallengeType, SpecialBusinessChallengeTypes.BloodPondHell, StringComparison.Ordinal)
+                && normalized.Length != 2)
+            {
+                return false;
+            }
+
+            policy = SpecialFoodTargetPolicy.CreateActive(
+                rawChallengeType,
+                owner,
+                _targetBusinessGeneration,
+                normalized,
+                matchMode.Value);
             return true;
         }
     }
@@ -199,11 +293,6 @@ internal static class RuntimeSpecialBusinessContextService
             .ToArray();
     }
 
-    private static string BuildWackyTargetSignatureLocked(IReadOnlyList<string> normalizedFoodTags)
-    {
-        return $"{SpecialBusinessChallengeTypes.WackyCookingCompetition}|koishi|phase:{_phase.Trim()}|food:{string.Join(",", normalizedFoodTags)}";
-    }
-
     public static void Attach(ManualLogSource log)
     {
         _log = log;
@@ -219,9 +308,14 @@ internal static class RuntimeSpecialBusinessContextService
                 || _yuyukoRetakeEvidenceSource.Length > 0;
             ResetTargetStateLocked();
             _yuyukoRetakeEvidenceSource = "";
+            CaptureFailureDiagnostics.Clear();
+            CaptureFailureDiagnosticOrder.Clear();
             _lastAction = $"target cleared: {reason}";
             if (hadState) _changeVersion++;
         }
+
+        YuumaCookerTopologyObserver.Reset(reason);
+        SpecialBusinessDiagnostics.Reset();
     }
 
     public static SpecialBusinessContext Snapshot()
@@ -231,6 +325,7 @@ internal static class RuntimeSpecialBusinessContextService
             return new SpecialBusinessContext
             {
                 Active = false,
+                ChallengeTypeAvailable = true,
                 ChallengeType = SpecialBusinessChallengeTypes.NotChallenge,
                 Source = $"NightBusinessLifecycle={RuntimeNightBusinessLifecycle.Status}",
             };
@@ -239,14 +334,17 @@ internal static class RuntimeSpecialBusinessContextService
         TryAttach(_log, force: false);
 
         var challengeState = ReadChallengeTypeState(out var error);
-        if (challengeState.RawChallengeTypeAvailable
-            && string.Equals(challengeState.RawChallengeType, SpecialBusinessChallengeTypes.NotChallenge, StringComparison.Ordinal))
+        if (!challengeState.RawChallengeTypeAvailable)
+        {
+            ClearTargetStateForUnavailableChallenge();
+        }
+        else if (string.Equals(challengeState.RawChallengeType, SpecialBusinessChallengeTypes.NotChallenge, StringComparison.Ordinal))
         {
             ClearTargetStateForInactiveChallenge();
         }
 
         var challengeType = challengeState.EffectiveChallengeType;
-        var active = IsActiveChallenge(challengeType);
+        var active = challengeState.RawChallengeTypeAvailable && IsActiveChallenge(challengeType);
         var rule = GetRule(challengeType, active);
         string? displayNameError = null;
         var displayName = active ? ReadChallengeDisplayName(challengeType, out displayNameError) : "";
@@ -261,11 +359,13 @@ internal static class RuntimeSpecialBusinessContextService
         return new SpecialBusinessContext
         {
             Active = active,
+            ChallengeTypeAvailable = challengeState.RawChallengeTypeAvailable,
             ChallengeType = challengeType,
             DisplayName = displayName,
             Category = rule.Category,
             RuleSummary = rule.RuleSummary,
             FoodTargetTags = target.FoodTargetTags.ToList(),
+            YuumaFoodTargetRevision = target.YuumaFoodTargetRevision,
             BeverageTargetTags = target.BeverageTargetTags.ToList(),
             TargetFund = target.TargetFund,
             TargetLabel = target.TargetLabel,
@@ -273,6 +373,9 @@ internal static class RuntimeSpecialBusinessContextService
             CurrentValue = target.CurrentValue,
             MaxValue = target.MaxValue,
             TargetValue = target.TargetValue,
+            CurrentAnger = target.CurrentAnger,
+            MaxAnger = target.MaxAnger,
+            TargetAnger = target.TargetAnger,
             TargetTimeProgress = target.TargetTimeProgress,
             TargetTagTimeProgress = target.TargetTagTimeProgress,
             WackyKoishiShieldBroken = target.WackyKoishiShieldBroken,
@@ -305,9 +408,54 @@ internal static class RuntimeSpecialBusinessContextService
         {
             _harmony ??= new Harmony("com.tyukki.mystia-steward-companion.special-business-context");
 
-            PatchMethod(_harmony, IncomeControllerYuumaTypeName, "SetTargetTag", 3, nameof(OnYuumaTargetTagSet), patchedNow, missing);
-            PatchMethod(_harmony, IncomeControllerYuumaTypeName, "SetContext", 6, nameof(OnYuumaContextSet), patchedNow, missing);
-            PatchMethod(_harmony, IncomeControllerYuumaTypeName, "SetTargetProgress", 1, nameof(OnYuumaTargetProgressSet), patchedNow, missing);
+            PatchExactInstanceMethod(
+                _harmony,
+                IncomeControllerYuumaTypeName,
+                "SetTargetTag",
+                new[] { typeof(string), typeof(string), typeof(bool) },
+                nameof(OnYuumaTargetTagSet),
+                patchedNow,
+                missing);
+            PatchExactInstanceMethod(
+                _harmony,
+                IncomeControllerYuumaTypeName,
+                "SetContext",
+                new[] { typeof(string), typeof(int), typeof(int), typeof(int), typeof(int), typeof(Il2CppSystem.Action) },
+                nameof(OnYuumaContextSet),
+                patchedNow,
+                missing);
+            PatchExactInstanceMethod(
+                _harmony,
+                IncomeControllerYuumaTypeName,
+                "SetTargetProgress",
+                new[] { typeof(int) },
+                nameof(OnYuumaTargetProgressSet),
+                patchedNow,
+                missing);
+            PatchExactInstanceMethod(
+                _harmony,
+                IncomeControllerYuumaTypeName,
+                "SetAngerProgress",
+                new[] { typeof(int) },
+                nameof(OnYuumaAngerProgressSet),
+                patchedNow,
+                missing);
+            PatchExactInstanceMethod(
+                _harmony,
+                IncomeControllerYuumaTypeName,
+                "SetTargetTime",
+                new[] { typeof(float) },
+                nameof(OnYuumaTargetTimeSet),
+                patchedNow,
+                missing);
+            PatchExactInstanceMethod(
+                _harmony,
+                IncomeControllerYuumaTypeName,
+                "SetTargetProgressImmediate",
+                new[] { typeof(int), typeof(int) },
+                nameof(OnYuumaTargetProgressImmediate),
+                patchedNow,
+                missing);
             PatchMethod(_harmony, IncomeControllerKoishiTypeName, "SetTargetTag", 2, nameof(OnKoishiTargetTagSet), patchedNow, missing);
             PatchMethod(_harmony, IncomeControllerKoishiTypeName, "SetTargetTagTime", 1, nameof(OnKoishiTargetTagTimeSet), patchedNow, missing);
             PatchMethod(_harmony, IncomeControllerKoishiTypeName, "SetTargetTagTimeImmediately", 1, nameof(OnKoishiTargetTagTimeSet), patchedNow, missing);
@@ -370,6 +518,44 @@ internal static class RuntimeSpecialBusinessContextService
         var type = RuntimeReflectionUtility.FindType(typeName);
         var target = type?.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static)
             .FirstOrDefault(method => method.Name == methodName && method.GetParameters().Length == parameterCount);
+        var postfix = typeof(RuntimeSpecialBusinessContextService).GetMethod(postfixName, BindingFlags.NonPublic | BindingFlags.Static);
+        if (target == null || postfix == null)
+        {
+            missing.Add(key);
+            return;
+        }
+
+        harmony.Patch(target, postfix: new HarmonyMethod(postfix));
+        lock (SyncRoot)
+        {
+            PatchedMethods.Add(key);
+        }
+
+        patchedNow.Add(key);
+    }
+
+    private static void PatchExactInstanceMethod(
+        Harmony harmony,
+        string typeName,
+        string methodName,
+        IReadOnlyList<Type> parameterTypes,
+        string postfixName,
+        ICollection<string> patchedNow,
+        ICollection<string> missing)
+    {
+        var signature = string.Join(",", parameterTypes.Select(type => type.FullName ?? type.Name));
+        var key = $"{typeName}.{methodName}({signature})";
+        lock (SyncRoot)
+        {
+            if (PatchedMethods.Contains(key)) return;
+        }
+
+        var type = RuntimeReflectionUtility.FindType(typeName);
+        var target = type?.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+            .SingleOrDefault(method =>
+                method.Name == methodName
+                && method.ReturnType == typeof(void)
+                && method.GetParameters().Select(parameter => parameter.ParameterType).SequenceEqual(parameterTypes));
         var postfix = typeof(RuntimeSpecialBusinessContextService).GetMethod(postfixName, BindingFlags.NonPublic | BindingFlags.Static);
         if (target == null || postfix == null)
         {
@@ -458,19 +644,38 @@ internal static class RuntimeSpecialBusinessContextService
         }
     }
 
-    private static void OnYuumaTargetTagSet(object? __0, object? __1)
+    private static void OnYuumaTargetTagSet(object? __0, object? __1, object? __2)
     {
-        RunCaptureCallback("yuuma target tags", () => UpdateFoodTarget("yuuma", CleanText(__0), CleanText(__1)));
+        RunCaptureCallback(
+            "yuuma target tags",
+            () => UpdateYuumaFoodTarget(CleanText(__0), CleanText(__1), RuntimeReflectionUtility.ToBool(__2)));
     }
 
-    private static void OnYuumaContextSet(object? __0, object? __1, object? __2)
+    private static void OnYuumaContextSet(object? __0, object? __1, object? __2, object? __3, object? __4)
     {
-        RunCaptureCallback("yuuma context", () => UpdateProgressContext("yuuma", CleanText(__0), __1, __2, phase: ""));
+        RunCaptureCallback(
+            "yuuma context",
+            () => UpdateProgressContext("yuuma", CleanText(__0), __1, __2, phase: "", __3, __4));
     }
 
     private static void OnYuumaTargetProgressSet(object? __0)
     {
         RunCaptureCallback("yuuma target progress", () => UpdateTargetValue("yuuma", __0));
+    }
+
+    private static void OnYuumaAngerProgressSet(object? __0)
+    {
+        RunCaptureCallback("yuuma anger progress", () => UpdateYuumaTargetAnger(__0));
+    }
+
+    private static void OnYuumaTargetTimeSet(object? __0)
+    {
+        RunCaptureCallback("yuuma target time", () => UpdateTargetTime("yuuma", __0));
+    }
+
+    private static void OnYuumaTargetProgressImmediate(object? __0, object? __1)
+    {
+        RunCaptureCallback("yuuma target progress immediate", () => UpdateYuumaImmediateProgress(__0, __1));
     }
 
     private static void OnKoishiTargetTagSet(object? __0)
@@ -741,7 +946,17 @@ internal static class RuntimeSpecialBusinessContextService
             lock (SyncRoot)
             {
                 firstOccurrence = CaptureFailureDiagnostics.Add(diagnostic);
-                if (firstOccurrence) _lastAction = $"{source} capture failed: {ex.GetBaseException().Message}";
+                if (firstOccurrence)
+                {
+                    CaptureFailureDiagnosticOrder.Enqueue(diagnostic);
+                    while (CaptureFailureDiagnosticOrder.Count > MaxCaptureFailureDiagnostics)
+                    {
+                        CaptureFailureDiagnostics.Remove(CaptureFailureDiagnosticOrder.Dequeue());
+                    }
+
+                    _lastAction = $"{source} capture failed: {ex.GetBaseException().Message}";
+                    _changeVersion++;
+                }
             }
             if (firstOccurrence)
             {
@@ -799,12 +1014,73 @@ internal static class RuntimeSpecialBusinessContextService
         }
     }
 
-    private static void UpdateProgressContext(string kind, string label, object? currentValue, object? maxValue, string phase)
+    private static void UpdateYuumaFoodTarget(string firstTag, string secondTag, bool useEffect)
+    {
+        if (!RuntimeNightBusinessLifecycle.IsActive) return;
+        if (!TryReadTargetOwner("yuuma", out var rawChallengeType)) return;
+
+        var normalized = new[] { CleanText(firstTag), CleanText(secondTag) }
+            .Select(tag => FoodTags.NormalizeName(tag) ?? tag)
+            .Where(tag => !string.IsNullOrWhiteSpace(tag))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(tag => tag, StringComparer.Ordinal)
+            .ToArray();
+        var complete = firstTag.Length > 0
+            && secondTag.Length > 0
+            && normalized.Length == 2;
+        lock (SyncRoot)
+        {
+            SwitchTargetContextLocked(rawChallengeType, "yuuma");
+            var identity = complete ? string.Join('\u001F', normalized) : "";
+            if (complete
+                && !string.Equals(
+                    _yuumaFoodTargetIdentity,
+                    identity,
+                    StringComparison.Ordinal))
+            {
+                _yuumaFoodTargetRevision++;
+                _yuumaFoodTargetIdentity = identity;
+            }
+
+            _foodTargetTags = complete ? normalized : Array.Empty<string>();
+            _targetFund = null;
+            _targetLabel = "目标料理 Tag";
+            _targetTagTimeProgress = null;
+            _lastTargetUpdatedUtc = DateTime.UtcNow;
+            _lastAction = $"yuuma food tags={string.Join(",", _foodTargetTags)}; complete={complete}; effect={useEffect}; revision={_yuumaFoodTargetRevision}";
+            _changeVersion++;
+            LogYuumaTargetStateLocked("target-tags");
+            SpecialBusinessDiagnostics.AppendYuumaSnapshot(
+                "Blood Pond Hell HUD Target Tags",
+                new[]
+                {
+                    $"generation: {RuntimeNightBusinessLifecycle.Generation}",
+                    $"firstTag: {firstTag}",
+                    $"secondTag: {secondTag}",
+                    $"complete: {complete}",
+                    $"distinctTagCount: {normalized.Length}",
+                    $"targetRevision: {_yuumaFoodTargetRevision}",
+                    $"useEffect: {useEffect}",
+                },
+                $"gen:{RuntimeNightBusinessLifecycle.Generation}|hud-tags|{firstTag}|{secondTag}|{useEffect}");
+        }
+    }
+
+    private static void UpdateProgressContext(
+        string kind,
+        string label,
+        object? currentValue,
+        object? maxValue,
+        string phase,
+        object? currentAngerValue = null,
+        object? maxAngerValue = null)
     {
         if (!RuntimeNightBusinessLifecycle.IsActive) return;
 
         var current = RuntimeReflectionUtility.ToInt(currentValue, int.MinValue);
         var max = RuntimeReflectionUtility.ToInt(maxValue, int.MinValue);
+        var currentAnger = RuntimeReflectionUtility.ToInt(currentAngerValue, int.MinValue);
+        var maxAnger = RuntimeReflectionUtility.ToInt(maxAngerValue, int.MinValue);
         if (!TryReadTargetOwner(kind, out var rawChallengeType)) return;
 
         lock (SyncRoot)
@@ -817,17 +1093,27 @@ internal static class RuntimeSpecialBusinessContextService
             _targetLabel = label;
             _currentValue = current == int.MinValue ? null : current;
             _maxValue = max == int.MinValue ? null : max;
+            _currentAnger = currentAnger == int.MinValue ? null : currentAnger;
+            _maxAnger = maxAnger == int.MinValue ? null : maxAnger;
             _phase = phase;
-            if (contextChanged)
+            if (string.Equals(kind, "yuuma", StringComparison.Ordinal))
+            {
+                // Native SetContext initializes both current and target progress.
+                _targetValue = _currentValue;
+                _targetAnger = _currentAnger;
+            }
+            else if (contextChanged)
             {
                 _targetValue = null;
+                _targetAnger = null;
                 ResetTransientStateForContextLocked(kind, phase);
             }
             _lastTargetUpdatedUtc = DateTime.UtcNow;
-            _lastAction = $"{kind} context={label}; progress={_currentValue?.ToString() ?? ""}/{_maxValue?.ToString() ?? ""}; phase={phase}";
+            _lastAction = $"{kind} context={label}; progress={_currentValue?.ToString() ?? ""}/{_maxValue?.ToString() ?? ""}; anger={_currentAnger?.ToString() ?? ""}/{_maxAnger?.ToString() ?? ""}; phase={phase}";
             _changeVersion++;
             LogWackyTargetStateLocked("context");
             LogYuyukoTargetStateLocked("context");
+            LogYuumaTargetStateLocked("context");
         }
     }
 
@@ -855,6 +1141,22 @@ internal static class RuntimeSpecialBusinessContextService
             _lastAction = "target cleared: challenge inactive";
             _changeVersion++;
         }
+
+        YuumaCookerTopologyObserver.Reset("challenge inactive");
+    }
+
+    private static void ClearTargetStateForUnavailableChallenge()
+    {
+        lock (SyncRoot)
+        {
+            if (_targetRawChallengeType.Length == 0 && _targetKind.Length == 0) return;
+
+            ResetTargetStateLocked();
+            _lastAction = "target cleared: challenge type unavailable";
+            _changeVersion++;
+        }
+
+        YuumaCookerTopologyObserver.Reset("challenge type unavailable");
     }
 
     private static void SwitchTargetContextLocked(string rawChallengeType, string kind)
@@ -867,18 +1169,23 @@ internal static class RuntimeSpecialBusinessContextService
         ResetTargetStateLocked();
         _targetRawChallengeType = rawChallengeType;
         _targetKind = kind;
+        _targetBusinessGeneration = RuntimeNightBusinessLifecycle.Generation;
     }
 
     private static bool TargetContextMatchesLocked(string rawChallengeType, string kind)
     {
         return string.Equals(_targetRawChallengeType, rawChallengeType, StringComparison.Ordinal)
-            && string.Equals(_targetKind, kind, StringComparison.Ordinal);
+            && string.Equals(_targetKind, kind, StringComparison.Ordinal)
+            && _targetBusinessGeneration == RuntimeNightBusinessLifecycle.Generation;
     }
 
     private static void ResetTargetStateLocked()
     {
         _targetRawChallengeType = "";
         _targetKind = "";
+        _targetBusinessGeneration = 0;
+        _yuumaFoodTargetRevision = 0;
+        _yuumaFoodTargetIdentity = "";
         _foodTargetTags = Array.Empty<string>();
         _targetFund = null;
         _targetLabel = "";
@@ -886,6 +1193,9 @@ internal static class RuntimeSpecialBusinessContextService
         _currentValue = null;
         _maxValue = null;
         _targetValue = null;
+        _currentAnger = null;
+        _maxAnger = null;
+        _targetAnger = null;
         _targetTimeProgress = null;
         _targetTagTimeProgress = null;
         _koishiShieldBroken = null;
@@ -946,12 +1256,56 @@ internal static class RuntimeSpecialBusinessContextService
         lock (SyncRoot)
         {
             SwitchTargetContextLocked(rawChallengeType, kind);
+            if (_targetValue == target) return;
             _targetValue = target;
             _lastTargetUpdatedUtc = DateTime.UtcNow;
             _lastAction = $"{kind} target progress={target}";
             _changeVersion++;
             LogWackyTargetStateLocked("target-progress");
             LogYuyukoTargetStateLocked("target-progress");
+            LogYuumaTargetStateLocked("target-progress");
+        }
+    }
+
+    private static void UpdateYuumaTargetAnger(object? value)
+    {
+        if (!RuntimeNightBusinessLifecycle.IsActive) return;
+
+        var target = RuntimeReflectionUtility.ToInt(value, int.MinValue);
+        if (target == int.MinValue) return;
+
+        if (!TryReadTargetOwner("yuuma", out var rawChallengeType)) return;
+        lock (SyncRoot)
+        {
+            SwitchTargetContextLocked(rawChallengeType, "yuuma");
+            if (_targetAnger == target) return;
+            _targetAnger = target;
+            _lastTargetUpdatedUtc = DateTime.UtcNow;
+            _lastAction = $"yuuma target anger={target}";
+            _changeVersion++;
+            LogYuumaTargetStateLocked("target-anger");
+        }
+    }
+
+    private static void UpdateYuumaImmediateProgress(object? targetValueValue, object? targetAngerValue)
+    {
+        if (!RuntimeNightBusinessLifecycle.IsActive) return;
+
+        var targetValue = RuntimeReflectionUtility.ToInt(targetValueValue, int.MinValue);
+        var targetAnger = RuntimeReflectionUtility.ToInt(targetAngerValue, int.MinValue);
+        if (targetValue == int.MinValue || targetAnger == int.MinValue) return;
+
+        if (!TryReadTargetOwner("yuuma", out var rawChallengeType)) return;
+        lock (SyncRoot)
+        {
+            SwitchTargetContextLocked(rawChallengeType, "yuuma");
+            if (_targetValue == targetValue && _targetAnger == targetAnger) return;
+            _targetValue = targetValue;
+            _targetAnger = targetAnger;
+            _lastTargetUpdatedUtc = DateTime.UtcNow;
+            _lastAction = $"yuuma immediate targets hp={targetValue}; anger={targetAnger}";
+            _changeVersion++;
+            LogYuumaTargetStateLocked("target-progress-immediate");
         }
     }
 
@@ -966,12 +1320,20 @@ internal static class RuntimeSpecialBusinessContextService
         lock (SyncRoot)
         {
             SwitchTargetContextLocked(rawChallengeType, kind);
-            _targetTimeProgress = ClampProgress(progress);
+            var normalizedProgress = ClampProgress(progress);
+            if (string.Equals(kind, "yuuma", StringComparison.Ordinal)
+                && ProgressBucket(_targetTimeProgress) == ProgressBucket(normalizedProgress))
+            {
+                return;
+            }
+
+            _targetTimeProgress = normalizedProgress;
             _lastTargetUpdatedUtc = DateTime.UtcNow;
             _lastAction = $"{kind} time={FormatProgress(_targetTimeProgress)}";
             _changeVersion++;
             LogWackyTargetStateLocked("target-time", bucketByTime: true);
             LogYuyukoTargetStateLocked("target-time", bucketByTime: true);
+            LogYuumaTargetStateLocked("target-time", bucketByTime: true);
         }
     }
 
@@ -1320,6 +1682,48 @@ internal static class RuntimeSpecialBusinessContextService
             $"hud|{eventName}|{_phase}|{_currentValue}|{_maxValue}|{_targetValue}");
     }
 
+    private static void LogYuumaTargetStateLocked(
+        string eventName,
+        bool bucketByTime = false)
+    {
+        if (!string.Equals(_targetKind, "yuuma", StringComparison.Ordinal)) return;
+
+        var generation = RuntimeNightBusinessLifecycle.Generation;
+        var lines = new[]
+        {
+            $"event: {eventName}",
+            $"generation: {generation}",
+            $"targetOwnerGeneration: {_targetBusinessGeneration}",
+            $"targetKind: {_targetKind}",
+            $"foodTargetTags: {SpecialBusinessDiagnostics.FormatTags(_foodTargetTags)}",
+            $"targetLabel: {_targetLabel}",
+            $"currentValue: {_currentValue?.ToString() ?? ""}",
+            $"maxValue: {_maxValue?.ToString() ?? ""}",
+            $"targetValue: {_targetValue?.ToString() ?? ""}",
+            $"currentAnger: {_currentAnger?.ToString() ?? ""}",
+            $"maxAnger: {_maxAnger?.ToString() ?? ""}",
+            $"targetAnger: {_targetAnger?.ToString() ?? ""}",
+            $"targetTimeProgress: {FormatProgress(_targetTimeProgress)}",
+            $"lastAction: {_lastAction}",
+            $"changeVersion: {_changeVersion}",
+        };
+
+        if (bucketByTime)
+        {
+            SpecialBusinessDiagnostics.AppendYuumaProgressSnapshot(
+                $"gen:{generation}|hud-time|{string.Join(",", _foodTargetTags)}",
+                _targetTimeProgress,
+                "Blood Pond Hell HUD Target Time",
+                lines);
+            return;
+        }
+
+        SpecialBusinessDiagnostics.AppendYuumaSnapshot(
+            "Blood Pond Hell HUD Target Updated",
+            lines,
+            $"gen:{generation}|hud|{eventName}|{string.Join(",", _foodTargetTags)}|{_currentValue}|{_maxValue}|{_targetValue}|{_currentAnger}|{_maxAnger}|{_targetAnger}");
+    }
+
     private static ChallengeTypeState ReadChallengeTypeState(out string? error)
     {
         var rawChallengeType = ReadRawChallengeType(out var rawError);
@@ -1635,6 +2039,7 @@ internal static class RuntimeSpecialBusinessContextService
             "0" => SpecialBusinessChallengeTypes.NotChallenge,
             "3" => SpecialBusinessChallengeTypes.StoryYuyuko,
             "4" => SpecialBusinessChallengeTypes.RetakeYuyuko,
+            "6" => SpecialBusinessChallengeTypes.BloodPondHell,
             _ => value,
         };
     }
@@ -1668,6 +2073,9 @@ internal static class RuntimeSpecialBusinessContextService
 
             return new SpecialBusinessTarget(
                 NormalizeFoodTargetTagsLocked(),
+                string.Equals(expectedKind, "yuuma", StringComparison.Ordinal)
+                    ? _yuumaFoodTargetRevision
+                    : 0,
                 Array.Empty<string>(),
                 _targetFund,
                 _targetLabel,
@@ -1675,6 +2083,9 @@ internal static class RuntimeSpecialBusinessContextService
                 _currentValue,
                 _maxValue,
                 _targetValue,
+                _currentAnger,
+                _maxAnger,
+                _targetAnger,
                 _targetTimeProgress,
                 _targetTagTimeProgress,
                 _koishiShieldBroken,
@@ -1692,7 +2103,7 @@ internal static class RuntimeSpecialBusinessContextService
     {
         return challengeType switch
         {
-            "Story_BloodPondHell" => "yuuma",
+            SpecialBusinessChallengeTypes.BloodPondHell => "yuuma",
             SpecialBusinessChallengeTypes.WackyCookingCompetition => "koishi",
             "Story_Basic" => "challenge",
             "Story_Advanced" => "challenge",
@@ -1718,7 +2129,7 @@ internal static class RuntimeSpecialBusinessContextService
 
     private static string BuildSource(ChallengeTypeState challengeState, SpecialBusinessTarget target)
     {
-        var source = $"ChallengeMode={challengeState.EffectiveChallengeType}; RawChallengeMode={challengeState.RawChallengeType}; DifficultyMode={challengeState.DifficultyMode}; VariantSource={challengeState.VariantSource}; Capture={BuildCaptureStatus(target)}";
+        var source = $"ChallengeTypeAvailable={challengeState.RawChallengeTypeAvailable}; ChallengeMode={challengeState.EffectiveChallengeType}; RawChallengeMode={challengeState.RawChallengeType}; DifficultyMode={challengeState.DifficultyMode}; VariantSource={challengeState.VariantSource}; Capture={BuildCaptureStatus(target)}";
         if (target.Source.Length > 0)
         {
             source += $"; TargetSource={target.Source}";
@@ -1733,7 +2144,7 @@ internal static class RuntimeSpecialBusinessContextService
         {
             var targetDescription = target.Source.Length == 0
                 ? "none"
-                : $"{target.Source}; foodTags={string.Join(",", target.FoodTargetTags)}; targetFund={target.TargetFund?.ToString() ?? ""}; progress={target.CurrentValue?.ToString() ?? ""}/{target.MaxValue?.ToString() ?? ""}; target={target.TargetValue?.ToString() ?? ""}; time={FormatProgress(target.TargetTimeProgress)}; tagTime={FormatProgress(target.TargetTagTimeProgress)}; koishiShield={target.WackyKoishiShieldBroken?.ToString() ?? ""}; koishiFoodLikes={string.Join(",", target.WackyKoishiFoodPreferenceTags)}; koishiFoodHates={string.Join(",", target.WackyKoishiFoodHateTags)}; koishiBevLikes={string.Join(",", target.WackyKoishiBeveragePreferenceTags)}; spells={target.CurrentSpellCount?.ToString() ?? ""}/{target.TargetSpellCount?.ToString() ?? ""}; phase={target.Phase}";
+                : $"{target.Source}; generation={_targetBusinessGeneration}; foodTags={string.Join(",", target.FoodTargetTags)}; targetFund={target.TargetFund?.ToString() ?? ""}; progress={target.CurrentValue?.ToString() ?? ""}/{target.MaxValue?.ToString() ?? ""}; target={target.TargetValue?.ToString() ?? ""}; anger={target.CurrentAnger?.ToString() ?? ""}/{target.MaxAnger?.ToString() ?? ""}; targetAnger={target.TargetAnger?.ToString() ?? ""}; time={FormatProgress(target.TargetTimeProgress)}; tagTime={FormatProgress(target.TargetTagTimeProgress)}; koishiShield={target.WackyKoishiShieldBroken?.ToString() ?? ""}; koishiFoodLikes={string.Join(",", target.WackyKoishiFoodPreferenceTags)}; koishiFoodHates={string.Join(",", target.WackyKoishiFoodHateTags)}; koishiBevLikes={string.Join(",", target.WackyKoishiBeveragePreferenceTags)}; spells={target.CurrentSpellCount?.ToString() ?? ""}/{target.TargetSpellCount?.ToString() ?? ""}; phase={target.Phase}";
             var yuyukoVariant = _yuyukoRetakeEvidenceSource.Length == 0
                 ? ""
                 : $"; yuyukoRetakeEvidence={_yuyukoRetakeEvidenceSource}";
@@ -1819,6 +2230,12 @@ internal static class RuntimeSpecialBusinessContextService
         return Math.Round(value, 4);
     }
 
+    private static int ProgressBucket(double? value, int bucketCount = 20)
+    {
+        if (!value.HasValue || double.IsNaN(value.Value)) return -1;
+        return Math.Clamp((int)Math.Floor(value.Value * bucketCount), 0, bucketCount);
+    }
+
     private static string FormatProgress(double? value)
     {
         return value.HasValue
@@ -1833,6 +2250,7 @@ internal static class RuntimeSpecialBusinessContextService
 
     private sealed record SpecialBusinessTarget(
         IReadOnlyList<string> FoodTargetTags,
+        long YuumaFoodTargetRevision,
         IReadOnlyList<string> BeverageTargetTags,
         int? TargetFund,
         string TargetLabel,
@@ -1840,6 +2258,9 @@ internal static class RuntimeSpecialBusinessContextService
         int? CurrentValue,
         int? MaxValue,
         int? TargetValue,
+        int? CurrentAnger,
+        int? MaxAnger,
+        int? TargetAnger,
         double? TargetTimeProgress,
         double? TargetTagTimeProgress,
         bool? WackyKoishiShieldBroken,
@@ -1853,10 +2274,14 @@ internal static class RuntimeSpecialBusinessContextService
     {
         public static SpecialBusinessTarget Empty { get; } = new(
             Array.Empty<string>(),
+            0,
             Array.Empty<string>(),
             null,
             "",
             "",
+            null,
+            null,
+            null,
             null,
             null,
             null,

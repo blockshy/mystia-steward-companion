@@ -11,6 +11,8 @@ export const wackyCookingCompetitionModule: SpecialBusinessRuleModule = {
   id: 'wacky-cooking-competition',
   challengeTypes: [WACKY_CHALLENGE_TYPE],
   buildOrderRule: buildWackyCookingCompetitionOrderRule,
+  requiresNormalExecutionTarget: (specialBusiness, role) =>
+    specialBusiness?.active === true && isWackyCookingCompetitionOrderRole(role),
   selectNormalExecutionTarget: selectWackyNormalExecutionTarget,
   isOrderRole: isWackyCookingCompetitionOrderRole,
   buildRejectedRecipeKeyFromEvent: buildWackyRejectedRecipeKeyFromEvent,

@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <LangVersion>10.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../../mods/bepinex/src/Core/Models.cs" Link="Models.cs" />
+    <Compile Include="../../mods/bepinex/src/LocalApi/LocalApiModels.cs" Link="LocalApiModels.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/AutomationCookerStartPolicy.cs" Link="AutomationCookerStartPolicy.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeCookerSnapshotContentSignature.cs" Link="RuntimeCookerSnapshotContentSignature.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeCookerReservation.cs" Link="RuntimeCookerReservation.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeCookerSnapshotService.cs" Link="RuntimeCookerSnapshotService.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeCookerStartAvailabilityService.cs" Link="RuntimeCookerStartAvailabilityService.cs" />
+  </ItemGroup>
+</Project>

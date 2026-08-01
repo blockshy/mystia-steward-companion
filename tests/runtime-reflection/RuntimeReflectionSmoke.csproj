@@ -16,6 +16,7 @@
     <Compile Include="../../mods/bepinex/src/Save/RuntimeCoreMappingProjection.cs" Link="RuntimeCoreMappingProjection.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeDaySceneReadinessState.cs" Link="RuntimeDaySceneReadinessState.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeReflectionUtility.cs" Link="RuntimeReflectionUtility.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeCookerTypeSequenceReader.cs" Link="RuntimeCookerTypeSequenceReader.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeStorageStateProjection.cs" Link="RuntimeStorageStateProjection.cs" />
   </ItemGroup>
 

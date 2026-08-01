@@ -5,6 +5,7 @@ import {
   resolveCompanionConnectionIdentity,
   updateUnavailableRuntimeData,
 } from '@/companion/connection-recovery';
+import { validateRecommendationCookerSnapshot } from '@/companion/domain/cookers';
 import {
   normalizeEndpoint,
   persistApiToken,
@@ -241,6 +242,12 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
         return;
       }
 
+      if (data.recommendationState) {
+        const cookerSnapshotError = validateRecommendationCookerSnapshot(data.recommendationState);
+        if (cookerSnapshotError) {
+          throw new Error(`游戏快照中的厨具字段不完整：${cookerSnapshotError}`);
+        }
+      }
       const nextSnapshotSignature = data.snapshotSignature ?? '';
       snapshotSignatureRef.current = nextSnapshotSignature;
       snapshotRef.current = data;

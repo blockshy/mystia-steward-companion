@@ -204,6 +204,15 @@ internal sealed class AutomationCookingJobTracker
         ReasonCode = "cooking-manual-handoff";
     }
 
+    public void MarkManualHandoffExpired(DateTime observedAtUtc)
+    {
+        _stallClock.Observe(observedAtUtc, eligible: false);
+        LastObservedAtUtc = observedAtUtc;
+        State = "manual-handoff-expired";
+        Outcome = "waiting";
+        ReasonCode = "cooking-manual-handoff-expired";
+    }
+
     public AutomationCookingTransition Observe(AutomationCookingObservation observation)
     {
         _stallClock.Observe(observation.ObservedAtUtc, observation.TimeoutEligible);

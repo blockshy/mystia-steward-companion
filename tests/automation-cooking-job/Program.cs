@@ -7,6 +7,8 @@ try
     VerifyHarmonyMutationCompletionSemantics();
     VerifyCookerStartAvailabilityPolicy();
     VerifyCookControllerFoodResultIdentityDomain();
+    VerifySpecialFoodTargetPolicyMatching();
+    VerifySpecialFoodTargetPolicyIdentity();
     VerifySameGenerationCanAdoptFinalResult();
     VerifyControllerReuseNeverProducesASideEffect();
     VerifyExplicitOwnershipLossInterruptsTheJob();
@@ -14,6 +16,7 @@ try
     VerifyProgressStallBlocksTheJob();
     VerifyNativeFinalizeWaitNeverRequestsASideEffect();
     VerifyManualHandoffSuspendsCookingSideEffects();
+    VerifyExpiredManualHandoffRetainsTheOrderSlot();
     VerifyThreeUnreadableObservationsBlockTheJob();
     VerifyAlternatingOwnershipFailuresAreBounded();
     VerifyRegressiveProgressDoesNotCountAsProgress();
@@ -25,16 +28,164 @@ try
     VerifyDefiniteNonCommitCanRetry();
     VerifyCommittedCleanupRetriesAreBounded();
     VerifySafetyBarriersRequireExactAcknowledgement();
+    VerifyYuumaSwitchDisabledManualHandoffIsBarrierFree();
+    VerifyInvalidatedCookerReservationsNeverInvokeOldWrappers();
+    VerifyProductionFreshCookerBindingContract();
     Console.WriteLine(
         "PASS: cooking jobs reuse only strict-idle or completed-Extract cookers, accept same-generation final "
         + "results, reject reused cookers without side effects, block stalled progress, lock uncertain/committed "
-        + "side effects, and bound committed cleanup retries.");
+        + "side effects, bound committed cleanup retries, reject invalidated cooker reservations before touching "
+        + "old wrappers, and keep the switch-disabled Blood Pond Hell handoff receipt deterministic and barrier-free.");
     return 0;
 }
 catch (Exception ex)
 {
     Console.Error.WriteLine($"FAIL: {ex}");
     return 1;
+}
+
+static void VerifySpecialFoodTargetPolicyMatching()
+{
+    var anySignature = SpecialFoodTargetPolicy.BuildSignature(
+        "Story_WackyCookingCompetition",
+        "koishi",
+        9,
+        SpecialFoodTargetMatchMode.Any,
+        new[] { "传说", "海味" });
+    AssertSpecialFoodTargetPolicy(
+        "Story_WackyCookingCompetition",
+        "koishi",
+        9,
+        new[] { "海味", "传说", "海味" },
+        "any",
+        anySignature,
+        out var anyPolicy);
+    if (!anyPolicy.Matches(new[] { "海味" }) || anyPolicy.Matches(new[] { "肉" }))
+    {
+        throw new InvalidOperationException("The Any special-food target policy did not preserve one-of matching.");
+    }
+
+    var allSignature = SpecialFoodTargetPolicy.BuildSignature(
+        "Story_BloodPondHell",
+        "yuuma",
+        12,
+        SpecialFoodTargetMatchMode.All,
+        new[] { "传说", "海味" });
+    AssertSpecialFoodTargetPolicy(
+        "Story_BloodPondHell",
+        "yuuma",
+        12,
+        new[] { "传说", "海味" },
+        "all",
+        allSignature,
+        out var allPolicy);
+    if (!allPolicy.Matches(new[] { "传说", "海味", "肉" })
+        || allPolicy.Matches(new[] { "传说" })
+        || allPolicy.Matches(Array.Empty<string>()))
+    {
+        throw new InvalidOperationException("The Blood Pond Hell All policy accepted an incomplete actual Tag set.");
+    }
+
+    if (SpecialFoodTargetPolicy.TryCreate(
+            " Story_BloodPondHell",
+            "yuuma",
+            12,
+            new[] { "传说", "海味" },
+            "all",
+            allSignature,
+            out _,
+            out _)
+        || SpecialFoodTargetPolicy.TryCreate(
+            "Story_BloodPondHell",
+            "yuuma",
+            12,
+            new[] { "传说", "海味" },
+            "ALL",
+            allSignature,
+            out _,
+            out _)
+        || SpecialFoodTargetPolicy.TryCreate(
+            "Story_BloodPondHell",
+            "yuuma",
+            0,
+            new[] { "传说", "海味" },
+            "all",
+            allSignature,
+            out _,
+            out _)
+        || SpecialFoodTargetPolicy.TryCreate(
+            "Story_BloodPondHell",
+            "yuuma",
+            12,
+            new[] { "传说", "海味" },
+            "all",
+            $"{allSignature}|alias",
+            out _,
+            out _))
+    {
+        throw new InvalidOperationException("An alias, invalid generation, or noncanonical signature was accepted.");
+    }
+}
+
+static void VerifySpecialFoodTargetPolicyIdentity()
+{
+    var expected = SpecialFoodTargetPolicy.CreateActive(
+        "Story_BloodPondHell",
+        "yuuma",
+        18,
+        new[] { "传说", "海味" },
+        SpecialFoodTargetMatchMode.All);
+    var same = SpecialFoodTargetPolicy.CreateActive(
+        "Story_BloodPondHell",
+        "yuuma",
+        18,
+        new[] { "海味", "传说" },
+        SpecialFoodTargetMatchMode.All);
+    var changedGeneration = SpecialFoodTargetPolicy.CreateActive(
+        "Story_BloodPondHell",
+        "yuuma",
+        19,
+        new[] { "传说", "海味" },
+        SpecialFoodTargetMatchMode.All);
+    var changedTags = SpecialFoodTargetPolicy.CreateActive(
+        "Story_BloodPondHell",
+        "yuuma",
+        18,
+        new[] { "传说", "肉" },
+        SpecialFoodTargetMatchMode.All);
+
+    if (!expected.HasSameIdentity(same)
+        || expected.HasSameIdentity(changedGeneration)
+        || expected.HasSameIdentity(changedTags))
+    {
+        throw new InvalidOperationException("Special-food target identity did not bind generation and normalized Tags.");
+    }
+}
+
+static void AssertSpecialFoodTargetPolicy(
+    string challenge,
+    string owner,
+    long generation,
+    IReadOnlyList<string> tags,
+    string mode,
+    string signature,
+    out SpecialFoodTargetPolicy policy)
+{
+    if (!SpecialFoodTargetPolicy.TryCreate(
+            challenge,
+            owner,
+            generation,
+            tags,
+            mode,
+            signature,
+            out var parsed,
+            out var error)
+        || parsed == null)
+    {
+        throw new InvalidOperationException($"A valid special-food target policy was rejected: {error}");
+    }
+
+    policy = parsed;
 }
 
 static void VerifyHarmonyMutationCompletionSemantics()
@@ -586,6 +737,28 @@ static void VerifyManualHandoffSuspendsCookingSideEffects()
     }
 }
 
+static void VerifyExpiredManualHandoffRetainsTheOrderSlot()
+{
+    var startedAt = Utc(12, 43, 0);
+    var tracker = NewTracker(expectedGeneration: 28, startedAt, phase: 3, progress: 1f);
+    tracker.EnterManualHandoff(startedAt.AddSeconds(1));
+    tracker.MarkManualHandoffExpired(startedAt.AddSeconds(2));
+    if (tracker.State != "manual-handoff-expired"
+        || tracker.Outcome != "waiting"
+        || tracker.ReasonCode != "cooking-manual-handoff-expired"
+        || tracker.EffectiveStallElapsed != TimeSpan.Zero)
+    {
+        throw new InvalidOperationException(
+            "A rotated Blood Pond Hell target did not retain a non-side-effecting expired handoff slot.");
+    }
+
+    tracker.Suspend(startedAt.AddMinutes(10));
+    if (tracker.EffectiveStallElapsed != TimeSpan.Zero)
+    {
+        throw new InvalidOperationException("An expired handoff consumed the cooking stall budget.");
+    }
+}
+
 static void VerifySafetyBarriersRequireExactAcknowledgement()
 {
     var registry = new AutomationSafetyBarrierRegistry();
@@ -615,6 +788,283 @@ static void VerifySafetyBarriersRequireExactAcknowledgement()
     {
         throw new InvalidOperationException("Acknowledging a target did not clear only its barriers through the selected sequence.");
     }
+}
+
+static void VerifyYuumaSwitchDisabledManualHandoffIsBarrierFree()
+{
+    var signature = SpecialFoodTargetPolicy.BuildSignature(
+        "Story_BloodPondHell",
+        "yuuma",
+        41,
+        SpecialFoodTargetMatchMode.All,
+        new[] { "传说", "海味" });
+    AssertSpecialFoodTargetPolicy(
+        "Story_BloodPondHell",
+        "yuuma",
+        41,
+        new[] { "传说", "海味" },
+        "all",
+        signature,
+        out var policy);
+    if (!policy.Matches(new[] { "传说", "海味" }))
+    {
+        throw new InvalidOperationException("The exact Blood Pond Hell target policy was not established for the handoff test.");
+    }
+
+    var startedAt = Utc(12, 58, 0);
+    var tracker = NewTracker(expectedGeneration: 41, startedAt, phase: 3, progress: 1f);
+    tracker.EnterManualHandoff(startedAt.AddSeconds(1));
+    if (tracker.State != "manual-handoff"
+        || tracker.Outcome != "waiting"
+        || tracker.ReasonCode != "cooking-manual-handoff"
+        || tracker.EffectiveStallElapsed != TimeSpan.Zero)
+    {
+        throw new InvalidOperationException(
+            "The switch-disabled Blood Pond Hell path did not enter the deterministic non-side-effecting handoff state.");
+    }
+
+    var barriers = new AutomationSafetyBarrierRegistry();
+    if (barriers.TryGetLatest("rare:trace:yuuma", out _))
+    {
+        throw new InvalidOperationException("A deterministic Blood Pond Hell handoff created an uncertainty barrier.");
+    }
+
+    var acknowledgement = barriers.Acknowledge(41);
+    if (acknowledgement.Found || acknowledgement.Sequences.Count != 0)
+    {
+        throw new InvalidOperationException("A deterministic Blood Pond Hell handoff required a safety acknowledgement.");
+    }
+}
+
+static void VerifyInvalidatedCookerReservationsNeverInvokeOldWrappers()
+{
+    if (!RuntimeCookerReservation.TryCreate(
+            0,
+            "0x1001",
+            4,
+            0,
+            2,
+            out var reservation,
+            out var reservationError))
+    {
+        throw new InvalidOperationException($"The exact cooker fixture was rejected: {reservationError}");
+    }
+
+    var oldController = new SideEffectProbe();
+    var replacementController = new SideEffectProbe();
+    var initialEntries = BuildCookerEntries(oldController, "0x1001");
+    AssertFreshCookerSideEffect(
+        expected: true,
+        reservation,
+        initialEntries,
+        lockedPositions: new HashSet<RuntimeCookerGridPosition>(),
+        couldOpen: true,
+        expectedOwnership: new TestCookerOwnership(7, 11),
+        currentOwnership: new TestCookerOwnership(7, 11),
+        oldController,
+        "An unchanged exact reservation did not reach its fresh wrapper.");
+    AssertEqual(1, oldController.InvocationCount, "The valid fresh wrapper was not invoked exactly once.");
+
+    AssertFreshCookerSideEffect(
+        expected: false,
+        reservation,
+        initialEntries,
+        lockedPositions: new HashSet<RuntimeCookerGridPosition> { reservation.GridPosition },
+        couldOpen: false,
+        expectedOwnership: new TestCookerOwnership(7, 11),
+        currentOwnership: new TestCookerOwnership(7, 11),
+        oldController,
+        "A challenge-locked reservation reached the old wrapper.");
+
+    var replacementEntries = BuildCookerEntries(replacementController, "0x2001");
+    AssertFreshCookerSideEffect(
+        expected: false,
+        reservation,
+        replacementEntries,
+        lockedPositions: new HashSet<RuntimeCookerGridPosition>(),
+        couldOpen: true,
+        expectedOwnership: new TestCookerOwnership(7, 11),
+        currentOwnership: new TestCookerOwnership(7, 11),
+        replacementController,
+        "A replacement controller reused the old reservation.");
+
+    AssertFreshCookerSideEffect(
+        expected: false,
+        reservation,
+        initialEntries,
+        lockedPositions: new HashSet<RuntimeCookerGridPosition>(),
+        couldOpen: true,
+        expectedOwnership: new TestCookerOwnership(7, 11),
+        currentOwnership: new TestCookerOwnership(7, 12),
+        oldController,
+        "A changed content revision reached the old wrapper.");
+
+    AssertEqual(
+        1,
+        oldController.InvocationCount,
+        "An invalidated event path invoked the retained old controller wrapper.");
+    AssertEqual(
+        0,
+        replacementController.InvocationCount,
+        "An old reservation invoked a replacement controller wrapper.");
+}
+
+static IReadOnlyList<RuntimeCookerControllerEntry> BuildCookerEntries(
+    SideEffectProbe controller,
+    string identity)
+{
+    return new[]
+    {
+        new RuntimeCookerControllerEntry
+        {
+            Controller = controller,
+            ControllerIdentity = identity,
+            GridPosition = new RuntimeCookerGridPosition(4, 0, 2),
+        },
+    };
+}
+
+static void AssertFreshCookerSideEffect(
+    bool expected,
+    RuntimeCookerReservation reservation,
+    IReadOnlyList<RuntimeCookerControllerEntry> currentEntries,
+    IReadOnlySet<RuntimeCookerGridPosition> lockedPositions,
+    bool couldOpen,
+    TestCookerOwnership expectedOwnership,
+    TestCookerOwnership currentOwnership,
+    SideEffectProbe expectedFreshController,
+    string message)
+{
+    var invoked = TryInvokeWithFreshCooker(
+        reservation,
+        currentEntries,
+        lockedPositions,
+        couldOpen,
+        expectedOwnership,
+        currentOwnership);
+    if (invoked != expected)
+    {
+        throw new InvalidOperationException(message);
+    }
+
+    if (invoked && expectedFreshController.InvocationCount == 0)
+    {
+        throw new InvalidOperationException("The side effect did not use the wrapper returned by the fresh catalog read.");
+    }
+}
+
+static bool TryInvokeWithFreshCooker(
+    RuntimeCookerReservation reservation,
+    IReadOnlyList<RuntimeCookerControllerEntry> currentEntries,
+    IReadOnlySet<RuntimeCookerGridPosition> lockedPositions,
+    bool couldOpen,
+    TestCookerOwnership expectedOwnership,
+    TestCookerOwnership currentOwnership)
+{
+    if (!reservation.TryMatch(currentEntries, out var freshEntry, out _)
+        || reservation.EvaluateChallengeGate(lockedPositions, couldOpen)
+            != RuntimeCookerChallengeGateState.Available
+        || currentOwnership != expectedOwnership)
+    {
+        return false;
+    }
+
+    ((SideEffectProbe)freshEntry.Controller).Invoke();
+    return true;
+}
+
+static void VerifyProductionFreshCookerBindingContract()
+{
+    var root = FindRepositoryRoot();
+    var service = File.ReadAllText(Path.Combine(
+        root,
+        "mods",
+        "bepinex",
+        "src",
+        "Save",
+        "RuntimeOrderPreparationService.cs"));
+    var cooking = File.ReadAllText(Path.Combine(
+        root,
+        "mods",
+        "bepinex",
+        "src",
+        "Save",
+        "RuntimeOrderPreparationService.Cooking.cs"));
+
+    var jobSource = ExtractSourceBlock(
+        service,
+        "private sealed class AutomationCookingJob");
+    AssertContains(
+        jobSource,
+        "public RuntimeCookerReservation CookerReservation { get; init; }",
+        "AutomationCookingJob no longer retains its exact managed cooker reservation.");
+    AssertDoesNotContain(
+        jobSource,
+        "object CookController",
+        "AutomationCookingJob retained a long-lived IL2CPP cooker wrapper.");
+
+    var processor = ExtractSourceBlock(
+        cooking,
+        "private static (bool Remove, string Message, string Code) TryProcessAutomationCookingJob(");
+    var freshBinding = processor.IndexOf("TryReacquireAutomationCooker(", StringComparison.Ordinal);
+    var contentRead = processor.IndexOf("cookerBinding.State", StringComparison.Ordinal);
+    AssertTrue(
+        freshBinding >= 0 && contentRead > freshBinding,
+        "An existing cooking job can read cooker content before a fresh exact reservation binding.");
+    AssertDoesNotContain(
+        processor,
+        "job.CookController",
+        "An existing cooking job can still touch a retained cooker wrapper.");
+
+    var reacquire = ExtractSourceBlock(
+        cooking,
+        "private static bool TryReacquireAutomationCooker(");
+    foreach (var required in new[]
+             {
+                 "TryReadCookerControllerEntriesFromCookSystem(",
+                 "TryReadLockedCookerPositions(",
+                 "job.CookerReservation.TryMatch(",
+                 "lockedPositions.Contains(job.CookerReservation.GridPosition)",
+                 "job.CookerReservation.EvaluateChallengeGate(",
+                 "controllerPointer != job.ControllerPointer",
+                 "ownershipBefore != ownershipAfter",
+                 "ownershipAfter.Generation == job.Generation",
+                 "ownershipAfter.ContentRevision == job.ContentRevision",
+                 "if (!ownershipMatches)",
+             })
+    {
+        AssertContains(
+            reacquire,
+            required,
+            $"Fresh cooker binding is missing the fail-closed boundary '{required}'.");
+    }
+
+    var reservationMatch = reacquire.IndexOf("job.CookerReservation.TryMatch(", StringComparison.Ordinal);
+    var lockedRejection = reacquire.IndexOf(
+        "lockedPositions.Contains(job.CookerReservation.GridPosition)",
+        StringComparison.Ordinal);
+    var stateRead = reacquire.IndexOf(
+        "RuntimeCookerReflection.TryReadCookerControllerState(",
+        StringComparison.Ordinal);
+    AssertTrue(
+        reservationMatch >= 0 && lockedRejection > reservationMatch && stateRead > lockedRejection,
+        "A challenge-locked reservation can still reach native controller state getters before rejection.");
+
+    var reservedSelection = ExtractSourceBlock(
+        cooking,
+        "private static (\n        bool Ok,\n        bool Waiting,\n        object? CookController,\n        RuntimeCookerControllerState? ControllerState,\n        string Message) TryGetCookerFromCookSystem(");
+    var selectionMatch = reservedSelection.IndexOf("reservation.TryMatch(", StringComparison.Ordinal);
+    var selectionLockedRejection = reservedSelection.IndexOf(
+        "lockedPositions.Contains(reservation.GridPosition)",
+        StringComparison.Ordinal);
+    var selectionStateRead = reservedSelection.IndexOf(
+        "RuntimeCookerReflection.TryReadCookerControllerState(",
+        StringComparison.Ordinal);
+    AssertTrue(
+        selectionMatch >= 0
+        && selectionLockedRejection > selectionMatch
+        && selectionStateRead > selectionLockedRejection,
+        "New cooking can still read a challenge-locked controller before rejecting its reservation.");
 }
 
 static void VerifyAlternatingOwnershipFailuresAreBounded()
@@ -945,6 +1395,98 @@ static void AssertTransition(
     if (actual != expected)
     {
         throw new InvalidOperationException($"{message} Expected '{expected}', actual '{actual}'.");
+    }
+}
+
+static string FindRepositoryRoot()
+{
+    var current = new DirectoryInfo(AppContext.BaseDirectory);
+    while (current != null)
+    {
+        if (File.Exists(Path.Combine(current.FullName, "package.json"))
+            && Directory.Exists(Path.Combine(current.FullName, "mods", "bepinex")))
+        {
+            return current.FullName;
+        }
+
+        current = current.Parent;
+    }
+
+    throw new InvalidOperationException("Repository root was not found from the test output directory.");
+}
+
+static string ExtractSourceBlock(string source, string marker)
+{
+    var markerIndex = source.IndexOf(marker, StringComparison.Ordinal);
+    if (markerIndex < 0)
+    {
+        throw new InvalidOperationException($"Source marker was not found: {marker}");
+    }
+
+    var openBrace = source.IndexOf('{', markerIndex);
+    if (openBrace < 0)
+    {
+        throw new InvalidOperationException($"Source block has no opening brace: {marker}");
+    }
+
+    var depth = 0;
+    for (var index = openBrace; index < source.Length; index++)
+    {
+        if (source[index] == '{')
+        {
+            depth++;
+        }
+        else if (source[index] == '}' && --depth == 0)
+        {
+            return source[markerIndex..(index + 1)];
+        }
+    }
+
+    throw new InvalidOperationException($"Source block is not balanced: {marker}");
+}
+
+static void AssertContains(string source, string expected, string message)
+{
+    if (!source.Contains(expected, StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException($"{message} Missing: {expected}");
+    }
+}
+
+static void AssertDoesNotContain(string source, string forbidden, string message)
+{
+    if (source.Contains(forbidden, StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException($"{message} Found: {forbidden}");
+    }
+}
+
+static void AssertTrue(bool condition, string message)
+{
+    if (!condition)
+    {
+        throw new InvalidOperationException(message);
+    }
+}
+
+static void AssertEqual<T>(T expected, T actual, string message)
+    where T : notnull
+{
+    if (!EqualityComparer<T>.Default.Equals(expected, actual))
+    {
+        throw new InvalidOperationException($"{message} Expected: {expected}; actual: {actual}.");
+    }
+}
+
+internal readonly record struct TestCookerOwnership(long Generation, long ContentRevision);
+
+internal sealed class SideEffectProbe
+{
+    public int InvocationCount { get; private set; }
+
+    public void Invoke()
+    {
+        InvocationCount++;
     }
 }
 

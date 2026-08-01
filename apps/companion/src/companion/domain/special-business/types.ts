@@ -31,6 +31,10 @@ export interface SpecialBusinessRuleModule {
     specialBusiness: SpecialBusinessContext | null | undefined,
     role: string | null | undefined,
   ) => SpecialBusinessOrderRule;
+  requiresNormalExecutionTarget?: (
+    specialBusiness: SpecialBusinessContext | null | undefined,
+    role: string | null | undefined,
+  ) => boolean;
   selectNormalExecutionTarget?: (args: SpecialBusinessNormalTargetArgs) => SpecialBusinessNormalTargetSelection;
   isOrderRole?: (role: string | null | undefined) => boolean;
   buildRejectedRecipeKeyFromEvent?: (event: AutomationRuntimeEvent) => string;

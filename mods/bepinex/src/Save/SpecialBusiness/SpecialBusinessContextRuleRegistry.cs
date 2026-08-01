@@ -31,7 +31,7 @@ internal static class SpecialBusinessContextRuleRegistry
             [SpecialBusinessChallengeTypes.StoryYuyuko] = StoryYuyukoChallenge(),
             [SpecialBusinessChallengeTypes.RetakeYuyuko] = RetakeYuyukoChallenge(),
             ["AnyChallenge"] = UnknownChallenge("游戏处于挑战占位或选择态；需要以实际挑战切换后的类型为准。"),
-            ["Story_BloodPondHell"] = TagTarget("游戏会随机指定两个料理 Tag，命中会影响伤害和怒气。"),
+            [SpecialBusinessChallengeTypes.BloodPondHell] = BloodPondHell(),
             [SpecialBusinessChallengeTypes.WackyCookingCompetition] = WackyCookingCompetition(),
             ["Story_Seiga_TempleCuisineCompetition"] = TargetFund(),
             ["Story_Futo_TempleCuisineCompetition"] = TargetFund(),
@@ -93,13 +93,13 @@ internal static class SpecialBusinessContextRuleRegistry
             "订单会标记特殊经营归属。开锅前检查阶段、目标 Tag 和剩余时间；出锅后再校验成品，无法确认原生评价链时暂停。");
     }
 
-    private static SpecialBusinessContextRule TagTarget(string summary)
+    private static SpecialBusinessContextRule BloodPondHell()
     {
         return new SpecialBusinessContextRule(
             "tag-target",
-            summary,
-            "推荐会在同一可完成订单内优先命中游戏 HUD 指定的目标 Tag。",
-            "不改变自动化选菜。若目标 Tag 与标准订单冲突，请手动处理。");
+            "游戏会随机指定两个料理 Tag；原订单成立后，同时命中两个目标 Tag 才是完整挑战目标方案。",
+            "仅对精确识别的血池地狱 BOSS 订单，在保持原订单成立的前提下选择同时满足两个动态料理 Tag 的方案。",
+            "仅在 BOSS 身份、经营代际、原订单、双 Tag 目标、实际成品和实时订单均严格复核后自动制作；酒水先送达。料理送达与订单完成均开启时按订单原生路由精确结算，否则保留成品等待玩家处理。");
     }
 
     private static SpecialBusinessContextRule TargetFund()

@@ -546,10 +546,10 @@ function isEnabledClearTarget(entry) {
     && !entry.params.ingredientIds;
 }
 
-function mutateSnapshot(source) {
+function mutateSnapshot(recommendationSignal) {
   assert(mutatedSnapshot?.nightBusiness?.orders?.[0], '缺少可变 Mock 快照');
-  mutatedSnapshot.nightBusiness.orders[0].source = source;
-  mutatedSnapshot.snapshotSignature = `${mutatedSnapshot.snapshotSignature}|${source}`;
+  mutatedSnapshot.nightBusiness.orders[0].automationBlockReason = recommendationSignal;
+  mutatedSnapshot.snapshotSignature = `${mutatedSnapshot.snapshotSignature}|${recommendationSignal}`;
 }
 
 function mutateInternalTargetSignature() {

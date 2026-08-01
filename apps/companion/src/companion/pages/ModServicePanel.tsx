@@ -133,6 +133,28 @@ function formatServiceSpecialBusinessSummary(context: SpecialBusinessContext | n
   return parts.join(' · ');
 }
 
+function formatPlacedCookerSummary(
+  runtime: RecommendationStateSnapshot | null,
+  runtimeSets: RuntimeSets | null,
+  applicable: boolean,
+): string {
+  if (!applicable) return '不适用';
+  if (!runtime) return '未读取';
+
+  const names = [...(runtimeSets?.placedCookerNames ?? [])].join('、');
+  if (runtime.placedCookerSnapshotComplete) {
+    const locked = runtime.placedCookerLockedControllerCount > 0
+      ? `${runtime.placedCookerLockedControllerCount} 个厨具被事件锁定`
+      : '';
+    if (runtime.placedCookers.length === 0) return `已读取 · ${locked || '未摆放'}`;
+    return ['已读取', names || `${runtime.placedCookers.length} 个厨具类型未识别`, locked]
+      .filter(Boolean)
+      .join(' · ');
+  }
+
+  return `读取不可用${runtime.placedCookerStatus ? ` · ${runtime.placedCookerStatus}` : ''}`;
+}
+
 function buildNormalOrderDetailPlanKey(plan: NormalOrderDetailPlan): string {
   const { order } = plan;
   return order.orderKey
@@ -142,11 +164,15 @@ function buildNormalOrderDetailPlanKey(plan: NormalOrderDetailPlan): string {
 
 export function ModServicePanel({
   runtime,
+  nightBusinessActive,
   night,
   specialBusiness,
   detectedPlace,
   recommendations,
   recommendationIssues,
+  recommendationPendingOrders,
+  recommendationsPending,
+  recommendationUpdateError,
   data,
   performanceMs,
   orderRecommendationPerformanceMs,
@@ -199,11 +225,15 @@ export function ModServicePanel({
   showDebugDetails,
 }: {
   runtime: RecommendationStateSnapshot | null;
+  nightBusinessActive: boolean;
   night: NightBusinessContext | null;
   specialBusiness: SpecialBusinessContext | null;
   detectedPlace: PlaceName | null;
   recommendations: OrderRecommendation[];
   recommendationIssues: RecommendationIssue[];
+  recommendationPendingOrders: NightBusinessOrder[];
+  recommendationsPending: boolean;
+  recommendationUpdateError: string | null;
   data: RecommendationDataSet;
   performanceMs?: Record<string, number>;
   orderRecommendationPerformanceMs?: Record<string, number>;
@@ -303,7 +333,6 @@ export function ModServicePanel({
     : automationTrackedCount > 0
     ? `已开启 · 跟踪 ${automationTrackedCount} 笔`
     : '已开启';
-
   return (
     <div className="space-y-4">
       <Card>
@@ -314,9 +343,7 @@ export function ModServicePanel({
           <InfoLine label="特殊经营" value={formatServiceSpecialBusinessSummary(specialBusiness)} />
           <InfoLine
             label="已摆放厨具"
-            value={runtimeSets?.hasCookerSnapshot
-              ? [...runtimeSets.placedCookerNames].join('、') || '已读取'
-              : runtime?.placedCookerStatus ? `未读取 · ${runtime.placedCookerStatus}` : '未读取'}
+            value={formatPlacedCookerSummary(runtime, runtimeSets, nightBusinessActive)}
           />
           <InfoLine label="目标厨具" value={uiPinningTarget?.cookerName || '暂无'} />
         </CardContent>
@@ -433,6 +460,9 @@ export function ModServicePanel({
           <CurrentOrderRecommendations
             recommendations={recommendations}
             recommendationIssues={recommendationIssues}
+            pendingOrders={recommendationPendingOrders}
+            pending={recommendationsPending}
+            updateError={recommendationUpdateError}
             runtimeSets={runtimeSets}
             dataIndexes={dataIndexes}
             orderSortMode={autoPrepPreferences.serviceOrderSortMode}
@@ -611,6 +641,9 @@ function ServiceRecommendationHeaderActions({
 export function ServiceFocusPage({
   recommendations,
   recommendationIssues,
+  recommendationPendingOrders,
+  recommendationsPending,
+  recommendationUpdateError,
   runtimeSets,
   dataIndexes,
   orderSortMode,
@@ -631,6 +664,9 @@ export function ServiceFocusPage({
 }: {
   recommendations: OrderRecommendation[];
   recommendationIssues: RecommendationIssue[];
+  recommendationPendingOrders: NightBusinessOrder[];
+  recommendationsPending: boolean;
+  recommendationUpdateError: string | null;
   runtimeSets: RuntimeSets | null;
   dataIndexes: ReturnType<typeof buildRecommendationDataIndexes>;
   orderSortMode: ServiceOrderSortMode;
@@ -649,7 +685,10 @@ export function ServiceFocusPage({
   onToggleBeverageFavorite: ToggleBeverageFavorite;
   onExit: () => void;
 }) {
-  const hasOrders = recommendations.length > 0 || recommendationIssues.length > 0;
+  const hasOrders = recommendationsPending
+    || recommendations.length > 0
+    || recommendationIssues.length > 0
+    || recommendationPendingOrders.length > 0;
 
   return (
     <div
@@ -685,6 +724,9 @@ export function ServiceFocusPage({
         <CurrentOrderRecommendations
           recommendations={recommendations}
           recommendationIssues={recommendationIssues}
+          pendingOrders={recommendationPendingOrders}
+          pending={recommendationsPending}
+          updateError={recommendationUpdateError}
           runtimeSets={runtimeSets}
           dataIndexes={dataIndexes}
           orderSortMode={orderSortMode}
@@ -710,6 +752,9 @@ export function ServiceFocusPage({
 function CurrentOrderRecommendations({
   recommendations,
   recommendationIssues,
+  pendingOrders,
+  pending = false,
+  updateError,
   runtimeSets,
   dataIndexes,
   orderSortMode,
@@ -728,6 +773,9 @@ function CurrentOrderRecommendations({
 }: {
   recommendations: OrderRecommendation[];
   recommendationIssues: RecommendationIssue[];
+  pendingOrders: NightBusinessOrder[];
+  pending?: boolean;
+  updateError: string | null;
   runtimeSets: RuntimeSets | null;
   dataIndexes: ReturnType<typeof buildRecommendationDataIndexes>;
   orderSortMode: ServiceOrderSortMode;
@@ -748,14 +796,28 @@ function CurrentOrderRecommendations({
     () => sortNightOrderRows([
       ...recommendationIssues.map((issue) => ({ kind: 'issue' as const, order: issue.order, issue })),
       ...recommendations.map((item) => ({ kind: 'recommendation' as const, order: item.order, item })),
+      ...pendingOrders.map((order) => ({ kind: 'pending' as const, order })),
     ], orderSortMode),
-    [orderSortMode, recommendationIssues, recommendations],
+    [orderSortMode, pendingOrders, recommendationIssues, recommendations],
   );
+  const panelAction = pending || updateError || action
+    ? (
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {updateError && (
+            <Badge variant="destructive" title={updateError}>
+              {rows.length > 0 ? '更新失败，当前为上次结果' : '推荐更新失败'}
+            </Badge>
+          )}
+          {pending && <Badge variant="outline">更新中</Badge>}
+          {action}
+        </div>
+      )
+    : undefined;
 
   return (
     <ListPanel
       title="当前点单推荐"
-      action={action}
+      action={panelAction}
       className={fillAvailableHeight ? 'min-h-0 flex-1' : undefined}
       gamepadScrollKey={fillAvailableHeight ? 'service-focus:recommendations' : 'service:recommendations'}
       gamepadScrollLabel={fillAvailableHeight ? '专注模式当前点单推荐' : '经营中当前点单推荐'}
@@ -772,9 +834,30 @@ function CurrentOrderRecommendations({
           {favoriteError}
         </div>
       )}
-      {rows.length === 0 && <EmptyRow text="暂无当前稀客点单推荐" />}
+      {rows.length === 0 && (
+        <EmptyRow text={updateError ? '推荐更新失败' : pending ? '推荐计算中' : '暂无当前稀客点单推荐'} />
+      )}
       <div className={compact ? 'space-y-2' : 'space-y-4'}>
         {rows.map((row) => {
+          if (row.kind === 'pending') {
+            const orderKey = buildNightBusinessOrderKey(row.order);
+            return (
+              <div
+                key={`${orderKey}:pending`}
+                className={compact ? 'steward-data-row p-2 text-xs' : 'steward-data-row p-3 text-sm'}
+                data-recommendation-pending-order="true"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="font-medium">{row.order.guestName || '稀客'} · 桌 {formatDesk(row.order.deskCode)}</div>
+                  <Badge variant="outline">推荐计算中</Badge>
+                </div>
+                <div className="mt-1 flex flex-wrap gap-1.5">
+                  <Badge variant="outline">料理 {row.order.foodTag || '无'}</Badge>
+                  <Badge variant="outline">酒水 {row.order.beverageTag || '无'}</Badge>
+                </div>
+              </div>
+            );
+          }
           if (row.kind === 'issue') {
             const issue = row.issue;
             const issueOccurrenceKey = issue.order.traceId

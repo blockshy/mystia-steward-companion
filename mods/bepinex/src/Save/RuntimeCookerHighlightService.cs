@@ -12,11 +12,13 @@ internal static class RuntimeCookerHighlightService
     private static readonly object DesiredRoot = new();
     private static readonly object VisualRoot = new();
     private static readonly Dictionary<nint, HighlightedRenderer> HighlightedRenderers = new();
+    private static readonly Dictionary<nint, RendererBaseline> RendererBaselines = new();
 
     private static CookerHighlightTargetSnapshot _desiredTarget = CookerHighlightTargetSnapshot.Disabled;
     private static long _appliedTargetGeneration;
     private static bool _suspended = true;
     private static string _suspendReason = "night business inactive";
+    private static int _topologyMutationDepth;
     private static float _nextScanAt;
     private static string _status = "disabled";
 
@@ -27,7 +29,7 @@ internal static class RuntimeCookerHighlightService
             var desired = Volatile.Read(ref _desiredTarget);
             lock (VisualRoot)
             {
-                return $"{_status}; desired={desired.Generation}/session:{desired.SessionGeneration}/cooker:{desired.CookerTypeId}/{desired.CookerName}; applied={_appliedTargetGeneration}; suspended={_suspended}";
+                return $"{_status}; desired={desired.Generation}/session:{desired.SessionGeneration}/cooker:{desired.CookerTypeId}/{desired.CookerName}; applied={_appliedTargetGeneration}; suspended={_suspended}; topologyMutationDepth={_topologyMutationDepth}";
             }
         }
     }
@@ -62,7 +64,7 @@ internal static class RuntimeCookerHighlightService
         var desired = Volatile.Read(ref _desiredTarget);
         lock (VisualRoot)
         {
-            if (_suspended || !lifecycle.IsActive) return;
+            if (_suspended || _topologyMutationDepth > 0 || !lifecycle.IsActive) return;
 
             var desiredEnabled = desired.Enabled
                 && desired.SessionGeneration == lifecycle.Generation
@@ -79,7 +81,7 @@ internal static class RuntimeCookerHighlightService
                 _status = desired.Enabled
                     ? "waiting: target belongs to a different night-business session"
                     : "disabled";
-                return;
+                if (RendererBaselines.Count == 0) return;
             }
         }
 
@@ -88,6 +90,7 @@ internal static class RuntimeCookerHighlightService
             ScanAndApply(desired);
         }
 
+        if (!desired.Enabled) return;
         PulseHighlightedRenderers(desired);
     }
 
@@ -95,9 +98,19 @@ internal static class RuntimeCookerHighlightService
     {
         lock (VisualRoot)
         {
+            var topologyMutationWasActive = _topologyMutationDepth > 0;
+            _topologyMutationDepth = 0;
             _suspended = true;
             _suspendReason = NormalizeReason(reason);
-            RestoreAllLocked();
+            if (topologyMutationWasActive)
+            {
+                HighlightedRenderers.Clear();
+            }
+            else
+            {
+                RestoreAllLocked();
+            }
+            RendererBaselines.Clear();
             _nextScanAt = 0f;
             _status = Volatile.Read(ref _desiredTarget).Enabled
                 ? $"suspended: {_suspendReason}"
@@ -109,6 +122,9 @@ internal static class RuntimeCookerHighlightService
     {
         lock (VisualRoot)
         {
+            HighlightedRenderers.Clear();
+            RendererBaselines.Clear();
+            _topologyMutationDepth = 0;
             _suspended = false;
             _suspendReason = NormalizeReason(reason);
             _nextScanAt = 0f;
@@ -126,6 +142,8 @@ internal static class RuntimeCookerHighlightService
         lock (VisualRoot)
         {
             HighlightedRenderers.Clear();
+            RendererBaselines.Clear();
+            _topologyMutationDepth = 0;
             _suspended = true;
             _suspendReason = NormalizeReason(reason);
             _nextScanAt = 0f;
@@ -133,38 +151,151 @@ internal static class RuntimeCookerHighlightService
         }
     }
 
+    /// <summary>
+    /// Drops all renderer wrappers before a native cooker topology mutation starts.
+    /// </summary>
+    public static void BeginTopologyMutation(string reason)
+    {
+        IncrementTopologyMutationDepth();
+        try
+        {
+            lock (VisualRoot)
+            {
+                foreach (var (pointer, highlighted) in HighlightedRenderers)
+                {
+                    RendererBaselines[pointer] = new RendererBaseline(
+                        highlighted.OriginalColor,
+                        highlighted.OriginalEnabled);
+                }
+                HighlightedRenderers.Clear();
+
+                _nextScanAt = 0f;
+                _status = $"topology mutation active: {NormalizeReason(reason)}";
+            }
+        }
+        catch
+        {
+            try
+            {
+                lock (VisualRoot)
+                {
+                    HighlightedRenderers.Clear();
+                    RendererBaselines.Clear();
+                    _nextScanAt = 0f;
+                    _status = "topology mutation active: fail-closed";
+                }
+            }
+            catch
+            {
+                // Never escape into the native topology mutation.
+            }
+        }
+    }
+
+    /// <summary>
+    /// Re-enables fresh catalog scanning after the outermost topology mutation returns.
+    /// </summary>
+    public static void CompleteTopologyMutation(string reason)
+    {
+        var remainingDepth = DecrementTopologyMutationDepth();
+        try
+        {
+            lock (VisualRoot)
+            {
+                if (remainingDepth == 0)
+                {
+                    _nextScanAt = 0f;
+                    _status = Volatile.Read(ref _desiredTarget).Enabled
+                        ? $"waiting after topology mutation: {NormalizeReason(reason)}"
+                        : "disabled";
+                }
+            }
+        }
+        catch
+        {
+            Interlocked.CompareExchange(ref _topologyMutationDepth, 1, 0);
+            // Never escape into the native topology mutation postfix.
+        }
+    }
+
     private static void ScanAndApply(CookerHighlightTargetSnapshot target)
     {
-        lock (VisualRoot) _nextScanAt = Time.realtimeSinceStartup + ScanIntervalSeconds;
+        lock (VisualRoot)
+        {
+            if (_suspended || _topologyMutationDepth > 0) return;
+            _nextScanAt = Time.realtimeSinceStartup + ScanIntervalSeconds;
+        }
 
-        var renderers = new List<SpriteRenderer>();
+        var openRenderers = new List<SpriteRenderer>();
+        var targetRenderers = new List<SpriteRenderer>();
         var controllerCount = 0;
+        var lockedControllerCount = 0;
         var matchedControllerCount = 0;
         var error = "";
         var sourceStatus = "sources=none";
 
         try
         {
-            var cookSystem = RuntimeCookerReflection.GetCookSystemManager();
-            if (cookSystem == null)
+            if (!RuntimeCookerReflection.TryReadLockedCookerPositions(
+                    out var lockedPositions,
+                    out var lockedStatus))
             {
-                SetStatus("waiting: cook system missing");
-                return;
+                error = lockedStatus;
             }
-
-            var controllers = ReadCookerControllers(cookSystem, out sourceStatus);
-            foreach (var controller in controllers)
+            else
             {
-                controllerCount++;
-                var cooker = TryInvokeInstanceValue(controller, "get_Cooker")
-                    ?? ReadMember(controller, "Cooker");
-                if (cooker == null) continue;
+                var cookSystem = RuntimeCookerReflection.GetCookSystemManager();
+                if (cookSystem == null)
+                {
+                    error = "cook system missing";
+                }
+                else if (!RuntimeCookerReflection.TryReadCookerControllerEntriesFromCookSystem(
+                         cookSystem,
+                         lockedPositions,
+                         out var controllerEntries,
+                         out var controllerStatus))
+                {
+                    error = controllerStatus;
+                }
+                else
+                {
+                    sourceStatus = $"{lockedStatus}; {controllerStatus}";
+                    controllerCount = controllerEntries.Count;
+                    foreach (var entry in controllerEntries)
+                    {
+                        if (lockedPositions.Contains(entry.GridPosition))
+                        {
+                            lockedControllerCount++;
+                            continue;
+                        }
 
-                var typeIds = RuntimeCookerReflection.ReadCookerTypeIds(cooker);
-                if (!typeIds.Contains(target.CookerTypeId)) continue;
+                        if (!RuntimeCookerReflection.TryReadCookerControllerState(
+                                entry.Controller,
+                                out var state,
+                                out var stateStatus))
+                        {
+                            error = $"controller={entry.ControllerIdentity}; {stateStatus}";
+                            break;
+                        }
 
-                matchedControllerCount++;
-                renderers.AddRange(ReadCookerRenderers(controller));
+                        if (!state.CouldOpen)
+                        {
+                            error = $"controller={entry.ControllerIdentity}; position={entry.GridPosition}; "
+                                + $"couldOpen={state.CouldOpen}; not present in LockedCookers; gate-mismatch";
+                            break;
+                        }
+
+                        if (state.IsEmptyDesk) continue;
+
+                        var controllerRenderers = ReadCookerRenderers(entry.Controller).ToArray();
+                        openRenderers.AddRange(controllerRenderers);
+                        if (target.Enabled && state.TypeIds.Contains(target.CookerTypeId))
+                        {
+                            matchedControllerCount++;
+                            targetRenderers.AddRange(controllerRenderers);
+                        }
+                    }
+                }
             }
         }
         catch (Exception ex)
@@ -172,18 +303,26 @@ internal static class RuntimeCookerHighlightService
             error = ex.InnerException?.Message ?? ex.Message;
         }
 
-        if (!IsTargetCurrent(target)) return;
+        if (!IsTargetSnapshotCurrent(target)) return;
 
         lock (VisualRoot)
         {
-            if (_suspended || !IsTargetCurrent(target)) return;
+            if (_suspended || _topologyMutationDepth > 0 || !IsTargetSnapshotCurrent(target)) return;
             if (!string.IsNullOrWhiteSpace(error))
             {
+                RestoreAllLocked();
                 _status = $"error: {error}";
                 return;
             }
 
-            var expectedPointers = renderers
+            RestoreRetainedBaselinesLocked(openRenderers);
+            if (!target.Enabled)
+            {
+                _status = "disabled";
+                return;
+            }
+
+            var expectedPointers = targetRenderers
                 .Where(renderer => renderer != null)
                 .Select(ReadUnityObjectPointer)
                 .Where(pointer => pointer != IntPtr.Zero)
@@ -195,7 +334,7 @@ internal static class RuntimeCookerHighlightService
                 RestoreRendererLocked(pointer);
             }
 
-            foreach (var renderer in renderers)
+            foreach (var renderer in targetRenderers)
             {
                 if (renderer == null) continue;
                 var pointer = ReadUnityObjectPointer(renderer);
@@ -203,7 +342,11 @@ internal static class RuntimeCookerHighlightService
 
                 try
                 {
-                    HighlightedRenderers[pointer] = new HighlightedRenderer(renderer, renderer.color, renderer.enabled);
+                    var baseline = new RendererBaseline(renderer.color, renderer.enabled);
+                    HighlightedRenderers[pointer] = new HighlightedRenderer(
+                        renderer,
+                        baseline.OriginalColor,
+                        baseline.OriginalEnabled);
                     renderer.enabled = true;
                 }
                 catch
@@ -213,14 +356,9 @@ internal static class RuntimeCookerHighlightService
             }
 
             _status = matchedControllerCount == 0
-                ? $"target missing; controllers={controllerCount}; {sourceStatus}; cooker={target.CookerTypeId}/{target.CookerName}"
-                : $"active; controllers={controllerCount}; matched={matchedControllerCount}; renderers={HighlightedRenderers.Count}; {sourceStatus}; cooker={target.CookerTypeId}/{target.CookerName}";
+                ? $"target missing; controllers={controllerCount}; locked={lockedControllerCount}; {sourceStatus}; cooker={target.CookerTypeId}/{target.CookerName}"
+                : $"active; controllers={controllerCount}; locked={lockedControllerCount}; matched={matchedControllerCount}; renderers={HighlightedRenderers.Count}; {sourceStatus}; cooker={target.CookerTypeId}/{target.CookerName}";
         }
-    }
-
-    private static IReadOnlyList<object> ReadCookerControllers(object cookSystem, out string status)
-    {
-        return RuntimeCookerReflection.ReadCookerControllersFromCookSystem(cookSystem, out status);
     }
 
     private static IEnumerable<SpriteRenderer> ReadCookerRenderers(object controller)
@@ -309,7 +447,7 @@ internal static class RuntimeCookerHighlightService
         List<HighlightedRenderer> renderers;
         lock (VisualRoot)
         {
-            if (_suspended || !IsTargetCurrent(target)) return;
+            if (_suspended || _topologyMutationDepth > 0 || !IsTargetCurrent(target)) return;
             renderers = HighlightedRenderers.Values.ToList();
         }
 
@@ -317,6 +455,7 @@ internal static class RuntimeCookerHighlightService
         var highlightColor = new Color(1f, 0.86f, 0.18f, 1f);
         foreach (var item in renderers)
         {
+            if (Volatile.Read(ref _topologyMutationDepth) > 0) return;
             try
             {
                 if (item.Renderer == null) continue;
@@ -335,11 +474,81 @@ internal static class RuntimeCookerHighlightService
         }
     }
 
+    private static int DecrementTopologyMutationDepth()
+    {
+        while (true)
+        {
+            var current = Volatile.Read(ref _topologyMutationDepth);
+            if (current <= 0)
+            {
+                return 0;
+            }
+
+            var next = current - 1;
+            if (Interlocked.CompareExchange(ref _topologyMutationDepth, next, current) == current)
+            {
+                return next;
+            }
+        }
+    }
+
+    private static void IncrementTopologyMutationDepth()
+    {
+        while (true)
+        {
+            var current = Volatile.Read(ref _topologyMutationDepth);
+            if (current >= int.MaxValue)
+            {
+                return;
+            }
+
+            if (Interlocked.CompareExchange(
+                    ref _topologyMutationDepth,
+                    current + 1,
+                    current) == current)
+            {
+                return;
+            }
+        }
+    }
+
     private static void RestoreAllLocked()
     {
         foreach (var pointer in HighlightedRenderers.Keys.ToList())
         {
             RestoreRendererLocked(pointer);
+        }
+    }
+
+    private static void RestoreRetainedBaselinesLocked(IEnumerable<SpriteRenderer> openRenderers)
+    {
+        if (RendererBaselines.Count == 0) return;
+
+        var freshRenderers = new Dictionary<nint, SpriteRenderer>();
+        foreach (var renderer in openRenderers)
+        {
+            if (renderer == null) continue;
+            var pointer = ReadUnityObjectPointer(renderer);
+            if (pointer != IntPtr.Zero) freshRenderers.TryAdd(pointer, renderer);
+        }
+
+        foreach (var pointer in RendererBaselines.Keys.ToList())
+        {
+            var baseline = RendererBaselines[pointer];
+            if (freshRenderers.TryGetValue(pointer, out var renderer))
+            {
+                try
+                {
+                    renderer.color = baseline.OriginalColor;
+                    renderer.enabled = baseline.OriginalEnabled;
+                }
+                catch
+                {
+                    // The fresh renderer may have been released after the directory scan.
+                }
+            }
+
+            RendererBaselines.Remove(pointer);
         }
     }
 
@@ -565,20 +774,16 @@ internal static class RuntimeCookerHighlightService
         return new IntPtr(RuntimeHelpers.GetHashCode(renderer));
     }
 
-    private static void SetStatus(string status)
+    private static bool IsTargetCurrent(CookerHighlightTargetSnapshot target)
     {
-        lock (VisualRoot)
-        {
-            _status = status;
-        }
+        return target.Enabled && IsTargetSnapshotCurrent(target);
     }
 
-    private static bool IsTargetCurrent(CookerHighlightTargetSnapshot target)
+    private static bool IsTargetSnapshotCurrent(CookerHighlightTargetSnapshot target)
     {
         var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
         var desired = Volatile.Read(ref _desiredTarget);
         return lifecycle.IsActive
-            && target.Enabled
             && target.SessionGeneration == lifecycle.Generation
             && ReferenceEquals(desired, target);
     }
@@ -603,6 +808,10 @@ internal static class RuntimeCookerHighlightService
         public Color OriginalColor { get; }
         public bool OriginalEnabled { get; }
     }
+
+    private readonly record struct RendererBaseline(
+        Color OriginalColor,
+        bool OriginalEnabled);
 
     private sealed class CookerHighlightTargetSnapshot
     {

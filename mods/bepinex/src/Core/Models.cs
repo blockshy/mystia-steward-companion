@@ -74,11 +74,24 @@ public sealed class TagPriorityRule
 public sealed class PlacedCookerInfo
 {
     public int ControllerIndex { get; init; }
+    public CookerGridPosition GridPosition { get; init; } = new();
+    public string ControllerIdentity { get; init; } = "";
     public List<int> TypeIds { get; init; } = new();
     public List<string> TypeNames { get; init; } = new();
     public string Name { get; init; } = "";
-    public bool IsOpen { get; init; }
+    public bool ChallengeLocked { get; init; }
+    public bool CouldOpen { get; init; }
+    public bool AutomationAvailable { get; init; }
+    public string AutomationAvailability { get; init; } = "";
+    public string AutomationAvailabilityDiagnostic { get; init; } = "";
     public string Source { get; init; } = "";
+}
+
+public sealed class CookerGridPosition
+{
+    public int X { get; init; }
+    public int Y { get; init; }
+    public int Z { get; init; }
 }
 
 public sealed class NormalCustomer
@@ -168,11 +181,13 @@ public sealed class NightBusinessContext
 public sealed class SpecialBusinessContext
 {
     public bool Active { get; init; }
+    public bool ChallengeTypeAvailable { get; init; }
     public string ChallengeType { get; init; } = "";
     public string DisplayName { get; init; } = "";
     public string Category { get; init; } = "";
     public string RuleSummary { get; init; } = "";
     public List<string> FoodTargetTags { get; init; } = new();
+    public long YuumaFoodTargetRevision { get; init; }
     public List<string> BeverageTargetTags { get; init; } = new();
     public int? TargetFund { get; init; }
     public string TargetLabel { get; init; } = "";
@@ -180,6 +195,9 @@ public sealed class SpecialBusinessContext
     public int? CurrentValue { get; init; }
     public int? MaxValue { get; init; }
     public int? TargetValue { get; init; }
+    public int? CurrentAnger { get; init; }
+    public int? MaxAnger { get; init; }
+    public int? TargetAnger { get; init; }
     public double? TargetTimeProgress { get; init; }
     public double? TargetTagTimeProgress { get; init; }
     public bool? WackyKoishiShieldBroken { get; init; }
@@ -201,6 +219,7 @@ public sealed class NormalBusinessOrder
     public string OrderKey { get; init; } = "";
     public int DeskCode { get; init; }
     public int? GuestId { get; init; }
+    public int? RuntimeGuestId { get; init; }
     public string GuestName { get; init; } = "";
     public string SpecialBusinessRole { get; init; } = "";
     public string SpecialBusinessRoleLabel { get; init; } = "";
@@ -253,6 +272,11 @@ public sealed class RecommendationState
     public Dictionary<int, int> OwnedBeverageQty { get; } = new();
     public HashSet<int> PlacedCookerTypeIds { get; } = new();
     public List<PlacedCookerInfo> PlacedCookers { get; } = new();
+    public bool PlacedCookerSnapshotComplete { get; set; }
+    public int PlacedCookerControllerCount { get; set; }
+    public int PlacedCookerEmptyControllerCount { get; set; }
+    public int PlacedCookerLockedControllerCount { get; set; }
+    public int PlacedCookerReadFailureCount { get; set; }
     public string PlacedCookerStatus { get; set; } = "";
     public string? PopularFoodTag { get; set; }
     public string? PopularHateFoodTag { get; set; }

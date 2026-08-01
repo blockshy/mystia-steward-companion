@@ -12,7 +12,10 @@ import {
   resolveAutomationStepStartedAtMs,
   type AutomationRequestStage,
 } from '@/companion/automation-machine';
-import type { NormalOrderExecutionTarget } from '@/companion/types';
+import type {
+  NormalOrderExecutionTarget,
+  SpecialFoodTargetWirePolicy,
+} from '@/companion/types';
 
 export type AutomationStep =
   | 'idle'
@@ -24,7 +27,7 @@ export type AutomationStep =
   | 'done'
   | 'paused';
 
-export interface RareAutomationRecipeTarget {
+export interface RareAutomationRecipeTarget extends SpecialFoodTargetWirePolicy {
   recipeId: number;
   foodId: number;
   recipeName: string;
@@ -45,6 +48,7 @@ export interface AutoFirstOrderState {
   orderKey: string;
   recipeTarget: RareAutomationRecipeTarget | null;
   recipeTargetSignature: string;
+  recipeTargetRevision: number;
   beverageTarget: RareAutomationBeverageTarget | null;
   prepared: boolean;
   cookingJobId: string;
@@ -56,6 +60,8 @@ export interface AutoFirstOrderState {
   retryCount: number;
   retryStage: AutomationStep | '';
   rollbackCount: number;
+  rollbackTargetSignature: string;
+  rollbackTargetRevision: number;
   nextAttemptAtMs: number;
   lastError: string;
   detailMessage: string;
@@ -70,6 +76,7 @@ export interface AutoFirstOrderState {
 export interface NormalAutoOrderState {
   orderKey: string;
   executionTarget: NormalOrderExecutionTarget | null;
+  executionTargetBusinessGeneration: number;
   prepared: boolean;
   cookingJobId: string;
   beverageHandled: boolean;
@@ -84,6 +91,8 @@ export interface NormalAutoOrderState {
   retryCount: number;
   retryStage: AutomationStep | '';
   rollbackCount: number;
+  rollbackTargetSignature: string;
+  rollbackTargetRevision: number;
   nextAttemptAtMs: number;
   lastError: string;
   detailMessage: string;
@@ -118,6 +127,9 @@ export type OrderPreparationStepCode =
   | 'cooking-warmer-commit-uncertain'
   | 'cooking-warmer-reset-blocked'
   | 'cooking-cancelled'
+  | 'cooking-manual-handoff-completed'
+  | 'cooking-manual-handoff-expired'
+  | 'cooking-manual-handoff-resolved'
   | 'cooking-manual-handoff-unreadable'
   | 'order-evaluation-state-unreadable'
   | 'order-evaluation-commit-uncertain'
@@ -166,6 +178,7 @@ export function emptyAutoFirstOrderState(orderKey = '', now = 0): AutoFirstOrder
     orderKey,
     recipeTarget: null,
     recipeTargetSignature: '',
+    recipeTargetRevision: 0,
     beverageTarget: null,
     prepared: false,
     cookingJobId: '',
@@ -177,6 +190,8 @@ export function emptyAutoFirstOrderState(orderKey = '', now = 0): AutoFirstOrder
     retryCount: 0,
     retryStage: '',
     rollbackCount: 0,
+    rollbackTargetSignature: '',
+    rollbackTargetRevision: 0,
     nextAttemptAtMs: 0,
     lastError: '',
     detailMessage: '',
@@ -193,6 +208,7 @@ export function emptyNormalAutoOrderState(orderKey: string, now = 0): NormalAuto
   return {
     orderKey,
     executionTarget: null,
+    executionTargetBusinessGeneration: 0,
     prepared: false,
     cookingJobId: '',
     beverageHandled: false,
@@ -207,6 +223,8 @@ export function emptyNormalAutoOrderState(orderKey: string, now = 0): NormalAuto
     retryCount: 0,
     retryStage: '',
     rollbackCount: 0,
+    rollbackTargetSignature: '',
+    rollbackTargetRevision: 0,
     nextAttemptAtMs: 0,
     lastError: '',
     detailMessage: '',
@@ -217,6 +235,44 @@ export function emptyNormalAutoOrderState(orderKey: string, now = 0): NormalAuto
     pauseReasonCode: '',
     lastRuntimeEventSequence: 0,
   };
+}
+
+export function lockNormalOrderExecutionTarget(
+  state: NormalAutoOrderState,
+  target: NormalOrderExecutionTarget,
+  businessGeneration: number,
+): NormalAutoOrderState {
+  return {
+    ...state,
+    executionTarget: target,
+    executionTargetBusinessGeneration: businessGeneration,
+  };
+}
+
+export function clearNormalOrderExecutionTarget(
+  state: NormalAutoOrderState,
+): NormalAutoOrderState {
+  if (!state.executionTarget && state.executionTargetBusinessGeneration === 0) return state;
+  return {
+    ...state,
+    executionTarget: null,
+    executionTargetBusinessGeneration: 0,
+  };
+}
+
+export function getCurrentNormalOrderExecutionTarget(
+  state: NormalAutoOrderState | undefined,
+  businessGeneration: number,
+  specialTargetSignature: string,
+  specialTargetRevision: number,
+): NormalOrderExecutionTarget | null {
+  const target = state?.executionTarget;
+  if (!target) return null;
+  if (state.executionTargetBusinessGeneration !== businessGeneration) return null;
+  return target.specialTargetSignature === specialTargetSignature
+    && target.specialTargetRevision === specialTargetRevision
+    ? target
+    : null;
 }
 
 export function markAutomationWaiting<T extends AutoFirstOrderState | NormalAutoOrderState>(

@@ -21,11 +21,11 @@ internal sealed class YuyukoChallengeOrderModule : ISpecialBusinessOrderModule
 
     public SpecialBusinessOrderClassification Classify(
         string challengeType,
-        SpecialBusinessOrderProbe guest,
         object? order,
         object? controller,
         string source)
     {
+        var guest = SpecialBusinessOrderProbe.Read(order, controller);
         return guest.IsGuest(YuyukoGuestIds, "Yuyuko", "幽幽子", "西行寺")
             ? SpecialBusinessModuleRegistry.AllowedSpecialOrder(
                 SpecialBusinessOrderRoles.YuyukoBoss,

@@ -1359,13 +1359,21 @@ internal sealed class StewardOverlayController
         AppendIntDictionary(builder, snapshot.OwnedIngredientQty);
         AppendIntDictionary(builder, snapshot.OwnedBeverageQty);
         AppendInts(builder, snapshot.PlacedCookerTypeIds);
+        AppendValue(builder, snapshot.PlacedCookerSnapshotComplete);
+        AppendValue(builder, snapshot.PlacedCookerControllerCount);
+        AppendValue(builder, snapshot.PlacedCookerEmptyControllerCount);
+        AppendValue(builder, snapshot.PlacedCookerLockedControllerCount);
+        AppendValue(builder, snapshot.PlacedCookerReadFailureCount);
         foreach (var cooker in snapshot.PlacedCookers.OrderBy(cooker => cooker.ControllerIndex))
         {
             AppendValue(builder, cooker.ControllerIndex);
             AppendInts(builder, cooker.TypeIds);
             AppendStrings(builder, cooker.TypeNames);
             AppendValue(builder, cooker.Name);
-            AppendValue(builder, cooker.IsOpen);
+            AppendValue(builder, cooker.CouldOpen);
+            AppendValue(builder, cooker.AutomationAvailable);
+            AppendValue(builder, cooker.AutomationAvailability);
+            AppendValue(builder, cooker.AutomationAvailabilityDiagnostic);
             AppendValue(builder, cooker.Source);
         }
 
@@ -1507,6 +1515,8 @@ internal sealed class StewardOverlayController
             AppendValue(builder, order.TraceId);
             AppendValue(builder, order.OrderKey);
             AppendValue(builder, order.DeskCode);
+            AppendValue(builder, order.GuestId);
+            AppendValue(builder, order.RuntimeGuestId);
             AppendValue(builder, order.GuestName);
             AppendValue(builder, order.SpecialBusinessRole);
             AppendValue(builder, order.SpecialBusinessRoleLabel);
@@ -3270,6 +3280,11 @@ internal sealed class StewardOverlayController
         if (_state == null) return;
         if (_state.PlacedCookers.Count == 0
             && _state.PlacedCookerTypeIds.Count == 0
+            && !_state.PlacedCookerSnapshotComplete
+            && _state.PlacedCookerControllerCount == 0
+            && _state.PlacedCookerEmptyControllerCount == 0
+            && _state.PlacedCookerLockedControllerCount == 0
+            && _state.PlacedCookerReadFailureCount == 0
             && string.Equals(_state.PlacedCookerStatus, status, StringComparison.Ordinal))
         {
             return;
@@ -3277,6 +3292,11 @@ internal sealed class StewardOverlayController
 
         _state.PlacedCookers.Clear();
         _state.PlacedCookerTypeIds.Clear();
+        _state.PlacedCookerSnapshotComplete = false;
+        _state.PlacedCookerControllerCount = 0;
+        _state.PlacedCookerEmptyControllerCount = 0;
+        _state.PlacedCookerLockedControllerCount = 0;
+        _state.PlacedCookerReadFailureCount = 0;
         _state.PlacedCookerStatus = status;
         _runtimeStateSignature = BuildRecommendationStateSignature(_state);
         _businessFallbackState = null;
@@ -3346,15 +3366,7 @@ internal sealed class StewardOverlayController
                 hash = (hash * 31) + item.Value;
             }
 
-            hash = HashIds(hash, state.PlacedCookerTypeIds);
-            foreach (var cooker in state.PlacedCookers.OrderBy(cooker => cooker.ControllerIndex))
-            {
-                hash = (hash * 31) + cooker.ControllerIndex;
-                hash = HashIds(hash, cooker.TypeIds);
-                hash = (hash * 31) + cooker.Source.GetHashCode();
-            }
-
-            hash = (hash * 31) + state.PlacedCookerStatus.GetHashCode();
+            hash = RuntimeCookerSnapshotContentSignature.Append(hash, state);
             hash = (hash * 31) + (state.PopularFoodTag?.GetHashCode() ?? 0);
             hash = (hash * 31) + (state.PopularHateFoodTag?.GetHashCode() ?? 0);
             hash = (hash * 31) + (state.FamousShopEnabled ? 1 : 0);

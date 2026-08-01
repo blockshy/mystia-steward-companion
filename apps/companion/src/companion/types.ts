@@ -41,9 +41,14 @@ export interface RecommendationStateSnapshot {
   availableIngredientIds: number[];
   ownedIngredientQty: Record<string, number>;
   ownedBeverageQty: Record<string, number>;
-  placedCookerTypeIds?: number[];
-  placedCookers?: PlacedCookerSnapshot[];
-  placedCookerStatus?: string;
+  placedCookerTypeIds: number[];
+  placedCookers: PlacedCookerSnapshot[];
+  placedCookerSnapshotComplete: boolean;
+  placedCookerControllerCount: number;
+  placedCookerEmptyControllerCount: number;
+  placedCookerLockedControllerCount: number;
+  placedCookerReadFailureCount: number;
+  placedCookerStatus: string;
   popularFoodTag: string | null;
   popularHateFoodTag: string | null;
   famousShopEnabled: boolean;
@@ -51,14 +56,29 @@ export interface RecommendationStateSnapshot {
 
 /**
  * 当前夜间经营场景中已摆放厨具的运行时快照。
+ *
+ * typeIds/typeNames 描述物理厨具类型；couldOpen 是游戏 getter 事实，
+ * automationAvailable 是经过完整运行时分类后的瞬时自动化容量事实。
  */
 export interface PlacedCookerSnapshot {
   controllerIndex: number;
+  gridPosition: CookerGridPosition;
+  controllerIdentity: string;
   typeIds: number[];
   typeNames: string[];
   name: string;
-  isOpen: boolean;
+  challengeLocked: boolean;
+  couldOpen: boolean;
+  automationAvailable: boolean;
+  automationAvailability: 'StrictIdle' | 'ExtractedResidual' | 'Unavailable';
+  automationAvailabilityDiagnostic: string;
   source: string;
+}
+
+export interface CookerGridPosition {
+  x: number;
+  y: number;
+  z: number;
 }
 
 /**
@@ -136,18 +156,23 @@ export interface NightBusinessContext {
  */
 export interface SpecialBusinessContext {
   active: boolean;
+  challengeTypeAvailable: boolean;
   challengeType: string;
   displayName: string;
   category: string;
   ruleSummary: string;
   foodTargetTags: string[];
   beverageTargetTags: string[];
+  yuumaFoodTargetRevision: number;
   targetFund?: number | null;
   targetLabel?: string;
   phase?: string;
   currentValue?: number | null;
   maxValue?: number | null;
   targetValue?: number | null;
+  currentAnger: number | null;
+  maxAnger: number | null;
+  targetAnger: number | null;
   targetTimeProgress?: number | null;
   targetTagTimeProgress?: number | null;
   wackyKoishiShieldBroken?: boolean | null;
@@ -171,6 +196,7 @@ export interface NormalBusinessOrder {
   orderKey?: string;
   deskCode: number;
   guestId?: number | null;
+  runtimeGuestId: number | null;
   guestName: string;
   specialBusinessRole?: string;
   specialBusinessRoleLabel?: string;
@@ -198,8 +224,19 @@ export interface NormalBusinessOrder {
 }
 
 export type NormalOrderExecutionMode = 'progress' | 'refresh';
+export type SpecialTargetMatchMode = 'any' | 'all';
 
-export interface NormalOrderExecutionTarget {
+export interface SpecialFoodTargetWirePolicy {
+  specialTargetChallenge: string;
+  specialTargetOwner: string;
+  specialTargetGeneration: number;
+  specialTargetRevision: number;
+  specialTargetFoodTags: string[];
+  specialTargetMatchMode: SpecialTargetMatchMode | '';
+  specialTargetSignature: string;
+}
+
+export interface NormalOrderExecutionTarget extends SpecialFoodTargetWirePolicy {
   matchFoodId: number;
   matchBeverageId: number;
   foodId: number;
@@ -213,7 +250,6 @@ export interface NormalOrderExecutionTarget {
   foodTags: string[];
   expectedFoodModifierTags: string[];
   beverageTags: string[];
-  wackyTargetFoodTags?: string[];
   reason: string;
 }
 
@@ -329,9 +365,10 @@ export interface AutomationCookingJobSnapshot {
   foodId: number;
   foodName: string;
   recipeId: number;
-  state: 'cooking' | 'ready' | 'manual-handoff';
+  state: 'cooking' | 'ready' | 'manual-handoff' | 'manual-handoff-expired';
   outcome: AutomationJobOutcome;
   reasonCode: string;
+  specialTargetRevision: number;
   autoDeliverFood: boolean;
   controllerId: string;
   resultId: string;
@@ -366,6 +403,8 @@ export interface RuntimeSets {
   ownedBeverageQty: Record<number, number>;
   placedCookerTypeIds: Set<number>;
   placedCookerNames: Set<string>;
+  usableCookerNames: Set<string>;
+  runtimeUnavailableCookerNames: Set<string>;
   hasCookerSnapshot: boolean;
 }
 
@@ -374,6 +413,7 @@ export type RecommendationBlockReasonCode =
   | 'food-recipe-locked'
   | 'food-base-ingredient-missing'
   | 'food-cooker-missing'
+  | 'food-cooker-runtime-unavailable'
   | 'food-required-tag-not-generated'
   | 'food-special-rule-mismatch'
   | 'food-negative-tag'
@@ -453,6 +493,8 @@ export interface RecommendationBlockedDiagnostic {
   missingIngredientNames: string[];
   requiredCookerNames: string[];
   placedCookerNames: string[];
+  usableCookerNames: string[];
+  runtimeUnavailableCookerNames: string[];
   remainingBudget: number | null;
   minimumPairPrice: number | null;
   stateSignature: string;
@@ -924,8 +966,22 @@ export interface NormalAutoOrderDiagnostic {
 
 export interface AutomationCookerCycle {
   bucket: number;
-  used: Map<string, number>;
-  labels: Map<string, string[]>;
+  usedControllerIndexes: Set<number>;
+  labelsByControllerIndex: Map<number, string>;
+}
+
+export interface AutomationCookerSlot {
+  controllerIndex: number;
+  controllerIdentity: string;
+  gridPosition: CookerGridPosition;
+  supportedKeys: string[];
+}
+
+export interface AutomationCookerPool {
+  slots: AutomationCookerSlot[];
+  snapshotComplete: boolean;
+  controllerCount: number;
+  readFailureCount: number;
 }
 
 export interface CookerRequirement {
@@ -936,11 +992,20 @@ export interface CookerRequirement {
 export interface CookerReservationResult {
   ok: boolean;
   message: string;
+  controllerIndex?: number;
+  controllerIdentity?: string;
+  gridPosition?: CookerGridPosition;
+}
+
+export interface CookerControllerReservation {
+  controllerIndex: number;
+  controllerIdentity: string;
+  gridPosition: CookerGridPosition;
 }
 
 export interface NormalCookerDemand {
-  counts: Map<string, number>;
-  labels: Map<string, string[]>;
+  controllerIndexes: Set<number>;
+  labelsByControllerIndex: Map<number, string>;
 }
 
 export interface AutomationCookerResourceRow {

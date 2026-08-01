@@ -57,6 +57,9 @@ export type {
   RecommendationExclusions,
   RecommendationRuntimeContext,
   ResolvedTags,
+  SpecialBusinessFoodTargetPolicy,
+  SpecialBusinessTagMatch,
+  SpecialBusinessTargetEnforcement,
 } from '@/recommendation-engine/types';
 export type {
   NormalCoverageRuntimeContext,

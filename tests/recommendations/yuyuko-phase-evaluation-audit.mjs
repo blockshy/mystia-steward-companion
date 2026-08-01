@@ -12,6 +12,7 @@ let yuyukoChallengeModule;
 let yuyukoNormalTargetModule;
 let preferencesModule;
 let specialBusinessRegistryModule;
+let automationStateModule;
 let serviceModule;
 let recommendationDataModule;
 try {
@@ -21,6 +22,7 @@ try {
     yuyukoNormalTargetModule,
     preferencesModule,
     specialBusinessRegistryModule,
+    automationStateModule,
     serviceModule,
     recommendationDataModule,
   ] = await Promise.all([
@@ -35,6 +37,7 @@ try {
     ),
     vite.ssrLoadModule('/src/companion/preferences.ts'),
     vite.ssrLoadModule('/src/companion/domain/special-business/registry.ts'),
+    vite.ssrLoadModule('/src/companion/automation-state.ts'),
     vite.ssrLoadModule('/src/companion/domain/service-recommendations.ts'),
     vite.ssrLoadModule('/src/lib/recommendation-data.ts'),
   ]);
@@ -55,10 +58,18 @@ const { selectYuyukoNormalExecutionTarget } = yuyukoNormalTargetModule;
 const { normalizeCompanionPreferences } = preferencesModule;
 const {
   buildSpecialBusinessOrderRule,
+  requiresSpecialBusinessNormalExecutionTarget,
   selectSpecialBusinessNormalExecutionTarget,
 } = specialBusinessRegistryModule;
 const {
+  clearNormalOrderExecutionTarget,
+  emptyNormalAutoOrderState,
+  getCurrentNormalOrderExecutionTarget,
+  lockNormalOrderExecutionTarget,
+} = automationStateModule;
+const {
   buildOrderRecommendations,
+  buildRareCustomerMap,
   createRecommendationCacheStore,
 } = serviceModule;
 const {
@@ -74,13 +85,18 @@ const demand = {
 };
 const yuyukoRuleContext = {
   active: true,
+  challengeTypeAvailable: true,
   challengeType: 'Challenge_Yuyuko',
   displayName: '幽幽子重修',
   category: 'challenge',
   ruleSummary: '',
   foodTargetTags: [],
   beverageTargetTags: [],
+  yuumaFoodTargetRevision: 0,
   phase: 'Phase 3',
+  currentAnger: null,
+  maxAnger: null,
+  targetAnger: null,
   recommendationPolicy: '',
   automationPolicy: '',
   source: 'test',
@@ -112,6 +128,153 @@ assert.equal(
   'none',
   '幽幽子非三阶段订单不得启用三阶段评价模式。',
 );
+assert.equal(
+  requiresSpecialBusinessNormalExecutionTarget(null, null),
+  false,
+  '普通经营不得进入特殊料理执行目标链路。',
+);
+assert.equal(
+  requiresSpecialBusinessNormalExecutionTarget(yuyukoRuleContext, 'ordinary-order'),
+  false,
+  '未被幽幽子模块认领的订单角色不得进入特殊料理执行目标链路。',
+);
+assert.equal(
+  requiresSpecialBusinessNormalExecutionTarget(yuyukoRuleContext, 'yuyuko-boss-order'),
+  true,
+  '幽幽子第三阶段明确认领的订单角色必须进入特殊料理执行目标链路。',
+);
+assert.equal(
+  requiresSpecialBusinessNormalExecutionTarget(
+    { ...yuyukoRuleContext, phase: 'Phase 2' },
+    'yuyuko-boss-order',
+  ),
+  false,
+  '幽幽子一、二阶段不得被第三阶段普客执行目标门禁误拦截。',
+);
+assert.equal(
+  requiresSpecialBusinessNormalExecutionTarget(
+    { ...yuyukoRuleContext, challengeType: 'Story_Basic' },
+    'ordinary-order',
+  ),
+  false,
+  '已明确注册的被动挑战不得因缺少特殊料理目标实现而阻断普通订单。',
+);
+assert.equal(
+  requiresSpecialBusinessNormalExecutionTarget(
+    { ...yuyukoRuleContext, challengeTypeAvailable: false },
+    'ordinary-order',
+  ),
+  true,
+  '活动特殊经营身份不可读时必须 fail-closed，不能退回普通经营路径。',
+);
+assert.equal(
+  requiresSpecialBusinessNormalExecutionTarget(
+    { ...yuyukoRuleContext, challengeType: 'Story_UnsupportedChallenge' },
+    'ordinary-order',
+  ),
+  true,
+  '未适配的活动特殊经营必须进入阻断链路，不能退回普通经营路径。',
+);
+assert.match(
+  selectSpecialBusinessNormalExecutionTarget({
+    order: {
+      orderKey: 'unsupported-order',
+      deskCode: 0,
+      guestId: 1,
+      guestName: '测试客人',
+      foodId: 1,
+      foodName: '测试料理',
+      beverageId: 2,
+      beverageName: '测试酒水',
+      foodPreferenceTags: [],
+      beveragePreferenceTags: [],
+      hasServedFood: false,
+      hasServedBeverage: false,
+      readyToEvaluate: false,
+      hasEvaluated: false,
+      source: 'runtime',
+    },
+    specialBusiness: { ...yuyukoRuleContext, challengeType: 'Story_UnsupportedChallenge' },
+    runtime: null,
+    preferences: normalizeCompanionPreferences({}),
+    dataSignature: 'unsupported-special-business',
+  }).message,
+  /尚未适配普客自动化执行目标/,
+  '未适配的活动特殊经营必须返回确定性阻断原因。',
+);
+
+const executionTargetFixture = {
+  specialTargetChallenge: '',
+  specialTargetOwner: '',
+  specialTargetGeneration: 0,
+  specialTargetRevision: 0,
+  specialTargetFoodTags: [],
+  specialTargetMatchMode: '',
+  specialTargetSignature: '',
+  matchFoodId: 1,
+  matchBeverageId: 2,
+  foodId: 1,
+  recipeId: 1,
+  recipeName: '测试料理',
+  extraIngredientIds: [3],
+  beverageId: 2,
+  beverageName: '测试酒水',
+  cookerName: '煮锅',
+  foodTags: ['家常'],
+  expectedFoodModifierTags: ['大份'],
+  beverageTags: ['直饮'],
+  reason: '测试锁存目标',
+};
+const emptyExecutionState = emptyNormalAutoOrderState('normal:test', 100);
+const lockedExecutionState = lockNormalOrderExecutionTarget(
+  emptyExecutionState,
+  executionTargetFixture,
+  17,
+);
+assert.equal(lockedExecutionState.executionTarget, executionTargetFixture,
+  '开锅前必须原子锁存完整普客执行目标。');
+assert.equal(lockedExecutionState.executionTargetBusinessGeneration, 17,
+  '锁存目标必须绑定当前经营代际。');
+assert.equal(
+  getCurrentNormalOrderExecutionTarget(lockedExecutionState, 17, '', 0),
+  executionTargetFixture,
+  '同经营代际且同特殊目标签名时必须复用锁存目标。',
+);
+assert.equal(
+  getCurrentNormalOrderExecutionTarget(lockedExecutionState, 18, '', 0),
+  null,
+  '经营代际变化后不得复用旧执行目标。',
+);
+assert.equal(
+  getCurrentNormalOrderExecutionTarget(lockedExecutionState, 17, 'rotated-target', 0),
+  null,
+  '同场特殊目标签名轮换后不得复用旧执行目标。',
+);
+const revisionedExecutionTarget = {
+  ...executionTargetFixture,
+  specialTargetChallenge: 'Story_BloodPondHell',
+  specialTargetOwner: 'yuuma',
+  specialTargetGeneration: 17,
+  specialTargetRevision: 5,
+  specialTargetFoodTags: ['目标甲', '目标乙'],
+  specialTargetMatchMode: 'all',
+  specialTargetSignature: 'canonical-target-a',
+};
+const revisionedExecutionState = lockNormalOrderExecutionTarget(
+  emptyExecutionState,
+  revisionedExecutionTarget,
+  17,
+);
+assert.equal(
+  getCurrentNormalOrderExecutionTarget(revisionedExecutionState, 17, 'canonical-target-a', 6),
+  null,
+  'A -> B -> A 的规范签名恢复后，旧 revision 的锁存目标仍必须失效。',
+);
+const clearedExecutionState = clearNormalOrderExecutionTarget(lockedExecutionState);
+assert.equal(clearedExecutionState.executionTarget, null,
+  '明确退休执行目标时必须清除目标内容。');
+assert.equal(clearedExecutionState.executionTargetBusinessGeneration, 0,
+  '明确退休执行目标时必须同时清除经营代际。');
 
 const phaseTwoPair = {
   food: buildFood({
@@ -487,7 +650,9 @@ function assertYuyukoStoryDoesNotRequireRuntimeYuyukoProfile() {
 }
 
 function assertRuntimeYuyukoProfileProjection() {
-  const selectionArgs = buildYuyukoNormalSelectionArgs('Challenge_Yuyuko', false);
+  const selectionArgs = buildYuyukoNormalSelectionArgs('Challenge_Yuyuko', false, {
+    includeNewLikedExtra: true,
+  });
   const rawYuyukoProfile = {
     id: 23,
     name: '西行寺幽幽子',
@@ -500,6 +665,9 @@ function assertRuntimeYuyukoProfileProjection() {
     ...rawYuyukoProfile,
     id: 40,
     places: ['妖怪兽道'],
+    positiveTags: ['清淡'],
+    negativeTags: ['肉', '大份'],
+    beverageTags: ['低酒精'],
   };
   const runtimeSnapshot = {
     isComplete: true,
@@ -538,6 +706,70 @@ function assertRuntimeYuyukoProfileProjection() {
   assert.doesNotMatch(selection.message, /characterId=23/,
     '存在基础评价档案时不得再报告 characterId=23 缺失。');
 
+  const capturedRareOrder = {
+    traceId: 'R-0018',
+    deskCode: 2,
+    guestId: 23,
+    runtimeGuestId: 23,
+    guestName: '西行寺幽幽子',
+    specialBusinessRole: 'yuyuko-boss-order',
+    automationAllowed: true,
+    foodTagId: 1,
+    foodTag: '肉',
+    beverageTagId: 2,
+    beverageTag: '直饮',
+    source: 'RuntimeCapture:ControllerOrderAdd+OrderAdd+OrderAdd',
+    isFreeOrder: true,
+    hasServedFood: false,
+    hasServedBeverage: false,
+  };
+  const serviceResult = buildOrderRecommendations(
+    [capturedRareOrder],
+    selectionArgs.runtime,
+    buildRareCustomerMap(runtimeData),
+    createRecommendationCacheStore(),
+    { version: 1, recipes: [], beverages: [] },
+    { version: 1, enabled: true, recipes: [] },
+    selectionArgs.preferences,
+    [],
+    yuyukoRuleContext,
+    [],
+    runtimeData,
+    { usage: 'automation' },
+  );
+  assert.equal(serviceResult.recommendationIssues.length, 0,
+    '幽幽子三阶段 canonical 23 不应再被普通地点目录过滤为无法映射。');
+  assert.equal(serviceResult.recommendations.length, 1);
+  assert.equal(serviceResult.recommendations[0].customer.id, 23,
+    '服务推荐必须使用 canonical 23 的完整评价档案，不能借用同名 mapped 40。');
+  assert.ok(serviceResult.recommendations[0].executionPlans.length > 0,
+    '诊断包中的 guestId/runtimeGuestId 均为 23 的订单必须恢复可执行推荐与自动化目标。');
+
+  const ordinaryMappedResult = buildOrderRecommendations(
+    [{
+      ...capturedRareOrder,
+      traceId: 'R-MAPPED-ORDINARY',
+      guestId: 40,
+      runtimeGuestId: 40,
+      specialBusinessRole: '',
+    }],
+    selectionArgs.runtime,
+    buildRareCustomerMap(runtimeData),
+    createRecommendationCacheStore(),
+    { version: 1, recipes: [], beverages: [] },
+    { version: 1, enabled: true, recipes: [] },
+    selectionArgs.preferences,
+    [],
+    yuyukoRuleContext,
+    [],
+    runtimeData,
+    { usage: 'automation' },
+  );
+  assert.equal(ordinaryMappedResult.recommendationIssues.length, 0,
+    '同场景普通 mapped 40 订单仍应使用普通地点目录。');
+  assert.equal(ordinaryMappedResult.recommendations[0]?.customer.id, 40,
+    '特殊经营档案解析不得改变非特殊角色的普通目录身份。');
+
   const dataWithoutBaseProfile = buildRecommendationDataSet({
     ...runtimeSnapshot,
     rareCustomers: [rawMappedYuyuko],
@@ -550,6 +782,26 @@ function assertRuntimeYuyukoProfileProjection() {
     '只有 mapped guest 而没有 canonical characterId=23 档案时必须 fail-closed。');
   assert.match(blockedSelection.message, /characterId=23/,
     '缺少 canonical 档案时必须保留可诊断的精确身份错误。');
+  const blockedServiceResult = buildOrderRecommendations(
+    [capturedRareOrder],
+    selectionArgs.runtime,
+    buildRareCustomerMap(dataWithoutBaseProfile),
+    createRecommendationCacheStore(),
+    { version: 1, recipes: [], beverages: [] },
+    { version: 1, enabled: true, recipes: [] },
+    selectionArgs.preferences,
+    [],
+    yuyukoRuleContext,
+    [],
+    dataWithoutBaseProfile,
+    { usage: 'automation' },
+  );
+  assert.equal(blockedServiceResult.recommendations.length, 0,
+    '缺少 canonical 23 档案时不得按同名回退到 mapped 40。');
+  assert.match(
+    blockedServiceResult.recommendationIssues[0]?.message ?? '',
+    /无法把该稀客映射/,
+  );
 
   const changedProfileData = buildRecommendationDataSet({
     ...runtimeSnapshot,
@@ -657,6 +909,7 @@ function buildYuyukoNormalSelectionArgs(
     },
     specialBusiness: {
       active: true,
+      challengeTypeAvailable: true,
       challengeType,
       displayName: '幽幽子挑战',
       category: 'challenge',
@@ -664,6 +917,9 @@ function buildYuyukoNormalSelectionArgs(
       foodTargetTags: [],
       beverageTargetTags: [],
       phase: 'Phase3',
+      currentAnger: null,
+      maxAnger: null,
+      targetAnger: null,
       recommendationPolicy: '',
       automationPolicy: '',
       source: 'test',
@@ -677,7 +933,7 @@ function buildYuyukoNormalSelectionArgs(
         ingredients.map((ingredient) => [ingredient.id, 10]),
       ),
       ownedBeverageQty: { [beverage.id]: 10 },
-      placedCookerTypeIds: [1],
+      ...buildCookerSnapshot([1]),
       popularFoodTag: null,
       popularHateFoodTag: null,
       famousShopEnabled: false,
@@ -725,6 +981,10 @@ function assertServiceRecommendationModeRouting() {
   });
   assert.equal(retakeHighLevel.executionPlans.length, 0,
     '服务链路不得让重修版三阶段沿用剧情版等级合计规则。');
+  assert.equal(retakeHighLevel.customer.id, 23,
+    '特殊经营必须按 canonical guestId 从完整评价档案读取幽幽子，不得按同名回退到 mapped 40。');
+  assert.deepEqual(retakeHighLevel.customer.places, [],
+    '特殊经营评价档案不应伪造普通日间地点。');
 
   const retakeRequestedHate = buildYuyukoRareServiceRecommendation({
     challengeType: 'Challenge_Yuyuko',
@@ -787,6 +1047,11 @@ function buildYuyukoRareServiceRecommendation({
     evaluation: {},
     spellCards: { positive: [], negative: [] },
   };
+  const mappedCustomer = {
+    ...customer,
+    id: 40,
+    places: ['博丽神社'],
+  };
   const ingredient = buildIngredient({
     id: 101,
     name: '基础材料',
@@ -818,7 +1083,7 @@ function buildYuyukoRareServiceRecommendation({
     ingredients: [ingredient],
     beverages: [beverage],
     normalCustomers: [],
-    rareCustomers: [customer],
+    rareCustomers: [mappedCustomer],
     rareCustomerProfiles: [{
       id: customer.id,
       name: customer.name,
@@ -838,7 +1103,7 @@ function buildYuyukoRareServiceRecommendation({
     availableIngredientIds: [ingredient.id],
     ownedIngredientQty: { [ingredient.id]: 10 },
     ownedBeverageQty: { [beverage.id]: 10 },
-    placedCookerTypeIds: [1],
+    ...buildCookerSnapshot([1]),
     popularFoodTag: null,
     popularHateFoodTag: null,
     famousShopEnabled: false,
@@ -862,7 +1127,7 @@ function buildYuyukoRareServiceRecommendation({
   const result = buildOrderRecommendations(
     [order],
     runtime,
-    new Map([[customer.id, customer]]),
+    new Map([[mappedCustomer.id, mappedCustomer]]),
     createRecommendationCacheStore(),
     { version: 1, recipes: [], beverages: [] },
     { version: 1, enabled: true, recipes: [] },
@@ -1246,27 +1511,51 @@ async function assertSourceContracts() {
   assert.ok(orderPreparationModels.includes('ExpectedFoodModifierTags')
     && localApiServer.includes('ExpectedFoodModifierTags = ReadStringListQuery(query, "expectedFoodModifierTags")'),
   '本地 API 必须将预期 modifier Tag 解析为显式请求字段。');
-  assert.ok(runtimeOrderPreparationService.includes('ExpectedFoodModifierTags = WackyCookingCompetitionRuntimePolicy.NormalizeTags')
+  assert.ok(runtimeOrderPreparationService.includes('ExpectedFoodModifierTags = SpecialFoodTargetPolicy.NormalizeTags')
     && runtimeOrderDirectDelivery.includes('ExpectedFoodModifierTags = target.ExpectedFoodModifierTags'),
   '异步 cooking target 必须持久化并在送达后重建预期 modifier Tag。');
 
   assert.ok(automationState.includes('executionTarget: NormalOrderExecutionTarget | null')
-    && automationState.includes('executionTarget: null'),
-  '普客自动化状态必须显式锁存完整执行目标。');
-  assert.ok(workbench.includes('if (state?.executionTarget)')
-    && workbench.includes('target: state.executionTarget')
-    && workbench.includes('acknowledgedStart ? specialTargetSelection.target : null')
-    && workbench.includes('executionTarget: null'),
-  '开锅确认后必须复用锁存目标，明确重置时必须释放锁。');
+    && automationState.includes('executionTargetBusinessGeneration: number')
+    && automationState.includes('lockNormalOrderExecutionTarget(')
+    && automationState.includes('clearNormalOrderExecutionTarget(')
+    && automationState.includes('getCurrentNormalOrderExecutionTarget(')
+    && automationState.includes('target.specialTargetSignature === specialTargetSignature')
+    && automationState.includes('target.specialTargetRevision === specialTargetRevision'),
+  '普客自动化状态必须显式锁存完整执行目标及其经营代际，并以目标签名和独立 revision 提供有效性判定和清理入口。');
+  const normalTargetSelectionContract = sourceSlice(
+    workbench,
+    'function getNormalAutomationTargetSelection(',
+    'function buildNormalOrderWorkerPayload(',
+  );
+  assert.ok(normalTargetSelectionContract.includes('if (!requiresSpecialTarget)')
+    && normalTargetSelectionContract.indexOf('if (currentExecutionTarget)')
+      < normalTargetSelectionContract.indexOf('if (!requiresRecipeTarget)')
+    && normalTargetSelectionContract.includes('const missingTargetMessage = \'特殊经营料理执行目标未在执行前锁存，自动化已暂停该订单。\'')
+    && normalTargetSelectionContract.includes('policyError: missingTargetMessage')
+    && workbench.includes('const normalOrdersRequireSpecialExecutionTarget = (snapshot?.normalBusiness?.orders ?? []).some('),
+  '普通订单不得进入特殊目标门禁；特殊经营已锁存目标必须优先透传，缺失时酒水与评价阶段也必须 fail-closed。');
+  assert.ok(workbench.includes('getCurrentNormalOrderExecutionTarget(')
+    && workbench.includes('target: applySpecialFoodTargetWirePolicy(currentExecutionTarget, targetPolicy)')
+    && workbench.includes('currentState = lockNormalOrderExecutionTarget(')
+    && workbench.indexOf('currentState = lockNormalOrderExecutionTarget(')
+      < workbench.lastIndexOf('completeFirstNormalOrder(')
+    && workbench.includes('clearNormalOrderExecutionTarget(currentState)')
+    && workbench.includes('executionTargetBusinessGeneration: 0'),
+  '执行目标必须在开锅副作用前按经营代际锁存，送达和评价阶段复用，明确重置时同时释放目标与代际。');
   assert.ok(workbench.includes('function retainNormalAutomationExecutionStates')
     && workbench.includes('!state.executionTarget && !state.cookingJobId')
     && workbench.includes('job.targetKind === \'normal\' && job.jobId === state.cookingJobId')
     && workbench.includes('!state?.manualResolutionRequired && !hasActiveCookingJob')
     && (workbench.match(/retainNormalAutomationExecutionStates\(normalOrderStatesRef\.current\)/g)?.length ?? 0) >= 3,
   '局部关闭普客自动化或处理阶段时必须保留已确认目标和活动 cooking job。');
-  assert.ok(automationDomain.includes('const specialTargetSelection = state?.executionTarget')
-    && automationDomain.includes('target: state.executionTarget'),
-  '厨具容量估算必须和实际普客调度共用已锁存执行目标。');
+  assert.ok(automationDomain.includes('requiresSpecialBusinessNormalExecutionTarget(')
+    && automationDomain.includes('const specialTargetPolicy = buildSpecialFoodTargetWirePolicy(')
+    && automationDomain.includes('const currentExecutionTarget = getCurrentNormalOrderExecutionTarget(')
+    && automationDomain.includes('specialTargetPolicy.specialTargetSignature')
+    && automationDomain.includes('specialTargetPolicy.specialTargetRevision')
+    && automationDomain.includes('applySpecialFoodTargetWirePolicy(currentExecutionTarget, specialTargetPolicy)'),
+  '厨具容量估算必须只为模块认领的订单复用同经营代际、同特殊目标签名和 revision 的锁存目标。');
 
   const storyTargetValidation = sourceSlice(
     yuyukoRuntimePolicy,
@@ -1285,6 +1574,39 @@ async function assertSourceContracts() {
   );
   assert.equal(diagnosticSignature.includes('snapshotSignature'), false,
     '快照内容更新不得让相同的自动化决策重复记录。');
+}
+
+function buildCookerSnapshot(typeIds) {
+  const typeNames = new Map([
+    [1, '煮锅'],
+    [2, '烧烤架'],
+    [3, '油锅'],
+    [4, '蒸锅'],
+    [5, '料理台'],
+  ]);
+  return {
+    placedCookerTypeIds: typeIds,
+    placedCookers: typeIds.map((typeId, controllerIndex) => ({
+      controllerIndex,
+      gridPosition: { x: controllerIndex, y: 0, z: 0 },
+      controllerIdentity: `0x${(0x4000 + controllerIndex).toString(16).toUpperCase()}`,
+      typeIds: [typeId],
+      typeNames: [typeNames.get(typeId)],
+      name: typeNames.get(typeId),
+      challengeLocked: false,
+      couldOpen: true,
+      automationAvailable: true,
+      automationAvailability: 'StrictIdle',
+      automationAvailabilityDiagnostic: 'recommendation audit',
+      source: 'test',
+    })),
+    placedCookerSnapshotComplete: true,
+    placedCookerControllerCount: typeIds.length,
+    placedCookerEmptyControllerCount: 0,
+    placedCookerLockedControllerCount: 0,
+    placedCookerReadFailureCount: 0,
+    placedCookerStatus: 'test',
+  };
 }
 
 function functionSlice(source, methodName, nextMethodName) {
