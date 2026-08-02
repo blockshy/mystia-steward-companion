@@ -1629,12 +1629,14 @@ internal sealed class LocalApiServer : IDisposable
             var highlightEnabled = ReadBoolQuery(query, "highlightEnabled") ?? false;
             var extraIngredientFillEnabled = ReadBoolQuery(query, "extraIngredientFillEnabled") ?? false;
             var seatHighlightEnabled = ReadBoolQuery(query, "seatHighlightEnabled") ?? false;
+            var orderHighlightEnabled = ReadBoolQuery(query, "orderHighlightEnabled") ?? false;
             var status = RuntimeUiPinningService.UpdateTarget(
                 ReadLongQuery(query, "businessGeneration", 0),
                 enabled,
                 highlightEnabled,
                 extraIngredientFillEnabled,
                 seatHighlightEnabled,
+                orderHighlightEnabled,
                 ReadIntQuery(query, "recipeId", -1),
                 ReadIntQuery(query, "beverageId", -1),
                 ReadIntListQuery(query, "ingredientIds"),
@@ -1644,6 +1646,7 @@ internal sealed class LocalApiServer : IDisposable
                 ReadIntQuery(query, "cookerTypeId", -1),
                 ReadStringQuery(query, "cookerName"),
                 ReadIntQuery(query, "deskCode", -1),
+                ReadStringQuery(query, "orderTraceId"),
                 ReadStringQuery(query, "targetRevision"));
             return ToJson(new LocalApiStatusDto { Ok = true, Status = status, Error = null });
         }

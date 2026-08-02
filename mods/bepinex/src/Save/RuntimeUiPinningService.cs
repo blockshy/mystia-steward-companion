@@ -23,6 +23,7 @@ internal static class RuntimeUiPinningService
     private static bool _highlightEnabled;
     private static bool _extraIngredientFillEnabled;
     private static bool _seatHighlightEnabled;
+    private static bool _orderHighlightEnabled;
     private static long _sessionGeneration;
     private static int _recipeId = -1;
     private static int _beverageId = -1;
@@ -30,6 +31,7 @@ internal static class RuntimeUiPinningService
     private static int[] _extraIngredientIds = EmptyIngredientIds;
     private static int _cookerTypeId = -1;
     private static int _deskCode = -1;
+    private static string _orderTraceId = "";
     private static string _targetRevision = "";
     private static string _recipeName = "";
     private static string _beverageName = "";
@@ -99,10 +101,10 @@ internal static class RuntimeUiPinningService
             string coreStatus;
             lock (SyncRoot)
             {
-                coreStatus = $"patches=checkPinnedPrefix:{_checkPinnedPatchStatus}, cookingScope:{_cookingScopePatchStatus}, beverageScope:{_beverageScopePatchStatus}, cookingPanel:{_cookingPanelPatchStatus}, storagePanel:{_storagePanelPatchStatus}; session={_sessionGeneration}; pinning={(_enabled ? "on" : "off")}; cookerHighlight={(_highlightEnabled ? "on" : "off")}; extraIngredientFill={(_extraIngredientFillEnabled ? "on" : "off")}; seatHighlight={(_seatHighlightEnabled ? "on" : "off")}; target=recipe:{_recipeId}/{_recipeName}, beverage:{_beverageId}/{_beverageName}, cooker:{_cookerTypeId}/{_cookerName}, desk:{_deskCode}, revisionLength:{_targetRevision.Length}, ingredients:{string.Join(",", _ingredientIds)}, extras:{string.Join(",", _extraIngredientIds)}; panelRefresh=cooking:{DescribePanelLocked(_cookingPanel)}, storage:{DescribePanelLocked(_storagePanel)}, attempts:{_panelRefreshAttempts}, successes:{_panelRefreshSuccesses}, failures:{_panelRefreshFailures}, stale:{_panelRefreshStalePanels}, warningLogs:{_panelRefreshWarningLogs}/{MaxPanelRefreshWarningLogs}, lastError:{_lastPanelRefreshError}";
+                coreStatus = $"patches=checkPinnedPrefix:{_checkPinnedPatchStatus}, cookingScope:{_cookingScopePatchStatus}, beverageScope:{_beverageScopePatchStatus}, cookingPanel:{_cookingPanelPatchStatus}, storagePanel:{_storagePanelPatchStatus}; session={_sessionGeneration}; pinning={(_enabled ? "on" : "off")}; cookerHighlight={(_highlightEnabled ? "on" : "off")}; extraIngredientFill={(_extraIngredientFillEnabled ? "on" : "off")}; seatHighlight={(_seatHighlightEnabled ? "on" : "off")}; orderHighlight={(_orderHighlightEnabled ? "on" : "off")}; target=recipe:{_recipeId}/{_recipeName}, beverage:{_beverageId}/{_beverageName}, cooker:{_cookerTypeId}/{_cookerName}, desk:{_deskCode}, orderTrace:{_orderTraceId}, revisionLength:{_targetRevision.Length}, ingredients:{string.Join(",", _ingredientIds)}, extras:{string.Join(",", _extraIngredientIds)}; panelRefresh=cooking:{DescribePanelLocked(_cookingPanel)}, storage:{DescribePanelLocked(_storagePanel)}, attempts:{_panelRefreshAttempts}, successes:{_panelRefreshSuccesses}, failures:{_panelRefreshFailures}, stale:{_panelRefreshStalePanels}, warningLogs:{_panelRefreshWarningLogs}/{MaxPanelRefreshWarningLogs}, lastError:{_lastPanelRefreshError}";
             }
 
-            return $"{coreStatus}; highlight={RuntimeCookerHighlightService.Status}; seat={RuntimeSeatHighlightService.Status}; extras={RuntimePinnedRecipeExtrasService.Status}; listHighlight={RuntimePinnedListHighlightService.Status}; forcedTotal=recipe:{Interlocked.Read(ref _recipeForces)}, ingredients:{Interlocked.Read(ref _ingredientForces)}, beverage:{Interlocked.Read(ref _beverageForces)}; scopeImbalance={Interlocked.Read(ref _scopeCleanupImbalances)}";
+            return $"{coreStatus}; highlight={RuntimeCookerHighlightService.Status}; seat={RuntimeSeatHighlightService.Status}; order={RuntimeOrderHighlightService.Status}; extras={RuntimePinnedRecipeExtrasService.Status}; listHighlight={RuntimePinnedListHighlightService.Status}; forcedTotal=recipe:{Interlocked.Read(ref _recipeForces)}, ingredients:{Interlocked.Read(ref _ingredientForces)}, beverage:{Interlocked.Read(ref _beverageForces)}; scopeImbalance={Interlocked.Read(ref _scopeCleanupImbalances)}";
         }
     }
 
@@ -195,6 +197,7 @@ internal static class RuntimeUiPinningService
         bool highlightEnabled,
         bool extraIngredientFillEnabled,
         bool seatHighlightEnabled,
+        bool orderHighlightEnabled,
         int recipeId,
         int beverageId,
         IEnumerable<int> ingredientIds,
@@ -204,6 +207,7 @@ internal static class RuntimeUiPinningService
         int cookerTypeId,
         string cookerName,
         int deskCode,
+        string orderTraceId,
         string targetRevision)
     {
         ValidateSession(sessionGeneration);
@@ -217,6 +221,7 @@ internal static class RuntimeUiPinningService
                 highlightEnabled,
                 extraIngredientFillEnabled,
                 seatHighlightEnabled,
+                orderHighlightEnabled,
                 recipeId,
                 beverageId,
                 ingredientIds,
@@ -226,6 +231,7 @@ internal static class RuntimeUiPinningService
                 cookerTypeId,
                 cookerName,
                 deskCode,
+                orderTraceId,
                 targetRevision);
         }
     }
@@ -320,6 +326,7 @@ internal static class RuntimeUiPinningService
                 _highlightEnabled = false;
                 _extraIngredientFillEnabled = false;
                 _seatHighlightEnabled = false;
+                _orderHighlightEnabled = false;
                 _sessionGeneration = 0;
                 _recipeId = -1;
                 _beverageId = -1;
@@ -327,6 +334,7 @@ internal static class RuntimeUiPinningService
                 _extraIngredientIds = EmptyIngredientIds;
                 _cookerTypeId = -1;
                 _deskCode = -1;
+                _orderTraceId = "";
                 _targetRevision = "";
                 _recipeName = "";
                 _beverageName = "";
@@ -349,6 +357,7 @@ internal static class RuntimeUiPinningService
             RunCleanupNoThrow(() => RuntimePinnedRecipeExtrasService.Abandon(reason));
             RunCleanupNoThrow(() => RuntimeCookerHighlightService.UpdateTarget(sessionGeneration, false, -1, ""));
             RunCleanupNoThrow(() => RuntimeSeatHighlightService.UpdateTarget(sessionGeneration, false, -1));
+            RunCleanupNoThrow(() => RuntimeOrderHighlightService.UpdateTarget(sessionGeneration, false, "", -1));
             TryLogInfo($"Runtime UI target invalidated: generation={sessionGeneration}; reason={reason}.");
         }
     }
@@ -359,6 +368,7 @@ internal static class RuntimeUiPinningService
         bool highlightEnabled,
         bool extraIngredientFillEnabled,
         bool seatHighlightEnabled,
+        bool orderHighlightEnabled,
         int recipeId,
         int beverageId,
         IEnumerable<int> ingredientIds,
@@ -368,14 +378,18 @@ internal static class RuntimeUiPinningService
         int cookerTypeId,
         string cookerName,
         int deskCode,
+        string orderTraceId,
         string targetRevision)
     {
-        var hasTarget = enabled || highlightEnabled || seatHighlightEnabled;
+        var hasTarget = enabled || highlightEnabled || seatHighlightEnabled || orderHighlightEnabled;
         var normalizedExtraIngredientFillEnabled = enabled && extraIngredientFillEnabled;
         var normalizedRecipeId = hasTarget ? recipeId : -1;
         var normalizedBeverageId = hasTarget ? beverageId : -1;
         var normalizedCookerTypeId = hasTarget ? cookerTypeId : -1;
         var normalizedDeskCode = hasTarget ? deskCode : -1;
+        var normalizedOrderTraceId = NormalizeOrderTraceId(
+            orderTraceId,
+            orderHighlightEnabled && hasTarget);
         var normalizedIngredientIds = hasTarget
             ? ingredientIds.Where(id => id >= 0).Distinct().Take(12).ToArray()
             : EmptyIngredientIds;
@@ -400,10 +414,12 @@ internal static class RuntimeUiPinningService
                     highlightEnabled,
                     normalizedExtraIngredientFillEnabled,
                     seatHighlightEnabled,
+                    orderHighlightEnabled,
                     normalizedRecipeId,
                     normalizedBeverageId,
                     normalizedCookerTypeId,
                     normalizedDeskCode,
+                    normalizedOrderTraceId,
                     normalizedIngredientIds,
                     normalizedExtraIngredientIds,
                     normalizedTargetRevision,
@@ -424,6 +440,11 @@ internal static class RuntimeUiPinningService
             sessionGeneration,
             seatHighlightEnabled && hasTarget,
             normalizedDeskCode);
+        RuntimeOrderHighlightService.UpdateTarget(
+            sessionGeneration,
+            orderHighlightEnabled && hasTarget,
+            normalizedOrderTraceId,
+            normalizedDeskCode);
 
         lock (SyncRoot)
         {
@@ -432,10 +453,12 @@ internal static class RuntimeUiPinningService
             _highlightEnabled = highlightEnabled;
             _extraIngredientFillEnabled = normalizedExtraIngredientFillEnabled;
             _seatHighlightEnabled = seatHighlightEnabled;
+            _orderHighlightEnabled = orderHighlightEnabled;
             _recipeId = normalizedRecipeId;
             _beverageId = normalizedBeverageId;
             _cookerTypeId = normalizedCookerTypeId;
             _deskCode = normalizedDeskCode;
+            _orderTraceId = normalizedOrderTraceId;
             _ingredientIds = normalizedIngredientIds;
             _extraIngredientIds = normalizedExtraIngredientIds;
             _targetRevision = normalizedTargetRevision;
@@ -468,7 +491,7 @@ internal static class RuntimeUiPinningService
             }
 
             logMessage = hasTarget
-                ? $"Runtime UI target updated: pinning={enabled}, cookerHighlight={highlightEnabled}, extraIngredientFill={normalizedExtraIngredientFillEnabled}, seatHighlight={seatHighlightEnabled}, recipe={_recipeId}/{_recipeName}, beverage={_beverageId}/{_beverageName}, cooker={_cookerTypeId}/{_cookerName}, desk={_deskCode}, ingredients={string.Join(",", _ingredientIds)}, extras={string.Join(",", _extraIngredientIds)}."
+                ? $"Runtime UI target updated: pinning={enabled}, cookerHighlight={highlightEnabled}, extraIngredientFill={normalizedExtraIngredientFillEnabled}, seatHighlight={seatHighlightEnabled}, orderHighlight={orderHighlightEnabled}, orderTrace={_orderTraceId}, recipe={_recipeId}/{_recipeName}, beverage={_beverageId}/{_beverageName}, cooker={_cookerTypeId}/{_cookerName}, desk={_deskCode}, ingredients={string.Join(",", _ingredientIds)}, extras={string.Join(",", _extraIngredientIds)}."
                 : "Runtime UI target disabled.";
         }
 
@@ -542,6 +565,17 @@ internal static class RuntimeUiPinningService
         return targetRevision;
     }
 
+    private static string NormalizeOrderTraceId(string orderTraceId, bool enabled)
+    {
+        return RuntimeOrderTraceIdService.TryNormalizeRareTraceId(
+            orderTraceId,
+            enabled,
+            out var normalized,
+            out _)
+            ? normalized
+            : "";
+    }
+
     private static void ValidateSession(long sessionGeneration)
     {
         var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
@@ -557,10 +591,12 @@ internal static class RuntimeUiPinningService
         bool highlightEnabled,
         bool extraIngredientFillEnabled,
         bool seatHighlightEnabled,
+        bool orderHighlightEnabled,
         int recipeId,
         int beverageId,
         int cookerTypeId,
         int deskCode,
+        string orderTraceId,
         int[] ingredientIds,
         int[] extraIngredientIds,
         string targetRevision,
@@ -573,10 +609,12 @@ internal static class RuntimeUiPinningService
             && _highlightEnabled == highlightEnabled
             && _extraIngredientFillEnabled == extraIngredientFillEnabled
             && _seatHighlightEnabled == seatHighlightEnabled
+            && _orderHighlightEnabled == orderHighlightEnabled
             && _recipeId == recipeId
             && _beverageId == beverageId
             && _cookerTypeId == cookerTypeId
             && _deskCode == deskCode
+            && string.Equals(_orderTraceId, orderTraceId, StringComparison.Ordinal)
             && _ingredientIds.SequenceEqual(ingredientIds)
             && _extraIngredientIds.SequenceEqual(extraIngredientIds)
             && string.Equals(_targetRevision, targetRevision, StringComparison.Ordinal)

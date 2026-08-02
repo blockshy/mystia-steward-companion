@@ -113,6 +113,7 @@ static void AssertRuntimeLifecycleCallbacks()
     AssertEqual(1L, active.Generation, "Runtime did not create generation 1.");
     AssertEqual(1, RuntimeBoundaryProbe.CookerResumeCount, "Cooker highlight did not resume at panel open.");
     AssertEqual(1, RuntimeBoundaryProbe.SeatResumeCount, "Seat highlight did not resume at panel open.");
+    AssertEqual(1, RuntimeBoundaryProbe.OrderResumeCount, "Order highlight did not resume at panel open.");
     AssertEqual(1, RuntimeBoundaryProbe.ListResumeCount, "List highlight did not resume at panel open.");
     AssertEqual(0, RuntimeBoundaryProbe.TargetInvalidationCount,
         "Panel open unexpectedly invalidated the active target.");
@@ -149,6 +150,7 @@ static void AssertRuntimeLifecycleCallbacks()
     AssertEqual(1, RuntimeBoundaryProbe.SpecialOrderClearCount, "Closing did not clear special orders once.");
     AssertEqual(1, RuntimeBoundaryProbe.CookingJobClearCount, "Closing did not clear cooking jobs once.");
     AssertEqual(1, RuntimeBoundaryProbe.SeatSuspendCount, "Closing did not suspend seat highlighting once.");
+    AssertEqual(1, RuntimeBoundaryProbe.OrderSuspendCount, "Closing did not suspend order highlighting once.");
     AssertEqual(NightBusinessLifecyclePhase.Closing, RuntimeBoundaryProbe.LastServeInWorkPhase,
         "ServeInWork diagnostics did not receive Closing.");
 
@@ -166,6 +168,8 @@ static void AssertRuntimeLifecycleCallbacks()
         "Scene destruction did not abandon cooker wrappers.");
     AssertEqual(1, RuntimeBoundaryProbe.SeatAbandonCount,
         "Scene destruction did not abandon seat-highlight wrappers.");
+    AssertEqual(1, RuntimeBoundaryProbe.OrderAbandonCount,
+        "Scene destruction did not abandon order-highlight wrappers.");
     AssertEqual(1, RuntimeBoundaryProbe.ListAbandonCount,
         "Scene destruction did not abandon list wrappers.");
 

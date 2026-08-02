@@ -182,6 +182,69 @@ namespace MystiaStewardCompanion.Save
         }
     }
 
+    internal static class RuntimeOrderTraceIdService
+    {
+        public static string NormalizeRareTraceId(string traceId, bool enabled)
+        {
+            if (!TryNormalizeRareTraceId(traceId, enabled, out var normalized, out var failure))
+            {
+                throw new ArgumentException(failure, nameof(traceId));
+            }
+
+            return normalized;
+        }
+
+        public static bool TryNormalizeRareTraceId(
+            string traceId,
+            bool enabled,
+            out string normalized,
+            out string failure)
+        {
+            if (!enabled)
+            {
+                normalized = "";
+                failure = "";
+                return true;
+            }
+            if (!traceId.StartsWith("R-", StringComparison.Ordinal)
+                || traceId.Length is < 4 or > 18
+                || traceId.Skip(2).Any(character => character is < '0' or > '9'))
+            {
+                normalized = "";
+                failure = "invalid rare trace id";
+                return false;
+            }
+
+            normalized = traceId;
+            failure = "";
+            return true;
+        }
+    }
+
+    internal static class RuntimeOrderHighlightService
+    {
+        public static string Status => LastEnabled ? "active" : "disabled";
+
+        public static bool LastEnabled { get; private set; }
+
+        public static long LastSessionGeneration { get; private set; }
+
+        public static string LastOrderTraceId { get; private set; } = "";
+
+        public static int LastDeskCode { get; private set; } = -1;
+
+        public static int UpdateCount { get; private set; }
+
+        public static void UpdateTarget(long sessionGeneration, bool enabled, string orderTraceId, int deskCode)
+        {
+            UpdateCount += 1;
+            LastSessionGeneration = sessionGeneration;
+            LastEnabled = enabled && sessionGeneration > 0 && orderTraceId.Length > 0 && deskCode >= 0;
+            LastOrderTraceId = LastEnabled ? orderTraceId : "";
+            LastDeskCode = LastEnabled ? deskCode : -1;
+        }
+    }
+
     internal static class RuntimePinnedRecipeExtrasService
     {
         public static string Status => "disabled";

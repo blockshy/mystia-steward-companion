@@ -34,6 +34,10 @@ assert(
   /seatHighlightEnabled:\s*readStoredBoolean\([^,]+,\s*false\)/.test(preferencesSource),
   '目标桌位高亮必须默认关闭',
 );
+assert(
+  /orderHighlightEnabled:\s*readStoredBoolean\([^,]+,\s*false\)/.test(preferencesSource),
+  '目标订单高亮必须默认关闭',
+);
 
 try {
   await page.route(`${API_URL}/**`, async (route) => {
@@ -133,7 +137,9 @@ try {
   assert(acceptedRetry.params.enabled === 'true', '定向巡检未启用游戏界面置顶');
   assert(acceptedRetry.params.extraIngredientFillEnabled === 'true', '定向巡检未启用推荐加料自动加入');
   assert(acceptedRetry.params.seatHighlightEnabled === 'true', '定向巡检未启用目标桌位高亮');
+  assert(acceptedRetry.params.orderHighlightEnabled === 'true', '定向巡检未启用目标订单高亮');
   assert(acceptedRetry.params.targetRevision, '置顶目标缺少稳定订单/执行计划 revision');
+  assert(acceptedRetry.params.orderTraceId === 'R-0001', '置顶目标缺少精确订单 trace');
   assert(acceptedRetry.params.ingredientIds, '置顶目标缺少材料 ID');
   assert('extraIngredientIds' in acceptedRetry.params, '置顶目标缺少独立的推荐加料字段');
   assert(Number(acceptedRetry.params.deskCode) >= 0, '置顶目标缺少有效桌位');
@@ -387,6 +393,7 @@ try {
   );
   const secondOrderTarget = targetRequests.slice(secondOrderStartCount).find(hasRecipeTarget);
   assert(secondOrderTarget, '缺少 B 订单出现后的目标请求');
+  assert(secondOrderTarget.params.orderTraceId === 'R-0002', 'B 订单未携带自身的精确订单 trace');
   assert(
     !sameTarget(activeOrderTarget, secondOrderTarget),
     'B 订单出现后仍发布了 A 订单的旧目标',
@@ -454,6 +461,7 @@ try {
   assert(coalescedRequests[0].params.highlightEnabled === 'true', '关闭置顶时错误关闭了厨具高亮');
   assert(coalescedRequests[0].params.extraIngredientFillEnabled === 'false', '关闭置顶时仍允许自动加入加料');
   assert(coalescedRequests[0].params.seatHighlightEnabled === 'true', '关闭置顶时错误关闭了独立桌位高亮');
+  assert(coalescedRequests[0].params.orderHighlightEnabled === 'true', '关闭置顶时错误关闭了独立订单高亮');
   assert(coalescedRequests[1].params.enabled === 'true', '延迟请求完成后未补发最新置顶开关');
   assert(coalescedRequests[1].params.extraIngredientFillEnabled === 'true', '重新开启置顶后未恢复自动加入加料');
   assert(maxActiveTargetRequests === 1, `置顶目标存在并发写入：max=${maxActiveTargetRequests}`);
@@ -771,6 +779,7 @@ function seedLocalStorage({ apiUrl, apiToken, storagePrefix }) {
   localStorage.setItem(`${storagePrefix}-recommended-extra-ingredient-fill`, '1');
   localStorage.setItem(`${storagePrefix}-cooker-highlight`, '1');
   localStorage.setItem(`${storagePrefix}-seat-highlight`, '1');
+  localStorage.setItem(`${storagePrefix}-order-highlight`, '1');
 }
 
 function hasRecipeTarget(entry) {
@@ -780,7 +789,9 @@ function hasRecipeTarget(entry) {
 function isEnabledClearTarget(entry) {
   return entry.params.enabled === 'true'
     && entry.params.highlightEnabled === 'true'
+    && entry.params.orderHighlightEnabled === 'true'
     && entry.params.targetRevision === ''
+    && entry.params.orderTraceId === ''
     && Number(entry.params.recipeId) < 0
     && Number(entry.params.beverageId) < 0
     && entry.params.deskCode === '-1'
@@ -791,7 +802,9 @@ function isEnabledClearTarget(entry) {
 function isHighlightOnlyClearTarget(entry) {
   return entry.params.enabled === 'false'
     && entry.params.highlightEnabled === 'true'
+    && entry.params.orderHighlightEnabled === 'true'
     && entry.params.targetRevision === ''
+    && entry.params.orderTraceId === ''
     && Number(entry.params.recipeId) < 0
     && Number(entry.params.beverageId) < 0
     && entry.params.deskCode === '-1'
@@ -936,7 +949,9 @@ function sameTarget(left, right) {
     && left.params.highlightEnabled === right.params.highlightEnabled
     && left.params.extraIngredientFillEnabled === right.params.extraIngredientFillEnabled
     && left.params.seatHighlightEnabled === right.params.seatHighlightEnabled
+    && left.params.orderHighlightEnabled === right.params.orderHighlightEnabled
     && left.params.targetRevision === right.params.targetRevision
+    && left.params.orderTraceId === right.params.orderTraceId
     && left.params.recipeId === right.params.recipeId
     && left.params.recipeName === right.params.recipeName
     && left.params.ingredientIds === right.params.ingredientIds
@@ -950,6 +965,7 @@ function sameTarget(left, right) {
 
 function sameWireTarget(left, right) {
   return left.params.targetRevision === right.params.targetRevision
+    && left.params.orderTraceId === right.params.orderTraceId
     && left.params.recipeId === right.params.recipeId
     && left.params.recipeName === right.params.recipeName
     && left.params.ingredientIds === right.params.ingredientIds
@@ -962,7 +978,8 @@ function sameWireTarget(left, right) {
 }
 
 function sameVisibleTarget(left, right) {
-  return left.params.recipeId === right.params.recipeId
+  return left.params.orderTraceId === right.params.orderTraceId
+    && left.params.recipeId === right.params.recipeId
     && left.params.recipeName === right.params.recipeName
     && left.params.ingredientIds === right.params.ingredientIds
     && left.params.extraIngredientIds === right.params.extraIngredientIds

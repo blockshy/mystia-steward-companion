@@ -907,6 +907,7 @@ export interface GameUiPinningTarget {
   signature: string;
   sourceOrderKey: string;
   sourceOrderSignature: string;
+  orderTraceId: string;
   recipeId: number;
   recipeName: string;
   ingredientIds: number[];

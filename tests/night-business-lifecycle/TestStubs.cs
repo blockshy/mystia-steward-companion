@@ -46,6 +46,9 @@ namespace MystiaStewardCompanion.Save
         public static int SeatResumeCount { get; set; }
         public static int SeatSuspendCount { get; set; }
         public static int SeatAbandonCount { get; set; }
+        public static int OrderResumeCount { get; set; }
+        public static int OrderSuspendCount { get; set; }
+        public static int OrderAbandonCount { get; set; }
         public static int ListResumeCount { get; set; }
         public static int ListSuspendCount { get; set; }
         public static int ListAbandonCount { get; set; }
@@ -67,6 +70,9 @@ namespace MystiaStewardCompanion.Save
             SeatResumeCount = 0;
             SeatSuspendCount = 0;
             SeatAbandonCount = 0;
+            OrderResumeCount = 0;
+            OrderSuspendCount = 0;
+            OrderAbandonCount = 0;
             ListResumeCount = 0;
             ListSuspendCount = 0;
             ListAbandonCount = 0;
@@ -99,6 +105,13 @@ namespace MystiaStewardCompanion.Save
         public static void Resume(string reason) => RuntimeBoundaryProbe.SeatResumeCount++;
         public static void Suspend(string reason) => RuntimeBoundaryProbe.SeatSuspendCount++;
         public static void Abandon(string reason) => RuntimeBoundaryProbe.SeatAbandonCount++;
+    }
+
+    internal static class RuntimeOrderHighlightService
+    {
+        public static void Resume(string reason) => RuntimeBoundaryProbe.OrderResumeCount++;
+        public static void Suspend(string reason) => RuntimeBoundaryProbe.OrderSuspendCount++;
+        public static void Abandon(string reason) => RuntimeBoundaryProbe.OrderAbandonCount++;
     }
 
     internal static class RuntimeServeInWorkMissionDiagnosticCapture

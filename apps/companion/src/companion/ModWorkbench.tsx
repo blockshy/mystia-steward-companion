@@ -2284,7 +2284,8 @@ export function ModWorkbench() {
     || rareAutomationNeedsRecommendations
     || companionPreferences.gameUiPinningEnabled
     || companionPreferences.cookerHighlightEnabled
-    || companionPreferences.seatHighlightEnabled;
+    || companionPreferences.seatHighlightEnabled
+    || companionPreferences.orderHighlightEnabled;
   const orderRecommendations = useOrderRecommendations(orderRecommendationPayload, {
     enabled: orderRecommendationsEnabled,
     inputSignature: orderRecommendationPayloadSignature,
@@ -2355,6 +2356,7 @@ export function ModWorkbench() {
     () => companionPreferences.gameUiPinningEnabled
       || companionPreferences.cookerHighlightEnabled
       || companionPreferences.seatHighlightEnabled
+      || companionPreferences.orderHighlightEnabled
       ? buildGameUiPinningTarget(
         orderRecommendations.recommendations,
         companionPreferences.serviceOrderSortMode,
@@ -2369,6 +2371,7 @@ export function ModWorkbench() {
       companionPreferences.cookerHighlightEnabled,
       companionPreferences.gameUiPinningEnabled,
       companionPreferences.missionRecipePriorityEnabled,
+      companionPreferences.orderHighlightEnabled,
       companionPreferences.serviceOrderSortMode,
       companionPreferences.seatHighlightEnabled,
       orderRecommendations.recommendations,
@@ -2393,6 +2396,7 @@ export function ModWorkbench() {
     extraIngredientFillEnabled: companionPreferences.gameUiPinningEnabled
       && companionPreferences.recommendedExtraIngredientFillEnabled,
     seatHighlightEnabled: companionPreferences.seatHighlightEnabled,
+    orderHighlightEnabled: companionPreferences.orderHighlightEnabled,
     target: gameUiPinningTarget,
     sourceOrders: gameUiPinningSourceOrders,
     recommendationIsCurrent: orderRecommendations.isCurrent,

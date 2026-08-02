@@ -52,6 +52,7 @@ const GAME_UI_PINNING_STORAGE_KEY = `${STORAGE_PREFIX}-game-ui-pinning`;
 const RECOMMENDED_EXTRA_INGREDIENT_FILL_STORAGE_KEY = `${STORAGE_PREFIX}-recommended-extra-ingredient-fill`;
 const COOKER_HIGHLIGHT_STORAGE_KEY = `${STORAGE_PREFIX}-cooker-highlight`;
 const SEAT_HIGHLIGHT_STORAGE_KEY = `${STORAGE_PREFIX}-seat-highlight`;
+const ORDER_HIGHLIGHT_STORAGE_KEY = `${STORAGE_PREFIX}-order-highlight`;
 const SHOW_DEBUG_DETAILS_STORAGE_KEY = `${STORAGE_PREFIX}-show-debug-details`;
 const SERVICE_ORDER_SORT_MODE_STORAGE_KEY = `${STORAGE_PREFIX}-service-order-sort-mode`;
 const RECOMMENDATION_SORT_PROFILE_STORAGE_KEY = `${STORAGE_PREFIX}-recommendation-sort-profile`;
@@ -135,6 +136,7 @@ export interface CompanionPreferences {
   recommendedExtraIngredientFillEnabled: boolean;
   cookerHighlightEnabled: boolean;
   seatHighlightEnabled: boolean;
+  orderHighlightEnabled: boolean;
   showDebugDetails: boolean;
   serviceOrderSortMode: ServiceOrderSortMode;
   recommendationSortProfile: RecommendationSortProfile;
@@ -203,6 +205,7 @@ export function readStoredCompanionPreferences(): CompanionPreferences {
     recommendedExtraIngredientFillEnabled: readStoredBoolean(RECOMMENDED_EXTRA_INGREDIENT_FILL_STORAGE_KEY, false),
     cookerHighlightEnabled: readStoredBoolean(COOKER_HIGHLIGHT_STORAGE_KEY, false),
     seatHighlightEnabled: readStoredBoolean(SEAT_HIGHLIGHT_STORAGE_KEY, false),
+    orderHighlightEnabled: readStoredBoolean(ORDER_HIGHLIGHT_STORAGE_KEY, false),
     showDebugDetails: readStoredBoolean(SHOW_DEBUG_DETAILS_STORAGE_KEY, false),
     serviceOrderSortMode: readStoredServiceOrderSortMode(),
     recommendationSortProfile: readStoredRecommendationSortProfile(),
@@ -261,6 +264,7 @@ export function normalizeCompanionPreferences(
     recommendedExtraIngredientFillEnabled: Boolean(value.recommendedExtraIngredientFillEnabled),
     cookerHighlightEnabled: Boolean(value.cookerHighlightEnabled),
     seatHighlightEnabled: Boolean(value.seatHighlightEnabled),
+    orderHighlightEnabled: Boolean(value.orderHighlightEnabled),
     showDebugDetails: Boolean(value.showDebugDetails),
     serviceOrderSortMode: value.serviceOrderSortMode === 'guest' ? 'guest' : 'ordered',
     recommendationSortProfile: normalizeRecommendationSortProfile(value.recommendationSortProfile),
@@ -365,6 +369,7 @@ export function persistCompanionPreferences(preferences: CompanionPreferences) {
   );
   localStorage.setItem(COOKER_HIGHLIGHT_STORAGE_KEY, normalized.cookerHighlightEnabled ? '1' : '0');
   localStorage.setItem(SEAT_HIGHLIGHT_STORAGE_KEY, normalized.seatHighlightEnabled ? '1' : '0');
+  localStorage.setItem(ORDER_HIGHLIGHT_STORAGE_KEY, normalized.orderHighlightEnabled ? '1' : '0');
   localStorage.setItem(SHOW_DEBUG_DETAILS_STORAGE_KEY, normalized.showDebugDetails ? '1' : '0');
   localStorage.setItem(SERVICE_ORDER_SORT_MODE_STORAGE_KEY, normalized.serviceOrderSortMode);
   localStorage.setItem(

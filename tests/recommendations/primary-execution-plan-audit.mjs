@@ -293,6 +293,8 @@ function assertGameUiPinningCompletionContracts() {
   const nextTarget = buildGameUiPinningTarget([servedFirst, activeSecond], 'ordered', indexes);
   assert.equal(nextTarget?.sourceOrderKey, 'trace:R-ACTIVE-B',
     'A fully served first order must be skipped in favor of the next actionable order.');
+  assert.equal(nextTarget?.orderTraceId, 'R-ACTIVE-B',
+    'A game UI target must carry the exact runtime order trace without a fallback identity.');
   assert.equal(nextTarget?.recipeId, secondPlan.food.recipe.recipeId,
     'The next actionable order must own the recipe target.');
   assert.equal(nextTarget?.beverageId, secondPlan.beverage.beverage.id,
@@ -301,6 +303,20 @@ function assertGameUiPinningCompletionContracts() {
     'The target must preserve the primary plan extra ingredients separately from list highlighting IDs.');
   assert.equal(nextTarget?.deskCode, 2,
     'The target must carry the exact source order desk code for table highlighting.');
+
+  const missingTrace = buildUiPinningRecommendation('', 1, firstPlan);
+  const missingTraceTarget = buildGameUiPinningTarget([missingTrace, activeSecond], 'ordered', indexes);
+  assert.equal(missingTraceTarget?.orderTraceId, '',
+    'A missing runtime order trace must remain empty instead of deriving an alias.');
+  assert.equal(missingTraceTarget?.sourceOrderKey.startsWith('trace:'), false,
+    'A missing runtime order trace must not be replaced by a trace-form identity.');
+  assert.equal(missingTraceTarget?.recipeId, firstPlan.food.recipe.recipeId,
+    'A missing order trace must disable only order highlighting without clearing other game UI targets.');
+  const opaqueTraceTarget = buildGameUiPinningTarget([
+    buildUiPinningRecommendation(' R-OPAQUE ', 1, firstPlan),
+  ], 'ordered', indexes);
+  assert.equal(opaqueTraceTarget?.orderTraceId, ' R-OPAQUE ',
+    'The runtime order trace is opaque and must not be trimmed or normalized on the wire target.');
 
   const activeSecondSource = buildGameUiPinningSourceOrderState(activeSecond.order);
   assert.equal(
@@ -670,9 +686,12 @@ async function assertSourceContracts() {
   );
   assert.ok(
     pinning.includes('const sourceOrderKey = buildNightBusinessOrderKey(item.order);')
+      && pinning.includes("const orderTraceId = item.order.traceId ?? '';")
+      && pinning.includes('orderTraceId,')
       && pinning.includes('sourceOrderKey,')
-      && types.includes('sourceOrderKey: string;'),
-    'A game UI target must carry its exact frontend source-order identity.',
+      && types.includes('sourceOrderKey: string;')
+      && types.includes('orderTraceId: string;'),
+    'A game UI target must carry exact frontend and runtime order identities without deriving a trace fallback.',
   );
   assert.equal(pinning.includes('item.recipes[0]'), false,
     'Game UI pinning must not fall back to independently paired display rows.');
@@ -698,8 +717,10 @@ async function assertSourceContracts() {
   );
   assert.ok(
     workbench.includes('extraIngredientFillEnabled: companionPreferences.gameUiPinningEnabled')
-      && workbench.includes('seatHighlightEnabled: companionPreferences.seatHighlightEnabled'),
-    'Extra-ingredient filling must remain subordinate to UI pinning while table highlighting stays independently controlled.',
+      && workbench.includes('seatHighlightEnabled: companionPreferences.seatHighlightEnabled')
+      && workbench.includes('orderHighlightEnabled: companionPreferences.orderHighlightEnabled')
+      && workbench.includes('|| companionPreferences.orderHighlightEnabled;'),
+    'Extra-ingredient filling must remain subordinate to UI pinning while table and order highlighting stay independently controlled.',
   );
   assert.equal(
     workbench.includes('preferences.autoPrepRecipeFavoritesOnly ? 1 : 0'),

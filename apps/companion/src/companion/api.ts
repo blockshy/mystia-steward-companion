@@ -479,6 +479,7 @@ export async function publishGameUiPinningTarget(
   highlightEnabled: boolean,
   extraIngredientFillEnabled: boolean,
   seatHighlightEnabled: boolean,
+  orderHighlightEnabled: boolean,
   target: GameUiPinningTarget | null,
   signal?: AbortSignal,
 ): Promise<void> {
@@ -489,7 +490,9 @@ export async function publishGameUiPinningTarget(
     highlightEnabled: String(highlightEnabled),
     extraIngredientFillEnabled: String(enabled && extraIngredientFillEnabled),
     seatHighlightEnabled: String(seatHighlightEnabled),
+    orderHighlightEnabled: String(orderHighlightEnabled),
     targetRevision: target?.signature ?? '',
+    orderTraceId: target?.orderTraceId ?? '',
     recipeId: target ? String(target.recipeId) : '-1',
     recipeName: target?.recipeName ?? '',
     ingredientIds: target ? target.ingredientIds.join(',') : '',

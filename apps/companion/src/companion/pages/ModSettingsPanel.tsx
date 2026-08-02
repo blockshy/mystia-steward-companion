@@ -688,6 +688,14 @@ export function ModSettingsPanel({
               <div className="text-xs text-muted-foreground">
                 经营中有推荐目标订单时，尝试在游戏内高亮对应桌位；只改变可见提示，不自动操作顾客。
               </div>
+              <SwitchControl
+                label="目标订单高亮（实验性）"
+                checked={preferences.orderHighlightEnabled}
+                onCheckedChange={(orderHighlightEnabled) => onPreferenceChange({ orderHighlightEnabled })}
+              />
+              <div className="text-xs text-muted-foreground">
+                经营中有推荐目标订单时，尝试在游戏左下订单列表高亮对应订单；只改变可见提示，不切换游戏原生订单焦点。
+              </div>
               <SettingSegmentedControl
                 label="预算处理"
                 value={preferences.recommendationBudgetPolicy}

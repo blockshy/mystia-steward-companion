@@ -1112,6 +1112,7 @@ export function buildGameUiPinningTarget(
     : candidates[0];
   if (!selected) return null;
   const { item, recipe, beverage } = selected;
+  const orderTraceId = item.order.traceId ?? '';
 
   const baseIngredientIds = recipe
     ? recipe.recipe.ingredients
@@ -1145,6 +1146,7 @@ export function buildGameUiPinningTarget(
     ),
     sourceOrderKey,
     sourceOrderSignature,
+    orderTraceId,
     recipeId,
     recipeName: recipe?.recipe.name ?? '',
     ingredientIds,

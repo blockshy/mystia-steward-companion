@@ -483,7 +483,9 @@ const server = http.createServer((request, response) => {
         const requiredParameters = [
           'extraIngredientFillEnabled',
           'seatHighlightEnabled',
+          'orderHighlightEnabled',
           'targetRevision',
+          'orderTraceId',
           'extraIngredientIds',
           'deskCode',
         ];
@@ -682,7 +684,7 @@ function buildSnapshot() {
       ],
       orders: [
         {
-          traceId: 'R-MOCK-0001',
+          traceId: 'R-0001',
           deskCode: 1,
           guestId: 1001,
           runtimeGuestId: 1001,
@@ -698,7 +700,7 @@ function buildSnapshot() {
           hasServedFood: false,
           hasServedBeverage: true,
           missionRecipePriority: {
-            traceId: 'R-MOCK-0001',
+            traceId: 'R-0001',
             deskCode: 1,
             guestId: 1001,
             runtimeGuestId: 1001,
@@ -709,6 +711,7 @@ function buildSnapshot() {
           },
         },
         {
+          traceId: 'R-0002',
           deskCode: 3,
           guestId: 1002,
           runtimeGuestId: 1002,

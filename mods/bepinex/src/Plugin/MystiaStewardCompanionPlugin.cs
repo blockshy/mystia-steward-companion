@@ -64,6 +64,7 @@ public sealed class MystiaStewardCompanionPlugin : BasePlugin
         RuntimeMissionDiagnosticCapture.Attach(Log);
         RuntimeServeInWorkMissionDiagnosticCapture.Attach(Log);
         YuyukoChallengeEvaluationTracker.Attach(Log);
+        RuntimeOrderHighlightService.Attach(Log);
         RuntimeUiPinningService.Attach(Log);
         RuntimePinnedListHighlightService.Attach(Log);
         RuntimeCookingGenerationTracker.Attach(Log);

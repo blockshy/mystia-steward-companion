@@ -597,6 +597,7 @@ internal sealed class StewardOverlayController
         RuntimeUiPinningService.Tick();
         RuntimeCookerHighlightService.Tick();
         RuntimeSeatHighlightService.Tick();
+        RuntimeOrderHighlightService.Tick();
         RuntimePinnedListHighlightService.Tick();
     }
 
@@ -629,6 +630,7 @@ internal sealed class StewardOverlayController
         RuntimePinnedRecipeExtrasService.Abandon("controller disposed");
         RuntimeCookerHighlightService.Abandon("controller disposed");
         RuntimeSeatHighlightService.Dispose("controller disposed");
+        RuntimeOrderHighlightService.Dispose("controller disposed");
         RuntimePinnedListHighlightService.Abandon("controller disposed");
         AggregateModLogService.Shutdown();
     }

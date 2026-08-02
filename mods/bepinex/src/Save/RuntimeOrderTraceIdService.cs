@@ -13,6 +13,7 @@ namespace MystiaStewardCompanion.Save;
 internal static class RuntimeOrderTraceIdService
 {
     private const int MaxTrackedOrdersPerKind = 512;
+    private const int MaxRareTraceDigits = 16;
     private static readonly object SyncRoot = new();
     private static readonly Dictionary<string, TraceRecord> RecordsByStableKey = new(StringComparer.Ordinal);
     private static int _rareSequence;
@@ -28,6 +29,114 @@ internal static class RuntimeOrderTraceIdService
             order.BeverageTagId,
             order.IsFreeOrder);
         return GetOrCreate("rare", "R", stableKey);
+    }
+
+    internal static string GetRareTraceId(CapturedRuntimeSpecialOrder order)
+    {
+        var stableKey = BuildRareStableKey(
+            order.FirstCapturedAt,
+            order.DeskCode,
+            order.GuestId,
+            order.HasFoodTagId ? order.FoodTagId : null,
+            order.HasBeverageTagId ? order.BeverageTagId : null,
+            order.IsFreeOrder);
+        return GetOrCreate("rare", "R", stableKey);
+    }
+
+    /// <summary>
+    /// Normalizes the exact rare-order trace carried by the UI-assistance protocol.
+    /// </summary>
+    /// <remarks>
+    /// Trace ids are opaque Ordinal identities. In particular, leading/trailing whitespace is
+    /// rejected instead of being trimmed into a different request identity.
+    /// </remarks>
+    internal static string NormalizeRareTraceId(string traceId, bool enabled)
+    {
+        if (!TryNormalizeRareTraceId(traceId, enabled, out var normalized, out var failure))
+        {
+            throw new ArgumentException(failure, nameof(traceId));
+        }
+
+        return normalized;
+    }
+
+    internal static bool TryNormalizeRareTraceId(
+        string traceId,
+        bool enabled,
+        out string normalized,
+        out string failure)
+    {
+        if (!enabled)
+        {
+            normalized = "";
+            failure = "";
+            return true;
+        }
+        if (!IsValidRareTraceId(traceId))
+        {
+            normalized = "";
+            failure = $"Rare-order trace must match R- followed by 1-{MaxRareTraceDigits} ASCII decimal digits.";
+            return false;
+        }
+
+        normalized = traceId;
+        failure = "";
+        return true;
+    }
+
+    internal static bool TryResolveCurrentRareCapture(
+        string orderTraceId,
+        int deskCode,
+        TimeSpan maxAge,
+        out CapturedRuntimeSpecialOrder? capture,
+        out string failure)
+    {
+        capture = null;
+        if (!IsValidRareTraceId(orderTraceId))
+        {
+            failure = "target rare-order trace has an invalid exact shape";
+            return false;
+        }
+        if (deskCode < 0)
+        {
+            failure = "target desk code is invalid";
+            return false;
+        }
+
+        var traceMatches = new List<CapturedRuntimeSpecialOrder>();
+        foreach (var candidate in SpecialOrderRuntimeCapture.Snapshot(maxAge))
+        {
+            if (candidate.OrderObject == null
+                || candidate.ControllerObject == null
+                || string.IsNullOrEmpty(candidate.RuntimeKey)
+                || !RuntimeReflectionUtility.TryReadNativeObjectPointer(candidate.OrderObject, out var orderPointer)
+                || !string.Equals(candidate.RuntimeKey, $"ptr:{orderPointer:x}", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (string.Equals(GetRareTraceId(candidate), orderTraceId, StringComparison.Ordinal))
+            {
+                traceMatches.Add(candidate);
+            }
+        }
+
+        if (traceMatches.Count != 1)
+        {
+            failure = $"target rare-order trace matched {traceMatches.Count} active captures";
+            return false;
+        }
+
+        var matched = traceMatches[0];
+        if (matched.DeskCode != deskCode)
+        {
+            failure = $"target desk mismatch: capture={matched.DeskCode}, target={deskCode}";
+            return false;
+        }
+
+        capture = matched;
+        failure = "";
+        return true;
     }
 
     public static string GetNormalTraceId(NormalBusinessOrder order)
@@ -71,6 +180,26 @@ internal static class RuntimeOrderTraceIdService
             PruneLocked(kind);
             return traceId;
         }
+    }
+
+    private static bool IsValidRareTraceId(string traceId)
+    {
+        if (traceId == null
+            || traceId.Length < 3
+            || traceId.Length > 2 + MaxRareTraceDigits
+            || traceId[0] != 'R'
+            || traceId[1] != '-')
+        {
+            return false;
+        }
+
+        for (var index = 2; index < traceId.Length; index += 1)
+        {
+            var character = traceId[index];
+            if (character < '0' || character > '9') return false;
+        }
+
+        return true;
     }
 
     private static string BuildRareStableKey(
