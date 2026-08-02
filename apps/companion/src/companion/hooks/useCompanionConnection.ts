@@ -201,10 +201,10 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
       setError('未收到本地 API Token。请从游戏内启动或按 F8 唤起伴随窗口。');
       setManualRefreshing(false);
       setConnectionProbing(false);
-      return;
+      return null;
     }
-    if (!manual && connectionPausedRef.current) return;
-    if (inFlightRequestIdRef.current !== null) return;
+    if (!manual && connectionPausedRef.current) return null;
+    if (inFlightRequestIdRef.current !== null) return null;
 
     const requestId = latestRequestIdRef.current + 1;
     latestRequestIdRef.current = requestId;
@@ -229,7 +229,7 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
         timeoutMs,
         knownSignature: snapshotSignatureRef.current,
       });
-      if (latestRequestIdRef.current !== requestId) return;
+      if (latestRequestIdRef.current !== requestId) return null;
       window.clearTimeout(timeoutId);
       if (isSnapshotUnchanged(data)) {
         snapshotSignatureRef.current = data.snapshotSignature;
@@ -239,7 +239,7 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
         setConnectionPaused(false);
         setConnectionFailureCount(0);
         markConnected();
-        return;
+        return currentSnapshot;
       }
 
       if (data.recommendationState) {
@@ -258,11 +258,13 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
       setConnectionPaused(false);
       setConnectionFailureCount(0);
       markConnected(true);
+      return data;
     } catch (err) {
-      if (latestRequestIdRef.current !== requestId) return;
+      if (latestRequestIdRef.current !== requestId) return null;
       const nextError = err instanceof Error ? err.message : String(err);
       setError((current) => current === nextError ? current : nextError);
       setConnectionFailureCount((current) => current + 1);
+      return null;
     } finally {
       window.clearTimeout(timeoutId);
       if (inFlightRequestIdRef.current === requestId) {

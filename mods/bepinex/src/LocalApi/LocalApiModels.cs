@@ -1,4 +1,5 @@
 using MystiaStewardCompanion.Core;
+using MystiaStewardCompanion.Save;
 
 namespace MystiaStewardCompanion.LocalApi;
 
@@ -6,6 +7,7 @@ internal sealed class LocalApiSnapshot
 {
     public string PluginVersion { get; init; } = "";
     public string AutomationSessionId { get; init; } = "";
+    public long AutomationCancellationAppliedEpoch { get; init; }
     public long NightBusinessGeneration { get; init; }
     public string NightBusinessLifecyclePhase { get; init; } = "Inactive";
     public string RuntimeNightBusinessLifecycleStatus { get; init; } = "";
@@ -107,8 +109,9 @@ internal sealed class AutomationCookingJobSnapshot
     public DateTime LastProgressAtUtc { get; init; }
 }
 
-internal sealed class AutomationCommandCancellationResult
+internal sealed class AutomationCancellationResult
 {
+    public AutomationCancellationTarget Target { get; init; }
     public long CommandEpoch { get; init; }
     public int CancelledJobs { get; init; }
     public int CancelledCommands { get; init; }
@@ -117,6 +120,7 @@ internal sealed class AutomationCommandCancellationResult
 internal sealed class LocalApiAutomationCancellationDto
 {
     public bool Ok { get; init; }
+    public string Target { get; init; } = "";
     public string Status { get; init; } = "";
     public string? Error { get; init; }
     public long CommandEpoch { get; init; }

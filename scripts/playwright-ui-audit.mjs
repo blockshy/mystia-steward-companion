@@ -535,7 +535,7 @@ async function auditMinimumRecommendationSettingsLayout(page, viewport, tab) {
   await page.getByRole('tab', { name: '实验性功能', exact: true }).first().click();
   await page.waitForTimeout(200);
   await auditMinimumMulticolumnGrids(page, viewport, { ...tab, label: `${tab.label} 实验性功能` });
-  for (const title of ['自动化', '游戏界面辅助']) {
+  for (const title of ['自动化总控', '游戏界面辅助', '稀客处理', '普客处理']) {
     if (!(await page.getByText(title, { exact: true }).count())) {
       issues.push({
         viewport: viewport.name,

@@ -10,6 +10,7 @@
   <ItemGroup>
     <Compile Include="../../mods/bepinex/src/Core/Models.cs" Link="Models.cs" />
     <Compile Include="../../mods/bepinex/src/LocalApi/LocalApiModels.cs" Link="LocalApiModels.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/AutomationCancellationTarget.cs" Link="AutomationCancellationTarget.cs" />
     <Compile Include="../../mods/bepinex/src/Save/AutomationCookerStartPolicy.cs" Link="AutomationCookerStartPolicy.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeCookerSnapshotContentSignature.cs" Link="RuntimeCookerSnapshotContentSignature.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeCookerReservation.cs" Link="RuntimeCookerReservation.cs" />

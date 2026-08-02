@@ -1938,7 +1938,7 @@ static void VerifyYuumaSettlementContract(
         "TryDeliverYuumaOrderBeverage(RuntimeOrderMatch",
         "The Yuuma beverage entry must not trust a generic runtime-order wrapper supplied by its caller.");
     var beverageRequestBuild = beverageDelivery.IndexOf(
-        "BuildOrderRequestFromCookingTarget(target)",
+        "BuildOrderRequestFromCookingTarget(",
         StringComparison.Ordinal);
     var beverageInitialLookup = beverageDelivery.IndexOf(
         "FindYuumaRuntimeOrder(target,request)",
@@ -2316,9 +2316,9 @@ static void VerifyYuumaSettlementContract(
 
     var normalCookingJob = Normalize(ExtractMethod(
         cookingSource,
-        "private static (bool Delivered, string StepName, string Message, string Code)\n        TryProcessNormalOrderCookingJob("));
+        "private static (bool Delivered, bool CompletedOrder, string StepName, string Message, string Code)\n        TryProcessNormalOrderCookingJob("));
     var yuumaTerminalReturn = normalCookingJob.IndexOf(
-        "if(result.Remove&&IsYuumaBossTarget(job.Target)){return(false,\"普客送达料理\",result.Message,result.Code);}",
+        "if(result.Remove&&IsYuumaBossTarget(job.Target)){return(false,false,\"普客送达料理\",result.Message,result.Code);}",
         StringComparison.Ordinal);
     var servedFoodFallback = normalCookingJob.IndexOf(
         "ReadOrderServedFood(order)",
@@ -2570,7 +2570,7 @@ static void VerifyYuumaLookupPurposeAndDeliveredItemIsolation(
 
     var normalCookingJobProcessor = Normalize(ExtractMethod(
         cookingSource,
-        "private static (bool Delivered, string StepName, string Message, string Code)\n        TryProcessNormalOrderCookingJob("));
+        "private static (bool Delivered, bool CompletedOrder, string StepName, string Message, string Code)\n        TryProcessNormalOrderCookingJob("));
     var normalFoodDeliveredResult = normalCookingJobProcessor.IndexOf(
         "result.Code==OrderPreparationStepCodes.FoodDelivered",
         StringComparison.Ordinal);

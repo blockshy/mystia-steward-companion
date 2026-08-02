@@ -46,7 +46,6 @@ import type {
   RecommendationBudgetResult,
 } from '@/recommendation-engine';
 import {
-  AUTOMATION_SWITCH_CELL,
   DENSE_TWO_COLUMN_GRID,
   DENSE_TWO_COLUMN_GRID_TIGHT,
   MAX_RECOMMENDATION_ROWS,
@@ -149,26 +148,6 @@ export function SwitchControl({
 
   return (
     <SwitchField label={label} checked={checked} onCheckedChange={onCheckedChange} disabled={disabled} title={title} />
-  );
-}
-
-export function AutomationSwitchCell({
-  label,
-  checked,
-  onCheckedChange,
-  disabled,
-  title,
-}: {
-  label: string;
-  checked: boolean;
-  onCheckedChange: (value: boolean) => void;
-  disabled?: boolean;
-  title?: string;
-}) {
-  return (
-    <div className={AUTOMATION_SWITCH_CELL}>
-      <SwitchControl label={label} checked={checked} onCheckedChange={onCheckedChange} disabled={disabled} title={title} />
-    </div>
   );
 }
 

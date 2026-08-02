@@ -163,6 +163,17 @@ namespace MystiaStewardCompanion.Save
 
     internal static class RuntimeOrderPreparationService
     {
-        public static void ClearAutomationCookingJobs(string reason) => RuntimeBoundaryProbe.CookingJobClearCount++;
+        public static void ClearAutomationCookingJobs(
+            string reason,
+            AutomationCancellationTarget target,
+            bool preserveIrreversibleTransactions) => RuntimeBoundaryProbe.CookingJobClearCount++;
+    }
+
+    internal enum AutomationCancellationTarget
+    {
+        Commands,
+        Rare,
+        Normal,
+        All,
     }
 }

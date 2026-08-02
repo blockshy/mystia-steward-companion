@@ -25,6 +25,7 @@ const ALWAYS_ON_TOP_STORAGE_KEY = `${STORAGE_PREFIX}-always-on-top`;
 const MOUSE_PASSTHROUGH_STORAGE_KEY = `${STORAGE_PREFIX}-mouse-passthrough`;
 const GAMEPAD_NAVIGATION_STORAGE_KEY = `${STORAGE_PREFIX}-gamepad-navigation`;
 const AUTOMATION_ENABLED_STORAGE_KEY = `${STORAGE_PREFIX}-automation-enabled`;
+const AUTO_RARE_ORDER_ENABLED_STORAGE_KEY = `${STORAGE_PREFIX}-auto-rare-order-enabled`;
 const AUTO_NORMAL_ORDER_ENABLED_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-order-enabled`;
 const AUTO_NORMAL_TAKE_BEVERAGE_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-take-beverage`;
 const AUTO_NORMAL_START_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-start-cooking`;
@@ -111,6 +112,7 @@ export interface CompanionPreferences {
   mousePassthroughEnabled: boolean;
   gamepadNavigationEnabled: boolean;
   automationEnabled: boolean;
+  autoRareOrderEnabled: boolean;
   autoNormalOrderEnabled: boolean;
   autoNormalTakeBeverage: boolean;
   autoNormalStartCooking: boolean;
@@ -174,6 +176,7 @@ export function readStoredCompanionPreferences(): CompanionPreferences {
     mousePassthroughEnabled: readStoredBoolean(MOUSE_PASSTHROUGH_STORAGE_KEY, false),
     gamepadNavigationEnabled: readStoredBoolean(GAMEPAD_NAVIGATION_STORAGE_KEY, true),
     automationEnabled: readStoredBoolean(AUTOMATION_ENABLED_STORAGE_KEY, false),
+    autoRareOrderEnabled: readStoredBoolean(AUTO_RARE_ORDER_ENABLED_STORAGE_KEY, true),
     autoNormalOrderEnabled: readStoredBoolean(AUTO_NORMAL_ORDER_ENABLED_STORAGE_KEY, false),
     autoNormalTakeBeverage: readStoredBoolean(AUTO_NORMAL_TAKE_BEVERAGE_STORAGE_KEY, false),
     autoNormalStartCooking: readStoredBoolean(AUTO_NORMAL_START_COOKING_STORAGE_KEY, false),
@@ -228,6 +231,8 @@ export function normalizeCompanionPreferences(
 ): CompanionPreferences {
   const legacyBackgroundOpacity = value.backgroundOpacity ?? value.windowOpacity ?? DEFAULT_BACKGROUND_OPACITY;
   const legacyFavoritesOnly = Boolean(value.autoPrepFavoritesOnly);
+  const autoPrepCompleteOrder = Boolean(value.autoPrepCompleteOrder);
+  const autoNormalCompleteOrder = Boolean(value.autoNormalCompleteOrder);
 
   return {
     backgroundOpacity: normalizeBackgroundOpacity(legacyBackgroundOpacity),
@@ -239,16 +244,17 @@ export function normalizeCompanionPreferences(
     mousePassthroughEnabled: Boolean(value.mousePassthroughEnabled),
     gamepadNavigationEnabled: Boolean(value.gamepadNavigationEnabled),
     automationEnabled: Boolean(value.automationEnabled),
+    autoRareOrderEnabled: value.autoRareOrderEnabled !== false,
     autoNormalOrderEnabled: Boolean(value.autoNormalOrderEnabled),
-    autoNormalTakeBeverage: Boolean(value.autoNormalTakeBeverage),
+    autoNormalTakeBeverage: autoNormalCompleteOrder && Boolean(value.autoNormalTakeBeverage),
     autoNormalStartCooking: Boolean(value.autoNormalStartCooking),
-    autoNormalDeliverFood: Boolean(value.autoNormalDeliverFood),
-    autoNormalCompleteOrder: Boolean(value.autoNormalCompleteOrder),
+    autoNormalDeliverFood: autoNormalCompleteOrder && Boolean(value.autoNormalDeliverFood),
+    autoNormalCompleteOrder,
     autoNormalStopOnError: Boolean(value.autoNormalStopOnError),
-    autoPrepCompleteOrder: Boolean(value.autoPrepCompleteOrder),
-    autoPrepTakeBeverage: Boolean(value.autoPrepTakeBeverage),
+    autoPrepCompleteOrder,
+    autoPrepTakeBeverage: autoPrepCompleteOrder && Boolean(value.autoPrepTakeBeverage),
     autoPrepStartCooking: Boolean(value.autoPrepStartCooking),
-    autoPrepCollectCooking: Boolean(value.autoPrepCollectCooking),
+    autoPrepCollectCooking: autoPrepCompleteOrder && Boolean(value.autoPrepCollectCooking),
     autoPrepRecipeFavoritesOnly: Boolean(value.autoPrepRecipeFavoritesOnly ?? legacyFavoritesOnly),
     autoPrepBeverageFavoritesOnly: Boolean(value.autoPrepBeverageFavoritesOnly ?? legacyFavoritesOnly),
     autoPrepStopOnError: Boolean(value.autoPrepStopOnError),
@@ -340,6 +346,7 @@ export function persistCompanionPreferences(preferences: CompanionPreferences) {
   localStorage.setItem(MOUSE_PASSTHROUGH_STORAGE_KEY, normalized.mousePassthroughEnabled ? '1' : '0');
   localStorage.setItem(GAMEPAD_NAVIGATION_STORAGE_KEY, normalized.gamepadNavigationEnabled ? '1' : '0');
   localStorage.setItem(AUTOMATION_ENABLED_STORAGE_KEY, normalized.automationEnabled ? '1' : '0');
+  localStorage.setItem(AUTO_RARE_ORDER_ENABLED_STORAGE_KEY, normalized.autoRareOrderEnabled ? '1' : '0');
   localStorage.setItem(AUTO_NORMAL_ORDER_ENABLED_STORAGE_KEY, normalized.autoNormalOrderEnabled ? '1' : '0');
   localStorage.setItem(AUTO_NORMAL_TAKE_BEVERAGE_STORAGE_KEY, normalized.autoNormalTakeBeverage ? '1' : '0');
   localStorage.setItem(AUTO_NORMAL_START_COOKING_STORAGE_KEY, normalized.autoNormalStartCooking ? '1' : '0');

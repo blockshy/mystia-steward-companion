@@ -58,7 +58,7 @@ internal sealed class LocalApiServer : IDisposable
     private readonly Func<OrderPreparationRequest, OrderPreparationResult> _completeOrder;
     private readonly Func<OrderPreparationRequest, OrderPreparationResult> _completeNormalOrder;
     private readonly Func<long, int> _advanceAutomationCommandEpoch;
-    private readonly Func<long, AutomationCommandCancellationResult> _cancelAutomationJobs;
+    private readonly Func<long, AutomationCancellationTarget, AutomationCancellationResult> _cancelAutomation;
     private readonly Func<long, AutomationSafetyBarrierAckResult> _ackAutomationSafetyBarrier;
     private readonly Func<RuntimeAvailableMissionSnapshot> _readAvailableMissions;
     private readonly Func<RuntimeAvailableMissionSnapshot> _getAvailableMissionSnapshot;
@@ -132,7 +132,7 @@ internal sealed class LocalApiServer : IDisposable
         Func<OrderPreparationRequest, OrderPreparationResult> completeNormalOrder,
         long automationCommandEpoch,
         Func<long, int> advanceAutomationCommandEpoch,
-        Func<long, AutomationCommandCancellationResult> cancelAutomationJobs,
+        Func<long, AutomationCancellationTarget, AutomationCancellationResult> cancelAutomation,
         Func<long, AutomationSafetyBarrierAckResult> ackAutomationSafetyBarrier,
         Func<RuntimeAvailableMissionSnapshot> readAvailableMissions,
         Func<RuntimeAvailableMissionSnapshot> getAvailableMissionSnapshot,
@@ -168,7 +168,7 @@ internal sealed class LocalApiServer : IDisposable
         _completeNormalOrder = completeNormalOrder;
         _automationCommandEpoch = Math.Max(1, automationCommandEpoch);
         _advanceAutomationCommandEpoch = advanceAutomationCommandEpoch;
-        _cancelAutomationJobs = cancelAutomationJobs;
+        _cancelAutomation = cancelAutomation;
         _ackAutomationSafetyBarrier = ackAutomationSafetyBarrier;
         _readAvailableMissions = readAvailableMissions;
         _getAvailableMissionSnapshot = getAvailableMissionSnapshot;
@@ -559,8 +559,24 @@ internal sealed class LocalApiServer : IDisposable
                     case "/automation/lease/acquire":
                         WriteResponse(stream, 200, "OK", ToJson(AcquireAutomationLease(request)));
                         break;
-                    case "/automation/jobs/cancel":
-                        WriteResponse(stream, 200, "OK", ToJson(CancelAutomationAndReleaseLease(request)));
+                    case "/automation/cancel":
+                        if (!AutomationCancellationTargetPolicy.TryParse(
+                                ReadStringQuery(query, "target"),
+                                out var cancellationTarget))
+                        {
+                            WriteResponse(
+                                stream,
+                                400,
+                                "Bad Request",
+                                ToJson(new LocalApiAutomationCancellationDto
+                                {
+                                    Ok = false,
+                                    Error = "target is required and must be exactly commands, rare, normal, or all",
+                                }));
+                            break;
+                        }
+
+                        WriteResponse(stream, 200, "OK", ToJson(CancelAutomation(request, cancellationTarget)));
                         break;
                     case "/automation/barriers/ack":
                         WriteResponse(stream, 200, "OK", ToJson(AcknowledgeAutomationSafetyBarrier(request, query)));
@@ -1011,7 +1027,8 @@ internal sealed class LocalApiServer : IDisposable
 
         lock (_automationLeaseLock)
         {
-            PruneExpiredAutomationLease(DateTime.UtcNow);
+            var now = DateTime.UtcNow;
+            PruneExpiredAutomationLease(now);
             return BuildAutomationLeaseDto(clientId, clientLabel, null);
         }
     }
@@ -1061,27 +1078,33 @@ internal sealed class LocalApiServer : IDisposable
         }
     }
 
-    private LocalApiAutomationCancellationDto CancelAutomationAndReleaseLease(string request)
+    private LocalApiAutomationCancellationDto CancelAutomation(
+        string request,
+        AutomationCancellationTarget target)
     {
+        var targetValue = AutomationCancellationTargetPolicy.ToWireValue(target);
         var (clientId, clientLabel, error) = ReadClientIdentity(request);
         if (!string.IsNullOrWhiteSpace(error))
         {
             return new LocalApiAutomationCancellationDto
             {
                 Ok = false,
+                Target = targetValue,
                 Error = error,
             };
         }
 
         lock (_automationLeaseLock)
         {
-            PruneExpiredAutomationLease(DateTime.UtcNow);
+            var now = DateTime.UtcNow;
+            PruneExpiredAutomationLease(now);
             if (_automationLease == null
                 || !string.Equals(_automationLease.ClientId, clientId, StringComparison.Ordinal))
             {
                 return new LocalApiAutomationCancellationDto
                 {
                     Ok = false,
+                    Target = targetValue,
                     Error = _automationLease == null
                         ? "自动化控制权已失效，无法确认取消屏障。"
                         : $"自动化当前由 {_automationLease.ClientLabel} 控制，本窗口不能取消其任务。",
@@ -1092,16 +1115,32 @@ internal sealed class LocalApiServer : IDisposable
             var cancellationEpoch = ++_automationCommandEpoch;
             try
             {
-                var result = _cancelAutomationJobs(cancellationEpoch);
-                _automationLease = null;
+                var result = _cancelAutomation(cancellationEpoch, target);
+                if (result.Target != target)
+                {
+                    throw new InvalidOperationException("Automation cancellation target changed while crossing the Unity main-thread boundary.");
+                }
+
+                var releaseLease = target == AutomationCancellationTarget.All;
+                if (releaseLease)
+                {
+                    _automationLease = null;
+                }
+                else
+                {
+                    _automationLease.LastSeenUtc = now;
+                    _automationLease.ExpiresAtUtc = now + AutomationLeaseTtl;
+                }
                 return new LocalApiAutomationCancellationDto
                 {
                     Ok = true,
-                    Status = $"自动化已取消：job {result.CancelledJobs} 个，排队命令 {result.CancelledCommands} 个。",
+                    Target = targetValue,
+                    Status = $"{BuildAutomationCancellationTargetLabel(target)}已取消："
+                        + $"job {result.CancelledJobs} 个，排队命令 {result.CancelledCommands} 个。",
                     CommandEpoch = result.CommandEpoch,
                     CancelledJobs = result.CancelledJobs,
                     CancelledCommands = result.CancelledCommands,
-                    LeaseReleased = true,
+                    LeaseReleased = releaseLease,
                 };
             }
             catch (Exception ex)
@@ -1109,12 +1148,25 @@ internal sealed class LocalApiServer : IDisposable
                 return new LocalApiAutomationCancellationDto
                 {
                     Ok = false,
+                    Target = targetValue,
                     Error = ex.GetBaseException().Message,
                     CommandEpoch = cancellationEpoch,
                     LeaseReleased = false,
                 };
             }
         }
+    }
+
+    private static string BuildAutomationCancellationTargetLabel(AutomationCancellationTarget target)
+    {
+        return target switch
+        {
+            AutomationCancellationTarget.Commands => "排队命令",
+            AutomationCancellationTarget.Rare => "稀客自动化",
+            AutomationCancellationTarget.Normal => "普客自动化",
+            AutomationCancellationTarget.All => "全部自动化",
+            _ => throw new ArgumentOutOfRangeException(nameof(target), target, null),
+        };
     }
 
     private AutomationSafetyBarrierAckResult AcknowledgeAutomationSafetyBarrier(string request, string query)

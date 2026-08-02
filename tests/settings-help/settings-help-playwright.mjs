@@ -73,22 +73,50 @@ const expectedHelpIdsBySection = new Map([
     'automation-normal-concurrency',
     'automation-max-step-retries',
     'automation-max-rollbacks',
+    'automation-rare-enabled',
+    'automation-rare-take-beverage',
+    'automation-rare-start-cooking',
+    'automation-rare-deliver-food',
+    'automation-rare-complete-order',
+    'automation-rare-stop-on-error',
+    'automation-rare-recipe-favorites-only',
+    'automation-rare-beverage-favorites-only',
+    'automation-normal-enabled',
+    'automation-normal-take-beverage',
+    'automation-normal-start-cooking',
+    'automation-normal-deliver-food',
+    'automation-normal-complete-order',
+    'automation-normal-stop-on-error',
   ]],
 ]);
 
 const expectedSettingsTabs = ['窗口', '连接', '推荐', '实验性功能', '更新'];
 
 const expectedExperimentalPanelByHelpId = new Map([
-  ['automation-enabled', '自动化'],
-  ['automation-rare-concurrency', '自动化'],
-  ['automation-normal-concurrency', '自动化'],
-  ['automation-max-step-retries', '自动化'],
-  ['automation-max-rollbacks', '自动化'],
+  ['automation-enabled', '自动化总控'],
+  ['automation-rare-concurrency', '自动化总控'],
+  ['automation-normal-concurrency', '自动化总控'],
+  ['automation-max-step-retries', '自动化总控'],
+  ['automation-max-rollbacks', '自动化总控'],
   ['recommendation-game-ui-pinning', '游戏界面辅助'],
   ['recommendation-extra-ingredient-fill', '游戏界面辅助'],
   ['recommendation-cooker-highlight', '游戏界面辅助'],
   ['recommendation-seat-highlight', '游戏界面辅助'],
   ['recommendation-order-highlight', '游戏界面辅助'],
+  ['automation-rare-enabled', '稀客处理'],
+  ['automation-rare-take-beverage', '稀客处理'],
+  ['automation-rare-start-cooking', '稀客处理'],
+  ['automation-rare-deliver-food', '稀客处理'],
+  ['automation-rare-complete-order', '稀客处理'],
+  ['automation-rare-stop-on-error', '稀客处理'],
+  ['automation-rare-recipe-favorites-only', '稀客处理'],
+  ['automation-rare-beverage-favorites-only', '稀客处理'],
+  ['automation-normal-enabled', '普客处理'],
+  ['automation-normal-take-beverage', '普客处理'],
+  ['automation-normal-start-cooking', '普客处理'],
+  ['automation-normal-deliver-food', '普客处理'],
+  ['automation-normal-complete-order', '普客处理'],
+  ['automation-normal-stop-on-error', '普客处理'],
 ]);
 
 await rm(outputDir, { recursive: true, force: true });
@@ -149,6 +177,8 @@ async function auditDesktopInteractions(page) {
   await assertSettingsTabStructure(page);
   await auditHelpFieldContracts(page);
   await assertExperimentalPanelGroups(page);
+  await assertAutomationSettingOrder(page);
+  await auditAutomationDeliveryInvariant(page);
   await activateSettingsSection(page, '窗口');
   const switchField = findField(page, '始终置顶');
   const switchTrigger = switchField.locator(selectors.trigger);
@@ -459,6 +489,65 @@ async function assertExperimentalPanelGroups(page) {
   );
 }
 
+async function assertAutomationSettingOrder(page) {
+  await activateSettingsSection(page, '实验性功能');
+  const commonOrder = [
+    'enabled',
+    'take-beverage',
+    'start-cooking',
+    'deliver-food',
+    'complete-order',
+    'stop-on-error',
+  ];
+  for (const kind of ['rare', 'normal']) {
+    const panelTitle = kind === 'rare' ? '稀客处理' : '普客处理';
+    const panel = findPanel(page, panelTitle);
+    const ids = await panel.locator(selectors.field).evaluateAll((fields) => fields.map((field) => (
+      field.getAttribute('data-setting-help-id') || ''
+    )));
+    assert.deepEqual(
+      ids.slice(0, commonOrder.length),
+      commonOrder.map((suffix) => `automation-${kind}-${suffix}`),
+      `${panelTitle}: 共同控制项顺序必须与普客顺序一致`,
+    );
+  }
+}
+
+async function auditAutomationDeliveryInvariant(page) {
+  await activateSettingsSection(page, '实验性功能');
+
+  const rarePanel = findPanel(page, '稀客处理');
+  const rareBeverage = findHelpField(rarePanel, 'automation-rare-take-beverage').locator('input[type="checkbox"]');
+  const rareFood = findHelpField(rarePanel, 'automation-rare-deliver-food').locator('input[type="checkbox"]');
+  const rareCompletion = findHelpField(rarePanel, 'automation-rare-complete-order').locator('input[type="checkbox"]');
+  assert.equal(await rareBeverage.isChecked(), false, '稀客自动送达酒水测试初态应关闭');
+  assert.equal(await rareFood.isChecked(), false, '稀客自动送达料理测试初态应关闭');
+  assert.equal(await rareCompletion.isChecked(), false, '稀客自动完成订单测试初态应关闭');
+  await clickSwitchField(rarePanel, 'automation-rare-take-beverage');
+  await clickSwitchField(rarePanel, 'automation-rare-deliver-food');
+  assert.equal(await rareCompletion.isChecked(), true, '开启稀客直接送达必须原子开启自动完成订单');
+  await clickSwitchField(rarePanel, 'automation-rare-complete-order');
+  assert.equal(await rareBeverage.isChecked(), false, '关闭稀客自动完成订单必须原子关闭酒水直送');
+  assert.equal(await rareFood.isChecked(), false, '关闭稀客自动完成订单必须原子关闭料理直送');
+
+  const normalPanel = findPanel(page, '普客处理');
+  const normalEnabled = findHelpField(normalPanel, 'automation-normal-enabled').locator('input[type="checkbox"]');
+  assert.equal(await normalEnabled.isChecked(), false, '普客处理测试初态应关闭');
+  await clickSwitchField(normalPanel, 'automation-normal-enabled');
+  assert.equal(await normalEnabled.isChecked(), true, '普客处理开关应可在设置页启用');
+  const normalBeverage = findHelpField(normalPanel, 'automation-normal-take-beverage').locator('input[type="checkbox"]');
+  const normalFood = findHelpField(normalPanel, 'automation-normal-deliver-food').locator('input[type="checkbox"]');
+  const normalCompletion = findHelpField(normalPanel, 'automation-normal-complete-order').locator('input[type="checkbox"]');
+  await clickSwitchField(normalPanel, 'automation-normal-take-beverage');
+  await clickSwitchField(normalPanel, 'automation-normal-deliver-food');
+  assert.equal(await normalCompletion.isChecked(), true, '开启普客直接送达必须原子开启自动完成订单');
+  await clickSwitchField(normalPanel, 'automation-normal-complete-order');
+  assert.equal(await normalBeverage.isChecked(), false, '关闭普客自动完成订单必须原子关闭酒水直送');
+  assert.equal(await normalFood.isChecked(), false, '关闭普客自动完成订单必须原子关闭料理直送');
+  await clickSwitchField(normalPanel, 'automation-normal-enabled');
+  assert.equal(await normalEnabled.isChecked(), false, '测试结束前应恢复普客处理开关');
+}
+
 async function assertSettingsTabLabelFits(page, label, profileName) {
   const tab = page.getByRole('tab', { name: label, exact: true }).first();
   const geometry = await tab.evaluate((element) => ({
@@ -536,6 +625,20 @@ async function readDocumentGeometry(page) {
 
 function findField(page, label) {
   return page.locator(selectors.field).filter({ hasText: label }).first();
+}
+
+function findPanel(page, title) {
+  return page.locator('.steward-list-panel').filter({
+    has: page.getByRole('heading', { name: title, exact: true }),
+  }).first();
+}
+
+function findHelpField(panel, helpId) {
+  return panel.locator(`${selectors.field}[data-setting-help-id="${escapeCssAttribute(helpId)}"]`).first();
+}
+
+async function clickSwitchField(panel, helpId) {
+  await findHelpField(panel, helpId).locator('label.steward-switch-field').first().click();
 }
 
 function escapeCssIdentifier(value) {

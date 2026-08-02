@@ -23,6 +23,7 @@ interface PrimaryExecutionPlanRecommendation {
 type PrimaryExecutionPlanPreferences = Pick<
   CompanionPreferences,
   | 'automationEnabled'
+  | 'autoRareOrderEnabled'
   | 'autoPrepStartCooking'
   | 'autoPrepTakeBeverage'
   | 'autoPrepRecipeFavoritesOnly'
@@ -33,7 +34,9 @@ export function buildPrimaryExecutionPlanPolicy(
   preferences: PrimaryExecutionPlanPreferences,
   automationAllowed = true,
 ): PrimaryExecutionPlanPolicy {
-  const automationEnabled = automationAllowed && preferences.automationEnabled;
+  const automationEnabled = automationAllowed
+    && preferences.automationEnabled
+    && preferences.autoRareOrderEnabled;
   return {
     requireRecipeFavorite: automationEnabled
       && preferences.autoPrepStartCooking

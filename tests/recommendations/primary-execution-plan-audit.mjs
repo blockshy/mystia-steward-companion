@@ -28,6 +28,7 @@ try {
 }
 const basePreferences = {
   automationEnabled: true,
+  autoRareOrderEnabled: true,
   autoPrepStartCooking: true,
   autoPrepTakeBeverage: true,
   autoPrepRecipeFavoritesOnly: true,
@@ -56,6 +57,13 @@ assert.deepEqual(buildPrimaryExecutionPlanPolicy({
   requireRecipeFavorite: false,
   requireBeverageFavorite: false,
 }, 'Favorite-only settings must not affect display ordering while automation is disabled.');
+assert.deepEqual(buildPrimaryExecutionPlanPolicy({
+  ...basePreferences,
+  autoRareOrderEnabled: false,
+}), {
+  requireRecipeFavorite: false,
+  requireBeverageFavorite: false,
+}, 'Rare favorite-only settings must not affect the primary plan while rare processing is disabled.');
 
 const plans = Array.from({ length: 40 }, (_, index) => buildPlan(index + 1, index + 101));
 const lateJointFavorite = plans[37];
@@ -654,8 +662,8 @@ async function assertSourceContracts() {
   assert.ok(
     settings.includes('label="任务料理置顶"')
       && settings.includes('checked={preferences.missionRecipePriorityEnabled}')
-      && settings.includes('若启用相应自动化收藏限定也必须满足')
-      && settings.includes('游戏内列表仍由上方实验性开关单独控制'),
+      && settings.includes('若启用相应自动化，收藏限定也必须满足')
+      && settings.includes('游戏内列表仍由游戏界面置顶推荐开关单独控制'),
     'Recommendation settings must expose the independent mission-pinning switch and explain the game-list boundary.',
   );
   assert.ok(

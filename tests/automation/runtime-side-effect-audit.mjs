@@ -615,12 +615,31 @@ assert.match(delivery, /TryInvokeDeliverySetter[\s\S]*out bool invocationAttempt
 assert.match(delivery, /writtenInAirItem == null[\s\S]*return UncertainDelivery/);
 assert.match(delivery, /TryUpdateGuestTableVisual[\s\S]*IsNightBusinessGenerationActive\(sessionGeneration\)[\s\S]*TryClearOrderInAirAndVerify/);
 assert.ok(!delivery.includes('TryInvokeInstance(runtimeOrder.Order, setterName'));
-const completionStart = directDelivery.indexOf('private static AutomationFoodDeliveryCompletion BuildFoodDeliveryCompletion(');
-const completionEnd = directDelivery.indexOf('private static (bool Remove, string Message, string Code) TryCompleteCommittedFoodDeliveryCleanup', completionStart);
-assert.ok(completionStart >= 0 && completionEnd > completionStart);
+const completionBuilder = methodSource(
+  directDelivery,
+  'private static AutomationFoodDeliveryCompletion BuildFoodDeliveryCompletion(',
+);
 assert.ok(
-  !directDelivery.slice(completionStart, completionEnd).includes('TryEvaluate'),
+  !completionBuilder.includes('TryEvaluate'),
   'The food-delivery metadata builder must not evaluate an order.',
+);
+const committedFoodTransaction = methodSource(
+  directDelivery,
+  'private static (bool Remove, string Message, string Code) TryCompleteCommittedFoodDeliveryTransaction(',
+);
+assert.match(
+  committedFoodTransaction,
+  /TryCompleteCommittedFoodDeliveryCleanup\(job\)[\s\S]*TryResolveCommittedFoodDeliveryEvaluation\(job/,
+  'A committed food-delivery transaction must independently close cooker cleanup and the latched evaluation intent.',
+);
+const committedFoodEvaluation = methodSource(
+  directDelivery,
+  'private static bool TryResolveCommittedFoodDeliveryEvaluation(',
+);
+assert.match(
+  committedFoodEvaluation,
+  /job\.AutoCompleteOrder[\s\S]*get_IsFullfilled[\s\S]*TryEvaluateMatchedAutomationOrderRuntimeIfReady/,
+  'A cooking job that latched auto-complete must evaluate a fulfilled order before retiring.',
 );
 assert.match(service, /public bool AutoCompleteOrder \{ get; set; \}/,
   'Cooking jobs must retain the caller\'s explicit auto-complete intent.');
@@ -1197,7 +1216,7 @@ assert.doesNotMatch(
   /TryDeliverYuumaOrderBeverage\([\s\S]*RuntimeOrderMatch\s+runtimeOrder/,
   'The Yuuma beverage entry must not trust a generic runtime-order wrapper supplied by its caller.',
 );
-const beverageRequestBuild = yuumaBeverageDelivery.indexOf('BuildOrderRequestFromCookingTarget(target)');
+const beverageRequestBuild = yuumaBeverageDelivery.indexOf('BuildOrderRequestFromCookingTarget(');
 const beverageInitialLookup = yuumaBeverageDelivery.indexOf(
   'FindYuumaRuntimeOrder(target, request)',
   beverageRequestBuild,
@@ -1820,34 +1839,49 @@ assert.match(
   'Normal completion must revalidate an existing Yuuma beverage against the original item ID.',
 );
 const normalJobResult = normalComplete.indexOf('var cookingJobResult = autoDeliverFood');
-const normalJobDelivered = normalComplete.indexOf(
-  'if (cookingJobResult.Delivered)',
+const normalJobCompleted = normalComplete.indexOf(
+  'if (cookingJobResult.CompletedOrder)',
   normalJobResult,
+);
+const normalCompletedOrder = normalComplete.indexOf(
+  'result.CompletedOrder = true',
+  normalJobCompleted,
+);
+const normalCompletedImmediateFinish = normalComplete.indexOf(
+  'return Finish(result)',
+  normalCompletedOrder,
+);
+const normalJobDelivered = normalComplete.indexOf(
+  'else if (cookingJobResult.Delivered)',
+  normalCompletedImmediateFinish,
 );
 const normalYuumaCompletion = normalComplete.indexOf(
   'if (yuumaSettlement)',
   normalJobDelivered,
 );
-const normalCompletedOrder = normalComplete.indexOf(
+const normalYuumaCompletedOrder = normalComplete.indexOf(
   'result.CompletedOrder = true',
   normalYuumaCompletion,
 );
-const normalImmediateFinish = normalComplete.indexOf(
+const normalYuumaImmediateFinish = normalComplete.indexOf(
   'return Finish(result)',
-  normalCompletedOrder,
+  normalYuumaCompletedOrder,
 );
 const normalLegacyServedRead = normalComplete.indexOf(
   'result.ServedFood = ReadOrderServedFood(runtimeOrder.Order)',
-  normalImmediateFinish,
+  normalYuumaImmediateFinish,
 );
 assert.ok(
   normalJobResult >= 0
-    && normalJobDelivered > normalJobResult
+    && normalJobCompleted > normalJobResult
+    && normalCompletedOrder > normalJobCompleted
+    && normalCompletedImmediateFinish > normalCompletedOrder
+    && normalJobDelivered > normalCompletedImmediateFinish
     && normalYuumaCompletion > normalJobDelivered
-    && normalCompletedOrder > normalYuumaCompletion
-    && normalImmediateFinish > normalCompletedOrder
-    && normalLegacyServedRead > normalImmediateFinish,
-  'A delivered normal Yuuma cooking job must mark the order completed and immediately finish before stale served-item reads.',
+    && normalYuumaCompletedOrder > normalYuumaCompletion
+    && normalYuumaImmediateFinish > normalYuumaCompletedOrder
+    && normalLegacyServedRead > normalYuumaImmediateFinish,
+  'A cooking job that completed evaluation, including Yuuma settlement, must immediately finish before stale served-item reads.',
 );
 const normalYuumaEvaluationGate = normalComplete.indexOf(
   'if (yuumaSettlement)',
@@ -1876,6 +1910,9 @@ const normalCookingJobProcessor = namedMethodSource(
   cooking,
   'TryProcessNormalOrderCookingJob',
 );
+const normalEvaluationCompletedResult = normalCookingJobProcessor.indexOf(
+  'job.FoodDeliveryEvaluationState == AutomationFoodDeliveryEvaluationState.Completed',
+);
 const normalFoodDeliveredResult = normalCookingJobProcessor.indexOf(
   'result.Code == OrderPreparationStepCodes.FoodDelivered',
 );
@@ -1888,10 +1925,11 @@ const normalLegacyJobServedRead = normalCookingJobProcessor.indexOf(
   normalYuumaRemovedResult,
 );
 assert.ok(
-  normalFoodDeliveredResult >= 0
+  normalEvaluationCompletedResult >= 0
+    && normalFoodDeliveredResult > normalEvaluationCompletedResult
     && normalYuumaRemovedResult > normalFoodDeliveredResult
     && normalLegacyJobServedRead > normalYuumaRemovedResult,
-  'A Yuuma normal cooking job may report Delivered only from exact FoodDelivered, never from the legacy served-field fallback.',
+  'A normal cooking job must report completed evaluation before any legacy served-field fallback, while Yuuma still requires its exact settlement result.',
 );
 
 const directYuumaLookup = directFoodDelivery.indexOf(

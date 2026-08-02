@@ -54,6 +54,7 @@ internal static partial class RuntimeOrderPreparationService
 
     private static class OrderPreparationStepCodes
     {
+        public const string AutomationConfigurationInvalid = AutomationOrderConfigurationPolicy.InvalidReasonCode;
         public const string BeverageDelivered = "beverage-delivered";
         public const string BeverageDeliveryCommitUncertain = "beverage-delivery-commit-uncertain";
         public const string FoodDeliveryCommitUncertain = "food-delivery-commit-uncertain";
@@ -174,12 +175,18 @@ internal static partial class RuntimeOrderPreparationService
     /// <param name="request">包含目标订单、推荐料理、酒水、额外食材和自动化开关的请求。</param>
     /// <returns>分步骤记录执行结果；失败时包含可展示给 UI 的错误原因。</returns>
     /// <remarks>
-    /// 该方法主要执行“准备”动作：按场景边界送达非最终酒水、开始料理并登记出锅处理。
-    /// 一般订单由 <see cref="CompleteFirst(OrderPreparationRequest)"/> 在满足后触发评价；
+    /// 该方法主要执行“准备”动作：按场景边界送达酒水、开始料理并登记出锅处理。
+    /// 一般订单若由本次酒水送达变为已满足，会在返回前沿精确订单路由触发评价；
+    /// 其余订单由 <see cref="CompleteFirst(OrderPreparationRequest)"/> 或出锅事务在满足后触发评价；
     /// 血池地狱订单在对应开关均启用时进入精确的专用原生结算事务，否则交由玩家处理。
     /// </remarks>
     public static OrderPreparationResult Prepare(OrderPreparationRequest request)
     {
+        var configurationError = BuildAutomationConfigurationInvalidResult(
+            request,
+            AutomationOrderActionKind.PrepareRare);
+        if (configurationError != null) return configurationError;
+
         var automationGate = RuntimeNightBusinessAutomationGate.Refresh();
         if (!automationGate.Allowed) return BuildAutomationGateUnavailableResult(request, "rare", automationGate);
         var sessionGeneration = automationGate.Generation;
@@ -254,6 +261,7 @@ internal static partial class RuntimeOrderPreparationService
             return runtimeOrderCache;
         }
         CookingCollectionTarget? actionTarget = null;
+        var beverageDeliveredThisRequest = false;
 
         if (request.AutoTakeBeverage)
         {
@@ -338,6 +346,7 @@ internal static partial class RuntimeOrderPreparationService
                             actionTarget);
                         if (beverageResult.Ok)
                         {
+                            beverageDeliveredThisRequest = true;
                             result.ServedBeverage = true;
                             result.Steps.Add(new OrderPreparationStep
                             {
@@ -376,6 +385,32 @@ internal static partial class RuntimeOrderPreparationService
         }
 
         if (!EnsureAutomationSessionActive(result, sessionGeneration, "送达酒水后")) return Finish(result);
+
+        if (request.AutoCompleteOrder && beverageDeliveredThisRequest && !yuumaRequest)
+        {
+            result.Automation.Stage = "order";
+            var evaluationTarget = actionTarget ?? BuildRareAutomationTarget(request);
+            if (!TryEvaluateMatchedAutomationOrderIfReady(
+                    result,
+                    request,
+                    FindRuntimeOrder(request, RuntimeOrderLookupPurpose.Completion),
+                    "触发上菜评价",
+                    "当前订单",
+                    evaluationTarget))
+            {
+                return Finish(result);
+            }
+
+            if (!EnsureAutomationSessionActive(result, sessionGeneration, "准备请求触发评价后"))
+            {
+                return Finish(result);
+            }
+
+            if (result.CompletedOrder)
+            {
+                return Finish(result);
+            }
+        }
 
         if (request.AutoStartCooking)
         {
@@ -506,17 +541,9 @@ internal static partial class RuntimeOrderPreparationService
 
         if (!EnsureAutomationSessionActive(result, sessionGeneration, "开始料理后")) return Finish(result);
 
-        var rareCookingTarget = actionTarget ?? BuildRareAutomationTarget(request);
-        if (WillAutomaticallyDeliverCookingTarget(
-                request.AutoCollectCooking,
-                request.AutoCompleteOrder,
-                rareCookingTarget))
+        if (request.AutoCollectCooking)
         {
             AddSkipped(result, "自动送达料理", "料理完成后会自动尝试直接送达顾客。");
-        }
-        else if (request.AutoCollectCooking)
-        {
-            AddSkipped(result, "自动送达料理", "自动完成订单未开启；料理完成后进入手动交接。");
         }
         else
         {
@@ -537,6 +564,11 @@ internal static partial class RuntimeOrderPreparationService
     /// </remarks>
     public static OrderPreparationResult CompleteFirst(OrderPreparationRequest request)
     {
+        var configurationError = BuildAutomationConfigurationInvalidResult(
+            request,
+            AutomationOrderActionKind.CompleteRare);
+        if (configurationError != null) return configurationError;
+
         var automationGate = RuntimeNightBusinessAutomationGate.Refresh();
         if (!automationGate.Allowed) return BuildAutomationGateUnavailableResult(request, "rare", automationGate);
         var sessionGeneration = automationGate.Generation;
@@ -748,6 +780,33 @@ internal static partial class RuntimeOrderPreparationService
 
         if (!EnsureAutomationSessionActive(result, sessionGeneration, "送达酒水后")) return Finish(result);
 
+        var evaluationTarget = BuildRareAutomationTarget(request);
+        if (deliveredItemCount > 0)
+        {
+            result.Automation.Stage = "order";
+            var freshRuntimeOrder = FindRuntimeOrder(request, RuntimeOrderLookupPurpose.Completion);
+            if (!TryEvaluateMatchedAutomationOrderIfReady(
+                    result,
+                    request,
+                    freshRuntimeOrder,
+                    "触发上菜评价",
+                    "当前订单",
+                    evaluationTarget))
+            {
+                return Finish(result);
+            }
+
+            if (!EnsureAutomationSessionActive(result, sessionGeneration, "酒水成为最终项目并触发评价后"))
+            {
+                return Finish(result);
+            }
+
+            if (result.CompletedOrder)
+            {
+                return Finish(result);
+            }
+        }
+
         result.ServedFood = ReadOrderServedFood(runtimeOrder.Order) != null;
         result.ServedBeverage = ReadOrderServedBeverage(runtimeOrder.Order) != null;
 
@@ -759,7 +818,6 @@ internal static partial class RuntimeOrderPreparationService
         if (!EnsureAutomationSessionActive(result, sessionGeneration, "恢复耐心后")) return Finish(result);
 
         result.Automation.Stage = "order";
-        var evaluationTarget = BuildRareAutomationTarget(request);
         if (RequiresNativeWackyKoishiBossEvaluationEntry(request))
         {
             if (!TryEvaluateWackyKoishiBossOrderIfReady(result, request, runtimeOrder, "触发上菜评价", "当前订单", evaluationTarget))
@@ -817,6 +875,11 @@ internal static partial class RuntimeOrderPreparationService
     /// </remarks>
     public static OrderPreparationResult CompleteNormalFirst(OrderPreparationRequest request)
     {
+        var configurationError = BuildAutomationConfigurationInvalidResult(
+            request,
+            AutomationOrderActionKind.CompleteNormal);
+        if (configurationError != null) return configurationError;
+
         var automationGate = RuntimeNightBusinessAutomationGate.Refresh();
         if (!automationGate.Allowed) return BuildAutomationGateUnavailableResult(request, "normal", automationGate);
         var sessionGeneration = automationGate.Generation;
@@ -990,6 +1053,7 @@ internal static partial class RuntimeOrderPreparationService
         }
 
         var deliveredNormalItemCount = 0;
+        var evaluatedNormalItemCount = 0;
 
         if (autoTakeBeverage)
         {
@@ -1120,6 +1184,34 @@ internal static partial class RuntimeOrderPreparationService
 
         if (!EnsureAutomationSessionActive(result, sessionGeneration, "普客送达酒水后")) return Finish(result);
 
+        if (deliveredNormalItemCount > 0 && autoCompleteOrder && !yuumaSettlement)
+        {
+            result.Automation.Stage = "order";
+            var freshRuntimeOrder = FindRuntimeNormalOrder(request);
+            if (!TryEvaluateMatchedAutomationOrderIfReady(
+                    result,
+                    request,
+                    freshRuntimeOrder,
+                    "触发普客评价",
+                    "当前普客订单",
+                    orderAutomationTarget))
+            {
+                return Finish(result);
+            }
+
+            if (!EnsureAutomationSessionActive(result, sessionGeneration, "普客酒水成为最终项目并触发评价后"))
+            {
+                return Finish(result);
+            }
+
+            if (result.CompletedOrder)
+            {
+                return Finish(result);
+            }
+
+            evaluatedNormalItemCount = deliveredNormalItemCount;
+        }
+
         if (foodDeliveryStarted)
         {
             AddSkipped(
@@ -1209,8 +1301,21 @@ internal static partial class RuntimeOrderPreparationService
                 result.Automation.Stage = "cooking-delivery";
                 var cookingJobResult = autoDeliverFood
                     ? TryProcessNormalOrderCookingJob(request.OrderKey, runtimeOrder.Order, request.DeskCode, expectedFoodId, request.BeverageId)
-                    : (Delivered: false, StepName: "普客开始料理", Message: cookingJobMessage, Code: OrderPreparationStepCodes.CookingPending);
-                if (cookingJobResult.Delivered)
+                    : (Delivered: false, CompletedOrder: false, StepName: "普客开始料理", Message: cookingJobMessage, Code: OrderPreparationStepCodes.CookingPending);
+                if (cookingJobResult.CompletedOrder)
+                {
+                    result.ServedFood = true;
+                    result.CompletedOrder = true;
+                    result.Steps.Add(new OrderPreparationStep
+                    {
+                        Code = cookingJobResult.Code,
+                        Name = "普客送达料理",
+                        Ok = true,
+                        Message = cookingJobResult.Message,
+                    });
+                    return Finish(result);
+                }
+                else if (cookingJobResult.Delivered)
                 {
                     result.ServedFood = true;
                     result.Steps.Add(new OrderPreparationStep
@@ -1318,14 +1423,9 @@ internal static partial class RuntimeOrderPreparationService
                                     Message = cookingResult.QteMessage,
                                 });
                             }
-                            AddSkipped(result, "普客送达料理", WillAutomaticallyDeliverCookingTarget(
-                                    autoDeliverCookedFood,
-                                    autoCompleteOrder,
-                                    target)
+                            AddSkipped(result, "普客送达料理", autoDeliverCookedFood
                                 ? "料理已开始制作，完成后会自动直接送达顾客。"
-                                : IsYuumaBossTarget(target) && autoDeliverCookedFood
-                                    ? "料理已开始制作；自动完成订单未开启，完成后进入手动交接。"
-                                    : "料理已开始制作，自动送达料理未开启，完成后保留在厨具中等待手动处理。");
+                                : "料理已开始制作，自动送达料理未开启，完成后保留在厨具中等待手动处理。");
                         }
                         else
                         {
@@ -1346,6 +1446,36 @@ internal static partial class RuntimeOrderPreparationService
             {
                 AddSkipped(result, "普客料理", $"普客订单尚未获得目标料理 {request.RecipeName}（料理 #{expectedFoodId}），自动制作料理已关闭。");
             }
+        }
+
+        if (deliveredNormalItemCount > evaluatedNormalItemCount
+            && autoCompleteOrder
+            && !yuumaSettlement)
+        {
+            result.Automation.Stage = "order";
+            var freshRuntimeOrder = FindRuntimeNormalOrder(request);
+            if (!TryEvaluateMatchedAutomationOrderIfReady(
+                    result,
+                    request,
+                    freshRuntimeOrder,
+                    "触发普客评价",
+                    "当前普客订单",
+                    orderAutomationTarget))
+            {
+                return Finish(result);
+            }
+
+            if (!EnsureAutomationSessionActive(result, sessionGeneration, "普客料理成为最终项目并触发评价后"))
+            {
+                return Finish(result);
+            }
+
+            if (result.CompletedOrder)
+            {
+                return Finish(result);
+            }
+
+            evaluatedNormalItemCount = deliveredNormalItemCount;
         }
 
         if (!EnsureAutomationSessionActive(result, sessionGeneration, "普客料理处理后")) return Finish(result);
@@ -1524,7 +1654,10 @@ internal static partial class RuntimeOrderPreparationService
             return new AutomationCookingProcessResult(Array.Empty<string>(), false);
         }
 
-        var released = ClearAutomationCookingJobs(RuntimeNightBusinessAutomationGate.TutorialActiveReason);
+        var released = ClearAutomationCookingJobs(
+            RuntimeNightBusinessAutomationGate.TutorialActiveReason,
+            AutomationCancellationTarget.All,
+            preserveIrreversibleTransactions: false);
         if (released <= 0)
         {
             return new AutomationCookingProcessResult(Array.Empty<string>(), false);
@@ -1590,10 +1723,13 @@ internal static partial class RuntimeOrderPreparationService
     }
 
     /// <summary>
-    /// 取消所有自动料理 job 的 Mod 所有权，不改动厨具、成品或库存。
+    /// 按目标范围取消自动料理 job 的 Mod 所有权，不改动厨具、成品或库存。
     /// </summary>
     /// <returns>被取消的 job 数量。</returns>
-    public static int ClearAutomationCookingJobs(string reasonCode = "scene-ended")
+    public static int ClearAutomationCookingJobs(
+        string reasonCode,
+        AutomationCancellationTarget target,
+        bool preserveIrreversibleTransactions)
     {
         lock (AutomationCookingJobLock)
         {
@@ -1601,6 +1737,23 @@ internal static partial class RuntimeOrderPreparationService
             for (var index = AutomationCookingJobs.Count - 1; index >= 0; index--)
             {
                 var job = AutomationCookingJobs[index];
+                if (!AutomationCancellationTargetPolicy.IncludesCookingJob(
+                        target,
+                        job.Target.Kind == CookingCollectionTargetKind.RareOrder))
+                {
+                    continue;
+                }
+
+                if (preserveIrreversibleTransactions
+                    && !CanCancelAutomationCookingJob(job, out var retentionReason))
+                {
+                    AppendAutomationLog(
+                        "job-cancel-deferred",
+                        job.Target,
+                        job.FormatLogContext(retentionReason));
+                    continue;
+                }
+
                 RecordAutomationRuntimeEvent(
                     OrderPreparationStepCodes.CookingCancelled,
                     job,
@@ -1614,6 +1767,33 @@ internal static partial class RuntimeOrderPreparationService
 
             return cancelled;
         }
+    }
+
+    private static bool CanCancelAutomationCookingJob(
+        AutomationCookingJob job,
+        out string retentionReason)
+    {
+        if (job.FoodDeliveryCommitted || job.FoodDeliveryCommitUncertain)
+        {
+            retentionReason = "料理送达已提交或提交状态不确定，必须保留后续厨具清理与评价事务。";
+            return false;
+        }
+
+        if (job.WarmerStoreCommitted || job.WarmerStoreCommitUncertain)
+        {
+            retentionReason = "保温箱写入已提交或提交状态不确定，必须保留同锅次清理事务。";
+            return false;
+        }
+
+        if (job.YuumaSettlementTracker.Stage
+            != YuumaSettlementTransactionStage.Ready)
+        {
+            retentionReason = $"血池地狱结算已进入不可逆阶段 {job.YuumaSettlementTracker.Stage}。";
+            return false;
+        }
+
+        retentionReason = "";
+        return true;
     }
 
     private static OrderPreparationResult BuildAutomationGateUnavailableResult(
@@ -1660,6 +1840,48 @@ internal static partial class RuntimeOrderPreparationService
             Message = message,
         });
         return result;
+    }
+
+    private static OrderPreparationResult? BuildAutomationConfigurationInvalidResult(
+        OrderPreparationRequest request,
+        AutomationOrderActionKind actionKind)
+    {
+        if (AutomationOrderConfigurationPolicy.TryValidate(
+                actionKind,
+                request.AutoTakeBeverage,
+                request.AutoCollectCooking,
+                request.AutoDeliverFood,
+                request.AutoCompleteOrder,
+                out var error))
+        {
+            return null;
+        }
+
+        var result = new OrderPreparationResult
+        {
+            Error = error,
+            Order = new OrderPreparationOrder
+            {
+                TraceId = request.TraceId,
+                DeskCode = request.DeskCode,
+                GuestId = request.GuestId,
+                GuestName = request.GuestName,
+                FoodTag = request.FoodTag,
+                BeverageTag = request.BeverageTag,
+            },
+            RecipeId = request.RecipeId,
+            RecipeName = request.RecipeName,
+            BeverageId = request.BeverageId,
+            BeverageName = request.BeverageName,
+        };
+        result.Steps.Add(new OrderPreparationStep
+        {
+            Code = OrderPreparationStepCodes.AutomationConfigurationInvalid,
+            Name = "校验自动化配置",
+            Ok = false,
+            Message = error,
+        });
+        return Finish(result);
     }
 
     private static bool EnsureAutomationSessionActive(
@@ -2046,6 +2268,15 @@ internal static partial class RuntimeOrderPreparationService
             return;
         }
 
+        if (codes.Contains(OrderPreparationStepCodes.AutomationConfigurationInvalid))
+        {
+            result.Automation.Outcome = "blocked";
+            result.Automation.Stage = "configuration";
+            result.Automation.ReasonCode = OrderPreparationStepCodes.AutomationConfigurationInvalid;
+            result.Automation.RetryAfterMs = 0;
+            return;
+        }
+
         if (codes.Contains(OrderPreparationStepCodes.NightBusinessLifecycleUnavailable))
         {
             result.Automation.Outcome = "cancelled";
@@ -2198,6 +2429,14 @@ internal static partial class RuntimeOrderPreparationService
         IReadOnlyList<string> TargetTags,
         IReadOnlyList<string> ActualTags);
 
+    private enum AutomationFoodDeliveryEvaluationState
+    {
+        Pending,
+        NotRequired,
+        Completed,
+        CommitUncertain,
+    }
+
     private sealed record RuntimeOrderEvaluationResult(
         bool Ok,
         bool Completed,
@@ -2249,6 +2488,12 @@ internal static partial class RuntimeOrderPreparationService
         public AutomationFoodDeliveryCompletion? FoodDeliveryCompletion { get; set; }
         public AutomationBoundedCleanupTracker FoodDeliveryCleanupTracker { get; } = new(MaxCookerCleanupAttempts);
         public int FoodDeliveryCleanupAttempts => FoodDeliveryCleanupTracker.AttemptCount;
+        public string FoodDeliveryCleanupMessage { get; set; } = "";
+        public bool FoodDeliveryCleanupTerminal { get; set; }
+        public string FoodDeliveryCleanupTerminalCode { get; set; } = "";
+        public AutomationFoodDeliveryEvaluationState FoodDeliveryEvaluationState { get; set; }
+        public string FoodDeliveryEvaluationMessage { get; set; } = "";
+        public string FoodDeliveryEvaluationCode { get; set; } = "";
         public int MissingTargetCount { get; private set; }
         public TimeSpan? FirstMissingTargetAtEffectiveElapsed { get; private set; }
         public int MissingControllerCount { get; private set; }
@@ -2307,7 +2552,8 @@ internal static partial class RuntimeOrderPreparationService
                 + $"{CookerBindingFailureCode}:"
                 + $"{MissingTargetCount + MissingControllerCount}:{WarmerStoreCommitted}:{WarmerStoreCommitUncertain}:"
                 + $"{WarmerResetAttempts}:{FoodDeliveryCommitted}:{FoodDeliveryCommitUncertain}:{FoodDeliveryCleanupAttempts}:"
-                + $"{FoodDeliveryCleanupCompleted}:{YuumaSettlementTracker.Stage}";
+                + $"{FoodDeliveryCleanupCompleted}:{FoodDeliveryCleanupTerminal}:"
+                + $"{FoodDeliveryEvaluationState}:{YuumaSettlementTracker.Stage}";
         }
 
         public AutomationCookingJobSnapshot ToSnapshot()

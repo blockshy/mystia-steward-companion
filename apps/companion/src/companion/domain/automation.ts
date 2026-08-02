@@ -648,7 +648,7 @@ export function buildAutomationResourceOverview({
   }
 
   const rareDiagnosticByKey = new Map(rareDiagnostics.map((item) => [item.orderKey, item]));
-  if (preferences.autoPrepStartCooking) {
+  if (preferences.autoRareOrderEnabled && preferences.autoPrepStartCooking) {
     const candidates = selectOrderPreparationCandidates(
       recommendations,
       favorites,
@@ -1264,10 +1264,11 @@ function buildGameUiPinningTargetSignature(
  * 判断稀客自动化是否至少启用了一个动作。
  */
 export function hasAutomationActionEnabled(preferences: CompanionPreferences): boolean {
-  return preferences.autoPrepCompleteOrder
-    || preferences.autoPrepTakeBeverage
-    || preferences.autoPrepStartCooking
-    || preferences.autoPrepCollectCooking;
+  return preferences.autoRareOrderEnabled
+    && (preferences.autoPrepCompleteOrder
+      || preferences.autoPrepTakeBeverage
+      || preferences.autoPrepStartCooking
+      || preferences.autoPrepCollectCooking);
 }
 
 export function hasNormalOrderActionEnabled(preferences: CompanionPreferences): boolean {

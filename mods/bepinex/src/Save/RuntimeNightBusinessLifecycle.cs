@@ -238,7 +238,12 @@ internal static class RuntimeNightBusinessLifecycle
         RunBoundaryAction("clear normal orders", () => NormalOrderRuntimeCapture.ClearOrders(reason));
         RunBoundaryAction("clear special-business context", () => RuntimeSpecialBusinessContextService.ClearForBusinessEnd(reason));
         RunBoundaryAction("clear cooking generations", RuntimeCookingGenerationTracker.ClearForSceneChange);
-        RunBoundaryAction("clear automation cooking jobs", () => RuntimeOrderPreparationService.ClearAutomationCookingJobs("business-lifecycle-ended"));
+        RunBoundaryAction(
+            "clear automation cooking jobs",
+            () => RuntimeOrderPreparationService.ClearAutomationCookingJobs(
+                "business-lifecycle-ended",
+                AutomationCancellationTarget.All,
+                preserveIrreversibleTransactions: false));
     }
 
     private static void RunBoundaryAction(string label, Action action)

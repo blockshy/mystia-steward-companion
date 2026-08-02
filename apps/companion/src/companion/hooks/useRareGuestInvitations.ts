@@ -27,7 +27,7 @@ interface UseRareGuestInvitationsOptions {
   connected: boolean;
   connectionRevision: number;
   normalizedEndpoint: string;
-  refresh: (manual?: boolean) => Promise<void>;
+  refresh: (manual?: boolean) => Promise<LocalApiSnapshot | null>;
   snapshot: LocalApiSnapshot | null;
 }
 

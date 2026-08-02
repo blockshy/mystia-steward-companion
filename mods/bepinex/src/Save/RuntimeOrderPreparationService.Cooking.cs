@@ -728,7 +728,7 @@ internal static partial class RuntimeOrderPreparationService
         return false;
     }
 
-    private static (bool Delivered, string StepName, string Message, string Code)
+    private static (bool Delivered, bool CompletedOrder, string StepName, string Message, string Code)
         TryProcessNormalOrderCookingJob(
             string orderKey,
             object order,
@@ -739,7 +739,7 @@ internal static partial class RuntimeOrderPreparationService
         var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
         if (!lifecycle.IsActive)
         {
-            return (false, "普客送达料理", "夜间经营会话已结束，已停止料理任务处理。", OrderPreparationStepCodes.NightBusinessLifecycleUnavailable);
+            return (false, false, "普客送达料理", "夜间经营会话已结束，已停止料理任务处理。", OrderPreparationStepCodes.NightBusinessLifecycleUnavailable);
         }
 
         var sessionGeneration = lifecycle.Generation;
@@ -773,7 +773,7 @@ internal static partial class RuntimeOrderPreparationService
                     || i >= AutomationCookingJobs.Count
                     || !ReferenceEquals(AutomationCookingJobs[i], job))
                 {
-                    return (false, "普客送达料理", "夜间经营会话已结束，已停止料理任务处理。", OrderPreparationStepCodes.NightBusinessLifecycleUnavailable);
+                    return (false, false, "普客送达料理", "夜间经营会话已结束，已停止料理任务处理。", OrderPreparationStepCodes.NightBusinessLifecycleUnavailable);
                 }
 
                 if (!string.IsNullOrWhiteSpace(result.Message))
@@ -787,9 +787,22 @@ internal static partial class RuntimeOrderPreparationService
                     AutomationCookingJobs.RemoveAt(i);
                 }
 
+                if (job.FoodDeliveryEvaluationState == AutomationFoodDeliveryEvaluationState.Completed)
+                {
+                    return (true, true, "普客送达料理", string.IsNullOrWhiteSpace(result.Message)
+                        ? $"{job.Target.FoodName} 已直接送达普客订单并完成评价。"
+                        : result.Message,
+                        result.Code);
+                }
+
+                if (job.FoodDeliveryEvaluationState == AutomationFoodDeliveryEvaluationState.CommitUncertain)
+                {
+                    return (false, false, "普客送达料理", result.Message, result.Code);
+                }
+
                 if (result.Code == OrderPreparationStepCodes.FoodDelivered)
                 {
-                    return (true, "普客送达料理", string.IsNullOrWhiteSpace(result.Message)
+                    return (true, false, "普客送达料理", string.IsNullOrWhiteSpace(result.Message)
                         ? $"{job.Target.FoodName} 已直接送达普客订单。"
                         : result.Message,
                         string.IsNullOrWhiteSpace(result.Code) ? OrderPreparationStepCodes.FoodDelivered : result.Code);
@@ -797,12 +810,12 @@ internal static partial class RuntimeOrderPreparationService
 
                 if (result.Remove && IsYuumaBossTarget(job.Target))
                 {
-                    return (false, "普客送达料理", result.Message, result.Code);
+                    return (false, false, "普客送达料理", result.Message, result.Code);
                 }
 
                 if (ReadOrderServedFood(order) != null)
                 {
-                    return (true, "普客送达料理", string.IsNullOrWhiteSpace(result.Message)
+                    return (true, false, "普客送达料理", string.IsNullOrWhiteSpace(result.Message)
                         ? $"{job.Target.FoodName} 已直接送达普客订单。"
                         : result.Message,
                         string.IsNullOrWhiteSpace(result.Code) ? OrderPreparationStepCodes.FoodDelivered : result.Code);
@@ -810,14 +823,14 @@ internal static partial class RuntimeOrderPreparationService
 
                 if (!string.IsNullOrWhiteSpace(result.Message))
                 {
-                    return (false, "普客送达料理", result.Message, result.Code);
+                    return (false, false, "普客送达料理", result.Message, result.Code);
                 }
 
-                return (false, "普客开始料理", FormatNormalOrderCookingJobMessage(job, deskCode), OrderPreparationStepCodes.CookingPending);
+                return (false, false, "普客开始料理", FormatNormalOrderCookingJobMessage(job, deskCode), OrderPreparationStepCodes.CookingPending);
             }
         }
 
-        return (false, "", "", "");
+        return (false, false, "", "", "");
     }
 
     private static bool IsMatchingNormalOrderCookingJob(AutomationCookingJob job, string orderKey, object order, int deskCode, int foodId, int beverageId)
@@ -847,16 +860,14 @@ internal static partial class RuntimeOrderPreparationService
     {
         return WillAutomaticallyDeliverCookingTarget(
             job.AutoDeliverFood,
-            job.AutoCompleteOrder,
-            job.Target);
+            job.AutoCompleteOrder);
     }
 
     private static bool WillAutomaticallyDeliverCookingTarget(
         bool autoDeliverFood,
-        bool autoCompleteOrder,
-        CookingCollectionTarget target)
+        bool autoCompleteOrder)
     {
-        return autoDeliverFood && (!IsYuumaBossTarget(target) || autoCompleteOrder);
+        return autoDeliverFood && autoCompleteOrder;
     }
 
     private static bool TryFindAutomationCookingJob(
@@ -1306,6 +1317,12 @@ internal static partial class RuntimeOrderPreparationService
             return TryProcessManualHandoffReceipt(job, nowUtc);
         }
 
+        if (job.FoodDeliveryCommitted
+            && (job.FoodDeliveryCleanupCompleted || job.FoodDeliveryCleanupTerminal))
+        {
+            return TryCompleteCommittedFoodDeliveryTransaction(job);
+        }
+
         if (!TryReacquireAutomationCooker(
                 job,
                 out var cookerBinding,
@@ -1356,7 +1373,7 @@ internal static partial class RuntimeOrderPreparationService
         if (job.FoodDeliveryCommitted)
         {
             return timeoutEligible
-                ? TryCompleteCommittedFoodDeliveryCleanup(job)
+                ? TryCompleteCommittedFoodDeliveryTransaction(job)
                 : (false, "", OrderPreparationStepCodes.CookingPending);
         }
 
@@ -1539,7 +1556,7 @@ internal static partial class RuntimeOrderPreparationService
                 }
             }
 
-            var request = BuildOrderRequestFromCookingTarget(job.Target);
+            var request = BuildOrderRequestFromCookingJob(job);
             var runtimeOrder = IsYuumaBossTarget(job.Target)
                 ? FindYuumaRuntimeOrder(job.Target, request)
                 : job.Target.Kind == CookingCollectionTargetKind.NormalOrder

@@ -3,12 +3,14 @@ import type {
   RareAutomationBeverageTarget,
   RareAutomationRecipeTarget,
 } from '@/companion/automation-state';
+import { assertAutomationDirectDeliveryCompletionInvariant } from '@/companion/automation-machine';
 import { readLocalApiJson, writeLocalApiJsonWithTimeout } from '@/companion/local-api';
 import type { CompanionPreferences } from '@/companion/preferences';
 import { normalizeEditableQuantity } from '@/companion/preferences';
 import { serializeRareGuestInvitationLevels } from '@/companion/storage';
 import type {
   DiagnosticPackageResponse,
+  AutomationCancellationTarget,
   AutomationCancellationResponse,
   AutomationSafetyBarrierAckResponse,
   AvailableMissionsApiResponse,
@@ -207,11 +209,13 @@ export async function acquireAutomationLease(
 export async function cancelAutomationCookingJobs(
   endpoint: string,
   apiToken: string,
+  target: AutomationCancellationTarget,
 ): Promise<AutomationCancellationResponse> {
+  const params = new URLSearchParams({ target });
   return writeLocalApiJsonWithTimeout<AutomationCancellationResponse>(
     endpoint,
     apiToken,
-    '/automation/jobs/cancel',
+    `/automation/cancel?${params.toString()}`,
     2800,
   );
 }
@@ -571,6 +575,12 @@ export async function completeFirstNormalOrder(
   data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
   executionTarget: NormalOrderExecutionTarget | null = null,
 ): Promise<OrderPreparationResponse> {
+  assertAutomationDirectDeliveryCompletionInvariant({
+    beverageDeliveryEnabled: preferences.autoNormalTakeBeverage,
+    completionEnabled: preferences.autoNormalCompleteOrder,
+    foodDeliveryEnabled: preferences.autoNormalDeliverFood,
+    targetLabel: '普客',
+  });
   const indexes = buildRecommendationDataIndexes(data);
   const recipe = indexes.recipeByFoodId.get(order.foodId) ?? null;
   const targetRecipeId = executionTarget?.recipeId ?? recipe?.recipeId ?? -1;
@@ -765,6 +775,12 @@ async function rareOrderAction(
   preferences: CompanionPreferences,
   cookerReservation: CookerControllerReservation | null,
 ): Promise<OrderPreparationResponse> {
+  assertAutomationDirectDeliveryCompletionInvariant({
+    beverageDeliveryEnabled: preferences.autoPrepTakeBeverage,
+    completionEnabled: preferences.autoPrepCompleteOrder,
+    foodDeliveryEnabled: preferences.autoPrepCollectCooking,
+    targetLabel: '稀客',
+  });
   // 订单自动化需要把本次推荐锁定的料理、加料和酒水传给 Mod，避免轮询刷新后前端列表变化影响正在执行的订单。
   const params = new URLSearchParams({
     traceId: item.order.traceId ?? '',

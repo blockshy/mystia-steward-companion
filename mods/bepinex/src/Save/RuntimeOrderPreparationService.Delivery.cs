@@ -623,6 +623,84 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
+    private static bool TryEvaluateMatchedAutomationOrderIfReady(
+        OrderPreparationResult result,
+        OrderPreparationRequest request,
+        RuntimeOrderMatch runtimeOrder,
+        string stepName,
+        string orderLabel,
+        CookingCollectionTarget safetyTarget)
+    {
+        var evaluation = TryEvaluateMatchedAutomationOrderRuntimeIfReady(
+            request,
+            runtimeOrder,
+            orderLabel,
+            safetyTarget);
+        if (!evaluation.Ok)
+        {
+            AddFailure(result, stepName, evaluation.Message, evaluation.Code);
+            RecordOrderSafetyBarrierIfNeeded(evaluation.Code, safetyTarget, evaluation.Message);
+            return false;
+        }
+
+        if (evaluation.Completed)
+        {
+            result.CompletedOrder = true;
+        }
+
+        result.Steps.Add(new OrderPreparationStep
+        {
+            Name = stepName,
+            Ok = true,
+            Skipped = evaluation.Skipped,
+            Message = evaluation.Message,
+        });
+        return true;
+    }
+
+    private static RuntimeOrderEvaluationResult TryEvaluateMatchedAutomationOrderRuntimeIfReady(
+        OrderPreparationRequest request,
+        RuntimeOrderMatch runtimeOrder,
+        string orderLabel,
+        CookingCollectionTarget target)
+    {
+        if (IsYuumaBossTarget(target))
+        {
+            return new(
+                false,
+                false,
+                false,
+                "血池地狱订单只能由精确料理锅次结算事务触发评价。",
+                OrderPreparationStepCodes.CookingPending);
+        }
+
+        if (RequiresNativeWackyKoishiBossEvaluationEntry(request))
+        {
+            return TryEvaluateWackyKoishiBossRuntimeOrderIfReady(request, runtimeOrder, orderLabel);
+        }
+
+        if (IsWackyKoishiBossRequest(request))
+        {
+            AppendWackyBossRuntimeDiagnostic(
+                "automation-evaluate-generic",
+                request,
+                runtimeOrder,
+                "call-generic-evaluate",
+                "Koishi boss clue-stage order uses regular order evaluation.");
+        }
+
+        if (IsYuyukoBossRequest(request))
+        {
+            return TryEvaluateYuyukoChallengeRuntimeOrderIfReady(
+                request,
+                runtimeOrder,
+                orderLabel,
+                reacquireLiveOrder: target.Kind == CookingCollectionTargetKind.RareOrder);
+        }
+
+        return TryEvaluateRuntimeOrderIfReady(runtimeOrder, orderLabel);
+    }
+
     private static bool TryEvaluateWackyKoishiBossOrderIfReady(
         OrderPreparationResult result,
         OrderPreparationRequest request,

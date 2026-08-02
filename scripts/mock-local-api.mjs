@@ -251,6 +251,7 @@ const connectionConfig = {
 };
 let automationLease = null;
 let automationCommandEpoch = 1;
+let automationCancellationAppliedEpoch = 0;
 let automationCookingJobs = [];
 const mockAutomationBarrierTarget = {
   targetIdentity: 'rare:mock-trace-barrier',
@@ -304,8 +305,22 @@ const server = http.createServer((request, response) => {
         return;
       }
 
-      if (path === '/automation/jobs/cancel') {
-        sendJson(response, 200, cancelAutomationAndReleaseLease(request));
+      if (path === '/automation/cancel') {
+        const target = requestUrl.searchParams.get('target');
+        if (!isAutomationCancellationTarget(target)) {
+          sendJson(response, 400, {
+            ok: false,
+            target: '',
+            status: '',
+            error: 'target is required and must be exactly commands, rare, normal, or all',
+            commandEpoch: automationCommandEpoch,
+            cancelledJobs: 0,
+            cancelledCommands: 0,
+            leaseReleased: false,
+          });
+          return;
+        }
+        sendJson(response, 200, cancelAutomationJobs(request, target));
         return;
       }
 
@@ -638,6 +653,7 @@ function buildSnapshot() {
     nightBusinessAutomationBlockReason: '',
     runtimeNightBusinessAutomationStatus: 'mock automation allowed generation=1',
     automationSessionId,
+    automationCancellationAppliedEpoch,
     capturedAtUtc: nowIso(),
     activeSceneName: 'NightScene.MockBusiness',
     activeDayMapLabel: '妖怪兽道',
@@ -810,6 +826,7 @@ function buildSnapshot() {
 function buildSnapshotSignature(snapshot) {
   return [
     snapshot.pluginVersion,
+    snapshot.automationCancellationAppliedEpoch,
     snapshot.activeSceneName,
     snapshot.runtimeLoaded ? '1' : '0',
     snapshot.status,
@@ -1590,12 +1607,13 @@ function acknowledgeAutomationSafetyBarrier(request, params) {
   };
 }
 
-function cancelAutomationAndReleaseLease(request) {
+function cancelAutomationJobs(request, target) {
   const identity = readClientIdentity(request);
   pruneAutomationLease();
   if (identity.error || automationLease?.clientId !== identity.clientId) {
     return {
       ok: false,
+      target,
       status: '',
       error: identity.error || 'automation lease is not owned',
       commandEpoch: automationCommandEpoch,
@@ -1606,18 +1624,34 @@ function cancelAutomationAndReleaseLease(request) {
   }
 
   automationCommandEpoch += 1;
-  const cancelledJobs = automationCookingJobs.length;
-  automationCookingJobs = [];
-  automationLease = null;
+  const retainedJobs = automationCookingJobs.filter((job) => (
+    target === 'commands' || (target !== 'all' && job.targetKind !== target)
+  ));
+  const cancelledJobs = automationCookingJobs.length - retainedJobs.length;
+  automationCookingJobs = retainedJobs;
+  automationCancellationAppliedEpoch = automationCommandEpoch;
+  const leaseReleased = target === 'all';
+  if (leaseReleased) {
+    automationLease = null;
+  } else {
+    const now = Date.now();
+    automationLease.lastSeenAt = now;
+    automationLease.expiresAt = now + AUTOMATION_LEASE_TTL_MS;
+  }
   return {
     ok: true,
-    status: 'automation cancelled and lease released',
+    target,
+    status: `mock ${target} automation cancelled`,
     error: null,
     commandEpoch: automationCommandEpoch,
     cancelledJobs,
     cancelledCommands: 0,
-    leaseReleased: true,
+    leaseReleased,
   };
+}
+
+function isAutomationCancellationTarget(value) {
+  return value === 'commands' || value === 'rare' || value === 'normal' || value === 'all';
 }
 
 function buildAutomationLease(clientId, clientLabel, error) {

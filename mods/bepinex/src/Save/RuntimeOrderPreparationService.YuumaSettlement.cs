@@ -110,7 +110,7 @@ internal static partial class RuntimeOrderPreparationService
             return ContinueOrBlockAutomationDelivery(job, targetDiagnostic);
         }
 
-        var request = BuildOrderRequestFromCookingTarget(job.Target);
+        var request = BuildOrderRequestFromCookingJob(job);
         var runtimeOrder = FindYuumaRuntimeOrder(job.Target, request);
         if (!TryValidateYuumaSettlementOrder(
                 job,
@@ -326,7 +326,10 @@ internal static partial class RuntimeOrderPreparationService
                 OrderPreparationStepCodes.CookingPending);
         }
 
-        var request = BuildOrderRequestFromCookingTarget(target);
+        var request = BuildOrderRequestFromCookingTarget(
+            target,
+            autoDeliverFood: false,
+            autoCompleteOrder: false);
         var runtimeOrder = FindYuumaRuntimeOrder(target, request);
         if (runtimeOrder.Order == null || runtimeOrder.Controller == null || runtimeOrder.Manager == null)
         {

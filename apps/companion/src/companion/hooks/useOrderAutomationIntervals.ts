@@ -3,6 +3,8 @@ import { useCallback, useEffect, useRef } from 'react';
 interface UseOrderAutomationIntervalsOptions {
   automationEnabled: boolean;
   resetStateWhenDisabled: boolean;
+  autoRareOrderEnabled: boolean;
+  resetRareStateWhenDisabled: boolean;
   autoNormalOrderEnabled: boolean;
   resetNormalStateWhenDisabled: boolean;
   normalOrderSignature: string;
@@ -11,6 +13,7 @@ interface UseOrderAutomationIntervalsOptions {
   runAutoFirstOrder: () => Promise<void>;
   runAutoNormalOrder: () => Promise<void>;
   onAutomationDisabled: () => void;
+  onRareAutomationDisabled: () => void;
   onNormalOrderSignatureChanged: () => void;
   onNormalAutomationDisabled: () => void;
 }
@@ -24,6 +27,8 @@ interface UseOrderAutomationIntervalsOptions {
 export function useOrderAutomationIntervals({
   automationEnabled,
   resetStateWhenDisabled,
+  autoRareOrderEnabled,
+  resetRareStateWhenDisabled,
   autoNormalOrderEnabled,
   resetNormalStateWhenDisabled,
   normalOrderSignature,
@@ -32,6 +37,7 @@ export function useOrderAutomationIntervals({
   runAutoFirstOrder,
   runAutoNormalOrder,
   onAutomationDisabled,
+  onRareAutomationDisabled,
   onNormalOrderSignatureChanged,
   onNormalAutomationDisabled,
 }: UseOrderAutomationIntervalsOptions) {
@@ -50,13 +56,34 @@ export function useOrderAutomationIntervals({
       if (resetStateWhenDisabled) onAutomationDisabled();
       return undefined;
     }
+    if (!autoRareOrderEnabled) {
+      return undefined;
+    }
 
     void runAutoFirstOrder();
     const timer = window.setInterval(() => {
       void runAutoFirstOrder();
     }, rareTickMs);
     return () => window.clearInterval(timer);
-  }, [automationEnabled, clearNormalSignatureTimer, onAutomationDisabled, rareTickMs, resetStateWhenDisabled, runAutoFirstOrder]);
+  }, [
+    automationEnabled,
+    autoRareOrderEnabled,
+    clearNormalSignatureTimer,
+    onAutomationDisabled,
+    rareTickMs,
+    resetStateWhenDisabled,
+    runAutoFirstOrder,
+  ]);
+
+  useEffect(() => {
+    if (!resetRareStateWhenDisabled) return;
+    onRareAutomationDisabled();
+  }, [
+    automationEnabled,
+    autoRareOrderEnabled,
+    onRareAutomationDisabled,
+    resetRareStateWhenDisabled,
+  ]);
 
   useEffect(() => {
     if (!automationEnabled || !autoNormalOrderEnabled) {

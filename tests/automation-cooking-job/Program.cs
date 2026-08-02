@@ -4,6 +4,9 @@ using MystiaStewardCompanion.Save;
 
 try
 {
+    VerifyAutomationCompletionInvariant();
+    VerifyTargetedAutomationCancellationPolicy();
+    VerifyCommittedDeliveryEvaluationBoundary();
     VerifyHarmonyMutationCompletionSemantics();
     VerifyCookerStartAvailabilityPolicy();
     VerifyCookControllerFoodResultIdentityDomain();
@@ -35,13 +38,371 @@ try
         "PASS: cooking jobs reuse only strict-idle or completed-Extract cookers, accept same-generation final "
         + "results, reject reused cookers without side effects, block stalled progress, lock uncertain/committed "
         + "side effects, bound committed cleanup retries, reject invalidated cooker reservations before touching "
-        + "old wrappers, and keep the switch-disabled Blood Pond Hell handoff receipt deterministic and barrier-free.");
+        + "old wrappers, close direct-delivery evaluation before retiring irreversible jobs, reject direct "
+        + "delivery without completion before runtime access, and keep the "
+        + "switch-disabled Blood Pond Hell handoff receipt deterministic and barrier-free.");
     return 0;
 }
 catch (Exception ex)
 {
     Console.Error.WriteLine($"FAIL: {ex}");
     return 1;
+}
+
+static void VerifyAutomationCompletionInvariant()
+{
+    AssertValidConfiguration(
+        AutomationOrderActionKind.PrepareRare,
+        autoTakeBeverage: false,
+        autoCollectCooking: false,
+        autoDeliverFood: false,
+        autoCompleteOrder: false,
+        "Rare cooking-only/manual-handoff configuration was rejected.");
+    AssertValidConfiguration(
+        AutomationOrderActionKind.CompleteNormal,
+        autoTakeBeverage: false,
+        autoCollectCooking: false,
+        autoDeliverFood: false,
+        autoCompleteOrder: false,
+        "Normal cooking-only/manual-handoff configuration was rejected.");
+    AssertValidConfiguration(
+        AutomationOrderActionKind.PrepareRare,
+        autoTakeBeverage: true,
+        autoCollectCooking: true,
+        autoDeliverFood: true,
+        autoCompleteOrder: true,
+        "A fully enabled rare automation configuration was rejected.");
+    AssertValidConfiguration(
+        AutomationOrderActionKind.CompleteNormal,
+        autoTakeBeverage: true,
+        autoCollectCooking: true,
+        autoDeliverFood: true,
+        autoCompleteOrder: true,
+        "A fully enabled normal automation configuration was rejected.");
+
+    foreach (var invalid in new[]
+             {
+                 (AutomationOrderActionKind.PrepareRare, true, false, false, "rare beverage"),
+                 (AutomationOrderActionKind.PrepareRare, false, true, false, "rare cooked-food collection"),
+                 (AutomationOrderActionKind.CompleteNormal, true, false, false, "normal beverage"),
+                 (AutomationOrderActionKind.CompleteNormal, false, true, false, "normal cooked-food collection"),
+                 (AutomationOrderActionKind.CompleteNormal, false, false, true, "normal food delivery"),
+             })
+    {
+        if (AutomationOrderConfigurationPolicy.TryValidate(
+                invalid.Item1,
+                invalid.Item2,
+                invalid.Item3,
+                invalid.Item4,
+                autoCompleteOrder: false,
+                out var error)
+            || string.IsNullOrWhiteSpace(error))
+        {
+            throw new InvalidOperationException(
+                $"The {invalid.Item5} configuration can still deliver without completion.");
+        }
+    }
+
+    if (AutomationOrderConfigurationPolicy.TryValidate(
+            AutomationOrderActionKind.CompleteRare,
+            autoTakeBeverage: false,
+            autoCollectCooking: false,
+            autoDeliverFood: false,
+            autoCompleteOrder: false,
+            out var completeRareError)
+        || string.IsNullOrWhiteSpace(completeRareError))
+    {
+        throw new InvalidOperationException(
+            "The rare completion endpoint can still evaluate while completion intent is disabled.");
+    }
+
+    var root = FindRepositoryRoot();
+    var service = File.ReadAllText(Path.Combine(
+        root,
+        "mods",
+        "bepinex",
+        "src",
+        "Save",
+        "RuntimeOrderPreparationService.cs"));
+    foreach (var (marker, actionKind) in new[]
+             {
+                 ("public static OrderPreparationResult Prepare(", "AutomationOrderActionKind.PrepareRare"),
+                 ("public static OrderPreparationResult CompleteFirst(", "AutomationOrderActionKind.CompleteRare"),
+                 ("public static OrderPreparationResult CompleteNormalFirst(", "AutomationOrderActionKind.CompleteNormal"),
+             })
+    {
+        var method = ExtractSourceBlock(service, marker);
+        var guard = method.IndexOf("BuildAutomationConfigurationInvalidResult(", StringComparison.Ordinal);
+        var runtimeGate = method.IndexOf("RuntimeNightBusinessAutomationGate.Refresh()", StringComparison.Ordinal);
+        AssertTrue(
+            guard >= 0 && runtimeGate > guard,
+            $"{marker} can reach the game runtime before validating the completion invariant.");
+        AssertContains(
+            method,
+            actionKind,
+            $"{marker} uses the wrong configuration policy action kind.");
+    }
+
+    AssertContains(
+        service,
+        "public const string AutomationConfigurationInvalid = AutomationOrderConfigurationPolicy.InvalidReasonCode;",
+        "The runtime result no longer exposes the canonical automation-config-invalid reason code.");
+    AssertContains(
+        service,
+        "result.Automation.Stage = \"configuration\";",
+        "Invalid automation configuration no longer produces a structured configuration-stage result.");
+    AssertContains(
+        service,
+        "result.Automation.RetryAfterMs = 0;",
+        "Invalid automation configuration can still enter a retry loop.");
+}
+
+static void VerifyTargetedAutomationCancellationPolicy()
+{
+    foreach (var (wireValue, expectedTarget) in new[]
+             {
+                 ("commands", AutomationCancellationTarget.Commands),
+                 ("rare", AutomationCancellationTarget.Rare),
+                 ("normal", AutomationCancellationTarget.Normal),
+                 ("all", AutomationCancellationTarget.All),
+             })
+    {
+        if (!AutomationCancellationTargetPolicy.TryParse(wireValue, out var target)
+            || target != expectedTarget
+            || !string.Equals(
+                AutomationCancellationTargetPolicy.ToWireValue(target),
+                wireValue,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException($"Cancellation target '{wireValue}' did not round-trip exactly.");
+        }
+    }
+
+    foreach (var invalid in new[] { "", "Commands", "Rare", " normal", "all ", "*", "jobs" })
+    {
+        if (AutomationCancellationTargetPolicy.TryParse(invalid, out _))
+        {
+            throw new InvalidOperationException($"Noncanonical cancellation target '{invalid}' was accepted.");
+        }
+    }
+
+    AssertTrue(
+        AutomationCancellationTargetPolicy.IncludesCookingJob(AutomationCancellationTarget.Rare, rareTarget: true)
+        && !AutomationCancellationTargetPolicy.IncludesCookingJob(AutomationCancellationTarget.Rare, rareTarget: false),
+        "Rare cancellation does not isolate rare cooking jobs.");
+    AssertTrue(
+        AutomationCancellationTargetPolicy.IncludesCookingJob(AutomationCancellationTarget.Normal, rareTarget: false)
+        && !AutomationCancellationTargetPolicy.IncludesCookingJob(AutomationCancellationTarget.Normal, rareTarget: true),
+        "Normal cancellation does not isolate normal cooking jobs.");
+    AssertTrue(
+        AutomationCancellationTargetPolicy.IncludesCookingJob(AutomationCancellationTarget.All, rareTarget: true)
+        && AutomationCancellationTargetPolicy.IncludesCookingJob(AutomationCancellationTarget.All, rareTarget: false),
+        "All cancellation does not cover both cooking-job kinds.");
+    AssertTrue(
+        !AutomationCancellationTargetPolicy.IncludesCookingJob(AutomationCancellationTarget.Commands, rareTarget: true)
+        && !AutomationCancellationTargetPolicy.IncludesCookingJob(AutomationCancellationTarget.Commands, rareTarget: false),
+        "Command-only cancellation can still select active cooking jobs.");
+
+    var activeJobs = new[]
+    {
+        (Id: "rare-1", Rare: true),
+        (Id: "normal-1", Rare: false),
+        (Id: "rare-2", Rare: true),
+        (Id: "normal-2", Rare: false),
+    };
+    AssertSequence(
+        activeJobs.Select(job => job.Id).ToArray(),
+        RetainJobsAfterCancellation(activeJobs, AutomationCancellationTarget.Commands),
+        "Command-only cancellation removed an active rare or normal cooking job.");
+    AssertSequence(
+        new[] { "normal-1", "normal-2" },
+        RetainJobsAfterCancellation(activeJobs, AutomationCancellationTarget.Rare),
+        "Rare cancellation did not retain exactly the active normal cooking jobs.");
+    AssertSequence(
+        new[] { "rare-1", "rare-2" },
+        RetainJobsAfterCancellation(activeJobs, AutomationCancellationTarget.Normal),
+        "Normal cancellation did not retain exactly the active rare cooking jobs.");
+    AssertSequence(
+        Array.Empty<string>(),
+        RetainJobsAfterCancellation(activeJobs, AutomationCancellationTarget.All),
+        "All cancellation retained active cooking jobs.");
+
+    var root = FindRepositoryRoot();
+    var service = File.ReadAllText(Path.Combine(
+        root,
+        "mods",
+        "bepinex",
+        "src",
+        "Save",
+        "RuntimeOrderPreparationService.cs"));
+    var clearJobs = ExtractSourceBlock(
+        service,
+        "public static int ClearAutomationCookingJobs(");
+    AssertContains(
+        clearJobs,
+        "AutomationCancellationTargetPolicy.IncludesCookingJob(",
+        "Cooking-job cancellation no longer filters the requested canonical target.");
+    AssertContains(
+        clearJobs,
+        "preserveIrreversibleTransactions",
+        "User cancellation no longer distinguishes safely releasable jobs from irreversible transactions.");
+    AssertContains(
+        clearJobs,
+        "CanCancelAutomationCookingJob(job, out var retentionReason)",
+        "User cancellation can remove a cooking job after an irreversible side effect started.");
+    var targetFilter = clearJobs.IndexOf("AutomationCancellationTargetPolicy.IncludesCookingJob(", StringComparison.Ordinal);
+    var eventCommit = clearJobs.IndexOf("RecordAutomationRuntimeEvent(", StringComparison.Ordinal);
+    var removal = clearJobs.IndexOf("AutomationCookingJobs.RemoveAt(index);", StringComparison.Ordinal);
+    AssertTrue(
+        targetFilter >= 0 && eventCommit > targetFilter && removal > eventCommit,
+        "A nonmatching cooking job can be logged or removed before the target filter.");
+    AssertDoesNotContain(
+        clearJobs,
+        "AutomationCancellationTarget target =",
+        "ClearAutomationCookingJobs restored an implicit all-target default.");
+
+    var canCancel = ExtractSourceBlock(
+        service,
+        "private static bool CanCancelAutomationCookingJob(");
+    AssertContains(canCancel, "job.FoodDeliveryCommitted || job.FoodDeliveryCommitUncertain",
+        "Cancellation no longer preserves an in-flight food-delivery transaction.");
+    AssertContains(canCancel, "job.WarmerStoreCommitted || job.WarmerStoreCommitUncertain",
+        "Cancellation no longer preserves an in-flight warmer transaction.");
+    AssertContains(canCancel, "YuumaSettlementTransactionStage.Ready",
+        "Cancellation no longer preserves an in-flight Yuuma settlement.");
+    AssertDoesNotContain(canCancel, "TryGetUnresolvedAutomationSafetyBarrier",
+        "A standalone safety barrier incorrectly keeps a safely releasable cooking job alive after lease release.");
+}
+
+static void VerifyCommittedDeliveryEvaluationBoundary()
+{
+    var root = FindRepositoryRoot();
+    var saveRoot = Path.Combine(root, "mods", "bepinex", "src", "Save");
+    var service = File.ReadAllText(Path.Combine(saveRoot, "RuntimeOrderPreparationService.cs"));
+    var cooking = File.ReadAllText(Path.Combine(saveRoot, "RuntimeOrderPreparationService.Cooking.cs"));
+    var delivery = File.ReadAllText(Path.Combine(saveRoot, "RuntimeOrderPreparationService.Delivery.cs"));
+    var directDelivery = File.ReadAllText(Path.Combine(saveRoot, "RuntimeOrderPreparationService.DirectDelivery.cs"));
+
+    var matchedEvaluation = ExtractSourceBlock(
+        delivery,
+        "private static RuntimeOrderEvaluationResult TryEvaluateMatchedAutomationOrderRuntimeIfReady(");
+    AssertContains(matchedEvaluation, "TryEvaluateWackyKoishiBossRuntimeOrderIfReady",
+        "The shared direct-delivery evaluation route no longer preserves Koishi full-feed evaluation.");
+    AssertContains(matchedEvaluation, "TryEvaluateYuyukoChallengeRuntimeOrderIfReady",
+        "The shared direct-delivery evaluation route no longer preserves Yuyuko evaluation.");
+    AssertContains(matchedEvaluation, "target.Kind == CookingCollectionTargetKind.RareOrder",
+        "Yuyuko evaluation no longer distinguishes rare fresh reacquisition from the normal-order route.");
+    AssertContains(matchedEvaluation, "TryEvaluateRuntimeOrderIfReady",
+        "The shared direct-delivery evaluation route no longer reaches ordinary order evaluation.");
+    AssertTrue(
+        matchedEvaluation.IndexOf("IsYuumaBossTarget(target)", StringComparison.Ordinal)
+            < matchedEvaluation.IndexOf("TryEvaluateWackyKoishiBossRuntimeOrderIfReady", StringComparison.Ordinal),
+        "The shared evaluation route can reach a non-Yuuma evaluator before rejecting Yuuma settlement.");
+
+    var transaction = ExtractSourceBlock(
+        directDelivery,
+        "private static (bool Remove, string Message, string Code) TryCompleteCommittedFoodDeliveryTransaction(");
+    var cleanup = transaction.IndexOf("TryCompleteCommittedFoodDeliveryCleanup(job)", StringComparison.Ordinal);
+    var evaluation = transaction.IndexOf("TryResolveCommittedFoodDeliveryEvaluation(job", StringComparison.Ordinal);
+    AssertTrue(cleanup >= 0 && evaluation > cleanup,
+        "Committed food delivery no longer closes cooker cleanup before fresh order evaluation.");
+    AssertContains(transaction, "job.FoodDeliveryCleanupTerminal",
+        "A terminal cooker-cleanup failure can still skip the independent order-evaluation closeout.");
+
+    var resolveEvaluation = ExtractSourceBlock(
+        directDelivery,
+        "private static bool TryResolveCommittedFoodDeliveryEvaluation(");
+    AssertTrue(
+        resolveEvaluation.IndexOf("if (!job.AutoCompleteOrder)", StringComparison.Ordinal)
+            < resolveEvaluation.IndexOf("get_IsFullfilled", StringComparison.Ordinal)
+        && resolveEvaluation.IndexOf("get_IsFullfilled", StringComparison.Ordinal)
+            < resolveEvaluation.IndexOf("TryEvaluateMatchedAutomationOrderRuntimeIfReady", StringComparison.Ordinal),
+        "The job does not use its latched completion intent and fresh fulfilled state before evaluating.");
+    AssertContains(resolveEvaluation, "OrderPreparationStepCodes.OrderEvaluationCommitUncertain",
+        "An unclassified evaluation exception no longer enters the commit-uncertain safety boundary.");
+
+    var prepare = ExtractSourceBlock(service, "public static OrderPreparationResult Prepare(");
+    AssertTrue(
+        prepare.IndexOf("beverageDeliveredThisRequest = true", StringComparison.Ordinal)
+            < prepare.IndexOf("TryEvaluateMatchedAutomationOrderIfReady(", StringComparison.Ordinal)
+        && prepare.IndexOf("TryEvaluateMatchedAutomationOrderIfReady(", StringComparison.Ordinal)
+            < prepare.IndexOf("if (request.AutoStartCooking)", StringComparison.Ordinal),
+        "Rare Prepare can still let cooking work interrupt evaluation after beverage became the final item.");
+
+    var completeRare = ExtractSourceBlock(service, "public static OrderPreparationResult CompleteFirst(");
+    AssertTrue(
+        completeRare.IndexOf("deliveredItemCount > 0", StringComparison.Ordinal)
+            < completeRare.IndexOf("TryEvaluateMatchedAutomationOrderIfReady(", StringComparison.Ordinal)
+        && completeRare.IndexOf("TryEvaluateMatchedAutomationOrderIfReady(", StringComparison.Ordinal)
+            < completeRare.IndexOf("AddPatientRecoveryStepIfNeeded", StringComparison.Ordinal),
+        "Rare completion can still let patient recovery interrupt evaluation after direct delivery.");
+
+    var completeNormal = ExtractSourceBlock(service, "public static OrderPreparationResult CompleteNormalFirst(");
+    var firstImmediateEvaluation = completeNormal.IndexOf("TryEvaluateMatchedAutomationOrderIfReady(", StringComparison.Ordinal);
+    var pendingFoodCommit = completeNormal.IndexOf("RuntimeDeliveryItemKind.Food", firstImmediateEvaluation, StringComparison.Ordinal);
+    var secondImmediateEvaluation = completeNormal.IndexOf("TryEvaluateMatchedAutomationOrderIfReady(", pendingFoodCommit, StringComparison.Ordinal);
+    var patientRecovery = completeNormal.IndexOf("AddPatientRecoveryStepIfNeeded", secondImmediateEvaluation, StringComparison.Ordinal);
+    AssertTrue(firstImmediateEvaluation >= 0
+        && pendingFoodCommit > firstImmediateEvaluation
+        && secondImmediateEvaluation > pendingFoodCommit
+        && patientRecovery > secondImmediateEvaluation,
+        "Normal direct beverage or in-air food delivery can still be interrupted before immediate evaluation.");
+    var completedJobBranch = completeNormal.IndexOf("if (cookingJobResult.CompletedOrder)", StringComparison.Ordinal);
+    var completedJobReturn = completeNormal.IndexOf("return Finish(result)", completedJobBranch, StringComparison.Ordinal);
+    var staleOrderRead = completeNormal.IndexOf("result.ServedFood = ReadOrderServedFood(runtimeOrder.Order)", completedJobReturn, StringComparison.Ordinal);
+    AssertTrue(completedJobBranch >= 0 && completedJobReturn > completedJobBranch && staleOrderRead > completedJobReturn,
+        "CompleteNormalFirst can access a stale order wrapper after a cooking job evaluated and retired it.");
+
+    var processNormalJob = ExtractSourceBlock(
+        cooking,
+        "private static (bool Delivered, bool CompletedOrder, string StepName, string Message, string Code)\n        TryProcessNormalOrderCookingJob(");
+    AssertTrue(
+        processNormalJob.IndexOf("AutomationFoodDeliveryEvaluationState.Completed", StringComparison.Ordinal)
+            < processNormalJob.IndexOf("ReadOrderServedFood(order)", StringComparison.Ordinal),
+        "Normal job processing can read the pre-evaluation order wrapper before reporting completed evaluation.");
+}
+
+static string[] RetainJobsAfterCancellation(
+    IEnumerable<(string Id, bool Rare)> activeJobs,
+    AutomationCancellationTarget target)
+{
+    return activeJobs
+        .Where(job => !AutomationCancellationTargetPolicy.IncludesCookingJob(target, job.Rare))
+        .Select(job => job.Id)
+        .ToArray();
+}
+
+static void AssertSequence(
+    IReadOnlyList<string> expected,
+    IReadOnlyList<string> actual,
+    string message)
+{
+    if (!expected.SequenceEqual(actual, StringComparer.Ordinal))
+    {
+        throw new InvalidOperationException(
+            $"{message} Expected [{string.Join(", ", expected)}], got [{string.Join(", ", actual)}].");
+    }
+}
+
+static void AssertValidConfiguration(
+    AutomationOrderActionKind actionKind,
+    bool autoTakeBeverage,
+    bool autoCollectCooking,
+    bool autoDeliverFood,
+    bool autoCompleteOrder,
+    string message)
+{
+    if (!AutomationOrderConfigurationPolicy.TryValidate(
+            actionKind,
+            autoTakeBeverage,
+            autoCollectCooking,
+            autoDeliverFood,
+            autoCompleteOrder,
+            out var error)
+        || !string.IsNullOrEmpty(error))
+    {
+        throw new InvalidOperationException(message);
+    }
 }
 
 static void VerifySpecialFoodTargetPolicyMatching()

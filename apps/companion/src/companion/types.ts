@@ -271,6 +271,7 @@ export interface NormalBusinessContext {
 export interface LocalApiSnapshot {
   pluginVersion: string;
   automationSessionId: string;
+  automationCancellationAppliedEpoch: number;
   nightBusinessGeneration: number;
   nightBusinessLifecyclePhase: 'Inactive' | 'Active' | 'Closing' | 'Destroyed';
   runtimeNightBusinessLifecycleStatus?: string;
@@ -596,8 +597,25 @@ export interface LocalApiStatusResponse {
   error: string | null;
 }
 
+export type AutomationCancellationTarget = 'commands' | 'rare' | 'normal' | 'all';
+
+export interface AutomationCancellationRequestBarrier {
+  endpoint: string;
+  target: AutomationCancellationTarget;
+}
+
+export interface AutomationCancellationAcknowledgedBarrier extends AutomationCancellationRequestBarrier {
+  automationSessionId: string;
+  commandEpoch: number;
+}
+
+export type AutomationCancellationBarrier =
+  | AutomationCancellationRequestBarrier
+  | AutomationCancellationAcknowledgedBarrier;
+
 export interface AutomationCancellationResponse {
   ok: boolean;
+  target: AutomationCancellationTarget;
   status: string;
   error: string | null;
   commandEpoch: number;

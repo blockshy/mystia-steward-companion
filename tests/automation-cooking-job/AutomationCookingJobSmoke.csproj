@@ -12,6 +12,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="../../mods/bepinex/src/Save/AutomationCancellationTarget.cs" Link="AutomationCancellationTarget.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/AutomationOrderConfigurationPolicy.cs" Link="AutomationOrderConfigurationPolicy.cs" />
     <Compile Include="../../mods/bepinex/src/Save/AutomationCookerStartPolicy.cs" Link="AutomationCookerStartPolicy.cs" />
     <Compile Include="../../mods/bepinex/src/Save/AutomationCookingJobLifecycle.cs" Link="AutomationCookingJobLifecycle.cs" />
     <Compile Include="../../mods/bepinex/src/Save/AutomationSafetyBarrierRegistry.cs" Link="AutomationSafetyBarrierRegistry.cs" />

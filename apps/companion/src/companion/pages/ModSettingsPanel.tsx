@@ -114,6 +114,50 @@ export function ModSettingsPanel({
     });
   }, [onPreferenceChange, preferences.recommendationExclusions]);
 
+  const setRareBeverageDelivery = useCallback((enabled: boolean) => {
+    onPreferenceChange(enabled
+      ? { autoPrepTakeBeverage: true, autoPrepCompleteOrder: true }
+      : { autoPrepTakeBeverage: false });
+  }, [onPreferenceChange]);
+
+  const setRareFoodDelivery = useCallback((enabled: boolean) => {
+    onPreferenceChange(enabled
+      ? { autoPrepCollectCooking: true, autoPrepCompleteOrder: true }
+      : { autoPrepCollectCooking: false });
+  }, [onPreferenceChange]);
+
+  const setRareOrderCompletion = useCallback((enabled: boolean) => {
+    onPreferenceChange(enabled
+      ? { autoPrepCompleteOrder: true }
+      : {
+          autoPrepCompleteOrder: false,
+          autoPrepTakeBeverage: false,
+          autoPrepCollectCooking: false,
+        });
+  }, [onPreferenceChange]);
+
+  const setNormalBeverageDelivery = useCallback((enabled: boolean) => {
+    onPreferenceChange(enabled
+      ? { autoNormalTakeBeverage: true, autoNormalCompleteOrder: true }
+      : { autoNormalTakeBeverage: false });
+  }, [onPreferenceChange]);
+
+  const setNormalFoodDelivery = useCallback((enabled: boolean) => {
+    onPreferenceChange(enabled
+      ? { autoNormalDeliverFood: true, autoNormalCompleteOrder: true }
+      : { autoNormalDeliverFood: false });
+  }, [onPreferenceChange]);
+
+  const setNormalOrderCompletion = useCallback((enabled: boolean) => {
+    onPreferenceChange(enabled
+      ? { autoNormalCompleteOrder: true }
+      : {
+          autoNormalCompleteOrder: false,
+          autoNormalTakeBeverage: false,
+          autoNormalDeliverFood: false,
+        });
+  }, [onPreferenceChange]);
+
   const applyConnectionConfigState = useCallback((nextConfig: LocalApiConnectionConfig) => {
     setConnectionConfig(nextConfig);
     setConnectionLanEnabled(nextConfig.lanEnabled);
@@ -830,7 +874,7 @@ export function ModSettingsPanel({
 
       <TabsContent value="experimental" className="space-y-4">
         <div className={DENSE_TWO_COLUMN_GRID}>
-          <ListPanel title="自动化">
+          <ListPanel title="自动化总控">
             <div className="space-y-4">
               <SwitchControl
                 label="启用自动化（实验性）"
@@ -921,6 +965,133 @@ export function ModSettingsPanel({
                 description="经营中有推荐目标订单时，尝试高亮游戏左下订单列表中的对应订单。此功能不切换游戏原生订单焦点。"
                 checked={preferences.orderHighlightEnabled}
                 onCheckedChange={(orderHighlightEnabled) => onPreferenceChange({ orderHighlightEnabled })}
+              />
+            </div>
+          </ListPanel>
+        </div>
+
+        <div className={DENSE_TWO_COLUMN_GRID}>
+          <ListPanel title="稀客处理">
+            <div className="space-y-4">
+              <SwitchControl
+                label="启用稀客处理"
+                helpId="automation-rare-enabled"
+                description="单独控制稀客订单是否进入自动化调度。关闭后保留各阶段设置，但会停止新的稀客处理并取消尚未进入不可逆阶段的稀客料理任务。"
+                checked={preferences.autoRareOrderEnabled}
+                onCheckedChange={(autoRareOrderEnabled) => onPreferenceChange({ autoRareOrderEnabled })}
+              />
+              <SwitchControl
+                label="自动送达酒水"
+                helpId="automation-rare-take-beverage"
+                description="为稀客订单选择并直接送达推荐酒水。开启时会同时开启自动完成订单，避免酒水和料理均已送达后订单失去原生完成入口。"
+                checked={preferences.autoPrepTakeBeverage}
+                disabled={!preferences.autoRareOrderEnabled}
+                onCheckedChange={setRareBeverageDelivery}
+              />
+              <SwitchControl
+                label="自动开始料理"
+                helpId="automation-rare-start-cooking"
+                description="为稀客订单选择厨具、投入推荐料理及加料并自动完成 QTE。未开启自动送达料理时，成品会留给玩家自行取出和送达。"
+                checked={preferences.autoPrepStartCooking}
+                disabled={!preferences.autoRareOrderEnabled}
+                onCheckedChange={(autoPrepStartCooking) => onPreferenceChange({ autoPrepStartCooking })}
+              />
+              <SwitchControl
+                label="自动送达料理"
+                helpId="automation-rare-deliver-food"
+                description="料理完成后直接送达稀客订单。开启时会同时开启自动完成订单，避免 Mod 送入最后一项后订单停在未评价状态。"
+                checked={preferences.autoPrepCollectCooking}
+                disabled={!preferences.autoRareOrderEnabled}
+                onCheckedChange={setRareFoodDelivery}
+              />
+              <SwitchControl
+                label="自动完成订单"
+                helpId="automation-rare-complete-order"
+                description="酒水和料理均送达后调用游戏已验证的评价入口完成稀客订单。关闭时会同时关闭自动送达酒水和自动送达料理，仍可只自动开始料理后由玩家接管。"
+                checked={preferences.autoPrepCompleteOrder}
+                disabled={!preferences.autoRareOrderEnabled}
+                onCheckedChange={setRareOrderCompletion}
+              />
+              <SwitchControl
+                label="出错时暂停"
+                helpId="automation-rare-stop-on-error"
+                description="稀客自动化步骤失败时暂停对应订单，等待手动重试、重置或安全栅栏确认。关闭后仍受最大重试和最大回退次数限制。"
+                checked={preferences.autoPrepStopOnError}
+                disabled={!preferences.autoRareOrderEnabled}
+                onCheckedChange={(autoPrepStopOnError) => onPreferenceChange({ autoPrepStopOnError })}
+              />
+              <div className="border-t pt-4">
+                <div className="mb-3 text-sm font-medium text-foreground">稀客限定</div>
+                <div className="space-y-4">
+                  <SwitchControl
+                    label="只处理收藏料理"
+                    helpId="automation-rare-recipe-favorites-only"
+                    description="稀客自动化只选择已收藏的料理。收藏中没有满足订单、库存和厨具硬门禁的料理时，该订单不会开始制作。"
+                    checked={preferences.autoPrepRecipeFavoritesOnly}
+                    disabled={!preferences.autoRareOrderEnabled}
+                    onCheckedChange={(autoPrepRecipeFavoritesOnly) => onPreferenceChange({ autoPrepRecipeFavoritesOnly })}
+                  />
+                  <SwitchControl
+                    label="只处理收藏酒水"
+                    helpId="automation-rare-beverage-favorites-only"
+                    description="稀客自动化只选择已收藏的酒水。收藏中没有满足点单与库存硬门禁的酒水时，该订单不会自动送达酒水。"
+                    checked={preferences.autoPrepBeverageFavoritesOnly}
+                    disabled={!preferences.autoRareOrderEnabled}
+                    onCheckedChange={(autoPrepBeverageFavoritesOnly) => onPreferenceChange({ autoPrepBeverageFavoritesOnly })}
+                  />
+                </div>
+              </div>
+            </div>
+          </ListPanel>
+
+          <ListPanel title="普客处理">
+            <div className="space-y-4">
+              <SwitchControl
+                label="启用普客处理"
+                helpId="automation-normal-enabled"
+                description="单独控制普客订单是否进入自动化调度。关闭后保留各阶段设置，但会停止新的普客处理并取消尚未进入不可逆阶段的普客料理任务。"
+                checked={preferences.autoNormalOrderEnabled}
+                onCheckedChange={(autoNormalOrderEnabled) => onPreferenceChange({ autoNormalOrderEnabled })}
+              />
+              <SwitchControl
+                label="自动送达酒水"
+                helpId="automation-normal-take-beverage"
+                description="为普客订单选择并直接送达指定酒水。开启时会同时开启自动完成订单，避免酒水和料理均已送达后订单失去原生完成入口。"
+                checked={preferences.autoNormalTakeBeverage}
+                disabled={!preferences.autoNormalOrderEnabled}
+                onCheckedChange={setNormalBeverageDelivery}
+              />
+              <SwitchControl
+                label="自动开始料理"
+                helpId="automation-normal-start-cooking"
+                description="为普客订单选择厨具、投入指定料理并自动完成 QTE。未开启自动送达料理时，成品会留给玩家自行取出和送达。"
+                checked={preferences.autoNormalStartCooking}
+                disabled={!preferences.autoNormalOrderEnabled}
+                onCheckedChange={(autoNormalStartCooking) => onPreferenceChange({ autoNormalStartCooking })}
+              />
+              <SwitchControl
+                label="自动送达料理"
+                helpId="automation-normal-deliver-food"
+                description="料理完成后直接送达普客订单。开启时会同时开启自动完成订单，避免 Mod 送入最后一项后订单停在未评价状态。"
+                checked={preferences.autoNormalDeliverFood}
+                disabled={!preferences.autoNormalOrderEnabled}
+                onCheckedChange={setNormalFoodDelivery}
+              />
+              <SwitchControl
+                label="自动完成订单"
+                helpId="automation-normal-complete-order"
+                description="酒水和料理均送达后调用游戏已验证的评价入口完成普客订单。关闭时会同时关闭自动送达酒水和自动送达料理，仍可只自动开始料理后由玩家接管。"
+                checked={preferences.autoNormalCompleteOrder}
+                disabled={!preferences.autoNormalOrderEnabled}
+                onCheckedChange={setNormalOrderCompletion}
+              />
+              <SwitchControl
+                label="出错时暂停"
+                helpId="automation-normal-stop-on-error"
+                description="普客自动化步骤失败时暂停对应订单，等待手动重试、重置或安全栅栏确认。关闭后仍受最大重试和最大回退次数限制。"
+                checked={preferences.autoNormalStopOnError}
+                disabled={!preferences.autoNormalOrderEnabled}
+                onCheckedChange={(autoNormalStopOnError) => onPreferenceChange({ autoNormalStopOnError })}
               />
             </div>
           </ListPanel>

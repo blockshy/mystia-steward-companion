@@ -49,7 +49,6 @@ import type {
 } from '@/companion/types';
 import type { NormalExecutionTargetSelection } from '@/companion/workers/order-recommendations.types';
 import {
-  AUTOMATION_SWITCH_GRID,
   DENSE_THREE_COLUMN_GRID,
   DENSE_TWO_COLUMN_GRID,
   MAX_RECOMMENDATION_ROWS,
@@ -57,7 +56,6 @@ import {
   SCROLL_FADE_CLASS,
 } from '@/companion/pages/shared-constants';
 import {
-  AutomationSwitchCell,
   FocusLimitInput,
   OrderRecommendationPanel,
   SwitchControl,
@@ -217,7 +215,6 @@ export function ModServicePanel({
   dismissRareOrderError,
   onRecipeLimitChange,
   onBeverageLimitChange,
-  onPreferenceChange,
   onToggleRecipeFavorite,
   onToggleBeverageFavorite,
   onRetryRareAutomationOrder,
@@ -281,7 +278,6 @@ export function ModServicePanel({
   dismissRareOrderError: string;
   onRecipeLimitChange: (value: number) => void;
   onBeverageLimitChange: (value: number) => void;
-  onPreferenceChange: (next: Partial<CompanionPreferences>) => void;
   onToggleRecipeFavorite: ToggleRecipeFavorite;
   onToggleBeverageFavorite: ToggleBeverageFavorite;
   onRetryRareAutomationOrder: (orderKey: string) => void;
@@ -500,7 +496,6 @@ export function ModServicePanel({
                     diagnostics={rareOrderDiagnostics}
                     automationBarrierAckBusyKey={automationBarrierAckBusyKey}
                     showDebugDetails={showDebugDetails}
-                    onPreferenceChange={onPreferenceChange}
                     onRetryOrder={onRetryRareAutomationOrder}
                     onResetOrder={onResetRareAutomationOrder}
                   />
@@ -516,7 +511,6 @@ export function ModServicePanel({
                     diagnostics={normalOrderDiagnostics}
                     automationBarrierAckBusyKey={automationBarrierAckBusyKey}
                     showDebugDetails={showDebugDetails}
-                    onPreferenceChange={onPreferenceChange}
                     onRetryOrder={onRetryNormalAutomationOrder}
                     onResetOrder={onResetNormalAutomationOrder}
                   />
@@ -525,7 +519,7 @@ export function ModServicePanel({
             </>
           ) : (
             <ListPanel title="自动化">
-              <EmptyRow text="设置页开启“启用自动化（实验性）”后，这里会显示自动化控制和执行状态。" />
+              <EmptyRow text="设置页开启“启用自动化（实验性）”后，这里会显示自动化执行状态。" />
             </ListPanel>
           )}
         </div>
@@ -981,7 +975,6 @@ function RareServiceAutomationPanel({
   diagnostics,
   automationBarrierAckBusyKey,
   showDebugDetails,
-  onPreferenceChange,
   onRetryOrder,
   onResetOrder,
 }: {
@@ -993,49 +986,11 @@ function RareServiceAutomationPanel({
   diagnostics: RareAutoOrderDiagnostic[];
   automationBarrierAckBusyKey: string;
   showDebugDetails: boolean;
-  onPreferenceChange: (next: Partial<CompanionPreferences>) => void;
   onRetryOrder: (orderKey: string) => void;
   onResetOrder: (orderKey: string) => void;
 }) {
   return (
-    <ListPanel title="稀客自动化（实验性）">
-      <div className={AUTOMATION_SWITCH_GRID}>
-        <AutomationSwitchCell
-          label="自动完成订单"
-          checked={preferences.autoPrepCompleteOrder}
-          onCheckedChange={(autoPrepCompleteOrder) => onPreferenceChange({ autoPrepCompleteOrder })}
-        />
-        <AutomationSwitchCell
-          label="自动送达酒水"
-          checked={preferences.autoPrepTakeBeverage}
-          onCheckedChange={(autoPrepTakeBeverage) => onPreferenceChange({ autoPrepTakeBeverage })}
-        />
-        <AutomationSwitchCell
-          label="自动开始料理"
-          checked={preferences.autoPrepStartCooking}
-          onCheckedChange={(autoPrepStartCooking) => onPreferenceChange({ autoPrepStartCooking })}
-        />
-        <AutomationSwitchCell
-          label="出锅后送达"
-          checked={preferences.autoPrepCollectCooking}
-          onCheckedChange={(autoPrepCollectCooking) => onPreferenceChange({ autoPrepCollectCooking })}
-        />
-        <AutomationSwitchCell
-          label="只处理收藏料理"
-          checked={preferences.autoPrepRecipeFavoritesOnly}
-          onCheckedChange={(autoPrepRecipeFavoritesOnly) => onPreferenceChange({ autoPrepRecipeFavoritesOnly })}
-        />
-        <AutomationSwitchCell
-          label="只处理收藏酒水"
-          checked={preferences.autoPrepBeverageFavoritesOnly}
-          onCheckedChange={(autoPrepBeverageFavoritesOnly) => onPreferenceChange({ autoPrepBeverageFavoritesOnly })}
-        />
-        <AutomationSwitchCell
-          label="出错时暂停"
-          checked={preferences.autoPrepStopOnError}
-          onCheckedChange={(autoPrepStopOnError) => onPreferenceChange({ autoPrepStopOnError })}
-        />
-      </div>
+    <ListPanel title="稀客自动化状态">
       <RareAutoPrepStatus
         busy={busy}
         paused={paused}
@@ -1063,7 +1018,6 @@ function NormalServiceAutomationPanel({
   showDebugDetails,
   onRetryOrder,
   onResetOrder,
-  onPreferenceChange,
 }: {
   preferences: CompanionPreferences;
   busy: boolean;
@@ -1075,46 +1029,9 @@ function NormalServiceAutomationPanel({
   showDebugDetails: boolean;
   onRetryOrder: (orderKey: string) => void;
   onResetOrder: (orderKey: string) => void;
-  onPreferenceChange: (next: Partial<CompanionPreferences>) => void;
 }) {
   return (
-    <ListPanel title="普客自动化（实验性）">
-      <div className={AUTOMATION_SWITCH_GRID}>
-        <AutomationSwitchCell
-          label="启用普客处理"
-          checked={preferences.autoNormalOrderEnabled}
-          onCheckedChange={(autoNormalOrderEnabled) => onPreferenceChange({ autoNormalOrderEnabled })}
-        />
-        {preferences.autoNormalOrderEnabled && (
-          <>
-            <AutomationSwitchCell
-              label="自动送达酒水"
-              checked={preferences.autoNormalTakeBeverage}
-              onCheckedChange={(autoNormalTakeBeverage) => onPreferenceChange({ autoNormalTakeBeverage })}
-            />
-            <AutomationSwitchCell
-              label="自动开始料理"
-              checked={preferences.autoNormalStartCooking}
-              onCheckedChange={(autoNormalStartCooking) => onPreferenceChange({ autoNormalStartCooking })}
-            />
-            <AutomationSwitchCell
-              label="自动送达料理"
-              checked={preferences.autoNormalDeliverFood}
-              onCheckedChange={(autoNormalDeliverFood) => onPreferenceChange({ autoNormalDeliverFood })}
-            />
-            <AutomationSwitchCell
-              label="自动完成订单"
-              checked={preferences.autoNormalCompleteOrder}
-              onCheckedChange={(autoNormalCompleteOrder) => onPreferenceChange({ autoNormalCompleteOrder })}
-            />
-            <AutomationSwitchCell
-              label="出错时暂停"
-              checked={preferences.autoNormalStopOnError}
-              onCheckedChange={(autoNormalStopOnError) => onPreferenceChange({ autoNormalStopOnError })}
-            />
-          </>
-        )}
-      </div>
+    <ListPanel title="普客自动化状态">
       <NormalAutoPrepStatus
         busy={busy}
         pausedCount={pausedCount}
@@ -1155,7 +1072,7 @@ function RareAutoPrepStatus({
   onResetOrder: (orderKey: string) => void;
 }) {
   return (
-    <div className="steward-inline-panel mt-3 px-3 py-2 text-sm">
+    <div className="steward-inline-panel px-3 py-2 text-sm">
       <div className="font-medium text-foreground">稀客自动化{busy ? '处理中' : '状态'}</div>
       {diagnostics.length === 0 ? (
         <div className="steward-data-row mt-2 px-2.5 py-2 text-xs text-muted-foreground">
@@ -1247,11 +1164,12 @@ function RareAutoPrepStatus({
         {runtimePauseLabel && <Badge variant="destructive">{runtimePauseLabel}</Badge>}
         <Badge variant={paused ? 'destructive' : 'secondary'}>{paused ? '订单存在暂停' : '订单无暂停'}</Badge>
         <Badge variant="outline">每轮最多 {preferences.autoRareConcurrency}</Badge>
-        <Badge variant={preferences.autoPrepCompleteOrder ? 'secondary' : 'outline'}>完成 {preferences.autoPrepCompleteOrder ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoRareOrderEnabled ? 'secondary' : 'outline'}>启用 {preferences.autoRareOrderEnabled ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepTakeBeverage ? 'secondary' : 'outline'}>送酒 {preferences.autoPrepTakeBeverage ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepStartCooking ? 'secondary' : 'outline'}>料理 {preferences.autoPrepStartCooking ? '开' : '关'}</Badge>
         {preferences.autoPrepStartCooking && <Badge variant="secondary">QTE 自动完成</Badge>}
         <Badge variant={preferences.autoPrepCollectCooking ? 'secondary' : 'outline'}>直送 {preferences.autoPrepCollectCooking ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoPrepCompleteOrder ? 'secondary' : 'outline'}>完成 {preferences.autoPrepCompleteOrder ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepRecipeFavoritesOnly ? 'secondary' : 'outline'}>收藏料理 {preferences.autoPrepRecipeFavoritesOnly ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepBeverageFavoritesOnly ? 'secondary' : 'outline'}>收藏酒水 {preferences.autoPrepBeverageFavoritesOnly ? '开' : '关'}</Badge>
       </div>
@@ -1283,7 +1201,7 @@ function NormalAutoPrepStatus({
   onResetOrder: (orderKey: string) => void;
 }) {
   return (
-    <div className="steward-inline-panel mt-3 px-3 py-2 text-sm">
+    <div className="steward-inline-panel px-3 py-2 text-sm">
       <div className="font-medium text-foreground">普客自动化{busy ? '处理中' : '状态'}</div>
       {diagnostics.length === 0 ? (
         <div className="steward-data-row mt-2 px-2.5 py-2 text-xs text-muted-foreground">

@@ -146,7 +146,9 @@ static void AssertIntegrationContract()
         "Automation stages were not all routed through the tutorial-aware checkpoint.");
     AssertTrue(preparation.Contains("HandleBlockedAutomationCookingJobs(automationGate)", StringComparison.Ordinal),
         "Cooking-job polling did not enforce the tutorial gate.");
-    AssertTrue(preparation.Contains("ClearAutomationCookingJobs(RuntimeNightBusinessAutomationGate.TutorialActiveReason)", StringComparison.Ordinal),
+    AssertTrue(preparation.Contains(
+            "ClearAutomationCookingJobs(\n            RuntimeNightBusinessAutomationGate.TutorialActiveReason,\n            AutomationCancellationTarget.All,\n            preserveIrreversibleTransactions: false)",
+            StringComparison.Ordinal),
         "Confirmed tutorial state did not release Mod cooking-job ownership.");
     var blockedJobsStart = preparation.IndexOf(
         "private static AutomationCookingProcessResult HandleBlockedAutomationCookingJobs(",
