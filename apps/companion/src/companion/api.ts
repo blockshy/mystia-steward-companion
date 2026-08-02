@@ -477,6 +477,8 @@ export async function publishGameUiPinningTarget(
   businessGeneration: number,
   enabled: boolean,
   highlightEnabled: boolean,
+  extraIngredientFillEnabled: boolean,
+  seatHighlightEnabled: boolean,
   target: GameUiPinningTarget | null,
   signal?: AbortSignal,
 ): Promise<void> {
@@ -485,13 +487,18 @@ export async function publishGameUiPinningTarget(
     businessGeneration: String(businessGeneration),
     enabled: String(enabled),
     highlightEnabled: String(highlightEnabled),
+    extraIngredientFillEnabled: String(enabled && extraIngredientFillEnabled),
+    seatHighlightEnabled: String(seatHighlightEnabled),
+    targetRevision: target?.signature ?? '',
     recipeId: target ? String(target.recipeId) : '-1',
     recipeName: target?.recipeName ?? '',
     ingredientIds: target ? target.ingredientIds.join(',') : '',
+    extraIngredientIds: target ? target.extraIngredientIds.join(',') : '',
     beverageId: target ? String(target.beverageId) : '-1',
     beverageName: target?.beverageName ?? '',
     cookerTypeId: target ? String(target.cookerTypeId) : '-1',
     cookerName: target?.cookerName ?? '',
+    deskCode: target ? String(target.deskCode) : '-1',
   });
   const response = await writeLocalApiJsonWithTimeout<{ ok: boolean; status?: string; error?: string | null }>(
     endpoint,

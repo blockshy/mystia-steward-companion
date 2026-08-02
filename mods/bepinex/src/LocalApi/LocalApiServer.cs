@@ -1627,17 +1627,24 @@ internal sealed class LocalApiServer : IDisposable
         {
             var enabled = ReadBoolQuery(query, "enabled") ?? false;
             var highlightEnabled = ReadBoolQuery(query, "highlightEnabled") ?? false;
+            var extraIngredientFillEnabled = ReadBoolQuery(query, "extraIngredientFillEnabled") ?? false;
+            var seatHighlightEnabled = ReadBoolQuery(query, "seatHighlightEnabled") ?? false;
             var status = RuntimeUiPinningService.UpdateTarget(
                 ReadLongQuery(query, "businessGeneration", 0),
                 enabled,
                 highlightEnabled,
+                extraIngredientFillEnabled,
+                seatHighlightEnabled,
                 ReadIntQuery(query, "recipeId", -1),
                 ReadIntQuery(query, "beverageId", -1),
                 ReadIntListQuery(query, "ingredientIds"),
+                ReadExactNonNegativeIntListQuery(query, "extraIngredientIds", 5),
                 ReadStringQuery(query, "recipeName"),
                 ReadStringQuery(query, "beverageName"),
                 ReadIntQuery(query, "cookerTypeId", -1),
-                ReadStringQuery(query, "cookerName"));
+                ReadStringQuery(query, "cookerName"),
+                ReadIntQuery(query, "deskCode", -1),
+                ReadStringQuery(query, "targetRevision"));
             return ToJson(new LocalApiStatusDto { Ok = true, Status = status, Error = null });
         }
         catch (Exception ex)
@@ -2260,6 +2267,34 @@ internal sealed class LocalApiServer : IDisposable
             .Distinct()
             .OrderBy(id => id)
             .ToList();
+    }
+
+    private static List<int> ReadExactNonNegativeIntListQuery(
+        string query,
+        string key,
+        int maxCount)
+    {
+        var value = ReadStringQuery(query, key);
+        if (string.IsNullOrWhiteSpace(value)) return new List<int>();
+
+        var parts = value.Split(',', StringSplitOptions.None);
+        if (parts.Length > maxCount)
+        {
+            throw new ArgumentOutOfRangeException(key, $"{key} cannot contain more than {maxCount} values.");
+        }
+
+        var result = new List<int>(parts.Length);
+        foreach (var part in parts)
+        {
+            if (!int.TryParse(part.Trim(), out var id) || id < 0)
+            {
+                throw new FormatException($"{key} must contain only non-negative integer ids.");
+            }
+
+            result.Add(id);
+        }
+
+        return result;
     }
 
     private static List<string> ReadStringListQuery(string query, string key)

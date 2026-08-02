@@ -110,14 +110,14 @@ export function SpecialBusinessOrderList({
   );
 }
 
-export function AutomationResourcePanel({ overview }: { overview: AutomationResourceOverview }) {
+export function AutomationResourceDiagnosticPanel({ overview }: { overview: AutomationResourceOverview }) {
   const hasCookerRows = overview.cookers.length > 0;
   const blockedRows = overview.normalBlocked.slice(0, 3);
   const blockedOverflow = Math.max(0, overview.normalBlocked.length - blockedRows.length);
 
   return (
-    <ListPanel title="厨具预约">
-      {!hasCookerRows && <EmptyRow text="暂无厨具预约" />}
+    <ListPanel title="预计厨具占用">
+      {!hasCookerRows && <EmptyRow text="暂无预计厨具占用" />}
       <div className="space-y-2">
         {overview.cookers.map((row) => (
           <ResourceUsageRow

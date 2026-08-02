@@ -63,7 +63,7 @@ import {
   SwitchControl,
 } from '@/companion/pages/shared';
 import {
-  AutomationResourcePanel,
+  AutomationResourceDiagnosticPanel,
   OrderTraceBadge,
   SpecialBusinessNotice,
   SpecialBusinessOrderList,
@@ -301,23 +301,33 @@ export function ModServicePanel({
     () => sortNightOrders(night?.orders ?? [], autoPrepPreferences.serviceOrderSortMode),
     [autoPrepPreferences.serviceOrderSortMode, night?.orders],
   );
+  const activeServiceView = showDebugDetails || serviceView !== 'diagnostics'
+    ? serviceView
+    : 'recommendations';
   const automationResources = useMemo(
-    () => buildAutomationResourceOverview({
-      runtime,
-      recommendations,
-      favorites,
-      preferences: autoPrepPreferences,
-      normalOrders: normalBusiness?.orders ?? [],
-      specialBusiness,
-      normalExecutionTargets,
-      normalExecutionTargetsEnabled,
-      normalExecutionTargetsPending,
-      normalExecutionTargetsError,
-      rareDiagnostics: rareOrderDiagnostics,
-      normalDiagnostics: normalOrderDiagnostics,
-      data,
-    }),
+    () => {
+      if (activeServiceView !== 'diagnostics' || !showDebugDetails) {
+        return { cookers: [], normalBlocked: [] };
+      }
+
+      return buildAutomationResourceOverview({
+        runtime,
+        recommendations,
+        favorites,
+        preferences: autoPrepPreferences,
+        normalOrders: normalBusiness?.orders ?? [],
+        specialBusiness,
+        normalExecutionTargets,
+        normalExecutionTargetsEnabled,
+        normalExecutionTargetsPending,
+        normalExecutionTargetsError,
+        rareDiagnostics: rareOrderDiagnostics,
+        normalDiagnostics: normalOrderDiagnostics,
+        data,
+      });
+    },
     [
+      activeServiceView,
       autoPrepPreferences,
       favorites,
       normalExecutionTargets,
@@ -329,13 +339,11 @@ export function ModServicePanel({
       rareOrderDiagnostics,
       recommendations,
       runtime,
+      showDebugDetails,
       specialBusiness,
       data,
     ],
   );
-  const activeServiceView = showDebugDetails || serviceView !== 'diagnostics'
-    ? serviceView
-    : 'recommendations';
   const serviceViewOptions = showDebugDetails ? SERVICE_PANEL_VIEW_OPTIONS : SERVICE_PANEL_DEFAULT_VIEW_OPTIONS;
   const automationTrackedCount = rareOrderDiagnostics.length + normalOrderDiagnostics.length;
   const automationStatus = getNightBusinessAutomationSummary({
@@ -393,82 +401,6 @@ export function ModServicePanel({
         </TabsList>
 
         <TabsContent value="rare" className="space-y-4">
-          <div className={DENSE_TWO_COLUMN_GRID}>
-            <ListPanel title="当前稀客" contentClassName="min-h-[9rem]">
-              {activeGuests.length === 0 && <EmptyRow text="暂无稀客" />}
-              {activeGuests.map((guest) => {
-                const fund = formatGuestFund(guest);
-                return (
-                  <div key={`${guest.deskCode}-${guest.guestId}-${guest.source}`} className="flex items-center justify-between border-b py-2 text-sm last:border-b-0">
-                    <span className="min-w-0 font-medium">
-                      <span>{guest.guestName}</span>
-                      {fund && <span className="ml-1 text-muted-foreground">· 金钱 {fund}</span>}
-                    </span>
-                    <span className="text-muted-foreground">
-                      桌 {formatDesk(guest.deskCode)}
-                      {showDebugDetails ? ` · ${guest.source}` : ''}
-                    </span>
-                  </div>
-                );
-              })}
-            </ListPanel>
-
-            <ListPanel title="当前稀客点单" contentClassName="min-h-[9rem]">
-              {orders.length === 0 && <EmptyRow text={night?.error || '暂无点单'} />}
-              {dismissRareOrderError && <EmptyRow text={dismissRareOrderError} />}
-              {orders.map((order) => {
-                const orderKey = buildNightBusinessOrderKey(order);
-                const busy = dismissRareOrderBusyKey === orderKey;
-                return (
-                  <div key={orderKey} className="border-b py-2 text-sm last:border-b-0">
-                    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
-                      <div className="min-w-0">
-                        <div className="flex items-center justify-between gap-3">
-                          <span className="truncate font-medium" title={order.guestName}>{order.guestName}</span>
-                          <span className="shrink-0 text-muted-foreground">桌 {formatDesk(order.deskCode)}</span>
-                        </div>
-                        <div className="mt-1 flex flex-wrap gap-1.5">
-                          <Badge variant="outline">
-                            料理 {order.foodTag || '无'}{showDebugDetails ? ` (${order.foodTagId ?? 'missing'})` : ''}
-                          </Badge>
-                          <Badge variant="outline">
-                            酒水 {order.beverageTag || '无'}{showDebugDetails ? ` (${order.beverageTagId ?? 'missing'})` : ''}
-                          </Badge>
-                          <OrderTraceBadge traceId={order.traceId} />
-                          {order.specialBusinessRoleLabel && (
-                            <Badge variant="secondary">{order.specialBusinessRoleLabel}</Badge>
-                          )}
-                          {order.automationAllowed === false && <Badge variant="outline">暂不可自动处理</Badge>}
-                          {order.isFreeOrder && <Badge variant="secondary">免费订单</Badge>}
-                          {showDebugDetails && <Badge variant="secondary">{order.source}</Badge>}
-                        </div>
-                        {order.automationAllowed === false && order.automationBlockReason && (
-                          <div className="mt-1 text-xs text-muted-foreground">
-                            {order.automationBlockReason}
-                          </div>
-                        )}
-                      </div>
-                      <Button
-                        type="button"
-                        size="icon"
-                        variant="ghost"
-                        className="size-8 text-muted-foreground hover:text-destructive"
-                        title="删除这笔稀客订单缓存"
-                        aria-label="删除这笔稀客订单缓存"
-                        disabled={busy}
-                        data-gamepad-clickable="true"
-                        data-gamepad-focus-key={`rare-order-dismiss:${orderKey}`}
-                        onClick={() => onDismissRareOrder(order)}
-                      >
-                        <IconTrash className="size-4" />
-                      </Button>
-                    </div>
-                  </div>
-                );
-              })}
-            </ListPanel>
-          </div>
-
           <CurrentOrderRecommendations
             recommendations={recommendations}
             recommendationIssues={recommendationIssues}
@@ -548,8 +480,6 @@ export function ModServicePanel({
           )}
           {autoPrepPreferences.automationEnabled ? (
             <>
-              <AutomationResourcePanel overview={automationResources} />
-
               <Tabs defaultValue="rare" className="space-y-4">
                 <TabsList className="grid h-9 w-full grid-cols-2">
                   <TabsTrigger value="rare" className={MOD_TAB_TRIGGER_CLASS}>
@@ -603,6 +533,83 @@ export function ModServicePanel({
 
       {activeServiceView === 'diagnostics' && showDebugDetails && (
         <div className="space-y-4">
+          <div className={DENSE_TWO_COLUMN_GRID}>
+            <ListPanel title="当前稀客" contentClassName="min-h-[9rem]">
+              {activeGuests.length === 0 && <EmptyRow text="暂无稀客" />}
+              {activeGuests.map((guest) => {
+                const fund = formatGuestFund(guest);
+                return (
+                  <div key={`${guest.deskCode}-${guest.guestId}-${guest.source}`} className="flex items-center justify-between border-b py-2 text-sm last:border-b-0">
+                    <span className="min-w-0 font-medium">
+                      <span>{guest.guestName}</span>
+                      {fund && <span className="ml-1 text-muted-foreground">· 金钱 {fund}</span>}
+                    </span>
+                    <span className="text-muted-foreground">
+                      桌 {formatDesk(guest.deskCode)} · {guest.source}
+                    </span>
+                  </div>
+                );
+              })}
+            </ListPanel>
+
+            <ListPanel title="当前稀客点单" contentClassName="min-h-[9rem]">
+              {orders.length === 0 && <EmptyRow text={night?.error || '暂无点单'} />}
+              {dismissRareOrderError && <EmptyRow text={dismissRareOrderError} />}
+              {orders.map((order) => {
+                const orderKey = buildNightBusinessOrderKey(order);
+                const busy = dismissRareOrderBusyKey === orderKey;
+                return (
+                  <div key={orderKey} className="border-b py-2 text-sm last:border-b-0">
+                    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
+                      <div className="min-w-0">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="truncate font-medium" title={order.guestName}>{order.guestName}</span>
+                          <span className="shrink-0 text-muted-foreground">桌 {formatDesk(order.deskCode)}</span>
+                        </div>
+                        <div className="mt-1 flex flex-wrap gap-1.5">
+                          <Badge variant="outline">
+                            料理 {order.foodTag || '无'} ({order.foodTagId ?? 'missing'})
+                          </Badge>
+                          <Badge variant="outline">
+                            酒水 {order.beverageTag || '无'} ({order.beverageTagId ?? 'missing'})
+                          </Badge>
+                          <OrderTraceBadge traceId={order.traceId} />
+                          {order.specialBusinessRoleLabel && (
+                            <Badge variant="secondary">{order.specialBusinessRoleLabel}</Badge>
+                          )}
+                          {order.automationAllowed === false && <Badge variant="outline">暂不可自动处理</Badge>}
+                          {order.isFreeOrder && <Badge variant="secondary">免费订单</Badge>}
+                          <Badge variant="secondary">{order.source}</Badge>
+                        </div>
+                        {order.automationAllowed === false && order.automationBlockReason && (
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            {order.automationBlockReason}
+                          </div>
+                        )}
+                      </div>
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        className="size-8 text-muted-foreground hover:text-destructive"
+                        title="删除这笔稀客订单缓存"
+                        aria-label="删除这笔稀客订单缓存"
+                        disabled={busy}
+                        data-gamepad-clickable="true"
+                        data-gamepad-focus-key={`rare-order-dismiss:${orderKey}`}
+                        onClick={() => onDismissRareOrder(order)}
+                      >
+                        <IconTrash className="size-4" />
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </ListPanel>
+          </div>
+          {autoPrepPreferences.automationEnabled && (
+            <AutomationResourceDiagnosticPanel overview={automationResources} />
+          )}
           {specialBusiness?.active && (
             <SpecialBusinessNotice context={specialBusiness} showDebugDetails={showDebugDetails} />
           )}

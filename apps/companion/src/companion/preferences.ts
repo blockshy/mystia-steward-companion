@@ -49,7 +49,9 @@ const MISSION_RECIPE_PRIORITY_STORAGE_KEY = `${STORAGE_PREFIX}-mission-recipe-pr
 const PIN_FAVORITE_RECIPE_STORAGE_KEY = `${STORAGE_PREFIX}-pin-favorite-recipe`;
 const PIN_FAVORITE_BEVERAGE_STORAGE_KEY = `${STORAGE_PREFIX}-pin-favorite-beverage`;
 const GAME_UI_PINNING_STORAGE_KEY = `${STORAGE_PREFIX}-game-ui-pinning`;
+const RECOMMENDED_EXTRA_INGREDIENT_FILL_STORAGE_KEY = `${STORAGE_PREFIX}-recommended-extra-ingredient-fill`;
 const COOKER_HIGHLIGHT_STORAGE_KEY = `${STORAGE_PREFIX}-cooker-highlight`;
+const SEAT_HIGHLIGHT_STORAGE_KEY = `${STORAGE_PREFIX}-seat-highlight`;
 const SHOW_DEBUG_DETAILS_STORAGE_KEY = `${STORAGE_PREFIX}-show-debug-details`;
 const SERVICE_ORDER_SORT_MODE_STORAGE_KEY = `${STORAGE_PREFIX}-service-order-sort-mode`;
 const RECOMMENDATION_SORT_PROFILE_STORAGE_KEY = `${STORAGE_PREFIX}-recommendation-sort-profile`;
@@ -130,7 +132,9 @@ export interface CompanionPreferences {
   pinFavoriteRecipeEnabled: boolean;
   pinFavoriteBeverageEnabled: boolean;
   gameUiPinningEnabled: boolean;
+  recommendedExtraIngredientFillEnabled: boolean;
   cookerHighlightEnabled: boolean;
+  seatHighlightEnabled: boolean;
   showDebugDetails: boolean;
   serviceOrderSortMode: ServiceOrderSortMode;
   recommendationSortProfile: RecommendationSortProfile;
@@ -196,7 +200,9 @@ export function readStoredCompanionPreferences(): CompanionPreferences {
     pinFavoriteRecipeEnabled: readStoredBoolean(PIN_FAVORITE_RECIPE_STORAGE_KEY, false),
     pinFavoriteBeverageEnabled: readStoredBoolean(PIN_FAVORITE_BEVERAGE_STORAGE_KEY, false),
     gameUiPinningEnabled: readStoredBoolean(GAME_UI_PINNING_STORAGE_KEY, false),
+    recommendedExtraIngredientFillEnabled: readStoredBoolean(RECOMMENDED_EXTRA_INGREDIENT_FILL_STORAGE_KEY, false),
     cookerHighlightEnabled: readStoredBoolean(COOKER_HIGHLIGHT_STORAGE_KEY, false),
+    seatHighlightEnabled: readStoredBoolean(SEAT_HIGHLIGHT_STORAGE_KEY, false),
     showDebugDetails: readStoredBoolean(SHOW_DEBUG_DETAILS_STORAGE_KEY, false),
     serviceOrderSortMode: readStoredServiceOrderSortMode(),
     recommendationSortProfile: readStoredRecommendationSortProfile(),
@@ -252,7 +258,9 @@ export function normalizeCompanionPreferences(
     pinFavoriteRecipeEnabled: Boolean(value.pinFavoriteRecipeEnabled),
     pinFavoriteBeverageEnabled: Boolean(value.pinFavoriteBeverageEnabled),
     gameUiPinningEnabled: Boolean(value.gameUiPinningEnabled),
+    recommendedExtraIngredientFillEnabled: Boolean(value.recommendedExtraIngredientFillEnabled),
     cookerHighlightEnabled: Boolean(value.cookerHighlightEnabled),
+    seatHighlightEnabled: Boolean(value.seatHighlightEnabled),
     showDebugDetails: Boolean(value.showDebugDetails),
     serviceOrderSortMode: value.serviceOrderSortMode === 'guest' ? 'guest' : 'ordered',
     recommendationSortProfile: normalizeRecommendationSortProfile(value.recommendationSortProfile),
@@ -351,7 +359,12 @@ export function persistCompanionPreferences(preferences: CompanionPreferences) {
   localStorage.setItem(PIN_FAVORITE_RECIPE_STORAGE_KEY, normalized.pinFavoriteRecipeEnabled ? '1' : '0');
   localStorage.setItem(PIN_FAVORITE_BEVERAGE_STORAGE_KEY, normalized.pinFavoriteBeverageEnabled ? '1' : '0');
   localStorage.setItem(GAME_UI_PINNING_STORAGE_KEY, normalized.gameUiPinningEnabled ? '1' : '0');
+  localStorage.setItem(
+    RECOMMENDED_EXTRA_INGREDIENT_FILL_STORAGE_KEY,
+    normalized.recommendedExtraIngredientFillEnabled ? '1' : '0',
+  );
   localStorage.setItem(COOKER_HIGHLIGHT_STORAGE_KEY, normalized.cookerHighlightEnabled ? '1' : '0');
+  localStorage.setItem(SEAT_HIGHLIGHT_STORAGE_KEY, normalized.seatHighlightEnabled ? '1' : '0');
   localStorage.setItem(SHOW_DEBUG_DETAILS_STORAGE_KEY, normalized.showDebugDetails ? '1' : '0');
   localStorage.setItem(SERVICE_ORDER_SORT_MODE_STORAGE_KEY, normalized.serviceOrderSortMode);
   localStorage.setItem(

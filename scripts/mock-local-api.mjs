@@ -34,6 +34,12 @@ const AUTOMATION_LEASE_TTL_MS = 15000;
 const host = process.env.MOCK_API_HOST || DEFAULT_HOST;
 const port = Number(process.env.MOCK_API_PORT || DEFAULT_PORT);
 const automationSessionId = process.env.MOCK_AUTOMATION_SESSION_ID?.trim() || 'mock-automation-session';
+const mockOrderFirstSeenAt = Object.freeze({
+  rarePrimary: nowIso(-240),
+  rareSecondary: nowIso(-120),
+  normalPrimary: nowIso(-75),
+  normalSecondary: nowIso(-40),
+});
 let mockToken = MOCK_TOKEN;
 
 const ingredients = [
@@ -474,6 +480,18 @@ const server = http.createServer((request, response) => {
       }
 
       if (path === '/ui-pinning/target') {
+        const requiredParameters = [
+          'extraIngredientFillEnabled',
+          'seatHighlightEnabled',
+          'targetRevision',
+          'extraIngredientIds',
+          'deskCode',
+        ];
+        const missingParameter = requiredParameters.find((name) => !requestUrl.searchParams.has(name));
+        if (missingParameter) {
+          sendJson(response, 400, { ok: false, error: `missing ${missingParameter}` });
+          return;
+        }
         sendJson(response, 200, { ok: true, status: 'mock target accepted' });
         return;
       }
@@ -674,7 +692,7 @@ function buildSnapshot() {
           beverageTagId: 21,
           beverageTag: '水果',
           source: 'mock',
-          firstSeenAtUtc: nowIso(-240),
+          firstSeenAtUtc: mockOrderFirstSeenAt.rarePrimary,
           lastSeenAtUtc: nowIso(-12),
           isFreeOrder: false,
           hasServedFood: false,
@@ -700,7 +718,7 @@ function buildSnapshot() {
           beverageTagId: 22,
           beverageTag: '中酒精',
           source: 'mock',
-          firstSeenAtUtc: nowIso(-120),
+          firstSeenAtUtc: mockOrderFirstSeenAt.rareSecondary,
           lastSeenAtUtc: nowIso(-5),
           isFreeOrder: true,
           hasServedFood: false,
@@ -725,7 +743,7 @@ function buildSnapshot() {
           hasServedBeverage: true,
           readyToEvaluate: false,
           hasEvaluated: false,
-          firstSeenAtUtc: nowIso(-75),
+          firstSeenAtUtc: mockOrderFirstSeenAt.normalPrimary,
           source: 'mock',
         },
         {
@@ -741,7 +759,7 @@ function buildSnapshot() {
           hasServedBeverage: false,
           readyToEvaluate: false,
           hasEvaluated: false,
-          firstSeenAtUtc: nowIso(-40),
+          firstSeenAtUtc: mockOrderFirstSeenAt.normalSecondary,
           source: 'mock',
         },
       ],

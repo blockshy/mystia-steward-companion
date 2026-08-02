@@ -910,10 +910,12 @@ export interface GameUiPinningTarget {
   recipeId: number;
   recipeName: string;
   ingredientIds: number[];
+  extraIngredientIds: number[];
   beverageId: number;
   beverageName: string;
   cookerTypeId: number;
   cookerName: string;
+  deskCode: number;
 }
 
 export interface RareAutoOrderDiagnostic {

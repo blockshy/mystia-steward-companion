@@ -1,4 +1,5 @@
 import { chromium } from 'playwright';
+import { readFileSync } from 'node:fs';
 
 const APP_URL = process.env.MYSTIA_APP_URL || 'http://127.0.0.1:4173/';
 const API_URL = process.env.MYSTIA_API_URL || 'http://127.0.0.1:32145';
@@ -23,6 +24,16 @@ let mutatedSnapshotAt = 0;
 let mutatedSnapshot = null;
 let mutatedSnapshotServeCount = 0;
 let deferredSecondOrder = null;
+
+const preferencesSource = readFileSync('apps/companion/src/companion/preferences.ts', 'utf8');
+assert(
+  /recommendedExtraIngredientFillEnabled:\s*readStoredBoolean\([^,]+,\s*false\)/.test(preferencesSource),
+  '推荐料理自动加料必须默认关闭',
+);
+assert(
+  /seatHighlightEnabled:\s*readStoredBoolean\([^,]+,\s*false\)/.test(preferencesSource),
+  '目标桌位高亮必须默认关闭',
+);
 
 try {
   await page.route(`${API_URL}/**`, async (route) => {
@@ -82,7 +93,6 @@ try {
       const apiResponse = await route.fetch();
       const snapshot = await apiResponse.json();
       assert(!snapshot.unchanged && snapshot.nightBusiness?.orders?.[0], '连接身份巡检需要完整 Mock 快照');
-      snapshot.nightBusiness.orders[0].source = 'mock-ui-pinning-stale-audit';
       snapshot.snapshotSignature = `${snapshot.snapshotSignature}|ui-pinning-stale-audit`;
       mutatedSnapshot = snapshot;
       if (mutatedSnapshotAt === 0) mutatedSnapshotAt = Date.now();
@@ -121,7 +131,12 @@ try {
   assert(Number(acceptedRetry.params.recipeId) === selectedRecipe.recipeId,
     `下发的 recipeId=${acceptedRetry.params.recipeId}，期望 ${selectedRecipe.recipeId}`);
   assert(acceptedRetry.params.enabled === 'true', '定向巡检未启用游戏界面置顶');
+  assert(acceptedRetry.params.extraIngredientFillEnabled === 'true', '定向巡检未启用推荐加料自动加入');
+  assert(acceptedRetry.params.seatHighlightEnabled === 'true', '定向巡检未启用目标桌位高亮');
+  assert(acceptedRetry.params.targetRevision, '置顶目标缺少稳定订单/执行计划 revision');
   assert(acceptedRetry.params.ingredientIds, '置顶目标缺少材料 ID');
+  assert('extraIngredientIds' in acceptedRetry.params, '置顶目标缺少独立的推荐加料字段');
+  assert(Number(acceptedRetry.params.deskCode) >= 0, '置顶目标缺少有效桌位');
   assert(acceptedRetry.params.businessGeneration === '1', '置顶目标缺少当前经营 generation');
   assert(Number(acceptedRetry.params.beverageId) < 0, '已经送达的酒水仍进入了游戏界面目标');
   assert(!acceptedRetry.params.beverageName, '已经送达的酒水仍保留了目标名称');
@@ -184,7 +199,10 @@ try {
   }
   const identityRequest = targetRequests.filter(hasRecipeTarget).at(-1);
   assert(identityRequest.at - mutatedSnapshotAt >= 1900, '推荐 Worker 结果就绪前发布了目标');
-  assert(sameTarget(acceptedRetry, identityRequest), '新连接身份未重发当前目标');
+  assert(
+    sameTarget(acceptedRetry, identityRequest),
+    `新连接身份未重发当前目标：before=${JSON.stringify(acceptedRetry.params)}, after=${JSON.stringify(identityRequest.params)}`,
+  );
 
   await page.evaluate(() => {
     window.__uiPinningWorkerDelayMs = 0;
@@ -205,10 +223,19 @@ try {
     5_000,
     '内部 target.signature 变化后推荐 Worker 未产生新成功结果',
   );
-  await new Promise((resolve) => setTimeout(resolve, 500));
+  await waitFor(
+    () => targetRequests.filter(hasRecipeTarget).length > signatureOnlyTargetCount,
+    5_000,
+    '源订单 revision 变化后没有重新发布相同可见目标',
+  );
+  const signatureOnlyRequest = targetRequests.filter(hasRecipeTarget).at(-1);
   assert(
-    targetRequests.filter(hasRecipeTarget).length === signatureOnlyTargetCount,
-    '内部 target.signature 变化但 wire 字段不变时重复 POST 了置顶目标',
+    sameVisibleTarget(identityRequest, signatureOnlyRequest),
+    '源订单 revision 变化时意外修改了可见目标字段',
+  );
+  assert(
+    identityRequest.params.targetRevision !== signatureOnlyRequest.params.targetRevision,
+    '源订单 revision 变化后仍发布旧 targetRevision',
   );
 
   const singleOrderMutationServeCount = mutatedSnapshotServeCount;
@@ -298,6 +325,7 @@ try {
   const beverageOnlyTarget = targetRequests.slice(foodDeliveryStartCount).find(isBeverageOnlyTarget);
   assert(beverageOnlyTarget, '缺少料理送达后的酒水单组件目标');
   assert(!beverageOnlyTarget.params.ingredientIds, '料理送达后仍保留材料目标');
+  assert(!beverageOnlyTarget.params.extraIngredientIds, '料理送达后仍保留自动加料目标');
   assert(Number(beverageOnlyTarget.params.cookerTypeId) < 0, '料理送达后仍保留厨具目标');
   assert(
     !targetRequests.slice(foodDeliveryStartCount).some(isEnabledClearTarget),
@@ -424,7 +452,10 @@ try {
   const coalescedRequests = targetRequests.slice(coalescingStartCount, coalescingStartCount + 2);
   assert(coalescedRequests[0].params.enabled === 'false', 'pending 期间关闭置顶未立即进入发布队列');
   assert(coalescedRequests[0].params.highlightEnabled === 'true', '关闭置顶时错误关闭了厨具高亮');
+  assert(coalescedRequests[0].params.extraIngredientFillEnabled === 'false', '关闭置顶时仍允许自动加入加料');
+  assert(coalescedRequests[0].params.seatHighlightEnabled === 'true', '关闭置顶时错误关闭了独立桌位高亮');
   assert(coalescedRequests[1].params.enabled === 'true', '延迟请求完成后未补发最新置顶开关');
+  assert(coalescedRequests[1].params.extraIngredientFillEnabled === 'true', '重新开启置顶后未恢复自动加入加料');
   assert(maxActiveTargetRequests === 1, `置顶目标存在并发写入：max=${maxActiveTargetRequests}`);
   await waitFor(
     () => completedTargetRequests.includes(coalescedRequests[1]),
@@ -652,7 +683,7 @@ try {
     `- 失败重试：${acceptedRetry.at - rejectedRequest.at}ms`,
     `- 短暂断线：快照恢复后保留成功签名，目标 POST 仍为 ${acceptedTargetCount} 次`,
     `- 连接 revision：先发布空目标隔离旧连接，${identityRequest.at - mutatedSnapshotAt}ms 后重发同一 wire 目标`,
-    '- 发布去重：内部 target.signature 变化但 wire 目标不变时未重复 POST',
+    '- 发布身份：可见目标不变但 targetRevision 变化时重新 POST，隔离连续订单事务',
     '- 无关订单变化：A 的源身份与未送达组件有效时不清空目标',
     '- 组件归约：料理送达保留酒水，酒水送达保留料理与厨具',
     `- 订单完成空窗：${completionClearRequest.at - completionStartedAt}ms 内清空 A 目标，迟到结果未复活`,
@@ -737,7 +768,9 @@ function seedLocalStorage({ apiUrl, apiToken, storagePrefix }) {
   localStorage.setItem(`${storagePrefix}-mod-api-endpoint`, apiUrl);
   localStorage.setItem(`${storagePrefix}-mod-api-token`, apiToken);
   localStorage.setItem(`${storagePrefix}-game-ui-pinning`, '1');
+  localStorage.setItem(`${storagePrefix}-recommended-extra-ingredient-fill`, '1');
   localStorage.setItem(`${storagePrefix}-cooker-highlight`, '1');
+  localStorage.setItem(`${storagePrefix}-seat-highlight`, '1');
 }
 
 function hasRecipeTarget(entry) {
@@ -747,17 +780,23 @@ function hasRecipeTarget(entry) {
 function isEnabledClearTarget(entry) {
   return entry.params.enabled === 'true'
     && entry.params.highlightEnabled === 'true'
+    && entry.params.targetRevision === ''
     && Number(entry.params.recipeId) < 0
     && Number(entry.params.beverageId) < 0
-    && !entry.params.ingredientIds;
+    && entry.params.deskCode === '-1'
+    && !entry.params.ingredientIds
+    && !entry.params.extraIngredientIds;
 }
 
 function isHighlightOnlyClearTarget(entry) {
   return entry.params.enabled === 'false'
     && entry.params.highlightEnabled === 'true'
+    && entry.params.targetRevision === ''
     && Number(entry.params.recipeId) < 0
     && Number(entry.params.beverageId) < 0
-    && !entry.params.ingredientIds;
+    && entry.params.deskCode === '-1'
+    && !entry.params.ingredientIds
+    && !entry.params.extraIngredientIds;
 }
 
 function isBeverageOnlyTarget(entry) {
@@ -895,23 +934,43 @@ async function deliveredWorkerSuccessCount(page) {
 function sameTarget(left, right) {
   return left.params.enabled === right.params.enabled
     && left.params.highlightEnabled === right.params.highlightEnabled
+    && left.params.extraIngredientFillEnabled === right.params.extraIngredientFillEnabled
+    && left.params.seatHighlightEnabled === right.params.seatHighlightEnabled
+    && left.params.targetRevision === right.params.targetRevision
     && left.params.recipeId === right.params.recipeId
     && left.params.recipeName === right.params.recipeName
     && left.params.ingredientIds === right.params.ingredientIds
+    && left.params.extraIngredientIds === right.params.extraIngredientIds
     && left.params.beverageId === right.params.beverageId
     && left.params.beverageName === right.params.beverageName
     && left.params.cookerTypeId === right.params.cookerTypeId
-    && left.params.cookerName === right.params.cookerName;
+    && left.params.cookerName === right.params.cookerName
+    && left.params.deskCode === right.params.deskCode;
 }
 
 function sameWireTarget(left, right) {
-  return left.params.recipeId === right.params.recipeId
+  return left.params.targetRevision === right.params.targetRevision
+    && left.params.recipeId === right.params.recipeId
     && left.params.recipeName === right.params.recipeName
     && left.params.ingredientIds === right.params.ingredientIds
+    && left.params.extraIngredientIds === right.params.extraIngredientIds
     && left.params.beverageId === right.params.beverageId
     && left.params.beverageName === right.params.beverageName
     && left.params.cookerTypeId === right.params.cookerTypeId
-    && left.params.cookerName === right.params.cookerName;
+    && left.params.cookerName === right.params.cookerName
+    && left.params.deskCode === right.params.deskCode;
+}
+
+function sameVisibleTarget(left, right) {
+  return left.params.recipeId === right.params.recipeId
+    && left.params.recipeName === right.params.recipeName
+    && left.params.ingredientIds === right.params.ingredientIds
+    && left.params.extraIngredientIds === right.params.extraIngredientIds
+    && left.params.beverageId === right.params.beverageId
+    && left.params.beverageName === right.params.beverageName
+    && left.params.cookerTypeId === right.params.cookerTypeId
+    && left.params.cookerName === right.params.cookerName
+    && left.params.deskCode === right.params.deskCode;
 }
 
 async function fulfillJson(route, body) {

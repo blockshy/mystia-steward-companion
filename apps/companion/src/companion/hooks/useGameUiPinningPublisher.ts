@@ -18,6 +18,8 @@ interface UseGameUiPinningPublisherOptions {
   connectionReady: boolean;
   pinningEnabled: boolean;
   cookerHighlightEnabled: boolean;
+  extraIngredientFillEnabled: boolean;
+  seatHighlightEnabled: boolean;
   target: GameUiPinningTarget | null;
   sourceOrders: readonly GameUiPinningSourceOrderState[];
   recommendationIsCurrent: boolean;
@@ -34,6 +36,8 @@ interface UiPinningPublication {
   businessGeneration: number;
   pinningEnabled: boolean;
   cookerHighlightEnabled: boolean;
+  extraIngredientFillEnabled: boolean;
+  seatHighlightEnabled: boolean;
   target: GameUiPinningTarget | null;
 }
 
@@ -67,6 +71,8 @@ export function useGameUiPinningPublisher({
   connectionReady,
   pinningEnabled,
   cookerHighlightEnabled,
+  extraIngredientFillEnabled,
+  seatHighlightEnabled,
   target,
   sourceOrders,
   recommendationIsCurrent,
@@ -106,6 +112,8 @@ export function useGameUiPinningPublisher({
       publication.businessGeneration,
       publication.pinningEnabled,
       publication.cookerHighlightEnabled,
+      publication.extraIngredientFillEnabled,
+      publication.seatHighlightEnabled,
       publication.target,
       abortController.signal,
     )
@@ -204,7 +212,8 @@ export function useGameUiPinningPublisher({
       state.failedAtSuccessRevision = null;
     }
 
-    const featureEnabled = pinningEnabled || cookerHighlightEnabled;
+    const effectiveExtraIngredientFillEnabled = pinningEnabled && extraIngredientFillEnabled;
+    const featureEnabled = pinningEnabled || cookerHighlightEnabled || seatHighlightEnabled;
     const recommendationFailed = recommendationError || state.failedAtSuccessRevision !== null;
     if (!featureEnabled || recommendationFailed) {
       state.lastCurrentTarget = null;
@@ -224,6 +233,8 @@ export function useGameUiPinningPublisher({
       targetPolicySignature,
       pinningEnabled ? '1' : '0',
       cookerHighlightEnabled ? '1' : '0',
+      effectiveExtraIngredientFillEnabled ? '1' : '0',
+      seatHighlightEnabled ? '1' : '0',
       publicationTargetSignature,
     ].join('\n');
     const previousDesiredSignature = state.desired?.signature ?? '';
@@ -234,6 +245,8 @@ export function useGameUiPinningPublisher({
       businessGeneration,
       pinningEnabled,
       cookerHighlightEnabled,
+      extraIngredientFillEnabled: effectiveExtraIngredientFillEnabled,
+      seatHighlightEnabled,
       target: publicationTarget,
     };
 
@@ -253,6 +266,7 @@ export function useGameUiPinningPublisher({
     connectionRevision,
     cookerHighlightEnabled,
     endpoint,
+    extraIngredientFillEnabled,
     pinningEnabled,
     pump,
     recommendationError,
@@ -260,6 +274,7 @@ export function useGameUiPinningPublisher({
     recommendationPending,
     recommendationSuccessRevision,
     sessionId,
+    seatHighlightEnabled,
     sourceOrders,
     target,
     targetPolicySignature,
@@ -269,12 +284,15 @@ export function useGameUiPinningPublisher({
 function serializeGameUiPinningWireTarget(target: GameUiPinningTarget | null): string {
   if (!target) return 'null';
   return JSON.stringify({
+    targetRevision: target.signature,
     recipeId: target.recipeId,
     recipeName: target.recipeName,
     ingredientIds: target.ingredientIds,
+    extraIngredientIds: target.extraIngredientIds,
     beverageId: target.beverageId,
     beverageName: target.beverageName,
     cookerTypeId: target.cookerTypeId,
     cookerName: target.cookerName,
+    deskCode: target.deskCode,
   });
 }

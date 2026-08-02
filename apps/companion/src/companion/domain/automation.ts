@@ -1122,6 +1122,9 @@ export function buildGameUiPinningTarget(
     ...baseIngredientIds,
     ...(recipe?.extraIngredients.map((ingredient) => ingredient.id) ?? []),
   ]);
+  const extraIngredientIds = recipe
+    ? recipe.extraIngredients.map((ingredient) => ingredient.id).filter((id) => id >= 0)
+    : [];
   const recipeId = recipe?.recipe.recipeId ?? -1;
   const beverageId = beverage?.beverage.id ?? -1;
   const cookerName = recipe?.recipe.cooker ?? '';
@@ -1135,18 +1138,22 @@ export function buildGameUiPinningTarget(
       sourceOrderSignature,
       recipeId,
       ingredientIds,
+      extraIngredientIds,
       beverageId,
       cookerTypeId,
+      item.order.deskCode,
     ),
     sourceOrderKey,
     sourceOrderSignature,
     recipeId,
     recipeName: recipe?.recipe.name ?? '',
     ingredientIds,
+    extraIngredientIds,
     beverageId,
     beverageName: beverage?.beverage.name ?? '',
     cookerTypeId,
     cookerName,
+    deskCode: item.order.deskCode,
   };
 }
 
@@ -1184,6 +1191,7 @@ export function reconcileGameUiPinningTarget(
   const recipeId = source.hasServedFood ? -1 : target.recipeId;
   const recipeName = source.hasServedFood ? '' : target.recipeName;
   const ingredientIds = source.hasServedFood ? [] : target.ingredientIds;
+  const extraIngredientIds = source.hasServedFood ? [] : target.extraIngredientIds;
   const cookerTypeId = source.hasServedFood ? -1 : target.cookerTypeId;
   const cookerName = source.hasServedFood ? '' : target.cookerName;
   const beverageId = source.hasServedBeverage ? -1 : target.beverageId;
@@ -1198,12 +1206,15 @@ export function reconcileGameUiPinningTarget(
       target.sourceOrderSignature,
       recipeId,
       ingredientIds,
+      extraIngredientIds,
       beverageId,
       cookerTypeId,
+      target.deskCode,
     ),
     recipeId,
     recipeName,
     ingredientIds,
+    extraIngredientIds,
     beverageId,
     beverageName,
     cookerTypeId,
@@ -1230,16 +1241,20 @@ function buildGameUiPinningTargetSignature(
   sourceOrderSignature: string,
   recipeId: number,
   ingredientIds: readonly number[],
+  extraIngredientIds: readonly number[],
   beverageId: number,
   cookerTypeId: number,
+  deskCode: number,
 ): string {
   return [
     sourceOrderKey,
     sourceOrderSignature,
     recipeId,
     ingredientIds.join(','),
+    extraIngredientIds.join(','),
     beverageId,
     cookerTypeId,
+    deskCode,
   ].join('|');
 }
 

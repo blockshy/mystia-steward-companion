@@ -720,7 +720,7 @@ Port = 32145
 - `POST /automation/jobs/cancel`：由当前 lease 所有者原子取消全部自动料理 job 和旧 epoch 排队命令，确认取消屏障后释放控制权；响应返回 `commandEpoch`、`cancelledJobs`、`cancelledCommands` 和 `leaseReleased`。
 - `POST /automation/barriers/ack?sequence=SEQ`：由当前 lease 所有者确认已人工检查对应安全事件；后端按精确 sequence 解除同一订单截至该事件的未确认栅栏。找不到事件或不持有 lease 时不得清除前端人工状态。
 - `POST /diagnostics/automation-decision?...`：把伴随窗口的自动化候选决策写入总日志。
-- `POST /ui-pinning/target?businessGeneration=GEN&...`：更新游戏内料理、食材、酒水置顶和厨具高亮目标；只接受与当前 Active 经营完全一致的正数 generation，Closing、Destroyed 或上一场请求均失败；`recipeId` 是游戏 `Recipe.Id`，与成品 food ID 分开。
+- `POST /ui-pinning/target?businessGeneration=GEN&...`：更新游戏内料理、食材、酒水置顶、推荐自动加料及厨具/桌位高亮目标；只接受与当前 Active 经营完全一致的正数 generation，Closing、Destroyed 或上一场请求均失败；请求必须同步提供四个开关、`recipeId`、用于列表置顶的材料集合 `ingredientIds`、推荐加料精确序列 `extraIngredientIds`、酒水、厨具、0-based `deskCode` 和 `targetRevision`。`recipeId` 是游戏 `Recipe.Id`，与成品 food ID 分开；同桌同搭配的新订单也必须用新 revision 重新发布。
 - `GET /favorites`：读取收藏料理和收藏酒水。
 - `POST /favorites/add-recipe?...`、`POST /favorites/remove-recipe?id=...`、`POST /favorites/add-beverage?...`、`POST /favorites/remove-beverage?id=...`：增删收藏数据。
 - `GET /custom-recipes`：读取自定义推荐料理。

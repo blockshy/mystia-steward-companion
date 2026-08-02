@@ -163,6 +163,8 @@ function buildResultSignature(result: OrderRecommendationResult): string {
       item.order.beverageTagId,
       item.order.beverageTag,
       item.order.specialBusinessRole ?? '',
+      item.order.firstSeenAtUtc ?? '',
+      item.order.isFreeOrder ? 1 : 0,
       item.order.hasServedFood ? 1 : 0,
       item.order.hasServedBeverage ? 1 : 0,
       item.blockedMessages.join('~'),

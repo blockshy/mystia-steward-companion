@@ -657,7 +657,20 @@ export function ModSettingsPanel({
                 onCheckedChange={(gameUiPinningEnabled) => onPreferenceChange({ gameUiPinningEnabled })}
               />
               <div className="text-xs text-muted-foreground">
-                打开料理或酒水选择界面时，尝试把当前第一笔订单的推荐材料、料理和酒水排到前面并显示黄色脉冲高亮；失败时只记录诊断，不修改库存。
+                打开料理或酒水选择界面时，尝试把当前目标订单的推荐材料、料理和酒水排到前面并显示黄色脉冲高亮；该开关本身不修改库存。
+              </div>
+              <div className="border-l pl-3">
+                <SwitchControl
+                  label="点击推荐料理时自动加入加料（实验性）"
+                  checked={preferences.recommendedExtraIngredientFillEnabled}
+                  disabled={!preferences.gameUiPinningEnabled}
+                  title={!preferences.gameUiPinningEnabled ? '请先开启游戏界面置顶推荐' : undefined}
+                  onCheckedChange={(recommendedExtraIngredientFillEnabled) =>
+                    onPreferenceChange({ recommendedExtraIngredientFillEnabled })}
+                />
+              </div>
+              <div className="text-xs text-muted-foreground">
+                确认当前置顶料理时，按同一主推荐方案自动加入加料并扣除对应库存；关闭置顶推荐后不会生效。
               </div>
               <SwitchControl
                 label="目标厨具高亮（实验性）"
@@ -666,6 +679,14 @@ export function ModSettingsPanel({
               />
               <div className="text-xs text-muted-foreground">
                 经营中有推荐目标厨具时，尝试让对应已摆放厨具显示黄色脉冲高亮；只改变可见提示，不自动操作厨具。
+              </div>
+              <SwitchControl
+                label="目标桌位高亮（实验性）"
+                checked={preferences.seatHighlightEnabled}
+                onCheckedChange={(seatHighlightEnabled) => onPreferenceChange({ seatHighlightEnabled })}
+              />
+              <div className="text-xs text-muted-foreground">
+                经营中有推荐目标订单时，尝试在游戏内高亮对应桌位；只改变可见提示，不自动操作顾客。
               </div>
               <SettingSegmentedControl
                 label="预算处理"

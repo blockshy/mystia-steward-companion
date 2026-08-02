@@ -46,13 +46,18 @@ static void VerifyEnabledEmptyTargetClearsVisuals()
         businessGeneration,
         enabled: true,
         highlightEnabled: true,
+        extraIngredientFillEnabled: false,
+        seatHighlightEnabled: false,
         recipeId,
         beverageId,
         ingredientIds: new[] { 83 },
+        extraIngredientIds: Array.Empty<int>(),
         recipeName: "active-recipe",
         beverageName: "active-beverage",
         cookerTypeId,
-        cookerName: "active-cooker");
+        cookerName: "active-cooker",
+        deskCode: -1,
+        targetRevision: "test-target");
 
     var cookingPanel = new CookingSelectionPanelProbe();
     var storagePanel = new StoragePanelProbe();
@@ -85,13 +90,18 @@ static void VerifyEnabledEmptyTargetClearsVisuals()
             businessGeneration,
             enabled: true,
             highlightEnabled: true,
+            extraIngredientFillEnabled: false,
+            seatHighlightEnabled: false,
             recipeId: -1,
             beverageId: -1,
             ingredientIds: Array.Empty<int>(),
+            extraIngredientIds: Array.Empty<int>(),
             recipeName: "",
             beverageName: "",
             cookerTypeId: -1,
-            cookerName: ""));
+            cookerName: "",
+            deskCode: -1,
+            targetRevision: "test-target"));
 
         var emptyTarget = RuntimeUiPinningService.ReadPinningTarget();
         AssertTrue(emptyTarget.Enabled, "An empty target disabled the still-enabled list-pinning feature.");
@@ -138,13 +148,18 @@ static void VerifyOpenPanelRefreshScheduling()
             RuntimeNightBusinessLifecycle.Generation,
             enabled,
             highlightEnabled: false,
+            extraIngredientFillEnabled: false,
+            seatHighlightEnabled: false,
             recipeId,
             beverageId,
             ingredientIds: enabled ? new[] { recipeId + 1000 } : Array.Empty<int>(),
+            extraIngredientIds: Array.Empty<int>(),
             recipeName: enabled ? $"recipe-{recipeId}" : "",
             beverageName: enabled ? $"beverage-{beverageId}" : "",
             cookerTypeId: enabled ? 3 : -1,
-            cookerName: enabled ? "cooker" : "");
+            cookerName: enabled ? "cooker" : "",
+            deskCode: -1,
+            targetRevision: "test-target");
     }
 
     try
@@ -256,13 +271,18 @@ static void VerifyLifecycleGenerationGuards()
         firstGeneration,
         enabled: true,
         highlightEnabled: true,
+        extraIngredientFillEnabled: false,
+        seatHighlightEnabled: false,
         recipeId: 90,
         beverageId: 91,
         ingredientIds: new[] { 92 },
+        extraIngredientIds: Array.Empty<int>(),
         recipeName: "first-generation",
         beverageName: "first-generation",
         cookerTypeId: 3,
-        cookerName: "first-generation");
+        cookerName: "first-generation",
+        deskCode: -1,
+        targetRevision: "test-target");
 
     InvokePrivate("OnCookingRefreshStarted", new CookingSelectionPanelProbe());
     try
@@ -282,13 +302,18 @@ static void VerifyLifecycleGenerationGuards()
             firstGeneration,
             enabled: true,
             highlightEnabled: false,
+            extraIngredientFillEnabled: false,
+            seatHighlightEnabled: false,
             recipeId: 93,
             beverageId: 94,
             ingredientIds: Array.Empty<int>(),
+            extraIngredientIds: Array.Empty<int>(),
             recipeName: "closing",
             beverageName: "closing",
             cookerTypeId: 3,
-            cookerName: "closing"),
+            cookerName: "closing",
+            deskCode: -1,
+            targetRevision: "test-target"),
         "Closing accepted a UI target publication.");
 
     RuntimeUiPinningService.InvalidateTarget(firstGeneration, "test closing");
@@ -302,26 +327,36 @@ static void VerifyLifecycleGenerationGuards()
             firstGeneration,
             enabled: true,
             highlightEnabled: false,
+            extraIngredientFillEnabled: false,
+            seatHighlightEnabled: false,
             recipeId: 95,
             beverageId: 96,
             ingredientIds: Array.Empty<int>(),
+            extraIngredientIds: Array.Empty<int>(),
             recipeName: "stale",
             beverageName: "stale",
             cookerTypeId: 3,
-            cookerName: "stale"),
+            cookerName: "stale",
+            deskCode: -1,
+            targetRevision: "test-target"),
         "A stale generation target was accepted by the next business session.");
 
     RunOnWorkerThread(() => RuntimeUiPinningService.UpdateTarget(
         secondGeneration,
         enabled: true,
         highlightEnabled: false,
+        extraIngredientFillEnabled: false,
+        seatHighlightEnabled: false,
         recipeId: 97,
         beverageId: 98,
         ingredientIds: new[] { 99 },
+        extraIngredientIds: Array.Empty<int>(),
         recipeName: "second-generation",
         beverageName: "second-generation",
         cookerTypeId: 3,
-        cookerName: "second-generation"));
+        cookerName: "second-generation",
+        deskCode: -1,
+        targetRevision: "test-target"));
     InvokePrivate("OnCookingRefreshStarted", new CookingSelectionPanelProbe());
     try
     {
@@ -332,6 +367,7 @@ static void VerifyLifecycleGenerationGuards()
     {
         InvokePrivate("OnCookingRefreshFinalized", new object?[] { null });
     }
+
 }
 
 static void VerifyIdenticalTargetPublicationIsIdempotent()
@@ -344,34 +380,46 @@ static void VerifyIdenticalTargetPublicationIsIdempotent()
     void Publish(
         bool nextEnabled = true,
         bool nextHighlightEnabled = true,
+        bool nextExtraIngredientFillEnabled = false,
+        bool nextSeatHighlightEnabled = false,
         int nextRecipeId = recipeId,
         int nextBeverageId = beverageId,
         int[]? nextIngredientIds = null,
+        int[]? nextExtraIngredientIds = null,
         string recipeName = "recipe",
         string beverageName = "beverage",
         int nextCookerTypeId = cookerTypeId,
-        string cookerName = "cooker")
+        string cookerName = "cooker",
+        int nextDeskCode = -1,
+        string nextTargetRevision = "test-target")
     {
         RuntimeUiPinningService.UpdateTarget(
             RuntimeNightBusinessLifecycle.Generation,
             nextEnabled,
             nextHighlightEnabled,
+            nextExtraIngredientFillEnabled,
+            nextSeatHighlightEnabled,
             nextRecipeId,
             nextBeverageId,
             nextIngredientIds ?? ingredientIds,
+            nextExtraIngredientIds ?? Array.Empty<int>(),
             recipeName,
             beverageName,
             nextCookerTypeId,
-            cookerName);
+            cookerName,
+            nextDeskCode,
+            nextTargetRevision);
     }
 
     void AssertPublishes(Action publish, string fieldName)
     {
         var logCount = ManualLogSource.InformationCount;
         var highlightUpdateCount = RuntimeCookerHighlightService.UpdateCount;
+        var seatUpdateCount = RuntimeSeatHighlightService.UpdateCount;
         publish();
         AssertEqual(logCount + 1, ManualLogSource.InformationCount, $"Changing {fieldName} did not publish a target log.");
         AssertEqual(highlightUpdateCount + 1, RuntimeCookerHighlightService.UpdateCount, $"Changing {fieldName} did not update cooker highlighting.");
+        AssertEqual(seatUpdateCount + 1, RuntimeSeatHighlightService.UpdateCount, $"Changing {fieldName} did not update seat highlighting.");
         Publish();
     }
 
@@ -379,22 +427,29 @@ static void VerifyIdenticalTargetPublicationIsIdempotent()
     var targetGeneration = RuntimeUiPinningService.ReadPinningTarget().Generation;
     var initialLogCount = ManualLogSource.InformationCount;
     var initialHighlightUpdateCount = RuntimeCookerHighlightService.UpdateCount;
+    var initialSeatUpdateCount = RuntimeSeatHighlightService.UpdateCount;
 
     Publish(nextIngredientIds: new[] { 11, 29 });
 
     AssertEqual(targetGeneration, RuntimeUiPinningService.ReadPinningTarget().Generation, "An identical target advanced its generation.");
     AssertEqual(initialLogCount, ManualLogSource.InformationCount, "An identical target wrote another information log.");
     AssertEqual(initialHighlightUpdateCount, RuntimeCookerHighlightService.UpdateCount, "An identical target updated cooker highlighting again.");
+    AssertEqual(initialSeatUpdateCount, RuntimeSeatHighlightService.UpdateCount, "An identical target updated seat highlighting again.");
 
     AssertPublishes(() => Publish(nextEnabled: false), "enabled");
     AssertPublishes(() => Publish(nextHighlightEnabled: false), "highlightEnabled");
+    AssertPublishes(() => Publish(nextExtraIngredientFillEnabled: true), "extraIngredientFillEnabled");
+    AssertPublishes(() => Publish(nextSeatHighlightEnabled: true, nextDeskCode: 2), "seatHighlightEnabled");
     AssertPublishes(() => Publish(nextRecipeId: recipeId + 1), "recipeId");
     AssertPublishes(() => Publish(nextBeverageId: beverageId + 1), "beverageId");
     AssertPublishes(() => Publish(nextIngredientIds: new[] { 11, 30 }), "ingredientIds");
+    AssertPublishes(() => Publish(nextExtraIngredientIds: new[] { 30 }), "extraIngredientIds");
     AssertPublishes(() => Publish(recipeName: "recipe changed"), "recipeName");
     AssertPublishes(() => Publish(beverageName: "beverage changed"), "beverageName");
     AssertPublishes(() => Publish(nextCookerTypeId: cookerTypeId + 1), "cookerTypeId");
     AssertPublishes(() => Publish(cookerName: "cooker changed"), "cookerName");
+    AssertPublishes(() => Publish(nextSeatHighlightEnabled: true, nextDeskCode: 3), "deskCode");
+    AssertPublishes(() => Publish(nextTargetRevision: "next-target"), "targetRevision");
 }
 
 static void VerifyPatchTargets()
@@ -554,13 +609,18 @@ static void VerifyScopedNativePinnedMatching()
         RuntimeNightBusinessLifecycle.Generation,
         enabled: true,
         highlightEnabled: false,
+        extraIngredientFillEnabled: false,
+        seatHighlightEnabled: false,
         recipeId: 34,
         beverageId: 16,
         ingredientIds: new[] { 11, 29 },
+        extraIngredientIds: Array.Empty<int>(),
         recipeName: "recipe",
         beverageName: "beverage",
         cookerTypeId: 3,
-        cookerName: "cooker");
+        cookerName: "cooker",
+        deskCode: -1,
+        targetRevision: "test-target");
 
     AssertTrue(InvokeCheckPinnedPrefix(1, 34).RunOriginal, "CheckPinned was skipped outside a panel refresh scope.");
     AssertFalse(InvokeCheckPinned(1, 34), "CheckPinned was changed outside a panel refresh scope.");
@@ -618,13 +678,18 @@ static void VerifyNestedScopeFinalizers()
         RuntimeNightBusinessLifecycle.Generation,
         enabled: true,
         highlightEnabled: false,
+        extraIngredientFillEnabled: false,
+        seatHighlightEnabled: false,
         recipeId: 35,
         beverageId: 17,
         ingredientIds: new[] { 12 },
+        extraIngredientIds: Array.Empty<int>(),
         recipeName: "nested",
         beverageName: "nested",
         cookerTypeId: 3,
-        cookerName: "cooker");
+        cookerName: "cooker",
+        deskCode: -1,
+        targetRevision: "test-target");
     var expectedException = new InvalidOperationException("expected original failure");
     var nestedPanel = new CookingSelectionPanelProbe();
     InvokePrivate("OnCookingRefreshStarted", nestedPanel);
@@ -644,13 +709,18 @@ static void VerifyTargetUpdatePreservesForceTotals()
         RuntimeNightBusinessLifecycle.Generation,
         enabled: true,
         highlightEnabled: false,
+        extraIngredientFillEnabled: false,
+        seatHighlightEnabled: false,
         recipeId: 34,
         beverageId: 16,
         ingredientIds: new[] { 11 },
+        extraIngredientIds: Array.Empty<int>(),
         recipeName: "counter-first",
         beverageName: "counter-first",
         cookerTypeId: 3,
-        cookerName: "cooker");
+        cookerName: "cooker",
+        deskCode: -1,
+        targetRevision: "test-target");
     InvokePrivate("OnCookingRefreshStarted", new CookingSelectionPanelProbe());
     try
     {
@@ -666,13 +736,18 @@ static void VerifyTargetUpdatePreservesForceTotals()
         RuntimeNightBusinessLifecycle.Generation,
         enabled: true,
         highlightEnabled: false,
+        extraIngredientFillEnabled: false,
+        seatHighlightEnabled: false,
         recipeId: 35,
         beverageId: 17,
         ingredientIds: new[] { 12 },
+        extraIngredientIds: Array.Empty<int>(),
         recipeName: "counter-second",
         beverageName: "counter-second",
         cookerTypeId: 3,
-        cookerName: "cooker");
+        cookerName: "cooker",
+        deskCode: -1,
+        targetRevision: "test-target");
     AssertEqual(forcesBeforeUpdate, ReadForcedTotal("recipe"), "Target update reset the process force total.");
 }
 
@@ -682,13 +757,18 @@ static void VerifyThreadLocalScopeIsolation()
         RuntimeNightBusinessLifecycle.Generation,
         enabled: true,
         highlightEnabled: false,
+        extraIngredientFillEnabled: false,
+        seatHighlightEnabled: false,
         recipeId: 34,
         beverageId: 16,
         ingredientIds: new[] { 11 },
+        extraIngredientIds: Array.Empty<int>(),
         recipeName: "threaded",
         beverageName: "threaded",
         cookerTypeId: 3,
-        cookerName: "cooker");
+        cookerName: "cooker",
+        deskCode: -1,
+        targetRevision: "test-target");
 
     using var scopeEntered = new ManualResetEventSlim();
     using var releaseScope = new ManualResetEventSlim();
@@ -739,13 +819,18 @@ static void VerifyScopePinsOneTargetSnapshot()
         RuntimeNightBusinessLifecycle.Generation,
         enabled: true,
         highlightEnabled: false,
+        extraIngredientFillEnabled: false,
+        seatHighlightEnabled: false,
         recipeId: 34,
         beverageId: 16,
         ingredientIds: new[] { 11 },
+        extraIngredientIds: Array.Empty<int>(),
         recipeName: "first",
         beverageName: "first",
         cookerTypeId: 3,
-        cookerName: "cooker");
+        cookerName: "cooker",
+        deskCode: -1,
+        targetRevision: "test-target");
     InvokePrivate("OnCookingRefreshStarted", new CookingSelectionPanelProbe());
     try
     {
@@ -753,13 +838,18 @@ static void VerifyScopePinsOneTargetSnapshot()
             RuntimeNightBusinessLifecycle.Generation,
             enabled: true,
             highlightEnabled: false,
+            extraIngredientFillEnabled: false,
+            seatHighlightEnabled: false,
             recipeId: 35,
             beverageId: 17,
             ingredientIds: new[] { 12 },
+            extraIngredientIds: Array.Empty<int>(),
             recipeName: "second",
             beverageName: "second",
             cookerTypeId: 3,
-            cookerName: "cooker");
+            cookerName: "cooker",
+            deskCode: -1,
+            targetRevision: "test-target");
         AssertTrue(InvokeCheckPinned(1, 34), "An active cooking refresh did not retain its initial target snapshot.");
         AssertFalse(InvokeCheckPinned(1, 35), "An active cooking refresh mixed in a newly published target.");
     }
@@ -785,13 +875,18 @@ static void VerifyPinningAndHighlightRemainIndependent()
         RuntimeNightBusinessLifecycle.Generation,
         enabled: false,
         highlightEnabled: true,
+        extraIngredientFillEnabled: false,
+        seatHighlightEnabled: false,
         recipeId: 34,
         beverageId: 16,
         ingredientIds: new[] { 11 },
+        extraIngredientIds: Array.Empty<int>(),
         recipeName: "recipe",
         beverageName: "beverage",
         cookerTypeId: 3,
-        cookerName: "cooker");
+        cookerName: "cooker",
+        deskCode: -1,
+        targetRevision: "test-target");
     AssertTrue(RuntimeCookerHighlightService.LastEnabled, "Highlight-only target did not enable cooker highlighting.");
     InvokePrivate("OnCookingRefreshStarted", new CookingSelectionPanelProbe());
     try
@@ -808,18 +903,55 @@ static void VerifyPinningAndHighlightRemainIndependent()
         RuntimeNightBusinessLifecycle.Generation,
         enabled: true,
         highlightEnabled: false,
+        extraIngredientFillEnabled: false,
+        seatHighlightEnabled: false,
         recipeId: 34,
         beverageId: 16,
         ingredientIds: new[] { 11 },
+        extraIngredientIds: Array.Empty<int>(),
         recipeName: "recipe",
         beverageName: "beverage",
         cookerTypeId: 3,
-        cookerName: "cooker");
+        cookerName: "cooker",
+        deskCode: -1,
+        targetRevision: "test-target");
     AssertFalse(RuntimeCookerHighlightService.LastEnabled, "Pinning-only target unexpectedly enabled cooker highlighting.");
     InvokePrivate("OnCookingRefreshStarted", new CookingSelectionPanelProbe());
     try
     {
         AssertTrue(InvokeCheckPinned(1, 34), "Pinning-only target did not enable native pinned matching.");
+    }
+    finally
+    {
+        InvokePrivate("OnCookingRefreshFinalized", new object?[] { null });
+    }
+
+    RuntimeUiPinningService.UpdateTarget(
+        RuntimeNightBusinessLifecycle.Generation,
+        enabled: false,
+        highlightEnabled: false,
+        extraIngredientFillEnabled: true,
+        seatHighlightEnabled: true,
+        recipeId: 34,
+        beverageId: 16,
+        ingredientIds: new[] { 11 },
+        extraIngredientIds: new[] { 12 },
+        recipeName: "recipe",
+        beverageName: "beverage",
+        cookerTypeId: 3,
+        cookerName: "cooker",
+        deskCode: 0,
+        targetRevision: "test-target");
+    AssertFalse(RuntimeCookerHighlightService.LastEnabled, "Seat-only target unexpectedly enabled cooker highlighting.");
+    AssertTrue(RuntimeSeatHighlightService.LastEnabled, "Seat-only target did not enable seat highlighting.");
+    AssertEqual(0, RuntimeSeatHighlightService.LastDeskCode, "Seat-only target changed the zero-based desk code.");
+    var seatOnlyPinningTarget = RuntimeUiPinningService.ReadPinningTarget();
+    AssertFalse(seatOnlyPinningTarget.Enabled, "Seat-only target unexpectedly enabled list pinning.");
+    AssertFalse(seatOnlyPinningTarget.ExtraIngredientFillEnabled, "Extra-ingredient fill bypassed its parent list-pinning switch.");
+    InvokePrivate("OnCookingRefreshStarted", new CookingSelectionPanelProbe());
+    try
+    {
+        AssertFalse(InvokeCheckPinned(1, 34), "Seat-only target changed native recipe pinning.");
     }
     finally
     {
@@ -849,13 +981,18 @@ static void VerifyManagedHarmonyReturnPropagation()
         RuntimeNightBusinessLifecycle.Generation,
         enabled: true,
         highlightEnabled: false,
+        extraIngredientFillEnabled: false,
+        seatHighlightEnabled: false,
         recipeId: 34,
         beverageId: 16,
         ingredientIds: new[] { 11 },
+        extraIngredientIds: Array.Empty<int>(),
         recipeName: "harmony-recipe",
         beverageName: "harmony-beverage",
         cookerTypeId: 3,
-        cookerName: "cooker");
+        cookerName: "cooker",
+        deskCode: -1,
+        targetRevision: "test-target");
 
     try
     {
@@ -926,13 +1063,18 @@ static void VerifyManagedPinnedListHighlighting()
         RuntimeNightBusinessLifecycle.Generation,
         enabled: true,
         highlightEnabled: false,
+        extraIngredientFillEnabled: false,
+        seatHighlightEnabled: false,
         recipeId: 34,
         beverageId: 16,
         ingredientIds: new[] { 11 },
+        extraIngredientIds: Array.Empty<int>(),
         recipeName: "highlight-recipe",
         beverageName: "highlight-beverage",
         cookerTypeId: 3,
-        cookerName: "cooker");
+        cookerName: "cooker",
+        deskCode: -1,
+        targetRevision: "test-target");
 
     try
     {
@@ -987,13 +1129,18 @@ static void VerifyManagedPinnedListHighlighting()
             RuntimeNightBusinessLifecycle.Generation,
             enabled: true,
             highlightEnabled: false,
+            extraIngredientFillEnabled: false,
+            seatHighlightEnabled: false,
             recipeId: 35,
             beverageId: 17,
             ingredientIds: new[] { 12 },
+            extraIngredientIds: Array.Empty<int>(),
             recipeName: "next-recipe",
             beverageName: "next-beverage",
             cookerTypeId: 3,
-            cookerName: "cooker"));
+            cookerName: "cooker",
+            deskCode: -1,
+            targetRevision: "test-target"));
         AssertEqual(setterCountBeforeWorkerUpdate, recipeButton.image.SetterCount, "Background target publication wrote a Unity image color.");
         AssertHighlighted(recipeBase, recipeButton.image.get_color(), "Target publication touched Unity color off the main visual tick.");
         RuntimePinnedListHighlightService.Tick();
@@ -1016,13 +1163,18 @@ static void VerifyManagedPinnedListHighlighting()
             RuntimeNightBusinessLifecycle.Generation,
             enabled: true,
             highlightEnabled: false,
+            extraIngredientFillEnabled: false,
+            seatHighlightEnabled: false,
             recipeId: 35,
             beverageId: 17,
             ingredientIds: new[] { 12 },
+            extraIngredientIds: Array.Empty<int>(),
             recipeName: "same-suspended-target",
             beverageName: "same-suspended-target",
             cookerTypeId: 3,
-            cookerName: "cooker");
+            cookerName: "cooker",
+            deskCode: -1,
+            targetRevision: "test-target");
         AssertContains(RuntimePinnedListHighlightService.Status, "state=suspended: test scene exit", "Publishing the same target resumed a suspended scene.");
         cookingPanel.OnRecipeElementEnabled(new RecipeProbe(35), new object(), recipeButton);
         var setterCountAfterSuspendedBinding = recipeButton.image.SetterCount;
@@ -1035,13 +1187,18 @@ static void VerifyManagedPinnedListHighlighting()
             RuntimeNightBusinessLifecycle.Generation,
             enabled: true,
             highlightEnabled: false,
+            extraIngredientFillEnabled: false,
+            seatHighlightEnabled: false,
             recipeId: 36,
             beverageId: 18,
             ingredientIds: new[] { 13 },
+            extraIngredientIds: Array.Empty<int>(),
             recipeName: "changed-suspended-target",
             beverageName: "changed-suspended-target",
             cookerTypeId: 3,
-            cookerName: "cooker"));
+            cookerName: "cooker",
+            deskCode: -1,
+            targetRevision: "test-target"));
         AssertContains(RuntimePinnedListHighlightService.Status, "state=suspended: test scene exit", "Publishing a changed target resumed a suspended scene.");
         CookingSelectionPanelProbe.OpenAction = () => cookingPanel.OnRecipeElementEnabled(new RecipeProbe(36), new object(), recipeButton);
         cookingPanel.OnPanelOpen();
@@ -1072,13 +1229,18 @@ static void VerifyManagedPinnedListHighlighting()
             RuntimeNightBusinessLifecycle.Generation,
             enabled: false,
             highlightEnabled: true,
+            extraIngredientFillEnabled: false,
+            seatHighlightEnabled: false,
             recipeId: 36,
             beverageId: 18,
             ingredientIds: new[] { 13 },
+            extraIngredientIds: Array.Empty<int>(),
             recipeName: "highlight-only",
             beverageName: "highlight-only",
             cookerTypeId: 3,
-            cookerName: "cooker");
+            cookerName: "cooker",
+            deskCode: -1,
+            targetRevision: "test-target");
         AssertEqual(setterCountBeforeDisable, recipeButton.image.SetterCount, "Disabling list pinning wrote a Unity image color off the main visual tick.");
         AssertHighlighted(recipeBase, recipeButton.image.get_color(), "Disabling list pinning touched Unity color before LateUpdate.");
         RuntimePinnedListHighlightService.Tick();
@@ -1089,13 +1251,18 @@ static void VerifyManagedPinnedListHighlighting()
             RuntimeNightBusinessLifecycle.Generation,
             enabled: true,
             highlightEnabled: false,
+            extraIngredientFillEnabled: false,
+            seatHighlightEnabled: false,
             recipeId: 37,
             beverageId: 19,
             ingredientIds: new[] { 14 },
+            extraIngredientIds: Array.Empty<int>(),
             recipeName: "setter-race",
             beverageName: "setter-race",
             cookerTypeId: 3,
-            cookerName: "cooker");
+            cookerName: "cooker",
+            deskCode: -1,
+            targetRevision: "test-target");
         var setterRaceButton = new UIButtonSimpleProbe(recipeBase);
         cookingPanel.OnRecipeElementEnabled(new RecipeProbe(37), new object(), setterRaceButton);
         using var setterEntered = new ManualResetEventSlim();
@@ -1116,13 +1283,18 @@ static void VerifyManagedPinnedListHighlighting()
                     RuntimeNightBusinessLifecycle.Generation,
                     enabled: true,
                     highlightEnabled: false,
+                    extraIngredientFillEnabled: false,
+                    seatHighlightEnabled: false,
                     recipeId: 38,
                     beverageId: 20,
                     ingredientIds: new[] { 15 },
+                    extraIngredientIds: Array.Empty<int>(),
                     recipeName: "setter-race-next",
                     beverageName: "setter-race-next",
                     cookerTypeId: 3,
-                    cookerName: "cooker");
+                    cookerName: "cooker",
+                    deskCode: -1,
+                    targetRevision: "test-target");
             }
             catch (Exception ex)
             {

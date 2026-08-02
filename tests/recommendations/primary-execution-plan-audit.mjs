@@ -297,6 +297,10 @@ function assertGameUiPinningCompletionContracts() {
     'The next actionable order must own the recipe target.');
   assert.equal(nextTarget?.beverageId, secondPlan.beverage.beverage.id,
     'The next actionable order must own the beverage target.');
+  assert.deepEqual(nextTarget?.extraIngredientIds, [29, 29],
+    'The target must preserve the primary plan extra ingredients separately from list highlighting IDs.');
+  assert.equal(nextTarget?.deskCode, 2,
+    'The target must carry the exact source order desk code for table highlighting.');
 
   const activeSecondSource = buildGameUiPinningSourceOrderState(activeSecond.order);
   assert.equal(
@@ -315,6 +319,7 @@ function assertGameUiPinningCompletionContracts() {
   assert.equal(foodDeliveredDuringPending?.recipeId, -1,
     'Pending reconciliation must remove a delivered recipe immediately.');
   assert.deepEqual(foodDeliveredDuringPending?.ingredientIds, []);
+  assert.deepEqual(foodDeliveredDuringPending?.extraIngredientIds, []);
   assert.equal(foodDeliveredDuringPending?.cookerTypeId, -1);
   assert.equal(foodDeliveredDuringPending?.beverageId, secondPlan.beverage.beverage.id,
     'Pending reconciliation must retain an unserved beverage.');
@@ -350,6 +355,8 @@ function assertGameUiPinningCompletionContracts() {
     'A served food component must not remain pinned.');
   assert.deepEqual(foodServedTarget?.ingredientIds, [],
     'A served food component must clear its ingredient targets.');
+  assert.deepEqual(foodServedTarget?.extraIngredientIds, [],
+    'A served food component must clear its automatic extra-ingredient targets.');
   assert.equal(foodServedTarget?.cookerTypeId, -1,
     'A served food component must clear its cooker target.');
   assert.equal(foodServedTarget?.beverageId, firstPlan.beverage.beverage.id,
@@ -361,6 +368,7 @@ function assertGameUiPinningCompletionContracts() {
   assert.equal(beverageServedTarget?.recipeId, firstPlan.food.recipe.recipeId,
     'An unserved food must remain targetable after beverage delivery.');
   assert.deepEqual(beverageServedTarget?.ingredientIds, [11, 29]);
+  assert.deepEqual(beverageServedTarget?.extraIngredientIds, [29, 29]);
   assert.equal(beverageServedTarget?.cookerTypeId, 1);
   assert.equal(beverageServedTarget?.beverageId, -1,
     'A served beverage component must not remain pinned.');
@@ -427,6 +435,16 @@ function buildUiPinningPlan(foodId, beverageId, recipeId) {
         from: {},
       },
       extraIngredients: [{
+        id: 29,
+        name: '额外材料',
+        description: '',
+        type: '',
+        tags: [],
+        dlc: 0,
+        level: 1,
+        price: 1,
+        from: {},
+      }, {
         id: 29,
         name: '额外材料',
         description: '',
@@ -677,6 +695,11 @@ async function assertSourceContracts() {
   assert.ok(
     workbench.includes('pinningEnabled: companionPreferences.gameUiPinningEnabled'),
     'Publishing targets into the game list must remain controlled by the experimental game UI pinning switch.',
+  );
+  assert.ok(
+    workbench.includes('extraIngredientFillEnabled: companionPreferences.gameUiPinningEnabled')
+      && workbench.includes('seatHighlightEnabled: companionPreferences.seatHighlightEnabled'),
+    'Extra-ingredient filling must remain subordinate to UI pinning while table highlighting stays independently controlled.',
   );
   assert.equal(
     workbench.includes('preferences.autoPrepRecipeFavoritesOnly ? 1 : 0'),

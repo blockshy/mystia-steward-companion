@@ -114,7 +114,9 @@ function seedLocalStorage({ apiUrl, apiToken, storagePrefix }) {
   localStorage.setItem(`${storagePrefix}-auto-prep-collect-cooking`, '1');
   localStorage.setItem(`${storagePrefix}-auto-prep-complete-order`, '1');
   localStorage.setItem(`${storagePrefix}-game-ui-pinning`, '1');
+  localStorage.setItem(`${storagePrefix}-recommended-extra-ingredient-fill`, '1');
   localStorage.setItem(`${storagePrefix}-cooker-highlight`, '1');
+  localStorage.setItem(`${storagePrefix}-seat-highlight`, '1');
   localStorage.setItem(`${storagePrefix}-background-opacity`, '0.82');
   localStorage.setItem(`${storagePrefix}-content-opacity`, '1');
 }
@@ -153,12 +155,51 @@ async function auditPage(page, viewport, tab) {
 
   await auditMinimumViewportLayout(page, viewport, tab);
   await auditMissionRecipePriorityMarker(page, viewport, tab);
+  await auditServiceDiagnosticsPlacement(page, viewport, tab);
 
   for (const target of hoverTargets) {
     await auditHoverTarget(page, viewport, tab, target);
   }
 
   await auditSelectDropdown(page, viewport, tab);
+}
+
+async function auditServiceDiagnosticsPlacement(page, viewport, tab) {
+  if (tab.value !== 'service') return;
+
+  const unexpectedRecommendationPanels = await page.getByText(/^(当前稀客|当前稀客点单|预计厨具占用)$/).count();
+  if (unexpectedRecommendationPanels > 0) {
+    issues.push({
+      viewport: viewport.name,
+      tab: tab.label,
+      component: 'ServiceDiagnostics',
+      message: '推荐视图仍显示只应位于诊断视图的原始运行态面板。',
+    });
+  }
+
+  const serviceViewControl = page.locator('[data-slot="segmented-control"]').filter({ hasText: '诊断' }).first();
+  await serviceViewControl.locator('label').filter({ hasText: /^诊断$/ }).click();
+  for (const title of ['当前稀客', '当前稀客点单', '预计厨具占用']) {
+    if (!(await page.getByText(title, { exact: true }).count())) {
+      issues.push({
+        viewport: viewport.name,
+        tab: tab.label,
+        component: 'ServiceDiagnostics',
+        message: `诊断视图缺少“${title}”面板。`,
+      });
+    }
+  }
+
+  await serviceViewControl.locator('label').filter({ hasText: /^自动化$/ }).click();
+  if (await page.getByText('预计厨具占用', { exact: true }).count()) {
+    issues.push({
+      viewport: viewport.name,
+      tab: tab.label,
+      component: 'ServiceDiagnostics',
+      message: '自动化视图仍重复显示预计厨具占用。',
+    });
+  }
+  await serviceViewControl.locator('label').filter({ hasText: /^推荐$/ }).click();
 }
 
 async function auditMinimumViewportLayout(page, viewport, tab) {

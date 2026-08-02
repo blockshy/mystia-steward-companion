@@ -66,21 +66,21 @@ internal static class RuntimeNightBusinessLifecycle
 
             if (patchedNow.Count > 0)
             {
-                log.LogInfo($"Night-business lifecycle patched: {string.Join(", ", patchedNow)}.");
+                TryLogInfo($"Night-business lifecycle patched: {string.Join(", ", patchedNow)}.");
             }
             if (missing.Count > 0)
             {
-                log.LogWarning($"Night-business lifecycle unavailable; game members were not found: {string.Join(", ", missing)}.");
+                TryLogWarning($"Night-business lifecycle unavailable; game members were not found: {string.Join(", ", missing)}.");
             }
             if (failed.Count > 0)
             {
-                log.LogWarning($"Night-business lifecycle hook installation failed: {string.Join(" | ", failed)}.");
+                TryLogWarning($"Night-business lifecycle hook installation failed: {string.Join(" | ", failed)}.");
             }
         }
         catch (Exception ex)
         {
             lock (PatchRoot) _hookStatus = $"error:{ex.GetBaseException().Message}";
-            log.LogWarning($"Night-business lifecycle attach failed: {ex.GetBaseException().Message}");
+            TryLogWarning($"Night-business lifecycle attach failed: {ex.GetBaseException().Message}");
         }
     }
 
@@ -191,13 +191,13 @@ internal static class RuntimeNightBusinessLifecycle
             if (!transitionFactory(Tracker, DateTime.UtcNow, Environment.CurrentManagedThreadId, out var snapshot)) return;
 
             Volatile.Write(ref _publishedSnapshot, snapshot);
-            _log?.LogInfo($"Night-business lifecycle entering: phase={snapshot.Phase}; generation={snapshot.Generation}; source={snapshot.Source}; thread={snapshot.ThreadId}.");
+            TryLogInfo($"Night-business lifecycle entering: phase={snapshot.Phase}; generation={snapshot.Generation}; source={snapshot.Source}; thread={snapshot.ThreadId}.");
             ApplyRuntimeBoundary(snapshot);
-            _log?.LogInfo($"Night-business lifecycle boundary completed: phase={snapshot.Phase}; generation={snapshot.Generation}; source={snapshot.Source}.");
+            TryLogInfo($"Night-business lifecycle boundary completed: phase={snapshot.Phase}; generation={snapshot.Generation}; source={snapshot.Source}.");
         }
         catch (Exception ex)
         {
-            _log?.LogWarning($"Night-business lifecycle callback failed without affecting the game method: {ex.GetBaseException().Message}");
+            TryLogWarning($"Night-business lifecycle callback failed without affecting the game method: {ex.GetBaseException().Message}");
         }
     }
 
@@ -212,6 +212,7 @@ internal static class RuntimeNightBusinessLifecycle
         if (snapshot.Phase == NightBusinessLifecyclePhase.Active)
         {
             RunBoundaryAction("resume cooker highlight", () => RuntimeCookerHighlightService.Resume(reason));
+            RunBoundaryAction("resume seat highlight", () => RuntimeSeatHighlightService.Resume(reason));
             RunBoundaryAction("resume pinned-list highlight", () => RuntimePinnedListHighlightService.Resume(reason));
             return;
         }
@@ -219,11 +220,13 @@ internal static class RuntimeNightBusinessLifecycle
         if (snapshot.Phase == NightBusinessLifecyclePhase.Closing)
         {
             RunBoundaryAction("suspend cooker highlight", () => RuntimeCookerHighlightService.Suspend(reason));
+            RunBoundaryAction("suspend seat highlight", () => RuntimeSeatHighlightService.Suspend(reason));
             RunBoundaryAction("suspend pinned-list highlight", () => RuntimePinnedListHighlightService.Suspend(reason));
         }
         else if (snapshot.Phase == NightBusinessLifecyclePhase.Destroyed)
         {
             RunBoundaryAction("abandon cooker highlight", () => RuntimeCookerHighlightService.Abandon(reason));
+            RunBoundaryAction("abandon seat highlight", () => RuntimeSeatHighlightService.Abandon(reason));
             RunBoundaryAction("abandon pinned-list highlight", () => RuntimePinnedListHighlightService.Abandon(reason));
         }
 
@@ -243,7 +246,31 @@ internal static class RuntimeNightBusinessLifecycle
         }
         catch (Exception ex)
         {
-            _log?.LogWarning($"Night-business lifecycle could not {label}: {ex.GetBaseException().Message}");
+            TryLogWarning($"Night-business lifecycle could not {label}: {ex.GetBaseException().Message}");
+        }
+    }
+
+    private static void TryLogInfo(string message)
+    {
+        try
+        {
+            _log?.LogInfo(message);
+        }
+        catch
+        {
+            // Logging must not affect Harmony callbacks or runtime boundaries.
+        }
+    }
+
+    private static void TryLogWarning(string message)
+    {
+        try
+        {
+            _log?.LogWarning(message);
+        }
+        catch
+        {
+            // Logging must not affect Harmony callbacks or runtime boundaries.
         }
     }
 

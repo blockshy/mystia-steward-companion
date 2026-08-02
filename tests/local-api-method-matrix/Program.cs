@@ -151,8 +151,12 @@ try
         "Order execution is not serialized with automation epoch changes.");
     AssertContains(
         overlaySource,
-        "result.Automation.ReasonCode = \"runtime-unavailable\";",
+        "result.Automation.ReasonCode = string.IsNullOrWhiteSpace(reasonCode) ? \"runtime-unavailable\" : reasonCode;",
         "Runtime-unavailable order responses do not participate in structured retry handling.");
+    AssertContains(
+        overlaySource,
+        ": \"retryable-failure\";",
+        "Runtime-unavailable order responses no longer expose a structured retryable outcome.");
 
     var overlappingRoutes = expectedGetRoutes.Intersect(expectedPostRoutes, StringComparer.Ordinal).ToArray();
     AssertEqual(

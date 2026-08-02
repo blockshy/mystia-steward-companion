@@ -161,6 +161,51 @@ namespace MystiaStewardCompanion.Save
         }
     }
 
+    internal static class RuntimeSeatHighlightService
+    {
+        public static string Status => LastEnabled ? "active" : "disabled";
+
+        public static bool LastEnabled { get; private set; }
+
+        public static long LastSessionGeneration { get; private set; }
+
+        public static int LastDeskCode { get; private set; } = -1;
+
+        public static int UpdateCount { get; private set; }
+
+        public static void UpdateTarget(long sessionGeneration, bool enabled, int deskCode)
+        {
+            UpdateCount += 1;
+            LastSessionGeneration = sessionGeneration;
+            LastEnabled = enabled && sessionGeneration > 0 && deskCode >= 0;
+            LastDeskCode = LastEnabled ? deskCode : -1;
+        }
+    }
+
+    internal static class RuntimePinnedRecipeExtrasService
+    {
+        public static string Status => "disabled";
+
+        public static void Attach(BepInEx.Logging.ManualLogSource log)
+        {
+        }
+
+        public static void TryApply(object panel, RuntimeUiPinningService.PinningTargetSnapshot target)
+        {
+        }
+
+        public static void OnRefreshFinalized(
+            object panel,
+            RuntimeUiPinningService.PinningTargetSnapshot target,
+            Exception? exception)
+        {
+        }
+
+        public static void Abandon(string reason)
+        {
+        }
+    }
+
     internal sealed class CookingSelectionPanelProbe
     {
         private static long _nextPointer = 1000;

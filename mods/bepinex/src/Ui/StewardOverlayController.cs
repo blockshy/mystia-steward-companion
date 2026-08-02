@@ -596,6 +596,7 @@ internal sealed class StewardOverlayController
         if (_disposed || ShouldGateNightBusinessRuntime()) return;
         RuntimeUiPinningService.Tick();
         RuntimeCookerHighlightService.Tick();
+        RuntimeSeatHighlightService.Tick();
         RuntimePinnedListHighlightService.Tick();
     }
 
@@ -625,7 +626,9 @@ internal sealed class StewardOverlayController
         _localApiServer?.Dispose();
         _localApiServer = null;
         RuntimeUiPinningService.Abandon("controller disposed");
+        RuntimePinnedRecipeExtrasService.Abandon("controller disposed");
         RuntimeCookerHighlightService.Abandon("controller disposed");
+        RuntimeSeatHighlightService.Dispose("controller disposed");
         RuntimePinnedListHighlightService.Abandon("controller disposed");
         AggregateModLogService.Shutdown();
     }
