@@ -440,7 +440,7 @@ try {
   );
 
   await page.locator('[data-gamepad-tab-value="settings"]').first().click();
-  await page.getByRole('tab', { name: '推荐', exact: true }).first().click();
+  await page.getByRole('tab', { name: '实验性功能', exact: true }).first().click();
   const pinningSwitchLabel = page.getByText('游戏界面置顶推荐（实验性）', { exact: true }).first();
   assert(await pinningSwitchLabel.count(), '未找到游戏界面置顶开关');
 

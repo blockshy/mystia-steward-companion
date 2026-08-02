@@ -432,6 +432,74 @@ html::-webkit-scrollbar-thumb:hover,
   background-color: var(--companion-card-surface);
 }
 
+.steward-setting-help-field {
+  min-width: 0;
+}
+
+.steward-setting-help-trigger {
+  display: inline-grid;
+  width: 1.5rem;
+  height: 1.5rem;
+  flex: 0 0 1.5rem;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: help;
+  transition:
+    color 120ms ease,
+    background-color 120ms ease;
+}
+
+.steward-setting-help-trigger:hover,
+.steward-setting-help-trigger[data-active='true'] {
+  background-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  color: var(--foreground);
+}
+
+.steward-setting-help-trigger:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+.steward-setting-help-tooltip {
+  width: max-content;
+  max-width: min(20rem, calc(100vw - 1.5rem));
+  padding: 0.625rem 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  background-color: var(--companion-popover-surface);
+  box-shadow:
+    0 8px 22px color-mix(in srgb, #000 18%, transparent),
+    0 1px 2px color-mix(in srgb, #000 12%, transparent);
+  color: var(--popover-foreground);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.steward-setting-help-tooltip-arrow {
+  background-color: var(--companion-popover-surface);
+  color: var(--companion-popover-surface);
+}
+
+.steward-setting-help-copy {
+  max-width: 100%;
+}
+
+.steward-setting-help-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .steward-background-surface-45 {
   background-color: color-mix(in srgb, var(--companion-background-surface) 45%, transparent);
 }

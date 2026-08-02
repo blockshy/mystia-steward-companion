@@ -10,6 +10,7 @@ export * from '@/components/ui/multi-select';
 export * from '@/components/ui/number-input';
 export * from '@/components/ui/segmented-control';
 export * from '@/components/ui/select';
+export * from '@/components/ui/setting-help';
 export * from '@/components/ui/slider';
 export * from '@/components/ui/switch';
 export * from '@/components/ui/tabs';

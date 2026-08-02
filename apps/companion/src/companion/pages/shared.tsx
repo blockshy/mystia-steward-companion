@@ -1,8 +1,10 @@
+import type { ReactNode } from 'react';
+
 import { PlaceSelect } from '@/components/controls/PlaceSelect';
 import { RecommendationItem, RecommendationMetaBadge, RecommendationTagPills } from '@/components/RecommendationItem';
 import { CustomerCoverageBadges } from '@/components/recommendation/CustomerCoverageBadges';
 import { TagPill, TagPillGroup } from '@/components/recommendation/TagPillGroup';
-import { Badge, Button, EmptyRow, EmptyState, NumberInput, SegmentedControl, SliderField, SwitchField } from '@/components/ui-kit';
+import { Badge, Button, EmptyRow, EmptyState, NumberInput, SegmentedControl, SettingHelpField, SliderField, SwitchField } from '@/components/ui-kit';
 import { findBeverageFavorite, findRecipeFavorite, beverageFavoriteKey, recipeFavoriteKey } from '@/companion/domain/favorites';
 import { INVENTORY_SORT_OPTIONS, type InventorySortMode } from '@/companion/domain/inventory-sorting';
 import { formatDesk, formatIngredientNamesWithQty, formatIngredientWithQty, formatQtySuffix } from '@/companion/formatters';
@@ -103,13 +105,48 @@ export function SwitchControl({
   onCheckedChange,
   disabled,
   title,
+  helpId,
+  description,
+  status,
 }: {
   label: string;
   checked: boolean;
   onCheckedChange: (value: boolean) => void;
   disabled?: boolean;
   title?: string;
+  helpId?: string;
+  description?: ReactNode;
+  status?: ReactNode;
 }) {
+  if (helpId && description) {
+    return (
+      <SettingHelpField
+        id={helpId}
+        label={label}
+        description={description}
+        disabledControl={disabled}
+      >
+        {({ helpTrigger, descriptionId }) => (
+          <>
+            <div className="flex min-w-0 items-center gap-1">
+              <SwitchField
+                className="min-w-0 flex-1"
+                label={label}
+                checked={checked}
+                onCheckedChange={onCheckedChange}
+                disabled={disabled}
+                title={title}
+                aria-describedby={descriptionId}
+              />
+              {helpTrigger}
+            </div>
+            {status && <div className="px-2.5 text-xs text-muted-foreground">{status}</div>}
+          </>
+        )}
+      </SettingHelpField>
+    );
+  }
+
   return (
     <SwitchField label={label} checked={checked} onCheckedChange={onCheckedChange} disabled={disabled} title={title} />
   );
@@ -166,21 +203,24 @@ export function FocusSwitchCooldownInput({
   onChange: (value: number) => void;
 }) {
   return (
-      <SliderField
-          label="切换冷却时间"
-          value={value}
-          min={MIN_FOCUS_SWITCH_COOLDOWN_MS}
-          max={MAX_FOCUS_SWITCH_COOLDOWN_MS}
-          step={50}
-          valueText={`${value}ms`}
-          description={`单位毫秒，范围 ${MIN_FOCUS_SWITCH_COOLDOWN_MS} - ${MAX_FOCUS_SWITCH_COOLDOWN_MS}。调低后切换更快，过低可能重复触发。`}
-          onChange={(nextValue) => onChange(normalizeFocusSwitchCooldownMs(nextValue))}
-      />
+    <SettingSliderField
+      helpId="window-focus-switch-cooldown"
+      label="切换冷却时间"
+      value={value}
+      min={MIN_FOCUS_SWITCH_COOLDOWN_MS}
+      max={MAX_FOCUS_SWITCH_COOLDOWN_MS}
+      step={50}
+      valueText={`${value}ms`}
+      description={`单位毫秒，范围 ${MIN_FOCUS_SWITCH_COOLDOWN_MS} - ${MAX_FOCUS_SWITCH_COOLDOWN_MS}。只抑制成功切换后的短时间重复请求；调低后切换更快，过低可能重复触发。`}
+      onChange={(nextValue) => onChange(normalizeFocusSwitchCooldownMs(nextValue))}
+    />
   );
 }
 
 export function AutomationSliderField({
   label,
+  helpId,
+  description,
   value,
   min,
   max,
@@ -188,6 +228,8 @@ export function AutomationSliderField({
   onChange,
 }: {
   label: string;
+  helpId: string;
+  description: ReactNode;
   value: number;
   min: number;
   max: number;
@@ -195,14 +237,15 @@ export function AutomationSliderField({
   onChange: (value: number) => void;
 }) {
   return (
-    <SliderField
+    <SettingSliderField
       label={label}
+      helpId={helpId}
+      description={description}
       value={value}
       min={min}
       max={max}
       step={1}
       valueText={`${value}${unit}`}
-      description={`${min}${unit} - ${max}${unit}`}
       onChange={(nextValue) => onChange(clampInteger(nextValue, min, max, value))}
     />
   );
@@ -218,7 +261,8 @@ export function BackgroundOpacitySlider({
   const percent = Math.round(normalizeBackgroundOpacity(value) * 100);
 
   return (
-    <SliderField
+    <SettingSliderField
+      helpId="window-background-opacity"
       label="背景透明度"
       value={percent}
       min={Math.round(MIN_BACKGROUND_OPACITY * 100)}
@@ -241,7 +285,8 @@ export function ContentOpacitySlider({
   const percent = Math.round(normalizeContentOpacity(value) * 100);
 
   return (
-    <SliderField
+    <SettingSliderField
+      helpId="window-content-opacity"
       label="文字透明度"
       value={percent}
       min={Math.round(MIN_CONTENT_OPACITY * 100)}
@@ -264,13 +309,15 @@ export function FontScaleSlider({
   const percent = normalizeFontScalePercent(value);
 
   return (
-    <SliderField
+    <SettingSliderField
+      helpId="window-font-scale"
       label="字体大小"
       value={percent}
       min={MIN_FONT_SCALE_PERCENT}
       max={MAX_FONT_SCALE_PERCENT}
       step={FONT_SCALE_PERCENT_STEP}
       valueText={`${percent}%`}
+      description="按当前设备独立保存界面字号，范围为 90% - 130%，默认 100%。只缩放文字和继承字号的控件内容，不改变窗口尺寸。"
       onChange={(nextPercent) => onChange(normalizeFontScalePercent(nextPercent))}
     />
   );
@@ -283,25 +330,77 @@ export type SettingSegmentedOption<TValue extends string> = {
 
 export function SettingSegmentedControl<TValue extends string>({
   label,
+  helpId,
+  description,
   value,
   options,
   onChange,
 }: {
   label: string;
+  helpId: string;
+  description: ReactNode;
   value: TValue;
   options: SettingSegmentedOption<TValue>[];
   onChange: (value: TValue) => void;
 }) {
   return (
-    <div className="space-y-2">
-      <div className="text-sm font-medium">{label}</div>
-      <SegmentedControl
-        value={value}
-        options={options}
-        onValueChange={onChange}
-        className="steward-settings-segmented-control max-w-full"
-      />
-    </div>
+    <SettingHelpField id={helpId} label={label} description={description}>
+      {({ helpTrigger, descriptionId }) => (
+        <div className="space-y-2">
+          <div className="flex min-w-0 items-center gap-1.5 text-sm font-medium">
+            <span className="min-w-0">{label}</span>
+            {helpTrigger}
+          </div>
+          <SegmentedControl
+            value={value}
+            options={options}
+            onValueChange={onChange}
+            aria-describedby={descriptionId}
+            className="steward-settings-segmented-control max-w-full"
+          />
+        </div>
+      )}
+    </SettingHelpField>
+  );
+}
+
+function SettingSliderField({
+  helpId,
+  label,
+  description,
+  value,
+  min,
+  max,
+  step,
+  valueText,
+  onChange,
+}: {
+  helpId: string;
+  label: string;
+  description: ReactNode;
+  value: number;
+  min: number;
+  max: number;
+  step?: number;
+  valueText?: string;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <SettingHelpField id={helpId} label={label} description={description}>
+      {({ helpTrigger, descriptionId }) => (
+        <SliderField
+          label={label}
+          value={value}
+          min={min}
+          max={max}
+          step={step}
+          valueText={valueText}
+          labelAccessory={helpTrigger}
+          aria-describedby={descriptionId}
+          onChange={onChange}
+        />
+      )}
+    </SettingHelpField>
   );
 }
 
@@ -310,12 +409,14 @@ export function InventorySortControl({
   onChange,
   disabled = false,
   ariaLabel = '库存排序',
+  ariaDescribedBy,
   className = '',
 }: {
   value: InventorySortMode;
   onChange: (value: InventorySortMode) => void;
   disabled?: boolean;
   ariaLabel?: string;
+  ariaDescribedBy?: string;
   className?: string;
 }) {
   return (
@@ -325,6 +426,7 @@ export function InventorySortControl({
       onValueChange={onChange}
       disabled={disabled}
       aria-label={ariaLabel}
+      aria-describedby={ariaDescribedBy}
       className={`h-7 shrink-0 ${className}`.trim()}
     />
   );

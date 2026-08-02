@@ -16,6 +16,8 @@ function NumberInput({
   value,
   onValueChange,
   size = 'sm',
+  attributes,
+  'aria-describedby': ariaDescribedBy,
   ...props
 }: NumberInputProps) {
   return (
@@ -35,6 +37,13 @@ function NumberInput({
         }
       }}
       {...props}
+      attributes={{
+        ...attributes,
+        input: {
+          ...attributes?.input,
+          ...(ariaDescribedBy ? { 'aria-describedby': ariaDescribedBy } : {}),
+        },
+      }}
     />
   );
 }

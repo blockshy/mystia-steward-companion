@@ -1,5 +1,6 @@
 import { Slider as MantineSlider } from '@mantine/core';
 import type { SliderProps as MantineSliderProps } from '@mantine/core';
+import type { ReactNode } from 'react';
 
 import { composeClassNames } from '@/components/ui/style';
 
@@ -20,8 +21,11 @@ function Slider({
 }: SliderProps) {
   const {
     'aria-label': ariaLabel,
+    'aria-describedby': ariaDescribedBy,
     'aria-valuetext': ariaValueText,
+    attributes,
     thumbLabel,
+    thumbProps,
     thumbValueText,
     ...sliderProps
   } = props;
@@ -43,6 +47,14 @@ function Slider({
         step={step}
         disabled={disabled}
         thumbLabel={thumbLabel ?? ariaLabel}
+        thumbProps={thumbProps}
+        attributes={{
+          ...attributes,
+          thumb: {
+            ...attributes?.thumb,
+            ...(ariaDescribedBy ? { 'aria-describedby': ariaDescribedBy } : {}),
+          },
+        }}
         thumbValueText={thumbValueText ?? ariaValueText}
         onChange={onValueChange}
         className="steward-slider"
@@ -59,7 +71,8 @@ function SliderField({
   max,
   step = 1,
   valueText,
-  description,
+  labelAccessory,
+  'aria-describedby': ariaDescribedBy,
   onChange,
 }: {
   label: string;
@@ -68,13 +81,17 @@ function SliderField({
   max: number;
   step?: number;
   valueText?: string;
-  description?: string;
+  labelAccessory?: ReactNode;
+  'aria-describedby'?: string;
   onChange: (value: number) => void;
 }) {
   return (
     <div>
       <div className="mb-1 flex items-center justify-between gap-3 text-sm">
-        <span className="font-medium">{label}</span>
+        <span className="flex min-w-0 items-center gap-1.5 font-medium">
+          <span className="min-w-0">{label}</span>
+          {labelAccessory}
+        </span>
         {valueText && <span className="text-muted-foreground">{valueText}</span>}
       </div>
       <Slider
@@ -85,8 +102,8 @@ function SliderField({
         onValueChange={onChange}
         aria-label={label}
         aria-valuetext={valueText}
+        aria-describedby={ariaDescribedBy}
       />
-      {description && <div className="mt-1 text-xs text-muted-foreground">{description}</div>}
     </div>
   );
 }

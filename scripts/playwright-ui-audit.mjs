@@ -438,12 +438,13 @@ async function auditMinimumPrimaryTabsLayout(page, viewport, tab) {
 async function auditMinimumRecommendationSettingsLayout(page, viewport, tab) {
   const windowTab = page.getByRole('tab', { name: '窗口', exact: true }).first();
   const recommendationTab = page.getByRole('tab', { name: '推荐', exact: true }).first();
-  if (!(await windowTab.count()) || !(await recommendationTab.count())) {
+  const experimentalTab = page.getByRole('tab', { name: '实验性功能', exact: true }).first();
+  if (!(await windowTab.count()) || !(await recommendationTab.count()) || !(await experimentalTab.count())) {
     issues.push({
       viewport: viewport.name,
       tab: tab.label,
       component: 'SettingsRecommendation',
-      message: '未找到设置页窗口或推荐分栏入口。',
+      message: '未找到设置页窗口、推荐或实验性功能分栏入口。',
     });
     return;
   }
@@ -529,6 +530,25 @@ async function auditMinimumRecommendationSettingsLayout(page, viewport, tab) {
   screenshots.push({ tab: `${tab.label} 推荐`, viewport: viewport.name, path: screenshotPath });
 
   await auditMissionRecipePriorityToggle(page, viewport, tab, recommendationTab);
+
+  await activateTab(page, { value: 'settings', label: '设置' });
+  await page.getByRole('tab', { name: '实验性功能', exact: true }).first().click();
+  await page.waitForTimeout(200);
+  await auditMinimumMulticolumnGrids(page, viewport, { ...tab, label: `${tab.label} 实验性功能` });
+  for (const title of ['自动化', '游戏界面辅助']) {
+    if (!(await page.getByText(title, { exact: true }).count())) {
+      issues.push({
+        viewport: viewport.name,
+        tab: tab.label,
+        component: 'SettingsExperimental',
+        message: `实验性功能分栏缺少“${title}”面板。`,
+      });
+    }
+  }
+
+  const experimentalScreenshotPath = path.join(OUTPUT_DIR, `${viewport.name}-${tab.value}-experimental.png`);
+  await page.screenshot({ path: experimentalScreenshotPath, fullPage: true });
+  screenshots.push({ tab: `${tab.label} 实验性功能`, viewport: viewport.name, path: experimentalScreenshotPath });
 }
 
 async function auditMissionRecipePriorityMarker(page, viewport, tab) {

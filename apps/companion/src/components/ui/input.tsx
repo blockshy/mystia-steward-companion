@@ -9,7 +9,14 @@ type InputProps = Omit<React.InputHTMLAttributes<HTMLInputElement>, 'size'> & {
   inputClassName?: string;
 };
 
-function Input({ className, inputClassName, type, size = 'sm', ...props }: InputProps) {
+function Input({
+  className,
+  inputClassName,
+  type,
+  size = 'sm',
+  'aria-describedby': ariaDescribedBy,
+  ...props
+}: InputProps) {
   return (
     <MantineInput
       type={type}
@@ -18,6 +25,7 @@ function Input({ className, inputClassName, type, size = 'sm', ...props }: Input
       className={composeClassNames('steward-input-root', className)}
       classNames={{ input: composeClassNames('steward-input', inputClassName) }}
       {...props}
+      attributes={ariaDescribedBy ? { input: { 'aria-describedby': ariaDescribedBy } } : undefined}
     />
   )
 }

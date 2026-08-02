@@ -790,6 +790,18 @@ async function auditInnerTabs(page) {
   await pressButton(page, BUTTON_DPAD_RIGHT, { holdMs: 70 });
   await expectFocusedInnerTab(page, '推荐', '设置页“连接”按右键应聚焦“推荐”二级 Tab');
 
+  await pressButton(page, BUTTON_DPAD_RIGHT, { holdMs: 70 });
+  await expectFocusedInnerTab(page, '实验性功能', '设置页“推荐”按右键应聚焦“实验性功能”二级 Tab');
+
+  await pressButton(page, BUTTON_DPAD_RIGHT, { holdMs: 70 });
+  await expectFocusedInnerTab(page, '更新', '设置页“实验性功能”按右键应聚焦“更新”二级 Tab');
+
+  await pressButton(page, BUTTON_DPAD_LEFT, { holdMs: 70 });
+  await expectFocusedInnerTab(page, '实验性功能', '设置页“更新”按左键应回到“实验性功能”二级 Tab');
+
+  await pressButton(page, BUTTON_DPAD_LEFT, { holdMs: 70 });
+  await expectFocusedInnerTab(page, '推荐', '设置页“实验性功能”按左键应回到“推荐”二级 Tab');
+
   await pressButton(page, BUTTON_DPAD_LEFT, { holdMs: 70 });
   await expectFocusedInnerTab(page, '连接', '设置页“推荐”按左键应回到“连接”二级 Tab');
 

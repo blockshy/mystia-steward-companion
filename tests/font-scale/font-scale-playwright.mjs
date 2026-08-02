@@ -300,7 +300,7 @@ async function auditSettingsSections(page, profile) {
     { key: 'window', label: '窗口' },
     { key: 'connection', label: '连接' },
     { key: 'recommendation', label: '推荐' },
-    { key: 'automation', label: '自动化' },
+    { key: 'experimental', label: '实验性功能' },
     { key: 'updates', label: '更新' },
   ];
 

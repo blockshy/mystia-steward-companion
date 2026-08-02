@@ -1,5 +1,6 @@
 import { MultiSelect as MantineMultiSelect } from '@mantine/core';
 import type { MultiSelectProps as MantineMultiSelectProps } from '@mantine/core';
+import { useCallback } from 'react';
 
 import { composeClassNames } from '@/components/ui/style';
 
@@ -30,10 +31,23 @@ function MultiSelectBox({
   size = 'sm',
   searchable = true,
   clearable = true,
+  attributes,
+  'aria-describedby': ariaDescribedBy,
   ...props
 }: MultiSelectBoxProps) {
+  const describedInputRef = useCallback((input: HTMLInputElement | null) => {
+    if (!input) return;
+
+    if (ariaDescribedBy) {
+      input.setAttribute('aria-describedby', ariaDescribedBy);
+    } else {
+      input.removeAttribute('aria-describedby');
+    }
+  }, [ariaDescribedBy]);
+
   return (
     <MantineMultiSelect
+      ref={describedInputRef}
       data-slot="multi-select"
       data-gamepad-control="multi-select"
       value={value}
@@ -61,6 +75,7 @@ function MultiSelectBox({
       }}
       onChange={(nextValue) => onValueChange(nextValue.map(String))}
       {...props}
+      attributes={attributes}
     />
   );
 }

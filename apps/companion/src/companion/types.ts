@@ -13,7 +13,7 @@ import type {
  */
 export type ModTab = 'overview' | 'normal' | 'rare' | 'custom-recipes' | 'service' | 'missions' | 'inventory' | 'help' | 'logs' | 'settings';
 export type OverviewTab = 'status' | 'inventory' | 'actions';
-export type SettingsTab = 'window' | 'connection' | 'recommendation' | 'automation' | 'updates';
+export type SettingsTab = 'window' | 'connection' | 'recommendation' | 'experimental' | 'updates';
 export type RareGuestInvitationScope = 'current' | 'all';
 export type MissionPanelView = 'tasks' | 'invitations';
 export type TrackedMissionStatus = 'unverified' | 'tracking' | 'fulfilled';

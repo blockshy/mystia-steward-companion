@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { IconCopy, IconDownload, IconExternalLink, IconKey, IconPackageImport, IconRefresh } from '@tabler/icons-react';
-import { Button, Dialog, InfoLine, Input, ListPanel, MultiSelectBox, NumberInput, Slider, SwitchField, Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui-kit';
+import { Button, Dialog, InfoLine, Input, ListPanel, MultiSelectBox, NumberInput, SettingHelpField, SettingHelpProvider, Slider, SwitchField, Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui-kit';
 import {
   readLocalApiConnectionConfig,
   regenerateLocalApiToken,
@@ -44,7 +44,7 @@ import {
   SettingSegmentedControl,
   SwitchControl,
 } from '@/companion/pages/shared';
-import { DENSE_TWO_COLUMN_GRID, INNER_TAB_TRIGGER_CLASS, MINIMUM_MULTICOLUMN_GRID_CLASS } from '@/companion/pages/shared-constants';
+import { DENSE_TWO_COLUMN_GRID, INNER_TAB_TRIGGER_CLASS } from '@/companion/pages/shared-constants';
 
 export function ModSettingsPanel({
   endpoint,
@@ -271,6 +271,7 @@ export function ModSettingsPanel({
 
   return (
     <>
+      <SettingHelpProvider resetKey={settingsTab}>
       <Tabs value={settingsTab} onValueChange={(value) => onSettingsTabChange(value as SettingsTab)} className="space-y-4">
       <TabsList scrollable className="grid h-9 w-full grid-cols-5">
         <TabsTrigger value="window" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
@@ -282,8 +283,8 @@ export function ModSettingsPanel({
         <TabsTrigger value="recommendation" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
           推荐
         </TabsTrigger>
-        <TabsTrigger value="automation" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
-          自动化
+        <TabsTrigger value="experimental" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
+          实验性功能
         </TabsTrigger>
         <TabsTrigger value="updates" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
           更新
@@ -306,6 +307,8 @@ export function ModSettingsPanel({
                 <>
                   <SettingSegmentedControl
                     label="焦点切换"
+                    helpId="window-focus-switch-behavior"
+                    description="使用 F8 或 RS Click 切回游戏时，可以隐藏伴随窗口，也可以让窗口保持悬浮显示。此设置只适用于桌面窗口。"
                     value={preferences.focusSwitchBehavior}
                     options={[
                       { value: 'hide', label: '隐藏窗口' },
@@ -319,17 +322,18 @@ export function ModSettingsPanel({
                   />
                   <SwitchControl
                     label="始终置顶"
+                    helpId="window-always-on-top"
+                    description="让伴随窗口保持在普通窗口和无边框游戏上方。独占全屏仍可能覆盖伴随窗口。"
                     checked={preferences.alwaysOnTop}
                     onCheckedChange={(alwaysOnTop) => onPreferenceChange({ alwaysOnTop })}
                   />
                   <SwitchControl
                     label="鼠标穿透锁定"
+                    helpId="window-mouse-passthrough"
+                    description="开启后伴随窗口会忽略鼠标点击，点击会落到下方游戏或其他窗口；按 F10、F8、RS Click 或使用托盘菜单可恢复操作。"
                     checked={preferences.mousePassthroughEnabled}
                     onCheckedChange={(mousePassthroughEnabled) => onPreferenceChange({ mousePassthroughEnabled })}
                   />
-                  <div className="text-xs text-muted-foreground">
-                    开启后伴随窗口会忽略鼠标点击，点击会落到下方游戏或其他窗口；按 F10、F8/RS Click 或托盘菜单可恢复操作。
-                  </div>
                 </>
               ) : (
                 <div className="steward-inline-panel px-3 py-2 text-xs text-muted-foreground">
@@ -343,6 +347,8 @@ export function ModSettingsPanel({
             <div className="space-y-4">
               <SettingSegmentedControl
                 label="主题"
+                helpId="window-theme"
+                description="选择浅色、深色，或跟随当前设备的系统外观。只影响伴随窗口显示。"
                 value={themeMode}
                 options={[
                   { value: 'system', label: '跟随系统' },
@@ -372,20 +378,18 @@ export function ModSettingsPanel({
               </div>
               <SwitchControl
                 label="手柄导航"
+                helpId="window-gamepad-navigation"
+                description="控制伴随窗口内的方向、确认、返回、切页、滚动和收藏操作。关闭后，F8 与 RS Click 的窗口焦点切换仍然有效。"
                 checked={preferences.gamepadNavigationEnabled}
                 onCheckedChange={(gamepadNavigationEnabled) => onPreferenceChange({ gamepadNavigationEnabled })}
               />
-              <div className="text-xs text-muted-foreground">
-                关闭手柄导航只影响伴随窗口内的方向、确认、返回、切页、滚动和收藏操作；F8 / RS Click 的窗口焦点切换仍然有效。
-              </div>
               <SwitchControl
                 label="显示调试信息"
+                helpId="window-debug-details"
+                description="开启后显示日志页、扫描状态、运行时来源、性能耗时和订单内部来源。普通使用建议保持关闭。"
                 checked={preferences.showDebugDetails}
                 onCheckedChange={(showDebugDetails) => onPreferenceChange({ showDebugDetails })}
               />
-              <div className="text-xs text-muted-foreground">
-                开启后显示日志页、扫描状态、运行时来源、性能耗时和订单内部来源；普通使用建议保持关闭。
-              </div>
             </div>
           </ListPanel>
 
@@ -404,24 +408,39 @@ export function ModSettingsPanel({
 
             <SwitchControl
               label="允许局域网设备连接"
+              helpId="connection-lan-enabled"
+              description="允许同一可信局域网中的 Windows 或 Android 伴随窗口连接本机 Mod API。本机回环地址始终保留；不要通过公网端口映射暴露此接口。"
               checked={connectionLanEnabled}
               onCheckedChange={toggleConnectionLanEnabled}
               disabled={!apiToken || Boolean(connectionBusy)}
             />
 
-            <label className="grid gap-1 text-sm">
-              <span className="text-muted-foreground">LAN 监听地址</span>
-              <Input
-                value={connectionLanHost}
-                onChange={(event) => setConnectionLanHost(event.target.value)}
-                placeholder="auto"
-                disabled={!connectionLanEnabled || !apiToken || Boolean(connectionBusy)}
-                inputClassName="font-mono"
-              />
-            </label>
-            <div className="text-xs text-muted-foreground">
-              开关会立即应用；修改监听地址后点击应用。`auto` 会监听活动网卡的私网 IPv4，也可填写其中一个明确地址；本机地址始终保留。
-            </div>
+            <SettingHelpField
+              id="connection-lan-bind-host"
+              label="LAN 监听地址"
+              description="修改监听地址后需要点击应用。填写 auto 会监听活动网卡的私网 IPv4，也可以填写本机活动网卡上的一个明确地址；本机回环地址始终保留。"
+              disabledControl={!connectionLanEnabled || !apiToken || Boolean(connectionBusy)}
+            >
+              {({ helpTrigger, descriptionId }) => (
+                <div className="grid gap-1 text-sm">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <label htmlFor="settings-lan-bind-host" className="min-w-0 text-muted-foreground">
+                      LAN 监听地址
+                    </label>
+                    {helpTrigger}
+                  </div>
+                  <Input
+                    id="settings-lan-bind-host"
+                    value={connectionLanHost}
+                    onChange={(event) => setConnectionLanHost(event.target.value)}
+                    placeholder="auto"
+                    disabled={!connectionLanEnabled || !apiToken || Boolean(connectionBusy)}
+                    inputClassName="font-mono"
+                    aria-describedby={descriptionId}
+                  />
+                </div>
+              )}
+            </SettingHelpField>
 
             <div className="grid gap-1.5">
               <div className="text-xs text-muted-foreground">局域网连接地址</div>
@@ -636,6 +655,8 @@ export function ModSettingsPanel({
             <div className="space-y-4">
               <SettingSegmentedControl
                 label="经营中订单排序"
+                helpId="recommendation-service-order-sort"
+                description="点单顺序按订单进入经营的先后排列；稀客分组会把同一稀客的订单集中显示。此设置只改变页面顺序，不改变订单本身。"
                 value={preferences.serviceOrderSortMode}
                 options={[
                   { value: 'ordered', label: '点单顺序' },
@@ -645,59 +666,15 @@ export function ModSettingsPanel({
               />
               <SwitchControl
                 label="稀客专注模式默认精简"
+                helpId="recommendation-focus-compact"
+                description="进入稀客订单专注模式时默认使用精简显示。料理和酒水显示数量仍可在专注模式内直接调整，并会自动记住。"
                 checked={serviceFocusCompact}
                 onCheckedChange={onServiceFocusCompactChange}
               />
-              <div className="text-xs text-muted-foreground">
-                料理和酒水显示数量在进入专注模式后直接调整，设置会自动记住。
-              </div>
-              <SwitchControl
-                label="游戏界面置顶推荐（实验性）"
-                checked={preferences.gameUiPinningEnabled}
-                onCheckedChange={(gameUiPinningEnabled) => onPreferenceChange({ gameUiPinningEnabled })}
-              />
-              <div className="text-xs text-muted-foreground">
-                打开料理或酒水选择界面时，尝试把当前目标订单的推荐材料、料理和酒水排到前面并显示黄色脉冲高亮；该开关本身不修改库存。
-              </div>
-              <div className="border-l pl-3">
-                <SwitchControl
-                  label="点击推荐料理时自动加入加料（实验性）"
-                  checked={preferences.recommendedExtraIngredientFillEnabled}
-                  disabled={!preferences.gameUiPinningEnabled}
-                  title={!preferences.gameUiPinningEnabled ? '请先开启游戏界面置顶推荐' : undefined}
-                  onCheckedChange={(recommendedExtraIngredientFillEnabled) =>
-                    onPreferenceChange({ recommendedExtraIngredientFillEnabled })}
-                />
-              </div>
-              <div className="text-xs text-muted-foreground">
-                确认当前置顶料理时，按同一主推荐方案自动加入加料并扣除对应库存；关闭置顶推荐后不会生效。
-              </div>
-              <SwitchControl
-                label="目标厨具高亮（实验性）"
-                checked={preferences.cookerHighlightEnabled}
-                onCheckedChange={(cookerHighlightEnabled) => onPreferenceChange({ cookerHighlightEnabled })}
-              />
-              <div className="text-xs text-muted-foreground">
-                经营中有推荐目标厨具时，尝试让对应已摆放厨具显示黄色脉冲高亮；只改变可见提示，不自动操作厨具。
-              </div>
-              <SwitchControl
-                label="目标桌位高亮（实验性）"
-                checked={preferences.seatHighlightEnabled}
-                onCheckedChange={(seatHighlightEnabled) => onPreferenceChange({ seatHighlightEnabled })}
-              />
-              <div className="text-xs text-muted-foreground">
-                经营中有推荐目标订单时，尝试在游戏内高亮对应桌位；只改变可见提示，不自动操作顾客。
-              </div>
-              <SwitchControl
-                label="目标订单高亮（实验性）"
-                checked={preferences.orderHighlightEnabled}
-                onCheckedChange={(orderHighlightEnabled) => onPreferenceChange({ orderHighlightEnabled })}
-              />
-              <div className="text-xs text-muted-foreground">
-                经营中有推荐目标订单时，尝试在游戏左下订单列表高亮对应订单；只改变可见提示，不切换游戏原生订单焦点。
-              </div>
               <SettingSegmentedControl
                 label="预算处理"
+                helpId="recommendation-budget-policy"
+                description="阻止超预算会排除顾客资金不足的方案；仅提示会保留方案并标记预算风险；忽略预算不参与筛选。免费订单不受付款预算限制。"
                 value={preferences.recommendationBudgetPolicy}
                 options={[
                   { value: 'block', label: '阻止超预算' },
@@ -708,92 +685,123 @@ export function ModSettingsPanel({
               />
               <SwitchControl
                 label="排除缺失厨具"
+                helpId="recommendation-filter-missing-cookers"
+                description="进入经营场景并读取到完整厨具快照后，推荐列表会隐藏当前已摆放厨具无法制作的料理。厨具快照不完整时不会使用部分数据猜测。"
                 checked={preferences.filterMissingCookers}
                 onCheckedChange={(filterMissingCookers) => onPreferenceChange({ filterMissingCookers })}
               />
-              <div className="text-xs text-muted-foreground">
-                进入经营场景后，若读取到已摆放厨具，推荐列表会隐藏当前场景无法制作的料理。
-              </div>
               <SwitchControl
                 label="任务料理置顶"
+                helpId="recommendation-mission-recipe-priority"
+                description="已追踪任务的目标料理通过库存、预算、厨具和酒水点单条件后置顶；若启用相应自动化，收藏限定也必须满足。任务料理可以跳过本次普通料理点单 Tag，游戏内列表仍由游戏界面置顶推荐开关单独控制。"
                 checked={preferences.missionRecipePriorityEnabled}
                 onCheckedChange={(missionRecipePriorityEnabled) => onPreferenceChange({
                   missionRecipePriorityEnabled,
                 })}
               />
-              <div className="text-xs text-muted-foreground">
-                已追踪任务的目标料理通过库存、预算、厨具和酒水点单条件后置顶；若启用相应自动化收藏限定也必须满足。任务料理无需匹配本次料理点单 Tag，游戏内列表仍由上方实验性开关单独控制。
-              </div>
               <SwitchControl
                 label="收藏料理置顶"
+                helpId="recommendation-pin-favorite-recipe"
+                description="收藏料理只有在解锁、库存、预算和厨具等硬条件通过后才会排到其他普通料理前面，只影响料理排序。"
                 checked={preferences.pinFavoriteRecipeEnabled}
                 onCheckedChange={(pinFavoriteRecipeEnabled) => onPreferenceChange({ pinFavoriteRecipeEnabled })}
               />
               <SwitchControl
                 label="收藏酒水置顶"
+                helpId="recommendation-pin-favorite-beverage"
+                description="收藏酒水只有在库存、预算和点单等硬条件通过后才会排到其他普通酒水前面，只影响酒水排序。"
                 checked={preferences.pinFavoriteBeverageEnabled}
                 onCheckedChange={(pinFavoriteBeverageEnabled) => onPreferenceChange({ pinFavoriteBeverageEnabled })}
               />
-              <div className="text-xs text-muted-foreground">
-                置顶只在解锁、库存、预算和厨具等硬条件通过后生效；收藏料理和收藏酒水分别影响对应列表的排序。
-              </div>
-              <label className="flex items-center justify-between gap-3 text-sm">
-                <span className="min-w-0 text-muted-foreground">同基础料理显示</span>
-                <NumberInput
-                  min={MIN_RECIPE_VARIANT_LIMIT_PER_BASE}
-                  max={MAX_RECIPE_VARIANT_LIMIT_PER_BASE}
-                  value={preferences.recipeVariantLimitPerBase}
-                  onValueChange={(recipeVariantLimitPerBase) => onPreferenceChange({
-                    recipeVariantLimitPerBase: normalizeRecipeVariantLimitPerBase(recipeVariantLimitPerBase),
-                  })}
-                  className="h-8 w-16"
-                />
-              </label>
-              <div className="text-xs text-muted-foreground">
-                同一道基础料理只保留当前排序最靠前的指定数量，加料不同但排序靠后的变体会隐藏。
-              </div>
-              <div className="space-y-2">
-                <div className="flex min-w-0 items-center justify-between gap-2">
-                  <div className="text-sm font-medium">排除材料</div>
-                  <InventorySortControl
-                    value={ingredientExclusionSortMode}
-                    onChange={setIngredientExclusionSortMode}
-                    disabled={ingredientOptions.length === 0}
-                    aria-label="排除材料排序"
-                  />
-                </div>
-                <MultiSelectBox
-                  value={preferences.recommendationExclusions.excludedIngredientIds.map(String)}
-                  options={ingredientOptions}
-                  placeholder={ingredientOptions.length > 0 ? '选择不参与推荐的材料' : '暂无运行时材料数据'}
-                  disabled={ingredientOptions.length === 0}
-                  onValueChange={(values) => updateExclusions({ excludedIngredientIds: parseSelectedIds(values) })}
-                />
-                <div className="text-xs text-muted-foreground">
-                  推荐料理不会使用这些材料，基础配方和加料都会避开。
-                </div>
-              </div>
-              <div className="space-y-2">
-                <div className="flex min-w-0 items-center justify-between gap-2">
-                  <div className="text-sm font-medium">排除酒水</div>
-                  <InventorySortControl
-                    value={beverageExclusionSortMode}
-                    onChange={setBeverageExclusionSortMode}
-                    disabled={beverageOptions.length === 0}
-                    aria-label="排除酒水排序"
-                  />
-                </div>
-                <MultiSelectBox
-                  value={preferences.recommendationExclusions.excludedBeverageIds.map(String)}
-                  options={beverageOptions}
-                  placeholder={beverageOptions.length > 0 ? '选择不参与推荐的酒水' : '暂无运行时酒水数据'}
-                  disabled={beverageOptions.length === 0}
-                  onValueChange={(values) => updateExclusions({ excludedBeverageIds: parseSelectedIds(values) })}
-                />
-                <div className="text-xs text-muted-foreground">
-                  推荐酒水会跳过这些项目。
-                </div>
-              </div>
+              <SettingHelpField
+                id="recommendation-recipe-variant-limit"
+                label="同基础料理显示"
+                description="同一道基础料理只保留当前排序最靠前的指定数量，加料不同但排序靠后的变体会隐藏。主执行方案不会因为展示数量限制而丢失。"
+              >
+                {({ helpTrigger, descriptionId }) => (
+                  <div className="flex items-center justify-between gap-3 text-sm">
+                    <div className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
+                      <label htmlFor="settings-recipe-variant-limit" className="min-w-0">同基础料理显示</label>
+                      {helpTrigger}
+                    </div>
+                    <NumberInput
+                      id="settings-recipe-variant-limit"
+                      min={MIN_RECIPE_VARIANT_LIMIT_PER_BASE}
+                      max={MAX_RECIPE_VARIANT_LIMIT_PER_BASE}
+                      value={preferences.recipeVariantLimitPerBase}
+                      onValueChange={(recipeVariantLimitPerBase) => onPreferenceChange({
+                        recipeVariantLimitPerBase: normalizeRecipeVariantLimitPerBase(recipeVariantLimitPerBase),
+                      })}
+                      className="h-8 w-16"
+                      aria-describedby={descriptionId}
+                    />
+                  </div>
+                )}
+              </SettingHelpField>
+              <SettingHelpField
+                id="recommendation-excluded-ingredients"
+                label="排除材料"
+                description="推荐料理不会使用所选材料，基础配方和加料都会避开。右侧排序只改变候选材料在设置列表中的显示顺序。"
+                disabledControl={ingredientOptions.length === 0}
+              >
+                {({ helpTrigger, descriptionId }) => (
+                  <div className="space-y-2">
+                    <div className="flex min-w-0 items-center justify-between gap-2">
+                      <div className="flex min-w-0 items-center gap-1.5 text-sm font-medium">
+                        <span className="min-w-0">排除材料</span>
+                        {helpTrigger}
+                      </div>
+                      <InventorySortControl
+                        value={ingredientExclusionSortMode}
+                        onChange={setIngredientExclusionSortMode}
+                        disabled={ingredientOptions.length === 0}
+                        ariaLabel="排除材料排序"
+                        ariaDescribedBy={descriptionId}
+                      />
+                    </div>
+                    <MultiSelectBox
+                      value={preferences.recommendationExclusions.excludedIngredientIds.map(String)}
+                      options={ingredientOptions}
+                      placeholder={ingredientOptions.length > 0 ? '选择不参与推荐的材料' : '暂无运行时材料数据'}
+                      disabled={ingredientOptions.length === 0}
+                      aria-describedby={descriptionId}
+                      onValueChange={(values) => updateExclusions({ excludedIngredientIds: parseSelectedIds(values) })}
+                    />
+                  </div>
+                )}
+              </SettingHelpField>
+              <SettingHelpField
+                id="recommendation-excluded-beverages"
+                label="排除酒水"
+                description="推荐酒水会跳过所选项目。右侧排序只改变候选酒水在设置列表中的显示顺序。"
+                disabledControl={beverageOptions.length === 0}
+              >
+                {({ helpTrigger, descriptionId }) => (
+                  <div className="space-y-2">
+                    <div className="flex min-w-0 items-center justify-between gap-2">
+                      <div className="flex min-w-0 items-center gap-1.5 text-sm font-medium">
+                        <span className="min-w-0">排除酒水</span>
+                        {helpTrigger}
+                      </div>
+                      <InventorySortControl
+                        value={beverageExclusionSortMode}
+                        onChange={setBeverageExclusionSortMode}
+                        disabled={beverageOptions.length === 0}
+                        ariaLabel="排除酒水排序"
+                        ariaDescribedBy={descriptionId}
+                      />
+                    </div>
+                    <MultiSelectBox
+                      value={preferences.recommendationExclusions.excludedBeverageIds.map(String)}
+                      options={beverageOptions}
+                      placeholder={beverageOptions.length > 0 ? '选择不参与推荐的酒水' : '暂无运行时酒水数据'}
+                      disabled={beverageOptions.length === 0}
+                      aria-describedby={descriptionId}
+                      onValueChange={(values) => updateExclusions({ excludedBeverageIds: parseSelectedIds(values) })}
+                    />
+                  </div>
+                )}
+              </SettingHelpField>
               <Button
                 type="button"
                 size="sm"
@@ -820,54 +828,106 @@ export function ModSettingsPanel({
         </div>
       </TabsContent>
 
-      <TabsContent value="automation" className="space-y-4">
-        <ListPanel title="自动化">
-          <div className="space-y-4">
-            <SwitchControl
-              label="启用自动化（实验性）"
-              checked={preferences.automationEnabled}
-              onCheckedChange={(automationEnabled) => onPreferenceChange({ automationEnabled })}
-            />
-            <div className="text-xs text-muted-foreground">
-              关闭时会取消 Mod 当前持有的料理任务和排队命令，但不会清空厨具、返还材料或改动玩家成品。
+      <TabsContent value="experimental" className="space-y-4">
+        <div className={DENSE_TWO_COLUMN_GRID}>
+          <ListPanel title="自动化">
+            <div className="space-y-4">
+              <SwitchControl
+                label="启用自动化（实验性）"
+                helpId="automation-enabled"
+                description="关闭后会取消 Mod 当前持有的料理任务和排队命令，但不会清空厨具、返还材料或改动玩家已经取得的成品。教学经营会保留开关设置但暂停全部自动化动作。"
+                checked={preferences.automationEnabled}
+                onCheckedChange={(automationEnabled) => onPreferenceChange({ automationEnabled })}
+              />
+              <div className="grid grid-cols-1 gap-4 min-[960px]:grid-cols-2">
+                <AutomationSliderField
+                  label="稀客并发"
+                  helpId="automation-rare-concurrency"
+                  description={`同时允许进入处理流程的稀客订单数量，范围 ${MIN_AUTO_ORDER_CONCURRENCY} - ${MAX_RARE_AUTO_ORDER_CONCURRENCY}。修改后在下一轮自动化调度生效。`}
+                  value={preferences.autoRareConcurrency}
+                  min={MIN_AUTO_ORDER_CONCURRENCY}
+                  max={MAX_RARE_AUTO_ORDER_CONCURRENCY}
+                  onChange={(autoRareConcurrency) => onPreferenceChange({ autoRareConcurrency })}
+                />
+                <AutomationSliderField
+                  label="普客并发"
+                  helpId="automation-normal-concurrency"
+                  description={`同时允许进入处理流程的普客订单数量，范围 ${MIN_AUTO_ORDER_CONCURRENCY} - ${MAX_NORMAL_AUTO_ORDER_CONCURRENCY}。修改后在下一轮自动化调度生效。`}
+                  value={preferences.autoNormalConcurrency}
+                  min={MIN_AUTO_ORDER_CONCURRENCY}
+                  max={MAX_NORMAL_AUTO_ORDER_CONCURRENCY}
+                  onChange={(autoNormalConcurrency) => onPreferenceChange({ autoNormalConcurrency })}
+                />
+                <AutomationSliderField
+                  label="最大重试"
+                  helpId="automation-max-step-retries"
+                  description={`同一订单阶段执行失败时允许自动重试的最大次数，范围 ${MIN_AUTO_STEP_RETRIES} - ${MAX_AUTO_STEP_RETRIES_LIMIT}。达到上限后会暂停该订单，避免无限重复副作用。`}
+                  value={preferences.autoMaxStepRetries}
+                  min={MIN_AUTO_STEP_RETRIES}
+                  max={MAX_AUTO_STEP_RETRIES_LIMIT}
+                  onChange={(autoMaxStepRetries) => onPreferenceChange({ autoMaxStepRetries })}
+                />
+                <AutomationSliderField
+                  label="最大回退"
+                  helpId="automation-max-rollbacks"
+                  description={`同一执行目标因玩家操作、成品不符或运行时事实变化而重新制作的最大次数，范围 ${MIN_AUTO_ROLLBACKS} - ${MAX_AUTO_ROLLBACKS_LIMIT}。特殊经营目标真正轮换后使用新的回退预算。`}
+                  value={preferences.autoMaxRollbacks}
+                  min={MIN_AUTO_ROLLBACKS}
+                  max={MAX_AUTO_ROLLBACKS_LIMIT}
+                  onChange={(autoMaxRollbacks) => onPreferenceChange({ autoMaxRollbacks })}
+                />
+              </div>
             </div>
-            <div className={`${MINIMUM_MULTICOLUMN_GRID_CLASS} grid grid-cols-1 gap-4 min-[640px]:grid-cols-2`}>
-              <AutomationSliderField
-                label="稀客并发"
-                value={preferences.autoRareConcurrency}
-                min={MIN_AUTO_ORDER_CONCURRENCY}
-                max={MAX_RARE_AUTO_ORDER_CONCURRENCY}
-                onChange={(autoRareConcurrency) => onPreferenceChange({ autoRareConcurrency })}
+          </ListPanel>
+
+          <ListPanel title="游戏界面辅助">
+            <div className="space-y-4">
+              <SwitchControl
+                label="游戏界面置顶推荐（实验性）"
+                helpId="recommendation-game-ui-pinning"
+                description="打开游戏的料理或酒水选择界面时，尝试把当前目标订单的推荐材料、料理和酒水排到前面并显示黄色脉冲高亮。此功能不修改库存。"
+                checked={preferences.gameUiPinningEnabled}
+                onCheckedChange={(gameUiPinningEnabled) => onPreferenceChange({ gameUiPinningEnabled })}
               />
-              <AutomationSliderField
-                label="普客并发"
-                value={preferences.autoNormalConcurrency}
-                min={MIN_AUTO_ORDER_CONCURRENCY}
-                max={MAX_NORMAL_AUTO_ORDER_CONCURRENCY}
-                onChange={(autoNormalConcurrency) => onPreferenceChange({ autoNormalConcurrency })}
+              <div className="border-l pl-3">
+                <SwitchControl
+                  label="点击推荐料理时自动加入加料（实验性）"
+                  helpId="recommendation-extra-ingredient-fill"
+                  description="确认当前置顶料理时，按同一主推荐方案自动加入加料并扣除对应库存。只有配方、基础食材、库存、五格限制和订单目标全部精确成立时才执行一次。"
+                  checked={preferences.recommendedExtraIngredientFillEnabled}
+                  disabled={!preferences.gameUiPinningEnabled}
+                  status={!preferences.gameUiPinningEnabled ? '需先开启游戏界面置顶推荐' : undefined}
+                  onCheckedChange={(recommendedExtraIngredientFillEnabled) =>
+                    onPreferenceChange({ recommendedExtraIngredientFillEnabled })}
+                />
+              </div>
+              <SwitchControl
+                label="目标厨具高亮（实验性）"
+                helpId="recommendation-cooker-highlight"
+                description="经营中有推荐目标厨具时，尝试让对应已摆放厨具显示黄色脉冲高亮。此功能只改变可见提示，不自动操作厨具。"
+                checked={preferences.cookerHighlightEnabled}
+                onCheckedChange={(cookerHighlightEnabled) => onPreferenceChange({ cookerHighlightEnabled })}
               />
-              <AutomationSliderField
-                label="最大重试"
-                value={preferences.autoMaxStepRetries}
-                min={MIN_AUTO_STEP_RETRIES}
-                max={MAX_AUTO_STEP_RETRIES_LIMIT}
-                onChange={(autoMaxStepRetries) => onPreferenceChange({ autoMaxStepRetries })}
+              <SwitchControl
+                label="目标桌位高亮（实验性）"
+                helpId="recommendation-seat-highlight"
+                description="经营中有推荐目标订单时，尝试在游戏内高亮对应桌位。此功能只改变可见提示，不自动操作顾客。"
+                checked={preferences.seatHighlightEnabled}
+                onCheckedChange={(seatHighlightEnabled) => onPreferenceChange({ seatHighlightEnabled })}
               />
-              <AutomationSliderField
-                label="最大回退"
-                value={preferences.autoMaxRollbacks}
-                min={MIN_AUTO_ROLLBACKS}
-                max={MAX_AUTO_ROLLBACKS_LIMIT}
-                onChange={(autoMaxRollbacks) => onPreferenceChange({ autoMaxRollbacks })}
+              <SwitchControl
+                label="目标订单高亮（实验性）"
+                helpId="recommendation-order-highlight"
+                description="经营中有推荐目标订单时，尝试高亮游戏左下订单列表中的对应订单。此功能不切换游戏原生订单焦点。"
+                checked={preferences.orderHighlightEnabled}
+                onCheckedChange={(orderHighlightEnabled) => onPreferenceChange({ orderHighlightEnabled })}
               />
             </div>
-            <div className="text-xs text-muted-foreground">
-              参数会在下一轮自动化调度生效。最大重试限制阶段执行失败，最大回退限制同一执行目标下因外部操作或成品不符产生的重新制作；特殊经营目标轮换会启用新的回退预算。
-            </div>
-          </div>
-        </ListPanel>
+          </ListPanel>
+        </div>
       </TabsContent>
       </Tabs>
+      </SettingHelpProvider>
 
       <Dialog
         id="token-reset-dialog"
@@ -940,6 +1000,8 @@ function RecommendationSortProfileControl({
     <div className="space-y-4">
       <SettingSegmentedControl
         label="权重方案"
+        helpId="recommendation-weight-preset"
+        description="选择预设会重新载入该方案的默认权重；之后可以逐项启用、停用或调整权重。重置当前方案会恢复所选预设。"
         value={profile.preset}
         options={RECOMMENDATION_SORT_PRESETS.map((preset) => ({
           value: preset.id,
@@ -954,38 +1016,54 @@ function RecommendationSortProfileControl({
           const disabledByHardFilter = definition.key === 'cookerAvailable' && filterMissingCookers;
           const controlDisabled = disabledByHardFilter;
           const description = disabledByHardFilter
-            ? '已开启“排除缺失厨具”硬过滤，此软排序项当前不参与结果。'
+            ? <>{definition.description} 当前已由“排除缺失厨具”硬过滤接管，此软排序项不参与结果。</>
             : definition.description;
 
           return (
-            <div key={definition.key} className="steward-data-row p-2">
-              <div className="grid min-w-0 gap-2">
-                <div className="flex min-w-0 items-center justify-between gap-2">
-                  <SwitchField
-                    label={definition.label}
-                    checked={rule.enabled}
-                    disabled={controlDisabled}
-                    onCheckedChange={(enabled) => updateObjective(definition.key, { enabled })}
-                    title={definition.label}
-                    className="min-w-0 flex-1"
-                  />
-                  <span className={rule.enabled && !controlDisabled ? 'shrink-0 text-right text-sm tabular-nums' : 'shrink-0 text-right text-sm tabular-nums text-muted-foreground'}>
-                    {rule.weight}
-                  </span>
+            <SettingHelpField
+              key={definition.key}
+              id={`recommendation-weight-${definition.key}`}
+              label={definition.label}
+              description={description}
+              disabledControl={controlDisabled}
+            >
+              {({ helpTrigger, descriptionId }) => (
+                <div className="steward-data-row p-2">
+                  <div className="grid min-w-0 gap-2">
+                    <div className="flex min-w-0 items-center justify-between gap-2">
+                      <div className="flex min-w-0 flex-1 items-center gap-1">
+                        <SwitchField
+                          label={definition.label}
+                          checked={rule.enabled}
+                          disabled={controlDisabled}
+                          onCheckedChange={(enabled) => updateObjective(definition.key, { enabled })}
+                          className="min-w-0 flex-1"
+                          aria-describedby={descriptionId}
+                        />
+                        {helpTrigger}
+                      </div>
+                      <span className={rule.enabled && !controlDisabled ? 'shrink-0 text-right text-sm tabular-nums' : 'shrink-0 text-right text-sm tabular-nums text-muted-foreground'}>
+                        {rule.weight}
+                      </span>
+                    </div>
+                    {disabledByHardFilter && (
+                      <div className="text-xs text-muted-foreground">硬过滤已接管</div>
+                    )}
+                    <Slider
+                      value={rule.weight}
+                      min={0}
+                      max={100}
+                      step={5}
+                      disabled={!rule.enabled || controlDisabled}
+                      aria-label={`${definition.label}权重`}
+                      aria-describedby={descriptionId}
+                      className="min-w-0"
+                      onValueChange={(weight) => updateObjective(definition.key, { weight })}
+                    />
+                  </div>
                 </div>
-                <Slider
-                  value={rule.weight}
-                  min={0}
-                  max={100}
-                  step={5}
-                  disabled={!rule.enabled || controlDisabled}
-                  aria-label={`${definition.label}权重`}
-                  className="min-w-0"
-                  onValueChange={(weight) => updateObjective(definition.key, { weight })}
-                />
-              </div>
-              <div className="mt-1 text-xs text-muted-foreground">{description}</div>
-            </div>
+              )}
+            </SettingHelpField>
           );
         })}
       </div>
