@@ -971,7 +971,7 @@ export function ModSettingsPanel({
         </div>
 
         <div className={DENSE_TWO_COLUMN_GRID}>
-          <ListPanel title="稀客处理">
+          <ListPanel title="稀客自动化设置">
             <div className="space-y-4">
               <SwitchControl
                 label="启用稀客处理"
@@ -1044,7 +1044,7 @@ export function ModSettingsPanel({
             </div>
           </ListPanel>
 
-          <ListPanel title="普客处理">
+          <ListPanel title="普客自动化设置">
             <div className="space-y-4">
               <SwitchControl
                 label="启用普客处理"

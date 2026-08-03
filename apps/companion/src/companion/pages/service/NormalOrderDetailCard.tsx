@@ -5,6 +5,7 @@ import { TagPill, TagPillGroup } from '@/components/recommendation/TagPillGroup'
 import type { NormalOrderDetailPlan, NormalOrderFoodDetail } from '@/companion/domain/normal-order-details';
 import { formatDesk, formatIngredientNamesWithQty, formatIngredientWithQty, formatQtySuffix } from '@/companion/formatters';
 import { OrderTraceBadge } from '@/companion/pages/service/ServiceContextPanels';
+import { ServiceOrderCardFrame } from '@/companion/pages/service/ServiceOrderPresentation';
 
 interface NormalOrderDetailCardProps {
   plan: NormalOrderDetailPlan;
@@ -25,34 +26,45 @@ export const NormalOrderDetailCard = memo(function NormalOrderDetailCard({
   const originalFoodText = `${plan.originalFood.name || `#${order.foodId}`}`;
   const originalBeverageText = `${plan.originalBeverage.name || `#${order.beverageId}`}`;
   const executionLabel = plan.usesSpecialExecution ? '执行方案' : '基础方案';
+  const hasStatusBadges = Boolean(
+    order.specialBusinessRoleLabel
+      || plan.hasExecutionOverride
+      || order.hasServedFood
+      || order.hasServedBeverage
+      || (order.readyToEvaluate && !order.hasEvaluated)
+      || order.hasEvaluated
+      || order.canAutomate === false
+      || showDebugDetails,
+  );
 
   return (
-    <div className="border-b py-3 text-sm [contain-intrinsic-size:220px] [content-visibility:auto] last:border-b-0">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span className="font-medium" title={order.guestName || '普客'}>
-              {order.guestName || '普客'}
-            </span>
-            <span className="text-muted-foreground">桌 {formatDesk(order.deskCode)}</span>
-            <OrderTraceBadge traceId={order.traceId} />
-          </div>
-          <div className="mt-1 text-xs text-muted-foreground">
-            原订单：料理 {originalFoodText} / 酒水 {originalBeverageText}
-          </div>
+    <ServiceOrderCardFrame
+      optimizeRendering
+      title={(
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span className="font-medium" title={order.guestName || '普客'}>
+            {order.guestName || '普客'}
+          </span>
+          <span className="font-normal text-muted-foreground">桌 {formatDesk(order.deskCode)}</span>
+          <OrderTraceBadge traceId={order.traceId} />
         </div>
-        <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
-          {order.specialBusinessRoleLabel && <Badge variant="secondary">{order.specialBusinessRoleLabel}</Badge>}
-          {plan.hasExecutionOverride && <Badge variant="secondary">含加料方案</Badge>}
-          {order.hasServedFood && <Badge variant="secondary">已有料理</Badge>}
-          {order.hasServedBeverage && <Badge variant="secondary">已有酒水</Badge>}
-          {order.readyToEvaluate && !order.hasEvaluated && <Badge variant="secondary">待评价</Badge>}
-          {order.hasEvaluated && <Badge variant="secondary">已评价</Badge>}
-          {order.canAutomate === false && <Badge variant="outline">暂不可自动处理</Badge>}
-          {showDebugDetails && <Badge variant="secondary">{order.source}</Badge>}
-        </div>
-      </div>
-
+      )}
+      subtitle={<>原订单：料理 {originalFoodText} / 酒水 {originalBeverageText}</>}
+      badges={hasStatusBadges
+        ? (
+            <>
+              {order.specialBusinessRoleLabel && <Badge variant="secondary">{order.specialBusinessRoleLabel}</Badge>}
+              {plan.hasExecutionOverride && <Badge variant="secondary">含加料方案</Badge>}
+              {order.hasServedFood && <Badge variant="secondary">已有料理</Badge>}
+              {order.hasServedBeverage && <Badge variant="secondary">已有酒水</Badge>}
+              {order.readyToEvaluate && !order.hasEvaluated && <Badge variant="secondary">待评价</Badge>}
+              {order.hasEvaluated && <Badge variant="secondary">已评价</Badge>}
+              {order.canAutomate === false && <Badge variant="outline">暂不可自动处理</Badge>}
+              {showDebugDetails && <Badge variant="secondary">{order.source}</Badge>}
+            </>
+          )
+        : undefined}
+    >
       <div className="mt-2 grid gap-2 lg:grid-cols-2">
         <div className="steward-data-row px-2 py-2">
           <div className="flex flex-wrap items-center gap-1.5">
@@ -112,7 +124,7 @@ export const NormalOrderDetailCard = memo(function NormalOrderDetailCard({
           {order.actionBlockReason}
         </div>
       )}
-    </div>
+    </ServiceOrderCardFrame>
   );
 }, areNormalOrderDetailCardPropsEqual);
 

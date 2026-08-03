@@ -53,11 +53,9 @@ import {
   DENSE_TWO_COLUMN_GRID,
   MAX_RECOMMENDATION_ROWS,
   MOD_TAB_TRIGGER_CLASS,
-  SCROLL_FADE_CLASS,
 } from '@/companion/pages/shared-constants';
 import {
   FocusLimitInput,
-  OrderRecommendationPanel,
   SwitchControl,
 } from '@/companion/pages/shared';
 import {
@@ -67,6 +65,12 @@ import {
   SpecialBusinessOrderList,
 } from '@/companion/pages/service/ServiceContextPanels';
 import { NormalOrderDetailCard } from '@/companion/pages/service/NormalOrderDetailCard';
+import { RareOrderRecommendationCard } from '@/companion/pages/service/RareOrderRecommendationCard';
+import {
+  ServiceOrderCardFrame,
+  ServiceOrderCollectionPanel,
+  type ServiceOrderCollectionState,
+} from '@/companion/pages/service/ServiceOrderPresentation';
 import { buildRecommendationDataIndexes, type RecommendationDataSet } from '@/lib/recommendation-data';
 import type { PlaceName } from '@/lib/catalog-types';
 
@@ -162,6 +166,54 @@ function buildNormalOrderDetailPlanKey(plan: NormalOrderDetailPlan): string {
   return order.orderKey
     ?? order.traceId
     ?? `${order.deskCode}-${order.guestName}-${order.foodId}-${order.beverageId}-${order.source}`;
+}
+
+function buildNormalOrderCollectionState({
+  normalBusiness,
+  detailPlanCount,
+  detailsPending,
+  detailsError,
+}: {
+  normalBusiness: NormalBusinessContext | null;
+  detailPlanCount: number;
+  detailsPending: boolean;
+  detailsError: string | null;
+}): ServiceOrderCollectionState {
+  if (!normalBusiness) {
+    return { kind: 'empty', message: '普客订单只在经营场景中读取' };
+  }
+  if (normalBusiness.error) {
+    return {
+      kind: 'error',
+      message: normalBusiness.error,
+      detail: normalBusiness.error,
+      emptyLabel: '订单读取失败',
+      updating: detailsPending,
+    };
+  }
+  if (normalBusiness.orders.length === 0) {
+    return { kind: 'empty', message: normalBusiness.source || '暂无普客订单' };
+  }
+  if (detailsError) {
+    return {
+      kind: 'error',
+      message: `普客订单详情计算失败：${detailsError}`,
+      detail: detailsError,
+      emptyLabel: '方案计算失败',
+      updating: detailsPending,
+    };
+  }
+  if (detailsPending) {
+    return {
+      kind: 'updating',
+      message: '普客订单详情计算中',
+      label: detailPlanCount > 0 ? '更新中，当前为上次结果' : '更新中',
+    };
+  }
+  if (detailPlanCount === 0) {
+    return { kind: 'empty', message: '暂无普客订单详情' };
+  }
+  return { kind: 'ready' };
 }
 
 export function ModServicePanel({
@@ -349,6 +401,12 @@ export function ModServicePanel({
     trackedCount: automationTrackedCount,
   });
   const automationRuntimePauseLabel = getNightBusinessAutomationPauseLabel(automationRuntimeBlockReason);
+  const normalOrderCollectionState = buildNormalOrderCollectionState({
+    normalBusiness,
+    detailPlanCount: normalOrderDetailPlans.length,
+    detailsPending: normalOrderDetailsPending,
+    detailsError: normalOrderDetailsError,
+  });
   return (
     <div className="space-y-4">
       <Card>
@@ -388,16 +446,16 @@ export function ModServicePanel({
         className="space-y-4"
       >
         <TabsList className="grid h-9 w-full grid-cols-2">
-          <TabsTrigger value="rare" className={MOD_TAB_TRIGGER_CLASS}>
+          <TabsTrigger value="rare" className={MOD_TAB_TRIGGER_CLASS} data-service-order-tab-trigger="rare">
             稀客
           </TabsTrigger>
-          <TabsTrigger value="normal" className={MOD_TAB_TRIGGER_CLASS}>
+          <TabsTrigger value="normal" className={MOD_TAB_TRIGGER_CLASS} data-service-order-tab-trigger="normal">
             普客
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="rare" className="space-y-4">
-          <CurrentOrderRecommendations
+        <TabsContent value="rare" className="space-y-4" data-service-order-tab="rare">
+          <RareOrderRecommendationList
             recommendations={recommendations}
             recommendationIssues={recommendationIssues}
             pendingOrders={recommendationPendingOrders}
@@ -427,40 +485,26 @@ export function ModServicePanel({
           />
         </TabsContent>
 
-        <TabsContent value="normal" className="space-y-4">
-          <ListPanel title={`普客订单 (${normalBusiness?.orders.length ?? 0})`} contentClassName="min-h-[18rem]">
-            {!normalBusiness && <EmptyRow text="普客订单只在经营场景中读取" />}
-            {normalBusiness?.error && <EmptyRow text={normalBusiness.error} />}
-            {normalBusiness?.orders.length === 0 && !normalBusiness.error && (
-              <EmptyRow text={normalBusiness.source || '暂无普客订单'} />
-            )}
-            {normalOrderDetailsPending && normalOrderDetailPlans.length === 0 && (normalBusiness?.orders.length ?? 0) > 0 && (
-              <EmptyRow text="普客订单详情计算中" />
-            )}
-            {normalOrderDetailsPending && normalOrderDetailPlans.length > 0 && (
-              <div className="border-b py-2 text-xs text-muted-foreground">
-                普客订单详情正在更新，当前显示上一轮结果。
-              </div>
-            )}
-            {normalOrderDetailsError && normalOrderDetailPlans.length === 0 && (normalBusiness?.orders.length ?? 0) > 0 && (
-              <EmptyRow text={`普客订单详情计算失败：${normalOrderDetailsError}`} />
-            )}
-            {!normalOrderDetailsPending
-              && !normalOrderDetailsError
-              && normalOrderDetailPlans.length === 0
-              && (normalBusiness?.orders.length ?? 0) > 0
-              && <EmptyRow text="暂无普客订单详情" />}
-            {normalOrderDetailPlans.map((plan) => (
-              <NormalOrderDetailCard
-                key={buildNormalOrderDetailPlanKey(plan)}
-                plan={plan}
-                ownedIngredientQty={runtimeSets?.ownedIngredientQty ?? {}}
-                ownedBeverageQty={runtimeSets?.ownedBeverageQty ?? {}}
-                ingredientIdByName={dataIndexes.ingredientIdByName}
-                showDebugDetails={showDebugDetails}
-              />
-            ))}
-          </ListPanel>
+        <TabsContent value="normal" className="space-y-4" data-service-order-tab="normal">
+          <ServiceOrderCollectionPanel
+            mode="normal"
+            count={normalBusiness?.orders.length ?? 0}
+            state={normalOrderCollectionState}
+            hasRows={normalOrderDetailPlans.length > 0}
+          >
+            <div className="space-y-4">
+              {normalOrderDetailPlans.map((plan) => (
+                <NormalOrderDetailCard
+                  key={buildNormalOrderDetailPlanKey(plan)}
+                  plan={plan}
+                  ownedIngredientQty={runtimeSets?.ownedIngredientQty ?? {}}
+                  ownedBeverageQty={runtimeSets?.ownedBeverageQty ?? {}}
+                  ingredientIdByName={dataIndexes.ingredientIdByName}
+                  showDebugDetails={showDebugDetails}
+                />
+              ))}
+            </div>
+          </ServiceOrderCollectionPanel>
         </TabsContent>
       </Tabs>
       )}
@@ -737,7 +781,7 @@ export function ServiceFocusPage({
       </div>
 
       {hasOrders ? (
-        <CurrentOrderRecommendations
+        <RareOrderRecommendationList
           recommendations={recommendations}
           recommendationIssues={recommendationIssues}
           pendingOrders={recommendationPendingOrders}
@@ -765,7 +809,7 @@ export function ServiceFocusPage({
   );
 }
 
-function CurrentOrderRecommendations({
+function RareOrderRecommendationList({
   recommendations,
   recommendationIssues,
   pendingOrders,
@@ -816,62 +860,53 @@ function CurrentOrderRecommendations({
     ], orderSortMode),
     [orderSortMode, pendingOrders, recommendationIssues, recommendations],
   );
-  const panelAction = pending || updateError || action
-    ? (
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          {updateError && (
-            <Badge variant="destructive" title={updateError}>
-              {rows.length > 0 ? '更新失败，当前为上次结果' : '推荐更新失败'}
-            </Badge>
-          )}
-          {pending && <Badge variant="outline">更新中</Badge>}
-          {action}
-        </div>
-      )
-    : undefined;
+  const collectionState: ServiceOrderCollectionState = updateError
+    ? {
+        kind: 'error',
+        message: '推荐更新失败',
+        detail: updateError,
+        emptyLabel: '推荐更新失败',
+        updating: pending,
+      }
+    : pending
+      ? { kind: 'updating', message: '推荐计算中' }
+      : rows.length === 0
+        ? { kind: 'empty', message: '暂无当前稀客点单推荐' }
+        : { kind: 'ready' };
 
   return (
-    <ListPanel
-      title="当前点单推荐"
-      action={panelAction}
-      className={fillAvailableHeight ? 'min-h-0 flex-1' : undefined}
-      gamepadScrollKey={fillAvailableHeight ? 'service-focus:recommendations' : 'service:recommendations'}
-      gamepadScrollLabel={fillAvailableHeight ? '专注模式当前点单推荐' : '经营中当前点单推荐'}
-      contentClassName={
-        fillAvailableHeight
-          ? `${SCROLL_FADE_CLASS} min-h-0 flex-1 overflow-auto pb-4 pr-1`
-          : compact
-          ? `${SCROLL_FADE_CLASS} min-h-[24rem] max-h-[calc(100vh-12rem)] overflow-auto pb-4 pr-1`
-          : `${SCROLL_FADE_CLASS} min-h-[32rem] max-h-[calc(100vh-20rem)] overflow-auto pb-4 pr-1`
-      }
+    <ServiceOrderCollectionPanel
+      mode={fillAvailableHeight ? 'rare-focus' : 'rare'}
+      count={rows.length}
+      state={collectionState}
+      hasRows={rows.length > 0}
+      action={action}
+      compact={compact}
+      notice={favoriteError
+        ? (
+            <div className="mb-2 border border-destructive/30 px-3 py-2 text-sm text-destructive">
+              {favoriteError}
+            </div>
+          )
+        : undefined}
     >
-      {favoriteError && (
-        <div className="mb-2 border border-destructive/30 px-3 py-2 text-sm text-destructive">
-          {favoriteError}
-        </div>
-      )}
-      {rows.length === 0 && (
-        <EmptyRow text={updateError ? '推荐更新失败' : pending ? '推荐计算中' : '暂无当前稀客点单推荐'} />
-      )}
       <div className={compact ? 'space-y-2' : 'space-y-4'}>
         {rows.map((row) => {
           if (row.kind === 'pending') {
             const orderKey = buildNightBusinessOrderKey(row.order);
             return (
-              <div
+              <ServiceOrderCardFrame
                 key={`${orderKey}:pending`}
-                className={compact ? 'steward-data-row p-2 text-xs' : 'steward-data-row p-3 text-sm'}
-                data-recommendation-pending-order="true"
+                compact={compact}
+                pending
+                title={`${row.order.guestName || '稀客'} · 桌 ${formatDesk(row.order.deskCode)}`}
+                badges={<Badge variant="outline">推荐计算中</Badge>}
               >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="font-medium">{row.order.guestName || '稀客'} · 桌 {formatDesk(row.order.deskCode)}</div>
-                  <Badge variant="outline">推荐计算中</Badge>
-                </div>
                 <div className="mt-1 flex flex-wrap gap-1.5">
                   <Badge variant="outline">料理 {row.order.foodTag || '无'}</Badge>
                   <Badge variant="outline">酒水 {row.order.beverageTag || '无'}</Badge>
                 </div>
-              </div>
+              </ServiceOrderCardFrame>
             );
           }
           if (row.kind === 'issue') {
@@ -879,20 +914,19 @@ function CurrentOrderRecommendations({
             const issueOccurrenceKey = issue.order.traceId
               || `${issue.order.deskCode}:${issue.order.runtimeGuestId ?? 'unknown'}:${issue.order.foodTagId ?? 'missing'}:${issue.order.beverageTagId ?? 'missing'}`;
             return (
-              <div
+              <ServiceOrderCardFrame
                 key={`${issueOccurrenceKey}:issue`}
-                className={compact ? 'steward-data-row p-2 text-xs' : 'steward-data-row p-3 text-sm'}
-              >
-                <div className="font-medium">{issue.order.guestName} · 桌 {formatDesk(issue.order.deskCode)}</div>
-                <div className="mt-1 text-xs text-muted-foreground">{issue.message}</div>
-              </div>
+                compact={compact}
+                title={`${issue.order.guestName} · 桌 ${formatDesk(issue.order.deskCode)}`}
+                message={issue.message}
+              />
             );
           }
 
           const orderOccurrenceKey = row.item.order.traceId
             || `${row.item.order.deskCode}:${row.item.order.runtimeGuestId ?? 'unknown'}:${row.item.order.foodTagId ?? 'missing'}:${row.item.order.beverageTagId ?? 'missing'}`;
           return (
-            <OrderRecommendationPanel
+            <RareOrderRecommendationCard
               key={orderOccurrenceKey}
               item={row.item}
               runtimeSets={runtimeSets}
@@ -911,7 +945,7 @@ function CurrentOrderRecommendations({
           );
         })}
       </div>
-    </ListPanel>
+    </ServiceOrderCollectionPanel>
   );
 }
 

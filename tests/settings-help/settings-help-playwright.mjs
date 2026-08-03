@@ -103,20 +103,20 @@ const expectedExperimentalPanelByHelpId = new Map([
   ['recommendation-cooker-highlight', '游戏界面辅助'],
   ['recommendation-seat-highlight', '游戏界面辅助'],
   ['recommendation-order-highlight', '游戏界面辅助'],
-  ['automation-rare-enabled', '稀客处理'],
-  ['automation-rare-take-beverage', '稀客处理'],
-  ['automation-rare-start-cooking', '稀客处理'],
-  ['automation-rare-deliver-food', '稀客处理'],
-  ['automation-rare-complete-order', '稀客处理'],
-  ['automation-rare-stop-on-error', '稀客处理'],
-  ['automation-rare-recipe-favorites-only', '稀客处理'],
-  ['automation-rare-beverage-favorites-only', '稀客处理'],
-  ['automation-normal-enabled', '普客处理'],
-  ['automation-normal-take-beverage', '普客处理'],
-  ['automation-normal-start-cooking', '普客处理'],
-  ['automation-normal-deliver-food', '普客处理'],
-  ['automation-normal-complete-order', '普客处理'],
-  ['automation-normal-stop-on-error', '普客处理'],
+  ['automation-rare-enabled', '稀客自动化设置'],
+  ['automation-rare-take-beverage', '稀客自动化设置'],
+  ['automation-rare-start-cooking', '稀客自动化设置'],
+  ['automation-rare-deliver-food', '稀客自动化设置'],
+  ['automation-rare-complete-order', '稀客自动化设置'],
+  ['automation-rare-stop-on-error', '稀客自动化设置'],
+  ['automation-rare-recipe-favorites-only', '稀客自动化设置'],
+  ['automation-rare-beverage-favorites-only', '稀客自动化设置'],
+  ['automation-normal-enabled', '普客自动化设置'],
+  ['automation-normal-take-beverage', '普客自动化设置'],
+  ['automation-normal-start-cooking', '普客自动化设置'],
+  ['automation-normal-deliver-food', '普客自动化设置'],
+  ['automation-normal-complete-order', '普客自动化设置'],
+  ['automation-normal-stop-on-error', '普客自动化设置'],
 ]);
 
 await rm(outputDir, { recursive: true, force: true });
@@ -500,7 +500,7 @@ async function assertAutomationSettingOrder(page) {
     'stop-on-error',
   ];
   for (const kind of ['rare', 'normal']) {
-    const panelTitle = kind === 'rare' ? '稀客处理' : '普客处理';
+    const panelTitle = kind === 'rare' ? '稀客自动化设置' : '普客自动化设置';
     const panel = findPanel(page, panelTitle);
     const ids = await panel.locator(selectors.field).evaluateAll((fields) => fields.map((field) => (
       field.getAttribute('data-setting-help-id') || ''
@@ -516,7 +516,7 @@ async function assertAutomationSettingOrder(page) {
 async function auditAutomationDeliveryInvariant(page) {
   await activateSettingsSection(page, '实验性功能');
 
-  const rarePanel = findPanel(page, '稀客处理');
+  const rarePanel = findPanel(page, '稀客自动化设置');
   const rareBeverage = findHelpField(rarePanel, 'automation-rare-take-beverage').locator('input[type="checkbox"]');
   const rareFood = findHelpField(rarePanel, 'automation-rare-deliver-food').locator('input[type="checkbox"]');
   const rareCompletion = findHelpField(rarePanel, 'automation-rare-complete-order').locator('input[type="checkbox"]');
@@ -530,7 +530,7 @@ async function auditAutomationDeliveryInvariant(page) {
   assert.equal(await rareBeverage.isChecked(), false, '关闭稀客自动完成订单必须原子关闭酒水直送');
   assert.equal(await rareFood.isChecked(), false, '关闭稀客自动完成订单必须原子关闭料理直送');
 
-  const normalPanel = findPanel(page, '普客处理');
+  const normalPanel = findPanel(page, '普客自动化设置');
   const normalEnabled = findHelpField(normalPanel, 'automation-normal-enabled').locator('input[type="checkbox"]');
   assert.equal(await normalEnabled.isChecked(), false, '普客处理测试初态应关闭');
   await clickSwitchField(normalPanel, 'automation-normal-enabled');

@@ -423,11 +423,12 @@ function buildSpecialBusiness(overrides = {}) {
 }
 
 async function assertSourceContracts() {
-  const [workbench, hook, api, panel, automation, worker] = await Promise.all([
+  const [workbench, hook, api, panel, servicePresentation, automation, worker] = await Promise.all([
     readFile(new URL('apps/companion/src/companion/ModWorkbench.tsx', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/hooks/useOrderRecommendations.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/api.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/pages/ModServicePanel.tsx', root), 'utf8'),
+    readFile(new URL('apps/companion/src/companion/pages/service/ServiceOrderPresentation.tsx', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/domain/automation.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/workers/order-recommendations.worker.ts', root), 'utf8'),
   ]);
@@ -447,9 +448,11 @@ async function assertSourceContracts() {
   assert.match(hook, /retainedAfterError: Boolean\(queueError\)/,
     '最新排队请求投递失败时，已成功返回的上一轮结果必须显式标记为失败后保留。');
   assert.match(hook, /lastResultSignatureRef\.current = ''/);
-  assert.match(panel, /data-recommendation-pending-order="true"/);
-  assert.match(panel, /更新失败，当前为上次结果/);
+  assert.match(servicePresentation, /data-recommendation-pending-order=\{pending \? 'true' : undefined\}/);
+  assert.match(servicePresentation, /更新失败，当前为上次结果/);
   assert.match(panel, /推荐更新失败/);
+  assert.match(panel, /mode="normal"/);
+  assert.match(panel, /mode=\{fillAvailableHeight \? 'rare-focus' : 'rare'\}/);
   for (const field of [
     'specialTargetChallenge',
     'specialTargetOwner',
