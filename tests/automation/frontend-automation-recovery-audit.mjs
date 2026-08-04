@@ -846,6 +846,26 @@ async function assertStageAndCancellationContracts() {
     /autoPrepCompleteOrder: forceKoishiFullFeedAutomation\s*\|\| companionPreferences\.autoPrepCompleteOrder/,
     'Koishi rare full-feed requests must carry completion intent into the exact runtime evaluation route.',
   );
+  const stagedRarePrepareRequest = workbench.slice(
+    workbench.indexOf('const preparePreferences = {'),
+    workbench.indexOf('const prepareResponseAt = Date.now();'),
+  );
+  assert.match(
+    stagedRarePrepareRequest,
+    /autoPrepTakeBeverage: shouldPrepareBeverage,[\s\S]*autoPrepStartCooking: shouldPrepareFood/,
+    'Rare staged actions must remain controlled exclusively by the current autoPrep action gates.',
+  );
+  assert.match(
+    stagedRarePrepareRequest,
+    /prepareNextRareOrder\([\s\S]*specialTargetPolicy,\s*currentState\.recipeTarget,\s*currentState\.beverageTarget,\s*preparePreferences,\s*shouldPrepareFood \? cookerReservation : null/,
+    'A food-only retry after beverage delivery must retain the locked beverage target together with the locked recipe target.',
+  );
+  assert.equal(
+    stagedRarePrepareRequest.includes('shouldPrepareFood ? currentState.recipeTarget : null')
+      || stagedRarePrepareRequest.includes('shouldPrepareBeverage ? currentState.beverageTarget : null'),
+    false,
+    'Rare staged requests must not turn an inactive action into missing execution-plan identity.',
+  );
   assert.match(
     automationMachine,
     /if \(input\.forceKoishiFullFeedAutomation\) return true;/,

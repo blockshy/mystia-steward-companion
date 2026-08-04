@@ -3947,8 +3947,8 @@ export function ModWorkbench() {
           apiToken,
           selection.item,
           specialTargetPolicy,
-          shouldPrepareFood ? currentState.recipeTarget : null,
-          shouldPrepareBeverage ? currentState.beverageTarget : null,
+          currentState.recipeTarget,
+          currentState.beverageTarget,
           preparePreferences,
           shouldPrepareFood ? cookerReservation : null,
         );

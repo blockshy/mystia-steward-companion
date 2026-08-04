@@ -480,8 +480,18 @@ async function assertSourceContracts() {
   assert.equal(api.includes('specialTargetChallenge: executionTarget?.specialTargetChallenge'), false);
   assert.match(
     workbench,
-    /prepareNextRareOrder\([\s\S]{0,260}specialTargetPolicy,[\s\S]{0,180}shouldPrepareFood \? currentState\.recipeTarget : null/,
-    '稀客只送酒请求必须独立传策略，并允许料理动作目标为空。',
+    /prepareNextRareOrder\([\s\S]{0,260}specialTargetPolicy,\s*currentState\.recipeTarget,\s*currentState\.beverageTarget,\s*preparePreferences,\s*shouldPrepareFood \? cookerReservation : null/,
+    '稀客分阶段请求必须传递当前订单锁定的完整料理和酒水目标，只有厨具预约可随料理动作关闭。',
+  );
+  assert.equal(
+    workbench.includes('shouldPrepareFood ? currentState.recipeTarget : null'),
+    false,
+    '料理动作关闭时不得裁剪锁定料理目标。',
+  );
+  assert.equal(
+    workbench.includes('shouldPrepareBeverage ? currentState.beverageTarget : null'),
+    false,
+    '酒水动作关闭时不得裁剪锁定酒水目标。',
   );
   assert.match(
     workbench,
