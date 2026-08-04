@@ -143,7 +143,13 @@ internal static partial class RuntimeOrderPreparationService
         bool reacquireLiveOrder = true,
         bool allowControllerMissing = false)
     {
-        var evaluation = TryEvaluateYuyukoChallengeRuntimeOrderIfReady(request, runtimeOrder, orderLabel, reacquireLiveOrder, allowControllerMissing);
+        var evaluation = TryEvaluateYuyukoChallengeRuntimeOrderIfReady(
+            request,
+            runtimeOrder,
+            orderLabel,
+            reacquireLiveOrder,
+            allowControllerMissing,
+            safetyTarget.OrderBinding);
         if (!evaluation.Ok)
         {
             AddFailure(result, stepName, evaluation.Message, evaluation.Code);
@@ -171,7 +177,8 @@ internal static partial class RuntimeOrderPreparationService
         RuntimeOrderMatch runtimeOrder,
         string orderLabel,
         bool reacquireLiveOrder = true,
-        bool allowControllerMissing = false)
+        bool allowControllerMissing = false,
+        RuntimeOrderBindingToken? expectedOrderBinding = null)
     {
         if (!TryCaptureActiveNightBusinessGeneration(out var sessionGeneration))
         {
@@ -235,6 +242,22 @@ internal static partial class RuntimeOrderPreparationService
             return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: false);
         }
 
+        if (expectedOrderBinding.HasValue
+            && !TryMatchRuntimeOrderBinding(
+                expectedOrderBinding,
+                evaluationOrder.Order,
+                evaluationOrder.Controller,
+                out var evaluationBindingDiagnostic))
+        {
+            return new(
+                false,
+                false,
+                false,
+                "幽幽子评价前重新取得的订单与 cooking job 锁定 lifecycle 不一致，已停止原生评价："
+                + evaluationBindingDiagnostic,
+                OrderPreparationStepCodes.OrderEvaluationStateUnreadable);
+        }
+
         var executionMode = NormalizeYuyukoNormalExecutionMode(request.ExecutionMode);
         AppendYuyukoRuntimeDiagnostic(
             "yuyuko-native-evaluate-before",
@@ -268,7 +291,8 @@ internal static partial class RuntimeOrderPreparationService
                 false,
                 false,
                 "幽幽子三阶段普客订单执行目标未满足原订单料理/酒水，已暂停自动提交，避免触发原生差评。"
-                + $"诊断：{normalOrderTargetDiagnostic}。请提供 aggregate-mod.log。");
+                + $"诊断：{normalOrderTargetDiagnostic}。请提供 aggregate-mod.log。",
+                OrderPreparationStepCodes.OrderEvaluationTargetMismatch);
         }
         else
         {
@@ -402,7 +426,8 @@ internal static partial class RuntimeOrderPreparationService
                 false,
                 false,
                 "幽幽子三阶段清理订单已送齐，但送达成品与请求目标不一致，已暂停自动提交，避免触发原生差评。"
-                + $"诊断：{targetDiagnostic}。请提供 aggregate-mod.log。");
+                + $"诊断：{targetDiagnostic}。请提供 aggregate-mod.log。",
+                OrderPreparationStepCodes.OrderEvaluationTargetMismatch);
         }
 
         var evaluationContract = ResolveYuyukoPhase3EvaluationContract(request);
@@ -427,8 +452,7 @@ internal static partial class RuntimeOrderPreparationService
             }
 
             var manualEvaluation = TryInvokeRuntimeOrderEvaluationOnce(
-                runtimeOrder.Manager,
-                runtimeOrder.Controller,
+                runtimeOrder,
                 "EvaulateManualOrder",
                 new object?[] { runtimeOrder.Controller, runtimeOrder.ManualEvaluationCallback },
                 orderLabel,
@@ -465,8 +489,7 @@ internal static partial class RuntimeOrderPreparationService
 
             var evaluation = evaluationRoute == YuyukoRetakePhase3EvaluationRoute.ManualBoss
                 ? TryInvokeRuntimeOrderEvaluationOnce(
-                    runtimeOrder.Manager,
-                    runtimeOrder.Controller,
+                    runtimeOrder,
                     "EvaulateManualOrder",
                     new object?[] { runtimeOrder.Controller, manualEvaluationCallback },
                     orderLabel,
@@ -569,8 +592,7 @@ internal static partial class RuntimeOrderPreparationService
         }
 
         var evaluation = TryInvokeRuntimeOrderEvaluationOnce(
-            runtimeOrder.Manager,
-            runtimeOrder.Controller,
+            runtimeOrder,
             "EvaulateManualOrder",
             new object?[] { runtimeOrder.Controller, runtimeOrder.ManualEvaluationCallback },
             orderLabel,
@@ -662,7 +684,8 @@ internal static partial class RuntimeOrderPreparationService
                 false,
                 false,
                 "重修版幽幽子三阶段订单已送齐，但送达目标不精确，已暂停自动提交，避免错误消耗订单。"
-                + $"诊断：{targetDiagnostic}。请提供 aggregate-mod.log。");
+                + $"诊断：{targetDiagnostic}。请提供 aggregate-mod.log。",
+                OrderPreparationStepCodes.OrderEvaluationTargetMismatch);
         }
 
         if (!TryResolveYuyukoRetakePhase3EvaluationRoute(
@@ -686,8 +709,7 @@ internal static partial class RuntimeOrderPreparationService
 
         var evaluation = evaluationRoute == YuyukoRetakePhase3EvaluationRoute.ManualBoss
             ? TryInvokeRuntimeOrderEvaluationOnce(
-                runtimeOrder.Manager,
-                runtimeOrder.Controller,
+                runtimeOrder,
                 "EvaulateManualOrder",
                 new object?[] { runtimeOrder.Controller, manualEvaluationCallback },
                 orderLabel,

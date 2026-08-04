@@ -85,6 +85,22 @@ assert.ok(!cooking.includes('CopyNormalOrderRequestWithoutOrderKey'));
 assert.ok(!matching.includes('CopyNormalOrderRequestWithoutOrderKey'));
 assert.ok(!matching.includes('orderKeyFallback'));
 assert.match(matching, /BuildRequestOrderIdentity[\s\S]*request\.RuntimeGuestId[\s\S]*request\.FoodTagId[\s\S]*request\.BeverageTagId/);
+assert.match(orderPreparationModels, /public long OrderLifecycleSequence \{ get; init; \} = -1;/,
+  'Order automation requests must expose one explicit lifecycle sequence.');
+assert.match(localApiServer, /OrderLifecycleSequence = ReadLongQuery\(query, "orderLifecycleSequence", -1\)/,
+  'The local API must parse the explicit order lifecycle sequence without deriving it from trace text.');
+assert.match(frontendApi, /orderLifecycleSequence: String\(item\.order\.orderLifecycleSequence\)/,
+  'Rare automation requests must send the exact snapshot lifecycle sequence.');
+assert.match(frontendApi, /orderLifecycleSequence: String\(order\.orderLifecycleSequence\)/,
+  'Normal automation requests must send the exact snapshot lifecycle sequence.');
+assert.match(service, /request\.OrderLifecycleSequence <= 0[\s\S]*OrderLifecycleMismatch/,
+  'Missing request lifecycle identity must fail before any automation side effect.');
+assert.match(service, /MatchesRequestedLifecycle\([\s\S]*target\.RequestedOrderLifecycleSequence,[\s\S]*runtimeOrder\.OrderLifecycleSequence/,
+  'Fresh target binding must require request and captured lifecycle equality.');
+assert.match(matching, /TryMatchCapturedOrderIdentity[\s\S]*MatchesRequestedLifecycle\([\s\S]*request\.OrderLifecycleSequence,[\s\S]*captured\.OrderLifecycleSequence/,
+  'Rare capture matching must reject delayed requests from another lifecycle.');
+assert.match(matching, /ScoreCapturedNormalOrder[\s\S]*MatchesRequestedLifecycle\([\s\S]*request\.OrderLifecycleSequence,[\s\S]*captured\.OrderLifecycleSequence/,
+  'Normal capture matching must reject delayed requests from another lifecycle.');
 assert.match(matching, /TryReadGuestId[\s\S]*TryReadInt\([\s\S]*get_Id[\s\S]*ReadMember\(guest, "Id"\)/);
 assert.match(matching, /private static IEnumerable<object> EnumerateControllerOrders\(object controller\)[\s\S]*TryInvokeInstanceValue\(controller, "PeekOrders"\)/);
 assert.doesNotMatch(matching, /"AllOrders"|"AllOrdersData"/,
@@ -430,8 +446,8 @@ assert.match(
 );
 assert.match(
   capture,
-  /OnControllerOrderAdded\(object __instance, object __0, bool __runOriginal\)[\s\S]*if \(!__runOriginal\) return;[\s\S]*AddOrder\(ParseOrder\(__0, "ControllerOrderAdd", __instance\)\)/,
-  'A skipped PushToOrder call must not create a controller binding.',
+  /OnControllerOrderAdded\(object __instance, object __0, bool __runOriginal\)[\s\S]*if \(!__runOriginal\) return;[\s\S]*lifecycleSequence = BeginOrderLifecycle\([\s\S]*__0,[\s\S]*__instance,[\s\S]*"ControllerOrderAdd"[\s\S]*order = ParseOrder\(__0, "ControllerOrderAdd", __instance\)[\s\S]*AddOrder\(order == null \|\| lifecycleSequence <= 0/,
+  'A skipped PushToOrder call must not create a controller binding or order lifecycle.',
 );
 assert.match(
   capture,
@@ -451,8 +467,8 @@ for (const [label, source, callbackName] of [
   const repellPostfix = methodSource(source, `private static void ${callbackName}(`);
   assert.match(
     repellPostfix,
-    /if \(!__runOriginal \|\| __state == null\) return;[\s\S]*On(?:Controller)?OrderCleanupSucceeded\(__state, __originalMethod, true\)/,
-    `${label} capture must retire a latched order whenever RepellInternal returns normally.`,
+    /if \(!__runOriginal \|\| __state == null\) return;[\s\S]*PublishAndRemoveOrder\([\s\S]*__state,[\s\S]*RuntimeOrderTerminalDisposition\.Removed,[\s\S]*RuntimeOrderTerminalReceiptSource\.RepellInternal/,
+    `${label} capture must publish an exact removal receipt and retire the latched order whenever RepellInternal returns normally.`,
   );
   assert.doesNotMatch(
     repellPostfix,
@@ -477,8 +493,13 @@ assert.doesNotMatch(
 const normalSnapshotLoad = methodSource(normalOrderSnapshot, 'public NormalBusinessContext Load(');
 assert.match(
   normalSnapshotLoad,
-  /if \(runtimeCaptureReady\)[\s\S]*normalOrderMode=authoritativeCapture[\s\S]*BuildContext\(visibleOrders\.Concat\(runtimeCapturedOrders\), source, errors\)/,
+  /if \(runtimeCaptureReady\)[\s\S]*normalOrderMode=authoritativeCapture[\s\S]*capturedNativeKeys[\s\S]*runtimeCapturedOrders\.Concat\(unboundVisibleOrders\)/,
   'A ready normal-order snapshot must publish authoritative captures even during a transient HUD gap.',
+);
+assert.match(
+  normalOrderSnapshot,
+  /OrderLifecycleSequence > 0[\s\S]*\|lifecycle:\{order\.OrderLifecycleSequence\}[\s\S]*\|unbound/,
+  'Normal-order projection groups must isolate a reused native key by its positive lifecycle sequence.',
 );
 assert.doesNotMatch(
   provider,
@@ -641,6 +662,13 @@ assert.match(
   /job\.AutoCompleteOrder[\s\S]*get_IsFullfilled[\s\S]*TryEvaluateMatchedAutomationOrderRuntimeIfReady/,
   'A cooking job that latched auto-complete must evaluate a fulfilled order before retiring.',
 );
+assert.ok(
+  committedFoodEvaluation.indexOf('RuntimeOrderTerminalReceiptStore.TryFind(')
+      < committedFoodEvaluation.indexOf('FindRuntimeNormalOrder(')
+    && committedFoodEvaluation.indexOf('TryMatchRuntimeOrderBinding(')
+      < committedFoodEvaluation.indexOf('get_IsFullfilled'),
+  'Committed evaluation must consume an exact terminal receipt first, then match the fresh order/controller token before reading fulfillment.',
+);
 assert.match(service, /public bool AutoCompleteOrder \{ get; set; \}/,
   'Cooking jobs must retain the caller\'s explicit auto-complete intent.');
 assert.match(cooking, /AutoCompleteOrder = autoCompleteOrder/,
@@ -656,6 +684,8 @@ const targetUnavailableGate = directFoodDelivery.indexOf('if (!specialTargetComp
 const targetChangedGate = directFoodDelivery.indexOf('if (specialTargetChanged)');
 const tagValidation = directFoodDelivery.indexOf('ValidateSpecialFoodTargetTags(');
 const yuumaSettlementCall = directFoodDelivery.indexOf('TryFinalizeYuumaCookingJob(job, cookedFood)');
+const exactRuntimeOrderGate = directFoodDelivery.indexOf('TryMatchRuntimeOrderBinding(');
+const deliveryFailureReset = directFoodDelivery.indexOf('job.ResetDeliveryFailures()');
 assert.ok(
   foodIdentityValidation >= 0
     && targetIdentityValidation > foodIdentityValidation
@@ -664,6 +694,12 @@ assert.ok(
     && tagValidation > targetIdentityValidation
     && yuumaSettlementCall > tagValidation,
   'Blood Pond Hell cooked food must validate ID, target identity, and exact Tags before entering its settlement transaction.',
+);
+assert.ok(
+  exactRuntimeOrderGate > tagValidation
+    && deliveryFailureReset > exactRuntimeOrderGate
+    && yuumaSettlementCall > exactRuntimeOrderGate,
+  'No cooked food may reach a delivery side effect or Yuuma settlement before matching the opening generation/kind/order/controller token.',
 );
 assert.match(
   directFoodDelivery,
@@ -1992,8 +2028,45 @@ assert.match(
 );
 assert.match(cooking, /ManualHandoffObserved[\s\S]*TryProcessManualHandoffReceipt/);
 assert.match(cooking, /TryGetUnresolvedAutomationSafetyBarrier\(job\.Target[\s\S]*job\.Tracker\.Suspend/);
-assert.match(service, /TryApplyUnresolvedAutomationSafetyBarrier\(result, "rare"/);
-assert.match(service, /TryApplyUnresolvedAutomationSafetyBarrier\(result, "normal"/);
+assert.match(
+  service,
+  /TryBindCookingTargetRuntimeOrder\([\s\S]*actionTarget[\s\S]*TryApplyUnresolvedAutomationSafetyBarrier\(result, actionTarget\)/,
+  'Rare preparation must bind the fresh exact order lifecycle before applying an unresolved barrier.',
+);
+assert.match(
+  service,
+  /TryBindCookingTargetRuntimeOrder\([\s\S]*automationTarget[\s\S]*TryApplyUnresolvedAutomationSafetyBarrier\(result, automationTarget\)/,
+  'Rare completion must bind the fresh exact order lifecycle before applying an unresolved barrier.',
+);
+assert.match(
+  service,
+  /TryBindCookingTargetRuntimeOrder\([\s\S]*orderAutomationTarget[\s\S]*TryApplyUnresolvedAutomationSafetyBarrier\(result, orderAutomationTarget\)/,
+  'Normal completion must bind the fresh exact order lifecycle before applying an unresolved barrier.',
+);
+assert.doesNotMatch(
+  service,
+  /TryApplyUnresolvedAutomationSafetyBarrier\(result,\s*"(?:rare|normal)"/,
+  'Request trace/order-key barriers must not run before fresh lifecycle binding.',
+);
+const safetyBarrierIdentity = methodSource(
+  service,
+  'private static string BuildAutomationSafetyTargetIdentity(',
+);
+assert.match(
+  safetyBarrierIdentity,
+  /target\.OrderBinding[\s\S]*BusinessGeneration[\s\S]*OrderKind[\s\S]*OrderPointer[\s\S]*ControllerPointer[\s\S]*LifecycleSequence/,
+  'Automation safety barriers must use the complete exact order lifecycle token.',
+);
+assert.doesNotMatch(
+  safetyBarrierIdentity,
+  /TraceId|OrderKey|\.Trim\(/,
+  'Automation safety barriers must not retain request trace/order-key identity fallbacks.',
+);
+assert.match(
+  service,
+  /OrderRuntimeKind = target\.OrderBinding[\s\S]*OrderId = target\.OrderBinding[\s\S]*OrderControllerId = target\.OrderBinding[\s\S]*OrderLifecycleSequence = target\.OrderBinding/,
+  'Published runtime events must expose the exact lifecycle identity used by backend barriers.',
+);
 assert.match(service, /AcknowledgeAutomationSafetyBarrier[\s\S]*AcknowledgedSequences/);
 assert.match(service, /TryProcessAutomationCookingJob\(job, timeoutEligible\)[\s\S]*ReferenceEquals\(AutomationCookingJobs\[i\], job\)/);
 assert.match(cooking, /TryProcessNormalOrderCookingJob[\s\S]*ReferenceEquals\(AutomationCookingJobs\[i\], job\)/);
@@ -2155,7 +2228,7 @@ assert.match(
 );
 assert.match(
   reservedCookerSelection,
-  /lockedPositions\.Contains\(reservation\.GridPosition\)[\s\S]*TryReadCookerControllerState\([\s\S]*reservation\.EvaluateChallengeGate\([\s\S]*RuntimeCookerChallengeGateState\.Inconsistent[\s\S]*controllerState\.TypeIds\.Contains\(recipeCookerType\)[\s\S]*不会改选其他厨具[\s\S]*IsCookControllerReserved\(cookController\)[\s\S]*RuntimeCookerStartAvailabilityService\.Classify/,
+  /lockedPositions\.Contains\(reservation\.GridPosition\)[\s\S]*TryReadCookerControllerState\([\s\S]*reservation\.EvaluateChallengeGate\([\s\S]*RuntimeCookerChallengeGateState\.Inconsistent[\s\S]*controllerState\.TypeIds\.Contains\(recipeCookerType\)[\s\S]*不会改选其他厨具[\s\S]*IsCookControllerReserved\(cookController, out var reservationDiagnostic\)[\s\S]*RuntimeCookerStartAvailabilityService\.Classify/,
   'Only an unlocked exact controller may be checked for readability, open gate, type, Mod reservation, and shared availability.',
 );
 assert.doesNotMatch(
@@ -2285,8 +2358,13 @@ assert.match(
 );
 assert.match(
   cookingJobRegistration,
-  /!job\.ManualHandoffObserved[\s\S]*IsSameCookingCollectionTarget\(job\.Target, target\)[\s\S]*job\.ControllerPointer == controllerPointer/,
-  'A reused controller must not delete a target-bound manual-handoff receipt.',
+  /duplicateTarget[\s\S]*IsSameCookingCollectionTarget\(job\.Target, target\)[\s\S]*throw new InvalidOperationException[\s\S]*job\.HoldsControllerReservation[\s\S]*job\.ControllerPointer == controllerPointer[\s\S]*throw new InvalidOperationException/,
+  'Registration must fail closed on duplicate targets or an active controller lease.',
+);
+assert.doesNotMatch(
+  cookingJobRegistration,
+  /replacedJobs|cooking-job-replaced/,
+  'The obsolete silent job-replacement path must not delete an evaluation receipt during controller reuse.',
 );
 const cookingJobLookup = methodSource(
   cooking,
@@ -2347,8 +2425,45 @@ const cookerReservation = methodSource(
 );
 assert.match(
   cookerReservation,
-  /TryReadNativeObjectPointer\(cookController, out var controllerPointer\)[\s\S]*!job\.ManualHandoffObserved[\s\S]*job\.ControllerPointer == controllerPointer/,
-  'A passive manual-handoff receipt must not reserve an otherwise idle cooker.',
+  /TryReadNativeObjectPointer\(cookController, out var controllerPointer\)[\s\S]*job\.HoldsControllerReservation[\s\S]*job\.ControllerPointer == controllerPointer/,
+  'Only an explicit active controller lease may reserve an otherwise idle cooker.',
+);
+assert.doesNotMatch(
+  cookerReservation,
+  /!job\.ManualHandoffObserved/,
+  'Controller reservation must not be inferred from the legacy manual-handoff predicate.',
+);
+const committedCleanup = methodSource(
+  directDelivery,
+  'private static (bool Remove, string Message, string Code) TryCompleteCommittedFoodDeliveryCleanup(',
+);
+assert.match(
+  committedCleanup,
+  /FoodDeliveryCleanupTracker\.Complete\(\)[\s\S]*CompleteCookerExtractionAfterReset\(job\)[\s\S]*EnterCommittedFoodDeliveryEvaluationReceipt/,
+  'A completed cleanup must release the controller only after all one-shot cooker callbacks finish.',
+);
+assert.match(
+  committedCleanup,
+  /if \(job\.FoodDeliveryCleanupCompleted\)[\s\S]*if \(job\.FoodDeliveryCleanupTerminal\)[\s\S]*if \(job\.DeliveredFood == null/,
+  'A released receipt must recognize its terminal cleanup state before checking the intentionally cleared wrapper.',
+);
+const terminalCleanup = methodSource(
+  directDelivery,
+  'private static (bool Remove, string Message, string Code) BlockCommittedFoodDeliveryCleanup(',
+);
+assert.match(
+  terminalCleanup,
+  /DeliveryCleanupTerminated[\s\S]*cooking-evaluation-after-cleanup-terminal/,
+  'A terminal cleanup that promises no further controller access must release its Mod lease.',
+);
+const evaluationReceiptTransition = methodSource(
+  directDelivery,
+  'private static void EnterCommittedFoodDeliveryEvaluationReceipt(',
+);
+assert.match(
+  evaluationReceiptTransition,
+  /ControllerLease\.Release[\s\S]*DeliveredFood = null[\s\S]*CurrentResultPointer = 0[\s\S]*EnterEvaluationPending/,
+  'Evaluation-only receipts must release the controller and discard the delivered IL2CPP wrapper.',
 );
 for (const [methodName, prefixName, postfixName] of [
   ['setCook', 'setCookPrefix', 'setCookPostfix'],
@@ -2569,6 +2684,49 @@ assert.match(reconcileCookerTarget, /PulseHighlightedRenderers\(desired\)/);
 
 assert.match(overlay, /AppendAutomationRuntimeEvents[\s\S]*OrderBy\(item => item\.Sequence\)[\s\S]*AppendValue\(builder, item\.Sequence\)/);
 assert.match(overlay, /AppendValue\(StringBuilder builder, long value\)[\s\S]*InvariantCulture/);
+const appendAutomationRuntimeEvents = methodSource(
+  overlay,
+  'private static void AppendAutomationRuntimeEvents(',
+);
+for (const field of ['OrderRuntimeKind', 'OrderId', 'OrderControllerId', 'OrderLifecycleSequence']) {
+  assert.ok(
+    appendAutomationRuntimeEvents.includes(`item.${field}`),
+    `The canonical snapshot signature omits automation runtime-event field ${field}.`,
+  );
+}
+assert.match(
+  methodSource(overlay, 'private static void AppendNightBusiness('),
+  /order\.OrderLifecycleSequence/,
+  'Rare-order lifecycle changes must invalidate the canonical snapshot signature.',
+);
+assert.match(
+  methodSource(overlay, 'private static void AppendNormalBusiness('),
+  /order\.OrderLifecycleSequence/,
+  'Normal-order lifecycle changes must invalidate the canonical snapshot signature.',
+);
+const appendAutomationCookingJobs = methodSource(
+  overlay,
+  'private static void AppendAutomationCookingJobs(',
+);
+for (const field of [
+  'TransactionStage',
+  'HoldsControllerReservation',
+  'ControllerLeaseReleaseReason',
+  'OrderRuntimeKind',
+  'OrderId',
+  'OrderControllerId',
+  'OrderLifecycleSequence',
+  'FoodDeliveryCleanupCompleted',
+  'FoodDeliveryCleanupTerminal',
+  'FoodDeliveryEvaluationState',
+  'FoodDeliveryEvaluationAttempts',
+  'FoodDeliveryEvaluationEffectiveSeconds',
+]) {
+  assert.ok(
+    appendAutomationCookingJobs.includes(`job.${field}`),
+    `The canonical snapshot signature omits automation cooking-job field ${field}.`,
+  );
+}
 
 console.log('PASS: runtime automation uses exact native signatures, one-shot side-effect boundaries, passive start receipts, and authoritative safety barriers.');
 

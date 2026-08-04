@@ -2,6 +2,8 @@ namespace NightScene.GuestManagementUtility;
 
 internal class GuestGroupController
 {
+    private static long _nextPointer;
+
     internal enum EvaluationResult
     {
         None,
@@ -13,6 +15,8 @@ internal class GuestGroupController
     }
 
     public GuestsManager.OrderBase? CurrentOrder { get; set; }
+    public bool HasEvaluated { get; set; }
+    public IntPtr Pointer { get; } = (IntPtr)Interlocked.Increment(ref _nextPointer);
 
     public GuestsManager.OrderBase? PeekOrders() => CurrentOrder;
 
@@ -58,7 +62,7 @@ internal sealed class GuestsManager
     {
         private readonly string _text;
 
-        public SpecialOrder(int foodTagId, int beverageTagId, string text, bool manualOrder = false)
+        public SpecialOrder(int? foodTagId, int? beverageTagId, string text, bool manualOrder = false)
             : base(2, manualOrder, freeOrder: false)
         {
             RequestFoodTag = foodTagId;
@@ -66,8 +70,8 @@ internal sealed class GuestsManager
             _text = text;
         }
 
-        public int RequestFoodTag { get; }
-        public int RequestBeverageTag { get; }
+        public int? RequestFoodTag { get; set; }
+        public int? RequestBeverageTag { get; set; }
         public bool IsFullfilled { get; set; }
         public SpecialGuest SpecialGuests { get; } = new();
         public int ToStringReads { get; private set; }

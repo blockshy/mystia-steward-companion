@@ -439,11 +439,10 @@ static CapturedRuntimeSpecialOrder AddCapture(
         OrderObject: order,
         ControllerObject: new GuestsManager.OrderBase(),
         FirstCapturedAt: capturedAt,
+        OrderLifecycleSequence: 1,
         DeskCode: deskCode,
         GuestId: guestId,
-        HasFoodTagId: true,
         FoodTagId: foodTagId,
-        HasBeverageTagId: true,
         BeverageTagId: beverageTagId,
         IsFreeOrder: false);
     SpecialOrderRuntimeCapture.Captures.Add(capture);

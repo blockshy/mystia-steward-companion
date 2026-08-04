@@ -149,6 +149,8 @@ const MANUAL_RESOLUTION_REASON_CODES = new Set([
   'cooking-delivery-cleanup-blocked',
   'cooking-delivery-cleanup-failed',
   'order-evaluation-commit-uncertain',
+  'order-evaluation-target-mismatch',
+  'order-evaluation-closeout-unresolved',
 ]);
 
 export interface AutomationStageCounters {

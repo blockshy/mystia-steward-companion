@@ -459,7 +459,14 @@ public static class NormalOrderRuntimeCapture
         RunCaptureCallback("ControllerOrderAdd", () =>
         {
             lock (SyncRoot) _addCallbacks++;
-            AddOrder(ParseOrder(__0, "ControllerOrderAdd", __instance));
+            var lifecycleSequence = BeginOrderLifecycle(
+                __0,
+                __instance,
+                "ControllerOrderAdd");
+            var order = ParseOrder(__0, "ControllerOrderAdd", __instance);
+            AddOrder(order == null || lifecycleSequence <= 0
+                ? null
+                : order with { OrderLifecycleSequence = lifecycleSequence });
         });
     }
 
@@ -474,6 +481,7 @@ public static class NormalOrderRuntimeCapture
         RunCaptureCallback("ManualOrderSet", () =>
         {
             lock (SyncRoot) _addCallbacks++;
+            var lifecycleSequence = BeginOrderLifecycle(__2, __0, "ManualOrderSet");
             var order = ParseOrder(__2, "ManualOrderSet", __0);
             if (order is not { ManualOrder: true })
             {
@@ -486,112 +494,381 @@ public static class NormalOrderRuntimeCapture
                 NoteParseFailure("ManualOrderSet", "manual evaluation callback is null");
             }
 
-            AddOrder(order with
-            {
-                ManualEvaluationCallback = __1,
-                ManualEvaluationBindingObserved = true,
-                ManualEvaluationBindingCallback = __1,
-            });
+            AddOrder(lifecycleSequence <= 0
+                ? null
+                : order with
+                {
+                    OrderLifecycleSequence = lifecycleSequence,
+                    ManualEvaluationCallback = __1,
+                    ManualEvaluationBindingObserved = true,
+                    ManualEvaluationBindingCallback = __1,
+                });
         });
     }
 
-    private static void CaptureOrderBeforeRemoval(object __0, out CapturedRuntimeNormalOrder? __state)
+    private static void CaptureOrderBeforeRemoval(object __0, out TerminalOrderCaptureState? __state)
     {
-        CapturedRuntimeNormalOrder? state = null;
+        TerminalOrderCaptureState? state = null;
         RunCaptureCallback("OrderRemove.Before", () =>
         {
-            state = ParseOrder(__0, "OrderRemove.Before");
+            state = CaptureOrderRemovalState(__0, "OrderRemove.Before");
         });
         __state = state;
     }
 
-    private static void OnOrderRemovalSucceeded(CapturedRuntimeNormalOrder? __state, bool __runOriginal)
+    private static void OnOrderRemovalSucceeded(TerminalOrderCaptureState? __state, bool __runOriginal)
     {
         if (!__runOriginal || __state == null) return;
 
-        RunCaptureCallback("OrderRemove.After", () =>
+        RunTerminalPostfix("OrderRemove.After", () =>
         {
             lock (SyncRoot) _removeCallbacks++;
-            RemoveOrder(__state);
+            PublishAndRemoveOrder(
+                __state,
+                RuntimeOrderTerminalDisposition.Removed,
+                RuntimeOrderTerminalReceiptSource.RemoveFromOrder);
         });
     }
 
     private static void CaptureControllerOrderBeforeCompletion(
         object __0,
         MethodBase __originalMethod,
-        out CapturedRuntimeNormalOrder? __state)
+        out TerminalOrderCaptureState? __state)
     {
-        CapturedRuntimeNormalOrder? state = null;
+        TerminalOrderCaptureState? state = null;
         var source = $"{__originalMethod.Name}.Before";
         RunCaptureCallback(source, () =>
         {
-            state = ParseControllerCurrentOrder(__0, source);
+            state = CaptureControllerTerminalState(__0, source);
         });
         __state = state;
     }
 
     private static void OnControllerOrderCompletionSucceeded(
-        CapturedRuntimeNormalOrder? __state,
+        TerminalOrderCaptureState? __state,
         MethodBase __originalMethod,
         bool __runOriginal)
     {
         if (!__runOriginal || __state is not { IsFulfilled: true }) return;
 
-        RunCaptureCallback($"{__originalMethod.Name}.After", () =>
+        RunTerminalPostfix($"{__originalMethod.Name}.After", () =>
         {
             lock (SyncRoot) _removeCallbacks++;
-            RemoveOrder(__state);
+            var receiptSource = __originalMethod.Name switch
+            {
+                "EvaluateOrder" => RuntimeOrderTerminalReceiptSource.EvaluateOrder,
+                "EvaulateManualOrder" => RuntimeOrderTerminalReceiptSource.EvaulateManualOrder,
+                _ => throw new InvalidOperationException(
+                    $"Unexpected evaluation Hook source {__originalMethod.Name}."),
+            };
+            PublishAndRemoveOrder(
+                __state,
+                RuntimeOrderTerminalDisposition.Evaluated,
+                receiptSource);
         });
     }
 
     private static void CaptureControllerOrderBeforeCleanup(
         object __0,
         MethodBase __originalMethod,
-        out CapturedRuntimeNormalOrder? __state)
+        out TerminalOrderCaptureState? __state)
     {
-        CapturedRuntimeNormalOrder? state = null;
+        TerminalOrderCaptureState? state = null;
         var source = $"{__originalMethod.Name}.Before";
         RunCaptureCallback(source, () =>
         {
-            state = ParseControllerCurrentOrder(__0, source);
+            state = CaptureControllerTerminalState(__0, source);
         });
         __state = state;
     }
 
     private static void OnControllerOrderCleanupSucceeded(
-        CapturedRuntimeNormalOrder? __state,
+        TerminalOrderCaptureState? __state,
         MethodBase __originalMethod,
         bool __runOriginal)
     {
         if (!__runOriginal || __state == null) return;
 
-        RunCaptureCallback($"{__originalMethod.Name}.After", () =>
+        RunTerminalPostfix($"{__originalMethod.Name}.After", () =>
         {
             lock (SyncRoot) _removeCallbacks++;
-            RemoveOrder(__state);
+            if (!string.Equals(__originalMethod.Name, "CleanOrderInfo", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Unexpected cleanup Hook source {__originalMethod.Name}.");
+            }
+            PublishAndRemoveOrder(
+                __state,
+                RuntimeOrderTerminalDisposition.Removed,
+                RuntimeOrderTerminalReceiptSource.CleanOrderInfo);
         });
     }
 
     private static void CaptureControllerOrderBeforeRepell(
         object __0,
         MethodBase __originalMethod,
-        out CapturedRuntimeNormalOrder? __state)
+        out TerminalOrderCaptureState? __state)
     {
         CaptureControllerOrderBeforeCleanup(__0, __originalMethod, out __state);
     }
 
     private static void OnControllerOrderRepellSucceeded(
-        CapturedRuntimeNormalOrder? __state,
+        TerminalOrderCaptureState? __state,
         MethodBase __originalMethod,
         bool __runOriginal)
     {
         if (!__runOriginal || __state == null) return;
-        OnControllerOrderCleanupSucceeded(__state, __originalMethod, true);
+
+        RunTerminalPostfix($"{__originalMethod.Name}.After", () =>
+        {
+            lock (SyncRoot) _removeCallbacks++;
+            if (!string.Equals(__originalMethod.Name, "RepellInternal", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Unexpected repell Hook source {__originalMethod.Name}.");
+            }
+            PublishAndRemoveOrder(
+                __state,
+                RuntimeOrderTerminalDisposition.Removed,
+                RuntimeOrderTerminalReceiptSource.RepellInternal);
+        });
+    }
+
+    private static void PublishAndRemoveOrder(
+        TerminalOrderCaptureState state,
+        RuntimeOrderTerminalDisposition disposition,
+        RuntimeOrderTerminalReceiptSource receiptSource)
+    {
+        var removeCapturedLifecycle = RuntimeOrderTerminalReceiptStore.MatchesActiveLifecycle(
+            state.ToBindingToken());
+        var binding = state.ToBindingToken();
+        try
+        {
+            RuntimeOrderTerminalReceiptStore.Publish(new RuntimeOrderTerminalHookState(
+                binding.BusinessGeneration,
+                binding.OrderKind,
+                binding.OrderPointer,
+                binding.ControllerPointer,
+                binding.LifecycleSequence,
+                disposition,
+                receiptSource));
+        }
+        finally
+        {
+            if (removeCapturedLifecycle)
+            {
+                RemoveOrder(state.ToBindingToken());
+            }
+        }
+    }
+
+    private static long BeginOrderLifecycle(
+        object order,
+        object controller,
+        string source)
+    {
+        var lifecycleBefore = RuntimeNightBusinessLifecycle.Snapshot;
+        if (!lifecycleBefore.IsActive || lifecycleBefore.Generation <= 0) return 0;
+
+        var resolution = RuntimeOrderTypeResolver.Resolve(order);
+        if (resolution.Resolved && resolution.Kind != RuntimeOrderKind.Normal) return 0;
+        if (!resolution.Resolved || resolution.ReadableOrder == null)
+        {
+            NoteParseFailure(source, $"order lifecycle start concrete type is unavailable: {resolution.Reason}");
+            return 0;
+        }
+
+        if (!RuntimeReflectionUtility.TryReadNativeObjectPointer(resolution.ReadableOrder, out var orderPointer)
+            || !RuntimeReflectionUtility.TryReadNativeObjectPointer(controller, out var controllerPointer))
+        {
+            NoteParseFailure(source, "order lifecycle start lacks exact native order/controller identity");
+            return 0;
+        }
+
+        if (!TryReadExactOrderBool(controller, "HasEvaluated", out var hasEvaluated)
+            || hasEvaluated)
+        {
+            NoteParseFailure(source, "order lifecycle start requires exact HasEvaluated=false after native return");
+            return 0;
+        }
+
+        var currentOrder = RuntimeReflectionUtility.InvokeMethod(controller, "PeekOrders");
+        var currentResolution = RuntimeOrderTypeResolver.Resolve(currentOrder);
+        if (!currentResolution.Resolved
+            || currentResolution.Kind != RuntimeOrderKind.Normal
+            || currentResolution.ReadableOrder == null
+            || !RuntimeReflectionUtility.TryReadNativeObjectPointer(currentResolution.ReadableOrder, out var currentOrderPointer)
+            || currentOrderPointer != orderPointer)
+        {
+            NoteParseFailure(source, "order lifecycle start no longer owns the exact PeekOrders stack top");
+            return 0;
+        }
+
+        var sequence = RuntimeOrderTerminalReceiptStore.BeginLifecycle(
+            lifecycleBefore.Generation,
+            RuntimeOrderKind.Normal,
+            orderPointer,
+            controllerPointer);
+        var lifecycleAfter = RuntimeNightBusinessLifecycle.Snapshot;
+        if (!lifecycleAfter.IsActive || lifecycleAfter.Generation != lifecycleBefore.Generation)
+        {
+            NoteParseFailure(source, "night-business generation changed during order lifecycle start");
+            return 0;
+        }
+
+        return sequence;
+    }
+
+    private static TerminalOrderCaptureState? CaptureControllerTerminalState(
+        object controller,
+        string source)
+    {
+        var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+        if (!lifecycle.IsActive || lifecycle.Generation <= 0) return null;
+
+        if (IsEvaluationTerminalSource(source))
+        {
+            if (!TryReadExactOrderBool(controller, "HasEvaluated", out var hasEvaluated))
+            {
+                NoteParseFailure(source, "exact GuestGroupController.HasEvaluated bool property is unavailable");
+                return null;
+            }
+
+            if (hasEvaluated) return null;
+        }
+
+        var order = RuntimeReflectionUtility.InvokeMethod(controller, "PeekOrders");
+        return CreateTerminalCaptureState(
+            order,
+            controller,
+            lifecycle.Generation,
+            source,
+            requireFulfilled: IsEvaluationTerminalSource(source));
+    }
+
+    private static bool IsEvaluationTerminalSource(string source)
+    {
+        return source.StartsWith("EvaluateOrder.", StringComparison.Ordinal)
+            || source.StartsWith("EvaulateManualOrder.", StringComparison.Ordinal);
+    }
+
+    private static TerminalOrderCaptureState? CaptureOrderRemovalState(object order, string source)
+    {
+        var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+        if (!lifecycle.IsActive || lifecycle.Generation <= 0) return null;
+        var resolution = RuntimeOrderTypeResolver.Resolve(order);
+        if (resolution.Resolved && resolution.Kind != RuntimeOrderKind.Normal) return null;
+        if (!resolution.Resolved
+            || resolution.ReadableOrder == null
+            || !RuntimeReflectionUtility.TryReadNativeObjectPointer(resolution.ReadableOrder, out var orderPointer))
+        {
+            NoteParseFailure(source, "RemoveFromOrder did not provide one exact concrete NormalOrder");
+            return null;
+        }
+
+        if (!RuntimeOrderTerminalReceiptStore.TryCaptureActiveLifecycleByOrder(
+                lifecycle.Generation,
+                RuntimeOrderKind.Normal,
+                orderPointer,
+                out var controllerPointer,
+                out var lifecycleSequence))
+        {
+            NoteParseFailure(
+                source,
+                $"RemoveFromOrder has no unique active order lifecycle: pointer=0x{(long)orderPointer:X}");
+            return null;
+        }
+
+        var currentLifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+        if (!currentLifecycle.IsActive || currentLifecycle.Generation != lifecycle.Generation)
+        {
+            NoteParseFailure(
+                source,
+                $"night-business generation changed during terminal capture: expected={lifecycle.Generation}, current={currentLifecycle.Generation}, active={currentLifecycle.IsActive}");
+            return null;
+        }
+
+        return new TerminalOrderCaptureState(
+            new RuntimeOrderBindingToken(
+                lifecycle.Generation,
+                RuntimeOrderKind.Normal,
+                orderPointer,
+                controllerPointer,
+                lifecycleSequence),
+            IsFulfilled: false);
+    }
+
+    private static TerminalOrderCaptureState? CreateTerminalCaptureState(
+        object? order,
+        object controller,
+        long businessGeneration,
+        string source,
+        bool requireFulfilled)
+    {
+        if (order == null) return null;
+
+        var resolution = RuntimeOrderTypeResolver.Resolve(order);
+        if (resolution.Resolved && resolution.Kind != RuntimeOrderKind.Normal) return null;
+        if (!resolution.Resolved || resolution.ReadableOrder == null)
+        {
+            NoteParseFailure(source, "terminal Hook did not resolve one concrete NormalOrder");
+            return null;
+        }
+
+        if (!RuntimeReflectionUtility.TryReadNativeObjectPointer(resolution.ReadableOrder, out var orderPointer)
+            || !RuntimeReflectionUtility.TryReadNativeObjectPointer(controller, out var controllerPointer))
+        {
+            NoteParseFailure(source, "terminal Hook native order/controller identity is incomplete");
+            return null;
+        }
+
+        var currentLifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+        if (!currentLifecycle.IsActive || currentLifecycle.Generation != businessGeneration)
+        {
+            NoteParseFailure(
+                source,
+                $"night-business generation changed during terminal capture: expected={businessGeneration}, current={currentLifecycle.Generation}, active={currentLifecycle.IsActive}");
+            return null;
+        }
+
+        if (!RuntimeOrderTerminalReceiptStore.TryCaptureActiveLifecycle(
+                businessGeneration,
+                resolution.Kind,
+                orderPointer,
+                controllerPointer,
+                out var lifecycleSequence))
+        {
+            NoteParseFailure(source, "terminal Hook has no exact active order-lifecycle sequence");
+            return null;
+        }
+
+        var isFulfilled = false;
+        if (requireFulfilled
+            && !TryReadExactOrderBool(resolution.ReadableOrder, "IsFullfilled", out isFulfilled))
+        {
+            NoteParseFailure(source, "exact OrderBase.IsFullfilled bool property is unavailable");
+            return null;
+        }
+
+        return new TerminalOrderCaptureState(
+            new RuntimeOrderBindingToken(
+                businessGeneration,
+                resolution.Kind,
+                orderPointer,
+                controllerPointer,
+                lifecycleSequence),
+            isFulfilled);
     }
 
     private static void RunCaptureCallback(string source, Action callback)
     {
         if (!RuntimeNightBusinessLifecycle.IsActive) return;
+
+        RunTerminalPostfix(source, callback);
+    }
+
+    private static void RunTerminalPostfix(string source, Action callback)
+    {
 
         try
         {
@@ -601,18 +878,6 @@ public static class NormalOrderRuntimeCapture
         {
             NoteParseFailure(source, $"capture callback failed: {ex.GetBaseException().Message}");
         }
-    }
-
-    private static CapturedRuntimeNormalOrder? ParseControllerCurrentOrder(object? controller, string source)
-    {
-        if (controller == null)
-        {
-            NoteParseFailure(source, "controller is null");
-            return null;
-        }
-
-        var order = RuntimeReflectionUtility.InvokeMethod(controller, "PeekOrders");
-        return ParseOrder(order, source, controller);
     }
 
     private static CapturedRuntimeNormalOrder? ParseOrder(object? order, string source, object? controller = null)
@@ -695,7 +960,8 @@ public static class NormalOrderRuntimeCapture
         if (order == null) return;
         if (order.OrderObject == null
             || order.ControllerObject == null
-            || string.IsNullOrWhiteSpace(order.RuntimeKey))
+            || string.IsNullOrWhiteSpace(order.RuntimeKey)
+            || order.OrderLifecycleSequence <= 0)
         {
             NoteParseFailure(order.CaptureSource, "native order/controller binding is incomplete");
             return;
@@ -704,7 +970,7 @@ public static class NormalOrderRuntimeCapture
         lock (SyncRoot)
         {
             var existing = Orders.Where(current => IsSameOrderSlot(current, order)).ToList();
-            Orders.RemoveAll(current => IsSameOrderSlot(current, order));
+            Orders.RemoveAll(current => IsSameNativeOrderSlot(current, order));
             var next = existing.Aggregate(order, MergeCapturedOrder);
             Orders.Add(next);
             _capturedOrders++;
@@ -719,19 +985,15 @@ public static class NormalOrderRuntimeCapture
         }
     }
 
-    private static void RemoveOrder(CapturedRuntimeNormalOrder? order)
+    private static void RemoveOrder(RuntimeOrderBindingToken binding)
     {
-        if (order == null) return;
-        if (string.IsNullOrWhiteSpace(order.RuntimeKey))
-        {
-            NoteParseFailure(order.CaptureSource, "native order key is unavailable for removal");
-            return;
-        }
-
+        var runtimeKey = $"ptr:{(long)binding.OrderPointer:x}";
         lock (SyncRoot)
         {
-            var removed = Orders.RemoveAll(existing => IsSameOrderSlot(existing, order));
-            _lastCapture = $"removed: desk={order.DeskCode + 1}, food={order.FoodId}, beverage={order.BeverageId}";
+            var removed = Orders.RemoveAll(existing =>
+                existing.OrderLifecycleSequence == binding.LifecycleSequence
+                && string.Equals(existing.RuntimeKey, runtimeKey, StringComparison.Ordinal));
+            _lastCapture = $"removed: order={runtimeKey}, lifecycle={binding.LifecycleSequence}";
             if (removed > 0) _changeVersion++;
             _status = BuildStatusLocked();
         }
@@ -856,6 +1118,15 @@ public static class NormalOrderRuntimeCapture
 
     private static bool IsSameOrderSlot(CapturedRuntimeNormalOrder left, CapturedRuntimeNormalOrder right)
     {
+        return IsSameNativeOrderSlot(left, right)
+            && left.OrderLifecycleSequence > 0
+            && left.OrderLifecycleSequence == right.OrderLifecycleSequence;
+    }
+
+    private static bool IsSameNativeOrderSlot(
+        CapturedRuntimeNormalOrder left,
+        CapturedRuntimeNormalOrder right)
+    {
         return !string.IsNullOrWhiteSpace(left.RuntimeKey)
             && !string.IsNullOrWhiteSpace(right.RuntimeKey)
             && string.Equals(left.RuntimeKey, right.RuntimeKey, StringComparison.Ordinal);
@@ -943,6 +1214,13 @@ public static class NormalOrderRuntimeCapture
         return $"ready={(covered ? "yes" : "no")}; required={RequiredPatchKeys.Length - missing.Length}/{RequiredPatchKeys.Length}; firstCoveredGeneration={(_firstCoveredBusinessGeneration == long.MaxValue ? "pending" : _firstCoveredBusinessGeneration)}; currentGeneration={RuntimeNightBusinessLifecycle.Generation}; missing=[{string.Join(",", missing)}]; patched={PatchedMethods.Count}; active={Orders.Count}; captured={_capturedOrders}; add={_addCallbacks}; remove={_removeCallbacks}; parseFailures={_parseFailures}; last={RuntimeReflectionUtility.Trim(_lastCapture, 120)}; lastFailure={RuntimeReflectionUtility.Trim(_lastParseFailure, 120)}";
     }
 
+    private sealed record TerminalOrderCaptureState(
+        RuntimeOrderBindingToken Binding,
+        bool IsFulfilled)
+    {
+        public RuntimeOrderBindingToken ToBindingToken() => Binding;
+    }
+
     private static string ShortPatchKey(string key)
     {
         var separator = key.LastIndexOf('.');
@@ -969,6 +1247,7 @@ public sealed record CapturedRuntimeNormalOrder(
 {
     internal object? OrderObject { get; init; }
     internal object? ControllerObject { get; init; }
+    internal long OrderLifecycleSequence { get; init; }
     public bool ManualOrder { get; init; }
     public bool IsFulfilled { get; init; }
     internal object? ManualEvaluationCallback { get; init; }

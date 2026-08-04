@@ -1573,6 +1573,7 @@ internal sealed class LocalApiServer : IDisposable
                 AutomationEpoch = automationEpoch,
                 TraceId = ReadStringQuery(query, "traceId"),
                 OrderKey = ReadStringQuery(query, "orderKey"),
+                OrderLifecycleSequence = ReadLongQuery(query, "orderLifecycleSequence", -1),
                 DeskCode = ReadIntQuery(query, "deskCode", -1),
                 GuestId = ReadNullableIntQuery(query, "guestId"),
                 RuntimeGuestId = ReadNullableIntQuery(query, "runtimeGuestId"),

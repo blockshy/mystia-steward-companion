@@ -254,10 +254,14 @@ let automationCommandEpoch = 1;
 let automationCancellationAppliedEpoch = 0;
 let automationCookingJobs = [];
 const mockAutomationBarrierTarget = {
-  targetIdentity: 'rare:mock-trace-barrier',
+  targetIdentity: 'order-lifecycle:1:Special:1001:2001:7',
   traceId: 'mock-trace-barrier',
   targetKind: 'rare',
   orderKey: '',
+  orderRuntimeKind: 'Special',
+  orderId: '0x1001',
+  orderControllerId: '0x2001',
+  orderLifecycleSequence: 7,
   deskCode: 1,
   guestId: 1001,
   guestName: '米斯蒂娅',
@@ -459,6 +463,15 @@ const server = http.createServer((request, response) => {
       }
 
       if (path === '/orders/prepare-next' || path === '/orders/complete-first' || path === '/orders/normal/complete-first') {
+        const orderLifecycleSequence = Number(requestUrl.searchParams.get('orderLifecycleSequence'));
+        if (!Number.isSafeInteger(orderLifecycleSequence) || orderLifecycleSequence <= 0) {
+          sendJson(response, 400, {
+            ok: false,
+            prepared: false,
+            error: 'missing or invalid orderLifecycleSequence',
+          });
+          return;
+        }
         const lease = readAutomationLease(request);
         if (!lease.owned) {
           sendJson(response, 200, {
@@ -701,6 +714,7 @@ function buildSnapshot() {
       orders: [
         {
           traceId: 'R-0001',
+          orderLifecycleSequence: 1,
           deskCode: 1,
           guestId: 1001,
           runtimeGuestId: 1001,
@@ -728,6 +742,7 @@ function buildSnapshot() {
         },
         {
           traceId: 'R-0002',
+          orderLifecycleSequence: 2,
           deskCode: 3,
           guestId: 1002,
           runtimeGuestId: 1002,
@@ -751,6 +766,7 @@ function buildSnapshot() {
       orders: [
         {
           orderKey: 'mock-normal-1',
+          orderLifecycleSequence: 3,
           deskCode: 2,
           runtimeGuestId: null,
           guestName: '妖怪鼠客',
@@ -767,6 +783,7 @@ function buildSnapshot() {
         },
         {
           orderKey: 'mock-normal-2',
+          orderLifecycleSequence: 4,
           deskCode: 4,
           runtimeGuestId: null,
           guestName: '兽道旅人',
@@ -799,6 +816,10 @@ function buildSnapshot() {
       traceId: barrier.traceId,
       targetKind: barrier.targetKind,
       orderKey: barrier.orderKey,
+      orderRuntimeKind: barrier.orderRuntimeKind,
+      orderId: barrier.orderId,
+      orderControllerId: barrier.orderControllerId,
+      orderLifecycleSequence: barrier.orderLifecycleSequence,
       deskCode: barrier.deskCode,
       guestId: barrier.guestId,
       guestName: barrier.guestName,
@@ -1067,10 +1088,17 @@ function buildMockAutomationCookingJob(response, path, params) {
     state: 'cooking',
     outcome: 'progressed',
     reasonCode: 'cooking-started',
+    transactionStage: 'cooking',
     specialTargetRevision: 0,
     allowYuumaControlledProgression:
       params.get('allowYuumaControlledProgression') === 'true',
     autoDeliverFood: params.get('autoCollectCooking') === 'true' || params.get('autoDeliverFood') === 'true',
+    holdsControllerReservation: true,
+    controllerLeaseReleaseReason: '',
+    orderRuntimeKind: path === '/orders/normal/complete-first' ? 'Normal' : 'Special',
+    orderId: 'mock-order-1',
+    orderControllerId: 'mock-order-controller-1',
+    orderLifecycleSequence: Number(params.get('orderLifecycleSequence')),
     controllerId: 'mock-cooker-1',
     resultId: 'mock-result-1',
     generation: 1,
@@ -1087,6 +1115,11 @@ function buildMockAutomationCookingJob(response, path, params) {
     foodDeliveryCommitted: false,
     foodDeliveryCommitUncertain: false,
     foodDeliveryCleanupAttempts: 0,
+    foodDeliveryCleanupCompleted: false,
+    foodDeliveryCleanupTerminal: false,
+    foodDeliveryEvaluationState: 'Pending',
+    foodDeliveryEvaluationAttempts: 0,
+    foodDeliveryEvaluationEffectiveSeconds: 0,
     startedAtUtc: now,
     lastObservedAtUtc: now,
     lastProgressAtUtc: now,

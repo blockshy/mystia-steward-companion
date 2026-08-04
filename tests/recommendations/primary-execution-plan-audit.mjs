@@ -299,7 +299,7 @@ function assertGameUiPinningCompletionContracts() {
     'A fully served order must not keep a game UI target.',
   );
   const nextTarget = buildGameUiPinningTarget([servedFirst, activeSecond], 'ordered', indexes);
-  assert.equal(nextTarget?.sourceOrderKey, 'trace:R-ACTIVE-B',
+  assert.equal(nextTarget?.sourceOrderKey, 'trace:R-ACTIVE-B|lifecycle:2',
     'A fully served first order must be skipped in favor of the next actionable order.');
   assert.equal(nextTarget?.orderTraceId, 'R-ACTIVE-B',
     'A game UI target must carry the exact runtime order trace without a fallback identity.');
@@ -374,7 +374,7 @@ function assertGameUiPinningCompletionContracts() {
   const foodServedTarget = buildGameUiPinningTarget([
     buildUiPinningRecommendation('R-FOOD-SERVED', 1, firstPlan, { hasServedFood: true }),
   ], 'ordered', indexes);
-  assert.equal(foodServedTarget?.sourceOrderKey, 'trace:R-FOOD-SERVED');
+  assert.equal(foodServedTarget?.sourceOrderKey, 'trace:R-FOOD-SERVED|lifecycle:1');
   assert.equal(foodServedTarget?.recipeId, -1,
     'A served food component must not remain pinned.');
   assert.deepEqual(foodServedTarget?.ingredientIds, [],
@@ -403,7 +403,7 @@ function assertGameUiPinningCompletionContracts() {
   });
   assert.equal(
     buildGameUiPinningTarget([noProjectableFirst, activeSecond], 'ordered', indexes)?.sourceOrderKey,
-    'trace:R-ACTIVE-B',
+    'trace:R-ACTIVE-B|lifecycle:2',
     'A primary plan with no unserved projectable component must not block a later order.',
   );
 
@@ -419,7 +419,7 @@ function assertGameUiPinningCompletionContracts() {
       indexes,
       { prioritizeMissionRecipe: true },
     )?.sourceOrderKey,
-    'trace:R-ORDINARY-FIRST',
+    'trace:R-ORDINARY-FIRST|lifecycle:1',
     'A delivered mission recipe must not retain cross-order mission priority.',
   );
   const activeMission = buildUiPinningRecommendation('R-MISSION-ACTIVE', 2, secondPlan, {
@@ -432,7 +432,7 @@ function assertGameUiPinningCompletionContracts() {
       indexes,
       { prioritizeMissionRecipe: true },
     )?.sourceOrderKey,
-    'trace:R-MISSION-ACTIVE',
+    'trace:R-MISSION-ACTIVE|lifecycle:2',
     'An unserved verified mission recipe must retain cross-order priority.',
   );
 }
@@ -515,6 +515,7 @@ function buildUiPinningRecommendation(traceId, deskCode, plan, options = {}) {
   return {
     order: {
       traceId,
+      orderLifecycleSequence: deskCode,
       deskCode,
       guestId,
       runtimeGuestId,

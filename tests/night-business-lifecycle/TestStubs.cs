@@ -38,6 +38,13 @@ namespace HarmonyLib
 
 namespace MystiaStewardCompanion.Save
 {
+    internal enum RuntimeOrderKind
+    {
+        Unknown,
+        Normal,
+        Special,
+    }
+
     internal static class RuntimeBoundaryProbe
     {
         public static int CookerResumeCount { get; set; }
@@ -59,6 +66,8 @@ namespace MystiaStewardCompanion.Save
         public static int SpecialBusinessClearCount { get; set; }
         public static int CookingGenerationClearCount { get; set; }
         public static int CookingJobClearCount { get; set; }
+        public static int SafetyBarrierClearCount { get; set; }
+        public static long LastSafetyBarrierGeneration { get; set; }
         public static int ServeInWorkBoundaryCount { get; set; }
         public static NightBusinessLifecyclePhase LastServeInWorkPhase { get; set; }
 
@@ -83,6 +92,8 @@ namespace MystiaStewardCompanion.Save
             SpecialBusinessClearCount = 0;
             CookingGenerationClearCount = 0;
             CookingJobClearCount = 0;
+            SafetyBarrierClearCount = 0;
+            LastSafetyBarrierGeneration = 0;
             ServeInWorkBoundaryCount = 0;
             LastServeInWorkPhase = NightBusinessLifecyclePhase.Inactive;
         }
@@ -163,6 +174,13 @@ namespace MystiaStewardCompanion.Save
 
     internal static class RuntimeOrderPreparationService
     {
+        public static int ClearAutomationSafetyBarriersForBusinessGeneration(long businessGeneration)
+        {
+            RuntimeBoundaryProbe.SafetyBarrierClearCount++;
+            RuntimeBoundaryProbe.LastSafetyBarrierGeneration = businessGeneration;
+            return 0;
+        }
+
         public static void ClearAutomationCookingJobs(
             string reason,
             AutomationCancellationTarget target,

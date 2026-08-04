@@ -112,6 +112,7 @@ export interface MissionRecipePriority {
  */
 export interface NightBusinessOrder {
   traceId?: string;
+  orderLifecycleSequence: number;
   deskCode: number;
   guestId: number | null;
   runtimeGuestId: number | null;
@@ -194,6 +195,7 @@ export interface SpecialBusinessContext {
 export interface NormalBusinessOrder {
   traceId?: string;
   orderKey?: string;
+  orderLifecycleSequence: number;
   deskCode: number;
   guestId?: number | null;
   runtimeGuestId: number | null;
@@ -325,6 +327,10 @@ export interface AutomationRuntimeEvent {
   traceId?: string;
   targetKind: 'rare' | 'normal' | string;
   orderKey?: string;
+  orderRuntimeKind: 'Special' | 'Normal' | string;
+  orderId: string;
+  orderControllerId: string;
+  orderLifecycleSequence: number;
   deskCode: number;
   guestId?: number | null;
   guestName?: string;
@@ -370,12 +376,19 @@ export interface AutomationCookingJobSnapshot {
   foodId: number;
   foodName: string;
   recipeId: number;
-  state: 'cooking' | 'ready' | 'manual-handoff' | 'manual-handoff-expired';
+  state: 'cooking' | 'ready' | 'evaluation-pending' | 'manual-handoff' | 'manual-handoff-expired';
   outcome: AutomationJobOutcome;
   reasonCode: string;
+  transactionStage: 'cooking' | 'ready' | 'delivery-cleanup' | 'evaluation-receipt' | 'manual-handoff' | 'manual-handoff-expired' | 'warmer-cleanup';
   specialTargetRevision: number;
   allowYuumaControlledProgression: boolean;
   autoDeliverFood: boolean;
+  holdsControllerReservation: boolean;
+  controllerLeaseReleaseReason: '' | 'manual-handoff' | 'delivery-cleanup-completed' | 'delivery-cleanup-terminated';
+  orderRuntimeKind: 'Normal' | 'Special';
+  orderId: string;
+  orderControllerId: string;
+  orderLifecycleSequence: number;
   controllerId: string;
   resultId: string;
   generation: number;
@@ -392,6 +405,11 @@ export interface AutomationCookingJobSnapshot {
   foodDeliveryCommitted: boolean;
   foodDeliveryCommitUncertain: boolean;
   foodDeliveryCleanupAttempts: number;
+  foodDeliveryCleanupCompleted: boolean;
+  foodDeliveryCleanupTerminal: boolean;
+  foodDeliveryEvaluationState: 'Pending' | 'NotRequired' | 'Completed' | 'CommitUncertain' | 'TargetMismatch' | 'CloseoutUnresolved' | 'OrderTerminated';
+  foodDeliveryEvaluationAttempts: number;
+  foodDeliveryEvaluationEffectiveSeconds: number;
   startedAtUtc: string;
   lastObservedAtUtc: string;
   lastProgressAtUtc: string;

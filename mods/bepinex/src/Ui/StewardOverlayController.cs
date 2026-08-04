@@ -1366,6 +1366,10 @@ internal sealed class StewardOverlayController
             AppendValue(builder, item.TargetKind);
             AppendValue(builder, item.TraceId);
             AppendValue(builder, item.OrderKey);
+            AppendValue(builder, item.OrderRuntimeKind);
+            AppendValue(builder, item.OrderId);
+            AppendValue(builder, item.OrderControllerId);
+            AppendValue(builder, item.OrderLifecycleSequence);
         }
     }
 
@@ -1382,8 +1386,20 @@ internal sealed class StewardOverlayController
             AppendValue(builder, job.State);
             AppendValue(builder, job.Outcome);
             AppendValue(builder, job.ReasonCode);
+            AppendValue(builder, job.TransactionStage);
+            AppendValue(builder, job.SpecialTargetRevision);
+            AppendValue(builder, job.AllowYuumaControlledProgression);
             AppendValue(builder, job.AutoDeliverFood);
+            AppendValue(builder, job.HoldsControllerReservation);
+            AppendValue(builder, job.ControllerLeaseReleaseReason);
+            AppendValue(builder, job.OrderRuntimeKind);
+            AppendValue(builder, job.OrderId);
+            AppendValue(builder, job.OrderControllerId);
+            AppendValue(builder, job.OrderLifecycleSequence);
+            AppendValue(builder, job.ControllerId);
+            AppendValue(builder, job.ResultId);
             AppendValue(builder, job.Generation);
+            AppendValue(builder, job.ContentRevision);
             AppendValue(builder, job.CookerPhase);
             AppendValue(builder, Math.Clamp((int)Math.Floor(job.CookerProgress * 10f), -1, 10));
             AppendValue(builder, job.OwnershipObservationFailures);
@@ -1396,6 +1412,13 @@ internal sealed class StewardOverlayController
             AppendValue(builder, job.FoodDeliveryCommitted);
             AppendValue(builder, job.FoodDeliveryCommitUncertain);
             AppendValue(builder, job.FoodDeliveryCleanupAttempts);
+            AppendValue(builder, job.FoodDeliveryCleanupCompleted);
+            AppendValue(builder, job.FoodDeliveryCleanupTerminal);
+            AppendValue(builder, job.FoodDeliveryEvaluationState);
+            AppendValue(builder, job.FoodDeliveryEvaluationAttempts);
+            AppendValue(builder, Math.Max(
+                0,
+                (int)Math.Floor(job.FoodDeliveryEvaluationEffectiveSeconds * 10d)));
         }
     }
 
@@ -1473,6 +1496,7 @@ internal sealed class StewardOverlayController
                      .ThenBy(order => order.Source, StringComparer.Ordinal))
         {
             AppendValue(builder, order.TraceId);
+            AppendValue(builder, order.OrderLifecycleSequence);
             AppendValue(builder, order.DeskCode);
             AppendValue(builder, order.GuestId);
             AppendValue(builder, order.RuntimeGuestId);
@@ -1568,6 +1592,7 @@ internal sealed class StewardOverlayController
         {
             AppendValue(builder, order.TraceId);
             AppendValue(builder, order.OrderKey);
+            AppendValue(builder, order.OrderLifecycleSequence);
             AppendValue(builder, order.DeskCode);
             AppendValue(builder, order.GuestId);
             AppendValue(builder, order.RuntimeGuestId);

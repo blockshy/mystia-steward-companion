@@ -54,6 +54,7 @@ internal static partial class RuntimeOrderPreparationService
                     Manager = captured.Manager,
                     Controller = captured.Controller,
                     Order = captured.Order,
+                    OrderLifecycleSequence = captured.OrderLifecycleSequence,
                     ManualOrder = captured.ManualOrder,
                     ManualEvaluationCallback = captured.ManualEvaluationCallback,
                     YuyukoManualBindingResolved = captured.YuyukoManualBindingResolved,
@@ -181,11 +182,32 @@ internal static partial class RuntimeOrderPreparationService
                     continue;
                 }
 
+                if (!TryCaptureRuntimeOrderLifecycle(
+                        order,
+                        controller,
+                        out var orderLifecycleSequence,
+                        out var lifecycleDiagnostic))
+                {
+                    if (liveRejections.Count < 4) liveRejections.Add(lifecycleDiagnostic);
+                    continue;
+                }
+
+                if (!RuntimeOrderTerminalReceiptStore.MatchesRequestedLifecycle(
+                        request.OrderLifecycleSequence,
+                        orderLifecycleSequence))
+                {
+                    var lifecycleRejectReason = "request lifecycle does not match live order: "
+                        + $"requested={request.OrderLifecycleSequence}; live={orderLifecycleSequence}";
+                    if (liveRejections.Count < 4) liveRejections.Add(lifecycleRejectReason);
+                    continue;
+                }
+
                 var match = new RuntimeOrderMatch
                 {
                     Manager = manager,
                     Controller = controller,
                     Order = order,
+                    OrderLifecycleSequence = orderLifecycleSequence,
                     ManualOrder = requiresLiveYuyukoPhase3Boss && manualBindingCaptured,
                     ManualEvaluationCallback = requiresLiveYuyukoPhase3Boss && manualBindingCaptured
                         ? manualEvaluationCallback
@@ -283,11 +305,28 @@ internal static partial class RuntimeOrderPreparationService
                     continue;
                 }
 
+                if (!TryCaptureRuntimeOrderLifecycle(
+                        readableOrder,
+                        controller,
+                        out var orderLifecycleSequence,
+                        out _))
+                {
+                    continue;
+                }
+
+                if (!RuntimeOrderTerminalReceiptStore.MatchesRequestedLifecycle(
+                        request.OrderLifecycleSequence,
+                        orderLifecycleSequence))
+                {
+                    continue;
+                }
+
                 var match = new RuntimeOrderMatch
                 {
                     Manager = manager,
                     Controller = controller,
                     Order = readableOrder,
+                    OrderLifecycleSequence = orderLifecycleSequence,
                     Diagnostic = IsWackyKoishiBossRequest(request)
                         ? $"{DescribeWackyKoishiExecutionMode(request)}, liveController=ok, controllerOrders={scannedControllerOrders}"
                         : $"controllerOrders={scannedControllerOrders}",
@@ -332,11 +371,29 @@ internal static partial class RuntimeOrderPreparationService
                 }
             }
 
+            if (controller == null
+                || !TryCaptureRuntimeOrderLifecycle(
+                    readableOrder,
+                    controller,
+                    out var orderLifecycleSequence,
+                    out _))
+            {
+                continue;
+            }
+
+            if (!RuntimeOrderTerminalReceiptStore.MatchesRequestedLifecycle(
+                    request.OrderLifecycleSequence,
+                    orderLifecycleSequence))
+            {
+                continue;
+            }
+
             var match = new RuntimeOrderMatch
             {
                 Manager = manager,
                 Controller = controller,
                 Order = readableOrder,
+                OrderLifecycleSequence = orderLifecycleSequence,
                 Diagnostic = $"controllers={scannedControllers}, controllerOrders={scannedControllerOrders}, captured=({captured.Diagnostic}), uiOrders={scannedUiOrders}, uiController={(controller == null ? "missing" : "ok")}",
             };
             AppendWackyBossRuntimeDiagnostic("normal-ui-match", request, match, "accept", match.Diagnostic);
@@ -588,6 +645,7 @@ internal static partial class RuntimeOrderPreparationService
                 Manager = manager,
                 Controller = captured.ControllerObject,
                 Order = captured.OrderObject,
+                OrderLifecycleSequence = captured.OrderLifecycleSequence,
                 ManualOrder = requiresYuumaSettlementManualContext
                     ? manualOrder
                     : requiresYuyukoManualBinding && yuyukoManualBindingCaptured,
@@ -598,7 +656,7 @@ internal static partial class RuntimeOrderPreparationService
                         : captured.ManualEvaluationCallback,
                 YuyukoManualBindingResolved = requiresYuyukoManualBinding,
                 YuyukoManualBindingCaptured = requiresYuyukoManualBinding && yuyukoManualBindingCaptured,
-                Diagnostic = $"capturedCandidates={candidates.Count}, identity=({FormatCapturedOrderIdentity(captured)}), display=({FormatCapturedOrderDisplay(captured)}), source={captured.CaptureSource}, capturedManual={captured.ManualOrder}, currentManual={manualOrder}, {manualContextDiagnostic}, {yuyukoManualBindingDiagnostic}",
+                Diagnostic = $"capturedCandidates={candidates.Count}, identity=({FormatCapturedOrderIdentity(captured)}), source={captured.CaptureSource}, capturedManual={captured.ManualOrder}, currentManual={manualOrder}, {manualContextDiagnostic}, {yuyukoManualBindingDiagnostic}",
             };
         }
 
@@ -705,7 +763,7 @@ internal static partial class RuntimeOrderPreparationService
 
         manualBindingCaptured = true;
         manualEvaluationCallback = callback;
-        diagnostic = $"manual-binding=captured, kind=SpecialOrder, exactObjectCandidates={candidates.Count}, identity=({FormatCapturedOrderIdentity(manualCandidates[0])}), display=({FormatCapturedOrderDisplay(manualCandidates[0])}), source={manualCandidates[0].CaptureSource}, callback={YuyukoChallengeEvaluationTracker.DescribeCallback(callback)}";
+        diagnostic = $"manual-binding=captured, kind=SpecialOrder, exactObjectCandidates={candidates.Count}, identity=({FormatCapturedOrderIdentity(manualCandidates[0])}), source={manualCandidates[0].CaptureSource}, callback={YuyukoChallengeEvaluationTracker.DescribeCallback(callback)}";
         return true;
     }
 
@@ -824,7 +882,7 @@ internal static partial class RuntimeOrderPreparationService
         }
 
         manualEvaluationCallback = callbackCandidate.ManualEvaluationCallback;
-        diagnostic = $"manual=true, manualCallback=captured, exactObjectCandidates={candidates.Count}, identity=({FormatCapturedOrderIdentity(callbackCandidate)}), display=({FormatCapturedOrderDisplay(callbackCandidate)}), source={callbackCandidate.CaptureSource}, callback={YuyukoChallengeEvaluationTracker.DescribeCallback(manualEvaluationCallback)}";
+        diagnostic = $"manual=true, manualCallback=captured, exactObjectCandidates={candidates.Count}, identity=({FormatCapturedOrderIdentity(callbackCandidate)}), source={callbackCandidate.CaptureSource}, callback={YuyukoChallengeEvaluationTracker.DescribeCallback(manualEvaluationCallback)}";
         return true;
     }
 
@@ -1023,6 +1081,7 @@ internal static partial class RuntimeOrderPreparationService
                 Manager = manager,
                 Controller = captured.ControllerObject,
                 Order = captured.OrderObject,
+                OrderLifecycleSequence = captured.OrderLifecycleSequence,
                 ManualOrder = requiresYuumaSettlementManualContext
                     ? manualOrder
                     : requiresYuyukoManualBinding && yuyukoManualBindingCaptured,
@@ -1045,7 +1104,14 @@ internal static partial class RuntimeOrderPreparationService
 
     private static int ScoreCapturedNormalOrder(CapturedRuntimeNormalOrder captured, OrderPreparationRequest request)
     {
-        if (captured.OrderObject == null || captured.ControllerObject == null) return 0;
+        if (captured.OrderObject == null
+            || captured.ControllerObject == null
+            || !RuntimeOrderTerminalReceiptStore.MatchesRequestedLifecycle(
+                request.OrderLifecycleSequence,
+                captured.OrderLifecycleSequence))
+        {
+            return 0;
+        }
 
         var score = 0;
         if (!string.IsNullOrWhiteSpace(request.OrderKey) && !string.IsNullOrWhiteSpace(captured.RuntimeKey))
@@ -1090,13 +1156,22 @@ internal static partial class RuntimeOrderPreparationService
         OrderPreparationRequest request,
         out string rejectReason)
     {
+        if (!RuntimeOrderTerminalReceiptStore.MatchesRequestedLifecycle(
+                request.OrderLifecycleSequence,
+                captured.OrderLifecycleSequence))
+        {
+            rejectReason = "request lifecycle does not match captured order: "
+                + $"requested={request.OrderLifecycleSequence}; captured={captured.OrderLifecycleSequence}";
+            return false;
+        }
+
         return RareOrderIdentityMatcher.Matches(
             BuildRequestOrderIdentity(request),
             new RareOrderIdentity(
                 captured.DeskCode >= 0 ? captured.DeskCode : null,
                 captured.GuestId,
-                captured.HasFoodTagId ? captured.FoodTagId : null,
-                captured.HasBeverageTagId ? captured.BeverageTagId : null),
+                captured.FoodTagId,
+                captured.BeverageTagId),
             out rejectReason);
     }
 
@@ -1204,7 +1279,7 @@ internal static partial class RuntimeOrderPreparationService
 
     private static string FormatRequestOrderIdentity(OrderPreparationRequest request)
     {
-        return RareOrderIdentityMatcher.Format(BuildRequestOrderIdentity(request));
+        return $"{RareOrderIdentityMatcher.Format(BuildRequestOrderIdentity(request))}, lifecycle={request.OrderLifecycleSequence}";
     }
 
     private static string FormatCapturedOrderIdentity(CapturedRuntimeSpecialOrder captured)
@@ -1212,13 +1287,8 @@ internal static partial class RuntimeOrderPreparationService
         return RareOrderIdentityMatcher.Format(new RareOrderIdentity(
             captured.DeskCode >= 0 ? captured.DeskCode : null,
             captured.GuestId,
-            captured.HasFoodTagId ? captured.FoodTagId : null,
-            captured.HasBeverageTagId ? captured.BeverageTagId : null));
-    }
-
-    private static string FormatCapturedOrderDisplay(CapturedRuntimeSpecialOrder captured)
-    {
-        return $"food={captured.FoodTagDisplayText},beverage={captured.BeverageTagDisplayText}";
+            captured.FoodTagId,
+            captured.BeverageTagId));
     }
 
     private static string FormatCapturedOrderSummary(IReadOnlyList<CapturedOrderIdentityEvaluation> capturedOrders)
@@ -1230,7 +1300,7 @@ internal static partial class RuntimeOrderPreparationService
             .Select(candidate =>
             {
                 var order = candidate.Order;
-                return $"identity=({FormatCapturedOrderIdentity(order)}),display=({FormatCapturedOrderDisplay(order)}),match={(candidate.Matched ? "yes" : "no")},reason={candidate.RejectReason},source={order.CaptureSource},obj={(order.OrderObject == null ? "no" : "yes")}/{(order.ControllerObject == null ? "no" : "yes")},manual={order.ManualOrder},manualCallback={(order.ManualEvaluationCallback == null ? "no" : "yes")}";
+                return $"identity=({FormatCapturedOrderIdentity(order)}),match={(candidate.Matched ? "yes" : "no")},reason={candidate.RejectReason},source={order.CaptureSource},obj={(order.OrderObject == null ? "no" : "yes")}/{(order.ControllerObject == null ? "no" : "yes")},manual={order.ManualOrder},manualCallback={(order.ManualEvaluationCallback == null ? "no" : "yes")}";
             })
             .ToArray();
         var suffix = capturedOrders.Count > items.Length ? $" ... total={capturedOrders.Count}" : "";
@@ -1548,6 +1618,58 @@ internal static partial class RuntimeOrderPreparationService
             : SpecialBusinessDiagnostics.DescribeObject(sellable);
     }
 
+    private static bool TryCaptureRuntimeOrderLifecycle(
+        object? order,
+        object? controller,
+        out long lifecycleSequence,
+        out string diagnostic)
+    {
+        lifecycleSequence = 0;
+        var lifecycleBefore = RuntimeNightBusinessLifecycle.Snapshot;
+        if (!lifecycleBefore.IsActive || lifecycleBefore.Generation <= 0)
+        {
+            diagnostic = "night-business lifecycle is not active";
+            return false;
+        }
+
+        var resolution = RuntimeOrderTypeResolver.Resolve(order);
+        if (!resolution.Resolved || resolution.ReadableOrder == null)
+        {
+            diagnostic = $"exact concrete order kind unavailable: {resolution.Reason}";
+            return false;
+        }
+
+        if (controller == null
+            || !TryReadNativeObjectPointer(resolution.ReadableOrder, out var orderPointer)
+            || !TryReadNativeObjectPointer(controller, out var controllerPointer))
+        {
+            diagnostic = "exact order/controller native identity unavailable";
+            return false;
+        }
+
+        if (!RuntimeOrderTerminalReceiptStore.TryCaptureActiveLifecycle(
+                lifecycleBefore.Generation,
+                resolution.Kind,
+                orderPointer,
+                controllerPointer,
+                out lifecycleSequence))
+        {
+            diagnostic = "exact order/controller identity has no active lifecycle";
+            return false;
+        }
+
+        var lifecycleAfter = RuntimeNightBusinessLifecycle.Snapshot;
+        if (!lifecycleAfter.IsActive || lifecycleAfter.Generation != lifecycleBefore.Generation)
+        {
+            lifecycleSequence = 0;
+            diagnostic = "night-business generation changed while capturing order lifecycle";
+            return false;
+        }
+
+        diagnostic = $"orderLifecycle={lifecycleSequence}";
+        return true;
+    }
+
     private static bool TryResolveRuntimeOrder(
         object? order,
         RuntimeOrderKind expectedKind,
@@ -1579,6 +1701,7 @@ internal static partial class RuntimeOrderPreparationService
         public object? Manager { get; init; }
         public object? Controller { get; init; }
         public object? Order { get; init; }
+        public long OrderLifecycleSequence { get; init; }
         public bool ManualOrder { get; init; }
         public object? ManualEvaluationCallback { get; init; }
         public bool YuyukoManualBindingResolved { get; init; }

@@ -30,8 +30,6 @@ internal sealed class NightBusinessReflectionProvider
     private readonly RuntimeStaticDataSnapshot? _staticDataSnapshot;
     private readonly bool _diagnosticsEnabled;
     private readonly string _sceneName;
-    private IReadOnlyList<string>? _foodTagCandidates;
-    private IReadOnlyList<string>? _beverageTagCandidates;
     private List<NightBusinessCandidateDiagnostic>? _candidateDiagnostics;
     private readonly Dictionary<string, double> _performanceMs = new(StringComparer.Ordinal);
 
@@ -559,29 +557,54 @@ internal sealed class NightBusinessReflectionProvider
         var identity = IsSpecialGuestObject(specialGuest)
             ? ResolveRareCustomerIdentity(specialGuest)
             : ResolveOrderingGuestRareCustomerIdentity(specialGuest, classifiedSpecialBusinessOrder);
-        var foodTag = ResolveOrderTagText(readableOrder, controller, specialGuest, "GetOrderFoodText", "GetFoodTagText", "RequestFoodTag", useFoodTagMap: true);
-        var beverageTag = ResolveOrderTagText(readableOrder, controller, specialGuest, "GetOrderBevText", "GetBevTagText", "RequestBeverageTag", useFoodTagMap: false);
         var foodTagId = ToNullableInt(GetMemberValue(readableOrder, "RequestFoodTag"));
         var beverageTagId = ToNullableInt(GetMemberValue(readableOrder, "RequestBeverageTag"));
-        if (!foodTagId.HasValue && !beverageTagId.HasValue && string.IsNullOrWhiteSpace(foodTag) && string.IsNullOrWhiteSpace(beverageTag))
+        if (!foodTagId.HasValue || !beverageTagId.HasValue)
         {
-            RecordCandidate("Order", source, accepted: false, "empty food and beverage tag", () => DescribeOrderCandidate(readableOrder, controller));
+            RecordCandidate(
+                "Order",
+                source,
+                accepted: false,
+                $"exact raw RequestFoodTag/RequestBeverageTag identity is incomplete: food={foodTagId?.ToString() ?? "missing"}; beverage={beverageTagId?.ToString() ?? "missing"}",
+                () => DescribeOrderCandidate(readableOrder, controller));
+            return null;
+        }
+        var foodTag = ResolveTagTextFromMap(foodTagId.Value, useFoodTagMap: true);
+        var beverageTag = ResolveTagTextFromMap(beverageTagId.Value, useFoodTagMap: false);
+        if (string.IsNullOrWhiteSpace(foodTag) || string.IsNullOrWhiteSpace(beverageTag))
+        {
+            RecordCandidate(
+                "Order",
+                source,
+                accepted: false,
+                $"runtime Tag map missing raw identity: food={foodTagId.Value}; beverage={beverageTagId.Value}; foodMapped={!string.IsNullOrWhiteSpace(foodTag)}; beverageMapped={!string.IsNullOrWhiteSpace(beverageTag)}",
+                () => DescribeOrderCandidate(readableOrder, controller));
             return null;
         }
 
         var deskCode = ToNullableInt(GetMemberValue(readableOrder, "DeskCode"))
             ?? ToNullableInt(GetMemberValue(controller, "DeskCode"))
             ?? -1;
+        var lifecycleAvailable = TryReadActiveOrderLifecycle(
+            readableOrder,
+            controller,
+            RuntimeOrderKind.Special,
+            out var orderLifecycleSequence);
         var result = new NightBusinessOrder
         {
+            OrderLifecycleSequence = lifecycleAvailable ? orderLifecycleSequence : -1,
             DeskCode = deskCode,
             GuestId = identity?.Id ?? guestId,
             RuntimeGuestId = guestId,
             GuestName = identity?.Name ?? ReadGuestName(specialGuest, guestId),
             SpecialBusinessRole = classification.Role,
             SpecialBusinessRoleLabel = classification.RoleLabel,
-            AutomationAllowed = classification.AutomationAllowed,
-            AutomationBlockReason = classification.AutomationBlockReason,
+            AutomationAllowed = classification.AutomationAllowed && lifecycleAvailable,
+            AutomationBlockReason = !classification.AutomationAllowed
+                ? classification.AutomationBlockReason
+                : lifecycleAvailable
+                    ? ""
+                    : "订单缺少活动生命周期身份，暂不执行自动化。",
             FoodTagId = foodTagId,
             FoodTag = foodTag,
             BeverageTagId = beverageTagId,
@@ -657,8 +680,7 @@ internal sealed class NightBusinessReflectionProvider
     {
         foreach (var captured in capturedOrders)
         {
-            if (!HasCapturedOrderDetails(captured)
-                || captured.OrderObject == null
+            if (captured.OrderObject == null
                 || captured.ControllerObject == null
                 || string.IsNullOrWhiteSpace(captured.RuntimeKey))
             {
@@ -666,22 +688,43 @@ internal sealed class NightBusinessReflectionProvider
             }
 
             var activeGuest = FindActiveGuestForCapturedOrder(captured, activeGuests);
+            if (!TryReadActiveOrderLifecycle(
+                    captured.OrderObject,
+                    captured.ControllerObject,
+                    RuntimeOrderKind.Special,
+                    out var activeLifecycleSequence)
+                || activeLifecycleSequence != captured.OrderLifecycleSequence)
+            {
+                RecordCandidate(
+                    "RuntimeCapture",
+                    captured.CaptureSource,
+                    accepted: false,
+                    $"captured order lifecycle is inactive or replaced: captured={captured.OrderLifecycleSequence}; active={activeLifecycleSequence}",
+                    () => DescribeOrderCandidate(captured.OrderObject, captured.ControllerObject));
+                continue;
+            }
+
             var identity = ResolveRareCustomerIdentity(captured.GuestId, captured.GuestName);
             var classification = SpecialBusinessOrderClassifier.Classify(captured.OrderObject, captured.ControllerObject);
             var guestId = identity?.Id ?? captured.GuestId ?? activeGuest?.GuestId;
             var fallbackGuestName = !string.IsNullOrWhiteSpace(captured.GuestName)
                 ? captured.GuestName
                 : activeGuest?.GuestName ?? "";
-            var foodTag = ResolveCapturedTagText(
-                captured.FoodTagDisplayText,
-                captured.HasFoodTagId ? captured.FoodTagId : null,
-                useFoodTagMap: true);
-            var beverageTag = ResolveCapturedTagText(
-                captured.BeverageTagDisplayText,
-                captured.HasBeverageTagId ? captured.BeverageTagId : null,
-                useFoodTagMap: false);
+            var foodTag = ResolveTagTextFromMap(captured.FoodTagId, useFoodTagMap: true);
+            var beverageTag = ResolveTagTextFromMap(captured.BeverageTagId, useFoodTagMap: false);
+            if (string.IsNullOrWhiteSpace(foodTag) || string.IsNullOrWhiteSpace(beverageTag))
+            {
+                RecordCandidate(
+                    "RuntimeCapture",
+                    captured.CaptureSource,
+                    accepted: false,
+                    $"runtime Tag map missing captured raw identity: food={captured.FoodTagId}; beverage={captured.BeverageTagId}; foodMapped={!string.IsNullOrWhiteSpace(foodTag)}; beverageMapped={!string.IsNullOrWhiteSpace(beverageTag)}",
+                    () => DescribeOrderCandidate(captured.OrderObject, captured.ControllerObject));
+                continue;
+            }
             var order = new NightBusinessOrder
             {
+                OrderLifecycleSequence = captured.OrderLifecycleSequence,
                 DeskCode = captured.DeskCode,
                 GuestId = guestId,
                 RuntimeGuestId = captured.GuestId,
@@ -690,9 +733,9 @@ internal sealed class NightBusinessReflectionProvider
                 SpecialBusinessRoleLabel = classification.RoleLabel,
                 AutomationAllowed = classification.AutomationAllowed,
                 AutomationBlockReason = classification.AutomationBlockReason,
-                FoodTagId = captured.HasFoodTagId ? captured.FoodTagId : null,
+                FoodTagId = captured.FoodTagId,
                 FoodTag = foodTag,
-                BeverageTagId = captured.HasBeverageTagId ? captured.BeverageTagId : null,
+                BeverageTagId = captured.BeverageTagId,
                 BeverageTag = beverageTag,
                 Source = string.IsNullOrWhiteSpace(captured.CaptureSource) ? "RuntimeCapture" : $"RuntimeCapture:{captured.CaptureSource}",
                 FirstSeenAtUtc = captured.FirstCapturedAt,
@@ -762,21 +805,39 @@ internal sealed class NightBusinessReflectionProvider
         return ResolveRareCustomerIdentity(guestId, fallback)?.Name ?? fallback;
     }
 
-    private string ResolveCapturedTagText(string tagText, int? tagId, bool useFoodTagMap)
+    private static bool TryReadActiveOrderLifecycle(
+        object? order,
+        object? controller,
+        RuntimeOrderKind orderKind,
+        out long lifecycleSequence)
     {
-        if (tagId.HasValue && TryResolveTagTextFromMap(tagId.Value, useFoodTagMap, out var mapped)) return mapped;
+        lifecycleSequence = 0;
+        var lifecycleBefore = RuntimeNightBusinessLifecycle.Snapshot;
+        if (!lifecycleBefore.IsActive
+            || lifecycleBefore.Generation <= 0
+            || order == null
+            || controller == null
+            || !RuntimeReflectionUtility.TryReadNativeObjectPointer(order, out var orderPointer)
+            || !RuntimeReflectionUtility.TryReadNativeObjectPointer(controller, out var controllerPointer)
+            || !RuntimeOrderTerminalReceiptStore.TryCaptureActiveLifecycle(
+                lifecycleBefore.Generation,
+                orderKind,
+                orderPointer,
+                controllerPointer,
+                out lifecycleSequence))
+        {
+            lifecycleSequence = 0;
+            return false;
+        }
 
-        var normalized = CanonicalizeTagText(tagText, useFoodTagMap);
-        if (!string.IsNullOrWhiteSpace(normalized)) return normalized;
-        return tagId.HasValue ? ResolveTagTextFromMap(tagId.Value, useFoodTagMap) : "";
-    }
+        var lifecycleAfter = RuntimeNightBusinessLifecycle.Snapshot;
+        if (!lifecycleAfter.IsActive || lifecycleAfter.Generation != lifecycleBefore.Generation)
+        {
+            lifecycleSequence = 0;
+            return false;
+        }
 
-    private static bool HasCapturedOrderDetails(CapturedRuntimeSpecialOrder captured)
-    {
-        return captured.HasFoodTagId
-            || captured.HasBeverageTagId
-            || !string.IsNullOrWhiteSpace(captured.FoodTagDisplayText)
-            || !string.IsNullOrWhiteSpace(captured.BeverageTagDisplayText);
+        return lifecycleSequence > 0;
     }
 
     private static bool IsCompatibleDesk(int orderDeskCode, int guestDeskCode)
@@ -791,7 +852,7 @@ internal sealed class NightBusinessReflectionProvider
 
         foreach (var order in orders)
         {
-            var key = $"{order.DeskCode}:{order.RuntimeGuestId?.ToString() ?? "missing"}:{order.FoodTagId?.ToString() ?? "missing"}:{order.BeverageTagId?.ToString() ?? "missing"}";
+            var key = $"{order.OrderLifecycleSequence}:{order.DeskCode}:{order.RuntimeGuestId?.ToString() ?? "missing"}:{order.FoodTagId?.ToString() ?? "missing"}:{order.BeverageTagId?.ToString() ?? "missing"}";
             if (!bySlot.TryGetValue(key, out var existing))
             {
                 bySlot[key] = order;
@@ -839,6 +900,9 @@ internal sealed class NightBusinessReflectionProvider
         return new NightBusinessOrder
         {
             TraceId = string.IsNullOrWhiteSpace(traceId) ? order.TraceId : traceId,
+            OrderLifecycleSequence = order.OrderLifecycleSequence > 0
+                ? order.OrderLifecycleSequence
+                : fallbackOrder?.OrderLifecycleSequence ?? -1,
             DeskCode = order.DeskCode,
             GuestId = order.GuestId,
             RuntimeGuestId = order.RuntimeGuestId ?? fallbackOrder?.RuntimeGuestId,
@@ -1236,28 +1300,6 @@ internal sealed class NightBusinessReflectionProvider
         return value[..Math.Max(0, maxLength - 3)] + "...";
     }
 
-    private string ResolveTagText(object specialGuest, string methodName, int tagId, bool useFoodTagMap)
-    {
-        if (TryResolveTagTextFromMap(tagId, useFoodTagMap, out var mapped)) return mapped;
-
-        var method = specialGuest.GetType().GetMethod(methodName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-        if (method != null)
-        {
-            try
-            {
-                var value = method.Invoke(specialGuest, new object[] { tagId })?.ToString();
-                var normalized = CanonicalizeTagText(value, useFoodTagMap);
-                if (!string.IsNullOrWhiteSpace(normalized)) return normalized;
-            }
-            catch
-            {
-                // Fall through to the local map.
-            }
-        }
-
-        return ResolveTagTextFromMap(tagId, useFoodTagMap);
-    }
-
     private bool TryResolveTagTextFromMap(int tagId, bool useFoodTagMap, out string tagText)
     {
         var key = tagId.ToString();
@@ -1276,31 +1318,7 @@ internal sealed class NightBusinessReflectionProvider
 
     private string ResolveTagTextFromMap(int tagId, bool useFoodTagMap)
     {
-        if (TryResolveTagTextFromMap(tagId, useFoodTagMap, out var mapped)) return mapped;
-
-        if (tagId < 0) return "";
-        if (tagId == 0) return "";
-        return $"#{tagId}";
-    }
-
-    private string ResolveOrderTagText(
-        object order,
-        object? controller,
-        object specialGuest,
-        string controllerMethodName,
-        string guestMethodName,
-        string orderPropertyName,
-        bool useFoodTagMap)
-    {
-        var tagValue = GetMemberValue(order, orderPropertyName);
-        var tagId = ToNullableInt(tagValue);
-        if (tagId.HasValue && TryResolveTagTextFromMap(tagId.Value, useFoodTagMap, out var mapped)) return mapped;
-
-        var controllerValue = InvokeMethod(controller, controllerMethodName, order)?.ToString();
-        var normalized = CanonicalizeTagText(controllerValue, useFoodTagMap);
-        if (!string.IsNullOrWhiteSpace(normalized)) return normalized;
-
-        return tagId.HasValue ? ResolveTagText(specialGuest, guestMethodName, tagId.Value, useFoodTagMap) : "";
+        return TryResolveTagTextFromMap(tagId, useFoodTagMap, out var mapped) ? mapped : "";
     }
 
     private static string? NormalizeTagText(string? value)
@@ -1315,98 +1333,6 @@ internal sealed class NightBusinessReflectionProvider
 
         var normalized = FoodTags.NormalizeName(trimmed);
         return string.IsNullOrWhiteSpace(normalized) ? trimmed : normalized;
-    }
-
-    private string CanonicalizeTagText(string? value, bool useFoodTagMap)
-    {
-        var normalized = NormalizeTagText(value);
-        if (string.IsNullOrWhiteSpace(normalized)) return "";
-
-        var candidates = GetKnownTagCandidates(useFoodTagMap);
-        foreach (var candidate in candidates)
-        {
-            if (string.Equals(normalized, candidate, StringComparison.Ordinal)) return candidate;
-        }
-
-        foreach (var candidate in candidates)
-        {
-            if (normalized.Contains(candidate, StringComparison.Ordinal)) return candidate;
-        }
-
-        return normalized;
-    }
-
-    private IReadOnlyList<string> GetKnownTagCandidates(bool useFoodTagMap)
-    {
-        if (useFoodTagMap)
-        {
-            _foodTagCandidates ??= BuildKnownTagCandidates(useFoodTagMap: true);
-            return _foodTagCandidates;
-        }
-
-        _beverageTagCandidates ??= BuildKnownTagCandidates(useFoodTagMap: false);
-        return _beverageTagCandidates;
-    }
-
-    private IReadOnlyList<string> BuildKnownTagCandidates(bool useFoodTagMap)
-    {
-        var values = new List<string>();
-
-        void Add(string? value)
-        {
-            var normalized = NormalizeTagText(value);
-            if (!string.IsNullOrWhiteSpace(normalized)) values.Add(normalized);
-        }
-
-        if (useFoodTagMap)
-        {
-            foreach (var tag in FoodTags.All) Add(tag);
-            foreach (var tag in _repository.FoodTagIdMap.Values) Add(tag);
-            foreach (var recipe in _repository.Recipes)
-            {
-                foreach (var tag in recipe.PositiveTags) Add(tag);
-                foreach (var tag in recipe.NegativeTags) Add(tag);
-            }
-
-            foreach (var ingredient in _repository.Ingredients)
-            {
-                foreach (var tag in ingredient.Tags) Add(tag);
-            }
-
-            foreach (var customer in _repository.NormalCustomers)
-            {
-                foreach (var tag in customer.PositiveTags) Add(tag);
-            }
-
-            foreach (var customer in _repository.RareCustomers)
-            {
-                foreach (var tag in customer.PositiveTags) Add(tag);
-                foreach (var tag in customer.NegativeTags) Add(tag);
-            }
-        }
-        else
-        {
-            foreach (var beverage in _repository.Beverages)
-            {
-                foreach (var tag in beverage.Tags) Add(tag);
-            }
-
-            foreach (var customer in _repository.NormalCustomers)
-            {
-                foreach (var tag in customer.BeverageTags) Add(tag);
-            }
-
-            foreach (var customer in _repository.RareCustomers)
-            {
-                foreach (var tag in customer.BeverageTags) Add(tag);
-            }
-        }
-
-        return values
-            .Distinct(StringComparer.Ordinal)
-            .OrderByDescending(value => value.Length)
-            .ThenBy(value => value, StringComparer.Ordinal)
-            .ToList();
     }
 
     private static string ReadGuestName(object specialGuest, int? guestId)

@@ -81,7 +81,14 @@ public sealed class RuntimeNormalOrderSnapshotService
         if (runtimeCaptureReady)
         {
             source.Add("normalOrderMode=authoritativeCapture");
-            return BuildContext(visibleOrders.Concat(runtimeCapturedOrders), source, errors);
+            var capturedNativeKeys = runtimeCapturedOrders
+                .Select(order => order.OrderKey)
+                .Where(key => !string.IsNullOrWhiteSpace(key))
+                .ToHashSet(StringComparer.Ordinal);
+            var unboundVisibleOrders = visibleOrders
+                .Where(order => string.IsNullOrWhiteSpace(order.OrderKey)
+                    || !capturedNativeKeys.Contains(order.OrderKey));
+            return BuildContext(runtimeCapturedOrders.Concat(unboundVisibleOrders), source, errors);
         }
 
         source.Add("normalOrderMode=visibleFailClosed");
@@ -157,8 +164,12 @@ public sealed class RuntimeNormalOrderSnapshotService
 
     private static string BuildOrderKey(NormalBusinessOrder order)
     {
-        if (!string.IsNullOrWhiteSpace(order.OrderKey)) return order.OrderKey;
-        return $"{order.DeskCode}|{order.FoodId}|{order.BeverageId}";
+        var rawKey = !string.IsNullOrWhiteSpace(order.OrderKey)
+            ? order.OrderKey
+            : $"{order.DeskCode}|{order.FoodId}|{order.BeverageId}";
+        return order.OrderLifecycleSequence > 0
+            ? $"{rawKey}|lifecycle:{order.OrderLifecycleSequence}"
+            : $"{rawKey}|unbound";
     }
 
     private static NormalBusinessOrder MergeOrderGroup(IEnumerable<NormalBusinessOrder> group)
@@ -169,10 +180,18 @@ public sealed class RuntimeNormalOrderSnapshotService
             .Select(order => order.GuestName)
             .FirstOrDefault(IsSpecificNormalGuestName) ?? first.GuestName;
         var specialBusinessRoleSource = ResolveSpecialBusinessRoleSource(orders);
+        var lifecycleSequences = orders
+            .Select(order => order.OrderLifecycleSequence)
+            .Where(sequence => sequence > 0)
+            .Distinct()
+            .Take(2)
+            .ToArray();
+        var orderLifecycleSequence = lifecycleSequences.Length == 1 ? lifecycleSequences[0] : -1;
         return new NormalBusinessOrder
         {
             TraceId = first.TraceId,
             OrderKey = first.OrderKey,
+            OrderLifecycleSequence = orderLifecycleSequence,
             DeskCode = first.DeskCode,
             GuestId = orders
                 .Select(order => order.GuestId)
@@ -204,8 +223,10 @@ public sealed class RuntimeNormalOrderSnapshotService
             ReadyToEvaluate = orders.Any(order => order.ReadyToEvaluate),
             HasEvaluated = orders.Any(order => order.HasEvaluated),
             ControllerAvailable = orders.Any(order => order.ControllerAvailable),
-            CanAutomate = orders.Any(order => order.CanAutomate),
-            ActionBlockReason = ResolveActionBlockReason(orders),
+            CanAutomate = orderLifecycleSequence > 0 && orders.Any(order => order.CanAutomate),
+            ActionBlockReason = orderLifecycleSequence > 0
+                ? ResolveActionBlockReason(orders)
+                : "订单活动生命周期身份缺失或冲突，暂不执行自动化。",
             FirstSeenAtUtc = first.FirstSeenAtUtc,
             Source = string.Join("/", orders.Select(order => order.Source).Where(source => !string.IsNullOrWhiteSpace(source)).Distinct(StringComparer.Ordinal)),
         };
@@ -235,6 +256,7 @@ public sealed class RuntimeNormalOrderSnapshotService
         var traceOrder = new NormalBusinessOrder
         {
             OrderKey = order.OrderKey,
+            OrderLifecycleSequence = order.OrderLifecycleSequence,
             DeskCode = order.DeskCode,
             GuestId = order.GuestId,
             RuntimeGuestId = order.RuntimeGuestId,
@@ -262,6 +284,7 @@ public sealed class RuntimeNormalOrderSnapshotService
                 ? RuntimeOrderTraceIdService.GetNormalTraceId(traceOrder)
                 : order.TraceId,
             OrderKey = order.OrderKey,
+            OrderLifecycleSequence = order.OrderLifecycleSequence,
             DeskCode = order.DeskCode,
             GuestId = order.GuestId,
             RuntimeGuestId = order.RuntimeGuestId,
@@ -344,12 +367,20 @@ public sealed class RuntimeNormalOrderSnapshotService
     {
         foreach (var captured in NormalOrderRuntimeCapture.Snapshot(RuntimeCapturedOrderMaxAge))
         {
-            var parsed = ReadNormalOrder(captured.OrderObject, captured.ControllerObject, $"RuntimeCapture:{captured.CaptureSource}");
+            var parsed = ReadNormalOrder(
+                captured.OrderObject,
+                captured.ControllerObject,
+                $"RuntimeCapture:{captured.CaptureSource}",
+                captured.OrderLifecycleSequence);
             if (parsed != null) yield return parsed;
         }
     }
 
-    private NormalBusinessOrder? ReadNormalOrder(object? order, object? controller, string source)
+    private NormalBusinessOrder? ReadNormalOrder(
+        object? order,
+        object? controller,
+        string source,
+        long expectedLifecycleSequence = -1)
     {
         var resolution = RuntimeOrderTypeResolver.Resolve(order);
         if (!resolution.Resolved
@@ -360,6 +391,15 @@ public sealed class RuntimeNormalOrderSnapshotService
         }
 
         var readableOrder = resolution.ReadableOrder;
+        var lifecycleAvailable = TryReadActiveOrderLifecycle(
+            readableOrder,
+            controller,
+            out var orderLifecycleSequence);
+        if (expectedLifecycleSequence > 0
+            && (!lifecycleAvailable || orderLifecycleSequence != expectedLifecycleSequence))
+        {
+            return null;
+        }
         var classification = SpecialBusinessOrderClassifier.Classify(readableOrder, controller, source);
 
         var requestFood = SafeGet(readableOrder, "RequestFood") ?? SafeInvoke(readableOrder, "get_RequestFood");
@@ -386,6 +426,7 @@ public sealed class RuntimeNormalOrderSnapshotService
         return new NormalBusinessOrder
         {
             OrderKey = orderKey,
+            OrderLifecycleSequence = lifecycleAvailable ? orderLifecycleSequence : -1,
             DeskCode = deskCode,
             GuestId = guestId,
             RuntimeGuestId = classification.RuntimeGuestId,
@@ -409,10 +450,14 @@ public sealed class RuntimeNormalOrderSnapshotService
             ReadyToEvaluate = RuntimeReflectionUtility.ToBool(SafeGet(readableOrder, "IsFullfilled")),
             HasEvaluated = RuntimeReflectionUtility.ToBool(SafeGet(controller, "HasEvaluated") ?? SafeInvoke(controller, "get_HasEvaluated")),
             ControllerAvailable = controller != null,
-            CanAutomate = controller != null && classification.AutomationAllowed,
+            CanAutomate = controller != null && classification.AutomationAllowed && lifecycleAvailable,
             ActionBlockReason = !classification.AutomationAllowed
                 ? classification.AutomationBlockReason
-                : controller == null ? "订单仍在 HUD 中，但未读取到可执行客人控制器。" : "",
+                : controller == null
+                    ? "订单仍在 HUD 中，但未读取到可执行客人控制器。"
+                    : lifecycleAvailable
+                        ? ""
+                        : "订单缺少活动生命周期身份，暂不执行自动化。",
             Source = source,
         };
     }
@@ -422,6 +467,40 @@ public sealed class RuntimeNormalOrderSnapshotService
         return RuntimeReflectionUtility.TryReadNativeObjectPointer(order, out var pointer)
             ? $"ptr:{pointer:x}"
             : "";
+    }
+
+    private static bool TryReadActiveOrderLifecycle(
+        object? order,
+        object? controller,
+        out long lifecycleSequence)
+    {
+        lifecycleSequence = 0;
+        var lifecycleBefore = RuntimeNightBusinessLifecycle.Snapshot;
+        if (!lifecycleBefore.IsActive
+            || lifecycleBefore.Generation <= 0
+            || order == null
+            || controller == null
+            || !RuntimeReflectionUtility.TryReadNativeObjectPointer(order, out var orderPointer)
+            || !RuntimeReflectionUtility.TryReadNativeObjectPointer(controller, out var controllerPointer)
+            || !RuntimeOrderTerminalReceiptStore.TryCaptureActiveLifecycle(
+                lifecycleBefore.Generation,
+                RuntimeOrderKind.Normal,
+                orderPointer,
+                controllerPointer,
+                out lifecycleSequence))
+        {
+            lifecycleSequence = 0;
+            return false;
+        }
+
+        var lifecycleAfter = RuntimeNightBusinessLifecycle.Snapshot;
+        if (!lifecycleAfter.IsActive || lifecycleAfter.Generation != lifecycleBefore.Generation)
+        {
+            lifecycleSequence = 0;
+            return false;
+        }
+
+        return lifecycleSequence > 0;
     }
 
     private static int ReadSellableId(object? sellable, object? fallback)

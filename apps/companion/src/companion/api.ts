@@ -589,6 +589,7 @@ export async function completeFirstNormalOrder(
   const params = new URLSearchParams({
     traceId: order.traceId ?? '',
     orderKey: order.orderKey ?? '',
+    orderLifecycleSequence: String(order.orderLifecycleSequence),
     deskCode: String(order.deskCode),
     guestName: order.guestName || '普客',
     specialBusinessRole: order.specialBusinessRole ?? '',
@@ -784,6 +785,7 @@ async function rareOrderAction(
   // 订单自动化需要把本次推荐锁定的料理、加料和酒水传给 Mod，避免轮询刷新后前端列表变化影响正在执行的订单。
   const params = new URLSearchParams({
     traceId: item.order.traceId ?? '',
+    orderLifecycleSequence: String(item.order.orderLifecycleSequence),
     deskCode: String(item.order.deskCode),
     guestId: item.order.guestId == null ? '' : String(item.order.guestId),
     guestName: item.order.guestName,

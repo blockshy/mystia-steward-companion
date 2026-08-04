@@ -34,6 +34,101 @@ internal readonly record struct AutomationCookingTransition(
 
 internal sealed record AutomationCookingProcessResult(IReadOnlyList<string> Messages, bool Changed);
 
+internal enum AutomationCookingControllerLeaseReleaseReason
+{
+    None,
+    ManualHandoff,
+    DeliveryCleanupCompleted,
+    DeliveryCleanupTerminated,
+}
+
+/// <summary>
+/// Tracks the Mod's logical reservation of one exact cook controller.
+/// </summary>
+/// <remarks>
+/// This lease is independent from the game's LockedCookers state. Once released it cannot be
+/// reacquired by the same job; an evaluation receipt may outlive the lease without blocking a
+/// physically idle cooker.
+/// </remarks>
+internal sealed class AutomationCookingControllerLease
+{
+    public bool HoldsReservation { get; private set; } = true;
+    public AutomationCookingControllerLeaseReleaseReason ReleaseReason { get; private set; }
+    public DateTime? ReleasedAtUtc { get; private set; }
+
+    public bool Release(
+        AutomationCookingControllerLeaseReleaseReason reason,
+        DateTime releasedAtUtc)
+    {
+        if (reason == AutomationCookingControllerLeaseReleaseReason.None)
+        {
+            throw new ArgumentOutOfRangeException(nameof(reason));
+        }
+
+        if (!HoldsReservation)
+        {
+            return false;
+        }
+
+        HoldsReservation = false;
+        ReleaseReason = reason;
+        ReleasedAtUtc = releasedAtUtc;
+        return true;
+    }
+}
+
+/// <summary>
+/// Bounds fresh-order evaluation closeout after cooker ownership has already ended.
+/// </summary>
+internal sealed class AutomationOrderEvaluationCloseoutTracker
+{
+    private readonly AutomationEffectiveTimeoutClock _effectiveClock;
+
+    public AutomationOrderEvaluationCloseoutTracker(
+        DateTime startedAtUtc,
+        int maxAttempts,
+        TimeSpan minimumAttemptWindow,
+        TimeSpan maxEffectiveDuration)
+    {
+        if (maxAttempts <= 0) throw new ArgumentOutOfRangeException(nameof(maxAttempts));
+        if (minimumAttemptWindow < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(minimumAttemptWindow));
+        if (maxEffectiveDuration <= TimeSpan.Zero || maxEffectiveDuration < minimumAttemptWindow)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maxEffectiveDuration));
+        }
+
+        MaxAttempts = maxAttempts;
+        MinimumAttemptWindow = minimumAttemptWindow;
+        MaxEffectiveDuration = maxEffectiveDuration;
+        _effectiveClock = new AutomationEffectiveTimeoutClock(startedAtUtc, initiallyEligible: true);
+    }
+
+    public int MaxAttempts { get; }
+    public TimeSpan MinimumAttemptWindow { get; }
+    public TimeSpan MaxEffectiveDuration { get; }
+    public int AttemptCount { get; private set; }
+    public TimeSpan EffectiveElapsed => _effectiveClock.Elapsed;
+    public bool Exhausted =>
+        AttemptCount >= MaxAttempts && EffectiveElapsed >= MinimumAttemptWindow
+        || EffectiveElapsed >= MaxEffectiveDuration;
+
+    public bool RecordFailure(DateTime observedAtUtc, bool eligible)
+    {
+        _effectiveClock.Observe(observedAtUtc, eligible);
+        if (eligible)
+        {
+            AttemptCount++;
+        }
+
+        return Exhausted;
+    }
+
+    public void Suspend(DateTime observedAtUtc)
+    {
+        _effectiveClock.Observe(observedAtUtc, eligible: false);
+    }
+}
+
 /// <summary>
 /// Accumulates only time intervals whose endpoints are both eligible for runtime progress.
 /// </summary>
@@ -202,6 +297,20 @@ internal sealed class AutomationCookingJobTracker
         State = "manual-handoff";
         Outcome = "waiting";
         ReasonCode = "cooking-manual-handoff";
+    }
+
+    public void EnterEvaluationPending(DateTime observedAtUtc, string reasonCode)
+    {
+        if (string.IsNullOrWhiteSpace(reasonCode))
+        {
+            throw new ArgumentException("Evaluation-pending reason code is required.", nameof(reasonCode));
+        }
+
+        _stallClock.Observe(observedAtUtc, eligible: false);
+        LastObservedAtUtc = observedAtUtc;
+        State = "evaluation-pending";
+        Outcome = "waiting";
+        ReasonCode = reasonCode;
     }
 
     public void MarkManualHandoffExpired(DateTime observedAtUtc)

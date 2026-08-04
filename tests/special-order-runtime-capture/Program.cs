@@ -5,11 +5,10 @@ using SpecialOrder = NightScene.GuestManagementUtility.GuestsManager.SpecialOrde
 
 try
 {
-    VerifyControllerTextResolvesNegativeBeverageTag();
-    VerifyControllerOverrideIsAuthoritative();
-    VerifyParsedOverrideMatchesByRawIdentity();
-    VerifyRawIdentityRemainsWithoutControllerGetter();
-    VerifyMergeKeepsRawIdentityAndDisplayTextIndependent();
+    VerifyRawSignedTagsAvoidTextGetters();
+    VerifyRawIdentityMatchesWithoutDisplayText();
+    VerifyMissingRawTagFailsClosed();
+    VerifyProductionSourcesRejectTextGetterPaths();
     VerifyDifferentRuntimeKeysNeverMerge();
     VerifyRuntimeKeysRequireNativePointers();
     VerifyDismissMatchesEveryProvidedRuntimeIdentityField();
@@ -20,6 +19,10 @@ try
     VerifyCleanupRemovalCommitsOnlyAfterNativeSuccess();
     VerifyRepellRemovalCommitsAfterNativeSuccess();
     VerifyNormalCompletionAndCleanupBoundaries();
+    VerifyTerminalReceiptsUseExactHookIdentity();
+    VerifyCapturedOrderLifecycleAbaKeepsTheNewBinding();
+    VerifyBoundStatusObserversDoNotAdvanceLifecycle();
+    VerifyRawTagDriftQuarantinesTheLifecycle();
     VerifyBusinessReadinessRequiresCompleteHooksBeforeTheGeneration();
     VerifyHistoricalOrderStacksAreNotUsedForLiveness();
     VerifyManualSetterHookUsesExact783Signature();
@@ -30,7 +33,7 @@ try
     VerifyManualBindingRetiresWithCapturedOrder();
     VerifySkippedManualSetterDoesNotCapture();
     VerifyOrdinaryOrderIsNotAParseFailure();
-    Console.WriteLine("PASS: special-order capture keeps raw Tag identity separate from the game's final display text.");
+    Console.WriteLine("PASS: special-order capture uses exact raw signed Tag identity without text getters or text fallback.");
     return 0;
 }
 catch (Exception ex)
@@ -193,111 +196,82 @@ static void VerifyObserverHooksUseExact783Signatures()
     }
 }
 
-static void VerifyControllerTextResolvesNegativeBeverageTag()
+static void VerifyRawSignedTagsAvoidTextGetters()
 {
-    var controller = new SpecialOrderController("甜", "无酒精");
-    var captured = Parse(new SpecialOrder(17, -1, ""), controller);
+    var controller = new SpecialOrderController("unused food text", "unused beverage text")
+    {
+        ThrowOnTextRead = true,
+    };
+    var runtimeOrder = new SpecialOrder(17, -1, BuildOrderText("stale food", "stale beverage"));
+    var captured = Parse(runtimeOrder, controller);
 
-    AssertEqual("甜", captured.FoodTagDisplayText, "Food Tag display text did not use the controller's final order text.");
     AssertEqual(17, captured.FoodTagId, "Food Tag ID changed unexpectedly.");
-    AssertEqual(true, captured.HasFoodTagId, "A valid food Tag ID was discarded.");
-    AssertEqual("无酒精", captured.BeverageTagDisplayText, "Negative beverage Tag ID lost its controller display text.");
     AssertEqual(-1, captured.BeverageTagId, "Negative beverage Tag ID changed unexpectedly.");
-    AssertEqual(true, captured.HasBeverageTagId, "A negative beverage Tag ID was discarded even though the raw value was readable.");
-    AssertEqual(1, controller.FoodReads, "Food order text was not read exactly once.");
-    AssertEqual(1, controller.BeverageReads, "Beverage order text was not read exactly once.");
+    AssertEqual(0, controller.FoodReads, "Special-order capture invoked GetOrderFoodText.");
+    AssertEqual(0, controller.BeverageReads, "Special-order capture invoked GetOrderBevText.");
+    AssertEqual(0, runtimeOrder.ToStringReads, "Special-order capture invoked OrderBase.ToString.");
+
+    var zeroAndNegative = Parse(new SpecialOrder(0, -1, ""), new object());
+    AssertEqual(0, zeroAndNegative.FoodTagId, "A readable zero food Tag ID was treated as missing.");
+    AssertEqual(-1, zeroAndNegative.BeverageTagId, "A readable negative beverage Tag ID was treated as missing.");
 }
 
-static void VerifyControllerOverrideIsAuthoritative()
+static void VerifyRawIdentityMatchesWithoutDisplayText()
 {
-    var controller = new SpecialOrderController("梦幻", "辛");
-    var captured = Parse(new SpecialOrder(30, 14, BuildOrderText("旧料理", "旧酒水")), controller);
-
-    AssertEqual(30, captured.FoodTagId, "Food Tag identity was replaced by controller display text.");
-    AssertEqual(true, captured.HasFoodTagId, "Readable food Tag identity was discarded.");
-    AssertEqual("梦幻", captured.FoodTagDisplayText, "Controller food override was replaced by stale order text.");
-    AssertEqual(14, captured.BeverageTagId, "Beverage Tag identity was replaced by controller display text.");
-    AssertEqual(true, captured.HasBeverageTagId, "Readable beverage Tag identity was discarded.");
-    AssertEqual("辛", captured.BeverageTagDisplayText, "Controller beverage override was replaced by stale order text.");
-}
-
-static void VerifyParsedOverrideMatchesByRawIdentity()
-{
-    var captured = Parse(
-        new SpecialOrder(30, 14, BuildOrderText("旧料理", "旧酒水")),
-        new SpecialOrderController("料理就和魔法一样，发光发热才叫好！", "请给我可加冰的饮料"));
+    var captured = Parse(new SpecialOrder(30, 14, BuildOrderText("stale food", "stale beverage")), new object());
     var matched = RareOrderIdentityMatcher.Matches(
         new RareOrderIdentity(2, 123, 30, 14),
         new RareOrderIdentity(
             captured.DeskCode,
             captured.GuestId,
-            captured.HasFoodTagId ? captured.FoodTagId : null,
-            captured.HasBeverageTagId ? captured.BeverageTagId : null),
+            captured.FoodTagId,
+            captured.BeverageTagId),
         out var reason);
-    AssertEqual(true, matched, $"Controller display overrides changed the parsed runtime identity: {reason}");
+    AssertEqual(true, matched, $"Raw signed Tag identity did not match exactly: {reason}");
 }
 
-static void VerifyRawIdentityRemainsWithoutControllerGetter()
+static void VerifyMissingRawTagFailsClosed()
 {
-    var runtimeOrder = new SpecialOrder(17, -1, BuildOrderText("甜", "无酒精"));
-    var captured = Parse(runtimeOrder, new object());
-    AssertEqual("", captured.FoodTagDisplayText, "Order ToString text was used as a food display fallback.");
-    AssertEqual("", captured.BeverageTagDisplayText, "Order ToString text was used as a beverage display fallback.");
-    AssertEqual(-1, captured.BeverageTagId, "Negative raw beverage Tag ID was not retained without a controller.");
-    AssertEqual(true, captured.HasBeverageTagId, "Readable negative beverage Tag ID was marked as missing without a controller.");
-    AssertEqual(0, runtimeOrder.ToStringReads, "Special-order capture invoked the runtime order ToString method.");
+    AssertEqual<object?>(
+        null,
+        TryParse(new SpecialOrder(null, -1, BuildOrderText("fallback food", "fallback beverage")), new SpecialOrderController("fallback", "fallback")),
+        "A SpecialOrder missing RequestFoodTag was accepted through text fallback.");
+    AssertEqual<object?>(
+        null,
+        TryParse(new SpecialOrder(17, null, BuildOrderText("fallback food", "fallback beverage")), new SpecialOrderController("fallback", "fallback")),
+        "A SpecialOrder missing RequestBeverageTag was accepted through text fallback.");
 }
 
-static void VerifyMergeKeepsRawIdentityAndDisplayTextIndependent()
+static void VerifyProductionSourcesRejectTextGetterPaths()
 {
-    var capturedAt = DateTime.UtcNow;
-    var identityOnly = new CapturedRuntimeSpecialOrder(
-        2,
-        123,
-        "Test guest",
-        30,
-        true,
-        "灼热",
-        -1,
-        true,
-        "无酒精",
-        false,
-        false,
-        capturedAt,
-        capturedAt,
-        "",
-        "Identity");
-    var displayOnly = identityOnly with
+    var captureSource = File.ReadAllText(FindRepositoryFile(
+        "mods", "bepinex", "src", "Save", "SpecialOrderRuntimeCapture.cs"));
+    var providerSource = File.ReadAllText(FindRepositoryFile(
+        "mods", "bepinex", "src", "Save", "NightBusinessReflectionProvider.cs"));
+    foreach (var source in new[] { captureSource, providerSource })
     {
-        FoodTagId = 0,
-        HasFoodTagId = false,
-        FoodTagDisplayText = "料理就和魔法一样，发光发热才叫好！",
-        BeverageTagId = 0,
-        HasBeverageTagId = false,
-        BeverageTagDisplayText = "请给我可加冰的饮料",
-        CaptureSource = "Display",
-    };
-
-    var merge = typeof(SpecialOrderRuntimeCapture).GetMethod(
-        "MergeCapturedOrder",
-        BindingFlags.NonPublic | BindingFlags.Static)
-        ?? throw new InvalidOperationException("SpecialOrderRuntimeCapture.MergeCapturedOrder was not found.");
-    var merged = merge.Invoke(null, new object[] { displayOnly, identityOnly }) as CapturedRuntimeSpecialOrder
-        ?? throw new InvalidOperationException("The special order captures were not merged.");
-
-    AssertEqual(30, merged.FoodTagId, "Food Tag identity was lost while merging display text.");
-    AssertEqual(true, merged.HasFoodTagId, "Merged food Tag identity was marked as missing.");
-    AssertEqual("料理就和魔法一样，发光发热才叫好！", merged.FoodTagDisplayText, "Food display text was not merged independently.");
-    AssertEqual(-1, merged.BeverageTagId, "Negative beverage Tag identity was lost while merging display text.");
-    AssertEqual(true, merged.HasBeverageTagId, "Merged negative beverage Tag identity was marked as missing.");
-    AssertEqual("请给我可加冰的饮料", merged.BeverageTagDisplayText, "Beverage display text was not merged independently.");
+        AssertEqual(false, source.Contains("GetOrderFoodText", StringComparison.Ordinal),
+            "Production code restored the SpecialOrder food-text getter.");
+        AssertEqual(false, source.Contains("GetOrderBevText", StringComparison.Ordinal),
+            "Production code restored the SpecialOrder beverage-text getter.");
+        AssertEqual(false, source.Contains("FoodTagDisplayText", StringComparison.Ordinal),
+            "Production code restored captured food display-text state.");
+        AssertEqual(false, source.Contains("BeverageTagDisplayText", StringComparison.Ordinal),
+            "Production code restored captured beverage display-text state.");
+        AssertEqual(false, source.Contains("HasFoodTagId", StringComparison.Ordinal),
+            "Production code restored partial food Tag identity compatibility.");
+        AssertEqual(false, source.Contains("HasBeverageTagId", StringComparison.Ordinal),
+            "Production code restored partial beverage Tag identity compatibility.");
+        AssertEqual(false, source.Contains("MergeTagParts", StringComparison.Ordinal),
+            "Production code restored partial Tag identity merging.");
+    }
 }
 
 static void VerifyDifferentRuntimeKeysNeverMerge()
 {
     var capturedAt = DateTime.UtcNow;
     var first = new CapturedRuntimeSpecialOrder(
-        2, 123, "Test guest", 30, true, "灼热", -1, true, "无酒精",
+        2, 123, "Test guest", 30, -1,
         false, false, capturedAt, capturedAt, "ptr:1", "First");
     var second = first with { RuntimeKey = "ptr:2", CaptureSource = "Second" };
     var canMerge = typeof(SpecialOrderRuntimeCapture).GetMethod(
@@ -307,12 +281,37 @@ static void VerifyDifferentRuntimeKeysNeverMerge()
     var merged = canMerge.Invoke(null, new object[] { first, second }) as bool?;
     AssertEqual(false, merged, "Different native runtime keys were merged by desk/guest fallback.");
 
-    var removalMatches = typeof(SpecialOrderRuntimeCapture).GetMethod(
-        "IsSameOrderRemovalMatch",
-        BindingFlags.NonPublic | BindingFlags.Static)
-        ?? throw new InvalidOperationException("SpecialOrderRuntimeCapture.IsSameOrderRemovalMatch was not found.");
-    var removed = removalMatches.Invoke(null, new object[] { first, second }) as bool?;
-    AssertEqual(false, removed, "A removal callback for another native runtime key matched this order.");
+    AssertEqual<MethodInfo?>(
+        null,
+        typeof(SpecialOrderRuntimeCapture).GetMethod(
+            "RemoveOrder",
+            BindingFlags.NonPublic | BindingFlags.Static,
+            binder: null,
+            types: new[] { typeof(CapturedRuntimeSpecialOrder) },
+            modifiers: null),
+        "The obsolete captured-special-order removal overload was retained.");
+    AssertEqual<MethodInfo?>(
+        null,
+        typeof(NormalOrderRuntimeCapture).GetMethod(
+            "RemoveOrder",
+            BindingFlags.NonPublic | BindingFlags.Static,
+            binder: null,
+            types: new[] { typeof(CapturedRuntimeNormalOrder) },
+            modifiers: null),
+        "The obsolete captured-normal-order removal overload was retained.");
+    foreach (var captureType in new[]
+             {
+                 typeof(SpecialOrderRuntimeCapture),
+                 typeof(NormalOrderRuntimeCapture),
+             })
+    {
+        AssertEqual<MethodInfo?>(
+            null,
+            captureType.GetMethod(
+                "ParseControllerCurrentOrder",
+                BindingFlags.NonPublic | BindingFlags.Static),
+            $"{captureType.Name} retained the obsolete controller-to-capture fallback.");
+    }
 
     var normalSlot = typeof(NormalOrderRuntimeCapture).GetMethod(
         "IsSameOrderSlot",
@@ -382,7 +381,7 @@ static void VerifyDismissMatchesEveryProvidedRuntimeIdentityField()
 {
     var capturedAt = DateTime.UtcNow;
     var order = new CapturedRuntimeSpecialOrder(
-        2, 123, "Test guest", 30, true, "灼热", -1, true, "无酒精",
+        2, 123, "Test guest", 30, -1,
         false, false, capturedAt, capturedAt, "ptr:1", "Test");
     var matches = typeof(SpecialOrderRuntimeCapture).GetMethod(
         "IsDismissRequestMatch",
@@ -400,10 +399,6 @@ static void VerifyDismissMatchesEveryProvidedRuntimeIdentityField()
 
     var wrongDesk = matches.Invoke(null, new object?[] { order, 3, 123, 30, -1 }) is true;
     AssertEqual(false, wrongDesk, "A matching runtime identity bypassed a conflicting desk.");
-
-    var missingFoodIdentity = order with { HasFoodTagId = false };
-    var missingFieldMatched = matches.Invoke(null, new object?[] { missingFoodIdentity, 2, 123, 30, -1 }) is true;
-    AssertEqual(false, missingFieldMatched, "A candidate missing a requested identity field was dismissed.");
 }
 
 static void VerifyFulfilledDeliveryStatusRemainsCaptured()
@@ -428,11 +423,12 @@ static void VerifyFulfilledDeliveryStatusRemainsCaptured()
     {
         var capturedAt = DateTime.UtcNow;
         var pending = new CapturedRuntimeSpecialOrder(
-            2, 123, "Test guest", 30, true, "灼热", -1, true, "无酒精",
+            2, 123, "Test guest", 30, -1,
             false, false, capturedAt, capturedAt, "ptr:fulfilled", "Test")
         {
             OrderObject = new object(),
             ControllerObject = new object(),
+            OrderLifecycleSequence = 1,
         };
         var fulfilled = pending with { IsFulfilled = true, CaptureSource = "FoodDelivered" };
         addOrder.Invoke(null, new object?[] { pending });
@@ -451,11 +447,12 @@ static void VerifyFulfilledDeliveryStatusRemainsCaptured()
 
 static void VerifyCompletionRemovalCommitsOnlyAfterNativeSuccess()
 {
+    RuntimeOrderTerminalReceiptStore.Clear();
     var orders = GetCaptureOrders(typeof(SpecialOrderRuntimeCapture));
     var addOrder = typeof(SpecialOrderRuntimeCapture).GetMethod(
-        "AddOrder",
+        "OnControllerOrderAdded",
         BindingFlags.NonPublic | BindingFlags.Static)
-        ?? throw new InvalidOperationException("SpecialOrderRuntimeCapture.AddOrder was not found.");
+        ?? throw new InvalidOperationException("SpecialOrderRuntimeCapture.OnControllerOrderAdded was not found.");
     var captureBefore = typeof(SpecialOrderRuntimeCapture).GetMethod(
         "CaptureControllerOrderBeforeCompletion",
         BindingFlags.NonPublic | BindingFlags.Static)
@@ -474,31 +471,68 @@ static void VerifyCompletionRemovalCommitsOnlyAfterNativeSuccess()
     orders.Clear();
     try
     {
-        var captured = Parse(runtimeOrder, controller);
-        addOrder.Invoke(null, new object?[] { captured });
+        addOrder.Invoke(null, new object?[] { controller, runtimeOrder, true });
+        var receiptLifecycle = RequireActiveLifecycle(
+            RuntimeNightBusinessLifecycle.Generation,
+            RuntimeOrderKind.Special,
+            runtimeOrder.Pointer,
+            controller.Pointer,
+            "The successful PushToOrder capture did not begin an order lifecycle.");
+        var receiptToken = new RuntimeOrderBindingToken(
+            RuntimeNightBusinessLifecycle.Generation,
+            RuntimeOrderKind.Special,
+            runtimeOrder.Pointer,
+            controller.Pointer,
+            receiptLifecycle);
 
         var prefixArguments = new object?[] { controller, nativeMethod, null };
         captureBefore.Invoke(null, prefixArguments);
-        var state = prefixArguments[2] as CapturedRuntimeSpecialOrder
-            ?? throw new InvalidOperationException("The completion prefix did not latch the current SpecialOrder.");
+        var state = RequireTerminalState(
+            prefixArguments[2],
+            "The completion prefix did not latch the current SpecialOrder.");
 
         commitAfter.Invoke(null, new object?[] { state, nativeMethod, false });
         AssertEqual(1, orders.Count, "A skipped native evaluation removed the captured order.");
+        AssertEqual(false, RuntimeOrderTerminalReceiptStore.TryFind(receiptToken, out _),
+            "A skipped native evaluation published a terminal receipt.");
 
         commitAfter.Invoke(null, new object?[] { state, nativeMethod, true });
         AssertEqual(1, orders.Count, "An unfulfilled order was retired merely because native evaluation returned.");
+        AssertEqual(false, RuntimeOrderTerminalReceiptStore.TryFind(receiptToken, out _),
+            "An unfulfilled native evaluation published a successful terminal receipt.");
 
-        commitAfter.Invoke(null, new object?[] { state with { IsFulfilled = true }, nativeMethod, true });
+        runtimeOrder.IsFullfilled = true;
+        controller.HasEvaluated = true;
+        prefixArguments = new object?[] { controller, nativeMethod, null };
+        captureBefore.Invoke(null, prefixArguments);
+        AssertEqual<object?>(null, prefixArguments[2],
+            "An already-evaluated controller latched a false successful evaluation state.");
+        AssertEqual(false, RuntimeOrderTerminalReceiptStore.TryFind(receiptToken, out _),
+            "An already-evaluated native no-op published a successful terminal receipt.");
+
+        controller.HasEvaluated = false;
+        prefixArguments = new object?[] { controller, nativeMethod, null };
+        captureBefore.Invoke(null, prefixArguments);
+        var fulfilledState = RequireTerminalState(
+            prefixArguments[2],
+            "The completion prefix did not reread the fulfilled SpecialOrder.");
+        commitAfter.Invoke(null, new object?[] { fulfilledState, nativeMethod, true });
         AssertEqual(0, orders.Count, "A successful native evaluation did not retire the fulfilled captured order.");
+        AssertEqual(true, RuntimeOrderTerminalReceiptStore.TryFind(receiptToken, out var receipt),
+            "A fulfilled native evaluation did not publish its exact terminal receipt.");
+        AssertEqual(RuntimeOrderTerminalDisposition.Evaluated, receipt.Disposition,
+            "A fulfilled native evaluation was not recorded as evaluated.");
     }
     finally
     {
         orders.Clear();
+        RuntimeOrderTerminalReceiptStore.Clear();
     }
 }
 
 static void VerifyControllerBindingCommitsOnlyAfterNativeSuccess()
 {
+    RuntimeOrderTerminalReceiptStore.Clear();
     var specialOrders = GetCaptureOrders(typeof(SpecialOrderRuntimeCapture));
     var specialCallback = typeof(SpecialOrderRuntimeCapture).GetMethod(
         "OnControllerOrderAdded",
@@ -512,6 +546,12 @@ static void VerifyControllerBindingCommitsOnlyAfterNativeSuccess()
     {
         specialCallback.Invoke(null, new object?[] { controller, runtimeOrder, false });
         AssertEqual(0, specialOrders.Count, "A skipped native PushToOrder created a special-order binding.");
+        AssertNoActiveLifecycle(
+            RuntimeNightBusinessLifecycle.Generation,
+            RuntimeOrderKind.Special,
+            runtimeOrder.Pointer,
+            controller.Pointer,
+            "A skipped native PushToOrder started a special-order lifecycle.");
 
         specialCallback.Invoke(null, new object?[] { controller, runtimeOrder, true });
         AssertEqual(1, specialOrders.Count, "A successful native PushToOrder did not create its exact special-order binding.");
@@ -523,6 +563,7 @@ static void VerifyControllerBindingCommitsOnlyAfterNativeSuccess()
     finally
     {
         specialOrders.Clear();
+        RuntimeOrderTerminalReceiptStore.Clear();
     }
 
     var normalOrders = GetCaptureOrders(typeof(NormalOrderRuntimeCapture));
@@ -531,13 +572,22 @@ static void VerifyControllerBindingCommitsOnlyAfterNativeSuccess()
         BindingFlags.NonPublic | BindingFlags.Static)
         ?? throw new InvalidOperationException("NormalOrderRuntimeCapture.OnControllerOrderAdded was not found.");
     var normalOrder = new NormalOrder();
-    var normalController = new NightScene.GuestManagementUtility.GuestGroupController();
+    var normalController = new NightScene.GuestManagementUtility.GuestGroupController
+    {
+        CurrentOrder = normalOrder,
+    };
 
     normalOrders.Clear();
     try
     {
         normalCallback.Invoke(null, new object?[] { normalController, normalOrder, false });
         AssertEqual(0, normalOrders.Count, "A skipped native PushToOrder created a normal-order binding.");
+        AssertNoActiveLifecycle(
+            RuntimeNightBusinessLifecycle.Generation,
+            RuntimeOrderKind.Normal,
+            normalOrder.Pointer,
+            normalController.Pointer,
+            "A skipped native PushToOrder started a normal-order lifecycle.");
 
         normalCallback.Invoke(null, new object?[] { normalController, normalOrder, true });
         AssertEqual(1, normalOrders.Count, "A successful native PushToOrder did not create its exact normal-order binding.");
@@ -549,6 +599,7 @@ static void VerifyControllerBindingCommitsOnlyAfterNativeSuccess()
     finally
     {
         normalOrders.Clear();
+        RuntimeOrderTerminalReceiptStore.Clear();
     }
 }
 
@@ -588,9 +639,9 @@ static void VerifyCleanupRemovalCommitsOnlyAfterNativeSuccess()
 {
     var orders = GetCaptureOrders(typeof(SpecialOrderRuntimeCapture));
     var addOrder = typeof(SpecialOrderRuntimeCapture).GetMethod(
-        "AddOrder",
+        "OnControllerOrderAdded",
         BindingFlags.NonPublic | BindingFlags.Static)
-        ?? throw new InvalidOperationException("SpecialOrderRuntimeCapture.AddOrder was not found.");
+        ?? throw new InvalidOperationException("SpecialOrderRuntimeCapture.OnControllerOrderAdded was not found.");
     var captureBefore = typeof(SpecialOrderRuntimeCapture).GetMethod(
         "CaptureControllerOrderBeforeCompletion",
         BindingFlags.NonPublic | BindingFlags.Static)
@@ -609,11 +660,12 @@ static void VerifyCleanupRemovalCommitsOnlyAfterNativeSuccess()
     orders.Clear();
     try
     {
-        addOrder.Invoke(null, new object?[] { Parse(runtimeOrder, controller) });
+        addOrder.Invoke(null, new object?[] { controller, runtimeOrder, true });
         var prefixArguments = new object?[] { controller, nativeMethod, null };
         captureBefore.Invoke(null, prefixArguments);
-        var state = prefixArguments[2] as CapturedRuntimeSpecialOrder
-            ?? throw new InvalidOperationException("The cleanup prefix did not latch the current SpecialOrder.");
+        var state = RequireTerminalState(
+            prefixArguments[2],
+            "The cleanup prefix did not latch the current SpecialOrder.");
 
         commitAfter.Invoke(null, new object?[] { state, nativeMethod, false });
         AssertEqual(1, orders.Count, "A skipped native cleanup removed the captured order.");
@@ -629,6 +681,7 @@ static void VerifyCleanupRemovalCommitsOnlyAfterNativeSuccess()
 
 static void VerifyRepellRemovalCommitsAfterNativeSuccess()
 {
+    RuntimeOrderTerminalReceiptStore.Clear();
     var nativeMethod = typeof(NightScene.GuestManagementUtility.GuestsManager).GetMethod(
         "RepellInternal",
         BindingFlags.NonPublic | BindingFlags.Instance)
@@ -654,15 +707,34 @@ static void VerifyRepellRemovalCommitsAfterNativeSuccess()
     try
     {
         specialAdded.Invoke(null, new object?[] { specialController, specialOrder, true });
+        var receiptLifecycle = RequireActiveLifecycle(
+            RuntimeNightBusinessLifecycle.Generation,
+            RuntimeOrderKind.Special,
+            specialOrder.Pointer,
+            specialController.Pointer,
+            "The special RepellInternal fixture has no active order lifecycle.");
         var prefixArguments = new object?[] { specialController, nativeMethod, null };
         specialBefore.Invoke(null, prefixArguments);
-        var state = prefixArguments[2] as CapturedRuntimeSpecialOrder
-            ?? throw new InvalidOperationException("The special RepellInternal prefix did not latch its current order.");
+        var state = RequireTerminalState(
+            prefixArguments[2],
+            "The special RepellInternal prefix did not latch its current order.");
 
         specialAfter.Invoke(null, new object?[] { state, nativeMethod, false });
         AssertEqual(1, specialOrders.Count, "A skipped native RepellInternal removed the special order.");
+        var receiptToken = new RuntimeOrderBindingToken(
+            RuntimeNightBusinessLifecycle.Generation,
+            RuntimeOrderKind.Special,
+            specialOrder.Pointer,
+            specialController.Pointer,
+            receiptLifecycle);
+        AssertEqual(false, RuntimeOrderTerminalReceiptStore.TryFind(receiptToken, out _),
+            "A skipped native RepellInternal published a terminal receipt.");
         specialAfter.Invoke(null, new object?[] { state, nativeMethod, true });
         AssertEqual(0, specialOrders.Count, "A successful native RepellInternal did not retire the special order.");
+        AssertEqual(true, RuntimeOrderTerminalReceiptStore.TryFind(receiptToken, out var receipt),
+            "A successful special RepellInternal did not publish a terminal receipt.");
+        AssertEqual(RuntimeOrderTerminalReceiptSource.RepellInternal, receipt.Source,
+            "The special RepellInternal receipt lost its exact Hook source.");
     }
     finally
     {
@@ -692,19 +764,39 @@ static void VerifyRepellRemovalCommitsAfterNativeSuccess()
     try
     {
         normalAdded.Invoke(null, new object?[] { normalController, normalOrder, true });
+        var receiptLifecycle = RequireActiveLifecycle(
+            RuntimeNightBusinessLifecycle.Generation,
+            RuntimeOrderKind.Normal,
+            normalOrder.Pointer,
+            normalController.Pointer,
+            "The normal RepellInternal fixture has no active order lifecycle.");
         var prefixArguments = new object?[] { normalController, nativeMethod, null };
         normalBefore.Invoke(null, prefixArguments);
-        var state = prefixArguments[2] as CapturedRuntimeNormalOrder
-            ?? throw new InvalidOperationException("The normal RepellInternal prefix did not latch its current order.");
+        var state = RequireTerminalState(
+            prefixArguments[2],
+            "The normal RepellInternal prefix did not latch its current order.");
 
         normalAfter.Invoke(null, new object?[] { state, nativeMethod, false });
         AssertEqual(1, normalOrders.Count, "A skipped native RepellInternal removed the normal order.");
+        var receiptToken = new RuntimeOrderBindingToken(
+            RuntimeNightBusinessLifecycle.Generation,
+            RuntimeOrderKind.Normal,
+            normalOrder.Pointer,
+            normalController.Pointer,
+            receiptLifecycle);
+        AssertEqual(false, RuntimeOrderTerminalReceiptStore.TryFind(receiptToken, out _),
+            "A skipped native normal RepellInternal published a terminal receipt.");
         normalAfter.Invoke(null, new object?[] { state, nativeMethod, true });
         AssertEqual(0, normalOrders.Count, "A successful native RepellInternal did not retire the normal order.");
+        AssertEqual(true, RuntimeOrderTerminalReceiptStore.TryFind(receiptToken, out var receipt),
+            "A successful normal RepellInternal did not publish a terminal receipt.");
+        AssertEqual(RuntimeOrderTerminalReceiptSource.RepellInternal, receipt.Source,
+            "The normal RepellInternal receipt lost its exact Hook source.");
     }
     finally
     {
         normalOrders.Clear();
+        RuntimeOrderTerminalReceiptStore.Clear();
     }
 }
 
@@ -748,16 +840,18 @@ static void VerifyNormalCompletionAndCleanupBoundaries()
         added.Invoke(null, new object?[] { controller, order, true });
         var completionArguments = new object?[] { controller, evaluateMethod, null };
         completionBefore.Invoke(null, completionArguments);
-        var unfulfilled = completionArguments[2] as CapturedRuntimeNormalOrder
-            ?? throw new InvalidOperationException("The normal completion prefix did not latch its current order.");
+        var unfulfilled = RequireTerminalState(
+            completionArguments[2],
+            "The normal completion prefix did not latch its current order.");
         completionAfter.Invoke(null, new object?[] { unfulfilled, evaluateMethod, true });
         AssertEqual(1, orders.Count, "A successful normal evaluation retired an unfulfilled order.");
 
         order.IsFullfilled = true;
         completionArguments = new object?[] { controller, evaluateMethod, null };
         completionBefore.Invoke(null, completionArguments);
-        var fulfilled = completionArguments[2] as CapturedRuntimeNormalOrder
-            ?? throw new InvalidOperationException("The normal completion prefix did not reread fulfilled state.");
+        var fulfilled = RequireTerminalState(
+            completionArguments[2],
+            "The normal completion prefix did not reread fulfilled state.");
         completionAfter.Invoke(null, new object?[] { fulfilled, evaluateMethod, false });
         AssertEqual(1, orders.Count, "A skipped normal evaluation retired a fulfilled order.");
         completionAfter.Invoke(null, new object?[] { fulfilled, evaluateMethod, true });
@@ -768,8 +862,9 @@ static void VerifyNormalCompletionAndCleanupBoundaries()
         added.Invoke(null, new object?[] { controller, cleanupOrder, true });
         var cleanupArguments = new object?[] { controller, cleanupMethod, null };
         cleanupBefore.Invoke(null, cleanupArguments);
-        var cleanupState = cleanupArguments[2] as CapturedRuntimeNormalOrder
-            ?? throw new InvalidOperationException("The normal cleanup prefix did not latch its current order.");
+        var cleanupState = RequireTerminalState(
+            cleanupArguments[2],
+            "The normal cleanup prefix did not latch its current order.");
         cleanupAfter.Invoke(null, new object?[] { cleanupState, cleanupMethod, false });
         AssertEqual(1, orders.Count, "A skipped normal cleanup retired its order.");
         cleanupAfter.Invoke(null, new object?[] { cleanupState, cleanupMethod, true });
@@ -866,6 +961,665 @@ static void VerifyBusinessReadinessRequiresCompleteHooksBeforeTheGeneration()
     }
 }
 
+static void VerifyTerminalReceiptsUseExactHookIdentity()
+{
+    var wasActive = RuntimeNightBusinessLifecycle.IsActive;
+    var previousGeneration = RuntimeNightBusinessLifecycle.Generation;
+    var specialOrders = GetCaptureOrders(typeof(SpecialOrderRuntimeCapture));
+    var normalOrders = GetCaptureOrders(typeof(NormalOrderRuntimeCapture));
+    RuntimeOrderTerminalReceiptStore.Clear();
+    specialOrders.Clear();
+    normalOrders.Clear();
+    try
+    {
+        RuntimeNightBusinessLifecycle.IsActive = true;
+        RuntimeNightBusinessLifecycle.Generation = 73;
+
+        var evaluateMethod = typeof(NightScene.GuestManagementUtility.GuestsManager).GetMethod(
+            "EvaluateOrder",
+            BindingFlags.Public | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("The EvaluateOrder fixture was not found.");
+        var specialOrder = new SpecialOrder(17, -1, "") { IsFullfilled = true };
+        var specialController = new SpecialOrderController("甜", "无酒精")
+        {
+            CurrentOrder = specialOrder,
+        };
+        var addSpecial = GetCaptureMutation(typeof(SpecialOrderRuntimeCapture), "OnControllerOrderAdded");
+        var beforeSpecial = GetCaptureMutation(typeof(SpecialOrderRuntimeCapture), "CaptureControllerOrderBeforeCompletion");
+        var afterSpecial = GetCaptureMutation(typeof(SpecialOrderRuntimeCapture), "OnOrderCompletionSucceeded");
+        addSpecial.Invoke(null, new object?[] { specialController, specialOrder, true });
+        var specialLifecycle = RequireActiveLifecycle(
+            73,
+            RuntimeOrderKind.Special,
+            specialOrder.Pointer,
+            specialController.Pointer,
+            "The special evaluation fixture has no active order lifecycle.");
+        var specialArguments = new object?[] { specialController, evaluateMethod, null };
+        beforeSpecial.Invoke(null, specialArguments);
+        var specialState = RequireTerminalState(
+            specialArguments[2],
+            "The special evaluation prefix did not capture its scalar terminal identity.");
+        afterSpecial.Invoke(null, new object?[] { specialState, evaluateMethod, true });
+        var specialToken = new RuntimeOrderBindingToken(
+            73,
+            RuntimeOrderKind.Special,
+            specialOrder.Pointer,
+            specialController.Pointer,
+            specialLifecycle);
+        AssertEqual(
+            true,
+            RuntimeOrderTerminalReceiptStore.TryFind(specialToken, out var evaluatedReceipt),
+            "The successful special evaluation did not publish an exact terminal receipt.");
+        AssertEqual(RuntimeOrderTerminalDisposition.Evaluated, evaluatedReceipt.Disposition,
+            "A successful special evaluation was recorded as generic removal.");
+        AssertEqual(RuntimeOrderTerminalReceiptSource.EvaluateOrder, evaluatedReceipt.Source,
+            "The special evaluation receipt lost its exact native Hook source.");
+        AssertEqual(
+            false,
+            RuntimeOrderTerminalReceiptStore.TryFind(
+                specialToken with { ControllerPointer = (nint)((long)specialController.Pointer + 1) },
+                out _),
+            "A terminal receipt matched the wrong controller pointer.");
+
+        var manualEvaluateMethod = typeof(NightScene.GuestManagementUtility.GuestsManager).GetMethod(
+            "EvaulateManualOrder",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("The EvaulateManualOrder fixture was not found.");
+        var manualOrder = new SpecialOrder(18, -1, "") { IsFullfilled = true };
+        var manualController = new SpecialOrderController("梦幻", "无酒精")
+        {
+            CurrentOrder = manualOrder,
+        };
+        addSpecial.Invoke(null, new object?[] { manualController, manualOrder, true });
+        var manualLifecycle = RequireActiveLifecycle(
+            73,
+            RuntimeOrderKind.Special,
+            manualOrder.Pointer,
+            manualController.Pointer,
+            "The manual evaluation fixture has no active order lifecycle.");
+        var manualArguments = new object?[] { manualController, manualEvaluateMethod, null };
+        beforeSpecial.Invoke(null, manualArguments);
+        var manualState = RequireTerminalState(
+            manualArguments[2],
+            "The manual evaluation prefix did not capture its exact terminal identity.");
+        var manualToken = new RuntimeOrderBindingToken(
+            73,
+            RuntimeOrderKind.Special,
+            manualOrder.Pointer,
+            manualController.Pointer,
+            manualLifecycle);
+        afterSpecial.Invoke(null, new object?[] { manualState, manualEvaluateMethod, false });
+        AssertEqual(
+            false,
+            RuntimeOrderTerminalReceiptStore.TryFind(manualToken, out _),
+            "A skipped manual evaluation published a terminal receipt.");
+        afterSpecial.Invoke(null, new object?[] { manualState, manualEvaluateMethod, true });
+        AssertEqual(
+            true,
+            RuntimeOrderTerminalReceiptStore.TryFind(manualToken, out var manualReceipt),
+            "The successful manual evaluation did not publish an exact terminal receipt.");
+        AssertEqual(RuntimeOrderTerminalReceiptSource.EvaulateManualOrder, manualReceipt.Source,
+            "The manual evaluation receipt lost its exact native Hook source.");
+
+        var removeMethod = typeof(NightScene.GuestManagementUtility.GuestsManager).GetMethod(
+            "RemoveFromOrder",
+            BindingFlags.Public | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("The RemoveFromOrder fixture was not found.");
+        var removeOrder = new SpecialOrder(19, -1, "");
+        var removeController = new SpecialOrderController("甜", "无酒精")
+        {
+            CurrentOrder = removeOrder,
+        };
+        addSpecial.Invoke(null, new object?[] { removeController, removeOrder, true });
+        var removeLifecycle = RequireActiveLifecycle(
+            73,
+            RuntimeOrderKind.Special,
+            removeOrder.Pointer,
+            removeController.Pointer,
+            "The RemoveFromOrder fixture has no active order lifecycle.");
+        var beforeRemove = GetCaptureMutation(typeof(SpecialOrderRuntimeCapture), "CaptureOrderBeforeRemoval");
+        var afterRemove = GetCaptureMutation(typeof(SpecialOrderRuntimeCapture), "OnOrderRemovalSucceeded");
+        var removeArguments = new object?[] { removeOrder, null };
+        beforeRemove.Invoke(null, removeArguments);
+        var removeState = RequireTerminalState(
+            removeArguments[1],
+            "The RemoveFromOrder prefix did not resolve one unique exact capture.");
+        var removeToken = new RuntimeOrderBindingToken(
+            73,
+            RuntimeOrderKind.Special,
+            removeOrder.Pointer,
+            removeController.Pointer,
+            removeLifecycle);
+        afterRemove.Invoke(null, new object?[] { removeState, false });
+        AssertEqual(1, specialOrders.Count,
+            "A skipped native RemoveFromOrder retired the special capture.");
+        AssertEqual(true, RuntimeOrderTerminalReceiptStore.MatchesActiveLifecycle(removeToken),
+            "A skipped native RemoveFromOrder retired the special active lifecycle.");
+        AssertEqual(false, RuntimeOrderTerminalReceiptStore.TryFind(removeToken, out _),
+            "A skipped native RemoveFromOrder published a terminal receipt.");
+
+        afterRemove.Invoke(null, new object?[] { removeState, true });
+        AssertEqual(
+            true,
+            RuntimeOrderTerminalReceiptStore.TryFind(removeToken, out var removeReceipt),
+            "The successful RemoveFromOrder did not publish an exact terminal receipt.");
+        AssertEqual(RuntimeOrderTerminalReceiptSource.RemoveFromOrder, removeReceipt.Source,
+            "The removal receipt lost its exact native Hook source.");
+        AssertEqual(RuntimeOrderTerminalDisposition.Removed, removeReceipt.Disposition,
+            "RemoveFromOrder was misreported as successful evaluation.");
+
+        var addNormal = GetCaptureMutation(typeof(NormalOrderRuntimeCapture), "OnControllerOrderAdded");
+        var normalRemoveOrder = new NormalOrder();
+        var normalRemoveController = new NightScene.GuestManagementUtility.GuestGroupController
+        {
+            CurrentOrder = normalRemoveOrder,
+        };
+        addNormal.Invoke(null, new object?[] { normalRemoveController, normalRemoveOrder, true });
+        var normalRemoveLifecycle = RequireActiveLifecycle(
+            73,
+            RuntimeOrderKind.Normal,
+            normalRemoveOrder.Pointer,
+            normalRemoveController.Pointer,
+            "The normal RemoveFromOrder fixture has no active order lifecycle.");
+        var beforeNormalRemove = GetCaptureMutation(typeof(NormalOrderRuntimeCapture), "CaptureOrderBeforeRemoval");
+        var afterNormalRemove = GetCaptureMutation(typeof(NormalOrderRuntimeCapture), "OnOrderRemovalSucceeded");
+        var normalRemoveArguments = new object?[] { normalRemoveOrder, null };
+        beforeNormalRemove.Invoke(null, normalRemoveArguments);
+        var normalRemoveState = RequireTerminalState(
+            normalRemoveArguments[1],
+            "The normal RemoveFromOrder prefix did not resolve one unique exact capture.");
+        var normalRemoveToken = new RuntimeOrderBindingToken(
+            73,
+            RuntimeOrderKind.Normal,
+            normalRemoveOrder.Pointer,
+            normalRemoveController.Pointer,
+            normalRemoveLifecycle);
+        afterNormalRemove.Invoke(null, new object?[] { normalRemoveState, false });
+        AssertEqual(1, normalOrders.Count,
+            "A skipped native RemoveFromOrder retired the normal capture.");
+        AssertEqual(true, RuntimeOrderTerminalReceiptStore.MatchesActiveLifecycle(normalRemoveToken),
+            "A skipped native RemoveFromOrder retired the normal active lifecycle.");
+        AssertEqual(false, RuntimeOrderTerminalReceiptStore.TryFind(normalRemoveToken, out _),
+            "A skipped native normal RemoveFromOrder published a terminal receipt.");
+        afterNormalRemove.Invoke(null, new object?[] { normalRemoveState, true });
+        AssertEqual(0, normalOrders.Count,
+            "A successful native RemoveFromOrder did not retire the normal capture.");
+        AssertEqual(true, RuntimeOrderTerminalReceiptStore.TryFind(normalRemoveToken, out var normalRemoveReceipt),
+            "A successful native normal RemoveFromOrder did not publish a terminal receipt.");
+        AssertEqual(RuntimeOrderTerminalReceiptSource.RemoveFromOrder, normalRemoveReceipt.Source,
+            "The normal removal receipt lost its exact native Hook source.");
+
+        var cleanMethod = typeof(NightScene.GuestManagementUtility.GuestsManager).GetMethod(
+            "CleanOrderInfo",
+            BindingFlags.Public | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("The CleanOrderInfo fixture was not found.");
+        var normalOrder = new NormalOrder();
+        var normalController = new NightScene.GuestManagementUtility.GuestGroupController
+        {
+            CurrentOrder = normalOrder,
+        };
+        var beforeNormal = GetCaptureMutation(typeof(NormalOrderRuntimeCapture), "CaptureControllerOrderBeforeCleanup");
+        var afterNormal = GetCaptureMutation(typeof(NormalOrderRuntimeCapture), "OnControllerOrderCleanupSucceeded");
+        addNormal.Invoke(null, new object?[] { normalController, normalOrder, true });
+        var normalLifecycle = RequireActiveLifecycle(
+            73,
+            RuntimeOrderKind.Normal,
+            normalOrder.Pointer,
+            normalController.Pointer,
+            "The normal cleanup fixture has no active order lifecycle.");
+        var normalArguments = new object?[] { normalController, cleanMethod, null };
+        beforeNormal.Invoke(null, normalArguments);
+        var normalState = RequireTerminalState(
+            normalArguments[2],
+            "The normal cleanup prefix did not capture its scalar terminal identity.");
+        afterNormal.Invoke(null, new object?[] { normalState, cleanMethod, true });
+        var normalToken = new RuntimeOrderBindingToken(
+            73,
+            RuntimeOrderKind.Normal,
+            normalOrder.Pointer,
+            normalController.Pointer,
+            normalLifecycle);
+        AssertEqual(
+            true,
+            RuntimeOrderTerminalReceiptStore.TryFind(normalToken, out var removedReceipt),
+            "The successful normal cleanup did not publish an exact terminal receipt.");
+        AssertEqual(RuntimeOrderTerminalDisposition.Removed, removedReceipt.Disposition,
+            "A normal cleanup was misreported as successful evaluation.");
+        AssertEqual(RuntimeOrderTerminalReceiptSource.CleanOrderInfo, removedReceipt.Source,
+            "The normal cleanup receipt lost its exact native Hook source.");
+
+        var closingOrder = new SpecialOrder(20, -1, "") { IsFullfilled = true };
+        var closingController = new SpecialOrderController("甜", "无酒精")
+        {
+            CurrentOrder = closingOrder,
+        };
+        addSpecial.Invoke(null, new object?[] { closingController, closingOrder, true });
+        var closingLifecycle = RequireActiveLifecycle(
+            73,
+            RuntimeOrderKind.Special,
+            closingOrder.Pointer,
+            closingController.Pointer,
+            "The Closing-spanning evaluation fixture has no active order lifecycle.");
+        var closingArguments = new object?[] { closingController, evaluateMethod, null };
+        beforeSpecial.Invoke(null, closingArguments);
+        var closingState = RequireTerminalState(
+            closingArguments[2],
+            "The evaluation prefix did not latch state before the Closing transition.");
+        RuntimeNightBusinessLifecycle.IsActive = false;
+        afterSpecial.Invoke(null, new object?[] { closingState, evaluateMethod, true });
+        var closingToken = new RuntimeOrderBindingToken(
+            73,
+            RuntimeOrderKind.Special,
+            closingOrder.Pointer,
+            closingController.Pointer,
+            closingLifecycle);
+        AssertEqual(
+            true,
+            RuntimeOrderTerminalReceiptStore.TryFind(closingToken, out var closingReceipt),
+            "A successful native evaluation lost its prefix-latched receipt when Closing began inside the call.");
+        AssertEqual(RuntimeOrderTerminalDisposition.Evaluated, closingReceipt.Disposition,
+            "The Closing-spanning evaluation receipt lost its exact success disposition.");
+        RuntimeNightBusinessLifecycle.IsActive = true;
+
+        var specialSource = File.ReadAllText(FindRepositoryFile(
+            "mods", "bepinex", "src", "Save", "SpecialOrderRuntimeCapture.cs"));
+        var normalSource = File.ReadAllText(FindRepositoryFile(
+            "mods", "bepinex", "src", "Save", "NormalOrderRuntimeCapture.cs"));
+        foreach (var source in new[] { specialSource, normalSource })
+        {
+            AssertContains(
+                source,
+                "RuntimeOrderTerminalReceiptStore.TryCaptureActiveLifecycleByOrder(",
+                "RemoveFromOrder no longer requires a unique exact active lifecycle for its order pointer.");
+            AssertEqual(false, source.Contains("RuntimeKey ==", StringComparison.Ordinal),
+                "Terminal receipt publication restored a weak RuntimeKey fallback.");
+        }
+        var receiptStoreSource = File.ReadAllText(FindRepositoryFile(
+            "mods", "bepinex", "src", "Save", "RuntimeOrderTerminalReceiptStore.cs"));
+        AssertContains(
+            receiptStoreSource,
+            "if (found)",
+            "The scalar RemoveFromOrder lifecycle lookup no longer rejects ambiguous controller matches.");
+    }
+    finally
+    {
+        RuntimeOrderTerminalReceiptStore.Clear();
+        specialOrders.Clear();
+        normalOrders.Clear();
+        RuntimeNightBusinessLifecycle.IsActive = wasActive;
+        RuntimeNightBusinessLifecycle.Generation = previousGeneration;
+    }
+}
+
+static void VerifyCapturedOrderLifecycleAbaKeepsTheNewBinding()
+{
+    var wasActive = RuntimeNightBusinessLifecycle.IsActive;
+    var previousGeneration = RuntimeNightBusinessLifecycle.Generation;
+    var specialOrders = GetCaptureOrders(typeof(SpecialOrderRuntimeCapture));
+    var normalOrders = GetCaptureOrders(typeof(NormalOrderRuntimeCapture));
+    RuntimeOrderTerminalReceiptStore.Clear();
+    specialOrders.Clear();
+    normalOrders.Clear();
+    try
+    {
+        RuntimeNightBusinessLifecycle.IsActive = true;
+        RuntimeNightBusinessLifecycle.Generation = 79;
+        var evaluateMethod = typeof(NightScene.GuestManagementUtility.GuestsManager).GetMethod(
+            "EvaluateOrder",
+            BindingFlags.Public | BindingFlags.Instance)
+            ?? throw new InvalidOperationException("The EvaluateOrder fixture was not found.");
+
+        var specialOrder = new SpecialOrder(17, -1, "") { IsFullfilled = true };
+        var specialController = new SpecialOrderController("甜", "无酒精") { CurrentOrder = specialOrder };
+        var addSpecial = GetCaptureMutation(typeof(SpecialOrderRuntimeCapture), "OnControllerOrderAdded");
+        var beforeSpecial = GetCaptureMutation(typeof(SpecialOrderRuntimeCapture), "CaptureControllerOrderBeforeCompletion");
+        var afterSpecial = GetCaptureMutation(typeof(SpecialOrderRuntimeCapture), "OnOrderCompletionSucceeded");
+        addSpecial.Invoke(null, new object?[] { specialController, specialOrder, true });
+        var specialFirstLifecycle = RequireActiveLifecycle(
+            79,
+            RuntimeOrderKind.Special,
+            specialOrder.Pointer,
+            specialController.Pointer,
+            "The first special lifecycle was not active.");
+        var specialPrefixArguments = new object?[] { specialController, evaluateMethod, null };
+        beforeSpecial.Invoke(null, specialPrefixArguments);
+        var specialOldState = RequireTerminalState(
+            specialPrefixArguments[2],
+            "The old special evaluation prefix did not latch its lifecycle.");
+
+        addSpecial.Invoke(null, new object?[] { specialController, specialOrder, true });
+        var specialSecondLifecycle = RequireActiveLifecycle(
+            79,
+            RuntimeOrderKind.Special,
+            specialOrder.Pointer,
+            specialController.Pointer,
+            "The replacement special lifecycle was not active.");
+        AssertEqual(true, specialSecondLifecycle > specialFirstLifecycle,
+            "Reusing the exact special tuple did not advance its lifecycle.");
+        var specialFirstToken = new RuntimeOrderBindingToken(
+            79,
+            RuntimeOrderKind.Special,
+            specialOrder.Pointer,
+            specialController.Pointer,
+            specialFirstLifecycle);
+        var specialSecondToken = specialFirstToken with { LifecycleSequence = specialSecondLifecycle };
+
+        afterSpecial.Invoke(null, new object?[] { specialOldState, evaluateMethod, true });
+        AssertEqual(1, specialOrders.Count,
+            "An old special postfix removed the replacement lifecycle capture.");
+        var retainedSpecial = specialOrders[0] as CapturedRuntimeSpecialOrder
+            ?? throw new InvalidOperationException("The retained special ABA capture had an unexpected type.");
+        AssertEqual(specialSecondLifecycle, retainedSpecial.OrderLifecycleSequence,
+            "An old special postfix replaced the new capture lifecycle.");
+        AssertEqual(true, RuntimeOrderTerminalReceiptStore.MatchesActiveLifecycle(specialSecondToken),
+            "An old special postfix retired the replacement active lifecycle.");
+        AssertEqual(true, RuntimeOrderTerminalReceiptStore.TryFind(specialFirstToken, out _),
+            "The old special postfix did not publish its own lifecycle receipt.");
+        AssertEqual(false, RuntimeOrderTerminalReceiptStore.TryFind(specialSecondToken, out _),
+            "The old special postfix published a receipt for the replacement lifecycle.");
+
+        var normalOrder = new NormalOrder { IsFullfilled = true };
+        var normalController = new NightScene.GuestManagementUtility.GuestGroupController
+        {
+            CurrentOrder = normalOrder,
+        };
+        var addNormal = GetCaptureMutation(typeof(NormalOrderRuntimeCapture), "OnControllerOrderAdded");
+        var beforeNormal = GetCaptureMutation(typeof(NormalOrderRuntimeCapture), "CaptureControllerOrderBeforeCompletion");
+        var afterNormal = GetCaptureMutation(typeof(NormalOrderRuntimeCapture), "OnControllerOrderCompletionSucceeded");
+        addNormal.Invoke(null, new object?[] { normalController, normalOrder, true });
+        var normalFirstLifecycle = RequireActiveLifecycle(
+            79,
+            RuntimeOrderKind.Normal,
+            normalOrder.Pointer,
+            normalController.Pointer,
+            "The first normal lifecycle was not active.");
+        var normalPrefixArguments = new object?[] { normalController, evaluateMethod, null };
+        beforeNormal.Invoke(null, normalPrefixArguments);
+        var normalOldState = RequireTerminalState(
+            normalPrefixArguments[2],
+            "The old normal evaluation prefix did not latch its lifecycle.");
+
+        addNormal.Invoke(null, new object?[] { normalController, normalOrder, true });
+        var normalSecondLifecycle = RequireActiveLifecycle(
+            79,
+            RuntimeOrderKind.Normal,
+            normalOrder.Pointer,
+            normalController.Pointer,
+            "The replacement normal lifecycle was not active.");
+        AssertEqual(true, normalSecondLifecycle > normalFirstLifecycle,
+            "Reusing the exact normal tuple did not advance its lifecycle.");
+        var normalFirstToken = new RuntimeOrderBindingToken(
+            79,
+            RuntimeOrderKind.Normal,
+            normalOrder.Pointer,
+            normalController.Pointer,
+            normalFirstLifecycle);
+        var normalSecondToken = normalFirstToken with { LifecycleSequence = normalSecondLifecycle };
+
+        afterNormal.Invoke(null, new object?[] { normalOldState, evaluateMethod, true });
+        AssertEqual(1, normalOrders.Count,
+            "An old normal postfix removed the replacement lifecycle capture.");
+        var retainedNormal = normalOrders[0] as CapturedRuntimeNormalOrder
+            ?? throw new InvalidOperationException("The retained normal ABA capture had an unexpected type.");
+        AssertEqual(normalSecondLifecycle, retainedNormal.OrderLifecycleSequence,
+            "An old normal postfix replaced the new capture lifecycle.");
+        AssertEqual(true, RuntimeOrderTerminalReceiptStore.MatchesActiveLifecycle(normalSecondToken),
+            "An old normal postfix retired the replacement active lifecycle.");
+        AssertEqual(true, RuntimeOrderTerminalReceiptStore.TryFind(normalFirstToken, out _),
+            "The old normal postfix did not publish its own lifecycle receipt.");
+        AssertEqual(false, RuntimeOrderTerminalReceiptStore.TryFind(normalSecondToken, out _),
+            "The old normal postfix published a receipt for the replacement lifecycle.");
+    }
+    finally
+    {
+        RuntimeOrderTerminalReceiptStore.Clear();
+        specialOrders.Clear();
+        normalOrders.Clear();
+        RuntimeNightBusinessLifecycle.IsActive = wasActive;
+        RuntimeNightBusinessLifecycle.Generation = previousGeneration;
+    }
+}
+
+static void VerifyBoundStatusObserversDoNotAdvanceLifecycle()
+{
+    var wasActive = RuntimeNightBusinessLifecycle.IsActive;
+    var previousGeneration = RuntimeNightBusinessLifecycle.Generation;
+    var orders = GetCaptureOrders(typeof(SpecialOrderRuntimeCapture));
+    RuntimeOrderTerminalReceiptStore.Clear();
+    orders.Clear();
+    try
+    {
+        RuntimeNightBusinessLifecycle.IsActive = true;
+        RuntimeNightBusinessLifecycle.Generation = 83;
+        var order = new SpecialOrder(17, -1, "") { IsFullfilled = true };
+        var controller = new SpecialOrderController("甜", "无酒精") { CurrentOrder = order };
+        var add = GetCaptureMutation(typeof(SpecialOrderRuntimeCapture), "OnControllerOrderAdded");
+        var status = GetCaptureMutation(typeof(SpecialOrderRuntimeCapture), "OnOrderStatusUpdated");
+        var system = GetCaptureMutation(typeof(SpecialOrderRuntimeCapture), "OnOrderSystemChanged");
+        add.Invoke(null, new object?[] { controller, order, true });
+        var lifecycle = RequireActiveLifecycle(
+            83,
+            RuntimeOrderKind.Special,
+            order.Pointer,
+            controller.Pointer,
+            "The observer fixture has no active lifecycle.");
+        var token = new RuntimeOrderBindingToken(
+            83,
+            RuntimeOrderKind.Special,
+            order.Pointer,
+            controller.Pointer,
+            lifecycle);
+
+        status.Invoke(null, new object?[] { order, "FoodDelivered" });
+        system.Invoke(null, new object?[] { new object(), "BeverageDelivered", order });
+
+        AssertEqual(1, orders.Count, "Bound status observers duplicated or removed the current capture.");
+        var retained = orders[0] as CapturedRuntimeSpecialOrder
+            ?? throw new InvalidOperationException("The observer-retained capture had an unexpected type.");
+        AssertEqual(lifecycle, retained.OrderLifecycleSequence,
+            "A status observer advanced the captured order lifecycle.");
+        AssertEqual(true, RuntimeOrderTerminalReceiptStore.MatchesActiveLifecycle(token),
+            "A status observer replaced or retired the active lifecycle.");
+        AssertEqual(
+            lifecycle,
+            RequireActiveLifecycle(
+                83,
+                RuntimeOrderKind.Special,
+                order.Pointer,
+                controller.Pointer,
+                "A status observer detached the active lifecycle."),
+            "A status observer advanced the store lifecycle sequence.");
+
+        var specialSource = File.ReadAllText(FindRepositoryFile(
+            "mods", "bepinex", "src", "Save", "SpecialOrderRuntimeCapture.cs"));
+        var normalSource = File.ReadAllText(FindRepositoryFile(
+            "mods", "bepinex", "src", "Save", "NormalOrderRuntimeCapture.cs"));
+        AssertLifecycleStartIsIsolated(
+            specialSource,
+            "private static long BeginOrderLifecycle(",
+            "private static CapturedRuntimeSpecialOrder? AttachActiveOrderLifecycle(",
+            "special");
+        AssertLifecycleStartIsIsolated(
+            normalSource,
+            "private static long BeginOrderLifecycle(",
+            "private static TerminalOrderCaptureState? CaptureControllerTerminalState(",
+            "normal");
+
+        var observerStart = specialSource.IndexOf(
+            "private static CapturedRuntimeSpecialOrder? AttachActiveOrderLifecycle(",
+            StringComparison.Ordinal);
+        var observerEnd = observerStart < 0
+            ? -1
+            : specialSource.IndexOf(
+                "private static bool TryReadOrderLifecycleIdentity(",
+                observerStart,
+                StringComparison.Ordinal);
+        AssertEqual(true, observerStart >= 0 && observerEnd > observerStart,
+            "The special observer lifecycle source block was not found.");
+        var observerSource = specialSource[observerStart..observerEnd];
+        AssertContains(observerSource, "TryCaptureActiveLifecycle",
+            "The bound special observer no longer attaches the active lifecycle.");
+        AssertEqual(false, observerSource.Contains("BeginLifecycle", StringComparison.Ordinal),
+            "The bound special observer starts a new lifecycle.");
+        AssertEqual(false, observerSource.Contains("BeginOrderLifecycle", StringComparison.Ordinal),
+            "The bound special observer calls the canonical lifecycle-start helper.");
+    }
+    finally
+    {
+        RuntimeOrderTerminalReceiptStore.Clear();
+        orders.Clear();
+        RuntimeNightBusinessLifecycle.IsActive = wasActive;
+        RuntimeNightBusinessLifecycle.Generation = previousGeneration;
+    }
+}
+
+static void VerifyRawTagDriftQuarantinesTheLifecycle()
+{
+    var wasActive = RuntimeNightBusinessLifecycle.IsActive;
+    var previousGeneration = RuntimeNightBusinessLifecycle.Generation;
+    var orders = GetCaptureOrders(typeof(SpecialOrderRuntimeCapture));
+    RuntimeOrderTerminalReceiptStore.Clear();
+    orders.Clear();
+    try
+    {
+        RuntimeNightBusinessLifecycle.IsActive = true;
+        RuntimeNightBusinessLifecycle.Generation = 87;
+        var order = new SpecialOrder(17, -1, "");
+        var controller = new SpecialOrderController("甜", "无酒精") { CurrentOrder = order };
+        var add = GetCaptureMutation(typeof(SpecialOrderRuntimeCapture), "OnControllerOrderAdded");
+        var status = GetCaptureMutation(typeof(SpecialOrderRuntimeCapture), "OnOrderStatusUpdated");
+        var system = GetCaptureMutation(typeof(SpecialOrderRuntimeCapture), "OnOrderSystemChanged");
+
+        foreach (var (foodTagId, beverageTagId, fulfilled, context, useSystemObserver, label) in new[]
+                 {
+                     (18, -1, false, "FoodDelivered", false, "non-fulfilled food"),
+                     (17, 9, true, "OrderChanged", true, "non-delivery beverage"),
+                 })
+        {
+            order.RequestFoodTag = 17;
+            order.RequestBeverageTag = -1;
+            order.IsFullfilled = false;
+            add.Invoke(null, new object?[] { controller, order, true });
+            AssertEqual(1, orders.Count, $"The {label}-drift fixture did not create its initial capture.");
+            var captured = orders[0] as CapturedRuntimeSpecialOrder
+                ?? throw new InvalidOperationException($"The {label}-drift capture had an unexpected type.");
+            var token = new RuntimeOrderBindingToken(
+                87,
+                RuntimeOrderKind.Special,
+                order.Pointer,
+                controller.Pointer,
+                captured.OrderLifecycleSequence);
+
+            order.RequestFoodTag = foodTagId;
+            order.RequestBeverageTag = beverageTagId;
+            order.IsFullfilled = fulfilled;
+            if (useSystemObserver)
+            {
+                system.Invoke(null, new object?[] { new object(), context, order });
+            }
+            else
+            {
+                status.Invoke(null, new object?[] { order, context });
+            }
+
+            AssertEqual(0, orders.Count,
+                $"A same-lifecycle {label} Tag drift remained available to provider/trace projection.");
+            AssertEqual(0, SpecialOrderRuntimeCapture.Snapshot(TimeSpan.FromMinutes(1)).Count,
+                $"A same-lifecycle {label} Tag drift remained in the authoritative projection snapshot.");
+            AssertEqual(false, RuntimeOrderTerminalReceiptStore.MatchesActiveLifecycle(token),
+                $"A same-lifecycle {label} Tag drift remained active for named live-controller automation.");
+            AssertEqual(false, RuntimeOrderTerminalReceiptStore.TryFind(token, out _),
+                $"A same-lifecycle {label} Tag drift was fabricated as a terminal order fact.");
+        }
+
+        order.RequestFoodTag = 17;
+        order.RequestBeverageTag = -1;
+        order.IsFullfilled = false;
+        add.Invoke(null, new object?[] { controller, order, true });
+        AssertEqual(1, orders.Count,
+            "A new successful native binding did not recover after the corrupt lifecycle was quarantined.");
+        var recovered = orders[0] as CapturedRuntimeSpecialOrder
+            ?? throw new InvalidOperationException("The recovered raw-identity capture had an unexpected type.");
+        AssertEqual(17, recovered.FoodTagId,
+            "The recovered lifecycle inherited the quarantined food Tag identity.");
+        AssertEqual(-1, recovered.BeverageTagId,
+            "The recovered lifecycle inherited the quarantined beverage Tag identity.");
+        AssertEqual(
+            true,
+            SpecialOrderRuntimeCapture.RecentParseFailuresSnapshot(TimeSpan.FromMinutes(1), 16)
+                .Any(message => message.Contains(
+                    "raw RequestFoodTag/RequestBeverageTag identity changed within one order lifecycle",
+                    StringComparison.Ordinal)),
+            "Raw Tag drift did not leave a bounded fail-closed diagnostic.");
+
+        var source = File.ReadAllText(FindRepositoryFile(
+            "mods", "bepinex", "src", "Save", "SpecialOrderRuntimeCapture.cs"));
+        var observerStart = source.IndexOf(
+            "private static void UpdateOrderStatus(",
+            StringComparison.Ordinal);
+        var observerEnd = observerStart < 0
+            ? -1
+            : source.IndexOf(
+                "private static void UpdateExistingOrder(",
+                observerStart,
+                StringComparison.Ordinal);
+        AssertEqual(true, observerStart >= 0 && observerEnd > observerStart,
+            "The production special-order status observer block was not found.");
+        var observerSource = source[observerStart..observerEnd];
+        var quarantineIndex = observerSource.IndexOf(
+            "TryQuarantineRawTagIdentityConflict(",
+            StringComparison.Ordinal);
+        var contextGateIndex = observerSource.IndexOf(
+            "IsOrderDeliveryContext(",
+            StringComparison.Ordinal);
+        var fulfilledGateIndex = observerSource.IndexOf(
+            "!order.IsFulfilled",
+            StringComparison.Ordinal);
+        AssertEqual(
+            true,
+            quarantineIndex >= 0
+            && contextGateIndex > quarantineIndex
+            && fulfilledGateIndex > quarantineIndex,
+            "Raw Tag quarantine no longer runs before every production status-observer gate.");
+    }
+    finally
+    {
+        RuntimeOrderTerminalReceiptStore.Clear();
+        orders.Clear();
+        RuntimeNightBusinessLifecycle.IsActive = wasActive;
+        RuntimeNightBusinessLifecycle.Generation = previousGeneration;
+    }
+}
+
+static void AssertLifecycleStartIsIsolated(
+    string source,
+    string beginMarker,
+    string endMarker,
+    string label)
+{
+    AssertEqual(
+        1,
+        System.Text.RegularExpressions.Regex.Matches(
+            source,
+            @"RuntimeOrderTerminalReceiptStore\.BeginLifecycle\(").Count,
+        $"The {label} capture has a lifecycle start outside its one canonical helper.");
+    AssertEqual(
+        3,
+        System.Text.RegularExpressions.Regex.Matches(source, @"\bBeginOrderLifecycle\(").Count,
+        $"The {label} lifecycle-start helper is no longer limited to its definition and two binding callbacks.");
+    var beginStart = source.IndexOf(beginMarker, StringComparison.Ordinal);
+    var beginEnd = beginStart < 0
+        ? -1
+        : source.IndexOf(endMarker, beginStart, StringComparison.Ordinal);
+    var lifecycleStart = source.IndexOf(
+        "RuntimeOrderTerminalReceiptStore.BeginLifecycle(",
+        StringComparison.Ordinal);
+    AssertEqual(
+        true,
+        beginStart >= 0 && beginEnd > beginStart && lifecycleStart > beginStart && lifecycleStart < beginEnd,
+        $"The {label} lifecycle start is not isolated inside BeginOrderLifecycle.");
+}
+
 static bool ReadBusinessReady(Type captureType)
 {
     var property = captureType.GetProperty("IsBusinessReady", BindingFlags.Public | BindingFlags.Static)
@@ -896,6 +1650,10 @@ static void VerifyHistoricalOrderStacksAreNotUsedForLiveness()
         "Normal-order projection restored the historical AllOrders stack.");
     AssertEqual(false, normalSnapshot.Contains("\"AllOrdersData\"", StringComparison.Ordinal),
         "Normal-order projection restored the historical AllOrdersData stack.");
+    AssertContains(normalSnapshot, "capturedNativeKeys",
+        "Authoritative normal captures no longer exclude unbound HUD rows with the same native key.");
+    AssertContains(normalSnapshot, "|lifecycle:{order.OrderLifecycleSequence}",
+        "Normal-order projection groups no longer isolate reused native pointers by lifecycle.");
     AssertContains(capture, "\"PushToOrder\"", "The exact order/controller binding hook is missing.");
     AssertContains(capture, "nameof(OnControllerOrderAdded)", "PushToOrder no longer commits through its postfix.");
     AssertContains(capture, "\"CleanOrderInfo\"", "The direct native cleanup boundary is missing.");
@@ -914,13 +1672,18 @@ static void VerifyManualSettersBindExactManualStateAndCallbacks()
     normalOrders.Clear();
     try
     {
+        var specialManualOrder = new SpecialOrder(17, -1, "", manualOrder: true);
+        var specialManualController = new SpecialOrderController("甜", "无酒精")
+        {
+            CurrentOrder = specialManualOrder,
+        };
         specialSetter.Invoke(
             null,
             new object?[]
             {
-                new SpecialOrderController("甜", "无酒精"),
+                specialManualController,
                 specialCallback,
-                new SpecialOrder(17, -1, "", manualOrder: true),
+                specialManualOrder,
                 true,
             });
         AssertEqual(1, specialOrders.Count, "The special manual setter did not capture its order.");
@@ -938,13 +1701,18 @@ static void VerifyManualSettersBindExactManualStateAndCallbacks()
             ReferenceEquals(specialCallback, capturedSpecial.ManualEvaluationBindingCallback),
             "The stable special manual binding did not retain the original setter callback.");
 
+        var normalManualOrder = new NormalOrder(manualOrder: true);
+        var normalManualController = new SpecialOrderController("", "")
+        {
+            CurrentOrder = normalManualOrder,
+        };
         normalSetter.Invoke(
             null,
             new object?[]
             {
-                new object(),
+                normalManualController,
                 normalCallback,
-                new NormalOrder(manualOrder: true),
+                normalManualOrder,
                 true,
             });
         AssertEqual(1, normalOrders.Count, "The normal manual setter did not capture its order.");
@@ -963,13 +1731,18 @@ static void VerifyManualSettersBindExactManualStateAndCallbacks()
             "The stable normal manual binding did not retain the original setter callback.");
 
         specialOrders.Clear();
+        var specialMissingCallbackOrder = new SpecialOrder(17, -1, "", manualOrder: true);
+        var specialMissingCallbackController = new SpecialOrderController("甜", "无酒精")
+        {
+            CurrentOrder = specialMissingCallbackOrder,
+        };
         specialSetter.Invoke(
             null,
             new object?[]
             {
-                new SpecialOrderController("甜", "无酒精"),
+                specialMissingCallbackController,
                 null,
-                new SpecialOrder(17, -1, "", manualOrder: true),
+                specialMissingCallbackOrder,
                 true,
             });
         var missingCallback = specialOrders[0] as CapturedRuntimeSpecialOrder
@@ -980,13 +1753,18 @@ static void VerifyManualSettersBindExactManualStateAndCallbacks()
         AssertEqual<object?>(null, missingCallback.ManualEvaluationBindingCallback, "A missing special binding callback was replaced.");
 
         normalOrders.Clear();
+        var normalMissingCallbackOrder = new NormalOrder(manualOrder: true);
+        var normalMissingCallbackController = new SpecialOrderController("", "")
+        {
+            CurrentOrder = normalMissingCallbackOrder,
+        };
         normalSetter.Invoke(
             null,
             new object?[]
             {
-                new object(),
+                normalMissingCallbackController,
                 null,
-                new NormalOrder(manualOrder: true),
+                normalMissingCallbackOrder,
                 true,
             });
         var missingNormalCallback = normalOrders[0] as CapturedRuntimeNormalOrder
@@ -1013,7 +1791,7 @@ static void VerifyManualBindingSurvivesTransientStateUpdates()
         BindingFlags.NonPublic | BindingFlags.Static)
         ?? throw new InvalidOperationException("SpecialOrderRuntimeCapture.MergeCapturedOrder was not found.");
     var specialManual = new CapturedRuntimeSpecialOrder(
-        2, 1003, "Yuuma", 30, true, "灼热", -1, true, "无酒精",
+        2, 1003, "Yuuma", 30, -1,
         false, false, capturedAt, capturedAt, "ptr:reused", "ManualOrderSet")
     {
         OrderObject = new object(),
@@ -1022,6 +1800,7 @@ static void VerifyManualBindingSurvivesTransientStateUpdates()
         ManualEvaluationCallback = callback,
         ManualEvaluationBindingObserved = true,
         ManualEvaluationBindingCallback = callback,
+        OrderLifecycleSequence = 1,
     };
     var specialStillManual = specialManual with
     {
@@ -1090,6 +1869,7 @@ static void VerifyManualBindingSurvivesTransientStateUpdates()
         ManualEvaluationCallback = callback,
         ManualEvaluationBindingObserved = true,
         ManualEvaluationBindingCallback = callback,
+        OrderLifecycleSequence = 1,
     };
     var mergedNormalManual = normalMerge.Invoke(
         null,
@@ -1116,6 +1896,7 @@ static void VerifyManualBindingSurvivesTransientStateUpdates()
                 ManualEvaluationCallback = null,
                 ManualEvaluationBindingObserved = false,
                 ManualEvaluationBindingCallback = null,
+                OrderLifecycleSequence = 2,
             },
             normalManual,
         }) as CapturedRuntimeNormalOrder
@@ -1156,6 +1937,7 @@ static void VerifyManualBindingSurvivesTransientStateUpdates()
                 ManualEvaluationCallback = null,
                 ManualEvaluationBindingObserved = false,
                 ManualEvaluationBindingCallback = null,
+                OrderLifecycleSequence = 2,
             },
             normalManual,
         }) as CapturedRuntimeNormalOrder
@@ -1171,15 +1953,27 @@ static void VerifyManualBindingRetiresWithCapturedOrder()
     var specialOrders = GetCaptureOrders(typeof(SpecialOrderRuntimeCapture));
     var normalOrders = GetCaptureOrders(typeof(NormalOrderRuntimeCapture));
     var specialAdd = GetCaptureMutation(typeof(SpecialOrderRuntimeCapture), "AddOrder");
-    var specialRemove = GetCaptureMutation(typeof(SpecialOrderRuntimeCapture), "RemoveOrder");
+    var specialRemove = typeof(SpecialOrderRuntimeCapture).GetMethod(
+        "RemoveOrder",
+        BindingFlags.NonPublic | BindingFlags.Static,
+        binder: null,
+        types: new[] { typeof(RuntimeOrderBindingToken), typeof(string) },
+        modifiers: null)
+        ?? throw new InvalidOperationException("SpecialOrderRuntimeCapture.RemoveOrder(binding, source) was not found.");
     var normalAdd = GetCaptureMutation(typeof(NormalOrderRuntimeCapture), "AddOrder");
-    var normalRemove = GetCaptureMutation(typeof(NormalOrderRuntimeCapture), "RemoveOrder");
+    var normalRemove = typeof(NormalOrderRuntimeCapture).GetMethod(
+        "RemoveOrder",
+        BindingFlags.NonPublic | BindingFlags.Static,
+        binder: null,
+        types: new[] { typeof(RuntimeOrderBindingToken) },
+        modifiers: null)
+        ?? throw new InvalidOperationException("NormalOrderRuntimeCapture.RemoveOrder(binding) was not found.");
     var orderObject = new object();
     var controllerObject = new object();
 
     var specialManual = new CapturedRuntimeSpecialOrder(
-        2, 1003, "Yuuma", 30, true, "灼热", -1, true, "无酒精",
-        false, false, capturedAt, capturedAt, "ptr:same", "ManualOrderSet")
+        2, 1003, "Yuuma", 30, -1,
+        false, false, capturedAt, capturedAt, "ptr:abc", "ManualOrderSet")
     {
         OrderObject = orderObject,
         ControllerObject = controllerObject,
@@ -1187,9 +1981,10 @@ static void VerifyManualBindingRetiresWithCapturedOrder()
         ManualEvaluationCallback = callback,
         ManualEvaluationBindingObserved = true,
         ManualEvaluationBindingCallback = callback,
+        OrderLifecycleSequence = 1,
     };
     var normalManual = new CapturedRuntimeNormalOrder(
-        "ptr:same", 2, "Yuuma", 17, 3, capturedAt, capturedAt, "ManualOrderSet")
+        "ptr:def", 2, "Yuuma", 17, 3, capturedAt, capturedAt, "ManualOrderSet")
     {
         OrderObject = orderObject,
         ControllerObject = controllerObject,
@@ -1197,6 +1992,7 @@ static void VerifyManualBindingRetiresWithCapturedOrder()
         ManualEvaluationCallback = callback,
         ManualEvaluationBindingObserved = true,
         ManualEvaluationBindingCallback = callback,
+        OrderLifecycleSequence = 1,
     };
 
     specialOrders.Clear();
@@ -1204,7 +2000,11 @@ static void VerifyManualBindingRetiresWithCapturedOrder()
     try
     {
         specialAdd.Invoke(null, new object?[] { specialManual });
-        specialRemove.Invoke(null, new object?[] { specialManual });
+        specialRemove.Invoke(null, new object?[]
+        {
+            new RuntimeOrderBindingToken(1, RuntimeOrderKind.Special, (nint)0xabc, (nint)0x111, 1),
+            "Test",
+        });
         specialAdd.Invoke(null, new object?[]
         {
             specialManual with
@@ -1214,6 +2014,7 @@ static void VerifyManualBindingRetiresWithCapturedOrder()
                 ManualEvaluationCallback = null,
                 ManualEvaluationBindingObserved = false,
                 ManualEvaluationBindingCallback = null,
+                OrderLifecycleSequence = 2,
             },
         });
         var specialReused = specialOrders[0] as CapturedRuntimeSpecialOrder
@@ -1222,7 +2023,10 @@ static void VerifyManualBindingRetiresWithCapturedOrder()
         AssertEqual<object?>(null, specialReused.ManualEvaluationBindingCallback, "A retired special callback survived exact pointer and identity reuse.");
 
         normalAdd.Invoke(null, new object?[] { normalManual });
-        normalRemove.Invoke(null, new object?[] { normalManual });
+        normalRemove.Invoke(null, new object?[]
+        {
+            new RuntimeOrderBindingToken(1, RuntimeOrderKind.Normal, (nint)0xdef, (nint)0x222, 1),
+        });
         normalAdd.Invoke(null, new object?[]
         {
             normalManual with
@@ -1232,6 +2036,7 @@ static void VerifyManualBindingRetiresWithCapturedOrder()
                 ManualEvaluationCallback = null,
                 ManualEvaluationBindingObserved = false,
                 ManualEvaluationBindingCallback = null,
+                OrderLifecycleSequence = 2,
             },
         });
         var normalReused = normalOrders[0] as CapturedRuntimeNormalOrder
@@ -1244,6 +2049,54 @@ static void VerifyManualBindingRetiresWithCapturedOrder()
         specialOrders.Clear();
         normalOrders.Clear();
     }
+}
+
+static object RequireTerminalState(object? state, string message)
+{
+    if (state == null)
+    {
+        throw new InvalidOperationException(message);
+    }
+
+    return state;
+}
+
+static long RequireActiveLifecycle(
+    long businessGeneration,
+    RuntimeOrderKind orderKind,
+    nint orderPointer,
+    nint controllerPointer,
+    string message)
+{
+    if (!RuntimeOrderTerminalReceiptStore.TryCaptureActiveLifecycle(
+            businessGeneration,
+            orderKind,
+            orderPointer,
+            controllerPointer,
+            out var lifecycleSequence))
+    {
+        throw new InvalidOperationException(message);
+    }
+
+    return lifecycleSequence;
+}
+
+static void AssertNoActiveLifecycle(
+    long businessGeneration,
+    RuntimeOrderKind orderKind,
+    nint orderPointer,
+    nint controllerPointer,
+    string message)
+{
+    AssertEqual(
+        false,
+        RuntimeOrderTerminalReceiptStore.TryCaptureActiveLifecycle(
+            businessGeneration,
+            orderKind,
+            orderPointer,
+            controllerPointer,
+            out _),
+        message);
 }
 
 static System.Collections.IList GetCaptureOrders(Type captureType)
@@ -1304,32 +2157,68 @@ static void VerifyOrdinaryOrderIsNotAParseFailure()
 
 static void VerifySkippedManualSetterDoesNotCapture()
 {
-    var ordersField = typeof(SpecialOrderRuntimeCapture).GetField(
-        "Orders",
-        BindingFlags.NonPublic | BindingFlags.Static)
-        ?? throw new InvalidOperationException("SpecialOrderRuntimeCapture.Orders was not found.");
-    var orders = ordersField.GetValue(null) as System.Collections.IList
-        ?? throw new InvalidOperationException("SpecialOrderRuntimeCapture.Orders was not a list.");
-    var postfix = typeof(SpecialOrderRuntimeCapture).GetMethod(
-        "OnManualControllerOrderSet",
-        BindingFlags.NonPublic | BindingFlags.Static)
-        ?? throw new InvalidOperationException(
-            "SpecialOrderRuntimeCapture.OnManualControllerOrderSet was not found.");
+    RuntimeOrderTerminalReceiptStore.Clear();
+    var specialOrders = GetCaptureOrders(typeof(SpecialOrderRuntimeCapture));
+    var normalOrders = GetCaptureOrders(typeof(NormalOrderRuntimeCapture));
+    var specialSetter = GetManualSetter(typeof(SpecialOrderRuntimeCapture));
+    var normalSetter = GetManualSetter(typeof(NormalOrderRuntimeCapture));
+    var specialOrder = new SpecialOrder(17, -1, "", manualOrder: true);
+    var specialController = new SpecialOrderController("甜", "无酒精") { CurrentOrder = specialOrder };
+    var normalOrder = new NormalOrder(manualOrder: true);
+    var normalController = new NightScene.GuestManagementUtility.GuestGroupController
+    {
+        CurrentOrder = normalOrder,
+    };
 
-    orders.Clear();
-    postfix.Invoke(null, new object[] { new object(), new object(), new object(), false });
+    specialOrders.Clear();
+    normalOrders.Clear();
+    try
+    {
+        specialSetter.Invoke(
+            null,
+            new object?[] { specialController, new object(), specialOrder, false });
+        AssertEqual(0, specialOrders.Count,
+            "A skipped native special manual setter produced a captured order.");
+        AssertNoActiveLifecycle(
+            RuntimeNightBusinessLifecycle.Generation,
+            RuntimeOrderKind.Special,
+            specialOrder.Pointer,
+            specialController.Pointer,
+            "A skipped native special manual setter started an active lifecycle.");
 
-    AssertEqual(0, orders.Count, "A skipped native manual setter produced a captured order.");
+        normalSetter.Invoke(
+            null,
+            new object?[] { normalController, new object(), normalOrder, false });
+        AssertEqual(0, normalOrders.Count,
+            "A skipped native normal manual setter produced a captured order.");
+        AssertNoActiveLifecycle(
+            RuntimeNightBusinessLifecycle.Generation,
+            RuntimeOrderKind.Normal,
+            normalOrder.Pointer,
+            normalController.Pointer,
+            "A skipped native normal manual setter started an active lifecycle.");
+    }
+    finally
+    {
+        specialOrders.Clear();
+        normalOrders.Clear();
+        RuntimeOrderTerminalReceiptStore.Clear();
+    }
 }
 
 static CapturedRuntimeSpecialOrder Parse(SpecialOrder order, object controller)
+{
+    return TryParse(order, controller)
+        ?? throw new InvalidOperationException("The special order was not captured.");
+}
+
+static CapturedRuntimeSpecialOrder? TryParse(SpecialOrder order, object controller)
 {
     var parseOrder = typeof(SpecialOrderRuntimeCapture).GetMethod(
         "ParseOrder",
         BindingFlags.NonPublic | BindingFlags.Static)
         ?? throw new InvalidOperationException("SpecialOrderRuntimeCapture.ParseOrder was not found.");
-    return parseOrder.Invoke(null, new[] { order, "Smoke", controller }) as CapturedRuntimeSpecialOrder
-        ?? throw new InvalidOperationException("The special order was not captured.");
+    return parseOrder.Invoke(null, new[] { order, "Smoke", controller }) as CapturedRuntimeSpecialOrder;
 }
 
 static string BuildOrderText(string foodTag, string beverageTag)
@@ -1398,16 +2287,19 @@ internal sealed class SpecialOrderController : NightScene.GuestManagementUtility
 
     public int FoodReads { get; private set; }
     public int BeverageReads { get; private set; }
+    public bool ThrowOnTextRead { get; init; }
 
     public string GetOrderFoodText(SpecialOrder order)
     {
         FoodReads++;
+        if (ThrowOnTextRead) throw new InvalidOperationException("Food text getter must not run.");
         return _foodTag;
     }
 
     public string GetOrderBevText(SpecialOrder order)
     {
         BeverageReads++;
+        if (ThrowOnTextRead) throw new InvalidOperationException("Beverage text getter must not run.");
         return _beverageTag;
     }
 }

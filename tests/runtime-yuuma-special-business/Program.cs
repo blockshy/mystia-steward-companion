@@ -1489,12 +1489,16 @@ static void VerifyYuumaSettlementContract(
         "private static bool IsSameCookingOrderIdentity("));
     AssertContains(
         sameCookingOrder,
-        "RareOrderIdentityMatcher.Matches(",
-        "Rare Blood Pond Hell jobs no longer require the exact raw order identity.");
+        "HasSameRuntimeOrderBindingIdentity(left.OrderBinding,right.OrderBinding)",
+        "Blood Pond Hell job reuse no longer requires the exact generation/order/controller native identity.");
     AssertContains(
         sameCookingOrder,
         "string.Equals(left.OrderKey,right.OrderKey,StringComparison.Ordinal)",
         "Normal Blood Pond Hell jobs no longer require the exact order key.");
+    AssertDoesNotContain(
+        sameCookingOrder,
+        "IsSameObject(left.Order",
+        "Cooking-job identity restored the removed cross-frame IL2CPP order-wrapper fallback.");
 
     VerifyYuumaManualOrderCaptureContract(specialCaptureSource, normalCaptureSource, matchingSource);
 
@@ -2487,7 +2491,7 @@ static void VerifyYuumaLookupPurposeAndDeliveredItemIsolation(
         "Rare prepare no longer detects an existing beverage.");
     AssertContains(
         rarePrepare,
-        "TryValidateYuumaDeliveredItemAgainstOriginalOrder(actionTarget,existingBeverage,RuntimeDeliveryItemKind.Beverage",
+        "TryValidateYuumaDeliveredItemAgainstOriginalOrder(actionTarget!,existingBeverage,RuntimeDeliveryItemKind.Beverage",
         "Rare prepare no longer validates an existing Yuuma beverage against the original Tag identity.");
 
     var rareComplete = Normalize(ExtractMethod(
@@ -2499,7 +2503,7 @@ static void VerifyYuumaLookupPurposeAndDeliveredItemIsolation(
         "Rare completion no longer isolates strict Yuuma lookup from ordinary and Yuyuko Completion lookup.");
     AssertContains(
         rareComplete,
-        "TryValidateYuumaDeliveredItemAgainstOriginalOrder(BuildRareAutomationTarget(request),currentBeverage,RuntimeDeliveryItemKind.Beverage",
+        "TryValidateYuumaDeliveredItemAgainstOriginalOrder(automationTarget,currentBeverage,RuntimeDeliveryItemKind.Beverage",
         "Rare completion no longer validates an existing Yuuma beverage against the original Tag identity.");
 
     var normalComplete = Normalize(ExtractMethod(

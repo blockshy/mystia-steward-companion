@@ -138,6 +138,29 @@ static void AssertRuntimeLifecycleCallbacks()
     AssertEqual(0, RuntimeBoundaryProbe.CookingJobClearCount,
         "Business-time expiry cleared a seated-order cooking job.");
 
+    var receiptLifecycle = RuntimeOrderTerminalReceiptStore.BeginLifecycle(
+        active.Generation,
+        RuntimeOrderKind.Special,
+        (nint)0x101,
+        (nint)0x202);
+    var receiptToken = new RuntimeOrderBindingToken(
+        active.Generation,
+        RuntimeOrderKind.Special,
+        (nint)0x101,
+        (nint)0x202,
+        receiptLifecycle);
+    RuntimeOrderTerminalReceiptStore.Publish(new RuntimeOrderTerminalHookState(
+        active.Generation,
+        RuntimeOrderKind.Special,
+        receiptToken.OrderPointer,
+        receiptToken.ControllerPointer,
+        receiptToken.LifecycleSequence,
+        RuntimeOrderTerminalDisposition.Evaluated,
+        RuntimeOrderTerminalReceiptSource.EvaluateOrder));
+    AssertTrue(
+        RuntimeOrderTerminalReceiptStore.TryFind(receiptToken, out _),
+        "The active business did not retain its exact terminal receipt before Closing.");
+
     InvokeRuntimeCallback(runtimeType, "OnDelayedBusinessClosing");
     var closing = RuntimeNightBusinessLifecycle.Snapshot;
     AssertEqual(NightBusinessLifecyclePhase.Closing, closing.Phase,
@@ -149,6 +172,13 @@ static void AssertRuntimeLifecycleCallbacks()
     AssertEqual(1, RuntimeBoundaryProbe.NormalOrderClearCount, "Closing did not clear normal orders once.");
     AssertEqual(1, RuntimeBoundaryProbe.SpecialOrderClearCount, "Closing did not clear special orders once.");
     AssertEqual(1, RuntimeBoundaryProbe.CookingJobClearCount, "Closing did not clear cooking jobs once.");
+    AssertEqual(1, RuntimeBoundaryProbe.SafetyBarrierClearCount,
+        "Closing did not retire unresolved automation barriers once.");
+    AssertEqual(active.Generation, RuntimeBoundaryProbe.LastSafetyBarrierGeneration,
+        "Closing retired automation barriers for the wrong business generation.");
+    AssertFalse(
+        RuntimeOrderTerminalReceiptStore.TryFind(receiptToken, out _),
+        "Closing did not clear exact terminal receipts from the retired business generation.");
     AssertEqual(1, RuntimeBoundaryProbe.SeatSuspendCount, "Closing did not suspend seat highlighting once.");
     AssertEqual(1, RuntimeBoundaryProbe.OrderSuspendCount, "Closing did not suspend order highlighting once.");
     AssertEqual(NightBusinessLifecyclePhase.Closing, RuntimeBoundaryProbe.LastServeInWorkPhase,
@@ -159,6 +189,8 @@ static void AssertRuntimeLifecycleCallbacks()
         "Duplicate result Closing repeated boundary cleanup.");
     AssertEqual(1, RuntimeBoundaryProbe.CookingJobClearCount,
         "Duplicate result Closing repeated cooking-job cleanup.");
+    AssertEqual(1, RuntimeBoundaryProbe.SafetyBarrierClearCount,
+        "Duplicate result Closing repeated automation-barrier cleanup.");
 
     InvokeRuntimeCallback(runtimeType, "OnBusinessDestroyed");
     var destroyed = RuntimeNightBusinessLifecycle.Snapshot;

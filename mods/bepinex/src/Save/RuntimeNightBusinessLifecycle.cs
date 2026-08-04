@@ -234,6 +234,10 @@ internal static class RuntimeNightBusinessLifecycle
         }
 
         RunBoundaryAction("invalidate UI target", () => RuntimeUiPinningService.InvalidateTarget(snapshot.Generation, reason));
+        RunBoundaryAction(
+            "retire automation safety barriers",
+            () => RuntimeOrderPreparationService.ClearAutomationSafetyBarriersForBusinessGeneration(snapshot.Generation));
+        RunBoundaryAction("clear runtime order terminal receipts", RuntimeOrderTerminalReceiptStore.Clear);
         RunBoundaryAction("clear special orders", () => SpecialOrderRuntimeCapture.ClearOrders(reason));
         RunBoundaryAction("clear normal orders", () => NormalOrderRuntimeCapture.ClearOrders(reason));
         RunBoundaryAction("clear special-business context", () => RuntimeSpecialBusinessContextService.ClearForBusinessEnd(reason));

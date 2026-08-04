@@ -23,6 +23,7 @@ internal static class RuntimeOrderTraceIdService
     {
         var stableKey = BuildRareStableKey(
             order.FirstSeenAtUtc,
+            order.OrderLifecycleSequence,
             order.DeskCode,
             order.RuntimeGuestId,
             order.FoodTagId,
@@ -35,10 +36,11 @@ internal static class RuntimeOrderTraceIdService
     {
         var stableKey = BuildRareStableKey(
             order.FirstCapturedAt,
+            order.OrderLifecycleSequence,
             order.DeskCode,
             order.GuestId,
-            order.HasFoodTagId ? order.FoodTagId : null,
-            order.HasBeverageTagId ? order.BeverageTagId : null,
+            order.FoodTagId,
+            order.BeverageTagId,
             order.IsFreeOrder);
         return GetOrCreate("rare", "R", stableKey);
     }
@@ -142,7 +144,7 @@ internal static class RuntimeOrderTraceIdService
     public static string GetNormalTraceId(NormalBusinessOrder order)
     {
         var stableKey = !string.IsNullOrWhiteSpace(order.OrderKey)
-            ? $"normal:{order.OrderKey}"
+            ? $"normal:{order.OrderKey}|lifecycle:{(order.OrderLifecycleSequence > 0 ? order.OrderLifecycleSequence.ToString(System.Globalization.CultureInfo.InvariantCulture) : "missing")}"
             : BuildNormalStableKey(
                 order.FirstSeenAtUtc,
                 order.DeskCode,
@@ -204,6 +206,7 @@ internal static class RuntimeOrderTraceIdService
 
     private static string BuildRareStableKey(
         DateTime? firstSeenAtUtc,
+        long orderLifecycleSequence,
         int deskCode,
         int? runtimeGuestId,
         int? foodTagId,
@@ -212,6 +215,11 @@ internal static class RuntimeOrderTraceIdService
     {
         var builder = new StringBuilder("rare:");
         AppendIso(builder, firstSeenAtUtc);
+        Append(
+            builder,
+            orderLifecycleSequence > 0
+                ? orderLifecycleSequence.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                : "missing-lifecycle");
         Append(builder, deskCode);
         Append(builder, runtimeGuestId);
         Append(builder, foodTagId);

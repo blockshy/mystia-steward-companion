@@ -101,6 +101,7 @@ import {
   buildNormalCookingTargetDecision,
   buildNormalAutoOrderDiagnostics,
   buildNormalAutoOrderKey,
+  buildNormalLifecycleAutoOrderKey,
   buildNormalCookerDemand,
   buildNormalOrderAutomationSignature,
   buildRareAutoOrderDiagnostic,
@@ -1023,7 +1024,9 @@ function isBlockingCookingTerminalEvent(event: AutomationRuntimeEvent): boolean 
 }
 
 function isManualResolutionAutomationEvent(event: AutomationRuntimeEvent): boolean {
-  return event.terminal && requiresManualAutomationResolution(event.reasonCode, [event.code]);
+  return event.terminal
+    && event.outcome === 'blocked'
+    && requiresManualAutomationResolution(event.reasonCode, [event.code]);
 }
 
 function resolveAutomationEventStage(event: AutomationRuntimeEvent): AutomationStep {
@@ -1269,6 +1272,9 @@ function matchesRareAutomationEvent(
   state: AutoFirstOrderState,
 ): boolean {
   if (event.targetKind !== 'rare') return false;
+  if (event.orderLifecycleSequence <= 0
+    || item.order.orderLifecycleSequence <= 0
+    || event.orderLifecycleSequence !== item.order.orderLifecycleSequence) return false;
   if (state.cookingJobId && event.jobId) return state.cookingJobId === event.jobId;
   const order = item.order;
   if (event.traceId && order.traceId) return event.traceId === order.traceId;
@@ -1323,9 +1329,11 @@ function resetRareOrderStateAfterRuntimeMismatch(
 
 function matchesNormalAutomationEvent(event: AutomationRuntimeEvent, order: NormalBusinessOrder): boolean {
   if (event.targetKind !== 'normal') return false;
+  if (event.orderLifecycleSequence <= 0
+    || order.orderLifecycleSequence <= 0
+    || event.orderLifecycleSequence !== order.orderLifecycleSequence) return false;
   if (event.traceId && order.traceId) return event.traceId === order.traceId;
-  const orderKey = buildNormalAutoOrderKey(order);
-  if (event.orderKey && orderKey) return event.orderKey === orderKey;
+  if (event.orderKey && order.orderKey) return event.orderKey === order.orderKey;
   if (event.foodId >= 0 && order.foodId !== event.foodId) return false;
   if (event.deskCode >= 0 && order.deskCode !== event.deskCode) return false;
   if (event.guestName && order.guestName && event.guestName !== order.guestName) return false;
@@ -1339,12 +1347,17 @@ function findRareAutomationCookingJob(
 ): AutomationCookingJobSnapshot | null {
   const order = selection.item.order;
   if (state?.cookingJobId) {
-    return jobs.find((job) => job.targetKind === 'rare' && job.jobId === state.cookingJobId) ?? null;
+    return jobs.find((job) => job.targetKind === 'rare'
+      && job.jobId === state.cookingJobId
+      && job.orderLifecycleSequence > 0
+      && job.orderLifecycleSequence === order.orderLifecycleSequence) ?? null;
   }
 
   const recipeTarget = state?.recipeTarget ?? selection.recipeTarget;
   return jobs.find((job) => {
     if (job.targetKind !== 'rare') return false;
+    if (job.orderLifecycleSequence <= 0
+      || job.orderLifecycleSequence !== order.orderLifecycleSequence) return false;
     if (job.traceId && order.traceId) return job.traceId === order.traceId;
     return job.deskCode === order.deskCode
       && job.foodId === recipeTarget?.foodId
@@ -1358,14 +1371,18 @@ function findNormalAutomationCookingJob(
   state?: NormalAutoOrderState,
 ): AutomationCookingJobSnapshot | null {
   if (state?.cookingJobId) {
-    return jobs.find((job) => job.targetKind === 'normal' && job.jobId === state.cookingJobId) ?? null;
+    return jobs.find((job) => job.targetKind === 'normal'
+      && job.jobId === state.cookingJobId
+      && job.orderLifecycleSequence > 0
+      && job.orderLifecycleSequence === order.orderLifecycleSequence) ?? null;
   }
 
-  const orderKey = buildNormalAutoOrderKey(order);
   return jobs.find((job) => {
     if (job.targetKind !== 'normal') return false;
+    if (job.orderLifecycleSequence <= 0
+      || job.orderLifecycleSequence !== order.orderLifecycleSequence) return false;
     if (job.traceId && order.traceId) return job.traceId === order.traceId;
-    return Boolean(job.orderKey && job.orderKey === orderKey);
+    return Boolean(job.orderKey && order.orderKey && job.orderKey === order.orderKey);
   }) ?? null;
 }
 
@@ -2248,11 +2265,17 @@ export function ModWorkbench() {
     const latestByTarget = new Map<string, AutomationRuntimeEvent>();
     for (const event of snapshot?.automationEvents ?? []) {
       if (!isManualResolutionAutomationEvent(event)) continue;
-      const targetIdentity = event.targetKind === 'normal' && event.orderKey
-        ? `normal:${event.orderKey}`
-        : event.traceId
-          ? `${event.targetKind}:${event.traceId}`
-          : `${event.targetKind}:sequence:${event.sequence}`;
+      if (event.orderLifecycleSequence <= 0
+        || !event.orderRuntimeKind
+        || !event.orderId
+        || !event.orderControllerId) continue;
+      const targetIdentity = [
+        event.targetKind,
+        event.orderRuntimeKind,
+        event.orderId,
+        event.orderControllerId,
+        event.orderLifecycleSequence,
+      ].join(':');
       const current = latestByTarget.get(targetIdentity);
       if (!current || current.sequence < event.sequence) latestByTarget.set(targetIdentity, event);
     }
@@ -3054,7 +3077,11 @@ export function ModWorkbench() {
       }
 
       if (event.targetKind === 'normal') {
-        let matchedKey = event.orderKey && normalOrderStatesRef.current.has(event.orderKey) ? event.orderKey : '';
+        const eventStateKey = buildNormalLifecycleAutoOrderKey(
+          event.orderKey || event.traceId,
+          event.orderLifecycleSequence,
+        );
+        let matchedKey = eventStateKey && normalOrderStatesRef.current.has(eventStateKey) ? eventStateKey : '';
         let matchedOrder = matchedKey
           ? normalOrders.find((order) => buildNormalAutoOrderKey(order) === matchedKey) ?? null
           : null;

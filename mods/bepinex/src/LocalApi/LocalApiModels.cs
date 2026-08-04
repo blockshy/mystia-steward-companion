@@ -55,6 +55,10 @@ internal sealed class AutomationRuntimeEvent
     public string TraceId { get; init; } = "";
     public string TargetKind { get; init; } = "";
     public string OrderKey { get; init; } = "";
+    public string OrderRuntimeKind { get; init; } = "";
+    public string OrderId { get; init; } = "";
+    public string OrderControllerId { get; init; } = "";
+    public long OrderLifecycleSequence { get; init; } = -1;
     public int DeskCode { get; init; } = -1;
     public int? GuestId { get; init; }
     public string GuestName { get; init; } = "";
@@ -85,9 +89,16 @@ internal sealed class AutomationCookingJobSnapshot
     public string State { get; init; } = "";
     public string Outcome { get; init; } = "";
     public string ReasonCode { get; init; } = "";
+    public string TransactionStage { get; init; } = "";
     public long SpecialTargetRevision { get; init; }
     public bool AllowYuumaControlledProgression { get; init; }
     public bool AutoDeliverFood { get; init; }
+    public bool HoldsControllerReservation { get; init; }
+    public string ControllerLeaseReleaseReason { get; init; } = "";
+    public string OrderRuntimeKind { get; init; } = "";
+    public string OrderId { get; init; } = "";
+    public string OrderControllerId { get; init; } = "";
+    public long OrderLifecycleSequence { get; init; } = -1;
     public string ControllerId { get; init; } = "";
     public string ResultId { get; init; } = "";
     public long Generation { get; init; }
@@ -104,6 +115,11 @@ internal sealed class AutomationCookingJobSnapshot
     public bool FoodDeliveryCommitted { get; init; }
     public bool FoodDeliveryCommitUncertain { get; init; }
     public int FoodDeliveryCleanupAttempts { get; init; }
+    public bool FoodDeliveryCleanupCompleted { get; init; }
+    public bool FoodDeliveryCleanupTerminal { get; init; }
+    public string FoodDeliveryEvaluationState { get; init; } = "";
+    public int FoodDeliveryEvaluationAttempts { get; init; }
+    public double FoodDeliveryEvaluationEffectiveSeconds { get; init; }
     public DateTime StartedAtUtc { get; init; }
     public DateTime LastObservedAtUtc { get; init; }
     public DateTime LastProgressAtUtc { get; init; }

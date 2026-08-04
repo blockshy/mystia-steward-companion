@@ -749,7 +749,7 @@ async function assertSourceContracts() {
   );
   assert.match(
     reservedCookerSelection,
-    /lockedPositions\.Contains\(reservation\.GridPosition\)[\s\S]*TryReadCookerControllerState\([\s\S]*reservation\.EvaluateChallengeGate\([\s\S]*RuntimeCookerChallengeGateState\.Inconsistent[\s\S]*controllerState\.TypeIds\.Contains\(recipeCookerType\)[\s\S]*IsCookControllerReserved\(cookController\)[\s\S]*RuntimeCookerStartAvailabilityService\.Classify\(/,
+    /lockedPositions\.Contains\(reservation\.GridPosition\)[\s\S]*TryReadCookerControllerState\([\s\S]*reservation\.EvaluateChallengeGate\([\s\S]*RuntimeCookerChallengeGateState\.Inconsistent[\s\S]*controllerState\.TypeIds\.Contains\(recipeCookerType\)[\s\S]*IsCookControllerReserved\(cookController, out var reservationDiagnostic\)[\s\S]*RuntimeCookerStartAvailabilityService\.Classify\(/,
     'Only an unlocked exact reserved controller may pass state, open gate, type, Mod reservation, and shared native availability checks.',
   );
   assert.doesNotMatch(
@@ -771,6 +771,21 @@ async function assertSourceContracts() {
     cookerRevalidation,
     /TryGetCookerFromCookSystem\([\s\S]*reservation[\s\S]*IsSameObject\(cookController, current\.CookController\)[\s\S]*IsSameObject\(selectedCooker, current\.ControllerState\.Cooker\)/,
     'Every repeated validation must fresh-read the reservation and retain both controller and bound-cooker identity.',
+  );
+  const cookerReservation = sourceSlice(
+    cooking,
+    'private static bool IsCookControllerReserved(',
+    'private static string DescribeCookController(',
+  );
+  assert.match(
+    cookerReservation,
+    /job\.HoldsControllerReservation[\s\S]*job\.ControllerPointer == controllerPointer[\s\S]*ownerJob=/,
+    'Physical slot scheduling must report only the exact job holding the explicit Mod controller lease.',
+  );
+  assert.doesNotMatch(
+    cookerReservation,
+    /!job\.ManualHandoffObserved/,
+    'A passive order receipt must not remain a cooker reservation through the legacy handoff predicate.',
   );
   const cookerStart = sourceSlice(
     cooking,

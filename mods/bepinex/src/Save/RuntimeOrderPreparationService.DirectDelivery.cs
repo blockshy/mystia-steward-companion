@@ -405,6 +405,20 @@ internal static partial class RuntimeOrderPreparationService
                 $"已找到目标订单，但未读取到可执行客人控制器；该订单可能只残留在 HUD 中。{runtimeOrder.Diagnostic}");
         }
 
+        if (!TryMatchRuntimeOrderBinding(
+                target.OrderBinding,
+                runtimeOrder.Order,
+                runtimeOrder.Controller,
+                out var bindingDiagnostic))
+        {
+            return HandleUndeliverableCookedFood(
+                job,
+                cookedFood,
+                AutomationDeliveryFailureKind.MissingOrder,
+                "fresh order/controller 与开锅前 exact identity 不一致，禁止向后继或并发订单送达："
+                + $"{bindingDiagnostic}；{runtimeOrder.Diagnostic}");
+        }
+
         job.ResetDeliveryFailures();
         if (yuumaTarget)
         {
@@ -775,20 +789,36 @@ internal static partial class RuntimeOrderPreparationService
         var message = $"{completion?.Message}{cleanup.Message}{job.FoodDeliveryEvaluationMessage}";
         var evaluationUncertain = job.FoodDeliveryEvaluationState
             == AutomationFoodDeliveryEvaluationState.CommitUncertain;
+        var evaluationBlocked = job.FoodDeliveryEvaluationState is
+            AutomationFoodDeliveryEvaluationState.TargetMismatch
+            or AutomationFoodDeliveryEvaluationState.CloseoutUnresolved;
+        var orderTerminated = job.FoodDeliveryEvaluationState
+            == AutomationFoodDeliveryEvaluationState.OrderTerminated;
         var terminalCode = evaluationUncertain
             ? OrderPreparationStepCodes.OrderEvaluationCommitUncertain
+            : evaluationBlocked || orderTerminated
+                ? job.FoodDeliveryEvaluationCode
             : job.FoodDeliveryCleanupTerminal
                 ? job.FoodDeliveryCleanupTerminalCode
                 : OrderPreparationStepCodes.FoodDelivered;
         AppendSpecialFoodTargetCookingJobDiagnostic(
             "cooked-food-delivered",
             job,
-            evaluationUncertain ? "evaluation-uncertain" : "delivered-and-evaluated",
+            evaluationUncertain
+                ? "evaluation-uncertain"
+                : evaluationBlocked
+                    ? "evaluation-blocked"
+                    : orderTerminated
+                        ? "order-terminated"
+                        : "delivered-and-evaluated",
             completion?.ActualFoodId ?? -1,
             completion?.TargetTags,
             completion?.ActualTags,
             message);
-        if (!evaluationUncertain && !job.FoodDeliveryCleanupTerminal)
+        if (!evaluationUncertain
+            && !evaluationBlocked
+            && !orderTerminated
+            && !job.FoodDeliveryCleanupTerminal)
         {
             RecordAutomationRuntimeEvent(
                 terminalCode,
@@ -796,6 +826,16 @@ internal static partial class RuntimeOrderPreparationService
                 message,
                 outcome: "completed",
                 reasonCode: "food-delivered",
+                terminal: true);
+        }
+        else if (orderTerminated)
+        {
+            RecordAutomationRuntimeEvent(
+                terminalCode,
+                job,
+                message,
+                outcome: "interrupted",
+                reasonCode: terminalCode,
                 terminal: true);
         }
         return (true, message, terminalCode);
@@ -819,6 +859,42 @@ internal static partial class RuntimeOrderPreparationService
             return true;
         }
 
+        if (!job.Target.OrderBinding.HasValue)
+        {
+            return ContinueOrCloseCommittedFoodDeliveryEvaluation(
+                job,
+                "cooking job 缺少开锅前锁定的 exact order/controller receipt identity。",
+                OrderPreparationStepCodes.OrderEvaluationStateUnreadable,
+                out message,
+                out code);
+        }
+
+        if (RuntimeOrderTerminalReceiptStore.TryFind(
+                job.Target.OrderBinding.Value,
+                out var terminalReceipt))
+        {
+            if (terminalReceipt.Disposition == RuntimeOrderTerminalDisposition.Evaluated)
+            {
+                job.FoodDeliveryEvaluationState = AutomationFoodDeliveryEvaluationState.Completed;
+                job.FoodDeliveryEvaluationMessage = "已收到同 generation/order/controller 的原生评价终态回执"
+                    + $"（source={terminalReceipt.Source}; sequence={terminalReceipt.Sequence}），"
+                    + "不会重新读取订单 wrapper 或重复评价。";
+                job.FoodDeliveryEvaluationCode = OrderPreparationStepCodes.FoodDelivered;
+            }
+            else
+            {
+                job.FoodDeliveryEvaluationState = AutomationFoodDeliveryEvaluationState.OrderTerminated;
+                job.FoodDeliveryEvaluationMessage = "已收到同 generation/order/controller 的原生订单终止回执"
+                    + $"（source={terminalReceipt.Source}; sequence={terminalReceipt.Sequence}）；"
+                    + "订单已不再可评价，旧 cooking receipt 将退休且不会猜测为评价成功。";
+                job.FoodDeliveryEvaluationCode = OrderPreparationStepCodes.OrderTerminatedBeforeEvaluation;
+            }
+
+            message = job.FoodDeliveryEvaluationMessage;
+            code = job.FoodDeliveryEvaluationCode;
+            return true;
+        }
+
         var target = job.Target;
         var request = BuildOrderRequestFromCookingJob(job);
         RuntimeOrderMatch runtimeOrder;
@@ -830,16 +906,36 @@ internal static partial class RuntimeOrderPreparationService
         }
         catch (Exception ex)
         {
-            message = $"{target.FoodName} 已确认送达，但精确重取目标订单时发生异常；"
-                + $"锁存的自动完成意图仍保留，下一轮会继续确认评价：{ex.GetBaseException().Message}";
-            return false;
+            return ContinueOrCloseCommittedFoodDeliveryEvaluation(
+                job,
+                $"精确重取目标订单时发生异常：{ex.GetBaseException().Message}。",
+                OrderPreparationStepCodes.CookingPending,
+                out message,
+                out code);
         }
 
         if (runtimeOrder.Order == null || runtimeOrder.Manager == null)
         {
-            message = $"{target.FoodName} 已确认送达，但目标订单或客人管理器暂不可用；"
-                + $"锁存的自动完成意图仍保留，等待精确订单恢复。{runtimeOrder.Diagnostic}";
-            return false;
+            return ContinueOrCloseCommittedFoodDeliveryEvaluation(
+                job,
+                $"目标订单或客人管理器暂不可用：{runtimeOrder.Diagnostic}。",
+                OrderPreparationStepCodes.CookingPending,
+                out message,
+                out code);
+        }
+
+        if (!TryMatchRuntimeOrderBinding(
+                job.Target.OrderBinding,
+                runtimeOrder.Order,
+                runtimeOrder.Controller,
+                out var bindingDiagnostic))
+        {
+            return ContinueOrCloseCommittedFoodDeliveryEvaluation(
+                job,
+                $"fresh order/controller 与开锅前 exact identity 不一致，禁止读取满足状态或触发评价：{bindingDiagnostic}。",
+                OrderPreparationStepCodes.OrderEvaluationStateUnreadable,
+                out message,
+                out code);
         }
 
         object? fulfilledValue;
@@ -849,16 +945,22 @@ internal static partial class RuntimeOrderPreparationService
         }
         catch (Exception ex)
         {
-            message = $"{target.FoodName} 已确认送达，但读取订单满足状态时发生异常；"
-                + $"锁存的自动完成意图仍保留，下一轮会继续确认：{ex.GetBaseException().Message}";
-            return false;
+            return ContinueOrCloseCommittedFoodDeliveryEvaluation(
+                job,
+                $"读取订单满足状态时发生异常：{ex.GetBaseException().Message}。",
+                OrderPreparationStepCodes.OrderEvaluationStateUnreadable,
+                out message,
+                out code);
         }
 
         if (fulfilledValue == null)
         {
-            message = $"{target.FoodName} 已确认送达，但 get_IsFullfilled 未返回布尔状态；"
-                + "锁存的自动完成意图仍保留，本轮未触发评价。";
-            return false;
+            return ContinueOrCloseCommittedFoodDeliveryEvaluation(
+                job,
+                "get_IsFullfilled 未返回布尔状态。",
+                OrderPreparationStepCodes.OrderEvaluationStateUnreadable,
+                out message,
+                out code);
         }
 
         if (!ReadBool(fulfilledValue))
@@ -892,9 +994,25 @@ internal static partial class RuntimeOrderPreparationService
         {
             message = evaluation.Message;
             code = evaluation.Code;
+            if (evaluation.Code == OrderPreparationStepCodes.OrderEvaluationTargetMismatch)
+            {
+                RecordOrderSafetyBarrierIfNeeded(evaluation.Code, target, evaluation.Message);
+                job.FoodDeliveryEvaluationState = AutomationFoodDeliveryEvaluationState.TargetMismatch;
+                job.FoodDeliveryEvaluationMessage = evaluation.Message;
+                job.FoodDeliveryEvaluationCode = evaluation.Code;
+                return true;
+            }
+
             if (!IsAutomationSafetyBarrierCode(evaluation.Code))
             {
-                return false;
+                return ContinueOrCloseCommittedFoodDeliveryEvaluation(
+                    job,
+                    $"精确评价路由尚不可提交：{evaluation.Message}。",
+                    string.IsNullOrWhiteSpace(evaluation.Code)
+                        ? OrderPreparationStepCodes.CookingPending
+                        : evaluation.Code,
+                    out message,
+                    out code);
             }
 
             RecordOrderSafetyBarrierIfNeeded(evaluation.Code, target, evaluation.Message);
@@ -906,9 +1024,14 @@ internal static partial class RuntimeOrderPreparationService
 
         if (!evaluation.Completed)
         {
-            message = $"{target.FoodName} 已确认送达且订单已满足，但精确评价路由尚未完成提交：{evaluation.Message}";
-            code = evaluation.Code;
-            return false;
+            return ContinueOrCloseCommittedFoodDeliveryEvaluation(
+                job,
+                $"订单已满足，但精确评价路由尚未完成提交：{evaluation.Message}。",
+                string.IsNullOrWhiteSpace(evaluation.Code)
+                    ? OrderPreparationStepCodes.CookingPending
+                    : evaluation.Code,
+                out message,
+                out code);
         }
 
         job.FoodDeliveryEvaluationState = AutomationFoodDeliveryEvaluationState.Completed;
@@ -919,14 +1042,46 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
+    private static bool ContinueOrCloseCommittedFoodDeliveryEvaluation(
+        AutomationCookingJob job,
+        string detail,
+        string transientCode,
+        out string message,
+        out string code)
+    {
+        var observedAtUtc = DateTime.UtcNow;
+        job.FoodDeliveryEvaluationCloseoutTracker ??= new AutomationOrderEvaluationCloseoutTracker(
+            observedAtUtc,
+            EvaluationCloseoutAttemptLimit,
+            EvaluationCloseoutMinimumAttemptWindow,
+            EvaluationCloseoutMaximumEffectiveDuration);
+        var tracker = job.FoodDeliveryEvaluationCloseoutTracker;
+        if (!tracker.RecordFailure(observedAtUtc, eligible: true))
+        {
+            message = $"{detail}评价回执将在精确身份边界内有限重试"
+                + $"（{tracker.AttemptCount}/{tracker.MaxAttempts}；"
+                + $"有效等待 {tracker.EffectiveElapsed.TotalSeconds:F1}s/"
+                + $"{tracker.MaxEffectiveDuration.TotalSeconds:F0}s）。";
+            code = transientCode;
+            return false;
+        }
+
+        code = OrderPreparationStepCodes.OrderEvaluationCloseoutUnresolved;
+        message = $"{job.Target.FoodName} 已确认送达且 controller lease 已释放，但在有界窗口内"
+            + "既未取得可安全评价的精确订单，也未收到同 generation/order/controller 的原生终态回执；"
+            + "该评价回执已退休，不会猜测评价成功或重放送达/评价。"
+            + $"最后诊断：{detail}尝试={tracker.AttemptCount}；"
+            + $"有效等待={tracker.EffectiveElapsed.TotalSeconds:F1}s。";
+        job.FoodDeliveryEvaluationState = AutomationFoodDeliveryEvaluationState.CloseoutUnresolved;
+        job.FoodDeliveryEvaluationMessage = message;
+        job.FoodDeliveryEvaluationCode = code;
+        RecordOrderSafetyBarrierIfNeeded(code, job.Target, message);
+        return true;
+    }
+
     private static (bool Remove, string Message, string Code) TryCompleteCommittedFoodDeliveryCleanup(
         AutomationCookingJob job)
     {
-        if (job.DeliveredFood == null || job.FoodDeliveryCompletion == null)
-        {
-            return BlockCommittedFoodDeliveryCleanup(job, "料理送达提交上下文不完整，无法安全复位厨具。");
-        }
-
         if (job.FoodDeliveryCleanupCompleted)
         {
             return (false, job.FoodDeliveryCleanupMessage, OrderPreparationStepCodes.CookingPending);
@@ -935,6 +1090,11 @@ internal static partial class RuntimeOrderPreparationService
         if (job.FoodDeliveryCleanupTerminal)
         {
             return (false, job.FoodDeliveryCleanupMessage, job.FoodDeliveryCleanupTerminalCode);
+        }
+
+        if (job.DeliveredFood == null || job.FoodDeliveryCompletion == null)
+        {
+            return BlockCommittedFoodDeliveryCleanup(job, "料理送达提交上下文不完整，无法安全复位厨具。");
         }
 
         if (!IsAutomationCookingJobOwned(job, out var ownershipDiagnostic))
@@ -971,6 +1131,10 @@ internal static partial class RuntimeOrderPreparationService
         job.FoodDeliveryCleanupTracker.Complete();
         var postResetMessage = CompleteCookerExtractionAfterReset(job);
         job.FoodDeliveryCleanupMessage = $"{resetMessage}{postResetMessage}";
+        EnterCommittedFoodDeliveryEvaluationReceipt(
+            job,
+            AutomationCookingControllerLeaseReleaseReason.DeliveryCleanupCompleted,
+            "cooking-evaluation-after-cleanup");
         return (false, job.FoodDeliveryCleanupMessage, OrderPreparationStepCodes.CookingPending);
     }
 
@@ -1046,6 +1210,10 @@ internal static partial class RuntimeOrderPreparationService
         job.FoodDeliveryCleanupTerminal = true;
         job.FoodDeliveryCleanupMessage = message;
         job.FoodDeliveryCleanupTerminalCode = OrderPreparationStepCodes.CookingDeliveryCleanupBlocked;
+        EnterCommittedFoodDeliveryEvaluationReceipt(
+            job,
+            AutomationCookingControllerLeaseReleaseReason.DeliveryCleanupTerminated,
+            "cooking-evaluation-after-cleanup-terminal");
         RecordAutomationRuntimeEvent(
             OrderPreparationStepCodes.CookingDeliveryCleanupBlocked,
             job,
@@ -1057,6 +1225,34 @@ internal static partial class RuntimeOrderPreparationService
             reasonCode: "cooking-delivery-cleanup-failed",
             terminal: true);
         return (false, message, OrderPreparationStepCodes.CookingDeliveryCleanupBlocked);
+    }
+
+    private static void EnterCommittedFoodDeliveryEvaluationReceipt(
+        AutomationCookingJob job,
+        AutomationCookingControllerLeaseReleaseReason releaseReason,
+        string reasonCode)
+    {
+        var observedAtUtc = DateTime.UtcNow;
+        var leaseReleased = job.ControllerLease.Release(releaseReason, observedAtUtc);
+
+        // Evaluation re-acquires the order from exact stable identity. It must never retain or
+        // revisit the delivered IL2CPP food wrapper after cooker cleanup has ended.
+        job.DeliveredFood = null;
+        job.CurrentResultPointer = 0;
+        job.FoodDeliveryEvaluationCloseoutTracker ??= new AutomationOrderEvaluationCloseoutTracker(
+            observedAtUtc,
+            EvaluationCloseoutAttemptLimit,
+            EvaluationCloseoutMinimumAttemptWindow,
+            EvaluationCloseoutMaximumEffectiveDuration);
+        job.Tracker.EnterEvaluationPending(observedAtUtc, reasonCode);
+
+        if (leaseReleased)
+        {
+            AppendAutomationLog(
+                "controller-lease-release",
+                job.Target,
+                job.FormatLogContext($"reason={job.ControllerLeaseReleaseReason}"));
+        }
     }
 
     private static (bool Remove, string Message, string Code) BlockUncertainFoodDelivery(
@@ -1890,6 +2086,8 @@ internal static partial class RuntimeOrderPreparationService
         {
             TraceId = target.TraceId,
             OrderKey = target.OrderKey,
+            OrderLifecycleSequence = target.OrderBinding?.LifecycleSequence
+                ?? target.RequestedOrderLifecycleSequence,
             DeskCode = target.DeskCode,
             GuestId = target.GuestId,
             RuntimeGuestId = target.RuntimeGuestId,

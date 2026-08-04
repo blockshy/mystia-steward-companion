@@ -18,6 +18,10 @@ try
     VerifyPersistentMissingResultBlocksTheJob();
     VerifyProgressStallBlocksTheJob();
     VerifyNativeFinalizeWaitNeverRequestsASideEffect();
+    VerifyControllerLeaseIsMonotonicAndIndependentFromEvaluationReceipt();
+    VerifyProductionControllerLeaseBoundary();
+    VerifyEvaluationCloseoutIsEffectivelyBounded();
+    VerifyProductionOrderReceiptBoundary();
     VerifyManualHandoffSuspendsCookingSideEffects();
     VerifyExpiredManualHandoffRetainsTheOrderSlot();
     VerifyThreeUnreadableObservationsBlockTheJob();
@@ -40,7 +44,8 @@ try
         + "side effects, bound committed cleanup retries, reject invalidated cooker reservations before touching "
         + "old wrappers, close direct-delivery evaluation before retiring irreversible jobs, reject direct "
         + "delivery without completion before runtime access, and keep the "
-        + "switch-disabled Blood Pond Hell handoff receipt deterministic and barrier-free.");
+        + "controller lease independent from evaluation receipts while keeping the switch-disabled Blood "
+        + "Pond Hell handoff receipt deterministic and barrier-free.");
     return 0;
 }
 catch (Exception ex)
@@ -1098,6 +1103,343 @@ static void VerifyManualHandoffSuspendsCookingSideEffects()
     }
 }
 
+static void VerifyControllerLeaseIsMonotonicAndIndependentFromEvaluationReceipt()
+{
+    var startedAt = Utc(12, 41, 0);
+    var completedReceiptLease = new AutomationCookingControllerLease();
+    AssertTrue(completedReceiptLease.HoldsReservation,
+        "A new cooking job did not start with an active controller lease.");
+    AssertTrue(
+        completedReceiptLease.Release(
+            AutomationCookingControllerLeaseReleaseReason.DeliveryCleanupCompleted,
+            startedAt),
+        "Completed cooker cleanup did not release the controller lease.");
+    AssertTrue(!completedReceiptLease.HoldsReservation,
+        "An evaluation-only receipt still reserves its old controller.");
+    AssertEqual(
+        AutomationCookingControllerLeaseReleaseReason.DeliveryCleanupCompleted,
+        completedReceiptLease.ReleaseReason,
+        "The cleanup-completed lease release reason was not preserved.");
+    AssertEqual(startedAt, completedReceiptLease.ReleasedAtUtc!.Value,
+        "The controller lease release timestamp was not preserved.");
+
+    AssertTrue(
+        !completedReceiptLease.Release(
+            AutomationCookingControllerLeaseReleaseReason.DeliveryCleanupTerminated,
+            startedAt.AddSeconds(1)),
+        "A released evaluation receipt reacquired or rewrote its controller lease.");
+    AssertEqual(
+        AutomationCookingControllerLeaseReleaseReason.DeliveryCleanupCompleted,
+        completedReceiptLease.ReleaseReason,
+        "A late terminal observation rewrote a monotonic lease release.");
+
+    var terminalReceiptLease = new AutomationCookingControllerLease();
+    terminalReceiptLease.Release(
+        AutomationCookingControllerLeaseReleaseReason.DeliveryCleanupTerminated,
+        startedAt.AddSeconds(2));
+    AssertTrue(!terminalReceiptLease.HoldsReservation,
+        "A terminal cleanup receipt still reserves a controller it promises not to access.");
+
+    var manualHandoffLease = new AutomationCookingControllerLease();
+    manualHandoffLease.Release(
+        AutomationCookingControllerLeaseReleaseReason.ManualHandoff,
+        startedAt.AddSeconds(3));
+    AssertTrue(!manualHandoffLease.HoldsReservation,
+        "A passive manual-handoff receipt still reserves its controller.");
+
+    var newCookingLease = new AutomationCookingControllerLease();
+    completedReceiptLease.Release(
+        AutomationCookingControllerLeaseReleaseReason.ManualHandoff,
+        startedAt.AddMinutes(1));
+    AssertTrue(newCookingLease.HoldsReservation,
+        "A late old-receipt transition changed the new job's independent controller lease.");
+    var reservations = new[]
+    {
+        (ControllerPointer: (nint)0x1000, Lease: completedReceiptLease),
+        (ControllerPointer: (nint)0x1000, Lease: newCookingLease),
+    };
+    AssertEqual(
+        1,
+        reservations.Count(candidate =>
+            candidate.ControllerPointer == (nint)0x1000
+            && candidate.Lease.HoldsReservation),
+        "A released closeout receipt and a new job on the same pointer did not leave exactly one active holder.");
+
+    var tracker = NewTracker(expectedGeneration: 26, startedAt, phase: 3, progress: 1f);
+    tracker.EnterEvaluationPending(startedAt.AddSeconds(4), "cooking-evaluation-after-cleanup");
+    AssertEqual("evaluation-pending", tracker.State,
+        "Cleanup completion did not enter the explicit evaluation-receipt state.");
+    AssertEqual("waiting", tracker.Outcome,
+        "An evaluation receipt was reported as active cooker progress.");
+    tracker.Suspend(startedAt.AddMinutes(10));
+    AssertEqual(TimeSpan.Zero, tracker.EffectiveStallElapsed,
+        "Evaluation closeout wall time consumed the physical cooker stall budget.");
+
+    var invalidReasonRejected = false;
+    try
+    {
+        new AutomationCookingControllerLease().Release(
+            AutomationCookingControllerLeaseReleaseReason.None,
+            startedAt);
+    }
+    catch (ArgumentOutOfRangeException)
+    {
+        invalidReasonRejected = true;
+    }
+
+    AssertTrue(invalidReasonRejected,
+        "The controller lease accepted a release without an exact terminal reason.");
+}
+
+static void VerifyProductionControllerLeaseBoundary()
+{
+    var root = FindRepositoryRoot();
+    var saveRoot = Path.Combine(root, "mods", "bepinex", "src", "Save");
+    var cooking = File.ReadAllText(Path.Combine(saveRoot, "RuntimeOrderPreparationService.Cooking.cs"));
+    var delivery = File.ReadAllText(Path.Combine(saveRoot, "RuntimeOrderPreparationService.DirectDelivery.cs"));
+
+    var registration = ExtractSourceBlock(
+        cooking,
+        "private static AutomationCookingJob RegisterAutomationCookingJob(");
+    AssertDoesNotContain(registration, "replacedJobs",
+        "Registration restored the obsolete silent job-replacement path.");
+    AssertDoesNotContain(registration, "cooking-job-replaced",
+        "Registration restored the obsolete replacement terminal event.");
+    AssertContains(registration, "duplicateTarget",
+        "Registration no longer fails closed if the pre-side-effect same-target guard is bypassed.");
+    AssertContains(registration, "job.HoldsControllerReservation",
+        "Registration does not distinguish an active controller lease from an old evaluation receipt.");
+    AssertContains(registration, "existing active lease",
+        "Registration can silently overwrite another active controller holder.");
+
+    var reservation = ExtractSourceBlock(
+        cooking,
+        "private static bool IsCookControllerReserved(");
+    AssertContains(reservation, "job.HoldsControllerReservation",
+        "Cooker reservation still derives ownership from manual-handoff state instead of the explicit lease.");
+    AssertDoesNotContain(reservation, "!job.ManualHandoffObserved",
+        "The obsolete manual-handoff reservation predicate was restored.");
+    AssertContains(reservation, "ownerJob=",
+        "Cooker waiting diagnostics no longer identify the exact owning job.");
+
+    var manualHandoff = ExtractSourceBlock(
+        cooking,
+        "private static (bool Remove, string Message, string Code) EnterManualHandoff(");
+    AssertTrue(
+        manualHandoff.IndexOf("ControllerLease.Release", StringComparison.Ordinal)
+            < manualHandoff.IndexOf("Tracker.EnterManualHandoff", StringComparison.Ordinal),
+        "Manual handoff can become passive before releasing its controller lease.");
+
+    var cleanup = ExtractSourceBlock(
+        delivery,
+        "private static (bool Remove, string Message, string Code) TryCompleteCommittedFoodDeliveryCleanup(");
+    var cleanupCommitted = cleanup.IndexOf("FoodDeliveryCleanupTracker.Complete();", StringComparison.Ordinal);
+    var extractionFinished = cleanup.IndexOf("CompleteCookerExtractionAfterReset(job)", StringComparison.Ordinal);
+    var evaluationReceipt = cleanup.IndexOf("EnterCommittedFoodDeliveryEvaluationReceipt(", StringComparison.Ordinal);
+    var completedGuard = cleanup.IndexOf("if (job.FoodDeliveryCleanupCompleted)", StringComparison.Ordinal);
+    var terminalGuard = cleanup.IndexOf("if (job.FoodDeliveryCleanupTerminal)", StringComparison.Ordinal);
+    var wrapperGuard = cleanup.IndexOf("if (job.DeliveredFood == null", StringComparison.Ordinal);
+    AssertTrue(cleanupCommitted >= 0
+        && extractionFinished > cleanupCommitted
+        && evaluationReceipt > extractionFinished,
+        "The controller lease can be released before strict reset and one-shot extraction callbacks finish.");
+    AssertTrue(completedGuard >= 0
+        && terminalGuard > completedGuard
+        && wrapperGuard > terminalGuard,
+        "A released receipt can mistake its intentionally cleared food wrapper for a new cleanup failure.");
+
+    var terminalCleanup = ExtractSourceBlock(
+        delivery,
+        "private static (bool Remove, string Message, string Code) BlockCommittedFoodDeliveryCleanup(");
+    AssertContains(
+        terminalCleanup,
+        "AutomationCookingControllerLeaseReleaseReason.DeliveryCleanupTerminated",
+        "A terminal cleanup that promises no more controller access still holds the Mod lease.");
+
+    var enterReceipt = ExtractSourceBlock(
+        delivery,
+        "private static void EnterCommittedFoodDeliveryEvaluationReceipt(");
+    AssertTrue(
+        enterReceipt.IndexOf("ControllerLease.Release", StringComparison.Ordinal)
+            < enterReceipt.IndexOf("DeliveredFood = null", StringComparison.Ordinal)
+        && enterReceipt.IndexOf("DeliveredFood = null", StringComparison.Ordinal)
+            < enterReceipt.IndexOf("Tracker.EnterEvaluationPending", StringComparison.Ordinal),
+        "Evaluation receipt transition no longer releases the lease and drops the IL2CPP food wrapper atomically.");
+}
+
+static void VerifyEvaluationCloseoutIsEffectivelyBounded()
+{
+    var startedAt = Utc(12, 44, 0);
+    var tracker = new AutomationOrderEvaluationCloseoutTracker(
+        startedAt,
+        maxAttempts: 3,
+        minimumAttemptWindow: TimeSpan.FromSeconds(2),
+        maxEffectiveDuration: TimeSpan.FromSeconds(5));
+
+    AssertTrue(!tracker.RecordFailure(startedAt, eligible: true),
+        "The first transient order lookup failure exhausted closeout immediately.");
+    AssertTrue(!tracker.RecordFailure(startedAt.AddSeconds(1), eligible: true),
+        "Closeout exhausted before its attempt and effective-time boundaries were both met.");
+    tracker.Suspend(startedAt.AddMinutes(10));
+    AssertEqual(TimeSpan.FromSeconds(1), tracker.EffectiveElapsed,
+        "A suspended automation interval consumed evaluation closeout time.");
+    AssertTrue(!tracker.RecordFailure(startedAt.AddMinutes(10).AddSeconds(1), eligible: true),
+        "The first observation after suspension incorrectly charged the paused interval.");
+    AssertTrue(tracker.RecordFailure(startedAt.AddMinutes(10).AddSeconds(2), eligible: true),
+        "Closeout did not stop after the configured attempt and effective-time boundary.");
+
+    var durationBound = new AutomationOrderEvaluationCloseoutTracker(
+        startedAt,
+        maxAttempts: 100,
+        minimumAttemptWindow: TimeSpan.FromSeconds(2),
+        maxEffectiveDuration: TimeSpan.FromSeconds(5));
+    AssertTrue(durationBound.RecordFailure(startedAt.AddSeconds(5), eligible: true),
+        "A low-frequency closeout bypassed its maximum effective duration.");
+}
+
+static void VerifyProductionOrderReceiptBoundary()
+{
+    var root = FindRepositoryRoot();
+    var saveRoot = Path.Combine(root, "mods", "bepinex", "src", "Save");
+    var service = File.ReadAllText(Path.Combine(saveRoot, "RuntimeOrderPreparationService.cs"));
+    var cooking = File.ReadAllText(Path.Combine(saveRoot, "RuntimeOrderPreparationService.Cooking.cs"));
+    var evaluationDelivery = File.ReadAllText(Path.Combine(saveRoot, "RuntimeOrderPreparationService.Delivery.cs"));
+    var delivery = File.ReadAllText(Path.Combine(saveRoot, "RuntimeOrderPreparationService.DirectDelivery.cs"));
+    var lifecycle = File.ReadAllText(Path.Combine(saveRoot, "RuntimeNightBusinessLifecycle.cs"));
+    var yuyuko = File.ReadAllText(Path.Combine(
+        saveRoot,
+        "SpecialBusiness",
+        "RuntimeOrderPreparationService.YuyukoChallengePolicy.cs"));
+
+    var target = ExtractSourceBlock(service, "private sealed class CookingCollectionTarget");
+    AssertContains(target, "RuntimeOrderBindingToken? OrderBinding",
+        "Cooking targets do not retain their exact wrapper-free order receipt identity.");
+    AssertDoesNotContain(target, "public object? Order",
+        "Cooking targets restored the cross-frame IL2CPP order-wrapper fallback.");
+
+    var binding = ExtractSourceBlock(service, "private static bool TryBindCookingTargetRuntimeOrder(");
+    AssertTrue(
+        binding.IndexOf("RuntimeOrderTypeResolver.Resolve", StringComparison.Ordinal)
+            < binding.IndexOf("TryCaptureActiveLifecycle", StringComparison.Ordinal)
+        && binding.IndexOf("TryReadNativeObjectPointer", StringComparison.Ordinal)
+            < binding.IndexOf("TryCaptureActiveLifecycle", StringComparison.Ordinal)
+        && binding.IndexOf("TryCaptureActiveLifecycle", StringComparison.Ordinal)
+            < binding.IndexOf("new RuntimeOrderBindingToken", StringComparison.Ordinal)
+        && binding.IndexOf("lifecycleAfter.Generation != lifecycleBefore.Generation", StringComparison.Ordinal)
+            < binding.IndexOf("new RuntimeOrderBindingToken", StringComparison.Ordinal),
+        "Order receipt binding is not fenced by an exact active lifecycle and stable business generation.");
+
+    var start = ExtractSourceBlock(cooking, "private static CookingStartResult TryStartCooking(");
+    AssertTrue(
+        start.IndexOf("!target.OrderBinding.HasValue", StringComparison.Ordinal)
+            < start.IndexOf("InvokeRuntimeStorageOut(\"IngredientOut\"", StringComparison.Ordinal),
+        "Cooking can deduct ingredients before requiring an exact order/controller receipt identity.");
+    AssertDoesNotContain(start, "CookingCollectionTarget?",
+        "Cooking restored the dead nullable target compatibility path.");
+    AssertDoesNotContain(start, "CookingCollectionTarget.ForRareOrder(new OrderPreparationRequest",
+        "Cooking restored a dummy unbound target that can never pass the exact binding gate.");
+
+    var matchNormal = ExtractSourceBlock(cooking, "private static bool IsMatchingNormalOrderCookingJob(");
+    AssertContains(matchNormal, "TryMatchRuntimeOrderBinding",
+        "Normal cooking-job lookup no longer uses the shared exact runtime identity check.");
+    AssertDoesNotContain(matchNormal, "IsSameObject(job.Target.Order",
+        "Normal cooking-job lookup restored the retained-wrapper fallback.");
+
+    var exactMatch = ExtractSourceBlock(service, "private static bool TryMatchRuntimeOrderBinding(");
+    AssertContains(exactMatch, "lifecycle.Generation != token.BusinessGeneration",
+        "The shared runtime-order matcher no longer fences the business generation.");
+    AssertContains(exactMatch, "resolution.Kind != token.OrderKind",
+        "The shared runtime-order matcher no longer requires the exact concrete order kind.");
+    AssertContains(exactMatch, "orderPointer != token.OrderPointer",
+        "The shared runtime-order matcher no longer requires the exact native order pointer.");
+    AssertContains(exactMatch, "controllerPointer != token.ControllerPointer",
+        "The shared runtime-order matcher no longer requires the exact native controller pointer.");
+    AssertContains(exactMatch, "RuntimeOrderTerminalReceiptStore.MatchesActiveLifecycle(token)",
+        "The shared runtime-order matcher no longer rejects a reused native tuple from another order lifecycle.");
+
+    var resolve = ExtractSourceBlock(delivery, "private static bool TryResolveCommittedFoodDeliveryEvaluation(");
+    AssertTrue(
+        resolve.IndexOf("RuntimeOrderTerminalReceiptStore.TryFind", StringComparison.Ordinal)
+            < resolve.IndexOf("FindRuntimeNormalOrder", StringComparison.Ordinal),
+        "A deferred evaluation reads runtime wrappers before checking the exact terminal receipt.");
+    AssertContains(resolve, "RuntimeOrderTerminalDisposition.Evaluated",
+        "An exact external evaluation receipt no longer completes deferred closeout.");
+    AssertContains(resolve, "AutomationFoodDeliveryEvaluationState.OrderTerminated",
+        "An exact removal receipt is no longer distinguished from successful evaluation.");
+    AssertTrue(
+        resolve.IndexOf("TryMatchRuntimeOrderBinding", StringComparison.Ordinal)
+            < resolve.IndexOf("get_IsFullfilled", StringComparison.Ordinal),
+        "Deferred evaluation can read or evaluate a fresh order before matching its exact generation/kind/order/controller identity.");
+    AssertContains(resolve, "OrderEvaluationTargetMismatch",
+        "A deterministic evaluation target mismatch no longer enters its explicit terminal boundary.");
+
+    var nativeEvaluation = ExtractSourceBlock(
+        evaluationDelivery,
+        "private static RuntimeOrderEvaluationResult TryInvokeRuntimeOrderEvaluationOnce(\n        object manager,");
+    AssertTrue(
+        nativeEvaluation.IndexOf("InvokeInstance(manager, methodName, args)", StringComparison.Ordinal)
+            < nativeEvaluation.IndexOf("TryConfirmRuntimeOrderEvaluatedReceipt(orderBinding", StringComparison.Ordinal)
+        && nativeEvaluation.IndexOf("TryConfirmRuntimeOrderEvaluatedReceipt(orderBinding", StringComparison.Ordinal)
+            < nativeEvaluation.IndexOf("return new(true, true, false", StringComparison.Ordinal),
+        "A normally returned evaluation can complete without consuming its exact synchronous Evaluated receipt.");
+    AssertContains(nativeEvaluation, "OrderEvaluationCommitUncertain",
+        "A skipped native evaluation without an exact receipt no longer enters the no-replay ACK boundary.");
+    var catchStart = nativeEvaluation.IndexOf("catch (Exception ex)", StringComparison.Ordinal);
+    var catchReceipt = nativeEvaluation.IndexOf(
+        "TryConfirmRuntimeOrderEvaluatedReceipt(orderBinding",
+        catchStart,
+        StringComparison.Ordinal);
+    AssertTrue(catchStart >= 0 && catchReceipt > catchStart,
+        "An exceptional evaluation does not check its exact terminal receipt.");
+    AssertDoesNotContain(
+        nativeEvaluation[catchStart..],
+        "TryReadRuntimeOrderEvaluated(controller",
+        "An exceptional evaluation re-reads a possibly retired controller wrapper after the native call.");
+
+    var deliver = ExtractSourceBlock(
+        delivery,
+        "private static (bool Remove, string Message, string Code) TryDeliverAutomationCookedFood(");
+    AssertTrue(
+        deliver.IndexOf("TryMatchRuntimeOrderBinding", StringComparison.Ordinal)
+            < deliver.IndexOf("job.ResetDeliveryFailures()", StringComparison.Ordinal),
+        "Cooked food can reach delivery handling before the fresh order/controller matches the opening token.");
+
+    var bounded = ExtractSourceBlock(
+        delivery,
+        "private static bool ContinueOrCloseCommittedFoodDeliveryEvaluation(");
+    AssertContains(bounded, "OrderEvaluationCloseoutUnresolved",
+        "Transient evaluation failures can still retry forever without an ACK safety barrier.");
+    AssertContains(bounded, "RecordOrderSafetyBarrierIfNeeded",
+        "Exhausted evaluation closeout no longer publishes its exact order-level safety barrier.");
+
+    AssertContains(yuyuko, "OrderPreparationStepCodes.OrderEvaluationTargetMismatch",
+        "Yuyuko deterministic served-target mismatches are not classified separately from transient reads.");
+    AssertContains(lifecycle, "RuntimeOrderTerminalReceiptStore.Clear",
+        "Runtime terminal receipts are not cleared at the night-business boundary.");
+    AssertContains(lifecycle, "ClearAutomationSafetyBarriersForBusinessGeneration(snapshot.Generation)",
+        "Retired business generations no longer clear their unresolved automation barriers.");
+
+    var eventWriter = ExtractSourceBlock(service, "private static long RecordAutomationRuntimeEvent(\n        string code,");
+    AssertTrue(
+        eventWriter.IndexOf("businessLifecycle.IsActive", StringComparison.Ordinal)
+            < eventWriter.IndexOf("UnresolvedAutomationSafetyBarriers.Register", StringComparison.Ordinal)
+        && eventWriter.IndexOf("businessLifecycle.Generation == orderBinding.Value.BusinessGeneration", StringComparison.Ordinal)
+            < eventWriter.IndexOf("UnresolvedAutomationSafetyBarriers.Register", StringComparison.Ordinal),
+        "A native callback can refill an ACK barrier after its business generation has already ended.");
+    AssertContains(eventWriter, "business-lifecycle-ended",
+        "A late old-generation uncertainty is not downgraded to a bounded non-ACK diagnostic.");
+
+    var suspend = ExtractSourceBlock(service, "private static void SuspendAutomationCookingJobClocks(");
+    AssertContains(suspend, "FoodDeliveryEvaluationCloseoutTracker?.Suspend(observedAtUtc)",
+        "A blocked automation gate still charges deferred evaluation closeout time.");
+
+    var jobType = ExtractSourceBlock(service, "private sealed class AutomationCookingJob");
+    AssertTrue(
+        jobType.IndexOf("if (ManualHandoffExpired)", StringComparison.Ordinal)
+            < jobType.IndexOf("if (ManualHandoffObserved)", StringComparison.Ordinal),
+        "The transaction stage can never expose an expired manual handoff.");
+}
+
 static void VerifyExpiredManualHandoffRetainsTheOrderSlot()
 {
     var startedAt = Utc(12, 43, 0);
@@ -1122,16 +1464,41 @@ static void VerifyExpiredManualHandoffRetainsTheOrderSlot()
 
 static void VerifySafetyBarriersRequireExactAcknowledgement()
 {
-    var registry = new AutomationSafetyBarrierRegistry();
-    registry.Register(new AutomationSafetyBarrierRecord(10, "rare:trace:a", "first", "cooking-delivery", "first"));
-    registry.Register(new AutomationSafetyBarrierRecord(11, "normal:order:b", "other", "order", "other"));
-    registry.Register(new AutomationSafetyBarrierRecord(12, "rare:trace:a", "latest", "order", "latest"));
-
-    if (!registry.TryGetLatest("rare:trace:a", out var latest)
-        || latest?.Sequence != 12
-        || registry.TryGetLatest("rare:trace:missing", out _))
+    var rareLifecycle1 = AutomationSafetyBarrierRegistry.BuildOrderLifecycleTargetIdentity(
+        41,
+        "Special",
+        (nint)0x1001,
+        (nint)0x2001,
+        7);
+    var rareLifecycle2 = AutomationSafetyBarrierRegistry.BuildOrderLifecycleTargetIdentity(
+        41,
+        "Special",
+        (nint)0x1001,
+        (nint)0x2001,
+        8);
+    var normalLifecycle = AutomationSafetyBarrierRegistry.BuildOrderLifecycleTargetIdentity(
+        42,
+        "Normal",
+        (nint)0x1002,
+        (nint)0x2002,
+        9);
+    if (string.Equals(rareLifecycle1, rareLifecycle2, StringComparison.Ordinal))
     {
-        throw new InvalidOperationException("Safety barrier target lookup did not return the exact latest target barrier.");
+        throw new InvalidOperationException(
+            "Safety barrier identity ignored the order lifecycle sequence during native pointer reuse.");
+    }
+
+    var registry = new AutomationSafetyBarrierRegistry();
+    registry.Register(new AutomationSafetyBarrierRecord(10, 41, rareLifecycle1, "first", "cooking-delivery", "first"));
+    registry.Register(new AutomationSafetyBarrierRecord(11, 42, normalLifecycle, "other", "order", "other"));
+    registry.Register(new AutomationSafetyBarrierRecord(12, 41, rareLifecycle1, "latest", "order", "latest"));
+
+    if (!registry.TryGetLatest(rareLifecycle1, out var latest)
+        || latest?.Sequence != 12
+        || registry.TryGetLatest(rareLifecycle2, out _))
+    {
+        throw new InvalidOperationException(
+            "Safety barrier lookup crossed an exact order lifecycle boundary or lost the latest matching barrier.");
     }
 
     var missing = registry.Acknowledge(99);
@@ -1148,6 +1515,29 @@ static void VerifySafetyBarriersRequireExactAcknowledgement()
         || !registry.Contains(11))
     {
         throw new InvalidOperationException("Acknowledging a target did not clear only its barriers through the selected sequence.");
+    }
+
+    for (var sequence = 100L; sequence < 170L; sequence++)
+    {
+        registry.Register(new AutomationSafetyBarrierRecord(
+            sequence,
+            41,
+            rareLifecycle2,
+            "bounded-generation",
+            "order",
+            "bounded-generation"));
+    }
+
+    var retired = registry.RetireBusinessGeneration(41);
+    if (retired.Count != 70
+        || retired[0] != 100
+        || retired[^1] != 169
+        || registry.Contains(100)
+        || registry.Contains(169)
+        || !registry.Contains(11))
+    {
+        throw new InvalidOperationException(
+            "Business-boundary barrier retirement was not complete, ordered, or generation-isolated.");
     }
 }
 

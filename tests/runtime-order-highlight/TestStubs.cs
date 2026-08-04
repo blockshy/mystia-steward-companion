@@ -463,6 +463,7 @@ namespace MystiaStewardCompanion.Core
     internal sealed class NightBusinessOrder
     {
         public DateTime? FirstSeenAtUtc { get; init; }
+        public long OrderLifecycleSequence { get; init; } = -1;
         public int DeskCode { get; init; }
         public int? RuntimeGuestId { get; init; }
         public int? FoodTagId { get; init; }
@@ -473,6 +474,7 @@ namespace MystiaStewardCompanion.Core
     internal sealed class NormalBusinessOrder
     {
         public string OrderKey { get; init; } = "";
+        public long OrderLifecycleSequence { get; init; } = -1;
         public DateTime? FirstSeenAtUtc { get; init; }
         public int DeskCode { get; init; }
         public string GuestName { get; init; } = "";
@@ -503,11 +505,10 @@ namespace MystiaStewardCompanion.Save
         object? OrderObject,
         object? ControllerObject,
         DateTime FirstCapturedAt,
+        long OrderLifecycleSequence,
         int DeskCode,
         int GuestId,
-        bool HasFoodTagId,
         int FoodTagId,
-        bool HasBeverageTagId,
         int BeverageTagId,
         bool IsFreeOrder);
 

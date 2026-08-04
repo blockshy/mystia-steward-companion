@@ -600,7 +600,11 @@ internal static partial class RuntimeOrderPreparationService
         CookingCollectionTarget safetyTarget,
         bool allowControllerMissing = false)
     {
-        var evaluation = TryEvaluateRuntimeOrderIfReady(runtimeOrder, orderLabel, allowControllerMissing);
+        var evaluation = TryEvaluateRuntimeOrderIfReady(
+            runtimeOrder,
+            orderLabel,
+            allowControllerMissing,
+            expectedOrderBinding: safetyTarget.OrderBinding);
         if (!evaluation.Ok)
         {
             AddFailure(result, stepName, evaluation.Message, evaluation.Code);
@@ -676,7 +680,11 @@ internal static partial class RuntimeOrderPreparationService
 
         if (RequiresNativeWackyKoishiBossEvaluationEntry(request))
         {
-            return TryEvaluateWackyKoishiBossRuntimeOrderIfReady(request, runtimeOrder, orderLabel);
+            return TryEvaluateWackyKoishiBossRuntimeOrderIfReady(
+                request,
+                runtimeOrder,
+                orderLabel,
+                target.OrderBinding);
         }
 
         if (IsWackyKoishiBossRequest(request))
@@ -695,10 +703,14 @@ internal static partial class RuntimeOrderPreparationService
                 request,
                 runtimeOrder,
                 orderLabel,
-                reacquireLiveOrder: target.Kind == CookingCollectionTargetKind.RareOrder);
+                reacquireLiveOrder: target.Kind == CookingCollectionTargetKind.RareOrder,
+                expectedOrderBinding: target.OrderBinding);
         }
 
-        return TryEvaluateRuntimeOrderIfReady(runtimeOrder, orderLabel);
+        return TryEvaluateRuntimeOrderIfReady(
+            runtimeOrder,
+            orderLabel,
+            expectedOrderBinding: target.OrderBinding);
     }
 
     private static bool TryEvaluateWackyKoishiBossOrderIfReady(
@@ -709,7 +721,11 @@ internal static partial class RuntimeOrderPreparationService
         string orderLabel,
         CookingCollectionTarget safetyTarget)
     {
-        var evaluation = TryEvaluateWackyKoishiBossRuntimeOrderIfReady(request, runtimeOrder, orderLabel);
+        var evaluation = TryEvaluateWackyKoishiBossRuntimeOrderIfReady(
+            request,
+            runtimeOrder,
+            orderLabel,
+            safetyTarget.OrderBinding);
         if (!evaluation.Ok)
         {
             AddFailure(result, stepName, evaluation.Message, evaluation.Code);
@@ -735,7 +751,8 @@ internal static partial class RuntimeOrderPreparationService
     private static RuntimeOrderEvaluationResult TryEvaluateWackyKoishiBossRuntimeOrderIfReady(
         OrderPreparationRequest request,
         RuntimeOrderMatch runtimeOrder,
-        string orderLabel)
+        string orderLabel,
+        RuntimeOrderBindingToken? expectedOrderBinding)
     {
         if (!TryCaptureActiveNightBusinessGeneration(out var sessionGeneration))
         {
@@ -776,7 +793,8 @@ internal static partial class RuntimeOrderPreparationService
         var evaluation = TryEvaluateRuntimeOrderIfReady(
             runtimeOrder,
             orderLabel,
-            expectedSessionGeneration: sessionGeneration);
+            expectedSessionGeneration: sessionGeneration,
+            expectedOrderBinding: expectedOrderBinding);
         var decision = evaluation.Ok
             ? evaluation.Skipped
                 ? "native-evaluate-entry-skipped"
@@ -798,7 +816,8 @@ internal static partial class RuntimeOrderPreparationService
         RuntimeOrderMatch runtimeOrder,
         string orderLabel,
         bool allowControllerMissing = false,
-        long? expectedSessionGeneration = null)
+        long? expectedSessionGeneration = null,
+        RuntimeOrderBindingToken? expectedOrderBinding = null)
     {
         var sessionGeneration = expectedSessionGeneration ?? RuntimeNightBusinessLifecycle.Generation;
         if (expectedSessionGeneration.HasValue
@@ -835,17 +854,117 @@ internal static partial class RuntimeOrderPreparationService
         }
 
         return TryInvokeRuntimeOrderEvaluationOnce(
-            runtimeOrder.Manager,
-            runtimeOrder.Controller,
+            runtimeOrder,
             "EvaluateOrder",
             new object?[] { runtimeOrder.Controller, false, null },
             orderLabel,
-            sessionGeneration);
+            sessionGeneration,
+            expectedOrderBinding);
+    }
+
+    private static RuntimeOrderEvaluationResult TryInvokeRuntimeOrderEvaluationOnce(
+        RuntimeOrderMatch runtimeOrder,
+        string methodName,
+        object?[] args,
+        string orderLabel,
+        long expectedSessionGeneration,
+        RuntimeOrderBindingToken? expectedOrderBinding = null)
+    {
+        if (runtimeOrder.Manager == null
+            || runtimeOrder.Controller == null
+            || runtimeOrder.Order == null)
+        {
+            return new(
+                false,
+                false,
+                false,
+                $"{orderLabel}缺少精确订单、控制器或管理器，无法调用游戏评价流程。",
+                OrderPreparationStepCodes.OrderEvaluationStateUnreadable);
+        }
+
+        if (!TryResolveRuntimeOrderEvaluationBinding(
+                runtimeOrder,
+                expectedSessionGeneration,
+                expectedOrderBinding,
+                out var orderBinding,
+                out var bindingDiagnostic))
+        {
+            return new(
+                false,
+                false,
+                false,
+                $"{orderLabel}的活动生命周期无法精确绑定，未调用游戏评价流程：{bindingDiagnostic}",
+                OrderPreparationStepCodes.OrderEvaluationStateUnreadable);
+        }
+
+        return TryInvokeRuntimeOrderEvaluationOnce(
+            runtimeOrder.Manager,
+            runtimeOrder.Controller,
+            orderBinding,
+            methodName,
+            args,
+            orderLabel,
+            expectedSessionGeneration);
+    }
+
+    private static bool TryResolveRuntimeOrderEvaluationBinding(
+        RuntimeOrderMatch runtimeOrder,
+        long businessGeneration,
+        RuntimeOrderBindingToken? expectedOrderBinding,
+        out RuntimeOrderBindingToken orderBinding,
+        out string diagnostic)
+    {
+        orderBinding = default;
+        if (businessGeneration <= 0 || runtimeOrder.OrderLifecycleSequence <= 0)
+        {
+            diagnostic = "business generation or captured order lifecycle is not positive";
+            return false;
+        }
+
+        var resolution = RuntimeOrderTypeResolver.Resolve(runtimeOrder.Order);
+        if (!resolution.Resolved || resolution.ReadableOrder == null)
+        {
+            diagnostic = $"concrete order resolution failed: {resolution.Reason}";
+            return false;
+        }
+
+        if (!TryReadNativeObjectPointer(resolution.ReadableOrder, out var orderPointer)
+            || orderPointer == 0
+            || runtimeOrder.Controller == null
+            || !TryReadNativeObjectPointer(runtimeOrder.Controller, out var controllerPointer)
+            || controllerPointer == 0)
+        {
+            diagnostic = "native order/controller pointer is unavailable";
+            return false;
+        }
+
+        var candidate = new RuntimeOrderBindingToken(
+            businessGeneration,
+            resolution.Kind,
+            orderPointer,
+            controllerPointer,
+            runtimeOrder.OrderLifecycleSequence);
+        if (expectedOrderBinding.HasValue && candidate != expectedOrderBinding.Value)
+        {
+            diagnostic = $"fresh binding differs from expected token: expected={expectedOrderBinding.Value}; actual={candidate}";
+            return false;
+        }
+
+        if (!RuntimeOrderTerminalReceiptStore.MatchesActiveLifecycle(candidate))
+        {
+            diagnostic = $"order lifecycle is no longer active: {candidate}";
+            return false;
+        }
+
+        orderBinding = candidate;
+        diagnostic = "";
+        return true;
     }
 
     private static RuntimeOrderEvaluationResult TryInvokeRuntimeOrderEvaluationOnce(
         object manager,
         object controller,
+        RuntimeOrderBindingToken orderBinding,
         string methodName,
         object?[] args,
         string orderLabel,
@@ -888,7 +1007,18 @@ internal static partial class RuntimeOrderPreparationService
                 return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: true);
             }
 
-            return new(true, true, false, $"已调用游戏评价流程完成{orderLabel}。");
+            if (!TryConfirmRuntimeOrderEvaluatedReceipt(orderBinding, out var receiptDiagnostic))
+            {
+                return new(
+                    false,
+                    false,
+                    false,
+                    $"{orderLabel}的评价调用已正常返回，但未收到同生命周期的原生 Evaluated 回执"
+                    + $"（{receiptDiagnostic}）。原方法可能被其他 Harmony 前缀跳过；为避免重复结算，已禁止自动重试，请人工确认订单状态。",
+                    OrderPreparationStepCodes.OrderEvaluationCommitUncertain);
+            }
+
+            return new(true, true, false, $"已调用游戏评价流程并确认精确终态回执，完成{orderLabel}。");
         }
         catch (Exception ex)
         {
@@ -897,31 +1027,49 @@ internal static partial class RuntimeOrderPreparationService
                 return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: true, ex);
             }
 
-            var readAfter = TryReadRuntimeOrderEvaluated(controller, out var evaluatedAfter, out var afterDiagnostic);
-            if (!IsNightBusinessGenerationActive(sessionGeneration))
-            {
-                return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: true, ex);
-            }
-
-            if (readAfter && evaluatedAfter)
+            if (TryConfirmRuntimeOrderEvaluatedReceipt(orderBinding, out var receiptDiagnostic))
             {
                 return new(
                     true,
                     true,
                     false,
-                    $"{orderLabel} 的评价调用后半段发生异常，但 HasEvaluated=true 已确认评价提交；不会重复调用。异常：{ex.GetBaseException().Message}");
+                    $"{orderLabel} 的评价调用后半段发生异常，但同生命周期 Evaluated 回执已确认提交；"
+                    + $"不会重复调用。异常：{ex.GetBaseException().Message}");
             }
 
-            var confirmation = string.IsNullOrWhiteSpace(afterDiagnostic)
-                ? "HasEvaluated 仍为 false"
-                : $"HasEvaluated 无法严格回读：{afterDiagnostic}";
+            if (!IsNightBusinessGenerationActive(sessionGeneration))
+            {
+                return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: true, ex);
+            }
+
             return new(
                 false,
                 false,
                 false,
-                $"{orderLabel} 的评价调用已开始但发生异常，且无法确认是否提交（{confirmation}）。为避免重复结算，已禁止自动重试，请人工确认订单状态：{ex.GetBaseException().Message}",
+                $"{orderLabel} 的评价调用已开始但发生异常，且无法确认精确终态"
+                + $"（receipt={receiptDiagnostic}）。为避免重复结算，已禁止自动重试，请人工确认订单状态：{ex.GetBaseException().Message}",
                 OrderPreparationStepCodes.OrderEvaluationCommitUncertain);
         }
+    }
+
+    private static bool TryConfirmRuntimeOrderEvaluatedReceipt(
+        RuntimeOrderBindingToken orderBinding,
+        out string diagnostic)
+    {
+        if (!RuntimeOrderTerminalReceiptStore.TryFind(orderBinding, out var receipt))
+        {
+            diagnostic = "exact terminal receipt is unavailable";
+            return false;
+        }
+
+        if (receipt.Disposition != RuntimeOrderTerminalDisposition.Evaluated)
+        {
+            diagnostic = $"terminal disposition is {receipt.Disposition} from {receipt.Source}";
+            return false;
+        }
+
+        diagnostic = $"sequence={receipt.Sequence}; source={receipt.Source}";
+        return true;
     }
 
     private static RuntimeOrderEvaluationResult BuildEndedNightBusinessEvaluation(

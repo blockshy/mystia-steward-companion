@@ -606,28 +606,39 @@ public static class SpecialOrderRuntimeCapture
         RunCaptureCallback("ControllerOrderAdd", () =>
         {
             lock (SyncRoot) _addCallbacks++;
-            AddOrder(ParseOrder(__0, "ControllerOrderAdd", __instance));
+            var lifecycleSequence = BeginOrderLifecycle(
+                __0,
+                __instance,
+                "ControllerOrderAdd");
+            var order = ParseOrder(__0, "ControllerOrderAdd", __instance);
+            AddOrder(order == null || lifecycleSequence <= 0
+                ? null
+                : order with { OrderLifecycleSequence = lifecycleSequence });
         });
     }
 
-    private static void CaptureOrderBeforeRemoval(object __0, out CapturedRuntimeSpecialOrder? __state)
+    private static void CaptureOrderBeforeRemoval(object __0, out TerminalOrderCaptureState? __state)
     {
-        CapturedRuntimeSpecialOrder? state = null;
+        TerminalOrderCaptureState? state = null;
         RunCaptureCallback("OrderRemove.Before", () =>
         {
-            state = ParseOrder(__0, "OrderRemove.Before");
+            state = CaptureOrderRemovalState(__0, "OrderRemove.Before");
         });
         __state = state;
     }
 
-    private static void OnOrderRemovalSucceeded(CapturedRuntimeSpecialOrder? __state, bool __runOriginal)
+    private static void OnOrderRemovalSucceeded(TerminalOrderCaptureState? __state, bool __runOriginal)
     {
         if (!__runOriginal || __state == null) return;
 
-        RunCaptureCallback("OrderRemove.After", () =>
+        RunTerminalPostfix("OrderRemove.After", () =>
         {
             lock (SyncRoot) _removeCallbacks++;
-            RemoveOrder(__state with { CaptureSource = "OrderRemove" });
+            PublishAndRemoveOrder(
+                __state,
+                RuntimeOrderTerminalDisposition.Removed,
+                RuntimeOrderTerminalReceiptSource.RemoveFromOrder,
+                "RemoveFromOrder");
         });
     }
 
@@ -636,7 +647,9 @@ public static class SpecialOrderRuntimeCapture
         RunCaptureCallback("OrderStatusUpdate", () =>
         {
             lock (SyncRoot) _statusCallbacks++;
-            UpdateOrderStatus(ParseOrder(__0, "OrderStatusUpdate"), __1);
+            UpdateOrderStatus(AttachActiveOrderLifecycle(
+                ParseOrder(__0, "OrderStatusUpdate"),
+                "OrderStatusUpdate"), __1);
         });
     }
 
@@ -650,7 +663,9 @@ public static class SpecialOrderRuntimeCapture
                 NoteNotApplicable("OrderSystemChanged", "null order");
                 return;
             }
-            UpdateOrderStatus(ParseOrder(__2, "OrderSystemChanged"), __1);
+            UpdateOrderStatus(AttachActiveOrderLifecycle(
+                ParseOrder(__2, "OrderSystemChanged"),
+                "OrderSystemChanged"), __1);
         });
     }
 
@@ -665,6 +680,7 @@ public static class SpecialOrderRuntimeCapture
         RunCaptureCallback("ManualOrderSet", () =>
         {
             lock (SyncRoot) _manualCallbacks++;
+            var lifecycleSequence = BeginOrderLifecycle(__2, __0, "ManualOrderSet");
             var order = ParseOrder(__2, "ManualOrderSet", __0);
             if (order is not { ManualOrder: true })
             {
@@ -677,77 +693,443 @@ public static class SpecialOrderRuntimeCapture
                 NoteParseFailure("ManualOrderSet", "manual evaluation callback is null", __2);
             }
 
-            AddOrder(order with
-            {
-                ManualEvaluationCallback = __1,
-                ManualEvaluationBindingObserved = true,
-                ManualEvaluationBindingCallback = __1,
-            });
+            AddOrder(lifecycleSequence <= 0
+                ? null
+                : order with
+                {
+                    OrderLifecycleSequence = lifecycleSequence,
+                    ManualEvaluationCallback = __1,
+                    ManualEvaluationBindingObserved = true,
+                    ManualEvaluationBindingCallback = __1,
+                });
         });
     }
 
     private static void CaptureControllerOrderBeforeCompletion(
         object __0,
         MethodBase __originalMethod,
-        out CapturedRuntimeSpecialOrder? __state)
+        out TerminalOrderCaptureState? __state)
     {
-        CapturedRuntimeSpecialOrder? state = null;
+        TerminalOrderCaptureState? state = null;
         var source = $"{__originalMethod.Name}.Before";
         RunCaptureCallback(source, () =>
         {
-            state = ParseControllerCurrentOrder(__0, source);
+            state = CaptureControllerTerminalState(__0, source);
         });
         __state = state;
     }
 
     private static void OnOrderCompletionSucceeded(
-        CapturedRuntimeSpecialOrder? __state,
+        TerminalOrderCaptureState? __state,
         MethodBase __originalMethod,
         bool __runOriginal)
     {
         if (!__runOriginal || __state is not { IsFulfilled: true }) return;
 
-        RunCaptureCallback($"{__originalMethod.Name}.After", () =>
+        RunTerminalPostfix($"{__originalMethod.Name}.After", () =>
         {
             lock (SyncRoot) _removeCallbacks++;
-            RemoveOrder(__state with { CaptureSource = __originalMethod.Name });
+            var receiptSource = __originalMethod.Name switch
+            {
+                "EvaluateOrder" => RuntimeOrderTerminalReceiptSource.EvaluateOrder,
+                "EvaulateManualOrder" => RuntimeOrderTerminalReceiptSource.EvaulateManualOrder,
+                _ => throw new InvalidOperationException(
+                    $"Unexpected evaluation Hook source {__originalMethod.Name}."),
+            };
+            PublishAndRemoveOrder(
+                __state,
+                RuntimeOrderTerminalDisposition.Evaluated,
+                receiptSource,
+                __originalMethod.Name);
         });
     }
 
     private static void OnOrderCleanupSucceeded(
-        CapturedRuntimeSpecialOrder? __state,
+        TerminalOrderCaptureState? __state,
         MethodBase __originalMethod,
         bool __runOriginal)
     {
         if (!__runOriginal || __state == null) return;
 
-        RunCaptureCallback($"{__originalMethod.Name}.After", () =>
+        RunTerminalPostfix($"{__originalMethod.Name}.After", () =>
         {
             lock (SyncRoot) _removeCallbacks++;
-            RemoveOrder(__state with { CaptureSource = __originalMethod.Name });
+            if (!string.Equals(__originalMethod.Name, "CleanOrderInfo", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Unexpected cleanup Hook source {__originalMethod.Name}.");
+            }
+            PublishAndRemoveOrder(
+                __state,
+                RuntimeOrderTerminalDisposition.Removed,
+                RuntimeOrderTerminalReceiptSource.CleanOrderInfo,
+                __originalMethod.Name);
         });
     }
 
     private static void CaptureControllerOrderBeforeRepell(
         object __0,
         MethodBase __originalMethod,
-        out CapturedRuntimeSpecialOrder? __state)
+        out TerminalOrderCaptureState? __state)
     {
         CaptureControllerOrderBeforeCompletion(__0, __originalMethod, out __state);
     }
 
     private static void OnOrderRepellSucceeded(
-        CapturedRuntimeSpecialOrder? __state,
+        TerminalOrderCaptureState? __state,
         MethodBase __originalMethod,
         bool __runOriginal)
     {
         if (!__runOriginal || __state == null) return;
-        OnOrderCleanupSucceeded(__state, __originalMethod, true);
+
+        RunTerminalPostfix($"{__originalMethod.Name}.After", () =>
+        {
+            lock (SyncRoot) _removeCallbacks++;
+            if (!string.Equals(__originalMethod.Name, "RepellInternal", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Unexpected repell Hook source {__originalMethod.Name}.");
+            }
+            PublishAndRemoveOrder(
+                __state,
+                RuntimeOrderTerminalDisposition.Removed,
+                RuntimeOrderTerminalReceiptSource.RepellInternal,
+                __originalMethod.Name);
+        });
+    }
+
+    private static void PublishAndRemoveOrder(
+        TerminalOrderCaptureState state,
+        RuntimeOrderTerminalDisposition disposition,
+        RuntimeOrderTerminalReceiptSource receiptSource,
+        string captureSource)
+    {
+        var removeCapturedLifecycle = RuntimeOrderTerminalReceiptStore.MatchesActiveLifecycle(
+            state.ToBindingToken());
+        var binding = state.ToBindingToken();
+        try
+        {
+            RuntimeOrderTerminalReceiptStore.Publish(new RuntimeOrderTerminalHookState(
+                binding.BusinessGeneration,
+                binding.OrderKind,
+                binding.OrderPointer,
+                binding.ControllerPointer,
+                binding.LifecycleSequence,
+                disposition,
+                receiptSource));
+        }
+        finally
+        {
+            if (removeCapturedLifecycle)
+            {
+                RemoveOrder(binding, captureSource);
+            }
+        }
+    }
+
+    private static long BeginOrderLifecycle(
+        object order,
+        object controller,
+        string source)
+    {
+        var lifecycleBefore = RuntimeNightBusinessLifecycle.Snapshot;
+        if (!lifecycleBefore.IsActive || lifecycleBefore.Generation <= 0) return 0;
+
+        var resolution = RuntimeOrderTypeResolver.Resolve(order);
+        if (resolution.Resolved && resolution.Kind != RuntimeOrderKind.Special) return 0;
+        if (!resolution.Resolved || resolution.ReadableOrder == null)
+        {
+            NoteParseFailure(
+                source,
+                $"order lifecycle start concrete type is unavailable: {resolution.Reason}",
+                order);
+            return 0;
+        }
+
+        if (!RuntimeReflectionUtility.TryReadNativeObjectPointer(resolution.ReadableOrder, out var orderPointer)
+            || !RuntimeReflectionUtility.TryReadNativeObjectPointer(controller, out var controllerPointer))
+        {
+            NoteParseFailure(source, "order lifecycle start lacks exact native order/controller identity", order);
+            return 0;
+        }
+
+        if (!TryReadExactOrderBool(controller, "HasEvaluated", out var hasEvaluated)
+            || hasEvaluated)
+        {
+            NoteParseFailure(
+                source,
+                "order lifecycle start requires exact HasEvaluated=false after native return",
+                order);
+            return 0;
+        }
+
+        var currentOrder = InvokeInstanceMethod(controller, "PeekOrders");
+        var currentResolution = RuntimeOrderTypeResolver.Resolve(currentOrder);
+        if (!currentResolution.Resolved
+            || currentResolution.Kind != RuntimeOrderKind.Special
+            || currentResolution.ReadableOrder == null
+            || !RuntimeReflectionUtility.TryReadNativeObjectPointer(currentResolution.ReadableOrder, out var currentOrderPointer)
+            || currentOrderPointer != orderPointer)
+        {
+            NoteParseFailure(source, "order lifecycle start no longer owns the exact PeekOrders stack top", order);
+            return 0;
+        }
+
+        var sequence = RuntimeOrderTerminalReceiptStore.BeginLifecycle(
+            lifecycleBefore.Generation,
+            RuntimeOrderKind.Special,
+            orderPointer,
+            controllerPointer);
+        var lifecycleAfter = RuntimeNightBusinessLifecycle.Snapshot;
+        if (!lifecycleAfter.IsActive || lifecycleAfter.Generation != lifecycleBefore.Generation)
+        {
+            NoteParseFailure(source, "night-business generation changed during order lifecycle start", order);
+            return 0;
+        }
+
+        return sequence;
+    }
+
+    private static CapturedRuntimeSpecialOrder? AttachActiveOrderLifecycle(
+        CapturedRuntimeSpecialOrder? order,
+        string source)
+    {
+        if (order == null) return null;
+        if (order.ControllerObject == null)
+        {
+            CapturedRuntimeSpecialOrder[] matches;
+            lock (SyncRoot)
+            {
+                matches = Orders
+                    .Where(existing => IsSameNativeOrderSlot(existing, order))
+                    .Take(2)
+                    .ToArray();
+            }
+
+            if (matches.Length != 1
+                || matches[0].ControllerObject == null
+                || matches[0].OrderLifecycleSequence <= 0)
+            {
+                return null;
+            }
+
+            order = order with
+            {
+                ControllerObject = matches[0].ControllerObject,
+                OrderLifecycleSequence = matches[0].OrderLifecycleSequence,
+            };
+        }
+
+        if (!TryReadOrderLifecycleIdentity(
+                order,
+                source,
+                out var businessGeneration,
+                out var orderPointer,
+                out var controllerPointer))
+        {
+            return null;
+        }
+
+        if (!RuntimeOrderTerminalReceiptStore.TryCaptureActiveLifecycle(
+                businessGeneration,
+                RuntimeOrderKind.Special,
+                orderPointer,
+                controllerPointer,
+                out var sequence))
+        {
+            return null;
+        }
+
+        if (order.OrderLifecycleSequence > 0
+            && order.OrderLifecycleSequence != sequence)
+        {
+            NoteParseFailure(source, "status callback lifecycle sequence conflicts with the active binding", order.OrderObject);
+            return null;
+        }
+
+        return order with { OrderLifecycleSequence = sequence };
+    }
+
+    private static bool TryReadOrderLifecycleIdentity(
+        CapturedRuntimeSpecialOrder? order,
+        string source,
+        out long businessGeneration,
+        out nint orderPointer,
+        out nint controllerPointer)
+    {
+        businessGeneration = 0;
+        orderPointer = 0;
+        controllerPointer = 0;
+        if (order == null) return false;
+
+        var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+        if (!lifecycle.IsActive || lifecycle.Generation <= 0) return false;
+        if (order.OrderObject == null
+            || order.ControllerObject == null
+            || !RuntimeReflectionUtility.TryReadNativeObjectPointer(order.OrderObject, out orderPointer)
+            || !RuntimeReflectionUtility.TryReadNativeObjectPointer(order.ControllerObject, out controllerPointer))
+        {
+            NoteParseFailure(source, "order lifecycle identity lacks exact native order/controller pointers", order.OrderObject);
+            return false;
+        }
+
+        businessGeneration = lifecycle.Generation;
+        return true;
+    }
+
+    private static TerminalOrderCaptureState? CaptureControllerTerminalState(
+        object controller,
+        string source)
+    {
+        var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+        if (!lifecycle.IsActive || lifecycle.Generation <= 0) return null;
+
+        if (IsEvaluationTerminalSource(source))
+        {
+            if (!TryReadExactOrderBool(controller, "HasEvaluated", out var hasEvaluated))
+            {
+                NoteParseFailure(source, "exact GuestGroupController.HasEvaluated bool property is unavailable", controller);
+                return null;
+            }
+
+            if (hasEvaluated) return null;
+        }
+
+        var order = InvokeInstanceMethod(controller, "PeekOrders");
+        return CreateTerminalCaptureState(
+            order,
+            controller,
+            lifecycle.Generation,
+            source,
+            requireFulfilled: IsEvaluationTerminalSource(source));
+    }
+
+    private static bool IsEvaluationTerminalSource(string source)
+    {
+        return source.StartsWith("EvaluateOrder.", StringComparison.Ordinal)
+            || source.StartsWith("EvaulateManualOrder.", StringComparison.Ordinal);
+    }
+
+    private static TerminalOrderCaptureState? CaptureOrderRemovalState(object order, string source)
+    {
+        var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+        if (!lifecycle.IsActive || lifecycle.Generation <= 0) return null;
+        var resolution = RuntimeOrderTypeResolver.Resolve(order);
+        if (resolution.Resolved && resolution.Kind != RuntimeOrderKind.Special) return null;
+        if (!resolution.Resolved
+            || resolution.ReadableOrder == null
+            || !RuntimeReflectionUtility.TryReadNativeObjectPointer(resolution.ReadableOrder, out var orderPointer))
+        {
+            NoteParseFailure(source, "RemoveFromOrder did not provide one exact concrete SpecialOrder", order);
+            return null;
+        }
+
+        if (!RuntimeOrderTerminalReceiptStore.TryCaptureActiveLifecycleByOrder(
+                lifecycle.Generation,
+                RuntimeOrderKind.Special,
+                orderPointer,
+                out var controllerPointer,
+                out var lifecycleSequence))
+        {
+            NoteParseFailure(
+                source,
+                $"RemoveFromOrder has no unique active order lifecycle: pointer=0x{(long)orderPointer:X}",
+                order);
+            return null;
+        }
+
+        var currentLifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+        if (!currentLifecycle.IsActive || currentLifecycle.Generation != lifecycle.Generation)
+        {
+            NoteParseFailure(
+                source,
+                $"night-business generation changed during terminal capture: expected={lifecycle.Generation}, current={currentLifecycle.Generation}, active={currentLifecycle.IsActive}",
+                order);
+            return null;
+        }
+
+        return new TerminalOrderCaptureState(
+            new RuntimeOrderBindingToken(
+                lifecycle.Generation,
+                RuntimeOrderKind.Special,
+                orderPointer,
+                controllerPointer,
+                lifecycleSequence),
+            IsFulfilled: false);
+    }
+
+    private static TerminalOrderCaptureState? CreateTerminalCaptureState(
+        object? order,
+        object controller,
+        long businessGeneration,
+        string source,
+        bool requireFulfilled)
+    {
+        if (order == null) return null;
+
+        var resolution = RuntimeOrderTypeResolver.Resolve(order);
+        if (resolution.Resolved && resolution.Kind != RuntimeOrderKind.Special) return null;
+        if (!resolution.Resolved || resolution.ReadableOrder == null)
+        {
+            NoteParseFailure(source, "terminal Hook did not resolve one concrete SpecialOrder", order);
+            return null;
+        }
+
+        if (!RuntimeReflectionUtility.TryReadNativeObjectPointer(resolution.ReadableOrder, out var orderPointer)
+            || !RuntimeReflectionUtility.TryReadNativeObjectPointer(controller, out var controllerPointer))
+        {
+            NoteParseFailure(source, "terminal Hook native order/controller identity is incomplete", order);
+            return null;
+        }
+
+        var currentLifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+        if (!currentLifecycle.IsActive || currentLifecycle.Generation != businessGeneration)
+        {
+            NoteParseFailure(
+                source,
+                $"night-business generation changed during terminal capture: expected={businessGeneration}, current={currentLifecycle.Generation}, active={currentLifecycle.IsActive}",
+                order);
+            return null;
+        }
+
+        if (!RuntimeOrderTerminalReceiptStore.TryCaptureActiveLifecycle(
+                businessGeneration,
+                resolution.Kind,
+                orderPointer,
+                controllerPointer,
+                out var lifecycleSequence))
+        {
+            NoteParseFailure(source, "terminal Hook has no exact active order-lifecycle sequence", order);
+            return null;
+        }
+
+        var isFulfilled = false;
+        if (requireFulfilled
+            && !TryReadExactOrderBool(resolution.ReadableOrder, "IsFullfilled", out isFulfilled))
+        {
+            NoteParseFailure(source, "exact OrderBase.IsFullfilled bool property is unavailable", order);
+            return null;
+        }
+
+        return new TerminalOrderCaptureState(
+            new RuntimeOrderBindingToken(
+                businessGeneration,
+                resolution.Kind,
+                orderPointer,
+                controllerPointer,
+                lifecycleSequence),
+            isFulfilled);
     }
 
     private static void RunCaptureCallback(string source, Action callback)
     {
         if (!RuntimeNightBusinessLifecycle.IsActive) return;
+
+        RunTerminalPostfix(source, callback);
+    }
+
+    private static void RunTerminalPostfix(string source, Action callback)
+    {
 
         try
         {
@@ -763,8 +1145,8 @@ public static class SpecialOrderRuntimeCapture
     /// 合并一条新捕获的订单记录。
     /// </summary>
     /// <remarks>
-    /// 同一稀客订单可能先由控制器绑定捕获，后续再由状态回调补充送达信息。
-    /// 因此这里按运行时对象、桌号和稀客维度合并，并优先保留信息更完整的一份记录。
+    /// 同一 lifecycle 只允许合并状态和精确手动回调证据。原始 Tag 是创建时即完整的
+    /// 不可变身份；同 lifecycle 内发生漂移时整条绑定失效，不能选取任一观测继续运行。
     /// </remarks>
     private static void AddOrder(CapturedRuntimeSpecialOrder? order)
     {
@@ -778,15 +1160,17 @@ public static class SpecialOrderRuntimeCapture
             return;
         }
 
+        if (TryQuarantineRawTagIdentityConflict(order, "add")) return;
+
         lock (SyncRoot)
         {
             var existing = Orders.Where(current => CanMergeCapturedOrders(current, order)).ToList();
-            Orders.RemoveAll(current => CanMergeCapturedOrders(current, order));
+            Orders.RemoveAll(current => IsSameNativeOrderSlot(current, order));
 
             var next = existing.Aggregate(order, MergeCapturedOrder);
             Orders.Add(next);
             _capturedOrders++;
-            _lastCapture = $"{next.CaptureSource}: desk={next.DeskCode}, guestId={next.GuestId?.ToString() ?? ""}, foodId={(next.HasFoodTagId ? next.FoodTagId.ToString() : "missing")}, foodText={next.FoodTagDisplayText}, bevId={(next.HasBeverageTagId ? next.BeverageTagId.ToString() : "missing")}, bevText={next.BeverageTagDisplayText}, free={next.IsFreeOrder}, manual={next.ManualOrder}, manualCallback={(next.ManualEvaluationCallback == null ? "no" : "yes")}, manualBinding={DescribeManualEvaluationBinding(next.ManualEvaluationBindingObserved, next.ManualEvaluationBindingConflict, next.ManualEvaluationBindingCallback)}";
+            _lastCapture = $"{next.CaptureSource}: desk={next.DeskCode}, guestId={next.GuestId?.ToString() ?? ""}, foodId={next.FoodTagId}, bevId={next.BeverageTagId}, free={next.IsFreeOrder}, manual={next.ManualOrder}, manualCallback={(next.ManualEvaluationCallback == null ? "no" : "yes")}, manualBinding={DescribeManualEvaluationBinding(next.ManualEvaluationBindingObserved, next.ManualEvaluationBindingConflict, next.ManualEvaluationBindingCallback)}";
             _changeVersion++;
             if (Orders.Count > MaxOrders)
             {
@@ -797,46 +1181,37 @@ public static class SpecialOrderRuntimeCapture
         }
     }
 
-    /// <summary>
-    /// 根据游戏移除、评价完成或手动结束回调移除订单。
-    /// </summary>
-    private static void RemoveOrder(CapturedRuntimeSpecialOrder? order)
+    private static void RemoveOrder(RuntimeOrderBindingToken binding, string captureSource)
     {
-        if (order == null) return;
-        if (string.IsNullOrWhiteSpace(order.RuntimeKey))
-        {
-            NoteParseFailure(order.CaptureSource, "native order key is unavailable for removal", order.OrderObject);
-            return;
-        }
-
+        var runtimeKey = $"ptr:{(long)binding.OrderPointer:x}";
         lock (SyncRoot)
         {
-            var removed = Orders.RemoveAll(existing => IsSameOrderRemovalMatch(existing, order));
-            _lastCapture = $"removed: desk={order.DeskCode}, guestId={order.GuestId?.ToString() ?? ""}";
+            var removed = Orders.RemoveAll(existing =>
+                existing.OrderLifecycleSequence == binding.LifecycleSequence
+                && string.Equals(existing.RuntimeKey, runtimeKey, StringComparison.Ordinal));
+            _lastCapture = $"removed:{captureSource}: order={runtimeKey}, lifecycle={binding.LifecycleSequence}";
             if (removed > 0) _changeVersion++;
             _status = BuildStatusLocked();
         }
     }
 
     /// <summary>
-    /// 处理订单状态更新回调：明确移除时清理，送达完成时刷新并保留捕获记录。
+    /// 处理订单状态 observer：只在送达完成时刷新并保留捕获记录。
     /// </summary>
     /// <remarks>
-    /// 游戏部分状态更新只表示 UI 或伙伴系统刷新，不代表订单结束。`IsFullfilled` 仍需进入评价阶段，
-    /// 因此不能把料理和酒水均已送达当作订单移除。
+    /// 游戏状态 observer 不是权威终态边界，不能移除 capture 或结束 lifecycle。`IsFullfilled`
+    /// 仍需进入评价阶段，因此不能把料理和酒水均已送达当作订单移除。
     /// </remarks>
     private static void UpdateOrderStatus(CapturedRuntimeSpecialOrder? order, object? context)
     {
         if (order == null) return;
 
-        var contextName = FormatValue(context);
-        if (string.Equals(contextName, "OrderRemove", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(contextName, "2", StringComparison.Ordinal))
-        {
-            RemoveOrder(order with { CaptureSource = "OrderRemove" });
-            return;
-        }
+        // Raw Tag identity is immutable for one native lifecycle. This check must precede the
+        // delivery-context and fulfilled filters: either observer may be the first place where
+        // corrupt identity drift becomes visible, even though no business-status update follows.
+        if (TryQuarantineRawTagIdentityConflict(order, "status-observer")) return;
 
+        var contextName = FormatValue(context);
         if (!IsOrderDeliveryContext(contextName)) return;
         if (!order.IsFulfilled) return;
 
@@ -869,11 +1244,70 @@ public static class SpecialOrderRuntimeCapture
         }
     }
 
+    /// <summary>
+    /// Quarantines one lifecycle when an observer reports different immutable raw Tag identity.
+    /// </summary>
+    private static bool TryQuarantineRawTagIdentityConflict(
+        CapturedRuntimeSpecialOrder incoming,
+        string operation)
+    {
+        CapturedRuntimeSpecialOrder? conflicting;
+        var removed = 0;
+        lock (SyncRoot)
+        {
+            conflicting = Orders.FirstOrDefault(existing =>
+                IsSameOrderSlot(existing, incoming)
+                && HasConflictingRawTagIdentity(existing, incoming));
+            if (conflicting == null) return false;
+
+            removed = Orders.RemoveAll(existing => IsSameOrderSlot(existing, incoming));
+            if (removed > 0) _changeVersion++;
+            _lastCapture = $"quarantined:raw-tag-conflict: runtimeKey={incoming.RuntimeKey}, lifecycle={incoming.OrderLifecycleSequence}";
+            _status = BuildStatusLocked();
+        }
+
+        var invalidated = false;
+        if (TryReadOrderLifecycleIdentity(
+                incoming,
+                $"{incoming.CaptureSource}.RawTagConflict",
+                out var businessGeneration,
+                out var orderPointer,
+                out var controllerPointer))
+        {
+            invalidated = RuntimeOrderTerminalReceiptStore.InvalidateActiveLifecycle(
+                new RuntimeOrderBindingToken(
+                    businessGeneration,
+                    RuntimeOrderKind.Special,
+                    orderPointer,
+                    controllerPointer,
+                    incoming.OrderLifecycleSequence));
+        }
+
+        NoteParseFailure(
+            incoming.CaptureSource,
+            "raw RequestFoodTag/RequestBeverageTag identity changed within one order lifecycle; "
+            + $"operation={operation}; lifecycle={incoming.OrderLifecycleSequence}; "
+            + $"previous={conflicting.FoodTagId}/{conflicting.BeverageTagId}; "
+            + $"incoming={incoming.FoodTagId}/{incoming.BeverageTagId}; "
+            + $"capturesRemoved={removed}; activeLifecycleInvalidated={invalidated}",
+            incoming.OrderObject);
+        return true;
+    }
+
+    private static bool HasConflictingRawTagIdentity(
+        CapturedRuntimeSpecialOrder left,
+        CapturedRuntimeSpecialOrder right)
+    {
+        return left.FoodTagId != right.FoodTagId
+            || left.BeverageTagId != right.BeverageTagId;
+    }
+
     private static bool HasExactControllerBinding(CapturedRuntimeSpecialOrder order)
     {
         return order.OrderObject != null
             && order.ControllerObject != null
-            && !string.IsNullOrWhiteSpace(order.RuntimeKey);
+            && !string.IsNullOrWhiteSpace(order.RuntimeKey)
+            && order.OrderLifecycleSequence > 0;
     }
 
     private static bool IsOrderDeliveryContext(string contextName)
@@ -885,7 +1319,7 @@ public static class SpecialOrderRuntimeCapture
     }
 
     /// <summary>
-    /// 从运行时订单对象和可选控制器中解析稀客、桌号、原始 Tag ID 与最终展示文本。
+    /// 从运行时订单对象和可选控制器中解析稀客、桌号与原始 signed Tag ID。
     /// </summary>
     /// <param name="order">游戏订单对象，可能是 IL2CPP 基类或具体 SpecialOrder。</param>
     /// <param name="source">触发解析的 Hook 名称，用于诊断。</param>
@@ -971,17 +1405,15 @@ public static class SpecialOrderRuntimeCapture
         string source)
     {
         var guestId = ToNullableInt(GetMemberValue(specialGuest, "Id"));
-        var foodTagDisplayText = ResolveOrderTagText(controller, order, "GetOrderFoodText");
-        var beverageTagDisplayText = ResolveOrderTagText(controller, order, "GetOrderBevText");
 
         var guestName = specialGuest == null ? "" : ReadGuestName(specialGuest, guestId);
 
-        if (!foodTagId.HasValue
-            && !beverageTagId.HasValue
-            && string.IsNullOrWhiteSpace(foodTagDisplayText)
-            && string.IsNullOrWhiteSpace(beverageTagDisplayText))
+        if (!foodTagId.HasValue || !beverageTagId.HasValue)
         {
-            NoteParseFailure(source, "empty food/beverage tag", order);
+            NoteParseFailure(
+                source,
+                $"exact raw RequestFoodTag/RequestBeverageTag identity is incomplete: food={foodTagId?.ToString() ?? "missing"}; beverage={beverageTagId?.ToString() ?? "missing"}",
+                order);
             return null;
         }
 
@@ -996,12 +1428,8 @@ public static class SpecialOrderRuntimeCapture
             deskCode,
             guestId,
             string.IsNullOrWhiteSpace(guestName) ? "Special guest" : guestName,
-            foodTagId ?? 0,
-            foodTagId.HasValue,
-            foodTagDisplayText,
-            beverageTagId ?? 0,
-            beverageTagId.HasValue,
-            beverageTagDisplayText,
+            foodTagId.Value,
+            beverageTagId.Value,
             isFreeOrder,
             isFulfilled,
             capturedAt,
@@ -1016,44 +1444,6 @@ public static class SpecialOrderRuntimeCapture
     }
 
     /// <summary>
-    /// 读取游戏针对当前订单最终展示的 Tag 文本。
-    /// </summary>
-    /// <remarks>
-    /// 稀客订单允许使用不在全局 Tag 目录中的 ID（例如无酒精为 -1），控制器方法还会应用
-    /// 订单文本 override，因此它是有控制器上下文时的唯一展示文本来源。订单原始 ID 独立保留，
-    /// 无控制器时不调用订单文本 getter 或 <c>ToString()</c> 猜测展示内容。
-    /// </remarks>
-    private static string ResolveOrderTagText(
-        object? controller,
-        object? order,
-        string controllerMethodName)
-    {
-        return NormalizeTag(InvokeInstanceMethod(controller, controllerMethodName, order)?.ToString());
-    }
-
-    /// <summary>
-    /// 在原生完成调用前，从控制器当前订单锁存精确稀客订单身份。
-    /// </summary>
-    private static CapturedRuntimeSpecialOrder? ParseControllerCurrentOrder(object? controller, string source)
-    {
-        if (controller == null)
-        {
-            NoteParseFailure(source, "controller is null");
-            return null;
-        }
-
-        var peekOrder = InvokeInstanceMethod(controller, "PeekOrders");
-        if (peekOrder != null)
-        {
-            var parsed = ParseOrder(peekOrder, source, controller);
-            if (parsed != null) return parsed;
-        }
-
-        NoteParseFailure(source, "exact current SpecialOrder is unavailable", controller);
-        return null;
-    }
-
-    /// <summary>
     /// 判断两个捕获记录是否指向同一个原生订单。
     /// </summary>
     /// <remarks>
@@ -1061,20 +1451,22 @@ public static class SpecialOrderRuntimeCapture
     /// </remarks>
     private static bool IsSameOrderSlot(CapturedRuntimeSpecialOrder left, CapturedRuntimeSpecialOrder right)
     {
+        return IsSameNativeOrderSlot(left, right)
+            && left.OrderLifecycleSequence > 0
+            && left.OrderLifecycleSequence == right.OrderLifecycleSequence;
+    }
+
+    private static bool IsSameNativeOrderSlot(
+        CapturedRuntimeSpecialOrder left,
+        CapturedRuntimeSpecialOrder right)
+    {
         return !string.IsNullOrWhiteSpace(left.RuntimeKey)
             && !string.IsNullOrWhiteSpace(right.RuntimeKey)
             && string.Equals(left.RuntimeKey, right.RuntimeKey, StringComparison.Ordinal);
     }
 
     private static bool CanMergeCapturedOrders(CapturedRuntimeSpecialOrder left, CapturedRuntimeSpecialOrder right)
-    {
-        return IsSameOrderSlot(left, right) && CanMergeCapturedOrderDetails(left, right);
-    }
-
-    private static bool IsSameOrderRemovalMatch(CapturedRuntimeSpecialOrder existing, CapturedRuntimeSpecialOrder removed)
-    {
-        return IsSameOrderSlot(existing, removed);
-    }
+        => IsSameOrderSlot(left, right);
 
     private static bool IsDismissRequestMatch(
         CapturedRuntimeSpecialOrder existing,
@@ -1088,9 +1480,9 @@ public static class SpecialOrderRuntimeCapture
         if (runtimeGuestId.HasValue
             && (!existing.GuestId.HasValue || existing.GuestId.Value != runtimeGuestId.Value)) return false;
         if (foodTagId.HasValue
-            && (!existing.HasFoodTagId || existing.FoodTagId != foodTagId.Value)) return false;
+            && existing.FoodTagId != foodTagId.Value) return false;
         if (beverageTagId.HasValue
-            && (!existing.HasBeverageTagId || existing.BeverageTagId != beverageTagId.Value)) return false;
+            && existing.BeverageTagId != beverageTagId.Value) return false;
         return true;
     }
 
@@ -1098,35 +1490,12 @@ public static class SpecialOrderRuntimeCapture
     /// 合并两次 Hook 捕获到的同一订单信息。
     /// </summary>
     /// <remarks>
-    /// 不同来源的记录可能分别拥有展示文本、原始 Tag ID、稀客 ID 或控制器对象。合并时独立保留
-    /// 原始身份与展示文本；原始 ID 明确冲突时，不把两条记录视为同一订单。
+    /// 两个 raw Tag ID 已在创建边界强制完整；后续只合并同一 lifecycle 的状态与回调证据。
     /// </remarks>
     private static CapturedRuntimeSpecialOrder MergeCapturedOrder(
         CapturedRuntimeSpecialOrder incoming,
         CapturedRuntimeSpecialOrder existing)
     {
-        if (!CanMergeCapturedOrderDetails(incoming, existing))
-        {
-            return GetCapturedOrderCompletenessScore(incoming) >= GetCapturedOrderCompletenessScore(existing)
-                ? incoming
-                : existing with { CapturedAt = incoming.CapturedAt };
-        }
-
-        var food = MergeTagParts(
-            incoming.FoodTagId,
-            incoming.HasFoodTagId,
-            incoming.FoodTagDisplayText,
-            existing.FoodTagId,
-            existing.HasFoodTagId,
-            existing.FoodTagDisplayText);
-        var beverage = MergeTagParts(
-            incoming.BeverageTagId,
-            incoming.HasBeverageTagId,
-            incoming.BeverageTagDisplayText,
-            existing.BeverageTagId,
-            existing.HasBeverageTagId,
-            existing.BeverageTagDisplayText);
-
         var manualBindingConflict = incoming.ManualEvaluationBindingConflict
             || existing.ManualEvaluationBindingConflict
             || HaveConflictingManualEvaluationBindings(incoming, existing);
@@ -1140,12 +1509,6 @@ public static class SpecialOrderRuntimeCapture
             GuestName = string.IsNullOrWhiteSpace(incoming.GuestName) || string.Equals(incoming.GuestName, "Special guest", StringComparison.Ordinal)
                 ? existing.GuestName
                 : incoming.GuestName,
-            FoodTagId = food.TagId,
-            HasFoodTagId = food.HasTagId,
-            FoodTagDisplayText = food.DisplayText,
-            BeverageTagId = beverage.TagId,
-            HasBeverageTagId = beverage.HasTagId,
-            BeverageTagDisplayText = beverage.DisplayText,
             IsFreeOrder = incoming.IsFreeOrder || existing.IsFreeOrder,
             IsFulfilled = incoming.IsFulfilled || existing.IsFulfilled,
             FirstCapturedAt = existing.FirstCapturedAt < incoming.FirstCapturedAt ? existing.FirstCapturedAt : incoming.FirstCapturedAt,
@@ -1200,66 +1563,6 @@ public static class SpecialOrderRuntimeCapture
         return callback == null ? "invalid" : "captured";
     }
 
-    private static bool CanMergeCapturedOrderDetails(CapturedRuntimeSpecialOrder left, CapturedRuntimeSpecialOrder right)
-    {
-        if (!string.IsNullOrWhiteSpace(left.RuntimeKey)
-            && !string.IsNullOrWhiteSpace(right.RuntimeKey)
-            && string.Equals(left.RuntimeKey, right.RuntimeKey, StringComparison.Ordinal))
-        {
-            return true;
-        }
-
-        if (HaveConflictingTagIds(left.HasFoodTagId, left.FoodTagId, right.HasFoodTagId, right.FoodTagId))
-        {
-            return false;
-        }
-
-        if (HaveConflictingTagIds(left.HasBeverageTagId, left.BeverageTagId, right.HasBeverageTagId, right.BeverageTagId))
-        {
-            return false;
-        }
-
-        return true;
-    }
-
-    private static bool HaveConflictingTagIds(
-        bool leftHasTagId,
-        int leftTagId,
-        bool rightHasTagId,
-        int rightTagId)
-    {
-        return leftHasTagId && rightHasTagId && leftTagId != rightTagId;
-    }
-
-    private static (int TagId, bool HasTagId, string DisplayText) MergeTagParts(
-        int incomingTagId,
-        bool incomingHasTagId,
-        string incomingDisplayText,
-        int existingTagId,
-        bool existingHasTagId,
-        string existingDisplayText)
-    {
-        var hasTagId = incomingHasTagId || existingHasTagId;
-        var tagId = incomingHasTagId ? incomingTagId : existingTagId;
-        var displayText = string.IsNullOrWhiteSpace(incomingDisplayText)
-            ? existingDisplayText
-            : incomingDisplayText;
-        return (tagId, hasTagId, displayText);
-    }
-
-    private static int GetCapturedOrderCompletenessScore(CapturedRuntimeSpecialOrder order)
-    {
-        return GetTagCompletenessScore(order.HasFoodTagId, order.FoodTagDisplayText)
-            + GetTagCompletenessScore(order.HasBeverageTagId, order.BeverageTagDisplayText)
-            + (order.GuestId.HasValue ? 2 : 0)
-            + (order.DeskCode >= 0 ? 1 : 0);
-    }
-
-    private static int GetTagCompletenessScore(bool hasTagId, string displayText)
-    {
-        return (!string.IsNullOrWhiteSpace(displayText) ? 8 : 0) + (hasTagId ? 2 : 0);
-    }
-
     private static string MergeCaptureSource(string existing, string incoming)
     {
         if (string.IsNullOrWhiteSpace(existing)) return incoming;
@@ -1309,16 +1612,6 @@ public static class SpecialOrderRuntimeCapture
         return guestId.HasValue ? $"Guest {guestId.Value}" : "Special guest";
     }
 
-    private static string NormalizeTag(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value)) return "";
-
-        var trimmed = value.Trim();
-        if (string.Equals(trimmed, "Null", StringComparison.OrdinalIgnoreCase)) return "";
-        if (string.Equals(trimmed, "None", StringComparison.OrdinalIgnoreCase)) return "";
-        return trimmed.StartsWith("#", StringComparison.Ordinal) ? "" : trimmed;
-    }
-
     private static object? InvokeInstanceMethod(object? instance, string name, params object?[] args)
     {
         if (instance == null) return null;
@@ -1340,7 +1633,7 @@ public static class SpecialOrderRuntimeCapture
     }
 
     /// <summary>
-    /// 兼容读取 IL2CPP 自动属性、私有字段和常见字段命名风格。
+    /// 读取已由实机资料确认的 IL2CPP 自动属性或精确字段形态。
     /// </summary>
     /// <remarks>
     /// Il2CppInterop 暴露的对象在不同版本或反编译形态下可能出现 <c>m_</c>、下划线和 backing field 等命名。
@@ -1580,13 +1873,20 @@ public static class SpecialOrderRuntimeCapture
         return int.TryParse(value.ToString(), out var parsed) ? parsed : null;
     }
 
+    private sealed record TerminalOrderCaptureState(
+        RuntimeOrderBindingToken Binding,
+        bool IsFulfilled)
+    {
+        public RuntimeOrderBindingToken ToBindingToken() => Binding;
+    }
+
 }
 
 /// <summary>
 /// 一条从游戏运行时捕获到的稀客订单。
 /// </summary>
 /// <remarks>
-/// 原始请求 Tag ID 用于订单身份匹配，展示文本只用于 UI 与诊断；运行时对象引用仅在 Mod 内部用于再次定位订单，不会序列化给前端。
+/// 原始请求 Tag ID 用于订单身份匹配；运行时对象引用仅在 Mod 内部用于再次定位订单，不会序列化给前端。
 /// <c>ManualOrder</c> 表示最近一次读取的瞬时属性，手动评价绑定字段则保存精确 setter 在该活动订单生命周期内建立的不可变证据。
 /// </remarks>
 public sealed record CapturedRuntimeSpecialOrder(
@@ -1594,11 +1894,7 @@ public sealed record CapturedRuntimeSpecialOrder(
     int? GuestId,
     string GuestName,
     int FoodTagId,
-    bool HasFoodTagId,
-    string FoodTagDisplayText,
     int BeverageTagId,
-    bool HasBeverageTagId,
-    string BeverageTagDisplayText,
     bool IsFreeOrder,
     bool IsFulfilled,
     DateTime FirstCapturedAt,
@@ -1608,6 +1904,7 @@ public sealed record CapturedRuntimeSpecialOrder(
 {
     internal object? OrderObject { get; init; }
     internal object? ControllerObject { get; init; }
+    internal long OrderLifecycleSequence { get; init; }
     public bool ManualOrder { get; init; }
     internal object? ManualEvaluationCallback { get; init; }
     public bool ManualEvaluationBindingObserved { get; init; }

@@ -16,6 +16,7 @@
     <Compile Include="../../mods/bepinex/src/Save/RuntimeConcreteCollectionReader.cs" Link="RuntimeConcreteCollectionReader.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeReflectionUtility.cs" Link="RuntimeReflectionUtility.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeOrderTypeResolver.cs" Link="RuntimeOrderTypeResolver.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeOrderTerminalReceiptStore.cs" Link="RuntimeOrderTerminalReceiptStore.cs" />
     <Compile Include="../../mods/bepinex/src/Save/NormalOrderRuntimeCapture.cs" Link="NormalOrderRuntimeCapture.cs" />
     <Compile Include="../../mods/bepinex/src/Save/SpecialOrderRuntimeCapture.cs" Link="SpecialOrderRuntimeCapture.cs" />
   </ItemGroup>

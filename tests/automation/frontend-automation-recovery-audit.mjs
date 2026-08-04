@@ -404,6 +404,12 @@ assert.equal(
 assert.equal(requiresManualAutomationResolution('cooking-manual-handoff-unreadable'), true);
 assert.equal(requiresManualAutomationResolution('order-evaluation-state-unreadable'), false);
 assert.equal(requiresManualAutomationResolution('order-evaluation-commit-uncertain'), true);
+assert.equal(requiresManualAutomationResolution('order-evaluation-target-mismatch'), true,
+  'A deterministic target mismatch must remain latched until its exact backend safety barrier is acknowledged.');
+assert.equal(requiresManualAutomationResolution('order-evaluation-closeout-unresolved'), true,
+  'An exhausted exact closeout must remain latched until its backend safety barrier is acknowledged.');
+assert.equal(requiresManualAutomationResolution('order-terminated-before-evaluation'), false,
+  'A proven native order removal retires the receipt and must not manufacture an ACK barrier.');
 assert.equal(requiresManualAutomationResolution('', ['cooking-warmer-commit-uncertain']), true);
 assert.equal(requiresManualAutomationResolution('cooking-ownership-lost'), false);
 for (const code of [
@@ -804,6 +810,7 @@ async function assertOldRecoveryLogicRemoved() {
 async function assertStageAndCancellationContracts() {
   const workbench = await readFile(new URL('apps/companion/src/companion/ModWorkbench.tsx', root), 'utf8');
   const domain = await readFile(new URL('apps/companion/src/companion/domain/automation.ts', root), 'utf8');
+  const normalOrderKey = await readFile(new URL('apps/companion/src/companion/domain/normal-order-key.ts', root), 'utf8');
   const intervals = await readFile(new URL('apps/companion/src/companion/hooks/useOrderAutomationIntervals.ts', root), 'utf8');
   const storage = await readFile(new URL('apps/companion/src/companion/storage.ts', root), 'utf8');
   const api = await readFile(new URL('apps/companion/src/companion/api.ts', root), 'utf8');
@@ -824,6 +831,40 @@ async function assertStageAndCancellationContracts() {
   const cookingLifecycle = await readFile(new URL('mods/bepinex/src/Save/AutomationCookingJobLifecycle.cs', root), 'utf8');
   const orderMatching = await readFile(new URL('mods/bepinex/src/Save/RuntimeOrderPreparationService.OrderMatching.cs', root), 'utf8');
   const generationTracker = await readFile(new URL('mods/bepinex/src/Save/RuntimeCookingGenerationTracker.cs', root), 'utf8');
+
+  assert.match(domain, /order\.orderLifecycleSequence > 0[\s\S]*lifecycle:\$\{order\.orderLifecycleSequence\}/,
+    'Rare automation state keys must include the exact order lifecycle sequence.');
+  assert.ok(normalOrderKey.includes('buildNormalLifecycleAutoOrderKey')
+    && normalOrderKey.includes('`${rawOrderIdentity}|lifecycle:${orderLifecycleSequence}`')
+    && normalOrderKey.includes('order.orderKey || order.traceId'),
+    'Normal event and snapshot state keys must share one lifecycle-aware constructor.');
+  assert.ok(workbench.includes('event.orderLifecycleSequence !== item.order.orderLifecycleSequence'),
+    'Rare runtime events must not cross an order lifecycle boundary.');
+  assert.ok(workbench.includes('event.orderLifecycleSequence !== order.orderLifecycleSequence'),
+    'Normal runtime events must not cross an order lifecycle boundary.');
+  assert.ok(workbench.includes('event.orderRuntimeKind')
+    && workbench.includes('event.orderControllerId')
+    && workbench.includes('event.orderLifecycleSequence'),
+  'Manual barrier presentation must group events by the exact backend order lifecycle identity.');
+  assert.match(
+    workbench,
+    /function isManualResolutionAutomationEvent[\s\S]*event\.terminal[\s\S]*event\.outcome === 'blocked'[\s\S]*requiresManualAutomationResolution/,
+    'Cancelled old-generation uncertainty events must not become unacknowledgeable manual barriers.',
+  );
+  assert.ok(api.includes("orderKey: order.orderKey ?? ''"),
+    'The UI lifecycle state key must not replace the native normal-order request key.');
+  assert.ok(workbench.includes('event.orderKey === order.orderKey')
+    && workbench.includes('job.orderKey === order.orderKey'),
+  'Normal runtime events and jobs must compare backend raw order keys instead of composite UI state keys.');
+  assert.ok(workbench.includes('event.orderKey || event.traceId')
+    && workbench.includes('normalOrderStatesRef.current.has(eventStateKey)'),
+  'A temporarily missing normal order must recover an event only through its exact composite lifecycle state key.');
+  assert.ok((workbench.match(/job\.orderLifecycleSequence !== order\.orderLifecycleSequence/g) ?? []).length >= 2,
+    'Rare and normal cooking jobs must not cross an order lifecycle boundary.');
+  assert.ok(api.includes('orderLifecycleSequence: String(item.order.orderLifecycleSequence)'),
+    'Rare automation requests must carry the exact snapshot lifecycle sequence.');
+  assert.ok(api.includes('orderLifecycleSequence: String(order.orderLifecycleSequence)'),
+    'Normal automation requests must carry the exact snapshot lifecycle sequence.');
 
   assert.equal(domain.includes('buildCompleteOrderPreferences'), false, 'Completion must not force unrelated rare stages.');
   assert.ok(runtime.includes('else if (!request.AutoTakeBeverage)'), 'Rare completion must honor the beverage switch.');
@@ -1194,6 +1235,9 @@ async function assertStageAndCancellationContracts() {
   assert.ok(workbench.includes("event.code.startsWith('order-')"), 'Order-evaluation barriers must map to the order stage.');
   assert.ok(stateMachine.includes("'order-evaluation-state-unreadable'"));
   assert.ok(stateMachine.includes("'order-evaluation-commit-uncertain'"));
+  assert.ok(stateMachine.includes("'order-evaluation-target-mismatch'"));
+  assert.ok(stateMachine.includes("'order-evaluation-closeout-unresolved'"));
+  assert.ok(stateMachine.includes("'order-terminated-before-evaluation'"));
   assert.ok(stateMachine.includes("'cooking-manual-handoff-unreadable'"));
   assert.ok(stateMachine.includes("'cooking-manual-handoff-expired'"));
   assert.ok(stateMachine.includes("'cooking-manual-handoff-resolved'"));
@@ -1242,6 +1286,22 @@ async function assertStageAndCancellationContracts() {
   assert.ok(servicePanel.includes('title={`待人工确认 (${diagnostics.length})`}'), 'Unresolved barriers need an order-independent panel.');
   assert.ok(servicePanel.includes('automation-barrier:${diagnostic.sequence}:ack'));
   assert.ok(servicePanel.includes("isBusy ? '确认中' : '确认已处理'"));
+  for (const field of [
+    'transactionStage',
+    'holdsControllerReservation',
+    'controllerLeaseReleaseReason',
+    'orderRuntimeKind',
+    'orderId',
+    'orderControllerId',
+    'orderLifecycleSequence',
+    'foodDeliveryCleanupCompleted',
+    'foodDeliveryCleanupTerminal',
+    'foodDeliveryEvaluationState',
+    'foodDeliveryEvaluationAttempts',
+    'foodDeliveryEvaluationEffectiveSeconds',
+  ]) {
+    assert.ok(types.includes(`${field}:`), `Automation cooking-job API type is missing ${field}.`);
+  }
 }
 
 async function assertMockProtocol() {
@@ -1293,6 +1353,14 @@ async function assertMockProtocol() {
     assert.ok(Array.isArray(snapshot.automationCookingJobs));
     assert.ok(Array.isArray(snapshot.automationEvents));
     assert.deepEqual(snapshot.automationEvents.map((event) => event.sequence), [9000, 9001]);
+    assert.deepEqual(snapshot.nightBusiness.orders.map((order) => order.orderLifecycleSequence), [1, 2]);
+    assert.deepEqual(snapshot.normalBusiness.orders.map((order) => order.orderLifecycleSequence), [3, 4]);
+    for (const event of snapshot.automationEvents) {
+      assert.equal(event.orderRuntimeKind, 'Special');
+      assert.equal(event.orderId, '0x1001');
+      assert.equal(event.orderControllerId, '0x2001');
+      assert.equal(event.orderLifecycleSequence, 7);
+    }
 
     const missingAck = await postJson(`http://127.0.0.1:${port}/automation/barriers/ack?sequence=9999`, headers);
     assert.equal(missingAck.ok, false);
@@ -1314,7 +1382,17 @@ async function assertMockProtocol() {
     assert.deepEqual(acknowledgedSnapshot.automationEvents, []);
     assert.notEqual(acknowledgedSnapshot.snapshotSignature, snapshot.snapshotSignature);
 
-    const response = await postJson(`http://127.0.0.1:${port}/orders/prepare-next`, headers);
+    const missingLifecycle = await fetch(
+      `http://127.0.0.1:${port}/orders/prepare-next`,
+      { method: 'POST', headers },
+    );
+    assert.equal(missingLifecycle.status, 400);
+    assert.equal((await missingLifecycle.json()).error, 'missing or invalid orderLifecycleSequence');
+
+    const response = await postJson(
+      `http://127.0.0.1:${port}/orders/prepare-next?orderLifecycleSequence=1`,
+      headers,
+    );
     assert.equal(response.automation.outcome, 'progressed');
     assert.equal(response.automation.stage, 'cooking-start');
     assert.equal(response.automation.reasonCode, 'cooking-started');
@@ -1328,6 +1406,18 @@ async function assertMockProtocol() {
     assert.equal(activeJob.foodDeliveryCommitted, false);
     assert.equal(activeJob.foodDeliveryCommitUncertain, false);
     assert.equal(activeJob.foodDeliveryCleanupAttempts, 0);
+    assert.equal(activeJob.transactionStage, 'cooking');
+    assert.equal(activeJob.holdsControllerReservation, true);
+    assert.equal(activeJob.controllerLeaseReleaseReason, '');
+    assert.equal(activeJob.orderRuntimeKind, 'Special');
+    assert.equal(activeJob.orderId, 'mock-order-1');
+    assert.equal(activeJob.orderControllerId, 'mock-order-controller-1');
+    assert.equal(activeJob.orderLifecycleSequence, 1);
+    assert.equal(activeJob.foodDeliveryCleanupCompleted, false);
+    assert.equal(activeJob.foodDeliveryCleanupTerminal, false);
+    assert.equal(activeJob.foodDeliveryEvaluationState, 'Pending');
+    assert.equal(activeJob.foodDeliveryEvaluationAttempts, 0);
+    assert.equal(activeJob.foodDeliveryEvaluationEffectiveSeconds, 0);
 
     const commandCancellation = await postJson(
       `http://127.0.0.1:${port}/automation/cancel?target=commands`,
@@ -1370,8 +1460,15 @@ async function assertMockProtocol() {
     assert.equal(targetedCancellation.cancelledJobs, 1);
     assert.equal(typeof targetedCancellation.commandEpoch, 'number');
 
-    const resumed = await postJson(`http://127.0.0.1:${port}/orders/prepare-next`, headers);
+    const resumed = await postJson(
+      `http://127.0.0.1:${port}/orders/normal/complete-first?orderLifecycleSequence=3`,
+      headers,
+    );
     assert.equal(resumed.ok, true, 'A targeted cancellation must retain the current automation lease.');
+    const normalSnapshot = await getJson(`http://127.0.0.1:${port}/snapshot`);
+    assert.equal(normalSnapshot.automationCookingJobs[0]?.targetKind, 'normal');
+    assert.equal(normalSnapshot.automationCookingJobs[0]?.orderRuntimeKind, 'Normal',
+      'The mock must preserve the concrete order kind for normal cooking-job snapshots.');
     const cancelled = await postJson(
       `http://127.0.0.1:${port}/automation/cancel?target=all`,
       headers,
@@ -1381,7 +1478,10 @@ async function assertMockProtocol() {
     assert.equal(cancelled.leaseReleased, true);
     assert.equal(cancelled.cancelledJobs, 1);
 
-    const superseded = await postJson(`http://127.0.0.1:${port}/orders/prepare-next`, headers);
+    const superseded = await postJson(
+      `http://127.0.0.1:${port}/orders/prepare-next?orderLifecycleSequence=2`,
+      headers,
+    );
     assert.equal(superseded.ok, false);
     assert.equal(superseded.automation.reasonCode, 'automation-lease-unavailable');
   } finally {

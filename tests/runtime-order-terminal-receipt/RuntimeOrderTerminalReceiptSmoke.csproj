@@ -8,9 +8,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="../../mods/bepinex/src/Save/NightBusinessLifecycleTracker.cs" Link="NightBusinessLifecycleTracker.cs" />
-    <Compile Include="../../mods/bepinex/src/Save/RuntimeNightBusinessLifecycle.cs" Link="RuntimeNightBusinessLifecycle.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeOrderTerminalReceiptStore.cs" Link="RuntimeOrderTerminalReceiptStore.cs" />
-    <EmbeddedResource Include="../../mods/bepinex/src/Save/RuntimeNightBusinessLifecycle.cs" LogicalName="RuntimeNightBusinessLifecycle.cs" />
   </ItemGroup>
 </Project>

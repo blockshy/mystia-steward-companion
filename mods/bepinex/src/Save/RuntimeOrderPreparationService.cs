@@ -47,6 +47,9 @@ internal static partial class RuntimeOrderPreparationService
     private const int MissingTargetRetireAttempts = 6;
     private const int MissingControllerRetireAttempts = 10;
     private const int MaxCookerCleanupAttempts = 6;
+    private const int EvaluationCloseoutAttemptLimit = 12;
+    private static readonly TimeSpan EvaluationCloseoutMinimumAttemptWindow = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan EvaluationCloseoutMaximumEffectiveDuration = TimeSpan.FromSeconds(20);
     private const int ManualHandoffReadFailureLimit = 3;
     private static readonly TimeSpan ManualHandoffReadFailureGrace = TimeSpan.FromMilliseconds(500);
 
@@ -55,6 +58,7 @@ internal static partial class RuntimeOrderPreparationService
     private static class OrderPreparationStepCodes
     {
         public const string AutomationConfigurationInvalid = AutomationOrderConfigurationPolicy.InvalidReasonCode;
+        public const string OrderLifecycleMismatch = "order-lifecycle-mismatch";
         public const string BeverageDelivered = "beverage-delivered";
         public const string BeverageDeliveryCommitUncertain = "beverage-delivery-commit-uncertain";
         public const string FoodDeliveryCommitUncertain = "food-delivery-commit-uncertain";
@@ -82,6 +86,9 @@ internal static partial class RuntimeOrderPreparationService
         public const string CookingManualHandoffUnreadable = "cooking-manual-handoff-unreadable";
         public const string OrderEvaluationStateUnreadable = "order-evaluation-state-unreadable";
         public const string OrderEvaluationCommitUncertain = "order-evaluation-commit-uncertain";
+        public const string OrderEvaluationTargetMismatch = "order-evaluation-target-mismatch";
+        public const string OrderEvaluationCloseoutUnresolved = "order-evaluation-closeout-unresolved";
+        public const string OrderTerminatedBeforeEvaluation = "order-terminated-before-evaluation";
         public const string CookingCancelled = "cooking-cancelled";
         public const string NightBusinessLifecycleUnavailable = RuntimeNightBusinessAutomationGate.LifecycleUnavailableReason;
         public const string NightBusinessTutorialActive = RuntimeNightBusinessAutomationGate.TutorialActiveReason;
@@ -212,11 +219,6 @@ internal static partial class RuntimeOrderPreparationService
             BeverageName = request.BeverageName,
         };
 
-        if (TryApplyUnresolvedAutomationSafetyBarrier(result, "rare", traceId, request.OrderKey))
-        {
-            return Finish(result);
-        }
-
         if (!TryValidateRequestedSpecialFoodTargetPolicy(
                 request,
                 CookingCollectionTargetKind.RareOrder,
@@ -261,6 +263,29 @@ internal static partial class RuntimeOrderPreparationService
             return runtimeOrderCache;
         }
         CookingCollectionTarget? actionTarget = null;
+        var plannedFoodId = request.FoodId >= 0
+            ? request.FoodId
+            : request.RecipeId >= 0
+                ? ResolveFoodIdFromRecipeId(request.RecipeId)
+                : -1;
+        bool TryBindActionTargetAndApplyBarrier(RuntimeOrderMatch runtimeOrder, string stepName)
+        {
+            actionTarget ??= BuildRareAutomationTarget(request, plannedFoodId);
+            if (!TryBindCookingTargetRuntimeOrder(
+                    actionTarget,
+                    runtimeOrder,
+                    out var orderBindingDiagnostic))
+            {
+                AddFailure(
+                    result,
+                    stepName,
+                    "无法绑定当前订单的精确生命周期，已在执行任何游戏副作用前停止："
+                    + orderBindingDiagnostic);
+                return false;
+            }
+
+            return !TryApplyUnresolvedAutomationSafetyBarrier(result, actionTarget);
+        }
         var beverageDeliveredThisRequest = false;
 
         if (request.AutoTakeBeverage)
@@ -282,6 +307,11 @@ internal static partial class RuntimeOrderPreparationService
                 }
                 else
                 {
+                    if (!TryBindActionTargetAndApplyBarrier(runtimeOrder, "绑定酒水订单"))
+                    {
+                        return Finish(result);
+                    }
+
                     object? yuumaServedFood = null;
                     object? yuumaFoodInAir = null;
                     object? yuumaServedBeverage = null;
@@ -308,10 +338,9 @@ internal static partial class RuntimeOrderPreparationService
                     }
                     else if (existingBeverage != null)
                     {
-                        actionTarget ??= BuildRareAutomationTarget(request);
                         if (yuumaRequest
                             && !TryValidateYuumaDeliveredItemAgainstOriginalOrder(
-                                actionTarget,
+                                actionTarget!,
                                 existingBeverage,
                                 RuntimeDeliveryItemKind.Beverage,
                                 out var existingBeverageDiagnostic))
@@ -337,13 +366,12 @@ internal static partial class RuntimeOrderPreparationService
                     }
                     else
                     {
-                        actionTarget ??= BuildRareAutomationTarget(request);
                         var beverageResult = TryDeliverOrderBeverage(
                             runtimeOrder,
                             request.BeverageId,
                             request.BeverageName,
                             "稀客订单",
-                            actionTarget);
+                            actionTarget!);
                         if (beverageResult.Ok)
                         {
                             beverageDeliveredThisRequest = true;
@@ -371,7 +399,7 @@ internal static partial class RuntimeOrderPreparationService
                             AddFailure(result, "自动送达酒水", beverageResult.Message, beverageResult.Code);
                             RecordOrderSafetyBarrierIfNeeded(
                                 beverageResult.Code,
-                                actionTarget,
+                                actionTarget!,
                                 beverageResult.Message);
                             if (request.StopOnError || IsAutomationSafetyBarrierCode(beverageResult.Code)) return Finish(result);
                         }
@@ -389,11 +417,17 @@ internal static partial class RuntimeOrderPreparationService
         if (request.AutoCompleteOrder && beverageDeliveredThisRequest && !yuumaRequest)
         {
             result.Automation.Stage = "order";
-            var evaluationTarget = actionTarget ?? BuildRareAutomationTarget(request);
+            var evaluationRuntimeOrder = FindRuntimeOrder(request, RuntimeOrderLookupPurpose.Completion);
+            if (!TryBindActionTargetAndApplyBarrier(evaluationRuntimeOrder, "绑定评价订单"))
+            {
+                return Finish(result);
+            }
+
+            var evaluationTarget = actionTarget!;
             if (!TryEvaluateMatchedAutomationOrderIfReady(
                     result,
                     request,
-                    FindRuntimeOrder(request, RuntimeOrderLookupPurpose.Completion),
+                    evaluationRuntimeOrder,
                     "触发上菜评价",
                     "当前订单",
                     evaluationTarget))
@@ -428,6 +462,11 @@ internal static partial class RuntimeOrderPreparationService
                 {
                     var diagnostic = string.IsNullOrWhiteSpace(runtimeOrder.Diagnostic) ? "" : $"（{runtimeOrder.Diagnostic}）";
                     AddFailure(result, "自动开始料理", $"无法确认当前稀客订单、客人控制器或管理器，已在扣除材料前取消开锅。{diagnostic}");
+                    return Finish(result);
+                }
+
+                if (!TryBindActionTargetAndApplyBarrier(runtimeOrder, "绑定料理订单"))
+                {
                     return Finish(result);
                 }
 
@@ -471,7 +510,7 @@ internal static partial class RuntimeOrderPreparationService
                         return Finish(result);
                     }
 
-                    var target = actionTarget ??= BuildRareAutomationTarget(request, expectedFoodId);
+                    var target = actionTarget!;
                     if (TryGetSpecialTargetCookingDeferral(target, out var rejectedMessage))
                     {
                         AddSkipped(result, "自动开始料理", rejectedMessage);
@@ -593,11 +632,6 @@ internal static partial class RuntimeOrderPreparationService
             BeverageName = request.BeverageName,
         };
 
-        if (TryApplyUnresolvedAutomationSafetyBarrier(result, "rare", traceId, request.OrderKey))
-        {
-            return Finish(result);
-        }
-
         if (!TryValidateRequestedSpecialFoodTargetPolicy(
                 request,
                 CookingCollectionTargetKind.RareOrder,
@@ -629,6 +663,25 @@ internal static partial class RuntimeOrderPreparationService
         {
             var diagnostic = string.IsNullOrWhiteSpace(runtimeOrder.Diagnostic) ? "" : $"（{runtimeOrder.Diagnostic}）";
             AddFailure(result, "匹配运行时订单", $"未找到当前第一笔稀客订单对象，可能订单已完成、客人已离场或经营状态刚刷新。{diagnostic}");
+            return Finish(result);
+        }
+
+        var automationTarget = BuildRareAutomationTarget(request);
+        if (!TryBindCookingTargetRuntimeOrder(
+                automationTarget,
+                runtimeOrder,
+                out var orderBindingDiagnostic))
+        {
+            AddFailure(
+                result,
+                "绑定运行时订单",
+                "无法绑定当前订单的精确生命周期，已在执行任何游戏副作用前停止："
+                + orderBindingDiagnostic);
+            return Finish(result);
+        }
+
+        if (TryApplyUnresolvedAutomationSafetyBarrier(result, automationTarget))
+        {
             return Finish(result);
         }
 
@@ -669,7 +722,7 @@ internal static partial class RuntimeOrderPreparationService
         if (IsYuumaBossRequest(request)
             && currentBeverage != null
             && !TryValidateYuumaDeliveredItemAgainstOriginalOrder(
-                BuildRareAutomationTarget(request),
+                automationTarget,
                 currentBeverage,
                 RuntimeDeliveryItemKind.Beverage,
                 out var existingBeverageDiagnostic))
@@ -743,13 +796,12 @@ internal static partial class RuntimeOrderPreparationService
         else
         {
             result.Automation.Stage = "beverage";
-            var safetyTarget = BuildRareAutomationTarget(request);
             var beverageResult = TryDeliverOrderBeverage(
                 runtimeOrder,
                 request.BeverageId,
                 request.BeverageName,
                 "稀客订单",
-                safetyTarget);
+                automationTarget);
             if (!beverageResult.Ok)
             {
                 if (beverageResult.Code == OrderPreparationStepCodes.CookingPending)
@@ -761,7 +813,7 @@ internal static partial class RuntimeOrderPreparationService
                 AddFailure(result, "送达酒水", beverageResult.Message, beverageResult.Code);
                 RecordOrderSafetyBarrierIfNeeded(
                     beverageResult.Code,
-                    safetyTarget,
+                    automationTarget,
                     beverageResult.Message);
                 return Finish(result);
             }
@@ -780,7 +832,7 @@ internal static partial class RuntimeOrderPreparationService
 
         if (!EnsureAutomationSessionActive(result, sessionGeneration, "送达酒水后")) return Finish(result);
 
-        var evaluationTarget = BuildRareAutomationTarget(request);
+        var evaluationTarget = automationTarget;
         if (deliveredItemCount > 0)
         {
             result.Automation.Stage = "order";
@@ -904,11 +956,6 @@ internal static partial class RuntimeOrderPreparationService
             BeverageName = request.BeverageName,
         };
 
-        if (TryApplyUnresolvedAutomationSafetyBarrier(result, "normal", traceId, request.OrderKey))
-        {
-            return Finish(result);
-        }
-
         if (!TryValidateRequestedSpecialFoodTargetPolicy(
                 request,
                 CookingCollectionTargetKind.NormalOrder,
@@ -955,6 +1002,32 @@ internal static partial class RuntimeOrderPreparationService
             return Finish(result);
         }
 
+        var expectedFoodId = request.FoodId >= 0
+            ? request.FoodId
+            : ResolveFoodIdFromRecipeId(request.RecipeId);
+        var orderAutomationTarget = BuildNormalAutomationTarget(
+            request,
+            traceId,
+            result.Order.GuestName,
+            expectedFoodId);
+        if (!TryBindCookingTargetRuntimeOrder(
+                orderAutomationTarget,
+                runtimeOrder,
+                out var initialOrderBindingDiagnostic))
+        {
+            AddFailure(
+                result,
+                "绑定普客订单",
+                "无法绑定当前普客订单的精确生命周期，已在执行任何游戏副作用前停止："
+                + initialOrderBindingDiagnostic);
+            return Finish(result);
+        }
+
+        if (TryApplyUnresolvedAutomationSafetyBarrier(result, orderAutomationTarget))
+        {
+            return Finish(result);
+        }
+
         if (!TryValidateYuyukoPhase3NormalOrderTargetInvariant(request, runtimeOrder, out var yuyukoNormalTargetDiagnostic))
         {
             AppendYuyukoRuntimeDiagnostic(
@@ -978,7 +1051,6 @@ internal static partial class RuntimeOrderPreparationService
             Message = $"已匹配桌 {request.DeskCode + 1} 的普客订单对象。",
         });
 
-        var expectedFoodId = request.FoodId >= 0 ? request.FoodId : ResolveFoodIdFromRecipeId(request.RecipeId);
         object? servedFood;
         object? foodInAir = null;
         object? servedBeverage;
@@ -1030,12 +1102,6 @@ internal static partial class RuntimeOrderPreparationService
         var foodDeliveryStarted = foodAlreadyServed || foodInAir != null;
         result.ServedFood = foodAlreadyServed;
         result.ServedBeverage = servedBeverage != null;
-        var orderAutomationTarget = BuildNormalAutomationTarget(
-            request,
-            runtimeOrder.Order,
-            traceId,
-            result.Order.GuestName,
-            expectedFoodId);
         if (yuumaSettlement
             && servedBeverage != null
             && !TryValidateYuumaDeliveredItemAgainstOriginalOrder(
@@ -1296,11 +1362,11 @@ internal static partial class RuntimeOrderPreparationService
                 AddFailure(result, "普客料理", $"订单已有其他待送达料理，暂不自动制作 {request.RecipeName}。");
                 if (request.StopOnError) return Finish(result);
             }
-            else if (HasNormalOrderCookingJob(request.OrderKey, runtimeOrder.Order, request.DeskCode, expectedFoodId, request.BeverageId, out var cookingJobMessage))
+            else if (HasNormalOrderCookingJob(request.OrderKey, runtimeOrder.Order, runtimeOrder.Controller, request.DeskCode, expectedFoodId, request.BeverageId, out var cookingJobMessage))
             {
                 result.Automation.Stage = "cooking-delivery";
                 var cookingJobResult = autoDeliverFood
-                    ? TryProcessNormalOrderCookingJob(request.OrderKey, runtimeOrder.Order, request.DeskCode, expectedFoodId, request.BeverageId)
+                    ? TryProcessNormalOrderCookingJob(request.OrderKey, runtimeOrder.Order, runtimeOrder.Controller, request.DeskCode, expectedFoodId, request.BeverageId)
                     : (Delivered: false, CompletedOrder: false, StepName: "普客开始料理", Message: cookingJobMessage, Code: OrderPreparationStepCodes.CookingPending);
                 if (cookingJobResult.CompletedOrder)
                 {
@@ -1373,7 +1439,6 @@ internal static partial class RuntimeOrderPreparationService
                         ? orderAutomationTarget
                         : BuildNormalAutomationTarget(
                             request,
-                            runtimeOrder.Order,
                             traceId,
                             result.Order.GuestName,
                             expectedFoodId,
@@ -1382,6 +1447,18 @@ internal static partial class RuntimeOrderPreparationService
                     if (TryGetSpecialTargetCookingDeferral(target, out var rejectedMessage))
                     {
                         AddSkipped(result, "普客开始料理", rejectedMessage);
+                    }
+                    else if (!TryBindCookingTargetRuntimeOrder(
+                                 target,
+                                 runtimeOrder,
+                                 out var orderBindingDiagnostic))
+                    {
+                        AddFailure(
+                            result,
+                            "普客开始料理",
+                            "无法在扣除材料前绑定精确订单/控制器终态回执身份，已取消开锅："
+                            + orderBindingDiagnostic);
+                        return Finish(result);
                     }
                     else
                     {
@@ -1676,6 +1753,7 @@ internal static partial class RuntimeOrderPreparationService
             foreach (var job in AutomationCookingJobs)
             {
                 job.DeliveryTimeoutClock.Observe(observedAtUtc, eligible: false);
+                job.FoodDeliveryEvaluationCloseoutTracker?.Suspend(observedAtUtc);
                 job.ManualHandoffMissingOrderClock.Observe(observedAtUtc, eligible: false);
                 job.ManualHandoffReadFailureClock.Observe(observedAtUtc, eligible: false);
                 job.Tracker.Suspend(observedAtUtc);
@@ -1846,13 +1924,19 @@ internal static partial class RuntimeOrderPreparationService
         OrderPreparationRequest request,
         AutomationOrderActionKind actionKind)
     {
-        if (AutomationOrderConfigurationPolicy.TryValidate(
+        string error;
+        var lifecycleInvalid = request.OrderLifecycleSequence <= 0;
+        if (lifecycleInvalid)
+        {
+            error = "订单请求缺少正的活动生命周期序列；未执行任何游戏副作用。";
+        }
+        else if (AutomationOrderConfigurationPolicy.TryValidate(
                 actionKind,
                 request.AutoTakeBeverage,
                 request.AutoCollectCooking,
                 request.AutoDeliverFood,
                 request.AutoCompleteOrder,
-                out var error))
+                out error))
         {
             return null;
         }
@@ -1876,8 +1960,10 @@ internal static partial class RuntimeOrderPreparationService
         };
         result.Steps.Add(new OrderPreparationStep
         {
-            Code = OrderPreparationStepCodes.AutomationConfigurationInvalid,
-            Name = "校验自动化配置",
+            Code = lifecycleInvalid
+                ? OrderPreparationStepCodes.OrderLifecycleMismatch
+                : OrderPreparationStepCodes.AutomationConfigurationInvalid,
+            Name = lifecycleInvalid ? "校验订单生命周期" : "校验自动化配置",
             Ok = false,
             Message = error,
         });
@@ -1951,7 +2037,6 @@ internal static partial class RuntimeOrderPreparationService
 
     private static CookingCollectionTarget BuildNormalAutomationTarget(
         OrderPreparationRequest request,
-        object? order,
         string traceId,
         string guestName,
         int expectedFoodId,
@@ -1959,9 +2044,9 @@ internal static partial class RuntimeOrderPreparationService
     {
         var recipeId = resolvedRecipeId ?? request.RecipeId;
         return CookingCollectionTarget.ForNormalOrder(
-            order,
             request.OrderKey,
             traceId,
+            request.OrderLifecycleSequence,
             request.MatchFoodId,
             request.MatchBeverageId,
             expectedFoodId,
@@ -1983,6 +2068,182 @@ internal static partial class RuntimeOrderPreparationService
             request.RuntimeGuestId,
             request.FoodTagId,
             request.BeverageTagId);
+    }
+
+    private static bool TryBindCookingTargetRuntimeOrder(
+        CookingCollectionTarget target,
+        RuntimeOrderMatch runtimeOrder,
+        out string diagnostic)
+    {
+        var lifecycleBefore = RuntimeNightBusinessLifecycle.Snapshot;
+        if (!lifecycleBefore.IsActive || lifecycleBefore.Generation <= 0)
+        {
+            diagnostic = "night-business lifecycle is not active";
+            return false;
+        }
+
+        var resolution = RuntimeOrderTypeResolver.Resolve(runtimeOrder.Order);
+        if (!resolution.Resolved || resolution.ReadableOrder == null)
+        {
+            diagnostic = $"exact concrete order kind unavailable: {resolution.Reason}";
+            return false;
+        }
+
+        if (runtimeOrder.Controller == null
+            || runtimeOrder.OrderLifecycleSequence <= 0
+            || !TryReadNativeObjectPointer(resolution.ReadableOrder, out var orderPointer)
+            || orderPointer == 0
+            || !TryReadNativeObjectPointer(runtimeOrder.Controller, out var controllerPointer)
+            || controllerPointer == 0)
+        {
+            diagnostic = "exact order/controller native identity or captured lifecycle sequence unavailable";
+            return false;
+        }
+
+        if (!RuntimeOrderTerminalReceiptStore.MatchesRequestedLifecycle(
+                target.RequestedOrderLifecycleSequence,
+                runtimeOrder.OrderLifecycleSequence))
+        {
+            diagnostic = "request lifecycle does not match the fresh captured order lifecycle: "
+                + $"requested={target.RequestedOrderLifecycleSequence}; "
+                + $"captured={runtimeOrder.OrderLifecycleSequence}";
+            return false;
+        }
+
+        var lifecycleAfter = RuntimeNightBusinessLifecycle.Snapshot;
+        if (!lifecycleAfter.IsActive
+            || lifecycleAfter.Generation != lifecycleBefore.Generation)
+        {
+            diagnostic = "night-business generation changed while binding the order receipt identity";
+            return false;
+        }
+
+        if (!RuntimeOrderTerminalReceiptStore.TryCaptureActiveLifecycle(
+                lifecycleAfter.Generation,
+                resolution.Kind,
+                orderPointer,
+                controllerPointer,
+                out var activeLifecycleSequence))
+        {
+            diagnostic = "exact order/controller identity has no active binding lifecycle";
+            return false;
+        }
+
+        if (activeLifecycleSequence != runtimeOrder.OrderLifecycleSequence)
+        {
+            diagnostic = "captured order lifecycle was replaced before the cooking target could bind: "
+                + $"captured={runtimeOrder.OrderLifecycleSequence}; active={activeLifecycleSequence}";
+            return false;
+        }
+
+        var token = new RuntimeOrderBindingToken(
+            lifecycleAfter.Generation,
+            resolution.Kind,
+            orderPointer,
+            controllerPointer,
+            runtimeOrder.OrderLifecycleSequence);
+        if (!target.TryBindRuntimeOrder(token))
+        {
+            diagnostic = "cooking target already carries a different exact runtime order identity";
+            return false;
+        }
+
+        diagnostic = $"generation={token.BusinessGeneration}; kind={token.OrderKind}; "
+            + $"order=0x{(long)token.OrderPointer:X}; controller=0x{(long)token.ControllerPointer:X}; "
+            + $"orderLifecycle={token.LifecycleSequence}";
+        return true;
+    }
+
+    private static bool TryMatchRuntimeOrderBinding(
+        RuntimeOrderBindingToken? binding,
+        object? order,
+        object? controller,
+        out string diagnostic)
+    {
+        if (!binding.HasValue)
+        {
+            diagnostic = "cooking target has no exact runtime order binding";
+            return false;
+        }
+
+        var token = binding.Value;
+        var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+        if (!lifecycle.IsActive || lifecycle.Generation != token.BusinessGeneration)
+        {
+            diagnostic = $"night-business generation mismatch: expected={token.BusinessGeneration}; "
+                + $"actual={lifecycle.Generation}; active={lifecycle.IsActive}";
+            return false;
+        }
+
+        var resolution = RuntimeOrderTypeResolver.Resolve(order);
+        if (!resolution.Resolved
+            || resolution.Kind != token.OrderKind
+            || resolution.ReadableOrder == null)
+        {
+            diagnostic = $"concrete order mismatch: expected={token.OrderKind}; "
+                + $"actual={resolution.Kind}; resolved={resolution.Resolved}; reason={resolution.Reason}";
+            return false;
+        }
+
+        if (!TryReadNativeObjectPointer(resolution.ReadableOrder, out var orderPointer)
+            || orderPointer != token.OrderPointer)
+        {
+            diagnostic = $"native order mismatch: expected=0x{(long)token.OrderPointer:X}; "
+                + $"actual=0x{(long)orderPointer:X}";
+            return false;
+        }
+
+        nint controllerPointer = 0;
+        if (controller == null
+            || !TryReadNativeObjectPointer(controller, out controllerPointer)
+            || controllerPointer != token.ControllerPointer)
+        {
+            diagnostic = $"native controller mismatch: expected=0x{(long)token.ControllerPointer:X}; "
+                + $"actual=0x{(long)controllerPointer:X}";
+            return false;
+        }
+
+        if (!RuntimeOrderTerminalReceiptStore.MatchesActiveLifecycle(token))
+        {
+            diagnostic = $"order lifecycle is no longer active or was replaced: expected={token.LifecycleSequence}";
+            return false;
+        }
+
+        diagnostic = $"generation={token.BusinessGeneration}; kind={token.OrderKind}; "
+            + $"order=0x{(long)token.OrderPointer:X}; controller=0x{(long)token.ControllerPointer:X}; "
+            + $"orderLifecycle={token.LifecycleSequence}";
+        return true;
+    }
+
+    private static bool TryValidateCookingTargetOrderLifecycle(
+        CookingCollectionTarget target,
+        out string diagnostic)
+    {
+        if (!target.OrderBinding.HasValue)
+        {
+            diagnostic = "cooking target has no exact runtime order binding";
+            return false;
+        }
+
+        var token = target.OrderBinding.Value;
+        var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+        if (!lifecycle.IsActive || lifecycle.Generation != token.BusinessGeneration)
+        {
+            diagnostic = $"night-business generation mismatch: expected={token.BusinessGeneration}; "
+                + $"actual={lifecycle.Generation}; active={lifecycle.IsActive}";
+            return false;
+        }
+
+        if (!RuntimeOrderTerminalReceiptStore.MatchesActiveLifecycle(token))
+        {
+            diagnostic = $"order lifecycle is no longer active: expected={token.LifecycleSequence}";
+            return false;
+        }
+
+        diagnostic = $"generation={token.BusinessGeneration}; kind={token.OrderKind}; "
+            + $"order=0x{(long)token.OrderPointer:X}; controller=0x{(long)token.ControllerPointer:X}; "
+            + $"orderLifecycle={token.LifecycleSequence}";
+        return true;
     }
 
     private static bool TryReadYuumaOrderDeliveryState(
@@ -2026,7 +2287,9 @@ internal static partial class RuntimeOrderPreparationService
     {
         if (code is not (OrderPreparationStepCodes.BeverageDeliveryCommitUncertain
             or OrderPreparationStepCodes.FoodDeliveryCommitUncertain
-            or OrderPreparationStepCodes.OrderEvaluationCommitUncertain))
+            or OrderPreparationStepCodes.OrderEvaluationCommitUncertain
+            or OrderPreparationStepCodes.OrderEvaluationTargetMismatch
+            or OrderPreparationStepCodes.OrderEvaluationCloseoutUnresolved))
         {
             return;
         }
@@ -2042,11 +2305,9 @@ internal static partial class RuntimeOrderPreparationService
 
     private static bool TryApplyUnresolvedAutomationSafetyBarrier(
         OrderPreparationResult result,
-        string targetKind,
-        string traceId,
-        string orderKey)
+        CookingCollectionTarget target)
     {
-        var targetIdentity = BuildAutomationSafetyTargetIdentity(targetKind, traceId, orderKey);
+        var targetIdentity = BuildAutomationSafetyTargetIdentity(target);
         AutomationSafetyBarrierRecord? barrier;
         lock (AutomationCookingJobLock)
         {
@@ -2067,23 +2328,41 @@ internal static partial class RuntimeOrderPreparationService
         CookingCollectionTarget target,
         out AutomationSafetyBarrierRecord? barrier)
     {
-        var targetKind = target.Kind == CookingCollectionTargetKind.RareOrder ? "rare" : "normal";
-        var targetIdentity = BuildAutomationSafetyTargetIdentity(targetKind, target.TraceId, target.OrderKey);
+        var targetIdentity = BuildAutomationSafetyTargetIdentity(target);
         lock (AutomationCookingJobLock)
         {
             return UnresolvedAutomationSafetyBarriers.TryGetLatest(targetIdentity, out barrier);
         }
     }
 
-    private static string BuildAutomationSafetyTargetIdentity(string targetKind, string traceId, string orderKey)
+    private static string BuildAutomationSafetyTargetIdentity(CookingCollectionTarget target)
     {
-        if (string.Equals(targetKind, "normal", StringComparison.Ordinal)
-            && !string.IsNullOrWhiteSpace(orderKey))
+        if (!target.OrderBinding.HasValue)
         {
-            return $"normal:order:{orderKey.Trim()}";
+            throw new InvalidOperationException(
+                "Automation safety barriers require an exact runtime order lifecycle binding.");
         }
 
-        return $"{targetKind}:trace:{traceId.Trim()}";
+        var token = target.OrderBinding.Value;
+        var expectedKind = target.Kind == CookingCollectionTargetKind.RareOrder
+            ? RuntimeOrderKind.Special
+            : RuntimeOrderKind.Normal;
+        if (token.BusinessGeneration <= 0
+            || token.OrderKind != expectedKind
+            || token.OrderPointer == 0
+            || token.ControllerPointer == 0
+            || token.LifecycleSequence <= 0)
+        {
+            throw new InvalidOperationException(
+                "Automation safety barrier target carries an invalid runtime order lifecycle binding.");
+        }
+
+        return AutomationSafetyBarrierRegistry.BuildOrderLifecycleTargetIdentity(
+            token.BusinessGeneration,
+            token.OrderKind.ToString(),
+            token.OrderPointer,
+            token.ControllerPointer,
+            token.LifecycleSequence);
     }
 
     private static long RecordAutomationRuntimeEvent(
@@ -2102,6 +2381,25 @@ internal static partial class RuntimeOrderPreparationService
 
         lock (AutomationCookingJobLock)
         {
+            var requestsSafetyBarrier = terminal
+                && string.Equals(outcome, "blocked", StringComparison.Ordinal)
+                && IsAutomationSafetyBarrierCode(code);
+            var orderBinding = target.OrderBinding;
+            var businessLifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+            var canRegisterSafetyBarrier = requestsSafetyBarrier
+                && orderBinding.HasValue
+                && businessLifecycle.IsActive
+                && businessLifecycle.Generation == orderBinding.Value.BusinessGeneration;
+            var effectiveOutcome = requestsSafetyBarrier && !canRegisterSafetyBarrier
+                ? "cancelled"
+                : outcome;
+            var effectiveReasonCode = requestsSafetyBarrier && !canRegisterSafetyBarrier
+                ? "business-lifecycle-ended"
+                : string.IsNullOrWhiteSpace(reasonCode) ? code : reasonCode;
+            var effectiveMessage = requestsSafetyBarrier && !canRegisterSafetyBarrier
+                ? message + " 当前经营生命周期已结束；仅保留有界诊断，不创建人工确认栅栏。"
+                : message;
+
             AutomationRuntimeEventSequence++;
             var runtimeEvent = new AutomationRuntimeEvent
             {
@@ -2109,8 +2407,8 @@ internal static partial class RuntimeOrderPreparationService
                 CreatedAtUtc = DateTime.UtcNow,
                 Code = code,
                 JobId = job?.JobId ?? "",
-                Outcome = outcome,
-                ReasonCode = string.IsNullOrWhiteSpace(reasonCode) ? code : reasonCode,
+                Outcome = effectiveOutcome,
+                ReasonCode = effectiveReasonCode,
                 Terminal = terminal,
                 Generation = job?.Generation ?? 0,
                 CookerPhase = job?.Tracker.LastPhase ?? -1,
@@ -2118,6 +2416,14 @@ internal static partial class RuntimeOrderPreparationService
                 TargetKind = target.Kind == CookingCollectionTargetKind.RareOrder ? "rare" : "normal",
                 TraceId = target.TraceId,
                 OrderKey = target.OrderKey,
+                OrderRuntimeKind = target.OrderBinding?.OrderKind.ToString() ?? "",
+                OrderId = target.OrderBinding.HasValue
+                    ? $"0x{(long)target.OrderBinding.Value.OrderPointer:X}"
+                    : "",
+                OrderControllerId = target.OrderBinding.HasValue
+                    ? $"0x{(long)target.OrderBinding.Value.ControllerPointer:X}"
+                    : "",
+                OrderLifecycleSequence = target.OrderBinding?.LifecycleSequence ?? -1,
                 DeskCode = target.DeskCode,
                 GuestId = target.GuestId,
                 GuestName = target.GuestName,
@@ -2130,37 +2436,60 @@ internal static partial class RuntimeOrderPreparationService
                 ActualFoodId = actualFoodId,
                 TargetFoodTags = (targetFoodTags ?? Array.Empty<string>()).ToList(),
                 ActualFoodTags = (actualFoodTags ?? Array.Empty<string>()).ToList(),
-                Message = message,
+                Message = effectiveMessage,
             };
             AutomationRuntimeEvents.Add(runtimeEvent);
 
-            if (terminal && string.Equals(outcome, "blocked", StringComparison.Ordinal)
-                && IsAutomationSafetyBarrierCode(code))
+            if (canRegisterSafetyBarrier)
             {
-                var targetKind = target.Kind == CookingCollectionTargetKind.RareOrder ? "rare" : "normal";
                 UnresolvedAutomationSafetyBarriers.Register(new AutomationSafetyBarrierRecord(
                     runtimeEvent.Sequence,
-                    BuildAutomationSafetyTargetIdentity(targetKind, target.TraceId, target.OrderKey),
+                    orderBinding!.Value.BusinessGeneration,
+                    BuildAutomationSafetyTargetIdentity(target),
                     code,
                     code switch
                     {
                         OrderPreparationStepCodes.BeverageDeliveryCommitUncertain => "beverage",
                         OrderPreparationStepCodes.CookingStartUnowned => "cooking-start",
-                        OrderPreparationStepCodes.OrderEvaluationCommitUncertain => "order",
+                        OrderPreparationStepCodes.OrderEvaluationCommitUncertain
+                            or OrderPreparationStepCodes.OrderEvaluationTargetMismatch
+                            or OrderPreparationStepCodes.OrderEvaluationCloseoutUnresolved => "order",
                         _ => "cooking-delivery",
                     },
                     message));
             }
 
-            while (AutomationRuntimeEvents.Count > MaxAutomationRuntimeEvents)
-            {
-                var removableIndex = AutomationRuntimeEvents.FindIndex(candidate =>
-                    !UnresolvedAutomationSafetyBarriers.Contains(candidate.Sequence));
-                if (removableIndex < 0) break;
-                AutomationRuntimeEvents.RemoveAt(removableIndex);
-            }
+            TrimAutomationRuntimeEventsLocked();
 
             return runtimeEvent.Sequence;
+        }
+    }
+
+    public static int ClearAutomationSafetyBarriersForBusinessGeneration(long businessGeneration)
+    {
+        if (businessGeneration <= 0) return 0;
+
+        lock (AutomationCookingJobLock)
+        {
+            var retiredSequences = UnresolvedAutomationSafetyBarriers
+                .RetireBusinessGeneration(businessGeneration);
+            if (retiredSequences.Count == 0) return 0;
+
+            var retiredSet = retiredSequences.ToHashSet();
+            AutomationRuntimeEvents.RemoveAll(runtimeEvent => retiredSet.Contains(runtimeEvent.Sequence));
+            TrimAutomationRuntimeEventsLocked();
+            return retiredSequences.Count;
+        }
+    }
+
+    private static void TrimAutomationRuntimeEventsLocked()
+    {
+        while (AutomationRuntimeEvents.Count > MaxAutomationRuntimeEvents)
+        {
+            var removableIndex = AutomationRuntimeEvents.FindIndex(candidate =>
+                !UnresolvedAutomationSafetyBarriers.Contains(candidate.Sequence));
+            if (removableIndex < 0) break;
+            AutomationRuntimeEvents.RemoveAt(removableIndex);
         }
     }
 
@@ -2247,7 +2576,9 @@ internal static partial class RuntimeOrderPreparationService
             {
                 OrderPreparationStepCodes.BeverageDeliveryCommitUncertain => "beverage",
                 OrderPreparationStepCodes.CookingStartUnowned => "cooking-start",
-                OrderPreparationStepCodes.OrderEvaluationCommitUncertain => "order",
+                OrderPreparationStepCodes.OrderEvaluationCommitUncertain
+                    or OrderPreparationStepCodes.OrderEvaluationTargetMismatch
+                    or OrderPreparationStepCodes.OrderEvaluationCloseoutUnresolved => "order",
                 _ => "cooking-delivery",
             };
             result.Automation.ReasonCode = blockedCode;
@@ -2397,7 +2728,9 @@ internal static partial class RuntimeOrderPreparationService
             or OrderPreparationStepCodes.CookingWarmerCommitUncertain
             or OrderPreparationStepCodes.CookingWarmerResetBlocked
             or OrderPreparationStepCodes.CookingManualHandoffUnreadable
-            or OrderPreparationStepCodes.OrderEvaluationCommitUncertain;
+            or OrderPreparationStepCodes.OrderEvaluationCommitUncertain
+            or OrderPreparationStepCodes.OrderEvaluationTargetMismatch
+            or OrderPreparationStepCodes.OrderEvaluationCloseoutUnresolved;
     }
 
     private static void AddSkipped(OrderPreparationResult result, string name, string message, string code = "")
@@ -2435,6 +2768,9 @@ internal static partial class RuntimeOrderPreparationService
         NotRequired,
         Completed,
         CommitUncertain,
+        TargetMismatch,
+        CloseoutUnresolved,
+        OrderTerminated,
     }
 
     private sealed record RuntimeOrderEvaluationResult(
@@ -2458,8 +2794,10 @@ internal static partial class RuntimeOrderPreparationService
         public nint ChosenRecipePointer { get; init; }
         public string RecipeName { get; init; } = "";
         public DateTime CreatedAtUtc { get; init; }
-        public CookingCollectionTarget Target { get; init; } = CookingCollectionTarget.ForRareOrder(new OrderPreparationRequest(), -1);
+        public CookingCollectionTarget Target { get; init; } = null!;
         public AutomationCookingJobTracker Tracker { get; init; } = new(0, DateTime.UtcNow, -1, 0f);
+        public AutomationCookingControllerLease ControllerLease { get; } = new();
+        public bool HoldsControllerReservation => ControllerLease.HoldsReservation;
         public bool AutoDeliverFood { get; set; }
         public bool AutoCompleteOrder { get; set; }
         public bool AllowYuumaControlledProgression => Target.AllowYuumaControlledProgression;
@@ -2494,11 +2832,39 @@ internal static partial class RuntimeOrderPreparationService
         public AutomationFoodDeliveryEvaluationState FoodDeliveryEvaluationState { get; set; }
         public string FoodDeliveryEvaluationMessage { get; set; } = "";
         public string FoodDeliveryEvaluationCode { get; set; } = "";
+        public AutomationOrderEvaluationCloseoutTracker? FoodDeliveryEvaluationCloseoutTracker { get; set; }
         public int MissingTargetCount { get; private set; }
         public TimeSpan? FirstMissingTargetAtEffectiveElapsed { get; private set; }
         public int MissingControllerCount { get; private set; }
         public TimeSpan? FirstMissingControllerAtEffectiveElapsed { get; private set; }
         public YuumaSettlementTransactionTracker YuumaSettlementTracker { get; } = new();
+
+        public string TransactionStage
+        {
+            get
+            {
+                if (ManualHandoffExpired) return "manual-handoff-expired";
+                if (ManualHandoffObserved) return "manual-handoff";
+                if (FoodDeliveryCommitted)
+                {
+                    return FoodDeliveryCleanupCompleted || FoodDeliveryCleanupTerminal
+                        ? "evaluation-receipt"
+                        : "delivery-cleanup";
+                }
+
+                if (WarmerStoreCommitted || WarmerStoreCommitUncertain) return "warmer-cleanup";
+                return Tracker.State;
+            }
+        }
+
+        public string ControllerLeaseReleaseReason => ControllerLease.ReleaseReason switch
+        {
+            AutomationCookingControllerLeaseReleaseReason.None => "",
+            AutomationCookingControllerLeaseReleaseReason.ManualHandoff => "manual-handoff",
+            AutomationCookingControllerLeaseReleaseReason.DeliveryCleanupCompleted => "delivery-cleanup-completed",
+            AutomationCookingControllerLeaseReleaseReason.DeliveryCleanupTerminated => "delivery-cleanup-terminated",
+            _ => throw new ArgumentOutOfRangeException(),
+        };
 
         public (int Count, TimeSpan EffectiveAge) RecordDeliveryFailure(
             AutomationDeliveryFailureKind kind,
@@ -2538,7 +2904,15 @@ internal static partial class RuntimeOrderPreparationService
                 + $"recipe=0x{(long)ChosenRecipePointer:X}; "
                 + $"controller={CookerReservation.ControllerIndex}/0x{(long)ControllerPointer:X}"
                 + $"@{CookerReservation.GridPosition}; result=0x{(long)CurrentResultPointer:X}; "
+                + $"orderKind={Target.OrderBinding?.OrderKind}; "
+                + $"order=0x{(long)(Target.OrderBinding?.OrderPointer ?? 0):X}; "
+                + $"orderController=0x{(long)(Target.OrderBinding?.ControllerPointer ?? 0):X}; "
+                + $"orderLifecycle={Target.OrderBinding?.LifecycleSequence ?? -1}; "
                 + $"phase={Tracker.LastPhase}; progress={Tracker.LastProgress:F3}; "
+                + $"transactionStage={TransactionStage}; controllerLease={(HoldsControllerReservation ? "held" : "released")}; "
+                + $"controllerLeaseReleaseReason={ControllerLeaseReleaseReason}; "
+                + $"evaluationAttempts={FoodDeliveryEvaluationCloseoutTracker?.AttemptCount ?? 0}; "
+                + $"evaluationEffectiveSeconds={FoodDeliveryEvaluationCloseoutTracker?.EffectiveElapsed.TotalSeconds ?? 0:F1}; "
                 + $"autoDeliver={AutoDeliverFood}; autoComplete={AutoCompleteOrder}; "
                 + $"specialTargetRevision={SpecialFoodTargetRevision}; "
                 + $"allowYuumaControlledProgression={AllowYuumaControlledProgression}; "
@@ -2553,7 +2927,9 @@ internal static partial class RuntimeOrderPreparationService
                 + $"{MissingTargetCount + MissingControllerCount}:{WarmerStoreCommitted}:{WarmerStoreCommitUncertain}:"
                 + $"{WarmerResetAttempts}:{FoodDeliveryCommitted}:{FoodDeliveryCommitUncertain}:{FoodDeliveryCleanupAttempts}:"
                 + $"{FoodDeliveryCleanupCompleted}:{FoodDeliveryCleanupTerminal}:"
-                + $"{FoodDeliveryEvaluationState}:{YuumaSettlementTracker.Stage}";
+                + $"{FoodDeliveryEvaluationState}:{FoodDeliveryEvaluationCloseoutTracker?.AttemptCount ?? 0}:"
+                + $"{HoldsControllerReservation}:{ControllerLeaseReleaseReason}:"
+                + $"{YuumaSettlementTracker.Stage}";
         }
 
         public AutomationCookingJobSnapshot ToSnapshot()
@@ -2573,9 +2949,20 @@ internal static partial class RuntimeOrderPreparationService
                 State = Tracker.State,
                 Outcome = Tracker.Outcome,
                 ReasonCode = Tracker.ReasonCode,
+                TransactionStage = TransactionStage,
                 SpecialTargetRevision = SpecialFoodTargetRevision,
                 AllowYuumaControlledProgression = AllowYuumaControlledProgression,
                 AutoDeliverFood = AutoDeliverFood,
+                HoldsControllerReservation = HoldsControllerReservation,
+                ControllerLeaseReleaseReason = ControllerLeaseReleaseReason,
+                OrderRuntimeKind = Target.OrderBinding?.OrderKind.ToString() ?? "",
+                OrderId = Target.OrderBinding.HasValue
+                    ? $"0x{(long)Target.OrderBinding.Value.OrderPointer:X}"
+                    : "",
+                OrderControllerId = Target.OrderBinding.HasValue
+                    ? $"0x{(long)Target.OrderBinding.Value.ControllerPointer:X}"
+                    : "",
+                OrderLifecycleSequence = Target.OrderBinding?.LifecycleSequence ?? -1,
                 ControllerId = $"0x{(long)ControllerPointer:X}",
                 ResultId = CurrentResultPointer == 0 ? "" : $"0x{(long)CurrentResultPointer:X}",
                 Generation = Generation,
@@ -2592,6 +2979,11 @@ internal static partial class RuntimeOrderPreparationService
                 FoodDeliveryCommitted = FoodDeliveryCommitted,
                 FoodDeliveryCommitUncertain = FoodDeliveryCommitUncertain,
                 FoodDeliveryCleanupAttempts = FoodDeliveryCleanupAttempts,
+                FoodDeliveryCleanupCompleted = FoodDeliveryCleanupCompleted,
+                FoodDeliveryCleanupTerminal = FoodDeliveryCleanupTerminal,
+                FoodDeliveryEvaluationState = FoodDeliveryEvaluationState.ToString(),
+                FoodDeliveryEvaluationAttempts = FoodDeliveryEvaluationCloseoutTracker?.AttemptCount ?? 0,
+                FoodDeliveryEvaluationEffectiveSeconds = FoodDeliveryEvaluationCloseoutTracker?.EffectiveElapsed.TotalSeconds ?? 0,
                 StartedAtUtc = Tracker.StartedAtUtc,
                 LastObservedAtUtc = Tracker.LastObservedAtUtc,
                 LastProgressAtUtc = Tracker.LastProgressAtUtc,
@@ -2606,7 +2998,8 @@ internal static partial class RuntimeOrderPreparationService
     {
         public CookingCollectionTargetKind Kind { get; private init; }
         public string TraceId { get; private init; } = "";
-        public object? Order { get; private init; }
+        public long RequestedOrderLifecycleSequence { get; private init; } = -1;
+        public RuntimeOrderBindingToken? OrderBinding { get; private set; }
         public string OrderKey { get; private init; } = "";
         public int? GuestId { get; private init; }
         public int? RuntimeGuestId { get; private init; }
@@ -2645,6 +3038,7 @@ internal static partial class RuntimeOrderPreparationService
                     OrderTraceKind.Rare,
                     request.TraceId,
                     BuildRareOrderStableKey(request)),
+                RequestedOrderLifecycleSequence = request.OrderLifecycleSequence,
                 GuestId = request.GuestId,
                 RuntimeGuestId = request.RuntimeGuestId,
                 FoodTagId = request.FoodTagId,
@@ -2671,9 +3065,9 @@ internal static partial class RuntimeOrderPreparationService
         }
 
         public static CookingCollectionTarget ForNormalOrder(
-            object? order,
             string orderKey,
             string traceId,
+            long requestedOrderLifecycleSequence,
             int matchFoodId,
             int matchBeverageId,
             int foodId,
@@ -2707,7 +3101,7 @@ internal static partial class RuntimeOrderPreparationService
                     string.IsNullOrWhiteSpace(orderKey)
                         ? $"normal:{deskCode}|{guestName}|{normalizedMatchFoodId}|{normalizedMatchBeverageId}"
                         : $"normal:{orderKey}"),
-                Order = order,
+                RequestedOrderLifecycleSequence = requestedOrderLifecycleSequence,
                 OrderKey = orderKey,
                 RuntimeGuestId = runtimeGuestId,
                 FoodTagId = foodTagId,
@@ -2731,6 +3125,29 @@ internal static partial class RuntimeOrderPreparationService
                 DeskCode = deskCode,
                 GuestName = guestName,
             };
+        }
+
+        public bool TryBindRuntimeOrder(RuntimeOrderBindingToken token)
+        {
+            if (!RuntimeOrderTerminalReceiptStore.MatchesRequestedLifecycle(
+                    RequestedOrderLifecycleSequence,
+                    token.LifecycleSequence))
+            {
+                return false;
+            }
+
+            if (!OrderBinding.HasValue)
+            {
+                OrderBinding = token;
+                return true;
+            }
+
+            var current = OrderBinding.Value;
+            return current.BusinessGeneration == token.BusinessGeneration
+                && current.OrderKind == token.OrderKind
+                && current.OrderPointer == token.OrderPointer
+                && current.ControllerPointer == token.ControllerPointer
+                && current.LifecycleSequence == token.LifecycleSequence;
         }
 
         public OrderLogContext ToLogContext()

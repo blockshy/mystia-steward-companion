@@ -233,6 +233,7 @@ internal static class RuntimeMissionRecipePriorityProjection
         return new NightBusinessOrder
         {
             TraceId = order.TraceId,
+            OrderLifecycleSequence = order.OrderLifecycleSequence,
             DeskCode = order.DeskCode,
             GuestId = order.GuestId,
             RuntimeGuestId = order.RuntimeGuestId,

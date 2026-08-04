@@ -28,7 +28,10 @@ import {
   findRecipeFavorite,
   normalizeIdList,
 } from '@/companion/domain/favorites';
-import { buildNormalAutoOrderKey } from '@/companion/domain/normal-order-key';
+import {
+  buildNormalAutoOrderKey,
+  buildNormalLifecycleAutoOrderKey,
+} from '@/companion/domain/normal-order-key';
 import {
   getPrimaryExecutionPlan,
   isVerifiedMissionPrimaryExecutionPlan,
@@ -1281,12 +1284,23 @@ export function hasNormalOrderActionEnabled(preferences: CompanionPreferences): 
 /**
  * 构建稀客自动化状态键。
  *
- * 键中包含首次出现时间、桌号、稀客和原始 Tag ID，避免展示文本变化重建自动化状态。
+ * 可执行订单以原生 trace 与 lifecycle sequence 建键；不可执行行只保留隔离的展示键。
  */
 export function buildAutoOrderKey(item: OrderRecommendation): string {
   const order = item.order;
-  if (order.traceId?.trim()) return `trace:${order.traceId.trim()}`;
+  if (order.orderLifecycleSequence > 0) {
+    const runtimeIdentity = order.traceId?.trim()
+      ? `trace:${order.traceId.trim()}`
+      : [
+        order.deskCode,
+        order.runtimeGuestId ?? 'unknown-runtime-guest',
+        order.foodTagId ?? 'unknown-food-tag',
+        order.beverageTagId ?? 'unknown-beverage-tag',
+      ].join('|');
+    return `${runtimeIdentity}|lifecycle:${order.orderLifecycleSequence}`;
+  }
   return [
+    'unbound',
     order.firstSeenAtUtc ?? order.lastSeenAtUtc ?? '',
     order.deskCode,
     order.runtimeGuestId ?? 'unknown-runtime-guest',
@@ -1300,8 +1314,19 @@ export function buildAutoOrderKey(item: OrderRecommendation): string {
  * 构建夜间稀客订单快照键。
  */
 export function buildNightBusinessOrderKey(order: NightBusinessOrder): string {
-  if (order.traceId?.trim()) return `trace:${order.traceId.trim()}`;
+  if (order.orderLifecycleSequence > 0) {
+    const runtimeIdentity = order.traceId?.trim()
+      ? `trace:${order.traceId.trim()}`
+      : [
+        order.deskCode,
+        order.runtimeGuestId ?? 'unknown-runtime-guest',
+        order.foodTagId ?? 'unknown-food-tag',
+        order.beverageTagId ?? 'unknown-beverage-tag',
+      ].join('|');
+    return `${runtimeIdentity}|lifecycle:${order.orderLifecycleSequence}`;
+  }
   return [
+    'unbound',
     order.firstSeenAtUtc ?? order.lastSeenAtUtc ?? '',
     order.deskCode,
     order.runtimeGuestId ?? 'unknown-runtime-guest',
@@ -1386,7 +1411,7 @@ export function buildNormalOrderAutomationSignature(orders: NormalBusinessOrder[
     .join('|');
 }
 
-export { buildNormalAutoOrderKey };
+export { buildNormalAutoOrderKey, buildNormalLifecycleAutoOrderKey };
 
 /**
  * 用订单快照中的已送达字段推进稀客自动化本地状态。

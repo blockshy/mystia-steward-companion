@@ -133,6 +133,9 @@ export type OrderPreparationStepCode =
   | 'cooking-manual-handoff-unreadable'
   | 'order-evaluation-state-unreadable'
   | 'order-evaluation-commit-uncertain'
+  | 'order-evaluation-target-mismatch'
+  | 'order-evaluation-closeout-unresolved'
+  | 'order-terminated-before-evaluation'
   | 'food-delivered'
   | 'order-completed';
 

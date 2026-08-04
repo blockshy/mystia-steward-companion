@@ -128,6 +128,7 @@ public sealed class MissionRecipePriority
 public sealed class NightBusinessOrder
 {
     public string TraceId { get; init; } = "";
+    public long OrderLifecycleSequence { get; init; } = -1;
     public int DeskCode { get; init; }
     public int? GuestId { get; init; }
     public int? RuntimeGuestId { get; init; }
@@ -217,6 +218,7 @@ public sealed class NormalBusinessOrder
 {
     public string TraceId { get; init; } = "";
     public string OrderKey { get; init; } = "";
+    public long OrderLifecycleSequence { get; init; } = -1;
     public int DeskCode { get; init; }
     public int? GuestId { get; init; }
     public int? RuntimeGuestId { get; init; }
