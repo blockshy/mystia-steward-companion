@@ -21,7 +21,6 @@ import {
   getCookerSlotCapacity,
   getNormalCookerRequirement,
   getRareCookerRequirement,
-  resolveCookerTypeId,
 } from '@/companion/domain/cookers';
 import {
   findBeverageFavorite,
@@ -34,7 +33,6 @@ import {
 } from '@/companion/domain/normal-order-key';
 import {
   getPrimaryExecutionPlan,
-  isVerifiedMissionPrimaryExecutionPlan,
 } from '@/companion/domain/primary-execution-plan';
 import { toRareRecipeResult } from '@/companion/domain/service-recommendations';
 import {
@@ -55,7 +53,7 @@ import {
   emptySpecialFoodTargetWirePolicy,
 } from '@/companion/domain/special-business';
 import { formatDesk } from '@/companion/formatters';
-import type { CompanionPreferences, ServiceOrderSortMode } from '@/companion/preferences';
+import type { CompanionPreferences } from '@/companion/preferences';
 import type {
   AutomationCookerCycle,
   AutomationCookerPool,
@@ -67,7 +65,6 @@ import type {
   FavoriteBeverageEntry,
   FavoriteData,
   FavoriteRecipeEntry,
-  GameUiPinningTarget,
   NightBusinessOrder,
   NormalOrderExecutionTarget,
   NormalAutoOrderDiagnostic,
@@ -79,21 +76,8 @@ import type {
   SpecialBusinessContext,
   SpecialFoodTargetWirePolicy,
 } from '@/companion/types';
-import {
-  DEFAULT_RECOMMENDATION_DATA,
-  buildRecommendationDataIndexes,
-  type RecommendationDataSet,
-} from '@/lib/recommendation-data';
+import type { RecommendationDataSet } from '@/lib/recommendation-data';
 import type { RareBeverageRecommendation, RareOrderRecommendationPlan, RareRecipeRecommendation } from '@/recommendation-engine';
-
-const DEFAULT_DATA_INDEXES = buildRecommendationDataIndexes(DEFAULT_RECOMMENDATION_DATA);
-
-export interface GameUiPinningSourceOrderState {
-  sourceOrderKey: string;
-  sourceOrderSignature: string;
-  hasServedFood: boolean;
-  hasServedBeverage: boolean;
-}
 
 type OrderPreparationSelection =
   | {
@@ -1068,199 +1052,6 @@ export function lockRareAutomationTargets(
     recipeTarget,
     beverageTarget,
   };
-}
-
-/**
- * 构建发送给 Mod 的游戏内目标厨具/材料高亮目标。
- *
- * 目标只来自推荐结果的唯一主执行计划，避免页面、自动化与游戏内高亮分叉。
- * 签名包含订单、料理、材料、酒水和厨具，便于 Mod 判断是否需要更新高亮。
- */
-export function buildGameUiPinningTarget(
-  recommendations: OrderRecommendation[],
-  orderSortMode: ServiceOrderSortMode,
-  indexes: ReturnType<typeof buildRecommendationDataIndexes> = DEFAULT_DATA_INDEXES,
-  options: {
-    prioritizeMissionRecipe?: boolean;
-  } = {},
-): GameUiPinningTarget | null {
-  const rows = sortNightOrderRows(
-    recommendations.map((recommendation) => ({ order: recommendation.order, recommendation })),
-    orderSortMode,
-  );
-  const candidates: Array<{
-    item: OrderRecommendation;
-    recipe: RareRecipeRecommendation | null;
-    beverage: RareBeverageRecommendation | null;
-  }> = [];
-  for (const row of rows) {
-    const item = row.recommendation;
-    const primaryPlan = getPrimaryExecutionPlan(item.executionPlans);
-    if (!primaryPlan) continue;
-
-    const recipe = !item.order.hasServedFood && primaryPlan.food
-      ? getRecipeRowForPlan(item, primaryPlan)
-      : null;
-    const beverage = !item.order.hasServedBeverage && primaryPlan.beverage
-      ? getBeverageRowForPlan(item, primaryPlan)
-      : null;
-    if (!recipe && !beverage) continue;
-    candidates.push({ item, recipe, beverage });
-  }
-
-  const selected = options.prioritizeMissionRecipe
-    ? candidates.find(({ item, recipe }) =>
-      recipe != null && isVerifiedMissionPrimaryExecutionPlan(item)
-    ) ?? candidates[0]
-    : candidates[0];
-  if (!selected) return null;
-  const { item, recipe, beverage } = selected;
-  const orderTraceId = item.order.traceId ?? '';
-
-  const baseIngredientIds = recipe
-    ? recipe.recipe.ingredients
-      .map((name) => indexes.ingredientByName.get(name)?.id ?? -1)
-      .filter((id) => id >= 0)
-    : [];
-  const ingredientIds = normalizeIdList([
-    ...baseIngredientIds,
-    ...(recipe?.extraIngredients.map((ingredient) => ingredient.id) ?? []),
-  ]);
-  const extraIngredientIds = recipe
-    ? recipe.extraIngredients.map((ingredient) => ingredient.id).filter((id) => id >= 0)
-    : [];
-  const recipeId = recipe?.recipe.recipeId ?? -1;
-  const beverageId = beverage?.beverage.id ?? -1;
-  const cookerName = recipe?.recipe.cooker ?? '';
-  const cookerTypeId = resolveCookerTypeId(cookerName);
-  const sourceOrderKey = buildNightBusinessOrderKey(item.order);
-  const sourceOrderSignature = buildGameUiPinningSourceOrderSignature(item.order);
-
-  return {
-    signature: buildGameUiPinningTargetSignature(
-      sourceOrderKey,
-      sourceOrderSignature,
-      recipeId,
-      ingredientIds,
-      extraIngredientIds,
-      beverageId,
-      cookerTypeId,
-      item.order.deskCode,
-    ),
-    sourceOrderKey,
-    sourceOrderSignature,
-    orderTraceId,
-    recipeId,
-    recipeName: recipe?.recipe.name ?? '',
-    ingredientIds,
-    extraIngredientIds,
-    beverageId,
-    beverageName: beverage?.beverage.name ?? '',
-    cookerTypeId,
-    cookerName,
-    deskCode: item.order.deskCode,
-  };
-}
-
-/**
- * 投影目标发布所需的最小订单状态。签名同时锁定原生订单身份与当前分类语义；
- * 任一部分变化都应清空旧目标并等待新的 current 推荐结果。
- */
-export function buildGameUiPinningSourceOrderState(
-  order: NightBusinessOrder,
-): GameUiPinningSourceOrderState {
-  return {
-    sourceOrderKey: buildNightBusinessOrderKey(order),
-    sourceOrderSignature: buildGameUiPinningSourceOrderSignature(order),
-    hasServedFood: order.hasServedFood === true,
-    hasServedBeverage: order.hasServedBeverage === true,
-  };
-}
-
-/**
- * 在推荐 Worker pending 时，按最新订单事实单向删除已经送达的目标组件。
- */
-export function reconcileGameUiPinningTarget(
-  target: GameUiPinningTarget | null,
-  sourceOrders: readonly GameUiPinningSourceOrderState[],
-): GameUiPinningTarget | null {
-  if (!target) return null;
-
-  const matchingSources = sourceOrders.filter((source) =>
-    source.sourceOrderKey === target.sourceOrderKey
-    && source.sourceOrderSignature === target.sourceOrderSignature
-  );
-  if (matchingSources.length !== 1) return null;
-
-  const [source] = matchingSources;
-  const recipeId = source.hasServedFood ? -1 : target.recipeId;
-  const recipeName = source.hasServedFood ? '' : target.recipeName;
-  const ingredientIds = source.hasServedFood ? [] : target.ingredientIds;
-  const extraIngredientIds = source.hasServedFood ? [] : target.extraIngredientIds;
-  const cookerTypeId = source.hasServedFood ? -1 : target.cookerTypeId;
-  const cookerName = source.hasServedFood ? '' : target.cookerName;
-  const beverageId = source.hasServedBeverage ? -1 : target.beverageId;
-  const beverageName = source.hasServedBeverage ? '' : target.beverageName;
-  if (recipeId < 0 && beverageId < 0) return null;
-
-  if (recipeId === target.recipeId && beverageId === target.beverageId) return target;
-  return {
-    ...target,
-    signature: buildGameUiPinningTargetSignature(
-      target.sourceOrderKey,
-      target.sourceOrderSignature,
-      recipeId,
-      ingredientIds,
-      extraIngredientIds,
-      beverageId,
-      cookerTypeId,
-      target.deskCode,
-    ),
-    recipeId,
-    recipeName,
-    ingredientIds,
-    extraIngredientIds,
-    beverageId,
-    beverageName,
-    cookerTypeId,
-    cookerName,
-  };
-}
-
-function buildGameUiPinningSourceOrderSignature(order: NightBusinessOrder): string {
-  return [
-    order.traceId?.trim() ?? '',
-    order.firstSeenAtUtc ?? '',
-    order.deskCode,
-    order.guestId ?? '',
-    order.runtimeGuestId ?? '',
-    order.specialBusinessRole ?? '',
-    order.foodTagId ?? '',
-    order.beverageTagId ?? '',
-    order.isFreeOrder ? 1 : 0,
-  ].join('|');
-}
-
-function buildGameUiPinningTargetSignature(
-  sourceOrderKey: string,
-  sourceOrderSignature: string,
-  recipeId: number,
-  ingredientIds: readonly number[],
-  extraIngredientIds: readonly number[],
-  beverageId: number,
-  cookerTypeId: number,
-  deskCode: number,
-): string {
-  return [
-    sourceOrderKey,
-    sourceOrderSignature,
-    recipeId,
-    ingredientIds.join(','),
-    extraIngredientIds.join(','),
-    beverageId,
-    cookerTypeId,
-    deskCode,
-  ].join('|');
 }
 
 /**

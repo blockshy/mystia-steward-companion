@@ -3,6 +3,8 @@ using MystiaStewardCompanion.Save;
 try
 {
     VerifyExactSuccessfulTransaction();
+    VerifySharedRecipeSameExtrasExecutesOnce();
+    VerifySharedRecipeConflictingExtrasFailClosed();
     VerifyFreeCookSkipsInventoryDebit();
     VerifyPreconditionsFailBeforeSideEffects();
     VerifyTargetRecheckPreventsStaleDebit();
@@ -57,6 +59,37 @@ static void VerifyFreeCookSkipsInventoryDebit()
     AssertEqual(0, runtime.QuantityReads, "Free cook read inventory.");
     AssertEqual(0, runtime.DebitCalls, "Free cook debited inventory.");
     AssertSequence(new[] { 1, 9, 10 }, runtime.Selected, "Free cook did not append extras.");
+}
+
+static void VerifySharedRecipeSameExtrasExecutesOnce()
+{
+    var runtime = FakeRuntime.Imported(0x103, 0x203, 33, new[] { 1 }, new[] { 1 }, 1, freeCook: false);
+    runtime.Inventory[7] = 2;
+    runtime.Inventory[8] = 2;
+    var targetSet = DualTarget(3, recipeId: 33, rareExtras: new[] { 7, 8 }, normalExtras: new[] { 7, 8 });
+    Install(runtime, targetSet);
+
+    var result = RuntimePinnedRecipeExtrasService.TryApply(runtime.Panel, targetSet);
+
+    AssertEqual(RuntimePinnedRecipeExtrasApplyResult.Applied, result, "Equal shared recipe extras did not apply.");
+    AssertEqual(1, runtime.DebitCalls, "Equal shared recipe extras performed more than one debit transaction.");
+    AssertSequence(new[] { 1, 7, 8 }, runtime.Selected, "Equal shared recipe extras were appended more than once.");
+}
+
+static void VerifySharedRecipeConflictingExtrasFailClosed()
+{
+    var runtime = FakeRuntime.Imported(0x104, 0x204, 34, new[] { 1 }, new[] { 1 }, 1, freeCook: false);
+    runtime.Inventory[7] = 2;
+    runtime.Inventory[8] = 2;
+    var targetSet = DualTarget(4, recipeId: 34, rareExtras: new[] { 7 }, normalExtras: new[] { 8 });
+    Install(runtime, targetSet);
+
+    var result = RuntimePinnedRecipeExtrasService.TryApply(runtime.Panel, targetSet);
+
+    AssertEqual(RuntimePinnedRecipeExtrasApplyResult.Rejected, result, "Conflicting shared recipe extras were not rejected.");
+    AssertEqual(0, runtime.QuantityReads, "Conflicting shared recipe extras inspected inventory before rejection.");
+    AssertEqual(0, runtime.DebitCalls, "Conflicting shared recipe extras debited inventory.");
+    AssertSequence(runtime.InitialSelected, runtime.Selected, "Conflicting shared recipe extras changed native selection.");
 }
 
 static void VerifyPreconditionsFailBeforeSideEffects()
@@ -194,7 +227,7 @@ static void VerifyNativeRefreshFinalizationControlsReplay()
         RuntimePinnedRecipeExtrasService.TryApply(runtime.Panel, target),
         "A failed post-modification refresh was retried.");
 
-    var nextTarget = Target(50, 80, new[] { 7 }, targetRevision: "next-order");
+    var nextTarget = Target(51, 80, new[] { 7 }, targetRevision: "next-order");
     RuntimeUiPinningService.Current = nextTarget;
     AssertEqual(
         RuntimePinnedRecipeExtrasApplyResult.Applied,
@@ -250,16 +283,16 @@ static void VerifyExactRuntimeContractSource()
         "The production transaction no longer holds the target-publication lock.");
     AssertContains(
         targetSource,
-        "ReferenceEquals(currentTarget, capturedTarget)",
+        "ReferenceEquals(currentTargetSet, capturedTargetSet)",
         "The production transaction no longer verifies the captured target instance.");
     AssertContains(
         targetSource,
-        "string.Equals(currentTarget.TargetRevision, capturedTarget.TargetRevision, StringComparison.Ordinal)",
-        "The production transaction no longer verifies the source-order revision.");
-    AssertContains(
-        targetSource,
-        "currentTarget.ExtraIngredientIds.SequenceEqual(extraIngredientIds)",
+        "currentExtraIngredientIds.SequenceEqual(extraIngredientIds)",
         "The production transaction no longer verifies the exact extra-ingredient sequence.");
+    AssertContains(
+        source,
+        "RuntimeUiRecipeExtrasResolution.Conflict",
+        "The production extras service no longer rejects conflicting dual-target sequences.");
     AssertContains(
         targetSource,
         "transaction();",
@@ -296,18 +329,15 @@ static void VerifyExactRuntimeContractSource()
     AssertOccurrenceCount(targetTransactionBody, "transaction();", 1, "Target transaction callback count changed.");
     foreach (var marker in new[]
              {
-                 "var currentTarget = Volatile.Read(ref _pinningTarget);",
+                 "var currentTargetSet = Volatile.Read(ref _targetSet);",
                  "var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;",
                  "!lifecycle.IsActive",
-                 "lifecycle.Generation != capturedTarget.SessionGeneration",
-                 "!ReferenceEquals(currentTarget, capturedTarget)",
-                 "!currentTarget.Enabled",
-                 "!currentTarget.ExtraIngredientFillEnabled",
-                 "currentTarget.Generation != capturedTarget.Generation",
-                 "currentTarget.SessionGeneration != capturedTarget.SessionGeneration",
-                 "currentTarget.RecipeId != capturedTarget.RecipeId",
-                 "string.Equals(currentTarget.TargetRevision, capturedTarget.TargetRevision, StringComparison.Ordinal)",
-                 "currentTarget.ExtraIngredientIds.SequenceEqual(extraIngredientIds)",
+                 "lifecycle.Generation != capturedTargetSet.SessionGeneration",
+                 "!ReferenceEquals(currentTargetSet, capturedTargetSet)",
+                 "currentTargetSet.Generation != capturedTargetSet.Generation",
+                 "currentTargetSet.SessionGeneration != capturedTargetSet.SessionGeneration",
+                 "currentTargetSet.ResolveRecipeExtras(",
+                 "currentExtraIngredientIds.SequenceEqual(extraIngredientIds)",
                  "transaction();",
              })
     {
@@ -318,23 +348,72 @@ static void VerifyExactRuntimeContractSource()
     }
 }
 
-static RuntimeUiPinningService.PinningTargetSnapshot Target(
+static RuntimeUiTargetSetSnapshot Target(
     long generation,
     int recipeId,
     int[] extras,
     string? targetRevision = null)
 {
-    return new RuntimeUiPinningService.PinningTargetSnapshot(
+    return new RuntimeUiTargetSetSnapshot(
         generation,
         sessionGeneration: 9,
-        enabled: true,
-        extraIngredientFillEnabled: true,
-        recipeId,
-        extras,
-        targetRevision ?? $"target-{generation}");
+        new[]
+        {
+            CreateTarget(
+                RuntimeUiTargetKind.Rare,
+                generation,
+                recipeId,
+                extras,
+                targetRevision ?? $"target-{generation}"),
+        });
 }
 
-static void Install(FakeRuntime runtime, RuntimeUiPinningService.PinningTargetSnapshot target)
+static RuntimeUiTargetSetSnapshot DualTarget(
+    long generation,
+    int recipeId,
+    int[] rareExtras,
+    int[] normalExtras)
+{
+    return new RuntimeUiTargetSetSnapshot(
+        generation,
+        sessionGeneration: 9,
+        new[]
+        {
+            CreateTarget(RuntimeUiTargetKind.Rare, generation, recipeId, rareExtras, $"rare-{generation}"),
+            CreateTarget(RuntimeUiTargetKind.Normal, generation, recipeId, normalExtras, $"normal-{generation}"),
+        });
+}
+
+static RuntimeUiTargetSnapshot CreateTarget(
+    RuntimeUiTargetKind kind,
+    long generation,
+    int recipeId,
+    int[] extras,
+    string revision)
+{
+    return new RuntimeUiTargetSnapshot(
+        kind,
+        kind == RuntimeUiTargetKind.Rare
+            ? RuntimeTargetHighlightColor.DefaultRare
+            : RuntimeTargetHighlightColor.DefaultNormal,
+        listPinningEnabled: true,
+        recipeVariantEnabled: true,
+        cookerHighlightEnabled: false,
+        seatHighlightEnabled: false,
+        orderHighlightEnabled: false,
+        $"{(kind == RuntimeUiTargetKind.Rare ? "R" : "N")}-{generation}",
+        kind == RuntimeUiTargetKind.Normal ? $"ptr:{generation + 1:x}" : "",
+        orderLifecycleSequence: generation + 1,
+        deskCode: kind == RuntimeUiTargetKind.Rare ? 0 : 1,
+        recipeId,
+        ingredientIds: new[] { 1 },
+        extraIngredientIds: extras,
+        beverageId: -1,
+        cookerTypeId: -1,
+        targetRevision: revision);
+}
+
+static void Install(FakeRuntime runtime, RuntimeUiTargetSetSnapshot target)
 {
     RuntimePinnedRecipeExtrasService.UseRuntimeForTests(runtime);
     RuntimeUiPinningService.Current = target;
@@ -342,7 +421,7 @@ static void Install(FakeRuntime runtime, RuntimeUiPinningService.PinningTargetSn
 
 static void AssertRejected(
     FakeRuntime runtime,
-    RuntimeUiPinningService.PinningTargetSnapshot target,
+    RuntimeUiTargetSetSnapshot target,
     string message)
 {
     Install(runtime, target);
@@ -427,12 +506,48 @@ static void AssertEqual<T>(T expected, T actual, string message)
 
 namespace MystiaStewardCompanion.Save
 {
+    internal readonly record struct RuntimeTargetHighlightColor(byte R, byte G, byte B)
+    {
+        public static readonly RuntimeTargetHighlightColor DefaultRare = new(0xFF, 0xDB, 0x2E);
+        public static readonly RuntimeTargetHighlightColor DefaultNormal = new(0x5F, 0xAC, 0xD3);
+    }
+
+    internal readonly record struct RuntimeTargetHighlightPalette(
+        RuntimeTargetHighlightColor Rare,
+        RuntimeTargetHighlightColor Normal);
+
+    internal static class RuntimeOrderTraceIdService
+    {
+        internal static bool TryNormalizeTargetTraceId(
+            RuntimeUiTargetKind kind,
+            string traceId,
+            bool enabled,
+            out string normalized,
+            out string failure)
+        {
+            var prefix = kind == RuntimeUiTargetKind.Rare ? "R-" : "N-";
+            if (enabled
+                && traceId.StartsWith(prefix, StringComparison.Ordinal)
+                && traceId.Length is >= 3 and <= 18
+                && traceId.Skip(2).All(character => character is >= '0' and <= '9'))
+            {
+                normalized = traceId;
+                failure = "";
+                return true;
+            }
+
+            normalized = enabled ? "" : traceId;
+            failure = "invalid typed trace";
+            return !enabled;
+        }
+    }
+
     internal static class RuntimeUiPinningService
     {
         private static readonly object TargetPublicationRoot = new();
-        private static PinningTargetSnapshot _current = PinningTargetSnapshot.Disabled;
+        private static RuntimeUiTargetSetSnapshot _current = RuntimeUiTargetSetSnapshot.Disabled;
 
-        public static PinningTargetSnapshot Current
+        public static RuntimeUiTargetSetSnapshot Current
         {
             get
             {
@@ -444,23 +559,23 @@ namespace MystiaStewardCompanion.Save
             }
         }
 
-        internal static PinningTargetSnapshot ReadPinningTarget() => Current;
+        internal static RuntimeUiTargetSetSnapshot ReadTargetSet() => Current;
 
         internal static bool TryExecutePinnedRecipeExtrasTransaction(
-            PinningTargetSnapshot capturedTarget,
+            RuntimeUiTargetSetSnapshot capturedTargetSet,
+            int recipeId,
             IReadOnlyList<int> extraIngredientIds,
             Action transaction)
         {
             lock (TargetPublicationRoot)
             {
-                if (!ReferenceEquals(_current, capturedTarget)
-                    || !_current.Enabled
-                    || !_current.ExtraIngredientFillEnabled
-                    || _current.Generation != capturedTarget.Generation
-                    || _current.SessionGeneration != capturedTarget.SessionGeneration
-                    || _current.RecipeId != capturedTarget.RecipeId
-                    || !string.Equals(_current.TargetRevision, capturedTarget.TargetRevision, StringComparison.Ordinal)
-                    || !_current.ExtraIngredientIds.SequenceEqual(extraIngredientIds))
+                if (!ReferenceEquals(_current, capturedTargetSet)
+                    || _current.Generation != capturedTargetSet.Generation
+                    || _current.SessionGeneration != capturedTargetSet.SessionGeneration
+                    || _current.ResolveRecipeExtras(
+                        recipeId,
+                        out var currentExtras) != RuntimeUiRecipeExtrasResolution.Resolved
+                    || !currentExtras.SequenceEqual(extraIngredientIds))
                 {
                     return false;
                 }
@@ -468,46 +583,6 @@ namespace MystiaStewardCompanion.Save
                 transaction();
                 return true;
             }
-        }
-
-        internal sealed class PinningTargetSnapshot
-        {
-            public static readonly PinningTargetSnapshot Disabled = new(
-                0,
-                0,
-                false,
-                false,
-                -1,
-                Array.Empty<int>(),
-                "");
-
-            public PinningTargetSnapshot(
-                long generation,
-                long sessionGeneration,
-                bool enabled,
-                bool extraIngredientFillEnabled,
-                int recipeId,
-                int[] extraIngredientIds,
-                string targetRevision)
-            {
-                Generation = generation;
-                SessionGeneration = sessionGeneration;
-                Enabled = enabled;
-                ExtraIngredientFillEnabled = extraIngredientFillEnabled;
-                RecipeId = recipeId;
-                _extraIngredientIds = extraIngredientIds.ToArray();
-                TargetRevision = targetRevision;
-            }
-
-            public long Generation { get; }
-            public long SessionGeneration { get; }
-            public bool Enabled { get; }
-            public bool ExtraIngredientFillEnabled { get; }
-            public int RecipeId { get; }
-            public string TargetRevision { get; }
-            private readonly int[] _extraIngredientIds;
-
-            public int[] ExtraIngredientIds => _extraIngredientIds.ToArray();
         }
     }
 

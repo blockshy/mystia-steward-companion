@@ -967,27 +967,27 @@ static void VerifyLockedCookerSourceContracts()
     var allOpenRendererRead = highlightScan.IndexOf(
         "openRenderers.AddRange(controllerRenderers);",
         StringComparison.Ordinal);
-    var targetRendererFilter = highlightScan.IndexOf(
-        "if (target.Enabled && state.TypeIds.Contains(target.CookerTypeId))",
+    var targetClaimMerge = highlightScan.IndexOf(
+        "claims |= targetSet.GetCookerClaims(cookerTypeId);",
         StringComparison.Ordinal);
     var retainedRestore = highlightScan.IndexOf(
         "RestoreRetainedBaselinesLocked(openRenderers);",
         StringComparison.Ordinal);
     var disabledReturn = highlightScan.IndexOf(
-        "if (!target.Enabled)",
+        "if (!HasCookerHighlightTargets(targetSet))",
         retainedRestore,
         StringComparison.Ordinal);
     var targetApply = highlightScan.IndexOf(
-        "foreach (var renderer in targetRenderers)",
+        "foreach (var targetRenderer in targetRenderers.Values)",
         disabledReturn,
         StringComparison.Ordinal);
     AssertTrue(
         allOpenRendererRead > highlightRendererRead
-        && targetRendererFilter > allOpenRendererRead
-        && retainedRestore > targetRendererFilter
+        && targetClaimMerge > allOpenRendererRead
+        && retainedRestore > targetClaimMerge
         && disabledReturn > retainedRestore
         && targetApply > disabledReturn,
-        "Topology recovery must scan every fresh unlocked renderer, restore A, then disable or apply target B.");
+        "Topology recovery must scan every fresh unlocked renderer, merge both target claims, restore A, then disable or apply target set B.");
 
     var retainedBaselineRestore = ExtractMethod(
         highlight,

@@ -14,6 +14,8 @@
   <ItemGroup>
     <Compile Include="../../mods/bepinex/src/Save/NightBusinessLifecycleTracker.cs" Link="NightBusinessLifecycleTracker.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimePinnedListHighlightService.cs" Link="RuntimePinnedListHighlightService.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeTargetHighlightStyle.cs" Link="RuntimeTargetHighlightStyle.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeUiTargetSet.cs" Link="RuntimeUiTargetSet.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeUiPinningService.cs" Link="RuntimeUiPinningService.cs" />
   </ItemGroup>
 

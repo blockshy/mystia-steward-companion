@@ -939,11 +939,28 @@ export interface RareOrderDismissResponse {
   error: string | null;
 }
 
-export interface GameUiPinningTarget {
-  signature: string;
+export type GameUiTargetKind = 'rare' | 'normal';
+
+export interface GameUiTargetFeatures {
+  listPinningEnabled: boolean;
+  recipeVariantEnabled: boolean;
+  cookerHighlightEnabled: boolean;
+  seatHighlightEnabled: boolean;
+  orderHighlightEnabled: boolean;
+}
+
+export type GameUiTargetFeatureSlots = Record<GameUiTargetKind, GameUiTargetFeatures>;
+
+export interface GameUiTarget {
+  kind: GameUiTargetKind;
+  features: GameUiTargetFeatures;
+  targetRevision: string;
+  color: string;
   sourceOrderKey: string;
   sourceOrderSignature: string;
-  orderTraceId: string;
+  traceId: string;
+  orderKey: string;
+  orderLifecycleSequence: number;
   recipeId: number;
   recipeName: string;
   ingredientIds: number[];
@@ -953,6 +970,11 @@ export interface GameUiPinningTarget {
   cookerTypeId: number;
   cookerName: string;
   deskCode: number;
+}
+
+export interface GameUiTargetSlots {
+  rare: GameUiTarget | null;
+  normal: GameUiTarget | null;
 }
 
 export interface RareAutoOrderDiagnostic {

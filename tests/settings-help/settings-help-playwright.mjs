@@ -63,11 +63,18 @@ const expectedHelpIdsBySection = new Map([
     'recommendation-weight-cookerAvailable',
   ]],
   ['实验性功能', [
-    'recommendation-game-ui-pinning',
-    'recommendation-extra-ingredient-fill',
-    'recommendation-cooker-highlight',
-    'recommendation-seat-highlight',
-    'recommendation-order-highlight',
+    'recommendation-rare-game-ui-pinning',
+    'recommendation-rare-recipe-variant',
+    'recommendation-rare-cooker-highlight',
+    'recommendation-rare-seat-highlight',
+    'recommendation-rare-order-highlight',
+    'recommendation-rare-highlight-color',
+    'recommendation-normal-game-ui-pinning',
+    'recommendation-normal-recipe-variant',
+    'recommendation-normal-cooker-highlight',
+    'recommendation-normal-seat-highlight',
+    'recommendation-normal-order-highlight',
+    'recommendation-normal-highlight-color',
     'automation-enabled',
     'automation-rare-concurrency',
     'automation-normal-concurrency',
@@ -98,11 +105,18 @@ const expectedExperimentalPanelByHelpId = new Map([
   ['automation-normal-concurrency', '自动化总控'],
   ['automation-max-step-retries', '自动化总控'],
   ['automation-max-rollbacks', '自动化总控'],
-  ['recommendation-game-ui-pinning', '游戏界面辅助'],
-  ['recommendation-extra-ingredient-fill', '游戏界面辅助'],
-  ['recommendation-cooker-highlight', '游戏界面辅助'],
-  ['recommendation-seat-highlight', '游戏界面辅助'],
-  ['recommendation-order-highlight', '游戏界面辅助'],
+  ['recommendation-rare-game-ui-pinning', '游戏界面辅助'],
+  ['recommendation-rare-recipe-variant', '游戏界面辅助'],
+  ['recommendation-rare-cooker-highlight', '游戏界面辅助'],
+  ['recommendation-rare-seat-highlight', '游戏界面辅助'],
+  ['recommendation-rare-order-highlight', '游戏界面辅助'],
+  ['recommendation-rare-highlight-color', '游戏界面辅助'],
+  ['recommendation-normal-game-ui-pinning', '游戏界面辅助'],
+  ['recommendation-normal-recipe-variant', '游戏界面辅助'],
+  ['recommendation-normal-cooker-highlight', '游戏界面辅助'],
+  ['recommendation-normal-seat-highlight', '游戏界面辅助'],
+  ['recommendation-normal-order-highlight', '游戏界面辅助'],
+  ['recommendation-normal-highlight-color', '游戏界面辅助'],
   ['automation-rare-enabled', '稀客自动化设置'],
   ['automation-rare-take-beverage', '稀客自动化设置'],
   ['automation-rare-start-cooking', '稀客自动化设置'],
@@ -164,7 +178,10 @@ async function seedAndOpen(page, fontScale) {
     localStorage.setItem('mystia-steward-companion-mod-api-token', token);
     localStorage.setItem('mystia-steward-companion-font-scale-percent', String(scale));
     localStorage.setItem('mystia-steward-companion-show-debug-details', '1');
-    localStorage.setItem('mystia-steward-companion-game-ui-pinning', '0');
+    localStorage.setItem('mystia-steward-companion-rare-game-ui-pinning', '0');
+    localStorage.setItem('mystia-steward-companion-normal-game-ui-pinning', '0');
+    localStorage.setItem('mystia-steward-companion-rare-target-highlight-color', '#FFDB2E');
+    localStorage.setItem('mystia-steward-companion-normal-target-highlight-color', '#5FACD3');
   }, { endpoint: apiUrl, token: apiToken, scale: fontScale });
   await page.goto(appUrl, { waitUntil: 'domcontentloaded' });
   await page.getByText('Mod 工作台', { exact: true }).waitFor({ timeout: 10_000 });
@@ -222,7 +239,7 @@ async function auditDesktopInteractions(page) {
   await auditControlFocus(page, '同基础料理显示', 'input', 'number input');
 
   await activateSettingsSection(page, '实验性功能');
-  const disabledField = findField(page, '点击推荐料理时自动加入加料');
+  const disabledField = findField(page, '显示稀客加料料理选项');
   const disabledControl = disabledField.locator('input[type="checkbox"]').first();
   assert.equal(await disabledControl.isDisabled(), true, '测试夹具应使自动加料开关处于禁用状态');
   const disabledTrigger = disabledField.locator(selectors.trigger);
@@ -236,6 +253,7 @@ async function auditDesktopInteractions(page) {
     delete document.body.dataset.gamepadNavigation;
   });
   await page.screenshot({ path: path.join(outputDir, 'desktop-disabled-focus.png'), fullPage: true });
+  await auditTargetHighlightColors(page);
 
   await activateSettingsSection(page, '推荐');
   await assertNoVisibleTooltip(page, '切换设置分栏后应关闭旧说明');
@@ -348,6 +366,44 @@ async function auditControlFocus(page, label, controlSelector, kind) {
     delete document.body.dataset.gamepadNavigation;
   });
   await assertNoVisibleTooltip(page, `${label}: 失焦后应关闭说明`);
+}
+
+async function auditTargetHighlightColors(page) {
+  const rareField = page.locator(
+    `${selectors.field}[data-setting-help-id="recommendation-rare-highlight-color"]`,
+  ).first();
+  const rareInput = rareField.locator('input[aria-label="稀客高亮色十六进制值"]');
+  const normalField = page.locator(
+    `${selectors.field}[data-setting-help-id="recommendation-normal-highlight-color"]`,
+  ).first();
+  const normalInput = normalField.locator('input[aria-label="普客高亮色十六进制值"]');
+  const storageKey = 'mystia-steward-companion-rare-target-highlight-color';
+
+  assert.equal(await rareInput.inputValue(), '#FFDB2E', '稀客高亮默认色漂移');
+  assert.equal(await normalInput.inputValue(), '#5FACD3', '普客高亮默认色漂移');
+
+  await rareInput.fill('#123456');
+  await rareInput.press('Escape');
+  assert.equal(await rareInput.inputValue(), '#FFDB2E', 'Escape 未撤销高亮色草稿');
+  assert.equal(await rareInput.evaluate((element) => document.activeElement === element), true,
+    'Escape 撤销草稿时不应触发 blur 提交');
+  assert.equal(await page.evaluate((key) => localStorage.getItem(key), storageKey), '#FFDB2E',
+    'Escape 错误提交了高亮色草稿');
+
+  await rareInput.fill('#abcdef');
+  await rareInput.press('Enter');
+  await page.waitForFunction(
+    (key) => localStorage.getItem(key) === '#ABCDEF',
+    storageKey,
+  );
+  assert.equal(await rareInput.inputValue(), '#ABCDEF', '合法颜色没有规范化为大写 #RRGGBB');
+
+  await rareField.getByRole('button', { name: '恢复', exact: true }).click();
+  await page.waitForFunction(
+    (key) => localStorage.getItem(key) === '#FFDB2E',
+    storageKey,
+  );
+  assert.equal(await rareInput.inputValue(), '#FFDB2E', '恢复按钮没有还原稀客默认色');
 }
 
 async function auditCompactTooltipLayout(page, profileName) {

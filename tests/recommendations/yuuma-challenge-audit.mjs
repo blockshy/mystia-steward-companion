@@ -1001,7 +1001,7 @@ async function assertSourceContracts() {
     readFile(new URL('apps/companion/src/companion/domain/automation.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/api.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/ModWorkbench.tsx', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/hooks/useGameUiPinningPublisher.ts', root), 'utf8'),
+    readFile(new URL('apps/companion/src/companion/hooks/useGameUiTargetPublisher.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/recommendation-engine/types.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/domain/special-business/registry.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/workers/order-recommendations.worker.ts', root), 'utf8'),
@@ -1035,7 +1035,7 @@ async function assertSourceContracts() {
   assert.equal(workbench.includes('visibleOrderRecommendations = orderRecommendationsPending'), false);
   assert.match(publisher, /targetPolicySignature/);
   assert.equal(publisher.includes('targetContextSignature'), false);
-  assert.match(publisher, /reconcileGameUiPinningTarget\(state\.lastCurrentTarget, sourceOrders\)/);
+  assert.match(publisher, /reconcileGameUiTarget\(candidate, sourceOrders\)/);
   assert.equal(recommendationTypes.includes("'prefer'"), false);
   assert.match(registry, /challengeTypeAvailable !== true/);
   assert.match(companionTypes, /interface NormalBusinessOrder[\s\S]*runtimeGuestId: number \| null/);

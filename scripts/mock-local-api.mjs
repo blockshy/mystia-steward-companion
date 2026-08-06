@@ -11,6 +11,28 @@ const DEFAULT_PORT = 32145;
 const MOCK_TOKEN = 'mock-token';
 const MOCK_TRACKED_MISSIONS_SIGNATURE = 'a'.repeat(64);
 const MOCK_AVAILABLE_MISSIONS_SIGNATURE = 'b'.repeat(64);
+const UI_TARGET_FEATURE_SUFFIXES = [
+  'ListPinningEnabled',
+  'RecipeVariantEnabled',
+  'CookerHighlightEnabled',
+  'SeatHighlightEnabled',
+  'OrderHighlightEnabled',
+];
+const UI_TARGET_FIELD_SUFFIXES = [
+  'Kind',
+  ...UI_TARGET_FEATURE_SUFFIXES,
+  'Revision',
+  'Color',
+  'TraceId',
+  'OrderKey',
+  'OrderLifecycleSequence',
+  'DeskCode',
+  'RecipeId',
+  'IngredientIds',
+  'ExtraIngredientIds',
+  'BeverageId',
+  'CookerTypeId',
+];
 const MOCK_LAN_ENDPOINTS = [
   {
     address: '192.168.1.20',
@@ -507,19 +529,10 @@ const server = http.createServer((request, response) => {
         return;
       }
 
-      if (path === '/ui-pinning/target') {
-        const requiredParameters = [
-          'extraIngredientFillEnabled',
-          'seatHighlightEnabled',
-          'orderHighlightEnabled',
-          'targetRevision',
-          'orderTraceId',
-          'extraIngredientIds',
-          'deskCode',
-        ];
-        const missingParameter = requiredParameters.find((name) => !requestUrl.searchParams.has(name));
-        if (missingParameter) {
-          sendJson(response, 400, { ok: false, error: `missing ${missingParameter}` });
+      if (path === '/ui-pinning/targets') {
+        const validationError = validateUiTargetPublication(requestUrl.searchParams);
+        if (validationError) {
+          sendJson(response, 400, { ok: false, error: validationError });
           return;
         }
         sendJson(response, 200, { ok: true, status: 'mock target accepted' });
@@ -765,7 +778,8 @@ function buildSnapshot() {
     normalBusiness: {
       orders: [
         {
-          orderKey: 'mock-normal-1',
+          traceId: 'N-0001',
+          orderKey: 'ptr:2001',
           orderLifecycleSequence: 3,
           deskCode: 2,
           runtimeGuestId: null,
@@ -782,7 +796,8 @@ function buildSnapshot() {
           source: 'mock',
         },
         {
-          orderKey: 'mock-normal-2',
+          traceId: 'N-0002',
+          orderKey: 'ptr:2002',
           orderLifecycleSequence: 4,
           deskCode: 4,
           runtimeGuestId: null,
@@ -1761,6 +1776,136 @@ function buildHealth() {
     lanRunning: lanState.lanRunning,
     lanError: lanState.lanError,
   };
+}
+
+function validateUiTargetPublication(searchParams) {
+  const requiredParameters = [
+    'businessGeneration',
+    'targetCount',
+  ];
+  const missingParameter = requiredParameters.find((name) => !searchParams.has(name));
+  if (missingParameter) return `missing ${missingParameter}`;
+
+  if (!isPositiveDecimal(searchParams.get('businessGeneration'))) {
+    return 'invalid businessGeneration';
+  }
+  for (const name of searchParams.keys()) {
+    if (requiredParameters.includes(name)) continue;
+    const match = /^target([0-9]+)(.+)$/.exec(name);
+    if (!match || !UI_TARGET_FIELD_SUFFIXES.includes(match[2])) return `unknown ${name}`;
+  }
+
+  const targetCountValue = searchParams.get('targetCount');
+  if (targetCountValue !== '0' && targetCountValue !== '1' && targetCountValue !== '2') {
+    return 'invalid targetCount';
+  }
+  const targetCount = Number(targetCountValue);
+  for (const name of searchParams.keys()) {
+    if (requiredParameters.includes(name)) continue;
+    const match = /^target([0-9]+)(.+)$/.exec(name);
+    const index = Number(match?.[1]);
+    const suffix = match?.[2] ?? '';
+    if (!Number.isInteger(index)
+      || !UI_TARGET_FIELD_SUFFIXES.includes(suffix)
+      || name !== `target${index}${suffix}`) {
+      return `invalid indexed target parameter ${name}`;
+    }
+    if (index >= targetCount) return `target${index} exceeds targetCount`;
+  }
+  let previousKindRank = -1;
+  for (let index = 0; index < targetCount; index += 1) {
+    const prefix = `target${index}`;
+    const missingSuffix = UI_TARGET_FIELD_SUFFIXES.find((suffix) => !searchParams.has(`${prefix}${suffix}`));
+    if (missingSuffix) return `missing ${prefix}${missingSuffix}`;
+
+    const kind = searchParams.get(`${prefix}Kind`);
+    const kindRank = kind === 'rare' ? 0 : kind === 'normal' ? 1 : -1;
+    if (kindRank < 0) return `invalid ${prefix}Kind`;
+    if (kindRank <= previousKindRank) return 'targets must be ordered rare then normal without duplicates';
+    previousKindRank = kindRank;
+
+    for (const suffix of UI_TARGET_FEATURE_SUFFIXES) {
+      if (!isExactBoolean(searchParams.get(`${prefix}${suffix}`))) {
+        return `invalid ${prefix}${suffix}`;
+      }
+    }
+    if (UI_TARGET_FEATURE_SUFFIXES.every((suffix) =>
+      searchParams.get(`${prefix}${suffix}`) === 'false')) {
+      return `featureless ${prefix}`;
+    }
+    if (searchParams.get(`${prefix}RecipeVariantEnabled`) === 'true'
+      && searchParams.get(`${prefix}ListPinningEnabled`) !== 'true') {
+      return `invalid ${prefix}RecipeVariantEnabled parent`;
+    }
+
+    const traceId = searchParams.get(`${prefix}TraceId`) ?? '';
+    const orderKey = searchParams.get(`${prefix}OrderKey`) ?? '';
+    if (kind === 'rare') {
+      if (!/^R-[0-9]{1,16}$/.test(traceId)) return `invalid ${prefix}TraceId`;
+      if (orderKey !== '') return `invalid ${prefix}OrderKey`;
+    } else {
+      if (!/^N-[0-9]{1,16}$/.test(traceId)) return `invalid ${prefix}TraceId`;
+      if (!/^ptr:[0-9a-f]{1,16}$/.test(orderKey) || !/[1-9a-f]/.test(orderKey.slice(4))) {
+        return `invalid ${prefix}OrderKey`;
+      }
+    }
+
+    const revision = searchParams.get(`${prefix}Revision`) ?? '';
+    if (revision.length === 0 || revision.length > 1024 || /[\u0000-\u001f\u007f]/.test(revision)) {
+      return `invalid ${prefix}Revision`;
+    }
+    if (!/^[0-9A-F]{6}$/.test(searchParams.get(`${prefix}Color`) ?? '')) {
+      return `invalid ${prefix}Color`;
+    }
+    if (!isPositiveDecimal(searchParams.get(`${prefix}OrderLifecycleSequence`))) {
+      return `invalid ${prefix}OrderLifecycleSequence`;
+    }
+    if (!isNonNegativeInt32(searchParams.get(`${prefix}DeskCode`))) {
+      return `invalid ${prefix}DeskCode`;
+    }
+    for (const suffix of ['RecipeId', 'BeverageId', 'CookerTypeId']) {
+      if (!isOptionalInt32Id(searchParams.get(`${prefix}${suffix}`))) {
+        return `invalid ${prefix}${suffix}`;
+      }
+    }
+    if (!isExactIdList(searchParams.get(`${prefix}IngredientIds`), 12, true)) {
+      return `invalid ${prefix}IngredientIds`;
+    }
+    if (!isExactIdList(searchParams.get(`${prefix}ExtraIngredientIds`), 5, false)) {
+      return `invalid ${prefix}ExtraIngredientIds`;
+    }
+  }
+
+  return null;
+}
+
+function isExactBoolean(value) {
+  return value === 'true' || value === 'false';
+}
+
+function isPositiveDecimal(value) {
+  if (!/^[1-9][0-9]*$/.test(value ?? '')) return false;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0;
+}
+
+function isNonNegativeInt32(value) {
+  if (!/^(0|[1-9][0-9]*)$/.test(value ?? '')) return false;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed <= 2_147_483_647;
+}
+
+function isOptionalInt32Id(value) {
+  return value === '-1' || isNonNegativeInt32(value);
+}
+
+function isExactIdList(value, maximumCount, requireUnique) {
+  if (value === '') return true;
+  if (!value || !/^(0|[1-9][0-9]*)(,(0|[1-9][0-9]*))*$/.test(value)) return false;
+  const entries = value.split(',');
+  return entries.length <= maximumCount
+    && entries.every(isNonNegativeInt32)
+    && (!requireUnique || new Set(entries).size === entries.length);
 }
 
 function resolveMockLanState() {

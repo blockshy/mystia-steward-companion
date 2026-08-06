@@ -114,6 +114,7 @@ static void AssertRuntimeLifecycleCallbacks()
     AssertEqual(1, RuntimeBoundaryProbe.CookerResumeCount, "Cooker highlight did not resume at panel open.");
     AssertEqual(1, RuntimeBoundaryProbe.SeatResumeCount, "Seat highlight did not resume at panel open.");
     AssertEqual(1, RuntimeBoundaryProbe.OrderResumeCount, "Order highlight did not resume at panel open.");
+    AssertEqual(1, RuntimeBoundaryProbe.ThrowDeliverOrderResumeCount, "Throw-delivery order highlight did not resume at panel open.");
     AssertEqual(1, RuntimeBoundaryProbe.ListResumeCount, "List highlight did not resume at panel open.");
     AssertEqual(0, RuntimeBoundaryProbe.TargetInvalidationCount,
         "Panel open unexpectedly invalidated the active target.");
@@ -181,6 +182,7 @@ static void AssertRuntimeLifecycleCallbacks()
         "Closing did not clear exact terminal receipts from the retired business generation.");
     AssertEqual(1, RuntimeBoundaryProbe.SeatSuspendCount, "Closing did not suspend seat highlighting once.");
     AssertEqual(1, RuntimeBoundaryProbe.OrderSuspendCount, "Closing did not suspend order highlighting once.");
+    AssertEqual(1, RuntimeBoundaryProbe.ThrowDeliverOrderSuspendCount, "Closing did not suspend throw-delivery order highlighting once.");
     AssertEqual(NightBusinessLifecyclePhase.Closing, RuntimeBoundaryProbe.LastServeInWorkPhase,
         "ServeInWork diagnostics did not receive Closing.");
 
@@ -202,18 +204,47 @@ static void AssertRuntimeLifecycleCallbacks()
         "Scene destruction did not abandon seat-highlight wrappers.");
     AssertEqual(1, RuntimeBoundaryProbe.OrderAbandonCount,
         "Scene destruction did not abandon order-highlight wrappers.");
+    AssertEqual(1, RuntimeBoundaryProbe.ThrowDeliverOrderAbandonCount,
+        "Scene destruction did not abandon throw-delivery order-highlight wrappers.");
     AssertEqual(1, RuntimeBoundaryProbe.ListAbandonCount,
         "Scene destruction did not abandon list wrappers.");
 
-    InvokeRuntimeCallback(runtimeType, "OnBusinessStarted");
+    RuntimeOrderHighlightService.ThrowOnResume = true;
+    try
+    {
+        InvokeRuntimeCallback(runtimeType, "OnBusinessStarted");
+    }
+    finally
+    {
+        RuntimeOrderHighlightService.ThrowOnResume = false;
+    }
     var second = RuntimeNightBusinessLifecycle.Snapshot;
     AssertEqual(NightBusinessLifecyclePhase.Active, second.Phase,
         "Next panel open did not reactivate the runtime.");
     AssertEqual(active.Generation + 1, second.Generation,
         "Next panel open did not advance the generation.");
-    InvokeRuntimeCallback(runtimeType, "OnChallengeBusinessClosing");
+    AssertEqual(1, RuntimeBoundaryProbe.OrderResumeCount,
+        "A failed HUD order-highlight resume was incorrectly reported as successful.");
+    AssertEqual(2, RuntimeBoundaryProbe.ThrowDeliverOrderResumeCount,
+        "A HUD order-highlight resume failure blocked the independent throw-delivery surface.");
+
+    RuntimeThrowDeliverOrderHighlightService.ThrowOnSuspend = true;
+    try
+    {
+        InvokeRuntimeCallback(runtimeType, "OnChallengeBusinessClosing");
+    }
+    finally
+    {
+        RuntimeThrowDeliverOrderHighlightService.ThrowOnSuspend = false;
+    }
     AssertEqual(NightBusinessLifecyclePhase.Closing, RuntimeNightBusinessLifecycle.Snapshot.Phase,
         "Challenge teardown did not enter Closing.");
+    AssertEqual(2, RuntimeBoundaryProbe.OrderSuspendCount,
+        "A throw-delivery suspend failure blocked the independent HUD surface.");
+    AssertEqual(1, RuntimeBoundaryProbe.ThrowDeliverOrderSuspendCount,
+        "A failed throw-delivery suspend was incorrectly reported as successful.");
+    AssertEqual(2, RuntimeBoundaryProbe.ListSuspendCount,
+        "A throw-delivery suspend failure blocked the remaining lifecycle cleanup.");
 }
 
 static void InvokeRuntimeCallback(Type runtimeType, string methodName)

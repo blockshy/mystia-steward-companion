@@ -519,6 +519,23 @@ namespace MystiaStewardCompanion.Save
         public static IReadOnlyList<CapturedRuntimeSpecialOrder> Snapshot(TimeSpan maxAge) => Captures.ToArray();
     }
 
+    internal sealed record CapturedRuntimeNormalOrder(
+        string RuntimeKey,
+        int DeskCode,
+        DateTime FirstCapturedAt,
+        DateTime CapturedAt)
+    {
+        internal object? OrderObject { get; init; }
+        internal object? ControllerObject { get; init; }
+        internal long OrderLifecycleSequence { get; init; }
+    }
+
+    internal static class NormalOrderRuntimeCapture
+    {
+        public static List<CapturedRuntimeNormalOrder> Captures { get; } = new();
+        public static IReadOnlyList<CapturedRuntimeNormalOrder> Snapshot(TimeSpan maxAge) => Captures.ToArray();
+    }
+
     internal static class RuntimeReflectionUtility
     {
         public static Type? FindType(string fullName) => fullName switch

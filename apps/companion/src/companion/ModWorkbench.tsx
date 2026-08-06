@@ -14,7 +14,7 @@ import {
 } from '@/companion/connection-recovery';
 import { useCustomRecipes } from '@/companion/hooks/useCustomRecipes';
 import { useFavorites } from '@/companion/hooks/useFavorites';
-import { useGameUiPinningPublisher } from '@/companion/hooks/useGameUiPinningPublisher';
+import { useGameUiTargetPublisher } from '@/companion/hooks/useGameUiTargetPublisher';
 import { useOrderAutomationIntervals } from '@/companion/hooks/useOrderAutomationIntervals';
 import { getNightBusinessAutomationPauseMessage } from '@/companion/domain/automation-runtime';
 import {
@@ -95,8 +95,6 @@ import {
 import {
   applyRareServedStateFromResponse,
   buildAutoOrderKey,
-  buildGameUiPinningTarget,
-  buildGameUiPinningSourceOrderState,
   buildNightBusinessOrderKey,
   buildNormalCookingTargetDecision,
   buildNormalAutoOrderDiagnostics,
@@ -124,6 +122,12 @@ import {
   type OrderPreparationCandidateResult,
   type ValidOrderPreparationSelection,
 } from '@/companion/domain/automation';
+import {
+  buildNormalGameUiTarget,
+  buildNormalGameUiTargetSource,
+  buildRareGameUiTarget,
+  buildRareGameUiTargetSource,
+} from '@/companion/domain/game-ui-targets';
 import {
   buildAutomationCookerPool,
   buildRuntimeSets,
@@ -200,6 +204,9 @@ import type {
   SettingsTab,
   SpecialBusinessContext,
   SpecialFoodTargetWirePolicy,
+  GameUiTargetFeatures,
+  GameUiTargetFeatureSlots,
+  GameUiTargetSlots,
 } from '@/companion/types';
 import type {
   NormalExecutionTargetSelection,
@@ -2304,10 +2311,45 @@ export function ModWorkbench() {
       order.specialBusinessRole,
     ),
   );
-  const normalAutomationTargetsEnabled = automationRuntimeEnabled
+  const rareGameUiTargetFeatures = useMemo<GameUiTargetFeatures>(() => ({
+    listPinningEnabled: companionPreferences.rareGameUiPinningEnabled,
+    recipeVariantEnabled: companionPreferences.rareGameUiPinningEnabled
+      && companionPreferences.rareRecipeVariantEnabled,
+    cookerHighlightEnabled: companionPreferences.rareCookerHighlightEnabled,
+    seatHighlightEnabled: companionPreferences.rareSeatHighlightEnabled,
+    orderHighlightEnabled: companionPreferences.rareOrderHighlightEnabled,
+  }), [
+    companionPreferences.rareCookerHighlightEnabled,
+    companionPreferences.rareGameUiPinningEnabled,
+    companionPreferences.rareOrderHighlightEnabled,
+    companionPreferences.rareRecipeVariantEnabled,
+    companionPreferences.rareSeatHighlightEnabled,
+  ]);
+  const normalGameUiTargetFeatures = useMemo<GameUiTargetFeatures>(() => ({
+    listPinningEnabled: companionPreferences.normalGameUiPinningEnabled,
+    recipeVariantEnabled: companionPreferences.normalGameUiPinningEnabled
+      && companionPreferences.normalRecipeVariantEnabled,
+    cookerHighlightEnabled: companionPreferences.normalCookerHighlightEnabled,
+    seatHighlightEnabled: companionPreferences.normalSeatHighlightEnabled,
+    orderHighlightEnabled: companionPreferences.normalOrderHighlightEnabled,
+  }), [
+    companionPreferences.normalCookerHighlightEnabled,
+    companionPreferences.normalGameUiPinningEnabled,
+    companionPreferences.normalOrderHighlightEnabled,
+    companionPreferences.normalRecipeVariantEnabled,
+    companionPreferences.normalSeatHighlightEnabled,
+  ]);
+  const gameUiTargetFeatureSlots = useMemo<GameUiTargetFeatureSlots>(() => ({
+    rare: rareGameUiTargetFeatures,
+    normal: normalGameUiTargetFeatures,
+  }), [normalGameUiTargetFeatures, rareGameUiTargetFeatures]);
+  const rareGameUiTargetFeaturesEnabled = Object.values(rareGameUiTargetFeatures).some(Boolean);
+  const normalGameUiTargetFeaturesEnabled = Object.values(normalGameUiTargetFeatures).some(Boolean);
+  const normalAutomationNeedsExecutionTargets = automationRuntimeEnabled
     && companionPreferences.autoNormalOrderEnabled
-    && hasNormalOrderActionEnabled(companionPreferences)
-    && normalOrdersRequireSpecialExecutionTarget;
+    && hasNormalOrderActionEnabled(companionPreferences);
+  const normalExecutionTargetsEnabled = normalOrdersRequireSpecialExecutionTarget
+    && (normalAutomationNeedsExecutionTargets || normalGameUiTargetFeaturesEnabled);
   const rareAutomationNeedsRecommendations = automationRuntimeEnabled
     && companionPreferences.autoRareOrderEnabled
     && hasAutomationActionEnabled(companionPreferences);
@@ -2401,10 +2443,10 @@ export function ModWorkbench() {
       recommendationData,
     ],
   );
-  const normalAutomationTargetInputValue = useMemo<NormalOrderDetailInput>(
+  const normalExecutionTargetInputValue = useMemo<NormalOrderDetailInput>(
     () => ({
-      include: normalAutomationTargetsEnabled,
-      normalOrders: normalAutomationTargetsEnabled ? snapshot?.normalBusiness?.orders ?? [] : [],
+      include: normalExecutionTargetsEnabled,
+      normalOrders: normalExecutionTargetsEnabled ? snapshot?.normalBusiness?.orders ?? [] : [],
       runtime,
       preferences: companionPreferences,
       specialBusiness: snapshot?.specialBusiness ?? null,
@@ -2412,39 +2454,36 @@ export function ModWorkbench() {
     }),
     [
       companionPreferences,
-      normalAutomationTargetsEnabled,
+      normalExecutionTargetsEnabled,
       runtime,
       snapshot?.normalBusiness?.orders,
       snapshot?.specialBusiness,
       specialBusinessRejectedRecipeKeys,
     ],
   );
-  const normalAutomationTargetInputSignature = useMemo(
-    () => buildNormalOrderDetailInputSignature(normalAutomationTargetInputValue),
-    [normalAutomationTargetInputValue],
+  const normalExecutionTargetInputSignature = useMemo(
+    () => buildNormalOrderDetailInputSignature(normalExecutionTargetInputValue),
+    [normalExecutionTargetInputValue],
   );
-  const normalAutomationTargetInput = useSignedValue(
-    normalAutomationTargetInputValue,
-    normalAutomationTargetInputSignature,
+  const normalExecutionTargetInput = useSignedValue(
+    normalExecutionTargetInputValue,
+    normalExecutionTargetInputSignature,
   );
-  const normalAutomationTargetPayload = useMemo(
+  const normalExecutionTargetPayload = useMemo(
     () => buildNormalOrderWorkerPayload(
-      normalAutomationTargetInput,
+      normalExecutionTargetInput,
       recommendationData,
       { includeExecutionTargets: true, usage: 'automation' },
     ),
     [
-      normalAutomationTargetInput,
+      normalExecutionTargetInput,
       recommendationData,
     ],
   );
   const orderRecommendationsEnabled = tab === 'service'
     || serviceFocusMode
     || rareAutomationNeedsRecommendations
-    || companionPreferences.gameUiPinningEnabled
-    || companionPreferences.cookerHighlightEnabled
-    || companionPreferences.seatHighlightEnabled
-    || companionPreferences.orderHighlightEnabled;
+    || rareGameUiTargetFeaturesEnabled;
   const orderRecommendations = useOrderRecommendations(orderRecommendationPayload, {
     enabled: orderRecommendationsEnabled,
     inputSignature: orderRecommendationPayloadSignature,
@@ -2482,12 +2521,12 @@ export function ModWorkbench() {
   const normalOrderDetails = useOrderRecommendations(normalOrderDetailPayload, {
     enabled: includeNormalOrderDetails,
   });
-  const normalAutomationTargets = useOrderRecommendations(normalAutomationTargetPayload, {
-    enabled: normalAutomationTargetsEnabled,
+  const normalExecutionTargets = useOrderRecommendations(normalExecutionTargetPayload, {
+    enabled: normalExecutionTargetsEnabled,
   });
   const normalAutomationTargetByKey = useMemo(
-    () => new Map(normalAutomationTargets.normalExecutionTargets.map((selection) => [selection.orderKey, selection])),
-    [normalAutomationTargets.normalExecutionTargets],
+    () => new Map(normalExecutionTargets.normalExecutionTargets.map((selection) => [selection.orderKey, selection])),
+    [normalExecutionTargets.normalExecutionTargets],
   );
   const orderRecommendationPerformanceMs = useMemo(
     () => ({
@@ -2497,28 +2536,27 @@ export function ModWorkbench() {
           normalDetails: normalOrderDetails.performanceMs.normalDetails ?? normalOrderDetails.performanceMs.total ?? 0,
         }
         : {}),
-      ...(normalAutomationTargets.performanceMs
+      ...(normalExecutionTargets.performanceMs
         ? {
-          normalAutomationTargets: normalAutomationTargets.performanceMs.normalExecutionTargets
-            ?? normalAutomationTargets.performanceMs.total
+          normalAutomationTargets: normalExecutionTargets.performanceMs.normalExecutionTargets
+            ?? normalExecutionTargets.performanceMs.total
             ?? 0,
         }
         : {}),
     }),
     [
-      normalAutomationTargets.performanceMs,
+      normalExecutionTargets.performanceMs,
       normalOrderDetails.performanceMs,
       orderRecommendations.performanceMs,
     ],
   );
-  const gameUiPinningTarget = useMemo(
-    () => companionPreferences.gameUiPinningEnabled
-      || companionPreferences.cookerHighlightEnabled
-      || companionPreferences.seatHighlightEnabled
-      || companionPreferences.orderHighlightEnabled
-      ? buildGameUiPinningTarget(
+  const rareGameUiTarget = useMemo(
+    () => rareGameUiTargetFeaturesEnabled
+      ? buildRareGameUiTarget(
         orderRecommendations.recommendations,
         companionPreferences.serviceOrderSortMode,
+        companionPreferences.rareTargetHighlightColor,
+        rareGameUiTargetFeatures,
         recommendationIndexes,
         {
           prioritizeMissionRecipe: companionPreferences.missionRecipePriorityEnabled
@@ -2527,22 +2565,92 @@ export function ModWorkbench() {
       )
       : null,
     [
-      companionPreferences.cookerHighlightEnabled,
-      companionPreferences.gameUiPinningEnabled,
+      companionPreferences.rareTargetHighlightColor,
       companionPreferences.missionRecipePriorityEnabled,
-      companionPreferences.orderHighlightEnabled,
       companionPreferences.serviceOrderSortMode,
-      companionPreferences.seatHighlightEnabled,
       orderRecommendations.recommendations,
+      rareGameUiTargetFeatures,
+      rareGameUiTargetFeaturesEnabled,
       recommendationIndexes,
       snapshot?.specialBusiness?.active,
     ],
   );
-  const gameUiPinningSourceOrders = useMemo(
-    () => (night?.orders ?? []).map(buildGameUiPinningSourceOrderState),
-    [night?.orders],
+  const normalGameUiTarget = useMemo(
+    () => normalGameUiTargetFeaturesEnabled
+      ? buildNormalGameUiTarget({
+        orders: snapshot?.normalBusiness?.orders ?? [],
+        executionTargets: normalExecutionTargets.normalExecutionTargets,
+        executionTargetsCurrent: normalExecutionTargets.isCurrent
+          && !normalExecutionTargets.pending
+          && !normalExecutionTargets.error,
+        specialBusiness: snapshot?.specialBusiness,
+        businessGeneration: snapshot?.nightBusinessGeneration ?? 0,
+        color: companionPreferences.normalTargetHighlightColor,
+        features: normalGameUiTargetFeatures,
+        data: recommendationData,
+      })
+      : null,
+    [
+      companionPreferences.normalTargetHighlightColor,
+      normalGameUiTargetFeatures,
+      normalGameUiTargetFeaturesEnabled,
+      normalExecutionTargets.error,
+      normalExecutionTargets.isCurrent,
+      normalExecutionTargets.normalExecutionTargets,
+      normalExecutionTargets.pending,
+      recommendationData,
+      snapshot?.nightBusinessGeneration,
+      snapshot?.normalBusiness?.orders,
+      snapshot?.specialBusiness,
+    ],
   );
-  useGameUiPinningPublisher({
+  const gameUiTargetSlots = useMemo<GameUiTargetSlots>(
+    () => ({ rare: rareGameUiTarget, normal: normalGameUiTarget }),
+    [normalGameUiTarget, rareGameUiTarget],
+  );
+  const gameUiTargetSourceOrders = useMemo(
+    () => [
+      ...(night?.orders ?? []).map(buildRareGameUiTargetSource),
+      ...(snapshot?.normalBusiness?.orders ?? []).map(buildNormalGameUiTargetSource),
+    ],
+    [night?.orders, snapshot?.normalBusiness?.orders],
+  );
+  const gameUiTargetLaneStates = useMemo(() => ({
+    rare: {
+      isCurrent: orderRecommendations.isCurrent,
+      pending: orderRecommendations.pending,
+      error: Boolean(orderRecommendations.error),
+    },
+    normal: {
+      isCurrent: normalGameUiTarget !== null
+        || !normalOrdersRequireSpecialExecutionTarget
+        || (normalExecutionTargets.isCurrent && !normalExecutionTargets.pending),
+      pending: normalGameUiTarget === null
+        && normalOrdersRequireSpecialExecutionTarget
+        && !normalExecutionTargets.error
+        && (normalExecutionTargets.pending || !normalExecutionTargets.isCurrent),
+      error: normalGameUiTarget === null
+        && normalOrdersRequireSpecialExecutionTarget
+        && Boolean(normalExecutionTargets.error),
+    },
+  }), [
+    normalExecutionTargets.error,
+    normalExecutionTargets.isCurrent,
+    normalExecutionTargets.pending,
+    normalGameUiTarget,
+    normalOrdersRequireSpecialExecutionTarget,
+    orderRecommendations.error,
+    orderRecommendations.isCurrent,
+    orderRecommendations.pending,
+  ]);
+  const gameUiTargetColors = useMemo(() => ({
+    rare: companionPreferences.rareTargetHighlightColor,
+    normal: companionPreferences.normalTargetHighlightColor,
+  }), [
+    companionPreferences.normalTargetHighlightColor,
+    companionPreferences.rareTargetHighlightColor,
+  ]);
+  useGameUiTargetPublisher({
     endpoint: normalizedEndpoint,
     apiToken,
     connectionRevision,
@@ -2550,18 +2658,11 @@ export function ModWorkbench() {
     businessGeneration: snapshot?.nightBusinessGeneration ?? 0,
     businessActive: snapshot?.nightBusinessLifecyclePhase === 'Active',
     connectionReady: connectionReadyForActions,
-    pinningEnabled: companionPreferences.gameUiPinningEnabled,
-    cookerHighlightEnabled: companionPreferences.cookerHighlightEnabled,
-    extraIngredientFillEnabled: companionPreferences.gameUiPinningEnabled
-      && companionPreferences.recommendedExtraIngredientFillEnabled,
-    seatHighlightEnabled: companionPreferences.seatHighlightEnabled,
-    orderHighlightEnabled: companionPreferences.orderHighlightEnabled,
-    target: gameUiPinningTarget,
-    sourceOrders: gameUiPinningSourceOrders,
-    recommendationIsCurrent: orderRecommendations.isCurrent,
-    recommendationPending: orderRecommendations.pending,
-    recommendationError: Boolean(orderRecommendations.error),
-    recommendationSuccessRevision: orderRecommendations.successRevision,
+    featureSlots: gameUiTargetFeatureSlots,
+    targetSlots: gameUiTargetSlots,
+    sourceOrders: gameUiTargetSourceOrders,
+    laneStates: gameUiTargetLaneStates,
+    colors: gameUiTargetColors,
     targetPolicySignature: buildUiPinningSpecialBusinessSignature(snapshot?.specialBusiness),
   });
 
@@ -4415,12 +4516,12 @@ export function ModWorkbench() {
       const specialTargetSelection = getNormalAutomationTargetSelection(
         order,
         state,
-        normalAutomationTargetsEnabled,
+        normalExecutionTargetsEnabled,
         normalAutomationTargetByKey,
         snapshot?.specialBusiness,
         snapshot?.nightBusinessGeneration ?? 0,
         requiresRecipeTarget,
-        normalAutomationTargets.error,
+        normalExecutionTargets.error,
       );
       const cookingDecision = buildNormalCookingTargetDecision(order, recommendationData, specialTargetSelection);
       const specialBusinessCookingDeferral = cookingDecision.blockedReason;
@@ -4568,12 +4669,12 @@ export function ModWorkbench() {
         const specialTargetSelection = getNormalAutomationTargetSelection(
           order,
           currentState,
-          normalAutomationTargetsEnabled,
+          normalExecutionTargetsEnabled,
           normalAutomationTargetByKey,
           snapshot?.specialBusiness,
           snapshot?.nightBusinessGeneration ?? 0,
           requiresRecipeTarget,
-          normalAutomationTargets.error,
+          normalExecutionTargets.error,
         );
         const cookingDecision = buildNormalCookingTargetDecision(order, recommendationData, specialTargetSelection);
         const targetBlockedCooking = Boolean(specialTargetSelection.policyError)
@@ -4868,8 +4969,8 @@ export function ModWorkbench() {
     isAutomationRequestCurrent,
     normalizedEndpoint,
     normalAutomationTargetByKey,
-    normalAutomationTargets.error,
-    normalAutomationTargetsEnabled,
+    normalExecutionTargets.error,
+    normalExecutionTargetsEnabled,
     publishNormalAutomationDecisionDiagnostic,
     publishAutomationTargetRotationDiagnostic,
     publishNormalOrderBusy,
@@ -5267,7 +5368,7 @@ export function ModWorkbench() {
               orderRecommendationPerformanceMs={orderRecommendationPerformanceMs}
               runtimeSets={runtimeSets}
               uiPinningStatus={snapshot?.runtimeUiPinningStatus ?? ''}
-              uiPinningTarget={gameUiPinningTarget}
+              uiTargetSlots={gameUiTargetSlots}
               favorites={favorites}
               customRecipes={customRecipes}
               favoriteBusyKey={favoriteBusyKey}
@@ -5288,10 +5389,10 @@ export function ModWorkbench() {
               automationRuntimeStatus={snapshot?.runtimeNightBusinessAutomationStatus ?? ''}
               automationSafetyBarriers={automationSafetyBarriers}
               automationBarrierAckBusyKey={automationBarrierAckBusyKey}
-              normalExecutionTargets={normalAutomationTargets.normalExecutionTargets}
-              normalExecutionTargetsEnabled={normalAutomationTargetsEnabled}
-              normalExecutionTargetsPending={normalAutomationTargets.pending || !normalAutomationTargets.isCurrent}
-              normalExecutionTargetsError={normalAutomationTargets.error}
+              normalExecutionTargets={normalExecutionTargets.normalExecutionTargets}
+              normalExecutionTargetsEnabled={normalExecutionTargetsEnabled}
+              normalExecutionTargetsPending={normalExecutionTargets.pending || !normalExecutionTargets.isCurrent}
+              normalExecutionTargetsError={normalExecutionTargets.error}
               normalOrderDetailPlans={normalOrderDetails.normalOrderDetailPlans}
               normalOrderDetailsPending={includeNormalOrderDetails
                 && (normalOrderDetails.pending || !normalOrderDetails.isCurrent)}

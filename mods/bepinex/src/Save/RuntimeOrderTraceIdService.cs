@@ -13,7 +13,7 @@ namespace MystiaStewardCompanion.Save;
 internal static class RuntimeOrderTraceIdService
 {
     private const int MaxTrackedOrdersPerKind = 512;
-    private const int MaxRareTraceDigits = 16;
+    private const int MaxUiTargetTraceDigits = 16;
     private static readonly object SyncRoot = new();
     private static readonly Dictionary<string, TraceRecord> RecordsByStableKey = new(StringComparer.Ordinal);
     private static int _rareSequence;
@@ -46,23 +46,11 @@ internal static class RuntimeOrderTraceIdService
     }
 
     /// <summary>
-    /// Normalizes the exact rare-order trace carried by the UI-assistance protocol.
+    /// Validates the exact process-local order trace carried by a typed UI target.
+    /// Whitespace, Unicode digits and a prefix that conflicts with the declared kind are rejected.
     /// </summary>
-    /// <remarks>
-    /// Trace ids are opaque Ordinal identities. In particular, leading/trailing whitespace is
-    /// rejected instead of being trimmed into a different request identity.
-    /// </remarks>
-    internal static string NormalizeRareTraceId(string traceId, bool enabled)
-    {
-        if (!TryNormalizeRareTraceId(traceId, enabled, out var normalized, out var failure))
-        {
-            throw new ArgumentException(failure, nameof(traceId));
-        }
-
-        return normalized;
-    }
-
-    internal static bool TryNormalizeRareTraceId(
+    internal static bool TryNormalizeTargetTraceId(
+        RuntimeUiTargetKind kind,
         string traceId,
         bool enabled,
         out string normalized,
@@ -74,69 +62,16 @@ internal static class RuntimeOrderTraceIdService
             failure = "";
             return true;
         }
-        if (!IsValidRareTraceId(traceId))
+
+        var expectedPrefix = kind == RuntimeUiTargetKind.Rare ? 'R' : 'N';
+        if (!IsValidUiTargetTraceId(traceId, expectedPrefix))
         {
             normalized = "";
-            failure = $"Rare-order trace must match R- followed by 1-{MaxRareTraceDigits} ASCII decimal digits.";
+            failure = $"{kind} UI target trace must match {expectedPrefix}- followed by 1-{MaxUiTargetTraceDigits} ASCII decimal digits.";
             return false;
         }
 
         normalized = traceId;
-        failure = "";
-        return true;
-    }
-
-    internal static bool TryResolveCurrentRareCapture(
-        string orderTraceId,
-        int deskCode,
-        TimeSpan maxAge,
-        out CapturedRuntimeSpecialOrder? capture,
-        out string failure)
-    {
-        capture = null;
-        if (!IsValidRareTraceId(orderTraceId))
-        {
-            failure = "target rare-order trace has an invalid exact shape";
-            return false;
-        }
-        if (deskCode < 0)
-        {
-            failure = "target desk code is invalid";
-            return false;
-        }
-
-        var traceMatches = new List<CapturedRuntimeSpecialOrder>();
-        foreach (var candidate in SpecialOrderRuntimeCapture.Snapshot(maxAge))
-        {
-            if (candidate.OrderObject == null
-                || candidate.ControllerObject == null
-                || string.IsNullOrEmpty(candidate.RuntimeKey)
-                || !RuntimeReflectionUtility.TryReadNativeObjectPointer(candidate.OrderObject, out var orderPointer)
-                || !string.Equals(candidate.RuntimeKey, $"ptr:{orderPointer:x}", StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            if (string.Equals(GetRareTraceId(candidate), orderTraceId, StringComparison.Ordinal))
-            {
-                traceMatches.Add(candidate);
-            }
-        }
-
-        if (traceMatches.Count != 1)
-        {
-            failure = $"target rare-order trace matched {traceMatches.Count} active captures";
-            return false;
-        }
-
-        var matched = traceMatches[0];
-        if (matched.DeskCode != deskCode)
-        {
-            failure = $"target desk mismatch: capture={matched.DeskCode}, target={deskCode}";
-            return false;
-        }
-
-        capture = matched;
         failure = "";
         return true;
     }
@@ -154,6 +89,17 @@ internal static class RuntimeOrderTraceIdService
                 order.BeverageId,
                 order.BeverageName);
         return GetOrCreate("normal", "N", stableKey);
+    }
+
+    internal static string GetNormalTraceId(CapturedRuntimeNormalOrder order)
+    {
+        var lifecycle = order.OrderLifecycleSequence > 0
+            ? order.OrderLifecycleSequence.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : "missing";
+        return GetOrCreate(
+            "normal",
+            "N",
+            $"normal:{order.RuntimeKey}|lifecycle:{lifecycle}");
     }
 
     public static string GetRequestTraceId(OrderTraceKind kind, string requestedTraceId, string stableKey)
@@ -184,12 +130,12 @@ internal static class RuntimeOrderTraceIdService
         }
     }
 
-    private static bool IsValidRareTraceId(string traceId)
+    private static bool IsValidUiTargetTraceId(string traceId, char expectedPrefix)
     {
         if (traceId == null
             || traceId.Length < 3
-            || traceId.Length > 2 + MaxRareTraceDigits
-            || traceId[0] != 'R'
+            || traceId.Length > 2 + MaxUiTargetTraceDigits
+            || traceId[0] != expectedPrefix
             || traceId[1] != '-')
         {
             return false;

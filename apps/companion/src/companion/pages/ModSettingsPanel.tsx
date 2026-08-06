@@ -11,6 +11,8 @@ import type { UpdateManager } from '@/companion/features/updates/useUpdateManage
 import { formatBytes } from '@/companion/formatters';
 import {
   DEFAULT_FONT_SCALE_PERCENT,
+  DEFAULT_NORMAL_TARGET_HIGHLIGHT_COLOR,
+  DEFAULT_RARE_TARGET_HIGHLIGHT_COLOR,
   MAX_RECIPE_VARIANT_LIMIT_PER_BASE,
   MAX_AUTO_ROLLBACKS_LIMIT,
   MAX_AUTO_STEP_RETRIES_LIMIT,
@@ -21,6 +23,7 @@ import {
   MIN_AUTO_ROLLBACKS,
   MIN_AUTO_STEP_RETRIES,
   normalizeRecipeVariantLimitPerBase,
+  normalizeTargetHighlightColor,
   type CompanionPreferences,
 } from '@/companion/preferences';
 import type { LocalApiConnectionConfig, RuntimeSets, SettingsTab, UpdateStatusResponse } from '@/companion/types';
@@ -925,47 +928,105 @@ export function ModSettingsPanel({
           </ListPanel>
 
           <ListPanel title="游戏界面辅助">
-            <div className="space-y-4">
-              <SwitchControl
-                label="游戏界面置顶推荐（实验性）"
-                helpId="recommendation-game-ui-pinning"
-                description="打开游戏的料理或酒水选择界面时，尝试把当前目标订单的推荐材料、料理和酒水排到前面并显示黄色脉冲高亮。此功能不修改库存。"
-                checked={preferences.gameUiPinningEnabled}
-                onCheckedChange={(gameUiPinningEnabled) => onPreferenceChange({ gameUiPinningEnabled })}
-              />
-              <div className="border-l pl-3">
+            <div className="grid grid-cols-1 gap-5 min-[900px]:grid-cols-2">
+              <div className="space-y-4 border-l pl-3">
+                <div className="text-sm font-medium">稀客目标</div>
                 <SwitchControl
-                  label="点击推荐料理时自动加入加料（实验性）"
-                  helpId="recommendation-extra-ingredient-fill"
-                  description="确认当前置顶料理时，按同一主推荐方案自动加入加料并扣除对应库存。只有配方、基础食材、库存、五格限制和订单目标全部精确成立时才执行一次。"
-                  checked={preferences.recommendedExtraIngredientFillEnabled}
-                  disabled={!preferences.gameUiPinningEnabled}
-                  status={!preferences.gameUiPinningEnabled ? '需先开启游戏界面置顶推荐' : undefined}
-                  onCheckedChange={(recommendedExtraIngredientFillEnabled) =>
-                    onPreferenceChange({ recommendedExtraIngredientFillEnabled })}
+                  label="稀客游戏界面置顶推荐（实验性）"
+                  helpId="recommendation-rare-game-ui-pinning"
+                  description="打开游戏的料理或酒水选择界面时，把当前稀客目标的推荐材料、料理和酒水排到前面并显示稀客目标色。此功能不修改库存。"
+                  checked={preferences.rareGameUiPinningEnabled}
+                  onCheckedChange={(rareGameUiPinningEnabled) => onPreferenceChange({ rareGameUiPinningEnabled })}
+                />
+                <div className="border-l pl-3">
+                  <SwitchControl
+                    label="显示稀客加料料理选项（实验性）"
+                    helpId="recommendation-rare-recipe-variant"
+                    description="稀客目标料理含加料时，在制作料理页面增加独立的加料料理选项，原基础料理选项保持不加料。确认加料选项前会重新核对目标、库存和五格限制。"
+                    checked={preferences.rareRecipeVariantEnabled}
+                    disabled={!preferences.rareGameUiPinningEnabled}
+                    status={!preferences.rareGameUiPinningEnabled ? '需先开启稀客游戏界面置顶推荐' : undefined}
+                    onCheckedChange={(rareRecipeVariantEnabled) => onPreferenceChange({ rareRecipeVariantEnabled })}
+                  />
+                </div>
+                <SwitchControl
+                  label="稀客目标厨具高亮（实验性）"
+                  helpId="recommendation-rare-cooker-highlight"
+                  description="高亮当前稀客主方案需要的已摆放厨具。此功能只改变可见提示，不自动操作厨具。"
+                  checked={preferences.rareCookerHighlightEnabled}
+                  onCheckedChange={(rareCookerHighlightEnabled) => onPreferenceChange({ rareCookerHighlightEnabled })}
+                />
+                <SwitchControl
+                  label="稀客目标桌位高亮（实验性）"
+                  helpId="recommendation-rare-seat-highlight"
+                  description="高亮当前稀客目标的桌位；不影响玩家原生选中效果，也不操作顾客。"
+                  checked={preferences.rareSeatHighlightEnabled}
+                  onCheckedChange={(rareSeatHighlightEnabled) => onPreferenceChange({ rareSeatHighlightEnabled })}
+                />
+                <SwitchControl
+                  label="稀客目标订单高亮（实验性）"
+                  helpId="recommendation-rare-order-highlight"
+                  description="高亮游戏左下 HUD 稀客订单卡片和投掷送达面板中的稀客目标订单；不切换游戏原生焦点。"
+                  checked={preferences.rareOrderHighlightEnabled}
+                  onCheckedChange={(rareOrderHighlightEnabled) => onPreferenceChange({ rareOrderHighlightEnabled })}
+                />
+                <TargetHighlightColorField
+                  kindLabel="稀客"
+                  helpId="recommendation-rare-highlight-color"
+                  value={preferences.rareTargetHighlightColor}
+                  defaultValue={DEFAULT_RARE_TARGET_HIGHLIGHT_COLOR}
+                  onChange={(rareTargetHighlightColor) => onPreferenceChange({ rareTargetHighlightColor })}
                 />
               </div>
-              <SwitchControl
-                label="目标厨具高亮（实验性）"
-                helpId="recommendation-cooker-highlight"
-                description="经营中有推荐目标厨具时，尝试让对应已摆放厨具显示黄色脉冲高亮。此功能只改变可见提示，不自动操作厨具。"
-                checked={preferences.cookerHighlightEnabled}
-                onCheckedChange={(cookerHighlightEnabled) => onPreferenceChange({ cookerHighlightEnabled })}
-              />
-              <SwitchControl
-                label="目标桌位高亮（实验性）"
-                helpId="recommendation-seat-highlight"
-                description="经营中有推荐目标订单时，尝试在游戏内高亮对应桌位。此功能只改变可见提示，不自动操作顾客。"
-                checked={preferences.seatHighlightEnabled}
-                onCheckedChange={(seatHighlightEnabled) => onPreferenceChange({ seatHighlightEnabled })}
-              />
-              <SwitchControl
-                label="目标订单高亮（实验性）"
-                helpId="recommendation-order-highlight"
-                description="经营中有推荐目标订单时，尝试高亮游戏左下订单列表中的对应订单。此功能不切换游戏原生订单焦点。"
-                checked={preferences.orderHighlightEnabled}
-                onCheckedChange={(orderHighlightEnabled) => onPreferenceChange({ orderHighlightEnabled })}
-              />
+              <div className="space-y-4 border-l pl-3">
+                <div className="text-sm font-medium">普客目标</div>
+                <SwitchControl
+                  label="普客游戏界面置顶推荐（实验性）"
+                  helpId="recommendation-normal-game-ui-pinning"
+                  description="打开游戏的料理或酒水选择界面时，把当前普客目标的推荐材料、料理和酒水排到前面并显示普客目标色。此功能不修改库存。"
+                  checked={preferences.normalGameUiPinningEnabled}
+                  onCheckedChange={(normalGameUiPinningEnabled) => onPreferenceChange({ normalGameUiPinningEnabled })}
+                />
+                <div className="border-l pl-3">
+                  <SwitchControl
+                    label="显示普客加料料理选项（实验性）"
+                    helpId="recommendation-normal-recipe-variant"
+                    description="普客目标料理含加料时，在制作料理页面增加独立的加料料理选项，原基础料理选项保持不加料。确认加料选项前会重新核对目标、库存和五格限制。"
+                    checked={preferences.normalRecipeVariantEnabled}
+                    disabled={!preferences.normalGameUiPinningEnabled}
+                    status={!preferences.normalGameUiPinningEnabled ? '需先开启普客游戏界面置顶推荐' : undefined}
+                    onCheckedChange={(normalRecipeVariantEnabled) => onPreferenceChange({ normalRecipeVariantEnabled })}
+                  />
+                </div>
+                <SwitchControl
+                  label="普客目标厨具高亮（实验性）"
+                  helpId="recommendation-normal-cooker-highlight"
+                  description="高亮当前普客主方案需要的已摆放厨具。此功能只改变可见提示，不自动操作厨具。"
+                  checked={preferences.normalCookerHighlightEnabled}
+                  onCheckedChange={(normalCookerHighlightEnabled) => onPreferenceChange({ normalCookerHighlightEnabled })}
+                />
+                <SwitchControl
+                  label="普客目标桌位高亮（实验性）"
+                  helpId="recommendation-normal-seat-highlight"
+                  description="高亮当前普客目标的桌位；不影响玩家原生选中效果，也不操作顾客。"
+                  checked={preferences.normalSeatHighlightEnabled}
+                  onCheckedChange={(normalSeatHighlightEnabled) => onPreferenceChange({ normalSeatHighlightEnabled })}
+                />
+                <SwitchControl
+                  label="普客目标订单高亮（实验性）"
+                  helpId="recommendation-normal-order-highlight"
+                  description="高亮游戏左下 HUD 普客订单卡片和投掷送达面板中的普客目标订单；不切换游戏原生焦点。"
+                  checked={preferences.normalOrderHighlightEnabled}
+                  onCheckedChange={(normalOrderHighlightEnabled) => onPreferenceChange({ normalOrderHighlightEnabled })}
+                />
+                <TargetHighlightColorField
+                  kindLabel="普客"
+                  helpId="recommendation-normal-highlight-color"
+                  value={preferences.normalTargetHighlightColor}
+                  defaultValue={DEFAULT_NORMAL_TARGET_HIGHLIGHT_COLOR}
+                  onChange={(normalTargetHighlightColor) => onPreferenceChange({ normalTargetHighlightColor })}
+                />
+              </div>
             </div>
           </ListPanel>
         </div>
@@ -1247,6 +1308,92 @@ function RecommendationSortProfileControl({
         重置当前方案
       </Button>
     </div>
+  );
+}
+
+function TargetHighlightColorField({
+  kindLabel,
+  helpId,
+  value,
+  defaultValue,
+  onChange,
+}: {
+  kindLabel: string;
+  helpId: string;
+  value: string;
+  defaultValue: string;
+  onChange: (value: string) => void;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const displayedValue = draft ?? value;
+
+  const commitDraft = useCallback(() => {
+    if (/^#[0-9A-Fa-f]{6}$/.test(displayedValue)) {
+      onChange(normalizeTargetHighlightColor(displayedValue, defaultValue));
+    }
+    setDraft(null);
+  }, [defaultValue, displayedValue, onChange]);
+
+  return (
+    <SettingHelpField
+      id={helpId}
+      label={`${kindLabel}高亮色`}
+      description={`设置${kindLabel}目标在料理、材料、酒水、厨具、桌位和订单区域使用的基础颜色。格式固定为 #RRGGBB。`}
+    >
+      {({ helpTrigger, descriptionId }) => (
+        <div className="space-y-2">
+          <div className="flex min-w-0 items-center gap-1.5 text-sm font-medium">
+            <span>{kindLabel}高亮色</span>
+            {helpTrigger}
+          </div>
+          <div className="flex items-center gap-2">
+            <Input
+              type="color"
+              value={value}
+              aria-label={`${kindLabel}高亮色选择器`}
+              aria-describedby={descriptionId}
+              className="w-10 shrink-0"
+              inputClassName="h-8 cursor-pointer p-1"
+              onChange={(event) => {
+                setDraft(null);
+                onChange(event.currentTarget.value.toUpperCase());
+              }}
+            />
+            <Input
+              value={displayedValue}
+              maxLength={7}
+              spellCheck={false}
+              aria-label={`${kindLabel}高亮色十六进制值`}
+              aria-describedby={descriptionId}
+              className="min-w-0 flex-1"
+              inputClassName="h-8 font-mono uppercase"
+              onChange={(event) => setDraft(event.currentTarget.value.toUpperCase())}
+              onBlur={commitDraft}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') event.currentTarget.blur();
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  setDraft(null);
+                }
+              }}
+            />
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="shrink-0"
+              disabled={value === defaultValue}
+              onClick={() => {
+                setDraft(null);
+                onChange(defaultValue);
+              }}
+            >
+              恢复
+            </Button>
+          </div>
+        </div>
+      )}
+    </SettingHelpField>
   );
 }
 

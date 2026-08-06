@@ -49,20 +49,16 @@ internal static class RuntimePinnedRecipeExtrasService
     /// </summary>
     public static RuntimePinnedRecipeExtrasApplyResult TryApply(
         object panel,
-        RuntimeUiPinningService.PinningTargetSnapshot capturedTarget)
+        RuntimeUiTargetSetSnapshot capturedTargetSet)
     {
-        if (!capturedTarget.Enabled || !capturedTarget.ExtraIngredientFillEnabled)
+        if (!capturedTargetSet.Targets.Any(target => target.RecipeVariantEnabled))
         {
             return RuntimePinnedRecipeExtrasApplyResult.Disabled;
         }
 
-        var extraIngredientIds = capturedTarget.ExtraIngredientIds;
-        if (capturedTarget.Generation <= 0
-            || capturedTarget.SessionGeneration <= 0
-            || capturedTarget.RecipeId < 0
-            || string.IsNullOrEmpty(capturedTarget.TargetRevision)
-            || extraIngredientIds.Length == 0
-            || extraIngredientIds.Any(id => id < 0))
+        if (capturedTargetSet.Generation <= 0
+            || capturedTargetSet.SessionGeneration <= 0
+            || capturedTargetSet.Targets.Count == 0)
         {
             return Reject("published extra-ingredient target is invalid");
         }
@@ -80,17 +76,27 @@ internal static class RuntimePinnedRecipeExtrasService
                 return RuntimePinnedRecipeExtrasApplyResult.NotImported;
             }
 
-            if (panelState.RecipeId != capturedTarget.RecipeId)
+            var extrasResolution = capturedTargetSet.ResolveRecipeExtras(
+                panelState.RecipeId,
+                out var extraIngredientIds);
+            if (extrasResolution == RuntimeUiRecipeExtrasResolution.NoMatchingRecipe)
             {
                 return Reject("imported recipe does not match the published recommendation");
+            }
+            if (extrasResolution == RuntimeUiRecipeExtrasResolution.Conflict)
+            {
+                return Reject("rare and normal targets request different extras for the same recipe");
+            }
+            if (extrasResolution == RuntimeUiRecipeExtrasResolution.Empty)
+            {
+                return RuntimePinnedRecipeExtrasApplyResult.Disabled;
             }
 
             var transaction = new TransactionAttempt(
                 panelState.PanelPointer,
-                capturedTarget.Generation,
-                capturedTarget.SessionGeneration,
-                capturedTarget.RecipeId,
-                capturedTarget.TargetRevision,
+                capturedTargetSet.Generation,
+                capturedTargetSet.SessionGeneration,
+                panelState.RecipeId,
                 TransactionState.Applying);
             lock (SyncRoot)
             {
@@ -150,7 +156,7 @@ internal static class RuntimePinnedRecipeExtrasService
                 }
             }
 
-            if (!IsCurrentTarget(capturedTarget, extraIngredientIds))
+            if (!IsCurrentTarget(capturedTargetSet, panelState.RecipeId, extraIngredientIds))
             {
                 return Reject("published target changed before the native transaction");
             }
@@ -174,7 +180,8 @@ internal static class RuntimePinnedRecipeExtrasService
             try
             {
                 var executed = RuntimeUiPinningService.TryExecutePinnedRecipeExtrasTransaction(
-                    capturedTarget,
+                    capturedTargetSet,
+                    panelState.RecipeId,
                     extraIngredientIds,
                     () =>
                     {
@@ -201,7 +208,7 @@ internal static class RuntimePinnedRecipeExtrasService
             {
                 transaction.State = TransactionState.Applied;
                 _successCount++;
-                _lastResult = $"added extras={string.Join(",", extraIngredientIds)} to recipe {capturedTarget.RecipeId}";
+                _lastResult = $"added extras={string.Join(",", extraIngredientIds)} to recipe {panelState.RecipeId}";
             }
 
             return RuntimePinnedRecipeExtrasApplyResult.Applied;
@@ -217,7 +224,7 @@ internal static class RuntimePinnedRecipeExtrasService
     /// </summary>
     public static void OnRefreshFinalized(
         object panel,
-        RuntimeUiPinningService.PinningTargetSnapshot capturedTarget,
+        RuntimeUiTargetSetSnapshot capturedTargetSet,
         Exception? exception)
     {
         nint panelPointer;
@@ -235,10 +242,8 @@ internal static class RuntimePinnedRecipeExtrasService
         {
             attempt = Attempts.LastOrDefault(candidate =>
                 candidate.PanelPointer == panelPointer
-                && candidate.TargetGeneration == capturedTarget.Generation
-                && candidate.SessionGeneration == capturedTarget.SessionGeneration
-                && candidate.RecipeId == capturedTarget.RecipeId
-                && string.Equals(candidate.TargetRevision, capturedTarget.TargetRevision, StringComparison.Ordinal));
+                && candidate.TargetGeneration == capturedTargetSet.Generation
+                && candidate.SessionGeneration == capturedTargetSet.SessionGeneration);
             if (attempt == null) return;
 
             if (exception == null && attempt.State == TransactionState.Applied)
@@ -283,18 +288,18 @@ internal static class RuntimePinnedRecipeExtrasService
     }
 
     private static bool IsCurrentTarget(
-        RuntimeUiPinningService.PinningTargetSnapshot capturedTarget,
+        RuntimeUiTargetSetSnapshot capturedTargetSet,
+        int recipeId,
         IReadOnlyList<int> extraIngredientIds)
     {
-        var currentTarget = RuntimeUiPinningService.ReadPinningTarget();
-        return ReferenceEquals(currentTarget, capturedTarget)
-            && currentTarget.Enabled
-            && currentTarget.ExtraIngredientFillEnabled
-            && currentTarget.Generation == capturedTarget.Generation
-            && currentTarget.SessionGeneration == capturedTarget.SessionGeneration
-            && currentTarget.RecipeId == capturedTarget.RecipeId
-            && string.Equals(currentTarget.TargetRevision, capturedTarget.TargetRevision, StringComparison.Ordinal)
-            && currentTarget.ExtraIngredientIds.SequenceEqual(extraIngredientIds);
+        var currentTargetSet = RuntimeUiPinningService.ReadTargetSet();
+        return ReferenceEquals(currentTargetSet, capturedTargetSet)
+            && currentTargetSet.Generation == capturedTargetSet.Generation
+            && currentTargetSet.SessionGeneration == capturedTargetSet.SessionGeneration
+            && currentTargetSet.ResolveRecipeExtras(
+                recipeId,
+                out var currentExtraIngredientIds) == RuntimeUiRecipeExtrasResolution.Resolved
+            && currentExtraIngredientIds.SequenceEqual(extraIngredientIds);
     }
 
     private static int[] ExpandForDebit(IReadOnlyList<int> ids, int multiplier)
@@ -385,8 +390,7 @@ internal static class RuntimePinnedRecipeExtrasService
         Attempts.RemoveAll(attempt =>
             attempt.PanelPointer == current.PanelPointer
             && (attempt.TargetGeneration != current.TargetGeneration
-                || attempt.SessionGeneration != current.SessionGeneration
-                || !string.Equals(attempt.TargetRevision, current.TargetRevision, StringComparison.Ordinal)));
+                || attempt.SessionGeneration != current.SessionGeneration));
     }
 
     private static string DescribeException(Exception exception)
@@ -414,14 +418,12 @@ internal static class RuntimePinnedRecipeExtrasService
             long targetGeneration,
             long sessionGeneration,
             int recipeId,
-            string targetRevision,
             TransactionState state)
         {
             PanelPointer = panelPointer;
             TargetGeneration = targetGeneration;
             SessionGeneration = sessionGeneration;
             RecipeId = recipeId;
-            TargetRevision = targetRevision;
             State = state;
         }
 
@@ -429,7 +431,6 @@ internal static class RuntimePinnedRecipeExtrasService
         public long TargetGeneration { get; }
         public long SessionGeneration { get; }
         public int RecipeId { get; }
-        public string TargetRevision { get; }
         public TransactionState State { get; set; }
 
         public bool HasSameIdentity(TransactionAttempt other)
@@ -437,8 +438,7 @@ internal static class RuntimePinnedRecipeExtrasService
             return PanelPointer == other.PanelPointer
                 && TargetGeneration == other.TargetGeneration
                 && SessionGeneration == other.SessionGeneration
-                && RecipeId == other.RecipeId
-                && string.Equals(TargetRevision, other.TargetRevision, StringComparison.Ordinal);
+                && RecipeId == other.RecipeId;
         }
     }
 

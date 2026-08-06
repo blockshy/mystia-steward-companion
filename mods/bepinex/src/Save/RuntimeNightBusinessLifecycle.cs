@@ -214,6 +214,7 @@ internal static class RuntimeNightBusinessLifecycle
             RunBoundaryAction("resume cooker highlight", () => RuntimeCookerHighlightService.Resume(reason));
             RunBoundaryAction("resume seat highlight", () => RuntimeSeatHighlightService.Resume(reason));
             RunBoundaryAction("resume order highlight", () => RuntimeOrderHighlightService.Resume(reason));
+            RunBoundaryAction("resume throw-delivery order highlight", () => RuntimeThrowDeliverOrderHighlightService.Resume(reason));
             RunBoundaryAction("resume pinned-list highlight", () => RuntimePinnedListHighlightService.Resume(reason));
             return;
         }
@@ -223,6 +224,7 @@ internal static class RuntimeNightBusinessLifecycle
             RunBoundaryAction("suspend cooker highlight", () => RuntimeCookerHighlightService.Suspend(reason));
             RunBoundaryAction("suspend seat highlight", () => RuntimeSeatHighlightService.Suspend(reason));
             RunBoundaryAction("suspend order highlight", () => RuntimeOrderHighlightService.Suspend(reason));
+            RunBoundaryAction("suspend throw-delivery order highlight", () => RuntimeThrowDeliverOrderHighlightService.Suspend(reason));
             RunBoundaryAction("suspend pinned-list highlight", () => RuntimePinnedListHighlightService.Suspend(reason));
         }
         else if (snapshot.Phase == NightBusinessLifecyclePhase.Destroyed)
@@ -230,6 +232,7 @@ internal static class RuntimeNightBusinessLifecycle
             RunBoundaryAction("abandon cooker highlight", () => RuntimeCookerHighlightService.Abandon(reason));
             RunBoundaryAction("abandon seat highlight", () => RuntimeSeatHighlightService.Abandon(reason));
             RunBoundaryAction("abandon order highlight", () => RuntimeOrderHighlightService.Abandon(reason));
+            RunBoundaryAction("abandon throw-delivery order highlight", () => RuntimeThrowDeliverOrderHighlightService.Abandon(reason));
             RunBoundaryAction("abandon pinned-list highlight", () => RuntimePinnedListHighlightService.Abandon(reason));
         }
 

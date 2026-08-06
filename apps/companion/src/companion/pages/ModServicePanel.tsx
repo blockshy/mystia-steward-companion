@@ -33,7 +33,7 @@ import type {
   AutomationSafetyBarrierDiagnostic,
   CustomRecipeData,
   FavoriteData,
-  GameUiPinningTarget,
+  GameUiTargetSlots,
   NightBusinessContext,
   NightBusinessOrder,
   NormalAutoOrderDiagnostic,
@@ -84,6 +84,18 @@ const SERVICE_PANEL_VIEW_OPTIONS: { value: ServicePanelView; label: string }[] =
 ];
 
 const SERVICE_PANEL_DEFAULT_VIEW_OPTIONS = SERVICE_PANEL_VIEW_OPTIONS.filter((option) => option.value !== 'diagnostics');
+
+function formatGameUiTargetCookers(targets: GameUiTargetSlots): string {
+  const values = [
+    targets.rare?.features.cookerHighlightEnabled && targets.rare.cookerName
+      ? `稀客：${targets.rare.cookerName}`
+      : '',
+    targets.normal?.features.cookerHighlightEnabled && targets.normal.cookerName
+      ? `普客：${targets.normal.cookerName}`
+      : '',
+  ].filter(Boolean);
+  return values.length > 0 ? values.join('；') : '暂无';
+}
 
 function formatAutomationDetailTime(value: number): string {
   if (value <= 0) return '';
@@ -232,7 +244,7 @@ export function ModServicePanel({
   orderRecommendationPerformanceMs,
   runtimeSets,
   uiPinningStatus,
-  uiPinningTarget,
+  uiTargetSlots,
   favorites,
   favoriteBusyKey,
   favoriteError,
@@ -295,7 +307,7 @@ export function ModServicePanel({
   orderRecommendationPerformanceMs?: Record<string, number>;
   runtimeSets: RuntimeSets | null;
   uiPinningStatus: string;
-  uiPinningTarget: GameUiPinningTarget | null;
+  uiTargetSlots: GameUiTargetSlots;
   favorites: FavoriteData;
   favoriteBusyKey: string;
   favoriteError: string;
@@ -419,7 +431,7 @@ export function ModServicePanel({
             label="已摆放厨具"
             value={formatPlacedCookerSummary(runtime, runtimeSets, nightBusinessActive)}
           />
-          <InfoLine label="目标厨具" value={uiPinningTarget?.cookerName || '暂无'} />
+          <InfoLine label="目标厨具" value={formatGameUiTargetCookers(uiTargetSlots)} />
         </CardContent>
       </Card>
 

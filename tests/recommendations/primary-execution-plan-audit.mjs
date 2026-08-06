@@ -14,18 +14,37 @@ const vite = await createServer({
   appType: 'custom',
   logLevel: 'silent',
 });
-let buildGameUiPinningTarget;
-let buildGameUiPinningSourceOrderState;
-let reconcileGameUiPinningTarget;
+let buildRareGameUiTarget;
+let buildRareGameUiTargetSource;
+let buildNormalGameUiTarget;
+let buildNormalGameUiTargetSource;
+let reconcileGameUiTarget;
 try {
   ({
-    buildGameUiPinningTarget,
-    buildGameUiPinningSourceOrderState,
-    reconcileGameUiPinningTarget,
-  } = await vite.ssrLoadModule('/src/companion/domain/automation.ts'));
+    buildNormalGameUiTarget,
+    buildNormalGameUiTargetSource,
+    buildRareGameUiTarget,
+    buildRareGameUiTargetSource,
+    reconcileGameUiTarget,
+  } = await vite.ssrLoadModule('/src/companion/domain/game-ui-targets.ts'));
 } finally {
   await vite.close();
 }
+const buildRareGameUiTargetForAudit = (recommendations, orderSortMode, indexes, options) =>
+  buildRareGameUiTarget(
+    recommendations,
+    orderSortMode,
+    '#FFDB2E',
+    {
+      listPinningEnabled: true,
+      recipeVariantEnabled: true,
+      cookerHighlightEnabled: true,
+      seatHighlightEnabled: true,
+      orderHighlightEnabled: true,
+    },
+    indexes,
+    options,
+  );
 const basePreferences = {
   automationEnabled: true,
   autoRareOrderEnabled: true,
@@ -235,7 +254,8 @@ const favoriteMission = normalizePrimaryExecutionPlans(
 assert.equal(getPrimaryExecutionPlan(favoriteMission), lateMissionPlan,
   'An exact mission plan satisfying favorite-only policy must remain authoritative.');
 
-assertGameUiPinningCompletionContracts();
+assertRareGameUiTargetCompletionContracts();
+assertNormalGameUiTargetContracts();
 await assertSourceContracts();
 
 console.log('PASS: one primary execution plan owns display, automation, pinning, mission recipe pinning, and favorite policy.');
@@ -278,30 +298,30 @@ function hardFailure(id) {
   };
 }
 
-function assertGameUiPinningCompletionContracts() {
+function assertRareGameUiTargetCompletionContracts() {
   const indexes = {
     ingredientByName: new Map([
       ['基础材料', { id: 11 }],
       ['额外材料', { id: 29 }],
     ]),
   };
-  const firstPlan = buildUiPinningPlan(20, 120, 220);
-  const secondPlan = buildUiPinningPlan(21, 121, 221);
-  const servedFirst = buildUiPinningRecommendation('R-SERVED-A', 1, firstPlan, {
+  const firstPlan = buildRareTargetPlan(20, 120, 220);
+  const secondPlan = buildRareTargetPlan(21, 121, 221);
+  const servedFirst = buildRareTargetRecommendation('R-101', 1, firstPlan, {
     hasServedFood: true,
     hasServedBeverage: true,
   });
-  const activeSecond = buildUiPinningRecommendation('R-ACTIVE-B', 2, secondPlan);
+  const activeSecond = buildRareTargetRecommendation('R-102', 2, secondPlan);
 
   assert.equal(
-    buildGameUiPinningTarget([servedFirst], 'ordered', indexes),
+    buildRareGameUiTargetForAudit([servedFirst], 'ordered', indexes),
     null,
     'A fully served order must not keep a game UI target.',
   );
-  const nextTarget = buildGameUiPinningTarget([servedFirst, activeSecond], 'ordered', indexes);
-  assert.equal(nextTarget?.sourceOrderKey, 'trace:R-ACTIVE-B|lifecycle:2',
+  const nextTarget = buildRareGameUiTargetForAudit([servedFirst, activeSecond], 'ordered', indexes);
+  assert.equal(nextTarget?.sourceOrderKey, 'R-102|lifecycle:2',
     'A fully served first order must be skipped in favor of the next actionable order.');
-  assert.equal(nextTarget?.orderTraceId, 'R-ACTIVE-B',
+  assert.equal(nextTarget?.traceId, 'R-102',
     'A game UI target must carry the exact runtime order trace without a fallback identity.');
   assert.equal(nextTarget?.recipeId, secondPlan.food.recipe.recipeId,
     'The next actionable order must own the recipe target.');
@@ -312,31 +332,27 @@ function assertGameUiPinningCompletionContracts() {
   assert.equal(nextTarget?.deskCode, 2,
     'The target must carry the exact source order desk code for table highlighting.');
 
-  const missingTrace = buildUiPinningRecommendation('', 1, firstPlan);
-  const missingTraceTarget = buildGameUiPinningTarget([missingTrace, activeSecond], 'ordered', indexes);
-  assert.equal(missingTraceTarget?.orderTraceId, '',
-    'A missing runtime order trace must remain empty instead of deriving an alias.');
-  assert.equal(missingTraceTarget?.sourceOrderKey.startsWith('trace:'), false,
-    'A missing runtime order trace must not be replaced by a trace-form identity.');
-  assert.equal(missingTraceTarget?.recipeId, firstPlan.food.recipe.recipeId,
-    'A missing order trace must disable only order highlighting without clearing other game UI targets.');
-  const opaqueTraceTarget = buildGameUiPinningTarget([
-    buildUiPinningRecommendation(' R-OPAQUE ', 1, firstPlan),
+  const missingTrace = buildRareTargetRecommendation('', 1, firstPlan);
+  const missingTraceTarget = buildRareGameUiTargetForAudit([missingTrace, activeSecond], 'ordered', indexes);
+  assert.equal(missingTraceTarget?.traceId, 'R-102',
+    'A missing runtime order trace must make that order ineligible instead of deriving an alias.');
+  const opaqueTraceTarget = buildRareGameUiTargetForAudit([
+    buildRareTargetRecommendation(' R-OPAQUE ', 1, firstPlan),
   ], 'ordered', indexes);
-  assert.equal(opaqueTraceTarget?.orderTraceId, ' R-OPAQUE ',
-    'The runtime order trace is opaque and must not be trimmed or normalized on the wire target.');
+  assert.equal(opaqueTraceTarget, null,
+    'An invalid trace must fail closed instead of being trimmed or normalized.');
 
-  const activeSecondSource = buildGameUiPinningSourceOrderState(activeSecond.order);
+  const activeSecondSource = buildRareGameUiTargetSource(activeSecond.order);
   assert.equal(
-    reconcileGameUiPinningTarget(nextTarget, [
+    reconcileGameUiTarget(nextTarget, [
       activeSecondSource,
-      buildGameUiPinningSourceOrderState(servedFirst.order),
+      buildRareGameUiTargetSource(servedFirst.order),
     ]),
     nextTarget,
     'An unrelated order state must not invalidate the current target.',
   );
 
-  const foodDeliveredDuringPending = reconcileGameUiPinningTarget(nextTarget, [{
+  const foodDeliveredDuringPending = reconcileGameUiTarget(nextTarget, [{
     ...activeSecondSource,
     hasServedFood: true,
   }]);
@@ -348,7 +364,7 @@ function assertGameUiPinningCompletionContracts() {
   assert.equal(foodDeliveredDuringPending?.beverageId, secondPlan.beverage.beverage.id,
     'Pending reconciliation must retain an unserved beverage.');
 
-  const beverageDeliveredDuringPending = reconcileGameUiPinningTarget(nextTarget, [{
+  const beverageDeliveredDuringPending = reconcileGameUiTarget(nextTarget, [{
     ...activeSecondSource,
     hasServedBeverage: true,
   }]);
@@ -357,24 +373,24 @@ function assertGameUiPinningCompletionContracts() {
   assert.equal(beverageDeliveredDuringPending?.beverageId, -1,
     'Pending reconciliation must remove a delivered beverage immediately.');
 
-  assert.equal(reconcileGameUiPinningTarget(nextTarget, []), null,
+  assert.equal(reconcileGameUiTarget(nextTarget, []), null,
     'A missing source order must clear the target.');
-  assert.equal(reconcileGameUiPinningTarget(nextTarget, [activeSecondSource, activeSecondSource]), null,
+  assert.equal(reconcileGameUiTarget(nextTarget, [activeSecondSource, activeSecondSource]), null,
     'An ambiguous source order must clear the target.');
-  assert.equal(reconcileGameUiPinningTarget(nextTarget, [{
+  assert.equal(reconcileGameUiTarget(nextTarget, [{
     ...activeSecondSource,
     sourceOrderSignature: `${activeSecondSource.sourceOrderSignature}|changed`,
   }]), null, 'An immutable source identity change must clear the target.');
-  assert.equal(reconcileGameUiPinningTarget(nextTarget, [{
+  assert.equal(reconcileGameUiTarget(nextTarget, [{
     ...activeSecondSource,
     hasServedFood: true,
     hasServedBeverage: true,
   }]), null, 'A fully delivered source order must clear the target.');
 
-  const foodServedTarget = buildGameUiPinningTarget([
-    buildUiPinningRecommendation('R-FOOD-SERVED', 1, firstPlan, { hasServedFood: true }),
+  const foodServedTarget = buildRareGameUiTargetForAudit([
+    buildRareTargetRecommendation('R-103', 1, firstPlan, { hasServedFood: true }),
   ], 'ordered', indexes);
-  assert.equal(foodServedTarget?.sourceOrderKey, 'trace:R-FOOD-SERVED|lifecycle:1');
+  assert.equal(foodServedTarget?.sourceOrderKey, 'R-103|lifecycle:1');
   assert.equal(foodServedTarget?.recipeId, -1,
     'A served food component must not remain pinned.');
   assert.deepEqual(foodServedTarget?.ingredientIds, [],
@@ -386,8 +402,8 @@ function assertGameUiPinningCompletionContracts() {
   assert.equal(foodServedTarget?.beverageId, firstPlan.beverage.beverage.id,
     'An unserved beverage must remain targetable after food delivery.');
 
-  const beverageServedTarget = buildGameUiPinningTarget([
-    buildUiPinningRecommendation('R-BEVERAGE-SERVED', 1, firstPlan, { hasServedBeverage: true }),
+  const beverageServedTarget = buildRareGameUiTargetForAudit([
+    buildRareTargetRecommendation('R-104', 1, firstPlan, { hasServedBeverage: true }),
   ], 'ordered', indexes);
   assert.equal(beverageServedTarget?.recipeId, firstPlan.food.recipe.recipeId,
     'An unserved food must remain targetable after beverage delivery.');
@@ -398,46 +414,175 @@ function assertGameUiPinningCompletionContracts() {
     'A served beverage component must not remain pinned.');
 
   const foodOnlyPlan = { ...firstPlan, beverage: null };
-  const noProjectableFirst = buildUiPinningRecommendation('R-NO-PROJECTION', 1, foodOnlyPlan, {
+  const noProjectableFirst = buildRareTargetRecommendation('R-105', 1, foodOnlyPlan, {
     hasServedFood: true,
   });
   assert.equal(
-    buildGameUiPinningTarget([noProjectableFirst, activeSecond], 'ordered', indexes)?.sourceOrderKey,
-    'trace:R-ACTIVE-B|lifecycle:2',
+    buildRareGameUiTargetForAudit([noProjectableFirst, activeSecond], 'ordered', indexes)?.sourceOrderKey,
+    'R-102|lifecycle:2',
     'A primary plan with no unserved projectable component must not block a later order.',
   );
 
-  const ordinaryFirst = buildUiPinningRecommendation('R-ORDINARY-FIRST', 1, firstPlan);
-  const servedMissionFood = buildUiPinningRecommendation('R-MISSION-FOOD-SERVED', 2, secondPlan, {
+  const ordinaryFirst = buildRareTargetRecommendation('R-106', 1, firstPlan);
+  const servedMissionFood = buildRareTargetRecommendation('R-107', 2, secondPlan, {
     hasServedFood: true,
     mission: true,
   });
   assert.equal(
-    buildGameUiPinningTarget(
+    buildRareGameUiTargetForAudit(
       [ordinaryFirst, servedMissionFood],
       'ordered',
       indexes,
       { prioritizeMissionRecipe: true },
     )?.sourceOrderKey,
-    'trace:R-ORDINARY-FIRST|lifecycle:1',
+    'R-106|lifecycle:1',
     'A delivered mission recipe must not retain cross-order mission priority.',
   );
-  const activeMission = buildUiPinningRecommendation('R-MISSION-ACTIVE', 2, secondPlan, {
+  const activeMission = buildRareTargetRecommendation('R-108', 2, secondPlan, {
     mission: true,
   });
   assert.equal(
-    buildGameUiPinningTarget(
+    buildRareGameUiTargetForAudit(
       [ordinaryFirst, activeMission],
       'ordered',
       indexes,
       { prioritizeMissionRecipe: true },
     )?.sourceOrderKey,
-    'trace:R-MISSION-ACTIVE|lifecycle:2',
+    'R-108|lifecycle:2',
     'An unserved verified mission recipe must retain cross-order priority.',
   );
 }
 
-function buildUiPinningPlan(foodId, beverageId, recipeId) {
+function assertNormalGameUiTargetContracts() {
+  const recipe = {
+    id: 501,
+    recipeId: 1501,
+    name: '普客目标料理',
+    description: '',
+    ingredients: ['普客基础材料'],
+    positiveTags: [],
+    negativeTags: [],
+    cooker: '煮锅',
+    baseCookTime: 5,
+    dlc: 0,
+    level: 1,
+    price: 10,
+    from: {},
+  };
+  const data = {
+    source: 'runtime',
+    status: 'ok',
+    recipes: [recipe],
+    ingredients: [{
+      id: 701,
+      name: '普客基础材料',
+      description: '',
+      type: '',
+      tags: [],
+      dlc: 0,
+      level: 1,
+      price: 1,
+      from: {},
+    }],
+    beverages: [{
+      id: 601,
+      name: '普客目标酒水',
+      description: '',
+      tags: [],
+      dlc: 0,
+      level: 1,
+      price: 2,
+      from: {},
+    }],
+    normalCustomers: [],
+    rareCustomers: [],
+    rareCustomerProfiles: [],
+    foodTagIdMap: {},
+    beverageTagIdMap: {},
+    tagPriorityRules: [],
+  };
+  const order = buildNormalTargetOrder();
+  const target = buildNormalGameUiTarget({
+    orders: [order],
+    executionTargets: [],
+    executionTargetsCurrent: false,
+    specialBusiness: null,
+    businessGeneration: 9,
+    color: '#5FACD3',
+    features: {
+      listPinningEnabled: true,
+      recipeVariantEnabled: false,
+      cookerHighlightEnabled: true,
+      seatHighlightEnabled: false,
+      orderHighlightEnabled: true,
+    },
+    data,
+  });
+
+  assert.equal(target?.kind, 'normal');
+  assert.equal(target?.color, '#5FACD3');
+  assert.equal(target?.traceId, 'N-201');
+  assert.equal(target?.orderKey, 'ptr:abc');
+  assert.equal(target?.orderLifecycleSequence, 12);
+  assert.equal(target?.deskCode, 3);
+  assert.equal(target?.recipeId, recipe.recipeId);
+  assert.deepEqual(target?.ingredientIds, [701]);
+  assert.equal(target?.beverageId, 601);
+  assert.equal(target?.cookerTypeId, 1);
+
+  assert.equal(buildNormalGameUiTarget({
+    orders: [{ ...order, orderKey: 'ptr:ABC' }],
+    executionTargets: [],
+    executionTargetsCurrent: false,
+    specialBusiness: null,
+    businessGeneration: 9,
+    color: '#5FACD3',
+    features: {
+      listPinningEnabled: true,
+      recipeVariantEnabled: false,
+      cookerHighlightEnabled: true,
+      seatHighlightEnabled: false,
+      orderHighlightEnabled: true,
+    },
+    data,
+  }), null, 'A normal target must reject a non-canonical raw pointer key.');
+
+  const source = buildNormalGameUiTargetSource(order);
+  const foodServed = reconcileGameUiTarget(target, [{ ...source, hasServedFood: true }]);
+  assert.equal(foodServed?.recipeId, -1);
+  assert.deepEqual(foodServed?.ingredientIds, []);
+  assert.equal(foodServed?.cookerTypeId, -1);
+  assert.equal(foodServed?.beverageId, 601,
+    'A normal target must retain its unserved beverage after food delivery.');
+  assert.equal(reconcileGameUiTarget(target, [{ ...source, terminal: true }]), null,
+    'An evaluated normal order must clear only its own target lane.');
+}
+
+function buildNormalTargetOrder(overrides = {}) {
+  return {
+    traceId: 'N-201',
+    orderKey: 'ptr:abc',
+    orderLifecycleSequence: 12,
+    deskCode: 3,
+    guestId: 41,
+    runtimeGuestId: 41,
+    guestName: '普客测试',
+    specialBusinessRole: '',
+    foodId: 501,
+    foodName: '普客目标料理',
+    beverageId: 601,
+    beverageName: '普客目标酒水',
+    hasServedFood: false,
+    hasServedBeverage: false,
+    readyToEvaluate: false,
+    hasEvaluated: false,
+    firstSeenAtUtc: '2026-08-06T00:00:00.000Z',
+    source: 'capture',
+    ...overrides,
+  };
+}
+
+function buildRareTargetPlan(foodId, beverageId, recipeId) {
   const plan = buildPlan(foodId, beverageId, recipeId);
   return {
     ...plan,
@@ -509,7 +654,7 @@ function buildUiPinningPlan(foodId, beverageId, recipeId) {
   };
 }
 
-function buildUiPinningRecommendation(traceId, deskCode, plan, options = {}) {
+function buildRareTargetRecommendation(traceId, deskCode, plan, options = {}) {
   const guestId = 15;
   const runtimeGuestId = 15;
   return {
@@ -563,6 +708,7 @@ async function assertSourceContracts() {
     settings,
     shared,
     worker,
+    gameUiTargets,
   ] = await Promise.all([
     readFile(new URL('apps/companion/src/companion/domain/service-recommendations.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/domain/automation.ts', root), 'utf8'),
@@ -574,6 +720,7 @@ async function assertSourceContracts() {
     readFile(new URL('apps/companion/src/companion/pages/ModSettingsPanel.tsx', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/pages/shared.tsx', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/workers/order-recommendations.worker.ts', root), 'utf8'),
+    readFile(new URL('apps/companion/src/companion/domain/game-ui-targets.ts', root), 'utf8'),
   ]);
 
   const normalizeIndex = service.indexOf('normalizePrimaryExecutionPlans(');
@@ -685,25 +832,45 @@ async function assertSourceContracts() {
     'Rare automation must read the shared primary plan.');
   assert.equal(picker.includes('for (const plan of'), false,
     'Rare automation must not scan later plans and create a second target.');
-  const pinning = functionSlice(automation, 'buildGameUiPinningTarget', 'hasAutomationActionEnabled');
+  const pinning = functionSlice(gameUiTargets, 'buildRareGameUiTarget', 'buildNormalGameUiTarget');
   assert.ok(
-    pinning.includes('!item.order.hasServedFood && primaryPlan.food')
-      && pinning.includes('!item.order.hasServedBeverage && primaryPlan.beverage')
-      && pinning.includes('recipe != null && isVerifiedMissionPrimaryExecutionPlan(item)')
-      && pinning.includes('getPrimaryExecutionPlan(item.executionPlans)'),
+    pinning.includes("order.hasServedFood === true ? null : plan.food")
+      && pinning.includes("order.hasServedBeverage === true ? null : plan.beverage")
+      && pinning.includes('food != null && isVerifiedMissionPrimaryExecutionPlan(recommendation)')
+      && pinning.includes('getPrimaryExecutionPlan(recommendation.executionPlans)'),
     'Game UI pinning must project only unserved primary-plan components and prioritize only an unserved mission recipe.',
   );
   assert.ok(
-    pinning.includes('const sourceOrderKey = buildNightBusinessOrderKey(item.order);')
-      && pinning.includes("const orderTraceId = item.order.traceId ?? '';")
-      && pinning.includes('orderTraceId,')
-      && pinning.includes('sourceOrderKey,')
+    pinning.includes('sourceOrderKey: buildRareSourceOrderKey(order)')
+      && pinning.includes('traceId: order.traceId!')
       && types.includes('sourceOrderKey: string;')
-      && types.includes('orderTraceId: string;'),
+      && types.includes('traceId: string;')
+      && types.includes('orderLifecycleSequence: number;'),
     'A game UI target must carry exact frontend and runtime order identities without deriving a trace fallback.',
   );
   assert.equal(pinning.includes('item.recipes[0]'), false,
     'Game UI pinning must not fall back to independently paired display rows.');
+  const normalPinning = functionSlice(gameUiTargets, 'buildNormalGameUiTarget', 'buildRareGameUiTargetSource');
+  assert.ok(
+    normalPinning.includes('selection?.target')
+      && normalPinning.includes('isCurrentNormalExecutionTarget(')
+      && normalPinning.includes('if (requiresFinalTarget && !executionTarget) continue;'),
+    'Special-business normal targets must require a current final worker selection without an original-order fallback.',
+  );
+  const normalIdentity = functionSlice(gameUiTargets, 'isCurrentNormalExecutionTarget', 'resolveIngredientNames');
+  assert.ok(
+    normalIdentity.includes('target.matchFoodId !== order.foodId')
+      && normalIdentity.includes('target.matchBeverageId !== order.beverageId')
+      && normalIdentity.includes('target.specialTargetSignature === policy.specialTargetSignature')
+      && normalIdentity.includes('target.specialTargetRevision === policy.specialTargetRevision'),
+    'A normal final target must match the source order and current special-target policy identity.',
+  );
+  const recipeResolver = functionSlice(gameUiTargets, 'resolveNormalRecipe', 'isCurrentNormalExecutionTarget');
+  assert.ok(
+    recipeResolver.includes('recipe.id === target.foodId && recipe.recipeId === target.recipeId')
+      && recipeResolver.includes('matches.length === 1'),
+    'A special normal recipe must match exact foodId + recipeId and reject ambiguous or mismatched catalog rows.',
+  );
 
   assert.ok(
     workbench.includes('serializePrimaryExecutionPlanPolicy(buildPrimaryExecutionPlanPolicy(preferences))'),
@@ -721,15 +888,20 @@ async function assertSourceContracts() {
     'The global game target selector must receive the persisted mission-pinning preference only in ordinary business.',
   );
   assert.ok(
-    workbench.includes('pinningEnabled: companionPreferences.gameUiPinningEnabled'),
-    'Publishing targets into the game list must remain controlled by the experimental game UI pinning switch.',
+    workbench.includes('listPinningEnabled: companionPreferences.rareGameUiPinningEnabled')
+      && workbench.includes('listPinningEnabled: companionPreferences.normalGameUiPinningEnabled'),
+    'Rare and normal list pinning must remain independently controlled.',
   );
   assert.ok(
-    workbench.includes('extraIngredientFillEnabled: companionPreferences.gameUiPinningEnabled')
-      && workbench.includes('seatHighlightEnabled: companionPreferences.seatHighlightEnabled')
-      && workbench.includes('orderHighlightEnabled: companionPreferences.orderHighlightEnabled')
-      && workbench.includes('|| companionPreferences.orderHighlightEnabled;'),
-    'Extra-ingredient filling must remain subordinate to UI pinning while table and order highlighting stay independently controlled.',
+    workbench.includes('recipeVariantEnabled: companionPreferences.rareGameUiPinningEnabled')
+      && workbench.includes('&& companionPreferences.rareRecipeVariantEnabled')
+      && workbench.includes('recipeVariantEnabled: companionPreferences.normalGameUiPinningEnabled')
+      && workbench.includes('&& companionPreferences.normalRecipeVariantEnabled')
+      && workbench.includes('seatHighlightEnabled: companionPreferences.rareSeatHighlightEnabled')
+      && workbench.includes('seatHighlightEnabled: companionPreferences.normalSeatHighlightEnabled')
+      && workbench.includes('orderHighlightEnabled: companionPreferences.rareOrderHighlightEnabled')
+      && workbench.includes('orderHighlightEnabled: companionPreferences.normalOrderHighlightEnabled'),
+    'Each target kind must own its recipe-variant and visual feature switches.',
   );
   assert.equal(
     workbench.includes('preferences.autoPrepRecipeFavoritesOnly ? 1 : 0'),

@@ -5,7 +5,7 @@ const APP_URL = process.env.MYSTIA_APP_URL || 'http://127.0.0.1:4173/';
 const API_URL = process.env.MYSTIA_API_URL || 'http://127.0.0.1:32145';
 const API_TOKEN = process.env.MYSTIA_API_TOKEN || 'mock-token';
 const STORAGE_PREFIX = 'mystia-steward-companion';
-const TARGET_PATH = '/ui-pinning/target';
+const TARGET_PATH = '/ui-pinning/targets';
 
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
@@ -26,17 +26,64 @@ let mutatedSnapshotServeCount = 0;
 let deferredSecondOrder = null;
 
 const preferencesSource = readFileSync('apps/companion/src/companion/preferences.ts', 'utf8');
+const apiSource = readFileSync('apps/companion/src/companion/api.ts', 'utf8');
+const targetsSource = readFileSync('apps/companion/src/companion/domain/game-ui-targets.ts', 'utf8');
+const publisherSource = readFileSync('apps/companion/src/companion/hooks/useGameUiTargetPublisher.ts', 'utf8');
+const settingsSource = readFileSync('apps/companion/src/companion/pages/ModSettingsPanel.tsx', 'utf8');
 assert(
-  /recommendedExtraIngredientFillEnabled:\s*readStoredBoolean\([^,]+,\s*false\)/.test(preferencesSource),
-  '推荐料理自动加料必须默认关闭',
+  /rareRecipeVariantEnabled:\s*readStoredBoolean\([^,]+,\s*false\)/.test(preferencesSource)
+    && /normalRecipeVariantEnabled:\s*readStoredBoolean\([^,]+,\s*false\)/.test(preferencesSource),
+  '两类目标加料料理选项必须分别默认关闭',
 );
 assert(
-  /seatHighlightEnabled:\s*readStoredBoolean\([^,]+,\s*false\)/.test(preferencesSource),
-  '目标桌位高亮必须默认关闭',
+  /rareSeatHighlightEnabled:\s*readStoredBoolean\([^,]+,\s*false\)/.test(preferencesSource)
+    && /normalSeatHighlightEnabled:\s*readStoredBoolean\([^,]+,\s*false\)/.test(preferencesSource),
+  '两类目标桌位高亮必须分别默认关闭',
 );
 assert(
-  /orderHighlightEnabled:\s*readStoredBoolean\([^,]+,\s*false\)/.test(preferencesSource),
-  '目标订单高亮必须默认关闭',
+  /rareOrderHighlightEnabled:\s*readStoredBoolean\([^,]+,\s*false\)/.test(preferencesSource)
+    && /normalOrderHighlightEnabled:\s*readStoredBoolean\([^,]+,\s*false\)/.test(preferencesSource),
+  '两类目标订单高亮必须分别默认关闭',
+);
+assert(preferencesSource.includes("DEFAULT_RARE_TARGET_HIGHLIGHT_COLOR = '#FFDB2E'"), '稀客高亮默认色漂移');
+assert(preferencesSource.includes("DEFAULT_NORMAL_TARGET_HIGHLIGHT_COLOR = '#5FACD3'"), '普客高亮默认色漂移');
+assert(/\^#\[0-9A-Fa-f\]\{6\}\$/.test(preferencesSource), '高亮颜色未严格限制为 #RRGGBB');
+assert(
+  /if \(event\.key === 'Escape'\) \{\s*event\.preventDefault\(\);\s*setDraft\(null\);\s*\}/.test(settingsSource),
+  '高亮色 Escape 必须只撤销草稿，不能 blur 后提交旧闭包值',
+);
+assert(apiSource.includes('/ui-pinning/targets?'), '双目标没有使用 plural 原子发布 endpoint');
+assert(!/\/ui-pinning\/target\?/.test(apiSource), '旧 singular UI target endpoint 仍被前端调用');
+const targetApiSource = apiSource.slice(
+  apiSource.indexOf('export async function publishGameUiTargets'),
+  apiSource.indexOf('export async function prepareNextRareOrder'),
+);
+assert(!targetApiSource.includes('enabled: String(enabled)'), '旧集合级置顶开关仍进入 wire');
+assert(!targetApiSource.includes('highlightEnabled: String(highlightEnabled)'), '旧集合级厨具开关仍进入 wire');
+assert(!targetApiSource.includes('extraIngredientFillEnabled'), '旧集合级自动加料字段仍进入 wire');
+assert(targetApiSource.includes('params.set(`${prefix}ListPinningEnabled`'), '目标级列表置顶开关未进入 wire');
+assert(targetApiSource.includes('params.set(`${prefix}RecipeVariantEnabled`'), '目标级加料料理选项开关未进入 wire');
+assert(apiSource.includes('params.set(`${prefix}Color`, target.color.slice(1))'), '颜色没有进入目标 wire');
+const revisionSource = targetsSource.slice(
+  targetsSource.indexOf('function buildTargetRevision'),
+  targetsSource.indexOf('function resolveNormalRecipe'),
+);
+assert(!revisionSource.includes('target.color'), '视觉颜色错误混入业务 targetRevision');
+assert(!revisionSource.includes('target.features'), '视觉功能开关错误混入业务 targetRevision');
+assert(
+  publisherSource.includes('for (const kind of TARGET_KINDS)')
+    && publisherSource.includes('failed: Record<GameUiTargetKind, boolean>')
+    && publisherSource.includes('else if (lane.isCurrent && !lane.pending)')
+    && publisherSource.includes('state.failed[kind] = false'),
+  '稀客与普客没有独立维护 current/error/reconcile 边界',
+);
+assert(
+  publisherSource.includes('state.contextClearPending = true')
+    && publisherSource.includes('clearsPreviousContext: state.contextClearPending')
+    && publisherSource.includes('state.contextClearPending = false')
+    && publisherSource.includes('setContextClearRevision((revision) => revision + 1)')
+    && publisherSource.includes('!state.contextClearPending && lane.isCurrent && !lane.pending'),
+  '连接或目标策略变化后的空目标发布没有确定触发当前双槽重发',
 );
 
 try {
@@ -45,10 +92,12 @@ try {
     const url = new URL(request.url());
 
     if (url.pathname === TARGET_PATH) {
+      const rawParams = Object.fromEntries(url.searchParams.entries());
       const entry = {
         method: request.method(),
         at: Date.now(),
-        params: Object.fromEntries(url.searchParams.entries()),
+        rawParams,
+        params: { ...rawParams, ...readTargetParams(rawParams, 'rare') },
       };
       targetRequests.push(entry);
       activeTargetRequests += 1;
@@ -129,23 +178,61 @@ try {
   assert(acceptedRetry.at - rejectedRequest.at >= 650, '目标失败后未执行固定退避');
 
   const runtimeData = await readRuntimeData();
-  const selectedRecipe = runtimeData.recipes.find((recipe) => recipe.name === acceptedRetry.params.recipeName);
-  assert(selectedRecipe, `Mock 运行时目录中找不到料理 ${acceptedRetry.params.recipeName}`);
+  const selectedRecipe = runtimeData.recipes.find((recipe) => recipe.recipeId === Number(acceptedRetry.params.recipeId));
+  assert(selectedRecipe, `Mock 运行时目录中找不到 recipeId=${acceptedRetry.params.recipeId}`);
   assert(selectedRecipe.id !== selectedRecipe.recipeId, 'Mock foodId 与 recipeId 仍然相同，无法检测 ID 契约回归');
   assert(Number(acceptedRetry.params.recipeId) === selectedRecipe.recipeId,
     `下发的 recipeId=${acceptedRetry.params.recipeId}，期望 ${selectedRecipe.recipeId}`);
-  assert(acceptedRetry.params.enabled === 'true', '定向巡检未启用游戏界面置顶');
-  assert(acceptedRetry.params.extraIngredientFillEnabled === 'true', '定向巡检未启用推荐加料自动加入');
-  assert(acceptedRetry.params.seatHighlightEnabled === 'true', '定向巡检未启用目标桌位高亮');
-  assert(acceptedRetry.params.orderHighlightEnabled === 'true', '定向巡检未启用目标订单高亮');
-  assert(acceptedRetry.params.targetRevision, '置顶目标缺少稳定订单/执行计划 revision');
-  assert(acceptedRetry.params.orderTraceId === 'R-0001', '置顶目标缺少精确订单 trace');
+  assert(acceptedRetry.params.listPinningEnabled === 'true', '定向巡检未启用稀客游戏界面置顶');
+  assert(acceptedRetry.params.recipeVariantEnabled === 'true', '定向巡检未启用稀客加料料理选项');
+  assert(acceptedRetry.params.cookerHighlightEnabled === 'true', '定向巡检未启用稀客目标厨具高亮');
+  assert(acceptedRetry.params.seatHighlightEnabled === 'true', '定向巡检未启用稀客目标桌位高亮');
+  assert(acceptedRetry.params.orderHighlightEnabled === 'true', '定向巡检未启用稀客目标订单高亮');
+  assert(acceptedRetry.rawParams.targetCount === '2', '稀客和普客目标没有原子发布为双槽');
+  assert(acceptedRetry.rawParams.target0Kind === 'rare', '双槽未按 rare -> normal 稳定排序');
+  assert(acceptedRetry.rawParams.target1Kind === 'normal', '普客目标槽缺失');
+  assert(acceptedRetry.rawParams.target1ListPinningEnabled === 'true', '定向巡检未独立启用普客游戏界面置顶');
+  assert(acceptedRetry.rawParams.target1RecipeVariantEnabled === 'true', '定向巡检未独立启用普客加料料理选项');
+  assert(acceptedRetry.rawParams.target1CookerHighlightEnabled === 'true', '定向巡检未独立启用普客目标厨具高亮');
+  assert(acceptedRetry.rawParams.target1SeatHighlightEnabled === 'true', '定向巡检未独立启用普客目标桌位高亮');
+  assert(acceptedRetry.rawParams.target1OrderHighlightEnabled === 'true', '定向巡检未独立启用普客目标订单高亮');
+  assert(acceptedRetry.rawParams.target0Color === 'FFDB2E', '稀客默认颜色 wire 漂移');
+  assert(acceptedRetry.rawParams.target1Color === '5FACD3', '普客默认颜色 wire 漂移');
+  assert(acceptedRetry.params.targetRevision, '稀客目标缺少稳定订单/执行计划 revision');
+  assert(acceptedRetry.params.orderTraceId === 'R-0001', '稀客目标缺少精确订单 trace');
+  assert(acceptedRetry.rawParams.target1TraceId === 'N-0001', '普客目标缺少 exact N trace');
+  assert(acceptedRetry.rawParams.target1OrderKey === 'ptr:2001', '普客目标未发送 raw orderKey');
+  assert(acceptedRetry.rawParams.target1OrderLifecycleSequence === '3', '普客目标缺少正生命周期');
   assert(acceptedRetry.params.ingredientIds, '置顶目标缺少材料 ID');
   assert('extraIngredientIds' in acceptedRetry.params, '置顶目标缺少独立的推荐加料字段');
   assert(Number(acceptedRetry.params.deskCode) >= 0, '置顶目标缺少有效桌位');
   assert(acceptedRetry.params.businessGeneration === '1', '置顶目标缺少当前经营 generation');
   assert(Number(acceptedRetry.params.beverageId) < 0, '已经送达的酒水仍进入了游戏界面目标');
-  assert(!acceptedRetry.params.beverageName, '已经送达的酒水仍保留了目标名称');
+  assert(!('targetRevision' in acceptedRetry.rawParams), '旧单目标字段仍残留在 query');
+  assert(!('orderTraceId' in acceptedRetry.rawParams), '旧单目标 trace 字段仍残留在 query');
+  assert(!('enabled' in acceptedRetry.rawParams), '旧集合级列表置顶字段仍残留在 query');
+  assert(!('highlightEnabled' in acceptedRetry.rawParams), '旧集合级厨具高亮字段仍残留在 query');
+  assert(!('extraIngredientFillEnabled' in acceptedRetry.rawParams), '旧集合级自动加料字段仍残留在 query');
+  assert(!('seatHighlightEnabled' in acceptedRetry.rawParams), '旧集合级桌位高亮字段仍残留在 query');
+  assert(!('orderHighlightEnabled' in acceptedRetry.rawParams), '旧集合级订单高亮字段仍残留在 query');
+  assert(!('recipeName' in acceptedRetry.rawParams), '只用于展示的 recipeName 仍进入 wire');
+  assert(!('beverageName' in acceptedRetry.rawParams), '只用于展示的 beverageName 仍进入 wire');
+  assert(!('cookerName' in acceptedRetry.rawParams), '只用于展示的 cookerName 仍进入 wire');
+
+  await assertMockRejectsPublication(acceptedRetry.rawParams, (params) => {
+    for (const suffix of [
+      'ListPinningEnabled',
+      'RecipeVariantEnabled',
+      'CookerHighlightEnabled',
+      'SeatHighlightEnabled',
+      'OrderHighlightEnabled',
+    ]) {
+      params.set(`target0${suffix}`, 'false');
+    }
+  }, 'Mock API 接受了没有任何功能的 target');
+  await assertMockRejectsPublication(acceptedRetry.rawParams, (params) => {
+    params.set('unknownUiTargetField', 'true');
+  }, 'Mock API 接受了未知顶层参数');
 
   await page.locator('[data-gamepad-tab-value="service"]').click();
   const firstRecipeRow = page.locator('[data-gamepad-row-key*="service:order:"][data-gamepad-row-key*=":recipe:"]').first();
@@ -154,7 +241,7 @@ try {
     8_000, '经营中页面未显示稀客推荐首项');
   const firstRecipeText = await firstRecipeRow.innerText();
   const firstBeverageText = await firstBeverageRow.innerText();
-  assert(firstRecipeText.includes('#1') && firstRecipeText.includes(acceptedRetry.params.recipeName),
+  assert(firstRecipeText.includes('#1') && firstRecipeText.includes(selectedRecipe.name),
     `游戏内料理目标未对应页面料理首项：${firstRecipeText}`);
   assert(firstBeverageText.includes('#1'), `经营中页面酒水首项缺失：${firstBeverageText}`);
 
@@ -441,8 +528,8 @@ try {
 
   await page.locator('[data-gamepad-tab-value="settings"]').first().click();
   await page.getByRole('tab', { name: '实验性功能', exact: true }).first().click();
-  const pinningSwitchLabel = page.getByText('游戏界面置顶推荐（实验性）', { exact: true }).first();
-  assert(await pinningSwitchLabel.count(), '未找到游戏界面置顶开关');
+  const pinningSwitchLabel = page.getByText('稀客游戏界面置顶推荐（实验性）', { exact: true }).first();
+  assert(await pinningSwitchLabel.count(), '未找到稀客游戏界面置顶开关');
 
   delayNextTargetMs = 1600;
   const coalescingStartCount = targetRequests.length;
@@ -457,13 +544,14 @@ try {
     '延迟目标完成后未合并补发最新开关状态',
   );
   const coalescedRequests = targetRequests.slice(coalescingStartCount, coalescingStartCount + 2);
-  assert(coalescedRequests[0].params.enabled === 'false', 'pending 期间关闭置顶未立即进入发布队列');
-  assert(coalescedRequests[0].params.highlightEnabled === 'true', '关闭置顶时错误关闭了厨具高亮');
-  assert(coalescedRequests[0].params.extraIngredientFillEnabled === 'false', '关闭置顶时仍允许自动加入加料');
-  assert(coalescedRequests[0].params.seatHighlightEnabled === 'true', '关闭置顶时错误关闭了独立桌位高亮');
-  assert(coalescedRequests[0].params.orderHighlightEnabled === 'true', '关闭置顶时错误关闭了独立订单高亮');
-  assert(coalescedRequests[1].params.enabled === 'true', '延迟请求完成后未补发最新置顶开关');
-  assert(coalescedRequests[1].params.extraIngredientFillEnabled === 'true', '重新开启置顶后未恢复自动加入加料');
+  assert(coalescedRequests[0].params.listPinningEnabled === 'false', 'pending 期间关闭稀客置顶未立即进入发布队列');
+  assert(coalescedRequests[0].params.cookerHighlightEnabled === 'true', '关闭稀客置顶时错误关闭了稀客厨具高亮');
+  assert(coalescedRequests[0].params.recipeVariantEnabled === 'false', '关闭稀客置顶时仍允许稀客加料料理选项');
+  assert(coalescedRequests[0].params.seatHighlightEnabled === 'true', '关闭稀客置顶时错误关闭了稀客桌位高亮');
+  assert(coalescedRequests[0].params.orderHighlightEnabled === 'true', '关闭稀客置顶时错误关闭了稀客订单高亮');
+  assert(coalescedRequests[0].rawParams.target1ListPinningEnabled === 'true', '关闭稀客置顶时错误关闭了普客置顶');
+  assert(coalescedRequests[1].params.listPinningEnabled === 'true', '延迟请求完成后未补发最新稀客置顶开关');
+  assert(coalescedRequests[1].params.recipeVariantEnabled === 'true', '重新开启稀客置顶后未恢复稀客加料料理选项');
   assert(maxActiveTargetRequests === 1, `置顶目标存在并发写入：max=${maxActiveTargetRequests}`);
   await waitFor(
     () => completedTargetRequests.includes(coalescedRequests[1]),
@@ -500,6 +588,9 @@ try {
     '推荐 Worker error 后未清空 Mod 旧目标',
   );
   const errorClearRequest = targetRequests.slice(errorStartCount).find(isEnabledClearTarget);
+  assert(errorClearRequest?.rawParams.targetCount === '1', '稀客 Worker error 错误清空了普客槽');
+  assert(errorClearRequest?.rawParams.target0Kind === 'normal', '稀客 Worker error 后未独立保留普客目标');
+  assert(errorClearRequest?.rawParams.target0Color === '5FACD3', '独立保留的普客目标颜色漂移');
   const heldRecoveryMutationServeCount = mutatedSnapshotServeCount;
   mutateSnapshot('mock-ui-pinning-held-recovery-audit');
   await waitFor(
@@ -514,21 +605,11 @@ try {
   );
   const errorFlagStartCount = targetRequests.length;
   await pinningSwitchLabel.click();
-  try {
-    await waitFor(
-      () => targetRequests.slice(errorFlagStartCount).some((entry) =>
-        entry.params.enabled === 'false'
-        && entry.params.highlightEnabled === 'true'
-        && Number(entry.params.recipeId) < 0),
-      3_000,
-      'Worker error 期间关闭置顶未下发最新 flags',
-    );
-  } catch (error) {
-    console.error(`Worker error 开关请求记录：${JSON.stringify(targetRequests.slice(errorFlagStartCount))}`);
-    console.error(`置顶开关状态：${await page.getByRole('switch', { name: '游戏界面置顶推荐（实验性）' }).isChecked()}`);
-    console.error(`Worker 记录：${JSON.stringify(await page.evaluate(() => window.__uiPinningWorkerEvents))}`);
-    throw error;
-  }
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  assert(targetRequests.length === errorFlagStartCount,
+    '稀客目标缺失时，纯稀客设置变化错误重复发布了仍未变化的普客目标');
+  assert(await page.getByRole('switch', { name: '稀客游戏界面置顶推荐（实验性）' }).isChecked() === false,
+    'Worker error 期间关闭稀客置顶后偏好状态未保留');
 
   const recoverySuccessCount = await page.evaluate(() =>
     window.__uiPinningWorkerEvents.filter((event) => event.deliveredOk === true).length);
@@ -546,11 +627,11 @@ try {
   );
   await waitFor(
     () => targetRequests.slice(recoveryStartCount).some((entry) =>
-      entry.params.enabled === 'false'
-      && entry.params.highlightEnabled === 'true'
+      entry.params.listPinningEnabled === 'false'
+      && entry.params.cookerHighlightEnabled === 'true'
       && Number(entry.params.recipeId) >= 0),
     5_000,
-    'Worker 成功恢复后未解除空目标锁存',
+    'Worker 成功恢复后未携带最新稀客功能设置解除空目标锁存',
   );
 
   const policyBaselineTarget = targetRequests.filter(hasRecipeTarget).at(-1);
@@ -775,11 +856,66 @@ function seedLocalStorage({ apiUrl, apiToken, storagePrefix }) {
   };
   localStorage.setItem(`${storagePrefix}-mod-api-endpoint`, apiUrl);
   localStorage.setItem(`${storagePrefix}-mod-api-token`, apiToken);
-  localStorage.setItem(`${storagePrefix}-game-ui-pinning`, '1');
-  localStorage.setItem(`${storagePrefix}-recommended-extra-ingredient-fill`, '1');
-  localStorage.setItem(`${storagePrefix}-cooker-highlight`, '1');
-  localStorage.setItem(`${storagePrefix}-seat-highlight`, '1');
-  localStorage.setItem(`${storagePrefix}-order-highlight`, '1');
+  for (const kind of ['rare', 'normal']) {
+    localStorage.setItem(`${storagePrefix}-${kind}-game-ui-pinning`, '1');
+    localStorage.setItem(`${storagePrefix}-${kind}-recipe-variant`, '1');
+    localStorage.setItem(`${storagePrefix}-${kind}-cooker-highlight`, '1');
+    localStorage.setItem(`${storagePrefix}-${kind}-seat-highlight`, '1');
+    localStorage.setItem(`${storagePrefix}-${kind}-order-highlight`, '1');
+  }
+}
+
+function readTargetParams(params, kind) {
+  const count = Number(params.targetCount ?? 0);
+  let prefix = '';
+  for (let index = 0; index < count; index += 1) {
+    if (params[`target${index}Kind`] === kind) {
+      prefix = `target${index}`;
+      break;
+    }
+  }
+  if (!prefix) {
+    return {
+      targetRevision: '',
+      listPinningEnabled: 'false',
+      recipeVariantEnabled: 'false',
+      cookerHighlightEnabled: 'false',
+      seatHighlightEnabled: 'false',
+      orderHighlightEnabled: 'false',
+      orderTraceId: '',
+      orderKey: '',
+      orderLifecycleSequence: '0',
+      recipeId: '-1',
+      recipeName: '',
+      ingredientIds: '',
+      extraIngredientIds: '',
+      beverageId: '-1',
+      beverageName: '',
+      cookerTypeId: '-1',
+      cookerName: '',
+      deskCode: '-1',
+    };
+  }
+  return {
+    targetRevision: params[`${prefix}Revision`] ?? '',
+    listPinningEnabled: params[`${prefix}ListPinningEnabled`] ?? 'false',
+    recipeVariantEnabled: params[`${prefix}RecipeVariantEnabled`] ?? 'false',
+    cookerHighlightEnabled: params[`${prefix}CookerHighlightEnabled`] ?? 'false',
+    seatHighlightEnabled: params[`${prefix}SeatHighlightEnabled`] ?? 'false',
+    orderHighlightEnabled: params[`${prefix}OrderHighlightEnabled`] ?? 'false',
+    orderTraceId: params[`${prefix}TraceId`] ?? '',
+    orderKey: params[`${prefix}OrderKey`] ?? '',
+    orderLifecycleSequence: params[`${prefix}OrderLifecycleSequence`] ?? '0',
+    recipeId: params[`${prefix}RecipeId`] ?? '-1',
+    recipeName: '',
+    ingredientIds: params[`${prefix}IngredientIds`] ?? '',
+    extraIngredientIds: params[`${prefix}ExtraIngredientIds`] ?? '',
+    beverageId: params[`${prefix}BeverageId`] ?? '-1',
+    beverageName: '',
+    cookerTypeId: params[`${prefix}CookerTypeId`] ?? '-1',
+    cookerName: '',
+    deskCode: params[`${prefix}DeskCode`] ?? '-1',
+  };
 }
 
 function hasRecipeTarget(entry) {
@@ -787,10 +923,7 @@ function hasRecipeTarget(entry) {
 }
 
 function isEnabledClearTarget(entry) {
-  return entry.params.enabled === 'true'
-    && entry.params.highlightEnabled === 'true'
-    && entry.params.orderHighlightEnabled === 'true'
-    && entry.params.targetRevision === ''
+  return entry.params.targetRevision === ''
     && entry.params.orderTraceId === ''
     && Number(entry.params.recipeId) < 0
     && Number(entry.params.beverageId) < 0
@@ -800,28 +933,19 @@ function isEnabledClearTarget(entry) {
 }
 
 function isHighlightOnlyClearTarget(entry) {
-  return entry.params.enabled === 'false'
-    && entry.params.highlightEnabled === 'true'
-    && entry.params.orderHighlightEnabled === 'true'
-    && entry.params.targetRevision === ''
-    && entry.params.orderTraceId === ''
-    && Number(entry.params.recipeId) < 0
-    && Number(entry.params.beverageId) < 0
-    && entry.params.deskCode === '-1'
-    && !entry.params.ingredientIds
-    && !entry.params.extraIngredientIds;
+  return isEnabledClearTarget(entry);
 }
 
 function isBeverageOnlyTarget(entry) {
-  return entry.params.enabled === 'true'
-    && entry.params.highlightEnabled === 'true'
+  return entry.params.listPinningEnabled === 'true'
+    && entry.params.cookerHighlightEnabled === 'true'
     && Number(entry.params.recipeId) < 0
     && Number(entry.params.beverageId) >= 0;
 }
 
 function isRecipeOnlyTarget(entry) {
-  return entry.params.enabled === 'true'
-    && entry.params.highlightEnabled === 'true'
+  return entry.params.listPinningEnabled === 'true'
+    && entry.params.cookerHighlightEnabled === 'true'
     && Number(entry.params.recipeId) >= 0
     && Number(entry.params.beverageId) < 0;
 }
@@ -945,49 +1069,21 @@ async function deliveredWorkerSuccessCount(page) {
 }
 
 function sameTarget(left, right) {
-  return left.params.enabled === right.params.enabled
-    && left.params.highlightEnabled === right.params.highlightEnabled
-    && left.params.extraIngredientFillEnabled === right.params.extraIngredientFillEnabled
-    && left.params.seatHighlightEnabled === right.params.seatHighlightEnabled
-    && left.params.orderHighlightEnabled === right.params.orderHighlightEnabled
-    && left.params.targetRevision === right.params.targetRevision
-    && left.params.orderTraceId === right.params.orderTraceId
-    && left.params.recipeId === right.params.recipeId
-    && left.params.recipeName === right.params.recipeName
-    && left.params.ingredientIds === right.params.ingredientIds
-    && left.params.extraIngredientIds === right.params.extraIngredientIds
-    && left.params.beverageId === right.params.beverageId
-    && left.params.beverageName === right.params.beverageName
-    && left.params.cookerTypeId === right.params.cookerTypeId
-    && left.params.cookerName === right.params.cookerName
-    && left.params.deskCode === right.params.deskCode;
+  return serializeParams(left.rawParams) === serializeParams(right.rawParams);
 }
 
 function sameWireTarget(left, right) {
-  return left.params.targetRevision === right.params.targetRevision
-    && left.params.orderTraceId === right.params.orderTraceId
-    && left.params.recipeId === right.params.recipeId
-    && left.params.recipeName === right.params.recipeName
-    && left.params.ingredientIds === right.params.ingredientIds
-    && left.params.extraIngredientIds === right.params.extraIngredientIds
-    && left.params.beverageId === right.params.beverageId
-    && left.params.beverageName === right.params.beverageName
-    && left.params.cookerTypeId === right.params.cookerTypeId
-    && left.params.cookerName === right.params.cookerName
-    && left.params.deskCode === right.params.deskCode;
+  return serializeParams(left.rawParams) === serializeParams(right.rawParams);
 }
 
 function sameVisibleTarget(left, right) {
-  return left.params.orderTraceId === right.params.orderTraceId
-    && left.params.recipeId === right.params.recipeId
-    && left.params.recipeName === right.params.recipeName
-    && left.params.ingredientIds === right.params.ingredientIds
-    && left.params.extraIngredientIds === right.params.extraIngredientIds
-    && left.params.beverageId === right.params.beverageId
-    && left.params.beverageName === right.params.beverageName
-    && left.params.cookerTypeId === right.params.cookerTypeId
-    && left.params.cookerName === right.params.cookerName
-    && left.params.deskCode === right.params.deskCode;
+  return serializeParams(left.rawParams, true) === serializeParams(right.rawParams, true);
+}
+
+function serializeParams(params, omitRevision = false) {
+  return JSON.stringify(Object.entries(params)
+    .filter(([key]) => !omitRevision || !/^target\d+Revision$/.test(key))
+    .sort(([left], [right]) => left.localeCompare(right)));
 }
 
 async function fulfillJson(route, body) {
@@ -1005,6 +1101,16 @@ async function readRuntimeData() {
   });
   assert(response.ok, `无法读取 Mock 运行时目录：HTTP ${response.status}`);
   return response.json();
+}
+
+async function assertMockRejectsPublication(rawParams, mutate, message) {
+  const params = new URLSearchParams(rawParams);
+  mutate(params);
+  const response = await fetch(`${API_URL}${TARGET_PATH}?${params.toString()}`, {
+    method: 'POST',
+    headers: { 'X-Mystia-Steward-Companion-Token': API_TOKEN },
+  });
+  assert(response.status === 400, `${message}：HTTP ${response.status}`);
 }
 
 async function waitFor(predicate, timeoutMs, message) {

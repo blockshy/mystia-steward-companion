@@ -34,6 +34,26 @@ internal sealed class LocalApiServer : IDisposable
     private static readonly TimeSpan AutomationLeaseTtl = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan ListenerStopTimeout = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan ClientHandlerStopTimeout = TimeSpan.FromSeconds(3);
+    private static readonly string[] UiPinningTargetFieldSuffixes =
+    {
+        "Kind",
+        "Revision",
+        "Color",
+        "ListPinningEnabled",
+        "RecipeVariantEnabled",
+        "CookerHighlightEnabled",
+        "SeatHighlightEnabled",
+        "OrderHighlightEnabled",
+        "TraceId",
+        "OrderKey",
+        "OrderLifecycleSequence",
+        "DeskCode",
+        "RecipeId",
+        "IngredientIds",
+        "ExtraIngredientIds",
+        "BeverageId",
+        "CookerTypeId",
+    };
 
     private readonly ManualLogSource _log;
     private readonly object _snapshotLock = new();
@@ -692,8 +712,8 @@ internal sealed class LocalApiServer : IDisposable
                                 ReadStringQuery(query, "scope"),
                                 ReadRareGuestInvitationWriteExpectation(query))));
                         break;
-                    case "/ui-pinning/target":
-                        WriteResponse(stream, 200, "OK", UpdateUiPinningTargetJson(query));
+                    case "/ui-pinning/targets":
+                        WriteResponse(stream, 200, "OK", UpdateUiPinningTargetsJson(query));
                         break;
                     case "/favorites/add-recipe":
                         WriteResponse(stream, 200, "OK", AddRecipeFavoriteJson(query));
@@ -1674,38 +1694,124 @@ internal sealed class LocalApiServer : IDisposable
         }
     }
 
-    private static string UpdateUiPinningTargetJson(string query)
+    private static string UpdateUiPinningTargetsJson(string query)
     {
         try
         {
-            var enabled = ReadBoolQuery(query, "enabled") ?? false;
-            var highlightEnabled = ReadBoolQuery(query, "highlightEnabled") ?? false;
-            var extraIngredientFillEnabled = ReadBoolQuery(query, "extraIngredientFillEnabled") ?? false;
-            var seatHighlightEnabled = ReadBoolQuery(query, "seatHighlightEnabled") ?? false;
-            var orderHighlightEnabled = ReadBoolQuery(query, "orderHighlightEnabled") ?? false;
-            var status = RuntimeUiPinningService.UpdateTarget(
-                ReadLongQuery(query, "businessGeneration", 0),
-                enabled,
-                highlightEnabled,
-                extraIngredientFillEnabled,
-                seatHighlightEnabled,
-                orderHighlightEnabled,
-                ReadIntQuery(query, "recipeId", -1),
-                ReadIntQuery(query, "beverageId", -1),
-                ReadIntListQuery(query, "ingredientIds"),
-                ReadExactNonNegativeIntListQuery(query, "extraIngredientIds", 5),
-                ReadStringQuery(query, "recipeName"),
-                ReadStringQuery(query, "beverageName"),
-                ReadIntQuery(query, "cookerTypeId", -1),
-                ReadStringQuery(query, "cookerName"),
-                ReadIntQuery(query, "deskCode", -1),
-                ReadStringQuery(query, "orderTraceId"),
-                ReadStringQuery(query, "targetRevision"));
+            if (!HasQueryParameter(query, "targetCount")
+                || ReadStringQuery(query, "targetCount") is not ("0" or "1" or "2")
+                || !int.TryParse(ReadStringQuery(query, "targetCount"), out var targetCount))
+            {
+                throw new FormatException("targetCount must be exactly 0, 1, or 2.");
+            }
+
+            var targets = new List<RuntimeUiTargetSnapshot>(targetCount);
+            for (var index = 0; index < targetCount; index += 1)
+            {
+                targets.Add(ReadUiPinningTarget(query, index));
+            }
+            ValidateUiPinningTargetParameters(query, targetCount);
+            if (targets.Count == 2
+                && (targets[0].Kind != RuntimeUiTargetKind.Rare
+                    || targets[1].Kind != RuntimeUiTargetKind.Normal))
+            {
+                throw new FormatException("Two UI targets must be ordered rare then normal.");
+            }
+
+            var status = RuntimeUiPinningService.UpdateTargets(
+                ReadRequiredPositiveLongQuery(query, "businessGeneration"),
+                targets);
             return ToJson(new LocalApiStatusDto { Ok = true, Status = status, Error = null });
         }
         catch (Exception ex)
         {
             return ToJson(new LocalApiStatusDto { Ok = false, Status = "", Error = ex.Message });
+        }
+    }
+
+    private static RuntimeUiTargetSnapshot ReadUiPinningTarget(string query, int index)
+    {
+        var prefix = $"target{index}";
+        var requiredKeys = UiPinningTargetFieldSuffixes.Select(suffix => prefix + suffix);
+        var missing = requiredKeys.FirstOrDefault(key => !HasQueryParameter(query, key));
+        if (missing != null)
+        {
+            throw new FormatException($"Missing required UI target parameter {missing}.");
+        }
+
+        var kindValue = ReadStringQuery(query, $"{prefix}Kind");
+        var kind = kindValue switch
+        {
+            "rare" => RuntimeUiTargetKind.Rare,
+            "normal" => RuntimeUiTargetKind.Normal,
+            _ => throw new FormatException($"{prefix}Kind must be exactly rare or normal."),
+        };
+        var colorValue = ReadStringQuery(query, $"{prefix}Color");
+        if (!RuntimeTargetHighlightColor.TryParseExactHex(colorValue, out var color))
+        {
+            throw new FormatException($"{prefix}Color must be exactly six uppercase hexadecimal RGB digits.");
+        }
+
+        return new RuntimeUiTargetSnapshot(
+            kind,
+            color,
+            ReadRequiredExactBoolQuery(query, $"{prefix}ListPinningEnabled"),
+            ReadRequiredExactBoolQuery(query, $"{prefix}RecipeVariantEnabled"),
+            ReadRequiredExactBoolQuery(query, $"{prefix}CookerHighlightEnabled"),
+            ReadRequiredExactBoolQuery(query, $"{prefix}SeatHighlightEnabled"),
+            ReadRequiredExactBoolQuery(query, $"{prefix}OrderHighlightEnabled"),
+            ReadStringQuery(query, $"{prefix}TraceId"),
+            ReadStringQuery(query, $"{prefix}OrderKey"),
+            ReadRequiredPositiveLongQuery(query, $"{prefix}OrderLifecycleSequence"),
+            ReadRequiredNonNegativeIntQuery(query, $"{prefix}DeskCode"),
+            ReadRequiredOptionalIdQuery(query, $"{prefix}RecipeId"),
+            ReadExactNonNegativeIntListQuery(query, $"{prefix}IngredientIds", 12),
+            ReadExactNonNegativeIntListQuery(query, $"{prefix}ExtraIngredientIds", 5),
+            ReadRequiredOptionalIdQuery(query, $"{prefix}BeverageId"),
+            ReadRequiredOptionalIdQuery(query, $"{prefix}CookerTypeId"),
+            ReadStringQuery(query, $"{prefix}Revision"));
+    }
+
+    private static void ValidateUiPinningTargetParameters(string query, int targetCount)
+    {
+        foreach (var pair in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var separator = pair.IndexOf('=');
+            var encodedName = separator < 0 ? pair : pair[..separator];
+            var name = Uri.UnescapeDataString(encodedName.Replace("+", " ", StringComparison.Ordinal));
+            if (string.Equals(name, "businessGeneration", StringComparison.Ordinal)
+                || string.Equals(name, "targetCount", StringComparison.Ordinal))
+            {
+                continue;
+            }
+            if (!name.StartsWith("target", StringComparison.Ordinal))
+            {
+                throw new FormatException($"Unexpected UI target parameter {name}.");
+            }
+
+            var digitStart = "target".Length;
+            var digitEnd = digitStart;
+            while (digitEnd < name.Length && name[digitEnd] is >= '0' and <= '9') digitEnd++;
+            if (digitEnd == digitStart
+                || !int.TryParse(
+                    name[digitStart..digitEnd],
+                    System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out var index))
+            {
+                throw new FormatException($"Invalid indexed UI target parameter {name}.");
+            }
+
+            var suffix = name[digitEnd..];
+            if (!UiPinningTargetFieldSuffixes.Contains(suffix, StringComparer.Ordinal)
+                || !string.Equals(name, $"target{index}{suffix}", StringComparison.Ordinal))
+            {
+                throw new FormatException($"Invalid indexed UI target parameter {name}.");
+            }
+            if (index >= targetCount)
+            {
+                throw new FormatException($"UI target parameter {name} exceeds targetCount {targetCount}.");
+            }
         }
     }
 
@@ -2226,6 +2332,76 @@ internal sealed class LocalApiServer : IDisposable
         return null;
     }
 
+    private static bool ReadRequiredExactBoolQuery(string query, string key)
+    {
+        if (!HasQueryParameter(query, key))
+        {
+            throw new FormatException($"Missing required UI target parameter {key}.");
+        }
+
+        return ReadStringQuery(query, key) switch
+        {
+            "true" => true,
+            "false" => false,
+            _ => throw new FormatException($"{key} must be exactly true or false."),
+        };
+    }
+
+    private static long ReadRequiredPositiveLongQuery(string query, string key)
+    {
+        var raw = ReadRequiredAsciiDecimalQuery(query, key);
+        if (!long.TryParse(
+                raw,
+                System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var value)
+            || value <= 0)
+        {
+            throw new FormatException($"{key} must be a positive 64-bit ASCII decimal integer.");
+        }
+        return value;
+    }
+
+    private static int ReadRequiredNonNegativeIntQuery(string query, string key)
+    {
+        var raw = ReadRequiredAsciiDecimalQuery(query, key);
+        if (!int.TryParse(
+                raw,
+                System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var value))
+        {
+            throw new FormatException($"{key} must be a non-negative 32-bit ASCII decimal integer.");
+        }
+        return value;
+    }
+
+    private static int ReadRequiredOptionalIdQuery(string query, string key)
+    {
+        if (!HasQueryParameter(query, key))
+        {
+            throw new FormatException($"Missing required UI target parameter {key}.");
+        }
+
+        var raw = ReadStringQuery(query, key);
+        return raw == "-1" ? -1 : ReadRequiredNonNegativeIntQuery(query, key);
+    }
+
+    private static string ReadRequiredAsciiDecimalQuery(string query, string key)
+    {
+        if (!HasQueryParameter(query, key))
+        {
+            throw new FormatException($"Missing required UI target parameter {key}.");
+        }
+
+        var raw = ReadStringQuery(query, key);
+        if (raw.Length == 0 || raw.Any(character => character is < '0' or > '9'))
+        {
+            throw new FormatException($"{key} must contain ASCII decimal digits only.");
+        }
+        return raw;
+    }
+
     private static int ReadIntQuery(string query, string key, int fallback)
     {
         return int.TryParse(ReadStringQuery(query, key), out var value) ? value : fallback;
@@ -2331,7 +2507,7 @@ internal sealed class LocalApiServer : IDisposable
         int maxCount)
     {
         var value = ReadStringQuery(query, key);
-        if (string.IsNullOrWhiteSpace(value)) return new List<int>();
+        if (value.Length == 0) return new List<int>();
 
         var parts = value.Split(',', StringSplitOptions.None);
         if (parts.Length > maxCount)
@@ -2342,9 +2518,15 @@ internal sealed class LocalApiServer : IDisposable
         var result = new List<int>(parts.Length);
         foreach (var part in parts)
         {
-            if (!int.TryParse(part.Trim(), out var id) || id < 0)
+            if (part.Length == 0
+                || part.Any(character => character is < '0' or > '9')
+                || !int.TryParse(
+                    part,
+                    System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out var id))
             {
-                throw new FormatException($"{key} must contain only non-negative integer ids.");
+                throw new FormatException($"{key} must contain only comma-separated ASCII decimal ids without whitespace or signs.");
             }
 
             result.Add(id);

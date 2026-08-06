@@ -6,10 +6,11 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
-
   <ItemGroup>
-    <Compile Include="../../mods/bepinex/src/Save/RuntimeOrderHighlightService.cs" Link="RuntimeOrderHighlightService.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeThrowDeliverOrderHighlightService.cs" Link="RuntimeThrowDeliverOrderHighlightService.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeConcreteCollectionReader.cs" Link="RuntimeConcreteCollectionReader.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeOrderTraceIdService.cs" Link="RuntimeOrderTraceIdService.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeOrderTypeResolver.cs" Link="RuntimeOrderTypeResolver.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeTargetHighlightStyle.cs" Link="RuntimeTargetHighlightStyle.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeUiTargetOrderResolver.cs" Link="RuntimeUiTargetOrderResolver.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeUiTargetSet.cs" Link="RuntimeUiTargetSet.cs" />

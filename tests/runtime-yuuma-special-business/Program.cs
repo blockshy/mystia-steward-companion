@@ -1113,7 +1113,23 @@ static void VerifyYuumaNativeDeliveryObserverRemoved(
     AssertFalse(
         File.Exists(observerPath),
         "The ineffective native delivery observer source was restored.");
+
     var productionSourceRoot = Path.Combine(root, "mods", "bepinex", "src");
+    var passiveVisualPath = Path.GetFullPath(Path.Combine(
+        productionSourceRoot,
+        "Save",
+        "RuntimeThrowDeliverOrderHighlightService.cs"));
+    var obsoleteVisualPath = Path.GetFullPath(Path.Combine(
+        productionSourceRoot,
+        "Save",
+        "Runtime" + "Serve" + "PanelOrderHighlightService.cs"));
+    AssertTrue(
+        File.Exists(passiveVisualPath),
+        "The dedicated passive throw-delivery visual service is missing.");
+    AssertFalse(
+        File.Exists(obsoleteVisualPath),
+        "The obsolete wrong-page visual service was retained beside the corrected throw-delivery observer.");
+
     foreach (var path in Directory.EnumerateFiles(
                  productionSourceRoot,
                  "*.cs",
@@ -1122,16 +1138,29 @@ static void VerifyYuumaNativeDeliveryObserverRemoved(
         var productionSource = Normalize(File.ReadAllText(path));
         AssertDoesNotContain(
             productionSource,
-            "\"OpenServePanel\"",
-            $"Production source restored the unverified native delivery entry: {path}");
-        if (productionSource.Contains("WorkSceneServePannel", StringComparison.Ordinal))
+            "YuumaNativeDeliveryObserver",
+            $"Production source still references the removed native delivery observer: {path}");
+        AssertDoesNotContain(
+            productionSource,
+            "Runtime" + "Serve" + "PanelOrderHighlightService",
+            $"Production source still references the removed wrong-page visual service: {path}");
+        AssertDoesNotContain(
+            productionSource,
+            "OpenThrowDeliverPanel",
+            $"Production source references the active throw-delivery panel entry: {path}");
+
+        if (Path.GetFullPath(path) == passiveVisualPath)
         {
-            AssertDoesNotContain(
-                productionSource,
-                "\"OnPanelClose\"",
-                $"Production source restored the non-unique serve-panel close hook: {path}");
+            continue;
         }
+
+        AssertFalse(
+            productionSource.Contains("WorkSceneThrowDeliverPanel", StringComparison.Ordinal)
+                && (productionSource.Contains("OnPanelOpen", StringComparison.Ordinal)
+                    || productionSource.Contains("OnPanelClose", StringComparison.Ordinal)),
+            $"Production source outside the dedicated passive visual service observes the WorkSceneThrowDeliverPanel lifecycle: {path}");
     }
+
     foreach (var source in new[]
              {
                  contextSource,
@@ -1142,6 +1171,275 @@ static void VerifyYuumaNativeDeliveryObserverRemoved(
             Normalize(source),
             "YuumaNativeDeliveryObserver",
             "Production code still references the removed native delivery observer.");
+    }
+
+    var passiveVisualSource = File.ReadAllText(passiveVisualPath);
+    var normalizedPassiveVisual = Normalize(passiveVisualSource);
+    AssertContains(
+        normalizedPassiveVisual,
+        "ThrowDeliverPanelTypeName=\"NightScene.UI.HUDUtility.WorkSceneThrowDeliverPanel\"",
+        "The passive visual service no longer binds the exact verified throw-delivery panel type.");
+    AssertContains(
+        normalizedPassiveVisual,
+        "OpenPatchKey=ThrowDeliverPanelTypeName+\".OnPanelOpen/0\"",
+        "The passive visual service no longer identifies the exact zero-argument open lifecycle.");
+    AssertContains(
+        normalizedPassiveVisual,
+        "ClosePatchKey=ThrowDeliverPanelTypeName+\".OnPanelClose/0\"",
+        "The passive visual service no longer identifies the exact zero-argument close lifecycle.");
+    AssertDoesNotContain(
+        normalizedPassiveVisual,
+        "WorkSceneServePannel",
+        "The corrected passive visual service still observes the later wrong page.");
+
+    var exactLifecycleLookup = Normalize(ExtractNamedMethod(
+        passiveVisualSource,
+        "FindExactPanelLifecycleMethod"));
+    foreach (var exactConstraint in new[]
+             {
+                 "BindingFlags.Public|BindingFlags.NonPublic|BindingFlags.Instance|BindingFlags.DeclaredOnly",
+                 "method.Name==methodName",
+                 "method.ReturnType==typeof(void)",
+                 "method.IsVirtual",
+                 "!method.IsGenericMethod",
+                 "method.GetParameters().Length==0",
+                 "returnmatches.Length==1?matches[0]:null",
+             })
+    {
+        AssertContains(
+            exactLifecycleLookup,
+            exactConstraint,
+            $"The passive visual lifecycle lookup lost exact constraint '{exactConstraint}'.");
+    }
+
+    var openPatch = Normalize(ExtractNamedMethod(passiveVisualSource, "TryPatchOpen"));
+    AssertContains(
+        openPatch,
+        "vartarget=FindExactPanelLifecycleMethod(panelType,\"OnPanelOpen\")",
+        "The passive visual service no longer resolves the exact panel-open method.");
+    AssertContains(
+        openPatch,
+        "harmony.Patch(target,prefix:newHarmonyMethod(prefix){priority=Priority.First},postfix:newHarmonyMethod(postfix){priority=Priority.Last})",
+        "Panel open must use a first prefix for pooled-state cleanup and a last postfix for passive binding.");
+
+    var closePatch = Normalize(ExtractNamedMethod(passiveVisualSource, "TryPatchClose"));
+    AssertContains(
+        closePatch,
+        "vartarget=FindExactPanelLifecycleMethod(panelType,\"OnPanelClose\")",
+        "The passive visual service no longer resolves the exact panel-close method.");
+    AssertContains(
+        closePatch,
+        "harmony.Patch(target,prefix:newHarmonyMethod(prefix){priority=Priority.First})",
+        "Panel close must clear the passive visual before the original can mutate or evaluate the order.");
+    AssertDoesNotContain(
+        closePatch,
+        "postfix:",
+        "Panel close restored an unsafe postfix that could read invalidated order wrappers.");
+
+    var beforeOpen = Normalize(ExtractNamedMethod(passiveVisualSource, "BeforePanelOpen"));
+    var afterOpen = Normalize(ExtractNamedMethod(passiveVisualSource, "AfterPanelOpen"));
+    var beforeClose = Normalize(ExtractNamedMethod(passiveVisualSource, "BeforePanelClose"));
+    AssertContains(
+        beforeOpen,
+        "privatestaticvoidBeforePanelOpen(object__instance,outPanelOpenEvidence?__state)",
+        "Panel-open prefix must be a void observer that carries pre-open identity to the postfix.");
+    AssertContains(
+        beforeOpen,
+        "TryReadLivePanelPointer(",
+        "Panel-open prefix no longer captures the exact scalar panel identity.");
+    AssertDoesNotContain(
+        beforeOpen,
+        "TryReadTargetPanelEvidence(",
+        "Panel-open prefix must not inspect m_Data or pooled buttons before the original populates them.");
+    AssertContains(
+        afterOpen,
+        "privatestaticvoidAfterPanelOpen(object__instance,PanelOpenEvidence?__state)",
+        "Panel-open postfix must be a void observer of the prefix identity.");
+    AssertContains(
+        afterOpen,
+        "newActivePanelRegistration(",
+        "Panel-open postfix no longer registers the rebuilt live panel independently from the target.");
+    AssertContains(
+        afterOpen,
+        "ReconcileRegisteredPanel(registration)",
+        "Panel-open postfix no longer reconciles the current target after registering the rebuilt panel.");
+    AssertContains(
+        beforeClose,
+        "privatestaticvoidBeforePanelClose(object__instance)",
+        "Panel-close prefix must remain a void passive observer.");
+
+    foreach (var callback in new[] { beforeOpen, afterOpen, beforeClose })
+    {
+        AssertDoesNotContain(
+            callback,
+            "returnfalse;",
+            "A throw-delivery visual callback can skip the original game method.");
+    }
+    AssertDoesNotContain(
+        normalizedPassiveVisual,
+        "__runOriginal",
+        "The passive throw-delivery visual service can modify Harmony original-execution state.");
+
+    foreach (var exactRead in new[]
+             {
+                 "TryResolveExactMembers",
+                 "TryReadTargetPanelEvidence",
+                 "TryReadDataTuple",
+                 "TryReadKeyedLogicalUnit",
+                 "TryValidatePoolMembership",
+                 "ReconcileRegisteredPanel",
+                 "TryObserveTarget",
+                 "TryReadSelectionEventTarget",
+                 "TryReadVisualSourceEvidence",
+                 "TryReadExactLeafImage",
+                 "TryCreateOwnedVisual",
+                 "TryValidateOwnedVisual",
+                 "TryRebuildOwnedVisualLocked",
+                 "RetireOwnedVisual",
+             })
+    {
+        AssertContains(
+            normalizedPassiveVisual,
+            exactRead,
+            $"The passive throw-delivery visual service lost exact read stage '{exactRead}'.");
+    }
+
+    foreach (var forbiddenEntry in new[]
+             {
+                 "OpenThrowDeliverPanel",
+                 "DescribeCurrentOrder",
+                 "TryFocusToOrder",
+                 "EnterGroup",
+                 "GetShowInUIOrders",
+                 "ShowOrder",
+                 "ShowManualOrder",
+                 "Send",
+                 "Cancel",
+                 "FinishOrderStatus",
+                 "InvokeOrderUpdate",
+                 "SetServedVisualOnUI",
+                 "\"ServFood\"",
+                 "\"ServBeverage\"",
+                 "set_ServFood",
+                 "set_ServBeverage",
+                 ".ServFood=",
+                 ".ServBeverage=",
+                 "Tray",
+                 "tray",
+                 "OnThrowDelivering",
+                 "ExecuteThrowDeliver",
+                 "ThrowDeliver(",
+                 "DisplayClass",
+                 "MoveNext",
+                 "EvaluateOrder",
+                 "EvaulateManualOrder",
+                 "FindObjectOfType",
+                 "FindObjectsOfType",
+                 "FindObjectsByType",
+                 "FindFirstObjectByType",
+                 "FindAnyObjectByType",
+                 "FindObjectsOfTypeAll",
+                 "GetComponentInChildren",
+                 "GetComponentsInChildren",
+                 "SetAsLastSibling",
+                 "SetParent(",
+                 "Yuuma",
+                 "SpecialBusiness",
+                 "Settlement",
+                 "settlement",
+             })
+    {
+        AssertDoesNotContain(
+            normalizedPassiveVisual,
+            forbiddenEntry,
+            $"The passive throw-delivery visual service references forbidden active/generated/scene-scan entry '{forbiddenEntry}'.");
+    }
+
+    foreach (var exactVisualContract in new[]
+             {
+                 "OwnedFillName=\"MystiaStewardCompanion.ThrowDeliveryTargetFill\"",
+                 "TryReadSelectionEventTarget(",
+                 "TryReadVisualSourceEvidence(",
+                 "backgrounds.Count!=2",
+                 "first.Enabled==second.Enabled",
+                 "UnityEngine.Object.Instantiate(source.ActiveBackground.Owner,parent)",
+                 "cloneRect.SetSiblingIndex(selectionSibling)",
+                 "SetRaycastTarget.Invoke(rawCloneImage,newobject?[]{false})",
+                 "RuntimeTargetHighlightStyle.BuildOrderHighlightPulseColor(",
+                 "TryValidateOwnedVisual(",
+                 "TryRebuildOwnedVisualLocked(",
+                 "RetireOwnedVisual(",
+             })
+    {
+        AssertContains(
+            normalizedPassiveVisual,
+            Normalize(exactVisualContract),
+            $"The exact owned throw-delivery background clone lost contract '{exactVisualContract}'.");
+    }
+
+    var visualSourceReader = Normalize(ExtractNamedMethod(
+        passiveVisualSource,
+        "TryReadVisualSourceEvidence"));
+    foreach (var nativeMutation in new[]
+             {
+                 "SetColor",
+                 "SetRaycastTarget",
+                 "SetEnabled",
+                 "SetSiblingIndex",
+                 "SetAsLastSibling",
+                 "Destroy(",
+             })
+    {
+        AssertDoesNotContain(
+            visualSourceReader,
+            Normalize(nativeMutation),
+            $"The native background/selection evidence reader mutates game UI through '{nativeMutation}'.");
+    }
+
+    var ownedVisualCreator = Normalize(ExtractNamedMethod(
+        passiveVisualSource,
+        "TryCreateOwnedVisual"));
+    AssertContains(
+        ownedVisualCreator,
+        "source.ActiveBackground.Owner",
+        "The owned fill is no longer cloned from the exact currently enabled native background.");
+    AssertContains(
+        ownedVisualCreator,
+        "cloneRect.SetSiblingIndex(selectionSibling)",
+        "The owned fill is no longer inserted immediately before the exact native selection target.");
+    AssertDoesNotContain(
+        ownedVisualCreator,
+        "SetSiblingIndex(0)",
+        "The removed invisible sibling-zero underlay was restored.");
+    AssertDoesNotContain(
+        ownedVisualCreator,
+        "SetAsLastSibling",
+        "The owned fill can cover the button content as a last-sibling overlay.");
+
+    foreach (var removedDiagnostic in new[]
+             {
+                 "BuildStructureDiagnostic",
+                 "PanelStructureDiagnostic",
+                 "BuildButtonTree",
+                 "AppendAncestorDiagnostic",
+                 "TupleItem1.GetValue",
+                 "WorldPosition",
+                 "SelectionOutline",
+                 "UnityEngine.UI.Outline",
+                 "LayoutElement",
+                 "ImageSlotDiagnostic",
+                 "ImageStateSnapshot",
+                 "DiagnosticOutcomes",
+                 "SeenSnapshots",
+                 "LastSnapshot",
+                 "Image-slot diagnostic",
+                 "Image-state diagnostic",
+             })
+    {
+        AssertDoesNotContain(
+            normalizedPassiveVisual,
+            Normalize(removedDiagnostic),
+            $"The exact owned throw-delivery background clone restored removed diagnostics or a forbidden visual path '{removedDiagnostic}'.");
     }
 }
 

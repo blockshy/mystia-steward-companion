@@ -35,7 +35,13 @@ foreach (var invalid in new[]
 {
     AssertTrace(invalid, expected: false);
 }
-Assert(RuntimeOrderTraceIdService.NormalizeRareTraceId("ignored", enabled: false) == "", "A disabled target must erase its trace without parsing it.");
+Assert(RuntimeOrderTraceIdService.TryNormalizeTargetTraceId(
+        RuntimeUiTargetKind.Rare,
+        "ignored",
+        enabled: false,
+        out var disabledTrace,
+        out _)
+       && disabledTrace == "", "A disabled target must erase its trace without parsing it.");
 
 // IL2CPP can erase concrete managed wrapper types in GetComponents<Component>() even though
 // typed GetComponent probes still resolve the same native RectTransform/CanvasRenderer/Image.
@@ -71,21 +77,31 @@ Assert(ReferenceEquals(wrapperLayoutParent.GetComponent(typeof(LayoutGroup)), wr
 RuntimeNightBusinessLifecycle.Snapshot = new NightBusinessLifecycleSnapshot(true, 2, unityThreadId);
 RuntimeOrderHighlightService.Resume("safe hook coverage starts with this business");
 
+long hudTargetGeneration = 0;
+RuntimeUiTargetSetSnapshot CreateHudTargetSet(
+    long sessionGeneration,
+    params RuntimeUiTargetSnapshot[] targets) => new(
+        ++hudTargetGeneration,
+        sessionGeneration,
+        targets);
+
 var capturedAtA = new DateTime(2026, 8, 2, 8, 0, 0, DateTimeKind.Utc);
 var orderA = new GuestsManager.OrderBase();
 var captureA = AddCapture(orderA, capturedAtA, deskCode: 0, guestId: 105, foodTagId: 12, beverageTagId: 34);
 var traceA = RuntimeOrderTraceIdService.GetRareTraceId(captureA);
 Assert(traceA == "R-0001", "The first captured rare order must receive a stable rare trace.");
 Assert(RuntimeOrderTraceIdService.GetRareTraceId(captureA) == traceA, "The same capture must retain its trace.");
-Assert(RuntimeOrderTraceIdService.TryResolveCurrentRareCapture(traceA, 0, TimeSpan.FromHours(6), out var resolvedA, out _)
-       && ReferenceEquals(resolvedA, captureA), "A unique current capture must resolve by exact trace and desk.");
-Assert(!RuntimeOrderTraceIdService.TryResolveCurrentRareCapture(traceA, 1, TimeSpan.FromHours(6), out _, out var wrongDeskFailure)
-       && wrongDeskFailure.Contains("desk mismatch", StringComparison.Ordinal), "Desk identity must be an exact cross-check, not a fallback.");
+var targetA = CreateRareTarget(traceA, captureA.OrderLifecycleSequence, 0, "resolver-a");
+Assert(RuntimeUiTargetOrderResolver.TryResolveCurrentCapture(targetA, TimeSpan.FromHours(6), out var resolvedA, out _)
+       && resolvedA?.OrderPointer == orderA.Pointer, "A unique current capture must resolve by exact trace, lifecycle, and desk.");
+var wrongDeskTarget = CreateRareTarget(traceA, captureA.OrderLifecycleSequence, 1, "resolver-wrong-desk");
+Assert(!RuntimeUiTargetOrderResolver.TryResolveCurrentCapture(wrongDeskTarget, TimeSpan.FromHours(6), out _, out var wrongDeskFailure)
+       && wrongDeskFailure.Contains("matched 0 active captures", StringComparison.Ordinal), "Desk identity must be an exact cross-check, not a fallback.");
 
 var duplicateCaptureOrder = new GuestsManager.OrderBase();
 var duplicateCapture = AddCapture(duplicateCaptureOrder, capturedAtA, deskCode: 0, guestId: 105, foodTagId: 12, beverageTagId: 34);
 Assert(RuntimeOrderTraceIdService.GetRareTraceId(duplicateCapture) == traceA, "Equivalent capture metadata must expose the ambiguity under the same trace.");
-Assert(!RuntimeOrderTraceIdService.TryResolveCurrentRareCapture(traceA, 0, TimeSpan.FromHours(6), out _, out var duplicateCaptureFailure)
+Assert(!RuntimeUiTargetOrderResolver.TryResolveCurrentCapture(targetA, TimeSpan.FromHours(6), out _, out var duplicateCaptureFailure)
        && duplicateCaptureFailure.Contains("matched 2 active captures", StringComparison.Ordinal), "Duplicate active captures must fail closed.");
 SpecialOrderRuntimeCapture.Captures.Remove(duplicateCapture);
 
@@ -117,15 +133,17 @@ Assert(nativeImage.gameObject.GetComponent(typeof(Image))?.GetType() == typeof(C
     "The end-to-end visual probe must also reproduce a typed GetComponent cache miss.");
 
 Time.realtimeSinceStartup = 0f;
-RuntimeOrderHighlightService.UpdateTarget(2, enabled: true, traceA, deskCode: 0);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(
+    2,
+    CreateRareTarget(traceA, captureA.OrderLifecycleSequence, 0, $"hud:{traceA}:0")));
 RuntimeOrderHighlightService.Tick();
 Assert(GameObject.Instantiated.Count == 1, "The exact target order must create one private overlay despite another order sharing its desk.");
 var firstOverlay = FindLatestOverlay();
 var firstOverlayImage = InspectPrivateOverlay(firstOverlay);
 Assert(RuntimeOrderHighlightService.Status.Contains("active", StringComparison.Ordinal), "A unique registered target must become active.");
 Assert(RuntimeOrderHighlightService.Status.Contains($"order:0x{orderA.Pointer:x}", StringComparison.Ordinal), "Diagnostics must identify the exact captured order pointer.");
-Assert(firstOverlayImage.color.r == 1f && firstOverlayImage.color.g == 0.86f && firstOverlayImage.color.b == 0.18f,
-    "The private border must use the verified yellow highlight color.");
+AssertColor(firstOverlayImage.color, RuntimeTargetHighlightColor.DefaultRare,
+    "The private border must use the configured rare-order highlight color.");
 Assert(firstOverlayImage.color.a is >= 0.62f and <= 1f, "The yellow overlay alpha must remain in the bounded pulse range.");
 
 Time.realtimeSinceStartup = 0.2f;
@@ -142,10 +160,12 @@ Assert(nativeImage.color == nativeColor
 
 // A duplicate HUD card for the same native order must be rejected rather than picking either card.
 var duplicateElement = CreateElement(controller, orderA, deskCode: 0);
-RuntimeOrderHighlightService.UpdateTarget(2, enabled: false, "", deskCode: -1);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(2));
 RuntimeOrderHighlightService.Tick();
 var destroyedBeforeDuplicate = GameObject.Destroyed.Count;
-RuntimeOrderHighlightService.UpdateTarget(2, enabled: true, traceA, deskCode: 0);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(
+    2,
+    CreateRareTarget(traceA, captureA.OrderLifecycleSequence, 0, $"hud:{traceA}:0")));
 RuntimeOrderHighlightService.Tick();
 Assert(GameObject.Instantiated.Count == 1, "Duplicate HUD elements must not create a replacement overlay.");
 Assert(GameObject.Destroyed.Count == destroyedBeforeDuplicate, "Duplicate HUD resolution must fail before creating a visual.");
@@ -155,37 +175,43 @@ RuntimeOrderHighlightService.Tick();
 Assert(GameObject.Instantiated.Count == 2, "Removing the duplicate card must let the unchanged exact target recover.");
 
 // Cloning is only safe for a leaf image outside a parent-controlled layout hierarchy.
-RuntimeOrderHighlightService.UpdateTarget(2, enabled: false, "", deskCode: -1);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(2));
 RuntimeOrderHighlightService.Tick();
 var templateChild = new GameObject { name = "UnsafeTemplateChild" };
 templateChild.transform.parent = nativeImage.transform;
 var instantiatedBeforeChildShape = GameObject.Instantiated.Count;
-RuntimeOrderHighlightService.UpdateTarget(2, enabled: true, traceA, deskCode: 0);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(
+    2,
+    CreateRareTarget(traceA, captureA.OrderLifecycleSequence, 0, $"hud:{traceA}:0")));
 RuntimeOrderHighlightService.Tick();
 Assert(GameObject.Instantiated.Count == instantiatedBeforeChildShape, "A border template with child objects must fail before cloning.");
 Assert(RuntimeOrderHighlightService.Status.Contains("child objects instead of a leaf-only visual shape", StringComparison.Ordinal),
     "A non-leaf template must expose the exact visual safety gate.");
 
-RuntimeOrderHighlightService.UpdateTarget(2, enabled: false, "", deskCode: -1);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(2));
 RuntimeOrderHighlightService.Tick();
 templateChild.transform.parent = null;
-RuntimeOrderHighlightService.UpdateTarget(2, enabled: true, traceA, deskCode: 0);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(
+    2,
+    CreateRareTarget(traceA, captureA.OrderLifecycleSequence, 0, $"hud:{traceA}:0")));
 RuntimeOrderHighlightService.Tick();
 Assert(GameObject.Instantiated.Count == instantiatedBeforeChildShape + 1, "The unchanged leaf-only border must recover after the unsafe child is removed.");
 
-RuntimeOrderHighlightService.UpdateTarget(2, enabled: false, "", deskCode: -1);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(2));
 RuntimeOrderHighlightService.Tick();
 var unknownVisualComponent = new Component();
 nativeImage.gameObject.Attach(unknownVisualComponent);
 var instantiatedBeforeUnknownComponent = GameObject.Instantiated.Count;
-RuntimeOrderHighlightService.UpdateTarget(2, enabled: true, traceA, deskCode: 0);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(
+    2,
+    CreateRareTarget(traceA, captureA.OrderLifecycleSequence, 0, $"hud:{traceA}:0")));
 RuntimeOrderHighlightService.Tick();
 Assert(GameObject.Instantiated.Count == instantiatedBeforeUnknownComponent,
     "A border template with an additional unknown native component must fail before cloning.");
 Assert(RuntimeOrderHighlightService.Status.Contains("has 4 components instead of the exact visual-only shape", StringComparison.Ordinal),
     "An additional native component must remain visible as an exact component-count failure.");
 
-RuntimeOrderHighlightService.UpdateTarget(2, enabled: false, "", deskCode: -1);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(2));
 RuntimeOrderHighlightService.Tick();
 nativeImage.gameObject.Detach(unknownVisualComponent);
 nativeImage.gameObject.ReturnBaseTypedComponentWrappers = false;
@@ -198,14 +224,16 @@ nativeImage.gameObject.ReturnBaseTypedComponentWrappers = true;
 Assert(nativeImage.gameObject.GetComponents<Component>().Length == 3,
     "The wrong-component probe must preserve the exact component count.");
 var instantiatedBeforeWrongComponent = GameObject.Instantiated.Count;
-RuntimeOrderHighlightService.UpdateTarget(2, enabled: true, traceA, deskCode: 0);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(
+    2,
+    CreateRareTarget(traceA, captureA.OrderLifecycleSequence, 0, $"hud:{traceA}:0")));
 RuntimeOrderHighlightService.Tick();
 Assert(GameObject.Instantiated.Count == instantiatedBeforeWrongComponent,
     "A three-component template missing the exact CanvasRenderer must fail before cloning.");
 Assert(RuntimeOrderHighlightService.Status.Contains("has no exact live native UnityEngine.CanvasRenderer", StringComparison.Ordinal),
     "A wrong native component must be rejected by the typed CanvasRenderer query, not accepted by count alone.");
 
-RuntimeOrderHighlightService.UpdateTarget(2, enabled: false, "", deskCode: -1);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(2));
 RuntimeOrderHighlightService.Tick();
 nativeImage.gameObject.ReturnBaseTypedComponentWrappers = false;
 nativeImage.gameObject.Detach(wrongThirdComponent);
@@ -216,22 +244,26 @@ elementA.gameObject.Attach(managedLayout);
 elementA.gameObject.ReturnBaseComponentWrappers = true;
 elementA.gameObject.ReturnBaseTypedComponentWrappers = true;
 var instantiatedBeforeManagedLayout = GameObject.Instantiated.Count;
-RuntimeOrderHighlightService.UpdateTarget(2, enabled: true, traceA, deskCode: 0);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(
+    2,
+    CreateRareTarget(traceA, captureA.OrderLifecycleSequence, 0, $"hud:{traceA}:0")));
 RuntimeOrderHighlightService.Tick();
 Assert(GameObject.Instantiated.Count == instantiatedBeforeManagedLayout, "A LayoutGroup-managed parent must fail before sibling insertion.");
 Assert(RuntimeOrderHighlightService.Status.Contains("managed by UnityEngine.UI.LayoutGroup", StringComparison.Ordinal),
     "The parent safety gate must use a typed native LayoutGroup query even when enumeration exposes base wrappers.");
 
-RuntimeOrderHighlightService.UpdateTarget(2, enabled: false, "", deskCode: -1);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(2));
 RuntimeOrderHighlightService.Tick();
 elementA.gameObject.Detach(managedLayout);
-RuntimeOrderHighlightService.UpdateTarget(2, enabled: true, traceA, deskCode: 0);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(
+    2,
+    CreateRareTarget(traceA, captureA.OrderLifecycleSequence, 0, $"hud:{traceA}:0")));
 RuntimeOrderHighlightService.Tick();
 Assert(GameObject.Instantiated.Count == instantiatedBeforeManagedLayout + 1, "A normal parent with a leaf border must remain supported.");
 Assert(RuntimeOrderHighlightService.Status.Contains("active", StringComparison.Ordinal), "The normal leaf visual must stay active after both safety-gate probes.");
 
 // A typed Image lookup may return a derived native UI class; exact class identity must reject it.
-RuntimeOrderHighlightService.UpdateTarget(2, enabled: false, "", deskCode: -1);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(2));
 RuntimeOrderHighlightService.Tick();
 var derivedImageOrder = new GuestsManager.OrderBase(deskCode: 3);
 var derivedImageCapture = AddCapture(
@@ -247,7 +279,13 @@ derivedImageElement.borderStyleImageForCurrent.gameObject.ReturnBaseComponentWra
 derivedImageElement.borderStyleImageForCurrent.gameObject.ReturnBaseTypedComponentWrappers = true;
 CreateElement(controller, derivedImageOrder, deskCode: 3, pooledElement: derivedImageElement);
 var instantiatedBeforeDerivedImage = GameObject.Instantiated.Count;
-RuntimeOrderHighlightService.UpdateTarget(2, enabled: true, derivedImageTrace, deskCode: 3);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(
+    2,
+    CreateRareTarget(
+        derivedImageTrace,
+        derivedImageCapture.OrderLifecycleSequence,
+        3,
+        $"hud:{derivedImageTrace}:3")));
 RuntimeOrderHighlightService.Tick();
 Assert(GameObject.Instantiated.Count == instantiatedBeforeDerivedImage,
     "A derived native Image class must fail before cloning even when typed Image lookup succeeds.");
@@ -255,16 +293,22 @@ Assert(RuntimeOrderHighlightService.Status.Contains("native component is not the
     "The exact native Image class mismatch must remain visible in diagnostics.");
 TeardownElement(derivedImageElement, "Out");
 SpecialOrderRuntimeCapture.Captures.Remove(derivedImageCapture);
-RuntimeOrderHighlightService.UpdateTarget(2, enabled: true, traceA, deskCode: 0);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(
+    2,
+    CreateRareTarget(traceA, captureA.OrderLifecycleSequence, 0, $"hud:{traceA}:0")));
 RuntimeOrderHighlightService.Tick();
 
 // Cross-generation and main-thread gates must stop before touching Unity visuals.
-RuntimeOrderHighlightService.UpdateTarget(3, enabled: true, traceA, deskCode: 0);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(
+    3,
+    CreateRareTarget(traceA, captureA.OrderLifecycleSequence, 0, $"hud:{traceA}:0")));
 RuntimeOrderHighlightService.Tick();
 Assert(RuntimeOrderHighlightService.Status.Contains("different night-business session", StringComparison.Ordinal), "A target from another business generation must fail closed.");
 var instantiatedBeforeWrongThread = GameObject.Instantiated.Count;
 RuntimeNightBusinessLifecycle.Snapshot = new NightBusinessLifecycleSnapshot(true, 2, unityThreadId + 1);
-RuntimeOrderHighlightService.UpdateTarget(2, enabled: true, traceA, deskCode: 0);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(
+    2,
+    CreateRareTarget(traceA, captureA.OrderLifecycleSequence, 0, $"hud:{traceA}:0")));
 RuntimeOrderHighlightService.Tick();
 Assert(GameObject.Instantiated.Count == instantiatedBeforeWrongThread, "A non-Unity-thread tick must not create a visual.");
 Assert(RuntimeOrderHighlightService.Status.Contains("Unity main thread", StringComparison.Ordinal), "The thread gate must be visible in diagnostics.");
@@ -274,15 +318,28 @@ Assert(GameObject.Instantiated.Count == instantiatedBeforeWrongThread + 1, "The 
 
 // Invalid protocol input must clear the current visual and must not be silently normalized.
 var destroyedBeforeInvalidTrace = GameObject.Destroyed.Count;
-RuntimeOrderHighlightService.UpdateTarget(2, enabled: true, " R-0001", deskCode: 0);
+var invalidTraceRejected = false;
+try
+{
+    RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(
+        2,
+        CreateRareTarget(" R-0001", captureA.OrderLifecycleSequence, 0, "invalid-trace")));
+}
+catch (ArgumentException)
+{
+    invalidTraceRejected = true;
+}
+Assert(invalidTraceRejected, "An invalid exact trace must be rejected at immutable target construction.");
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(2));
 RuntimeOrderHighlightService.Tick();
 Assert(GameObject.Destroyed.Count == destroyedBeforeInvalidTrace + 1, "An invalid exact trace must retire the live overlay.");
-Assert(RuntimeOrderHighlightService.Status.Contains("invalid target", StringComparison.Ordinal), "An invalid exact trace must remain visible as a protocol failure.");
-RuntimeOrderHighlightService.UpdateTarget(2, enabled: true, traceA, deskCode: 0);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(
+    2,
+    CreateRareTarget(traceA, captureA.OrderLifecycleSequence, 0, $"hud:{traceA}:0")));
 RuntimeOrderHighlightService.Tick();
 
 // Registration reads the exact get-only OrderBase.DeskCode, including non-zero desks.
-RuntimeOrderHighlightService.UpdateTarget(2, enabled: false, "", deskCode: -1);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(2));
 RuntimeOrderHighlightService.Tick();
 var nonZeroDeskOrder = new GuestsManager.OrderBase(deskCode: 2);
 var nonZeroDeskCapture = AddCapture(
@@ -294,7 +351,13 @@ var nonZeroDeskCapture = AddCapture(
     beverageTagId: 36);
 var nonZeroDeskTrace = RuntimeOrderTraceIdService.GetRareTraceId(nonZeroDeskCapture);
 var nonZeroDeskElement = CreateElement(controller, nonZeroDeskOrder, deskCode: 2);
-RuntimeOrderHighlightService.UpdateTarget(2, enabled: true, nonZeroDeskTrace, deskCode: 2);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(
+    2,
+    CreateRareTarget(
+        nonZeroDeskTrace,
+        nonZeroDeskCapture.OrderLifecycleSequence,
+        2,
+        $"hud:{nonZeroDeskTrace}:2")));
 RuntimeOrderHighlightService.Tick();
 Assert(RuntimeOrderHighlightService.Status.Contains("active", StringComparison.Ordinal),
     "A non-zero exact OrderBase.DeskCode must register and resolve normally.");
@@ -311,13 +374,21 @@ var mismatchedDeskCapture = AddCapture(
     beverageTagId: 37);
 var mismatchedDeskTrace = RuntimeOrderTraceIdService.GetRareTraceId(mismatchedDeskCapture);
 var mismatchedDeskElement = CreateElement(controller, mismatchedDeskOrder, deskCode: 5);
-RuntimeOrderHighlightService.UpdateTarget(2, enabled: true, mismatchedDeskTrace, deskCode: 5);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(
+    2,
+    CreateRareTarget(
+        mismatchedDeskTrace,
+        mismatchedDeskCapture.OrderLifecycleSequence,
+        5,
+        $"hud:{mismatchedDeskTrace}:5")));
 RuntimeOrderHighlightService.Tick();
 Assert(RuntimeOrderHighlightService.Status.Contains("matched 0 registered HUD elements", StringComparison.Ordinal),
     "A capture desk that disagrees with exact OrderBase.DeskCode must fail closed without using Initialize's desk argument.");
 TeardownElement(mismatchedDeskElement, "DestroySelf");
 SpecialOrderRuntimeCapture.Captures.Remove(mismatchedDeskCapture);
-RuntimeOrderHighlightService.UpdateTarget(2, enabled: true, traceA, deskCode: 0);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(
+    2,
+    CreateRareTarget(traceA, captureA.OrderLifecycleSequence, 0, $"hud:{traceA}:0")));
 RuntimeOrderHighlightService.Tick();
 
 // Reusing a pooled card for B must retire A and bind by B's native pointer, even on the same desk.
@@ -334,7 +405,9 @@ SpecialOrderRuntimeCapture.Captures.Remove(captureA);
 var overlayBeforeRebind = FindLatestOverlay();
 CreateElement(controller, orderB, deskCode: 0, pooledElement: elementA);
 Assert(overlayBeforeRebind.m_CachedPtr == IntPtr.Zero, "Initialize/rebind must destroy A's private overlay before the card is reused.");
-RuntimeOrderHighlightService.UpdateTarget(2, enabled: true, traceB, deskCode: 0);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(
+    2,
+    CreateRareTarget(traceB, captureB.OrderLifecycleSequence, 0, $"hud:{traceB}:0")));
 RuntimeOrderHighlightService.Tick();
 Assert(RuntimeOrderHighlightService.Status.Contains($"order:0x{orderB.Pointer:x}", StringComparison.Ordinal), "A pooled card must bind to B's exact native order pointer.");
 Assert(!RuntimeOrderHighlightService.Status.Contains($"order:0x{orderA.Pointer:x}", StringComparison.Ordinal), "A pooled card must not retain A's identity.");
@@ -375,14 +448,112 @@ var destroyedBeforeAbandon = GameObject.Destroyed.Count;
 RuntimeOrderHighlightService.Abandon("native scene already destroyed");
 Assert(GameObject.Destroyed.Count == destroyedBeforeAbandon, "Destroyed-scene abandonment must not dereference or destroy stale Unity wrappers.");
 Assert(overlayBeforeAbandon.m_CachedPtr != IntPtr.Zero, "Abandon must only drop managed ownership and leave native destruction to Unity.");
+UnityEngine.Object.Destroy(overlayBeforeAbandon);
+
+// Rare and normal targets own independent HUD overlays and consume their real capture stores.
+RuntimeNightBusinessLifecycle.Snapshot = new NightBusinessLifecycleSnapshot(true, 100, unityThreadId);
+RuntimeOrderHighlightService.Resume("dual target HUD coverage");
+SpecialOrderRuntimeCapture.Captures.Clear();
+NormalOrderRuntimeCapture.Captures.Clear();
+var dualRareOrder = new GuestsManager.OrderBase(deskCode: 0);
+var dualRareCapture = AddCapture(
+    dualRareOrder,
+    capturedAtA.AddMinutes(1),
+    deskCode: 0,
+    guestId: 201,
+    foodTagId: 51,
+    beverageTagId: 61);
+var dualNormalOrder = new GuestsManager.OrderBase(deskCode: 1);
+var dualNormalController = new GuestsManager.OrderBase();
+var dualNormalCapture = AddNormalCapture(
+    dualNormalOrder,
+    dualNormalController,
+    capturedAtA.AddMinutes(1),
+    deskCode: 1,
+    lifecycleSequence: 101);
+var dualRareColor = new RuntimeTargetHighlightColor(0xE2, 0x9B, 0x24);
+var dualNormalColor = new RuntimeTargetHighlightColor(0x31, 0x8A, 0xC4);
+var dualRareTarget = CreateRareTarget(
+    RuntimeOrderTraceIdService.GetRareTraceId(dualRareCapture),
+    dualRareCapture.OrderLifecycleSequence,
+    0,
+    "dual-hud-rare",
+    dualRareColor);
+var dualNormalTarget = CreateNormalTarget(dualNormalCapture, "dual-hud-normal", dualNormalColor);
+var dualController = new OrderController();
+var dualRareElement = CreateElement(dualController, dualRareOrder, deskCode: 0);
+var dualNormalElement = CreateElement(dualController, dualNormalOrder, deskCode: 1);
+Time.realtimeSinceStartup = 10f;
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(100, dualRareTarget, dualNormalTarget));
+RuntimeOrderHighlightService.Tick();
+var dualRareOverlay = FindLiveOverlayFor(dualRareElement);
+var dualNormalOverlay = FindLiveOverlayFor(dualNormalElement);
+AssertColor(InspectPrivateOverlay(dualRareOverlay).color, dualRareColor,
+    "The rare HUD card must use its injected color.");
+AssertColor(InspectPrivateOverlay(dualNormalOverlay).color, dualNormalColor,
+    "The normal HUD card must use its injected color from a real normal capture.");
+Assert(RuntimeOrderHighlightService.Status.StartsWith("active:2/2", StringComparison.Ordinal)
+       && RuntimeOrderHighlightService.Status.Contains("Rare:target:", StringComparison.Ordinal)
+       && RuntimeOrderHighlightService.Status.Contains("Normal:target:", StringComparison.Ordinal),
+    "Both exact HUD target kinds must remain active simultaneously.");
+
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(100, dualNormalTarget));
+Time.realtimeSinceStartup = 10.1f;
+RuntimeOrderHighlightService.Tick();
+Assert(dualRareOverlay.m_CachedPtr == IntPtr.Zero,
+    "Removing the rare slot must retire only its owned HUD overlay.");
+Assert(dualNormalOverlay.m_CachedPtr != IntPtr.Zero
+       && ReferenceEquals(FindLiveOverlayFor(dualNormalElement), dualNormalOverlay),
+    "Removing one target slot must preserve the other slot's exact HUD overlay identity.");
+
+// If both typed targets resolve to one native order, neither target may win by iteration order.
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(100));
+RuntimeOrderHighlightService.Tick();
+SpecialOrderRuntimeCapture.Captures.Clear();
+NormalOrderRuntimeCapture.Captures.Clear();
+var collisionOrder = new GuestsManager.OrderBase(deskCode: 2);
+var collisionRareCapture = AddCapture(
+    collisionOrder,
+    capturedAtA.AddMinutes(2),
+    deskCode: 2,
+    guestId: 202,
+    foodTagId: 52,
+    beverageTagId: 62);
+var collisionNormalCapture = AddNormalCapture(
+    collisionOrder,
+    new GuestsManager.OrderBase(),
+    capturedAtA.AddMinutes(2),
+    deskCode: 2,
+    lifecycleSequence: 102);
+_ = CreateElement(dualController, collisionOrder, deskCode: 2);
+var liveOverlaysBeforeCollision = LiveOverlays().Length;
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(
+    100,
+    CreateRareTarget(
+        RuntimeOrderTraceIdService.GetRareTraceId(collisionRareCapture),
+        collisionRareCapture.OrderLifecycleSequence,
+        2,
+        "collision-rare"),
+    CreateNormalTarget(collisionNormalCapture, "collision-normal")));
+Time.realtimeSinceStartup = 11f;
+RuntimeOrderHighlightService.Tick();
+Assert(LiveOverlays().Length == liveOverlaysBeforeCollision,
+    "Two target kinds resolving to one native order must fail before either overlay is created.");
+Assert(RuntimeOrderHighlightService.Status.Contains(
+        "exact native order is claimed by both target kinds",
+        StringComparison.Ordinal),
+    "The cross-kind native-order collision must remain visible in diagnostics.");
+RuntimeOrderHighlightService.Dispose("dual target HUD coverage complete");
 
 var serviceSource = File.ReadAllText("mods/bepinex/src/Save/RuntimeOrderHighlightService.cs");
 var traceSource = File.ReadAllText("mods/bepinex/src/Save/RuntimeOrderTraceIdService.cs");
+var resolverSource = File.ReadAllText("mods/bepinex/src/Save/RuntimeUiTargetOrderResolver.cs");
 foreach (var required in new[]
          {
              "CreateOrderingElement",
-             "TryResolveCurrentRareCapture",
-             "candidate.OrderPointer != orderPointer",
+             "RuntimeUiTargetOrderResolver.TryResolveCurrentCapture",
+             "Dictionary<RuntimeUiTargetKind, ActiveOrderVisual>",
+             "exact native order is claimed by both target kinds",
              "HasExactSafeImageComponents",
              "sourceObject.transform.childCount != 0",
              "components.Length != 3",
@@ -396,14 +567,18 @@ foreach (var required in new[]
              "pointer = component.Pointer",
              "UnityEngine.Object.Instantiate(sourceObject, parent)",
              "SetRaycastTarget!.Invoke(clonedImage, new object?[] { false })",
-             "new Color(1f, 0.86f, 0.18f, alpha)",
+             "RuntimeTargetHighlightStyle.BuildOrderHighlightPulseColor",
          })
 {
     Assert(serviceSource.Contains(required, StringComparison.Ordinal), $"Order highlighting must retain its exact runtime contract: {required}");
 }
 Assert(traceSource.Contains("character < '0' || character > '9'", StringComparison.Ordinal), "Rare trace validation must remain ASCII-only.");
-Assert(traceSource.Contains("string.Equals(candidate.RuntimeKey, $\"ptr:{orderPointer:x}\", StringComparison.Ordinal)", StringComparison.Ordinal),
+Assert(resolverSource.Contains("string.Equals(runtimeKey, $\"ptr:{orderPointer:x}\", StringComparison.Ordinal)", StringComparison.Ordinal),
     "Capture resolution must retain the nonzero native-key cross-check.");
+Assert(resolverSource.Contains("NormalOrderRuntimeCapture.Snapshot(maxAge)", StringComparison.Ordinal)
+       && resolverSource.Contains("RuntimeOrderTraceIdService.GetNormalTraceId(capture)", StringComparison.Ordinal)
+       && resolverSource.Contains("capture.RuntimeKey, target.OrderKey", StringComparison.Ordinal),
+    "Normal HUD resolution must consume the exact normal capture, N trace, and raw ptr order key.");
 
 foreach (var forbidden in new[]
          {
@@ -446,6 +621,27 @@ static CapturedRuntimeSpecialOrder AddCapture(
         BeverageTagId: beverageTagId,
         IsFreeOrder: false);
     SpecialOrderRuntimeCapture.Captures.Add(capture);
+    return capture;
+}
+
+static CapturedRuntimeNormalOrder AddNormalCapture(
+    GuestsManager.OrderBase order,
+    object controller,
+    DateTime capturedAt,
+    int deskCode,
+    long lifecycleSequence)
+{
+    var capture = new CapturedRuntimeNormalOrder(
+        RuntimeKey: $"ptr:{order.Pointer:x}",
+        DeskCode: deskCode,
+        FirstCapturedAt: capturedAt,
+        CapturedAt: capturedAt)
+    {
+        OrderObject = order,
+        ControllerObject = controller,
+        OrderLifecycleSequence = lifecycleSequence,
+    };
+    NormalOrderRuntimeCapture.Captures.Add(capture);
     return capture;
 }
 
@@ -534,6 +730,17 @@ static GameObject FindLatestOverlay()
     return GameObject.Instantiated.Last(item => item.name == "MystiaStewardCompanion.TargetOrderHighlight");
 }
 
+static GameObject[] LiveOverlays() => GameObject.Instantiated
+    .Where(item => item.name == "MystiaStewardCompanion.TargetOrderHighlight"
+        && item.m_CachedPtr != IntPtr.Zero)
+    .ToArray();
+
+static GameObject FindLiveOverlayFor(OrderingElement element)
+{
+    var expectedParent = element.borderStyleImageForCurrent.transform.parent;
+    return LiveOverlays().Single(item => ReferenceEquals(item.transform.parent, expectedParent));
+}
+
 static PatchRecord FindPatch(Type declaringType, string name, int parameterCount)
 {
     var matches = Harmony.Patches
@@ -559,7 +766,8 @@ static void AssertPatch(
 
 static void AssertTrace(string value, bool expected)
 {
-    var accepted = RuntimeOrderTraceIdService.TryNormalizeRareTraceId(
+    var accepted = RuntimeOrderTraceIdService.TryNormalizeTargetTraceId(
+        RuntimeUiTargetKind.Rare,
         value,
         enabled: true,
         out var normalized,
@@ -567,6 +775,60 @@ static void AssertTrace(string value, bool expected)
     Assert(accepted == expected, $"Unexpected exact trace validation result for '{value}'.");
     Assert(!accepted || normalized == value, "Accepted trace ids must remain byte-for-byte unchanged.");
     Assert(accepted || normalized == "", "Rejected trace ids must not leak a normalized alias.");
+}
+
+static RuntimeUiTargetSnapshot CreateRareTarget(
+    string traceId,
+    long lifecycleSequence,
+    int deskCode,
+    string revision,
+    RuntimeTargetHighlightColor? color = null) => new(
+    RuntimeUiTargetKind.Rare,
+    color ?? RuntimeTargetHighlightColor.DefaultRare,
+    listPinningEnabled: false,
+    recipeVariantEnabled: false,
+    cookerHighlightEnabled: false,
+    seatHighlightEnabled: false,
+    orderHighlightEnabled: true,
+    traceId,
+    "",
+    lifecycleSequence,
+    deskCode,
+    -1,
+    Array.Empty<int>(),
+    Array.Empty<int>(),
+    -1,
+    -1,
+    revision);
+
+static RuntimeUiTargetSnapshot CreateNormalTarget(
+    CapturedRuntimeNormalOrder capture,
+    string revision,
+    RuntimeTargetHighlightColor? color = null) => new(
+    RuntimeUiTargetKind.Normal,
+    color ?? RuntimeTargetHighlightColor.DefaultNormal,
+    listPinningEnabled: false,
+    recipeVariantEnabled: false,
+    cookerHighlightEnabled: false,
+    seatHighlightEnabled: false,
+    orderHighlightEnabled: true,
+    RuntimeOrderTraceIdService.GetNormalTraceId(capture),
+    capture.RuntimeKey,
+    capture.OrderLifecycleSequence,
+    capture.DeskCode,
+    -1,
+    Array.Empty<int>(),
+    Array.Empty<int>(),
+    -1,
+    -1,
+    revision);
+
+static void AssertColor(Color actual, RuntimeTargetHighlightColor expected, string message)
+{
+    Assert(actual.r == expected.R / 255f
+           && actual.g == expected.G / 255f
+           && actual.b == expected.B / 255f,
+        message);
 }
 
 static void Assert(bool condition, string message)

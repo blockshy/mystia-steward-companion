@@ -56,6 +56,9 @@ namespace MystiaStewardCompanion.Save
         public static int OrderResumeCount { get; set; }
         public static int OrderSuspendCount { get; set; }
         public static int OrderAbandonCount { get; set; }
+        public static int ThrowDeliverOrderResumeCount { get; set; }
+        public static int ThrowDeliverOrderSuspendCount { get; set; }
+        public static int ThrowDeliverOrderAbandonCount { get; set; }
         public static int ListResumeCount { get; set; }
         public static int ListSuspendCount { get; set; }
         public static int ListAbandonCount { get; set; }
@@ -82,6 +85,9 @@ namespace MystiaStewardCompanion.Save
             OrderResumeCount = 0;
             OrderSuspendCount = 0;
             OrderAbandonCount = 0;
+            ThrowDeliverOrderResumeCount = 0;
+            ThrowDeliverOrderSuspendCount = 0;
+            ThrowDeliverOrderAbandonCount = 0;
             ListResumeCount = 0;
             ListSuspendCount = 0;
             ListAbandonCount = 0;
@@ -120,9 +126,30 @@ namespace MystiaStewardCompanion.Save
 
     internal static class RuntimeOrderHighlightService
     {
-        public static void Resume(string reason) => RuntimeBoundaryProbe.OrderResumeCount++;
+        public static bool ThrowOnResume { get; set; }
+
+        public static void Resume(string reason)
+        {
+            if (ThrowOnResume) throw new InvalidOperationException("HUD order-highlight resume failed");
+            RuntimeBoundaryProbe.OrderResumeCount++;
+        }
         public static void Suspend(string reason) => RuntimeBoundaryProbe.OrderSuspendCount++;
         public static void Abandon(string reason) => RuntimeBoundaryProbe.OrderAbandonCount++;
+    }
+
+    internal static class RuntimeThrowDeliverOrderHighlightService
+    {
+        public static bool ThrowOnSuspend { get; set; }
+
+        public static void Resume(string reason) => RuntimeBoundaryProbe.ThrowDeliverOrderResumeCount++;
+
+        public static void Suspend(string reason)
+        {
+            if (ThrowOnSuspend) throw new InvalidOperationException("throw-delivery order-highlight suspend failed");
+            RuntimeBoundaryProbe.ThrowDeliverOrderSuspendCount++;
+        }
+
+        public static void Abandon(string reason) => RuntimeBoundaryProbe.ThrowDeliverOrderAbandonCount++;
     }
 
     internal static class RuntimeServeInWorkMissionDiagnosticCapture

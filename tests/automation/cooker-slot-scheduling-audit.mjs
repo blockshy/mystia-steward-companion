@@ -672,13 +672,13 @@ async function assertSourceContracts() {
   );
   assert.match(
     highlightScan,
-    /TryReadLockedCookerPositions\([\s\S]*TryReadCookerControllerEntriesFromCookSystem\(\s*cookSystem,\s*lockedPositions,[\s\S]*lockedPositions\.Contains\(entry\.GridPosition\)[\s\S]*continue;[\s\S]*TryReadCookerControllerState\([\s\S]*if \(!state\.CouldOpen\)[\s\S]*if \(state\.IsEmptyDesk\) continue;[\s\S]*ReadCookerRenderers\(entry\.Controller\)[\s\S]*openRenderers\.AddRange\(controllerRenderers\)[\s\S]*if \(target\.Enabled && state\.TypeIds\.Contains\(target\.CookerTypeId\)\)/,
-    'Cooker highlighting must skip locked keys, collect only fresh open renderers, and then filter the new target.',
+    /TryReadLockedCookerPositions\([\s\S]*TryReadCookerControllerEntriesFromCookSystem\(\s*cookSystem,\s*lockedPositions,[\s\S]*lockedPositions\.Contains\(entry\.GridPosition\)[\s\S]*continue;[\s\S]*TryReadCookerControllerState\([\s\S]*if \(!state\.CouldOpen\)[\s\S]*if \(state\.IsEmptyDesk\) continue;[\s\S]*ReadCookerRenderers\(entry\.Controller\)[\s\S]*openRenderers\.AddRange\(controllerRenderers\)[\s\S]*var claims = RuntimeUiTargetKinds\.None;[\s\S]*if \(HasCookerHighlightTargets\(targetSet\)\)[\s\S]*foreach \(var cookerTypeId in state\.TypeIds\)[\s\S]*claims \|= targetSet\.GetCookerClaims\(cookerTypeId\);[\s\S]*if \(claims != RuntimeUiTargetKinds\.None\)[\s\S]*existing\.Claims \|= claims[\s\S]*new TargetRenderer\(renderer, pointer, claims\)/,
+    'Cooker highlighting must skip locked keys, collect only fresh open renderers, and merge rare/normal claims for every matching cooker type.',
   );
   assert.match(
     highlightScan,
-    /RestoreRetainedBaselinesLocked\(openRenderers\);[\s\S]*if \(!target\.Enabled\)[\s\S]*foreach \(var renderer in targetRenderers\)/,
-    'Post-event highlighting must restore surviving old-target baselines before disable or new-target application.',
+    /RestoreRetainedBaselinesLocked\(openRenderers\);[\s\S]*if \(!HasCookerHighlightTargets\(targetSet\)\)[\s\S]*foreach \(var targetRenderer in targetRenderers\.Values\)/,
+    'Post-event highlighting must restore surviving old-target baselines before disabling or applying the claim-bearing target renderer set.',
   );
   assert.match(
     highlightScan,

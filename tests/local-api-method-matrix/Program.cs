@@ -43,7 +43,7 @@ var expectedPostRoutes = new HashSet<string>(StringComparer.Ordinal)
     "/orders/rare/dismiss",
     "/rare-guests/invite",
     "/rare-guests/invite-all",
-    "/ui-pinning/target",
+    "/ui-pinning/targets",
     "/updates/check",
     "/updates/download",
     "/updates/install-on-exit",
@@ -59,6 +59,57 @@ try
     AssertAbsent(source, "StartsWith(\"/api/\"", "The /api/* path alias still exists.");
     AssertAbsent(source, "case \"/automation/lease/release\":", "The obsolete lease release route still exists.");
     AssertAbsent(source, "case \"/automation/jobs/cancel\":", "The obsolete job-cancellation route still exists.");
+    AssertAbsent(source, "case \"/ui-pinning/target\":", "The obsolete singular UI target route still exists.");
+    AssertContains(
+        source,
+        "ValidateUiPinningTargetParameters(query, targetCount);",
+        "Unexpected or out-of-range UI target fields are not rejected.");
+    foreach (var field in new[]
+             {
+                 "ListPinningEnabled",
+                 "RecipeVariantEnabled",
+                 "CookerHighlightEnabled",
+                 "SeatHighlightEnabled",
+                 "OrderHighlightEnabled",
+             })
+    {
+        AssertContains(
+            source,
+            $"ReadRequiredExactBoolQuery(query, $\"{{prefix}}{field}\")",
+            $"Per-target {field} is missing from the exact UI target wire contract.");
+    }
+    AssertContains(
+        source,
+        "throw new FormatException($\"Unexpected UI target parameter {name}.\");",
+        "Obsolete collection-level UI feature fields are not rejected.");
+    AssertAbsent(
+        source,
+        "ReadRequiredExactBoolQuery(query, \"enabled\")",
+        "The obsolete collection-level enabled field remains in the UI target protocol.");
+    AssertAbsent(
+        source,
+        "ReadRequiredExactBoolQuery(query, \"highlightEnabled\")",
+        "The obsolete collection-level highlight field remains in the UI target protocol.");
+    AssertAbsent(
+        source,
+        "ReadRequiredExactBoolQuery(query, \"extraIngredientFillEnabled\")",
+        "The obsolete collection-level recipe-extra field remains in the UI target protocol.");
+    AssertAbsent(
+        source,
+        "ReadRequiredExactBoolQuery(query, \"seatHighlightEnabled\")",
+        "The obsolete collection-level seat-highlight field remains in the UI target protocol.");
+    AssertAbsent(
+        source,
+        "ReadRequiredExactBoolQuery(query, \"orderHighlightEnabled\")",
+        "The obsolete collection-level order-highlight field remains in the UI target protocol.");
+    AssertContains(
+        source,
+        "RuntimeTargetHighlightColor.TryParseExactHex(colorValue, out var color)",
+        "UI target colors no longer use the exact uppercase RGB parser.");
+    AssertContains(
+        source,
+        "part.Any(character => character is < '0' or > '9')",
+        "UI target id sequences no longer reject whitespace, signs, or non-ASCII digits.");
     AssertContains(
         source,
         "AutomationCancellationTargetPolicy.TryParse(",
@@ -157,7 +208,7 @@ try
 
     var inviteAllRouteStart = RequireIndex(source, "case \"/rare-guests/invite-all\":", postSwitchStart);
     var inviteRouteStart = RequireIndex(source, "case \"/rare-guests/invite\":", inviteAllRouteStart);
-    var nextPostRouteStart = RequireIndex(source, "case \"/ui-pinning/target\":", inviteRouteStart);
+    var nextPostRouteStart = RequireIndex(source, "case \"/ui-pinning/targets\":", inviteRouteStart);
     AssertContains(
         source[inviteAllRouteStart..inviteRouteStart],
         "ReadRareGuestInvitationWriteExpectation(query)",

@@ -46,6 +46,8 @@ namespace BepInEx.Logging
     {
         public static int InformationCount { get; private set; }
 
+        public static int WarningCount { get; private set; }
+
         public void LogInfo(object value)
         {
             InformationCount += 1;
@@ -53,6 +55,7 @@ namespace BepInEx.Logging
 
         public void LogWarning(object value)
         {
+            WarningCount += 1;
         }
     }
 }
@@ -152,12 +155,14 @@ namespace MystiaStewardCompanion.Save
 
         public static int UpdateCount { get; private set; }
 
-        public static void UpdateTarget(long sessionGeneration, bool enabled, int cookerTypeId, string cookerName)
+        public static void UpdateTargets(RuntimeUiTargetSetSnapshot targetSet)
         {
             UpdateCount += 1;
-            LastSessionGeneration = sessionGeneration;
-            LastEnabled = enabled && sessionGeneration > 0 && cookerTypeId > 0;
-            LastCookerTypeId = LastEnabled ? cookerTypeId : -1;
+            LastSessionGeneration = targetSet.SessionGeneration;
+            var target = targetSet.Targets.FirstOrDefault(candidate =>
+                candidate.CookerHighlightEnabled && candidate.CookerTypeId > 0);
+            LastEnabled = target != null;
+            LastCookerTypeId = LastEnabled ? target!.CookerTypeId : -1;
         }
     }
 
@@ -173,28 +178,21 @@ namespace MystiaStewardCompanion.Save
 
         public static int UpdateCount { get; private set; }
 
-        public static void UpdateTarget(long sessionGeneration, bool enabled, int deskCode)
+        public static void UpdateTargets(RuntimeUiTargetSetSnapshot targetSet)
         {
             UpdateCount += 1;
-            LastSessionGeneration = sessionGeneration;
-            LastEnabled = enabled && sessionGeneration > 0 && deskCode >= 0;
-            LastDeskCode = LastEnabled ? deskCode : -1;
+            LastSessionGeneration = targetSet.SessionGeneration;
+            var target = targetSet.Targets.FirstOrDefault(candidate =>
+                candidate.SeatHighlightEnabled && candidate.DeskCode >= 0);
+            LastEnabled = target != null;
+            LastDeskCode = LastEnabled ? target!.DeskCode : -1;
         }
     }
 
     internal static class RuntimeOrderTraceIdService
     {
-        public static string NormalizeRareTraceId(string traceId, bool enabled)
-        {
-            if (!TryNormalizeRareTraceId(traceId, enabled, out var normalized, out var failure))
-            {
-                throw new ArgumentException(failure, nameof(traceId));
-            }
-
-            return normalized;
-        }
-
-        public static bool TryNormalizeRareTraceId(
+        public static bool TryNormalizeTargetTraceId(
+            RuntimeUiTargetKind kind,
             string traceId,
             bool enabled,
             out string normalized,
@@ -206,12 +204,13 @@ namespace MystiaStewardCompanion.Save
                 failure = "";
                 return true;
             }
-            if (!traceId.StartsWith("R-", StringComparison.Ordinal)
-                || traceId.Length is < 4 or > 18
+            var prefix = kind == RuntimeUiTargetKind.Rare ? "R-" : "N-";
+            if (!traceId.StartsWith(prefix, StringComparison.Ordinal)
+                || traceId.Length is < 3 or > 18
                 || traceId.Skip(2).Any(character => character is < '0' or > '9'))
             {
                 normalized = "";
-                failure = "invalid rare trace id";
+                failure = "invalid typed trace id";
                 return false;
             }
 
@@ -235,13 +234,45 @@ namespace MystiaStewardCompanion.Save
 
         public static int UpdateCount { get; private set; }
 
-        public static void UpdateTarget(long sessionGeneration, bool enabled, string orderTraceId, int deskCode)
+        public static bool ThrowOnUpdate { get; set; }
+
+        public static void UpdateTargets(RuntimeUiTargetSetSnapshot targetSet)
         {
             UpdateCount += 1;
-            LastSessionGeneration = sessionGeneration;
-            LastEnabled = enabled && sessionGeneration > 0 && orderTraceId.Length > 0 && deskCode >= 0;
-            LastOrderTraceId = LastEnabled ? orderTraceId : "";
-            LastDeskCode = LastEnabled ? deskCode : -1;
+            if (ThrowOnUpdate) throw new InvalidOperationException("HUD order-highlight update failed");
+            LastSessionGeneration = targetSet.SessionGeneration;
+            var target = targetSet.Targets.FirstOrDefault(candidate => candidate.OrderHighlightEnabled);
+            LastEnabled = target != null;
+            LastOrderTraceId = LastEnabled ? target!.OrderTraceId : "";
+            LastDeskCode = LastEnabled ? target!.DeskCode : -1;
+        }
+    }
+
+    internal static class RuntimeThrowDeliverOrderHighlightService
+    {
+        public static string Status => LastEnabled ? "active" : "disabled";
+
+        public static bool LastEnabled { get; private set; }
+
+        public static long LastSessionGeneration { get; private set; }
+
+        public static string LastOrderTraceId { get; private set; } = "";
+
+        public static int LastDeskCode { get; private set; } = -1;
+
+        public static int UpdateCount { get; private set; }
+
+        public static bool ThrowOnUpdate { get; set; }
+
+        public static void UpdateTargets(RuntimeUiTargetSetSnapshot targetSet)
+        {
+            UpdateCount += 1;
+            if (ThrowOnUpdate) throw new InvalidOperationException("throw-delivery order-highlight update failed");
+            LastSessionGeneration = targetSet.SessionGeneration;
+            var target = targetSet.Targets.FirstOrDefault(candidate => candidate.OrderHighlightEnabled);
+            LastEnabled = target != null;
+            LastOrderTraceId = LastEnabled ? target!.OrderTraceId : "";
+            LastDeskCode = LastEnabled ? target!.DeskCode : -1;
         }
     }
 
@@ -253,13 +284,13 @@ namespace MystiaStewardCompanion.Save
         {
         }
 
-        public static void TryApply(object panel, RuntimeUiPinningService.PinningTargetSnapshot target)
+        public static void TryApply(object panel, RuntimeUiTargetSetSnapshot targetSet)
         {
         }
 
         public static void OnRefreshFinalized(
             object panel,
-            RuntimeUiPinningService.PinningTargetSnapshot target,
+            RuntimeUiTargetSetSnapshot targetSet,
             Exception? exception)
         {
         }

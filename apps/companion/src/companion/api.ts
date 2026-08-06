@@ -22,7 +22,7 @@ import type {
   CookerControllerReservation,
   FavoriteData,
   FavoriteMutationResponse,
-  GameUiPinningTarget,
+  GameUiTargetSlots,
   InventoryBulkEditResponse,
   InventoryEditResponse,
   LocalApiAutomationLease,
@@ -475,42 +475,42 @@ export async function writeInventoryBulkQuantity(
   );
 }
 
-export async function publishGameUiPinningTarget(
+export async function publishGameUiTargets(
   endpoint: string,
   apiToken: string,
   businessGeneration: number,
-  enabled: boolean,
-  highlightEnabled: boolean,
-  extraIngredientFillEnabled: boolean,
-  seatHighlightEnabled: boolean,
-  orderHighlightEnabled: boolean,
-  target: GameUiPinningTarget | null,
+  targetSlots: GameUiTargetSlots,
   signal?: AbortSignal,
 ): Promise<void> {
-  // 前端只发布当前推荐目标；Mod 在目标面板刷新作用域内复用游戏原生 pinned 排序，不直接操作 UI 列表。
+  const targets = [targetSlots.rare, targetSlots.normal].filter((target) => target !== null);
   const params = new URLSearchParams({
     businessGeneration: String(businessGeneration),
-    enabled: String(enabled),
-    highlightEnabled: String(highlightEnabled),
-    extraIngredientFillEnabled: String(enabled && extraIngredientFillEnabled),
-    seatHighlightEnabled: String(seatHighlightEnabled),
-    orderHighlightEnabled: String(orderHighlightEnabled),
-    targetRevision: target?.signature ?? '',
-    orderTraceId: target?.orderTraceId ?? '',
-    recipeId: target ? String(target.recipeId) : '-1',
-    recipeName: target?.recipeName ?? '',
-    ingredientIds: target ? target.ingredientIds.join(',') : '',
-    extraIngredientIds: target ? target.extraIngredientIds.join(',') : '',
-    beverageId: target ? String(target.beverageId) : '-1',
-    beverageName: target?.beverageName ?? '',
-    cookerTypeId: target ? String(target.cookerTypeId) : '-1',
-    cookerName: target?.cookerName ?? '',
-    deskCode: target ? String(target.deskCode) : '-1',
+    targetCount: String(targets.length),
+  });
+  targets.forEach((target, index) => {
+    const prefix = `target${index}`;
+    params.set(`${prefix}Kind`, target.kind);
+    params.set(`${prefix}ListPinningEnabled`, String(target.features.listPinningEnabled));
+    params.set(`${prefix}RecipeVariantEnabled`, String(target.features.recipeVariantEnabled));
+    params.set(`${prefix}CookerHighlightEnabled`, String(target.features.cookerHighlightEnabled));
+    params.set(`${prefix}SeatHighlightEnabled`, String(target.features.seatHighlightEnabled));
+    params.set(`${prefix}OrderHighlightEnabled`, String(target.features.orderHighlightEnabled));
+    params.set(`${prefix}Revision`, target.targetRevision);
+    params.set(`${prefix}Color`, target.color.slice(1));
+    params.set(`${prefix}TraceId`, target.traceId);
+    params.set(`${prefix}OrderKey`, target.orderKey);
+    params.set(`${prefix}OrderLifecycleSequence`, String(target.orderLifecycleSequence));
+    params.set(`${prefix}DeskCode`, String(target.deskCode));
+    params.set(`${prefix}RecipeId`, String(target.recipeId));
+    params.set(`${prefix}IngredientIds`, target.ingredientIds.join(','));
+    params.set(`${prefix}ExtraIngredientIds`, target.extraIngredientIds.join(','));
+    params.set(`${prefix}BeverageId`, String(target.beverageId));
+    params.set(`${prefix}CookerTypeId`, String(target.cookerTypeId));
   });
   const response = await writeLocalApiJsonWithTimeout<{ ok: boolean; status?: string; error?: string | null }>(
     endpoint,
     apiToken,
-    `/ui-pinning/target?${params.toString()}`,
+    `/ui-pinning/targets?${params.toString()}`,
     2200,
     signal,
   );

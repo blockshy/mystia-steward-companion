@@ -13,6 +13,7 @@
 
   <ItemGroup>
     <Compile Include="../../mods/bepinex/src/Save/RuntimePinnedRecipeExtrasService.cs" Link="RuntimePinnedRecipeExtrasService.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeUiTargetSet.cs" Link="RuntimeUiTargetSet.cs" />
   </ItemGroup>
 
   <ItemGroup>

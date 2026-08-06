@@ -113,7 +113,8 @@ function seedLocalStorage({ apiUrl, apiToken, storagePrefix }) {
   localStorage.setItem(`${storagePrefix}-auto-prep-start-cooking`, '1');
   localStorage.setItem(`${storagePrefix}-auto-prep-collect-cooking`, '1');
   localStorage.setItem(`${storagePrefix}-auto-prep-complete-order`, '1');
-  localStorage.setItem(`${storagePrefix}-game-ui-pinning`, '1');
+  localStorage.setItem(`${storagePrefix}-rare-game-ui-pinning`, '1');
+  localStorage.setItem(`${storagePrefix}-normal-game-ui-pinning`, '1');
   localStorage.setItem(`${storagePrefix}-recommended-extra-ingredient-fill`, '1');
   localStorage.setItem(`${storagePrefix}-cooker-highlight`, '1');
   localStorage.setItem(`${storagePrefix}-seat-highlight`, '1');

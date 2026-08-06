@@ -55,6 +55,76 @@ const wackyOrderModule = read(
 const plugin = read('mods/bepinex/src/Plugin/MystiaStewardCompanionPlugin.cs');
 
 const productionSourceRoot = path.join(root, 'mods/bepinex/src');
+const productionCsRelativePaths = fs.readdirSync(productionSourceRoot, { recursive: true })
+  .filter((relativePath) => typeof relativePath === 'string' && relativePath.endsWith('.cs'));
+const throwDeliveryOrderHighlightRelativePath = path.join(
+  'Save',
+  'RuntimeThrowDeliverOrderHighlightService.cs',
+);
+const throwDeliveryOrderHighlightPath = path.join(
+  productionSourceRoot,
+  throwDeliveryOrderHighlightRelativePath,
+);
+const obsoleteWrongPageOrderHighlightPath = path.join(
+  productionSourceRoot,
+  'Save',
+  ['Runtime', 'Serve', 'PanelOrderHighlightService.cs'].join(''),
+);
+assert.ok(
+  fs.existsSync(throwDeliveryOrderHighlightPath),
+  'The exact passive throw-delivery order-highlight service is missing.',
+);
+assert.ok(
+  !fs.existsSync(obsoleteWrongPageOrderHighlightPath),
+  'The obsolete wrong-page order-highlight service must be removed instead of retained as a compatibility path.',
+);
+const throwDeliveryOrderHighlight = fs.readFileSync(throwDeliveryOrderHighlightPath, 'utf8');
+const obsoleteWrongPageServicePattern = new RegExp(
+  ['Runtime', 'Serve', 'PanelOrderHighlightService'].join(''),
+);
+const throwDeliveryPanelLifecycleObservers = productionCsRelativePaths
+  .filter((relativePath) => {
+    const source = fs.readFileSync(path.join(productionSourceRoot, relativePath), 'utf8');
+    assert.doesNotMatch(
+      source,
+      obsoleteWrongPageServicePattern,
+      `Production source retained the obsolete wrong-page service identity: ${relativePath}`,
+    );
+    assert.doesNotMatch(
+      source,
+      /OpenThrowDeliverPanel/,
+      `Production source restored the active throw-delivery panel entry: ${relativePath}`,
+    );
+    return /WorkSceneThrowDeliverPanel/.test(source)
+      && /OnPanelOpen|OnPanelClose/.test(source);
+  })
+  .map((relativePath) => relativePath.split(path.sep).join('/'));
+assert.deepEqual(
+  throwDeliveryPanelLifecycleObservers,
+  ['Save/RuntimeThrowDeliverOrderHighlightService.cs'],
+  'Only the dedicated passive visual service may observe WorkSceneThrowDeliverPanel OnPanelOpen/OnPanelClose.',
+);
+assert.match(
+  throwDeliveryOrderHighlight,
+  /ThrowDeliverPanelTypeName\s*=\s*"NightScene\.UI\.HUDUtility\.WorkSceneThrowDeliverPanel"/,
+  'The passive visual service must bind the exact verified throw-delivery panel type.',
+);
+assert.match(
+  throwDeliveryOrderHighlight,
+  /OpenPatchKey\s*=\s*ThrowDeliverPanelTypeName\s*\+\s*"\.OnPanelOpen\/0"/,
+  'The passive visual service must bind the exact zero-argument open lifecycle.',
+);
+assert.match(
+  throwDeliveryOrderHighlight,
+  /ClosePatchKey\s*=\s*ThrowDeliverPanelTypeName\s*\+\s*"\.OnPanelClose\/0"/,
+  'The passive visual service must bind the exact zero-argument close lifecycle.',
+);
+assert.doesNotMatch(
+  throwDeliveryOrderHighlight,
+  /WorkSceneServePannel|OpenThrowDeliverPanel|DescribeCurrentOrder|TryFocusToOrder|EnterGroup|GetShowInUIOrders|DisplayClass|MoveNext|OnThrowDelivering|ExecuteThrowDeliver|ThrowDeliver\(|EvaluateOrder|EvaulateManualOrder|FindObjectOfType|FindObjectsOfType|FindObjectsByType|FindFirstObjectByType|FindAnyObjectByType|FindObjectsOfTypeAll|GetComponentInChildren|GetComponentsInChildren/,
+  'The passive throw-delivery visual service restored a wrong-page, active/generated, evaluation, or scene-scan path.',
+);
+
 const storageOutHookSources = fs.readdirSync(productionSourceRoot, { recursive: true })
   .filter((relativePath) => typeof relativePath === 'string' && relativePath.endsWith('.cs'))
   .filter((relativePath) => {
@@ -2571,13 +2641,13 @@ assert.match(
 );
 assert.match(
   cookerHighlight,
-  /if \(state\.IsEmptyDesk\) continue;[\s\S]*openRenderers\.AddRange\(controllerRenderers\);[\s\S]*if \(target\.Enabled && state\.TypeIds\.Contains\(target\.CookerTypeId\)\)/,
-  'Cooker highlighting must skip empty desks, retain every fresh open renderer for restoration, and then filter the target type.',
+  /if \(state\.IsEmptyDesk\) continue;[\s\S]*openRenderers\.AddRange\(controllerRenderers\);[\s\S]*var claims = RuntimeUiTargetKinds\.None;[\s\S]*if \(HasCookerHighlightTargets\(targetSet\)\)[\s\S]*foreach \(var cookerTypeId in state\.TypeIds\)[\s\S]*claims \|= targetSet\.GetCookerClaims\(cookerTypeId\);[\s\S]*if \(claims != RuntimeUiTargetKinds\.None\)[\s\S]*existing\.Claims \|= claims[\s\S]*new TargetRenderer\(renderer, pointer, claims\)/,
+  'Cooker highlighting must skip empty desks, retain every fresh open renderer, and merge rare/normal claims for each matching cooker type.',
 );
 assert.match(
   cookerHighlight,
-  /RestoreRetainedBaselinesLocked\(openRenderers\);[\s\S]*if \(!target\.Enabled\)[\s\S]*foreach \(var renderer in targetRenderers\)/,
-  'Cooker highlighting must restore post-event baselines before disabling or applying a replacement target.',
+  /RestoreRetainedBaselinesLocked\(openRenderers\);[\s\S]*if \(!HasCookerHighlightTargets\(targetSet\)\)[\s\S]*foreach \(var targetRenderer in targetRenderers\.Values\)/,
+  'Cooker highlighting must restore post-event baselines before disabling or applying the claim-bearing target renderer set.',
 );
 assert.match(
   snapshotReader,
@@ -2674,13 +2744,35 @@ for (const [label, source] of [
     `${label} must not retain deprecated cooker discovery or dictionary parsing paths.`);
 }
 
-const publishCookerTarget = sourceSlice(cookerHighlight, 'public static void UpdateTarget(', 'public static void Tick()');
+const publishCookerTarget = sourceSlice(cookerHighlight, 'public static void UpdateTargets(', 'public static void Tick()');
 assert.ok(!/SpriteRenderer|UnityEngine|Time\.|Restore|ScanAndApply|PulseHighlightedRenderers/.test(publishCookerTarget),
   'Background cooker-target publication must only replace managed desired state.');
+assert.doesNotMatch(
+  cookerHighlight,
+  /RuntimeHelpers|GetHashCode\(/,
+  'Cooker renderer identity must not fall back to managed object hashes.',
+);
 const reconcileCookerTarget = sourceSlice(cookerHighlight, 'public static void Tick()', 'public static void Suspend(');
 assert.match(reconcileCookerTarget, /RuntimeNightBusinessLifecycle\.Snapshot/);
 assert.match(reconcileCookerTarget, /ScanAndApply\(desired\)/);
 assert.match(reconcileCookerTarget, /PulseHighlightedRenderers\(desired\)/);
+const scanAndApplyCookerHighlight = methodSource(cookerHighlight, 'private static void ScanAndApply(');
+assert.match(
+  scanAndApplyCookerHighlight,
+  /Dictionary<nint, TargetRenderer>[\s\S]*targetSet\.GetCookerClaims\(cookerTypeId\)[\s\S]*existing\.Claims \|= claims/,
+  'A cooker shared by rare and normal targets must merge both claims under one native renderer identity.',
+);
+assert.match(
+  scanAndApplyCookerHighlight,
+  /HighlightedRenderers\.TryGetValue\(pointer, out var existing\)[\s\S]*existing\.Claims = targetRenderer\.Claims[\s\S]*new RendererBaseline\(renderer\.color, renderer\.enabled\)/,
+  'Cooker reconciliation must update one owned renderer claim while capturing its baseline only on first ownership.',
+);
+const pulseCookerHighlight = methodSource(cookerHighlight, 'private static void PulseHighlightedRenderers(');
+assert.match(
+  pulseCookerHighlight,
+  /BuildCookerSpritePulseColor\([\s\S]*item\.OriginalColor,[\s\S]*item\.Claims,[\s\S]*targetSet\.Palette/,
+  'Cooker pulse must render merged claims through the published two-color palette.',
+);
 
 assert.match(overlay, /AppendAutomationRuntimeEvents[\s\S]*OrderBy\(item => item\.Sequence\)[\s\S]*AppendValue\(builder, item\.Sequence\)/);
 assert.match(overlay, /AppendValue\(StringBuilder builder, long value\)[\s\S]*InvariantCulture/);

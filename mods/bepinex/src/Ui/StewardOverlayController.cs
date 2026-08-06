@@ -602,6 +602,7 @@ internal sealed class StewardOverlayController
         RuntimeCookerHighlightService.Tick();
         RuntimeSeatHighlightService.Tick();
         RuntimeOrderHighlightService.Tick();
+        RuntimeThrowDeliverOrderHighlightService.Tick();
         RuntimePinnedListHighlightService.Tick();
     }
 
@@ -634,9 +635,33 @@ internal sealed class StewardOverlayController
         RuntimePinnedRecipeExtrasService.Abandon("controller disposed");
         RuntimeCookerHighlightService.Abandon("controller disposed");
         RuntimeSeatHighlightService.Dispose("controller disposed");
-        RuntimeOrderHighlightService.Dispose("controller disposed");
+        RunOrderHighlightDisposalNoThrow(
+            "HUD",
+            () => RuntimeOrderHighlightService.Dispose("controller disposed"));
+        RunOrderHighlightDisposalNoThrow(
+            "throw-delivery panel",
+            () => RuntimeThrowDeliverOrderHighlightService.Dispose("controller disposed"));
         RuntimePinnedListHighlightService.Abandon("controller disposed");
         AggregateModLogService.Shutdown();
+    }
+
+    private void RunOrderHighlightDisposalNoThrow(string surface, Action action)
+    {
+        try
+        {
+            action();
+        }
+        catch (Exception ex)
+        {
+            try
+            {
+                _log?.LogWarning($"Failed to dispose the {surface} order-highlight surface without affecting the other surface: {ex.GetBaseException().Message}");
+            }
+            catch
+            {
+                // Diagnostics must not prevent the remaining runtime visual from being released.
+            }
+        }
     }
 
     private void ProcessToggleInput()

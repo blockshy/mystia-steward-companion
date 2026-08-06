@@ -17,8 +17,6 @@ internal static class RuntimePinnedListHighlightService
     private static readonly HashSet<string> PatchedMethods = new(StringComparer.Ordinal);
     private static readonly ConcurrentDictionary<Type, ButtonAccessors> ButtonAccessorCache = new();
     private static readonly ConcurrentDictionary<Type, ImageAccessors> ImageAccessorCache = new();
-    private static readonly Color HighlightColor = new(1f, 0.86f, 0.18f, 1f);
-
     private static Harmony? _harmony;
     private static ManualLogSource? _log;
     private static long _missingImages;
@@ -35,7 +33,7 @@ internal static class RuntimePinnedListHighlightService
     {
         get
         {
-            var target = RuntimeUiPinningService.ReadPinningTarget();
+            var target = RuntimeUiPinningService.ReadTargetSet();
             lock (SyncRoot)
             {
                 var recipeCount = TrackedImages.Values.Count(item => item.ItemKind == ItemKind.Recipe);
@@ -43,7 +41,7 @@ internal static class RuntimePinnedListHighlightService
                 var beverageCount = TrackedImages.Values.Count(item => item.ItemKind == ItemKind.Beverage);
                 var state = _suspended
                     ? _state
-                    : !target.Enabled
+                    : !HasListPinningTargets(target)
                         ? TrackedImages.Count == 0 ? "disabled" : "pending disable"
                         : TrackedImages.Values.Any(item => item.TargetGeneration == target.Generation)
                             ? _state
@@ -105,14 +103,14 @@ internal static class RuntimePinnedListHighlightService
 
         List<TrackedImage> staleImages;
         List<TrackedImage> candidates;
-        var target = RuntimeUiPinningService.ReadPinningTarget();
+        var target = RuntimeUiPinningService.ReadTargetSet();
         var generation = target.Generation;
         lock (SyncRoot)
         {
             if (_suspended) return;
 
             staleImages = TrackedImages.Values
-                .Where(item => !target.Enabled
+                .Where(item => !HasListPinningTargets(target)
                     || item.TargetGeneration != generation
                     || !MatchesTarget(target, item.ItemKind, item.ItemId))
                 .ToList();
@@ -122,7 +120,7 @@ internal static class RuntimePinnedListHighlightService
             }
 
             candidates = TrackedImages.Values.ToList();
-            if (!target.Enabled)
+            if (!HasListPinningTargets(target))
             {
                 _state = "disabled";
             }
@@ -131,21 +129,25 @@ internal static class RuntimePinnedListHighlightService
         RestoreTrackedImages(staleImages);
         if (!IsGenerationEnabled(generation)) return;
 
-        var pulse = 0.55f + (Mathf.Sin(Time.realtimeSinceStartup * 5.5f) + 1f) * 0.225f;
         foreach (var item in candidates)
         {
             if (!TryPrepareVisual(item, generation, out var originalColor)) continue;
+            var claims = GetClaims(target, item.ItemKind, item.ItemId);
+            if (claims == RuntimeUiTargetKinds.None) continue;
 
-            var color = Color.Lerp(originalColor, HighlightColor, pulse);
-            color.a = originalColor.a;
+            var color = RuntimeTargetHighlightStyle.BuildListItemPulseColor(
+                originalColor,
+                claims,
+                target.Palette,
+                Time.realtimeSinceStartup);
             if (!TryApplyHighlight(item, generation, color)) continue;
         }
 
-        var latestTarget = RuntimeUiPinningService.ReadPinningTarget();
+        var latestTarget = RuntimeUiPinningService.ReadTargetSet();
         lock (SyncRoot)
         {
             if (_suspended) return;
-            _state = !latestTarget.Enabled
+            _state = !HasListPinningTargets(latestTarget)
                 ? "disabled"
                 : TrackedImages.Values.Any(item => item.TargetGeneration == latestTarget.Generation)
                     ? "active"
@@ -155,14 +157,14 @@ internal static class RuntimePinnedListHighlightService
 
     public static void Suspend(string reason)
     {
-        var target = RuntimeUiPinningService.ReadPinningTarget();
+        var target = RuntimeUiPinningService.ReadTargetSet();
         List<TrackedImage> images;
         lock (SyncRoot)
         {
             _suspended = true;
             _suspendReason = string.IsNullOrWhiteSpace(reason) ? "scene unavailable" : reason.Trim();
             images = TakeAllTrackedImagesLocked();
-            _state = target.Enabled ? $"suspended: {_suspendReason}" : "disabled";
+            _state = HasListPinningTargets(target) ? $"suspended: {_suspendReason}" : "disabled";
         }
 
         RestoreTrackedImages(images);
@@ -170,12 +172,12 @@ internal static class RuntimePinnedListHighlightService
 
     public static void Resume(string reason)
     {
-        var target = RuntimeUiPinningService.ReadPinningTarget();
+        var target = RuntimeUiPinningService.ReadTargetSet();
         lock (SyncRoot)
         {
             _suspended = false;
             _suspendReason = string.IsNullOrWhiteSpace(reason) ? "night business active" : reason.Trim();
-            _state = target.Enabled ? "waiting for target elements" : "disabled";
+            _state = HasListPinningTargets(target) ? "waiting for target elements" : "disabled";
         }
     }
 
@@ -285,12 +287,12 @@ internal static class RuntimePinnedListHighlightService
     {
         if (!RuntimeNightBusinessLifecycle.IsActive) return;
 
-        var target = RuntimeUiPinningService.ReadPinningTarget();
+        var target = RuntimeUiPinningService.ReadTargetSet();
         lock (SyncRoot)
         {
             _suspended = false;
             _suspendReason = "scene unavailable";
-            _state = target.Enabled ? "waiting for target elements" : "disabled";
+            _state = HasListPinningTargets(target) ? "waiting for target elements" : "disabled";
         }
     }
 
@@ -365,7 +367,7 @@ internal static class RuntimePinnedListHighlightService
             var itemId = RuntimeReflectionUtility.ToInt(RuntimeReflectionUtility.GetMemberValue(item, "id"), -1);
             if (itemId < 0) return;
 
-            var target = RuntimeUiPinningService.ReadPinningTarget();
+            var target = RuntimeUiPinningService.ReadTargetSet();
             lock (SyncRoot)
             {
                 if (_suspended || !MatchesTarget(target, itemKind, itemId)) return;
@@ -381,7 +383,7 @@ internal static class RuntimePinnedListHighlightService
             var pointer = RuntimeReflectionUtility.ReadObjectPointer(image);
             if (pointer == IntPtr.Zero) return;
 
-            var latestTarget = RuntimeUiPinningService.ReadPinningTarget();
+            var latestTarget = RuntimeUiPinningService.ReadTargetSet();
             lock (SyncRoot)
             {
                 if (_suspended
@@ -413,7 +415,7 @@ internal static class RuntimePinnedListHighlightService
     {
         originalColor = default;
         bool captureFinalColor;
-        var target = RuntimeUiPinningService.ReadPinningTarget();
+        var target = RuntimeUiPinningService.ReadTargetSet();
         lock (SyncRoot)
         {
             if (!IsCurrentTargetLocked(item, generation, target)) return false;
@@ -431,7 +433,7 @@ internal static class RuntimePinnedListHighlightService
                 return false;
             }
 
-            var latestTarget = RuntimeUiPinningService.ReadPinningTarget();
+            var latestTarget = RuntimeUiPinningService.ReadTargetSet();
             lock (SyncRoot)
             {
                 if (!IsCurrentTargetLocked(item, generation, latestTarget)) return false;
@@ -449,7 +451,7 @@ internal static class RuntimePinnedListHighlightService
 
     private static bool TryApplyHighlight(TrackedImage item, long generation, Color color)
     {
-        var target = RuntimeUiPinningService.ReadPinningTarget();
+        var target = RuntimeUiPinningService.ReadTargetSet();
         lock (SyncRoot)
         {
             if (!IsCurrentTargetLocked(item, generation, target)) return false;
@@ -472,7 +474,7 @@ internal static class RuntimePinnedListHighlightService
         }
 
         var restore = false;
-        var latestTarget = RuntimeUiPinningService.ReadPinningTarget();
+        var latestTarget = RuntimeUiPinningService.ReadTargetSet();
         lock (SyncRoot)
         {
             if (IsCurrentTargetLocked(item, generation, latestTarget))
@@ -489,20 +491,20 @@ internal static class RuntimePinnedListHighlightService
 
     private static bool IsGenerationEnabled(long generation)
     {
-        var target = RuntimeUiPinningService.ReadPinningTarget();
+        var target = RuntimeUiPinningService.ReadTargetSet();
         lock (SyncRoot)
         {
-            return !_suspended && target.Enabled && target.Generation == generation;
+            return !_suspended && HasListPinningTargets(target) && target.Generation == generation;
         }
     }
 
     private static bool IsCurrentTargetLocked(
         TrackedImage item,
         long generation,
-        RuntimeUiPinningService.PinningTargetSnapshot target)
+        RuntimeUiTargetSetSnapshot target)
     {
         return !_suspended
-            && target.Enabled
+            && HasListPinningTargets(target)
             && target.Generation == generation
             && item.TargetGeneration == generation
             && TrackedImages.TryGetValue(item.Pointer, out var current)
@@ -510,15 +512,23 @@ internal static class RuntimePinnedListHighlightService
             && MatchesTarget(target, item.ItemKind, item.ItemId);
     }
 
-    private static bool MatchesTarget(RuntimeUiPinningService.PinningTargetSnapshot target, ItemKind itemKind, int itemId)
+    private static bool MatchesTarget(RuntimeUiTargetSetSnapshot target, ItemKind itemKind, int itemId)
     {
-        if (!target.Enabled) return false;
+        return HasListPinningTargets(target)
+            && GetClaims(target, itemKind, itemId) != RuntimeUiTargetKinds.None;
+    }
+
+    private static RuntimeUiTargetKinds GetClaims(
+        RuntimeUiTargetSetSnapshot target,
+        ItemKind itemKind,
+        int itemId)
+    {
         return itemKind switch
         {
-            ItemKind.Recipe => itemId == target.RecipeId,
-            ItemKind.Ingredient => target.ContainsIngredient(itemId),
-            ItemKind.Beverage => itemId == target.BeverageId,
-            _ => false,
+            ItemKind.Recipe => target.GetRecipeClaims(itemId),
+            ItemKind.Ingredient => target.GetIngredientClaims(itemId),
+            ItemKind.Beverage => target.GetBeverageClaims(itemId),
+            _ => RuntimeUiTargetKinds.None,
         };
     }
 
@@ -573,7 +583,7 @@ internal static class RuntimePinnedListHighlightService
 
     private static void RestorePanel(PanelKind panelKind)
     {
-        var target = RuntimeUiPinningService.ReadPinningTarget();
+        var target = RuntimeUiPinningService.ReadTargetSet();
         List<TrackedImage> images;
         lock (SyncRoot)
         {
@@ -584,11 +594,16 @@ internal static class RuntimePinnedListHighlightService
             }
 
             _state = _suspended
-                ? target.Enabled ? $"suspended: {_suspendReason}" : "disabled"
-                : target.Enabled ? "waiting for target elements" : "disabled";
+                ? HasListPinningTargets(target) ? $"suspended: {_suspendReason}" : "disabled"
+                : HasListPinningTargets(target) ? "waiting for target elements" : "disabled";
         }
 
         RestoreTrackedImages(images);
+    }
+
+    private static bool HasListPinningTargets(RuntimeUiTargetSetSnapshot targetSet)
+    {
+        return targetSet.Targets.Any(target => target.ListPinningEnabled);
     }
 
     private static void ReconcilePanelTeardown(PanelKind panelKind)

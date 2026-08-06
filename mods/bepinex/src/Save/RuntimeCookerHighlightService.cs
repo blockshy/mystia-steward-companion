@@ -1,6 +1,5 @@
 using System.Collections;
 using System.Reflection;
-using System.Runtime.CompilerServices;
 using UnityEngine;
 
 namespace MystiaStewardCompanion.Save;
@@ -14,7 +13,7 @@ internal static class RuntimeCookerHighlightService
     private static readonly Dictionary<nint, HighlightedRenderer> HighlightedRenderers = new();
     private static readonly Dictionary<nint, RendererBaseline> RendererBaselines = new();
 
-    private static CookerHighlightTargetSnapshot _desiredTarget = CookerHighlightTargetSnapshot.Disabled;
+    private static RuntimeUiTargetSetSnapshot _desiredTargetSet = RuntimeUiTargetSetSnapshot.Disabled;
     private static long _appliedTargetGeneration;
     private static bool _suspended = true;
     private static string _suspendReason = "night business inactive";
@@ -26,10 +25,14 @@ internal static class RuntimeCookerHighlightService
     {
         get
         {
-            var desired = Volatile.Read(ref _desiredTarget);
+            var desired = Volatile.Read(ref _desiredTargetSet);
             lock (VisualRoot)
             {
-                return $"{_status}; desired={desired.Generation}/session:{desired.SessionGeneration}/cooker:{desired.CookerTypeId}/{desired.CookerName}; applied={_appliedTargetGeneration}; suspended={_suspended}; topologyMutationDepth={_topologyMutationDepth}";
+                var cookerTargets = desired.Targets.Where(target => target.CookerHighlightEnabled).ToArray();
+                var cookers = cookerTargets.Length == 0
+                    ? "none"
+                    : string.Join(",", cookerTargets.Select(target => $"{target.Kind}:{target.CookerTypeId}"));
+                return $"{_status}; desired={desired.Generation}/session:{desired.SessionGeneration}/cookers:{cookers}; applied={_appliedTargetGeneration}; suspended={_suspended}; topologyMutationDepth={_topologyMutationDepth}";
             }
         }
     }
@@ -37,38 +40,26 @@ internal static class RuntimeCookerHighlightService
     /// <summary>
     /// Publishes managed desired state only. Unity objects are reconciled later by <see cref="Tick"/>.
     /// </summary>
-    public static void UpdateTarget(long sessionGeneration, bool enabled, int cookerTypeId, string cookerName)
+    public static void UpdateTargets(RuntimeUiTargetSetSnapshot targetSet)
     {
-        var normalizedEnabled = enabled && sessionGeneration > 0 && cookerTypeId > 0;
-        var normalizedCookerTypeId = normalizedEnabled ? cookerTypeId : -1;
-        var normalizedCookerName = normalizedEnabled ? cookerName.Trim() : "";
+        ArgumentNullException.ThrowIfNull(targetSet);
         lock (DesiredRoot)
         {
-            var current = Volatile.Read(ref _desiredTarget);
-            if (current.HasSameValues(sessionGeneration, normalizedEnabled, normalizedCookerTypeId, normalizedCookerName)) return;
-
-            Volatile.Write(
-                ref _desiredTarget,
-                new CookerHighlightTargetSnapshot(
-                    checked(current.Generation + 1),
-                    sessionGeneration,
-                    normalizedEnabled,
-                    normalizedCookerTypeId,
-                    normalizedCookerName));
+            if (ReferenceEquals(Volatile.Read(ref _desiredTargetSet), targetSet)) return;
+            Volatile.Write(ref _desiredTargetSet, targetSet);
         }
     }
 
     public static void Tick()
     {
         var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
-        var desired = Volatile.Read(ref _desiredTarget);
+        var desired = Volatile.Read(ref _desiredTargetSet);
         lock (VisualRoot)
         {
             if (_suspended || _topologyMutationDepth > 0 || !lifecycle.IsActive) return;
 
-            var desiredEnabled = desired.Enabled
-                && desired.SessionGeneration == lifecycle.Generation
-                && desired.CookerTypeId > 0;
+            var desiredEnabled = HasCookerHighlightTargets(desired)
+                && desired.SessionGeneration == lifecycle.Generation;
             if (_appliedTargetGeneration != desired.Generation)
             {
                 RestoreAllLocked();
@@ -78,7 +69,7 @@ internal static class RuntimeCookerHighlightService
 
             if (!desiredEnabled)
             {
-                _status = desired.Enabled
+                _status = HasCookerHighlightTargets(desired)
                     ? "waiting: target belongs to a different night-business session"
                     : "disabled";
                 if (RendererBaselines.Count == 0) return;
@@ -90,7 +81,7 @@ internal static class RuntimeCookerHighlightService
             ScanAndApply(desired);
         }
 
-        if (!desired.Enabled) return;
+        if (!HasCookerHighlightTargets(desired)) return;
         PulseHighlightedRenderers(desired);
     }
 
@@ -112,7 +103,7 @@ internal static class RuntimeCookerHighlightService
             }
             RendererBaselines.Clear();
             _nextScanAt = 0f;
-            _status = Volatile.Read(ref _desiredTarget).Enabled
+            _status = HasCookerHighlightTargets(Volatile.Read(ref _desiredTargetSet))
                 ? $"suspended: {_suspendReason}"
                 : "disabled";
         }
@@ -128,7 +119,7 @@ internal static class RuntimeCookerHighlightService
             _suspended = false;
             _suspendReason = NormalizeReason(reason);
             _nextScanAt = 0f;
-            _status = Volatile.Read(ref _desiredTarget).Enabled
+            _status = HasCookerHighlightTargets(Volatile.Read(ref _desiredTargetSet))
                 ? "waiting for main-thread reconcile"
                 : "disabled";
         }
@@ -205,7 +196,7 @@ internal static class RuntimeCookerHighlightService
                 if (remainingDepth == 0)
                 {
                     _nextScanAt = 0f;
-                    _status = Volatile.Read(ref _desiredTarget).Enabled
+                    _status = HasCookerHighlightTargets(Volatile.Read(ref _desiredTargetSet))
                         ? $"waiting after topology mutation: {NormalizeReason(reason)}"
                         : "disabled";
                 }
@@ -218,7 +209,7 @@ internal static class RuntimeCookerHighlightService
         }
     }
 
-    private static void ScanAndApply(CookerHighlightTargetSnapshot target)
+    private static void ScanAndApply(RuntimeUiTargetSetSnapshot targetSet)
     {
         lock (VisualRoot)
         {
@@ -227,7 +218,7 @@ internal static class RuntimeCookerHighlightService
         }
 
         var openRenderers = new List<SpriteRenderer>();
-        var targetRenderers = new List<SpriteRenderer>();
+        var targetRenderers = new Dictionary<nint, TargetRenderer>();
         var controllerCount = 0;
         var lockedControllerCount = 0;
         var matchedControllerCount = 0;
@@ -289,10 +280,31 @@ internal static class RuntimeCookerHighlightService
 
                         var controllerRenderers = ReadCookerRenderers(entry.Controller).ToArray();
                         openRenderers.AddRange(controllerRenderers);
-                        if (target.Enabled && state.TypeIds.Contains(target.CookerTypeId))
+                        var claims = RuntimeUiTargetKinds.None;
+                        if (HasCookerHighlightTargets(targetSet))
+                        {
+                            foreach (var cookerTypeId in state.TypeIds)
+                            {
+                                claims |= targetSet.GetCookerClaims(cookerTypeId);
+                            }
+                        }
+                        if (claims != RuntimeUiTargetKinds.None)
                         {
                             matchedControllerCount++;
-                            targetRenderers.AddRange(controllerRenderers);
+                            foreach (var renderer in controllerRenderers)
+                            {
+                                if (renderer == null) continue;
+                                var pointer = ReadUnityObjectPointer(renderer);
+                                if (pointer == IntPtr.Zero) continue;
+                                if (targetRenderers.TryGetValue(pointer, out var existing))
+                                {
+                                    existing.Claims |= claims;
+                                }
+                                else
+                                {
+                                    targetRenderers[pointer] = new TargetRenderer(renderer, pointer, claims);
+                                }
+                            }
                         }
                     }
                 }
@@ -303,11 +315,11 @@ internal static class RuntimeCookerHighlightService
             error = ex.InnerException?.Message ?? ex.Message;
         }
 
-        if (!IsTargetSnapshotCurrent(target)) return;
+        if (!IsTargetSnapshotCurrent(targetSet)) return;
 
         lock (VisualRoot)
         {
-            if (_suspended || _topologyMutationDepth > 0 || !IsTargetSnapshotCurrent(target)) return;
+            if (_suspended || _topologyMutationDepth > 0 || !IsTargetSnapshotCurrent(targetSet)) return;
             if (!string.IsNullOrWhiteSpace(error))
             {
                 RestoreAllLocked();
@@ -316,17 +328,13 @@ internal static class RuntimeCookerHighlightService
             }
 
             RestoreRetainedBaselinesLocked(openRenderers);
-            if (!target.Enabled)
+            if (!HasCookerHighlightTargets(targetSet))
             {
                 _status = "disabled";
                 return;
             }
 
-            var expectedPointers = targetRenderers
-                .Where(renderer => renderer != null)
-                .Select(ReadUnityObjectPointer)
-                .Where(pointer => pointer != IntPtr.Zero)
-                .ToHashSet();
+            var expectedPointers = targetRenderers.Keys.ToHashSet();
 
             foreach (var pointer in HighlightedRenderers.Keys.ToList())
             {
@@ -334,17 +342,24 @@ internal static class RuntimeCookerHighlightService
                 RestoreRendererLocked(pointer);
             }
 
-            foreach (var renderer in targetRenderers)
+            foreach (var targetRenderer in targetRenderers.Values)
             {
-                if (renderer == null) continue;
-                var pointer = ReadUnityObjectPointer(renderer);
-                if (pointer == IntPtr.Zero || HighlightedRenderers.ContainsKey(pointer)) continue;
+                var renderer = targetRenderer.Renderer;
+                var pointer = targetRenderer.Pointer;
+                if (HighlightedRenderers.TryGetValue(pointer, out var existing))
+                {
+                    existing.Renderer = renderer;
+                    existing.Claims = targetRenderer.Claims;
+                    continue;
+                }
 
                 try
                 {
                     var baseline = new RendererBaseline(renderer.color, renderer.enabled);
                     HighlightedRenderers[pointer] = new HighlightedRenderer(
                         renderer,
+                        pointer,
+                        targetRenderer.Claims,
                         baseline.OriginalColor,
                         baseline.OriginalEnabled);
                     renderer.enabled = true;
@@ -356,8 +371,8 @@ internal static class RuntimeCookerHighlightService
             }
 
             _status = matchedControllerCount == 0
-                ? $"target missing; controllers={controllerCount}; locked={lockedControllerCount}; {sourceStatus}; cooker={target.CookerTypeId}/{target.CookerName}"
-                : $"active; controllers={controllerCount}; locked={lockedControllerCount}; matched={matchedControllerCount}; renderers={HighlightedRenderers.Count}; {sourceStatus}; cooker={target.CookerTypeId}/{target.CookerName}";
+                ? $"target missing; controllers={controllerCount}; locked={lockedControllerCount}; {sourceStatus}; cookers={DescribeCookerTargets(targetSet)}"
+                : $"active; controllers={controllerCount}; locked={lockedControllerCount}; matched={matchedControllerCount}; renderers={HighlightedRenderers.Count}; {sourceStatus}; cookers={DescribeCookerTargets(targetSet)}";
         }
     }
 
@@ -442,27 +457,27 @@ internal static class RuntimeCookerHighlightService
         }
     }
 
-    private static void PulseHighlightedRenderers(CookerHighlightTargetSnapshot target)
+    private static void PulseHighlightedRenderers(RuntimeUiTargetSetSnapshot targetSet)
     {
         List<HighlightedRenderer> renderers;
         lock (VisualRoot)
         {
-            if (_suspended || _topologyMutationDepth > 0 || !IsTargetCurrent(target)) return;
+            if (_suspended || _topologyMutationDepth > 0 || !IsTargetCurrent(targetSet)) return;
             renderers = HighlightedRenderers.Values.ToList();
         }
 
-        var pulse = 0.55f + (Mathf.Sin(Time.realtimeSinceStartup * 5.5f) + 1f) * 0.225f;
-        var highlightColor = new Color(1f, 0.86f, 0.18f, 1f);
         foreach (var item in renderers)
         {
-            if (Volatile.Read(ref _topologyMutationDepth) > 0) return;
+            if (Volatile.Read(ref _topologyMutationDepth) > 0 || !IsTargetCurrent(targetSet)) return;
             try
             {
                 if (item.Renderer == null) continue;
-                var color = Color.Lerp(item.OriginalColor, highlightColor, pulse);
-                color.a = Mathf.Max(item.OriginalColor.a, 0.85f);
                 item.Renderer.enabled = true;
-                item.Renderer.color = color;
+                item.Renderer.color = RuntimeTargetHighlightStyle.BuildCookerSpritePulseColor(
+                    item.OriginalColor,
+                    item.Claims,
+                    targetSet.Palette,
+                    Time.realtimeSinceStartup);
             }
             catch
             {
@@ -595,16 +610,8 @@ internal static class RuntimeCookerHighlightService
         foreach (var item in EnumerateManaged(value).Concat(EnumerateByIndexer(value)))
         {
             if (item == null) continue;
-            nint pointer;
-            try
-            {
-                pointer = ReadObjectPointer(item);
-            }
-            catch
-            {
-                pointer = new IntPtr(RuntimeHelpers.GetHashCode(item));
-            }
-
+            var pointer = ReadObjectPointer(item);
+            if (pointer == IntPtr.Zero) continue;
             if (!seen.Add(pointer)) continue;
             yield return item;
         }
@@ -748,11 +755,11 @@ internal static class RuntimeCookerHighlightService
             }
             catch
             {
-                return new IntPtr(RuntimeHelpers.GetHashCode(target));
+                return IntPtr.Zero;
             }
         }
 
-        return new IntPtr(RuntimeHelpers.GetHashCode(target));
+        return IntPtr.Zero;
     }
 
     private static nint ReadUnityObjectPointer(SpriteRenderer renderer)
@@ -771,21 +778,36 @@ internal static class RuntimeCookerHighlightService
             return IntPtr.Zero;
         }
 
-        return new IntPtr(RuntimeHelpers.GetHashCode(renderer));
+        return IntPtr.Zero;
     }
 
-    private static bool IsTargetCurrent(CookerHighlightTargetSnapshot target)
+    private static bool IsTargetCurrent(RuntimeUiTargetSetSnapshot targetSet)
     {
-        return target.Enabled && IsTargetSnapshotCurrent(target);
+        return HasCookerHighlightTargets(targetSet) && IsTargetSnapshotCurrent(targetSet);
     }
 
-    private static bool IsTargetSnapshotCurrent(CookerHighlightTargetSnapshot target)
+    private static bool IsTargetSnapshotCurrent(RuntimeUiTargetSetSnapshot targetSet)
     {
         var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
-        var desired = Volatile.Read(ref _desiredTarget);
+        var desired = Volatile.Read(ref _desiredTargetSet);
         return lifecycle.IsActive
-            && target.SessionGeneration == lifecycle.Generation
-            && ReferenceEquals(desired, target);
+            && targetSet.SessionGeneration == lifecycle.Generation
+            && ReferenceEquals(desired, targetSet);
+    }
+
+    private static bool HasCookerHighlightTargets(RuntimeUiTargetSetSnapshot targetSet)
+    {
+        return targetSet.Targets.Any(target =>
+            target.CookerHighlightEnabled && target.CookerTypeId > 0);
+    }
+
+    private static string DescribeCookerTargets(RuntimeUiTargetSetSnapshot targetSet)
+    {
+        return string.Join(
+            ",",
+            targetSet.Targets
+                .Where(target => target.CookerHighlightEnabled && target.CookerTypeId > 0)
+                .Select(target => $"{target.Kind}:{target.CookerTypeId}"));
     }
 
     private static string NormalizeReason(string reason)
@@ -795,54 +817,43 @@ internal static class RuntimeCookerHighlightService
 
     private sealed class HighlightedRenderer
     {
-        public HighlightedRenderer(SpriteRenderer renderer, Color originalColor, bool originalEnabled)
+        public HighlightedRenderer(
+            SpriteRenderer renderer,
+            nint pointer,
+            RuntimeUiTargetKinds claims,
+            Color originalColor,
+            bool originalEnabled)
         {
             Renderer = renderer;
-            Pointer = ReadUnityObjectPointer(renderer);
+            Pointer = pointer;
+            Claims = claims;
             OriginalColor = originalColor;
             OriginalEnabled = originalEnabled;
         }
 
-        public SpriteRenderer Renderer { get; }
+        public SpriteRenderer Renderer { get; set; }
         public nint Pointer { get; }
+        public RuntimeUiTargetKinds Claims { get; set; }
         public Color OriginalColor { get; }
         public bool OriginalEnabled { get; }
+    }
+
+    private sealed class TargetRenderer
+    {
+        public TargetRenderer(SpriteRenderer renderer, nint pointer, RuntimeUiTargetKinds claims)
+        {
+            Renderer = renderer;
+            Pointer = pointer;
+            Claims = claims;
+        }
+
+        public SpriteRenderer Renderer { get; }
+        public nint Pointer { get; }
+        public RuntimeUiTargetKinds Claims { get; set; }
     }
 
     private readonly record struct RendererBaseline(
         Color OriginalColor,
         bool OriginalEnabled);
 
-    private sealed class CookerHighlightTargetSnapshot
-    {
-        public static readonly CookerHighlightTargetSnapshot Disabled = new(0, 0, false, -1, "");
-
-        public CookerHighlightTargetSnapshot(
-            long generation,
-            long sessionGeneration,
-            bool enabled,
-            int cookerTypeId,
-            string cookerName)
-        {
-            Generation = generation;
-            SessionGeneration = sessionGeneration;
-            Enabled = enabled;
-            CookerTypeId = cookerTypeId;
-            CookerName = cookerName;
-        }
-
-        public long Generation { get; }
-        public long SessionGeneration { get; }
-        public bool Enabled { get; }
-        public int CookerTypeId { get; }
-        public string CookerName { get; }
-
-        public bool HasSameValues(long sessionGeneration, bool enabled, int cookerTypeId, string cookerName)
-        {
-            return SessionGeneration == sessionGeneration
-                && Enabled == enabled
-                && CookerTypeId == cookerTypeId
-                && string.Equals(CookerName, cookerName, StringComparison.Ordinal);
-        }
-    }
 }

@@ -49,11 +49,18 @@ const FILTER_MISSING_COOKERS_STORAGE_KEY = `${STORAGE_PREFIX}-filter-missing-coo
 const MISSION_RECIPE_PRIORITY_STORAGE_KEY = `${STORAGE_PREFIX}-mission-recipe-priority`;
 const PIN_FAVORITE_RECIPE_STORAGE_KEY = `${STORAGE_PREFIX}-pin-favorite-recipe`;
 const PIN_FAVORITE_BEVERAGE_STORAGE_KEY = `${STORAGE_PREFIX}-pin-favorite-beverage`;
-const GAME_UI_PINNING_STORAGE_KEY = `${STORAGE_PREFIX}-game-ui-pinning`;
-const RECOMMENDED_EXTRA_INGREDIENT_FILL_STORAGE_KEY = `${STORAGE_PREFIX}-recommended-extra-ingredient-fill`;
-const COOKER_HIGHLIGHT_STORAGE_KEY = `${STORAGE_PREFIX}-cooker-highlight`;
-const SEAT_HIGHLIGHT_STORAGE_KEY = `${STORAGE_PREFIX}-seat-highlight`;
-const ORDER_HIGHLIGHT_STORAGE_KEY = `${STORAGE_PREFIX}-order-highlight`;
+const RARE_GAME_UI_PINNING_STORAGE_KEY = `${STORAGE_PREFIX}-rare-game-ui-pinning`;
+const NORMAL_GAME_UI_PINNING_STORAGE_KEY = `${STORAGE_PREFIX}-normal-game-ui-pinning`;
+const RARE_RECIPE_VARIANT_STORAGE_KEY = `${STORAGE_PREFIX}-rare-recipe-variant`;
+const NORMAL_RECIPE_VARIANT_STORAGE_KEY = `${STORAGE_PREFIX}-normal-recipe-variant`;
+const RARE_COOKER_HIGHLIGHT_STORAGE_KEY = `${STORAGE_PREFIX}-rare-cooker-highlight`;
+const NORMAL_COOKER_HIGHLIGHT_STORAGE_KEY = `${STORAGE_PREFIX}-normal-cooker-highlight`;
+const RARE_SEAT_HIGHLIGHT_STORAGE_KEY = `${STORAGE_PREFIX}-rare-seat-highlight`;
+const NORMAL_SEAT_HIGHLIGHT_STORAGE_KEY = `${STORAGE_PREFIX}-normal-seat-highlight`;
+const RARE_ORDER_HIGHLIGHT_STORAGE_KEY = `${STORAGE_PREFIX}-rare-order-highlight`;
+const NORMAL_ORDER_HIGHLIGHT_STORAGE_KEY = `${STORAGE_PREFIX}-normal-order-highlight`;
+const RARE_TARGET_HIGHLIGHT_COLOR_STORAGE_KEY = `${STORAGE_PREFIX}-rare-target-highlight-color`;
+const NORMAL_TARGET_HIGHLIGHT_COLOR_STORAGE_KEY = `${STORAGE_PREFIX}-normal-target-highlight-color`;
 const SHOW_DEBUG_DETAILS_STORAGE_KEY = `${STORAGE_PREFIX}-show-debug-details`;
 const SERVICE_ORDER_SORT_MODE_STORAGE_KEY = `${STORAGE_PREFIX}-service-order-sort-mode`;
 const RECOMMENDATION_SORT_PROFILE_STORAGE_KEY = `${STORAGE_PREFIX}-recommendation-sort-profile`;
@@ -87,6 +94,8 @@ export const DEFAULT_AUTO_ROLLBACKS = 2;
 export const MIN_AUTO_ROLLBACKS = 0;
 export const MAX_AUTO_ROLLBACKS_LIMIT = 5;
 export const DEFAULT_RECIPE_VARIANT_LIMIT_PER_BASE = 1;
+export const DEFAULT_RARE_TARGET_HIGHLIGHT_COLOR = '#FFDB2E';
+export const DEFAULT_NORMAL_TARGET_HIGHLIGHT_COLOR = '#5FACD3';
 export const MIN_RECIPE_VARIANT_LIMIT_PER_BASE = 1;
 export const MAX_RECIPE_VARIANT_LIMIT_PER_BASE = 8;
 export const DEFAULT_RECOMMENDATION_EXCLUSIONS: RecommendationExclusions = {
@@ -134,11 +143,18 @@ export interface CompanionPreferences {
   missionRecipePriorityEnabled: boolean;
   pinFavoriteRecipeEnabled: boolean;
   pinFavoriteBeverageEnabled: boolean;
-  gameUiPinningEnabled: boolean;
-  recommendedExtraIngredientFillEnabled: boolean;
-  cookerHighlightEnabled: boolean;
-  seatHighlightEnabled: boolean;
-  orderHighlightEnabled: boolean;
+  rareGameUiPinningEnabled: boolean;
+  normalGameUiPinningEnabled: boolean;
+  rareRecipeVariantEnabled: boolean;
+  normalRecipeVariantEnabled: boolean;
+  rareCookerHighlightEnabled: boolean;
+  normalCookerHighlightEnabled: boolean;
+  rareSeatHighlightEnabled: boolean;
+  normalSeatHighlightEnabled: boolean;
+  rareOrderHighlightEnabled: boolean;
+  normalOrderHighlightEnabled: boolean;
+  rareTargetHighlightColor: string;
+  normalTargetHighlightColor: string;
   showDebugDetails: boolean;
   serviceOrderSortMode: ServiceOrderSortMode;
   recommendationSortProfile: RecommendationSortProfile;
@@ -204,11 +220,20 @@ export function readStoredCompanionPreferences(): CompanionPreferences {
     missionRecipePriorityEnabled: readStoredBoolean(MISSION_RECIPE_PRIORITY_STORAGE_KEY, true),
     pinFavoriteRecipeEnabled: readStoredBoolean(PIN_FAVORITE_RECIPE_STORAGE_KEY, false),
     pinFavoriteBeverageEnabled: readStoredBoolean(PIN_FAVORITE_BEVERAGE_STORAGE_KEY, false),
-    gameUiPinningEnabled: readStoredBoolean(GAME_UI_PINNING_STORAGE_KEY, false),
-    recommendedExtraIngredientFillEnabled: readStoredBoolean(RECOMMENDED_EXTRA_INGREDIENT_FILL_STORAGE_KEY, false),
-    cookerHighlightEnabled: readStoredBoolean(COOKER_HIGHLIGHT_STORAGE_KEY, false),
-    seatHighlightEnabled: readStoredBoolean(SEAT_HIGHLIGHT_STORAGE_KEY, false),
-    orderHighlightEnabled: readStoredBoolean(ORDER_HIGHLIGHT_STORAGE_KEY, false),
+    rareGameUiPinningEnabled: readStoredBoolean(RARE_GAME_UI_PINNING_STORAGE_KEY, false),
+    normalGameUiPinningEnabled: readStoredBoolean(NORMAL_GAME_UI_PINNING_STORAGE_KEY, false),
+    rareRecipeVariantEnabled: readStoredBoolean(RARE_RECIPE_VARIANT_STORAGE_KEY, false),
+    normalRecipeVariantEnabled: readStoredBoolean(NORMAL_RECIPE_VARIANT_STORAGE_KEY, false),
+    rareCookerHighlightEnabled: readStoredBoolean(RARE_COOKER_HIGHLIGHT_STORAGE_KEY, false),
+    normalCookerHighlightEnabled: readStoredBoolean(NORMAL_COOKER_HIGHLIGHT_STORAGE_KEY, false),
+    rareSeatHighlightEnabled: readStoredBoolean(RARE_SEAT_HIGHLIGHT_STORAGE_KEY, false),
+    normalSeatHighlightEnabled: readStoredBoolean(NORMAL_SEAT_HIGHLIGHT_STORAGE_KEY, false),
+    rareOrderHighlightEnabled: readStoredBoolean(RARE_ORDER_HIGHLIGHT_STORAGE_KEY, false),
+    normalOrderHighlightEnabled: readStoredBoolean(NORMAL_ORDER_HIGHLIGHT_STORAGE_KEY, false),
+    rareTargetHighlightColor: localStorage.getItem(RARE_TARGET_HIGHLIGHT_COLOR_STORAGE_KEY)
+      ?? DEFAULT_RARE_TARGET_HIGHLIGHT_COLOR,
+    normalTargetHighlightColor: localStorage.getItem(NORMAL_TARGET_HIGHLIGHT_COLOR_STORAGE_KEY)
+      ?? DEFAULT_NORMAL_TARGET_HIGHLIGHT_COLOR,
     showDebugDetails: readStoredBoolean(SHOW_DEBUG_DETAILS_STORAGE_KEY, false),
     serviceOrderSortMode: readStoredServiceOrderSortMode(),
     recommendationSortProfile: readStoredRecommendationSortProfile(),
@@ -266,11 +291,24 @@ export function normalizeCompanionPreferences(
     missionRecipePriorityEnabled: value.missionRecipePriorityEnabled !== false,
     pinFavoriteRecipeEnabled: Boolean(value.pinFavoriteRecipeEnabled),
     pinFavoriteBeverageEnabled: Boolean(value.pinFavoriteBeverageEnabled),
-    gameUiPinningEnabled: Boolean(value.gameUiPinningEnabled),
-    recommendedExtraIngredientFillEnabled: Boolean(value.recommendedExtraIngredientFillEnabled),
-    cookerHighlightEnabled: Boolean(value.cookerHighlightEnabled),
-    seatHighlightEnabled: Boolean(value.seatHighlightEnabled),
-    orderHighlightEnabled: Boolean(value.orderHighlightEnabled),
+    rareGameUiPinningEnabled: Boolean(value.rareGameUiPinningEnabled),
+    normalGameUiPinningEnabled: Boolean(value.normalGameUiPinningEnabled),
+    rareRecipeVariantEnabled: Boolean(value.rareRecipeVariantEnabled),
+    normalRecipeVariantEnabled: Boolean(value.normalRecipeVariantEnabled),
+    rareCookerHighlightEnabled: Boolean(value.rareCookerHighlightEnabled),
+    normalCookerHighlightEnabled: Boolean(value.normalCookerHighlightEnabled),
+    rareSeatHighlightEnabled: Boolean(value.rareSeatHighlightEnabled),
+    normalSeatHighlightEnabled: Boolean(value.normalSeatHighlightEnabled),
+    rareOrderHighlightEnabled: Boolean(value.rareOrderHighlightEnabled),
+    normalOrderHighlightEnabled: Boolean(value.normalOrderHighlightEnabled),
+    rareTargetHighlightColor: normalizeTargetHighlightColor(
+      value.rareTargetHighlightColor,
+      DEFAULT_RARE_TARGET_HIGHLIGHT_COLOR,
+    ),
+    normalTargetHighlightColor: normalizeTargetHighlightColor(
+      value.normalTargetHighlightColor,
+      DEFAULT_NORMAL_TARGET_HIGHLIGHT_COLOR,
+    ),
     showDebugDetails: Boolean(value.showDebugDetails),
     serviceOrderSortMode: value.serviceOrderSortMode === 'guest' ? 'guest' : 'ordered',
     recommendationSortProfile: normalizeRecommendationSortProfile(value.recommendationSortProfile),
@@ -329,6 +367,12 @@ export function normalizeRecipeVariantLimitPerBase(value: number | undefined) {
   );
 }
 
+export function normalizeTargetHighlightColor(value: unknown, fallback: string): string {
+  return typeof value === 'string' && /^#[0-9A-Fa-f]{6}$/.test(value)
+    ? value.toUpperCase()
+    : fallback;
+}
+
 /**
  * 持久化伴随窗口偏好。
  *
@@ -369,14 +413,18 @@ export function persistCompanionPreferences(preferences: CompanionPreferences) {
   localStorage.setItem(MISSION_RECIPE_PRIORITY_STORAGE_KEY, normalized.missionRecipePriorityEnabled ? '1' : '0');
   localStorage.setItem(PIN_FAVORITE_RECIPE_STORAGE_KEY, normalized.pinFavoriteRecipeEnabled ? '1' : '0');
   localStorage.setItem(PIN_FAVORITE_BEVERAGE_STORAGE_KEY, normalized.pinFavoriteBeverageEnabled ? '1' : '0');
-  localStorage.setItem(GAME_UI_PINNING_STORAGE_KEY, normalized.gameUiPinningEnabled ? '1' : '0');
-  localStorage.setItem(
-    RECOMMENDED_EXTRA_INGREDIENT_FILL_STORAGE_KEY,
-    normalized.recommendedExtraIngredientFillEnabled ? '1' : '0',
-  );
-  localStorage.setItem(COOKER_HIGHLIGHT_STORAGE_KEY, normalized.cookerHighlightEnabled ? '1' : '0');
-  localStorage.setItem(SEAT_HIGHLIGHT_STORAGE_KEY, normalized.seatHighlightEnabled ? '1' : '0');
-  localStorage.setItem(ORDER_HIGHLIGHT_STORAGE_KEY, normalized.orderHighlightEnabled ? '1' : '0');
+  localStorage.setItem(RARE_GAME_UI_PINNING_STORAGE_KEY, normalized.rareGameUiPinningEnabled ? '1' : '0');
+  localStorage.setItem(NORMAL_GAME_UI_PINNING_STORAGE_KEY, normalized.normalGameUiPinningEnabled ? '1' : '0');
+  localStorage.setItem(RARE_RECIPE_VARIANT_STORAGE_KEY, normalized.rareRecipeVariantEnabled ? '1' : '0');
+  localStorage.setItem(NORMAL_RECIPE_VARIANT_STORAGE_KEY, normalized.normalRecipeVariantEnabled ? '1' : '0');
+  localStorage.setItem(RARE_COOKER_HIGHLIGHT_STORAGE_KEY, normalized.rareCookerHighlightEnabled ? '1' : '0');
+  localStorage.setItem(NORMAL_COOKER_HIGHLIGHT_STORAGE_KEY, normalized.normalCookerHighlightEnabled ? '1' : '0');
+  localStorage.setItem(RARE_SEAT_HIGHLIGHT_STORAGE_KEY, normalized.rareSeatHighlightEnabled ? '1' : '0');
+  localStorage.setItem(NORMAL_SEAT_HIGHLIGHT_STORAGE_KEY, normalized.normalSeatHighlightEnabled ? '1' : '0');
+  localStorage.setItem(RARE_ORDER_HIGHLIGHT_STORAGE_KEY, normalized.rareOrderHighlightEnabled ? '1' : '0');
+  localStorage.setItem(NORMAL_ORDER_HIGHLIGHT_STORAGE_KEY, normalized.normalOrderHighlightEnabled ? '1' : '0');
+  localStorage.setItem(RARE_TARGET_HIGHLIGHT_COLOR_STORAGE_KEY, normalized.rareTargetHighlightColor);
+  localStorage.setItem(NORMAL_TARGET_HIGHLIGHT_COLOR_STORAGE_KEY, normalized.normalTargetHighlightColor);
   localStorage.setItem(SHOW_DEBUG_DETAILS_STORAGE_KEY, normalized.showDebugDetails ? '1' : '0');
   localStorage.setItem(SERVICE_ORDER_SORT_MODE_STORAGE_KEY, normalized.serviceOrderSortMode);
   localStorage.setItem(

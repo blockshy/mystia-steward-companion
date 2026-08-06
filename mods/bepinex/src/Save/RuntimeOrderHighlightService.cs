@@ -8,7 +8,7 @@ using UnityEngine;
 namespace MystiaStewardCompanion.Save;
 
 /// <summary>
-/// Owns a private visual overlay for the HUD card of the current recommendation target order.
+/// Owns one private visual overlay per exact rare/normal target HUD card.
 /// </summary>
 internal static class RuntimeOrderHighlightService
 {
@@ -50,18 +50,12 @@ internal static class RuntimeOrderHighlightService
     private static Type? _rectTransformType;
     private static Type? _canvasRendererType;
     private static Type? _layoutGroupType;
-    private static OrderHighlightTargetSnapshot _desiredTarget = OrderHighlightTargetSnapshot.Disabled;
+    private static RuntimeUiTargetSetSnapshot _desiredTargetSet = RuntimeUiTargetSetSnapshot.Disabled;
     private static long _appliedTargetGeneration;
     private static bool _suspended = true;
     private static string _suspendReason = "night business inactive";
-    private static GameObject? _activeOverlay;
-    private static object? _activeImage;
-    private static ImageAccessors? _activeImageAccessors;
-    private static RegisteredElement? _activeElement;
-    private static long _activeTargetGeneration;
-    private static nint _activeOrderPointer;
-    private static float _nextAttemptAt;
-    private static float _nextHealthCheckAt;
+    private static readonly Dictionary<RuntimeUiTargetKind, ActiveOrderVisual> ActiveVisuals = new();
+    private static readonly Dictionary<RuntimeUiTargetKind, float> NextAttemptAt = new();
     private static string _state = "disabled";
     private static string _lastFailure = "";
     private static long _registrationCallbacks;
@@ -83,10 +77,13 @@ internal static class RuntimeOrderHighlightService
                 hookStatus = $"hooks={RequiredPatchKeys.Length - missing}/{RequiredPatchKeys.Length}; firstCoveredGeneration={(_firstCoveredBusinessGeneration == long.MaxValue ? "pending" : _firstCoveredBusinessGeneration)}";
             }
 
-            var desired = Volatile.Read(ref _desiredTarget);
+            var desired = Volatile.Read(ref _desiredTargetSet);
             lock (VisualRoot)
             {
-                return $"{_state}; {hookStatus}; desired={desired.Generation}/session:{desired.SessionGeneration}/trace:{desired.OrderTraceId}/desk:{desired.DeskCode}; applied={_appliedTargetGeneration}; tracked={RegisteredElements.Count}; active=target:{_activeTargetGeneration}/order:{FormatPointer(_activeOrderPointer)}; suspended={_suspended}; callbacks=registered:{_registrationCallbacks},teardown:{_teardownCallbacks}; visuals=created:{_createdVisuals},destroyErrors:{_destroyErrors}; errors=binding:{_bindingErrors},visual:{_visualErrors}; warnings={_warningLogs}/{MaxWarningLogs}; lastFailure={NormalizeStatus(_lastFailure)}";
+                var active = string.Join(",", ActiveVisuals
+                    .OrderBy(pair => pair.Key)
+                    .Select(pair => $"{pair.Key}:target:{pair.Value.TargetSetGeneration}/order:{FormatPointer(pair.Value.OrderPointer)}"));
+                return $"{_state}; {hookStatus}; desired={desired.Generation}/session:{desired.SessionGeneration}/targets:{desired.Targets.Count}; applied={_appliedTargetGeneration}; tracked={RegisteredElements.Count}; active={active}; suspended={_suspended}; callbacks=registered:{_registrationCallbacks},teardown:{_teardownCallbacks}; visuals=created:{_createdVisuals},destroyErrors:{_destroyErrors}; errors=binding:{_bindingErrors},visual:{_visualErrors}; warnings={_warningLogs}/{MaxWarningLogs}; lastFailure={NormalizeStatus(_lastFailure)}";
             }
         }
     }
@@ -100,47 +97,12 @@ internal static class RuntimeOrderHighlightService
     /// <summary>
     /// Publishes managed target state. Unity objects are only reconciled later on the main thread.
     /// </summary>
-    public static void UpdateTarget(
-        long sessionGeneration,
-        bool enabled,
-        string orderTraceId,
-        int deskCode)
+    public static void UpdateTargets(RuntimeUiTargetSetSnapshot targetSet)
     {
-        RuntimeOrderTraceIdService.TryNormalizeRareTraceId(
-            orderTraceId,
-            enabled,
-            out var normalizedTraceId,
-            out var traceFailure);
-        var validationFailure = !enabled
-            ? ""
-            : sessionGeneration <= 0
-                ? "enabled order highlight has no active session generation"
-                : deskCode < 0
-                    ? "enabled order highlight has no non-negative desk code"
-                    : traceFailure;
-        var normalizedDeskCode = enabled ? deskCode : -1;
+        ArgumentNullException.ThrowIfNull(targetSet);
         lock (DesiredRoot)
         {
-            var current = Volatile.Read(ref _desiredTarget);
-            if (current.HasSameValues(
-                    sessionGeneration,
-                    enabled,
-                    normalizedTraceId,
-                    normalizedDeskCode,
-                    validationFailure))
-            {
-                return;
-            }
-
-            Volatile.Write(
-                ref _desiredTarget,
-                new OrderHighlightTargetSnapshot(
-                    checked(current.Generation + 1),
-                    sessionGeneration,
-                    enabled,
-                    normalizedTraceId,
-                    normalizedDeskCode,
-                    validationFailure));
+            Volatile.Write(ref _desiredTargetSet, targetSet);
         }
     }
 
@@ -160,7 +122,7 @@ internal static class RuntimeOrderHighlightService
     {
         TryAttach(force: false);
         var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
-        var desired = Volatile.Read(ref _desiredTarget);
+        var desired = Volatile.Read(ref _desiredTargetSet);
         lock (VisualRoot)
         {
             if (_suspended) return;
@@ -172,28 +134,19 @@ internal static class RuntimeOrderHighlightService
 
             if (_appliedTargetGeneration != desired.Generation)
             {
-                DestroyActiveVisualLocked();
+                ReconcileTargetSetChangeLocked(desired);
                 _appliedTargetGeneration = desired.Generation;
-                _nextAttemptAt = 0f;
-                _nextHealthCheckAt = 0f;
             }
 
-            if (desired.Enabled && !string.IsNullOrEmpty(desired.ValidationFailure))
-            {
-                DestroyActiveVisualLocked();
-                SetFailureLocked($"invalid target: {desired.ValidationFailure}");
-                return;
-            }
-
+            var orderTargets = desired.Targets.Where(target => target.OrderHighlightEnabled).ToArray();
             var desiredEnabled = lifecycle.IsActive
-                && desired.Enabled
                 && desired.SessionGeneration == lifecycle.Generation
-                && desired.DeskCode >= 0
+                && orderTargets.Length > 0
                 && IsBusinessReady(lifecycle.Generation);
             if (!desiredEnabled)
             {
-                DestroyActiveVisualLocked();
-                _state = !desired.Enabled
+                DestroyAllActiveVisualsLocked();
+                _state = orderTargets.Length == 0
                     ? "disabled"
                     : !lifecycle.IsActive
                         ? "waiting: night business inactive"
@@ -204,78 +157,111 @@ internal static class RuntimeOrderHighlightService
             }
 
             var now = Time.realtimeSinceStartup;
-            if (_activeOverlay != null && _activeElement != null)
+            foreach (var (kind, active) in ActiveVisuals.ToList())
             {
-                if (_activeTargetGeneration != desired.Generation)
+                if (!desired.TryGetTarget(kind, out var target)
+                    || !target.OrderHighlightEnabled
+                    || !active.Target.HasSameValues(target)
+                    || active.SessionGeneration != desired.SessionGeneration)
                 {
-                    DestroyActiveVisualLocked();
+                    DestroyActiveVisualLocked(kind);
+                    NextAttemptAt[kind] = 0f;
+                    continue;
                 }
-                else
-                {
-                    if (now >= _nextHealthCheckAt)
-                    {
-                        if (!TryValidateActiveVisualLocked(desired, out var healthFailure))
-                        {
-                            DestroyActiveVisualLocked();
-                            _nextAttemptAt = now + RetryIntervalSeconds;
-                            SetFailureLocked($"active visual invalid: {healthFailure}");
-                            return;
-                        }
 
-                        _nextHealthCheckAt = now + HealthCheckIntervalSeconds;
+                if (now >= active.NextHealthCheckAt)
+                {
+                    if (!TryValidateActiveVisualLocked(active, target, out var healthFailure))
+                    {
+                        DestroyActiveVisualLocked(kind);
+                        NextAttemptAt[kind] = now + RetryIntervalSeconds;
+                        SetFailureLocked($"{kind} active visual invalid: {healthFailure}");
+                        continue;
                     }
 
-                    if (TryApplyPulseLocked(out var pulseFailure))
-                    {
-                        _state = "active";
-                        return;
-                    }
-
-                    _visualErrors++;
-                    DestroyActiveVisualLocked();
-                    _nextAttemptAt = now + RetryIntervalSeconds;
-                    SetFailureLocked($"pulse failed: {pulseFailure}");
-                    return;
+                    active.NextHealthCheckAt = now + HealthCheckIntervalSeconds;
                 }
-            }
 
-            if (now < _nextAttemptAt) return;
-            PruneStaleElementsLocked();
-            if (!TryResolveTargetElementLocked(
-                    desired,
-                    out var registration,
-                    out var orderPointer,
-                    out var resolutionFailure))
-            {
-                _nextAttemptAt = now + RetryIntervalSeconds;
-                SetFailureLocked(resolutionFailure);
-                return;
-            }
+                if (TryApplyPulseLocked(active, desired.Palette, out var pulseFailure)) continue;
 
-            if (!TryCreateActiveVisualLocked(
-                    desired,
-                    registration,
-                    orderPointer,
-                    out var creationFailure))
-            {
                 _visualErrors++;
-                _nextAttemptAt = now + RetryIntervalSeconds;
-                SetFailureLocked(creationFailure);
-                return;
+                DestroyActiveVisualLocked(kind);
+                NextAttemptAt[kind] = now + RetryIntervalSeconds;
+                SetFailureLocked($"{kind} pulse failed: {pulseFailure}");
             }
 
-            var latest = Volatile.Read(ref _desiredTarget);
-            if (latest.Generation != desired.Generation)
+            PruneStaleElementsLocked();
+            var resolved = new List<ResolvedTargetElement>();
+            foreach (var target in orderTargets)
             {
-                DestroyActiveVisualLocked();
-                _nextAttemptAt = 0f;
-                _state = "waiting: target changed while creating visual";
-                return;
+                if (ActiveVisuals.ContainsKey(target.Kind)
+                    || NextAttemptAt.TryGetValue(target.Kind, out var retryAt) && now < retryAt)
+                {
+                    continue;
+                }
+
+                if (!TryResolveTargetElementLocked(
+                        target,
+                        desired.SessionGeneration,
+                        out var registration,
+                        out var binding,
+                        out var resolutionFailure))
+                {
+                    NextAttemptAt[target.Kind] = now + RetryIntervalSeconds;
+                    SetFailureLocked($"{target.Kind}: {resolutionFailure}");
+                    continue;
+                }
+
+                resolved.Add(new ResolvedTargetElement(target, registration, binding));
             }
 
-            _nextHealthCheckAt = 0f;
-            _state = "active";
-            _lastFailure = "";
+            var conflictingKinds = new HashSet<RuntimeUiTargetKind>();
+            foreach (var candidate in resolved)
+            {
+                foreach (var active in ActiveVisuals.Values.Where(active =>
+                             active.Target.Kind != candidate.Target.Kind
+                             && active.OrderPointer == candidate.Binding.OrderPointer))
+                {
+                    conflictingKinds.Add(candidate.Target.Kind);
+                    conflictingKinds.Add(active.Target.Kind);
+                }
+                foreach (var other in resolved.Where(other =>
+                             other.Target.Kind != candidate.Target.Kind
+                             && other.Binding.OrderPointer == candidate.Binding.OrderPointer))
+                {
+                    conflictingKinds.Add(candidate.Target.Kind);
+                    conflictingKinds.Add(other.Target.Kind);
+                }
+            }
+            foreach (var kind in conflictingKinds)
+            {
+                DestroyActiveVisualLocked(kind);
+                NextAttemptAt[kind] = now + RetryIntervalSeconds;
+                SetFailureLocked($"{kind}: exact native order is claimed by both target kinds");
+            }
+
+            foreach (var candidate in resolved.Where(candidate => !conflictingKinds.Contains(candidate.Target.Kind)))
+            {
+                if (!TryCreateActiveVisualLocked(
+                        desired,
+                        candidate.Target,
+                        candidate.Registration,
+                        candidate.Binding,
+                        out var creationFailure))
+                {
+                    _visualErrors++;
+                    NextAttemptAt[candidate.Target.Kind] = now + RetryIntervalSeconds;
+                    SetFailureLocked($"{candidate.Target.Kind}: {creationFailure}");
+                }
+            }
+
+            var latest = Volatile.Read(ref _desiredTargetSet);
+            if (latest.Generation != desired.Generation) return;
+            if (ActiveVisuals.Count > 0)
+            {
+                _state = $"active:{ActiveVisuals.Count}/{orderTargets.Length}";
+                if (ActiveVisuals.Count == orderTargets.Length) _lastFailure = "";
+            }
         }
     }
 
@@ -288,16 +274,15 @@ internal static class RuntimeOrderHighlightService
             _suspendReason = NormalizeReason(reason);
             if (Environment.CurrentManagedThreadId == lifecycle.ThreadId)
             {
-                DestroyActiveVisualLocked();
+                DestroyAllActiveVisualsLocked();
             }
             else
             {
-                AbandonActiveVisualLocked();
+                AbandonAllActiveVisualsLocked();
             }
             RegisteredElements.Clear();
-            _nextAttemptAt = 0f;
-            _nextHealthCheckAt = 0f;
-            _state = Volatile.Read(ref _desiredTarget).Enabled
+            NextAttemptAt.Clear();
+            _state = HasOrderHighlightTargets(Volatile.Read(ref _desiredTargetSet))
                 ? $"suspended: {_suspendReason}"
                 : "disabled";
         }
@@ -310,18 +295,17 @@ internal static class RuntimeOrderHighlightService
         {
             if (Environment.CurrentManagedThreadId == lifecycle.ThreadId)
             {
-                DestroyActiveVisualLocked();
+                DestroyAllActiveVisualsLocked();
             }
             else
             {
-                AbandonActiveVisualLocked();
+                AbandonAllActiveVisualsLocked();
             }
             RegisteredElements.Clear();
             _suspended = false;
             _suspendReason = NormalizeReason(reason);
-            _nextAttemptAt = 0f;
-            _nextHealthCheckAt = 0f;
-            _state = Volatile.Read(ref _desiredTarget).Enabled
+            NextAttemptAt.Clear();
+            _state = HasOrderHighlightTargets(Volatile.Read(ref _desiredTargetSet))
                 ? "waiting for exact HUD order element"
                 : "disabled";
         }
@@ -334,12 +318,11 @@ internal static class RuntimeOrderHighlightService
     {
         lock (VisualRoot)
         {
-            AbandonActiveVisualLocked();
+            AbandonAllActiveVisualsLocked();
             RegisteredElements.Clear();
             _suspended = true;
             _suspendReason = NormalizeReason(reason);
-            _nextAttemptAt = 0f;
-            _nextHealthCheckAt = 0f;
+            NextAttemptAt.Clear();
             _state = $"abandoned: {_suspendReason}";
         }
     }
@@ -351,17 +334,16 @@ internal static class RuntimeOrderHighlightService
         {
             if (Environment.CurrentManagedThreadId == lifecycle.ThreadId)
             {
-                DestroyActiveVisualLocked();
+                DestroyAllActiveVisualsLocked();
             }
             else
             {
-                AbandonActiveVisualLocked();
+                AbandonAllActiveVisualsLocked();
             }
             RegisteredElements.Clear();
             _suspended = true;
             _suspendReason = NormalizeReason(reason);
-            _nextAttemptAt = 0f;
-            _nextHealthCheckAt = 0f;
+            NextAttemptAt.Clear();
             _state = $"disposed: {_suspendReason}";
         }
     }
@@ -706,7 +688,7 @@ internal static class RuntimeOrderHighlightService
                         .First();
                     RemoveRegisteredElementLocked(oldest.ElementPointer, destroyActiveVisual: true);
                 }
-                _nextAttemptAt = 0f;
+                NextAttemptAt.Clear();
             }
         }
         catch (Exception ex)
@@ -736,12 +718,8 @@ internal static class RuntimeOrderHighlightService
                 else
                 {
                     RemoveRegisteredElementLocked(elementPointer, destroyActiveVisual: false);
-                    if (_activeElement?.ElementPointer == elementPointer)
-                    {
-                        AbandonActiveVisualLocked();
-                    }
                 }
-                _nextAttemptAt = 0f;
+                NextAttemptAt.Clear();
             }
         }
         catch (Exception ex)
@@ -751,32 +729,32 @@ internal static class RuntimeOrderHighlightService
     }
 
     private static bool TryResolveTargetElementLocked(
-        OrderHighlightTargetSnapshot target,
+        RuntimeUiTargetSnapshot target,
+        long sessionGeneration,
         out RegisteredElement registration,
-        out nint orderPointer,
+        out RuntimeUiTargetOrderBinding binding,
         out string failure)
     {
         registration = null!;
-        orderPointer = 0;
-        if (!RuntimeOrderTraceIdService.TryResolveCurrentRareCapture(
-                target.OrderTraceId,
-                target.DeskCode,
+        binding = default;
+        if (!RuntimeUiTargetOrderResolver.TryResolveCurrentCapture(
+                target,
                 CaptureMaxAge,
-                out var capture,
+                out var resolved,
                 out failure)
-            || capture?.OrderObject == null
-            || !RuntimeReflectionUtility.TryReadNativeObjectPointer(capture.OrderObject, out orderPointer))
+            || resolved == null)
         {
-            if (string.IsNullOrEmpty(failure)) failure = "target capture has no exact native order pointer";
+            if (string.IsNullOrEmpty(failure)) failure = "target capture has no exact runtime binding";
             return false;
         }
+        binding = resolved.Value;
 
         var matches = new List<RegisteredElement>();
         foreach (var candidate in RegisteredElements.Values)
         {
-            if (candidate.BusinessGeneration != target.SessionGeneration
+            if (candidate.BusinessGeneration != sessionGeneration
                 || candidate.DeskCode != target.DeskCode
-                || candidate.OrderPointer != orderPointer)
+                || candidate.OrderPointer != binding.OrderPointer)
             {
                 continue;
             }
@@ -796,9 +774,10 @@ internal static class RuntimeOrderHighlightService
     }
 
     private static bool TryCreateActiveVisualLocked(
-        OrderHighlightTargetSnapshot target,
+        RuntimeUiTargetSetSnapshot targetSet,
+        RuntimeUiTargetSnapshot target,
         RegisteredElement registration,
-        nint orderPointer,
+        RuntimeUiTargetOrderBinding binding,
         out string failure)
     {
         GameObject? clone = null;
@@ -931,15 +910,35 @@ internal static class RuntimeOrderHighlightService
                 return false;
             }
 
-            imageAccessors.SetColor!.Invoke(clonedImage, new object?[] { BuildHighlightColor() });
-            _activeOverlay = clone;
-            _activeImage = clonedImage;
-            _activeImageAccessors = imageAccessors;
-            _activeElement = registration;
-            _activeTargetGeneration = target.Generation;
-            _activeOrderPointer = orderPointer;
-            _createdVisuals++;
-            clone = null;
+            var color = RuntimeTargetHighlightStyle.BuildOrderHighlightPulseColor(
+                target.Claim,
+                targetSet.Palette,
+                Time.realtimeSinceStartup);
+            imageAccessors.SetColor!.Invoke(clonedImage, new object?[] { color });
+            lock (DesiredRoot)
+            {
+                var latest = Volatile.Read(ref _desiredTargetSet);
+                if (latest.Generation != targetSet.Generation
+                    || !latest.TryGetTarget(target.Kind, out var latestTarget)
+                    || !latestTarget.HasSameValues(target))
+                {
+                    failure = "target changed while creating order visual";
+                    return false;
+                }
+
+                ActiveVisuals[target.Kind] = new ActiveOrderVisual(
+                    targetSet.Generation,
+                    targetSet.SessionGeneration,
+                    target,
+                    clone,
+                    clonedImage,
+                    imageAccessors,
+                    registration,
+                    binding,
+                    Time.realtimeSinceStartup + HealthCheckIntervalSeconds);
+                _createdVisuals++;
+                clone = null;
+            }
             failure = "";
             return true;
         }
@@ -960,32 +959,29 @@ internal static class RuntimeOrderHighlightService
     }
 
     private static bool TryValidateActiveVisualLocked(
-        OrderHighlightTargetSnapshot target,
+        ActiveOrderVisual active,
+        RuntimeUiTargetSnapshot target,
         out string failure)
     {
-        if (_activeOverlay == null
-            || _activeImage == null
-            || _activeImageAccessors == null
-            || _activeElement == null
-            || !IsLiveUnityObject(_activeOverlay)
-            || !IsLiveUnityObject(_activeImage)
-            || !_activeOverlay.activeInHierarchy
-            || _activeImageAccessors.GetEnabled?.Invoke(_activeImage, null) is not true)
+        if (!IsLiveUnityObject(active.Overlay)
+            || !IsLiveUnityObject(active.Image)
+            || !active.Overlay.activeInHierarchy
+            || active.ImageAccessors.GetEnabled?.Invoke(active.Image, null) is not true)
         {
             failure = "private order border image is unavailable or inactive";
             return false;
         }
 
-        if (!TryValidateRegisteredElementLocked(_activeElement, out failure)) return false;
-        if (!RuntimeOrderTraceIdService.TryResolveCurrentRareCapture(
-                target.OrderTraceId,
-                target.DeskCode,
+        if (!TryValidateRegisteredElementLocked(active.Element, out failure)) return false;
+        if (!RuntimeUiTargetOrderResolver.TryResolveCurrentCapture(
+                target,
                 CaptureMaxAge,
-                out var capture,
+                out var binding,
                 out failure)
-            || capture?.OrderObject == null
-            || !RuntimeReflectionUtility.TryReadNativeObjectPointer(capture.OrderObject, out var currentOrderPointer)
-            || currentOrderPointer != _activeOrderPointer)
+            || binding == null
+            || binding.Value.OrderPointer != active.OrderPointer
+            || binding.Value.ControllerPointer != active.ControllerPointer
+            || binding.Value.OrderLifecycleSequence != active.OrderLifecycleSequence)
         {
             if (string.IsNullOrEmpty(failure)) failure = "active capture no longer owns the highlighted order";
             return false;
@@ -1030,19 +1026,26 @@ internal static class RuntimeOrderHighlightService
         return true;
     }
 
-    private static bool TryApplyPulseLocked(out string failure)
+    private static bool TryApplyPulseLocked(
+        ActiveOrderVisual active,
+        RuntimeTargetHighlightPalette palette,
+        out string failure)
     {
         try
         {
-            if (_activeImage == null || _activeImageAccessors?.SetColor == null)
+            if (active.ImageAccessors.SetColor == null)
             {
                 failure = "active Image color setter is unavailable";
                 return false;
             }
 
-            _activeImageAccessors.SetColor.Invoke(
-                _activeImage,
-                new object?[] { BuildHighlightColor() });
+            var color = RuntimeTargetHighlightStyle.BuildOrderHighlightPulseColor(
+                active.Target.Claim,
+                palette,
+                Time.realtimeSinceStartup);
+            active.ImageAccessors.SetColor.Invoke(
+                active.Image,
+                new object?[] { color });
             failure = "";
             return true;
         }
@@ -1051,12 +1054,6 @@ internal static class RuntimeOrderHighlightService
             failure = ex.GetBaseException().Message;
             return false;
         }
-    }
-
-    private static Color BuildHighlightColor()
-    {
-        var alpha = 0.62f + (Mathf.Sin(Time.realtimeSinceStartup * 5.5f) + 1f) * 0.19f;
-        return new Color(1f, 0.86f, 0.18f, alpha);
     }
 
     private static bool HasExactSafeImageComponents(
@@ -1282,34 +1279,70 @@ internal static class RuntimeOrderHighlightService
     private static void RemoveRegisteredElementLocked(nint pointer, bool destroyActiveVisual)
     {
         if (!RegisteredElements.Remove(pointer, out var removed)) return;
-        if (_activeElement == null || !ReferenceEquals(_activeElement, removed)) return;
-
-        if (destroyActiveVisual)
+        foreach (var (kind, active) in ActiveVisuals
+                     .Where(pair => ReferenceEquals(pair.Value.Element, removed))
+                     .ToList())
         {
-            DestroyActiveVisualLocked();
-        }
-        else
-        {
-            AbandonActiveVisualLocked();
+            if (destroyActiveVisual) DestroyActiveVisualLocked(kind);
+            else AbandonActiveVisualLocked(kind);
         }
     }
 
-    private static void DestroyActiveVisualLocked()
+    private static void ReconcileTargetSetChangeLocked(RuntimeUiTargetSetSnapshot targetSet)
     {
-        var overlay = _activeOverlay;
-        AbandonActiveVisualLocked();
-        if (overlay != null) SafeDestroyOverlay(overlay);
+        foreach (var (kind, active) in ActiveVisuals.ToList())
+        {
+            if (targetSet.SessionGeneration != active.SessionGeneration
+                || !targetSet.TryGetTarget(kind, out var target)
+                || !target.OrderHighlightEnabled
+                || !active.Target.HasSameValues(target))
+            {
+                DestroyActiveVisualLocked(kind);
+                NextAttemptAt[kind] = 0f;
+                continue;
+            }
+
+            active.TargetSetGeneration = targetSet.Generation;
+            active.Target = target;
+        }
+
+        foreach (var kind in NextAttemptAt.Keys.ToList())
+        {
+            if (!targetSet.TryGetTarget(kind, out var target) || !target.OrderHighlightEnabled)
+            {
+                NextAttemptAt.Remove(kind);
+            }
+        }
+        foreach (var target in targetSet.Targets.Where(target => target.OrderHighlightEnabled))
+        {
+            if (!ActiveVisuals.ContainsKey(target.Kind)) NextAttemptAt[target.Kind] = 0f;
+        }
     }
 
-    private static void AbandonActiveVisualLocked()
+    private static bool HasOrderHighlightTargets(RuntimeUiTargetSetSnapshot targetSet)
     {
-        _activeOverlay = null;
-        _activeImage = null;
-        _activeImageAccessors = null;
-        _activeElement = null;
-        _activeTargetGeneration = 0;
-        _activeOrderPointer = 0;
-        _nextHealthCheckAt = 0f;
+        return targetSet.Targets.Any(target => target.OrderHighlightEnabled);
+    }
+
+    private static void DestroyActiveVisualLocked(RuntimeUiTargetKind kind)
+    {
+        if (!ActiveVisuals.Remove(kind, out var active)) return;
+        SafeDestroyOverlay(active.Overlay);
+    }
+
+    private static void AbandonActiveVisualLocked(RuntimeUiTargetKind kind)
+    {
+        ActiveVisuals.Remove(kind);
+    }
+
+    private static void DestroyAllActiveVisualsLocked()
+    {
+        foreach (var kind in ActiveVisuals.Keys.ToList()) DestroyActiveVisualLocked(kind);
+    }
+
+    private static void AbandonAllActiveVisualsLocked()
+    {
+        ActiveVisuals.Clear();
     }
 
     private static void SafeDestroyOverlay(GameObject overlay)
@@ -1397,8 +1430,8 @@ internal static class RuntimeOrderHighlightService
         lock (VisualRoot)
         {
             _visualErrors++;
-            DestroyActiveVisualLocked();
-            _nextAttemptAt = 0f;
+            DestroyAllActiveVisualsLocked();
+            NextAttemptAt.Clear();
             SetFailureLocked(failure);
             if (_warningLogs < MaxWarningLogs)
             {
@@ -1442,30 +1475,49 @@ internal static class RuntimeOrderHighlightService
         return pointer == 0 ? "none" : $"0x{pointer:x}";
     }
 
-    private sealed record OrderHighlightTargetSnapshot(
-        long Generation,
-        long SessionGeneration,
-        bool Enabled,
-        string OrderTraceId,
-        int DeskCode,
-        string ValidationFailure)
+    private sealed class ActiveOrderVisual
     {
-        public static readonly OrderHighlightTargetSnapshot Disabled = new(0, 0, false, "", -1, "");
-
-        public bool HasSameValues(
+        public ActiveOrderVisual(
+            long targetSetGeneration,
             long sessionGeneration,
-            bool enabled,
-            string orderTraceId,
-            int deskCode,
-            string validationFailure)
+            RuntimeUiTargetSnapshot target,
+            GameObject overlay,
+            object image,
+            ImageAccessors imageAccessors,
+            RegisteredElement element,
+            RuntimeUiTargetOrderBinding binding,
+            float nextHealthCheckAt)
         {
-            return SessionGeneration == sessionGeneration
-                && Enabled == enabled
-                && string.Equals(OrderTraceId, orderTraceId, StringComparison.Ordinal)
-                && DeskCode == deskCode
-                && string.Equals(ValidationFailure, validationFailure, StringComparison.Ordinal);
+            TargetSetGeneration = targetSetGeneration;
+            SessionGeneration = sessionGeneration;
+            Target = target;
+            Overlay = overlay;
+            Image = image;
+            ImageAccessors = imageAccessors;
+            Element = element;
+            OrderPointer = binding.OrderPointer;
+            ControllerPointer = binding.ControllerPointer;
+            OrderLifecycleSequence = binding.OrderLifecycleSequence;
+            NextHealthCheckAt = nextHealthCheckAt;
         }
+
+        public long TargetSetGeneration { get; set; }
+        public long SessionGeneration { get; }
+        public RuntimeUiTargetSnapshot Target { get; set; }
+        public GameObject Overlay { get; }
+        public object Image { get; }
+        public ImageAccessors ImageAccessors { get; }
+        public RegisteredElement Element { get; }
+        public nint OrderPointer { get; }
+        public nint ControllerPointer { get; }
+        public long OrderLifecycleSequence { get; }
+        public float NextHealthCheckAt { get; set; }
     }
+
+    private sealed record ResolvedTargetElement(
+        RuntimeUiTargetSnapshot Target,
+        RegisteredElement Registration,
+        RuntimeUiTargetOrderBinding Binding);
 
     private sealed record RegisteredElement(
         object Element,

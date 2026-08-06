@@ -1,4 +1,5 @@
 using System.Reflection;
+using BepInEx.Logging;
 using Il2CppInterop.Runtime;
 using Il2CppInterop.Runtime.InteropTypes.Arrays;
 using UnityEngine;
@@ -6,89 +7,89 @@ using UnityEngine;
 namespace MystiaStewardCompanion.Save;
 
 /// <summary>
-/// Owns private copies of the game's table selection and stencil visuals for the current recommendation target.
+/// Owns one private, standard-sprite table fill per desk claimed by the current rare/normal targets.
 /// </summary>
 internal static class RuntimeSeatHighlightService
 {
     private const float RetryIntervalSeconds = 1.25f;
-    private const float VisibilityGraceSeconds = 1f;
     private const float ActiveHealthCheckIntervalSeconds = 0.25f;
-    private const int MaxSelectionRendererCount = 64;
+    private const int MaxSpriteVertexCount = 4096;
+    private const int MaxSpriteTriangleIndexCount = 12288;
+    private const int OwnedFillTextureSize = 64;
+    private const int MaxBindingLogsPerBusiness = 8;
+    private const int MaxFailureLogsPerBusiness = 8;
     private const string TileManagerTypeName = "NightScene.Tiles.TileManager";
     private const string InteractableTileTypeName = "NightScene.Tiles.InteractableTile";
     private const string TileBaseTypeName = "UnityEngine.Tilemaps.Tile";
     private const string TilemapTypeName = "UnityEngine.Tilemaps.Tilemap";
     private const string UiElementClusterTypeName = "DEYU.UniversalUISystem.UIElementCluster";
-    private const string StencilPainterControllerTypeName = "NightScene.Tiles.StencilPainterController";
+    private const string SpriteRendererTypeName = "UnityEngine.SpriteRenderer";
+    private const string OutlineShaderName = "THIZKY/Effects/OutlineBlinkOnly";
+    private const string RegionalFillShaderName = "THIZKY/Effects/RegionalHSVFillter";
+    private const string StandardSpriteShaderName = "Sprites/Default";
+    private const string OwnedFillObjectName = "MystiaStewardCompanion.TargetDeskStandardFill";
+    private const string OwnedFillTextureName = "MystiaStewardCompanion.TargetDeskFillTexture";
+    private const string OwnedFillSpriteName = "MystiaStewardCompanion.TargetDeskFillSprite";
+    private const string OwnedFillMeshTypeName = nameof(SpriteMeshType.Tight);
+    private const string OwnedMaterialName = "MystiaStewardCompanion.TargetDeskFillMaterial";
 
     private static readonly object DesiredRoot = new();
     private static readonly object VisualRoot = new();
 
-    private static SeatHighlightTargetSnapshot _desiredTarget = SeatHighlightTargetSnapshot.Disabled;
+    private static ManualLogSource? _log;
+    private static RuntimeUiTargetSetSnapshot _desiredTargetSet = RuntimeUiTargetSetSnapshot.Disabled;
     private static long _appliedTargetGeneration;
     private static bool _suspended = true;
     private static string _suspendReason = "night business inactive";
-    private static GameObject? _activeSelectionClone;
-    private static List<SpriteRenderer>? _activeSelectionRenderers;
-    private static SpriteRenderer? _activeSelectionPrimary;
-    private static Sprite? _activeSelectionSprite;
-    private static GameObject? _activeStencilClone;
-    private static object? _activeController;
-    private static Il2CppSystem.Collections.Generic.List<SpriteRenderer>? _activeWorkers;
-    private static Sprite? _activeVisual;
-    private static long _activeSessionGeneration;
-    private static int _activeDeskCode = -1;
-    private static int _activeWorkerCount;
-    private static int _activeRenderableWorkerCount;
-    private static int _activeSelectionRendererCount;
-    private static int _activeRenderableSelectionRendererCount;
-    private static Vector3Int _activeCellPosition;
-    private static Vector3 _activeAnchor;
-    private static float _activeVisibilityDeadline;
-    private static float _nextVisibilityCheckAt;
-    private static float _nextAttemptAt;
+    private static readonly Dictionary<int, ActiveSeatVisual> ActiveVisuals = new();
+    private static readonly Dictionary<int, float> NextAttemptAt = new();
     private static long _destroyErrors;
     private static string _status = "disabled";
-    private static string _renderDiagnostics = "none";
+    private static long _bindingLogBusinessGeneration;
+    private static readonly HashSet<string> BindingLogKeys = new(StringComparer.Ordinal);
+    private static int _bindingLogCount;
+    private static readonly HashSet<string> FailureLogKeys = new(StringComparer.Ordinal);
+    private static int _failureLogCount;
 
     public static string Status
     {
         get
         {
-            var desired = Volatile.Read(ref _desiredTarget);
+            var desired = Volatile.Read(ref _desiredTargetSet);
             lock (VisualRoot)
             {
-                return $"{_status}; desired={desired.Generation}/session:{desired.SessionGeneration}/desk:{desired.DeskCode}; applied={_appliedTargetGeneration}; active=session:{_activeSessionGeneration}/desk:{_activeDeskCode}/selection:{_activeRenderableSelectionRendererCount}/{_activeSelectionRendererCount}/stencil:{_activeRenderableWorkerCount}/{_activeWorkerCount}/cell:{FormatVector(_activeCellPosition)}/anchor:{FormatVector(_activeAnchor)}; render={_renderDiagnostics}; suspended={_suspended}; destroyErrors={_destroyErrors}";
+                var activeStatus = string.Join(",", ActiveVisuals.Values
+                    .OrderBy(active => active.DeskCode)
+                    .Select(active => $"session:{active.SessionGeneration}/desk:{active.DeskCode}/claims:{active.Claims}/root:{FormatVector(active.RootPosition)}"));
+                return $"{_status}; desired={desired.Generation}/session:{desired.SessionGeneration}/targets:{desired.Targets.Count}; applied={_appliedTargetGeneration}; active={activeStatus}; bindingLog=business:{_bindingLogBusinessGeneration}/keys:{BindingLogKeys.Count}/budget:{_bindingLogCount}/{MaxBindingLogsPerBusiness}; failureLog={_failureLogCount}/{MaxFailureLogsPerBusiness}; suspended={_suspended}; destroyErrors={_destroyErrors}";
             }
+        }
+    }
+
+    public static void Attach(ManualLogSource log)
+    {
+        lock (VisualRoot)
+        {
+            _log = log;
         }
     }
 
     /// <summary>
     /// Publishes managed desired state only. Unity objects are reconciled later by <see cref="Tick"/>.
     /// </summary>
-    public static void UpdateTarget(long sessionGeneration, bool enabled, int deskCode)
+    public static void UpdateTargets(RuntimeUiTargetSetSnapshot targetSet)
     {
-        var normalizedEnabled = enabled && sessionGeneration > 0 && deskCode >= 0;
-        var normalizedDeskCode = normalizedEnabled ? deskCode : -1;
+        ArgumentNullException.ThrowIfNull(targetSet);
         lock (DesiredRoot)
         {
-            var current = Volatile.Read(ref _desiredTarget);
-            if (current.HasSameValues(sessionGeneration, normalizedEnabled, normalizedDeskCode)) return;
-
-            Volatile.Write(
-                ref _desiredTarget,
-                new SeatHighlightTargetSnapshot(
-                    checked(current.Generation + 1),
-                    sessionGeneration,
-                    normalizedEnabled,
-                    normalizedDeskCode));
+            Volatile.Write(ref _desiredTargetSet, targetSet);
         }
     }
 
     public static void Tick()
     {
         var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
-        var desired = Volatile.Read(ref _desiredTarget);
+        var desired = Volatile.Read(ref _desiredTargetSet);
         lock (VisualRoot)
         {
             if (_suspended) return;
@@ -98,21 +99,20 @@ internal static class RuntimeSeatHighlightService
                 return;
             }
 
-            var desiredEnabled = lifecycle.IsActive
-                && desired.Enabled
-                && desired.SessionGeneration == lifecycle.Generation
-                && desired.DeskCode >= 0;
             if (_appliedTargetGeneration != desired.Generation)
             {
-                DestroyActiveVisualsLocked();
+                ReconcileTargetSetChangeLocked(desired);
                 _appliedTargetGeneration = desired.Generation;
-                _nextAttemptAt = 0f;
             }
 
+            var claims = BuildSeatClaims(desired);
+            var desiredEnabled = lifecycle.IsActive
+                && desired.SessionGeneration == lifecycle.Generation
+                && claims.Count > 0;
             if (!desiredEnabled)
             {
-                DestroyActiveVisualsLocked();
-                _status = desired.Enabled
+                DestroyAllActiveVisualsLocked();
+                _status = HasSeatHighlightTargets(desired)
                     ? lifecycle.IsActive
                         ? "waiting: target belongs to a different night-business session"
                         : "waiting: night business inactive"
@@ -120,71 +120,73 @@ internal static class RuntimeSeatHighlightService
                 return;
             }
 
-            if (_activeSelectionClone != null
-                && _activeStencilClone != null
-                && _activeController != null
-                && _activeSessionGeneration == desired.SessionGeneration
-                && _activeDeskCode == desired.DeskCode)
+            var now = Time.realtimeSinceStartup;
+            foreach (var (deskCode, active) in ActiveVisuals.ToList())
             {
-                var selectionCloneIsLive = IsLiveUnityObject(_activeSelectionClone);
-                var cloneIsLive = IsLiveUnityObject(_activeStencilClone);
-                if (selectionCloneIsLive && cloneIsLive && IsLiveUnityObject(_activeController))
+                if (!claims.TryGetValue(deskCode, out var claim)
+                    || active.SessionGeneration != desired.SessionGeneration)
                 {
-                    var now = Time.realtimeSinceStartup;
-                    if (now < _nextVisibilityCheckAt) return;
+                    DestroyActiveVisualLocked(deskCode);
+                    NextAttemptAt[deskCode] = 0f;
+                    continue;
+                }
+                active.Claims = claim.Claims;
 
-                    if (TryInspectVisualsLocked(
-                            out var selectionRendererCount,
-                            out var renderableSelectionRendererCount,
-                            out var workerCount,
-                            out var renderableWorkerCount,
-                            out var visibilityFailure))
-                    {
-                        _activeSelectionRendererCount = selectionRendererCount;
-                        _activeRenderableSelectionRendererCount = renderableSelectionRendererCount;
-                        _activeWorkerCount = workerCount;
-                        _activeRenderableWorkerCount = renderableWorkerCount;
-                        if (renderableSelectionRendererCount > 0 && renderableWorkerCount > 0)
-                        {
-                            _activeVisibilityDeadline = 0f;
-                            _nextVisibilityCheckAt = now + ActiveHealthCheckIntervalSeconds;
-                            _status = "active";
-                            return;
-                        }
+                if (!TryApplyPulseLocked(active, desired.Palette, now, out var pulseFailure))
+                {
+                    TryLogFailureLocked(claim, "pulse", pulseFailure);
+                    DestroyActiveVisualLocked(deskCode);
+                    NextAttemptAt[deskCode] = now + RetryIntervalSeconds;
+                    _status = $"unavailable: {NormalizeStatus(pulseFailure)}";
+                    continue;
+                }
+                if (now < active.NextHealthCheckAt) continue;
 
-                        if (_activeVisibilityDeadline <= 0f)
-                        {
-                            _activeVisibilityDeadline = now + VisibilityGraceSeconds;
-                        }
-                        if (now < _activeVisibilityDeadline)
-                        {
-                            _nextVisibilityCheckAt = 0f;
-                            _status = $"pending: {NormalizeStatus(visibilityFailure)}";
-                            return;
-                        }
-
-                        DestroyActiveVisualsLocked();
-                        _nextAttemptAt = now + RetryIntervalSeconds;
-                        _status = $"unavailable: {NormalizeStatus(visibilityFailure)}";
-                        return;
-                    }
-
-                    DestroyActiveVisualsLocked();
-                    _nextAttemptAt = now + RetryIntervalSeconds;
-                    _status = $"unavailable: {NormalizeStatus(visibilityFailure)}";
-                    return;
+                if (TryInspectActiveVisualLocked(
+                        active,
+                        out var containsDestroyedObject,
+                        out var healthFailure))
+                {
+                    active.NextHealthCheckAt = now + ActiveHealthCheckIntervalSeconds;
+                    continue;
                 }
 
-                DestroyActiveVisualsLocked();
-                _nextAttemptAt = 0f;
+                DestroyActiveVisualLocked(deskCode);
+                TryLogFailureLocked(claim, "health", healthFailure);
+                _status = $"unavailable: {NormalizeStatus(healthFailure)}";
+                NextAttemptAt[deskCode] = containsDestroyedObject
+                    ? 0f
+                    : now + RetryIntervalSeconds;
             }
 
-            DestroyActiveVisualsLocked();
-            if (Time.realtimeSinceStartup < _nextAttemptAt) return;
-            if (!TryCreateActiveVisualsLocked(desired, out var failure))
+            foreach (var claim in claims.Values.OrderBy(claim => claim.DeskCode))
             {
-                _nextAttemptAt = Time.realtimeSinceStartup + RetryIntervalSeconds;
-                _status = $"unavailable: {NormalizeStatus(failure)}";
+                if (ActiveVisuals.ContainsKey(claim.DeskCode)
+                    || NextAttemptAt.TryGetValue(claim.DeskCode, out var retryAt) && now < retryAt)
+                {
+                    continue;
+                }
+
+                BeginBindingLogTargetLocked(claim);
+                if (!TryCreateActiveVisualLocked(desired, claim, out var failure))
+                {
+                    var latestDesired = Volatile.Read(ref _desiredTargetSet);
+                    if (latestDesired.Generation != desired.Generation)
+                    {
+                        NextAttemptAt[claim.DeskCode] = 0f;
+                        _status = "waiting: target changed while creating visual";
+                        continue;
+                    }
+
+                    TryLogFailureLocked(claim, "create", failure);
+                    NextAttemptAt[claim.DeskCode] = now + RetryIntervalSeconds;
+                    _status = $"unavailable: {NormalizeStatus(failure)}";
+                }
+            }
+
+            if (ActiveVisuals.Count > 0)
+            {
+                _status = $"active:{ActiveVisuals.Count}/{claims.Count}";
             }
         }
     }
@@ -198,15 +200,15 @@ internal static class RuntimeSeatHighlightService
             _suspendReason = NormalizeReason(reason);
             if (Environment.CurrentManagedThreadId == lifecycle.ThreadId)
             {
-                DestroyActiveVisualsLocked();
+                DestroyAllActiveVisualsLocked();
             }
             else
             {
-                AbandonActiveVisualsLocked();
+                AbandonAllActiveVisualsLocked();
             }
 
-            _nextAttemptAt = 0f;
-            _status = Volatile.Read(ref _desiredTarget).Enabled
+            NextAttemptAt.Clear();
+            _status = HasSeatHighlightTargets(Volatile.Read(ref _desiredTargetSet))
                 ? $"suspended: {_suspendReason}"
                 : "disabled";
         }
@@ -219,17 +221,17 @@ internal static class RuntimeSeatHighlightService
         {
             if (Environment.CurrentManagedThreadId == lifecycle.ThreadId)
             {
-                DestroyActiveVisualsLocked();
+                DestroyAllActiveVisualsLocked();
             }
             else
             {
-                AbandonActiveVisualsLocked();
+                AbandonAllActiveVisualsLocked();
             }
 
             _suspended = false;
             _suspendReason = NormalizeReason(reason);
-            _nextAttemptAt = 0f;
-            _status = Volatile.Read(ref _desiredTarget).Enabled
+            NextAttemptAt.Clear();
+            _status = HasSeatHighlightTargets(Volatile.Read(ref _desiredTargetSet))
                 ? "waiting for main-thread reconcile"
                 : "disabled";
         }
@@ -242,16 +244,16 @@ internal static class RuntimeSeatHighlightService
     {
         lock (VisualRoot)
         {
-            AbandonActiveVisualsLocked();
+            AbandonAllActiveVisualsLocked();
             _suspended = true;
             _suspendReason = NormalizeReason(reason);
-            _nextAttemptAt = 0f;
+            NextAttemptAt.Clear();
             _status = $"abandoned: {_suspendReason}";
         }
     }
 
     /// <summary>
-    /// Releases the Mod-owned clone when the persistent controller is disposed on the Unity thread.
+    /// Releases the Mod-owned selection clone, renderer object, texture, Sprite, and material on the Unity thread.
     /// </summary>
     public static void Dispose(string reason)
     {
@@ -260,30 +262,35 @@ internal static class RuntimeSeatHighlightService
         {
             if (Environment.CurrentManagedThreadId == lifecycle.ThreadId)
             {
-                DestroyActiveVisualsLocked();
+                DestroyAllActiveVisualsLocked();
             }
             else
             {
-                AbandonActiveVisualsLocked();
+                AbandonAllActiveVisualsLocked();
             }
 
             _suspended = true;
             _suspendReason = NormalizeReason(reason);
-            _nextAttemptAt = 0f;
+            NextAttemptAt.Clear();
             _status = $"disposed: {_suspendReason}";
         }
     }
 
-    private static bool TryCreateActiveVisualsLocked(SeatHighlightTargetSnapshot target, out string failure)
+    private static bool TryCreateActiveVisualLocked(
+        RuntimeUiTargetSetSnapshot targetSet,
+        SeatHighlightClaim target,
+        out string failure)
     {
         GameObject? selectionClone = null;
-        GameObject? clone = null;
+        GameObject? fillObject = null;
+        Texture2D? fillTexture = null;
+        Sprite? fillSprite = null;
+        Material? fillMaterial = null;
         try
         {
             var tileManagerType = RuntimeReflectionUtility.FindType(TileManagerTypeName);
             var tileType = RuntimeReflectionUtility.FindType(InteractableTileTypeName);
-            var controllerType = RuntimeReflectionUtility.FindType(StencilPainterControllerTypeName);
-            if (tileManagerType == null || tileType == null || controllerType == null)
+            if (tileManagerType == null || tileType == null)
             {
                 failure = "required BepInEx 783 interop types are not loaded";
                 return false;
@@ -309,7 +316,7 @@ internal static class RuntimeSeatHighlightService
                 failure = "MonoSingleton<TileManager>.Instance has an unexpected return type";
                 return false;
             }
-            var tileManager = instanceProperty?.GetValue(null);
+            var tileManager = instanceProperty.GetValue(null);
             if (tileManager == null || !IsLiveUnityObject(tileManager))
             {
                 failure = "TileManager.Instance is unavailable";
@@ -417,16 +424,12 @@ internal static class RuntimeSeatHighlightService
                 return false;
             }
 
-            var getSelectionRendererDefinition = FindDeclaredGenericInstanceMethod(
-                onSelectionProperty.PropertyType,
-                "GetObject",
-                typeof(int));
             var getSelectionRenderersDefinition = FindDeclaredGenericArrayInstanceMethod(
                 onSelectionProperty.PropertyType,
                 "GetObjects");
-            if (getSelectionRendererDefinition == null || getSelectionRenderersDefinition == null)
+            if (getSelectionRenderersDefinition == null)
             {
-                failure = "UIElementCluster renderer accessors do not match the verified declarations";
+                failure = "UIElementCluster renderer array accessor does not match the verified declaration";
                 return false;
             }
             var selectionRoot = selectionComponent.transform;
@@ -437,6 +440,11 @@ internal static class RuntimeSeatHighlightService
                 || !IsLiveUnityObject(selectionSourceObject))
             {
                 failure = "TileManager.onSelection root is unavailable";
+                return false;
+            }
+            if (selectionRoot.parent != null)
+            {
+                failure = "TileManager.onSelection is not the verified scene-root visual";
                 return false;
             }
 
@@ -450,25 +458,6 @@ internal static class RuntimeSeatHighlightService
                 return false;
             }
 
-            var visualDictionaryProperty = FindDeclaredInstanceProperty(tileManagerType, "interactablesHighlightedVisual");
-            if (visualDictionaryProperty?.PropertyType
-                != typeof(Il2CppSystem.Collections.Generic.Dictionary<Sprite, Sprite>))
-            {
-                failure = "TileManager highlighted visual property does not match Dictionary<Sprite, Sprite>";
-                return false;
-            }
-            var visualDictionary = visualDictionaryProperty.GetValue(tileManager);
-            if (visualDictionary == null)
-            {
-                failure = "TileManager highlighted visual dictionary is unavailable";
-                return false;
-            }
-
-            if (!TryReadHighlightedVisual(visualDictionary, tileSprite, out var highlightedVisual, out failure))
-            {
-                return false;
-            }
-
             selectionClone = UnityEngine.Object.Instantiate(selectionSourceObject);
             if (selectionClone == null || !IsLiveUnityObject(selectionClone))
             {
@@ -476,7 +465,7 @@ internal static class RuntimeSeatHighlightService
                 return false;
             }
 
-            selectionClone.name = "MystiaStewardCompanion.TargetDeskSelection";
+            selectionClone.name = "MystiaStewardCompanion.TargetDeskFill";
             selectionClone.SetActive(true);
             if (!selectionClone.activeInHierarchy)
             {
@@ -494,125 +483,257 @@ internal static class RuntimeSeatHighlightService
                 failure = "cloned selection UIElementCluster is unavailable";
                 return false;
             }
+            if (clonedSelectionRoot.transform.parent != null)
+            {
+                failure = "cloned selection fill is not a scene-root visual";
+                return false;
+            }
 
             clonedSelectionRoot.transform.position = desiredRootPosition;
             if (!TryBindSelectionRenderers(
                     clonedSelection,
-                    getSelectionRendererDefinition,
                     getSelectionRenderersDefinition,
                     clonedSelectionRoot.transform,
                     tileSprite,
-                    out var selectionRenderers,
-                    out var selectionRenderer,
+                    out var outlineRenderer,
+                    out var regionalRenderer,
                     out failure))
             {
                 return false;
             }
 
-            var selectionBounds = selectionRenderer.bounds;
-            var painterAnchor = selectionBounds.center;
-            if (!selectionRenderer.enabled
-                || !selectionRenderer.gameObject.activeInHierarchy
-                || !IsFinite(painterAnchor)
-                || !IsFinite(selectionBounds.size)
-                || !HasNonZeroSize(selectionBounds.size))
+            if (regionalRenderer.drawMode != SpriteDrawMode.Simple)
             {
-                failure = "cloned selection primary renderer is not renderable";
+                failure = $"private RegionalHSVFillter template draw mode is not Simple: {regionalRenderer.drawMode}";
                 return false;
             }
 
-            var templateProperty = FindDeclaredInstanceProperty(tileManagerType, "stencilPainterParent");
-            var parentProperty = FindDeclaredInstanceProperty(tileManagerType, "stencilPainterField");
-            if (templateProperty?.PropertyType != typeof(GameObject)
-                || parentProperty?.PropertyType != typeof(Transform))
+            outlineRenderer.enabled = false;
+            regionalRenderer.enabled = false;
+
+            fillObject = CreateOwnedSpriteRendererGameObject(OwnedFillObjectName);
+            if (fillObject == null || !IsLiveUnityObject(fillObject))
             {
-                failure = "TileManager stencil properties do not match the verified declarations";
+                failure = "failed to create the Mod-owned standard SpriteRenderer object";
                 return false;
             }
-            var template = templateProperty.GetValue(tileManager) as GameObject;
-            var parent = parentProperty.GetValue(tileManager) as Transform;
-            if (template == null
-                || parent == null
-                || !IsLiveUnityObject(template)
-                || !IsLiveUnityObject(parent))
+            fillObject.SetActive(false);
+
+            var fillComponent = fillObject.GetComponent(Il2CppType.From(typeof(SpriteRenderer)));
+            if (fillComponent is not Component queriedFillComponent
+                || !IsLiveUnityObject(queriedFillComponent))
             {
-                failure = "TileManager stencil prefab or parent is unavailable";
+                failure = "Mod-owned fill object typed query returned no live Component wrapper";
                 return false;
             }
 
-            clone = UnityEngine.Object.Instantiate(template, parent);
-            if (clone == null || !IsLiveUnityObject(clone))
+            var exactFillComponent = RuntimeReflectionUtility.TryCastRuntimeObject(
+                queriedFillComponent,
+                SpriteRendererTypeName);
+            if (exactFillComponent is not SpriteRenderer fillRenderer
+                || !IsLiveUnityObject(fillRenderer))
             {
-                failure = "failed to clone the game stencil prefab";
+                failure = "Mod-owned fill Component wrapper cannot exact-cast to a live SpriteRenderer";
+                return false;
+            }
+            if (!RuntimeReflectionUtility.TryReadNativeObjectPointer(
+                    queriedFillComponent,
+                    out var queriedFillPointer)
+                || !RuntimeReflectionUtility.TryReadNativeObjectPointer(
+                    fillRenderer,
+                    out var exactFillPointer)
+                || queriedFillPointer != exactFillPointer)
+            {
+                failure = "Mod-owned fill SpriteRenderer cast changed native component identity";
+                return false;
+            }
+            if (!TryReadNativeClassName(fillRenderer, out var fillClassName)
+                || !string.Equals(fillClassName, SpriteRendererTypeName, StringComparison.Ordinal))
+            {
+                failure = "Mod-owned fill component native class is not exact UnityEngine.SpriteRenderer";
+                return false;
+            }
+            if (!TryReadSameNativeObject(
+                    fillObject,
+                    fillRenderer.gameObject,
+                    out var fillOwnsComponent)
+                || !fillOwnsComponent)
+            {
+                failure = "Mod-owned fill SpriteRenderer belongs to a different GameObject";
                 return false;
             }
 
-            clone.name = "MystiaStewardCompanion.TargetDeskHighlight";
-            if (!clone.activeInHierarchy)
+            fillRenderer.enabled = false;
+            var regionalTransform = regionalRenderer.transform;
+            var fillTransform = fillRenderer.transform;
+            if (regionalTransform == null
+                || fillTransform == null
+                || !IsLiveUnityObject(regionalTransform)
+                || !IsLiveUnityObject(fillTransform))
             {
-                failure = "cloned stencil is inactive in the scene hierarchy";
-                return false;
-            }
-            var component = clone.GetComponent(Il2CppType.From(controllerType));
-            var controller = RuntimeReflectionUtility.TryCastRuntimeObject(component, StencilPainterControllerTypeName);
-            if (controller == null || !IsLiveUnityObject(controller))
-            {
-                failure = "cloned stencil controller is unavailable";
-                return false;
-            }
-
-            var workerProperty = FindDeclaredInstanceProperty(controllerType, "worker");
-            if (workerProperty?.PropertyType
-                != typeof(Il2CppSystem.Collections.Generic.List<SpriteRenderer>))
-            {
-                failure = "cloned stencil worker property does not match List<SpriteRenderer>";
-                return false;
-            }
-            var worker = workerProperty.GetValue(controller)
-                as Il2CppSystem.Collections.Generic.List<SpriteRenderer>;
-            if (worker == null || !TryReadExactCount(worker, out var workerCount) || workerCount <= 0)
-            {
-                failure = "cloned stencil has no SpriteRenderer workers";
+                failure = "Regional template or Mod-owned fill transform is unavailable";
                 return false;
             }
 
-            var show = FindDeclaredInstanceMethod(controllerType, "Show", typeof(Vector3), typeof(Sprite));
-            if (show == null || show.ReturnType != typeof(void))
+            fillTransform.parent = regionalTransform.parent;
+            fillTransform.localPosition = regionalTransform.localPosition;
+            fillTransform.localRotation = regionalTransform.localRotation;
+            fillTransform.localScale = regionalTransform.localScale;
+            fillObject.layer = regionalRenderer.gameObject.layer;
+            fillRenderer.sortingLayerID = regionalRenderer.sortingLayerID;
+            fillRenderer.sortingOrder = regionalRenderer.sortingOrder;
+            fillRenderer.drawMode = regionalRenderer.drawMode;
+            fillRenderer.flipX = regionalRenderer.flipX;
+            fillRenderer.flipY = regionalRenderer.flipY;
+            if (!TryCreateOwnedWhiteSprite(
+                    tileSprite,
+                    out fillSprite,
+                    out fillTexture,
+                    out var sourceVertexCount,
+                    out var sourceTriangleIndexCount,
+                    out failure))
             {
-                failure = "StencilPainterController.Show does not match the verified declaration";
+                return false;
+            }
+            fillRenderer.sprite = fillSprite;
+            fillRenderer.color = RuntimeTargetHighlightStyle.BuildSeatFillPulseColor(
+                target.Claims,
+                targetSet.Palette,
+                Time.realtimeSinceStartup);
+
+            var defaultFillMaterial = fillRenderer.sharedMaterial;
+            var defaultFillShader = defaultFillMaterial?.shader;
+            if (defaultFillMaterial == null
+                || defaultFillShader == null
+                || !IsLiveUnityObject(defaultFillMaterial)
+                || !IsLiveUnityObject(defaultFillShader)
+                || !string.Equals(defaultFillShader.name, StandardSpriteShaderName, StringComparison.Ordinal)
+                || !RuntimeReflectionUtility.TryReadNativeObjectPointer(
+                    defaultFillMaterial,
+                    out var defaultMaterialPointer))
+            {
+                failure = "new SpriteRenderer does not expose the verified Unity default sprite material";
                 return false;
             }
 
-            show.Invoke(controller, new[] { (object)painterAnchor, highlightedVisual });
-            if (!IsLiveUnityObject(clone)
-                || !IsLiveUnityObject(controller))
+            var instantiatedFillMaterial = fillRenderer.material;
+            if (instantiatedFillMaterial == null
+                || !RuntimeReflectionUtility.TryReadNativeObjectPointer(instantiatedFillMaterial, out var ownedMaterialPointer)
+                || defaultMaterialPointer == ownedMaterialPointer)
             {
-                failure = "stencil clone became unavailable while applying the target";
+                failure = "failed to instantiate a distinct Mod-owned material from the default SpriteRenderer material";
+                return false;
+            }
+            fillMaterial = instantiatedFillMaterial;
+            if (!IsLiveUnityObject(fillMaterial))
+            {
+                failure = "instantiated Mod-owned material is not a live Unity object";
+                return false;
+            }
+            fillMaterial.name = OwnedMaterialName;
+            var ownedShader = fillMaterial.shader;
+            if (ownedShader == null
+                || !IsLiveUnityObject(ownedShader)
+                || !TryReadSameNativeObject(defaultFillShader, ownedShader, out var sameDefaultShader)
+                || !sameDefaultShader
+                || !string.Equals(ownedShader.name, StandardSpriteShaderName, StringComparison.Ordinal))
+            {
+                failure = "Mod-owned fill material does not retain the Unity default sprite shader";
                 return false;
             }
 
-            _activeStencilClone = clone;
-            _activeSelectionClone = selectionClone;
-            _activeSelectionRenderers = selectionRenderers;
-            _activeSelectionPrimary = selectionRenderer;
-            _activeSelectionSprite = tileSprite;
-            _activeController = controller;
-            _activeWorkers = worker;
-            _activeVisual = (Sprite)highlightedVisual;
-            _activeSessionGeneration = target.SessionGeneration;
-            _activeDeskCode = target.DeskCode;
-            _activeWorkerCount = workerCount;
-            _activeRenderableWorkerCount = 0;
-            _activeSelectionRendererCount = selectionRenderers.Count;
-            _activeRenderableSelectionRendererCount = 0;
-            _activeCellPosition = cellPosition;
-            _activeAnchor = painterAnchor;
-            _activeVisibilityDeadline = Time.realtimeSinceStartup + VisibilityGraceSeconds;
-            _nextVisibilityCheckAt = 0f;
-            _status = "pending: waiting for the native stencil show coroutine";
-            selectionClone = null;
-            clone = null;
+            fillRenderer.enabled = true;
+            fillObject.SetActive(true);
+
+            var fillLayer = fillRenderer.gameObject.layer;
+            var fillSortingLayerId = fillRenderer.sortingLayerID;
+            var fillSortingOrder = fillRenderer.sortingOrder;
+            var fillLocalPosition = fillTransform.localPosition;
+            var fillLocalRotation = fillTransform.localRotation;
+            var fillLocalScale = fillTransform.localScale;
+            var fillDrawMode = fillRenderer.drawMode;
+            var fillFlipX = fillRenderer.flipX;
+            var fillFlipY = fillRenderer.flipY;
+            if (!TryValidateBoundFill(
+                    selectionClone,
+                    outlineRenderer,
+                    regionalRenderer,
+                    fillObject,
+                    fillRenderer,
+                    fillMaterial,
+                    tileSprite,
+                    fillSprite,
+                    fillTexture,
+                    desiredRootPosition,
+                    fillLayer,
+                    fillSortingLayerId,
+                    fillSortingOrder,
+                    fillLocalPosition,
+                    fillLocalRotation,
+                    fillLocalScale,
+                    fillDrawMode,
+                    fillFlipX,
+                    fillFlipY,
+                    out var fillBounds,
+                    out failure))
+            {
+                return false;
+            }
+
+            var nextHealthCheckAt = Time.realtimeSinceStartup;
+
+            // UpdateTargets runs on the local API listener thread and owns DesiredRoot. Close
+            // the final recheck/publication window so a superseded target can never acquire
+            // the locally owned Unity resources or emit successful binding evidence.
+            lock (DesiredRoot)
+            {
+                var latestTargetSet = Volatile.Read(ref _desiredTargetSet);
+                var latestClaims = BuildSeatClaims(latestTargetSet);
+                if (latestTargetSet.Generation != targetSet.Generation
+                    || !latestClaims.TryGetValue(target.DeskCode, out var latestTarget)
+                    || latestTarget.Claims != target.Claims)
+                {
+                    failure = "target changed while creating seat fill";
+                    return false;
+                }
+
+                ActiveVisuals[target.DeskCode] = new ActiveSeatVisual(
+                    selectionClone,
+                    outlineRenderer,
+                    regionalRenderer,
+                    fillObject,
+                    fillRenderer,
+                    fillMaterial,
+                    tileSprite,
+                    fillSprite,
+                    fillTexture,
+                    target.SessionGeneration,
+                    target.DeskCode,
+                    target.Claims,
+                    desiredRootPosition,
+                    fillLayer,
+                    fillSortingLayerId,
+                    fillSortingOrder,
+                    fillLocalPosition,
+                    fillLocalRotation,
+                    fillLocalScale,
+                    fillDrawMode,
+                    fillFlipX,
+                    fillFlipY,
+                    nextHealthCheckAt);
+                selectionClone = null;
+                fillObject = null;
+                fillTexture = null;
+                fillSprite = null;
+                fillMaterial = null;
+            }
+
             failure = "";
+            TryLogFillBindingLocked(
+                target,
+                sourceVertexCount,
+                sourceTriangleIndexCount,
+                fillBounds);
             return true;
         }
         catch (TargetInvocationException ex)
@@ -627,75 +748,345 @@ internal static class RuntimeSeatHighlightService
         }
         finally
         {
-            if (clone != null)
+            if (fillObject != null)
             {
-                SafeDestroyClone(clone);
+                SafeDestroyGameObject(fillObject);
             }
             if (selectionClone != null)
             {
-                SafeDestroyClone(selectionClone);
+                SafeDestroyGameObject(selectionClone);
+            }
+            if (fillSprite != null)
+            {
+                SafeDestroySprite(fillSprite);
+            }
+            if (fillMaterial != null)
+            {
+                SafeDestroyMaterial(fillMaterial);
+            }
+            if (fillTexture != null)
+            {
+                SafeDestroyTexture(fillTexture);
             }
         }
     }
 
-    private static bool TryReadHighlightedVisual(
-        object dictionary,
-        object sourceSprite,
-        out object highlightedVisual,
+    private static GameObject CreateOwnedSpriteRendererGameObject(string name)
+    {
+        var componentTypes = new Il2CppReferenceArray<Il2CppSystem.Type>(1);
+        componentTypes[0] = Il2CppType.From(typeof(SpriteRenderer));
+        return new GameObject(name, componentTypes);
+    }
+
+    private static bool TryCreateOwnedWhiteSprite(
+        Sprite sourceSprite,
+        out Sprite ownedSprite,
+        out Texture2D ownedTexture,
+        out int sourceVertexCount,
+        out int sourceTriangleIndexCount,
         out string failure)
     {
-        highlightedVisual = new object();
-        var dictionaryType = dictionary.GetType();
-        var spriteType = sourceSprite.GetType();
-        var containsKey = FindDeclaredInstanceMethod(dictionaryType, "ContainsKey", spriteType);
-        var getItem = FindDeclaredInstanceMethod(dictionaryType, "get_Item", spriteType);
-        if (containsKey == null
-            || containsKey.ReturnType != typeof(bool)
-            || getItem == null
-            || getItem.ReturnType.FullName != "UnityEngine.Sprite")
+        ownedSprite = null!;
+        ownedTexture = null!;
+        sourceVertexCount = 0;
+        sourceTriangleIndexCount = 0;
+        Texture2D? candidateTexture = null;
+        Sprite? candidateSprite = null;
+        try
         {
-            failure = "highlighted visual dictionary does not match Dictionary<Sprite, Sprite>";
+            var sourceVertices = sourceSprite.vertices;
+            var sourceTriangles = sourceSprite.triangles;
+            if (!TryValidateSpriteGeometry(
+                    sourceVertices,
+                    sourceTriangles,
+                    out failure))
+            {
+                return false;
+            }
+
+            var sourceBounds = sourceSprite.bounds;
+            if (!IsFinite(sourceBounds.center)
+                || !IsFinite(sourceBounds.size)
+                || !HasNonZeroSize(sourceBounds.size))
+            {
+                failure = "customer desk sprite has invalid local bounds";
+                return false;
+            }
+
+            var sourceRect = sourceSprite.rect;
+            var sourcePivot = sourceSprite.pivot;
+            var sourcePixelsPerUnit = sourceSprite.pixelsPerUnit;
+            var sourceTexture = sourceSprite.texture;
+            const int whiteWidth = OwnedFillTextureSize;
+            const int whiteHeight = OwnedFillTextureSize;
+            if (!IsFinite(sourceRect.width)
+                || !IsFinite(sourceRect.height)
+                || sourceRect.width <= 0f
+                || sourceRect.height <= 0f
+                || !IsFinite(sourcePivot.x)
+                || !IsFinite(sourcePivot.y)
+                || !IsFinite(sourcePixelsPerUnit)
+                || sourcePixelsPerUnit <= 0f
+                || sourceTexture == null
+                || !IsLiveUnityObject(sourceTexture))
+            {
+                failure = "customer desk sprite has invalid geometry metadata";
+                return false;
+            }
+
+            var scale = Math.Min(
+                whiteWidth / sourceRect.width,
+                whiteHeight / sourceRect.height);
+            var offset = new Vector2(
+                (whiteWidth - (sourceRect.width * scale)) * 0.5f,
+                (whiteHeight - (sourceRect.height * scale)) * 0.5f);
+            var destinationPixelsPerUnit = sourcePixelsPerUnit * scale;
+            var destinationPivotPixels = new Vector2(
+                offset.x + (sourcePivot.x * scale),
+                offset.y + (sourcePivot.y * scale));
+            var destinationPivot = new Vector2(
+                destinationPivotPixels.x / whiteWidth,
+                destinationPivotPixels.y / whiteHeight);
+            if (!IsFinite(scale)
+                || scale <= 0f
+                || !IsFinite(destinationPixelsPerUnit)
+                || destinationPixelsPerUnit <= 0f
+                || !IsFinite(destinationPivot.x)
+                || !IsFinite(destinationPivot.y))
+            {
+                failure = "white seat sprite coordinate mapping is invalid";
+                return false;
+            }
+
+            var destinationVertices = new Il2CppStructArray<Vector2>(sourceVertices.Length);
+            const float pixelTolerance = 0.001f;
+            for (var index = 0; index < sourceVertices.Length; index += 1)
+            {
+                var sourceVertex = sourceVertices[index];
+                var mappedX = offset.x
+                    + ((sourceVertex.x * sourcePixelsPerUnit + sourcePivot.x) * scale);
+                var mappedY = offset.y
+                    + ((sourceVertex.y * sourcePixelsPerUnit + sourcePivot.y) * scale);
+                if (!IsFinite(mappedX)
+                    || !IsFinite(mappedY)
+                    || mappedX < -pixelTolerance
+                    || mappedY < -pixelTolerance
+                    || mappedX > whiteWidth + pixelTolerance
+                    || mappedY > whiteHeight + pixelTolerance)
+                {
+                    failure = "customer desk sprite geometry maps outside the Mod-owned white texture rect";
+                    return false;
+                }
+                destinationVertices[index] = new Vector2(
+                    Math.Clamp(mappedX, 0f, whiteWidth),
+                    Math.Clamp(mappedY, 0f, whiteHeight));
+            }
+
+            candidateTexture = new Texture2D(
+                OwnedFillTextureSize,
+                OwnedFillTextureSize,
+                TextureFormat.RGBA32,
+                false,
+                false);
+            if (candidateTexture == null
+                || candidateTexture.GetType().FullName != "UnityEngine.Texture2D"
+                || !IsLiveUnityObject(candidateTexture)
+                || candidateTexture.width != OwnedFillTextureSize
+                || candidateTexture.height != OwnedFillTextureSize
+                || candidateTexture.format != TextureFormat.RGBA32
+                || candidateTexture.mipmapCount != 1
+                || !candidateTexture.isReadable)
+            {
+                failure = "failed to create the exact Mod-owned white seat texture";
+                return false;
+            }
+            candidateTexture.name = OwnedFillTextureName;
+
+            var whitePixels = new Il2CppStructArray<Color32>(
+                OwnedFillTextureSize * OwnedFillTextureSize);
+            var opaqueWhite = new Color32(byte.MaxValue, byte.MaxValue, byte.MaxValue, byte.MaxValue);
+            for (var index = 0; index < whitePixels.Length; index += 1)
+            {
+                whitePixels[index] = opaqueWhite;
+            }
+            candidateTexture.SetPixels32(whitePixels);
+            candidateTexture.Apply(updateMipmaps: false, makeNoLongerReadable: false);
+            if (!IsLiveUnityObject(candidateTexture)
+                || candidateTexture.width != OwnedFillTextureSize
+                || candidateTexture.height != OwnedFillTextureSize
+                || candidateTexture.format != TextureFormat.RGBA32
+                || candidateTexture.mipmapCount != 1
+                || !candidateTexture.isReadable)
+            {
+                failure = "Mod-owned white seat texture changed identity or format after upload";
+                return false;
+            }
+
+            candidateSprite = Sprite.Create(
+                candidateTexture,
+                new Rect(0f, 0f, whiteWidth, whiteHeight),
+                destinationPivot,
+                destinationPixelsPerUnit,
+                0u,
+                SpriteMeshType.Tight);
+            if (candidateSprite == null || !IsLiveUnityObject(candidateSprite))
+            {
+                failure = "failed to create the Mod-owned white seat sprite";
+                return false;
+            }
+            candidateSprite.name = OwnedFillSpriteName;
+            candidateSprite.OverrideGeometry(destinationVertices, sourceTriangles);
+
+            var spriteTexture = candidateSprite.texture;
+            if (spriteTexture == null
+                || !IsLiveUnityObject(spriteTexture)
+                || !TryReadSameNativeObject(
+                    candidateTexture,
+                    spriteTexture,
+                    out var sameOwnedTexture)
+                || !sameOwnedTexture
+                || !TryReadSameNativeObject(
+                    sourceTexture,
+                    candidateTexture,
+                    out var sharesSourceTexture)
+                || sharesSourceTexture
+                || !RuntimeReflectionUtility.TryReadNativeObjectPointer(
+                    sourceSprite,
+                    out var sourceSpritePointer)
+                || !RuntimeReflectionUtility.TryReadNativeObjectPointer(
+                    candidateSprite,
+                    out var candidateSpritePointer)
+                || sourceSpritePointer == candidateSpritePointer)
+            {
+                failure = "Mod-owned seat sprite does not use the exact owned white texture or has invalid identity";
+                return false;
+            }
+
+            var candidateVertices = candidateSprite.vertices;
+            var candidateTriangles = candidateSprite.triangles;
+            if (!HasSameSpriteGeometry(
+                    sourceVertices,
+                    sourceTriangles,
+                    candidateVertices,
+                    candidateTriangles)
+                || !Approximately(candidateSprite.bounds, sourceBounds))
+            {
+                failure = "Mod-owned white seat sprite did not retain the exact source geometry";
+                return false;
+            }
+
+            ownedSprite = candidateSprite;
+            ownedTexture = candidateTexture;
+            sourceVertexCount = sourceVertices.Length;
+            sourceTriangleIndexCount = sourceTriangles.Length;
+            candidateSprite = null;
+            candidateTexture = null;
+            failure = "";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            failure = $"white seat sprite creation failed: {NormalizeStatus(ex.GetBaseException().Message)}";
+            return false;
+        }
+        finally
+        {
+            if (candidateSprite != null)
+            {
+                SafeDestroySprite(candidateSprite);
+            }
+            if (candidateTexture != null)
+            {
+                SafeDestroyTexture(candidateTexture);
+            }
+        }
+    }
+
+    private static bool TryValidateSpriteGeometry(
+        Il2CppStructArray<Vector2> vertices,
+        Il2CppStructArray<ushort> triangles,
+        out string failure)
+    {
+        if (vertices == null || vertices.Length < 3)
+        {
+            failure = "customer desk sprite has fewer than three geometry vertices";
+            return false;
+        }
+        if (vertices.Length > MaxSpriteVertexCount)
+        {
+            failure = $"customer desk sprite exceeds the {MaxSpriteVertexCount} vertex safety limit";
+            return false;
+        }
+        if (triangles == null
+            || triangles.Length < 3
+            || triangles.Length % 3 != 0
+            || triangles.Length > MaxSpriteTriangleIndexCount)
+        {
+            failure = "customer desk sprite has an invalid triangle index array";
             return false;
         }
 
-        if (containsKey.Invoke(dictionary, new[] { sourceSprite }) is not true)
+        for (var index = 0; index < vertices.Length; index += 1)
         {
-            failure = "customer desk sprite has no highlighted visual";
-            return false;
+            var vertex = vertices[index];
+            if (!IsFinite(vertex.x) || !IsFinite(vertex.y))
+            {
+                failure = "customer desk sprite contains a non-finite geometry vertex";
+                return false;
+            }
+        }
+        for (var index = 0; index < triangles.Length; index += 1)
+        {
+            if (triangles[index] >= vertices.Length)
+            {
+                failure = "customer desk sprite triangle index exceeds the vertex array";
+                return false;
+            }
         }
 
-        var visual = getItem.Invoke(dictionary, new[] { sourceSprite });
-        if (visual == null
-            || visual.GetType().FullName != "UnityEngine.Sprite"
-            || !IsLiveUnityObject(visual))
-        {
-            failure = "highlighted customer desk sprite is unavailable";
-            return false;
-        }
-
-        highlightedVisual = visual;
         failure = "";
+        return true;
+    }
+
+    private static bool HasSameSpriteGeometry(
+        Il2CppStructArray<Vector2> sourceVertices,
+        Il2CppStructArray<ushort> sourceTriangles,
+        Il2CppStructArray<Vector2> candidateVertices,
+        Il2CppStructArray<ushort> candidateTriangles)
+    {
+        if (candidateVertices == null
+            || candidateTriangles == null
+            || sourceVertices.Length != candidateVertices.Length
+            || sourceTriangles.Length != candidateTriangles.Length)
+        {
+            return false;
+        }
+        for (var index = 0; index < sourceVertices.Length; index += 1)
+        {
+            if (!Approximately(sourceVertices[index], candidateVertices[index])) return false;
+        }
+        for (var index = 0; index < sourceTriangles.Length; index += 1)
+        {
+            if (sourceTriangles[index] != candidateTriangles[index]) return false;
+        }
         return true;
     }
 
     private static bool TryBindSelectionRenderers(
         object selection,
-        MethodInfo getPrimaryDefinition,
         MethodInfo getAllDefinition,
         Transform selectionRoot,
         Sprite sourceSprite,
-        out List<SpriteRenderer> renderers,
-        out SpriteRenderer primary,
+        out SpriteRenderer outline,
+        out SpriteRenderer regional,
         out string failure)
     {
-        renderers = new List<SpriteRenderer>();
-        primary = null!;
-        var getPrimary = getPrimaryDefinition.MakeGenericMethod(typeof(SpriteRenderer));
+        outline = null!;
+        regional = null!;
         var getAll = getAllDefinition.MakeGenericMethod(typeof(SpriteRenderer));
-        if (getPrimary.ReturnType != typeof(SpriteRenderer)
-            || !typeof(Il2CppArrayBase<SpriteRenderer>).IsAssignableFrom(getAll.ReturnType))
+        if (!typeof(Il2CppArrayBase<SpriteRenderer>).IsAssignableFrom(getAll.ReturnType))
         {
-            failure = "UIElementCluster SpriteRenderer accessors have unexpected closed return types";
+            failure = "UIElementCluster SpriteRenderer array accessor has an unexpected closed return type";
             return false;
         }
 
@@ -704,9 +1095,9 @@ internal static class RuntimeSeatHighlightService
             failure = "cloned selection has no SpriteRenderer array";
             return false;
         }
-        if (sourceRenderers.Length <= 0 || sourceRenderers.Length > MaxSelectionRendererCount)
+        if (sourceRenderers.Length != 2)
         {
-            failure = $"cloned selection SpriteRenderer count is outside 1..{MaxSelectionRendererCount}";
+            failure = $"cloned selection must contain exactly two SpriteRenderers, got {sourceRenderers.Length}";
             return false;
         }
 
@@ -732,254 +1123,482 @@ internal static class RuntimeSeatHighlightService
                 return false;
             }
 
+            var material = renderer.sharedMaterial;
+            var shader = material?.shader;
+            if (material == null
+                || shader == null
+                || !IsLiveUnityObject(material)
+                || !IsLiveUnityObject(shader))
+            {
+                failure = $"cloned selection SpriteRenderer {index} has no live material shader";
+                return false;
+            }
+
+            if (string.Equals(shader.name, OutlineShaderName, StringComparison.Ordinal))
+            {
+                if (outline != null)
+                {
+                    failure = $"cloned selection has duplicate {OutlineShaderName} renderers";
+                    return false;
+                }
+                outline = renderer;
+            }
+            else if (string.Equals(shader.name, RegionalFillShaderName, StringComparison.Ordinal))
+            {
+                if (regional != null)
+                {
+                    failure = $"cloned selection has duplicate {RegionalFillShaderName} renderers";
+                    return false;
+                }
+                regional = renderer;
+            }
+            else
+            {
+                failure = $"cloned selection renderer shader is not one of the two verified seat shaders: {NormalizeStatus(shader.name)}";
+                return false;
+            }
+
             renderer.sprite = sourceSprite;
-            renderers.Add(renderer);
         }
 
-        if (getPrimary.Invoke(selection, new object?[] { 0 }) is not SpriteRenderer primaryRenderer
-            || !IsLiveUnityObject(primaryRenderer)
-            || !RuntimeReflectionUtility.TryReadNativeObjectPointer(primaryRenderer, out var primaryPointer)
-            || !identities.Contains(primaryPointer))
+        if (outline == null || regional == null)
         {
-            failure = "cloned selection primary SpriteRenderer is unavailable or outside its renderer array";
+            failure = "cloned selection does not contain exactly one OutlineBlinkOnly and one RegionalHSVFillter renderer";
             return false;
         }
 
-        primary = primaryRenderer;
         failure = "";
         return true;
     }
 
-    private static bool TryReadExactCount(object? collection, out int count)
-    {
-        count = 0;
-        if (collection == null) return false;
-        var getter = FindDeclaredInstanceMethod(collection.GetType(), "get_Count");
-        if (getter == null || getter.ReturnType != typeof(int)) return false;
-        var rawCount = getter.Invoke(collection, Array.Empty<object?>());
-        if (rawCount is not int value || value < 0) return false;
-        count = value;
-        return true;
-    }
-
-    private static bool TryInspectVisualsLocked(
-        out int selectionRendererCount,
-        out int renderableSelectionRendererCount,
-        out int workerCount,
-        out int renderableWorkerCount,
+    private static bool TryApplyPulseLocked(
+        ActiveSeatVisual active,
+        RuntimeTargetHighlightPalette palette,
+        float realtimeSinceStartup,
         out string failure)
     {
+        if (!IsLiveUnityObject(active.FillRenderer))
+        {
+            failure = "active seat fill renderer is unavailable";
+            return false;
+        }
+
         try
         {
-            return TryInspectVisualsCoreLocked(
-                out selectionRendererCount,
-                out renderableSelectionRendererCount,
-                out workerCount,
-                out renderableWorkerCount,
+            active.FillRenderer.color = RuntimeTargetHighlightStyle.BuildSeatFillPulseColor(
+                active.Claims,
+                palette,
+                realtimeSinceStartup);
+            failure = "";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            failure = $"seat fill pulse failed: {NormalizeStatus(ex.GetBaseException().Message)}";
+            return false;
+        }
+    }
+
+    private static bool TryInspectActiveVisualLocked(
+        ActiveSeatVisual active,
+        out bool containsDestroyedObject,
+        out string failure)
+    {
+        containsDestroyedObject = false;
+        try
+        {
+            if (!IsLiveUnityObject(active.SelectionClone)
+                || !IsLiveUnityObject(active.OutlineRenderer)
+                || !IsLiveUnityObject(active.RegionalRenderer)
+                || !IsLiveUnityObject(active.FillObject)
+                || !IsLiveUnityObject(active.FillRenderer)
+                || !IsLiveUnityObject(active.FillMaterial)
+                || !IsLiveUnityObject(active.SourceSprite)
+                || !IsLiveUnityObject(active.FillSprite)
+                || !IsLiveUnityObject(active.FillTexture))
+            {
+                containsDestroyedObject = true;
+                failure = "active seat fill contains a destroyed Unity object";
+                return false;
+            }
+            return TryValidateBoundFill(
+                active.SelectionClone,
+                active.OutlineRenderer,
+                active.RegionalRenderer,
+                active.FillObject,
+                active.FillRenderer,
+                active.FillMaterial,
+                active.SourceSprite,
+                active.FillSprite,
+                active.FillTexture,
+                active.RootPosition,
+                active.FillLayer,
+                active.FillSortingLayerId,
+                active.FillSortingOrder,
+                active.FillLocalPosition,
+                active.FillLocalRotation,
+                active.FillLocalScale,
+                active.FillDrawMode,
+                active.FillFlipX,
+                active.FillFlipY,
+                out _,
                 out failure);
         }
         catch (Exception ex)
         {
-            selectionRendererCount = 0;
-            renderableSelectionRendererCount = 0;
-            workerCount = 0;
-            renderableWorkerCount = 0;
-            failure = $"seat visual inspection failed: {NormalizeStatus(ex.GetBaseException().Message)}";
+            failure = $"seat fill inspection failed: {NormalizeStatus(ex.GetBaseException().Message)}";
             return false;
         }
     }
 
-    private static bool TryInspectVisualsCoreLocked(
-        out int selectionRendererCount,
-        out int renderableSelectionRendererCount,
-        out int workerCount,
-        out int renderableWorkerCount,
+    private static bool TryValidateBoundFill(
+        GameObject clone,
+        SpriteRenderer outline,
+        SpriteRenderer regional,
+        GameObject fillObject,
+        SpriteRenderer fill,
+        Material ownedMaterial,
+        Sprite sourceSprite,
+        Sprite fillSprite,
+        Texture2D fillTexture,
+        Vector3 expectedRootPosition,
+        int expectedLayer,
+        int expectedSortingLayerId,
+        int expectedSortingOrder,
+        Vector3 expectedLocalPosition,
+        Quaternion expectedLocalRotation,
+        Vector3 expectedLocalScale,
+        SpriteDrawMode expectedDrawMode,
+        bool expectedFlipX,
+        bool expectedFlipY,
+        out Bounds bounds,
         out string failure)
     {
-        selectionRendererCount = 0;
-        renderableSelectionRendererCount = 0;
-        workerCount = 0;
-        renderableWorkerCount = 0;
-        var selectionClone = _activeSelectionClone;
-        var selectionRenderers = _activeSelectionRenderers;
-        var selectionPrimary = _activeSelectionPrimary;
-        var sourceSprite = _activeSelectionSprite;
-        var clone = _activeStencilClone;
-        var workers = _activeWorkers;
-        var highlightedVisual = _activeVisual;
-        if (selectionClone == null
-            || selectionRenderers == null
-            || selectionPrimary == null
-            || sourceSprite == null
-            || clone == null
-            || workers == null
-            || highlightedVisual == null)
+        bounds = default;
+        if (!IsLiveUnityObject(clone)
+            || !IsLiveUnityObject(outline)
+            || !IsLiveUnityObject(regional)
+            || !IsLiveUnityObject(fillObject)
+            || !IsLiveUnityObject(fill)
+            || !IsLiveUnityObject(ownedMaterial)
+            || !IsLiveUnityObject(sourceSprite)
+            || !IsLiveUnityObject(fillSprite)
+            || !IsLiveUnityObject(fillTexture))
         {
-            failure = "active seat visual state is incomplete";
+            failure = "active seat fill contains a destroyed Unity object";
             return false;
-        }
-        if (!selectionClone.activeInHierarchy)
-        {
-            failure = "cloned selection visual is inactive in the scene hierarchy";
-            return true;
         }
         if (!clone.activeInHierarchy)
         {
-            failure = "cloned stencil is inactive in the scene hierarchy";
-            return true;
-        }
-        if (!TryReadExactCount(workers, out workerCount) || workerCount <= 0)
-        {
-            failure = "cloned stencil has no SpriteRenderer workers";
+            failure = "cloned selection fill is inactive in the scene hierarchy";
             return false;
         }
-        selectionRendererCount = selectionRenderers.Count;
-        if (selectionRendererCount <= 0 || selectionRendererCount > MaxSelectionRendererCount)
+        if (clone.transform.parent != null)
         {
-            failure = "cloned selection has an invalid SpriteRenderer count";
+            failure = "cloned selection fill was reparented away from the scene root";
             return false;
         }
-        if (!IsLiveUnityObject(sourceSprite)
-            || !RuntimeReflectionUtility.TryReadNativeObjectPointer(sourceSprite, out var sourceSpritePointer))
+        if (!Approximately(clone.transform.position, expectedRootPosition))
         {
-            failure = "customer desk source sprite has no native identity";
+            failure = "cloned selection fill moved away from the target desk";
             return false;
         }
-        if (!IsLiveUnityObject(highlightedVisual)
-            || !RuntimeReflectionUtility.TryReadNativeObjectPointer(highlightedVisual, out var highlightedVisualPointer))
+        if (!TryValidateDisabledTemplateRenderer(
+                clone,
+                outline,
+                OutlineShaderName,
+                sourceSprite,
+                out failure)
+            || !TryValidateDisabledTemplateRenderer(
+                clone,
+                regional,
+                RegionalFillShaderName,
+                sourceSprite,
+                out failure))
         {
-            failure = "highlighted customer desk sprite has no native identity";
             return false;
         }
 
-        var firstFailure = "cloned selection has no renderable SpriteRenderer";
-        for (var index = 0; index < selectionRendererCount; index += 1)
+        var fillTransform = fill.transform;
+        var regionalTransform = regional.transform;
+        if (fillTransform == null
+            || regionalTransform == null
+            || !IsLiveUnityObject(fillTransform)
+            || !IsLiveUnityObject(regionalTransform)
+            || !TryReadSameNativeObject(fillObject, fill.gameObject, out var fillOwnsComponent)
+            || !fillOwnsComponent
+            || !fillObject.activeInHierarchy
+            || !fill.enabled)
         {
-            var renderer = selectionRenderers[index];
-            if (renderer == null || !IsLiveUnityObject(renderer))
-            {
-                firstFailure = $"selection renderer {index} is unavailable";
-                continue;
-            }
-            var rendererSprite = renderer.sprite;
-            if (rendererSprite == null
-                || !IsLiveUnityObject(rendererSprite)
-                || !RuntimeReflectionUtility.TryReadNativeObjectPointer(rendererSprite, out var rendererSpritePointer)
-                || rendererSpritePointer != sourceSpritePointer)
-            {
-                firstFailure = $"selection renderer {index} has not bound the customer desk sprite";
-                continue;
-            }
-            var rendererObject = renderer.gameObject;
-            var bounds = renderer.bounds;
-            if (rendererObject != null
-                && IsLiveUnityObject(rendererObject)
-                && rendererObject.activeInHierarchy
-                && renderer.enabled
-                && IsFinite(bounds.center)
-                && IsFinite(bounds.size)
-                && HasNonZeroSize(bounds.size))
-            {
-                renderableSelectionRendererCount += 1;
-            }
-            else
-            {
-                firstFailure = $"selection renderer {index} is not currently renderable";
-            }
-        }
-        if (renderableSelectionRendererCount <= 0)
-        {
-            failure = firstFailure;
-            return true;
-        }
-        if (!IsLiveUnityObject(selectionPrimary))
-        {
-            failure = "cloned selection primary renderer is unavailable";
+            failure = "Mod-owned seat fill renderer is not active on its exact object";
             return false;
         }
-        var primaryObject = selectionPrimary.gameObject;
-        var primaryBounds = selectionPrimary.bounds;
-        if (primaryObject == null
-            || !IsLiveUnityObject(primaryObject)
-            || !primaryObject.activeInHierarchy
-            || !selectionPrimary.enabled
-            || !IsFinite(primaryBounds.center)
-            || !IsFinite(primaryBounds.size)
-            || !HasNonZeroSize(primaryBounds.size))
+        if (!TryReadSameParent(fillTransform.parent, regionalTransform.parent, out var sameParent)
+            || !sameParent
+            || !Approximately(fillTransform.localPosition, regionalTransform.localPosition)
+            || !Approximately(fillTransform.localRotation, regionalTransform.localRotation)
+            || !Approximately(fillTransform.localScale, regionalTransform.localScale)
+            || !Approximately(fillTransform.localPosition, expectedLocalPosition)
+            || !Approximately(fillTransform.localRotation, expectedLocalRotation)
+            || !Approximately(fillTransform.localScale, expectedLocalScale))
         {
-            failure = "cloned selection primary renderer is not currently renderable";
-            return true;
+            failure = "Mod-owned seat fill no longer matches the RegionalHSVFillter parent or local transform";
+            return false;
         }
-        var primaryBoundsCenter = primaryBounds.center;
-        if (!IsFinite(primaryBoundsCenter) || !Approximately(primaryBoundsCenter, _activeAnchor))
+        if (fillObject.layer != expectedLayer
+            || fill.sortingLayerID != expectedSortingLayerId
+            || fill.sortingOrder != expectedSortingOrder
+            || fill.drawMode != expectedDrawMode
+            || fill.flipX != expectedFlipX
+            || fill.flipY != expectedFlipY
+            || fillObject.layer != regional.gameObject.layer
+            || fill.sortingLayerID != regional.sortingLayerID
+            || fill.sortingOrder != regional.sortingOrder
+            || fill.drawMode != regional.drawMode
+            || fill.flipX != regional.flipX
+            || fill.flipY != regional.flipY)
         {
-            failure = "cloned selection primary renderer moved away from the painter anchor";
-            return true;
+            failure = "Mod-owned seat fill no longer matches the RegionalHSVFillter render settings";
+            return false;
         }
 
-        firstFailure = "cloned stencil has no renderable SpriteRenderer workers";
-        SpriteRenderer? firstRenderableWorker = null;
-        for (var index = 0; index < workerCount; index += 1)
+        var rendererSprite = fill.sprite;
+        if (rendererSprite == null
+            || !IsLiveUnityObject(rendererSprite)
+            || !TryReadSameNativeObject(fillSprite, rendererSprite, out var sameFillSprite)
+            || !sameFillSprite
+            || !RuntimeReflectionUtility.TryReadNativeObjectPointer(
+                sourceSprite,
+                out var sourceSpritePointer)
+            || !RuntimeReflectionUtility.TryReadNativeObjectPointer(
+                fillSprite,
+                out var fillSpritePointer)
+            || sourceSpritePointer == fillSpritePointer)
         {
-            try
+            failure = "Mod-owned seat fill no longer binds its distinct white sprite";
+            return false;
+        }
+        var rendererTexture = fillSprite.texture;
+        if (rendererTexture == null
+            || !IsLiveUnityObject(rendererTexture)
+            || fillTexture.GetType().FullName != "UnityEngine.Texture2D"
+            || fillTexture.width != OwnedFillTextureSize
+            || fillTexture.height != OwnedFillTextureSize
+            || fillTexture.format != TextureFormat.RGBA32
+            || fillTexture.mipmapCount != 1
+            || !fillTexture.isReadable
+            || !TryReadSameNativeObject(fillTexture, rendererTexture, out var sameFillTexture)
+            || !sameFillTexture
+            || !Approximately(fillSprite.bounds, sourceSprite.bounds))
+        {
+            failure = "Mod-owned seat fill sprite no longer retains its exact white texture and source bounds";
+            return false;
+        }
+        var sourceTexture = sourceSprite.texture;
+        if (sourceTexture == null
+            || !IsLiveUnityObject(sourceTexture)
+            || !TryReadSameNativeObject(sourceTexture, fillTexture, out var sharesSourceTexture)
+            || sharesSourceTexture)
+        {
+            failure = "Mod-owned seat fill texture is unavailable or aliases the source desk texture";
+            return false;
+        }
+        var sourceVertices = sourceSprite.vertices;
+        var sourceTriangles = sourceSprite.triangles;
+        var fillVertices = fillSprite.vertices;
+        var fillTriangles = fillSprite.triangles;
+        if (!TryValidateSpriteGeometry(sourceVertices, sourceTriangles, out failure)
+            || !HasSameSpriteGeometry(
+                sourceVertices,
+                sourceTriangles,
+                fillVertices,
+                fillTriangles))
+        {
+            if (string.IsNullOrEmpty(failure))
             {
-                var renderer = workers[index];
-                if (renderer == null || !IsLiveUnityObject(renderer))
-                {
-                    firstFailure = $"stencil worker {index} is unavailable";
-                    continue;
-                }
-
-                var rendererSprite = renderer.sprite;
-                if (rendererSprite == null
-                    || !IsLiveUnityObject(rendererSprite)
-                    || !RuntimeReflectionUtility.TryReadNativeObjectPointer(rendererSprite, out var rendererSpritePointer)
-                    || rendererSpritePointer != highlightedVisualPointer)
-                {
-                    firstFailure = $"stencil worker {index} has not bound the highlighted sprite";
-                    continue;
-                }
-
-                var rendererObject = renderer.gameObject;
-                if (rendererObject == null
-                    || !IsLiveUnityObject(rendererObject)
-                    || !rendererObject.activeInHierarchy)
-                {
-                    firstFailure = $"stencil worker {index} is inactive in the scene hierarchy";
-                    continue;
-                }
-
-                var size = renderer.bounds.size;
-                if (renderer.enabled
-                    && IsFinite(size)
-                    && (Math.Abs(size.x) > float.Epsilon
-                        || Math.Abs(size.y) > float.Epsilon
-                        || Math.Abs(size.z) > float.Epsilon))
-                {
-                    renderableWorkerCount += 1;
-                    firstRenderableWorker ??= renderer;
-                }
-                else
-                {
-                    firstFailure = $"stencil worker {index} is not currently renderable";
-                }
+                failure = "Mod-owned white seat sprite geometry drifted from the customer desk sprite";
             }
-            catch (Exception ex)
-            {
-                firstFailure = $"stencil worker {index} inspection failed: {NormalizeStatus(ex.GetBaseException().Message)}";
-            }
+            return false;
         }
 
-        if (renderableWorkerCount > 0 && firstRenderableWorker != null)
+        var rendererMaterial = fill.sharedMaterial;
+        if (rendererMaterial == null
+            || !IsLiveUnityObject(rendererMaterial)
+            || !TryReadSameNativeObject(ownedMaterial, rendererMaterial, out var sameMaterial)
+            || !sameMaterial)
         {
-            _renderDiagnostics = $"selection[{DescribeRenderer(selectionPrimary)}]|stencil[{DescribeRenderer(firstRenderableWorker)}]";
-            failure = "";
+            failure = "Mod-owned seat fill no longer binds its instantiated material";
+            return false;
         }
-        else
+        var ownedShader = ownedMaterial.shader;
+        if (ownedShader == null
+            || !IsLiveUnityObject(ownedShader)
+            || !string.Equals(ownedShader.name, StandardSpriteShaderName, StringComparison.Ordinal))
         {
-            failure = firstFailure;
+            failure = $"Mod-owned seat fill no longer retains the exact {StandardSpriteShaderName} default shader";
+            return false;
         }
+
+        bounds = fill.bounds;
+        return TryValidateRenderableBounds(bounds, out failure);
+    }
+
+    private static bool TryValidateDisabledTemplateRenderer(
+        GameObject clone,
+        SpriteRenderer renderer,
+        string expectedShaderName,
+        Sprite sourceSprite,
+        out string failure)
+    {
+        var rendererTransform = renderer.transform;
+        if (rendererTransform == null
+            || !IsLiveUnityObject(rendererTransform)
+            || !TryReadSameNativeObject(clone.transform, rendererTransform, out var sameTransform)
+            || (!sameTransform && !rendererTransform.IsChildOf(clone.transform)))
+        {
+            failure = $"private {expectedShaderName} template left the cloned selection hierarchy";
+            return false;
+        }
+        if (renderer.enabled)
+        {
+            failure = $"private {expectedShaderName} template was unexpectedly re-enabled";
+            return false;
+        }
+
+        var rendererSprite = renderer.sprite;
+        var material = renderer.sharedMaterial;
+        var shader = material?.shader;
+        if (rendererSprite == null
+            || material == null
+            || shader == null
+            || !IsLiveUnityObject(rendererSprite)
+            || !IsLiveUnityObject(material)
+            || !IsLiveUnityObject(shader)
+            || !TryReadSameNativeObject(sourceSprite, rendererSprite, out var sameSprite)
+            || !sameSprite
+            || !string.Equals(shader.name, expectedShaderName, StringComparison.Ordinal))
+        {
+            failure = $"private {expectedShaderName} template identity changed";
+            return false;
+        }
+
+        failure = "";
         return true;
+    }
+
+    private static bool TryReadSameParent(Transform? left, Transform? right, out bool same)
+    {
+        if (left == null || right == null)
+        {
+            same = left == null && right == null;
+            return true;
+        }
+        if (!IsLiveUnityObject(left) || !IsLiveUnityObject(right))
+        {
+            same = false;
+            return false;
+        }
+        return TryReadSameNativeObject(left, right, out same);
+    }
+
+    private static bool TryReadNativeClassName(Component component, out string fullName)
+    {
+        fullName = "";
+        if (!RuntimeReflectionUtility.TryReadNativeObjectPointer(component, out var pointer))
+        {
+            return false;
+        }
+        var classPointer = IL2CPP.il2cpp_object_get_class(pointer);
+        if (classPointer == IntPtr.Zero) return false;
+        var className = IL2CPP.il2cpp_class_get_name_(classPointer);
+        var classNamespace = IL2CPP.il2cpp_class_get_namespace_(classPointer);
+        if (string.IsNullOrEmpty(className)) return false;
+        fullName = string.IsNullOrEmpty(classNamespace)
+            ? className
+            : classNamespace + "." + className;
+        return true;
+    }
+
+    private static bool TryValidateRenderableBounds(Bounds bounds, out string failure)
+    {
+        if (!IsFinite(bounds.center)
+            || !IsFinite(bounds.size)
+            || !HasNonZeroSize(bounds.size))
+        {
+            failure = "Mod-owned seat fill renderer has invalid world bounds";
+            return false;
+        }
+
+        failure = "";
+        return true;
+    }
+
+    private static void BeginBindingLogTargetLocked(SeatHighlightClaim target)
+    {
+        if (_bindingLogBusinessGeneration != target.SessionGeneration)
+        {
+            _bindingLogBusinessGeneration = target.SessionGeneration;
+            _bindingLogCount = 0;
+            _failureLogCount = 0;
+            BindingLogKeys.Clear();
+            FailureLogKeys.Clear();
+        }
+    }
+
+    private static void TryLogFillBindingLocked(
+        SeatHighlightClaim target,
+        int sourceVertexCount,
+        int sourceTriangleIndexCount,
+        Bounds fillBounds)
+    {
+        var key = $"{target.TargetSetGeneration}:{target.DeskCode}:{target.Claims}";
+        if (!BindingLogKeys.Add(key)) return;
+        if (_bindingLogCount >= MaxBindingLogsPerBusiness) return;
+        _bindingLogCount += 1;
+
+        var log = _log;
+        if (log == null) return;
+        try
+        {
+            log.LogInfo(
+                $"Runtime seat highlight fill bound: businessGeneration={target.SessionGeneration}; targetGeneration={target.TargetSetGeneration}; desk={target.DeskCode}; claims={target.Claims}; createTexture={OwnedFillTextureSize}x{OwnedFillTextureSize}/{TextureFormat.RGBA32}/mips:1/readable:True; createMesh={OwnedFillMeshTypeName}; geometry={sourceVertexCount}v/{sourceTriangleIndexCount}i; bounds={FormatVector(fillBounds.center)}/{FormatVector(fillBounds.size)}");
+        }
+        catch
+        {
+            // Bounded evidence must never affect the target visual or game loop.
+        }
+    }
+
+    private static void TryLogFailureLocked(
+        SeatHighlightClaim target,
+        string phase,
+        string failure)
+    {
+        if (_bindingLogBusinessGeneration != target.SessionGeneration)
+        {
+            _bindingLogBusinessGeneration = target.SessionGeneration;
+            _bindingLogCount = 0;
+            _failureLogCount = 0;
+            BindingLogKeys.Clear();
+            FailureLogKeys.Clear();
+        }
+
+        var normalizedFailure = NormalizeStatus(failure);
+        var key = $"{target.TargetSetGeneration}:{target.DeskCode}:{target.Claims}:{phase}:{normalizedFailure}";
+        if (_failureLogCount >= MaxFailureLogsPerBusiness || !FailureLogKeys.Add(key)) return;
+        _failureLogCount += 1;
+
+        var log = _log;
+        if (log == null) return;
+        try
+        {
+            log.LogInfo(
+                $"Runtime seat highlight fill failed: businessGeneration={target.SessionGeneration}; targetGeneration={target.TargetSetGeneration}; desk={target.DeskCode}; claims={target.Claims}; phase={phase}; createTexture={OwnedFillTextureSize}x{OwnedFillTextureSize}/{TextureFormat.RGBA32}/mips:1/readable:True; createMesh={OwnedFillMeshTypeName}; failure={normalizedFailure}");
+        }
+        catch
+        {
+            // Bounded diagnostics must never affect the target visual or game loop.
+        }
     }
 
     private static PropertyInfo? FindDeclaredStaticProperty(Type type, string name)
@@ -1012,20 +1631,6 @@ internal static class RuntimeSeatHighlightService
                 BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)
             .Where(method => method.Name == name
                 && !method.IsGenericMethod
-                && ParametersMatch(method.GetParameters(), parameterTypes))
-            .ToArray();
-        return matches.Length == 1 ? matches[0] : null;
-    }
-
-    private static MethodInfo? FindDeclaredGenericInstanceMethod(Type type, string name, params Type[] parameterTypes)
-    {
-        var matches = type.GetMethods(
-                BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
-            .Where(method => method.Name == name
-                && method.IsGenericMethodDefinition
-                && method.GetGenericArguments().Length == 1
-                && method.ReturnType.IsGenericParameter
-                && method.ReturnType.GenericParameterPosition == 0
                 && ParametersMatch(method.GetParameters(), parameterTypes))
             .ToArray();
         return matches.Length == 1 ? matches[0] : null;
@@ -1096,27 +1701,74 @@ internal static class RuntimeSeatHighlightService
         return true;
     }
 
-    private static void DestroyActiveVisualsLocked()
+    private static Dictionary<int, SeatHighlightClaim> BuildSeatClaims(
+        RuntimeUiTargetSetSnapshot targetSet)
     {
-        var selectionClone = _activeSelectionClone;
-        var clone = _activeStencilClone;
-        AbandonActiveVisualsLocked();
-        if (clone != null)
+        var claims = new Dictionary<int, SeatHighlightClaim>();
+        foreach (var target in targetSet.Targets.Where(target =>
+                     target.SeatHighlightEnabled && target.DeskCode >= 0))
         {
-            SafeDestroyClone(clone);
+            var combined = target.Claim;
+            if (claims.TryGetValue(target.DeskCode, out var existing))
+            {
+                combined |= existing.Claims;
+            }
+            claims[target.DeskCode] = new SeatHighlightClaim(
+                targetSet.Generation,
+                targetSet.SessionGeneration,
+                target.DeskCode,
+                combined);
         }
-        if (selectionClone != null)
+        return claims;
+    }
+
+    private static bool HasSeatHighlightTargets(RuntimeUiTargetSetSnapshot targetSet)
+    {
+        return targetSet.Targets.Any(target => target.SeatHighlightEnabled);
+    }
+
+    private static void ReconcileTargetSetChangeLocked(RuntimeUiTargetSetSnapshot targetSet)
+    {
+        var claims = BuildSeatClaims(targetSet);
+        foreach (var (deskCode, active) in ActiveVisuals.ToList())
         {
-            SafeDestroyClone(selectionClone);
+            if (targetSet.SessionGeneration != active.SessionGeneration
+                || !claims.TryGetValue(deskCode, out var claim))
+            {
+                DestroyActiveVisualLocked(deskCode);
+                NextAttemptAt[deskCode] = 0f;
+                continue;
+            }
+            active.Claims = claim.Claims;
+        }
+
+        foreach (var deskCode in NextAttemptAt.Keys.ToList())
+        {
+            if (!claims.ContainsKey(deskCode)) NextAttemptAt.Remove(deskCode);
+        }
+        foreach (var deskCode in claims.Keys)
+        {
+            if (!ActiveVisuals.ContainsKey(deskCode)) NextAttemptAt[deskCode] = 0f;
         }
     }
 
-    private static void SafeDestroyClone(GameObject clone)
+    private static void DestroyActiveVisualLocked(int deskCode)
+    {
+        if (!ActiveVisuals.Remove(deskCode, out var active)) return;
+        SafeDestroyGameObject(active.FillObject);
+        SafeDestroyGameObject(active.SelectionClone);
+        SafeDestroySprite(active.FillSprite);
+        SafeDestroyMaterial(active.FillMaterial);
+        SafeDestroyTexture(active.FillTexture);
+    }
+
+    private static void SafeDestroyGameObject(GameObject ownedObject)
     {
         try
         {
-            if (!IsLiveUnityObject(clone)) return;
-            UnityEngine.Object.Destroy(clone);
+            if (!IsLiveUnityObject(ownedObject)) return;
+            ownedObject.SetActive(false);
+            UnityEngine.Object.Destroy(ownedObject);
         }
         catch
         {
@@ -1124,27 +1776,58 @@ internal static class RuntimeSeatHighlightService
         }
     }
 
-    private static void AbandonActiveVisualsLocked()
+    private static void SafeDestroyMaterial(Material material)
     {
-        _activeSelectionClone = null;
-        _activeSelectionRenderers = null;
-        _activeSelectionPrimary = null;
-        _activeSelectionSprite = null;
-        _activeStencilClone = null;
-        _activeController = null;
-        _activeWorkers = null;
-        _activeVisual = null;
-        _activeSessionGeneration = 0;
-        _activeDeskCode = -1;
-        _activeWorkerCount = 0;
-        _activeRenderableWorkerCount = 0;
-        _activeSelectionRendererCount = 0;
-        _activeRenderableSelectionRendererCount = 0;
-        _activeCellPosition = default;
-        _activeAnchor = default;
-        _activeVisibilityDeadline = 0f;
-        _nextVisibilityCheckAt = 0f;
-        _renderDiagnostics = "none";
+        try
+        {
+            if (!IsLiveUnityObject(material)) return;
+            UnityEngine.Object.Destroy(material);
+        }
+        catch
+        {
+            Interlocked.Increment(ref _destroyErrors);
+        }
+    }
+
+    private static void SafeDestroySprite(Sprite sprite)
+    {
+        try
+        {
+            if (!IsLiveUnityObject(sprite)) return;
+            UnityEngine.Object.Destroy(sprite);
+        }
+        catch
+        {
+            Interlocked.Increment(ref _destroyErrors);
+        }
+    }
+
+    private static void SafeDestroyTexture(Texture2D texture)
+    {
+        try
+        {
+            if (!IsLiveUnityObject(texture)) return;
+            UnityEngine.Object.Destroy(texture);
+        }
+        catch
+        {
+            Interlocked.Increment(ref _destroyErrors);
+        }
+    }
+
+    private static void AbandonActiveVisualLocked(int deskCode)
+    {
+        ActiveVisuals.Remove(deskCode);
+    }
+
+    private static void DestroyAllActiveVisualsLocked()
+    {
+        foreach (var deskCode in ActiveVisuals.Keys.ToList()) DestroyActiveVisualLocked(deskCode);
+    }
+
+    private static void AbandonAllActiveVisualsLocked()
+    {
+        ActiveVisuals.Clear();
     }
 
     private static bool Approximately(Vector3 left, Vector3 right)
@@ -1153,6 +1836,34 @@ internal static class RuntimeSeatHighlightService
         return Math.Abs(left.x - right.x) <= tolerance
             && Math.Abs(left.y - right.y) <= tolerance
             && Math.Abs(left.z - right.z) <= tolerance;
+    }
+
+    private static bool Approximately(Vector2 left, Vector2 right)
+    {
+        const float tolerance = 0.001f;
+        return Math.Abs(left.x - right.x) <= tolerance
+            && Math.Abs(left.y - right.y) <= tolerance;
+    }
+
+    private static bool Approximately(Bounds left, Bounds right)
+    {
+        return Approximately(left.center, right.center)
+            && Approximately(left.size, right.size);
+    }
+
+    private static bool Approximately(Quaternion left, Quaternion right)
+    {
+        const float tolerance = 0.001f;
+        var direct = Math.Abs(left.x - right.x) <= tolerance
+            && Math.Abs(left.y - right.y) <= tolerance
+            && Math.Abs(left.z - right.z) <= tolerance
+            && Math.Abs(left.w - right.w) <= tolerance;
+        if (direct) return true;
+
+        return Math.Abs(left.x + right.x) <= tolerance
+            && Math.Abs(left.y + right.y) <= tolerance
+            && Math.Abs(left.z + right.z) <= tolerance
+            && Math.Abs(left.w + right.w) <= tolerance;
     }
 
     private static bool HasNonZeroSize(Vector3 value)
@@ -1177,28 +1888,6 @@ internal static class RuntimeSeatHighlightService
         return $"{value.x:0.###},{value.y:0.###},{value.z:0.###}";
     }
 
-    private static string FormatVector(Vector3Int value)
-    {
-        return $"{value.x},{value.y},{value.z}";
-    }
-
-    private static string DescribeRenderer(SpriteRenderer renderer)
-    {
-        try
-        {
-            var rendererObject = renderer.gameObject;
-            var bounds = renderer.bounds;
-            var material = renderer.sharedMaterial;
-            var shaderName = material?.shader?.name ?? "none";
-            var renderQueue = material?.renderQueue ?? -1;
-            return $"visible:{renderer.isVisible},enabled:{renderer.enabled},active:{rendererObject?.activeInHierarchy == true},layer:{rendererObject?.layer ?? -1},sorting:{renderer.sortingLayerID}/{renderer.sortingOrder},alpha:{renderer.color.a:0.###},bounds:{FormatVector(bounds.center)}/{FormatVector(bounds.size)},shader:{NormalizeStatus(shaderName)},queue:{renderQueue}";
-        }
-        catch (Exception ex)
-        {
-            return $"inspection-error:{NormalizeStatus(ex.GetBaseException().Message)}";
-        }
-    }
-
     private static string NormalizeReason(string reason)
     {
         return string.IsNullOrWhiteSpace(reason) ? "scene unavailable" : reason.Trim();
@@ -1210,19 +1899,86 @@ internal static class RuntimeSeatHighlightService
         return normalized.Length <= 180 ? normalized : normalized[..180] + "...";
     }
 
-    private sealed record SeatHighlightTargetSnapshot(
-        long Generation,
+    private readonly record struct SeatHighlightClaim(
+        long TargetSetGeneration,
         long SessionGeneration,
-        bool Enabled,
-        int DeskCode)
-    {
-        public static readonly SeatHighlightTargetSnapshot Disabled = new(0, 0, false, -1);
+        int DeskCode,
+        RuntimeUiTargetKinds Claims);
 
-        public bool HasSameValues(long sessionGeneration, bool enabled, int deskCode)
+    private sealed class ActiveSeatVisual
+    {
+        public ActiveSeatVisual(
+            GameObject selectionClone,
+            SpriteRenderer outlineRenderer,
+            SpriteRenderer regionalRenderer,
+            GameObject fillObject,
+            SpriteRenderer fillRenderer,
+            Material fillMaterial,
+            Sprite sourceSprite,
+            Sprite fillSprite,
+            Texture2D fillTexture,
+            long sessionGeneration,
+            int deskCode,
+            RuntimeUiTargetKinds claims,
+            Vector3 rootPosition,
+            int fillLayer,
+            int fillSortingLayerId,
+            int fillSortingOrder,
+            Vector3 fillLocalPosition,
+            Quaternion fillLocalRotation,
+            Vector3 fillLocalScale,
+            SpriteDrawMode fillDrawMode,
+            bool fillFlipX,
+            bool fillFlipY,
+            float nextHealthCheckAt)
         {
-            return SessionGeneration == sessionGeneration
-                && Enabled == enabled
-                && DeskCode == deskCode;
+            SelectionClone = selectionClone;
+            OutlineRenderer = outlineRenderer;
+            RegionalRenderer = regionalRenderer;
+            FillObject = fillObject;
+            FillRenderer = fillRenderer;
+            FillMaterial = fillMaterial;
+            SourceSprite = sourceSprite;
+            FillSprite = fillSprite;
+            FillTexture = fillTexture;
+            SessionGeneration = sessionGeneration;
+            DeskCode = deskCode;
+            Claims = claims;
+            RootPosition = rootPosition;
+            FillLayer = fillLayer;
+            FillSortingLayerId = fillSortingLayerId;
+            FillSortingOrder = fillSortingOrder;
+            FillLocalPosition = fillLocalPosition;
+            FillLocalRotation = fillLocalRotation;
+            FillLocalScale = fillLocalScale;
+            FillDrawMode = fillDrawMode;
+            FillFlipX = fillFlipX;
+            FillFlipY = fillFlipY;
+            NextHealthCheckAt = nextHealthCheckAt;
         }
+
+        public GameObject SelectionClone { get; }
+        public SpriteRenderer OutlineRenderer { get; }
+        public SpriteRenderer RegionalRenderer { get; }
+        public GameObject FillObject { get; }
+        public SpriteRenderer FillRenderer { get; }
+        public Material FillMaterial { get; }
+        public Sprite SourceSprite { get; }
+        public Sprite FillSprite { get; }
+        public Texture2D FillTexture { get; }
+        public long SessionGeneration { get; }
+        public int DeskCode { get; }
+        public RuntimeUiTargetKinds Claims { get; set; }
+        public Vector3 RootPosition { get; }
+        public int FillLayer { get; }
+        public int FillSortingLayerId { get; }
+        public int FillSortingOrder { get; }
+        public Vector3 FillLocalPosition { get; }
+        public Quaternion FillLocalRotation { get; }
+        public Vector3 FillLocalScale { get; }
+        public SpriteDrawMode FillDrawMode { get; }
+        public bool FillFlipX { get; }
+        public bool FillFlipY { get; }
+        public float NextHealthCheckAt { get; set; }
     }
 }
