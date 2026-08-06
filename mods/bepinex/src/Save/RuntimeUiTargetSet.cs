@@ -210,8 +210,6 @@ internal sealed class RuntimeUiTargetSnapshot
             && _extraIngredientIds.SequenceEqual(other._extraIngredientIds);
     }
 
-    internal int[] CopyExtraIngredientIds() => _extraIngredientIds.ToArray();
-
     private static int[] CopyExactIds(
         IEnumerable<int> values,
         int maximumCount,
@@ -263,14 +261,6 @@ internal sealed class RuntimeUiTargetSnapshot
             throw new ArgumentOutOfRangeException(parameterName, "UI target ids use -1 as the only missing value.");
         }
     }
-}
-
-internal enum RuntimeUiRecipeExtrasResolution
-{
-    NoMatchingRecipe,
-    Empty,
-    Resolved,
-    Conflict,
 }
 
 /// <summary>
@@ -336,6 +326,32 @@ internal sealed class RuntimeUiTargetSetSnapshot
         return GetClaims(target => target.ListPinningEnabled && target.RecipeId == recipeId);
     }
 
+    /// <summary>
+    /// Returns claims that belong on the authoritative base-recipe row. Variant-enabled targets
+    /// with actual extras are represented by their exact synthetic row instead.
+    /// </summary>
+    public RuntimeUiTargetKinds GetBaseRecipeClaims(int recipeId)
+    {
+        return GetClaims(target =>
+            target.ListPinningEnabled
+            && target.RecipeId == recipeId
+            && (!target.RecipeVariantEnabled || target.ExtraIngredientIds.Count == 0));
+    }
+
+    public RuntimeUiTargetKinds GetRecipeVariantClaims(int recipeId)
+    {
+        return GetClaims(target =>
+            target.ListPinningEnabled
+            && target.RecipeId == recipeId
+            && target.RecipeVariantEnabled
+            && target.ExtraIngredientIds.Count > 0);
+    }
+
+    public bool HasRecipeVariants(int recipeId)
+    {
+        return GetRecipeVariantClaims(recipeId) != RuntimeUiTargetKinds.None;
+    }
+
     public RuntimeUiTargetKinds GetIngredientClaims(int ingredientId)
     {
         return GetClaims(target => target.ListPinningEnabled && target.ContainsIngredient(ingredientId));
@@ -349,28 +365,6 @@ internal sealed class RuntimeUiTargetSetSnapshot
     public RuntimeUiTargetKinds GetCookerClaims(int cookerTypeId)
     {
         return GetClaims(target => target.CookerHighlightEnabled && target.CookerTypeId == cookerTypeId);
-    }
-
-    public RuntimeUiRecipeExtrasResolution ResolveRecipeExtras(
-        int recipeId,
-        out int[] extraIngredientIds)
-    {
-        extraIngredientIds = Array.Empty<int>();
-        var matches = _targets
-            .Where(target => target.RecipeVariantEnabled && target.RecipeId == recipeId)
-            .ToArray();
-        if (matches.Length == 0) return RuntimeUiRecipeExtrasResolution.NoMatchingRecipe;
-
-        var expected = matches[0].CopyExtraIngredientIds();
-        if (matches.Skip(1).Any(target => !target.ExtraIngredientIds.SequenceEqual(expected)))
-        {
-            return RuntimeUiRecipeExtrasResolution.Conflict;
-        }
-
-        extraIngredientIds = expected;
-        return expected.Length == 0
-            ? RuntimeUiRecipeExtrasResolution.Empty
-            : RuntimeUiRecipeExtrasResolution.Resolved;
     }
 
     public bool HasSameValues(

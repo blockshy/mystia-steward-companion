@@ -1286,7 +1286,7 @@ static void VerifyYuumaNativeDeliveryObserverRemoved(
                  "TryReadTargetPanelEvidence",
                  "TryReadDataTuple",
                  "TryReadKeyedLogicalUnit",
-                 "TryValidatePoolMembership",
+                 "TryReadPoolDirectory",
                  "ReconcileRegisteredPanel",
                  "TryObserveTarget",
                  "TryReadSelectionEventTarget",
@@ -1303,6 +1303,10 @@ static void VerifyYuumaNativeDeliveryObserverRemoved(
             exactRead,
             $"The passive throw-delivery visual service lost exact read stage '{exactRead}'.");
     }
+    AssertContains(
+        normalizedPassiveVisual,
+        "!directory.ButtonPointers.Contains(buttonPointer)",
+        "The keyed throw-delivery button is no longer checked against the exact pool directory.");
 
     foreach (var forbiddenEntry in new[]
              {

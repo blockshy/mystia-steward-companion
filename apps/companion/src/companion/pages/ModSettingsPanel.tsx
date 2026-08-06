@@ -940,9 +940,9 @@ export function ModSettingsPanel({
                 />
                 <div className="border-l pl-3">
                   <SwitchControl
-                    label="显示稀客加料料理选项（实验性）"
+                    label="稀客加料料理选项（实验性）"
                     helpId="recommendation-rare-recipe-variant"
-                    description="稀客目标料理含加料时，在制作料理页面增加独立的加料料理选项，原基础料理选项保持不加料。确认加料选项前会重新核对目标、库存和五格限制。"
+                    description="稀客目标料理含加料时，在制作页面显示独立选项。选择后只加入该方案的加料，并按游戏规则扣除材料；基础料理保持原配方，选项使用稀客目标色。"
                     checked={preferences.rareRecipeVariantEnabled}
                     disabled={!preferences.rareGameUiPinningEnabled}
                     status={!preferences.rareGameUiPinningEnabled ? '需先开启稀客游戏界面置顶推荐' : undefined}
@@ -989,9 +989,9 @@ export function ModSettingsPanel({
                 />
                 <div className="border-l pl-3">
                   <SwitchControl
-                    label="显示普客加料料理选项（实验性）"
+                    label="普客加料料理选项（实验性）"
                     helpId="recommendation-normal-recipe-variant"
-                    description="普客目标料理含加料时，在制作料理页面增加独立的加料料理选项，原基础料理选项保持不加料。确认加料选项前会重新核对目标、库存和五格限制。"
+                    description="普客目标料理含加料时，在制作页面显示独立选项。选择后只加入该方案的加料，并按游戏规则扣除材料；基础料理保持原配方，选项使用普客目标色。"
                     checked={preferences.normalRecipeVariantEnabled}
                     disabled={!preferences.normalGameUiPinningEnabled}
                     status={!preferences.normalGameUiPinningEnabled ? '需先开启普客游戏界面置顶推荐' : undefined}

@@ -149,7 +149,7 @@
 
 - C# 挑战上下文、订单分类、运行时匹配和场景策略放在 `mods/bepinex/src/Save/SpecialBusiness/`。前端规则、普客执行目标和失败组合处理放在 `apps/companion/src/companion/domain/special-business/`，由 registry 按 `challengeType` 分发。
 - 挑战/BOSS 订单可能以 `OrderBase/Normal` 或 `SpecialOrder` 形态出现。“原订单匹配目标”用于找到真实运行时订单，“实际执行目标”用于开锅和送达，两者不得混用；`AllOrders` / `AllOrdersData` 是历史栈，禁止用于活动定位、业务 bootstrap 或捕获退休。一般订单只能使用由成功创建 Hook 锁存、七个生命周期 Hook 完整且覆盖当前经营 generation 的精确对象；捕获 key 只接受非零 IL2CPP 原生对象指针，不得回退到 managed hash。`PeekOrders()` 只复核其当前栈顶，不创建订单。古明地恋 BOSS 与幽幽子三阶段各自保留显式命名的 live-controller 专用定位，并继续执行各自额外原生门禁；不得把这两个例外抽象成通用 manager fallback。同一 native slot + lifecycle 的 raw Tag 冲突属于身份损坏，不是订单更新：任一已绑定 observer 发现后必须移除 capture、失效 lifecycle 且不发布替代身份，直到成功的新创建绑定分配新 lifecycle。
-- 特殊经营规则完成计划排序后，`executionPlans[0]` 是该稀客订单唯一主执行计划。页面料理/酒水首项、自动化初始锁、游戏界面置顶、料理/材料/酒水列表项高亮、目标厨具高亮、目标桌位高亮和目标订单高亮必须消费同一计划，不得按场景再实现第二套目标选择。订单层可以跳过没有主计划的订单，但选中订单后不能扫描其后续计划。
+- 特殊经营规则完成计划排序后，`executionPlans[0]` 是该订单唯一主执行计划。页面料理/酒水首项、自动化初始锁、游戏界面置顶、制作页加料料理选项和全部目标高亮必须读取同一计划，不得按场景再实现第二套目标选择。订单层可以跳过没有主计划的订单，但选中订单后不能扫描其后续计划。加料选项只能提交所属主计划的有序加料，并继续通过该场景的全部硬门禁；不得回退到基础料理隐式加料或其他候选方案。
 - 任何跨帧待办、`AutomationCookingJob`、runtime event 和订单动作请求都必须保留挑战类型、owner、订单角色、原订单目标、执行目标、匹配模式、规范 Tag 签名、当前夜间经营 generation，以及 concrete order kind、order/controller native pointer 和进程单调 lifecycle sequence，防止旧订单、旧请求或复用 native tuple 串到新订单。阶段文本不单独进入 wire 身份；阶段导致目标 Tag 或匹配规则变化时，规范签名自然变化。进入 Closing 时清理特殊经营上下文、当前 generation 的安全栅栏和未完成 job，Destroyed 后不得再访问已失效的 Unity wrapper；调用栈内晚到的旧结果只形成有界 lifecycle-ended 诊断。
 - 总日志必须记录原始/有效挑战类型、阶段、订单角色、match/execution 目标、评价回调证据、结构化 outcome 和阻断原因。用户帮助页只说明可观察行为，不暴露内部 hook 名称或伪代码地址。
 

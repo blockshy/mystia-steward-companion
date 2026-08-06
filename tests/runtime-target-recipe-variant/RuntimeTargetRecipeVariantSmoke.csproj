@@ -12,19 +12,32 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="../../mods/bepinex/src/Save/RuntimePinnedRecipeExtrasService.cs" Link="RuntimePinnedRecipeExtrasService.cs" />
-    <Compile Include="../../mods/bepinex/src/Save/RuntimeUiTargetSet.cs" Link="RuntimeUiTargetSet.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeTargetRecipeVariantService.cs" Link="RuntimeTargetRecipeVariantService.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeTargetRecipeVariantRuntime.cs" Link="RuntimeTargetRecipeVariantRuntime.cs" />
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Mono.Cecil" Version="0.11.4" />
     <Reference Include="BepInEx.Core">
       <HintPath>$(ReferenceDir)\BepInEx.Core.dll</HintPath>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(ReferenceDir)\0Harmony.dll</HintPath>
+    </Reference>
+    <Reference Include="MonoMod.RuntimeDetour">
+      <HintPath>$(ReferenceDir)\MonoMod.RuntimeDetour.dll</HintPath>
+    </Reference>
+    <Reference Include="MonoMod.Utils">
+      <HintPath>$(ReferenceDir)\MonoMod.Utils.dll</HintPath>
     </Reference>
     <Reference Include="Il2CppInterop.Runtime">
       <HintPath>$(ReferenceDir)\Il2CppInterop.Runtime.dll</HintPath>
     </Reference>
     <Reference Include="Il2Cppmscorlib">
       <HintPath>$(ReferenceDir)\Il2Cppmscorlib.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(ReferenceDir)\UnityEngine.CoreModule.dll</HintPath>
     </Reference>
   </ItemGroup>
 </Project>

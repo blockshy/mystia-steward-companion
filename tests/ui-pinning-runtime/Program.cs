@@ -9,6 +9,8 @@ try
 {
     VerifyPatchTargets();
     VerifyDualTargetClaimsAndColorRoundTrip();
+    VerifyTargetRecipeVariantPublicationLease();
+    VerifyCookingRefreshHoldsExactTargetPublicationLease();
     VerifySharedListItemUsesSingleOwnershipAndBaseline();
     VerifyOrderHighlightRuntimeWiring();
     VerifyOpenPanelRefreshScheduling();
@@ -23,6 +25,7 @@ try
     VerifyDangerousListHooksAreAbsent();
     VerifyManagedHarmonyReturnPropagation();
     VerifyManagedPinnedListHighlighting();
+    VerifyExactRecipeVariantRowHighlighting();
     VerifyEnabledEmptyTargetClearsVisuals();
     VerifyLifecycleGenerationGuards();
     Console.WriteLine("PASS: scoped pinning and pinned-list highlighting propagate through Harmony without mutating IL2CPP lists.");
@@ -83,6 +86,9 @@ static void VerifyDualTargetClaimsAndColorRoundTrip()
         });
 
     AssertEqual(RuntimeUiTargetKinds.Rare | RuntimeUiTargetKinds.Normal, targetSet.GetRecipeClaims(90), "Shared recipe did not retain both claims.");
+    AssertEqual(RuntimeUiTargetKinds.None, targetSet.GetBaseRecipeClaims(90), "Variant-enabled targets leaked onto the authoritative base row.");
+    AssertEqual(RuntimeUiTargetKinds.Rare | RuntimeUiTargetKinds.Normal, targetSet.GetRecipeVariantClaims(90), "Shared recipe variants did not retain both claims.");
+    AssertTrue(targetSet.HasRecipeVariants(90), "Shared variant recipe was not classified as row-controlled.");
     AssertEqual(RuntimeUiTargetKinds.Rare | RuntimeUiTargetKinds.Normal, targetSet.GetIngredientClaims(91), "Shared ingredient did not retain both claims.");
     AssertEqual(RuntimeUiTargetKinds.Rare | RuntimeUiTargetKinds.Normal, targetSet.GetCookerClaims(3), "Shared cooker did not retain both claims.");
     AssertEqual(RuntimeUiTargetKinds.Rare, targetSet.GetBeverageClaims(93), "Rare-only beverage claim changed.");
@@ -117,6 +123,8 @@ static void VerifyDualTargetClaimsAndColorRoundTrip()
                 orderHighlightEnabled: true),
         });
     AssertEqual(RuntimeUiTargetKinds.Rare, splitFeatureSet.GetRecipeClaims(90), "Normal list pinning leaked through a disabled normal target feature.");
+    AssertEqual(RuntimeUiTargetKinds.Rare, splitFeatureSet.GetBaseRecipeClaims(90), "A non-variant recipe target did not remain on the base row.");
+    AssertFalse(splitFeatureSet.HasRecipeVariants(90), "A disabled variant target made the recipe row-controlled.");
     AssertEqual(RuntimeUiTargetKinds.Normal, splitFeatureSet.GetCookerClaims(3), "Rare cooker highlighting leaked through a disabled rare target feature.");
     AssertTrue(splitFeatureSet.TryGetTarget(RuntimeUiTargetKind.Rare, out var splitRare), "Split feature set lost its rare target.");
     AssertTrue(splitFeatureSet.TryGetTarget(RuntimeUiTargetKind.Normal, out var splitNormal), "Split feature set lost its normal target.");
@@ -165,6 +173,291 @@ static void VerifyDualTargetClaimsAndColorRoundTrip()
             palette,
             rareEndpointTime),
         "Shared highlight did not return to the rare color endpoint.");
+}
+
+static void VerifyTargetRecipeVariantPublicationLease()
+{
+    var businessGeneration = RuntimeNightBusinessLifecycle.Generation;
+    PublishRareTarget(
+        businessGeneration,
+        listPinningEnabled: true,
+        recipeVariantEnabled: true,
+        cookerHighlightEnabled: false,
+        seatHighlightEnabled: false,
+        orderHighlightEnabled: false,
+        recipeId: 120,
+        beverageId: -1,
+        ingredientIds: new[] { 121 },
+        extraIngredientIds: new[] { 122 },
+        cookerTypeId: -1,
+        deskCode: -1,
+        orderTraceId: "",
+        targetRevision: "publication-lease");
+    var expected = RuntimeUiPinningService.ReadTargetSet();
+    AssertTrue(
+        RuntimeUiPinningService.TryAcquireTargetRecipeVariantPublicationLease(expected, out var lease),
+        "The current active target snapshot could not acquire its publication lease.");
+
+    using var workerStarted = new ManualResetEventSlim();
+    using var workerFinished = new ManualResetEventSlim();
+    Exception? workerFailure = null;
+    var worker = new Thread(() =>
+    {
+        try
+        {
+            workerStarted.Set();
+            PublishRareTarget(
+                businessGeneration,
+                listPinningEnabled: true,
+                recipeVariantEnabled: false,
+                cookerHighlightEnabled: false,
+                seatHighlightEnabled: false,
+                orderHighlightEnabled: false,
+                recipeId: 123,
+                beverageId: -1,
+                ingredientIds: new[] { 124 },
+                extraIngredientIds: Array.Empty<int>(),
+                cookerTypeId: -1,
+                deskCode: -1,
+                orderTraceId: "",
+                targetRevision: "publication-after-lease");
+        }
+        catch (Exception ex)
+        {
+            workerFailure = ex;
+        }
+        finally
+        {
+            workerFinished.Set();
+        }
+    });
+    worker.Start();
+    AssertTrue(workerStarted.Wait(TimeSpan.FromSeconds(2)), "The publication worker did not start.");
+    AssertFalse(workerFinished.Wait(TimeSpan.FromMilliseconds(100)), "Target publication escaped an active variant lease.");
+    lease.Dispose();
+    AssertTrue(workerFinished.Wait(TimeSpan.FromSeconds(5)), "Target publication did not resume after the lease was released.");
+    worker.Join();
+    if (workerFailure != null) throw new InvalidOperationException("Target publication worker failed.", workerFailure);
+    AssertFalse(
+        RuntimeUiPinningService.TryAcquireTargetRecipeVariantPublicationLease(expected, out _),
+        "A stale target snapshot acquired a publication lease.");
+
+    var current = RuntimeUiPinningService.ReadTargetSet();
+    AssertTrue(
+        RuntimeUiPinningService.TryAcquireTargetRecipeVariantPublicationLease(current, out var threadAffineLease),
+        "The replacement target snapshot could not acquire a publication lease.");
+    Exception? wrongThreadRelease = null;
+    var wrongThread = new Thread(() =>
+    {
+        try
+        {
+            threadAffineLease.Dispose();
+        }
+        catch (Exception ex)
+        {
+            wrongThreadRelease = ex;
+        }
+    });
+    wrongThread.Start();
+    wrongThread.Join();
+    AssertTrue(wrongThreadRelease is InvalidOperationException, "A publication lease was released by a different thread.");
+    threadAffineLease.Dispose();
+
+    AssertTrue(
+        RuntimeUiPinningService.TryAcquireTargetRecipeVariantPublicationLease(
+            businessGeneration,
+            out var businessLease),
+        "An active business generation could not acquire its snapshot-independent publication lease.");
+    using var businessPublicationStarted = new ManualResetEventSlim();
+    using var businessPublicationFinished = new ManualResetEventSlim();
+    Exception? businessPublicationFailure = null;
+    var businessPublicationWorker = new Thread(() =>
+    {
+        try
+        {
+            businessPublicationStarted.Set();
+            PublishRareTarget(
+                businessGeneration,
+                listPinningEnabled: true,
+                recipeVariantEnabled: false,
+                cookerHighlightEnabled: false,
+                seatHighlightEnabled: false,
+                orderHighlightEnabled: false,
+                recipeId: 125,
+                beverageId: -1,
+                ingredientIds: new[] { 126 },
+                extraIngredientIds: Array.Empty<int>(),
+                cookerTypeId: -1,
+                deskCode: -1,
+                orderTraceId: "",
+                targetRevision: "business-publication-after-lease");
+        }
+        catch (Exception ex)
+        {
+            businessPublicationFailure = ex;
+        }
+        finally
+        {
+            businessPublicationFinished.Set();
+        }
+    });
+    businessPublicationWorker.Start();
+    AssertTrue(businessPublicationStarted.Wait(TimeSpan.FromSeconds(2)), "The business-lease publication worker did not start.");
+    AssertFalse(
+        businessPublicationFinished.Wait(TimeSpan.FromMilliseconds(100)),
+        "Target publication escaped an active snapshot-independent business lease.");
+    businessLease.Dispose();
+    AssertTrue(
+        businessPublicationFinished.Wait(TimeSpan.FromSeconds(5)),
+        "Target publication did not resume after the snapshot-independent business lease was released.");
+    businessPublicationWorker.Join();
+    if (businessPublicationFailure != null)
+    {
+        throw new InvalidOperationException("Business-lease publication worker failed.", businessPublicationFailure);
+    }
+
+    AssertTrue(
+        RuntimeUiPinningService.TryAcquireTargetRecipeVariantPublicationLease(
+            businessGeneration,
+            out var rotatedTargetBusinessLease),
+        "A target rotation incorrectly invalidated the same business generation's publication lease.");
+    rotatedTargetBusinessLease.Dispose();
+
+    RuntimeNightBusinessLifecycle.ActivateNextGeneration();
+    AssertFalse(
+        RuntimeUiPinningService.TryAcquireTargetRecipeVariantPublicationLease(
+            businessGeneration,
+            out _),
+        "A prior business generation acquired a publication lease after the lifecycle advanced.");
+}
+
+static void VerifyCookingRefreshHoldsExactTargetPublicationLease()
+{
+    CookingSelectionPanelProbe.ResetRefreshProbe();
+    RunTimePlayerDataProbe.Reset(nativeResult: false);
+    var businessGeneration = RuntimeNightBusinessLifecycle.Generation;
+    var panel = new CookingSelectionPanelProbe();
+    try
+    {
+        PublishRareTarget(
+            businessGeneration,
+            listPinningEnabled: true,
+            recipeVariantEnabled: false,
+            cookerHighlightEnabled: false,
+            seatHighlightEnabled: false,
+            orderHighlightEnabled: false,
+            recipeId: 130,
+            beverageId: -1,
+            ingredientIds: new[] { 131 },
+            extraIngredientIds: Array.Empty<int>(),
+            cookerTypeId: -1,
+            deskCode: -1,
+            orderTraceId: "",
+            targetRevision: "cooking-refresh-initial");
+        panel.OnPanelOpen();
+
+        PublishRareTarget(
+            businessGeneration,
+            listPinningEnabled: true,
+            recipeVariantEnabled: false,
+            cookerHighlightEnabled: false,
+            seatHighlightEnabled: false,
+            orderHighlightEnabled: false,
+            recipeId: 132,
+            beverageId: -1,
+            ingredientIds: new[] { 133 },
+            extraIngredientIds: Array.Empty<int>(),
+            cookerTypeId: -1,
+            deskCode: -1,
+            orderTraceId: "",
+            targetRevision: "cooking-refresh-leased");
+        var exactRefreshTarget = RuntimeUiPinningService.ReadTargetSet();
+
+        using var publicationStarted = new ManualResetEventSlim();
+        using var publicationFinished = new ManualResetEventSlim();
+        Exception? publicationFailure = null;
+        Thread? publicationWorker = null;
+        var refreshActionInvoked = false;
+        var exactTargetObserved = false;
+        var directTargetPinned = false;
+        var publicationWorkerStarted = false;
+        var publicationEscapedDuringRefresh = false;
+        CookingSelectionPanelProbe.RefreshAction = () =>
+        {
+            refreshActionInvoked = true;
+            exactTargetObserved = ReferenceEquals(
+                exactRefreshTarget,
+                RuntimeUiPinningService.ReadTargetSet());
+            directTargetPinned = RunTimePlayerDataProbe.CheckPinned(
+                PlayerSaveFileDefaultPropProbe.Recipes,
+                132);
+            publicationWorker = new Thread(() =>
+            {
+                try
+                {
+                    publicationStarted.Set();
+                    PublishRareTarget(
+                        businessGeneration,
+                        listPinningEnabled: true,
+                        recipeVariantEnabled: false,
+                        cookerHighlightEnabled: false,
+                        seatHighlightEnabled: false,
+                        orderHighlightEnabled: false,
+                        recipeId: 134,
+                        beverageId: -1,
+                        ingredientIds: new[] { 135 },
+                        extraIngredientIds: Array.Empty<int>(),
+                        cookerTypeId: -1,
+                        deskCode: -1,
+                        orderTraceId: "",
+                        targetRevision: "cooking-refresh-post-publication");
+                }
+                catch (Exception ex)
+                {
+                    publicationFailure = ex;
+                }
+                finally
+                {
+                    publicationFinished.Set();
+                }
+            });
+            publicationWorker.Start();
+            publicationWorkerStarted = publicationStarted.Wait(TimeSpan.FromSeconds(2));
+            if (publicationWorkerStarted)
+            {
+                publicationEscapedDuringRefresh = publicationFinished.Wait(
+                    TimeSpan.FromMilliseconds(100));
+            }
+            return true;
+        };
+
+        RuntimeUiPinningService.Tick();
+        AssertTrue(refreshActionInvoked, "The cooking target refresh did not invoke UpdateRecipeField.");
+        AssertTrue(exactTargetObserved, "Cooking refresh started without its exact target snapshot.");
+        AssertTrue(directTargetPinned,
+            "Direct UpdateRecipeField did not establish the cooking CheckPinned scope for its new target.");
+        AssertTrue(publicationWorkerStarted, "The cooking-refresh publication worker did not start.");
+        AssertFalse(
+            publicationEscapedDuringRefresh,
+            "Cooking refresh allowed the exact target snapshot to rotate before UpdateRecipeField returned.");
+        AssertEqual(1, CookingSelectionPanelProbe.FullVisualRefreshCount,
+            "A target publication invoked full UpdateAllVisual instead of direct UpdateRecipeField.");
+        AssertEqual(2, CookingSelectionPanelProbe.RefreshCount,
+            "The open panel did not run exactly one natural and one direct recipe-field refresh.");
+        AssertTrue(
+            publicationFinished.Wait(TimeSpan.FromSeconds(5)),
+            "Target publication did not resume after the cooking refresh completed.");
+        publicationWorker?.Join();
+        if (publicationFailure != null)
+        {
+            throw new InvalidOperationException("Cooking-refresh publication worker failed.", publicationFailure);
+        }
+    }
+    finally
+    {
+        CookingSelectionPanelProbe.RefreshAction = null;
+        panel.OnPanelClose();
+    }
 }
 
 static void VerifyEnabledEmptyTargetClearsVisuals()
@@ -414,6 +707,8 @@ static void VerifyOpenPanelRefreshScheduling()
         cookingPanel.OnPanelOpen();
         storagePanel.OnPanelOpen();
         AssertEqual(1, CookingSelectionPanelProbe.RefreshCount, "Cooking panel open did not perform its natural refresh.");
+        AssertEqual(1, CookingSelectionPanelProbe.FullVisualRefreshCount,
+            "Cooking panel open did not perform exactly one natural full refresh.");
         AssertEqual(1, StoragePanelProbe.RefreshCount, "Storage panel open did not perform its natural refresh.");
 
         RunOnWorkerThread(() => Publish(301, 401));
@@ -421,6 +716,8 @@ static void VerifyOpenPanelRefreshScheduling()
         AssertEqual(1, StoragePanelProbe.RefreshCount, "Worker target publication refreshed the storage panel.");
         RuntimeUiPinningService.Tick();
         AssertEqual(2, CookingSelectionPanelProbe.RefreshCount, "An open cooking panel did not consume the new target once.");
+        AssertEqual(1, CookingSelectionPanelProbe.FullVisualRefreshCount,
+            "Target publication used full UpdateAllVisual instead of direct UpdateRecipeField.");
         AssertEqual(2, StoragePanelProbe.RefreshCount, "An open storage panel did not consume the new target once.");
         RuntimeUiPinningService.Tick();
         AssertEqual(2, CookingSelectionPanelProbe.RefreshCount, "Cooking panel refreshed twice for one target generation.");
@@ -770,6 +1067,7 @@ static void VerifyOrderHighlightRuntimeWiring()
 {
     var pluginSource = File.ReadAllText("mods/bepinex/src/Plugin/MystiaStewardCompanionPlugin.cs");
     var controllerSource = File.ReadAllText("mods/bepinex/src/Ui/StewardOverlayController.cs");
+    var pinningSource = File.ReadAllText("mods/bepinex/src/Save/RuntimeUiPinningService.cs");
 
     AssertContains(
         pluginSource,
@@ -787,6 +1085,34 @@ static void VerifyOrderHighlightRuntimeWiring()
         controllerSource,
         "RunOrderHighlightDisposalNoThrow",
         "HUD and throw-delivery disposal are not isolated from one another.");
+    AssertContains(
+        pinningSource,
+        "RuntimeTargetRecipeVariantService.Attach(log);",
+        "Runtime UI pinning did not attach the formal recipe-variant service before list highlighting.");
+    var panelRefreshStart = pinningSource.IndexOf(
+        "private static void TryRefreshOpenPanel",
+        StringComparison.Ordinal);
+    var panelRefreshEnd = panelRefreshStart < 0
+        ? -1
+        : pinningSource.IndexOf(
+            "private static bool IsCurrentOpenPanel",
+            panelRefreshStart,
+            StringComparison.Ordinal);
+    AssertTrue(panelRefreshStart >= 0 && panelRefreshEnd > panelRefreshStart,
+        "Open-panel refresh implementation is missing.");
+    var panelRefreshSource = pinningSource[panelRefreshStart..panelRefreshEnd];
+    AssertContains(
+        panelRefreshSource,
+        "TryAcquireTargetRecipeVariantPublicationLease(target, out exactTargetLease)",
+        "Cooking refresh does not acquire the exact target-snapshot publication lease.");
+    AssertContains(
+        controllerSource,
+        "RuntimeTargetRecipeVariantService.RetireFailClosed(\"controller disposed\");",
+        "Controller disposal still references the removed diagnostic recipe-variant service.");
+    AssertTrue(
+        pluginSource.IndexOf("RuntimeUiPinningService.Attach(Log);", StringComparison.Ordinal)
+        < pluginSource.IndexOf("RuntimePinnedListHighlightService.Attach(Log);", StringComparison.Ordinal),
+        "Plugin startup did not attach UI pinning and its variant bindings before list highlighting.");
 }
 
 static void VerifyPatchTargets()
@@ -801,13 +1127,32 @@ static void VerifyPatchTargets()
         typeof(StoragePanelProbe),
     };
     var patchedProbeCount = Harmony.GetAllPatchedMethods().Count(method => method.DeclaringType != null && probeTypes.Contains(method.DeclaringType));
-    AssertEqual(12, patchedProbeCount, "Runtime UI pinning and list highlighting should install exactly twelve patches.");
+    AssertEqual(13, patchedProbeCount, "Runtime UI pinning and list highlighting should install exactly thirteen patches.");
     AssertPatch(
         typeof(CookingSelectionPanelProbe),
         nameof(CookingSelectionPanelProbe.UpdateAllVisual),
         prefix: "OnCookingRefreshStarted",
         postfix: null,
         finalizer: "OnCookingRefreshFinalized");
+    AssertPatch(
+        typeof(CookingSelectionPanelProbe),
+        nameof(CookingSelectionPanelProbe.UpdateRecipeField),
+        prefix: "OnCookingRefreshStarted",
+        postfix: null,
+        finalizer: "OnCookingRefreshFinalized");
+    var cookingRefreshMethod = (MethodInfo?)typeof(RuntimeUiPinningService)
+        .GetField("_cookingRefreshMethod", BindingFlags.NonPublic | BindingFlags.Static)!
+        .GetValue(null);
+    var expectedCookingRefreshMethod = typeof(CookingSelectionPanelProbe).GetMethod(
+        nameof(CookingSelectionPanelProbe.UpdateRecipeField),
+        BindingFlags.Public | BindingFlags.Instance,
+        binder: null,
+        types: Type.EmptyTypes,
+        modifiers: null);
+    AssertEqual(expectedCookingRefreshMethod, cookingRefreshMethod,
+        "Target publication did not cache the exact zero-argument UpdateRecipeField MethodInfo.");
+    AssertFalse(cookingRefreshMethod?.IsGenericMethod == true,
+        "Target publication cached a generic cooking refresh method.");
     AssertPatch(
         typeof(RunTimePlayerDataProbe),
         nameof(RunTimePlayerDataProbe.CheckPinned),
@@ -880,7 +1225,8 @@ static void VerifyPatchTargets()
         finalizer: null,
         patchOwner: typeof(RuntimePinnedListHighlightService),
         prefixPriority: Priority.First,
-        postfixPriority: Priority.Last);
+        postfixPriority: Priority.Last,
+        postfixAfter: "com.tyukki.mystia-steward-companion.runtime-target-recipe-variant");
     AssertPatch(
         typeof(CookingSelectionPanelProbe),
         nameof(CookingSelectionPanelProbe.OnIngElementEnabled),
@@ -1006,7 +1352,7 @@ static void VerifyScopedNativePinnedMatching()
 
     AssertFalse(InvokeCheckPinned(1, 34), "Cooking scope leaked after its finalizer.");
     AssertFalse(InvokeCheckPinned(2, 16), "Beverage scope leaked after its finalizer.");
-    AssertContains(RuntimeUiPinningService.Status, "forcedTotal=recipe:1, ingredients:4, beverage:1", "Scoped prefix diagnostics are incorrect.");
+    AssertContains(RuntimeUiPinningService.Status, "forcedTotal=recipe:2, ingredients:4, beverage:1", "Scoped prefix diagnostics are incorrect.");
 }
 
 static void VerifyNestedScopeFinalizers()
@@ -1714,6 +2060,397 @@ static void VerifyManagedPinnedListHighlighting()
     }
 }
 
+static void VerifyExactRecipeVariantRowHighlighting()
+{
+    const int recipeId = 141;
+    var lifecycleLogStart = ManualLogSource.SnapshotInformationMessages().Length;
+    var listHighlightRoot = typeof(RuntimePinnedListHighlightService)
+        .GetField("SyncRoot", BindingFlags.NonPublic | BindingFlags.Static)?
+        .GetValue(null)
+        ?? throw new InvalidOperationException("Pinned-list SyncRoot was not found.");
+    ManualLogSource.ResetInformationLogSafetyObservation();
+    ManualLogSource.InformationLogUnsafeProbe = () => Monitor.IsEntered(listHighlightRoot);
+    var businessGeneration = RuntimeNightBusinessLifecycle.Generation;
+    var baseline = new Color(0.64f, 0.68f, 0.74f, 0.52f);
+    AssertTrue(RuntimeTargetHighlightColor.TryParseExactHex("FFD35A", out var rareColor), "Rare test color was rejected.");
+    AssertTrue(RuntimeTargetHighlightColor.TryParseExactHex("5FACD3", out var normalColor), "Normal test color was rejected.");
+
+    RuntimeUiTargetSnapshot CreateTarget(
+        RuntimeUiTargetKind kind,
+        bool recipeVariantEnabled,
+        string revision,
+        RuntimeTargetHighlightColor? color = null,
+        IReadOnlyList<int>? extras = null)
+    {
+        var isRare = kind == RuntimeUiTargetKind.Rare;
+        var targetExtras = recipeVariantEnabled
+            ? extras ?? new[] { isRare ? 143 : 144 }
+            : Array.Empty<int>();
+        return new RuntimeUiTargetSnapshot(
+            kind,
+            color ?? (isRare ? rareColor : normalColor),
+            listPinningEnabled: true,
+            recipeVariantEnabled: recipeVariantEnabled,
+            cookerHighlightEnabled: false,
+            seatHighlightEnabled: false,
+            orderHighlightEnabled: false,
+            orderTraceId: isRare ? "R-141" : "N-141",
+            orderKey: isRare ? "" : "ptr:8d",
+            orderLifecycleSequence: isRare ? 141 : 142,
+            deskCode: isRare ? 0 : 1,
+            recipeId,
+            ingredientIds: new[] { 142 },
+            extraIngredientIds: targetExtras,
+            beverageId: -1,
+            cookerTypeId: -1,
+            targetRevision: $"{revision}-{kind}");
+    }
+
+    RuntimeTargetRecipeVariantService.RetireFailClosed("reset exact row-highlight smoke");
+    RuntimeUiPinningService.UpdateTargets(
+        businessGeneration,
+        new[]
+        {
+            CreateTarget(RuntimeUiTargetKind.Rare, recipeVariantEnabled: false, revision: "uncontrolled"),
+            CreateTarget(RuntimeUiTargetKind.Normal, recipeVariantEnabled: false, revision: "uncontrolled"),
+        });
+
+    CookingSelectionPanelProbe.RecipeBoundColor = baseline;
+    var panel = new CookingSelectionPanelProbe();
+    var priorIdModeRecipe = new RecipeProbe(recipeId);
+    var priorIdModeButton = new UIButtonSimpleProbe(baseline);
+    panel.OnPanelOpen();
+    panel.OnRecipeElementEnabled(priorIdModeRecipe, new object(), priorIdModeButton);
+    Time.realtimeSinceStartup = 0.25f;
+    RuntimePinnedListHighlightService.Tick();
+    AssertHighlighted(baseline, priorIdModeButton.image.get_color(), "An uncontrolled recipe lost its existing recipe-id highlight.");
+
+    RuntimeUiPinningService.UpdateTargets(
+        businessGeneration,
+        new[]
+        {
+            CreateTarget(RuntimeUiTargetKind.Rare, recipeVariantEnabled: true, revision: "controlled"),
+            CreateTarget(RuntimeUiTargetKind.Normal, recipeVariantEnabled: false, revision: "controlled"),
+        });
+    var controlledTarget = RuntimeUiPinningService.ReadTargetSet();
+    AssertTrue(controlledTarget.HasRecipeVariants(recipeId), "The active variant recipe was not placed in exact-only mode.");
+    AssertEqual(RuntimeUiTargetKinds.Normal, controlledTarget.GetBaseRecipeClaims(recipeId), "The authoritative base row did not retain only the non-variant normal claim.");
+    AssertEqual(RuntimeUiTargetKinds.Rare, controlledTarget.GetRecipeVariantClaims(recipeId), "The synthetic row did not retain the rare variant claim.");
+
+    RuntimePinnedListHighlightService.Tick();
+    AssertColor(baseline, priorIdModeButton.image.get_color(), "An old recipe-id aggregate color survived the transition to exact-only mode.");
+    AssertContains(RuntimePinnedListHighlightService.Status, "tracked=recipe:0", "An old recipe-id row stayed tracked after becoming variant-controlled.");
+
+    var baseRecipe = new RecipeProbe(recipeId);
+    var baseButton = new UIButtonSimpleProbe(baseline);
+    RuntimeTargetRecipeVariantService.BindRecipeRow(
+        panel,
+        baseRecipe,
+        baseButton,
+        RuntimeUiTargetKinds.Normal,
+        "normal-base");
+    panel.OnRecipeElementEnabled(baseRecipe, new object(), baseButton);
+
+    var syntheticRecipe = new RecipeProbe(recipeId);
+    var syntheticButton = new UIButtonSimpleProbe(baseline);
+    var staleSyntheticLease = RuntimeTargetRecipeVariantService.BindRecipeRow(
+        panel,
+        syntheticRecipe,
+        syntheticButton,
+        RuntimeUiTargetKinds.Rare,
+        "rare-extra-143-stale");
+    var currentSyntheticLease = RuntimeTargetRecipeVariantService.BindRecipeRow(
+        panel,
+        syntheticRecipe,
+        syntheticButton,
+        RuntimeUiTargetKinds.Rare,
+        "rare-extra-143-current");
+    AssertFalse(
+        RuntimeTargetRecipeVariantService.TryValidateRecipeRowClaims(staleSyntheticLease, out _),
+        "A pooled exact row accepted a stale plan identity with the same pointer tuple.");
+    AssertTrue(
+        RuntimeTargetRecipeVariantService.TryValidateRecipeRowClaims(currentSyntheticLease, out var reboundClaims)
+            && reboundClaims == RuntimeUiTargetKinds.Rare,
+        "The current exact row plan identity was not retained after a pointer-stable rebind.");
+    panel.OnRecipeElementEnabled(syntheticRecipe, new object(), syntheticButton);
+
+    var lifecycleMessages = ReadExactRecipeLifecycleMessages(lifecycleLogStart);
+    var boundMessages = lifecycleMessages
+        .Where(message => message.Contains("event=bound;", StringComparison.Ordinal))
+        .ToArray();
+    AssertEqual(2, boundMessages.Length, "Exact recipe rows did not log one lifecycle bind each.");
+    AssertTrue(
+        boundMessages.Any(message => message.Contains("plan=normal-base", StringComparison.Ordinal)
+            && message.Contains("claims=Normal", StringComparison.Ordinal)),
+        "The authoritative exact-row bind log lost its plan or claim identity.");
+    AssertTrue(
+        boundMessages.Any(message => message.Contains("plan=rare-extra-143-current", StringComparison.Ordinal)
+            && message.Contains("claims=Rare", StringComparison.Ordinal)),
+        "The synthetic exact-row bind log lost its current plan or claim identity.");
+    AssertTrue(
+        boundMessages.All(message => message.Contains($"business={businessGeneration};", StringComparison.Ordinal)
+            && message.Contains($"targetGen={controlledTarget.Generation};", StringComparison.Ordinal)
+            && message.Contains("panel=0x", StringComparison.Ordinal)
+            && message.Contains("recipePtr=0x", StringComparison.Ordinal)
+            && message.Contains("button=0x", StringComparison.Ordinal)
+            && message.Contains("image=0x", StringComparison.Ordinal)),
+        "An exact-row bind log omitted its bounded native identity fields.");
+
+    var unboundSameIdButton = new UIButtonSimpleProbe(baseline);
+    panel.OnRecipeElementEnabled(new RecipeProbe(recipeId), new object(), unboundSameIdButton);
+    RuntimePinnedListHighlightService.Tick();
+
+    AssertColor(
+        RuntimeTargetHighlightStyle.BuildListItemPulseColor(
+            baseline,
+            RuntimeUiTargetKinds.Normal,
+            controlledTarget.Palette,
+            Time.realtimeSinceStartup),
+        baseButton.image.get_color(),
+        "The exact authoritative row did not use only the normal target color.");
+    AssertColor(
+        RuntimeTargetHighlightStyle.BuildListItemPulseColor(
+            baseline,
+            RuntimeUiTargetKinds.Rare,
+            controlledTarget.Palette,
+            Time.realtimeSinceStartup),
+        syntheticButton.image.get_color(),
+        "The exact synthetic row did not use its rare target color.");
+    AssertColor(baseline, unboundSameIdButton.image.get_color(), "A same-id row without an exact panel/recipe/button binding was highlighted.");
+    AssertContains(RuntimePinnedListHighlightService.Status, "tracked=recipe:2", "Exact rows did not retain one Image ownership each.");
+
+    lifecycleMessages = ReadExactRecipeLifecycleMessages(lifecycleLogStart);
+    AssertEqual(
+        2,
+        lifecycleMessages.Count(message => message.Contains("event=applied;", StringComparison.Ordinal)),
+        "Exact recipe rows did not log their first durable highlight application once.");
+
+    var releaseCountBeforePoolRebind = lifecycleMessages.Count(message => message.Contains("event=released;", StringComparison.Ordinal));
+    panel.OnRecipeElementEnabled(baseRecipe, new object(), baseButton);
+    lifecycleMessages = ReadExactRecipeLifecycleMessages(lifecycleLogStart);
+    AssertEqual(
+        releaseCountBeforePoolRebind + 1,
+        lifecycleMessages.Count(message => message.Contains("event=released;", StringComparison.Ordinal)),
+        "A pooled exact recipe row did not log its actual ownership release.");
+    AssertTrue(
+        lifecycleMessages.Any(message => message.Contains("event=released;", StringComparison.Ordinal)
+            && message.Contains("reason=pool-rebind;", StringComparison.Ordinal)
+            && message.Contains("plan=normal-base", StringComparison.Ordinal)),
+        "The pooled exact-row release did not retain its precise reason and lease identity.");
+    RuntimePinnedListHighlightService.Tick();
+    lifecycleMessages = ReadExactRecipeLifecycleMessages(lifecycleLogStart);
+    AssertEqual(
+        3,
+        lifecycleMessages.Count(message => message.Contains("event=applied;", StringComparison.Ordinal)),
+        "A rebound exact row did not receive one new first-application lifecycle event.");
+
+    RuntimeTargetRecipeVariantService.AdvancePanelEpoch(panel);
+    RuntimePinnedListHighlightService.Tick();
+    AssertColor(baseline, baseButton.image.get_color(), "A stale authoritative row lease kept its highlight after the panel epoch advanced.");
+    AssertColor(baseline, syntheticButton.image.get_color(), "A stale synthetic row lease kept its highlight after the panel epoch advanced.");
+    AssertContains(RuntimePinnedListHighlightService.Status, "tracked=recipe:0", "Stale exact recipe-row leases remained tracked.");
+    lifecycleMessages = ReadExactRecipeLifecycleMessages(lifecycleLogStart);
+    var invalidLeaseReleaseCount = lifecycleMessages.Count(message =>
+        message.Contains("event=released;", StringComparison.Ordinal)
+        && message.Contains("reason=exact-lease-invalid;", StringComparison.Ordinal));
+    AssertEqual(2, invalidLeaseReleaseCount, "Epoch drift did not release both exact rows with the lease-invalid reason.");
+    RuntimePinnedListHighlightService.Tick();
+    AssertEqual(
+        invalidLeaseReleaseCount,
+        ReadExactRecipeLifecycleMessages(lifecycleLogStart).Count(message =>
+            message.Contains("event=released;", StringComparison.Ordinal)
+            && message.Contains("reason=exact-lease-invalid;", StringComparison.Ordinal)),
+        "A released exact-row lease emitted another lifecycle event on a later Tick.");
+
+    panel.OnPanelClose();
+    RuntimeTargetRecipeVariantService.RetireFailClosed("exact row-highlight smoke complete");
+
+    AssertTrue(RuntimeTargetHighlightColor.TryParseExactHex("2A9FD6", out var customNormalColor), "Custom normal test color was rejected.");
+    RuntimeUiPinningService.UpdateTargets(
+        businessGeneration,
+        new[]
+        {
+            CreateTarget(RuntimeUiTargetKind.Rare, recipeVariantEnabled: false, revision: "symmetric"),
+            CreateTarget(
+                RuntimeUiTargetKind.Normal,
+                recipeVariantEnabled: true,
+                revision: "symmetric",
+                color: customNormalColor,
+                extras: new[] { 144 }),
+        });
+    var symmetricTarget = RuntimeUiPinningService.ReadTargetSet();
+    AssertEqual(RuntimeUiTargetKinds.Rare, symmetricTarget.GetBaseRecipeClaims(recipeId), "The symmetric base row did not retain only the rare claim.");
+    AssertEqual(RuntimeUiTargetKinds.Normal, symmetricTarget.GetRecipeVariantClaims(recipeId), "The symmetric synthetic row did not retain only the normal claim.");
+    var symmetricPanel = new CookingSelectionPanelProbe();
+    symmetricPanel.OnPanelOpen();
+    var symmetricBaseRecipe = new RecipeProbe(recipeId);
+    var symmetricBaseButton = new UIButtonSimpleProbe(baseline);
+    RuntimeTargetRecipeVariantService.BindRecipeRow(
+        symmetricPanel,
+        symmetricBaseRecipe,
+        symmetricBaseButton,
+        RuntimeUiTargetKinds.Rare,
+        "rare-base-symmetric");
+    symmetricPanel.OnRecipeElementEnabled(symmetricBaseRecipe, new object(), symmetricBaseButton);
+    var symmetricSyntheticRecipe = new RecipeProbe(recipeId);
+    var symmetricSyntheticButton = new UIButtonSimpleProbe(baseline);
+    RuntimeTargetRecipeVariantService.BindRecipeRow(
+        symmetricPanel,
+        symmetricSyntheticRecipe,
+        symmetricSyntheticButton,
+        RuntimeUiTargetKinds.Normal,
+        "normal-extra-144");
+    symmetricPanel.OnRecipeElementEnabled(symmetricSyntheticRecipe, new object(), symmetricSyntheticButton);
+    Time.realtimeSinceStartup = 0.25f;
+    RuntimePinnedListHighlightService.Tick();
+    AssertColor(
+        RuntimeTargetHighlightStyle.BuildListItemPulseColor(
+            baseline,
+            RuntimeUiTargetKinds.Rare,
+            symmetricTarget.Palette,
+            Time.realtimeSinceStartup),
+        symmetricBaseButton.image.get_color(),
+        "The symmetric authoritative row did not use only the rare target color.");
+    AssertColor(
+        RuntimeTargetHighlightStyle.BuildListItemPulseColor(
+            baseline,
+            RuntimeUiTargetKinds.Normal,
+            symmetricTarget.Palette,
+            Time.realtimeSinceStartup),
+        symmetricSyntheticButton.image.get_color(),
+        "The normal synthetic row did not use its custom target color.");
+    var panelCloseReleaseCount = ReadExactRecipeLifecycleMessages(lifecycleLogStart).Count(message =>
+        message.Contains("event=released;", StringComparison.Ordinal)
+        && message.Contains("reason=panel-closed;", StringComparison.Ordinal));
+    symmetricPanel.OnPanelClose();
+    AssertEqual(
+        panelCloseReleaseCount + 2,
+        ReadExactRecipeLifecycleMessages(lifecycleLogStart).Count(message =>
+            message.Contains("event=released;", StringComparison.Ordinal)
+            && message.Contains("reason=panel-closed;", StringComparison.Ordinal)),
+        "Cooking panel close did not log both exact-row ownership releases precisely.");
+    RuntimeTargetRecipeVariantService.RetireFailClosed("symmetric exact row-highlight smoke complete");
+
+    RuntimeUiPinningService.UpdateTargets(
+        businessGeneration,
+        new[]
+        {
+            CreateTarget(RuntimeUiTargetKind.Rare, recipeVariantEnabled: true, revision: "split-extras", extras: new[] { 143 }),
+            CreateTarget(RuntimeUiTargetKind.Normal, recipeVariantEnabled: true, revision: "split-extras", color: customNormalColor, extras: new[] { 144 }),
+        });
+    var splitExtrasTarget = RuntimeUiPinningService.ReadTargetSet();
+    AssertEqual(RuntimeUiTargetKinds.None, splitExtrasTarget.GetBaseRecipeClaims(recipeId), "Two variant targets leaked an aggregate claim onto the base row.");
+    var splitPanel = new CookingSelectionPanelProbe();
+    splitPanel.OnPanelOpen();
+    var rareSplitRecipe = new RecipeProbe(recipeId);
+    var rareSplitButton = new UIButtonSimpleProbe(baseline);
+    RuntimeTargetRecipeVariantService.BindRecipeRow(
+        splitPanel,
+        rareSplitRecipe,
+        rareSplitButton,
+        RuntimeUiTargetKinds.Rare,
+        "rare-extra-143-split");
+    splitPanel.OnRecipeElementEnabled(rareSplitRecipe, new object(), rareSplitButton);
+    var normalSplitRecipe = new RecipeProbe(recipeId);
+    var normalSplitButton = new UIButtonSimpleProbe(baseline);
+    RuntimeTargetRecipeVariantService.BindRecipeRow(
+        splitPanel,
+        normalSplitRecipe,
+        normalSplitButton,
+        RuntimeUiTargetKinds.Normal,
+        "normal-extra-144-split");
+    splitPanel.OnRecipeElementEnabled(normalSplitRecipe, new object(), normalSplitButton);
+    RuntimePinnedListHighlightService.Tick();
+    AssertColor(
+        RuntimeTargetHighlightStyle.BuildListItemPulseColor(
+            baseline,
+            RuntimeUiTargetKinds.Rare,
+            splitExtrasTarget.Palette,
+            Time.realtimeSinceStartup),
+        rareSplitButton.image.get_color(),
+        "Different rare extras did not retain their exact rare-only synthetic color.");
+    AssertColor(
+        RuntimeTargetHighlightStyle.BuildListItemPulseColor(
+            baseline,
+            RuntimeUiTargetKinds.Normal,
+            splitExtrasTarget.Palette,
+            Time.realtimeSinceStartup),
+        normalSplitButton.image.get_color(),
+        "Different normal extras did not retain their exact normal-only synthetic color.");
+    splitPanel.OnPanelClose();
+    RuntimeTargetRecipeVariantService.RetireFailClosed("split extras exact row-highlight smoke complete");
+
+    RuntimeUiPinningService.UpdateTargets(
+        businessGeneration,
+        new[]
+        {
+            CreateTarget(RuntimeUiTargetKind.Rare, recipeVariantEnabled: true, revision: "shared-extras", extras: new[] { 145 }),
+            CreateTarget(RuntimeUiTargetKind.Normal, recipeVariantEnabled: true, revision: "shared-extras", color: customNormalColor, extras: new[] { 145 }),
+        });
+    var sharedExtrasTarget = RuntimeUiPinningService.ReadTargetSet();
+    var sharedPanel = new CookingSelectionPanelProbe();
+    sharedPanel.OnPanelOpen();
+    var sharedRecipe = new RecipeProbe(recipeId);
+    var sharedButton = new UIButtonSimpleProbe(baseline);
+    RuntimeTargetRecipeVariantService.BindRecipeRow(
+        sharedPanel,
+        sharedRecipe,
+        sharedButton,
+        RuntimeUiTargetKinds.Rare | RuntimeUiTargetKinds.Normal,
+        "shared-extra-145");
+    sharedPanel.OnRecipeElementEnabled(sharedRecipe, new object(), sharedButton);
+    Time.realtimeSinceStartup = 0.75f;
+    RuntimePinnedListHighlightService.Tick();
+    AssertColor(
+        RuntimeTargetHighlightStyle.BuildListItemPulseColor(
+            baseline,
+            RuntimeUiTargetKinds.Rare | RuntimeUiTargetKinds.Normal,
+            sharedExtrasTarget.Palette,
+            Time.realtimeSinceStartup),
+        sharedButton.image.get_color(),
+        "A shared ordered-extras row did not retain its dual target claim and palette.");
+    sharedPanel.OnPanelClose();
+    RuntimeTargetRecipeVariantService.RetireFailClosed("shared extras exact row-highlight smoke complete");
+
+    var boundedPanel = new CookingSelectionPanelProbe();
+    boundedPanel.OnPanelOpen();
+    for (var index = 0; index < 20; index += 1)
+    {
+        var boundedRecipe = new RecipeProbe(recipeId);
+        var boundedButton = new UIButtonSimpleProbe(baseline);
+        RuntimeTargetRecipeVariantService.BindRecipeRow(
+            boundedPanel,
+            boundedRecipe,
+            boundedButton,
+            RuntimeUiTargetKinds.Rare | RuntimeUiTargetKinds.Normal,
+            $"bounded-exact-row-{index}");
+        boundedPanel.OnRecipeElementEnabled(boundedRecipe, new object(), boundedButton);
+    }
+    boundedPanel.OnPanelClose();
+    RuntimeTargetRecipeVariantService.RetireFailClosed("bounded exact row-highlight logging smoke complete");
+
+    lifecycleMessages = ReadExactRecipeLifecycleMessages(lifecycleLogStart);
+    AssertEqual(32, lifecycleMessages.Length, "Exact-row lifecycle logging exceeded or failed to reach its per-business bound.");
+    AssertContains(RuntimePinnedListHighlightService.Status, "exactRecipeLogs=32/32", "Exact-row lifecycle log status did not expose the active bound.");
+    AssertTrue(
+        ReadListHighlightCounter("exactRecipeLogsSuppressed") > 0,
+        "Exact-row lifecycle events beyond the per-business bound were not counted as suppressed.");
+    AssertFalse(
+        ManualLogSource.InformationLoggedWhileUnsafe,
+        "An exact-row lifecycle message was emitted while the pinned-list state lock was held.");
+    ManualLogSource.InformationLogUnsafeProbe = null;
+}
+
+static string[] ReadExactRecipeLifecycleMessages(int startIndex)
+{
+    return ManualLogSource.SnapshotInformationMessages()
+        .Skip(startIndex)
+        .Where(message => message.StartsWith(
+            "Runtime pinned list exact recipe lifecycle ",
+            StringComparison.Ordinal))
+        .ToArray();
+}
+
 static string PublishRareTarget(
     long sessionGeneration,
     bool listPinningEnabled,
@@ -1843,7 +2580,8 @@ static void AssertPatch(
     string? finalizer,
     Type? patchOwner = null,
     int? prefixPriority = null,
-    int? postfixPriority = null)
+    int? postfixPriority = null,
+    string? postfixAfter = null)
 {
     var original = declaringType.GetMethod(originalName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static)
         ?? throw new MissingMethodException(declaringType.FullName, originalName);
@@ -1865,6 +2603,11 @@ static void AssertPatch(
     {
         var actualPriority = patch.Postfixes.Single(item => item.PatchMethod.DeclaringType == serviceType).priority;
         AssertEqual(postfixPriority.Value, actualPriority, $"Unexpected postfix priority for {originalName}.");
+    }
+    if (postfixAfter != null)
+    {
+        var after = patch.Postfixes.Single(item => item.PatchMethod.DeclaringType == serviceType).after;
+        AssertTrue(after.Contains(postfixAfter, StringComparer.Ordinal), $"Postfix ordering for {originalName} did not follow the variant binding service.");
     }
 }
 

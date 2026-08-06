@@ -632,7 +632,7 @@ internal sealed class StewardOverlayController
         _localApiServer?.Dispose();
         _localApiServer = null;
         RuntimeUiPinningService.Abandon("controller disposed");
-        RuntimePinnedRecipeExtrasService.Abandon("controller disposed");
+        RuntimeTargetRecipeVariantService.RetireFailClosed("controller disposed");
         RuntimeCookerHighlightService.Abandon("controller disposed");
         RuntimeSeatHighlightService.Dispose("controller disposed");
         RunOrderHighlightDisposalNoThrow(

@@ -89,24 +89,25 @@ internal static class RuntimeUiPinningService
                 coreStatus = $"patches=checkPinnedPrefix:{_checkPinnedPatchStatus}, cookingScope:{_cookingScopePatchStatus}, beverageScope:{_beverageScopePatchStatus}, cookingPanel:{_cookingPanelPatchStatus}, storagePanel:{_storagePanelPatchStatus}; targetSet={DescribeTargetSet(targetSet)}; orderSurfaces=hud:{(_hudOrderHighlightTargetSynchronized ? "synchronized" : "retry-pending")},throwDelivery:{(_throwDeliveryOrderHighlightTargetSynchronized ? "synchronized" : "retry-pending")}; panelRefresh=cooking:{DescribePanelLocked(_cookingPanel)}, storage:{DescribePanelLocked(_storagePanel)}, attempts:{_panelRefreshAttempts}, successes:{_panelRefreshSuccesses}, failures:{_panelRefreshFailures}, stale:{_panelRefreshStalePanels}, warningLogs:{_panelRefreshWarningLogs}/{MaxPanelRefreshWarningLogs}, lastError:{_lastPanelRefreshError}";
             }
 
-            return $"{coreStatus}; highlight={RuntimeCookerHighlightService.Status}; seat={RuntimeSeatHighlightService.Status}; order={RuntimeOrderHighlightService.Status}; throwDeliveryOrder={RuntimeThrowDeliverOrderHighlightService.Status}; extras={RuntimePinnedRecipeExtrasService.Status}; listHighlight={RuntimePinnedListHighlightService.Status}; forcedTotal=recipe:{Interlocked.Read(ref _recipeForces)}, ingredients:{Interlocked.Read(ref _ingredientForces)}, beverage:{Interlocked.Read(ref _beverageForces)}; scopeImbalance={Interlocked.Read(ref _scopeCleanupImbalances)}";
+            return $"{coreStatus}; highlight={RuntimeCookerHighlightService.Status}; seat={RuntimeSeatHighlightService.Status}; order={RuntimeOrderHighlightService.Status}; throwDeliveryOrder={RuntimeThrowDeliverOrderHighlightService.Status}; recipeVariant={RuntimeTargetRecipeVariantService.Status}; listHighlight={RuntimePinnedListHighlightService.Status}; forcedTotal=recipe:{Interlocked.Read(ref _recipeForces)}, ingredients:{Interlocked.Read(ref _ingredientForces)}, beverage:{Interlocked.Read(ref _beverageForces)}; scopeImbalance={Interlocked.Read(ref _scopeCleanupImbalances)}";
         }
     }
 
     public static void Attach(ManualLogSource log)
     {
         _log = log;
-        RuntimePinnedRecipeExtrasService.Attach(log);
+        RuntimeTargetRecipeVariantService.Attach(log);
         try
         {
             _harmony ??= new Harmony("com.tyukki.mystia-steward-companion.runtime-ui-pinning");
             var patchedNow = new List<string>();
             var missing = new List<string>();
 
-            PatchScopeMethod(
+            PatchScopeMethods(
                 _harmony,
                 CookingSelectionPanelTypeName,
-                "UpdateAllVisual",
+                new[] { "UpdateAllVisual", "UpdateRecipeField" },
+                "UpdateRecipeField",
                 0,
                 nameof(OnCookingRefreshStarted),
                 nameof(OnCookingRefreshFinalized),
@@ -122,9 +123,10 @@ internal static class RuntimeUiPinningService
                 PatchSlot.CheckPinned,
                 patchedNow,
                 missing);
-            PatchScopeMethod(
+            PatchScopeMethods(
                 _harmony,
                 StoragePanelTypeName,
+                new[] { "UpdateBevField" },
                 "UpdateBevField",
                 0,
                 nameof(OnBeverageRefreshStarted),
@@ -199,35 +201,73 @@ internal static class RuntimeUiPinningService
             : RuntimeUiTargetSetSnapshot.Disabled;
     }
 
-    internal static bool TryExecutePinnedRecipeExtrasTransaction(
-        RuntimeUiTargetSetSnapshot capturedTargetSet,
-        int recipeId,
-        IReadOnlyList<int> extraIngredientIds,
-        Action transaction)
+    /// <summary>
+    /// Acquires the target-publication side of a variant transaction. The caller must acquire the
+    /// variant-service lock only after this succeeds and retain the lease until the synchronous
+    /// native submit callback has returned. The lease is intentionally thread-affine.
+    /// </summary>
+    internal static bool TryAcquireTargetRecipeVariantPublicationLease(
+        RuntimeUiTargetSetSnapshot expectedTargetSet,
+        out TargetRecipeVariantPublicationLease lease)
     {
-        ArgumentNullException.ThrowIfNull(capturedTargetSet);
-        ArgumentNullException.ThrowIfNull(extraIngredientIds);
-        ArgumentNullException.ThrowIfNull(transaction);
+        ArgumentNullException.ThrowIfNull(expectedTargetSet);
+        lease = null!;
 
-        lock (TargetPublicationRoot)
+        var lockTaken = false;
+        try
         {
-            var currentTargetSet = Volatile.Read(ref _targetSet);
+            Monitor.Enter(TargetPublicationRoot, ref lockTaken);
             var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
-            if (!lifecycle.IsActive
-                || lifecycle.Generation != capturedTargetSet.SessionGeneration
-                || !ReferenceEquals(currentTargetSet, capturedTargetSet)
-                || currentTargetSet.Generation != capturedTargetSet.Generation
-                || currentTargetSet.SessionGeneration != capturedTargetSet.SessionGeneration
-                || currentTargetSet.ResolveRecipeExtras(
-                    recipeId,
-                    out var currentExtraIngredientIds) != RuntimeUiRecipeExtrasResolution.Resolved
-                || !currentExtraIngredientIds.SequenceEqual(extraIngredientIds))
+            var current = Volatile.Read(ref _targetSet);
+            if (!ReferenceEquals(current, expectedTargetSet)
+                || !lifecycle.IsActive
+                || current.Generation != expectedTargetSet.Generation
+                || current.SessionGeneration <= 0
+                || current.SessionGeneration != expectedTargetSet.SessionGeneration
+                || current.SessionGeneration != lifecycle.Generation)
             {
                 return false;
             }
 
-            transaction();
+            lease = new TargetRecipeVariantPublicationLease(TargetPublicationRoot);
+            lockTaken = false;
             return true;
+        }
+        finally
+        {
+            if (lockTaken) Monitor.Exit(TargetPublicationRoot);
+        }
+    }
+
+    /// <summary>
+    /// Acquires the target-publication side of a variant transaction for one exact active
+    /// night-business generation. Unlike the snapshot overload, this lease deliberately does not
+    /// tie the transaction to whichever target snapshot happened to be current when it began.
+    /// The lease remains thread-affine and blocks target publication until it is released.
+    /// </summary>
+    internal static bool TryAcquireTargetRecipeVariantPublicationLease(
+        long expectedBusinessGeneration,
+        out TargetRecipeVariantPublicationLease lease)
+    {
+        lease = null!;
+
+        var lockTaken = false;
+        try
+        {
+            Monitor.Enter(TargetPublicationRoot, ref lockTaken);
+            var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+            if (!lifecycle.IsActive || lifecycle.Generation != expectedBusinessGeneration)
+            {
+                return false;
+            }
+
+            lease = new TargetRecipeVariantPublicationLease(TargetPublicationRoot);
+            lockTaken = false;
+            return true;
+        }
+        finally
+        {
+            if (lockTaken) Monitor.Exit(TargetPublicationRoot);
         }
     }
 
@@ -281,7 +321,7 @@ internal static class RuntimeUiPinningService
             Volatile.Write(ref _targetSet, disabled);
 
             RunCleanupNoThrow(() => Abandon(reason));
-            RunCleanupNoThrow(() => RuntimePinnedRecipeExtrasService.Abandon(reason));
+            RunCleanupNoThrow(() => RuntimeTargetRecipeVariantService.RetireFailClosed(reason));
             RunCleanupNoThrow(() => RuntimeCookerHighlightService.UpdateTargets(disabled));
             RunCleanupNoThrow(() => RuntimeSeatHighlightService.UpdateTargets(disabled));
             var hudOrderSynchronized = TryUpdateOrderHighlightSurface(
@@ -479,10 +519,11 @@ internal static class RuntimeUiPinningService
         }
     }
 
-    private static void PatchScopeMethod(
+    private static void PatchScopeMethods(
         Harmony harmony,
         string typeName,
-        string methodName,
+        IReadOnlyList<string> scopeMethodNames,
+        string refreshMethodName,
         int parameterCount,
         string prefixName,
         string finalizerName,
@@ -490,42 +531,68 @@ internal static class RuntimeUiPinningService
         ICollection<string> patchedNow,
         ICollection<string> missing)
     {
-        var key = $"{typeName}.{methodName}/{parameterCount}:{patchSlot}";
-        lock (SyncRoot)
-        {
-            if (PatchedMethods.Contains(key))
-            {
-                SetPatchStatusLocked(patchSlot, "patched");
-                return;
-            }
-        }
-
         try
         {
+            if (scopeMethodNames.Count == 0)
+            {
+                throw new InvalidOperationException("a refresh scope requires at least one method");
+            }
+            var distinctScopeNames = scopeMethodNames
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
             var type = RuntimeReflectionUtility.FindType(typeName);
-            var target = FindMethod(type, methodName, parameterCount);
+            var scopeMethods = distinctScopeNames
+                .Select(name => new
+                {
+                    Name = name,
+                    Method = FindMethod(type, name, parameterCount),
+                    Key = $"{typeName}.{name}/{parameterCount}:{patchSlot}",
+                })
+                .ToArray();
+            var refreshMethod = FindMethod(type, refreshMethodName, 0);
             var prefix = typeof(RuntimeUiPinningService).GetMethod(prefixName, BindingFlags.NonPublic | BindingFlags.Static);
             var finalizer = typeof(RuntimeUiPinningService).GetMethod(finalizerName, BindingFlags.NonPublic | BindingFlags.Static);
-            if (target == null || prefix == null || finalizer == null)
+            var missingScope = scopeMethods.FirstOrDefault(scope => scope.Method == null);
+            if (missingScope != null || refreshMethod == null || prefix == null || finalizer == null)
             {
                 lock (SyncRoot)
                 {
-                    SetPatchStatusLocked(patchSlot, target == null ? "method missing" : "hook missing");
+                    SetPatchStatusLocked(
+                        patchSlot,
+                        missingScope != null
+                            ? $"scope method missing:{missingScope.Name}"
+                            : refreshMethod == null
+                                ? "refresh method missing"
+                                : "hook missing");
                 }
 
-                missing.Add(key);
+                missing.Add(missingScope != null
+                    ? missingScope.Key
+                    : refreshMethod == null
+                        ? $"{typeName}.{refreshMethodName}/0:PanelRefresh"
+                        : $"{typeName}:RefreshScopeHooks");
                 return;
             }
 
-            harmony.Patch(target, prefix: new HarmonyMethod(prefix), finalizer: new HarmonyMethod(finalizer));
+            foreach (var scope in scopeMethods)
+            {
+                lock (SyncRoot)
+                {
+                    if (PatchedMethods.Contains(scope.Key)) continue;
+                }
+
+                harmony.Patch(
+                    scope.Method!,
+                    prefix: new HarmonyMethod(prefix),
+                    finalizer: new HarmonyMethod(finalizer));
+                lock (SyncRoot) PatchedMethods.Add(scope.Key);
+                patchedNow.Add(scope.Key);
+            }
             lock (SyncRoot)
             {
-                PatchedMethods.Add(key);
                 SetPatchStatusLocked(patchSlot, "patched");
-                SetRefreshMethodLocked(patchSlot, target);
+                SetRefreshMethodLocked(patchSlot, refreshMethod!);
             }
-
-            patchedNow.Add(key);
         }
         catch (Exception ex)
         {
@@ -534,7 +601,7 @@ internal static class RuntimeUiPinningService
                 SetPatchStatusLocked(patchSlot, $"error:{ex.GetBaseException().Message}");
             }
 
-            missing.Add($"{key} (patch error)");
+            missing.Add($"{typeName}:RefreshScope ({ex.GetBaseException().Message})");
         }
     }
 
@@ -647,10 +714,6 @@ internal static class RuntimeUiPinningService
         }
 
         _cookingRefreshDepth++;
-        if (isOutermostRefresh && _cookingScopeTarget != null)
-        {
-            RuntimePinnedRecipeExtrasService.TryApply(__instance, _cookingScopeTarget);
-        }
     }
 
     private static Exception? OnCookingRefreshFinalized(Exception? __exception)
@@ -664,13 +727,6 @@ internal static class RuntimeUiPinningService
                 var instance = _cookingScopeInstance;
                 var target = _cookingScopeTarget;
                 var succeeded = !_cookingScopeFailed && __exception == null;
-                if (instance != null && target != null)
-                {
-                    RuntimePinnedRecipeExtrasService.OnRefreshFinalized(
-                        instance,
-                        target,
-                        succeeded ? null : __exception ?? new InvalidOperationException("Nested cooking refresh failed."));
-                }
                 _cookingScopeTarget = null;
                 _cookingScopeInstance = null;
                 _cookingScopeFailed = false;
@@ -897,6 +953,7 @@ internal static class RuntimeUiPinningService
         var latestTarget = Volatile.Read(ref _targetSet);
         if (!latestLifecycle.IsActive
             || latestLifecycle.Generation != attempt.BusinessGeneration
+            || !ReferenceEquals(latestTarget, target)
             || latestTarget.SessionGeneration != attempt.BusinessGeneration
             || latestTarget.Generation != attempt.TargetGeneration
             || !IsCurrentOpenPanel(attempt))
@@ -904,8 +961,15 @@ internal static class RuntimeUiPinningService
             return;
         }
 
+        TargetRecipeVariantPublicationLease? exactTargetLease = null;
         try
         {
+            if (attempt.PanelKind == RefreshPanelKind.Cooking
+                && !TryAcquireTargetRecipeVariantPublicationLease(target, out exactTargetLease))
+            {
+                return;
+            }
+
             attempt.RefreshMethod.Invoke(attempt.Instance, Array.Empty<object?>());
             lock (SyncRoot)
             {
@@ -923,6 +987,10 @@ internal static class RuntimeUiPinningService
         catch (Exception ex)
         {
             NotePanelRefreshFailure(panelKind, attempt.TargetGeneration, ex);
+        }
+        finally
+        {
+            exactTargetLease?.Dispose();
         }
     }
 
@@ -1192,5 +1260,35 @@ internal static class RuntimeUiPinningService
         IngredientsMeat = 4,
         IngredientsVegetable = 5,
         IngredientsOther = 6,
+    }
+}
+
+/// <summary>
+/// Thread-affine ownership of the target-publication monitor. This type carries no target data;
+/// the exact snapshot is validated before construction.
+/// </summary>
+internal sealed class TargetRecipeVariantPublicationLease : IDisposable
+{
+    private readonly object _publicationRoot;
+    private readonly int _ownerThreadId;
+    private bool _released;
+
+    internal TargetRecipeVariantPublicationLease(object publicationRoot)
+    {
+        _publicationRoot = publicationRoot;
+        _ownerThreadId = Environment.CurrentManagedThreadId;
+    }
+
+    public void Dispose()
+    {
+        if (Environment.CurrentManagedThreadId != _ownerThreadId)
+        {
+            throw new InvalidOperationException(
+                "A target recipe-variant publication lease must be released by its acquiring thread.");
+        }
+        if (_released) return;
+
+        Monitor.Exit(_publicationRoot);
+        _released = true;
     }
 }

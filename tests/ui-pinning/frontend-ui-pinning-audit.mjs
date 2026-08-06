@@ -30,6 +30,7 @@ const apiSource = readFileSync('apps/companion/src/companion/api.ts', 'utf8');
 const targetsSource = readFileSync('apps/companion/src/companion/domain/game-ui-targets.ts', 'utf8');
 const publisherSource = readFileSync('apps/companion/src/companion/hooks/useGameUiTargetPublisher.ts', 'utf8');
 const settingsSource = readFileSync('apps/companion/src/companion/pages/ModSettingsPanel.tsx', 'utf8');
+const helpContentSource = readFileSync('apps/companion/src/data/help-content.json', 'utf8');
 assert(
   /rareRecipeVariantEnabled:\s*readStoredBoolean\([^,]+,\s*false\)/.test(preferencesSource)
     && /normalRecipeVariantEnabled:\s*readStoredBoolean\([^,]+,\s*false\)/.test(preferencesSource),
@@ -51,6 +52,44 @@ assert(/\^#\[0-9A-Fa-f\]\{6\}\$/.test(preferencesSource), '高亮颜色未严格
 assert(
   /if \(event\.key === 'Escape'\) \{\s*event\.preventDefault\(\);\s*setDraft\(null\);\s*\}/.test(settingsSource),
   '高亮色 Escape 必须只撤销草稿，不能 blur 后提交旧闭包值',
+);
+assert(
+  settingsSource.includes('稀客加料料理选项（实验性）')
+    && settingsSource.includes('普客加料料理选项（实验性）'),
+  '设置页必须明确区分稀客与普客加料料理选项开关',
+);
+assert(
+  settingsSource.includes('稀客目标料理含加料时，在制作页面显示独立选项。选择后只加入该方案的加料，并按游戏规则扣除材料；基础料理保持原配方，选项使用稀客目标色。')
+    && settingsSource.includes('普客目标料理含加料时，在制作页面显示独立选项。选择后只加入该方案的加料，并按游戏规则扣除材料；基础料理保持原配方，选项使用普客目标色。'),
+  '设置页没有完整说明两类独立加料选项、目标方案和基础料理原生语义',
+);
+assert(
+  helpContentSource.includes('制作页面会在基础料理后显示独立选项')
+    && helpContentSource.includes('并同时开启同类的游戏界面置顶推荐')
+    && helpContentSource.includes('基础料理保持原配方；选择加料选项时，Mod 只加入该目标的有序加料，并按游戏规则扣除材料')
+    && helpContentSource.includes('相同基础料理和相同加料方案只显示一个共享选项')
+    && helpContentSource.includes('修改后会同时影响列表、加料料理选项、厨具、桌位、左下订单卡片和投掷送达面板')
+    && helpContentSource.includes('无加料目标使用基础料理，并按所属订单颜色高亮；含加料目标只高亮自己的加料选项')
+    && helpContentSource.includes('加料选项只在目标订单、制作页面、配方和材料库存能够精确对应时执行')
+    && helpContentSource.includes('信息不完整时会停止本次操作，不会改用基础料理或其他目标方案')
+    && helpContentSource.includes('制作页刷新只更新料理行的 Mod 绑定，不会清理游戏原生料理回调或禁用按钮')
+    && helpContentSource.includes('实际提交新料理且游戏正常返回后，只有退旧材料和装入新配方都已确认')
+    && helpContentSource.includes('手动关闭正常返回时仍由游戏退料')
+    && helpContentSource.includes('Target recipe variant switch-armed')
+    && helpContentSource.includes('Target recipe variant switch-rejected')
+    && helpContentSource.includes('Mod 不会猜测退款或重放材料操作'),
+  '帮助页没有完整说明置顶前置、独立加料行、原生换菜收据和失败关闭边界',
+);
+assert(
+  !settingsSource.includes('加料料理选项诊断')
+    && !helpContentSource.includes('加料料理选项当前只用于实机诊断')
+    && !helpContentSource.includes('原基础料理行和临时诊断行都无法选择或提交'),
+  '设置页或帮助页仍保留旧诊断版与 blanket blocker 描述',
+);
+assert(
+  !helpContentSource.includes('点击推荐料理时自动加入加料')
+    && !helpContentSource.includes('自动加料会调用游戏原生库存入口'),
+  '帮助页仍保留尚未实现的自动加料承诺',
 );
 assert(apiSource.includes('/ui-pinning/targets?'), '双目标没有使用 plural 原子发布 endpoint');
 assert(!/\/ui-pinning\/target\?/.test(apiSource), '旧 singular UI target endpoint 仍被前端调用');

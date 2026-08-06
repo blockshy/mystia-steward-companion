@@ -11,6 +11,7 @@ internal static class RuntimePinnedListHighlightService
     private const string CookingSelectionPanelTypeName = "NightScene.UI.CookingUtility.WorkSceneCookingSelectionPannel";
     private const string StoragePanelTypeName = "NightScene.UI.CookingUtility.WorkSceneStoragePannel";
     private const int ExpectedHookCount = 9;
+    private const int MaximumExactRecipeLifecycleLogsPerBusiness = 32;
 
     private static readonly object SyncRoot = new();
     private static readonly Dictionary<nint, TrackedImage> TrackedImages = new();
@@ -23,6 +24,9 @@ internal static class RuntimePinnedListHighlightService
     private static long _bindingErrors;
     private static long _visualErrors;
     private static long _restoreErrors;
+    private static long _exactRecipeLogBusinessGeneration;
+    private static int _exactRecipeLifecycleLogs;
+    private static long _suppressedExactRecipeLifecycleLogs;
     private static bool _bindingWarningLogged;
     private static bool _suspended;
     private static string _suspendReason = "scene unavailable";
@@ -46,7 +50,7 @@ internal static class RuntimePinnedListHighlightService
                         : TrackedImages.Values.Any(item => item.TargetGeneration == target.Generation)
                             ? _state
                             : TrackedImages.Count == 0 ? "waiting for target elements" : "pending target refresh";
-                return $"hooks={_hookStatus}; state={state}; tracked=recipe:{recipeCount}, ingredients:{ingredientCount}, beverage:{beverageCount}; missingImage={_missingImages}; bindingErrors={_bindingErrors}; visualErrors={_visualErrors}; restoreErrors={_restoreErrors}";
+                return $"hooks={_hookStatus}; state={state}; tracked=recipe:{recipeCount}, ingredients:{ingredientCount}, beverage:{beverageCount}; missingImage={_missingImages}; bindingErrors={_bindingErrors}; visualErrors={_visualErrors}; restoreErrors={_restoreErrors}; exactRecipeLogs={_exactRecipeLifecycleLogs}/{MaximumExactRecipeLifecycleLogsPerBusiness}; exactRecipeLogGeneration={_exactRecipeLogBusinessGeneration}; exactRecipeLogsSuppressed={_suppressedExactRecipeLifecycleLogs}";
             }
         }
     }
@@ -101,7 +105,7 @@ internal static class RuntimePinnedListHighlightService
     {
         if (!RuntimeNightBusinessLifecycle.IsActive) return;
 
-        List<TrackedImage> staleImages;
+        List<TrackedImageRelease> staleImages;
         List<TrackedImage> candidates;
         var target = RuntimeUiPinningService.ReadTargetSet();
         var generation = target.Generation;
@@ -110,13 +114,14 @@ internal static class RuntimePinnedListHighlightService
             if (_suspended) return;
 
             staleImages = TrackedImages.Values
-                .Where(item => !HasListPinningTargets(target)
-                    || item.TargetGeneration != generation
-                    || !MatchesTarget(target, item.ItemKind, item.ItemId))
+                .Select(item => new TrackedImageRelease(
+                    item,
+                    ClassifyTargetRelease(item, target)))
+                .Where(item => item.Reason != ExactRecipeReleaseReason.None)
                 .ToList();
-            foreach (var item in staleImages)
+            foreach (var release in staleImages)
             {
-                RemoveTrackedImageLocked(item);
+                RemoveTrackedImageLocked(release.Item);
             }
 
             candidates = TrackedImages.Values.ToList();
@@ -126,19 +131,24 @@ internal static class RuntimePinnedListHighlightService
             }
         }
 
-        RestoreTrackedImages(staleImages);
+        RestoreAndLogTrackedImages(staleImages);
         if (!IsGenerationEnabled(generation)) return;
 
         foreach (var item in candidates)
         {
+            if (!TryReadCurrentClaims(item, generation, out var claims, out var palette))
+            {
+                RemoveStaleTrackedImage(
+                    item,
+                    ClassifyLeaseRelease(item, RuntimeUiPinningService.ReadTargetSet()));
+                continue;
+            }
             if (!TryPrepareVisual(item, generation, out var originalColor)) continue;
-            var claims = GetClaims(target, item.ItemKind, item.ItemId);
-            if (claims == RuntimeUiTargetKinds.None) continue;
 
             var color = RuntimeTargetHighlightStyle.BuildListItemPulseColor(
                 originalColor,
                 claims,
-                target.Palette,
+                palette,
                 Time.realtimeSinceStartup);
             if (!TryApplyHighlight(item, generation, color)) continue;
         }
@@ -167,7 +177,10 @@ internal static class RuntimePinnedListHighlightService
             _state = HasListPinningTargets(target) ? $"suspended: {_suspendReason}" : "disabled";
         }
 
-        RestoreTrackedImages(images);
+        RestoreAndLogTrackedImages(
+            images.Select(item => new TrackedImageRelease(
+                item,
+                ExactRecipeReleaseReason.ServiceSuspended)));
     }
 
     public static void Resume(string reason)
@@ -186,13 +199,19 @@ internal static class RuntimePinnedListHighlightService
     /// </summary>
     public static void Abandon(string reason)
     {
+        List<TrackedImage> images;
         lock (SyncRoot)
         {
-            TrackedImages.Clear();
+            images = TakeAllTrackedImagesLocked();
             _suspended = true;
             _suspendReason = string.IsNullOrWhiteSpace(reason) ? "night business destroyed" : reason.Trim();
             _state = $"abandoned: {_suspendReason}";
         }
+
+        LogTrackedImageReleases(
+            images.Select(item => new TrackedImageRelease(
+                item,
+                ExactRecipeReleaseReason.ServiceAbandoned)));
     }
 
     private static void PatchElementMethod(
@@ -224,7 +243,11 @@ internal static class RuntimePinnedListHighlightService
             harmony.Patch(
                 target,
                 prefix: new HarmonyMethod(prefix) { priority = Priority.First },
-                postfix: new HarmonyMethod(postfix) { priority = Priority.Last });
+                postfix: new HarmonyMethod(postfix)
+                {
+                    priority = Priority.Last,
+                    after = new[] { RuntimeTargetRecipeVariantService.HarmonyId },
+                });
             lock (SyncRoot)
             {
                 PatchedMethods.Add(key);
@@ -314,7 +337,14 @@ internal static class RuntimePinnedListHighlightService
                 TrackedImages.Remove(pointer, out trackedImage);
             }
 
-            if (trackedImage != null) RestoreTrackedImage(trackedImage);
+            if (trackedImage != null)
+            {
+                RestoreTrackedImage(trackedImage);
+                TryLogExactRecipeLifecycle(
+                    trackedImage,
+                    ExactRecipeLifecycleEvent.Released,
+                    ExactRecipeReleaseReason.PoolRebind);
+            }
         }
         catch (Exception ex)
         {
@@ -322,40 +352,102 @@ internal static class RuntimePinnedListHighlightService
         }
     }
 
-    private static void AfterRecipeItemEnabled(object __0, object __2)
+    private static void AfterRecipeItemEnabled(object __instance, object __0, object __2)
     {
-        TryRegister(__0, __2, PanelKind.Cooking, ItemKind.Recipe);
+        TryRegisterRecipe(__instance, __0, __2);
     }
 
     private static void AfterIngredientItemEnabled(object __0, object __2)
     {
-        TryRegister(__0, __2, PanelKind.Cooking, ItemKind.Ingredient);
+        TryRegisterByItemId(__0, __2, PanelKind.Cooking, ItemKind.Ingredient);
     }
 
     private static void AfterStorageItemEnabled(object __0, object __2)
     {
-        TryRegister(__0, __2, PanelKind.Storage, ItemKind.Beverage);
+        TryRegisterByItemId(__0, __2, PanelKind.Storage, ItemKind.Beverage);
     }
 
-    private static void BeforeCookingPanelTeardown()
+    private static void BeforeCookingPanelTeardown(MethodBase __originalMethod)
     {
-        ReconcilePanelTeardown(PanelKind.Cooking);
+        ReconcilePanelTeardown(
+            PanelKind.Cooking,
+            __originalMethod.Name == "OnPanelDestroyed"
+                ? ExactRecipeReleaseReason.PanelDestroyed
+                : ExactRecipeReleaseReason.PanelClosed);
     }
 
-    private static void BeforeStoragePanelTeardown()
+    private static void BeforeStoragePanelTeardown(MethodBase __originalMethod)
     {
-        ReconcilePanelTeardown(PanelKind.Storage);
+        ReconcilePanelTeardown(
+            PanelKind.Storage,
+            __originalMethod.Name == "OnPanelDestroyed"
+                ? ExactRecipeReleaseReason.PanelDestroyed
+                : ExactRecipeReleaseReason.PanelClosed);
     }
 
-    private static void TryRegister(object data, object button, PanelKind panelKind, ItemKind itemKind)
+    private static void TryRegisterRecipe(object panel, object recipe, object button)
     {
         if (!RuntimeNightBusinessLifecycle.IsActive) return;
 
         try
         {
-            var item = itemKind == ItemKind.Recipe
-                ? data
-                : RuntimeReflectionUtility.GetMemberValue(data, "Key");
+            var itemId = RuntimeReflectionUtility.ToInt(
+                RuntimeReflectionUtility.GetMemberValue(recipe, "id"),
+                -1);
+            if (itemId < 0) return;
+
+            var target = RuntimeUiPinningService.ReadTargetSet();
+            if (!target.HasRecipeVariants(itemId))
+            {
+                if (target.GetRecipeClaims(itemId) == RuntimeUiTargetKinds.None) return;
+                TryRegisterImage(
+                    button,
+                    PanelKind.Cooking,
+                    ItemKind.Recipe,
+                    itemId,
+                    target,
+                    usesExactRecipeRowLease: false,
+                    default);
+                return;
+            }
+
+            if (!RuntimeTargetRecipeVariantService.TryResolveRecipeRowClaims(
+                    panel,
+                    recipe,
+                    button,
+                    out var claims,
+                    out var lease)
+                || claims == RuntimeUiTargetKinds.None)
+            {
+                return;
+            }
+
+            TryRegisterImage(
+                button,
+                PanelKind.Cooking,
+                ItemKind.Recipe,
+                itemId,
+                target,
+                usesExactRecipeRowLease: true,
+                lease);
+        }
+        catch (Exception ex)
+        {
+            NoteBindingError("recipe postfix", ex);
+        }
+    }
+
+    private static void TryRegisterByItemId(
+        object data,
+        object button,
+        PanelKind panelKind,
+        ItemKind itemKind)
+    {
+        if (!RuntimeNightBusinessLifecycle.IsActive) return;
+
+        try
+        {
+            var item = RuntimeReflectionUtility.GetMemberValue(data, "Key");
             if (item == null) return;
 
             if (itemKind == ItemKind.Beverage
@@ -373,41 +465,107 @@ internal static class RuntimePinnedListHighlightService
                 if (_suspended || !MatchesTarget(target, itemKind, itemId)) return;
             }
 
-            var image = ReadButtonImage(button);
-            if (image == null || !TryReadColor(image, out var originalColor))
-            {
-                IncrementMissingImage();
-                return;
-            }
-
-            var pointer = RuntimeReflectionUtility.ReadObjectPointer(image);
-            if (pointer == IntPtr.Zero) return;
-
-            var latestTarget = RuntimeUiPinningService.ReadTargetSet();
-            lock (SyncRoot)
-            {
-                if (_suspended
-                    || target.Generation != latestTarget.Generation
-                    || !MatchesTarget(latestTarget, itemKind, itemId))
-                {
-                    return;
-                }
-
-                TrackedImages.Remove(pointer);
-                TrackedImages[pointer] = new TrackedImage(
-                    image,
-                    pointer,
-                    panelKind,
-                    itemKind,
-                    itemId,
-                    target.Generation,
-                    originalColor);
-                _state = "active";
-            }
+            TryRegisterImage(
+                button,
+                panelKind,
+                itemKind,
+                itemId,
+                target,
+                usesExactRecipeRowLease: false,
+                default);
         }
         catch (Exception ex)
         {
             NoteBindingError($"{itemKind} postfix", ex);
+        }
+    }
+
+    private static void TryRegisterImage(
+        object button,
+        PanelKind panelKind,
+        ItemKind itemKind,
+        int itemId,
+        RuntimeUiTargetSetSnapshot target,
+        bool usesExactRecipeRowLease,
+        TargetRecipeVariantRowLease recipeRowLease)
+    {
+        var exactRecipeClaims = RuntimeUiTargetKinds.None;
+        if (usesExactRecipeRowLease
+            && (!RuntimeTargetRecipeVariantService.TryValidateRecipeRowClaims(
+                    recipeRowLease,
+                    out exactRecipeClaims)
+                || exactRecipeClaims == RuntimeUiTargetKinds.None))
+        {
+            return;
+        }
+
+        var image = ReadButtonImage(button);
+        if (image == null || !TryReadColor(image, out var originalColor))
+        {
+            IncrementMissingImage();
+            return;
+        }
+
+        var pointer = RuntimeReflectionUtility.ReadObjectPointer(image);
+        if (pointer == IntPtr.Zero) return;
+
+        var latestTarget = RuntimeUiPinningService.ReadTargetSet();
+        var latestClaims = RuntimeUiTargetKinds.None;
+        if (usesExactRecipeRowLease
+            && (!RuntimeTargetRecipeVariantService.TryValidateRecipeRowClaims(
+                    recipeRowLease,
+                    out latestClaims)
+                || latestClaims == RuntimeUiTargetKinds.None))
+        {
+            return;
+        }
+        if (usesExactRecipeRowLease) exactRecipeClaims = latestClaims;
+
+        TrackedImage? replaced = null;
+        TrackedImage? registered = null;
+        lock (SyncRoot)
+        {
+            if (_suspended
+                || target.Generation != latestTarget.Generation
+                || !MatchesTrackingMode(
+                    latestTarget,
+                    itemKind,
+                    itemId,
+                    usesExactRecipeRowLease))
+            {
+                return;
+            }
+
+            TrackedImages.Remove(pointer, out replaced);
+            registered = new TrackedImage(
+                image,
+                pointer,
+                panelKind,
+                itemKind,
+                itemId,
+                target.Generation,
+                target.SessionGeneration,
+                originalColor,
+                usesExactRecipeRowLease,
+                recipeRowLease,
+                exactRecipeClaims);
+            TrackedImages[pointer] = registered;
+            _state = "active";
+        }
+
+        if (replaced != null)
+        {
+            TryLogExactRecipeLifecycle(
+                replaced,
+                ExactRecipeLifecycleEvent.Released,
+                ExactRecipeReleaseReason.RegistrationReplaced);
+        }
+        if (registered != null)
+        {
+            TryLogExactRecipeLifecycle(
+                registered,
+                ExactRecipeLifecycleEvent.Bound,
+                ExactRecipeReleaseReason.None);
         }
     }
 
@@ -418,7 +576,7 @@ internal static class RuntimePinnedListHighlightService
         var target = RuntimeUiPinningService.ReadTargetSet();
         lock (SyncRoot)
         {
-            if (!IsCurrentTargetLocked(item, generation, target)) return false;
+            if (!IsCurrentTrackingLocked(item, generation, target)) return false;
             captureFinalColor = !item.IsHighlighted;
             originalColor = item.OriginalColor;
         }
@@ -429,14 +587,14 @@ internal static class RuntimePinnedListHighlightService
         {
             if (!TryReadColor(item.Image, out var currentColor))
             {
-                RemoveFailedVisual(item);
+                RemoveFailedVisual(item, ExactRecipeReleaseReason.VisualReadFailed);
                 return false;
             }
 
             var latestTarget = RuntimeUiPinningService.ReadTargetSet();
             lock (SyncRoot)
             {
-                if (!IsCurrentTargetLocked(item, generation, latestTarget)) return false;
+                if (!IsCurrentTrackingLocked(item, generation, latestTarget)) return false;
                 item.OriginalColor = currentColor;
                 originalColor = currentColor;
                 return true;
@@ -444,7 +602,7 @@ internal static class RuntimePinnedListHighlightService
         }
         catch
         {
-            RemoveFailedVisual(item);
+            RemoveFailedVisual(item, ExactRecipeReleaseReason.VisualReadFailed);
             return false;
         }
     }
@@ -454,14 +612,14 @@ internal static class RuntimePinnedListHighlightService
         var target = RuntimeUiPinningService.ReadTargetSet();
         lock (SyncRoot)
         {
-            if (!IsCurrentTargetLocked(item, generation, target)) return false;
+            if (!IsCurrentTrackingLocked(item, generation, target)) return false;
         }
 
         try
         {
             if (!TryWriteColor(item.Image, color))
             {
-                RemoveFailedVisual(item);
+                RemoveFailedVisual(item, ExactRecipeReleaseReason.VisualWriteFailed);
                 return false;
             }
 
@@ -469,23 +627,40 @@ internal static class RuntimePinnedListHighlightService
         }
         catch
         {
-            RemoveFailedVisual(item, forceRestore: true);
+            RemoveFailedVisual(
+                item,
+                ExactRecipeReleaseReason.VisualWriteFailed,
+                forceRestore: true);
             return false;
         }
 
+        if (TryReadCurrentClaims(item, generation, out _, out _))
+        {
+            if (item.UsesExactRecipeRowLease
+                && Interlocked.CompareExchange(ref item.ExactRecipeAppliedLogged, 1, 0) == 0)
+            {
+                TryLogExactRecipeLifecycle(
+                    item,
+                    ExactRecipeLifecycleEvent.Applied,
+                    ExactRecipeReleaseReason.None);
+            }
+            return true;
+        }
+
         var restore = false;
-        var latestTarget = RuntimeUiPinningService.ReadTargetSet();
         lock (SyncRoot)
         {
-            if (IsCurrentTargetLocked(item, generation, latestTarget))
-            {
-                return true;
-            }
-
             restore = RemoveTrackedImageLocked(item);
         }
 
-        if (restore) RestoreTrackedImage(item);
+        if (restore)
+        {
+            RestoreTrackedImage(item);
+            TryLogExactRecipeLifecycle(
+                item,
+                ExactRecipeLifecycleEvent.Released,
+                ClassifyLeaseRelease(item, RuntimeUiPinningService.ReadTargetSet(), postWrite: true));
+        }
         return false;
     }
 
@@ -498,7 +673,7 @@ internal static class RuntimePinnedListHighlightService
         }
     }
 
-    private static bool IsCurrentTargetLocked(
+    private static bool IsCurrentTrackingLocked(
         TrackedImage item,
         long generation,
         RuntimeUiTargetSetSnapshot target)
@@ -509,23 +684,82 @@ internal static class RuntimePinnedListHighlightService
             && item.TargetGeneration == generation
             && TrackedImages.TryGetValue(item.Pointer, out var current)
             && ReferenceEquals(current, item)
-            && MatchesTarget(target, item.ItemKind, item.ItemId);
+            && MatchesTrackingMode(
+                target,
+                item.ItemKind,
+                item.ItemId,
+                item.UsesExactRecipeRowLease);
     }
 
     private static bool MatchesTarget(RuntimeUiTargetSetSnapshot target, ItemKind itemKind, int itemId)
     {
         return HasListPinningTargets(target)
-            && GetClaims(target, itemKind, itemId) != RuntimeUiTargetKinds.None;
+            && GetUncontrolledClaims(target, itemKind, itemId) != RuntimeUiTargetKinds.None;
     }
 
-    private static RuntimeUiTargetKinds GetClaims(
+    private static bool MatchesTrackingMode(
+        RuntimeUiTargetSetSnapshot target,
+        ItemKind itemKind,
+        int itemId,
+        bool usesExactRecipeRowLease)
+    {
+        if (!HasListPinningTargets(target)) return false;
+        if (itemKind != ItemKind.Recipe)
+        {
+            return GetUncontrolledClaims(target, itemKind, itemId) != RuntimeUiTargetKinds.None;
+        }
+
+        var recipeIsVariantControlled = target.HasRecipeVariants(itemId);
+        return usesExactRecipeRowLease
+            ? recipeIsVariantControlled
+            : !recipeIsVariantControlled
+                && target.GetRecipeClaims(itemId) != RuntimeUiTargetKinds.None;
+    }
+
+    private static bool TryReadCurrentClaims(
+        TrackedImage item,
+        long generation,
+        out RuntimeUiTargetKinds claims,
+        out RuntimeTargetHighlightPalette palette)
+    {
+        claims = RuntimeUiTargetKinds.None;
+        palette = default;
+        var target = RuntimeUiPinningService.ReadTargetSet();
+        if (item.UsesExactRecipeRowLease)
+        {
+            if (!RuntimeTargetRecipeVariantService.TryValidateRecipeRowClaims(
+                    item.RecipeRowLease,
+                    out claims)
+                || claims == RuntimeUiTargetKinds.None)
+            {
+                return false;
+            }
+        }
+        else
+        {
+            claims = GetUncontrolledClaims(target, item.ItemKind, item.ItemId);
+            if (claims == RuntimeUiTargetKinds.None) return false;
+        }
+
+        var latestTarget = RuntimeUiPinningService.ReadTargetSet();
+        lock (SyncRoot)
+        {
+            if (!IsCurrentTrackingLocked(item, generation, latestTarget)) return false;
+            palette = latestTarget.Palette;
+            return true;
+        }
+    }
+
+    private static RuntimeUiTargetKinds GetUncontrolledClaims(
         RuntimeUiTargetSetSnapshot target,
         ItemKind itemKind,
         int itemId)
     {
         return itemKind switch
         {
-            ItemKind.Recipe => target.GetRecipeClaims(itemId),
+            ItemKind.Recipe => target.HasRecipeVariants(itemId)
+                ? RuntimeUiTargetKinds.None
+                : target.GetRecipeClaims(itemId),
             ItemKind.Ingredient => target.GetIngredientClaims(itemId),
             ItemKind.Beverage => target.GetBeverageClaims(itemId),
             _ => RuntimeUiTargetKinds.None,
@@ -581,7 +815,9 @@ internal static class RuntimePinnedListHighlightService
         });
     }
 
-    private static void RestorePanel(PanelKind panelKind)
+    private static void RestorePanel(
+        PanelKind panelKind,
+        ExactRecipeReleaseReason releaseReason)
     {
         var target = RuntimeUiPinningService.ReadTargetSet();
         List<TrackedImage> images;
@@ -598,7 +834,8 @@ internal static class RuntimePinnedListHighlightService
                 : HasListPinningTargets(target) ? "waiting for target elements" : "disabled";
         }
 
-        RestoreTrackedImages(images);
+        RestoreAndLogTrackedImages(
+            images.Select(item => new TrackedImageRelease(item, releaseReason)));
     }
 
     private static bool HasListPinningTargets(RuntimeUiTargetSetSnapshot targetSet)
@@ -606,24 +843,31 @@ internal static class RuntimePinnedListHighlightService
         return targetSet.Targets.Any(target => target.ListPinningEnabled);
     }
 
-    private static void ReconcilePanelTeardown(PanelKind panelKind)
+    private static void ReconcilePanelTeardown(
+        PanelKind panelKind,
+        ExactRecipeReleaseReason releaseReason)
     {
         if (RuntimeNightBusinessLifecycle.Snapshot.Phase == NightBusinessLifecyclePhase.Destroyed)
         {
+            List<TrackedImage> images;
             lock (SyncRoot)
             {
-                foreach (var pointer in TrackedImages
-                             .Where(pair => pair.Value.PanelKind == panelKind)
-                             .Select(pair => pair.Key)
-                             .ToList())
+                images = TrackedImages.Values
+                    .Where(item => item.PanelKind == panelKind)
+                    .ToList();
+                foreach (var item in images)
                 {
-                    TrackedImages.Remove(pointer);
+                    RemoveTrackedImageLocked(item);
                 }
             }
+            LogTrackedImageReleases(
+                images.Select(item => new TrackedImageRelease(
+                    item,
+                    ExactRecipeReleaseReason.BusinessDestroyed)));
             return;
         }
 
-        RestorePanel(panelKind);
+        RestorePanel(panelKind, releaseReason);
     }
 
     private static List<TrackedImage> TakeAllTrackedImagesLocked()
@@ -644,7 +888,10 @@ internal static class RuntimePinnedListHighlightService
         return true;
     }
 
-    private static void RemoveFailedVisual(TrackedImage item, bool forceRestore = false)
+    private static void RemoveFailedVisual(
+        TrackedImage item,
+        ExactRecipeReleaseReason releaseReason,
+        bool forceRestore = false)
     {
         var removed = false;
         lock (SyncRoot)
@@ -653,14 +900,58 @@ internal static class RuntimePinnedListHighlightService
             if (removed) _visualErrors++;
         }
 
-        if (removed) RestoreTrackedImage(item, forceRestore);
+        if (removed)
+        {
+            RestoreTrackedImage(item, forceRestore);
+            TryLogExactRecipeLifecycle(
+                item,
+                ExactRecipeLifecycleEvent.Released,
+                releaseReason);
+        }
     }
 
-    private static void RestoreTrackedImages(IEnumerable<TrackedImage> images)
+    private static void RemoveStaleTrackedImage(
+        TrackedImage item,
+        ExactRecipeReleaseReason releaseReason)
     {
-        foreach (var item in images)
+        var removed = false;
+        lock (SyncRoot)
+        {
+            removed = RemoveTrackedImageLocked(item);
+        }
+
+        if (removed)
         {
             RestoreTrackedImage(item);
+            TryLogExactRecipeLifecycle(
+                item,
+                ExactRecipeLifecycleEvent.Released,
+                releaseReason);
+        }
+    }
+
+    private static void RestoreAndLogTrackedImages(
+        IEnumerable<TrackedImageRelease> releases)
+    {
+        foreach (var release in releases)
+        {
+            RestoreTrackedImage(release.Item);
+            TryLogExactRecipeLifecycle(
+                release.Item,
+                ExactRecipeLifecycleEvent.Released,
+                release.Reason);
+        }
+    }
+
+    private static void LogTrackedImageReleases(
+        IEnumerable<TrackedImageRelease> releases)
+    {
+        foreach (var release in releases)
+        {
+            TryLogExactRecipeLifecycle(
+                release.Item,
+                ExactRecipeLifecycleEvent.Released,
+                release.Reason);
         }
     }
 
@@ -681,6 +972,125 @@ internal static class RuntimePinnedListHighlightService
         {
             _restoreErrors++;
         }
+    }
+
+    private static ExactRecipeReleaseReason ClassifyTargetRelease(
+        TrackedImage item,
+        RuntimeUiTargetSetSnapshot target)
+    {
+        if (!HasListPinningTargets(target))
+        {
+            return ExactRecipeReleaseReason.ListPinningDisabled;
+        }
+        if (item.TargetGeneration != target.Generation)
+        {
+            return ExactRecipeReleaseReason.TargetGenerationChanged;
+        }
+        return MatchesTrackingMode(
+                target,
+                item.ItemKind,
+                item.ItemId,
+                item.UsesExactRecipeRowLease)
+            ? ExactRecipeReleaseReason.None
+            : ExactRecipeReleaseReason.TrackingModeChanged;
+    }
+
+    private static ExactRecipeReleaseReason ClassifyLeaseRelease(
+        TrackedImage item,
+        RuntimeUiTargetSetSnapshot target,
+        bool postWrite = false)
+    {
+        var targetReason = ClassifyTargetRelease(item, target);
+        if (targetReason != ExactRecipeReleaseReason.None) return targetReason;
+        return postWrite
+            ? ExactRecipeReleaseReason.PostWriteLeaseInvalid
+            : ExactRecipeReleaseReason.ExactLeaseInvalid;
+    }
+
+    private static void TryLogExactRecipeLifecycle(
+        TrackedImage item,
+        ExactRecipeLifecycleEvent lifecycleEvent,
+        ExactRecipeReleaseReason releaseReason)
+    {
+        if (item.ItemKind != ItemKind.Recipe
+            || !item.UsesExactRecipeRowLease
+            || item.BusinessGeneration <= 0)
+        {
+            return;
+        }
+
+        ManualLogSource? log;
+        lock (SyncRoot)
+        {
+            if (_log == null) return;
+            if (_exactRecipeLogBusinessGeneration > item.BusinessGeneration)
+            {
+                _suppressedExactRecipeLifecycleLogs++;
+                return;
+            }
+            if (_exactRecipeLogBusinessGeneration < item.BusinessGeneration)
+            {
+                _exactRecipeLogBusinessGeneration = item.BusinessGeneration;
+                _exactRecipeLifecycleLogs = 0;
+                _suppressedExactRecipeLifecycleLogs = 0;
+            }
+            if (_exactRecipeLifecycleLogs >= MaximumExactRecipeLifecycleLogsPerBusiness)
+            {
+                _suppressedExactRecipeLifecycleLogs++;
+                return;
+            }
+
+            _exactRecipeLifecycleLogs++;
+            log = _log;
+        }
+
+        var lease = item.RecipeRowLease;
+        var eventName = lifecycleEvent switch
+        {
+            ExactRecipeLifecycleEvent.Bound => "bound",
+            ExactRecipeLifecycleEvent.Applied => "applied",
+            ExactRecipeLifecycleEvent.Released => "released",
+            _ => "unknown",
+        };
+        var reason = releaseReason switch
+        {
+            ExactRecipeReleaseReason.None => "none",
+            ExactRecipeReleaseReason.ListPinningDisabled => "list-pinning-disabled",
+            ExactRecipeReleaseReason.TargetGenerationChanged => "target-generation-changed",
+            ExactRecipeReleaseReason.TrackingModeChanged => "tracking-mode-changed",
+            ExactRecipeReleaseReason.PoolRebind => "pool-rebind",
+            ExactRecipeReleaseReason.RegistrationReplaced => "registration-replaced",
+            ExactRecipeReleaseReason.ExactLeaseInvalid => "exact-lease-invalid",
+            ExactRecipeReleaseReason.PostWriteLeaseInvalid => "post-write-lease-invalid",
+            ExactRecipeReleaseReason.VisualReadFailed => "visual-read-failed",
+            ExactRecipeReleaseReason.VisualWriteFailed => "visual-write-failed",
+            ExactRecipeReleaseReason.PanelClosed => "panel-closed",
+            ExactRecipeReleaseReason.PanelDestroyed => "panel-destroyed",
+            ExactRecipeReleaseReason.BusinessDestroyed => "business-destroyed",
+            ExactRecipeReleaseReason.ServiceSuspended => "service-suspended",
+            ExactRecipeReleaseReason.ServiceAbandoned => "service-abandoned",
+            _ => "unknown",
+        };
+        try
+        {
+            log?.LogInfo(
+                $"Runtime pinned list exact recipe lifecycle event={eventName}; "
+                + $"reason={reason}; business={item.BusinessGeneration}; "
+                + $"targetGen={item.TargetGeneration}; panel={FormatPointer(lease.PanelPointer)}; "
+                + $"epoch={lease.PanelEpoch}; recipe={item.ItemId}; "
+                + $"recipePtr={FormatPointer(lease.RecipePointer)}; "
+                + $"button={FormatPointer(lease.ButtonPointer)}; image={FormatPointer(item.Pointer)}; "
+                + $"claims={item.ExactRecipeClaims}; plan={lease.PlanIdentity}");
+        }
+        catch
+        {
+            // Lifecycle logging is observational and never changes highlight ownership.
+        }
+    }
+
+    private static string FormatPointer(nint pointer)
+    {
+        return $"0x{unchecked((ulong)(long)pointer):x}";
     }
 
     private static void IncrementMissingImage()
@@ -716,7 +1126,11 @@ internal static class RuntimePinnedListHighlightService
             ItemKind itemKind,
             int itemId,
             long targetGeneration,
-            Color originalColor)
+            long businessGeneration,
+            Color originalColor,
+            bool usesExactRecipeRowLease,
+            TargetRecipeVariantRowLease recipeRowLease,
+            RuntimeUiTargetKinds exactRecipeClaims)
         {
             Image = image;
             Pointer = pointer;
@@ -724,7 +1138,11 @@ internal static class RuntimePinnedListHighlightService
             ItemKind = itemKind;
             ItemId = itemId;
             TargetGeneration = targetGeneration;
+            BusinessGeneration = businessGeneration;
             OriginalColor = originalColor;
+            UsesExactRecipeRowLease = usesExactRecipeRowLease;
+            RecipeRowLease = recipeRowLease;
+            ExactRecipeClaims = exactRecipeClaims;
         }
 
         public object Image { get; }
@@ -733,9 +1151,18 @@ internal static class RuntimePinnedListHighlightService
         public ItemKind ItemKind { get; }
         public int ItemId { get; }
         public long TargetGeneration { get; }
+        public long BusinessGeneration { get; }
         public Color OriginalColor { get; set; }
+        public bool UsesExactRecipeRowLease { get; }
+        public TargetRecipeVariantRowLease RecipeRowLease { get; }
+        public RuntimeUiTargetKinds ExactRecipeClaims { get; }
         public bool IsHighlighted { get; set; }
+        public int ExactRecipeAppliedLogged;
     }
+
+    private readonly record struct TrackedImageRelease(
+        TrackedImage Item,
+        ExactRecipeReleaseReason Reason);
 
     private sealed record ButtonAccessors(MethodInfo? GetImage);
 
@@ -752,5 +1179,31 @@ internal static class RuntimePinnedListHighlightService
         Recipe,
         Ingredient,
         Beverage,
+    }
+
+    private enum ExactRecipeLifecycleEvent
+    {
+        Bound,
+        Applied,
+        Released,
+    }
+
+    private enum ExactRecipeReleaseReason
+    {
+        None,
+        ListPinningDisabled,
+        TargetGenerationChanged,
+        TrackingModeChanged,
+        PoolRebind,
+        RegistrationReplaced,
+        ExactLeaseInvalid,
+        PostWriteLeaseInvalid,
+        VisualReadFailed,
+        VisualWriteFailed,
+        PanelClosed,
+        PanelDestroyed,
+        BusinessDestroyed,
+        ServiceSuspended,
+        ServiceAbandoned,
     }
 }

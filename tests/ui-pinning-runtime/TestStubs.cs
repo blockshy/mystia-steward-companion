@@ -44,18 +44,41 @@ namespace BepInEx.Logging
 {
     internal sealed class ManualLogSource
     {
+        private static readonly object SyncRoot = new();
+        private static readonly List<string> InformationMessages = new();
+
         public static int InformationCount { get; private set; }
 
         public static int WarningCount { get; private set; }
 
+        public static Func<bool>? InformationLogUnsafeProbe { get; set; }
+
+        public static bool InformationLoggedWhileUnsafe { get; private set; }
+
+        public static string[] SnapshotInformationMessages()
+        {
+            lock (SyncRoot) return InformationMessages.ToArray();
+        }
+
+        public static void ResetInformationLogSafetyObservation()
+        {
+            InformationLoggedWhileUnsafe = false;
+        }
+
         public void LogInfo(object value)
         {
-            InformationCount += 1;
+            var unsafeWrite = InformationLogUnsafeProbe?.Invoke() == true;
+            lock (SyncRoot)
+            {
+                InformationCount += 1;
+                InformationMessages.Add(value?.ToString() ?? "");
+                InformationLoggedWhileUnsafe |= unsafeWrite;
+            }
         }
 
         public void LogWarning(object value)
         {
-            WarningCount += 1;
+            lock (SyncRoot) WarningCount += 1;
         }
     }
 }
@@ -276,28 +299,147 @@ namespace MystiaStewardCompanion.Save
         }
     }
 
-    internal static class RuntimePinnedRecipeExtrasService
+    internal readonly record struct TargetRecipeVariantRowLease(
+        nint PanelPointer,
+        long PanelEpoch,
+        nint RecipePointer,
+        nint ButtonPointer,
+        long TargetGeneration,
+        string PlanIdentity);
+
+    internal static class RuntimeTargetRecipeVariantService
     {
-        public static string Status => "disabled";
+        internal const string HarmonyId =
+            "com.tyukki.mystia-steward-companion.runtime-target-recipe-variant";
+
+        private static readonly object SyncRoot = new();
+        private static readonly Dictionary<nint, long> PanelEpochs = new();
+        private static readonly Dictionary<nint, RowBinding> RowsByButton = new();
+
+        public static string Status
+        {
+            get
+            {
+                lock (SyncRoot) return $"test bindings={RowsByButton.Count}";
+            }
+        }
 
         public static void Attach(BepInEx.Logging.ManualLogSource log)
         {
         }
 
-        public static void TryApply(object panel, RuntimeUiTargetSetSnapshot targetSet)
+        public static void RetireFailClosed(string reason)
         {
+            lock (SyncRoot)
+            {
+                RowsByButton.Clear();
+                PanelEpochs.Clear();
+            }
         }
 
-        public static void OnRefreshFinalized(
+        public static TargetRecipeVariantRowLease BindRecipeRow(
             object panel,
-            RuntimeUiTargetSetSnapshot targetSet,
-            Exception? exception)
+            object recipe,
+            object button,
+            RuntimeUiTargetKinds claims,
+            string planIdentity)
         {
+            var panelPointer = RuntimeReflectionUtility.ReadObjectPointer(panel);
+            var recipePointer = RuntimeReflectionUtility.ReadObjectPointer(recipe);
+            var buttonPointer = RuntimeReflectionUtility.ReadObjectPointer(button);
+            lock (SyncRoot)
+            {
+                if (!PanelEpochs.TryGetValue(panelPointer, out var panelEpoch))
+                {
+                    panelEpoch = 1;
+                    PanelEpochs.Add(panelPointer, panelEpoch);
+                }
+                var lease = new TargetRecipeVariantRowLease(
+                    panelPointer,
+                    panelEpoch,
+                    recipePointer,
+                    buttonPointer,
+                    RuntimeUiPinningService.ReadTargetSet().Generation,
+                    planIdentity);
+                RowsByButton[buttonPointer] = new RowBinding(lease, claims);
+                return lease;
+            }
         }
 
-        public static void Abandon(string reason)
+        public static void AdvancePanelEpoch(object panel)
         {
+            var panelPointer = RuntimeReflectionUtility.ReadObjectPointer(panel);
+            lock (SyncRoot)
+            {
+                var nextEpoch = PanelEpochs.TryGetValue(panelPointer, out var current)
+                    ? checked(current + 1)
+                    : 1;
+                PanelEpochs[panelPointer] = nextEpoch;
+                foreach (var buttonPointer in RowsByButton
+                             .Where(entry => entry.Value.Lease.PanelPointer == panelPointer)
+                             .Select(entry => entry.Key)
+                             .ToArray())
+                {
+                    RowsByButton.Remove(buttonPointer);
+                }
+            }
         }
+
+        public static bool TryResolveRecipeRowClaims(
+            object panel,
+            object recipe,
+            object button,
+            out RuntimeUiTargetKinds claims,
+            out TargetRecipeVariantRowLease lease)
+        {
+            claims = RuntimeUiTargetKinds.None;
+            lease = default;
+            var panelPointer = RuntimeReflectionUtility.ReadObjectPointer(panel);
+            var recipePointer = RuntimeReflectionUtility.ReadObjectPointer(recipe);
+            var buttonPointer = RuntimeReflectionUtility.ReadObjectPointer(button);
+            lock (SyncRoot)
+            {
+                if (!RowsByButton.TryGetValue(buttonPointer, out var binding)
+                    || binding.Lease.PanelPointer != panelPointer
+                    || binding.Lease.RecipePointer != recipePointer
+                    || binding.Lease.ButtonPointer != buttonPointer
+                    || !PanelEpochs.TryGetValue(panelPointer, out var panelEpoch)
+                    || binding.Lease.PanelEpoch != panelEpoch
+                    || binding.Lease.TargetGeneration != RuntimeUiPinningService.ReadTargetSet().Generation)
+                {
+                    return false;
+                }
+
+                claims = binding.Claims;
+                lease = binding.Lease;
+                return claims != RuntimeUiTargetKinds.None;
+            }
+        }
+
+        public static bool TryValidateRecipeRowClaims(
+            TargetRecipeVariantRowLease lease,
+            out RuntimeUiTargetKinds claims)
+        {
+            claims = RuntimeUiTargetKinds.None;
+            lock (SyncRoot)
+            {
+                if (!RowsByButton.TryGetValue(lease.ButtonPointer, out var binding)
+                    || binding.Lease != lease
+                    || !PanelEpochs.TryGetValue(lease.PanelPointer, out var panelEpoch)
+                    || panelEpoch != lease.PanelEpoch
+                    || lease.TargetGeneration != RuntimeUiPinningService.ReadTargetSet().Generation)
+                {
+                    return false;
+                }
+
+                claims = binding.Claims;
+                return claims != RuntimeUiTargetKinds.None;
+            }
+        }
+
+        private sealed record RowBinding(
+            TargetRecipeVariantRowLease Lease,
+            RuntimeUiTargetKinds Claims);
     }
 
     internal sealed class CookingSelectionPanelProbe
@@ -320,6 +462,8 @@ namespace MystiaStewardCompanion.Save
 
         public static int RefreshCount { get; private set; }
 
+        public static int FullVisualRefreshCount { get; private set; }
+
         public static List<int> RefreshThreadIds { get; } = new();
 
         public nint m_CachedPtr { get; private set; } = new IntPtr(Interlocked.Increment(ref _nextPointer));
@@ -328,6 +472,7 @@ namespace MystiaStewardCompanion.Save
         {
             ThrowOnRefresh = false;
             RefreshCount = 0;
+            FullVisualRefreshCount = 0;
             RefreshThreadIds.Clear();
             RefreshAction = null;
             LastResult = null;
@@ -335,6 +480,13 @@ namespace MystiaStewardCompanion.Save
 
         [MethodImpl(MethodImplOptions.NoInlining)]
         public void UpdateAllVisual()
+        {
+            FullVisualRefreshCount++;
+            UpdateRecipeField();
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        public void UpdateRecipeField()
         {
             RefreshCount++;
             RefreshThreadIds.Add(Environment.CurrentManagedThreadId);

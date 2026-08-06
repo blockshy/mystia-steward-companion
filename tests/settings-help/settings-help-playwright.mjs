@@ -239,9 +239,9 @@ async function auditDesktopInteractions(page) {
   await auditControlFocus(page, '同基础料理显示', 'input', 'number input');
 
   await activateSettingsSection(page, '实验性功能');
-  const disabledField = findField(page, '显示稀客加料料理选项');
+  const disabledField = findField(page, '稀客加料料理选项（实验性）');
   const disabledControl = disabledField.locator('input[type="checkbox"]').first();
-  assert.equal(await disabledControl.isDisabled(), true, '测试夹具应使自动加料开关处于禁用状态');
+  assert.equal(await disabledControl.isDisabled(), true, '测试夹具应使加料料理选项开关处于禁用状态');
   const disabledTrigger = disabledField.locator(selectors.trigger);
   assert.equal(await disabledTrigger.getAttribute('tabindex'), '0', '禁用设置的说明图标应允许聚焦');
   await page.evaluate(() => {
