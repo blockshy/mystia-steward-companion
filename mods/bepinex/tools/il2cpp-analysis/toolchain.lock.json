@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "tools": {
+    "il2cppDumper": {
+      "version": "6.7.46",
+      "asset": "Il2CppDumper-net6-v6.7.46.zip",
+      "url": "https://github.com/Perfare/Il2CppDumper/releases/download/v6.7.46/Il2CppDumper-net6-v6.7.46.zip",
+      "sha256": "db9bbbc538e33abfb057c7757ae5d6c1f16a05fdc0d13af8a5a67ea31faaba0c"
+    },
+    "cpp2Il": {
+      "version": "2022.1.0-pre-release.21+58fc404ac503f4e512055cafc48c03088fc6e224",
+      "asset": "Cpp2IL-2022.1.0-pre-release.21-Linux",
+      "url": "https://github.com/SamboyCoding/Cpp2IL/releases/download/2022.1.0-pre-release.21/Cpp2IL-2022.1.0-pre-release.21-Linux",
+      "sha256": "526998e593c52c029c5a6215c5c6c9f9d963706bfc409fc9ff80a95c4c500349"
+    },
+    "ilspyCmd": {
+      "version": "10.1.1.8388",
+      "package": "ilspycmd",
+      "source": "https://api.nuget.org/v3/index.json",
+      "nupkgSha256": "17a8baf571c889516bf8c268e3089156ba4cdfc2192a814206a3233581c9ae77"
+    },
+    "bepInEx": {
+      "build": 783,
+      "version": "6.0.0-be.783+c58c42d",
+      "asset": "BepInEx-Unity.IL2CPP-win-x64-6.0.0-be.783+c58c42d.zip",
+      "url": "https://builds.bepinex.dev/projects/bepinex_be/783/BepInEx-Unity.IL2CPP-win-x64-6.0.0-be.783+c58c42d.zip",
+      "sha256": "108d982dcd363cbe65e3bcdfb152d67703b4793e8f04f2011f59c73dfdd3e182"
+    },
+    "unityBaseLibraries": {
+      "unityVersion": "2021.3.28",
+      "asset": "2021.3.28.zip",
+      "url": "https://unity.bepinex.dev/libraries/2021.3.28.zip",
+      "sha256": "b90967f3c22d7b5ef5653726793757ab5a690625c5d7b89a950424e9577a7533"
+    },
+    "ida": {
+      "version": "9.0.0.240925",
+      "defaultInstallDirectory": "/huyu/software/IDA Pro-v9.0 RC1-Linux"
+    }
+  }
+}

@@ -10,20 +10,28 @@
 - `src/Plugin/`：BepInEx 入口、配置和伴随窗口启动逻辑。
 - `src/LocalApi/`：Token 保护的本地 API，始终保留回环 listener，也可显式开启附加 LAN listener。
 - `References/`：本机编译引用 DLL，不提交到仓库。
-- `tools/`：前置检查、构建和打包脚本。
+- `tools/`：前置检查、构建、打包和锁定的 IL2CPP/IDA 分析脚本。
+
+`tools/il2cpp-analysis/InteropGenerator` 是独立的 .NET 工具工程；Mod csproj 明确排除 `tools/**/*.cs`，
+不能把生成器依赖编入发布 DLL。
 
 运行时读取说明见 [docs/RUNTIME_PROVIDER_NOTES.md](docs/RUNTIME_PROVIDER_NOTES.md)。
+游戏源码结构、BepInEx #783 interop 与 IDA 资料的完整重建方式见
+[IL2CPP 源码与 IDA 分析工作流](../../docs/il2cpp-analysis-workflow.md)。
 
 ## 开发环境
 
 Windows 上通常需要：
 
-- .NET 6 SDK 或更新版本。
+- Mod 常规构建使用 .NET 6 SDK 或更新版本；完整重建 IL2CPP 分析还需要 .NET 10 SDK，
+  因为独立 `InteropGenerator` 目标为 `net10.0`。
 - Node.js 20+，并通过 Corepack 使用仓库固定的 `pnpm@10.10.0`。
 - PowerShell 7。
 - Rust stable、Microsoft C++ Build Tools 2022 或 Visual Studio “使用 C++ 的桌面开发”组件。
 - Microsoft Edge WebView2 Runtime。
-- 已安装并启动过一次 BepInEx Unity IL2CPP 的游戏目录；普通开发和验证优先使用 #783 构建 `BepInEx-Unity.IL2CPP-win-x64-6.0.0-be.783+c58c42d.zip`，不要直接追最新 Bleeding Edge。
+- Windows 实机运行验证需要已安装并启动过一次 BepInEx Unity IL2CPP 的游戏目录；优先使用 #783 构建
+  `BepInEx-Unity.IL2CPP-win-x64-6.0.0-be.783+c58c42d.zip`，不要直接追最新 Bleeding Edge。Linux 只做
+  源码分析和构建时可使用下文的离线 interop，不需要先启动游戏。
 
 推荐初始化命令：
 
@@ -38,6 +46,9 @@ Linux 验证 Tauri 构建时还需要：
 ```bash
 sudo apt-get install -y pkg-config libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libxdo-dev
 ```
+
+Linux 主机上的 Steam 版本仍是 Windows x64 PE 游戏。实际运行 Mod 必须使用 Windows x64 IL2CPP #783
+包并由 Proton 加载，不能安装 Linux BepInEx；只生成开发分析资料时使用离线分析工作流，不需要启动游戏。
 
 ## 构建引用
 
@@ -59,6 +70,7 @@ mods/bepinex/
 
 - `游戏根目录/BepInEx/core/`
 - `游戏根目录/BepInEx/interop/`
+- Linux 离线分析环境的 `/huyu/data/disk/mystia-steward-companion/new/interop-783/assemblies/`
 
 `tests/ui-pinning-runtime/UiPinningRuntimeSmoke.csproj` 会使用真实 Harmony wrapper 验证 scoped prefix 返回传播、料理/材料/酒水列表 Hook、Food/Beverage 隔离、稀客/普客双槽原子发布、每槽五个功能位、颜色与共享资源 claims、经营 generation、revision/trace/lifecycle、普客 raw order key、Closing/下一场隔离、池化重绑、已打开列表单次主线程刷新，以及空目标恢复全部 Mod-owned 状态。运行该 smoke 时还要从 `BepInEx/core` 复制 `MonoMod.RuntimeDetour.dll` 和 `MonoMod.Utils.dll`；它们只供测试，不加入 Mod 编译和发布 preflight。外部引用目录通过 `-p:ReferenceDir="..."` 传给 `dotnet run`。
 

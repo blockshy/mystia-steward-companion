@@ -15,6 +15,15 @@
 - Mod 不编译引用额外的游戏业务 DLL，运行时通过反射读取游戏已加载的 IL2CPP interop 类型。
 - 用户可见项目名、安装目录和发布产物使用 `mystia-steward-companion`。`v1.2.x` 仅暂时保留 Local API 启动阶段执行的 `favorites.source=manual` 转自定义料理一次性数据迁移，计划在 `v1.3.0` 删除。自 `v1.2.0` 起不再读取旧 GUID 配置；除该数据迁移外，旧名称只允许出现在上游来源说明中，不保留旧路径、旧类型或旧 API 别名。
 - `References/` 只放本机编译 DLL，不提交仓库。
+- 当前游戏输入身份由仓库外 `new/analysis-manifest.json` 锁定。源码分析使用 Il2CppDumper metadata C#、
+  离线复现的 BepInEx #783 / Il2CppInterop 1.5.3 wrapper、IDA 9/Hex-Rays 和实机日志四层闭环；旧资料在
+  `backup/legacy-analysis-20260608/`，不参与业务 fallback。完整流程见 `docs/il2cpp-analysis-workflow.md`。
+- Linux Steam 安装仍是 Windows x64 PE 游戏。Linux BepInEx 对它无效；运行时使用 Windows x64 #783 +
+  Proton，离线 interop 生成不启动游戏、不写 Steam 目录。Cpp2IL 当前锁定版本的 `dll_il_recovery`
+  实际只写 `ldnull; throw`，已从正式分析路径移除。
+- IDA 导入只对唯一 Native 地址设置最终名称，全部托管别名保存在 `method_map.csv`；函数体输出以 RVA
+  分片，Hex-Rays 失败时保留覆盖全部 chunks 的反汇编。全量导出每 1,000 个函数必须清理反编译缓存，
+  避免内存线性增长。
 - HUD 目标订单卡片覆盖层所用边框模板，其 BepInEx 783 组件枚举 wrapper 只用于严格计数和唯一 native pointer 集合；`RectTransform`、`CanvasRenderer`、`Image` 必须同时通过 typed native query 与 native class pointer 精确相等复核，源模板和 clone 再与枚举集合闭合。parent `LayoutGroup` 查询有意接受全部派生类型并统一拒绝，禁止以 wrapper `GetType()` 推断原生类别或增加视觉兼容路径。
 - 推荐数据来自游戏运行时 `RuntimeDataCatalog`；`build-release.ps1` 和发布包只包含 Mod DLL 与伴随窗口程序。
 - 用户安装和测试优先使用已验证的 BepInEx Bleeding Edge #783 Windows x64 IL2CPP 包：`BepInEx-Unity.IL2CPP-win-x64-6.0.0-be.783+c58c42d.zip`。#784 及之后构建当前不建议用于本项目，后续如需支持新版 BepInEx，必须重新实测并检查运行时日志。

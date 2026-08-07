@@ -21,8 +21,6 @@ if [[ -n "${NODE:-}" ]]; then
   NODE_CMD=$NODE
 elif command -v node >/dev/null 2>&1; then
   NODE_CMD=$(command -v node)
-elif [[ -x /huyu/environment/.nvm/versions/node/v22.22.2/bin/node ]]; then
-  NODE_CMD=/huyu/environment/.nvm/versions/node/v22.22.2/bin/node
 else
   echo "node was not found. Install Node.js or set NODE=/path/to/node." >&2
   exit 1

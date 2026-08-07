@@ -1,6 +1,6 @@
 # 特殊经营场景规则与实现边界
 
-更新日期：2026-07-30
+更新日期：2026-08-07
 
 本文档记录特殊经营的游戏原生规则、Mod 执行策略和已验证边界。三者必须分开表述，不得把 Mod 的保守约束写成游戏原生门槛。
 
@@ -8,9 +8,13 @@
 
 结论按以下顺序交叉验证：
 
-1. `Assembly-CSharp/` 中的类型、字段、属性和方法签名。
-2. `01_functions_index.csv`、`06_call_xrefs.csv` 和 `pseudocode/` 中的 IL2CPP Native 执行路径。
-3. 当前游戏版本的 interop DLL、Mod 反射结果和实机总日志。
+1. `new/managed-source/metadata/Assembly-CSharp/` 中的类型、字段、属性和方法签名。
+2. `new/managed-source/interop-783/` 中的 BepInEx #783 wrapper 形态；无法项目化的程序集查
+   `new/managed-source/interop-783-il/` 精确 CIL。
+3. `new/ida/export/functions.csv`、`call_xrefs.csv` 和索引指向的伪代码或反汇编中的 IL2CPP Native
+   执行路径。
+4. Mod 反射结果和当前游戏版本的实机总日志。资料根目录和完整生成方式见
+   [`IL2CPP 源码与 IDA 分析工作流`](il2cpp-analysis-workflow.md)。
 
 文档中的评价名称使用游戏枚举语义：`ExGood`、`Good`、`Normal`、`Bad`、`Exbad`。角色使用游戏中文名称“古明地恋”；`Koishi` 只作为内部类型、字段或角色标识的一部分。不在文档、诊断或用户界面中使用社区昵称。
 

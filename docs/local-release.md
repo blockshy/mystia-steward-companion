@@ -14,13 +14,16 @@
 
 发布机器需要是 Windows，并预装：
 
-- Node.js 22，启用 Corepack。
-- .NET 6 SDK 或更新版本。
-- Rust stable。
+- Node.js `24.19.0`、Corepack `0.35.0`，并通过 Corepack 使用仓库固定的 `pnpm@10.10.0`。
+- .NET SDK `10.0.110`。Mod 发布目标仍是 `net6.0`，不要为此安装已停止支持的 .NET 6 SDK；
+  运行一般 net6 smoke 时可在当前 PowerShell 设置 `$env:DOTNET_ROLL_FORWARD = "Major"`。
+- Rust stable（当前验证版本 `1.97.1`）。
 - Microsoft C++ Build Tools 2022 或 Visual Studio “使用 C++ 的桌面开发”组件。
 - Microsoft Edge WebView2 Runtime。
 - PowerShell 7。
 - GitHub CLI，并完成 `gh auth login`。
+- 需要完整复现 `automation-cooking-job` 的真实 Harmony/MonoMod 动态补丁 smoke 时安装 Docker Desktop，
+  并使用 `docs/development-conventions.md` 锁定的 .NET 6 SDK 容器；不要删除该运行时探针。
 
 如需同时发布 Android APK，还需要 Android Studio/SDK/NDK、JDK 17、Android Rust targets，并完成 APK 签名配置。Android APK 是 Tauri mobile 的单独构建产物，不从 Windows EXE 转换。
 

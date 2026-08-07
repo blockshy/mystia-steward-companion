@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>10.0</LangVersion>
+    <BepInExCorePath Condition="'$(BepInExCorePath)' == ''">__missing_bepinex_core__</BepInExCorePath>
+    <BepInExDotnetPath Condition="'$(BepInExDotnetPath)' == ''">__missing_bepinex_dotnet__</BepInExDotnetPath>
+  </PropertyGroup>
+
+  <Target Name="ValidateBepInExPaths" BeforeTargets="ResolveReferences">
+    <Error
+      Condition="!Exists('$(BepInExCorePath)/BepInEx.Unity.IL2CPP.dll')"
+      Text="Set BepInExCorePath to the BepInEx #783 BepInEx/core directory." />
+    <Error
+      Condition="!Exists('$(BepInExDotnetPath)/Microsoft.Extensions.Logging.Abstractions.dll')"
+      Text="Set BepInExDotnetPath to the BepInEx #783 dotnet directory." />
+  </Target>
+
+  <ItemGroup>
+    <Reference Include="$(BepInExCorePath)/*.dll">
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="Microsoft.Extensions.Logging.Abstractions">
+      <HintPath>$(BepInExDotnetPath)/Microsoft.Extensions.Logging.Abstractions.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+</Project>

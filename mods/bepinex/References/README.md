@@ -1,6 +1,7 @@
 # 本地构建引用
 
-该目录在源码中保持为空，不提交真实 DLL。构建前只需要从已安装 BepInEx Unity IL2CPP 的《东方夜雀食堂》游戏目录复制以下基础引用：
+该目录在源码中保持为空，不提交真实 DLL。构建前只需要从已验证的 BepInEx #783 core，以及实机或离线
+生成的同版本 interop 中复制以下基础引用：
 
 - `BepInEx.Core.dll`
 - `BepInEx.Unity.IL2CPP.dll`
@@ -21,8 +22,12 @@
 
 - `游戏根目录/BepInEx/core/`
 - `游戏根目录/BepInEx/interop/`
+- Linux 离线分析环境的 `/huyu/data/disk/mystia-steward-companion/new/interop-783/assemblies/`
 
-如果 `BepInEx/interop/` 不存在，先启动游戏一次。BepInEx 首次启动 IL2CPP 游戏时会生成 interop 程序集。
+Windows 环境中如果 `BepInEx/interop/` 不存在，可先启动游戏一次。Linux 主机上的 Steam 游戏仍是
+Windows x64 PE，不能用 Linux BepInEx 生成 interop；开发分析使用
+[`generate-analysis.sh`](../tools/il2cpp-analysis/generate-analysis.sh) 离线复现 BepInEx #783 的生成路径，
+无需启动游戏。完整说明见 [`docs/il2cpp-analysis-workflow.md`](../../../docs/il2cpp-analysis-workflow.md)。
 
 复制引用后，在仓库根目录运行：
 

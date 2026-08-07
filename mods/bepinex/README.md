@@ -16,6 +16,10 @@ BepInEx-Unity.IL2CPP-win-x64-6.0.0-be.783+c58c42d.zip
 
    BepInEx Bleeding Edge 是开发构建，不同构建之间可能有兼容性差异。本项目当前不建议使用 #784 或之后的构建；如果后续确认新版可用，再按新版说明更新。
 
+   在 Linux 主机通过 Steam/Proton 运行时也必须下载上述 Windows x64 包，因为本游戏主程序是 Windows
+   PE。不要安装 Linux BepInEx；Steam 启动选项设置为
+   `WINEDLLOVERRIDES="winhttp=n,b" %command%`，让 Proton 使用包内的 `winhttp.dll`。
+
 4. 将压缩包内容解压到游戏根目录。解压后应出现：
 
 ```text

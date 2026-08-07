@@ -25,6 +25,9 @@ temp/
 .playwright-cli/
 mods/bepinex/References/*.dll
 mods/bepinex/References/*.pdb
+mods/bepinex/tools/il2cpp-analysis/__pycache__/
+mods/bepinex/tools/il2cpp-analysis/InteropGenerator/bin/
+mods/bepinex/tools/il2cpp-analysis/InteropGenerator/obj/
 
 # Editor directories and files
 .vscode/*

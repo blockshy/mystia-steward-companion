@@ -1,6 +1,6 @@
 # 开发约定与流程
 
-更新日期：2026-07-24
+更新日期：2026-08-07
 
 ## 代码边界
 
@@ -17,6 +17,10 @@
 - 旧名称只允许出现在明确的兼容迁移代码或上游来源说明中，例如旧 BepInEx 配置和旧 localStorage key 迁移。
 - 游戏角色、场景和挑战名称优先使用游戏运行时数据或程序集元数据中的正式名称。用户可见文案、文档和诊断不得使用社区昵称；英文标识只用于内部类型、字段、日志 key 或中文元数据不可读时的原始诊断。
 - 修改路径或项目名时，必须同步更新 README、AGENTS、构建脚本、GitHub Actions 和相关 docs。
+- IL2CPP 分析固定使用 `mods/bepinex/tools/il2cpp-analysis/` 的锁定工具链，输出放在仓库外的
+  `/huyu/data/disk/mystia-steward-companion/new/`。运行时行为依次用 metadata C#、BepInEx #783 interop、
+  IDA/Hex-Rays 和实机日志交叉验证；旧分析只在 `backup/` 做历史对比，不建立新旧 fallback。Cpp2IL
+  `2022.1.0-pre-release.21` 的 `dll_il_recovery` 只生成 `ldnull; throw`，不得恢复或引用为方法源码。
 
 ## 编码规范
 
