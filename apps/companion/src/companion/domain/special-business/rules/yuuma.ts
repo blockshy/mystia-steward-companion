@@ -41,6 +41,8 @@ export function buildYuumaChallengeOrderRule(
       match: 'all',
       tags: targetTags,
     },
+    requiredExtraIngredientIds: [],
+    forbiddenExtraIngredientIds: [],
     blockingReason: targetReady
       ? ''
       : `${challengeLabel}需要同时读取 ${YUUMA_TARGET_TAG_COUNT} 个料理目标 Tag，当前读取到 ${targetTags.length} 个。`,

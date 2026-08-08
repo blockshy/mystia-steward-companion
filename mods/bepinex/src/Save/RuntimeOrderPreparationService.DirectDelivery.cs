@@ -54,6 +54,20 @@ internal static partial class RuntimeOrderPreparationService
             return (false, $"无法从游戏数据库创建酒水对象：{beverageName} #{beverageId}。", "");
         }
 
+        if (target != null
+            && !TryValidateMizuchiRuntimeOrder(
+                target,
+                runtimeOrder,
+                "before-beverage-setter",
+                out var mizuchiBeverageDiagnostic))
+        {
+            return (
+                false,
+                "瑞灵特殊经营订单角色或评价闭包在酒水送达前已漂移，未调用订单 setter："
+                + mizuchiBeverageDiagnostic,
+                OrderPreparationStepCodes.MizuchiContractMismatch);
+        }
+
         var delivery = TryCommitRuntimeDelivery(runtimeOrder, sellable, RuntimeDeliveryItemKind.Beverage, beverageName);
         if (!IsNightBusinessGenerationActive(sessionGeneration))
         {
@@ -231,6 +245,18 @@ internal static partial class RuntimeOrderPreparationService
             return ContinueOrBlockAutomationDelivery(
                 job,
                 $"{job.RecipeName} 已完成，但成品 {actualText} 不是目标料理 {target.FoodName}（料理 #{target.FoodId}），{FormatWarmerStoreJobState(storeCommitted, storeMessage)}");
+        }
+
+        if (!TryValidateMizuchiFoodModifier(
+                target,
+                cookedFood,
+                "cooked-result-before-delivery",
+                out var mizuchiCookedResultDiagnostic))
+        {
+            return BlockMizuchiCookingJob(
+                job,
+                "成品送达前",
+                mizuchiCookedResultDiagnostic);
         }
 
         var specialTargetChanged = TryDetectSpecialFoodTargetPolicyChanged(
@@ -419,6 +445,19 @@ internal static partial class RuntimeOrderPreparationService
                 + $"{bindingDiagnostic}；{runtimeOrder.Diagnostic}");
         }
 
+        if (!TryValidateMizuchiFoodDeliveryPreflight(
+                target,
+                runtimeOrder,
+                cookedFood,
+                "fresh-order-before-food-state",
+                out var mizuchiFoodStateDiagnostic))
+        {
+            return BlockMizuchiCookingJob(
+                job,
+                "订单状态读取前",
+                mizuchiFoodStateDiagnostic);
+        }
+
         job.ResetDeliveryFailures();
         if (yuumaTarget)
         {
@@ -579,6 +618,19 @@ internal static partial class RuntimeOrderPreparationService
                 runtimeOrder,
                 "commit-food",
                 $"food={target.FoodName}; cookedFood={SpecialBusinessDiagnostics.DescribeObject(cookedFood)}");
+        }
+
+        if (!TryValidateMizuchiFoodDeliveryPreflight(
+                target,
+                runtimeOrder,
+                cookedFood,
+                "immediately-before-food-setter",
+                out var mizuchiFoodCommitDiagnostic))
+        {
+            return BlockMizuchiCookingJob(
+                job,
+                "料理 setter 前",
+                mizuchiFoodCommitDiagnostic);
         }
 
         if (!job.FoodDeliveryCleanupTracker.TryBeginCommit())

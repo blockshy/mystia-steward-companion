@@ -1,6 +1,6 @@
 # 开发约定与流程
 
-更新日期：2026-08-07
+更新日期：2026-08-08
 
 ## 代码边界
 
@@ -35,6 +35,20 @@
 - 页面级代码应继续按页面和业务域拆分到 `apps/companion/src/companion/pages/`、`domain/`、`hooks/`、`features/` 或 `workers/`。新增页面时先复用 `ListPanel`、`InfoLine`、`EmptyState`、`SwitchField`、`SliderField`、`SegmentedControl`、`Tree` 和 `Accordion`，避免页面层样式混乱。
 
 ## 构建验证
+
+当前 Linux 验证基线为 Node.js `24.19.0`、Corepack `0.35.0`、仓库固定 pnpm `10.10.0`、
+.NET SDK `10.0.110` 和 Rust `1.97.1`。Windows 开发机建议对齐这些主版本；Mod 发布目标仍保持
+`net6.0`，不因本机构建 SDK 升级而改目标框架。只有 .NET 10 runtime 的环境运行 net6 smoke 时可为当前
+测试进程设置 `DOTNET_ROLL_FORWARD=Major`，不要安装已停止支持的 .NET 6 SDK 作为项目固定依赖。
+`automation-cooking-job` 含真实 Harmony/MonoMod 动态补丁探针；该旧依赖组合在 Linux .NET 10 CoreCLR
+上会于探针执行时发生原生崩溃，因此此项必须在固定 .NET 6 SDK 容器中运行，不能删除探针或用源码断言
+替代运行时验证：
+
+```bash
+docker run --rm -v "$PWD:/workspace" -w /workspace \
+  mcr.microsoft.com/dotnet/sdk@sha256:eaa148f3f58a7276c9bb2eac0612f9560e9ba69e44de02e9ae1912e7105a9b1e \
+  dotnet run --project tests/automation-cooking-job/AutomationCookingJobSmoke.csproj -c Release
+```
 
 常规检查：
 
@@ -168,6 +182,8 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 - 进入幽幽子原生评价查找前先用 Completion 精确对象检查 `IsFullfilled`，未送齐只返回正常等待。NativeEvaluation 必须 fresh read 当前订单：`SpecialOrder` 优先复核 capture，必要时才让显式幽幽子专用 manager 扫描候选通过同一验证器；`NormalOrder` 只接受当前 capture，并再次复核 `PeekOrders()` 与原生指针身份。两类路径都必须验证当前经营 generation、强身份、controller 所有权、fulfilled、已送达目标和回调绑定。剧情版只复用最终选中的同一原生 order/controller 捕获记录中的 `onEvaluate` 调用 `EvaulateManualOrder`。重修版不得按挑战类型统一选择入口：精确 `SetManualControllerOrderInternal` 建立的回调绑定必须与后续读取的瞬时 `OrderBase.ManualOrder` 分开保存，并在同一活动订单的状态合并中保持到精确移除、过期或经营代际清理；来源与绑定状态不一致、空回调或多个不同回调均视为冲突。同一 order/controller 的稳定 `ManualOrderSet` 绑定必须同时具备精确 `DisplayClass16_10 + b__77/b__78` 手动回调和主幽幽子 `_50` 回调，才调用 `EvaulateManualOrder`；捕获明确无手动绑定、具体订单已唯一解析为 `NormalOrder` 或 `SpecialOrder`，且 controller 仅具备组订单 `_70`、不具备 `_50` 时，才调用 `EvaluateOrder(controller, false, null)`。`无手动绑定 + _50`、`手动绑定 + _70`、回调缺失、候选歧义或身份漂移全部 fail-closed，禁止换另一入口重试。`SpecialOrder` 门禁严格核对实际加料，并确认请求料理/酒水 Tag 存在于实送成品的完整 Tag 数组；完整喜恶集合与最终档位仍由游戏原生评价计算，不伪造前端预测集合。`NormalOrder` 门禁则校验 exact extras 与 `expectedFoodModifierTags`。对应回调、送达目标或评价语义不可确认时必须暂停。
 - 挑战/BOSS 订单可能表现为精确 `NormalOrder` 或 `SpecialOrder`，必须通过统一分类器标记归属。跨帧待办、自动料理 job 和运行时事件必须保存原订单 match 目标、实际 execution 目标、挑战类型、订单角色、规范特殊目标签名与受控推进许可；日志记录 match/execution 对照、严格/受控模式、回调证据和阻断原因。血池地狱自动制作前必须从当前强匹配订单重新唯一确认具体形态，再使用对应 live 查找器取得同一订单，不得在 `NormalOrder` 与 `SpecialOrder` 之间模糊回退。酒水本轮确认提交后立即结束响应，由下一轮 fresh read 后再开锅。匹配料理出锅后继续复核 controller 所有权、canonical ID `1003`、原始点单身份、实际成品、当前策略、严格双 Tag 或受控许可、经营代际和双阶段开关；只有专用结算入口拥有血池地狱最终料理送达、评价与原生状态通知，普通完成入口不得接管或补做其中任一阶段。
 - 特殊经营模块应拥有自己的规则构造、普客执行目标选择、目标适用 predicate、订单角色识别和失败组合 key 生成；目标适用性必须复用该模块已验证的阶段与角色条件，不能从 selector 是否存在推断。`special-business/registry.ts` 只负责按 `challengeType` 分发，不应重新承载场景分支。前端规则构造放在 `special-business/rules/`，普客执行目标放在 `special-business/normal-targets/<scene>.ts`，`rules.ts` 和 `normal-targets.ts` 只作为稳定导出入口。C# 侧订单分类、运行时匹配策略、Boss 评价入口、`AutomationCookingJob` 出锅校验和诊断 helper 应放在 `mods/bepinex/src/Save/SpecialBusiness/` 下的场景策略文件中；`RuntimeOrderPreparationService*.cs` 只保留通用自动化编排和跨场景共享动作，怪诞料理大赛运行时判定集中在 `WackyCookingCompetitionRuntimePolicy`。
+- Mizuchi 模块只匹配精确 `Story_Mizuchi` 与 `Story_Mizuchi_1/_2/_3`。`SpecialOrder` 必须通过唯一评价 delegate、单一 invocation、精确 callback method、Target/parent closure、selected/group/controller/order guest 原生身份、当前 controlled guest，以及 challenge-specific 的控制类型、目标材料和基础挑战标志共同分类：基础场景要求 `targetIngredientId=5002`、`isMizuchiChallenge=true`、活动 control 属于 `0..2`；三场试炼要求 `targetIngredientId=5005`、`isMizuchiChallenge=false`，活动 control 分别精确等于 `1/0/2`。运行时稀客身份使用与正式目录一致的非负 ID 域，`0` 是莉格露的合法 ID；order/controller/group/selected 必须接受 `0`，controlled 只允许唯一空值 `-1` 或非负 ID，其他负数 fail-closed。控制状态只接受精确 `(-1,None(3))` 无目标期或合法 `(nonnegative,active-control)` 活动目标期；不得缓存上一目标、接受任意 `None`、把 `0` 当空值或用正数门禁排除它。捕获入口声明的 controller 是 `GuestGroupController`，实机可因此交付基类 wrapper；读取 `SpecialGuestsController.SpecialGuest` 或其继承 callback 前必须使用正式 IL2CPP cast 得到精确派生 wrapper，并要求原 wrapper、派生 wrapper 与闭包 `group` native pointer 全等。不得直接在基类 wrapper 上读取派生属性，也不得调用回调、Hook `MoveNext`、扫描场景或使用名称/文本/弱成员兜底。基础和试炼必须使用不同 wire role，但共用唯一 Mizuchi 身份读取与自动化策略；基础附身角色强制预置 `5002`，试炼附身角色强制预置 `5005`，对应普通角色禁止自己的目标材料，跨场景 role 或材料均拒绝。特殊经营模块提供的附身优先级必须由页面排序、自动化选择和游戏界面目标共同消费，不得改动无上下文的普通排序。自动化在请求匹配、扣料前、`SetCook` 前、酒水/料理 setter 前和评价前 fresh 复核同一角色与 lifecycle；最终 `Food.Modifier` 必须与请求 extras 精确全等，并恰好包含或禁止本场目标材料。评价流程必须先读取同一订单的 `IsFullfilled`：只送达酒水、料理尚未完成时返回正常等待并继续开锅，不得提前读取空 `ServFood` 或建立安全栅栏；只有 fulfilled 后才通过共享评价器的 `fulfilledPreflight` fresh 复核角色、闭包、`ServFood` ID 与 Modifier，并紧接着调用原生评价。首次不可逆操作前的漂移必须取消本次动作；扣料后的漂移进入既有 `cooking-start-unowned` 不确定栅栏，酒水/成品送达与评价边界的漂移进入 `mizuchi-contract-mismatch` 人工栅栏。旧 passive `Story_Mizuchi` 登记、trial-only 类型/文件和 `mizuchi-trial-contract-mismatch` 不保留兼容别名；任何阶段都不得降级为 ordinary 或标准经营路径。
+- 月都闭包的 control/controlled 组合必须按原生双状态解释：`controlled=-1 && control=None(3)` 是开场及每次捕获后的无目标保护期，此时通过其余 exact 身份与闭包门禁的活动订单全部分类为 ordinary；`controlled>=0 && control=当前试炼类型` 是活动附身阶段，再按 guest ID 精确相等区分 possessed/ordinary。`(-1,当前试炼类型)`、`(nonnegative,None)`、错误活动控制类型及其他混合组合都保持 unverified。不得缓存上一位附身目标、接受任意 `None`，或把无目标阶段当成初始化失败；自动化 fresh 复核在该阶段必须维持既有普通订单，不得因此回收已完成料理。
 - 怪诞料理大赛中古明地恋本体破防期的投食方案必须共享同一套评分入口；自动化执行目标、稀客/经营推荐 execution plan、推荐料理和推荐酒水首项都从同一投食分、预算、剩余目标分和剩余提交次数规划结果派生。不得在自动化和可视推荐中分别维护排序公式。
 - 普客订单中的客人、料理和酒水名称只能使用本地数据仓库名称或明确可读文本。`GameData.CoreLanguage.LanguageBase`、`Il2Cpp*`、`GameData.*` 这类运行时类型名必须过滤掉；普客订单去重也不得依赖不稳定的客人文本。
 - 自动化能力是实验性功能，持久配置必须集中在 `设置 -> 实验性功能`；经营中页只显示运行状态、订单步骤、重试、重置和人工确认入口，不拥有第二套配置。总开关之下，稀客与普客分别由 `autoRareOrderEnabled` / `autoNormalOrderEnabled` 独立门禁；两组共同开关顺序固定为启用处理、自动送达酒水、自动开始料理、自动送达料理、自动完成订单、出错时暂停，稀客收藏限定放在共同开关之后。稀客并发、普客并发、最大重试和最大回退都必须走 `CompanionPreferences`，默认分别为 `2`、`3`、`3`、`2`；稀客和普客都按订单独立判断是否可完成，已满足料理和酒水的订单应优先触发评价，但本地 API 调用仍必须串行 await，避免多订单同时修改 Unity 运行时对象。任一次锁存完成意图的直接送达若成为最后一项，必须在同一个后端调用或跨帧料理 job 事务中 fresh 复核并沿订单的精确评价入口收口；不得删除 job 后依赖前端下一轮补发评价。评价返回后不得再读取调用前缓存的订单 wrapper。新稀客门禁默认 `true` 只用于保持已有隐式调度语义；总开关和各动作阶段的默认关闭仍确保新安装不执行动作。

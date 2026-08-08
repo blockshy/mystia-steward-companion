@@ -61,8 +61,10 @@ interface BuildRareOrderPlansFromCandidatesOptions extends BuildRareOrderPlansOp
   beverageCandidates: BeverageCandidate[];
 }
 
-interface BuildRareFoodCandidatesOptions {
+export interface BuildRareFoodCandidatesOptions {
   preserveTwoTagSpecialTargetReachability?: boolean;
+  requiredExtraIngredientIds?: readonly number[];
+  forbiddenExtraIngredientIds?: readonly number[];
 }
 
 interface IngredientSearchState {
@@ -186,8 +188,20 @@ export function buildRareFoodCandidates(
 ): FoodCandidate[] {
   const ingredientsByName = new Map(data.ingredients.map((ingredient) => [ingredient.name, ingredient]));
   const ingredientsById = new Map(data.ingredients.map((ingredient) => [ingredient.id, ingredient]));
+  const forbiddenExtraIngredientIds = normalizeExtraIngredientConstraintIds(
+    options.forbiddenExtraIngredientIds ?? [],
+  );
+  if (forbiddenExtraIngredientIds == null) return [];
+  const requiredExtraIngredients = resolveRequiredExtraIngredients(
+    options.requiredExtraIngredientIds ?? [],
+    ingredientsById,
+    context,
+  );
+  if (requiredExtraIngredients == null
+    || requiredExtraIngredients.some((ingredient) => forbiddenExtraIngredientIds.has(ingredient.id))) return [];
   const usableIngredients = [...context.availableIngredientIds]
     .filter((id) => !isIngredientExcluded(id, context))
+    .filter((id) => !forbiddenExtraIngredientIds.has(id))
     .map((id) => ingredientsById.get(id))
     .filter((ingredient): ingredient is IngredientCatalogItem => Boolean(ingredient));
 
@@ -203,6 +217,7 @@ export function buildRareFoodCandidates(
       demand,
       context,
       options,
+      requiredExtraIngredients,
     ));
   }
 
@@ -400,26 +415,36 @@ function buildFoodCandidatesForRecipe(
   demand: RareTagOrderDemand,
   context: RecommendationRuntimeContext,
   options: BuildRareFoodCandidatesOptions,
+  requiredExtraIngredients: IngredientCatalogItem[],
 ): FoodCandidate[] {
   // extraSlots 使用配方原始材料数量计算，不能用去重后的材料集合，否则重复材料配方会错误地允许继续加料。
   const extraSlots = getAvailableExtraIngredientSlots(recipe, context);
   const baseIngredientIds = new Set(recipe.ingredients
     .map((name) => ingredientsByName.get(name)?.id ?? -1)
     .filter((id) => id >= 0));
-  const baseState = evaluateIngredientState(recipe, [], demand, context);
+  if (requiredExtraIngredients.some((ingredient) =>
+    baseIngredientIds.has(ingredient.id) || hasForbiddenIngredientTag(ingredient, recipe)
+  )) return [];
+  if (requiredExtraIngredients.length > extraSlots) return [];
+
+  const baseState = evaluateIngredientState(recipe, requiredExtraIngredients, demand, context);
+  const reservedIngredientIds = new Set([
+    ...baseIngredientIds,
+    ...requiredExtraIngredients.map((ingredient) => ingredient.id),
+  ]);
   const ingredientPool = buildRelevantIngredientPool({
     recipe,
     usableIngredients,
     baseState,
     demand,
-    baseIngredientIds,
+    baseIngredientIds: reservedIngredientIds,
     tagPriorityRules: context.tagPriorityRules,
   });
   const bestStates = searchIngredientStates({
     recipe,
     baseState,
     ingredientPool,
-    extraSlots,
+    extraSlots: extraSlots - requiredExtraIngredients.length,
     demand,
     context,
     preserveSpecialTargetReachability:
@@ -430,6 +455,31 @@ function buildFoodCandidatesForRecipe(
   return bestStates.map((state) =>
     buildFoodCandidate(recipe, state, demand, context, ingredientsByName)
   );
+}
+
+function resolveRequiredExtraIngredients(
+  requiredIds: readonly number[],
+  ingredientsById: Map<number, IngredientCatalogItem>,
+  context: RecommendationRuntimeContext,
+): IngredientCatalogItem[] | null {
+  if (requiredIds.some((id) => !Number.isInteger(id) || id < 0)) return null;
+  if (new Set(requiredIds).size !== requiredIds.length) return null;
+
+  const ingredients: IngredientCatalogItem[] = [];
+  for (const id of requiredIds) {
+    const ingredient = ingredientsById.get(id);
+    if (!ingredient
+      || !context.availableIngredientIds.has(id)
+      || isIngredientExcluded(id, context)) return null;
+    ingredients.push(ingredient);
+  }
+  return ingredients;
+}
+
+function normalizeExtraIngredientConstraintIds(ids: readonly number[]): Set<number> | null {
+  if (ids.some((id) => !Number.isInteger(id) || id < 0)) return null;
+  const normalized = new Set(ids);
+  return normalized.size === ids.length ? normalized : null;
 }
 
 function buildRarePlan(

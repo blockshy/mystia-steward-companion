@@ -299,10 +299,26 @@ static void VerifyCommittedDeliveryEvaluationBoundary()
         "Yuyuko evaluation no longer distinguishes rare fresh reacquisition from the normal-order route.");
     AssertContains(matchedEvaluation, "TryEvaluateRuntimeOrderIfReady",
         "The shared direct-delivery evaluation route no longer reaches ordinary order evaluation.");
+    AssertContains(matchedEvaluation, "fulfilledPreflight: fulfilledPreflight",
+        "Mizuchi validation is not attached to the fulfilled-only evaluation boundary.");
     AssertTrue(
         matchedEvaluation.IndexOf("IsYuumaBossTarget(target)", StringComparison.Ordinal)
             < matchedEvaluation.IndexOf("TryEvaluateWackyKoishiBossRuntimeOrderIfReady", StringComparison.Ordinal),
         "The shared evaluation route can reach a non-Yuuma evaluator before rejecting Yuuma settlement.");
+
+    var genericEvaluation = ExtractSourceBlock(
+        delivery,
+        "private static RuntimeOrderEvaluationResult TryEvaluateRuntimeOrderIfReady(");
+    var fulfilledReadIndex = genericEvaluation.IndexOf("get_IsFullfilled", StringComparison.Ordinal);
+    var unfulfilledWaitIndex = genericEvaluation.IndexOf("if (!isFullfilled)", StringComparison.Ordinal);
+    var fulfilledPreflightIndex = genericEvaluation.IndexOf("fulfilledPreflight?.Invoke()", StringComparison.Ordinal);
+    var nativeEvaluationIndex = genericEvaluation.IndexOf("TryInvokeRuntimeOrderEvaluationOnce(", StringComparison.Ordinal);
+    AssertTrue(
+        fulfilledReadIndex >= 0
+        && unfulfilledWaitIndex > fulfilledReadIndex
+        && fulfilledPreflightIndex > unfulfilledWaitIndex
+        && nativeEvaluationIndex > fulfilledPreflightIndex,
+        "An incomplete order can still enter a special fulfilled preflight, or a fulfilled order can invoke native evaluation before that preflight.");
 
     var transaction = ExtractSourceBlock(
         directDelivery,

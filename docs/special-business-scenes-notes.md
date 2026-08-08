@@ -1,6 +1,6 @@
 # 特殊经营场景规则与实现边界
 
-更新日期：2026-08-07
+更新日期：2026-08-08
 
 本文档记录特殊经营的游戏原生规则、Mod 执行策略和已验证边界。三者必须分开表述，不得把 Mod 的保守约束写成游戏原生门槛。
 
@@ -111,6 +111,77 @@
 - 幽幽子料理送达后的厨具严格 cleanup 或人工交接一旦结束，就单调释放该 job 的 cooker controller lease；后续 wrapper-free evaluation receipt 可以继续有界等待，但不得再占用厨具或阻断第三阶段其他订单。closeout 最多 12 次、至少 5 秒且最多 20 秒有效运行时间，耗尽只登记同生命周期人工栅栏，不重送、不猜测成功，也不恢复或扩大通用 manager fallback、文本 getter 或 pointer-only 兼容路径；上一条定义的幽幽子 `SpecialOrder` 显式命名 live-controller 例外保持唯一边界。
 - 幽幽子 `SpecialOrder` 的强身份必须同时读到 `RequestFoodTag` 与 `RequestBeverageTag` 两项 raw signed ID；`0`、`-1` 等合法值原样保留，展示只查完整运行时 signed Tag map，map miss 有界记录并 fail-closed。禁止调用 `GetOrderFoodText/GetOrderBevText`、override 委托链、`SpecialGuest.Get*TagText`、`ToString()`、`#id` 或其他文本回退。任一已绑定 observer（包括未送齐或非送达 context）一旦在同一 native slot + lifecycle 看到 food/beverage raw ID 与捕获值冲突，就必须移除 capture、失效该 lifecycle，并停止发布 identity、trace 和订单；不得合并漂移值，也不得把 Provider 主动 fresh 扫描作为恢复方式，只有后续成功原生创建绑定产生新 lifecycle 才能恢复。
 
+## 寻找瑞灵踪迹与月都试炼 1 / 2 / 3
+
+### 游戏原生规则
+
+四个场景共用 `GameData.Profile.DLC5_MizuchiChallengeBossData` 的订单生成和评价闭包。metadata、
+BepInEx #783 interop、IDA 伪代码与实机日志共同确认：
+
+- 基础场景 `Story_Mizuchi` 的 `ChallengeType` 数值为 `16`，父闭包使用
+  `isMizuchiChallenge=true`、`targetIngredientId=5002`，并从 `WrongBeverageTag(0)`、
+  `WrongFoodOrder(1)`、`WrongTalkingDialog(2)` 三种异常表现中随机选择当前类型。三场试炼的数值为
+  `17/18/19`，均使用 `isMizuchiChallenge=false`、`targetIngredientId=5005`，控制类型依次固定为
+  `WrongFoodOrder(1)`、`WrongBeverageTag(0)`、`WrongTalkingDialog(2)`。
+- 被控制稀客的 `SpecialOrder.RequestFoodTag` / `RequestBeverageTag` 不会被异常表现替换；两项原始 signed
+  Tag 始终是订单成立的第一层条件。
+- 捕获成功读取最终 `Food.Modifier` 是否包含当前目标材料。基础配方自带材料不属于 `Modifier`，所以基础场景
+  必须实际把噗噗呦果 `5002`、试炼必须实际把辣椒水 `5005` 作为额外材料加入料理。目标材料给到当前受控
+  guest 时增加捕获数；给到其他 guest 时进入抓错目标分支并修改经营时间；当前受控 guest 未收到目标材料时
+  进入未捕获/逃脱分支。捕获数达到运行时 `needCatchMizuchiTime` 才成功结束，初始材料数和所需次数不写死。
+- 四场的唯一评价委托方法均为 `<MainChallengeLoop>g__GroupOverrideEvaluationCallback|74`。其 Target 是
+  精确闭包 `__c__DisplayClass66_9`，再指向父闭包 `__c__DisplayClass66_0`；父闭包保存当前受控 guest、控制
+  类型、目标材料、基础挑战标记和捕获计数。闭包中的 selected guest、group controller、订单 guest 和
+  controller guest 必须是同一原生身份。
+- 原生从 `actionType.Keys` 构造 guest 集合，并把随机选中的原始 ID 直接写入
+  `currentGuestWhoIsControlledByMizuchi`。运行时目录及实机订单确认莉格露的合法 ID 为 `0`；只有 `-1`
+  表示当前没有受控稀客。因此 order/controller/group/selected guest 使用非负 ID 域，controlled guest 只允许
+  `-1` 或非负 ID，其他负数 fail-closed。
+- `ResetMizuchiTarget|73` 同时写入 `controlled=-1` 和 `control=None(3)`。稀客生成循环只在保护时间结束且
+  当前目标仍为 `-1` 后选择下一位目标；开场和每次捕获后的该精确组合是正式无目标保护期，不是闭包初始化
+  竞态。活动目标期要求非负 controlled；基础场景的 control 必须为 `0..2`，试炼必须等于本场固定 control。
+- 订单捕获入口把控制器声明为 `GuestGroupController`，BepInEx 因此可能先交付基类 wrapper。读取
+  `SpecialGuest` 等派生成员前必须唯一转换为精确 `SpecialGuestsController`，并要求转换前后 native pointer
+  完全相同；转换失败时不得改走弱成员、名称或文本路径。
+- HUD 的 `IncomeControllerMizuchi.SetTargetNum`、`SetTargetCatchProgress` 和
+  `SetTargetCatchProgressImmediate` 被动发布当前捕获数与目标数。Mod 不调用评价委托，不操作 Moon Eye、
+  QTE、捕获数或阶段推进，也不 Hook 编译器生成的 `MoveNext`。
+
+### Mod 执行策略
+
+- 后端 `MizuchiOrderModule` 与前端 `mizuchi-challenges` 模块只匹配上述四个精确 challenge。基础场景使用
+  `mizuchi-story-possessed/ordinary/unverified-order`，三场试炼保留
+  `mizuchi-trial-possessed/ordinary/unverified-order`；两组 wire role 不互认，也不从材料或场景名称反推角色。
+- `MizuchiOrderIdentity` 共用唯一 callback/closure/原生身份读取链，并按 challenge contract 精确复核目标材料、
+  基础挑战标记和控制类型。控制状态只接受 `(-1,None)` 无目标期与合法的 `(nonnegative,active-control)`
+  活动目标期：前者把通过其余门禁的订单分类为 ordinary，后者按 guest ID 等值分类 possessed/ordinary。
+  字段不可读、身份冲突、其他负数、错误 control、`(-1,active-control)` 或 `(nonnegative,None)` 均为
+  unverified 并暂停；不缓存上一目标。
+- 附身订单固定排在普通稀客订单之前。两类订单都必须满足原始料理和酒水 Tag；基础附身订单在候选搜索前
+  预置唯一必需材料 `5002`，试炼附身订单预置 `5005`，对应普通订单禁止自己的目标材料。目录、库存、排除、
+  配方禁忌或五格上限不允许时保持无执行计划，不跨场景换材料，也不使用无目标材料方案。
+- 自定义料理只有完整包含本场必需额外材料时才可成为附身订单候选。最终 `executionPlans[0]` 同时供页面首项、
+  自动化锁定、游戏界面置顶和全部目标高亮使用，不建立第二套目标选择。
+- 自动化复用正式 capture、正 order lifecycle、料理 job、直接送达、终态 receipt 和人工确认栅栏。请求匹配、
+  扣料前、`SetCook` 前、酒水/料理 setter 前及评价前都会 fresh 读取同一订单和闭包角色；创建结果、出锅结果
+  与已送达料理的 `Food.Modifier` 必须和请求 extras 精确全等，并恰好包含或禁止本场目标材料。评价前检查只在
+  原生 `IsFullfilled=true` 后执行；只送达酒水时正常等待，不读取空 `ServFood` 或建立人工栅栏。
+- 角色、闭包、lifecycle 或 Modifier 漂移时立即停止后续副作用：扣料前取消本次开锅，扣料后进入既有
+  `cooking-start-unowned` 不确定栅栏，酒水/成品送达和评价边界进入 `mizuchi-contract-mismatch` 人工确认
+  栅栏。旧 `mizuchi-trial-contract-mismatch` 已删除，不保留别名或双逻辑。
+
+### 实机闭环状态
+
+- 月都试炼 1 / 2 / 3 已由用户逐场确认推荐与自动化正常。试炼 1 的诊断还闭环了基类 wrapper、合法 ID `0`、
+  fulfilled 顺序、possessed/ordinary、辣椒水 `Modifier`、捕获推进，以及持续数十秒的 `(-1,None)` 保护期。
+  旧的无条件 control 门禁曾让推荐周期性消失并误收回 ordinary 成品，现已删除并由上述精确双状态替代。
+- 2026-08-08 的基础场景实机尝试确认 challenge、剧情说明和订单链均进入 `Story_Mizuchi`，但旧实现只登记
+  被动规则，所有 `SpecialOrder` 都按普通经营处理，Unity 日志中的噗噗呦果数量持续为 `5`。当前实现已删除
+  该无效被动登记，接入 `5002`、随机 control、捕获 HUD owner、推荐和自动化。
+- 基础场景仍需在新构建上实测至少一笔 possessed、一笔 ordinary、一次 `(-1,None)` 保护期以及捕获推进和
+  最终完成，并回传完整日志与诊断包。其他形态不符只记录有界 `special-business.mizuchi` 诊断并
+  fail-closed，不增加别名、宽松反射或文本/场景扫描路径。
+
 ## 血池地狱
 
 ### 游戏原生规则
@@ -147,7 +218,6 @@
 - `Story_Basic` / `Story_Advanced`：展示目标营业额和符卡计数，不改变推荐排序。
 - 青娥、布都、屠自古料理挑战：展示目标营业额，不改变推荐排序。
 - 云居一轮、村纱水蜜、寅丸星音游挑战、芙兰朵露的笼女游戏和 `Rogue Like`：不接入料理/酒水推荐。
-- 瑞灵相关挑战：当前只提示挑战存在；抓捕、错误料理/酒水 Tag 和辣椒等副作用尚未有完整实机证据，不推断规则，不改变自动化。
 
 ## 实现约束
 

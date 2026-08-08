@@ -36,6 +36,8 @@ export function buildYuyukoChallengeOrderRule(
       match: 'any',
       tags: [],
     },
+    requiredExtraIngredientIds: [],
+    forbiddenExtraIngredientIds: [],
     blockingReason: '',
     requiresBaseOrderMatch: requiresQualifiedEvaluation,
     requiresHighEvaluation: requiresQualifiedEvaluation,

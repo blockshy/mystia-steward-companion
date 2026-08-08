@@ -164,6 +164,7 @@ export interface SpecialBusinessContext {
   ruleSummary: string;
   foodTargetTags: string[];
   beverageTargetTags: string[];
+  requiredExtraIngredientIds: number[];
   yuumaFoodTargetRevision: number;
   targetFund?: number | null;
   targetLabel?: string;
@@ -439,6 +440,7 @@ export type RecommendationBlockReasonCode =
   | 'food-cooker-missing'
   | 'food-cooker-runtime-unavailable'
   | 'food-required-tag-not-generated'
+  | 'food-required-extra-unavailable'
   | 'food-special-rule-mismatch'
   | 'food-negative-tag'
   | 'beverage-unavailable'
@@ -454,6 +456,7 @@ export type RecommendationCandidateStage =
   | 'food-base-ingredients'
   | 'food-cooker'
   | 'food-candidate-generation'
+  | 'food-required-extra'
   | 'food-special-rule'
   | 'food-negative-safe'
   | 'beverage-available'

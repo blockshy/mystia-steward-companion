@@ -358,8 +358,12 @@ export function ModServicePanel({
   const dataIndexes = useMemo(() => buildRecommendationDataIndexes(data), [data]);
   const activeGuests = night?.activeRareGuests ?? [];
   const orders = useMemo(
-    () => sortNightOrders(night?.orders ?? [], autoPrepPreferences.serviceOrderSortMode),
-    [autoPrepPreferences.serviceOrderSortMode, night?.orders],
+    () => sortNightOrders(
+      night?.orders ?? [],
+      autoPrepPreferences.serviceOrderSortMode,
+      specialBusiness,
+    ),
+    [autoPrepPreferences.serviceOrderSortMode, night?.orders, specialBusiness],
   );
   const activeServiceView = showDebugDetails || serviceView !== 'diagnostics'
     ? serviceView
@@ -476,6 +480,7 @@ export function ModServicePanel({
             runtimeSets={runtimeSets}
             dataIndexes={dataIndexes}
             orderSortMode={autoPrepPreferences.serviceOrderSortMode}
+            specialBusiness={specialBusiness}
             showDebugDetails={showDebugDetails}
             favorites={favorites}
             customRecipes={customRecipes}
@@ -719,6 +724,7 @@ export function ServiceFocusPage({
   runtimeSets,
   dataIndexes,
   orderSortMode,
+  specialBusiness,
   showDebugDetails,
   favorites,
   customRecipes,
@@ -742,6 +748,7 @@ export function ServiceFocusPage({
   runtimeSets: RuntimeSets | null;
   dataIndexes: ReturnType<typeof buildRecommendationDataIndexes>;
   orderSortMode: ServiceOrderSortMode;
+  specialBusiness: SpecialBusinessContext | null;
   showDebugDetails: boolean;
   favorites: FavoriteData;
   customRecipes: CustomRecipeData;
@@ -802,6 +809,7 @@ export function ServiceFocusPage({
           runtimeSets={runtimeSets}
           dataIndexes={dataIndexes}
           orderSortMode={orderSortMode}
+          specialBusiness={specialBusiness}
           showDebugDetails={showDebugDetails}
           favorites={favorites}
           customRecipes={customRecipes}
@@ -830,6 +838,7 @@ function RareOrderRecommendationList({
   runtimeSets,
   dataIndexes,
   orderSortMode,
+  specialBusiness,
   showDebugDetails = false,
   favorites,
   customRecipes,
@@ -851,6 +860,7 @@ function RareOrderRecommendationList({
   runtimeSets: RuntimeSets | null;
   dataIndexes: ReturnType<typeof buildRecommendationDataIndexes>;
   orderSortMode: ServiceOrderSortMode;
+  specialBusiness: SpecialBusinessContext | null;
   showDebugDetails?: boolean;
   favorites: FavoriteData;
   customRecipes: CustomRecipeData;
@@ -869,8 +879,8 @@ function RareOrderRecommendationList({
       ...recommendationIssues.map((issue) => ({ kind: 'issue' as const, order: issue.order, issue })),
       ...recommendations.map((item) => ({ kind: 'recommendation' as const, order: item.order, item })),
       ...pendingOrders.map((order) => ({ kind: 'pending' as const, order })),
-    ], orderSortMode),
-    [orderSortMode, pendingOrders, recommendationIssues, recommendations],
+    ], orderSortMode, specialBusiness),
+    [orderSortMode, pendingOrders, recommendationIssues, recommendations, specialBusiness],
   );
   const collectionState: ServiceOrderCollectionState = updateError
     ? {

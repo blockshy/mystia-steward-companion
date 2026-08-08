@@ -47,11 +47,15 @@ export function buildRareGameUiTarget(
   color: string,
   features: GameUiTargetFeatures,
   indexes: ReturnType<typeof buildRecommendationDataIndexes>,
-  options: { prioritizeMissionRecipe?: boolean } = {},
+  options: {
+    prioritizeMissionRecipe?: boolean;
+    specialBusiness?: SpecialBusinessContext | null;
+  } = {},
 ): GameUiTarget | null {
   const candidates = sortNightOrderRows(
     recommendations.map((recommendation) => ({ order: recommendation.order, recommendation })),
     orderSortMode,
+    options.specialBusiness,
   ).flatMap(({ recommendation }) => {
     const order = recommendation.order;
     if (!hasStrongRareIdentity(order)) return [];

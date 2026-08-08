@@ -19,6 +19,26 @@ export const BLOOD_POND_HELL_CHALLENGE_TYPE = 'Story_BloodPondHell';
 export const YUUMA_BOSS_ROLE = 'yuuma-boss-order';
 export const YUUMA_UNVERIFIED_ROLE = 'yuuma-order-unverified';
 export const YUUMA_CHARACTER_ID = 1003;
+export const MIZUCHI_STORY_CHALLENGE_TYPE = 'Story_Mizuchi';
+export const MIZUCHI_TRIAL_CHALLENGE_TYPES = [
+  'Story_Mizuchi_1',
+  'Story_Mizuchi_2',
+  'Story_Mizuchi_3',
+] as const;
+export const MIZUCHI_TRIAL_CHALLENGE_TYPE_SET = new Set<string>(MIZUCHI_TRIAL_CHALLENGE_TYPES);
+export const MIZUCHI_CHALLENGE_TYPES = [
+  MIZUCHI_STORY_CHALLENGE_TYPE,
+  ...MIZUCHI_TRIAL_CHALLENGE_TYPES,
+] as const;
+export const MIZUCHI_CHALLENGE_TYPE_SET = new Set<string>(MIZUCHI_CHALLENGE_TYPES);
+export const MIZUCHI_STORY_PUYOYO_FRUIT_INGREDIENT_ID = 5002;
+export const MIZUCHI_TRIAL_PEPPER_WATER_INGREDIENT_ID = 5005;
+export const MIZUCHI_STORY_POSSESSED_ROLE = 'mizuchi-story-possessed-order';
+export const MIZUCHI_STORY_ORDINARY_ROLE = 'mizuchi-story-ordinary-order';
+export const MIZUCHI_STORY_UNVERIFIED_ROLE = 'mizuchi-story-unverified-order';
+export const MIZUCHI_TRIAL_POSSESSED_ROLE = 'mizuchi-trial-possessed-order';
+export const MIZUCHI_TRIAL_ORDINARY_ROLE = 'mizuchi-trial-ordinary-order';
+export const MIZUCHI_TRIAL_UNVERIFIED_ROLE = 'mizuchi-trial-unverified-order';
 
 export function matchesSpecialBusinessTags(
   tags: readonly string[],

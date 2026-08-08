@@ -1025,8 +1025,8 @@ internal static partial class RuntimeOrderPreparationService
         object servedBeverage,
         out string diagnostic)
     {
-        if (!TryValidateYuyukoRetakeServedExtraIngredients(
-                request,
+        if (!TryValidateServedFoodExtraIngredients(
+                request.ExtraIngredientIds,
                 servedFood,
                 out var actualExtraIngredientIds,
                 out var ingredientDiagnostic))
@@ -1088,8 +1088,8 @@ internal static partial class RuntimeOrderPreparationService
         object servedFood,
         out string diagnostic)
     {
-        if (!TryValidateYuyukoRetakeServedExtraIngredients(
-                request,
+        if (!TryValidateServedFoodExtraIngredients(
+                request.ExtraIngredientIds,
                 servedFood,
                 out var actualExtraIngredientIds,
                 out var ingredientDiagnostic))
@@ -1130,70 +1130,6 @@ internal static partial class RuntimeOrderPreparationService
         diagnostic =
             $"extraIngredients={SpecialBusinessDiagnostics.FormatIds(actualExtraIngredientIds)}; "
             + $"modifierTags={SpecialBusinessDiagnostics.FormatTags(actualModifierTags)}";
-        return true;
-    }
-
-    private static bool TryValidateYuyukoRetakeServedExtraIngredients(
-        OrderPreparationRequest request,
-        object servedFood,
-        out IReadOnlyList<int> actualExtraIngredientIds,
-        out string diagnostic)
-    {
-        actualExtraIngredientIds = Array.Empty<int>();
-        if (!TryReadExactMemberValue(
-                servedFood,
-                out var rawModifier,
-                out var modifierReadDiagnostic,
-                "Modifier")
-            || rawModifier == null)
-        {
-            diagnostic = $"actual extra ingredients unreadable; member={modifierReadDiagnostic}";
-            return false;
-        }
-
-        if (!RuntimeConcreteCollectionReader.TryReadIntArray(
-                rawModifier,
-                out var rawActualExtraIngredientIds,
-                out var modifierArrayFailure))
-        {
-            diagnostic = $"actual extra ingredients array unreadable: {modifierArrayFailure}";
-            return false;
-        }
-
-        if (rawActualExtraIngredientIds.Any(id => id < 0)
-            || rawActualExtraIngredientIds.Distinct().Count() != rawActualExtraIngredientIds.Count)
-        {
-            diagnostic =
-                $"actual extra ingredients contain invalid or duplicate ids: "
-                + $"{SpecialBusinessDiagnostics.FormatIds(rawActualExtraIngredientIds)}";
-            return false;
-        }
-
-        if (request.ExtraIngredientIds.Any(id => id < 0)
-            || request.ExtraIngredientIds.Distinct().Count() != request.ExtraIngredientIds.Count)
-        {
-            diagnostic =
-                $"requested extra ingredients contain invalid or duplicate ids: "
-                + $"{SpecialBusinessDiagnostics.FormatIds(request.ExtraIngredientIds)}";
-            return false;
-        }
-
-        var expectedExtraIngredientIds = request.ExtraIngredientIds
-            .OrderBy(id => id)
-            .ToArray();
-        var normalizedActualExtraIngredientIds = rawActualExtraIngredientIds
-            .OrderBy(id => id)
-            .ToArray();
-        if (!normalizedActualExtraIngredientIds.SequenceEqual(expectedExtraIngredientIds))
-        {
-            diagnostic =
-                $"extra ingredients mismatch; expected={SpecialBusinessDiagnostics.FormatIds(expectedExtraIngredientIds)}; "
-                + $"actual={SpecialBusinessDiagnostics.FormatIds(normalizedActualExtraIngredientIds)}";
-            return false;
-        }
-
-        actualExtraIngredientIds = normalizedActualExtraIngredientIds;
-        diagnostic = $"extraIngredients={SpecialBusinessDiagnostics.FormatIds(actualExtraIngredientIds)}";
         return true;
     }
 

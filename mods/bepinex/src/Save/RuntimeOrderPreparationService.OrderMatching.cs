@@ -1479,6 +1479,18 @@ internal static partial class RuntimeOrderPreparationService
             order,
             controller,
             "RuntimeOrderPreparationService");
+        if (!TryValidateMizuchiRolePair(
+                request,
+                classification,
+                "request-order-match",
+                order,
+                controller,
+                request.OrderLifecycleSequence,
+                out rejectReason))
+        {
+            return false;
+        }
+
         if (!classification.AutomationAllowed)
         {
             rejectReason = classification.AutomationBlockReason.Length > 0

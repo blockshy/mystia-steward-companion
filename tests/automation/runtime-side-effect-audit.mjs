@@ -30,6 +30,9 @@ const specialTargetPolicy = read(
   'mods/bepinex/src/Save/SpecialBusiness/RuntimeOrderPreparationService.SpecialFoodTargetPolicy.cs',
 );
 const yuyukoPolicy = read('mods/bepinex/src/Save/SpecialBusiness/RuntimeOrderPreparationService.YuyukoChallengePolicy.cs');
+const mizuchiPolicy = read('mods/bepinex/src/Save/SpecialBusiness/RuntimeOrderPreparationService.MizuchiPolicy.cs');
+const mizuchiRolePolicy = read('mods/bepinex/src/Save/SpecialBusiness/MizuchiAutomationPolicy.cs');
+const foodModifierValidation = read('mods/bepinex/src/Save/SpecialBusiness/RuntimeOrderPreparationService.FoodModifierValidation.cs');
 const yuyukoEvaluationTracker = read(
   'mods/bepinex/src/Save/SpecialBusiness/YuyukoChallengeEvaluationTracker.cs',
 );
@@ -2819,6 +2822,140 @@ for (const field of [
     `The canonical snapshot signature omits automation cooking-job field ${field}.`,
   );
 }
+
+const specialBusinessRequestGate = namedMethodSource(
+  matching,
+  'IsSpecialBusinessOrderAllowedForRequest',
+);
+assert.match(
+  specialBusinessRequestGate,
+  /SpecialBusinessOrderClassifier\.Classify\([\s\S]*TryValidateMizuchiRolePair\([\s\S]*request[\s\S]*classification/,
+  'Every Mizuchi request/order match must preserve exact classifier role parity.',
+);
+
+const mizuchiRequestContract = namedMethodSource(mizuchiRolePolicy, 'TryValidateRequest');
+assert.match(
+  mizuchiRequestContract,
+  /contract\.IsPossessed[\s\S]*Count\(id => id == contract\.TargetIngredientId\) != 1/,
+  'A possessed Mizuchi request must carry exactly one scene-specific target Modifier ingredient.',
+);
+assert.doesNotMatch(
+  mizuchiRolePolicy,
+  /OrdinalIgnoreCase|role\??\.(?:Trim|Contains|StartsWith|EndsWith)\(/,
+  'Mizuchi automation roles must remain opaque exact Ordinal identities.',
+);
+assert.match(
+  mizuchiRequestContract,
+  /!contract\.IsPossessed[\s\S]*Contains\(contract\.TargetIngredientId\)/,
+  'An ordinary Mizuchi request must reject its scene-specific target ingredient in Food.Modifier.',
+);
+assert.match(
+  mizuchiRolePolicy,
+  /MizuchiStoryPossessed[\s\S]*PuyoyoFruitIngredientId[\s\S]*MizuchiTrialPossessed[\s\S]*PepperWaterIngredientId/,
+  'Story and trial roles must resolve distinct target ingredients without inference from extras.',
+);
+
+const cookingStart = namedMethodSource(cooking, 'TryStartCooking');
+const createdModifierIndex = cookingStart.indexOf('created-food-before-deduction');
+const mizuchiPreDeductionIndex = cookingStart.indexOf('TryValidateCookingTargetOrderLifecycle(');
+const ingredientOutIndex = cookingStart.indexOf('InvokeRuntimeStorageOut("IngredientOut"');
+const mizuchiPreSetCookIndex = cookingStart.indexOf(
+  'TryValidateCookingTargetOrderLifecycle(',
+  mizuchiPreDeductionIndex + 1,
+);
+const mizuchiSetCookIndex = cookingStart.indexOf('InvokeInstance(cookController, "SetCook"');
+assert.ok(
+  cookingStart.includes('"before-ingredient-deduction"'),
+  'Pre-deduction lifecycle validation must identify the fresh Mizuchi role checkpoint.',
+);
+assert.ok(
+  cookingStart.includes('"immediately-before-set-cook"'),
+  'Pre-SetCook lifecycle validation must identify the fresh Mizuchi role checkpoint.',
+);
+assert.ok(
+  createdModifierIndex >= 0
+    && mizuchiPreDeductionIndex > createdModifierIndex
+    && ingredientOutIndex > mizuchiPreDeductionIndex
+    && mizuchiPreSetCookIndex > ingredientOutIndex
+    && mizuchiSetCookIndex > mizuchiPreSetCookIndex,
+  'Mizuchi Modifier/role checks must bracket material deduction and SetCook in the authoritative cooking path.',
+);
+const cookingLifecycleValidation = namedMethodSource(service, 'TryValidateCookingTargetOrderLifecycle');
+assert.match(
+  cookingLifecycleValidation,
+  /TryValidateMizuchiCookingTargetFresh\([\s\S]*checkpoint/,
+  'Each cooking lifecycle checkpoint must fresh-read the exact Mizuchi order role and closure.',
+);
+
+const beverageDelivery = namedMethodSource(directDelivery, 'TryDeliverOrderBeverage');
+assert.match(
+  beverageDelivery,
+  /TryValidateMizuchiRuntimeOrder\([\s\S]*"before-beverage-setter"[\s\S]*TryCommitRuntimeDelivery\(/,
+  'Beverage delivery must fresh-check the exact Mizuchi role/closure immediately before its setter path.',
+);
+
+const foodDelivery = namedMethodSource(directDelivery, 'TryDeliverAutomationCookedFood');
+const cookedModifierIndex = foodDelivery.indexOf('cooked-result-before-delivery');
+const freshOrderIndex = foodDelivery.indexOf('fresh-order-before-food-state');
+const immediateFoodIndex = foodDelivery.indexOf('immediately-before-food-setter');
+const commitFoodIndex = foodDelivery.indexOf(
+  'TryCommitRuntimeDelivery(runtimeOrder, cookedFood, RuntimeDeliveryItemKind.Food',
+);
+assert.ok(
+  cookedModifierIndex >= 0
+    && freshOrderIndex > cookedModifierIndex
+    && immediateFoodIndex > freshOrderIndex
+    && commitFoodIndex > immediateFoodIndex,
+  'Cooked Mizuchi food must preserve exact Modifier and fresh role identity through the final setter boundary.',
+);
+
+const evaluationRoute = namedMethodSource(
+  delivery,
+  'TryEvaluateMatchedAutomationOrderRuntimeIfReady',
+);
+assert.match(
+  evaluationRoute,
+  /fulfilledPreflight = \(\) =>[\s\S]*TryValidateMizuchiEvaluationPreflight\([\s\S]*fulfilledPreflight: fulfilledPreflight/,
+  'Mizuchi role and served-food Modifier validation must be attached to the fulfilled-only generic evaluation boundary.',
+);
+const genericEvaluation = namedMethodSource(delivery, 'TryEvaluateRuntimeOrderIfReady');
+const genericFulfilledReadIndex = genericEvaluation.indexOf('get_IsFullfilled');
+const genericUnfulfilledWaitIndex = genericEvaluation.indexOf('if (!isFullfilled)');
+const genericFulfilledPreflightIndex = genericEvaluation.indexOf('fulfilledPreflight?.Invoke()');
+const genericNativeEvaluationIndex = genericEvaluation.indexOf('TryInvokeRuntimeOrderEvaluationOnce(');
+assert.ok(
+  genericFulfilledReadIndex >= 0
+    && genericUnfulfilledWaitIndex > genericFulfilledReadIndex
+    && genericFulfilledPreflightIndex > genericUnfulfilledWaitIndex
+    && genericNativeEvaluationIndex > genericFulfilledPreflightIndex,
+  'An incomplete order must return the normal wait outcome before the Mizuchi ServFood preflight; a fulfilled order must run that preflight immediately before native evaluation.',
+);
+assert.match(
+  namedMethodSource(mizuchiPolicy, 'TryValidateMizuchiEvaluationPreflight'),
+  /TryReadOrderServedItem\([\s\S]*TryReadCookControllerFoodResultIdentity\([\s\S]*TryValidateMizuchiFoodModifier\(/,
+  'Mizuchi evaluation must reread exact ServFood identity and Modifier before native evaluation.',
+);
+
+assert.match(
+  foodModifierValidation,
+  /TryReadExactMemberValue\([\s\S]*"Modifier"[\s\S]*RuntimeConcreteCollectionReader\.TryReadIntArray/,
+  'Food.Modifier must use the single strict concrete int-array reader.',
+);
+assert.match(yuyukoPolicy, /TryValidateServedFoodExtraIngredients\(/,
+  'Yuyuko must consume the shared strict Modifier reader.');
+assert.doesNotMatch(yuyukoPolicy, /TryValidateYuyukoRetakeServedExtraIngredients/,
+  'The obsolete Yuyuko-only Modifier path must be removed.');
+assert.doesNotMatch(
+  mizuchiPolicy,
+  /MoveNext|FindObject|FindObjects|GetOrderFoodText|GetOrderBevText|DynamicInvoke|\.Invoke\(.*OverrideEvaluationCallback/,
+  'Mizuchi automation must not add generated-state hooks, scene scans, display-text identities, or callback execution.',
+);
+assert.match(service, /MizuchiContractMismatch = "mizuchi-contract-mismatch"/);
+assert.match(
+  namedMethodSource(service, 'IsAutomationSafetyBarrierCode'),
+  /MizuchiContractMismatch/,
+  'Mizuchi contract drift must enter the existing exact-order manual safety barrier.',
+);
 
 console.log('PASS: runtime automation uses exact native signatures, one-shot side-effect boundaries, passive start receipts, and authoritative safety barriers.');
 

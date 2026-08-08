@@ -1037,13 +1037,15 @@ function isManualResolutionAutomationEvent(event: AutomationRuntimeEvent): boole
 }
 
 function resolveAutomationEventStage(event: AutomationRuntimeEvent): AutomationStep {
-  const runtimeStage = event.code.startsWith('beverage-')
-    ? 'beverage'
-    : event.code.startsWith('order-')
-      ? 'order'
-      : event.code === 'cooking-start-unowned'
-        ? 'cooking-start'
-        : 'cooking-delivery';
+  const runtimeStage = event.code === 'mizuchi-contract-mismatch'
+    ? 'order'
+    : event.code.startsWith('beverage-')
+      ? 'beverage'
+      : event.code.startsWith('order-')
+        ? 'order'
+        : event.code === 'cooking-start-unowned'
+          ? 'cooking-start'
+          : 'cooking-delivery';
   return resolveAutomationResponseStage(runtimeStage, 'ensure-cooking');
 }
 
@@ -2561,6 +2563,7 @@ export function ModWorkbench() {
         {
           prioritizeMissionRecipe: companionPreferences.missionRecipePriorityEnabled
             && !snapshot?.specialBusiness?.active,
+          specialBusiness: snapshot?.specialBusiness ?? null,
         },
       )
       : null,
@@ -2572,7 +2575,7 @@ export function ModWorkbench() {
       rareGameUiTargetFeatures,
       rareGameUiTargetFeaturesEnabled,
       recommendationIndexes,
-      snapshot?.specialBusiness?.active,
+      snapshot?.specialBusiness,
     ],
   );
   const normalGameUiTarget = useMemo(
@@ -3648,6 +3651,7 @@ export function ModWorkbench() {
       favorites,
       selectionPreferences,
       rareOrderStatesRef.current,
+      snapshot?.specialBusiness,
     );
     if (candidateResult.selections.length === 0) {
       publishRareAutomationDecisionDiagnostic('rare-candidate-empty', candidateResult, candidateResult.message, selectionPreferences);
@@ -5170,6 +5174,7 @@ export function ModWorkbench() {
         favoriteBusyKey={favoriteBusyKey}
         favoriteError={favoriteError}
         orderSortMode={companionPreferences.serviceOrderSortMode}
+        specialBusiness={snapshot?.specialBusiness ?? null}
         showDebugDetails={companionPreferences.showDebugDetails}
         compact={serviceFocusCompact}
         recipeLimit={serviceFocusRecipeLimit}

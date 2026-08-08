@@ -27,6 +27,8 @@ interface BuildCustomFoodCandidatesOptions {
   requiredFoodTag: string;
   requiredBeverageTag: string;
   specialFoodTarget?: SpecialBusinessFoodTargetPolicy;
+  requiredExtraIngredientIds?: readonly number[];
+  forbiddenExtraIngredientIds?: readonly number[];
   context: RecommendationRuntimeContext;
 }
 
@@ -116,6 +118,8 @@ export function buildCustomFoodCandidates({
   requiredFoodTag,
   requiredBeverageTag,
   specialFoodTarget,
+  requiredExtraIngredientIds = [],
+  forbiddenExtraIngredientIds = [],
   context,
 }: BuildCustomFoodCandidatesOptions): FoodCandidate[] {
   const demand: RareTagOrderDemand = {
@@ -139,6 +143,8 @@ export function buildCustomFoodCandidates({
       .filter((ingredient): ingredient is IngredientCatalogItem => Boolean(ingredient));
     if (extraIngredients.length !== entry.extraIngredientIds.length) continue;
     if (!isCustomRecipeFoodCandidateAllowed(recipe, extraIngredients, ingredientsByName, context)) continue;
+    if (!containsRequiredExtraIngredients(extraIngredients, requiredExtraIngredientIds)) continue;
+    if (!excludesForbiddenExtraIngredients(extraIngredients, forbiddenExtraIngredientIds)) continue;
 
     const candidate = buildCustomFoodCandidate(recipe, extraIngredients, entry, demand, context, ingredientsByName);
     const key = foodCandidateResultKey(candidate);
@@ -148,6 +154,26 @@ export function buildCustomFoodCandidates({
   }
 
   return candidates.sort(compareCustomFoodCandidates);
+}
+
+function containsRequiredExtraIngredients(
+  extraIngredients: readonly IngredientCatalogItem[],
+  requiredIds: readonly number[],
+): boolean {
+  if (requiredIds.some((id) => !Number.isInteger(id) || id < 0)) return false;
+  if (new Set(requiredIds).size !== requiredIds.length) return false;
+  const extraIds = new Set(extraIngredients.map((ingredient) => ingredient.id));
+  return requiredIds.every((id) => extraIds.has(id));
+}
+
+function excludesForbiddenExtraIngredients(
+  extraIngredients: readonly IngredientCatalogItem[],
+  forbiddenIds: readonly number[],
+): boolean {
+  if (forbiddenIds.some((id) => !Number.isInteger(id) || id < 0)) return false;
+  if (new Set(forbiddenIds).size !== forbiddenIds.length) return false;
+  const extraIds = new Set(extraIngredients.map((ingredient) => ingredient.id));
+  return forbiddenIds.every((id) => !extraIds.has(id));
 }
 
 export function mergeCustomFoodCandidates(

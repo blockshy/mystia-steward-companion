@@ -668,6 +668,30 @@ internal static partial class RuntimeOrderPreparationService
         string orderLabel,
         CookingCollectionTarget target)
     {
+        Func<RuntimeOrderEvaluationResult?>? fulfilledPreflight = null;
+        if (MizuchiAutomationPolicy.IsAnyRole(target.SpecialBusinessRole))
+        {
+            fulfilledPreflight = () =>
+            {
+                if (TryValidateMizuchiEvaluationPreflight(
+                        target,
+                        runtimeOrder,
+                        out var mizuchiEvaluationDiagnostic))
+                {
+                    return null;
+                }
+
+                return new(
+                    false,
+                    false,
+                    false,
+                    "瑞灵特殊经营订单角色、评价闭包或已送达料理加料在评价前无法精确复核；"
+                    + "未调用评价入口："
+                    + mizuchiEvaluationDiagnostic,
+                    OrderPreparationStepCodes.MizuchiContractMismatch);
+            };
+        }
+
         if (IsYuumaBossTarget(target))
         {
             return new(
@@ -710,7 +734,8 @@ internal static partial class RuntimeOrderPreparationService
         return TryEvaluateRuntimeOrderIfReady(
             runtimeOrder,
             orderLabel,
-            expectedOrderBinding: target.OrderBinding);
+            expectedOrderBinding: target.OrderBinding,
+            fulfilledPreflight: fulfilledPreflight);
     }
 
     private static bool TryEvaluateWackyKoishiBossOrderIfReady(
@@ -817,7 +842,8 @@ internal static partial class RuntimeOrderPreparationService
         string orderLabel,
         bool allowControllerMissing = false,
         long? expectedSessionGeneration = null,
-        RuntimeOrderBindingToken? expectedOrderBinding = null)
+        RuntimeOrderBindingToken? expectedOrderBinding = null,
+        Func<RuntimeOrderEvaluationResult?>? fulfilledPreflight = null)
     {
         var sessionGeneration = expectedSessionGeneration ?? RuntimeNightBusinessLifecycle.Generation;
         if (expectedSessionGeneration.HasValue
@@ -851,6 +877,19 @@ internal static partial class RuntimeOrderPreparationService
             }
 
             return new(false, false, false, "已匹配订单，但未找到对应客人控制器，无法调用游戏评价流程。");
+        }
+
+        // OrderBase.IsFullfilled is the native servFood && servBeverage boundary. Scene-specific
+        // served-item validation belongs after that normal wait path and immediately before evaluation.
+        var fulfilledPreflightResult = fulfilledPreflight?.Invoke();
+        if (fulfilledPreflightResult != null)
+        {
+            return fulfilledPreflightResult;
+        }
+
+        if (!IsNightBusinessGenerationActive(sessionGeneration))
+        {
+            return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: false);
         }
 
         return TryInvokeRuntimeOrderEvaluationOnce(

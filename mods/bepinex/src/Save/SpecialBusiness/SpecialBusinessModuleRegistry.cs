@@ -15,6 +15,7 @@ internal static class SpecialBusinessModuleRegistry
 {
     private static readonly IReadOnlyList<ISpecialBusinessOrderModule> Modules = new ISpecialBusinessOrderModule[]
     {
+        new MizuchiOrderModule(),
         new WackyCookingCompetitionOrderModule(),
         new YuyukoChallengeOrderModule(),
         new YuumaChallengeOrderModule(),

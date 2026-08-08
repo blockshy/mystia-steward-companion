@@ -151,6 +151,7 @@ const MANUAL_RESOLUTION_REASON_CODES = new Set([
   'order-evaluation-commit-uncertain',
   'order-evaluation-target-mismatch',
   'order-evaluation-closeout-unresolved',
+  'mizuchi-contract-mismatch',
 ]);
 
 export interface AutomationStageCounters {

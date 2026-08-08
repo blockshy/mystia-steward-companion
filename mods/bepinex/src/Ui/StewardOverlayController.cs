@@ -1578,6 +1578,7 @@ internal sealed class StewardOverlayController
         AppendValue(builder, context.Category);
         AppendValue(builder, context.RuleSummary);
         AppendStrings(builder, context.FoodTargetTags);
+        AppendInts(builder, context.RequiredExtraIngredientIds);
         AppendStrings(builder, context.BeverageTargetTags);
         AppendValue(builder, context.TargetFund);
         AppendValue(builder, context.TargetLabel);

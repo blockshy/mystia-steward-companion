@@ -151,7 +151,7 @@ export function buildOrderRecommendations(
   options: BuildOrderRecommendationOptions = {},
 ): { recommendations: OrderRecommendation[]; recommendationIssues: RecommendationIssue[] } {
   if (orders.length === 0) return { recommendations: [], recommendationIssues: [] };
-  const sortedOrders = sortNightOrders(orders, preferences.serviceOrderSortMode);
+  const sortedOrders = sortNightOrders(orders, preferences.serviceOrderSortMode, specialBusiness);
   if (!runtime) {
     return {
       recommendations: [],
@@ -219,7 +219,15 @@ export function buildOrderRecommendations(
       preferences,
       order.automationAllowed !== false,
     );
-    const foodCandidateKey = buildFoodCandidateCacheKey(data, customer, foodTag, candidateContext, specialFoodTarget);
+    const foodCandidateKey = buildFoodCandidateCacheKey(
+      data,
+      customer,
+      foodTag,
+      candidateContext,
+      specialFoodTarget,
+      specialBusinessRule.requiredExtraIngredientIds,
+      specialBusinessRule.forbiddenExtraIngredientIds,
+    );
     const beverageCandidateKey = buildBeverageCandidateCacheKey(data, customer, beverageTag, candidateContext);
     let foodCandidates = caches.foodCandidates.get(foodCandidateKey);
     if (!foodCandidates) {
@@ -227,6 +235,10 @@ export function buildOrderRecommendations(
         data,
         rareDemand,
         candidateContext,
+        {
+          requiredExtraIngredientIds: specialBusinessRule.requiredExtraIngredientIds,
+          forbiddenExtraIngredientIds: specialBusinessRule.forbiddenExtraIngredientIds,
+        },
       );
       caches.foodCandidates.set(foodCandidateKey, foodCandidates);
       trimCache(caches.foodCandidates, FOOD_CANDIDATE_CACHE_LIMIT);
@@ -248,6 +260,8 @@ export function buildOrderRecommendations(
       requiredFoodTag: foodTag,
       requiredBeverageTag: beverageTag,
       specialFoodTarget,
+      requiredExtraIngredientIds: specialBusinessRule.requiredExtraIngredientIds,
+      forbiddenExtraIngredientIds: specialBusinessRule.forbiddenExtraIngredientIds,
       context: candidateContext,
     });
     const mergedFoodCandidates = mergeCustomFoodCandidates(foodCandidates, customFoodCandidates);
@@ -538,6 +552,8 @@ function filterSpecialBusinessFoodCandidates(
   return candidates.filter((candidate) => {
     if (!isSpecialBusinessFoodBaseMatchCandidate(candidate, rule)) return false;
     if (!isSpecialBusinessFoodNegativeSafeCandidate(candidate, rule, requiredFoodTag)) return false;
+    if (!hasRequiredExtraIngredients(candidate, rule.requiredExtraIngredientIds)) return false;
+    if (!hasNoForbiddenExtraIngredients(candidate, rule.forbiddenExtraIngredientIds)) return false;
     if (rule.blockingReason) return false;
     if (rule.foodTarget.enforcement !== 'require') return true;
     if (!matchesSpecialBusinessFoodTarget(candidate.activeTags, rule.foodTarget)) return false;
@@ -556,6 +572,26 @@ function isSpecialBusinessFoodBaseMatchCandidate(
   rule: ReturnType<typeof buildSpecialBusinessOrderRule>,
 ): boolean {
   return !rule.requiresBaseOrderMatch || candidate.meetsRequiredFood;
+}
+
+function hasRequiredExtraIngredients(
+  candidate: FoodCandidate,
+  requiredIds: readonly number[],
+): boolean {
+  if (requiredIds.some((id) => !Number.isInteger(id) || id < 0)) return false;
+  if (new Set(requiredIds).size !== requiredIds.length) return false;
+  const candidateIds = candidate.extraIngredients.map((ingredient) => ingredient.id);
+  return requiredIds.every((id) => candidateIds.filter((candidateId) => candidateId === id).length === 1);
+}
+
+function hasNoForbiddenExtraIngredients(
+  candidate: FoodCandidate,
+  forbiddenIds: readonly number[],
+): boolean {
+  if (forbiddenIds.some((id) => !Number.isInteger(id) || id < 0)) return false;
+  if (new Set(forbiddenIds).size !== forbiddenIds.length) return false;
+  const candidateIds = new Set(candidate.extraIngredients.map((ingredient) => ingredient.id));
+  return forbiddenIds.every((id) => !candidateIds.has(id));
 }
 
 function isSpecialBusinessFoodNegativeSafeCandidate(
@@ -590,6 +626,8 @@ function filterSpecialBusinessExecutionPlans(
 ): RareOrderRecommendationPlan[] {
   if (rule.blockingReason) return [];
   if (rule.foodTarget.enforcement !== 'require'
+    && rule.requiredExtraIngredientIds.length === 0
+    && rule.forbiddenExtraIngredientIds.length === 0
     && !rule.requiresBaseOrderMatch
     && !rule.requiresHighEvaluation) return plans;
   return plans.filter((plan) => isSpecialBusinessSafeExecutionPlan(plan, rule));
@@ -687,6 +725,32 @@ function withSpecialBusinessPlanReasons(
   plans: RareOrderRecommendationPlan[],
   rule: ReturnType<typeof buildSpecialBusinessOrderRule>,
 ): RareOrderRecommendationPlan[] {
+  if (rule.requiredExtraIngredientIds.length > 0) {
+    const ingredientLabel = rule.requiredExtraIngredientIds
+      .map(describeSpecialBusinessIngredient)
+      .join('、');
+    const reason = `特殊经营强制加料：${ingredientLabel}`;
+    return plans.map((plan) => {
+      if (!plan.food || !plan.beverage || plan.bucket === 'blocked') return plan;
+      return {
+        ...plan,
+        reasons: [reason, ...plan.reasons.filter((item) => item !== reason)],
+      };
+    });
+  }
+  if (rule.forbiddenExtraIngredientIds.length > 0) {
+    const ingredientLabel = rule.forbiddenExtraIngredientIds
+      .map(describeSpecialBusinessIngredient)
+      .join('、');
+    const reason = `特殊经营禁止额外加料：${ingredientLabel}`;
+    return plans.map((plan) => {
+      if (!plan.food || !plan.beverage || plan.bucket === 'blocked') return plan;
+      return {
+        ...plan,
+        reasons: [reason, ...plan.reasons.filter((item) => item !== reason)],
+      };
+    });
+  }
   if (rule.foodTarget.enforcement !== 'none') {
     return plans.map((plan) => {
       if (!plan.food || !plan.beverage || plan.bucket === 'blocked') return plan;
@@ -748,6 +812,17 @@ function withMissionRecipePlanReasons(
   });
 }
 
+function describeSpecialBusinessIngredient(id: number): string {
+  switch (id) {
+    case 5002:
+      return '噗噗呦果';
+    case 5005:
+      return '辣椒水';
+    default:
+      return `#${id}`;
+  }
+}
+
 function isSpecialBusinessSafeExecutionPlan(
   plan: RareOrderRecommendationPlan,
   rule: ReturnType<typeof buildSpecialBusinessOrderRule>,
@@ -758,6 +833,8 @@ function isSpecialBusinessSafeExecutionPlan(
   if (rule.blockingReason) return false;
   if (rule.foodTarget.enforcement === 'require'
     && !matchesSpecialBusinessFoodTarget(food.activeTags, rule.foodTarget)) return false;
+  if (!hasRequiredExtraIngredients(food, rule.requiredExtraIngredientIds)) return false;
+  if (!hasNoForbiddenExtraIngredients(food, rule.forbiddenExtraIngredientIds)) return false;
   if (rule.requiresBaseOrderMatch && (!food.meetsRequiredFood || !beverage.meetsRequiredBeverage)) return false;
   if (rule.yuyukoProgressEvaluationMode !== 'none') {
     return isYuyukoProgressPlan(plan, rule.yuyukoProgressEvaluationMode);
@@ -781,6 +858,8 @@ function buildSpecialBusinessBlockedMessages(
 ): string[] {
   if (rule.blockingReason) return [rule.blockingReason];
   if ((rule.foodTarget.enforcement !== 'require'
+      && rule.requiredExtraIngredientIds.length === 0
+      && rule.forbiddenExtraIngredientIds.length === 0
       && !rule.requiresBaseOrderMatch
       && !rule.requiresHighEvaluation
       && !rule.preferYuyukoPositiveSpell
@@ -798,6 +877,16 @@ function buildSpecialBusinessBlockedMessages(
       ? `特殊经营要求料理同时满足目标 Tag：${rule.foodTarget.tags.join('、')}。`
       : `特殊经营要求料理满足以下任一目标 Tag：${rule.foodTarget.tags.join('、')}。`);
   }
+  if (rule.requiredExtraIngredientIds.length > 0) {
+    messages.push(`特殊经营要求料理额外加入材料：${rule.requiredExtraIngredientIds
+      .map(describeSpecialBusinessIngredient)
+      .join('、')}。`);
+  }
+  if (rule.forbiddenExtraIngredientIds.length > 0) {
+    messages.push(`特殊经营禁止把以下材料作为额外加料：${rule.forbiddenExtraIngredientIds
+      .map(describeSpecialBusinessIngredient)
+      .join('、')}。`);
+  }
   if (rule.requiresBaseOrderMatch) {
     messages.push('特殊经营要求先满足原订单料理和酒水。');
   }
@@ -810,6 +899,8 @@ function buildSpecialBusinessBlockedMessages(
 function serializeSpecialBusinessOrderRule(rule: ReturnType<typeof buildSpecialBusinessOrderRule>): string {
   return [
     `foodTarget=${rule.foodTarget.enforcement}/${rule.foodTarget.match}/${rule.foodTarget.tags.join(',')}`,
+    `requiredExtras=${rule.requiredExtraIngredientIds.join(',')}`,
+    `forbiddenExtras=${rule.forbiddenExtraIngredientIds.join(',')}`,
     `blocking=${rule.blockingReason}`,
     rule.requiresBaseOrderMatch ? 'base=1' : 'base=0',
     rule.requiresHighEvaluation ? 'highest=1' : 'highest=0',
@@ -1366,6 +1457,30 @@ function selectRecommendationBlockedReason({
   const foodCandidates = counts.foodCandidates;
   const beverageCandidates = counts.beverageCandidates;
   const plans = counts.plans;
+
+  if (specialBusinessRule.requiredExtraIngredientIds.length > 0
+    && foodCandidates.generated === 0) {
+    const labels = specialBusinessRule.requiredExtraIngredientIds
+      .map(describeSpecialBusinessIngredient)
+      .join('、');
+    return {
+      code: 'food-required-extra-unavailable',
+      firstEmptyStage: 'food-required-extra',
+      message: `特殊经营强制加料 ${labels} 无法用于当前订单；请检查材料目录、库存、排除设置、配方禁忌和剩余加料槽。`,
+    };
+  }
+
+  if (specialBusinessRule.forbiddenExtraIngredientIds.length > 0
+    && foodCandidates.generated === 0) {
+    const labels = specialBusinessRule.forbiddenExtraIngredientIds
+      .map(describeSpecialBusinessIngredient)
+      .join('、');
+    return {
+      code: 'food-special-rule-mismatch',
+      firstEmptyStage: 'food-special-rule',
+      message: `当前订单不能把 ${labels} 作为额外加料，移除后没有可满足原订单的安全料理方案。`,
+    };
+  }
 
   if (foodCandidates.baseOrderMatched === 0) {
     if (foodRecipes.requiredTagReachable === 0) {
@@ -2074,6 +2189,8 @@ function buildFoodCandidateCacheKey(
   requiredFoodTag: string,
   context: RecommendationRuntimeContext,
   specialFoodTarget?: SpecialBusinessFoodTargetPolicy,
+  requiredExtraIngredientIds: readonly number[] = [],
+  forbiddenExtraIngredientIds: readonly number[] = [],
 ): string {
   return [
     'foodCandidates',
@@ -2081,6 +2198,8 @@ function buildFoodCandidateCacheKey(
     serializeRareCustomerFoodProfile(customer),
     `requiredFood:${requiredFoodTag}`,
     `specialFood:${serializeSpecialBusinessFoodTarget(specialFoodTarget)}`,
+    `requiredExtras:${[...requiredExtraIngredientIds].sort((left, right) => left - right).join(',')}`,
+    `forbiddenExtras:${[...forbiddenExtraIngredientIds].sort((left, right) => left - right).join(',')}`,
     `recipes:${serializeNumberSet(context.availableRecipeIds)}`,
     `ingredients:${serializeNumberSet(context.availableIngredientIds)}`,
     `excludedIngredients:${serializeNumberSet(context.excludedIngredientIds)}`,

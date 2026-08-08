@@ -15,6 +15,7 @@ internal static class RuntimeSpecialBusinessContextService
     private const string IncomeControllerYuumaTypeName = "NightScene.UI.HUDUtility.IncomeControllerYuuma";
     private const string IncomeControllerKoishiTypeName = "NightScene.UI.HUDUtility.IncomeControllerKoishi";
     private const string IncomeControllerYuyukoTypeName = "NightScene.UI.HUDUtility.IncomeControllerYuyuko";
+    private const string IncomeControllerMizuchiTypeName = "Night.UI.HUD.IncomeControllerMizuchi";
     private const string IncomeControllerChallengeTypeName = "NightScene.UI.HUDUtility.IncomeControllerChallenge";
     private const string IncomeControllerMausoleumTypeName = "NightScene.UI.HUDUtility.IncomeControllerMausoleumCuisineCompetition";
     private const string DataBaseLanguageTypeName = "GameData.CoreLanguage.Collections.DataBaseLanguage";
@@ -365,6 +366,7 @@ internal static class RuntimeSpecialBusinessContextService
             Category = rule.Category,
             RuleSummary = rule.RuleSummary,
             FoodTargetTags = target.FoodTargetTags.ToList(),
+            RequiredExtraIngredientIds = rule.RequiredExtraIngredientIds.ToList(),
             YuumaFoodTargetRevision = target.YuumaFoodTargetRevision,
             BeverageTargetTags = target.BeverageTargetTags.ToList(),
             TargetFund = target.TargetFund,
@@ -467,6 +469,30 @@ internal static class RuntimeSpecialBusinessContextService
             PatchMethod(_harmony, IncomeControllerYuyukoTypeName, "SetContext", 4, nameof(OnYuyukoContextSet), patchedNow, missing);
             PatchMethod(_harmony, IncomeControllerYuyukoTypeName, "SetTargetProgress", 1, nameof(OnYuyukoTargetProgressSet), patchedNow, missing);
             PatchMethod(_harmony, IncomeControllerYuyukoTypeName, "SetTargetTime", 1, nameof(OnYuyukoTargetTimeSet), patchedNow, missing);
+            PatchExactInstanceMethod(
+                _harmony,
+                IncomeControllerMizuchiTypeName,
+                "SetTargetNum",
+                new[] { typeof(int) },
+                nameof(OnMizuchiTargetNumSet),
+                patchedNow,
+                missing);
+            PatchExactInstanceMethod(
+                _harmony,
+                IncomeControllerMizuchiTypeName,
+                "SetTargetCatchProgress",
+                new[] { typeof(int) },
+                nameof(OnMizuchiCatchProgressSet),
+                patchedNow,
+                missing);
+            PatchExactInstanceMethod(
+                _harmony,
+                IncomeControllerMizuchiTypeName,
+                "SetTargetCatchProgressImmediate",
+                new[] { typeof(int) },
+                nameof(OnMizuchiCatchProgressImmediateSet),
+                patchedNow,
+                missing);
             PatchMethod(_harmony, IncomeControllerChallengeTypeName, "SetTargetFund", 1, nameof(OnChallengeTargetFundSet), patchedNow, missing);
             PatchMethod(_harmony, IncomeControllerChallengeTypeName, "UpdateSpellCount", 2, nameof(OnChallengeSpellCountUpdated), patchedNow, missing);
             PatchMethod(_harmony, IncomeControllerMausoleumTypeName, "SetTargetFund", 1, nameof(OnMausoleumTargetFundSet), patchedNow, missing);
@@ -898,6 +924,21 @@ internal static class RuntimeSpecialBusinessContextService
         RunCaptureCallback("yuyuko target time", () => UpdateTargetTime("yuyuko", __0));
     }
 
+    private static void OnMizuchiTargetNumSet(object? __0)
+    {
+        RunCaptureCallback("mizuchi target catches", () => UpdateMizuchiCatchTarget(__0));
+    }
+
+    private static void OnMizuchiCatchProgressSet(object? __0)
+    {
+        RunCaptureCallback("mizuchi catch progress", () => UpdateMizuchiCatchProgress(__0, immediate: false));
+    }
+
+    private static void OnMizuchiCatchProgressImmediateSet(object? __0)
+    {
+        RunCaptureCallback("mizuchi catch progress immediate", () => UpdateMizuchiCatchProgress(__0, immediate: true));
+    }
+
     private static void OnChallengeTargetFundSet(object? __0)
     {
         RunCaptureCallback("challenge target fund", () => UpdateTargetFund("challenge", __0, "目标营业额"));
@@ -985,6 +1026,46 @@ internal static class RuntimeSpecialBusinessContextService
             _lastAction = $"{kind} target fund={targetFund}";
             _changeVersion++;
             LogWackyTargetStateLocked("target-fund");
+        }
+    }
+
+    private static void UpdateMizuchiCatchTarget(object? value)
+    {
+        if (!RuntimeNightBusinessLifecycle.IsActive) return;
+
+        var target = RuntimeReflectionUtility.ToInt(value, int.MinValue);
+        if (target <= 0 || !TryReadTargetOwner("mizuchi", out var rawChallengeType)) return;
+
+        lock (SyncRoot)
+        {
+            SwitchTargetContextLocked(rawChallengeType, "mizuchi");
+            if (_maxValue == target && string.Equals(_targetLabel, "瑞灵捕获次数", StringComparison.Ordinal)) return;
+            _targetLabel = "瑞灵捕获次数";
+            _maxValue = target;
+            _lastTargetUpdatedUtc = DateTime.UtcNow;
+            _lastAction = $"mizuchi target catches={target}";
+            _changeVersion++;
+            LogMizuchiTargetStateLocked("target-catches");
+        }
+    }
+
+    private static void UpdateMizuchiCatchProgress(object? value, bool immediate)
+    {
+        if (!RuntimeNightBusinessLifecycle.IsActive) return;
+
+        var current = RuntimeReflectionUtility.ToInt(value, int.MinValue);
+        if (current < 0 || !TryReadTargetOwner("mizuchi", out var rawChallengeType)) return;
+
+        lock (SyncRoot)
+        {
+            SwitchTargetContextLocked(rawChallengeType, "mizuchi");
+            if (_currentValue == current && string.Equals(_targetLabel, "瑞灵捕获次数", StringComparison.Ordinal)) return;
+            _targetLabel = "瑞灵捕获次数";
+            _currentValue = current;
+            _lastTargetUpdatedUtc = DateTime.UtcNow;
+            _lastAction = $"mizuchi catch progress={current}; immediate={immediate}";
+            _changeVersion++;
+            LogMizuchiTargetStateLocked(immediate ? "catch-progress-immediate" : "catch-progress");
         }
     }
 
@@ -1724,6 +1805,28 @@ internal static class RuntimeSpecialBusinessContextService
             $"gen:{generation}|hud|{eventName}|{string.Join(",", _foodTargetTags)}|{_currentValue}|{_maxValue}|{_targetValue}|{_currentAnger}|{_maxAnger}|{_targetAnger}");
     }
 
+    private static void LogMizuchiTargetStateLocked(string eventName)
+    {
+        if (!string.Equals(_targetKind, "mizuchi", StringComparison.Ordinal)) return;
+
+        var generation = RuntimeNightBusinessLifecycle.Generation;
+        SpecialBusinessDiagnostics.AppendMizuchiSnapshot(
+            "Mizuchi HUD Catch Progress Updated",
+            new[]
+            {
+                $"event: {eventName}",
+                $"generation: {generation}",
+                $"targetOwnerGeneration: {_targetBusinessGeneration}",
+                $"challengeType: {_targetRawChallengeType}",
+                $"targetLabel: {_targetLabel}",
+                $"currentValue: {_currentValue?.ToString() ?? ""}",
+                $"maxValue: {_maxValue?.ToString() ?? ""}",
+                $"lastAction: {_lastAction}",
+                $"changeVersion: {_changeVersion}",
+            },
+            $"gen:{generation}|hud|{eventName}|{_currentValue}|{_maxValue}");
+    }
+
     private static ChallengeTypeState ReadChallengeTypeState(out string? error)
     {
         var rawChallengeType = ReadRawChallengeType(out var rawError);
@@ -2109,6 +2212,10 @@ internal static class RuntimeSpecialBusinessContextService
             "Story_Advanced" => "challenge",
             SpecialBusinessChallengeTypes.StoryYuyuko => "yuyuko",
             SpecialBusinessChallengeTypes.RetakeYuyuko => "yuyuko",
+            SpecialBusinessChallengeTypes.StoryMizuchi => "mizuchi",
+            SpecialBusinessChallengeTypes.MizuchiTrial1 => "mizuchi",
+            SpecialBusinessChallengeTypes.MizuchiTrial2 => "mizuchi",
+            SpecialBusinessChallengeTypes.MizuchiTrial3 => "mizuchi",
             "Story_Seiga_TempleCuisineCompetition" => "mausoleum",
             "Story_Futo_TempleCuisineCompetition" => "mausoleum",
             "Story_Tochiko_TempleCuisineCompetition" => "mausoleum",

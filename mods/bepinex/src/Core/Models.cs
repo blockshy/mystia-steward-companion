@@ -188,6 +188,7 @@ public sealed class SpecialBusinessContext
     public string Category { get; init; } = "";
     public string RuleSummary { get; init; } = "";
     public List<string> FoodTargetTags { get; init; } = new();
+    public List<int> RequiredExtraIngredientIds { get; init; } = new();
     public long YuumaFoodTargetRevision { get; init; }
     public List<string> BeverageTargetTags { get; init; } = new();
     public int? TargetFund { get; init; }

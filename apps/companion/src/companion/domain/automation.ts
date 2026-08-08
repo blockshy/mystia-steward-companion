@@ -640,6 +640,8 @@ export function buildAutomationResourceOverview({
       recommendations,
       favorites,
       preferences,
+      undefined,
+      specialBusiness,
     );
     let rareReserved = 0;
     for (const selection of candidates.selections) {
@@ -862,10 +864,12 @@ export function selectOrderPreparationCandidates(
   favorites: FavoriteData,
   preferences: CompanionPreferences,
   states?: ReadonlyMap<string, AutoFirstOrderState>,
+  specialBusiness: SpecialBusinessContext | null | undefined = null,
 ): OrderPreparationCandidateResult {
   const rows = sortNightOrderRows(
     recommendations.map((item) => ({ order: item.order, item })),
     preferences.serviceOrderSortMode,
+    specialBusiness,
   );
   if (rows.length === 0) {
     return { selections: [], skips: [], messages: [], message: '暂无可准备的稀客订单。' };

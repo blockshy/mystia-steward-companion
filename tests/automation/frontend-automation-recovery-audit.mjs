@@ -406,6 +406,8 @@ assert.equal(requiresManualAutomationResolution('order-evaluation-state-unreadab
 assert.equal(requiresManualAutomationResolution('order-evaluation-commit-uncertain'), true);
 assert.equal(requiresManualAutomationResolution('order-evaluation-target-mismatch'), true,
   'A deterministic target mismatch must remain latched until its exact backend safety barrier is acknowledged.');
+assert.equal(requiresManualAutomationResolution('mizuchi-contract-mismatch'), true,
+  'Mizuchi role/closure/Modifier drift must remain latched until its exact backend safety barrier is acknowledged.');
 assert.equal(requiresManualAutomationResolution('order-evaluation-closeout-unresolved'), true,
   'An exhausted exact closeout must remain latched until its backend safety barrier is acknowledged.');
 assert.equal(requiresManualAutomationResolution('order-terminated-before-evaluation'), false,

@@ -23,11 +23,17 @@
 
 Windows 上通常需要：
 
-- Mod 常规构建使用 .NET 6 SDK 或更新版本；完整重建 IL2CPP 分析还需要 .NET 10 SDK，
-  因为独立 `InteropGenerator` 目标为 `net10.0`。
-- Node.js 20+，并通过 Corepack 使用仓库固定的 `pnpm@10.10.0`。
+- 当前已验证基线为 .NET SDK `10.0.110`。它同时构建仍以 `net6.0` 为目标的 Mod 和以 `net10.0`
+  为目标的独立 `InteropGenerator`；不要为了 Mod 目标框架安装已停止支持的 .NET 6 SDK。若 Windows 仅安装
+  .NET 10 runtime，运行仓库内一般 net6 smoke 前为该终端设置 `$env:DOTNET_ROLL_FORWARD = "Major"`。
+  `automation-cooking-job` 的真实 Harmony/MonoMod 动态补丁探针不能在 Linux .NET 10 CoreCLR 上运行；
+  使用 Docker Desktop/Linux Docker 与 `docs/development-conventions.md` 锁定的 .NET 6 镜像执行该测试，
+  不要删除探针或把测试改成只读源码断言。
+- 当前已验证 Node.js 为 `24.19.0`、Corepack 为 `0.35.0`，并通过 Corepack 使用仓库固定的
+  `pnpm@10.10.0`。
 - PowerShell 7。
-- Rust stable、Microsoft C++ Build Tools 2022 或 Visual Studio “使用 C++ 的桌面开发”组件。
+- Rust stable（当前已验证 `1.97.1`）、Microsoft C++ Build Tools 2022 或 Visual Studio
+  “使用 C++ 的桌面开发”组件。
 - Microsoft Edge WebView2 Runtime。
 - Windows 实机运行验证需要已安装并启动过一次 BepInEx Unity IL2CPP 的游戏目录；优先使用 #783 构建
   `BepInEx-Unity.IL2CPP-win-x64-6.0.0-be.783+c58c42d.zip`，不要直接追最新 Bleeding Edge。Linux 只做

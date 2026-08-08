@@ -89,6 +89,7 @@ internal static partial class RuntimeOrderPreparationService
         public const string OrderEvaluationTargetMismatch = "order-evaluation-target-mismatch";
         public const string OrderEvaluationCloseoutUnresolved = "order-evaluation-closeout-unresolved";
         public const string OrderTerminatedBeforeEvaluation = "order-terminated-before-evaluation";
+        public const string MizuchiContractMismatch = "mizuchi-contract-mismatch";
         public const string CookingCancelled = "cooking-cancelled";
         public const string NightBusinessLifecycleUnavailable = RuntimeNightBusinessAutomationGate.LifecycleUnavailableReason;
         public const string NightBusinessTutorialActive = RuntimeNightBusinessAutomationGate.TutorialActiveReason;
@@ -2151,6 +2152,19 @@ internal static partial class RuntimeOrderPreparationService
         diagnostic = $"generation={token.BusinessGeneration}; kind={token.OrderKind}; "
             + $"order=0x{(long)token.OrderPointer:X}; controller=0x{(long)token.ControllerPointer:X}; "
             + $"orderLifecycle={token.LifecycleSequence}";
+        if (!TryValidateMizuchiCookingTargetFresh(
+                target,
+                "cooking-target-lifecycle",
+                out var mizuchiDiagnostic))
+        {
+            diagnostic += $"; Mizuchi={mizuchiDiagnostic}";
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(mizuchiDiagnostic))
+        {
+            diagnostic += $"; Mizuchi={mizuchiDiagnostic}";
+        }
         return true;
     }
 
@@ -2217,6 +2231,7 @@ internal static partial class RuntimeOrderPreparationService
 
     private static bool TryValidateCookingTargetOrderLifecycle(
         CookingCollectionTarget target,
+        string checkpoint,
         out string diagnostic)
     {
         if (!target.OrderBinding.HasValue)
@@ -2243,6 +2258,19 @@ internal static partial class RuntimeOrderPreparationService
         diagnostic = $"generation={token.BusinessGeneration}; kind={token.OrderKind}; "
             + $"order=0x{(long)token.OrderPointer:X}; controller=0x{(long)token.ControllerPointer:X}; "
             + $"orderLifecycle={token.LifecycleSequence}";
+        if (!TryValidateMizuchiCookingTargetFresh(
+                target,
+                checkpoint,
+                out var mizuchiDiagnostic))
+        {
+            diagnostic += $"; Mizuchi={mizuchiDiagnostic}";
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(mizuchiDiagnostic))
+        {
+            diagnostic += $"; Mizuchi={mizuchiDiagnostic}";
+        }
         return true;
     }
 
@@ -2289,6 +2317,7 @@ internal static partial class RuntimeOrderPreparationService
             or OrderPreparationStepCodes.FoodDeliveryCommitUncertain
             or OrderPreparationStepCodes.OrderEvaluationCommitUncertain
             or OrderPreparationStepCodes.OrderEvaluationTargetMismatch
+            or OrderPreparationStepCodes.MizuchiContractMismatch
             or OrderPreparationStepCodes.OrderEvaluationCloseoutUnresolved))
         {
             return;
@@ -2453,6 +2482,7 @@ internal static partial class RuntimeOrderPreparationService
                         OrderPreparationStepCodes.CookingStartUnowned => "cooking-start",
                         OrderPreparationStepCodes.OrderEvaluationCommitUncertain
                             or OrderPreparationStepCodes.OrderEvaluationTargetMismatch
+                            or OrderPreparationStepCodes.MizuchiContractMismatch
                             or OrderPreparationStepCodes.OrderEvaluationCloseoutUnresolved => "order",
                         _ => "cooking-delivery",
                     },
@@ -2578,6 +2608,7 @@ internal static partial class RuntimeOrderPreparationService
                 OrderPreparationStepCodes.CookingStartUnowned => "cooking-start",
                 OrderPreparationStepCodes.OrderEvaluationCommitUncertain
                     or OrderPreparationStepCodes.OrderEvaluationTargetMismatch
+                    or OrderPreparationStepCodes.MizuchiContractMismatch
                     or OrderPreparationStepCodes.OrderEvaluationCloseoutUnresolved => "order",
                 _ => "cooking-delivery",
             };
@@ -2730,6 +2761,7 @@ internal static partial class RuntimeOrderPreparationService
             or OrderPreparationStepCodes.CookingManualHandoffUnreadable
             or OrderPreparationStepCodes.OrderEvaluationCommitUncertain
             or OrderPreparationStepCodes.OrderEvaluationTargetMismatch
+            or OrderPreparationStepCodes.MizuchiContractMismatch
             or OrderPreparationStepCodes.OrderEvaluationCloseoutUnresolved;
     }
 

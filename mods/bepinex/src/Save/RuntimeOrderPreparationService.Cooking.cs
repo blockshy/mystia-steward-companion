@@ -187,6 +187,21 @@ internal static partial class RuntimeOrderPreparationService
         }
 
         var finalFood = cookResult ?? baseFood;
+        if (!TryValidateMizuchiFoodModifier(
+                target,
+                finalFood,
+                "created-food-before-deduction",
+                out var mizuchiModifierDiagnostic))
+        {
+            AppendAutomationLog(
+                "start-failed",
+                collectionTarget,
+                $"{recipeName}: Mizuchi trial Modifier validation failed before ingredient deduction: {mizuchiModifierDiagnostic}");
+            return CookingStartResult.Failed(
+                "瑞灵特殊经营成品加料无法在扣除材料前精确确认，已取消开锅："
+                + mizuchiModifierDiagnostic);
+        }
+
         if (!RuntimeCookingGenerationTracker.EnsureAttached())
         {
             return CookingStartResult.Failed($"自动料理锅次追踪不可用，已在扣除材料前取消开火：{RuntimeCookingGenerationTracker.Status}");
@@ -249,7 +264,10 @@ internal static partial class RuntimeOrderPreparationService
             return CookingStartResult.WaitForCooker(message);
         }
 
-        if (!TryValidateCookingTargetOrderLifecycle(target, out var preDeductionOrderDiagnostic))
+        if (!TryValidateCookingTargetOrderLifecycle(
+                target,
+                "before-ingredient-deduction",
+                out var preDeductionOrderDiagnostic))
         {
             AppendAutomationLog(
                 "start-failed",
@@ -315,7 +333,10 @@ internal static partial class RuntimeOrderPreparationService
                 + preSetCookTopologyDiagnostic);
         }
 
-        if (!TryValidateCookingTargetOrderLifecycle(target, out var preSetCookOrderDiagnostic))
+        if (!TryValidateCookingTargetOrderLifecycle(
+                target,
+                "immediately-before-set-cook",
+                out var preSetCookOrderDiagnostic))
         {
             AppendAutomationLog(
                 "start-unowned",

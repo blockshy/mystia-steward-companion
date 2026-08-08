@@ -18,6 +18,7 @@ import {
   type SpecialBusinessOrderRule,
 } from '@/companion/domain/special-business/rules';
 import { passiveSpecialBusinessModule } from '@/companion/domain/special-business/modules/passive-special-business';
+import { mizuchiChallengesModule } from '@/companion/domain/special-business/modules/mizuchi-challenges';
 import { wackyCookingCompetitionModule } from '@/companion/domain/special-business/modules/wacky-cooking-competition';
 import { yuyukoChallengeModule } from '@/companion/domain/special-business/modules/yuyuko-challenge';
 import { yuumaChallengeModule } from '@/companion/domain/special-business/modules/yuuma-challenge';
@@ -36,6 +37,7 @@ const modules: readonly SpecialBusinessRuleModule[] = [
   wackyCookingCompetitionModule,
   yuyukoChallengeModule,
   yuumaChallengeModule,
+  mizuchiChallengesModule,
   passiveSpecialBusinessModule,
 ];
 const NORMAL_TARGET_CACHE_LIMIT = 64;
@@ -116,6 +118,7 @@ export function buildSpecialBusinessRecommendationSignature(
     specialBusiness.challengeType,
     stableStringArraySignature(specialBusiness.foodTargetTags),
     stableStringArraySignature(specialBusiness.beverageTargetTags),
+    stableNumberArraySignature(specialBusiness.requiredExtraIngredientIds),
   ];
   if (module === wackyCookingCompetitionModule) {
     values.push(specialBusiness.phase ?? '');
@@ -195,6 +198,15 @@ export function buildWackyRejectedRecipeKeyFromEvent(event: AutomationRuntimeEve
 
 export function isSpecialBusinessOrderRole(role: string | null | undefined): boolean {
   return modules.some((module) => module.isOrderRole?.(role));
+}
+
+export function getSpecialBusinessOrderPriority(
+  specialBusiness: SpecialBusinessContext | null | undefined,
+  role: string | null | undefined,
+): number {
+  if (!specialBusiness?.active || specialBusiness.challengeTypeAvailable !== true) return 0;
+  const module = findRegisteredSpecialBusinessModule(specialBusiness);
+  return module?.getOrderPriority?.(role) ?? 0;
 }
 
 function buildNormalTargetCacheKey({

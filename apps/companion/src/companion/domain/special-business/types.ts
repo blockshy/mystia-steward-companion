@@ -37,5 +37,6 @@ export interface SpecialBusinessRuleModule {
   ) => boolean;
   selectNormalExecutionTarget?: (args: SpecialBusinessNormalTargetArgs) => SpecialBusinessNormalTargetSelection;
   isOrderRole?: (role: string | null | undefined) => boolean;
+  getOrderPriority?: (role: string | null | undefined) => number;
   buildRejectedRecipeKeyFromEvent?: (event: AutomationRuntimeEvent) => string;
 }

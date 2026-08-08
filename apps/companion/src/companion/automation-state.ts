@@ -136,6 +136,7 @@ export type OrderPreparationStepCode =
   | 'order-evaluation-target-mismatch'
   | 'order-evaluation-closeout-unresolved'
   | 'order-terminated-before-evaluation'
+  | 'mizuchi-contract-mismatch'
   | 'food-delivered'
   | 'order-completed';
 

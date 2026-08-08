@@ -1254,6 +1254,7 @@ async function assertSourceContracts() {
     yuyukoPositiveSpell,
     yuyukoNormalTarget,
     yuyukoRuntimePolicy,
+    foodModifierValidation,
     workbench,
     automationState,
     automationDomain,
@@ -1272,6 +1273,7 @@ async function assertSourceContracts() {
     readFile(new URL('apps/companion/src/companion/domain/special-business/yuyuko-positive-spell.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/domain/special-business/normal-targets/yuyuko.ts', root), 'utf8'),
     readFile(new URL('mods/bepinex/src/Save/SpecialBusiness/RuntimeOrderPreparationService.YuyukoChallengePolicy.cs', root), 'utf8'),
+    readFile(new URL('mods/bepinex/src/Save/SpecialBusiness/RuntimeOrderPreparationService.FoodModifierValidation.cs', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/ModWorkbench.tsx', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/automation-state.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/domain/automation.ts', root), 'utf8'),
@@ -1453,7 +1455,7 @@ async function assertSourceContracts() {
     'private static bool TryValidateYuyukoRetakeSpecialOrderServedContract(',
     'private static bool TryValidateYuyukoRetakeNormalOrderServedContract(',
   );
-  assert.ok(specialOrderServedContract.includes('TryValidateYuyukoRetakeServedExtraIngredients(')
+  assert.ok(specialOrderServedContract.includes('TryValidateServedFoodExtraIngredients(')
     && specialOrderServedContract.includes('request.FoodTagId')
     && specialOrderServedContract.includes('request.BeverageTagId')
     && specialOrderServedContract.match(/TryReadYuyukoSellableTagIds\(/g)?.length === 2,
@@ -1473,21 +1475,28 @@ async function assertSourceContracts() {
   const normalOrderServedContract = sourceSlice(
     yuyukoRuntimePolicy,
     'private static bool TryValidateYuyukoRetakeNormalOrderServedContract(',
-    'private static bool TryValidateYuyukoRetakeServedExtraIngredients(',
-  );
-  assert.ok(normalOrderServedContract.includes('request.ExpectedFoodModifierTags')
-    && normalOrderServedContract.includes('TryReadYuyukoNormalOrderFoodModifierTags(')
-    && normalOrderServedContract.includes('actualModifierTags.SequenceEqual(expectedModifierTags)'),
-  'NormalOrder 必须继续严格校验前端锁存的 modifier Tag。');
-  const sharedExtraIngredientContract = sourceSlice(
-    yuyukoRuntimePolicy,
-    'private static bool TryValidateYuyukoRetakeServedExtraIngredients(',
     'private static bool TryReadYuyukoSellableTagIds(',
   );
+  assert.ok(normalOrderServedContract.includes('TryValidateServedFoodExtraIngredients(')
+    && normalOrderServedContract.includes('request.ExpectedFoodModifierTags')
+    && normalOrderServedContract.includes('TryReadYuyukoNormalOrderFoodModifierTags(')
+    && normalOrderServedContract.includes('actualModifierTags.SequenceEqual(expectedModifierTags)'),
+  'NormalOrder 必须继续严格校验实际加料与前端锁存的 modifier Tag。');
+  const sharedExtraIngredientContract = sourceSlice(
+    foodModifierValidation,
+    'private static bool TryValidateServedFoodExtraIngredients(',
+    '\n}',
+  );
   assert.ok(sharedExtraIngredientContract.includes('"Modifier"')
-    && sharedExtraIngredientContract.includes('request.ExtraIngredientIds')
-    && sharedExtraIngredientContract.includes('SequenceEqual(expectedExtraIngredientIds)'),
+    && sharedExtraIngredientContract.includes('expectedExtraIngredientIds')
+    && sharedExtraIngredientContract.includes('RuntimeConcreteCollectionReader.TryReadIntArray(')
+    && sharedExtraIngredientContract.includes('actual.SequenceEqual(expected)'),
   '两类重修订单都必须严格校验实际 Modifier 材料 ID。');
+  assert.equal(
+    yuyukoRuntimePolicy.includes('TryValidateYuyukoRetakeServedExtraIngredients('),
+    false,
+    '幽幽子不得保留已被共享严格读取器替代的私有兼容入口。',
+  );
   const normalOrderModifierReader = sourceSlice(
     yuyukoRuntimePolicy,
     'private static bool TryReadYuyukoNormalOrderFoodModifierTags(',

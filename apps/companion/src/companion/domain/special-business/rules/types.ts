@@ -7,6 +7,8 @@ export type YuyukoProgressEvaluationMode =
 
 export interface SpecialBusinessOrderRule {
   foodTarget: SpecialBusinessFoodTargetPolicy;
+  requiredExtraIngredientIds: number[];
+  forbiddenExtraIngredientIds: number[];
   blockingReason: string;
   requiresBaseOrderMatch: boolean;
   requiresHighEvaluation: boolean;
@@ -26,6 +28,8 @@ export function emptySpecialBusinessOrderRule(): SpecialBusinessOrderRule {
       match: 'any',
       tags: [],
     },
+    requiredExtraIngredientIds: [],
+    forbiddenExtraIngredientIds: [],
     blockingReason: '',
     requiresBaseOrderMatch: false,
     requiresHighEvaluation: false,

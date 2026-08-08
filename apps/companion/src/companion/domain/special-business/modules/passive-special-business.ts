@@ -13,10 +13,6 @@ const PASSIVE_SPECIAL_BUSINESS_CHALLENGE_TYPES = [
   'Story_Toramaru_MusicCompetition',
   'Story_Flandre',
   'RogueLike',
-  'Story_Mizuchi',
-  'Story_Mizuchi_1',
-  'Story_Mizuchi_2',
-  'Story_Mizuchi_3',
 ] as const;
 
 export const passiveSpecialBusinessModule: SpecialBusinessRuleModule = {

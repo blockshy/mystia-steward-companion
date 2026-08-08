@@ -79,6 +79,106 @@ internal static class SpecialBusinessDiagnostics
         AppendProgressSnapshot("special-business.yuuma", key, progress, title, lines, bucketCount);
     }
 
+    public static void AppendMizuchiSnapshot(
+        string title,
+        IEnumerable<string> lines,
+        string? onceKey = null)
+    {
+        AppendSnapshot("special-business.mizuchi", title, lines, onceKey);
+    }
+
+    public static void AppendMizuchiOrderClassification(
+        string challengeType,
+        SpecialBusinessOrderClassification classification,
+        MizuchiOrderIdentity identity,
+        object? order,
+        object? controller,
+        string source)
+    {
+        if (!AggregateModLogService.Enabled) return;
+        try
+        {
+            var generation = RuntimeNightBusinessLifecycle.Generation;
+            AppendMizuchiSnapshot(
+                "Mizuchi Order Classified",
+                new[]
+                {
+                    $"generation: {generation}",
+                    $"challengeType: {challengeType}",
+                    $"source: {source}",
+                    $"role: {classification.Role}",
+                    $"roleLabel: {classification.RoleLabel}",
+                    $"automationAllowed: {classification.AutomationAllowed}",
+                    $"automationBlockReason: {classification.AutomationBlockReason}",
+                    $"identityVerified: {identity.Verified}",
+                    $"identityReason: {identity.Reason}",
+                    $"orderGuestId: {identity.OrderGuestId?.ToString() ?? ""}",
+                    $"controllerGuestId: {identity.ControllerGuestId?.ToString() ?? ""}",
+                    $"groupGuestId: {identity.GroupGuestId?.ToString() ?? ""}",
+                    $"selectedGuestId: {identity.SelectedGuestId?.ToString() ?? ""}",
+                    $"controlledGuestId: {identity.ControlledGuestId?.ToString() ?? ""}",
+                    $"controlType: {identity.ControlType?.ToString() ?? ""}",
+                    $"targetIngredientId: {identity.TargetIngredientId?.ToString() ?? ""}",
+                    $"isMizuchiChallenge: {identity.IsMizuchiChallenge?.ToString() ?? ""}",
+                    $"catchProgress: {identity.CatchCount?.ToString() ?? ""}/{identity.RequiredCatchCount?.ToString() ?? ""}",
+                    $"callbackMethod: {identity.CallbackMethod}",
+                    $"orderPointer: 0x{(long)identity.OrderPointer:X}",
+                    $"controllerPointer: 0x{(long)identity.ControllerPointer:X}",
+                    $"callbackPointer: 0x{(long)identity.CallbackPointer:X}",
+                    $"closurePointer: 0x{(long)identity.ClosurePointer:X}",
+                    $"parentClosurePointer: 0x{(long)identity.ParentClosurePointer:X}",
+                    $"order: {DescribeObject(order)}",
+                    $"controller: {DescribeObject(controller)}",
+                },
+                $"classify|gen:{generation}|{challengeType}|{classification.Role}|{identity.OrderGuestId}|{identity.ControlledGuestId}|{identity.ControlType}|{identity.OrderPointer:X}|{identity.ControllerPointer:X}|{identity.CallbackPointer:X}");
+        }
+        catch
+        {
+            // Diagnostics must never affect order classification.
+        }
+    }
+
+    public static void AppendMizuchiAutomationCheckpoint(
+        string checkpoint,
+        bool accepted,
+        string requestRole,
+        string candidateRole,
+        IReadOnlyList<int> expectedExtraIngredientIds,
+        IReadOnlyList<int>? actualExtraIngredientIds,
+        string detail,
+        nint orderPointer = 0,
+        nint controllerPointer = 0,
+        long orderLifecycleSequence = -1)
+    {
+        if (!AggregateModLogService.Enabled) return;
+        try
+        {
+            var generation = RuntimeNightBusinessLifecycle.Generation;
+            AppendMizuchiSnapshot(
+                "Mizuchi Automation Checkpoint",
+                new[]
+                {
+                    $"generation: {generation}",
+                    $"checkpoint: {checkpoint}",
+                    $"accepted: {accepted}",
+                    $"requestRole: {requestRole}",
+                    $"candidateRole: {candidateRole}",
+                    $"expectedExtraIngredientIds: {FormatIds(expectedExtraIngredientIds)}",
+                    $"actualExtraIngredientIds: {FormatIds(actualExtraIngredientIds ?? Array.Empty<int>())}",
+                    $"orderPointer: 0x{(long)orderPointer:X}",
+                    $"controllerPointer: 0x{(long)controllerPointer:X}",
+                    $"orderLifecycleSequence: {orderLifecycleSequence}",
+                    $"detail: {detail}",
+                },
+                $"automation|gen:{generation}|{checkpoint}|{accepted}|{requestRole}|{candidateRole}|"
+                + $"{orderPointer:X}|{controllerPointer:X}|{orderLifecycleSequence}|{detail}");
+        }
+        catch
+        {
+            // Diagnostics must never affect automation safety checks.
+        }
+    }
+
     public static void AppendYuumaOrderClassification(
         string challengeType,
         SpecialBusinessOrderClassification classification,
