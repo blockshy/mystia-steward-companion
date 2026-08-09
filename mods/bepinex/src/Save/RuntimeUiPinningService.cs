@@ -26,8 +26,8 @@ internal static class RuntimeUiPinningService
     private static string _cookingPanelPatchStatus = "not attached";
     private static string _storagePanelPatchStatus = "not attached";
     private static RuntimeUiTargetSetSnapshot _targetSet = RuntimeUiTargetSetSnapshot.Disabled;
-    private static MethodInfo? _cookingRefreshMethod;
-    private static MethodInfo? _storageRefreshMethod;
+    private static RuntimeUiListSurfaceRefreshBinding? _cookingSurfaceRefresh;
+    private static RuntimeUiListSurfaceRefreshBinding? _storageSurfaceRefresh;
     private static PanelRefreshRegistration? _cookingPanel;
     private static PanelRefreshRegistration? _storagePanel;
     private static bool _panelRefreshTickActive;
@@ -107,7 +107,7 @@ internal static class RuntimeUiPinningService
                 _harmony,
                 CookingSelectionPanelTypeName,
                 new[] { "UpdateAllVisual", "UpdateRecipeField" },
-                "UpdateRecipeField",
+                RuntimeUiListSurfaceKind.Cooking,
                 0,
                 nameof(OnCookingRefreshStarted),
                 nameof(OnCookingRefreshFinalized),
@@ -127,7 +127,7 @@ internal static class RuntimeUiPinningService
                 _harmony,
                 StoragePanelTypeName,
                 new[] { "UpdateBevField" },
-                "UpdateBevField",
+                RuntimeUiListSurfaceKind.Beverage,
                 0,
                 nameof(OnBeverageRefreshStarted),
                 nameof(OnBeverageRefreshFinalized),
@@ -202,13 +202,13 @@ internal static class RuntimeUiPinningService
     }
 
     /// <summary>
-    /// Acquires the target-publication side of a variant transaction. The caller must acquire the
-    /// variant-service lock only after this succeeds and retain the lease until the synchronous
-    /// native submit callback has returned. The lease is intentionally thread-affine.
+    /// Acquires ownership of the exact current UI target publication. Callers may take narrower
+    /// service locks only after this succeeds and must retain the thread-affine lease through all
+    /// synchronous native work that consumes the target.
     /// </summary>
-    internal static bool TryAcquireTargetRecipeVariantPublicationLease(
+    internal static bool TryAcquireTargetPublicationLease(
         RuntimeUiTargetSetSnapshot expectedTargetSet,
-        out TargetRecipeVariantPublicationLease lease)
+        out RuntimeUiTargetPublicationLease lease)
     {
         ArgumentNullException.ThrowIfNull(expectedTargetSet);
         lease = null!;
@@ -229,7 +229,7 @@ internal static class RuntimeUiPinningService
                 return false;
             }
 
-            lease = new TargetRecipeVariantPublicationLease(TargetPublicationRoot);
+            lease = new RuntimeUiTargetPublicationLease(TargetPublicationRoot);
             lockTaken = false;
             return true;
         }
@@ -240,14 +240,14 @@ internal static class RuntimeUiPinningService
     }
 
     /// <summary>
-    /// Acquires the target-publication side of a variant transaction for one exact active
+    /// Acquires target-publication ownership for one exact active
     /// night-business generation. Unlike the snapshot overload, this lease deliberately does not
     /// tie the transaction to whichever target snapshot happened to be current when it began.
     /// The lease remains thread-affine and blocks target publication until it is released.
     /// </summary>
-    internal static bool TryAcquireTargetRecipeVariantPublicationLease(
+    internal static bool TryAcquireTargetPublicationLease(
         long expectedBusinessGeneration,
-        out TargetRecipeVariantPublicationLease lease)
+        out RuntimeUiTargetPublicationLease lease)
     {
         lease = null!;
 
@@ -261,7 +261,7 @@ internal static class RuntimeUiPinningService
                 return false;
             }
 
-            lease = new TargetRecipeVariantPublicationLease(TargetPublicationRoot);
+            lease = new RuntimeUiTargetPublicationLease(TargetPublicationRoot);
             lockTaken = false;
             return true;
         }
@@ -523,7 +523,7 @@ internal static class RuntimeUiPinningService
         Harmony harmony,
         string typeName,
         IReadOnlyList<string> scopeMethodNames,
-        string refreshMethodName,
+        RuntimeUiListSurfaceKind surfaceKind,
         int parameterCount,
         string prefixName,
         string finalizerName,
@@ -549,11 +549,23 @@ internal static class RuntimeUiPinningService
                     Key = $"{typeName}.{name}/{parameterCount}:{patchSlot}",
                 })
                 .ToArray();
-            var refreshMethod = FindMethod(type, refreshMethodName, 0);
+            RuntimeUiListSurfaceRefreshBinding? surfaceBinding = null;
+            var surfaceBindingFailure = "panel type missing";
+            if (type != null)
+            {
+                _ = RuntimeUiListSurfaceRefreshBinding.TryCreate(
+                    surfaceKind,
+                    type,
+                    out surfaceBinding,
+                    out surfaceBindingFailure);
+            }
             var prefix = typeof(RuntimeUiPinningService).GetMethod(prefixName, BindingFlags.NonPublic | BindingFlags.Static);
             var finalizer = typeof(RuntimeUiPinningService).GetMethod(finalizerName, BindingFlags.NonPublic | BindingFlags.Static);
             var missingScope = scopeMethods.FirstOrDefault(scope => scope.Method == null);
-            if (missingScope != null || refreshMethod == null || prefix == null || finalizer == null)
+            if (missingScope != null
+                || surfaceBinding == null
+                || prefix == null
+                || finalizer == null)
             {
                 lock (SyncRoot)
                 {
@@ -561,15 +573,15 @@ internal static class RuntimeUiPinningService
                         patchSlot,
                         missingScope != null
                             ? $"scope method missing:{missingScope.Name}"
-                            : refreshMethod == null
-                                ? "refresh method missing"
+                            : surfaceBinding == null
+                                ? $"surface binding missing:{surfaceBindingFailure}"
                                 : "hook missing");
                 }
 
                 missing.Add(missingScope != null
                     ? missingScope.Key
-                    : refreshMethod == null
-                        ? $"{typeName}.{refreshMethodName}/0:PanelRefresh"
+                    : surfaceBinding == null
+                        ? $"{typeName}:{surfaceKind}Surface ({surfaceBindingFailure})"
                         : $"{typeName}:RefreshScopeHooks");
                 return;
             }
@@ -591,7 +603,7 @@ internal static class RuntimeUiPinningService
             lock (SyncRoot)
             {
                 SetPatchStatusLocked(patchSlot, "patched");
-                SetRefreshMethodLocked(patchSlot, refreshMethod!);
+                SetSurfaceRefreshBindingLocked(patchSlot, surfaceBinding);
             }
         }
         catch (Exception ex)
@@ -705,83 +717,146 @@ internal static class RuntimeUiPinningService
 
     private static void OnCookingRefreshStarted(object __instance)
     {
-        var isOutermostRefresh = _cookingRefreshDepth == 0;
-        if (isOutermostRefresh)
+        BeginCookingRefreshScope(__instance, Volatile.Read(ref _targetSet));
+    }
+
+    private static Exception? OnCookingRefreshFinalized(Exception? __exception)
+    {
+        CompleteCookingRefreshScope(__exception, recordCompletion: true);
+        return __exception;
+    }
+
+    private static void OnBeverageRefreshStarted(object __instance)
+    {
+        BeginBeverageRefreshScope(__instance, Volatile.Read(ref _targetSet));
+    }
+
+    private static Exception? OnBeverageRefreshFinalized(Exception? __exception)
+    {
+        CompleteBeverageRefreshScope(__exception, recordCompletion: true);
+        return __exception;
+    }
+
+    private static void BeginCookingRefreshScope(
+        object instance,
+        RuntimeUiTargetSetSnapshot target)
+    {
+        if (_cookingRefreshDepth == 0)
         {
-            _cookingScopeTarget = Volatile.Read(ref _targetSet);
-            _cookingScopeInstance = __instance;
+            _cookingScopeTarget = target;
+            _cookingScopeInstance = instance;
             _cookingScopeFailed = false;
         }
 
         _cookingRefreshDepth++;
     }
 
-    private static Exception? OnCookingRefreshFinalized(Exception? __exception)
+    private static void CompleteCookingRefreshScope(
+        Exception? exception,
+        bool recordCompletion)
     {
-        if (__exception != null) _cookingScopeFailed = true;
-        if (_cookingRefreshDepth > 0)
-        {
-            _cookingRefreshDepth--;
-            if (_cookingRefreshDepth == 0)
-            {
-                var instance = _cookingScopeInstance;
-                var target = _cookingScopeTarget;
-                var succeeded = !_cookingScopeFailed && __exception == null;
-                _cookingScopeTarget = null;
-                _cookingScopeInstance = null;
-                _cookingScopeFailed = false;
-                if (succeeded && instance != null && target != null)
-                {
-                    RecordPanelRefreshCompleted(RefreshPanelKind.Cooking, instance, target);
-                }
-            }
-        }
-        else
+        if (exception != null) _cookingScopeFailed = true;
+        if (_cookingRefreshDepth <= 0)
         {
             Interlocked.Increment(ref _scopeCleanupImbalances);
+            return;
         }
 
-        return __exception;
+        _cookingRefreshDepth--;
+        if (_cookingRefreshDepth != 0) return;
+
+        var instance = _cookingScopeInstance;
+        var target = _cookingScopeTarget;
+        var succeeded = !_cookingScopeFailed && exception == null;
+        _cookingScopeTarget = null;
+        _cookingScopeInstance = null;
+        _cookingScopeFailed = false;
+        if (recordCompletion
+            && succeeded
+            && instance != null
+            && target != null)
+        {
+            RecordPanelRefreshCompleted(RefreshPanelKind.Cooking, instance, target);
+        }
     }
 
-    private static void OnBeverageRefreshStarted(object __instance)
+    private static void BeginBeverageRefreshScope(
+        object instance,
+        RuntimeUiTargetSetSnapshot target)
     {
         if (_beverageRefreshDepth == 0)
         {
-            _beverageScopeTarget = Volatile.Read(ref _targetSet);
-            _beverageScopeInstance = __instance;
+            _beverageScopeTarget = target;
+            _beverageScopeInstance = instance;
             _beverageScopeFailed = false;
         }
 
         _beverageRefreshDepth++;
     }
 
-    private static Exception? OnBeverageRefreshFinalized(Exception? __exception)
+    private static void CompleteBeverageRefreshScope(
+        Exception? exception,
+        bool recordCompletion)
     {
-        if (__exception != null) _beverageScopeFailed = true;
-        if (_beverageRefreshDepth > 0)
+        if (exception != null) _beverageScopeFailed = true;
+        if (_beverageRefreshDepth <= 0)
         {
-            _beverageRefreshDepth--;
-            if (_beverageRefreshDepth == 0)
-            {
-                var instance = _beverageScopeInstance;
-                var target = _beverageScopeTarget;
-                var succeeded = !_beverageScopeFailed && __exception == null;
-                _beverageScopeTarget = null;
-                _beverageScopeInstance = null;
-                _beverageScopeFailed = false;
-                if (succeeded && instance != null && target != null)
-                {
-                    RecordPanelRefreshCompleted(RefreshPanelKind.Storage, instance, target);
-                }
-            }
+            Interlocked.Increment(ref _scopeCleanupImbalances);
+            return;
+        }
+
+        _beverageRefreshDepth--;
+        if (_beverageRefreshDepth != 0) return;
+
+        var instance = _beverageScopeInstance;
+        var target = _beverageScopeTarget;
+        var succeeded = !_beverageScopeFailed && exception == null;
+        _beverageScopeTarget = null;
+        _beverageScopeInstance = null;
+        _beverageScopeFailed = false;
+        if (recordCompletion
+            && succeeded
+            && instance != null
+            && target != null)
+        {
+            RecordPanelRefreshCompleted(RefreshPanelKind.Storage, instance, target);
+        }
+    }
+
+    private static void BeginProgrammaticSurfaceRefreshScope(
+        RefreshPanelKind panelKind,
+        object instance,
+        RuntimeUiTargetSetSnapshot target)
+    {
+        if (_cookingRefreshDepth != 0 || _beverageRefreshDepth != 0)
+        {
+            throw new RuntimeUiListSurfaceRefreshException(
+                "target-scope-entry",
+                "another panel refresh scope is already active on the Unity thread");
+        }
+
+        if (panelKind == RefreshPanelKind.Cooking)
+        {
+            BeginCookingRefreshScope(instance, target);
         }
         else
         {
-            Interlocked.Increment(ref _scopeCleanupImbalances);
+            BeginBeverageRefreshScope(instance, target);
         }
+    }
 
-        return __exception;
+    private static void CompleteProgrammaticSurfaceRefreshScope(
+        RefreshPanelKind panelKind,
+        Exception? exception)
+    {
+        if (panelKind == RefreshPanelKind.Cooking)
+        {
+            CompleteCookingRefreshScope(exception, recordCompletion: false);
+        }
+        else
+        {
+            CompleteBeverageRefreshScope(exception, recordCompletion: false);
+        }
     }
 
     private static void BeforeCookingPanelOpen()
@@ -811,10 +886,19 @@ internal static class RuntimeUiPinningService
 
     private static void AfterStoragePanelOpen(object __instance)
     {
+        var naturallyAppliedTarget = ConsumeRecentPanelRefresh(
+            RefreshPanelKind.Storage,
+            __instance);
+        if (naturallyAppliedTarget == null) return;
+
+        RuntimeUiListSurfaceRefreshBinding? binding;
+        lock (SyncRoot) binding = _storageSurfaceRefresh;
+        if (binding == null || !binding.IsApplicablePanel(__instance, out _)) return;
+
         RegisterOpenPanel(
             RefreshPanelKind.Storage,
             __instance,
-            ConsumeRecentPanelRefresh(RefreshPanelKind.Storage, __instance));
+            naturallyAppliedTarget);
     }
 
     private static void BeforeStoragePanelTeardown(object __instance)
@@ -919,8 +1003,8 @@ internal static class RuntimeUiPinningService
         lock (SyncRoot)
         {
             var panel = GetPanelLocked(panelKind);
-            var refreshMethod = GetRefreshMethodLocked(panelKind);
-            if (panel == null || refreshMethod == null) return;
+            var surfaceRefresh = GetSurfaceRefreshBindingLocked(panelKind);
+            if (panel == null || surfaceRefresh == null) return;
             if (panel.BusinessGeneration != lifecycle.Generation)
             {
                 SetPanelLocked(panelKind, null);
@@ -937,13 +1021,14 @@ internal static class RuntimeUiPinningService
                 panel.Pointer,
                 panel.BusinessGeneration,
                 target.Generation,
-                refreshMethod);
+                surfaceRefresh);
         }
 
         if (attempt == null) return;
         if (!TryReadLivePanelPointer(attempt.Instance, out var pointer)
             || pointer != attempt.Pointer
-            || !attempt.RefreshMethod.DeclaringType!.IsInstanceOfType(attempt.Instance))
+            || !attempt.SurfaceRefresh.PanelType.IsInstanceOfType(attempt.Instance)
+            || !attempt.SurfaceRefresh.IsApplicablePanel(attempt.Instance, out _))
         {
             ForgetStaleRefreshAttempt(attempt);
             return;
@@ -961,16 +1046,44 @@ internal static class RuntimeUiPinningService
             return;
         }
 
-        TargetRecipeVariantPublicationLease? exactTargetLease = null;
+        RuntimeUiTargetPublicationLease? exactTargetLease = null;
         try
         {
-            if (attempt.PanelKind == RefreshPanelKind.Cooking
-                && !TryAcquireTargetRecipeVariantPublicationLease(target, out exactTargetLease))
+            if (!TryAcquireTargetPublicationLease(target, out exactTargetLease))
             {
                 return;
             }
 
-            attempt.RefreshMethod.Invoke(attempt.Instance, Array.Empty<object?>());
+            Exception? refreshException = null;
+            BeginProgrammaticSurfaceRefreshScope(
+                panelKind,
+                attempt.Instance,
+                target);
+            try
+            {
+                attempt.SurfaceRefresh.Refresh(attempt.Instance);
+            }
+            catch (Exception ex)
+            {
+                refreshException = ex;
+                throw;
+            }
+            finally
+            {
+                CompleteProgrammaticSurfaceRefreshScope(
+                    panelKind,
+                    refreshException);
+            }
+
+            var completedLifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+            var completedTarget = Volatile.Read(ref _targetSet);
+            if (!completedLifecycle.IsActive
+                || completedLifecycle.Generation != attempt.BusinessGeneration
+                || !ReferenceEquals(completedTarget, target)
+                || !IsCurrentOpenPanel(attempt))
+            {
+                return;
+            }
             lock (SyncRoot)
             {
                 var panel = GetPanelLocked(panelKind);
@@ -1031,7 +1144,11 @@ internal static class RuntimeUiPinningService
     {
         var root = exception is TargetInvocationException { InnerException: not null }
             ? exception.InnerException
-            : exception.GetBaseException();
+            : exception;
+        if (root is not RuntimeUiListSurfaceRefreshException)
+        {
+            root = root.GetBaseException();
+        }
         var message = $"{panelKind} target {targetGeneration}: {root.GetType().Name}: {root.Message}";
         if (message.Length > 220) message = message[..220] + "...";
 
@@ -1094,9 +1211,12 @@ internal static class RuntimeUiPinningService
         }
     }
 
-    private static MethodInfo? GetRefreshMethodLocked(RefreshPanelKind panelKind)
+    private static RuntimeUiListSurfaceRefreshBinding? GetSurfaceRefreshBindingLocked(
+        RefreshPanelKind panelKind)
     {
-        return panelKind == RefreshPanelKind.Cooking ? _cookingRefreshMethod : _storageRefreshMethod;
+        return panelKind == RefreshPanelKind.Cooking
+            ? _cookingSurfaceRefresh
+            : _storageSurfaceRefresh;
     }
 
     private static void ClearPanelRegistrationsLocked()
@@ -1188,15 +1308,17 @@ internal static class RuntimeUiPinningService
         }
     }
 
-    private static void SetRefreshMethodLocked(PatchSlot patchSlot, MethodInfo method)
+    private static void SetSurfaceRefreshBindingLocked(
+        PatchSlot patchSlot,
+        RuntimeUiListSurfaceRefreshBinding binding)
     {
         switch (patchSlot)
         {
             case PatchSlot.CookingScope:
-                _cookingRefreshMethod = method;
+                _cookingSurfaceRefresh = binding;
                 break;
             case PatchSlot.BeverageScope:
-                _storageRefreshMethod = method;
+                _storageSurfaceRefresh = binding;
                 break;
         }
     }
@@ -1249,7 +1371,7 @@ internal static class RuntimeUiPinningService
         nint Pointer,
         long BusinessGeneration,
         long TargetGeneration,
-        MethodInfo RefreshMethod);
+        RuntimeUiListSurfaceRefreshBinding SurfaceRefresh);
 
     private enum PinnedType
     {
@@ -1265,15 +1387,15 @@ internal static class RuntimeUiPinningService
 
 /// <summary>
 /// Thread-affine ownership of the target-publication monitor. This type carries no target data;
-/// the exact snapshot is validated before construction.
+/// the exact snapshot or business generation is validated before construction.
 /// </summary>
-internal sealed class TargetRecipeVariantPublicationLease : IDisposable
+internal sealed class RuntimeUiTargetPublicationLease : IDisposable
 {
     private readonly object _publicationRoot;
     private readonly int _ownerThreadId;
     private bool _released;
 
-    internal TargetRecipeVariantPublicationLease(object publicationRoot)
+    internal RuntimeUiTargetPublicationLease(object publicationRoot)
     {
         _publicationRoot = publicationRoot;
         _ownerThreadId = Environment.CurrentManagedThreadId;
@@ -1284,7 +1406,7 @@ internal sealed class TargetRecipeVariantPublicationLease : IDisposable
         if (Environment.CurrentManagedThreadId != _ownerThreadId)
         {
             throw new InvalidOperationException(
-                "A target recipe-variant publication lease must be released by its acquiring thread.");
+                "A runtime UI target publication lease must be released by its acquiring thread.");
         }
         if (_released) return;
 

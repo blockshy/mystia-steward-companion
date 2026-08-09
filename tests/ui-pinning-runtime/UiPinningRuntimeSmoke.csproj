@@ -17,6 +17,7 @@
     <Compile Include="../../mods/bepinex/src/Save/RuntimeTargetHighlightStyle.cs" Link="RuntimeTargetHighlightStyle.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeUiTargetSet.cs" Link="RuntimeUiTargetSet.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeUiPinningService.cs" Link="RuntimeUiPinningService.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeUiListSurfaceRefresh.cs" Link="RuntimeUiListSurfaceRefresh.cs" />
   </ItemGroup>
 
   <ItemGroup>

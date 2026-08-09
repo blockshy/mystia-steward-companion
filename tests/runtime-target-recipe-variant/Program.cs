@@ -2238,8 +2238,8 @@ static void VerifyAppliedTargetSnapshotTransfer()
     Equal(RuntimeUiTargetKinds.Normal, destinationClaims,
         "the destination synthetic row inherited the disappeared rare claim");
 
-    var snapshotLeasesBeforeSwitch = TargetRecipeVariantPublicationLease.SnapshotCreated;
-    var snapshotDisposalsBeforeSwitch = TargetRecipeVariantPublicationLease.SnapshotDisposed;
+    var snapshotLeasesBeforeSwitch = RuntimeUiTargetPublicationLease.SnapshotCreated;
+    var snapshotDisposalsBeforeSwitch = RuntimeUiTargetPublicationLease.SnapshotDisposed;
     True(RuntimeTargetRecipeVariantService.BeginSubmitForTests(destinationButton, out var destinationSubmit),
         "the destination row could not begin an exact native switch");
     object destinationSelection = destinationSynthetic;
@@ -2250,15 +2250,15 @@ static void VerifyAppliedTargetSnapshotTransfer()
         out var destinationSelectionState), "the destination row selection was blocked before native switch");
     True(RuntimeTargetRecipeVariantService.CompleteRecipeSelectionForTests(destinationSelectionState) == null,
         "the destination row could not arm an exact native switch");
-    Equal(snapshotLeasesBeforeSwitch + 1, TargetRecipeVariantPublicationLease.SnapshotCreated,
+    Equal(snapshotLeasesBeforeSwitch + 1, RuntimeUiTargetPublicationLease.SnapshotCreated,
         "the destination switch did not acquire the current target snapshot lease exactly once");
-    Equal(snapshotDisposalsBeforeSwitch, TargetRecipeVariantPublicationLease.SnapshotDisposed,
+    Equal(snapshotDisposalsBeforeSwitch, RuntimeUiTargetPublicationLease.SnapshotDisposed,
         "the destination switch released its target snapshot lease before native completion");
     runtime.NativeSwitchTo(destinationRecipe);
     RuntimeTargetRecipeVariantService.ApplyExtrasForTests(runtime.Panel, out var destinationVisual);
     RuntimeTargetRecipeVariantService.CompleteUpdateVisualForTests(destinationVisual);
     RuntimeTargetRecipeVariantService.CompleteSubmitForTests(destinationSubmit);
-    Equal(snapshotDisposalsBeforeSwitch + 1, TargetRecipeVariantPublicationLease.SnapshotDisposed,
+    Equal(snapshotDisposalsBeforeSwitch + 1, RuntimeUiTargetPublicationLease.SnapshotDisposed,
         "the destination switch leaked its target snapshot lease");
     var destinationTransaction = ReadCurrentTransaction(runtime.Panel);
     False(ReferenceEquals(sourceTransaction, destinationTransaction),
@@ -2336,26 +2336,26 @@ static void VerifyOutputReadyTargetSnapshotTransfer()
     Equal(0L, StatusCount("safety"),
         "a successful cross-target output transfer consumed the safety-event reserve");
 
-    var businessLeasesBefore = TargetRecipeVariantPublicationLease.BusinessCreated;
-    var businessDisposalsBefore = TargetRecipeVariantPublicationLease.BusinessDisposed;
-    var snapshotLeasesBefore = TargetRecipeVariantPublicationLease.SnapshotCreated;
+    var businessLeasesBefore = RuntimeUiTargetPublicationLease.BusinessCreated;
+    var businessDisposalsBefore = RuntimeUiTargetPublicationLease.BusinessDisposed;
+    var snapshotLeasesBefore = RuntimeUiTargetPublicationLease.SnapshotCreated;
     True(RuntimeTargetRecipeVariantService.BeginSubmitForTests(ready.Button, out var outputSubmit),
         "preserved output button could not enter its exact submit");
     True(RuntimeTargetRecipeVariantService.BeginOutputClosureForTests(
         ready.Closure, out var outputClosure),
         "preserved output closure remained tied to the old target snapshot");
-    Equal(businessLeasesBefore + 1, TargetRecipeVariantPublicationLease.BusinessCreated,
+    Equal(businessLeasesBefore + 1, RuntimeUiTargetPublicationLease.BusinessCreated,
         "preserved output did not acquire one business-generation lease");
-    Equal(businessDisposalsBefore, TargetRecipeVariantPublicationLease.BusinessDisposed,
+    Equal(businessDisposalsBefore, RuntimeUiTargetPublicationLease.BusinessDisposed,
         "preserved output released its business-generation lease before native completion");
-    Equal(snapshotLeasesBefore, TargetRecipeVariantPublicationLease.SnapshotCreated,
+    Equal(snapshotLeasesBefore, RuntimeUiTargetPublicationLease.SnapshotCreated,
         "preserved output incorrectly acquired an exact target snapshot lease");
     var close = RuntimeTargetRecipeVariantService.BeginPanelTeardownForTests(ready.Runtime.Panel);
     ready.Runtime.NativeClosePanel();
     RuntimeTargetRecipeVariantService.CompletePanelCloseForTests(close);
     RuntimeTargetRecipeVariantService.CompleteOutputClosureForTests(outputClosure);
     RuntimeTargetRecipeVariantService.CompleteSubmitForTests(outputSubmit);
-    Equal(businessDisposalsBefore + 1, TargetRecipeVariantPublicationLease.BusinessDisposed,
+    Equal(businessDisposalsBefore + 1, RuntimeUiTargetPublicationLease.BusinessDisposed,
         "preserved output leaked its business-generation lease");
     Equal(1L, StatusCount("completed"),
         "preserved cross-snapshot output did not complete with its exact close receipt");
@@ -2706,19 +2706,19 @@ static void VerifyOutputClosureEntryExceptionCleanup()
         True(RuntimeTargetRecipeVariantService.BeginSubmitForTests(ready.Button, out var submit),
             "throwing final-output probe could not enter its button submit");
         configure(ready.Runtime);
-        var created = TargetRecipeVariantPublicationLease.Created;
-        var disposed = TargetRecipeVariantPublicationLease.Disposed;
+        var created = RuntimeUiTargetPublicationLease.Created;
+        var disposed = RuntimeUiTargetPublicationLease.Disposed;
         False(RuntimeTargetRecipeVariantService.BeginOutputClosureForTests(
             ready.Closure, out var closureState),
             "throwing final-output runtime probe fell through to the native closure");
-        Equal(created + 1, TargetRecipeVariantPublicationLease.Created,
+        Equal(created + 1, RuntimeUiTargetPublicationLease.Created,
             "throwing final-output probe did not acquire exactly one lease");
-        Equal(disposed + 1, TargetRecipeVariantPublicationLease.Disposed,
+        Equal(disposed + 1, RuntimeUiTargetPublicationLease.Disposed,
             "throwing final-output probe leaked its acquired lease");
         Equal(1L, StatusCount("uncertain"),
             "throwing final-output probe did not latch the known transaction Uncertain");
         RuntimeTargetRecipeVariantService.CompleteOutputClosureForTests(closureState);
-        Equal(disposed + 1, TargetRecipeVariantPublicationLease.Disposed,
+        Equal(disposed + 1, RuntimeUiTargetPublicationLease.Disposed,
             "prefix=false finalizer disposed the recovered lease twice");
         RuntimeTargetRecipeVariantService.CompleteSubmitForTests(submit);
         False(RuntimeTargetRecipeVariantService.BeginSubmitForTests(ready.Button, out var retry),
@@ -2929,8 +2929,8 @@ static void VerifyTransactionSequenceAndNestedProbeStack()
     Bind(leaseRuntime, leaseRuntime.Created.Single(), leaseButton);
     False(RuntimeTargetRecipeVariantService.BeginSubmitForTests(leaseButton, out var rejectedPrefix),
         "insufficient inventory unexpectedly armed a tracked submit");
-    Equal(1, TargetRecipeVariantPublicationLease.Created, "rejected prefix did not acquire its publication lease");
-    Equal(1, TargetRecipeVariantPublicationLease.Disposed, "rejected prefix leaked its publication lease");
+    Equal(1, RuntimeUiTargetPublicationLease.Created, "rejected prefix did not acquire its publication lease");
+    Equal(1, RuntimeUiTargetPublicationLease.Disposed, "rejected prefix leaked its publication lease");
     RuntimeTargetRecipeVariantService.CompleteSubmitForTests(rejectedPrefix);
     True(RuntimeTargetRecipeVariantService.BeginSubmitForTests(new FakeButton(0x298), out var afterRejected),
         "prefix=false finalizer did not pop its exact submit probe");
@@ -3505,7 +3505,7 @@ static void VerifyProductionSourceContract()
     True(core.Contains("BeforeRecipeElementSelectedExact<TRecipe>", StringComparison.Ordinal)
         && core.Contains("MakeGenericMethod(recipeType)", StringComparison.Ordinal),
         "production does not install the closed generic exact Recipe prefix");
-    True(core.Contains("TryAcquireTargetRecipeVariantPublicationLease", StringComparison.Ordinal),
+    True(core.Contains("TryAcquireTargetPublicationLease", StringComparison.Ordinal),
         "submit does not hold a target publication lease");
     True(pinning.Contains("long expectedBusinessGeneration", StringComparison.Ordinal)
         && pinning.Contains("lifecycle.Generation != expectedBusinessGeneration", StringComparison.Ordinal),
@@ -3929,7 +3929,7 @@ static FakeRuntime Install(params FakeRecipe[] recipes)
     var runtime = new FakeRuntime(recipes);
     RuntimeNightBusinessLifecycle.Snapshot = new NightBusinessSnapshot(true, 9);
     RuntimeUiTargetVariantTestState.Reset();
-    TargetRecipeVariantPublicationLease.ResetCounts();
+    RuntimeUiTargetPublicationLease.ResetCounts();
     RuntimeTargetRecipeVariantService.UseRuntimeForTests(runtime);
     return runtime;
 }
@@ -4060,29 +4060,29 @@ namespace MystiaStewardCompanion.Save
     {
         public static RuntimeUiTargetSetSnapshot Current { get; set; } = new(0, 0, Array.Empty<RuntimeUiTargetSnapshot>());
         public static RuntimeUiTargetSetSnapshot ReadTargetSet() => Current;
-        public static bool TryAcquireTargetRecipeVariantPublicationLease(
+        public static bool TryAcquireTargetPublicationLease(
             RuntimeUiTargetSetSnapshot expected,
-            out TargetRecipeVariantPublicationLease lease)
+            out RuntimeUiTargetPublicationLease lease)
         {
             lease = null!;
             if (!ReferenceEquals(Current, expected) || !RuntimeNightBusinessLifecycle.Snapshot.IsActive) return false;
-            lease = new TargetRecipeVariantPublicationLease(isBusinessGenerationLease: false);
+            lease = new RuntimeUiTargetPublicationLease(isBusinessGenerationLease: false);
             return true;
         }
 
-        public static bool TryAcquireTargetRecipeVariantPublicationLease(
+        public static bool TryAcquireTargetPublicationLease(
             long expectedBusinessGeneration,
-            out TargetRecipeVariantPublicationLease lease)
+            out RuntimeUiTargetPublicationLease lease)
         {
             lease = null!;
             var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
             if (!lifecycle.IsActive || lifecycle.Generation != expectedBusinessGeneration) return false;
-            lease = new TargetRecipeVariantPublicationLease(isBusinessGenerationLease: true);
+            lease = new RuntimeUiTargetPublicationLease(isBusinessGenerationLease: true);
             return true;
         }
     }
 
-    internal sealed class TargetRecipeVariantPublicationLease : IDisposable
+    internal sealed class RuntimeUiTargetPublicationLease : IDisposable
     {
         private bool _disposed;
         private readonly bool _isBusinessGenerationLease;
@@ -4093,7 +4093,7 @@ namespace MystiaStewardCompanion.Save
         public static int BusinessCreated { get; private set; }
         public static int BusinessDisposed { get; private set; }
 
-        public TargetRecipeVariantPublicationLease(bool isBusinessGenerationLease)
+        public RuntimeUiTargetPublicationLease(bool isBusinessGenerationLease)
         {
             _isBusinessGenerationLease = isBusinessGenerationLease;
             Created++;

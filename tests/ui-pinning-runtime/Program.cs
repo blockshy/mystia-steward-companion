@@ -9,11 +9,14 @@ try
 {
     VerifyPatchTargets();
     VerifyDualTargetClaimsAndColorRoundTrip();
-    VerifyTargetRecipeVariantPublicationLease();
+    VerifyRuntimeUiTargetPublicationLease();
     VerifyCookingRefreshHoldsExactTargetPublicationLease();
+    VerifyStorageRefreshHoldsExactTargetPublicationLease();
     VerifySharedListItemUsesSingleOwnershipAndBaseline();
     VerifyOrderHighlightRuntimeWiring();
     VerifyOpenPanelRefreshScheduling();
+    VerifyOpenPanelSurfaceRefreshSemantics();
+    VerifyCookingRefreshStagesFailClosed();
     VerifyIdenticalTargetPublicationIsIdempotent();
     VerifyOrderHighlightSurfaceIsolation();
     VerifyScopedNativePinnedMatching();
@@ -175,7 +178,7 @@ static void VerifyDualTargetClaimsAndColorRoundTrip()
         "Shared highlight did not return to the rare color endpoint.");
 }
 
-static void VerifyTargetRecipeVariantPublicationLease()
+static void VerifyRuntimeUiTargetPublicationLease()
 {
     var businessGeneration = RuntimeNightBusinessLifecycle.Generation;
     PublishRareTarget(
@@ -195,7 +198,7 @@ static void VerifyTargetRecipeVariantPublicationLease()
         targetRevision: "publication-lease");
     var expected = RuntimeUiPinningService.ReadTargetSet();
     AssertTrue(
-        RuntimeUiPinningService.TryAcquireTargetRecipeVariantPublicationLease(expected, out var lease),
+        RuntimeUiPinningService.TryAcquireTargetPublicationLease(expected, out var lease),
         "The current active target snapshot could not acquire its publication lease.");
 
     using var workerStarted = new ManualResetEventSlim();
@@ -233,18 +236,18 @@ static void VerifyTargetRecipeVariantPublicationLease()
     });
     worker.Start();
     AssertTrue(workerStarted.Wait(TimeSpan.FromSeconds(2)), "The publication worker did not start.");
-    AssertFalse(workerFinished.Wait(TimeSpan.FromMilliseconds(100)), "Target publication escaped an active variant lease.");
+    AssertFalse(workerFinished.Wait(TimeSpan.FromMilliseconds(100)), "Target publication escaped an active UI target lease.");
     lease.Dispose();
     AssertTrue(workerFinished.Wait(TimeSpan.FromSeconds(5)), "Target publication did not resume after the lease was released.");
     worker.Join();
     if (workerFailure != null) throw new InvalidOperationException("Target publication worker failed.", workerFailure);
     AssertFalse(
-        RuntimeUiPinningService.TryAcquireTargetRecipeVariantPublicationLease(expected, out _),
+        RuntimeUiPinningService.TryAcquireTargetPublicationLease(expected, out _),
         "A stale target snapshot acquired a publication lease.");
 
     var current = RuntimeUiPinningService.ReadTargetSet();
     AssertTrue(
-        RuntimeUiPinningService.TryAcquireTargetRecipeVariantPublicationLease(current, out var threadAffineLease),
+        RuntimeUiPinningService.TryAcquireTargetPublicationLease(current, out var threadAffineLease),
         "The replacement target snapshot could not acquire a publication lease.");
     Exception? wrongThreadRelease = null;
     var wrongThread = new Thread(() =>
@@ -264,7 +267,7 @@ static void VerifyTargetRecipeVariantPublicationLease()
     threadAffineLease.Dispose();
 
     AssertTrue(
-        RuntimeUiPinningService.TryAcquireTargetRecipeVariantPublicationLease(
+        RuntimeUiPinningService.TryAcquireTargetPublicationLease(
             businessGeneration,
             out var businessLease),
         "An active business generation could not acquire its snapshot-independent publication lease.");
@@ -317,7 +320,7 @@ static void VerifyTargetRecipeVariantPublicationLease()
     }
 
     AssertTrue(
-        RuntimeUiPinningService.TryAcquireTargetRecipeVariantPublicationLease(
+        RuntimeUiPinningService.TryAcquireTargetPublicationLease(
             businessGeneration,
             out var rotatedTargetBusinessLease),
         "A target rotation incorrectly invalidated the same business generation's publication lease.");
@@ -325,7 +328,7 @@ static void VerifyTargetRecipeVariantPublicationLease()
 
     RuntimeNightBusinessLifecycle.ActivateNextGeneration();
     AssertFalse(
-        RuntimeUiPinningService.TryAcquireTargetRecipeVariantPublicationLease(
+        RuntimeUiPinningService.TryAcquireTargetPublicationLease(
             businessGeneration,
             out _),
         "A prior business generation acquired a publication lease after the lifecycle advanced.");
@@ -372,25 +375,39 @@ static void VerifyCookingRefreshHoldsExactTargetPublicationLease()
             orderTraceId: "",
             targetRevision: "cooking-refresh-leased");
         var exactRefreshTarget = RuntimeUiPinningService.ReadTargetSet();
+        var sequenceStart = CookingSelectionPanelProbe.RefreshSequence.Count;
 
         using var publicationStarted = new ManualResetEventSlim();
         using var publicationFinished = new ManualResetEventSlim();
         Exception? publicationFailure = null;
         Thread? publicationWorker = null;
-        var refreshActionInvoked = false;
-        var exactTargetObserved = false;
-        var directTargetPinned = false;
+        var ingredientRefreshActionInvoked = false;
+        var recipeRefreshActionInvoked = false;
+        var ingredientSurfaceRefreshActionInvoked = false;
+        var recipeSurfaceRefreshActionInvoked = false;
+        var exactTargetObservedByAllStages = true;
+        var directIngredientTargetsPinned = false;
+        var directRecipeTargetPinned = false;
+        var visibleIngredientTargetsPinned = false;
+        var visibleRecipeTargetPinned = false;
         var publicationWorkerStarted = false;
-        var publicationEscapedDuringRefresh = false;
-        CookingSelectionPanelProbe.RefreshAction = () =>
+        var publicationEscapedDuringIngredientRefresh = false;
+        var publicationEscapedDuringRecipeRefresh = false;
+        var publicationEscapedDuringIngredientSurfaceRefresh = false;
+        var publicationEscapedDuringRecipeSurfaceRefresh = false;
+        CookingSelectionPanelProbe.IngredientRefreshAction = () =>
         {
-            refreshActionInvoked = true;
-            exactTargetObserved = ReferenceEquals(
+            ingredientRefreshActionInvoked = true;
+            exactTargetObservedByAllStages &= ReferenceEquals(
                 exactRefreshTarget,
                 RuntimeUiPinningService.ReadTargetSet());
-            directTargetPinned = RunTimePlayerDataProbe.CheckPinned(
-                PlayerSaveFileDefaultPropProbe.Recipes,
-                132);
+            directIngredientTargetsPinned = new[]
+            {
+                PlayerSaveFileDefaultPropProbe.IngredientsSeafood,
+                PlayerSaveFileDefaultPropProbe.IngredientsMeat,
+                PlayerSaveFileDefaultPropProbe.IngredientsVegetable,
+                PlayerSaveFileDefaultPropProbe.IngredientsOther,
+            }.All(ingredientType => RunTimePlayerDataProbe.CheckPinned(ingredientType, 133));
             publicationWorker = new Thread(() =>
             {
                 try
@@ -425,25 +442,100 @@ static void VerifyCookingRefreshHoldsExactTargetPublicationLease()
             publicationWorkerStarted = publicationStarted.Wait(TimeSpan.FromSeconds(2));
             if (publicationWorkerStarted)
             {
-                publicationEscapedDuringRefresh = publicationFinished.Wait(
+                publicationEscapedDuringIngredientRefresh = publicationFinished.Wait(
                     TimeSpan.FromMilliseconds(100));
             }
             return true;
         };
+        CookingSelectionPanelProbe.RecipeRefreshAction = () =>
+        {
+            recipeRefreshActionInvoked = true;
+            exactTargetObservedByAllStages &= ReferenceEquals(
+                exactRefreshTarget,
+                RuntimeUiPinningService.ReadTargetSet());
+            directRecipeTargetPinned = RunTimePlayerDataProbe.CheckPinned(
+                PlayerSaveFileDefaultPropProbe.Recipes,
+                132);
+            publicationEscapedDuringRecipeRefresh = publicationFinished.IsSet;
+            return true;
+        };
+        CookingSelectionPanelProbe.IngredientSurfaceRefreshAction = () =>
+        {
+            ingredientSurfaceRefreshActionInvoked = true;
+            exactTargetObservedByAllStages &= ReferenceEquals(
+                exactRefreshTarget,
+                RuntimeUiPinningService.ReadTargetSet());
+            visibleIngredientTargetsPinned = new[]
+            {
+                PlayerSaveFileDefaultPropProbe.IngredientsSeafood,
+                PlayerSaveFileDefaultPropProbe.IngredientsMeat,
+                PlayerSaveFileDefaultPropProbe.IngredientsVegetable,
+                PlayerSaveFileDefaultPropProbe.IngredientsOther,
+            }.All(ingredientType => RunTimePlayerDataProbe.CheckPinned(ingredientType, 133));
+            publicationEscapedDuringIngredientSurfaceRefresh = publicationFinished.IsSet;
+        };
+        CookingSelectionPanelProbe.RecipeSurfaceRefreshAction = () =>
+        {
+            recipeSurfaceRefreshActionInvoked = true;
+            exactTargetObservedByAllStages &= ReferenceEquals(
+                exactRefreshTarget,
+                RuntimeUiPinningService.ReadTargetSet());
+            visibleRecipeTargetPinned = RunTimePlayerDataProbe.CheckPinned(
+                PlayerSaveFileDefaultPropProbe.Recipes,
+                132);
+            publicationEscapedDuringRecipeSurfaceRefresh = publicationFinished.IsSet;
+        };
 
         RuntimeUiPinningService.Tick();
-        AssertTrue(refreshActionInvoked, "The cooking target refresh did not invoke UpdateRecipeField.");
-        AssertTrue(exactTargetObserved, "Cooking refresh started without its exact target snapshot.");
-        AssertTrue(directTargetPinned,
-            "Direct UpdateRecipeField did not establish the cooking CheckPinned scope for its new target.");
+        AssertTrue(ingredientRefreshActionInvoked,
+            "The cooking target refresh did not invoke UpdateIngField.");
+        AssertTrue(recipeRefreshActionInvoked,
+            "The cooking target refresh did not invoke UpdateRecipeField.");
+        AssertTrue(ingredientSurfaceRefreshActionInvoked,
+            "The cooking target refresh did not rebuild m_StaticIngredientsGroup after both backing-data stages.");
+        AssertTrue(recipeSurfaceRefreshActionInvoked,
+            "The cooking target refresh did not rebuild m_StaticRecipeGroup after UpdateRecipeField.");
+        AssertTrue(exactTargetObservedByAllStages,
+            "A cooking refresh stage observed a target snapshot other than its exact publication lease.");
+        AssertTrue(directIngredientTargetsPinned,
+            "Direct UpdateIngField did not use the cooking CheckPinned scope for all four ingredient categories.");
+        AssertTrue(directRecipeTargetPinned,
+            "Direct UpdateRecipeField did not use the cooking CheckPinned scope for its new recipe target.");
+        AssertTrue(visibleIngredientTargetsPinned,
+            "m_StaticIngredientsGroup.UpdateElements ran outside the exact cooking CheckPinned scope for an ingredient category.");
+        AssertTrue(visibleRecipeTargetPinned,
+            "m_StaticRecipeGroup.UpdateElements ran outside the exact cooking CheckPinned scope.");
         AssertTrue(publicationWorkerStarted, "The cooking-refresh publication worker did not start.");
         AssertFalse(
-            publicationEscapedDuringRefresh,
-            "Cooking refresh allowed the exact target snapshot to rotate before UpdateRecipeField returned.");
+            publicationEscapedDuringIngredientRefresh,
+            "Cooking refresh allowed the exact target snapshot to rotate before UpdateIngField returned.");
+        AssertFalse(
+            publicationEscapedDuringRecipeRefresh,
+            "Cooking refresh released the exact target publication lease before UpdateRecipeField returned.");
+        AssertFalse(
+            publicationEscapedDuringIngredientSurfaceRefresh,
+            "Cooking refresh released the exact target publication lease before m_StaticIngredientsGroup.UpdateElements returned.");
+        AssertFalse(
+            publicationEscapedDuringRecipeSurfaceRefresh,
+            "Cooking refresh released the exact target publication lease before m_StaticRecipeGroup.UpdateElements returned.");
+        AssertSequenceEqual(
+            new[] { "ingredient-data", "recipe-data", "ingredient-visible", "recipe-visible" },
+            CookingSelectionPanelProbe.RefreshSequence.Skip(sequenceStart),
+            "The direct cooking refresh did not preserve the exact native four-stage order.");
         AssertEqual(1, CookingSelectionPanelProbe.FullVisualRefreshCount,
-            "A target publication invoked full UpdateAllVisual instead of direct UpdateRecipeField.");
-        AssertEqual(2, CookingSelectionPanelProbe.RefreshCount,
+            "A target publication invoked full UpdateAllVisual instead of the bounded four-stage refresh.");
+        AssertEqual(2, CookingSelectionPanelProbe.IngredientRefreshCount,
+            "The open panel did not run exactly one natural and one direct ingredient-data refresh.");
+        AssertEqual(2, CookingSelectionPanelProbe.RecipeRefreshCount,
             "The open panel did not run exactly one natural and one direct recipe-field refresh.");
+        AssertEqual(2, CookingSelectionPanelProbe.IngredientSurfaceRefreshCount,
+            "The open panel did not run exactly one natural and one direct ingredient-surface refresh.");
+        AssertEqual(2, CookingSelectionPanelProbe.RecipeSurfaceRefreshCount,
+            "The open panel did not run exactly one natural and one direct recipe-surface refresh.");
+        AssertEqual(1, CookingSelectionPanelProbe.SelectedSurfaceRefreshCount,
+            "The bounded target refresh rebuilt the selected-ingredient surface.");
+        AssertEqual(1, CookingSelectionPanelProbe.OutputSurfaceRefreshCount,
+            "The bounded target refresh rebuilt the output surface.");
         AssertTrue(
             publicationFinished.Wait(TimeSpan.FromSeconds(5)),
             "Target publication did not resume after the cooking refresh completed.");
@@ -455,7 +547,146 @@ static void VerifyCookingRefreshHoldsExactTargetPublicationLease()
     }
     finally
     {
-        CookingSelectionPanelProbe.RefreshAction = null;
+        CookingSelectionPanelProbe.IngredientRefreshAction = null;
+        CookingSelectionPanelProbe.RecipeRefreshAction = null;
+        CookingSelectionPanelProbe.IngredientSurfaceRefreshAction = null;
+        CookingSelectionPanelProbe.RecipeSurfaceRefreshAction = null;
+        panel.OnPanelClose();
+    }
+}
+
+static void VerifyStorageRefreshHoldsExactTargetPublicationLease()
+{
+    StoragePanelProbe.ResetRefreshProbe();
+    var businessGeneration = RuntimeNightBusinessLifecycle.Generation;
+    var panel = new StoragePanelProbe();
+    try
+    {
+        PublishRareTarget(
+            businessGeneration,
+            listPinningEnabled: true,
+            recipeVariantEnabled: false,
+            cookerHighlightEnabled: false,
+            seatHighlightEnabled: false,
+            orderHighlightEnabled: false,
+            recipeId: -1,
+            beverageId: 230,
+            ingredientIds: Array.Empty<int>(),
+            extraIngredientIds: Array.Empty<int>(),
+            cookerTypeId: -1,
+            deskCode: -1,
+            orderTraceId: "",
+            targetRevision: "storage-refresh-initial");
+        panel.OnPanelOpen();
+
+        PublishRareTarget(
+            businessGeneration,
+            listPinningEnabled: true,
+            recipeVariantEnabled: false,
+            cookerHighlightEnabled: false,
+            seatHighlightEnabled: false,
+            orderHighlightEnabled: false,
+            recipeId: -1,
+            beverageId: 231,
+            ingredientIds: Array.Empty<int>(),
+            extraIngredientIds: Array.Empty<int>(),
+            cookerTypeId: -1,
+            deskCode: -1,
+            orderTraceId: "",
+            targetRevision: "storage-refresh-leased");
+        var exactRefreshTarget = RuntimeUiPinningService.ReadTargetSet();
+
+        using var publicationStarted = new ManualResetEventSlim();
+        using var publicationFinished = new ManualResetEventSlim();
+        Exception? publicationFailure = null;
+        Thread? publicationWorker = null;
+        var publicationEscapedDuringDataRefresh = false;
+        var publicationEscapedDuringSurfaceRefresh = false;
+        var surfaceRefreshActionInvoked = false;
+        var exactTargetObservedByBothStages = true;
+        var dataTargetPinned = false;
+        var visibleTargetPinned = false;
+        StoragePanelProbe.RefreshAction = () =>
+        {
+            exactTargetObservedByBothStages &= ReferenceEquals(
+                exactRefreshTarget,
+                RuntimeUiPinningService.ReadTargetSet());
+            dataTargetPinned = RunTimePlayerDataProbe.CheckPinned(
+                PlayerSaveFileDefaultPropProbe.Beverages,
+                231);
+            publicationWorker = new Thread(() =>
+            {
+                try
+                {
+                    publicationStarted.Set();
+                    PublishRareTarget(
+                        businessGeneration,
+                        listPinningEnabled: true,
+                        recipeVariantEnabled: false,
+                        cookerHighlightEnabled: false,
+                        seatHighlightEnabled: false,
+                        orderHighlightEnabled: false,
+                        recipeId: -1,
+                        beverageId: 232,
+                        ingredientIds: Array.Empty<int>(),
+                        extraIngredientIds: Array.Empty<int>(),
+                        cookerTypeId: -1,
+                        deskCode: -1,
+                        orderTraceId: "",
+                        targetRevision: "storage-refresh-post-publication");
+                }
+                catch (Exception ex)
+                {
+                    publicationFailure = ex;
+                }
+                finally
+                {
+                    publicationFinished.Set();
+                }
+            });
+            publicationWorker.Start();
+            AssertTrue(publicationStarted.Wait(TimeSpan.FromSeconds(2)),
+                "The storage-refresh publication worker did not start.");
+            publicationEscapedDuringDataRefresh = publicationFinished.Wait(TimeSpan.FromMilliseconds(100));
+            return true;
+        };
+        StoragePanelProbe.SurfaceRefreshAction = () =>
+        {
+            surfaceRefreshActionInvoked = true;
+            exactTargetObservedByBothStages &= ReferenceEquals(
+                exactRefreshTarget,
+                RuntimeUiPinningService.ReadTargetSet());
+            visibleTargetPinned = RunTimePlayerDataProbe.CheckPinned(
+                PlayerSaveFileDefaultPropProbe.Beverages,
+                231);
+            publicationEscapedDuringSurfaceRefresh = publicationFinished.IsSet;
+        };
+
+        RuntimeUiPinningService.Tick();
+        AssertFalse(publicationEscapedDuringDataRefresh,
+            "Storage refresh allowed target publication while UpdateBevField was active.");
+        AssertTrue(surfaceRefreshActionInvoked,
+            "Storage refresh did not rebuild m_BevsGroup after UpdateBevField.");
+        AssertTrue(exactTargetObservedByBothStages,
+            "A storage refresh stage observed a target other than its exact publication lease.");
+        AssertTrue(dataTargetPinned,
+            "Direct UpdateBevField did not use the exact beverage CheckPinned scope.");
+        AssertTrue(visibleTargetPinned,
+            "m_BevsGroup.UpdateElements ran outside the exact beverage CheckPinned scope.");
+        AssertFalse(publicationEscapedDuringSurfaceRefresh,
+            "Storage refresh released the target publication lease before m_BevsGroup.UpdateElements returned.");
+        AssertTrue(publicationFinished.Wait(TimeSpan.FromSeconds(5)),
+            "Target publication did not resume after the storage surface refresh completed.");
+        publicationWorker?.Join();
+        if (publicationFailure != null)
+        {
+            throw new InvalidOperationException("Storage-refresh publication worker failed.", publicationFailure);
+        }
+    }
+    finally
+    {
+        StoragePanelProbe.RefreshAction = null;
+        StoragePanelProbe.SurfaceRefreshAction = null;
         panel.OnPanelClose();
     }
 }
@@ -491,7 +722,7 @@ static void VerifyEnabledEmptyTargetClearsVisuals()
     var cookingPanel = new CookingSelectionPanelProbe();
     var storagePanel = new StoragePanelProbe();
     var recipeButton = new UIButtonSimpleProbe(baseColor);
-    CookingSelectionPanelProbe.RefreshAction = () =>
+    CookingSelectionPanelProbe.RecipeRefreshAction = () =>
         RunTimePlayerDataProbe.CheckPinned(PlayerSaveFileDefaultPropProbe.Recipes, recipeId);
     StoragePanelProbe.RefreshAction = () =>
         RunTimePlayerDataProbe.CheckPinned(PlayerSaveFileDefaultPropProbe.Beverages, beverageId);
@@ -503,7 +734,7 @@ static void VerifyEnabledEmptyTargetClearsVisuals()
         cookingPanel.OnRecipeElementEnabled(new RecipeProbe(recipeId), new object(), recipeButton);
         RuntimePinnedListHighlightService.Tick();
 
-        AssertTrue(CookingSelectionPanelProbe.LastResult == true, "The active recipe target did not use scoped pinning.");
+        AssertTrue(CookingSelectionPanelProbe.LastRecipeResult == true, "The active recipe target did not use scoped pinning.");
         AssertTrue(StoragePanelProbe.LastResult == true, "The active beverage target did not use scoped pinning.");
         AssertEqual(0, RunTimePlayerDataProbe.NativeCallCount, "The active Mod targets called the native pinned probe.");
         AssertHighlighted(baseColor, recipeButton.image.get_color(), "The active recipe target was not highlighted.");
@@ -511,7 +742,7 @@ static void VerifyEnabledEmptyTargetClearsVisuals()
         AssertEqual(cookerTypeId, RuntimeCookerHighlightService.LastCookerTypeId, "The cooker stub did not retain the active cooker type.");
 
         var activeTargetGeneration = RuntimeUiPinningService.ReadTargetSet().Generation;
-        var cookingRefreshCount = CookingSelectionPanelProbe.RefreshCount;
+        var cookingRefreshCount = CookingSelectionPanelProbe.RecipeRefreshCount;
         var storageRefreshCount = StoragePanelProbe.RefreshCount;
         var setterCountBeforeClear = recipeButton.image.SetterCount;
 
@@ -541,9 +772,9 @@ static void VerifyEnabledEmptyTargetClearsVisuals()
         AssertEqual(businessGeneration, RuntimeCookerHighlightService.LastSessionGeneration, "An empty cooker target changed the business generation.");
 
         RuntimeUiPinningService.Tick();
-        AssertEqual(cookingRefreshCount + 1, CookingSelectionPanelProbe.RefreshCount, "An open cooking panel did not refresh once for the empty target.");
+        AssertEqual(cookingRefreshCount + 1, CookingSelectionPanelProbe.RecipeRefreshCount, "An open cooking panel did not refresh once for the empty target.");
         AssertEqual(storageRefreshCount + 1, StoragePanelProbe.RefreshCount, "An open storage panel did not refresh once for the empty target.");
-        AssertTrue(CookingSelectionPanelProbe.LastResult == false, "The empty recipe target did not restore the native pinned result.");
+        AssertTrue(CookingSelectionPanelProbe.LastRecipeResult == false, "The empty recipe target did not restore the native pinned result.");
         AssertTrue(StoragePanelProbe.LastResult == false, "The empty beverage target did not restore the native pinned result.");
         AssertEqual(2, RunTimePlayerDataProbe.NativeCallCount, "The empty target did not execute both native pinned probes.");
 
@@ -552,12 +783,12 @@ static void VerifyEnabledEmptyTargetClearsVisuals()
         AssertContains(RuntimePinnedListHighlightService.Status, "tracked=recipe:0", "The empty target kept the old recipe image tracked.");
 
         RuntimeUiPinningService.Tick();
-        AssertEqual(cookingRefreshCount + 1, CookingSelectionPanelProbe.RefreshCount, "The empty target refreshed the cooking panel more than once.");
+        AssertEqual(cookingRefreshCount + 1, CookingSelectionPanelProbe.RecipeRefreshCount, "The empty target refreshed the cooking panel more than once.");
         AssertEqual(storageRefreshCount + 1, StoragePanelProbe.RefreshCount, "The empty target refreshed the storage panel more than once.");
     }
     finally
     {
-        CookingSelectionPanelProbe.RefreshAction = null;
+        CookingSelectionPanelProbe.RecipeRefreshAction = null;
         StoragePanelProbe.RefreshAction = null;
         cookingPanel.OnPanelClose();
         storagePanel.OnPanelClose();
@@ -691,10 +922,10 @@ static void VerifyOpenPanelRefreshScheduling()
         var naturallyRefreshedStoragePanel = new StoragePanelProbe();
         naturallyRefreshedCookingPanel.OnPanelOpen();
         naturallyRefreshedStoragePanel.OnPanelOpen();
-        AssertEqual(1, CookingSelectionPanelProbe.RefreshCount, "Cooking panel did not naturally apply an existing target.");
+        AssertEqual(1, CookingSelectionPanelProbe.RecipeRefreshCount, "Cooking panel did not naturally apply an existing target.");
         AssertEqual(1, StoragePanelProbe.RefreshCount, "Storage panel did not naturally apply an existing target.");
         RuntimeUiPinningService.Tick();
-        AssertEqual(1, CookingSelectionPanelProbe.RefreshCount, "Cooking panel repeated a target already applied during open.");
+        AssertEqual(1, CookingSelectionPanelProbe.RecipeRefreshCount, "Cooking panel repeated a target already applied during open.");
         AssertEqual(1, StoragePanelProbe.RefreshCount, "Storage panel repeated a target already applied during open.");
         naturallyRefreshedCookingPanel.OnPanelClose();
         naturallyRefreshedStoragePanel.OnPanelDestroyed();
@@ -706,78 +937,78 @@ static void VerifyOpenPanelRefreshScheduling()
         var storagePanel = new StoragePanelProbe();
         cookingPanel.OnPanelOpen();
         storagePanel.OnPanelOpen();
-        AssertEqual(1, CookingSelectionPanelProbe.RefreshCount, "Cooking panel open did not perform its natural refresh.");
+        AssertEqual(1, CookingSelectionPanelProbe.RecipeRefreshCount, "Cooking panel open did not perform its natural refresh.");
         AssertEqual(1, CookingSelectionPanelProbe.FullVisualRefreshCount,
             "Cooking panel open did not perform exactly one natural full refresh.");
         AssertEqual(1, StoragePanelProbe.RefreshCount, "Storage panel open did not perform its natural refresh.");
 
         RunOnWorkerThread(() => Publish(301, 401));
-        AssertEqual(1, CookingSelectionPanelProbe.RefreshCount, "Worker target publication refreshed the cooking panel.");
+        AssertEqual(1, CookingSelectionPanelProbe.RecipeRefreshCount, "Worker target publication refreshed the cooking panel.");
         AssertEqual(1, StoragePanelProbe.RefreshCount, "Worker target publication refreshed the storage panel.");
         RuntimeUiPinningService.Tick();
-        AssertEqual(2, CookingSelectionPanelProbe.RefreshCount, "An open cooking panel did not consume the new target once.");
+        AssertEqual(2, CookingSelectionPanelProbe.RecipeRefreshCount, "An open cooking panel did not consume the new target once.");
         AssertEqual(1, CookingSelectionPanelProbe.FullVisualRefreshCount,
             "Target publication used full UpdateAllVisual instead of direct UpdateRecipeField.");
         AssertEqual(2, StoragePanelProbe.RefreshCount, "An open storage panel did not consume the new target once.");
         RuntimeUiPinningService.Tick();
-        AssertEqual(2, CookingSelectionPanelProbe.RefreshCount, "Cooking panel refreshed twice for one target generation.");
+        AssertEqual(2, CookingSelectionPanelProbe.RecipeRefreshCount, "Cooking panel refreshed twice for one target generation.");
         AssertEqual(2, StoragePanelProbe.RefreshCount, "Storage panel refreshed twice for one target generation.");
 
         RunOnWorkerThread(() => Publish(301, 401));
         RuntimeUiPinningService.Tick();
-        AssertEqual(2, CookingSelectionPanelProbe.RefreshCount, "An identical target refreshed the cooking panel.");
+        AssertEqual(2, CookingSelectionPanelProbe.RecipeRefreshCount, "An identical target refreshed the cooking panel.");
         AssertEqual(2, StoragePanelProbe.RefreshCount, "An identical target refreshed the storage panel.");
 
         RunOnWorkerThread(() => Publish(302, 402));
         RuntimeUiPinningService.Tick();
-        AssertEqual(3, CookingSelectionPanelProbe.RefreshCount, "A new target did not refresh the cooking panel exactly once.");
+        AssertEqual(3, CookingSelectionPanelProbe.RecipeRefreshCount, "A new target did not refresh the cooking panel exactly once.");
         AssertEqual(3, StoragePanelProbe.RefreshCount, "A new target did not refresh the storage panel exactly once.");
 
         cookingPanel.OnPanelClose();
         RunOnWorkerThread(() => Publish(303, 403));
         RuntimeUiPinningService.Tick();
-        AssertEqual(3, CookingSelectionPanelProbe.RefreshCount, "A closed cooking panel was refreshed.");
+        AssertEqual(3, CookingSelectionPanelProbe.RecipeRefreshCount, "A closed cooking panel was refreshed.");
         AssertEqual(4, StoragePanelProbe.RefreshCount, "The still-open storage panel did not refresh.");
 
         storagePanel.OnPanelDestroyed();
         RunOnWorkerThread(() => Publish(304, 404));
         RuntimeUiPinningService.Tick();
-        AssertEqual(3, CookingSelectionPanelProbe.RefreshCount, "A closed cooking panel returned after another target.");
+        AssertEqual(3, CookingSelectionPanelProbe.RecipeRefreshCount, "A closed cooking panel returned after another target.");
         AssertEqual(4, StoragePanelProbe.RefreshCount, "A destroyed storage panel was refreshed.");
 
         var staleCookingPanel = new CookingSelectionPanelProbe();
         var staleStoragePanel = new StoragePanelProbe();
         staleCookingPanel.OnPanelOpen();
         staleStoragePanel.OnPanelOpen();
-        AssertEqual(4, CookingSelectionPanelProbe.RefreshCount, "Generation-mismatch cooking setup did not open.");
+        AssertEqual(4, CookingSelectionPanelProbe.RecipeRefreshCount, "Generation-mismatch cooking setup did not open.");
         AssertEqual(5, StoragePanelProbe.RefreshCount, "Generation-mismatch storage setup did not open.");
         RuntimeNightBusinessLifecycle.ActivateNextGeneration();
         RunOnWorkerThread(() => Publish(305, 405));
         RuntimeUiPinningService.Tick();
-        AssertEqual(4, CookingSelectionPanelProbe.RefreshCount, "A prior-generation cooking panel was refreshed.");
+        AssertEqual(4, CookingSelectionPanelProbe.RecipeRefreshCount, "A prior-generation cooking panel was refreshed.");
         AssertEqual(5, StoragePanelProbe.RefreshCount, "A prior-generation storage panel was refreshed.");
         staleCookingPanel.OnPanelClose();
         staleStoragePanel.OnPanelDestroyed();
 
         var failingCookingPanel = new CookingSelectionPanelProbe();
         failingCookingPanel.OnPanelOpen();
-        AssertEqual(5, CookingSelectionPanelProbe.RefreshCount, "Failure-path cooking setup did not open.");
+        AssertEqual(5, CookingSelectionPanelProbe.RecipeRefreshCount, "Failure-path cooking setup did not open.");
         RunOnWorkerThread(() => Publish(306, 406));
-        CookingSelectionPanelProbe.ThrowOnRefresh = true;
+        CookingSelectionPanelProbe.ThrowOnRecipeRefresh = true;
         RuntimeUiPinningService.Tick();
-        AssertEqual(6, CookingSelectionPanelProbe.RefreshCount, "The failing cooking refresh was not attempted once.");
+        AssertEqual(6, CookingSelectionPanelProbe.RecipeRefreshCount, "The failing cooking refresh was not attempted once.");
         RuntimeUiPinningService.Tick();
-        AssertEqual(6, CookingSelectionPanelProbe.RefreshCount, "A failed cooking refresh retried without a new target.");
+        AssertEqual(6, CookingSelectionPanelProbe.RecipeRefreshCount, "A failed cooking refresh retried without a new target.");
         AssertContains(RuntimeUiPinningService.Status, "failures:1", "Panel refresh failure diagnostics were not retained.");
 
-        CookingSelectionPanelProbe.ThrowOnRefresh = false;
+        CookingSelectionPanelProbe.ThrowOnRecipeRefresh = false;
         RunOnWorkerThread(() => Publish(307, 407));
         RuntimeUiPinningService.Tick();
-        AssertEqual(7, CookingSelectionPanelProbe.RefreshCount, "A later target did not recover after the one-shot failure.");
+        AssertEqual(7, CookingSelectionPanelProbe.RecipeRefreshCount, "A later target did not recover after the one-shot failure.");
         failingCookingPanel.OnPanelClose();
 
         AssertTrue(
-            CookingSelectionPanelProbe.RefreshThreadIds.All(threadId => threadId == mainThreadId),
+            CookingSelectionPanelProbe.RecipeRefreshThreadIds.All(threadId => threadId == mainThreadId),
             "A cooking panel refresh ran outside the Unity main thread.");
         AssertTrue(
             StoragePanelProbe.RefreshThreadIds.All(threadId => threadId == mainThreadId),
@@ -785,8 +1016,332 @@ static void VerifyOpenPanelRefreshScheduling()
     }
     finally
     {
-        CookingSelectionPanelProbe.ThrowOnRefresh = false;
+        CookingSelectionPanelProbe.ThrowOnRecipeRefresh = false;
         StoragePanelProbe.ThrowOnRefresh = false;
+    }
+}
+
+static void VerifyOpenPanelSurfaceRefreshSemantics()
+{
+    CookingSelectionPanelProbe.ResetRefreshProbe();
+    StoragePanelProbe.ResetRefreshProbe();
+    var businessGeneration = RuntimeNightBusinessLifecycle.Generation;
+    var cookingPanel = new CookingSelectionPanelProbe();
+    var storagePanel = new StoragePanelProbe();
+    CookingSelectionPanelProbe.IngredientRefreshAction = () =>
+    {
+        var ingredientIds = RuntimeUiPinningService.ReadTargetSet().Targets
+            .Where(target => target.ListPinningEnabled)
+            .SelectMany(target => target.IngredientIds)
+            .Distinct()
+            .OrderBy(ingredientId => ingredientId)
+            .ToArray();
+        cookingPanel.SetIngredientSurfaceSource(ingredientIds);
+        return true;
+    };
+    CookingSelectionPanelProbe.RecipeRefreshAction = () =>
+    {
+        var recipeIds = RuntimeUiPinningService.ReadTargetSet().Targets
+            .Where(target => target.ListPinningEnabled && target.RecipeId >= 0)
+            .Select(target => target.RecipeId)
+            .ToArray();
+        cookingPanel.SetRecipeSurfaceSource(recipeIds);
+        return true;
+    };
+    StoragePanelProbe.RefreshAction = () =>
+    {
+        var beverageIds = RuntimeUiPinningService.ReadTargetSet().Targets
+            .Where(target => target.ListPinningEnabled && target.BeverageId >= 0)
+            .Select(target => target.BeverageId)
+            .ToArray();
+        storagePanel.SetBeverageSurfaceSource(beverageIds);
+        return true;
+    };
+
+    try
+    {
+        PublishRareTarget(
+            businessGeneration,
+            listPinningEnabled: true,
+            recipeVariantEnabled: true,
+            cookerHighlightEnabled: false,
+            seatHighlightEnabled: false,
+            orderHighlightEnabled: false,
+            recipeId: 510,
+            beverageId: 610,
+            ingredientIds: new[] { 511 },
+            extraIngredientIds: new[] { 512 },
+            cookerTypeId: -1,
+            deskCode: -1,
+            orderTraceId: "",
+            targetRevision: "surface-enabled");
+        cookingPanel.OnPanelOpen();
+        storagePanel.OnPanelOpen();
+        AssertSequenceEqual(new[] { 511 }, cookingPanel.VisibleIngredientIds,
+            "Natural cooking open did not materialize its ingredient surface.");
+        AssertSequenceEqual(new[] { 510 }, cookingPanel.VisibleRecipeIds,
+            "Natural cooking open did not materialize its recipe surface.");
+        AssertSequenceEqual(new[] { 610 }, storagePanel.VisibleBeverageIds,
+            "Natural storage open did not materialize its beverage surface.");
+
+        PublishRareTarget(
+            businessGeneration,
+            listPinningEnabled: false,
+            recipeVariantEnabled: false,
+            cookerHighlightEnabled: false,
+            seatHighlightEnabled: false,
+            orderHighlightEnabled: false,
+            recipeId: -1,
+            beverageId: -1,
+            ingredientIds: Array.Empty<int>(),
+            extraIngredientIds: Array.Empty<int>(),
+            cookerTypeId: -1,
+            deskCode: -1,
+            orderTraceId: "",
+            targetRevision: "surface-disabled");
+        RuntimeUiPinningService.Tick();
+        AssertSequenceEqual(Array.Empty<int>(), cookingPanel.VisibleIngredientIds,
+            "Disabling the open cooking feature rebuilt recipes but left stale ingredient rows visible.");
+        AssertSequenceEqual(Array.Empty<int>(), cookingPanel.VisibleRecipeIds,
+            "Disabling the open cooking feature rebuilt data but left stale recipe rows visible.");
+        AssertSequenceEqual(Array.Empty<int>(), storagePanel.VisibleBeverageIds,
+            "Disabling the open beverage feature rebuilt data but left stale beverage rows visible.");
+        AssertEqual(1, CookingSelectionPanelProbe.SelectedSurfaceRefreshCount,
+            "The bounded target refresh unexpectedly rebuilt the selected-ingredient surface.");
+        AssertEqual(1, CookingSelectionPanelProbe.OutputSurfaceRefreshCount,
+            "The bounded target refresh unexpectedly rebuilt the output surface.");
+
+        var cookingDataCountBeforeFailure = CookingSelectionPanelProbe.RecipeRefreshCount;
+        var cookingSurfaceCountBeforeFailure = CookingSelectionPanelProbe.RecipeSurfaceRefreshCount;
+        var cookingAppliedBeforeFailure = ReadPanelRefreshGeneration("cooking", "applied");
+        var panelFailuresBefore = ReadPanelRefreshCounter("failures");
+        CookingSelectionPanelProbe.ThrowOnRecipeSurfaceRefresh = true;
+        PublishRareTarget(
+            businessGeneration,
+            listPinningEnabled: true,
+            recipeVariantEnabled: false,
+            cookerHighlightEnabled: false,
+            seatHighlightEnabled: false,
+            orderHighlightEnabled: false,
+            recipeId: 520,
+            beverageId: 620,
+            ingredientIds: new[] { 521 },
+            extraIngredientIds: Array.Empty<int>(),
+            cookerTypeId: -1,
+            deskCode: -1,
+            orderTraceId: "",
+            targetRevision: "surface-failure");
+        RuntimeUiPinningService.Tick();
+        AssertEqual(cookingDataCountBeforeFailure + 1, CookingSelectionPanelProbe.RecipeRefreshCount,
+            "Cooking surface failure did not first rebuild recipe data exactly once.");
+        AssertEqual(cookingSurfaceCountBeforeFailure + 1, CookingSelectionPanelProbe.RecipeSurfaceRefreshCount,
+            "Cooking surface failure did not attempt m_StaticRecipeGroup.UpdateElements exactly once.");
+        AssertEqual(panelFailuresBefore + 1, ReadPanelRefreshCounter("failures"),
+            "Cooking surface failure was not retained exactly once in panel diagnostics.");
+        AssertEqual(cookingAppliedBeforeFailure, ReadPanelRefreshGeneration("cooking", "applied"),
+            "Cooking data completion was incorrectly committed before the visible group refresh succeeded.");
+        AssertContains(RuntimeUiPinningService.Status, "stage=recipe-visible-elements",
+            "Cooking logical-group failure diagnostics lost the exact refresh stage.");
+        RuntimeUiPinningService.Tick();
+        AssertEqual(cookingDataCountBeforeFailure + 1, CookingSelectionPanelProbe.RecipeRefreshCount,
+            "A partial cooking surface failure retried within the same target generation.");
+
+        CookingSelectionPanelProbe.ThrowOnRecipeSurfaceRefresh = false;
+        cookingPanel.OnPanelClose();
+        storagePanel.OnPanelClose();
+
+        CookingSelectionPanelProbe.ResetRefreshProbe();
+        StoragePanelProbe.ResetRefreshProbe();
+        var foodStoragePanel = new StoragePanelProbe(SellableTypeProbe.Food);
+        foodStoragePanel.OnPanelOpen();
+        AssertEqual(0, StoragePanelProbe.RefreshCount,
+            "A food-mode storage panel unexpectedly rebuilt beverage data during natural open.");
+        PublishRareTarget(
+            businessGeneration,
+            listPinningEnabled: true,
+            recipeVariantEnabled: false,
+            cookerHighlightEnabled: false,
+            seatHighlightEnabled: false,
+            orderHighlightEnabled: false,
+            recipeId: 530,
+            beverageId: 630,
+            ingredientIds: new[] { 531 },
+            extraIngredientIds: Array.Empty<int>(),
+            cookerTypeId: -1,
+            deskCode: -1,
+            orderTraceId: "",
+            targetRevision: "food-storage-not-beverage");
+        RuntimeUiPinningService.Tick();
+        AssertEqual(0, StoragePanelProbe.RefreshCount,
+            "A food-mode storage panel was registered as a beverage surface.");
+        AssertEqual(0, StoragePanelProbe.SurfaceRefreshCount,
+            "A food-mode storage panel rebuilt m_BevsGroup after target publication.");
+        foodStoragePanel.OnPanelClose();
+    }
+    finally
+    {
+        CookingSelectionPanelProbe.ThrowOnRecipeSurfaceRefresh = false;
+        StoragePanelProbe.ThrowOnSurfaceRefresh = false;
+        CookingSelectionPanelProbe.IngredientRefreshAction = null;
+        CookingSelectionPanelProbe.RecipeRefreshAction = null;
+        StoragePanelProbe.RefreshAction = null;
+        cookingPanel.OnPanelClose();
+        storagePanel.OnPanelClose();
+    }
+}
+
+static void VerifyCookingRefreshStagesFailClosed()
+{
+    CookingSelectionPanelProbe.ResetRefreshProbe();
+    var businessGeneration = RuntimeNightBusinessLifecycle.Generation;
+    var cookingPanel = new CookingSelectionPanelProbe();
+
+    void Publish(int targetId)
+    {
+        PublishRareTarget(
+            businessGeneration,
+            listPinningEnabled: true,
+            recipeVariantEnabled: false,
+            cookerHighlightEnabled: false,
+            seatHighlightEnabled: false,
+            orderHighlightEnabled: false,
+            recipeId: 700 + targetId,
+            beverageId: -1,
+            ingredientIds: new[] { 800 + targetId },
+            extraIngredientIds: Array.Empty<int>(),
+            cookerTypeId: -1,
+            deskCode: -1,
+            orderTraceId: "",
+            targetRevision: $"cooking-stage-{targetId}");
+    }
+
+    void AssertFailure(
+        int targetId,
+        string expectedStage,
+        Action armFailure,
+        Action disarmFailure,
+        int expectedIngredientDataDelta,
+        int expectedRecipeDataDelta,
+        int expectedIngredientSurfaceDelta,
+        int expectedRecipeSurfaceDelta)
+    {
+        var ingredientDataBefore = CookingSelectionPanelProbe.IngredientRefreshCount;
+        var recipeDataBefore = CookingSelectionPanelProbe.RecipeRefreshCount;
+        var ingredientSurfaceBefore = CookingSelectionPanelProbe.IngredientSurfaceRefreshCount;
+        var recipeSurfaceBefore = CookingSelectionPanelProbe.RecipeSurfaceRefreshCount;
+        var appliedBefore = ReadPanelRefreshGeneration("cooking", "applied");
+        var failuresBefore = ReadPanelRefreshCounter("failures");
+
+        armFailure();
+        Publish(targetId);
+        RuntimeUiPinningService.Tick();
+        disarmFailure();
+
+        AssertEqual(ingredientDataBefore + expectedIngredientDataDelta,
+            CookingSelectionPanelProbe.IngredientRefreshCount,
+            $"{expectedStage} executed an unexpected number of ingredient-data stages.");
+        AssertEqual(recipeDataBefore + expectedRecipeDataDelta,
+            CookingSelectionPanelProbe.RecipeRefreshCount,
+            $"{expectedStage} executed an unexpected number of recipe-data stages.");
+        AssertEqual(ingredientSurfaceBefore + expectedIngredientSurfaceDelta,
+            CookingSelectionPanelProbe.IngredientSurfaceRefreshCount,
+            $"{expectedStage} executed an unexpected number of ingredient visible stages.");
+        AssertEqual(recipeSurfaceBefore + expectedRecipeSurfaceDelta,
+            CookingSelectionPanelProbe.RecipeSurfaceRefreshCount,
+            $"{expectedStage} executed an unexpected number of recipe visible stages.");
+        AssertEqual(appliedBefore, ReadPanelRefreshGeneration("cooking", "applied"),
+            $"{expectedStage} incorrectly committed a partial cooking refresh.");
+        AssertEqual(failuresBefore + 1, ReadPanelRefreshCounter("failures"),
+            $"{expectedStage} was not counted as exactly one panel refresh failure.");
+        AssertContains(RuntimeUiPinningService.Status, $"stage={expectedStage}",
+            $"{expectedStage} diagnostics lost the exact failed stage.");
+
+        RuntimeUiPinningService.Tick();
+        AssertEqual(ingredientDataBefore + expectedIngredientDataDelta,
+            CookingSelectionPanelProbe.IngredientRefreshCount,
+            $"{expectedStage} retried within the same target generation.");
+        AssertEqual(failuresBefore + 1, ReadPanelRefreshCounter("failures"),
+            $"{expectedStage} recorded the same generation more than once.");
+    }
+
+    try
+    {
+        PublishRareTarget(
+            businessGeneration,
+            listPinningEnabled: false,
+            recipeVariantEnabled: false,
+            cookerHighlightEnabled: false,
+            seatHighlightEnabled: false,
+            orderHighlightEnabled: false,
+            recipeId: -1,
+            beverageId: -1,
+            ingredientIds: Array.Empty<int>(),
+            extraIngredientIds: Array.Empty<int>(),
+            cookerTypeId: -1,
+            deskCode: -1,
+            orderTraceId: "",
+            targetRevision: "cooking-stage-baseline");
+        cookingPanel.OnPanelOpen();
+
+        AssertFailure(
+            1,
+            "ingredient-backing-data",
+            () => CookingSelectionPanelProbe.ThrowOnIngredientRefresh = true,
+            () => CookingSelectionPanelProbe.ThrowOnIngredientRefresh = false,
+            expectedIngredientDataDelta: 1,
+            expectedRecipeDataDelta: 0,
+            expectedIngredientSurfaceDelta: 0,
+            expectedRecipeSurfaceDelta: 0);
+        AssertFailure(
+            2,
+            "recipe-backing-data",
+            () => CookingSelectionPanelProbe.ThrowOnRecipeRefresh = true,
+            () => CookingSelectionPanelProbe.ThrowOnRecipeRefresh = false,
+            expectedIngredientDataDelta: 1,
+            expectedRecipeDataDelta: 1,
+            expectedIngredientSurfaceDelta: 0,
+            expectedRecipeSurfaceDelta: 0);
+        AssertFailure(
+            3,
+            "ingredient-visible-elements",
+            () => CookingSelectionPanelProbe.ThrowOnIngredientSurfaceRefresh = true,
+            () => CookingSelectionPanelProbe.ThrowOnIngredientSurfaceRefresh = false,
+            expectedIngredientDataDelta: 1,
+            expectedRecipeDataDelta: 1,
+            expectedIngredientSurfaceDelta: 1,
+            expectedRecipeSurfaceDelta: 0);
+        AssertFailure(
+            4,
+            "recipe-visible-elements",
+            () => CookingSelectionPanelProbe.ThrowOnRecipeSurfaceRefresh = true,
+            () => CookingSelectionPanelProbe.ThrowOnRecipeSurfaceRefresh = false,
+            expectedIngredientDataDelta: 1,
+            expectedRecipeDataDelta: 1,
+            expectedIngredientSurfaceDelta: 1,
+            expectedRecipeSurfaceDelta: 1);
+
+        var successSequenceStart = CookingSelectionPanelProbe.RefreshSequence.Count;
+        Publish(5);
+        var successfulTargetGeneration = RuntimeUiPinningService.ReadTargetSet().Generation;
+        RuntimeUiPinningService.Tick();
+        AssertEqual(successfulTargetGeneration, ReadPanelRefreshGeneration("cooking", "applied"),
+            "A later target did not recover after all four one-shot cooking stage failures.");
+        AssertSequenceEqual(
+            new[] { "ingredient-data", "recipe-data", "ingredient-visible", "recipe-visible" },
+            CookingSelectionPanelProbe.RefreshSequence.Skip(successSequenceStart),
+            "A recovered cooking refresh did not execute its four stages exactly once and in order.");
+        AssertEqual(1, CookingSelectionPanelProbe.SelectedSurfaceRefreshCount,
+            "Cooking stage failures or recovery rebuilt the selected-ingredient surface.");
+        AssertEqual(1, CookingSelectionPanelProbe.OutputSurfaceRefreshCount,
+            "Cooking stage failures or recovery rebuilt the output surface.");
+    }
+    finally
+    {
+        CookingSelectionPanelProbe.ThrowOnIngredientRefresh = false;
+        CookingSelectionPanelProbe.ThrowOnRecipeRefresh = false;
+        CookingSelectionPanelProbe.ThrowOnIngredientSurfaceRefresh = false;
+        CookingSelectionPanelProbe.ThrowOnRecipeSurfaceRefresh = false;
+        cookingPanel.OnPanelClose();
     }
 }
 
@@ -1103,8 +1658,12 @@ static void VerifyOrderHighlightRuntimeWiring()
     var panelRefreshSource = pinningSource[panelRefreshStart..panelRefreshEnd];
     AssertContains(
         panelRefreshSource,
-        "TryAcquireTargetRecipeVariantPublicationLease(target, out exactTargetLease)",
-        "Cooking refresh does not acquire the exact target-snapshot publication lease.");
+        "TryAcquireTargetPublicationLease(target, out exactTargetLease)",
+        "Open-panel refresh does not acquire the exact target-snapshot publication lease.");
+    AssertContains(
+        panelRefreshSource,
+        "attempt.SurfaceRefresh.Refresh(attempt.Instance)",
+        "Open-panel refresh does not execute the exact backing-data and logical-group binding.");
     AssertContains(
         controllerSource,
         "RuntimeTargetRecipeVariantService.RetireFailClosed(\"controller disposed\");",
@@ -1140,18 +1699,46 @@ static void VerifyPatchTargets()
         prefix: "OnCookingRefreshStarted",
         postfix: null,
         finalizer: "OnCookingRefreshFinalized");
-    var cookingRefreshMethod = (MethodInfo?)typeof(RuntimeUiPinningService)
-        .GetField("_cookingRefreshMethod", BindingFlags.NonPublic | BindingFlags.Static)!
+    var cookingSurfaceRefresh = (RuntimeUiListSurfaceRefreshBinding?)typeof(RuntimeUiPinningService)
+        .GetField("_cookingSurfaceRefresh", BindingFlags.NonPublic | BindingFlags.Static)!
         .GetValue(null);
-    var expectedCookingRefreshMethod = typeof(CookingSelectionPanelProbe).GetMethod(
+    var expectedIngredientRefreshMethod = typeof(CookingSelectionPanelProbe).GetMethod(
+        nameof(CookingSelectionPanelProbe.UpdateIngField),
+        BindingFlags.Public | BindingFlags.Instance,
+        binder: null,
+        types: Type.EmptyTypes,
+        modifiers: null);
+    var expectedRecipeRefreshMethod = typeof(CookingSelectionPanelProbe).GetMethod(
         nameof(CookingSelectionPanelProbe.UpdateRecipeField),
         BindingFlags.Public | BindingFlags.Instance,
         binder: null,
         types: Type.EmptyTypes,
         modifiers: null);
-    AssertEqual(expectedCookingRefreshMethod, cookingRefreshMethod,
-        "Target publication did not cache the exact zero-argument UpdateRecipeField MethodInfo.");
-    AssertFalse(cookingRefreshMethod?.IsGenericMethod == true,
+    AssertEqual(4, cookingSurfaceRefresh?.Steps.Count ?? -1,
+        "Cooking surface did not bind exactly four refresh stages.");
+    AssertEqual("ingredient-backing-data", cookingSurfaceRefresh?.Steps[0].Stage,
+        "Cooking surface lost the ingredient backing-data stage identity.");
+    AssertEqual(expectedIngredientRefreshMethod, cookingSurfaceRefresh?.Steps[0].RefreshMethod,
+        "Cooking surface did not bind the exact zero-argument UpdateIngField MethodInfo.");
+    AssertEqual<PropertyInfo?>(null, cookingSurfaceRefresh?.Steps[0].ReceiverProperty,
+        "UpdateIngField was incorrectly bound through a logical-group receiver.");
+    AssertEqual("recipe-backing-data", cookingSurfaceRefresh?.Steps[1].Stage,
+        "Cooking surface lost the recipe backing-data stage identity.");
+    AssertEqual(expectedRecipeRefreshMethod, cookingSurfaceRefresh?.Steps[1].RefreshMethod,
+        "Cooking surface did not bind the exact zero-argument UpdateRecipeField MethodInfo.");
+    AssertEqual("ingredient-visible-elements", cookingSurfaceRefresh?.Steps[2].Stage,
+        "Cooking surface lost the ingredient visible-elements stage identity.");
+    AssertEqual("m_StaticIngredientsGroup", cookingSurfaceRefresh?.Steps[2].ReceiverProperty?.Name,
+        "Cooking surface did not bind the exact m_StaticIngredientsGroup property.");
+    AssertEqual(nameof(CookingIngredientLogicalGroupProbe.UpdateElements), cookingSurfaceRefresh?.Steps[2].RefreshMethod.Name,
+        "Cooking ingredient surface did not bind the exact UpdateElements/0 method.");
+    AssertEqual("recipe-visible-elements", cookingSurfaceRefresh?.Steps[3].Stage,
+        "Cooking surface lost the recipe visible-elements stage identity.");
+    AssertEqual("m_StaticRecipeGroup", cookingSurfaceRefresh?.Steps[3].ReceiverProperty?.Name,
+        "Cooking surface did not bind the exact m_StaticRecipeGroup property.");
+    AssertEqual(nameof(CookingRecipeLogicalGroupProbe.UpdateElements), cookingSurfaceRefresh?.Steps[3].RefreshMethod.Name,
+        "Cooking recipe surface did not bind the exact UpdateElements/0 method.");
+    AssertFalse(cookingSurfaceRefresh?.Steps.Any(step => step.RefreshMethod.IsGenericMethod) == true,
         "Target publication cached a generic cooking refresh method.");
     AssertPatch(
         typeof(RunTimePlayerDataProbe),
@@ -1165,6 +1752,23 @@ static void VerifyPatchTargets()
         prefix: "OnBeverageRefreshStarted",
         postfix: null,
         finalizer: "OnBeverageRefreshFinalized");
+    var storageSurfaceRefresh = (RuntimeUiListSurfaceRefreshBinding?)typeof(RuntimeUiPinningService)
+        .GetField("_storageSurfaceRefresh", BindingFlags.NonPublic | BindingFlags.Static)!
+        .GetValue(null);
+    AssertEqual(2, storageSurfaceRefresh?.Steps.Count ?? -1,
+        "Storage surface did not bind exactly two refresh stages.");
+    AssertEqual("beverage-backing-data", storageSurfaceRefresh?.Steps[0].Stage,
+        "Storage surface lost the beverage backing-data stage identity.");
+    AssertEqual(nameof(StoragePanelProbe.UpdateBevField), storageSurfaceRefresh?.Steps[0].RefreshMethod.Name,
+        "Storage surface did not bind the exact UpdateBevField/0 method.");
+    AssertEqual("beverage-visible-elements", storageSurfaceRefresh?.Steps[1].Stage,
+        "Storage surface lost the beverage visible-elements stage identity.");
+    AssertEqual("m_BevsGroup", storageSurfaceRefresh?.Steps[1].ReceiverProperty?.Name,
+        "Storage surface did not bind the exact m_BevsGroup property.");
+    AssertEqual("openType", storageSurfaceRefresh?.OpenTypeProperty?.Name,
+        "Storage surface did not bind the exact openType property.");
+    AssertEqual(nameof(BeverageLogicalGroupProbe.UpdateElements), storageSurfaceRefresh?.Steps[1].RefreshMethod.Name,
+        "Storage surface did not bind the exact UpdateElements/0 method.");
     AssertPatch(
         typeof(CookingSelectionPanelProbe),
         nameof(CookingSelectionPanelProbe.OnPanelOpen),
@@ -1352,7 +1956,7 @@ static void VerifyScopedNativePinnedMatching()
 
     AssertFalse(InvokeCheckPinned(1, 34), "Cooking scope leaked after its finalizer.");
     AssertFalse(InvokeCheckPinned(2, 16), "Beverage scope leaked after its finalizer.");
-    AssertContains(RuntimeUiPinningService.Status, "forcedTotal=recipe:2, ingredients:4, beverage:1", "Scoped prefix diagnostics are incorrect.");
+    AssertContains(RuntimeUiPinningService.Status, "forcedTotal=recipe:3, ingredients:12, beverage:3", "Scoped prefix diagnostics are incorrect.");
 }
 
 static void VerifyNestedScopeFinalizers()
@@ -1726,22 +2330,22 @@ static void VerifyManagedHarmonyReturnPropagation()
         AssertFalse(RunTimePlayerDataProbe.CheckPinned(PlayerSaveFileDefaultPropProbe.Recipes, 34), "The managed Harmony prefix leaked outside a refresh scope.");
         AssertEqual(1, RunTimePlayerDataProbe.NativeCallCount, "The native CheckPinned probe did not run outside a refresh scope.");
 
-        CookingSelectionPanelProbe.RefreshAction = () => RunTimePlayerDataProbe.CheckPinned(PlayerSaveFileDefaultPropProbe.Recipes, 34);
+        CookingSelectionPanelProbe.RecipeRefreshAction = () => RunTimePlayerDataProbe.CheckPinned(PlayerSaveFileDefaultPropProbe.Recipes, 34);
         new CookingSelectionPanelProbe().UpdateAllVisual();
-        AssertTrue(CookingSelectionPanelProbe.LastResult == true, "The managed Harmony wrapper did not propagate the forced recipe result.");
+        AssertTrue(CookingSelectionPanelProbe.LastRecipeResult == true, "The managed Harmony wrapper did not propagate the forced recipe result.");
         AssertEqual(1, RunTimePlayerDataProbe.NativeCallCount, "The managed Harmony wrapper did not skip the target's original method.");
         AssertFalse(RunTimePlayerDataProbe.CheckPinned(PlayerSaveFileDefaultPropProbe.Recipes, 34), "Cooking scope leaked after a normal managed wrapper return.");
         AssertEqual(2, RunTimePlayerDataProbe.NativeCallCount, "The native CheckPinned probe did not resume after a normal wrapper return.");
 
         RunTimePlayerDataProbe.NativeResult = true;
-        CookingSelectionPanelProbe.RefreshAction = () => RunTimePlayerDataProbe.CheckPinned(PlayerSaveFileDefaultPropProbe.Recipes, 99);
+        CookingSelectionPanelProbe.RecipeRefreshAction = () => RunTimePlayerDataProbe.CheckPinned(PlayerSaveFileDefaultPropProbe.Recipes, 99);
         new CookingSelectionPanelProbe().UpdateAllVisual();
-        AssertTrue(CookingSelectionPanelProbe.LastResult == true, "The managed Harmony wrapper changed a native favorite result.");
+        AssertTrue(CookingSelectionPanelProbe.LastRecipeResult == true, "The managed Harmony wrapper changed a native favorite result.");
         AssertEqual(3, RunTimePlayerDataProbe.NativeCallCount, "A non-target native favorite did not execute the original method.");
 
         RunTimePlayerDataProbe.Reset(nativeResult: false);
         var expectedException = new InvalidOperationException("managed wrapper failure");
-        CookingSelectionPanelProbe.RefreshAction = () => throw expectedException;
+        CookingSelectionPanelProbe.RecipeRefreshAction = () => throw expectedException;
         Exception? observedException = null;
         try
         {
@@ -1766,7 +2370,7 @@ static void VerifyManagedHarmonyReturnPropagation()
     }
     finally
     {
-        CookingSelectionPanelProbe.RefreshAction = null;
+        CookingSelectionPanelProbe.RecipeRefreshAction = null;
         StoragePanelProbe.RefreshAction = null;
     }
 }
@@ -2534,6 +3138,32 @@ static long ReadListHighlightCounter(string counterName)
     return value;
 }
 
+static long ReadPanelRefreshCounter(string counterName)
+{
+    var match = Regex.Match(RuntimeUiPinningService.Status, $@"\b{Regex.Escape(counterName)}:(\d+)");
+    if (!match.Success || !long.TryParse(match.Groups[1].Value, out var value))
+    {
+        throw new InvalidOperationException(
+            $"Could not read panel refresh {counterName} from status: {RuntimeUiPinningService.Status}");
+    }
+
+    return value;
+}
+
+static long ReadPanelRefreshGeneration(string panelKind, string generationKind)
+{
+    var match = Regex.Match(
+        RuntimeUiPinningService.Status,
+        $@"panelRefresh=[^;]*\b{Regex.Escape(panelKind)}:open@[^;]*?/{Regex.Escape(generationKind)}:(-?\d+)");
+    if (!match.Success || !long.TryParse(match.Groups[1].Value, out var value))
+    {
+        throw new InvalidOperationException(
+            $"Could not read {panelKind} {generationKind} generation from status: {RuntimeUiPinningService.Status}");
+    }
+
+    return value;
+}
+
 static bool InvokeCheckPinned(int pinnedType, int pinnedId, bool originalResult = false)
 {
     var call = InvokeCheckPinnedPrefix(pinnedType, pinnedId);
@@ -2641,6 +3271,15 @@ static void AssertContains(string actual, string expected, string message)
     if (!actual.Contains(expected, StringComparison.Ordinal))
     {
         throw new InvalidOperationException($"{message} Expected fragment '{expected}', actual '{actual}'.");
+    }
+}
+
+static void AssertSequenceEqual<T>(IEnumerable<T> expected, IEnumerable<T> actual, string message)
+{
+    if (!expected.SequenceEqual(actual))
+    {
+        throw new InvalidOperationException(
+            $"{message} Expected '[{string.Join(",", expected)}]', actual '[{string.Join(",", actual)}]'.");
     }
 }
 

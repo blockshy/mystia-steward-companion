@@ -442,9 +442,57 @@ namespace MystiaStewardCompanion.Save
             RuntimeUiTargetKinds Claims);
     }
 
+    internal sealed class CookingIngredientLogicalGroupProbe
+    {
+        private static long _nextPointer = 2500;
+        private readonly CookingSelectionPanelProbe _owner;
+
+        public CookingIngredientLogicalGroupProbe(CookingSelectionPanelProbe owner)
+        {
+            _owner = owner;
+        }
+
+        public nint m_CachedPtr { get; } = new IntPtr(Interlocked.Increment(ref _nextPointer));
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        public void UpdateElements()
+        {
+            _owner.ApplyIngredientSurfaceRefresh();
+        }
+    }
+
+    internal sealed class CookingRecipeLogicalGroupProbe
+    {
+        private static long _nextPointer = 3000;
+        private readonly CookingSelectionPanelProbe _owner;
+
+        public CookingRecipeLogicalGroupProbe(CookingSelectionPanelProbe owner)
+        {
+            _owner = owner;
+        }
+
+        public nint m_CachedPtr { get; } = new IntPtr(Interlocked.Increment(ref _nextPointer));
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        public void UpdateElements()
+        {
+            _owner.ApplyRecipeSurfaceRefresh();
+        }
+    }
+
     internal sealed class CookingSelectionPanelProbe
     {
         private static long _nextPointer = 1000;
+        private readonly List<int> _ingredientSurfaceSource = new();
+        private readonly List<int> _visibleIngredientIds = new();
+        private readonly List<int> _recipeSurfaceSource = new();
+        private readonly List<int> _visibleRecipeIds = new();
+
+        public CookingSelectionPanelProbe()
+        {
+            m_StaticIngredientsGroup = new CookingIngredientLogicalGroupProbe(this);
+            m_StaticRecipeGroup = new CookingRecipeLogicalGroupProbe(this);
+        }
 
         public static UnityEngine.Color RecipeBoundColor { get; set; } = new(0.8f, 0.8f, 0.8f, 0.5f);
 
@@ -452,46 +500,152 @@ namespace MystiaStewardCompanion.Save
 
         public static UnityEngine.Color IngredientBoundColor { get; set; } = new(0.4f, 0.6f, 0.8f, 0.35f);
 
-        public static Func<bool>? RefreshAction { get; set; }
+        public static Func<bool>? IngredientRefreshAction { get; set; }
+
+        public static Func<bool>? RecipeRefreshAction { get; set; }
 
         public static Action? OpenAction { get; set; }
 
-        public static bool? LastResult { get; private set; }
+        public static bool? LastIngredientResult { get; private set; }
 
-        public static bool ThrowOnRefresh { get; set; }
+        public static bool? LastRecipeResult { get; private set; }
 
-        public static int RefreshCount { get; private set; }
+        public static bool ThrowOnIngredientRefresh { get; set; }
+
+        public static bool ThrowOnRecipeRefresh { get; set; }
+
+        public static bool ThrowOnIngredientSurfaceRefresh { get; set; }
+
+        public static bool ThrowOnRecipeSurfaceRefresh { get; set; }
+
+        public static int IngredientRefreshCount { get; private set; }
+
+        public static int RecipeRefreshCount { get; private set; }
 
         public static int FullVisualRefreshCount { get; private set; }
 
-        public static List<int> RefreshThreadIds { get; } = new();
+        public static int SelectedSurfaceRefreshCount { get; private set; }
+
+        public static int OutputSurfaceRefreshCount { get; private set; }
+
+        public static int IngredientSurfaceRefreshCount { get; private set; }
+
+        public static int RecipeSurfaceRefreshCount { get; private set; }
+
+        public static List<int> IngredientRefreshThreadIds { get; } = new();
+
+        public static List<int> RecipeRefreshThreadIds { get; } = new();
+
+        public static List<int> IngredientSurfaceRefreshThreadIds { get; } = new();
+
+        public static List<int> RecipeSurfaceRefreshThreadIds { get; } = new();
+
+        public static Action? IngredientSurfaceRefreshAction { get; set; }
+
+        public static Action? RecipeSurfaceRefreshAction { get; set; }
+
+        public static List<string> RefreshSequence { get; } = new();
 
         public nint m_CachedPtr { get; private set; } = new IntPtr(Interlocked.Increment(ref _nextPointer));
 
+        public CookingIngredientLogicalGroupProbe m_StaticIngredientsGroup { get; }
+
+        public CookingRecipeLogicalGroupProbe m_StaticRecipeGroup { get; }
+
+        public IReadOnlyList<int> VisibleIngredientIds => _visibleIngredientIds;
+
+        public IReadOnlyList<int> VisibleRecipeIds => _visibleRecipeIds;
+
         public static void ResetRefreshProbe()
         {
-            ThrowOnRefresh = false;
-            RefreshCount = 0;
+            ThrowOnIngredientRefresh = false;
+            ThrowOnRecipeRefresh = false;
+            ThrowOnIngredientSurfaceRefresh = false;
+            ThrowOnRecipeSurfaceRefresh = false;
+            IngredientRefreshCount = 0;
+            RecipeRefreshCount = 0;
             FullVisualRefreshCount = 0;
-            RefreshThreadIds.Clear();
-            RefreshAction = null;
-            LastResult = null;
+            SelectedSurfaceRefreshCount = 0;
+            OutputSurfaceRefreshCount = 0;
+            IngredientSurfaceRefreshCount = 0;
+            RecipeSurfaceRefreshCount = 0;
+            IngredientRefreshThreadIds.Clear();
+            RecipeRefreshThreadIds.Clear();
+            IngredientSurfaceRefreshThreadIds.Clear();
+            RecipeSurfaceRefreshThreadIds.Clear();
+            IngredientRefreshAction = null;
+            RecipeRefreshAction = null;
+            IngredientSurfaceRefreshAction = null;
+            RecipeSurfaceRefreshAction = null;
+            RefreshSequence.Clear();
+            LastIngredientResult = null;
+            LastRecipeResult = null;
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
         public void UpdateAllVisual()
         {
             FullVisualRefreshCount++;
+            UpdateIngField();
             UpdateRecipeField();
+            SelectedSurfaceRefreshCount++;
+            OutputSurfaceRefreshCount++;
+            m_StaticIngredientsGroup.UpdateElements();
+            m_StaticRecipeGroup.UpdateElements();
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        public void UpdateIngField()
+        {
+            IngredientRefreshCount++;
+            IngredientRefreshThreadIds.Add(Environment.CurrentManagedThreadId);
+            RefreshSequence.Add("ingredient-data");
+            if (ThrowOnIngredientRefresh) throw new InvalidOperationException("ingredient data refresh failed");
+            LastIngredientResult = IngredientRefreshAction?.Invoke();
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
         public void UpdateRecipeField()
         {
-            RefreshCount++;
-            RefreshThreadIds.Add(Environment.CurrentManagedThreadId);
-            if (ThrowOnRefresh) throw new InvalidOperationException("cooking refresh failed");
-            LastResult = RefreshAction?.Invoke();
+            RecipeRefreshCount++;
+            RecipeRefreshThreadIds.Add(Environment.CurrentManagedThreadId);
+            RefreshSequence.Add("recipe-data");
+            if (ThrowOnRecipeRefresh) throw new InvalidOperationException("recipe data refresh failed");
+            LastRecipeResult = RecipeRefreshAction?.Invoke();
+        }
+
+        public void SetIngredientSurfaceSource(params int[] ingredientIds)
+        {
+            _ingredientSurfaceSource.Clear();
+            _ingredientSurfaceSource.AddRange(ingredientIds);
+        }
+
+        public void SetRecipeSurfaceSource(params int[] recipeIds)
+        {
+            _recipeSurfaceSource.Clear();
+            _recipeSurfaceSource.AddRange(recipeIds);
+        }
+
+        internal void ApplyIngredientSurfaceRefresh()
+        {
+            IngredientSurfaceRefreshCount++;
+            IngredientSurfaceRefreshThreadIds.Add(Environment.CurrentManagedThreadId);
+            RefreshSequence.Add("ingredient-visible");
+            IngredientSurfaceRefreshAction?.Invoke();
+            if (ThrowOnIngredientSurfaceRefresh) throw new InvalidOperationException("ingredient surface refresh failed");
+            _visibleIngredientIds.Clear();
+            _visibleIngredientIds.AddRange(_ingredientSurfaceSource);
+        }
+
+        internal void ApplyRecipeSurfaceRefresh()
+        {
+            RecipeSurfaceRefreshCount++;
+            RecipeSurfaceRefreshThreadIds.Add(Environment.CurrentManagedThreadId);
+            RefreshSequence.Add("recipe-visible");
+            RecipeSurfaceRefreshAction?.Invoke();
+            if (ThrowOnRecipeSurfaceRefresh) throw new InvalidOperationException("recipe surface refresh failed");
+            _visibleRecipeIds.Clear();
+            _visibleRecipeIds.AddRange(_recipeSurfaceSource);
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
@@ -525,9 +679,36 @@ namespace MystiaStewardCompanion.Save
         }
     }
 
+    internal sealed class BeverageLogicalGroupProbe
+    {
+        private static long _nextPointer = 4000;
+        private readonly StoragePanelProbe _owner;
+
+        public BeverageLogicalGroupProbe(StoragePanelProbe owner)
+        {
+            _owner = owner;
+        }
+
+        public nint m_CachedPtr { get; } = new IntPtr(Interlocked.Increment(ref _nextPointer));
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        public void UpdateElements()
+        {
+            _owner.ApplyBeverageSurfaceRefresh();
+        }
+    }
+
     internal sealed class StoragePanelProbe
     {
         private static long _nextPointer = 2000;
+        private readonly List<int> _beverageSurfaceSource = new();
+        private readonly List<int> _visibleBeverageIds = new();
+
+        public StoragePanelProbe(SellableTypeProbe panelType = SellableTypeProbe.Beverage)
+        {
+            openType = panelType;
+            m_BevsGroup = new BeverageLogicalGroupProbe(this);
+        }
 
         public static UnityEngine.Color BoundColor { get; set; } = new(0.35f, 0.55f, 0.75f, 0.6f);
 
@@ -539,18 +720,36 @@ namespace MystiaStewardCompanion.Save
 
         public static bool ThrowOnRefresh { get; set; }
 
+        public static bool ThrowOnSurfaceRefresh { get; set; }
+
         public static int RefreshCount { get; private set; }
+
+        public static int SurfaceRefreshCount { get; private set; }
 
         public static List<int> RefreshThreadIds { get; } = new();
 
+        public static List<int> SurfaceRefreshThreadIds { get; } = new();
+
+        public static Action? SurfaceRefreshAction { get; set; }
+
         public nint m_CachedPtr { get; private set; } = new IntPtr(Interlocked.Increment(ref _nextPointer));
+
+        public BeverageLogicalGroupProbe m_BevsGroup { get; }
+
+        public SellableTypeProbe openType { get; }
+
+        public IReadOnlyList<int> VisibleBeverageIds => _visibleBeverageIds;
 
         public static void ResetRefreshProbe()
         {
             ThrowOnRefresh = false;
+            ThrowOnSurfaceRefresh = false;
             RefreshCount = 0;
+            SurfaceRefreshCount = 0;
             RefreshThreadIds.Clear();
+            SurfaceRefreshThreadIds.Clear();
             RefreshAction = null;
+            SurfaceRefreshAction = null;
             LastResult = null;
         }
 
@@ -566,8 +765,28 @@ namespace MystiaStewardCompanion.Save
         [MethodImpl(MethodImplOptions.NoInlining)]
         public void OnPanelOpen()
         {
-            UpdateBevField();
+            if (openType == SellableTypeProbe.Beverage)
+            {
+                UpdateBevField();
+                m_BevsGroup.UpdateElements();
+            }
             OpenAction?.Invoke();
+        }
+
+        public void SetBeverageSurfaceSource(params int[] beverageIds)
+        {
+            _beverageSurfaceSource.Clear();
+            _beverageSurfaceSource.AddRange(beverageIds);
+        }
+
+        internal void ApplyBeverageSurfaceRefresh()
+        {
+            SurfaceRefreshCount++;
+            SurfaceRefreshThreadIds.Add(Environment.CurrentManagedThreadId);
+            SurfaceRefreshAction?.Invoke();
+            if (ThrowOnSurfaceRefresh) throw new InvalidOperationException("storage surface refresh failed");
+            _visibleBeverageIds.Clear();
+            _visibleBeverageIds.AddRange(_beverageSurfaceSource);
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
@@ -610,8 +829,12 @@ namespace MystiaStewardCompanion.Save
 
     internal enum PlayerSaveFileDefaultPropProbe
     {
+        IngredientsSeafood = 0,
         Recipes = 1,
         Beverages = 2,
+        IngredientsMeat = 4,
+        IngredientsVegetable = 5,
+        IngredientsOther = 6,
     }
 
     internal sealed class RecipeProbe

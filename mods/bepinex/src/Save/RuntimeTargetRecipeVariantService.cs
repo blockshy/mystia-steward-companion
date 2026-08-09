@@ -1503,7 +1503,7 @@ internal static class RuntimeTargetRecipeVariantService
             }
         }
 
-        if (!RuntimeUiPinningService.TryAcquireTargetRecipeVariantPublicationLease(
+        if (!RuntimeUiPinningService.TryAcquireTargetPublicationLease(
                 intent.TargetSet,
                 out var publicationLease))
         {
@@ -3935,7 +3935,7 @@ internal static class RuntimeTargetRecipeVariantService
             }
         }
 
-        if (!RuntimeUiPinningService.TryAcquireTargetRecipeVariantPublicationLease(
+        if (!RuntimeUiPinningService.TryAcquireTargetPublicationLease(
                 expectedTargetSet!,
                 out var publicationLease))
         {
@@ -4421,7 +4421,7 @@ internal static class RuntimeTargetRecipeVariantService
     }
 
     private static void DisposePublicationLeaseNoThrow(
-        TargetRecipeVariantPublicationLease? publicationLease)
+        RuntimeUiTargetPublicationLease? publicationLease)
     {
         if (publicationLease == null) return;
         try { publicationLease.Dispose(); } catch { }
@@ -6226,7 +6226,7 @@ internal static class RuntimeTargetRecipeVariantService
                     : closureError);
         }
 
-        if (!RuntimeUiPinningService.TryAcquireTargetRecipeVariantPublicationLease(
+        if (!RuntimeUiPinningService.TryAcquireTargetPublicationLease(
                 expectedBusinessGeneration,
                 out var publicationLease))
         {
@@ -7993,7 +7993,7 @@ internal static class RuntimeTargetRecipeVariantService
         public string SwitchAttemptIdentity { get; private set; } = "";
         internal object? SwitchAttemptToken { get; private set; }
         public long SwitchBusinessGeneration { get; private set; }
-        public TargetRecipeVariantPublicationLease? SwitchPublicationLease { get; set; }
+        public RuntimeUiTargetPublicationLease? SwitchPublicationLease { get; set; }
         public SubmitKind Kind { get; private set; }
 
         public void AttachRecipe(
@@ -8362,7 +8362,7 @@ internal static class RuntimeTargetRecipeVariantService
 
     internal sealed class SubmitHookState
     {
-        public TargetRecipeVariantPublicationLease? PublicationLease { get; set; }
+        public RuntimeUiTargetPublicationLease? PublicationLease { get; set; }
         internal ActiveSubmitContext? Probe { get; set; }
         public nint PanelPointer { get; set; }
         public long PanelEpoch { get; set; }
@@ -8383,7 +8383,7 @@ internal static class RuntimeTargetRecipeVariantService
 
     internal sealed class OutputClosureHookState
     {
-        public TargetRecipeVariantPublicationLease? PublicationLease { get; set; }
+        public RuntimeUiTargetPublicationLease? PublicationLease { get; set; }
         internal ActiveSubmitContext? ActiveProbe { get; set; }
         internal OutputClosureBinding? Binding { get; set; }
         internal ActiveOutputClosureContext? TerminalContext { get; set; }

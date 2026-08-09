@@ -4,10 +4,16 @@ import { readFileSync } from 'node:fs';
 const APP_URL = process.env.MYSTIA_APP_URL || 'http://127.0.0.1:4173/';
 const API_URL = process.env.MYSTIA_API_URL || 'http://127.0.0.1:32145';
 const API_TOKEN = process.env.MYSTIA_API_TOKEN || 'mock-token';
+const CHROMIUM_EXECUTABLE_PATH = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH?.trim();
 const STORAGE_PREFIX = 'mystia-steward-companion';
 const TARGET_PATH = '/ui-pinning/targets';
 
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({
+  headless: true,
+  ...(CHROMIUM_EXECUTABLE_PATH
+    ? { executablePath: CHROMIUM_EXECUTABLE_PATH }
+    : {}),
+});
 const page = await browser.newPage({ viewport: { width: 900, height: 760 } });
 const targetRequests = [];
 const completedTargetRequests = [];
@@ -72,7 +78,8 @@ assert(
     && helpContentSource.includes('无加料目标使用基础料理，并按所属订单颜色高亮；含加料目标只高亮自己的加料选项')
     && helpContentSource.includes('加料选项只在目标订单、制作页面、配方和材料库存能够精确对应时执行')
     && helpContentSource.includes('信息不完整时会停止本次操作，不会改用基础料理或其他目标方案')
-    && helpContentSource.includes('制作页刷新只更新料理行的 Mod 绑定，不会清理游戏原生料理回调或禁用按钮')
+    && helpContentSource.includes('目标变化触发的制作页刷新会依次重建食材分类、料理数据、当前可见食材行和料理行，不会重建已选材料区或出锅区')
+    && helpContentSource.includes('旧食材置顶、高亮和旧加料行都会从已打开页面移除')
     && helpContentSource.includes('实际提交新料理且游戏正常返回后，只有退旧材料和装入新配方都已确认')
     && helpContentSource.includes('手动关闭正常返回时仍由游戏退料')
     && helpContentSource.includes('Target recipe variant switch-armed')
