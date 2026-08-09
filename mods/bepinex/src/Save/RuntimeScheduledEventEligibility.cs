@@ -25,6 +25,8 @@ internal sealed record RuntimeScheduledEventEligibilityDiagnostic(
 
 internal static class RuntimeScheduledEventEligibility
 {
+    public const int OnEnterDaySceneMapTrigger = 0;
+    public const int OnEnterDaySceneTrigger = 1;
     public const int OnTalkWithCharacterTrigger = 3;
     public const int KizunaCheckPointTrigger = 5;
 
@@ -38,6 +40,20 @@ internal static class RuntimeScheduledEventEligibility
         {
             RequireNoEvidence(kizunaEvidence, "finished-event");
             return Result("excluded", "event-finished");
+        }
+
+        if (triggerType == OnEnterDaySceneMapTrigger)
+        {
+            RequireNoEvidence(kizunaEvidence, "on-enter-day-scene-map");
+            return string.IsNullOrEmpty(triggerId)
+                ? Result("ineligible", "trigger-id-missing")
+                : Result("eligible", "on-enter-day-scene-map");
+        }
+
+        if (triggerType == OnEnterDaySceneTrigger)
+        {
+            RequireNoEvidence(kizunaEvidence, "on-enter-day-scene");
+            return Result("eligible", "on-enter-day-scene");
         }
 
         if (triggerType == OnTalkWithCharacterTrigger)

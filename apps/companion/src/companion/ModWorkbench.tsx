@@ -172,12 +172,16 @@ import {
   persistFocusBeverageLimit,
   persistFocusCompact,
   persistFocusRecipeLimit,
+  persistMissionListModuleEnabled,
+  persistRareGuestInvitationModuleEnabled,
   persistTab,
+  readStoredAutomationCancellation,
+  readStoredCustomRecipeGroupMode,
   readStoredFocusBeverageLimit,
   readStoredFocusCompact,
   readStoredFocusRecipeLimit,
-  readStoredCustomRecipeGroupMode,
-  readStoredAutomationCancellation,
+  readStoredMissionListModuleEnabled,
+  readStoredRareGuestInvitationModuleEnabled,
   readStoredTab,
 } from '@/companion/storage';
 import type {
@@ -1527,6 +1531,12 @@ export function ModWorkbench() {
   const [tab, setTab] = useState<ModTab>(() => readStoredTab());
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('window');
   const [missionPanelView, setMissionPanelView] = useState<MissionPanelView>('tasks');
+  const [missionListModuleEnabled, setMissionListModuleEnabled] = useState(
+    readStoredMissionListModuleEnabled,
+  );
+  const [rareGuestInvitationModuleEnabled, setRareGuestInvitationModuleEnabled] = useState(
+    readStoredRareGuestInvitationModuleEnabled,
+  );
   const [serviceFocusMode, setServiceFocusMode] = useState(false);
   const [serviceFocusCompact, setServiceFocusCompact] = useState(readStoredFocusCompact);
   const [serviceFocusRecipeLimit, setServiceFocusRecipeLimit] = useState(readStoredFocusRecipeLimit);
@@ -1597,13 +1607,15 @@ export function ModWorkbench() {
     setCustomRecipeGroupMode(mode);
     persistCustomRecipeGroupMode(mode);
   }, []);
+  const missionListVisible = tab === 'missions' && missionPanelView === 'tasks';
+  const rareGuestInvitationVisible = tab === 'missions' && missionPanelView === 'invitations';
   const {
     trackedMissions,
     trackedMissionsError,
     trackedMissionsLoading,
     refreshTrackedMissions,
   } = useTrackedMissions({
-    active: tab === 'missions' && missionPanelView === 'tasks',
+    active: missionListModuleEnabled && missionListVisible,
     apiToken,
     connected: companionConnected,
     connectionRevision,
@@ -1615,12 +1627,10 @@ export function ModWorkbench() {
     availableMissionsLoading,
     refreshAvailableMissions,
   } = useAvailableMissions({
-    active: tab === 'missions' && missionPanelView === 'tasks',
+    active: missionListModuleEnabled && missionListVisible,
     apiToken,
     connected: companionConnected,
     connectionRevision,
-    daySceneGeneration: snapshot?.runtimeDaySceneGeneration ?? 0,
-    daySceneReady: snapshot?.runtimeDaySceneReady ?? false,
     missionGeneration: snapshot?.missionGeneration ?? 0,
     normalizedEndpoint,
   });
@@ -1633,18 +1643,29 @@ export function ModWorkbench() {
     rareGuestInvitationError,
     rareGuestInvitationBusyKey,
     rareGuestInvitationContextReady,
+    rareGuestInvitationWriteBusy,
     loadRareGuestInvitations,
     inviteAllRareGuests,
     inviteRareGuest,
   } = useRareGuestInvitations({
-    active: tab === 'missions' && missionPanelView === 'invitations',
     apiToken,
     connected: companionConnected,
     connectionRevision,
+    enabled: rareGuestInvitationModuleEnabled,
     normalizedEndpoint,
     refresh,
     snapshot,
+    visible: rareGuestInvitationVisible,
   });
+  const updateMissionListModuleEnabled = useCallback((enabled: boolean) => {
+    setMissionListModuleEnabled(enabled);
+    persistMissionListModuleEnabled(enabled);
+  }, []);
+  const updateRareGuestInvitationModuleEnabled = useCallback((enabled: boolean) => {
+    if (!enabled && rareGuestInvitationWriteBusy) return;
+    setRareGuestInvitationModuleEnabled(enabled);
+    persistRareGuestInvitationModuleEnabled(enabled);
+  }, [rareGuestInvitationWriteBusy]);
   const [manualPlace, setManualPlace] = useState<PlaceName | null>(null);
   const [rareCustomerId, setRareCustomerId] = useState<number | null>(null);
   const [requiredFoodTag, setRequiredFoodTag] = useState('');
@@ -5430,11 +5451,8 @@ export function ModWorkbench() {
             <ModMissionsPanel
               view={missionPanelView}
               connected={companionConnected}
-              availableContextReady={
-                (snapshot?.runtimeDaySceneReady ?? false)
-                && (snapshot?.runtimeDaySceneGeneration ?? 0) > 0
-                && (snapshot?.missionGeneration ?? 0) > 0
-              }
+              missionListModuleEnabled={missionListModuleEnabled}
+              availableRuntimeReady={(snapshot?.missionGeneration ?? 0) > 0}
               availableMissions={availableMissions}
               availableMissionsError={availableMissionsError}
               availableMissionsLoading={availableMissionsLoading}
@@ -5443,6 +5461,8 @@ export function ModWorkbench() {
               trackedMissionsLoading={trackedMissionsLoading}
               runtimeLoaded={snapshot?.runtimeLoaded ?? false}
               runtimeDaySceneReady={snapshot?.runtimeDaySceneReady ?? false}
+              rareGuestInvitationModuleEnabled={rareGuestInvitationModuleEnabled}
+              rareGuestInvitationModuleToggleDisabled={rareGuestInvitationWriteBusy}
               invitationContextReady={rareGuestInvitationContextReady}
               activeDayMapName={snapshot?.activeDayMapName ?? ''}
               activeDayMapLabel={snapshot?.activeDayMapLabel ?? ''}
@@ -5453,6 +5473,7 @@ export function ModWorkbench() {
               inviteAllError={rareGuestInvitationError}
               showDebugDetails={companionPreferences.showDebugDetails}
               onViewChange={setMissionPanelView}
+              onMissionListModuleEnabledChange={updateMissionListModuleEnabled}
               onRefreshMissions={() => {
                 refreshAvailableMissions();
                 refreshTrackedMissions();
@@ -5463,6 +5484,7 @@ export function ModWorkbench() {
               onInviteLevelsChange={(levels) => {
                 setRareGuestInvitationLevels(normalizeRareGuestInvitationLevels(levels));
               }}
+              onRareGuestInvitationModuleEnabledChange={updateRareGuestInvitationModuleEnabled}
               onRefreshRareGuestInvitations={loadRareGuestInvitations}
               onInviteAllRareGuests={inviteAllRareGuests}
               onInviteRareGuest={inviteRareGuest}

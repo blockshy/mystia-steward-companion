@@ -16,8 +16,6 @@ interface UseAvailableMissionsOptions {
   apiToken: string;
   connected: boolean;
   connectionRevision: number;
-  daySceneGeneration: number;
-  daySceneReady: boolean;
   missionGeneration: number;
   normalizedEndpoint: string;
 }
@@ -27,8 +25,6 @@ export function useAvailableMissions({
   apiToken,
   connected,
   connectionRevision,
-  daySceneGeneration,
-  daySceneReady,
   missionGeneration,
   normalizedEndpoint,
 }: UseAvailableMissionsOptions) {
@@ -49,14 +45,11 @@ export function useAvailableMissions({
     () => active
       && connected
       && apiToken
-      && daySceneReady
-      && daySceneGeneration > 0
       && missionGeneration > 0
       ? JSON.stringify([
         connectionRevision,
         normalizedEndpoint,
         apiToken,
-        daySceneGeneration,
         missionGeneration,
       ])
       : null,
@@ -65,8 +58,6 @@ export function useAvailableMissions({
       apiToken,
       connected,
       connectionRevision,
-      daySceneGeneration,
-      daySceneReady,
       missionGeneration,
       normalizedEndpoint,
     ],
@@ -193,16 +184,17 @@ export function useAvailableMissions({
       else clearRefreshTimer();
       return;
     }
-    if (response.daySceneGeneration !== daySceneGeneration) {
+    if (response.missionGeneration !== missionGeneration) {
       clearResult();
-      setError('可接取任务响应与当前日间场景代际不一致，已拒绝旧结果。');
+      setError('可接取任务响应与当前任务代际不一致，已拒绝旧结果。');
       setLoading(false);
       clearRefreshTimer();
       return;
     }
-    if (response.missionGeneration !== missionGeneration) {
+    if (previousResult
+        && response.sourceRevision < previousResult.sourceRevision) {
       clearResult();
-      setError('可接取任务响应与当前任务代际不一致，已拒绝旧结果。');
+      setError('可接取任务响应的来源修订早于当前结果，已拒绝迟到数据。');
       setLoading(false);
       clearRefreshTimer();
       return;
@@ -219,7 +211,6 @@ export function useAvailableMissions({
     cancelRequest,
     clearRefreshTimer,
     clearResult,
-    daySceneGeneration,
     missionGeneration,
     normalizedEndpoint,
     scheduleRead,

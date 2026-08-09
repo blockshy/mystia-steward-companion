@@ -876,7 +876,7 @@ internal sealed class LocalApiServer : IDisposable
             var current = _getAvailableMissionSnapshot();
             snapshot = RuntimeAvailableMissionSnapshot.Unavailable(
                 current.MissionGeneration,
-                current.DaySceneGeneration,
+                current.SourceRevision,
                 RuntimeAvailableMissionSnapshot.MissionDataIncompleteStatus,
                 $"available-mission-command-failed:{ex.GetType().Name}:{ex.GetBaseException().Message}");
         }
@@ -1474,6 +1474,11 @@ internal sealed class LocalApiServer : IDisposable
                     archive,
                     "snapshot/runtime-available-missions.json",
                     ToJson(_getAvailableMissionSnapshot()),
+                    added);
+                AddTextEntry(
+                    archive,
+                    "snapshot/runtime-available-mission-sources.json",
+                    ToJson(RuntimeAvailableMissionSourceCapture.Snapshot()),
                     added);
                 AddTextEntry(
                     archive,

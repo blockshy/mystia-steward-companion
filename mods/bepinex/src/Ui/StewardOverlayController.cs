@@ -439,11 +439,6 @@ internal sealed class StewardOverlayController
             _pendingAvailableMissionReads,
             _availableMissionReadLock,
             new OperationCanceledException("Scene changed before the available-mission read started."));
-        _availableMissionState.SetUnavailable(
-            RuntimeMissionDiagnosticCapture.Snapshot().Generation,
-            RuntimeSceneReadinessCapture.DaySceneGeneration,
-            RuntimeAvailableMissionSnapshot.WaitingForLoadStatus,
-            "scene-changed");
         if (IsNonGameplayScene(sceneName) || IsNightBusinessScene(sceneName))
         {
             RuntimeSceneReadinessCapture.ClearForSceneChange(sceneName);
@@ -493,16 +488,6 @@ internal sealed class StewardOverlayController
         if (version == _lastRuntimeSceneReadinessVersion) return;
 
         _lastRuntimeSceneReadinessVersion = version;
-        CancelPendingMainThreadCommands(
-            _pendingAvailableMissionReads,
-            _availableMissionReadLock,
-            new OperationCanceledException(
-                "Day-scene readiness changed before the available-mission read started."));
-        _availableMissionState.SetUnavailable(
-            RuntimeMissionDiagnosticCapture.Snapshot().Generation,
-            RuntimeSceneReadinessCapture.DaySceneGeneration,
-            RuntimeAvailableMissionSnapshot.WaitingForLoadStatus,
-            "day-scene-readiness-changed");
         _nextAutoRefreshAt = 0f;
         ResetRuntimeRetryDelays();
         _lastPublishedRuntimeDataSignature = "";
@@ -2398,12 +2383,12 @@ internal sealed class StewardOverlayController
     private RuntimeAvailableMissionSnapshot CaptureAvailableMissions()
     {
         var missionBefore = RuntimeMissionDiagnosticCapture.Snapshot();
-        var dayGeneration = RuntimeSceneReadinessCapture.DaySceneGeneration;
+        var sourceBefore = RuntimeAvailableMissionSourceCapture.Snapshot();
         if (Environment.CurrentManagedThreadId != _mainThreadId)
         {
             return PublishAvailableMissionUnavailable(
                 missionBefore.Generation,
-                dayGeneration,
+                sourceBefore.SourceRevision,
                 RuntimeAvailableMissionSnapshot.MissionDataIncompleteStatus,
                 "available-mission-owner-thread-mismatch");
         }
@@ -2411,7 +2396,7 @@ internal sealed class StewardOverlayController
         {
             return PublishAvailableMissionUnavailable(
                 missionBefore.Generation,
-                dayGeneration,
+                sourceBefore.SourceRevision,
                 RuntimeAvailableMissionSnapshot.NotAttachedStatus,
                 readerFailure);
         }
@@ -2431,7 +2416,7 @@ internal sealed class StewardOverlayController
             };
             return PublishAvailableMissionUnavailable(
                 missionBefore.Generation,
-                dayGeneration,
+                sourceBefore.SourceRevision,
                 status,
                 $"mission-runtime-not-ready:{missionBefore.Phase}:{missionBefore.LastError}");
         }
@@ -2439,18 +2424,28 @@ internal sealed class StewardOverlayController
         {
             return PublishAvailableMissionUnavailable(
                 missionBefore.Generation,
-                dayGeneration,
+                sourceBefore.SourceRevision,
                 RuntimeAvailableMissionSnapshot.MissionDataIncompleteStatus,
                 "mission-runtime-owner-thread-mismatch");
         }
-        if (dayGeneration < 1
-            || !RuntimeSceneReadinessCapture.CanReadDaySceneRuntime())
+        if (!sourceBefore.HooksAttached)
         {
             return PublishAvailableMissionUnavailable(
                 missionBefore.Generation,
-                dayGeneration,
-                RuntimeAvailableMissionSnapshot.WaitingForLoadStatus,
-                "day-scene-runtime-not-ready");
+                sourceBefore.SourceRevision,
+                RuntimeAvailableMissionSnapshot.NotAttachedStatus,
+                $"available-mission-source-hooks-not-attached:{sourceBefore.HookStatus}");
+        }
+        if (!sourceBefore.RuntimeAvailable
+            || sourceBefore.MissionGeneration != missionBefore.Generation
+            || sourceBefore.OwnerThreadId != _mainThreadId
+            || sourceBefore.SourceRevision < 1)
+        {
+            return PublishAvailableMissionUnavailable(
+                missionBefore.Generation,
+                sourceBefore.SourceRevision,
+                RuntimeAvailableMissionSnapshot.MissionDataIncompleteStatus,
+                $"available-mission-source-runtime-not-ready:{sourceBefore.LastError}");
         }
         if (!RuntimeMappedGuestCatalog.TryGetLoadedSnapshot(
                 out var mappedGuestSnapshot)
@@ -2458,37 +2453,51 @@ internal sealed class StewardOverlayController
         {
             return PublishAvailableMissionUnavailable(
                 missionBefore.Generation,
-                dayGeneration,
+                sourceBefore.SourceRevision,
                 RuntimeAvailableMissionSnapshot.WaitingForLoadStatus,
                 "mapped-guest-runtime-not-ready");
         }
 
         try
         {
-            var source = RuntimeScheduledMissionSourceReader.ReadFresh(
+            var source = RuntimeScheduledMissionSourceReader.ReadAvailableFresh(
                 missionBefore,
-                dayGeneration,
-                mappedGuestSnapshot);
+                mappedGuestSnapshot,
+                sourceBefore);
             IReadOnlyDictionary<string, RuntimeMissionPresentation> presentations;
-            try
+            var presentationDayGeneration =
+                RuntimeSceneReadinessCapture.DaySceneGeneration;
+            var readPresentations = presentationDayGeneration > 0
+                && RuntimeSceneReadinessCapture.CanReadDaySceneRuntime();
+            if (readPresentations)
             {
-                presentations = RuntimeMissionPresentationReader.ReadMany(
-                    source.MissionReferences
-                        .Where(reference => reference.HasReceiver)
-                        .Select(reference => reference.Receiver)
-                        .Distinct(StringComparer.Ordinal)
-                        .ToArray(),
-                    mappedGuestSnapshot,
-                    missionBefore.Generation,
-                    dayGeneration);
+                try
+                {
+                    presentations = RuntimeMissionPresentationReader.ReadMany(
+                        source.MissionReferences
+                            .Where(reference => reference.HasReceiver)
+                            .Select(reference => reference.Receiver)
+                            .Distinct(StringComparer.Ordinal)
+                            .ToArray(),
+                        mappedGuestSnapshot,
+                        missionBefore.Generation,
+                        presentationDayGeneration);
+                }
+                catch
+                {
+                    presentations =
+                        new Dictionary<string, RuntimeMissionPresentation>(
+                            StringComparer.Ordinal);
+                }
             }
-            catch
+            else
             {
                 presentations =
                     new Dictionary<string, RuntimeMissionPresentation>(
                         StringComparer.Ordinal);
             }
             var missionAfter = RuntimeMissionDiagnosticCapture.Snapshot();
+            var sourceAfter = RuntimeAvailableMissionSourceCapture.Snapshot();
             if (Environment.CurrentManagedThreadId != _mainThreadId
                 || missionAfter.Generation != missionBefore.Generation
                 || missionAfter.ChangeVersion != missionBefore.ChangeVersion
@@ -2496,8 +2505,11 @@ internal sealed class StewardOverlayController
                 || missionAfter.Phase != RuntimeMissionDiagnosticPhase.Ready
                 || !missionAfter.RuntimeAvailable
                 || source.SourceMissionChangeVersion != missionBefore.ChangeVersion
-                || RuntimeSceneReadinessCapture.DaySceneGeneration != dayGeneration
-                || !RuntimeSceneReadinessCapture.CanReadDaySceneRuntime()
+                || !sourceAfter.HooksAttached
+                || !sourceAfter.RuntimeAvailable
+                || sourceAfter.MissionGeneration != sourceBefore.MissionGeneration
+                || sourceAfter.SourceRevision != sourceBefore.SourceRevision
+                || sourceAfter.OwnerThreadId != sourceBefore.OwnerThreadId
                 || !RuntimeMappedGuestCatalog.TryGetLoadedSnapshot(
                     out var mappedGuestSnapshotAfter)
                 || !ReferenceEquals(
@@ -2506,9 +2518,19 @@ internal sealed class StewardOverlayController
             {
                 return PublishAvailableMissionUnavailable(
                     missionBefore.Generation,
-                    dayGeneration,
+                    sourceAfter.SourceRevision,
                     RuntimeAvailableMissionSnapshot.MissionDataIncompleteStatus,
                     "runtime-identity-changed-during-available-mission-read");
+            }
+
+            if (readPresentations
+                && (RuntimeSceneReadinessCapture.DaySceneGeneration
+                        != presentationDayGeneration
+                    || !RuntimeSceneReadinessCapture.CanReadDaySceneRuntime()))
+            {
+                presentations =
+                    new Dictionary<string, RuntimeMissionPresentation>(
+                        StringComparer.Ordinal);
             }
 
             var candidates = source.Complete
@@ -2518,7 +2540,7 @@ internal sealed class StewardOverlayController
                 new RuntimeAvailableMissionCaptureInput(
                     Complete: source.Complete,
                     MissionGeneration: missionBefore.Generation,
-                    DaySceneGeneration: dayGeneration,
+                    SourceRevision: sourceBefore.SourceRevision,
                     SourceMissionChangeVersion: source.SourceMissionChangeVersion,
                     FinishedEvents: source.FinishedEvents,
                     FinishedMissions: source.FinishedMissions,
@@ -2531,7 +2553,7 @@ internal sealed class StewardOverlayController
         {
             return PublishAvailableMissionUnavailable(
                 missionBefore.Generation,
-                dayGeneration,
+                RuntimeAvailableMissionSourceCapture.Snapshot().SourceRevision,
                 RuntimeAvailableMissionSnapshot.MissionDataIncompleteStatus,
                 $"available-mission-read-failed:{ex.GetType().Name}:{ex.GetBaseException().Message}");
         }
@@ -2583,6 +2605,13 @@ internal sealed class StewardOverlayController
                     EligibilityDisposition:
                         reference.SourceEventEligibilityDisposition,
                     ReferenceSource: reference.Source,
+                    SourcePhase: string.Equals(
+                        scheduledEvent.BucketSource,
+                        "transition",
+                        StringComparison.Ordinal)
+                        ? RuntimeAvailableMissionTriggerClassifier
+                            .WaitingAfterPerformancePhase
+                        : RuntimeAvailableMissionTriggerClassifier.ScheduledPhase,
                     MissionLabel: reference.MissionLabel,
                     DefinitionAvailable: reference.DefinitionAvailable,
                     Title: reference.Title,
@@ -2618,13 +2647,13 @@ internal sealed class StewardOverlayController
 
     private RuntimeAvailableMissionSnapshot PublishAvailableMissionUnavailable(
         long missionGeneration,
-        long daySceneGeneration,
+        long sourceRevision,
         string status,
         string error)
     {
         var snapshot = _availableMissionState.SetUnavailable(
             missionGeneration,
-            daySceneGeneration,
+            sourceRevision,
             status,
             error);
         LogAvailableMissionSnapshot(snapshot);
@@ -2638,7 +2667,7 @@ internal sealed class StewardOverlayController
             "|",
             snapshot.RuntimeAvailable,
             snapshot.MissionGeneration,
-            snapshot.DaySceneGeneration,
+            snapshot.SourceRevision,
             snapshot.Status,
             snapshot.Error,
             string.Join(",", snapshot.Missions.Select(mission => mission.Label)));
@@ -2654,7 +2683,7 @@ internal sealed class StewardOverlayController
         var message =
             $"Available mission read: available={snapshot.RuntimeAvailable}; "
             + $"missionGeneration={snapshot.MissionGeneration}; "
-            + $"daySceneGeneration={snapshot.DaySceneGeneration}; "
+            + $"sourceRevision={snapshot.SourceRevision}; "
             + $"status={snapshot.Status}; count={snapshot.Missions.Count}; "
             + $"labels=[{string.Join(",", snapshot.Missions.Select(mission => mission.Label))}]; "
             + $"error={snapshot.Error}";

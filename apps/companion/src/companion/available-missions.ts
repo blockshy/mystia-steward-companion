@@ -1,5 +1,10 @@
 import type {
   AvailableMissionEntry,
+  AvailableMissionActivationHint,
+  AvailableMissionActivationMode,
+  AvailableMissionActivationStatus,
+  AvailableMissionSourceTiming,
+  AvailableMissionTriggerKind,
   AvailableMissionsApiResponse,
   AvailableMissionsResponse,
   TrackedMissionRuntimeStatus,
@@ -15,6 +20,33 @@ const AVAILABLE_MISSION_RUNTIME_STATUSES = new Set<TrackedMissionRuntimeStatus>(
   'ready',
   'runtime-unavailable',
   'mission-data-incomplete',
+]);
+const AVAILABLE_MISSION_ACTIVATION_MODES = new Set<AvailableMissionActivationMode>([
+  'conditional',
+  'automatic',
+  'multiple',
+]);
+const AVAILABLE_MISSION_ACTIVATION_STATUSES = new Set<AvailableMissionActivationStatus>([
+  'available',
+  'triggering',
+]);
+const AVAILABLE_MISSION_TRIGGER_KINDS = new Set<AvailableMissionTriggerKind>([
+  'enter-day-scene-map',
+  'enter-day-scene',
+  'kizuna-checkpoint',
+  'multiple',
+]);
+const AVAILABLE_MISSION_SOURCE_TIMINGS = new Set<AvailableMissionSourceTiming>([
+  'before-performance',
+  'after-performance',
+  'multiple',
+]);
+const AVAILABLE_MISSION_ACTIVATION_HINTS = new Set<AvailableMissionActivationHint>([
+  'enter-target-day-map',
+  'enter-day-scene',
+  'kizuna-ready',
+  'native-start-pending',
+  'multiple-sources',
 ]);
 
 export const AVAILABLE_MISSION_POLL_INTERVAL_MS = 2_000;
@@ -43,9 +75,9 @@ export function parseAvailableMissionsApiResponse(value: unknown): AvailableMiss
     'missionGeneration',
     Number.MAX_SAFE_INTEGER,
   );
-  const daySceneGeneration = requireBoundedInteger(
-    response.daySceneGeneration,
-    'daySceneGeneration',
+  const sourceRevision = requireBoundedInteger(
+    response.sourceRevision,
+    'sourceRevision',
     Number.MAX_SAFE_INTEGER,
   );
   if (!Array.isArray(response.missions) || response.missions.length > MAX_AVAILABLE_MISSIONS) {
@@ -63,7 +95,7 @@ export function parseAvailableMissionsApiResponse(value: unknown): AvailableMiss
   }
 
   if (runtimeAvailable
-      && (!ok || status !== 'ready' || missionGeneration < 1 || daySceneGeneration < 1)) {
+      && (!ok || status !== 'ready' || missionGeneration < 1 || sourceRevision < 1)) {
     throw new Error('可接取任务运行时可用时必须返回有效代际和 ready 状态。');
   }
   if (!runtimeAvailable && status === 'ready') {
@@ -83,7 +115,7 @@ export function parseAvailableMissionsApiResponse(value: unknown): AvailableMiss
     runtimeAvailable,
     status,
     missionGeneration,
-    daySceneGeneration,
+    sourceRevision,
     contentSignature,
     availableCount,
     missions,
@@ -128,14 +160,35 @@ export function getAvailableMissionsResponseError(response: AvailableMissionsRes
 function parseAvailableMission(value: unknown, index: number): AvailableMissionEntry {
   const mission = requireRecord(value, `missions[${index}]`);
   const presentation = parseMissionPresentationMetadata(mission, `missions[${index}]`);
-  if (presentation.presentationStatus === 'no-receiver'
-      || !presentation.receiverLabel.trim()) {
-    throw new Error(`missions[${index}] 可接取任务缺少接取角色。`);
-  }
   return {
     ...presentation,
     label: requireOpaqueIdentity(mission.label, `missions[${index}].label`),
     title: requireNonBlankString(mission.title, `missions[${index}].title`),
+    activationMode: requireFiniteString(
+      mission.activationMode,
+      `missions[${index}].activationMode`,
+      AVAILABLE_MISSION_ACTIVATION_MODES,
+    ),
+    activationStatus: requireFiniteString(
+      mission.activationStatus,
+      `missions[${index}].activationStatus`,
+      AVAILABLE_MISSION_ACTIVATION_STATUSES,
+    ),
+    triggerKind: requireFiniteString(
+      mission.triggerKind,
+      `missions[${index}].triggerKind`,
+      AVAILABLE_MISSION_TRIGGER_KINDS,
+    ),
+    sourceTiming: requireFiniteString(
+      mission.sourceTiming,
+      `missions[${index}].sourceTiming`,
+      AVAILABLE_MISSION_SOURCE_TIMINGS,
+    ),
+    activationHint: requireFiniteString(
+      mission.activationHint,
+      `missions[${index}].activationHint`,
+      AVAILABLE_MISSION_ACTIVATION_HINTS,
+    ),
   };
 }
 
@@ -182,6 +235,17 @@ function requireContentSignature(value: unknown): string {
     throw new Error('可接取任务响应中的 contentSignature 无效。');
   }
   return value;
+}
+
+function requireFiniteString<T extends string>(
+  value: unknown,
+  label: string,
+  allowed: ReadonlySet<T>,
+): T {
+  if (typeof value !== 'string' || !allowed.has(value as T)) {
+    throw new Error(`可接取任务响应中的 ${label} 无效。`);
+  }
+  return value as T;
 }
 
 function requireRuntimeStatus(value: unknown): TrackedMissionRuntimeStatus {

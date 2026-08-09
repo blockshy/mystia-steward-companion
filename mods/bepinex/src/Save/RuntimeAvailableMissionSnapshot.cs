@@ -3,7 +3,7 @@ namespace MystiaStewardCompanion.Save;
 internal sealed record RuntimeAvailableMissionSnapshot(
     bool RuntimeAvailable,
     long MissionGeneration,
-    long DaySceneGeneration,
+    long SourceRevision,
     string Status,
     string Error,
     IReadOnlyList<RuntimeAvailableMissionSnapshotEntry> Missions)
@@ -17,19 +17,19 @@ internal sealed record RuntimeAvailableMissionSnapshot(
 
     public static RuntimeAvailableMissionSnapshot Unavailable(
         long missionGeneration,
-        long daySceneGeneration,
+        long sourceRevision,
         string error)
     {
         return Unavailable(
             missionGeneration,
-            daySceneGeneration,
+            sourceRevision,
             RuntimeUnavailableStatus,
             error);
     }
 
     public static RuntimeAvailableMissionSnapshot Unavailable(
         long missionGeneration,
-        long daySceneGeneration,
+        long sourceRevision,
         string status,
         string error)
     {
@@ -48,7 +48,7 @@ internal sealed record RuntimeAvailableMissionSnapshot(
         return new RuntimeAvailableMissionSnapshot(
             RuntimeAvailable: false,
             MissionGeneration: missionGeneration,
-            DaySceneGeneration: daySceneGeneration,
+            SourceRevision: sourceRevision,
             Status: status,
             Error: error,
             Missions: Array.Empty<RuntimeAvailableMissionSnapshotEntry>());
@@ -61,12 +61,17 @@ internal sealed record RuntimeAvailableMissionSnapshotEntry(
     string ReceiverLabel,
     string CharacterName,
     IReadOnlyList<string> SceneNames,
-    string PresentationStatus);
+    string PresentationStatus,
+    string ActivationMode,
+    string ActivationStatus,
+    string TriggerKind,
+    string SourceTiming,
+    string ActivationHint);
 
 internal sealed record RuntimeAvailableMissionCaptureInput(
     bool Complete,
     long MissionGeneration,
-    long DaySceneGeneration,
+    long SourceRevision,
     long SourceMissionChangeVersion,
     IReadOnlyList<string> FinishedEvents,
     IReadOnlyList<string> FinishedMissions,
@@ -78,6 +83,7 @@ internal sealed record RuntimeAvailableMissionCandidate(
     int TriggerType,
     string EligibilityDisposition,
     string ReferenceSource,
+    string SourcePhase,
     string MissionLabel,
     bool DefinitionAvailable,
     string Title,

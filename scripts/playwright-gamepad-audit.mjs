@@ -14,6 +14,7 @@ const API_URL = process.env.MYSTIA_API_URL || 'http://127.0.0.1:32145';
 const API_TOKEN = process.env.MYSTIA_API_TOKEN || 'mock-token';
 const OUTPUT_DIR = process.env.GAMEPAD_AUDIT_OUTPUT_DIR || '/tmp/mystia-companion-gamepad-audit';
 const STORAGE_PREFIX = 'mystia-steward-companion';
+const CHROMIUM_EXECUTABLE_PATH = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH?.trim();
 
 const BUTTON_A = 0;
 const BUTTON_B = 1;
@@ -36,7 +37,12 @@ const runtimeDiagnostics = [];
 
 await mkdir(OUTPUT_DIR, { recursive: true });
 
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({
+  headless: true,
+  ...(CHROMIUM_EXECUTABLE_PATH
+    ? { executablePath: CHROMIUM_EXECUTABLE_PATH }
+    : {}),
+});
 const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
 page.on('pageerror', (error) => pageErrors.push(error.stack || error.message));
 page.on('console', (message) => {
@@ -91,6 +97,8 @@ function seedLocalStorage({ apiUrl, apiToken, storagePrefix, fontScalePercent = 
   localStorage.setItem(`${storagePrefix}-mod-api-token`, apiToken);
   localStorage.setItem(`${storagePrefix}-show-debug-details`, '1');
   localStorage.setItem(`${storagePrefix}-gamepad-navigation`, '1');
+  localStorage.setItem(`${storagePrefix}-mission-list-module-enabled`, '1');
+  localStorage.setItem(`${storagePrefix}-rare-guest-invitation-module-enabled`, '1');
   localStorage.setItem(`${storagePrefix}-automation-enabled`, '1');
   localStorage.setItem(`${storagePrefix}-auto-normal-order-enabled`, '1');
   localStorage.setItem(`${storagePrefix}-auto-normal-take-beverage`, '1');
@@ -972,11 +980,26 @@ async function auditAxisGroup(page) {
   }
 
   await rangeControl.scrollIntoViewIfNeeded();
+  await page.waitForFunction(
+    () => document.querySelector('[aria-label="稀客邀请范围"] input[value="current"]')?.disabled === false,
+    null,
+    { timeout: 3_000 },
+  ).catch(() => {});
   await focusInnerTab(page, '稀客邀请');
   await pressButton(page, BUTTON_DPAD_DOWN, { holdMs: 70 });
+  const moduleToggleFocus = await readFocusedSummary(page);
+  if (!moduleToggleFocus?.text.includes('启用稀客邀请模块')) {
+    issues.push(`稀客邀请页无法从二级 Tab 进入模块总控，实际为 ${moduleToggleFocus?.text || '空'}。`);
+    return;
+  }
+  await rangeControl.locator('label').first().evaluate((element) => {
+    element.tabIndex = -1;
+    element.focus();
+  });
+  await page.waitForTimeout(80);
   const beforeRight = await readFocusedSummary(page);
   if (!beforeRight?.segmented || !beforeRight.text.includes('当前场景')) {
-    issues.push(`稀客邀请页无法从二级 Tab 进入“当前场景”范围选项，实际为 ${beforeRight?.text || '空'}。`);
+    issues.push(`稀客邀请页无法聚焦“当前场景”范围选项，实际为 ${beforeRight?.text || '空'}。`);
     return;
   }
 
@@ -998,8 +1021,11 @@ async function auditAxisGroup(page) {
     null,
     { timeout: 3_000 },
   ).catch(() => {});
-  await focusInnerTab(page, '稀客邀请');
-  await pressButton(page, BUTTON_DPAD_DOWN, { holdMs: 70 });
+  await rangeControl.locator('label').nth(1).evaluate((element) => {
+    element.tabIndex = -1;
+    element.focus();
+  });
+  await page.waitForTimeout(80);
   const recoveredFocus = await readFocusedSummary(page);
   if (!recoveredFocus?.segmented || !(await allScopeInput.isChecked())) {
     issues.push(`稀客邀请范围刷新完成后无法重新进入选项组，实际为 ${recoveredFocus?.text || '空'}。`);

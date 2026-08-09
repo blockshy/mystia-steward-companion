@@ -908,9 +908,32 @@ export type TrackedMissionsApiResponse =
   | TrackedMissionsResponse
   | TrackedMissionsUnchangedResponse;
 
+export type AvailableMissionActivationMode = 'conditional' | 'automatic' | 'multiple';
+export type AvailableMissionActivationStatus = 'available' | 'triggering';
+export type AvailableMissionTriggerKind =
+  | 'enter-day-scene-map'
+  | 'enter-day-scene'
+  | 'kizuna-checkpoint'
+  | 'multiple';
+export type AvailableMissionSourceTiming =
+  | 'before-performance'
+  | 'after-performance'
+  | 'multiple';
+export type AvailableMissionActivationHint =
+  | 'enter-target-day-map'
+  | 'enter-day-scene'
+  | 'kizuna-ready'
+  | 'native-start-pending'
+  | 'multiple-sources';
+
 export interface AvailableMissionEntry extends MissionPresentationMetadata {
   label: string;
   title: string;
+  activationMode: AvailableMissionActivationMode;
+  activationStatus: AvailableMissionActivationStatus;
+  triggerKind: AvailableMissionTriggerKind;
+  sourceTiming: AvailableMissionSourceTiming;
+  activationHint: AvailableMissionActivationHint;
 }
 
 export interface AvailableMissionsResponse {
@@ -918,7 +941,7 @@ export interface AvailableMissionsResponse {
   runtimeAvailable: boolean;
   status: TrackedMissionRuntimeStatus;
   missionGeneration: number;
-  daySceneGeneration: number;
+  sourceRevision: number;
   contentSignature: string;
   unchanged?: false;
   availableCount: number;

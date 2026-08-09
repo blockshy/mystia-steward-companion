@@ -9,7 +9,7 @@ internal sealed class LocalApiAvailableMissionsDto
     public bool RuntimeAvailable { get; init; }
     public string Status { get; init; } = "";
     public long MissionGeneration { get; init; }
-    public long DaySceneGeneration { get; init; }
+    public long SourceRevision { get; init; }
     public string ContentSignature { get; init; } = "";
     public bool Unchanged { get; init; }
     public int AvailableCount { get; init; }
@@ -26,6 +26,11 @@ internal sealed class LocalApiAvailableMissionDto
     public string CharacterName { get; init; } = "";
     public IReadOnlyList<string> SceneNames { get; init; } = Array.Empty<string>();
     public string PresentationStatus { get; init; } = "";
+    public string ActivationMode { get; init; } = "";
+    public string ActivationStatus { get; init; } = "";
+    public string TriggerKind { get; init; } = "";
+    public string SourceTiming { get; init; } = "";
+    public string ActivationHint { get; init; } = "";
 }
 
 internal sealed class LocalApiAvailableMissionsUnchangedDto
@@ -39,7 +44,7 @@ internal sealed class LocalApiAvailableMissionsContentDto
     public bool RuntimeAvailable { get; init; }
     public string Status { get; init; } = "";
     public long MissionGeneration { get; init; }
-    public long DaySceneGeneration { get; init; }
+    public long SourceRevision { get; init; }
     public int AvailableCount { get; init; }
     public IReadOnlyList<LocalApiAvailableMissionDto> Missions { get; init; } =
         Array.Empty<LocalApiAvailableMissionDto>();
@@ -66,7 +71,7 @@ internal static class LocalApiAvailableMissionsPayload
         if (snapshot.RuntimeAvailable
             && (snapshot.Status != RuntimeAvailableMissionSnapshot.ReadyStatus
                 || snapshot.MissionGeneration < 1
-                || snapshot.DaySceneGeneration < 1
+                || snapshot.SourceRevision < 1
                 || snapshot.Error.Length != 0))
         {
             throw new InvalidOperationException(
@@ -91,6 +96,11 @@ internal static class LocalApiAvailableMissionsPayload
                 CharacterName = mission.CharacterName,
                 SceneNames = mission.SceneNames.ToArray(),
                 PresentationStatus = mission.PresentationStatus,
+                ActivationMode = mission.ActivationMode,
+                ActivationStatus = mission.ActivationStatus,
+                TriggerKind = mission.TriggerKind,
+                SourceTiming = mission.SourceTiming,
+                ActivationHint = mission.ActivationHint,
             })
             .ToArray();
         if (missions.Any(mission =>
@@ -100,6 +110,11 @@ internal static class LocalApiAvailableMissionsPayload
                 || mission.CharacterName == null
                 || mission.SceneNames == null
                 || mission.PresentationStatus == null
+                || mission.ActivationMode == null
+                || mission.ActivationStatus == null
+                || mission.TriggerKind == null
+                || mission.SourceTiming == null
+                || mission.ActivationHint == null
                 || !IsValidPresentation(mission))
             || missions.Select(mission => mission.Label)
                 .Distinct(StringComparer.Ordinal)
@@ -113,7 +128,7 @@ internal static class LocalApiAvailableMissionsPayload
             RuntimeAvailable = snapshot.RuntimeAvailable,
             Status = snapshot.Status,
             MissionGeneration = snapshot.MissionGeneration,
-            DaySceneGeneration = snapshot.DaySceneGeneration,
+            SourceRevision = snapshot.SourceRevision,
             AvailableCount = missions.Length,
             Missions = missions,
             Error = snapshot.Error,
@@ -140,7 +155,7 @@ internal static class LocalApiAvailableMissionsPayload
                 RuntimeAvailable = content.RuntimeAvailable,
                 Status = content.Status,
                 MissionGeneration = content.MissionGeneration,
-                DaySceneGeneration = content.DaySceneGeneration,
+                SourceRevision = content.SourceRevision,
                 ContentSignature = contentSignature,
                 Unchanged = false,
                 AvailableCount = content.AvailableCount,
@@ -153,16 +168,18 @@ internal static class LocalApiAvailableMissionsPayload
     private static bool IsValidPresentation(
         LocalApiAvailableMissionDto mission)
     {
-        return !string.IsNullOrWhiteSpace(mission.ReceiverLabel)
-            && !string.Equals(
-                mission.PresentationStatus,
-                RuntimeMissionPresentation.NoReceiverStatus,
-                StringComparison.Ordinal)
-            && RuntimeMissionPresentation.IsValid(
+        return RuntimeMissionPresentation.IsValid(
                 new RuntimeMissionPresentation(
                     mission.ReceiverLabel,
                     mission.CharacterName,
                     mission.SceneNames,
-                    mission.PresentationStatus));
+                    mission.PresentationStatus))
+            && RuntimeAvailableMissionTriggerClassifier.IsValid(
+                new RuntimeAvailableMissionTriggerClassification(
+                    mission.ActivationMode,
+                    mission.ActivationStatus,
+                    mission.TriggerKind,
+                    mission.SourceTiming,
+                    mission.ActivationHint));
     }
 }

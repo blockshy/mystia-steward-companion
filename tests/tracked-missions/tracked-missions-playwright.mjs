@@ -9,6 +9,7 @@ const API_URL = process.env.MYSTIA_API_URL || 'http://127.0.0.1:32145';
 const API_TOKEN = process.env.MYSTIA_API_TOKEN || 'mock-token';
 const OUTPUT_DIR = process.env.TRACKED_MISSIONS_AUDIT_OUTPUT_DIR
   || '/tmp/mystia-companion-tracked-missions-audit';
+const CHROMIUM_EXECUTABLE_PATH = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH?.trim();
 const STORAGE_PREFIX = 'mystia-steward-companion';
 const requests = [];
 const availableRequests = [];
@@ -21,16 +22,25 @@ const signatures = {
   availableStale: '6'.repeat(64),
   availableUnavailable: '7'.repeat(64),
   trackedUnavailable: '8'.repeat(64),
+  availableTriggering: '9'.repeat(64),
+  trackedAutomatic: 'a'.repeat(64),
 };
 
 await mkdir(OUTPUT_DIR, { recursive: true });
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({
+  headless: true,
+  ...(CHROMIUM_EXECUTABLE_PATH
+    ? { executablePath: CHROMIUM_EXECUTABLE_PATH }
+    : {}),
+});
 const page = await browser.newPage({ viewport: { width: 640, height: 760 } });
 
 try {
   let requestSequence = 0;
   let delayNextAvailableResponse = false;
   let availableUnavailableReadsRemaining = 0;
+  let availableTriggering = false;
+  let trackAutomaticMission = false;
   let trackedUnavailable = false;
   await page.route('**/missions/available**', async (route) => {
     if (route.request().method() !== 'GET') {
@@ -62,7 +72,7 @@ try {
           runtimeAvailable: false,
           status: 'waiting-for-load',
           missionGeneration: 1,
-          daySceneGeneration: 1,
+          sourceRevision: 21,
           contentSignature: signatures.availableUnavailable,
           availableCount: 0,
           missions: [],
@@ -71,18 +81,26 @@ try {
       });
       return;
     }
-    if (url.searchParams.get('knownSignature') === signatures.available) {
+    const availableSignature = availableTriggering
+      ? signatures.availableTriggering
+      : signatures.available;
+    if (url.searchParams.get('knownSignature') === availableSignature) {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
           unchanged: true,
-          contentSignature: signatures.available,
+          contentSignature: availableSignature,
         }),
       });
       return;
     }
-    await fulfillAvailableMissionResponse(route, signatures.available, '可接取的美铃任务');
+    await fulfillAvailableMissionResponse(
+      route,
+      availableSignature,
+      '可接取的美铃任务',
+      availableTriggering,
+    );
   });
 
   await page.route('**/missions/tracked**', async (route) => {
@@ -138,12 +156,20 @@ try {
       return;
     }
 
-    const response = sequence === 1
-      ? [signatures.initial, '初次自动读取任务', true]
-      : sequence === 2
-        ? [signatures.refreshed, '手动刷新后的任务', false]
-        : [signatures.current, '切回后的当前任务', true];
-    await fulfillMissionResponse(route, response[0], response[1], response[2]);
+    const response = trackAutomaticMission
+      ? [signatures.trackedAutomatic, '切回后的当前任务', true]
+      : sequence === 1
+        ? [signatures.initial, '初次自动读取任务', true]
+        : sequence === 2
+          ? [signatures.refreshed, '手动刷新后的任务', false]
+          : [signatures.current, '切回后的当前任务', true];
+    await fulfillMissionResponse(
+      route,
+      response[0],
+      response[1],
+      response[2],
+      trackAutomaticMission,
+    );
   });
 
   await page.addInitScript(({ apiUrl, apiToken, storagePrefix }) => {
@@ -157,6 +183,19 @@ try {
   await page.goto(APP_URL, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('[data-gamepad-tab-value="overview"]', { timeout: 10_000 });
   await activateTopTab('missions');
+  await page.getByText('任务列表模块已停用。手动开启总控后才会读取任务数据。', { exact: true })
+    .waitFor({ timeout: 10_000 });
+  await page.waitForTimeout(500);
+  assert.equal(requests.length, 0, 'The default-off task module issued a tracked mission request.');
+  assert.equal(availableRequests.length, 0, 'The default-off task module issued an available mission request.');
+  const moduleToggle = page.locator('[data-gamepad-focus-key="missions:tasks:module-toggle"]');
+  assert.equal(await moduleToggle.isChecked(), false, 'The task module did not default to disabled.');
+  await moduleToggle.click();
+  assert.equal(
+    await page.evaluate((storagePrefix) => localStorage.getItem(`${storagePrefix}-mission-list-module-enabled`), STORAGE_PREFIX),
+    '1',
+    'Enabling the task module was not persisted.',
+  );
   await page.getByText('初次自动读取任务', { exact: true }).waitFor({ timeout: 10_000 });
   assert.equal(requests[0]?.knownSignature, null, 'The first task read must request a full payload.');
   await assertMissionStatusTabs(
@@ -209,7 +248,8 @@ try {
   await waitForRequestCount(3);
   await waitForAvailableRequestCount(delayedAvailableRequestIndex + 1);
   await page.getByRole('tab', { name: '稀客邀请', exact: true }).click();
-  await page.getByText('当前场景', { exact: true }).waitFor({ timeout: 10_000 });
+  await page.getByText('稀客邀请模块已停用。手动开启总控后才会读取候选或执行邀请。', { exact: true })
+    .waitFor({ timeout: 10_000 });
   await page.waitForTimeout(100);
   await page.getByRole('tab', { name: '任务列表', exact: true }).click();
   await page.getByText('切回后的当前任务', { exact: true }).waitFor({ timeout: 10_000 });
@@ -349,6 +389,22 @@ try {
   });
 
   await page.screenshot({ path: `${OUTPUT_DIR}/minimum-tracked-missions.png`, fullPage: true });
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const desktopLayout = await page.evaluate(() => ({
+    overflow: Math.max(
+      0,
+      document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    ),
+    visibleMissionRows: document.querySelectorAll(
+      '[data-mission-status-list]:not([hidden]) [data-gamepad-row="true"]',
+    ).length,
+  }));
+  assert.deepEqual(
+    desktopLayout,
+    { overflow: 0, visibleMissionRows: 5 },
+    `1280px task layout failed: ${JSON.stringify(desktopLayout)}`,
+  );
+  await page.screenshot({ path: `${OUTPUT_DIR}/desktop-tracked-missions.png`, fullPage: true });
   await page.setViewportSize({ width: 390, height: 760 });
   await selectMissionStatus('unverified');
   const narrowLayout = await page.evaluate(() => {
@@ -451,17 +507,103 @@ try {
     `Long scene badge clipped its wrapped label: ${JSON.stringify(longScene)}`,
   );
   await page.screenshot({ path: `${OUTPUT_DIR}/narrow-tracked-missions.png`, fullPage: true });
+
+  await selectMissionStatus('available');
+  availableTriggering = true;
+  await refresh.click();
+  const triggeringRow = page.locator(
+    '[data-gamepad-row-key="mission:available-meirin"][data-mission-status="available"]:visible',
+  );
+  await triggeringRow.getByText('接取中', { exact: true }).waitFor({ timeout: 5_000 });
+  await triggeringRow.getByText('前置事件已完成，游戏正在接取任务。', { exact: true }).waitFor();
+  assert.equal(
+    await triggeringRow.getAttribute('data-mission-activation-status'),
+    'triggering',
+  );
+
+  trackAutomaticMission = true;
+  await refresh.click();
+  await selectMissionStatus('all');
+  const handedOffRow = page.locator('[data-gamepad-row-key="mission:available-meirin"]');
+  await handedOffRow.getByText('游戏已接取的地图任务', { exact: true })
+    .waitFor({ timeout: 5_000 });
+  assert.equal(
+    await handedOffRow.count(),
+    1,
+    'The automatic mission remained duplicated after tracked handoff.',
+  );
+  assert.equal(
+    await handedOffRow.getAttribute('data-mission-status'),
+    'tracking',
+    'The available row took precedence after the game tracked the mission.',
+  );
+
+  await moduleToggle.click();
+  await page.getByText('任务列表模块已停用。手动开启总控后才会读取任务数据。', { exact: true }).waitFor();
+  const requestsAfterDisable = requests.length;
+  const availableRequestsAfterDisable = availableRequests.length;
+  await page.waitForTimeout(2_300);
+  assert.equal(requests.length, requestsAfterDisable, 'Tracked mission polling continued while the module was disabled.');
+  assert.equal(
+    availableRequests.length,
+    availableRequestsAfterDisable,
+    'Available mission polling continued while the module was disabled.',
+  );
+  assert.equal(
+    await page.evaluate((storagePrefix) => localStorage.getItem(`${storagePrefix}-mission-list-module-enabled`), STORAGE_PREFIX),
+    '0',
+    'Disabling the task module was not persisted.',
+  );
+
+  const requestsBeforeReenable = requests.length;
+  await moduleToggle.click();
+  await waitForRequestCount(requestsBeforeReenable + 1);
+  assert.equal(
+    requests[requestsBeforeReenable]?.knownSignature,
+    null,
+    'Re-enabling the task module reused a stale tracked mission signature.',
+  );
+  const requestsBeforeReload = requests.length;
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-gamepad-focus-key="missions:tasks:module-toggle"]', { timeout: 10_000 });
+  assert.equal(
+    await page.locator('[data-gamepad-focus-key="missions:tasks:module-toggle"]').isChecked(),
+    true,
+    'The manually enabled task module did not persist across reload.',
+  );
+  await waitForRequestCount(requestsBeforeReload + 1);
   console.log(
-    'PASS: task list merges available and tracked missions, refreshes both independent signatures, '
-    + 'renders bounded character/related-scene metadata, cancels inactive reads, '
-    + 'and keeps five scrollable status tabs.',
+    'PASS: task list is independently default-off and persistent, merges available and tracked missions, '
+    + 'stops polling while disabled, refreshes both independent signatures, '
+    + 'renders bounded character/related-scene metadata, hands triggering tasks to tracked state, '
+    + 'cancels inactive reads, and keeps five scrollable status tabs.',
   );
 } finally {
   await browser.close();
 }
 
-async function fulfillMissionResponse(route, contentSignature, title, includeUnverified = true) {
+async function fulfillMissionResponse(
+  route,
+  contentSignature,
+  title,
+  includeUnverified = true,
+  includeAutomaticTracked = false,
+) {
   const missions = [
+    ...(includeAutomaticTracked
+      ? [{
+        label: 'available-meirin',
+        title: '游戏已接取的地图任务',
+        receiverLabel: '',
+        characterName: '',
+        sceneNames: [],
+        presentationStatus: 'no-receiver',
+        status: 'tracking',
+        conditionCount: 1,
+        completedConditionCount: 0,
+        conditionStates: [false],
+      }]
+      : []),
     ...(includeUnverified
       ? [{
         label: 'unverified',
@@ -523,7 +665,7 @@ async function fulfillMissionResponse(route, contentSignature, title, includeUnv
       status: 'ready',
       contentSignature,
       unverifiedCount: includeUnverified ? 1 : 0,
-      trackingCount: 2,
+      trackingCount: includeAutomaticTracked ? 3 : 2,
       fulfilledCount: 1,
       missions,
       error: null,
@@ -531,7 +673,12 @@ async function fulfillMissionResponse(route, contentSignature, title, includeUnv
   });
 }
 
-async function fulfillAvailableMissionResponse(route, contentSignature, title) {
+async function fulfillAvailableMissionResponse(
+  route,
+  contentSignature,
+  title,
+  triggering = false,
+) {
   await route.fulfill({
     status: 200,
     contentType: 'application/json',
@@ -540,7 +687,7 @@ async function fulfillAvailableMissionResponse(route, contentSignature, title) {
       runtimeAvailable: true,
       status: 'ready',
       missionGeneration: 1,
-      daySceneGeneration: 1,
+      sourceRevision: triggering ? 23 : 22,
       contentSignature,
       availableCount: 2,
       missions: [
@@ -551,6 +698,11 @@ async function fulfillAvailableMissionResponse(route, contentSignature, title) {
           characterName: '红美铃',
           sceneNames: ['红魔馆'],
           presentationStatus: 'ready',
+          activationMode: 'automatic',
+          activationStatus: triggering ? 'triggering' : 'available',
+          triggerKind: 'enter-day-scene-map',
+          sourceTiming: 'after-performance',
+          activationHint: triggering ? 'native-start-pending' : 'enter-target-day-map',
         },
         {
           label: 'tracking-a',
@@ -559,6 +711,11 @@ async function fulfillAvailableMissionResponse(route, contentSignature, title) {
           characterName: '稗田阿求',
           sceneNames: ['人间之里'],
           presentationStatus: 'ready',
+          activationMode: 'conditional',
+          activationStatus: 'available',
+          triggerKind: 'kizuna-checkpoint',
+          sourceTiming: 'after-performance',
+          activationHint: 'kizuna-ready',
         },
       ],
       error: null,
@@ -622,6 +779,12 @@ async function assertMissionPresentation() {
   await availableRow.getByText('红美铃', { exact: true }).waitFor();
   await availableRow.getByText('相关场景', { exact: true }).waitFor();
   await availableRow.locator('[data-mission-scene-name="红魔馆"]').waitFor();
+  await availableRow.getByText('自动触发', { exact: true }).waitFor();
+  await availableRow.getByText('进入指定白天地图时由游戏自动接取。', { exact: true }).waitFor();
+  assert.equal(
+    await availableRow.getAttribute('data-mission-trigger-kind'),
+    'enter-day-scene-map',
+  );
   assert.match(
     await availableRow.locator('[data-mission-presentation-debug]').innerText(),
     /receiverLabel=Meirin; presentationStatus=ready/,

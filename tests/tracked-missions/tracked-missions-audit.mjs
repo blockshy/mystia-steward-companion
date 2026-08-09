@@ -259,6 +259,8 @@ const [
   trackedParserSource,
   availableParserSource,
   presentationParserSource,
+  storageSource,
+  moduleControlSource,
 ] = await Promise.all([
   readFile(new URL('apps/companion/src/companion/api.ts', root), 'utf8'),
   readFile(new URL('apps/companion/src/companion/hooks/useTrackedMissions.ts', root), 'utf8'),
@@ -268,6 +270,8 @@ const [
   readFile(new URL('apps/companion/src/companion/tracked-missions.ts', root), 'utf8'),
   readFile(new URL('apps/companion/src/companion/available-missions.ts', root), 'utf8'),
   readFile(new URL('apps/companion/src/companion/mission-presentation.ts', root), 'utf8'),
+  readFile(new URL('apps/companion/src/companion/storage.ts', root), 'utf8'),
+  readFile(new URL('apps/companion/src/companion/pages/MissionModuleControl.tsx', root), 'utf8'),
 ]);
 
 const apiFunction = sourceSlice(
@@ -313,11 +317,16 @@ for (const contract of [
   assert.ok(hookSource.includes(contract), `Tracked mission Hook is missing request contract: ${contract}`);
 }
 
-assert.ok(workbenchSource.includes("active: tab === 'missions' && missionPanelView === 'tasks'"));
+assert.ok(workbenchSource.includes('active: missionListModuleEnabled && missionListVisible'));
+assert.ok(workbenchSource.includes('readStoredMissionListModuleEnabled'));
+assert.ok(workbenchSource.includes('persistMissionListModuleEnabled(enabled)'));
 assert.ok(workbenchSource.includes('refreshTrackedMissions();'));
 assert.doesNotMatch(workbenchSource, /data-gamepad-tab-value="rare-invitations"/);
 assert.ok(panelSource.includes('<TabsTrigger value="tasks"'));
 assert.ok(panelSource.includes('<TabsTrigger value="invitations"'));
+assert.ok(panelSource.includes('label="启用任务列表模块"'));
+assert.ok(panelSource.includes('任务列表模块已停用'));
+assert.ok(panelSource.includes('missionListModuleEnabled'));
 assert.ok(panelSource.includes('data-gamepad-focus-key="missions:tasks:refresh"'));
 assert.ok(panelSource.includes('gamepadScrollKey="missions:tasks"'));
 assert.ok(panelSource.includes('data-mission-status-tabs="true"'));
@@ -340,6 +349,12 @@ assert.match(panelSource, /可接取/);
 assert.ok(panelSource.includes('任务进度尚未完成原生校验'));
 assert.doesNotMatch(panelSource, /待刷新|等待游戏自然刷新任务进度/);
 assert.ok(panelSource.includes('mission.conditionStates.map'));
+assert.ok(storageSource.includes("`${STORAGE_PREFIX}-mission-list-module-enabled`"));
+assert.match(
+  storageSource,
+  /readStoredMissionListModuleEnabled\(\): boolean \{\s+return readStoredBoolean\(MISSION_LIST_MODULE_ENABLED_STORAGE_KEY, false\);/,
+);
+assert.ok(moduleControlSource.includes('data-gamepad-focus-key={focusKey}'));
 
 const postBranch = sourceSlice(
   mockSource,
@@ -353,8 +368,8 @@ assert.match(mockSource, /knownSignature/);
 assert.match(mockSource, /unchanged: true/);
 
 console.log(
-  'PASS: tracked missions use a strict GET protocol, bounded request lifecycle, '
-  + 'signature polling, canonical task navigation, and fail-closed response parsing.',
+  'PASS: tracked missions use a default-off persisted module gate, strict GET protocol, '
+  + 'bounded request lifecycle, signature polling, canonical task navigation, and fail-closed response parsing.',
 );
 
 function mission(label, title, status, conditionStates, completedConditionCount) {

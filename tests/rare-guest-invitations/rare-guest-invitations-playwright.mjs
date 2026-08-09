@@ -7,13 +7,20 @@ const API_URL = process.env.MYSTIA_API_URL || 'http://127.0.0.1:32145';
 const API_TOKEN = process.env.MYSTIA_API_TOKEN || 'mock-token';
 const OUTPUT_DIR = process.env.RARE_GUEST_INVITATION_AUDIT_OUTPUT_DIR
   || '/tmp/mystia-companion-rare-guest-invitation-audit';
+const CHROMIUM_EXECUTABLE_PATH = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH?.trim();
 const STORAGE_PREFIX = 'mystia-steward-companion';
 const listRequests = [];
 const singleInviteRequests = [];
 
 await mkdir(OUTPUT_DIR, { recursive: true });
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({
+  headless: true,
+  ...(CHROMIUM_EXECUTABLE_PATH
+    ? { executablePath: CHROMIUM_EXECUTABLE_PATH }
+    : {}),
+});
 const page = await browser.newPage({ viewport: { width: 640, height: 760 } });
+let releaseSingleInviteResponse = null;
 
 try {
   let transientInvitationReadsRemaining = 1;
@@ -117,6 +124,9 @@ try {
       expectedDaySceneGeneration: url.searchParams.get('expectedDaySceneGeneration'),
       expectedMapLabel: url.searchParams.get('expectedMapLabel'),
     });
+    await new Promise((resolve) => {
+      releaseSingleInviteResponse = resolve;
+    });
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -161,6 +171,18 @@ try {
   await page.goto(APP_URL, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => document.body.innerText.includes('1.0.5'), null, { timeout: 10_000 });
   await activateInvitationPanel();
+  await page.getByText('稀客邀请模块已停用。手动开启总控后才会读取候选或执行邀请。', { exact: true })
+    .waitFor({ timeout: 10_000 });
+  await page.waitForTimeout(500);
+  assert.equal(listRequests.length, 0, 'The default-off invitation module issued a candidate read.');
+  const moduleToggle = page.locator('[data-gamepad-focus-key="missions:invitations:module-toggle"]');
+  assert.equal(await moduleToggle.isChecked(), false, 'The invitation module did not default to disabled.');
+  await moduleToggle.click();
+  assert.equal(
+    await page.evaluate((storagePrefix) => localStorage.getItem(`${storagePrefix}-rare-guest-invitation-module-enabled`), STORAGE_PREFIX),
+    '1',
+    'Enabling the invitation module was not persisted.',
+  );
   await waitForListRequestCount(2);
   await page.getByText('mock invitation candidates loaded', { exact: true }).waitFor();
   assertRequest(0, 'current');
@@ -179,6 +201,7 @@ try {
   const mappedGuestRow = page.locator('[data-gamepad-row-key="mission-invitation:10:DLC1_Marisa"]');
   await mappedGuestRow.getByRole('button', { name: '邀请', exact: true }).click();
   await waitFor(() => singleInviteRequests.length === 1, 10_000);
+  assert.equal(await moduleToggle.isDisabled(), true, 'The module toggle remained enabled during an in-flight invitation write.');
   assert.deepEqual(singleInviteRequests[0], {
     method: 'POST',
     guestId: '10',
@@ -186,7 +209,18 @@ try {
     expectedDaySceneGeneration: '1',
     expectedMapLabel: '妖怪兽道',
   });
+  await page.getByRole('tab', { name: '任务列表', exact: true }).click();
+  await page.getByText('任务列表模块已停用。手动开启总控后才会读取任务数据。', { exact: true }).waitFor();
+  await page.getByRole('tab', { name: '稀客邀请', exact: true }).click();
+  assert.equal(
+    await page.locator('[data-gamepad-focus-key="missions:invitations:module-toggle"]').isDisabled(),
+    true,
+    'Switching mission subpages retired the in-flight invitation operation.',
+  );
+  releaseSingleInviteResponse?.();
+  releaseSingleInviteResponse = null;
   await page.getByText('mock mapped invitation write checked', { exact: true }).waitFor();
+  assert.equal(await moduleToggle.isDisabled(), false, 'The module toggle did not recover after the write completed.');
 
   await page
     .getByLabel('稀客邀请', { exact: true })
@@ -241,11 +275,37 @@ try {
   );
   assert.equal(listRequests.length, 7, 'A failed invitation write triggered an unintended list refresh.');
 
+  await moduleToggle.click();
+  await page.getByText('稀客邀请模块已停用。手动开启总控后才会读取候选或执行邀请。', { exact: true }).waitFor();
+  const readsAfterDisable = listRequests.length;
+  await page.waitForTimeout(1_000);
+  assert.equal(listRequests.length, readsAfterDisable, 'Invitation reads continued while the module was disabled.');
+  assert.equal(
+    await page.evaluate((storagePrefix) => localStorage.getItem(`${storagePrefix}-rare-guest-invitation-module-enabled`), STORAGE_PREFIX),
+    '0',
+    'Disabling the invitation module was not persisted.',
+  );
+
+  await moduleToggle.click();
+  await waitForListRequestCount(readsAfterDisable + 1);
+  const readsBeforeReload = listRequests.length;
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-gamepad-tab-value="missions"]', { timeout: 10_000 });
+  await activateInvitationPanel();
+  await page.waitForSelector('[data-gamepad-focus-key="missions:invitations:module-toggle"]', { timeout: 10_000 });
+  assert.equal(
+    await page.locator('[data-gamepad-focus-key="missions:invitations:module-toggle"]').isChecked(),
+    true,
+    'The manually enabled invitation module did not persist across reload.',
+  );
+  await waitFor(() => listRequests.length >= readsBeforeReload + 1, 10_000);
+
   console.log(
-    'PASS: invitation page auto-refreshes on identity changes, surfaces failed responses, '
-    + 'retains write errors, and keeps manual GET refresh.',
+    'PASS: invitation page is independently default-off and persistent, auto-refreshes on identity changes, '
+    + 'preserves in-flight writes across subpage switches, surfaces failed responses, and keeps manual GET refresh.',
   );
 } finally {
+  releaseSingleInviteResponse?.();
   await browser.close();
 }
 

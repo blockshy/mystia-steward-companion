@@ -25,7 +25,7 @@ const fullResponse = {
   runtimeAvailable: true,
   status: 'ready',
   missionGeneration: 7,
-  daySceneGeneration: 3,
+  sourceRevision: 12,
   contentSignature: signature,
   availableCount: 2,
   missions: [
@@ -44,6 +44,22 @@ const opaqueIdentityResponse = parseAvailableMissionsApiResponse({
 assert.equal(opaqueIdentityResponse.missions[0].label, '  mission-id  ');
 assert.equal(opaqueIdentityResponse.missions[0].title, '  保留原始标题  ');
 assert.equal(opaqueIdentityResponse.missions[0].presentationStatus, 'ready');
+const noReceiverResponse = parseAvailableMissionsApiResponse({
+  ...fullResponse,
+  availableCount: 1,
+  missions: [{
+    ...availableMission('auto-no-receiver', '自动接取任务', '', []),
+    receiverLabel: '',
+    presentationStatus: 'no-receiver',
+    activationMode: 'automatic',
+    activationStatus: 'triggering',
+    triggerKind: 'enter-day-scene',
+    sourceTiming: 'after-performance',
+    activationHint: 'native-start-pending',
+  }],
+});
+assert.equal(noReceiverResponse.missions[0].receiverLabel, '');
+assert.equal(noReceiverResponse.missions[0].activationStatus, 'triggering');
 assert.deepEqual(
   parseAvailableMissionsApiResponse({
     unchanged: true,
@@ -58,7 +74,7 @@ assert.deepEqual(
 for (const invalidResponse of [
   { ...fullResponse, contentSignature: 'invalid' },
   { ...fullResponse, missionGeneration: 0 },
-  { ...fullResponse, daySceneGeneration: 0 },
+  { ...fullResponse, sourceRevision: 0 },
   { ...fullResponse, availableCount: 1 },
   { ...fullResponse, status: 'partially-ready' },
   { ...fullResponse, ok: false },
@@ -111,12 +127,6 @@ for (const invalidResponse of [
   }),
   replaceMissionPresentation(fullResponse, {
     receiverLabel: '',
-    characterName: '',
-    sceneNames: [],
-    presentationStatus: 'no-receiver',
-  }),
-  replaceMissionPresentation(fullResponse, {
-    receiverLabel: '',
     presentationStatus: 'ready',
   }),
   replaceMissionPresentation(fullResponse, {
@@ -132,6 +142,11 @@ for (const invalidResponse of [
   replaceMissionPresentation(fullResponse, {
     presentationStatus: 'unavailable:unknown-code',
   }),
+  replaceMissionPresentation(fullResponse, { activationMode: 'legacy' }),
+  replaceMissionPresentation(fullResponse, { activationStatus: 'started' }),
+  replaceMissionPresentation(fullResponse, { triggerKind: 'unknown' }),
+  replaceMissionPresentation(fullResponse, { sourceTiming: 'legacy' }),
+  replaceMissionPresentation(fullResponse, { activationHint: 'guess' }),
 ]) {
   assert.throws(
     () => parseAvailableMissionsApiResponse(invalidResponse),
@@ -183,22 +198,22 @@ for (const contract of [
   'previousResult?.contentSignature',
   'parseAvailableMissionsApiResponse',
   'AVAILABLE_MISSION_POLL_INTERVAL_MS',
-  'daySceneGeneration',
-  'daySceneReady',
   'missionGeneration',
-  'response.daySceneGeneration !== daySceneGeneration',
   'response.missionGeneration !== missionGeneration',
+  'response.sourceRevision < previousResult.sourceRevision',
   'transientDelay ?? AVAILABLE_MISSION_POLL_INTERVAL_MS',
   'if (transientDelay != null) retryAttemptRef.current += 1',
 ]) {
   assert.ok(hookSource.includes(contract), `Available mission Hook is missing contract: ${contract}`);
 }
 
-assert.ok(workbenchSource.includes("missionPanelView === 'tasks'"));
+assert.ok(workbenchSource.includes("const missionListVisible = tab === 'missions' && missionPanelView === 'tasks'"));
+assert.ok(workbenchSource.includes('active: missionListModuleEnabled && missionListVisible'));
 assert.ok(workbenchSource.includes('refreshAvailableMissions();'));
 assert.ok(workbenchSource.includes('refreshTrackedMissions();'));
 assert.ok(panelSource.includes('<TabsTrigger value="tasks"'));
 assert.ok(panelSource.includes('任务列表'));
+assert.ok(panelSource.includes('任务列表模块已停用'));
 assert.ok(panelSource.includes('data-gamepad-focus-key="missions:tasks:refresh"'));
 assert.ok(panelSource.includes('missions:tasks:status:${status.value}'));
 assert.ok(panelSource.includes("'available'"));
@@ -207,10 +222,10 @@ assert.ok(panelSource.includes("kind: 'available'"));
 assert.ok(panelSource.includes("kind: 'tracked'"));
 assert.ok(panelSource.includes("availableResult !== null && trackedResult !== null"));
 assert.ok(panelSource.includes("statusView === 'available'"));
-assert.match(
-  await readFile(new URL('apps/companion/src/companion/available-missions.ts', root), 'utf8'),
-  /presentation\.presentationStatus === 'no-receiver'/,
-);
+assert.doesNotMatch(hookSource, /daySceneGeneration|daySceneReady/);
+assert.ok(panelSource.includes("return '自动触发';"));
+assert.ok(panelSource.includes("return '接取中';"));
+assert.ok(panelSource.includes('data-mission-activation-hint'));
 assert.ok(panelSource.includes('data-mission-character-name={mission.characterName}'));
 assert.ok(panelSource.includes('data-mission-related-scenes="true"'));
 assert.ok(panelSource.includes('data-mission-presentation-debug="true"'));
@@ -228,8 +243,8 @@ assert.doesNotMatch(postBranch, /path === '\/missions\/available'/);
 assert.match(getBranch, /path === '\/missions\/available'/);
 
 console.log(
-  'PASS: available missions use strict parsing, day-scene request identity, '
-  + 'bounded presentation metadata, canonical GET, and merge into the task list without duplicate tracked labels.',
+  'PASS: available missions use a default-off persisted module gate, strict source-revision parsing, '
+  + 'mission request identity, finite activation states, no-receiver presentation, canonical GET, and tracked-label precedence.',
 );
 
 function availableMission(label, title, characterName, sceneNames) {
@@ -240,6 +255,11 @@ function availableMission(label, title, characterName, sceneNames) {
     characterName,
     sceneNames,
     presentationStatus: 'ready',
+    activationMode: 'conditional',
+    activationStatus: 'available',
+    triggerKind: 'kizuna-checkpoint',
+    sourceTiming: 'after-performance',
+    activationHint: 'kizuna-ready',
   };
 }
 

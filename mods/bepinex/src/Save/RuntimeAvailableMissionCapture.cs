@@ -2,8 +2,6 @@ namespace MystiaStewardCompanion.Save;
 
 internal static class RuntimeAvailableMissionCapture
 {
-    public const int SupportedTriggerType = 5;
-    public const string SupportedReferenceSource = "postMissionsAfterPerformance";
     public const string EligibleDisposition = "eligible";
     private const int MaxCandidateCount = 4096;
     private const int MaxFinishedLabelCount = 20_000;
@@ -19,13 +17,13 @@ internal static class RuntimeAvailableMissionCapture
         {
             return RuntimeAvailableMissionSnapshot.Unavailable(
                 input.MissionGeneration,
-                input.DaySceneGeneration,
+                input.SourceRevision,
                 string.IsNullOrEmpty(input.Error)
                     ? "available-mission-source-incomplete"
                     : $"available-mission-source-incomplete:{input.Error}");
         }
         if (input.MissionGeneration <= 0
-            || input.DaySceneGeneration <= 0
+            || input.SourceRevision <= 0
             || input.SourceMissionChangeVersion < 0
             || input.FinishedEvents == null
             || input.FinishedMissions == null
@@ -38,7 +36,7 @@ internal static class RuntimeAvailableMissionCapture
         {
             return RuntimeAvailableMissionSnapshot.Unavailable(
                 input.MissionGeneration,
-                input.DaySceneGeneration,
+                input.SourceRevision,
                 "available-mission-source-invalid");
         }
 
@@ -58,7 +56,12 @@ internal static class RuntimeAvailableMissionCapture
             foreach (var candidate in input.Candidates)
             {
                 ArgumentNullException.ThrowIfNull(candidate);
-                if (!IsSupportedCandidate(candidate))
+                if (!RuntimeAvailableMissionTriggerClassifier.TryClassify(
+                        candidate.TriggerType,
+                        candidate.EligibilityDisposition,
+                        candidate.ReferenceSource,
+                        candidate.SourcePhase,
+                        out _))
                 {
                     continue;
                 }
@@ -94,14 +97,32 @@ internal static class RuntimeAvailableMissionCapture
                     continue;
                 }
 
-                if (!pair.Value.Any(candidate =>
-                    PreconditionsSatisfied(
+                var satisfied = pair.Value
+                    .Where(candidate => PreconditionsSatisfied(
                         candidate,
                         finishedEvents,
-                        finishedMissions)))
+                        finishedMissions))
+                    .Select(candidate =>
+                    {
+                        if (!RuntimeAvailableMissionTriggerClassifier.TryClassify(
+                                candidate.TriggerType,
+                                candidate.EligibilityDisposition,
+                                candidate.ReferenceSource,
+                                candidate.SourcePhase,
+                                out var classification))
+                        {
+                            throw new InvalidOperationException(
+                                "supported-trigger-classification-changed");
+                        }
+                        return classification;
+                    })
+                    .ToArray();
+                if (satisfied.Length == 0)
                 {
                     continue;
                 }
+                var trigger = RuntimeAvailableMissionTriggerClassifier.Merge(
+                    satisfied);
 
                 available.Add(
                     new RuntimeAvailableMissionSnapshotEntry(
@@ -110,7 +131,12 @@ internal static class RuntimeAvailableMissionCapture
                         representative.ReceiverLabel,
                         representative.CharacterName,
                         representative.SceneNames.ToArray(),
-                        representative.PresentationStatus));
+                        representative.PresentationStatus,
+                        trigger.ActivationMode,
+                        trigger.ActivationStatus,
+                        trigger.TriggerKind,
+                        trigger.SourceTiming,
+                        trigger.ActivationHint));
             }
 
             available.Sort(
@@ -126,7 +152,7 @@ internal static class RuntimeAvailableMissionCapture
             return new RuntimeAvailableMissionSnapshot(
                 RuntimeAvailable: true,
                 MissionGeneration: input.MissionGeneration,
-                DaySceneGeneration: input.DaySceneGeneration,
+                SourceRevision: input.SourceRevision,
                 Status: RuntimeAvailableMissionSnapshot.ReadyStatus,
                 Error: "",
                 Missions: available.ToArray());
@@ -135,23 +161,9 @@ internal static class RuntimeAvailableMissionCapture
         {
             return RuntimeAvailableMissionSnapshot.Unavailable(
                 input.MissionGeneration,
-                input.DaySceneGeneration,
+                input.SourceRevision,
                 $"available-mission-projection-invalid:{ex.GetType().Name}:{ex.Message}");
         }
-    }
-
-    private static bool IsSupportedCandidate(
-        RuntimeAvailableMissionCandidate candidate)
-    {
-        return candidate.TriggerType == SupportedTriggerType
-            && string.Equals(
-                candidate.EligibilityDisposition,
-                EligibleDisposition,
-                StringComparison.Ordinal)
-            && string.Equals(
-                candidate.ReferenceSource,
-                SupportedReferenceSource,
-                StringComparison.Ordinal);
     }
 
     private static void ValidateCandidate(
@@ -168,19 +180,14 @@ internal static class RuntimeAvailableMissionCapture
             throw new InvalidOperationException(
                 $"mission-definition-unavailable:{candidate.MissionLabel}");
         }
-        if (!candidate.HasReceiver)
+        var noReceiver = string.Equals(
+            candidate.PresentationStatus,
+            RuntimeMissionPresentation.NoReceiverStatus,
+            StringComparison.Ordinal);
+        if (candidate.HasReceiver == noReceiver)
         {
             throw new InvalidOperationException(
-                $"mission-receiver-missing:{candidate.MissionLabel}");
-        }
-        if (string.IsNullOrWhiteSpace(candidate.ReceiverLabel)
-            || string.Equals(
-                candidate.PresentationStatus,
-                RuntimeMissionPresentation.NoReceiverStatus,
-                StringComparison.Ordinal))
-        {
-            throw new InvalidOperationException(
-                $"mission-presentation-receiver-missing:{candidate.MissionLabel}");
+                $"mission-presentation-receiver-shape-mismatch:{candidate.MissionLabel}");
         }
         if (!RuntimeMissionPresentation.IsValid(
                 new RuntimeMissionPresentation(

@@ -41,6 +41,7 @@ internal static class RuntimeScheduledMissionSourceReader
         "Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStringArray";
 
     private const int PermanentBucket = -1;
+    private const int TransitionBucketBase = int.MinValue;
     private const int MaxCorrectedDay = 1_000_000;
     private const int MaxPreNodeCount = 4096;
 
@@ -85,7 +86,6 @@ internal static class RuntimeScheduledMissionSourceReader
 
     public static RuntimeScheduledMissionSourceReadResult ReadFresh(
         RuntimeMissionDiagnosticSnapshot missionSnapshot,
-        long dayGeneration,
         RuntimeMappedGuestCatalogSnapshot mappedGuestSnapshot)
     {
         ArgumentNullException.ThrowIfNull(missionSnapshot);
@@ -97,13 +97,49 @@ internal static class RuntimeScheduledMissionSourceReader
                 ?? throw new InvalidOperationException(
                     "scheduled-mission-source-reader-not-resolved");
         }
-        return Read(shape, missionSnapshot, dayGeneration, mappedGuestSnapshot);
+        return Read(shape, missionSnapshot, mappedGuestSnapshot);
+    }
+
+    public static RuntimeScheduledMissionSourceReadResult ReadAvailableFresh(
+        RuntimeMissionDiagnosticSnapshot missionSnapshot,
+        RuntimeMappedGuestCatalogSnapshot mappedGuestSnapshot,
+        RuntimeAvailableMissionSourceSnapshot sourceSnapshot)
+    {
+        ArgumentNullException.ThrowIfNull(missionSnapshot);
+        ArgumentNullException.ThrowIfNull(mappedGuestSnapshot);
+        ArgumentNullException.ThrowIfNull(sourceSnapshot);
+        RuntimeShape shape;
+        lock (ShapeRoot)
+        {
+            shape = _shape
+                ?? throw new InvalidOperationException(
+                    "scheduled-mission-source-reader-not-resolved");
+        }
+        if (!sourceSnapshot.HooksAttached
+            || !sourceSnapshot.RuntimeAvailable
+            || sourceSnapshot.MissionGeneration != missionSnapshot.Generation
+            || sourceSnapshot.SourceRevision < 1
+            || sourceSnapshot.OwnerThreadId != missionSnapshot.OwnerThreadId)
+        {
+            throw new InvalidOperationException(
+                "available-mission-source-lifecycle-unavailable");
+        }
+
+        var scheduled = Read(
+            shape,
+            missionSnapshot,
+            mappedGuestSnapshot);
+        return MergeObservedTransitions(
+            shape,
+            missionSnapshot,
+            mappedGuestSnapshot,
+            sourceSnapshot,
+            scheduled);
     }
 
     private static RuntimeScheduledMissionSourceReadResult Read(
         RuntimeShape shape,
         RuntimeMissionDiagnosticSnapshot missionSnapshot,
-        long dayGeneration,
         RuntimeMappedGuestCatalogSnapshot mappedGuestSnapshot)
     {
         var timer = Stopwatch.StartNew();
@@ -111,11 +147,6 @@ internal static class RuntimeScheduledMissionSourceReader
         {
             throw new InvalidOperationException("scheduled-event-owner-thread-mismatch");
         }
-        if (dayGeneration < 1)
-        {
-            throw new InvalidOperationException("scheduled-event-day-generation-invalid");
-        }
-
         var missionReport = RuntimeMissionDiagnosticCapture.Report();
         if (missionReport.Summary.Generation != missionSnapshot.Generation
             || missionReport.Summary.ChangeVersion != missionSnapshot.ChangeVersion
@@ -272,6 +303,155 @@ internal static class RuntimeScheduledMissionSourceReader
             MissionReferences: missionReferences,
             CaptureElapsedMilliseconds: timer.ElapsedMilliseconds,
             Error: error);
+    }
+
+    private static RuntimeScheduledMissionSourceReadResult MergeObservedTransitions(
+        RuntimeShape shape,
+        RuntimeMissionDiagnosticSnapshot missionSnapshot,
+        RuntimeMappedGuestCatalogSnapshot mappedGuestSnapshot,
+        RuntimeAvailableMissionSourceSnapshot sourceSnapshot,
+        RuntimeScheduledMissionSourceReadResult scheduled)
+    {
+        if (sourceSnapshot.Transitions.Count == 0)
+        {
+            return scheduled;
+        }
+        RuntimeScheduledEventDiagnosticBounds.ValidateCount(
+            sourceSnapshot.Transitions.Count,
+            HardLimits.MaxScheduledEventCount,
+            "available-mission-source-transitions");
+
+        var timer = Stopwatch.StartNew();
+        var missionReport = RuntimeMissionDiagnosticCapture.Report();
+        if (missionReport.Summary.Generation != missionSnapshot.Generation
+            || missionReport.Summary.ChangeVersion != missionSnapshot.ChangeVersion
+            || missionReport.Summary.Phase != RuntimeMissionDiagnosticPhase.Ready
+            || !missionReport.Summary.RuntimeAvailable)
+        {
+            throw new InvalidOperationException(
+                "mission-report-changed-before-transition-read");
+        }
+
+        var activeMissionLabels = ReadActiveMissionLabels(
+            missionReport,
+            missionSnapshot.ActiveMissionCount);
+        var finishedMissionLabels =
+            RuntimeScheduledEventDiagnosticBounds.BuildMembershipSet(
+                scheduled.FinishedMissions,
+                HardLimits.MaxFinishedMissionCount,
+                "finished-missions-transition");
+        var scheduledEventLabels = scheduled.Events
+            .Select(entry => entry.Label)
+            .ToHashSet(StringComparer.Ordinal);
+        var eligibilityReader = new EligibilityReader(
+            shape,
+            mappedGuestSnapshot);
+        var transitionEvents = new List<RuntimeScheduledEventDiagnosticEntry>(
+            sourceSnapshot.Transitions.Count);
+        var expectedReferences = new HashSet<
+            (string EventLabel, string Source, int SourceOrdinal, string MissionLabel)>();
+
+        for (var index = 0; index < sourceSnapshot.Transitions.Count; index++)
+        {
+            var transition = sourceSnapshot.Transitions[index];
+            if (transition.Phase
+                    != RuntimeAvailableMissionSourcePhase.WaitingAfterPerformance
+                || !scheduledEventLabels.Add(transition.EventLabel))
+            {
+                throw new InvalidOperationException(
+                    $"available-mission-transition-invalid:{transition.EventLabel}");
+            }
+            var syntheticBucket = checked(TransitionBucketBase + index);
+            transitionEvents.Add(ReadEventDefinition(
+                shape,
+                new ScheduledEventSeed(
+                    transition.EventLabel,
+                    syntheticBucket,
+                    "transition",
+                    index),
+                finished: false,
+                duplicated: false,
+                eligibilityReader));
+
+            foreach (var reference in transition.References)
+            {
+                if (!string.Equals(
+                        reference.Source,
+                        RuntimeAvailableMissionSourceState.AfterPerformanceSource,
+                        StringComparison.Ordinal)
+                    || reference.SourceOrdinal < 0
+                    || !expectedReferences.Add((
+                        transition.EventLabel,
+                        reference.Source,
+                        reference.SourceOrdinal,
+                        reference.MissionLabel)))
+                {
+                    throw new InvalidOperationException(
+                        $"available-mission-transition-reference-invalid:{transition.EventLabel}");
+                }
+            }
+        }
+
+        var allTransitionReferences = ReadMissionReferences(
+            shape,
+            transitionEvents,
+            activeMissionLabels,
+            finishedMissionLabels);
+        var transitionReferences = allTransitionReferences
+            .Where(reference => string.Equals(
+                reference.Source,
+                RuntimeAvailableMissionSourceState.AfterPerformanceSource,
+                StringComparison.Ordinal))
+            .ToArray();
+        if (transitionReferences.Length != expectedReferences.Count
+            || transitionReferences.Any(reference => !expectedReferences.Contains((
+                reference.EventLabel,
+                reference.Source,
+                reference.SourceOrdinal,
+                reference.MissionLabel))))
+        {
+            throw new InvalidOperationException(
+                "available-mission-transition-reference-shape-changed");
+        }
+
+        var invalidEventCount = transitionEvents.Count(entry =>
+            string.Equals(entry.Disposition, "invalid", StringComparison.Ordinal));
+        var invalidEligibilityCount = transitionEvents.Count(entry =>
+            string.Equals(
+                entry.Eligibility?.Disposition,
+                "invalid",
+                StringComparison.Ordinal));
+        var invalidMissionCount = transitionReferences.Count(entry =>
+            string.Equals(entry.Disposition, "invalid", StringComparison.Ordinal));
+        var transitionComplete = invalidEventCount == 0
+            && invalidEligibilityCount == 0
+            && invalidMissionCount == 0;
+        timer.Stop();
+        var error = scheduled.Complete && transitionComplete
+            ? ""
+            : string.Join(
+                "; ",
+                new[]
+                {
+                    scheduled.Error,
+                    transitionComplete
+                        ? ""
+                        : $"transition-invalid-events={invalidEventCount}; "
+                            + $"transition-invalid-eligibility={invalidEligibilityCount}; "
+                            + $"transition-invalid-mission-references={invalidMissionCount}",
+                }.Where(value => value.Length > 0));
+        return scheduled with
+        {
+            Complete = scheduled.Complete && transitionComplete,
+            Events = scheduled.Events.Concat(transitionEvents).ToArray(),
+            MissionReferences = scheduled.MissionReferences
+                .Concat(transitionReferences)
+                .ToArray(),
+            CaptureElapsedMilliseconds = checked(
+                scheduled.CaptureElapsedMilliseconds
+                + timer.ElapsedMilliseconds),
+            Error = error,
+        };
     }
 
     private static HashSet<string> ReadActiveMissionLabels(
@@ -1215,6 +1395,14 @@ internal static class RuntimeScheduledMissionSourceReader
             var dayKindType = RequireType(DayKindTypeName);
             var dayCalculateType = RequireType(DayCalculateTypeName);
             ValidateInt32Enum(triggerKindType, TriggerKindTypeName);
+            ValidateEnumValue(
+                triggerKindType,
+                "OnEnterDaySceneMap",
+                RuntimeScheduledEventEligibility.OnEnterDaySceneMapTrigger);
+            ValidateEnumValue(
+                triggerKindType,
+                "OnEnterDayScene",
+                RuntimeScheduledEventEligibility.OnEnterDaySceneTrigger);
             ValidateEnumValue(
                 triggerKindType,
                 "OnTalkWithCharacter",

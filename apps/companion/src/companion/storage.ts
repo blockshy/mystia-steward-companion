@@ -17,6 +17,8 @@ const LEGACY_STORAGE_PREFIX = 'mystia-steward';
 const ENDPOINT_STORAGE_KEY = `${STORAGE_PREFIX}-mod-api-endpoint`;
 const TOKEN_STORAGE_KEY = `${STORAGE_PREFIX}-mod-api-token`;
 const TAB_STORAGE_KEY = `${STORAGE_PREFIX}-mod-tab`;
+const MISSION_LIST_MODULE_ENABLED_STORAGE_KEY = `${STORAGE_PREFIX}-mission-list-module-enabled`;
+const RARE_GUEST_INVITATION_MODULE_ENABLED_STORAGE_KEY = `${STORAGE_PREFIX}-rare-guest-invitation-module-enabled`;
 const RARE_GUEST_INVITATION_SCOPE_STORAGE_KEY = `${STORAGE_PREFIX}-rare-guest-invitation-scope`;
 const RARE_GUEST_INVITATION_LEVELS_STORAGE_KEY = `${STORAGE_PREFIX}-rare-guest-invitation-levels`;
 const FOCUS_COMPACT_STORAGE_KEY = `${STORAGE_PREFIX}-service-focus-compact`;
@@ -58,6 +60,22 @@ export function readStoredTab(): ModTab {
 
 export function persistTab(tab: ModTab) {
   localStorage.setItem(TAB_STORAGE_KEY, tab);
+}
+
+export function readStoredMissionListModuleEnabled(): boolean {
+  return readStoredBoolean(MISSION_LIST_MODULE_ENABLED_STORAGE_KEY, false);
+}
+
+export function persistMissionListModuleEnabled(enabled: boolean) {
+  localStorage.setItem(MISSION_LIST_MODULE_ENABLED_STORAGE_KEY, enabled ? '1' : '0');
+}
+
+export function readStoredRareGuestInvitationModuleEnabled(): boolean {
+  return readStoredBoolean(RARE_GUEST_INVITATION_MODULE_ENABLED_STORAGE_KEY, false);
+}
+
+export function persistRareGuestInvitationModuleEnabled(enabled: boolean) {
+  localStorage.setItem(RARE_GUEST_INVITATION_MODULE_ENABLED_STORAGE_KEY, enabled ? '1' : '0');
 }
 
 export function readStoredRareGuestInvitationScope(): RareGuestInvitationScope {

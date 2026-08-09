@@ -3,8 +3,8 @@ import type {
   RareGuestInvitationScope,
 } from '@/companion/types';
 
-export interface RareGuestInvitationRefreshContext {
-  active: boolean;
+export interface RareGuestInvitationRuntimeContext {
+  enabled: boolean;
   connected: boolean;
   connectionRevision: number;
   normalizedEndpoint: string;
@@ -32,21 +32,21 @@ export function getRareGuestInvitationTransientRetryDelayMs(
 }
 
 /**
- * Builds the identity of one passive invitation-list read.
+ * Builds the stable runtime identity shared by invitation reads and writes.
  *
- * A null identity means the day-scene runtime is not safe to read. Every value
- * that can make a previous result stale is included so a scene or connection
- * transition cannot reuse an earlier candidate list.
+ * A null identity means the module is disabled or the day-scene runtime is not
+ * safe to use. Page visibility is deliberately excluded: hiding the page stops
+ * passive reads, but must not pretend that an already submitted write vanished.
  */
-export function buildRareGuestInvitationRefreshIdentity({
-  active,
+export function buildRareGuestInvitationContextIdentity({
+  enabled,
   connected,
   connectionRevision,
   normalizedEndpoint,
   scope,
   snapshot,
-}: RareGuestInvitationRefreshContext): string | null {
-  if (!active
+}: RareGuestInvitationRuntimeContext): string | null {
+  if (!enabled
       || !connected
       || !snapshot?.runtimeLoaded
       || !snapshot.runtimeDaySceneReady

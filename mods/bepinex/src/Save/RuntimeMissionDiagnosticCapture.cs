@@ -556,6 +556,10 @@ internal static class RuntimeMissionDiagnosticCapture
             RuntimeScheduledEventDiagnosticCapture.ResetForMissionGeneration(
                 token.Generation,
                 DateTime.UtcNow);
+            RuntimeAvailableMissionSourceCapture.ResetForMissionGeneration(
+                token.Generation,
+                token.ThreadId,
+                DateTime.UtcNow);
             RuntimeServeInWorkMissionDiagnosticCapture.ResetForMissionGeneration(
                 token.Generation,
                 DateTime.UtcNow);
@@ -1194,6 +1198,10 @@ internal static class RuntimeMissionDiagnosticCapture
             committedSnapshot.Generation,
             committedSnapshot.OwnerThreadId,
             DateTime.UtcNow);
+        RuntimeAvailableMissionSourceCapture.ArmMissionGeneration(
+            committedSnapshot.Generation,
+            committedSnapshot.OwnerThreadId,
+            DateTime.UtcNow);
         AppendSnapshotDiagnostic("initialize-postfix");
     }
 
@@ -1224,6 +1232,10 @@ internal static class RuntimeMissionDiagnosticCapture
 
         var token = State.BeginLoadCapture(
             Environment.CurrentManagedThreadId,
+            changedAtUtc);
+        RuntimeAvailableMissionSourceCapture.ResetForMissionGeneration(
+            token.Generation,
+            token.ThreadId,
             changedAtUtc);
         RuntimeServeInWorkMissionDiagnosticCapture.ResetForMissionGeneration(
             token.Generation,
@@ -1268,7 +1280,13 @@ internal static class RuntimeMissionDiagnosticCapture
                 return;
             }
 
-            var frame = new StartHookFrame(snapshot.Generation, threadId, label);
+            var sourceStartToken =
+                RuntimeAvailableMissionSourceCapture.BeginMissionStart(label);
+            var frame = new StartHookFrame(
+                snapshot.Generation,
+                threadId,
+                label,
+                sourceStartToken);
             (_startFrames ??= new Stack<StartHookFrame>()).Push(frame);
             __state = frame;
         }
@@ -1334,6 +1352,7 @@ internal static class RuntimeMissionDiagnosticCapture
         if (!_hooksReady || __state == null || __state.Completed) return;
 
         var framePopped = false;
+        var sourceOutcome = RuntimeAvailableMissionStartOutcome.Uncertain;
         RuntimeMissionDefinitionDiagnosticReadResult? definition = null;
         try
         {
@@ -1444,9 +1463,14 @@ internal static class RuntimeMissionDiagnosticCapture
                     AppendSnapshotDiagnostic("start-commit-rejected");
                     return;
                 }
+                sourceOutcome = RuntimeAvailableMissionStartOutcome.Started;
                 RuntimeServeInWorkMissionDiagnosticCapture.ReconcileForMissionLifecycle(
                     __state.Generation,
                     DateTime.UtcNow);
+            }
+            else if (!__state.Faulted)
+            {
+                sourceOutcome = RuntimeAvailableMissionStartOutcome.Retired;
             }
         }
         catch (Exception ex)
@@ -1463,6 +1487,9 @@ internal static class RuntimeMissionDiagnosticCapture
                     _startFrames?.Clear();
                 }
             }
+            RuntimeAvailableMissionSourceCapture.CompleteMissionStart(
+                __state.SourceStartToken,
+                sourceOutcome);
             __state.Completed = true;
         }
     }
@@ -1485,6 +1512,9 @@ internal static class RuntimeMissionDiagnosticCapture
                 __exception == null
                     ? "start-postfix-not-completed"
                     : "start-original-exception");
+            RuntimeAvailableMissionSourceCapture.CompleteMissionStart(
+                __state.SourceStartToken,
+                RuntimeAvailableMissionStartOutcome.Uncertain);
             __state.Completed = true;
         }
         catch (Exception ex)
@@ -2386,16 +2416,22 @@ internal static class RuntimeMissionDiagnosticCapture
 
     private sealed class StartHookFrame
     {
-        public StartHookFrame(long generation, int threadId, string requestedLabel)
+        public StartHookFrame(
+            long generation,
+            int threadId,
+            string requestedLabel,
+            RuntimeAvailableMissionSourceStartToken sourceStartToken)
         {
             Generation = generation;
             ThreadId = threadId;
             RequestedLabel = requestedLabel;
+            SourceStartToken = sourceStartToken;
         }
 
         public long Generation { get; }
         public int ThreadId { get; }
         public string RequestedLabel { get; }
+        public RuntimeAvailableMissionSourceStartToken SourceStartToken { get; }
         public object? GeneratedInstance { get; set; }
         public RuntimeMissionDiagnosticTrackedSeed? GeneratedSeed { get; set; }
         public RuntimeMissionDiagnosticTrackedSeed? RefreshedSeed { get; set; }

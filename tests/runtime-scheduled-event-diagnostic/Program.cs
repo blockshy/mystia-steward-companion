@@ -380,6 +380,47 @@ static RuntimeScheduledEventMissionReferenceDiagnostic MissionReference(
 
 static void AssertEligibilityContracts()
 {
+    AssertEqual(
+        "eligible",
+        RuntimeScheduledEventEligibility.Evaluate(
+            RuntimeScheduledEventEligibility.OnEnterDaySceneMapTrigger,
+            "HakureiShrine",
+            eventFinished: false,
+            kizunaEvidence: null).Disposition,
+        "A map-entry trigger with an exact map identity was not eligible.");
+    AssertEqual(
+        "on-enter-day-scene-map",
+        RuntimeScheduledEventEligibility.Evaluate(
+            RuntimeScheduledEventEligibility.OnEnterDaySceneMapTrigger,
+            " ",
+            eventFinished: false,
+            kizunaEvidence: null).Reason,
+        "An opaque whitespace map identity was normalized.");
+    AssertEqual(
+        "ineligible",
+        RuntimeScheduledEventEligibility.Evaluate(
+            RuntimeScheduledEventEligibility.OnEnterDaySceneMapTrigger,
+            "",
+            eventFinished: false,
+            kizunaEvidence: null).Disposition,
+        "A map-entry trigger without a map identity was accepted.");
+    AssertEqual(
+        "eligible",
+        RuntimeScheduledEventEligibility.Evaluate(
+            RuntimeScheduledEventEligibility.OnEnterDaySceneTrigger,
+            triggerId: null,
+            eventFinished: false,
+            kizunaEvidence: null).Disposition,
+        "A day-scene entry trigger incorrectly required a trigger identity.");
+    AssertEqual(
+        "excluded",
+        RuntimeScheduledEventEligibility.Evaluate(
+            RuntimeScheduledEventEligibility.OnEnterDaySceneTrigger,
+            triggerId: null,
+            eventFinished: true,
+            kizunaEvidence: null).Disposition,
+        "A finished day-scene entry event was not excluded.");
+
     var onTalk = RuntimeScheduledEventEligibility.Evaluate(
         RuntimeScheduledEventEligibility.OnTalkWithCharacterTrigger,
         "Meirin",

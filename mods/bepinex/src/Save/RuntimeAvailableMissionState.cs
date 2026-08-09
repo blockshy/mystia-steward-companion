@@ -6,7 +6,7 @@ internal sealed class RuntimeAvailableMissionState
     private RuntimeAvailableMissionSnapshot _snapshot =
         RuntimeAvailableMissionSnapshot.Unavailable(
             missionGeneration: 0,
-            daySceneGeneration: 0,
+            sourceRevision: 0,
             error: "available-mission-runtime-not-ready");
 
     public RuntimeAvailableMissionSnapshot Snapshot()
@@ -30,25 +30,25 @@ internal sealed class RuntimeAvailableMissionState
 
     public RuntimeAvailableMissionSnapshot SetUnavailable(
         long missionGeneration,
-        long daySceneGeneration,
+        long sourceRevision,
         string error)
     {
         return SetUnavailable(
             missionGeneration,
-            daySceneGeneration,
+            sourceRevision,
             RuntimeAvailableMissionSnapshot.RuntimeUnavailableStatus,
             error);
     }
 
     public RuntimeAvailableMissionSnapshot SetUnavailable(
         long missionGeneration,
-        long daySceneGeneration,
+        long sourceRevision,
         string status,
         string error)
     {
         var next = RuntimeAvailableMissionSnapshot.Unavailable(
             missionGeneration,
-            daySceneGeneration,
+            sourceRevision,
             status,
             error);
         lock (_gate)

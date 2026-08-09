@@ -159,7 +159,6 @@ internal static class RuntimeScheduledEventDiagnosticCapture
             {
                 var result = RuntimeScheduledMissionSourceReader.ReadFresh(
                     missionBefore,
-                    dayGeneration,
                     mappedGuestSnapshot);
                 var missionAfter = RuntimeMissionDiagnosticCapture.Snapshot();
                 if (Environment.CurrentManagedThreadId != unityMainThreadId

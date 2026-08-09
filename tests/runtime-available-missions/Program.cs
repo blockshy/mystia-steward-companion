@@ -6,14 +6,17 @@ using MystiaStewardCompanion.Save;
 try
 {
     TestSupportedProjection();
+    TestAutomaticTriggerProjection();
     TestStrictCandidateBoundary();
     TestNativeStartMissionGates();
     TestDuplicateMissionRules();
+    TestSourceLifecycleState();
     TestUnavailableAndStateIsolation();
     TestStableApiPayload();
     Console.WriteLine(
-        "PASS: available missions use strict type-5 after-performance eligibility, "
-        + "native start gates, deterministic deduplication, and stable payload signatures.");
+        "PASS: available missions use exact scene/kizuna trigger classification, "
+        + "source lifecycle revisions, native start gates, no-receiver presentation, "
+        + "deterministic aggregation, and stable payload signatures.");
     return 0;
 }
 catch (Exception ex)
@@ -62,6 +65,50 @@ static void TestSupportedProjection()
     AssertEqual("稗田阿求", a.CharacterName, "Available character name mismatch.");
     AssertSequence(new[] { "人间之里" }, a.SceneNames, "Available related scenes mismatch.");
     AssertEqual("ready", a.PresentationStatus, "Available presentation status mismatch.");
+    AssertEqual("conditional", a.ActivationMode, "Kizuna activation mode mismatch.");
+    AssertEqual("available", a.ActivationStatus, "Kizuna activation status mismatch.");
+    AssertEqual("kizuna-checkpoint", a.TriggerKind, "Kizuna trigger kind mismatch.");
+    AssertEqual("after-performance", a.SourceTiming, "Kizuna source timing mismatch.");
+}
+
+static void TestAutomaticTriggerProjection()
+{
+    var snapshot = Project(
+        Candidate(
+            sourceEvent: "Enter_Map_Event",
+            mission: "Enter_Map_Mission",
+            triggerType: RuntimeAvailableMissionTriggerClassifier
+                .OnEnterDaySceneMapTrigger,
+            referenceSource:
+                RuntimeAvailableMissionSourceState.BeforePerformanceSource,
+            hasReceiver: false,
+            receiver: "",
+            characterName: "",
+            sceneNames: Array.Empty<string>(),
+            presentationStatus: RuntimeMissionPresentation.NoReceiverStatus),
+        Candidate(
+            sourceEvent: "Enter_Day_Event",
+            mission: "Enter_Day_Mission",
+            triggerType: RuntimeAvailableMissionTriggerClassifier
+                .OnEnterDaySceneTrigger,
+            sourcePhase: RuntimeAvailableMissionTriggerClassifier
+                .WaitingAfterPerformancePhase));
+
+    AssertTrue(snapshot.RuntimeAvailable, "Scene-triggered missions were unavailable.");
+    AssertEqual(2, snapshot.Missions.Count, "Scene-triggered mission count mismatch.");
+    var mapMission = snapshot.Missions.Single(mission =>
+        mission.Label == "Enter_Map_Mission");
+    AssertEqual("automatic", mapMission.ActivationMode, "Map activation mode mismatch.");
+    AssertEqual("available", mapMission.ActivationStatus, "Map activation status mismatch.");
+    AssertEqual("enter-day-scene-map", mapMission.TriggerKind, "Map trigger kind mismatch.");
+    AssertEqual("before-performance", mapMission.SourceTiming, "Map source timing mismatch.");
+    AssertEqual("", mapMission.ReceiverLabel, "No-receiver task forged a receiver.");
+    AssertEqual("no-receiver", mapMission.PresentationStatus, "No-receiver status mismatch.");
+
+    var dayMission = snapshot.Missions.Single(mission =>
+        mission.Label == "Enter_Day_Mission");
+    AssertEqual("triggering", dayMission.ActivationStatus, "Transition status mismatch.");
+    AssertEqual("native-start-pending", dayMission.ActivationHint, "Transition hint mismatch.");
 }
 
 static void TestStrictCandidateBoundary()
@@ -76,9 +123,9 @@ static void TestStrictCandidateBoundary()
             sourceEvent: "Not_Eligible_Event",
             mission: "Not_Eligible_Mission"),
         Candidate(
-            referenceSource: "postMissions",
-            sourceEvent: "Immediate_Event",
-            mission: "Immediate_Mission"));
+            referenceSource: "legacyPostMissions",
+            sourceEvent: "Unknown_Source_Event",
+            mission: "Unknown_Source_Mission"));
     AssertEqual(0, unsupported.Missions.Count, "An unsupported source entered the business list.");
 
     AssertUnavailable(
@@ -99,12 +146,15 @@ static void TestStrictCandidateBoundary()
             mission: "Whitespace_Title_Mission",
             title: "   ")),
         "A whitespace-only localized title did not fail closed.");
-    AssertUnavailable(
-        Project(Candidate(
-            sourceEvent: "Missing_Receiver_Event",
-            mission: "Missing_Receiver_Mission",
-            hasReceiver: false)),
-        "A missing receiver did not fail closed.");
+    var noReceiver = Project(Candidate(
+        sourceEvent: "No_Receiver_Event",
+        mission: "No_Receiver_Mission",
+        hasReceiver: false,
+        receiver: "",
+        characterName: "",
+        sceneNames: Array.Empty<string>(),
+        presentationStatus: RuntimeMissionPresentation.NoReceiverStatus));
+    AssertEqual(1, noReceiver.Missions.Count, "A no-receiver task was excluded.");
     AssertUnavailable(
         Project(Candidate(
             sourceEvent: "Contradictory_Receiver_Event",
@@ -255,6 +305,25 @@ static void TestDuplicateMissionRules()
         oneSatisfied.Missions.Count,
         "A mission with one satisfied compatible source was not published.");
 
+    var multipleSources = Project(
+        Candidate(
+            sourceEvent: "Map_Source",
+            mission: "Multi_Source_Mission",
+            title: "多来源任务",
+            triggerType: RuntimeAvailableMissionTriggerClassifier
+                .OnEnterDaySceneMapTrigger,
+            referenceSource:
+                RuntimeAvailableMissionSourceState.BeforePerformanceSource),
+        Candidate(
+            sourceEvent: "Kizuna_Source",
+            mission: "Multi_Source_Mission",
+            title: "多来源任务"));
+    var aggregated = multipleSources.Missions.Single();
+    AssertEqual("multiple", aggregated.ActivationMode, "Multiple activation modes were guessed.");
+    AssertEqual("multiple", aggregated.TriggerKind, "Multiple trigger kinds were guessed.");
+    AssertEqual("multiple", aggregated.SourceTiming, "Multiple source timings were guessed.");
+    AssertEqual("multiple-sources", aggregated.ActivationHint, "Multiple source hint mismatch.");
+
     AssertUnavailable(
         Project(
             Candidate(
@@ -266,6 +335,106 @@ static void TestDuplicateMissionRules()
                 mission: "Conflicting_Mission",
                 title: "标题 B")),
         "Conflicting duplicate metadata did not fail closed.");
+}
+
+static void TestSourceLifecycleState()
+{
+    var state = new RuntimeAvailableMissionSourceState();
+    var detached = state.Snapshot();
+    AssertFalse(detached.HooksAttached, "Source state started attached.");
+    AssertFalse(detached.RuntimeAvailable, "Detached source state was available.");
+
+    state.SetHookStatus(true, "patched:4/4", DateTime.UnixEpoch);
+    state.ResetForMissionGeneration(7, 41, DateTime.UnixEpoch.AddSeconds(1));
+    var reset = state.Snapshot();
+    AssertTrue(reset.HooksAttached, "Source hooks were not retained across reset.");
+    AssertFalse(reset.RuntimeAvailable, "Source state armed before scheduler initialization.");
+    AssertTrue(
+        state.ArmMissionGeneration(7, 41, DateTime.UnixEpoch.AddSeconds(2)),
+        "Exact source generation did not arm.");
+    AssertFalse(
+        state.ArmMissionGeneration(6, 41, DateTime.UnixEpoch.AddSeconds(3)),
+        "A stale source generation armed.");
+
+    var armed = state.Snapshot();
+    AssertTrue(armed.RuntimeAvailable, "Armed source state was unavailable.");
+    AssertTrue(
+        state.ObserveSchedulerBoundary(
+            7,
+            41,
+            "  opaque event  ",
+            "schedule-event",
+            DateTime.UnixEpoch.AddSeconds(4)),
+        "Exact scheduler boundary was rejected.");
+    AssertTrue(
+        state.Snapshot().SourceRevision > armed.SourceRevision,
+        "Scheduler boundary did not advance source revision.");
+
+    AssertTrue(
+        state.CommitBeforePerformance(
+            7,
+            41,
+            "  opaque event  ",
+            new[]
+            {
+                RuntimeAvailableMissionStartOutcome.Started,
+                RuntimeAvailableMissionStartOutcome.Retired,
+            },
+            new[] { "After_A", "After_A", "  After B  " },
+            DateTime.UnixEpoch.AddSeconds(5)),
+        "Before-performance transition did not commit.");
+    var waiting = state.Snapshot();
+    AssertEqual(1, waiting.Transitions.Count, "Waiting transition count mismatch.");
+    AssertEqual(
+        RuntimeAvailableMissionSourcePhase.WaitingAfterPerformance,
+        waiting.Transitions[0].Phase,
+        "Waiting transition phase mismatch.");
+    AssertSequence(
+        new[] { 0, 1, 2 },
+        waiting.Transitions[0].References.Select(reference => reference.SourceOrdinal),
+        "Repeated after-performance references lost source ordinals.");
+    AssertSequence(
+        new[] { "After_A", "After_A", "  After B  " },
+        waiting.Transitions[0].References.Select(reference => reference.MissionLabel),
+        "Opaque after-performance identities were normalized.");
+
+    AssertTrue(
+        state.CommitAfterPerformance(
+            7,
+            41,
+            "  opaque event  ",
+            new[] { "After_A", "After_A", "  After B  " },
+            new[]
+            {
+                RuntimeAvailableMissionStartOutcome.Started,
+                RuntimeAvailableMissionStartOutcome.Retired,
+                RuntimeAvailableMissionStartOutcome.Started,
+            },
+            DateTime.UnixEpoch.AddSeconds(6)),
+        "After-performance transition did not retire.");
+    AssertEqual(
+        0,
+        state.Snapshot().Transitions.Count,
+        "Terminal source transition remained active.");
+
+    AssertFalse(
+        state.CommitBeforePerformance(
+            7,
+            41,
+            "Uncertain_Event",
+            new[] { RuntimeAvailableMissionStartOutcome.Uncertain },
+            new[] { "Must_Not_Leak" },
+            DateTime.UnixEpoch.AddSeconds(7)),
+        "An uncertain native start outcome was accepted.");
+    var failed = state.Snapshot();
+    AssertFalse(failed.RuntimeAvailable, "Uncertain source state did not fail closed.");
+    AssertEqual(0, failed.Transitions.Count, "Failed source state leaked transitions.");
+
+    state.ResetForMissionGeneration(8, 41, DateTime.UnixEpoch.AddSeconds(8));
+    AssertTrue(
+        state.ArmMissionGeneration(8, 41, DateTime.UnixEpoch.AddSeconds(9)),
+        "A new exact generation did not recover source state.");
+    AssertTrue(state.Snapshot().RuntimeAvailable, "Recovered source state was unavailable.");
 }
 
 static void TestUnavailableAndStateIsolation()
@@ -338,6 +507,18 @@ static void TestStableApiPayload()
         "Available API related scene missing.");
     AssertEqual("ready", root.GetProperty("missions")[0].GetProperty("presentationStatus").GetString(),
         "Available API presentation status missing.");
+    AssertEqual("conditional", root.GetProperty("missions")[0].GetProperty("activationMode").GetString(),
+        "Available API activation mode missing.");
+    AssertEqual("available", root.GetProperty("missions")[0].GetProperty("activationStatus").GetString(),
+        "Available API activation status missing.");
+    AssertEqual("kizuna-checkpoint", root.GetProperty("missions")[0].GetProperty("triggerKind").GetString(),
+        "Available API trigger kind missing.");
+    AssertEqual("after-performance", root.GetProperty("missions")[0].GetProperty("sourceTiming").GetString(),
+        "Available API source timing missing.");
+    AssertEqual(17L, root.GetProperty("sourceRevision").GetInt64(),
+        "Available API source revision mismatch.");
+    AssertFalse(root.TryGetProperty("daySceneGeneration", out _),
+        "Removed daySceneGeneration leaked into the new protocol.");
     var signature = root.GetProperty("contentSignature").GetString() ?? "";
     AssertEqual(64, signature.Length, "Content signature length mismatch.");
     AssertTrue(
@@ -360,7 +541,7 @@ static void TestStableApiPayload()
     AssertTrue(unchanged.GetProperty("unchanged").GetBoolean(), "Unchanged marker missing.");
     AssertEqual(signature, unchanged.GetProperty("contentSignature").GetString(), "Unchanged signature mismatch.");
 
-    var unavailable = RuntimeAvailableMissionSnapshot.Unavailable(4, 9, "scene-not-ready");
+    var unavailable = RuntimeAvailableMissionSnapshot.Unavailable(4, 9, "source-not-ready");
     var unavailableJson = LocalApiAvailableMissionsPayload.BuildJson(
         unavailable,
         "",
@@ -391,7 +572,7 @@ static RuntimeAvailableMissionSnapshot ProjectWithHistory(
         new RuntimeAvailableMissionCaptureInput(
             Complete: true,
             MissionGeneration: 2,
-            DaySceneGeneration: 7,
+            SourceRevision: 17,
             SourceMissionChangeVersion: 13,
             FinishedEvents: finishedEvents ?? Array.Empty<string>(),
             FinishedMissions: finishedMissions ?? Array.Empty<string>(),
@@ -406,7 +587,7 @@ static RuntimeAvailableMissionCaptureInput Input(
     return new RuntimeAvailableMissionCaptureInput(
         Complete: complete,
         MissionGeneration: 2,
-        DaySceneGeneration: 7,
+        SourceRevision: 17,
         SourceMissionChangeVersion: 13,
         FinishedEvents: Array.Empty<string>(),
         FinishedMissions: Array.Empty<string>(),
@@ -418,9 +599,10 @@ static RuntimeAvailableMissionCandidate Candidate(
     string sourceEvent,
     string mission,
     string title = "任务标题",
-    int triggerType = RuntimeAvailableMissionCapture.SupportedTriggerType,
+    int triggerType = RuntimeAvailableMissionTriggerClassifier.KizunaCheckPointTrigger,
     string eligibility = RuntimeAvailableMissionCapture.EligibleDisposition,
-    string referenceSource = RuntimeAvailableMissionCapture.SupportedReferenceSource,
+    string referenceSource = RuntimeAvailableMissionSourceState.AfterPerformanceSource,
+    string sourcePhase = RuntimeAvailableMissionTriggerClassifier.ScheduledPhase,
     bool definitionAvailable = true,
     bool hasReceiver = true,
     string receiver = "Meirin",
@@ -438,6 +620,7 @@ static RuntimeAvailableMissionCandidate Candidate(
         TriggerType: triggerType,
         EligibilityDisposition: eligibility,
         ReferenceSource: referenceSource,
+        SourcePhase: sourcePhase,
         MissionLabel: mission,
         DefinitionAvailable: definitionAvailable,
         Title: title,

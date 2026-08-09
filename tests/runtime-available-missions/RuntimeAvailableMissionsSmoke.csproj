@@ -11,8 +11,10 @@
     <Compile Include="../../mods/bepinex/src/LocalApi/LocalApiAvailableMissionsPayload.cs" Link="LocalApiAvailableMissionsPayload.cs" />
     <Compile Include="../../mods/bepinex/src/LocalApi/LocalApiSnapshotSignature.cs" Link="LocalApiSnapshotSignature.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeAvailableMissionCapture.cs" Link="RuntimeAvailableMissionCapture.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeAvailableMissionSourceState.cs" Link="RuntimeAvailableMissionSourceState.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeAvailableMissionSnapshot.cs" Link="RuntimeAvailableMissionSnapshot.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeAvailableMissionState.cs" Link="RuntimeAvailableMissionState.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeAvailableMissionTriggerClassifier.cs" Link="RuntimeAvailableMissionTriggerClassifier.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeMissionPresentation.cs" Link="RuntimeMissionPresentation.cs" />
   </ItemGroup>
 </Project>

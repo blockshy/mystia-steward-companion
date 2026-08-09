@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
-  buildRareGuestInvitationRefreshIdentity,
+  buildRareGuestInvitationContextIdentity,
   getRareGuestInvitationTransientRetryDelayMs,
   RARE_GUEST_INVITATION_TRANSIENT_RETRY_DELAYS_MS,
 } from '../../apps/companion/src/companion/rare-guest-invitation-refresh.ts';
@@ -13,19 +13,19 @@ const baseSnapshot = {
   activeDayMapLabel: 'YoukaiTrail',
 };
 const baseContext = {
-  active: true,
   connected: true,
   connectionRevision: 3,
+  enabled: true,
   normalizedEndpoint: 'http://127.0.0.1:32145',
   scope: 'current',
   snapshot: baseSnapshot,
 };
 
-const identity = buildRareGuestInvitationRefreshIdentity(baseContext);
-assert.ok(identity, 'A stable day scene must produce an invitation refresh identity.');
+const identity = buildRareGuestInvitationContextIdentity(baseContext);
+assert.ok(identity, 'An enabled module in a stable day scene must produce an invitation context identity.');
 
 for (const context of [
-  { ...baseContext, active: false },
+  { ...baseContext, enabled: false },
   { ...baseContext, connected: false },
   { ...baseContext, snapshot: null },
   { ...baseContext, snapshot: { ...baseSnapshot, runtimeLoaded: false } },
@@ -34,9 +34,9 @@ for (const context of [
   { ...baseContext, snapshot: { ...baseSnapshot, activeDayMapLabel: '' } },
 ]) {
   assert.equal(
-    buildRareGuestInvitationRefreshIdentity(context),
+    buildRareGuestInvitationContextIdentity(context),
     null,
-    'An unsafe or inactive context must not produce a passive invitation read.',
+    'A disabled or unsafe context must not permit invitation reads or writes.',
   );
 }
 
@@ -48,14 +48,14 @@ for (const context of [
   { ...baseContext, snapshot: { ...baseSnapshot, activeDayMapLabel: 'HumanVillage' } },
 ]) {
   assert.notEqual(
-    buildRareGuestInvitationRefreshIdentity(context),
+    buildRareGuestInvitationContextIdentity(context),
     identity,
     'Every state boundary that can stale a candidate list must change its refresh identity.',
   );
 }
 
 assert.equal(
-  buildRareGuestInvitationRefreshIdentity({
+  buildRareGuestInvitationContextIdentity({
     ...baseContext,
     snapshot: {
       ...baseSnapshot,
@@ -90,6 +90,8 @@ const [
   panelSource,
   missionsPanelSource,
   mockSource,
+  storageSource,
+  moduleControlSource,
 ] = await Promise.all([
   readFile(new URL('apps/companion/src/companion/api.ts', root), 'utf8'),
   readFile(new URL('apps/companion/src/companion/hooks/useRareGuestInvitations.ts', root), 'utf8'),
@@ -97,6 +99,8 @@ const [
   readFile(new URL('apps/companion/src/companion/pages/ModRareGuestInvitationsPanel.tsx', root), 'utf8'),
   readFile(new URL('apps/companion/src/companion/pages/ModMissionsPanel.tsx', root), 'utf8'),
   readFile(new URL('scripts/mock-local-api.mjs', root), 'utf8'),
+  readFile(new URL('apps/companion/src/companion/storage.ts', root), 'utf8'),
+  readFile(new URL('apps/companion/src/companion/pages/MissionModuleControl.tsx', root), 'utf8'),
 ]);
 
 const listApi = sourceSlice(
@@ -130,11 +134,13 @@ for (const [name, source] of [
 }
 
 for (const contract of [
-  'buildRareGuestInvitationRefreshIdentity',
+  'buildRareGuestInvitationContextIdentity',
+  'const listIdentity = visible ? contextIdentity : null',
   'requestGenerationRef',
   'listAbortControllerRef',
   'attemptedListIdentityRef',
-  'latestIdentityRef.current !== identity',
+  'latestListIdentityRef.current !== identity',
+  'latestContextIdentityRef.current !== contextIdentity',
   'scheduleTransientListRetry(identity)',
   'clearTransientListRetry()',
   'if (!response.ok)',
@@ -142,7 +148,8 @@ for (const contract of [
   "getRareGuestInvitationError(response, '批量邀请稀客失败。')",
   "getRareGuestInvitationError(response, '邀请稀客失败。')",
   'setRareGuestInvitationResult(null)',
-  'rareGuestInvitationContextReady: refreshIdentity !== null',
+  'rareGuestInvitationContextReady: contextIdentity !== null',
+  "rareGuestInvitationBusyKey !== 'list'",
   'const writeContext = useMemo<RareGuestInvitationWriteContext | null>',
   'expectedDaySceneGeneration: snapshot.runtimeDaySceneGeneration',
   'expectedMapLabel,',
@@ -152,7 +159,11 @@ for (const contract of [
   assert.ok(hookSource.includes(contract), `Invitation Hook is missing stale-request contract: ${contract}`);
 }
 assert.ok(workbenchSource.includes('connectionRevision,'));
-assert.ok(workbenchSource.includes("active: tab === 'missions' && missionPanelView === 'invitations'"));
+assert.ok(workbenchSource.includes("const rareGuestInvitationVisible = tab === 'missions' && missionPanelView === 'invitations'"));
+assert.ok(workbenchSource.includes('enabled: rareGuestInvitationModuleEnabled'));
+assert.ok(workbenchSource.includes('visible: rareGuestInvitationVisible'));
+assert.ok(workbenchSource.includes('readStoredRareGuestInvitationModuleEnabled'));
+assert.ok(workbenchSource.includes('persistRareGuestInvitationModuleEnabled(enabled)'));
 assert.ok(workbenchSource.includes('runtimeDaySceneReady={snapshot?.runtimeDaySceneReady ?? false}'));
 assert.ok(workbenchSource.includes('invitationContextReady={rareGuestInvitationContextReady}'));
 assert.ok(missionsPanelSource.includes('<TabsTrigger value="invitations"'));
@@ -162,6 +173,15 @@ assert.ok(panelSource.includes(') : !inviteAllError && ('));
 assert.ok(panelSource.includes('const busy = inviteBusyKey === `guest:${entry.id}`;'));
 assert.ok(panelSource.includes('onClick={() => onInviteRareGuest(entry.id)}'));
 assert.ok(panelSource.includes('const key = entry.id >= 0'));
+assert.ok(panelSource.includes('label="启用稀客邀请模块"'));
+assert.ok(panelSource.includes('稀客邀请模块已停用'));
+assert.ok(panelSource.includes('rareGuestInvitationModuleToggleDisabled'));
+assert.ok(storageSource.includes("`${STORAGE_PREFIX}-rare-guest-invitation-module-enabled`"));
+assert.match(
+  storageSource,
+  /readStoredRareGuestInvitationModuleEnabled\(\): boolean \{\s+return readStoredBoolean\(RARE_GUEST_INVITATION_MODULE_ENABLED_STORAGE_KEY, false\);/,
+);
+assert.ok(moduleControlSource.includes('data-gamepad-focus-key={focusKey}'));
 assert.ok(mockSource.includes("invitation(10, '雾雨魔理沙'"));
 assert.ok(mockSource.includes("'DLC1_Marisa'"));
 
@@ -171,8 +191,8 @@ assert.doesNotMatch(postBranch, /path === '\/rare-guests\/invitations'/);
 assert.match(getBranch, /path === '\/rare-guests\/invitations'/);
 
 console.log(
-  'PASS: rare-guest invitation reads use day-scene identities, GET-only transport, '
-  + 'bounded transient-readiness retries, stale-response isolation, and guarded write contexts.',
+  'PASS: rare-guest invitations use a default-off persisted module gate, split read/write identities, '
+  + 'GET-only list transport, bounded transient-readiness retries, and stale-response isolation.',
 );
 
 function sourceSlice(source, startText, endText) {

@@ -5,8 +5,10 @@ import process from 'node:process';
 const repoRoot = process.cwd();
 const availableFiles = [
   'mods/bepinex/src/Save/RuntimeAvailableMissionCapture.cs',
+  'mods/bepinex/src/Save/RuntimeAvailableMissionSourceState.cs',
   'mods/bepinex/src/Save/RuntimeAvailableMissionSnapshot.cs',
   'mods/bepinex/src/Save/RuntimeAvailableMissionState.cs',
+  'mods/bepinex/src/Save/RuntimeAvailableMissionTriggerClassifier.cs',
   'mods/bepinex/src/LocalApi/LocalApiAvailableMissionsPayload.cs',
 ];
 const combined = availableFiles
@@ -26,6 +28,14 @@ const localApi = fs.readFileSync(
 );
 const presentationReader = fs.readFileSync(
   path.join(repoRoot, 'mods/bepinex/src/Save/RuntimeMissionPresentationReader.cs'),
+  'utf8',
+);
+const sourceCapture = fs.readFileSync(
+  path.join(repoRoot, 'mods/bepinex/src/Save/RuntimeAvailableMissionSourceCapture.cs'),
+  'utf8',
+);
+const missionCapture = fs.readFileSync(
+  path.join(repoRoot, 'mods/bepinex/src/Save/RuntimeMissionDiagnosticCapture.cs'),
   'utf8',
 );
 
@@ -52,8 +62,15 @@ if (violations.length > 0) {
 }
 
 for (const required of [
-  'SupportedTriggerType = 5',
-  'SupportedReferenceSource = "postMissionsAfterPerformance"',
+  'OnEnterDaySceneMapTrigger = 0',
+  'OnEnterDaySceneTrigger = 1',
+  'KizunaCheckPointTrigger = 5',
+  'SourceRevision',
+  'ActivationMode',
+  'ActivationStatus',
+  'TriggerKind',
+  'SourceTiming',
+  'ActivationHint',
   'EligibilityDisposition',
   'PreNodes',
   'LoopedMission',
@@ -82,6 +99,10 @@ for (const forbiddenReaderCall of [
 }
 for (const requiredReaderContract of [
   'ReadFresh(',
+  'ReadAvailableFresh(',
+  'MergeObservedTransitions(',
+  'transitionReferences.Length != expectedReferences.Count',
+  'available-mission-transition-reference-shape-changed',
   'FinishedEvents: finishedEvents',
   'FinishedMissions: finishedMissions',
   'PreNodes',
@@ -98,10 +119,11 @@ for (const requiredControllerContract of [
   'PendingAvailableMissionRead : MainThreadCommand<RuntimeAvailableMissionSnapshot>',
   'ProcessPendingAvailableMissionReads();',
   'if (!pending.TryBegin()) continue;',
-  'RuntimeScheduledMissionSourceReader.ReadFresh(',
+  'RuntimeScheduledMissionSourceReader.ReadAvailableFresh(',
+  'RuntimeAvailableMissionSourceCapture.Snapshot()',
   'MissionGeneration = mission.Generation',
   'missionAfter.ChangeVersion != missionBefore.ChangeVersion',
-  'RuntimeSceneReadinessCapture.DaySceneGeneration != dayGeneration',
+  'sourceAfter.SourceRevision != sourceBefore.SourceRevision',
   'ReferenceEquals(',
   'FinishedEvents: source.FinishedEvents',
   'FinishedMissions: source.FinishedMissions',
@@ -110,6 +132,51 @@ for (const requiredControllerContract of [
 ]) {
   if (!controller.includes(requiredControllerContract)) {
     throw new Error(`Available mission main-thread contract is missing: ${requiredControllerContract}`);
+  }
+}
+for (const removedControllerContract of [
+  'DaySceneGeneration: dayGeneration',
+  'snapshot.DaySceneGeneration',
+  '"day-scene-runtime-not-ready"',
+]) {
+  if (controller.includes(removedControllerContract)) {
+    throw new Error(`Removed available mission day-scene contract remains: ${removedControllerContract}`);
+  }
+}
+for (const requiredSourceHook of [
+  '"ScheduleEvent"',
+  '"DismissEvent"',
+  '"FinishSchedulerNode"',
+  '"FinishSchedulerNodePost"',
+  'patched:{ExpectedHookCount}/{ExpectedHookCount}',
+  'RuntimeAvailableMissionSourceState.BeforePerformanceSource',
+  'RuntimeAvailableMissionSourceState.AfterPerformanceSource',
+  'source-start-frame-order-mismatch',
+  'finish-scheduler-start-sequence-incomplete',
+]) {
+  if (!sourceCapture.includes(requiredSourceHook)) {
+    throw new Error(`Available mission source Hook is missing: ${requiredSourceHook}`);
+  }
+}
+for (const forbiddenSourceHook of [
+  'CanContinue',
+  'CheckCharacterInteractEvent',
+  'TryTrigger',
+  'RefOrGenerateSpecialRunTimeData',
+  'FindUnityObject',
+]) {
+  if (sourceCapture.includes(forbiddenSourceHook)) {
+    throw new Error(`Available mission source Hook restored forbidden behavior: ${forbiddenSourceHook}`);
+  }
+}
+for (const integrationContract of [
+  'RuntimeAvailableMissionSourceCapture.ResetForMissionGeneration(',
+  'RuntimeAvailableMissionSourceCapture.ArmMissionGeneration(',
+  'RuntimeAvailableMissionSourceCapture.BeginMissionStart(label)',
+  'RuntimeAvailableMissionSourceCapture.CompleteMissionStart(',
+]) {
+  if (!missionCapture.includes(integrationContract)) {
+    throw new Error(`Mission lifecycle source integration is missing: ${integrationContract}`);
   }
 }
 if (controller.includes('RuntimeScheduledEventDiagnosticCapture.Report()')) {
@@ -147,6 +214,7 @@ for (const requiredPresentationContract of [
 }
 if ((localApi.match(/case "\/missions\/available":/g) ?? []).length !== 1
     || !localApi.includes('snapshot/runtime-available-missions.json')
+    || !localApi.includes('snapshot/runtime-available-mission-sources.json')
     || !localApi.includes('_readAvailableMissions()')
     || !localApi.includes('LocalApiAvailableMissionsPayload.BuildJson(')) {
   throw new Error('Canonical available mission API or diagnostic export wiring is incomplete.');
@@ -154,5 +222,6 @@ if ((localApi.match(/case "\/missions\/available":/g) ?? []).length !== 1
 
 console.log(
   'PASS: available mission business code remains isolated from frozen diagnostics, '
-    + 'uses a cancellable Unity main-thread fresh read, and publishes one canonical GET payload.',
+    + 'uses exact passive scheduler transitions plus a cancellable Unity main-thread fresh read, '
+    + 'and publishes one source-revision canonical GET payload.',
 );

@@ -13,6 +13,7 @@ const APP_URL = process.env.MYSTIA_APP_URL || 'http://127.0.0.1:4173/';
 const API_URL = process.env.MYSTIA_API_URL || 'http://127.0.0.1:32145';
 const API_TOKEN = process.env.MYSTIA_API_TOKEN || 'mock-token';
 const OUTPUT_DIR = process.env.UI_AUDIT_OUTPUT_DIR || '/tmp/mystia-companion-ui-audit';
+const CHROMIUM_EXECUTABLE_PATH = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH?.trim();
 const STORAGE_PREFIX = 'mystia-steward-companion';
 
 const viewports = [
@@ -69,7 +70,12 @@ const hoverTargets = [
   },
 ];
 
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({
+  headless: true,
+  ...(CHROMIUM_EXECUTABLE_PATH
+    ? { executablePath: CHROMIUM_EXECUTABLE_PATH }
+    : {}),
+});
 const issues = [];
 const screenshots = [];
 
@@ -102,6 +108,8 @@ function seedLocalStorage({ apiUrl, apiToken, storagePrefix }) {
   localStorage.setItem(`${storagePrefix}-mod-api-endpoint`, apiUrl);
   localStorage.setItem(`${storagePrefix}-mod-api-token`, apiToken);
   localStorage.setItem(`${storagePrefix}-show-debug-details`, '1');
+  localStorage.setItem(`${storagePrefix}-mission-list-module-enabled`, '1');
+  localStorage.setItem(`${storagePrefix}-rare-guest-invitation-module-enabled`, '1');
   localStorage.setItem(`${storagePrefix}-automation-enabled`, '1');
   localStorage.setItem(`${storagePrefix}-auto-normal-order-enabled`, '1');
   localStorage.setItem(`${storagePrefix}-auto-normal-take-beverage`, '1');

@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { IconRefresh } from '@tabler/icons-react';
-import { Badge, Button, EmptyRow, InfoLine, Input, ListPanel, SegmentedControl } from '@/components/ui-kit';
+import { Badge, Button, EmptyRow, EmptyState, InfoLine, Input, ListPanel, SegmentedControl } from '@/components/ui-kit';
 import { toggleNumberInList } from '@/companion/storage';
 import type { RareGuestInvitationEntry, RareGuestInvitationResponse, RareGuestInvitationScope } from '@/companion/types';
 import { RuntimeUnavailable } from '@/companion/pages/shared';
+import { MissionModuleControl } from '@/companion/pages/MissionModuleControl';
 import { DENSE_TWO_COLUMN_GRID_TIGHT } from '@/companion/pages/shared-constants';
 
 function RareGuestInvitationPanel({
@@ -245,6 +246,8 @@ function RareGuestInvitationPanel({
 export interface ModRareGuestInvitationsPanelProps {
   runtimeLoaded: boolean;
   runtimeDaySceneReady: boolean;
+  rareGuestInvitationModuleEnabled: boolean;
+  rareGuestInvitationModuleToggleDisabled: boolean;
   invitationContextReady: boolean;
   activeDayMapName: string;
   activeDayMapLabel: string;
@@ -254,6 +257,7 @@ export interface ModRareGuestInvitationsPanelProps {
   inviteAllResult: RareGuestInvitationResponse | null;
   inviteAllError: string;
   showDebugDetails: boolean;
+  onRareGuestInvitationModuleEnabledChange: (enabled: boolean) => void;
   onInviteScopeChange: (scope: RareGuestInvitationScope) => void;
   onInviteLevelsChange: (levels: number[]) => void;
   onRefreshRareGuestInvitations: () => void;
@@ -264,6 +268,8 @@ export interface ModRareGuestInvitationsPanelProps {
 export function ModRareGuestInvitationsPanel({
   runtimeLoaded,
   runtimeDaySceneReady,
+  rareGuestInvitationModuleEnabled,
+  rareGuestInvitationModuleToggleDisabled,
   invitationContextReady,
   activeDayMapName,
   activeDayMapLabel,
@@ -273,35 +279,51 @@ export function ModRareGuestInvitationsPanel({
   inviteAllResult,
   inviteAllError,
   showDebugDetails,
+  onRareGuestInvitationModuleEnabledChange,
   onInviteScopeChange,
   onInviteLevelsChange,
   onRefreshRareGuestInvitations,
   onInviteAllRareGuests,
   onInviteRareGuest,
 }: ModRareGuestInvitationsPanelProps) {
-  if (!runtimeLoaded) {
-    return <RuntimeUnavailable />;
-  }
-
   return (
-    <RareGuestInvitationPanel
-      runtimeLoaded={runtimeLoaded}
-      runtimeDaySceneReady={runtimeDaySceneReady}
-      invitationContextReady={invitationContextReady}
-      activeDayMapName={activeDayMapName}
-      activeDayMapLabel={activeDayMapLabel}
-      inviteScope={inviteScope}
-      inviteLevels={inviteLevels}
-      inviteBusyKey={inviteBusyKey}
-      inviteAllResult={inviteAllResult}
-      inviteAllError={inviteAllError}
-      showDebugDetails={showDebugDetails}
-      onInviteScopeChange={onInviteScopeChange}
-      onInviteLevelsChange={onInviteLevelsChange}
-      onRefreshRareGuestInvitations={onRefreshRareGuestInvitations}
-      onInviteAllRareGuests={onInviteAllRareGuests}
-      onInviteRareGuest={onInviteRareGuest}
-    />
+    <div className="space-y-4">
+      <MissionModuleControl
+        moduleId="rare-guest-invitations"
+        label="启用稀客邀请模块"
+        description={rareGuestInvitationModuleToggleDisabled
+          ? '邀请写入已经提交，需等待 Mod 返回确定结果后才能关闭模块。'
+          : '开启后才会读取日间稀客候选并开放单独或批量邀请；关闭时不会发起邀请读取或写入。'}
+        enabled={rareGuestInvitationModuleEnabled}
+        disabled={rareGuestInvitationModuleToggleDisabled}
+        focusKey="missions:invitations:module-toggle"
+        onEnabledChange={onRareGuestInvitationModuleEnabledChange}
+      />
+      {!rareGuestInvitationModuleEnabled ? (
+        <EmptyState text="稀客邀请模块已停用。手动开启总控后才会读取候选或执行邀请。" />
+      ) : !runtimeLoaded ? (
+        <RuntimeUnavailable />
+      ) : (
+        <RareGuestInvitationPanel
+          runtimeLoaded={runtimeLoaded}
+          runtimeDaySceneReady={runtimeDaySceneReady}
+          invitationContextReady={invitationContextReady}
+          activeDayMapName={activeDayMapName}
+          activeDayMapLabel={activeDayMapLabel}
+          inviteScope={inviteScope}
+          inviteLevels={inviteLevels}
+          inviteBusyKey={inviteBusyKey}
+          inviteAllResult={inviteAllResult}
+          inviteAllError={inviteAllError}
+          showDebugDetails={showDebugDetails}
+          onInviteScopeChange={onInviteScopeChange}
+          onInviteLevelsChange={onInviteLevelsChange}
+          onRefreshRareGuestInvitations={onRefreshRareGuestInvitations}
+          onInviteAllRareGuests={onInviteAllRareGuests}
+          onInviteRareGuest={onInviteRareGuest}
+        />
+      )}
+    </div>
   );
 }
 

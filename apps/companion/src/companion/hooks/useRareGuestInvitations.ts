@@ -5,7 +5,7 @@ import {
   inviteAvailableRareGuest,
 } from '@/companion/api';
 import {
-  buildRareGuestInvitationRefreshIdentity,
+  buildRareGuestInvitationContextIdentity,
   getRareGuestInvitationTransientRetryDelayMs,
 } from '@/companion/rare-guest-invitation-refresh';
 import {
@@ -22,23 +22,25 @@ import type {
 } from '@/companion/types';
 
 interface UseRareGuestInvitationsOptions {
-  active: boolean;
   apiToken: string;
   connected: boolean;
   connectionRevision: number;
+  enabled: boolean;
   normalizedEndpoint: string;
   refresh: (manual?: boolean) => Promise<LocalApiSnapshot | null>;
   snapshot: LocalApiSnapshot | null;
+  visible: boolean;
 }
 
 export function useRareGuestInvitations({
-  active,
   apiToken,
   connected,
   connectionRevision,
+  enabled,
   normalizedEndpoint,
   refresh,
   snapshot,
+  visible,
 }: UseRareGuestInvitationsOptions) {
   const [rareGuestInvitationScope, setRareGuestInvitationScopeState] = useState<RareGuestInvitationScope>(() =>
     readStoredRareGuestInvitationScope(),
@@ -54,8 +56,8 @@ export function useRareGuestInvitations({
   const listAbortControllerRef = useRef<AbortController | null>(null);
   const activeListIdentityRef = useRef<string | null>(null);
   const attemptedListIdentityRef = useRef<string | null>(null);
-  const visibleIdentityRef = useRef<string | null>(null);
-  const latestIdentityRef = useRef<string | null>(null);
+  const latestContextIdentityRef = useRef<string | null>(null);
+  const latestListIdentityRef = useRef<string | null>(null);
   const transientRetryRef = useRef<{ identity: string | null; attemptIndex: number }>({
     identity: null,
     attemptIndex: 0,
@@ -64,34 +66,36 @@ export function useRareGuestInvitations({
   const nextOperationIdRef = useRef(0);
   const busyOperationRef = useRef({ id: 0, key: '' });
 
-  const refreshIdentity = useMemo(
-    () => buildRareGuestInvitationRefreshIdentity({
-      active,
+  const contextIdentity = useMemo(
+    () => buildRareGuestInvitationContextIdentity({
       connected,
       connectionRevision,
+      enabled,
       normalizedEndpoint,
       scope: rareGuestInvitationScope,
       snapshot,
     }),
     [
-      active,
       connected,
       connectionRevision,
+      enabled,
       normalizedEndpoint,
       rareGuestInvitationScope,
       snapshot,
     ],
   );
+  const listIdentity = visible ? contextIdentity : null;
   const writeContext = useMemo<RareGuestInvitationWriteContext | null>(() => {
-    if (!refreshIdentity || !snapshot) return null;
+    if (!contextIdentity || !snapshot) return null;
     const expectedMapLabel = snapshot.activeDayMapLabel?.trim() ?? '';
     if (snapshot.runtimeDaySceneGeneration < 1 || !expectedMapLabel) return null;
     return {
       expectedDaySceneGeneration: snapshot.runtimeDaySceneGeneration,
       expectedMapLabel,
     };
-  }, [refreshIdentity, snapshot]);
-  latestIdentityRef.current = refreshIdentity;
+  }, [contextIdentity, snapshot]);
+  latestContextIdentityRef.current = contextIdentity;
+  latestListIdentityRef.current = listIdentity;
 
   const clearTransientListRetry = useCallback(() => {
     if (transientRetryTimerRef.current != null) {
@@ -102,7 +106,7 @@ export function useRareGuestInvitations({
   }, []);
 
   const scheduleTransientListRetry = useCallback((identity: string) => {
-    if (latestIdentityRef.current !== identity) return;
+    if (latestListIdentityRef.current !== identity) return;
 
     const previous = transientRetryRef.current;
     const attemptIndex = previous.identity === identity
@@ -126,7 +130,7 @@ export function useRareGuestInvitations({
     };
     transientRetryTimerRef.current = window.setTimeout(() => {
       transientRetryTimerRef.current = null;
-      if (latestIdentityRef.current !== identity) return;
+      if (latestListIdentityRef.current !== identity) return;
       attemptedListIdentityRef.current = null;
       setRefreshEpoch((current) => current + 1);
     }, delay);
@@ -171,7 +175,7 @@ export function useRareGuestInvitations({
       setRareGuestInvitationError('未收到本地 API Token。请从游戏内启动或按 F8 唤起伴随窗口。');
       return;
     }
-    if (latestIdentityRef.current !== identity) return;
+    if (latestListIdentityRef.current !== identity) return;
     if (busyOperationRef.current.key && busyOperationRef.current.key !== 'list') return;
     if (!force
         && (attemptedListIdentityRef.current === identity
@@ -197,7 +201,7 @@ export function useRareGuestInvitations({
         abortController.signal,
       );
       if (requestGenerationRef.current !== requestGeneration
-          || latestIdentityRef.current !== identity) {
+          || latestListIdentityRef.current !== identity) {
         return;
       }
       if (!response.ok) {
@@ -219,7 +223,7 @@ export function useRareGuestInvitations({
     } catch (err) {
       if (abortController.signal.aborted
           || requestGenerationRef.current !== requestGeneration
-          || latestIdentityRef.current !== identity) {
+          || latestListIdentityRef.current !== identity) {
         return;
       }
       setRareGuestInvitationResult(null);
@@ -244,19 +248,19 @@ export function useRareGuestInvitations({
   ]);
 
   const loadRareGuestInvitations = useCallback(async () => {
-    if (!refreshIdentity) {
+    if (!listIdentity) {
       setRareGuestInvitationError('当前日间场景尚未稳定，暂时不能读取稀客邀请候选。');
       return;
     }
-    await runInvitationListRead(refreshIdentity, true);
-  }, [refreshIdentity, runInvitationListRead]);
+    await runInvitationListRead(listIdentity, true);
+  }, [listIdentity, runInvitationListRead]);
 
   const inviteAllRareGuests = useCallback(async () => {
     if (!apiToken) {
       setRareGuestInvitationError('未收到本地 API Token。请从游戏内启动或按 F8 唤起伴随窗口。');
       return;
     }
-    if (!refreshIdentity || !writeContext) {
+    if (!contextIdentity || !writeContext) {
       setRareGuestInvitationError('当前日间场景尚未稳定，暂时不能邀请稀客。');
       return;
     }
@@ -275,11 +279,11 @@ export function useRareGuestInvitations({
         writeContext,
       );
       if (busyOperationRef.current.id !== operationId
-          || latestIdentityRef.current !== refreshIdentity) {
+          || latestContextIdentityRef.current !== contextIdentity) {
         return;
       }
       if (!response.ok) {
-        attemptedListIdentityRef.current = refreshIdentity;
+        attemptedListIdentityRef.current = contextIdentity;
         setRareGuestInvitationError(getRareGuestInvitationError(response, '批量邀请稀客失败。'));
         return;
       }
@@ -288,15 +292,15 @@ export function useRareGuestInvitations({
       setRareGuestInvitationError('');
       await refresh(true);
       if (busyOperationRef.current.id === operationId
-          && latestIdentityRef.current === refreshIdentity) {
+          && latestContextIdentityRef.current === contextIdentity) {
         setRefreshEpoch((current) => current + 1);
       }
     } catch (err) {
       if (busyOperationRef.current.id !== operationId
-          || latestIdentityRef.current !== refreshIdentity) {
+          || latestContextIdentityRef.current !== contextIdentity) {
         return;
       }
-      attemptedListIdentityRef.current = refreshIdentity;
+      attemptedListIdentityRef.current = contextIdentity;
       setRareGuestInvitationError(err instanceof Error ? err.message : String(err));
     } finally {
       finishOperation(operationId);
@@ -311,7 +315,7 @@ export function useRareGuestInvitations({
     rareGuestInvitationLevels,
     rareGuestInvitationScope,
     refresh,
-    refreshIdentity,
+    contextIdentity,
     writeContext,
   ]);
 
@@ -320,7 +324,7 @@ export function useRareGuestInvitations({
       setRareGuestInvitationError('未收到本地 API Token。请从游戏内启动或按 F8 唤起伴随窗口。');
       return;
     }
-    if (!refreshIdentity || !writeContext) {
+    if (!contextIdentity || !writeContext) {
       setRareGuestInvitationError('当前日间场景尚未稳定，暂时不能邀请稀客。');
       return;
     }
@@ -340,11 +344,11 @@ export function useRareGuestInvitations({
         writeContext,
       );
       if (busyOperationRef.current.id !== operationId
-          || latestIdentityRef.current !== refreshIdentity) {
+          || latestContextIdentityRef.current !== contextIdentity) {
         return;
       }
       if (!response.ok) {
-        attemptedListIdentityRef.current = refreshIdentity;
+        attemptedListIdentityRef.current = contextIdentity;
         setRareGuestInvitationError(getRareGuestInvitationError(response, '邀请稀客失败。'));
         return;
       }
@@ -353,15 +357,15 @@ export function useRareGuestInvitations({
       setRareGuestInvitationError('');
       await refresh(true);
       if (busyOperationRef.current.id === operationId
-          && latestIdentityRef.current === refreshIdentity) {
+          && latestContextIdentityRef.current === contextIdentity) {
         setRefreshEpoch((current) => current + 1);
       }
     } catch (err) {
       if (busyOperationRef.current.id !== operationId
-          || latestIdentityRef.current !== refreshIdentity) {
+          || latestContextIdentityRef.current !== contextIdentity) {
         return;
       }
-      attemptedListIdentityRef.current = refreshIdentity;
+      attemptedListIdentityRef.current = contextIdentity;
       setRareGuestInvitationError(err instanceof Error ? err.message : String(err));
     } finally {
       finishOperation(operationId);
@@ -375,36 +379,39 @@ export function useRareGuestInvitations({
     normalizedEndpoint,
     rareGuestInvitationScope,
     refresh,
-    refreshIdentity,
+    contextIdentity,
     writeContext,
   ]);
 
   useEffect(() => {
-    if (visibleIdentityRef.current === refreshIdentity) return;
-    visibleIdentityRef.current = refreshIdentity;
     cancelListRequest();
     clearTransientListRetry();
-    const id = nextOperationIdRef.current + 1;
-    nextOperationIdRef.current = id;
-    busyOperationRef.current = { id, key: '' };
-    setRareGuestInvitationBusyKey('');
     attemptedListIdentityRef.current = null;
     setRareGuestInvitationResult(null);
     setRareGuestInvitationError('');
-  }, [cancelListRequest, clearTransientListRetry, refreshIdentity]);
+  }, [cancelListRequest, clearTransientListRetry, contextIdentity]);
 
   useEffect(() => {
-    if (!refreshIdentity
+    if (listIdentity) return;
+    cancelListRequest();
+    clearTransientListRetry();
+    attemptedListIdentityRef.current = null;
+    setRareGuestInvitationResult(null);
+    setRareGuestInvitationError('');
+  }, [cancelListRequest, clearTransientListRetry, listIdentity]);
+
+  useEffect(() => {
+    if (!listIdentity
         || rareGuestInvitationBusyKey
-        || attemptedListIdentityRef.current === refreshIdentity
-        || activeListIdentityRef.current === refreshIdentity) {
+        || attemptedListIdentityRef.current === listIdentity
+        || activeListIdentityRef.current === listIdentity) {
       return;
     }
-    void runInvitationListRead(refreshIdentity, false);
+    void runInvitationListRead(listIdentity, false);
   }, [
+    listIdentity,
     rareGuestInvitationBusyKey,
     refreshEpoch,
-    refreshIdentity,
     runInvitationListRead,
   ]);
 
@@ -437,7 +444,9 @@ export function useRareGuestInvitations({
     rareGuestInvitationResult,
     rareGuestInvitationError,
     rareGuestInvitationBusyKey,
-    rareGuestInvitationContextReady: refreshIdentity !== null,
+    rareGuestInvitationContextReady: contextIdentity !== null,
+    rareGuestInvitationWriteBusy: rareGuestInvitationBusyKey !== ''
+      && rareGuestInvitationBusyKey !== 'list',
     loadRareGuestInvitations,
     inviteAllRareGuests,
     inviteRareGuest,

@@ -5,6 +5,7 @@ import {
   Badge,
   Button,
   EmptyRow,
+  EmptyState,
   InfoLine,
   ListPanel,
   Tabs,
@@ -24,6 +25,7 @@ import {
   ModRareGuestInvitationsPanel,
   type ModRareGuestInvitationsPanelProps,
 } from '@/companion/pages/ModRareGuestInvitationsPanel';
+import { MissionModuleControl } from '@/companion/pages/MissionModuleControl';
 import {
   DENSE_THREE_COLUMN_GRID,
   INNER_TAB_TRIGGER_CLASS,
@@ -57,13 +59,15 @@ const MISSION_STATUS_VIEWS = [
 interface ModMissionsPanelProps extends ModRareGuestInvitationsPanelProps {
   view: MissionPanelView;
   connected: boolean;
-  availableContextReady: boolean;
+  missionListModuleEnabled: boolean;
+  availableRuntimeReady: boolean;
   availableMissions: AvailableMissionsResponse | null;
   availableMissionsError: string;
   availableMissionsLoading: boolean;
   trackedMissions: TrackedMissionsResponse | null;
   trackedMissionsError: string;
   trackedMissionsLoading: boolean;
+  onMissionListModuleEnabledChange: (enabled: boolean) => void;
   onViewChange: (view: MissionPanelView) => void;
   onRefreshMissions: () => void;
 }
@@ -71,13 +75,15 @@ interface ModMissionsPanelProps extends ModRareGuestInvitationsPanelProps {
 export function ModMissionsPanel({
   view,
   connected,
-  availableContextReady,
+  missionListModuleEnabled,
+  availableRuntimeReady,
   availableMissions,
   availableMissionsError,
   availableMissionsLoading,
   trackedMissions,
   trackedMissionsError,
   trackedMissionsLoading,
+  onMissionListModuleEnabledChange,
   onViewChange,
   onRefreshMissions,
   ...invitationProps
@@ -103,7 +109,8 @@ export function ModMissionsPanel({
         {view === 'tasks' && (
           <MissionListPanel
             connected={connected}
-            availableContextReady={availableContextReady}
+            enabled={missionListModuleEnabled}
+            availableRuntimeReady={availableRuntimeReady}
             availableResult={availableMissions}
             availableError={availableMissionsError}
             availableLoading={availableMissionsLoading}
@@ -111,6 +118,7 @@ export function ModMissionsPanel({
             trackedError={trackedMissionsError}
             trackedLoading={trackedMissionsLoading}
             showDebugDetails={invitationProps.showDebugDetails}
+            onEnabledChange={onMissionListModuleEnabledChange}
             onRefresh={onRefreshMissions}
           />
         )}
@@ -127,7 +135,8 @@ export function ModMissionsPanel({
 
 function MissionListPanel({
   connected,
-  availableContextReady,
+  enabled,
+  availableRuntimeReady,
   availableResult,
   availableError,
   availableLoading,
@@ -135,10 +144,12 @@ function MissionListPanel({
   trackedError,
   trackedLoading,
   showDebugDetails,
+  onEnabledChange,
   onRefresh,
 }: {
   connected: boolean;
-  availableContextReady: boolean;
+  enabled: boolean;
+  availableRuntimeReady: boolean;
   availableResult: AvailableMissionsResponse | null;
   availableError: string;
   availableLoading: boolean;
@@ -146,6 +157,7 @@ function MissionListPanel({
   trackedError: string;
   trackedLoading: boolean;
   showDebugDetails: boolean;
+  onEnabledChange: (enabled: boolean) => void;
   onRefresh: () => void;
 }) {
   const [statusView, setStatusView] = useState<MissionStatusView>('all');
@@ -175,116 +187,130 @@ function MissionListPanel({
       : trackedResult !== null;
 
   return (
-    <ListPanel
-      title={`任务列表 (${missions.length})`}
-      action={(
-        <Button
-          type="button"
-          size="sm"
-          className="h-8 px-2.5"
-          onClick={onRefresh}
-          disabled={!connected || loading}
-          data-gamepad-clickable="true"
-          data-gamepad-focus-key="missions:tasks:refresh"
+    <div className="space-y-4">
+      <MissionModuleControl
+        moduleId="task-list"
+        label="启用任务列表模块"
+        description="开启后才会读取并轮询可接取任务与当前活动任务；关闭不会影响任务料理置顶等共享的被动任务能力。"
+        enabled={enabled}
+        focusKey="missions:tasks:module-toggle"
+        onEnabledChange={onEnabledChange}
+      />
+      {!enabled ? (
+        <EmptyState text="任务列表模块已停用。手动开启总控后才会读取任务数据。" />
+      ) : (
+        <ListPanel
+          title={`任务列表 (${missions.length})`}
+          action={(
+            <Button
+              type="button"
+              size="sm"
+              className="h-8 px-2.5"
+              onClick={onRefresh}
+              disabled={!connected || loading}
+              data-gamepad-clickable="true"
+              data-gamepad-focus-key="missions:tasks:refresh"
+            >
+              <IconRefresh className={loading ? 'size-4 animate-spin' : 'size-4'} />
+              刷新
+            </Button>
+          )}
+          gamepadScrollKey="missions:tasks"
+          gamepadScrollLabel="任务列表"
         >
-          <IconRefresh className={loading ? 'size-4 animate-spin' : 'size-4'} />
-          刷新
-        </Button>
-      )}
-      gamepadScrollKey="missions:tasks"
-      gamepadScrollLabel="任务列表"
-    >
-      <div className="grid min-w-0 gap-3 text-sm">
-        {showDebugDetails && (availableResult || trackedResult) && (
-          <div className={DENSE_THREE_COLUMN_GRID}>
-            <InfoLine
-              label="任务代际"
-              value={availableResult?.missionGeneration ?? trackedResult?.generation ?? 0}
-              mono
-            />
-            <InfoLine
-              label="日间代际"
-              value={availableResult?.daySceneGeneration ?? 0}
-              mono
-            />
-            <InfoLine
-              label="读取状态"
-              value={`available=${availableResult?.status ?? 'none'}; tracked=${trackedResult?.status ?? 'none'}`}
-              mono
-            />
-          </div>
-        )}
-
-        {!connected && <EmptyRow text="等待 Mod 本地 API 连接。" />}
-        {connected && loading && !hasResult && <EmptyRow text="正在读取任务列表。" />}
-        {connected && !availableContextReady && showAvailableStatus && (
-          <EmptyRow text="进入日间场景并完成存档初始化后可读取可接取任务。" />
-        )}
-        {connected && showAvailableStatus && availableError && (
-          <EmptyRow text={`可接取任务：${availableError}`} />
-        )}
-        {connected && showTrackedStatus && trackedError && (
-          <EmptyRow text={`已追踪任务：${trackedError}`} />
-        )}
-        {connected && hasResult && (
-          <Tabs
-            value={statusView}
-            onValueChange={(value) => {
-              if (isMissionStatusView(value)) setStatusView(value);
-            }}
-            className="min-w-0 gap-3"
-            data-mission-status-tabs="true"
-          >
-            <TabsList
-              scrollable
-              aria-label="任务状态筛选"
-              className="h-9 w-full max-w-full flex-nowrap justify-start"
-            >
-              {statusViews.map((status) => (
-                <TabsTrigger
-                  key={status.value}
-                  value={status.value}
-                  className="min-w-[5rem] flex-none px-2.5 min-[720px]:min-w-0 min-[720px]:flex-1"
-                  data-gamepad-clickable="true"
-                  data-gamepad-focus-key={`missions:tasks:status:${status.value}`}
-                  data-mission-status-tab={status.value}
-                >
-                  <span>{status.label}</span>
-                  <span
-                    className="ml-1 tabular-nums text-xs text-muted-foreground"
-                    data-mission-status-tab-count={status.value}
-                  >
-                    {status.missions.length}
-                  </span>
-                </TabsTrigger>
-              ))}
-            </TabsList>
-
-            <TabsContent
-              value={activeStatusView.value}
-              className="min-w-0"
-              data-mission-status-list={activeStatusView.value}
-            >
-              <div className="min-w-0 px-2">
-                {activeStatusView.missions.map((mission) => (
-                  <MissionRow
-                    key={mission.label}
-                    entry={mission}
-                    showDebugDetails={showDebugDetails}
-                  />
-                ))}
-                {activeStatusView.missions.length === 0
-                  && canShowEmptyState
-                  && !(activeStatusView.value === 'available' && !availableContextReady)
-                  && (
-                    <EmptyRow text={getMissionEmptyText(activeStatusView.value)} />
-                  )}
+          <div className="grid min-w-0 gap-3 text-sm">
+            {showDebugDetails && (availableResult || trackedResult) && (
+              <div className={DENSE_THREE_COLUMN_GRID}>
+                <InfoLine
+                  label="任务代际"
+                  value={availableResult?.missionGeneration ?? trackedResult?.generation ?? 0}
+                  mono
+                />
+                <InfoLine
+                  label="来源修订"
+                  value={availableResult?.sourceRevision ?? 0}
+                  mono
+                />
+                <InfoLine
+                  label="读取状态"
+                  value={`available=${availableResult?.status ?? 'none'}; tracked=${trackedResult?.status ?? 'none'}`}
+                  mono
+                />
               </div>
-            </TabsContent>
-          </Tabs>
-        )}
-      </div>
-    </ListPanel>
+            )}
+
+            {!connected && <EmptyRow text="等待 Mod 本地 API 连接。" />}
+            {connected && loading && !hasResult && <EmptyRow text="正在读取任务列表。" />}
+            {connected && !availableRuntimeReady && showAvailableStatus && (
+              <EmptyRow text="等待游戏完成存档任务初始化。" />
+            )}
+            {connected && showAvailableStatus && availableError && (
+              <EmptyRow text={`可接取任务：${availableError}`} />
+            )}
+            {connected && showTrackedStatus && trackedError && (
+              <EmptyRow text={`已追踪任务：${trackedError}`} />
+            )}
+            {connected && hasResult && (
+              <Tabs
+                value={statusView}
+                onValueChange={(value) => {
+                  if (isMissionStatusView(value)) setStatusView(value);
+                }}
+                className="min-w-0 gap-3"
+                data-mission-status-tabs="true"
+              >
+                <TabsList
+                  scrollable
+                  aria-label="任务状态筛选"
+                  className="h-9 w-full max-w-full flex-nowrap justify-start"
+                >
+                  {statusViews.map((status) => (
+                    <TabsTrigger
+                      key={status.value}
+                      value={status.value}
+                      className="min-w-[5rem] flex-none px-2.5 min-[720px]:min-w-0 min-[720px]:flex-1"
+                      data-gamepad-clickable="true"
+                      data-gamepad-focus-key={`missions:tasks:status:${status.value}`}
+                      data-mission-status-tab={status.value}
+                    >
+                      <span>{status.label}</span>
+                      <span
+                        className="ml-1 tabular-nums text-xs text-muted-foreground"
+                        data-mission-status-tab-count={status.value}
+                      >
+                        {status.missions.length}
+                      </span>
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+
+                <TabsContent
+                  value={activeStatusView.value}
+                  className="min-w-0"
+                  data-mission-status-list={activeStatusView.value}
+                >
+                  <div className="min-w-0 px-2">
+                    {activeStatusView.missions.map((mission) => (
+                      <MissionRow
+                        key={mission.label}
+                        entry={mission}
+                        showDebugDetails={showDebugDetails}
+                      />
+                    ))}
+                    {activeStatusView.missions.length === 0
+                      && canShowEmptyState
+                      && !(activeStatusView.value === 'available' && !availableRuntimeReady)
+                      && (
+                        <EmptyRow text={getMissionEmptyText(activeStatusView.value)} />
+                      )}
+                  </div>
+                </TabsContent>
+              </Tabs>
+            )}
+          </div>
+        </ListPanel>
+      )}
+    </div>
   );
 }
 
@@ -302,16 +328,41 @@ function MissionRow({
         data-gamepad-row="true"
         data-gamepad-row-key={`mission:${entry.label}`}
         data-mission-status="available"
+        data-mission-activation-status={entry.mission.activationStatus}
+        data-mission-trigger-kind={entry.mission.triggerKind}
       >
         <div className="flex min-w-0 flex-wrap items-start justify-between gap-x-3 gap-y-1">
           <span className="min-w-0 break-words font-medium">{entry.title}</span>
-          <Badge variant="outline" className="shrink-0">可接取</Badge>
+          <Badge
+            variant={entry.mission.activationStatus === 'triggering' ? 'secondary' : 'outline'}
+            className="shrink-0"
+          >
+            {getAvailableMissionStatusLabel(entry.mission)}
+          </Badge>
+        </div>
+        <div
+          className="mt-1 text-xs text-muted-foreground"
+          data-mission-activation-hint={entry.mission.activationHint}
+        >
+          {getAvailableMissionHint(entry.mission)}
         </div>
         <MissionPresentationDetails
           mission={entry.mission}
           missionLabel={entry.label}
           showDebugDetails={showDebugDetails}
         />
+        {showDebugDetails && (
+          <div className="mt-1 break-all font-mono text-xs text-muted-foreground">
+            activationMode=
+            {entry.mission.activationMode}
+            ; activationStatus=
+            {entry.mission.activationStatus}
+            ; triggerKind=
+            {entry.mission.triggerKind}
+            ; sourceTiming=
+            {entry.mission.sourceTiming}
+          </div>
+        )}
       </div>
     );
   }
@@ -486,6 +537,33 @@ function getTrackedMissionStatusLabel(status: TrackedMissionEntry['status']): st
       return '进行中';
     case 'unverified':
       return '待确认';
+  }
+}
+
+function getAvailableMissionStatusLabel(mission: AvailableMissionEntry): string {
+  if (mission.activationStatus === 'triggering') return '接取中';
+  switch (mission.activationMode) {
+    case 'automatic':
+      return '自动触发';
+    case 'multiple':
+      return '多种触发';
+    case 'conditional':
+      return '可接取';
+  }
+}
+
+function getAvailableMissionHint(mission: AvailableMissionEntry): string {
+  switch (mission.activationHint) {
+    case 'enter-target-day-map':
+      return '进入指定白天地图时由游戏自动接取。';
+    case 'enter-day-scene':
+      return '进入白天场景时由游戏自动接取。';
+    case 'kizuna-ready':
+      return '羁绊条件已满足，等待游戏接取。';
+    case 'native-start-pending':
+      return '前置事件已完成，游戏正在接取任务。';
+    case 'multiple-sources':
+      return '该任务存在多个已确认的触发来源。';
   }
 }
 
