@@ -274,8 +274,11 @@ const connectionConfig = {
 };
 let automationLease = null;
 let automationCommandEpoch = 1;
-let automationCancellationAppliedEpoch = 0;
 let automationCookingJobs = [];
+let automationControlBlock = {
+  reasonCode: 'automation-authority-unavailable',
+  message: '自动化主设备控制权尚未就绪。',
+};
 const mockDeviceAuthority = {
   registryId: randomUUID().replaceAll('-', ''),
   authorityRevision: 0,
@@ -369,27 +372,13 @@ const server = http.createServer(async (request, response) => {
         return;
       }
 
-      if (path === '/automation/barriers/ack') {
-        sendJson(response, 200, acknowledgeAutomationSafetyBarrier(request, requestUrl.searchParams));
+      if (path === '/automation/lease/release') {
+        sendJson(response, 200, releaseAutomationLease(request));
         return;
       }
 
-      if (path === '/automation/cancel') {
-        const target = requestUrl.searchParams.get('target');
-        if (!isAutomationCancellationTarget(target)) {
-          sendJson(response, 400, {
-            ok: false,
-            target: '',
-            status: '',
-            error: 'target is required and must be exactly commands, rare, normal, or all',
-            commandEpoch: automationCommandEpoch,
-            cancelledJobs: 0,
-            cancelledCommands: 0,
-            leaseReleased: false,
-          });
-          return;
-        }
-        sendJson(response, 200, cancelAutomationJobs(request, target));
+      if (path === '/automation/barriers/ack') {
+        sendJson(response, 200, acknowledgeAutomationSafetyBarrier(request, requestUrl.searchParams));
         return;
       }
 
@@ -568,6 +557,7 @@ const server = http.createServer(async (request, response) => {
         }
         const actionResponse = buildOrderActionResponse(requestUrl.searchParams);
         automationCookingJobs = [buildMockAutomationCookingJob(actionResponse, path, requestUrl.searchParams)];
+        refreshMockAutomationCookingJobControls();
         sendJson(response, 200, actionResponse);
         return;
       }
@@ -732,7 +722,6 @@ function buildSnapshot() {
     nightBusinessAutomationBlockReason: '',
     runtimeNightBusinessAutomationStatus: 'mock automation allowed generation=1',
     automationSessionId,
-    automationCancellationAppliedEpoch,
     capturedAtUtc: nowIso(),
     activeSceneName: 'NightScene.MockBusiness',
     activeDayMapLabel: '妖怪兽道',
@@ -915,7 +904,6 @@ function buildSnapshot() {
 function buildSnapshotSignature(snapshot) {
   return [
     snapshot.pluginVersion,
-    snapshot.automationCancellationAppliedEpoch,
     snapshot.activeSceneName,
     snapshot.runtimeLoaded ? '1' : '0',
     snapshot.status,
@@ -924,7 +912,15 @@ function buildSnapshotSignature(snapshot) {
     snapshot.normalBusiness?.orders?.length ?? 0,
     snapshot.specialBusiness?.challengeType ?? '',
     snapshot.specialBusiness?.phase ?? '',
-    snapshot.automationCookingJobs.map((job) => `${job.jobId}:${job.state}:${job.reasonCode}`).join(','),
+    snapshot.automationCookingJobs.map((job) => [
+      job.jobId,
+      job.state,
+      job.reasonCode,
+      job.controlState,
+      job.controlReasonCode,
+      job.controlStage,
+      job.controlAuthorityRevision,
+    ].join(':')).join(','),
     snapshot.automationEvents.map((event) => event.sequence).join(','),
   ].join('|');
 }
@@ -1198,7 +1194,12 @@ function buildMockAutomationCookingJob(response, path, params) {
     specialTargetRevision: 0,
     allowYuumaControlledProgression:
       params.get('allowYuumaControlledProgression') === 'true',
-    autoDeliverFood: params.get('autoCollectCooking') === 'true' || params.get('autoDeliverFood') === 'true',
+    controlState: 'suspended-authority',
+    controlReasonCode: 'automation-authority-unavailable',
+    controlMessage: '自动化主设备控制权尚未就绪。',
+    controlAuthorityRevision: mockDeviceAuthority.authorityRevision,
+    controlStage: 'FoodDelivery',
+    controlSuspendedAtUtc: now,
     holdsControllerReservation: true,
     controllerLeaseReleaseReason: '',
     orderRuntimeKind: path === '/orders/normal/complete-first' ? 'Normal' : 'Special',
@@ -1712,6 +1713,11 @@ function updateMockDeviceProfile(request, body) {
     mockDeviceAuthority.authorityRevision += 1;
     mockDeviceAuthority.stateRevision += 1;
     automationLease = null;
+    automationControlBlock = {
+      reasonCode: 'automation-profile-changing',
+      message: '主设备生效配置正在切换；已开始的料理会保留在原厨具，配置应用并重新取得控制权后继续。',
+    };
+    refreshMockAutomationCookingJobControls();
   }
   current.lastSeenAtUtc = nowIso();
   return buildMockDeviceAuthorityState(current);
@@ -1728,6 +1734,11 @@ function setMockPrimaryDevice(request, body) {
     mockDeviceAuthority.authorityRevision += 1;
     mockDeviceAuthority.stateRevision += 1;
     automationLease = null;
+    automationControlBlock = {
+      reasonCode: 'automation-primary-device-changing',
+      message: '主设备正在切换；已开始的料理会保留在原厨具，新主设备取得控制权后继续。',
+    };
+    refreshMockAutomationCookingJobControls();
   }
   current.lastSeenAtUtc = nowIso();
   return buildMockDeviceAuthorityState(current);
@@ -1942,6 +1953,8 @@ function acquireAutomationLease(request) {
     expiresAt: now + AUTOMATION_LEASE_TTL_MS,
     authorityRevision: authority.authorityRevision,
   };
+  automationControlBlock = { reasonCode: '', message: '' };
+  refreshMockAutomationCookingJobControls();
   return buildAutomationLease(identity.clientId, identity.clientLabel, null, authority.authorityRevision);
 }
 
@@ -2002,60 +2015,45 @@ function acknowledgeAutomationSafetyBarrier(request, params) {
   };
 }
 
-function cancelAutomationJobs(request, target) {
+function releaseAutomationLease(request) {
   const identity = readClientIdentity(request);
   const authority = identity.error ? { ok: false, error: identity.error } : authorizeMockRuntimeWriter(request);
   pruneAutomationLease();
-  if (!authority.ok
-    || automationLease?.clientId !== identity.clientId
-    || automationLease?.authorityRevision !== authority.authorityRevision) {
-    return {
-      ok: false,
-      target,
-      status: '',
-      error: authority.error || 'automation lease is not owned',
-      commandEpoch: automationCommandEpoch,
-      cancelledJobs: 0,
-      cancelledCommands: 0,
-      leaseReleased: false,
-    };
+  if (!authority.ok) {
+    return buildAutomationLease(
+      identity.clientId,
+      identity.clientLabel,
+      authority.error,
+      authority.authorityRevision,
+    );
   }
-
-  automationCommandEpoch += 1;
-  const retainedJobs = automationCookingJobs.filter((job) => (
-    target === 'commands' || (target !== 'all' && job.targetKind !== target)
-  ));
-  const cancelledJobs = automationCookingJobs.length - retainedJobs.length;
-  automationCookingJobs = retainedJobs;
-  automationCancellationAppliedEpoch = automationCommandEpoch;
-  const leaseReleased = target === 'all';
-  if (leaseReleased) {
+  if (automationLease
+    && (automationLease.clientId !== identity.clientId
+      || automationLease.authorityRevision !== authority.authorityRevision)) {
+    return buildAutomationLease(
+      identity.clientId,
+      identity.clientLabel,
+      `自动化当前由 ${automationLease.clientLabel} 控制，本窗口不能释放其控制权。`,
+      authority.authorityRevision,
+    );
+  }
+  if (automationLease) {
     automationLease = null;
-  } else {
-    const now = Date.now();
-    automationLease.lastSeenAt = now;
-    automationLease.expiresAt = now + AUTOMATION_LEASE_TTL_MS;
+    automationCommandEpoch += 1;
+    automationControlBlock = {
+      reasonCode: 'automation-lease-released',
+      message: '主设备正在应用新的自动化配置；已开始的料理会保留在原厨具，配置生效并重新取得控制权后继续。',
+    };
+    refreshMockAutomationCookingJobControls();
   }
-  return {
-    ok: true,
-    target,
-    status: `mock ${target} automation cancelled`,
-    error: null,
-    commandEpoch: automationCommandEpoch,
-    cancelledJobs,
-    cancelledCommands: 0,
-    leaseReleased,
-  };
-}
-
-function isAutomationCancellationTarget(value) {
-  return value === 'commands' || value === 'rare' || value === 'normal' || value === 'all';
+  return buildAutomationLease(identity.clientId, identity.clientLabel, null, authority.authorityRevision);
 }
 
 function buildAutomationLease(clientId, clientLabel, error, authorityRevision = 0) {
   return {
     ok: !error,
-    owned: automationLease?.clientId === clientId,
+    owned: automationLease?.clientId === clientId
+      && automationLease?.authorityRevision === authorityRevision,
     clientId,
     clientLabel,
     authorityRevision,
@@ -2072,8 +2070,77 @@ function pruneAutomationLease() {
   if (automationLease
     && (automationLease.expiresAt <= Date.now()
       || automationLease.authorityRevision !== mockDeviceAuthority.authorityRevision)) {
+    const revisionChanged = automationLease.authorityRevision !== mockDeviceAuthority.authorityRevision;
     automationLease = null;
+    automationControlBlock = {
+      reasonCode: revisionChanged ? 'automation-authority-revision-changed' : 'automation-lease-expired',
+      message: revisionChanged
+        ? '主设备配置权威已经变化；已开始的料理保持暂停。'
+        : '主设备自动化租约已过期；已开始的料理保持暂停。',
+    };
+    refreshMockAutomationCookingJobControls();
   }
+}
+
+function refreshMockAutomationCookingJobControls() {
+  const primary = mockDeviceAuthority.devices.get(mockDeviceAuthority.primaryDeviceId);
+  const profile = primary?.profile;
+  const leaseReady = Boolean(
+    automationLease
+    && automationLease.authorityRevision === mockDeviceAuthority.authorityRevision
+    && automationLease.expiresAt > Date.now(),
+  );
+  for (const job of automationCookingJobs) {
+    const decision = getMockAutomationControlDecision(job, profile, leaseReady);
+    job.controlState = decision.state;
+    job.controlReasonCode = decision.reasonCode;
+    job.controlMessage = decision.message;
+    job.controlAuthorityRevision = mockDeviceAuthority.authorityRevision;
+    job.controlSuspendedAtUtc = decision.state === 'active'
+      ? null
+      : job.controlSuspendedAtUtc || nowIso();
+  }
+}
+
+function getMockAutomationControlDecision(job, profile, leaseReady) {
+  if (!profile || !leaseReady) {
+    return {
+      state: 'suspended-authority',
+      reasonCode: automationControlBlock.reasonCode || 'automation-authority-unavailable',
+      message: automationControlBlock.message || '自动化主设备控制权尚未就绪。',
+    };
+  }
+  if (!profile.automationEnabled) {
+    return {
+      state: 'suspended-configuration',
+      reasonCode: 'automation-disabled',
+      message: '自动化总控已关闭；已开始的料理会保留在原厨具，重新开启后继续。',
+    };
+  }
+  const rare = job.targetKind === 'rare';
+  if (rare ? !profile.autoRareOrderEnabled : !profile.autoNormalOrderEnabled) {
+    return {
+      state: 'suspended-configuration',
+      reasonCode: rare ? 'rare-automation-disabled' : 'normal-automation-disabled',
+      message: `${rare ? '稀客' : '普客'}自动化模块已关闭；已开始的料理保持暂停。`,
+    };
+  }
+  const evaluation = job.controlStage === 'OrderEvaluation';
+  const stageEnabled = evaluation
+    ? (rare ? profile.autoPrepCompleteOrder : profile.autoNormalCompleteOrder)
+    : (rare ? profile.autoPrepCollectCooking : profile.autoNormalDeliverFood);
+  if (!stageEnabled) {
+    return {
+      state: 'suspended-configuration',
+      reasonCode: evaluation
+        ? (rare ? 'rare-order-completion-disabled' : 'normal-order-completion-disabled')
+        : (rare ? 'rare-food-delivery-disabled' : 'normal-food-delivery-disabled'),
+      message: evaluation
+        ? '自动完成订单已关闭；重新开启后从订单评价步骤继续。'
+        : '自动送达料理已关闭；成品会保留在原厨具，重新开启后从送达步骤继续。',
+    };
+  }
+  return { state: 'active', reasonCode: '', message: '' };
 }
 
 function readClientIdentity(request) {

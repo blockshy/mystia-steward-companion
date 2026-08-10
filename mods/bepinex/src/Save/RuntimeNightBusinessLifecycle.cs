@@ -236,7 +236,16 @@ internal static class RuntimeNightBusinessLifecycle
             RunBoundaryAction("abandon pinned-list highlight", () => RuntimePinnedListHighlightService.Abandon(reason));
         }
 
-        RunBoundaryAction("invalidate UI target", () => RuntimeUiPinningService.InvalidateTarget(snapshot.Generation, reason));
+        RunBoundaryAction(
+            "retire recipe variant transactions",
+            () => RuntimeTargetRecipeVariantService.RetireForBusinessBoundary(
+                snapshot.Generation,
+                reason));
+        RunBoundaryAction(
+            "clear UI targets for business boundary",
+            () => RuntimeUiPinningService.ClearTargetsForBusinessBoundary(
+                snapshot.Generation,
+                reason));
         RunBoundaryAction(
             "retire automation safety barriers",
             () => RuntimeOrderPreparationService.ClearAutomationSafetyBarriersForBusinessGeneration(snapshot.Generation));
@@ -248,9 +257,7 @@ internal static class RuntimeNightBusinessLifecycle
         RunBoundaryAction(
             "clear automation cooking jobs",
             () => RuntimeOrderPreparationService.ClearAutomationCookingJobs(
-                "business-lifecycle-ended",
-                AutomationCancellationTarget.All,
-                preserveIrreversibleTransactions: false));
+                "business-lifecycle-ended"));
     }
 
     private static void RunBoundaryAction(string label, Action action)

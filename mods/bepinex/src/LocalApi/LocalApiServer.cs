@@ -81,7 +81,6 @@ internal sealed class LocalApiServer : IDisposable
     private readonly Func<OrderPreparationRequest, OrderPreparationResult> _completeOrder;
     private readonly Func<OrderPreparationRequest, OrderPreparationResult> _completeNormalOrder;
     private readonly Func<long, int> _advanceAutomationCommandEpoch;
-    private readonly Func<long, AutomationCancellationTarget, AutomationCancellationResult> _cancelAutomation;
     private readonly Func<long, AutomationSafetyBarrierAckResult> _ackAutomationSafetyBarrier;
     private readonly Func<RuntimeAvailableMissionSnapshot> _readAvailableMissions;
     private readonly Func<RuntimeAvailableMissionSnapshot> _getAvailableMissionSnapshot;
@@ -157,7 +156,6 @@ internal sealed class LocalApiServer : IDisposable
         Func<OrderPreparationRequest, OrderPreparationResult> completeNormalOrder,
         long automationCommandEpoch,
         Func<long, int> advanceAutomationCommandEpoch,
-        Func<long, AutomationCancellationTarget, AutomationCancellationResult> cancelAutomation,
         Func<long, AutomationSafetyBarrierAckResult> ackAutomationSafetyBarrier,
         Func<RuntimeAvailableMissionSnapshot> readAvailableMissions,
         Func<RuntimeAvailableMissionSnapshot> getAvailableMissionSnapshot,
@@ -194,7 +192,6 @@ internal sealed class LocalApiServer : IDisposable
         _completeNormalOrder = completeNormalOrder;
         _automationCommandEpoch = Math.Max(1, automationCommandEpoch);
         _advanceAutomationCommandEpoch = advanceAutomationCommandEpoch;
-        _cancelAutomation = cancelAutomation;
         _ackAutomationSafetyBarrier = ackAutomationSafetyBarrier;
         _readAvailableMissions = readAvailableMissions;
         _getAvailableMissionSnapshot = getAvailableMissionSnapshot;
@@ -205,6 +202,7 @@ internal sealed class LocalApiServer : IDisposable
         _favoriteStore = favoriteStore;
         _customRecipeStore = customRecipeStore;
         _deviceAuthorityStore = deviceAuthorityStore;
+        RuntimeAutomationControlState.Reset("本地 API 正在等待主设备注册和自动化控制权。");
     }
 
     public IPAddress BindAddress { get; }
@@ -285,6 +283,7 @@ internal sealed class LocalApiServer : IDisposable
 
     public void Dispose()
     {
+        RuntimeAutomationControlState.Reset("本地 API 已停止；现有自动料理任务保持暂停。");
         lock (_lanSettingsLock)
         {
             _running = false;
@@ -608,24 +607,8 @@ internal sealed class LocalApiServer : IDisposable
                     case "/automation/lease/acquire":
                         WriteResponse(stream, 200, "OK", ToJson(AcquireAutomationLease(request)));
                         break;
-                    case "/automation/cancel":
-                        if (!AutomationCancellationTargetPolicy.TryParse(
-                                ReadStringQuery(query, "target"),
-                                out var cancellationTarget))
-                        {
-                            WriteResponse(
-                                stream,
-                                400,
-                                "Bad Request",
-                                ToJson(new LocalApiAutomationCancellationDto
-                                {
-                                    Ok = false,
-                                    Error = "target is required and must be exactly commands, rare, normal, or all",
-                                }));
-                            break;
-                        }
-
-                        WriteResponse(stream, 200, "OK", ToJson(CancelAutomation(request, cancellationTarget)));
+                    case "/automation/lease/release":
+                        WriteResponse(stream, 200, "OK", ToJson(ReleaseAutomationLease(request)));
                         break;
                     case "/automation/barriers/ack":
                         WriteResponse(stream, 200, "OK", ToJson(AcknowledgeAutomationSafetyBarrier(request, query)));
@@ -1076,7 +1059,16 @@ internal sealed class LocalApiServer : IDisposable
             "platform",
             "appVersion",
             "profile");
-        return _deviceAuthorityStore.Register(clientId, clientLabel, body, DateTime.UtcNow);
+        lock (_authorityTransitionLock)
+        {
+            var state = _deviceAuthorityStore.Register(clientId, clientLabel, body, DateTime.UtcNow);
+            RuntimeAutomationControlState.PublishAuthority(
+                state.ActiveProfile,
+                state.AuthorityRevision,
+                "automation-authority-unavailable",
+                "主设备已注册，正在等待其取得自动化控制权；已开始的料理保持暂停。");
+            return state;
+        }
     }
 
     private CompanionDeviceAuthorityStateDto ReadCompanionDevices(string request)
@@ -1101,7 +1093,11 @@ internal sealed class LocalApiServer : IDisposable
             var state = _deviceAuthorityStore.UpdatePrimaryProfile(clientId, body, DateTime.UtcNow);
             if (state.AuthorityRevision != previousAuthorityRevision)
             {
-                InvalidateRuntimeAuthority("primary companion functional profile changed");
+                InvalidateRuntimeAuthority(
+                    state,
+                    "automation-profile-changing",
+                    "主设备生效配置正在切换；已开始的料理会保留在原厨具，配置应用并重新取得控制权后继续。",
+                    "primary companion functional profile changed");
             }
             return state;
         }
@@ -1120,7 +1116,11 @@ internal sealed class LocalApiServer : IDisposable
             var result = _deviceAuthorityStore.SetPrimary(clientId, body, DateTime.UtcNow);
             if (result.Changed)
             {
-                InvalidateRuntimeAuthority("primary companion device changed");
+                InvalidateRuntimeAuthority(
+                    result.State,
+                    "automation-primary-device-changing",
+                    "主设备正在切换；已开始的料理会保留在原厨具，新主设备取得控制权后继续。",
+                    "primary companion device changed");
             }
             return result.State;
         }
@@ -1167,26 +1167,34 @@ internal sealed class LocalApiServer : IDisposable
         return _deviceAuthorityStore.Forget(clientId, body, DateTime.UtcNow);
     }
 
-    private void InvalidateRuntimeAuthority(string reason)
+    private void InvalidateRuntimeAuthority(
+        CompanionDeviceAuthorityStateDto state,
+        string reasonCode,
+        string message,
+        string logReason)
     {
         lock (_automationLeaseLock)
         {
             _automationLease = null;
+            RuntimeAutomationControlState.PublishAuthority(
+                state.ActiveProfile,
+                state.AuthorityRevision,
+                reasonCode,
+                message);
             _automationCommandEpoch++;
             try
             {
-                _cancelAutomation(
-                    _automationCommandEpoch,
-                    AutomationCancellationTarget.All);
+                _advanceAutomationCommandEpoch(_automationCommandEpoch);
             }
             catch (Exception ex)
             {
-                _advanceAutomationCommandEpoch(_automationCommandEpoch);
-                _log.LogWarning($"Companion authority transition could not cancel all automation cleanly: {ex.GetBaseException().Message}");
+                _log.LogWarning($"Companion authority transition could not advance queued automation commands cleanly: {ex.GetBaseException().Message}");
             }
         }
-        RuntimeUiPinningService.InvalidateTarget(RuntimeNightBusinessLifecycle.Generation, reason);
-        _log.LogInfo($"Companion configuration authority advanced: {reason}.");
+        RuntimeUiPinningService.ClearTargetsForAuthorityTransition(
+            RuntimeNightBusinessLifecycle.Generation,
+            logReason);
+        _log.LogInfo($"Companion configuration authority advanced: {logReason}.");
     }
 
     private static T ReadJsonRequest<T>(HttpRequestData request, params string[] expectedProperties)
@@ -1323,23 +1331,25 @@ internal sealed class LocalApiServer : IDisposable
                     ExpiresAtUtc = now + AutomationLeaseTtl,
                     AuthorityRevision = authorityRevision,
                 };
+                RuntimeAutomationControlState.PublishLease(
+                    authorityRevision,
+                    _automationLease.ExpiresAtUtc);
                 return BuildAutomationLeaseDto(clientId, clientLabel, authorityRevision, null);
             }
         }
     }
 
-    private LocalApiAutomationCancellationDto CancelAutomation(
-        string request,
-        AutomationCancellationTarget target)
+    private LocalApiAutomationLeaseDto ReleaseAutomationLease(string request)
     {
-        var targetValue = AutomationCancellationTargetPolicy.ToWireValue(target);
         var (clientId, clientLabel, error) = ReadClientIdentity(request);
         if (!string.IsNullOrWhiteSpace(error))
         {
-            return new LocalApiAutomationCancellationDto
+            return new LocalApiAutomationLeaseDto
             {
                 Ok = false,
-                Target = targetValue,
+                ClientId = clientId,
+                ClientLabel = clientLabel,
+                TtlMs = (int)AutomationLeaseTtl.TotalMilliseconds,
                 Error = error,
             };
         }
@@ -1349,88 +1359,44 @@ internal sealed class LocalApiServer : IDisposable
             var now = DateTime.UtcNow;
             if (!TryAuthorizeRuntimeWriter(request, clientId, now, out var authorityRevision, out var authorityError))
             {
-                return new LocalApiAutomationCancellationDto
+                return new LocalApiAutomationLeaseDto
                 {
                     Ok = false,
-                    Target = targetValue,
+                    ClientId = clientId,
+                    ClientLabel = clientLabel,
+                    AuthorityRevision = authorityRevision,
+                    TtlMs = (int)AutomationLeaseTtl.TotalMilliseconds,
                     Error = authorityError,
-                    CommandEpoch = _automationCommandEpoch,
                 };
             }
+
             lock (_automationLeaseLock)
             {
                 PruneExpiredAutomationLease(now);
-                if (_automationLease == null
-                    || !string.Equals(_automationLease.ClientId, clientId, StringComparison.Ordinal)
-                    || _automationLease.AuthorityRevision != authorityRevision)
+                if (_automationLease != null
+                    && (!string.Equals(_automationLease.ClientId, clientId, StringComparison.Ordinal)
+                        || _automationLease.AuthorityRevision != authorityRevision))
                 {
-                    return new LocalApiAutomationCancellationDto
-                    {
-                        Ok = false,
-                        Target = targetValue,
-                        Error = _automationLease == null
-                            ? "自动化控制权已失效，无法确认取消屏障。"
-                            : $"自动化当前由 {_automationLease.ClientLabel} 控制，本窗口不能取消其任务。",
-                        CommandEpoch = _automationCommandEpoch,
-                    };
+                    return BuildAutomationLeaseDto(
+                        clientId,
+                        clientLabel,
+                        authorityRevision,
+                        $"自动化当前由 {_automationLease.ClientLabel} 控制，本窗口不能释放其控制权。");
                 }
 
-                var cancellationEpoch = ++_automationCommandEpoch;
-                try
+                if (_automationLease != null)
                 {
-                    var result = _cancelAutomation(cancellationEpoch, target);
-                    if (result.Target != target)
-                    {
-                        throw new InvalidOperationException("Automation cancellation target changed while crossing the Unity main-thread boundary.");
-                    }
+                    _automationLease = null;
+                    RuntimeAutomationControlState.RevokeLease(
+                        "automation-lease-released",
+                        "主设备正在应用新的自动化配置；已开始的料理会保留在原厨具，配置生效并重新取得控制权后继续。");
+                    _automationCommandEpoch++;
+                    _advanceAutomationCommandEpoch(_automationCommandEpoch);
+                }
 
-                    var releaseLease = target == AutomationCancellationTarget.All;
-                    if (releaseLease)
-                    {
-                        _automationLease = null;
-                    }
-                    else
-                    {
-                        _automationLease.LastSeenUtc = now;
-                        _automationLease.ExpiresAtUtc = now + AutomationLeaseTtl;
-                    }
-                    return new LocalApiAutomationCancellationDto
-                    {
-                        Ok = true,
-                        Target = targetValue,
-                        Status = $"{BuildAutomationCancellationTargetLabel(target)}已取消："
-                            + $"job {result.CancelledJobs} 个，排队命令 {result.CancelledCommands} 个。",
-                        CommandEpoch = result.CommandEpoch,
-                        CancelledJobs = result.CancelledJobs,
-                        CancelledCommands = result.CancelledCommands,
-                        LeaseReleased = releaseLease,
-                    };
-                }
-                catch (Exception ex)
-                {
-                    return new LocalApiAutomationCancellationDto
-                    {
-                        Ok = false,
-                        Target = targetValue,
-                        Error = ex.GetBaseException().Message,
-                        CommandEpoch = cancellationEpoch,
-                        LeaseReleased = false,
-                    };
-                }
+                return BuildAutomationLeaseDto(clientId, clientLabel, authorityRevision, null);
             }
         }
-    }
-
-    private static string BuildAutomationCancellationTargetLabel(AutomationCancellationTarget target)
-    {
-        return target switch
-        {
-            AutomationCancellationTarget.Commands => "排队命令",
-            AutomationCancellationTarget.Rare => "稀客自动化",
-            AutomationCancellationTarget.Normal => "普客自动化",
-            AutomationCancellationTarget.All => "全部自动化",
-            _ => throw new ArgumentOutOfRangeException(nameof(target), target, null),
-        };
     }
 
     private AutomationSafetyBarrierAckResult AcknowledgeAutomationSafetyBarrier(string request, string query)
@@ -1668,7 +1634,16 @@ internal sealed class LocalApiServer : IDisposable
             && (_automationLease.ExpiresAtUtc <= now
                 || _automationLease.AuthorityRevision != _deviceAuthorityStore.ReadAuthorityRevision()))
         {
+            var revisionChanged = _automationLease.AuthorityRevision
+                != _deviceAuthorityStore.ReadAuthorityRevision();
             _automationLease = null;
+            RuntimeAutomationControlState.RevokeLease(
+                revisionChanged
+                    ? "automation-authority-revision-changed"
+                    : "automation-lease-expired",
+                revisionChanged
+                    ? "主设备配置权威已经变化；已开始的料理会保留在原厨具，新权威取得控制权后继续。"
+                    : "主设备自动化租约已过期；已开始的料理会保留在原厨具，续约成功后继续。");
         }
     }
 

@@ -7,7 +7,6 @@ internal sealed class LocalApiSnapshot
 {
     public string PluginVersion { get; init; } = "";
     public string AutomationSessionId { get; init; } = "";
-    public long AutomationCancellationAppliedEpoch { get; init; }
     public long NightBusinessGeneration { get; init; }
     public string NightBusinessLifecyclePhase { get; init; } = "Inactive";
     public string RuntimeNightBusinessLifecycleStatus { get; init; } = "";
@@ -92,7 +91,12 @@ internal sealed class AutomationCookingJobSnapshot
     public string TransactionStage { get; init; } = "";
     public long SpecialTargetRevision { get; init; }
     public bool AllowYuumaControlledProgression { get; init; }
-    public bool AutoDeliverFood { get; init; }
+    public string ControlState { get; init; } = "active";
+    public string ControlReasonCode { get; init; } = "";
+    public string ControlMessage { get; init; } = "";
+    public long ControlAuthorityRevision { get; init; }
+    public string ControlStage { get; init; } = "";
+    public DateTime? ControlSuspendedAtUtc { get; init; }
     public bool HoldsControllerReservation { get; init; }
     public string ControllerLeaseReleaseReason { get; init; } = "";
     public string OrderRuntimeKind { get; init; } = "";
@@ -123,26 +127,6 @@ internal sealed class AutomationCookingJobSnapshot
     public DateTime StartedAtUtc { get; init; }
     public DateTime LastObservedAtUtc { get; init; }
     public DateTime LastProgressAtUtc { get; init; }
-}
-
-internal sealed class AutomationCancellationResult
-{
-    public AutomationCancellationTarget Target { get; init; }
-    public long CommandEpoch { get; init; }
-    public int CancelledJobs { get; init; }
-    public int CancelledCommands { get; init; }
-}
-
-internal sealed class LocalApiAutomationCancellationDto
-{
-    public bool Ok { get; init; }
-    public string Target { get; init; } = "";
-    public string Status { get; init; } = "";
-    public string? Error { get; init; }
-    public long CommandEpoch { get; init; }
-    public int CancelledJobs { get; init; }
-    public int CancelledCommands { get; init; }
-    public bool LeaseReleased { get; init; }
 }
 
 internal sealed class RecommendationStateSnapshot

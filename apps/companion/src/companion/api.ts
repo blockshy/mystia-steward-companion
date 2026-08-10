@@ -10,8 +10,6 @@ import { SHARED_COMPANION_PREFERENCES_SCHEMA_VERSION, normalizeEditableQuantity 
 import { serializeRareGuestInvitationLevels } from '@/companion/storage';
 import type {
   DiagnosticPackageResponse,
-  AutomationCancellationTarget,
-  AutomationCancellationResponse,
   AutomationSafetyBarrierAckResponse,
   AvailableMissionsApiResponse,
   BepInExConsoleVisibilityResponse,
@@ -345,17 +343,15 @@ export async function acquireAutomationLease(
   );
 }
 
-export async function cancelAutomationCookingJobs(
+export async function releaseAutomationLease(
   endpoint: string,
   apiToken: string,
-  target: AutomationCancellationTarget,
   authorityRevision: number,
-): Promise<AutomationCancellationResponse> {
-  const params = new URLSearchParams({ target });
-  return writeLocalApiJsonWithTimeout<AutomationCancellationResponse>(
+): Promise<LocalApiAutomationLease> {
+  return writeLocalApiJsonWithTimeout<LocalApiAutomationLease>(
     endpoint,
     apiToken,
-    `/automation/cancel?${params.toString()}`,
+    '/automation/lease/release',
     2800,
     { authorityRevision },
   );

@@ -282,7 +282,6 @@ export interface NormalBusinessContext {
 export interface LocalApiSnapshot {
   pluginVersion: string;
   automationSessionId: string;
-  automationCancellationAppliedEpoch: number;
   nightBusinessGeneration: number;
   nightBusinessLifecyclePhase: 'Inactive' | 'Active' | 'Closing' | 'Destroyed';
   runtimeNightBusinessLifecycleStatus?: string;
@@ -391,7 +390,12 @@ export interface AutomationCookingJobSnapshot {
   transactionStage: 'cooking' | 'ready' | 'delivery-cleanup' | 'evaluation-receipt' | 'manual-handoff' | 'manual-handoff-expired' | 'warmer-cleanup';
   specialTargetRevision: number;
   allowYuumaControlledProgression: boolean;
-  autoDeliverFood: boolean;
+  controlState: 'active' | 'suspended-authority' | 'suspended-configuration';
+  controlReasonCode: string;
+  controlMessage: string;
+  controlAuthorityRevision: number;
+  controlStage: 'FoodDelivery' | 'OrderEvaluation' | 'YuumaSettlement';
+  controlSuspendedAtUtc: string | null;
   holdsControllerReservation: boolean;
   controllerLeaseReleaseReason: '' | 'manual-handoff' | 'delivery-cleanup-completed' | 'delivery-cleanup-terminated';
   orderRuntimeKind: 'Normal' | 'Special';
@@ -665,33 +669,6 @@ export interface LocalApiStatusResponse {
   ok: boolean;
   status: string;
   error: string | null;
-}
-
-export type AutomationCancellationTarget = 'commands' | 'rare' | 'normal' | 'all';
-
-export interface AutomationCancellationRequestBarrier {
-  endpoint: string;
-  target: AutomationCancellationTarget;
-}
-
-export interface AutomationCancellationAcknowledgedBarrier extends AutomationCancellationRequestBarrier {
-  automationSessionId: string;
-  commandEpoch: number;
-}
-
-export type AutomationCancellationBarrier =
-  | AutomationCancellationRequestBarrier
-  | AutomationCancellationAcknowledgedBarrier;
-
-export interface AutomationCancellationResponse {
-  ok: boolean;
-  target: AutomationCancellationTarget;
-  status: string;
-  error: string | null;
-  commandEpoch: number;
-  cancelledJobs: number;
-  cancelledCommands: number;
-  leaseReleased: boolean;
 }
 
 export interface AutomationSafetyBarrierAckResponse {

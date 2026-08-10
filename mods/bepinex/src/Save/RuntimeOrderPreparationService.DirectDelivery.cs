@@ -517,12 +517,7 @@ internal static partial class RuntimeOrderPreparationService
                     "血池地狱订单已有其他料理或料理正在由游戏送达");
             }
 
-            if (job.AutoDeliverFood && job.AutoCompleteOrder)
-            {
-                return TryFinalizeYuumaCookingJob(job, cookedFood);
-            }
-
-            return EnterManualHandoff(job, DateTime.UtcNow);
+            return TryFinalizeYuumaCookingJob(job, cookedFood);
         }
 
         if (!TryReadOrderServedItem(
@@ -565,7 +560,7 @@ internal static partial class RuntimeOrderPreparationService
             {
                 return StopAutomationFoodDeliveryForEndedSession(job, resolveCommit: false);
             }
-            return TryCompleteCommittedFoodDeliveryTransaction(job);
+            return DeferCommittedFoodDeliveryFollowUp(job);
         }
 
         if (servedFoodIdentity == RuntimeObjectIdentityComparison.Unknown)
@@ -686,7 +681,26 @@ internal static partial class RuntimeOrderPreparationService
         {
             return StopAutomationFoodDeliveryForEndedSession(job, resolveCommit: false);
         }
-        return TryCompleteCommittedFoodDeliveryTransaction(job);
+        return DeferCommittedFoodDeliveryFollowUp(job);
+    }
+
+    /// <summary>
+    /// Ends the food-delivery permit before cooker cleanup and order evaluation are processed.
+    /// </summary>
+    /// <remarks>
+    /// The setter and its commit verification are one atomic side-effect boundary. Cleanup is
+    /// mandatory after a committed setter, while evaluation is a separate configurable boundary
+    /// and must acquire a fresh permit on the next job poll.
+    /// </remarks>
+    private static (bool Remove, string Message, string Code) DeferCommittedFoodDeliveryFollowUp(
+        AutomationCookingJob job)
+    {
+        var message = job.FoodDeliveryCompletion?.Message
+            ?? $"{job.Target.FoodName} 已确认送达订单。";
+        return (
+            false,
+            $"{message}等待清理原厨具并按当前生效配置确认订单评价。",
+            OrderPreparationStepCodes.CookingPending);
     }
 
     private static (bool Remove, string Message, string Code) StoreCookedFoodForAlreadyHandledTarget(
@@ -905,10 +919,16 @@ internal static partial class RuntimeOrderPreparationService
             return true;
         }
 
-        if (!job.AutoCompleteOrder)
+        using var permit = AcquireAutomationCookingJobControlPermit(
+            job,
+            RuntimeAutomationControlStage.OrderEvaluation,
+            DateTime.UtcNow);
+        if (!permit.Allowed)
         {
-            job.FoodDeliveryEvaluationState = AutomationFoodDeliveryEvaluationState.NotRequired;
-            return true;
+            job.FoodDeliveryEvaluationCloseoutTracker?.Suspend(DateTime.UtcNow);
+            message = permit.Decision.Message;
+            code = OrderPreparationStepCodes.CookingPending;
+            return false;
         }
 
         if (!job.Target.OrderBinding.HasValue)
@@ -2123,10 +2143,19 @@ internal static partial class RuntimeOrderPreparationService
 
     private static OrderPreparationRequest BuildOrderRequestFromCookingJob(AutomationCookingJob job)
     {
+        var observedAtUtc = DateTime.UtcNow;
+        var delivery = ObserveAutomationCookingJobControl(
+            job,
+            RuntimeAutomationControlStage.FoodDelivery,
+            observedAtUtc);
+        var completion = ObserveAutomationCookingJobControl(
+            job,
+            RuntimeAutomationControlStage.OrderEvaluation,
+            observedAtUtc);
         return BuildOrderRequestFromCookingTarget(
             job.Target,
-            job.AutoDeliverFood,
-            job.AutoCompleteOrder);
+            delivery.Allowed,
+            completion.Allowed);
     }
 
     private static OrderPreparationRequest BuildOrderRequestFromCookingTarget(

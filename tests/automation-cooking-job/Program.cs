@@ -5,13 +5,14 @@ using MystiaStewardCompanion.Save;
 try
 {
     VerifyAutomationCompletionInvariant();
-    VerifyTargetedAutomationCancellationPolicy();
+    VerifyRuntimeAutomationControlIntegrationContract();
     VerifyCommittedDeliveryEvaluationBoundary();
     VerifyHarmonyMutationCompletionSemantics();
     VerifyCookerStartAvailabilityPolicy();
     VerifyCookControllerFoodResultIdentityDomain();
     VerifySpecialFoodTargetPolicyMatching();
     VerifySpecialFoodTargetPolicyIdentity();
+    VerifyYuyukoRetakeFoodModifierContract();
     VerifySameGenerationCanAdoptFinalResult();
     VerifyControllerReuseNeverProducesASideEffect();
     VerifyExplicitOwnershipLossInterruptsTheJob();
@@ -35,7 +36,7 @@ try
     VerifyDefiniteNonCommitCanRetry();
     VerifyCommittedCleanupRetriesAreBounded();
     VerifySafetyBarriersRequireExactAcknowledgement();
-    VerifyYuumaSwitchDisabledManualHandoffIsBarrierFree();
+    VerifyPlayerOwnershipLossManualHandoffIsBarrierFree();
     VerifyInvalidatedCookerReservationsNeverInvokeOldWrappers();
     VerifyProductionFreshCookerBindingContract();
     Console.WriteLine(
@@ -43,9 +44,10 @@ try
         + "results, reject reused cookers without side effects, block stalled progress, lock uncertain/committed "
         + "side effects, bound committed cleanup retries, reject invalidated cooker reservations before touching "
         + "old wrappers, close direct-delivery evaluation before retiring irreversible jobs, reject direct "
-        + "delivery without completion before runtime access, and keep the "
-        + "controller lease independent from evaluation receipts while keeping the switch-disabled Blood "
-        + "Pond Hell handoff receipt deterministic and barrier-free.");
+        + "delivery without completion before runtime access, suspend active jobs at future side-effect "
+        + "boundaries while configuration authority changes, and keep the "
+        + "controller lease independent from evaluation receipts while keeping player-ownership-loss "
+        + "handoff receipts deterministic and barrier-free.");
     return 0;
 }
 catch (Exception ex)
@@ -162,121 +164,81 @@ static void VerifyAutomationCompletionInvariant()
         "Invalid automation configuration can still enter a retry loop.");
 }
 
-static void VerifyTargetedAutomationCancellationPolicy()
+static void VerifyYuyukoRetakeFoodModifierContract()
 {
-    foreach (var (wireValue, expectedTarget) in new[]
-             {
-                 ("commands", AutomationCancellationTarget.Commands),
-                 ("rare", AutomationCancellationTarget.Rare),
-                 ("normal", AutomationCancellationTarget.Normal),
-                 ("all", AutomationCancellationTarget.All),
-             })
-    {
-        if (!AutomationCancellationTargetPolicy.TryParse(wireValue, out var target)
-            || target != expectedTarget
-            || !string.Equals(
-                AutomationCancellationTargetPolicy.ToWireValue(target),
-                wireValue,
-                StringComparison.Ordinal))
-        {
-            throw new InvalidOperationException($"Cancellation target '{wireValue}' did not round-trip exactly.");
-        }
-    }
-
-    foreach (var invalid in new[] { "", "Commands", "Rare", " normal", "all ", "*", "jobs" })
-    {
-        if (AutomationCancellationTargetPolicy.TryParse(invalid, out _))
-        {
-            throw new InvalidOperationException($"Noncanonical cancellation target '{invalid}' was accepted.");
-        }
-    }
-
+    var semanticModifierIds = YuyukoFoodModifierContract.BuildRetakeNormalOrderModifierTagIds(
+        new[] { 20, 10, -30, 20, -31, 40 },
+        new[] { 10, 40 });
     AssertTrue(
-        AutomationCancellationTargetPolicy.IncludesCookingJob(AutomationCancellationTarget.Rare, rareTarget: true)
-        && !AutomationCancellationTargetPolicy.IncludesCookingJob(AutomationCancellationTarget.Rare, rareTarget: false),
-        "Rare cancellation does not isolate rare cooking jobs.");
+        semanticModifierIds.SequenceEqual(new[] { -31, 20 }),
+        "Yuyuko NormalOrder did not exclude only the exact SparrowSeries cooker marker while preserving other signed modifier IDs.");
     AssertTrue(
-        AutomationCancellationTargetPolicy.IncludesCookingJob(AutomationCancellationTarget.Normal, rareTarget: false)
-        && !AutomationCancellationTargetPolicy.IncludesCookingJob(AutomationCancellationTarget.Normal, rareTarget: true),
-        "Normal cancellation does not isolate normal cooking jobs.");
+        YuyukoFoodModifierContract.HasAddedSparrowSeriesCookerMarker(
+            new[] { 10, -30, 20 },
+            new[] { 10 }),
+        "An added SparrowSeries cooker marker was not reported for diagnostics.");
     AssertTrue(
-        AutomationCancellationTargetPolicy.IncludesCookingJob(AutomationCancellationTarget.All, rareTarget: true)
-        && AutomationCancellationTargetPolicy.IncludesCookingJob(AutomationCancellationTarget.All, rareTarget: false),
-        "All cancellation does not cover both cooking-job kinds.");
+        !YuyukoFoodModifierContract.HasAddedSparrowSeriesCookerMarker(
+            new[] { 10, -30, 20 },
+            new[] { 10, -30 }),
+        "A recipe-native -30 tag was incorrectly reported as an added cooker marker.");
     AssertTrue(
-        !AutomationCancellationTargetPolicy.IncludesCookingJob(AutomationCancellationTarget.Commands, rareTarget: true)
-        && !AutomationCancellationTargetPolicy.IncludesCookingJob(AutomationCancellationTarget.Commands, rareTarget: false),
-        "Command-only cancellation can still select active cooking jobs.");
+        YuyukoFoodModifierContract.BuildRetakeNormalOrderModifierTagIds(
+                new[] { -29, 15 },
+                Array.Empty<int>())
+            .SequenceEqual(new[] { -29, 15 }),
+        "The Yuyuko modifier contract broadened the exact -30 exclusion to unrelated negative tags.");
+}
 
-    var activeJobs = new[]
-    {
-        (Id: "rare-1", Rare: true),
-        (Id: "normal-1", Rare: false),
-        (Id: "rare-2", Rare: true),
-        (Id: "normal-2", Rare: false),
-    };
-    AssertSequence(
-        activeJobs.Select(job => job.Id).ToArray(),
-        RetainJobsAfterCancellation(activeJobs, AutomationCancellationTarget.Commands),
-        "Command-only cancellation removed an active rare or normal cooking job.");
-    AssertSequence(
-        new[] { "normal-1", "normal-2" },
-        RetainJobsAfterCancellation(activeJobs, AutomationCancellationTarget.Rare),
-        "Rare cancellation did not retain exactly the active normal cooking jobs.");
-    AssertSequence(
-        new[] { "rare-1", "rare-2" },
-        RetainJobsAfterCancellation(activeJobs, AutomationCancellationTarget.Normal),
-        "Normal cancellation did not retain exactly the active rare cooking jobs.");
-    AssertSequence(
-        Array.Empty<string>(),
-        RetainJobsAfterCancellation(activeJobs, AutomationCancellationTarget.All),
-        "All cancellation retained active cooking jobs.");
-
+static void VerifyRuntimeAutomationControlIntegrationContract()
+{
     var root = FindRepositoryRoot();
-    var service = File.ReadAllText(Path.Combine(
-        root,
-        "mods",
-        "bepinex",
-        "src",
-        "Save",
-        "RuntimeOrderPreparationService.cs"));
-    var clearJobs = ExtractSourceBlock(
-        service,
-        "public static int ClearAutomationCookingJobs(");
-    AssertContains(
-        clearJobs,
-        "AutomationCancellationTargetPolicy.IncludesCookingJob(",
-        "Cooking-job cancellation no longer filters the requested canonical target.");
-    AssertContains(
-        clearJobs,
-        "preserveIrreversibleTransactions",
-        "User cancellation no longer distinguishes safely releasable jobs from irreversible transactions.");
-    AssertContains(
-        clearJobs,
-        "CanCancelAutomationCookingJob(job, out var retentionReason)",
-        "User cancellation can remove a cooking job after an irreversible side effect started.");
-    var targetFilter = clearJobs.IndexOf("AutomationCancellationTargetPolicy.IncludesCookingJob(", StringComparison.Ordinal);
-    var eventCommit = clearJobs.IndexOf("RecordAutomationRuntimeEvent(", StringComparison.Ordinal);
-    var removal = clearJobs.IndexOf("AutomationCookingJobs.RemoveAt(index);", StringComparison.Ordinal);
-    AssertTrue(
-        targetFilter >= 0 && eventCommit > targetFilter && removal > eventCommit,
-        "A nonmatching cooking job can be logged or removed before the target filter.");
-    AssertDoesNotContain(
-        clearJobs,
-        "AutomationCancellationTarget target =",
-        "ClearAutomationCookingJobs restored an implicit all-target default.");
+    var saveRoot = Path.Combine(root, "mods", "bepinex", "src", "Save");
+    var service = File.ReadAllText(Path.Combine(saveRoot, "RuntimeOrderPreparationService.cs"));
+    var cooking = File.ReadAllText(Path.Combine(saveRoot, "RuntimeOrderPreparationService.Cooking.cs"));
+    var controlBridge = File.ReadAllText(Path.Combine(saveRoot, "RuntimeOrderPreparationService.AutomationControl.cs"));
+    var server = File.ReadAllText(Path.Combine(root, "mods", "bepinex", "src", "LocalApi", "LocalApiServer.cs"));
+    var clearJobs = ExtractSourceBlock(service, "public static int ClearAutomationCookingJobs(");
+    AssertContains(clearJobs, "AutomationCookingJobs.RemoveAt(index);",
+        "The true runtime-lifecycle boundary no longer releases cooking jobs.");
+    AssertDoesNotContain(clearJobs, "AutomationCancellationTarget",
+        "Lifecycle cleanup still exposes the deleted user-cancellation target model.");
+    AssertDoesNotContain(clearJobs, "preserveIrreversibleTransactions",
+        "Lifecycle cleanup still carries the obsolete user-cancellation compatibility branch.");
 
-    var canCancel = ExtractSourceBlock(
-        service,
-        "private static bool CanCancelAutomationCookingJob(");
-    AssertContains(canCancel, "job.FoodDeliveryCommitted || job.FoodDeliveryCommitUncertain",
-        "Cancellation no longer preserves an in-flight food-delivery transaction.");
-    AssertContains(canCancel, "job.WarmerStoreCommitted || job.WarmerStoreCommitUncertain",
-        "Cancellation no longer preserves an in-flight warmer transaction.");
-    AssertContains(canCancel, "YuumaSettlementTransactionStage.Ready",
-        "Cancellation no longer preserves an in-flight Yuuma settlement.");
-    AssertDoesNotContain(canCancel, "TryGetUnresolvedAutomationSafetyBarrier",
-        "A standalone safety barrier incorrectly keeps a safely releasable cooking job alive after lease release.");
+    var invalidateAuthority = ExtractSourceBlock(server, "private void InvalidateRuntimeAuthority(");
+    AssertContains(invalidateAuthority, "RuntimeAutomationControlState.PublishAuthority(",
+        "A primary/profile transition no longer publishes the new runtime control snapshot.");
+    AssertContains(invalidateAuthority, "_advanceAutomationCommandEpoch(_automationCommandEpoch);",
+        "A primary/profile transition no longer fences queued commands.");
+    AssertContains(invalidateAuthority, "RuntimeUiPinningService.ClearTargetsForAuthorityTransition(",
+        "A primary/profile transition no longer fences stale UI targets through the non-terminal boundary.");
+    AssertDoesNotContain(invalidateAuthority, "ClearTargetsForBusinessBoundary(",
+        "A primary/profile transition can still tear down open game panels as a business boundary.");
+    AssertDoesNotContain(invalidateAuthority, "ClearAutomationCookingJobs(",
+        "A primary/profile transition can still delete active cooking jobs.");
+    var releaseLease = ExtractSourceBlock(server, "private LocalApiAutomationLeaseDto ReleaseAutomationLease(");
+    AssertContains(releaseLease, "RuntimeAutomationControlState.RevokeLease(",
+        "Explicit lease release no longer suspends active cooking jobs.");
+    AssertDoesNotContain(releaseLease, "ClearAutomationCookingJobs(",
+        "Explicit lease release can still delete active cooking jobs.");
+    AssertDoesNotContain(server, "case \"/automation/cancel\":",
+        "The destructive automation-cancellation endpoint still exists.");
+
+    AssertContains(cooking, "ObserveAutomationCookingJobControl(",
+        "Cooking progress no longer observes the current authoritative automation configuration.");
+    AssertContains(cooking, "AcquireAutomationCookingJobControlPermit(",
+        "A ready cooker result can reach a future side effect without an exact control permit.");
+    AssertContains(controlBridge, "SuspendAutomationCookingJobClocks(job, observedAtUtc);",
+        "A suspended control decision no longer pauses effective job timeout clocks.");
+    AssertContains(cooking, "if (job.ControlSuspended",
+        "A player-owned cooker transition while control is suspended no longer enters manual handoff.");
+    AssertContains(cooking, "return EnterManualHandoff(job, nowUtc);",
+        "A suspended job can retire after player intervention without retaining its handoff receipt.");
+    AssertDoesNotContain(service, "public bool AutoDeliverFood",
+        "Cooking jobs still latch their delivery switch at creation time.");
+    AssertDoesNotContain(service, "public bool AutoCompleteOrder",
+        "Cooking jobs still latch their completion switch at creation time.");
 }
 
 static void VerifyCommittedDeliveryEvaluationBoundary()
@@ -330,15 +292,35 @@ static void VerifyCommittedDeliveryEvaluationBoundary()
     AssertContains(transaction, "job.FoodDeliveryCleanupTerminal",
         "A terminal cooker-cleanup failure can still skip the independent order-evaluation closeout.");
 
+    var cookedFoodDelivery = ExtractSourceBlock(
+        directDelivery,
+        "private static (bool Remove, string Message, string Code) TryDeliverAutomationCookedFood(");
+    AssertTrue(
+        cookedFoodDelivery.Split(
+            "return TryCompleteCommittedFoodDeliveryTransaction(job);",
+            StringSplitOptions.None).Length - 1 == 1,
+        "A newly committed food setter can still retain its delivery permit across the separate order-evaluation boundary.");
+    AssertContains(
+        cookedFoodDelivery,
+        "return DeferCommittedFoodDeliveryFollowUp(job);",
+        "A newly committed food setter no longer defers cleanup and fresh-permit evaluation to the next job poll.");
+    var deferredFollowUp = ExtractSourceBlock(
+        directDelivery,
+        "private static (bool Remove, string Message, string Code) DeferCommittedFoodDeliveryFollowUp(");
+    AssertContains(deferredFollowUp, "OrderPreparationStepCodes.CookingPending",
+        "The delivery/evaluation boundary handoff no longer keeps the committed job alive.");
+
     var resolveEvaluation = ExtractSourceBlock(
         directDelivery,
         "private static bool TryResolveCommittedFoodDeliveryEvaluation(");
     AssertTrue(
-        resolveEvaluation.IndexOf("if (!job.AutoCompleteOrder)", StringComparison.Ordinal)
+        resolveEvaluation.IndexOf("AcquireAutomationCookingJobControlPermit(", StringComparison.Ordinal)
             < resolveEvaluation.IndexOf("get_IsFullfilled", StringComparison.Ordinal)
         && resolveEvaluation.IndexOf("get_IsFullfilled", StringComparison.Ordinal)
             < resolveEvaluation.IndexOf("TryEvaluateMatchedAutomationOrderRuntimeIfReady", StringComparison.Ordinal),
-        "The job does not use its latched completion intent and fresh fulfilled state before evaluating.");
+        "The job does not acquire the current completion-stage permit before fresh fulfilled state and evaluation.");
+    AssertDoesNotContain(resolveEvaluation, "job.AutoCompleteOrder",
+        "Committed delivery evaluation still uses the job's creation-time completion switch.");
     AssertContains(resolveEvaluation, "OrderPreparationStepCodes.OrderEvaluationCommitUncertain",
         "An unclassified evaluation exception no longer enters the commit-uncertain safety boundary.");
 
@@ -381,28 +363,6 @@ static void VerifyCommittedDeliveryEvaluationBoundary()
         processNormalJob.IndexOf("AutomationFoodDeliveryEvaluationState.Completed", StringComparison.Ordinal)
             < processNormalJob.IndexOf("ReadOrderServedFood(order)", StringComparison.Ordinal),
         "Normal job processing can read the pre-evaluation order wrapper before reporting completed evaluation.");
-}
-
-static string[] RetainJobsAfterCancellation(
-    IEnumerable<(string Id, bool Rare)> activeJobs,
-    AutomationCancellationTarget target)
-{
-    return activeJobs
-        .Where(job => !AutomationCancellationTargetPolicy.IncludesCookingJob(target, job.Rare))
-        .Select(job => job.Id)
-        .ToArray();
-}
-
-static void AssertSequence(
-    IReadOnlyList<string> expected,
-    IReadOnlyList<string> actual,
-    string message)
-{
-    if (!expected.SequenceEqual(actual, StringComparer.Ordinal))
-    {
-        throw new InvalidOperationException(
-            $"{message} Expected [{string.Join(", ", expected)}], got [{string.Join(", ", actual)}].");
-    }
 }
 
 static void AssertValidConfiguration(
@@ -1326,6 +1286,10 @@ static void VerifyProductionOrderReceiptBoundary()
         saveRoot,
         "SpecialBusiness",
         "RuntimeOrderPreparationService.YuyukoChallengePolicy.cs"));
+    var yuyukoModifierContract = File.ReadAllText(Path.Combine(
+        saveRoot,
+        "SpecialBusiness",
+        "YuyukoFoodModifierContract.cs"));
 
     var target = ExtractSourceBlock(service, "private sealed class CookingCollectionTarget");
     AssertContains(target, "RuntimeOrderBindingToken? OrderBinding",
@@ -1430,6 +1394,12 @@ static void VerifyProductionOrderReceiptBoundary()
 
     AssertContains(yuyuko, "OrderPreparationStepCodes.OrderEvaluationTargetMismatch",
         "Yuyuko deterministic served-target mismatches are not classified separately from transient reads.");
+    AssertContains(yuyuko, "YuyukoFoodModifierContract.BuildRetakeNormalOrderModifierTagIds(",
+        "Yuyuko NormalOrder evaluation no longer uses the semantic modifier-tag contract.");
+    AssertContains(yuyukoModifierContract, "SparrowSeriesCookerMarkerTagId = -30",
+        "The exact SparrowSeries cooker marker identity drifted from the verified runtime contract.");
+    AssertDoesNotContain(yuyukoModifierContract, "厨具「夜雀」",
+        "The SparrowSeries marker is filtered by localized display text instead of its exact signed ID.");
     AssertContains(lifecycle, "RuntimeOrderTerminalReceiptStore.Clear",
         "Runtime terminal receipts are not cleared at the night-business boundary.");
     AssertContains(lifecycle, "ClearAutomationSafetyBarriersForBusinessGeneration(snapshot.Generation)",
@@ -1557,7 +1527,7 @@ static void VerifySafetyBarriersRequireExactAcknowledgement()
     }
 }
 
-static void VerifyYuumaSwitchDisabledManualHandoffIsBarrierFree()
+static void VerifyPlayerOwnershipLossManualHandoffIsBarrierFree()
 {
     var signature = SpecialFoodTargetPolicy.BuildSignature(
         "Story_BloodPondHell",
@@ -1587,7 +1557,7 @@ static void VerifyYuumaSwitchDisabledManualHandoffIsBarrierFree()
         || tracker.EffectiveStallElapsed != TimeSpan.Zero)
     {
         throw new InvalidOperationException(
-            "The switch-disabled Blood Pond Hell path did not enter the deterministic non-side-effecting handoff state.");
+            "A player ownership transfer did not enter the deterministic non-side-effecting handoff state.");
     }
 
     var barriers = new AutomationSafetyBarrierRegistry();

@@ -53,8 +53,6 @@ internal sealed class StewardOverlayController
     // 订单准备会读写运行时订单、厨具和库存，必须串行回到主线程执行。
     private readonly Queue<PendingOrderPreparation> _pendingOrderPreparations = new();
     private readonly AutomationCommandEpochFence _automationCommandFence = new();
-    private readonly object _automationCancellationLock = new();
-    private readonly Queue<PendingAutomationCancellation> _pendingAutomationCancellations = new();
     private readonly object _rareGuestInvitationLock = new();
     // 稀客邀请涉及日间场景候选和角色状态，同样不允许在 API 后台线程直接执行。
     private readonly Queue<PendingRareGuestInvitation> _pendingRareGuestInvitations = new();
@@ -112,7 +110,6 @@ internal sealed class StewardOverlayController
     private string _lastLocalApiSnapshotContentSignature = "";
     private string _localApiSnapshotDirtyReason = "";
     private string _lastLocalApiSnapshotDiagnosticSignature = "";
-    private long _automationCancellationAppliedEpoch;
     private LocalApiSnapshotDirtyDomain _localApiSnapshotDirtyDomains = LocalApiSnapshotDirtyDomain.None;
     private readonly Dictionary<string, double> _performanceMs = new(StringComparer.Ordinal);
     private readonly Dictionary<string, float> _performanceUpdatedAt = new(StringComparer.Ordinal);
@@ -165,13 +162,6 @@ internal sealed class StewardOverlayController
         public OrderPreparationRequest Request { get; init; } = new();
         public OrderActionKind Action { get; init; }
         public long AutomationEpoch { get; init; }
-    }
-
-    private sealed class PendingAutomationCancellation : MainThreadCommand<AutomationCancellationResult>
-    {
-        public long AutomationEpoch { get; init; }
-        public AutomationCancellationTarget Target { get; init; }
-        public int CancelledCommands { get; init; }
     }
 
     /// <summary>
@@ -259,7 +249,6 @@ internal sealed class StewardOverlayController
         ProcessNightBusinessAutomationGateChange();
         RuntimeScheduledEventDiagnosticCapture.Tick(_mainThreadId);
         ProcessPendingAvailableMissionReads();
-        ProcessPendingAutomationCancellations();
         if (ShouldGateNightBusinessRuntime())
         {
             ProcessToggleInput();
@@ -330,7 +319,6 @@ internal sealed class StewardOverlayController
             }
             return 0;
         });
-        CancelPendingMainThreadCommands(_pendingAutomationCancellations, _automationCancellationLock, cancellation);
         CancelPendingMainThreadCommands(_pendingAvailableMissionReads, _availableMissionReadLock, cancellation);
         CancelPendingMainThreadCommands(_pendingRareGuestInvitations, _rareGuestInvitationLock, cancellation);
     }
@@ -352,9 +340,7 @@ internal sealed class StewardOverlayController
                 StringComparison.Ordinal))
         {
             var releasedJobs = RuntimeOrderPreparationService.ClearAutomationCookingJobs(
-                RuntimeNightBusinessAutomationGate.TutorialActiveReason,
-                AutomationCancellationTarget.All,
-                preserveIrreversibleTransactions: false);
+                RuntimeNightBusinessAutomationGate.TutorialActiveReason);
             _status = releasedJobs > 0
                 ? $"当前为教学经营，自动化已暂停；已释放 {releasedJobs} 个自动料理任务的 Mod 所有权。"
                 : "当前为教学经营，自动化已暂停。";
@@ -611,13 +597,12 @@ internal sealed class StewardOverlayController
             }
             return 0;
         });
-        CancelPendingMainThreadCommands(_pendingAutomationCancellations, _automationCancellationLock, disposedException);
         CancelPendingMainThreadCommands(_pendingAvailableMissionReads, _availableMissionReadLock, disposedException);
         CancelPendingMainThreadCommands(_pendingRareGuestInvitations, _rareGuestInvitationLock, disposedException);
         _localApiServer?.Dispose();
         _localApiServer = null;
         RuntimeUiPinningService.Abandon("controller disposed");
-        RuntimeTargetRecipeVariantService.RetireFailClosed("controller disposed");
+        RuntimeTargetRecipeVariantService.RetireForShutdown("controller disposed");
         RuntimeCookerHighlightService.Abandon("controller disposed");
         RuntimeSeatHighlightService.Dispose("controller disposed");
         RunOrderHighlightDisposalNoThrow(
@@ -981,7 +966,6 @@ internal sealed class StewardOverlayController
                 CompleteNormalOrderFromLocalApi,
                 GetAutomationCommandEpoch(),
                 AdvanceAutomationCommandEpoch,
-                CancelAutomationFromLocalApi,
                 AcknowledgeAutomationSafetyBarrierFromLocalApi,
                 ReadAvailableMissionsFromLocalApi,
                 _availableMissionState.Snapshot,
@@ -1068,7 +1052,6 @@ internal sealed class StewardOverlayController
             {
                 PluginVersion = MystiaStewardCompanionPlugin.PluginVersion,
                 AutomationSessionId = RuntimeOrderPreparationService.AutomationSessionId,
-                AutomationCancellationAppliedEpoch = _automationCancellationAppliedEpoch,
                 NightBusinessGeneration = lifecycle.Generation,
                 NightBusinessLifecyclePhase = lifecycle.Phase.ToString(),
                 RuntimeNightBusinessLifecycleStatus = RuntimeNightBusinessLifecycle.Status,
@@ -1329,7 +1312,6 @@ internal sealed class StewardOverlayController
         var builder = new StringBuilder(2048);
         AppendValue(builder, snapshot.PluginVersion);
         AppendValue(builder, snapshot.AutomationSessionId);
-        AppendValue(builder, snapshot.AutomationCancellationAppliedEpoch);
         AppendValue(builder, snapshot.NightBusinessGeneration);
         AppendValue(builder, snapshot.NightBusinessLifecyclePhase);
         AppendValue(builder, snapshot.RuntimeNightBusinessLifecycleStatus);
@@ -1395,7 +1377,12 @@ internal sealed class StewardOverlayController
             AppendValue(builder, job.TransactionStage);
             AppendValue(builder, job.SpecialTargetRevision);
             AppendValue(builder, job.AllowYuumaControlledProgression);
-            AppendValue(builder, job.AutoDeliverFood);
+            AppendValue(builder, job.ControlState);
+            AppendValue(builder, job.ControlReasonCode);
+            AppendValue(builder, job.ControlMessage);
+            AppendValue(builder, job.ControlAuthorityRevision);
+            AppendValue(builder, job.ControlStage);
+            AppendValue(builder, job.ControlSuspendedAtUtc?.ToString("O") ?? "");
             AppendValue(builder, job.HoldsControllerReservation);
             AppendValue(builder, job.ControllerLeaseReleaseReason);
             AppendValue(builder, job.OrderRuntimeKind);
@@ -2237,37 +2224,6 @@ internal sealed class StewardOverlayController
         return RunOrderActionFromLocalApi(request, OrderActionKind.CompleteNormal);
     }
 
-    private AutomationCancellationResult CancelAutomationFromLocalApi(
-        long automationEpoch,
-        AutomationCancellationTarget target)
-    {
-        var cancelledCommands = AdvanceAutomationCommandEpoch(automationEpoch);
-        if (Thread.CurrentThread.ManagedThreadId == _mainThreadId)
-        {
-            return ApplyAutomationCancellation(automationEpoch, target, cancelledCommands);
-        }
-
-        using var pending = new PendingAutomationCancellation
-        {
-            AutomationEpoch = automationEpoch,
-            Target = target,
-            CancelledCommands = cancelledCommands,
-        };
-        lock (_automationCancellationLock)
-        {
-            ThrowIfDisposed();
-            if (_pendingAutomationCancellations.Count >= MaxPendingMainThreadCommandsPerQueue)
-            {
-                throw new InvalidOperationException("Automation cancellation queue is full. Retry after the game resumes processing frames.");
-            }
-            _pendingAutomationCancellations.Enqueue(pending);
-        }
-
-        return pending.WaitForResult(
-            TimeSpan.FromSeconds(2.5),
-            "Automation cancellation timed out before the Unity main thread started it.");
-    }
-
     private AutomationSafetyBarrierAckResult AcknowledgeAutomationSafetyBarrierFromLocalApi(long sequence)
     {
         var result = RuntimeOrderPreparationService.AcknowledgeAutomationSafetyBarrier(sequence);
@@ -2280,41 +2236,6 @@ internal sealed class StewardOverlayController
         }
 
         return result;
-    }
-
-    private AutomationCancellationResult ApplyAutomationCancellation(
-        long automationEpoch,
-        AutomationCancellationTarget target,
-        int cancelledCommands)
-    {
-        var cancelledJobs = target == AutomationCancellationTarget.Commands
-            ? 0
-            : RuntimeOrderPreparationService.ClearAutomationCookingJobs(
-                "user-cancelled",
-                target,
-                preserveIrreversibleTransactions: true);
-        _automationCancellationAppliedEpoch = Math.Max(
-            _automationCancellationAppliedEpoch,
-            automationEpoch);
-        var dirtyDomains = LocalApiSnapshotDirtyDomain.Automation
-            | (target == AutomationCancellationTarget.Rare
-                ? LocalApiSnapshotDirtyDomain.RareBusiness
-                : target == AutomationCancellationTarget.Normal
-                    ? LocalApiSnapshotDirtyDomain.NormalBusiness
-                    : target == AutomationCancellationTarget.All
-                        ? LocalApiSnapshotDirtyDomain.RareBusiness | LocalApiSnapshotDirtyDomain.NormalBusiness
-                        : LocalApiSnapshotDirtyDomain.None);
-        MarkLocalApiSnapshotDirty(
-            dirtyDomains,
-            "automation cancellation applied",
-            force: true);
-        return new AutomationCancellationResult
-        {
-            Target = target,
-            CommandEpoch = automationEpoch,
-            CancelledJobs = cancelledJobs,
-            CancelledCommands = cancelledCommands,
-        };
     }
 
     private int AdvanceAutomationCommandEpoch(long automationEpoch)
@@ -2855,7 +2776,7 @@ internal sealed class StewardOverlayController
 
     private static OrderPreparationResult BuildSupersededOrderResult(OrderPreparationRequest request)
     {
-        var result = BuildUnavailableOrderResult(request, "该自动化命令已被更新的取消屏障作废，未执行任何游戏操作。");
+        var result = BuildUnavailableOrderResult(request, "该自动化命令已被更新的配置或控制权代际作废，未执行任何游戏操作。");
         result.Automation.Outcome = "cancelled";
         result.Automation.Stage = "command";
         result.Automation.ReasonCode = "automation-command-superseded";
@@ -3230,40 +3151,6 @@ internal sealed class StewardOverlayController
             MarkLocalApiSnapshotDirty(
                 LocalApiSnapshotDirtyDomain.Automation | LocalApiSnapshotDirtyDomain.NormalBusiness | LocalApiSnapshotDirtyDomain.RareBusiness,
                 "automation cooking job changed");
-        }
-    }
-
-    /// <summary>
-    /// Consumes explicit automation ownership cancellation requests on the Unity main thread.
-    /// </summary>
-    private void ProcessPendingAutomationCancellations()
-    {
-        while (true)
-        {
-            PendingAutomationCancellation? pending;
-            lock (_automationCancellationLock)
-            {
-                pending = _pendingAutomationCancellations.Count == 0
-                    ? null
-                    : _pendingAutomationCancellations.Dequeue();
-            }
-
-            if (pending == null) return;
-            if (!pending.TryBegin()) continue;
-
-            try
-            {
-                pending.Complete(ApplyAutomationCancellation(
-                    pending.AutomationEpoch,
-                    pending.Target,
-                    pending.CancelledCommands));
-            }
-            catch (Exception ex)
-            {
-                pending.Fail(ex);
-            }
-
-            return;
         }
     }
 

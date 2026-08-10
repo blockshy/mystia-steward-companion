@@ -1745,8 +1745,6 @@ static void VerifyYuumaSettlementContract(
         "!expectedPolicy.HasSameIdentity(currentPolicy)",
         "A changed target owner, generation, mode, signature, or Tag set no longer invalidates the cooking job.");
 
-    var normalizedCooking = Normalize(cookingSource);
-    var normalizedService = Normalize(serviceSource);
     var cookingJobDefinition = Normalize(ExtractMethod(
         serviceSource,
         "private sealed class AutomationCookingJob"));
@@ -1759,21 +1757,39 @@ static void VerifyYuumaSettlementContract(
         "objectCookController",
         "A Blood Pond Hell cooking job retained a long-lived IL2CPP cooker wrapper.");
     AssertContains(
-        normalizedService,
-        "publicboolAutoCompleteOrder{get;set;}",
-        "The cooking job does not retain the caller's explicit auto-complete intent.");
+        cookingJobDefinition,
+        "publicstringControlState{get;set;}=\"active\";",
+        "The cooking job no longer publishes its current automation control state.");
     AssertContains(
-        normalizedCooking,
-        "AutoCompleteOrder=autoCompleteOrder",
-        "A newly registered cooking job does not latch auto-complete intent.");
+        cookingJobDefinition,
+        "publicRuntimeAutomationControlStageControlStage{get;set;}",
+        "The cooking job no longer publishes its pending current-control stage.");
+    AssertDoesNotContain(
+        cookingJobDefinition,
+        "AutoDeliverFood",
+        "The cooking job still latches its creation-time delivery switch.");
+    AssertDoesNotContain(
+        cookingJobDefinition,
+        "AutoCompleteOrder",
+        "The cooking job still latches its creation-time completion switch.");
 
-    var automaticDeliveryPolicy = Normalize(ExtractMethod(
+    var cookingProcessor = Normalize(ExtractMethod(
         cookingSource,
-        "private static bool WillAutomaticallyDeliverCookingTarget("));
-    AssertContains(
-        automaticDeliveryPolicy,
-        "autoDeliverFood",
-        "Automatic food delivery no longer depends on the explicit delivery switch.");
+        "private static (bool Remove, string Message, string Code) TryProcessAutomationCookingJob("));
+    foreach (var currentControlGate in new[]
+             {
+                 "ObserveAutomationCookingJobControl(job,controlStage,nowUtc)",
+                 "if(!controlDecision.Allowed)",
+                 "AcquireAutomationCookingJobControlPermit(job,controlStage,DateTime.UtcNow)",
+                 "if(!permit.Allowed)",
+                 "returnTryDeliverAutomationCookedFood(job,cookedFood)",
+             })
+    {
+        AssertContains(
+            cookingProcessor,
+            currentControlGate,
+            $"The cooking processor is missing current-control boundary '{currentControlGate}'.");
+    }
 
     var sameCookingTarget = Normalize(ExtractMethod(
         cookingSource,
@@ -1814,8 +1830,7 @@ static void VerifyYuumaSettlementContract(
     foreach (var required in new[]
              {
                  "job.YuumaSettlementTracker.Stage!=SpecialBusiness.YuumaSettlementTransactionStage.Ready",
-                 "if(job.AutoDeliverFood&&job.AutoCompleteOrder)",
-                 "returnEnterManualHandoff(job,DateTime.UtcNow);",
+                 "returnTryFinalizeYuumaCookingJob(job,cookedFood)",
              })
     {
         AssertContains(
@@ -1823,6 +1838,18 @@ static void VerifyYuumaSettlementContract(
             required,
             $"The Ready/resume Yuuma settlement gate is missing '{required}'.");
     }
+    AssertDoesNotContain(
+        directDelivery,
+        "job.AutoDeliverFood",
+        "Yuuma delivery still reads the creation-time delivery switch.");
+    AssertDoesNotContain(
+        directDelivery,
+        "job.AutoCompleteOrder",
+        "Yuuma delivery still reads the creation-time completion switch.");
+    AssertDoesNotContain(
+        directDelivery,
+        "EnterManualHandoff(",
+        "A configuration pause still turns a Yuuma job into manual handoff.");
 
     var finalization = Normalize(ExtractNamedMethod(
         settlementSource,
@@ -1868,8 +1895,6 @@ static void VerifyYuumaSettlementContract(
         "returnfalse",
         "Final-food settlement can continue after observing a native BeverageInAir.");
     var yuumaIdentityGate = finalization.IndexOf("!IsYuumaBossTarget(job.Target)", StringComparison.Ordinal);
-    var deliverySwitchGate = finalization.IndexOf("!job.AutoDeliverFood", StringComparison.Ordinal);
-    var completionSwitchGate = finalization.IndexOf("!job.AutoCompleteOrder", StringComparison.Ordinal);
     var settlementOrderValidation = finalization.IndexOf(
         "TryValidateYuumaSettlementOrder(",
         StringComparison.Ordinal);
@@ -1911,8 +1936,8 @@ static void VerifyYuumaSettlementContract(
     var evaluation = finalization.IndexOf("TryInvokeYuumaEvaluation(", StringComparison.Ordinal);
     var bookkeeping = finalization.IndexOf("TryApplyYuumaDeliveryBookkeeping(", StringComparison.Ordinal);
     AssertTrue(
-        new[] { yuumaIdentityGate, deliverySwitchGate, completionSwitchGate }
-            .All(index => index >= 0 && index < deliveryCommit)
+        yuumaIdentityGate >= 0
+        && yuumaIdentityGate < deliveryCommit
         && settlementOrderValidation >= 0
         && settlementOrderValidation < settlementPreflight
         && settlementPreflight >= 0
@@ -1929,6 +1954,14 @@ static void VerifyYuumaSettlementContract(
         && evaluation > secondReacquireValidation
         && bookkeeping > evaluation,
         "Blood Pond Hell finalization must fresh-bind the cooker before the irreversible claim, commit the final setter, revalidate, reset the cooker, run exact extraction callbacks, reacquire and fully revalidate a second time, then evaluate and publish bookkeeping.");
+    AssertDoesNotContain(
+        finalization,
+        "job.AutoDeliverFood",
+        "Blood Pond Hell finalization still reads the creation-time delivery switch.");
+    AssertDoesNotContain(
+        finalization,
+        "job.AutoCompleteOrder",
+        "Blood Pond Hell finalization still reads the creation-time completion switch.");
     AssertDoesNotContain(
         finalization[freshCookerValidation..irreversibleFoodClaim],
         "MarkUncertain",

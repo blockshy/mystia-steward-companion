@@ -64,6 +64,10 @@ namespace MystiaStewardCompanion.Save
         public static int ListAbandonCount { get; set; }
         public static int TargetInvalidationCount { get; set; }
         public static long LastInvalidatedGeneration { get; set; }
+        public static int RecipeVariantRetireCount { get; set; }
+        public static long LastRecipeVariantRetiredGeneration { get; set; }
+        public static string LastRecipeVariantRetireReason { get; set; } = "";
+        public static List<string> BoundaryOrder { get; } = new();
         public static int SpecialOrderClearCount { get; set; }
         public static int NormalOrderClearCount { get; set; }
         public static int SpecialBusinessClearCount { get; set; }
@@ -93,6 +97,10 @@ namespace MystiaStewardCompanion.Save
             ListAbandonCount = 0;
             TargetInvalidationCount = 0;
             LastInvalidatedGeneration = 0;
+            RecipeVariantRetireCount = 0;
+            LastRecipeVariantRetiredGeneration = 0;
+            LastRecipeVariantRetireReason = "";
+            BoundaryOrder.Clear();
             SpecialOrderClearCount = 0;
             NormalOrderClearCount = 0;
             SpecialBusinessClearCount = 0;
@@ -172,10 +180,22 @@ namespace MystiaStewardCompanion.Save
 
     internal static class RuntimeUiPinningService
     {
-        public static void InvalidateTarget(long generation, string reason)
+        public static void ClearTargetsForBusinessBoundary(long generation, string reason)
         {
+            RuntimeBoundaryProbe.BoundaryOrder.Add("target-invalidated");
             RuntimeBoundaryProbe.TargetInvalidationCount++;
             RuntimeBoundaryProbe.LastInvalidatedGeneration = generation;
+        }
+    }
+
+    internal static class RuntimeTargetRecipeVariantService
+    {
+        public static void RetireForBusinessBoundary(long generation, string reason)
+        {
+            RuntimeBoundaryProbe.BoundaryOrder.Add("recipe-variant-retired");
+            RuntimeBoundaryProbe.RecipeVariantRetireCount++;
+            RuntimeBoundaryProbe.LastRecipeVariantRetiredGeneration = generation;
+            RuntimeBoundaryProbe.LastRecipeVariantRetireReason = reason;
         }
     }
 
@@ -208,17 +228,10 @@ namespace MystiaStewardCompanion.Save
             return 0;
         }
 
-        public static void ClearAutomationCookingJobs(
-            string reason,
-            AutomationCancellationTarget target,
-            bool preserveIrreversibleTransactions) => RuntimeBoundaryProbe.CookingJobClearCount++;
-    }
-
-    internal enum AutomationCancellationTarget
-    {
-        Commands,
-        Rare,
-        Normal,
-        All,
+        public static int ClearAutomationCookingJobs(string reason)
+        {
+            RuntimeBoundaryProbe.CookingJobClearCount++;
+            return 0;
+        }
     }
 }

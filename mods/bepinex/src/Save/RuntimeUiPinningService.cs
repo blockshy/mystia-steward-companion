@@ -26,6 +26,8 @@ internal static class RuntimeUiPinningService
     private static string _cookingPanelPatchStatus = "not attached";
     private static string _storagePanelPatchStatus = "not attached";
     private static RuntimeUiTargetSetSnapshot _targetSet = RuntimeUiTargetSetSnapshot.Disabled;
+    private static long _authorityFenceTargetGeneration;
+    private static RuntimeUiTargetSetSnapshot? _authorityFencePresentationTarget;
     private static RuntimeUiListSurfaceRefreshBinding? _cookingSurfaceRefresh;
     private static RuntimeUiListSurfaceRefreshBinding? _storageSurfaceRefresh;
     private static PanelRefreshRegistration? _cookingPanel;
@@ -37,6 +39,7 @@ internal static class RuntimeUiPinningService
     private static long _panelRefreshStalePanels;
     private static int _panelRefreshWarningLogs;
     private static string _lastPanelRefreshError = "";
+    private static string _lastTargetTransition = "none";
     private static long _recipeForces;
     private static long _ingredientForces;
     private static long _beverageForces;
@@ -53,6 +56,9 @@ internal static class RuntimeUiPinningService
 
     [ThreadStatic]
     private static bool _cookingScopeFailed;
+
+    [ThreadStatic]
+    private static bool _cookingScopeUsesDeferredAuthorityTarget;
 
     [ThreadStatic]
     private static object? _recentCookingRefreshInstance;
@@ -73,6 +79,9 @@ internal static class RuntimeUiPinningService
     private static bool _beverageScopeFailed;
 
     [ThreadStatic]
+    private static bool _beverageScopeUsesDeferredAuthorityTarget;
+
+    [ThreadStatic]
     private static object? _recentBeverageRefreshInstance;
 
     [ThreadStatic]
@@ -83,10 +92,16 @@ internal static class RuntimeUiPinningService
         get
         {
             var targetSet = Volatile.Read(ref _targetSet);
+            var authorityFenceGeneration = Volatile.Read(ref _authorityFenceTargetGeneration);
+            var authorityFencePresentationTarget = Volatile.Read(ref _authorityFencePresentationTarget);
+            var authorityFenceStatus = authorityFenceGeneration > 0
+                && targetSet.Generation == authorityFenceGeneration
+                ? $"pending:{authorityFenceGeneration}/held:{authorityFencePresentationTarget?.Generation.ToString() ?? "none"}"
+                : "none";
             string coreStatus;
             lock (SyncRoot)
             {
-                coreStatus = $"patches=checkPinnedPrefix:{_checkPinnedPatchStatus}, cookingScope:{_cookingScopePatchStatus}, beverageScope:{_beverageScopePatchStatus}, cookingPanel:{_cookingPanelPatchStatus}, storagePanel:{_storagePanelPatchStatus}; targetSet={DescribeTargetSet(targetSet)}; orderSurfaces=hud:{(_hudOrderHighlightTargetSynchronized ? "synchronized" : "retry-pending")},throwDelivery:{(_throwDeliveryOrderHighlightTargetSynchronized ? "synchronized" : "retry-pending")}; panelRefresh=cooking:{DescribePanelLocked(_cookingPanel)}, storage:{DescribePanelLocked(_storagePanel)}, attempts:{_panelRefreshAttempts}, successes:{_panelRefreshSuccesses}, failures:{_panelRefreshFailures}, stale:{_panelRefreshStalePanels}, warningLogs:{_panelRefreshWarningLogs}/{MaxPanelRefreshWarningLogs}, lastError:{_lastPanelRefreshError}";
+                coreStatus = $"patches=checkPinnedPrefix:{_checkPinnedPatchStatus}, cookingScope:{_cookingScopePatchStatus}, beverageScope:{_beverageScopePatchStatus}, cookingPanel:{_cookingPanelPatchStatus}, storagePanel:{_storagePanelPatchStatus}; targetSet={DescribeTargetSet(targetSet)}; targetTransition={_lastTargetTransition}; authorityPanelFence={authorityFenceStatus}; orderSurfaces=hud:{(_hudOrderHighlightTargetSynchronized ? "synchronized" : "retry-pending")},throwDelivery:{(_throwDeliveryOrderHighlightTargetSynchronized ? "synchronized" : "retry-pending")}; panelRefresh=cooking:{DescribePanelLocked(_cookingPanel)}, storage:{DescribePanelLocked(_storagePanel)}, attempts:{_panelRefreshAttempts}, successes:{_panelRefreshSuccesses}, failures:{_panelRefreshFailures}, stale:{_panelRefreshStalePanels}, warningLogs:{_panelRefreshWarningLogs}/{MaxPanelRefreshWarningLogs}, lastError:{_lastPanelRefreshError}";
             }
 
             return $"{coreStatus}; highlight={RuntimeCookerHighlightService.Status}; seat={RuntimeSeatHighlightService.Status}; order={RuntimeOrderHighlightService.Status}; throwDeliveryOrder={RuntimeThrowDeliverOrderHighlightService.Status}; recipeVariant={RuntimeTargetRecipeVariantService.Status}; listHighlight={RuntimePinnedListHighlightService.Status}; forcedTotal=recipe:{Interlocked.Read(ref _recipeForces)}, ingredients:{Interlocked.Read(ref _ingredientForces)}, beverage:{Interlocked.Read(ref _beverageForces)}; scopeImbalance={Interlocked.Read(ref _scopeCleanupImbalances)}";
@@ -134,22 +149,20 @@ internal static class RuntimeUiPinningService
                 PatchSlot.BeverageScope,
                 patchedNow,
                 missing);
-            PatchPanelLifecycle(
+            PatchCookingPanelLifecycle(
                 _harmony,
                 CookingSelectionPanelTypeName,
                 nameof(BeforeCookingPanelOpen),
                 nameof(AfterCookingPanelOpen),
                 nameof(BeforeCookingPanelTeardown),
-                PatchSlot.CookingPanel,
                 patchedNow,
                 missing);
-            PatchPanelLifecycle(
+            PatchStoragePanelLifecycle(
                 _harmony,
                 StoragePanelTypeName,
                 nameof(BeforeStoragePanelOpen),
                 nameof(AfterStoragePanelOpen),
                 nameof(BeforeStoragePanelTeardown),
-                PatchSlot.StoragePanel,
                 patchedNow,
                 missing);
 
@@ -161,6 +174,9 @@ internal static class RuntimeUiPinningService
             {
                 log.LogWarning($"Runtime UI pinning unavailable; game members were not found: {string.Join(", ", missing.Take(3))}.");
             }
+            log.LogInfo(
+                "Runtime UI pinning intentionally leaves "
+                + "WorkSceneCookingSelectionPannel.OnPanelDestroyed unpatched because it shares an empty native alias.");
         }
         catch (Exception ex)
         {
@@ -199,6 +215,67 @@ internal static class RuntimeUiPinningService
         return lifecycle.IsActive && target.SessionGeneration == lifecycle.Generation
             ? target
             : RuntimeUiTargetSetSnapshot.Disabled;
+    }
+
+    /// <summary>
+    /// Reads the exact target owned by the current native list refresh. An authority transition
+    /// immediately fences user actions with an empty operational target, but an already-open
+    /// list keeps its last confirmed presentation target until the new authority publishes its
+    /// first complete target set. This is not an execution fallback: the held target is never
+    /// returned by <see cref="ReadTargetSet"/> and cannot acquire an exact target publication lease.
+    /// </summary>
+    internal static RuntimeUiTargetSetSnapshot ReadSurfaceRefreshTargetSet()
+    {
+        var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+        if (_cookingRefreshDepth > 0
+            && _cookingScopeTarget is { } cookingTarget
+            && lifecycle.IsActive
+            && cookingTarget.SessionGeneration == lifecycle.Generation)
+        {
+            return cookingTarget;
+        }
+        if (_beverageRefreshDepth > 0
+            && _beverageScopeTarget is { } beverageTarget
+            && lifecycle.IsActive
+            && beverageTarget.SessionGeneration == lifecycle.Generation)
+        {
+            return beverageTarget;
+        }
+
+        return ResolveSurfaceRefreshTarget(out _);
+    }
+
+    internal static bool IsSurfaceRefreshTargetCurrentOrDeferred(
+        RuntimeUiTargetSetSnapshot expectedTargetSet)
+    {
+        ArgumentNullException.ThrowIfNull(expectedTargetSet);
+        var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+        if (!lifecycle.IsActive
+            || expectedTargetSet.SessionGeneration != lifecycle.Generation)
+        {
+            return false;
+        }
+
+        if (_cookingRefreshDepth > 0
+            && _cookingScopeUsesDeferredAuthorityTarget
+            && ReferenceEquals(_cookingScopeTarget, expectedTargetSet))
+        {
+            return true;
+        }
+        if (_beverageRefreshDepth > 0
+            && _beverageScopeUsesDeferredAuthorityTarget
+            && ReferenceEquals(_beverageScopeTarget, expectedTargetSet))
+        {
+            return true;
+        }
+
+        lock (TargetPublicationRoot)
+        {
+            var current = Volatile.Read(ref _targetSet);
+            if (ReferenceEquals(current, expectedTargetSet)) return true;
+            return IsAuthorityFenceTargetLocked(current)
+                && ReferenceEquals(_authorityFencePresentationTarget, expectedTargetSet);
+        }
     }
 
     /// <summary>
@@ -277,11 +354,20 @@ internal static class RuntimeUiPinningService
     /// </summary>
     public static void Tick()
     {
-        var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
-        if (!lifecycle.IsActive) return;
+        NightBusinessLifecycleSnapshot lifecycle;
+        RuntimeUiTargetSetSnapshot target;
+        lock (TargetPublicationRoot)
+        {
+            lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+            if (!lifecycle.IsActive) return;
 
-        var target = Volatile.Read(ref _targetSet);
-        if (target.SessionGeneration != lifecycle.Generation) return;
+            target = Volatile.Read(ref _targetSet);
+            if (target.SessionGeneration != lifecycle.Generation
+                || IsAuthorityFenceTargetLocked(target))
+            {
+                return;
+            }
+        }
 
         lock (SyncRoot)
         {
@@ -309,34 +395,86 @@ internal static class RuntimeUiPinningService
         }
     }
 
-    internal static void InvalidateTarget(long sessionGeneration, string reason)
+    /// <summary>
+    /// Fences targets published by a previous companion authority while preserving the exact
+    /// native panels that are still open. User actions are fenced immediately, while native list
+    /// refreshes retain the last confirmed presentation target until the new authority publishes
+    /// its first complete target set. The next main-thread Tick then applies that publication
+    /// without retiring recipe transactions or panel bindings.
+    /// </summary>
+    internal static void ClearTargetsForAuthorityTransition(
+        long sessionGeneration,
+        string reason)
     {
         lock (TargetPublicationRoot)
         {
             var current = Volatile.Read(ref _targetSet);
-            var disabled = new RuntimeUiTargetSetSnapshot(
-                checked(current.Generation + 1),
+            var presentationTarget = IsAuthorityFenceTargetLocked(current)
+                ? _authorityFencePresentationTarget
+                : current.SessionGeneration == sessionGeneration && current.Generation > 0
+                    ? current
+                    : null;
+            var disabled = PublishEmptyTargetSetLocked(
                 sessionGeneration,
-                Array.Empty<RuntimeUiTargetSnapshot>());
-            Volatile.Write(ref _targetSet, disabled);
-
-            RunCleanupNoThrow(() => Abandon(reason));
-            RunCleanupNoThrow(() => RuntimeTargetRecipeVariantService.RetireFailClosed(reason));
-            RunCleanupNoThrow(() => RuntimeCookerHighlightService.UpdateTargets(disabled));
-            RunCleanupNoThrow(() => RuntimeSeatHighlightService.UpdateTargets(disabled));
-            var hudOrderSynchronized = TryUpdateOrderHighlightSurface(
-                "HUD",
-                () => RuntimeOrderHighlightService.UpdateTargets(disabled));
-            var throwDeliveryOrderSynchronized = TryUpdateOrderHighlightSurface(
-                "throw-delivery panel",
-                () => RuntimeThrowDeliverOrderHighlightService.UpdateTargets(disabled));
-            lock (SyncRoot)
-            {
-                _hudOrderHighlightTargetSynchronized = hudOrderSynchronized;
-                _throwDeliveryOrderHighlightTargetSynchronized = throwDeliveryOrderSynchronized;
-            }
-            TryLogInfo($"Runtime UI target invalidated: generation={sessionGeneration}; reason={reason}.");
+                "authority-fence-preserved",
+                reason);
+            Volatile.Write(ref _authorityFencePresentationTarget, presentationTarget);
+            Volatile.Write(ref _authorityFenceTargetGeneration, disabled.Generation);
+            TryLogInfo(
+                $"Runtime UI authority panel refresh deferred: fence={disabled.Generation}; "
+                + $"presentation={presentationTarget?.Generation.ToString() ?? "none"}; "
+                + "waiting for the first complete target publication.");
         }
+    }
+
+    /// <summary>
+    /// Clears targets and open-panel registrations at an authoritative night-business boundary.
+    /// Recipe transactions are retired separately by their exact business-generation owner.
+    /// </summary>
+    internal static void ClearTargetsForBusinessBoundary(
+        long sessionGeneration,
+        string reason)
+    {
+        lock (TargetPublicationRoot)
+        {
+            ClearAuthorityFenceLocked();
+            PublishEmptyTargetSetLocked(
+                sessionGeneration,
+                "business-boundary-cleared",
+                reason);
+            RunTargetTransitionNoThrow(() => Abandon(reason));
+        }
+    }
+
+    private static RuntimeUiTargetSetSnapshot PublishEmptyTargetSetLocked(
+        long sessionGeneration,
+        string transition,
+        string reason)
+    {
+        var current = Volatile.Read(ref _targetSet);
+        var disabled = new RuntimeUiTargetSetSnapshot(
+            checked(current.Generation + 1),
+            sessionGeneration,
+            Array.Empty<RuntimeUiTargetSnapshot>());
+        Volatile.Write(ref _targetSet, disabled);
+
+        RunTargetTransitionNoThrow(() => RuntimeCookerHighlightService.UpdateTargets(disabled));
+        RunTargetTransitionNoThrow(() => RuntimeSeatHighlightService.UpdateTargets(disabled));
+        var hudOrderSynchronized = TryUpdateOrderHighlightSurface(
+            "HUD",
+            () => RuntimeOrderHighlightService.UpdateTargets(disabled));
+        var throwDeliveryOrderSynchronized = TryUpdateOrderHighlightSurface(
+            "throw-delivery panel",
+            () => RuntimeThrowDeliverOrderHighlightService.UpdateTargets(disabled));
+        lock (SyncRoot)
+        {
+            _hudOrderHighlightTargetSynchronized = hudOrderSynchronized;
+            _throwDeliveryOrderHighlightTargetSynchronized = throwDeliveryOrderSynchronized;
+            _lastTargetTransition = transition;
+        }
+        TryLogInfo(
+            $"Runtime UI target transition={transition}: generation={sessionGeneration}; reason={reason}.");
+        return disabled;
     }
 
     private static string PublishTargets(
@@ -345,7 +483,9 @@ internal static class RuntimeUiPinningService
     {
         var orderedTargets = targets.OrderBy(target => target.Kind).ToArray();
         var current = Volatile.Read(ref _targetSet);
-        var targetMatches = current.HasSameValues(sessionGeneration, orderedTargets);
+        var completesAuthorityFence = IsAuthorityFenceTargetLocked(current);
+        var targetMatches = !completesAuthorityFence
+            && current.HasSameValues(sessionGeneration, orderedTargets);
         bool updateHudOrderSurface;
         bool updateThrowDeliveryOrderSurface;
         lock (SyncRoot)
@@ -368,6 +508,7 @@ internal static class RuntimeUiPinningService
                 sessionGeneration,
                 orderedTargets);
             Volatile.Write(ref _targetSet, published);
+            if (completesAuthorityFence) ClearAuthorityFenceLocked();
             RuntimeCookerHighlightService.UpdateTargets(published);
             RuntimeSeatHighlightService.UpdateTargets(published);
         }
@@ -382,6 +523,12 @@ internal static class RuntimeUiPinningService
         {
             _hudOrderHighlightTargetSynchronized = hudOrderSynchronized;
             _throwDeliveryOrderHighlightTargetSynchronized = throwDeliveryOrderSynchronized;
+            if (!targetMatches)
+            {
+                _lastTargetTransition = orderedTargets.Length == 0
+                    ? "target-set-cleared"
+                    : "target-set-published";
+            }
         }
 
         TryLogInfo(
@@ -389,7 +536,42 @@ internal static class RuntimeUiPinningService
         return Status;
     }
 
-    private static void RunCleanupNoThrow(Action action)
+    private static RuntimeUiTargetSetSnapshot ResolveSurfaceRefreshTarget(
+        out bool usesDeferredAuthorityTarget)
+    {
+        lock (TargetPublicationRoot)
+        {
+            var current = Volatile.Read(ref _targetSet);
+            var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+            if (IsAuthorityFenceTargetLocked(current)
+                && _authorityFencePresentationTarget is { } presentationTarget
+                && presentationTarget.Generation > 0
+                && lifecycle.IsActive
+                && presentationTarget.SessionGeneration == lifecycle.Generation)
+            {
+                usesDeferredAuthorityTarget = true;
+                return presentationTarget;
+            }
+
+            usesDeferredAuthorityTarget = false;
+            return current;
+        }
+    }
+
+    private static bool IsAuthorityFenceTargetLocked(RuntimeUiTargetSetSnapshot target)
+    {
+        return _authorityFenceTargetGeneration > 0
+            && target.Generation == _authorityFenceTargetGeneration
+            && ReferenceEquals(target, Volatile.Read(ref _targetSet));
+    }
+
+    private static void ClearAuthorityFenceLocked()
+    {
+        Volatile.Write(ref _authorityFenceTargetGeneration, 0);
+        Volatile.Write(ref _authorityFencePresentationTarget, null);
+    }
+
+    private static void RunTargetTransitionNoThrow(Action action)
     {
         try
         {
@@ -397,7 +579,7 @@ internal static class RuntimeUiPinningService
         }
         catch (Exception ex)
         {
-            TryLogWarning($"Runtime UI target cleanup failed without escaping the lifecycle boundary: {ex.GetBaseException().Message}");
+            TryLogWarning($"Runtime UI target transition step failed without escaping its owner: {ex.GetBaseException().Message}");
         }
     }
 
@@ -617,13 +799,53 @@ internal static class RuntimeUiPinningService
         }
     }
 
-    private static void PatchPanelLifecycle(
+    private static void PatchCookingPanelLifecycle(
         Harmony harmony,
         string typeName,
         string openPrefixName,
         string openPostfixName,
         string teardownPrefixName,
-        PatchSlot patchSlot,
+        ICollection<string> patchedNow,
+        ICollection<string> missing)
+    {
+        var installed = 0;
+        installed += PatchPanelMethod(
+            harmony,
+            typeName,
+            "OnPanelOpen",
+            openPrefixName,
+            openPostfixName,
+            patchedNow,
+            missing)
+            ? 1
+            : 0;
+        installed += PatchPanelMethod(
+            harmony,
+            typeName,
+            "OnPanelClose",
+            teardownPrefixName,
+            null,
+            patchedNow,
+            missing)
+            ? 1
+            : 0;
+
+        lock (SyncRoot)
+        {
+            SetPatchStatusLocked(
+                PatchSlot.CookingPanel,
+                installed == 2
+                    ? "patched:2/2;destroy=unpatched-shared-native-alias"
+                    : $"partial:{installed}/2;destroy=unpatched-shared-native-alias");
+        }
+    }
+
+    private static void PatchStoragePanelLifecycle(
+        Harmony harmony,
+        string typeName,
+        string openPrefixName,
+        string openPostfixName,
+        string teardownPrefixName,
         ICollection<string> patchedNow,
         ICollection<string> missing)
     {
@@ -661,7 +883,9 @@ internal static class RuntimeUiPinningService
 
         lock (SyncRoot)
         {
-            SetPatchStatusLocked(patchSlot, installed == 3 ? "patched" : $"partial:{installed}/3");
+            SetPatchStatusLocked(
+                PatchSlot.StoragePanel,
+                installed == 3 ? "patched:3/3" : $"partial:{installed}/3");
         }
     }
 
@@ -717,7 +941,8 @@ internal static class RuntimeUiPinningService
 
     private static void OnCookingRefreshStarted(object __instance)
     {
-        BeginCookingRefreshScope(__instance, Volatile.Read(ref _targetSet));
+        var target = ResolveSurfaceRefreshTarget(out var usesDeferredAuthorityTarget);
+        BeginCookingRefreshScope(__instance, target, usesDeferredAuthorityTarget);
     }
 
     private static Exception? OnCookingRefreshFinalized(Exception? __exception)
@@ -728,7 +953,8 @@ internal static class RuntimeUiPinningService
 
     private static void OnBeverageRefreshStarted(object __instance)
     {
-        BeginBeverageRefreshScope(__instance, Volatile.Read(ref _targetSet));
+        var target = ResolveSurfaceRefreshTarget(out var usesDeferredAuthorityTarget);
+        BeginBeverageRefreshScope(__instance, target, usesDeferredAuthorityTarget);
     }
 
     private static Exception? OnBeverageRefreshFinalized(Exception? __exception)
@@ -739,13 +965,15 @@ internal static class RuntimeUiPinningService
 
     private static void BeginCookingRefreshScope(
         object instance,
-        RuntimeUiTargetSetSnapshot target)
+        RuntimeUiTargetSetSnapshot target,
+        bool usesDeferredAuthorityTarget)
     {
         if (_cookingRefreshDepth == 0)
         {
             _cookingScopeTarget = target;
             _cookingScopeInstance = instance;
             _cookingScopeFailed = false;
+            _cookingScopeUsesDeferredAuthorityTarget = usesDeferredAuthorityTarget;
         }
 
         _cookingRefreshDepth++;
@@ -771,6 +999,7 @@ internal static class RuntimeUiPinningService
         _cookingScopeTarget = null;
         _cookingScopeInstance = null;
         _cookingScopeFailed = false;
+        _cookingScopeUsesDeferredAuthorityTarget = false;
         if (recordCompletion
             && succeeded
             && instance != null
@@ -782,13 +1011,15 @@ internal static class RuntimeUiPinningService
 
     private static void BeginBeverageRefreshScope(
         object instance,
-        RuntimeUiTargetSetSnapshot target)
+        RuntimeUiTargetSetSnapshot target,
+        bool usesDeferredAuthorityTarget)
     {
         if (_beverageRefreshDepth == 0)
         {
             _beverageScopeTarget = target;
             _beverageScopeInstance = instance;
             _beverageScopeFailed = false;
+            _beverageScopeUsesDeferredAuthorityTarget = usesDeferredAuthorityTarget;
         }
 
         _beverageRefreshDepth++;
@@ -814,6 +1045,7 @@ internal static class RuntimeUiPinningService
         _beverageScopeTarget = null;
         _beverageScopeInstance = null;
         _beverageScopeFailed = false;
+        _beverageScopeUsesDeferredAuthorityTarget = false;
         if (recordCompletion
             && succeeded
             && instance != null
@@ -837,11 +1069,11 @@ internal static class RuntimeUiPinningService
 
         if (panelKind == RefreshPanelKind.Cooking)
         {
-            BeginCookingRefreshScope(instance, target);
+            BeginCookingRefreshScope(instance, target, usesDeferredAuthorityTarget: false);
         }
         else
         {
-            BeginBeverageRefreshScope(instance, target);
+            BeginBeverageRefreshScope(instance, target, usesDeferredAuthorityTarget: false);
         }
     }
 
@@ -1000,6 +1232,7 @@ internal static class RuntimeUiPinningService
         RuntimeUiTargetSetSnapshot target)
     {
         PanelRefreshAttempt? attempt = null;
+        var targetAlreadyAttempted = false;
         lock (SyncRoot)
         {
             var panel = GetPanelLocked(panelKind);
@@ -1011,10 +1244,13 @@ internal static class RuntimeUiPinningService
                 _panelRefreshStalePanels++;
                 return;
             }
-            if (panel.LastAttemptedTargetGeneration == target.Generation) return;
-
-            panel.LastAttemptedTargetGeneration = target.Generation;
-            _panelRefreshAttempts++;
+            targetAlreadyAttempted =
+                panel.LastAttemptedTargetGeneration == target.Generation;
+            if (!targetAlreadyAttempted)
+            {
+                panel.LastAttemptedTargetGeneration = target.Generation;
+                _panelRefreshAttempts++;
+            }
             attempt = new PanelRefreshAttempt(
                 panelKind,
                 panel.Instance,
@@ -1026,8 +1262,13 @@ internal static class RuntimeUiPinningService
 
         if (attempt == null) return;
         if (!TryReadLivePanelPointer(attempt.Instance, out var pointer)
-            || pointer != attempt.Pointer
-            || !attempt.SurfaceRefresh.PanelType.IsInstanceOfType(attempt.Instance)
+            || pointer != attempt.Pointer)
+        {
+            ForgetStaleRefreshAttempt(attempt);
+            return;
+        }
+        if (targetAlreadyAttempted) return;
+        if (!attempt.SurfaceRefresh.PanelType.IsInstanceOfType(attempt.Instance)
             || !attempt.SurfaceRefresh.IsApplicablePanel(attempt.Instance, out _))
         {
             ForgetStaleRefreshAttempt(attempt);

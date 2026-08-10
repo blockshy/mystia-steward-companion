@@ -54,7 +54,6 @@ internal static partial class RuntimeOrderPreparationService
     /// <param name="recipeId">目标配方 ID。</param>
     /// <param name="recipeName">用于用户提示和自动化日志的料理名称。</param>
     /// <param name="extraIngredientIds">推荐算法选择的额外加料材料 ID。</param>
-    /// <param name="autoCollect">料理完成后是否由 job 直接送达；关闭时 job 只保留手动交接回执。</param>
     /// <param name="cookerControllerIndex">前端根据同轮运行时快照预约的精确厨具控制器索引。</param>
     /// <param name="cookerControllerIdentity">同一快照中的厨具控制器原生身份。</param>
     /// <param name="cookerGridX">同一快照中的厨具网格 X 坐标。</param>
@@ -70,8 +69,6 @@ internal static partial class RuntimeOrderPreparationService
         int recipeId,
         string recipeName,
         IReadOnlyList<int> extraIngredientIds,
-        bool autoCollect,
-        bool autoCompleteOrder,
         int cookerControllerIndex,
         string cookerControllerIdentity,
         int? cookerGridX,
@@ -101,8 +98,6 @@ internal static partial class RuntimeOrderPreparationService
 
         if (TryFindAutomationCookingJob(
                 target,
-                autoCollect,
-                autoCompleteOrder,
                 out var existingJob,
                 out var existingJobMessage))
         {
@@ -473,8 +468,6 @@ internal static partial class RuntimeOrderPreparationService
                 finalFood,
                 recipeName,
                 target,
-                autoCollect,
-                autoCompleteOrder,
                 specialFoodTargetRevision);
         }
         catch (Exception ex)
@@ -494,7 +487,7 @@ internal static partial class RuntimeOrderPreparationService
         AppendAutomationLog(
             "start-ok",
             collectionTarget,
-            $"{recipeName}; cooker={DescribeCookController(cookController)}; autoCollect={autoCollect}; "
+            $"{recipeName}; cooker={DescribeCookController(cookController)}; "
             + $"extra={extraText}; {cookerValidationMessage}; {startDiagnostic}");
         return CookingStartResult.Succeeded(
             $"{recipeName} 已开始制作（配方 #{recipeId}，加料：{extraText}）。",
@@ -660,8 +653,6 @@ internal static partial class RuntimeOrderPreparationService
         object initialResult,
         string recipeName,
         CookingCollectionTarget target,
-        bool autoDeliverFood,
-        bool autoCompleteOrder,
         long specialFoodTargetRevision)
     {
         var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
@@ -729,8 +720,6 @@ internal static partial class RuntimeOrderPreparationService
                 RecipeName = recipeName,
                 CreatedAtUtc = nowUtc,
                 Target = target,
-                AutoDeliverFood = autoDeliverFood,
-                AutoCompleteOrder = autoCompleteOrder,
                 SpecialFoodTargetRevision = specialFoodTargetRevision,
                 Tracker = new AutomationCookingJobTracker(ownershipSnapshot.Generation, nowUtc, phase, progress),
                 DeliveryTimeoutClock = new AutomationEffectiveTimeoutClock(nowUtc, initiallyEligible: false),
@@ -738,6 +727,14 @@ internal static partial class RuntimeOrderPreparationService
                 ManualHandoffReadFailureClock = new AutomationEffectiveTimeoutClock(nowUtc, initiallyEligible: false),
                 CurrentResultPointer = resultPointer,
             };
+            ApplyAutomationCookingJobControlDecision(
+                job,
+                GetPendingCookingJobControlStage(job),
+                ObserveAutomationCookingJobControl(
+                    job,
+                    GetPendingCookingJobControlStage(job),
+                    nowUtc),
+                nowUtc);
             AutomationCookingJobs.Add(job);
             AppendAutomationLog(
                 "job-add",
@@ -928,32 +925,23 @@ internal static partial class RuntimeOrderPreparationService
 
     private static string FormatNormalOrderCookingJobMessage(AutomationCookingJob job, int deskCode)
     {
+        var observedAtUtc = DateTime.UtcNow;
+        var stage = GetPendingCookingJobControlStage(job);
+        ApplyAutomationCookingJobControlDecision(
+            job,
+            stage,
+            ObserveAutomationCookingJobControl(job, stage, observedAtUtc),
+            observedAtUtc);
         var targetText = job.Target.DeskCode == deskCode
             ? $"桌 {deskCode + 1} 的目标料理 {job.Target.FoodName}"
             : $"目标料理 {job.Target.FoodName}";
-        return WillAutomaticallyDeliverCookingJob(job)
+        return !job.ControlSuspended
             ? $"{targetText} 已在制作中，等待完成后会自动直接送达。"
-            : $"{targetText} 已登记手动交接回执；Mod 不会送达、入箱或复位厨具。";
-    }
-
-    private static bool WillAutomaticallyDeliverCookingJob(AutomationCookingJob job)
-    {
-        return WillAutomaticallyDeliverCookingTarget(
-            job.AutoDeliverFood,
-            job.AutoCompleteOrder);
-    }
-
-    private static bool WillAutomaticallyDeliverCookingTarget(
-        bool autoDeliverFood,
-        bool autoCompleteOrder)
-    {
-        return autoDeliverFood && autoCompleteOrder;
+            : $"{targetText} 已在制作中；{job.ControlMessage}";
     }
 
     private static bool TryFindAutomationCookingJob(
         CookingCollectionTarget target,
-        bool requestAutoDelivery,
-        bool requestAutoCompletion,
         out AutomationCookingJob? existingJob,
         out string message)
     {
@@ -962,16 +950,15 @@ internal static partial class RuntimeOrderPreparationService
             foreach (var job in AutomationCookingJobs)
             {
                 if (!IsSameCookingCollectionTarget(job.Target, target)) continue;
-
-                if (requestAutoDelivery && !job.AutoDeliverFood && !job.ManualHandoffObserved)
-                {
-                    job.AutoDeliverFood = true;
-                }
-
-                if (requestAutoCompletion && !job.AutoCompleteOrder && !job.ManualHandoffObserved)
-                {
-                    job.AutoCompleteOrder = true;
-                }
+                var observedAtUtc = DateTime.UtcNow;
+                var stage = job.TransactionStage == "evaluation-receipt"
+                    ? RuntimeAutomationControlStage.OrderEvaluation
+                    : GetPendingCookingJobControlStage(job);
+                ApplyAutomationCookingJobControlDecision(
+                    job,
+                    stage,
+                    ObserveAutomationCookingJobControl(job, stage, observedAtUtc),
+                    observedAtUtc);
 
                 existingJob = job;
                 message = job.TransactionStage == "evaluation-receipt"
@@ -979,9 +966,9 @@ internal static partial class RuntimeOrderPreparationService
                     : job.ManualHandoffExpired
                     ? $"同一订单仍有过期目标料理 {job.Target.FoodName} 等待玩家处理；"
                         + "当前目标不会重复开锅，其他订单不受影响。"
-                    : WillAutomaticallyDeliverCookingJob(job)
+                    : !job.ControlSuspended
                     ? $"目标料理 {job.Target.FoodName} 已在制作中，等待完成后会自动直接送达。"
-                    : $"目标料理 {job.Target.FoodName} 已进入手动交接，Mod 只保留防重复开锅回执，不会送达、入箱或复位厨具。";
+                    : $"目标料理 {job.Target.FoodName} 已在制作中；{job.ControlMessage}";
                 return true;
             }
 
@@ -1400,6 +1387,15 @@ internal static partial class RuntimeOrderPreparationService
             return TryCompleteCommittedFoodDeliveryTransaction(job);
         }
 
+        var controlStage = GetPendingCookingJobControlStage(job);
+        var controlDecision = ObserveAutomationCookingJobControl(job, controlStage, nowUtc);
+        var controlChanged = ApplyAutomationCookingJobControlDecision(
+            job,
+            controlStage,
+            controlDecision,
+            nowUtc);
+        var sideEffectTimeoutEligible = timeoutEligible && controlDecision.Allowed;
+
         if (!TryReacquireAutomationCooker(
                 job,
                 out var cookerBinding,
@@ -1429,7 +1425,7 @@ internal static partial class RuntimeOrderPreparationService
 
         job.DeliveryTimeoutClock.Observe(
             nowUtc,
-            timeoutEligible && phase == 3);
+            sideEffectTimeoutEligible && phase == 3);
         if (job.WarmerStoreCommitUncertain)
         {
             return BlockUncertainWarmerStore(job, "保温箱提交状态无法确认，禁止继续处理厨具。");
@@ -1518,12 +1514,11 @@ internal static partial class RuntimeOrderPreparationService
             phase,
             progress,
             invalidResultDiagnostic,
-            timeoutEligible));
+            sideEffectTimeoutEligible));
 
         if (transition.Terminal)
         {
-            if (!IsYuumaBossTarget(job.Target)
-                && !job.AutoDeliverFood
+            if (job.ControlSuspended
                 && transition.ReasonCode is "cooking-controller-reused" or "cooking-ownership-lost")
             {
                 return EnterManualHandoff(job, nowUtc);
@@ -1564,14 +1559,24 @@ internal static partial class RuntimeOrderPreparationService
 
         if (transition.Directive == AutomationCookingJobDirective.DeliverOwnedResult && cookedFood != null)
         {
-            if (IsYuumaBossTarget(job.Target))
+            if (!controlDecision.Allowed)
             {
-                return TryDeliverAutomationCookedFood(job, cookedFood);
+                return (
+                    false,
+                    controlChanged ? controlDecision.Message : "",
+                    OrderPreparationStepCodes.CookingPending);
             }
 
-            if (!job.AutoDeliverFood)
+            using var permit = AcquireAutomationCookingJobControlPermit(
+                job,
+                controlStage,
+                DateTime.UtcNow);
+            if (!permit.Allowed)
             {
-                return EnterManualHandoff(job, nowUtc);
+                return (
+                    false,
+                    permit.Decision.Message,
+                    OrderPreparationStepCodes.CookingPending);
             }
 
             return TryDeliverAutomationCookedFood(job, cookedFood);

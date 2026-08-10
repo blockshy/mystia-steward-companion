@@ -10,7 +10,9 @@ internal static class RuntimePinnedListHighlightService
 {
     private const string CookingSelectionPanelTypeName = "NightScene.UI.CookingUtility.WorkSceneCookingSelectionPannel";
     private const string StoragePanelTypeName = "NightScene.UI.CookingUtility.WorkSceneStoragePannel";
-    private const int ExpectedHookCount = 9;
+    private const int ExpectedHookCount = 8;
+    private const string SharedCookingDestroyHookStatus =
+        "cookingDestroy=unpatched-shared-native-alias";
     private const int MaximumExactRecipeLifecycleLogsPerBusiness = 32;
 
     private static readonly object SyncRoot = new();
@@ -70,15 +72,14 @@ internal static class RuntimePinnedListHighlightService
             PatchElementMethod(_harmony, CookingSelectionPanelTypeName, "OnIngElementEnabled", nameof(AfterIngredientItemEnabled), patchedNow, missing);
             PatchElementMethod(_harmony, StoragePanelTypeName, "OnElementEnabled", nameof(AfterStorageItemEnabled), patchedNow, missing);
             PatchPanelPrefixMethod(_harmony, CookingSelectionPanelTypeName, "OnPanelClose", nameof(BeforeCookingPanelTeardown), patchedNow, missing);
-            PatchPanelPrefixMethod(_harmony, CookingSelectionPanelTypeName, "OnPanelDestroyed", nameof(BeforeCookingPanelTeardown), patchedNow, missing);
             PatchPanelPrefixMethod(_harmony, StoragePanelTypeName, "OnPanelClose", nameof(BeforeStoragePanelTeardown), patchedNow, missing);
             PatchPanelPrefixMethod(_harmony, StoragePanelTypeName, "OnPanelDestroyed", nameof(BeforeStoragePanelTeardown), patchedNow, missing);
 
             lock (SyncRoot)
             {
                 _hookStatus = PatchedMethods.Count == ExpectedHookCount
-                    ? "patched"
-                    : $"partial:{PatchedMethods.Count}/{ExpectedHookCount}";
+                    ? $"patched:{ExpectedHookCount}/{ExpectedHookCount};{SharedCookingDestroyHookStatus}"
+                    : $"partial:{PatchedMethods.Count}/{ExpectedHookCount};{SharedCookingDestroyHookStatus}";
             }
 
             if (patchedNow.Count > 0)
@@ -89,6 +90,9 @@ internal static class RuntimePinnedListHighlightService
             {
                 log.LogWarning($"Runtime pinned list highlight unavailable; game members were not found: {string.Join(", ", missing.Take(3))}.");
             }
+            log.LogInfo(
+                "Runtime pinned list highlight intentionally leaves "
+                + "WorkSceneCookingSelectionPannel.OnPanelDestroyed unpatched because it shares an empty native alias.");
         }
         catch (Exception ex)
         {
@@ -367,13 +371,11 @@ internal static class RuntimePinnedListHighlightService
         TryRegisterByItemId(__0, __2, PanelKind.Storage, ItemKind.Beverage);
     }
 
-    private static void BeforeCookingPanelTeardown(MethodBase __originalMethod)
+    private static void BeforeCookingPanelTeardown()
     {
         ReconcilePanelTeardown(
             PanelKind.Cooking,
-            __originalMethod.Name == "OnPanelDestroyed"
-                ? ExactRecipeReleaseReason.PanelDestroyed
-                : ExactRecipeReleaseReason.PanelClosed);
+            ExactRecipeReleaseReason.PanelClosed);
     }
 
     private static void BeforeStoragePanelTeardown(MethodBase __originalMethod)

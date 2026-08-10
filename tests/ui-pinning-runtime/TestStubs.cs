@@ -316,6 +316,8 @@ namespace MystiaStewardCompanion.Save
         private static readonly Dictionary<nint, long> PanelEpochs = new();
         private static readonly Dictionary<nint, RowBinding> RowsByButton = new();
 
+        public static int ShutdownRetireCount { get; private set; }
+
         public static string Status
         {
             get
@@ -328,10 +330,11 @@ namespace MystiaStewardCompanion.Save
         {
         }
 
-        public static void RetireFailClosed(string reason)
+        public static void RetireForShutdown(string reason)
         {
             lock (SyncRoot)
             {
+                ShutdownRetireCount++;
                 RowsByButton.Clear();
                 PanelEpochs.Clear();
             }

@@ -18,7 +18,7 @@ var expectedGetRoutes = new HashSet<string>(StringComparer.Ordinal)
 var expectedPostRoutes = new HashSet<string>(StringComparer.Ordinal)
 {
     "/automation/lease/acquire",
-    "/automation/cancel",
+    "/automation/lease/release",
     "/automation/barriers/ack",
     "/custom-recipes/move",
     "/custom-recipes/remove",
@@ -65,7 +65,7 @@ try
     AssertAbsent(source, "NormalizeApiPath", "Legacy API path normalization still exists.");
     AssertAbsent(source, "case \"/\":", "The root path still aliases another endpoint.");
     AssertAbsent(source, "StartsWith(\"/api/\"", "The /api/* path alias still exists.");
-    AssertAbsent(source, "case \"/automation/lease/release\":", "The obsolete lease release route still exists.");
+    AssertAbsent(source, "case \"/automation/cancel\":", "The destructive automation-cancellation route still exists.");
     AssertAbsent(source, "case \"/automation/jobs/cancel\":", "The obsolete job-cancellation route still exists.");
     AssertAbsent(source, "case \"/ui-pinning/target\":", "The obsolete singular UI target route still exists.");
     AssertContains(
@@ -120,36 +120,31 @@ try
         "UI target id sequences no longer reject whitespace, signs, or non-ASCII digits.");
     AssertContains(
         source,
-        "AutomationCancellationTargetPolicy.TryParse(",
-        "Automation cancellation does not require an exact canonical target.");
-    AssertContains(
-        source,
-        "ReadStringQuery(query, \"target\")",
-        "Automation cancellation does not read its required target query.");
-    AssertContains(
-        source,
-        "CancelAutomation(request, cancellationTarget)",
-        "Automation cancellation does not forward the validated target.");
-    AssertContains(
-        source,
-        "target is required and must be exactly commands, rare, normal, or all",
-        "Missing or invalid cancellation targets do not produce an explicit client error.");
+        "ReleaseAutomationLease(request)",
+        "The exact automation lease-release route is not connected to its handler.");
     AssertAbsent(
         source,
-        "CancelAutomationAndReleaseLease(request)",
-        "Automation cancellation retained the obsolete unconditional lease-release path.");
-    AssertContains(
+        "AutomationCancellationTarget",
+        "The deleted targeted-cancellation model is still reachable from the Local API.");
+    var releaseLease = ExtractSourceBlock(
         source,
-        "var releaseLease = target == AutomationCancellationTarget.All;",
-        "Command-only or grouped cancellation no longer retains the current automation lease.");
+        "private LocalApiAutomationLeaseDto ReleaseAutomationLease(");
     AssertContains(
-        source,
-        "if (releaseLease)\n                    {\n                        _automationLease = null;",
-        "All-target cancellation no longer releases the current automation lease.");
+        releaseLease,
+        "TryAuthorizeRuntimeWriter(request, clientId, now, out var authorityRevision, out var authorityError)",
+        "Lease release does not require the exact current primary-device authority.");
     AssertContains(
-        source,
-        "_automationLease.LastSeenUtc = now;\n                        _automationLease.ExpiresAtUtc = now + AutomationLeaseTtl;",
-        "Command-only or grouped cancellation no longer retains and renews the current automation lease.");
+        releaseLease,
+        "RuntimeAutomationControlState.RevokeLease(",
+        "Lease release does not suspend future active-job side effects.");
+    AssertContains(
+        releaseLease,
+        "_advanceAutomationCommandEpoch(_automationCommandEpoch);",
+        "Lease release does not fence already queued commands.");
+    AssertAbsent(
+        releaseLease,
+        "ClearAutomationCookingJobs(",
+        "Lease release can still delete an active cooking job instead of suspending it.");
     AssertContains(
         source,
         "var requestData = HttpRequestReader.Read(stream, MaxRequestHeaderBytes, MaxRequestBodyBytes);",
@@ -214,17 +209,17 @@ try
     AssertNoDuplicates("GET", getRoutes);
     AssertNoDuplicates("POST", postRoutes);
 
-    var automationCancelRouteStart = RequireIndex(source, "case \"/automation/cancel\":", postSwitchStart);
-    var automationBarrierRouteStart = RequireIndex(source, "case \"/automation/barriers/ack\":", automationCancelRouteStart);
-    var automationCancelRoute = source[automationCancelRouteStart..automationBarrierRouteStart];
+    var automationReleaseRouteStart = RequireIndex(source, "case \"/automation/lease/release\":", postSwitchStart);
+    var automationBarrierRouteStart = RequireIndex(source, "case \"/automation/barriers/ack\":", automationReleaseRouteStart);
+    var automationReleaseRoute = source[automationReleaseRouteStart..automationBarrierRouteStart];
     AssertContains(
-        automationCancelRoute,
-        "WriteResponse(\n                                stream,\n                                400,\n                                \"Bad Request\"",
-        "Missing or invalid cancellation targets are not rejected with HTTP 400.");
+        automationReleaseRoute,
+        "ToJson(ReleaseAutomationLease(request))",
+        "The release route does not return the canonical lease DTO.");
     AssertAbsent(
-        automationCancelRoute,
-        "ReadStringQuery(query, \"scope\")",
-        "The cancellation endpoint still accepts the obsolete scope query.");
+        automationReleaseRoute,
+        "ReadStringQuery(query",
+        "The release endpoint accepts an obsolete cancellation target or scope query.");
 
     var inviteAllRouteStart = RequireIndex(source, "case \"/rare-guests/invite-all\":", postSwitchStart);
     var inviteRouteStart = RequireIndex(source, "case \"/rare-guests/invite\":", inviteAllRouteStart);
@@ -253,24 +248,28 @@ try
     var modelSource = File.ReadAllText(Path.Combine(Path.GetDirectoryName(sourcePath)!, "LocalApiModels.cs"));
     AssertContains(
         modelSource,
-        "public long AutomationCancellationAppliedEpoch { get; init; }",
-        "The Local API snapshot does not publish the applied cancellation epoch.");
+        "public string ControlState { get; init; } = \"active\";",
+        "The Local API cooking-job snapshot does not publish its live control state.");
+    AssertContains(
+        modelSource,
+        "public long ControlAuthorityRevision { get; init; }",
+        "The Local API cooking-job snapshot does not identify its observed authority revision.");
+    AssertAbsent(
+        modelSource,
+        "AutomationCancellationAppliedEpoch",
+        "The snapshot still publishes the deleted cancellation-ack epoch.");
     AssertContains(
         overlaySource,
-        "AutomationCancellationAppliedEpoch = _automationCancellationAppliedEpoch,",
-        "Snapshot construction does not capture the applied cancellation epoch.");
+        "AppendValue(builder, job.ControlState);",
+        "The job control state is absent from the canonical snapshot content signature.");
     AssertContains(
         overlaySource,
-        "AppendValue(builder, snapshot.AutomationCancellationAppliedEpoch);",
-        "The applied cancellation epoch is absent from the canonical snapshot content signature.");
-    var cancellationProcessIndex = RequireIndex(overlaySource, "ProcessPendingAutomationCancellations();", 0);
-    var runtimeGateIndex = RequireIndex(overlaySource, "if (ShouldGateNightBusinessRuntime())", cancellationProcessIndex);
-    var orderProcessIndex = RequireIndex(overlaySource, "ProcessPendingOrderPreparations();", cancellationProcessIndex);
-    if (!(cancellationProcessIndex < runtimeGateIndex && runtimeGateIndex < orderProcessIndex))
-    {
-        throw new InvalidOperationException(
-            "Automation cancellation must be processed before the runtime gate and queued order commands each frame.");
-    }
+        "AppendValue(builder, job.ControlAuthorityRevision);",
+        "The observed control authority is absent from the canonical snapshot content signature.");
+    AssertAbsent(
+        overlaySource,
+        "AutomationCancellation",
+        "The Unity overlay still contains the deleted cancellation queue or acknowledgement path.");
     AssertContains(
         overlaySource,
         "pending.AutomationEpoch != currentEpoch",
@@ -287,86 +286,6 @@ try
         overlaySource,
         ": \"retryable-failure\";",
         "Runtime-unavailable order responses no longer expose a structured retryable outcome.");
-    AssertContains(
-        overlaySource,
-        "Target = target",
-        "The cancellation target is not retained across the Unity main-thread queue.");
-    AssertContains(
-        overlaySource,
-        "? 0\n            : RuntimeOrderPreparationService.ClearAutomationCookingJobs(\n                \"user-cancelled\",\n                target,\n                preserveIrreversibleTransactions: true);",
-        "Command-only cancellation does not preserve cooking jobs at the Unity main-thread boundary.");
-    var cancelFromApiStart = RequireIndex(
-        overlaySource,
-        "private AutomationCancellationResult CancelAutomationFromLocalApi(",
-        0);
-    var cancelFromApiEnd = RequireIndex(
-        overlaySource,
-        "private AutomationSafetyBarrierAckResult AcknowledgeAutomationSafetyBarrierFromLocalApi(",
-        cancelFromApiStart);
-    var cancelFromApi = overlaySource[cancelFromApiStart..cancelFromApiEnd];
-    var commandEpochAdvance = RequireIndex(
-        cancelFromApi,
-        "var cancelledCommands = AdvanceAutomationCommandEpoch(automationEpoch);",
-        0);
-    var mainThreadBranch = RequireIndex(
-        cancelFromApi,
-        "if (Thread.CurrentThread.ManagedThreadId == _mainThreadId)",
-        commandEpochAdvance);
-    var enqueueIndex = RequireIndex(
-        cancelFromApi,
-        "_pendingAutomationCancellations.Enqueue(pending);",
-        mainThreadBranch);
-    AssertAbsent(
-        cancelFromApi,
-        "if (target == AutomationCancellationTarget.Commands)",
-        "Command-only cancellation bypasses the common Unity main-thread Apply boundary.");
-    AssertAbsent(
-        cancelFromApi,
-        "ShouldGateNightBusinessRuntime()",
-        "The runtime gate can still prevent cancellation from publishing its command epoch.");
-    if (!(commandEpochAdvance < mainThreadBranch && mainThreadBranch < enqueueIndex))
-    {
-        throw new InvalidOperationException("Cancellation targets do not share one Unity main-thread queue boundary.");
-    }
-
-    var applyStart = RequireIndex(
-        overlaySource,
-        "private AutomationCancellationResult ApplyAutomationCancellation(",
-        cancelFromApiEnd);
-    var applyEnd = RequireIndex(
-        overlaySource,
-        "private int AdvanceAutomationCommandEpoch(",
-        applyStart);
-    var applyCancellation = overlaySource[applyStart..applyEnd];
-    AssertContains(
-        applyCancellation,
-        "target == AutomationCancellationTarget.Commands\n            ? 0",
-        "Command-only cancellation does not explicitly retain all cooking jobs.");
-    var clearJobsIndex = RequireIndex(
-        applyCancellation,
-        "RuntimeOrderPreparationService.ClearAutomationCookingJobs(",
-        0);
-    var appliedEpochIndex = RequireIndex(
-        applyCancellation,
-        "_automationCancellationAppliedEpoch = Math.Max(",
-        clearJobsIndex);
-    var markSnapshotIndex = RequireIndex(
-        applyCancellation,
-        "MarkLocalApiSnapshotDirty(",
-        appliedEpochIndex);
-    if (!(clearJobsIndex < appliedEpochIndex && appliedEpochIndex < markSnapshotIndex))
-    {
-        throw new InvalidOperationException(
-            "The cancellation applied epoch must advance after job cleanup and before snapshot invalidation.");
-    }
-    AssertContains(
-        applyCancellation,
-        "LocalApiSnapshotDirtyDomain.Automation",
-        "Cancellation Apply does not invalidate the automation snapshot domain.");
-    AssertContains(
-        applyCancellation,
-        "\"automation cancellation applied\",\n            force: true);",
-        "Cancellation Apply does not force a snapshot publication for the new command epoch.");
 
     var overlappingRoutes = expectedGetRoutes.Intersect(expectedPostRoutes, StringComparer.Ordinal).ToArray();
     AssertEqual(
@@ -423,6 +342,30 @@ static int RequireIndex(string source, string marker, int startIndex)
     return index >= 0
         ? index
         : throw new InvalidOperationException($"Route parser marker was not found: {marker}");
+}
+
+static string ExtractSourceBlock(string source, string marker)
+{
+    var markerIndex = source.IndexOf(marker, StringComparison.Ordinal);
+    if (markerIndex < 0)
+    {
+        throw new InvalidOperationException($"Source marker was not found: {marker}");
+    }
+
+    var openBrace = source.IndexOf('{', markerIndex);
+    if (openBrace < 0)
+    {
+        throw new InvalidOperationException($"Source block has no opening brace: {marker}");
+    }
+
+    var depth = 0;
+    for (var index = openBrace; index < source.Length; index++)
+    {
+        if (source[index] == '{') depth++;
+        else if (source[index] == '}' && --depth == 0) return source[markerIndex..(index + 1)];
+    }
+
+    throw new InvalidOperationException($"Source block is not balanced: {marker}");
 }
 
 static List<string> ReadCaseRoutes(string source)

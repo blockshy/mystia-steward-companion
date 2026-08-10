@@ -522,8 +522,6 @@ internal static partial class RuntimeOrderPreparationService
                             request.RecipeId,
                             request.RecipeName,
                             request.ExtraIngredientIds,
-                            request.AutoCollectCooking,
-                            request.AutoCompleteOrder,
                             request.CookerControllerIndex,
                             request.CookerControllerIdentity,
                             request.CookerGridX,
@@ -1467,8 +1465,6 @@ internal static partial class RuntimeOrderPreparationService
                             recipeId,
                             request.RecipeName,
                             request.ExtraIngredientIds,
-                            autoDeliverCookedFood,
-                            autoCompleteOrder,
                             request.CookerControllerIndex,
                             request.CookerControllerIdentity,
                             request.CookerGridX,
@@ -1733,9 +1729,7 @@ internal static partial class RuntimeOrderPreparationService
         }
 
         var released = ClearAutomationCookingJobs(
-            RuntimeNightBusinessAutomationGate.TutorialActiveReason,
-            AutomationCancellationTarget.All,
-            preserveIrreversibleTransactions: false);
+            RuntimeNightBusinessAutomationGate.TutorialActiveReason);
         if (released <= 0)
         {
             return new AutomationCookingProcessResult(Array.Empty<string>(), false);
@@ -1802,77 +1796,30 @@ internal static partial class RuntimeOrderPreparationService
     }
 
     /// <summary>
-    /// 按目标范围取消自动料理 job 的 Mod 所有权，不改动厨具、成品或库存。
+    /// 在明确的运行时生命周期终点释放全部自动料理 job 的 Mod 所有权。
     /// </summary>
-    /// <returns>被取消的 job 数量。</returns>
-    public static int ClearAutomationCookingJobs(
-        string reasonCode,
-        AutomationCancellationTarget target,
-        bool preserveIrreversibleTransactions)
+    /// <returns>被释放的 job 数量。</returns>
+    public static int ClearAutomationCookingJobs(string reasonCode)
     {
         lock (AutomationCookingJobLock)
         {
-            var cancelled = 0;
+            var released = 0;
             for (var index = AutomationCookingJobs.Count - 1; index >= 0; index--)
             {
                 var job = AutomationCookingJobs[index];
-                if (!AutomationCancellationTargetPolicy.IncludesCookingJob(
-                        target,
-                        job.Target.Kind == CookingCollectionTargetKind.RareOrder))
-                {
-                    continue;
-                }
-
-                if (preserveIrreversibleTransactions
-                    && !CanCancelAutomationCookingJob(job, out var retentionReason))
-                {
-                    AppendAutomationLog(
-                        "job-cancel-deferred",
-                        job.Target,
-                        job.FormatLogContext(retentionReason));
-                    continue;
-                }
-
                 RecordAutomationRuntimeEvent(
                     OrderPreparationStepCodes.CookingCancelled,
                     job,
-                    $"{job.RecipeName} 自动料理任务已取消；厨具和成品保持原状。",
+                    $"{job.RecipeName} 自动料理任务已随运行时生命周期结束；厨具和成品保持原状。",
                     outcome: "cancelled",
                     reasonCode: reasonCode,
                     terminal: true);
                 AutomationCookingJobs.RemoveAt(index);
-                cancelled++;
+                released++;
             }
 
-            return cancelled;
+            return released;
         }
-    }
-
-    private static bool CanCancelAutomationCookingJob(
-        AutomationCookingJob job,
-        out string retentionReason)
-    {
-        if (job.FoodDeliveryCommitted || job.FoodDeliveryCommitUncertain)
-        {
-            retentionReason = "料理送达已提交或提交状态不确定，必须保留后续厨具清理与评价事务。";
-            return false;
-        }
-
-        if (job.WarmerStoreCommitted || job.WarmerStoreCommitUncertain)
-        {
-            retentionReason = "保温箱写入已提交或提交状态不确定，必须保留同锅次清理事务。";
-            return false;
-        }
-
-        if (job.YuumaSettlementTracker.Stage
-            != YuumaSettlementTransactionStage.Ready)
-        {
-            retentionReason = $"血池地狱结算已进入不可逆阶段 {job.YuumaSettlementTracker.Stage}。";
-            return false;
-        }
-
-        retentionReason = "";
-        return true;
     }
 
     private static OrderPreparationResult BuildAutomationGateUnavailableResult(
@@ -2830,9 +2777,14 @@ internal static partial class RuntimeOrderPreparationService
         public AutomationCookingJobTracker Tracker { get; init; } = new(0, DateTime.UtcNow, -1, 0f);
         public AutomationCookingControllerLease ControllerLease { get; } = new();
         public bool HoldsControllerReservation => ControllerLease.HoldsReservation;
-        public bool AutoDeliverFood { get; set; }
-        public bool AutoCompleteOrder { get; set; }
         public bool AllowYuumaControlledProgression => Target.AllowYuumaControlledProgression;
+        public string ControlState { get; set; } = "active";
+        public string ControlReasonCode { get; set; } = "";
+        public string ControlMessage { get; set; } = "";
+        public long ControlAuthorityRevision { get; set; }
+        public RuntimeAutomationControlStage ControlStage { get; set; } = RuntimeAutomationControlStage.FoodDelivery;
+        public DateTime? ControlSuspendedAtUtc { get; set; }
+        public bool ControlSuspended => !string.Equals(ControlState, "active", StringComparison.Ordinal);
         public bool ManualHandoffObserved { get; set; }
         public bool ManualHandoffExpired { get; set; }
         public long SpecialFoodTargetRevision { get; init; }
@@ -2945,7 +2897,7 @@ internal static partial class RuntimeOrderPreparationService
                 + $"controllerLeaseReleaseReason={ControllerLeaseReleaseReason}; "
                 + $"evaluationAttempts={FoodDeliveryEvaluationCloseoutTracker?.AttemptCount ?? 0}; "
                 + $"evaluationEffectiveSeconds={FoodDeliveryEvaluationCloseoutTracker?.EffectiveElapsed.TotalSeconds ?? 0:F1}; "
-                + $"autoDeliver={AutoDeliverFood}; autoComplete={AutoCompleteOrder}; "
+                + $"control={ControlState}/{ControlReasonCode}/{ControlStage}@{ControlAuthorityRevision}; "
                 + $"specialTargetRevision={SpecialFoodTargetRevision}; "
                 + $"allowYuumaControlledProgression={AllowYuumaControlledProgression}; "
                 + $"handoffExpired={ManualHandoffExpired}; {detail}";
@@ -2954,7 +2906,8 @@ internal static partial class RuntimeOrderPreparationService
         public string BuildRetrySignature()
         {
             return $"{Tracker.OwnershipObservationFailures}:{Tracker.RegressiveObservations}:"
-                + $"{AutoDeliverFood}:{AutoCompleteOrder}:{ManualHandoffObserved}:{ManualHandoffExpired}:"
+                + $"{ControlState}:{ControlReasonCode}:{ControlStage}:{ControlAuthorityRevision}:"
+                + $"{ManualHandoffObserved}:{ManualHandoffExpired}:"
                 + $"{CookerBindingFailureCode}:"
                 + $"{MissingTargetCount + MissingControllerCount}:{WarmerStoreCommitted}:{WarmerStoreCommitUncertain}:"
                 + $"{WarmerResetAttempts}:{FoodDeliveryCommitted}:{FoodDeliveryCommitUncertain}:{FoodDeliveryCleanupAttempts}:"
@@ -2984,7 +2937,12 @@ internal static partial class RuntimeOrderPreparationService
                 TransactionStage = TransactionStage,
                 SpecialTargetRevision = SpecialFoodTargetRevision,
                 AllowYuumaControlledProgression = AllowYuumaControlledProgression,
-                AutoDeliverFood = AutoDeliverFood,
+                ControlState = ControlState,
+                ControlReasonCode = ControlReasonCode,
+                ControlMessage = ControlMessage,
+                ControlAuthorityRevision = ControlAuthorityRevision,
+                ControlStage = ControlStage.ToString(),
+                ControlSuspendedAtUtc = ControlSuspendedAtUtc,
                 HoldsControllerReservation = HoldsControllerReservation,
                 ControllerLeaseReleaseReason = ControllerLeaseReleaseReason,
                 OrderRuntimeKind = Target.OrderBinding?.OrderKind.ToString() ?? "",

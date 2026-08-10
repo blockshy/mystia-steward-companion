@@ -633,6 +633,16 @@ internal static class RuntimeTargetRecipeVariantService
             mutationUncertain = _businessMutationUncertain;
             mutationUncertainReason = _businessMutationUncertainReason;
             if (previousMatchesBusiness
+                && TryRejectRetiredSurfaceBeforeNativeInsertionLocked(
+                    previous!,
+                    refreshKind,
+                    out unsafeMutationTransitionReason))
+            {
+                // A retired physical panel may be replaced only after its previous transaction
+                // is absent or terminal. Every retained non-terminal transaction must stop
+                // before synthetic Recipe allocation or native List.Insert.
+            }
+            else if (previousMatchesBusiness
                 && previous!.Transaction is { } candidate
                 && candidate.BusinessGeneration == businessGeneration
                 && !IsTerminalTransactionState(candidate.State))
@@ -892,7 +902,7 @@ internal static class RuntimeTargetRecipeVariantService
             if (insertionUncertain) insertionUncertainReason = failure;
         }
 
-        if (!ReferenceEquals(RuntimeUiPinningService.ReadTargetSet(), targetSet))
+        if (!RuntimeUiPinningService.IsSurfaceRefreshTargetCurrentOrDeferred(targetSet))
         {
             complete = false;
             failure = "target changed during recipe variant insertion";
@@ -1054,6 +1064,25 @@ internal static class RuntimeTargetRecipeVariantService
             LogOutputBindingReset(businessGeneration, panelPointer, outputReset, epoch);
         }
         return complete;
+    }
+
+    private static bool TryRejectRetiredSurfaceBeforeNativeInsertionLocked(
+        PanelState panel,
+        RecipeSurfaceRefreshKind refreshKind,
+        out string reason)
+    {
+        reason = "";
+        if (!panel.Retired) return false;
+
+        var transaction = panel.Transaction;
+        var retiredSurfaceCanBeReplaced = transaction == null
+            || IsTerminalTransactionState(transaction.State);
+        if (retiredSurfaceCanBeReplaced) return false;
+
+        var transactionState = transaction?.State.ToString() ?? "none";
+        reason = "pre-insert-retired-rejected: retired recipe surface cannot accept "
+            + $"{refreshKind} with retained transaction state {transactionState}";
+        return true;
     }
 
     private static bool TryRejectUnsafeSurfaceProbeLocked(
@@ -6782,13 +6811,6 @@ internal static class RuntimeTargetRecipeVariantService
                 nameof(AfterPanelClose),
                 Priority.First,
                 Priority.Last);
-            PatchPrefixFinalizer(
-                harmony,
-                hooks.OnPanelDestroyed,
-                nameof(BeforePanelDestroyed),
-                nameof(AfterPanelDestroyed),
-                Priority.First,
-                Priority.Last);
 
             // Injection is deliberately last and is armed only after every safety hook exists.
             PatchPostfix(
@@ -6800,10 +6822,12 @@ internal static class RuntimeTargetRecipeVariantService
             {
                 _harmony = harmony;
                 _injectionArmed = true;
-                _hookStatus = "patched:9/9:safety-first";
+                _hookStatus = "patched:8/8:safety-first;destroy=unpatched-shared-native-alias";
                 _lastResult = "recipe variant service armed";
             }
-            TryLogInfo("Target recipe variant service patched 9 exact hooks.");
+            TryLogInfo(
+                "Target recipe variant service patched 8 exact hooks; "
+                + "WorkSceneCookingSelectionPannel.OnPanelDestroyed remains unpatched because it shares an empty native alias.");
         }
         catch (Exception ex)
         {
@@ -6819,7 +6843,12 @@ internal static class RuntimeTargetRecipeVariantService
         }
     }
 
-    public static void RetireFailClosed(string reason)
+    /// <summary>
+    /// Retires every managed panel/button binding when the owning Mod controller is shutting
+    /// down. Authority/profile target transitions must preserve these objects and use the
+    /// dedicated RuntimeUiPinningService fence instead.
+    /// </summary>
+    public static void RetireForShutdown(string reason)
     {
         var normalized = string.IsNullOrWhiteSpace(reason)
             ? "recipe variant state retired"
@@ -6832,6 +6861,128 @@ internal static class RuntimeTargetRecipeVariantService
                 TombstonePanelButtonsLocked(panelPointer);
             }
             _lastResult = normalized;
+        }
+    }
+
+    /// <summary>
+    /// Retires only the exact night-business generation at an authoritative Closing/Destroyed
+    /// boundary. All work is managed-only: Unity wrappers are never retained or touched here.
+    /// </summary>
+    public static void RetireForBusinessBoundary(
+        long businessGeneration,
+        string reason)
+    {
+        if (businessGeneration <= 0) return;
+
+        var normalized = string.IsNullOrWhiteSpace(reason)
+            ? "recipe variant business boundary"
+            : reason.Trim();
+        var retiredPanels = 0;
+        var retiredButtons = 0;
+        var retiredClosures = 0;
+        var newlyUncertain = 0L;
+        try
+        {
+            lock (StateRoot)
+            {
+                var panels = Panels.Values
+                    .Where(panel => panel.BusinessGeneration == businessGeneration)
+                    .OrderBy(panel => panel.PanelEpoch)
+                    .ToArray();
+                var uncertainBefore = _uncertainTransactions;
+                foreach (var panel in panels)
+                {
+                    panel.Retired = true;
+                    if (panel.SwitchAttempt is { State:
+                            RecipeSwitchAttemptState.Armed
+                            or RecipeSwitchAttemptState.ReceiptObserved
+                            or RecipeSwitchAttemptState.VisualCompleted } switchAttempt)
+                    {
+                        MarkSwitchAttemptUncertainLocked(
+                            switchAttempt,
+                            $"{normalized}; active recipe switch crossed the business boundary");
+                    }
+
+                    if (panel.Transaction is { } transaction
+                        && transaction.MutationStarted
+                        && transaction.State != TransactionState.Uncertain
+                        && !IsTerminalTransactionState(transaction.State))
+                    {
+                        var transactionReason =
+                            $"{normalized}; mutated recipe transaction crossed the business boundary";
+                        var context = _activeOutputClosure;
+                        if (transaction.State == TransactionState.OutputSubmitting
+                            && context != null
+                            && context.Identity.BusinessGeneration == businessGeneration
+                            && context.Identity.PanelPointer == panel.PanelPointer
+                            && context.Identity.TransactionSequence == transaction.Sequence
+                            && string.Equals(
+                                context.Identity.TransactionIdentity,
+                                transaction.Identity,
+                                StringComparison.Ordinal))
+                        {
+                            MarkFinalOutputUncertainLocked(context, transactionReason);
+                        }
+                        else
+                        {
+                            MarkTransactionUncertainLocked(transaction, transactionReason);
+                        }
+                    }
+
+                    TombstonePanelButtonsLocked(panel.PanelPointer);
+                    foreach (var buttonPointer in Buttons
+                        .Where(pair =>
+                            pair.Value.PanelPointer == panel.PanelPointer
+                            && pair.Value.PanelEpoch <= panel.PanelEpoch)
+                        .Select(pair => pair.Key)
+                        .ToArray())
+                    {
+                        if (Buttons.TryGetValue(buttonPointer, out var binding)
+                            && binding.PanelPointer == panel.PanelPointer
+                            && binding.PanelEpoch <= panel.PanelEpoch)
+                        {
+                            Buttons.Remove(buttonPointer);
+                            retiredButtons++;
+                        }
+                    }
+                    foreach (var closurePointer in OutputClosures
+                        .Where(pair =>
+                            pair.Value.PanelPointer == panel.PanelPointer
+                            && pair.Value.PanelEpoch <= panel.PanelEpoch)
+                        .Select(pair => pair.Key)
+                        .ToArray())
+                    {
+                        if (OutputClosures.Remove(closurePointer))
+                        {
+                            retiredClosures++;
+                        }
+                    }
+                    if (Panels.TryGetValue(panel.PanelPointer, out var current)
+                        && ReferenceEquals(current, panel))
+                    {
+                        Panels.Remove(panel.PanelPointer);
+                        retiredPanels++;
+                    }
+                }
+
+                newlyUncertain = _uncertainTransactions - uncertainBefore;
+                if (retiredPanels > 0)
+                {
+                    _lastResult = normalized;
+                }
+            }
+        }
+        finally
+        {
+            FlushDeferredTransactionLogs();
+        }
+
+        if (retiredPanels > 0)
+        {
+            TryLogInfo(
+                $"Target recipe variant business boundary retired generation={businessGeneration}; "
+                + $"panels={retiredPanels}; buttons={retiredButtons}; closures={retiredClosures}; "
+                + $"newlyUncertain={newlyUncertain}; reason={normalized}.");
         }
     }
 
@@ -6851,7 +7002,7 @@ internal static class RuntimeTargetRecipeVariantService
             }
             TryInject(
                 __instance,
-                RuntimeUiPinningService.ReadTargetSet(),
+                RuntimeUiPinningService.ReadSurfaceRefreshTargetSet(),
                 lifecycle.Generation,
                 _updateAllVisualDepth > 0
                     ? RecipeSurfaceRefreshKind.FullVisual
@@ -7112,30 +7263,9 @@ internal static class RuntimeTargetRecipeVariantService
         return __exception;
     }
 
-    private static void BeforePanelDestroyed(
-        object __instance,
-        out PanelTeardownToken __state)
-    {
-        __state = BeginPanelTeardown(__instance, captureCloseReceipt: false);
-    }
-
-    private static Exception? AfterPanelDestroyed(
-        Exception? __exception,
-        PanelTeardownToken __state)
-    {
-        try { CompletePanelDestroyed(__state, __exception == null); } catch { }
-        finally { FlushDeferredTransactionLogs(); }
-        return __exception;
-    }
-
     internal static PanelTeardownToken BeginPanelTeardownForTests(object panel)
     {
         return BeginPanelTeardown(panel, captureCloseReceipt: true);
-    }
-
-    internal static PanelTeardownToken BeginPanelDestroyedForTests(object panel)
-    {
-        return BeginPanelTeardown(panel, captureCloseReceipt: false);
     }
 
     internal static void CompletePanelCloseForTests(
@@ -7143,13 +7273,6 @@ internal static class RuntimeTargetRecipeVariantService
         bool originalCompleted = true)
     {
         CompletePanelClose(token, originalCompleted);
-    }
-
-    internal static void CompletePanelDestroyedForTests(
-        PanelTeardownToken token,
-        bool originalCompleted = true)
-    {
-        CompletePanelDestroyed(token, originalCompleted);
     }
 
     private static PanelTeardownToken BeginPanelTeardown(
@@ -7403,87 +7526,6 @@ internal static class RuntimeTargetRecipeVariantService
             or TransactionState.Rejected;
     }
 
-    private static void CompletePanelDestroyed(
-        PanelTeardownToken token,
-        bool originalCompleted)
-    {
-        if (token.PanelPointer == 0 || token.PanelEpoch <= 0) return;
-        lock (StateRoot)
-        {
-            HandleSwitchAttemptTeardownLocked(
-                token,
-                originalCompleted
-                    ? "recipe panel was destroyed during a recipe switch"
-                    : "recipe panel destroy failed during a recipe switch");
-            if (token.TransactionCaptured
-                && token.MutationStarted
-                && !IsTerminalTransactionState(token.TransactionStateAtPrefix))
-            {
-                const string reason = "recipe panel was destroyed after native ingredient mutation";
-                if (TryGetTeardownTransactionLocked(token, out var transaction))
-                {
-                    if (!IsTerminalTransactionState(transaction.State))
-                    {
-                        var context = _activeOutputClosure;
-                        if (token.TransactionStateAtPrefix == TransactionState.OutputSubmitting
-                            && context != null
-                            && context.Identity.PanelPointer == token.PanelPointer
-                            && context.Identity.TransactionSequence == token.TransactionSequence
-                            && string.Equals(
-                                context.Identity.TransactionIdentity,
-                                token.TransactionIdentity,
-                                StringComparison.Ordinal))
-                        {
-                            MarkFinalOutputUncertainLocked(context, reason);
-                        }
-                        else
-                        {
-                            MarkTransactionUncertainLocked(transaction, reason);
-                        }
-                    }
-                }
-                else
-                {
-                    LatchBusinessMutationUncertainLocked(
-                        token.BusinessGeneration,
-                        reason);
-                    _uncertainTransactions++;
-                    _lastResult = reason;
-                }
-            }
-            if (!originalCompleted) return;
-
-            foreach (var buttonPointer in Buttons
-                .Where(pair =>
-                    pair.Value.PanelPointer == token.PanelPointer
-                    && pair.Value.PanelEpoch <= token.PanelEpoch)
-                .Select(pair => pair.Key)
-                .ToArray())
-            {
-                if (Buttons.TryGetValue(buttonPointer, out var binding)
-                    && binding.PanelPointer == token.PanelPointer
-                    && binding.PanelEpoch <= token.PanelEpoch)
-                {
-                    Buttons.Remove(buttonPointer);
-                }
-            }
-            foreach (var closurePointer in OutputClosures
-                .Where(pair =>
-                    pair.Value.PanelPointer == token.PanelPointer
-                    && pair.Value.PanelEpoch <= token.PanelEpoch)
-                .Select(pair => pair.Key)
-                .ToArray())
-            {
-                OutputClosures.Remove(closurePointer);
-            }
-            if (Panels.TryGetValue(token.PanelPointer, out var panel)
-                && panel.PanelEpoch == token.PanelEpoch)
-            {
-                Panels.Remove(token.PanelPointer);
-            }
-        }
-    }
-
     private static ExactHookTargets ResolveExactHookTargets()
     {
         var panelType = FindType(PanelTypeName) ?? throw new TypeLoadException(PanelTypeName);
@@ -7537,7 +7579,6 @@ internal static class RuntimeTargetRecipeVariantService
                 "Method_Internal_Void_PDM_0",
                 typeof(void)),
             RequireExactMethod(panelType, "OnPanelClose", typeof(void)),
-            RequireExactMethod(panelType, "OnPanelDestroyed", typeof(void)),
             RequireExactMethod(buttonBaseType, "CallSubmitAction", typeof(void)));
     }
 
@@ -8534,7 +8575,6 @@ internal static class RuntimeTargetRecipeVariantService
         MethodInfo OnOutputSelected,
         MethodInfo OutputSubmitClosure,
         MethodInfo OnPanelClose,
-        MethodInfo OnPanelDestroyed,
         MethodInfo CallSubmitAction);
 }
 

@@ -1069,7 +1069,7 @@ export function ModSettingsPanel({
               <SwitchControl
                 label="启用自动化（实验性）"
                 helpId="automation-enabled"
-                description="关闭后会取消 Mod 当前持有的料理任务和排队命令，但不会清空厨具、返还材料或改动玩家已经取得的成品。教学经营会保留开关设置但暂停全部自动化动作。"
+                description="关闭后会停止新动作并使排队命令失效；已开锅任务继续由游戏制作，后续送达或评价停在当前安全边界，重新开启后可继续。玩家在暂停期间取走或替换成品时改为手动交接。教学经营会保留开关设置但暂停全部自动化动作。"
                 checked={preferences.automationEnabled}
                 onCheckedChange={(automationEnabled) => onPreferenceChange({ automationEnabled })}
               />
@@ -1224,7 +1224,7 @@ export function ModSettingsPanel({
               <SwitchControl
                 label="启用稀客处理"
                 helpId="automation-rare-enabled"
-                description="单独控制稀客订单是否进入自动化调度。关闭后保留各阶段设置，但会停止新的稀客处理并取消尚未进入不可逆阶段的稀客料理任务。"
+                description="单独控制稀客订单是否进入自动化调度。关闭后保留各阶段设置并停止新处理；已开锅任务停在下一安全副作用边界，重新开启后继续。"
                 checked={preferences.autoRareOrderEnabled}
                 onCheckedChange={(autoRareOrderEnabled) => onPreferenceChange({ autoRareOrderEnabled })}
               />
@@ -1247,7 +1247,7 @@ export function ModSettingsPanel({
               <SwitchControl
                 label="自动送达料理"
                 helpId="automation-rare-deliver-food"
-                description="料理完成后直接送达稀客订单。开启时会同时开启自动完成订单，避免 Mod 送入最后一项后订单停在未评价状态。"
+                description="料理完成后直接送达稀客订单。开启时会同时开启自动完成订单；制作途中关闭时不会中止游戏倒计时，成品会留在原厨具，重新开启后继续送达。"
                 checked={preferences.autoPrepCollectCooking}
                 disabled={!preferences.autoRareOrderEnabled}
                 onCheckedChange={setRareFoodDelivery}
@@ -1255,7 +1255,7 @@ export function ModSettingsPanel({
               <SwitchControl
                 label="自动完成订单"
                 helpId="automation-rare-complete-order"
-                description="酒水和料理均送达后调用游戏已验证的评价入口完成稀客订单。关闭时会同时关闭自动送达酒水和自动送达料理，仍可只自动开始料理后由玩家接管。"
+                description="酒水和料理均送达后调用游戏已验证的评价入口完成稀客订单。关闭时会同时关闭自动送达酒水和料理；已送达但尚未评价的任务会暂停，重新开启后从评价步骤继续。"
                 checked={preferences.autoPrepCompleteOrder}
                 disabled={!preferences.autoRareOrderEnabled}
                 onCheckedChange={setRareOrderCompletion}
@@ -1297,7 +1297,7 @@ export function ModSettingsPanel({
               <SwitchControl
                 label="启用普客处理"
                 helpId="automation-normal-enabled"
-                description="单独控制普客订单是否进入自动化调度。关闭后保留各阶段设置，但会停止新的普客处理并取消尚未进入不可逆阶段的普客料理任务。"
+                description="单独控制普客订单是否进入自动化调度。关闭后保留各阶段设置并停止新处理；已开锅任务停在下一安全副作用边界，重新开启后继续。"
                 checked={preferences.autoNormalOrderEnabled}
                 onCheckedChange={(autoNormalOrderEnabled) => onPreferenceChange({ autoNormalOrderEnabled })}
               />
@@ -1320,7 +1320,7 @@ export function ModSettingsPanel({
               <SwitchControl
                 label="自动送达料理"
                 helpId="automation-normal-deliver-food"
-                description="料理完成后直接送达普客订单。开启时会同时开启自动完成订单，避免 Mod 送入最后一项后订单停在未评价状态。"
+                description="料理完成后直接送达普客订单。开启时会同时开启自动完成订单；制作途中关闭时不会中止游戏倒计时，成品会留在原厨具，重新开启后继续送达。"
                 checked={preferences.autoNormalDeliverFood}
                 disabled={!preferences.autoNormalOrderEnabled}
                 onCheckedChange={setNormalFoodDelivery}
@@ -1328,7 +1328,7 @@ export function ModSettingsPanel({
               <SwitchControl
                 label="自动完成订单"
                 helpId="automation-normal-complete-order"
-                description="酒水和料理均送达后调用游戏已验证的评价入口完成普客订单。关闭时会同时关闭自动送达酒水和自动送达料理，仍可只自动开始料理后由玩家接管。"
+                description="酒水和料理均送达后调用游戏已验证的评价入口完成普客订单。关闭时会同时关闭自动送达酒水和料理；已送达但尚未评价的任务会暂停，重新开启后从评价步骤继续。"
                 checked={preferences.autoNormalCompleteOrder}
                 disabled={!preferences.autoNormalOrderEnabled}
                 onCheckedChange={setNormalOrderCompletion}

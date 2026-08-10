@@ -8,6 +8,9 @@ const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), 'u
 
 const lifecycle = read('mods/bepinex/src/Save/AutomationCookingJobLifecycle.cs');
 const cooking = read('mods/bepinex/src/Save/RuntimeOrderPreparationService.Cooking.cs');
+const automationControl = read(
+  'mods/bepinex/src/Save/RuntimeOrderPreparationService.AutomationControl.cs',
+);
 const delivery = read('mods/bepinex/src/Save/RuntimeOrderPreparationService.Delivery.cs');
 const directDelivery = read('mods/bepinex/src/Save/RuntimeOrderPreparationService.DirectDelivery.cs');
 const yuumaSettlement = read('mods/bepinex/src/Save/RuntimeOrderPreparationService.YuumaSettlement.cs');
@@ -724,7 +727,7 @@ const committedFoodTransaction = methodSource(
 assert.match(
   committedFoodTransaction,
   /TryCompleteCommittedFoodDeliveryCleanup\(job\)[\s\S]*TryResolveCommittedFoodDeliveryEvaluation\(job/,
-  'A committed food-delivery transaction must independently close cooker cleanup and the latched evaluation intent.',
+  'A committed food-delivery transaction must independently close cooker cleanup and current evaluation control.',
 );
 const committedFoodEvaluation = methodSource(
   directDelivery,
@@ -732,8 +735,8 @@ const committedFoodEvaluation = methodSource(
 );
 assert.match(
   committedFoodEvaluation,
-  /job\.AutoCompleteOrder[\s\S]*get_IsFullfilled[\s\S]*TryEvaluateMatchedAutomationOrderRuntimeIfReady/,
-  'A cooking job that latched auto-complete must evaluate a fulfilled order before retiring.',
+  /AcquireAutomationCookingJobControlPermit\([\s\S]*RuntimeAutomationControlStage\.OrderEvaluation[\s\S]*if \(!permit\.Allowed\)[\s\S]*get_IsFullfilled[\s\S]*TryEvaluateMatchedAutomationOrderRuntimeIfReady/,
+  'Committed delivery must reacquire current completion authority before reading fulfillment or evaluating.',
 );
 assert.ok(
   committedFoodEvaluation.indexOf('RuntimeOrderTerminalReceiptStore.TryFind(')
@@ -742,10 +745,10 @@ assert.ok(
       < committedFoodEvaluation.indexOf('get_IsFullfilled'),
   'Committed evaluation must consume an exact terminal receipt first, then match the fresh order/controller token before reading fulfillment.',
 );
-assert.match(service, /public bool AutoCompleteOrder \{ get; set; \}/,
-  'Cooking jobs must retain the caller\'s explicit auto-complete intent.');
-assert.match(cooking, /AutoCompleteOrder = autoCompleteOrder/,
-  'Cooking-job registration must latch auto-complete intent.');
+assert.doesNotMatch(service, /public bool Auto(?:DeliverFood|CompleteOrder) \{ get; set; \}/,
+  'Cooking jobs must not retain creation-time delivery or completion switches.');
+assert.doesNotMatch(cooking, /Auto(?:DeliverFood|CompleteOrder) = auto(?:DeliverFood|CompleteOrder)/,
+  'Cooking-job registration must not latch delivery or completion intent.');
 
 const directFoodDelivery = methodSource(
   directDelivery,
@@ -786,34 +789,57 @@ assert.match(
 );
 assert.match(
   directFoodDelivery,
-  /YuumaSettlementTracker\.Stage[\s\S]*!=[\s\S]*YuumaSettlementTransactionStage\.Ready[\s\S]*TryFinalizeYuumaCookingJob\([\s\S]*if \(job\.AutoDeliverFood && job\.AutoCompleteOrder\)[\s\S]*TryFinalizeYuumaCookingJob\([\s\S]*return EnterManualHandoff\(/,
-  'Only a previously started transaction may resume without both switches; a Ready job must require delivery and completion or enter manual handoff.',
+  /YuumaSettlementTracker\.Stage[\s\S]*!=[\s\S]*YuumaSettlementTransactionStage\.Ready[\s\S]*TryFinalizeYuumaCookingJob\([\s\S]*return TryFinalizeYuumaCookingJob\(job, cookedFood\)/,
+  'A validated Yuuma result must remain on the dedicated monotonic settlement path after current control admits it.',
+);
+assert.doesNotMatch(
+  directFoodDelivery,
+  /job\.AutoDeliverFood|job\.AutoCompleteOrder|EnterManualHandoff\(/,
+  'Yuuma delivery still branches on creation-time switches or treats a configuration pause as manual handoff.',
 );
 
 const cookingProcessor = methodSource(
   cooking,
   'private static (bool Remove, string Message, string Code) TryProcessAutomationCookingJob(',
 );
-const validatedYuumaPath = cookingProcessor.indexOf(
-  'if (IsYuumaBossTarget(job.Target))',
+const controlObservation = cookingProcessor.indexOf('ObserveAutomationCookingJobControl(');
+const cookerReacquire = cookingProcessor.indexOf('TryReacquireAutomationCooker(');
+const ownedResultDirective = cookingProcessor.indexOf(
+  'if (transition.Directive == AutomationCookingJobDirective.DeliverOwnedResult && cookedFood != null)',
 );
-const genericManualHandoff = cookingProcessor.indexOf(
-  'if (!job.AutoDeliverFood)',
-  validatedYuumaPath,
+const currentControlGate = cookingProcessor.indexOf('if (!controlDecision.Allowed)', ownedResultDirective);
+const currentControlPermit = cookingProcessor.indexOf(
+  'AcquireAutomationCookingJobControlPermit(',
+  currentControlGate,
+);
+const deliveryCall = cookingProcessor.indexOf(
+  'return TryDeliverAutomationCookedFood(job, cookedFood);',
+  currentControlPermit,
 );
 assert.ok(
-  validatedYuumaPath >= 0
-    && cookingProcessor.indexOf(
-      'return TryDeliverAutomationCookedFood(job, cookedFood);',
-      validatedYuumaPath,
-    ) > validatedYuumaPath
-    && genericManualHandoff > validatedYuumaPath,
-  'Blood Pond Hell must enter its validated settlement boundary before generic manual handoff.',
+  controlObservation >= 0
+    && cookerReacquire > controlObservation
+    && ownedResultDirective > cookerReacquire
+    && currentControlGate > ownedResultDirective
+    && currentControlPermit > currentControlGate
+    && deliveryCall > currentControlPermit,
+  'A ready cooked result can reach delivery before observing and acquiring current automation control.',
 );
 assert.match(
   cookingProcessor,
-  /!IsYuumaBossTarget\(job\.Target\)[\s\S]*&& !job\.AutoDeliverFood/,
-  'Blood Pond Hell must not create a handoff receipt after cooker ownership was lost.',
+  /job\.ControlSuspended[\s\S]*cooking-controller-reused[\s\S]*cooking-ownership-lost[\s\S]*return EnterManualHandoff\(job, nowUtc\)/,
+  'A suspended job no longer converts exact player ownership loss into a retained manual-handoff receipt.',
+);
+assert.doesNotMatch(cookingProcessor, /job\.AutoDeliverFood|job\.AutoCompleteOrder/,
+  'The cooking processor still reads creation-time stage switches.');
+const pendingControlStage = methodSource(
+  automationControl,
+  'private static RuntimeAutomationControlStage GetPendingCookingJobControlStage(',
+);
+assert.match(
+  pendingControlStage,
+  /IsYuumaBossTarget\(job\.Target\)[\s\S]*RuntimeAutomationControlStage\.YuumaSettlement/,
+  'Yuuma finalization no longer uses the atomic settlement control stage.',
 );
 
 const yuumaRequestIdentity = methodSource(
@@ -999,8 +1025,6 @@ assert.match(
   'Final-food settlement must reject both FoodInAir and BeverageInAir before committing food.',
 );
 const yuumaIdentityGate = yuumaFinalization.indexOf('!IsYuumaBossTarget(job.Target)');
-const deliverySwitchGate = yuumaFinalization.indexOf('!job.AutoDeliverFood');
-const completionSwitchGate = yuumaFinalization.indexOf('!job.AutoCompleteOrder');
 const settlementPreflight = yuumaFinalization.indexOf('TryPreflightYuumaSettlement(');
 const settlementOrderValidation = yuumaFinalization.indexOf('TryValidateYuumaSettlementOrder(');
 const settlementFreshCooker = yuumaFinalization.indexOf(
@@ -1038,8 +1062,8 @@ const secondReacquireValidation = yuumaFinalization.indexOf(
 const settlementEvaluation = yuumaFinalization.indexOf('TryInvokeYuumaEvaluation(');
 const settlementBookkeeping = yuumaFinalization.indexOf('TryApplyYuumaDeliveryBookkeeping(');
 assert.ok(
-  [yuumaIdentityGate, deliverySwitchGate, completionSwitchGate]
-    .every((index) => index >= 0 && index < settlementCommit)
+  yuumaIdentityGate >= 0
+    && yuumaIdentityGate < settlementCommit
     && settlementOrderValidation >= 0
     && settlementOrderValidation < settlementPreflight
     && settlementPreflight >= 0
@@ -1056,6 +1080,11 @@ assert.ok(
     && settlementEvaluation > secondReacquireValidation
     && settlementBookkeeping > settlementEvaluation,
   'Yuuma settlement must fresh-bind the cooker before the irreversible claim, commit the final setter, revalidate, reset the cooker, run exact extraction callbacks, reacquire and fully revalidate a second time, then evaluate and apply bookkeeping.',
+);
+assert.doesNotMatch(
+  yuumaFinalization,
+  /job\.AutoDeliverFood|job\.AutoCompleteOrder/,
+  'Yuuma settlement still reads creation-time switches after the current atomic permit admitted it.',
 );
 assert.doesNotMatch(
   yuumaFinalization.slice(settlementFreshCooker, settlementIrreversibleClaim),
@@ -2094,10 +2123,20 @@ assert.match(
   'Rare Yuuma orders must validate delivered food/beverage by the exact original Tag ID.',
 );
 
-assert.match(
+const startCooking = methodSource(cooking, 'private static CookingStartResult TryStartCooking(');
+const registerCookingJob = methodSource(
   cooking,
-  /RegisterAutomationCookingJob\([\s\S]*autoCollect,[\s\S]*autoCompleteOrder,[\s\S]*specialFoodTargetRevision\)/,
-  'Cooking-job registration must carry both collection and completion intent to the final settlement boundary.',
+  'private static AutomationCookingJob RegisterAutomationCookingJob(',
+);
+assert.doesNotMatch(
+  startCooking.slice(0, startCooking.indexOf('{')),
+  /autoCollect|autoCompleteOrder/,
+  'Cooking start still carries obsolete creation-time delivery/completion switches.',
+);
+assert.match(
+  registerCookingJob,
+  /ApplyAutomationCookingJobControlDecision\([\s\S]*ObserveAutomationCookingJobControl\(/,
+  'Cooking-job registration no longer publishes its initial current-control state.',
 );
 assert.match(cooking, /ManualHandoffObserved[\s\S]*TryProcessManualHandoffReceipt/);
 assert.match(cooking, /TryGetUnresolvedAutomationSafetyBarrier\(job\.Target[\s\S]*job\.Tracker\.Suspend/);

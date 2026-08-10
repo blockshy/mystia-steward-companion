@@ -1123,13 +1123,15 @@ internal static partial class RuntimeOrderPreparationService
             diagnostic =
                 $"modifier tags mismatch; expected={SpecialBusinessDiagnostics.FormatTags(expectedModifierTags)}; "
                 + $"actual={SpecialBusinessDiagnostics.FormatTags(actualModifierTags)}; "
-                + $"extraIngredients={SpecialBusinessDiagnostics.FormatIds(actualExtraIngredientIds)}";
+                + $"extraIngredients={SpecialBusinessDiagnostics.FormatIds(actualExtraIngredientIds)}; "
+                + tagDiagnostic;
             return false;
         }
 
         diagnostic =
             $"extraIngredients={SpecialBusinessDiagnostics.FormatIds(actualExtraIngredientIds)}; "
-            + $"modifierTags={SpecialBusinessDiagnostics.FormatTags(actualModifierTags)}";
+            + $"modifierTags={SpecialBusinessDiagnostics.FormatTags(actualModifierTags)}; "
+            + tagDiagnostic;
         return true;
     }
 
@@ -1200,11 +1202,13 @@ internal static partial class RuntimeOrderPreparationService
             return false;
         }
 
-        var modifierTagIds = finalTagIds
-            .Except(baseTagIds)
-            .Distinct()
-            .OrderBy(id => id)
-            .ToArray();
+        var modifierTagIds = YuyukoFoodModifierContract.BuildRetakeNormalOrderModifierTagIds(
+            finalTagIds,
+            baseTagIds);
+        var ignoredSparrowSeriesCookerMarker =
+            YuyukoFoodModifierContract.HasAddedSparrowSeriesCookerMarker(
+                finalTagIds,
+                baseTagIds);
         var normalizedTags = new HashSet<string>(StringComparer.Ordinal);
         foreach (var tagId in modifierTagIds)
         {
@@ -1230,7 +1234,8 @@ internal static partial class RuntimeOrderPreparationService
         diagnostic =
             $"finalTagIds={SpecialBusinessDiagnostics.FormatIds(finalTagIds)}; "
             + $"rawTagIds={SpecialBusinessDiagnostics.FormatIds(baseTagIds)}; "
-            + $"modifierTagIds={SpecialBusinessDiagnostics.FormatIds(modifierTagIds)}";
+            + $"modifierTagIds={SpecialBusinessDiagnostics.FormatIds(modifierTagIds)}; "
+            + $"ignoredCookerMarkerIds={(ignoredSparrowSeriesCookerMarker ? "-30" : "[]")}";
         return true;
     }
 

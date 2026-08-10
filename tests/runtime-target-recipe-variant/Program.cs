@@ -9,6 +9,7 @@ try
     VerifyApplicableRecipeFiltering();
     VerifyFreshCookCount();
     VerifyCookCountModesAndInsertionReadback();
+    VerifyRetiredSurfaceRejectsBeforeNativeInsertion();
     VerifySubmitFirstSelectionTiming();
     VerifyTwoActivationCommitAndEpochTransfer();
     VerifyNativeRecipeSwitchReceipts();
@@ -29,7 +30,7 @@ try
     VerifyMutationContextTransitions();
     VerifySyntheticSourceIdentityAndDelayedRows();
     VerifyOutputClosureEntryExceptionCleanup();
-    VerifyDestroyedTransactions();
+    VerifyBusinessBoundaryTransactions();
     VerifyTransactionSequenceAndNestedProbeStack();
     VerifyOwnershipFailurePolicyAndCallbackCleanup();
     VerifyPostNativeOutputCallbackOwnership();
@@ -286,8 +287,9 @@ static void VerifyCookCountModesAndInsertionReadback()
     Publish(ledgerTarget);
     False(RuntimeTargetRecipeVariantService.InjectForTests(ledger.Panel, ledgerTarget, 9),
         "ledger setup did not fail uncertain after Insert");
-    var destroyed = RuntimeTargetRecipeVariantService.BeginPanelDestroyedForTests(ledger.Panel);
-    RuntimeTargetRecipeVariantService.CompletePanelDestroyedForTests(destroyed);
+    RuntimeTargetRecipeVariantService.RetireForBusinessBoundary(
+        9,
+        "test insertion-ledger boundary");
     ledger.ResetRecipeListToAuthoritative();
     ledger.FailReadbackAfterInsert = false;
     False(RuntimeTargetRecipeVariantService.InjectForTests(ledger.Panel, ledgerTarget, 9),
@@ -353,6 +355,48 @@ static void VerifySubmitFirstSelectionTiming()
     True(RuntimeTargetRecipeVariantService.RouteRecipeSelectionForTests(
         runtime.Panel, ref nestedAgain, rareButton), "second activation could not reuse exact identity");
     RuntimeTargetRecipeVariantService.CompleteSubmitForTests(second);
+}
+
+static void VerifyRetiredSurfaceRejectsBeforeNativeInsertion()
+{
+    var prepared = PrepareMutatedTransaction(
+        0x126,
+        341,
+        68,
+        "applied");
+    RuntimeTargetRecipeVariantService.RetireForShutdown(
+        "test shutdown race before surface refresh");
+    prepared.Runtime.ResetRecipeListToAuthoritative();
+
+    False(RuntimeTargetRecipeVariantService.InjectForTests(
+            prepared.Runtime.Panel,
+            prepared.Target,
+            9,
+            RuntimeTargetRecipeVariantService.RecipeSurfaceRefreshKind.FullVisual),
+        "A retired mutated panel was revived by a FullVisual refresh.");
+    Equal(0, prepared.Runtime.InsertCalls,
+        "The first retired-panel rejection reached native List.Insert.");
+    Equal(0, prepared.Runtime.Created.Count,
+        "The first retired-panel rejection allocated a synthetic Recipe.");
+    Equal("Uncertain", ReadProperty(
+        ReadCurrentTransaction(prepared.Runtime.Panel), "State")!.ToString()!,
+        "A retired mutated transaction was not kept fail-closed.");
+
+    prepared.Runtime.ResetRecipeListToAuthoritative();
+    False(RuntimeTargetRecipeVariantService.InjectForTests(
+            prepared.Runtime.Panel,
+            prepared.Target,
+            9,
+            RuntimeTargetRecipeVariantService.RecipeSurfaceRefreshKind.DirectRecipeField),
+        "A later direct refresh revived the retained retired panel.");
+    Equal(0, prepared.Runtime.InsertCalls,
+        "A retained retired panel was rejected only after native List.Insert.");
+    Equal(0, prepared.Runtime.Created.Count,
+        "A retained retired panel allocated a synthetic Recipe before rejection.");
+    True(RuntimeTargetRecipeVariantService.Status.Contains(
+            "pre-insert-retired-rejected",
+            StringComparison.Ordinal),
+        "The pre-insert retired-panel rejection is not distinguishable in diagnostics.");
 }
 
 static void VerifyTwoActivationCommitAndEpochTransfer()
@@ -1540,9 +1584,9 @@ static void VerifyRecipeSwitchFailureAndOutputRetirement()
         "destroyed switch selection failed");
     True(RuntimeTargetRecipeVariantService.CompleteRecipeSelectionForTests(destroyedSelection) == null,
         "destroyed switch did not arm");
-    var destroyToken = RuntimeTargetRecipeVariantService.BeginPanelDestroyedForTests(
-        destroyed.Runtime.Panel);
-    RuntimeTargetRecipeVariantService.CompletePanelDestroyedForTests(destroyToken);
+    RuntimeTargetRecipeVariantService.RetireForBusinessBoundary(
+        9,
+        "test active-switch boundary");
     RuntimeTargetRecipeVariantService.CompleteSubmitForTests(
         destroyedSubmit,
         new InvalidOperationException("panel destroyed"));
@@ -1985,8 +2029,9 @@ static void VerifyFinalOutputReceiptAndRetainedIdentity()
         removed.Closure, out var removedClosure), "retained-missing closure was blocked");
     var close = RuntimeTargetRecipeVariantService.BeginPanelTeardownForTests(removed.Runtime.Panel);
     RuntimeTargetRecipeVariantService.CompletePanelCloseForTests(close);
-    var destroy = RuntimeTargetRecipeVariantService.BeginPanelDestroyedForTests(removed.Runtime.Panel);
-    RuntimeTargetRecipeVariantService.CompletePanelDestroyedForTests(destroy);
+    RuntimeTargetRecipeVariantService.RetireForBusinessBoundary(
+        9,
+        "test retained-output boundary");
     RuntimeTargetRecipeVariantService.CompleteOutputClosureForTests(removedClosure);
     RuntimeTargetRecipeVariantService.CompleteSubmitForTests(removedSubmit);
     True(RuntimeTargetRecipeVariantService.Status.Contains("uncertain=1", StringComparison.Ordinal),
@@ -2727,32 +2772,32 @@ static void VerifyOutputClosureEntryExceptionCleanup()
     }
 }
 
-static void VerifyDestroyedTransactions()
+static void VerifyBusinessBoundaryTransactions()
 {
     foreach (var phase in new[] { "applied", "output-ready", "output-submitting" })
     {
-        foreach (var originalCompleted in new[] { true, false })
+        var prepared = PrepareMutatedTransaction(
+            (nint)(0x3e0 + phase.Length),
+            250 + phase.Length,
+            250 + phase.Length,
+            phase);
+        RuntimeTargetRecipeVariantService.RetireForBusinessBoundary(
+            9,
+            $"test {phase} closing boundary");
+        Equal(1L, StatusCount("uncertain"),
+            $"{phase} business boundary lost the no-replay state");
+        True(RuntimeTargetRecipeVariantService.Status.Contains("panels=0", StringComparison.Ordinal),
+            $"{phase} business boundary retained its panel identity");
+        True(RuntimeTargetRecipeVariantService.Status.Contains("buttons=0", StringComparison.Ordinal),
+            $"{phase} business boundary retained button identities");
+        True(RuntimeTargetRecipeVariantService.Status.Contains("closures=0", StringComparison.Ordinal),
+            $"{phase} business boundary retained output-closure identities");
+        if (prepared.OutputSubmit != null)
         {
-            var prepared = PrepareMutatedTransaction(
-                (nint)(0x3e0 + phase.Length + (originalCompleted ? 0 : 0x20)),
-                250 + phase.Length,
-                250 + phase.Length,
-                phase);
-            var destroy = RuntimeTargetRecipeVariantService.BeginPanelDestroyedForTests(prepared.Runtime.Panel);
-            RuntimeTargetRecipeVariantService.CompletePanelDestroyedForTests(destroy, originalCompleted);
+            RuntimeTargetRecipeVariantService.CompleteOutputClosureForTests(prepared.OutputClosureState!);
+            RuntimeTargetRecipeVariantService.CompleteSubmitForTests(prepared.OutputSubmit);
             Equal(1L, StatusCount("uncertain"),
-                $"{phase} destroy {(originalCompleted ? "success" : "failure")} lost no-replay state");
-            True(RuntimeTargetRecipeVariantService.Status.Contains(
-                    originalCompleted ? "panels=0" : "panels=1",
-                    StringComparison.Ordinal),
-                $"{phase} destroy {(originalCompleted ? "success" : "failure")} cleanup state changed");
-            if (prepared.OutputSubmit != null)
-            {
-                RuntimeTargetRecipeVariantService.CompleteOutputClosureForTests(prepared.OutputClosureState!);
-                RuntimeTargetRecipeVariantService.CompleteSubmitForTests(prepared.OutputSubmit);
-                Equal(1L, StatusCount("uncertain"),
-                    $"{phase} destroy finalizer recounted the uncertain transaction");
-            }
+                $"{phase} late finalizer recounted the retired uncertain transaction");
         }
     }
 
@@ -2760,76 +2805,47 @@ static void VerifyDestroyedTransactions()
     pending.Inventory[1] = 5;
     pending.Inventory[2] = 5;
     var pendingTarget = Set(270,
-        Target(RuntimeUiTargetKind.Rare, 270, new[] { 1, 2 }, new[] { 2 }, "pending-destroy"));
+        Target(RuntimeUiTargetKind.Rare, 270, new[] { 1, 2 }, new[] { 2 }, "pending-boundary"));
     Publish(pendingTarget);
     True(RuntimeTargetRecipeVariantService.InjectForTests(pending.Panel, pendingTarget, 9),
-        "pending destroy setup injection failed");
+        "pending boundary setup injection failed");
     var pendingRecipe = pending.Created.Single();
     var pendingButton = new FakeButton(0x8f2);
     Bind(pending, pendingRecipe, pendingButton);
     object pendingSelection = pendingRecipe;
     True(RuntimeTargetRecipeVariantService.RouteRecipeSelectionForTests(
-        pending.Panel, ref pendingSelection, pendingButton), "pending destroy setup route failed");
-    var pendingDestroy = RuntimeTargetRecipeVariantService.BeginPanelDestroyedForTests(pending.Panel);
-    RuntimeTargetRecipeVariantService.CompletePanelDestroyedForTests(pendingDestroy);
-    Equal(0L, StatusCount("uncertain"), "unmutated pending destroy became Uncertain");
+        pending.Panel, ref pendingSelection, pendingButton), "pending boundary setup route failed");
+    RuntimeTargetRecipeVariantService.RetireForBusinessBoundary(9, "test unmutated boundary");
+    Equal(0L, StatusCount("uncertain"), "unmutated pending boundary became Uncertain");
     True(RuntimeTargetRecipeVariantService.Status.Contains("panels=0", StringComparison.Ordinal),
-        "successful pending destroy retained its panel");
-
-    var pendingFailure = Install(new FakeRecipe(0x3f3, 272, new[] { 1 }, 2));
-    pendingFailure.Inventory[1] = 5;
-    pendingFailure.Inventory[2] = 5;
-    var pendingFailureTarget = Set(272,
-        Target(RuntimeUiTargetKind.Rare, 272, new[] { 1, 2 }, new[] { 2 }, "pending-destroy-failure"));
-    Publish(pendingFailureTarget);
-    True(RuntimeTargetRecipeVariantService.InjectForTests(
-        pendingFailure.Panel, pendingFailureTarget, 9),
-        "pending destroy failure setup injection failed");
-    var pendingFailureRecipe = pendingFailure.Created.Single();
-    var pendingFailureButton = new FakeButton(0x8f3);
-    Bind(pendingFailure, pendingFailureRecipe, pendingFailureButton);
-    object pendingFailureSelection = pendingFailureRecipe;
-    True(RuntimeTargetRecipeVariantService.RouteRecipeSelectionForTests(
-        pendingFailure.Panel, ref pendingFailureSelection, pendingFailureButton),
-        "pending destroy failure setup route failed");
-    var pendingFailedDestroy = RuntimeTargetRecipeVariantService.BeginPanelDestroyedForTests(
-        pendingFailure.Panel);
-    RuntimeTargetRecipeVariantService.CompletePanelDestroyedForTests(
-        pendingFailedDestroy,
-        originalCompleted: false);
-    Equal(0L, StatusCount("uncertain"), "failed unmutated pending destroy became Uncertain");
-    True(RuntimeTargetRecipeVariantService.Status.Contains("panels=1", StringComparison.Ordinal),
-        "failed pending destroy removed its retired panel state");
+        "unmutated pending boundary retained its panel");
 
     var cancelled = PrepareMutatedTransaction(0x3f4, 273, 273, "applied");
     var cancelledClose = RuntimeTargetRecipeVariantService.BeginPanelTeardownForTests(
         cancelled.Runtime.Panel);
     cancelled.Runtime.NativeClosePanel();
     RuntimeTargetRecipeVariantService.CompletePanelCloseForTests(cancelledClose);
-    var cancelledDestroy = RuntimeTargetRecipeVariantService.BeginPanelDestroyedForTests(
-        cancelled.Runtime.Panel);
-    RuntimeTargetRecipeVariantService.CompletePanelDestroyedForTests(
-        cancelledDestroy,
-        originalCompleted: false);
-    Equal(1L, StatusCount("cancelled"), "failed destroy changed the Cancelled terminal");
-    Equal(0L, StatusCount("uncertain"), "failed destroy downgraded Cancelled");
-    True(RuntimeTargetRecipeVariantService.Status.Contains("panels=1", StringComparison.Ordinal),
-        "failed destroy removed a Cancelled panel state");
+    RuntimeTargetRecipeVariantService.RetireForBusinessBoundary(9, "test cancelled boundary");
+    Equal(1L, StatusCount("cancelled"), "business boundary changed the Cancelled terminal");
+    Equal(0L, StatusCount("uncertain"), "business boundary downgraded Cancelled");
+    True(RuntimeTargetRecipeVariantService.Status.Contains("panels=0", StringComparison.Ordinal),
+        "business boundary retained a Cancelled panel state");
 
     var terminal = ReadyOutputClosure(0x3f2, 271, 0x6f2);
     True(RuntimeTargetRecipeVariantService.BeginSubmitForTests(terminal.Button, out var terminalSubmit),
-        "terminal destroy setup submit failed");
+        "terminal boundary setup submit failed");
     True(RuntimeTargetRecipeVariantService.BeginOutputClosureForTests(
-        terminal.Closure, out var terminalClosure), "terminal destroy setup closure failed");
+        terminal.Closure, out var terminalClosure), "terminal boundary setup closure failed");
     var terminalClose = RuntimeTargetRecipeVariantService.BeginPanelTeardownForTests(terminal.Runtime.Panel);
     terminal.Runtime.NativeClosePanel();
     RuntimeTargetRecipeVariantService.CompletePanelCloseForTests(terminalClose);
     RuntimeTargetRecipeVariantService.CompleteOutputClosureForTests(terminalClosure);
     RuntimeTargetRecipeVariantService.CompleteSubmitForTests(terminalSubmit);
-    var terminalDestroy = RuntimeTargetRecipeVariantService.BeginPanelDestroyedForTests(terminal.Runtime.Panel);
-    RuntimeTargetRecipeVariantService.CompletePanelDestroyedForTests(terminalDestroy);
-    Equal(1L, StatusCount("completed"), "destroy cleanup changed a Completed transaction");
-    Equal(0L, StatusCount("uncertain"), "destroy cleanup downgraded a Completed transaction");
+    RuntimeTargetRecipeVariantService.RetireForBusinessBoundary(9, "test completed boundary");
+    Equal(1L, StatusCount("completed"), "business boundary changed a Completed transaction");
+    Equal(0L, StatusCount("uncertain"), "business boundary downgraded a Completed transaction");
+    True(RuntimeTargetRecipeVariantService.Status.Contains("panels=0", StringComparison.Ordinal),
+        "business boundary retained a Completed panel state");
 
     var transferred = ReadyOutputClosure(0x3f5, 274, 0x6f5);
     var transferredTarget = RuntimeUiPinningService.Current;
@@ -2840,20 +2856,37 @@ static void VerifyDestroyedTransactions()
         transferredTarget,
         9,
         RuntimeTargetRecipeVariantService.RecipeSurfaceRefreshKind.FullVisual),
-        "destroy cleanup transfer setup failed");
+        "business-boundary transfer setup failed");
     False(RuntimeTargetRecipeVariantService.BeginOutputClosureForTests(
         oldClosure,
         out var retainedOldClosure),
-        "epoch transfer removed the old closure before the destroy boundary");
+        "epoch transfer removed the old closure before the business boundary");
     RuntimeTargetRecipeVariantService.CompleteOutputClosureForTests(retainedOldClosure);
-    var transferredDestroy = RuntimeTargetRecipeVariantService.BeginPanelDestroyedForTests(
-        transferred.Runtime.Panel);
-    RuntimeTargetRecipeVariantService.CompletePanelDestroyedForTests(transferredDestroy);
+    RuntimeTargetRecipeVariantService.RetireForBusinessBoundary(9, "test transferred boundary");
     True(RuntimeTargetRecipeVariantService.BeginOutputClosureForTests(
         oldClosure,
         out var releasedOldClosure),
-        "successful E2 destroy retained the E1 output-closure tombstone");
+        "business boundary retained the prior-epoch output-closure tombstone");
     RuntimeTargetRecipeVariantService.CompleteOutputClosureForTests(releasedOldClosure);
+
+    var reused = ReadyOutputClosure(0x3f6, 275, 0x6f6, businessGeneration: 10);
+    RuntimeTargetRecipeVariantService.RetireForBusinessBoundary(9, "delayed prior-generation boundary");
+    True(RuntimeTargetRecipeVariantService.Status.Contains("panels=1", StringComparison.Ordinal),
+        "a delayed prior-generation boundary removed the current reused panel");
+    True(RuntimeTargetRecipeVariantService.Status.Contains("mutationLatch=10:False", StringComparison.Ordinal),
+        "a delayed prior-generation boundary latched the current business uncertain");
+    True(RuntimeTargetRecipeVariantService.BeginSubmitForTests(reused.Button, out var reusedSubmit),
+        "a delayed prior-generation boundary tombstoned the current output button");
+    True(RuntimeTargetRecipeVariantService.BeginOutputClosureForTests(
+        reused.Closure, out var reusedClosure),
+        "a delayed prior-generation boundary removed the current output closure");
+    var reusedClose = RuntimeTargetRecipeVariantService.BeginPanelTeardownForTests(reused.Runtime.Panel);
+    reused.Runtime.NativeClosePanel();
+    RuntimeTargetRecipeVariantService.CompletePanelCloseForTests(reusedClose);
+    RuntimeTargetRecipeVariantService.CompleteOutputClosureForTests(reusedClosure);
+    RuntimeTargetRecipeVariantService.CompleteSubmitForTests(reusedSubmit);
+    Equal(1L, StatusCount("completed"),
+        "the current reused transaction did not complete after a delayed old boundary");
 }
 
 static void VerifyTransactionSequenceAndNestedProbeStack()
@@ -3067,20 +3100,13 @@ static void VerifyOwnershipFailurePolicyAndCallbackCleanup()
     Same(nativeException, preserved!, "Mod cleanup exception replaced the native exception");
     RuntimeTargetRecipeVariantService.CompleteSubmitForTests(preserve.Submit, preserved);
 
-    var failedDestroy = ReadyOutputClosure(0x1a9, 138, 0x4a9);
-    var failedDestroyToken = RuntimeTargetRecipeVariantService.BeginPanelDestroyedForTests(
-        failedDestroy.Runtime.Panel);
-    RuntimeTargetRecipeVariantService.CompletePanelDestroyedForTests(
-        failedDestroyToken,
-        originalCompleted: false);
-    False(RuntimeTargetRecipeVariantService.BeginOutputClosureForTests(
-        failedDestroy.Closure, out var retainedClosure),
-        "failed OnPanelDestroyed removed its exact closure tombstone");
-    RuntimeTargetRecipeVariantService.CompleteOutputClosureForTests(retainedClosure);
-    RuntimeTargetRecipeVariantService.CompletePanelDestroyedForTests(failedDestroyToken);
+    var boundaryCleanup = ReadyOutputClosure(0x1a9, 138, 0x4a9);
+    RuntimeTargetRecipeVariantService.RetireForBusinessBoundary(
+        9,
+        "test output-closure ownership boundary");
     True(RuntimeTargetRecipeVariantService.BeginOutputClosureForTests(
-        failedDestroy.Closure, out var releasedClosure),
-        "successful OnPanelDestroyed did not release its exact closure mapping");
+        boundaryCleanup.Closure, out var releasedClosure),
+        "business boundary retained its exact output-closure mapping");
     RuntimeTargetRecipeVariantService.CompleteOutputClosureForTests(releasedClosure);
 }
 
@@ -3516,6 +3542,17 @@ static void VerifyProductionSourceContract()
     True(core.Contains("RecipeSurfaceRefreshKind.DirectRecipeField", StringComparison.Ordinal)
         && core.Contains("RecipeSurfaceRefreshKind.FullVisual", StringComparison.Ordinal),
         "direct target refresh and full visual rebuild do not have explicit semantics");
+    True(core.Contains(
+            "RuntimeUiPinningService.ReadSurfaceRefreshTargetSet()",
+            StringComparison.Ordinal)
+        && core.Contains(
+            "RuntimeUiPinningService.IsSurfaceRefreshTargetCurrentOrDeferred(targetSet)",
+            StringComparison.Ordinal),
+        "recipe-surface refreshes do not preserve the exact deferred authority presentation target");
+    True(pinning.Contains("authorityPanelFence=", StringComparison.Ordinal)
+        && pinning.Contains("IsAuthorityFenceTargetLocked(target)", StringComparison.Ordinal)
+        && pinning.Contains("TryAcquireTargetPublicationLease", StringComparison.Ordinal),
+        "authority panel refresh fencing is not separated from operational action publication leases");
     var fullVisualPrefixStart = core.IndexOf(
         "private static void BeforeUpdateAllVisual",
         StringComparison.Ordinal);
@@ -3570,10 +3607,29 @@ static void VerifyProductionSourceContract()
         && core.Contains("PatchPrefixFinalizer(", StringComparison.Ordinal),
         "output callback registration is not closed by a finalizer");
     True(core.Contains("Method_Internal_Void_PDM_0", StringComparison.Ordinal)
-        && core.Contains("patched:9/9:safety-first", StringComparison.Ordinal)
+        && core.Contains("patched:8/8:safety-first", StringComparison.Ordinal)
         && core.Contains("BeginOutputClosure", StringComparison.Ordinal)
         && core.Contains("CompleteOutputClosure", StringComparison.Ordinal),
-        "exact final output closure is not the ninth safety hook");
+        "exact final output closure is not retained within the eight safe hooks");
+    False(core.Contains("hooks.OnPanelDestroyed", StringComparison.Ordinal)
+        || core.Contains("nameof(BeforePanelDestroyed)", StringComparison.Ordinal)
+        || core.Contains(
+            "RequireExactMethod(panelType, \"OnPanelDestroyed\"",
+            StringComparison.Ordinal),
+        "production still installs the cooking destroy Hook that shares an empty native alias");
+    True(core.Contains("RetireForBusinessBoundary(", StringComparison.Ordinal)
+        && core.Contains("panel.BusinessGeneration == businessGeneration", StringComparison.Ordinal)
+        && core.Contains("pair.Value.PanelEpoch <= panel.PanelEpoch", StringComparison.Ordinal),
+        "business-boundary retirement does not fence exact generation and panel epochs");
+    True(core.Contains("RetireForShutdown(", StringComparison.Ordinal)
+        && !core.Contains("RetireFailClosed(", StringComparison.Ordinal),
+        "controller shutdown still uses the ambiguous recipe-variant retirement entry");
+    var retiredPreInsertGate = core.IndexOf(
+        "TryRejectRetiredSurfaceBeforeNativeInsertionLocked(",
+        StringComparison.Ordinal);
+    var firstNativeInsert = core.IndexOf("_runtime.InsertRecipe(", StringComparison.Ordinal);
+    True(retiredPreInsertGate >= 0 && firstNativeInsert > retiredPreInsertGate,
+        "a retained retired transaction can reach native Insert before its explicit gate");
     True(runtime.Contains("\"get_method\"", StringComparison.Ordinal)
         && runtime.Contains(
             "GetIl2CppMethodInfoPointerFieldForGeneratedMethod",
@@ -3641,8 +3697,8 @@ static void VerifyProductionSourceContract()
         "transaction log priority still depends on a message prefix");
     True(core.Contains("ButtonCleanupLeases", StringComparison.Ordinal)
         && core.Contains("businessGeneration <= 0", StringComparison.Ordinal)
-        && core.Contains("pair.Value.PanelEpoch <= token.PanelEpoch", StringComparison.Ordinal),
-        "callback cleanup ownership, stale log, or prior-epoch destroy guard is missing");
+        && core.Contains("pair.Value.PanelEpoch <= panel.PanelEpoch", StringComparison.Ordinal),
+        "callback cleanup ownership, stale log, or prior-epoch business-boundary guard is missing");
     Equal(1, Count(core, "_runtime.TryCleanSubmitCallback("),
         "callback cleanup bypasses the single exclusive cleanup lease");
     var recipeRowStart = core.IndexOf(
@@ -4060,6 +4116,9 @@ namespace MystiaStewardCompanion.Save
     {
         public static RuntimeUiTargetSetSnapshot Current { get; set; } = new(0, 0, Array.Empty<RuntimeUiTargetSnapshot>());
         public static RuntimeUiTargetSetSnapshot ReadTargetSet() => Current;
+        public static RuntimeUiTargetSetSnapshot ReadSurfaceRefreshTargetSet() => Current;
+        public static bool IsSurfaceRefreshTargetCurrentOrDeferred(
+            RuntimeUiTargetSetSnapshot expected) => ReferenceEquals(Current, expected);
         public static bool TryAcquireTargetPublicationLease(
             RuntimeUiTargetSetSnapshot expected,
             out RuntimeUiTargetPublicationLease lease)

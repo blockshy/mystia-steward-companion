@@ -15,6 +15,7 @@ try
     VerifySharedListItemUsesSingleOwnershipAndBaseline();
     VerifyOrderHighlightRuntimeWiring();
     VerifyOpenPanelRefreshScheduling();
+    VerifyAuthorityTransitionPreservesOpenPanels();
     VerifyOpenPanelSurfaceRefreshSemantics();
     VerifyCookingRefreshStagesFailClosed();
     VerifyIdenticalTargetPublicationIsIdempotent();
@@ -1013,6 +1014,22 @@ static void VerifyOpenPanelRefreshScheduling()
         AssertTrue(
             StoragePanelProbe.RefreshThreadIds.All(threadId => threadId == mainThreadId),
             "A storage panel refresh ran outside the Unity main thread.");
+
+        CookingSelectionPanelProbe.ResetRefreshProbe();
+        var destroyedWithoutClose = new CookingSelectionPanelProbe();
+        destroyedWithoutClose.OnPanelOpen();
+        AssertEqual(1, CookingSelectionPanelProbe.RecipeRefreshCount,
+            "Destroy-without-close setup did not open the cooking panel once.");
+        destroyedWithoutClose.OnPanelDestroyed();
+        RuntimeUiPinningService.Tick();
+        AssertContains(RuntimeUiPinningService.Status, "panelRefresh=cooking:closed",
+            "An unchanged target did not evict the destroyed cooking panel by exact dead pointer.");
+        RunOnWorkerThread(() => Publish(308, 408));
+        RuntimeUiPinningService.Tick();
+        AssertEqual(1, CookingSelectionPanelProbe.RecipeRefreshCount,
+            "A destroyed cooking panel was refreshed without a destroy Hook.");
+        AssertContains(RuntimeUiPinningService.Status, "panelRefresh=cooking:closed",
+            "A later target restored a destroyed cooking panel registration.");
     }
     finally
     {
@@ -1187,6 +1204,178 @@ static void VerifyOpenPanelSurfaceRefreshSemantics()
         StoragePanelProbe.RefreshAction = null;
         cookingPanel.OnPanelClose();
         storagePanel.OnPanelClose();
+    }
+}
+
+static void VerifyAuthorityTransitionPreservesOpenPanels()
+{
+    CookingSelectionPanelProbe.ResetRefreshProbe();
+    StoragePanelProbe.ResetRefreshProbe();
+    var businessGeneration = RuntimeNightBusinessLifecycle.Generation;
+    PublishRareTarget(
+        businessGeneration,
+        listPinningEnabled: true,
+        recipeVariantEnabled: false,
+        cookerHighlightEnabled: false,
+        seatHighlightEnabled: false,
+        orderHighlightEnabled: false,
+        recipeId: 470,
+        beverageId: 570,
+        ingredientIds: new[] { 471 },
+        extraIngredientIds: Array.Empty<int>(),
+        cookerTypeId: -1,
+        deskCode: -1,
+        orderTraceId: "",
+        targetRevision: "authority-before");
+
+    var cookingPanel = new CookingSelectionPanelProbe();
+    var storagePanel = new StoragePanelProbe();
+    try
+    {
+        cookingPanel.OnPanelOpen();
+        storagePanel.OnPanelOpen();
+        var presentationTarget = RuntimeUiPinningService.ReadTargetSet();
+        var retireCount = RuntimeTargetRecipeVariantService.ShutdownRetireCount;
+        var selectedRefreshCount = CookingSelectionPanelProbe.SelectedSurfaceRefreshCount;
+        var outputRefreshCount = CookingSelectionPanelProbe.OutputSurfaceRefreshCount;
+
+        RunOnWorkerThread(() => RuntimeUiPinningService.ClearTargetsForAuthorityTransition(
+            businessGeneration,
+            "test primary profile changed"));
+        AssertEqual(1, CookingSelectionPanelProbe.RecipeRefreshCount,
+            "Authority fencing refreshed the cooking page outside the Unity main thread.");
+        AssertEqual(1, StoragePanelProbe.RefreshCount,
+            "Authority fencing refreshed the storage page outside the Unity main thread.");
+        AssertEqual(retireCount, RuntimeTargetRecipeVariantService.ShutdownRetireCount,
+            "Authority fencing retired recipe-variant state as if the controller had shut down.");
+        AssertContains(RuntimeUiPinningService.Status, "panelRefresh=cooking:open",
+            "Authority fencing discarded the open cooking-page registration.");
+        AssertContains(RuntimeUiPinningService.Status, "storage:open",
+            "Authority fencing discarded the open storage-page registration.");
+        AssertContains(RuntimeUiPinningService.Status, "authority-fence-preserved",
+            "Authority fencing diagnostics do not distinguish the non-terminal transition.");
+        AssertContains(RuntimeUiPinningService.Status, "authorityPanelFence=pending:",
+            "Authority fencing diagnostics do not expose the deferred panel-refresh generation.");
+        AssertEqual(0, RuntimeUiPinningService.ReadTargetSet().Targets.Count,
+            "Authority fencing retained the previous writer's UI target.");
+        AssertTrue(
+            ReferenceEquals(
+                presentationTarget,
+                RuntimeUiPinningService.ReadSurfaceRefreshTargetSet()),
+            "Authority fencing did not retain the last confirmed target for native list presentation.");
+        AssertTrue(
+            RuntimeUiPinningService.IsSurfaceRefreshTargetCurrentOrDeferred(presentationTarget),
+            "The held panel presentation target was rejected during its exact authority fence.");
+        AssertFalse(
+            RuntimeUiPinningService.TryAcquireTargetPublicationLease(presentationTarget, out _),
+            "The held presentation target still authorized a recipe action during the authority fence.");
+
+        RuntimeUiPinningService.Tick();
+        AssertEqual(1, CookingSelectionPanelProbe.RecipeRefreshCount,
+            "The open cooking page consumed the transient empty authority fence.");
+        AssertEqual(1, StoragePanelProbe.RefreshCount,
+            "The open storage page consumed the transient empty authority fence.");
+        AssertEqual(selectedRefreshCount, CookingSelectionPanelProbe.SelectedSurfaceRefreshCount,
+            "Authority fencing rebuilt the selected-ingredient surface.");
+        AssertEqual(outputRefreshCount, CookingSelectionPanelProbe.OutputSurfaceRefreshCount,
+            "Authority fencing rebuilt the output surface.");
+
+        var cookingRefreshUsedPresentationTarget = false;
+        var cookingRefreshRetainedPresentationAfterPublication = false;
+        var storageRefreshUsedPresentationTarget = false;
+        CookingSelectionPanelProbe.RecipeRefreshAction = () =>
+        {
+            cookingRefreshUsedPresentationTarget =
+                ReferenceEquals(
+                    presentationTarget,
+                    RuntimeUiPinningService.ReadSurfaceRefreshTargetSet())
+                && RuntimeUiPinningService.ReadSurfaceRefreshTargetSet()
+                    .GetRecipeClaims(470) != RuntimeUiTargetKinds.None;
+            RunOnWorkerThread(() => PublishRareTarget(
+                businessGeneration,
+                listPinningEnabled: true,
+                recipeVariantEnabled: true,
+                cookerHighlightEnabled: false,
+                seatHighlightEnabled: false,
+                orderHighlightEnabled: false,
+                recipeId: 472,
+                beverageId: 572,
+                ingredientIds: new[] { 473 },
+                extraIngredientIds: new[] { 474 },
+                cookerTypeId: -1,
+                deskCode: -1,
+                orderTraceId: "",
+                targetRevision: "authority-after"));
+            cookingRefreshRetainedPresentationAfterPublication =
+                RuntimeUiPinningService.ReadTargetSet().GetRecipeClaims(472)
+                    != RuntimeUiTargetKinds.None
+                && ReferenceEquals(
+                    presentationTarget,
+                    RuntimeUiPinningService.ReadSurfaceRefreshTargetSet())
+                && RuntimeUiPinningService.IsSurfaceRefreshTargetCurrentOrDeferred(
+                    presentationTarget);
+            return cookingRefreshUsedPresentationTarget
+                && cookingRefreshRetainedPresentationAfterPublication;
+        };
+        StoragePanelProbe.RefreshAction = () =>
+        {
+            storageRefreshUsedPresentationTarget =
+                ReferenceEquals(
+                    presentationTarget,
+                    RuntimeUiPinningService.ReadSurfaceRefreshTargetSet())
+                && RuntimeUiPinningService.ReadSurfaceRefreshTargetSet()
+                    .GetBeverageClaims(570) != RuntimeUiTargetKinds.None;
+            return storageRefreshUsedPresentationTarget;
+        };
+        storagePanel.UpdateBevField();
+        cookingPanel.UpdateAllVisual();
+        AssertTrue(cookingRefreshUsedPresentationTarget,
+            "A natural cooking-page refresh consumed the empty operational fence instead of the held presentation target.");
+        AssertTrue(cookingRefreshRetainedPresentationAfterPublication,
+            "An in-flight natural cooking refresh lost its held presentation target when the new authority published concurrently.");
+        AssertTrue(storageRefreshUsedPresentationTarget,
+            "A natural storage-page refresh consumed the empty operational fence instead of the held presentation target.");
+        CookingSelectionPanelProbe.RecipeRefreshAction = null;
+        StoragePanelProbe.RefreshAction = null;
+        RuntimeUiPinningService.Tick();
+        AssertEqual(3, CookingSelectionPanelProbe.RecipeRefreshCount,
+            "The retained cooking page did not consume the new authority target once.");
+        AssertEqual(3, StoragePanelProbe.RefreshCount,
+            "The retained storage page did not consume the new authority target once.");
+        AssertContains(RuntimeUiPinningService.Status, "target-set-published",
+            "Fresh authority target publication did not replace the fence diagnostic state.");
+        AssertContains(RuntimeUiPinningService.Status, "authorityPanelFence=none",
+            "Fresh authority target publication did not close the panel-refresh fence.");
+        AssertFalse(
+            RuntimeUiPinningService.IsSurfaceRefreshTargetCurrentOrDeferred(presentationTarget),
+            "The old presentation target remained valid after the new authority publication.");
+
+        RunOnWorkerThread(() => RuntimeUiPinningService.ClearTargetsForAuthorityTransition(
+            businessGeneration,
+            "test primary profile disabled all targets"));
+        RuntimeUiPinningService.Tick();
+        AssertEqual(3, CookingSelectionPanelProbe.RecipeRefreshCount,
+            "A second empty authority fence refreshed the cooking page before confirmation.");
+        AssertEqual(3, StoragePanelProbe.RefreshCount,
+            "A second empty authority fence refreshed the storage page before confirmation.");
+
+        RuntimeUiPinningService.UpdateTargets(
+            businessGeneration,
+            Array.Empty<RuntimeUiTargetSnapshot>());
+        AssertContains(RuntimeUiPinningService.Status, "authorityPanelFence=none",
+            "A fresh authoritative empty target did not close the panel-refresh fence.");
+        RuntimeUiPinningService.Tick();
+        AssertEqual(4, CookingSelectionPanelProbe.RecipeRefreshCount,
+            "A fresh authoritative empty target did not clear the retained cooking page once.");
+        AssertEqual(4, StoragePanelProbe.RefreshCount,
+            "A fresh authoritative empty target did not clear the retained storage page once.");
+    }
+    finally
+    {
+        CookingSelectionPanelProbe.RecipeRefreshAction = null;
+        StoragePanelProbe.RefreshAction = null;
+        cookingPanel.OnPanelClose();
+        storagePanel.OnPanelDestroyed();
     }
 }
 
@@ -1395,7 +1584,7 @@ static void VerifyLifecycleGenerationGuards()
             targetRevision: "test-target"),
         "Closing accepted a UI target publication.");
 
-    RuntimeUiPinningService.InvalidateTarget(firstGeneration, "test closing");
+    RuntimeUiPinningService.ClearTargetsForBusinessBoundary(firstGeneration, "test closing");
     AssertEqual(0, RuntimeUiPinningService.ReadTargetSet().Targets.Count, "Invalidation retained a UI target.");
     AssertFalse(RuntimeOrderHighlightService.LastEnabled, "Invalidation left the HUD order-highlight target enabled.");
     AssertFalse(RuntimeThrowDeliverOrderHighlightService.LastEnabled, "Invalidation left the throw-delivery order-highlight target enabled.");
@@ -1666,7 +1855,7 @@ static void VerifyOrderHighlightRuntimeWiring()
         "Open-panel refresh does not execute the exact backing-data and logical-group binding.");
     AssertContains(
         controllerSource,
-        "RuntimeTargetRecipeVariantService.RetireFailClosed(\"controller disposed\");",
+        "RuntimeTargetRecipeVariantService.RetireForShutdown(\"controller disposed\");",
         "Controller disposal still references the removed diagnostic recipe-variant service.");
     AssertTrue(
         pluginSource.IndexOf("RuntimeUiPinningService.Attach(Log);", StringComparison.Ordinal)
@@ -1686,7 +1875,7 @@ static void VerifyPatchTargets()
         typeof(StoragePanelProbe),
     };
     var patchedProbeCount = Harmony.GetAllPatchedMethods().Count(method => method.DeclaringType != null && probeTypes.Contains(method.DeclaringType));
-    AssertEqual(13, patchedProbeCount, "Runtime UI pinning and list highlighting should install exactly thirteen patches.");
+    AssertEqual(12, patchedProbeCount, "Runtime UI pinning and list highlighting should install exactly twelve safe patches.");
     AssertPatch(
         typeof(CookingSelectionPanelProbe),
         nameof(CookingSelectionPanelProbe.UpdateAllVisual),
@@ -1781,12 +1970,11 @@ static void VerifyPatchTargets()
         prefix: "BeforeCookingPanelTeardown",
         postfix: null,
         finalizer: null);
-    AssertPatch(
+    AssertNoPatch(
         typeof(CookingSelectionPanelProbe),
         nameof(CookingSelectionPanelProbe.OnPanelDestroyed),
-        prefix: "BeforeCookingPanelTeardown",
-        postfix: null,
-        finalizer: null);
+        typeof(RuntimeUiPinningService),
+        "Runtime UI pinning patched the cooking destroy method that shares an empty native alias.");
     AssertPatch(
         typeof(StoragePanelProbe),
         nameof(StoragePanelProbe.OnPanelOpen),
@@ -1857,14 +2045,11 @@ static void VerifyPatchTargets()
         finalizer: null,
         patchOwner: typeof(RuntimePinnedListHighlightService),
         prefixPriority: Priority.First);
-    AssertPatch(
+    AssertNoPatch(
         typeof(CookingSelectionPanelProbe),
         nameof(CookingSelectionPanelProbe.OnPanelDestroyed),
-        prefix: "BeforeCookingPanelTeardown",
-        postfix: null,
-        finalizer: null,
-        patchOwner: typeof(RuntimePinnedListHighlightService),
-        prefixPriority: Priority.First);
+        typeof(RuntimePinnedListHighlightService),
+        "Pinned-list highlighting patched the cooking destroy method that shares an empty native alias.");
     AssertPatch(
         typeof(StoragePanelProbe),
         nameof(StoragePanelProbe.OnPanelClose),
@@ -1884,10 +2069,10 @@ static void VerifyPatchTargets()
     AssertContains(RuntimeUiPinningService.Status, "checkPinnedPrefix:patched", "CheckPinned prefix patch status is missing.");
     AssertContains(RuntimeUiPinningService.Status, "cookingScope:patched", "Cooking scope patch status is missing.");
     AssertContains(RuntimeUiPinningService.Status, "beverageScope:patched", "Beverage scope patch status is missing.");
-    AssertContains(RuntimeUiPinningService.Status, "cookingPanel:patched", "Cooking panel lifecycle patch status is missing.");
-    AssertContains(RuntimeUiPinningService.Status, "storagePanel:patched", "Storage panel lifecycle patch status is missing.");
-    AssertContains(RuntimePinnedListHighlightService.Status, "hooks=patched", "Pinned-list highlight patch status is missing.");
-    AssertContains(RuntimeUiPinningService.Status, "listHighlight=hooks=patched", "Pinned-list highlight diagnostics are missing from pinning status.");
+    AssertContains(RuntimeUiPinningService.Status, "cookingPanel:patched:2/2;destroy=unpatched-shared-native-alias", "Cooking panel safe lifecycle status is missing.");
+    AssertContains(RuntimeUiPinningService.Status, "storagePanel:patched:3/3", "Storage panel lifecycle patch status is missing.");
+    AssertContains(RuntimePinnedListHighlightService.Status, "hooks=patched:8/8;cookingDestroy=unpatched-shared-native-alias", "Pinned-list safe hook status is missing.");
+    AssertContains(RuntimeUiPinningService.Status, "listHighlight=hooks=patched:8/8;cookingDestroy=unpatched-shared-native-alias", "Pinned-list safe-hook diagnostics are missing from pinning status.");
     AssertContains(RuntimeUiPinningService.Status, "throwDeliveryOrder=", "Throw-delivery order-highlight diagnostics are missing from pinning status.");
 }
 
@@ -2478,8 +2663,8 @@ static void VerifyManagedPinnedListHighlighting()
         cookingPanel.OnRecipeElementEnabled(new RecipeProbe(35), new object(), recipeButton);
         RuntimePinnedListHighlightService.Tick();
         AssertHighlighted(recipeBase, recipeButton.image.get_color(), "New recipe target was not highlighted after rebinding.");
-        cookingPanel.OnPanelDestroyed();
-        AssertColor(recipeBase, recipeButton.image.get_color(), "Cooking panel destroy did not restore the recipe color.");
+        cookingPanel.OnPanelClose();
+        AssertColor(recipeBase, recipeButton.image.get_color(), "Cooking panel close did not restore the recipe color.");
 
         cookingPanel.OnRecipeElementEnabled(new RecipeProbe(35), new object(), recipeButton);
         RuntimePinnedListHighlightService.Tick();
@@ -2710,7 +2895,7 @@ static void VerifyExactRecipeVariantRowHighlighting()
             targetRevision: $"{revision}-{kind}");
     }
 
-    RuntimeTargetRecipeVariantService.RetireFailClosed("reset exact row-highlight smoke");
+    RuntimeTargetRecipeVariantService.RetireForShutdown("reset exact row-highlight smoke");
     RuntimeUiPinningService.UpdateTargets(
         businessGeneration,
         new[]
@@ -2867,7 +3052,7 @@ static void VerifyExactRecipeVariantRowHighlighting()
         "A released exact-row lease emitted another lifecycle event on a later Tick.");
 
     panel.OnPanelClose();
-    RuntimeTargetRecipeVariantService.RetireFailClosed("exact row-highlight smoke complete");
+    RuntimeTargetRecipeVariantService.RetireForShutdown("exact row-highlight smoke complete");
 
     AssertTrue(RuntimeTargetHighlightColor.TryParseExactHex("2A9FD6", out var customNormalColor), "Custom normal test color was rejected.");
     RuntimeUiPinningService.UpdateTargets(
@@ -2933,7 +3118,7 @@ static void VerifyExactRecipeVariantRowHighlighting()
             message.Contains("event=released;", StringComparison.Ordinal)
             && message.Contains("reason=panel-closed;", StringComparison.Ordinal)),
         "Cooking panel close did not log both exact-row ownership releases precisely.");
-    RuntimeTargetRecipeVariantService.RetireFailClosed("symmetric exact row-highlight smoke complete");
+    RuntimeTargetRecipeVariantService.RetireForShutdown("symmetric exact row-highlight smoke complete");
 
     RuntimeUiPinningService.UpdateTargets(
         businessGeneration,
@@ -2982,7 +3167,7 @@ static void VerifyExactRecipeVariantRowHighlighting()
         normalSplitButton.image.get_color(),
         "Different normal extras did not retain their exact normal-only synthetic color.");
     splitPanel.OnPanelClose();
-    RuntimeTargetRecipeVariantService.RetireFailClosed("split extras exact row-highlight smoke complete");
+    RuntimeTargetRecipeVariantService.RetireForShutdown("split extras exact row-highlight smoke complete");
 
     RuntimeUiPinningService.UpdateTargets(
         businessGeneration,
@@ -3014,7 +3199,7 @@ static void VerifyExactRecipeVariantRowHighlighting()
         sharedButton.image.get_color(),
         "A shared ordered-extras row did not retain its dual target claim and palette.");
     sharedPanel.OnPanelClose();
-    RuntimeTargetRecipeVariantService.RetireFailClosed("shared extras exact row-highlight smoke complete");
+    RuntimeTargetRecipeVariantService.RetireForShutdown("shared extras exact row-highlight smoke complete");
 
     var boundedPanel = new CookingSelectionPanelProbe();
     boundedPanel.OnPanelOpen();
@@ -3031,7 +3216,7 @@ static void VerifyExactRecipeVariantRowHighlighting()
         boundedPanel.OnRecipeElementEnabled(boundedRecipe, new object(), boundedButton);
     }
     boundedPanel.OnPanelClose();
-    RuntimeTargetRecipeVariantService.RetireFailClosed("bounded exact row-highlight logging smoke complete");
+    RuntimeTargetRecipeVariantService.RetireForShutdown("bounded exact row-highlight logging smoke complete");
 
     lifecycleMessages = ReadExactRecipeLifecycleMessages(lifecycleLogStart);
     AssertEqual(32, lifecycleMessages.Length, "Exact-row lifecycle logging exceeded or failed to reach its per-business bound.");
@@ -3239,6 +3424,26 @@ static void AssertPatch(
         var after = patch.Postfixes.Single(item => item.PatchMethod.DeclaringType == serviceType).after;
         AssertTrue(after.Contains(postfixAfter, StringComparer.Ordinal), $"Postfix ordering for {originalName} did not follow the variant binding service.");
     }
+}
+
+static void AssertNoPatch(
+    Type declaringType,
+    string originalName,
+    Type patchOwner,
+    string message)
+{
+    var original = declaringType.GetMethod(
+        originalName,
+        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static)
+        ?? throw new MissingMethodException(declaringType.FullName, originalName);
+    var patch = Harmony.GetPatchInfo(original);
+    if (patch == null) return;
+
+    var ownerPresent = patch.Prefixes
+            .Concat(patch.Postfixes)
+            .Concat(patch.Finalizers)
+            .Any(item => item.PatchMethod.DeclaringType == patchOwner);
+    AssertFalse(ownerPresent, message);
 }
 
 static void AssertHighlighted(Color original, Color actual, string message)

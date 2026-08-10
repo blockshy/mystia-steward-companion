@@ -66,16 +66,6 @@ internal static partial class RuntimeOrderPreparationService
             return (false, "非血池地狱订单不会进入专用结算事务。", OrderPreparationStepCodes.CookingPending);
         }
 
-        if (!job.AutoDeliverFood)
-        {
-            return EnterManualHandoff(job, DateTime.UtcNow);
-        }
-
-        if (!job.AutoCompleteOrder)
-        {
-            return EnterManualHandoff(job, DateTime.UtcNow);
-        }
-
         if (!TryCaptureActiveNightBusinessGeneration(out var businessGeneration)
             || businessGeneration != job.Target.SpecialFoodTargetPolicy?.BusinessGeneration)
         {

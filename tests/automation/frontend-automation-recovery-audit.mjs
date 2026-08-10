@@ -5,14 +5,10 @@ import { once } from 'node:events';
 import {
   assertAutomationDirectDeliveryCompletionInvariant,
   canAdvanceAutomationRuntimeEventSequence,
-  canRetireAutomationCancellationBarrier,
-  clearAutomationLocalStatesAfterCancellation,
-  getAutomationCancellationTarget,
   getAutomationStageFailureRetirement,
   hasAutomationSpecialTargetRotated,
   isAutomationResponseCurrent,
   isRecoverableCookingTerminalEvent,
-  mergeAutomationCancellationTarget,
   reconcileAutomationRollbackTarget,
   reduceAutomationCookingRollbackBudget,
   reduceAutomationManualRetry,
@@ -39,16 +35,6 @@ import {
 
 const root = new URL('../../', import.meta.url);
 const initial = { retryCount: 2, lastProgressAtMs: 1000, retryStage: 'ensure-beverage' };
-const allCookingJobStagesEnabled = {
-  autoRareOrderEnabled: true,
-  autoPrepTakeBeverage: true,
-  autoPrepCollectCooking: true,
-  autoPrepCompleteOrder: true,
-  autoNormalOrderEnabled: true,
-  autoNormalTakeBeverage: true,
-  autoNormalDeliverFood: true,
-  autoNormalCompleteOrder: true,
-};
 
 assert.equal(
   getNightBusinessAutomationPauseMessage(NIGHT_BUSINESS_TUTORIAL_ACTIVE),
@@ -85,200 +71,6 @@ assert.equal(getNightBusinessAutomationSummary({
   trackedCount: 2,
 }), '已开启 · 跟踪 2 笔');
 
-for (const [field, label] of [
-  ['autoPrepTakeBeverage', 'rare beverage delivery'],
-  ['autoPrepCollectCooking', 'rare food delivery'],
-  ['autoPrepCompleteOrder', 'rare order completion'],
-  ['autoRareOrderEnabled', 'rare order group'],
-  ['autoNormalTakeBeverage', 'normal beverage delivery'],
-  ['autoNormalDeliverFood', 'normal food delivery'],
-  ['autoNormalCompleteOrder', 'normal order completion'],
-  ['autoNormalOrderEnabled', 'normal order group'],
-]) {
-  assert.equal(
-    getAutomationCancellationTarget(
-      allCookingJobStagesEnabled,
-      { ...allCookingJobStagesEnabled, [field]: false },
-    ),
-    label.includes('beverage') ? 'commands' : label.startsWith('rare') ? 'rare' : 'normal',
-    `Disabling ${label} must cancel cooking jobs that captured the old stage intent.`,
-  );
-}
-assert.equal(
-  getAutomationCancellationTarget(
-    { ...allCookingJobStagesEnabled, autoPrepCollectCooking: false },
-    allCookingJobStagesEnabled,
-  ),
-  null,
-  'Enabling an automation stage must not manufacture a cancellation barrier.',
-);
-assert.equal(
-  getAutomationCancellationTarget(allCookingJobStagesEnabled, allCookingJobStagesEnabled),
-  null,
-  'Unchanged stage preferences must not cancel active cooking jobs.',
-);
-assert.equal(
-  getAutomationCancellationTarget(
-    allCookingJobStagesEnabled,
-    {
-      ...allCookingJobStagesEnabled,
-      autoPrepCollectCooking: false,
-      autoNormalDeliverFood: false,
-    },
-  ),
-  'all',
-  'Disabling stages in both groups must request one all-scope cancellation barrier.',
-);
-assert.equal(mergeAutomationCancellationTarget(null, 'commands'), 'commands');
-assert.equal(mergeAutomationCancellationTarget('commands', 'rare'), 'rare');
-assert.equal(mergeAutomationCancellationTarget('normal', 'commands'), 'normal');
-assert.equal(mergeAutomationCancellationTarget('rare', 'normal'), 'all');
-assert.equal(mergeAutomationCancellationTarget('normal', 'all'), 'all');
-
-const acknowledgedCancellationBarrier = {
-  endpoint: 'http://127.0.0.1:32145',
-  target: 'rare',
-  automationSessionId: 'session-a',
-  commandEpoch: 12,
-};
-assert.equal(canRetireAutomationCancellationBarrier(acknowledgedCancellationBarrier, {
-  automationCancellationAppliedEpoch: 11,
-  automationSessionId: 'session-a',
-}), false, 'An old cached snapshot must not retire an acknowledged cancellation barrier.');
-assert.equal(canRetireAutomationCancellationBarrier(acknowledgedCancellationBarrier, {
-  automationCancellationAppliedEpoch: 12,
-  automationSessionId: 'session-a',
-}), true, 'The same-session applied epoch may retire its acknowledged cancellation barrier.');
-assert.equal(canRetireAutomationCancellationBarrier(acknowledgedCancellationBarrier, {
-  automationCancellationAppliedEpoch: 0,
-  automationSessionId: 'session-b',
-}), true, 'A confirmed new Mod session cannot retain jobs from the acknowledged old session.');
-assert.equal(canRetireAutomationCancellationBarrier({
-  endpoint: 'http://127.0.0.1:32145',
-  target: 'all',
-}, {
-  automationCancellationAppliedEpoch: 99,
-  automationSessionId: 'session-a',
-}), false, 'A cancellation request without an ACK must never be retired from a snapshot alone.');
-
-assertTargetedCancellationClearsLocalExecutionState();
-
-function assertTargetedCancellationClearsLocalExecutionState() {
-  const rareActiveState = {
-    cookingJobId: 'rare-old-job',
-    manualResolutionRequired: false,
-    prepared: true,
-    recipeTarget: { recipeId: 1 },
-  };
-  const rareManualState = {
-    cookingJobId: 'rare-manual-job',
-    manualResolutionRequired: true,
-    prepared: true,
-    recipeTarget: { recipeId: 2 },
-  };
-  const normalActiveState = {
-    cookingJobId: 'normal-old-job',
-    executionTarget: { recipeId: 3 },
-    manualResolutionRequired: false,
-    prepared: true,
-  };
-  const rareStates = new Map([
-    ['rare-active', rareActiveState],
-    ['rare-manual', rareManualState],
-  ]);
-  const normalStates = new Map([['normal-active', normalActiveState]]);
-  const rareBeverageDisabledPreferences = {
-    ...allCookingJobStagesEnabled,
-    autoPrepTakeBeverage: false,
-  };
-  const rareBeverageTarget = getAutomationCancellationTarget(
-    allCookingJobStagesEnabled,
-    rareBeverageDisabledPreferences,
-  );
-  assert.equal(rareBeverageTarget, 'commands');
-  clearAutomationLocalStatesAfterCancellation(rareBeverageTarget, rareStates, normalStates);
-  assert.equal(rareStates.get('rare-active'), rareActiveState,
-    'Turning off rare beverage delivery must not retire its active cooking job.');
-  assert.equal(normalStates.get('normal-active'), normalActiveState);
-
-  const normalBeverageDisabledPreferences = {
-    ...allCookingJobStagesEnabled,
-    autoNormalTakeBeverage: false,
-  };
-  const normalBeverageTarget = getAutomationCancellationTarget(
-    allCookingJobStagesEnabled,
-    normalBeverageDisabledPreferences,
-  );
-  assert.equal(normalBeverageTarget, 'commands');
-  clearAutomationLocalStatesAfterCancellation(normalBeverageTarget, rareStates, normalStates);
-  assert.equal(normalStates.get('normal-active'), normalActiveState,
-    'Turning off normal beverage delivery must not retire its active cooking job or execution target.');
-  assert.equal(rareStates.get('rare-active'), rareActiveState);
-
-  const rareDisabledPreferences = {
-    ...allCookingJobStagesEnabled,
-    autoPrepCollectCooking: false,
-  };
-  const rareTarget = getAutomationCancellationTarget(
-    allCookingJobStagesEnabled,
-    rareDisabledPreferences,
-  );
-  assert.equal(rareTarget, 'rare');
-  clearAutomationLocalStatesAfterCancellation(rareTarget, rareStates, normalStates);
-  assert.equal(rareStates.has('rare-active'), false,
-    'A rare scoped ACK must delete the local job/prepared/recipe target captured before shutdown.');
-  assert.equal(rareStates.get('rare-manual'), rareManualState,
-    'A rare scoped ACK must preserve a manual-resolution safety barrier.');
-  assert.equal(normalStates.get('normal-active'), normalActiveState,
-    'A rare scoped ACK must not clear unrelated normal execution state.');
-  assert.equal(
-    getAutomationCancellationTarget(rareDisabledPreferences, allCookingJobStagesEnabled),
-    null,
-    'Re-enabling rare delivery must not manufacture another cancellation.',
-  );
-  assert.equal(rareStates.has('rare-active'), false,
-    'Re-enabling rare delivery must not recover the cancelled cooking job from local state.');
-
-  const nextRareActiveState = {
-    cookingJobId: 'rare-next-job',
-    manualResolutionRequired: false,
-    prepared: true,
-  };
-  const nextNormalActiveState = {
-    cookingJobId: 'normal-next-job',
-    executionTarget: { recipeId: 4 },
-    manualResolutionRequired: false,
-    prepared: true,
-  };
-  rareStates.set('rare-next', nextRareActiveState);
-  normalStates.set('normal-next', nextNormalActiveState);
-  const normalDisabledPreferences = {
-    ...allCookingJobStagesEnabled,
-    autoNormalCompleteOrder: false,
-  };
-  const normalTarget = getAutomationCancellationTarget(
-    allCookingJobStagesEnabled,
-    normalDisabledPreferences,
-  );
-  assert.equal(normalTarget, 'normal');
-  clearAutomationLocalStatesAfterCancellation(normalTarget, rareStates, normalStates);
-  assert.equal(normalStates.has('normal-active'), false);
-  assert.equal(normalStates.has('normal-next'), false,
-    'A normal scoped ACK must delete every non-manual execution target and cooking job.');
-  assert.equal(rareStates.get('rare-next'), nextRareActiveState,
-    'A normal scoped ACK must not clear unrelated rare execution state.');
-  assert.equal(
-    getAutomationCancellationTarget(normalDisabledPreferences, allCookingJobStagesEnabled),
-    null,
-  );
-  assert.equal(normalStates.has('normal-next'), false,
-    'Re-enabling normal completion must not recover the cancelled cooking job from local state.');
-
-  clearAutomationLocalStatesAfterCancellation('all', rareStates, normalStates);
-  assert.equal(rareStates.has('rare-next'), false);
-  assert.equal(rareStates.get('rare-manual'), rareManualState,
-    'An all-scope ACK must still preserve manual-resolution safety barriers.');
-}
 assert.equal(shouldRequestNormalOrderCompletion({
   beverageDeliveryEnabled: false,
   completionEnabled: true,
@@ -682,7 +474,7 @@ assert.equal(isAutomationResponseCurrent({
   requestEpoch: 4,
   currentEpoch: 5,
   runtimeEnabled: true,
-}), false, 'A response from before explicit cancellation must be ignored.');
+}), false, 'A response from before a control-state transition must be ignored.');
 assert.equal(isAutomationResponseCurrent({
   requestEpoch: 5,
   currentEpoch: 5,
@@ -784,10 +576,10 @@ assert.equal(
 );
 
 await assertOldRecoveryLogicRemoved();
-await assertStageAndCancellationContracts();
+await assertStageAndControlContracts();
 await assertMockProtocol();
 
-console.log('PASS: structured automation outcomes preserve waiting state, bound retries, pause blocked jobs, and expose job cancellation/snapshot contracts.');
+console.log('PASS: structured automation outcomes preserve waiting state, bound retries, pause blocked jobs, and retain jobs across control-state transitions.');
 
 async function assertOldRecoveryLogicRemoved() {
   const files = [
@@ -809,7 +601,7 @@ async function assertOldRecoveryLogicRemoved() {
   }
 }
 
-async function assertStageAndCancellationContracts() {
+async function assertStageAndControlContracts() {
   const workbench = await readFile(new URL('apps/companion/src/companion/ModWorkbench.tsx', root), 'utf8');
   const domain = await readFile(new URL('apps/companion/src/companion/domain/automation.ts', root), 'utf8');
   const normalOrderKey = await readFile(new URL('apps/companion/src/companion/domain/normal-order-key.ts', root), 'utf8');
@@ -826,6 +618,8 @@ async function assertStageAndCancellationContracts() {
   const directDelivery = await readFile(new URL('mods/bepinex/src/Save/RuntimeOrderPreparationService.DirectDelivery.cs', root), 'utf8');
   const yuumaSettlement = await readFile(new URL('mods/bepinex/src/Save/RuntimeOrderPreparationService.YuumaSettlement.cs', root), 'utf8');
   const cooking = await readFile(new URL('mods/bepinex/src/Save/RuntimeOrderPreparationService.Cooking.cs', root), 'utf8');
+  const runtimeControl = await readFile(new URL('mods/bepinex/src/Save/RuntimeAutomationControlState.cs', root), 'utf8');
+  const jobControl = await readFile(new URL('mods/bepinex/src/Save/RuntimeOrderPreparationService.AutomationControl.cs', root), 'utf8');
   const specialTargetPolicy = await readFile(
     new URL('mods/bepinex/src/Save/SpecialBusiness/RuntimeOrderPreparationService.SpecialFoodTargetPolicy.cs', root),
     'utf8',
@@ -922,25 +716,24 @@ async function assertStageAndCancellationContracts() {
     'The removed Blood Pond Hell direct-finalization protocol must not remain as a no-op field.',
   );
   const directYuumaDelivery = directDelivery.indexOf('private static (bool Remove, string Message, string Code) TryDeliverAutomationCookedFood(');
-  const directYuumaFinalizeGate = directDelivery.indexOf(
-    'if (job.AutoDeliverFood && job.AutoCompleteOrder)',
-    directYuumaDelivery,
-  );
   const directYuumaFinalize = directDelivery.indexOf(
     'return TryFinalizeYuumaCookingJob(job, cookedFood);',
-    directYuumaFinalizeGate,
-  );
-  const directYuumaHandoffReturn = directDelivery.indexOf(
-    'return EnterManualHandoff(job, DateTime.UtcNow);',
-    directYuumaFinalizeGate,
+    directYuumaDelivery,
   );
   assert.ok(
     directYuumaDelivery >= 0
-      && directYuumaFinalizeGate > directYuumaDelivery
-      && directYuumaFinalize > directYuumaFinalizeGate
-      && directYuumaHandoffReturn > directYuumaFinalize,
-    'Blood Pond Hell cooked food must use controlled settlement only when delivery and completion are both enabled; either disabled action must fall through to manual handoff.',
+      && directYuumaFinalize > directYuumaDelivery
+      && !directDelivery.slice(directYuumaDelivery, directYuumaFinalize).includes('job.AutoDeliverFood')
+      && !directDelivery.slice(directYuumaDelivery, directYuumaFinalize).includes('job.AutoCompleteOrder'),
+    'Blood Pond Hell settlement must use the current control permit instead of creation-time action flags.',
   );
+  assert.ok(jobControl.includes('RuntimeAutomationControlStage.YuumaSettlement')
+    && jobControl.includes('IsWackyKoishiBossTarget(job.Target)'),
+  'A Blood Pond Hell cooking job must use its named combined settlement boundary and preserve the Koishi override.');
+  assert.ok(runtimeControl.includes('if (!profile.AutomationEnabled)')
+    && runtimeControl.includes('if (!targetEnabled)')
+    && runtimeControl.includes('forceStageConfiguration || targetKind switch'),
+  'A named stage override may bypass only delivery/completion flags, never the global/group/authority gates.');
   assert.ok(
     yuumaSettlement.includes('TryFinalizeYuumaCookingJob(')
       && yuumaSettlement.includes('TryInvokeYuumaEvaluation('),
@@ -1034,61 +827,42 @@ async function assertStageAndCancellationContracts() {
   );
   assert.match(
     workbench,
-    /const handleRareAutomationDisabled = useCallback\(\(\) => \{[\s\S]*retainAutomationManualResolutionStates\(rareOrderStatesRef\.current\)[\s\S]*retainRareManualResolutionDiagnosticItems/,
-    'Disabling rare automation must preserve manual-resolution safety state while clearing ordinary execution state.',
+    /const handleRareAutomationDisabled = useCallback\(\(\) => \{[\s\S]*retainRareAutomationExecutionStates\(rareOrderStatesRef\.current\)[\s\S]*retainRareAutomationExecutionDiagnosticItems/,
+    'Disabling rare automation must preserve active cooking-job identity and manual-resolution safety state.',
   );
   assert.ok(workbench.includes('window.setInterval(refreshDiagnosticClock, 1000)'), 'Visible automation diagnostics need a one-second display clock.');
   assert.ok(workbench.includes('authoritativeResponseStep: preflightResponseStep'), 'Rare waiting diagnostics must preserve the authoritative preflight stage.');
   assert.ok(workbench.includes('refreshRareOrderDiagnostics(Date.now());'), 'Rare loop completion must use a timestamp taken after its responses.');
   assert.ok(workbench.includes('refreshNormalOrderDiagnostics(orders, Date.now());'), 'Normal loop completion must use a timestamp taken after its responses.');
-  assert.ok(storage.includes('AUTOMATION_CANCELLATION_STORAGE_KEY'));
-  assert.ok(storage.includes('JSON.stringify({')
-    && storage.includes('endpoint: normalizeEndpoint(barrier.endpoint)')
-    && storage.includes('target: barrier.target')
-    && storage.includes('automationSessionId: barrier.automationSessionId')
-    && storage.includes('commandEpoch: barrier.commandEpoch'),
-  'The restart barrier must atomically persist its request target and acknowledged convergence identity.');
-  assert.ok(storage.includes('JSON.parse(raw)')
-    && storage.includes('isAutomationCancellationTarget(value.target)')
-    && storage.includes('localStorage.removeItem(AUTOMATION_CANCELLATION_STORAGE_KEY)'),
-  'Restart recovery must reject and remove malformed or noncanonical cancellation barriers.');
-  assert.equal(storage.includes('automation-cancellation-endpoint'), false,
-    'The canonical cancellation barrier must not retain the obsolete endpoint-only storage key or migration.');
-  assert.ok(workbench.includes('readStoredAutomationCancellation'));
-  assert.ok(workbench.includes('persistAutomationCancellation(null)'));
-  const cancellationRequest = workbench.slice(
-    workbench.indexOf('const requestAutomationCancellation = useCallback('),
-    workbench.indexOf('const updateCompanionPreferences = useCallback('),
-  );
+  assert.equal(storage.includes('AUTOMATION_CANCELLATION'), false,
+    'The deleted destructive cancellation barrier must not remain in local storage.');
+  assert.equal(workbench.includes('AutomationCancellation'), false,
+    'The workbench still carries the deleted cancellation request or ACK state machine.');
+  assert.equal(automationMachine.includes('AutomationCancellation'), false,
+    'The frontend state machine still exposes targeted job deletion helpers.');
   const preferenceUpdate = workbench.slice(
     workbench.indexOf('const updateCompanionPreferences = useCallback('),
     workbench.indexOf('useEffect(() => {', workbench.indexOf('const updateCompanionPreferences = useCallback(')),
   );
-  assert.ok(cancellationRequest.includes('automationRequestEpochRef.current += 1')
-    && cancellationRequest.includes('endpoint: current?.endpoint ?? normalizedEndpoint')
-    && cancellationRequest.includes('mergeAutomationCancellationTarget(current?.target ?? null, target)')
-    && cancellationRequest.includes('persistAutomationCancellation(nextCancellation)'),
-  'Stage shutdown must reuse the durable automation cancellation barrier and invalidate in-flight requests.');
-  assert.ok(preferenceUpdate.includes('getAutomationCancellationTarget(current, normalized)')
-    && preferenceUpdate.includes("? 'all'")
-    && preferenceUpdate.includes('requestAutomationCancellation(cancellationTarget)'),
-  'Preference updates must route command-only and cooking-job shutdown through the targeted cancellation barrier.');
-  assert.ok(preferenceUpdate.includes('current.automationEnabled')
-    && preferenceUpdate.includes('normalized.automationEnabled'),
-  'Stage-only cancellation must apply to an active automation session, while master shutdown retains its existing path.');
-  assert.ok(
-    automationMachine.includes('previous.autoRareOrderEnabled && !next.autoRareOrderEnabled')
-      && automationMachine.includes('previous.autoPrepTakeBeverage && !next.autoPrepTakeBeverage')
-      && automationMachine.includes('previous.autoPrepCollectCooking && !next.autoPrepCollectCooking')
-      && automationMachine.includes('previous.autoNormalOrderEnabled && !next.autoNormalOrderEnabled')
-      && automationMachine.includes('previous.autoNormalTakeBeverage && !next.autoNormalTakeBeverage')
-      && automationMachine.includes('previous.autoNormalDeliverFood && !next.autoNormalDeliverFood'),
-    'Disabling either order group or its staged actions must select the matching cancellation target.',
-  );
-  assert.ok(automationMachine.includes("? 'commands'")
-    && automationMachine.includes("if (target === 'rare' || target === 'all')")
-    && automationMachine.includes("if (target === 'normal' || target === 'all')"),
-  'Beverage-only cancellation must retain cooking jobs while job targets prune their matching local state.');
+  assert.equal(preferenceUpdate.includes('cancel'), false,
+    'A preference edit must not delete active cooking jobs from local state.');
+  assert.ok(workbench.includes('function buildAutomationControlSignature(')
+    && workbench.includes('preferences.autoPrepCollectCooking')
+    && workbench.includes('preferences.autoPrepCompleteOrder')
+    && workbench.includes('preferences.autoNormalDeliverFood')
+    && workbench.includes('preferences.autoNormalCompleteOrder'),
+  'The control-state transition signature must include both order groups and their future delivery/evaluation stages.');
+  assert.ok(workbench.includes('previousAutomationControlSignatureRef.current')
+    && workbench.includes('automationRequestEpochRef.current += 1')
+    && workbench.includes('automationLeaseRevalidationRequiredRef.current = true')
+    && workbench.includes('setAutomationLease(null)')
+    && workbench.includes('await waitForAutomationLeaseAcquire()')
+    && workbench.includes('await releaseAutomationLease('),
+  'A live control-state change must stop local scheduling, wait for in-flight acquire, and release the old lease.');
+  assert.ok(workbench.includes('AUTOMATION_CONTROL_DETAIL_PREFIX')
+    && workbench.includes("job.controlState === 'active'")
+    && workbench.includes('job.controlMessage'),
+  'Suspended cooking jobs must expose the backend control reason without becoming an error-pause state.');
   assert.ok(workbench.includes('retryNormalAutomationOrder'));
   assert.ok(workbench.includes('resetNormalAutomationOrder'));
   assert.equal(
@@ -1102,9 +876,12 @@ async function assertStageAndCancellationContracts() {
   assert.ok(stateMachine.includes("prepared: state.prepared || responseStep === 'ensure-cooking' || responseStep === 'deliver-food'"));
   assert.ok(domain.includes('!base.manualResolutionRequired && snapshotPassesPausedStage'));
   assert.ok(domain.includes('!state.manualResolutionRequired && snapshotPassesPausedStage'));
-  assert.ok(workbench.includes('retainAutomationManualResolutionStates(rareOrderStatesRef.current)'));
-  assert.ok(workbench.includes('retainAutomationManualResolutionStates(normalOrderStatesRef.current)'));
-  assert.ok(automationMachine.includes('if (!state.manualResolutionRequired) states.delete(orderKey);'), 'Only manual-resolution latches may survive an explicit automation reset.');
+  assert.ok(workbench.includes('function retainRareAutomationExecutionStates(')
+    && workbench.includes('!state.manualResolutionRequired && !state.cookingJobId'),
+  'Rare control suspension must retain exact cooking-job identity while dropping unrelated local work.');
+  assert.ok(workbench.includes('retainNormalAutomationExecutionStates(normalOrderStatesRef.current)'));
+  assert.equal(automationMachine.includes('retainAutomationManualResolutionStates'), false,
+    'The obsolete cancellation-only local state cleanup helper must be removed.');
   assert.ok(workbench.includes('lastRuntimeEventSequence: state.lastRuntimeEventSequence'));
   assert.equal(
     (workbench.match(/reduceAutomationCookingRollbackBudget\(state\.rollbackCount, event\)/g) ?? []).length,
@@ -1156,49 +933,37 @@ async function assertStageAndCancellationContracts() {
   assert.ok(workbench.includes("response.automation.reasonCode === 'automation-lease-unavailable'"));
   assert.ok(workbench.includes('handleAutomationControlPlaneResponse(prepareResponse)'), 'Lease loss must invalidate the control plane before reducing an order response.');
   assert.ok(workbench.includes('handleAutomationControlPlaneResponse(response)'), 'Normal-order lease loss must not count as an order-stage retry.');
-  const waitIndex = workbench.indexOf('await waitForAutomationLeaseAcquire();');
-  const cancelIndex = workbench.indexOf('cancelAutomationCookingJobs(', waitIndex);
-  assert.ok(waitIndex >= 0 && cancelIndex > waitIndex, 'Cancellation must wait for the single in-flight lease acquire.');
-  const cancellationEffect = workbench.slice(cancelIndex, workbench.indexOf('useEffect(() => {', cancelIndex));
-  assert.ok(cancellationEffect.includes('cancellationEndpoint,')
-    && cancellationEffect.includes('cancellationTarget,'),
-  'Every cancellation request must carry the persisted endpoint and canonical target.');
-  assert.ok(cancellationEffect.includes("const shouldReleaseLease = cancellationTarget === 'all'")
-    && cancellationEffect.includes('response.leaseReleased !== shouldReleaseLease')
-    && cancellationEffect.includes('!Number.isSafeInteger(response.commandEpoch)')
-    && cancellationEffect.includes('response.commandEpoch <= 0')
-    && cancellationEffect.includes('if (shouldReleaseLease) {'),
-  'A valid targeted ACK must carry a positive epoch; all alone performs the full lease cleanup.');
-  const responseValidationIndex = cancellationEffect.indexOf('response.target !== cancellationTarget');
-  const localStateClearIndex = cancellationEffect.indexOf('clearAutomationLocalStatesAfterCancellation(');
-  const acknowledgedBarrierPersistIndex = cancellationEffect.indexOf('persistAutomationCancellation(acknowledgedCancellation);');
-  assert.ok(responseValidationIndex >= 0
-    && localStateClearIndex > responseValidationIndex
-    && acknowledgedBarrierPersistIndex > localStateClearIndex,
-  'A valid ACK must prune local stale jobs before durably entering the snapshot-convergence phase.');
-  const cancellationPollStart = workbench.indexOf('const retireBarrier = () => {', cancelIndex);
-  const cancellationPoll = workbench.slice(
-    cancellationPollStart,
-    workbench.indexOf('useEffect(() => {', cancellationPollStart),
-  );
-  assert.ok(cancellationPollStart > cancelIndex
-    && cancellationPoll.includes('await refresh(true)')
-    && cancellationPoll.includes('canRetireAutomationCancellationBarrier(cancellation, refreshedSnapshot)')
-    && cancellationPoll.includes('persistAutomationCancellation(null)'),
-  'An acknowledged barrier must poll snapshots and retire only after applied-epoch convergence.');
-  assert.equal(cancellationPoll.includes('cancelAutomationCookingJobs('), false,
-    'Snapshot convergence must never resend cancellation and move the target epoch forward forever.');
-  assert.ok(workbench.includes('companionPreferences.automationEnabled || automationCancellationNeedsAck')
-    && workbench.includes('automationCancellationNeedsAck && automationLeaseOwned'),
-  'Only an unacknowledged barrier may force lease acquisition; acknowledged all-target polling is lease-free.');
+  const controlReleaseStart = workbench.indexOf('const previousSignature = previousAutomationControlSignatureRef.current;');
+  const controlReleaseEnd = workbench.indexOf('useEffect(() => {', controlReleaseStart);
+  const controlReleaseEffect = workbench.slice(controlReleaseStart, controlReleaseEnd);
+  const waitIndex = controlReleaseEffect.indexOf('await waitForAutomationLeaseAcquire();');
+  const releaseIndex = controlReleaseEffect.indexOf('await releaseAutomationLease(', waitIndex);
+  assert.ok(controlReleaseStart >= 0 && waitIndex >= 0 && releaseIndex > waitIndex,
+    'A configuration transition must wait for the single in-flight acquire before releasing the old lease.');
+  assert.ok(controlReleaseEffect.includes('const previousRelease = automationControlReleaseRef.current?.promise;')
+    && controlReleaseEffect.includes('if (previousRelease) await previousRelease;')
+    && controlReleaseEffect.includes('automationControlReleasePendingRef.current = true')
+    && controlReleaseEffect.includes('setAutomationControlReleasePending(true)'),
+  'Rapid control-state changes must serialize release requests and close lease reacquisition before the first release starts.');
+  assert.ok(controlReleaseEffect.includes('automationRuntimeEnabledRef.current = false')
+    && controlReleaseEffect.includes('setAutomationLease(null)')
+    && controlReleaseEffect.includes('setAutomationLeaseBindingKey(\'\')'),
+  'A configuration transition must stop local scheduling before the backend profile revision changes.');
+  assert.equal(controlReleaseEffect.includes('rareOrderStatesRef.current.delete'), false);
+  assert.equal(controlReleaseEffect.includes('normalOrderStatesRef.current.delete'), false,
+    'A control-state transition must retain both groups\' active cooking-job identity.');
+  assert.ok(workbench.includes('|| automationControlReleasePending) return undefined;')
+    && workbench.includes('if (automationControlReleasePendingRef.current) return;'),
+  'Lease renewal must remain closed until the latest serialized control-state release finishes.');
   assert.ok(connection.includes('if (inFlightRequestIdRef.current !== null) return null;')
     && connection.includes('if (isSnapshotUnchanged(data))')
     && connection.includes('return currentSnapshot;')
     && connection.includes('return data;'),
-  'A forced refresh must return the actual full or cached snapshot so applied-epoch convergence can be proven.');
-  assert.ok(api.includes('new URLSearchParams({ target })')
-    && api.includes('`/automation/cancel?${params.toString()}`'),
-  'The frontend API must not expose a missing-target or obsolete jobs/cancel path.');
+  'A forced refresh must return the actual full or cached snapshot for job-control convergence.');
+  assert.ok(api.includes('export async function releaseAutomationLease(')
+    && api.includes("'/automation/lease/release'"),
+  'The frontend must use the canonical explicit lease-release endpoint.');
+  assert.equal(api.includes('/automation/cancel'), false);
   assert.equal(api.includes('/automation/jobs/cancel'), false);
   assert.ok(servicePanel.includes('diagnostic.manualResolutionRequired ? \'确认已处理\' : \'重置\''));
   assert.ok(servicePanel.includes('!diagnostic.paused || diagnostic.manualResolutionRequired'));
@@ -1290,6 +1055,12 @@ async function assertStageAndCancellationContracts() {
   assert.ok(servicePanel.includes("isBusy ? '确认中' : '确认已处理'"));
   for (const field of [
     'transactionStage',
+    'controlState',
+    'controlReasonCode',
+    'controlMessage',
+    'controlAuthorityRevision',
+    'controlStage',
+    'controlSuspendedAtUtc',
     'holdsControllerReservation',
     'controllerLeaseReleaseReason',
     'orderRuntimeKind',
@@ -1330,6 +1101,15 @@ async function assertMockProtocol() {
       'x-mystia-steward-companion-client-id': 'automation-audit',
       'x-mystia-steward-companion-client-label': 'Automation Audit',
     };
+    const enabledProfile = {
+      automationEnabled: true,
+      autoRareOrderEnabled: true,
+      autoNormalOrderEnabled: true,
+      autoPrepCollectCooking: true,
+      autoPrepCompleteOrder: true,
+      autoNormalDeliverFood: true,
+      autoNormalCompleteOrder: true,
+    };
     const registrationResponse = await fetch(`http://127.0.0.1:${port}/devices/register`, {
       method: 'POST',
       headers: { ...headers, 'content-type': 'application/json; charset=utf-8' },
@@ -1338,12 +1118,12 @@ async function assertMockProtocol() {
         profileSchemaVersion: 1,
         platform: 'browser',
         appVersion: '1.2.0',
-        profile: { automationEnabled: true },
+        profile: enabledProfile,
       }),
     });
     assert.equal(registrationResponse.ok, true);
     const registration = await registrationResponse.json();
-    const runtimeHeaders = {
+    let runtimeHeaders = {
       ...headers,
       'x-mystia-steward-companion-authority-revision': String(registration.authorityRevision),
     };
@@ -1354,15 +1134,12 @@ async function assertMockProtocol() {
     const lease = await postJson(`http://127.0.0.1:${port}/automation/lease/acquire`, runtimeHeaders);
     assert.equal(lease.owned, true);
 
-    const missingTargetResponse = await fetch(
+    const removedCancellationResponse = await fetch(
       `http://127.0.0.1:${port}/automation/cancel`,
       { method: 'POST', headers: runtimeHeaders },
     );
-    assert.equal(missingTargetResponse.status, 400);
-    const missingTarget = await missingTargetResponse.json();
-    assert.equal(missingTarget.ok, false);
-    assert.equal(missingTarget.target, '');
-    assert.equal(missingTarget.leaseReleased, false);
+    assert.equal(removedCancellationResponse.status, 404,
+      'The mock must not retain the destructive cancellation route as a compatibility alias.');
 
     const snapshot = await getJson(`http://127.0.0.1:${port}/snapshot`);
     assert.equal(snapshot.automationSessionId, 'automation-audit-session');
@@ -1421,6 +1198,13 @@ async function assertMockProtocol() {
     const activeJob = activeSnapshot.automationCookingJobs.find((job) => job.jobId === response.automation.jobId);
     assert.ok(activeJob, 'Mock snapshot must expose the cooking job created by the action response.');
     assert.equal('autoFinalizeCookingJob' in activeJob, false);
+    assert.equal('autoDeliverFood' in activeJob, false,
+      'A cooking job must not latch its creation-time delivery switch.');
+    assert.equal(activeJob.controlState, 'active');
+    assert.equal(activeJob.controlReasonCode, '');
+    assert.equal(activeJob.controlAuthorityRevision, registration.authorityRevision);
+    assert.equal(activeJob.controlStage, 'FoodDelivery');
+    assert.equal(activeJob.controlSuspendedAtUtc, null);
     assert.equal(activeJob.warmerStoreCommitUncertain, false);
     assert.equal(activeJob.foodDeliveryCommitted, false);
     assert.equal(activeJob.foodDeliveryCommitUncertain, false);
@@ -1438,64 +1222,108 @@ async function assertMockProtocol() {
     assert.equal(activeJob.foodDeliveryEvaluationAttempts, 0);
     assert.equal(activeJob.foodDeliveryEvaluationEffectiveSeconds, 0);
 
-    const commandCancellation = await postJson(
-      `http://127.0.0.1:${port}/automation/cancel?target=commands`,
+    const released = await postJson(
+      `http://127.0.0.1:${port}/automation/lease/release`,
       runtimeHeaders,
     );
-    assert.equal(commandCancellation.ok, true);
-    assert.equal(commandCancellation.target, 'commands');
-    assert.equal(commandCancellation.leaseReleased, false);
-    assert.equal(commandCancellation.cancelledJobs, 0);
-    const commandBarrier = {
-      endpoint: `http://127.0.0.1:${port}`,
-      target: 'commands',
-      automationSessionId: activeSnapshot.automationSessionId,
-      commandEpoch: commandCancellation.commandEpoch,
+    assert.equal(released.ok, true);
+    assert.equal(released.owned, false);
+    const leaseSuspendedSnapshot = await getJson(`http://127.0.0.1:${port}/snapshot`);
+    assert.equal(leaseSuspendedSnapshot.automationCookingJobs.length, 1);
+    assert.equal(leaseSuspendedSnapshot.automationCookingJobs[0].jobId, activeJob.jobId);
+    assert.equal(leaseSuspendedSnapshot.automationCookingJobs[0].controlState, 'suspended-authority');
+    assert.equal(leaseSuspendedSnapshot.automationCookingJobs[0].controlReasonCode, 'automation-lease-released');
+
+    const reacquired = await postJson(`http://127.0.0.1:${port}/automation/lease/acquire`, runtimeHeaders);
+    assert.equal(reacquired.owned, true);
+    const leaseResumedSnapshot = await getJson(`http://127.0.0.1:${port}/snapshot`);
+    assert.equal(leaseResumedSnapshot.automationCookingJobs[0].jobId, activeJob.jobId);
+    assert.equal(leaseResumedSnapshot.automationCookingJobs[0].controlState, 'active');
+
+    const deliveryDisabledProfile = { ...enabledProfile, autoPrepCollectCooking: false };
+    const disabledAuthority = await postJsonBody(
+      `http://127.0.0.1:${port}/devices/profile`,
+      headers,
+      {
+        protocolVersion: 1,
+        profileSchemaVersion: 1,
+        expectedAuthorityRevision: registration.authorityRevision,
+        expectedProfileRevision: registration.activeProfileRevision,
+        profile: deliveryDisabledProfile,
+      },
+    );
+    runtimeHeaders = {
+      ...headers,
+      'x-mystia-steward-companion-authority-revision': String(disabledAuthority.authorityRevision),
     };
-    assert.equal(canRetireAutomationCancellationBarrier(commandBarrier, activeSnapshot), false,
-      'The cached pre-cancel snapshot must leave the acknowledged barrier pending.');
-    const retainedSnapshot = await getJson(`http://127.0.0.1:${port}/snapshot`);
-    assert.equal(retainedSnapshot.automationCookingJobs.length, 1);
-    assert.equal(retainedSnapshot.automationCancellationAppliedEpoch, commandCancellation.commandEpoch,
-      'The first post-ACK snapshot must publish the cancellation epoch while retaining command-only jobs.');
-    assert.equal(canRetireAutomationCancellationBarrier(commandBarrier, retainedSnapshot), true);
+    const profileTransitionSnapshot = await getJson(`http://127.0.0.1:${port}/snapshot`);
+    assert.equal(profileTransitionSnapshot.automationCookingJobs[0].jobId, activeJob.jobId);
+    assert.equal(profileTransitionSnapshot.automationCookingJobs[0].controlState, 'suspended-authority');
+    assert.equal(profileTransitionSnapshot.automationCookingJobs[0].controlReasonCode, 'automation-profile-changing');
+    const disabledLease = await postJson(`http://127.0.0.1:${port}/automation/lease/acquire`, runtimeHeaders);
+    assert.equal(disabledLease.owned, true);
+    const configurationSuspendedSnapshot = await getJson(`http://127.0.0.1:${port}/snapshot`);
+    assert.equal(configurationSuspendedSnapshot.automationCookingJobs[0].jobId, activeJob.jobId);
+    assert.equal(configurationSuspendedSnapshot.automationCookingJobs[0].controlState, 'suspended-configuration');
+    assert.equal(configurationSuspendedSnapshot.automationCookingJobs[0].controlReasonCode, 'rare-food-delivery-disabled');
 
-    const unrelatedCancellation = await postJson(
-      `http://127.0.0.1:${port}/automation/cancel?target=normal`,
-      runtimeHeaders,
+    const enabledAuthority = await postJsonBody(
+      `http://127.0.0.1:${port}/devices/profile`,
+      headers,
+      {
+        protocolVersion: 1,
+        profileSchemaVersion: 1,
+        expectedAuthorityRevision: disabledAuthority.authorityRevision,
+        expectedProfileRevision: disabledAuthority.activeProfileRevision,
+        profile: enabledProfile,
+      },
     );
-    assert.equal(unrelatedCancellation.ok, true);
-    assert.equal(unrelatedCancellation.target, 'normal');
-    assert.equal(unrelatedCancellation.leaseReleased, false);
-    assert.equal(unrelatedCancellation.cancelledJobs, 0);
+    runtimeHeaders = {
+      ...headers,
+      'x-mystia-steward-companion-authority-revision': String(enabledAuthority.authorityRevision),
+    };
+    await postJson(`http://127.0.0.1:${port}/automation/lease/acquire`, runtimeHeaders);
+    const configurationResumedSnapshot = await getJson(`http://127.0.0.1:${port}/snapshot`);
+    assert.equal(configurationResumedSnapshot.automationCookingJobs[0].jobId, activeJob.jobId);
+    assert.equal(configurationResumedSnapshot.automationCookingJobs[0].controlState, 'active');
 
-    const targetedCancellation = await postJson(
-      `http://127.0.0.1:${port}/automation/cancel?target=rare`,
-      runtimeHeaders,
+    const nextHeaders = {
+      'x-mystia-steward-companion-client-id': 'automation-audit-next',
+      'x-mystia-steward-companion-client-label': 'Automation Audit Next',
+    };
+    const nextRegistration = await postJsonBody(
+      `http://127.0.0.1:${port}/devices/register`,
+      nextHeaders,
+      {
+        protocolVersion: 1,
+        profileSchemaVersion: 1,
+        platform: 'browser',
+        appVersion: '1.2.0',
+        profile: enabledProfile,
+      },
     );
-    assert.equal(targetedCancellation.ok, true);
-    assert.equal(targetedCancellation.target, 'rare');
-    assert.equal(targetedCancellation.leaseReleased, false);
-    assert.equal(targetedCancellation.cancelledJobs, 1);
-    assert.equal(typeof targetedCancellation.commandEpoch, 'number');
-
-    const resumed = await postJson(
-      `http://127.0.0.1:${port}/orders/normal/complete-first?orderLifecycleSequence=3`,
-      runtimeHeaders,
+    const switchedAuthority = await postJsonBody(
+      `http://127.0.0.1:${port}/devices/primary`,
+      headers,
+      {
+        protocolVersion: 1,
+        expectedAuthorityRevision: nextRegistration.authorityRevision,
+        deviceId: nextRegistration.currentDeviceId,
+      },
     );
-    assert.equal(resumed.ok, true, 'A targeted cancellation must retain the current automation lease.');
-    const normalSnapshot = await getJson(`http://127.0.0.1:${port}/snapshot`);
-    assert.equal(normalSnapshot.automationCookingJobs[0]?.targetKind, 'normal');
-    assert.equal(normalSnapshot.automationCookingJobs[0]?.orderRuntimeKind, 'Normal',
-      'The mock must preserve the concrete order kind for normal cooking-job snapshots.');
-    const cancelled = await postJson(
-      `http://127.0.0.1:${port}/automation/cancel?target=all`,
-      runtimeHeaders,
-    );
-    assert.equal(cancelled.ok, true);
-    assert.equal(cancelled.target, 'all');
-    assert.equal(cancelled.leaseReleased, true);
-    assert.equal(cancelled.cancelledJobs, 1);
+    const switchSuspendedSnapshot = await getJson(`http://127.0.0.1:${port}/snapshot`);
+    assert.equal(switchSuspendedSnapshot.automationCookingJobs[0].jobId, activeJob.jobId);
+    assert.equal(switchSuspendedSnapshot.automationCookingJobs[0].controlState, 'suspended-authority');
+    assert.equal(switchSuspendedSnapshot.automationCookingJobs[0].controlReasonCode, 'automation-primary-device-changing');
+    const nextRuntimeHeaders = {
+      ...nextHeaders,
+      'x-mystia-steward-companion-authority-revision': String(switchedAuthority.authorityRevision),
+    };
+    const nextLease = await postJson(`http://127.0.0.1:${port}/automation/lease/acquire`, nextRuntimeHeaders);
+    assert.equal(nextLease.owned, true);
+    const switchResumedSnapshot = await getJson(`http://127.0.0.1:${port}/snapshot`);
+    assert.equal(switchResumedSnapshot.automationCookingJobs[0].jobId, activeJob.jobId);
+    assert.equal(switchResumedSnapshot.automationCookingJobs[0].controlState, 'active');
 
     const superseded = await postJson(
       `http://127.0.0.1:${port}/orders/prepare-next?orderLifecycleSequence=2`,
@@ -1531,6 +1359,16 @@ async function getJson(url) {
 
 async function postJson(url, headers) {
   const response = await fetch(url, { method: 'POST', headers });
+  assert.equal(response.ok, true);
+  return response.json();
+}
+
+async function postJsonBody(url, headers, body) {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { ...headers, 'content-type': 'application/json; charset=utf-8' },
+    body: JSON.stringify(body),
+  });
   assert.equal(response.ok, true);
   return response.json();
 }

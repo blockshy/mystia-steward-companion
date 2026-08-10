@@ -97,6 +97,13 @@ static void AssertRuntimeBoundaryContract()
         AssertTrue(source.Contains(requiredBoundary, StringComparison.Ordinal),
             $"Verified lifecycle boundary was missing: {requiredBoundary}.");
     }
+    AssertTrue(
+        source.Contains("RuntimeTargetRecipeVariantService.RetireForBusinessBoundary(", StringComparison.Ordinal),
+        "Closing/Destroyed does not retire recipe-variant state through the authoritative business boundary.");
+    AssertTrue(
+        source.IndexOf("RuntimeTargetRecipeVariantService.RetireForBusinessBoundary(", StringComparison.Ordinal)
+        < source.IndexOf("RuntimeUiPinningService.ClearTargetsForBusinessBoundary(", StringComparison.Ordinal),
+        "Recipe-variant identities are not retired before UI target invalidation.");
 }
 
 static void AssertRuntimeLifecycleCallbacks()
@@ -120,6 +127,8 @@ static void AssertRuntimeLifecycleCallbacks()
         "Panel open unexpectedly invalidated the active target.");
     AssertEqual(0, RuntimeBoundaryProbe.CookingJobClearCount,
         "Panel open unexpectedly cleared active cooking jobs.");
+    AssertEqual(0, RuntimeBoundaryProbe.RecipeVariantRetireCount,
+        "Panel open unexpectedly retired recipe-variant state.");
     AssertEqual(1, RuntimeBoundaryProbe.ServeInWorkBoundaryCount,
         "Panel open did not update ServeInWork diagnostic scope.");
     AssertEqual(NightBusinessLifecyclePhase.Active, RuntimeBoundaryProbe.LastServeInWorkPhase,
@@ -170,6 +179,16 @@ static void AssertRuntimeLifecycleCallbacks()
     AssertEqual(1, RuntimeBoundaryProbe.TargetInvalidationCount, "Closing did not invalidate the UI target once.");
     AssertEqual(active.Generation, RuntimeBoundaryProbe.LastInvalidatedGeneration,
         "Closing invalidated the wrong generation.");
+    AssertEqual(1, RuntimeBoundaryProbe.RecipeVariantRetireCount,
+        "Closing did not retire the recipe-variant generation once.");
+    AssertEqual(active.Generation, RuntimeBoundaryProbe.LastRecipeVariantRetiredGeneration,
+        "Closing retired recipe variants for the wrong business generation.");
+    AssertTrue(RuntimeBoundaryProbe.LastRecipeVariantRetireReason.Contains("night-business-closing", StringComparison.Ordinal),
+        "Closing did not provide the exact lifecycle reason to recipe-variant retirement.");
+    AssertEqual(
+        "recipe-variant-retired,target-invalidated",
+        string.Join(",", RuntimeBoundaryProbe.BoundaryOrder.Take(2)),
+        "Closing invalidated UI targets before retiring exact recipe-variant identities.");
     AssertEqual(1, RuntimeBoundaryProbe.NormalOrderClearCount, "Closing did not clear normal orders once.");
     AssertEqual(1, RuntimeBoundaryProbe.SpecialOrderClearCount, "Closing did not clear special orders once.");
     AssertEqual(1, RuntimeBoundaryProbe.CookingJobClearCount, "Closing did not clear cooking jobs once.");
@@ -193,6 +212,8 @@ static void AssertRuntimeLifecycleCallbacks()
         "Duplicate result Closing repeated cooking-job cleanup.");
     AssertEqual(1, RuntimeBoundaryProbe.SafetyBarrierClearCount,
         "Duplicate result Closing repeated automation-barrier cleanup.");
+    AssertEqual(1, RuntimeBoundaryProbe.RecipeVariantRetireCount,
+        "Duplicate result Closing repeated recipe-variant retirement.");
 
     InvokeRuntimeCallback(runtimeType, "OnBusinessDestroyed");
     var destroyed = RuntimeNightBusinessLifecycle.Snapshot;
@@ -208,6 +229,10 @@ static void AssertRuntimeLifecycleCallbacks()
         "Scene destruction did not abandon throw-delivery order-highlight wrappers.");
     AssertEqual(1, RuntimeBoundaryProbe.ListAbandonCount,
         "Scene destruction did not abandon list wrappers.");
+    AssertEqual(2, RuntimeBoundaryProbe.RecipeVariantRetireCount,
+        "Scene destruction did not run the idempotent managed recipe-variant boundary.");
+    AssertEqual(active.Generation, RuntimeBoundaryProbe.LastRecipeVariantRetiredGeneration,
+        "Scene destruction retired recipe variants for the wrong generation.");
 
     RuntimeOrderHighlightService.ThrowOnResume = true;
     try
@@ -245,6 +270,8 @@ static void AssertRuntimeLifecycleCallbacks()
         "A failed throw-delivery suspend was incorrectly reported as successful.");
     AssertEqual(2, RuntimeBoundaryProbe.ListSuspendCount,
         "A throw-delivery suspend failure blocked the remaining lifecycle cleanup.");
+    AssertEqual(3, RuntimeBoundaryProbe.RecipeVariantRetireCount,
+        "A throw-delivery suspend failure blocked recipe-variant retirement.");
 }
 
 static void InvokeRuntimeCallback(Type runtimeType, string methodName)

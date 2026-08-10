@@ -147,7 +147,7 @@ static void AssertIntegrationContract()
     AssertTrue(preparation.Contains("HandleBlockedAutomationCookingJobs(automationGate)", StringComparison.Ordinal),
         "Cooking-job polling did not enforce the tutorial gate.");
     AssertTrue(preparation.Contains(
-            "ClearAutomationCookingJobs(\n            RuntimeNightBusinessAutomationGate.TutorialActiveReason,\n            AutomationCancellationTarget.All,\n            preserveIrreversibleTransactions: false)",
+            "ClearAutomationCookingJobs(\n            RuntimeNightBusinessAutomationGate.TutorialActiveReason)",
             StringComparison.Ordinal),
         "Confirmed tutorial state did not release Mod cooking-job ownership.");
     var blockedJobsStart = preparation.IndexOf(

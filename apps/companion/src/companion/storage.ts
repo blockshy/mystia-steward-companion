@@ -3,8 +3,6 @@ import {
   normalizeFocusRecommendationLimit,
 } from '@/companion/preferences';
 import type {
-  AutomationCancellationBarrier,
-  AutomationCancellationTarget,
   CustomRecipeGroupMode,
   ModTab,
   RareGuestInvitationScope,
@@ -25,7 +23,6 @@ const FOCUS_COMPACT_STORAGE_KEY = `${STORAGE_PREFIX}-service-focus-compact`;
 const FOCUS_RECIPE_LIMIT_STORAGE_KEY = `${STORAGE_PREFIX}-service-focus-recipe-limit`;
 const FOCUS_BEVERAGE_LIMIT_STORAGE_KEY = `${STORAGE_PREFIX}-service-focus-beverage-limit`;
 const CUSTOM_RECIPE_GROUP_MODE_STORAGE_KEY = `${STORAGE_PREFIX}-custom-recipe-group-mode`;
-const AUTOMATION_CANCELLATION_STORAGE_KEY = `${STORAGE_PREFIX}-automation-cancellation`;
 const LEGACY_ENDPOINT_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-api-endpoint`;
 const LEGACY_TOKEN_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-api-token`;
 const LEGACY_TAB_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-tab`;
@@ -131,68 +128,6 @@ export function readStoredCustomRecipeGroupMode(): CustomRecipeGroupMode {
 
 export function persistCustomRecipeGroupMode(mode: CustomRecipeGroupMode) {
   localStorage.setItem(CUSTOM_RECIPE_GROUP_MODE_STORAGE_KEY, mode);
-}
-
-export function readStoredAutomationCancellation(): AutomationCancellationBarrier | null {
-  const raw = localStorage.getItem(AUTOMATION_CANCELLATION_STORAGE_KEY);
-  if (!raw) return null;
-  try {
-    return parseAutomationCancellationBarrier(raw);
-  } catch {
-    localStorage.removeItem(AUTOMATION_CANCELLATION_STORAGE_KEY);
-    return null;
-  }
-}
-
-export function persistAutomationCancellation(barrier: AutomationCancellationBarrier | null) {
-  if (barrier) {
-    localStorage.setItem(AUTOMATION_CANCELLATION_STORAGE_KEY, JSON.stringify({
-      endpoint: normalizeEndpoint(barrier.endpoint),
-      target: barrier.target,
-      ...('commandEpoch' in barrier ? {
-        automationSessionId: barrier.automationSessionId,
-        commandEpoch: barrier.commandEpoch,
-      } : {}),
-    }));
-    return;
-  }
-
-  localStorage.removeItem(AUTOMATION_CANCELLATION_STORAGE_KEY);
-}
-
-function parseAutomationCancellationBarrier(raw: string): AutomationCancellationBarrier {
-  const value = JSON.parse(raw) as Record<string, unknown>;
-  if (typeof value !== 'object'
-    || value === null
-    || typeof value.endpoint !== 'string'
-    || !value.endpoint.trim()
-    || !isAutomationCancellationTarget(value.target)) {
-    throw new Error('invalid automation cancellation barrier');
-  }
-  const barrier = {
-    endpoint: normalizeEndpoint(value.endpoint),
-    target: value.target,
-  };
-  const hasCommandEpoch = Object.prototype.hasOwnProperty.call(value, 'commandEpoch');
-  const hasAutomationSessionId = Object.prototype.hasOwnProperty.call(value, 'automationSessionId');
-  if (!hasCommandEpoch && !hasAutomationSessionId) return barrier;
-  if (!hasCommandEpoch
-    || !hasAutomationSessionId
-    || !Number.isSafeInteger(value.commandEpoch)
-    || Number(value.commandEpoch) <= 0
-    || typeof value.automationSessionId !== 'string'
-    || !value.automationSessionId.trim()) {
-    throw new Error('invalid acknowledged automation cancellation barrier');
-  }
-  return {
-    ...barrier,
-    automationSessionId: value.automationSessionId,
-    commandEpoch: Number(value.commandEpoch),
-  };
-}
-
-function isAutomationCancellationTarget(value: unknown): value is AutomationCancellationTarget {
-  return value === 'commands' || value === 'rare' || value === 'normal' || value === 'all';
 }
 
 export function normalizeEndpoint(value: string) {

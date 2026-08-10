@@ -1254,6 +1254,7 @@ async function assertSourceContracts() {
     yuyukoPositiveSpell,
     yuyukoNormalTarget,
     yuyukoRuntimePolicy,
+    yuyukoModifierContract,
     foodModifierValidation,
     workbench,
     automationState,
@@ -1273,6 +1274,7 @@ async function assertSourceContracts() {
     readFile(new URL('apps/companion/src/companion/domain/special-business/yuyuko-positive-spell.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/domain/special-business/normal-targets/yuyuko.ts', root), 'utf8'),
     readFile(new URL('mods/bepinex/src/Save/SpecialBusiness/RuntimeOrderPreparationService.YuyukoChallengePolicy.cs', root), 'utf8'),
+    readFile(new URL('mods/bepinex/src/Save/SpecialBusiness/YuyukoFoodModifierContract.cs', root), 'utf8'),
     readFile(new URL('mods/bepinex/src/Save/SpecialBusiness/RuntimeOrderPreparationService.FoodModifierValidation.cs', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/ModWorkbench.tsx', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/automation-state.ts', root), 'utf8'),
@@ -1504,8 +1506,14 @@ async function assertSourceContracts() {
   );
   assert.ok(normalOrderModifierReader.includes('"Tags"')
     && normalOrderModifierReader.includes('"RawTags"')
-    && normalOrderModifierReader.includes('.Except(baseTagIds)'),
-  'NormalOrder 必须保留 Tags.Except(RawTags) 的原生 modifier 读取方式。');
+    && normalOrderModifierReader.includes('YuyukoFoodModifierContract.BuildRetakeNormalOrderModifierTagIds('),
+  'NormalOrder 必须从 Tags 与 RawTags 的 signed ID 建立语义 modifier 集合。');
+  assert.ok(yuyukoModifierContract.includes('SparrowSeriesCookerMarkerTagId = -30')
+    && yuyukoModifierContract.includes('.Where(tagId => !rawTagSet.Contains(tagId))')
+    && yuyukoModifierContract.includes('.Where(tagId => tagId != SparrowSeriesCookerMarkerTagId)'),
+  'NormalOrder 只能从 Tags.Except(RawTags) 语义中排除精确的 SparrowSeries -30 厨具来源标记。');
+  assert.equal(yuyukoModifierContract.includes('厨具「夜雀」'), false,
+    'SparrowSeries 厨具来源标记不得依赖本地化显示名过滤。');
 
   assert.ok(companionApi.includes('expectedFoodModifierTags: executionTarget ? executionTarget.expectedFoodModifierTags.join')
     && orderRecommendationWorker.includes("item.target?.expectedFoodModifierTags.join(',')"),

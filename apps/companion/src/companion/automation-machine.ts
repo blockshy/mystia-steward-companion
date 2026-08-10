@@ -1,9 +1,4 @@
-import type {
-  AutomationCancellationAcknowledgedBarrier,
-  AutomationCancellationBarrier,
-  AutomationCancellationTarget,
-  AutomationJobOutcome,
-} from '@/companion/types';
+import type { AutomationJobOutcome } from '@/companion/types';
 
 export type AutomationRequestStage =
   | 'match-order'
@@ -11,17 +6,6 @@ export type AutomationRequestStage =
   | 'ensure-cooking'
   | 'deliver-food'
   | 'complete-order';
-
-export interface AutomationCookingJobStagePreferences {
-  autoRareOrderEnabled: boolean;
-  autoPrepTakeBeverage: boolean;
-  autoPrepCollectCooking: boolean;
-  autoPrepCompleteOrder: boolean;
-  autoNormalOrderEnabled: boolean;
-  autoNormalTakeBeverage: boolean;
-  autoNormalDeliverFood: boolean;
-  autoNormalCompleteOrder: boolean;
-}
 
 export interface NormalOrderCompletionRequestInput {
   beverageDeliveryEnabled: boolean;
@@ -53,81 +37,6 @@ export function assertAutomationDirectDeliveryCompletionInvariant(
 ): void {
   if ((!input.beverageDeliveryEnabled && !input.foodDeliveryEnabled) || input.completionEnabled) return;
   throw new Error(`${input.targetLabel}自动送达必须同时启用自动完成订单。`);
-}
-
-export function mergeAutomationCancellationTarget(
-  current: AutomationCancellationTarget | null,
-  requested: AutomationCancellationTarget,
-): AutomationCancellationTarget {
-  if (!current || current === requested) return requested;
-  if (current === 'commands') return requested;
-  if (requested === 'commands') return current;
-  return 'all';
-}
-
-export function getAutomationCancellationTarget(
-  previous: AutomationCookingJobStagePreferences,
-  next: AutomationCookingJobStagePreferences,
-): AutomationCancellationTarget | null {
-  const rareJobsDisabled = (previous.autoRareOrderEnabled && !next.autoRareOrderEnabled)
-    || (previous.autoPrepCollectCooking && !next.autoPrepCollectCooking)
-    || (previous.autoPrepCompleteOrder && !next.autoPrepCompleteOrder);
-  const normalJobsDisabled = (previous.autoNormalOrderEnabled && !next.autoNormalOrderEnabled)
-    || (previous.autoNormalDeliverFood && !next.autoNormalDeliverFood)
-    || (previous.autoNormalCompleteOrder && !next.autoNormalCompleteOrder);
-  if (rareJobsDisabled && normalJobsDisabled) return 'all';
-  if (rareJobsDisabled) return 'rare';
-  if (normalJobsDisabled) return 'normal';
-  return (previous.autoPrepTakeBeverage && !next.autoPrepTakeBeverage)
-    || (previous.autoNormalTakeBeverage && !next.autoNormalTakeBeverage)
-    ? 'commands'
-    : null;
-}
-
-interface AutomationLocalSafetyState {
-  manualResolutionRequired: boolean;
-}
-
-export function retainAutomationManualResolutionStates<T extends AutomationLocalSafetyState>(
-  states: Map<string, T>,
-): void {
-  for (const [orderKey, state] of states) {
-    if (!state.manualResolutionRequired) states.delete(orderKey);
-  }
-}
-
-export function clearAutomationLocalStatesAfterCancellation<
-  TRare extends AutomationLocalSafetyState,
-  TNormal extends AutomationLocalSafetyState,
->(
-  target: AutomationCancellationTarget,
-  rareStates: Map<string, TRare>,
-  normalStates: Map<string, TNormal>,
-): void {
-  if (target === 'rare' || target === 'all') {
-    retainAutomationManualResolutionStates(rareStates);
-  }
-  if (target === 'normal' || target === 'all') {
-    retainAutomationManualResolutionStates(normalStates);
-  }
-}
-
-export function isAutomationCancellationAcknowledged(
-  barrier: AutomationCancellationBarrier,
-): barrier is AutomationCancellationAcknowledgedBarrier {
-  return 'commandEpoch' in barrier && 'automationSessionId' in barrier;
-}
-
-export function canRetireAutomationCancellationBarrier(
-  barrier: AutomationCancellationBarrier,
-  snapshot: {
-    automationCancellationAppliedEpoch: number;
-    automationSessionId: string;
-  } | null,
-): boolean {
-  if (!isAutomationCancellationAcknowledged(barrier) || !snapshot?.automationSessionId) return false;
-  return snapshot.automationSessionId !== barrier.automationSessionId
-    || snapshot.automationCancellationAppliedEpoch >= barrier.commandEpoch;
 }
 
 const MANUAL_RESOLUTION_REASON_CODES = new Set([
