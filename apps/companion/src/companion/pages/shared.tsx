@@ -632,7 +632,7 @@ export function RecipeRecommendationRow({
     ownedIngredientQty,
     ingredientIdByName,
   ) || '无';
-  const busy = favoriteBusyKey === (favorite?.id ?? favoriteKey);
+  const busy = Boolean(favoriteBusyKey);
 
   return (
     <RecommendationItem
@@ -700,7 +700,7 @@ export function BeverageRecommendationRow({
   gamepadOccurrenceKey: string;
   onToggleFavorite?: () => void;
 }) {
-  const busy = favoriteBusyKey === (favorite?.id ?? favoriteKey);
+  const busy = Boolean(favoriteBusyKey);
 
   return (
     <RecommendationItem

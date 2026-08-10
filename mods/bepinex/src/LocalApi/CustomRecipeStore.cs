@@ -13,13 +13,11 @@ internal sealed class CustomRecipeStore
 
     private readonly object _lock = new();
     private readonly string _path;
-    private readonly FavoriteStore _favoriteStore;
     private readonly ManualLogSource _log;
 
-    public CustomRecipeStore(string path, FavoriteStore favoriteStore, ManualLogSource log)
+    public CustomRecipeStore(string path, ManualLogSource log)
     {
         _path = path;
-        _favoriteStore = favoriteStore;
         _log = log;
     }
 
@@ -203,60 +201,6 @@ internal sealed class CustomRecipeStore
         }
     }
 
-    public int MigrateManualRecipeFavorites()
-    {
-        lock (_lock)
-        {
-            var migrated = _favoriteStore.ReadManualRecipeFavorites();
-            if (migrated.Count == 0) return 0;
-
-            var data = Load();
-            var now = DateTime.UtcNow;
-            var existingKeys = new HashSet<string>(
-                data.Recipes.Select(entry => BuildRecipeKey(entry.CustomerId, entry.FoodTag, entry.FoodId, entry.ExtraIngredientIds)),
-                StringComparer.Ordinal);
-            var nextSortOrder = NextSortOrder(data);
-            var addedCount = 0;
-
-            foreach (var favorite in migrated)
-            {
-                var key = BuildRecipeKey(favorite.CustomerId, favorite.FoodTag, favorite.RecipeId, favorite.ExtraIngredientIds);
-                if (!existingKeys.Add(key)) continue;
-
-                data.Recipes.Add(new CustomRecipeEntry
-                {
-                    Id = Guid.NewGuid().ToString("N"),
-                    CustomerId = favorite.CustomerId,
-                    CustomerName = favorite.CustomerName,
-                    FoodTag = NormalizeOptionalTag(favorite.FoodTag),
-                    FoodId = favorite.RecipeId,
-                    RecipeId = -1,
-                    RecipeName = "",
-                    ExtraIngredientIds = NormalizeIds(favorite.ExtraIngredientIds),
-                    Enabled = true,
-                    PinToTop = true,
-                    SortOrder = nextSortOrder,
-                    CreatedAtUtc = favorite.CreatedAtUtc == default ? now : favorite.CreatedAtUtc,
-                    UpdatedAtUtc = now,
-                });
-                nextSortOrder += 100;
-                addedCount++;
-            }
-
-            if (addedCount > 0)
-            {
-                NormalizeData(data);
-                Save(data);
-            }
-
-            // Cross-file transaction order is intentional: persist the destination before deleting
-            // legacy entries. A retry after interruption recognizes the destination keys and resumes here.
-            _favoriteStore.RemoveManualRecipeFavorites();
-            _log.LogInfo($"Migrated {migrated.Count} manual recipe favorites to custom-recipes.json ({addedCount} added).");
-            return addedCount;
-        }
-    }
-
     private CustomRecipeData Load()
     {
         try
@@ -311,11 +255,6 @@ internal sealed class CustomRecipeStore
             CustomRecipes = data,
             Error = string.IsNullOrWhiteSpace(error) ? null : error,
         }, JsonOptions);
-    }
-
-    private static string BuildRecipeKey(int customerId, string? foodTag, int foodId, IEnumerable<int> extraIngredientIds)
-    {
-        return $"{customerId}:{NormalizeOptionalTag(foodTag) ?? "*"}:{foodId}:{string.Join(",", NormalizeIds(extraIngredientIds))}";
     }
 
     private static string? NormalizeOptionalTag(string? value)

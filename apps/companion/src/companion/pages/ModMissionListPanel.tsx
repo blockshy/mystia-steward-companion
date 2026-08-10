@@ -17,19 +17,11 @@ import type {
   AvailableMissionEntry,
   AvailableMissionsResponse,
   MissionPresentationMetadata,
-  MissionPanelView,
   TrackedMissionEntry,
   TrackedMissionsResponse,
 } from '@/companion/types';
-import {
-  ModRareGuestInvitationsPanel,
-  type ModRareGuestInvitationsPanelProps,
-} from '@/companion/pages/ModRareGuestInvitationsPanel';
-import { MissionModuleControl } from '@/companion/pages/MissionModuleControl';
-import {
-  DENSE_THREE_COLUMN_GRID,
-  INNER_TAB_TRIGGER_CLASS,
-} from '@/companion/pages/shared-constants';
+import { ModuleControlPanel } from '@/companion/pages/ModuleControlPanel';
+import { DENSE_THREE_COLUMN_GRID } from '@/companion/pages/shared-constants';
 
 type MissionStatusView = 'all' | 'available' | TrackedMissionEntry['status'];
 type MissionListEntry =
@@ -56,8 +48,7 @@ const MISSION_STATUS_VIEWS = [
   { value: 'unverified', label: '待确认' },
 ] as const satisfies ReadonlyArray<{ value: MissionStatusView; label: string }>;
 
-interface ModMissionsPanelProps extends ModRareGuestInvitationsPanelProps {
-  view: MissionPanelView;
+export interface ModMissionListPanelProps {
   connected: boolean;
   missionListModuleEnabled: boolean;
   availableRuntimeReady: boolean;
@@ -67,99 +58,25 @@ interface ModMissionsPanelProps extends ModRareGuestInvitationsPanelProps {
   trackedMissions: TrackedMissionsResponse | null;
   trackedMissionsError: string;
   trackedMissionsLoading: boolean;
+  showDebugDetails: boolean;
   onMissionListModuleEnabledChange: (enabled: boolean) => void;
-  onViewChange: (view: MissionPanelView) => void;
   onRefreshMissions: () => void;
 }
 
-export function ModMissionsPanel({
-  view,
+export function ModMissionListPanel({
   connected,
-  missionListModuleEnabled,
+  missionListModuleEnabled: enabled,
   availableRuntimeReady,
-  availableMissions,
-  availableMissionsError,
-  availableMissionsLoading,
-  trackedMissions,
-  trackedMissionsError,
-  trackedMissionsLoading,
-  onMissionListModuleEnabledChange,
-  onViewChange,
-  onRefreshMissions,
-  ...invitationProps
-}: ModMissionsPanelProps) {
-  return (
-    <Tabs
-      value={view}
-      onValueChange={(value) => {
-        if (value === 'tasks' || value === 'invitations') onViewChange(value);
-      }}
-      className="space-y-4"
-    >
-      <TabsList className="grid h-9 w-full grid-cols-2">
-        <TabsTrigger value="tasks" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
-          任务列表
-        </TabsTrigger>
-        <TabsTrigger value="invitations" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
-          稀客邀请
-        </TabsTrigger>
-      </TabsList>
-
-      <TabsContent value="tasks" className="space-y-4">
-        {view === 'tasks' && (
-          <MissionListPanel
-            connected={connected}
-            enabled={missionListModuleEnabled}
-            availableRuntimeReady={availableRuntimeReady}
-            availableResult={availableMissions}
-            availableError={availableMissionsError}
-            availableLoading={availableMissionsLoading}
-            trackedResult={trackedMissions}
-            trackedError={trackedMissionsError}
-            trackedLoading={trackedMissionsLoading}
-            showDebugDetails={invitationProps.showDebugDetails}
-            onEnabledChange={onMissionListModuleEnabledChange}
-            onRefresh={onRefreshMissions}
-          />
-        )}
-      </TabsContent>
-
-      <TabsContent value="invitations" className="space-y-4">
-        {view === 'invitations' && (
-          <ModRareGuestInvitationsPanel {...invitationProps} />
-        )}
-      </TabsContent>
-    </Tabs>
-  );
-}
-
-function MissionListPanel({
-  connected,
-  enabled,
-  availableRuntimeReady,
-  availableResult,
-  availableError,
-  availableLoading,
-  trackedResult,
-  trackedError,
-  trackedLoading,
+  availableMissions: availableResult,
+  availableMissionsError: availableError,
+  availableMissionsLoading: availableLoading,
+  trackedMissions: trackedResult,
+  trackedMissionsError: trackedError,
+  trackedMissionsLoading: trackedLoading,
   showDebugDetails,
-  onEnabledChange,
-  onRefresh,
-}: {
-  connected: boolean;
-  enabled: boolean;
-  availableRuntimeReady: boolean;
-  availableResult: AvailableMissionsResponse | null;
-  availableError: string;
-  availableLoading: boolean;
-  trackedResult: TrackedMissionsResponse | null;
-  trackedError: string;
-  trackedLoading: boolean;
-  showDebugDetails: boolean;
-  onEnabledChange: (enabled: boolean) => void;
-  onRefresh: () => void;
-}) {
+  onMissionListModuleEnabledChange: onEnabledChange,
+  onRefreshMissions: onRefresh,
+}: ModMissionListPanelProps) {
   const [statusView, setStatusView] = useState<MissionStatusView>('all');
   const missions = useMemo(
     () => mergeMissionEntries(availableResult?.missions ?? [], trackedResult?.missions ?? []),
@@ -188,12 +105,12 @@ function MissionListPanel({
 
   return (
     <div className="space-y-4">
-      <MissionModuleControl
+      <ModuleControlPanel
         moduleId="task-list"
         label="启用任务列表模块"
         description="开启后才会读取并轮询可接取任务与当前活动任务；关闭不会影响任务料理置顶等共享的被动任务能力。"
         enabled={enabled}
-        focusKey="missions:tasks:module-toggle"
+        focusKey="missions:module-toggle"
         onEnabledChange={onEnabledChange}
       />
       {!enabled ? (
@@ -209,13 +126,13 @@ function MissionListPanel({
               onClick={onRefresh}
               disabled={!connected || loading}
               data-gamepad-clickable="true"
-              data-gamepad-focus-key="missions:tasks:refresh"
+              data-gamepad-focus-key="missions:refresh"
             >
               <IconRefresh className={loading ? 'size-4 animate-spin' : 'size-4'} />
               刷新
             </Button>
           )}
-          gamepadScrollKey="missions:tasks"
+          gamepadScrollKey="missions"
           gamepadScrollLabel="任务列表"
         >
           <div className="grid min-w-0 gap-3 text-sm">
@@ -268,9 +185,9 @@ function MissionListPanel({
                     <TabsTrigger
                       key={status.value}
                       value={status.value}
-                      className="min-w-[5rem] flex-none px-2.5 min-[720px]:min-w-0 min-[720px]:flex-1"
+                      className="min-w-[5rem] flex-none px-2.5 min-[640px]:min-w-0 min-[640px]:flex-1"
                       data-gamepad-clickable="true"
-                      data-gamepad-focus-key={`missions:tasks:status:${status.value}`}
+                      data-gamepad-focus-key={`missions:status:${status.value}`}
                       data-mission-status-tab={status.value}
                     >
                       <span>{status.label}</span>

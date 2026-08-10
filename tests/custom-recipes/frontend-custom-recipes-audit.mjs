@@ -5,6 +5,7 @@ const APP_URL = process.env.MYSTIA_APP_URL || 'http://127.0.0.1:4173/';
 const API_URL = process.env.MYSTIA_API_URL || 'http://127.0.0.1:32145';
 const API_TOKEN = process.env.MYSTIA_API_TOKEN || 'mock-token';
 const OUTPUT_DIR = process.env.CUSTOM_RECIPE_AUDIT_OUTPUT_DIR || '/tmp/mystia-custom-recipes-audit';
+const CHROMIUM_EXECUTABLE_PATH = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH?.trim();
 const STORAGE_PREFIX = 'mystia-steward-companion';
 const mutationRequests = [];
 let activeMutations = 0;
@@ -12,7 +13,10 @@ let maxActiveMutations = 0;
 let delayNextFlagsMs = 0;
 
 await mkdir(OUTPUT_DIR, { recursive: true });
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({
+  headless: true,
+  ...(CHROMIUM_EXECUTABLE_PATH ? { executablePath: CHROMIUM_EXECUTABLE_PATH } : {}),
+});
 const page = await browser.newPage({ viewport: { width: 640, height: 760 } });
 
 try {
@@ -196,6 +200,9 @@ async function assertHeaderActionSameLine(action, message) {
 }
 
 async function activateTab(label) {
+  if (['普客', '稀客', '自定义推荐料理', '收藏管理'].includes(label)) {
+    await page.getByRole('tab', { name: '推荐料理', exact: true }).click();
+  }
   await page.getByRole('tab', { name: label, exact: true }).click();
   await page.waitForTimeout(150);
 }

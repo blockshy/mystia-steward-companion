@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdir } from 'node:fs/promises';
 import { chromium } from 'playwright';
 
+import { inspectMinimumNestedTabsLayout } from '../ui-layout/nested-tabs-layout.mjs';
 import { inspectMinimumPrimaryTabsLayout } from '../ui-layout/primary-tabs-layout.mjs';
 
 const APP_URL = process.env.MYSTIA_APP_URL || 'http://127.0.0.1:4173/';
@@ -182,13 +183,13 @@ try {
 
   await page.goto(APP_URL, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('[data-gamepad-tab-value="overview"]', { timeout: 10_000 });
-  await activateTopTab('missions');
+  await activateExtensionTab('任务列表');
   await page.getByText('任务列表模块已停用。手动开启总控后才会读取任务数据。', { exact: true })
     .waitFor({ timeout: 10_000 });
   await page.waitForTimeout(500);
   assert.equal(requests.length, 0, 'The default-off task module issued a tracked mission request.');
   assert.equal(availableRequests.length, 0, 'The default-off task module issued an available mission request.');
-  const moduleToggle = page.locator('[data-gamepad-focus-key="missions:tasks:module-toggle"]');
+  const moduleToggle = page.locator('[data-gamepad-focus-key="missions:module-toggle"]');
   assert.equal(await moduleToggle.isChecked(), false, 'The task module did not default to disabled.');
   await moduleToggle.click();
   assert.equal(
@@ -215,7 +216,7 @@ try {
   await assertMissionPresentation();
   await assertMissionStatusTabFocusContract();
 
-  const refresh = page.locator('[data-gamepad-focus-key="missions:tasks:refresh"]:visible').first();
+  const refresh = page.locator('[data-gamepad-focus-key="missions:refresh"]:visible').first();
   await refresh.focus();
   assert.equal(await refresh.evaluate((element) => document.activeElement === element), true);
   await selectMissionStatus('unverified');
@@ -335,21 +336,32 @@ try {
 
   const primaryTabs = await inspectMinimumPrimaryTabsLayout(page);
   assert.equal(primaryTabs.ok, true, `640px primary tab layout failed: ${JSON.stringify(primaryTabs)}`);
+  const missionStatusTabs = await inspectMinimumNestedTabsLayout(
+    page,
+    '[aria-label="任务状态筛选"]',
+  );
+  assert.equal(
+    missionStatusTabs.listCount,
+    1,
+    `640px task status tab list missing: ${JSON.stringify(missionStatusTabs)}`,
+  );
+  assert.equal(
+    missionStatusTabs.ok,
+    true,
+    `640px task status tabs did not fill the row: ${JSON.stringify(missionStatusTabs.failures)}`,
+  );
   const layout = await page.evaluate(() => {
-    const innerTabs = Array.from(document.querySelectorAll('[data-slot="tabs-trigger"]'))
+    const taskPanel = document.querySelector('[data-gamepad-scroll-key="missions"]');
+    const nestedRouteTabs = Array.from(taskPanel?.querySelectorAll('[data-slot="tabs-trigger"]') ?? [])
       .filter((element) => element instanceof HTMLElement)
       .filter((element) => ['任务列表', '稀客邀请'].includes(element.textContent?.trim() || ''));
-    const refreshButton = document.querySelector('[data-gamepad-focus-key="missions:tasks:refresh"]');
+    const refreshButton = document.querySelector('[data-gamepad-focus-key="missions:refresh"]');
     const statusTabList = document.querySelector('[aria-label="任务状态筛选"]');
     const statusTabs = Array.from(document.querySelectorAll('[data-mission-status-tab]'))
       .filter((element) => element instanceof HTMLElement);
     return {
       overflow: Math.max(0, document.documentElement.scrollWidth - document.documentElement.clientWidth),
-      innerTabCount: innerTabs.length,
-      innerTabsContained: innerTabs.every((element) => {
-        const rect = element.getBoundingClientRect();
-        return rect.left >= -1 && rect.right <= document.documentElement.clientWidth + 1;
-      }),
+      nestedRouteTabCount: nestedRouteTabs.length,
       refreshFocusable: refreshButton instanceof HTMLElement && !refreshButton.hasAttribute('disabled'),
       statusTabCount: statusTabs.length,
       statusTabsContained: statusTabs.every((element) => {
@@ -371,19 +383,18 @@ try {
   });
   assert.deepEqual(layout, {
     overflow: 0,
-    innerTabCount: 2,
-    innerTabsContained: true,
+    nestedRouteTabCount: 0,
     refreshFocusable: true,
     statusTabCount: 5,
     statusTabsContained: true,
     statusTabsNoWrap: true,
     statusTabsScrollable: true,
     statusFocusKeys: [
-      'missions:tasks:status:all',
-      'missions:tasks:status:available',
-      'missions:tasks:status:fulfilled',
-      'missions:tasks:status:tracking',
-      'missions:tasks:status:unverified',
+      'missions:status:all',
+      'missions:status:available',
+      'missions:status:fulfilled',
+      'missions:status:tracking',
+      'missions:status:unverified',
     ],
     visibleMissionRows: 5,
   });
@@ -437,7 +448,7 @@ try {
     `390px task status tabs cannot scroll horizontally: ${JSON.stringify(narrowLayout)}`,
   );
   assert.equal(narrowLayout.activeContained, true);
-  assert.equal(narrowLayout.activeFocusKey, 'missions:tasks:status:unverified');
+  assert.equal(narrowLayout.activeFocusKey, 'missions:status:unverified');
   await selectMissionStatus('all');
   const narrowPresentationLayout = await page.evaluate(() => {
     const rows = Array.from(document.querySelectorAll(
@@ -565,18 +576,18 @@ try {
   );
   const requestsBeforeReload = requests.length;
   await page.reload({ waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('[data-gamepad-focus-key="missions:tasks:module-toggle"]', { timeout: 10_000 });
+  await page.waitForSelector('[data-gamepad-focus-key="missions:module-toggle"]', { timeout: 10_000 });
   assert.equal(
-    await page.locator('[data-gamepad-focus-key="missions:tasks:module-toggle"]').isChecked(),
+    await page.locator('[data-gamepad-focus-key="missions:module-toggle"]').isChecked(),
     true,
     'The manually enabled task module did not persist across reload.',
   );
   await waitForRequestCount(requestsBeforeReload + 1);
   console.log(
-    'PASS: task list is independently default-off and persistent, merges available and tracked missions, '
+    'PASS: task-list extension subpage is independently default-off and persistent, merges available and tracked missions, '
     + 'stops polling while disabled, refreshes both independent signatures, '
     + 'renders bounded character/related-scene metadata, hands triggering tasks to tracked state, '
-    + 'cancels inactive reads, and keeps five scrollable status tabs.',
+    + 'cancels inactive reads, fills five status tabs at 640px, and keeps them scrollable below 640px.',
   );
 } finally {
   await browser.close();
@@ -727,6 +738,11 @@ async function activateTopTab(value) {
   const trigger = page.locator(`[data-gamepad-tab-value="${value}"]`).first();
   await trigger.scrollIntoViewIfNeeded();
   await trigger.click();
+}
+
+async function activateExtensionTab(label) {
+  await activateTopTab('extensions');
+  await page.locator('[data-extension-tabs]').getByRole('tab', { name: label, exact: true }).click();
 }
 
 async function assertMissionStatusTabs(expectedCounts, activeStatus) {

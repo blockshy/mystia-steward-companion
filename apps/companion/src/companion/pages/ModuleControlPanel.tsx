@@ -1,6 +1,6 @@
 import { Badge, Switch } from '@/components/ui-kit';
 
-export function MissionModuleControl({
+export function ModuleControlPanel({
   description,
   disabled = false,
   enabled,
@@ -17,12 +17,12 @@ export function MissionModuleControl({
   moduleId: 'task-list' | 'rare-guest-invitations';
   onEnabledChange: (enabled: boolean) => void;
 }) {
-  const descriptionId = `mission-module-${moduleId}-description`;
+  const descriptionId = `module-control-${moduleId}-description`;
 
   return (
     <div
       className="steward-inline-panel space-y-2 px-3 py-3"
-      data-mission-module={moduleId}
+      data-feature-module={moduleId}
       data-module-enabled={enabled ? 'true' : 'false'}
     >
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">

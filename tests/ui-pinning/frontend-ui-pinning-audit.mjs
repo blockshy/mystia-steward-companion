@@ -59,10 +59,30 @@ assert(
   /if \(event\.key === 'Escape'\) \{\s*event\.preventDefault\(\);\s*setDraft\(null\);\s*\}/.test(settingsSource),
   '高亮色 Escape 必须只撤销草稿，不能 blur 后提交旧闭包值',
 );
+const gameUiAssistSwitchLabels = [
+  '稀客游戏界面置顶推荐',
+  '稀客加料料理选项',
+  '稀客目标厨具高亮',
+  '稀客目标桌位高亮',
+  '稀客目标订单高亮',
+  '普客游戏界面置顶推荐',
+  '普客加料料理选项',
+  '普客目标厨具高亮',
+  '普客目标桌位高亮',
+  '普客目标订单高亮',
+];
 assert(
-  settingsSource.includes('稀客加料料理选项（实验性）')
-    && settingsSource.includes('普客加料料理选项（实验性）'),
-  '设置页必须明确区分稀客与普客加料料理选项开关',
+  gameUiAssistSwitchLabels.every((label) => settingsSource.includes(`label="${label}"`)),
+  '设置页必须保留十个规范的稀客/普客游戏界面辅助开关名称',
+);
+assert(
+  gameUiAssistSwitchLabels.every((label) => !settingsSource.includes(`${label}（实验性）`)),
+  '游戏界面辅助开关不得重复显示“实验性”后缀',
+);
+assert(
+  settingsSource.includes('data-experimental-risk-notice="true"')
+    && settingsSource.includes('自动化和加料料理选项会改变游戏运行时状态，存在一定风险。'),
+  '实验性功能页面必须集中显示风险提示',
 );
 assert(
   settingsSource.includes('稀客目标料理含加料时，在制作页面显示独立选项。选择后只加入该方案的加料，并按游戏规则扣除材料；基础料理保持原配方，选项使用稀客目标色。')
@@ -574,7 +594,7 @@ try {
 
   await page.locator('[data-gamepad-tab-value="settings"]').first().click();
   await page.getByRole('tab', { name: '实验性功能', exact: true }).first().click();
-  const pinningSwitchLabel = page.getByText('稀客游戏界面置顶推荐（实验性）', { exact: true }).first();
+  const pinningSwitchLabel = page.getByText('稀客游戏界面置顶推荐', { exact: true }).first();
   assert(await pinningSwitchLabel.count(), '未找到稀客游戏界面置顶开关');
 
   delayNextTargetMs = 1600;
@@ -654,7 +674,7 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 350));
   assert(targetRequests.length === errorFlagStartCount,
     '稀客目标缺失时，纯稀客设置变化错误重复发布了仍未变化的普客目标');
-  assert(await page.getByRole('switch', { name: '稀客游戏界面置顶推荐（实验性）' }).isChecked() === false,
+  assert(await page.getByRole('switch', { name: '稀客游戏界面置顶推荐' }).isChecked() === false,
     'Worker error 期间关闭稀客置顶后偏好状态未保留');
 
   const recoverySuccessCount = await page.evaluate(() =>

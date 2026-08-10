@@ -12,15 +12,12 @@ try
     VerifyCorruptFavoriteIsPreserved(root, log);
     VerifyNullableFavoriteExtras(root, log);
     VerifyMutationJsonEscaping(root, log);
+    VerifyFavoriteManagementMutations(root, log);
     VerifyCustomRecipeReadDoesNotWrite(root, log);
-    VerifyCustomRecipeCrudDoesNotRunMigration(root, log);
     VerifyCustomRecipeManagement(root, log);
-    VerifyManualFavoriteMigration(root, log);
-    VerifyInterruptedManualFavoriteMigrationRecovery(root, log);
-    VerifyFailedManualFavoriteMigrationPreservesFiles(root, log);
     VerifyCorruptCustomRecipeIsPreserved(root, log);
     VerifyFutureSchemasArePreserved(root, log);
-    Console.WriteLine("PASS: storage files were preserved, normalized and migrated without destructive rewrites or duplicate custom recipes.");
+    Console.WriteLine("PASS: favorite and custom recipe storage was preserved, normalized and mutated without destructive rewrites.");
     return 0;
 }
 catch (Exception ex)
@@ -72,100 +69,62 @@ static void VerifyMutationJsonEscaping(string root, ManualLogSource log)
     AssertEqual(1, recipe.GetProperty("extraIngredientIds").GetArrayLength(), "Extra ingredient IDs were not normalized.");
 }
 
+static void VerifyFavoriteManagementMutations(string root, ManualLogSource log)
+{
+    var path = Path.Combine(root, "favorites-management.json");
+    var store = new FavoriteStore(path, log);
+    using var firstRecipeResponse = JsonDocument.Parse(store.AddRecipe(3, "guest", "sweet", 4, new[] { 9 }));
+    var firstRecipeId = firstRecipeResponse.RootElement
+        .GetProperty("favorites")
+        .GetProperty("recipes")[0]
+        .GetProperty("id")
+        .GetString() ?? throw new InvalidOperationException("The first recipe favorite has no ID.");
+    using var secondRecipeResponse = JsonDocument.Parse(store.AddRecipe(3, "guest", "fresh", 5, Array.Empty<int>()));
+    var secondRecipeId = secondRecipeResponse.RootElement
+        .GetProperty("favorites")
+        .GetProperty("recipes")
+        .EnumerateArray()
+        .Single(entry => entry.GetProperty("recipeId").GetInt32() == 5)
+        .GetProperty("id")
+        .GetString() ?? throw new InvalidOperationException("The second recipe favorite has no ID.");
+    using var beverageResponse = JsonDocument.Parse(store.AddBeverage(3, "guest", "fruit", 6));
+    var beverageId = beverageResponse.RootElement
+        .GetProperty("favorites")
+        .GetProperty("beverages")[0]
+        .GetProperty("id")
+        .GetString() ?? throw new InvalidOperationException("The beverage favorite has no ID.");
+
+    using (var removedRecipe = JsonDocument.Parse(store.RemoveRecipe(firstRecipeId)))
+    {
+        var favorites = removedRecipe.RootElement.GetProperty("favorites");
+        var recipes = favorites.GetProperty("recipes");
+        AssertEqual(1, recipes.GetArrayLength(), "Removing one recipe favorite changed the wrong number of recipes.");
+        AssertEqual(secondRecipeId, recipes[0].GetProperty("id").GetString(), "Removing one recipe favorite changed an unrelated recipe.");
+        AssertEqual(beverageId, favorites.GetProperty("beverages")[0].GetProperty("id").GetString(), "Removing a recipe favorite changed the beverage favorite.");
+    }
+
+    using (var removedBeverage = JsonDocument.Parse(store.RemoveBeverage(beverageId)))
+    {
+        var favorites = removedBeverage.RootElement.GetProperty("favorites");
+        AssertEqual(0, favorites.GetProperty("beverages").GetArrayLength(), "Removing the beverage favorite did not remove its exact entry.");
+        AssertEqual(secondRecipeId, favorites.GetProperty("recipes")[0].GetProperty("id").GetString(), "Removing a beverage favorite changed the recipe favorite.");
+    }
+}
+
 static void VerifyCustomRecipeReadDoesNotWrite(string root, ManualLogSource log)
 {
-    var favoritePath = Path.Combine(root, "favorites-empty.json");
     var path = Path.Combine(root, "custom-read.json");
     const string original = "{\n  \"version\": 1,\n  \"recipes\": []\n}\n";
     File.WriteAllText(path, original, new UTF8Encoding(false));
 
-    var favoriteStore = new FavoriteStore(favoritePath, log);
-    _ = new CustomRecipeStore(path, favoriteStore, log).GetJson();
+    _ = new CustomRecipeStore(path, log).GetJson();
     AssertEqual(original, File.ReadAllText(path, Encoding.UTF8), "Reading custom recipes rewrote the file.");
-}
-
-static void VerifyManualFavoriteMigration(string root, ManualLogSource log)
-{
-    var favoritePath = Path.Combine(root, "favorites-manual-migration.json");
-    var customPath = Path.Combine(root, "custom-manual-migration.json");
-    File.WriteAllText(
-        favoritePath,
-        "{\"version\":1,\"recipes\":["
-        + "{\"id\":\"manual\",\"customerId\":3,\"customerName\":\"guest\",\"foodTag\":\"tag\",\"recipeId\":7,\"extraIngredientIds\":[9,9],\"source\":\"manual\"},"
-        + "{\"id\":\"favorite\",\"customerId\":3,\"customerName\":\"guest\",\"foodTag\":\"tag\",\"recipeId\":8,\"extraIngredientIds\":[]}]"
-        + ",\"beverages\":[]}",
-        Encoding.UTF8);
-
-    var favoriteStore = new FavoriteStore(favoritePath, log);
-    var customStore = new CustomRecipeStore(customPath, favoriteStore, log);
-    AssertEqual(1, customStore.MigrateManualRecipeFavorites(), "The explicit migration did not add the manual favorite.");
-    using (var customRecipes = JsonDocument.Parse(File.ReadAllText(customPath, Encoding.UTF8)))
-    {
-        var recipes = customRecipes.RootElement.GetProperty("recipes");
-        AssertEqual(1, recipes.GetArrayLength(), "The manual favorite was not migrated exactly once.");
-        AssertEqual(7, recipes[0].GetProperty("foodId").GetInt32(), "The migrated custom recipe used the wrong food ID.");
-        AssertEqual(1, recipes[0].GetProperty("extraIngredientIds").GetArrayLength(), "The migrated extra ingredient IDs were not normalized.");
-    }
-
-    using (var favorites = JsonDocument.Parse(File.ReadAllText(favoritePath, Encoding.UTF8)))
-    {
-        var recipes = favorites.RootElement.GetProperty("recipes");
-        AssertEqual(1, recipes.GetArrayLength(), "The migrated manual favorite still exists on disk.");
-        AssertEqual("favorite", recipes[0].GetProperty("id").GetString(), "A normal favorite was removed during migration.");
-    }
-
-    var rebuiltFavoriteStore = new FavoriteStore(favoritePath, log);
-    var rebuiltCustomStore = new CustomRecipeStore(customPath, rebuiltFavoriteStore, log);
-    AssertEqual(0, rebuiltCustomStore.MigrateManualRecipeFavorites(), "Rebuilding the stores repeated an already completed migration.");
-    using var rebuiltCustomRecipes = JsonDocument.Parse(File.ReadAllText(customPath, Encoding.UTF8));
-    AssertEqual(1, rebuiltCustomRecipes.RootElement.GetProperty("recipes").GetArrayLength(), "A rebuilt store duplicated the migrated custom recipe.");
-}
-
-static void VerifyCustomRecipeCrudDoesNotRunMigration(string root, ManualLogSource log)
-{
-    var favoritePath = Path.Combine(root, "favorites-manual-no-implicit-migration.json");
-    var customPath = Path.Combine(root, "custom-no-implicit-migration.json");
-    File.WriteAllText(
-        favoritePath,
-        "{\"version\":1,\"recipes\":[{\"id\":\"manual\",\"customerId\":4,\"customerName\":\"guest\",\"foodTag\":\"tag\",\"recipeId\":9,\"extraIngredientIds\":[],\"source\":\"manual\"}],\"beverages\":[]}",
-        Encoding.UTF8);
-
-    var store = new CustomRecipeStore(customPath, new FavoriteStore(favoritePath, log), log);
-    using (var initial = JsonDocument.Parse(store.GetJson()))
-    {
-        AssertEqual(0, initial.RootElement.GetProperty("recipes").GetArrayLength(), "GET implicitly migrated a manual favorite.");
-    }
-
-    var upsertResponse = store.Upsert(new CustomRecipeMutation
-    {
-        CustomerId = 8,
-        CustomerName = "other",
-        FoodId = 12,
-        RecipeId = -1,
-        RecipeName = "custom",
-        Enabled = true,
-        PinToTop = true,
-    });
-    using var upsertDocument = JsonDocument.Parse(upsertResponse);
-    var id = upsertDocument.RootElement.GetProperty("customRecipes").GetProperty("recipes")[0].GetProperty("id").GetString() ?? "";
-    _ = store.UpdateFlags(
-        new CustomRecipeSelection { Kind = CustomRecipeSelectionKind.Entry, Id = id },
-        enabled: false,
-        pinToTop: null);
-    _ = store.Move(id, "up");
-    _ = store.Remove(id);
-
-    using var favorites = JsonDocument.Parse(File.ReadAllText(favoritePath, Encoding.UTF8));
-    var manualRecipes = favorites.RootElement.GetProperty("recipes");
-    AssertEqual(1, manualRecipes.GetArrayLength(), "A custom recipe CRUD operation removed the manual favorite.");
-    AssertEqual("manual", manualRecipes[0].GetProperty("id").GetString(), "A custom recipe CRUD operation changed the manual favorite.");
 }
 
 static void VerifyCustomRecipeManagement(string root, ManualLogSource log)
 {
-    var favoritePath = Path.Combine(root, "favorites-for-custom-management.json");
     var customPath = Path.Combine(root, "custom-management.json");
-    var store = new CustomRecipeStore(customPath, new FavoriteStore(favoritePath, log), log);
+    var store = new CustomRecipeStore(customPath, log);
 
     using (var initial = JsonDocument.Parse(store.GetJson()))
     {
@@ -272,53 +231,12 @@ static void AssertMutationFailed(string response, string message)
     AssertEqual(false, document.RootElement.GetProperty("ok").GetBoolean(), message);
 }
 
-static void VerifyInterruptedManualFavoriteMigrationRecovery(string root, ManualLogSource log)
-{
-    var favoritePath = Path.Combine(root, "favorites-manual-recovery.json");
-    var customPath = Path.Combine(root, "custom-manual-recovery.json");
-    File.WriteAllText(
-        favoritePath,
-        "{\"version\":1,\"recipes\":[{\"id\":\"manual\",\"customerId\":5,\"customerName\":\"guest\",\"foodTag\":\"tag\",\"recipeId\":13,\"extraIngredientIds\":[2],\"source\":\"manual\"}],\"beverages\":[]}",
-        Encoding.UTF8);
-    File.WriteAllText(
-        customPath,
-        "{\"version\":1,\"recipes\":[{\"id\":\"persisted\",\"customerId\":5,\"customerName\":\"guest\",\"foodTag\":\"tag\",\"foodId\":13,\"recipeId\":-1,\"recipeName\":\"\",\"extraIngredientIds\":[2],\"enabled\":true,\"pinToTop\":true,\"sortOrder\":100}]}",
-        Encoding.UTF8);
-
-    var store = new CustomRecipeStore(customPath, new FavoriteStore(favoritePath, log), log);
-    AssertEqual(0, store.MigrateManualRecipeFavorites(), "Recovery duplicated a custom recipe that was already persisted.");
-    using (var customRecipes = JsonDocument.Parse(File.ReadAllText(customPath, Encoding.UTF8)))
-    {
-        AssertEqual(1, customRecipes.RootElement.GetProperty("recipes").GetArrayLength(), "Recovery changed the already persisted custom recipe count.");
-    }
-    using (var favorites = JsonDocument.Parse(File.ReadAllText(favoritePath, Encoding.UTF8)))
-    {
-        AssertEqual(0, favorites.RootElement.GetProperty("recipes").GetArrayLength(), "Recovery did not remove the legacy source entry from disk.");
-    }
-}
-
-static void VerifyFailedManualFavoriteMigrationPreservesFiles(string root, ManualLogSource log)
-{
-    var favoritePath = Path.Combine(root, "favorites-manual-failed-migration.json");
-    var customPath = Path.Combine(root, "custom-failed-migration.json");
-    const string favorites = "{\"version\":1,\"recipes\":[{\"id\":\"manual\",\"customerId\":6,\"customerName\":\"guest\",\"foodTag\":\"tag\",\"recipeId\":14,\"extraIngredientIds\":[],\"source\":\"manual\"}],\"beverages\":[]}";
-    const string corruptCustom = "{ not valid custom recipes";
-    File.WriteAllText(favoritePath, favorites, Encoding.UTF8);
-    File.WriteAllText(customPath, corruptCustom, Encoding.UTF8);
-
-    var store = new CustomRecipeStore(customPath, new FavoriteStore(favoritePath, log), log);
-    ExpectInvalidData(store.MigrateManualRecipeFavorites);
-    AssertEqual(favorites, File.ReadAllText(favoritePath, Encoding.UTF8), "A failed migration changed the favorites source file.");
-    AssertEqual(corruptCustom, File.ReadAllText(customPath, Encoding.UTF8), "A failed migration changed the custom recipe file.");
-}
-
 static void VerifyCorruptCustomRecipeIsPreserved(string root, ManualLogSource log)
 {
-    var favoritePath = Path.Combine(root, "favorites-for-custom.json");
     var path = Path.Combine(root, "custom-corrupt.json");
     const string corruptJson = "[ not an object";
     File.WriteAllText(path, corruptJson, Encoding.UTF8);
-    var store = new CustomRecipeStore(path, new FavoriteStore(favoritePath, log), log);
+    var store = new CustomRecipeStore(path, log);
 
     ExpectInvalidData(store.GetJson);
     AssertEqual(corruptJson, File.ReadAllText(path, Encoding.UTF8), "A failed custom recipe read changed the source file.");
@@ -338,11 +256,10 @@ static void VerifyFutureSchemasArePreserved(string root, ManualLogSource log)
     ExpectInvalidData(new FavoriteStore(invalidFavoritePath, log).GetJson);
     AssertEqual(invalidFavorites, File.ReadAllText(invalidFavoritePath, Encoding.UTF8), "An invalid favorites schema was rewritten.");
 
-    var emptyFavoritePath = Path.Combine(root, "favorites-for-future-custom.json");
     var customPath = Path.Combine(root, "custom-future.json");
     const string futureCustom = "{\"version\":2,\"recipes\":[],\"futureField\":true}";
     File.WriteAllText(customPath, futureCustom, Encoding.UTF8);
-    var customStore = new CustomRecipeStore(customPath, new FavoriteStore(emptyFavoritePath, log), log);
+    var customStore = new CustomRecipeStore(customPath, log);
     ExpectInvalidData(customStore.GetJson);
     AssertEqual(futureCustom, File.ReadAllText(customPath, Encoding.UTF8), "A future custom recipe schema was rewritten.");
 }

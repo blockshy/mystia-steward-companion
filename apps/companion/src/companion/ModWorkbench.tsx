@@ -45,13 +45,14 @@ import { useRareGuestInvitations } from '@/companion/hooks/useRareGuestInvitatio
 import { useTrackedMissions } from '@/companion/hooks/useTrackedMissions';
 import { useAvailableMissions } from '@/companion/hooks/useAvailableMissions';
 import { ModCustomRecipesPanel } from '@/companion/pages/ModCustomRecipesPanel';
-import { ModHelpPanel } from '@/companion/pages/ModHelpPanel';
+import { ModFavoritesPanel } from '@/companion/pages/ModFavoritesPanel';
 import { ModInventoryPanel } from '@/companion/pages/ModInventoryPanel';
 import { ModLogsPanel } from '@/companion/pages/ModLogsPanel';
-import { ModMissionsPanel } from '@/companion/pages/ModMissionsPanel';
+import { ModMissionListPanel } from '@/companion/pages/ModMissionListPanel';
 import { ModNormalPanel } from '@/companion/pages/ModNormalPanel';
 import { ModOverviewPanel } from '@/companion/pages/ModOverviewPanel';
 import { ModRarePanel } from '@/companion/pages/ModRarePanel';
+import { ModRareGuestInvitationsPanel } from '@/companion/pages/ModRareGuestInvitationsPanel';
 import {
   ModServicePanel,
   ServiceFocusPage,
@@ -195,15 +196,16 @@ import type {
   CookerReservationResult,
   CustomRecipeData,
   CustomRecipeGroupMode,
+  ExtensionTab,
   FavoriteData,
   LocalApiAutomationLease,
-  MissionPanelView,
   ModTab,
   NightBusinessOrder,
   NormalAutoOrderDiagnostic,
   NormalBusinessOrder,
   OrderRecommendation,
   RareAutoOrderDiagnostic,
+  RecommendationTab,
   RecommendationStateSnapshot,
   SettingsTab,
   SpecialBusinessContext,
@@ -226,16 +228,24 @@ import {
 import { isTauriRuntime } from '@/lib/tauri-runtime';
 import { useThemeMode } from '@/lib/theme';
 import type { PlaceName } from '@/lib/catalog-types';
+import { INNER_TAB_TRIGGER_CLASS } from '@/companion/pages/shared-constants';
 
 const AUTO_FIRST_ORDER_TICK_MS = 1500;
 const AUTO_NORMAL_ORDER_TICK_MS = 800;
 const AUTOMATION_LEASE_RENEW_INTERVAL_MS = 3000;
 const MAX_SPECIAL_BUSINESS_REJECTED_RECIPE_KEYS = 64;
 const MAX_AUTOMATION_DECISION_DIAGNOSTIC_SIGNATURES = 64;
-const MOD_TAB_TRIGGER_CLASS = 'min-w-[4.75rem] flex-none min-[720px]:min-w-0 min-[720px]:flex-1';
+const MOD_TAB_TRIGGER_CLASS = 'min-w-[4.75rem] flex-none min-[640px]:w-full min-[640px]:min-w-0';
 type CompanionPlatform = 'desktop' | 'mobile';
 
-const MOD_TABS: ModTab[] = ['overview', 'normal', 'rare', 'custom-recipes', 'service', 'missions', 'inventory', 'help', 'logs', 'settings'];
+const MOD_TABS: ModTab[] = [
+  'overview',
+  'recommendations',
+  'service',
+  'extensions',
+  'logs',
+  'settings',
+];
 const BASIC_MOD_TABS: ModTab[] = MOD_TABS.filter((tab) => tab !== 'logs');
 const EMPTY_WORKER_FAVORITES: FavoriteData = { version: 0, recipes: [], beverages: [] };
 const EMPTY_WORKER_CUSTOM_RECIPES: CustomRecipeData = { version: 0, enabled: false, recipes: [] };
@@ -1529,8 +1539,9 @@ function pauseNormalOrderStateAfterRuntimeFailure(
 export function ModWorkbench() {
   const { mode: themeMode, setMode: setThemeMode } = useThemeMode();
   const [tab, setTab] = useState<ModTab>(() => readStoredTab());
+  const [recommendationTab, setRecommendationTab] = useState<RecommendationTab>('normal');
+  const [extensionTab, setExtensionTab] = useState<ExtensionTab>('missions');
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('window');
-  const [missionPanelView, setMissionPanelView] = useState<MissionPanelView>('tasks');
   const [missionListModuleEnabled, setMissionListModuleEnabled] = useState(
     readStoredMissionListModuleEnabled,
   );
@@ -1576,8 +1587,12 @@ export function ModWorkbench() {
     favorites,
     favoriteError,
     favoriteBusyKey,
+    favoriteRefreshing,
+    refreshFavorites,
     toggleRecipeFavorite,
     toggleBeverageFavorite,
+    removeRecipeFavoriteById,
+    removeBeverageFavoriteById,
   } = useFavorites({ apiToken, connectionPaused, normalizedEndpoint });
   const {
     customRecipes,
@@ -1607,8 +1622,8 @@ export function ModWorkbench() {
     setCustomRecipeGroupMode(mode);
     persistCustomRecipeGroupMode(mode);
   }, []);
-  const missionListVisible = tab === 'missions' && missionPanelView === 'tasks';
-  const rareGuestInvitationVisible = tab === 'missions' && missionPanelView === 'invitations';
+  const missionListVisible = tab === 'extensions' && extensionTab === 'missions';
+  const rareGuestInvitationVisible = tab === 'extensions' && extensionTab === 'rare-invitations';
   const {
     trackedMissions,
     trackedMissionsError,
@@ -5245,30 +5260,19 @@ export function ModWorkbench() {
           scrollable
           className="steward-primary-tabs-list h-9 !w-full max-w-full justify-stretch"
           data-gamepad-scope="tabs"
+          style={{ gridTemplateColumns: `repeat(${visibleTabs.length}, minmax(0, 1fr))` }}
         >
           <TabsTrigger value="overview" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="overview">
             概览
           </TabsTrigger>
-          <TabsTrigger value="normal" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="normal">
-            普客
-          </TabsTrigger>
-          <TabsTrigger value="rare" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="rare">
-            稀客
-          </TabsTrigger>
-          <TabsTrigger value="custom-recipes" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="custom-recipes">
-            自定义推荐料理
+          <TabsTrigger value="recommendations" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="recommendations">
+            推荐料理
           </TabsTrigger>
           <TabsTrigger value="service" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="service">
             经营中
           </TabsTrigger>
-          <TabsTrigger value="missions" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="missions">
-            任务
-          </TabsTrigger>
-          <TabsTrigger value="inventory" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="inventory">
-            修改
-          </TabsTrigger>
-          <TabsTrigger value="help" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="help">
-            帮助
+          <TabsTrigger value="extensions" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="extensions">
+            扩展功能
           </TabsTrigger>
           {companionPreferences.showDebugDetails && (
             <TabsTrigger value="logs" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="logs">
@@ -5296,82 +5300,123 @@ export function ModWorkbench() {
           )}
         </TabsContent>
 
-        <TabsContent value="normal" data-gamepad-scope="content">
-          {tab === 'normal' && (
-            <ModNormalPanel
-              runtime={runtime}
-              runtimeSets={runtimeSets}
-              selectedPlace={selectedPlace}
-              detectedPlace={detectedPlace}
-              data={recommendationData}
-              active
-              onPlaceChange={setManualPlace}
-              onFollowDetectedPlace={() => setManualPlace(null)}
-            />
-          )}
-        </TabsContent>
+        <TabsContent value="recommendations" data-gamepad-scope="content">
+          {tab === 'recommendations' && (
+            <Tabs
+              value={recommendationTab}
+              onValueChange={(value) => setRecommendationTab(value as RecommendationTab)}
+              className="space-y-4"
+            >
+              <TabsList scrollable className="grid h-9 w-full grid-cols-4" data-recommendation-tabs="true">
+                <TabsTrigger value="normal" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
+                  普客
+                </TabsTrigger>
+                <TabsTrigger value="rare" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
+                  稀客
+                </TabsTrigger>
+                <TabsTrigger value="custom-recipes" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
+                  自定义推荐料理
+                </TabsTrigger>
+                <TabsTrigger value="favorites" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
+                  收藏管理
+                </TabsTrigger>
+              </TabsList>
 
-        <TabsContent value="rare" data-gamepad-scope="content">
-          {tab === 'rare' && (
-            <ModRarePanel
-              runtime={runtime}
-              runtimeSets={runtimeSets}
-              selectedPlace={selectedPlace}
-              detectedPlace={detectedPlace}
-              data={recommendationData}
-              rareCustomerId={rareCustomerId}
-              requiredFoodTag={requiredFoodTag}
-              requiredBeverageTag={requiredBeverageTag}
-              favorites={favorites}
-              customRecipes={customRecipes}
-              favoriteBusyKey={favoriteBusyKey}
-              favoriteError={favoriteError}
-              preferences={companionPreferences}
-              active
-              onPlaceChange={(place) => {
-                setManualPlace(place);
-                setRareCustomerId(null);
-                setRequiredFoodTag('');
-                setRequiredBeverageTag('');
-              }}
-              onFollowDetectedPlace={() => {
-                setManualPlace(null);
-                setRareCustomerId(null);
-                setRequiredFoodTag('');
-                setRequiredBeverageTag('');
-              }}
-              onRareCustomerChange={(customerId) => {
-                setRareCustomerId(customerId);
-                setRequiredFoodTag('');
-                setRequiredBeverageTag('');
-              }}
-              onFoodTagChange={setRequiredFoodTag}
-              onBeverageTagChange={setRequiredBeverageTag}
-              onToggleRecipeFavorite={toggleRecipeFavorite}
-              onToggleBeverageFavorite={toggleBeverageFavorite}
-            />
-          )}
-        </TabsContent>
+              <TabsContent value="normal" className="space-y-4">
+                {recommendationTab === 'normal' && (
+                  <ModNormalPanel
+                    runtime={runtime}
+                    runtimeSets={runtimeSets}
+                    selectedPlace={selectedPlace}
+                    detectedPlace={detectedPlace}
+                    data={recommendationData}
+                    active
+                    onPlaceChange={setManualPlace}
+                    onFollowDetectedPlace={() => setManualPlace(null)}
+                  />
+                )}
+              </TabsContent>
 
-        <TabsContent value="custom-recipes" data-gamepad-scope="content">
-          {tab === 'custom-recipes' && (
-            <ModCustomRecipesPanel
-              apiToken={apiToken}
-              customRecipes={customRecipes}
-              customRecipeBusyKey={customRecipeBusyKey}
-              customRecipeError={customRecipeError}
-              form={customRecipeForm}
-              groupMode={customRecipeGroupMode}
-              runtimeSets={runtimeSets}
-              data={recommendationData}
-              onUpsertCustomRecipe={upsertCustomRecipeEntry}
-              onRemoveCustomRecipe={removeCustomRecipeEntry}
-              onSetCustomRecipesEnabled={setCustomRecipesEnabledState}
-              onUpdateCustomRecipeFlags={updateCustomRecipeFlagsState}
-              onMoveCustomRecipe={moveCustomRecipeEntry}
-              onFormChange={setCustomRecipeForm}
-              onGroupModeChange={updateCustomRecipeGroupMode}
-            />
+              <TabsContent value="rare" className="space-y-4">
+                {recommendationTab === 'rare' && (
+                  <ModRarePanel
+                    runtime={runtime}
+                    runtimeSets={runtimeSets}
+                    selectedPlace={selectedPlace}
+                    detectedPlace={detectedPlace}
+                    data={recommendationData}
+                    rareCustomerId={rareCustomerId}
+                    requiredFoodTag={requiredFoodTag}
+                    requiredBeverageTag={requiredBeverageTag}
+                    favorites={favorites}
+                    customRecipes={customRecipes}
+                    favoriteBusyKey={favoriteBusyKey}
+                    favoriteError={favoriteError}
+                    preferences={companionPreferences}
+                    active
+                    onPlaceChange={(place) => {
+                      setManualPlace(place);
+                      setRareCustomerId(null);
+                      setRequiredFoodTag('');
+                      setRequiredBeverageTag('');
+                    }}
+                    onFollowDetectedPlace={() => {
+                      setManualPlace(null);
+                      setRareCustomerId(null);
+                      setRequiredFoodTag('');
+                      setRequiredBeverageTag('');
+                    }}
+                    onRareCustomerChange={(customerId) => {
+                      setRareCustomerId(customerId);
+                      setRequiredFoodTag('');
+                      setRequiredBeverageTag('');
+                    }}
+                    onFoodTagChange={setRequiredFoodTag}
+                    onBeverageTagChange={setRequiredBeverageTag}
+                    onToggleRecipeFavorite={toggleRecipeFavorite}
+                    onToggleBeverageFavorite={toggleBeverageFavorite}
+                  />
+                )}
+              </TabsContent>
+
+              <TabsContent value="custom-recipes" className="space-y-4">
+                {recommendationTab === 'custom-recipes' && (
+                  <ModCustomRecipesPanel
+                    apiToken={apiToken}
+                    customRecipes={customRecipes}
+                    customRecipeBusyKey={customRecipeBusyKey}
+                    customRecipeError={customRecipeError}
+                    form={customRecipeForm}
+                    groupMode={customRecipeGroupMode}
+                    runtimeSets={runtimeSets}
+                    data={recommendationData}
+                    onUpsertCustomRecipe={upsertCustomRecipeEntry}
+                    onRemoveCustomRecipe={removeCustomRecipeEntry}
+                    onSetCustomRecipesEnabled={setCustomRecipesEnabledState}
+                    onUpdateCustomRecipeFlags={updateCustomRecipeFlagsState}
+                    onMoveCustomRecipe={moveCustomRecipeEntry}
+                    onFormChange={setCustomRecipeForm}
+                    onGroupModeChange={updateCustomRecipeGroupMode}
+                  />
+                )}
+              </TabsContent>
+
+              <TabsContent value="favorites" className="space-y-4">
+                {recommendationTab === 'favorites' && (
+                  <ModFavoritesPanel
+                    apiToken={apiToken}
+                    favorites={favorites}
+                    favoriteBusyKey={favoriteBusyKey}
+                    favoriteError={favoriteError}
+                    favoriteRefreshing={favoriteRefreshing}
+                    data={recommendationData}
+                    onRefresh={refreshFavorites}
+                    onRemoveRecipe={removeRecipeFavoriteById}
+                    onRemoveBeverage={removeBeverageFavoriteById}
+                  />
+                )}
+              </TabsContent>
+            </Tabs>
           )}
         </TabsContent>
 
@@ -5446,69 +5491,93 @@ export function ModWorkbench() {
           )}
         </TabsContent>
 
-        <TabsContent value="missions" data-gamepad-scope="content">
-          {tab === 'missions' && (
-            <ModMissionsPanel
-              view={missionPanelView}
-              connected={companionConnected}
-              missionListModuleEnabled={missionListModuleEnabled}
-              availableRuntimeReady={(snapshot?.missionGeneration ?? 0) > 0}
-              availableMissions={availableMissions}
-              availableMissionsError={availableMissionsError}
-              availableMissionsLoading={availableMissionsLoading}
-              trackedMissions={trackedMissions}
-              trackedMissionsError={trackedMissionsError}
-              trackedMissionsLoading={trackedMissionsLoading}
-              runtimeLoaded={snapshot?.runtimeLoaded ?? false}
-              runtimeDaySceneReady={snapshot?.runtimeDaySceneReady ?? false}
-              rareGuestInvitationModuleEnabled={rareGuestInvitationModuleEnabled}
-              rareGuestInvitationModuleToggleDisabled={rareGuestInvitationWriteBusy}
-              invitationContextReady={rareGuestInvitationContextReady}
-              activeDayMapName={snapshot?.activeDayMapName ?? ''}
-              activeDayMapLabel={snapshot?.activeDayMapLabel ?? ''}
-              inviteScope={rareGuestInvitationScope}
-              inviteLevels={rareGuestInvitationLevels}
-              inviteBusyKey={rareGuestInvitationBusyKey}
-              inviteAllResult={rareGuestInvitationResult}
-              inviteAllError={rareGuestInvitationError}
-              showDebugDetails={companionPreferences.showDebugDetails}
-              onViewChange={setMissionPanelView}
-              onMissionListModuleEnabledChange={updateMissionListModuleEnabled}
-              onRefreshMissions={() => {
-                refreshAvailableMissions();
-                refreshTrackedMissions();
-              }}
-              onInviteScopeChange={(scope) => {
-                setRareGuestInvitationScope(scope);
-              }}
-              onInviteLevelsChange={(levels) => {
-                setRareGuestInvitationLevels(normalizeRareGuestInvitationLevels(levels));
-              }}
-              onRareGuestInvitationModuleEnabledChange={updateRareGuestInvitationModuleEnabled}
-              onRefreshRareGuestInvitations={loadRareGuestInvitations}
-              onInviteAllRareGuests={inviteAllRareGuests}
-              onInviteRareGuest={inviteRareGuest}
-            />
-          )}
-        </TabsContent>
+        <TabsContent value="extensions" data-gamepad-scope="content">
+          {tab === 'extensions' && (
+            <Tabs
+              value={extensionTab}
+              onValueChange={(value) => setExtensionTab(value as ExtensionTab)}
+              className="space-y-4"
+            >
+              <TabsList scrollable className="grid h-9 w-full grid-cols-3" data-extension-tabs="true">
+                <TabsTrigger value="missions" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
+                  任务列表
+                </TabsTrigger>
+                <TabsTrigger value="rare-invitations" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
+                  稀客邀请
+                </TabsTrigger>
+                <TabsTrigger value="inventory" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
+                  修改
+                </TabsTrigger>
+              </TabsList>
 
-        <TabsContent value="inventory" data-gamepad-scope="content">
-          {tab === 'inventory' && (
-            <ModInventoryPanel
-              endpoint={normalizedEndpoint}
-              apiToken={apiToken}
-              runtimeSets={runtimeSets}
-              runtimeLoaded={snapshot?.runtimeLoaded ?? false}
-              data={recommendationData}
-              onRefresh={async () => {
-                await refresh(true);
-              }}
-            />
-          )}
-        </TabsContent>
+              <TabsContent value="missions" className="space-y-4">
+                {extensionTab === 'missions' && (
+                  <ModMissionListPanel
+                    connected={companionConnected}
+                    missionListModuleEnabled={missionListModuleEnabled}
+                    availableRuntimeReady={(snapshot?.missionGeneration ?? 0) > 0}
+                    availableMissions={availableMissions}
+                    availableMissionsError={availableMissionsError}
+                    availableMissionsLoading={availableMissionsLoading}
+                    trackedMissions={trackedMissions}
+                    trackedMissionsError={trackedMissionsError}
+                    trackedMissionsLoading={trackedMissionsLoading}
+                    showDebugDetails={companionPreferences.showDebugDetails}
+                    onMissionListModuleEnabledChange={updateMissionListModuleEnabled}
+                    onRefreshMissions={() => {
+                      refreshAvailableMissions();
+                      refreshTrackedMissions();
+                    }}
+                  />
+                )}
+              </TabsContent>
 
-        <TabsContent value="help" data-gamepad-scope="content">
-          {tab === 'help' && <ModHelpPanel />}
+              <TabsContent value="rare-invitations" className="space-y-4">
+                {extensionTab === 'rare-invitations' && (
+                  <ModRareGuestInvitationsPanel
+                    runtimeLoaded={snapshot?.runtimeLoaded ?? false}
+                    runtimeDaySceneReady={snapshot?.runtimeDaySceneReady ?? false}
+                    rareGuestInvitationModuleEnabled={rareGuestInvitationModuleEnabled}
+                    rareGuestInvitationModuleToggleDisabled={rareGuestInvitationWriteBusy}
+                    invitationContextReady={rareGuestInvitationContextReady}
+                    activeDayMapName={snapshot?.activeDayMapName ?? ''}
+                    activeDayMapLabel={snapshot?.activeDayMapLabel ?? ''}
+                    inviteScope={rareGuestInvitationScope}
+                    inviteLevels={rareGuestInvitationLevels}
+                    inviteBusyKey={rareGuestInvitationBusyKey}
+                    inviteAllResult={rareGuestInvitationResult}
+                    inviteAllError={rareGuestInvitationError}
+                    showDebugDetails={companionPreferences.showDebugDetails}
+                    onInviteScopeChange={(scope) => {
+                      setRareGuestInvitationScope(scope);
+                    }}
+                    onInviteLevelsChange={(levels) => {
+                      setRareGuestInvitationLevels(normalizeRareGuestInvitationLevels(levels));
+                    }}
+                    onRareGuestInvitationModuleEnabledChange={updateRareGuestInvitationModuleEnabled}
+                    onRefreshRareGuestInvitations={loadRareGuestInvitations}
+                    onInviteAllRareGuests={inviteAllRareGuests}
+                    onInviteRareGuest={inviteRareGuest}
+                  />
+                )}
+              </TabsContent>
+
+              <TabsContent value="inventory" className="space-y-4">
+                {extensionTab === 'inventory' && (
+                  <ModInventoryPanel
+                    endpoint={normalizedEndpoint}
+                    apiToken={apiToken}
+                    runtimeSets={runtimeSets}
+                    runtimeLoaded={snapshot?.runtimeLoaded ?? false}
+                    data={recommendationData}
+                    onRefresh={async () => {
+                      await refresh(true);
+                    }}
+                  />
+                )}
+              </TabsContent>
+            </Tabs>
+          )}
         </TabsContent>
 
         {companionPreferences.showDebugDetails && (

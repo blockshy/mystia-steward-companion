@@ -174,7 +174,7 @@ const root = new URL('../../', import.meta.url);
 const [apiSource, hookSource, panelSource, workbenchSource, mockSource] = await Promise.all([
   readFile(new URL('apps/companion/src/companion/api.ts', root), 'utf8'),
   readFile(new URL('apps/companion/src/companion/hooks/useAvailableMissions.ts', root), 'utf8'),
-  readFile(new URL('apps/companion/src/companion/pages/ModMissionsPanel.tsx', root), 'utf8'),
+  readFile(new URL('apps/companion/src/companion/pages/ModMissionListPanel.tsx', root), 'utf8'),
   readFile(new URL('apps/companion/src/companion/ModWorkbench.tsx', root), 'utf8'),
   readFile(new URL('scripts/mock-local-api.mjs', root), 'utf8'),
 ]);
@@ -207,15 +207,16 @@ for (const contract of [
   assert.ok(hookSource.includes(contract), `Available mission Hook is missing contract: ${contract}`);
 }
 
-assert.ok(workbenchSource.includes("const missionListVisible = tab === 'missions' && missionPanelView === 'tasks'"));
+assert.ok(workbenchSource.includes("const missionListVisible = tab === 'extensions' && extensionTab === 'missions'"));
+assert.ok(workbenchSource.includes('data-extension-tabs="true"'));
 assert.ok(workbenchSource.includes('active: missionListModuleEnabled && missionListVisible'));
 assert.ok(workbenchSource.includes('refreshAvailableMissions();'));
 assert.ok(workbenchSource.includes('refreshTrackedMissions();'));
-assert.ok(panelSource.includes('<TabsTrigger value="tasks"'));
+assert.doesNotMatch(panelSource, /<TabsTrigger value="tasks"|<TabsTrigger value="invitations"/);
 assert.ok(panelSource.includes('任务列表'));
 assert.ok(panelSource.includes('任务列表模块已停用'));
-assert.ok(panelSource.includes('data-gamepad-focus-key="missions:tasks:refresh"'));
-assert.ok(panelSource.includes('missions:tasks:status:${status.value}'));
+assert.ok(panelSource.includes('data-gamepad-focus-key="missions:refresh"'));
+assert.ok(panelSource.includes('missions:status:${status.value}'));
 assert.ok(panelSource.includes("'available'"));
 assert.ok(panelSource.includes('trackedLabels.has(mission.label)'));
 assert.ok(panelSource.includes("kind: 'available'"));

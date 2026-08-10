@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright';
+import { inspectMinimumNestedTabsLayout } from '../tests/ui-layout/nested-tabs-layout.mjs';
 import { inspectMinimumPrimaryTabsLayout } from '../tests/ui-layout/primary-tabs-layout.mjs';
 
 /**
@@ -24,15 +25,17 @@ const viewports = [
 
 const tabs = [
   { value: 'overview', label: '概览' },
-  { value: 'normal', label: '普客' },
-  { value: 'rare', label: '稀客' },
-  { value: 'custom-recipes', label: '自定义推荐料理' },
+  { value: 'normal', label: '推荐料理 · 普客', topValue: 'recommendations', innerSelector: '[data-recommendation-tabs]', innerLabel: '普客' },
+  { value: 'rare', label: '推荐料理 · 稀客', topValue: 'recommendations', innerSelector: '[data-recommendation-tabs]', innerLabel: '稀客' },
+  { value: 'custom-recipes', label: '推荐料理 · 自定义推荐料理', topValue: 'recommendations', innerSelector: '[data-recommendation-tabs]', innerLabel: '自定义推荐料理' },
+  { value: 'favorites', label: '推荐料理 · 收藏管理', topValue: 'recommendations', innerSelector: '[data-recommendation-tabs]', innerLabel: '收藏管理' },
   { value: 'service', label: '经营中' },
-  { value: 'missions', label: '任务' },
-  { value: 'inventory', label: '修改' },
-  { value: 'help', label: '帮助' },
+  { value: 'missions', label: '扩展功能 · 任务列表', topValue: 'extensions', innerSelector: '[data-extension-tabs]', innerLabel: '任务列表' },
+  { value: 'rare-invitations', label: '扩展功能 · 稀客邀请', topValue: 'extensions', innerSelector: '[data-extension-tabs]', innerLabel: '稀客邀请' },
+  { value: 'inventory', label: '扩展功能 · 修改', topValue: 'extensions', innerSelector: '[data-extension-tabs]', innerLabel: '修改' },
   { value: 'logs', label: '日志' },
-  { value: 'settings', label: '设置' },
+  { value: 'settings', label: '设置 · 窗口', topValue: 'settings', innerSelector: '[data-settings-tabs]', innerLabel: '窗口' },
+  { value: 'help', label: '设置 · 帮助', topValue: 'settings', innerSelector: '[data-settings-tabs]', innerLabel: '帮助' },
 ];
 
 const hoverTargets = [
@@ -131,7 +134,7 @@ function seedLocalStorage({ apiUrl, apiToken, storagePrefix }) {
 }
 
 async function activateTab(page, tab) {
-  const trigger = page.locator(`[data-gamepad-tab-value="${tab.value}"]`).first();
+  const trigger = page.locator(`[data-gamepad-tab-value="${tab.topValue ?? tab.value}"]`).first();
   if (!(await trigger.count())) {
     issues.push({
       viewport: page.viewportSize()?.width || 0,
@@ -144,6 +147,23 @@ async function activateTab(page, tab) {
 
   await trigger.scrollIntoViewIfNeeded();
   await trigger.click();
+  if (tab.innerSelector && tab.innerLabel) {
+    const innerTrigger = page.locator(tab.innerSelector).getByRole('tab', {
+      name: tab.innerLabel,
+      exact: true,
+    });
+    if (!(await innerTrigger.count())) {
+      issues.push({
+        viewport: page.viewportSize()?.width || 0,
+        tab: tab.label,
+        component: 'TabsTrigger',
+        message: `未找到 ${tab.label} 二级页签入口。`,
+      });
+      return;
+    }
+    await innerTrigger.scrollIntoViewIfNeeded();
+    await innerTrigger.click();
+  }
 }
 
 async function auditPage(page, viewport, tab) {
@@ -165,6 +185,7 @@ async function auditPage(page, viewport, tab) {
   await auditMinimumViewportLayout(page, viewport, tab);
   await auditMissionRecipePriorityMarker(page, viewport, tab);
   await auditServiceDiagnosticsPlacement(page, viewport, tab);
+  await auditRareGuestInvitationLayout(page, viewport, tab);
 
   for (const target of hoverTargets) {
     await auditHoverTarget(page, viewport, tab, target);
@@ -211,10 +232,53 @@ async function auditServiceDiagnosticsPlacement(page, viewport, tab) {
   await serviceViewControl.locator('label').filter({ hasText: /^推荐$/ }).click();
 }
 
+async function auditRareGuestInvitationLayout(page, viewport, tab) {
+  if (tab.value !== 'rare-invitations') return;
+
+  await page.locator('[data-rare-invitation-content]').waitFor({ timeout: 5_000 }).catch(() => {});
+  const result = await page.evaluate(() => {
+    const content = document.querySelector('[data-rare-invitation-content]');
+    if (!(content instanceof HTMLElement)) return { ok: false, reason: 'missing-content' };
+    const sections = Array.from(content.querySelectorAll(':scope > [data-rare-invitation-section]'))
+      .filter((element) => element instanceof HTMLElement);
+    const order = sections.map((element) => element.dataset.rareInvitationSection || '');
+    const candidateRows = Array.from(content.querySelectorAll('[data-rare-invitation-candidate]'))
+      .filter((element) => element instanceof HTMLElement);
+    const invitedEntries = content.querySelectorAll('[data-rare-invitation-invited-id]');
+    const search = content.querySelector('[data-rare-invitation-search]');
+    return {
+      ok: order.join('|') === 'invited|filters|available|unavailable'
+        && invitedEntries.length > 0
+        && search instanceof HTMLInputElement
+        && candidateRows.every((row) => row.scrollWidth <= row.clientWidth + 1),
+      order,
+      invitedCount: invitedEntries.length,
+      hasSearch: search instanceof HTMLInputElement,
+      candidateCount: candidateRows.length,
+      overflowingCandidates: candidateRows
+        .filter((row) => row.scrollWidth > row.clientWidth + 1)
+        .map((row) => row.dataset.rareInvitationCandidate || ''),
+    };
+  });
+  if (!result.ok) {
+    issues.push({
+      viewport: viewport.name,
+      tab: tab.label,
+      component: 'RareGuestInvitationLayout',
+      message: `稀客邀请信息层级或候选换行异常：${JSON.stringify(result)}。`,
+    });
+  }
+}
+
 async function auditMinimumViewportLayout(page, viewport, tab) {
   if (viewport.name !== 'minimum') return;
 
   await auditMinimumMulticolumnGrids(page, viewport, tab);
+  await auditMinimumNestedTabsLayout(page, viewport, tab);
+
+  if (tab.value === 'service') {
+    await auditMinimumServiceSummaryGrid(page, viewport, tab);
+  }
 
   if (tab.value === 'overview') {
     await auditMinimumShellGutter(page, viewport, tab);
@@ -227,9 +291,73 @@ async function auditMinimumViewportLayout(page, viewport, tab) {
   }
 }
 
+async function auditMinimumNestedTabsLayout(page, viewport, tab) {
+  const result = await inspectMinimumNestedTabsLayout(page);
+  const expected = tab.value !== 'logs';
+  if (result.ok && (!expected || result.listCount > 0)) return;
+
+  issues.push({
+    viewport: viewport.name,
+    tab: tab.label,
+    component: 'NestedTabsLayout',
+    message: result.listCount === 0
+      ? '最小宽度下未找到应显示的二级或三级页签。'
+      : `最小宽度下二级或三级页签未等分占满整行：${JSON.stringify(result.failures).slice(0, 500)}`,
+  });
+}
+
+async function auditMinimumServiceSummaryGrid(page, viewport, tab) {
+  const result = await page.evaluate(() => {
+    const grid = document.querySelector('[data-service-summary-grid="true"]');
+    if (!(grid instanceof HTMLElement)) return { ok: false, reason: 'missing-grid' };
+
+    const children = Array.from(grid.children).filter((node) => node instanceof HTMLElement);
+    const gridRect = grid.getBoundingClientRect();
+    const rects = children.map((child) => child.getBoundingClientRect());
+    const rowTops = [];
+    for (const rect of rects) {
+      if (!rowTops.some((top) => Math.abs(top - rect.top) <= 2)) rowTops.push(rect.top);
+    }
+    const columnCount = getComputedStyle(grid).gridTemplateColumns
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .length;
+    const contained = rects.every((rect) => (
+      rect.left >= gridRect.left - 1
+      && rect.right <= gridRect.right + 1
+      && rect.top >= gridRect.top - 1
+      && rect.bottom <= gridRect.bottom + 1
+    ));
+
+    return {
+      ok: children.length === 6
+        && columnCount === 3
+        && rowTops.length === 2
+        && contained
+        && grid.scrollWidth <= grid.clientWidth + 1,
+      childCount: children.length,
+      columnCount,
+      rowCount: rowTops.length,
+      contained,
+      clientWidth: grid.clientWidth,
+      scrollWidth: grid.scrollWidth,
+    };
+  });
+
+  if (!result.ok) {
+    issues.push({
+      viewport: viewport.name,
+      tab: tab.label,
+      component: 'ServiceSummaryGrid',
+      message: result.reason || `经营中顶部六项摘要未保持三列两行：${JSON.stringify(result)}`,
+    });
+  }
+}
+
 async function auditMinimumMulticolumnGrids(page, viewport, tab) {
   const result = await page.evaluate(({ tabValue }) => {
-    const expectedTabs = new Set(['overview', 'normal', 'rare', 'custom-recipes', 'service', 'missions', 'inventory', 'settings', 'logs']);
+    const expectedTabs = new Set(['overview', 'normal', 'rare', 'custom-recipes', 'service', 'missions', 'rare-invitations', 'inventory', 'settings', 'logs']);
     const candidates = Array.from(document.querySelectorAll('.steward-minimum-multicolumn-grid'))
       .filter((node) => node instanceof HTMLElement)
       .filter((element) => isVisible(element));

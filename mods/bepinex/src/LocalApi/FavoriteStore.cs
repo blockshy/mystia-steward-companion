@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using BepInEx;
 using BepInEx.Logging;
 
@@ -32,7 +31,6 @@ internal sealed class FavoriteStore
         lock (_lock)
         {
             var data = Load();
-            PrepareClientData(data);
             return JsonSerializer.Serialize(data, JsonOptions);
         }
     }
@@ -67,7 +65,6 @@ internal sealed class FavoriteStore
             else
             {
                 existing.CustomerName = customerName;
-                existing.Source = null;
                 existing.UpdatedAtUtc = now;
             }
 
@@ -133,47 +130,6 @@ internal sealed class FavoriteStore
         }
     }
 
-    // Bounded v1.2.x migration surface for CustomRecipeStore; remove in v1.3.0.
-    public List<ManualRecipeFavoriteSnapshot> ReadManualRecipeFavorites()
-    {
-        lock (_lock)
-        {
-            var data = Load();
-            var manualRecipes = data.Recipes
-                .Where(entry => string.Equals(entry.Source, "manual", StringComparison.OrdinalIgnoreCase))
-                .Select(entry => new ManualRecipeFavoriteSnapshot(
-                    entry.CustomerId,
-                    entry.CustomerName,
-                    entry.FoodTag,
-                    entry.RecipeId,
-                    NormalizeIds(entry.ExtraIngredientIds),
-                    entry.CreatedAtUtc,
-                    entry.UpdatedAtUtc))
-                .ToList();
-
-            return manualRecipes;
-        }
-    }
-
-    // Bounded v1.2.x migration surface for CustomRecipeStore; remove in v1.3.0.
-    public void RemoveManualRecipeFavorites()
-    {
-        lock (_lock)
-        {
-            var data = Load();
-            var removed = data.Recipes.RemoveAll(entry =>
-                string.Equals(entry.Source, "manual", StringComparison.OrdinalIgnoreCase));
-            if (removed == 0) return;
-
-            foreach (var entry in data.Recipes)
-            {
-                entry.Source = null;
-            }
-
-            Save(data);
-        }
-    }
-
     private FavoriteData Load()
     {
         try
@@ -208,24 +164,12 @@ internal sealed class FavoriteStore
 
     private static string BuildMutationJson(bool ok, FavoriteData data, string? error)
     {
-        PrepareClientData(data);
         return JsonSerializer.Serialize(new LocalApiFavoriteMutationDto
         {
             Ok = ok,
             Favorites = data,
             Error = string.IsNullOrWhiteSpace(error) ? null : error,
         }, JsonOptions);
-    }
-
-    private static void PrepareClientData(FavoriteData data)
-    {
-        data.Recipes = data.Recipes
-            .Where(entry => !string.Equals(entry.Source, "manual", StringComparison.OrdinalIgnoreCase))
-            .ToList();
-        foreach (var entry in data.Recipes)
-        {
-            entry.Source = null;
-        }
     }
 
     private static List<int> NormalizeIds(IEnumerable<int>? ids)
@@ -260,8 +204,6 @@ internal sealed class FavoriteRecipeEntry
     public string FoodTag { get; set; } = "";
     public int RecipeId { get; set; }
     public List<int> ExtraIngredientIds { get; set; } = new();
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? Source { get; set; }
     public DateTime CreatedAtUtc { get; set; }
     public DateTime UpdatedAtUtc { get; set; }
 }
@@ -276,12 +218,3 @@ internal sealed class FavoriteBeverageEntry
     public DateTime CreatedAtUtc { get; set; }
     public DateTime UpdatedAtUtc { get; set; }
 }
-
-internal sealed record ManualRecipeFavoriteSnapshot(
-    int CustomerId,
-    string CustomerName,
-    string FoodTag,
-    int RecipeId,
-    IReadOnlyList<int> ExtraIngredientIds,
-    DateTime CreatedAtUtc,
-    DateTime UpdatedAtUtc);

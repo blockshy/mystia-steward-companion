@@ -11,11 +11,18 @@ import type {
 /**
  * 工作台一级 Tab。值会持久化到 localStorage，并用于手柄导航定位。
  */
-export type ModTab = 'overview' | 'normal' | 'rare' | 'custom-recipes' | 'service' | 'missions' | 'inventory' | 'help' | 'logs' | 'settings';
+export type ModTab =
+  | 'overview'
+  | 'recommendations'
+  | 'service'
+  | 'extensions'
+  | 'logs'
+  | 'settings';
 export type OverviewTab = 'status' | 'inventory' | 'actions';
-export type SettingsTab = 'window' | 'connection' | 'recommendation' | 'experimental' | 'updates';
+export type RecommendationTab = 'normal' | 'rare' | 'custom-recipes' | 'favorites';
+export type ExtensionTab = 'missions' | 'rare-invitations' | 'inventory';
+export type SettingsTab = 'window' | 'connection' | 'recommendation' | 'experimental' | 'updates' | 'help';
 export type RareGuestInvitationScope = 'current' | 'all';
-export type MissionPanelView = 'tasks' | 'invitations';
 export type TrackedMissionStatus = 'unverified' | 'tracking' | 'fulfilled';
 export type TrackedMissionRuntimeStatus =
   | 'not-attached'
@@ -862,7 +869,7 @@ export interface RareGuestInvitationResponse {
   scope?: RareGuestInvitationScope;
   currentMapLabel?: string;
   currentMapName?: string;
-  candidates?: RareGuestInvitationEntry[];
+  candidates: RareGuestInvitationEntry[];
   available: RareGuestInvitationEntry[];
   existingInvited: RareGuestInvitationEntry[];
   invited: RareGuestInvitationEntry[];

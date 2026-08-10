@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright';
+import { inspectMinimumNestedTabsLayout } from '../ui-layout/nested-tabs-layout.mjs';
 import { inspectMinimumPrimaryTabsLayout } from '../ui-layout/primary-tabs-layout.mjs';
 
 const appUrl = process.env.MYSTIA_APP_URL || 'http://127.0.0.1:4173';
@@ -9,18 +10,29 @@ const apiUrl = process.env.MYSTIA_API_URL || 'http://127.0.0.1:32145';
 const apiToken = process.env.MYSTIA_API_TOKEN || 'mock-token';
 const outputDir = process.env.FONT_SCALE_AUDIT_OUTPUT_DIR || '/tmp/mystia-companion-font-scale-audit';
 const storageKey = 'mystia-steward-companion-font-scale-percent';
+const chromiumExecutablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH?.trim();
 
-const tabs = [
+const primaryTabs = [
   'overview',
-  'normal',
-  'rare',
-  'custom-recipes',
+  'recommendations',
   'service',
-  'missions',
-  'inventory',
-  'help',
+  'extensions',
   'logs',
   'settings',
+];
+const pages = [
+  { value: 'overview', topValue: 'overview' },
+  { value: 'normal', topValue: 'recommendations', innerSelector: '[data-recommendation-tabs]', innerLabel: '普客' },
+  { value: 'rare', topValue: 'recommendations', innerSelector: '[data-recommendation-tabs]', innerLabel: '稀客' },
+  { value: 'custom-recipes', topValue: 'recommendations', innerSelector: '[data-recommendation-tabs]', innerLabel: '自定义推荐料理' },
+  { value: 'favorites', topValue: 'recommendations', innerSelector: '[data-recommendation-tabs]', innerLabel: '收藏管理' },
+  { value: 'service', topValue: 'service' },
+  { value: 'missions', topValue: 'extensions', innerSelector: '[data-extension-tabs]', innerLabel: '任务列表' },
+  { value: 'rare-invitations', topValue: 'extensions', innerSelector: '[data-extension-tabs]', innerLabel: '稀客邀请' },
+  { value: 'inventory', topValue: 'extensions', innerSelector: '[data-extension-tabs]', innerLabel: '修改' },
+  { value: 'logs', topValue: 'logs' },
+  { value: 'settings', topValue: 'settings', innerSelector: '[data-settings-tabs]', innerLabel: '窗口' },
+  { value: 'help', topValue: 'settings', innerSelector: '[data-settings-tabs]', innerLabel: '帮助' },
 ];
 
 const profiles = [
@@ -33,7 +45,10 @@ const profiles = [
 
 await rm(outputDir, { recursive: true, force: true });
 await mkdir(outputDir, { recursive: true });
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({
+  headless: true,
+  ...(chromiumExecutablePath ? { executablePath: chromiumExecutablePath } : {}),
+});
 
 try {
   for (const profile of profiles) {
@@ -54,12 +69,18 @@ try {
       await assertMinimumHeaderToolbarLayout(page, profile);
     }
 
-    const targetTabs = profile.allTabs ? tabs : ['overview', 'settings'];
-    for (const tab of targetTabs) {
-      await activateTab(page, tab);
+    const targetPages = profile.allTabs
+      ? pages
+      : pages.filter((candidate) => candidate.value === 'overview' || candidate.value === 'settings');
+    for (const pageView of targetPages) {
+      const tab = pageView.value;
+      await activatePage(page, pageView);
       await page.waitForTimeout(tab === 'logs' ? 500 : 200);
       await assertNoDocumentOverflow(page, profile, tab);
       await assertControlLayout(page, profile, tab);
+      if (profile.width === 640 && tab !== 'logs') {
+        await assertMinimumNestedTabsLayout(page, profile, tab);
+      }
       if (tab === 'rare' || tab === 'service') {
         await assertEffectiveCustomRecipeHeaders(page, profile, tab);
       }
@@ -105,10 +126,34 @@ function seedLocalStorage({ endpoint, token, fontScale, fontScaleStorageKey, sho
   }
 }
 
-async function activateTab(page, tab) {
-  const trigger = page.locator(`[data-gamepad-tab-value="${tab}"]`).first();
+async function activatePage(page, pageView) {
+  const trigger = page.locator(`[data-gamepad-tab-value="${pageView.topValue}"]`).first();
   await trigger.scrollIntoViewIfNeeded();
   await trigger.click();
+  if (pageView.innerSelector && pageView.innerLabel) {
+    const innerTrigger = page.locator(pageView.innerSelector).getByRole('tab', {
+      name: pageView.innerLabel,
+      exact: true,
+    });
+    await innerTrigger.scrollIntoViewIfNeeded();
+    await innerTrigger.click();
+  }
+}
+
+async function activatePageByValue(page, value) {
+  const pageView = pages.find((candidate) => candidate.value === value);
+  assert.ok(pageView, `Unknown audit page: ${value}`);
+  await activatePage(page, pageView);
+}
+
+async function assertMinimumNestedTabsLayout(page, profile, tab) {
+  const result = await inspectMinimumNestedTabsLayout(page);
+  assert.ok(result.listCount > 0, `${profile.name}/${tab}: nested tab list missing`);
+  assert.equal(
+    result.ok,
+    true,
+    `${profile.name}/${tab}: nested tabs do not fill the row ${JSON.stringify(result.failures)}`,
+  );
 }
 
 async function assertFontScale(page, profile) {
@@ -142,8 +187,8 @@ async function assertNoDocumentOverflow(page, profile, tab) {
 
 async function assertMinimumPrimaryTabsLayout(page, profile) {
   const expectedValues = profile.showDebugDetails === false
-    ? tabs.filter((value) => value !== 'logs')
-    : tabs;
+    ? primaryTabs.filter((value) => value !== 'logs')
+    : primaryTabs;
   const result = await inspectMinimumPrimaryTabsLayout(page, expectedValues);
   assert.equal(result.ok, true, `${profile.name}: primary tabs layout ${JSON.stringify(result)}`);
   assert.deepEqual(result.missingValues, [], `${profile.name}: primary tabs are missing`);
@@ -152,8 +197,8 @@ async function assertMinimumPrimaryTabsLayout(page, profile) {
   assert.equal(result.triggerCount, expectedValues.length, `${profile.name}: primary tab count is incorrect`);
   assert.deepEqual(result.failures, [], `${profile.name}: primary tab clipping ${JSON.stringify(result.failures)}`);
   assert.equal(result.display, 'grid', `${profile.name}: primary tabs must use the minimum-width grid`);
-  assert.equal(result.columnCount, 5, `${profile.name}: primary tab column count is incorrect`);
-  assert.equal(result.rowCount, 2, `${profile.name}: primary tabs must use exactly two rows`);
+  assert.equal(result.columnCount, expectedValues.length, `${profile.name}: primary tab column count is incorrect`);
+  assert.equal(result.rowCount, 1, `${profile.name}: grouped primary tabs must use one row`);
   assert.equal(result.noInternalOverflow, true, `${profile.name}: primary tabs overflow internally`);
 }
 
@@ -408,7 +453,7 @@ async function auditServiceFocusMode(page, profile) {
 }
 
 async function verifySliderPersistenceAndReset(page) {
-  await activateTab(page, 'settings');
+  await activatePageByValue(page, 'settings');
   const slider = page.getByRole('slider', { name: '字体大小', exact: true });
   assert.equal(await slider.count(), 1, 'font size must expose exactly one slider control');
   assert.equal(await slider.getAttribute('aria-valuetext'), '100%');
@@ -438,7 +483,7 @@ async function verifySliderPersistenceAndReset(page) {
       .getPropertyValue('--companion-font-scale').trim()),
     '1.3',
   );
-  await activateTab(page, 'settings');
+  await activatePageByValue(page, 'settings');
   await page.getByRole('button', { name: '恢复默认字体大小' }).click();
   await page.waitForFunction(() => getComputedStyle(document.documentElement)
     .getPropertyValue('--companion-font-scale').trim() === '1');

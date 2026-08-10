@@ -8,6 +8,7 @@ const apiUrl = process.env.MYSTIA_API_URL || 'http://127.0.0.1:32145';
 const apiToken = process.env.MYSTIA_API_TOKEN || 'mock-token';
 const outputDir = process.env.SETTINGS_HELP_AUDIT_OUTPUT_DIR
   || '/tmp/mystia-companion-settings-help-audit';
+const chromiumExecutablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH?.trim();
 
 const selectors = {
   field: '[data-setting-field]',
@@ -97,7 +98,7 @@ const expectedHelpIdsBySection = new Map([
   ]],
 ]);
 
-const expectedSettingsTabs = ['窗口', '连接', '推荐', '实验性功能', '更新'];
+const expectedSettingsTabs = ['窗口', '连接', '推荐', '实验性功能', '更新', '帮助'];
 
 const expectedExperimentalPanelByHelpId = new Map([
   ['automation-enabled', '自动化总控'],
@@ -136,7 +137,10 @@ const expectedExperimentalPanelByHelpId = new Map([
 await rm(outputDir, { recursive: true, force: true });
 await mkdir(outputDir, { recursive: true });
 
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({
+  headless: true,
+  ...(chromiumExecutablePath ? { executablePath: chromiumExecutablePath } : {}),
+});
 
 try {
   const desktopContext = await browser.newContext({ viewport: { width: 1280, height: 900 } });
@@ -239,7 +243,7 @@ async function auditDesktopInteractions(page) {
   await auditControlFocus(page, '同基础料理显示', 'input', 'number input');
 
   await activateSettingsSection(page, '实验性功能');
-  const disabledField = findField(page, '稀客加料料理选项（实验性）');
+  const disabledField = findField(page, '稀客加料料理选项');
   const disabledControl = disabledField.locator('input[type="checkbox"]').first();
   assert.equal(await disabledControl.isDisabled(), true, '测试夹具应使加料料理选项开关处于禁用状态');
   const disabledTrigger = disabledField.locator(selectors.trigger);
@@ -530,10 +534,26 @@ async function assertSettingsTabStructure(page) {
     0,
     '旧“自动化”设置分栏不应保留',
   );
+  assert.equal(
+    await page.locator('[data-gamepad-tab-value="help"]').count(),
+    0,
+    '帮助不应继续保留一级页签入口',
+  );
+  await activateSettingsSection(page, '帮助');
+  await page.getByRole('heading', { name: '帮助', exact: true }).waitFor();
+  await activateSettingsSection(page, '窗口');
 }
 
 async function assertExperimentalPanelGroups(page) {
   await activateSettingsSection(page, '实验性功能');
+  const riskNotice = page.locator('[data-experimental-risk-notice="true"]');
+  assert.equal(await riskNotice.count(), 1, '实验性功能页面必须显示唯一风险提示条');
+  assert.equal(await riskNotice.isVisible(), true, '实验性功能风险提示条必须可见');
+  assert.match(
+    await riskNotice.innerText(),
+    /自动化和加料料理选项会改变游戏运行时状态，存在一定风险。/,
+    '实验性功能风险提示内容不完整',
+  );
   const groups = await page.locator(`${selectors.field}:visible`).evaluateAll((fields) => fields.map((field) => ({
     helpId: field.getAttribute('data-setting-help-id') || '',
     panel: field.closest('.steward-list-panel')?.querySelector('h2')?.textContent?.trim() || '',

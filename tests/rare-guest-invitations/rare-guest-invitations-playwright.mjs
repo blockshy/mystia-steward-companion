@@ -79,6 +79,7 @@ try {
         scheduledSlotCount: 0,
         invitedCount: 0,
         skippedCount: 0,
+        candidates: [],
         available: [],
         existingInvited: [],
         invited: [],
@@ -175,7 +176,7 @@ try {
     .waitFor({ timeout: 10_000 });
   await page.waitForTimeout(500);
   assert.equal(listRequests.length, 0, 'The default-off invitation module issued a candidate read.');
-  const moduleToggle = page.locator('[data-gamepad-focus-key="missions:invitations:module-toggle"]');
+  const moduleToggle = page.locator('[data-gamepad-focus-key="rare-invitations:module-toggle"]');
   assert.equal(await moduleToggle.isChecked(), false, 'The invitation module did not default to disabled.');
   await moduleToggle.click();
   assert.equal(
@@ -194,11 +195,44 @@ try {
   await page.waitForTimeout(800);
   assert.equal(listRequests.length, 2, 'A successful retry left a hot invitation-read loop active.');
 
+  const invitationSectionOrder = await page.evaluate(() => {
+    const content = document.querySelector('[data-rare-invitation-content]');
+    if (!(content instanceof HTMLElement)) return [];
+    return Array.from(content.querySelectorAll(':scope > [data-rare-invitation-section]'))
+      .map((element) => element.getAttribute('data-rare-invitation-section'));
+  });
+  assert.deepEqual(
+    invitationSectionOrder,
+    ['invited', 'filters', 'available', 'unavailable'],
+    'Invitation sections are not ordered by current state before controls and candidates.',
+  );
+  const invitedList = page.locator('[data-rare-invitation-invited-list]');
+  assert.equal(
+    await invitedList.locator('[data-rare-invitation-invited-id]').count(),
+    3,
+    'The complete current invited list was not rendered.',
+  );
+  const invitationSearch = page.locator('[data-rare-invitation-search]');
+  await invitationSearch.fill('华扇');
+  assert.equal(
+    await invitedList.locator('[data-rare-invitation-invited-id]').count(),
+    3,
+    'Candidate search incorrectly filtered the current invited list.',
+  );
+  await page.getByText('用于验证完整展示且不会被搜索隐藏的超长稀客名称', { exact: true }).waitFor();
+  await page.getByRole('button', { name: '邀请全部匹配项 (2)', exact: true }).waitFor();
+  assert.equal(
+    await page.locator('[data-rare-invitation-section="unavailable"] [data-rare-invitation-candidate="1005"]').count(),
+    1,
+    'Unavailable candidates were not separated into their own section.',
+  );
+  await invitationSearch.fill('');
+
   await page.getByText('全部场景', { exact: true }).click();
   await waitForListRequestCount(3);
   assertRequest(2, 'all');
   await page.getByText('慧音', { exact: true }).waitFor();
-  const mappedGuestRow = page.locator('[data-gamepad-row-key="mission-invitation:10:DLC1_Marisa"]');
+  const mappedGuestRow = page.locator('[data-gamepad-row-key="rare-invitation:10:DLC1_Marisa"]');
   await mappedGuestRow.getByRole('button', { name: '邀请', exact: true }).click();
   await waitFor(() => singleInviteRequests.length === 1, 10_000);
   assert.equal(await moduleToggle.isDisabled(), true, 'The module toggle remained enabled during an in-flight invitation write.');
@@ -213,19 +247,16 @@ try {
   await page.getByText('任务列表模块已停用。手动开启总控后才会读取任务数据。', { exact: true }).waitFor();
   await page.getByRole('tab', { name: '稀客邀请', exact: true }).click();
   assert.equal(
-    await page.locator('[data-gamepad-focus-key="missions:invitations:module-toggle"]').isDisabled(),
+    await page.locator('[data-gamepad-focus-key="rare-invitations:module-toggle"]').isDisabled(),
     true,
-    'Switching mission subpages retired the in-flight invitation operation.',
+    'Switching extension subpages retired the in-flight invitation operation.',
   );
   releaseSingleInviteResponse?.();
   releaseSingleInviteResponse = null;
   await page.getByText('mock mapped invitation write checked', { exact: true }).waitFor();
   assert.equal(await moduleToggle.isDisabled(), false, 'The module toggle did not recover after the write completed.');
 
-  await page
-    .getByLabel('稀客邀请', { exact: true })
-    .getByRole('button', { name: '刷新', exact: true })
-    .click();
+  await page.locator('[data-gamepad-focus-key="rare-invitations:refresh"]').click();
   await waitForListRequestCount(4);
   assertRequest(3, 'all');
 
@@ -239,17 +270,25 @@ try {
     () => Math.max(0, document.documentElement.scrollWidth - document.documentElement.clientWidth),
   );
   assert.equal(overflow, 0, `640px invitation page has ${overflow}px horizontal overflow.`);
+  await page.setViewportSize({ width: 390, height: 760 });
+  const narrowOverflow = await page.evaluate(
+    () => Math.max(0, document.documentElement.scrollWidth - document.documentElement.clientWidth),
+  );
+  assert.equal(narrowOverflow, 0, `390px invitation page has ${narrowOverflow}px horizontal overflow.`);
+  const narrowCandidateContainment = await page.locator('[data-rare-invitation-candidate]').evaluateAll(
+    (elements) => elements.every((element) => element.scrollWidth <= element.clientWidth + 1),
+  );
+  assert.equal(narrowCandidateContainment, true, 'A candidate row clips long content at 390px.');
+  await page.screenshot({ path: `${OUTPUT_DIR}/narrow-auto-refresh.png`, fullPage: true });
+  await page.setViewportSize({ width: 640, height: 760 });
   assert.ok(listRequests.every((request) => request.method === 'GET'));
 
   returnPermanentInvitationFailure = true;
-  await page
-    .getByLabel('稀客邀请', { exact: true })
-    .getByRole('button', { name: '刷新', exact: true })
-    .click();
+  await page.locator('[data-gamepad-focus-key="rare-invitations:refresh"]').click();
   await waitForListRequestCount(6);
   await page.getByText('mock invitation list contract failed', { exact: true }).waitFor();
   assert.equal(
-    await page.getByText('暂无稀客候选', { exact: true }).count(),
+    await page.locator('[data-rare-invitation-content]').count(),
     0,
     'A failed invitation response was rendered as a successful empty list.',
   );
@@ -257,15 +296,12 @@ try {
   assert.equal(listRequests.length, 6, 'A deterministic invitation failure entered the transient retry loop.');
 
   returnPermanentInvitationFailure = false;
-  await page
-    .getByLabel('稀客邀请', { exact: true })
-    .getByRole('button', { name: '刷新', exact: true })
-    .click();
+  await page.locator('[data-gamepad-focus-key="rare-invitations:refresh"]').click();
   await waitForListRequestCount(7);
   await page.getByText('mock invitation candidates loaded', { exact: true }).waitFor();
 
   returnInvitationWriteFailure = true;
-  await page.getByRole('button', { name: '邀请全部', exact: true }).click();
+  await page.getByRole('button', { name: /邀请全部匹配项/ }).click();
   await page.getByText('mock invitation write failed', { exact: true }).waitFor();
   await page.waitForTimeout(800);
   assert.equal(
@@ -290,19 +326,20 @@ try {
   await waitForListRequestCount(readsAfterDisable + 1);
   const readsBeforeReload = listRequests.length;
   await page.reload({ waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('[data-gamepad-tab-value="missions"]', { timeout: 10_000 });
+  await page.waitForSelector('[data-gamepad-tab-value="extensions"]', { timeout: 10_000 });
   await activateInvitationPanel();
-  await page.waitForSelector('[data-gamepad-focus-key="missions:invitations:module-toggle"]', { timeout: 10_000 });
+  await page.waitForSelector('[data-gamepad-focus-key="rare-invitations:module-toggle"]', { timeout: 10_000 });
   assert.equal(
-    await page.locator('[data-gamepad-focus-key="missions:invitations:module-toggle"]').isChecked(),
+    await page.locator('[data-gamepad-focus-key="rare-invitations:module-toggle"]').isChecked(),
     true,
     'The manually enabled invitation module did not persist across reload.',
   );
   await waitFor(() => listRequests.length >= readsBeforeReload + 1, 10_000);
 
   console.log(
-    'PASS: invitation page is independently default-off and persistent, auto-refreshes on identity changes, '
-    + 'preserves in-flight writes across subpage switches, surfaces failed responses, and keeps manual GET refresh.',
+    'PASS: invitation extension subpage is independently default-off and persistent, keeps invited/filter/candidate '
+    + 'sections stable at 640px and 390px, auto-refreshes on identity changes, preserves writes across page '
+    + 'switches, surfaces failed responses, and keeps manual GET refresh.',
   );
 } finally {
   releaseSingleInviteResponse?.();
@@ -321,10 +358,8 @@ async function activateTab(value) {
 }
 
 async function activateInvitationPanel() {
-  await activateTab('missions');
-  const trigger = page.getByRole('tab', { name: '稀客邀请', exact: true }).first();
-  await trigger.scrollIntoViewIfNeeded();
-  await trigger.click();
+  await activateTab('extensions');
+  await page.locator('[data-extension-tabs]').getByRole('tab', { name: '稀客邀请', exact: true }).click();
 }
 
 async function waitForListRequestCount(expected) {

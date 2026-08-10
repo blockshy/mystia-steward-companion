@@ -189,10 +189,10 @@ async function auditTabShortPress(page) {
   await activateTopTab(page, 'overview');
 
   await pressButton(page, BUTTON_RB, { holdMs: 70 });
-  await expectTopTab(page, 'normal', 'RB 短按应从“概览”切到“普客”');
+  await expectTopTab(page, 'recommendations', 'RB 短按应从“概览”切到“推荐料理”');
 
   await pressButton(page, BUTTON_LB, { holdMs: 70 });
-  await expectTopTab(page, 'overview', 'LB 短按应从“普客”切回“概览”');
+  await expectTopTab(page, 'overview', 'LB 短按应从“推荐料理”切回“概览”');
 }
 
 async function auditReconnectNeutralGate(page) {
@@ -208,7 +208,7 @@ async function auditReconnectNeutralGate(page) {
   await setButton(page, BUTTON_RB, false);
   await waitForNeutralGate(page);
   await pressButton(page, BUTTON_RB);
-  await expectTopTab(page, 'normal', '重连后释放至中立再按 RB 应切换到“普客”');
+  await expectTopTab(page, 'recommendations', '重连后释放至中立再按 RB 应切换到“推荐料理”');
 }
 
 async function auditHeldInputAcrossFocusRecovery(page) {
@@ -216,18 +216,18 @@ async function auditHeldInputAcrossFocusRecovery(page) {
 
   await setButton(page, BUTTON_RB, true);
   await page.waitForTimeout(90);
-  await expectTopTab(page, 'normal', 'RB 按下后应先切到“普客”');
+  await expectTopTab(page, 'recommendations', 'RB 按下后应先切到“推荐料理”');
 
   await page.evaluate(() => window.__mockGamepad.focused(false));
   await page.waitForTimeout(80);
   await page.evaluate(() => window.__mockGamepad.focused(true));
   await page.waitForTimeout(180);
-  await expectTopTab(page, 'normal', '恢复焦点时仍按住 RB 不应重复切换页签');
+  await expectTopTab(page, 'recommendations', '恢复焦点时仍按住 RB 不应重复切换页签');
 
   await setButton(page, BUTTON_RB, false);
   await waitForNeutralGate(page);
   await pressButton(page, BUTTON_RB);
-  await expectTopTab(page, 'rare', '焦点恢复后释放至中立再按 RB 应继续切到“稀客”');
+  await expectTopTab(page, 'service', '焦点恢复后释放至中立再按 RB 应继续切到“经营中”');
 }
 
 async function auditAnalogHysteresis(page) {
@@ -236,21 +236,21 @@ async function auditAnalogHysteresis(page) {
 
   await setAxes(page, [0.66, 0, 0, 0]);
   await page.waitForTimeout(90);
-  await expectFocusedTopTab(page, 'normal', '左摇杆超过按下阈值后应向右聚焦“普客”');
+  await expectFocusedTopTab(page, 'recommendations', '左摇杆超过按下阈值后应向右聚焦“推荐料理”');
 
   await setAxes(page, [0.5, 0, 0, 0]);
   await page.waitForTimeout(100);
-  await expectFocusedTopTab(page, 'normal', '左摇杆回落但未低于释放阈值时不应重复移动');
+  await expectFocusedTopTab(page, 'recommendations', '左摇杆回落但未低于释放阈值时不应重复移动');
 
   await setAxes(page, [0.39, 0, 0, 0]);
   await page.waitForTimeout(70);
   await setAxes(page, [0.55, 0, 0, 0]);
   await page.waitForTimeout(100);
-  await expectFocusedTopTab(page, 'normal', '摇杆释放后未再次超过按下阈值时不应移动');
+  await expectFocusedTopTab(page, 'recommendations', '摇杆释放后未再次超过按下阈值时不应移动');
 
   await setAxes(page, [0.66, 0, 0, 0]);
   await page.waitForTimeout(90);
-  await expectFocusedTopTab(page, 'rare', '摇杆再次超过按下阈值后应向右聚焦“稀客”');
+  await expectFocusedTopTab(page, 'service', '摇杆再次超过按下阈值后应向右聚焦“经营中”');
   await releaseAxes(page);
 }
 
@@ -260,7 +260,7 @@ async function auditAnalogDominantAxis(page) {
 
   await setAxes(page, [0.9, 0.74, 0, 0]);
   await page.waitForTimeout(90);
-  await expectFocusedTopTab(page, 'normal', '斜向输入应只采用幅度更大的横轴并聚焦“普客”');
+  await expectFocusedTopTab(page, 'recommendations', '斜向输入应只采用幅度更大的横轴并聚焦“推荐料理”');
   await releaseAxes(page);
 
   await page.locator('[data-gamepad-tab-value="overview"]').first().focus();
@@ -278,7 +278,7 @@ async function auditAnalogDominantAxis(page) {
         : false,
     };
   });
-  if (focusState.focusedTopTab === 'normal' || !focusState.insideVisiblePanel) {
+  if (focusState.focusedTopTab === 'recommendations' || !focusState.insideVisiblePanel) {
     issues.push('纵轴占优的斜向输入应进入当前页签内容，且不能同时向右移动页签。');
   }
   await releaseAxes(page);
@@ -290,9 +290,9 @@ async function auditConfirmFallback(page) {
 
   await pressButton(page, BUTTON_DPAD_RIGHT, { holdMs: 70 });
   const focusedTab = await readFocusedTopTab(page);
-  if (focusedTab !== 'normal') {
+  if (focusedTab !== 'recommendations') {
     const focused = await readFocusedSummary(page);
-    issues.push(`方向键右移后焦点应落到 normal Tab，实际为 ${focused?.text || focusedTab || '空'}。`);
+    issues.push(`方向键右移后焦点应落到 recommendations Tab，实际为 ${focused?.text || focusedTab || '空'}。`);
     return;
   }
 
@@ -300,11 +300,11 @@ async function auditConfirmFallback(page) {
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
   });
   await pressButton(page, BUTTON_A, { holdMs: 70 });
-  await expectTopTab(page, 'normal', '焦点丢失后按 A 应激活上一次手柄高亮的“普客”Tab');
+  await expectTopTab(page, 'recommendations', '焦点丢失后按 A 应激活上一次手柄高亮的“推荐料理”Tab');
 }
 
 async function auditSelectConfirm(page) {
-  await activateTopTab(page, 'normal');
+  await activateRecommendationTab(page, '普客');
   await page.waitForTimeout(300);
 
   const select = page.locator('[data-slot="select"] input:not(:disabled), input.steward-select-input:not(:disabled)').first();
@@ -394,7 +394,7 @@ async function auditMultiSelectBack(page) {
 }
 
 async function auditFavoriteAction(page) {
-  await activateTopTab(page, 'rare');
+  await activateRecommendationTab(page, '稀客');
   const row = page.locator('[data-gamepad-favorite-scope="true"]:visible').first();
   const favorite = row.locator('[data-gamepad-favorite="true"]:visible').first();
   if (!(await row.count()) || !(await favorite.count())) {
@@ -436,7 +436,7 @@ async function auditFavoriteAction(page) {
 }
 
 async function auditEffectiveCustomRecipesDisclosure(page) {
-  await activateTopTab(page, 'rare');
+  await activateRecommendationTab(page, '稀客');
   const trigger = page.locator('[data-effective-custom-recipes-trigger="true"]:visible').first();
   if (!(await trigger.count())) {
     issues.push('稀客推荐中未找到生效自定义配方按钮，无法验证移动后的手柄路径。');
@@ -596,7 +596,8 @@ async function auditLayeredBackNavigation(page) {
 }
 
 async function auditExplicitScrollRegion(page) {
-  await activateTopTab(page, 'help');
+  await activateTopTab(page, 'settings');
+  await activateInnerTab(page, '帮助');
   const region = page.locator('[data-gamepad-scroll-key="help:navigation"]:visible').first();
   if (!(await region.count())) {
     issues.push('帮助页未找到显式手柄滚动区。');
@@ -843,23 +844,44 @@ async function auditInnerTabs(page) {
     ].join(''));
   }
 
-  await activateTopTab(page, 'missions');
+  await activateRecommendationTab(page, '普客');
+  const recommendationTabs = page.locator('[data-recommendation-tabs]');
+  await recommendationTabs.getByRole('tab', { name: '普客', exact: true }).focus();
+  await pressButton(page, BUTTON_DPAD_RIGHT, { holdMs: 70 });
+  await expectFocusedInnerTab(page, '稀客', '“推荐料理”中的“普客”按右键应聚焦“稀客”二级 Tab');
+  await pressButton(page, BUTTON_DPAD_RIGHT, { holdMs: 70 });
+  await expectFocusedInnerTab(page, '自定义推荐料理', '“推荐料理”中的“稀客”按右键应聚焦“自定义推荐料理”二级 Tab');
+  await pressButton(page, BUTTON_DPAD_RIGHT, { holdMs: 70 });
+  await expectFocusedInnerTab(page, '收藏管理', '“推荐料理”中的“自定义推荐料理”按右键应聚焦“收藏管理”二级 Tab');
+
+  await activateExtensionTab(page, '任务列表');
   await page.getByText('阿求的料理委托', { exact: true }).waitFor({ timeout: 3_000 }).catch(() => {
     issues.push('任务页未显示 mock 已追踪任务，无法完整验证任务页手柄路径。');
   });
-  await focusInnerTab(page, '任务列表');
+  const extensionTabs = page.locator('[data-extension-tabs]');
+  await extensionTabs.getByRole('tab', { name: '任务列表', exact: true }).focus();
   await pressButton(page, BUTTON_DPAD_RIGHT, { holdMs: 70 });
-  await expectFocusedInnerTab(page, '稀客邀请', '任务页“任务列表”按右键应聚焦“稀客邀请”二级 Tab');
+  await expectFocusedInnerTab(page, '稀客邀请', '“任务列表”按右键应聚焦“稀客邀请”二级 Tab');
   await pressButton(page, BUTTON_A, { holdMs: 70 });
-  await page.getByText('当前场景', { exact: true }).waitFor({ timeout: 3_000 }).catch(() => {
-    issues.push('任务页“稀客邀请”二级 Tab 按 A 后未显示邀请范围。');
+  await page.locator('[aria-label="稀客邀请范围"] input[value="current"]')
+    .waitFor({ state: 'attached', timeout: 3_000 }).catch(async () => {
+    const activeTopTab = await page.locator('[data-gamepad-tab="true"][data-active]').first()
+      .getAttribute('data-gamepad-tab-value')
+      .catch(() => '');
+    const contentText = await page.locator('[data-gamepad-scope="content"]:visible').first()
+      .innerText()
+      .catch(() => '');
+    issues.push(
+      `“扩展功能”中的“稀客邀请”二级 Tab 按 A 后未显示邀请范围，当前页签为 ${activeTopTab || '未知'}，`
+      + `内容为 ${contentText.replace(/\s+/g, ' ').slice(0, 160) || '空'}。`,
+    );
   });
 
-  await focusInnerTab(page, '稀客邀请');
+  await extensionTabs.getByRole('tab', { name: '稀客邀请', exact: true }).focus();
   await pressButton(page, BUTTON_DPAD_LEFT, { holdMs: 70 });
-  await expectFocusedInnerTab(page, '任务列表', '任务页“稀客邀请”按左键应回到“任务列表”二级 Tab');
+  await expectFocusedInnerTab(page, '任务列表', '“稀客邀请”按左键应回到“任务列表”二级 Tab');
   await pressButton(page, BUTTON_A, { holdMs: 70 });
-  const missionRefresh = page.locator('[data-gamepad-focus-key="missions:tasks:refresh"]:visible').first();
+  const missionRefresh = page.locator('[data-gamepad-focus-key="missions:refresh"]:visible').first();
   if (!(await missionRefresh.count())) {
     issues.push('任务页未找到可供手柄聚焦的任务刷新按钮。');
   } else {
@@ -870,7 +892,7 @@ async function auditInnerTabs(page) {
 }
 
 async function auditPlaceToolbarAndRareSelectors(page) {
-  await activateTopTab(page, 'rare');
+  await activateRecommendationTab(page, '稀客');
   await focusVisibleLocator(page, 'input[placeholder="选择地区"]');
   await pressButton(page, BUTTON_DPAD_RIGHT, { holdMs: 70 });
   await expectFocusedText(page, /跟随经营场景/, '稀客页地区下拉框按右键应聚焦“跟随经营场景”按钮');
@@ -885,7 +907,7 @@ async function auditPlaceToolbarAndRareSelectors(page) {
   await pressButton(page, BUTTON_DPAD_RIGHT, { holdMs: 70 });
   await expectFocusedText(page, /点单酒水 Tag/, '稀客页“点单料理 Tag”按右键应聚焦“点单酒水 Tag”');
 
-  await activateTopTab(page, 'normal');
+  await activateRecommendationTab(page, '普客');
   await focusVisibleLocator(page, 'input[placeholder="选择地区"]');
   await pressButton(page, BUTTON_DPAD_RIGHT, { holdMs: 70 });
   await expectFocusedText(page, /跟随经营场景/, '普客页地区下拉框按右键应聚焦“跟随经营场景”按钮');
@@ -967,8 +989,7 @@ async function auditSlider(page) {
 }
 
 async function auditAxisGroup(page) {
-  await activateTopTab(page, 'missions');
-  await activateInnerTab(page, '稀客邀请');
+  await activateExtensionTab(page, '稀客邀请');
   await page.waitForTimeout(300);
 
   const rangeControl = page.locator('[data-slot="segmented-control"]:visible')
@@ -985,11 +1006,11 @@ async function auditAxisGroup(page) {
     null,
     { timeout: 3_000 },
   ).catch(() => {});
-  await focusInnerTab(page, '稀客邀请');
+  await page.locator('[data-extension-tabs]').getByRole('tab', { name: '稀客邀请', exact: true }).focus();
   await pressButton(page, BUTTON_DPAD_DOWN, { holdMs: 70 });
   const moduleToggleFocus = await readFocusedSummary(page);
   if (!moduleToggleFocus?.text.includes('启用稀客邀请模块')) {
-    issues.push(`稀客邀请页无法从二级 Tab 进入模块总控，实际为 ${moduleToggleFocus?.text || '空'}。`);
+    issues.push(`稀客邀请页无法从扩展功能二级 Tab 进入模块总控，实际为 ${moduleToggleFocus?.text || '空'}。`);
     return;
   }
   await rangeControl.locator('label').first().evaluate((element) => {
@@ -1039,6 +1060,23 @@ async function activateTopTab(page, value) {
   await trigger.click();
   await page.waitForTimeout(180);
   await expectTopTab(page, value, `应能切换到 ${value} Tab`);
+}
+
+async function activateRecommendationTab(page, label) {
+  await activateTopTab(page, 'recommendations');
+  await activateGroupedInnerTab(page, '[data-recommendation-tabs]', label);
+}
+
+async function activateExtensionTab(page, label) {
+  await activateTopTab(page, 'extensions');
+  await activateGroupedInnerTab(page, '[data-extension-tabs]', label);
+}
+
+async function activateGroupedInnerTab(page, selector, label) {
+  const trigger = page.locator(selector).getByRole('tab', { name: label, exact: true });
+  await trigger.scrollIntoViewIfNeeded();
+  await trigger.click();
+  await page.waitForTimeout(180);
 }
 
 async function closeResidualDialog(page) {
@@ -1098,7 +1136,7 @@ async function auditResponsiveProfiles(browser) {
 
       await profilePage.locator('[data-gamepad-tab-value="service"]').first().focus();
       await pressButton(profilePage, BUTTON_DPAD_RIGHT);
-      await expectFocusedTopTab(profilePage, 'missions', `[${profile.name}] 一级导航跨行焦点移动失败`);
+      await expectFocusedTopTab(profilePage, 'extensions', `[${profile.name}] 分组后的一级导航横向焦点移动失败`);
       const focusedTabContained = await profilePage.evaluate(() => {
         const active = document.activeElement;
         const list = active?.closest('.steward-primary-tabs-list');
@@ -1111,17 +1149,17 @@ async function auditResponsiveProfiles(browser) {
           && activeRect.bottom <= listRect.bottom + 1;
       });
       if (!focusedTabContained) {
-        issues.push(`[${profile.name}] 一级导航跨行后的焦点页签不在导航容器内。`);
+        issues.push(`[${profile.name}] 一级导航横向移动后的焦点页签不在导航容器内。`);
       }
       await pressButton(profilePage, BUTTON_A);
-      await expectTopTab(profilePage, 'missions', `[${profile.name}] A 键未激活跨行后的顶部 Tab`);
+      await expectTopTab(profilePage, 'extensions', `[${profile.name}] A 键未激活“扩展功能”顶部 Tab`);
     }
 
     await profilePage.locator('[data-gamepad-tab-value="overview"]').first().focus();
     await pressButton(profilePage, BUTTON_DPAD_RIGHT);
-    await expectFocusedTopTab(profilePage, 'normal', `[${profile.name}] 顶部 Tab 方向导航失败`);
+    await expectFocusedTopTab(profilePage, 'recommendations', `[${profile.name}] 顶部 Tab 方向导航失败`);
     await pressButton(profilePage, BUTTON_A);
-    await expectTopTab(profilePage, 'normal', `[${profile.name}] A 键未激活聚焦的顶部 Tab`);
+    await expectTopTab(profilePage, 'recommendations', `[${profile.name}] A 键未激活聚焦的顶部 Tab`);
     await pressButton(profilePage, BUTTON_DPAD_DOWN);
     const contentFocus = await profilePage.evaluate(() => {
       const active = document.activeElement;

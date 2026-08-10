@@ -264,14 +264,14 @@ const [
 ] = await Promise.all([
   readFile(new URL('apps/companion/src/companion/api.ts', root), 'utf8'),
   readFile(new URL('apps/companion/src/companion/hooks/useTrackedMissions.ts', root), 'utf8'),
-  readFile(new URL('apps/companion/src/companion/pages/ModMissionsPanel.tsx', root), 'utf8'),
+  readFile(new URL('apps/companion/src/companion/pages/ModMissionListPanel.tsx', root), 'utf8'),
   readFile(new URL('apps/companion/src/companion/ModWorkbench.tsx', root), 'utf8'),
   readFile(new URL('scripts/mock-local-api.mjs', root), 'utf8'),
   readFile(new URL('apps/companion/src/companion/tracked-missions.ts', root), 'utf8'),
   readFile(new URL('apps/companion/src/companion/available-missions.ts', root), 'utf8'),
   readFile(new URL('apps/companion/src/companion/mission-presentation.ts', root), 'utf8'),
   readFile(new URL('apps/companion/src/companion/storage.ts', root), 'utf8'),
-  readFile(new URL('apps/companion/src/companion/pages/MissionModuleControl.tsx', root), 'utf8'),
+  readFile(new URL('apps/companion/src/companion/pages/ModuleControlPanel.tsx', root), 'utf8'),
 ]);
 
 const apiFunction = sourceSlice(
@@ -321,17 +321,22 @@ assert.ok(workbenchSource.includes('active: missionListModuleEnabled && missionL
 assert.ok(workbenchSource.includes('readStoredMissionListModuleEnabled'));
 assert.ok(workbenchSource.includes('persistMissionListModuleEnabled(enabled)'));
 assert.ok(workbenchSource.includes('refreshTrackedMissions();'));
-assert.doesNotMatch(workbenchSource, /data-gamepad-tab-value="rare-invitations"/);
-assert.ok(panelSource.includes('<TabsTrigger value="tasks"'));
-assert.ok(panelSource.includes('<TabsTrigger value="invitations"'));
+assert.ok(workbenchSource.includes("const missionListVisible = tab === 'extensions' && extensionTab === 'missions'"));
+assert.ok(workbenchSource.includes('data-gamepad-tab-value="extensions"'));
+assert.ok(workbenchSource.includes('data-extension-tabs="true"'));
+assert.ok(workbenchSource.includes('<TabsTrigger value="missions"'));
+assert.ok(workbenchSource.includes('<TabsTrigger value="rare-invitations"'));
+assert.doesNotMatch(workbenchSource, /data-gamepad-tab-value="(?:missions|rare-invitations|inventory)"/);
+assert.doesNotMatch(workbenchSource, /MissionPanelView|missionPanelView/);
+assert.doesNotMatch(panelSource, /<TabsTrigger value="tasks"|<TabsTrigger value="invitations"/);
 assert.ok(panelSource.includes('label="启用任务列表模块"'));
 assert.ok(panelSource.includes('任务列表模块已停用'));
 assert.ok(panelSource.includes('missionListModuleEnabled'));
-assert.ok(panelSource.includes('data-gamepad-focus-key="missions:tasks:refresh"'));
-assert.ok(panelSource.includes('gamepadScrollKey="missions:tasks"'));
+assert.ok(panelSource.includes('data-gamepad-focus-key="missions:refresh"'));
+assert.ok(panelSource.includes('gamepadScrollKey="missions"'));
 assert.ok(panelSource.includes('data-mission-status-tabs="true"'));
 assert.ok(panelSource.includes('aria-label="任务状态筛选"'));
-assert.ok(panelSource.includes('data-gamepad-focus-key={`missions:tasks:status:${status.value}`}'));
+assert.ok(panelSource.includes('data-gamepad-focus-key={`missions:status:${status.value}`}'));
 assert.ok(panelSource.includes('data-mission-status-tab={status.value}'));
 assert.ok(panelSource.includes('data-mission-status-list={activeStatusView.value}'));
 assert.ok(panelSource.includes('data-mission-status={mission.status}'));

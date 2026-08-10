@@ -996,7 +996,7 @@ html::-webkit-scrollbar-thumb:hover,
   --tab-hover-color: color-mix(in srgb, var(--companion-muted-surface) 58%, transparent);
 }
 
-@media (max-width: 719px) {
+@media (max-width: 639px) {
   .steward-tabs-list[data-scrollable-tabs='true'] {
     display: flex;
     max-width: 100%;
@@ -1022,9 +1022,23 @@ html::-webkit-scrollbar-thumb:hover,
 }
 
 @media (min-width: 640px) and (max-width: 719px) {
+  .steward-tabs-list[data-scrollable-tabs='true']:not(.steward-primary-tabs-list) {
+    display: flex;
+    flex-wrap: nowrap;
+    overflow-x: hidden;
+  }
+
+  .steward-tabs-list[data-scrollable-tabs='true']:not(.steward-primary-tabs-list) .steward-tabs-trigger {
+    min-width: 0;
+    flex: 1 1 0;
+    padding-inline: 0.25rem;
+  }
+}
+
+@media (min-width: 640px) {
   .steward-primary-tabs-list[data-scrollable-tabs='true'] {
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(5.75rem, 1fr));
     height: auto;
     overflow: hidden;
   }

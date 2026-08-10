@@ -49,7 +49,7 @@ import type {
 } from '@/companion/types';
 import type { NormalExecutionTargetSelection } from '@/companion/workers/order-recommendations.types';
 import {
-  DENSE_THREE_COLUMN_GRID,
+  DENSE_MINIMUM_THREE_COLUMN_GRID,
   DENSE_TWO_COLUMN_GRID,
   MAX_RECOMMENDATION_ROWS,
   MOD_TAB_TRIGGER_CLASS,
@@ -426,7 +426,10 @@ export function ModServicePanel({
   return (
     <div className="space-y-4">
       <Card>
-        <CardContent className={`${DENSE_THREE_COLUMN_GRID} p-4 text-sm`}>
+        <CardContent
+          className={`${DENSE_MINIMUM_THREE_COLUMN_GRID} p-4 text-sm`}
+          data-service-summary-grid="true"
+        >
           <InfoLine label="经营场景" value={detectedPlace ?? night?.placeLabel ?? '无经营场景'} />
           <InfoLine label="推荐数据" value={runtime ? '已就绪' : '暂不可用'} />
           <InfoLine label="自动化" value={automationStatus} />

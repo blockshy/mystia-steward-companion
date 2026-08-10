@@ -88,7 +88,6 @@ const [
   hookSource,
   workbenchSource,
   panelSource,
-  missionsPanelSource,
   mockSource,
   storageSource,
   moduleControlSource,
@@ -97,10 +96,9 @@ const [
   readFile(new URL('apps/companion/src/companion/hooks/useRareGuestInvitations.ts', root), 'utf8'),
   readFile(new URL('apps/companion/src/companion/ModWorkbench.tsx', root), 'utf8'),
   readFile(new URL('apps/companion/src/companion/pages/ModRareGuestInvitationsPanel.tsx', root), 'utf8'),
-  readFile(new URL('apps/companion/src/companion/pages/ModMissionsPanel.tsx', root), 'utf8'),
   readFile(new URL('scripts/mock-local-api.mjs', root), 'utf8'),
   readFile(new URL('apps/companion/src/companion/storage.ts', root), 'utf8'),
-  readFile(new URL('apps/companion/src/companion/pages/MissionModuleControl.tsx', root), 'utf8'),
+  readFile(new URL('apps/companion/src/companion/pages/ModuleControlPanel.tsx', root), 'utf8'),
 ]);
 
 const listApi = sourceSlice(
@@ -159,31 +157,56 @@ for (const contract of [
   assert.ok(hookSource.includes(contract), `Invitation Hook is missing stale-request contract: ${contract}`);
 }
 assert.ok(workbenchSource.includes('connectionRevision,'));
-assert.ok(workbenchSource.includes("const rareGuestInvitationVisible = tab === 'missions' && missionPanelView === 'invitations'"));
+assert.ok(workbenchSource.includes("const rareGuestInvitationVisible = tab === 'extensions' && extensionTab === 'rare-invitations'"));
 assert.ok(workbenchSource.includes('enabled: rareGuestInvitationModuleEnabled'));
 assert.ok(workbenchSource.includes('visible: rareGuestInvitationVisible'));
 assert.ok(workbenchSource.includes('readStoredRareGuestInvitationModuleEnabled'));
 assert.ok(workbenchSource.includes('persistRareGuestInvitationModuleEnabled(enabled)'));
 assert.ok(workbenchSource.includes('runtimeDaySceneReady={snapshot?.runtimeDaySceneReady ?? false}'));
 assert.ok(workbenchSource.includes('invitationContextReady={rareGuestInvitationContextReady}'));
-assert.ok(missionsPanelSource.includes('<TabsTrigger value="invitations"'));
-assert.ok(missionsPanelSource.includes('<ModRareGuestInvitationsPanel {...invitationProps} />'));
+assert.ok(workbenchSource.includes('data-gamepad-tab-value="extensions"'));
+assert.ok(workbenchSource.includes('data-extension-tabs="true"'));
+assert.ok(workbenchSource.includes('<TabsTrigger value="rare-invitations"'));
+assert.ok(workbenchSource.includes('<TabsContent value="rare-invitations"'));
+assert.doesNotMatch(workbenchSource, /data-gamepad-tab-value="(?:missions|rare-invitations|inventory)"/);
+assert.ok(workbenchSource.includes('<ModRareGuestInvitationsPanel'));
+assert.doesNotMatch(workbenchSource, /MissionPanelView|missionPanelView/);
 assert.ok(panelSource.includes('{inviteAllError && <EmptyRow text={inviteAllError} />}'));
 assert.ok(panelSource.includes(') : !inviteAllError && ('));
-assert.ok(panelSource.includes('const busy = inviteBusyKey === `guest:${entry.id}`;'));
 assert.ok(panelSource.includes('onClick={() => onInviteRareGuest(entry.id)}'));
 assert.ok(panelSource.includes('const key = entry.id >= 0'));
 assert.ok(panelSource.includes('label="启用稀客邀请模块"'));
 assert.ok(panelSource.includes('稀客邀请模块已停用'));
 assert.ok(panelSource.includes('rareGuestInvitationModuleToggleDisabled'));
+assert.ok(panelSource.includes('const sourceEntries = inviteAllResult?.candidates ?? [];'));
+assert.ok(panelSource.includes('...inviteAllResult.existingInvited,'));
+assert.ok(panelSource.includes('const batchEligibleEntries = availableEntries'));
+assert.ok(panelSource.includes('搜索只改变下方列表展示；羁绊筛选同时决定批量邀请范围。'));
+assert.ok(panelSource.includes('kind="available"'));
+assert.ok(panelSource.includes('kind="unavailable"'));
+assert.ok(panelSource.includes('data-gamepad-focus-key="rare-invitations:invite-all"'));
+assert.doesNotMatch(panelSource, /slice\(0, 12\)|formatFilteredCount|summarizeInvitationSkipped|mission-invitation/);
+const invitedSectionIndex = panelSource.indexOf('data-rare-invitation-section="invited"');
+const filterSectionIndex = panelSource.indexOf('data-rare-invitation-section="filters"');
+const availableSectionIndex = panelSource.indexOf('kind="available"');
+const unavailableSectionIndex = panelSource.indexOf('kind="unavailable"');
+assert.ok(
+  invitedSectionIndex >= 0
+    && invitedSectionIndex < filterSectionIndex
+    && filterSectionIndex < availableSectionIndex
+    && availableSectionIndex < unavailableSectionIndex,
+  'Invitation information hierarchy must be invited -> filters -> available -> unavailable.',
+);
 assert.ok(storageSource.includes("`${STORAGE_PREFIX}-rare-guest-invitation-module-enabled`"));
 assert.match(
   storageSource,
   /readStoredRareGuestInvitationModuleEnabled\(\): boolean \{\s+return readStoredBoolean\(RARE_GUEST_INVITATION_MODULE_ENABLED_STORAGE_KEY, false\);/,
 );
 assert.ok(moduleControlSource.includes('data-gamepad-focus-key={focusKey}'));
+assert.ok(moduleControlSource.includes('data-feature-module={moduleId}'));
 assert.ok(mockSource.includes("invitation(10, '雾雨魔理沙'"));
 assert.ok(mockSource.includes("'DLC1_Marisa'"));
+assert.ok(mockSource.includes('existingInvited,'));
 
 const postBranch = sourceSlice(mockSource, "if (request.method === 'POST')", "if (request.method !== 'GET')");
 const getBranch = sourceSlice(mockSource, "if (request.method !== 'GET')", 'server.listen');
@@ -191,8 +214,9 @@ assert.doesNotMatch(postBranch, /path === '\/rare-guests\/invitations'/);
 assert.match(getBranch, /path === '\/rare-guests\/invitations'/);
 
 console.log(
-  'PASS: rare-guest invitations use a default-off persisted module gate, split read/write identities, '
-  + 'GET-only list transport, bounded transient-readiness retries, and stale-response isolation.',
+  'PASS: rare-guest invitations use an isolated extension subpage and default-off persisted module gate, '
+  + 'render invited/filter/available/unavailable sections in canonical order, keep search out of bulk scope, '
+  + 'and retain GET-only reads, bounded retries, write identity, and stale-response isolation.',
 );
 
 function sourceSlice(source, startText, endText) {

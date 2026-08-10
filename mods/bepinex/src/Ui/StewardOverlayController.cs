@@ -956,15 +956,7 @@ internal sealed class StewardOverlayController
                 },
                 _log);
             var favoriteStore = new FavoriteStore(FavoriteStore.ResolvePath(), _log);
-            var customRecipeStore = new CustomRecipeStore(CustomRecipeStore.ResolvePath(), favoriteStore, _log);
-            try
-            {
-                customRecipeStore.MigrateManualRecipeFavorites();
-            }
-            catch (Exception ex)
-            {
-                _log.LogWarning($"Manual recipe favorite migration did not complete; local API startup will continue and the migration can be retried: {ex.Message}");
-            }
+            var customRecipeStore = new CustomRecipeStore(CustomRecipeStore.ResolvePath(), _log);
 
             _localApiServer = new LocalApiServer(
                 _config.LocalApiLanEnabled.Value,

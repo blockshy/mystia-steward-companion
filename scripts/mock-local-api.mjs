@@ -1020,12 +1020,39 @@ function buildAvailableMissionsResponse(params) {
 function buildInvitationResponse(path, params) {
   const scope = normalizeScope(params.get('scope'));
   const targetGuestId = Number(params.get('guestId') || 0);
+  const existingInvited = [
+    invitation(1001, '米斯蒂娅', true, 4, '已经加入今晚邀请名单', false, 'Mystia', 'invited'),
+    invitation(2001, '博丽灵梦', true, 5, '已经加入今晚邀请名单', false, 'Reimu', 'invited'),
+    invitation(
+      2002,
+      '用于验证完整展示且不会被搜索隐藏的超长稀客名称',
+      false,
+      4,
+      '已经加入今晚邀请名单',
+      false,
+      'LongInvitedGuest',
+      'invited',
+      ['这个很长的场景名称用于验证已邀请名单不会被候选筛选或截断'],
+    ),
+  ];
   const allCandidates = [
-    invitation(1001, '米斯蒂娅', true, 4, '已在座位上，可重复校验', false),
+    existingInvited[0],
     invitation(1002, '露米娅', true, 3, '当前场景满足羁绊条件', true),
     invitation(1003, '慧音', false, 5, '非当前场景，但全部场景可邀请', true),
     invitation(1004, '莉格露', true, 2, '当前场景满足羁绊条件', true),
     invitation(10, '雾雨魔理沙', false, 5, '映射身份使用原生角色 ID', true, 'DLC1_Marisa'),
+    invitation(
+      1005,
+      '茨木华扇（用于验证较长的候选名称可以自然换行）',
+      true,
+      1,
+      '当前羁绊等级尚未达到邀请要求；这段较长原因用于验证不可邀请信息不会被省略。',
+      false,
+      'Kasen',
+      'low-kizuna',
+      ['妖怪兽道', '这个较长的地点名称用于验证候选地点可以完整换行'],
+    ),
+    invitation(1006, '爱丽丝', false, 4, '当前资料中没有可用的原生邀请对话。', false, 'Alice', 'missing-dialog'),
   ];
   const candidates = scope === 'all' ? allCandidates : allCandidates.filter((entry) => entry.isCurrentScene);
   const available = candidates.filter((entry) => entry.canInvite);
@@ -1055,6 +1082,7 @@ function buildInvitationResponse(path, params) {
     currentMapName: '妖怪兽道',
     candidates,
     available,
+    existingInvited,
     invited,
     skipped,
   };
@@ -1494,18 +1522,28 @@ function rareCustomer(id, name, places, positiveTags, beverageTags, negativeTags
   };
 }
 
-function invitation(id, name, isCurrentScene, kizunaLevel, reason, canInvite, runtimeName = name) {
+function invitation(
+  id,
+  name,
+  isCurrentScene,
+  kizunaLevel,
+  reason,
+  canInvite,
+  runtimeName = name,
+  status = canInvite ? 'available' : 'unavailable',
+  sceneNames = isCurrentScene ? ['妖怪兽道'] : ['人间之里'],
+) {
   return {
     id,
     name,
     runtimeName,
     reason,
-    status: canInvite ? '可邀请' : '已在队列/座位中',
+    status,
     canInvite,
     isCurrentScene,
     kizunaLevel,
-    sceneLabels: isCurrentScene ? ['妖怪兽道'] : ['人间之里'],
-    sceneNames: isCurrentScene ? ['妖怪兽道'] : ['人间之里'],
+    sceneLabels: sceneNames,
+    sceneNames,
   };
 }
 

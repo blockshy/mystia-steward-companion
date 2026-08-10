@@ -1,12 +1,8 @@
 export const EXPECTED_PRIMARY_TAB_VALUES = Object.freeze([
   'overview',
-  'normal',
-  'rare',
-  'custom-recipes',
+  'recommendations',
   'service',
-  'missions',
-  'inventory',
-  'help',
+  'extensions',
   'logs',
   'settings',
 ]);
@@ -70,6 +66,7 @@ export async function inspectMinimumPrimaryTabsLayout(page, expectedValues = EXP
     const orderMatches = values.every((value, index) => value === expectedValues[index]);
     const style = getComputedStyle(list);
     const columnCount = style.gridTemplateColumns.trim().split(/\s+/).filter(Boolean).length;
+    const expectedColumnCount = expectedValues.length;
     const noInternalOverflow = list.scrollWidth <= list.clientWidth + 1
       && list.scrollHeight <= list.clientHeight + 1;
     return {
@@ -79,8 +76,8 @@ export async function inspectMinimumPrimaryTabsLayout(page, expectedValues = EXP
         && triggers.length === expectedValues.length
         && failures.length === 0
         && style.display === 'grid'
-        && columnCount === 5
-        && rowTops.length === 2
+        && columnCount === expectedColumnCount
+        && rowTops.length === 1
         && noInternalOverflow,
       triggerCount: triggers.length,
       missingValues,
@@ -89,6 +86,7 @@ export async function inspectMinimumPrimaryTabsLayout(page, expectedValues = EXP
       failures,
       display: style.display,
       columnCount,
+      expectedColumnCount,
       rowCount: rowTops.length,
       noInternalOverflow,
       clientSize: [list.clientWidth, list.clientHeight],
