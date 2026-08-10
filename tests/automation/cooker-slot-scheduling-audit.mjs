@@ -541,7 +541,8 @@ async function assertSourceContracts() {
   );
   for (const source of [prepareRareApi, completeRareApi]) {
     assert.match(source, /cookerReservation: CookerControllerReservation \| null/);
-    assert.match(source, /preferences,\s*cookerReservation,\s*\);/);
+    assert.match(source, /authorityRevision: number/);
+    assert.match(source, /preferences,\s*cookerReservation,\s*authorityRevision,\s*\);/);
   }
   for (const source of [completeNormalApi, rareOrderAction]) {
     assert.match(source, /cookerReservation: CookerControllerReservation \| null/);
@@ -570,7 +571,7 @@ async function assertSourceContracts() {
   );
   assert.match(
     preflightRequestSource,
-    /completeFirstRareOrder\([\s\S]*autoPrepStartCooking: false,[\s\S]*null,\s*\);/,
+    /completeFirstRareOrder\([\s\S]*autoPrepStartCooking: false,[\s\S]*null,\s*companionDeviceAuthority\.authorityRevision,\s*\);/,
     'A rare completion preflight must explicitly disable cooking and carry no cooker reservation.',
   );
   const immediateCompletionSource = sourceSlice(
@@ -580,7 +581,7 @@ async function assertSourceContracts() {
   );
   assert.match(
     immediateCompletionSource,
-    /autoPrepStartCooking: false,[\s\S]*null,\s*\);/,
+    /autoPrepStartCooking: false,[\s\S]*null,\s*companionDeviceAuthority\.authorityRevision,\s*\);/,
     'An immediate rare completion request must explicitly disable cooking and carry no cooker reservation.',
   );
   assert.match(

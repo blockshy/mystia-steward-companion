@@ -180,6 +180,7 @@ async function seedAndOpen(page, fontScale) {
   await page.addInitScript(({ endpoint, token, scale }) => {
     localStorage.setItem('mystia-steward-companion-mod-api-endpoint', endpoint);
     localStorage.setItem('mystia-steward-companion-mod-api-token', token);
+    localStorage.setItem('mystia-steward-companion-client-id', 'settings-help-audit-device');
     localStorage.setItem('mystia-steward-companion-font-scale-percent', String(scale));
     localStorage.setItem('mystia-steward-companion-show-debug-details', '1');
     localStorage.setItem('mystia-steward-companion-rare-game-ui-pinning', '0');

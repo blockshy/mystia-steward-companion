@@ -162,6 +162,7 @@ try {
       const entry = {
         method: request.method(),
         at: Date.now(),
+        authorityRevision: request.headers()['x-mystia-steward-companion-authority-revision'] ?? '',
         rawParams,
         params: { ...rawParams, ...readTargetParams(rawParams, 'rare') },
       };
@@ -323,7 +324,9 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 1200));
   assert(
     targetRequests.filter(hasRecipeTarget).length === acceptedTargetCount,
-    '同一游戏会话的短暂断线清除了成功发布签名并重复 POST',
+    `同一游戏会话的短暂断线清除了成功发布签名并重复 POST：${JSON.stringify(
+      targetRequests.filter(hasRecipeTarget).slice(acceptedTargetCount - 1),
+    )}`,
   );
 
   const identityTargetCount = targetRequests.filter(hasRecipeTarget).length;
@@ -605,22 +608,26 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 350));
   assert(targetRequests.length === coalescingStartCount + 1, '单写者忙碌时仍并发发送了新目标');
   await waitFor(
-    () => targetRequests.length >= coalescingStartCount + 2,
+    () => targetRequests.slice(coalescingStartCount + 1).some((entry) => (
+      hasRecipeTarget(entry)
+      && entry.params.listPinningEnabled === 'true'
+      && entry.params.recipeVariantEnabled === 'true'
+    )),
     5_000,
     '延迟目标完成后未合并补发最新开关状态',
   );
-  const coalescedRequests = targetRequests.slice(coalescingStartCount, coalescingStartCount + 2);
-  assert(coalescedRequests[0].params.listPinningEnabled === 'false', 'pending 期间关闭稀客置顶未立即进入发布队列');
-  assert(coalescedRequests[0].params.cookerHighlightEnabled === 'true', '关闭稀客置顶时错误关闭了稀客厨具高亮');
-  assert(coalescedRequests[0].params.recipeVariantEnabled === 'false', '关闭稀客置顶时仍允许稀客加料料理选项');
-  assert(coalescedRequests[0].params.seatHighlightEnabled === 'true', '关闭稀客置顶时错误关闭了稀客桌位高亮');
-  assert(coalescedRequests[0].params.orderHighlightEnabled === 'true', '关闭稀客置顶时错误关闭了稀客订单高亮');
-  assert(coalescedRequests[0].rawParams.target1ListPinningEnabled === 'true', '关闭稀客置顶时错误关闭了普客置顶');
-  assert(coalescedRequests[1].params.listPinningEnabled === 'true', '延迟请求完成后未补发最新稀客置顶开关');
-  assert(coalescedRequests[1].params.recipeVariantEnabled === 'true', '重新开启稀客置顶后未恢复稀客加料料理选项');
+  const coalescedRequests = targetRequests.slice(coalescingStartCount);
+  const finalCoalescedRequest = coalescedRequests.findLast((entry) => hasRecipeTarget(entry));
+  assert(isEnabledClearTarget(coalescedRequests[0]), '配置权威变化前未先清空旧游戏界面目标');
+  assert(finalCoalescedRequest?.params.listPinningEnabled === 'true', '延迟请求完成后未补发最新稀客置顶开关');
+  assert(finalCoalescedRequest?.params.recipeVariantEnabled === 'true', '重新开启稀客置顶后未恢复稀客加料料理选项');
+  assert(finalCoalescedRequest?.params.cookerHighlightEnabled === 'true', '最新目标错误关闭了稀客厨具高亮');
+  assert(finalCoalescedRequest?.params.seatHighlightEnabled === 'true', '最新目标错误关闭了稀客桌位高亮');
+  assert(finalCoalescedRequest?.params.orderHighlightEnabled === 'true', '最新目标错误关闭了稀客订单高亮');
+  assert(finalCoalescedRequest?.rawParams.target1ListPinningEnabled === 'true', '最新目标错误关闭了普客置顶');
   assert(maxActiveTargetRequests === 1, `置顶目标存在并发写入：max=${maxActiveTargetRequests}`);
   await waitFor(
-    () => completedTargetRequests.includes(coalescedRequests[1]),
+    () => completedTargetRequests.includes(finalCoalescedRequest),
     3_000,
     '最新合并目标未完成写入',
   );
@@ -671,9 +678,14 @@ try {
   );
   const errorFlagStartCount = targetRequests.length;
   await pinningSwitchLabel.click();
-  await new Promise((resolve) => setTimeout(resolve, 350));
-  assert(targetRequests.length === errorFlagStartCount,
-    '稀客目标缺失时，纯稀客设置变化错误重复发布了仍未变化的普客目标');
+  await waitFor(
+    () => targetRequests.slice(errorFlagStartCount).some(isEnabledClearTarget),
+    3_000,
+    '共享设置改变配置权威后未清空旧游戏界面目标',
+  );
+  const authorityClearRequest = targetRequests.slice(errorFlagStartCount).find(isEnabledClearTarget);
+  assert(authorityClearRequest?.rawParams.targetCount === '0',
+    '配置权威变化时未以空双槽清理旧主设备发布的目标');
   assert(await page.getByRole('switch', { name: '稀客游戏界面置顶推荐' }).isChecked() === false,
     'Worker error 期间关闭稀客置顶后偏好状态未保留');
 
@@ -922,6 +934,7 @@ function seedLocalStorage({ apiUrl, apiToken, storagePrefix }) {
   };
   localStorage.setItem(`${storagePrefix}-mod-api-endpoint`, apiUrl);
   localStorage.setItem(`${storagePrefix}-mod-api-token`, apiToken);
+  localStorage.setItem(`${storagePrefix}-client-id`, 'ui-pinning-audit-device');
   for (const kind of ['rare', 'normal']) {
     localStorage.setItem(`${storagePrefix}-${kind}-game-ui-pinning`, '1');
     localStorage.setItem(`${storagePrefix}-${kind}-recipe-variant`, '1');

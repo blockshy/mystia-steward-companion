@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { createHash, randomUUID } from 'node:crypto';
 
 /**
  * 本地 API 模拟服务。
@@ -275,6 +276,13 @@ let automationLease = null;
 let automationCommandEpoch = 1;
 let automationCancellationAppliedEpoch = 0;
 let automationCookingJobs = [];
+const mockDeviceAuthority = {
+  registryId: randomUUID().replaceAll('-', ''),
+  authorityRevision: 0,
+  stateRevision: 0,
+  primaryDeviceId: '',
+  devices: new Map(),
+};
 const mockAutomationBarrierTarget = {
   targetIdentity: 'order-lifecycle:1:Special:1001:2001:7',
   traceId: 'mock-trace-barrier',
@@ -307,7 +315,7 @@ const automationSafetyBarriers = new Map([
   }],
 ]);
 
-const server = http.createServer((request, response) => {
+const server = http.createServer(async (request, response) => {
   setCorsHeaders(response);
 
   if (request.method === 'OPTIONS') {
@@ -321,6 +329,41 @@ const server = http.createServer((request, response) => {
 
   if (request.method === 'POST') {
     try {
+      if (path === '/devices/register') {
+        sendJson(response, 200, registerMockDevice(request, await readJsonBody(request)));
+        return;
+      }
+
+      if (path === '/devices/profile') {
+        sendJson(response, 200, updateMockDeviceProfile(request, await readJsonBody(request)));
+        return;
+      }
+
+      if (path === '/devices/primary') {
+        sendJson(response, 200, setMockPrimaryDevice(request, await readJsonBody(request)));
+        return;
+      }
+
+      if (path === '/devices/sync') {
+        sendJson(response, 200, syncMockDevice(request, await readJsonBody(request)));
+        return;
+      }
+
+      if (path === '/devices/sync-ack') {
+        sendJson(response, 200, acknowledgeMockDeviceSync(request, await readJsonBody(request)));
+        return;
+      }
+
+      if (path === '/devices/rename') {
+        sendJson(response, 200, renameMockDevice(request, await readJsonBody(request)));
+        return;
+      }
+
+      if (path === '/devices/forget') {
+        sendJson(response, 200, forgetMockDevice(request, await readJsonBody(request)));
+        return;
+      }
+
       if (path === '/automation/lease/acquire') {
         sendJson(response, 200, acquireAutomationLease(request));
         return;
@@ -530,6 +573,11 @@ const server = http.createServer((request, response) => {
       }
 
       if (path === '/ui-pinning/targets') {
+        const authority = authorizeMockRuntimeWriter(request);
+        if (!authority.ok) {
+          sendJson(response, 200, { ok: false, error: authority.error });
+          return;
+        }
         const validationError = validateUiTargetPublication(requestUrl.searchParams);
         if (validationError) {
           sendJson(response, 400, { ok: false, error: validationError });
@@ -577,7 +625,7 @@ const server = http.createServer((request, response) => {
       sendJson(response, 404, { ok: false, error: `Unknown mock endpoint: ${path}` });
       return;
     } catch (error) {
-      sendJson(response, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+      sendJson(response, error?.statusCode || 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
       return;
     }
   }
@@ -595,6 +643,11 @@ const server = http.createServer((request, response) => {
 
     if (path === '/automation/lease') {
       sendJson(response, 200, readAutomationLease(request));
+      return;
+    }
+
+    if (path === '/devices') {
+      sendJson(response, 200, buildMockDeviceAuthorityState(requireMockDevice(request)));
       return;
     }
 
@@ -654,7 +707,7 @@ const server = http.createServer((request, response) => {
 
     sendJson(response, 404, { ok: false, error: `Unknown mock endpoint: ${path}` });
   } catch (error) {
-    sendJson(response, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+    sendJson(response, error?.statusCode || 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
   }
 });
 
@@ -1591,6 +1644,235 @@ function normalizeLanHost(value) {
   return normalized.toLowerCase() === 'auto' ? 'auto' : normalized;
 }
 
+async function readJsonBody(request) {
+  const chunks = [];
+  let bytes = 0;
+  for await (const chunk of request) {
+    bytes += chunk.length;
+    if (bytes > 65_536) throw mockHttpError(413, 'mock request body exceeds 64 KiB');
+    chunks.push(chunk);
+  }
+  if (bytes === 0) throw mockHttpError(400, 'JSON request body is required');
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  } catch {
+    throw mockHttpError(400, 'invalid JSON request body');
+  }
+}
+
+function registerMockDevice(request, body) {
+  const identity = requireMockIdentity(request);
+  if (body?.protocolVersion !== 1 || body?.profileSchemaVersion !== 1 || !body.profile) {
+    throw mockHttpError(409, 'unsupported mock device protocol');
+  }
+  let device = mockDeviceAuthority.devices.get(identity.clientId);
+  if (!device) {
+    const now = nowIso();
+    device = {
+      deviceId: identity.clientId,
+      label: identity.clientLabel,
+      platform: body.platform,
+      appVersion: body.appVersion,
+      profileRevision: 1,
+      appliedProfileRevision: 1,
+      profileHash: hashMockProfile(body.profile),
+      profile: structuredClone(body.profile),
+      pendingSyncId: null,
+      createdAtUtc: now,
+      updatedAtUtc: now,
+      lastSeenAtUtc: now,
+    };
+    mockDeviceAuthority.devices.set(device.deviceId, device);
+    if (!mockDeviceAuthority.primaryDeviceId) {
+      mockDeviceAuthority.primaryDeviceId = device.deviceId;
+      mockDeviceAuthority.authorityRevision = 1;
+    }
+    mockDeviceAuthority.stateRevision += 1;
+  } else {
+    device.platform = body.platform;
+    device.appVersion = body.appVersion;
+    device.lastSeenAtUtc = nowIso();
+  }
+  return buildMockDeviceAuthorityState(device);
+}
+
+function updateMockDeviceProfile(request, body) {
+  const current = requireMockDevice(request);
+  requireMockCas(body);
+  if (current.deviceId !== mockDeviceAuthority.primaryDeviceId) throw mockHttpError(403, 'only the primary mock device can update the active profile');
+  if (body.expectedProfileRevision !== current.profileRevision) throw mockHttpError(409, 'mock profile revision changed');
+  const hash = hashMockProfile(body.profile);
+  if (hash !== current.profileHash) {
+    current.profile = structuredClone(body.profile);
+    current.profileHash = hash;
+    current.profileRevision += 1;
+    current.appliedProfileRevision = current.profileRevision;
+    current.pendingSyncId = null;
+    current.updatedAtUtc = nowIso();
+    mockDeviceAuthority.authorityRevision += 1;
+    mockDeviceAuthority.stateRevision += 1;
+    automationLease = null;
+  }
+  current.lastSeenAtUtc = nowIso();
+  return buildMockDeviceAuthorityState(current);
+}
+
+function setMockPrimaryDevice(request, body) {
+  const current = requireMockDevice(request);
+  requireMockCas(body);
+  const target = mockDeviceAuthority.devices.get(body.deviceId);
+  if (!target) throw mockHttpError(409, 'mock target device does not exist');
+  if (target.pendingSyncId) throw mockHttpError(409, 'mock target device has a pending sync');
+  if (target.deviceId !== mockDeviceAuthority.primaryDeviceId) {
+    mockDeviceAuthority.primaryDeviceId = target.deviceId;
+    mockDeviceAuthority.authorityRevision += 1;
+    mockDeviceAuthority.stateRevision += 1;
+    automationLease = null;
+  }
+  current.lastSeenAtUtc = nowIso();
+  return buildMockDeviceAuthorityState(current);
+}
+
+function syncMockDevice(request, body) {
+  const current = requireMockDevice(request);
+  requireMockCas(body);
+  const primary = mockDeviceAuthority.devices.get(mockDeviceAuthority.primaryDeviceId);
+  const target = mockDeviceAuthority.devices.get(body.deviceId);
+  if (!primary || !target || target.deviceId === primary.deviceId) throw mockHttpError(400, 'invalid mock sync target');
+  target.profile = structuredClone(primary.profile);
+  target.profileHash = primary.profileHash;
+  target.profileRevision += 1;
+  target.pendingSyncId = randomUUID().replaceAll('-', '');
+  target.updatedAtUtc = nowIso();
+  mockDeviceAuthority.stateRevision += 1;
+  current.lastSeenAtUtc = nowIso();
+  return buildMockDeviceAuthorityState(current);
+}
+
+function acknowledgeMockDeviceSync(request, body) {
+  const current = requireMockDevice(request);
+  if (body?.protocolVersion !== 1
+    || current.pendingSyncId !== body.syncId
+    || current.profileRevision !== body.profileRevision
+    || current.profileHash !== body.profileHash) {
+    throw mockHttpError(409, 'mock pending sync changed');
+  }
+  current.appliedProfileRevision = current.profileRevision;
+  current.pendingSyncId = null;
+  current.updatedAtUtc = nowIso();
+  current.lastSeenAtUtc = nowIso();
+  mockDeviceAuthority.stateRevision += 1;
+  return buildMockDeviceAuthorityState(current);
+}
+
+function renameMockDevice(request, body) {
+  const current = requireMockDevice(request);
+  const label = String(body?.label || '').trim();
+  if (body?.protocolVersion !== 1 || !label || label.length > 48) throw mockHttpError(400, 'invalid mock device label');
+  current.label = label;
+  current.updatedAtUtc = nowIso();
+  current.lastSeenAtUtc = nowIso();
+  mockDeviceAuthority.stateRevision += 1;
+  return buildMockDeviceAuthorityState(current);
+}
+
+function forgetMockDevice(request, body) {
+  const current = requireMockDevice(request);
+  requireMockCas(body);
+  if (body.deviceId === current.deviceId || body.deviceId === mockDeviceAuthority.primaryDeviceId) {
+    throw mockHttpError(400, 'cannot forget current or primary mock device');
+  }
+  mockDeviceAuthority.devices.delete(body.deviceId);
+  mockDeviceAuthority.stateRevision += 1;
+  return buildMockDeviceAuthorityState(current);
+}
+
+function buildMockDeviceAuthorityState(current) {
+  const primary = mockDeviceAuthority.devices.get(mockDeviceAuthority.primaryDeviceId);
+  if (!primary) throw mockHttpError(503, 'mock device authority is not initialized');
+  return {
+    ok: true,
+    protocolVersion: 1,
+    profileSchemaVersion: 1,
+    registryId: mockDeviceAuthority.registryId,
+    authorityRevision: mockDeviceAuthority.authorityRevision,
+    stateRevision: mockDeviceAuthority.stateRevision,
+    primaryDeviceId: primary.deviceId,
+    currentDeviceId: current.deviceId,
+    currentDeviceIsPrimary: current.deviceId === primary.deviceId,
+    activeProfileRevision: primary.profileRevision,
+    activeProfileHash: primary.profileHash,
+    activeProfile: structuredClone(primary.profile),
+    currentDeviceProfileRevision: current.profileRevision,
+    currentDeviceProfileHash: current.profileHash,
+    currentDeviceProfile: structuredClone(current.profile),
+    pendingSyncId: current.pendingSyncId,
+    devices: [...mockDeviceAuthority.devices.values()].map((device) => ({
+      deviceId: device.deviceId,
+      label: device.label,
+      platform: device.platform,
+      appVersion: device.appVersion,
+      isCurrent: device.deviceId === current.deviceId,
+      isPrimary: device.deviceId === primary.deviceId,
+      online: Date.now() - Date.parse(device.lastSeenAtUtc) <= 20_000,
+      lastSeenAtUtc: device.lastSeenAtUtc,
+      profileRevision: device.profileRevision,
+      appliedProfileRevision: device.appliedProfileRevision,
+      profileHash: device.profileHash,
+      syncPending: Boolean(device.pendingSyncId),
+      createdAtUtc: device.createdAtUtc,
+      updatedAtUtc: device.updatedAtUtc,
+    })),
+    error: null,
+  };
+}
+
+function requireMockIdentity(request) {
+  const identity = readClientIdentity(request);
+  if (identity.error) throw mockHttpError(400, identity.error);
+  return identity;
+}
+
+function requireMockDevice(request) {
+  const identity = requireMockIdentity(request);
+  const device = mockDeviceAuthority.devices.get(identity.clientId);
+  if (!device) throw mockHttpError(409, 'mock companion device is not registered');
+  device.lastSeenAtUtc = nowIso();
+  return device;
+}
+
+function requireMockCas(body) {
+  if (body?.protocolVersion !== 1 || body.expectedAuthorityRevision !== mockDeviceAuthority.authorityRevision) {
+    throw mockHttpError(409, 'mock configuration authority changed');
+  }
+}
+
+function authorizeMockRuntimeWriter(request) {
+  const device = requireMockDevice(request);
+  const authorityRevision = Number(request.headers['x-mystia-steward-companion-authority-revision'] || 0);
+  if (device.deviceId !== mockDeviceAuthority.primaryDeviceId) return { ok: false, authorityRevision, error: '当前设备不是主设备。' };
+  if (authorityRevision !== mockDeviceAuthority.authorityRevision) return { ok: false, authorityRevision, error: '配置权威版本已经变化。' };
+  return { ok: true, authorityRevision, device, error: null };
+}
+
+function hashMockProfile(profile) {
+  return createHash('sha256').update(stableJson(profile)).digest('hex');
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function mockHttpError(statusCode, message) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+}
+
 function readAutomationLease(request) {
   const identity = readClientIdentity(request);
   if (identity.error) {
@@ -1608,8 +1890,14 @@ function readAutomationLease(request) {
     };
   }
 
+  const authority = authorizeMockRuntimeWriter(request);
+  if (!authority.ok) {
+    pruneAutomationLease();
+    return buildAutomationLease(identity.clientId, identity.clientLabel, authority.error, authority.authorityRevision);
+  }
+
   pruneAutomationLease();
-  return buildAutomationLease(identity.clientId, identity.clientLabel, null);
+  return buildAutomationLease(identity.clientId, identity.clientLabel, null, authority.authorityRevision);
 }
 
 function acquireAutomationLease(request) {
@@ -1629,12 +1917,19 @@ function acquireAutomationLease(request) {
     };
   }
 
+  const authority = authorizeMockRuntimeWriter(request);
+  if (!authority.ok) {
+    pruneAutomationLease();
+    return buildAutomationLease(identity.clientId, identity.clientLabel, authority.error, authority.authorityRevision);
+  }
+
   pruneAutomationLease();
   if (automationLease && automationLease.clientId !== identity.clientId) {
     return buildAutomationLease(
       identity.clientId,
       identity.clientLabel,
       `自动化当前由 ${automationLease.clientLabel} 控制，本窗口仅查看。`,
+      authority.authorityRevision,
     );
   }
 
@@ -1645,22 +1940,26 @@ function acquireAutomationLease(request) {
     clientLabel: identity.clientLabel,
     lastSeenAt: now,
     expiresAt: now + AUTOMATION_LEASE_TTL_MS,
+    authorityRevision: authority.authorityRevision,
   };
-  return buildAutomationLease(identity.clientId, identity.clientLabel, null);
+  return buildAutomationLease(identity.clientId, identity.clientLabel, null, authority.authorityRevision);
 }
 
 function acknowledgeAutomationSafetyBarrier(request, params) {
   const identity = readClientIdentity(request);
+  const authority = identity.error ? { ok: false, error: identity.error } : authorizeMockRuntimeWriter(request);
   const sequence = Number(params.get('sequence') || 0);
   pruneAutomationLease();
-  if (identity.error || automationLease?.clientId !== identity.clientId) {
+  if (!authority.ok
+    || automationLease?.clientId !== identity.clientId
+    || automationLease?.authorityRevision !== authority.authorityRevision) {
     return {
       ok: false,
       sequence,
       acknowledgedCount: 0,
       acknowledgedSequences: [],
       status: '',
-      error: identity.error || 'automation lease is not owned',
+      error: authority.error || 'automation lease is not owned',
     };
   }
   if (!Number.isSafeInteger(sequence) || sequence <= 0) {
@@ -1705,13 +2004,16 @@ function acknowledgeAutomationSafetyBarrier(request, params) {
 
 function cancelAutomationJobs(request, target) {
   const identity = readClientIdentity(request);
+  const authority = identity.error ? { ok: false, error: identity.error } : authorizeMockRuntimeWriter(request);
   pruneAutomationLease();
-  if (identity.error || automationLease?.clientId !== identity.clientId) {
+  if (!authority.ok
+    || automationLease?.clientId !== identity.clientId
+    || automationLease?.authorityRevision !== authority.authorityRevision) {
     return {
       ok: false,
       target,
       status: '',
-      error: identity.error || 'automation lease is not owned',
+      error: authority.error || 'automation lease is not owned',
       commandEpoch: automationCommandEpoch,
       cancelledJobs: 0,
       cancelledCommands: 0,
@@ -1750,12 +2052,13 @@ function isAutomationCancellationTarget(value) {
   return value === 'commands' || value === 'rare' || value === 'normal' || value === 'all';
 }
 
-function buildAutomationLease(clientId, clientLabel, error) {
+function buildAutomationLease(clientId, clientLabel, error, authorityRevision = 0) {
   return {
     ok: !error,
     owned: automationLease?.clientId === clientId,
     clientId,
     clientLabel,
+    authorityRevision,
     ownerClientId: automationLease?.clientId || '',
     ownerLabel: automationLease?.clientLabel || '',
     ownerLastSeenUtc: automationLease ? new Date(automationLease.lastSeenAt).toISOString() : '',
@@ -1766,7 +2069,9 @@ function buildAutomationLease(clientId, clientLabel, error) {
 }
 
 function pruneAutomationLease() {
-  if (automationLease && automationLease.expiresAt <= Date.now()) {
+  if (automationLease
+    && (automationLease.expiresAt <= Date.now()
+      || automationLease.authorityRevision !== mockDeviceAuthority.authorityRevision)) {
     automationLease = null;
   }
 }
@@ -1984,7 +2289,7 @@ function nowIso(offsetSeconds = 0) {
 function setCorsHeaders(response) {
   response.setHeader('Access-Control-Allow-Origin', '*');
   response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  response.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Mystia-Steward-Companion-Token, X-Mystia-Steward-Companion-Client-Id, X-Mystia-Steward-Companion-Client-Label');
+  response.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Mystia-Steward-Companion-Token, X-Mystia-Steward-Companion-Client-Id, X-Mystia-Steward-Companion-Client-Label, X-Mystia-Steward-Companion-Authority-Revision');
   response.setHeader('Access-Control-Max-Age', '86400');
 }
 

@@ -35,6 +35,7 @@ const tabs = [
   { value: 'inventory', label: '扩展功能 · 修改', topValue: 'extensions', innerSelector: '[data-extension-tabs]', innerLabel: '修改' },
   { value: 'logs', label: '日志' },
   { value: 'settings', label: '设置 · 窗口', topValue: 'settings', innerSelector: '[data-settings-tabs]', innerLabel: '窗口' },
+  { value: 'connection', label: '设置 · 连接', topValue: 'settings', innerSelector: '[data-settings-tabs]', innerLabel: '连接' },
   { value: 'help', label: '设置 · 帮助', topValue: 'settings', innerSelector: '[data-settings-tabs]', innerLabel: '帮助' },
 ];
 
@@ -89,6 +90,7 @@ for (const viewport of viewports) {
   await page.addInitScript(seedLocalStorage, { apiUrl: API_URL, apiToken: API_TOKEN, storagePrefix: STORAGE_PREFIX });
   await page.goto(APP_URL, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => document.body.innerText.includes('1.0.5'), null, { timeout: 10000 });
+  await ensureSecondaryAuditDevice(page);
   await auditTransparencyModel(page, viewport);
 
   for (const tab of tabs) {
@@ -107,9 +109,51 @@ await writeFile(path.join(OUTPUT_DIR, 'report.md'), report);
 console.log(report);
 console.log(`\nScreenshots and report written to ${OUTPUT_DIR}`);
 
+async function ensureSecondaryAuditDevice(page) {
+  await page.evaluate(async ({ apiUrl, apiToken }) => {
+    const primaryHeaders = {
+      'X-Mystia-Steward-Companion-Token': apiToken,
+      'X-Mystia-Steward-Companion-Client-Id': 'ui-audit-device-0001',
+      'X-Mystia-Steward-Companion-Client-Label': 'UI audit primary',
+    };
+    let state = null;
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const stateResponse = await fetch(`${apiUrl}/devices`, { cache: 'no-store', headers: primaryHeaders });
+      if (stateResponse.ok) {
+        state = await stateResponse.json();
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (!state) throw new Error('current UI audit device did not finish registration');
+    if (state.devices.some((device) => device.deviceId === 'ui-audit-device-0002')) return;
+    const registerResponse = await fetch(`${apiUrl}/devices/register`, {
+      method: 'POST',
+      headers: {
+        ...primaryHeaders,
+        'X-Mystia-Steward-Companion-Client-Id': 'ui-audit-device-0002',
+        'X-Mystia-Steward-Companion-Client-Label': 'Android audit device',
+        'Content-Type': 'application/json; charset=utf-8',
+      },
+      body: JSON.stringify({
+        protocolVersion: state.protocolVersion,
+        profileSchemaVersion: state.profileSchemaVersion,
+        platform: 'android',
+        appVersion: state.devices.find((device) => device.isCurrent)?.appVersion ?? 'unknown',
+        profile: {
+          ...state.activeProfile,
+          automationEnabled: !state.activeProfile.automationEnabled,
+        },
+      }),
+    });
+    if (!registerResponse.ok) throw new Error(`secondary device registration HTTP ${registerResponse.status}`);
+  }, { apiUrl: API_URL, apiToken: API_TOKEN });
+}
+
 function seedLocalStorage({ apiUrl, apiToken, storagePrefix }) {
   localStorage.setItem(`${storagePrefix}-mod-api-endpoint`, apiUrl);
   localStorage.setItem(`${storagePrefix}-mod-api-token`, apiToken);
+  localStorage.setItem(`${storagePrefix}-client-id`, 'ui-audit-device-0001');
   localStorage.setItem(`${storagePrefix}-show-debug-details`, '1');
   localStorage.setItem(`${storagePrefix}-mission-list-module-enabled`, '1');
   localStorage.setItem(`${storagePrefix}-rare-guest-invitation-module-enabled`, '1');
@@ -186,12 +230,134 @@ async function auditPage(page, viewport, tab) {
   await auditMissionRecipePriorityMarker(page, viewport, tab);
   await auditServiceDiagnosticsPlacement(page, viewport, tab);
   await auditRareGuestInvitationLayout(page, viewport, tab);
+  await auditDeviceAuthorityLayout(page, viewport, tab);
 
   for (const target of hoverTargets) {
     await auditHoverTarget(page, viewport, tab, target);
   }
 
   await auditSelectDropdown(page, viewport, tab);
+}
+
+async function auditDeviceAuthorityLayout(page, viewport, tab) {
+  if (tab.value !== 'connection') return;
+
+  await page.locator('[data-device-authority-content]').waitFor({ timeout: 5_000 }).catch(() => {});
+  const result = await page.evaluate(() => {
+    const content = document.querySelector('[data-device-authority-content]');
+    if (!(content instanceof HTMLElement)) return { ok: false, reason: 'missing-content' };
+    const rows = Array.from(content.querySelectorAll('[data-device-authority-device]'))
+      .filter((element) => element instanceof HTMLElement);
+    return {
+      ok: rows.length > 0
+        && rows.every((row) => row.scrollWidth <= row.clientWidth + 1),
+      rowCount: rows.length,
+      overflowingRows: rows
+        .filter((row) => row.scrollWidth > row.clientWidth + 1)
+        .map((row) => row.dataset.deviceAuthorityDevice || ''),
+    };
+  });
+  if (!result.ok) {
+    issues.push({
+      viewport: viewport.name,
+      tab: tab.label,
+      component: 'DeviceAuthority',
+      message: `设备权威列表缺失或溢出：${JSON.stringify(result)}`,
+    });
+  }
+  if (viewport.name !== 'desktop') return;
+  const setPrimaryButton = page.getByRole('button', { name: '设为主设备', exact: true }).first();
+  if (!(await setPrimaryButton.count()) || !(await setPrimaryButton.isEnabled())) {
+    issues.push({
+      viewport: viewport.name,
+      tab: tab.label,
+      component: 'DeviceAuthority',
+      message: '在线且配置不同的非主设备没有可用的主设备切换入口。',
+    });
+    return;
+  }
+  await setPrimaryButton.click();
+  const dialog = page.getByRole('dialog').filter({ hasText: '切换主设备' });
+  await dialog.waitFor({ state: 'visible', timeout: 2_000 }).catch(() => {});
+  const dialogVisible = await dialog.isVisible();
+  if (dialogVisible) {
+    await page.waitForFunction((element) => getComputedStyle(element).opacity === '1', await dialog.elementHandle(), {
+      timeout: 2_000,
+    }).catch(() => {});
+  }
+  const dialogText = dialogVisible ? await dialog.innerText() : '';
+  if (!dialogVisible || !dialogText.includes('目标设备的配置与当前主设备不同')) {
+    issues.push({
+      viewport: viewport.name,
+      tab: tab.label,
+      component: 'DeviceAuthority',
+      message: '配置不同的主设备切换没有显示确认与风险提示。',
+    });
+  }
+  const dialogSurface = dialogVisible
+    ? await dialog.evaluate((element) => {
+        const header = element.querySelector('.mantine-Modal-header');
+        const overlay = document.querySelector('.mantine-Modal-overlay');
+        const inspect = (target) => {
+          if (!(target instanceof HTMLElement)) return null;
+          const style = getComputedStyle(target);
+          return {
+            backgroundColor: style.backgroundColor,
+            opacity: style.opacity,
+          };
+        };
+        return {
+          content: inspect(element),
+          header: inspect(header),
+          overlay: inspect(overlay),
+        };
+      })
+    : null;
+  if (!dialogSurface
+    || !isOpaqueCssColor(dialogSurface.content?.backgroundColor)
+    || !isOpaqueCssColor(dialogSurface.header?.backgroundColor)
+    || dialogSurface.content?.opacity !== '1'
+    || dialogSurface.header?.opacity !== '1'
+    || isTransparentCssColor(dialogSurface.overlay?.backgroundColor)) {
+    issues.push({
+      viewport: viewport.name,
+      tab: tab.label,
+      component: 'DialogSurface',
+      message: `主设备切换弹窗没有形成实体内容层或有效遮罩：${JSON.stringify(dialogSurface)}`,
+    });
+  }
+  const dialogScreenshot = path.join(OUTPUT_DIR, 'desktop-connection-primary-dialog.png');
+  await page.screenshot({ path: dialogScreenshot, fullPage: true });
+  screenshots.push({ tab: `${tab.label} · 切换确认`, viewport: viewport.name, path: dialogScreenshot });
+  await dialog.getByRole('button', { name: '取消', exact: true }).click();
+}
+
+function isOpaqueCssColor(value) {
+  if (!value || isTransparentCssColor(value)) return false;
+  const alpha = readCssColorAlpha(value);
+  return alpha !== null && alpha >= 0.999;
+}
+
+function isTransparentCssColor(value) {
+  if (!value || value === 'transparent') return true;
+  const alpha = readCssColorAlpha(value);
+  return alpha !== null && alpha <= 0.001;
+}
+
+function readCssColorAlpha(value) {
+  const rgba = value.match(/^rgba?\((.+)\)$/i);
+  if (rgba) {
+    const parts = rgba[1].split(/[,/]/).map((part) => part.trim()).filter(Boolean);
+    return parts.length >= 4 ? Number(parts.at(-1)) : 1;
+  }
+  const colorFunction = value.match(/^color\([^/]+(?:\/\s*([\d.]+%?))?\)$/i);
+  if (colorFunction) {
+    if (!colorFunction[1]) return 1;
+    return colorFunction[1].endsWith('%')
+      ? Number(colorFunction[1].slice(0, -1)) / 100
+      : Number(colorFunction[1]);
+  }
+  return null;
 }
 
 async function auditServiceDiagnosticsPlacement(page, viewport, tab) {

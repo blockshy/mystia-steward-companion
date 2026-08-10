@@ -1330,16 +1330,33 @@ async function assertMockProtocol() {
       'x-mystia-steward-companion-client-id': 'automation-audit',
       'x-mystia-steward-companion-client-label': 'Automation Audit',
     };
+    const registrationResponse = await fetch(`http://127.0.0.1:${port}/devices/register`, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({
+        protocolVersion: 1,
+        profileSchemaVersion: 1,
+        platform: 'browser',
+        appVersion: '1.2.0',
+        profile: { automationEnabled: true },
+      }),
+    });
+    assert.equal(registrationResponse.ok, true);
+    const registration = await registrationResponse.json();
+    const runtimeHeaders = {
+      ...headers,
+      'x-mystia-steward-companion-authority-revision': String(registration.authorityRevision),
+    };
     const deniedAck = await postJson(`http://127.0.0.1:${port}/automation/barriers/ack?sequence=9001`, headers);
     assert.equal(deniedAck.ok, false);
     assert.deepEqual(deniedAck.acknowledgedSequences, []);
 
-    const lease = await postJson(`http://127.0.0.1:${port}/automation/lease/acquire`, headers);
+    const lease = await postJson(`http://127.0.0.1:${port}/automation/lease/acquire`, runtimeHeaders);
     assert.equal(lease.owned, true);
 
     const missingTargetResponse = await fetch(
       `http://127.0.0.1:${port}/automation/cancel`,
-      { method: 'POST', headers },
+      { method: 'POST', headers: runtimeHeaders },
     );
     assert.equal(missingTargetResponse.status, 400);
     const missingTarget = await missingTargetResponse.json();
@@ -1364,19 +1381,19 @@ async function assertMockProtocol() {
       assert.equal(event.orderLifecycleSequence, 7);
     }
 
-    const missingAck = await postJson(`http://127.0.0.1:${port}/automation/barriers/ack?sequence=9999`, headers);
+    const missingAck = await postJson(`http://127.0.0.1:${port}/automation/barriers/ack?sequence=9999`, runtimeHeaders);
     assert.equal(missingAck.ok, false);
     assert.deepEqual(missingAck.acknowledgedSequences, []);
     const unchangedSnapshot = await getJson(`http://127.0.0.1:${port}/snapshot`);
     assert.deepEqual(unchangedSnapshot.automationEvents.map((event) => event.sequence), [9000, 9001]);
 
-    const acknowledged = await postJson(`http://127.0.0.1:${port}/automation/barriers/ack?sequence=9001`, headers);
+    const acknowledged = await postJson(`http://127.0.0.1:${port}/automation/barriers/ack?sequence=9001`, runtimeHeaders);
     assert.equal(acknowledged.ok, true);
     assert.equal(acknowledged.sequence, 9001);
     assert.equal(acknowledged.acknowledgedCount, 2);
     assert.deepEqual(acknowledged.acknowledgedSequences, [9000, 9001]);
 
-    const duplicateAck = await postJson(`http://127.0.0.1:${port}/automation/barriers/ack?sequence=9001`, headers);
+    const duplicateAck = await postJson(`http://127.0.0.1:${port}/automation/barriers/ack?sequence=9001`, runtimeHeaders);
     assert.equal(duplicateAck.ok, false);
     assert.deepEqual(duplicateAck.acknowledgedSequences, []);
 
@@ -1386,14 +1403,14 @@ async function assertMockProtocol() {
 
     const missingLifecycle = await fetch(
       `http://127.0.0.1:${port}/orders/prepare-next`,
-      { method: 'POST', headers },
+      { method: 'POST', headers: runtimeHeaders },
     );
     assert.equal(missingLifecycle.status, 400);
     assert.equal((await missingLifecycle.json()).error, 'missing or invalid orderLifecycleSequence');
 
     const response = await postJson(
       `http://127.0.0.1:${port}/orders/prepare-next?orderLifecycleSequence=1`,
-      headers,
+      runtimeHeaders,
     );
     assert.equal(response.automation.outcome, 'progressed');
     assert.equal(response.automation.stage, 'cooking-start');
@@ -1423,7 +1440,7 @@ async function assertMockProtocol() {
 
     const commandCancellation = await postJson(
       `http://127.0.0.1:${port}/automation/cancel?target=commands`,
-      headers,
+      runtimeHeaders,
     );
     assert.equal(commandCancellation.ok, true);
     assert.equal(commandCancellation.target, 'commands');
@@ -1445,7 +1462,7 @@ async function assertMockProtocol() {
 
     const unrelatedCancellation = await postJson(
       `http://127.0.0.1:${port}/automation/cancel?target=normal`,
-      headers,
+      runtimeHeaders,
     );
     assert.equal(unrelatedCancellation.ok, true);
     assert.equal(unrelatedCancellation.target, 'normal');
@@ -1454,7 +1471,7 @@ async function assertMockProtocol() {
 
     const targetedCancellation = await postJson(
       `http://127.0.0.1:${port}/automation/cancel?target=rare`,
-      headers,
+      runtimeHeaders,
     );
     assert.equal(targetedCancellation.ok, true);
     assert.equal(targetedCancellation.target, 'rare');
@@ -1464,7 +1481,7 @@ async function assertMockProtocol() {
 
     const resumed = await postJson(
       `http://127.0.0.1:${port}/orders/normal/complete-first?orderLifecycleSequence=3`,
-      headers,
+      runtimeHeaders,
     );
     assert.equal(resumed.ok, true, 'A targeted cancellation must retain the current automation lease.');
     const normalSnapshot = await getJson(`http://127.0.0.1:${port}/snapshot`);
@@ -1473,7 +1490,7 @@ async function assertMockProtocol() {
       'The mock must preserve the concrete order kind for normal cooking-job snapshots.');
     const cancelled = await postJson(
       `http://127.0.0.1:${port}/automation/cancel?target=all`,
-      headers,
+      runtimeHeaders,
     );
     assert.equal(cancelled.ok, true);
     assert.equal(cancelled.target, 'all');
@@ -1482,7 +1499,7 @@ async function assertMockProtocol() {
 
     const superseded = await postJson(
       `http://127.0.0.1:${port}/orders/prepare-next?orderLifecycleSequence=2`,
-      headers,
+      runtimeHeaders,
     );
     assert.equal(superseded.ok, false);
     assert.equal(superseded.automation.reasonCode, 'automation-lease-unavailable');

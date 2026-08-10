@@ -28,6 +28,14 @@ type NativeLocalApiErrorCode =
 interface LocalApiRequestOptions {
   signal?: AbortSignal;
   tauriTimeoutMs?: number;
+  body?: string;
+  authorityRevision?: number;
+}
+
+export interface LocalApiWriteOptions {
+  signal?: AbortSignal;
+  body?: unknown;
+  authorityRevision?: number;
 }
 
 type LocalApiMethod = 'GET' | 'POST';
@@ -60,6 +68,8 @@ async function requestLocalApiJson<T>(
         endpoint: targetEndpoint,
         token: apiToken,
         method,
+        body: requestOptions.body,
+        authorityRevision: requestOptions.authorityRevision,
         timeoutMs: requestOptions.tauriTimeoutMs,
         clientId,
         clientLabel,
@@ -76,12 +86,17 @@ async function requestLocalApiJson<T>(
   if (apiToken) headers.set('X-Mystia-Steward-Companion-Token', apiToken);
   headers.set('X-Mystia-Steward-Companion-Client-Id', clientId);
   headers.set('X-Mystia-Steward-Companion-Client-Label', clientLabel);
+  if (requestOptions.authorityRevision && requestOptions.authorityRevision > 0) {
+    headers.set('X-Mystia-Steward-Companion-Authority-Revision', String(requestOptions.authorityRevision));
+  }
+  if (requestOptions.body !== undefined) headers.set('Content-Type', 'application/json; charset=utf-8');
   let response: Response;
   try {
     response = await fetch(targetEndpoint, {
       cache: 'no-store',
       headers,
       method,
+      body: requestOptions.body,
       signal: requestOptions.signal,
     });
   } catch (error) {
@@ -90,11 +105,12 @@ async function requestLocalApiJson<T>(
     }
     throw new Error(nativeLocalApiErrorMessage('connect-failed'));
   }
+  const responseText = await response.text();
   if (!response.ok) {
-    throw new Error(httpStatusErrorMessage(response.status));
+    throw new Error(readLocalApiErrorMessage(responseText) || httpStatusErrorMessage(response.status));
   }
 
-  return parseLocalApiJson<T>(await response.text());
+  return parseLocalApiJson<T>(responseText);
 }
 
 export async function readLocalApiJsonWithTimeout<T>(
@@ -121,23 +137,32 @@ export async function writeLocalApiJsonWithTimeout<T>(
   apiToken: string,
   path: string,
   timeoutMs: number,
-  signal?: AbortSignal,
+  options?: AbortSignal | LocalApiWriteOptions,
 ): Promise<T> {
+  const writeOptions = normalizeWriteOptions(options);
   const abortController = new AbortController();
   const timeoutId = window.setTimeout(() => abortController.abort(), timeoutMs);
   const forwardAbort = () => abortController.abort();
-  if (signal?.aborted) abortController.abort();
-  else signal?.addEventListener('abort', forwardAbort, { once: true });
+  if (writeOptions.signal?.aborted) abortController.abort();
+  else writeOptions.signal?.addEventListener('abort', forwardAbort, { once: true });
 
   try {
     return await requestLocalApiJson<T>(endpoint, apiToken, path, 'POST', {
       signal: abortController.signal,
       tauriTimeoutMs: timeoutMs,
+      body: writeOptions.body === undefined ? undefined : JSON.stringify(writeOptions.body),
+      authorityRevision: writeOptions.authorityRevision,
     });
   } finally {
     window.clearTimeout(timeoutId);
-    signal?.removeEventListener('abort', forwardAbort);
+    writeOptions.signal?.removeEventListener('abort', forwardAbort);
   }
+}
+
+function normalizeWriteOptions(options: AbortSignal | LocalApiWriteOptions | undefined): LocalApiWriteOptions {
+  if (!options) return {};
+  if (options instanceof AbortSignal) return { signal: options };
+  return options;
 }
 
 function normalizeRequestOptions(options: AbortSignal | LocalApiRequestOptions | undefined): LocalApiRequestOptions {
@@ -226,9 +251,13 @@ function nativeLocalApiErrorMessage(code: NativeLocalApiErrorCode, detail = ''):
     case 'unauthorized':
       return '本地 API Token 验证失败（HTTP 401）。请重新复制游戏内当前 Token。';
     case 'forbidden':
-      return '本地 API 拒绝了该操作（HTTP 403）。连接配置和 Token 重置只能在游戏所在电脑上执行。';
+      return detail && detail !== '403'
+        ? `本地 API 拒绝了该操作：${detail}`
+        : '本地 API 拒绝了该操作（HTTP 403）。连接配置和 Token 重置只能在游戏所在电脑上执行。';
     case 'http-status':
-      return `本地 API 返回异常状态${detail ? `（HTTP ${detail}）` : ''}。请查看 Mod 日志确认服务状态。`;
+      return detail && !/^\d{3}$/.test(detail)
+        ? detail
+        : `本地 API 返回异常状态${detail ? `（HTTP ${detail}）` : ''}。请查看 Mod 日志确认服务状态。`;
     case 'invalid-response':
       return '本地 API 返回了无效响应。请确认伴随窗口与 Mod 来自同一版本。';
     case 'internal-error':
@@ -249,5 +278,14 @@ function parseLocalApiJson<T>(payload: string): T {
     return JSON.parse(payload) as T;
   } catch {
     throw new Error(nativeLocalApiErrorMessage('invalid-response'));
+  }
+}
+
+function readLocalApiErrorMessage(payload: string): string {
+  try {
+    const value = JSON.parse(payload) as { error?: unknown };
+    return typeof value?.error === 'string' ? value.error.trim() : '';
+  } catch {
+    return '';
   }
 }

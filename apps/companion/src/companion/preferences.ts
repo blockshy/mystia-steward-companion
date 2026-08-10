@@ -163,6 +163,56 @@ export interface CompanionPreferences {
   recommendationExclusions: RecommendationExclusions;
 }
 
+/**
+ * 会影响推荐主方案、自动化或游戏界面辅助的跨设备功能配置。
+ *
+ * 窗口外观、平台能力、调试显示和纯页面状态不得进入该结构。字段顺序也是规范 JSON/hash 的一部分。
+ */
+export interface SharedCompanionPreferences {
+  automationEnabled: boolean;
+  autoRareOrderEnabled: boolean;
+  autoNormalOrderEnabled: boolean;
+  autoNormalTakeBeverage: boolean;
+  autoNormalStartCooking: boolean;
+  autoNormalDeliverFood: boolean;
+  autoNormalCompleteOrder: boolean;
+  autoNormalStopOnError: boolean;
+  autoPrepCompleteOrder: boolean;
+  autoPrepTakeBeverage: boolean;
+  autoPrepStartCooking: boolean;
+  autoPrepCollectCooking: boolean;
+  autoPrepRecipeFavoritesOnly: boolean;
+  autoPrepBeverageFavoritesOnly: boolean;
+  autoPrepStopOnError: boolean;
+  autoRareConcurrency: number;
+  autoNormalConcurrency: number;
+  autoMaxStepRetries: number;
+  autoMaxRollbacks: number;
+  filterMissingCookers: boolean;
+  missionRecipePriorityEnabled: boolean;
+  pinFavoriteRecipeEnabled: boolean;
+  pinFavoriteBeverageEnabled: boolean;
+  rareGameUiPinningEnabled: boolean;
+  normalGameUiPinningEnabled: boolean;
+  rareRecipeVariantEnabled: boolean;
+  normalRecipeVariantEnabled: boolean;
+  rareCookerHighlightEnabled: boolean;
+  normalCookerHighlightEnabled: boolean;
+  rareSeatHighlightEnabled: boolean;
+  normalSeatHighlightEnabled: boolean;
+  rareOrderHighlightEnabled: boolean;
+  normalOrderHighlightEnabled: boolean;
+  rareTargetHighlightColor: string;
+  normalTargetHighlightColor: string;
+  serviceOrderSortMode: ServiceOrderSortMode;
+  recommendationSortProfile: RecommendationSortProfile;
+  recommendationBudgetPolicy: RecommendationBudgetPolicy;
+  recipeVariantLimitPerBase: number;
+  recommendationExclusions: RecommendationExclusions;
+}
+
+export const SHARED_COMPANION_PREFERENCES_SCHEMA_VERSION = 1;
+
 export function normalizeEditableQuantity(value: number) {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(9999, Math.trunc(value)));
@@ -316,6 +366,76 @@ export function normalizeCompanionPreferences(
     recipeVariantLimitPerBase: normalizeRecipeVariantLimitPerBase(value.recipeVariantLimitPerBase),
     recommendationExclusions: normalizeRecommendationExclusions(value.recommendationExclusions),
   };
+}
+
+export function readSharedCompanionPreferences(
+  preferences: CompanionPreferences,
+): SharedCompanionPreferences {
+  const normalized = normalizeCompanionPreferences(preferences);
+  return {
+    automationEnabled: normalized.automationEnabled,
+    autoRareOrderEnabled: normalized.autoRareOrderEnabled,
+    autoNormalOrderEnabled: normalized.autoNormalOrderEnabled,
+    autoNormalTakeBeverage: normalized.autoNormalTakeBeverage,
+    autoNormalStartCooking: normalized.autoNormalStartCooking,
+    autoNormalDeliverFood: normalized.autoNormalDeliverFood,
+    autoNormalCompleteOrder: normalized.autoNormalCompleteOrder,
+    autoNormalStopOnError: normalized.autoNormalStopOnError,
+    autoPrepCompleteOrder: normalized.autoPrepCompleteOrder,
+    autoPrepTakeBeverage: normalized.autoPrepTakeBeverage,
+    autoPrepStartCooking: normalized.autoPrepStartCooking,
+    autoPrepCollectCooking: normalized.autoPrepCollectCooking,
+    autoPrepRecipeFavoritesOnly: normalized.autoPrepRecipeFavoritesOnly,
+    autoPrepBeverageFavoritesOnly: normalized.autoPrepBeverageFavoritesOnly,
+    autoPrepStopOnError: normalized.autoPrepStopOnError,
+    autoRareConcurrency: normalized.autoRareConcurrency,
+    autoNormalConcurrency: normalized.autoNormalConcurrency,
+    autoMaxStepRetries: normalized.autoMaxStepRetries,
+    autoMaxRollbacks: normalized.autoMaxRollbacks,
+    filterMissingCookers: normalized.filterMissingCookers,
+    missionRecipePriorityEnabled: normalized.missionRecipePriorityEnabled,
+    pinFavoriteRecipeEnabled: normalized.pinFavoriteRecipeEnabled,
+    pinFavoriteBeverageEnabled: normalized.pinFavoriteBeverageEnabled,
+    rareGameUiPinningEnabled: normalized.rareGameUiPinningEnabled,
+    normalGameUiPinningEnabled: normalized.normalGameUiPinningEnabled,
+    rareRecipeVariantEnabled: normalized.rareRecipeVariantEnabled,
+    normalRecipeVariantEnabled: normalized.normalRecipeVariantEnabled,
+    rareCookerHighlightEnabled: normalized.rareCookerHighlightEnabled,
+    normalCookerHighlightEnabled: normalized.normalCookerHighlightEnabled,
+    rareSeatHighlightEnabled: normalized.rareSeatHighlightEnabled,
+    normalSeatHighlightEnabled: normalized.normalSeatHighlightEnabled,
+    rareOrderHighlightEnabled: normalized.rareOrderHighlightEnabled,
+    normalOrderHighlightEnabled: normalized.normalOrderHighlightEnabled,
+    rareTargetHighlightColor: normalized.rareTargetHighlightColor,
+    normalTargetHighlightColor: normalized.normalTargetHighlightColor,
+    serviceOrderSortMode: normalized.serviceOrderSortMode,
+    recommendationSortProfile: normalized.recommendationSortProfile,
+    recommendationBudgetPolicy: normalized.recommendationBudgetPolicy,
+    recipeVariantLimitPerBase: normalized.recipeVariantLimitPerBase,
+    recommendationExclusions: normalized.recommendationExclusions,
+  };
+}
+
+export function normalizeSharedCompanionPreferences(
+  value: Partial<SharedCompanionPreferences>,
+): SharedCompanionPreferences {
+  return readSharedCompanionPreferences(normalizeCompanionPreferences(value));
+}
+
+export function applySharedCompanionPreferences(
+  current: CompanionPreferences,
+  shared: SharedCompanionPreferences,
+): CompanionPreferences {
+  return normalizeCompanionPreferences({
+    ...current,
+    ...normalizeSharedCompanionPreferences(shared),
+  });
+}
+
+export function serializeSharedCompanionPreferences(
+  preferences: SharedCompanionPreferences,
+): string {
+  return JSON.stringify(normalizeSharedCompanionPreferences(preferences));
 }
 
 export function normalizeBackgroundOpacity(value: number) {

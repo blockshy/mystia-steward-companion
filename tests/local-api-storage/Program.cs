@@ -17,7 +17,9 @@ try
     VerifyCustomRecipeManagement(root, log);
     VerifyCorruptCustomRecipeIsPreserved(root, log);
     VerifyFutureSchemasArePreserved(root, log);
-    Console.WriteLine("PASS: favorite and custom recipe storage was preserved, normalized and mutated without destructive rewrites.");
+    VerifyCompanionDeviceAuthority(root, log);
+    VerifyCorruptDeviceAuthorityIsPreserved(root, log);
+    Console.WriteLine("PASS: local API file stores and companion device configuration authority passed storage, CAS and corruption checks.");
     return 0;
 }
 catch (Exception ex)
@@ -29,6 +31,253 @@ finally
 {
     Logger.Sources.Remove(log);
     Directory.Delete(root, recursive: true);
+}
+
+static void VerifyCompanionDeviceAuthority(string root, ManualLogSource log)
+{
+    var path = Path.Combine(root, "companion-devices.json");
+    var store = new CompanionDeviceAuthorityStore(path, log);
+    var now = DateTime.UtcNow;
+    var primaryProfile = BuildSharedProfile(automationEnabled: true, rareConcurrency: 2);
+    var secondaryProfile = BuildSharedProfile(automationEnabled: false, rareConcurrency: 3);
+
+    var primary = store.Register(
+        "11111111-1111-1111-1111-111111111111",
+        "Windows 主设备",
+        RegisterRequest("windows", primaryProfile),
+        now);
+    AssertEqual(true, primary.CurrentDeviceIsPrimary, "The first registered device did not become primary.");
+    AssertEqual(1L, primary.AuthorityRevision, "Initial authority revision is invalid.");
+    AssertEqual(1, primary.Devices.Count, "Initial device registry count is invalid.");
+
+    var secondary = store.Register(
+        "22222222-2222-2222-2222-222222222222",
+        "Android 设备",
+        RegisterRequest("android", secondaryProfile),
+        now.AddSeconds(1));
+    AssertEqual(false, secondary.CurrentDeviceIsPrimary, "The second registered device unexpectedly became primary.");
+    AssertEqual(
+        true,
+        secondary.ActiveProfile.GetProperty("automationEnabled").GetBoolean(),
+        "A secondary device did not receive the primary active profile.");
+    AssertEqual(
+        false,
+        secondary.CurrentDeviceProfile.GetProperty("automationEnabled").GetBoolean(),
+        "A secondary device's own stored profile was overwritten during registration.");
+
+    ExpectAuthorityError(
+        403,
+        () => store.UpdatePrimaryProfile(
+            secondary.CurrentDeviceId,
+            new CompanionDeviceProfileUpdateRequest
+            {
+                ProtocolVersion = 1,
+                ProfileSchemaVersion = 1,
+                ExpectedAuthorityRevision = secondary.AuthorityRevision,
+                ExpectedProfileRevision = secondary.CurrentDeviceProfileRevision,
+                Profile = secondaryProfile,
+            },
+            now.AddSeconds(2)));
+
+    var updatedProfile = BuildSharedProfile(automationEnabled: true, rareConcurrency: 4);
+    var updated = store.UpdatePrimaryProfile(
+        primary.CurrentDeviceId,
+        new CompanionDeviceProfileUpdateRequest
+        {
+            ProtocolVersion = 1,
+            ProfileSchemaVersion = 1,
+            ExpectedAuthorityRevision = secondary.AuthorityRevision,
+            ExpectedProfileRevision = primary.CurrentDeviceProfileRevision,
+            Profile = updatedProfile,
+        },
+        now.AddSeconds(3));
+    AssertEqual(2L, updated.AuthorityRevision, "Changing the active profile did not advance authority.");
+    AssertEqual(4, updated.ActiveProfile.GetProperty("autoRareConcurrency").GetInt32(), "The active profile update was not persisted.");
+    ExpectAuthorityError(
+        409,
+        () => store.UpdatePrimaryProfile(
+            primary.CurrentDeviceId,
+            new CompanionDeviceProfileUpdateRequest
+            {
+                ProtocolVersion = 1,
+                ProfileSchemaVersion = 1,
+                ExpectedAuthorityRevision = secondary.AuthorityRevision,
+                ExpectedProfileRevision = primary.CurrentDeviceProfileRevision,
+                Profile = primaryProfile,
+            },
+            now.AddSeconds(4)));
+
+    AssertEqual(
+        true,
+        store.TryAuthorizePrimary(primary.CurrentDeviceId, updated.AuthorityRevision, now.AddSeconds(4), out var primaryWriterError),
+        $"The current primary was not authorized as runtime writer: {primaryWriterError}");
+    AssertEqual(
+        false,
+        store.TryAuthorizePrimary(secondary.CurrentDeviceId, updated.AuthorityRevision, now.AddSeconds(4), out _),
+        "A secondary device was authorized as runtime writer.");
+
+    var synced = store.SyncFromPrimary(
+        secondary.CurrentDeviceId,
+        new CompanionDeviceSyncRequest
+        {
+            ProtocolVersion = 1,
+            ExpectedAuthorityRevision = updated.AuthorityRevision,
+            DeviceId = secondary.CurrentDeviceId,
+        },
+        now.AddSeconds(5));
+    var syncedDevice = synced.Devices.Single(device => device.DeviceId == secondary.CurrentDeviceId);
+    AssertEqual(true, syncedDevice.SyncPending, "One-way profile synchronization did not create a pending acknowledgement.");
+    var secondaryPending = store.Read(secondary.CurrentDeviceId, now.AddSeconds(6));
+    AssertEqual(true, !string.IsNullOrWhiteSpace(secondaryPending.PendingSyncId), "Pending sync ID was not exposed to its target device.");
+    var acknowledged = store.AcknowledgeSync(
+        secondary.CurrentDeviceId,
+        new CompanionDeviceSyncAckRequest
+        {
+            ProtocolVersion = 1,
+            SyncId = secondaryPending.PendingSyncId!,
+            ProfileRevision = secondaryPending.CurrentDeviceProfileRevision,
+            ProfileHash = secondaryPending.CurrentDeviceProfileHash,
+        },
+        now.AddSeconds(7));
+    AssertEqual(null, acknowledged.PendingSyncId, "Acknowledged sync was not retired.");
+
+    var switched = store.SetPrimary(
+        primary.CurrentDeviceId,
+        new CompanionDeviceSetPrimaryRequest
+        {
+            ProtocolVersion = 1,
+            ExpectedAuthorityRevision = acknowledged.AuthorityRevision,
+            DeviceId = secondary.CurrentDeviceId,
+        },
+        now.AddSeconds(8));
+    AssertEqual(true, switched.Changed, "Primary transfer did not report a state change.");
+    AssertEqual(secondary.CurrentDeviceId, switched.State.PrimaryDeviceId, "Primary transfer selected the wrong device.");
+    AssertEqual(3L, switched.State.AuthorityRevision, "Primary transfer did not advance authority.");
+    AssertEqual(
+        switched.State.ActiveProfileHash,
+        switched.State.CurrentDeviceProfileHash,
+        "The new primary did not activate its exact stored profile.");
+    AssertEqual(
+        false,
+        store.TryAuthorizePrimary(primary.CurrentDeviceId, updated.AuthorityRevision, now.AddSeconds(8), out _),
+        "The former primary retained runtime-writer authority after transfer.");
+    AssertEqual(
+        true,
+        store.TryAuthorizePrimary(secondary.CurrentDeviceId, switched.State.AuthorityRevision, now.AddSeconds(8), out var secondaryWriterError),
+        $"The new primary did not receive runtime-writer authority: {secondaryWriterError}");
+
+    var reloaded = new CompanionDeviceAuthorityStore(path, log).Register(
+        secondary.CurrentDeviceId,
+        "Ignored registration label",
+        RegisterRequest("android", secondaryProfile),
+        now.AddSeconds(9));
+    AssertEqual(secondary.CurrentDeviceId, reloaded.PrimaryDeviceId, "Primary identity did not survive a store reload.");
+    AssertEqual("Android 设备", reloaded.Devices.Single(device => device.IsCurrent).Label, "Registration unexpectedly renamed an existing device.");
+
+    using var invalidDocument = JsonDocument.Parse(JsonSerializer.Serialize(new Dictionary<string, object?>
+    {
+        ["automationEnabled"] = true,
+    }));
+    ExpectAuthorityError(
+        400,
+        () => new CompanionDeviceAuthorityStore(Path.Combine(root, "invalid-profile.json"), log).Register(
+            "33333333-3333-3333-3333-333333333333",
+            "Invalid",
+            RegisterRequest("browser", invalidDocument.RootElement.Clone()),
+            now));
+}
+
+static void VerifyCorruptDeviceAuthorityIsPreserved(string root, ManualLogSource log)
+{
+    var path = Path.Combine(root, "companion-devices-corrupt.json");
+    const string corrupt = "{ broken device registry";
+    File.WriteAllText(path, corrupt, Encoding.UTF8);
+    var store = new CompanionDeviceAuthorityStore(path, log);
+    ExpectAuthorityError(
+        503,
+        () => store.Register(
+            "44444444-4444-4444-4444-444444444444",
+            "Device",
+            RegisterRequest("windows", BuildSharedProfile(false, 2)),
+            DateTime.UtcNow));
+    AssertEqual(corrupt, File.ReadAllText(path, Encoding.UTF8), "A corrupt device registry was overwritten.");
+}
+
+static CompanionDeviceRegisterRequest RegisterRequest(string platform, JsonElement profile)
+{
+    return new CompanionDeviceRegisterRequest
+    {
+        ProtocolVersion = 1,
+        ProfileSchemaVersion = 1,
+        Platform = platform,
+        AppVersion = "1.2.0",
+        Profile = profile,
+    };
+}
+
+static JsonElement BuildSharedProfile(bool automationEnabled, int rareConcurrency)
+{
+    var booleanFields = new[]
+    {
+        "automationEnabled", "autoRareOrderEnabled", "autoNormalOrderEnabled",
+        "autoNormalTakeBeverage", "autoNormalStartCooking", "autoNormalDeliverFood",
+        "autoNormalCompleteOrder", "autoNormalStopOnError", "autoPrepCompleteOrder",
+        "autoPrepTakeBeverage", "autoPrepStartCooking", "autoPrepCollectCooking",
+        "autoPrepRecipeFavoritesOnly", "autoPrepBeverageFavoritesOnly", "autoPrepStopOnError",
+        "filterMissingCookers", "missionRecipePriorityEnabled", "pinFavoriteRecipeEnabled",
+        "pinFavoriteBeverageEnabled", "rareGameUiPinningEnabled", "normalGameUiPinningEnabled",
+        "rareRecipeVariantEnabled", "normalRecipeVariantEnabled", "rareCookerHighlightEnabled",
+        "normalCookerHighlightEnabled", "rareSeatHighlightEnabled", "normalSeatHighlightEnabled",
+        "rareOrderHighlightEnabled", "normalOrderHighlightEnabled",
+    };
+    var profile = booleanFields.ToDictionary(field => field, _ => (object)false, StringComparer.Ordinal);
+    profile["automationEnabled"] = automationEnabled;
+    profile["autoRareOrderEnabled"] = true;
+    profile["filterMissingCookers"] = true;
+    profile["missionRecipePriorityEnabled"] = true;
+    profile["autoRareConcurrency"] = rareConcurrency;
+    profile["autoNormalConcurrency"] = 3;
+    profile["autoMaxStepRetries"] = 3;
+    profile["autoMaxRollbacks"] = 2;
+    profile["rareTargetHighlightColor"] = "#FFDB2E";
+    profile["normalTargetHighlightColor"] = "#5FACD3";
+    profile["serviceOrderSortMode"] = "ordered";
+    profile["recommendationBudgetPolicy"] = "block";
+    profile["recipeVariantLimitPerBase"] = 1;
+    var objectiveKeys = new[]
+    {
+        "foodPreference", "beveragePreference", "negativeRisk", "extraCount", "resourcePressure",
+        "totalCost", "profit", "beverageStock", "cookerAvailable",
+    };
+    profile["recommendationSortProfile"] = new Dictionary<string, object?>
+    {
+        ["preset"] = "balanced",
+        ["objectives"] = objectiveKeys.Select(key => new Dictionary<string, object?>
+        {
+            ["key"] = key,
+            ["enabled"] = true,
+            ["weight"] = 50,
+            ["direction"] = key is "negativeRisk" or "extraCount" or "resourcePressure" or "totalCost" ? "asc" : "desc",
+        }).ToArray(),
+    };
+    profile["recommendationExclusions"] = new Dictionary<string, object?>
+    {
+        ["excludedIngredientIds"] = Array.Empty<int>(),
+        ["excludedBeverageIds"] = Array.Empty<int>(),
+    };
+    return JsonSerializer.SerializeToElement(profile);
+}
+
+static void ExpectAuthorityError(int statusCode, Action action)
+{
+    try
+    {
+        action();
+        throw new InvalidOperationException($"Expected device authority error {statusCode} was not thrown.");
+    }
+    catch (CompanionDeviceAuthorityException ex) when (ex.StatusCode == statusCode)
+    {
+    }
 }
 
 static void VerifyCorruptFavoriteIsPreserved(string root, ManualLogSource log)

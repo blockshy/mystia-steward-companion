@@ -27,6 +27,8 @@
     "audit:recommendations": "node --experimental-strip-types tests/recommendations/primary-execution-plan-audit.mjs && node --experimental-strip-types tests/recommendations/yuyuko-phase-evaluation-audit.mjs && node --experimental-strip-types tests/recommendations/yuuma-challenge-audit.mjs && node --experimental-strip-types tests/recommendations/mizuchi-challenges-audit.mjs && node --experimental-strip-types tests/recommendations/order-presentation-audit.mjs && node --experimental-strip-types tests/recommendations/infinite-inventory-audit.mjs && node --experimental-strip-types tests/recommendations/blocked-diagnostics-audit.mjs",
     "audit:mizuchi": "node --experimental-strip-types tests/recommendations/mizuchi-challenges-audit.mjs",
     "audit:connection-recovery": "node --experimental-strip-types tests/connection-recovery/connection-recovery-audit.mjs",
+    "audit:device-authority": "node tests/device-authority/device-authority-audit.mjs",
+    "audit:device-authority:ui": "node tests/device-authority/device-authority-playwright.mjs",
     "audit:font-scale": "node tests/font-scale/font-scale-playwright.mjs",
     "audit:settings-help": "node tests/settings-help/settings-help-playwright.mjs",
     "audit:service-orders": "node tests/service-order-presentation/service-order-state-audit.mjs && node tests/service-order-presentation/service-order-presentation-playwright.mjs",

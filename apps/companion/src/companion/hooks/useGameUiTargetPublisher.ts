@@ -25,6 +25,7 @@ interface UseGameUiTargetPublisherOptions {
   endpoint: string;
   apiToken: string;
   connectionRevision: number;
+  authorityRevision: number;
   sessionId: string;
   businessGeneration: number;
   businessActive: boolean;
@@ -43,6 +44,7 @@ interface UiTargetPublication {
   clearsPreviousContext: boolean;
   endpoint: string;
   apiToken: string;
+  authorityRevision: number;
   businessGeneration: number;
   targetSlots: GameUiTargetSlots;
 }
@@ -67,6 +69,7 @@ export function useGameUiTargetPublisher({
   endpoint,
   apiToken,
   connectionRevision,
+  authorityRevision,
   sessionId,
   businessGeneration,
   businessActive,
@@ -109,6 +112,7 @@ export function useGameUiTargetPublisher({
       publication.apiToken,
       publication.businessGeneration,
       publication.targetSlots,
+      publication.authorityRevision,
       abortController.signal,
     )
       .then(() => {
@@ -162,7 +166,14 @@ export function useGameUiTargetPublisher({
     // A successful context-clear POST advances this value so current targets are
     // reconciled again even when no recommendation input changed in the meantime.
     void contextClearRevision;
-    const connectionKey = [endpoint, apiToken, connectionRevision, sessionId, businessGeneration].join('\n');
+    const connectionKey = [
+      endpoint,
+      apiToken,
+      connectionRevision,
+      authorityRevision,
+      sessionId,
+      businessGeneration,
+    ].join('\n');
     const connectionChanged = state.connectionKey !== connectionKey;
     const targetPolicyChanged = state.targetPolicySignature !== targetPolicySignature;
     if (connectionChanged || targetPolicyChanged) {
@@ -173,14 +184,12 @@ export function useGameUiTargetPublisher({
       state.lastCurrentTargets = { rare: null, normal: null };
       state.failed = { rare: false, normal: false };
       state.lastSuccessfulSignature = connectionChanged ? '' : state.lastSuccessfulSignature;
-      state.activeAbortController?.abort();
       clearRetry(state);
     }
 
     if (!connectionReady || !businessActive || businessGeneration <= 0) {
       state.desired = null;
       state.lastCurrentTargets = { rare: null, normal: null };
-      state.activeAbortController?.abort();
       clearRetry(state);
       return;
     }
@@ -225,6 +234,7 @@ export function useGameUiTargetPublisher({
       clearsPreviousContext: state.contextClearPending,
       endpoint,
       apiToken,
+      authorityRevision,
       businessGeneration,
       targetSlots: nextTargets,
     };
@@ -232,6 +242,7 @@ export function useGameUiTargetPublisher({
     pump();
   }, [
     apiToken,
+    authorityRevision,
     businessActive,
     businessGeneration,
     colors,

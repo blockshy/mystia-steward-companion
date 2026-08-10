@@ -32,6 +32,7 @@ const pages = [
   { value: 'inventory', topValue: 'extensions', innerSelector: '[data-extension-tabs]', innerLabel: '修改' },
   { value: 'logs', topValue: 'logs' },
   { value: 'settings', topValue: 'settings', innerSelector: '[data-settings-tabs]', innerLabel: '窗口' },
+  { value: 'connection', topValue: 'settings', innerSelector: '[data-settings-tabs]', innerLabel: '连接' },
   { value: 'help', topValue: 'settings', innerSelector: '[data-settings-tabs]', innerLabel: '帮助' },
 ];
 
@@ -118,6 +119,7 @@ console.log(`font scale Playwright audit passed; screenshots: ${outputDir}`);
 function seedLocalStorage({ endpoint, token, fontScale, fontScaleStorageKey, showDebugDetails }) {
   localStorage.setItem('mystia-steward-companion-mod-api-endpoint', endpoint);
   localStorage.setItem('mystia-steward-companion-mod-api-token', token);
+  localStorage.setItem('mystia-steward-companion-client-id', 'font-scale-audit-device');
   localStorage.setItem('mystia-steward-companion-show-debug-details', showDebugDetails ? '1' : '0');
   const seedMarker = 'mystia-steward-companion-font-scale-audit-seeded';
   if (!sessionStorage.getItem(seedMarker)) {

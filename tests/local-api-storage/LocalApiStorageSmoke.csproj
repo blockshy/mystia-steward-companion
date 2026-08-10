@@ -16,6 +16,7 @@
     <Compile Include="../../mods/bepinex/src/LocalApi/JsonFileStore.cs" Link="JsonFileStore.cs" />
     <Compile Include="../../mods/bepinex/src/LocalApi/FavoriteStore.cs" Link="FavoriteStore.cs" />
     <Compile Include="../../mods/bepinex/src/LocalApi/CustomRecipeStore.cs" Link="CustomRecipeStore.cs" />
+    <Compile Include="../../mods/bepinex/src/LocalApi/CompanionDeviceAuthorityStore.cs" Link="CompanionDeviceAuthorityStore.cs" />
   </ItemGroup>
 
   <ItemGroup>

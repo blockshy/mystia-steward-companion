@@ -369,6 +369,12 @@ body {
   background-color: var(--companion-background-surface);
 }
 
+/* Dialogs are modal reading surfaces, so they remain opaque even when the window background is translucent. */
+.steward-dialog-content,
+.steward-dialog-header {
+  background: var(--popover) !important;
+}
+
 .companion-shell,
 .companion-shell *,
 .mantine-Popover-dropdown,

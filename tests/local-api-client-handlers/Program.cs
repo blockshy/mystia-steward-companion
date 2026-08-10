@@ -9,8 +9,8 @@ try
     VerifyConcurrencyLimitAndStop(pool);
     VerifyHandlerFailureReleasesSlot(pool, failures);
     VerifyDisposeFailureReleasesSlot();
-    VerifyRequestHeadersMustBeCompleteAndBounded();
-    Console.WriteLine("PASS: client handlers are bounded and leak-free, and request headers must be complete and bounded.");
+    VerifyRequestsMustBeCompleteAndBounded();
+    Console.WriteLine("PASS: client handlers are bounded and leak-free, and HTTP headers/bodies are complete and bounded.");
     return 0;
 }
 catch (Exception ex)
@@ -65,29 +65,52 @@ static void VerifyDisposeFailureReleasesSlot()
     pool.StopAccepting();
 }
 
-static void VerifyRequestHeadersMustBeCompleteAndBounded()
+static void VerifyRequestsMustBeCompleteAndBounded()
 {
-    using var complete = new MemoryStream(System.Text.Encoding.ASCII.GetBytes("GET /health HTTP/1.1\r\nHost: localhost\r\n\r\nignored"));
-    var header = HttpRequestReader.ReadHeader(complete, 128);
-    AssertEqual("GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n", header, "Complete headers were not read exactly.");
+    using var complete = new MemoryStream(System.Text.Encoding.ASCII.GetBytes("POST /devices/register HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n\r\n{}"));
+    var request = HttpRequestReader.Read(complete, 128, 16);
+    AssertEqual("POST /devices/register HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n\r\n", request.Header, "Complete headers were not read exactly.");
+    AssertEqual("{}", HttpRequestReader.ReadRequiredJsonBody(request), "Complete request body was not read exactly.");
 
     ExpectRequestError(
         new MemoryStream(System.Text.Encoding.ASCII.GetBytes("GET /health HTTP/1.1\r\nHost: localhost")),
         128,
+        16,
         400);
     ExpectRequestError(
         new MemoryStream(System.Text.Encoding.ASCII.GetBytes(new string('a', 32))),
         32,
+        16,
         431);
+    ExpectRequestError(
+        new MemoryStream(System.Text.Encoding.ASCII.GetBytes("POST /devices/register HTTP/1.1\r\nContent-Length: 17\r\n\r\n" + new string('a', 17))),
+        128,
+        16,
+        413);
+    ExpectRequestError(
+        new MemoryStream(System.Text.Encoding.ASCII.GetBytes("POST /devices/register HTTP/1.1\r\nContent-Length: 3\r\n\r\n{}")),
+        128,
+        16,
+        400);
+    ExpectRequestError(
+        new MemoryStream(System.Text.Encoding.ASCII.GetBytes("POST /devices/register HTTP/1.1\r\nContent-Length: 2\r\nContent-Length: 2\r\n\r\n{}")),
+        128,
+        16,
+        400);
+    ExpectRequestError(
+        new MemoryStream(System.Text.Encoding.ASCII.GetBytes("POST /devices/register HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n")),
+        128,
+        16,
+        400);
 }
 
-static void ExpectRequestError(Stream stream, int maxBytes, int expectedStatus)
+static void ExpectRequestError(Stream stream, int maxHeaderBytes, int maxBodyBytes, int expectedStatus)
 {
     using (stream)
     {
         try
         {
-            _ = HttpRequestReader.ReadHeader(stream, maxBytes);
+            _ = HttpRequestReader.Read(stream, maxHeaderBytes, maxBodyBytes);
             throw new InvalidOperationException($"Expected HTTP {expectedStatus} request error was not thrown.");
         }
         catch (HttpRequestReadException ex)

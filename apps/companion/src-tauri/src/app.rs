@@ -222,6 +222,8 @@ async fn request_local_api(
     endpoint: String,
     token: String,
     method: Option<String>,
+    body: Option<String>,
+    authority_revision: Option<u64>,
     timeout_ms: Option<u64>,
     client_id: Option<String>,
     client_label: Option<String>,
@@ -232,6 +234,8 @@ async fn request_local_api(
         endpoint,
         None,
         token,
+        body,
+        authority_revision,
         timeout_ms,
         client_id,
         client_label,
@@ -245,6 +249,8 @@ async fn request_local_api_with_frontend_timeout_async(
     endpoint: String,
     path_override: Option<String>,
     token: String,
+    body: Option<String>,
+    authority_revision: Option<u64>,
     timeout_ms: Option<u64>,
     client_id: Option<String>,
     client_label: Option<String>,
@@ -255,6 +261,8 @@ async fn request_local_api_with_frontend_timeout_async(
             &endpoint,
             path_override.as_deref(),
             &token,
+            body.as_deref(),
+            authority_revision,
             timeout_ms,
             client_id.as_deref(),
             client_label.as_deref(),
@@ -274,6 +282,8 @@ fn request_local_api_with_frontend_timeout(
     endpoint: &str,
     path_override: Option<&str>,
     token: &str,
+    body: Option<&str>,
+    authority_revision: Option<u64>,
     timeout_ms: Option<u64>,
     client_id: Option<&str>,
     client_label: Option<&str>,
@@ -284,6 +294,8 @@ fn request_local_api_with_frontend_timeout(
         endpoint,
         path_override,
         token,
+        body,
+        authority_revision,
         timeouts.connect,
         timeouts.read,
         timeouts.write,
@@ -317,6 +329,8 @@ fn request_local_api_with_timeout(
     endpoint: &str,
     path_override: Option<&str>,
     token: &str,
+    body: Option<&str>,
+    authority_revision: Option<u64>,
     connect_timeout: Duration,
     read_timeout: Duration,
     write_timeout: Duration,
@@ -326,6 +340,19 @@ fn request_local_api_with_timeout(
     let target = LocalApiTarget::parse(&endpoint)?;
     let path = path_override.unwrap_or(&target.path);
     let method = normalize_http_method(method)?;
+    let body = body.unwrap_or("");
+    if method == "GET" && !body.is_empty() {
+        return Err(LocalApiError::new(
+            LocalApiErrorCode::InvalidRequest,
+            "GET requests cannot contain a body",
+        ));
+    }
+    if body.len() > 65_536 {
+        return Err(LocalApiError::new(
+            LocalApiErrorCode::InvalidRequest,
+            "local API request body exceeds 64 KiB",
+        ));
+    }
     validate_http_fragment(path, "path")?;
     validate_http_fragment(token, "token")?;
     if let Some(value) = client_id {
@@ -371,9 +398,28 @@ fn request_local_api_with_timeout(
         .filter(|value| !value.is_empty())
         .map(|value| format!("X-Mystia-Steward-Companion-Client-Label: {value}\r\n"))
         .unwrap_or_default();
+    let authority_revision_header = authority_revision
+        .filter(|value| *value > 0)
+        .map(|value| format!("X-Mystia-Steward-Companion-Authority-Revision: {value}\r\n"))
+        .unwrap_or_default();
+    let content_type_header = if body.is_empty() {
+        String::new()
+    } else {
+        "Content-Type: application/json; charset=utf-8\r\n".to_string()
+    };
     let request = format!(
-        "{} {} HTTP/1.1\r\nHost: {}:{}\r\n{}{}{}Connection: close\r\nCache-Control: no-store\r\nContent-Length: 0\r\n\r\n",
-        method, path, target.host, target.port, auth_header, client_id_header, client_label_header
+        "{} {} HTTP/1.1\r\nHost: {}:{}\r\n{}{}{}{}{}Connection: close\r\nCache-Control: no-store\r\nContent-Length: {}\r\n\r\n{}",
+        method,
+        path,
+        target.host,
+        target.port,
+        auth_header,
+        client_id_header,
+        client_label_header,
+        authority_revision_header,
+        content_type_header,
+        body.len(),
+        body,
     );
     stream
         .write_all(request.as_bytes())
@@ -997,17 +1043,25 @@ fn parse_http_response_body(response: &str) -> LocalApiResult<String> {
         200 => Ok(body.to_string()),
         401 => Err(LocalApiError::new(
             LocalApiErrorCode::Unauthorized,
-            status_code.to_string(),
+            local_api_http_error_detail(status_code, body),
         )),
         403 => Err(LocalApiError::new(
             LocalApiErrorCode::Forbidden,
-            status_code.to_string(),
+            local_api_http_error_detail(status_code, body),
         )),
         _ => Err(LocalApiError::new(
             LocalApiErrorCode::HttpStatus,
-            status_code.to_string(),
+            local_api_http_error_detail(status_code, body),
         )),
     }
+}
+
+fn local_api_http_error_detail(status_code: u16, body: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| value.get("error")?.as_str().map(str::trim).map(str::to_string))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| status_code.to_string())
 }
 
 #[cfg(desktop)]
@@ -1157,6 +1211,8 @@ fn start_game_shutdown_monitor(
                 &endpoint,
                 Some("/health"),
                 "",
+                None,
+                None,
                 Duration::from_millis(350),
                 Duration::from_millis(350),
                 Duration::from_millis(250),
@@ -1933,6 +1989,18 @@ mod tests {
             assert_eq!(error.detail, status.to_string());
             assert_eq!(error.encode(), format!("local-api:{encoded_code}:{status}"));
         }
+    }
+
+    #[test]
+    fn preserves_local_api_json_error_detail() {
+        let body = r#"{"ok":false,"error":"configuration authority changed"}"#;
+        let response = format!(
+            "HTTP/1.1 409 Conflict\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len(),
+        );
+        let error = parse_http_response_body(&response).unwrap_err();
+        assert_eq!(error.code, LocalApiErrorCode::HttpStatus);
+        assert_eq!(error.detail, "configuration authority changed");
     }
 
     #[test]

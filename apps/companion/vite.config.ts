@@ -1,4 +1,5 @@
 import { execSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
@@ -15,12 +16,16 @@ function resolveGitCommitTime() {
 }
 
 const appVersion = resolveGitCommitTime()
+const packageVersion = JSON.parse(
+  readFileSync(path.resolve(__dirname, '../../package.json'), 'utf8'),
+).version as string
 
 export default defineConfig({
   root: __dirname,
   plugins: [react(), tailwindcss()],
   define: {
     __APP_COMMIT_HASH__: JSON.stringify(appVersion),
+    __APP_VERSION__: JSON.stringify(packageVersion),
   },
   publicDir: path.resolve(__dirname, './public'),
   build: {

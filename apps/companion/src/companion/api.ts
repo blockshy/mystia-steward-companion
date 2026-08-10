@@ -5,8 +5,8 @@ import type {
 } from '@/companion/automation-state';
 import { assertAutomationDirectDeliveryCompletionInvariant } from '@/companion/automation-machine';
 import { readLocalApiJson, writeLocalApiJsonWithTimeout } from '@/companion/local-api';
-import type { CompanionPreferences } from '@/companion/preferences';
-import { normalizeEditableQuantity } from '@/companion/preferences';
+import type { CompanionPreferences, SharedCompanionPreferences } from '@/companion/preferences';
+import { SHARED_COMPANION_PREFERENCES_SCHEMA_VERSION, normalizeEditableQuantity } from '@/companion/preferences';
 import { serializeRareGuestInvitationLevels } from '@/companion/storage';
 import type {
   DiagnosticPackageResponse,
@@ -19,6 +19,8 @@ import type {
   CustomRecipeFlagUpdateInput,
   CustomRecipeMutationResponse,
   CustomRecipeUpsertInput,
+  CompanionDeviceAuthorityState,
+  CompanionDevicePlatform,
   CookerControllerReservation,
   FavoriteData,
   FavoriteMutationResponse,
@@ -78,6 +80,137 @@ export interface AutomationDecisionDiagnosticRequest {
   orderLines: string[];
   selectionLines: string[];
   skipLines: string[];
+}
+
+const COMPANION_DEVICE_PROTOCOL_VERSION = 1;
+
+export async function registerCompanionDevice(
+  endpoint: string,
+  apiToken: string,
+  platform: CompanionDevicePlatform,
+  appVersion: string,
+  profile: SharedCompanionPreferences,
+): Promise<CompanionDeviceAuthorityState> {
+  return writeLocalApiJsonWithTimeout<CompanionDeviceAuthorityState>(
+    endpoint,
+    apiToken,
+    '/devices/register',
+    3200,
+    {
+      body: {
+        protocolVersion: COMPANION_DEVICE_PROTOCOL_VERSION,
+        profileSchemaVersion: SHARED_COMPANION_PREFERENCES_SCHEMA_VERSION,
+        platform,
+        appVersion,
+        profile,
+      },
+    },
+  );
+}
+
+export async function readCompanionDevices(
+  endpoint: string,
+  apiToken: string,
+  signal?: AbortSignal,
+): Promise<CompanionDeviceAuthorityState> {
+  return readLocalApiJson<CompanionDeviceAuthorityState>(endpoint, apiToken, '/devices', signal);
+}
+
+export async function updatePrimaryCompanionProfile(
+  endpoint: string,
+  apiToken: string,
+  state: CompanionDeviceAuthorityState,
+  profile: SharedCompanionPreferences,
+): Promise<CompanionDeviceAuthorityState> {
+  return writeLocalApiJsonWithTimeout<CompanionDeviceAuthorityState>(
+    endpoint,
+    apiToken,
+    '/devices/profile',
+    3200,
+    {
+      body: {
+        protocolVersion: COMPANION_DEVICE_PROTOCOL_VERSION,
+        profileSchemaVersion: SHARED_COMPANION_PREFERENCES_SCHEMA_VERSION,
+        expectedAuthorityRevision: state.authorityRevision,
+        expectedProfileRevision: state.currentDeviceProfileRevision,
+        profile,
+      },
+    },
+  );
+}
+
+export async function setPrimaryCompanionDevice(
+  endpoint: string,
+  apiToken: string,
+  authorityRevision: number,
+  deviceId: string,
+): Promise<CompanionDeviceAuthorityState> {
+  return writeDeviceAuthorityMutation(endpoint, apiToken, '/devices/primary', {
+    protocolVersion: COMPANION_DEVICE_PROTOCOL_VERSION,
+    expectedAuthorityRevision: authorityRevision,
+    deviceId,
+  });
+}
+
+export async function syncCompanionDeviceProfile(
+  endpoint: string,
+  apiToken: string,
+  authorityRevision: number,
+  deviceId: string,
+): Promise<CompanionDeviceAuthorityState> {
+  return writeDeviceAuthorityMutation(endpoint, apiToken, '/devices/sync', {
+    protocolVersion: COMPANION_DEVICE_PROTOCOL_VERSION,
+    expectedAuthorityRevision: authorityRevision,
+    deviceId,
+  });
+}
+
+export async function acknowledgeCompanionDeviceSync(
+  endpoint: string,
+  apiToken: string,
+  syncId: string,
+  profileRevision: number,
+  profileHash: string,
+): Promise<CompanionDeviceAuthorityState> {
+  return writeDeviceAuthorityMutation(endpoint, apiToken, '/devices/sync-ack', {
+    protocolVersion: COMPANION_DEVICE_PROTOCOL_VERSION,
+    syncId,
+    profileRevision,
+    profileHash,
+  });
+}
+
+export async function renameCompanionDevice(
+  endpoint: string,
+  apiToken: string,
+  label: string,
+): Promise<CompanionDeviceAuthorityState> {
+  return writeDeviceAuthorityMutation(endpoint, apiToken, '/devices/rename', {
+    protocolVersion: COMPANION_DEVICE_PROTOCOL_VERSION,
+    label,
+  });
+}
+
+export async function forgetCompanionDevice(
+  endpoint: string,
+  apiToken: string,
+  authorityRevision: number,
+  deviceId: string,
+): Promise<CompanionDeviceAuthorityState> {
+  return writeDeviceAuthorityMutation(endpoint, apiToken, '/devices/forget', {
+    protocolVersion: COMPANION_DEVICE_PROTOCOL_VERSION,
+    expectedAuthorityRevision: authorityRevision,
+    deviceId,
+  });
+}
+
+async function writeDeviceAuthorityMutation(
+  endpoint: string,
+  apiToken: string,
+  path: string,
+  body: Record<string, unknown>,
+): Promise<CompanionDeviceAuthorityState> {
+  return writeLocalApiJsonWithTimeout<CompanionDeviceAuthorityState>(endpoint, apiToken, path, 3200, { body });
 }
 
 /**
@@ -190,19 +323,25 @@ export async function readAutomationLease(
   endpoint: string,
   apiToken: string,
   signal: AbortSignal,
+  authorityRevision: number,
 ): Promise<LocalApiAutomationLease> {
-  return readLocalApiJson<LocalApiAutomationLease>(endpoint, apiToken, '/automation/lease', signal);
+  return readLocalApiJson<LocalApiAutomationLease>(endpoint, apiToken, '/automation/lease', {
+    signal,
+    authorityRevision,
+  });
 }
 
 export async function acquireAutomationLease(
   endpoint: string,
   apiToken: string,
+  authorityRevision: number,
 ): Promise<LocalApiAutomationLease> {
   return writeLocalApiJsonWithTimeout<LocalApiAutomationLease>(
     endpoint,
     apiToken,
     '/automation/lease/acquire',
     2200,
+    { authorityRevision },
   );
 }
 
@@ -210,6 +349,7 @@ export async function cancelAutomationCookingJobs(
   endpoint: string,
   apiToken: string,
   target: AutomationCancellationTarget,
+  authorityRevision: number,
 ): Promise<AutomationCancellationResponse> {
   const params = new URLSearchParams({ target });
   return writeLocalApiJsonWithTimeout<AutomationCancellationResponse>(
@@ -217,6 +357,7 @@ export async function cancelAutomationCookingJobs(
     apiToken,
     `/automation/cancel?${params.toString()}`,
     2800,
+    { authorityRevision },
   );
 }
 
@@ -224,6 +365,7 @@ export async function acknowledgeAutomationSafetyBarrier(
   endpoint: string,
   apiToken: string,
   sequence: number,
+  authorityRevision: number,
 ): Promise<AutomationSafetyBarrierAckResponse> {
   const params = new URLSearchParams({ sequence: String(sequence) });
   return writeLocalApiJsonWithTimeout<AutomationSafetyBarrierAckResponse>(
@@ -231,6 +373,7 @@ export async function acknowledgeAutomationSafetyBarrier(
     apiToken,
     `/automation/barriers/ack?${params.toString()}`,
     2800,
+    { authorityRevision },
   );
 }
 
@@ -480,6 +623,7 @@ export async function publishGameUiTargets(
   apiToken: string,
   businessGeneration: number,
   targetSlots: GameUiTargetSlots,
+  authorityRevision: number,
   signal?: AbortSignal,
 ): Promise<void> {
   const targets = [targetSlots.rare, targetSlots.normal].filter((target) => target !== null);
@@ -512,7 +656,7 @@ export async function publishGameUiTargets(
     apiToken,
     `/ui-pinning/targets?${params.toString()}`,
     2200,
-    signal,
+    { signal, authorityRevision },
   );
   if (!response.ok) {
     throw new Error(response.error || response.status || '游戏界面置顶目标更新失败。');
@@ -528,6 +672,7 @@ export async function prepareNextRareOrder(
   beverageTarget: RareAutomationBeverageTarget | null,
   preferences: CompanionPreferences,
   cookerReservation: CookerControllerReservation | null,
+  authorityRevision: number,
 ): Promise<OrderPreparationResponse> {
   return rareOrderAction(
     endpoint,
@@ -539,6 +684,7 @@ export async function prepareNextRareOrder(
     beverageTarget,
     preferences,
     cookerReservation,
+    authorityRevision,
   );
 }
 
@@ -551,6 +697,7 @@ export async function completeFirstRareOrder(
   beverageTarget: RareAutomationBeverageTarget | null,
   preferences: CompanionPreferences,
   cookerReservation: CookerControllerReservation | null,
+  authorityRevision: number,
 ): Promise<OrderPreparationResponse> {
   return rareOrderAction(
     endpoint,
@@ -562,6 +709,7 @@ export async function completeFirstRareOrder(
     beverageTarget,
     preferences,
     cookerReservation,
+    authorityRevision,
   );
 }
 
@@ -572,6 +720,7 @@ export async function completeFirstNormalOrder(
   specialTargetPolicy: SpecialFoodTargetWirePolicy,
   preferences: CompanionPreferences,
   cookerReservation: CookerControllerReservation | null,
+  authorityRevision: number,
   data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
   executionTarget: NormalOrderExecutionTarget | null = null,
 ): Promise<OrderPreparationResponse> {
@@ -627,6 +776,7 @@ export async function completeFirstNormalOrder(
     apiToken,
     `/orders/normal/complete-first?${params.toString()}`,
     5000,
+    { authorityRevision },
   );
 }
 
@@ -775,6 +925,7 @@ async function rareOrderAction(
   beverageTarget: RareAutomationBeverageTarget | null,
   preferences: CompanionPreferences,
   cookerReservation: CookerControllerReservation | null,
+  authorityRevision: number,
 ): Promise<OrderPreparationResponse> {
   assertAutomationDirectDeliveryCompletionInvariant({
     beverageDeliveryEnabled: preferences.autoPrepTakeBeverage,
@@ -827,6 +978,7 @@ async function rareOrderAction(
     apiToken,
     `${path}?${params.toString()}`,
     5000,
+    { authorityRevision },
   );
 }
 

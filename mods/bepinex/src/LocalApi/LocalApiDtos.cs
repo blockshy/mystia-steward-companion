@@ -90,6 +90,7 @@ internal sealed class LocalApiAutomationLeaseDto
     public bool Owned { get; init; }
     public string ClientId { get; init; } = "";
     public string ClientLabel { get; init; } = "";
+    public long AuthorityRevision { get; init; }
     public string OwnerClientId { get; init; } = "";
     public string OwnerLabel { get; init; } = "";
     public string OwnerLastSeenUtc { get; init; } = "";

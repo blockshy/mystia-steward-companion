@@ -94,14 +94,24 @@ assert.equal(
   'An unchanged incomplete runtime catalog status must preserve referential identity.',
 );
 
-const stableLeaseKey = buildAutomationLeaseConnectionKey(stableIdentity, 'mod-session-1');
+const stableLeaseKey = buildAutomationLeaseConnectionKey(stableIdentity, 'mod-session-1', 7);
 assert.equal(
   stableLeaseKey,
-  buildAutomationLeaseConnectionKey(stableIdentity, 'mod-session-1'),
+  buildAutomationLeaseConnectionKey(stableIdentity, 'mod-session-1', 7),
   'A transient failure in the same Mod session must not change lease identity.',
 );
-const nextSessionLeaseKey = buildAutomationLeaseConnectionKey(stableIdentity, 'mod-session-2');
+const nextSessionLeaseKey = buildAutomationLeaseConnectionKey(stableIdentity, 'mod-session-2', 7);
 assert.notEqual(nextSessionLeaseKey, stableLeaseKey, 'A new Mod session must have a new lease identity.');
+assert.notEqual(
+  buildAutomationLeaseConnectionKey(stableIdentity, 'mod-session-1', 8),
+  stableLeaseKey,
+  'A new configuration authority revision must have a new lease identity.',
+);
+assert.equal(
+  buildAutomationLeaseConnectionKey(stableIdentity, 'mod-session-1', 0),
+  '',
+  'An unconfirmed configuration authority must fail closed.',
+);
 
 const ownedLease = { ok: true, owned: true };
 assert.equal(isAutomationLeaseOwnedForConnection(ownedLease, stableLeaseKey, stableLeaseKey, false), true);

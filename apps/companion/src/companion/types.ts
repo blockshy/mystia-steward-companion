@@ -1,6 +1,7 @@
 import type {
   RareCustomerCatalogItem,
 } from '@/lib/catalog-types';
+import type { SharedCompanionPreferences } from '@/companion/preferences';
 import type {
   RareBeverageRecommendation,
   RareOrderRecommendationPlan,
@@ -611,11 +612,52 @@ export interface LocalApiAutomationLease {
   owned: boolean;
   clientId: string;
   clientLabel: string;
+  authorityRevision: number;
   ownerClientId: string;
   ownerLabel: string;
   ownerLastSeenUtc: string;
   expiresAtUtc: string;
   ttlMs: number;
+  error: string | null;
+}
+
+export type CompanionDevicePlatform = 'windows' | 'android' | 'browser';
+
+export interface CompanionDeviceRecord {
+  deviceId: string;
+  label: string;
+  platform: CompanionDevicePlatform;
+  appVersion: string;
+  isCurrent: boolean;
+  isPrimary: boolean;
+  online: boolean;
+  lastSeenAtUtc: string;
+  profileRevision: number;
+  appliedProfileRevision: number;
+  profileHash: string;
+  syncPending: boolean;
+  createdAtUtc: string;
+  updatedAtUtc: string;
+}
+
+export interface CompanionDeviceAuthorityState {
+  ok: boolean;
+  protocolVersion: number;
+  profileSchemaVersion: number;
+  registryId: string;
+  authorityRevision: number;
+  stateRevision: number;
+  primaryDeviceId: string;
+  currentDeviceId: string;
+  currentDeviceIsPrimary: boolean;
+  activeProfileRevision: number;
+  activeProfileHash: string;
+  activeProfile: SharedCompanionPreferences;
+  currentDeviceProfileRevision: number;
+  currentDeviceProfileHash: string;
+  currentDeviceProfile: SharedCompanionPreferences;
+  pendingSyncId: string | null;
+  devices: CompanionDeviceRecord[];
   error: string | null;
 }
 

@@ -65,9 +65,12 @@ export function updateUnavailableRuntimeData(
 export function buildAutomationLeaseConnectionKey(
   identity: CompanionConnectionIdentity,
   automationSessionId: string,
+  authorityRevision: number,
 ): string {
   const sessionId = automationSessionId.trim();
-  return sessionId ? `${identity.endpoint}\n${identity.apiToken}\n${sessionId}` : '';
+  return sessionId && Number.isSafeInteger(authorityRevision) && authorityRevision > 0
+    ? `${identity.endpoint}\n${identity.apiToken}\n${sessionId}\n${authorityRevision}`
+    : '';
 }
 
 export function isAutomationLeaseOwnedForConnection(

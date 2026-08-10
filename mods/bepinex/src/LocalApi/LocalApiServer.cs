@@ -22,7 +22,8 @@ namespace MystiaStewardCompanion.LocalApi;
 /// </remarks>
 internal sealed class LocalApiServer : IDisposable
 {
-    private const int MaxRequestBytes = 32768;
+    private const int MaxRequestHeaderBytes = 32768;
+    private const int MaxRequestBodyBytes = 65536;
     private const int DiagnosticTailMaxBytes = 2 * 1024 * 1024;
     private const int DiagnosticTailMaxLines = 2000;
     private const int AutomationDecisionDiagnosticMaxLines = 12;
@@ -31,6 +32,7 @@ internal sealed class LocalApiServer : IDisposable
     private const string AutoLanHost = "auto";
     private const string ClientIdHeaderName = "X-Mystia-Steward-Companion-Client-Id";
     private const string ClientLabelHeaderName = "X-Mystia-Steward-Companion-Client-Label";
+    private const string AuthorityRevisionHeaderName = "X-Mystia-Steward-Companion-Authority-Revision";
     private static readonly TimeSpan AutomationLeaseTtl = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan ListenerStopTimeout = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan ClientHandlerStopTimeout = TimeSpan.FromSeconds(3);
@@ -60,6 +62,7 @@ internal sealed class LocalApiServer : IDisposable
     private readonly object _listenerLock = new();
     private readonly object _lanSettingsLock = new();
     private readonly object _automationLeaseLock = new();
+    private readonly object _authorityTransitionLock = new();
     private readonly string _pluginVersion;
     private string _token;
     private bool _lanEnabled;
@@ -88,6 +91,7 @@ internal sealed class LocalApiServer : IDisposable
     private readonly UpdateService _updateService;
     private readonly FavoriteStore _favoriteStore;
     private readonly CustomRecipeStore _customRecipeStore;
+    private readonly CompanionDeviceAuthorityStore _deviceAuthorityStore;
     private readonly BoundedHandlerPool<TcpClient> _clientHandlers;
     private readonly List<LocalApiListenerWorker> _listeners = new();
     private readonly List<LanAddressCandidate> _activeLanCandidates = new();
@@ -111,6 +115,7 @@ internal sealed class LocalApiServer : IDisposable
         public string ClientLabel { get; init; } = "";
         public DateTime LastSeenUtc { get; set; }
         public DateTime ExpiresAtUtc { get; set; }
+        public long AuthorityRevision { get; init; }
     }
 
     private sealed class LanAddressCandidate
@@ -162,6 +167,7 @@ internal sealed class LocalApiServer : IDisposable
         UpdateService updateService,
         FavoriteStore favoriteStore,
         CustomRecipeStore customRecipeStore,
+        CompanionDeviceAuthorityStore deviceAuthorityStore,
         ManualLogSource log)
     {
         BindAddress = IPAddress.Loopback;
@@ -198,6 +204,7 @@ internal sealed class LocalApiServer : IDisposable
         _updateService = updateService;
         _favoriteStore = favoriteStore;
         _customRecipeStore = customRecipeStore;
+        _deviceAuthorityStore = deviceAuthorityStore;
     }
 
     public IPAddress BindAddress { get; }
@@ -521,8 +528,8 @@ internal sealed class LocalApiServer : IDisposable
     /// </summary>
     /// <param name="client">由监听线程接收到的 TCP 客户端。</param>
     /// <remarks>
-    /// 当前协议只支持简单的 GET/POST，无请求体。Tauri 伴随窗口通过 Header 传入 Token；
-    /// 浏览器开发模式同样走回环地址和 Token，避免把游戏运行时操作暴露给任意网页。
+    /// 协议支持简单的 GET/POST；设备权威端点使用有界 JSON 请求体，其余既有端点继续使用查询参数。
+    /// Tauri 伴随窗口通过 Header 传入 Token；浏览器开发模式同样走回环地址和 Token，避免把游戏运行时操作暴露给任意网页。
     /// </remarks>
     private void HandleClient(TcpClient client)
     {
@@ -539,7 +546,8 @@ internal sealed class LocalApiServer : IDisposable
                 return;
             }
 
-            var request = HttpRequestReader.ReadHeader(stream, MaxRequestBytes);
+            var requestData = HttpRequestReader.Read(stream, MaxRequestHeaderBytes, MaxRequestBodyBytes);
+            var request = requestData.Header;
             var firstLine = request.Split('\n').FirstOrDefault()?.TrimEnd('\r') ?? "";
             var parts = firstLine.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             if (parts.Length < 2)
@@ -576,6 +584,27 @@ internal sealed class LocalApiServer : IDisposable
             {
                 switch (path)
                 {
+                    case "/devices/register":
+                        WriteResponse(stream, 200, "OK", ToJson(RegisterCompanionDevice(request, requestData)));
+                        break;
+                    case "/devices/profile":
+                        WriteResponse(stream, 200, "OK", ToJson(UpdateCompanionDeviceProfile(request, requestData)));
+                        break;
+                    case "/devices/primary":
+                        WriteResponse(stream, 200, "OK", ToJson(SetPrimaryCompanionDevice(request, requestData)));
+                        break;
+                    case "/devices/sync":
+                        WriteResponse(stream, 200, "OK", ToJson(SyncCompanionDeviceProfile(request, requestData)));
+                        break;
+                    case "/devices/sync-ack":
+                        WriteResponse(stream, 200, "OK", ToJson(AcknowledgeCompanionDeviceSync(request, requestData)));
+                        break;
+                    case "/devices/rename":
+                        WriteResponse(stream, 200, "OK", ToJson(RenameCompanionDevice(request, requestData)));
+                        break;
+                    case "/devices/forget":
+                        WriteResponse(stream, 200, "OK", ToJson(ForgetCompanionDevice(request, requestData)));
+                        break;
                     case "/automation/lease/acquire":
                         WriteResponse(stream, 200, "OK", ToJson(AcquireAutomationLease(request)));
                         break;
@@ -713,7 +742,7 @@ internal sealed class LocalApiServer : IDisposable
                                 ReadRareGuestInvitationWriteExpectation(query))));
                         break;
                     case "/ui-pinning/targets":
-                        WriteResponse(stream, 200, "OK", UpdateUiPinningTargetsJson(query));
+                        WriteResponse(stream, 200, "OK", UpdateUiPinningTargetsJson(request, query));
                         break;
                     case "/favorites/add-recipe":
                         WriteResponse(stream, 200, "OK", AddRecipeFavoriteJson(query));
@@ -764,6 +793,9 @@ internal sealed class LocalApiServer : IDisposable
                     }
                     WriteResponse(stream, 200, "OK", ToJson(_getConnectionConfig()));
                     break;
+                case "/devices":
+                    WriteResponse(stream, 200, "OK", ToJson(ReadCompanionDevices(request)));
+                    break;
                 case "/snapshot":
                     WriteResponse(stream, 200, "OK", GetSnapshotJson(query, request));
                     break;
@@ -806,6 +838,10 @@ internal sealed class LocalApiServer : IDisposable
         catch (HttpRequestReadException ex)
         {
             TryWriteErrorResponse(stream, ex.StatusCode, ex.Reason, ex.Error);
+        }
+        catch (CompanionDeviceAuthorityException ex)
+        {
+            TryWriteErrorResponse(stream, ex.StatusCode, HttpStatusReason(ex.StatusCode), ex.Message);
         }
         catch (Exception ex)
         {
@@ -1030,6 +1066,175 @@ internal sealed class LocalApiServer : IDisposable
         });
     }
 
+    private CompanionDeviceAuthorityStateDto RegisterCompanionDevice(string request, HttpRequestData requestData)
+    {
+        var (clientId, clientLabel) = ReadRequiredClientIdentity(request);
+        var body = ReadJsonRequest<CompanionDeviceRegisterRequest>(
+            requestData,
+            "protocolVersion",
+            "profileSchemaVersion",
+            "platform",
+            "appVersion",
+            "profile");
+        return _deviceAuthorityStore.Register(clientId, clientLabel, body, DateTime.UtcNow);
+    }
+
+    private CompanionDeviceAuthorityStateDto ReadCompanionDevices(string request)
+    {
+        var (clientId, _) = ReadRequiredClientIdentity(request);
+        return _deviceAuthorityStore.Read(clientId, DateTime.UtcNow);
+    }
+
+    private CompanionDeviceAuthorityStateDto UpdateCompanionDeviceProfile(string request, HttpRequestData requestData)
+    {
+        var (clientId, _) = ReadRequiredClientIdentity(request);
+        var body = ReadJsonRequest<CompanionDeviceProfileUpdateRequest>(
+            requestData,
+            "protocolVersion",
+            "profileSchemaVersion",
+            "expectedAuthorityRevision",
+            "expectedProfileRevision",
+            "profile");
+        lock (_authorityTransitionLock)
+        {
+            var previousAuthorityRevision = _deviceAuthorityStore.ReadAuthorityRevision();
+            var state = _deviceAuthorityStore.UpdatePrimaryProfile(clientId, body, DateTime.UtcNow);
+            if (state.AuthorityRevision != previousAuthorityRevision)
+            {
+                InvalidateRuntimeAuthority("primary companion functional profile changed");
+            }
+            return state;
+        }
+    }
+
+    private CompanionDeviceAuthorityStateDto SetPrimaryCompanionDevice(string request, HttpRequestData requestData)
+    {
+        var (clientId, _) = ReadRequiredClientIdentity(request);
+        var body = ReadJsonRequest<CompanionDeviceSetPrimaryRequest>(
+            requestData,
+            "protocolVersion",
+            "expectedAuthorityRevision",
+            "deviceId");
+        lock (_authorityTransitionLock)
+        {
+            var result = _deviceAuthorityStore.SetPrimary(clientId, body, DateTime.UtcNow);
+            if (result.Changed)
+            {
+                InvalidateRuntimeAuthority("primary companion device changed");
+            }
+            return result.State;
+        }
+    }
+
+    private CompanionDeviceAuthorityStateDto SyncCompanionDeviceProfile(string request, HttpRequestData requestData)
+    {
+        var (clientId, _) = ReadRequiredClientIdentity(request);
+        var body = ReadJsonRequest<CompanionDeviceSyncRequest>(
+            requestData,
+            "protocolVersion",
+            "expectedAuthorityRevision",
+            "deviceId");
+        return _deviceAuthorityStore.SyncFromPrimary(clientId, body, DateTime.UtcNow);
+    }
+
+    private CompanionDeviceAuthorityStateDto AcknowledgeCompanionDeviceSync(string request, HttpRequestData requestData)
+    {
+        var (clientId, _) = ReadRequiredClientIdentity(request);
+        var body = ReadJsonRequest<CompanionDeviceSyncAckRequest>(
+            requestData,
+            "protocolVersion",
+            "syncId",
+            "profileRevision",
+            "profileHash");
+        return _deviceAuthorityStore.AcknowledgeSync(clientId, body, DateTime.UtcNow);
+    }
+
+    private CompanionDeviceAuthorityStateDto RenameCompanionDevice(string request, HttpRequestData requestData)
+    {
+        var (clientId, _) = ReadRequiredClientIdentity(request);
+        var body = ReadJsonRequest<CompanionDeviceRenameRequest>(requestData, "protocolVersion", "label");
+        return _deviceAuthorityStore.Rename(clientId, body, DateTime.UtcNow);
+    }
+
+    private CompanionDeviceAuthorityStateDto ForgetCompanionDevice(string request, HttpRequestData requestData)
+    {
+        var (clientId, _) = ReadRequiredClientIdentity(request);
+        var body = ReadJsonRequest<CompanionDeviceForgetRequest>(
+            requestData,
+            "protocolVersion",
+            "expectedAuthorityRevision",
+            "deviceId");
+        return _deviceAuthorityStore.Forget(clientId, body, DateTime.UtcNow);
+    }
+
+    private void InvalidateRuntimeAuthority(string reason)
+    {
+        lock (_automationLeaseLock)
+        {
+            _automationLease = null;
+            _automationCommandEpoch++;
+            try
+            {
+                _cancelAutomation(
+                    _automationCommandEpoch,
+                    AutomationCancellationTarget.All);
+            }
+            catch (Exception ex)
+            {
+                _advanceAutomationCommandEpoch(_automationCommandEpoch);
+                _log.LogWarning($"Companion authority transition could not cancel all automation cleanly: {ex.GetBaseException().Message}");
+            }
+        }
+        RuntimeUiPinningService.InvalidateTarget(RuntimeNightBusinessLifecycle.Generation, reason);
+        _log.LogInfo($"Companion configuration authority advanced: {reason}.");
+    }
+
+    private static T ReadJsonRequest<T>(HttpRequestData request, params string[] expectedProperties)
+    {
+        var json = HttpRequestReader.ReadRequiredJsonBody(request);
+        try
+        {
+            using var document = JsonDocument.Parse(json, new JsonDocumentOptions
+            {
+                AllowTrailingCommas = false,
+                CommentHandling = JsonCommentHandling.Disallow,
+                MaxDepth = 16,
+            });
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                throw new CompanionDeviceAuthorityException(400, "JSON 请求体必须是对象。");
+            }
+            var actual = document.RootElement.EnumerateObject().Select(property => property.Name).ToArray();
+            if (actual.Length != expectedProperties.Length
+                || actual.Distinct(StringComparer.Ordinal).Count() != actual.Length
+                || actual.Any(name => !expectedProperties.Contains(name, StringComparer.Ordinal)))
+            {
+                throw new CompanionDeviceAuthorityException(400, "JSON 请求字段与当前设备协议不一致。");
+            }
+
+            return JsonSerializer.Deserialize<T>(json, JsonOptions)
+                ?? throw new CompanionDeviceAuthorityException(400, "JSON 请求体不能为空。");
+        }
+        catch (CompanionDeviceAuthorityException)
+        {
+            throw;
+        }
+        catch (JsonException)
+        {
+            throw new CompanionDeviceAuthorityException(400, "JSON 请求体格式无效。");
+        }
+    }
+
+    private static (string ClientId, string ClientLabel) ReadRequiredClientIdentity(string request)
+    {
+        var (clientId, clientLabel, error) = ReadClientIdentity(request);
+        if (!string.IsNullOrWhiteSpace(error))
+        {
+            throw new CompanionDeviceAuthorityException(400, error);
+        }
+        return (clientId, clientLabel);
+    }
+
     private LocalApiAutomationLeaseDto ReadAutomationLease(string request)
     {
         var (clientId, clientLabel, error) = ReadClientIdentity(request);
@@ -1045,11 +1250,22 @@ internal sealed class LocalApiServer : IDisposable
             };
         }
 
-        lock (_automationLeaseLock)
+        lock (_authorityTransitionLock)
         {
             var now = DateTime.UtcNow;
-            PruneExpiredAutomationLease(now);
-            return BuildAutomationLeaseDto(clientId, clientLabel, null);
+            if (!TryAuthorizeRuntimeWriter(request, clientId, now, out var authorityRevision, out var authorityError))
+            {
+                lock (_automationLeaseLock)
+                {
+                    PruneExpiredAutomationLease(now);
+                    return BuildAutomationLeaseDto(clientId, clientLabel, authorityRevision, authorityError);
+                }
+            }
+            lock (_automationLeaseLock)
+            {
+                PruneExpiredAutomationLease(now);
+                return BuildAutomationLeaseDto(clientId, clientLabel, authorityRevision, null);
+            }
         }
     }
 
@@ -1068,33 +1284,47 @@ internal sealed class LocalApiServer : IDisposable
             };
         }
 
-        lock (_automationLeaseLock)
+        lock (_authorityTransitionLock)
         {
             var now = DateTime.UtcNow;
-            PruneExpiredAutomationLease(now);
-            if (_automationLease != null
-                && !string.Equals(_automationLease.ClientId, clientId, StringComparison.Ordinal))
+            if (!TryAuthorizeRuntimeWriter(request, clientId, now, out var authorityRevision, out var authorityError))
             {
-                return BuildAutomationLeaseDto(
-                    clientId,
-                    clientLabel,
-                    $"自动化当前由 {_automationLease.ClientLabel} 控制，本窗口仅查看。");
+                lock (_automationLeaseLock)
+                {
+                    PruneExpiredAutomationLease(now);
+                    return BuildAutomationLeaseDto(clientId, clientLabel, authorityRevision, authorityError);
+                }
             }
-
-            if (_automationLease == null)
+            lock (_automationLeaseLock)
             {
-                _automationCommandEpoch++;
-                _advanceAutomationCommandEpoch(_automationCommandEpoch);
+                PruneExpiredAutomationLease(now);
+                if (_automationLease != null
+                    && (!string.Equals(_automationLease.ClientId, clientId, StringComparison.Ordinal)
+                        || _automationLease.AuthorityRevision != authorityRevision))
+                {
+                    return BuildAutomationLeaseDto(
+                        clientId,
+                        clientLabel,
+                        authorityRevision,
+                        $"自动化当前由 {_automationLease.ClientLabel} 控制，本窗口仅查看。");
+                }
+
+                if (_automationLease == null)
+                {
+                    _automationCommandEpoch++;
+                    _advanceAutomationCommandEpoch(_automationCommandEpoch);
+                }
+
+                _automationLease = new AutomationLease
+                {
+                    ClientId = clientId,
+                    ClientLabel = clientLabel,
+                    LastSeenUtc = now,
+                    ExpiresAtUtc = now + AutomationLeaseTtl,
+                    AuthorityRevision = authorityRevision,
+                };
+                return BuildAutomationLeaseDto(clientId, clientLabel, authorityRevision, null);
             }
-
-            _automationLease = new AutomationLease
-            {
-                ClientId = clientId,
-                ClientLabel = clientLabel,
-                LastSeenUtc = now,
-                ExpiresAtUtc = now + AutomationLeaseTtl,
-            };
-            return BuildAutomationLeaseDto(clientId, clientLabel, null);
         }
     }
 
@@ -1114,65 +1344,79 @@ internal sealed class LocalApiServer : IDisposable
             };
         }
 
-        lock (_automationLeaseLock)
+        lock (_authorityTransitionLock)
         {
             var now = DateTime.UtcNow;
-            PruneExpiredAutomationLease(now);
-            if (_automationLease == null
-                || !string.Equals(_automationLease.ClientId, clientId, StringComparison.Ordinal))
+            if (!TryAuthorizeRuntimeWriter(request, clientId, now, out var authorityRevision, out var authorityError))
             {
                 return new LocalApiAutomationCancellationDto
                 {
                     Ok = false,
                     Target = targetValue,
-                    Error = _automationLease == null
-                        ? "自动化控制权已失效，无法确认取消屏障。"
-                        : $"自动化当前由 {_automationLease.ClientLabel} 控制，本窗口不能取消其任务。",
+                    Error = authorityError,
                     CommandEpoch = _automationCommandEpoch,
                 };
             }
-
-            var cancellationEpoch = ++_automationCommandEpoch;
-            try
+            lock (_automationLeaseLock)
             {
-                var result = _cancelAutomation(cancellationEpoch, target);
-                if (result.Target != target)
+                PruneExpiredAutomationLease(now);
+                if (_automationLease == null
+                    || !string.Equals(_automationLease.ClientId, clientId, StringComparison.Ordinal)
+                    || _automationLease.AuthorityRevision != authorityRevision)
                 {
-                    throw new InvalidOperationException("Automation cancellation target changed while crossing the Unity main-thread boundary.");
+                    return new LocalApiAutomationCancellationDto
+                    {
+                        Ok = false,
+                        Target = targetValue,
+                        Error = _automationLease == null
+                            ? "自动化控制权已失效，无法确认取消屏障。"
+                            : $"自动化当前由 {_automationLease.ClientLabel} 控制，本窗口不能取消其任务。",
+                        CommandEpoch = _automationCommandEpoch,
+                    };
                 }
 
-                var releaseLease = target == AutomationCancellationTarget.All;
-                if (releaseLease)
+                var cancellationEpoch = ++_automationCommandEpoch;
+                try
                 {
-                    _automationLease = null;
+                    var result = _cancelAutomation(cancellationEpoch, target);
+                    if (result.Target != target)
+                    {
+                        throw new InvalidOperationException("Automation cancellation target changed while crossing the Unity main-thread boundary.");
+                    }
+
+                    var releaseLease = target == AutomationCancellationTarget.All;
+                    if (releaseLease)
+                    {
+                        _automationLease = null;
+                    }
+                    else
+                    {
+                        _automationLease.LastSeenUtc = now;
+                        _automationLease.ExpiresAtUtc = now + AutomationLeaseTtl;
+                    }
+                    return new LocalApiAutomationCancellationDto
+                    {
+                        Ok = true,
+                        Target = targetValue,
+                        Status = $"{BuildAutomationCancellationTargetLabel(target)}已取消："
+                            + $"job {result.CancelledJobs} 个，排队命令 {result.CancelledCommands} 个。",
+                        CommandEpoch = result.CommandEpoch,
+                        CancelledJobs = result.CancelledJobs,
+                        CancelledCommands = result.CancelledCommands,
+                        LeaseReleased = releaseLease,
+                    };
                 }
-                else
+                catch (Exception ex)
                 {
-                    _automationLease.LastSeenUtc = now;
-                    _automationLease.ExpiresAtUtc = now + AutomationLeaseTtl;
+                    return new LocalApiAutomationCancellationDto
+                    {
+                        Ok = false,
+                        Target = targetValue,
+                        Error = ex.GetBaseException().Message,
+                        CommandEpoch = cancellationEpoch,
+                        LeaseReleased = false,
+                    };
                 }
-                return new LocalApiAutomationCancellationDto
-                {
-                    Ok = true,
-                    Target = targetValue,
-                    Status = $"{BuildAutomationCancellationTargetLabel(target)}已取消："
-                        + $"job {result.CancelledJobs} 个，排队命令 {result.CancelledCommands} 个。",
-                    CommandEpoch = result.CommandEpoch,
-                    CancelledJobs = result.CancelledJobs,
-                    CancelledCommands = result.CancelledCommands,
-                    LeaseReleased = releaseLease,
-                };
-            }
-            catch (Exception ex)
-            {
-                return new LocalApiAutomationCancellationDto
-                {
-                    Ok = false,
-                    Target = targetValue,
-                    Error = ex.GetBaseException().Message,
-                    CommandEpoch = cancellationEpoch,
-                    LeaseReleased = false,
-                };
             }
         }
     }
@@ -1201,27 +1445,42 @@ internal sealed class LocalApiServer : IDisposable
             };
         }
 
-        var (clientId, clientLabel, identityError) = ReadClientIdentity(request);
-        lock (_automationLeaseLock)
+        var (clientId, _, identityError) = ReadClientIdentity(request);
+        lock (_authorityTransitionLock)
         {
-            PruneExpiredAutomationLease(DateTime.UtcNow);
-            if (!string.IsNullOrWhiteSpace(identityError)
-                || _automationLease == null
-                || !string.Equals(_automationLease.ClientId, clientId, StringComparison.Ordinal))
+            var now = DateTime.UtcNow;
+            var authorityRevision = 0L;
+            var authorityError = "";
+            var authorityOk = string.IsNullOrWhiteSpace(identityError)
+                && TryAuthorizeRuntimeWriter(request, clientId, now, out authorityRevision, out authorityError);
+            if (!authorityOk)
             {
                 return new AutomationSafetyBarrierAckResult
                 {
                     Ok = false,
                     Sequence = sequence,
-                    Error = !string.IsNullOrWhiteSpace(identityError)
-                        ? identityError
-                        : _automationLease == null
-                            ? "自动化控制权已失效，不能确认安全栅栏。"
-                            : $"自动化当前由 {_automationLease.ClientLabel} 控制，本窗口不能确认其安全栅栏。",
+                    Error = !string.IsNullOrWhiteSpace(identityError) ? identityError : authorityError,
                 };
             }
+            lock (_automationLeaseLock)
+            {
+                PruneExpiredAutomationLease(now);
+                if (_automationLease == null
+                    || !string.Equals(_automationLease.ClientId, clientId, StringComparison.Ordinal)
+                    || _automationLease.AuthorityRevision != authorityRevision)
+                {
+                    return new AutomationSafetyBarrierAckResult
+                    {
+                        Ok = false,
+                        Sequence = sequence,
+                        Error = _automationLease == null
+                            ? "自动化控制权已失效，不能确认安全栅栏。"
+                            : $"自动化当前由 {_automationLease.ClientLabel} 控制，本窗口不能确认其安全栅栏。",
+                    };
+                }
 
-            return _ackAutomationSafetyBarrier(sequence);
+                return _ackAutomationSafetyBarrier(sequence);
+            }
         }
     }
 
@@ -1232,47 +1491,78 @@ internal sealed class LocalApiServer : IDisposable
     {
         automationEpoch = 0;
         var (clientId, clientLabel, identityError) = ReadClientIdentity(request);
-        lock (_automationLeaseLock)
+        lock (_authorityTransitionLock)
         {
-            PruneExpiredAutomationLease(DateTime.UtcNow);
-            var status = string.IsNullOrWhiteSpace(identityError)
-                ? BuildAutomationLeaseDto(clientId, clientLabel, null)
-                : new LocalApiAutomationLeaseDto
+            var now = DateTime.UtcNow;
+            var authorityRevision = 0L;
+            var authorityError = "";
+            var authorityOk = string.IsNullOrWhiteSpace(identityError)
+                && TryAuthorizeRuntimeWriter(request, clientId, now, out authorityRevision, out authorityError);
+            lock (_automationLeaseLock)
+            {
+                PruneExpiredAutomationLease(now);
+                var status = authorityOk
+                    ? BuildAutomationLeaseDto(clientId, clientLabel, authorityRevision, null)
+                    : new LocalApiAutomationLeaseDto
+                    {
+                        Ok = false,
+                        ClientId = clientId,
+                        ClientLabel = clientLabel,
+                        AuthorityRevision = authorityRevision,
+                        Error = !string.IsNullOrWhiteSpace(identityError) ? identityError : authorityError,
+                    };
+                if (status.Ok && status.Owned)
+                {
+                    automationEpoch = _automationCommandEpoch;
+                    error = new LocalApiOrderActionErrorDto();
+                    return true;
+                }
+
+                error = new LocalApiOrderActionErrorDto
                 {
                     Ok = false,
-                    ClientId = clientId,
-                    ClientLabel = clientLabel,
-                    Error = identityError,
+                    Prepared = false,
+                    Error = status.Error
+                        ?? (string.IsNullOrWhiteSpace(status.OwnerClientId)
+                            ? "自动化控制权不可用，请先在本窗口开启自动化。"
+                            : $"自动化当前由 {status.OwnerLabel} 控制，本窗口仅查看。"),
                 };
-            if (status.Ok && status.Owned)
-            {
-                automationEpoch = _automationCommandEpoch;
-                error = new LocalApiOrderActionErrorDto();
-                return true;
+                return false;
             }
-
-            error = new LocalApiOrderActionErrorDto
-            {
-                Ok = false,
-                Prepared = false,
-                Error = status.Error
-                    ?? (string.IsNullOrWhiteSpace(status.OwnerClientId)
-                        ? "自动化控制权不可用，请先在本窗口开启自动化。"
-                        : $"自动化当前由 {status.OwnerLabel} 控制，本窗口仅查看。"),
-            };
-            return false;
         }
     }
 
-    private LocalApiAutomationLeaseDto BuildAutomationLeaseDto(string clientId, string clientLabel, string? error)
+    private bool TryAuthorizeRuntimeWriter(
+        string request,
+        string clientId,
+        DateTime nowUtc,
+        out long authorityRevision,
+        out string error)
+    {
+        authorityRevision = ReadPositiveLongHeader(request, AuthorityRevisionHeaderName);
+        return _deviceAuthorityStore.TryAuthorizePrimary(
+            clientId,
+            authorityRevision,
+            nowUtc,
+            out error);
+    }
+
+    private LocalApiAutomationLeaseDto BuildAutomationLeaseDto(
+        string clientId,
+        string clientLabel,
+        long authorityRevision,
+        string? error)
     {
         var lease = _automationLease;
         return new LocalApiAutomationLeaseDto
         {
             Ok = string.IsNullOrWhiteSpace(error),
-            Owned = lease != null && string.Equals(lease.ClientId, clientId, StringComparison.Ordinal),
+            Owned = lease != null
+                && string.Equals(lease.ClientId, clientId, StringComparison.Ordinal)
+                && lease.AuthorityRevision == authorityRevision,
             ClientId = clientId,
             ClientLabel = clientLabel,
+            AuthorityRevision = authorityRevision,
             OwnerClientId = lease?.ClientId ?? "",
             OwnerLabel = lease?.ClientLabel ?? "",
             OwnerLastSeenUtc = lease == null ? "" : lease.LastSeenUtc.ToString("O"),
@@ -1374,7 +1664,9 @@ internal sealed class LocalApiServer : IDisposable
 
     private void PruneExpiredAutomationLease(DateTime now)
     {
-        if (_automationLease != null && _automationLease.ExpiresAtUtc <= now)
+        if (_automationLease != null
+            && (_automationLease.ExpiresAtUtc <= now
+                || _automationLease.AuthorityRevision != _deviceAuthorityStore.ReadAuthorityRevision()))
         {
             _automationLease = null;
         }
@@ -1699,34 +1991,50 @@ internal sealed class LocalApiServer : IDisposable
         }
     }
 
-    private static string UpdateUiPinningTargetsJson(string query)
+    private string UpdateUiPinningTargetsJson(string request, string query)
     {
         try
         {
-            if (!HasQueryParameter(query, "targetCount")
-                || ReadStringQuery(query, "targetCount") is not ("0" or "1" or "2")
-                || !int.TryParse(ReadStringQuery(query, "targetCount"), out var targetCount))
+            var (clientId, _, identityError) = ReadClientIdentity(request);
+            lock (_authorityTransitionLock)
             {
-                throw new FormatException("targetCount must be exactly 0, 1, or 2.");
-            }
+                var now = DateTime.UtcNow;
+                var authorityError = "";
+                if (!string.IsNullOrWhiteSpace(identityError)
+                    || !TryAuthorizeRuntimeWriter(request, clientId, now, out _, out authorityError))
+                {
+                    return ToJson(new LocalApiStatusDto
+                    {
+                        Ok = false,
+                        Status = "",
+                        Error = !string.IsNullOrWhiteSpace(identityError) ? identityError : authorityError,
+                    });
+                }
+                if (!HasQueryParameter(query, "targetCount")
+                    || ReadStringQuery(query, "targetCount") is not ("0" or "1" or "2")
+                    || !int.TryParse(ReadStringQuery(query, "targetCount"), out var targetCount))
+                {
+                    throw new FormatException("targetCount must be exactly 0, 1, or 2.");
+                }
 
-            var targets = new List<RuntimeUiTargetSnapshot>(targetCount);
-            for (var index = 0; index < targetCount; index += 1)
-            {
-                targets.Add(ReadUiPinningTarget(query, index));
-            }
-            ValidateUiPinningTargetParameters(query, targetCount);
-            if (targets.Count == 2
-                && (targets[0].Kind != RuntimeUiTargetKind.Rare
-                    || targets[1].Kind != RuntimeUiTargetKind.Normal))
-            {
-                throw new FormatException("Two UI targets must be ordered rare then normal.");
-            }
+                var targets = new List<RuntimeUiTargetSnapshot>(targetCount);
+                for (var index = 0; index < targetCount; index += 1)
+                {
+                    targets.Add(ReadUiPinningTarget(query, index));
+                }
+                ValidateUiPinningTargetParameters(query, targetCount);
+                if (targets.Count == 2
+                    && (targets[0].Kind != RuntimeUiTargetKind.Rare
+                        || targets[1].Kind != RuntimeUiTargetKind.Normal))
+                {
+                    throw new FormatException("Two UI targets must be ordered rare then normal.");
+                }
 
-            var status = RuntimeUiPinningService.UpdateTargets(
-                ReadRequiredPositiveLongQuery(query, "businessGeneration"),
-                targets);
-            return ToJson(new LocalApiStatusDto { Ok = true, Status = status, Error = null });
+                var status = RuntimeUiPinningService.UpdateTargets(
+                    ReadRequiredPositiveLongQuery(query, "businessGeneration"),
+                    targets);
+                return ToJson(new LocalApiStatusDto { Ok = true, Status = status, Error = null });
+            }
         }
         catch (Exception ex)
         {
@@ -2054,6 +2362,20 @@ internal sealed class LocalApiServer : IDisposable
         }
     }
 
+    private static string HttpStatusReason(int status)
+    {
+        return status switch
+        {
+            400 => "Bad Request",
+            403 => "Forbidden",
+            409 => "Conflict",
+            413 => "Payload Too Large",
+            431 => "Request Header Fields Too Large",
+            503 => "Service Unavailable",
+            _ => "Internal Server Error",
+        };
+    }
+
     private static string NormalizeLanBindHost(string configuredHost)
     {
         var host = (configuredHost ?? "").Trim();
@@ -2268,7 +2590,7 @@ internal sealed class LocalApiServer : IDisposable
         var clientId = (ReadHeader(request, ClientIdHeaderName) ?? "").Trim();
         if (!IsValidClientId(clientId))
         {
-            return ("", "伴随窗口", "自动化请求缺少有效客户端 ID。");
+            return ("", "伴随窗口", "请求缺少有效的伴随设备 ID。");
         }
 
         var label = (ReadHeader(request, ClientLabelHeaderName) ?? "").Trim();
@@ -2313,6 +2635,12 @@ internal sealed class LocalApiServer : IDisposable
         }
 
         return null;
+    }
+
+    private static long ReadPositiveLongHeader(string request, string headerName)
+    {
+        var raw = ReadHeader(request, headerName);
+        return long.TryParse(raw, out var value) && value > 0 ? value : 0;
     }
 
     private static (string Path, string Query) SplitRequestTarget(string target)

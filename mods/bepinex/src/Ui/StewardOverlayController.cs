@@ -957,6 +957,9 @@ internal sealed class StewardOverlayController
                 _log);
             var favoriteStore = new FavoriteStore(FavoriteStore.ResolvePath(), _log);
             var customRecipeStore = new CustomRecipeStore(CustomRecipeStore.ResolvePath(), _log);
+            var deviceAuthorityStore = new CompanionDeviceAuthorityStore(
+                CompanionDeviceAuthorityStore.ResolvePath(),
+                _log);
 
             _localApiServer = new LocalApiServer(
                 _config.LocalApiLanEnabled.Value,
@@ -988,6 +991,7 @@ internal sealed class StewardOverlayController
                 updateService,
                 favoriteStore,
                 customRecipeStore,
+                deviceAuthorityStore,
                 _log);
             _localApiServer.Start();
         }

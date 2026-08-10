@@ -37,8 +37,8 @@ function Dialog({
       className={composeClassNames('steward-dialog', className)}
       classNames={{
         body: 'space-y-4 text-sm',
-        content: 'border border-border bg-background text-foreground shadow-xl',
-        header: 'border-b border-border bg-background px-4 py-3',
+        content: 'steward-dialog-content border border-border text-foreground shadow-xl',
+        header: 'steward-dialog-header border-b border-border px-4 py-3',
         title: 'text-sm font-semibold',
       }}
       overlayProps={{ backgroundOpacity: 0.52 }}

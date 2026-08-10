@@ -8,6 +8,7 @@ import { WorkbenchHeader } from '@/companion/features/workbench/WorkbenchHeader'
 import { UpdateNoticeBar } from '@/companion/features/updates/UpdateNoticeBar';
 import { useUpdateManager } from '@/companion/features/updates/useUpdateManager';
 import { useCompanionConnection } from '@/companion/hooks/useCompanionConnection';
+import { useCompanionDeviceAuthority } from '@/companion/hooks/useCompanionDeviceAuthority';
 import {
   buildAutomationLeaseConnectionKey,
   isAutomationLeaseOwnedForConnection,
@@ -158,12 +159,15 @@ import {
 import { formatDesk } from '@/companion/formatters';
 import {
   applyCompanionPreferencesToTauri,
+  applySharedCompanionPreferences,
   applyCompanionVisualPreferences,
   normalizeCompanionPreferences,
   normalizeFocusSwitchCooldownMs,
   persistCompanionPreferences,
   readStoredCompanionPreferences,
+  readSharedCompanionPreferences,
   type CompanionPreferences,
+  type SharedCompanionPreferences,
   type FocusSwitchBehavior,
 } from '@/companion/preferences';
 import {
@@ -194,6 +198,7 @@ import type {
   AutomationCookerCycle,
   CookerControllerReservation,
   CookerReservationResult,
+  CompanionDevicePlatform,
   CustomRecipeData,
   CustomRecipeGroupMode,
   ExtensionTab,
@@ -1879,9 +1884,41 @@ export function ModWorkbench() {
     setAutomationCancellationAttempt(0);
   }, [normalizedEndpoint]);
 
+  const applyAuthoritativeSharedPreferences = useCallback((profile: SharedCompanionPreferences) => {
+    setCompanionPreferences((current) => {
+      const next = applySharedCompanionPreferences(current, profile);
+      companionPreferencesRef.current = next;
+      persistCompanionPreferences(next);
+      return next;
+    });
+  }, []);
+  const sharedCompanionPreferences = useMemo(
+    () => readSharedCompanionPreferences(companionPreferences),
+    [companionPreferences],
+  );
+  const companionDevicePlatform: CompanionDevicePlatform = !isTauriRuntime()
+    ? 'browser'
+    : companionPlatform === 'mobile' ? 'android' : 'windows';
+  const companionDeviceAuthority = useCompanionDeviceAuthority({
+    endpoint: normalizedEndpoint,
+    apiToken,
+    connected: companionConnected,
+    connectionRevision,
+    platform: companionDevicePlatform,
+    appVersion: __APP_VERSION__,
+    sharedPreferences: sharedCompanionPreferences,
+    applySharedPreferences: applyAuthoritativeSharedPreferences,
+  });
+
   const updateCompanionPreferences = useCallback((next: Partial<CompanionPreferences>) => {
     const current = companionPreferencesRef.current;
-    const normalized = normalizeCompanionPreferences({ ...current, ...next });
+    let normalized = normalizeCompanionPreferences({ ...current, ...next });
+    if (companionConnected && !companionDeviceAuthority.currentDeviceIsPrimary) {
+      normalized = applySharedCompanionPreferences(
+        normalized,
+        companionDeviceAuthority.state?.activeProfile ?? readSharedCompanionPreferences(current),
+      );
+    }
     const disabledTarget = current.automationEnabled
       && normalized.automationEnabled
       ? getAutomationCancellationTarget(current, normalized)
@@ -1892,7 +1929,12 @@ export function ModWorkbench() {
     if (cancellationTarget) requestAutomationCancellation(cancellationTarget);
     companionPreferencesRef.current = normalized;
     setCompanionPreferences(normalized);
-  }, [requestAutomationCancellation]);
+  }, [
+    companionConnected,
+    companionDeviceAuthority.currentDeviceIsPrimary,
+    companionDeviceAuthority.state?.activeProfile,
+    requestAutomationCancellation,
+  ]);
 
   useEffect(() => {
     if (!companionPreferences.showDebugDetails && tab === 'logs') {
@@ -1917,12 +1959,19 @@ export function ModWorkbench() {
   }, []);
 
   const runtime = snapshot?.recommendationState ?? null;
-  const connectionReadyForActions = Boolean(apiToken && !connectionPaused && !error && snapshot);
+  const connectionReadyForActions = Boolean(
+    apiToken
+    && !connectionPaused
+    && !error
+    && snapshot
+    && companionDeviceAuthority.runtimeWriterReady,
+  );
   if (!connectionReadyForActions) automationLeaseRevalidationRequiredRef.current = true;
   const automationSessionId = snapshot?.automationSessionId.trim() ?? '';
   const automationLeaseConnectionKey = buildAutomationLeaseConnectionKey(
     { endpoint: normalizedEndpoint, apiToken },
     automationSessionId,
+    companionDeviceAuthority.authorityRevision,
   );
   const automationCancellationEndpoint = automationCancellation?.endpoint ?? '';
   const automationCancellationPending = automationCancellation !== null;
@@ -1987,8 +2036,16 @@ export function ModWorkbench() {
     if (current?.key === key) return current.promise;
 
     const promise = current
-      ? current.promise.catch(() => undefined).then(() => acquireAutomationLease(normalizedEndpoint, apiToken))
-      : acquireAutomationLease(normalizedEndpoint, apiToken);
+      ? current.promise.catch(() => undefined).then(() => acquireAutomationLease(
+          normalizedEndpoint,
+          apiToken,
+          companionDeviceAuthority.authorityRevision,
+        ))
+      : acquireAutomationLease(
+          normalizedEndpoint,
+          apiToken,
+          companionDeviceAuthority.authorityRevision,
+        );
     const entry: AutomationLeaseAcquireEntry = { key, promise };
     automationLeaseAcquireRef.current = entry;
     const clearEntry = () => {
@@ -1996,7 +2053,12 @@ export function ModWorkbench() {
     };
     void promise.then(clearEntry, clearEntry);
     return promise;
-  }, [apiToken, automationLeaseConnectionKey, normalizedEndpoint]);
+  }, [
+    apiToken,
+    automationLeaseConnectionKey,
+    companionDeviceAuthority.authorityRevision,
+    normalizedEndpoint,
+  ]);
 
   const waitForAutomationLeaseAcquire = useCallback(async (): Promise<void> => {
     while (automationLeaseAcquireRef.current) {
@@ -2079,6 +2141,7 @@ export function ModWorkbench() {
             cancellationEndpoint,
             apiToken,
             cancellationTarget,
+            companionDeviceAuthority.authorityRevision,
           );
           if (disposed) return;
           const currentCancellation = automationCancellationRef.current;
@@ -2157,6 +2220,7 @@ export function ModWorkbench() {
     automationCancellationEndpointMatchesConnection,
     automationLeaseOwned,
     automationSessionId,
+    companionDeviceAuthority.authorityRevision,
     connectionReadyForActions,
     publishAutoPrepBusy,
     publishAutoPrepMessage,
@@ -2693,6 +2757,7 @@ export function ModWorkbench() {
     endpoint: normalizedEndpoint,
     apiToken,
     connectionRevision,
+    authorityRevision: companionDeviceAuthority.authorityRevision,
     sessionId: snapshot?.automationSessionId.trim() ?? '',
     businessGeneration: snapshot?.nightBusinessGeneration ?? 0,
     businessActive: snapshot?.nightBusinessLifecyclePhase === 'Active',
@@ -3382,7 +3447,12 @@ export function ModWorkbench() {
       return next;
     });
     try {
-      const response = await acknowledgeAutomationSafetyBarrier(normalizedEndpoint, apiToken, sequence);
+      const response = await acknowledgeAutomationSafetyBarrier(
+        normalizedEndpoint,
+        apiToken,
+        sequence,
+        companionDeviceAuthority.authorityRevision,
+      );
       if (automationStateSessionIdRef.current !== sessionId) {
         return automationBarrierAckFailure(sequence, '游戏自动化实例已切换，旧 sequence 的确认结果已作废。');
       }
@@ -3405,7 +3475,7 @@ export function ModWorkbench() {
         setAutomationBarrierAckBusyKey('');
       }
     }
-  }, [apiToken, normalizedEndpoint]);
+  }, [apiToken, companionDeviceAuthority.authorityRevision, normalizedEndpoint]);
 
   const clearAcknowledgedAutomationBarriers = useCallback((
     acknowledgedSequences: readonly number[],
@@ -3979,6 +4049,7 @@ export function ModWorkbench() {
                 || companionPreferences.autoPrepCompleteOrder,
             },
             null,
+            companionDeviceAuthority.authorityRevision,
           );
           const completeResponseAt = Date.now();
           if (!isAutomationRequestCurrent(requestEpoch)) return;
@@ -4119,6 +4190,7 @@ export function ModWorkbench() {
           currentState.beverageTarget,
           preparePreferences,
           shouldPrepareFood ? cookerReservation : null,
+          companionDeviceAuthority.authorityRevision,
         );
         const prepareResponseAt = Date.now();
         if (!isAutomationRequestCurrent(requestEpoch)) return;
@@ -4221,6 +4293,7 @@ export function ModWorkbench() {
                 || companionPreferences.autoPrepCompleteOrder,
             },
             null,
+            companionDeviceAuthority.authorityRevision,
           );
           const immediateCompleteResponseAt = Date.now();
           finalStateUpdatedAt = immediateCompleteResponseAt;
@@ -4352,6 +4425,7 @@ export function ModWorkbench() {
   }, [
     apiToken,
     companionPreferences,
+    companionDeviceAuthority.authorityRevision,
     favorites,
     getSpecialBusinessRejectedRecipeKeys,
     normalizedEndpoint,
@@ -4833,6 +4907,7 @@ export function ModWorkbench() {
           requestPreferences.autoNormalStartCooking
             ? cookerReservationByOrderKey.get(orderKey) ?? null
             : null,
+          companionDeviceAuthority.authorityRevision,
           recommendationData,
           specialTargetSelection.target,
         );
@@ -5004,6 +5079,7 @@ export function ModWorkbench() {
   }, [
     apiToken,
     companionPreferences,
+    companionDeviceAuthority.authorityRevision,
     getAutomationCookerCycle,
     handleAutomationControlPlaneResponse,
     isAutomationRequestCurrent,
@@ -5598,6 +5674,7 @@ export function ModWorkbench() {
               serviceFocusCompact={serviceFocusCompact}
               settingsTab={settingsTab}
               updateManager={updateManager}
+              deviceAuthority={companionDeviceAuthority}
               onPreferenceChange={updateCompanionPreferences}
               onConnectionConfigApplied={applyConnectionDetails}
               onSettingsTabChange={setSettingsTab}

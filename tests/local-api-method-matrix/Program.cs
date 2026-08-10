@@ -4,6 +4,7 @@ var expectedGetRoutes = new HashSet<string>(StringComparer.Ordinal)
 {
     "/automation/lease",
     "/custom-recipes",
+    "/devices",
     "/favorites",
     "/health",
     "/local-api/config",
@@ -25,6 +26,13 @@ var expectedPostRoutes = new HashSet<string>(StringComparer.Ordinal)
     "/custom-recipes/upsert",
     "/custom-recipes/update-flags",
     "/diagnostics/automation-decision",
+    "/devices/forget",
+    "/devices/primary",
+    "/devices/profile",
+    "/devices/register",
+    "/devices/rename",
+    "/devices/sync",
+    "/devices/sync-ack",
     "/favorites/add-beverage",
     "/favorites/add-recipe",
     "/favorites/remove-beverage",
@@ -136,12 +144,24 @@ try
         "Command-only or grouped cancellation no longer retains the current automation lease.");
     AssertContains(
         source,
-        "if (releaseLease)\n                {\n                    _automationLease = null;",
+        "if (releaseLease)\n                    {\n                        _automationLease = null;",
         "All-target cancellation no longer releases the current automation lease.");
     AssertContains(
         source,
-        "_automationLease.LastSeenUtc = now;\n                    _automationLease.ExpiresAtUtc = now + AutomationLeaseTtl;",
+        "_automationLease.LastSeenUtc = now;\n                        _automationLease.ExpiresAtUtc = now + AutomationLeaseTtl;",
         "Command-only or grouped cancellation no longer retains and renews the current automation lease.");
+    AssertContains(
+        source,
+        "var requestData = HttpRequestReader.Read(stream, MaxRequestHeaderBytes, MaxRequestBodyBytes);",
+        "Local API requests no longer use the bounded header/body reader.");
+    AssertContains(
+        source,
+        "ReadJsonRequest<CompanionDeviceRegisterRequest>",
+        "Device registration no longer requires an exact JSON request body.");
+    AssertContains(
+        source,
+        "TryAuthorizeRuntimeWriter(request, clientId, now, out authorityRevision, out authorityError)",
+        "Runtime writers no longer validate the current device authority revision.");
     AssertContains(
         source,
         "AcknowledgeAutomationSafetyBarrier(request, query)",
