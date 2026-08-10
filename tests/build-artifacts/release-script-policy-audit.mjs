@@ -10,6 +10,7 @@ const sources = Object.fromEntries(await Promise.all([
   ['packageBash', 'mods/bepinex/tools/package-release.sh'],
   ['publish', 'mods/bepinex/tools/publish-release.ps1'],
   ['android', 'scripts/build-android-signed-apk.mjs'],
+  ['tauriApp', 'apps/companion/src-tauri/src/app.rs'],
   ['packageJson', 'package.json'],
 ].map(async ([name, relativePath]) => [name, await readFile(path.join(repoRoot, relativePath), 'utf8')])));
 
@@ -23,8 +24,8 @@ for (const scriptName of [
 ]) {
   assert.match(
     packageScripts[scriptName],
-    /^node scripts\/manage-build-artifacts\.mjs prune && /u,
-    `${scriptName} does not enforce the cache policy before building.`,
+    /^node scripts\/check-build-toolchain\.mjs tauri --require-corepack-invocation && node scripts\/manage-build-artifacts\.mjs prune && /u,
+    `${scriptName} does not enforce the toolchain and cache policies before building.`,
   );
 }
 
@@ -52,9 +53,27 @@ assert.match(sources.android, /const stagingDir = mkdtempSync\(path\.join\(distD
 const androidMainBody = sources.android.match(/function main\(\) \{[\s\S]+?\n\}/u)?.[0] ?? '';
 assert.ok(androidMainBody, 'Missing signed Android APK main function.');
 assert.ok(
+  androidMainBody.indexOf('verifyBuildToolchain();') < androidMainBody.indexOf('mkdirSync(distDir'),
+  'Signed Android APK builds do not verify the locked toolchain before writing build artifacts.',
+);
+assert.ok(
   androidMainBody.indexOf('pruneBuildArtifacts();') < androidMainBody.indexOf('runTauriAndroidApkBuild();'),
   'Signed Android APK builds do not prune stale caches before compiling.',
 );
+assert.match(sources.android, /check-build-toolchain\.mjs/u);
+assert.match(sources.android, /\[buildToolchainCheck, 'tauri'\]/u);
+for (const helperName of ['is_main_window_focused', 'hide_main_window']) {
+  const definitions = [...sources.tauriApp.matchAll(new RegExp(
+    `(?<attributes>(?:#\\[cfg\\([^\\n]+\\)\\]\\s*)*)fn ${helperName}\\(`,
+    'gu',
+  ))];
+  assert.equal(definitions.length, 1, `${helperName} must have one canonical implementation.`);
+  assert.match(
+    definitions[0].groups?.attributes ?? '',
+    /#\[cfg\(desktop\)\]/u,
+    `${helperName} must remain excluded from Android and other mobile targets.`,
+  );
+}
 const pruneThenCommitBody = sources.android.match(
   /function pruneThenCommitAndroidApks[\s\S]+?\n\}/u,
 )?.[0] ?? '';

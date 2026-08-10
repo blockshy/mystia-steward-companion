@@ -4,6 +4,7 @@ version = "1.2.0"
 description = "Desktop companion window for mystia-steward-companion"
 authors = ["mystia-steward-companion contributors"]
 edition = "2021"
+rust-version = "1.97.1"
 
 [lib]
 name = "mystia_steward_companion_mobile"

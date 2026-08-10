@@ -1,6 +1,6 @@
 # 开发约定与流程
 
-更新日期：2026-08-08
+更新日期：2026-08-10
 
 ## 代码边界
 
@@ -36,25 +36,31 @@
 
 ## 构建验证
 
-当前 Linux 验证基线为 Node.js `24.19.0`、Corepack `0.35.0`、仓库固定 pnpm `10.10.0`、
-.NET SDK `10.0.110` 和 Rust `1.97.1`。Windows 开发机建议对齐这些主版本；Mod 发布目标仍保持
-`net6.0`，不因本机构建 SDK 升级而改目标框架。只有 .NET 10 runtime 的环境运行 net6 smoke 时可为当前
-测试进程设置 `DOTNET_ROLL_FORWARD=Major`，不要安装已停止支持的 .NET 6 SDK 作为项目固定依赖。
-`automation-cooking-job` 含真实 Harmony/MonoMod 动态补丁探针；该旧依赖组合在 Linux .NET 10 CoreCLR
-上会于探针执行时发生原生崩溃，因此此项必须在固定 .NET 6 SDK 容器中运行，不能删除探针或用源码断言
-替代运行时验证：
+Linux 与 Windows 的正式构建基线统一为 Node.js `24.19.0`、Corepack `0.35.0`、pnpm `10.10.0`、
+.NET SDK `10.0.110` 和 Rust/Cargo `1.97.1`。根目录 `toolchain.lock.json` 是唯一版本基线；`.nvmrc`、
+`package.json`、`global.json`、`rust-toolchain.toml`、Cargo manifest 和 CI 只是各工具的受控投影，
+`pnpm audit:toolchain` 会阻止它们漂移。`pnpm build`、`pnpm lint`、Tauri 命令和 Windows 发布入口会在执行
+副作用前验证相应工具链；不允许回退到全局 pnpm、较新 SDK 或笼统的 stable channel。
+
+Mod 发布目标仍保持 `net6.0`，不因构建 SDK 锁定到 .NET 10 而改目标框架。只有 .NET 10 runtime 的环境
+运行一般 net6 smoke 时可为当前测试进程设置 `DOTNET_ROLL_FORWARD=Major`，不要安装已停止支持的 .NET 6
+SDK 作为产品构建依赖。`automation-cooking-job`、`ui-pinning-runtime` 和
+`runtime-target-recipe-variant` 含真实 Harmony/MonoMod 动态补丁探针；该旧依赖组合在 Linux .NET 10
+CoreCLR 上会于探针执行时发生原生崩溃，因此三项必须通过仓库脚本在固定 .NET 6 SDK 容器中运行。脚本把
+`tests/dotnet6-harmony/global.json` 只覆盖到容器内根目录，不修改宿主 `global.json`，也不允许把 .NET 6
+恢复为产品构建路径：
 
 ```bash
-docker run --rm -v "$PWD:/workspace" -w /workspace \
-  mcr.microsoft.com/dotnet/sdk@sha256:eaa148f3f58a7276c9bb2eac0612f9560e9ba69e44de02e9ae1912e7105a9b1e \
-  dotnet run --project tests/automation-cooking-job/AutomationCookingJobSmoke.csproj -c Release
+corepack pnpm test:dotnet6-harmony
 ```
 
 常规检查：
 
 ```bash
+corepack pnpm toolchain:check
 pnpm lint
 pnpm build
+pnpm audit:toolchain
 ```
 
 构建产物空间检查和清理：
@@ -100,7 +106,7 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 - package/APK 事务遗留的 `dist.staging-*`、`dist.backup-*` 或 `.android-apk-stage-*` 不能自动覆盖或继续叠加；后续构建必须 fail-closed 并列出路径，由开发者确认 canonical `dist` 后恢复或删除。覆盖已有 GitHub Release 时还要对账两个 canonical Android APK，本次不再发布的旧资产只有显式 `-Clobber` 时才能删除。
 - 不要主动创建 tag 或发布 Release；版本构建必须等待用户明确指令。
 - 用户和测试文档中的 BepInEx 安装版本优先固定到已验证的 `BepInEx-Unity.IL2CPP-win-x64-6.0.0-be.783+c58c42d.zip`。不要笼统推荐最新 Bleeding Edge；#784 及之后构建若要恢复支持，需要先通过实测和运行时日志确认。
-- Android APK 不是 Windows 伴随窗口 EXE 的转换产物。Android 版按 Tauri mobile 目标维护，只作为 B 设备 LAN 伴随窗口；桌面托盘、置顶、鼠标穿透、焦点切换、单实例控制和游戏关闭自动退出必须继续隔离在桌面平台代码中。Android applicationId 固定为 `com.tyukki.mystia.steward.companion`；不要使用带连字符的产品名作为 Android 包名。桌面 Tauri identifier 继续使用既有值，Android 通过 `apps/companion/src-tauri/tauri.android.conf.json` 单独覆盖 identifier，避免影响桌面端本地数据目录。仓库保留 `apps/companion/src-tauri/gen/android/` 工程，Gradle Rust 插件必须通过 Corepack 调用 pnpm。Android 发布 APK 默认通过 `--split-per-abi --target aarch64 armv7` 构建，避免 universal fat APK；`pnpm tauri:android:apk:signed` 读取被 Git 忽略的 `apps/companion/src-tauri/gen/android/keystore.properties`，构建后用 `apksigner verify` 验签并复制 `mods/bepinex/dist/mystia-steward-companion-android-arm64-v8a.apk` 和 `mods/bepinex/dist/mystia-steward-companion-android-armeabi-v7a.apk`；`build-release.ps1 -BuildAndroidApk` 和 `publish-release.ps1 -BuildAndroidApk` 只是复用该签名构建流程，不允许把 keystore、密码和签名配置提交。Android Gradle 已关闭 Kotlin incremental compilation，避免 Windows 上 Cargo registry 与项目分属不同盘符时出现 Kotlin daemon 相对路径报错。APK 需要 Android 工具链构建、签名和真机验证，作为独立 Release 资产上传，不参与 Mod 自动更新。
+- Android APK 不是 Windows 伴随窗口 EXE 的转换产物。Android 版按 Tauri mobile 目标维护，只作为 B 设备 LAN 伴随窗口；桌面托盘、置顶、鼠标穿透、焦点切换、单实例控制和游戏关闭自动退出必须继续隔离在桌面平台代码中。Android applicationId 固定为 `com.tyukki.mystia.steward.companion`；不要使用带连字符的产品名作为 Android 包名。桌面 Tauri identifier 继续使用既有值，Android 通过 `apps/companion/src-tauri/tauri.android.conf.json` 单独覆盖 identifier，避免影响桌面端本地数据目录。仓库保留 `apps/companion/src-tauri/gen/android/` 工程，Gradle Rust 插件必须通过 Corepack 调用 pnpm；`apps/companion/src-tauri/gen/schemas/` 是 Tauri 按当前目标生成的能力补全文件，必须保持 Git 忽略，不得提交桌面或移动端的瞬时版本。Android 发布 APK 默认通过 `--split-per-abi --target aarch64 armv7` 构建，避免 universal fat APK；`pnpm tauri:android:apk:signed` 读取被 Git 忽略的 `apps/companion/src-tauri/gen/android/keystore.properties`，构建后用 `apksigner verify` 验签并复制 `mods/bepinex/dist/mystia-steward-companion-android-arm64-v8a.apk` 和 `mods/bepinex/dist/mystia-steward-companion-android-armeabi-v7a.apk`；`build-release.ps1 -BuildAndroidApk` 和 `publish-release.ps1 -BuildAndroidApk` 只是复用该签名构建流程，不允许把 keystore、密码和签名配置提交。Android Gradle 已关闭 Kotlin incremental compilation，避免 Windows 上 Cargo registry 与项目分属不同盘符时出现 Kotlin daemon 相对路径报错。APK 需要 Android 工具链构建、签名和真机验证，作为独立 Release 资产上传，不参与 Mod 自动更新。
 - Android APK 体积优化只允许在 Android 构建脚本中通过 `CARGO_PROFILE_RELEASE_*` 环境变量启用；不要把 `lto` 或 `codegen-units` 写入全局 Cargo release profile，避免普通 Windows `build-release.ps1` 构建被 Android 优化拖慢。
 - `apps/companion/src-tauri/Cargo.toml` 的 mobile lib target 使用内部名 `mystia_steward_companion_mobile`，不要改回 `mystia_steward_companion`。Windows MSVC 会把桌面 bin target `mystia-steward-companion` 的 PDB 名规格化为 `mystia_steward_companion.pdb`；同名 lib target 会触发 Cargo `output filename collision` 警告。
 

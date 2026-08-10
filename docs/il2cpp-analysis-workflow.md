@@ -75,7 +75,8 @@
 
 ## 完整生成
 
-完整分析使用 .NET 10 SDK（当前本机为 `/usr/bin/dotnet` `10.0.110`）和 Python 3.10+；Mod 发布 DLL 仍目标
+完整分析使用根目录 `toolchain.lock.json` / `global.json` 精确锁定的 .NET SDK `10.0.110` 和 Python
+3.10+；Mod 发布 DLL 仍目标
 `net6.0`，两者不得混为同一个工程。先确认 IDA 已由当前用户完成首次许可确认，且 `idapyswitch`
 已配置可用 Python 3。目标目录必须为空：
 

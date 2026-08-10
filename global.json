@@ -1,0 +1,8 @@
+{
+  "sdk": {
+    "version": "10.0.110",
+    "rollForward": "disable",
+    "allowPrerelease": false,
+    "errorMessage": "mystia-steward-companion requires the exact .NET SDK version declared in toolchain.lock.json."
+  }
+}

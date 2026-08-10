@@ -46,4 +46,5 @@ dotnet run --project tests\ui-pinning-runtime\UiPinningRuntimeSmoke.csproj `
   -c Release -p:ReferenceDir="D:\path\to\mystia-steward-companion-references"
 ```
 
-构建环境建议使用 .NET 6 SDK 或更新版本，项目目标框架为 `net6.0`。
+产品构建必须使用仓库 `global.json` 锁定的 .NET SDK `10.0.110`；项目目标框架仍为 `net6.0`，
+SDK 版本和目标框架不可混为一谈。真实 Harmony/MonoMod smoke 使用仓库单独锁定的 .NET 6 容器入口。

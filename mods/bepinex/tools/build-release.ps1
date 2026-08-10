@@ -38,6 +38,7 @@ $ProjectPath = Join-Path $RootDir "MystiaStewardCompanion.BepInEx.csproj"
 $PreflightScript = Join-Path $ToolDir "preflight.ps1"
 $PackageScript = Join-Path $ToolDir "package-release.ps1"
 $BuildArtifactManager = Join-Path $RepoRoot "scripts/manage-build-artifacts.mjs"
+$ToolchainCheckScript = Join-Path $RepoRoot "scripts/check-build-toolchain.mjs"
 $EffectiveReferenceDir = if ([string]::IsNullOrWhiteSpace($ReferenceDir)) {
     Join-Path $RootDir "References"
 } else {
@@ -78,28 +79,21 @@ function Invoke-Checked {
 function Get-PnpmCommand {
     <#
     .SYNOPSIS
-        选择当前机器可用的 pnpm 入口。
+        取得仓库唯一允许的 Corepack pnpm 入口。
 
     .DESCRIPTION
-        优先通过 corepack 调用 pnpm，保证包管理器版本遵循 packageManager 字段；没有 corepack 时才退回全局 pnpm。
+        只通过 Corepack 调用 pnpm，保证包管理器版本和完整性哈希遵循 packageManager 字段。
+        不接受全局 pnpm 回退。
     #>
     $Corepack = Get-Command "corepack" -ErrorAction SilentlyContinue
-    if ($null -ne $Corepack) {
-        return @{
-            FilePath = $Corepack.Source
-            Prefix = @("pnpm")
-        }
+    if ($null -eq $Corepack) {
+        throw "corepack was not found. Install the exact Node.js and Corepack versions declared in toolchain.lock.json, then run: corepack enable"
     }
 
-    $Pnpm = Get-Command "pnpm" -ErrorAction SilentlyContinue
-    if ($null -ne $Pnpm) {
-        return @{
-            FilePath = $Pnpm.Source
-            Prefix = @()
-        }
+    return @{
+        FilePath = $Corepack.Source
+        Prefix = @("pnpm")
     }
-
-    throw "Neither corepack nor pnpm was found. Install Node.js 20+ and run: corepack enable"
 }
 
 function Invoke-Pnpm {
@@ -121,7 +115,7 @@ function Invoke-BuildCachePrune {
 
     $Node = Get-Command "node" -ErrorAction SilentlyContinue
     if ($null -eq $Node) {
-        throw "node was not found. Install Node.js 20+ before enforcing the build cache limit."
+        throw "node was not found. Install the exact Node.js version declared in toolchain.lock.json."
     }
 
     Invoke-Checked `
@@ -222,6 +216,16 @@ $env:MYSTIA_SKIP_BUILD_CACHE_CLEANUP = if ($SkipBuildCacheCleanup) { "1" } else 
 
 Push-Location $RepoRoot
 try {
+    $Node = Get-Command "node" -ErrorAction SilentlyContinue
+    if ($null -eq $Node) {
+        throw "node was not found. Install the exact Node.js version declared in toolchain.lock.json."
+    }
+
+    Invoke-Checked `
+        -Title "Validate locked build toolchain" `
+        -FilePath $Node.Source `
+        -Arguments @($ToolchainCheckScript, "full")
+
     Assert-BuildReferences
 
     # A new Tauri build does not depend on a reused frontend build, so it is safe to prune stale buckets first.
@@ -252,7 +256,7 @@ try {
 
         $Cargo = Get-Command "cargo" -ErrorAction SilentlyContinue
         if ($null -eq $Cargo) {
-            throw "cargo was not found. Install Rust stable toolchain for the updater build."
+            throw "cargo was not found. Install the exact Rust toolchain declared in toolchain.lock.json."
         }
 
         $UpdaterManifest = Join-Path $RepoRoot "apps/companion/src-tauri/Cargo.toml"
@@ -264,7 +268,7 @@ try {
 
     $Dotnet = Get-Command "dotnet" -ErrorAction SilentlyContinue
     if ($null -eq $Dotnet) {
-        throw "dotnet was not found. Install .NET 6 SDK or newer."
+        throw "dotnet was not found. Install the exact .NET SDK declared in toolchain.lock.json."
     }
 
     $DotnetBuildArgs = @("build", $ProjectPath, "-c", $Configuration, "/p:ReferenceDir=$EffectiveReferenceDir")

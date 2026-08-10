@@ -91,12 +91,14 @@ apps/companion/src/            React 工作台、推荐算法、UI 组件和运�
 apps/companion/src-tauri/      Tauri 伴随窗口壳及 Windows / Android 平台工程
 mods/bepinex/                  BepInEx 插件、运行时读取、本地 API、打包脚本
 docs/                          Mod 开发约定、机制知识库和运行时说明
+toolchain.lock.json            Node/Corepack/pnpm/.NET/Rust 唯一构建版本基线
 ```
 
 ## 使用与开发入口
 
 - 用户安装、快捷键和故障排查：[mods/bepinex/README.md](mods/bepinex/README.md)
 - 开发环境、构建和打包：[mods/bepinex/README.dev.md](mods/bepinex/README.dev.md)
+- 构建前可运行 `corepack pnpm toolchain:check`；正式构建入口会自动拒绝与 `toolchain.lock.json` 不一致的环境。
 - 开发约定：[docs/development-conventions.md](docs/development-conventions.md)
 - 本地构建与发布方案：[docs/local-release.md](docs/local-release.md)
 - 仓库状态：[docs/repo-memory.md](docs/repo-memory.md)

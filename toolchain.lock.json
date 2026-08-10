@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "node": "24.19.0",
+  "corepack": "0.35.0",
+  "pnpm": "10.10.0",
+  "dotnetSdk": "10.0.110",
+  "rust": "1.97.1",
+  "dotnet6HarmonySdk": "6.0.428",
+  "dotnet6HarmonyImage": "mcr.microsoft.com/dotnet/sdk@sha256:eaa148f3f58a7276c9bb2eac0612f9560e9ba69e44de02e9ae1912e7105a9b1e"
+}

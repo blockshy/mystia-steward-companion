@@ -7,7 +7,11 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-$RootDir = Resolve-Path (Join-Path $PSScriptRoot "..")
+$RootDir = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$RepoRoot = (Resolve-Path (Join-Path $RootDir "../..")).Path
+$ToolchainLockPath = Join-Path $RepoRoot "toolchain.lock.json"
+$ToolchainLock = Get-Content -LiteralPath $ToolchainLockPath -Raw | ConvertFrom-Json
+$ExpectedDotnetSdk = [string]$ToolchainLock.dotnetSdk
 $EffectiveReferenceDir = if ([string]::IsNullOrWhiteSpace($ReferenceDir)) {
     Join-Path $RootDir "References"
 } else {
@@ -27,11 +31,28 @@ function Test-RequiredFile {
 }
 
 Write-Host "Checking .NET SDK"
-if (Get-Command dotnet -ErrorAction SilentlyContinue) {
-    dotnet --version
-} else {
+$Dotnet = Get-Command dotnet -ErrorAction SilentlyContinue
+if ($null -eq $Dotnet) {
     Write-Host "MISS dotnet"
     $Failed = $true
+}
+else {
+    Push-Location $RepoRoot
+    try {
+        $ActualDotnetSdk = ((& $Dotnet.Source --version) | Out-String).Trim()
+        $DotnetExitCode = $LASTEXITCODE
+    }
+    finally {
+        Pop-Location
+    }
+
+    if ($DotnetExitCode -ne 0 -or $ActualDotnetSdk -ne $ExpectedDotnetSdk) {
+        Write-Host "MISMATCH dotnet expected=$ExpectedDotnetSdk actual=$ActualDotnetSdk"
+        $Failed = $true
+    }
+    else {
+        Write-Host "OK   dotnet $ActualDotnetSdk"
+    }
 }
 
 Write-Host ""
@@ -46,7 +67,7 @@ Test-RequiredFile (Join-Path $EffectiveReferenceDir "UnityEngine.InputLegacyModu
 
 if ($Failed) {
     Write-Host ""
-    throw "Preflight failed. Copy the missing DLLs into mods/bepinex/References, or pass -ReferenceDir to a directory containing them."
+    throw "Preflight failed. Install the locked .NET SDK and copy missing DLLs into mods/bepinex/References, or pass -ReferenceDir to a directory containing them."
 }
 
 Write-Host ""

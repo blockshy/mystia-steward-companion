@@ -1293,30 +1293,36 @@ fn show_main_window_without_passthrough_state(app: &tauri::AppHandle) -> bool {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(desktop)]
 fn is_main_window_focused(window: &WebviewWindow) -> Option<bool> {
-    window
-        .hwnd()
-        .ok()
-        .map(|hwnd| windows_focus::is_foreground_window(hwnd.0))
+    #[cfg(target_os = "windows")]
+    {
+        return window
+            .hwnd()
+            .ok()
+            .map(|hwnd| windows_focus::is_foreground_window(hwnd.0));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        window.is_focused().ok()
+    }
 }
 
-#[cfg(not(target_os = "windows"))]
-fn is_main_window_focused(window: &WebviewWindow) -> Option<bool> {
-    window.is_focused().ok()
-}
-
-#[cfg(target_os = "windows")]
+#[cfg(desktop)]
 fn hide_main_window(window: &WebviewWindow) -> bool {
-    window
-        .hwnd()
-        .ok()
-        .is_some_and(|hwnd| windows_focus::hide_window(hwnd.0))
-}
+    #[cfg(target_os = "windows")]
+    {
+        return window
+            .hwnd()
+            .ok()
+            .is_some_and(|hwnd| windows_focus::hide_window(hwnd.0));
+    }
 
-#[cfg(not(target_os = "windows"))]
-fn hide_main_window(window: &WebviewWindow) -> bool {
-    window.hide().is_ok()
+    #[cfg(not(target_os = "windows"))]
+    {
+        window.hide().is_ok()
+    }
 }
 
 #[cfg(desktop)]

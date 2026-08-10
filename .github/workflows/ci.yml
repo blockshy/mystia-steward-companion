@@ -14,10 +14,15 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version-file: .nvmrc
 
-      - name: Enable Corepack
-        run: corepack enable
+      - name: Install and enable locked Corepack
+        run: |
+          npm install --global corepack@0.35.0
+          corepack enable
+
+      - name: Verify frontend toolchain
+        run: node scripts/check-build-toolchain.mjs frontend
 
       - name: Install dependencies
         run: corepack pnpm install --frozen-lockfile

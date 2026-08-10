@@ -3,6 +3,8 @@ set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 lock_file="$script_dir/toolchain.lock.json"
+repo_root=$(cd "$script_dir/../../../.." && pwd)
+build_toolchain_lock="$repo_root/toolchain.lock.json"
 
 if [[ $# -lt 2 || $# -gt 3 ]]; then
   echo "Usage: $0 <game-root> <empty-output-root> [ida-install-directory]" >&2
@@ -40,9 +42,16 @@ for command_name in curl dotnet file python3 sha256sum strings unzip; do
   }
 done
 
-dotnet_version=$(dotnet --version)
-if [[ "$dotnet_version" != 10.* ]]; then
-  echo "The IL2CPP analysis generator requires a .NET 10 SDK; found $dotnet_version." >&2
+expected_dotnet_version=$(python3 - "$build_toolchain_lock" <<'PY'
+import json
+import sys
+
+print(json.load(open(sys.argv[1], encoding="utf-8"))["dotnetSdk"])
+PY
+)
+dotnet_version=$(cd "$repo_root" && dotnet --version)
+if [[ "$dotnet_version" != "$expected_dotnet_version" ]]; then
+  echo "The IL2CPP analysis generator requires .NET SDK $expected_dotnet_version; found $dotnet_version." >&2
   exit 1
 fi
 if ! python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 10))'; then

@@ -17,13 +17,31 @@
 - Node.js `24.19.0`、Corepack `0.35.0`，并通过 Corepack 使用仓库固定的 `pnpm@10.10.0`。
 - .NET SDK `10.0.110`。Mod 发布目标仍是 `net6.0`，不要为此安装已停止支持的 .NET 6 SDK；
   运行一般 net6 smoke 时可在当前 PowerShell 设置 `$env:DOTNET_ROLL_FORWARD = "Major"`。
-- Rust stable（当前验证版本 `1.97.1`）。
+- Rust/Cargo `1.97.1`，通过 rustup 安装；不要用会随时间变化的 `stable` 作为发布工具链。
 - Microsoft C++ Build Tools 2022 或 Visual Studio “使用 C++ 的桌面开发”组件。
 - Microsoft Edge WebView2 Runtime。
 - PowerShell 7。
 - GitHub CLI，并完成 `gh auth login`。
-- 需要完整复现 `automation-cooking-job` 的真实 Harmony/MonoMod 动态补丁 smoke 时安装 Docker Desktop，
-  并使用 `docs/development-conventions.md` 锁定的 .NET 6 SDK 容器；不要删除该运行时探针。
+- 需要完整复现三项真实 Harmony/MonoMod 动态补丁 smoke 时安装 Docker Desktop，并运行
+  `corepack pnpm test:dotnet6-harmony` 使用锁定的 .NET 6 SDK 容器；不要删除这些运行时探针。
+
+根目录 `toolchain.lock.json` 是上述版本的唯一基线，`.nvmrc`、`global.json` 和
+`rust-toolchain.toml` 会分别选择 Node、.NET SDK 与 Rust；`package.json` 继续以版本加完整性哈希锁定
+pnpm。正式构建不接受较新补丁、全局 pnpm 或缺失 Corepack 的回退。Windows x64 初始化建议使用同一套
+Node 安装方式，不要同时叠加官方 MSI 和 nvm-windows；安装完成后执行：
+
+```powershell
+npm install --global corepack@0.35.0
+corepack enable
+corepack install
+rustup toolchain install 1.97.1 --profile minimal
+corepack pnpm toolchain:check
+```
+
+如果 Node 官方 MSI 自带的 Corepack 阻止全局升级，先在 Node 安装程序的“修改”界面移除 Corepack
+Manager 组件，再安装上方精确版本。`.NET SDK 10.0.110` 建议使用独立 x64 SDK 安装包，避免 Visual
+Studio 更新替换它。检查结果必须依次为 Node `v24.19.0`、Corepack `0.35.0`、pnpm `10.10.0`、
+.NET SDK `10.0.110`、rustc/cargo `1.97.1`；发布脚本会再次执行同一硬门禁。
 
 如需同时发布 Android APK，还需要 Android Studio/SDK/NDK、JDK 17、Android Rust targets，并完成 APK 签名配置。Android APK 是 Tauri mobile 的单独构建产物，不从 Windows EXE 转换。
 

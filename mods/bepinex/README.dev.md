@@ -23,16 +23,16 @@
 
 Windows 上通常需要：
 
-- 当前已验证基线为 .NET SDK `10.0.110`。它同时构建仍以 `net6.0` 为目标的 Mod 和以 `net10.0`
-  为目标的独立 `InteropGenerator`；不要为了 Mod 目标框架安装已停止支持的 .NET 6 SDK。若 Windows 仅安装
+- 仓库通过 `toolchain.lock.json` 和 `global.json` 精确锁定 .NET SDK `10.0.110`。它同时构建仍以
+  `net6.0` 为目标的 Mod 和以 `net10.0` 为目标的独立 `InteropGenerator`；不要为了 Mod 目标框架安装
+  已停止支持的 .NET 6 SDK。若 Windows 仅安装
   .NET 10 runtime，运行仓库内一般 net6 smoke 前为该终端设置 `$env:DOTNET_ROLL_FORWARD = "Major"`。
-  `automation-cooking-job` 的真实 Harmony/MonoMod 动态补丁探针不能在 Linux .NET 10 CoreCLR 上运行；
-  使用 Docker Desktop/Linux Docker 与 `docs/development-conventions.md` 锁定的 .NET 6 镜像执行该测试，
-  不要删除探针或把测试改成只读源码断言。
-- 当前已验证 Node.js 为 `24.19.0`、Corepack 为 `0.35.0`，并通过 Corepack 使用仓库固定的
-  `pnpm@10.10.0`。
+  三项真实 Harmony/MonoMod 动态补丁 smoke 不能在 Linux .NET 10 CoreCLR 上运行；使用
+  `corepack pnpm test:dotnet6-harmony` 在锁定的 .NET 6 容器中执行，不要删除探针或把测试改成源码断言。
+- Node.js 精确锁定为 `24.19.0`、Corepack 为 `0.35.0`，并通过 Corepack 使用仓库固定的
+  `pnpm@10.10.0`；构建不回退到全局 pnpm。
 - PowerShell 7。
-- Rust stable（当前已验证 `1.97.1`）、Microsoft C++ Build Tools 2022 或 Visual Studio
+- Rust/Cargo `1.97.1`、Microsoft C++ Build Tools 2022 或 Visual Studio
   “使用 C++ 的桌面开发”组件。
 - Microsoft Edge WebView2 Runtime。
 - Windows 实机运行验证需要已安装并启动过一次 BepInEx Unity IL2CPP 的游戏目录；优先使用 #783 构建
@@ -42,9 +42,12 @@ Windows 上通常需要：
 推荐初始化命令：
 
 ```powershell
+npm install --global corepack@0.35.0
 corepack enable
-corepack prepare pnpm@10.10.0 --activate
+corepack install
 winget install Rustlang.Rustup
+rustup toolchain install 1.97.1 --profile minimal
+corepack pnpm toolchain:check
 ```
 
 Linux 验证 Tauri 构建时还需要：
@@ -106,7 +109,9 @@ PowerShell 7 从仓库根目录执行：
 pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 ```
 
-该脚本会依次执行 `pnpm install --frozen-lockfile`、`preflight.ps1`、运行时数据模式提示、伴随窗口前端构建、Tauri 伴随窗口构建、Mod DLL 构建和安装包生成。
+该脚本会先严格验证 `toolchain.lock.json` 中的 Node/Corepack/pnpm/.NET/Rust 版本，再依次执行
+`pnpm install --frozen-lockfile`、`preflight.ps1`、运行时数据模式提示、伴随窗口前端构建、Tauri 伴随窗口
+构建、Mod DLL 构建和安装包生成。任一版本不一致都会在编译前停止。
 脚本开始时会先检查 `mods\bepinex\References` 中的 BepInEx/Unity 引用 DLL。若引用 DLL 放在其他目录，可显式传入：
 
 ```powershell
@@ -139,6 +144,7 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1 -BuildAn
 需要拆分排查时，可从仓库根目录手动运行：
 
 ```bash
+corepack pnpm toolchain:check
 pnpm install
 pnpm build
 pnpm tauri:build

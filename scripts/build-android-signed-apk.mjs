@@ -24,6 +24,7 @@ const keystorePropertiesPath = path.join(androidDir, 'keystore.properties');
 const apkOutputDir = path.join(androidDir, 'app', 'build', 'outputs', 'apk');
 const distDir = path.join(repoRoot, 'mods', 'bepinex', 'dist');
 const buildArtifactManager = path.join(repoRoot, 'scripts', 'manage-build-artifacts.mjs');
+const buildToolchainCheck = path.join(repoRoot, 'scripts', 'check-build-toolchain.mjs');
 const releaseApkTargets = [
   {
     target: 'aarch64',
@@ -49,6 +50,7 @@ if (isMainModule()) {
 }
 
 function main() {
+  verifyBuildToolchain();
   assertSigningConfig();
   mkdirSync(distDir, { recursive: true });
   assertRealDirectory(distDir, 'Android release dist');
@@ -66,6 +68,10 @@ function main() {
 
   console.log('');
   console.log(`Built ${signedApks.length} signed Android APKs.`);
+}
+
+function verifyBuildToolchain() {
+  run(process.execPath, [buildToolchainCheck, 'tauri'], { cwd: repoRoot });
 }
 
 function isMainModule() {
