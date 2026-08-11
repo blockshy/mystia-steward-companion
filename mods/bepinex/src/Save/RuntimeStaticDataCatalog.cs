@@ -96,16 +96,33 @@ internal sealed class RuntimeStaticDataCatalog
                 "IzakayasMapping",
                 RuntimeCoreMappingIdDomain.Signed);
 
+            phase = "read-recipe-descriptors";
+            var recipeDescriptors = ReadRecipeDescriptors(methods.RefRecipe, recipeIds);
+            phase = "resolve-recipe-dependencies";
+            var recipeDependencies = RuntimeRecipeDependencyProjection.Build(
+                ingredientIds,
+                foodIds,
+                recipeDescriptors);
             phase = "read-izakaya-places";
             var places = ReadIzakayaPlaces(methods.RefIzakaya, izakayaIds);
             phase = "read-ingredients";
-            var ingredients = ReadIngredients(methods.RefIngredient, methods.GetIngredientLang, ingredientIds, foodTags);
+            var ingredients = ReadIngredients(
+                methods.RefIngredient,
+                methods.GetIngredientLang,
+                recipeDependencies.IngredientIds,
+                foodTags,
+                recipeDependencies.IngredientSourceRecipeIds);
             phase = "read-beverages";
             var beverages = ReadBeverages(methods.RefBeverage, methods.GetBeverageLang, beverageIds, beverageTags);
             phase = "read-foods";
-            var foods = ReadFoods(methods.RefFood, methods.GetFoodLang, foodIds, foodTags);
-            phase = "read-recipes";
-            var recipes = ReadRecipes(methods.RefRecipe, recipeIds, foods, ingredients);
+            var foods = ReadFoods(
+                methods.RefFood,
+                methods.GetFoodLang,
+                recipeDependencies.FoodIds,
+                foodTags,
+                recipeDependencies.FoodSourceRecipeIds);
+            phase = "materialize-recipes";
+            var recipes = MaterializeRecipes(recipeDescriptors, foods, ingredients);
             phase = "read-normal-customers";
             var normalCustomers = ReadNormalCustomers(
                 methods.GetAllNormalGuests,
@@ -135,7 +152,12 @@ internal sealed class RuntimeStaticDataCatalog
                 Status = string.Join(
                     ",",
                     $"ingredients:{ingredients.Count}",
+                    $"mappedIngredients:{ingredientIds.Count}",
+                    $"recipeIngredientDependencies:{recipeDependencies.DependencyIngredientIds.Count}",
                     $"beverages:{beverages.Count}",
+                    $"foods:{foods.Count}",
+                    $"mappedFoods:{foodIds.Count}",
+                    $"recipeFoodDependencies:{recipeDependencies.DependencyFoodIds.Count}",
                     $"recipes:{recipes.Count}",
                     $"normal:{normalCustomers.Count}",
                     $"rare:{rareCustomers.Count}",
@@ -156,13 +178,18 @@ internal sealed class RuntimeStaticDataCatalog
                 throw new InvalidOperationException($"Runtime data catalog is incomplete: {catalog.Status}.");
             }
 
-            var status = $"runtimeData={catalog.Status}; source=five-core-mappings";
+            var status = $"runtimeData={catalog.Status}; source=five-core-mapping-roots+recipe-dependencies";
             return new RuntimeStaticDataSnapshot
             {
                 CapturedAtUtc = DateTime.UtcNow,
                 Status = status,
                 TagLines = BuildTagLines(foodTags, beverageTags),
-                CoreLines = BuildCoreLines(ingredients, beverages, foods.Values, recipes),
+                CoreLines = BuildCoreLines(
+                    ingredients,
+                    beverages,
+                    foods.Values,
+                    recipes,
+                    recipeDependencies),
                 GuestLines = BuildGuestLines(normalCustomers, rareCustomers),
                 IzakayaLines = places.DiagnosticLines,
                 DataCatalog = catalog,
@@ -188,19 +215,31 @@ internal sealed class RuntimeStaticDataCatalog
         MethodInfo refIngredient,
         MethodInfo getIngredientLang,
         IReadOnlyList<int> ids,
-        IReadOnlyDictionary<int, string> foodTags)
+        IReadOnlyDictionary<int, string> foodTags,
+        IReadOnlyDictionary<int, IReadOnlyList<int>> sourceRecipeIds)
     {
         var result = new List<Ingredient>(ids.Count);
         foreach (var id in ids)
         {
-            var runtime = InvokeRequiredStatic(refIngredient, id);
-            result.Add(new Ingredient
+            try
             {
-                Id = id,
-                Name = ReadRequiredLanguageName(getIngredientLang, id),
-                Tags = ReadTagNames(ReadRequiredIntArrayMember(runtime, "RawTags"), foodTags),
-                Price = ReadRequiredIntMember(runtime, "baseValue"),
-            });
+                var runtime = InvokeRequiredStatic(refIngredient, id);
+                RequireRuntimeObjectId(runtime, id, $"DataBaseCore.RefIngredient({id})");
+                result.Add(new Ingredient
+                {
+                    Id = id,
+                    Name = ReadRequiredLanguageName(getIngredientLang, id),
+                    Tags = ReadTagNames(ReadRequiredIntArrayMember(runtime, "RawTags"), foodTags),
+                    Price = ReadRequiredIntMember(runtime, "baseValue"),
+                });
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException(
+                    $"{DescribeCatalogEntryOrigin("ingredient", "IngredientsMapping", id, sourceRecipeIds)} "
+                    + $"could not be resolved through DataBaseCore.RefIngredient: {ex.Message}",
+                    ex);
+            }
         }
 
         return result;
@@ -233,50 +272,89 @@ internal sealed class RuntimeStaticDataCatalog
         MethodInfo refFood,
         MethodInfo getFoodLang,
         IReadOnlyList<int> ids,
-        IReadOnlyDictionary<int, string> foodTags)
+        IReadOnlyDictionary<int, string> foodTags,
+        IReadOnlyDictionary<int, IReadOnlyList<int>> sourceRecipeIds)
     {
         var result = new Dictionary<int, RuntimeFoodData>();
         foreach (var id in ids)
         {
-            var runtime = InvokeRequiredStatic(refFood, id);
-            result.Add(id, new RuntimeFoodData(
-                id,
-                ReadRequiredLanguageName(getFoodLang, id),
-                ReadTagNames(ReadRequiredIntArrayMember(runtime, "RawTags"), foodTags),
-                ReadTagNames(ReadRequiredIntArrayMember(runtime, "banTags"), foodTags),
-                ReadRequiredIntMember(runtime, "level"),
-                ReadRequiredIntMember(runtime, "baseValue")));
+            try
+            {
+                var runtime = InvokeRequiredStatic(refFood, id);
+                RequireRuntimeObjectId(runtime, id, $"DataBaseCore.RefFood({id})");
+                result.Add(id, new RuntimeFoodData(
+                    id,
+                    ReadRequiredLanguageName(getFoodLang, id),
+                    ReadTagNames(ReadRequiredIntArrayMember(runtime, "RawTags"), foodTags),
+                    ReadTagNames(ReadRequiredIntArrayMember(runtime, "banTags"), foodTags),
+                    ReadRequiredIntMember(runtime, "level"),
+                    ReadRequiredIntMember(runtime, "baseValue")));
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException(
+                    $"{DescribeCatalogEntryOrigin("food", "FoodsMapping", id, sourceRecipeIds)} "
+                    + $"could not be resolved through DataBaseCore.RefFood: {ex.Message}",
+                    ex);
+            }
         }
 
         return result;
     }
 
-    private static List<Recipe> ReadRecipes(
+    private static List<RuntimeRecipeDescriptor> ReadRecipeDescriptors(
         MethodInfo refRecipe,
-        IReadOnlyList<int> ids,
+        IReadOnlyList<int> ids)
+    {
+        var result = new List<RuntimeRecipeDescriptor>(ids.Count);
+        foreach (var recipeId in ids)
+        {
+            try
+            {
+                var runtime = InvokeRequiredStatic(refRecipe, recipeId);
+                RequireRuntimeObjectId(runtime, recipeId, $"DataBaseCore.RefRecipe({recipeId})");
+                result.Add(new RuntimeRecipeDescriptor(
+                    recipeId,
+                    ReadRequiredIntMember(runtime, "foodID"),
+                    ReadRequiredIntArrayMember(runtime, "ingredients").ToArray(),
+                    NormalizeCooker(ReadRequiredMember(runtime, "cookerType").ToString() ?? "")));
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException(
+                    $"RecipesMapping[{recipeId}] could not be resolved through "
+                    + $"DataBaseCore.RefRecipe: {ex.Message}",
+                    ex);
+            }
+        }
+
+        return result;
+    }
+
+    private static List<Recipe> MaterializeRecipes(
+        IReadOnlyList<RuntimeRecipeDescriptor> descriptors,
         IReadOnlyDictionary<int, RuntimeFoodData> foods,
         IReadOnlyList<Ingredient> ingredients)
     {
         var ingredientNames = ingredients.ToDictionary(ingredient => ingredient.Id, ingredient => ingredient.Name);
-        var result = new List<Recipe>(ids.Count);
-        foreach (var recipeId in ids)
+        var result = new List<Recipe>(descriptors.Count);
+        foreach (var descriptor in descriptors)
         {
-            var runtime = InvokeRequiredStatic(refRecipe, recipeId);
-            var foodId = ReadRequiredIntMember(runtime, "foodID");
-            if (!foods.TryGetValue(foodId, out var food))
+            if (!foods.TryGetValue(descriptor.FoodId, out var food))
             {
                 throw new InvalidOperationException(
-                    $"RecipesMapping[{recipeId}] references unknown food ID {foodId}.");
+                    $"Recipe dependency closure omitted food ID {descriptor.FoodId} "
+                    + $"referenced by recipe {descriptor.RecipeId}.");
             }
 
-            var ingredientIds = ReadRequiredIntArrayMember(runtime, "ingredients");
-            var recipeIngredients = new List<string>(ingredientIds.Count);
-            foreach (var ingredientId in ingredientIds)
+            var recipeIngredients = new List<string>(descriptor.IngredientIds.Count);
+            foreach (var ingredientId in descriptor.IngredientIds)
             {
                 if (!ingredientNames.TryGetValue(ingredientId, out var ingredientName))
                 {
                     throw new InvalidOperationException(
-                        $"Recipe {recipeId} references unknown ingredient ID {ingredientId}.");
+                        $"Recipe dependency closure omitted ingredient ID {ingredientId} "
+                        + $"referenced by recipe {descriptor.RecipeId}.");
                 }
 
                 recipeIngredients.Add(ingredientName);
@@ -284,13 +362,13 @@ internal sealed class RuntimeStaticDataCatalog
 
             result.Add(new Recipe
             {
-                Id = foodId,
-                RecipeId = recipeId,
+                Id = descriptor.FoodId,
+                RecipeId = descriptor.RecipeId,
                 Name = food.Name,
                 Ingredients = recipeIngredients,
                 PositiveTags = food.PositiveTags,
                 NegativeTags = food.NegativeTags,
-                Cooker = NormalizeCooker(ReadRequiredMember(runtime, "cookerType").ToString() ?? ""),
+                Cooker = descriptor.Cooker,
                 Level = food.Level,
                 Price = food.Price,
             });
@@ -674,6 +752,28 @@ internal sealed class RuntimeStaticDataCatalog
                 $"{instance.GetType().FullName}.{memberName} returned {value.GetType().FullName} instead of Int32.");
     }
 
+    private static void RequireRuntimeObjectId(object instance, int expectedId, string source)
+    {
+        var actualId = ReadRequiredIntMember(instance, "id");
+        if (actualId != expectedId)
+        {
+            throw new InvalidOperationException(
+                $"{source} returned object ID {actualId} instead of {expectedId}.");
+        }
+    }
+
+    private static string DescribeCatalogEntryOrigin(
+        string entryType,
+        string mappingName,
+        int id,
+        IReadOnlyDictionary<int, IReadOnlyList<int>> sourceRecipeIds)
+    {
+        return sourceRecipeIds.TryGetValue(id, out var recipeIds)
+            ? $"Recipe dependency {entryType} ID {id} referenced by RecipesMapping recipe IDs "
+                + FormatIds(recipeIds)
+            : $"{mappingName}[{id}]";
+    }
+
     private static bool ReadRequiredBoolMember(object instance, string memberName)
     {
         var value = ReadRequiredMember(instance, memberName);
@@ -818,13 +918,29 @@ internal sealed class RuntimeStaticDataCatalog
         IReadOnlyList<Ingredient> ingredients,
         IReadOnlyList<Beverage> beverages,
         IEnumerable<RuntimeFoodData> foods,
-        IReadOnlyList<Recipe> recipes)
+        IReadOnlyList<Recipe> recipes,
+        RuntimeRecipeDependencyClosure recipeDependencies)
     {
         var lines = new List<string>
         {
+            "[RecipeDependencyClosure]",
+            $"ingredientDependencyCount={recipeDependencies.DependencyIngredientIds.Count}",
+            $"ingredientDependencyIds={FormatIds(recipeDependencies.DependencyIngredientIds)}",
+        };
+        lines.AddRange(recipeDependencies.DependencyIngredientIds.Select(id =>
+            $"  - ingredientId={id}; sourceRecipeIds="
+            + FormatIds(recipeDependencies.IngredientSourceRecipeIds[id])));
+        lines.Add($"foodDependencyCount={recipeDependencies.DependencyFoodIds.Count}");
+        lines.Add($"foodDependencyIds={FormatIds(recipeDependencies.DependencyFoodIds)}");
+        lines.AddRange(recipeDependencies.DependencyFoodIds.Select(id =>
+            $"  - foodId={id}; sourceRecipeIds="
+            + FormatIds(recipeDependencies.FoodSourceRecipeIds[id])));
+        lines.Add("");
+        lines.AddRange(new[]
+        {
             "[Ingredients]",
             $"count={ingredients.Count}",
-        };
+        });
         lines.AddRange(ingredients.Select(item =>
             $"  - id={item.Id}; name={item.Name}; value={item.Price}; tags=[{string.Join(",", item.Tags)}]"));
         lines.Add("");

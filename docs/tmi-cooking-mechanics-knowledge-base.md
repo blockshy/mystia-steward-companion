@@ -73,7 +73,7 @@ Tag 压制使用当前项目已验证的基础顺序；运行时目录不投影�
 
 ## 运行时数据边界
 
-- 料理、食材、酒水和场景 ID 只从 `DataBaseCore` 五张精确 int/string Mapping 枚举。材料、酒水、料理和配方使用非负内容 ID 域，负数内部键在唯一业务投影边界排除，非负 ID 再逐项读取运行时对象；地点保留完整 signed ID，允许 signed ID 的料理/酒水 Tag 字典也不使用内容过滤规则。所有 Mapping 条目都先严格验证键值类型、非空来源和 ID 唯一性。基础稀客的喜好、厌恶和酒水 Tag 只取精确数组中的 raw fields。核心目录与基础/映射稀客 identity 独立记录完成状态；普通地图切换复用完整静态身份，离开有效存档运行态或读取不完整时独立重建。普客、稀客和 Tag 映射以当前游戏运行时目录为准；Tag 压制使用上述项目已验证规则，不从社区攻略或历史静态表临时推测。
+- 料理、食材、酒水和场景只以 `DataBaseCore` 五张精确 int/string Mapping 为枚举根。映射配方的直接 `foodID` / `ingredients` 依赖若不在料理或食材 Mapping 中，只按明确的非负 ID 加入有界闭包，再通过精确 `RefFood` / `RefIngredient` 与语言入口读取；不扫描全量数据库、不写共享 Mapping、不识别特定第三方 Mod，也不跳过解析失败的配方。材料、酒水、料理和配方使用非负内容 ID 域，负数内部键在唯一业务投影边界排除，非负 ID 再逐项读取运行时对象；地点保留完整 signed ID，允许 signed ID 的料理/酒水 Tag 字典也不使用内容过滤规则。所有 Mapping 条目都先严格验证键值类型、非空来源和 ID 唯一性，配方依赖另验证对象 identity、语言数据和容量。基础稀客的喜好、厌恶和酒水 Tag 只取精确数组中的 raw fields。核心目录与基础/映射稀客 identity 独立记录完成状态；普通地图切换复用完整静态身份，离开有效存档运行态或读取不完整时独立重建。普客、稀客和 Tag 映射以当前游戏运行时目录为准；Tag 压制使用上述项目已验证规则，不从社区攻略或历史静态表临时推测。
 - 已解锁料理、材料和酒水库存以完整静态目录 ID 为闭包，分别逐项调用 `RunTimeStorage.HaveRecipe(int)`、`GetIngredientCountById(int)` 和 `GetBeverageCountById(int)`。材料和酒水都只有精确 `-1` 表示无限；零库存不发布，低于 `-1` 的数量令本轮失败；没有已解锁料理时等待下一轮，不发布“全内容可用”。
 - 流行料理 Tag 从 `RunTimePlayerData.GetPopFoodTags(...)` 读取；明星店从 `RunTimeDayScene.GetTrackedSwitch("Aya_FamousIzakaya", false)` 读取。明星店开启且流行喜爱为“招牌”时，只启用明星店效果，不重复占用 `popularFoodTag`。
 - 当前推荐类型没有流行酒水字段，也没有基于硬编码联动 key 的角色显隐表。稀客可用性以游戏运行时稀客目录、场景和有效 Tag 为准。

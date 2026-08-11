@@ -36,6 +36,9 @@ const companionConnection = readSource(
   'apps/companion/src/companion/hooks/useCompanionConnection.ts',
 );
 const coreProjection = readSource('mods/bepinex/src/Save/RuntimeCoreMappingProjection.cs');
+const recipeDependencyProjection = readSource(
+  'mods/bepinex/src/Save/RuntimeRecipeDependencyProjection.cs',
+);
 const storageProjection = readSource('mods/bepinex/src/Save/RuntimeStorageStateProjection.cs');
 const modCSharpSources = listFilesRecursively(path.join(root, 'mods/bepinex/src'))
   .filter((filePath) => filePath.endsWith('.cs'))
@@ -225,6 +228,12 @@ for (const requiredContract of [
   [mappedGuests, 'private static RuntimeMappedGuestMethodSet? _cachedMethods'],
   [catalog, 'allowNegativeIds: true'],
   [catalog, 'ReadRequiredIntArrayMember(runtime, "RawTags")'],
+  [catalog, 'var recipeDescriptors = ReadRecipeDescriptors(methods.RefRecipe, recipeIds)'],
+  [catalog, 'RuntimeRecipeDependencyProjection.Build('],
+  [catalog, 'recipeDependencies.IngredientIds'],
+  [catalog, 'recipeDependencies.FoodIds'],
+  [catalog, 'RequireRuntimeObjectId(runtime, recipeId'],
+  [catalog, 'source=five-core-mapping-roots+recipe-dependencies'],
   [catalog, 'private static RuntimeStaticMethodSet? _cachedMethods'],
   [recommendationState, 'RuntimeStorageStateProjection.ReadAvailableRecipeIds('],
   [recommendationState, 'RuntimeStorageStateProjection.ReadIngredientQuantities('],
@@ -238,10 +247,30 @@ for (const requiredContract of [
     'idDomain == RuntimeCoreMappingIdDomain.NonNegativeContent && id < 0',
   ],
   [storageProjection, 'quantity < -1'],
+  [recipeDependencyProjection, 'private const int MaxCatalogItems = 4096'],
+  [recipeDependencyProjection, 'private const int MaxRecipeIngredientReferences = 16384'],
+  [recipeDependencyProjection, 'Where(id => !mappedIngredientSet.Contains(id))'],
+  [recipeDependencyProjection, 'Where(id => !mappedFoodSet.Contains(id))'],
+  [recipeDependencyProjection, 'FreezeSources(ingredientSources, dependencyIngredientIds)'],
+  [recipeDependencyProjection, 'FreezeSources(foodSources, dependencyFoodIds)'],
 ]) {
   const [source, marker] = requiredContract;
   assert.ok(source.includes(marker), `Runtime catalog contract is missing: ${marker}`);
 }
+
+const recipeDescriptorPhase = catalog.indexOf('var recipeDescriptors = ReadRecipeDescriptors(');
+const ingredientResolutionPhase = catalog.indexOf('var ingredients = ReadIngredients(');
+assert.ok(
+  recipeDescriptorPhase >= 0 && ingredientResolutionPhase > recipeDescriptorPhase,
+  'Mapped recipe descriptors must be frozen before ingredient dependencies are resolved.',
+);
+
+assert.ok(
+  !recipeDependencyProjection.includes('RuntimeReflectionUtility')
+    && !recipeDependencyProjection.includes('DataBaseCore')
+    && !recipeDependencyProjection.includes('GetAll'),
+  'Recipe dependency projection must remain a pure closure over mapped recipe descriptors.',
+);
 
 assert.ok(
   !storageProjection.includes('allowInfinite')
@@ -278,6 +307,29 @@ for (const forbiddenPath of [
   assert.ok(
     !forbiddenSources.includes(forbiddenPath),
     `Runtime catalog restored a forbidden whole-database or save-generation path: ${forbiddenPath}`,
+  );
+}
+
+for (const compatibilitySpecialCase of [
+  'MetaMystia',
+  'MetaMiku',
+  'ResourceEx',
+  'LoadedIngredientIds',
+]) {
+  assert.ok(
+    !catalog.includes(compatibilitySpecialCase)
+      && !recipeDependencyProjection.includes(compatibilitySpecialCase),
+    `Runtime catalog added a cross-Mod compatibility special case: ${compatibilitySpecialCase}`,
+  );
+}
+
+for (const forbiddenInflatedDictionary of [
+  'GetStaticMemberValue(coreType, "Ingredients")',
+  'GetStaticMemberValue(coreType, "Foods")',
+]) {
+  assert.ok(
+    !catalog.includes(forbiddenInflatedDictionary),
+    `Runtime catalog directly enumerates an inflated database: ${forbiddenInflatedDictionary}`,
   );
 }
 
@@ -428,11 +480,11 @@ assert.ok(
 );
 
 for (const requiredAutomaticInvitationLoad of [
-  'buildRareGuestInvitationRefreshIdentity',
+  'buildRareGuestInvitationContextIdentity',
   'requestGenerationRef',
   'listAbortControllerRef',
   'snapshot: LocalApiSnapshot',
-  'active: boolean',
+  'visible: boolean',
 ]) {
   assert.ok(
     rareGuestInvitationHook.includes(requiredAutomaticInvitationLoad),

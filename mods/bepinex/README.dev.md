@@ -326,6 +326,7 @@ pnpm audit:logs:console
 
 ```bash
 dotnet run --project tests/runtime-reflection/RuntimeReflectionSmoke.csproj -c Release
+dotnet run --project tests/runtime-static-data-catalog/RuntimeStaticDataCatalogSmoke.csproj -c Release
 dotnet run --project tests/runtime-mission-load-seed/RuntimeMissionLoadSeedSmoke.csproj -c Release
 dotnet run --project tests/runtime-mission-definition/RuntimeMissionDefinitionSmoke.csproj -c Release
 dotnet run --project tests/runtime-mission-diagnostic/RuntimeMissionDiagnosticSmoke.csproj -c Release
@@ -646,7 +647,7 @@ git push --force origin v1.1.0
 
 Mod 会定期检查当前页面和游戏运行时状态。进入游戏并加载进度后，推荐状态来自当前内存中的运行时对象，不读取 `.memory` 存档文件。
 
-运行时固定数据读取成功后，C# 会把 `DataBaseCore`、`DataBaseCharacter` 和 `DataBaseLanguage` 中的料理、食材、酒水、普客、稀客和 tag 映射构造成 `RuntimeDataCatalog`，发布到独立的 `/runtime-data` 缓存与端点，并切换 C# 推荐仓库到运行时仓库。核心目录 ID 只枚举 `DataBaseCore.IngredientsMapping`、`BeveragesMapping`、`FoodsMapping`、`RecipesMapping` 和 `IzakayasMapping` 五张精确 `Dictionary<int,string>`。所有 mapping 条目先严格验证 CLR `Int32` 键、非空 CLR `String` 值、原始 ID 唯一性和容量；材料、酒水、料理和配方显式使用非负内容 ID 域，负数内部键在核心业务投影边界排除且不会调用对应 `Ref*`，排除后没有非负 ID 时整轮读取失败。`IzakayasMapping` 显式保留完整 signed ID，再逐项调用 `RefIzakaya`；允许 signed ID 的料理/酒水 Tag 字典也保持独立规则。Izakaya 条目先精确读取 `DaySceneMapLabel`，只有空标签占位允许跳过；非空标签必须严格读取原生 `DaySceneMapName`，读取失败令整轮失败，合法但不属于支持日间经营地点的条目才记录 skipped。确认支持地点后再严格读取普通/稀客池，不读取特殊经营和占位条目中与推荐无关的合法空池。基础稀客从 `GetAllSpecialGuests()` 的精确引用数组读取，喜好、厌恶和酒水 Tag 只取声明的原始字段，不调用生成或计算型入口。核心目录与基础/映射稀客 identity 快照独立记录完成状态；二者均完整前不构造推荐状态 provider。普通地图或就绪变化复用已完成的静态身份，只让未完成读取立即重试。进入主菜单等非游戏场景清空存档运行态后，identity 会独立重建，不能被仍完整的核心目录短路。伴随窗口概览页的“推荐数据”显示“游戏运行时”时，表示前端推荐算法已经获得完整运行时数据。
+运行时固定数据读取成功后，C# 会把 `DataBaseCore`、`DataBaseCharacter` 和 `DataBaseLanguage` 中的料理、食材、酒水、普客、稀客和 tag 映射构造成 `RuntimeDataCatalog`，发布到独立的 `/runtime-data` 缓存与端点，并切换 C# 推荐仓库到运行时仓库。核心目录只以 `DataBaseCore.IngredientsMapping`、`BeveragesMapping`、`FoodsMapping`、`RecipesMapping` 和 `IzakayasMapping` 五张精确 `Dictionary<int,string>` 为枚举根。映射配方先冻结 `foodID`、`ingredients` 与厨具；直接引用但未进入 `FoodsMapping` / `IngredientsMapping` 的非负 ID 会加入有界依赖闭包，并通过精确 `RefFood` / `RefIngredient` 和对应语言入口读取。这一闭包不会扫描全量数据库、写入共享 Mapping、读取第三方 Mod 专用注册表或跳过无效配方。所有 mapping 条目先严格验证 CLR `Int32` 键、非空 CLR `String` 值、原始 ID 唯一性和容量；材料、酒水、料理和配方显式使用非负内容 ID 域，负数内部键在核心业务投影边界排除且不会调用对应 `Ref*`，排除后没有非负 ID 时整轮读取失败。依赖项额外验证 ID、运行时对象 identity、语言数据、引用总量和闭包容量；失败日志会给出依赖类型、ID 与来源配方。`IzakayasMapping` 显式保留完整 signed ID，再逐项调用 `RefIzakaya`；允许 signed ID 的料理/酒水 Tag 字典也保持独立规则。Izakaya 条目先精确读取 `DaySceneMapLabel`，只有空标签占位允许跳过；非空标签必须严格读取原生 `DaySceneMapName`，读取失败令整轮失败，合法但不属于支持日间经营地点的条目才记录 skipped。确认支持地点后再严格读取普通/稀客池，不读取特殊经营和占位条目中与推荐无关的合法空池。基础稀客从 `GetAllSpecialGuests()` 的精确引用数组读取，喜好、厌恶和酒水 Tag 只取声明的原始字段，不调用生成或计算型入口。核心目录与基础/映射稀客 identity 快照独立记录完成状态；二者均完整前不构造推荐状态 provider。普通地图或就绪变化复用已完成的静态身份，只让未完成读取立即重试。进入主菜单等非游戏场景清空存档运行态后，identity 会独立重建，不能被仍完整的核心目录短路。伴随窗口概览页的“推荐数据”显示“游戏运行时”时，表示前端推荐算法已经获得完整运行时数据。
 
 前端从同一份完整稀客原始目录构造两个互不混用的投影：`rareCustomers` 只包含有合法日间地点、可在普通页面选择的稀客；`rareCustomerProfiles` 只携带特殊经营评价所需的 canonical ID、名称与喜好/厌恶 Tag，即使原生 `places=[]` 也保留。幽幽子重修等规则严格按已验证的基础 character ID 读取评价档案，不按映射身份、中文名或内置 Tag 回退。两份投影都属于推荐数据签名，worker 和 NormalOrder 特殊目标缓存不能跨签名复用结果。
 
