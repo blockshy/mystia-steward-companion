@@ -720,6 +720,22 @@ export type UpdateInstallState =
   | 'failed'
   | 'cancelled';
 
+export type UpdateReleaseHistoryState =
+  | 'not-required'
+  | 'ready'
+  | 'unavailable'
+  | 'failed';
+
+export interface UpdateReleaseInfo {
+  version: string;
+  tag: string;
+  title: string;
+  channel: 'stable' | 'preview';
+  publishedAtUtc: string;
+  releaseUrl: string;
+  notesMarkdown: string;
+}
+
 export interface UpdateStatusResponse {
   ok: boolean;
   currentVersion: string;
@@ -738,6 +754,10 @@ export interface UpdateStatusResponse {
   releaseUrl: string;
   packageAsset: string;
   packageSize: number;
+  releaseHistoryState?: UpdateReleaseHistoryState;
+  releaseHistoryCheckedAtUtc?: string;
+  releaseHistoryError?: string | null;
+  availableReleases?: UpdateReleaseInfo[];
   downloadedVersion: string;
   downloadedAtUtc: string;
   staged: boolean;

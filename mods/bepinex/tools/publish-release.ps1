@@ -6,8 +6,8 @@
 
 .DESCRIPTION
     该脚本用于稳定版和预览版发布阶段：校验项目版本与 tag 一致、按需调用 build-release.ps1、
-    生成 update-manifest.json，并通过 GitHub CLI 创建或上传 Release 资产。预览版必须使用
-    X.Y.Z-preview.N tag 并带 -Prerelease 或 -Preview。
+    生成 update-catalog.json 与 update-manifest.json，并通过 GitHub CLI 创建或上传 Release
+    资产。预览版必须使用 X.Y.Z-preview.N tag 并带 -Prerelease 或 -Preview。
     脚本不会自动修改版本号，也不会推送 dev/main 分支。
 #>
 param(
@@ -47,6 +47,8 @@ $CurrentAndroidApkNames = @(
     "mystia-steward-companion-android-armeabi-v7a.apk"
 )
 $ManifestPath = Join-Path $DistRoot "update-manifest.json"
+$CatalogPath = Join-Path $DistRoot "update-catalog.json"
+$CatalogGenerator = Join-Path $RepoRoot "scripts/generate-update-catalog.mjs"
 
 function Invoke-Checked {
     param(
@@ -77,6 +79,15 @@ function Get-PwshCommand {
     }
 
     return $Pwsh.Source
+}
+
+function Get-NodeCommand {
+    $Node = Get-Command "node" -ErrorAction SilentlyContinue
+    if ($null -eq $Node) {
+        throw "Node.js was not found. Install the repository-locked Node.js version before publishing."
+    }
+
+    return $Node.Source
 }
 
 function Get-VersionFromTag {
@@ -251,6 +262,88 @@ function Get-GhReleaseAssetNames {
     )
 }
 
+function Get-GhReleaseMetadata {
+    param(
+        [Parameter(Mandatory = $true)][string]$Gh,
+        [Parameter(Mandatory = $true)][string]$Tag,
+        [Parameter(Mandatory = $true)][string]$Repo
+    )
+
+    $RawJson = & $Gh release view $Tag --repo $Repo --json name,body,publishedAt
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to read existing release metadata for $Tag."
+    }
+
+    return $RawJson | ConvertFrom-Json
+}
+
+function Write-Utf8WithoutBom {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Content
+    )
+
+    [System.IO.File]::WriteAllText(
+        $Path,
+        $Content,
+        [System.Text.UTF8Encoding]::new($false)
+    )
+}
+
+function New-UpdateCatalog {
+    param(
+        [Parameter(Mandatory = $true)][string]$Gh,
+        [Parameter(Mandatory = $true)][string]$Node,
+        [Parameter(Mandatory = $true)][string]$Repo,
+        [Parameter(Mandatory = $true)][string]$Tag,
+        [Parameter(Mandatory = $true)][string]$Version,
+        [Parameter(Mandatory = $true)][string]$Channel,
+        [Parameter(Mandatory = $true)][string]$Title,
+        [Parameter(Mandatory = $true)][string]$Notes,
+        [Parameter(Mandatory = $true)][string]$PublishedAtUtc,
+        [Parameter(Mandatory = $true)][string]$GeneratedAtUtc
+    )
+
+    if (-not (Test-Path -LiteralPath $CatalogGenerator -PathType Leaf)) {
+        throw "Missing update catalog generator: $CatalogGenerator"
+    }
+
+    $InputPath = [System.IO.Path]::GetTempFileName()
+    $TitlePath = [System.IO.Path]::GetTempFileName()
+    $NotesPath = [System.IO.Path]::GetTempFileName()
+    try {
+        Write-Host "    $Gh api --paginate --slurp repos/$Repo/releases?per_page=100"
+        $ReleasePages = & $Gh api --paginate --slurp "repos/$Repo/releases?per_page=100"
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to read the complete GitHub Release history for $Repo."
+        }
+
+        Write-Utf8WithoutBom -Path $InputPath -Content ($ReleasePages -join [Environment]::NewLine)
+        Write-Utf8WithoutBom -Path $TitlePath -Content $Title
+        Write-Utf8WithoutBom -Path $NotesPath -Content $Notes
+        Invoke-Checked -FilePath $Node -Arguments @(
+            $CatalogGenerator,
+            "--input", $InputPath,
+            "--output", $CatalogPath,
+            "--repository", $Repo,
+            "--tag", $Tag,
+            "--version", $Version,
+            "--channel", $Channel,
+            "--title-file", $TitlePath,
+            "--notes-file", $NotesPath,
+            "--published-at", $PublishedAtUtc,
+            "--generated-at", $GeneratedAtUtc
+        )
+    }
+    finally {
+        Remove-Item -LiteralPath $InputPath, $TitlePath, $NotesPath -Force -ErrorAction SilentlyContinue
+    }
+
+    if (-not (Test-Path -LiteralPath $CatalogPath -PathType Leaf)) {
+        throw "Update catalog generator did not create: $CatalogPath"
+    }
+}
+
 function Get-StaleCanonicalAndroidAssets {
     param(
         [Parameter(Mandatory = $true)]
@@ -384,8 +477,54 @@ try {
     }
 
     New-Item -ItemType Directory -Force -Path $DistRoot | Out-Null
+    $Gh = Get-GhCommand
+    $Node = Get-NodeCommand
+    $ReleaseExists = Test-GhReleaseExists -Gh $Gh -Tag $Tag -Repo $Repo
+    $GeneratedAtUtc = [DateTime]::UtcNow.ToString("O")
+    $PublishedAtUtc = $GeneratedAtUtc
+    if ($ReleaseExists) {
+        $ExistingRelease = Get-GhReleaseMetadata -Gh $Gh -Tag $Tag -Repo $Repo
+        if ([string]::IsNullOrWhiteSpace($Title)) {
+            $Title = if ([string]::IsNullOrWhiteSpace([string]$ExistingRelease.name)) {
+                $Tag
+            }
+            else {
+                [string]$ExistingRelease.name
+            }
+        }
+        if ([string]::IsNullOrWhiteSpace($Notes)) {
+            $Notes = [string]$ExistingRelease.body
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$ExistingRelease.publishedAt)) {
+            $PublishedAtUtc = ([DateTime]$ExistingRelease.publishedAt).ToUniversalTime().ToString("O")
+        }
+    }
+    else {
+        if ([string]::IsNullOrWhiteSpace($Title)) {
+            $Title = $Tag
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($Notes)) {
+        throw "Release notes are required. Pass a non-empty -Notes value before publishing $Tag."
+    }
+
+    New-UpdateCatalog `
+        -Gh $Gh `
+        -Node $Node `
+        -Repo $Repo `
+        -Tag $Tag `
+        -Version $ExpectedVersion `
+        -Channel $ReleaseChannel `
+        -Title $Title `
+        -Notes $Notes `
+        -PublishedAtUtc $PublishedAtUtc `
+        -GeneratedAtUtc $GeneratedAtUtc
+
     $ModZipHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $ModZip).Hash.ToLowerInvariant()
     $ModZipItem = Get-Item -LiteralPath $ModZip
+    $CatalogHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $CatalogPath).Hash.ToLowerInvariant()
+    $CatalogItem = Get-Item -LiteralPath $CatalogPath
     $Manifest = [ordered]@{
         schemaVersion = 1
         version = $ExpectedVersion
@@ -394,12 +533,17 @@ try {
         packageAsset = (Split-Path $ModZip -Leaf)
         packageSha256 = $ModZipHash
         packageSize = $ModZipItem.Length
+        catalogAsset = (Split-Path $CatalogPath -Leaf)
+        catalogSha256 = $CatalogHash
+        catalogSize = $CatalogItem.Length
         releaseUrl = "https://github.com/$Repo/releases/tag/$Tag"
-        publishedAtUtc = [DateTime]::UtcNow.ToString("O")
+        publishedAtUtc = $PublishedAtUtc
     }
-    $Manifest | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $ManifestPath
+    Write-Utf8WithoutBom `
+        -Path $ManifestPath `
+        -Content (($Manifest | ConvertTo-Json -Depth 4) + [Environment]::NewLine)
 
-    [string[]]$AssetPaths = @($ModZip, $ManifestPath, $CompanionExe)
+    [string[]]$AssetPaths = @($ModZip, $ManifestPath, $CatalogPath, $CompanionExe)
     [string[]]$ResolvedAndroidApks = @()
     if (-not [string]::IsNullOrWhiteSpace($AndroidApkPath)) {
         $ResolvedAndroidApks = @(Resolve-OptionalAndroidApks -ConfiguredPath $AndroidApkPath)
@@ -420,8 +564,6 @@ try {
         Write-Host "Including Android APK asset: $ResolvedAndroidApk"
     }
 
-    $Gh = Get-GhCommand
-    $ReleaseExists = Test-GhReleaseExists -Gh $Gh -Tag $Tag -Repo $Repo
     [string[]]$StaleCanonicalAndroidAssets = @()
     if ($ReleaseExists) {
         [string[]]$ExistingAssetNames = @(Get-GhReleaseAssetNames -Gh $Gh -Tag $Tag -Repo $Repo)
@@ -470,18 +612,19 @@ try {
             )
         }
 
+        [string[]]$EditArgs = @(
+            "release", "edit", $Tag,
+            "--repo", $Repo,
+            "--title", $Title,
+            "--notes", $Notes
+        )
         if ($ReleaseChannel -eq "preview") {
-            Invoke-Checked -FilePath $Gh -Arguments @("release", "edit", $Tag, "--repo", $Repo, "--prerelease", "--latest=false")
+            $EditArgs += "--prerelease"
+            $EditArgs += "--latest=false"
         }
+        Invoke-Checked -FilePath $Gh -Arguments $EditArgs
     }
     else {
-        if ([string]::IsNullOrWhiteSpace($Title)) {
-            $Title = $Tag
-        }
-        if ([string]::IsNullOrWhiteSpace($Notes)) {
-            $Notes = "Built locally and uploaded with GitHub CLI."
-        }
-
         [string[]]$CreateArgs = @("release", "create", $Tag)
         foreach ($AssetPath in $AssetPaths) {
             $CreateArgs += $AssetPath

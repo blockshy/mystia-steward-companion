@@ -6,6 +6,9 @@ authors = ["mystia-steward-companion contributors"]
 edition = "2021"
 rust-version = "1.97.1"
 
+[features]
+updater-windows-ui-check = ["dep:windows-sys"]
+
 [lib]
 name = "mystia_steward_companion_mobile"
 crate-type = ["staticlib", "cdylib", "rlib"]
@@ -26,9 +29,29 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = ["image-png", "tray-icon"] }
 tauri-plugin-opener = "2"
+windows-sys = { version = "0.61.2", optional = true, features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_System_LibraryLoader",
+  "Win32_UI_Controls",
+  "Win32_UI_HiDpi",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_WindowsAndMessaging",
+] }
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-window-state = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_System_LibraryLoader",
+  "Win32_UI_Controls",
+  "Win32_UI_HiDpi",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_WindowsAndMessaging",
+] }
 
 [profile.dev]
 debug = 1

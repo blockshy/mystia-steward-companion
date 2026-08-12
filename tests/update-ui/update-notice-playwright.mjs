@@ -6,6 +6,7 @@ const appUrl = process.env.MYSTIA_APP_URL || 'http://127.0.0.1:4173';
 const apiUrl = process.env.MYSTIA_API_URL || 'http://127.0.0.1:32145';
 const apiToken = process.env.MYSTIA_API_TOKEN || 'mock-token';
 const outputDir = process.env.UPDATE_UI_AUDIT_OUTPUT_DIR || '/tmp/mystia-companion-update-ui-audit';
+const chromiumExecutablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH?.trim();
 
 function createUpdateStatus(overrides = {}) {
   return {
@@ -26,6 +27,20 @@ function createUpdateStatus(overrides = {}) {
     releaseUrl: 'https://github.com/blockshy/mystia-steward-companion/releases/tag/v1.2.1',
     packageAsset: 'mystia-steward-companion-bepinex.zip',
     packageSize: 1024,
+    releaseHistoryState: 'ready',
+    releaseHistoryCheckedAtUtc: new Date().toISOString(),
+    releaseHistoryError: null,
+    availableReleases: [
+      {
+        version: '1.2.1',
+        tag: 'v1.2.1',
+        title: 'v1.2.1',
+        channel: 'stable',
+        publishedAtUtc: new Date().toISOString(),
+        releaseUrl: 'https://github.com/blockshy/mystia-steward-companion/releases/tag/v1.2.1',
+        notesMarkdown: '## 修复与稳定性\n\n- 模拟更新说明。\n\n<script>window.__unsafeReleaseNote = true</script>',
+      },
+    ],
     downloadedVersion: '',
     downloadedAtUtc: '',
     staged: false,
@@ -37,7 +52,10 @@ function createUpdateStatus(overrides = {}) {
 }
 
 await mkdir(outputDir, { recursive: true });
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({
+  headless: true,
+  ...(chromiumExecutablePath ? { executablePath: chromiumExecutablePath } : {}),
+});
 const page = await browser.newPage({ viewport: { width: 640, height: 760 } });
 await page.addInitScript(({ endpoint, token }) => {
   localStorage.setItem('mystia-steward-companion-mod-api-endpoint', endpoint);
@@ -63,7 +81,25 @@ try {
   await page.getByRole('tab', { name: '更新', exact: true }).and(page.locator('[aria-selected="true"]')).waitFor();
   await page.getByText('最近成功检查', { exact: true }).waitFor();
   await page.getByText('下次自动检查', { exact: true }).waitFor();
+  await page.getByText('版本更新内容', { exact: true }).waitFor();
+  await page.getByText('逐版本展示更新说明。', { exact: true }).waitFor();
+  assert.equal(await page.locator('[data-release-notes] script').count(), 0);
+  assert.equal(await page.locator('[data-release-notes] a').count(), 0);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
   await page.screenshot({ path: `${outputDir}/settings-update-minimum.png`, fullPage: true });
+  for (const viewport of [
+    { width: 390, height: 844, name: 'narrow' },
+    { width: 1280, height: 900, name: 'wide' },
+  ]) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth),
+      true,
+      `${viewport.width}px update settings must not overflow the document horizontally`,
+    );
+    await page.screenshot({ path: `${outputDir}/settings-update-${viewport.name}.png`, fullPage: true });
+  }
+  await page.setViewportSize({ width: 640, height: 760 });
 
   let failSnapshots = false;
   const snapshotRoute = (route) => failSnapshots
@@ -110,7 +146,7 @@ try {
   };
   await page.route('**/updates/download', downloadRoute);
 
-  const downloadButton = page.getByRole('button', { name: '下载', exact: true });
+  const downloadButton = page.getByRole('button', { name: '下载更新', exact: true });
   await downloadButton.click();
   await interruptedDownloadStarted;
   assert.equal(await downloadButton.getAttribute('data-loading'), 'true');

@@ -81,6 +81,12 @@ bash mods/bepinex/tools/set-version.sh 1.1.0
 - `v1.1.0-preview.1` 必须带 `-Prerelease` 或 `-Preview`。
 - `v1.1.0` 不能带 `-Prerelease`。
 - 其他后缀，例如 `alpha`、`beta`、`rc`，不进入自动更新发布流程。
+- `-Notes` 必须提供非空的本版本用户可见更新说明；覆盖已有 Release 时可省略并复用已有正文，但已有正文也不能为空。
+
+发布脚本会在发布机上使用已经登录的 GitHub CLI 分页读取公开 Release 历史，生成累计的
+`update-catalog.json`。这次 GitHub REST API 调用只发生在发布机，并使用认证额度；用户端更新检测不会
+调用 GitHub REST API，避免中国大陆共享 VPN 出口节点的未认证限额影响更新。catalog 生成、历史身份校验
+或说明大小校验失败时，脚本会在创建或覆盖 Release 前停止。
 
 版本号同步后先提交到 `dev`：
 
@@ -190,15 +196,19 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
   -ReferenceDir "D:\path\to\mystia-steward-companion-references"
 ```
 
-脚本会先运行 `build-release.ps1`。正常构建通过 staging 完整重建 `mods/bepinex/dist`，旧 APK、manifest、tar、zip 和旧目录不会进入本次资产；随后脚本生成本次 update manifest，并上传 Mod 压缩包、自动更新清单和供其他设备直接使用的独立伴随窗口 EXE：
+脚本会先运行 `build-release.ps1`。正常构建通过 staging 完整重建 `mods/bepinex/dist`，旧 APK、manifest、catalog、tar、zip 和旧目录不会进入本次资产；随后脚本生成本次累计版本目录和 update manifest，并上传 Mod 压缩包、两个更新协议资产和供其他设备直接使用的独立伴随窗口 EXE：
 
 - `mods/bepinex/dist/mystia-steward-companion-bepinex.zip`
 - `mods/bepinex/dist/update-manifest.json`
+- `mods/bepinex/dist/update-catalog.json`
 - `mods/bepinex/dist/mystia-steward-companion-companion-windows-x64.exe`
 - 可选：`mods/bepinex/dist/mystia-steward-companion-android-arm64-v8a.apk`
 - 可选：`mods/bepinex/dist/mystia-steward-companion-android-armeabi-v7a.apk`
 
-`update-manifest.json` 包含版本号、资产文件名、zip 大小和 SHA256，不包含本机打包路径，并且只指向 `mystia-steward-companion-bepinex.zip`。独立 Windows 伴随窗口 EXE 和 Android APK 只给 B 设备跨局域网连接使用，不参与 Mod 自动更新。Tauri setup 安装器不会上传到 Release，避免和 Mod 分发包混淆。
+`update-manifest.json` 包含版本号、主包与 catalog 的资产文件名、大小和 SHA256，不包含本机打包路径；其中安装权威仍只指向 `mystia-steward-companion-bepinex.zip`。`update-catalog.json` 是截至本次 Release 的累计、确定性版本说明快照，只用于更新页展示；它缺失或读取失败不会改变主包下载和安装。独立 Windows 伴随窗口 EXE 和 Android APK 只给 B 设备跨局域网连接使用，不参与 Mod 自动更新。Tauri setup 安装器不会上传到 Release，避免和 Mod 分发包混淆。
+
+Mod 包内的独立更新程序最低支持 Windows 10 1703。发布前至少在 100%、125%、150% 和 200% 缩放下
+检查初始窗口与跨显示器移动后的文字清晰度、按钮布局和进度条，并完整走一次正常安装与一次取消流程。
 
 如发布机已配置 Android 工具链和签名配置，可在发布构建时直接生成 Android APK：
 

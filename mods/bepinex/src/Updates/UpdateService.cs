@@ -3,6 +3,7 @@ using System.IO.Compression;
 using System.Net;
 using System.Net.Http;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
@@ -24,6 +25,7 @@ internal sealed class UpdateService : IDisposable
 {
     private const string RepoWeb = "https://github.com/blockshy/mystia-steward-companion";
     private const string ManifestAssetName = "update-manifest.json";
+    private const string CatalogAssetName = "update-catalog.json";
     private const string PackageAssetName = "mystia-steward-companion-bepinex.zip";
     private const string ReleasesAtomUrl = RepoWeb + "/releases.atom";
     private const string AllReleasesUrl = RepoWeb + "/releases";
@@ -34,12 +36,21 @@ internal sealed class UpdateService : IDisposable
     private const string RequiredWindowsCompanion = "companion/mystia-steward-companion.exe";
     private const string RequiredWindowsUpdater = "mystia-steward-companion-updater.exe";
     private const int SupportedManifestSchemaVersion = 1;
+    private const int SupportedCatalogSchemaVersion = 1;
+    private const int MaximumCatalogReleaseCount = 256;
+    private const int MaximumReleaseTitleBytes = 512;
+    private const int MaximumReleaseNotesBytes = 64 * 1024;
+    private const int MaximumReleaseHistoryErrorBytes = 4 * 1024;
+    private const long MaximumCatalogSize = 2 * 1024 * 1024;
     private static readonly TimeSpan SchedulerMaximumWait = TimeSpan.FromHours(1);
     private static readonly TimeSpan SchedulerOperationRetryDelay = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan SchedulerStopTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan PackageDownloadTimeout = TimeSpan.FromMinutes(5);
     private static readonly Regex PendingDownloadDirectoryPattern = new(
         @"^\.(?<version>.+)\.(?<operationId>[0-9a-fA-F]{32})\.tmp$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex SupportedUpdateVersionPattern = new(
+        @"^v?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-preview\.[1-9]\d*)?$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly HttpClient Http = CreateHttpClient(TimeSpan.FromSeconds(12));
     private static readonly HttpClient DownloadHttp = CreateHttpClient(PackageDownloadTimeout);
@@ -62,6 +73,7 @@ internal sealed class UpdateService : IDisposable
     private readonly Func<DateTime> _utcNow;
     private readonly Func<TimeSpan, CancellationToken, bool> _waitForScheduler;
     private readonly Func<CancellationToken, UpdateCandidate> _fetchUpdateCandidate;
+    private readonly Func<UpdateManifest, CancellationToken, UpdateCatalog> _fetchReleaseCatalog;
     private readonly Action<string, string, long, CancellationToken> _downloadFile;
     private UpdateState _state;
     private Thread? _schedulerThread;
@@ -82,7 +94,8 @@ internal sealed class UpdateService : IDisposable
         Func<CancellationToken, UpdateCandidate>? fetchUpdateCandidate,
         Func<TimeSpan, CancellationToken, bool>? waitForScheduler = null,
         Action<string, string, long, CancellationToken>? downloadFile = null,
-        TimeSpan? shutdownTimeout = null)
+        TimeSpan? shutdownTimeout = null,
+        Func<UpdateManifest, CancellationToken, UpdateCatalog>? fetchReleaseCatalog = null)
     {
         _settings = settings;
         _log = log;
@@ -94,6 +107,7 @@ internal sealed class UpdateService : IDisposable
         _utcNow = utcNow;
         _waitForScheduler = waitForScheduler ?? WaitForCancellation;
         _fetchUpdateCandidate = fetchUpdateCandidate ?? FetchUpdateCandidate;
+        _fetchReleaseCatalog = fetchReleaseCatalog ?? FetchReleaseCatalog;
         _downloadFile = downloadFile ?? DownloadFile;
         _state = LoadState();
         RefreshInstallStatus();
@@ -206,6 +220,7 @@ internal sealed class UpdateService : IDisposable
 
         string previousState;
         string? previousError;
+        UpdateState previousSnapshot;
         lock (_lock)
         {
             var now = _utcNow().ToUniversalTime();
@@ -216,6 +231,7 @@ internal sealed class UpdateService : IDisposable
 
             previousState = _state.State;
             previousError = _state.Error;
+            previousSnapshot = _state.Clone();
             _state.State = "checking";
             _state.LastAttemptAtUtc = now;
             _state.NextCheckAtUtc = null;
@@ -230,6 +246,11 @@ internal sealed class UpdateService : IDisposable
             cancellationToken.ThrowIfCancellationRequested();
             var manifest = candidate.Manifest;
             var hasUpdate = CompareVersion(manifest.Version, MystiaStewardCompanionPlugin.PluginVersion) > 0;
+            var releaseHistory = ResolveReleaseHistory(
+                manifest,
+                hasUpdate,
+                previousSnapshot,
+                cancellationToken);
             lock (_lock)
             {
                 var completedAtUtc = _utcNow().ToUniversalTime();
@@ -249,10 +270,18 @@ internal sealed class UpdateService : IDisposable
                 _state.PackageSha256 = manifest.PackageSha256.ToLowerInvariant();
                 _state.PackageSize = manifest.PackageSize;
                 _state.PackageDownloadUrl = candidate.PackageDownloadUrl;
+                _state.CatalogAsset = manifest.CatalogAsset;
+                _state.CatalogSha256 = (manifest.CatalogSha256 ?? "").ToLowerInvariant();
+                _state.CatalogSize = manifest.CatalogSize;
+                ApplyReleaseHistory(_state, releaseHistory, completedAtUtc);
                 _state.Error = null;
                 SaveState();
                 _log.LogInfo(
-                    $"Update check completed (trigger={trigger}, result={_state.State}, latest={manifest.Version}, next={_state.NextCheckAtUtc.Value:O}).");
+                    $"Update check completed (trigger={trigger}, result={_state.State}, latest={manifest.Version}, history={_state.ReleaseHistoryState}, releases={_state.ReleaseCatalog?.Releases.Count ?? 0}, next={_state.NextCheckAtUtc.Value:O}).");
+                if (string.Equals(_state.ReleaseHistoryState, "failed", StringComparison.Ordinal))
+                {
+                    _log.LogWarning($"Update release history unavailable: {_state.ReleaseHistoryError}");
+                }
                 return BuildStatus(null);
             }
         }
@@ -824,6 +853,312 @@ internal sealed class UpdateService : IDisposable
         return cancellationToken.WaitHandle.WaitOne(delay);
     }
 
+    private ReleaseHistoryResult ResolveReleaseHistory(
+        UpdateManifest manifest,
+        bool hasUpdate,
+        UpdateState previousState,
+        CancellationToken cancellationToken)
+    {
+        if (!hasUpdate)
+        {
+            return ReleaseHistoryResult.NotRequired();
+        }
+
+        if (!HasCatalogMetadata(manifest))
+        {
+            return ReleaseHistoryResult.Unavailable("该 Release 未提供完整版本说明目录。");
+        }
+
+        if (string.Equals(previousState.ReleaseHistoryState, "ready", StringComparison.Ordinal)
+            && string.Equals(previousState.ReleaseHistoryTag, manifest.Tag, StringComparison.Ordinal)
+            && string.Equals(previousState.CatalogAsset, manifest.CatalogAsset, StringComparison.Ordinal)
+            && string.Equals(previousState.CatalogSha256, manifest.CatalogSha256, StringComparison.OrdinalIgnoreCase)
+            && previousState.CatalogSize == manifest.CatalogSize
+            && previousState.ReleaseCatalog != null)
+        {
+            try
+            {
+                ValidateCatalog(previousState.ReleaseCatalog, manifest);
+                return ReleaseHistoryResult.Ready(previousState.ReleaseCatalog);
+            }
+            catch (InvalidOperationException ex)
+            {
+                _log.LogWarning($"Cached update release history was rejected and will be downloaded again: {ex.Message}");
+            }
+        }
+
+        try
+        {
+            var catalog = _fetchReleaseCatalog(manifest, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            ValidateCatalog(catalog, manifest);
+            return ReleaseHistoryResult.Ready(catalog);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return ReleaseHistoryResult.Failed(BoundReleaseHistoryError(FormatUpdateError(ex)));
+        }
+    }
+
+    private static void ApplyReleaseHistory(
+        UpdateState state,
+        ReleaseHistoryResult result,
+        DateTime checkedAtUtc)
+    {
+        state.ReleaseHistoryState = result.State;
+        state.ReleaseHistoryCheckedAtUtc = checkedAtUtc.ToUniversalTime();
+        state.ReleaseHistoryError = result.Error;
+        state.ReleaseCatalog = result.Catalog;
+        state.ReleaseHistoryTag = result.Catalog?.OwnerTag ?? "";
+    }
+
+    private static string BoundReleaseHistoryError(string value)
+    {
+        if (Encoding.UTF8.GetByteCount(value) <= MaximumReleaseHistoryErrorBytes) return value;
+
+        var builder = new StringBuilder(value.Length);
+        var byteCount = 0;
+        foreach (var rune in value.EnumerateRunes())
+        {
+            var runeBytes = rune.Utf8SequenceLength;
+            if (byteCount + runeBytes > MaximumReleaseHistoryErrorBytes) break;
+            builder.Append(rune.ToString());
+            byteCount += runeBytes;
+        }
+        return builder.ToString();
+    }
+
+    private static UpdateCatalog FetchReleaseCatalog(
+        UpdateManifest manifest,
+        CancellationToken cancellationToken)
+    {
+        if (!HasCatalogMetadata(manifest))
+        {
+            throw new InvalidOperationException("update-manifest.json 未声明版本说明目录。");
+        }
+
+        var catalogUrl = BuildVersionedAssetDownloadUrl(manifest.Tag, manifest.CatalogAsset);
+        var bytes = DownloadTextAsset(catalogUrl, manifest.CatalogSize, cancellationToken);
+        var actualHash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        if (!string.Equals(actualHash, manifest.CatalogSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"版本说明目录校验失败：期望 {manifest.CatalogSha256}，实际 {actualHash}。");
+        }
+
+        string json;
+        try
+        {
+            json = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true)
+                .GetString(bytes);
+        }
+        catch (DecoderFallbackException ex)
+        {
+            throw new InvalidOperationException("update-catalog.json 不是有效的 UTF-8。", ex);
+        }
+        if (json.Length > 0 && json[0] == '\uFEFF')
+        {
+            throw new InvalidOperationException("update-catalog.json 不得包含 UTF-8 BOM。");
+        }
+
+        UpdateCatalog catalog;
+        try
+        {
+            catalog = JsonSerializer.Deserialize<UpdateCatalog>(json, JsonOptions)
+                ?? throw new InvalidOperationException("update-catalog.json 解析失败。");
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidOperationException("update-catalog.json 解析失败。", ex);
+        }
+        ValidateCatalog(catalog, manifest);
+        return catalog;
+    }
+
+    private static byte[] DownloadTextAsset(
+        string url,
+        long expectedSize,
+        CancellationToken cancellationToken)
+    {
+        if (expectedSize <= 0 || expectedSize > MaximumCatalogSize)
+        {
+            throw new InvalidOperationException($"版本说明目录大小无效：{expectedSize} 字节。");
+        }
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        using var response = Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+            .GetAwaiter()
+            .GetResult();
+        response.EnsureSuccessStatusCode();
+        if (response.Content.Headers.ContentLength is long contentLength && contentLength != expectedSize)
+        {
+            throw new InvalidOperationException(
+                $"版本说明目录大小不匹配：期望 {expectedSize} 字节，响应声明 {contentLength} 字节。");
+        }
+
+        using var source = response.Content.ReadAsStreamAsync(cancellationToken).GetAwaiter().GetResult();
+        using var destination = new MemoryStream(checked((int)expectedSize));
+        CopyDownloadContentAsync(source, destination, expectedSize, cancellationToken).GetAwaiter().GetResult();
+        return destination.ToArray();
+    }
+
+    internal static void ValidateCatalog(UpdateCatalog catalog, UpdateManifest manifest)
+    {
+        if (catalog.SchemaVersion != SupportedCatalogSchemaVersion)
+        {
+            throw new InvalidOperationException(
+                $"update-catalog.json schemaVersion 不受支持：{catalog.SchemaVersion}，当前仅支持 {SupportedCatalogSchemaVersion}。");
+        }
+        if (!string.Equals(catalog.Repository, "blockshy/mystia-steward-companion", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException($"update-catalog.json repository 无效：{catalog.Repository}");
+        }
+        if (!string.Equals(catalog.OwnerVersion, manifest.Version, StringComparison.Ordinal)
+            || !string.Equals(catalog.OwnerTag, manifest.Tag, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"update-catalog.json owner 与 manifest 不一致：{catalog.OwnerVersion} / {catalog.OwnerTag}，期望 {manifest.Version} / {manifest.Tag}。");
+        }
+        if (ParseDateOrNull(catalog.GeneratedAtUtc) == null)
+        {
+            throw new InvalidOperationException("update-catalog.json generatedAtUtc 无效。");
+        }
+        if (catalog.Releases == null
+            || catalog.Releases.Count == 0
+            || catalog.Releases.Count > MaximumCatalogReleaseCount)
+        {
+            throw new InvalidOperationException(
+                $"update-catalog.json releases 数量必须为 1 至 {MaximumCatalogReleaseCount}。");
+        }
+
+        var versions = new HashSet<string>(StringComparer.Ordinal);
+        var tags = new HashSet<string>(StringComparer.Ordinal);
+        SemanticVersion? previousVersion = null;
+        if (!SemanticVersion.TryParse(catalog.OwnerVersion, out var ownerVersion))
+        {
+            throw new InvalidOperationException($"update-catalog.json ownerVersion 无效：{catalog.OwnerVersion}");
+        }
+        var ownerMatches = 0;
+        foreach (var release in catalog.Releases)
+        {
+            if (release == null)
+            {
+                throw new InvalidOperationException("update-catalog.json 包含空 release 条目。");
+            }
+            if (!IsSupportedUpdateVersion(release.Version)
+                || !string.Equals(release.Tag, $"v{release.Version}", StringComparison.Ordinal)
+                || !SemanticVersion.TryParse(release.Version, out var version)
+                || !SemanticVersion.TryParse(release.Tag, out var tagVersion)
+                || version.CompareTo(tagVersion) != 0)
+            {
+                throw new InvalidOperationException(
+                    $"update-catalog.json release 版本或 tag 无效：{release.Version} / {release.Tag}");
+            }
+
+            var expectedChannel = version.IsPrerelease ? "preview" : "stable";
+            if (!string.Equals(release.Channel, expectedChannel, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"update-catalog.json release channel 无效：{release.Tag} / {release.Channel}");
+            }
+            var canonicalVersion = release.Version.StartsWith("v", StringComparison.OrdinalIgnoreCase)
+                ? release.Version[1..]
+                : release.Version;
+            if (!versions.Add(canonicalVersion) || !tags.Add(release.Tag))
+            {
+                throw new InvalidOperationException($"update-catalog.json 包含重复版本或 tag：{release.Tag}");
+            }
+            if (previousVersion != null && previousVersion.CompareTo(version) >= 0)
+            {
+                throw new InvalidOperationException("update-catalog.json releases 未按 SemVer 严格升序排列。");
+            }
+            if (version.CompareTo(ownerVersion) > 0)
+            {
+                throw new InvalidOperationException(
+                    $"update-catalog.json 包含晚于 owner 的 release：{release.Tag} / {catalog.OwnerTag}");
+            }
+            previousVersion = version;
+
+            if (string.IsNullOrWhiteSpace(release.Title)
+                || Encoding.UTF8.GetByteCount(release.Title) > MaximumReleaseTitleBytes)
+            {
+                throw new InvalidOperationException($"update-catalog.json release 标题无效：{release.Tag}");
+            }
+            if (string.IsNullOrWhiteSpace(release.NotesMarkdown)
+                || Encoding.UTF8.GetByteCount(release.NotesMarkdown) > MaximumReleaseNotesBytes)
+            {
+                throw new InvalidOperationException($"update-catalog.json release 说明无效或过大：{release.Tag}");
+            }
+            if (ParseDateOrNull(release.PublishedAtUtc) == null)
+            {
+                throw new InvalidOperationException($"update-catalog.json release 发布时间无效：{release.Tag}");
+            }
+            var expectedReleaseUrl = BuildReleaseUrl(release.Tag);
+            if (!string.Equals(release.ReleaseUrl, expectedReleaseUrl, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException($"update-catalog.json release URL 无效：{release.Tag}");
+            }
+
+            if (version.CompareTo(tagVersion) == 0
+                && string.Equals(release.Tag, manifest.Tag, StringComparison.Ordinal))
+            {
+                ownerMatches += 1;
+            }
+        }
+
+        if (ownerMatches != 1)
+        {
+            throw new InvalidOperationException("update-catalog.json 未包含唯一的 manifest owner 条目。");
+        }
+    }
+
+    internal static List<UpdateReleaseInfo> BuildAvailableReleases(
+        UpdateCatalog catalog,
+        string currentVersion,
+        string latestVersion,
+        bool includePrerelease)
+    {
+        if (!SemanticVersion.TryParse(currentVersion, out var current)
+            || !SemanticVersion.TryParse(latestVersion, out var latest))
+        {
+            return new List<UpdateReleaseInfo>();
+        }
+
+        return catalog.Releases
+            .Where(release => SemanticVersion.TryParse(release.Version, out var version)
+                && version.CompareTo(current) > 0
+                && version.CompareTo(latest) <= 0
+                && (includePrerelease || !version.IsPrerelease))
+            .Select(release => new UpdateReleaseInfo
+            {
+                Version = release.Version,
+                Tag = release.Tag,
+                Title = release.Title,
+                Channel = release.Channel,
+                PublishedAtUtc = release.PublishedAtUtc,
+                ReleaseUrl = release.ReleaseUrl,
+                NotesMarkdown = release.NotesMarkdown,
+            })
+            .ToList();
+    }
+
+    private static bool IsSupportedUpdateVersion(string? value)
+    {
+        return !string.IsNullOrWhiteSpace(value)
+            && SupportedUpdateVersionPattern.IsMatch(value.Trim());
+    }
+
+    private static bool HasCatalogMetadata(UpdateManifest manifest)
+    {
+        return !string.IsNullOrWhiteSpace(manifest.CatalogAsset)
+            && !string.IsNullOrWhiteSpace(manifest.CatalogSha256)
+            && manifest.CatalogSize > 0;
+    }
+
     private UpdateCandidate FetchUpdateCandidate(CancellationToken cancellationToken)
     {
         return _settings.IncludePrerelease
@@ -1000,6 +1335,36 @@ internal sealed class UpdateService : IDisposable
         {
             throw new InvalidOperationException("update-manifest.json 的 packageSize 必须大于 0。");
         }
+
+        var catalogMetadataAbsent = string.IsNullOrWhiteSpace(manifest.CatalogAsset)
+            && string.IsNullOrWhiteSpace(manifest.CatalogSha256)
+            && manifest.CatalogSize == 0;
+        if (!catalogMetadataAbsent)
+        {
+            if (string.IsNullOrWhiteSpace(manifest.CatalogAsset)
+                || string.IsNullOrWhiteSpace(manifest.CatalogSha256)
+                || manifest.CatalogSize == 0)
+            {
+                throw new InvalidOperationException(
+                    "update-manifest.json 的 catalogAsset、catalogSha256 和 catalogSize 版本说明目录字段必须同时提供。");
+            }
+            if (!string.Equals(manifest.CatalogAsset, CatalogAssetName, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"update-manifest.json 的 catalogAsset 引用了未知版本说明资产：{manifest.CatalogAsset}");
+            }
+            if (string.IsNullOrWhiteSpace(manifest.CatalogSha256)
+                || manifest.CatalogSha256.Length != 64
+                || manifest.CatalogSha256.Any(character => !Uri.IsHexDigit(character)))
+            {
+                throw new InvalidOperationException("update-manifest.json 的 catalogSha256 必须是 64 位十六进制 SHA256。");
+            }
+            if (manifest.CatalogSize <= 0 || manifest.CatalogSize > MaximumCatalogSize)
+            {
+                throw new InvalidOperationException(
+                    $"update-manifest.json 的 catalogSize 必须为 1 至 {MaximumCatalogSize} 字节。");
+            }
+        }
     }
 
     private static string ReadString(string url, CancellationToken cancellationToken)
@@ -1091,6 +1456,12 @@ internal sealed class UpdateService : IDisposable
     {
         if (string.IsNullOrWhiteSpace(tag)) throw new ArgumentException("Release tag is required.", nameof(tag));
         return $"{RepoWeb}/releases/download/{Uri.EscapeDataString(tag)}/{Uri.EscapeDataString(assetName)}";
+    }
+
+    private static string BuildReleaseUrl(string tag)
+    {
+        if (string.IsNullOrWhiteSpace(tag)) throw new ArgumentException("Release tag is required.", nameof(tag));
+        return $"{RepoWeb}/releases/tag/{Uri.EscapeDataString(tag)}";
     }
 
     /// <summary>
@@ -1225,12 +1596,57 @@ internal sealed class UpdateService : IDisposable
         try
         {
             if (!File.Exists(_statePath)) return new UpdateState();
-            return JsonSerializer.Deserialize<UpdateState>(File.ReadAllText(_statePath), JsonOptions) ?? new UpdateState();
+            var state = JsonSerializer.Deserialize<UpdateState>(File.ReadAllText(_statePath), JsonOptions)
+                ?? new UpdateState();
+            NormalizeLoadedReleaseHistory(state);
+            return state;
         }
         catch (Exception ex)
         {
             _log.LogWarning($"Read update state failed: {ex.Message}");
             return new UpdateState();
+        }
+    }
+
+    private void NormalizeLoadedReleaseHistory(UpdateState state)
+    {
+        if (!string.Equals(state.ReleaseHistoryState, "ready", StringComparison.Ordinal))
+        {
+            if (state.ReleaseHistoryState is not ("not-required" or "unavailable" or "failed"))
+            {
+                state.ReleaseHistoryState = "not-required";
+                state.ReleaseHistoryError = null;
+            }
+            state.ReleaseCatalog = null;
+            state.ReleaseHistoryTag = "";
+            return;
+        }
+
+        try
+        {
+            if (state.ReleaseCatalog == null)
+            {
+                throw new InvalidOperationException("缓存缺少 release catalog。");
+            }
+            var manifest = CreateManifestFromState(state);
+            ValidateManifest(manifest);
+            if (!HasCatalogMetadata(manifest))
+            {
+                throw new InvalidOperationException("缓存缺少 catalog 资产大小与 SHA256 绑定元数据。");
+            }
+            ValidateCatalog(state.ReleaseCatalog, manifest);
+            if (!string.Equals(state.ReleaseHistoryTag, manifest.Tag, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("缓存 release history tag 与 manifest 不一致。");
+            }
+        }
+        catch (InvalidOperationException ex)
+        {
+            state.ReleaseHistoryState = "failed";
+            state.ReleaseHistoryError = $"已拒绝无效的本地版本说明缓存：{ex.Message}";
+            state.ReleaseHistoryTag = "";
+            state.ReleaseCatalog = null;
+            _log.LogWarning(state.ReleaseHistoryError);
         }
     }
 
@@ -1496,6 +1912,15 @@ internal sealed class UpdateService : IDisposable
     private UpdateStatus BuildStatus(string? error)
     {
         var hasUpdate = HasAvailableUpdate(_state);
+        var availableReleases = hasUpdate
+            && string.Equals(_state.ReleaseHistoryState, "ready", StringComparison.Ordinal)
+            && _state.ReleaseCatalog != null
+                ? BuildAvailableReleases(
+                    _state.ReleaseCatalog,
+                    MystiaStewardCompanionPlugin.PluginVersion,
+                    _state.LatestVersion,
+                    _settings.IncludePrerelease)
+                : new List<UpdateReleaseInfo>();
         return new UpdateStatus
         {
             Ok = string.IsNullOrWhiteSpace(error),
@@ -1517,6 +1942,10 @@ internal sealed class UpdateService : IDisposable
             ReleaseUrl = string.IsNullOrWhiteSpace(_state.ReleaseUrl) ? AllReleasesUrl : _state.ReleaseUrl,
             PackageAsset = _state.PackageAsset,
             PackageSize = _state.PackageSize,
+            ReleaseHistoryState = hasUpdate ? _state.ReleaseHistoryState : "not-required",
+            ReleaseHistoryCheckedAtUtc = _state.ReleaseHistoryCheckedAtUtc?.ToString("O") ?? "",
+            ReleaseHistoryError = hasUpdate ? _state.ReleaseHistoryError : null,
+            AvailableReleases = availableReleases,
             DownloadedVersion = _state.DownloadedVersion,
             DownloadedAtUtc = _state.DownloadedAtUtc?.ToString("O") ?? "",
             Staged = HasInstallableStagedUpdate(_state),
@@ -1537,22 +1966,38 @@ internal sealed class UpdateService : IDisposable
 
         try
         {
-            ValidateManifest(new UpdateManifest
-            {
-                SchemaVersion = SupportedManifestSchemaVersion,
-                Version = state.LatestVersion,
-                Tag = state.LatestTag,
-                Channel = version.IsPrerelease ? "preview" : "stable",
-                PackageAsset = state.PackageAsset,
-                PackageSha256 = state.PackageSha256,
-                PackageSize = state.PackageSize,
-            });
+            ValidateManifest(CreateManifestFromState(state, version));
             return true;
         }
         catch (InvalidOperationException)
         {
             return false;
         }
+    }
+
+    private static UpdateManifest CreateManifestFromState(
+        UpdateState state,
+        SemanticVersion? parsedVersion = null)
+    {
+        if (parsedVersion == null && !SemanticVersion.TryParse(state.LatestVersion, out parsedVersion))
+        {
+            parsedVersion = null;
+        }
+        return new UpdateManifest
+        {
+            SchemaVersion = SupportedManifestSchemaVersion,
+            Version = state.LatestVersion,
+            Tag = state.LatestTag,
+            Channel = parsedVersion?.IsPrerelease == true ? "preview" : "stable",
+            PackageAsset = state.PackageAsset,
+            PackageSha256 = state.PackageSha256,
+            PackageSize = state.PackageSize,
+            CatalogAsset = state.CatalogAsset,
+            CatalogSha256 = state.CatalogSha256,
+            CatalogSize = state.CatalogSize,
+            ReleaseUrl = state.ReleaseUrl,
+            PublishedAtUtc = state.PublishedAtUtc?.ToString("O") ?? "",
+        };
     }
 
     private static bool HasInstallableStagedUpdate(UpdateState state)
@@ -1632,6 +2077,10 @@ internal sealed class UpdateStatus
     public string ReleaseUrl { get; init; } = "";
     public string PackageAsset { get; init; } = "";
     public long PackageSize { get; init; }
+    public string ReleaseHistoryState { get; init; } = "not-required";
+    public string ReleaseHistoryCheckedAtUtc { get; init; } = "";
+    public string? ReleaseHistoryError { get; init; }
+    public List<UpdateReleaseInfo> AvailableReleases { get; init; } = new();
     public string DownloadedVersion { get; init; } = "";
     public string DownloadedAtUtc { get; init; } = "";
     public bool Staged { get; init; }
@@ -1655,6 +2104,14 @@ internal sealed class UpdateState
     public string PackageSha256 { get; set; } = "";
     public long PackageSize { get; set; }
     public string PackageDownloadUrl { get; set; } = "";
+    public string CatalogAsset { get; set; } = "";
+    public string CatalogSha256 { get; set; } = "";
+    public long CatalogSize { get; set; }
+    public string ReleaseHistoryState { get; set; } = "not-required";
+    public string ReleaseHistoryTag { get; set; } = "";
+    public DateTime? ReleaseHistoryCheckedAtUtc { get; set; }
+    public string? ReleaseHistoryError { get; set; }
+    public UpdateCatalog? ReleaseCatalog { get; set; }
     public string DownloadedVersion { get; set; } = "";
     public DateTime? DownloadedAtUtc { get; set; }
     public string StagedDirectory { get; set; } = "";
@@ -1680,6 +2137,14 @@ internal sealed class UpdateState
             PackageSha256 = PackageSha256,
             PackageSize = PackageSize,
             PackageDownloadUrl = PackageDownloadUrl,
+            CatalogAsset = CatalogAsset,
+            CatalogSha256 = CatalogSha256,
+            CatalogSize = CatalogSize,
+            ReleaseHistoryState = ReleaseHistoryState,
+            ReleaseHistoryTag = ReleaseHistoryTag,
+            ReleaseHistoryCheckedAtUtc = ReleaseHistoryCheckedAtUtc,
+            ReleaseHistoryError = ReleaseHistoryError,
+            ReleaseCatalog = ReleaseCatalog?.Clone(),
             DownloadedVersion = DownloadedVersion,
             DownloadedAtUtc = DownloadedAtUtc,
             StagedDirectory = StagedDirectory,
@@ -1700,8 +2165,89 @@ internal sealed class UpdateManifest
     public string PackageAsset { get; init; } = "";
     public string PackageSha256 { get; init; } = "";
     public long PackageSize { get; init; }
+    public string CatalogAsset { get; init; } = "";
+    public string CatalogSha256 { get; init; } = "";
+    public long CatalogSize { get; init; }
     public string ReleaseUrl { get; init; } = "";
     public string PublishedAtUtc { get; init; } = "";
+}
+
+internal sealed class UpdateCatalog
+{
+    public int SchemaVersion { get; init; }
+    public string GeneratedAtUtc { get; init; } = "";
+    public string Repository { get; init; } = "";
+    public string OwnerVersion { get; init; } = "";
+    public string OwnerTag { get; init; } = "";
+    public List<UpdateCatalogRelease> Releases { get; init; } = new();
+
+    public UpdateCatalog Clone()
+    {
+        return new UpdateCatalog
+        {
+            SchemaVersion = SchemaVersion,
+            GeneratedAtUtc = GeneratedAtUtc,
+            Repository = Repository,
+            OwnerVersion = OwnerVersion,
+            OwnerTag = OwnerTag,
+            Releases = Releases?.Select(release => release.Clone()).ToList() ?? new List<UpdateCatalogRelease>(),
+        };
+    }
+}
+
+internal sealed class UpdateCatalogRelease
+{
+    public string Version { get; init; } = "";
+    public string Tag { get; init; } = "";
+    public string Title { get; init; } = "";
+    public string Channel { get; init; } = "";
+    public string PublishedAtUtc { get; init; } = "";
+    public string ReleaseUrl { get; init; } = "";
+    public string NotesMarkdown { get; init; } = "";
+
+    public UpdateCatalogRelease Clone()
+    {
+        return new UpdateCatalogRelease
+        {
+            Version = Version,
+            Tag = Tag,
+            Title = Title,
+            Channel = Channel,
+            PublishedAtUtc = PublishedAtUtc,
+            ReleaseUrl = ReleaseUrl,
+            NotesMarkdown = NotesMarkdown,
+        };
+    }
+}
+
+internal sealed class UpdateReleaseInfo
+{
+    public string Version { get; init; } = "";
+    public string Tag { get; init; } = "";
+    public string Title { get; init; } = "";
+    public string Channel { get; init; } = "";
+    public string PublishedAtUtc { get; init; } = "";
+    public string ReleaseUrl { get; init; } = "";
+    public string NotesMarkdown { get; init; } = "";
+}
+
+internal sealed class ReleaseHistoryResult
+{
+    private ReleaseHistoryResult(string state, string? error, UpdateCatalog? catalog)
+    {
+        State = state;
+        Error = error;
+        Catalog = catalog;
+    }
+
+    public string State { get; }
+    public string? Error { get; }
+    public UpdateCatalog? Catalog { get; }
+
+    public static ReleaseHistoryResult NotRequired() => new("not-required", null, null);
+    public static ReleaseHistoryResult Unavailable(string error) => new("unavailable", error, null);
+    public static ReleaseHistoryResult Failed(string error) => new("failed", error, null);
+    public static ReleaseHistoryResult Ready(UpdateCatalog catalog) => new("ready", null, catalog.Clone());
 }
 
 internal sealed class UpdateCandidate

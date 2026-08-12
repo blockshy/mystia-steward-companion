@@ -4,6 +4,12 @@
 //! 等待游戏进程退出后再替换插件目录。这样可以避免运行中的 BepInEx DLL 或伴随窗口 exe
 //! 被自身进程锁定导致半更新。
 
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+#![cfg_attr(
+    all(target_os = "linux", feature = "updater-windows-ui-check"),
+    allow(dead_code)
+)]
+
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -19,6 +25,28 @@ const DEFAULT_WAIT_TIMEOUT_SECONDS: u64 = 1800;
 const REQUIRED_DLL: &str = "MystiaStewardCompanion.BepInEx.dll";
 const REQUIRED_COMPANION_EXE: &str = "companion/mystia-steward-companion.exe";
 const REQUIRED_UPDATER_EXE: &str = "mystia-steward-companion-updater.exe";
+#[cfg(any(
+    target_os = "windows",
+    test,
+    all(target_os = "linux", feature = "updater-windows-ui-check")
+))]
+const BASE_DPI: u32 = 96;
+
+#[cfg(any(
+    target_os = "windows",
+    test,
+    all(target_os = "linux", feature = "updater-windows-ui-check")
+))]
+fn scale_logical_pixels(value: i32, dpi: u32) -> i32 {
+    let dpi = dpi.max(1);
+    let scaled = i64::from(value) * i64::from(dpi);
+    let rounded = if scaled >= 0 {
+        scaled + i64::from(BASE_DPI / 2)
+    } else {
+        scaled - i64::from(BASE_DPI / 2)
+    };
+    (rounded / i64::from(BASE_DPI)).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
 
 #[derive(Clone)]
 struct InstallContext {
@@ -34,9 +62,15 @@ struct InstallContext {
 enum GameCloseMode {
     #[cfg(not(target_os = "windows"))]
     WaitOnly,
-    #[cfg(target_os = "windows")]
+    #[cfg(any(
+        target_os = "windows",
+        all(target_os = "linux", feature = "updater-windows-ui-check")
+    ))]
     RequestClose,
-    #[cfg(target_os = "windows")]
+    #[cfg(any(
+        target_os = "windows",
+        all(target_os = "linux", feature = "updater-windows-ui-check")
+    ))]
     ForceTerminate,
 }
 
@@ -157,7 +191,10 @@ fn run_install(
                     ),
                 );
             }
-            #[cfg(target_os = "windows")]
+            #[cfg(any(
+                target_os = "windows",
+                all(target_os = "linux", feature = "updater-windows-ui-check")
+            ))]
             GameCloseMode::RequestClose => {
                 let requested = request_game_close(context.game_pid);
                 let message = if requested {
@@ -177,7 +214,10 @@ fn run_install(
                     InstallProgress::new("waiting-game", message, 20),
                 );
             }
-            #[cfg(target_os = "windows")]
+            #[cfg(any(
+                target_os = "windows",
+                all(target_os = "linux", feature = "updater-windows-ui-check")
+            ))]
             GameCloseMode::ForceTerminate => {
                 publish_progress(
                     status_file,
@@ -320,6 +360,11 @@ fn request_game_close(pid: u32) -> bool {
     windows_process_control::request_close(pid)
 }
 
+#[cfg(all(target_os = "linux", feature = "updater-windows-ui-check"))]
+fn request_game_close(_pid: u32) -> bool {
+    false
+}
+
 #[cfg(target_os = "windows")]
 fn force_terminate_game(pid: u32) -> Result<(), String> {
     let status = process::Command::new("taskkill")
@@ -333,6 +378,11 @@ fn force_terminate_game(pid: u32) -> Result<(), String> {
     } else {
         Err(format!("taskkill exited with status {status}"))
     }
+}
+
+#[cfg(all(target_os = "linux", feature = "updater-windows-ui-check"))]
+fn force_terminate_game(_pid: u32) -> Result<(), String> {
+    Err("force termination is unavailable in the Windows UI compile check".to_string())
 }
 
 #[cfg(target_os = "windows")]
@@ -578,72 +628,87 @@ mod windows_process_control {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(
+    target_os = "windows",
+    all(target_os = "linux", feature = "updater-windows-ui-check")
+))]
 mod windows_updater_ui {
     use super::{
-        force_terminate_game, is_process_running, parse_install_context, run_install, write_status,
-        GameCloseMode, InstallContext, InstallOptions, InstallProgress,
+        force_terminate_game, is_process_running, parse_install_context, run_install,
+        scale_logical_pixels, write_status, GameCloseMode, InstallContext, InstallOptions,
+        InstallProgress,
     };
     use std::collections::HashMap;
-    use std::ffi::{c_void, OsStr};
     use std::iter;
-    use std::os::windows::ffi::OsStrExt;
+    use std::mem::size_of;
     use std::path::PathBuf;
     use std::ptr;
     use std::thread;
+    use windows_sys::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
+    use windows_sys::Win32::Graphics::Gdi::{
+        CreateFontIndirectW, DeleteObject, UpdateWindow, COLOR_WINDOW, FW_BOLD, HBRUSH, HFONT,
+        HGDIOBJ,
+    };
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::UI::Controls::{
+        InitCommonControlsEx, ICC_PROGRESS_CLASS, INITCOMMONCONTROLSEX, PBM_SETPOS, PBM_SETRANGE32,
+        PBM_SETSTATE, PBST_ERROR, PBST_NORMAL, PBS_SMOOTH, PROGRESS_CLASSW,
+    };
+    use windows_sys::Win32::UI::HiDpi::{
+        AdjustWindowRectExForDpi, AreDpiAwarenessContextsEqual, GetDpiForSystem, GetDpiForWindow,
+        GetThreadDpiAwarenessContext, SetProcessDpiAwarenessContext, SystemParametersInfoForDpi,
+        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    };
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect,
+        GetMessageW, GetWindowLongPtrW, LoadCursorW, MoveWindow, PostMessageW, PostQuitMessage,
+        RegisterClassW, SendMessageW, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
+        TranslateMessage, BS_PUSHBUTTON, CW_USEDEFAULT, GWLP_USERDATA, IDC_ARROW, MSG,
+        NONCLIENTMETRICSW, SPI_GETNONCLIENTMETRICS, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOW,
+        WM_APP, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_DPICHANGED, WM_SETFONT, WM_SIZE, WNDCLASSW,
+        WS_CAPTION, WS_CHILD, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU, WS_VISIBLE,
+    };
 
-    type Bool = i32;
-    type Dword = u32;
-    type Hbrush = *mut c_void;
-    type Hcursor = *mut c_void;
-    type Hdc = *mut c_void;
-    type Hfont = *mut c_void;
-    type Hicon = *mut c_void;
-    type Hinstance = *mut c_void;
-    type Hmenu = *mut c_void;
-    type Hwnd = *mut c_void;
-    type Lparam = isize;
-    type Lresult = isize;
-    type Uint = u32;
-    type Wparam = usize;
-
-    const CW_USEDEFAULT: i32 = 0x80000000u32 as i32;
-    const GWLP_USERDATA: i32 = -21;
-    const WS_OVERLAPPED: Dword = 0x00000000;
-    const WS_CAPTION: Dword = 0x00C00000;
-    const WS_SYSMENU: Dword = 0x00080000;
-    const WS_MINIMIZEBOX: Dword = 0x00020000;
-    const WS_CHILD: Dword = 0x40000000;
-    const WS_VISIBLE: Dword = 0x10000000;
-    const SS_LEFT: Dword = 0x00000000;
-    const BS_PUSHBUTTON: Dword = 0x00000000;
-    const WM_COMMAND: Uint = 0x0111;
-    const WM_CLOSE: Uint = 0x0010;
-    const WM_DESTROY: Uint = 0x0002;
-    const WM_PAINT: Uint = 0x000F;
-    const WM_SETFONT: Uint = 0x0030;
-    const WM_APP_PROGRESS: Uint = 0x8001;
-    const SW_SHOW: i32 = 5;
-    const SW_HIDE: i32 = 0;
-    const COLOR_WINDOW: isize = 5;
-    const DEFAULT_GUI_FONT: i32 = 17;
+    const WINDOW_CLIENT_WIDTH: i32 = 680;
+    const WINDOW_CLIENT_HEIGHT: i32 = 330;
     const START_BUTTON_ID: u16 = 1001;
     const FORCE_BUTTON_ID: u16 = 1002;
     const CLOSE_BUTTON_ID: u16 = 1003;
+    const WM_APP_PROGRESS: u32 = WM_APP + 1;
+    const STATIC_LEFT: u32 = 0;
+    const STATIC_RIGHT: u32 = 2;
 
     struct UiState {
         context: InstallContext,
         status_file: PathBuf,
-        title_label: Hwnd,
-        status_label: Hwnd,
-        detail_label: Hwnd,
-        progress_label: Hwnd,
-        start_button: Hwnd,
-        force_button: Hwnd,
-        close_button: Hwnd,
+        title_label: HWND,
+        status_label: HWND,
+        detail_label: HWND,
+        progress_bar: HWND,
+        progress_label: HWND,
+        start_button: HWND,
+        force_button: HWND,
+        close_button: HWND,
+        body_font: HFONT,
+        title_font: HFONT,
+        dpi: u32,
         worker_started: bool,
         install_finished: bool,
         progress: u8,
+    }
+
+    impl Drop for UiState {
+        fn drop(&mut self) {
+            unsafe {
+                if !self.body_font.is_null() {
+                    let _ = DeleteObject(self.body_font as HGDIOBJ);
+                }
+                if !self.title_font.is_null() {
+                    let _ = DeleteObject(self.title_font as HGDIOBJ);
+                }
+            }
+        }
     }
 
     struct UiMessage {
@@ -652,76 +717,40 @@ mod windows_updater_ui {
         success: bool,
     }
 
-    #[repr(C)]
-    struct Rect {
-        left: i32,
-        top: i32,
-        right: i32,
-        bottom: i32,
-    }
-
-    #[repr(C)]
-    struct Point {
-        x: i32,
-        y: i32,
-    }
-
-    #[repr(C)]
-    struct Msg {
-        hwnd: Hwnd,
-        message: Uint,
-        w_param: Wparam,
-        l_param: Lparam,
-        time: Dword,
-        pt: Point,
-    }
-
-    #[repr(C)]
-    struct PaintStruct {
-        hdc: Hdc,
-        f_erase: Bool,
-        rc_paint: Rect,
-        f_restore: Bool,
-        f_inc_update: Bool,
-        rgb_reserved: [u8; 32],
-    }
-
-    #[repr(C)]
-    struct WndClassW {
-        style: Uint,
-        lpfn_wnd_proc: Option<unsafe extern "system" fn(Hwnd, Uint, Wparam, Lparam) -> Lresult>,
-        cb_cls_extra: i32,
-        cb_wnd_extra: i32,
-        h_instance: Hinstance,
-        h_icon: Hicon,
-        h_cursor: Hcursor,
-        hbr_background: Hbrush,
-        lpsz_menu_name: *const u16,
-        lpsz_class_name: *const u16,
-    }
-
     pub fn run(args: HashMap<String, String>, status_file: PathBuf) -> Result<(), String> {
         let context = parse_install_context(&args)?;
         let class_name = wide("MystiaStewardCompanionUpdaterWindow");
         let title = wide("mystia-steward-companion 更新程序");
 
         unsafe {
+            configure_per_monitor_dpi()?;
+            initialize_common_controls()?;
+
             let instance = GetModuleHandleW(ptr::null());
-            let class = WndClassW {
+            if instance.is_null() {
+                return Err("get updater module handle failed".to_string());
+            }
+            let class = WNDCLASSW {
                 style: 0,
-                lpfn_wnd_proc: Some(window_proc),
-                cb_cls_extra: 0,
-                cb_wnd_extra: 0,
-                h_instance: instance,
-                h_icon: ptr::null_mut(),
-                h_cursor: LoadCursorW(ptr::null_mut(), 32512usize as *const u16),
-                hbr_background: (COLOR_WINDOW + 1) as Hbrush,
-                lpsz_menu_name: ptr::null(),
-                lpsz_class_name: class_name.as_ptr(),
+                lpfnWndProc: Some(window_proc),
+                cbClsExtra: 0,
+                cbWndExtra: 0,
+                hInstance: instance as HINSTANCE,
+                hIcon: ptr::null_mut(),
+                hCursor: LoadCursorW(ptr::null_mut(), IDC_ARROW),
+                hbrBackground: (COLOR_WINDOW + 1) as usize as HBRUSH,
+                lpszMenuName: ptr::null(),
+                lpszClassName: class_name.as_ptr(),
             };
             if RegisterClassW(&class) == 0 {
                 return Err("register updater window class failed".to_string());
             }
+
+            let initial_dpi = GetDpiForSystem();
+            if initial_dpi == 0 {
+                return Err("get updater system DPI failed".to_string());
+            }
+            let (window_width, window_height) = adjusted_window_size(initial_dpi)?;
 
             let hwnd = CreateWindowExW(
                 0,
@@ -730,31 +759,40 @@ mod windows_updater_ui {
                 WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
-                640,
-                300,
+                window_width,
+                window_height,
                 ptr::null_mut(),
                 ptr::null_mut(),
-                instance,
+                instance as HINSTANCE,
                 ptr::null_mut(),
             );
             if hwnd.is_null() {
                 return Err("create updater window failed".to_string());
             }
 
-            let state = Box::new(build_state(hwnd, instance, context, status_file));
+            let state = match build_state(hwnd, instance as HINSTANCE, context, status_file) {
+                Ok(state) => Box::new(state),
+                Err(error) => {
+                    DestroyWindow(hwnd);
+                    return Err(error);
+                }
+            };
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
+            if let Some(state) = state_mut(hwnd) {
+                layout_controls(hwnd, state);
+            }
             ShowWindow(hwnd, SW_SHOW);
             UpdateWindow(hwnd);
 
-            let mut msg = Msg {
-                hwnd: ptr::null_mut(),
-                message: 0,
-                w_param: 0,
-                l_param: 0,
-                time: 0,
-                pt: Point { x: 0, y: 0 },
-            };
-            while GetMessageW(&mut msg, ptr::null_mut(), 0, 0) > 0 {
+            let mut msg = MSG::default();
+            loop {
+                let result = GetMessageW(&mut msg, ptr::null_mut(), 0, 0);
+                if result == 0 {
+                    break;
+                }
+                if result < 0 {
+                    return Err("updater window message loop failed".to_string());
+                }
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
@@ -764,11 +802,16 @@ mod windows_updater_ui {
     }
 
     unsafe fn build_state(
-        hwnd: Hwnd,
-        instance: Hinstance,
+        hwnd: HWND,
+        instance: HINSTANCE,
         context: InstallContext,
         status_file: PathBuf,
-    ) -> UiState {
+    ) -> Result<UiState, String> {
+        let dpi = GetDpiForWindow(hwnd);
+        if dpi == 0 {
+            return Err("get updater window DPI failed".to_string());
+        }
+        let (body_font, title_font) = create_fonts(dpi)?;
         let game_running = is_process_running(context.game_pid);
         let status_text = if game_running {
             format!("检测到游戏进程 {} 正在运行。", context.game_pid)
@@ -781,60 +824,66 @@ mod windows_updater_ui {
             "点击“开始安装”后会关闭伴随窗口、备份旧版本并替换插件目录。"
         };
 
-        let title_label = create_label(hwnd, instance, "自动更新已准备就绪", 24, 22, 560, 24);
-        let status_label = create_label(hwnd, instance, &status_text, 24, 58, 560, 24);
-        let detail_label = create_label(hwnd, instance, detail_text, 24, 84, 560, 42);
-        let progress_label = create_label(hwnd, instance, "0%", 24, 160, 560, 24);
+        let title_label = create_label(hwnd, instance, "自动更新已准备就绪", STATIC_LEFT);
+        let status_label = create_label(hwnd, instance, &status_text, STATIC_LEFT);
+        let detail_label = create_label(hwnd, instance, detail_text, STATIC_LEFT);
+        let progress_bar = create_progress_bar(hwnd, instance);
+        let progress_label = create_label(hwnd, instance, "0%", STATIC_RIGHT);
         let start_text = if game_running {
             "关闭游戏并安装"
         } else {
             "开始安装"
         };
-        let start_button = create_button(
-            hwnd,
-            instance,
-            START_BUTTON_ID,
-            start_text,
-            250,
-            212,
-            130,
-            32,
-        );
-        let force_button = create_button(
-            hwnd,
-            instance,
-            FORCE_BUTTON_ID,
-            "强制结束游戏",
-            390,
-            212,
-            120,
-            32,
-        );
-        let close_button = create_button(hwnd, instance, CLOSE_BUTTON_ID, "取消", 520, 212, 72, 32);
+        let start_button = create_button(hwnd, instance, START_BUTTON_ID, start_text);
+        let force_button = create_button(hwnd, instance, FORCE_BUTTON_ID, "强制结束游戏");
+        let close_button = create_button(hwnd, instance, CLOSE_BUTTON_ID, "取消");
+        let controls = [
+            title_label,
+            status_label,
+            detail_label,
+            progress_bar,
+            progress_label,
+            start_button,
+            force_button,
+            close_button,
+        ];
+        if controls.iter().any(|control| control.is_null()) {
+            let _ = DeleteObject(body_font as HGDIOBJ);
+            let _ = DeleteObject(title_font as HGDIOBJ);
+            return Err("create updater child control failed".to_string());
+        }
+
+        let _ = SendMessageW(progress_bar, PBM_SETRANGE32, 0, 100);
+        let _ = SendMessageW(progress_bar, PBM_SETPOS, 0, 0);
+        apply_fonts(&controls, title_label, body_font, title_font);
         ShowWindow(force_button, if game_running { SW_SHOW } else { SW_HIDE });
 
-        UiState {
+        Ok(UiState {
             context,
             status_file,
             title_label,
             status_label,
             detail_label,
+            progress_bar,
             progress_label,
             start_button,
             force_button,
             close_button,
+            body_font,
+            title_font,
+            dpi,
             worker_started: false,
             install_finished: false,
             progress: 0,
-        }
+        })
     }
 
     unsafe extern "system" fn window_proc(
-        hwnd: Hwnd,
-        msg: Uint,
-        w_param: Wparam,
-        l_param: Lparam,
-    ) -> Lresult {
+        hwnd: HWND,
+        msg: u32,
+        w_param: WPARAM,
+        l_param: LPARAM,
+    ) -> LRESULT {
         match msg {
             WM_COMMAND => {
                 let id = (w_param & 0xffff) as u16;
@@ -863,6 +912,38 @@ mod windows_updater_ui {
                 }
                 0
             }
+            WM_SIZE => {
+                if let Some(state) = state_mut(hwnd) {
+                    layout_controls(hwnd, state);
+                }
+                0
+            }
+            WM_DPICHANGED => {
+                let suggested = l_param as *const RECT;
+                if !suggested.is_null() {
+                    let suggested = &*suggested;
+                    let _ = SetWindowPos(
+                        hwnd,
+                        ptr::null_mut(),
+                        suggested.left,
+                        suggested.top,
+                        suggested.right - suggested.left,
+                        suggested.bottom - suggested.top,
+                        SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                }
+                if let Some(state) = state_mut(hwnd) {
+                    let next_dpi = (w_param & 0xffff) as u32;
+                    if let Err(error) = replace_fonts_for_dpi(state, next_dpi) {
+                        set_text(
+                            state.detail_label,
+                            &format!("更新程序无法适配当前显示缩放：{error}"),
+                        );
+                    }
+                    layout_controls(hwnd, state);
+                }
+                0
+            }
             WM_APP_PROGRESS => {
                 if l_param != 0 {
                     let message = Box::from_raw(l_param as *mut UiMessage);
@@ -870,10 +951,6 @@ mod windows_updater_ui {
                         apply_message(hwnd, state, &message);
                     }
                 }
-                0
-            }
-            WM_PAINT => {
-                paint_progress(hwnd);
                 0
             }
             WM_CLOSE => {
@@ -897,7 +974,7 @@ mod windows_updater_ui {
         }
     }
 
-    unsafe fn start_worker(hwnd: Hwnd, state: &mut UiState, game_close_mode: GameCloseMode) {
+    unsafe fn start_worker(hwnd: HWND, state: &mut UiState, game_close_mode: GameCloseMode) {
         if state.worker_started {
             return;
         }
@@ -917,7 +994,7 @@ mod windows_updater_ui {
         let status_file = state.status_file.clone();
         let hwnd_value = hwnd as isize;
         thread::spawn(move || {
-            let hwnd = hwnd_value as Hwnd;
+            let hwnd = hwnd_value as HWND;
             let mut post_progress = |progress: InstallProgress| unsafe {
                 post_ui_message(hwnd, progress, false, false);
             };
@@ -948,12 +1025,18 @@ mod windows_updater_ui {
         });
     }
 
-    unsafe fn apply_message(hwnd: Hwnd, state: &mut UiState, message: &UiMessage) {
+    unsafe fn apply_message(hwnd: HWND, state: &mut UiState, message: &UiMessage) {
         state.progress = message.progress.progress;
         set_text(state.status_label, &message.progress.message);
         set_text(
             state.progress_label,
             &format!("{}%", message.progress.progress),
+        );
+        let _ = SendMessageW(
+            state.progress_bar,
+            PBM_SETPOS,
+            usize::from(message.progress.progress),
+            0,
         );
         if message.finished {
             state.install_finished = true;
@@ -977,11 +1060,21 @@ mod windows_updater_ui {
                     "旧版本目录会尽量保留或回滚。请查看更新状态文件或重新下载更新包后再试。"
                 },
             );
+            let _ = SendMessageW(
+                state.progress_bar,
+                PBM_SETSTATE,
+                if message.success {
+                    PBST_NORMAL as usize
+                } else {
+                    PBST_ERROR as usize
+                },
+                0,
+            );
         }
-        InvalidateRect(hwnd, ptr::null(), 1);
+        layout_controls(hwnd, state);
     }
 
-    unsafe fn close_or_cancel(hwnd: Hwnd, state: &mut UiState) {
+    unsafe fn close_or_cancel(hwnd: HWND, state: &mut UiState) {
         if state.worker_started && !state.install_finished {
             set_text(
                 state.detail_label,
@@ -1000,57 +1093,8 @@ mod windows_updater_ui {
         DestroyWindow(hwnd);
     }
 
-    unsafe fn paint_progress(hwnd: Hwnd) {
-        let mut paint = PaintStruct {
-            hdc: ptr::null_mut(),
-            f_erase: 0,
-            rc_paint: Rect {
-                left: 0,
-                top: 0,
-                right: 0,
-                bottom: 0,
-            },
-            f_restore: 0,
-            f_inc_update: 0,
-            rgb_reserved: [0; 32],
-        };
-        let hdc = BeginPaint(hwnd, &mut paint);
-        let progress = state_mut(hwnd).map(|state| state.progress).unwrap_or(0);
-        let background = CreateSolidBrush(0x00e8e6e3);
-        let foreground = CreateSolidBrush(0x00b86f28);
-        let border = CreateSolidBrush(0x00d0ccc7);
-        let outer = Rect {
-            left: 24,
-            top: 136,
-            right: 592,
-            bottom: 158,
-        };
-        FillRect(hdc, &outer, border);
-        let inner = Rect {
-            left: 25,
-            top: 137,
-            right: 591,
-            bottom: 157,
-        };
-        FillRect(hdc, &inner, background);
-        let width = ((inner.right - inner.left) * i32::from(progress)) / 100;
-        if width > 0 {
-            let filled = Rect {
-                left: inner.left,
-                top: inner.top,
-                right: inner.left + width,
-                bottom: inner.bottom,
-            };
-            FillRect(hdc, &filled, foreground);
-        }
-        DeleteObject(background);
-        DeleteObject(foreground);
-        DeleteObject(border);
-        EndPaint(hwnd, &paint);
-    }
-
     unsafe fn post_ui_message(
-        hwnd: Hwnd,
+        hwnd: HWND,
         progress: InstallProgress,
         finished: bool,
         success: bool,
@@ -1060,10 +1104,13 @@ mod windows_updater_ui {
             finished,
             success,
         });
-        let _ = PostMessageW(hwnd, WM_APP_PROGRESS, 0, Box::into_raw(message) as Lparam);
+        let raw = Box::into_raw(message);
+        if PostMessageW(hwnd, WM_APP_PROGRESS, 0, raw as LPARAM) == 0 {
+            drop(Box::from_raw(raw));
+        }
     }
 
-    unsafe fn state_mut(hwnd: Hwnd) -> Option<&'static mut UiState> {
+    unsafe fn state_mut(hwnd: HWND) -> Option<&'static mut UiState> {
         let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
         if ptr == 0 {
             None
@@ -1072,134 +1119,292 @@ mod windows_updater_ui {
         }
     }
 
-    unsafe fn create_label(
-        hwnd: Hwnd,
-        instance: Hinstance,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: i32,
-        height: i32,
-    ) -> Hwnd {
+    unsafe fn create_label(hwnd: HWND, instance: HINSTANCE, text: &str, static_style: u32) -> HWND {
         let class_name = wide("STATIC");
         let text = wide(text);
-        let control = CreateWindowExW(
+        CreateWindowExW(
             0,
             class_name.as_ptr(),
             text.as_ptr(),
-            WS_CHILD | WS_VISIBLE | SS_LEFT,
-            x,
-            y,
-            width,
-            height,
+            WS_CHILD | WS_VISIBLE | static_style,
+            0,
+            0,
+            1,
+            1,
             hwnd,
             ptr::null_mut(),
             instance,
             ptr::null_mut(),
-        );
-        set_default_font(control);
-        control
+        )
     }
 
-    unsafe fn create_button(
-        hwnd: Hwnd,
-        instance: Hinstance,
-        id: u16,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: i32,
-        height: i32,
-    ) -> Hwnd {
+    unsafe fn create_button(hwnd: HWND, instance: HINSTANCE, id: u16, text: &str) -> HWND {
         let class_name = wide("BUTTON");
         let text = wide(text);
-        let control = CreateWindowExW(
+        CreateWindowExW(
             0,
             class_name.as_ptr(),
             text.as_ptr(),
-            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            x,
-            y,
-            width,
-            height,
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON as u32,
+            0,
+            0,
+            1,
+            1,
             hwnd,
-            id as usize as Hmenu,
+            id as usize as _,
             instance,
             ptr::null_mut(),
-        );
-        set_default_font(control);
-        control
+        )
     }
 
-    unsafe fn set_default_font(hwnd: Hwnd) {
-        let font = GetStockObject(DEFAULT_GUI_FONT) as Hfont;
-        let _ = SendMessageW(hwnd, WM_SETFONT, font as usize, 1);
+    unsafe fn create_progress_bar(hwnd: HWND, instance: HINSTANCE) -> HWND {
+        CreateWindowExW(
+            0,
+            PROGRESS_CLASSW,
+            ptr::null(),
+            WS_CHILD | WS_VISIBLE | PBS_SMOOTH,
+            0,
+            0,
+            1,
+            1,
+            hwnd,
+            ptr::null_mut(),
+            instance,
+            ptr::null_mut(),
+        )
     }
 
-    unsafe fn set_text(hwnd: Hwnd, text: &str) {
+    unsafe fn set_text(hwnd: HWND, text: &str) {
         let text = wide(text);
         let _ = SetWindowTextW(hwnd, text.as_ptr());
     }
 
+    unsafe fn configure_per_monitor_dpi() -> Result<(), String> {
+        let target = DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2;
+        if SetProcessDpiAwarenessContext(target) == 0
+            && AreDpiAwarenessContextsEqual(GetThreadDpiAwarenessContext(), target) == 0
+        {
+            return Err(
+                "enable Per-Monitor DPI Awareness V2 failed; Windows 10 1703 or later is required"
+                    .to_string(),
+            );
+        }
+        if AreDpiAwarenessContextsEqual(GetThreadDpiAwarenessContext(), target) == 0 {
+            return Err("updater DPI awareness context verification failed".to_string());
+        }
+        Ok(())
+    }
+
+    unsafe fn initialize_common_controls() -> Result<(), String> {
+        let controls = INITCOMMONCONTROLSEX {
+            dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
+            dwICC: ICC_PROGRESS_CLASS,
+        };
+        if InitCommonControlsEx(&controls) == 0 {
+            return Err("initialize updater progress control failed".to_string());
+        }
+        Ok(())
+    }
+
+    unsafe fn adjusted_window_size(dpi: u32) -> Result<(i32, i32), String> {
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: scale_logical_pixels(WINDOW_CLIENT_WIDTH, dpi),
+            bottom: scale_logical_pixels(WINDOW_CLIENT_HEIGHT, dpi),
+        };
+        let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+        if AdjustWindowRectExForDpi(&mut rect, style, 0, 0, dpi) == 0 {
+            return Err("calculate updater DPI-aware window size failed".to_string());
+        }
+        Ok((rect.right - rect.left, rect.bottom - rect.top))
+    }
+
+    unsafe fn create_fonts(dpi: u32) -> Result<(HFONT, HFONT), String> {
+        let mut metrics = NONCLIENTMETRICSW::default();
+        metrics.cbSize = size_of::<NONCLIENTMETRICSW>() as u32;
+        if SystemParametersInfoForDpi(
+            SPI_GETNONCLIENTMETRICS,
+            metrics.cbSize,
+            &mut metrics as *mut NONCLIENTMETRICSW as *mut _,
+            0,
+            dpi,
+        ) == 0
+        {
+            return Err("read DPI-aware Windows message font failed".to_string());
+        }
+
+        let body_font = CreateFontIndirectW(&metrics.lfMessageFont);
+        if body_font.is_null() {
+            return Err("create updater message font failed".to_string());
+        }
+        let mut title_log_font = metrics.lfMessageFont;
+        title_log_font.lfWeight = FW_BOLD as i32;
+        let title_font = CreateFontIndirectW(&title_log_font);
+        if title_font.is_null() {
+            let _ = DeleteObject(body_font as HGDIOBJ);
+            return Err("create updater title font failed".to_string());
+        }
+        Ok((body_font, title_font))
+    }
+
+    unsafe fn apply_fonts(
+        controls: &[HWND],
+        title_label: HWND,
+        body_font: HFONT,
+        title_font: HFONT,
+    ) {
+        for &control in controls {
+            let font = if control == title_label {
+                title_font
+            } else {
+                body_font
+            };
+            let _ = SendMessageW(control, WM_SETFONT, font as usize, 1);
+        }
+    }
+
+    unsafe fn replace_fonts_for_dpi(state: &mut UiState, dpi: u32) -> Result<(), String> {
+        if dpi == 0 || dpi == state.dpi {
+            return Ok(());
+        }
+        let (body_font, title_font) = create_fonts(dpi)?;
+        let controls = [
+            state.title_label,
+            state.status_label,
+            state.detail_label,
+            state.progress_label,
+            state.start_button,
+            state.force_button,
+            state.close_button,
+        ];
+        apply_fonts(&controls, state.title_label, body_font, title_font);
+        let previous_body = std::mem::replace(&mut state.body_font, body_font);
+        let previous_title = std::mem::replace(&mut state.title_font, title_font);
+        state.dpi = dpi;
+        let _ = DeleteObject(previous_body as HGDIOBJ);
+        let _ = DeleteObject(previous_title as HGDIOBJ);
+        Ok(())
+    }
+
+    unsafe fn layout_controls(hwnd: HWND, state: &UiState) {
+        let mut client = RECT::default();
+        if GetClientRect(hwnd, &mut client) == 0 {
+            return;
+        }
+        let dpi = state.dpi;
+        let width = client.right - client.left;
+        let height = client.bottom - client.top;
+        let margin = scale_logical_pixels(24, dpi);
+        let content_width = (width - margin * 2).max(1);
+        let title_height = scale_logical_pixels(28, dpi);
+        let line_height = scale_logical_pixels(24, dpi);
+        let detail_height = scale_logical_pixels(48, dpi);
+        let progress_height = scale_logical_pixels(18, dpi);
+        let button_height = scale_logical_pixels(34, dpi);
+        let gap = scale_logical_pixels(10, dpi);
+
+        move_control(
+            state.title_label,
+            margin,
+            scale_logical_pixels(22, dpi),
+            content_width,
+            title_height,
+        );
+        move_control(
+            state.status_label,
+            margin,
+            scale_logical_pixels(62, dpi),
+            content_width,
+            line_height,
+        );
+        move_control(
+            state.detail_label,
+            margin,
+            scale_logical_pixels(92, dpi),
+            content_width,
+            detail_height,
+        );
+        move_control(
+            state.progress_bar,
+            margin,
+            scale_logical_pixels(158, dpi),
+            content_width,
+            progress_height,
+        );
+        move_control(
+            state.progress_label,
+            margin,
+            scale_logical_pixels(181, dpi),
+            content_width,
+            line_height,
+        );
+
+        let close_width = scale_logical_pixels(78, dpi);
+        let force_width = scale_logical_pixels(128, dpi);
+        let start_width = scale_logical_pixels(146, dpi);
+        let button_y = (height - margin - button_height).max(margin);
+        let close_x = width - margin - close_width;
+        let force_x = close_x - gap - force_width;
+        let start_x = force_x - gap - start_width;
+        move_control(
+            state.start_button,
+            start_x,
+            button_y,
+            start_width,
+            button_height,
+        );
+        move_control(
+            state.force_button,
+            force_x,
+            button_y,
+            force_width,
+            button_height,
+        );
+        move_control(
+            state.close_button,
+            close_x,
+            button_y,
+            close_width,
+            button_height,
+        );
+    }
+
+    unsafe fn move_control(hwnd: HWND, x: i32, y: i32, width: i32, height: i32) {
+        let _ = MoveWindow(hwnd, x, y, width.max(1), height.max(1), 1);
+    }
+
     fn wide(value: &str) -> Vec<u16> {
-        OsStr::new(value)
-            .encode_wide()
-            .chain(iter::once(0))
-            .collect()
+        value.encode_utf16().chain(iter::once(0)).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scale_logical_pixels;
+
+    #[test]
+    fn logical_pixels_scale_for_supported_dpi_steps() {
+        let fixtures = [
+            (96, 24, 24),
+            (120, 24, 30),
+            (144, 24, 36),
+            (192, 24, 48),
+            (120, 680, 850),
+            (144, 330, 495),
+        ];
+        for (dpi, logical, expected) in fixtures {
+            assert_eq!(scale_logical_pixels(logical, dpi), expected);
+        }
     }
 
-    #[link(name = "user32")]
-    extern "system" {
-        fn BeginPaint(hWnd: Hwnd, lpPaint: *mut PaintStruct) -> Hdc;
-        fn CreateWindowExW(
-            dwExStyle: Dword,
-            lpClassName: *const u16,
-            lpWindowName: *const u16,
-            dwStyle: Dword,
-            X: i32,
-            Y: i32,
-            nWidth: i32,
-            nHeight: i32,
-            hWndParent: Hwnd,
-            hMenu: Hmenu,
-            hInstance: Hinstance,
-            lpParam: *mut c_void,
-        ) -> Hwnd;
-        fn DefWindowProcW(hWnd: Hwnd, Msg: Uint, wParam: Wparam, lParam: Lparam) -> Lresult;
-        fn DestroyWindow(hWnd: Hwnd) -> Bool;
-        fn DispatchMessageW(lpMsg: *const Msg) -> Lresult;
-        fn EnableWindow(hWnd: Hwnd, bEnable: Bool) -> Bool;
-        fn EndPaint(hWnd: Hwnd, lpPaint: *const PaintStruct) -> Bool;
-        fn FillRect(hDC: Hdc, lprc: *const Rect, hbr: Hbrush) -> i32;
-        fn GetMessageW(
-            lpMsg: *mut Msg,
-            hWnd: Hwnd,
-            wMsgFilterMin: Uint,
-            wMsgFilterMax: Uint,
-        ) -> Bool;
-        fn GetWindowLongPtrW(hWnd: Hwnd, nIndex: i32) -> isize;
-        fn InvalidateRect(hWnd: Hwnd, lpRect: *const Rect, bErase: Bool) -> Bool;
-        fn LoadCursorW(hInstance: Hinstance, lpCursorName: *const u16) -> Hcursor;
-        fn PostMessageW(hWnd: Hwnd, Msg: Uint, wParam: Wparam, lParam: Lparam) -> Bool;
-        fn PostQuitMessage(nExitCode: i32);
-        fn RegisterClassW(lpWndClass: *const WndClassW) -> u16;
-        fn SendMessageW(hWnd: Hwnd, Msg: Uint, wParam: Wparam, lParam: Lparam) -> Lresult;
-        fn SetWindowLongPtrW(hWnd: Hwnd, nIndex: i32, dwNewLong: isize) -> isize;
-        fn SetWindowTextW(hWnd: Hwnd, lpString: *const u16) -> Bool;
-        fn ShowWindow(hWnd: Hwnd, nCmdShow: i32) -> Bool;
-        fn TranslateMessage(lpMsg: *const Msg) -> Bool;
-        fn UpdateWindow(hWnd: Hwnd) -> Bool;
-    }
-
-    #[link(name = "gdi32")]
-    extern "system" {
-        fn CreateSolidBrush(color: Dword) -> Hbrush;
-        fn DeleteObject(ho: *mut c_void) -> Bool;
-        fn GetStockObject(i: i32) -> *mut c_void;
-    }
-
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn GetModuleHandleW(lpModuleName: *const u16) -> Hinstance;
+    #[test]
+    fn logical_pixel_rounding_is_symmetric() {
+        for dpi in [96, 120, 144, 192] {
+            assert_eq!(
+                scale_logical_pixels(-17, dpi),
+                -scale_logical_pixels(17, dpi)
+            );
+        }
     }
 }

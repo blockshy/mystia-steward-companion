@@ -34,6 +34,12 @@ assert.match(sources.publish, /if \(\$BuildAndroidApk -and -not \[string\]::IsNu
 assert.match(sources.publish, /Get-StaleCanonicalAndroidAssets/u);
 assert.match(sources.publish, /release",\s*"delete-asset"/u);
 assert.match(sources.publish, /StaleCanonicalAndroidAssets\.Count -gt 0 -and -not \$Clobber/u);
+assert.match(sources.publish, /update-catalog\.json/u);
+assert.match(sources.publish, /generate-update-catalog\.mjs/u);
+assert.match(sources.publish, /catalogSha256/u);
+assert.match(sources.publish, /catalogSize/u);
+assert.match(sources.publish, /Release notes are required/u);
+assert.doesNotMatch(sources.publish, /Built locally and uploaded with GitHub CLI/u);
 
 const prebuildPruneCondition = sources.build.match(
   /if \(-not \$SkipBuildCacheCleanup[^\n]+\) \{\s*Invoke-BuildCachePrune -Title "Prune stale build artifacts before compilation"/u,

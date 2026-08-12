@@ -131,6 +131,12 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1 -SkipIns
 
 如果修改了 `apps/companion/src/` 或 Tauri 窗口相关代码，不要使用 `-SkipTauriBuild`，否则安装包中的伴随窗口仍会使用旧产物。
 
+Mod 包中的 `mystia-steward-companion-updater.exe` 最低支持 Windows 10 1703。它在创建窗口前强制确认
+Per-Monitor DPI Aware V2，使用当前 DPI 的系统 message font、逻辑坐标和原生 Progress Bar，并在
+`WM_DPICHANGED` 后按新显示器缩放重建字体与布局。修改该程序时不得恢复 `DEFAULT_GUI_FONT`、固定物理
+像素或 GDI 手绘进度条；除常规 Cargo 检查外，还要在 Windows 的 100%/125%/150%/200% 缩放与跨显示器
+移动场景中实测。
+
 如发布机已配置 Android SDK/NDK、JDK、Rust Android targets 和 APK 签名配置，可在同一次发布构建中生成 Android APK：
 
 ```powershell

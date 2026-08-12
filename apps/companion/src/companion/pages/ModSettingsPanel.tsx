@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { IconAlertTriangle, IconCopy, IconCrown, IconDeviceDesktop, IconDeviceMobile, IconDownload, IconExternalLink, IconKey, IconPackageImport, IconRefresh, IconTrash } from '@tabler/icons-react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import { IconAlertTriangle, IconCopy, IconCrown, IconDeviceDesktop, IconDeviceMobile, IconKey, IconRefresh, IconTrash } from '@tabler/icons-react';
 import { Button, Dialog, InfoLine, Input, ListPanel, MultiSelectBox, NumberInput, SettingHelpField, SettingHelpProvider, Slider, SwitchField, Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui-kit';
 import {
   readLocalApiConnectionConfig,
@@ -9,7 +9,6 @@ import {
 import { buildInventorySelectOptions, type InventorySortMode } from '@/companion/domain/inventory-sorting';
 import type { UpdateManager } from '@/companion/features/updates/useUpdateManager';
 import type { CompanionDeviceAuthorityController } from '@/companion/hooks/useCompanionDeviceAuthority';
-import { formatBytes } from '@/companion/formatters';
 import { ModHelpPanel } from '@/companion/pages/ModHelpPanel';
 import {
   DEFAULT_FONT_SCALE_PERCENT,
@@ -28,7 +27,7 @@ import {
   normalizeTargetHighlightColor,
   type CompanionPreferences,
 } from '@/companion/preferences';
-import type { LocalApiConnectionConfig, RuntimeSets, SettingsTab, UpdateStatusResponse } from '@/companion/types';
+import type { LocalApiConnectionConfig, RuntimeSets, SettingsTab } from '@/companion/types';
 import type { RecommendationDataSet } from '@/lib/recommendation-data';
 import type { ThemeMode } from '@/lib/theme';
 import {
@@ -50,6 +49,11 @@ import {
   SwitchControl,
 } from '@/companion/pages/shared';
 import { DENSE_TWO_COLUMN_GRID, INNER_TAB_TRIGGER_CLASS } from '@/companion/pages/shared-constants';
+
+const UpdateSettingsPanel = lazy(async () => {
+  const module = await import('@/companion/features/updates/UpdateSettingsPanel');
+  return { default: module.UpdateSettingsPanel };
+});
 
 export function ModSettingsPanel({
   endpoint,
@@ -289,23 +293,6 @@ export function ModSettingsPanel({
     refreshConnectionConfig();
   }, [refreshConnectionConfig, settingsTab]);
 
-  const updateStatus = updateManager.status;
-  const updateStateLabel = formatUpdateState(updateStatus);
-  const updateDetail = updateManager.error || updateStatus?.error || updateStatus?.installMessage || '';
-  const remoteUpdateBusy = updateStatus?.state === 'checking'
-    || updateStatus?.state === 'downloading'
-    || isActiveUpdateInstallState(updateStatus?.installState ?? '');
-  const canDownloadUpdate = Boolean(
-    updateStatus?.hasUpdate
-    && updateStatus.enabled
-    && !updateStatus.staged
-    && !remoteUpdateBusy,
-  );
-  const canInstallUpdate = Boolean(
-    updateStatus?.staged
-    && updateStatus.enabled
-    && !remoteUpdateBusy,
-  );
   const hostDraftDirty = connectionConfig
     ? normalizeLanHostDraft(connectionLanHost) !== normalizeLanHostDraft(connectionConfig.lanBindHost)
     : false;
@@ -780,85 +767,11 @@ export function ModSettingsPanel({
       </TabsContent>
 
       <TabsContent value="updates" className="space-y-4">
-        <ListPanel title="更新">
-          <div className="space-y-4">
-            <div className="grid gap-2 text-sm">
-              <InfoLine label="当前版本" value={updateStatus?.currentVersion || '未知'} />
-              <InfoLine label="最新版本" value={updateStatus?.latestVersion || '未检查'} />
-              <InfoLine label="状态" value={updateStateLabel} />
-              <InfoLine label="自动检查" value={!updateStatus ? '未读取' : updateStatus.autoCheck ? '已开启' : '已关闭'} />
-              <InfoLine label="更新通道" value={!updateStatus ? '未读取' : updateStatus.includePrerelease ? '含预发布版本' : '仅正式版本'} />
-              <InfoLine label="最近成功检查" value={!updateStatus ? '未读取' : formatUpdateDateTime(updateStatus.lastSuccessAtUtc)} />
-              <InfoLine label="下次自动检查" value={formatNextUpdateCheck(updateStatus)} />
-              {(updateStatus?.consecutiveFailures ?? 0) > 0 && (
-                <InfoLine label="连续检查失败" value={`${updateStatus?.consecutiveFailures} 次`} />
-              )}
-              <InfoLine label="更新包" value={updateStatus?.packageSize ? formatBytes(updateStatus.packageSize) : '未知'} />
-            </div>
-            {updateDetail && (
-              <div className="steward-inline-panel px-3 py-2 text-xs text-muted-foreground">
-                {updateDetail}
-              </div>
-            )}
-            {updateStatus?.installState === 'waiting' && (
-              <div className="text-xs text-muted-foreground">
-                已打开独立更新程序；请在弹窗中确认关闭游戏并完成安装。
-              </div>
-            )}
-            <div className="flex flex-wrap gap-2" data-gamepad-axis="x">
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                leftSection={<IconRefresh size={14} />}
-                loading={updateManager.busy === 'check'}
-                disabled={!updateManager.connected || Boolean(updateManager.busy) || remoteUpdateBusy}
-                data-gamepad-focus-key="settings:updates:check"
-                onClick={() => void updateManager.check()}
-              >
-                检查
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                leftSection={<IconDownload size={14} />}
-                loading={updateManager.busy === 'download'}
-                disabled={!updateManager.connected || Boolean(updateManager.busy) || !canDownloadUpdate}
-                data-gamepad-focus-key="settings:updates:download"
-                onClick={() => void updateManager.download()}
-              >
-                下载
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                leftSection={<IconPackageImport size={14} />}
-                loading={updateManager.busy === 'install'}
-                disabled={!updateManager.connected || Boolean(updateManager.busy) || !canInstallUpdate}
-                data-gamepad-focus-key="settings:updates:install"
-                onClick={() => void updateManager.install()}
-              >
-                打开安装程序
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                leftSection={<IconExternalLink size={14} />}
-                disabled={!updateStatus?.releaseUrl}
-                data-gamepad-focus-key="settings:updates:release-page"
-                onClick={() => void updateManager.openReleasePage()}
-              >
-                发布页
-              </Button>
-            </div>
-            <div className="text-xs text-muted-foreground">
-              更新包会先下载到配置目录；安装阶段由独立更新程序显示进度，并在游戏退出后替换插件目录。
-            </div>
-          </div>
-        </ListPanel>
+        {settingsTab === 'updates' && (
+          <Suspense fallback={<ListPanel title="更新">正在加载更新信息…</ListPanel>}>
+            <UpdateSettingsPanel updateManager={updateManager} />
+          </Suspense>
+        )}
       </TabsContent>
 
       <TabsContent value="recommendation" className="space-y-4">
@@ -1693,78 +1606,12 @@ function formatLanInterfaceType(value: string): string {
   }
 }
 
-function formatUpdateState(status: UpdateStatusResponse | null): string {
-  if (!status) return '等待本地 API';
-  if (!status.enabled) return '已关闭';
-  switch (status.installState) {
-    case 'waiting':
-      return '更新程序已打开';
-    case 'preparing':
-      return '正在准备安装';
-    case 'closing-companion':
-      return '正在关闭伴随窗口';
-    case 'waiting-game':
-      return '等待游戏退出';
-    case 'terminating-game':
-      return '正在关闭游戏';
-    case 'game-closed':
-      return '游戏已退出';
-    case 'backing-up':
-      return '正在备份';
-    case 'installing':
-      return '正在安装';
-    case 'verifying':
-      return '正在校验';
-    case 'succeeded':
-      return '安装完成';
-    case 'failed':
-      return '安装失败';
-    case 'cancelled':
-      return '已取消安装';
-  }
-  if (status.staged) return '已下载';
-  if (status.hasUpdate) return '有新版本';
-  switch (status.state) {
-    case 'checking':
-      return '检查中';
-    case 'downloading':
-      return '下载中';
-    case 'current':
-      return '已是最新';
-    case 'installed':
-      return '安装完成';
-    case 'failed':
-      return '检查失败';
-    case 'disabled':
-      return '已关闭';
-    default:
-      return '未检查';
-  }
-}
-
 function formatDevicePlatform(platform: 'windows' | 'android' | 'browser'): string {
   switch (platform) {
     case 'windows': return 'Windows';
     case 'android': return 'Android';
     case 'browser': return '浏览器预览';
   }
-}
-
-function isActiveUpdateInstallState(state: UpdateStatusResponse['installState']): boolean {
-  return state !== '' && state !== 'succeeded' && state !== 'failed' && state !== 'cancelled';
-}
-
-function formatUpdateDateTime(value: string | null | undefined): string {
-  if (!value) return '未记录';
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return '未记录';
-  return parsed.toLocaleString('zh-CN', { hour12: false });
-}
-
-function formatNextUpdateCheck(status: UpdateStatusResponse | null): string {
-  if (!status) return '未读取';
-  if (!status.enabled || !status.autoCheck) return '未计划';
-  return formatUpdateDateTime(status.nextCheckAtUtc);
 }
 
 function parseSelectedIds(values: string[]): number[] {

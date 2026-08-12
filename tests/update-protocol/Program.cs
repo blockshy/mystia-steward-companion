@@ -1,11 +1,15 @@
 using MystiaStewardCompanion.Updates;
 using BepInEx.Logging;
+using System.Text;
 using System.Text.Json;
 
 try
 {
     VerifySemanticVersionOrdering();
     VerifyManifestValidation();
+    VerifyReleaseCatalogValidationAndFiltering();
+    VerifyOptionalReleaseHistoryIsolation();
+    VerifyCachedReleaseHistoryValidation();
     VerifyAtomParsing();
     VerifyCachedStateValidation();
     VerifyBoundedDownloadCopy();
@@ -17,7 +21,7 @@ try
     VerifyRecurringSchedulerAndMutualExclusion();
     VerifyDisposeRetryAfterTimeout();
     VerifyAbruptOperationRecovery();
-    Console.WriteLine("PASS: update protocol validation, retry scheduling, recurring execution, mutual exclusion, lifecycle cancellation, abrupt recovery cleanup, and bounded downloads are correct.");
+    Console.WriteLine("PASS: update protocol validation, optional release-history isolation, retry scheduling, recurring execution, mutual exclusion, lifecycle cancellation, abrupt recovery cleanup, and bounded downloads are correct.");
     return 0;
 }
 catch (Exception ex)
@@ -38,6 +42,7 @@ static void VerifySemanticVersionOrdering()
 static void VerifyManifestValidation()
 {
     UpdateService.ValidateManifest(Manifest());
+    UpdateService.ValidateManifest(Manifest(withCatalog: true));
     ExpectInvalidManifest(Manifest(schemaVersion: 2), "schemaVersion");
     ExpectInvalidManifest(Manifest(channel: "preview"), "channel");
     ExpectInvalidManifest(Manifest(packageSha256: "abc"), "packageSha256");
@@ -53,6 +58,223 @@ static void VerifyManifestValidation()
     }, "packageSha256");
     ExpectInvalidManifest(Manifest(packageSize: 0), "packageSize");
     ExpectInvalidManifest(Manifest(tag: "v1.2.4"), "version 与 tag");
+    ExpectInvalidManifest(Manifest(catalogAsset: "update-catalog.json"), "版本说明目录字段必须同时提供");
+    ExpectInvalidManifest(Manifest(withCatalog: true, catalogAsset: "catalog.json"), "catalogAsset");
+    ExpectInvalidManifest(Manifest(withCatalog: true, catalogSha256: "abc"), "catalogSha256");
+    ExpectInvalidManifest(Manifest(withCatalog: true, catalogSize: -1), "catalogSize");
+}
+
+static void VerifyReleaseCatalogValidationAndFiltering()
+{
+    var manifest = Manifest(version: "1.3.0", tag: "v1.3.0", withCatalog: true);
+    var catalog = Catalog(
+        ownerVersion: "1.3.0",
+        releases: new[]
+        {
+            CatalogRelease("1.2.2", "stable"),
+            CatalogRelease("1.2.4", "stable"),
+            CatalogRelease("1.2.5-preview.1", "preview"),
+            CatalogRelease("1.2.5", "stable"),
+            CatalogRelease("1.3.0", "stable"),
+        });
+
+    UpdateService.ValidateCatalog(catalog, manifest);
+
+    var stable = UpdateService.BuildAvailableReleases(catalog, "1.2.3", "1.3.0", includePrerelease: false);
+    AssertEqual("1.2.4,1.2.5,1.3.0", string.Join(',', stable.Select(release => release.Version)),
+        "Stable update history included an old or preview release, or lost SemVer order.");
+    var preview = UpdateService.BuildAvailableReleases(catalog, "1.2.3", "1.3.0", includePrerelease: true);
+    AssertEqual("1.2.4,1.2.5-preview.1,1.2.5,1.3.0", string.Join(',', preview.Select(release => release.Version)),
+        "Preview update history did not expose every intermediate supported release.");
+
+    ExpectInvalidCatalog(
+        Catalog("1.3.1", new[] { CatalogRelease("1.3.1", "stable") }),
+        manifest,
+        "owner 与 manifest 不一致");
+    ExpectInvalidCatalog(
+        Catalog("1.3.0", new[]
+        {
+            CatalogRelease("1.2.4", "stable"),
+            CatalogRelease("1.2.4", "stable"),
+            CatalogRelease("1.3.0", "stable"),
+        }),
+        manifest,
+        "重复版本或 tag");
+    ExpectInvalidCatalog(
+        Catalog("1.3.0", new[]
+        {
+            CatalogRelease("1.2.5", "stable"),
+            CatalogRelease("1.2.4", "stable"),
+            CatalogRelease("1.3.0", "stable"),
+        }),
+        manifest,
+        "SemVer 严格升序");
+    ExpectInvalidCatalog(
+        Catalog("1.3.0", new[] { CatalogRelease("1.3.0", "preview") }),
+        manifest,
+        "channel 无效");
+    ExpectInvalidCatalog(
+        Catalog("1.3.0", new[] { CatalogRelease("1.3.0", "stable", releaseUrl: "https://example.test/v1.3.0") }),
+        manifest,
+        "release URL 无效");
+    ExpectInvalidCatalog(
+        Catalog("1.3.0", new[] { CatalogRelease("1.3.0", "stable", tag: "1.3.0") }),
+        manifest,
+        "版本或 tag 无效");
+    ExpectInvalidCatalog(
+        Catalog("1.3.0", new[] { CatalogRelease("1.3.0", "stable", notesMarkdown: "  ") }),
+        manifest,
+        "说明无效或过大");
+    ExpectInvalidCatalog(
+        Catalog("1.3.0", new[]
+        {
+            CatalogRelease("1.3.0", "stable"),
+            CatalogRelease("1.3.1", "stable"),
+        }),
+        manifest,
+        "晚于 owner");
+}
+
+static void VerifyOptionalReleaseHistoryIsolation()
+{
+    var root = Path.Combine(Path.GetTempPath(), $"mystia-update-history-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(root);
+    var log = Logger.CreateLogSource("update-history-smoke");
+    var nowUtc = new DateTime(2026, 8, 12, 1, 2, 3, DateTimeKind.Utc);
+    try
+    {
+        var candidateWithCatalog = Candidate(withCatalog: true);
+        using (var service = new UpdateService(
+                   Settings(),
+                   log,
+                   Path.Combine(root, "ready"),
+                   () => nowUtc,
+                   _ => candidateWithCatalog,
+                   fetchReleaseCatalog: (_, _) => Catalog(
+                       "1.2.4",
+                       new[]
+                       {
+                           CatalogRelease("1.2.3", "stable"),
+                           CatalogRelease("1.2.4", "stable"),
+                       })))
+        {
+            var status = service.CheckForUpdates();
+            AssertEqual(true, status.Ok, "A valid release catalog caused the core update check to fail.");
+            AssertEqual(true, status.HasUpdate, "A valid release catalog hid an available update.");
+            AssertEqual("ready", status.ReleaseHistoryState, "A valid release catalog was not published as ready.");
+            AssertEqual(1, status.AvailableReleases.Count, "The release list did not filter out the current version.");
+            AssertEqual("1.2.4", status.AvailableReleases[0].Version, "The available release version was incorrect.");
+        }
+
+        using (var service = new UpdateService(
+                   Settings(),
+                   log,
+                   Path.Combine(root, "failed"),
+                   () => nowUtc,
+                   _ => candidateWithCatalog,
+                   fetchReleaseCatalog: (_, _) => throw new HttpRequestException("expected catalog outage")))
+        {
+            var status = service.CheckForUpdates();
+            AssertEqual(true, status.Ok, "A release-catalog outage failed the core update check.");
+            AssertEqual(true, status.HasUpdate, "A release-catalog outage hid an available update.");
+            AssertEqual("available", status.State, "A release-catalog outage changed the core update state.");
+            AssertEqual("failed", status.ReleaseHistoryState, "A release-catalog outage was not isolated as a history failure.");
+            AssertEqual(0, status.AvailableReleases.Count, "A failed release catalog exposed unverified release history.");
+            AssertEqual(true, status.ReleaseHistoryError?.Contains("expected catalog outage", StringComparison.Ordinal) == true,
+                "The isolated release-history error was not exposed.");
+            AssertEqual<string?>(null, status.Error, "A release-history error leaked into the core update error.");
+        }
+
+        using (var service = new UpdateService(
+                   Settings(),
+                   log,
+                   Path.Combine(root, "bounded-failure"),
+                   () => nowUtc,
+                   _ => candidateWithCatalog,
+                   fetchReleaseCatalog: (_, _) => throw new HttpRequestException(new string('错', 5000))))
+        {
+            var status = service.CheckForUpdates();
+            AssertEqual(true, status.Ok, "An oversized release-history error failed the core update check.");
+            AssertEqual(true, Encoding.UTF8.GetByteCount(status.ReleaseHistoryError ?? "") <= 4 * 1024,
+                "A release-history diagnostic exceeded its persisted/API UTF-8 bound.");
+        }
+
+        using (var service = new UpdateService(
+                   Settings(),
+                   log,
+                   Path.Combine(root, "legacy-manifest"),
+                   () => nowUtc,
+                   _ => Candidate()))
+        {
+            var status = service.CheckForUpdates();
+            AssertEqual(true, status.Ok, "A legacy manifest without catalog metadata failed the core update check.");
+            AssertEqual(true, status.HasUpdate, "A legacy manifest without catalog metadata hid an available update.");
+            AssertEqual("unavailable", status.ReleaseHistoryState,
+                "A legacy manifest without catalog metadata did not report unavailable history.");
+            AssertEqual(0, status.AvailableReleases.Count,
+                "A legacy manifest without catalog metadata fabricated release history.");
+        }
+    }
+    finally
+    {
+        Directory.Delete(root, recursive: true);
+    }
+}
+
+static void VerifyCachedReleaseHistoryValidation()
+{
+    var root = Path.Combine(Path.GetTempPath(), $"mystia-update-history-cache-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(root);
+    var log = Logger.CreateLogSource("update-history-cache-smoke");
+    var nowUtc = new DateTime(2026, 8, 12, 1, 2, 3, DateTimeKind.Utc);
+    try
+    {
+        var validRoot = Path.Combine(root, "valid");
+        var validState = AvailableState("available", nowUtc);
+        validState.CatalogAsset = "update-catalog.json";
+        validState.CatalogSha256 = new string('b', 64);
+        validState.CatalogSize = 1024;
+        validState.ReleaseHistoryState = "ready";
+        validState.ReleaseHistoryTag = "v1.2.4";
+        validState.ReleaseCatalog = Catalog(
+            "1.2.4",
+            new[]
+            {
+                CatalogRelease("1.2.3", "stable"),
+                CatalogRelease("1.2.4", "stable"),
+            });
+        WriteUpdateState(validRoot, validState);
+        using (var validService = NewRecoveryService(validRoot, nowUtc, log))
+        {
+            var status = validService.GetStatus();
+            AssertEqual("ready", status.ReleaseHistoryState,
+                "A catalog cache with complete manifest identity was rejected.");
+            AssertEqual(1, status.AvailableReleases.Count,
+                "A valid catalog cache did not expose the release after the current version.");
+        }
+
+        var unboundRoot = Path.Combine(root, "unbound");
+        var unboundState = AvailableState("available", nowUtc);
+        unboundState.ReleaseHistoryState = "ready";
+        unboundState.ReleaseHistoryTag = "v1.2.4";
+        unboundState.ReleaseCatalog = validState.ReleaseCatalog;
+        WriteUpdateState(unboundRoot, unboundState);
+        using (var unboundService = NewRecoveryService(unboundRoot, nowUtc, log))
+        {
+            var status = unboundService.GetStatus();
+            AssertEqual("failed", status.ReleaseHistoryState,
+                "A catalog cache without manifest size/hash identity was accepted.");
+            AssertEqual(0, status.AvailableReleases.Count,
+                "An unbound catalog cache exposed unverified release notes.");
+            AssertEqual(true, status.ReleaseHistoryError?.Contains("缺少 catalog", StringComparison.Ordinal) == true,
+                "The rejected catalog cache did not preserve a bounded diagnostic.");
+        }
+    }
+    finally
+    {
+        Logger.Sources.Remove(log);
+        Directory.Delete(root, recursive: true);
+    }
 }
 
 static void VerifyCachedStateValidation()
@@ -645,11 +867,11 @@ static UpdateServiceSettings Settings()
     };
 }
 
-static UpdateCandidate Candidate()
+static UpdateCandidate Candidate(bool withCatalog = false)
 {
     return new UpdateCandidate
     {
-        Manifest = Manifest(version: "1.2.4", tag: "v1.2.4"),
+        Manifest = Manifest(version: "1.2.4", tag: "v1.2.4", withCatalog: withCatalog),
         ReleaseUrl = "https://example.test/releases/v1.2.4",
         PublishedAtUtc = new DateTime(2026, 7, 14, 0, 0, 0, DateTimeKind.Utc),
         PackageDownloadUrl = "https://example.test/releases/v1.2.4/package.zip",
@@ -700,7 +922,11 @@ static UpdateManifest Manifest(
     string tag = "v1.2.3",
     string channel = "stable",
     string? packageSha256 = null,
-    long packageSize = 42)
+    long packageSize = 42,
+    bool withCatalog = false,
+    string? catalogAsset = null,
+    string? catalogSha256 = null,
+    long? catalogSize = null)
 {
     return new UpdateManifest
     {
@@ -711,7 +937,58 @@ static UpdateManifest Manifest(
         PackageAsset = "mystia-steward-companion-bepinex.zip",
         PackageSha256 = packageSha256 ?? new string('a', 64),
         PackageSize = packageSize,
+        CatalogAsset = catalogAsset ?? (withCatalog ? "update-catalog.json" : ""),
+        CatalogSha256 = catalogSha256 ?? (withCatalog ? new string('b', 64) : ""),
+        CatalogSize = catalogSize ?? (withCatalog ? 1024 : 0),
     };
+}
+
+static UpdateCatalog Catalog(string ownerVersion, IEnumerable<UpdateCatalogRelease> releases)
+{
+    return new UpdateCatalog
+    {
+        SchemaVersion = 1,
+        GeneratedAtUtc = "2026-08-12T01:00:00Z",
+        Repository = "blockshy/mystia-steward-companion",
+        OwnerVersion = ownerVersion,
+        OwnerTag = $"v{ownerVersion}",
+        Releases = releases.ToList(),
+    };
+}
+
+static UpdateCatalogRelease CatalogRelease(
+    string version,
+    string channel,
+    string? releaseUrl = null,
+    string? tag = null,
+    string? notesMarkdown = null)
+{
+    var releaseTag = tag ?? $"v{version}";
+    return new UpdateCatalogRelease
+    {
+        Version = version,
+        Tag = releaseTag,
+        Title = $"v{version}",
+        Channel = channel,
+        PublishedAtUtc = "2026-08-12T00:00:00Z",
+        ReleaseUrl = releaseUrl ?? $"https://github.com/blockshy/mystia-steward-companion/releases/tag/v{version}",
+        NotesMarkdown = notesMarkdown ?? $"## v{version}\n\n- smoke test",
+    };
+}
+
+static void ExpectInvalidCatalog(
+    UpdateCatalog catalog,
+    UpdateManifest manifest,
+    string expectedMessage)
+{
+    try
+    {
+        UpdateService.ValidateCatalog(catalog, manifest);
+        throw new InvalidOperationException($"Catalog containing invalid {expectedMessage} was accepted.");
+    }
+    catch (InvalidOperationException ex) when (ex.Message.Contains(expectedMessage, StringComparison.Ordinal))
+    {
+    }
 }
 
 static void ExpectInvalidManifest(UpdateManifest manifest, string expectedMessage)

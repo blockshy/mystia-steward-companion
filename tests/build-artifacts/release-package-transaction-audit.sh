@@ -99,6 +99,7 @@ mkdir -p \
 printf 'old-package\n' >"$SUCCESS_ROOT/mods/bepinex/dist/mystia-steward-companion/old.dll"
 printf 'old-apk\n' >"$SUCCESS_ROOT/mods/bepinex/dist/mystia-steward-companion-android-arm64-v8a.apk"
 printf 'old-manifest\n' >"$SUCCESS_ROOT/mods/bepinex/dist/update-manifest.json"
+printf 'old-catalog\n' >"$SUCCESS_ROOT/mods/bepinex/dist/update-catalog.json"
 printf 'old-tar\n' >"$SUCCESS_ROOT/mods/bepinex/dist/mystia-steward-companion-bepinex.tar.gz"
 printf 'old-zip\n' >"$SUCCESS_ROOT/mods/bepinex/dist/mystia-steward-companion-companion-windows-x64.zip"
 
@@ -113,6 +114,7 @@ assert_file_content "$SUCCESS_DIST/mystia-steward-companion-companion-windows-x6
 [[ -s "$SUCCESS_DIST/mystia-steward-companion-bepinex.zip" ]] || fail "canonical ZIP is missing"
 [[ ! -e "$SUCCESS_DIST/mystia-steward-companion-android-arm64-v8a.apk" ]] || fail "stale APK survived"
 [[ ! -e "$SUCCESS_DIST/update-manifest.json" ]] || fail "stale update manifest survived"
+[[ ! -e "$SUCCESS_DIST/update-catalog.json" ]] || fail "stale update catalog survived"
 [[ ! -e "$SUCCESS_DIST/mystia-steward-companion-bepinex.tar.gz" ]] || fail "stale tar archive survived"
 [[ ! -e "$SUCCESS_DIST/mystia-steward-companion-companion-windows-x64" ]] || fail "legacy directory survived"
 [[ ! -e "$SUCCESS_DIST/mystia-steward-companion-companion-windows-x64.zip" ]] || fail "legacy ZIP survived"

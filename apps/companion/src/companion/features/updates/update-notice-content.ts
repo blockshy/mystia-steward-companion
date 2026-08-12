@@ -16,6 +16,7 @@ export interface UpdateNoticeContent {
 
 export function getUpdateNoticeContent(status: UpdateStatusResponse): UpdateNoticeContent {
   const version = status.latestTag || status.latestVersion;
+  const releaseCount = status.availableReleases?.length ?? 0;
   if (status.installState === 'failed') {
     return {
       kind: 'install-failed',
@@ -54,7 +55,9 @@ export function getUpdateNoticeContent(status: UpdateStatusResponse): UpdateNoti
   return {
     kind: 'available',
     title: `发现游戏端更新 ${version}`,
-    detail: '这是所连接游戏主机上的 Mod 更新，可在更新设置中查看版本并手动下载。',
+    detail: releaseCount > 1
+      ? `本次跨越 ${releaseCount} 个公开版本，可在更新设置中逐一查看更新内容并手动下载。`
+      : '这是所连接游戏主机上的 Mod 更新，可在更新设置中查看版本并手动下载。',
   };
 }
 

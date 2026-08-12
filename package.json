@@ -48,7 +48,7 @@
     "audit:build-artifacts": "node tests/build-artifacts/build-artifacts-audit.mjs",
     "audit:release-package": "bash tests/build-artifacts/release-package-transaction-audit.sh",
     "audit:android-apk-transaction": "node tests/build-artifacts/android-apk-transaction-audit.mjs",
-    "audit:release-policy": "node tests/build-artifacts/release-script-policy-audit.mjs",
+    "audit:release-policy": "node tests/update-catalog/update-catalog-audit.mjs && node tests/build-artifacts/release-script-policy-audit.mjs",
     "audit:toolchain": "node tests/build-toolchain/build-toolchain-policy-audit.mjs",
     "test:dotnet6-harmony": "node scripts/run-dotnet6-harmony-smoke.mjs all",
     "preview": "vite preview --config apps/companion/vite.config.ts",
@@ -70,6 +70,7 @@
     "clsx": "^2.1.1",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
+    "react-markdown": "^10.1.0",
     "tailwindcss": "^4.2.2"
   },
   "devDependencies": {

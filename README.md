@@ -14,7 +14,7 @@
 - **任务与邀请**：查看可接取及进行中的任务，并管理当天的稀客邀请名单；两个模块默认关闭。
 - **特殊经营支持**：支持怪诞料理大赛、幽幽子挑战与重修、寻找瑞灵踪迹、月都试炼 1/2/3、血池地狱等场景。
 - **多设备连接**：游戏电脑负责运行 Mod，Windows 或 Android 设备可在可信局域网内连接；多设备时由用户指定主设备配置。
-- **日志与更新**：提供运行日志、诊断包和正式版本更新检查，便于排查问题和升级。
+- **日志与更新**：提供运行日志、诊断包、正式版本更新检查和跨版本更新说明，便于排查问题和升级。
 
 自动化、运行时库存修改和部分游戏界面辅助会改变游戏运行状态。首次使用前建议备份存档，并先熟悉对应设置和帮助说明。
 
@@ -85,7 +85,9 @@
 | HarmonyX | 运行时方法补丁 | MIT | [BepInEx/HarmonyX](https://github.com/BepInEx/HarmonyX) |
 | Il2CppInterop | CoreCLR 与 Unity IL2CPP 运行时互操作 | LGPL-3.0-only | [BepInEx/Il2CppInterop](https://github.com/BepInEx/Il2CppInterop) |
 | Tauri 及官方插件 | Windows / Android 伴随窗口和系统能力 | MIT OR Apache-2.0 | [tauri-apps/tauri](https://github.com/tauri-apps/tauri)、[plugins-workspace](https://github.com/tauri-apps/plugins-workspace) |
+| windows-sys | 独立 Windows 更新程序的 DPI 与原生控件接入 | MIT OR Apache-2.0 | [microsoft/windows-rs](https://github.com/microsoft/windows-rs) |
 | React / React DOM | 伴随窗口用户界面 | MIT | [facebook/react](https://github.com/facebook/react) |
+| react-markdown | Release Note 的受限 Markdown 展示 | MIT | [remarkjs/react-markdown](https://github.com/remarkjs/react-markdown) |
 | Mantine | 界面组件与 React Hooks | MIT | [mantinedev/mantine](https://github.com/mantinedev/mantine) |
 | Tailwind CSS | 界面样式与构建插件 | MIT | [tailwindlabs/tailwindcss](https://github.com/tailwindlabs/tailwindcss) |
 | Tabler Icons | 界面图标 | MIT | [tabler/tabler-icons](https://github.com/tabler/tabler-icons) |

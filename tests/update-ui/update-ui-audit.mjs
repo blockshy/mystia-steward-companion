@@ -129,15 +129,34 @@ const failedInstallNotice = getUpdateNoticeContent({
   installMessage: 'mock install failed',
   error: 'mock install failed',
   staged: true,
+  availableReleases: [],
 });
 assert.equal(failedInstallNotice.kind, 'install-failed');
 assert.equal(failedInstallNotice.title, '游戏端更新 v1.2.1 安装失败');
 assert.equal(failedInstallNotice.detail, 'mock install failed');
 
-const [managerSource, noticeSource, rustSource, capabilitySource, mockSource] = await Promise.all([
+const existingHostNotice = getUpdateNoticeContent({
+  state: 'available',
+  installState: '',
+  latestTag: 'v1.3.1',
+  latestVersion: '1.3.1',
+  installMessage: '',
+  error: null,
+  staged: false,
+});
+assert.equal(existingHostNotice.kind, 'available');
+assert.equal(
+  existingHostNotice.detail,
+  '这是所连接游戏主机上的 Mod 更新，可在更新设置中查看版本并手动下载。',
+  'A 1.3.0 host response without optional release-history fields broke the existing latest-version notice.',
+);
+
+const [managerSource, noticeSource, settingsSource, rustSource, updaterSource, capabilitySource, mockSource] = await Promise.all([
   readFile(new URL('../../apps/companion/src/companion/features/updates/useUpdateManager.ts', import.meta.url), 'utf8'),
   readFile(new URL('../../apps/companion/src/companion/features/updates/UpdateNoticeBar.tsx', import.meta.url), 'utf8'),
+  readFile(new URL('../../apps/companion/src/companion/features/updates/UpdateSettingsPanel.tsx', import.meta.url), 'utf8'),
   readFile(new URL('../../apps/companion/src-tauri/src/app.rs', import.meta.url), 'utf8'),
+  readFile(new URL('../../apps/companion/src-tauri/src/bin/updater.rs', import.meta.url), 'utf8'),
   readFile(new URL('../../apps/companion/src-tauri/capabilities/default.json', import.meta.url), 'utf8'),
   readFile(new URL('../../scripts/mock-local-api.mjs', import.meta.url), 'utf8'),
 ]);
@@ -145,12 +164,29 @@ const [managerSource, noticeSource, rustSource, capabilitySource, mockSource] = 
 assert.match(managerSource, /visibilitychange/);
 assert.match(managerSource, /getUpdateStatusPollInterval/);
 assert.match(noticeSource, /getUpdateNoticeContent/);
+assert.match(settingsSource, /data-update-settings-panel/);
+assert.match(settingsSource, /ReactMarkdown/);
+assert.match(settingsSource, /skipHtml/);
+assert.match(settingsSource, /manager\.openReleasePage\(release\.releaseUrl\)/);
+assert.doesNotMatch(settingsSource, /dangerouslySetInnerHTML/);
 assert.doesNotMatch(rustSource, /open_external_url/);
 assert.match(rustSource, /tauri_plugin_opener::init\(\)/);
 assert.match(capabilitySource, /opener:allow-open-url/);
 assert.match(capabilitySource, /mystia-steward-companion\/releases\/\*/);
+assert.match(updaterSource, /windows_subsystem = "windows"/);
+assert.match(updaterSource, /SetProcessDpiAwarenessContext/);
+assert.match(updaterSource, /DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2/);
+assert.match(updaterSource, /AreDpiAwarenessContextsEqual/);
+assert.match(updaterSource, /SystemParametersInfoForDpi/);
+assert.match(updaterSource, /WM_DPICHANGED/);
+assert.match(updaterSource, /PROGRESS_CLASSW/);
+assert.match(updaterSource, /PBM_SETPOS/);
+assert.doesNotMatch(updaterSource, /DEFAULT_GUI_FONT/);
+assert.doesNotMatch(updaterSource, /CreateSolidBrush/);
+assert.doesNotMatch(updaterSource, /paint_progress/);
 assert.doesNotMatch(mockSource, /checkedAtUtc/);
 assert.match(mockSource, /lastSuccessAtUtc/);
 assert.match(mockSource, /nextCheckAtUtc/);
+assert.match(mockSource, /availableReleases/);
 
 console.log('update UI protocol audit passed');

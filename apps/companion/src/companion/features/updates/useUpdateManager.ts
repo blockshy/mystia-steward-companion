@@ -30,7 +30,7 @@ export interface UpdateManager {
   check: () => Promise<void>;
   download: () => Promise<void>;
   install: () => Promise<void>;
-  openReleasePage: () => Promise<void>;
+  openReleasePage: (releaseUrl?: string) => Promise<void>;
   snoozeNotice: () => void;
 }
 
@@ -214,11 +214,12 @@ export function useUpdateManager({
     [apiToken, endpoint, runAction],
   );
 
-  const openReleasePage = useCallback(async () => {
-    if (!currentStatus?.releaseUrl) return;
+  const openReleasePage = useCallback(async (releaseUrl?: string) => {
+    const targetUrl = releaseUrl?.trim() || currentStatus?.releaseUrl;
+    if (!targetUrl) return;
     try {
       setError('');
-      await openProjectReleaseUrl(currentStatus.releaseUrl);
+      await openProjectReleaseUrl(targetUrl);
     } catch (openError) {
       setError(`无法打开发布页：${openError instanceof Error ? openError.message : String(openError)}`);
     }

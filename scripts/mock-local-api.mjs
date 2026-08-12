@@ -244,7 +244,7 @@ let nextBepInExConsoleFailure = null;
 
 const updateStatus = {
   ok: true,
-  currentVersion: '1.0.9-mock',
+  currentVersion: '1.0.8',
   enabled: true,
   autoCheck: true,
   includePrerelease: false,
@@ -260,6 +260,29 @@ const updateStatus = {
   releaseUrl: 'https://github.com/blockshy/mystia-steward-companion/releases/tag/v1.0.10',
   packageAsset: 'mystia-steward-companion-bepinex.zip',
   packageSize: 27 * 1024 * 1024,
+  releaseHistoryState: 'ready',
+  releaseHistoryCheckedAtUtc: nowIso(),
+  releaseHistoryError: null,
+  availableReleases: [
+    {
+      version: '1.0.9',
+      tag: 'v1.0.9',
+      title: 'v1.0.9 · 任务与推荐优化',
+      channel: 'stable',
+      publishedAtUtc: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+      releaseUrl: 'https://github.com/blockshy/mystia-steward-companion/releases/tag/v1.0.9',
+      notesMarkdown: '## 新增功能\n\n- 完善任务列表读取。\n- 优化稀客邀请页面。',
+    },
+    {
+      version: '1.0.10',
+      tag: 'v1.0.10',
+      title: 'v1.0.10 · 更新体验改进',
+      channel: 'stable',
+      publishedAtUtc: nowIso(),
+      releaseUrl: 'https://github.com/blockshy/mystia-steward-companion/releases/tag/v1.0.10',
+      notesMarkdown: '## 体验优化\n\n- 逐版本展示更新说明。\n- 修复独立更新程序在高 DPI 下文字模糊。\n\n[项目主页](https://github.com/blockshy/mystia-steward-companion)\n\n<script>alert("blocked")</script>',
+    },
+  ],
   downloadedVersion: '',
   downloadedAtUtc: '',
   staged: false,
