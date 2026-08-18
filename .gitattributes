@@ -1,0 +1,2 @@
+# Tauri rewrites this manifest with LF line endings when synchronizing managed features.
+apps/companion/src-tauri/Cargo.toml text eol=lf

@@ -1,4 +1,3 @@
-import java.io.FileInputStream
 import java.util.Properties
 
 plugins {
@@ -17,7 +16,12 @@ val tauriProperties = Properties().apply {
 val releaseKeystorePropertiesFile = rootProject.file("keystore.properties")
 val releaseKeystoreProperties = Properties().apply {
     if (releaseKeystorePropertiesFile.exists()) {
-        load(FileInputStream(releaseKeystorePropertiesFile))
+        releaseKeystorePropertiesFile.inputStream().use { load(it) }
+        val allowedKeys = setOf("keyAlias", "storePassword", "keyPassword", "storeFile")
+        val unexpectedKeys = stringPropertyNames().filterNot(allowedKeys::contains).sorted()
+        require(unexpectedKeys.isEmpty()) {
+            "Unsupported Android signing properties in ${releaseKeystorePropertiesFile.path}: ${unexpectedKeys.joinToString(", ")}"
+        }
     }
 }
 val hasReleaseKeystore = releaseKeystorePropertiesFile.exists()
@@ -28,6 +32,7 @@ fun Properties.requiredSigningProperty(name: String): String {
 
 android {
     compileSdk = 36
+    buildToolsVersion = "35.0.0"
     namespace = "com.tyukki.mystia.steward.companion"
     defaultConfig {
         applicationId = "com.tyukki.mystia.steward.companion"
@@ -40,11 +45,9 @@ android {
         if (hasReleaseKeystore) {
             create("release") {
                 keyAlias = releaseKeystoreProperties.requiredSigningProperty("keyAlias")
-                keyPassword = releaseKeystoreProperties.getProperty("keyPassword")
-                    ?: releaseKeystoreProperties.requiredSigningProperty("password")
+                keyPassword = releaseKeystoreProperties.requiredSigningProperty("keyPassword")
                 storeFile = rootProject.file(releaseKeystoreProperties.requiredSigningProperty("storeFile"))
-                storePassword = releaseKeystoreProperties.getProperty("storePassword")
-                    ?: releaseKeystoreProperties.requiredSigningProperty("password")
+                storePassword = releaseKeystoreProperties.requiredSigningProperty("storePassword")
             }
         }
     }

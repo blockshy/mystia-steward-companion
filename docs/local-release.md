@@ -1,341 +1,349 @@
-# 本地构建与发布方案
+# 构建与发布流程
 
-## 发布方式
+## 流程边界
 
-本项目不再使用 GitHub Actions 自动构建 Release。发布采用：
+项目把日常构建与正式发布明确分开：
 
-```text
-本机 Windows 构建完整产物 -> GitHub CLI 上传 Release
-```
+- 日常开发、功能验证和预览版仍在本机完成。
+- 正式稳定版只允许从 `main` 分支手动触发 `.github/workflows/release.yml`。
+- workflow 不修改版本号、不提交代码、不合并分支，也不响应 push、tag 或 pull request。
+- 正式发布由一个 GitHub-hosted `windows-2022` job 依次构建 Windows/Mod 与 Android 产物；Linux jobs
+  负责无密钥输入验证、资产汇总、校验和、provenance 和最终 create-only 发布，不在 Linux 编译产品。
+- 发布脚本只创建新 tag 和新 Release；已存在同名 tag 或 Release 时直接停止，不提供覆盖、编辑或删除路径。
 
-原因是 Mod 编译依赖 BepInEx、Il2CppInterop 和 Unity interop DLL。这些 DLL 不提交到仓库，也不上传到 GitHub runner。
+根目录 `toolchain.lock.json` 是 Linux、Windows 与 CI 共用的唯一构建版本基线。选择文件、workflow
+和脚本只是它的受控投影，不允许使用全局 pnpm、较新 SDK、`stable` 或 `latest` 回退。
 
-## 本机要求
+## 日常本地构建
 
-发布机器需要是 Windows，并预装：
+Windows 与 Linux 的基础版本为：
 
-- Node.js `24.19.0`、Corepack `0.35.0`，并通过 Corepack 使用仓库固定的 `pnpm@10.10.0`。
-- .NET SDK `10.0.110`。Mod 发布目标仍是 `net6.0`，不要为此安装已停止支持的 .NET 6 SDK；
-  运行一般 net6 smoke 时可在当前 PowerShell 设置 `$env:DOTNET_ROLL_FORWARD = "Major"`。
-- Rust/Cargo `1.97.1`，通过 rustup 安装；不要用会随时间变化的 `stable` 作为发布工具链。
-- Microsoft C++ Build Tools 2022 或 Visual Studio “使用 C++ 的桌面开发”组件。
-- Microsoft Edge WebView2 Runtime。
-- PowerShell 7。
-- GitHub CLI，并完成 `gh auth login`。
-- 需要完整复现三项真实 Harmony/MonoMod 动态补丁 smoke 时安装 Docker Desktop，并运行
-  `corepack pnpm test:dotnet6-harmony` 使用锁定的 .NET 6 SDK 容器；不要删除这些运行时探针。
+- Node.js `24.19.0`
+- Corepack `0.35.0`
+- pnpm `10.10.0`（只能通过 Corepack 调用）
+- .NET SDK `10.0.110`
+- Rust/Cargo `1.97.1`
 
-根目录 `toolchain.lock.json` 是上述版本的唯一基线，`.nvmrc`、`global.json` 和
-`rust-toolchain.toml` 会分别选择 Node、.NET SDK 与 Rust；`package.json` 继续以版本加完整性哈希锁定
-pnpm。正式构建不接受较新补丁、全局 pnpm 或缺失 Corepack 的回退。Windows x64 初始化建议使用同一套
-Node 安装方式，不要同时叠加官方 MSI 和 nvm-windows；安装完成后执行：
+Windows 还需要 PowerShell `7.6.4`、GitHub CLI `2.97.0`、Microsoft C++ Build Tools 2022 和
+WebView2 Runtime。正式 workflow 不使用 runner 预装的 PowerShell/gh：每个 job 都先按
+`toolchain.lock.json.releaseToolArchives` 锁定的官方 URL、字节数和 SHA-256 下载对应 Linux/Windows x64
+归档，事务式安装后再精确检查版本。runner 预装版本不参与选择；归档身份、平台或内容不一致时直接停止。
+事务目录就是调用前不存在的最终安装目录，只有完整复制、版本自检和 PATH 提交全部成功后才生效；Windows 不在
+执行 staged `pwsh.exe` / `gh.exe` 后重命名其父目录，避免可执行文件扫描或句柄释放窗口导致 `EPERM`。
+Corepack 安装器先下载锁定版本的 npm tarball，再按仓库记录的 SHA-512 integrity 校验，并安装到调用者指定的
+全新隔离目录；正式 workflow 将该目录写入后续 step 的 PATH，不覆盖 runner 预装的 Yarn、pnpm 或 Corepack，
+也不执行 `corepack enable`。本机已经安装精确 Corepack 时无需运行安装器；首次需要隔离安装时执行：
 
 ```powershell
-npm install --global corepack@0.35.0
-corepack enable
+$corepackParent = Join-Path $env:LOCALAPPDATA "mystia-steward-companion\toolchain"
+New-Item -ItemType Directory -Force $corepackParent | Out-Null
+$corepackRoot = Join-Path $corepackParent "corepack-0.35.0"
+node scripts/install-locked-corepack.mjs --install-root $corepackRoot
+$env:PATH = "$corepackRoot;$env:PATH"
 corepack install
 rustup toolchain install 1.97.1 --profile minimal
 corepack pnpm toolchain:check
 ```
 
-如果 Node 官方 MSI 自带的 Corepack 阻止全局升级，先在 Node 安装程序的“修改”界面移除 Corepack
-Manager 组件，再安装上方精确版本。`.NET SDK 10.0.110` 建议使用独立 x64 SDK 安装包，避免 Visual
-Studio 更新替换它。检查结果必须依次为 Node `v24.19.0`、Corepack `0.35.0`、pnpm `10.10.0`、
-.NET SDK `10.0.110`、rustc/cargo `1.97.1`；发布脚本会再次执行同一硬门禁。
+`--install-root` 必须是尚不存在的目录；版本升级时使用新的版本目录，不覆盖原目录。
 
-如需同时发布 Android APK，还需要 Android Studio/SDK/NDK、JDK 17、Android Rust targets，并完成 APK 签名配置。Android APK 是 Tauri mobile 的单独构建产物，不从 Windows EXE 转换。
+Mod 仍以 `net6.0` 为目标；这不表示产品构建需要安装已停止支持的 .NET 6 SDK。真实
+Harmony/MonoMod 动态探针按 `docs/development-conventions.md` 使用仓库锁定的 .NET 6 容器。
 
-`mods/bepinex/References/` 需要包含：
+常规验证：
+
+```powershell
+corepack pnpm install --frozen-lockfile
+corepack pnpm lint
+corepack pnpm build
+cargo check --manifest-path apps/companion/src-tauri/Cargo.toml
+dotnet build mods/bepinex/MystiaStewardCompanion.BepInEx.csproj -c Release
+```
+
+Windows 完整发布包构建：
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
+```
+
+该命令只生成本地资产，不创建 tag 或 Release。构建缓存按仓库统一配额管理，可用
+`pnpm artifacts:report` 和 `pnpm artifacts:prune -- --dry-run` 预先检查。
+
+## 锁定的 BepInEx 构建引用
+
+真实 DLL 不提交到公开源码仓库。`mods/bepinex/References/references.lock.json` 锁定私有 bundle、
+来源身份、bundle 大小与 SHA-256，以及 7 个正式 DLL 各自的大小与 SHA-256。详细恢复命令见
+`mods/bepinex/References/README.md`。
+
+正式 bundle 位于私有仓库 `blockshy/mystia-steward-build-assets`：
+
+- tag：`bepinex-783-tmi-91ce5ae3-995d1a08-v2`
+- asset：`mystia-steward-build-references.zip`
+
+恢复脚本是离线严格校验器，不自行联网，也不尝试当前游戏目录、其他 BepInEx 版本、cache 或旧
+interop 作为替代来源。恢复后可单独验证：
+
+```powershell
+corepack pnpm references:verify
+```
+
+## Android 本机构建
+
+Android 构建在基础版本外精确锁定：
+
+- Eclipse Temurin JDK `21.0.4`
+- Android compile SDK `36`
+- Android target SDK `36`
+- Gradle `8.14.3`（wrapper distribution SHA-256 同步锁定）
+- Android Build Tools `35.0.0`
+- Android NDK SDK 包坐标 `30.0.14904198`（r30 beta1；包内 `Pkg.Revision` 必须为
+  `30.0.14904198-beta1`）
+- Rust targets：`aarch64-linux-android`、`armv7-linux-androideabi`
+
+先确认 `JAVA_HOME` 与必填的 `ANDROID_HOME` 指向上述工具链，并把必填的 `NDK_HOME` 指向
+`$ANDROID_HOME/ndk/30.0.14904198`；若同时设置 `ANDROID_SDK_ROOT`、`ANDROID_NDK`、
+`ANDROID_NDK_HOME` 或 `ANDROID_NDK_ROOT`，这些别名也必须分别与对应的锁定目录一致。Windows 示例：
+
+```powershell
+$env:NDK_HOME = Join-Path $env:ANDROID_HOME "ndk\30.0.14904198"
+rustup target add aarch64-linux-android armv7-linux-androideabi --toolchain 1.97.1
+node scripts/check-build-toolchain.mjs android
+```
+
+本机签名仍使用被 Git 忽略的
+`apps/companion/src-tauri/gen/android/keystore.properties`。生成签名 APK：
+
+```powershell
+corepack pnpm tauri:android:apk:signed
+```
+
+脚本会验证两个 APK 的签名证书 SHA-256 必须是：
 
 ```text
-BepInEx.Core.dll
-BepInEx.Unity.IL2CPP.dll
-0Harmony.dll
-Il2CppInterop.Runtime.dll
-Il2Cppmscorlib.dll
-UnityEngine.CoreModule.dll
-UnityEngine.InputLegacyModule.dll
+15:40:B6:09:D5:CD:54:E0:6A:84:29:BB:0A:AA:2C:C4:B5:11:E0:55:56:5F:DA:C9:3A:CF:20:6C:17:91:D1:FB
 ```
 
-## 版本号与发布通道
+该值是最终 APK 的签名证书指纹，不是 keystore 文件本身的 SHA-256。只有两个 ABI 均通过构建、
+签名与证书校验，并由锁定 Build Tools `35.0.0` 的 `aapt2 dump badging` 证明 applicationId、项目
+`versionName`、唯一十进制 `versionCode` 和单一 `native-code` 分别精确匹配，而且不存在额外 release
+signed APK 后，脚本才会原子替换 `mods/bepinex/dist` 中的 Android 资产。`versionCode` 遵循 Tauri v2 的
+`major * 1_000_000 + minor * 1_000 + patch`；预览版 `X.Y.Z-preview.N` 使用同一个 `X.Y.Z` 核心 code，
+minor/patch 超过 `999`、code 为 `0` 或超过 Android 上限 `2100000000` 时停止。
 
-发布前先同步项目内版本号。脚本会同时修改 `package.json`、`tauri.conf.json`、`Cargo.toml`、`Cargo.lock` 和 Mod 的 `PluginVersion`：
+完整 Windows + Android 本机构建：
 
 ```powershell
-pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\set-version.ps1 -Version 1.1.0
+pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1 -BuildAndroidApk
 ```
 
-Linux 开发环境可使用等价脚本：
+构建成功不等于 LAN 功能验证完成。正式发布前仍应在 Android 真机检查连接、Token、前后台恢复、
+Wi-Fi 重连和 automation lease；没有真机时必须明确记录“仅构建、签名和包元数据通过”。
 
-```bash
-bash mods/bepinex/tools/set-version.sh 1.1.0
-```
+## 一次性 GitHub 配置
 
-自动更新发布只支持两种公开通道：
+这些设置需要仓库管理员在 GitHub 网页完成；workflow 不创建 App、Environment 或长期凭据。
 
-- 稳定版：`X.Y.Z`，例如 `1.1.0`，发布为普通 GitHub Release。
-- 预览版：`X.Y.Z-preview.N`，例如 `1.1.0-preview.1`，发布为 GitHub Prerelease。
+### 私有构建资产与只读 GitHub App
 
-`publish-release.ps1` 会强制校验通道和 tag：
+1. 保持 `blockshy/mystia-steward-build-assets` 为私有仓库，并为其 Release 启用 Immutable Releases。
+2. 创建专用只读 GitHub App，Repository permissions 仅授予 `Contents: Read-only` 与
+   `Administration: Read-only`。后者只用于在公开发布前读取 Immutable Releases 开关，不允许修改仓库设置。
+3. 只把该 App 安装到 `mystia-steward-build-assets` 和 `mystia-steward-companion` 两个选定仓库，
+   不要授予账户下的全部仓库。workflow 为每次用途再次向下收窄 token：私有仓库只取 `Contents: read`，
+   主仓库只取 `Administration: read`。
+4. 生成 App private key。workflow 每次只用 App ID 和 private key 换取短期 token，不保留 PAT，也不把引用 bundle 上传为 Actions artifact/cache。
 
-- `v1.1.0-preview.1` 必须带 `-Prerelease` 或 `-Preview`。
-- `v1.1.0` 不能带 `-Prerelease`。
-- 其他后缀，例如 `alpha`、`beta`、`rc`，不进入自动更新发布流程。
-- `-Notes` 必须提供非空的本版本用户可见更新说明；覆盖已有 Release 时可省略并复用已有正文，但已有正文也不能为空。
+### 两道 Environment 审批
 
-发布脚本会在发布机上使用已经登录的 GitHub CLI 分页读取公开 Release 历史，生成累计的
-`update-catalog.json`。这次 GitHub REST API 调用只发生在发布机，并使用认证额度；用户端更新检测不会
-调用 GitHub REST API，避免中国大陆共享 VPN 出口节点的未认证限额影响更新。catalog 生成、历史身份校验
-或说明大小校验失败时，脚本会在创建或覆盖 Release 前停止。
+在主仓库创建以下 Environments，并把 deployment branch 限制为 `main`：
 
-版本号同步后先提交到 `dev`：
+- `official-release-build`：无密钥验证通过后、下载私有 References 和物化 Android 签名前审批。
+- `official-release`：全部 7 项资产完成汇总、SHA-256 校验和 provenance 后，创建正式 Release 前审批。
+
+两个 Environment 都应配置 required reviewers。若仓库目前只有发起 workflow 的同一位管理员，需要允许
+发起者审批；若启用“Prevent self-review”，必须先增加另一位可信维护者，否则发布会永久等待。同时关闭
+`Allow administrators to bypass configured protection rules`，否则管理员可绕过任一道审批。workflow 会在
+构建前读取并核对 required reviewer、禁止管理员绕过和仅 `main` 的 branch policy；环境缺失或配置漂移时
+直接停止。
+
+在主仓库 `Settings -> General -> Releases` 中启用 **Immutable Releases**。该设置只影响此后发布的
+Release；正式 publish job 会使用上面的只读 App 在任何远端写入前核对开关，并在发布后再次要求新 Release
+实际为 immutable。不要用 PAT 或给 App 写入 `Administration` 权限。
+
+建议同时在主仓库 Actions 设置中启用 **Require actions to be pinned to a full-length commit SHA**。
+当前 workflow 与仓库审计已经逐项固定 full SHA；仓库级策略可阻止未来提交重新引入浮动 action tag。
+
+### `official-release-build` Secrets
+
+GitHub App 两项：
+
+| Secret | 内容 |
+| --- | --- |
+| `BUILD_ASSETS_APP_ID` | 只读 GitHub App 的 Client ID（Secret 名称保持不变） |
+| `BUILD_ASSETS_APP_PRIVATE_KEY` | 该 App 生成的完整 PEM private key |
+
+Android 五项：
+
+| Secret | 内容 |
+| --- | --- |
+| `MYSTIA_ANDROID_KEYSTORE_BASE64` | 发布 keystore 原始字节的单行 canonical Base64 |
+| `MYSTIA_ANDROID_KEYSTORE_SHA256` | keystore 文件字节的 64 位小写 SHA-256 |
+| `MYSTIA_ANDROID_KEY_ALIAS` | 发布 key alias |
+| `MYSTIA_ANDROID_STORE_PASSWORD` | keystore 密码 |
+| `MYSTIA_ANDROID_KEY_PASSWORD` | key 密码；相同时仍显式填写同一值 |
+
+`MYSTIA_ANDROID_KEYSTORE_SHA256` 只保护 CI 解码出的 keystore 文件，不能填写 APK 证书指纹。APK 证书
+指纹已经锁在 `toolchain.lock.json`，构建后由 `apksigner` 独立校验。
+
+`official-release` Environment 还需配置同名的 `BUILD_ASSETS_APP_ID`（值同样为 Client ID）与
+`BUILD_ASSETS_APP_PRIVATE_KEY`。GitHub Environment Secrets 不能跨环境共享；第二份只用于生成主仓库
+`Administration: read` 的短期 policy token，不会获得 Contents 写权限。创建 Release 仍只使用该 job
+自带、仅当前仓库有效且仅 `contents: write` 的 `GITHUB_TOKEN`。
+
+Windows PowerShell 可在本地生成上表 Android 五项中的前两项值，输出后直接粘贴到 GitHub Environment
+Secret，不要写入仓库：
 
 ```powershell
-git add package.json apps\companion\src-tauri\Cargo.toml apps\companion\src-tauri\Cargo.lock apps\companion\src-tauri\tauri.conf.json mods\bepinex\src\Plugin\MystiaStewardCompanionPlugin.cs
-git commit -m "chore(release): bump version to 1.0.1"
-git push origin dev
+$keystore = "$env:USERPROFILE\.android\mystia-steward-companion-release.jks"
+[Convert]::ToBase64String([IO.File]::ReadAllBytes($keystore))
+(Get-FileHash -Algorithm SHA256 -LiteralPath $keystore).Hash.ToLowerInvariant()
 ```
 
-稳定版确认可发布后，再合并到 `main`，并在 `main` 上执行发布脚本。预览版只用于更新链路测试，通常保留在 `dev` 上打 tag 并发布 GitHub Prerelease，不合并 `main`。
+签名文件只在 runner 临时目录和被忽略的 `keystore.properties` 中短暂物化，并在 package build job 的
+`always()` 清理步骤删除。秘密不得进入日志、artifact、cache、Release 或诊断包。
 
-`publish-release.ps1` 会根据 `-Tag` 校验代码版本。如果代码仍是旧版本，脚本会失败并提示先运行 `set-version.ps1`。
+## 正式稳定版发布
 
-## 预览版更新测试流程
+### 1. 准备 `main`
 
-预览版用于验证自动更新链路，典型流程如下：
+在 `dev` 更新版本并同步以下五处：
 
-```text
-v1.1.0-preview.1
-↓ 测试检查、下载、打开安装程序并完成安装
-v1.1.0-preview.2
-↓ 修复问题后再次测试
-v1.1.0
-↓ 正式发布
-```
+- `package.json`
+- `apps/companion/src-tauri/tauri.conf.json`
+- `apps/companion/src-tauri/Cargo.toml`
+- `apps/companion/src-tauri/Cargo.lock`
+- `MystiaStewardCompanionPlugin.PluginVersion`
 
-发布预览版时，在 `dev` 上同步预览版本号、提交并推送，然后创建并推送 tag：
+运行发布前验证、提交并推送 `dev`，随后只以 fast-forward 把 `dev` 合并到 `main` 并推送。正式版本必须是
+canonical `X.Y.Z`，workflow 不接受 preview 后缀。不要预先创建或推送 tag；发布 job 会把新 tag 精确绑定到
+本次经过验证的完整 `main` SHA。
+
+### 2. 手动触发 workflow
+
+进入 GitHub `Actions -> Official stable release -> Run workflow`，分支选择 `main`，填写：
+
+- `tag`：`vX.Y.Z`
+- `title`：通常与 tag 相同
+- `notes`：面向普通用户的 Markdown Release Note
+
+workflow 会依次执行：
+
+1. 在无 secret 的 `validate` job 确认当前提交仍是 `origin/main`、版本五处一致、tag/Release 不存在，并完成 lint、build 和发布策略审计。
+2. 等待 `official-release-build` 审批。
+3. 在唯一的 `windows-2022` 构建 job 中恢复精确 References、构建 Windows/Mod 包，清理可重建的桌面缓存，
+   再临时物化签名并构建两个 Android APK；因此第一次 Environment 审批只对应一个 job。
+4. 构建 job 先分别输出四个二进制资产的 SHA-256；Linux 汇总 job 下载 artifact 后逐项对照这些 digest，
+   再生成 `update-catalog.json`、`update-manifest.json`、`SHA256SUMS.txt`，验证精确资产集合并生成 provenance。
+5. 等待 `official-release` 审批。
+6. 先原子创建精确指向该 `main` SHA 的轻量 tag，再创建无资产 Draft。两个 POST 直接响应分别锁定 exact
+   ref、positive numeric Release id 和精确 `uploads.github.com` URI template；之后不再按 tag、分页列表或
+   GraphQL 发现当前事务。7 项资产通过该 numeric-id upload URL 逐项串行 raw upload，并核对
+   `state`、`content_type`、精确大小和 GitHub `sha256:` digest；全部一致后才 PATCH 同一 numeric Draft id
+   公开为 Latest。mutation 至少间隔 1 秒且绝不重试；只读 exact-ref、direct-id 与 Latest 检查只对明确的
+   404、合法资产子集、旧 Draft 或 immutable/Latest 尚未收敛状态作有界等待，畸形响应和身份漂移立即停止。
+   最后复核 Release body、direct tag ref、完整资产 allowlist 和 immutable 状态。提交身份只以
+   `object.type=commit` 且 SHA 精确相等的 direct tag ref 为权威，不使用 Release `target_commitish` 作为证明。
+   这段远端流程由单一内部事务函数执行；`pnpm audit:release-policy` 会以分页列表始终缺少新 Draft、
+   direct-id/exact-ref/Latest 延迟可见的有状态 GitHub CLI 桩，完整演练 7 项资产和公开前停止分支。
+
+若审批期间 `main` 前进、同名 tag/Release 出现、版本或资产漂移，流程会停止；不要复用该运行的旧产物。
+中间 artifact 保留 40 天，以覆盖 workflow 最长 35 天（包括两次审批等待）的生命周期。失败后不要使用
+`Re-run failed jobs` 或单独重跑 job，因为正式
+产物名称绑定原始 run attempt；应先按 exact ref 和 numeric Release id 检查是否已留下 tag/Draft。远端完全
+未变更时重新手动 dispatch，已留下 tag 或 Draft 时停止并人工处理，脚本不会自动删除、覆盖、恢复或按 tag
+续传。正式 publish job 内的脚本已经完成 numeric-id 资产、immutable 和 Latest 终检；workflow 不在下一步
+再次用 `gh release view <tag>` 发现刚公开的对象，避免公开成功后因 tag 索引短暂延迟制造不可重跑的假失败。
+
+### 3. 正式资产
+
+正式 Release 必须恰好包含 7 项：
+
+| 资产 | 精确 `Content-Type` |
+| --- | --- |
+| `mystia-steward-companion-bepinex.zip` | `application/zip` |
+| `mystia-steward-companion-companion-windows-x64.exe` | `application/x-msdownload` |
+| `mystia-steward-companion-android-arm64-v8a.apk` | `application/vnd.android.package-archive` |
+| `mystia-steward-companion-android-armeabi-v7a.apk` | `application/vnd.android.package-archive` |
+| `update-manifest.json` | `application/json` |
+| `update-catalog.json` | `application/json` |
+| `SHA256SUMS.txt` | `text/plain; charset=utf-8` |
+
+资产名与 MIME 类型使用同一套大小写敏感规范映射；上传前、上传响应和最终远端 allowlist 都必须逐项匹配，
+未知资产名在任何远端写入前停止。
+
+`SHA256SUMS.txt` 校验前 6 项。`update-manifest.json` 的安装权威只指向 Mod ZIP；Windows 独立伴随窗口
+和 Android APK 供 B 设备连接使用，不参与 Mod 自动更新。`update-catalog.json` 只负责累计版本说明展示，
+读取失败不得改变 manifest 的下载与安装权威。当前 owner 条目的 `publishedAtUtc` 是不可变资产的准备时间；
+该版本在后续 catalog 中成为历史条目时会改用 GitHub `published_at`，因此首次进入历史列表时可能发生一次
+时间修正，但版本顺序和更新权威不受影响。
+
+## 本地预览版发布
+
+预览版仍可从已推送的 `dev` 提交在本机发布，用于验证 `preview.1 -> preview.2 -> stable` 更新链路。
+先把五处版本同步为 `X.Y.Z-preview.N`、提交并推送，然后准备 UTF-8 Release Note 文件。不要手工创建或
+推送 tag；脚本会在确认远端不存在同名 tag/Release 后创建一次。
 
 ```powershell
-pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\set-version.ps1 -Version 1.1.0-preview.1
+$tag = "v1.4.0-preview.1"
+$target = (git rev-parse HEAD).Trim().ToLowerInvariant()
+$notesFile = Join-Path $env:TEMP "mystia-release-notes.md"
+[IO.File]::WriteAllText(
+  $notesFile,
+  "预览版更新测试说明",
+  [Text.UTF8Encoding]::new($false)
+)
 
-git add package.json apps\companion\src-tauri\Cargo.toml apps\companion\src-tauri\Cargo.lock apps\companion\src-tauri\tauri.conf.json mods\bepinex\src\Plugin\MystiaStewardCompanionPlugin.cs
-git commit -m "chore(release): bump version to 1.1.0-preview.1"
-git push origin dev
-
-git tag -a v1.1.0-preview.1 -m "v1.1.0-preview.1"
-git push origin v1.1.0-preview.1
-```
-
-然后在 Windows 发布机上发布 GitHub Prerelease：
-
-```powershell
 pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
-  -Tag v1.1.0-preview.1 `
-  -Title "v1.1.0-preview.1" `
-  -Notes "预览版更新测试说明" `
-  -Prerelease
+  -Tag $tag `
+  -Title $tag `
+  -NotesFile $notesFile `
+  -TargetCommitSha $target
 ```
 
-测试者需要在 BepInEx 配置中开启预发布检查：
+如需让预览 Release 同时包含两个 Android APK，确保本机构建环境与签名配置完整后增加
+`-BuildAndroidApk`。不加该参数时，预览 Release 不要求 Android 工具链。
+
+`publish-release.ps1` 默认先构建，再调用 `prepare-release-assets.ps1` 生成累计 catalog、manifest 和
+SHA-256 清单。只有 CI 或明确的故障恢复场景才使用 `-SkipBuild`；此时调用者必须已经用完全相同的 tag、
+标题、Note 文件和目标 SHA 准备好当前 `dist`，脚本仍会复核全部内容，不接受上次构建残留。
+
+测试者需要在 BepInEx 配置中开启：
 
 ```ini
 [Updates]
 IncludePrerelease = true
 ```
 
-开启后，预览版会参与自动更新检查；默认配置下普通用户只检查稳定版。测试 `preview.1 -> preview.2` 时，重复以上步骤发布 `v1.1.0-preview.2`。测试通过后，再同步 `1.1.0`，按稳定版流程合并 `main` 并正式发布。
+## Release Note 与失败处理
 
-## Release Note 规则
-
-发布说明只描述从上一个版本到当前版本的用户可见变化：
-
-- 新增功能。
-- 体验或性能优化。
-- BUG 修复。
-
-不要写内部重构、文档、构建脚本、版本号变更或 Git 流程调整。如果某个优化或 BUG 修复只是本版本新增功能带来的二次调整，不单独列入 Note，只在新增功能描述中体现最终交付能力。
-
-整理 Note 前先查看上一版本 tag 到当前分支的提交记录，例如：
+Release Note 只写从上个正式版本到本版本的用户可见新增、体验优化、修复与稳定性，不写提交整理、内部
+重构、框架升级、构建流程或开发文档。可先检查：
 
 ```powershell
-git log --oneline v1.0.2..HEAD
+git log --oneline v1.3.0..HEAD
 ```
 
-## 一键构建并发布
+发布脚本的输入以 `-NotesFile` 和 40 位小写 `-TargetCommitSha` 为准，避免多行 Markdown 经过命令插值，
+并确保 tag 不会漂移到后续提交。发布创建过程中如果 GitHub mutation 返回失败，脚本不会自动重试、删除或
+覆盖任何既有 Release/tag；公开前失败最多留下精确 tag 和未公开 Draft，必须按 mutation 已返回的 numeric
+Release id 人工检查远端状态和 7 项资产，再决定使用新版本号重新发布。direct-id 只读终检会对明确的短暂
+一致性状态有界等待，但不会把 401/403、畸形对象、错误 upload URL 或身份漂移当作重试条件。不要通过删除
+正式 tag、修改已发布资产、`Re-run failed jobs` 或单独重跑 job 来“续跑”失败流程。
 
-从仓库根目录执行：
+正式发布完成后至少核对：
 
-```powershell
-git checkout main
-git pull --ff-only origin main
-
-pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
-  -Tag v1.1.0 `
-  -Title "v1.1.0" `
-  -Notes "版本更新说明"
-```
-
-发布构建默认管理仓库内可再生缓存：超过 12 GiB 时以完整 Cargo profile/target triple、Gradle build 或 .NET `bin/obj` 为单位清理到 8 GiB，Android 和 .NET 分类上限分别为 1.5 GiB 和 0.5 GiB。发布资产 `mods/bepinex/dist`、本机引用和签名材料不计入配额。可在构建前查看实际占用：
-
-```powershell
-pnpm artifacts:report
-pnpm artifacts:prune -- --dry-run
-```
-
-需要调整发布机预算时传入 `-BuildCacheLimitGiB` 和 `-BuildCacheTargetGiB`；`-SkipBuildCacheCleanup` 只用于保留中间目录排查构建问题，不应作为常规发布参数。
-
-配额按文件逻辑大小统计，因此可能高于磁盘工具显示的实际分配块大小。手动运行 `prune`/`clean` 前必须退出 Cargo、Gradle、Vite 和 dotnet 构建进程；清理器只互斥其他清理进程，不会终止或接管正在运行的构建。
-
-如果引用 DLL 不在 `mods\bepinex\References`，传入同一个目录：
-
-```powershell
-pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
-  -Tag v1.1.0 `
-  -Title "v1.1.0" `
-  -Notes "版本更新说明" `
-  -ReferenceDir "D:\path\to\mystia-steward-companion-references"
-```
-
-脚本会先运行 `build-release.ps1`。正常构建通过 staging 完整重建 `mods/bepinex/dist`，旧 APK、manifest、catalog、tar、zip 和旧目录不会进入本次资产；随后脚本生成本次累计版本目录和 update manifest，并上传 Mod 压缩包、两个更新协议资产和供其他设备直接使用的独立伴随窗口 EXE：
-
-- `mods/bepinex/dist/mystia-steward-companion-bepinex.zip`
-- `mods/bepinex/dist/update-manifest.json`
-- `mods/bepinex/dist/update-catalog.json`
-- `mods/bepinex/dist/mystia-steward-companion-companion-windows-x64.exe`
-- 可选：`mods/bepinex/dist/mystia-steward-companion-android-arm64-v8a.apk`
-- 可选：`mods/bepinex/dist/mystia-steward-companion-android-armeabi-v7a.apk`
-
-`update-manifest.json` 包含版本号、主包与 catalog 的资产文件名、大小和 SHA256，不包含本机打包路径；其中安装权威仍只指向 `mystia-steward-companion-bepinex.zip`。`update-catalog.json` 是截至本次 Release 的累计、确定性版本说明快照，只用于更新页展示；它缺失或读取失败不会改变主包下载和安装。独立 Windows 伴随窗口 EXE 和 Android APK 只给 B 设备跨局域网连接使用，不参与 Mod 自动更新。Tauri setup 安装器不会上传到 Release，避免和 Mod 分发包混淆。
-
-Mod 包内的独立更新程序最低支持 Windows 10 1703。发布前至少在 100%、125%、150% 和 200% 缩放下
-检查初始窗口与跨显示器移动后的文字清晰度、按钮布局和进度条，并完整走一次正常安装与一次取消流程。
-
-如发布机已配置 Android 工具链和签名配置，可在发布构建时直接生成 Android APK：
-
-```powershell
-pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1 -BuildAndroidApk
-```
-
-正式发布命令也可以透传该参数：
-
-```powershell
-pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
-  -Tag v1.1.0 `
-  -Title "v1.1.0" `
-  -Notes "版本更新说明" `
-  -BuildAndroidApk
-```
-
-没有 `-BuildAndroidApk` 时，Windows 发布流程继续只构建 Mod 主包、更新清单和 Windows 独立伴随窗口 EXE，不强制依赖 Android SDK/NDK/JDK 或 keystore，也不会启用 Android APK 专用的 Rust LTO 体积优化。
-
-`-BuildAndroidApk` 不能与 `-SkipBuild` 或 `-AndroidApkPath` 同时使用：前者要求本次实际构建，后者表示使用调用者提供的外部 APK，资产来源必须唯一。覆盖已有 Release 时，脚本会对账两个 canonical Android APK；本次不再发布的旧 APK 只有在显式使用 `-Clobber` 时才会于基础资产上传成功后删除，否则发布会停止并列出差异。
-
-Android APK 也可以在具备 Android 工具链的机器上单独构建。仓库已包含 `apps/companion/src-tauri/gen/android/` 工程；签名配置、keystore、Gradle 缓存和 build 输出不能提交：
-
-```powershell
-pnpm tauri:android:apk
-```
-
-该命令默认会生成按 ABI 拆分的未签名验证包，例如：
-
-```text
-apps\companion\src-tauri\gen\android\app\build\outputs\apk\arm64\release\app-arm64-release-unsigned.apk
-apps\companion\src-tauri\gen\android\app\build\outputs\apk\arm\release\app-arm-release-unsigned.apk
-```
-
-正式发布必须使用已签名 APK。先准备本机私有 keystore：
-
-```powershell
-keytool -genkeypair -v `
-  -keystore "$env:USERPROFILE\.android\mystia-steward-companion-release.jks" `
-  -storetype PKCS12 `
-  -keyalg RSA `
-  -keysize 2048 `
-  -validity 10000 `
-  -alias mystia-steward-companion
-```
-
-然后创建 `apps\companion\src-tauri\gen\android\keystore.properties`。该文件已被 Git 忽略，不能提交：
-
-```properties
-keyAlias=mystia-steward-companion
-password=<keystore 和 key 共用密码>
-storeFile=C:\\Users\\Administrator\\.android\\mystia-steward-companion-release.jks
-```
-
-如果 keystore 密码和 key 密码不同，使用：
-
-```properties
-keyAlias=mystia-steward-companion
-storePassword=<keystore 密码>
-keyPassword=<key 密码>
-storeFile=C:\\Users\\Administrator\\.android\\mystia-steward-companion-release.jks
-```
-
-构建、验签并原子复制发布资产：
-
-```powershell
-pnpm tauri:android:apk:signed
-```
-
-签名 APK 脚本会在 Android 构建进程内注入 `CARGO_PROFILE_RELEASE_STRIP=symbols`、`CARGO_PROFILE_RELEASE_LTO=thin` 和 `CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1`，用于降低 APK 体积。该优化不会写入全局 Cargo release profile，避免普通 Windows 发布构建在 Rust 链接优化阶段耗时过长。
-
-只有全部目标 APK 均构建并验签成功后才会替换 `dist` 中的 Android 资产；随后可按空间配额清理 Android Gradle/Cargo 中间产物。成功后会生成：
-
-```text
-mods\bepinex\dist\mystia-steward-companion-android-arm64-v8a.apk
-mods\bepinex\dist\mystia-steward-companion-android-armeabi-v7a.apk
-```
-
-构建和验签只能证明 APK 产物有效，不能证明 LAN 功能可用。正式上传 Android 资产前必须使用真机完成以下检查：
-
-1. A 设备启动游戏和 Mod，开启 LAN listener，确认设置页列出的推荐地址与 B 设备处于同一局域网网段。
-2. Android 浏览器通过 `GET http://A设备局域网地址:32145/health` 看到 JSON，先排除错误地址、Windows 防火墙和 AP/client isolation。
-3. 安装本次签名 APK，使用同一地址和正确 Token 执行 `GET /snapshot`、`GET /runtime-data`，再用错误 Token 确认显示未授权。不得用 `/` 或 `/api/*` 代替规范路径。
-4. 在 A 设备连续关闭、开启和重新应用 LAN 配置，确认回环连接不受影响，worker 线程不累积，`LogOutput.log` 不出现重复 `Local API LAN accept failed`。
-5. Android 断开并恢复 Wi-Fi、切到后台再返回，确认重连和自动化 lease 状态正确。
-
-没有真机时只能记录“构建、签名和包元数据通过，LAN 未实机验证”，不能把 APK 标记为已完成 LAN 发布验证。
-
-`publish-release.ps1` 会自动把 `mods\bepinex\dist` 下的 Android APK 作为额外 Release 资产上传。若 APK 位于其他路径，发布时可显式传入单个 APK 或包含 APK 的目录：
-
-```powershell
-pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
-  -Tag v1.1.0 `
-  -Title "v1.1.0" `
-  -Notes "版本更新说明" `
-  -AndroidApkPath "D:\path\android-apks"
-```
-
-没有 APK 时，Windows 发布流程继续只上传 Mod 主包、更新清单和 Windows 独立伴随窗口 EXE。
-
-Windows 下如果 Android 构建出现 `this and base files have different roots: C:\... and D:\...`，这是 Kotlin 增量编译缓存跨盘符相对路径问题。仓库已在 Android Gradle 配置中关闭 Kotlin incremental compilation；如果本机仍使用旧 daemon 或旧缓存，先清理：
-
-```powershell
-cd apps\companion\src-tauri\gen\android
-.\gradlew --stop
-Remove-Item -Recurse -Force .gradle, build, app\build, buildSrc\build -ErrorAction SilentlyContinue
-```
-
-## 只上传已有产物
-
-如果已经构建过，只重新上传：
-
-```powershell
-pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
-  -Tag v1.1.0 `
-  -SkipBuild `
-  -Clobber
-```
-
-`-Clobber` 会覆盖同名 Release 资产。
-
-`-SkipBuild` 会显式复用当前 `dist`，不会重建目录或自动移除已有 APK。执行前必须用脚本输出的资产清单确认这些文件确实属于目标 tag；常规发布不要依赖上一次构建残留。
-
-正常打包若检测到 `mods\bepinex\dist.staging-*` 或 `dist.backup-*`，会停止而不会生成新的事务目录。先检查 canonical `dist` 是否完整；确认后再恢复唯一有效备份或删除已无用的 staging/backup，避免失败事务继续累积。
-
-## 注意事项
-
-- 不要直接推送 tag 期待 GitHub 自动构建；仓库没有 Release 构建 workflow。
-- 构建引用 DLL 只留在本机 `References/`，不要提交。
-- 发布前运行 `set-version.ps1` 并提交版本号变更；发布脚本会自动校验版本一致性。
+- tag 指向 workflow 验证的 `main` SHA；
+- Release 不是 Draft 或 Prerelease，并被标记为 Latest；
+- 7 项资产名称与大小正确，`SHA256SUMS.txt` 可复算；
+- Mod ZIP 自动更新、Windows 独立伴随窗口、两个 Android ABI 安装包均来自本次运行；
+- updater 在 Windows 10 1703+ 的 100%、125%、150% 和 200% 缩放下文字清晰、布局正确，安装与取消流程正常。

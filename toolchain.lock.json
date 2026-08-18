@@ -1,10 +1,56 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 3,
   "node": "24.19.0",
   "corepack": "0.35.0",
+  "corepackIntegrity": "sha512-9BuIGHDFE7Zieor1CeRsvt7X7AJFEuJ6OnbSbsVprq83ChDFoBh1wP98NeUS9FT3ZwlzFllPElXcz/OiDf0YGw==",
   "pnpm": "10.10.0",
+  "powershell": "7.6.4",
+  "githubCli": "2.97.0",
+  "releaseToolArchives": {
+    "linux-x64": {
+      "powershell": {
+        "url": "https://github.com/PowerShell/PowerShell/releases/download/v7.6.4/powershell-7.6.4-linux-x64.tar.gz",
+        "size": 77628778,
+        "sha256": "4471b5a36bfe86ec7af8525d36bb1cacba0128e7aac22d05cc064bc00e604721"
+      },
+      "githubCli": {
+        "url": "https://github.com/cli/cli/releases/download/v2.97.0/gh_2.97.0_linux_amd64.tar.gz",
+        "size": 14770812,
+        "sha256": "a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112"
+      }
+    },
+    "win32-x64": {
+      "powershell": {
+        "url": "https://github.com/PowerShell/PowerShell/releases/download/v7.6.4/PowerShell-7.6.4-win-x64.zip",
+        "size": 116979293,
+        "sha256": "80832551c52809301e6071c8bac977beb5a2f1ec953eb4db9f94deb953333793"
+      },
+      "githubCli": {
+        "url": "https://github.com/cli/cli/releases/download/v2.97.0/gh_2.97.0_windows_amd64.zip",
+        "size": 14938517,
+        "sha256": "35d7fe05c4dd1411ffda1e73dfc7c6f44b75c936ca51fa6595c657fdc0350cec"
+      }
+    }
+  },
   "dotnetSdk": "10.0.110",
   "rust": "1.97.1",
+  "android": {
+    "jdkDistribution": "temurin",
+    "jdkVendor": "Eclipse Adoptium",
+    "jdkVersion": "21.0.4",
+    "compileSdk": 36,
+    "targetSdk": 36,
+    "gradle": "8.14.3",
+    "gradleDistributionSha256": "bd71102213493060956ec229d946beee57158dbd89d0e62b91bca0fa2c5f3531",
+    "buildTools": "35.0.0",
+    "ndkPackage": "30.0.14904198",
+    "ndkRevision": "30.0.14904198-beta1",
+    "rustTargets": [
+      "aarch64-linux-android",
+      "armv7-linux-androideabi"
+    ],
+    "signingCertificateSha256": "1540b609d5cd54e06a8429bb0aaa2cc4b511e055565fdac93acf206c1791d1fb"
+  },
   "dotnet6HarmonySdk": "6.0.428",
   "dotnet6HarmonyImage": "mcr.microsoft.com/dotnet/sdk@sha256:eaa148f3f58a7276c9bb2eac0612f9560e9ba69e44de02e9ae1912e7105a9b1e"
 }

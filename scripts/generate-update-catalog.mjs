@@ -164,7 +164,16 @@ export function buildUpdateCatalog({
   const generatedAt = normalizePublishedAt(generatedAtUtc, 'Catalog');
   const normalizedReleases = flattenReleasePages(githubReleases)
     .map((release) => normalizeRelease(release, repository))
-    .filter((release) => release && compareUpdateVersions(release.parsedVersion, parsedOwnerVersion) <= 0);
+    .filter(Boolean);
+
+  const newerRelease = normalizedReleases.find(
+    (release) => compareUpdateVersions(release.parsedVersion, parsedOwnerVersion) >= 0,
+  );
+  if (newerRelease) {
+    throw new Error(
+      `Release ${ownerTag} must be strictly newer than published canonical release ${newerRelease.tag}.`,
+    );
+  }
 
   const byVersion = new Map();
   const tags = new Set();

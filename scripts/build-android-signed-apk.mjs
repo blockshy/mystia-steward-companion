@@ -25,6 +25,11 @@ const apkOutputDir = path.join(androidDir, 'app', 'build', 'outputs', 'apk');
 const distDir = path.join(repoRoot, 'mods', 'bepinex', 'dist');
 const buildArtifactManager = path.join(repoRoot, 'scripts', 'manage-build-artifacts.mjs');
 const buildToolchainCheck = path.join(repoRoot, 'scripts', 'check-build-toolchain.mjs');
+const toolchain = JSON.parse(readFileSync(path.join(repoRoot, 'toolchain.lock.json'), 'utf8'));
+const androidToolchain = toolchain.android;
+const projectPackage = JSON.parse(readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
+const androidApplicationId = 'com.tyukki.mystia.steward.companion';
+const maximumAndroidVersionCode = 2_100_000_000;
 const releaseApkTargets = [
   {
     target: 'aarch64',
@@ -60,10 +65,11 @@ function main() {
   rmSync(apkOutputDir, { recursive: true, force: true });
   runTauriAndroidApkBuild();
 
-  const signedApks = findSignedApks();
+  const aapt2 = findAapt2Command();
+  const signedApks = findSignedApks(aapt2);
   const apkSigner = findApkSignerCommand();
 
-  const stagedApks = stageAndVerifyAndroidApks(signedApks, apkSigner);
+  const stagedApks = stageAndVerifyAndroidApks(signedApks, apkSigner, aapt2);
   pruneThenCommitAndroidApks(stagedApks);
 
   console.log('');
@@ -71,7 +77,7 @@ function main() {
 }
 
 function verifyBuildToolchain() {
-  run(process.execPath, [buildToolchainCheck, 'tauri'], { cwd: repoRoot });
+  run(process.execPath, [buildToolchainCheck, 'android'], { cwd: repoRoot });
 }
 
 function isMainModule() {
@@ -101,15 +107,21 @@ function assertNoPendingAndroidStages() {
   );
 }
 
-function stageAndVerifyAndroidApks(signedApksToStage, signer) {
+function stageAndVerifyAndroidApks(signedApksToStage, signer, aapt2Command) {
   const stagingDir = mkdtempSync(path.join(distDir, '.android-apk-stage-'));
 
   try {
     const items = signedApksToStage.map((item) => {
       const stagedPath = path.join(stagingDir, item.target.assetName);
       copyFileSync(item.apkPath, stagedPath);
-      run(signer.command, [...signer.args, 'verify', '--verbose', '--print-certs', stagedPath], { cwd: repoRoot });
-      console.log(`Signed Android APK verified: ${item.apkPath}`);
+      verifyAndroidApkSignature(stagedPath, signer, androidToolchain.signingCertificateSha256);
+      assertAndroidApkIdentity(dumpAndroidApkBadging(stagedPath, aapt2Command), {
+        applicationId: androidApplicationId,
+        versionName: projectPackage.version,
+        versionCode: computeTauriAndroidVersionCode(projectPackage.version),
+        abi: item.target.abi,
+      });
+      console.log(`Signed Android APK certificate and package identity verified: ${item.apkPath}`);
       return {
         ...item,
         stagedPath,
@@ -242,22 +254,15 @@ function assertSigningConfig() {
         '',
         'Create the file with these keys before running this command:',
         '  keyAlias=mystia-steward-companion',
-        '  password=<keystore and key password>',
+        '  storePassword=<keystore password>',
+        '  keyPassword=<key password>',
         '  storeFile=<absolute path to your release keystore>',
       ].join('\n'),
     );
   }
 
   const properties = parseProperties(readFileSync(keystorePropertiesPath, 'utf8'));
-  const requiredKeys = ['keyAlias', 'storeFile'];
-  if (!properties.password) {
-    requiredKeys.push('storePassword', 'keyPassword');
-  }
-
-  const missingKeys = requiredKeys.filter((key) => !properties[key]);
-  if (missingKeys.length > 0) {
-    throw new Error(`Missing Android signing properties in ${keystorePropertiesPath}: ${missingKeys.join(', ')}`);
-  }
+  assertSigningProperties(properties, keystorePropertiesPath);
 
   const storeFile = resolveStoreFile(properties.storeFile);
   if (!existsSync(storeFile)) {
@@ -265,21 +270,85 @@ function assertSigningConfig() {
   }
 }
 
+function assertSigningProperties(properties, sourceLabel = 'Android signing configuration') {
+  const requiredKeys = ['keyAlias', 'storePassword', 'keyPassword', 'storeFile'];
+  const unexpectedKeys = Object.keys(properties).filter((key) => !requiredKeys.includes(key));
+  if (unexpectedKeys.length > 0) {
+    throw new Error(
+      `Unsupported Android signing properties in ${sourceLabel}: ${unexpectedKeys.join(', ')}`,
+    );
+  }
+
+  const missingKeys = requiredKeys.filter((key) => !properties[key]);
+  if (missingKeys.length > 0) {
+    throw new Error(`Missing Android signing properties in ${sourceLabel}: ${missingKeys.join(', ')}`);
+  }
+}
+
 function parseProperties(content) {
   const properties = {};
   for (const rawLine of content.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith('#')) continue;
+    const lineWithoutLeadingWhitespace = rawLine.replace(/^[ \t\f]+/u, '');
+    if (!lineWithoutLeadingWhitespace
+      || lineWithoutLeadingWhitespace.startsWith('#')
+      || lineWithoutLeadingWhitespace.startsWith('!')) continue;
 
-    const separatorIndex = line.search(/[:=]/);
+    const separatorIndex = rawLine.search(/[:=]/);
     if (separatorIndex < 0) continue;
 
-    const key = line.slice(0, separatorIndex).trim();
-    const value = line.slice(separatorIndex + 1).trim();
-    if (key) properties[key] = value;
+    const key = rawLine.slice(0, separatorIndex).trim();
+    const encodedValue = rawLine
+      .slice(separatorIndex + 1)
+      .replace(/^[ \t\f]+/u, '');
+    const value = decodeJavaPropertyValue(encodedValue);
+    if (key) {
+      if (Object.hasOwn(properties, key)) {
+        throw new Error(`Android signing property is duplicated: ${key}`);
+      }
+      Object.defineProperty(properties, key, {
+        configurable: false,
+        enumerable: true,
+        value,
+        writable: false,
+      });
+    }
   }
 
   return properties;
+}
+
+function decodeJavaPropertyValue(value) {
+  let decoded = '';
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (character !== '\\') {
+      decoded += character;
+      continue;
+    }
+
+    index += 1;
+    if (index >= value.length) {
+      throw new Error('Android signing property ends with an incomplete escape sequence.');
+    }
+    const escaped = value[index];
+    switch (escaped) {
+      case 't': decoded += '\t'; break;
+      case 'n': decoded += '\n'; break;
+      case 'r': decoded += '\r'; break;
+      case 'f': decoded += '\f'; break;
+      case 'u': {
+        const hexadecimal = value.slice(index + 1, index + 5);
+        if (!/^[0-9a-fA-F]{4}$/u.test(hexadecimal)) {
+          throw new Error('Android signing property contains an invalid Unicode escape sequence.');
+        }
+        decoded += String.fromCharCode(Number.parseInt(hexadecimal, 16));
+        index += 4;
+        break;
+      }
+      default: decoded += escaped; break;
+    }
+  }
+  return decoded;
 }
 
 function resolveStoreFile(storeFile) {
@@ -361,39 +430,24 @@ function findTauriCliScript() {
   }
 }
 
-function findSignedApks() {
+function findSignedApks(aapt2Command) {
   if (!existsSync(apkOutputDir)) {
     throw new Error(`Android APK output directory was not generated: ${apkOutputDir}`);
   }
 
   const candidates = listFilesRecursive(apkOutputDir)
-    .filter((filePath) => filePath.endsWith('.apk') && !filePath.endsWith('-unsigned.apk'));
+    .filter((filePath) => isSignedReleaseApk(filePath))
+    .sort((left, right) => left.localeCompare(right));
 
   if (candidates.length === 0) {
     throw new Error(`No signed release APK found in ${apkOutputDir}`);
   }
 
-  return releaseApkTargets.map((target) => {
-    const matches = candidates
-      .filter((candidate) => isTargetReleaseApk(candidate, target))
-      .sort((left, right) => left.localeCompare(right));
-
-    if (matches.length === 0) {
-      const relativeCandidates = candidates.map((candidate) => path.relative(apkOutputDir, candidate));
-      throw new Error(
-        [
-          `No signed ${target.abi} release APK found in ${apkOutputDir}`,
-          'Generated APKs:',
-          ...relativeCandidates.map((candidate) => `  - ${candidate}`),
-        ].join('\n'),
-      );
-    }
-
-    return {
-      target,
-      apkPath: matches[0],
-    };
-  });
+  return resolveReleaseAndroidApkCandidates(
+    candidates,
+    (candidate) => dumpAndroidApkBadging(candidate, aapt2Command),
+    projectPackage.version,
+  );
 }
 
 function listFilesRecursive(rootDir) {
@@ -418,62 +472,240 @@ function listFilesRecursive(rootDir) {
 function isTargetReleaseApk(candidate, target) {
   const normalized = candidate.replace(/\\/g, '/').toLowerCase();
   const flavor = target.flavor.toLowerCase();
-  return normalized.includes(`/apk/${flavor}/release/`)
-    || normalized.endsWith(`/app-${flavor}-release.apk`);
+  return normalized.includes(`/apk/${flavor}/release/`);
+}
+
+function isSignedReleaseApk(candidate) {
+  const normalized = candidate.replace(/\\/g, '/').toLowerCase();
+  return normalized.endsWith('.apk')
+    && !normalized.endsWith('-unsigned.apk')
+    && (normalized.includes('/release/') || normalized.endsWith('-release.apk'));
+}
+
+function resolveReleaseAndroidApkCandidates(candidates, inspectBadging, expectedVersionName) {
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    throw new Error('Expected signed Android release APK candidates.');
+  }
+  if (typeof inspectBadging !== 'function') {
+    throw new Error('Android APK badging inspector must be a function.');
+  }
+  if (typeof expectedVersionName !== 'string' || expectedVersionName.trim() !== expectedVersionName
+      || expectedVersionName.length === 0) {
+    throw new Error('Expected Android versionName must be a non-empty project version.');
+  }
+  const expectedVersionCode = computeTauriAndroidVersionCode(expectedVersionName);
+
+  const badgingByCandidate = candidates.map((candidate) => ({
+    candidate,
+    badging: inspectBadging(candidate),
+  }));
+  const inspected = badgingByCandidate.map(({ candidate, badging }) => {
+    const matchingTargets = releaseApkTargets.filter((target) => isTargetReleaseApk(candidate, target));
+    if (matchingTargets.length !== 1) {
+      throw new Error(`Unconsumed signed Android release APK: ${candidate}`);
+    }
+
+    const target = matchingTargets[0];
+    assertAndroidApkIdentity(badging, {
+      applicationId: androidApplicationId,
+      versionName: expectedVersionName,
+      versionCode: expectedVersionCode,
+      abi: target.abi,
+    });
+    return { target, apkPath: candidate };
+  });
+
+  return releaseApkTargets.map((target) => {
+    const matches = inspected.filter((candidate) => candidate.target === target);
+    if (matches.length !== 1) {
+      throw new Error(
+        `Expected exactly one signed ${target.abi} release APK, received ${matches.length}.`,
+      );
+    }
+    return matches[0];
+  });
+}
+
+function findAapt2Command() {
+  const executableName = process.platform === 'win32' ? 'aapt2.exe' : 'aapt2';
+  const executablePath = findAndroidBuildToolFile(executableName);
+  if (!executablePath) {
+    throw new Error(`Locked Android Build Tools ${androidToolchain.buildTools} does not contain ${executableName}.`);
+  }
+  return executablePath;
+}
+
+function dumpAndroidApkBadging(apkPath, aapt2Command) {
+  const result = runCaptured(aapt2Command, ['dump', 'badging', apkPath], { cwd: repoRoot });
+  return result.stdout;
+}
+
+function assertAndroidApkIdentity(output, expected) {
+  if (!expected || typeof expected.applicationId !== 'string' || typeof expected.versionName !== 'string'
+      || !Number.isInteger(expected.versionCode) || expected.versionCode <= 0
+      || expected.versionCode > maximumAndroidVersionCode || typeof expected.abi !== 'string') {
+    throw new Error('Expected Android APK identity is incomplete.');
+  }
+
+  const actual = parseAapt2Badging(output);
+  if (actual.applicationId !== expected.applicationId) {
+    throw new Error(
+      `Android APK package mismatch: expected ${expected.applicationId}, received ${actual.applicationId}.`,
+    );
+  }
+  if (actual.versionName !== expected.versionName) {
+    throw new Error(
+      `Android APK versionName mismatch: expected ${expected.versionName}, received ${actual.versionName}.`,
+    );
+  }
+  if (actual.versionCode !== expected.versionCode) {
+    throw new Error(
+      `Android APK versionCode mismatch: expected ${expected.versionCode}, received ${actual.versionCode}.`,
+    );
+  }
+  if (actual.nativeCodes.length !== 1 || actual.nativeCodes[0] !== expected.abi) {
+    throw new Error(
+      `Android APK native-code mismatch: expected exactly ${expected.abi}, received ${actual.nativeCodes.join(', ') || '<none>'}.`,
+    );
+  }
+  return actual;
+}
+
+function parseAapt2Badging(output) {
+  if (typeof output !== 'string') {
+    throw new Error('Android APK badging output must be text.');
+  }
+  const lines = output.split(/\r?\n/u);
+  const packageLines = lines.filter((line) => line.startsWith('package:'));
+  if (packageLines.length !== 1) {
+    throw new Error(`Expected exactly one Android package badging line, received ${packageLines.length}.`);
+  }
+  const nativeCodeLines = lines.filter((line) => line.startsWith('native-code:'));
+  if (nativeCodeLines.length !== 1) {
+    throw new Error(`Expected exactly one Android native-code badging line, received ${nativeCodeLines.length}.`);
+  }
+
+  const applicationId = extractSingleBadgingAttribute(packageLines[0], 'name');
+  const rawVersionCode = extractSingleBadgingAttribute(packageLines[0], 'versionCode');
+  const versionName = extractSingleBadgingAttribute(packageLines[0], 'versionName');
+  if (!/^[1-9][0-9]*$/u.test(rawVersionCode)) {
+    throw new Error('Android package versionCode must be a canonical positive decimal integer.');
+  }
+  const versionCodeValue = BigInt(rawVersionCode);
+  if (versionCodeValue > BigInt(maximumAndroidVersionCode)) {
+    throw new Error(`Android package versionCode exceeds ${maximumAndroidVersionCode}.`);
+  }
+  const versionCode = Number(versionCodeValue);
+  const nativeCodePayload = nativeCodeLines[0].slice('native-code:'.length).trim();
+  const nativeCodes = [...nativeCodePayload.matchAll(/'([^']*)'/gu)].map((match) => match[1]);
+  const unparsedNativeCode = nativeCodePayload.replace(/'[^']*'/gu, '').trim();
+  if (unparsedNativeCode || nativeCodes.some((abi) => abi.length === 0)) {
+    throw new Error('Android native-code badging line is malformed.');
+  }
+
+  return { applicationId, versionName, versionCode, nativeCodes };
+}
+
+function computeTauriAndroidVersionCode(versionName) {
+  if (typeof versionName !== 'string') {
+    throw new Error('Android release version must be canonical X.Y.Z or X.Y.Z-preview.N.');
+  }
+  const match = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-preview\.([1-9][0-9]*))?$/u.exec(versionName);
+  if (!match) {
+    throw new Error(`Android release version must be canonical X.Y.Z or X.Y.Z-preview.N: ${versionName}`);
+  }
+
+  const major = BigInt(match[1]);
+  const minor = BigInt(match[2]);
+  const patch = BigInt(match[3]);
+  if (minor > 999n || patch > 999n) {
+    throw new Error('Android release minor and patch versions must each be between 0 and 999.');
+  }
+
+  const versionCode = (major * 1_000_000n) + (minor * 1_000n) + patch;
+  if (versionCode < 1n || versionCode > BigInt(maximumAndroidVersionCode)) {
+    throw new Error(
+      `Android versionCode must be between 1 and ${maximumAndroidVersionCode}; received ${versionCode}.`,
+    );
+  }
+  return Number(versionCode);
+}
+
+function extractSingleBadgingAttribute(line, attributeName) {
+  const expression = new RegExp(`(?:^|\\s)${attributeName}='([^']*)'(?=\\s|$)`, 'gu');
+  const matches = [...line.matchAll(expression)].map((match) => match[1]);
+  if (matches.length !== 1 || matches[0].length === 0) {
+    throw new Error(`Expected exactly one non-empty Android package ${attributeName} attribute.`);
+  }
+  return matches[0];
 }
 
 function findApkSignerCommand() {
   const apksignerJar = findAndroidBuildToolFile(path.join('lib', 'apksigner.jar'));
-  if (apksignerJar) {
-    return {
-      command: findJavaCommand(),
-      args: ['-jar', apksignerJar],
-    };
+  if (!apksignerJar) {
+    throw new Error(`Locked Android Build Tools ${androidToolchain.buildTools} does not contain lib/apksigner.jar.`);
   }
 
   return {
-    command: findAndroidBuildToolExecutable('apksigner'),
-    args: [],
+    command: findJavaCommand(),
+    args: ['-jar', apksignerJar],
   };
 }
 
 function findJavaCommand() {
-  const javaHome = process.env.JAVA_HOME;
+  const javaHome = process.env.JAVA_HOME?.trim();
   const executableName = process.platform === 'win32' ? 'java.exe' : 'java';
-  if (javaHome) {
-    const candidate = path.join(javaHome, 'bin', executableName);
-    if (existsSync(candidate)) return candidate;
+  if (!javaHome) {
+    throw new Error('JAVA_HOME must point to the locked Android Temurin JDK.');
   }
 
-  return executableName;
-}
-
-function findAndroidBuildToolExecutable(toolName) {
-  const sdkRoot = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT;
-  const executableName = process.platform === 'win32' ? `${toolName}.bat` : toolName;
-
-  return findAndroidBuildToolFile(executableName) || executableName;
+  const candidate = path.join(javaHome, 'bin', executableName);
+  if (!existsSync(candidate)) {
+    throw new Error(`Locked Android JDK executable does not exist: ${candidate}`);
+  }
+  return candidate;
 }
 
 function findAndroidBuildToolFile(relativePath) {
-  const sdkRoot = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT;
+  const sdkRoot = process.env.ANDROID_HOME?.trim();
+  if (!sdkRoot) return '';
+  const candidate = path.join(sdkRoot, 'build-tools', androidToolchain.buildTools, relativePath);
+  return existsSync(candidate) ? candidate : '';
+}
 
-  if (sdkRoot) {
-    const buildToolsDir = path.join(sdkRoot, 'build-tools');
-    if (existsSync(buildToolsDir)) {
-      const versions = readdirSync(buildToolsDir, { withFileTypes: true })
-        .filter((entry) => entry.isDirectory())
-        .map((entry) => entry.name)
-        .sort((left, right) => right.localeCompare(left, undefined, { numeric: true }));
+function verifyAndroidApkSignature(apkPath, signer, expectedCertificateSha256) {
+  const result = runCaptured(
+    signer.command,
+    [...signer.args, 'verify', '--verbose', '--print-certs', apkPath],
+    { cwd: repoRoot },
+  );
+  assertApkSignerCertificateSha256(
+    [result.stdout, result.stderr].filter(Boolean).join('\n'),
+    expectedCertificateSha256,
+  );
+}
 
-      for (const version of versions) {
-        const candidate = path.join(buildToolsDir, version, relativePath);
-        if (existsSync(candidate)) return candidate;
-      }
-    }
+function assertApkSignerCertificateSha256(output, expectedCertificateSha256) {
+  if (!/^[a-f0-9]{64}$/u.test(expectedCertificateSha256 ?? '')) {
+    throw new Error('Locked Android signing certificate SHA-256 is invalid.');
   }
+  const actualCertificateSha256 = extractApkSignerCertificateSha256(output);
+  if (actualCertificateSha256 !== expectedCertificateSha256) {
+    throw new Error(
+      `Android APK signing certificate mismatch: expected ${expectedCertificateSha256}, received ${actualCertificateSha256}.`,
+    );
+  }
+  return actualCertificateSha256;
+}
 
-  return '';
+function extractApkSignerCertificateSha256(output) {
+  const matches = [...output.matchAll(
+    /Signer\s+#\d+\s+certificate\s+SHA-256\s+digest:\s*([A-Fa-f0-9:]+)/gu,
+  )].map((match) => match[1].replaceAll(':', '').toLowerCase());
+  if (matches.length !== 1 || !/^[a-f0-9]{64}$/u.test(matches[0] ?? '')) {
+    throw new Error(`Expected exactly one valid Android APK signer certificate, received ${matches.length}.`);
+  }
+  return matches[0];
 }
 
 function run(command, args, options) {
@@ -497,6 +729,31 @@ function run(command, args, options) {
   }
 }
 
+function runCaptured(command, args, options) {
+  const spawnOptions = {
+    ...options,
+    encoding: 'utf8',
+    shell: false,
+    windowsHide: true,
+  };
+  const result = shouldRunThroughWindowsCommandShell(command)
+    ? spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `"${[command, ...args].map(quoteWindowsCommandArg).join(' ')}"`], spawnOptions)
+    : spawnSync(command, args, spawnOptions);
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    const diagnostic = [result.stderr, result.stdout]
+      .map((value) => value?.trim())
+      .filter(Boolean)
+      .join(' | ')
+      .slice(0, 4096);
+    throw new Error(
+      `Command failed with exit code ${result.status}: ${command} ${args.join(' ')}`
+        + (diagnostic ? `\n${diagnostic}` : ''),
+    );
+  }
+  return result;
+}
+
 function shouldRunThroughWindowsCommandShell(command) {
   return process.platform === 'win32' && /\.(bat|cmd)$/iu.test(command);
 }
@@ -509,7 +766,17 @@ function quoteWindowsCommandArg(value) {
 }
 
 export {
+  assertAndroidApkIdentity,
+  assertApkSignerCertificateSha256,
   assertRealDirectory,
+  assertSigningProperties,
   commitStagedAndroidApks,
+  computeTauriAndroidVersionCode,
+  decodeJavaPropertyValue,
+  extractApkSignerCertificateSha256,
+  parseAapt2Badging,
+  parseProperties,
   pruneThenCommitAndroidApks,
+  resolveReleaseAndroidApkCandidates,
+  verifyAndroidApkSignature,
 };

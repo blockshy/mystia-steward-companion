@@ -5,11 +5,13 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$PSNativeCommandUseErrorActionPreference = $false
 Set-StrictMode -Version Latest
 
 $RootDir = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $RepoRoot = (Resolve-Path (Join-Path $RootDir "../..")).Path
 $ToolchainLockPath = Join-Path $RepoRoot "toolchain.lock.json"
+$ReferenceVerifierPath = Join-Path $RepoRoot "scripts/restore-build-references.mjs"
 $ToolchainLock = Get-Content -LiteralPath $ToolchainLockPath -Raw | ConvertFrom-Json
 $ExpectedDotnetSdk = [string]$ToolchainLock.dotnetSdk
 $EffectiveReferenceDir = if ([string]::IsNullOrWhiteSpace($ReferenceDir)) {
@@ -18,17 +20,6 @@ $EffectiveReferenceDir = if ([string]::IsNullOrWhiteSpace($ReferenceDir)) {
     $ReferenceDir
 }
 $Failed = $false
-
-function Test-RequiredFile {
-    param([Parameter(Mandatory = $true)][string]$Path)
-
-    if (Test-Path -LiteralPath $Path -PathType Leaf) {
-        Write-Host "OK   $Path"
-    } else {
-        Write-Host "MISS $Path"
-        $script:Failed = $true
-    }
-}
 
 Write-Host "Checking .NET SDK"
 $Dotnet = Get-Command dotnet -ErrorAction SilentlyContinue
@@ -46,7 +37,7 @@ else {
         Pop-Location
     }
 
-    if ($DotnetExitCode -ne 0 -or $ActualDotnetSdk -ne $ExpectedDotnetSdk) {
+    if ($DotnetExitCode -ne 0 -or $ActualDotnetSdk -cne $ExpectedDotnetSdk) {
         Write-Host "MISMATCH dotnet expected=$ExpectedDotnetSdk actual=$ActualDotnetSdk"
         $Failed = $true
     }
@@ -57,17 +48,25 @@ else {
 
 Write-Host ""
 Write-Host "Checking build references: $EffectiveReferenceDir"
-Test-RequiredFile (Join-Path $EffectiveReferenceDir "BepInEx.Core.dll")
-Test-RequiredFile (Join-Path $EffectiveReferenceDir "BepInEx.Unity.IL2CPP.dll")
-Test-RequiredFile (Join-Path $EffectiveReferenceDir "0Harmony.dll")
-Test-RequiredFile (Join-Path $EffectiveReferenceDir "Il2CppInterop.Runtime.dll")
-Test-RequiredFile (Join-Path $EffectiveReferenceDir "Il2Cppmscorlib.dll")
-Test-RequiredFile (Join-Path $EffectiveReferenceDir "UnityEngine.CoreModule.dll")
-Test-RequiredFile (Join-Path $EffectiveReferenceDir "UnityEngine.InputLegacyModule.dll")
+$Node = Get-Command node -ErrorAction SilentlyContinue
+if ($null -eq $Node) {
+    Write-Host "MISS node (required for strict reference verification)"
+    $Failed = $true
+}
+elseif (-not (Test-Path -LiteralPath $ReferenceVerifierPath -PathType Leaf)) {
+    Write-Host "MISS $ReferenceVerifierPath"
+    $Failed = $true
+}
+else {
+    & $Node.Source $ReferenceVerifierPath --verify --output $EffectiveReferenceDir
+    if ($LASTEXITCODE -ne 0) {
+        $Failed = $true
+    }
+}
 
 if ($Failed) {
     Write-Host ""
-    throw "Preflight failed. Install the locked .NET SDK and copy missing DLLs into mods/bepinex/References, or pass -ReferenceDir to a directory containing them."
+    throw "Preflight failed. Install the locked .NET SDK and restore the exact reference bundle described by mods/bepinex/References/references.lock.json."
 }
 
 Write-Host ""

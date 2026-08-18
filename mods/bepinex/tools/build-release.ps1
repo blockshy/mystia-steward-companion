@@ -13,7 +13,6 @@
 param(
     [string]$Configuration = "Release",
     [switch]$SkipInstall,
-    [switch]$SkipPreflight,
     [Alias("SkipWebBuild")]
     [switch]$SkipFrontendBuild,
     [switch]$SkipTauriBuild,
@@ -29,6 +28,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$PSNativeCommandUseErrorActionPreference = $false
 Set-StrictMode -Version Latest
 
 $ToolDir = $PSScriptRoot
@@ -42,17 +42,8 @@ $ToolchainCheckScript = Join-Path $RepoRoot "scripts/check-build-toolchain.mjs"
 $EffectiveReferenceDir = if ([string]::IsNullOrWhiteSpace($ReferenceDir)) {
     Join-Path $RootDir "References"
 } else {
-    $ReferenceDir
+    (Resolve-Path -LiteralPath $ReferenceDir).Path
 }
-$RequiredReferenceFiles = @(
-    "BepInEx.Core.dll",
-    "BepInEx.Unity.IL2CPP.dll",
-    "0Harmony.dll",
-    "Il2CppInterop.Runtime.dll",
-    "Il2Cppmscorlib.dll",
-    "UnityEngine.CoreModule.dll",
-    "UnityEngine.InputLegacyModule.dll"
-)
 
 function Write-Step {
     param([Parameter(Mandatory = $true)][string]$Title)
@@ -167,46 +158,6 @@ function Invoke-AndroidApkBuild {
     }
 }
 
-function Assert-BuildReferences {
-    <#
-    .SYNOPSIS
-        校验构建 Mod 所需的 Unity、BepInEx 和 Il2CppInterop 引用 DLL。
-
-    .DESCRIPTION
-        这些 DLL 来自用户本机游戏和 BepInEx 安装目录，不应提交到仓库。缺失时直接停止构建，
-        避免生成缺引用或引用错误版本的插件 DLL。
-    #>
-    Write-Step "Validate BepInEx build references"
-    Write-Host "    $EffectiveReferenceDir"
-
-    $Missing = @()
-    foreach ($File in $RequiredReferenceFiles) {
-        $Path = Join-Path $EffectiveReferenceDir $File
-        if (Test-Path -LiteralPath $Path -PathType Leaf) {
-            Write-Host "    OK   $File"
-        }
-        else {
-            Write-Host "    MISS $File"
-            $Missing += $Path
-        }
-    }
-
-    if ($Missing.Count -gt 0) {
-        $Message = @(
-            "Missing BepInEx build references.",
-            "Copy the required DLLs into: $EffectiveReferenceDir",
-            "Common sources:",
-            "  - GameRoot\BepInEx\core",
-            "  - GameRoot\BepInEx\interop",
-            "Or run this script with: -ReferenceDir `"C:\path\to\reference-dlls`"",
-            "Missing files:",
-            ($Missing | ForEach-Object { "  - $_" })
-        ) -join [Environment]::NewLine
-
-        throw $Message
-    }
-}
-
 if ($BuildCacheTargetGiB -ge $BuildCacheLimitGiB) {
     throw "BuildCacheTargetGiB must be less than BuildCacheLimitGiB. Actual: target=$BuildCacheTargetGiB, limit=$BuildCacheLimitGiB"
 }
@@ -226,8 +177,6 @@ try {
         -FilePath $Node.Source `
         -Arguments @($ToolchainCheckScript, "full")
 
-    Assert-BuildReferences
-
     # A new Tauri build does not depend on a reused frontend build, so it is safe to prune stale buckets first.
     if (-not $SkipBuildCacheCleanup -and -not $SkipTauriBuild) {
         Invoke-BuildCachePrune -Title "Prune stale build artifacts before compilation"
@@ -242,10 +191,8 @@ try {
         Invoke-Pnpm -Title "Install companion frontend dependencies" -Arguments $InstallArgs
     }
 
-    if (-not $SkipPreflight) {
-        Write-Step "Run Mod preflight"
-        & $PreflightScript -ReferenceDir $EffectiveReferenceDir
-    }
+    Write-Step "Run Mod preflight"
+    & $PreflightScript -ReferenceDir $EffectiveReferenceDir
 
     if (-not $SkipFrontendBuild) {
         Invoke-Pnpm -Title "Build companion frontend" -Arguments @("build")

@@ -1,0 +1,911 @@
+name: Official stable release
+
+run-name: Release ${{ inputs.tag }} from ${{ github.sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Stable tag in canonical vX.Y.Z form
+        required: true
+        type: string
+      title:
+        description: GitHub Release title
+        required: true
+        type: string
+      notes:
+        description: User-facing Markdown Release Notes
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: official-release
+  cancel-in-progress: false
+  queue: max
+
+env:
+  BUILD_ASSETS_REPOSITORY: blockshy/mystia-steward-build-assets
+  RELEASE_METADATA_ARTIFACT: release-metadata-${{ github.run_id }}-${{ github.run_attempt }}
+  WINDOWS_PACKAGE_ARTIFACT: release-windows-${{ github.run_id }}-${{ github.run_attempt }}
+  ANDROID_PACKAGE_ARTIFACT: release-android-${{ github.run_id }}-${{ github.run_attempt }}
+  ASSEMBLED_RELEASE_ARTIFACT: release-assets-${{ github.run_id }}-${{ github.run_attempt }}
+
+jobs:
+  validate:
+    name: Validate main and release inputs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Checkout the dispatched commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+
+      - name: Install locked release tools
+        run: node scripts/install-locked-release-tools.mjs --install-root "$RUNNER_TEMP/mystia-release-tools"
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+
+      - name: Install exact Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup default 1.97.1
+
+      - name: Install isolated locked Corepack
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/install-locked-corepack.mjs --install-root "$RUNNER_TEMP/mystia-corepack"
+
+      - name: Verify locked release toolchain
+        run: node scripts/check-build-toolchain.mjs release
+
+      - name: Verify protected approval environments
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for environment_name in official-release-build official-release; do
+            gh api "repos/$GITHUB_REPOSITORY/environments/$environment_name" \
+              >"$RUNNER_TEMP/$environment_name.json"
+            gh api "repos/$GITHUB_REPOSITORY/environments/$environment_name/deployment-branch-policies" \
+              >"$RUNNER_TEMP/$environment_name-branches.json"
+          done
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+
+          const temp = process.env.RUNNER_TEMP;
+          for (const name of ['official-release-build', 'official-release']) {
+            const environment = JSON.parse(readFileSync(`${temp}/${name}.json`, 'utf8'));
+            const branches = JSON.parse(readFileSync(`${temp}/${name}-branches.json`, 'utf8'));
+            const reviewerRule = environment.protection_rules?.find(
+              (rule) => rule?.type === 'required_reviewers',
+            );
+            if (environment.name !== name
+              || environment.can_admins_bypass !== false
+              || environment.deployment_branch_policy?.protected_branches !== false
+              || environment.deployment_branch_policy?.custom_branch_policies !== true
+              || !Array.isArray(reviewerRule?.reviewers)
+              || reviewerRule.reviewers.length === 0) {
+              throw new Error(
+                `Environment ${name} must require review without administrator bypass and allow only main.`,
+              );
+            }
+            if (branches.total_count !== 1
+              || branches.branch_policies?.length !== 1
+              || branches.branch_policies[0]?.name !== 'main'
+              || branches.branch_policies[0]?.type !== 'branch') {
+              throw new Error(`Environment ${name} must allow only the main branch.`);
+            }
+          }
+          NODE
+
+      - name: Validate main, stable tag, versions, and release absence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG_INPUT: ${{ inputs.tag }}
+          RELEASE_TITLE_INPUT: ${{ inputs.title }}
+          RELEASE_NOTES_INPUT: ${{ inputs.notes }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "Official releases must be dispatched from main; actual ref: $GITHUB_REF" >&2
+            exit 1
+          fi
+
+          if [[ ! "$RELEASE_TAG_INPUT" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Official releases require a canonical stable tag such as v1.4.0." >&2
+            exit 1
+          fi
+
+          git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/main"
+          if [[ "$(git rev-parse refs/remotes/origin/main)" != "$GITHUB_SHA" ]]; then
+            echo "The dispatched commit is no longer the current origin/main head." >&2
+            exit 1
+          fi
+
+          set +e
+          git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG_INPUT" >"$RUNNER_TEMP/release-tag.txt"
+          tag_status=$?
+          set -e
+          if [[ $tag_status -eq 0 ]]; then
+            echo "The release tag already exists: $RELEASE_TAG_INPUT" >&2
+            exit 1
+          fi
+          if [[ $tag_status -ne 2 ]]; then
+            echo "Unable to prove that the release tag is absent." >&2
+            exit 1
+          fi
+
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            >"$RUNNER_TEMP/releases.json"
+
+          mkdir -p release-metadata
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+
+          const tag = process.env.RELEASE_TAG_INPUT;
+          const version = tag.slice(1);
+          const title = process.env.RELEASE_TITLE_INPUT;
+          const notes = process.env.RELEASE_NOTES_INPUT;
+          const notesBytes = Buffer.byteLength(notes, 'utf8');
+
+          if (!title || title.trim() !== title || Buffer.byteLength(title, 'utf8') > 512) {
+            throw new Error('Release title must be non-blank, trimmed, and at most 512 bytes of UTF-8.');
+          }
+          if (!notes || notes.trim().length === 0 || notesBytes > 65_536) {
+            throw new Error('Release notes must be non-blank and at most 64 KiB of UTF-8.');
+          }
+
+          const packageJson = JSON.parse(readFileSync('package.json', 'utf8'));
+          const tauriConfig = JSON.parse(readFileSync('apps/companion/src-tauri/tauri.conf.json', 'utf8'));
+          const cargoToml = readFileSync('apps/companion/src-tauri/Cargo.toml', 'utf8');
+          const cargoLock = readFileSync('apps/companion/src-tauri/Cargo.lock', 'utf8');
+          const pluginSource = readFileSync(
+            'mods/bepinex/src/Plugin/MystiaStewardCompanionPlugin.cs',
+            'utf8',
+          );
+
+          const requireMatch = (content, pattern, source) => {
+            const match = content.match(pattern);
+            if (!match) throw new Error(`Version was not found in ${source}.`);
+            return match[1];
+          };
+          const versions = new Map([
+            ['package.json', packageJson.version],
+            ['tauri.conf.json', tauriConfig.version],
+            ['Cargo.toml', requireMatch(cargoToml, /^version = "([^"]+)"/m, 'Cargo.toml')],
+            [
+              'Cargo.lock',
+              requireMatch(
+                cargoLock,
+                /name = "mystia-steward-companion"\s+version = "([^"]+)"/s,
+                'Cargo.lock',
+              ),
+            ],
+            [
+              'PluginVersion',
+              requireMatch(
+                pluginSource,
+                /public const string PluginVersion = "([^"]+)";/,
+                'PluginVersion',
+              ),
+            ],
+          ]);
+          for (const [source, actual] of versions) {
+            if (actual !== version) {
+              throw new Error(`${source} version ${actual} does not match ${version}.`);
+            }
+          }
+
+          const releasePages = JSON.parse(readFileSync(process.env.RUNNER_TEMP + '/releases.json', 'utf8'));
+          const releases = releasePages.flat();
+          if (releases.some((release) => release?.tag_name === tag)) {
+            throw new Error(`A GitHub Release already exists for ${tag}.`);
+          }
+          const { compareUpdateVersions, parseUpdateVersion } = await import(
+            './scripts/generate-update-catalog.mjs'
+          );
+          const ownerVersion = parseUpdateVersion(tag);
+          for (const release of releases) {
+            if (release?.draft === true) continue;
+            const parsed = parseUpdateVersion(release?.tag_name);
+            if (!parsed || release.tag_name !== `v${parsed.version}`) continue;
+            if ((parsed.channel === 'preview') !== (release.prerelease === true)) {
+              throw new Error(`Published Release channel mismatch: ${release.tag_name}.`);
+            }
+            if (compareUpdateVersions(parsed, ownerVersion) >= 0) {
+              throw new Error(`${tag} must be newer than ${release.tag_name}.`);
+            }
+          }
+
+          writeFileSync('release-metadata/release-notes.md', notes, { encoding: 'utf8', flag: 'wx' });
+          writeFileSync(
+            'release-metadata/release-metadata.json',
+            `${JSON.stringify({
+              schemaVersion: 1,
+              repository: process.env.GITHUB_REPOSITORY,
+              targetCommitSha: process.env.GITHUB_SHA,
+              tag,
+              version,
+              title,
+              notesSha256: (await import('node:crypto')).createHash('sha256').update(notes).digest('hex'),
+            }, null, 2)}\n`,
+            { encoding: 'utf8', flag: 'wx' },
+          );
+          NODE
+
+      - name: Install dependencies
+        run: corepack pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: corepack pnpm lint
+
+      - name: Build frontend
+        run: corepack pnpm build
+
+      - name: Audit release and workflow policy
+        run: |
+          corepack pnpm audit:release-policy
+          corepack pnpm audit:release-package
+          corepack pnpm audit:toolchain
+          corepack pnpm audit:build-references
+          corepack pnpm audit:android-apk-transaction
+
+      - name: Upload immutable release metadata
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ env.RELEASE_METADATA_ARTIFACT }}
+          path: |
+            release-metadata/release-metadata.json
+            release-metadata/release-notes.md
+          if-no-files-found: error
+          include-hidden-files: false
+          overwrite: false
+          retention-days: 40
+
+  release-packages:
+    name: Build Windows, Mod, and Android packages
+    needs: validate
+    runs-on: windows-2022
+    timeout-minutes: 300
+    environment: official-release-build
+    permissions:
+      contents: read
+    outputs:
+      mod_package_sha256: ${{ steps.windows-digests.outputs.mod_package_sha256 }}
+      companion_sha256: ${{ steps.windows-digests.outputs.companion_sha256 }}
+      arm64_sha256: ${{ steps.android-digests.outputs.arm64_sha256 }}
+      armv7_sha256: ${{ steps.android-digests.outputs.armv7_sha256 }}
+    steps:
+      - name: Checkout the validated commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+
+      - name: Install locked release tools
+        shell: cmd
+        run: node scripts\install-locked-release-tools.mjs --install-root "%RUNNER_TEMP%\mystia-release-tools"
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+
+      - name: Install exact Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw "rustup toolchain install failed." }
+          rustup default 1.97.1
+          if ($LASTEXITCODE -ne 0) { throw "rustup default failed." }
+
+      - name: Install isolated locked Corepack
+        shell: pwsh
+        run: |
+          node scripts/install-locked-corepack.mjs --install-root "$env:RUNNER_TEMP/mystia-corepack"
+          if ($LASTEXITCODE -ne 0) { throw "Locked Corepack installation failed." }
+
+      - name: Verify locked release toolchain
+        shell: pwsh
+        run: node scripts/check-build-toolchain.mjs release
+
+      - name: Request read-only build-assets token
+        id: build-assets-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ secrets.BUILD_ASSETS_APP_ID }}
+          private-key: ${{ secrets.BUILD_ASSETS_APP_PRIVATE_KEY }}
+          owner: blockshy
+          repositories: mystia-steward-build-assets
+          permission-contents: read
+
+      - name: Restore exact BepInEx build references
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ steps.build-assets-token.outputs.token }}
+        run: |
+          $ReferenceLockPath = "mods/bepinex/References/references.lock.json"
+          $ReferenceLock = Get-Content -Raw -LiteralPath $ReferenceLockPath |
+            ConvertFrom-Json -DateKind String -NoEnumerate
+          if ($ReferenceLock -is [System.Array] -or
+              $ReferenceLock.bundle.repository -isnot [string] -or
+              $ReferenceLock.bundle.tag -isnot [string] -or
+              $ReferenceLock.bundle.asset -isnot [string]) {
+            throw "Reference-lock download coordinates must be strings."
+          }
+          if ([string]$ReferenceLock.bundle.repository -cne $env:BUILD_ASSETS_REPOSITORY) {
+            throw "Reference-lock repository is outside the approved GitHub App scope."
+          }
+          $ReferenceTag = [string]$ReferenceLock.bundle.tag
+          $ReferenceAsset = [string]$ReferenceLock.bundle.asset
+          if ($ReferenceTag -cnotmatch '^[A-Za-z0-9][A-Za-z0-9_.-]*$') {
+            throw "Reference-lock tag is not a safe flat GitHub release tag."
+          }
+          if ($ReferenceAsset -cnotmatch '^[A-Za-z0-9][A-Za-z0-9_.-]*\.zip$') {
+            throw "Reference-lock asset is not a safe flat ZIP file name."
+          }
+          $EncodedReferenceTag = [Uri]::EscapeDataString($ReferenceTag)
+          $ReferenceReleaseJson = gh api `
+            "repos/$env:BUILD_ASSETS_REPOSITORY/releases/tags/$EncodedReferenceTag"
+          if ($LASTEXITCODE -ne 0) { throw "Build-reference Release lookup failed." }
+          $ReferenceRelease = $ReferenceReleaseJson |
+            ConvertFrom-Json -DateKind String -NoEnumerate
+          if ($ReferenceRelease -is [System.Array] -or
+              $ReferenceRelease.assets -isnot [System.Array]) {
+            throw "Build-reference Release assets must be a JSON array."
+          }
+          if ($ReferenceRelease.draft -isnot [bool] -or
+              $ReferenceRelease.prerelease -isnot [bool] -or
+              $ReferenceRelease.immutable -isnot [bool]) {
+            throw "Build-reference Release flags must be JSON booleans."
+          }
+          $ReferenceAssets = @($ReferenceRelease.assets)
+          if ($ReferenceLock.bundle.size -isnot [int] -and
+              $ReferenceLock.bundle.size -isnot [long]) {
+            throw "Reference-lock bundle size must be a JSON integer."
+          }
+          $ExpectedReferenceDigest = "sha256:$([string]$ReferenceLock.bundle.sha256)"
+          if ([string]$ReferenceRelease.tag_name -cne $ReferenceTag -or
+              $ReferenceRelease.draft -ne $false -or
+              $ReferenceRelease.prerelease -ne $false -or
+              $ReferenceRelease.immutable -ne $true -or
+              $ReferenceAssets.Count -ne 1 -or
+              ($ReferenceAssets[0].size -isnot [int] -and
+                $ReferenceAssets[0].size -isnot [long]) -or
+              [string]$ReferenceAssets[0].name -cne $ReferenceAsset -or
+              [string]$ReferenceAssets[0].state -cne "uploaded" -or
+              [long]$ReferenceAssets[0].size -ne [long]$ReferenceLock.bundle.size -or
+              [string]$ReferenceAssets[0].digest -cne $ExpectedReferenceDigest) {
+            throw "Build-reference Release identity does not exactly match references.lock.json."
+          }
+          $ArchiveDir = Join-Path $env:RUNNER_TEMP "mystia-build-references"
+          $ArchivePath = Join-Path $ArchiveDir $ReferenceAsset
+          New-Item -ItemType Directory -Force -Path $ArchiveDir | Out-Null
+          gh release download $ReferenceTag `
+            --repo $env:BUILD_ASSETS_REPOSITORY `
+            --pattern $ReferenceAsset `
+            --dir $ArchiveDir
+          if ($LASTEXITCODE -ne 0) { throw "Build-reference asset download failed." }
+          node scripts/restore-build-references.mjs `
+            --archive $ArchivePath `
+            --output mods/bepinex/References
+          if ($LASTEXITCODE -ne 0) { throw "Build-reference restore failed." }
+
+      - name: Build Windows release package
+        shell: pwsh
+        run: |
+          pwsh -ExecutionPolicy Bypass -File mods/bepinex/tools/build-release.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Windows release build failed." }
+
+      - name: Reject tracked build-input drift
+        shell: pwsh
+        run: |
+          $TrackedChanges = @(git status --porcelain=v1 --untracked-files=no)
+          if ($LASTEXITCODE -ne 0) { throw "Unable to inspect the Windows build worktree." }
+          if ($TrackedChanges.Count -ne 0) {
+            Write-Host "Tracked changes detected after Windows release build:"
+            foreach ($TrackedChange in $TrackedChanges) {
+              Write-Host "  $TrackedChange"
+            }
+            throw "Windows release build changed tracked source or lock files."
+          }
+
+      - name: Verify exact Windows artifact set
+        shell: pwsh
+        run: |
+          $Expected = @(
+            "mystia-steward-companion-bepinex.zip",
+            "mystia-steward-companion-companion-windows-x64.exe"
+          )
+          foreach ($Name in $Expected) {
+            $Path = Join-Path "mods/bepinex/dist" $Name
+            if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+              throw "Missing Windows release artifact: $Path"
+            }
+          }
+
+      - name: Record exact Windows artifact digests
+        id: windows-digests
+        shell: pwsh
+        run: |
+          $PackageHash = (Get-FileHash -Algorithm SHA256 -LiteralPath `
+            "mods/bepinex/dist/mystia-steward-companion-bepinex.zip").Hash.ToLowerInvariant()
+          $CompanionHash = (Get-FileHash -Algorithm SHA256 -LiteralPath `
+            "mods/bepinex/dist/mystia-steward-companion-companion-windows-x64.exe").Hash.ToLowerInvariant()
+          "mod_package_sha256=$PackageHash" | Out-File `
+            -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "companion_sha256=$CompanionHash" | Out-File `
+            -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Remove restored build references
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $ReferenceDlls = @(Get-ChildItem -LiteralPath mods/bepinex/References -Filter "*.dll" -File)
+          foreach ($ReferenceDll in $ReferenceDlls) {
+            Remove-Item -LiteralPath $ReferenceDll.FullName -Force
+          }
+          $ArchiveDirectory = "$env:RUNNER_TEMP/mystia-build-references"
+          if (Test-Path -LiteralPath $ArchiveDirectory) {
+            Remove-Item -LiteralPath $ArchiveDirectory -Recurse -Force
+          }
+          if (@(Get-ChildItem -LiteralPath mods/bepinex/References -Filter "*.dll" -File).Count -ne 0 -or
+              (Test-Path -LiteralPath $ArchiveDirectory)) {
+            throw "Private build-reference cleanup did not complete."
+          }
+
+      - name: Upload Windows package inputs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ env.WINDOWS_PACKAGE_ARTIFACT }}
+          path: |
+            mods/bepinex/dist/mystia-steward-companion-bepinex.zip
+            mods/bepinex/dist/mystia-steward-companion-companion-windows-x64.exe
+          if-no-files-found: error
+          include-hidden-files: false
+          overwrite: false
+          retention-days: 40
+
+      - name: Remove completed desktop build caches
+        shell: pwsh
+        run: |
+          node scripts/manage-build-artifacts.mjs clean
+          if ($LASTEXITCODE -ne 0) { throw "Desktop build-cache cleanup failed." }
+
+      - name: Setup JDK 21.0.4
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: "21.0.4"
+
+      - name: Install exact Android Rust targets
+        shell: pwsh
+        run: |
+          rustup target add aarch64-linux-android armv7-linux-androideabi --toolchain 1.97.1
+          if ($LASTEXITCODE -ne 0) { throw "Android Rust target installation failed." }
+
+      - name: Install exact Android SDK packages
+        shell: pwsh
+        run: |
+          $SdkManager = Join-Path $env:ANDROID_HOME "cmdline-tools/latest/bin/sdkmanager.bat"
+          if (-not (Test-Path -LiteralPath $SdkManager -PathType Leaf)) {
+            throw "Locked Android sdkmanager.bat entrypoint was not found: $SdkManager"
+          }
+          & $SdkManager `
+            "platforms;android-36" `
+            "build-tools;35.0.0" `
+            "ndk;30.0.14904198"
+          if ($LASTEXITCODE -ne 0) { throw "Android SDK package installation failed." }
+          $NdkHome = Join-Path $env:ANDROID_HOME "ndk/30.0.14904198"
+          "ANDROID_SDK_ROOT=$env:ANDROID_HOME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "NDK_HOME=$NdkHome" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "ANDROID_NDK=$NdkHome" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "ANDROID_NDK_HOME=$NdkHome" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "ANDROID_NDK_ROOT=$NdkHome" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Verify locked Android toolchain
+        shell: pwsh
+        run: node scripts/check-build-toolchain.mjs android
+
+      - name: Verify locked release tools
+        shell: pwsh
+        run: node scripts/check-build-toolchain.mjs release-tools
+
+      - name: Materialize Android signing files
+        shell: pwsh
+        env:
+          MYSTIA_ANDROID_KEYSTORE_BASE64: ${{ secrets.MYSTIA_ANDROID_KEYSTORE_BASE64 }}
+          MYSTIA_ANDROID_KEYSTORE_SHA256: ${{ secrets.MYSTIA_ANDROID_KEYSTORE_SHA256 }}
+          MYSTIA_ANDROID_KEY_ALIAS: ${{ secrets.MYSTIA_ANDROID_KEY_ALIAS }}
+          MYSTIA_ANDROID_STORE_PASSWORD: ${{ secrets.MYSTIA_ANDROID_STORE_PASSWORD }}
+          MYSTIA_ANDROID_KEY_PASSWORD: ${{ secrets.MYSTIA_ANDROID_KEY_PASSWORD }}
+        run: |
+          node scripts/materialize-android-signing.mjs `
+            --keystore-output "$env:RUNNER_TEMP/mystia-release.jks" `
+            --properties-output apps/companion/src-tauri/gen/android/keystore.properties
+          if ($LASTEXITCODE -ne 0) { throw "Android signing materialization failed." }
+
+      - name: Build and verify signed Android APKs
+        run: corepack pnpm tauri:android:apk:signed
+
+      - name: Reject tracked Android build-input drift
+        shell: pwsh
+        run: |
+          $TrackedChanges = @(git status --porcelain=v1 --untracked-files=no)
+          if ($LASTEXITCODE -ne 0) { throw "Unable to inspect the Android build worktree." }
+          if ($TrackedChanges.Count -ne 0) {
+            Write-Host "Tracked changes detected after Android release build:"
+            foreach ($TrackedChange in $TrackedChanges) {
+              Write-Host "  $TrackedChange"
+            }
+            throw "Android release build changed tracked source or lock files."
+          }
+
+      - name: Remove Android signing files
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          node scripts/materialize-android-signing.mjs `
+            --keystore-output "$env:RUNNER_TEMP/mystia-release.jks" `
+            --properties-output apps/companion/src-tauri/gen/android/keystore.properties `
+            --cleanup
+          if ($LASTEXITCODE -ne 0) { throw "Android signing cleanup failed." }
+
+      - name: Verify exact Android artifact set
+        shell: pwsh
+        run: |
+          $Expected = @(
+            "mystia-steward-companion-android-arm64-v8a.apk",
+            "mystia-steward-companion-android-armeabi-v7a.apk"
+          )
+          foreach ($Name in $Expected) {
+            $Path = Join-Path "mods/bepinex/dist" $Name
+            if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+              throw "Missing Android release artifact: $Path"
+            }
+          }
+
+      - name: Record exact Android artifact digests
+        id: android-digests
+        shell: pwsh
+        run: |
+          $Arm64Hash = (Get-FileHash -Algorithm SHA256 -LiteralPath `
+            "mods/bepinex/dist/mystia-steward-companion-android-arm64-v8a.apk").Hash.ToLowerInvariant()
+          $Armv7Hash = (Get-FileHash -Algorithm SHA256 -LiteralPath `
+            "mods/bepinex/dist/mystia-steward-companion-android-armeabi-v7a.apk").Hash.ToLowerInvariant()
+          "arm64_sha256=$Arm64Hash" | Out-File `
+            -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "armv7_sha256=$Armv7Hash" | Out-File `
+            -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Upload signed Android package inputs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ env.ANDROID_PACKAGE_ARTIFACT }}
+          path: |
+            mods/bepinex/dist/mystia-steward-companion-android-arm64-v8a.apk
+            mods/bepinex/dist/mystia-steward-companion-android-armeabi-v7a.apk
+          if-no-files-found: error
+          include-hidden-files: false
+          overwrite: false
+          retention-days: 40
+
+  assemble-attest:
+    name: Assemble, checksum, and attest release
+    needs:
+      - validate
+      - release-packages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Checkout the validated commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+
+      - name: Install locked release tools
+        run: node scripts/install-locked-release-tools.mjs --install-root "$RUNNER_TEMP/mystia-release-tools"
+
+      - name: Verify locked release tools
+        run: node scripts/check-build-toolchain.mjs release-tools
+
+      - name: Download validated release metadata
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ env.RELEASE_METADATA_ARTIFACT }}
+          path: ${{ runner.temp }}/release-metadata
+
+      - name: Download Windows package inputs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ env.WINDOWS_PACKAGE_ARTIFACT }}
+          path: mods/bepinex/dist
+
+      - name: Download Android package inputs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ env.ANDROID_PACKAGE_ARTIFACT }}
+          path: mods/bepinex/dist
+
+      - name: Verify build-job artifact digests
+        shell: bash
+        env:
+          EXPECTED_MOD_PACKAGE_SHA256: ${{ needs.release-packages.outputs.mod_package_sha256 }}
+          EXPECTED_COMPANION_SHA256: ${{ needs.release-packages.outputs.companion_sha256 }}
+          EXPECTED_ARM64_SHA256: ${{ needs.release-packages.outputs.arm64_sha256 }}
+          EXPECTED_ARMV7_SHA256: ${{ needs.release-packages.outputs.armv7_sha256 }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { createHash } from 'node:crypto';
+          import { readFileSync } from 'node:fs';
+
+          const expected = new Map([
+            ['mystia-steward-companion-bepinex.zip', process.env.EXPECTED_MOD_PACKAGE_SHA256],
+            [
+              'mystia-steward-companion-companion-windows-x64.exe',
+              process.env.EXPECTED_COMPANION_SHA256,
+            ],
+            ['mystia-steward-companion-android-arm64-v8a.apk', process.env.EXPECTED_ARM64_SHA256],
+            ['mystia-steward-companion-android-armeabi-v7a.apk', process.env.EXPECTED_ARMV7_SHA256],
+          ]);
+          for (const [name, expectedDigest] of expected) {
+            if (!/^[0-9a-f]{64}$/u.test(expectedDigest ?? '')) {
+              throw new Error(`Missing canonical build-job digest for ${name}.`);
+            }
+            const actualDigest = createHash('sha256')
+              .update(readFileSync(`mods/bepinex/dist/${name}`))
+              .digest('hex');
+            if (actualDigest !== expectedDigest) {
+              throw new Error(`Cross-job artifact digest mismatch: ${name}.`);
+            }
+          }
+          NODE
+
+      - name: Verify immutable release metadata
+        shell: bash
+        env:
+          RELEASE_TAG_INPUT: ${{ inputs.tag }}
+          RELEASE_TITLE_INPUT: ${{ inputs.title }}
+          RELEASE_NOTES_INPUT: ${{ inputs.notes }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { createHash } from 'node:crypto';
+          import { readFileSync } from 'node:fs';
+
+          const root = process.env.RUNNER_TEMP + '/release-metadata';
+          const metadata = JSON.parse(readFileSync(root + '/release-metadata.json', 'utf8'));
+          const notes = readFileSync(root + '/release-notes.md', 'utf8');
+          const expectedVersion = process.env.RELEASE_TAG_INPUT.slice(1);
+          const notesSha256 = createHash('sha256').update(notes).digest('hex');
+          const expected = {
+            schemaVersion: 1,
+            repository: process.env.GITHUB_REPOSITORY,
+            targetCommitSha: process.env.GITHUB_SHA,
+            tag: process.env.RELEASE_TAG_INPUT,
+            version: expectedVersion,
+            title: process.env.RELEASE_TITLE_INPUT,
+            notesSha256,
+          };
+          for (const [key, value] of Object.entries(expected)) {
+            if (metadata[key] !== value) throw new Error(`Release metadata mismatch: ${key}.`);
+          }
+          if (notes !== process.env.RELEASE_NOTES_INPUT) {
+            throw new Error('Release notes artifact no longer matches the dispatch input.');
+          }
+          NODE
+
+      - name: Prepare exact release assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG_INPUT: ${{ inputs.tag }}
+          RELEASE_TITLE_INPUT: ${{ inputs.title }}
+        run: |
+          pwsh -ExecutionPolicy Bypass -File mods/bepinex/tools/prepare-release-assets.ps1 `
+            -Tag $env:RELEASE_TAG_INPUT `
+            -Title $env:RELEASE_TITLE_INPUT `
+            -NotesFile "$env:RUNNER_TEMP/release-metadata/release-notes.md" `
+            -TargetCommitSha $env:GITHUB_SHA `
+            -RequireAndroid
+          if ($LASTEXITCODE -ne 0) { throw "Release asset preparation failed." }
+
+      - name: Verify exact checksummed asset set
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { createHash } from 'node:crypto';
+          import { readdirSync, readFileSync } from 'node:fs';
+          import { join } from 'node:path';
+
+          const root = 'mods/bepinex/dist';
+          const checksumName = 'SHA256SUMS.txt';
+          const subjects = [
+            'mystia-steward-companion-bepinex.zip',
+            'mystia-steward-companion-companion-windows-x64.exe',
+            'mystia-steward-companion-android-arm64-v8a.apk',
+            'mystia-steward-companion-android-armeabi-v7a.apk',
+            'update-manifest.json',
+            'update-catalog.json',
+          ];
+          const expectedFiles = [...subjects, checksumName].sort();
+          const actualFiles = readdirSync(root, { withFileTypes: true })
+            .filter((entry) => entry.isFile())
+            .map((entry) => entry.name)
+            .sort();
+          if (JSON.stringify(actualFiles) !== JSON.stringify(expectedFiles)) {
+            throw new Error(`Release asset allowlist mismatch: ${actualFiles.join(', ')}`);
+          }
+
+          const checksums = new Map();
+          for (const line of readFileSync(join(root, checksumName), 'utf8').split(/\r?\n/u)) {
+            if (!line) continue;
+            const match = line.match(/^([0-9a-f]{64})  ([^/\\]+)$/u);
+            if (!match || checksums.has(match[2])) throw new Error(`Invalid checksum line: ${line}`);
+            checksums.set(match[2], match[1]);
+          }
+          if (checksums.size !== subjects.length) throw new Error('Checksum subject count mismatch.');
+          for (const name of subjects) {
+            const digest = createHash('sha256').update(readFileSync(join(root, name))).digest('hex');
+            if (checksums.get(name) !== digest) throw new Error(`Checksum mismatch: ${name}`);
+          }
+          NODE
+
+      - name: Generate build provenance for all release assets
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: |
+            mods/bepinex/dist/mystia-steward-companion-bepinex.zip
+            mods/bepinex/dist/mystia-steward-companion-companion-windows-x64.exe
+            mods/bepinex/dist/mystia-steward-companion-android-arm64-v8a.apk
+            mods/bepinex/dist/mystia-steward-companion-android-armeabi-v7a.apk
+            mods/bepinex/dist/update-manifest.json
+            mods/bepinex/dist/update-catalog.json
+            mods/bepinex/dist/SHA256SUMS.txt
+
+      - name: Upload exact assembled release
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ env.ASSEMBLED_RELEASE_ARTIFACT }}
+          path: |
+            mods/bepinex/dist/mystia-steward-companion-bepinex.zip
+            mods/bepinex/dist/mystia-steward-companion-companion-windows-x64.exe
+            mods/bepinex/dist/mystia-steward-companion-android-arm64-v8a.apk
+            mods/bepinex/dist/mystia-steward-companion-android-armeabi-v7a.apk
+            mods/bepinex/dist/update-manifest.json
+            mods/bepinex/dist/update-catalog.json
+            mods/bepinex/dist/SHA256SUMS.txt
+          if-no-files-found: error
+          include-hidden-files: false
+          overwrite: false
+          retention-days: 40
+
+  publish:
+    name: Publish immutable official release
+    needs:
+      - validate
+      - assemble-attest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: official-release
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout the validated commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+
+      - name: Install locked release tools
+        run: node scripts/install-locked-release-tools.mjs --install-root "$RUNNER_TEMP/mystia-release-tools"
+
+      - name: Request read-only release-policy token
+        id: release-policy-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ secrets.BUILD_ASSETS_APP_ID }}
+          private-key: ${{ secrets.BUILD_ASSETS_APP_PRIVATE_KEY }}
+          owner: blockshy
+          repositories: mystia-steward-companion
+          permission-administration: read
+
+      - name: Verify immutable Release policy
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.release-policy-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/immutable-releases" \
+            >"$RUNNER_TEMP/immutable-releases.json"
+          node --input-type=module <<'NODE'
+            import { readFileSync } from 'node:fs';
+
+            const policy = JSON.parse(
+              readFileSync(process.env.RUNNER_TEMP + '/immutable-releases.json', 'utf8'),
+            );
+            if (policy.enabled !== true) {
+              throw new Error('Official releases require repository Immutable Releases to be enabled.');
+            }
+          NODE
+
+      - name: Verify locked release tools
+        run: node scripts/check-build-toolchain.mjs release-tools
+
+      - name: Download validated release metadata
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ env.RELEASE_METADATA_ARTIFACT }}
+          path: ${{ runner.temp }}/release-metadata
+
+      - name: Download attested release assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ env.ASSEMBLED_RELEASE_ARTIFACT }}
+          path: mods/bepinex/dist
+
+      - name: Publish create-only official Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MYSTIA_RELEASE_POLICY_TOKEN: ${{ steps.release-policy-token.outputs.token }}
+          RELEASE_TAG_INPUT: ${{ inputs.tag }}
+          RELEASE_TITLE_INPUT: ${{ inputs.title }}
+        run: |
+          pwsh -ExecutionPolicy Bypass -File mods/bepinex/tools/publish-release.ps1 `
+            -Tag $env:RELEASE_TAG_INPUT `
+            -Title $env:RELEASE_TITLE_INPUT `
+            -NotesFile "$env:RUNNER_TEMP/release-metadata/release-notes.md" `
+            -TargetCommitSha $env:GITHUB_SHA `
+            -OfficialRelease `
+            -SkipBuild
+          if ($LASTEXITCODE -ne 0) { throw "Official Release publication failed." }

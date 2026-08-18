@@ -14,11 +14,17 @@
 
 - Mod 不编译引用额外的游戏业务 DLL，运行时通过反射读取游戏已加载的 IL2CPP interop 类型。
 - 用户可见项目名、安装目录和发布产物使用 `mystia-steward-companion`。`v1.3.0` 已删除 `v1.2.x` 的收藏到自定义料理一次性迁移；`favorites.json` 与 `custom-recipes.json` 现在是无跨存储依赖的独立正式模型。从 `v1.1.x` 或更早版本保留旧手动自定义料理的用户必须先启动一次 `v1.2.0` 完成转换，`v1.3.0` 不支持直接跨版本恢复。自 `v1.2.0` 起不再读取旧 GUID 配置；旧名称只允许出现在上游来源说明中，不保留旧路径、旧类型或旧 API 别名。
-- `References/` 只放本机编译 DLL，不提交仓库。
+- `References/` 的真实 DLL 不提交公开仓库。正式身份由 `mods/bepinex/References/references.lock.json` 唯一
+  锁定：BepInEx #783/game 来源、私有 `blockshy/mystia-steward-build-assets` immutable bundle，以及 7 个
+  DLL 的精确大小与 SHA-256。恢复器离线拒绝缺项、多项、路径、symlink、大小或 hash 漂移，不从游戏目录、
+  cache 或旧 interop 回退；CI 只用专用只读 GitHub App 的短期 token 下载 bundle，引用不跨 job 上传。
 - 根目录 `toolchain.lock.json` 是 Linux、Windows、CI 共用的构建版本基线：Node `24.19.0`、Corepack
   `0.35.0`、pnpm `10.10.0`、.NET SDK `10.0.110`、Rust/Cargo `1.97.1`。标准选择文件和构建入口只投影
   这一份基线；版本不一致直接停止，不回退全局 pnpm、较新 SDK 或 stable channel。Mod 目标仍为
-  `net6.0`；三项真实 Harmony/MonoMod smoke 只通过固定 .NET 6 容器运行。
+  `net6.0`；三项真实 Harmony/MonoMod smoke 只通过固定 .NET 6 容器运行。Android 同一基线额外锁定
+  Eclipse Temurin `21.0.4`、SDK `36`、Build Tools `35.0.0`、NDK SDK 包坐标 `30.0.14904198`
+  （包内 revision `30.0.14904198-beta1`）、两个正式 Rust target
+  和 APK 签名证书 SHA-256，任一身份漂移均 fail-closed。
 - 当前游戏输入身份由仓库外 `new/analysis-manifest.json` 锁定。源码分析使用 Il2CppDumper metadata C#、
   离线复现的 BepInEx #783 / Il2CppInterop 1.5.3 wrapper、IDA 9/Hex-Rays 和实机日志四层闭环；旧资料在
   `backup/legacy-analysis-20260608/`，不参与业务 fallback。完整流程见 `docs/il2cpp-analysis-workflow.md`。
@@ -29,7 +35,8 @@
   分片，Hex-Rays 失败时保留覆盖全部 chunks 的反汇编。全量导出每 1,000 个函数必须清理反编译缓存，
   避免内存线性增长。
 - HUD 目标订单卡片覆盖层所用边框模板，其 BepInEx 783 组件枚举 wrapper 只用于严格计数和唯一 native pointer 集合；`RectTransform`、`CanvasRenderer`、`Image` 必须同时通过 typed native query 与 native class pointer 精确相等复核，源模板和 clone 再与枚举集合闭合。parent `LayoutGroup` 查询有意接受全部派生类型并统一拒绝，禁止以 wrapper `GetType()` 推断原生类别或增加视觉兼容路径。
-- 推荐数据来自游戏运行时 `RuntimeDataCatalog`；`build-release.ps1` 和发布包只包含 Mod DLL 与伴随窗口程序。
+- 推荐数据来自游戏运行时 `RuntimeDataCatalog`；Mod ZIP 只包含 Mod DLL、更新程序与伴随窗口，不打包静态
+  游戏业务目录。Android APK、Windows 独立伴随窗口和更新协议文件是并列 Release 资产。
 - 用户安装和测试优先使用已验证的 BepInEx Bleeding Edge #783 Windows x64 IL2CPP 包：`BepInEx-Unity.IL2CPP-win-x64-6.0.0-be.783+c58c42d.zip`。#784 及之后构建当前不建议用于本项目，后续如需支持新版 BepInEx，必须重新实测并检查运行时日志。
 - BepInEx 783 / Il2CppInterop 1.5.3 通过 Dobby 1.0.5 detour IL2CPP native method pointer。禁止 Harmony Hook `RunTimeStorage.*Out`、`*OutRange` 或 `ObjectOut`：实机 Windows 事件中的 `0x80000003 / GameAssembly.dll RVA 0x6642b6` 已与 `BeverageOut(0, false)` 的 short-Jcc trampoline 错跳精确闭合。历史 `RuntimeStorageSentinelDiagnostic` 及其 13 个全局出库 Hook 已删除；库存诊断只能放在受控调用方或既有业务日志中，不得恢复同类原生入口观察器。
 - 独立伴随窗口默认通过 `127.0.0.1:32145` 读取运行态；该回环 listener 必须始终保留。`LocalApi.AllowLanConnections=true` 只会额外开启 LAN listener，供可信局域网设备连接；LAN 配置和 Token 重置只能由 A 设备本机回环客户端调用。所有正式 Tauri runtime 统一通过 Rust TCP command 访问 API，只有浏览器开发模式直接 fetch；Rust 代理的连接超时最长 5 秒，响应读取超时按前端命令要求最多允许 60 秒。除 `/health` 外，本地 API 使用 `X-Mystia-Steward-Companion-Token` 授权，远程伴随窗口需要手动输入 A 设备 endpoint 和 token，代理只接受 loopback/private/link-local IPv4 endpoint。API 只接受规范路径，不提供 `/` 或 `/api/*` 别名；只读查询使用 `GET`，所有文件、运行时、配置、控制权、诊断和更新副作用使用 `POST`。设备权威端点使用最多 64 KiB 的严格 UTF-8 JSON body，拒绝重复/无效 `Content-Length`、`Transfer-Encoding`、截断、尾随数据和未知字段；其他旧端点不得自行增加 body 兼容协议。`/updates/status` 会归并 updater 结果并可能写入或删除状态文件，因此也使用 `POST`。
@@ -49,9 +56,30 @@
 - Mod 不修改全局 `BepInEx.cfg`，也不释放宿主控制台。默认启动自动显示关闭且不覆盖 BepInEx 全局选择；游戏电脑回环客户端可显式显示或隐藏当前进程窗口。隐藏只改变可见性，日志链保持活动；`SetConsoleUtf8` 只调整当前已创建控制台的编码。
 - 自动更新检查、下载和安装由单操作门串行；`UpdateService` 在 Local API 生命周期内运行一个可取消调度器，成功按配置间隔续检，失败按 15m/30m/1h/2h/4h/6h 退避。关闭 Local API 会先阻止新操作，再通过统一生命周期令牌取消自动/手动检查和下载，等待 handler、活动操作和调度器退出；取消检查恢复原稳定状态并立即到期，不保留虚假 `checking`。服务启动时把强制退出留下的 `checking/downloading` 恢复为当前元数据对应的稳定状态并立即安排检查，同时只清理下载一级目录内符合 `.<semantic-version>.<guid>.tmp` 的残留目录。状态明确区分最近尝试、最近成功、下次检查和连续失败数，不再使用混合语义的 `checkedAtUtc`。工作台级 `useUpdateManager` 是唯一前端控制器，活动状态 2 秒、稳定状态 60 秒读取主机状态，状态端点连续失败按 2s/5s/15s/60s 退避；状态请求和用户动作分开管理，断连或连接身份变化会清理动作并隔离迟到响应。发现新版后显示非模态提示，可直达更新页或按 endpoint + tag 延后 24 小时。manifest 严格校验 schema 1、版本/tag/channel、包名、SHA256 和长度，包体流式写盘；可选 `update-catalog.json` 只提供累计版本目录和 Markdown Release Note，并额外验证大小、SHA256、owner、严格 SemVer 顺序、通道和项目 URL。catalog 缺失或失败只影响版本说明，不影响 manifest 权威的最新版本、下载和安装；终端运行时不调用 GitHub REST API，避免共享 VPN 出口限流，REST 历史收集只发生在使用已认证 GitHub CLI 的发布机。更新页展示当前到最新路径、单一主要动作和逐版本手风琴，Release Note 禁止 raw HTML 和正文直接外链。安装只使用 staged 包内已校验的 updater，且 staged 版本必须高于当前插件版本，旧暂存包只显示为不可安装，不得触发降级。独立 updater 最低支持 Windows 10 1703，使用 Per-Monitor DPI Aware V2、系统 message font、逻辑坐标、原生进度条和动态 DPI 重排。读取更新状态时会归并独立 updater 留下的结果并维护状态文件，因此对应本地 API 不是只读 GET。发布页通过 capability 限定的 Tauri opener 打开；该更新只服务游戏主机 Mod 主包，远程独立 Windows 窗口和 Android APK 不自更新。
 - 游戏内 IMGUI 面板已移除；Mod 在游戏侧只保留后台控制器、本地 API、运行时读取、自动化和伴随窗口唤起。
-- 仓库不使用 GitHub Actions 自动构建 Release；`.github/workflows/ci.yml` 只保留手动前端检查。版本发布采用 Windows 本机构建后由 GitHub CLI 上传。自动更新发布只支持稳定版 `X.Y.Z` 和预览版 `X.Y.Z-preview.N`；预览版必须是 GitHub Prerelease，用于 `dev` 上测试 `preview.1 -> preview.2 -> stable` 更新链路，稳定版再合并 `main` 发布普通 Release。发布脚本要求明确提供非空 Release Note，在创建/覆盖 Release 前通过已认证 `gh api --paginate --slurp` 读取全部公开非 Draft Release，生成确定性 `update-catalog.json`，再把 catalog 的固定资产名、大小和 SHA256 写入 schema 1 manifest；生成或校验失败不得发布。Release 资产包含 `mystia-steward-companion-bepinex.zip`、`update-manifest.json`、`update-catalog.json` 和可直接运行的 `mystia-steward-companion-companion-windows-x64.exe`；如发布机已配置 Android 工具链和签名配置，可通过 `build-release.ps1 -BuildAndroidApk` 或 `publish-release.ps1 -BuildAndroidApk` 额外生成并上传 `mystia-steward-companion-android-arm64-v8a.apk` 和 `mystia-steward-companion-android-armeabi-v7a.apk`。更新清单只指向 Mod 主包，catalog 只负责说明展示，独立 Windows 伴随窗口 EXE 和 Android APK 只给 B 设备跨局域网连接使用。
+- 日常构建和预览版发布在本机执行；正式稳定版唯一入口是 `main` 上手动触发的
+  `.github/workflows/release.yml`。workflow 不响应 push/tag，不修改版本或分支；无密钥验证先锁定当前
+  `origin/main` SHA、五处版本、Note 和 tag/Release 不存在，再由唯一的 GitHub-hosted `windows-2022` job
+  顺序构建 Windows/Mod 与 Android，桌面构建后先清理可重建缓存；因此 `official-release-build` 在私有
+  References/签名解密前只形成一个构建审批点，
+  `official-release` 在 7 项资产汇总、checksum 与 provenance 后、创建 Release 前审批。顶层权限为空，
+  publish job 才有 `contents: write`；所有 action 固定完整 commit SHA。两道 Environment 都必须仅允许
+  `main`、要求 reviewer 且禁止管理员绕过，主仓库必须启用 Immutable Releases。正式资产恰为 Mod ZIP、Windows
+  独立 EXE、两个 ABI APK、manifest、catalog 和 `SHA256SUMS.txt`。manifest 只指向 Mod ZIP；其他客户端
+  资产不参与自动更新。四个构建产物以生产 job 输出的 SHA-256 跨 artifact 边界复核；正式 job 先从锁文件的
+  官方 URL/大小/SHA-256 归档安装精确 PowerShell/gh，不读取 runner 预装版本。发布脚本使用 `-NotesFile` 与
+  精确 `-TargetCommitSha` create-only 创建 direct commit tag 和无资产 Draft。tag/Draft mutation 响应分别
+  锁定 exact ref 与 positive numeric Release id/精确 upload URL；后续串行 raw upload、公开及终检只走
+  exact ref、numeric-id REST 和 Latest，不再按 tag/分页列表发现当前事务。写操作至少间隔 1 秒且不重试，
+  只读检查仅对明确合法的短暂未收敛状态有界等待；上传后校验远端 digest/大小/content-type/元数据才公开，
+  并终检 direct tag ref、immutable/Latest。拒绝任何已有同名对象，不提供覆盖、编辑或删除路径；完整
+  Release 列表仅用于创建前缺席证明与发布历史 fresh 校验。远端编排集中在单一事务函数，运行时审计以
+  列表缺失新 Draft 且 direct-id/ref/Latest 延迟的有状态桩贯穿正式 7 资产并验证 PATCH 前停止。预览版仍可在
+  已推送 `dev` 上用同一脚本发布 Prerelease，但也不得预先推送 tag。七项资产 MIME 由大小写敏感单一映射
+  约束为 ZIP `application/zip`、EXE `application/x-msdownload`、APK
+  `application/vnd.android.package-archive`、JSON `application/json` 和 checksum
+  `text/plain; charset=utf-8`；请求、响应、终检必须一致，未知资产在首个 upload mutation 前拒绝。
 - 仓库内构建缓存统一通过 `pnpm artifacts:report/prune/clean` 管理。默认 12 GiB 高水位、8 GiB 清理目标、Android 1.5 GiB、.NET 0.5 GiB 和 14 天过期优先级，按文件逻辑大小统计；清理只以完整 Cargo profile/target triple、Gradle build 或 .NET `bin/obj` 为单位，不裁剪 Cargo 单文件，也不得与 Cargo、Gradle、Vite 或 dotnet 构建并发。常用 Tauri/Android package 命令在构建前 prune，直接 Cargo/dotnet 命令需要显式检查。`dist`、References、temp、依赖、Playwright 浏览器和签名材料不自动删除。正常 package/build 使用 staging 完整重建本次 `dist`，不得把旧 APK、manifest、tar、zip 或旧目录带入新发布；`publish-release.ps1 -SkipBuild` 才显式复用现有资产。PowerShell 和 bash package 脚本都只生成 canonical ZIP，缺少 ZIP 工具时必须在触碰旧 `dist` 前失败。
-- Android APK 不能从 Windows EXE 直接转换。Android 版按 Tauri mobile 独立目标处理，Android applicationId 固定为 `com.tyukki.mystia.steward.companion`，通过 `apps/companion/src-tauri/tauri.android.conf.json` 覆盖 Android identifier，桌面 Tauri identifier 不变；前端通过 `companion_platform` 识别移动端并隐藏桌面窗口能力；Rust 后端用平台 cfg 隔离托盘、单实例控制、鼠标穿透、窗口状态、全局快捷键和游戏 PID 监控，但本地 API TCP command 与桌面共用。仓库已包含 `apps/companion/src-tauri/gen/android/` 工程和 `src-tauri` library entrypoint；生成的 Gradle Rust 插件使用 Corepack 调用 pnpm，release build 允许连接可信 LAN HTTP endpoint。Tauri 的 `apps/companion/src-tauri/gen/schemas/` 是按当前桌面或移动目标生成的能力补全目录，保持 Git 忽略，避免不同目标覆盖同一 ACL manifest。签名 APK 通过 `pnpm tauri:android:apk:signed` 构建，读取本地被忽略的 `gen/android/keystore.properties`，按 `aarch64` 和 `armv7` 生成拆分 APK，验签后复制到 `mods/bepinex/dist`；release 脚本的 `-BuildAndroidApk` 参数复用该流程。Android Gradle 关闭 Kotlin incremental compilation，避免 Windows 上 Cargo registry 和项目分属不同盘符导致 Kotlin daemon 报 `different roots`。APK 构建需要 Android Studio/SDK/NDK、JDK、Android Rust targets、签名配置和真机 LAN 连接测试；未连接真机时只能验证 APK 构建和包元数据，不能宣称 LAN 已验证。Android 竖屏顶部页签使用横向滚动，焦点或激活页签需要自动滚入可视区域；应用整体需要通过 safe-area inset 避开状态栏和导航栏。
+- Android APK 不能从 Windows EXE 直接转换。Android 版按 Tauri mobile 独立目标处理，Android applicationId 固定为 `com.tyukki.mystia.steward.companion`，通过 `apps/companion/src-tauri/tauri.android.conf.json` 覆盖 Android identifier，桌面 Tauri identifier 不变；前端通过 `companion_platform` 识别移动端并隐藏桌面窗口能力；Rust 后端用平台 cfg 隔离托盘、单实例控制、鼠标穿透、窗口状态、全局快捷键和游戏 PID 监控，但本地 API TCP command 与桌面共用。仓库已包含 `apps/companion/src-tauri/gen/android/` 工程和 `src-tauri` library entrypoint；生成的 Gradle Rust 插件使用 Corepack 调用 pnpm，release build 允许连接可信 LAN HTTP endpoint。Tauri 的 `apps/companion/src-tauri/gen/schemas/` 是按当前桌面或移动目标生成的能力补全目录，保持 Git 忽略，避免不同目标覆盖同一 ACL manifest。签名 APK 通过 `pnpm tauri:android:apk:signed` 按 `aarch64` 和 `armv7` 构建；本地读取被忽略的 `gen/android/keystore.properties`，CI 从 Environment 的五项 secret 临时物化后在 `always()` 清理。两条路径都校验精确 keystore 文件 hash 与最终 APK 证书身份的独立门禁，并只从同一次构建原子复制两个 canonical APK，不接受外部 APK 路径。Android Gradle 关闭 Kotlin incremental compilation，避免 Windows 上 Cargo registry 和项目分属不同盘符导致 Kotlin daemon 报 `different roots`。构建和包元数据不能替代真机 LAN 验证；Android 竖屏顶部页签使用横向滚动，焦点或激活页签需要自动滚入可视区域，应用整体通过 safe-area inset 避开状态栏和导航栏。
 - Android APK 体积优化由签名 APK 脚本注入 `CARGO_PROFILE_RELEASE_STRIP=symbols`、`CARGO_PROFILE_RELEASE_LTO=thin` 和 `CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1`；全局 Cargo release profile 不启用 LTO，避免 Windows-only 发布构建在 Rust 链接优化尾段长时间停顿。
 - Tauri mobile 的 Rust lib target 内部名为 `mystia_steward_companion_mobile`，用于避开 Windows MSVC 下桌面 bin `mystia-steward-companion` 规格化后的 PDB 名冲突；桌面产品名、EXE 名、Tauri identifier 和 Android applicationId 不因此改变。
 - 默认热键 `F8` 和 `RS Click` 的主语义是游戏与伴随窗口焦点切换；Mod 侧 `RS Click` 只做释放锁存，默认 800ms 可配置冷却由 Tauri 唯一 gate 管理且只在实际 `applied` 后计时。伴随窗口聚焦时由 Tauri 前端处理热键并按设置切回游戏，必须先确认游戏聚焦成功再隐藏窗口。Windows 侧以 `SetForegroundWindow` 非零返回或当前前台窗口属于目标进程确认成功，不把激活转换期的精确 HWND 瞬时不一致误判为失败。

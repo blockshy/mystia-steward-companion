@@ -21,8 +21,7 @@ assert.equal(parseUpdateVersion('1.4.0-preview.9007199254740992'), null);
 
 const historicalReleases = [[
   release('v1.2.0', false, '2026-07-12T12:51:25Z', 'v1.2.0', '## 修复\n\n- 历史修复'),
-  release('v1.4.0-preview.1', true, '2026-08-10T00:00:00Z', '预览版 1', '预览说明'),
-  release('v1.3.0', false, '2026-08-11T02:57:08Z', '旧标题', '旧说明'),
+  release('v1.3.0-preview.1', true, '2026-08-10T00:00:00Z', '预览版 1', '预览说明'),
   release('1.2.1', false, '2026-07-13T00:00:00Z', '非规范 tag', '不应进入目录'),
   { ...release('v9.9.9', false, '2026-08-11T03:00:00Z'), draft: true },
   release('not-an-update', false, '2026-08-11T04:00:00Z'),
@@ -44,11 +43,12 @@ assert.equal(built.catalog.schemaVersion, 1);
 assert.equal(built.catalog.ownerTag, 'v1.3.0');
 assert.deepEqual(
   built.catalog.releases.map((entry) => entry.version),
-  ['1.2.0', '1.3.0'],
-  'Catalog releases were not bounded to canonical releases at or before the owner version.',
+  ['1.2.0', '1.3.0-preview.1', '1.3.0'],
+  'Catalog releases did not preserve strict semantic-version order.',
 );
-assert.equal(built.catalog.releases[1].title, 'v1.3.0 新标题');
-assert.equal(built.catalog.releases[1].notesMarkdown, '## 新增功能\n\n- 当前说明\n');
+const ownerRelease = built.catalog.releases.find((entry) => entry.tag === 'v1.3.0');
+assert.equal(ownerRelease?.title, 'v1.3.0 新标题');
+assert.equal(ownerRelease?.notesMarkdown, '## 新增功能\n\n- 当前说明\n');
 assert.ok(built.serialized.endsWith('\n'));
 assert.equal(
   built.serialized,
@@ -98,6 +98,12 @@ expectFailure(
     githubReleases: [[release('v1.4.0-preview.1', false, '2026-07-01T00:00:00Z')]],
   })),
   'prerelease flag',
+);
+expectFailure(
+  () => buildUpdateCatalog(baseOptions({
+    githubReleases: [[release('v1.4.0-preview.1', true, '2026-07-01T00:00:00Z')]],
+  })),
+  'must be strictly newer',
 );
 expectFailure(
   () => buildUpdateCatalog(baseOptions({

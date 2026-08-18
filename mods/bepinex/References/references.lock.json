@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "bepInEx": {
+      "build": 783,
+      "version": "6.0.0-be.783+c58c42d",
+      "asset": "BepInEx-Unity.IL2CPP-win-x64-6.0.0-be.783+c58c42d.zip",
+      "sha256": "108d982dcd363cbe65e3bcdfb152d67703b4793e8f04f2011f59c73dfdd3e182"
+    },
+    "game": {
+      "steamAppId": "1584090",
+      "steamBuildId": "23158340",
+      "gameAssemblySha256": "91ce5ae3dad5da07dfed63bab4c9e454f67b6e50f9a6e8ec498ef9b0b806a789",
+      "globalMetadataSha256": "995d1a08cac7a784d397927cf73ae71a8ce47cc8637cc4dd7ea534a3368b31e7"
+    }
+  },
+  "bundle": {
+    "repository": "blockshy/mystia-steward-build-assets",
+    "tag": "bepinex-783-tmi-91ce5ae3-995d1a08-v2",
+    "asset": "mystia-steward-build-references.zip",
+    "size": 2231579,
+    "sha256": "05bc343aeecc866cbb3b5d2f862bf2f31d815d9218fffcacfa059a2ef9775e28"
+  },
+  "files": [
+    {
+      "name": "BepInEx.Core.dll",
+      "size": 138240,
+      "sha256": "751ec75bc1243685e98c1532fbf56c22967506f5eb2189ae8a896b8ea13caab0"
+    },
+    {
+      "name": "BepInEx.Unity.IL2CPP.dll",
+      "size": 101888,
+      "sha256": "1227bd4e73e9d48bc5879e3b000c43aadcd1638594d6ec6287a67d2479acb79e"
+    },
+    {
+      "name": "0Harmony.dll",
+      "size": 264192,
+      "sha256": "6c898933b52149e8bcf6722305c7e4d94add47c9e53b364096f91721624c0877"
+    },
+    {
+      "name": "Il2CppInterop.Runtime.dll",
+      "size": 284672,
+      "sha256": "65ab051a681c2c1e52df7596ff738be401aae72cff882ff18241cf54a3ea38a4"
+    },
+    {
+      "name": "Il2Cppmscorlib.dll",
+      "size": 6301184,
+      "sha256": "04f286eed2756fe11b18abf5911d6f37c0629a39f3e47f072109a0e054b606ab"
+    },
+    {
+      "name": "UnityEngine.CoreModule.dll",
+      "size": 2912256,
+      "sha256": "01c188159b9177387c0b7b6337768c42f183e6e993185d313882c3d898f61bb7"
+    },
+    {
+      "name": "UnityEngine.InputLegacyModule.dll",
+      "size": 47616,
+      "sha256": "bd88d217bbb2b7ad16df5b0dcf7b7d67279bbe283152ed6723234e99bf3ebd2e"
+    }
+  ]
+}
