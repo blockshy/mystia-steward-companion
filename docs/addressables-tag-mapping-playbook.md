@@ -1,7 +1,10 @@
 # Addressables 标签映射提取手册
 
-更新日期：2026-04-30
-适用范围：当存档中的料理或酒水 tag 使用数字 id，且仓库内映射需要重新核实时。
+更新日期：2026-08-19
+
+本文只说明从游戏 Addressables 恢复料理、酒水和规则 Tag 映射的操作步骤。Tag 的业务语义见
+[料理机制知识库](tmi-cooking-mechanics-knowledge-base.md)，运行时读取和发布见
+[运行时 Provider](runtime-provider.md)。
 
 ## 1. 目标
 
@@ -115,11 +118,13 @@
 
 ## 5. 落地要求
 
-当映射被重新核实后，必须同步更新：
+当映射被重新核实后，必须同步检查：
 
 - `mods/bepinex/src/Save/` 中的运行时解析逻辑和诊断输出
-- `docs/tmi-cooking-mechanics-knowledge-base.md`
-- 相关 README 或运行时说明文档
+- [料理机制知识库](tmi-cooking-mechanics-knowledge-base.md)中的 Tag 身份或机制结论
+- [运行时 Provider](runtime-provider.md)中的映射来源边界
+
+只有用户安装或操作发生变化时才修改用户 README；资源文件名、解码流程或内部映射变化不进入用户文档。
 
 ## 6. 常见误区
 

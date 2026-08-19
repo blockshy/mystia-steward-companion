@@ -1,5 +1,10 @@
 # IL2CPP 源码与 IDA 分析工作流
 
+更新日期：2026-08-19
+
+本文只负责分析资料生成、证据层级、锁定分析工具和已确认的失效路径；产品构建与测试命令见
+[本地开发与构建](local-development.md)和[验证指南](validation-guide.md)。
+
 ## 目标与边界
 
 当前 Steam 安装的《东方夜雀食堂》虽然运行在 Linux 主机上，主程序仍是 Windows x64 PE：
@@ -143,8 +148,8 @@ ILSpy 10.1.1 对少数 Il2CppInterop 复杂泛型程序集无法生成项目 C#�
   DummyDll，不能用空项目补齐数量。
 - Il2CppInterop DLL 的文件哈希包含生成期身份，不应单凭 DLL SHA-256 判断 wrapper 语义变化；应比较明确
   类型/成员形态并重新构建 Mod 与专项 smoke。
-- 最终至少运行 `pnpm lint`、`pnpm build`、Tauri Rust 单元测试、`pnpm tauri:build`、Mod Release build，
-  并对当前修改涉及的运行时契约执行对应 smoke/audit。
+- 分析结论进入代码后，按[验证指南](validation-guide.md)运行受影响的构建、smoke/audit 和游戏实测；
+  分析生成成功本身不证明产品行为正确。
 
 ## Steam 游戏目录约束
 

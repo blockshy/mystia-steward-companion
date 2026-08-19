@@ -65,7 +65,7 @@ PowerShell 和 Bash preflight 都会执行同一项身份校验，不再只检�
 - `MonoMod.RuntimeDetour.dll`
 - `MonoMod.Utils.dll`
 
-## 构建
+## 恢复后的验证
 
 恢复引用后，在仓库根目录运行：
 
@@ -85,5 +85,6 @@ dotnet run --project tests\ui-pinning-runtime\UiPinningRuntimeSmoke.csproj `
   -c Release -p:ReferenceDir="D:\path\to\mystia-steward-companion-references"
 ```
 
-产品构建必须使用仓库 `global.json` 锁定的 .NET SDK `10.0.110`；项目目标框架仍为 `net6.0`，
-SDK 版本和目标框架不可混为一谈。真实 Harmony/MonoMod smoke 使用仓库单独锁定的 .NET 6 容器入口。
+工具链安装、完整构建和缓存治理见[本地开发与构建](../../../docs/local-development.md)；测试专用依赖与
+Harmony/MonoMod 容器入口见[验证指南](../../../docs/validation-guide.md)。本文件不重复维护通用工具版本或
+发布流程。
