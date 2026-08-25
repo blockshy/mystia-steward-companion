@@ -4,6 +4,13 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import {
+  isCanonicalJavaReleaseSemver,
+  isCanonicalJavaVersion,
+  matchesLockedJavaRuntimeVersion,
+  resolveAndroidJavaCommand,
+} from '../../scripts/android-jdk-toolchain.mjs';
+
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const toolchain = JSON.parse(await readFile(path.join(repoRoot, 'toolchain.lock.json'), 'utf8'));
 const packageJson = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8'));
@@ -33,7 +40,7 @@ const [
   readFile(path.join(repoRoot, 'scripts/install-locked-release-tools.mjs'), 'utf8'),
   readFile(path.join(repoRoot, 'mods/bepinex/tools/build-release.ps1'), 'utf8'),
   readFile(path.join(repoRoot, '.github/workflows/ci.yml'), 'utf8'),
-  readFile(path.join(repoRoot, 'scripts/run-dotnet6-harmony-smoke.mjs'), 'utf8'),
+  readFile(path.join(repoRoot, 'scripts/run-dotnet6-smoke.mjs'), 'utf8'),
   readFile(path.join(repoRoot, 'mods/bepinex/tools/il2cpp-analysis/generate-analysis.sh'), 'utf8'),
   readFile(path.join(repoRoot, 'scripts/build-android-signed-apk.mjs'), 'utf8'),
   readFile(path.join(repoRoot, 'mods/bepinex/tools/preflight.ps1'), 'utf8'),
@@ -74,8 +81,37 @@ assert.notEqual(globalPackageManagerCheck.status, 0, 'A global package-manager i
 assert.match(globalPackageManagerCheck.stderr, /must be invoked through Corepack/u);
 
 assert.equal(packageJson.scripts['toolchain:check'], 'node scripts/check-build-toolchain.mjs full');
-assert.equal(packageJson.scripts['test:dotnet6-harmony'], 'node scripts/run-dotnet6-harmony-smoke.mjs all');
-assert.equal(toolchain.schemaVersion, 3);
+assert.equal(packageJson.scripts['test:dotnet6'], 'node scripts/run-dotnet6-smoke.mjs');
+assert.deepEqual(
+  Object.keys(packageJson.scripts).filter((name) => name.startsWith('test:dotnet6')),
+  ['test:dotnet6'],
+  'package.json must expose exactly one .NET 6 smoke entry.',
+);
+assert.equal(toolchain.schemaVersion, 5);
+assert.deepEqual(
+  Object.keys(toolchain).sort(),
+  [
+    'android',
+    'corepack',
+    'corepackIntegrity',
+    'dotnet6Image',
+    'dotnet6Sdk',
+    'dotnetSdk',
+    'githubCli',
+    'node',
+    'pnpm',
+    'powershell',
+    'releaseToolArchives',
+    'rust',
+    'schemaVersion',
+  ],
+  'toolchain.lock.json top-level schema drifted.',
+);
+assert.equal(toolchain.dotnet6Sdk, '6.0.428');
+assert.equal(
+  toolchain.dotnet6Image,
+  'mcr.microsoft.com/dotnet/sdk@sha256:eaa148f3f58a7276c9bb2eac0612f9560e9ba69e44de02e9ae1912e7105a9b1e',
+);
 assert.equal(
   toolchain.corepackIntegrity,
   'sha512-9BuIGHDFE7Zieor1CeRsvt7X7AJFEuJ6OnbSbsVprq83ChDFoBh1wP98NeUS9FT3ZwlzFllPElXcz/OiDf0YGw==',
@@ -111,7 +147,8 @@ assert.deepEqual(toolchain.releaseToolArchives, {
 assert.deepEqual(toolchain.android, {
   jdkDistribution: 'temurin',
   jdkVendor: 'Eclipse Adoptium',
-  jdkVersion: '21.0.4',
+  jdkVersion: '21.0.12.1',
+  jdkReleaseSemver: '21.0.12+101.0.LTS',
   compileSdk: 36,
   targetSdk: 36,
   gradle: '8.14.3',
@@ -122,6 +159,63 @@ assert.deepEqual(toolchain.android, {
   rustTargets: ['aarch64-linux-android', 'armv7-linux-androideabi'],
   signingCertificateSha256: '1540b609d5cd54e06a8429bb0aaa2cc4b511e055565fdac93acf206c1791d1fb',
 });
+assert.equal(isCanonicalJavaVersion('21.0.12.1'), true);
+assert.equal(isCanonicalJavaVersion('21.0.12'), true);
+assert.equal(isCanonicalJavaVersion('21.0'), false);
+assert.equal(isCanonicalJavaVersion('21.0.12.1.1'), false);
+assert.equal(isCanonicalJavaReleaseSemver('21.0.12+101.0.LTS'), true);
+assert.equal(isCanonicalJavaReleaseSemver('21.0.12.1'), false);
+assert.equal(isCanonicalJavaReleaseSemver('21.0.12+'), false);
+assert.equal(matchesLockedJavaRuntimeVersion('21.0.12.1', '21.0.12.1+1-LTS'), true);
+assert.equal(matchesLockedJavaRuntimeVersion('21.0.12.1', '21.0.12.1'), true);
+assert.equal(matchesLockedJavaRuntimeVersion('21.0.12.1', '21.0.12+1-LTS'), false);
+assert.equal(matchesLockedJavaRuntimeVersion('21.0.12.1', '21.0.12.10+1-LTS'), false);
+
+const windowsAndroidJava = resolveAndroidJavaCommand({
+  javaHome: '  D:\\toolchains\\temurin-21.0.12.1  ',
+  platform: 'win32',
+  pathExists: (candidate) => candidate === 'D:\\toolchains\\temurin-21.0.12.1\\bin\\java.exe',
+});
+assert.deepEqual(windowsAndroidJava, {
+  command: 'D:\\toolchains\\temurin-21.0.12.1\\bin\\java.exe',
+  javaHome: 'D:\\toolchains\\temurin-21.0.12.1',
+});
+assert.deepEqual(
+  resolveAndroidJavaCommand({
+    javaHome: '/opt/toolchains/temurin-21.0.12.1/',
+    platform: 'linux',
+    pathExists: (candidate) => candidate === '/opt/toolchains/temurin-21.0.12.1/bin/java',
+  }),
+  {
+    command: '/opt/toolchains/temurin-21.0.12.1/bin/java',
+    javaHome: '/opt/toolchains/temurin-21.0.12.1/',
+  },
+);
+assert.throws(
+  () => resolveAndroidJavaCommand({ javaHome: '  ' }),
+  /JAVA_HOME must point to the locked Android Temurin JDK/u,
+);
+assert.throws(
+  () => resolveAndroidJavaCommand({
+    javaHome: 'D:\\toolchains\\missing-jdk',
+    platform: 'win32',
+    pathExists: () => false,
+  }),
+  /Locked Android JDK executable does not exist: D:\\toolchains\\missing-jdk\\bin\\java\.exe/u,
+);
+assert.match(buildToolchainChecker, /resolveAndroidJavaCommand\(\)/u);
+assert.match(
+  buildToolchainChecker,
+  /spawnSync\(javaCommand\.command, \['-XshowSettings:properties', '-version'\]/u,
+);
+assert.match(buildToolchainChecker, /installed Android JDK did not report java\.home/u);
+assert.doesNotMatch(
+  buildToolchainChecker,
+  /spawnSync\(['"]java['"], \['-XshowSettings:properties', '-version'\]/u,
+  'The Android JDK check must execute JAVA_HOME/bin/java instead of searching PATH.',
+);
+assert.match(androidApkBuilder, /command: resolveAndroidJavaCommand\(\)\.command/u);
+assert.doesNotMatch(androidApkBuilder, /function findJavaCommand\(/u);
 assert.match(
   buildToolchainChecker,
   /path\.join\(androidHome, 'ndk', androidToolchain\.ndkPackage\)/u,
@@ -284,8 +378,19 @@ for (const scriptName of ['tauri:android:dev', 'tauri:android:build', 'tauri:and
 assert.match(buildRelease, /Join-Path \$RepoRoot "scripts\/check-build-toolchain\.mjs"/u);
 assert.match(buildRelease, /-Title "Validate locked build toolchain"/u);
 assert.match(buildRelease, /-Arguments @\(\$ToolchainCheckScript, "full"\)/u);
+assert.match(buildRelease, /-Title "Validate locked Android build toolchain"/u);
+assert.match(buildRelease, /-Arguments @\(\$ToolchainCheckScript, "android"\)/u);
 assert.doesNotMatch(buildRelease, /Get-Command "pnpm"/u);
 assert.match(buildRelease, /Get-Command "corepack"/u);
+
+const fullToolchainCheckIndex = buildRelease.indexOf('-Arguments @($ToolchainCheckScript, "full")');
+const androidToolchainCheckIndex = buildRelease.indexOf('-Arguments @($ToolchainCheckScript, "android")');
+const buildCachePruneIndex = buildRelease.indexOf(
+  'Invoke-BuildCachePrune -Title "Prune stale build artifacts before compilation"',
+);
+assert.ok(fullToolchainCheckIndex >= 0);
+assert.ok(androidToolchainCheckIndex > fullToolchainCheckIndex);
+assert.ok(buildCachePruneIndex > androidToolchainCheckIndex);
 
 assert.match(ciWorkflow, /node-version-file: \.nvmrc/u);
 assert.match(
@@ -303,7 +408,18 @@ for (const smokeName of [
   assert.match(dotnet6Runner, new RegExp(`'${escapeRegex(smokeName)}'`, 'u'));
 }
 assert.match(dotnet6Runner, /target=\/workspace\/global\.json,readonly/u);
+assert.match(dotnet6Runner, /tests\/dotnet6\/global\.json/u);
+assert.match(dotnet6Runner, /toolchain\.dotnet6Image/u);
 assert.doesNotMatch(dotnet6Runner, /mcr\.microsoft\.com\/dotnet\/sdk@sha256:/u);
+assert.doesNotMatch(dotnet6Runner, /['"]HOME=\/tmp/u, 'The smoke runner must not repurpose HOME.');
+
+const invalidDotnet6Selection = spawnSync(
+  process.execPath,
+  [path.join(repoRoot, 'scripts/run-dotnet6-smoke.mjs'), 'not-a-smoke'],
+  { cwd: repoRoot, encoding: 'utf8' },
+);
+assert.equal(invalidDotnet6Selection.status, 2, 'The .NET 6 smoke runner accepted an unknown smoke name.');
+assert.match(invalidDotnet6Selection.stderr, /Usage: node scripts\/run-dotnet6-smoke\.mjs/u);
 
 assert.match(analysisGenerator, /build_toolchain_lock="\$repo_root\/toolchain\.lock\.json"/u);
 assert.match(analysisGenerator, /dotnet_version=\$\(cd "\$repo_root" && dotnet --version\)/u);

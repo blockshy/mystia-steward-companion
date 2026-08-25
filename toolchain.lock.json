@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 5,
   "node": "24.19.0",
   "corepack": "0.35.0",
   "corepackIntegrity": "sha512-9BuIGHDFE7Zieor1CeRsvt7X7AJFEuJ6OnbSbsVprq83ChDFoBh1wP98NeUS9FT3ZwlzFllPElXcz/OiDf0YGw==",
@@ -37,7 +37,8 @@
   "android": {
     "jdkDistribution": "temurin",
     "jdkVendor": "Eclipse Adoptium",
-    "jdkVersion": "21.0.4",
+    "jdkVersion": "21.0.12.1",
+    "jdkReleaseSemver": "21.0.12+101.0.LTS",
     "compileSdk": 36,
     "targetSdk": 36,
     "gradle": "8.14.3",
@@ -51,6 +52,6 @@
     ],
     "signingCertificateSha256": "1540b609d5cd54e06a8429bb0aaa2cc4b511e055565fdac93acf206c1791d1fb"
   },
-  "dotnet6HarmonySdk": "6.0.428",
-  "dotnet6HarmonyImage": "mcr.microsoft.com/dotnet/sdk@sha256:eaa148f3f58a7276c9bb2eac0612f9560e9ba69e44de02e9ae1912e7105a9b1e"
+  "dotnet6Sdk": "6.0.428",
+  "dotnet6Image": "mcr.microsoft.com/dotnet/sdk@sha256:eaa148f3f58a7276c9bb2eac0612f9560e9ba69e44de02e9ae1912e7105a9b1e"
 }

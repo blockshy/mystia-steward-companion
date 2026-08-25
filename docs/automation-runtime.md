@@ -139,7 +139,7 @@ corepack pnpm audit:connection-recovery
 `automation-cooking-job` 使用真实 Harmony/MonoMod 探针，应通过锁定的 .NET 6 容器入口运行：
 
 ```bash
-corepack pnpm test:dotnet6-harmony
+corepack pnpm test:dotnet6
 ```
 
 若修改特殊经营结算，再执行对应专项 smoke，并按 [IL2CPP / IDA 分析流程](il2cpp-analysis-workflow.md) 复核原生边界。

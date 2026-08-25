@@ -18,6 +18,8 @@ const fail = (message) => {
   throw new Error(`GitHub Actions release policy audit failed: ${message}`);
 };
 
+const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+
 const requireMatch = (content, pattern, message) => {
   if (!pattern.test(content)) fail(message);
 };
@@ -442,7 +444,11 @@ requireMatch(
   'Signing files need strict unconditional cleanup.',
 );
 requireMatch(jobs.build, /corepack pnpm tauri:android:apk:signed/u, 'The package job must build signed APKs.');
-requireMatch(jobs.build, /java-version: "21\.0\.4"/u, 'The package job must use the locked Temurin 21.0.4 JDK.');
+requireMatch(
+  jobs.build,
+  new RegExp(`java-version: "${escapeRegex(toolchain.android.jdkReleaseSemver)}"`, 'u'),
+  `The package job must use the locked Temurin ${toolchain.android.jdkReleaseSemver} release coordinate.`,
+);
 requireMatch(jobs.build, /"build-tools;35\.0\.0"/u, 'The package job must install the locked Android build tools.');
 requireMatch(
   jobs.build,

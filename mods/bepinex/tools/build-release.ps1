@@ -177,6 +177,13 @@ try {
         -FilePath $Node.Source `
         -Arguments @($ToolchainCheckScript, "full")
 
+    if ($BuildAndroidApk) {
+        Invoke-Checked `
+            -Title "Validate locked Android build toolchain" `
+            -FilePath $Node.Source `
+            -Arguments @($ToolchainCheckScript, "android")
+    }
+
     # A new Tauri build does not depend on a reused frontend build, so it is safe to prune stale buckets first.
     if (-not $SkipBuildCacheCleanup -and -not $SkipTauriBuild) {
         Invoke-BuildCachePrune -Title "Prune stale build artifacts before compilation"

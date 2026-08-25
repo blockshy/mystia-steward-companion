@@ -138,5 +138,5 @@ dotnet build tests/runtime-target-recipe-variant/RuntimeTargetRecipeVariantSmoke
 dotnet run --project tests/runtime-target-recipe-variant/RuntimeTargetRecipeVariantSmoke.csproj -c Release --no-build
 ```
 
-需要锁定 .NET 6 + Harmony 的组合验证时运行 `corepack pnpm test:dotnet6-harmony`。完整验证分层见
+需要锁定 .NET 6 + Harmony 的组合验证时运行 `corepack pnpm test:dotnet6`。完整验证分层见
 [验证指南](validation-guide.md)。

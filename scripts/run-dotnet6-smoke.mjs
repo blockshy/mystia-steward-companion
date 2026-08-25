@@ -5,12 +5,18 @@ import { fileURLToPath } from 'node:url';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 const toolchain = JSON.parse(readFileSync(path.join(repoRoot, 'toolchain.lock.json'), 'utf8'));
-const dotnet6GlobalJsonPath = path.join(repoRoot, 'tests/dotnet6-harmony/global.json');
+const dotnet6GlobalJsonPath = path.join(repoRoot, 'tests/dotnet6/global.json');
 const dotnet6GlobalJson = JSON.parse(readFileSync(dotnet6GlobalJsonPath, 'utf8'));
 
-if (dotnet6GlobalJson.sdk?.version !== toolchain.dotnet6HarmonySdk
-  || dotnet6GlobalJson.sdk?.rollForward !== 'disable') {
-  throw new Error('The .NET 6 Harmony SDK selector does not match toolchain.lock.json.');
+if (dotnet6GlobalJson.sdk?.version !== toolchain.dotnet6Sdk
+  || dotnet6GlobalJson.sdk?.rollForward !== 'disable'
+  || dotnet6GlobalJson.sdk?.allowPrerelease !== false) {
+  throw new Error('The .NET 6 SDK selector does not match toolchain.lock.json.');
+}
+if (!/^mcr\.microsoft\.com\/dotnet\/sdk@sha256:[a-f0-9]{64}$/u.test(
+  toolchain.dotnet6Image ?? '',
+)) {
+  throw new Error('The .NET 6 SDK image must be locked by a canonical SHA-256 digest.');
 }
 
 const smokeTests = new Map([
@@ -31,14 +37,21 @@ const selected = requested.length === 0 || (requested.length === 1 && requested[
   ? [...smokeTests.keys()]
   : requested;
 
-if (selected.length === 0 || selected.some((name) => !smokeTests.has(name))) {
-  console.error(`Usage: node scripts/run-dotnet6-harmony-smoke.mjs [all|${[...smokeTests.keys()].join('|')}]`);
+if (selected.length === 0
+  || new Set(selected).size !== selected.length
+  || selected.some((name) => !smokeTests.has(name))) {
+  console.error(`Usage: node scripts/run-dotnet6-smoke.mjs [all|${[...smokeTests.keys()].join('|')}]`);
   process.exit(2);
 }
 
 for (const name of selected) {
-  const commands = smokeTests.get(name);
-  console.log(`Running locked .NET 6 Harmony smoke: ${name}`);
+  console.log(`Running locked .NET 6 smoke: ${name}`);
+  runDocker(smokeTests.get(name), name);
+}
+
+console.log(`Locked .NET 6 smoke passed: ${selected.join(', ')}.`);
+
+function runDocker(commands, name) {
   const dockerArgs = [
     'run',
     '--rm',
@@ -51,7 +64,15 @@ for (const name of selected) {
     '--env',
     'DOTNET_CLI_HOME=/tmp/dotnet-home',
     '--env',
-    'HOME=/tmp',
+    'NUGET_PACKAGES=/tmp/nuget-packages',
+    '--env',
+    'XDG_DATA_HOME=/tmp/dotnet-data',
+    '--env',
+    'XDG_CACHE_HOME=/tmp/dotnet-cache',
+    '--env',
+    'DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1',
+    '--env',
+    'DOTNET_CLI_TELEMETRY_OPTOUT=1',
   ];
 
   if (process.platform !== 'win32') {
@@ -60,7 +81,7 @@ for (const name of selected) {
   }
 
   dockerArgs.push(
-    toolchain.dotnet6HarmonyImage,
+    toolchain.dotnet6Image,
     '/bin/sh',
     '-eu',
     '-c',
@@ -73,12 +94,10 @@ for (const name of selected) {
     windowsHide: true,
   });
   if (result.error) {
-    console.error(`Unable to start Docker for ${name}: ${result.error.message}`);
+    console.error(`Unable to start .NET 6 container smoke ${name}: ${result.error.message}`);
     process.exit(1);
   }
   if (result.status !== 0) {
     process.exit(result.status ?? 1);
   }
 }
-
-console.log(`Locked .NET 6 Harmony smoke passed: ${selected.join(', ')}.`);

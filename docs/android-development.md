@@ -1,6 +1,6 @@
 # Android 本地开发
 
-更新日期：2026-08-19
+更新日期：2026-08-25
 
 本文档只说明 Android 伴随窗口的本地环境、构建、签名、产物和故障排查。通用 Node/Rust 环境与
 Mock API 见[本地开发与构建](local-development.md)，测试选择见[验证指南](validation-guide.md)，
@@ -20,7 +20,7 @@ Android 版用于可信局域网内的 B 设备，通过 A 设备上运行的游
 
 | 组件 | 锁定值 |
 | --- | --- |
-| Eclipse Temurin JDK | `21.0.4` |
+| Eclipse Temurin JDK | `21.0.12.1` |
 | Android compile SDK | `36` |
 | Android target SDK | `36` |
 | Android Build Tools | `35.0.0` |
@@ -36,9 +36,10 @@ NDK 的 SDK 目录名与包内 revision 是两个需要同时满足的值。不�
 ## 环境准备
 
 通过 Android Studio SDK Manager 或 `sdkmanager` 精确安装 platform `36`、Build Tools `35.0.0` 和 NDK
-package `30.0.14904198`。安装 Eclipse Temurin JDK `21.0.4`，再配置：
+package `30.0.14904198`。安装 Eclipse Temurin JDK `21.0.12.1`，再配置：
 
-- `JAVA_HOME`：JDK `21.0.4` 根目录；
+- `JAVA_HOME`：Eclipse Temurin JDK `21.0.12.1` 根目录；Android 构建只使用该目录下的 Java，
+  不从 `PATH` 或 Android Studio 中猜测其他 JDK；
 - `ANDROID_HOME`：包含 `platforms/`、`build-tools/` 和 `ndk/` 的 SDK 根目录；
 - `NDK_HOME`：`$ANDROID_HOME/ndk/30.0.14904198`。
 
@@ -49,14 +50,25 @@ package `30.0.14904198`。安装 Eclipse Temurin JDK `21.0.4`，再配置：
 Windows PowerShell 示例：
 
 ```powershell
-$env:JAVA_HOME = "D:\environment\jdk-21.0.4"
+$env:JAVA_HOME = "D:\environment\temurin-21.0.12.1"
 $env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
 $env:ANDROID_SDK_ROOT = $env:ANDROID_HOME
 $env:NDK_HOME = Join-Path $env:ANDROID_HOME "ndk\30.0.14904198"
 
+& (Join-Path $env:JAVA_HOME "bin\java.exe") -XshowSettings:properties -version 2>&1 |
+  Select-String "java.runtime.version|java.vendor|java.home"
 rustup target add aarch64-linux-android armv7-linux-androideabi --toolchain 1.97.1
 node scripts/check-build-toolchain.mjs android
 ```
+
+上述 Java 输出必须同时显示 `java.runtime.version = 21.0.12.1+1...`、
+`java.vendor = Eclipse Adoptium`，且 `java.home` 与 `JAVA_HOME` 解析到同一目录。机器上可以安装其他
+JDK，但不要让当前构建终端的 `JAVA_HOME` 指向 Oracle JDK 或 Android Studio JBR。版本末尾的第四段
+`.1` 是 Java 版本的 patch component，不得截断为 `21.0.12`。
+
+`toolchain.lock.json` 还以 `jdkReleaseSemver = 21.0.12+101.0.LTS` 固定同一 Adoptium Release 的 CI
+解析坐标。该值来自 Adoptium 的 `version_data.semver`，只供发布 workflow 精确下载使用，不是本地
+`java -version` 应显示的另一套 JDK 版本。
 
 标准项目命令还会要求由 Corepack 调用锁定 pnpm：
 
@@ -96,7 +108,8 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1 -BuildAn
 ```
 
 该命令仅构建本地资产，不创建 tag 或 GitHub Release。正式稳定版工作流见
-[发布流程](local-release.md)。
+[发布流程](local-release.md)。传入 `-BuildAndroidApk` 时，脚本会在前端、桌面窗口和 Mod 编译前完成
+Android 工具链预检；签名 APK 子流程仍会在自身副作用前重新验证同一工具链。
 
 ## 未签名产物
 
@@ -133,11 +146,12 @@ keytool -genkeypair -v `
 keyAlias=mystia-steward-companion
 storePassword=<keystore 密码>
 keyPassword=<key 密码>
-storeFile=C:\Users\Administrator\.android\mystia-steward-companion-release.jks
+storeFile=C:/Users/Administrator/.android/mystia-steward-companion-release.jks
 ```
 
 即使 store 与 key 使用同一密码，也要分别填写 `storePassword` 和 `keyPassword`。旧 `password` 字段不是
-有效路径。`storeFile` 可使用绝对路径，或以 Android 工程根目录为基准的相对路径。
+有效路径。`storeFile` 可使用绝对路径，或以 Android 工程根目录为基准的相对路径。Windows 绝对路径推荐使用
+正斜杠；若使用反斜杠，必须按 Java Properties 语法写成 `C:\\Users\\...`，不能直接写单个反斜杠。
 
 keystore、密码、`keystore.properties`、Gradle 缓存、JNI `.so` 与构建输出均不得提交、写入诊断包或日志。
 
@@ -195,9 +209,15 @@ release profile。APK 是独立下载资产，不写入 Mod 的 `update-manifest
 ### 工具链检查报告版本或路径冲突
 
 - 先读取 `toolchain.lock.json`，不要根据 Android Studio 的推荐版本升级；
-- 确认命令实际使用的 `java`、`rustc`、`cargo`、SDK 和 NDK 与环境变量一致；
+- 确认 `JAVA_HOME\bin\java.exe`、`rustc`、`cargo`、SDK 和 NDK 与环境变量一致；
 - 检查 `NDK_HOME/source.properties` 的 `Pkg.Revision` 是 `30.0.14904198-beta1`；
 - 删除或修正指向其他目录的 Android SDK/NDK 别名，而不是增加检测回退。
+
+### JDK vendor 报告 Oracle Corporation
+
+这表示当前 `JAVA_HOME` 指向 Oracle JDK，而不是锁定的 Eclipse Temurin。即使 Java 主版本和补丁号同为
+`21.0.12.1`，工具链检查仍会在 Gradle 启动前停止。将 `JAVA_HOME` 改为实际的 Temurin `21.0.12.1` 根目录，
+重新运行上方 Java properties 命令和 Android profile 检查；不要放宽 vendor 校验或增加 Oracle fallback。
 
 ### 缺少 Rust Android target
 

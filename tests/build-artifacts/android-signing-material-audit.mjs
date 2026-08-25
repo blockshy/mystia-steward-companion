@@ -51,6 +51,10 @@ function auditGradleSigningContract() {
   assert.match(androidGradle, /Unsupported Android signing properties/u);
   assert.match(
     androidGradle,
+    /Replace legacy password with both storePassword and keyPassword/u,
+  );
+  assert.match(
+    androidGradle,
     /releaseKeystorePropertiesFile\.inputStream\(\)\.use \{ load\(it\) \}/u,
   );
   assert.doesNotMatch(androidGradle, /FileInputStream/u);
@@ -127,6 +131,10 @@ function auditPropertyEscaping() {
     },
   );
   assert.equal(parseProperties('storePassword=  literal trailing  \n').storePassword, 'literal trailing  ');
+  assert.equal(
+    parseProperties('storeFile=C:/Users/Administrator/.android/release.jks\n').storeFile,
+    'C:/Users/Administrator/.android/release.jks',
+  );
 }
 
 function auditCanonicalSigningProperties() {
@@ -143,7 +151,7 @@ function auditCanonicalSigningProperties() {
       password: 'legacy-password',
       storeFile: canonical.storeFile,
     }, 'fixture'),
-    /Unsupported Android signing properties.*password/u,
+    /Unsupported Android signing properties.*password.*Replace legacy password with both storePassword and keyPassword/u,
   );
   assert.throws(
     () => assertSigningProperties({ ...canonical, keyPassword: '' }, 'fixture'),

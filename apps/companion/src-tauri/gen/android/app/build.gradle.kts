@@ -19,8 +19,14 @@ val releaseKeystoreProperties = Properties().apply {
         releaseKeystorePropertiesFile.inputStream().use { load(it) }
         val allowedKeys = setOf("keyAlias", "storePassword", "keyPassword", "storeFile")
         val unexpectedKeys = stringPropertyNames().filterNot(allowedKeys::contains).sorted()
+        val legacyPasswordHint = if (unexpectedKeys.contains("password")) {
+            " Replace legacy password with both storePassword and keyPassword."
+        } else {
+            ""
+        }
         require(unexpectedKeys.isEmpty()) {
-            "Unsupported Android signing properties in ${releaseKeystorePropertiesFile.path}: ${unexpectedKeys.joinToString(", ")}"
+            "Unsupported Android signing properties in ${releaseKeystorePropertiesFile.path}: " +
+                "${unexpectedKeys.joinToString(", ")}.$legacyPasswordHint"
         }
     }
 }

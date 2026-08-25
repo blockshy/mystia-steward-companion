@@ -54,7 +54,7 @@
     "audit:toolchain": "node tests/build-toolchain/build-toolchain-policy-audit.mjs",
     "references:restore": "node scripts/restore-build-references.mjs",
     "references:verify": "node scripts/restore-build-references.mjs --verify --output mods/bepinex/References",
-    "test:dotnet6-harmony": "node scripts/run-dotnet6-harmony-smoke.mjs all",
+    "test:dotnet6": "node scripts/run-dotnet6-smoke.mjs",
     "preview": "vite preview --config apps/companion/vite.config.ts",
     "tauri:dev": "node scripts/check-build-toolchain.mjs tauri --require-corepack-invocation && node scripts/manage-build-artifacts.mjs prune && cd apps/companion && tauri dev",
     "tauri:build": "node scripts/check-build-toolchain.mjs tauri --require-corepack-invocation && node scripts/manage-build-artifacts.mjs prune && cd apps/companion && tauri build --no-bundle",

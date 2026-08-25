@@ -4,6 +4,13 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import {
+  isCanonicalJavaReleaseSemver,
+  isCanonicalJavaVersion,
+  matchesLockedJavaRuntimeVersion,
+  resolveAndroidJavaCommand,
+} from './android-jdk-toolchain.mjs';
+
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 const supportedProfiles = new Set([
   'frontend',
@@ -31,7 +38,7 @@ const failures = [];
 const toolchain = await readJson('toolchain.lock.json');
 const packageJson = await readJson('package.json');
 const globalJson = await readJson('global.json');
-const dotnet6GlobalJson = await readJson('tests/dotnet6-harmony/global.json');
+const dotnet6GlobalJson = await readJson('tests/dotnet6/global.json');
 const nvmVersion = (await readText('.nvmrc')).trim();
 const rustToolchain = await readText('rust-toolchain.toml');
 const cargoManifest = await readText('apps/companion/src-tauri/Cargo.toml');
@@ -47,18 +54,19 @@ validateLockedVersion('PowerShell', toolchain.powershell);
 validateLockedVersion('GitHub CLI', toolchain.githubCli);
 validateLockedVersion('.NET SDK', toolchain.dotnetSdk);
 validateLockedVersion('Rust', toolchain.rust);
-validateLockedVersion('Android Temurin JDK', toolchain.android?.jdkVersion);
+validateJavaVersion('Android Temurin JDK', toolchain.android?.jdkVersion);
+validateJavaReleaseSemver('Android Temurin release SemVer', toolchain.android?.jdkReleaseSemver);
 validateLockedVersion('Android Gradle', toolchain.android?.gradle);
 validateLockedVersion('Android Build Tools', toolchain.android?.buildTools);
 validateLockedVersion('Android NDK package', toolchain.android?.ndkPackage);
 validateLockedRevision('Android NDK revision', toolchain.android?.ndkRevision);
-validateLockedVersion('.NET 6 Harmony SDK', toolchain.dotnet6HarmonySdk);
+validateLockedVersion('.NET 6 SDK', toolchain.dotnet6Sdk);
 
 if (!/^sha512-[A-Za-z0-9+/]+={0,2}$/u.test(toolchain.corepackIntegrity ?? '')) {
   failures.push('Corepack package integrity must be a canonical sha512 Subresource Integrity value.');
 }
 
-expectEqual('toolchain schema version', toolchain.schemaVersion, 3);
+expectEqual('toolchain schema version', toolchain.schemaVersion, 5);
 expectEqual('.nvmrc Node.js version', nvmVersion, toolchain.node);
 expectEqual('package.json engines.node', packageJson.engines?.node, toolchain.node);
 expectEqual('package.json engines.pnpm', packageJson.engines?.pnpm, toolchain.pnpm);
@@ -76,17 +84,17 @@ expectEqual('global.json SDK version', globalJson.sdk?.version, toolchain.dotnet
 expectEqual('global.json SDK rollForward', globalJson.sdk?.rollForward, 'disable');
 expectEqual('global.json SDK allowPrerelease', globalJson.sdk?.allowPrerelease, false);
 expectEqual(
-  '.NET 6 Harmony global.json SDK version',
+  '.NET 6 global.json SDK version',
   dotnet6GlobalJson.sdk?.version,
-  toolchain.dotnet6HarmonySdk,
+  toolchain.dotnet6Sdk,
 );
 expectEqual(
-  '.NET 6 Harmony global.json SDK rollForward',
+  '.NET 6 global.json SDK rollForward',
   dotnet6GlobalJson.sdk?.rollForward,
   'disable',
 );
 expectEqual(
-  '.NET 6 Harmony global.json SDK allowPrerelease',
+  '.NET 6 global.json SDK allowPrerelease',
   dotnet6GlobalJson.sdk?.allowPrerelease,
   false,
 );
@@ -95,6 +103,11 @@ expectTomlValue('rust-toolchain.toml profile', rustToolchain, 'profile', 'minima
 expectTomlValue('Cargo.toml rust-version', cargoManifest, 'rust-version', toolchain.rust);
 expectEqual('Android JDK distribution', toolchain.android?.jdkDistribution, 'temurin');
 expectEqual('Android JDK vendor', toolchain.android?.jdkVendor, 'Eclipse Adoptium');
+expectEqual(
+  'Android Temurin release SemVer base',
+  toolchain.android?.jdkReleaseSemver?.split('+')[0],
+  toolchain.android?.jdkVersion?.split('.').slice(0, 3).join('.'),
+);
 validatePositiveInteger('Android compile SDK', toolchain.android?.compileSdk);
 validatePositiveInteger('Android target SDK', toolchain.android?.targetSdk);
 expectEqual(
@@ -146,9 +159,9 @@ if (!/^[a-f0-9]{64}$/u.test(toolchain.android?.gradleDistributionSha256 ?? '')) 
 }
 
 if (!/^mcr\.microsoft\.com\/dotnet\/sdk@sha256:[a-f0-9]{64}$/u.test(
-  toolchain.dotnet6HarmonyImage ?? '',
+  toolchain.dotnet6Image ?? '',
 )) {
-  failures.push('dotnet6HarmonyImage must use the locked Microsoft SDK image digest.');
+  failures.push('dotnet6Image must use the locked Microsoft SDK image digest.');
 }
 
 if (!policyOnly) {
@@ -289,6 +302,18 @@ function validateLockedVersion(label, value) {
   }
 }
 
+function validateJavaVersion(label, value) {
+  if (!isCanonicalJavaVersion(value)) {
+    failures.push(`${label} must be an exact three- or four-part Java version; received ${describe(value)}.`);
+  }
+}
+
+function validateJavaReleaseSemver(label, value) {
+  if (!isCanonicalJavaReleaseSemver(value)) {
+    failures.push(`${label} must be an exact canonical SemVer with build metadata; received ${describe(value)}.`);
+  }
+}
+
 function validateLockedRevision(label, value) {
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$/u.test(value ?? '')) {
     failures.push(`${label} must be an exact canonical revision; received ${describe(value)}.`);
@@ -333,13 +358,21 @@ function expectGradleWrapperProperty(label, source, key, expected) {
 }
 
 function expectTemurinJdk(androidToolchain) {
-  const result = spawnSync('java', ['-XshowSettings:properties', '-version'], {
+  let javaCommand;
+  try {
+    javaCommand = resolveAndroidJavaCommand();
+  } catch (error) {
+    failures.push(error instanceof Error ? error.message : String(error));
+    return;
+  }
+
+  const result = spawnSync(javaCommand.command, ['-XshowSettings:properties', '-version'], {
     cwd: repoRoot,
     encoding: 'utf8',
     windowsHide: true,
   });
   if (result.error) {
-    failures.push(`installed Android JDK could not run java: ${result.error.message}`);
+    failures.push(`installed Android JDK could not run ${describe(javaCommand.command)}: ${result.error.message}`);
     return;
   }
   if (result.status !== 0) {
@@ -354,19 +387,15 @@ function expectTemurinJdk(androidToolchain) {
   const javaHome = /^\s*java\.home\s*=\s*(.+?)\s*$/mu.exec(output)?.[1];
   if (!runtimeVersion) {
     failures.push('installed Android JDK did not report java.runtime.version.');
-  } else {
-    const escapedVersion = androidToolchain.jdkVersion.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
-    if (!new RegExp(`^${escapedVersion}(?:$|[+_-])`, 'u').test(runtimeVersion)) {
-      failures.push(`installed Android JDK version must be ${describe(androidToolchain.jdkVersion)}; received ${describe(runtimeVersion)}.`);
-    }
+  } else if (!matchesLockedJavaRuntimeVersion(androidToolchain.jdkVersion, runtimeVersion)) {
+    failures.push(`installed Android JDK version must be ${describe(androidToolchain.jdkVersion)}; received ${describe(runtimeVersion)}.`);
   }
   expectEqual('installed Android JDK vendor', vendor, androidToolchain.jdkVendor);
 
-  const configuredJavaHome = process.env.JAVA_HOME?.trim();
-  if (!configuredJavaHome) {
-    failures.push('JAVA_HOME must point to the locked Android Temurin JDK.');
-  } else if (javaHome) {
-    expectSameExistingPath('JAVA_HOME', configuredJavaHome, javaHome);
+  if (!javaHome) {
+    failures.push('installed Android JDK did not report java.home.');
+  } else {
+    expectSameExistingPath('JAVA_HOME', javaCommand.javaHome, javaHome);
   }
 }
 

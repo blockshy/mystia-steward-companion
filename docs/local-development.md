@@ -54,8 +54,8 @@ corepack pnpm toolchain:check
 安装器只接受尚不存在的目录，并校验锁定 tarball 的完整性。升级 Corepack 时创建新的版本目录，不覆盖旧目录，
 也不执行全局 `corepack enable`。
 
-Mod 的目标框架是 `net6.0`，产品构建仍使用锁定的 .NET SDK `10.0.110`。只有三项真实 Harmony/MonoMod
-动态补丁测试使用锁定的 .NET 6 容器；入口和限制见[验证指南](validation-guide.md#真实-harmonymonomod-测试)。
+Mod 的目标框架是 `net6.0`，产品构建仍使用锁定的 .NET SDK `10.0.110`。唯一的通用 .NET 6 smoke
+入口覆盖三项真实 Harmony/MonoMod 动态补丁探针；入口和限制见[验证指南](validation-guide.md#锁定-net-6-smoke-矩阵)。
 
 ## BepInEx 构建引用
 

@@ -221,7 +221,7 @@ corepack pnpm audit:gamepad
 特殊经营的游戏机制来源和实测记录见
 [特殊经营验证](special-business-validation.md)。
 
-## 真实 Harmony/MonoMod 测试
+## 锁定 .NET 6 smoke 矩阵
 
 以下三个测试会安装真实 Harmony/MonoMod 动态补丁：
 
@@ -229,10 +229,11 @@ corepack pnpm audit:gamepad
 - `tests/ui-pinning-runtime/`；
 - `tests/runtime-target-recipe-variant/`。
 
-Linux .NET 10 CoreCLR 上的真实探针可能原生崩溃。统一使用仓库锁定的 .NET 6 SDK 容器入口：
+Linux .NET 10 CoreCLR 上的真实探针可能原生崩溃。统一使用仓库锁定的通用 .NET 6 SDK 容器入口；
+不带参数时执行全部三项 smoke：
 
 ```bash
-corepack pnpm test:dotnet6-harmony
+corepack pnpm test:dotnet6
 ```
 
 该入口使用 `toolchain.lock.json` 中固定 digest 的 .NET SDK `6.0.428` 镜像。不要删除探针、改成源码字符串

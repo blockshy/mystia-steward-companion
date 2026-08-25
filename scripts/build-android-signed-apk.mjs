@@ -14,6 +14,8 @@ import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
+import { resolveAndroidJavaCommand } from './android-jdk-toolchain.mjs';
+
 const require = createRequire(import.meta.url);
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, '..');
@@ -274,8 +276,11 @@ function assertSigningProperties(properties, sourceLabel = 'Android signing conf
   const requiredKeys = ['keyAlias', 'storePassword', 'keyPassword', 'storeFile'];
   const unexpectedKeys = Object.keys(properties).filter((key) => !requiredKeys.includes(key));
   if (unexpectedKeys.length > 0) {
+    const legacyPasswordHint = unexpectedKeys.includes('password')
+      ? ' Replace legacy password with both storePassword and keyPassword.'
+      : '';
     throw new Error(
-      `Unsupported Android signing properties in ${sourceLabel}: ${unexpectedKeys.join(', ')}`,
+      `Unsupported Android signing properties in ${sourceLabel}: ${unexpectedKeys.join(', ')}.${legacyPasswordHint}`,
     );
   }
 
@@ -647,23 +652,9 @@ function findApkSignerCommand() {
   }
 
   return {
-    command: findJavaCommand(),
+    command: resolveAndroidJavaCommand().command,
     args: ['-jar', apksignerJar],
   };
-}
-
-function findJavaCommand() {
-  const javaHome = process.env.JAVA_HOME?.trim();
-  const executableName = process.platform === 'win32' ? 'java.exe' : 'java';
-  if (!javaHome) {
-    throw new Error('JAVA_HOME must point to the locked Android Temurin JDK.');
-  }
-
-  const candidate = path.join(javaHome, 'bin', executableName);
-  if (!existsSync(candidate)) {
-    throw new Error(`Locked Android JDK executable does not exist: ${candidate}`);
-  }
-  return candidate;
 }
 
 function findAndroidBuildToolFile(relativePath) {
