@@ -8,11 +8,13 @@ try
     VerifySpecialOverrideScope();
     VerifyLeaseExpiryAndRevocation();
     VerifyProfileShapeAndRevisionValidation();
+    VerifyManagedRareGuestRosterSnapshot();
     VerifyPermitSerializesAuthorityTransition();
     Console.WriteLine(
         "PASS: runtime automation control requires the exact current authority lease, evaluates "
         + "delivery/completion switches at each future side-effect boundary, preserves the Koishi "
-        + "stage-only override, and serializes authority transitions with admitted native effects.");
+        + "stage-only override, keeps the configured rare-guest roster inert while its module is "
+        + "disabled, fences profile changes, and serializes authority transitions with admitted native effects.");
     return 0;
 }
 catch (Exception ex)
@@ -68,7 +70,24 @@ static void VerifyAuthorityAndLeaseGate()
     AssertAllowed(RuntimeAutomationControlTargetKind.Normal, RuntimeAutomationControlStage.FoodDelivery, now);
 
     RuntimeAutomationControlState.PublishAuthority(
-        Profile(autoNormalDeliverFood: false),
+        Profile(managedRareGuestIds: new[] { 3, 8 }),
+        authorityRevision: 7,
+        "managed-rare-guests-changing",
+        "managed rare guests changing");
+    AssertDecision(
+        RuntimeAutomationControlState.Observe(
+            RuntimeAutomationControlTargetKind.Rare,
+            RuntimeAutomationControlStage.FoodDelivery,
+            forceStageConfiguration: false,
+            now),
+        allowed: false,
+        state: "suspended-authority",
+        reasonCode: "managed-rare-guests-changing",
+        authorityRevision: 7);
+    RuntimeAutomationControlState.PublishLease(7, now.AddMinutes(1));
+
+    RuntimeAutomationControlState.PublishAuthority(
+        Profile(autoNormalDeliverFood: false, managedRareGuestIds: new[] { 3, 8 }),
         authorityRevision: 7,
         "automation-profile-changing",
         "profile changing");
@@ -226,7 +245,7 @@ static void VerifyProfileShapeAndRevisionValidation()
             19,
             "invalid",
             "invalid"),
-        "A profile missing exact automation booleans was accepted.");
+        "A profile missing required automation fields was accepted.");
     AssertThrows<InvalidDataException>(
         () => RuntimeAutomationControlState.PublishAuthority(
             JsonSerializer.SerializeToElement(new { automationEnabled = "true" }),
@@ -234,6 +253,88 @@ static void VerifyProfileShapeAndRevisionValidation()
             "invalid",
             "invalid"),
         "A non-boolean automation profile field was accepted.");
+    AssertThrows<InvalidDataException>(
+        () => RuntimeAutomationControlState.PublishAuthority(
+            Profile(rareGuestParticipationModuleEnabled: "true"),
+            19,
+            "invalid",
+            "invalid"),
+        "A non-boolean rare-guest participation module field was accepted.");
+    foreach (var invalidIds in new object[]
+    {
+        "3",
+        new[] { 2, 1 },
+        new[] { 1, 1 },
+        new[] { -1 },
+        new long[] { (long)int.MaxValue + 1 },
+        Enumerable.Range(0, 513).ToArray(),
+    })
+    {
+        AssertThrows<InvalidDataException>(
+            () => RuntimeAutomationControlState.PublishAuthority(
+                Profile(managedRareGuestIds: invalidIds),
+                19,
+                "invalid",
+                "invalid"),
+            "A non-canonical managed rare-guest ID list was accepted.");
+    }
+}
+
+static void VerifyManagedRareGuestRosterSnapshot()
+{
+    RuntimeAutomationControlState.Reset("roster reset");
+    RuntimeAutomationControlState.PublishAuthority(
+        Profile(managedRareGuestIds: new[] { 3, 8, int.MaxValue }),
+        23,
+        "roster-published",
+        "roster published");
+    AssertTrue(
+        !RuntimeAutomationControlState.SnapshotRareGuestParticipationModuleEnabled(),
+        "The rare-guest participation module did not default to disabled.");
+    AssertTrue(
+        RuntimeAutomationControlState.SnapshotManagedRareGuestIds().Count == 0,
+        "A disabled rare-guest participation module exposed its configured roster to runtime.");
+    RuntimeAutomationControlState.PublishAuthority(
+        Profile(
+            rareGuestParticipationModuleEnabled: true,
+            managedRareGuestIds: new[] { 3, 8, int.MaxValue }),
+        24,
+        "rare-participation-enabled",
+        "rare participation enabled");
+    AssertTrue(
+        RuntimeAutomationControlState.SnapshotRareGuestParticipationModuleEnabled(),
+        "The enabled rare-guest participation module was not published.");
+    var first = RuntimeAutomationControlState.SnapshotManagedRareGuestIds();
+    AssertTrue(first.SequenceEqual(new[] { 3, 8, int.MaxValue }), "The managed roster snapshot changed canonical IDs.");
+    if (first is int[] mutable) mutable[0] = 99;
+    AssertTrue(
+        RuntimeAutomationControlState.SnapshotManagedRareGuestIds().SequenceEqual(new[] { 3, 8, int.MaxValue }),
+        "A caller mutated the automation control state's managed roster.");
+    RuntimeAutomationControlState.PublishAuthority(
+        Profile(managedRareGuestIds: new[] { 3, 8, int.MaxValue }),
+        25,
+        "rare-participation-disabled",
+        "rare participation disabled");
+    AssertTrue(
+        RuntimeAutomationControlState.SnapshotManagedRareGuestIds().Count == 0,
+        "Disabling rare-guest participation retained an effective managed roster.");
+    RuntimeAutomationControlState.PublishAuthority(
+        Profile(
+            rareGuestParticipationModuleEnabled: true,
+            managedRareGuestIds: new[] { 3, 8, int.MaxValue }),
+        26,
+        "rare-participation-reenabled",
+        "rare participation re-enabled");
+    AssertTrue(
+        RuntimeAutomationControlState.SnapshotManagedRareGuestIds().SequenceEqual(new[] { 3, 8, int.MaxValue }),
+        "Re-enabling rare-guest participation did not restore the configured roster.");
+    RuntimeAutomationControlState.Reset("roster reset complete");
+    AssertTrue(
+        RuntimeAutomationControlState.SnapshotManagedRareGuestIds().Count == 0,
+        "Reset retained a stale managed rare-guest roster.");
+    AssertTrue(
+        !RuntimeAutomationControlState.SnapshotRareGuestParticipationModuleEnabled(),
+        "Reset retained a stale rare-guest participation module state.");
 }
 
 static void VerifyPermitSerializesAuthorityTransition()
@@ -329,9 +430,11 @@ static JsonElement Profile(
     bool autoPrepCollectCooking = true,
     bool autoPrepCompleteOrder = true,
     bool autoNormalDeliverFood = true,
-    bool autoNormalCompleteOrder = true)
+    bool autoNormalCompleteOrder = true,
+    object? rareGuestParticipationModuleEnabled = null,
+    object? managedRareGuestIds = null)
 {
-    return JsonSerializer.SerializeToElement(new Dictionary<string, bool>(StringComparer.Ordinal)
+    return JsonSerializer.SerializeToElement(new Dictionary<string, object>(StringComparer.Ordinal)
     {
         ["automationEnabled"] = automationEnabled,
         ["autoRareOrderEnabled"] = autoRareOrderEnabled,
@@ -340,6 +443,8 @@ static JsonElement Profile(
         ["autoPrepCompleteOrder"] = autoPrepCompleteOrder,
         ["autoNormalDeliverFood"] = autoNormalDeliverFood,
         ["autoNormalCompleteOrder"] = autoNormalCompleteOrder,
+        ["rareGuestParticipationModuleEnabled"] = rareGuestParticipationModuleEnabled ?? false,
+        ["managedRareGuestIds"] = managedRareGuestIds ?? Array.Empty<int>(),
     });
 }
 

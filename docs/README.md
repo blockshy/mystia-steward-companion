@@ -1,6 +1,6 @@
 # 开发文档索引
 
-更新日期：2026-08-19
+更新日期：2026-09-01
 
 本目录面向维护者，记录项目架构、开发流程和已经由代码、测试或游戏分析资料确认的实现边界。用户安装与操作说明仍以根目录 `README.md`、`mods/bepinex/README.md` 和伴随窗口内置帮助为准。
 
@@ -38,6 +38,7 @@
 | --- | --- |
 | [运行时数据 Provider](runtime-provider.md) | 游戏静态目录、玩家状态、readiness、快照和失败状态 |
 | [订单捕获与生命周期](runtime-order-lifecycle.md) | 夜间经营、普客/稀客捕获、强身份和终态回执 |
+| [稀客订单参与队列](rare-order-participation.md) | 默认关闭模块、配置/有效名单、显式队列位置、单订单/整组 mutation、优先插入保护与 operational 门禁 |
 | [自动化运行时](automation-runtime.md) | 控制租约、阶段门禁、CookingJob、暂停恢复和安全栅栏 |
 | [本地 API](local-api.md) | listener、鉴权、请求限制、规范路由和设备配置权威 |
 | [游戏 UI 集成](game-ui-integration.md) | 置顶、加料变体、厨具/桌位/订单高亮及 Unity ownership |

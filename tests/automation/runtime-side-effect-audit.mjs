@@ -2623,8 +2623,13 @@ assert.match(
 );
 assert.match(
   freshCookerBinding,
-  /ownershipBefore != ownershipAfter[\s\S]*ownershipAfter\.Generation == job\.Generation[\s\S]*ownershipAfter\.ContentRevision == job\.ContentRevision[\s\S]*if \(!ownershipMatches\)/,
+  /ownershipBefore != ownershipAfter[\s\S]*ownershipAfter\.Generation == job\.CookingOwnershipGeneration[\s\S]*ownershipAfter\.ContentRevision == job\.ContentRevision[\s\S]*if \(!ownershipMatches\)/,
   'Fresh job binding must reject ownership changes before publishing a wrapper.',
+);
+assert.doesNotMatch(
+  freshCookerBinding,
+  /job\.Generation/,
+  'Cooker ownership checks must not restore the ambiguous cooking-job generation field.',
 );
 assert.match(
   freshCookerBinding,

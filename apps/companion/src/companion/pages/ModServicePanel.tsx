@@ -1,6 +1,5 @@
 import { useMemo } from 'react';
 import type { ReactNode } from 'react';
-import { IconTrash } from '@tabler/icons-react';
 import {
   Accordion,
   AccordionContent,
@@ -8,10 +7,7 @@ import {
   AccordionTrigger,
   Badge,
   Button,
-  Card,
-  CardContent,
   EmptyRow,
-  EmptyState,
   InfoLine,
   ListPanel,
   SegmentedControl,
@@ -20,13 +16,26 @@ import {
   TabsList,
   TabsTrigger,
 } from '@/components/ui-kit';
-import { buildAutomationResourceOverview, buildNightBusinessOrderKey } from '@/companion/domain/automation';
+import {
+  buildAutomationResourceOverview,
+  buildNightBusinessOrderKey,
+  type OperationalOrderRecommendation,
+} from '@/companion/domain/automation';
 import {
   getNightBusinessAutomationPauseLabel,
   getNightBusinessAutomationSummary,
 } from '@/companion/domain/automation-runtime';
 import type { NormalOrderDetailPlan } from '@/companion/domain/normal-order-details';
-import { sortNightOrderRows, sortNightOrders } from '@/companion/domain/sorting';
+import { buildParticipatingRareOrderPresentationRows } from '@/companion/domain/order-recommendation-presentation';
+import type {
+  RareOrderExactIdentity,
+  RareOrderParticipationResolution,
+  RareOrderParticipationSnapshotView,
+} from '@/companion/domain/rare-order-participation';
+import {
+  sortNightOrderRows,
+  sortNightOrders,
+} from '@/companion/domain/sorting';
 import { formatDesk, formatGuestFund, formatPerformanceMs } from '@/companion/formatters';
 import type { CompanionPreferences, ServiceOrderSortMode } from '@/companion/preferences';
 import type {
@@ -40,6 +49,7 @@ import type {
   NormalBusinessContext,
   OrderRecommendation,
   RareAutoOrderDiagnostic,
+  RareGuestParticipationMutationAction,
   RecommendationIssue,
   RecommendationStateSnapshot,
   RuntimeSets,
@@ -66,16 +76,26 @@ import {
 } from '@/companion/pages/service/ServiceContextPanels';
 import { NormalOrderDetailCard } from '@/companion/pages/service/NormalOrderDetailCard';
 import { RareOrderRecommendationCard } from '@/companion/pages/service/RareOrderRecommendationCard';
+import { RareOrderParticipationPanel } from '@/companion/pages/service/RareOrderParticipationPanel';
+import {
+  buildRareOrderRecommendationCollectionState,
+  type ServiceOrderCollectionState,
+} from '@/companion/pages/service/service-order-collection-state';
 import {
   ServiceOrderCardFrame,
   ServiceOrderCollectionPanel,
-  type ServiceOrderCollectionState,
 } from '@/companion/pages/service/ServiceOrderPresentation';
 import { buildRecommendationDataIndexes, type RecommendationDataSet } from '@/lib/recommendation-data';
 import type { PlaceName } from '@/lib/catalog-types';
 
 export type ServicePanelView = 'recommendations' | 'automation' | 'diagnostics';
-export type ServiceRecommendationTab = 'rare' | 'normal';
+export type ServiceRecommendationTab = 'rare' | 'rare-queue' | 'normal';
+
+type RareOrderPresentationRow = (
+  | { kind: 'issue'; order: NightBusinessOrder; issue: RecommendationIssue }
+  | { kind: 'recommendation'; order: NightBusinessOrder; item: OrderRecommendation }
+  | { kind: 'pending'; order: NightBusinessOrder }
+) & { participation: RareOrderParticipationResolution | null };
 
 const SERVICE_PANEL_VIEW_OPTIONS: { value: ServicePanelView; label: string }[] = [
   { value: 'recommendations', label: '推荐' },
@@ -171,6 +191,64 @@ function formatPlacedCookerSummary(
   }
 
   return `读取不可用${runtime.placedCookerStatus ? ` · ${runtime.placedCookerStatus}` : ''}`;
+}
+
+function ServiceSummaryAccordion({
+  runtime,
+  nightBusinessActive,
+  night,
+  specialBusiness,
+  detectedPlace,
+  runtimeSets,
+  uiTargetSlots,
+  automationStatus,
+}: {
+  runtime: RecommendationStateSnapshot | null;
+  nightBusinessActive: boolean;
+  night: NightBusinessContext | null;
+  specialBusiness: SpecialBusinessContext | null;
+  detectedPlace: PlaceName | null;
+  runtimeSets: RuntimeSets | null;
+  uiTargetSlots: GameUiTargetSlots;
+  automationStatus: string;
+}) {
+  const scene = detectedPlace ?? night?.placeLabel ?? '无经营场景';
+  const recommendationStatus = runtime ? '已就绪' : '暂不可用';
+
+  return (
+    <Accordion data-service-summary-accordion="true">
+      <AccordionItem value="service-summary">
+        <AccordionTrigger
+          data-service-summary-trigger="true"
+          data-gamepad-clickable="true"
+          data-gamepad-focus-key="service:summary:toggle"
+        >
+          <span className="flex min-w-0 flex-col items-start gap-0.5 text-left">
+            <span className="font-medium">经营概况</span>
+            <span className="text-xs font-normal text-muted-foreground">
+              {scene} · 推荐：{recommendationStatus} · 自动化：{automationStatus}
+            </span>
+          </span>
+        </AccordionTrigger>
+        <AccordionContent data-service-summary-content="true">
+          <div
+            className={`${DENSE_MINIMUM_THREE_COLUMN_GRID} text-sm`}
+            data-service-summary-grid="true"
+          >
+            <InfoLine label="经营场景" value={scene} />
+            <InfoLine label="推荐数据" value={recommendationStatus} />
+            <InfoLine label="自动化" value={automationStatus} />
+            <InfoLine label="特殊经营" value={formatServiceSpecialBusinessSummary(specialBusiness)} />
+            <InfoLine
+              label="已摆放厨具"
+              value={formatPlacedCookerSummary(runtime, runtimeSets, nightBusinessActive)}
+            />
+            <InfoLine label="目标厨具" value={formatGameUiTargetCookers(uiTargetSlots)} />
+          </div>
+        </AccordionContent>
+      </AccordionItem>
+    </Accordion>
+  );
 }
 
 function buildNormalOrderDetailPlanKey(plan: NormalOrderDetailPlan): string {
@@ -275,8 +353,19 @@ export function ModServicePanel({
   normalBusiness,
   serviceView,
   serviceRecommendationTab,
-  dismissRareOrderBusyKey,
-  dismissRareOrderError,
+  operationalRecommendations,
+  rareParticipationModuleEnabled,
+  managedRareGuestIds,
+  rareGuestParticipationSnapshot,
+  rareParticipationBusinessGeneration,
+  rareParticipationCollectionComplete,
+  rareParticipationEnabled,
+  rareParticipationReady,
+  rareParticipationReadOnly,
+  rareParticipationReadOnlyReason,
+  rareParticipationBusyMutationKey,
+  rareParticipationError,
+  resolveRareOrderParticipation,
   onRecipeLimitChange,
   onBeverageLimitChange,
   onToggleRecipeFavorite,
@@ -286,7 +375,9 @@ export function ModServicePanel({
   onRetryNormalAutomationOrder,
   onResetNormalAutomationOrder,
   onAcknowledgeAutomationBarrier,
-  onDismissRareOrder,
+  onMutateRareGuestOrders,
+  onMutateRareOrder,
+  onOpenRareParticipationModule,
   onEnterFocusMode,
   onServiceViewChange,
   onServiceRecommendationTabChange,
@@ -338,8 +429,19 @@ export function ModServicePanel({
   normalBusiness: NormalBusinessContext | null;
   serviceView: ServicePanelView;
   serviceRecommendationTab: ServiceRecommendationTab;
-  dismissRareOrderBusyKey: string;
-  dismissRareOrderError: string;
+  operationalRecommendations: readonly OperationalOrderRecommendation[] | null;
+  rareParticipationModuleEnabled: boolean;
+  managedRareGuestIds: readonly number[];
+  rareGuestParticipationSnapshot: RareOrderParticipationSnapshotView | null;
+  rareParticipationBusinessGeneration: number;
+  rareParticipationCollectionComplete: boolean;
+  rareParticipationEnabled: boolean;
+  rareParticipationReady: boolean;
+  rareParticipationReadOnly: boolean;
+  rareParticipationReadOnlyReason: string;
+  rareParticipationBusyMutationKey: string | null;
+  rareParticipationError: string;
+  resolveRareOrderParticipation: (order: NightBusinessOrder) => RareOrderParticipationResolution | null;
   onRecipeLimitChange: (value: number) => void;
   onBeverageLimitChange: (value: number) => void;
   onToggleRecipeFavorite: ToggleRecipeFavorite;
@@ -349,7 +451,16 @@ export function ModServicePanel({
   onRetryNormalAutomationOrder: (orderKey: string) => void;
   onResetNormalAutomationOrder: (orderKey: string) => void;
   onAcknowledgeAutomationBarrier: (sequence: number) => void;
-  onDismissRareOrder: (order: NightBusinessOrder) => void;
+  onMutateRareGuestOrders: (
+    guestId: number,
+    targets: readonly RareOrderExactIdentity[],
+    action: RareGuestParticipationMutationAction,
+  ) => void;
+  onMutateRareOrder: (
+    order: RareOrderExactIdentity,
+    action: RareGuestParticipationMutationAction,
+  ) => void;
+  onOpenRareParticipationModule: () => void;
   onEnterFocusMode: () => void;
   onServiceViewChange: (value: ServicePanelView) => void;
   onServiceRecommendationTabChange: (value: ServiceRecommendationTab) => void;
@@ -377,6 +488,7 @@ export function ModServicePanel({
       return buildAutomationResourceOverview({
         runtime,
         recommendations,
+        operationalRecommendations,
         favorites,
         preferences: autoPrepPreferences,
         normalOrders: normalBusiness?.orders ?? [],
@@ -400,6 +512,7 @@ export function ModServicePanel({
       normalExecutionTargetsPending,
       normalBusiness?.orders,
       normalOrderDiagnostics,
+      operationalRecommendations,
       rareOrderDiagnostics,
       recommendations,
       runtime,
@@ -425,22 +538,16 @@ export function ModServicePanel({
   });
   return (
     <div className="space-y-4">
-      <Card>
-        <CardContent
-          className={`${DENSE_MINIMUM_THREE_COLUMN_GRID} p-4 text-sm`}
-          data-service-summary-grid="true"
-        >
-          <InfoLine label="经营场景" value={detectedPlace ?? night?.placeLabel ?? '无经营场景'} />
-          <InfoLine label="推荐数据" value={runtime ? '已就绪' : '暂不可用'} />
-          <InfoLine label="自动化" value={automationStatus} />
-          <InfoLine label="特殊经营" value={formatServiceSpecialBusinessSummary(specialBusiness)} />
-          <InfoLine
-            label="已摆放厨具"
-            value={formatPlacedCookerSummary(runtime, runtimeSets, nightBusinessActive)}
-          />
-          <InfoLine label="目标厨具" value={formatGameUiTargetCookers(uiTargetSlots)} />
-        </CardContent>
-      </Card>
+      <ServiceSummaryAccordion
+        runtime={runtime}
+        nightBusinessActive={nightBusinessActive}
+        night={night}
+        specialBusiness={specialBusiness}
+        detectedPlace={detectedPlace}
+        runtimeSets={runtimeSets}
+        uiTargetSlots={uiTargetSlots}
+        automationStatus={automationStatus}
+      />
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <SegmentedControl
@@ -460,13 +567,22 @@ export function ModServicePanel({
       <Tabs
         value={serviceRecommendationTab}
         onValueChange={(value) => {
-          if (value === 'rare' || value === 'normal') onServiceRecommendationTabChange(value);
+          if (value === 'rare' || value === 'rare-queue' || value === 'normal') {
+            onServiceRecommendationTabChange(value);
+          }
         }}
         className="space-y-4"
       >
-        <TabsList className="grid h-9 w-full grid-cols-2">
+        <TabsList className="steward-equal-tabs-list h-9 w-full">
           <TabsTrigger value="rare" className={MOD_TAB_TRIGGER_CLASS} data-service-order-tab-trigger="rare">
             稀客
+          </TabsTrigger>
+          <TabsTrigger
+            value="rare-queue"
+            className={MOD_TAB_TRIGGER_CLASS}
+            data-service-order-tab-trigger="rare-queue"
+          >
+            稀客队列
           </TabsTrigger>
           <TabsTrigger value="normal" className={MOD_TAB_TRIGGER_CLASS} data-service-order-tab-trigger="normal">
             普客
@@ -489,6 +605,9 @@ export function ModServicePanel({
             customRecipes={customRecipes}
             favoriteBusyKey={favoriteBusyKey}
             favoriteError={favoriteError}
+            participationEnabled={rareParticipationEnabled}
+            participationReady={rareParticipationReady}
+            resolveRareOrderParticipation={resolveRareOrderParticipation}
             action={(
               <ServiceRecommendationHeaderActions
                 recipeLimit={recipeLimit}
@@ -502,6 +621,25 @@ export function ModServicePanel({
             beverageLimit={beverageLimit}
             onToggleRecipeFavorite={onToggleRecipeFavorite}
             onToggleBeverageFavorite={onToggleBeverageFavorite}
+          />
+        </TabsContent>
+
+        <TabsContent value="rare-queue" className="space-y-4" data-service-order-tab="rare-queue">
+          <RareOrderParticipationPanel
+            moduleEnabled={rareParticipationModuleEnabled}
+            orders={night?.orders ?? []}
+            managedGuestIds={managedRareGuestIds}
+            snapshot={rareGuestParticipationSnapshot}
+            businessGeneration={rareParticipationBusinessGeneration}
+            collectionComplete={rareParticipationCollectionComplete}
+            businessActive={nightBusinessActive}
+            readOnly={rareParticipationReadOnly}
+            readOnlyReason={rareParticipationReadOnlyReason}
+            busyMutationKey={rareParticipationBusyMutationKey}
+            error={rareParticipationError}
+            onMutateGuest={onMutateRareGuestOrders}
+            onMutateOrder={onMutateRareOrder}
+            onOpenModule={onOpenRareParticipationModule}
           />
         </TabsContent>
 
@@ -612,53 +750,35 @@ export function ModServicePanel({
 
             <ListPanel title="当前稀客点单" contentClassName="min-h-[9rem]">
               {orders.length === 0 && <EmptyRow text={night?.error || '暂无点单'} />}
-              {dismissRareOrderError && <EmptyRow text={dismissRareOrderError} />}
               {orders.map((order) => {
                 const orderKey = buildNightBusinessOrderKey(order);
-                const busy = dismissRareOrderBusyKey === orderKey;
                 return (
                   <div key={orderKey} className="border-b py-2 text-sm last:border-b-0">
-                    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
-                      <div className="min-w-0">
-                        <div className="flex items-center justify-between gap-3">
-                          <span className="truncate font-medium" title={order.guestName}>{order.guestName}</span>
-                          <span className="shrink-0 text-muted-foreground">桌 {formatDesk(order.deskCode)}</span>
-                        </div>
-                        <div className="mt-1 flex flex-wrap gap-1.5">
-                          <Badge variant="outline">
-                            料理 {order.foodTag || '无'} ({order.foodTagId ?? 'missing'})
-                          </Badge>
-                          <Badge variant="outline">
-                            酒水 {order.beverageTag || '无'} ({order.beverageTagId ?? 'missing'})
-                          </Badge>
-                          <OrderTraceBadge traceId={order.traceId} />
-                          {order.specialBusinessRoleLabel && (
-                            <Badge variant="secondary">{order.specialBusinessRoleLabel}</Badge>
-                          )}
-                          {order.automationAllowed === false && <Badge variant="outline">暂不可自动处理</Badge>}
-                          {order.isFreeOrder && <Badge variant="secondary">免费订单</Badge>}
-                          <Badge variant="secondary">{order.source}</Badge>
-                        </div>
-                        {order.automationAllowed === false && order.automationBlockReason && (
-                          <div className="mt-1 text-xs text-muted-foreground">
-                            {order.automationBlockReason}
-                          </div>
-                        )}
+                    <div className="min-w-0">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="truncate font-medium" title={order.guestName}>{order.guestName}</span>
+                        <span className="shrink-0 text-muted-foreground">桌 {formatDesk(order.deskCode)}</span>
                       </div>
-                      <Button
-                        type="button"
-                        size="icon"
-                        variant="ghost"
-                        className="size-8 text-muted-foreground hover:text-destructive"
-                        title="删除这笔稀客订单缓存"
-                        aria-label="删除这笔稀客订单缓存"
-                        disabled={busy}
-                        data-gamepad-clickable="true"
-                        data-gamepad-focus-key={`rare-order-dismiss:${orderKey}`}
-                        onClick={() => onDismissRareOrder(order)}
-                      >
-                        <IconTrash className="size-4" />
-                      </Button>
+                      <div className="mt-1 flex flex-wrap gap-1.5">
+                        <Badge variant="outline">
+                          料理 {order.foodTag || '无'} ({order.foodTagId ?? 'missing'})
+                        </Badge>
+                        <Badge variant="outline">
+                          酒水 {order.beverageTag || '无'} ({order.beverageTagId ?? 'missing'})
+                        </Badge>
+                        <OrderTraceBadge traceId={order.traceId} />
+                        {order.specialBusinessRoleLabel && (
+                          <Badge variant="secondary">{order.specialBusinessRoleLabel}</Badge>
+                        )}
+                        {order.automationAllowed === false && <Badge variant="outline">暂不可自动处理</Badge>}
+                        {order.isFreeOrder && <Badge variant="secondary">免费订单</Badge>}
+                        <Badge variant="secondary">{order.source}</Badge>
+                      </div>
+                      {order.automationAllowed === false && order.automationBlockReason && (
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {order.automationBlockReason}
+                        </div>
+                      )}
                     </div>
                   </div>
                 );
@@ -733,6 +853,9 @@ export function ServiceFocusPage({
   customRecipes,
   favoriteBusyKey,
   favoriteError,
+  participationEnabled,
+  participationReady,
+  resolveRareOrderParticipation,
   compact,
   recipeLimit,
   beverageLimit,
@@ -742,6 +865,7 @@ export function ServiceFocusPage({
   onToggleRecipeFavorite,
   onToggleBeverageFavorite,
   onExit,
+  safetyNotice,
 }: {
   recommendations: OrderRecommendation[];
   recommendationIssues: RecommendationIssue[];
@@ -757,6 +881,9 @@ export function ServiceFocusPage({
   customRecipes: CustomRecipeData;
   favoriteBusyKey: string;
   favoriteError: string;
+  participationEnabled: boolean;
+  participationReady: boolean;
+  resolveRareOrderParticipation: (order: NightBusinessOrder) => RareOrderParticipationResolution | null;
   compact: boolean;
   recipeLimit: number;
   beverageLimit: number;
@@ -766,12 +893,8 @@ export function ServiceFocusPage({
   onToggleRecipeFavorite: ToggleRecipeFavorite;
   onToggleBeverageFavorite: ToggleBeverageFavorite;
   onExit: () => void;
+  safetyNotice?: ReactNode;
 }) {
-  const hasOrders = recommendationsPending
-    || recommendations.length > 0
-    || recommendationIssues.length > 0
-    || recommendationPendingOrders.length > 0;
-
   return (
     <div
       className="flex min-h-[calc(100dvh-1rem)] flex-col gap-4"
@@ -784,6 +907,7 @@ export function ServiceFocusPage({
         className="flex w-full shrink-0 flex-wrap items-center justify-end gap-3"
         data-service-focus-toolbar="true"
       >
+        {safetyNotice}
         <SwitchControl
           label="精简模式"
           checked={compact}
@@ -802,32 +926,31 @@ export function ServiceFocusPage({
         <Button size="sm" data-gamepad-focus-key="service-focus:exit" onClick={onExit}>退出专注模式</Button>
       </div>
 
-      {hasOrders ? (
-        <RareOrderRecommendationList
-          recommendations={recommendations}
-          recommendationIssues={recommendationIssues}
-          pendingOrders={recommendationPendingOrders}
-          pending={recommendationsPending}
-          updateError={recommendationUpdateError}
-          runtimeSets={runtimeSets}
-          dataIndexes={dataIndexes}
-          orderSortMode={orderSortMode}
-          specialBusiness={specialBusiness}
-          showDebugDetails={showDebugDetails}
-          favorites={favorites}
-          customRecipes={customRecipes}
-          favoriteBusyKey={favoriteBusyKey}
-          favoriteError={favoriteError}
-          compact={compact}
-          fillAvailableHeight
-          recipeLimit={recipeLimit}
-          beverageLimit={beverageLimit}
-          onToggleRecipeFavorite={onToggleRecipeFavorite}
-          onToggleBeverageFavorite={onToggleBeverageFavorite}
-        />
-      ) : (
-        <EmptyState text="暂无当前稀客点单。检测到稀客点单后，这里会自动显示推荐料理和酒水。" />
-      )}
+      <RareOrderRecommendationList
+        recommendations={recommendations}
+        recommendationIssues={recommendationIssues}
+        pendingOrders={recommendationPendingOrders}
+        pending={recommendationsPending}
+        updateError={recommendationUpdateError}
+        runtimeSets={runtimeSets}
+        dataIndexes={dataIndexes}
+        orderSortMode={orderSortMode}
+        specialBusiness={specialBusiness}
+        showDebugDetails={showDebugDetails}
+        favorites={favorites}
+        customRecipes={customRecipes}
+        favoriteBusyKey={favoriteBusyKey}
+        favoriteError={favoriteError}
+        participationEnabled={participationEnabled}
+        participationReady={participationReady}
+        resolveRareOrderParticipation={resolveRareOrderParticipation}
+        compact={compact}
+        fillAvailableHeight
+        recipeLimit={recipeLimit}
+        beverageLimit={beverageLimit}
+        onToggleRecipeFavorite={onToggleRecipeFavorite}
+        onToggleBeverageFavorite={onToggleBeverageFavorite}
+      />
     </div>
   );
 }
@@ -847,6 +970,9 @@ function RareOrderRecommendationList({
   customRecipes,
   favoriteBusyKey,
   favoriteError,
+  participationEnabled = false,
+  participationReady = true,
+  resolveRareOrderParticipation,
   action,
   compact = false,
   fillAvailableHeight = false,
@@ -869,6 +995,11 @@ function RareOrderRecommendationList({
   customRecipes: CustomRecipeData;
   favoriteBusyKey: string;
   favoriteError: string;
+  participationEnabled?: boolean;
+  participationReady?: boolean;
+  resolveRareOrderParticipation?: (
+    order: NightBusinessOrder,
+  ) => RareOrderParticipationResolution | null;
   action?: ReactNode;
   compact?: boolean;
   fillAvailableHeight?: boolean;
@@ -877,27 +1008,44 @@ function RareOrderRecommendationList({
   onToggleRecipeFavorite: ToggleRecipeFavorite;
   onToggleBeverageFavorite: ToggleBeverageFavorite;
 }) {
-  const rows = useMemo(
-    () => sortNightOrderRows([
-      ...recommendationIssues.map((issue) => ({ kind: 'issue' as const, order: issue.order, issue })),
-      ...recommendations.map((item) => ({ kind: 'recommendation' as const, order: item.order, item })),
-      ...pendingOrders.map((order) => ({ kind: 'pending' as const, order })),
-    ], orderSortMode, specialBusiness),
-    [orderSortMode, pendingOrders, recommendationIssues, recommendations, specialBusiness],
-  );
-  const collectionState: ServiceOrderCollectionState = updateError
-    ? {
-        kind: 'error',
-        message: '推荐更新失败',
-        detail: updateError,
-        emptyLabel: '推荐更新失败',
-        updating: pending,
-      }
-    : pending
-      ? { kind: 'updating', message: '推荐计算中' }
-      : rows.length === 0
-        ? { kind: 'empty', message: '暂无当前稀客点单推荐' }
-        : { kind: 'ready' };
+  const candidateRows = useMemo<RareOrderPresentationRow[]>(() => [
+    ...recommendationIssues.map((issue) => ({
+      kind: 'issue' as const,
+      order: issue.order,
+      issue,
+      participation: null,
+    })),
+    ...recommendations.map((item) => ({
+      kind: 'recommendation' as const,
+      order: item.order,
+      item,
+      participation: null,
+    })),
+    ...pendingOrders.map((order) => ({ kind: 'pending' as const, order, participation: null })),
+  ], [pendingOrders, recommendationIssues, recommendations]);
+  const rows = useMemo(() => {
+    if (!participationEnabled) {
+      return sortNightOrderRows(candidateRows, orderSortMode, specialBusiness);
+    }
+    if (!resolveRareOrderParticipation) return [];
+    return buildParticipatingRareOrderPresentationRows(
+      candidateRows,
+      resolveRareOrderParticipation,
+    );
+  }, [
+    candidateRows,
+    orderSortMode,
+    participationEnabled,
+    resolveRareOrderParticipation,
+    specialBusiness,
+  ]);
+  const collectionState = buildRareOrderRecommendationCollectionState({
+    participationEnabled,
+    participationReady,
+    rowCount: rows.length,
+    updateError,
+    pending,
+  });
 
   return (
     <ServiceOrderCollectionPanel
@@ -964,6 +1112,8 @@ function RareOrderRecommendationList({
               recipeLimit={recipeLimit}
               beverageLimit={beverageLimit}
               showDebugDetails={showDebugDetails}
+              participationEnabled={participationEnabled}
+              participation={row.participation}
               onToggleRecipeFavorite={onToggleRecipeFavorite}
               onToggleBeverageFavorite={onToggleBeverageFavorite}
             />

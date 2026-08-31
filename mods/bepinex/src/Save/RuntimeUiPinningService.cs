@@ -28,6 +28,7 @@ internal static class RuntimeUiPinningService
     private static RuntimeUiTargetSetSnapshot _targetSet = RuntimeUiTargetSetSnapshot.Disabled;
     private static long _authorityFenceTargetGeneration;
     private static RuntimeUiTargetSetSnapshot? _authorityFencePresentationTarget;
+    private static long _authorityFencePresentationRefreshGeneration;
     private static RuntimeUiListSurfaceRefreshBinding? _cookingSurfaceRefresh;
     private static RuntimeUiListSurfaceRefreshBinding? _storageSurfaceRefresh;
     private static PanelRefreshRegistration? _cookingPanel;
@@ -96,7 +97,7 @@ internal static class RuntimeUiPinningService
             var authorityFencePresentationTarget = Volatile.Read(ref _authorityFencePresentationTarget);
             var authorityFenceStatus = authorityFenceGeneration > 0
                 && targetSet.Generation == authorityFenceGeneration
-                ? $"pending:{authorityFenceGeneration}/held:{authorityFencePresentationTarget?.Generation.ToString() ?? "none"}"
+                ? $"pending:{authorityFenceGeneration}/held:{authorityFencePresentationTarget?.Generation.ToString() ?? "none"}/refresh:{Volatile.Read(ref _authorityFencePresentationRefreshGeneration)}"
                 : "none";
             string coreStatus;
             lock (SyncRoot)
@@ -205,6 +206,99 @@ internal static class RuntimeUiPinningService
         {
             ValidateSession(sessionGeneration);
             return PublishTargets(sessionGeneration, targets);
+        }
+    }
+
+    /// <summary>
+    /// Removes one exact paused rare-order target while retaining any independently published
+    /// normal target. The target snapshot and every highlight surface are updated while the target
+    /// publication root is held, so a concurrent publisher cannot reintroduce the paused lifecycle
+    /// between target removal and downstream synchronization.
+    /// </summary>
+    internal static bool RemoveRareTargetIfMatches(
+        long sessionGeneration,
+        string orderTraceId,
+        long orderLifecycleSequence,
+        int guestId,
+        string reason)
+    {
+        ArgumentNullException.ThrowIfNull(orderTraceId);
+        ArgumentNullException.ThrowIfNull(reason);
+        if (sessionGeneration <= 0
+            || orderLifecycleSequence <= 0
+            || guestId < 0
+            || !RuntimeOrderTraceIdService.TryNormalizeTargetTraceId(
+                RuntimeUiTargetKind.Rare,
+                orderTraceId,
+                enabled: true,
+                out var normalizedTraceId,
+                out _)
+            || !string.Equals(normalizedTraceId, orderTraceId, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        lock (TargetPublicationRoot)
+        {
+            var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+            var current = Volatile.Read(ref _targetSet);
+            if (!lifecycle.IsActive
+                || lifecycle.Generation != sessionGeneration
+                || current.SessionGeneration != sessionGeneration)
+            {
+                return false;
+            }
+
+            var authorityFenceActive = IsAuthorityFenceTargetLocked(current);
+            var removalSource = authorityFenceActive
+                ? _authorityFencePresentationTarget
+                : current;
+            if (removalSource == null
+                || removalSource.SessionGeneration != sessionGeneration)
+            {
+                return false;
+            }
+
+            var rareTarget = removalSource.Targets.FirstOrDefault(target =>
+                target.Kind == RuntimeUiTargetKind.Rare
+                && target.OrderLifecycleSequence == orderLifecycleSequence
+                && target.GuestId == guestId
+                && string.Equals(target.OrderTraceId, orderTraceId, StringComparison.Ordinal));
+            if (rareTarget == null) return false;
+
+            var remainingTargets = removalSource.Targets
+                .Where(target => !ReferenceEquals(target, rareTarget))
+                .ToArray();
+            if (authorityFenceActive)
+            {
+                var presentationGeneration = checked(current.Generation + 1);
+                var presentation = new RuntimeUiTargetSetSnapshot(
+                    presentationGeneration,
+                    sessionGeneration,
+                    remainingTargets);
+                var disabled = PublishEmptyTargetSetLocked(
+                    sessionGeneration,
+                    "authority-fence-participation-paused",
+                    reason,
+                    presentationGeneration);
+                Volatile.Write(ref _authorityFencePresentationTarget, presentation);
+                Volatile.Write(ref _authorityFenceTargetGeneration, disabled.Generation);
+                Volatile.Write(
+                    ref _authorityFencePresentationRefreshGeneration,
+                    rareTarget.ListPinningEnabled || rareTarget.RecipeVariantEnabled
+                        ? presentation.Generation
+                        : 0);
+            }
+            else
+            {
+                PublishTargets(sessionGeneration, remainingTargets);
+                lock (SyncRoot) _lastTargetTransition = "rare-target-participation-paused";
+            }
+            TryLogInfo(
+                $"Runtime UI exact rare target removed after participation pause: "
+                + $"generation={sessionGeneration}; trace={orderTraceId}; lifecycle={orderLifecycleSequence}; "
+                + $"guest={guestId}; reason={reason}.");
+            return true;
         }
     }
 
@@ -356,16 +450,29 @@ internal static class RuntimeUiPinningService
     {
         NightBusinessLifecycleSnapshot lifecycle;
         RuntimeUiTargetSetSnapshot target;
+        var usesDeferredAuthorityPresentation = false;
         lock (TargetPublicationRoot)
         {
             lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
             if (!lifecycle.IsActive) return;
 
             target = Volatile.Read(ref _targetSet);
-            if (target.SessionGeneration != lifecycle.Generation
-                || IsAuthorityFenceTargetLocked(target))
+            if (target.SessionGeneration != lifecycle.Generation)
             {
                 return;
+            }
+            if (IsAuthorityFenceTargetLocked(target))
+            {
+                var presentationTarget = _authorityFencePresentationTarget;
+                if (presentationTarget == null
+                    || presentationTarget.SessionGeneration != lifecycle.Generation
+                    || presentationTarget.Generation
+                        != _authorityFencePresentationRefreshGeneration)
+                {
+                    return;
+                }
+                target = presentationTarget;
+                usesDeferredAuthorityPresentation = true;
             }
         }
 
@@ -377,8 +484,16 @@ internal static class RuntimeUiPinningService
 
         try
         {
-            TryRefreshOpenPanel(RefreshPanelKind.Cooking, lifecycle, target);
-            TryRefreshOpenPanel(RefreshPanelKind.Storage, lifecycle, target);
+            TryRefreshOpenPanel(
+                RefreshPanelKind.Cooking,
+                lifecycle,
+                target,
+                usesDeferredAuthorityPresentation);
+            TryRefreshOpenPanel(
+                RefreshPanelKind.Storage,
+                lifecycle,
+                target,
+                usesDeferredAuthorityPresentation);
         }
         finally
         {
@@ -406,25 +521,127 @@ internal static class RuntimeUiPinningService
         long sessionGeneration,
         string reason)
     {
+        RuntimeUiTargetSetSnapshot? admissionCandidate;
         lock (TargetPublicationRoot)
         {
             var current = Volatile.Read(ref _targetSet);
-            var presentationTarget = IsAuthorityFenceTargetLocked(current)
-                ? _authorityFencePresentationTarget
-                : current.SessionGeneration == sessionGeneration && current.Generation > 0
-                    ? current
-                    : null;
-            var disabled = PublishEmptyTargetSetLocked(
-                sessionGeneration,
-                "authority-fence-preserved",
-                reason);
-            Volatile.Write(ref _authorityFencePresentationTarget, presentationTarget);
-            Volatile.Write(ref _authorityFenceTargetGeneration, disabled.Generation);
-            TryLogInfo(
-                $"Runtime UI authority panel refresh deferred: fence={disabled.Generation}; "
-                + $"presentation={presentationTarget?.Generation.ToString() ?? "none"}; "
-                + "waiting for the first complete target publication.");
+            admissionCandidate = ReadAuthorityPresentationCandidateLocked(
+                current,
+                sessionGeneration);
         }
+
+        RuntimeRareGuestParticipationOrderIdentity? admittedRareIdentity = null;
+        RuntimeRareGuestParticipationPermit? participationPermit = null;
+        try
+        {
+            if (admissionCandidate != null
+                && admissionCandidate.TryGetTarget(RuntimeUiTargetKind.Rare, out var rareCandidate))
+            {
+                var identity = ToRareParticipationIdentity(sessionGeneration, rareCandidate);
+                participationPermit = RuntimeRareGuestParticipationState.AcquireAdmissionPermit(
+                    identity);
+                if (participationPermit.Allowed) admittedRareIdentity = identity;
+            }
+
+            lock (TargetPublicationRoot)
+            {
+                var current = Volatile.Read(ref _targetSet);
+                var liveCandidate = ReadAuthorityPresentationCandidateLocked(
+                    current,
+                    sessionGeneration);
+                RuntimeUiTargetSnapshot liveRare = null!;
+                var liveHasRare = liveCandidate != null
+                    && liveCandidate.TryGetTarget(RuntimeUiTargetKind.Rare, out liveRare);
+                var preserveRare = admittedRareIdentity.HasValue
+                    && ReferenceEquals(liveCandidate, admissionCandidate)
+                    && liveHasRare
+                    && HasRareParticipationIdentity(
+                        liveRare,
+                        sessionGeneration,
+                        admittedRareIdentity.Value);
+                var rareFiltered = liveHasRare && !preserveRare;
+                var presentationTarget = liveCandidate;
+                var reservedPresentationGeneration = 0L;
+                if (rareFiltered)
+                {
+                    reservedPresentationGeneration = checked(current.Generation + 1);
+                    presentationTarget = new RuntimeUiTargetSetSnapshot(
+                        reservedPresentationGeneration,
+                        sessionGeneration,
+                        liveCandidate!.Targets.Where(target =>
+                            target.Kind != RuntimeUiTargetKind.Rare));
+                }
+                var retainPendingPresentationRefresh = IsAuthorityFenceTargetLocked(current)
+                    && ReferenceEquals(
+                        presentationTarget,
+                        _authorityFencePresentationTarget);
+                var filteredRareHadListPresentationClaims = rareFiltered
+                    && (liveRare.ListPinningEnabled || liveRare.RecipeVariantEnabled);
+                var presentationRefreshGeneration = filteredRareHadListPresentationClaims
+                    ? presentationTarget!.Generation
+                    : retainPendingPresentationRefresh
+                        ? _authorityFencePresentationRefreshGeneration
+                        : 0;
+
+                var disabled = PublishEmptyTargetSetLocked(
+                    sessionGeneration,
+                    rareFiltered
+                        ? "authority-fence-participation-filtered"
+                        : "authority-fence-preserved",
+                    reason,
+                    reservedPresentationGeneration);
+                Volatile.Write(ref _authorityFencePresentationTarget, presentationTarget);
+                Volatile.Write(ref _authorityFenceTargetGeneration, disabled.Generation);
+                Volatile.Write(
+                    ref _authorityFencePresentationRefreshGeneration,
+                    presentationRefreshGeneration);
+                TryLogInfo(
+                    $"Runtime UI authority panel refresh deferred: fence={disabled.Generation}; "
+                    + $"presentation={presentationTarget?.Generation.ToString() ?? "none"}; "
+                    + $"rare={(rareFiltered ? "participation-filtered" : preserveRare ? "admitted" : "none")}; "
+                    + "waiting for the first complete target publication.");
+            }
+        }
+        finally
+        {
+            participationPermit?.Dispose();
+        }
+    }
+
+    private static RuntimeUiTargetSetSnapshot? ReadAuthorityPresentationCandidateLocked(
+        RuntimeUiTargetSetSnapshot current,
+        long sessionGeneration)
+    {
+        var candidate = IsAuthorityFenceTargetLocked(current)
+            ? _authorityFencePresentationTarget
+            : current;
+        return candidate is { Generation: > 0 }
+            && candidate.SessionGeneration == sessionGeneration
+            ? candidate
+            : null;
+    }
+
+    private static RuntimeRareGuestParticipationOrderIdentity ToRareParticipationIdentity(
+        long sessionGeneration,
+        RuntimeUiTargetSnapshot target)
+    {
+        return new RuntimeRareGuestParticipationOrderIdentity(
+            sessionGeneration,
+            target.OrderTraceId,
+            target.OrderLifecycleSequence,
+            target.GuestId);
+    }
+
+    private static bool HasRareParticipationIdentity(
+        RuntimeUiTargetSnapshot target,
+        long sessionGeneration,
+        RuntimeRareGuestParticipationOrderIdentity identity)
+    {
+        return target.Kind == RuntimeUiTargetKind.Rare
+            && identity.BusinessGeneration == sessionGeneration
+            && target.OrderLifecycleSequence == identity.OrderLifecycleSequence
+            && target.GuestId == identity.GuestId
+            && string.Equals(target.OrderTraceId, identity.TraceId, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -449,11 +666,12 @@ internal static class RuntimeUiPinningService
     private static RuntimeUiTargetSetSnapshot PublishEmptyTargetSetLocked(
         long sessionGeneration,
         string transition,
-        string reason)
+        string reason,
+        long reservedPresentationGeneration = 0)
     {
         var current = Volatile.Read(ref _targetSet);
         var disabled = new RuntimeUiTargetSetSnapshot(
-            checked(current.Generation + 1),
+            checked(Math.Max(current.Generation, reservedPresentationGeneration) + 1),
             sessionGeneration,
             Array.Empty<RuntimeUiTargetSnapshot>());
         Volatile.Write(ref _targetSet, disabled);
@@ -569,6 +787,7 @@ internal static class RuntimeUiPinningService
     {
         Volatile.Write(ref _authorityFenceTargetGeneration, 0);
         Volatile.Write(ref _authorityFencePresentationTarget, null);
+        Volatile.Write(ref _authorityFencePresentationRefreshGeneration, 0);
     }
 
     private static void RunTargetTransitionNoThrow(Action action)
@@ -639,7 +858,7 @@ internal static class RuntimeUiPinningService
             : string.Join(
                 ";",
                 targetSet.Targets.Select(target =>
-                    $"{target.Kind.ToString().ToLowerInvariant()}:features=list:{FormatFlag(target.ListPinningEnabled)},variant:{FormatFlag(target.RecipeVariantEnabled)},cooker:{FormatFlag(target.CookerHighlightEnabled)},seat:{FormatFlag(target.SeatHighlightEnabled)},order:{FormatFlag(target.OrderHighlightEnabled)},trace={target.OrderTraceId},lifecycle={target.OrderLifecycleSequence},desk={target.DeskCode},recipe={target.RecipeId},beverage={target.BeverageId},cooker={target.CookerTypeId},color={target.Color.ToExactHex()},ingredients={string.Join(",", target.IngredientIds)},extras={string.Join(",", target.ExtraIngredientIds)},revisionLength={target.TargetRevision.Length}"));
+                    $"{target.Kind.ToString().ToLowerInvariant()}:features=list:{FormatFlag(target.ListPinningEnabled)},variant:{FormatFlag(target.RecipeVariantEnabled)},cooker:{FormatFlag(target.CookerHighlightEnabled)},seat:{FormatFlag(target.SeatHighlightEnabled)},order:{FormatFlag(target.OrderHighlightEnabled)},trace={target.OrderTraceId},lifecycle={target.OrderLifecycleSequence},guest={target.GuestId},desk={target.DeskCode},recipe={target.RecipeId},beverage={target.BeverageId},cooker={target.CookerTypeId},color={target.Color.ToExactHex()},ingredients={string.Join(",", target.IngredientIds)},extras={string.Join(",", target.ExtraIngredientIds)},revisionLength={target.TargetRevision.Length}"));
         return $"generation={targetSet.Generation}/session:{targetSet.SessionGeneration}; targets={targetSet.Targets.Count}[{slots}]";
     }
 
@@ -1229,7 +1448,8 @@ internal static class RuntimeUiPinningService
     private static void TryRefreshOpenPanel(
         RefreshPanelKind panelKind,
         NightBusinessLifecycleSnapshot lifecycle,
-        RuntimeUiTargetSetSnapshot target)
+        RuntimeUiTargetSetSnapshot target,
+        bool usesDeferredAuthorityPresentation)
     {
         PanelRefreshAttempt? attempt = null;
         var targetAlreadyAttempted = false;
@@ -1275,13 +1495,10 @@ internal static class RuntimeUiPinningService
             return;
         }
 
-        var latestLifecycle = RuntimeNightBusinessLifecycle.Snapshot;
-        var latestTarget = Volatile.Read(ref _targetSet);
-        if (!latestLifecycle.IsActive
-            || latestLifecycle.Generation != attempt.BusinessGeneration
-            || !ReferenceEquals(latestTarget, target)
-            || latestTarget.SessionGeneration != attempt.BusinessGeneration
-            || latestTarget.Generation != attempt.TargetGeneration
+        if (!IsPanelRefreshTargetCurrent(
+                target,
+                attempt.BusinessGeneration,
+                usesDeferredAuthorityPresentation)
             || !IsCurrentOpenPanel(attempt))
         {
             return;
@@ -1290,7 +1507,12 @@ internal static class RuntimeUiPinningService
         RuntimeUiTargetPublicationLease? exactTargetLease = null;
         try
         {
-            if (!TryAcquireTargetPublicationLease(target, out exactTargetLease))
+            var acquiredTargetLease = usesDeferredAuthorityPresentation
+                ? TryAcquireDeferredAuthorityPresentationRefreshLease(
+                    target,
+                    out exactTargetLease)
+                : TryAcquireTargetPublicationLease(target, out exactTargetLease);
+            if (!acquiredTargetLease)
             {
                 return;
             }
@@ -1316,11 +1538,10 @@ internal static class RuntimeUiPinningService
                     refreshException);
             }
 
-            var completedLifecycle = RuntimeNightBusinessLifecycle.Snapshot;
-            var completedTarget = Volatile.Read(ref _targetSet);
-            if (!completedLifecycle.IsActive
-                || completedLifecycle.Generation != attempt.BusinessGeneration
-                || !ReferenceEquals(completedTarget, target)
+            if (!IsPanelRefreshTargetCurrent(
+                    target,
+                    attempt.BusinessGeneration,
+                    usesDeferredAuthorityPresentation)
                 || !IsCurrentOpenPanel(attempt))
             {
                 return;
@@ -1345,6 +1566,68 @@ internal static class RuntimeUiPinningService
         finally
         {
             exactTargetLease?.Dispose();
+        }
+    }
+
+    private static bool IsPanelRefreshTargetCurrent(
+        RuntimeUiTargetSetSnapshot expectedTarget,
+        long expectedBusinessGeneration,
+        bool usesDeferredAuthorityPresentation)
+    {
+        lock (TargetPublicationRoot)
+        {
+            var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+            var current = Volatile.Read(ref _targetSet);
+            if (!lifecycle.IsActive
+                || lifecycle.Generation != expectedBusinessGeneration
+                || expectedTarget.SessionGeneration != expectedBusinessGeneration)
+            {
+                return false;
+            }
+            if (!usesDeferredAuthorityPresentation)
+            {
+                return ReferenceEquals(current, expectedTarget)
+                    && current.Generation == expectedTarget.Generation;
+            }
+            return IsAuthorityFenceTargetLocked(current)
+                && _authorityFencePresentationRefreshGeneration
+                    == expectedTarget.Generation
+                && ReferenceEquals(
+                    _authorityFencePresentationTarget,
+                    expectedTarget);
+        }
+    }
+
+    private static bool TryAcquireDeferredAuthorityPresentationRefreshLease(
+        RuntimeUiTargetSetSnapshot expectedTarget,
+        out RuntimeUiTargetPublicationLease lease)
+    {
+        lease = null!;
+        var lockTaken = false;
+        try
+        {
+            Monitor.Enter(TargetPublicationRoot, ref lockTaken);
+            var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+            var current = Volatile.Read(ref _targetSet);
+            if (!lifecycle.IsActive
+                || expectedTarget.SessionGeneration != lifecycle.Generation
+                || !IsAuthorityFenceTargetLocked(current)
+                || _authorityFencePresentationRefreshGeneration
+                    != expectedTarget.Generation
+                || !ReferenceEquals(
+                    _authorityFencePresentationTarget,
+                    expectedTarget))
+            {
+                return false;
+            }
+
+            lease = new RuntimeUiTargetPublicationLease(TargetPublicationRoot);
+            lockTaken = false;
+            return true;
+        }
+        finally
+        {
+            if (lockTaken) Monitor.Exit(TargetPublicationRoot);
         }
     }
 

@@ -30,6 +30,12 @@ const smokeTests = new Map([
     'dotnet build tests/runtime-target-recipe-variant/RuntimeTargetRecipeVariantSmoke.csproj -c Release -t:Rebuild',
     'dotnet run --project tests/runtime-target-recipe-variant/RuntimeTargetRecipeVariantSmoke.csproj -c Release --no-build',
   ]],
+  ['runtime-rare-guest-participation', [
+    'dotnet run --project tests/runtime-rare-guest-participation/RuntimeRareGuestParticipationSmoke.csproj -c Release',
+  ]],
+  ['night-business-lifecycle', [
+    'dotnet run --project tests/night-business-lifecycle/NightBusinessLifecycleSmoke.csproj -c Release',
+  ]],
 ]);
 
 const requested = process.argv.slice(2);

@@ -118,7 +118,7 @@ const inviteAllApi = sourceSlice(
 const inviteOneApi = sourceSlice(
   apiSource,
   'export async function inviteAvailableRareGuest',
-  'export async function dismissRuntimeRareOrder',
+  'export async function updateRareGuestParticipation',
 );
 for (const [name, source] of [
   ['invite-all', inviteAllApi],

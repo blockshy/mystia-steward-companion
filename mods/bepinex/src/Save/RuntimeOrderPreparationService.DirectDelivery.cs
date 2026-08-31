@@ -919,18 +919,6 @@ internal static partial class RuntimeOrderPreparationService
             return true;
         }
 
-        using var permit = AcquireAutomationCookingJobControlPermit(
-            job,
-            RuntimeAutomationControlStage.OrderEvaluation,
-            DateTime.UtcNow);
-        if (!permit.Allowed)
-        {
-            job.FoodDeliveryEvaluationCloseoutTracker?.Suspend(DateTime.UtcNow);
-            message = permit.Decision.Message;
-            code = OrderPreparationStepCodes.CookingPending;
-            return false;
-        }
-
         if (!job.Target.OrderBinding.HasValue)
         {
             return ContinueOrCloseCommittedFoodDeliveryEvaluation(
@@ -965,6 +953,18 @@ internal static partial class RuntimeOrderPreparationService
             message = job.FoodDeliveryEvaluationMessage;
             code = job.FoodDeliveryEvaluationCode;
             return true;
+        }
+
+        using var permit = AcquireAutomationCookingJobControlPermit(
+            job,
+            RuntimeAutomationControlStage.OrderEvaluation,
+            DateTime.UtcNow);
+        if (!permit.Allowed)
+        {
+            job.FoodDeliveryEvaluationCloseoutTracker?.Suspend(DateTime.UtcNow);
+            message = permit.Decision.Message;
+            code = OrderPreparationStepCodes.CookingPending;
+            return false;
         }
 
         var target = job.Target;

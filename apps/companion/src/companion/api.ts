@@ -6,7 +6,11 @@ import type {
 import { assertAutomationDirectDeliveryCompletionInvariant } from '@/companion/automation-machine';
 import { readLocalApiJson, writeLocalApiJsonWithTimeout } from '@/companion/local-api';
 import type { CompanionPreferences, SharedCompanionPreferences } from '@/companion/preferences';
-import { SHARED_COMPANION_PREFERENCES_SCHEMA_VERSION, normalizeEditableQuantity } from '@/companion/preferences';
+import {
+  SHARED_COMPANION_PREFERENCES_SCHEMA_VERSION,
+  normalizeEditableQuantity,
+  normalizeSharedCompanionPreferences,
+} from '@/companion/preferences';
 import { serializeRareGuestInvitationLevels } from '@/companion/storage';
 import type {
   DiagnosticPackageResponse,
@@ -31,14 +35,14 @@ import type {
   LocalApiLogSettings,
   LocalApiSnapshotResponse,
   LocalApiStatusResponse,
-  NightBusinessOrder,
   NormalOrderExecutionTarget,
   NormalBusinessOrder,
   OrderRecommendation,
   RareGuestInvitationResponse,
   RareGuestInvitationScope,
   RareGuestInvitationWriteContext,
-  RareOrderDismissResponse,
+  RareGuestParticipationMutationRequest,
+  RareGuestParticipationMutationResponse,
   SpecialFoodTargetWirePolicy,
   TrackedMissionsApiResponse,
   UpdateStatusResponse,
@@ -100,7 +104,7 @@ export async function registerCompanionDevice(
         profileSchemaVersion: SHARED_COMPANION_PREFERENCES_SCHEMA_VERSION,
         platform,
         appVersion,
-        profile,
+        profile: normalizeSharedCompanionPreferences(profile),
       },
     },
   );
@@ -131,7 +135,7 @@ export async function updatePrimaryCompanionProfile(
         profileSchemaVersion: SHARED_COMPANION_PREFERENCES_SCHEMA_VERSION,
         expectedAuthorityRevision: state.authorityRevision,
         expectedProfileRevision: state.currentDeviceProfileRevision,
-        profile,
+        profile: normalizeSharedCompanionPreferences(profile),
       },
     },
   );
@@ -554,24 +558,58 @@ export async function inviteAvailableRareGuest(
   return mutateRareGuestInvitation(endpoint, apiToken, `/rare-guests/invite?${params.toString()}`);
 }
 
-export async function dismissRuntimeRareOrder(
+/**
+ * 原子暂停、队尾启用或非抢占式优先启用一个 exact lifecycle / 稀客完整当前订单集合。
+ *
+ * authority revision 同时写入严格 JSON body 和主设备 authority header；订单 identity
+ * 逐字段重新投影，避免调用方对象上的额外展示字段泄漏到严格协议。
+ */
+export async function updateRareGuestParticipation(
   endpoint: string,
   apiToken: string,
-  order: NightBusinessOrder,
-): Promise<RareOrderDismissResponse> {
-  const params = new URLSearchParams({
-    deskCode: String(order.deskCode),
-  });
-  if (order.runtimeGuestId != null) params.set('runtimeGuestId', String(order.runtimeGuestId));
-  if (order.foodTagId != null) params.set('foodTagId', String(order.foodTagId));
-  if (order.beverageTagId != null) params.set('beverageTagId', String(order.beverageTagId));
-
-  return writeLocalApiJsonWithTimeout<RareOrderDismissResponse>(
+  request: RareGuestParticipationMutationRequest,
+  signal?: AbortSignal,
+): Promise<RareGuestParticipationMutationResponse> {
+  return writeLocalApiJsonWithTimeout<RareGuestParticipationMutationResponse>(
     endpoint,
     apiToken,
-    `/orders/rare/dismiss?${params.toString()}`,
-    2500,
+    '/orders/rare/participation',
+    3200,
+    {
+      signal,
+      authorityRevision: request.expectedAuthorityRevision,
+      body: {
+        expectedAuthorityRevision: request.expectedAuthorityRevision,
+        expectedBusinessGeneration: request.expectedBusinessGeneration,
+        expectedParticipationRevision: request.expectedParticipationRevision,
+        action: request.action,
+        target: request.target.type === 'guest'
+          ? {
+              type: 'guest',
+              guestId: request.target.guestId,
+              expectedCurrentOrders: request.target.expectedCurrentOrders.map(projectRareOrderIdentity),
+            }
+          : {
+              type: 'order',
+              order: projectRareOrderIdentity(request.target.order),
+            },
+      },
+    },
   );
+}
+
+function projectRareOrderIdentity(order: {
+  businessGeneration: number;
+  traceId: string;
+  orderLifecycleSequence: number;
+  guestId: number;
+}) {
+  return {
+    businessGeneration: order.businessGeneration,
+    traceId: order.traceId,
+    orderLifecycleSequence: order.orderLifecycleSequence,
+    guestId: order.guestId,
+  };
 }
 
 export async function writeInventoryQuantity(
@@ -640,6 +678,7 @@ export async function publishGameUiTargets(
     params.set(`${prefix}TraceId`, target.traceId);
     params.set(`${prefix}OrderKey`, target.orderKey);
     params.set(`${prefix}OrderLifecycleSequence`, String(target.orderLifecycleSequence));
+    params.set(`${prefix}GuestId`, String(target.guestId));
     params.set(`${prefix}DeskCode`, String(target.deskCode));
     params.set(`${prefix}RecipeId`, String(target.recipeId));
     params.set(`${prefix}IngredientIds`, target.ingredientIds.join(','));

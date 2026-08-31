@@ -6,6 +6,12 @@ import type {
   SpecialBusinessContext,
 } from '@/companion/types';
 
+/** Mod 参与投影中供 operational 消费者使用的最小排序状态。 */
+export interface NightOrderOperationalParticipation {
+  operationallyParticipating: boolean;
+  queuePosition: number | null;
+}
+
 export function sortNightOrders(
   orders: NightBusinessOrder[],
   mode: ServiceOrderSortMode = 'ordered',
@@ -36,6 +42,51 @@ export function sortNightOrderRows<T extends { order: NightBusinessOrder }>(
   ));
 }
 
+/**
+ * 过滤并排序可以进入高亮、自动化或资源预约的稀客订单。
+ *
+ * 顺序契约为：特殊经营已验证的硬优先 lane，其次是 Mod 权威分配的连续队列位置，
+ * 最后才是现有的时间/稀客分组稳定顺序。缺失正队列位置的行即使声称参与也会
+ * fail-closed，不由前端补造顺序。
+ */
+export function sortOperationalNightOrderRows<
+  T extends {
+    order: NightBusinessOrder;
+    participation: NightOrderOperationalParticipation;
+  },
+>(
+  rows: readonly T[],
+  mode: ServiceOrderSortMode,
+  specialBusiness: SpecialBusinessContext | null | undefined = null,
+): T[] {
+  const eligible = rows.flatMap((row, originalIndex) => {
+    const queuePosition = row.participation.queuePosition;
+    if (!row.participation.operationallyParticipating
+      || !isPositiveQueuePosition(queuePosition)) return [];
+    return [{ row, originalIndex, queuePosition }];
+  });
+  const groupFirstSeen = buildOrderGroupFirstSeen(eligible.map(({ row }) => row.order));
+  return eligible.sort((left, right) => {
+    const priorityDifference = compareSpecialBusinessLane(
+      left.row.order,
+      right.row.order,
+      specialBusiness,
+    );
+    if (priorityDifference !== 0) return priorityDifference;
+
+    const queueDifference = left.queuePosition - right.queuePosition;
+    if (queueDifference !== 0) return queueDifference;
+
+    const stableDifference = compareNightOrdersWithoutSpecialBusiness(
+      left.row.order,
+      right.row.order,
+      mode,
+      groupFirstSeen,
+    );
+    return stableDifference || left.originalIndex - right.originalIndex;
+  }).map(({ row }) => row);
+}
+
 export function sortNormalOrders(orders: NormalBusinessOrder[]): NormalBusinessOrder[] {
   return [...orders].sort(compareNormalOrdersByTime);
 }
@@ -63,15 +114,32 @@ function compareNightOrders(
   groupFirstSeen: Map<string, number> | null = null,
   specialBusiness: SpecialBusinessContext | null | undefined = null,
 ): number {
-  const priorityDifference = getSpecialBusinessOrderPriority(
+  const priorityDifference = compareSpecialBusinessLane(left, right, specialBusiness);
+  if (priorityDifference !== 0) return priorityDifference;
+
+  return compareNightOrdersWithoutSpecialBusiness(left, right, mode, groupFirstSeen);
+}
+
+function compareSpecialBusinessLane(
+  left: NightBusinessOrder,
+  right: NightBusinessOrder,
+  specialBusiness: SpecialBusinessContext | null | undefined,
+): number {
+  return getSpecialBusinessOrderPriority(
     specialBusiness,
     left.specialBusinessRole,
   ) - getSpecialBusinessOrderPriority(
     specialBusiness,
     right.specialBusinessRole,
   );
-  if (priorityDifference !== 0) return priorityDifference;
+}
 
+function compareNightOrdersWithoutSpecialBusiness(
+  left: NightBusinessOrder,
+  right: NightBusinessOrder,
+  mode: ServiceOrderSortMode = 'ordered',
+  groupFirstSeen: Map<string, number> | null = null,
+): number {
   if (mode === 'guest') {
     const leftGroupKey = getOrderGuestGroupKey(left);
     const rightGroupKey = getOrderGuestGroupKey(right);
@@ -127,4 +195,8 @@ function getOrderSeenTime(order: NightBusinessOrder): number {
   if (!value) return Number.MAX_SAFE_INTEGER;
   const time = Date.parse(value);
   return Number.isFinite(time) ? time : Number.MAX_SAFE_INTEGER;
+}
+
+function isPositiveQueuePosition(value: number | null): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 }

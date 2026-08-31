@@ -17,12 +17,17 @@ namespace MystiaStewardCompanion.LocalApi;
 internal sealed class CompanionDeviceAuthorityStore
 {
     public const int ProtocolVersion = 1;
-    public const int ProfileSchemaVersion = 1;
-    private const int StoreSchemaVersion = 1;
+    public const int ProfileSchemaVersion = 3;
+    private const int LegacyStoreSchemaVersion = 1;
+    private const int PreviousStoreSchemaVersion = 2;
+    private const int StoreSchemaVersion = 3;
     private const int MaxDevices = 32;
+    private const int MaxManagedRareGuestIds = 512;
     private static readonly TimeSpan OnlineTtl = TimeSpan.FromSeconds(20);
     private static readonly Regex ColorPattern = new("^#[0-9A-F]{6}$", RegexOptions.CultureInvariant);
-    private static readonly HashSet<string> ProfileBooleanFields = new(StringComparer.Ordinal)
+    // Historical descriptors grow forward only. Never reconstruct an old schema by subtracting
+    // fields from the current one; doing so would make old-store validation drift on the next bump.
+    private static readonly HashSet<string> ProfileBooleanFieldsV1 = new(StringComparer.Ordinal)
     {
         "automationEnabled",
         "autoRareOrderEnabled",
@@ -54,8 +59,8 @@ internal sealed class CompanionDeviceAuthorityStore
         "rareOrderHighlightEnabled",
         "normalOrderHighlightEnabled",
     };
-    private static readonly HashSet<string> ProfileFields = new(
-        ProfileBooleanFields.Concat(new[]
+    private static readonly HashSet<string> ProfileFieldsV1 = new(
+        ProfileBooleanFieldsV1.Concat(new[]
         {
             "autoRareConcurrency",
             "autoNormalConcurrency",
@@ -69,6 +74,48 @@ internal sealed class CompanionDeviceAuthorityStore
             "recipeVariantLimitPerBase",
             "recommendationExclusions",
         }),
+        StringComparer.Ordinal);
+    private static readonly HashSet<string> ProfileBooleanFieldsV2 = new(
+        ProfileBooleanFieldsV1,
+        StringComparer.Ordinal);
+    private static readonly HashSet<string> ProfileFieldsV2 = new(
+        ProfileFieldsV1.Concat(new[] { "managedRareGuestIds" }),
+        StringComparer.Ordinal);
+    private static readonly HashSet<string> ProfileBooleanFieldsV3 = new(
+        ProfileBooleanFieldsV2,
+        StringComparer.Ordinal)
+    {
+        "rareGuestParticipationModuleEnabled",
+    };
+    private static readonly HashSet<string> ProfileFieldsV3 = new(
+        ProfileFieldsV2.Concat(new[] { "rareGuestParticipationModuleEnabled" }),
+        StringComparer.Ordinal);
+    private static readonly HashSet<string> StoredDataFieldsV1ToV3 = new(
+        new[]
+        {
+            "version",
+            "registryId",
+            "authorityRevision",
+            "stateRevision",
+            "primaryDeviceId",
+            "devices",
+        },
+        StringComparer.Ordinal);
+    private static readonly HashSet<string> StoredDeviceFieldsV1ToV3 = new(
+        new[]
+        {
+            "deviceId",
+            "label",
+            "platform",
+            "appVersion",
+            "profileRevision",
+            "appliedProfileRevision",
+            "profileHash",
+            "profile",
+            "pendingSyncId",
+            "createdAtUtc",
+            "updatedAtUtc",
+        },
         StringComparer.Ordinal);
     private static readonly HashSet<string> ObjectiveKeys = new(StringComparer.Ordinal)
     {
@@ -439,8 +486,29 @@ internal sealed class CompanionDeviceAuthorityStore
 
             try
             {
-                var data = JsonFileStore.LoadOrCreate<DeviceAuthorityData>(_path, JsonOptions);
-                ValidateStoredData(data);
+                var json = File.ReadAllText(_path, Encoding.UTF8);
+                ValidateStoredJsonShape(json);
+                var data = JsonSerializer.Deserialize<DeviceAuthorityData>(json, JsonOptions)
+                    ?? throw new InvalidDataException(
+                        $"JSON file '{_path}' contains a null device authority document.");
+                if (data.Version == LegacyStoreSchemaVersion)
+                {
+                    ValidateStoredData(data, LegacyStoreSchemaVersion, ValidateAndCloneLegacyProfile);
+                    data = MigrateToCurrentData(data);
+                    ValidateStoredData(data);
+                    JsonFileStore.Save(_path, data, JsonOptions);
+                }
+                else if (data.Version == PreviousStoreSchemaVersion)
+                {
+                    ValidateStoredData(data, PreviousStoreSchemaVersion, ValidateAndClonePreviousProfile);
+                    data = MigrateToCurrentData(data);
+                    ValidateStoredData(data);
+                    JsonFileStore.Save(_path, data, JsonOptions);
+                }
+                else
+                {
+                    ValidateStoredData(data);
+                }
                 _data = data;
                 _loadError = "";
             }
@@ -458,6 +526,101 @@ internal sealed class CompanionDeviceAuthorityStore
         ValidateStoredData(next);
         JsonFileStore.Save(_path, next, JsonOptions);
         _data = next;
+    }
+
+    private static void ValidateStoredJsonShape(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object
+            || !root.TryGetProperty("version", out var versionProperty)
+            || !versionProperty.TryGetInt32(out var version)
+            || version is not LegacyStoreSchemaVersion
+                and not PreviousStoreSchemaVersion
+                and not StoreSchemaVersion)
+        {
+            throw new InvalidDataException("Device authority store version is missing or unsupported.");
+        }
+        RequireExactStoredProperties(root, StoredDataFieldsV1ToV3, "Device authority store");
+        RequireStoredString(root, "registryId", "Device authority store");
+        RequireStoredInt64(root, "authorityRevision", "Device authority store");
+        RequireStoredInt64(root, "stateRevision", "Device authority store");
+        RequireStoredString(root, "primaryDeviceId", "Device authority store");
+
+        var devices = root.GetProperty("devices");
+        if (devices.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidDataException("Device authority store field 'devices' must be an array.");
+        }
+
+        foreach (var device in devices.EnumerateArray())
+        {
+            RequireExactStoredProperties(device, StoredDeviceFieldsV1ToV3, "Stored companion device");
+            foreach (var name in new[]
+                     {
+                         "deviceId",
+                         "label",
+                         "platform",
+                         "appVersion",
+                         "profileHash",
+                         "pendingSyncId",
+                     })
+            {
+                RequireStoredString(device, name, "Stored companion device");
+            }
+            RequireStoredInt64(device, "profileRevision", "Stored companion device");
+            RequireStoredInt64(device, "appliedProfileRevision", "Stored companion device");
+            if (device.GetProperty("profile").ValueKind != JsonValueKind.Object)
+            {
+                throw new InvalidDataException(
+                    "Stored companion device field 'profile' must be an object.");
+            }
+            RequireStoredDateTime(device, "createdAtUtc", "Stored companion device");
+            RequireStoredDateTime(device, "updatedAtUtc", "Stored companion device");
+        }
+    }
+
+    private static void RequireExactStoredProperties(
+        JsonElement value,
+        HashSet<string> expected,
+        string label)
+    {
+        if (value.ValueKind != JsonValueKind.Object)
+        {
+            throw new InvalidDataException($"{label} must be a JSON object.");
+        }
+        var actual = value.EnumerateObject().Select(property => property.Name).ToArray();
+        if (actual.Length != expected.Count
+            || actual.Distinct(StringComparer.Ordinal).Count() != actual.Length
+            || actual.Any(name => !expected.Contains(name)))
+        {
+            throw new InvalidDataException($"{label} fields do not match its exact schema.");
+        }
+    }
+
+    private static void RequireStoredString(JsonElement value, string name, string label)
+    {
+        if (value.GetProperty(name).ValueKind != JsonValueKind.String)
+        {
+            throw new InvalidDataException($"{label} field '{name}' must be a string.");
+        }
+    }
+
+    private static void RequireStoredInt64(JsonElement value, string name, string label)
+    {
+        if (!value.GetProperty(name).TryGetInt64(out _))
+        {
+            throw new InvalidDataException($"{label} field '{name}' must be an Int64.");
+        }
+    }
+
+    private static void RequireStoredDateTime(JsonElement value, string name, string label)
+    {
+        var property = value.GetProperty(name);
+        if (property.ValueKind != JsonValueKind.String || !property.TryGetDateTime(out _))
+        {
+            throw new InvalidDataException($"{label} field '{name}' must be a JSON date-time string.");
+        }
     }
 
     private CompanionDeviceAuthorityStateDto BuildState(
@@ -566,12 +729,43 @@ internal sealed class CompanionDeviceAuthorityStore
 
     private static JsonElement ValidateAndCloneProfile(JsonElement profile)
     {
+        return ValidateAndCloneProfile(
+            profile,
+            ProfileFieldsV3,
+            ProfileBooleanFieldsV3,
+            requireManagedRareGuestIds: true);
+    }
+
+    private static JsonElement ValidateAndClonePreviousProfile(JsonElement profile)
+    {
+        return ValidateAndCloneProfile(
+            profile,
+            ProfileFieldsV2,
+            ProfileBooleanFieldsV2,
+            requireManagedRareGuestIds: true);
+    }
+
+    private static JsonElement ValidateAndCloneLegacyProfile(JsonElement profile)
+    {
+        return ValidateAndCloneProfile(
+            profile,
+            ProfileFieldsV1,
+            ProfileBooleanFieldsV1,
+            requireManagedRareGuestIds: false);
+    }
+
+    private static JsonElement ValidateAndCloneProfile(
+        JsonElement profile,
+        HashSet<string> expectedFields,
+        HashSet<string> booleanFields,
+        bool requireManagedRareGuestIds)
+    {
         if (profile.ValueKind != JsonValueKind.Object)
         {
             throw new CompanionDeviceAuthorityException(400, "共享配置必须是 JSON 对象。");
         }
-        RequireExactProperties(profile, ProfileFields, "共享配置");
-        foreach (var field in ProfileBooleanFields)
+        RequireExactProperties(profile, expectedFields, "共享配置");
+        foreach (var field in booleanFields)
         {
             RequireBoolean(profile, field);
         }
@@ -587,6 +781,13 @@ internal sealed class CompanionDeviceAuthorityStore
         RequireColor(profile, "normalTargetHighlightColor");
         ValidateSortProfile(profile.GetProperty("recommendationSortProfile"));
         ValidateExclusions(profile.GetProperty("recommendationExclusions"));
+        if (requireManagedRareGuestIds)
+        {
+            ValidateIdArray(
+                profile.GetProperty("managedRareGuestIds"),
+                "受控稀客",
+                MaxManagedRareGuestIds);
+        }
         ValidatePreferenceDependencies(profile);
         return profile.Clone();
     }
@@ -636,13 +837,13 @@ internal sealed class CompanionDeviceAuthorityStore
             value,
             new HashSet<string>(new[] { "excludedIngredientIds", "excludedBeverageIds" }, StringComparer.Ordinal),
             "推荐排除项");
-        ValidateIdArray(value.GetProperty("excludedIngredientIds"), "排除食材");
-        ValidateIdArray(value.GetProperty("excludedBeverageIds"), "排除酒水");
+        ValidateIdArray(value.GetProperty("excludedIngredientIds"), "排除食材", 4096);
+        ValidateIdArray(value.GetProperty("excludedBeverageIds"), "排除酒水", 4096);
     }
 
-    private static void ValidateIdArray(JsonElement value, string label)
+    private static void ValidateIdArray(JsonElement value, string label, int maxCount)
     {
-        if (value.ValueKind != JsonValueKind.Array || value.GetArrayLength() > 4096)
+        if (value.ValueKind != JsonValueKind.Array || value.GetArrayLength() > maxCount)
         {
             throw new CompanionDeviceAuthorityException(400, $"{label}列表格式或数量无效。");
         }
@@ -807,9 +1008,53 @@ internal sealed class CompanionDeviceAuthorityStore
             ?? throw new InvalidDataException("Failed to clone companion device authority state.");
     }
 
+    private static DeviceAuthorityData MigrateToCurrentData(DeviceAuthorityData source)
+    {
+        var migrated = CloneData(source);
+        migrated.Version = StoreSchemaVersion;
+        foreach (var device in migrated.Devices)
+        {
+            device.Profile = UpgradeProfileToCurrent(device.Profile);
+            device.ProfileHash = ComputeProfileHash(device.Profile);
+        }
+        return migrated;
+    }
+
+    private static JsonElement UpgradeProfileToCurrent(JsonElement previousProfile)
+    {
+        var hasManagedRareGuestIds = previousProfile.TryGetProperty("managedRareGuestIds", out _);
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            writer.WriteStartObject();
+            foreach (var property in previousProfile.EnumerateObject())
+            {
+                property.WriteTo(writer);
+            }
+            if (!hasManagedRareGuestIds)
+            {
+                writer.WriteStartArray("managedRareGuestIds");
+                writer.WriteEndArray();
+            }
+            writer.WriteBoolean("rareGuestParticipationModuleEnabled", false);
+            writer.WriteEndObject();
+        }
+
+        using var document = JsonDocument.Parse(stream.ToArray());
+        return document.RootElement.Clone();
+    }
+
     private static void ValidateStoredData(DeviceAuthorityData data)
     {
-        if (data.Version != StoreSchemaVersion) throw new InvalidDataException($"Unsupported device authority schema version: {data.Version}.");
+        ValidateStoredData(data, StoreSchemaVersion, ValidateAndCloneProfile);
+    }
+
+    private static void ValidateStoredData(
+        DeviceAuthorityData data,
+        int expectedStoreSchemaVersion,
+        Func<JsonElement, JsonElement> validateProfile)
+    {
+        if (data.Version != expectedStoreSchemaVersion) throw new InvalidDataException($"Unsupported device authority schema version: {data.Version}.");
         if (data.RegistryId.Length != 32 || data.RegistryId.Any(character => !Uri.IsHexDigit(character)))
         {
             throw new InvalidDataException("Device registry ID is invalid.");
@@ -846,7 +1091,7 @@ internal sealed class CompanionDeviceAuthorityStore
             {
                 throw new InvalidDataException("Stored device profile revision is invalid.");
             }
-            var profile = ValidateAndCloneProfile(device.Profile);
+            var profile = validateProfile(device.Profile);
             if (!string.Equals(device.ProfileHash, ComputeProfileHash(profile), StringComparison.Ordinal))
             {
                 throw new InvalidDataException("Stored device profile hash is invalid.");
@@ -892,7 +1137,7 @@ internal sealed class CompanionDeviceAuthorityMutationResult
 
 internal sealed class DeviceAuthorityData
 {
-    public int Version { get; set; } = 1;
+    public int Version { get; set; }
     public string RegistryId { get; set; } = "";
     public long AuthorityRevision { get; set; }
     public long StateRevision { get; set; }

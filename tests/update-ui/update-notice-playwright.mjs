@@ -152,8 +152,10 @@ try {
   assert.equal(await downloadButton.getAttribute('data-loading'), 'true');
 
   failSnapshots = true;
+  await activateOverviewConnection(page);
   await page.getByRole('button', { name: '刷新', exact: true }).click();
   await page.getByText('重试中', { exact: true }).waitFor();
+  await activateUpdateSettings(page);
   assert.equal(
     await downloadButton.getAttribute('data-loading'),
     null,
@@ -161,8 +163,10 @@ try {
   );
 
   failSnapshots = false;
+  await activateOverviewConnection(page);
   await page.getByRole('button', { name: '刷新', exact: true }).click();
   await page.getByText('已连接', { exact: true }).waitFor();
+  await activateUpdateSettings(page);
   releaseInterruptedDownload();
   await page.waitForTimeout(100);
   assert.equal(await page.getByText('v9.9.9', { exact: false }).count(), 0);
@@ -220,11 +224,13 @@ try {
     && response.request().headers()['x-mystia-steward-companion-token'] === switchedApiToken
     && response.ok()
   ));
-  const tokenInput = page.locator('.steward-workbench-header input').nth(1);
+  await activateOverviewConnection(page);
+  const tokenInput = page.getByLabel('Mod API Token', { exact: true });
   await tokenInput.fill(switchedApiToken);
   await tokenInput.press('Enter');
   await alternateSnapshot;
   await page.getByText('已连接', { exact: true }).waitFor();
+  await activateUpdateSettings(page);
   assert.equal(
     await installButton.getAttribute('data-loading'),
     null,
@@ -249,6 +255,7 @@ try {
     && response.request().headers()['x-mystia-steward-companion-token'] === apiToken
     && response.ok()
   ));
+  await activateOverviewConnection(page);
   await tokenInput.fill(apiToken);
   await tokenInput.press('Enter');
   await originalSnapshot;
@@ -257,7 +264,7 @@ try {
   await notice.getByRole('button', { name: '24 小时后提醒' }).click();
   await notice.waitFor({ state: 'detached' });
   await page.reload({ waitUntil: 'domcontentloaded' });
-  await page.getByText('Mod 工作台', { exact: true }).waitFor();
+  await page.locator('[data-gamepad-tab-value="overview"]').first().waitFor();
   await page.waitForTimeout(500);
   assert.equal(await page.locator('[data-update-notice="visible"]').count(), 0);
   assert.equal(
@@ -291,6 +298,17 @@ try {
 } finally {
   await page.close();
   await browser.close();
+}
+
+async function activateOverviewConnection(page) {
+  await page.locator('[data-gamepad-tab-value="overview"]').first().click();
+  await page.locator('[data-overview-connection-panel="true"]').waitFor();
+}
+
+async function activateUpdateSettings(page) {
+  await page.locator('[data-gamepad-tab-value="settings"]').first().click();
+  await page.getByRole('tab', { name: '更新', exact: true }).click();
+  await page.locator('[data-update-settings-panel]').waitFor();
 }
 
 console.log(`update notice Playwright audit passed; screenshots: ${outputDir}`);

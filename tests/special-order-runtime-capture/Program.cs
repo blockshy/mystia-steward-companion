@@ -11,7 +11,6 @@ try
     VerifyProductionSourcesRejectTextGetterPaths();
     VerifyDifferentRuntimeKeysNeverMerge();
     VerifyRuntimeKeysRequireNativePointers();
-    VerifyDismissMatchesEveryProvidedRuntimeIdentityField();
     VerifyFulfilledDeliveryStatusRemainsCaptured();
     VerifyControllerBindingCommitsOnlyAfterNativeSuccess();
     VerifyStatusCallbacksCannotCreateUnboundOrders();
@@ -375,30 +374,6 @@ static void VerifyRuntimeKeysRequireNativePointers()
         "",
         normalKey.Invoke(null, new object?[] { new object() }) as string,
         "Normal capture replaced a missing native pointer with a managed identity.");
-}
-
-static void VerifyDismissMatchesEveryProvidedRuntimeIdentityField()
-{
-    var capturedAt = DateTime.UtcNow;
-    var order = new CapturedRuntimeSpecialOrder(
-        2, 123, "Test guest", 30, -1,
-        false, false, capturedAt, capturedAt, "ptr:1", "Test");
-    var matches = typeof(SpecialOrderRuntimeCapture).GetMethod(
-        "IsDismissRequestMatch",
-        BindingFlags.NonPublic | BindingFlags.Static)
-        ?? throw new InvalidOperationException("SpecialOrderRuntimeCapture.IsDismissRequestMatch was not found.");
-
-    bool Invoke(int? runtimeGuestId, int? foodTagId, int? beverageTagId) =>
-        matches.Invoke(null, new object?[] { order, 2, runtimeGuestId, foodTagId, beverageTagId }) is true;
-
-    AssertEqual(true, Invoke(123, 30, -1), "Complete runtime identity did not dismiss its own capture.");
-    AssertEqual(false, Invoke(999, 30, -1), "Matching Tag IDs bypassed a conflicting runtime guest ID.");
-    AssertEqual(false, Invoke(123, 31, -1), "Matching guest ID bypassed a conflicting food Tag ID.");
-    AssertEqual(false, Invoke(123, 30, 14), "Matching guest and food IDs bypassed a conflicting beverage Tag ID.");
-    AssertEqual(false, Invoke(null, null, null), "Desk-only dismissal was accepted without a runtime identity field.");
-
-    var wrongDesk = matches.Invoke(null, new object?[] { order, 3, 123, 30, -1 }) is true;
-    AssertEqual(false, wrongDesk, "A matching runtime identity bypassed a conflicting desk.");
 }
 
 static void VerifyFulfilledDeliveryStatusRemainsCaptured()

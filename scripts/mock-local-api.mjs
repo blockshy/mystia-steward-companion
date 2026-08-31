@@ -27,6 +27,7 @@ const UI_TARGET_FIELD_SUFFIXES = [
   'TraceId',
   'OrderKey',
   'OrderLifecycleSequence',
+  'GuestId',
   'DeskCode',
   'RecipeId',
   'IngredientIds',
@@ -53,6 +54,64 @@ const MOCK_LAN_ENDPOINTS = [
   },
 ];
 const AUTOMATION_LEASE_TTL_MS = 15000;
+const MOCK_SHARED_PROFILE_BOOLEAN_FIELDS = Object.freeze([
+  'automationEnabled',
+  'autoRareOrderEnabled',
+  'rareGuestParticipationModuleEnabled',
+  'autoNormalOrderEnabled',
+  'autoNormalTakeBeverage',
+  'autoNormalStartCooking',
+  'autoNormalDeliverFood',
+  'autoNormalCompleteOrder',
+  'autoNormalStopOnError',
+  'autoPrepCompleteOrder',
+  'autoPrepTakeBeverage',
+  'autoPrepStartCooking',
+  'autoPrepCollectCooking',
+  'autoPrepRecipeFavoritesOnly',
+  'autoPrepBeverageFavoritesOnly',
+  'autoPrepStopOnError',
+  'filterMissingCookers',
+  'missionRecipePriorityEnabled',
+  'pinFavoriteRecipeEnabled',
+  'pinFavoriteBeverageEnabled',
+  'rareGameUiPinningEnabled',
+  'normalGameUiPinningEnabled',
+  'rareRecipeVariantEnabled',
+  'normalRecipeVariantEnabled',
+  'rareCookerHighlightEnabled',
+  'normalCookerHighlightEnabled',
+  'rareSeatHighlightEnabled',
+  'normalSeatHighlightEnabled',
+  'rareOrderHighlightEnabled',
+  'normalOrderHighlightEnabled',
+]);
+const MOCK_SHARED_PROFILE_FIELDS = Object.freeze([
+  ...MOCK_SHARED_PROFILE_BOOLEAN_FIELDS,
+  'autoRareConcurrency',
+  'autoNormalConcurrency',
+  'autoMaxStepRetries',
+  'autoMaxRollbacks',
+  'rareTargetHighlightColor',
+  'normalTargetHighlightColor',
+  'serviceOrderSortMode',
+  'recommendationSortProfile',
+  'recommendationBudgetPolicy',
+  'recipeVariantLimitPerBase',
+  'recommendationExclusions',
+  'managedRareGuestIds',
+]);
+const MOCK_SHARED_PROFILE_OBJECTIVE_KEYS = Object.freeze([
+  'foodPreference',
+  'beveragePreference',
+  'negativeRisk',
+  'extraCount',
+  'resourcePressure',
+  'totalCost',
+  'profit',
+  'beverageStock',
+  'cookerAvailable',
+]);
 
 const host = process.env.MOCK_API_HOST || DEFAULT_HOST;
 const port = Number(process.env.MOCK_API_PORT || DEFAULT_PORT);
@@ -63,6 +122,21 @@ const mockOrderFirstSeenAt = Object.freeze({
   normalPrimary: nowIso(-75),
   normalSecondary: nowIso(-40),
 });
+const MOCK_NIGHT_BUSINESS_GENERATION = 1;
+const MOCK_RARE_ORDER_IDENTITIES = Object.freeze([
+  Object.freeze({
+    businessGeneration: MOCK_NIGHT_BUSINESS_GENERATION,
+    traceId: 'R-0001',
+    orderLifecycleSequence: 1,
+    guestId: 1001,
+  }),
+  Object.freeze({
+    businessGeneration: MOCK_NIGHT_BUSINESS_GENERATION,
+    traceId: 'R-0002',
+    orderLifecycleSequence: 2,
+    guestId: 1002,
+  }),
+]);
 let mockToken = MOCK_TOKEN;
 
 const ingredients = [
@@ -297,7 +371,10 @@ const connectionConfig = {
 };
 let automationLease = null;
 let automationCommandEpoch = 1;
-let automationCookingJobs = [];
+const automationCookingJobs = [];
+let automationCookingJobSequence = 0;
+const mockAutomationCookingJobMetadata = new Map();
+let mockRareUiTargetIdentity = null;
 let automationControlBlock = {
   reasonCode: 'automation-authority-unavailable',
   message: '自动化主设备控制权尚未就绪。',
@@ -308,6 +385,19 @@ const mockDeviceAuthority = {
   stateRevision: 0,
   primaryDeviceId: '',
   devices: new Map(),
+};
+const mockRareGuestParticipation = {
+  active: true,
+  businessGeneration: MOCK_NIGHT_BUSINESS_GENERATION,
+  participationRevision: 2,
+  managedGuestIds: [],
+  entries: MOCK_RARE_ORDER_IDENTITIES.map((identity, index) => ({
+    ...identity,
+    managed: false,
+    queuePosition: index + 1,
+    reasonCode: 'guest-not-managed',
+    observationSequence: index + 1,
+  })),
 };
 const mockAutomationBarrierTarget = {
   targetIdentity: 'order-lifecycle:1:Special:1001:2001:7',
@@ -534,8 +624,12 @@ const server = http.createServer(async (request, response) => {
         return;
       }
 
-      if (path === '/orders/rare/dismiss') {
-        sendJson(response, 200, { ok: true, removed: 1, status: 'mock rare order dismissed', error: null });
+      if (path === '/orders/rare/participation') {
+        sendJson(
+          response,
+          200,
+          mutateMockRareGuestParticipation(request, await readJsonBody(request)),
+        );
         return;
       }
 
@@ -579,7 +673,7 @@ const server = http.createServer(async (request, response) => {
           return;
         }
         const actionResponse = buildOrderActionResponse(requestUrl.searchParams);
-        automationCookingJobs = [buildMockAutomationCookingJob(actionResponse, path, requestUrl.searchParams)];
+        registerMockAutomationCookingJob(actionResponse, path, requestUrl.searchParams);
         refreshMockAutomationCookingJobControls();
         sendJson(response, 200, actionResponse);
         return;
@@ -596,6 +690,19 @@ const server = http.createServer(async (request, response) => {
           sendJson(response, 400, { ok: false, error: validationError });
           return;
         }
+        const targetCount = Number(requestUrl.searchParams.get('targetCount'));
+        const rareTargetIndex = Array.from({ length: targetCount }, (_, index) => index)
+          .find((index) => requestUrl.searchParams.get(`target${index}Kind`) === 'rare');
+        mockRareUiTargetIdentity = rareTargetIndex === undefined
+          ? null
+          : {
+              businessGeneration: Number(requestUrl.searchParams.get('businessGeneration')),
+              traceId: requestUrl.searchParams.get(`target${rareTargetIndex}TraceId`),
+              orderLifecycleSequence: Number(
+                requestUrl.searchParams.get(`target${rareTargetIndex}OrderLifecycleSequence`),
+              ),
+              guestId: Number(requestUrl.searchParams.get(`target${rareTargetIndex}GuestId`)),
+            };
         sendJson(response, 200, { ok: true, status: 'mock target accepted' });
         return;
       }
@@ -738,7 +845,7 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
 function buildSnapshot() {
   const snapshot = {
     pluginVersion: '1.0.5-mock',
-    nightBusinessGeneration: 1,
+    nightBusinessGeneration: MOCK_NIGHT_BUSINESS_GENERATION,
     nightBusinessLifecyclePhase: 'Active',
     runtimeNightBusinessLifecycleStatus: 'mock active generation=1',
     nightBusinessAutomationAllowed: true,
@@ -757,6 +864,7 @@ function buildSnapshot() {
     runtimeSource: 'mock-local-api',
     runtimeSceneReadinessStatus: 'ready',
     runtimeUiPinningStatus: 'patches=checkPinnedPrefix:patched, cookingScope:patched, beverageScope:patched; pinning=on; cookerHighlight=on; target=recipe:1202/蜂蜜蛋糕, beverage:101/果味米酒, cooker:5/料理台, ingredients:2,7; highlight=active; listHighlight=hooks=patched; state=active; tracked=recipe:1, ingredients:2, beverage:1; missingImage=0; bindingErrors=0; visualErrors=0; restoreErrors=0; forcedTotal=recipe:1, ingredients:2, beverage:1; scopeImbalance=0',
+    rareGuestParticipation: buildMockRareGuestParticipationSnapshot(),
     recommendationState: {
       availableRecipeIds: recipes.map((item) => item.id),
       availableBeverageIds: beverages.map((item) => item.id),
@@ -931,6 +1039,18 @@ function buildSnapshotSignature(snapshot) {
     snapshot.runtimeLoaded ? '1' : '0',
     snapshot.status,
     snapshot.runtimeDataSignature,
+    snapshot.rareGuestParticipation.businessGeneration,
+    snapshot.rareGuestParticipation.participationRevision,
+    snapshot.rareGuestParticipation.managedGuestIds.join(','),
+    snapshot.rareGuestParticipation.entries.map((entry) => [
+      entry.traceId,
+      entry.orderLifecycleSequence,
+      entry.guestId,
+      entry.managed ? '1' : '0',
+      entry.participating ? '1' : '0',
+      entry.queuePosition ?? '',
+      entry.reasonCode,
+    ].join(':')).join(','),
     snapshot.nightBusiness?.orders?.length ?? 0,
     snapshot.normalBusiness?.orders?.length ?? 0,
     snapshot.specialBusiness?.challengeType ?? '',
@@ -1187,7 +1307,7 @@ function buildOrderActionResponse(params) {
       outcome: 'progressed',
       stage: 'cooking-start',
       reasonCode: 'cooking-started',
-      jobId: 'CJ-MOCK-000001',
+      jobId: '',
       retryAfterMs: 0,
     },
     steps: [
@@ -1197,7 +1317,41 @@ function buildOrderActionResponse(params) {
   };
 }
 
-function buildMockAutomationCookingJob(response, path, params) {
+function registerMockAutomationCookingJob(response, path, params) {
+  const targetKey = buildMockAutomationCookingJobTargetKey({
+    targetKind: path === '/orders/normal/complete-first' ? 'normal' : 'rare',
+    traceId: params.get('traceId') || '',
+    orderKey: params.get('orderKey') || '',
+    orderLifecycleSequence: Number(params.get('orderLifecycleSequence')),
+    guestId: response.order.guestId,
+    deskCode: response.order.deskCode,
+  }, MOCK_NIGHT_BUSINESS_GENERATION);
+  const existing = automationCookingJobs.find((job) => (
+    mockAutomationCookingJobMetadata.get(job.jobId)?.targetKey === targetKey
+  ));
+  if (existing) {
+    response.automation.jobId = existing.jobId;
+    return existing;
+  }
+
+  automationCookingJobSequence += 1;
+  const jobId = `CJ-MOCK-${String(automationCookingJobSequence).padStart(6, '0')}`;
+  response.automation.jobId = jobId;
+  const job = buildMockAutomationCookingJob(
+    response,
+    path,
+    params,
+    automationCookingJobSequence,
+  );
+  automationCookingJobs.push(job);
+  mockAutomationCookingJobMetadata.set(jobId, {
+    businessGeneration: MOCK_NIGHT_BUSINESS_GENERATION,
+    targetKey,
+  });
+  return job;
+}
+
+function buildMockAutomationCookingJob(response, path, params, jobSequence) {
   const now = nowIso();
   return {
     jobId: response.automation.jobId,
@@ -1226,11 +1380,11 @@ function buildMockAutomationCookingJob(response, path, params) {
     holdsControllerReservation: true,
     controllerLeaseReleaseReason: '',
     orderRuntimeKind: path === '/orders/normal/complete-first' ? 'Normal' : 'Special',
-    orderId: 'mock-order-1',
-    orderControllerId: 'mock-order-controller-1',
+    orderId: `mock-order-${jobSequence}`,
+    orderControllerId: `mock-order-controller-${jobSequence}`,
     orderLifecycleSequence: Number(params.get('orderLifecycleSequence')),
-    controllerId: 'mock-cooker-1',
-    resultId: 'mock-result-1',
+    controllerId: `mock-cooker-${jobSequence}`,
+    resultId: `mock-result-${jobSequence}`,
     generation: 1,
     contentRevision: 1,
     cookerPhase: 1,
@@ -1254,6 +1408,18 @@ function buildMockAutomationCookingJob(response, path, params) {
     lastObservedAtUtc: now,
     lastProgressAtUtc: now,
   };
+}
+
+function buildMockAutomationCookingJobTargetKey(job, businessGeneration) {
+  return JSON.stringify([
+    job.targetKind,
+    businessGeneration,
+    job.traceId,
+    job.orderKey,
+    job.orderLifecycleSequence,
+    job.guestId,
+    job.deskCode,
+  ]);
 }
 
 function mutateRecipeFavorite(params) {
@@ -1686,9 +1852,10 @@ async function readJsonBody(request) {
 
 function registerMockDevice(request, body) {
   const identity = requireMockIdentity(request);
-  if (body?.protocolVersion !== 1 || body?.profileSchemaVersion !== 1 || !body.profile) {
+  if (body?.protocolVersion !== 1 || body?.profileSchemaVersion !== 3) {
     throw mockHttpError(409, 'unsupported mock device protocol');
   }
+  validateMockSharedProfile(body.profile);
   let device = mockDeviceAuthority.devices.get(identity.clientId);
   if (!device) {
     const now = nowIso();
@@ -1717,12 +1884,15 @@ function registerMockDevice(request, body) {
     device.appVersion = body.appVersion;
     device.lastSeenAtUtc = nowIso();
   }
+  alignMockRareGuestParticipationToPrimaryProfile(false);
   return buildMockDeviceAuthorityState(device);
 }
 
 function updateMockDeviceProfile(request, body) {
   const current = requireMockDevice(request);
   requireMockCas(body);
+  if (body?.profileSchemaVersion !== 3) throw mockHttpError(409, 'unsupported mock profile schema');
+  validateMockSharedProfile(body.profile);
   if (current.deviceId !== mockDeviceAuthority.primaryDeviceId) throw mockHttpError(403, 'only the primary mock device can update the active profile');
   if (body.expectedProfileRevision !== current.profileRevision) throw mockHttpError(409, 'mock profile revision changed');
   const hash = hashMockProfile(body.profile);
@@ -1741,6 +1911,7 @@ function updateMockDeviceProfile(request, body) {
       message: '主设备生效配置正在切换；已开始的料理会保留在原厨具，配置应用并重新取得控制权后继续。',
     };
     refreshMockAutomationCookingJobControls();
+    alignMockRareGuestParticipationToPrimaryProfile(false);
   }
   current.lastSeenAtUtc = nowIso();
   return buildMockDeviceAuthorityState(current);
@@ -1762,6 +1933,7 @@ function setMockPrimaryDevice(request, body) {
       message: '主设备正在切换；已开始的料理会保留在原厨具，新主设备取得控制权后继续。',
     };
     refreshMockAutomationCookingJobControls();
+    alignMockRareGuestParticipationToPrimaryProfile(true);
   }
   current.lastSeenAtUtc = nowIso();
   return buildMockDeviceAuthorityState(current);
@@ -1827,7 +1999,7 @@ function buildMockDeviceAuthorityState(current) {
   return {
     ok: true,
     protocolVersion: 1,
-    profileSchemaVersion: 1,
+    profileSchemaVersion: 3,
     registryId: mockDeviceAuthority.registryId,
     authorityRevision: mockDeviceAuthority.authorityRevision,
     stateRevision: mockDeviceAuthority.stateRevision,
@@ -1889,8 +2061,514 @@ function authorizeMockRuntimeWriter(request) {
   return { ok: true, authorityRevision, device, error: null };
 }
 
+function mutateMockRareGuestParticipation(request, body) {
+  validateMockRareGuestParticipationMutation(body);
+  const authority = authorizeMockRuntimeWriter(request);
+  if (!authority.ok || authority.authorityRevision !== body.expectedAuthorityRevision) {
+    throw mockHttpError(409, authority.error || '设备配置权威版本已经变化，请刷新后重试。');
+  }
+  if (authority.device.profile.rareGuestParticipationModuleEnabled !== true) {
+    throw mockHttpError(409, 'Rare-guest participation module is disabled in the active profile.');
+  }
+
+  // 与 Mod 一致：主设备校验成功后先建立 automation safety fence，再检查运行时 CAS。
+  automationCommandEpoch += 1;
+  if (!mockRareGuestParticipation.active) {
+    throw mockHttpError(409, 'Rare-guest participation has no active business generation.');
+  }
+  if (body.expectedBusinessGeneration !== mockRareGuestParticipation.businessGeneration) {
+    throw mockHttpError(409, 'Rare-guest participation business generation changed.');
+  }
+  if (body.expectedParticipationRevision !== mockRareGuestParticipation.participationRevision) {
+    throw mockHttpError(409, 'Rare-guest participation revision changed.');
+  }
+  const expectedOrders = body.target.type === 'guest'
+    ? body.target.expectedCurrentOrders
+    : [body.target.order];
+  const guestId = body.target.type === 'guest'
+    ? body.target.guestId
+    : body.target.order.guestId;
+  if (!mockRareGuestParticipation.managedGuestIds.includes(guestId)) {
+    throw mockHttpError(409, `Rare guest ${guestId} is not managed by the active profile.`);
+  }
+
+  const currentGuestEntries = mockRareGuestParticipation.entries
+    .filter((entry) => entry.guestId === guestId)
+    .sort((left, right) => left.observationSequence - right.observationSequence);
+  const expectedKeys = new Set(expectedOrders.map(buildMockRareOrderIdentityKey));
+  if (body.target.type === 'guest'
+    && (currentGuestEntries.length !== expectedKeys.size
+      || currentGuestEntries.some((entry) => !expectedKeys.has(buildMockRareOrderIdentityKey(entry))))) {
+    throw mockHttpError(409, `Rare guest ${guestId} current lifecycle set changed.`);
+  }
+  const targetEntries = body.target.type === 'guest'
+    ? currentGuestEntries
+    : currentGuestEntries.filter(
+      (entry) => buildMockRareOrderIdentityKey(entry) === buildMockRareOrderIdentityKey(body.target.order),
+    );
+  if (targetEntries.length !== (body.target.type === 'guest' ? currentGuestEntries.length : 1)) {
+    throw mockHttpError(409, `Rare guest ${guestId} target lifecycle changed.`);
+  }
+
+  const currentQueue = mockRareGuestParticipation.entries
+    .filter((entry) => entry.queuePosition !== null)
+    .sort((left, right) => left.queuePosition - right.queuePosition);
+  const eligibleTargets = targetEntries
+    .filter((entry) => body.action === 'pause'
+      ? entry.queuePosition !== null
+      : entry.queuePosition === null)
+    .sort((left, right) => left.observationSequence - right.observationSequence);
+  const changed = eligibleTargets.length > 0;
+  if (body.action === 'pause') {
+    const pausedKeys = new Set(eligibleTargets.map(buildMockRareOrderIdentityKey));
+    assignMockRareGuestQueuePositions(
+      currentQueue.filter((entry) => !pausedKeys.has(buildMockRareOrderIdentityKey(entry))),
+    );
+    if (mockRareUiTargetIdentity
+      && pausedKeys.has(buildMockRareOrderIdentityKey(mockRareUiTargetIdentity))) {
+      mockRareUiTargetIdentity = null;
+    }
+    for (const entry of eligibleTargets) {
+      entry.reasonCode = 'managed-lifecycle-manually-paused';
+    }
+  } else if (body.action === 'enable-tail') {
+    assignMockRareGuestQueuePositions([...currentQueue, ...eligibleTargets]);
+    for (const entry of eligibleTargets) {
+      entry.reasonCode = 'managed-lifecycle-manually-enabled-tail';
+    }
+  } else if (body.action === 'enable-front') {
+    const protectedKeys = buildMockRareGuestProtectedQueueKeys(
+      body.expectedParticipationRevision,
+    );
+    const protectedIndexes = currentQueue
+      .map((entry, index) => protectedKeys.has(buildMockRareOrderIdentityKey(entry)) ? index : -1)
+      .filter((index) => index >= 0);
+    if (protectedIndexes.length !== protectedKeys.size) {
+      throw mockHttpError(409, 'mock active rare queue anchor is not current and participating');
+    }
+    const insertionIndex = protectedIndexes.length === 0
+      ? 0
+      : Math.max(...protectedIndexes) + 1;
+    assignMockRareGuestQueuePositions([
+      ...currentQueue.slice(0, insertionIndex),
+      ...eligibleTargets,
+      ...currentQueue.slice(insertionIndex),
+    ]);
+    for (const entry of eligibleTargets) {
+      entry.reasonCode = 'managed-lifecycle-manually-enabled-front';
+    }
+  }
+  if (changed) mockRareGuestParticipation.participationRevision += 1;
+
+  return {
+    ok: true,
+    changed,
+    status: body.action === 'pause'
+      ? 'selected rare guest orders paused'
+      : body.action === 'enable-tail'
+        ? 'selected rare guest orders queued at tail'
+        : 'selected rare guest orders queued after active work',
+    participation: buildMockRareGuestParticipationSnapshot(),
+    error: null,
+  };
+}
+
+function validateMockRareGuestParticipationMutation(body) {
+  requireExactMockJsonObject(body, [
+    'expectedAuthorityRevision',
+    'expectedBusinessGeneration',
+    'expectedParticipationRevision',
+    'action',
+    'target',
+  ], 'rare participation request');
+  if (!isPositiveSafeInteger(body.expectedAuthorityRevision)
+    || !isPositiveSafeInteger(body.expectedBusinessGeneration)
+    || !isPositiveSafeInteger(body.expectedParticipationRevision)
+    || !['pause', 'enable-tail', 'enable-front'].includes(body.action)) {
+    throw mockHttpError(400, 'rare participation request scalar fields are invalid');
+  }
+  if (body.target?.type === 'guest') {
+    requireExactMockJsonObject(body.target, [
+      'type',
+      'guestId',
+      'expectedCurrentOrders',
+    ], 'rare participation guest target');
+    if (!isNonNegativeInt32Number(body.target.guestId)
+      || !Array.isArray(body.target.expectedCurrentOrders)
+      || body.target.expectedCurrentOrders.length === 0
+      || body.target.expectedCurrentOrders.length > 512) {
+      throw mockHttpError(400, 'guest target must contain 1 to 512 exact current identities');
+    }
+  } else if (body.target?.type === 'order') {
+    requireExactMockJsonObject(body.target, ['type', 'order'], 'rare participation order target');
+  } else {
+    throw mockHttpError(400, 'rare participation target type is invalid');
+  }
+
+  const expectedOrders = body.target.type === 'guest'
+    ? body.target.expectedCurrentOrders
+    : [body.target.order];
+  const guestId = body.target.type === 'guest'
+    ? body.target.guestId
+    : body.target.order?.guestId;
+  const identities = new Set();
+  for (const order of expectedOrders) {
+    requireExactMockJsonObject(order, [
+      'businessGeneration',
+      'traceId',
+      'orderLifecycleSequence',
+      'guestId',
+    ], 'rare participation order identity');
+    if (!isPositiveSafeInteger(order.businessGeneration)
+      || typeof order.traceId !== 'string'
+      || !/^R-[0-9]{1,16}$/.test(order.traceId)
+      || !isPositiveSafeInteger(order.orderLifecycleSequence)
+      || !isNonNegativeInt32Number(order.guestId)
+      || order.businessGeneration !== body.expectedBusinessGeneration
+      || order.guestId !== guestId) {
+      throw mockHttpError(400, 'rare participation order identity is invalid');
+    }
+    const key = buildMockRareOrderIdentityKey(order);
+    if (identities.has(key)) {
+      throw mockHttpError(400, 'expectedCurrentOrders must contain unique identities');
+    }
+    identities.add(key);
+  }
+}
+
+function requireExactMockJsonObject(value, expectedProperties, label) {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) {
+    throw mockHttpError(400, `${label} must be a JSON object`);
+  }
+  const actual = Object.keys(value);
+  const expected = new Set(expectedProperties);
+  if (actual.length !== expected.size || actual.some((property) => !expected.has(property))) {
+    throw mockHttpError(400, `${label} fields do not match the current protocol`);
+  }
+}
+
+function isPositiveSafeInteger(value) {
+  return Number.isSafeInteger(value) && value > 0;
+}
+
+function isNonNegativeInt32Number(value) {
+  return Number.isInteger(value) && value >= 0 && value <= 2_147_483_647;
+}
+
+function buildMockRareOrderIdentityKey(identity) {
+  return JSON.stringify([
+    identity.businessGeneration,
+    identity.traceId,
+    identity.orderLifecycleSequence,
+    identity.guestId,
+  ]);
+}
+
+function buildMockRareGuestParticipationSnapshot() {
+  return {
+    active: mockRareGuestParticipation.active,
+    businessGeneration: mockRareGuestParticipation.businessGeneration,
+    participationRevision: mockRareGuestParticipation.participationRevision,
+    managedGuestIds: [...mockRareGuestParticipation.managedGuestIds],
+    entries: [...mockRareGuestParticipation.entries]
+      .sort((left, right) => {
+        const leftParticipating = left.queuePosition !== null;
+        const rightParticipating = right.queuePosition !== null;
+        if (leftParticipating !== rightParticipating) return leftParticipating ? -1 : 1;
+        return leftParticipating
+          ? left.queuePosition - right.queuePosition
+          : left.observationSequence - right.observationSequence;
+      })
+      .map((entry) => ({
+        traceId: entry.traceId,
+        orderLifecycleSequence: entry.orderLifecycleSequence,
+        guestId: entry.guestId,
+        managed: entry.managed,
+        participating: entry.queuePosition !== null,
+        reasonCode: entry.reasonCode,
+        queuePosition: entry.queuePosition,
+      })),
+  };
+}
+
+function alignMockRareGuestParticipationToPrimaryProfile(resetManagedParticipation) {
+  const primary = mockDeviceAuthority.devices.get(mockDeviceAuthority.primaryDeviceId);
+  if (!primary) return;
+  const nextManagedGuestIds = primary.profile.rareGuestParticipationModuleEnabled
+    ? [...primary.profile.managedRareGuestIds]
+    : [];
+  const sameRoster = nextManagedGuestIds.length === mockRareGuestParticipation.managedGuestIds.length
+    && nextManagedGuestIds.every(
+      (guestId, index) => guestId === mockRareGuestParticipation.managedGuestIds[index],
+    );
+  if (!resetManagedParticipation && sameRoster) return;
+
+  const previousManagedGuestIds = new Set(mockRareGuestParticipation.managedGuestIds);
+  const nextManagedGuestIdSet = new Set(nextManagedGuestIds);
+  const currentQueue = mockRareGuestParticipation.entries
+    .filter((entry) => entry.queuePosition !== null)
+    .sort((left, right) => left.queuePosition - right.queuePosition);
+  const queueKeys = new Set(currentQueue.map(buildMockRareOrderIdentityKey));
+  for (const entry of [...mockRareGuestParticipation.entries]
+    .sort((left, right) => left.observationSequence - right.observationSequence)) {
+    const wasManaged = previousManagedGuestIds.has(entry.guestId);
+    const isManaged = nextManagedGuestIdSet.has(entry.guestId);
+    entry.managed = isManaged;
+    if (resetManagedParticipation && isManaged) {
+      queueKeys.delete(buildMockRareOrderIdentityKey(entry));
+      entry.reasonCode = 'managed-lifecycle-authority-reset-paused';
+      continue;
+    }
+    if (wasManaged === isManaged) continue;
+    if (isManaged) {
+      queueKeys.delete(buildMockRareOrderIdentityKey(entry));
+      entry.reasonCode = 'managed-lifecycle-default-paused';
+      continue;
+    }
+    queueKeys.add(buildMockRareOrderIdentityKey(entry));
+    entry.reasonCode = 'guest-not-managed';
+  }
+
+  assignMockRareGuestQueuePositions([
+    ...currentQueue.filter((entry) => queueKeys.has(buildMockRareOrderIdentityKey(entry))),
+    ...mockRareGuestParticipation.entries
+      .filter((entry) => queueKeys.has(buildMockRareOrderIdentityKey(entry))
+        && !currentQueue.includes(entry))
+      .sort((left, right) => left.observationSequence - right.observationSequence),
+  ]);
+
+  mockRareGuestParticipation.managedGuestIds = nextManagedGuestIds;
+  mockRareGuestParticipation.participationRevision += 1;
+}
+
+function assignMockRareGuestQueuePositions(orderedEntries) {
+  for (const entry of mockRareGuestParticipation.entries) entry.queuePosition = null;
+  orderedEntries.forEach((entry, index) => {
+    entry.queuePosition = index + 1;
+  });
+}
+
+function buildMockRareGuestProtectedQueueKeys(expectedParticipationRevision) {
+  if (expectedParticipationRevision !== mockRareGuestParticipation.participationRevision) {
+    throw mockHttpError(409, 'mock participation revision changed while capturing queue anchors');
+  }
+
+  const result = new Set();
+  if (mockRareUiTargetIdentity) {
+    const uiEntry = requireMockCurrentRareQueueAnchor(
+      mockRareUiTargetIdentity,
+      'mock rare UI target',
+    );
+    if (uiEntry.queuePosition === null) {
+      throw mockHttpError(409, 'mock rare UI target is not participating');
+    }
+    result.add(buildMockRareOrderIdentityKey(mockRareUiTargetIdentity));
+  }
+
+  const activeJobIds = new Set();
+  const activeIdentities = new Set();
+  for (const job of automationCookingJobs) {
+    if (job.targetKind !== 'rare' || job.controlState !== 'active') continue;
+
+    if (typeof job.jobId !== 'string'
+      || job.jobId.length === 0
+      || activeJobIds.has(job.jobId)) {
+      throw mockHttpError(409, 'mock active rare cooking jobs do not have unique job ids');
+    }
+    activeJobIds.add(job.jobId);
+    const metadata = mockAutomationCookingJobMetadata.get(job.jobId);
+    if (!metadata
+      || metadata.businessGeneration !== mockRareGuestParticipation.businessGeneration
+      || metadata.targetKey !== buildMockAutomationCookingJobTargetKey(
+        job,
+        metadata.businessGeneration,
+      )
+      || job.orderRuntimeKind !== 'Special'
+      || typeof job.orderId !== 'string'
+      || job.orderId.length === 0
+      || typeof job.orderControllerId !== 'string'
+      || job.orderControllerId.length === 0
+      || !/^R-[0-9]{1,16}$/.test(job.traceId)
+      || !isPositiveSafeInteger(job.orderLifecycleSequence)
+      || !isNonNegativeInt32Number(job.guestId)) {
+      throw mockHttpError(409, `mock active rare cooking job ${job.jobId} has no exact queue anchor`);
+    }
+
+    const identity = {
+      businessGeneration: metadata.businessGeneration,
+      traceId: job.traceId,
+      orderLifecycleSequence: job.orderLifecycleSequence,
+      guestId: job.guestId,
+    };
+    const identityKey = buildMockRareOrderIdentityKey(identity);
+    if (activeIdentities.has(identityKey)) {
+      throw mockHttpError(409, `multiple mock active rare cooking jobs claim ${identityKey}`);
+    }
+    activeIdentities.add(identityKey);
+
+    const currentEntry = requireMockCurrentRareQueueAnchor(
+      identity,
+      `mock active rare cooking job ${job.jobId}`,
+    );
+    if (currentEntry.queuePosition === null) {
+      if (!currentEntry.managed) {
+        throw mockHttpError(409, `mock active rare cooking job ${job.jobId} has ambiguous participation`);
+      }
+      // Participation is authoritative: cached active control cannot make an explicitly paused
+      // lifecycle operational. Exclude that stale job without weakening unknown identity failures.
+      continue;
+    }
+    result.add(identityKey);
+  }
+
+  if (expectedParticipationRevision !== mockRareGuestParticipation.participationRevision) {
+    throw mockHttpError(409, 'mock participation revision changed while capturing queue anchors');
+  }
+  return result;
+}
+
+function requireMockCurrentRareQueueAnchor(identity, label) {
+  if (!identity
+    || identity.businessGeneration !== mockRareGuestParticipation.businessGeneration
+    || !/^R-[0-9]{1,16}$/.test(identity.traceId)
+    || !isPositiveSafeInteger(identity.orderLifecycleSequence)
+    || !isNonNegativeInt32Number(identity.guestId)) {
+    throw mockHttpError(409, `${label} has no exact current-generation identity`);
+  }
+  const identityKey = buildMockRareOrderIdentityKey(identity);
+  const matches = mockRareGuestParticipation.entries.filter(
+    (entry) => buildMockRareOrderIdentityKey(entry) === identityKey,
+  );
+  if (matches.length !== 1) {
+    throw mockHttpError(409, `${label} is not one exact current participation entry`);
+  }
+  const entry = matches[0];
+  if (entry.queuePosition !== null && !isPositiveSafeInteger(entry.queuePosition)) {
+    throw mockHttpError(409, `${label} has an invalid participation queue position`);
+  }
+  return entry;
+}
+
 function hashMockProfile(profile) {
   return createHash('sha256').update(stableJson(profile)).digest('hex');
+}
+
+function validateMockSharedProfile(profile) {
+  requireExactMockJsonObject(profile, MOCK_SHARED_PROFILE_FIELDS, 'shared profile');
+  for (const field of MOCK_SHARED_PROFILE_BOOLEAN_FIELDS) {
+    if (typeof profile[field] !== 'boolean') {
+      throw mockHttpError(400, `shared profile field ${field} must be a boolean`);
+    }
+  }
+
+  requireMockBoundedInteger(profile, 'autoRareConcurrency', 1, 4);
+  requireMockBoundedInteger(profile, 'autoNormalConcurrency', 1, 6);
+  requireMockBoundedInteger(profile, 'autoMaxStepRetries', 1, 10);
+  requireMockBoundedInteger(profile, 'autoMaxRollbacks', 0, 5);
+  requireMockBoundedInteger(profile, 'recipeVariantLimitPerBase', 1, 8);
+  requireMockStringChoice(profile, 'serviceOrderSortMode', ['ordered', 'guest']);
+  requireMockStringChoice(profile, 'recommendationBudgetPolicy', ['block', 'warn', 'ignore']);
+  requireMockCanonicalColor(profile, 'rareTargetHighlightColor');
+  requireMockCanonicalColor(profile, 'normalTargetHighlightColor');
+  validateMockRecommendationSortProfile(profile.recommendationSortProfile);
+  validateMockRecommendationExclusions(profile.recommendationExclusions);
+  validateMockCanonicalIdArray(profile.managedRareGuestIds, 'managedRareGuestIds', 512);
+
+  if (!profile.autoNormalCompleteOrder
+    && (profile.autoNormalTakeBeverage || profile.autoNormalDeliverFood)) {
+    throw mockHttpError(400, 'normal delivery substeps require autoNormalCompleteOrder');
+  }
+  if (!profile.autoPrepCompleteOrder
+    && (profile.autoPrepTakeBeverage || profile.autoPrepCollectCooking)) {
+    throw mockHttpError(400, 'rare delivery substeps require autoPrepCompleteOrder');
+  }
+}
+
+function validateMockRecommendationSortProfile(sortProfile) {
+  requireExactMockJsonObject(
+    sortProfile,
+    ['preset', 'objectives'],
+    'shared recommendation sort profile',
+  );
+  requireMockStringChoice(
+    sortProfile,
+    'preset',
+    ['balanced', 'resources', 'profit', 'simple'],
+  );
+  if (!Array.isArray(sortProfile.objectives)
+    || sortProfile.objectives.length !== MOCK_SHARED_PROFILE_OBJECTIVE_KEYS.length) {
+    throw mockHttpError(400, 'shared recommendation objectives must contain all current keys');
+  }
+
+  const allowedKeys = new Set(MOCK_SHARED_PROFILE_OBJECTIVE_KEYS);
+  const seenKeys = new Set();
+  for (const objective of sortProfile.objectives) {
+    requireExactMockJsonObject(
+      objective,
+      ['key', 'enabled', 'weight', 'direction'],
+      'shared recommendation objective',
+    );
+    if (typeof objective.key !== 'string'
+      || !allowedKeys.has(objective.key)
+      || seenKeys.has(objective.key)) {
+      throw mockHttpError(400, 'shared recommendation objective key is unknown or duplicated');
+    }
+    seenKeys.add(objective.key);
+    if (typeof objective.enabled !== 'boolean') {
+      throw mockHttpError(400, 'shared recommendation objective enabled must be a boolean');
+    }
+    requireMockBoundedInteger(objective, 'weight', 0, 100);
+    requireMockStringChoice(objective, 'direction', ['asc', 'desc']);
+  }
+}
+
+function validateMockRecommendationExclusions(exclusions) {
+  requireExactMockJsonObject(
+    exclusions,
+    ['excludedIngredientIds', 'excludedBeverageIds'],
+    'shared recommendation exclusions',
+  );
+  validateMockCanonicalIdArray(
+    exclusions.excludedIngredientIds,
+    'excludedIngredientIds',
+    4096,
+  );
+  validateMockCanonicalIdArray(
+    exclusions.excludedBeverageIds,
+    'excludedBeverageIds',
+    4096,
+  );
+}
+
+function requireMockBoundedInteger(value, field, minimum, maximum) {
+  if (!Number.isInteger(value[field]) || value[field] < minimum || value[field] > maximum) {
+    throw mockHttpError(400, `shared profile field ${field} is outside its allowed range`);
+  }
+}
+
+function requireMockStringChoice(value, field, choices) {
+  if (typeof value[field] !== 'string' || !choices.includes(value[field])) {
+    throw mockHttpError(400, `shared profile field ${field} is not an allowed value`);
+  }
+}
+
+function requireMockCanonicalColor(value, field) {
+  if (typeof value[field] !== 'string' || !/^#[0-9A-F]{6}$/.test(value[field])) {
+    throw mockHttpError(400, `shared profile field ${field} must be an uppercase #RRGGBB color`);
+  }
+}
+
+function validateMockCanonicalIdArray(value, label, maximumCount) {
+  if (!Array.isArray(value) || value.length > maximumCount) {
+    throw mockHttpError(400, `${label} must be a bounded array`);
+  }
+  let previous = -1;
+  for (const id of value) {
+    if (!isNonNegativeInt32Number(id) || id <= previous) {
+      throw mockHttpError(400, `${label} must contain strictly increasing non-negative Int32 IDs`);
+    }
+    previous = id;
+  }
 }
 
 function stableJson(value) {
@@ -2302,6 +2980,10 @@ function validateUiTargetPublication(searchParams) {
     }
     if (!isPositiveDecimal(searchParams.get(`${prefix}OrderLifecycleSequence`))) {
       return `invalid ${prefix}OrderLifecycleSequence`;
+    }
+    const guestId = searchParams.get(`${prefix}GuestId`);
+    if (kind === 'rare' ? !isNonNegativeInt32(guestId) : guestId !== '-1') {
+      return `invalid ${prefix}GuestId`;
     }
     if (!isNonNegativeInt32(searchParams.get(`${prefix}DeskCode`))) {
       return `invalid ${prefix}DeskCode`;

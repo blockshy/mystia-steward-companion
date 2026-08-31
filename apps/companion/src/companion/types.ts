@@ -19,10 +19,16 @@ export type ModTab =
   | 'extensions'
   | 'logs'
   | 'settings';
-export type OverviewTab = 'status' | 'inventory' | 'actions';
+export type OverviewTab = 'connection' | 'status' | 'inventory' | 'actions';
 export type RecommendationTab = 'normal' | 'rare' | 'custom-recipes' | 'favorites';
-export type ExtensionTab = 'missions' | 'rare-invitations' | 'inventory';
-export type SettingsTab = 'window' | 'connection' | 'recommendation' | 'experimental' | 'updates' | 'help';
+export type ExtensionTab = 'missions' | 'rare-invitations' | 'rare-participation' | 'inventory';
+export type SettingsTab =
+  | 'window'
+  | 'connection'
+  | 'recommendation'
+  | 'experimental'
+  | 'updates'
+  | 'help';
 export type RareGuestInvitationScope = 'current' | 'all';
 export type TrackedMissionStatus = 'unverified' | 'tracking' | 'fulfilled';
 export type TrackedMissionRuntimeStatus =
@@ -157,6 +163,68 @@ export interface NightBusinessContext {
   activeRareGuests: NightBusinessGuest[];
   orders: NightBusinessOrder[];
   source: string;
+  error: string | null;
+}
+
+/** Mod 权威维护的单个稀客订单参与状态。 */
+export interface RareGuestParticipationEntry {
+  traceId: string;
+  orderLifecycleSequence: number;
+  guestId: number;
+  managed: boolean;
+  participating: boolean;
+  reasonCode: string;
+  queuePosition: number | null;
+}
+
+/** `/snapshot` 中随经营代际发布的完整稀客参与队列。 */
+export interface RareGuestParticipationSnapshot {
+  active: boolean;
+  businessGeneration: number;
+  participationRevision: number;
+  managedGuestIds: number[];
+  entries: RareGuestParticipationEntry[];
+}
+
+/** 参与 mutation 中回显的一个精确订单 lifecycle identity。 */
+export interface RareGuestParticipationOrderIdentity {
+  businessGeneration: number;
+  traceId: string;
+  orderLifecycleSequence: number;
+  guestId: number;
+}
+
+export type RareGuestParticipationMutationAction =
+  | 'pause'
+  | 'enable-tail'
+  | 'enable-front';
+
+export type RareGuestParticipationMutationTarget =
+  | {
+      type: 'guest';
+      guestId: number;
+      expectedCurrentOrders: readonly RareGuestParticipationOrderIdentity[];
+    }
+  | {
+      type: 'order';
+      order: RareGuestParticipationOrderIdentity;
+    };
+
+/** `/orders/rare/participation` 的严格 CAS 请求体。 */
+export interface RareGuestParticipationMutationRequest {
+  expectedAuthorityRevision: number;
+  expectedBusinessGeneration: number;
+  expectedParticipationRevision: number;
+  action: RareGuestParticipationMutationAction;
+  target: RareGuestParticipationMutationTarget;
+}
+
+/** `/orders/rare/participation` 成功后返回的最新 Mod 权威队列。 */
+export interface RareGuestParticipationMutationResponse {
+  ok: boolean;
+  changed: boolean;
+  status: string;
+  participation: RareGuestParticipationSnapshot;
   error: string | null;
 }
 
@@ -301,6 +369,7 @@ export interface LocalApiSnapshot {
   runtimeSource: string;
   runtimeSceneReadinessStatus?: string;
   runtimeUiPinningStatus?: string;
+  rareGuestParticipation: RareGuestParticipationSnapshot;
   recommendationState: RecommendationStateSnapshot | null;
   nightBusiness: NightBusinessContext | null;
   specialBusiness?: SpecialBusinessContext | null;
@@ -390,7 +459,7 @@ export interface AutomationCookingJobSnapshot {
   transactionStage: 'cooking' | 'ready' | 'delivery-cleanup' | 'evaluation-receipt' | 'manual-handoff' | 'manual-handoff-expired' | 'warmer-cleanup';
   specialTargetRevision: number;
   allowYuumaControlledProgression: boolean;
-  controlState: 'active' | 'suspended-authority' | 'suspended-configuration';
+  controlState: 'active' | 'suspended-authority' | 'suspended-configuration' | 'suspended-participation';
   controlReasonCode: string;
   controlMessage: string;
   controlAuthorityRevision: number;
@@ -1004,13 +1073,6 @@ export type AvailableMissionsApiResponse =
   | AvailableMissionsResponse
   | AvailableMissionsUnchangedResponse;
 
-export interface RareOrderDismissResponse {
-  ok: boolean;
-  removed: number;
-  status: string;
-  error: string | null;
-}
-
 export type GameUiTargetKind = 'rare' | 'normal';
 
 export interface GameUiTargetFeatures {
@@ -1033,6 +1095,7 @@ export interface GameUiTarget {
   traceId: string;
   orderKey: string;
   orderLifecycleSequence: number;
+  guestId: number;
   recipeId: number;
   recipeName: string;
   ingredientIds: number[];

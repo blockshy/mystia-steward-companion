@@ -9,6 +9,14 @@ using MystiaStewardCompanion.Save.SpecialBusiness;
 namespace MystiaStewardCompanion.Save;
 
 /// <summary>
+/// Wrapper-free cached-active rare-order cooking-job candidate. The caller must classify it against
+/// the same participation revision after this service releases the cooking-job lock.
+/// </summary>
+internal readonly record struct RuntimeRareAutomationQueueCandidate(
+    string JobId,
+    RuntimeRareGuestParticipationOrderIdentity Identity);
+
+/// <summary>
 /// 在游戏运行时执行订单准备、自动送达酒水、自动开火、出锅直送和上菜评价。
 /// </summary>
 /// <remarks>
@@ -88,6 +96,7 @@ internal static partial class RuntimeOrderPreparationService
         public const string OrderEvaluationCommitUncertain = "order-evaluation-commit-uncertain";
         public const string OrderEvaluationTargetMismatch = "order-evaluation-target-mismatch";
         public const string OrderEvaluationCloseoutUnresolved = "order-evaluation-closeout-unresolved";
+        public const string OrderTerminatedBeforeDelivery = "order-terminated-before-delivery";
         public const string OrderTerminatedBeforeEvaluation = "order-terminated-before-evaluation";
         public const string MizuchiContractMismatch = "mizuchi-contract-mismatch";
         public const string CookingCancelled = "cooking-cancelled";
@@ -149,6 +158,79 @@ internal static partial class RuntimeOrderPreparationService
         }
     }
 
+    /// <summary>
+    /// Captures exact managed scalars for every cached-active rare-order cooking job in one business
+    /// generation. A malformed candidate makes priority placement unavailable instead of being
+    /// silently omitted. The caller must release this lock before consulting participation state:
+    /// an explicitly paused candidate is no longer an operational anchor even if its cached control
+    /// state has not yet observed that pause.
+    /// </summary>
+    internal static IReadOnlyList<RuntimeRareAutomationQueueCandidate> SnapshotActiveRareAutomationQueueCandidates(
+        long businessGeneration)
+    {
+        if (businessGeneration <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(businessGeneration));
+        }
+
+        lock (AutomationCookingJobLock)
+        {
+            var result = new List<RuntimeRareAutomationQueueCandidate>();
+            var identities = new HashSet<RuntimeRareGuestParticipationOrderIdentity>();
+            foreach (var job in AutomationCookingJobs)
+            {
+                if (job.Target.Kind != CookingCollectionTargetKind.RareOrder
+                    || !string.Equals(job.ControlState, "active", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                if (!job.Target.OrderBinding.HasValue)
+                {
+                    throw new InvalidOperationException(
+                        $"Active rare cooking job {job.JobId} has no exact runtime order binding.");
+                }
+
+                var binding = job.Target.OrderBinding.Value;
+                if (binding.BusinessGeneration != businessGeneration
+                    || binding.OrderKind != RuntimeOrderKind.Special
+                    || binding.OrderPointer == 0
+                    || binding.ControllerPointer == 0
+                    || !RuntimeOrderTerminalReceiptStore.MatchesRequestedLifecycle(
+                        job.Target.RequestedOrderLifecycleSequence,
+                        binding.LifecycleSequence)
+                    || !job.Target.GuestId.HasValue
+                    || job.Target.GuestId.Value < 0
+                    || !RuntimeOrderTraceIdService.TryNormalizeTargetTraceId(
+                        RuntimeUiTargetKind.Rare,
+                        job.Target.TraceId,
+                        enabled: true,
+                        out var normalizedTraceId,
+                        out _)
+                    || !string.Equals(normalizedTraceId, job.Target.TraceId, StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(
+                        $"Active rare cooking job {job.JobId} cannot provide a current exact queue anchor.");
+                }
+
+                var identity = new RuntimeRareGuestParticipationOrderIdentity(
+                    binding.BusinessGeneration,
+                    job.Target.TraceId,
+                    binding.LifecycleSequence,
+                    job.Target.GuestId.Value);
+                if (!identities.Add(identity))
+                {
+                    throw new InvalidOperationException(
+                        $"Multiple active rare cooking jobs claim the same exact queue anchor: {identity}.");
+                }
+
+                result.Add(new RuntimeRareAutomationQueueCandidate(job.JobId, identity));
+            }
+
+            return result;
+        }
+    }
+
     public static AutomationSafetyBarrierAckResult AcknowledgeAutomationSafetyBarrier(long sequence)
     {
         lock (AutomationCookingJobLock)
@@ -185,10 +267,12 @@ internal static partial class RuntimeOrderPreparationService
     /// <remarks>
     /// 该方法主要执行“准备”动作：按场景边界送达酒水、开始料理并登记出锅处理。
     /// 一般订单若由本次酒水送达变为已满足，会在返回前沿精确订单路由触发评价；
-    /// 其余订单由 <see cref="CompleteFirst(OrderPreparationRequest)"/> 或出锅事务在满足后触发评价；
+    /// 其余订单由 <see cref="CompleteFirst(OrderPreparationRequest, bool)"/> 或出锅事务在满足后触发评价；
     /// 血池地狱订单在对应开关均启用时进入精确的专用原生结算事务，否则交由玩家处理。
     /// </remarks>
-    public static OrderPreparationResult Prepare(OrderPreparationRequest request)
+    public static OrderPreparationResult Prepare(
+        OrderPreparationRequest request,
+        bool requireRareParticipationBinding)
     {
         var configurationError = BuildAutomationConfigurationInvalidResult(
             request,
@@ -275,6 +359,7 @@ internal static partial class RuntimeOrderPreparationService
             if (!TryBindCookingTargetRuntimeOrder(
                     actionTarget,
                     runtimeOrder,
+                    requireRareParticipationBinding,
                     out var orderBindingDiagnostic))
             {
                 AddFailure(
@@ -600,7 +685,9 @@ internal static partial class RuntimeOrderPreparationService
     /// 普通稀客订单由准备链路补送缺失酒水并在游戏判定订单已满足后调用评价入口；
     /// 血池地狱仅由精确 cooking job 事务执行最终送达与订单专属评价。
     /// </remarks>
-    public static OrderPreparationResult CompleteFirst(OrderPreparationRequest request)
+    public static OrderPreparationResult CompleteFirst(
+        OrderPreparationRequest request,
+        bool requireRareParticipationBinding)
     {
         var configurationError = BuildAutomationConfigurationInvalidResult(
             request,
@@ -669,6 +756,7 @@ internal static partial class RuntimeOrderPreparationService
         if (!TryBindCookingTargetRuntimeOrder(
                 automationTarget,
                 runtimeOrder,
+                requireRareParticipationBinding,
                 out var orderBindingDiagnostic))
         {
             AddFailure(
@@ -1012,6 +1100,7 @@ internal static partial class RuntimeOrderPreparationService
         if (!TryBindCookingTargetRuntimeOrder(
                 orderAutomationTarget,
                 runtimeOrder,
+                requireRareParticipationBinding: false,
                 out var initialOrderBindingDiagnostic))
         {
             AddFailure(
@@ -1450,6 +1539,7 @@ internal static partial class RuntimeOrderPreparationService
                     else if (!TryBindCookingTargetRuntimeOrder(
                                  target,
                                  runtimeOrder,
+                                 requireRareParticipationBinding: false,
                                  out var orderBindingDiagnostic))
                     {
                         AddFailure(
@@ -2021,6 +2111,7 @@ internal static partial class RuntimeOrderPreparationService
     private static bool TryBindCookingTargetRuntimeOrder(
         CookingCollectionTarget target,
         RuntimeOrderMatch runtimeOrder,
+        bool requireRareParticipationBinding,
         out string diagnostic)
     {
         var lifecycleBefore = RuntimeNightBusinessLifecycle.Snapshot;
@@ -2094,6 +2185,33 @@ internal static partial class RuntimeOrderPreparationService
         {
             diagnostic = "cooking target already carries a different exact runtime order identity";
             return false;
+        }
+        if (requireRareParticipationBinding)
+        {
+            if (target.Kind != CookingCollectionTargetKind.RareOrder)
+            {
+                diagnostic = "rare-order participation binding was requested for a non-rare target";
+                return false;
+            }
+            if (!target.GuestId.HasValue)
+            {
+                diagnostic = "managed rare-order participation requires a canonical guest identity";
+                return false;
+            }
+            var participationIdentity = new RuntimeRareGuestParticipationOrderIdentity(
+                token.BusinessGeneration,
+                target.TraceId,
+                target.RequestedOrderLifecycleSequence,
+                target.GuestId.Value);
+            if (!RuntimeRareGuestParticipationState.TryEnrichCurrentBinding(
+                    participationIdentity,
+                    token,
+                    out var participationDecision))
+            {
+                diagnostic = "rare-order participation binding rejected: "
+                    + $"{participationDecision.ReasonCode}; {participationDecision.Message}";
+                return false;
+            }
         }
 
         diagnostic = $"generation={token.BusinessGeneration}; kind={token.OrderKind}; "
@@ -2386,7 +2504,7 @@ internal static partial class RuntimeOrderPreparationService
                 Outcome = effectiveOutcome,
                 ReasonCode = effectiveReasonCode,
                 Terminal = terminal,
-                Generation = job?.Generation ?? 0,
+                Generation = job?.CookingOwnershipGeneration ?? 0,
                 CookerPhase = job?.Tracker.LastPhase ?? -1,
                 CookerProgress = job?.Tracker.LastProgress ?? -1f,
                 TargetKind = target.Kind == CookingCollectionTargetKind.RareOrder ? "rare" : "normal",
@@ -2768,7 +2886,10 @@ internal static partial class RuntimeOrderPreparationService
         public string JobId { get; init; } = "";
         public RuntimeCookerReservation CookerReservation { get; init; }
         public nint ControllerPointer { get; init; }
-        public long Generation { get; init; }
+        /// <summary>
+        /// Physical cooker-content ownership generation. This is not a night-business generation.
+        /// </summary>
+        public long CookingOwnershipGeneration { get; init; }
         public long ContentRevision { get; init; }
         public nint ChosenRecipePointer { get; init; }
         public string RecipeName { get; init; } = "";
@@ -2845,6 +2966,7 @@ internal static partial class RuntimeOrderPreparationService
         {
             AutomationCookingControllerLeaseReleaseReason.None => "",
             AutomationCookingControllerLeaseReleaseReason.ManualHandoff => "manual-handoff",
+            AutomationCookingControllerLeaseReleaseReason.OrderTerminatedBeforeDelivery => "order-terminated-before-delivery",
             AutomationCookingControllerLeaseReleaseReason.DeliveryCleanupCompleted => "delivery-cleanup-completed",
             AutomationCookingControllerLeaseReleaseReason.DeliveryCleanupTerminated => "delivery-cleanup-terminated",
             _ => throw new ArgumentOutOfRangeException(),
@@ -2884,7 +3006,9 @@ internal static partial class RuntimeOrderPreparationService
 
         public string FormatLogContext(string detail)
         {
-            return $"jobId={JobId}; generation={Generation}; contentRevision={ContentRevision}; "
+            return $"jobId={JobId}; cookingOwnershipGeneration={CookingOwnershipGeneration}; "
+                + $"businessGeneration={Target.OrderBinding?.BusinessGeneration ?? 0}; "
+                + $"contentRevision={ContentRevision}; "
                 + $"recipe=0x{(long)ChosenRecipePointer:X}; "
                 + $"controller={CookerReservation.ControllerIndex}/0x{(long)ControllerPointer:X}"
                 + $"@{CookerReservation.GridPosition}; result=0x{(long)CurrentResultPointer:X}; "
@@ -2955,7 +3079,7 @@ internal static partial class RuntimeOrderPreparationService
                 OrderLifecycleSequence = Target.OrderBinding?.LifecycleSequence ?? -1,
                 ControllerId = $"0x{(long)ControllerPointer:X}",
                 ResultId = CurrentResultPointer == 0 ? "" : $"0x{(long)CurrentResultPointer:X}",
-                Generation = Generation,
+                Generation = CookingOwnershipGeneration,
                 ContentRevision = ContentRevision,
                 CookerPhase = Tracker.LastPhase,
                 CookerProgress = Tracker.LastProgress,

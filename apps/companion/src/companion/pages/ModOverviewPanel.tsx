@@ -1,13 +1,27 @@
 import { useMemo, useState } from 'react';
 import { Card, CardContent, InfoLine, ListPanel, Metric, Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui-kit';
-import { formatPerformanceMs, formatTime } from '@/companion/formatters';
+import { formatPerformanceMs } from '@/companion/formatters';
 import type { LocalApiSnapshot, NightBusinessContext, OverviewTab, RecommendationStateSnapshot } from '@/companion/types';
+import { OverviewConnectionPanel } from '@/companion/pages/overview/OverviewConnectionPanel';
 import { LowStockColumn } from '@/companion/pages/shared';
-import { buildLowStockEntries, DENSE_FOUR_COLUMN_GRID, DENSE_TWO_COLUMN_GRID, DENSE_TWO_COLUMN_GRID_TIGHT, INNER_TAB_TRIGGER_CLASS } from '@/companion/pages/shared-constants';
+import { buildLowStockEntries, DENSE_FOUR_COLUMN_GRID, DENSE_TWO_COLUMN_GRID, DENSE_TWO_COLUMN_GRID_TIGHT } from '@/companion/pages/shared-constants';
 import type { buildRecommendationDataIndexes, RecommendationDataSet } from '@/lib/recommendation-data';
 
+const OVERVIEW_TAB_TRIGGER_CLASS = 'min-w-[6rem] flex-none min-[640px]:min-w-0 min-[640px]:flex-1';
+
 export function ModOverviewPanel({
-  endpoint,
+  endpointDraft,
+  onEndpointDraftChange,
+  apiTokenDraft,
+  onApiTokenDraftChange,
+  onApplyEndpointConnection,
+  onPauseConnection,
+  onRefresh,
+  apiToken,
+  connectionPaused,
+  connectionFailureCount,
+  loading,
+  normalizedEndpoint,
   snapshot,
   runtime,
   night,
@@ -17,7 +31,18 @@ export function ModOverviewPanel({
   lastConnectedAt,
   showDebugDetails,
 }: {
-  endpoint: string;
+  endpointDraft: string;
+  onEndpointDraftChange: (value: string) => void;
+  apiTokenDraft: string;
+  onApiTokenDraftChange: (value: string) => void;
+  onApplyEndpointConnection: () => void;
+  onPauseConnection: () => void;
+  onRefresh: () => void;
+  apiToken: string;
+  connectionPaused: boolean;
+  connectionFailureCount: number;
+  loading: boolean;
+  normalizedEndpoint: string;
   snapshot: LocalApiSnapshot | null;
   runtime: RecommendationStateSnapshot | null;
   night: NightBusinessContext | null;
@@ -35,30 +60,59 @@ export function ModOverviewPanel({
     () => buildLowStockEntries(runtime?.ownedBeverageQty ?? {}, indexes.beverageNameById),
     [indexes.beverageNameById, runtime?.ownedBeverageQty],
   );
-  const [overviewTab, setOverviewTab] = useState<OverviewTab>('status');
+  const [overviewTab, setOverviewTab] = useState<OverviewTab>('connection');
 
   return (
     <div className="space-y-4">
       <Tabs value={overviewTab} onValueChange={(value) => setOverviewTab(value as OverviewTab)} className="space-y-4">
-        <TabsList className="grid h-9 w-full grid-cols-3">
-          <TabsTrigger value="status" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
+        <TabsList
+          scrollable
+          className="grid h-9 w-full grid-cols-4"
+          data-overview-tabs="true"
+        >
+          <TabsTrigger
+            value="connection"
+            className={OVERVIEW_TAB_TRIGGER_CLASS}
+            data-gamepad-clickable="true"
+          >
+            连接
+          </TabsTrigger>
+          <TabsTrigger value="status" className={OVERVIEW_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
             状态
           </TabsTrigger>
-          <TabsTrigger value="inventory" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
+          <TabsTrigger value="inventory" className={OVERVIEW_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
             库存
           </TabsTrigger>
-          <TabsTrigger value="actions" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
+          <TabsTrigger value="actions" className={OVERVIEW_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
             操作
           </TabsTrigger>
         </TabsList>
+
+        <TabsContent value="connection" className="space-y-4">
+          <OverviewConnectionPanel
+            endpointDraft={endpointDraft}
+            onEndpointDraftChange={onEndpointDraftChange}
+            apiTokenDraft={apiTokenDraft}
+            onApiTokenDraftChange={onApiTokenDraftChange}
+            onApplyEndpointConnection={onApplyEndpointConnection}
+            onPauseConnection={onPauseConnection}
+            onRefresh={onRefresh}
+            apiToken={apiToken}
+            connectionPaused={connectionPaused}
+            connectionFailureCount={connectionFailureCount}
+            error={error}
+            lastConnectedAt={lastConnectedAt}
+            loading={loading}
+            normalizedEndpoint={normalizedEndpoint}
+            night={night}
+            snapshot={snapshot}
+          />
+        </TabsContent>
 
         <TabsContent value="status" className="space-y-4">
           <Card>
             <CardContent className={`${DENSE_TWO_COLUMN_GRID_TIGHT} p-4 text-sm`}>
               <InfoLine label="数据来源" value="游戏实时 API，不读取 .memory 存档" />
-              {showDebugDetails && <InfoLine label="API 地址" value={endpoint} mono />}
-              <InfoLine label="连接状态" value={error ? `未连接: ${error}` : snapshot ? '已连接' : '连接中'} />
-              <InfoLine label="最近响应" value={lastConnectedAt ? formatTime(lastConnectedAt) : '暂无'} />
               <InfoLine label="场景" value={snapshot?.activeSceneName || '未知'} />
               <InfoLine label="运行时状态" value={snapshot?.status || '暂无快照'} />
               {showDebugDetails && <InfoLine label="运行时来源" value={snapshot?.runtimeSource || '未知'} />}

@@ -1,21 +1,8 @@
 import type { ReactNode } from 'react';
 
+import type { ServiceOrderCollectionState } from '@/companion/pages/service/service-order-collection-state';
 import { Badge, EmptyState, ListPanel } from '@/components/ui-kit';
 import { composeClassNames } from '@/components/ui/style';
-
-export type ServiceOrderCollectionState =
-  | { kind: 'ready' }
-  | { kind: 'empty'; message: string }
-  | { kind: 'updating'; message: string; label?: string }
-  | {
-      kind: 'error';
-      message: string;
-      detail?: string;
-      emptyLabel?: string;
-      retainedLabel?: string;
-      updating?: boolean;
-      updatingLabel?: string;
-    };
 
 type ServiceOrderCollectionMode = 'rare' | 'normal' | 'rare-focus';
 

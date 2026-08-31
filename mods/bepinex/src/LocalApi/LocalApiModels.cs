@@ -26,6 +26,7 @@ internal sealed class LocalApiSnapshot
     public string RuntimeSource { get; init; } = "";
     public string RuntimeSceneReadinessStatus { get; init; } = "";
     public string RuntimeUiPinningStatus { get; init; } = "";
+    public LocalApiRareGuestParticipationSnapshot RareGuestParticipation { get; init; } = new();
     public RecommendationStateSnapshot? RecommendationState { get; init; }
     public NightBusinessContext? NightBusiness { get; init; }
     public SpecialBusinessContext? SpecialBusiness { get; init; }
@@ -37,6 +38,50 @@ internal sealed class LocalApiSnapshot
     public string RuntimeDataStatus { get; init; } = "";
     public string RuntimeDataSignature { get; init; } = "";
     public Dictionary<string, double> PerformanceMs { get; init; } = new(StringComparer.Ordinal);
+}
+
+internal sealed class LocalApiRareGuestParticipationSnapshot
+{
+    public bool Active { get; init; }
+    public long BusinessGeneration { get; init; }
+    public long ParticipationRevision { get; init; }
+    public List<int> ManagedGuestIds { get; init; } = new();
+    public List<LocalApiRareGuestParticipationEntry> Entries { get; init; } = new();
+
+    public static LocalApiRareGuestParticipationSnapshot From(
+        RuntimeRareGuestParticipationSnapshot snapshot)
+    {
+        return new LocalApiRareGuestParticipationSnapshot
+        {
+            Active = snapshot.IsActive,
+            BusinessGeneration = snapshot.BusinessGeneration,
+            ParticipationRevision = snapshot.Revision,
+            ManagedGuestIds = snapshot.ManagedGuestIds.ToList(),
+            Entries = snapshot.Orders
+                .Select(order => new LocalApiRareGuestParticipationEntry
+                {
+                    TraceId = order.Identity.TraceId,
+                    OrderLifecycleSequence = order.Identity.OrderLifecycleSequence,
+                    GuestId = order.Identity.GuestId,
+                    Managed = order.Managed,
+                    Participating = order.Participating,
+                    ReasonCode = order.ReasonCode,
+                    QueuePosition = order.QueuePosition > 0 ? order.QueuePosition : null,
+                })
+                .ToList(),
+        };
+    }
+}
+
+internal sealed class LocalApiRareGuestParticipationEntry
+{
+    public string TraceId { get; init; } = "";
+    public long OrderLifecycleSequence { get; init; }
+    public int GuestId { get; init; }
+    public bool Managed { get; init; }
+    public bool Participating { get; init; }
+    public string ReasonCode { get; init; } = "";
+    public int? QueuePosition { get; init; }
 }
 
 internal sealed class AutomationRuntimeEvent

@@ -14,7 +14,7 @@ export function ModuleControlPanel({
   enabled: boolean;
   focusKey: string;
   label: string;
-  moduleId: 'task-list' | 'rare-guest-invitations';
+  moduleId: 'task-list' | 'rare-guest-invitations' | 'rare-guest-participation';
   onEnabledChange: (enabled: boolean) => void;
 }) {
   const descriptionId = `module-control-${moduleId}-description`;

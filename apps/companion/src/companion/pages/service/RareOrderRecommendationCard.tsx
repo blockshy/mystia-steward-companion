@@ -5,6 +5,7 @@ import {
   findRecipeFavorite,
   recipeFavoriteKey,
 } from '@/companion/domain/favorites';
+import type { RareOrderParticipationResolution } from '@/companion/domain/rare-order-participation';
 import { formatDesk } from '@/companion/formatters';
 import { useEffectiveCustomRecipesDisclosure } from '@/companion/hooks/useEffectiveCustomRecipesDisclosure';
 import { normalizeFocusRecommendationLimit } from '@/companion/preferences';
@@ -43,6 +44,8 @@ export function RareOrderRecommendationCard({
   showDebugDetails = false,
   customRecipes,
   gamepadOccurrenceKey,
+  participationEnabled = false,
+  participation,
   onToggleRecipeFavorite,
   onToggleBeverageFavorite,
 }: {
@@ -53,6 +56,8 @@ export function RareOrderRecommendationCard({
   customRecipes: CustomRecipeData;
   gamepadOccurrenceKey: string;
   favoriteBusyKey: string;
+  participationEnabled?: boolean;
+  participation?: RareOrderParticipationResolution | null;
   compact?: boolean;
   recipeLimit?: number;
   beverageLimit?: number;
@@ -71,7 +76,14 @@ export function RareOrderRecommendationCard({
   const automationBlockReason = item.order.automationAllowed === false
     ? item.order.automationBlockReason
     : '';
-  const hasMessage = item.blockedMessages.length > 0 || Boolean(automationBlockReason);
+  const queuedPosition = participationEnabled
+    && participation?.configurationAligned
+    && participation.displayState === 'queued'
+    && participation.operationallyParticipating
+    ? participation.queuePosition
+    : null;
+  const hasMessage = item.blockedMessages.length > 0
+    || Boolean(automationBlockReason);
 
   return (
     <ServiceOrderCardFrame
@@ -85,6 +97,9 @@ export function RareOrderRecommendationCard({
             <Badge variant="secondary">{item.order.specialBusinessRoleLabel}</Badge>
           )}
           {item.order.automationAllowed === false && <Badge variant="outline">暂不可自动处理</Badge>}
+          {queuedPosition !== null && (
+            <Badge variant="secondary">已启用 · 队列 #{queuedPosition}</Badge>
+          )}
           {item.order.isFreeOrder && <Badge variant="secondary">免费订单</Badge>}
           {targetCookerName && <Badge className="steward-tag-extra">目标厨具 {targetCookerName}</Badge>}
           {item.budget && <BudgetBadge budget={item.budget} />}

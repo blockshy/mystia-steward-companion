@@ -1,10 +1,11 @@
 # 游戏界面辅助
 
-更新日期：2026-08-19
+更新日期：2026-09-01
 
 本文说明 Mod 如何把伴随窗口选出的普客与稀客目标投影到游戏原生 UI。目标如何选出见
 [推荐引擎](recommendation-engine.md)，订单身份和生命周期见
-[订单运行时生命周期](runtime-order-lifecycle.md)。
+[订单运行时生命周期](runtime-order-lifecycle.md)，受控稀客的 operational 授权见
+[稀客订单参与队列](rare-order-participation.md)。
 
 ## 职责边界
 
@@ -28,7 +29,7 @@
 一个 target set 最多包含一个稀客目标和一个普客目标，并按稀客、普客的稳定顺序发布。每个目标必须携带：
 
 - `kind`、目标色和内容修订。
-- 订单 trace、lifecycle、桌位，以及普客的原生 order key。
+- 订单 trace、lifecycle、桌位、canonical `guestId`（稀客为非负 ID，普客固定为 `-1`），以及普客的原生 order key。
 - 料理、基础食材、有序加料、酒水和厨具类型。
 - 五个目标级功能位：列表置顶、加料料理、厨具高亮、座位高亮、订单高亮。
 
@@ -36,9 +37,21 @@
 后端 `RuntimeUiTargetSet` 只保存不可变托管标量，可由 API 线程更新；任何 Unity wrapper、指针或场景对象只允许
 在 Unity 主线程解析和使用。
 
-设备主权威或生效 profile 改变时，后端先推进一个空目标的 authority fence，再由下一次主线程 Tick 接受新
-目标。这个边界不会销毁仍打开的页面登记，也不会猜测中止已经发生的加料事务。只有经营进入 Closing、
-Destroyed，或控制器 shutdown，才进行终态退休。
+稀客调度模块关闭或有效受控名单为空时，稀客 target 保持原有选择逻辑。有效名单非空时，前端只从权威 participation queue 选择，
+后端还会在发布临界区持有 exact admission permit；缺少 identity、快照未对齐、暂停或已过期的 rare target
+全部拒绝，normal target 不受其影响。
+
+`enable-front` 需要保护当前 rare UI target 时，服务端只读取 `RuntimeUiPinningService` 保存的不可变 target
+identity，并复核 generation、R-trace、lifecycle 和 canonical guestId。有效 target 作为队列插入锚点之一；
+没有 rare target 不等于错误，存在但已过期、暂停或身份不完整则整次 mutation 冲突。客户端不会根据当前页面
+显示位置猜测锚点，也不会通过优先启用替换或清空正在显示的目标。活动料理任务提供的其他保护锚点见
+[自动化运行时](automation-runtime.md)，最终插入规则见[稀客订单参与队列](rare-order-participation.md)。
+
+设备主权威或生效 profile 改变时，后端先应用新名单，再推进一个空 operational target 的 authority fence。
+仍打开页面使用的 presentation target 会按新 participation 状态过滤：暂停 rare 的 recipe、ingredient、beverage
+claims 被剔除，独立 normal claims 保留。过滤投影和空 fence 使用不同的单调 generation；下一次 Unity 主线程
+Tick 只应用一次过滤投影，清除已打开页面的旧稀客置顶/高亮。这个边界不销毁页面登记，也不退休、退款或重放
+已经发生的加料事务。只有经营进入 Closing、Destroyed，或控制器 shutdown，才进行终态退休。
 
 ## 页面登记与窄刷新
 
@@ -120,6 +133,7 @@ Hook。料理页生命周期由 open/close 登记和每帧指针验证处理。�
 
 ```bash
 corepack pnpm audit:ui-pinning
+corepack pnpm audit:rare-order-participation
 ```
 
 后端各表面：

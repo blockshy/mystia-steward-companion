@@ -15,9 +15,13 @@
     <Compile Include="../../mods/bepinex/src/Save/AutomationOrderConfigurationPolicy.cs" Link="AutomationOrderConfigurationPolicy.cs" />
     <Compile Include="../../mods/bepinex/src/Save/AutomationCookerStartPolicy.cs" Link="AutomationCookerStartPolicy.cs" />
     <Compile Include="../../mods/bepinex/src/Save/AutomationCookingJobLifecycle.cs" Link="AutomationCookingJobLifecycle.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/AutomationCookingTerminalReceiptPolicy.cs" Link="AutomationCookingTerminalReceiptPolicy.cs" />
     <Compile Include="../../mods/bepinex/src/Save/AutomationSafetyBarrierRegistry.cs" Link="AutomationSafetyBarrierRegistry.cs" />
     <Compile Include="../../mods/bepinex/src/Save/CookControllerFoodResultIdentity.cs" Link="CookControllerFoodResultIdentity.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeCookerReservation.cs" Link="RuntimeCookerReservation.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeRareCookingJobParticipationPolicy.cs" Link="RuntimeRareCookingJobParticipationPolicy.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeRareGuestParticipationState.cs" Link="RuntimeRareGuestParticipationState.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeOrderTerminalReceiptStore.cs" Link="RuntimeOrderTerminalReceiptStore.cs" />
     <Compile Include="../../mods/bepinex/src/Save/SpecialBusiness/SpecialFoodTargetPolicy.cs" Link="SpecialFoodTargetPolicy.cs" />
     <Compile Include="../../mods/bepinex/src/Save/SpecialBusiness/YuyukoFoodModifierContract.cs" Link="YuyukoFoodModifierContract.cs" />
   </ItemGroup>

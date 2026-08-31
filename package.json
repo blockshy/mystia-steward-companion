@@ -41,6 +41,8 @@
     "audit:yuuma-cooker-topology": "dotnet run --project tests/yuuma-cooker-topology/YuumaCookerTopologySmoke.csproj -c Release",
     "audit:rare-guest-invitations": "node --experimental-strip-types tests/rare-guest-invitations/frontend-rare-guest-invitations-audit.mjs",
     "audit:rare-guest-invitations:ui": "node tests/rare-guest-invitations/rare-guest-invitations-playwright.mjs",
+    "audit:rare-order-participation": "node tests/rare-order-participation/runtime-rare-order-participation-integration-audit.mjs && node tests/rare-order-participation/frontend-rare-order-participation-api-audit.mjs && node tests/rare-order-participation/frontend-rare-order-participation-audit.mjs && node tests/rare-order-participation/frontend-rare-order-operational-audit.mjs && node tests/rare-order-participation/frontend-rare-order-main-flow-audit.mjs",
+    "audit:rare-order-participation:ui": "node tests/rare-order-participation/rare-order-participation-playwright.mjs",
     "audit:gamepad": "node --experimental-strip-types tests/gamepad-input/gamepad-input-engine-audit.mjs && node scripts/playwright-gamepad-audit.mjs",
     "audit:logs:console": "node --experimental-strip-types tests/console-window/loopback-endpoint-audit.mjs && node tests/console-window/bepinex-console-playwright.mjs",
     "audit:runtime-missions": "node tests/runtime-mission-diagnostic/runtime-mission-diagnostic-audit.mjs && node tests/runtime-available-missions/runtime-available-missions-audit.mjs && node --experimental-strip-types tests/tracked-missions/tracked-missions-audit.mjs && node --experimental-strip-types tests/available-missions/available-missions-audit.mjs",

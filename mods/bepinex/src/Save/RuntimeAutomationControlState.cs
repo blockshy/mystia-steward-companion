@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 
 namespace MystiaStewardCompanion.Save;
@@ -64,8 +65,10 @@ internal sealed class RuntimeAutomationControlPermit : IDisposable
 /// </remarks>
 internal static class RuntimeAutomationControlState
 {
+    private const int MaxManagedRareGuestIds = 512;
     private static readonly object SyncRoot = new();
     private static RuntimeAutomationControlProfile? _profile;
+    private static int[] _configuredManagedRareGuestIds = Array.Empty<int>();
     private static long _authorityRevision;
     private static long _leaseAuthorityRevision;
     private static DateTime _leaseExpiresAtUtc;
@@ -83,11 +86,13 @@ internal static class RuntimeAutomationControlState
             throw new ArgumentOutOfRangeException(nameof(authorityRevision));
         }
 
-        var profile = RuntimeAutomationControlProfile.Parse(activeProfile);
+        var managedRareGuestIds = RuntimeAutomationControlProfile.ParseManagedRareGuestIds(activeProfile);
+        var profile = RuntimeAutomationControlProfile.Parse(activeProfile, managedRareGuestIds);
         lock (SyncRoot)
         {
             var changed = _authorityRevision != authorityRevision || _profile != profile;
             _profile = profile;
+            _configuredManagedRareGuestIds = managedRareGuestIds;
             _authorityRevision = authorityRevision;
             if (!changed) return;
 
@@ -131,12 +136,28 @@ internal static class RuntimeAutomationControlState
         lock (SyncRoot)
         {
             _profile = null;
+            _configuredManagedRareGuestIds = Array.Empty<int>();
             _authorityRevision = 0;
             _leaseAuthorityRevision = 0;
             _leaseExpiresAtUtc = DateTime.MinValue;
             _leaseBlockReasonCode = "automation-authority-unavailable";
             _leaseBlockMessage = RequireText(message, nameof(message));
         }
+    }
+
+    public static IReadOnlyList<int> SnapshotManagedRareGuestIds()
+    {
+        lock (SyncRoot)
+        {
+            return _profile?.RareGuestParticipationModuleEnabled == true
+                ? _configuredManagedRareGuestIds.ToArray()
+                : Array.Empty<int>();
+        }
+    }
+
+    public static bool SnapshotRareGuestParticipationModuleEnabled()
+    {
+        lock (SyncRoot) return _profile?.RareGuestParticipationModuleEnabled == true;
     }
 
     public static RuntimeAutomationControlDecision Observe(
@@ -341,13 +362,17 @@ internal static class RuntimeAutomationControlState
     private sealed record RuntimeAutomationControlProfile(
         bool AutomationEnabled,
         bool AutoRareOrderEnabled,
+        bool RareGuestParticipationModuleEnabled,
         bool AutoNormalOrderEnabled,
         bool AutoPrepCollectCooking,
         bool AutoPrepCompleteOrder,
         bool AutoNormalDeliverFood,
-        bool AutoNormalCompleteOrder)
+        bool AutoNormalCompleteOrder,
+        string ManagedRareGuestIdsSignature)
     {
-        public static RuntimeAutomationControlProfile Parse(JsonElement profile)
+        public static RuntimeAutomationControlProfile Parse(
+            JsonElement profile,
+            IReadOnlyList<int> managedRareGuestIds)
         {
             if (profile.ValueKind != JsonValueKind.Object)
             {
@@ -357,11 +382,15 @@ internal static class RuntimeAutomationControlState
             return new RuntimeAutomationControlProfile(
                 ReadBool(profile, "automationEnabled"),
                 ReadBool(profile, "autoRareOrderEnabled"),
+                ReadBool(profile, "rareGuestParticipationModuleEnabled"),
                 ReadBool(profile, "autoNormalOrderEnabled"),
                 ReadBool(profile, "autoPrepCollectCooking"),
                 ReadBool(profile, "autoPrepCompleteOrder"),
                 ReadBool(profile, "autoNormalDeliverFood"),
-                ReadBool(profile, "autoNormalCompleteOrder"));
+                ReadBool(profile, "autoNormalCompleteOrder"),
+                string.Join(
+                    ",",
+                    managedRareGuestIds.Select(id => id.ToString(CultureInfo.InvariantCulture))));
         }
 
         private static bool ReadBool(JsonElement profile, string name)
@@ -373,6 +402,32 @@ internal static class RuntimeAutomationControlState
             }
 
             return value.GetBoolean();
+        }
+
+        public static int[] ParseManagedRareGuestIds(JsonElement profile)
+        {
+            if (!profile.TryGetProperty("managedRareGuestIds", out var value)
+                || value.ValueKind != JsonValueKind.Array
+                || value.GetArrayLength() > MaxManagedRareGuestIds)
+            {
+                throw new InvalidDataException(
+                    "Companion automation profile field 'managedRareGuestIds' is not a bounded array.");
+            }
+
+            var ids = new int[value.GetArrayLength()];
+            var previous = -1;
+            var index = 0;
+            foreach (var element in value.EnumerateArray())
+            {
+                if (!element.TryGetInt32(out var id) || id < 0 || id <= previous)
+                {
+                    throw new InvalidDataException(
+                        "Companion automation profile field 'managedRareGuestIds' must contain strictly increasing non-negative Int32 IDs.");
+                }
+                ids[index++] = id;
+                previous = id;
+            }
+            return ids;
         }
     }
 }

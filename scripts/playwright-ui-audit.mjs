@@ -32,6 +32,7 @@ const tabs = [
   { value: 'service', label: '经营中' },
   { value: 'missions', label: '扩展功能 · 任务列表', topValue: 'extensions', innerSelector: '[data-extension-tabs]', innerLabel: '任务列表' },
   { value: 'rare-invitations', label: '扩展功能 · 稀客邀请', topValue: 'extensions', innerSelector: '[data-extension-tabs]', innerLabel: '稀客邀请' },
+  { value: 'rare-participation', label: '扩展功能 · 稀客调度', topValue: 'extensions', innerSelector: '[data-extension-tabs]', innerLabel: '稀客调度' },
   { value: 'inventory', label: '扩展功能 · 修改', topValue: 'extensions', innerSelector: '[data-extension-tabs]', innerLabel: '修改' },
   { value: 'logs', label: '日志' },
   { value: 'settings', label: '设置 · 窗口', topValue: 'settings', innerSelector: '[data-settings-tabs]', innerLabel: '窗口' },
@@ -89,7 +90,10 @@ for (const viewport of viewports) {
   const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
   await page.addInitScript(seedLocalStorage, { apiUrl: API_URL, apiToken: API_TOKEN, storagePrefix: STORAGE_PREFIX });
   await page.goto(APP_URL, { waitUntil: 'domcontentloaded' });
-  await page.waitForFunction(() => document.body.innerText.includes('1.0.5'), null, { timeout: 10000 });
+  await page.locator('[data-gamepad-tab-value="overview"]').first().click();
+  await page.waitForFunction(() => (
+    document.querySelector('[data-overview-connection-panel="true"]')?.textContent?.includes('1.0.5')
+  ), null, { timeout: 10000 });
   await ensureSecondaryAuditDevice(page);
   await auditTransparencyModel(page, viewport);
 
@@ -226,6 +230,7 @@ async function auditPage(page, viewport, tab) {
     });
   }
 
+  await auditServiceSummaryAccordion(page, viewport, tab);
   await auditMinimumViewportLayout(page, viewport, tab);
   await auditMissionRecipePriorityMarker(page, viewport, tab);
   await auditServiceDiagnosticsPlacement(page, viewport, tab);
@@ -237,6 +242,109 @@ async function auditPage(page, viewport, tab) {
   }
 
   await auditSelectDropdown(page, viewport, tab);
+}
+
+async function auditServiceSummaryAccordion(page, viewport, tab) {
+  if (tab.value !== 'service') return;
+
+  let trigger = page.locator('[data-service-summary-trigger="true"]:visible').first();
+  if (!(await trigger.count())) {
+    issues.push({
+      viewport: viewport.name,
+      tab: tab.label,
+      component: 'ServiceSummaryAccordion',
+      message: '经营中页缺少经营概况折叠按钮。',
+    });
+    return;
+  }
+
+  if (await trigger.getAttribute('aria-expanded') !== 'false') {
+    issues.push({
+      viewport: viewport.name,
+      tab: tab.label,
+      component: 'ServiceSummaryAccordion',
+      message: '首次进入经营中时，经营概况未保持默认折叠。',
+    });
+  }
+
+  await trigger.scrollIntoViewIfNeeded();
+  await trigger.focus();
+  await trigger.press('Enter');
+  if (!(await waitForServiceSummaryExpanded(page, true))) {
+    issues.push({
+      viewport: viewport.name,
+      tab: tab.label,
+      component: 'ServiceSummaryAccordion',
+      message: '经营概况按钮使用 Enter 后未展开或未同步 aria-expanded=true。',
+    });
+  }
+  if (!(await isServiceSummaryTriggerFocused(trigger))) {
+    issues.push({
+      viewport: viewport.name,
+      tab: tab.label,
+      component: 'ServiceSummaryAccordion',
+      message: '使用 Enter 展开经营概况后，焦点没有保留在折叠按钮。',
+    });
+  }
+
+  if (viewport.name === 'minimum') {
+    await auditMinimumServiceSummaryGrid(page, viewport, tab);
+  }
+
+  await trigger.press('Space');
+  if (!(await waitForServiceSummaryExpanded(page, false))) {
+    issues.push({
+      viewport: viewport.name,
+      tab: tab.label,
+      component: 'ServiceSummaryAccordion',
+      message: '经营概况按钮使用 Space 后未收起或未同步 aria-expanded=false。',
+    });
+  }
+  if (!(await isServiceSummaryTriggerFocused(trigger))) {
+    issues.push({
+      viewport: viewport.name,
+      tab: tab.label,
+      component: 'ServiceSummaryAccordion',
+      message: '使用 Space 收起经营概况后，焦点没有保留在折叠按钮。',
+    });
+  }
+
+  await trigger.press('Enter');
+  await waitForServiceSummaryExpanded(page, true);
+  await activateTab(page, { value: 'overview', label: '概览' });
+  await activateTab(page, { value: 'service', label: '经营中' });
+  trigger = page.locator('[data-service-summary-trigger="true"]:visible').first();
+  await trigger.waitFor({ state: 'visible', timeout: 3_000 }).catch(() => {});
+  if (!(await trigger.count()) || await trigger.getAttribute('aria-expanded') !== 'false') {
+    issues.push({
+      viewport: viewport.name,
+      tab: tab.label,
+      component: 'ServiceSummaryAccordion',
+      message: '离开并再次进入经营中后，经营概况没有恢复默认折叠。',
+    });
+  }
+}
+
+async function waitForServiceSummaryExpanded(page, expanded) {
+  try {
+    await page.waitForFunction((expected) => {
+      const trigger = document.querySelector('[data-service-summary-trigger="true"]');
+      const content = document.querySelector('[data-service-summary-content="true"]');
+      const contentVisible = content instanceof HTMLElement
+        && content.getBoundingClientRect().width > 0
+        && content.getBoundingClientRect().height > 0
+        && getComputedStyle(content).visibility !== 'hidden';
+      return trigger?.getAttribute('aria-expanded') === String(expected)
+        && contentVisible === expected;
+    }, expanded, { timeout: 2_000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function isServiceSummaryTriggerFocused(trigger) {
+  return trigger.evaluate((element) => document.activeElement === element).catch(() => false);
 }
 
 async function auditDeviceAuthorityLayout(page, viewport, tab) {
@@ -442,13 +550,9 @@ async function auditMinimumViewportLayout(page, viewport, tab) {
   await auditMinimumMulticolumnGrids(page, viewport, tab);
   await auditMinimumNestedTabsLayout(page, viewport, tab);
 
-  if (tab.value === 'service') {
-    await auditMinimumServiceSummaryGrid(page, viewport, tab);
-  }
-
   if (tab.value === 'overview') {
     await auditMinimumShellGutter(page, viewport, tab);
-    await auditMinimumHeaderLayout(page, viewport, tab);
+    await auditMinimumOverviewConnectionLayout(page, viewport, tab);
     await auditMinimumPrimaryTabsLayout(page, viewport, tab);
   }
 
@@ -523,7 +627,7 @@ async function auditMinimumServiceSummaryGrid(page, viewport, tab) {
 
 async function auditMinimumMulticolumnGrids(page, viewport, tab) {
   const result = await page.evaluate(({ tabValue }) => {
-    const expectedTabs = new Set(['overview', 'normal', 'rare', 'custom-recipes', 'service', 'missions', 'rare-invitations', 'inventory', 'settings', 'logs']);
+    const expectedTabs = new Set(['overview', 'normal', 'rare', 'custom-recipes', 'missions', 'rare-invitations', 'inventory', 'settings', 'logs']);
     const candidates = Array.from(document.querySelectorAll('.steward-minimum-multicolumn-grid'))
       .filter((node) => node instanceof HTMLElement)
       .filter((element) => isVisible(element));
@@ -629,89 +733,87 @@ async function auditMinimumShellGutter(page, viewport, tab) {
   }
 }
 
-async function auditMinimumHeaderLayout(page, viewport, tab) {
+async function auditMinimumOverviewConnectionLayout(page, viewport, tab) {
   const result = await page.evaluate(() => {
-    const header = document.querySelector('.steward-workbench-header');
-    const headerGrid = header?.firstElementChild;
-    const toolbar = headerGrid?.children[1];
-    const statusGrid = header?.children[1];
-    if (!(header instanceof HTMLElement)
-      || !(headerGrid instanceof HTMLElement)
-      || !(toolbar instanceof HTMLElement)
-      || !(statusGrid instanceof HTMLElement)) {
-      return { ok: false, reason: '未找到 Header 布局检查目标。' };
+    const panel = document.querySelector('[data-overview-connection-panel="true"]');
+    const endpoint = document.querySelector('[data-overview-connection-endpoint="true"]');
+    const token = document.querySelector('[data-overview-connection-token="true"]');
+    const controls = document.querySelector('[data-overview-connection-controls="true"]');
+    const summary = document.querySelector('[data-overview-connection-summary="true"]');
+    if (!(panel instanceof HTMLElement)
+      || !(endpoint instanceof HTMLElement)
+      || !(token instanceof HTMLElement)
+      || !(controls instanceof HTMLElement)
+      || !(summary instanceof HTMLElement)) {
+      return { ok: false, reason: '未找到概览连接子页布局检查目标。' };
     }
 
-    const gridChildren = Array.from(headerGrid.children).filter((node) => node instanceof HTMLElement);
-    const toolbarChildren = Array.from(toolbar.children).filter((node) => node instanceof HTMLElement);
-    const statusChildren = Array.from(statusGrid.children).filter((node) => node instanceof HTMLElement);
-    if (gridChildren.length < 2 || toolbarChildren.length !== 4 || statusChildren.length !== 3) {
-      return { ok: false, reason: 'Header 工具条或状态摘要项目数量不符合预期。' };
+    const controlChildren = Array.from(controls.children).filter((node) => node instanceof HTMLElement);
+    const summaryChildren = Array.from(summary.children).filter((node) => node instanceof HTMLElement);
+    if (controlChildren.length !== 2 || summaryChildren.length !== 3) {
+      return { ok: false, reason: '概览连接控制项或状态摘要项目数量不符合预期。' };
     }
 
-    const [brandRect, toolbarRect] = gridChildren.map((node) => node.getBoundingClientRect());
-    const headerRect = header.getBoundingClientRect();
-    const toolbarRects = toolbarChildren.map((node) => node.getBoundingClientRect());
-    const statusRects = statusChildren.map((node) => node.getBoundingClientRect());
+    const panelRect = panel.getBoundingClientRect();
+    const inputRects = [endpoint, token].map((node) => node.getBoundingClientRect());
+    const controlRects = controlChildren.map((node) => node.getBoundingClientRect());
+    const summaryRects = summaryChildren.map((node) => node.getBoundingClientRect());
     const viewportWidth = document.documentElement.clientWidth;
-    const toolbarStacked = toolbarRect.top >= brandRect.bottom - 1;
-    const toolbarSameRow = toolbarRects.every((rect) => (
-      Math.abs(rect.top - toolbarRects[0].top) <= 2
-      && Math.abs(rect.bottom - toolbarRects[0].bottom) <= 2
+    const inputsSameRow = inputRects.every((rect) => (
+      Math.abs(rect.top - inputRects[0].top) <= 2
+      && Math.abs(rect.bottom - inputRects[0].bottom) <= 2
     ));
-    const toolbarOrdered = toolbarRects.slice(1).every((rect, index) => (
-      rect.left >= toolbarRects[index].right - 1
+    const inputsOrdered = inputRects[1].left >= inputRects[0].right - 1;
+    const controlsOrdered = controlRects.slice(1).every((rect, index) => (
+      rect.left >= controlRects[index].right - 1
     ));
-    const toolbarContained = toolbar.scrollWidth <= toolbar.clientWidth + 1
-      && toolbar.scrollHeight <= toolbar.clientHeight + 1;
-    const statusSameRow = statusRects.every((rect) => (
-      Math.abs(rect.top - statusRects[0].top) <= 2
-      && Math.abs(rect.bottom - statusRects[0].bottom) <= 2
+    const controlsContained = controls.scrollWidth <= controls.clientWidth + 1
+      && controls.scrollHeight <= controls.clientHeight + 1;
+    const summarySameRow = summaryRects.every((rect) => (
+      Math.abs(rect.top - summaryRects[0].top) <= 2
+      && Math.abs(rect.bottom - summaryRects[0].bottom) <= 2
     ));
-    const statusOrdered = statusRects.slice(1).every((rect, index) => (
-      rect.left >= statusRects[index].right - 1
+    const summaryOrdered = summaryRects.slice(1).every((rect, index) => (
+      rect.left >= summaryRects[index].right - 1
     ));
-    const statusColumnCount = getComputedStyle(statusGrid).gridTemplateColumns.trim().split(/\s+/).filter(Boolean).length;
-    const statusContained = statusGrid.scrollWidth <= statusGrid.clientWidth + 1
-      && statusGrid.scrollHeight <= statusGrid.clientHeight + 1;
-    const containedRects = [brandRect, toolbarRect, ...toolbarRects, ...statusRects];
+    const summaryColumnCount = getComputedStyle(summary).gridTemplateColumns.trim().split(/\s+/).filter(Boolean).length;
+    const summaryContained = summary.scrollWidth <= summary.clientWidth + 1
+      && summary.scrollHeight <= summary.clientHeight + 1;
+    const containedRects = [...inputRects, ...controlRects, ...summaryRects];
     const contained = containedRects.every((rect) => (
-      rect.left >= headerRect.left - 1
-      && rect.right <= headerRect.right + 1
+      rect.left >= panelRect.left - 1
+      && rect.right <= panelRect.right + 1
       && rect.left >= -1
       && rect.right <= viewportWidth + 1
     ));
-    const usable = toolbarRects[0].width >= 136
-      && toolbarRects[1].width >= 112
-      && toolbarRects.slice(2).every((rect) => rect.width >= 32 && rect.height >= 24)
-      && statusRects.every((rect) => rect.width >= 150 && rect.height >= 24);
+    const usable = inputRects.every((rect) => rect.width >= 150 && rect.height >= 24)
+      && controlRects.every((rect) => rect.width >= 32 && rect.height >= 24)
+      && summaryRects.every((rect) => rect.width >= 150 && rect.height >= 24);
 
     return {
-      ok: toolbarStacked
-        && toolbarSameRow
-        && toolbarOrdered
-        && toolbarContained
-        && statusSameRow
-        && statusOrdered
-        && statusColumnCount === 3
-        && statusContained
+      ok: inputsSameRow
+        && inputsOrdered
+        && controlsOrdered
+        && controlsContained
+        && summarySameRow
+        && summaryOrdered
+        && summaryColumnCount === 3
+        && summaryContained
         && contained
         && usable,
-      toolbarStacked,
-      toolbarSameRow,
-      toolbarOrdered,
-      toolbarContained,
-      statusSameRow,
-      statusOrdered,
-      statusColumnCount,
-      statusContained,
+      inputsSameRow,
+      inputsOrdered,
+      controlsOrdered,
+      controlsContained,
+      summarySameRow,
+      summaryOrdered,
+      summaryColumnCount,
+      summaryContained,
       contained,
       usable,
-      brandBottom: Math.round(brandRect.bottom),
-      toolbarTop: Math.round(toolbarRect.top),
-      toolbarTops: toolbarRects.map((rect) => Math.round(rect.top)),
-      statusTops: statusRects.map((rect) => Math.round(rect.top)),
-      statusWidths: statusRects.map((rect) => Math.round(rect.width)),
+      inputWidths: inputRects.map((rect) => Math.round(rect.width)),
+      controlWidths: controlRects.map((rect) => Math.round(rect.width)),
+      summaryWidths: summaryRects.map((rect) => Math.round(rect.width)),
     };
   });
 
@@ -719,8 +821,8 @@ async function auditMinimumHeaderLayout(page, viewport, tab) {
     issues.push({
       viewport: viewport.name,
       tab: tab.label,
-      component: 'ResponsiveHeader',
-      message: result.reason || `最小宽度 Header 紧凑布局异常：toolbarStacked=${result.toolbarStacked}，toolbarSameRow=${result.toolbarSameRow}，toolbarOrdered=${result.toolbarOrdered}，toolbarContained=${result.toolbarContained}，statusSameRow=${result.statusSameRow}，statusOrdered=${result.statusOrdered}，statusColumns=${result.statusColumnCount}，statusContained=${result.statusContained}，contained=${result.contained}，usable=${result.usable}，brandBottom/toolbarTop=${result.brandBottom}/${result.toolbarTop}，toolbarTops=${result.toolbarTops?.join('/')}，statusWidths=${result.statusWidths?.join('/')}`,
+      component: 'OverviewConnectionLayout',
+      message: result.reason || `最小宽度概览连接布局异常：inputsSameRow=${result.inputsSameRow}，inputsOrdered=${result.inputsOrdered}，controlsOrdered=${result.controlsOrdered}，controlsContained=${result.controlsContained}，summarySameRow=${result.summarySameRow}，summaryOrdered=${result.summaryOrdered}，summaryColumns=${result.summaryColumnCount}，summaryContained=${result.summaryContained}，contained=${result.contained}，usable=${result.usable}，inputWidths=${result.inputWidths?.join('/')}，controlWidths=${result.controlWidths?.join('/')}，summaryWidths=${result.summaryWidths?.join('/')}`,
     });
   }
 }
@@ -1044,13 +1146,13 @@ async function auditMinimumSettingSegmentedControls(page, viewport, tab, section
 /**
  * 检查 Tauri 透明窗口模型。
  *
- * 根节点必须保持透明，内容壳负责背景透明度，文字保持不透明，避免桌面透明窗口出现整窗发灰或文字半透明。
+ * 根节点必须保持透明，内容壳负责背景透明度，一级导航文字保持不透明，避免桌面透明窗口出现整窗发灰或文字半透明。
  */
 async function auditTransparencyModel(page, viewport) {
   const result = await page.evaluate(() => {
     const shell = document.querySelector('.companion-shell');
-    const title = document.querySelector('h1');
-    if (!(shell instanceof HTMLElement) || !(title instanceof HTMLElement)) {
+    const navigationText = document.querySelector('[data-gamepad-tab="true"]');
+    if (!(shell instanceof HTMLElement) || !(navigationText instanceof HTMLElement)) {
       return { ok: false, reason: '未找到透明度检查目标元素。' };
     }
 
@@ -1063,20 +1165,20 @@ async function auditTransparencyModel(page, viewport) {
     const mantineBodyColor = window.getComputedStyle(document.documentElement).getPropertyValue('--mantine-color-body').trim();
     const mantineBodyAlpha = readColorAlpha(mantineBodyColor);
     const shellBackgroundAlpha = readColorAlpha(window.getComputedStyle(shell).backgroundColor);
-    const titleColorAlpha = readColorAlpha(window.getComputedStyle(title).color);
+    const navigationTextColorAlpha = readColorAlpha(window.getComputedStyle(navigationText).color);
     return {
       ok: htmlBackgroundAlpha < 0.02
         && bodyBackgroundAlpha < 0.02
         && rootBackgroundAlpha < 0.02
         && mantineBodyAlpha < 0.02
         && shellBackgroundAlpha < 0.98
-        && titleColorAlpha > 0.98,
+        && navigationTextColorAlpha > 0.98,
       htmlBackgroundAlpha,
       bodyBackgroundAlpha,
       rootBackgroundAlpha,
       mantineBodyAlpha,
       shellBackgroundAlpha,
-      titleColorAlpha,
+      navigationTextColorAlpha,
     };
 
     function readColorAlpha(value) {
@@ -1103,7 +1205,7 @@ async function auditTransparencyModel(page, viewport) {
       viewport: viewport.name,
       tab: '全局',
       component: 'Transparency',
-      message: result.reason || `根背景 alpha(html/body/root/mantine-body/shell)=${result.htmlBackgroundAlpha}/${result.bodyBackgroundAlpha}/${result.rootBackgroundAlpha}/${result.mantineBodyAlpha}/${result.shellBackgroundAlpha}，文字 alpha=${result.titleColorAlpha}，不符合背景和文字透明度分离预期。`,
+      message: result.reason || `根背景 alpha(html/body/root/mantine-body/shell)=${result.htmlBackgroundAlpha}/${result.bodyBackgroundAlpha}/${result.rootBackgroundAlpha}/${result.mantineBodyAlpha}/${result.shellBackgroundAlpha}，一级导航文字 alpha=${result.navigationTextColorAlpha}，不符合背景和文字透明度分离预期。`,
     });
   }
 }

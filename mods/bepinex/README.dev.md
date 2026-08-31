@@ -52,6 +52,7 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 | 按改动选择测试 | [验证指南](../../docs/validation-guide.md) |
 | 静态目录、玩家状态与快照 | [运行时数据 Provider](../../docs/runtime-provider.md) |
 | 普客/稀客捕获与终态回执 | [订单捕获与生命周期](../../docs/runtime-order-lifecycle.md) |
+| 受控稀客名单、参与队列与门禁 | [稀客订单参与队列](../../docs/rare-order-participation.md) |
 | 租约、CookingJob 与暂停恢复 | [自动化运行时](../../docs/automation-runtime.md) |
 | listener、鉴权、路由与设备权威 | [本地 API](../../docs/local-api.md) |
 | 置顶、变体与游戏内高亮 | [游戏 UI 集成](../../docs/game-ui-integration.md) |

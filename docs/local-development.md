@@ -55,7 +55,8 @@ corepack pnpm toolchain:check
 也不执行全局 `corepack enable`。
 
 Mod 的目标框架是 `net6.0`，产品构建仍使用锁定的 .NET SDK `10.0.110`。唯一的通用 .NET 6 smoke
-入口覆盖三项真实 Harmony/MonoMod 动态补丁探针；入口和限制见[验证指南](validation-guide.md#锁定-net-6-smoke-矩阵)。
+入口覆盖三项真实 Harmony/MonoMod 动态补丁探针，以及 participation permit 和经营 lifecycle 两项纯托管 smoke；入口和限制见
+[验证指南](validation-guide.md#锁定-net-6-smoke-矩阵)。
 
 ## BepInEx 构建引用
 

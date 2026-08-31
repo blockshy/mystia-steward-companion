@@ -714,7 +714,7 @@ internal static partial class RuntimeOrderPreparationService
                 JobId = $"CJ-{AutomationCookingJobSequence:D6}",
                 CookerReservation = cookerReservation,
                 ControllerPointer = controllerPointer,
-                Generation = ownershipSnapshot.Generation,
+                CookingOwnershipGeneration = ownershipSnapshot.Generation,
                 ContentRevision = ownershipSnapshot.ContentRevision,
                 ChosenRecipePointer = chosenRecipePointer,
                 RecipeName = recipeName,
@@ -1260,19 +1260,19 @@ internal static partial class RuntimeOrderPreparationService
         }
 
         var ownershipMatches = expectedCompletedMutation.HasValue
-            ? ownershipAfter.Generation == job.Generation
+            ? ownershipAfter.Generation == job.CookingOwnershipGeneration
                 && ownershipAfter.ContentRevision > minimumContentRevision
                 && ownershipAfter.LastMutation == expectedCompletedMutation.Value
                 && ownershipAfter.MutationCompleted
-            : ownershipAfter.Generation == job.Generation
+            : ownershipAfter.Generation == job.CookingOwnershipGeneration
                 && ownershipAfter.ContentRevision == job.ContentRevision;
         if (!ownershipMatches)
         {
             failureKind = AutomationCookerReacquireFailureKind.Invalidated;
             var expected = expectedCompletedMutation.HasValue
-                ? $"generation={job.Generation}; mutation={expectedCompletedMutation}; "
+                ? $"cookingOwnershipGeneration={job.CookingOwnershipGeneration}; mutation={expectedCompletedMutation}; "
                     + $"completed=true; contentRevision>{minimumContentRevision}"
-                : $"generation={job.Generation}; contentRevision={job.ContentRevision}";
+                : $"cookingOwnershipGeneration={job.CookingOwnershipGeneration}; contentRevision={job.ContentRevision}";
             diagnostic = $"ownership-invalidated; expected={expected}; "
                 + $"actual={ownershipAfter.Generation}/{ownershipAfter.ContentRevision}; "
                 + $"mutation={ownershipAfter.LastMutation}; completed={ownershipAfter.MutationCompleted}; "
@@ -1355,6 +1355,17 @@ internal static partial class RuntimeOrderPreparationService
         bool timeoutEligible = true)
     {
         var nowUtc = DateTime.UtcNow;
+        if (AutomationCookingTerminalReceiptPolicy.TryFindOrderTerminatedBeforeDelivery(
+                job.FoodDeliveryCommitted,
+                job.Target.OrderBinding,
+                out var terminalReceipt))
+        {
+            return RetireCookingJobForOrderTerminatedBeforeDelivery(
+                job,
+                terminalReceipt,
+                nowUtc);
+        }
+
         if (!timeoutEligible)
         {
             job.DeliveryTimeoutClock.Observe(nowUtc, eligible: false);
@@ -1583,6 +1594,40 @@ internal static partial class RuntimeOrderPreparationService
         }
 
         return (false, "", OrderPreparationStepCodes.CookingPending);
+    }
+
+    private static (bool Remove, string Message, string Code)
+        RetireCookingJobForOrderTerminatedBeforeDelivery(
+            AutomationCookingJob job,
+            RuntimeOrderTerminalReceipt terminalReceipt,
+            DateTime observedAtUtc)
+    {
+        var code = OrderPreparationStepCodes.OrderTerminatedBeforeDelivery;
+        var message = $"{job.RecipeName} 的目标订单已在 Mod 送达前由游戏终结"
+            + $"（{terminalReceipt.Disposition}; source={terminalReceipt.Source}; sequence={terminalReceipt.Sequence}）；"
+            + "旧自动料理任务已退休并释放 Mod 厨具预约，锅内料理和厨具现场保持原状，"
+            + "不会送达、评价、移入保温箱或复位厨具。";
+        var leaseReleased = job.ControllerLease.Release(
+            AutomationCookingControllerLeaseReleaseReason.OrderTerminatedBeforeDelivery,
+            observedAtUtc);
+        job.FoodDeliveryEvaluationState = AutomationFoodDeliveryEvaluationState.OrderTerminated;
+        job.FoodDeliveryEvaluationMessage = message;
+        job.FoodDeliveryEvaluationCode = code;
+        if (leaseReleased)
+        {
+            AppendAutomationLog(
+                "controller-lease-release",
+                job.Target,
+                job.FormatLogContext($"reason={code}"));
+        }
+        RecordAutomationRuntimeEvent(
+            code,
+            job,
+            message,
+            outcome: "interrupted",
+            reasonCode: code,
+            terminal: true);
+        return (true, message, code);
     }
 
     private static (bool Remove, string Message, string Code) EnterManualHandoff(

@@ -71,6 +71,7 @@ await auditSelectConfirm(page);
 await auditMultiSelectBack(page);
 await auditFavoriteAction(page);
 await auditEffectiveCustomRecipesDisclosure(page);
+await auditServiceSummaryAccordion(page);
 await auditFocusMode(page);
 await auditCompoundControls(page);
 await auditNumberInput(page);
@@ -480,6 +481,64 @@ async function auditEffectiveCustomRecipesDisclosure(page) {
   }
 }
 
+async function auditServiceSummaryAccordion(page) {
+  await activateTopTab(page, 'service');
+  let trigger = page.locator('[data-service-summary-trigger="true"]:visible').first();
+  if (!(await trigger.count())) {
+    issues.push('经营中页缺少可由手柄操作的经营概况折叠按钮。');
+    return;
+  }
+  if (await trigger.getAttribute('aria-expanded') !== 'false') {
+    issues.push('首次进入经营中时，经营概况应默认 aria-expanded=false。');
+  }
+
+  await trigger.scrollIntoViewIfNeeded();
+  await trigger.focus();
+  await pressButton(page, BUTTON_A, { holdMs: 70 });
+  if (!(await waitForServiceSummaryState(page, true))) {
+    issues.push('经营概况按钮按 A 后未展开或未同步 aria-expanded=true。');
+    return;
+  }
+  await expectFocusedElement(page, trigger, '手柄展开经营概况后焦点应保留在折叠按钮');
+
+  await pressButton(page, BUTTON_A, { holdMs: 70 });
+  if (!(await waitForServiceSummaryState(page, false))) {
+    issues.push('经营概况按钮再次按 A 后未收起或未同步 aria-expanded=false。');
+    return;
+  }
+  await expectFocusedElement(page, trigger, '手柄收起经营概况后焦点应保留在折叠按钮');
+
+  await pressButton(page, BUTTON_A, { holdMs: 70 });
+  if (!(await waitForServiceSummaryState(page, true))) {
+    issues.push('经营概况未能在离开页面前再次展开。');
+    return;
+  }
+  await activateTopTab(page, 'overview');
+  await activateTopTab(page, 'service');
+  trigger = page.locator('[data-service-summary-trigger="true"]:visible').first();
+  if (!(await trigger.count()) || await trigger.getAttribute('aria-expanded') !== 'false') {
+    issues.push('离开并重新进入经营中后，经营概况没有恢复默认折叠。');
+  }
+}
+
+async function waitForServiceSummaryState(page, expanded) {
+  try {
+    await page.waitForFunction((expected) => {
+      const trigger = document.querySelector('[data-service-summary-trigger="true"]');
+      const content = document.querySelector('[data-service-summary-content="true"]');
+      const contentVisible = content instanceof HTMLElement
+        && content.getBoundingClientRect().width > 0
+        && content.getBoundingClientRect().height > 0
+        && getComputedStyle(content).visibility !== 'hidden';
+      return trigger?.getAttribute('aria-expanded') === String(expected)
+        && contentVisible === expected;
+    }, expanded, { timeout: 1_200 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function auditFocusMode(page) {
   await activateTopTab(page, 'service');
   await pressButton(page, BUTTON_Y, { holdMs: 70 });
@@ -834,15 +893,17 @@ async function auditInnerTabs(page) {
   const serviceTabBefore = await readActiveElementDebug(page);
   runtimeDiagnostics.push(`经营中二级 Tab 右移前：${formatElementDebug(serviceTabBefore)}`);
   await pressButton(page, BUTTON_DPAD_RIGHT, { holdMs: 70 });
-  const serviceTabAfter = await readActiveElementDebug(page);
-  runtimeDiagnostics.push(`经营中二级 Tab 右移后：${formatElementDebug(serviceTabAfter)}`);
-  if (!serviceTabAfter.innerTab || serviceTabAfter.text !== '普客') {
+  const serviceQueueTab = await readActiveElementDebug(page);
+  runtimeDiagnostics.push(`经营中二级 Tab 首次右移后：${formatElementDebug(serviceQueueTab)}`);
+  if (!serviceQueueTab.innerTab || serviceQueueTab.text !== '稀客队列') {
     issues.push([
-      '经营中页“稀客”按右键应聚焦“普客”二级 Tab。',
+      '经营中页“稀客”按右键应聚焦“稀客队列”二级 Tab。',
       `操作前 ${formatElementDebug(serviceTabBefore)}；`,
-      `操作后 ${formatElementDebug(serviceTabAfter)}。`,
+      `操作后 ${formatElementDebug(serviceQueueTab)}。`,
     ].join(''));
   }
+  await pressButton(page, BUTTON_DPAD_RIGHT, { holdMs: 70 });
+  await expectFocusedInnerTab(page, '普客', '经营中页“稀客队列”按右键应聚焦“普客”二级 Tab');
 
   await activateRecommendationTab(page, '普客');
   const recommendationTabs = page.locator('[data-recommendation-tabs]');
@@ -878,6 +939,10 @@ async function auditInnerTabs(page) {
   });
 
   await extensionTabs.getByRole('tab', { name: '稀客邀请', exact: true }).focus();
+  await pressButton(page, BUTTON_DPAD_RIGHT, { holdMs: 70 });
+  await expectFocusedInnerTab(page, '稀客调度', '“稀客邀请”按右键应聚焦“稀客调度”二级 Tab');
+  await pressButton(page, BUTTON_DPAD_LEFT, { holdMs: 70 });
+  await expectFocusedInnerTab(page, '稀客邀请', '“稀客调度”按左键应回到“稀客邀请”二级 Tab');
   await pressButton(page, BUTTON_DPAD_LEFT, { holdMs: 70 });
   await expectFocusedInnerTab(page, '任务列表', '“稀客邀请”按左键应回到“任务列表”二级 Tab');
   await pressButton(page, BUTTON_A, { holdMs: 70 });

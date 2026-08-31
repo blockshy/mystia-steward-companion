@@ -6,6 +6,7 @@ try
 {
     VerifyAutomationCompletionInvariant();
     VerifyRuntimeAutomationControlIntegrationContract();
+    VerifyRareCookingParticipationUsesExactOrderBusinessGeneration();
     VerifyCommittedDeliveryEvaluationBoundary();
     VerifyHarmonyMutationCompletionSemantics();
     VerifyCookerStartAvailabilityPolicy();
@@ -20,6 +21,7 @@ try
     VerifyProgressStallBlocksTheJob();
     VerifyNativeFinalizeWaitNeverRequestsASideEffect();
     VerifyControllerLeaseIsMonotonicAndIndependentFromEvaluationReceipt();
+    VerifyTerminalReceiptBeforeDeliveryPolicyIsExactAndWrapperFree();
     VerifyProductionControllerLeaseBoundary();
     VerifyEvaluationCloseoutIsEffectivelyBounded();
     VerifyProductionOrderReceiptBoundary();
@@ -45,7 +47,8 @@ try
         + "side effects, bound committed cleanup retries, reject invalidated cooker reservations before touching "
         + "old wrappers, close direct-delivery evaluation before retiring irreversible jobs, reject direct "
         + "delivery without completion before runtime access, suspend active jobs at future side-effect "
-        + "boundaries while configuration authority changes, and keep the "
+        + "boundaries while configuration authority changes, scope rare participation to exact order-business "
+        + "bindings when cooker ownership generations differ, and keep the "
         + "controller lease independent from evaluation receipts while keeping player-ownership-loss "
         + "handoff receipts deterministic and barrier-free.");
     return 0;
@@ -239,6 +242,174 @@ static void VerifyRuntimeAutomationControlIntegrationContract()
         "Cooking jobs still latch their delivery switch at creation time.");
     AssertDoesNotContain(service, "public bool AutoCompleteOrder",
         "Cooking jobs still latch their completion switch at creation time.");
+}
+
+static void VerifyRareCookingParticipationUsesExactOrderBusinessGeneration()
+{
+    const long businessGeneration = 1;
+    const long cookingOwnershipGeneration = 7;
+    const int unmanagedGuestId = 2;
+    const int managedGuestId = 4;
+    var configuredManagedGuestIds = new[] { managedGuestId };
+    var unmanagedBinding = new RuntimeOrderBindingToken(
+        businessGeneration,
+        RuntimeOrderKind.Special,
+        (nint)0x101,
+        (nint)0x201,
+        LifecycleSequence: 11);
+    var managedBinding = new RuntimeOrderBindingToken(
+        businessGeneration,
+        RuntimeOrderKind.Special,
+        (nint)0x102,
+        (nint)0x202,
+        LifecycleSequence: 12);
+    var unmanagedIdentity = RuntimeRareCookingJobParticipationPolicy.CreateIdentityFromExactBinding(
+        unmanagedBinding,
+        "R-7001",
+        unmanagedGuestId);
+    var managedIdentity = RuntimeRareCookingJobParticipationPolicy.CreateIdentityFromExactBinding(
+        managedBinding,
+        "R-7002",
+        managedGuestId);
+
+    AssertTrue(
+        cookingOwnershipGeneration != unmanagedIdentity.BusinessGeneration,
+        "The regression fixture no longer distinguishes cooker ownership from business authority.");
+    AssertTrue(
+        unmanagedIdentity.BusinessGeneration == unmanagedBinding.BusinessGeneration
+        && managedIdentity.BusinessGeneration == managedBinding.BusinessGeneration,
+        "Rare cooking participation identity did not take its generation from the exact order binding.");
+
+    RuntimeRareGuestParticipationState.Reset();
+    try
+    {
+        var revision = RuntimeRareGuestParticipationState.BeginBusiness(
+            businessGeneration,
+            configuredManagedGuestIds);
+        revision = RuntimeRareGuestParticipationState.ReconcileCurrentOrders(
+            businessGeneration,
+            revision,
+            collectionComplete: true,
+            new[]
+            {
+                new RuntimeRareGuestParticipationOrderObservation(unmanagedIdentity, unmanagedBinding),
+                new RuntimeRareGuestParticipationOrderObservation(managedIdentity, managedBinding),
+            });
+
+        AssertTrue(
+            RuntimeRareCookingJobParticipationPolicy.IsRosterAlignedWithExactBinding(
+                RuntimeRareGuestParticipationState.Snapshot,
+                unmanagedBinding,
+                configuredManagedGuestIds),
+            "A roster aligned to business generation 1 was rejected because cooker ownership is generation 7.");
+
+        using (var unmanagedPermit = RuntimeRareGuestParticipationState.AcquireBoundSideEffectPermit(
+                   unmanagedIdentity,
+                   unmanagedBinding))
+        {
+            AssertTrue(
+                unmanagedPermit.Allowed,
+                $"An unmanaged rare order was suspended with a non-empty roster: {unmanagedPermit.Decision.ReasonCode}.");
+        }
+
+        using (var pausedManagedPermit = RuntimeRareGuestParticipationState.AcquireBoundSideEffectPermit(
+                   managedIdentity,
+                   managedBinding))
+        {
+            AssertTrue(
+                !pausedManagedPermit.Allowed
+                && string.Equals(
+                    pausedManagedPermit.Decision.ReasonCode,
+                    "order-paused",
+                    StringComparison.Ordinal),
+                "A newly observed managed rare order did not remain paused at the side-effect boundary.");
+        }
+
+        revision = RuntimeRareGuestParticipationState.MutateParticipation(
+            businessGeneration,
+            revision,
+            RuntimeRareGuestParticipationAction.EnableTail,
+            RuntimeRareGuestParticipationTargetScope.Guest,
+            managedGuestId,
+            new[] { managedIdentity });
+        using (var enabledManagedPermit = RuntimeRareGuestParticipationState.AcquireBoundSideEffectPermit(
+                   managedIdentity,
+                   managedBinding))
+        {
+            AssertTrue(
+                enabledManagedPermit.Allowed,
+                $"An explicitly enabled managed rare order remained suspended: {enabledManagedPermit.Decision.ReasonCode}.");
+        }
+
+        var wrongCookerScopedIdentity = unmanagedIdentity with
+        {
+            BusinessGeneration = cookingOwnershipGeneration,
+        };
+        using var wrongGenerationPermit = RuntimeRareGuestParticipationState.AcquireBoundSideEffectPermit(
+            wrongCookerScopedIdentity,
+            unmanagedBinding);
+        AssertTrue(
+            !wrongGenerationPermit.Allowed,
+            "A cooker ownership generation was accepted as rare-order participation authority.");
+    }
+    finally
+    {
+        RuntimeRareGuestParticipationState.Reset();
+    }
+
+    var root = FindRepositoryRoot();
+    var saveRoot = Path.Combine(root, "mods", "bepinex", "src", "Save");
+    var preparation = File.ReadAllText(Path.Combine(saveRoot, "RuntimeOrderPreparationService.cs"));
+    var preparationControl = File.ReadAllText(Path.Combine(
+        saveRoot,
+        "RuntimeOrderPreparationService.AutomationControl.cs"));
+    var policy = File.ReadAllText(Path.Combine(
+        saveRoot,
+        "RuntimeRareCookingJobParticipationPolicy.cs"));
+    var jobSource = ExtractSourceBlock(preparation, "private sealed class AutomationCookingJob");
+    var permitBridge = ExtractSourceBlock(
+        preparationControl,
+        "private static RuntimeRareGuestParticipationPermit? AcquireRareCookingJobParticipationPermit(");
+    var decisionMerge = ExtractSourceBlock(
+        preparationControl,
+        "private static RuntimeAutomationControlDecision MergeRareCookingJobParticipationDecision(");
+
+    AssertContains(
+        jobSource,
+        "public long CookingOwnershipGeneration { get; init; }",
+        "The private cooking job generation remains ambiguous.");
+    AssertDoesNotContain(
+        jobSource,
+        "public long Generation { get; init; }",
+        "The private cooking job retained its ambiguous generation property.");
+    AssertContains(
+        permitBridge,
+        "RuntimeRareCookingJobParticipationPolicy.CreateIdentityFromExactBinding(",
+        "The cooking-job participation bridge bypasses the exact-binding identity policy.");
+    AssertContains(
+        decisionMerge,
+        "RuntimeRareCookingJobParticipationPolicy.IsRosterAlignedWithExactBinding(",
+        "The cooking-job roster alignment bypasses the exact order binding.");
+    foreach (var forbiddenGenerationSource in new[]
+             {
+                 "job.Generation",
+                 "job.CookingOwnershipGeneration",
+                 "RuntimeNightBusinessLifecycle",
+             })
+    {
+        AssertDoesNotContain(
+            permitBridge,
+            forbiddenGenerationSource,
+            $"Participation identity still uses a non-binding generation source: {forbiddenGenerationSource}.");
+        AssertDoesNotContain(
+            decisionMerge,
+            forbiddenGenerationSource,
+            $"Participation roster alignment still uses a non-binding generation source: {forbiddenGenerationSource}.");
+        AssertDoesNotContain(
+            policy,
+            forbiddenGenerationSource,
+            $"The exact-binding participation policy gained a forbidden generation source: {forbiddenGenerationSource}.");
+    }
 }
 
 static void VerifyCommittedDeliveryEvaluationBoundary()
@@ -1167,6 +1338,102 @@ static void VerifyControllerLeaseIsMonotonicAndIndependentFromEvaluationReceipt(
         "The controller lease accepted a release without an exact terminal reason.");
 }
 
+static void VerifyTerminalReceiptBeforeDeliveryPolicyIsExactAndWrapperFree()
+{
+    RuntimeOrderTerminalReceiptStore.Clear();
+    var generation = 271L;
+    var orderPointer = (nint)0x2710;
+    var controllerPointer = (nint)0x2720;
+    var evaluatedLifecycle = RuntimeOrderTerminalReceiptStore.BeginLifecycle(
+        generation,
+        RuntimeOrderKind.Special,
+        orderPointer,
+        controllerPointer);
+    var evaluatedBinding = new RuntimeOrderBindingToken(
+        generation,
+        RuntimeOrderKind.Special,
+        orderPointer,
+        controllerPointer,
+        evaluatedLifecycle);
+    RuntimeOrderTerminalReceiptStore.Publish(new RuntimeOrderTerminalHookState(
+        generation,
+        RuntimeOrderKind.Special,
+        orderPointer,
+        controllerPointer,
+        evaluatedLifecycle,
+        RuntimeOrderTerminalDisposition.Evaluated,
+        RuntimeOrderTerminalReceiptSource.EvaluateOrder));
+    AssertTrue(
+        AutomationCookingTerminalReceiptPolicy.TryFindOrderTerminatedBeforeDelivery(
+            foodDeliveryCommitted: false,
+            evaluatedBinding,
+            out var evaluatedReceipt),
+        "An exact Evaluated receipt did not retire an undelivered cooking job.");
+    AssertEqual(RuntimeOrderTerminalDisposition.Evaluated, evaluatedReceipt.Disposition,
+        "The undelivered-job policy changed the exact Evaluated disposition.");
+
+    var removedLifecycle = RuntimeOrderTerminalReceiptStore.BeginLifecycle(
+        generation,
+        RuntimeOrderKind.Special,
+        orderPointer,
+        controllerPointer);
+    var removedBinding = evaluatedBinding with { LifecycleSequence = removedLifecycle };
+    RuntimeOrderTerminalReceiptStore.Publish(new RuntimeOrderTerminalHookState(
+        generation,
+        RuntimeOrderKind.Special,
+        orderPointer,
+        controllerPointer,
+        removedLifecycle,
+        RuntimeOrderTerminalDisposition.Removed,
+        RuntimeOrderTerminalReceiptSource.RemoveFromOrder));
+    AssertTrue(
+        AutomationCookingTerminalReceiptPolicy.TryFindOrderTerminatedBeforeDelivery(
+            foodDeliveryCommitted: false,
+            removedBinding,
+            out var removedReceipt),
+        "An exact Removed receipt did not retire an undelivered cooking job.");
+    AssertEqual(RuntimeOrderTerminalDisposition.Removed, removedReceipt.Disposition,
+        "The undelivered-job policy changed the exact Removed disposition.");
+    var currentLifecycle = RuntimeOrderTerminalReceiptStore.BeginLifecycle(
+        generation,
+        RuntimeOrderKind.Special,
+        orderPointer,
+        controllerPointer);
+    var currentBinding = evaluatedBinding with { LifecycleSequence = currentLifecycle };
+    AssertTrue(
+        !AutomationCookingTerminalReceiptPolicy.TryFindOrderTerminatedBeforeDelivery(
+            foodDeliveryCommitted: false,
+            currentBinding,
+            out _),
+        "A stale receipt from a previous native lifecycle retired a newer job without its own receipt.");
+    AssertTrue(
+        !AutomationCookingTerminalReceiptPolicy.TryFindOrderTerminatedBeforeDelivery(
+            foodDeliveryCommitted: true,
+            removedBinding,
+            out _),
+        "A terminal receipt bypassed cleanup after Mod delivery had already committed.");
+    AssertTrue(
+        !AutomationCookingTerminalReceiptPolicy.TryFindOrderTerminatedBeforeDelivery(
+            foodDeliveryCommitted: false,
+            orderBinding: null,
+            out _),
+        "A job without an exact native binding guessed a terminal receipt.");
+
+    var lease = new AutomationCookingControllerLease();
+    AssertTrue(
+        lease.Release(
+            AutomationCookingControllerLeaseReleaseReason.OrderTerminatedBeforeDelivery,
+            Utc(12, 41, 30)),
+        "Terminal-before-delivery retirement did not release its logical controller lease.");
+    AssertTrue(!lease.HoldsReservation,
+        "Terminal-before-delivery retirement retained a logical controller reservation.");
+    AssertEqual(
+        AutomationCookingControllerLeaseReleaseReason.OrderTerminatedBeforeDelivery,
+        lease.ReleaseReason,
+        "Terminal-before-delivery retirement lost its exact lease-release reason.");
+    RuntimeOrderTerminalReceiptStore.Clear();
+}
+
 static void VerifyProductionControllerLeaseBoundary()
 {
     var root = FindRepositoryRoot();
@@ -1298,6 +1565,14 @@ static void VerifyProductionOrderReceiptBoundary()
         "Cooking targets restored the cross-frame IL2CPP order-wrapper fallback.");
 
     var binding = ExtractSourceBlock(service, "private static bool TryBindCookingTargetRuntimeOrder(");
+    AssertDoesNotContain(
+        binding,
+        "RuntimeAutomationControlState",
+        "Order binding reacquired the automation lock while a participation admission permit can be held.");
+    AssertContains(
+        binding,
+        "bool requireRareParticipationBinding",
+        "Order binding no longer receives the already-authorized participation context explicitly.");
     AssertTrue(
         binding.IndexOf("RuntimeOrderTypeResolver.Resolve", StringComparison.Ordinal)
             < binding.IndexOf("TryCaptureActiveLifecycle", StringComparison.Ordinal)
@@ -1338,6 +1613,12 @@ static void VerifyProductionOrderReceiptBoundary()
         "The shared runtime-order matcher no longer rejects a reused native tuple from another order lifecycle.");
 
     var resolve = ExtractSourceBlock(delivery, "private static bool TryResolveCommittedFoodDeliveryEvaluation(");
+    AssertTrue(
+        resolve.IndexOf("!job.Target.OrderBinding.HasValue", StringComparison.Ordinal)
+            < resolve.IndexOf("RuntimeOrderTerminalReceiptStore.TryFind", StringComparison.Ordinal)
+        && resolve.IndexOf("RuntimeOrderTerminalReceiptStore.TryFind", StringComparison.Ordinal)
+            < resolve.IndexOf("AcquireAutomationCookingJobControlPermit", StringComparison.Ordinal),
+        "A scalar terminal receipt is blocked by participation/active-lifecycle gating before it can retire the exact job.");
     AssertTrue(
         resolve.IndexOf("RuntimeOrderTerminalReceiptStore.TryFind", StringComparison.Ordinal)
             < resolve.IndexOf("FindRuntimeNormalOrder", StringComparison.Ordinal),
@@ -1743,15 +2024,52 @@ static void VerifyProductionFreshCookerBindingContract()
     var processor = ExtractSourceBlock(
         cooking,
         "private static (bool Remove, string Message, string Code) TryProcessAutomationCookingJob(");
+    var terminalReceiptGate = processor.IndexOf(
+        "AutomationCookingTerminalReceiptPolicy.TryFindOrderTerminatedBeforeDelivery(",
+        StringComparison.Ordinal);
+    var manualHandoffGate = processor.IndexOf("if (job.ManualHandoffObserved)", StringComparison.Ordinal);
+    var timeoutGate = processor.IndexOf("if (!timeoutEligible)", StringComparison.Ordinal);
+    var controlGate = processor.IndexOf("ObserveAutomationCookingJobControl(", StringComparison.Ordinal);
     var freshBinding = processor.IndexOf("TryReacquireAutomationCooker(", StringComparison.Ordinal);
     var contentRead = processor.IndexOf("cookerBinding.State", StringComparison.Ordinal);
     AssertTrue(
         freshBinding >= 0 && contentRead > freshBinding,
         "An existing cooking job can read cooker content before a fresh exact reservation binding.");
+    AssertTrue(
+        terminalReceiptGate >= 0
+        && timeoutGate > terminalReceiptGate
+        && manualHandoffGate > terminalReceiptGate
+        && controlGate > terminalReceiptGate
+        && freshBinding > terminalReceiptGate,
+        "An exact terminal receipt is blocked by control/participation or cooker-wrapper access before retiring an undelivered job.");
     AssertDoesNotContain(
         processor,
         "job.CookController",
         "An existing cooking job can still touch a retained cooker wrapper.");
+
+    var terminalRetirement = ExtractSourceBlock(
+        cooking,
+        "private static (bool Remove, string Message, string Code)\n        RetireCookingJobForOrderTerminatedBeforeDelivery(");
+    AssertContains(
+        terminalRetirement,
+        "AutomationCookingControllerLeaseReleaseReason.OrderTerminatedBeforeDelivery",
+        "Terminal-before-delivery retirement did not release the exact logical controller lease.");
+    foreach (var forbiddenNativeProbe in new[]
+             {
+                 "TryReacquireAutomationCooker(",
+                 "FindRuntimeOrder(",
+                 "FindRuntimeNormalOrder(",
+                 "ReadMember(",
+                 "InvokeInstance(",
+                 "TryDeliverAutomationCookedFood(",
+                 "TryStoreCookedFoodInWarmer(",
+             })
+    {
+        AssertDoesNotContain(
+            terminalRetirement,
+            forbiddenNativeProbe,
+            $"Terminal-before-delivery retirement performs forbidden runtime work: {forbiddenNativeProbe}");
+    }
 
     var reacquire = ExtractSourceBlock(
         cooking,
@@ -1765,7 +2083,7 @@ static void VerifyProductionFreshCookerBindingContract()
                  "job.CookerReservation.EvaluateChallengeGate(",
                  "controllerPointer != job.ControllerPointer",
                  "ownershipBefore != ownershipAfter",
-                 "ownershipAfter.Generation == job.Generation",
+                 "ownershipAfter.Generation == job.CookingOwnershipGeneration",
                  "ownershipAfter.ContentRevision == job.ContentRevision",
                  "if (!ownershipMatches)",
              })

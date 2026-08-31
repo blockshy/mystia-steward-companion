@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { once } from 'node:events';
+import { buildCurrentSharedProfileV3 } from '../device-authority/current-v3-profile-fixture.mjs';
 import {
   assertAutomationDirectDeliveryCompletionInvariant,
   canAdvanceAutomationRuntimeEventSequence,
@@ -850,8 +851,10 @@ async function assertStageAndControlContracts() {
     && workbench.includes('preferences.autoPrepCollectCooking')
     && workbench.includes('preferences.autoPrepCompleteOrder')
     && workbench.includes('preferences.autoNormalDeliverFood')
-    && workbench.includes('preferences.autoNormalCompleteOrder'),
-  'The control-state transition signature must include both order groups and their future delivery/evaluation stages.');
+    && workbench.includes('preferences.autoNormalCompleteOrder')
+    && workbench.includes('preferences.rareGuestParticipationModuleEnabled')
+    && workbench.includes("preferences.managedRareGuestIds.join(',')"),
+  'The control-state transition signature must include both order groups, their future stages, the participation module switch, and the managed rare-guest list.');
   assert.ok(workbench.includes('previousAutomationControlSignatureRef.current')
     && workbench.includes('automationRequestEpochRef.current += 1')
     && workbench.includes('automationLeaseRevalidationRequiredRef.current = true')
@@ -897,8 +900,10 @@ async function assertStageAndControlContracts() {
     'Target-rotation diagnostics must distinguish an A -> B -> A return by runtime revision.');
   assert.ok(workbench.includes('retainRareAutomationContinuityStates('),
     'A temporary zero-candidate recommendation pass must preserve an active order rollback owner.');
-  assert.ok(workbench.includes('orderRecommendations.recommendations.map(buildAutoOrderKey)'),
-    'Zero-candidate retention must be bounded by orders that still exist in the current recommendation result.');
+  assert.ok(workbench.includes('operationalOrderRecommendations === null')
+    && workbench.includes('operationalOrderRecommendations.map(({ recommendation }) => recommendation)')
+    && workbench.includes(').map(buildAutoOrderKey)'),
+  'Zero-candidate retention must use all recommendations only for the empty-roster bypass and otherwise be bounded by authoritative operational orders.');
   assert.ok(workbench.includes('source=target-signature-reconciliation'),
     'Target-signature retirement diagnostics must identify their non-runtime-event source.');
   assert.equal(workbench.includes('selectionCount: 1,\n      skipCount: 0,'), false,
@@ -1101,21 +1106,23 @@ async function assertMockProtocol() {
       'x-mystia-steward-companion-client-id': 'automation-audit',
       'x-mystia-steward-companion-client-label': 'Automation Audit',
     };
-    const enabledProfile = {
+    const enabledProfile = buildCurrentSharedProfileV3({
       automationEnabled: true,
       autoRareOrderEnabled: true,
+      rareGuestParticipationModuleEnabled: false,
+      managedRareGuestIds: [],
       autoNormalOrderEnabled: true,
       autoPrepCollectCooking: true,
       autoPrepCompleteOrder: true,
       autoNormalDeliverFood: true,
       autoNormalCompleteOrder: true,
-    };
+    });
     const registrationResponse = await fetch(`http://127.0.0.1:${port}/devices/register`, {
       method: 'POST',
       headers: { ...headers, 'content-type': 'application/json; charset=utf-8' },
       body: JSON.stringify({
         protocolVersion: 1,
-        profileSchemaVersion: 1,
+        profileSchemaVersion: 3,
         platform: 'browser',
         appVersion: '1.2.0',
         profile: enabledProfile,
@@ -1246,7 +1253,7 @@ async function assertMockProtocol() {
       headers,
       {
         protocolVersion: 1,
-        profileSchemaVersion: 1,
+        profileSchemaVersion: 3,
         expectedAuthorityRevision: registration.authorityRevision,
         expectedProfileRevision: registration.activeProfileRevision,
         profile: deliveryDisabledProfile,
@@ -1272,7 +1279,7 @@ async function assertMockProtocol() {
       headers,
       {
         protocolVersion: 1,
-        profileSchemaVersion: 1,
+        profileSchemaVersion: 3,
         expectedAuthorityRevision: disabledAuthority.authorityRevision,
         expectedProfileRevision: disabledAuthority.activeProfileRevision,
         profile: enabledProfile,
@@ -1296,7 +1303,7 @@ async function assertMockProtocol() {
       nextHeaders,
       {
         protocolVersion: 1,
-        profileSchemaVersion: 1,
+        profileSchemaVersion: 3,
         platform: 'browser',
         appVersion: '1.2.0',
         profile: enabledProfile,

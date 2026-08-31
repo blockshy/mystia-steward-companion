@@ -198,11 +198,37 @@ internal sealed class LocalApiRareGuestInvitationErrorDto
     public IReadOnlyList<object> Skipped { get; init; } = Array.Empty<object>();
 }
 
-internal sealed class LocalApiRareOrderDismissDto
+internal sealed class LocalApiRareGuestParticipationMutationRequest
+{
+    public long ExpectedAuthorityRevision { get; init; }
+    public long ExpectedBusinessGeneration { get; init; }
+    public long ExpectedParticipationRevision { get; init; }
+    public string Action { get; init; } = "";
+    public LocalApiRareGuestParticipationMutationTargetDto Target { get; init; } = new();
+}
+
+internal sealed class LocalApiRareGuestParticipationMutationTargetDto
+{
+    public string Type { get; init; } = "";
+    public int GuestId { get; init; } = -1;
+    public List<LocalApiRareGuestParticipationIdentityDto> ExpectedCurrentOrders { get; init; } = new();
+    public LocalApiRareGuestParticipationIdentityDto? Order { get; init; }
+}
+
+internal sealed class LocalApiRareGuestParticipationIdentityDto
+{
+    public long BusinessGeneration { get; init; }
+    public string TraceId { get; init; } = "";
+    public long OrderLifecycleSequence { get; init; }
+    public int GuestId { get; init; } = -1;
+}
+
+internal sealed class LocalApiRareGuestParticipationMutationDto
 {
     public bool Ok { get; init; }
-    public int Removed { get; init; }
+    public bool Changed { get; init; }
     public string Status { get; init; } = "";
+    public LocalApiRareGuestParticipationSnapshot Participation { get; init; } = new();
     public string? Error { get; init; }
 }
 

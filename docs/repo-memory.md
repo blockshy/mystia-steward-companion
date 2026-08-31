@@ -1,6 +1,6 @@
 # 项目事实与决策索引
 
-更新日期：2026-08-19
+更新日期：2026-09-01
 
 本文保存需要跨会话快速确认、但不属于具体操作步骤的稳定项目决策。它不是功能流水账，也不复制专题契约；细节以链接文档和测试源码为准。
 
@@ -33,6 +33,7 @@
 | 游戏证据 | metadata、interop、IDA 与实机日志交叉验证；未知状态 fail-closed | [IL2CPP / IDA 分析工作流](il2cpp-analysis-workflow.md) |
 | 运行时数据 | 静态目录、玩家状态和业务快照分层；完整目录按内容签名独立获取 | [运行时数据 Provider](runtime-provider.md) |
 | 订单 | 普客与稀客都以成功原生创建边界形成的精确捕获为权威；HUD 只补展示，不证明所有权 | [订单捕获与生命周期](runtime-order-lifecycle.md) |
+| 稀客调度 | 独立模块默认关闭；受控 lifecycle 默认暂停，支持单订单/整组暂停、队尾启用及在当前 UI 目标与仍参与的活动料理任务之后优先启用 | [稀客订单参与队列](rare-order-participation.md) |
 | 自动化 | 每次副作用受当前主设备 profile、authority revision、automation lease、经营 generation 和订单 lifecycle 共同约束 | [自动化运行时](automation-runtime.md) |
 | 推荐 | 候选管线先执行硬过滤，再组合和排序；只有完整计划为空才生成阻断诊断 | [推荐引擎](recommendation-engine.md) |
 | 游戏 UI | 后台只发布 immutable target；Unity 主线程按精确 ownership 应用 Mod-owned 视觉和加料事务 | [游戏 UI 集成](game-ui-integration.md) |

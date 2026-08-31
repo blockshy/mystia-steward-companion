@@ -404,6 +404,7 @@ for (const smokeName of [
   'automation-cooking-job',
   'ui-pinning-runtime',
   'runtime-target-recipe-variant',
+  'runtime-rare-guest-participation',
 ]) {
   assert.match(dotnet6Runner, new RegExp(`'${escapeRegex(smokeName)}'`, 'u'));
 }

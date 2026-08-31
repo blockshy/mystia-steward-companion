@@ -719,8 +719,13 @@ async function assertSourceContracts() {
   );
   assert.match(
     existingJobBinding,
-    /ownershipBefore != ownershipAfter[\s\S]*ownershipAfter\.Generation == job\.Generation[\s\S]*ownershipAfter\.ContentRevision == job\.ContentRevision[\s\S]*if \(!ownershipMatches\)/,
+    /ownershipBefore != ownershipAfter[\s\S]*ownershipAfter\.Generation == job\.CookingOwnershipGeneration[\s\S]*ownershipAfter\.ContentRevision == job\.ContentRevision[\s\S]*if \(!ownershipMatches\)/,
     'An existing job must reject ownership drift before publishing a fresh wrapper.',
+  );
+  assert.doesNotMatch(
+    existingJobBinding,
+    /job\.Generation/,
+    'Cooker ownership checks must not restore the ambiguous cooking-job generation field.',
   );
   const existingJobProcessor = sourceSlice(
     cooking,

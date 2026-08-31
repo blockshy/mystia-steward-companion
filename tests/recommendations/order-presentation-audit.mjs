@@ -10,16 +10,19 @@ const vite = await createServer({
 });
 let presentationModule;
 let registryModule;
+let servicePresentationModule;
 try {
-  [presentationModule, registryModule] = await Promise.all([
+  [presentationModule, registryModule, servicePresentationModule] = await Promise.all([
     vite.ssrLoadModule('/src/companion/domain/order-recommendation-presentation.ts'),
     vite.ssrLoadModule('/src/companion/domain/special-business/registry.ts'),
+    vite.ssrLoadModule('/src/companion/pages/service/service-order-collection-state.ts'),
   ]);
 } finally {
   await vite.close();
 }
 
 const {
+  buildParticipatingRareOrderPresentationRows,
   buildOrderDemandIdentity,
   buildOrderRecommendationPresentation,
 } = presentationModule;
@@ -27,6 +30,7 @@ const {
   buildSpecialBusinessRecommendationSignature,
   buildSpecialFoodTargetWirePolicy,
 } = registryModule;
+const { buildRareOrderRecommendationCollectionState } = servicePresentationModule;
 const root = new URL('../../', import.meta.url);
 
 const baseOrder = buildOrder({
@@ -70,6 +74,64 @@ assert.equal(
   buildOrderDemandIdentity(baseOrder),
   buildOrderDemandIdentity(currentOrder),
   '观测字段不得进入展示语义身份。',
+);
+
+const pausedPresentationOrder = buildOrder({
+  traceId: 'R-0003',
+  deskCode: 3,
+  runtimeGuestId: 102,
+  foodTagId: 12,
+  beverageTagId: 22,
+});
+const presentationParticipationByTrace = new Map([
+  ['R-0001', participationResolution('automatic', 2, true)],
+  ['R-0002', participationResolution('queued', 1, true)],
+  ['R-0003', participationResolution('paused', null, false)],
+]);
+const participatingPresentationRows = buildParticipatingRareOrderPresentationRows([
+  { kind: 'recommendation', order: currentOrder },
+  { kind: 'issue', order: newOrder },
+  { kind: 'pending', order: pausedPresentationOrder },
+], (order) => presentationParticipationByTrace.get(order.traceId) ?? null);
+assert.deepEqual(
+  participatingPresentationRows.map((row) => `${row.kind}:${row.order.traceId}`),
+  ['issue:R-0002', 'recommendation:R-0001'],
+  '稀客 recommendation/issue/pending 三类展示行必须统一隐藏暂停项并严格按权威 queuePosition 排列。',
+);
+assert.deepEqual(
+  buildParticipatingRareOrderPresentationRows([
+    { kind: 'recommendation', order: currentOrder },
+  ], () => participationResolution('queued', 0, true)),
+  [],
+  '非正 queuePosition 不得由展示层补造或回退到普通排序。',
+);
+assert.deepEqual(
+  buildRareOrderRecommendationCollectionState({
+    participationEnabled: true,
+    participationReady: true,
+    rowCount: 0,
+    updateError: 'retained recommendation failed',
+    pending: false,
+  }),
+  {
+    kind: 'error',
+    message: '推荐更新失败',
+    detail: 'retained recommendation failed',
+    emptyLabel: '推荐更新失败',
+    updating: false,
+  },
+  '新参与订单没有可保留展示行时，Worker 错误不得被误报为参与队列为空。',
+);
+assert.equal(
+  buildRareOrderRecommendationCollectionState({
+    participationEnabled: true,
+    participationReady: false,
+    rowCount: 0,
+    updateError: 'stale worker error',
+    pending: false,
+  }).kind,
+  'updating',
+  'participation 未对齐时必须优先显示同步门禁，不得泄漏旧 Worker 状态。',
 );
 
 const servedOrder = { ...currentOrder, hasServedFood: true };
@@ -396,6 +458,18 @@ function buildRecommendation(order) {
   };
 }
 
+function participationResolution(displayState, queuePosition, operationallyParticipating) {
+  return {
+    configuredAsManaged: displayState !== 'automatic',
+    configurationAligned: true,
+    displayState,
+    operationallyParticipating,
+    exactIdentity: null,
+    queuePosition,
+    reason: '',
+  };
+}
+
 function buildSpecialBusiness(overrides = {}) {
   return {
     active: true,
@@ -423,12 +497,22 @@ function buildSpecialBusiness(overrides = {}) {
 }
 
 async function assertSourceContracts() {
-  const [workbench, hook, api, panel, servicePresentation, automation, worker] = await Promise.all([
+  const [
+    workbench,
+    hook,
+    api,
+    panel,
+    servicePresentation,
+    collectionState,
+    automation,
+    worker,
+  ] = await Promise.all([
     readFile(new URL('apps/companion/src/companion/ModWorkbench.tsx', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/hooks/useOrderRecommendations.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/api.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/pages/ModServicePanel.tsx', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/pages/service/ServiceOrderPresentation.tsx', root), 'utf8'),
+    readFile(new URL('apps/companion/src/companion/pages/service/service-order-collection-state.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/domain/automation.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/workers/order-recommendations.worker.ts', root), 'utf8'),
   ]);
@@ -450,7 +534,8 @@ async function assertSourceContracts() {
   assert.match(hook, /lastResultSignatureRef\.current = ''/);
   assert.match(servicePresentation, /data-recommendation-pending-order=\{pending \? 'true' : undefined\}/);
   assert.match(servicePresentation, /更新失败，当前为上次结果/);
-  assert.match(panel, /推荐更新失败/);
+  assert.match(collectionState, /推荐更新失败/);
+  assert.match(panel, /buildRareOrderRecommendationCollectionState/);
   assert.match(panel, /mode="normal"/);
   assert.match(panel, /mode=\{fillAvailableHeight \? 'rare-focus' : 'rare'\}/);
   for (const field of [

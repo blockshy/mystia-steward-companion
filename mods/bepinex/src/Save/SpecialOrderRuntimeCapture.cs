@@ -163,30 +163,6 @@ public static class SpecialOrderRuntimeCapture
     }
 
     /// <summary>
-    /// 根据前端操作主动从捕获列表中移除一个订单。
-    /// </summary>
-    /// <param name="deskCode">游戏桌号，未知时为负数。</param>
-    /// <param name="runtimeGuestId">稀客运行时原始 ID，未知时为 <c>null</c>。</param>
-    /// <param name="foodTagId">料理原始 Tag ID，未指定时为 <c>null</c>。</param>
-    /// <param name="beverageTagId">酒水原始 Tag ID，未指定时为 <c>null</c>。</param>
-    /// <returns>被移除的捕获记录数量。</returns>
-    public static int DismissOrder(int deskCode, int? runtimeGuestId, int? foodTagId, int? beverageTagId)
-    {
-        lock (SyncRoot)
-        {
-            var removed = Orders.RemoveAll(order => IsDismissRequestMatch(order, deskCode, runtimeGuestId, foodTagId, beverageTagId));
-            _lastCapture = $"dismissed: desk={deskCode}, runtimeGuestId={runtimeGuestId?.ToString() ?? "missing"}, foodTagId={foodTagId?.ToString() ?? "missing"}, bevTagId={beverageTagId?.ToString() ?? "missing"}";
-            if (removed > 0)
-            {
-                _changeVersion++;
-            }
-
-            _status = BuildStatusLocked();
-            return removed;
-        }
-    }
-
-    /// <summary>
     /// 清空内存中的稀客订单捕获结果。
     /// </summary>
     /// <param name="reason">记录到诊断状态中的清理原因。</param>
@@ -1467,24 +1443,6 @@ public static class SpecialOrderRuntimeCapture
 
     private static bool CanMergeCapturedOrders(CapturedRuntimeSpecialOrder left, CapturedRuntimeSpecialOrder right)
         => IsSameOrderSlot(left, right);
-
-    private static bool IsDismissRequestMatch(
-        CapturedRuntimeSpecialOrder existing,
-        int deskCode,
-        int? runtimeGuestId,
-        int? foodTagId,
-        int? beverageTagId)
-    {
-        if (deskCode < 0 || existing.DeskCode != deskCode) return false;
-        if (!runtimeGuestId.HasValue && !foodTagId.HasValue && !beverageTagId.HasValue) return false;
-        if (runtimeGuestId.HasValue
-            && (!existing.GuestId.HasValue || existing.GuestId.Value != runtimeGuestId.Value)) return false;
-        if (foodTagId.HasValue
-            && existing.FoodTagId != foodTagId.Value) return false;
-        if (beverageTagId.HasValue
-            && existing.BeverageTagId != beverageTagId.Value) return false;
-        return true;
-    }
 
     /// <summary>
     /// 合并两次 Hook 捕获到的同一订单信息。

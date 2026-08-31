@@ -27,7 +27,11 @@ import {
   normalizeTargetHighlightColor,
   type CompanionPreferences,
 } from '@/companion/preferences';
-import type { LocalApiConnectionConfig, RuntimeSets, SettingsTab } from '@/companion/types';
+import type {
+  LocalApiConnectionConfig,
+  RuntimeSets,
+  SettingsTab,
+} from '@/companion/types';
 import type { RecommendationDataSet } from '@/lib/recommendation-data';
 import type { ThemeMode } from '@/lib/theme';
 import {

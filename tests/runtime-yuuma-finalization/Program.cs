@@ -85,7 +85,7 @@ static void VerifyJobRetainsOnlyManagedCookerIdentity(string service, string coo
                  "controllerPointer != job.ControllerPointer",
                  "RuntimeCookerChallengeGateState.Inconsistent",
                  "ownershipBefore != ownershipAfter",
-                 "ownershipAfter.Generation == job.Generation",
+                 "ownershipAfter.Generation == job.CookingOwnershipGeneration",
                  "ownershipAfter.ContentRevision == job.ContentRevision",
                  "if (!ownershipMatches)",
                  "expectedCompletedMutation.HasValue",

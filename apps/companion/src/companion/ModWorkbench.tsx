@@ -4,7 +4,6 @@ import {
   createEmptyCustomRecipeForm,
   type CustomRecipeFormState,
 } from '@/companion/custom-recipe-editor';
-import { WorkbenchHeader } from '@/companion/features/workbench/WorkbenchHeader';
 import { UpdateNoticeBar } from '@/companion/features/updates/UpdateNoticeBar';
 import { useUpdateManager } from '@/companion/features/updates/useUpdateManager';
 import { useCompanionConnection } from '@/companion/hooks/useCompanionConnection';
@@ -37,6 +36,7 @@ import {
 } from '@/companion/automation-machine';
 import { useOrderRecommendations } from '@/companion/hooks/useOrderRecommendations';
 import { useRareGuestInvitations } from '@/companion/hooks/useRareGuestInvitations';
+import { useRareOrderParticipation } from '@/companion/hooks/useRareOrderParticipation';
 import { useTrackedMissions } from '@/companion/hooks/useTrackedMissions';
 import { useAvailableMissions } from '@/companion/hooks/useAvailableMissions';
 import { ModCustomRecipesPanel } from '@/companion/pages/ModCustomRecipesPanel';
@@ -48,6 +48,7 @@ import { ModNormalPanel } from '@/companion/pages/ModNormalPanel';
 import { ModOverviewPanel } from '@/companion/pages/ModOverviewPanel';
 import { ModRarePanel } from '@/companion/pages/ModRarePanel';
 import { ModRareGuestInvitationsPanel } from '@/companion/pages/ModRareGuestInvitationsPanel';
+import { ModRareGuestParticipationPanel } from '@/companion/pages/ModRareGuestParticipationPanel';
 import {
   ModServicePanel,
   ServiceFocusPage,
@@ -61,7 +62,6 @@ import {
   appendAutomationDecisionDiagnostic,
   completeFirstNormalOrder,
   completeFirstRareOrder,
-  dismissRuntimeRareOrder,
   prepareNextRareOrder,
   releaseAutomationLease,
 } from '@/companion/api';
@@ -91,7 +91,6 @@ import {
 import {
   applyRareServedStateFromResponse,
   buildAutoOrderKey,
-  buildNightBusinessOrderKey,
   buildNormalCookingTargetDecision,
   buildNormalAutoOrderDiagnostics,
   buildNormalAutoOrderKey,
@@ -109,6 +108,7 @@ import {
   reconcileRareRecipeTargetForSpecialBusiness,
   reserveAutomationCookerSlot,
   reserveRareCookerSlot,
+  selectOperationalOrderPreparationCandidates,
   selectOrderPreparationCandidates,
   shouldAttemptNormalBeverage,
   shouldAttemptNormalCompletion,
@@ -116,12 +116,14 @@ import {
   syncNormalOrderStateWithSnapshot,
   syncRareStateWithOrderServedState,
   type OrderPreparationCandidateResult,
+  type OperationalOrderRecommendation,
   type ValidOrderPreparationSelection,
 } from '@/companion/domain/automation';
 import {
   buildNormalGameUiTarget,
   buildNormalGameUiTargetSource,
   buildRareGameUiTarget,
+  buildRareGameUiTargetFromParticipationQueue,
   buildRareGameUiTargetSource,
 } from '@/companion/domain/game-ui-targets';
 import {
@@ -214,7 +216,7 @@ import type {
   NormalExecutionTargetSelection,
   OrderRecommendationWorkerPayload,
 } from '@/companion/workers/order-recommendations.types';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui-kit';
+import { Badge, Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui-kit';
 import {
   buildRecommendationDataIndexes,
   buildRecommendationDataSet,
@@ -296,9 +298,10 @@ interface AutomationControlReleaseEntry {
 const AUTOMATION_CONTROL_DETAIL_PREFIX = '自动化阶段暂停\n';
 
 function buildAutomationControlSignature(preferences: SharedCompanionPreferences): string {
-  return [
+  const switches = [
     preferences.automationEnabled,
     preferences.autoRareOrderEnabled,
+    preferences.rareGuestParticipationModuleEnabled,
     preferences.autoPrepTakeBeverage,
     preferences.autoPrepStartCooking,
     preferences.autoPrepCollectCooking,
@@ -309,6 +312,7 @@ function buildAutomationControlSignature(preferences: SharedCompanionPreferences
     preferences.autoNormalDeliverFood,
     preferences.autoNormalCompleteOrder,
   ].map((value) => (value ? '1' : '0')).join('');
+  return `${switches}|${preferences.managedRareGuestIds.join(',')}`;
 }
 
 interface AutomationBarrierAckEntry {
@@ -1748,8 +1752,6 @@ export function ModWorkbench() {
   const [rareCustomerId, setRareCustomerId] = useState<number | null>(null);
   const [requiredFoodTag, setRequiredFoodTag] = useState('');
   const [requiredBeverageTag, setRequiredBeverageTag] = useState('');
-  const [dismissRareOrderBusyKey, setDismissRareOrderBusyKey] = useState('');
-  const [dismissRareOrderError, setDismissRareOrderError] = useState('');
   const [autoPrepBusy, setAutoPrepBusy] = useState(false);
   const [autoPrepMessage, setAutoPrepMessage] = useState('');
   const [autoPrepPaused, setAutoPrepPaused] = useState(false);
@@ -1779,6 +1781,7 @@ export function ModWorkbench() {
   const rareAutomationDecisionDiagnosticSignaturesRef = useRef(new Set<string>());
   const normalAutomationDecisionDiagnosticSignaturesRef = useRef(new Set<string>());
   const automationRequestEpochRef = useRef(0);
+  const rareParticipationMutationBusyRef = useRef(false);
   const companionPreferencesRef = useRef(companionPreferences);
   const automationLeaseAcquireRef = useRef<AutomationLeaseAcquireEntry | null>(null);
   const previousAutomationControlSignatureRef = useRef('');
@@ -2036,6 +2039,40 @@ export function ModWorkbench() {
   previousAutomationRuntimeEnabledRef.current = automationRuntimeEnabled;
   automationRuntimeEnabledRef.current = automationRuntimeEnabled;
   const night = snapshot?.nightBusiness ?? null;
+  const nightBusinessActive = snapshot?.nightBusinessLifecyclePhase === 'Active'
+    || snapshot?.nightBusinessLifecyclePhase === 'Closing';
+  const rareOrderCollectionComplete = night !== null
+    && !night.error?.trim();
+  const markRareParticipationMutationBoundary = useCallback(() => {
+    rareParticipationMutationBusyRef.current = true;
+    automationRequestEpochRef.current += 1;
+  }, []);
+  const refreshRareParticipationSnapshot = useCallback(async () => {
+    await refresh(true);
+  }, [refresh]);
+  const rareOrderParticipation = useRareOrderParticipation({
+    endpoint: normalizedEndpoint,
+    apiToken,
+    connected: companionConnected,
+    connectionRevision,
+    authorityReady: companionDeviceAuthority.ready,
+    currentDeviceIsPrimary: companionDeviceAuthority.currentDeviceIsPrimary,
+    runtimeWriterReady: companionDeviceAuthority.runtimeWriterReady,
+    authorityRevision: companionDeviceAuthority.authorityRevision,
+    businessActive: nightBusinessActive,
+    businessGeneration: snapshot?.nightBusinessGeneration ?? 0,
+    collectionComplete: rareOrderCollectionComplete,
+    orders: night?.orders ?? [],
+    moduleEnabled: companionPreferences.rareGuestParticipationModuleEnabled,
+    managedGuestIds: companionPreferences.managedRareGuestIds,
+    snapshot: snapshot?.rareGuestParticipation ?? null,
+    refreshSnapshot: refreshRareParticipationSnapshot,
+    refreshAuthority: companionDeviceAuthority.refresh,
+    onMutationBoundary: markRareParticipationMutationBoundary,
+  });
+  useEffect(() => {
+    rareParticipationMutationBusyRef.current = rareOrderParticipation.busyMutationKey !== null;
+  }, [rareOrderParticipation.busyMutationKey]);
   const detectedPlace = normalizePlace(night?.place);
   const selectedPlace = manualPlace ?? detectedPlace;
   const effectiveRuntimeData = cachedRuntimeData;
@@ -2512,9 +2549,25 @@ export function ModWorkbench() {
     inputSignature: orderRecommendationPayloadSignature,
     contextSignature: orderRecommendationPresentationContextSignature,
   });
+  const rareParticipationActive = rareOrderParticipation.participationActive;
+  const rareParticipationProjectionReady = rareOrderParticipation.projectionReady;
+  const resolveRareOrderParticipation = rareOrderParticipation.resolveOrder;
+  const rareRecommendationPresentationOrders = useMemo(
+    () => rareParticipationActive
+      ? rareParticipationProjectionReady
+        ? rareOrderParticipation.projection?.operationalOrders ?? []
+        : []
+      : night?.orders ?? [],
+    [
+      night?.orders,
+      rareOrderParticipation.projection?.operationalOrders,
+      rareParticipationActive,
+      rareParticipationProjectionReady,
+    ],
+  );
   const orderRecommendationPresentation = useMemo(
     () => buildOrderRecommendationPresentation({
-      orders: night?.orders ?? [],
+      orders: rareRecommendationPresentationOrders,
       recommendations: orderRecommendations.recommendations,
       recommendationIssues: orderRecommendations.recommendationIssues,
       pending: orderRecommendations.pending,
@@ -2525,7 +2578,7 @@ export function ModWorkbench() {
       retainedAfterError: orderRecommendations.retainedAfterError,
     }),
     [
-      night?.orders,
+      rareRecommendationPresentationOrders,
       orderRecommendationPresentationContextSignature,
       orderRecommendations.isCurrent,
       orderRecommendations.pending,
@@ -2541,6 +2594,24 @@ export function ModWorkbench() {
   const visibleOrderRecommendationPendingOrders = orderRecommendationPresentation.pendingOrders;
   const visibleOrderRecommendationsUpdating = orderRecommendationPresentation.updating;
   const visibleOrderRecommendationUpdateError = orderRecommendationPresentation.updateError;
+  const operationalOrderRecommendations = useMemo<readonly OperationalOrderRecommendation[] | null>(
+    () => {
+      if (!rareParticipationActive) return null;
+      if (!rareParticipationProjectionReady) return [];
+      return orderRecommendations.recommendations.flatMap((recommendation) => {
+        const participation = resolveRareOrderParticipation(recommendation.order);
+        return participation?.operationallyParticipating
+          ? [{ recommendation, participation }]
+          : [];
+      });
+    },
+    [
+      orderRecommendations.recommendations,
+      rareParticipationActive,
+      rareParticipationProjectionReady,
+      resolveRareOrderParticipation,
+    ],
+  );
   const normalOrderDetails = useOrderRecommendations(normalOrderDetailPayload, {
     enabled: includeNormalOrderDetails,
   });
@@ -2574,8 +2645,19 @@ export function ModWorkbench() {
     ],
   );
   const rareGameUiTarget = useMemo(
-    () => rareGameUiTargetFeaturesEnabled
-      ? buildRareGameUiTarget(
+    () => {
+      if (!rareGameUiTargetFeaturesEnabled) return null;
+      if (operationalOrderRecommendations !== null) {
+        return buildRareGameUiTargetFromParticipationQueue(
+          operationalOrderRecommendations,
+          companionPreferences.serviceOrderSortMode,
+          companionPreferences.rareTargetHighlightColor,
+          rareGameUiTargetFeatures,
+          recommendationIndexes,
+          { specialBusiness: snapshot?.specialBusiness ?? null },
+        );
+      }
+      return buildRareGameUiTarget(
         orderRecommendations.recommendations,
         companionPreferences.serviceOrderSortMode,
         companionPreferences.rareTargetHighlightColor,
@@ -2586,13 +2668,14 @@ export function ModWorkbench() {
             && !snapshot?.specialBusiness?.active,
           specialBusiness: snapshot?.specialBusiness ?? null,
         },
-      )
-      : null,
+      );
+    },
     [
       companionPreferences.rareTargetHighlightColor,
       companionPreferences.missionRecipePriorityEnabled,
       companionPreferences.serviceOrderSortMode,
       orderRecommendations.recommendations,
+      operationalOrderRecommendations,
       rareGameUiTargetFeatures,
       rareGameUiTargetFeaturesEnabled,
       recommendationIndexes,
@@ -2634,16 +2717,26 @@ export function ModWorkbench() {
   );
   const gameUiTargetSourceOrders = useMemo(
     () => [
-      ...(night?.orders ?? []).map(buildRareGameUiTargetSource),
+      ...(rareOrderParticipation.participationActive
+        ? rareOrderParticipation.projectionReady
+          ? rareOrderParticipation.projection?.operationalOrders ?? []
+          : []
+        : night?.orders ?? []).map(buildRareGameUiTargetSource),
       ...(snapshot?.normalBusiness?.orders ?? []).map(buildNormalGameUiTargetSource),
     ],
-    [night?.orders, snapshot?.normalBusiness?.orders],
+    [
+      night?.orders,
+      rareOrderParticipation.participationActive,
+      rareOrderParticipation.projectionReady,
+      rareOrderParticipation.projection?.operationalOrders,
+      snapshot?.normalBusiness?.orders,
+    ],
   );
   const gameUiTargetLaneStates = useMemo(() => ({
     rare: {
-      isCurrent: orderRecommendations.isCurrent,
-      pending: orderRecommendations.pending,
-      error: Boolean(orderRecommendations.error),
+      isCurrent: rareOrderParticipation.projectionReady && orderRecommendations.isCurrent,
+      pending: rareOrderParticipation.projectionReady && orderRecommendations.pending,
+      error: !rareOrderParticipation.projectionReady || Boolean(orderRecommendations.error),
     },
     normal: {
       isCurrent: normalGameUiTarget !== null
@@ -2666,6 +2759,7 @@ export function ModWorkbench() {
     orderRecommendations.error,
     orderRecommendations.isCurrent,
     orderRecommendations.pending,
+    rareOrderParticipation.projectionReady,
   ]);
   const gameUiTargetColors = useMemo(() => ({
     rare: companionPreferences.rareTargetHighlightColor,
@@ -3651,32 +3745,10 @@ export function ModWorkbench() {
     snapshot?.normalBusiness?.orders,
   ]);
 
-  const dismissRareOrder = useCallback(async (order: NightBusinessOrder) => {
-    if (!apiToken) {
-      setDismissRareOrderError('未收到本地 API Token。请从游戏内启动或按 F8 唤起伴随窗口。');
-      return;
-    }
-
-    const orderKey = buildNightBusinessOrderKey(order);
-    setDismissRareOrderBusyKey(orderKey);
-    setDismissRareOrderError('');
-    try {
-      const response = await dismissRuntimeRareOrder(normalizedEndpoint, apiToken, order);
-      if (!response.ok) {
-        throw new Error(response.error || response.status || '删除稀客订单失败');
-      }
-
-      await refresh(true);
-    } catch (err) {
-      setDismissRareOrderError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setDismissRareOrderBusyKey('');
-    }
-  }, [apiToken, normalizedEndpoint, refresh]);
-
   const runAutoFirstOrder = useCallback(async () => {
     if (!automationRuntimeEnabledRef.current
       || !companionPreferences.autoRareOrderEnabled
+      || rareParticipationMutationBusyRef.current
       || autoFirstOrderBusyRef.current) return;
     const requestEpoch = automationRequestEpochRef.current;
     const now = Date.now();
@@ -3712,13 +3784,21 @@ export function ModWorkbench() {
     }
 
     const selectionPreferences = companionPreferences;
-    const candidateResult = selectOrderPreparationCandidates(
-      orderRecommendations.recommendations,
-      favorites,
-      selectionPreferences,
-      rareOrderStatesRef.current,
-      snapshot?.specialBusiness,
-    );
+    const candidateResult = operationalOrderRecommendations === null
+      ? selectOrderPreparationCandidates(
+          orderRecommendations.recommendations,
+          favorites,
+          selectionPreferences,
+          rareOrderStatesRef.current,
+          snapshot?.specialBusiness,
+        )
+      : selectOperationalOrderPreparationCandidates(
+          operationalOrderRecommendations,
+          favorites,
+          selectionPreferences,
+          rareOrderStatesRef.current,
+          snapshot?.specialBusiness,
+        );
     if (candidateResult.selections.length === 0) {
       publishRareAutomationDecisionDiagnostic('rare-candidate-empty', candidateResult, candidateResult.message, selectionPreferences);
       if ((snapshot?.automationCookingJobs ?? []).some((job) => job.targetKind === 'rare')) {
@@ -3726,7 +3806,10 @@ export function ModWorkbench() {
         return;
       }
       const activeOrderKeys = new Set(
-        orderRecommendations.recommendations.map(buildAutoOrderKey),
+        (operationalOrderRecommendations === null
+          ? orderRecommendations.recommendations
+          : operationalOrderRecommendations.map(({ recommendation }) => recommendation)
+        ).map(buildAutoOrderKey),
       );
       retainRareAutomationContinuityStates(
         rareOrderStatesRef.current,
@@ -4393,6 +4476,7 @@ export function ModWorkbench() {
     orderRecommendations.isCurrent,
     orderRecommendations.pending,
     orderRecommendations.recommendations,
+    operationalOrderRecommendations,
     publishAutoPrepBusy,
     publishAutoPrepMessage,
     publishAutomationTargetRotationDiagnostic,
@@ -4414,6 +4498,7 @@ export function ModWorkbench() {
   const runAutoNormalOrder = useCallback(async () => {
     if (!automationRuntimeEnabledRef.current
       || !companionPreferences.autoNormalOrderEnabled
+      || rareParticipationMutationBusyRef.current
       || normalOrderBusyRef.current) return;
     const requestEpoch = automationRequestEpochRef.current;
     const now = Date.now();
@@ -5237,6 +5322,15 @@ export function ModWorkbench() {
     onToggleCompactMode: () => setServiceFocusCompact((current) => !current),
   });
 
+  const mousePassthroughSafetyNotice = companionPlatform === 'desktop'
+    && companionPreferences.mousePassthroughEnabled
+    ? (
+        <Badge variant="secondary" data-mouse-passthrough-safety="true">
+          鼠标穿透中 · F10 解除
+        </Badge>
+      )
+    : null;
+
   if (serviceFocusMode) {
     return (
       <ServiceFocusPage
@@ -5251,6 +5345,9 @@ export function ModWorkbench() {
         customRecipes={customRecipes}
         favoriteBusyKey={favoriteBusyKey}
         favoriteError={favoriteError}
+        participationEnabled={rareOrderParticipation.participationActive}
+        participationReady={rareOrderParticipation.projectionReady}
+        resolveRareOrderParticipation={rareOrderParticipation.resolveOrder}
         orderSortMode={companionPreferences.serviceOrderSortMode}
         specialBusiness={snapshot?.specialBusiness ?? null}
         showDebugDetails={companionPreferences.showDebugDetails}
@@ -5263,31 +5360,16 @@ export function ModWorkbench() {
         onToggleRecipeFavorite={toggleRecipeFavorite}
         onToggleBeverageFavorite={toggleBeverageFavorite}
         onExit={() => setServiceFocusMode(false)}
+        safetyNotice={mousePassthroughSafetyNotice}
       />
     );
   }
 
   return (
     <div className="space-y-3" data-companion-surface="workbench">
-      <WorkbenchHeader
-        endpointDraft={endpointDraft}
-        onEndpointDraftChange={setEndpointDraft}
-        apiTokenDraft={apiTokenDraft}
-        onApiTokenDraftChange={setApiTokenDraft}
-        onApplyEndpointConnection={applyEndpointConnection}
-        onPauseConnection={pauseConnection}
-        onRefresh={() => void refresh(true)}
-        apiToken={apiToken}
-        connectionPaused={connectionPaused}
-        connectionFailureCount={connectionFailureCount}
-        error={error}
-        lastConnectedAt={lastConnectedAt}
-        loading={loading}
-        normalizedEndpoint={normalizedEndpoint}
-        mousePassthroughEnabled={companionPlatform === 'desktop' && companionPreferences.mousePassthroughEnabled}
-        night={night}
-        snapshot={snapshot}
-      />
+      {mousePassthroughSafetyNotice && (
+        <div className="flex justify-end">{mousePassthroughSafetyNotice}</div>
+      )}
 
       <UpdateNoticeBar
         manager={updateManager}
@@ -5329,7 +5411,18 @@ export function ModWorkbench() {
         <TabsContent value="overview" data-gamepad-scope="content">
           {tab === 'overview' && (
             <ModOverviewPanel
-              endpoint={normalizedEndpoint}
+              endpointDraft={endpointDraft}
+              onEndpointDraftChange={setEndpointDraft}
+              apiTokenDraft={apiTokenDraft}
+              onApiTokenDraftChange={setApiTokenDraft}
+              onApplyEndpointConnection={applyEndpointConnection}
+              onPauseConnection={pauseConnection}
+              onRefresh={() => void refresh(true)}
+              apiToken={apiToken}
+              connectionPaused={connectionPaused}
+              connectionFailureCount={connectionFailureCount}
+              loading={loading}
+              normalizedEndpoint={normalizedEndpoint}
               snapshot={snapshot}
               runtime={runtime}
               night={night}
@@ -5466,8 +5559,7 @@ export function ModWorkbench() {
           {tab === 'service' && (
             <ModServicePanel
               runtime={runtime}
-              nightBusinessActive={snapshot?.nightBusinessLifecyclePhase === 'Active'
-                || snapshot?.nightBusinessLifecyclePhase === 'Closing'}
+              nightBusinessActive={nightBusinessActive}
               night={night}
               specialBusiness={snapshot?.specialBusiness ?? null}
               detectedPlace={detectedPlace}
@@ -5519,15 +5611,35 @@ export function ModWorkbench() {
               onRetryNormalAutomationOrder={retryNormalAutomationOrder}
               onResetNormalAutomationOrder={resetNormalAutomationOrder}
               onAcknowledgeAutomationBarrier={acknowledgeAutomationBarrierEvent}
-              dismissRareOrderBusyKey={dismissRareOrderBusyKey}
-              dismissRareOrderError={dismissRareOrderError}
-              onDismissRareOrder={dismissRareOrder}
               onEnterFocusMode={() => setServiceFocusMode(true)}
               normalBusiness={snapshot?.normalBusiness ?? null}
               serviceView={serviceView}
               serviceRecommendationTab={serviceRecommendationTab}
+              operationalRecommendations={operationalOrderRecommendations}
+              rareParticipationModuleEnabled={rareOrderParticipation.moduleEnabled}
+              managedRareGuestIds={companionPreferences.managedRareGuestIds}
+              rareGuestParticipationSnapshot={rareOrderParticipation.snapshot}
+              rareParticipationBusinessGeneration={snapshot?.nightBusinessGeneration ?? 0}
+              rareParticipationCollectionComplete={rareOrderCollectionComplete}
+              rareParticipationEnabled={rareOrderParticipation.participationActive}
+              rareParticipationReady={rareOrderParticipation.projectionReady}
+              rareParticipationReadOnly={rareOrderParticipation.readOnly}
+              rareParticipationReadOnlyReason={rareOrderParticipation.readOnlyReason}
+              rareParticipationBusyMutationKey={rareOrderParticipation.busyMutationKey}
+              rareParticipationError={rareOrderParticipation.error}
+              resolveRareOrderParticipation={rareOrderParticipation.resolveOrder}
               onServiceViewChange={setServiceView}
               onServiceRecommendationTabChange={setServiceRecommendationTab}
+              onMutateRareGuestOrders={(guestId, targets, action) => {
+                void rareOrderParticipation.mutateGuest(guestId, targets, action);
+              }}
+              onMutateRareOrder={(order, action) => {
+                void rareOrderParticipation.mutateOrder(order, action);
+              }}
+              onOpenRareParticipationModule={() => {
+                setExtensionTab('rare-participation');
+                setTab('extensions');
+              }}
               showDebugDetails={companionPreferences.showDebugDetails}
             />
           )}
@@ -5540,12 +5652,15 @@ export function ModWorkbench() {
               onValueChange={(value) => setExtensionTab(value as ExtensionTab)}
               className="space-y-4"
             >
-              <TabsList scrollable className="grid h-9 w-full grid-cols-3" data-extension-tabs="true">
+              <TabsList scrollable className="grid h-9 w-full grid-cols-4" data-extension-tabs="true">
                 <TabsTrigger value="missions" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
                   任务列表
                 </TabsTrigger>
                 <TabsTrigger value="rare-invitations" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
                   稀客邀请
+                </TabsTrigger>
+                <TabsTrigger value="rare-participation" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
+                  稀客调度
                 </TabsTrigger>
                 <TabsTrigger value="inventory" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
                   修改
@@ -5600,6 +5715,42 @@ export function ModWorkbench() {
                     onRefreshRareGuestInvitations={loadRareGuestInvitations}
                     onInviteAllRareGuests={inviteAllRareGuests}
                     onInviteRareGuest={inviteRareGuest}
+                  />
+                )}
+              </TabsContent>
+
+              <TabsContent value="rare-participation" className="space-y-4">
+                {extensionTab === 'rare-participation' && (
+                  <ModRareGuestParticipationPanel
+                    moduleEnabled={companionPreferences.rareGuestParticipationModuleEnabled}
+                    moduleToggleDisabled={
+                      !companionDeviceAuthority.ready
+                      || !companionDeviceAuthority.currentDeviceIsPrimary
+                      || companionDeviceAuthority.busy !== null
+                      || rareOrderParticipation.busyMutationKey !== null
+                    }
+                    customers={recommendationData.rareCustomers}
+                    managedGuestIds={companionPreferences.managedRareGuestIds}
+                    currentOrders={night?.orders ?? []}
+                    readOnly={
+                      !companionDeviceAuthority.ready
+                      || !companionDeviceAuthority.currentDeviceIsPrimary
+                    }
+                    readOnlyReason={companionDeviceAuthority.ready
+                      ? `当前由“${companionDeviceAuthority.state?.devices.find((device) => device.isPrimary)?.label || '其他设备'}”提供生效配置；稀客调度仅可在主设备修改。`
+                      : '正在确认主设备和生效配置；确认前稀客调度只读。'}
+                    busy={
+                      companionDeviceAuthority.busy !== null
+                      || rareOrderParticipation.busyMutationKey !== null
+                    }
+                    error={companionDeviceAuthority.error || rareOrderParticipation.error}
+                    onModuleEnabledChange={(rareGuestParticipationModuleEnabled) => {
+                      if (rareOrderParticipation.busyMutationKey !== null) return;
+                      updateCompanionPreferences({ rareGuestParticipationModuleEnabled });
+                    }}
+                    onManagedGuestIdsChange={(managedRareGuestIds) => {
+                      updateCompanionPreferences({ managedRareGuestIds: [...managedRareGuestIds] });
+                    }}
                   />
                 )}
               </TabsContent>

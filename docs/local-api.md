@@ -1,6 +1,6 @@
 # 本地 API
 
-更新日期：2026-08-19
+更新日期：2026-09-01
 
 本文档只定义游戏进程内本地 HTTP API 的监听、鉴权、设备权威、方法矩阵、请求生命周期和传输边界。运行时数据含义见 [运行时 Provider](runtime-provider.md)，订单身份见 [运行时订单生命周期](runtime-order-lifecycle.md)，自动化状态机见 [自动化运行时](automation-runtime.md)。
 
@@ -15,7 +15,7 @@
 - 每个 listener 拥有独立停止状态和阻塞 accept 线程。主动停止导致的 accept 异常直接结束；意外异常最多报告一次并终止该 worker，不做无限重试。
 - 客户端 handler 上限为 16。停止时先拒绝新连接并关闭在途 socket，再有界等待 handler 退出。
 
-不要把 API 端口映射到公网。正式 Tauri 客户端通过 Rust 原生 TCP 代理访问，不依赖 WebView 或系统 HTTP 代理。浏览器开发模式只应直连 mock API；当前真实 Mod 的 CORS allowlist 不包含 authority revision header，因此浏览器直连不能承担设备权威写请求。
+不要把 API 端口映射到公网。正式 Tauri 客户端通过 Rust 原生 TCP 代理访问，不依赖 WebView 或系统 HTTP 代理。浏览器开发模式只应直连 mock API；真实 Mod 的 CORS allowlist 包含规范客户端、Token 与 authority revision header，但这不改变回环/LAN 来源、Token、主设备和 revision 校验。
 
 ## HTTP 与请求上限
 
@@ -80,18 +80,37 @@ Token 只证明能访问 Mod；它不代表设备是主设备，也不代表持�
 | 更新 | `/updates/status`、`/updates/check`、`/updates/download`、`/updates/install-on-exit` |
 | 日志与诊断 | `/diagnostics/automation-decision`、`/logs/export-diagnostics`、`/logs/config`、`/logs/console`、`/logs/open-folder` |
 | 运行时库存 | `/inventory/set`、`/inventory/bulk-set` |
-| 订单 | `/orders/prepare-next`、`/orders/complete-first`、`/orders/normal/complete-first`、`/orders/rare/dismiss` |
+| 订单 | `/orders/prepare-next`、`/orders/complete-first`、`/orders/normal/complete-first`、`/orders/rare/participation` |
 | 稀客邀请 | `/rare-guests/invite`、`/rare-guests/invite-all` |
 | 游戏 UI 目标 | `/ui-pinning/targets` |
 | 收藏 | `/favorites/add-recipe`、`/favorites/remove-recipe`、`/favorites/add-beverage`、`/favorites/remove-beverage` |
 | 自定义料理 | `/custom-recipes/upsert`、`/custom-recipes/remove`、`/custom-recipes/settings`、`/custom-recipes/update-flags`、`/custom-recipes/move` |
 
-设备权威 POST 使用有界 JSON body 和 exact property set。其余当前端点使用 URL query；新增协议不能同时保留 query、JSON 或别名多套写法。
+设备权威 POST 与 `/orders/rare/participation` 使用有界 JSON body 和 exact property set。其余当前端点使用 URL
+query；新增协议不能同时保留 query、JSON 或别名多套写法。参与 mutation 的规范 body 为：
+
+```text
+expectedAuthorityRevision
++ expectedBusinessGeneration
++ expectedParticipationRevision
++ action: pause | enable-tail | enable-front
++ target:
+    { type: guest, guestId, expectedCurrentOrders: exact identity[] }
+  | { type: order, order: exact identity }
+```
+
+guest target 必须与该 guest 当前完整 lifecycle 集合执行 CAS，order target 必须精确命中单个当前 lifecycle；
+authority header/body、business generation 或 participation revision 任一不匹配均返回 409。`enable-front` 的
+当前 rare UI target 与 cached-active rare cooking-job 候选只由服务端读取，不进入客户端请求体；服务端再按同一
+participation snapshot 分类，只有仍参与的当前候选成为保护项，已暂停候选排除。请求缺项、额外字段、非法
+action/target 组合或弱 identity 返回 400。
 
 ## 设备配置权威
 
 `CompanionDeviceAuthorityStore` 是共享功能配置的唯一权威；窗口主题、字体、连接地址等本地 UI 偏好不进入该 profile。
 
+- 当前 wire profile schema 与 `companion-devices.json` store schema 均为 v3。profile 必须包含严格布尔值 `rareGuestParticipationModuleEnabled` 和规范 `managedRareGuestIds`。
+- store v1/v2 只在加载时执行一次原子迁移并立即写回 v3：v1 增加空名单，v2 保留已有名单，两者都把模块设为关闭。迁移前必须由冻结的版本描述完整校验 store envelope、device record 和 profile；未知、缺失、`null` 或额外字段均 fail-closed，损坏或未知版本不写回。
 - 第一个成功注册的设备成为初始主设备，不因离线自动转移。
 - 只有当前主设备能通过 `expectedAuthorityRevision + expectedProfileRevision` 更新生效 profile。
 - 设置主设备、同步、忘记设备等操作使用 `expectedAuthorityRevision` 做 CAS；冲突必须刷新后重试，不做 last-write-wins 合并。
@@ -104,7 +123,8 @@ Token 只证明能访问 Mod；它不代表设备是主设备，也不代表持�
 2. 撤销旧 automation lease。
 3. 推进 automation command epoch，取消尚未开始的旧命令。
 4. 发布新的自动化 profile。
-5. 清空旧游戏 UI operational targets，但保留需要由 Unity 主线程安全处理的页面登记。
+5. 根据模块开关应用有效受控名单：模块关闭时有效名单为空但配置名单保留；切换主设备时撤销所有当前人工参与授权，普通 profile 更新只处理有效名单差异。
+6. 清空旧游戏 UI operational targets，并按新参与状态过滤仍打开页面的 rare presentation claims；页面登记保留。
 
 自动化暂停与恢复语义见 [自动化运行时](automation-runtime.md)。
 
@@ -125,7 +145,7 @@ Token 只证明能访问 Mod；它不代表设备是主设备，也不代表持�
 
 `/snapshot` 和任务端点的 `knownSignature` 只用于压缩响应，不能跳过业务要求的 fresh read。规范内容签名固定为 64 字符小写 SHA-256，不把随订单增长的原文放进 query。
 
-完整 `RuntimeDataCatalog` 不嵌入主快照，而由 `/runtime-data` 单独返回。主快照只携带完整性、来源、状态和签名；伴随窗口在本地无缓存或签名变化时获取目录。主快照的签名排除捕获时间和性能数字，但包含会改变 UI 与动作判断的经营 generation、订单、自动化 job/event、门禁和目录身份。
+完整 `RuntimeDataCatalog` 不嵌入主快照，而由 `/runtime-data` 单独返回。主快照只携带完整性、来源、状态和签名；伴随窗口在本地无缓存或签名变化时获取目录。主快照的签名排除捕获时间和性能数字，但包含会改变 UI 与动作判断的经营 generation、订单、稀客参与 revision/连续 `queuePosition` 队列、自动化 job/event、门禁和目录身份。
 
 `/missions/available` 每次 GET 都进入 Unity 主线程 fresh read；`knownSignature` 只允许返回 unchanged 结果，不能复用旧资格判断。任务业务规则由对应任务专题和测试维护，本页只定义传输边界。
 
@@ -141,6 +161,7 @@ listener shutdown 的顺序固定为：停止接收新客户端、通知更新�
 - `/api/*` 别名
 - `/automation/cancel`
 - `/automation/jobs/cancel`
+- `/orders/rare/dismiss`
 - `/ui-pinning/target` 单目标旧路由
 
 ## 修改与验证

@@ -48,7 +48,7 @@ var expectedPostRoutes = new HashSet<string>(StringComparer.Ordinal)
     "/orders/complete-first",
     "/orders/normal/complete-first",
     "/orders/prepare-next",
-    "/orders/rare/dismiss",
+    "/orders/rare/participation",
     "/rare-guests/invite",
     "/rare-guests/invite-all",
     "/ui-pinning/targets",
@@ -67,6 +67,8 @@ try
     AssertAbsent(source, "StartsWith(\"/api/\"", "The /api/* path alias still exists.");
     AssertAbsent(source, "case \"/automation/cancel\":", "The destructive automation-cancellation route still exists.");
     AssertAbsent(source, "case \"/automation/jobs/cancel\":", "The obsolete job-cancellation route still exists.");
+    AssertAbsent(source, "case \"/orders/rare/dismiss\":", "The obsolete rare-order capture dismissal route still exists.");
+    AssertAbsent(source, "BuildRareOrderDismissJson", "The obsolete rare-order capture dismissal handler still exists.");
     AssertAbsent(source, "case \"/ui-pinning/target\":", "The obsolete singular UI target route still exists.");
     AssertContains(
         source,
@@ -159,6 +161,10 @@ try
         "Runtime writers no longer validate the current device authority revision.");
     AssertContains(
         source,
+        "X-Mystia-Steward-Companion-Authority-Revision\\r\\n",
+        "Browser CORS preflight does not allow the required authority-revision header.");
+    AssertContains(
+        source,
         "AcknowledgeAutomationSafetyBarrier(request, query)",
         "Automation safety barriers do not expose an explicit lease-owned acknowledgement endpoint.");
     AssertContains(
@@ -182,6 +188,29 @@ try
         source,
         "ReadStringQuery(query, \"expectedMapLabel\")",
         "Rare-guest invitation writes do not require the expected map label.");
+    var participationMutation = ExtractSourceBlock(
+        source,
+        "private LocalApiRareGuestParticipationMutationDto UpdateRareGuestParticipation(");
+    AssertContains(
+        participationMutation,
+        "ValidateRareGuestParticipationMutationJson",
+        "Rare-order participation does not validate its nested exact identity body.");
+    AssertContains(
+        participationMutation,
+        "TryAuthorizeRuntimeWriter(",
+        "Rare-order participation is not restricted to the exact current primary authority.");
+    AssertContains(
+        participationMutation,
+        "_advanceAutomationCommandEpoch(_automationCommandEpoch);",
+        "Rare-order participation does not fence already queued automation commands.");
+    AssertContains(
+        participationMutation,
+        "RuntimeRareGuestParticipationState.MutateParticipation(",
+        "Rare-order participation bypasses the Mod-authoritative exact guest mutation.");
+    AssertAbsent(
+        participationMutation,
+        "RuntimeRareGuestParticipationState.SetGuestParticipating(",
+        "Rare-order participation still calls the deleted guest-only participation mutation.");
 
     var disposeStart = RequireIndex(source, "public void Dispose()", 0);
     var stopAcceptingIndex = RequireIndex(source, "_clientHandlers.StopAccepting();", disposeStart);

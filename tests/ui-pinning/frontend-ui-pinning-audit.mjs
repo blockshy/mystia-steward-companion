@@ -129,6 +129,7 @@ assert(!targetApiSource.includes('highlightEnabled: String(highlightEnabled)'), 
 assert(!targetApiSource.includes('extraIngredientFillEnabled'), '旧集合级自动加料字段仍进入 wire');
 assert(targetApiSource.includes('params.set(`${prefix}ListPinningEnabled`'), '目标级列表置顶开关未进入 wire');
 assert(targetApiSource.includes('params.set(`${prefix}RecipeVariantEnabled`'), '目标级加料料理选项开关未进入 wire');
+assert(targetApiSource.includes('params.set(`${prefix}GuestId`, String(target.guestId))'), 'canonical guestId 未进入目标 wire');
 assert(apiSource.includes('params.set(`${prefix}Color`, target.color.slice(1))'), '颜色没有进入目标 wire');
 const revisionSource = targetsSource.slice(
   targetsSource.indexOf('function buildTargetRevision'),
@@ -136,6 +137,12 @@ const revisionSource = targetsSource.slice(
 );
 assert(!revisionSource.includes('target.color'), '视觉颜色错误混入业务 targetRevision');
 assert(!revisionSource.includes('target.features'), '视觉功能开关错误混入业务 targetRevision');
+assert(revisionSource.includes('target.guestId'), 'canonical guestId 没有参与目标 revision');
+assert(
+  targetsSource.includes('requireCanonicalGuestId && !hasCanonicalRareGuestId(order)')
+    && /Number\.isSafeInteger\(order\.guestId\)[\s\S]*order\.guestId! >= 0/.test(targetsSource),
+  '参与队列稀客目标没有 fail-closed 校验 canonical guestId',
+);
 assert(
   publisherSource.includes('for (const kind of TARGET_KINDS)')
     && publisherSource.includes('failed: Record<GameUiTargetKind, boolean>')
@@ -270,6 +277,8 @@ try {
   assert(acceptedRetry.rawParams.target1TraceId === 'N-0001', '普客目标缺少 exact N trace');
   assert(acceptedRetry.rawParams.target1OrderKey === 'ptr:2001', '普客目标未发送 raw orderKey');
   assert(acceptedRetry.rawParams.target1OrderLifecycleSequence === '3', '普客目标缺少正生命周期');
+  assert(acceptedRetry.rawParams.target0GuestId === '1001', '稀客目标缺少 canonical guestId');
+  assert(acceptedRetry.rawParams.target1GuestId === '-1', '普客目标没有发送严格的 guestId=-1');
   assert(acceptedRetry.params.ingredientIds, '置顶目标缺少材料 ID');
   assert('extraIngredientIds' in acceptedRetry.params, '置顶目标缺少独立的推荐加料字段');
   assert(Number(acceptedRetry.params.deskCode) >= 0, '置顶目标缺少有效桌位');
@@ -300,6 +309,15 @@ try {
   await assertMockRejectsPublication(acceptedRetry.rawParams, (params) => {
     params.set('unknownUiTargetField', 'true');
   }, 'Mock API 接受了未知顶层参数');
+  await assertMockRejectsPublication(acceptedRetry.rawParams, (params) => {
+    params.delete('target0GuestId');
+  }, 'Mock API 接受了缺失 canonical guestId 的稀客目标');
+  await assertMockRejectsPublication(acceptedRetry.rawParams, (params) => {
+    params.set('target0GuestId', '-2');
+  }, 'Mock API 接受了 wire domain 之外的稀客 guestId');
+  await assertMockRejectsPublication(acceptedRetry.rawParams, (params) => {
+    params.set('target1GuestId', '1001');
+  }, 'Mock API 接受了携带稀客 guestId 的普客目标');
 
   await page.locator('[data-gamepad-tab-value="service"]').click();
   const firstRecipeRow = page.locator('[data-gamepad-row-key*="service:order:"][data-gamepad-row-key*=":recipe:"]').first();
@@ -335,7 +353,8 @@ try {
     window.__uiPinningWorkerDelayMs = 2200;
   });
   mutateSnapshots = true;
-  await page.locator('.steward-workbench-header input').first().press('Enter');
+  await page.locator('[data-gamepad-tab-value="overview"]').first().click();
+  await page.getByRole('textbox', { name: 'API 地址（IP / 端口）', exact: true }).press('Enter');
   await waitFor(
     () => targetRequests.slice(connectionIsolationStartCount).some(isEnabledClearTarget),
     2_800,
@@ -356,7 +375,7 @@ try {
   } catch (error) {
     console.error(`定向巡检请求记录：${JSON.stringify(targetRequests)}`);
     console.error(`Worker 记录：${JSON.stringify(await page.evaluate(() => window.__uiPinningWorkerEvents))}`);
-    console.error(`页面状态：${(await page.locator('.steward-workbench-header').innerText()).replaceAll('\n', ' | ')}`);
+    console.error(`页面状态：${(await page.locator('[data-overview-connection-panel="true"]').innerText()).replaceAll('\n', ' | ')}`);
     throw error;
   }
   const identityRequest = targetRequests.filter(hasRecipeTarget).at(-1);
@@ -964,6 +983,7 @@ function readTargetParams(params, kind) {
       orderTraceId: '',
       orderKey: '',
       orderLifecycleSequence: '0',
+      guestId: '-1',
       recipeId: '-1',
       recipeName: '',
       ingredientIds: '',
@@ -985,6 +1005,7 @@ function readTargetParams(params, kind) {
     orderTraceId: params[`${prefix}TraceId`] ?? '',
     orderKey: params[`${prefix}OrderKey`] ?? '',
     orderLifecycleSequence: params[`${prefix}OrderLifecycleSequence`] ?? '0',
+    guestId: params[`${prefix}GuestId`] ?? '-1',
     recipeId: params[`${prefix}RecipeId`] ?? '-1',
     recipeName: '',
     ingredientIds: params[`${prefix}IngredientIds`] ?? '',

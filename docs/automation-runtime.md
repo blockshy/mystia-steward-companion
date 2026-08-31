@@ -1,8 +1,8 @@
 # 自动化运行时
 
-更新日期：2026-08-19
+更新日期：2026-09-01
 
-本文档只定义订单自动化从命令准入、开锅、跨帧跟踪到送达与评价的运行时安全边界。订单身份由 [运行时订单生命周期](runtime-order-lifecycle.md) 定义，运行时数据和厨具快照来源见 [运行时 Provider](runtime-provider.md)，HTTP 路由与设备协议见 [本地 API](local-api.md)，特殊场景策略见[特殊经营实现](special-business-implementation.md)。
+本文档只定义订单自动化从命令准入、开锅、跨帧跟踪到送达与评价的运行时安全边界。订单身份由 [运行时订单生命周期](runtime-order-lifecycle.md) 定义，受控稀客的参与授权见[稀客订单参与队列](rare-order-participation.md)，运行时数据和厨具快照来源见 [运行时 Provider](runtime-provider.md)，HTTP 路由与设备协议见 [本地 API](local-api.md)，特殊场景策略见[特殊经营实现](special-business-implementation.md)。
 
 ## 安全模型
 
@@ -16,6 +16,7 @@
 - 请求方持有该 revision 的有效 automation control lease。
 - 请求携带当前 automation command epoch。
 - 普客或稀客订单捕获完整就绪，且请求 lifecycle 与 fresh 活动订单一致。
+- 稀客调度模块开启且有效名单非空时，稀客 exact lifecycle 已进入当前 participation queue；公开身份与 profile/state 任一不一致即拒绝。
 - 总控、对应订单组和所请求阶段的配置满足不变量。
 
 直接送达料理或酒水的配置必须同时允许完成订单；无效组合在前端归一化、请求解析和 C# 副作用入口三处拒绝，不保留旧配置语义。
@@ -48,6 +49,24 @@
 
 古明地恋 full-feed 可以绕过其专用阶段配置，但不能绕过自动化总控、对应订单组、authority 或 lease。
 
+## 稀客参与许可
+
+稀客调度模块关闭或有效受控名单为空时不增加参与门禁，原有候选顺序和动作保持不变。有效名单非空时，稀客动作还有两层许可：
+
+- 排队准备和完成命令使用 `business generation + R-trace + lifecycle + canonical guestId` 取得 admission permit。
+- 原生订单绑定成功后，料理送达、评价和特殊经营结算使用同一公开身份及 exact `RuntimeOrderBindingToken` 取得 bound side-effect permit。
+
+许可在同步原生边界结束前持有；暂停 mutation 必须等待已准入边界完成，然后推进 command epoch。未开始任务直接失效，已开锅 job 保留原锅并进入 `suspended-participation`，不消耗暂停期间的有效超时，重新启用后从下一安全步骤继续。
+
+优先启用 mutation 会在 automation cooking-job 锁内投影所有缓存为 `ControlState == active` 的稀客 job。
+投影只接受当前经营代际、特殊订单类型、非零 exact `OrderBinding` 和有效 R-trace/lifecycle/guestId，并且只
+传递不可变托管 identity 标量，不暴露或跨线程保存活的 IL2CPP wrapper。释放 cooking-job 锁后，调用方再用
+请求所指向的同一 participation snapshot 分类候选：current 且 `Participating` 的 job 才是保护锚点；current
+但已经暂停的 cached-active job 从保护集合排除，并在成功日志的有界 `suspendedActiveJobs` 列表中记录，等待
+后续轮询把 job 转入 `suspended-participation`。候选缺失、绑定或身份未知、重复、代际不匹配，以及分类前后
+participation revision 漂移均使 mutation fail closed；拒绝原因和候选 job ID 也只做有界记录。最终保护集合、
+插入规则和 mutation CAS 只在[稀客订单参与队列](rare-order-participation.md)维护。
+
 ## 命令与结构化结果
 
 订单动作使用结构化 outcome：
@@ -79,14 +98,16 @@
 
 `AutomationCookingJob` 是 Mod 对一锅自动料理的唯一跨帧状态。它保存稳定标量身份和预约，不跨帧保存 `CookController` wrapper：
 
-- job ID、经营 generation、订单 binding token 与执行目标。
-- controller index、native identity、grid 和 cooking generation/content revision。
+- job ID、包含精确 `BusinessGeneration` 的订单 binding token 与执行目标。
+- controller index、native identity、grid 和 cooker ownership generation/content revision。
 - 配方、料理、加料、锅次和特殊目标签名等不可变执行标量。
 - 当前 phase/progress、结构化 outcome、控制状态、有效超时和有界清理 tracker。
 
+订单经营代次只取自 exact `OrderBinding.BusinessGeneration`。cooker ownership generation 只证明 job 对当前厨具内容的所有权，不能用于 participation identity、名单对齐或经营生命周期判断。
+
 每次轮询、送达、复位、availability 检查和 `AfterPlayerExtract` 前都从当前物理目录重新绑定同一控制器。`SetCook`、`Extract` 和 `Store` 的 prefix 先发布未完成 mutation，只有同一 revision 的成功 postfix 才标记完成；嵌套或迟到 postfix 不得覆盖更新状态。
 
-同 generation 下由游戏原生完成料理并替换 `Result` 是正常推进。出现新的 `SetCook` generation 时以 `cooking-controller-reused` 中断；出现已确认的 `Extract`、`Store` 或稳定空闲且内容所有权丢失时以 `cooking-ownership-lost` 中断。两种情况都只释放 Mod 所有权，不操作当前内容。
+同 cooker ownership generation 下由游戏原生完成料理并替换 `Result` 是正常推进。出现新的 `SetCook` generation 时以 `cooking-controller-reused` 中断；出现已确认的 `Extract`、`Store` 或稳定空闲且内容所有权丢失时以 `cooking-ownership-lost` 中断。两种情况都只释放 Mod 所有权，不操作当前内容。
 
 进度停滞只累计前后观测都可推进的有效时间。控制暂停、断线、场景不可读和 controller 暂不可达不计时。phase 或 progress 真正前进才重置停滞钟；达到有界阈值后保留旧锅并进入人工确认，不自动重开。
 
@@ -97,7 +118,7 @@
 - 酒水扣库与送达按当前订单、原生库存和最终字段逐步确认。
 - 料理送达只接受 final setter 后同一 `Sellable` 对象出现在订单最终字段。
 - `StoreFood` 一旦开始调用，即使抛异常也可能已执行前置写入；只有明确未提交才可重试。
-- 厨具 cleanup 只在同 generation 下确认 `Phase == Idle`、`Result == null`、`ChosenRecipe == null` 后完成。
+- 厨具 cleanup 只在同 cooker ownership generation 下确认 `Phase == Idle`、`Result == null`、`ChosenRecipe == null` 后完成。
 - controller lease 在人工交接、delivery cleanup 成功或 cleanup 明确终止后单调释放；评价回执可晚于 lease，但不得继续占锅。
 - Mod 发起评价只接受同一次调用内发布、精确命中订单 lifecycle 的 `Evaluated` terminal receipt。订单消失或快照 `HasEvaluated` 只表示外部收敛，不能证明本次提交成功。
 
@@ -130,9 +151,11 @@
 dotnet run --project tests/night-business-lifecycle/NightBusinessLifecycleSmoke.csproj -c Release
 dotnet run --project tests/night-business-automation-gate/NightBusinessAutomationGateSmoke.csproj -c Release
 dotnet run --project tests/runtime-automation-control/RuntimeAutomationControlSmoke.csproj -c Release
+dotnet run --project tests/runtime-rare-guest-participation/RuntimeRareGuestParticipationSmoke.csproj -c Release
 dotnet run --project tests/runtime-order-terminal-receipt/RuntimeOrderTerminalReceiptSmoke.csproj -c Release
 dotnet run --project tests/runtime-cooker-snapshot/RuntimeCookerSnapshotSmoke.csproj -c Release
 corepack pnpm audit:automation
+corepack pnpm audit:rare-order-participation
 corepack pnpm audit:connection-recovery
 ```
 

@@ -219,6 +219,10 @@ internal static class RuntimeNightBusinessLifecycle
             return;
         }
 
+        RunBoundaryAction(
+            "retire rare guest participation",
+            () => RuntimeRareGuestParticipationState.EndBusinessIfCurrent(snapshot.Generation));
+
         if (snapshot.Phase == NightBusinessLifecyclePhase.Closing)
         {
             RunBoundaryAction("suspend cooker highlight", () => RuntimeCookerHighlightService.Suspend(reason));

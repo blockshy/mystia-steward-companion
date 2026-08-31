@@ -5,7 +5,12 @@ import {
   getPrimaryExecutionPlan,
   isVerifiedMissionPrimaryExecutionPlan,
 } from '@/companion/domain/primary-execution-plan';
-import { sortNightOrderRows, sortNormalOrders } from '@/companion/domain/sorting';
+import {
+  sortNightOrderRows,
+  sortNormalOrders,
+  sortOperationalNightOrderRows,
+  type NightOrderOperationalParticipation,
+} from '@/companion/domain/sorting';
 import {
   buildSpecialFoodTargetWirePolicy,
   requiresSpecialBusinessNormalExecutionTarget,
@@ -27,6 +32,7 @@ import {
   type RecommendationDataSet,
 } from '@/lib/recommendation-data';
 import type { RecipeCatalogItem } from '@/lib/catalog-types';
+import type { RareOrderRecommendationPlan } from '@/recommendation-engine';
 
 const RARE_TRACE_PATTERN = /^R-[0-9]{1,16}$/;
 const NORMAL_TRACE_PATTERN = /^N-[0-9]{1,16}$/;
@@ -41,6 +47,18 @@ export interface GameUiTargetSourceOrderState {
   terminal: boolean;
 }
 
+/** 已显式绑定 Mod 参与投影的稀客游戏 UI 候选。 */
+export interface OperationalRareGameUiRecommendation {
+  recommendation: OrderRecommendation;
+  participation: NightOrderOperationalParticipation;
+}
+
+interface RareGameUiTargetCandidate {
+  recommendation: OrderRecommendation;
+  food: RareOrderRecommendationPlan['food'];
+  beverage: RareOrderRecommendationPlan['beverage'];
+}
+
 export function buildRareGameUiTarget(
   recommendations: readonly OrderRecommendation[],
   orderSortMode: ServiceOrderSortMode,
@@ -52,13 +70,60 @@ export function buildRareGameUiTarget(
     specialBusiness?: SpecialBusinessContext | null;
   } = {},
 ): GameUiTarget | null {
-  const candidates = sortNightOrderRows(
+  const candidates = buildRareGameUiTargetCandidates(sortNightOrderRows(
     recommendations.map((recommendation) => ({ order: recommendation.order, recommendation })),
     orderSortMode,
     options.specialBusiness,
-  ).flatMap(({ recommendation }) => {
+  ).map(({ recommendation }) => recommendation), false);
+  const selected = options.prioritizeMissionRecipe
+    ? candidates.find(({ recommendation, food }) =>
+      food != null && isVerifiedMissionPrimaryExecutionPlan(recommendation)
+    ) ?? candidates[0]
+    : candidates[0];
+  if (!selected) return null;
+
+  return materializeRareGameUiTarget(selected, color, features, indexes);
+}
+
+/**
+ * 仅从 Mod 权威参与队列选择稀客置顶/高亮目标。
+ *
+ * 跨订单任务料理不会跳过新队列序号；特殊经营的硬安全 lane 仍在队列序号之前。
+ */
+export function buildRareGameUiTargetFromParticipationQueue(
+  rows: readonly OperationalRareGameUiRecommendation[],
+  orderSortMode: ServiceOrderSortMode,
+  color: string,
+  features: GameUiTargetFeatures,
+  indexes: ReturnType<typeof buildRecommendationDataIndexes>,
+  options: {
+    specialBusiness?: SpecialBusinessContext | null;
+  } = {},
+): GameUiTarget | null {
+  const operationalRows = sortOperationalNightOrderRows(
+    rows.map(({ recommendation, participation }) => ({
+      order: recommendation.order,
+      recommendation,
+      participation,
+    })),
+    orderSortMode,
+    options.specialBusiness,
+  );
+  const selected = buildRareGameUiTargetCandidates(
+    operationalRows.map(({ recommendation }) => recommendation),
+    true,
+  )[0];
+  return selected ? materializeRareGameUiTarget(selected, color, features, indexes) : null;
+}
+
+function buildRareGameUiTargetCandidates(
+  recommendations: readonly OrderRecommendation[],
+  requireCanonicalGuestId: boolean,
+): RareGameUiTargetCandidate[] {
+  return recommendations.flatMap((recommendation): RareGameUiTargetCandidate[] => {
     const order = recommendation.order;
-    if (!hasStrongRareIdentity(order)) return [];
+    if (!hasStrongRareIdentity(order)
+      || (requireCanonicalGuestId && !hasCanonicalRareGuestId(order))) return [];
     const plan = getPrimaryExecutionPlan(recommendation.executionPlans);
     if (!plan) return [];
 
@@ -67,13 +132,14 @@ export function buildRareGameUiTarget(
     if (!food && !beverage) return [];
     return [{ recommendation, food, beverage }];
   });
-  const selected = options.prioritizeMissionRecipe
-    ? candidates.find(({ recommendation, food }) =>
-      food != null && isVerifiedMissionPrimaryExecutionPlan(recommendation)
-    ) ?? candidates[0]
-    : candidates[0];
-  if (!selected) return null;
+}
 
+function materializeRareGameUiTarget(
+  selected: RareGameUiTargetCandidate,
+  color: string,
+  features: GameUiTargetFeatures,
+  indexes: ReturnType<typeof buildRecommendationDataIndexes>,
+): GameUiTarget | null {
   const { order } = selected.recommendation;
   const baseIngredientIds = selected.food
     ? resolveIngredientNames(selected.food.recipe.ingredients, indexes)
@@ -93,6 +159,7 @@ export function buildRareGameUiTarget(
     traceId: order.traceId!,
     orderKey: '',
     orderLifecycleSequence: order.orderLifecycleSequence,
+    guestId: hasCanonicalRareGuestId(order) ? order.guestId : -1,
     deskCode: order.deskCode,
     recipeId: selected.food?.recipe.recipeId ?? -1,
     recipeName: selected.food?.recipe.name ?? '',
@@ -178,6 +245,7 @@ export function buildNormalGameUiTarget({
       traceId: order.traceId!,
       orderKey: order.orderKey!,
       orderLifecycleSequence: order.orderLifecycleSequence,
+      guestId: -1,
       deskCode: order.deskCode,
       recipeId: recipe?.recipeId ?? -1,
       recipeName: executionTarget?.recipeName || recipe?.name || order.foodName,
@@ -260,6 +328,7 @@ function buildTargetRevision(target: Omit<GameUiTarget, 'targetRevision'> | Game
     target.traceId,
     target.orderKey,
     target.orderLifecycleSequence,
+    target.guestId,
     target.recipeId,
     target.ingredientIds.join(','),
     target.extraIngredientIds.join(','),
@@ -317,6 +386,12 @@ function hasStrongRareIdentity(order: NightBusinessOrder): boolean {
     && order.deskCode >= 0
     && typeof order.traceId === 'string'
     && RARE_TRACE_PATTERN.test(order.traceId);
+}
+
+function hasCanonicalRareGuestId(
+  order: NightBusinessOrder,
+): order is NightBusinessOrder & { guestId: number } {
+  return Number.isSafeInteger(order.guestId) && order.guestId! >= 0;
 }
 
 function hasStrongNormalIdentity(order: NormalBusinessOrder): boolean {

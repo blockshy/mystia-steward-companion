@@ -134,6 +134,11 @@ static void AssertRuntimeLifecycleCallbacks()
     AssertEqual(NightBusinessLifecyclePhase.Active, RuntimeBoundaryProbe.LastServeInWorkPhase,
         "ServeInWork diagnostics received the wrong active phase.");
 
+    RuntimeRareGuestParticipationState.Reset();
+    var participationRevision = RuntimeRareGuestParticipationState.BeginBusiness(
+        active.Generation,
+        Array.Empty<int>());
+
     AssertTrue(runtimeType.GetMethod("OnNormalBusinessClosing", BindingFlags.NonPublic | BindingFlags.Static) == null,
         "Business-time expiry callback still exists.");
     var draining = RuntimeNightBusinessLifecycle.Snapshot;
@@ -176,6 +181,13 @@ static void AssertRuntimeLifecycleCallbacks()
     AssertEqual(NightBusinessLifecyclePhase.Closing, closing.Phase,
         "Final seated-guest drain did not enter Closing.");
     AssertEqual(active.Generation, closing.Generation, "Closing changed the active generation.");
+    var retiredParticipation = RuntimeRareGuestParticipationState.Snapshot;
+    AssertFalse(retiredParticipation.IsActive,
+        "Closing returned before retiring rare-guest participation authority.");
+    AssertEqual(participationRevision + 1, retiredParticipation.Revision,
+        "Closing did not advance participation retirement revision exactly once.");
+    AssertEqual(0, retiredParticipation.Orders.Count,
+        "Closing retained rare-order participation authorization.");
     AssertEqual(1, RuntimeBoundaryProbe.TargetInvalidationCount, "Closing did not invalidate the UI target once.");
     AssertEqual(active.Generation, RuntimeBoundaryProbe.LastInvalidatedGeneration,
         "Closing invalidated the wrong generation.");
@@ -233,6 +245,8 @@ static void AssertRuntimeLifecycleCallbacks()
         "Scene destruction did not run the idempotent managed recipe-variant boundary.");
     AssertEqual(active.Generation, RuntimeBoundaryProbe.LastRecipeVariantRetiredGeneration,
         "Scene destruction retired recipe variants for the wrong generation.");
+    AssertEqual(retiredParticipation.Revision, RuntimeRareGuestParticipationState.Snapshot.Revision,
+        "Destroyed repeated an already completed participation retirement.");
 
     RuntimeOrderHighlightService.ThrowOnResume = true;
     try

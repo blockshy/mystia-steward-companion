@@ -189,7 +189,7 @@ async function seedAndOpen(page, fontScale) {
     localStorage.setItem('mystia-steward-companion-normal-target-highlight-color', '#5FACD3');
   }, { endpoint: apiUrl, token: apiToken, scale: fontScale });
   await page.goto(appUrl, { waitUntil: 'domcontentloaded' });
-  await page.getByText('Mod 工作台', { exact: true }).waitFor({ timeout: 10_000 });
+  await page.locator('[data-gamepad-tab-value="overview"]').first().waitFor({ timeout: 10_000 });
   await activateSettings(page);
   await activateSettingsSection(page, '窗口');
   await assertNoVisibleTooltip(page, '初始状态不应显示设置说明');

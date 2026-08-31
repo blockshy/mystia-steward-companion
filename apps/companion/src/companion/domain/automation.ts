@@ -36,8 +36,10 @@ import {
 } from '@/companion/domain/primary-execution-plan';
 import { toRareRecipeResult } from '@/companion/domain/service-recommendations';
 import {
+  sortOperationalNightOrderRows,
   sortNightOrderRows,
   sortNormalOrders,
+  type NightOrderOperationalParticipation,
 } from '@/companion/domain/sorting';
 import {
   applySpecialFoodTargetWirePolicy,
@@ -121,6 +123,12 @@ export interface OrderPreparationCandidateResult {
   skips: OrderPreparationCandidateSkip[];
   messages: string[];
   message: string;
+}
+
+/** 已由参与领域层投影的稀客自动化候选行。 */
+export interface OperationalOrderRecommendation {
+  recommendation: OrderRecommendation;
+  participation: NightOrderOperationalParticipation;
 }
 
 export interface NormalExecutionTargetSelectionLike {
@@ -542,6 +550,7 @@ export function buildNormalCookerDemand(
 export function buildAutomationResourceOverview({
   runtime,
   recommendations,
+  operationalRecommendations = null,
   favorites,
   preferences,
   normalOrders,
@@ -556,6 +565,7 @@ export function buildAutomationResourceOverview({
 }: {
   runtime: RecommendationStateSnapshot | null;
   recommendations: OrderRecommendation[];
+  operationalRecommendations?: readonly OperationalOrderRecommendation[] | null;
   favorites: FavoriteData;
   preferences: CompanionPreferences;
   normalOrders: NormalBusinessOrder[];
@@ -636,13 +646,21 @@ export function buildAutomationResourceOverview({
 
   const rareDiagnosticByKey = new Map(rareDiagnostics.map((item) => [item.orderKey, item]));
   if (preferences.autoRareOrderEnabled && preferences.autoPrepStartCooking) {
-    const candidates = selectOrderPreparationCandidates(
-      recommendations,
-      favorites,
-      preferences,
-      undefined,
-      specialBusiness,
-    );
+    const candidates = operationalRecommendations === null
+      ? selectOrderPreparationCandidates(
+          recommendations,
+          favorites,
+          preferences,
+          undefined,
+          specialBusiness,
+        )
+      : selectOperationalOrderPreparationCandidates(
+          operationalRecommendations,
+          favorites,
+          preferences,
+          undefined,
+          specialBusiness,
+        );
     let rareReserved = 0;
     for (const selection of candidates.selections) {
       if (rareReserved >= preferences.autoRareConcurrency) break;
@@ -871,6 +889,45 @@ export function selectOrderPreparationCandidates(
     preferences.serviceOrderSortMode,
     specialBusiness,
   );
+  return selectOrderPreparationCandidatesFromRows(rows, favorites, preferences, states);
+}
+
+/**
+ * 从 Mod 权威参与队列中选择稀客自动化候选。
+ *
+ * 调用方必须显式传入推荐与参与投影的对应关系；该函数不会按姓名、桌位或 Tag
+ * 重新匹配。暂停、状态缺失和队列序号无效的行在计划/收藏选择前已被排除。
+ */
+export function selectOperationalOrderPreparationCandidates(
+  rows: readonly OperationalOrderRecommendation[],
+  favorites: FavoriteData,
+  preferences: CompanionPreferences,
+  states?: ReadonlyMap<string, AutoFirstOrderState>,
+  specialBusiness: SpecialBusinessContext | null | undefined = null,
+): OrderPreparationCandidateResult {
+  const operationalRows = sortOperationalNightOrderRows(
+    rows.map(({ recommendation, participation }) => ({
+      order: recommendation.order,
+      item: recommendation,
+      participation,
+    })),
+    preferences.serviceOrderSortMode,
+    specialBusiness,
+  );
+  return selectOrderPreparationCandidatesFromRows(
+    operationalRows,
+    favorites,
+    preferences,
+    states,
+  );
+}
+
+function selectOrderPreparationCandidatesFromRows(
+  rows: readonly { order: NightBusinessOrder; item: OrderRecommendation }[],
+  favorites: FavoriteData,
+  preferences: CompanionPreferences,
+  states?: ReadonlyMap<string, AutoFirstOrderState>,
+): OrderPreparationCandidateResult {
   if (rows.length === 0) {
     return { selections: [], skips: [], messages: [], message: '暂无可准备的稀客订单。' };
   }

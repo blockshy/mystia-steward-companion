@@ -9,6 +9,8 @@ try
 {
     VerifyPatchTargets();
     VerifyDualTargetClaimsAndColorRoundTrip();
+    VerifyCanonicalGuestIdentityContract();
+    VerifyRareParticipationPauseRemovesExactTarget();
     VerifyRuntimeUiTargetPublicationLease();
     VerifyCookingRefreshHoldsExactTargetPublicationLease();
     VerifyStorageRefreshHoldsExactTargetPublicationLease();
@@ -16,6 +18,9 @@ try
     VerifyOrderHighlightRuntimeWiring();
     VerifyOpenPanelRefreshScheduling();
     VerifyAuthorityTransitionPreservesOpenPanels();
+    VerifyAuthorityTransitionFiltersPausedRarePresentation();
+    VerifyAuthorityFencedParticipationPauseRefreshesOpenPanels();
+    VerifyAuthorityFilteringSkipsIrrelevantPanelRefresh();
     VerifyOpenPanelSurfaceRefreshSemantics();
     VerifyCookingRefreshStagesFailClosed();
     VerifyIdenticalTargetPublicationIsIdempotent();
@@ -71,6 +76,7 @@ static void VerifyDualTargetClaimsAndColorRoundTrip()
             trace,
             orderKey,
             orderLifecycleSequence: kind == RuntimeUiTargetKind.Rare ? 10 : 11,
+            guestId: kind == RuntimeUiTargetKind.Rare ? 7 : -1,
             deskCode: kind == RuntimeUiTargetKind.Rare ? 0 : 1,
             recipeId: 90,
             ingredientIds: new[] { 91 },
@@ -177,6 +183,132 @@ static void VerifyDualTargetClaimsAndColorRoundTrip()
             palette,
             rareEndpointTime),
         "Shared highlight did not return to the rare color endpoint.");
+}
+
+static void VerifyCanonicalGuestIdentityContract()
+{
+    RuntimeUiTargetSnapshot Create(RuntimeUiTargetKind kind, int guestId, string revision)
+    {
+        var isRare = kind == RuntimeUiTargetKind.Rare;
+        return new RuntimeUiTargetSnapshot(
+            kind,
+            isRare ? RuntimeTargetHighlightColor.DefaultRare : RuntimeTargetHighlightColor.DefaultNormal,
+            listPinningEnabled: true,
+            recipeVariantEnabled: false,
+            cookerHighlightEnabled: false,
+            seatHighlightEnabled: false,
+            orderHighlightEnabled: false,
+            orderTraceId: isRare ? "R-501" : "N-501",
+            orderKey: isRare ? "" : "ptr:1f5",
+            orderLifecycleSequence: 501,
+            guestId,
+            deskCode: 5,
+            recipeId: 51,
+            ingredientIds: new[] { 52 },
+            extraIngredientIds: Array.Empty<int>(),
+            beverageId: -1,
+            cookerTypeId: -1,
+            targetRevision: revision);
+    }
+
+    var rareLegacyIdentity = Create(RuntimeUiTargetKind.Rare, -1, "rare-legacy-automatic-identity");
+    AssertEqual(-1, rareLegacyIdentity.GuestId,
+        "The empty-roster legacy rare target could not preserve an unavailable canonical guest id.");
+    AssertThrows<ArgumentOutOfRangeException>(
+        () => Create(RuntimeUiTargetKind.Rare, -2, "rare-invalid-guest"),
+        "A rare target accepted a guest id outside the explicit -1/non-negative wire domain.");
+    AssertThrows<ArgumentOutOfRangeException>(
+        () => Create(RuntimeUiTargetKind.Normal, 501, "normal-carried-guest"),
+        "A normal target carried a rare-order canonical guest id.");
+
+    var rare501 = Create(RuntimeUiTargetKind.Rare, 501, "same-revision");
+    var rare502 = Create(RuntimeUiTargetKind.Rare, 502, "same-revision");
+    AssertFalse(
+        rare501.HasSameValues(rare502),
+        "Canonical guest identity did not participate in immutable target equality.");
+    AssertFalse(
+        rareLegacyIdentity.HasSameValues(rare501),
+        "Legacy unknown and canonical rare guest identities collapsed in immutable target equality.");
+}
+
+static void VerifyRareParticipationPauseRemovesExactTarget()
+{
+    var generation = RuntimeNightBusinessLifecycle.Generation;
+    RuntimeUiTargetSnapshot Create(
+        RuntimeUiTargetKind kind,
+        string traceId,
+        string orderKey,
+        long lifecycle,
+        int guestId,
+        int deskCode,
+        int cookerTypeId)
+    {
+        return new RuntimeUiTargetSnapshot(
+            kind,
+            kind == RuntimeUiTargetKind.Rare
+                ? RuntimeTargetHighlightColor.DefaultRare
+                : RuntimeTargetHighlightColor.DefaultNormal,
+            listPinningEnabled: true,
+            recipeVariantEnabled: false,
+            cookerHighlightEnabled: true,
+            seatHighlightEnabled: true,
+            orderHighlightEnabled: true,
+            traceId,
+            orderKey,
+            lifecycle,
+            guestId,
+            deskCode,
+            recipeId: kind == RuntimeUiTargetKind.Rare ? 61 : 62,
+            ingredientIds: new[] { kind == RuntimeUiTargetKind.Rare ? 63 : 64 },
+            extraIngredientIds: Array.Empty<int>(),
+            beverageId: -1,
+            cookerTypeId,
+            targetRevision: $"pause-removal-{kind}");
+    }
+
+    var rare = Create(RuntimeUiTargetKind.Rare, "R-601", "", 601, 1601, 6, 31);
+    var normal = Create(RuntimeUiTargetKind.Normal, "N-602", "ptr:25a", 602, -1, 7, 32);
+    RuntimeUiPinningService.UpdateTargets(generation, new[] { rare, normal });
+    var cookerUpdates = RuntimeCookerHighlightService.UpdateCount;
+    var seatUpdates = RuntimeSeatHighlightService.UpdateCount;
+    var hudUpdates = RuntimeOrderHighlightService.UpdateCount;
+    var throwUpdates = RuntimeThrowDeliverOrderHighlightService.UpdateCount;
+
+    AssertFalse(
+        RuntimeUiPinningService.RemoveRareTargetIfMatches(
+            generation,
+            rare.OrderTraceId,
+            rare.OrderLifecycleSequence,
+            guestId: rare.GuestId + 1,
+            "mismatched canonical guest"),
+        "A mismatched canonical guest removed the current rare target.");
+    AssertEqual(2, RuntimeUiPinningService.ReadTargetSet().Targets.Count, "A rejected exact removal changed the target set.");
+    AssertEqual(cookerUpdates, RuntimeCookerHighlightService.UpdateCount, "A rejected exact removal touched cooker highlights.");
+    AssertEqual(seatUpdates, RuntimeSeatHighlightService.UpdateCount, "A rejected exact removal touched seat highlights.");
+    AssertEqual(hudUpdates, RuntimeOrderHighlightService.UpdateCount, "A rejected exact removal touched HUD order highlights.");
+    AssertEqual(throwUpdates, RuntimeThrowDeliverOrderHighlightService.UpdateCount, "A rejected exact removal touched throw-delivery highlights.");
+
+    AssertTrue(
+        RuntimeUiPinningService.RemoveRareTargetIfMatches(
+            generation,
+            rare.OrderTraceId,
+            rare.OrderLifecycleSequence,
+            rare.GuestId,
+            "managed rare guest paused"),
+        "The exact paused rare target was not removed.");
+    var remaining = RuntimeUiPinningService.ReadTargetSet();
+    AssertEqual(1, remaining.Targets.Count, "Exact rare removal did not preserve precisely one normal target.");
+    AssertEqual(RuntimeUiTargetKind.Normal, remaining.Targets[0].Kind, "Exact rare removal retained the wrong target kind.");
+    AssertEqual(-1, remaining.Targets[0].GuestId, "The preserved normal target violated canonical guest identity semantics.");
+    AssertEqual(cookerUpdates + 1, RuntimeCookerHighlightService.UpdateCount, "Rare removal did not synchronize cooker highlights.");
+    AssertEqual(seatUpdates + 1, RuntimeSeatHighlightService.UpdateCount, "Rare removal did not synchronize seat highlights.");
+    AssertEqual(hudUpdates + 1, RuntimeOrderHighlightService.UpdateCount, "Rare removal did not synchronize HUD order highlights.");
+    AssertEqual(throwUpdates + 1, RuntimeThrowDeliverOrderHighlightService.UpdateCount, "Rare removal did not synchronize throw-delivery highlights.");
+    AssertEqual(32, RuntimeCookerHighlightService.LastCookerTypeId, "Rare removal cleared the preserved normal cooker target.");
+    AssertEqual(7, RuntimeSeatHighlightService.LastDeskCode, "Rare removal cleared the preserved normal seat target.");
+    AssertEqual("N-602", RuntimeOrderHighlightService.LastOrderTraceId, "Rare removal cleared the preserved normal HUD target.");
+    AssertEqual("N-602", RuntimeThrowDeliverOrderHighlightService.LastOrderTraceId, "Rare removal cleared the preserved normal throw-delivery target.");
+    AssertContains(RuntimeUiPinningService.Status, "rare-target-participation-paused", "Exact rare removal did not expose its target transition.");
 }
 
 static void VerifyRuntimeUiTargetPublicationLease()
@@ -823,6 +955,7 @@ static void VerifySharedListItemUsesSingleOwnershipAndBaseline()
             trace,
             orderKey,
             lifecycle,
+            kind == RuntimeUiTargetKind.Rare ? 95 : -1,
             deskCode,
             recipeId,
             ingredientIds: new[] { 96 },
@@ -1212,6 +1345,24 @@ static void VerifyAuthorityTransitionPreservesOpenPanels()
     CookingSelectionPanelProbe.ResetRefreshProbe();
     StoragePanelProbe.ResetRefreshProbe();
     var businessGeneration = RuntimeNightBusinessLifecycle.Generation;
+    RuntimeRareGuestParticipationState.Reset();
+    var participationRevision = RuntimeRareGuestParticipationState.BeginBusiness(
+        businessGeneration,
+        Array.Empty<int>());
+    participationRevision = RuntimeRareGuestParticipationState.ReconcileCurrentOrders(
+        businessGeneration,
+        participationRevision,
+        collectionComplete: true,
+        new[]
+        {
+            new RuntimeRareGuestParticipationOrderObservation(
+                new RuntimeRareGuestParticipationOrderIdentity(
+                    businessGeneration,
+                    "R-1",
+                    1,
+                    1),
+                Binding: null),
+        });
     PublishRareTarget(
         businessGeneration,
         listPinningEnabled: true,
@@ -1374,6 +1525,568 @@ static void VerifyAuthorityTransitionPreservesOpenPanels()
     {
         CookingSelectionPanelProbe.RecipeRefreshAction = null;
         StoragePanelProbe.RefreshAction = null;
+        cookingPanel.OnPanelClose();
+        storagePanel.OnPanelDestroyed();
+    }
+}
+
+static void VerifyAuthorityTransitionFiltersPausedRarePresentation()
+{
+    CookingSelectionPanelProbe.ResetRefreshProbe();
+    StoragePanelProbe.ResetRefreshProbe();
+    var businessGeneration = RuntimeNightBusinessLifecycle.Generation;
+    RuntimeRareGuestParticipationState.Reset();
+    var participationRevision = RuntimeRareGuestParticipationState.BeginBusiness(
+        businessGeneration,
+        new[] { 71 });
+    var rareIdentity = new RuntimeRareGuestParticipationOrderIdentity(
+        businessGeneration,
+        "R-701",
+        701,
+        71);
+    participationRevision = RuntimeRareGuestParticipationState.ReconcileCurrentOrders(
+        businessGeneration,
+        participationRevision,
+        collectionComplete: true,
+        new[]
+        {
+            new RuntimeRareGuestParticipationOrderObservation(
+                rareIdentity,
+                Binding: null),
+        });
+    participationRevision = RuntimeRareGuestParticipationState.MutateParticipation(
+        businessGeneration,
+        participationRevision,
+        RuntimeRareGuestParticipationAction.EnableTail,
+        RuntimeRareGuestParticipationTargetScope.Guest,
+        71,
+        new[] { rareIdentity });
+
+    RuntimeUiTargetSnapshot CreateTarget(
+        RuntimeUiTargetKind kind,
+        string traceId,
+        string orderKey,
+        long lifecycle,
+        int guestId,
+        int recipeId,
+        int ingredientId,
+        int beverageId)
+    {
+        return new RuntimeUiTargetSnapshot(
+            kind,
+            kind == RuntimeUiTargetKind.Rare
+                ? RuntimeTargetHighlightColor.DefaultRare
+                : RuntimeTargetHighlightColor.DefaultNormal,
+            listPinningEnabled: true,
+            recipeVariantEnabled: false,
+            cookerHighlightEnabled: false,
+            seatHighlightEnabled: false,
+            orderHighlightEnabled: false,
+            traceId,
+            orderKey,
+            lifecycle,
+            guestId,
+            deskCode: 1,
+            recipeId,
+            ingredientIds: new[] { ingredientId },
+            extraIngredientIds: Array.Empty<int>(),
+            beverageId,
+            cookerTypeId: -1,
+            targetRevision: $"authority-participation-{kind}");
+    }
+
+    var rare = CreateTarget(
+        RuntimeUiTargetKind.Rare,
+        "R-701",
+        "",
+        701,
+        71,
+        771,
+        772,
+        773);
+    var normal = CreateTarget(
+        RuntimeUiTargetKind.Normal,
+        "N-702",
+        "ptr:2be",
+        702,
+        -1,
+        781,
+        782,
+        783);
+    RuntimeUiPinningService.UpdateTargets(
+        businessGeneration,
+        new[] { rare, normal });
+    var originalTarget = RuntimeUiPinningService.ReadTargetSet();
+    var retireCount = RuntimeTargetRecipeVariantService.ShutdownRetireCount;
+    var cookingPanel = new CookingSelectionPanelProbe();
+    var storagePanel = new StoragePanelProbe();
+    try
+    {
+        cookingPanel.OnPanelOpen();
+        storagePanel.OnPanelOpen();
+        var cookingRefreshCount = CookingSelectionPanelProbe.RecipeRefreshCount;
+        var storageRefreshCount = StoragePanelProbe.RefreshCount;
+
+        RunOnWorkerThread(() => RuntimeUiPinningService.ClearTargetsForAuthorityTransition(
+            businessGeneration,
+            "test first fence while current rare lifecycle remains admitted"));
+
+        var admittedFence = RuntimeUiPinningService.ReadTargetSet();
+        AssertEqual(0, admittedFence.Targets.Count,
+            "The first authority fence retained an operational target.");
+        AssertEqual(originalTarget.Generation + 1, admittedFence.Generation,
+            "The first authority fence did not advance the target generation exactly once.");
+        AssertTrue(
+            ReferenceEquals(
+                originalTarget,
+                RuntimeUiPinningService.ReadSurfaceRefreshTargetSet()),
+            "The first authority fence discarded an admitted rare presentation.");
+        AssertTrue(
+            RuntimeUiPinningService.IsSurfaceRefreshTargetCurrentOrDeferred(originalTarget),
+            "The first authority fence did not retain the admitted presentation for natural list refreshes.");
+        AssertContains(RuntimeUiPinningService.Status, "authority-fence-preserved",
+            "The first admitted authority fence was reported as participation filtering.");
+        AssertContains(RuntimeUiPinningService.Status, "refresh:0",
+            "The first admitted authority fence armed a programmatic panel refresh.");
+        AssertFalse(
+            RuntimeUiPinningService.TryAcquireTargetPublicationLease(originalTarget, out _),
+            "The admitted held presentation authorized an operational recipe action during the fence.");
+
+        RuntimeUiPinningService.Tick();
+        AssertEqual(cookingRefreshCount, CookingSelectionPanelProbe.RecipeRefreshCount,
+            "The first admitted authority fence replayed the held cooking presentation.");
+        AssertEqual(storageRefreshCount, StoragePanelProbe.RefreshCount,
+            "The first admitted authority fence replayed the held storage presentation.");
+        AssertEqual(retireCount, RuntimeTargetRecipeVariantService.ShutdownRetireCount,
+            "The first admitted authority fence retired pending recipe transactions.");
+
+        participationRevision = RuntimeRareGuestParticipationState.ApplyManagedGuestIdsFromAuthority(
+            new[] { 71 },
+            resetManagedParticipation: true);
+        var pausedOrder = RuntimeRareGuestParticipationState.Snapshot.Orders.Single(order =>
+            order.Identity == rareIdentity);
+        AssertEqual(participationRevision, RuntimeRareGuestParticipationState.Snapshot.Revision,
+            "The authority participation reset did not publish its revision atomically.");
+        AssertFalse(pausedOrder.Participating,
+            "The authority reset did not pause the already-held rare lifecycle.");
+        AssertEqual(RuntimeRareGuestParticipationState.AuthorityResetPausedReason, pausedOrder.ReasonCode,
+            "The already-held rare lifecycle did not expose the authority-reset pause reason.");
+        AssertTrue(
+            ReferenceEquals(
+                originalTarget,
+                RuntimeUiPinningService.ReadSurfaceRefreshTargetSet()),
+            "The participation reset replaced the held presentation before the second authority fence could filter it.");
+
+        RunOnWorkerThread(() => RuntimeUiPinningService.ClearTargetsForAuthorityTransition(
+            businessGeneration,
+            "test second fence after authority reset paused the held rare lifecycle"));
+
+        var operationalFence = RuntimeUiPinningService.ReadTargetSet();
+        var filteredPresentation = RuntimeUiPinningService.ReadSurfaceRefreshTargetSet();
+        AssertEqual(0, operationalFence.Targets.Count,
+            "Authority participation filtering restored an operational target during the fence.");
+        AssertEqual(1, filteredPresentation.Targets.Count,
+            "Authority participation filtering did not preserve exactly the independent normal target.");
+        AssertEqual(RuntimeUiTargetKind.Normal, filteredPresentation.Targets[0].Kind,
+            "Authority participation filtering retained the paused rare target instead of the normal target.");
+        AssertEqual(RuntimeUiTargetKinds.None, filteredPresentation.GetRecipeClaims(rare.RecipeId),
+            "A paused rare recipe claim remained in the deferred authority presentation.");
+        AssertEqual(RuntimeUiTargetKinds.None, filteredPresentation.GetIngredientClaims(772),
+            "A paused rare ingredient claim remained in the deferred authority presentation.");
+        AssertEqual(RuntimeUiTargetKinds.None, filteredPresentation.GetBeverageClaims(773),
+            "A paused rare beverage claim remained in the deferred authority presentation.");
+        AssertEqual(RuntimeUiTargetKinds.Normal, filteredPresentation.GetRecipeClaims(normal.RecipeId),
+            "Filtering a paused rare target removed the independent normal recipe claim.");
+        AssertEqual(admittedFence.Generation + 1, filteredPresentation.Generation,
+            "The filtered presentation did not receive its unique intermediate generation.");
+        AssertEqual(filteredPresentation.Generation + 1, operationalFence.Generation,
+            "The empty operational fence did not follow the filtered presentation generation.");
+        AssertContains(RuntimeUiPinningService.Status, "authority-fence-participation-filtered",
+            "Authority diagnostics did not report participation filtering.");
+        AssertFalse(
+            RuntimeUiPinningService.IsSurfaceRefreshTargetCurrentOrDeferred(originalTarget),
+            "The unfiltered authority presentation remained current after participation changed.");
+        AssertFalse(
+            RuntimeUiPinningService.TryAcquireTargetPublicationLease(filteredPresentation, out _),
+            "The filtered deferred presentation authorized an operational recipe action.");
+        AssertEqual(retireCount, RuntimeTargetRecipeVariantService.ShutdownRetireCount,
+            "Filtering a paused rare presentation retired pending recipe transactions.");
+
+        RuntimeUiPinningService.Tick();
+        AssertEqual(cookingRefreshCount + 1, CookingSelectionPanelProbe.RecipeRefreshCount,
+            "The main-thread tick did not remove paused rare claims from the open cooking page.");
+        AssertEqual(storageRefreshCount + 1, StoragePanelProbe.RefreshCount,
+            "The main-thread tick did not remove paused rare claims from the open storage page.");
+        RuntimeUiPinningService.Tick();
+        AssertEqual(cookingRefreshCount + 1, CookingSelectionPanelProbe.RecipeRefreshCount,
+            "The filtered authority presentation refreshed the cooking page more than once.");
+        AssertEqual(storageRefreshCount + 1, StoragePanelProbe.RefreshCount,
+            "The filtered authority presentation refreshed the storage page more than once.");
+
+        RunOnWorkerThread(() => RuntimeUiPinningService.ClearTargetsForAuthorityTransition(
+            businessGeneration,
+            "test repeated authority fence while rare remains paused"));
+        var repeatedFence = RuntimeUiPinningService.ReadTargetSet();
+        AssertTrue(
+            ReferenceEquals(
+                filteredPresentation,
+                RuntimeUiPinningService.ReadSurfaceRefreshTargetSet()),
+            "A repeated authority fence discarded the already-filtered normal presentation.");
+        AssertEqual(operationalFence.Generation + 1, repeatedFence.Generation,
+            "A repeated authority fence did not keep target generations strictly monotonic.");
+        RuntimeUiPinningService.Tick();
+        AssertEqual(cookingRefreshCount + 1, CookingSelectionPanelProbe.RecipeRefreshCount,
+            "A repeated authority fence replayed the filtered cooking-page refresh.");
+        AssertEqual(storageRefreshCount + 1, StoragePanelProbe.RefreshCount,
+            "A repeated authority fence replayed the filtered storage-page refresh.");
+
+        RuntimeUiPinningService.UpdateTargets(
+            businessGeneration,
+            new[] { normal });
+        AssertEqual(repeatedFence.Generation + 1, RuntimeUiPinningService.ReadTargetSet().Generation,
+            "The first complete post-authority publication reused a reserved generation.");
+        RuntimeUiPinningService.Tick();
+    }
+    finally
+    {
+        cookingPanel.OnPanelClose();
+        storagePanel.OnPanelDestroyed();
+    }
+}
+
+static void VerifyAuthorityFencedParticipationPauseRefreshesOpenPanels()
+{
+    CookingSelectionPanelProbe.ResetRefreshProbe();
+    StoragePanelProbe.ResetRefreshProbe();
+    var businessGeneration = RuntimeNightBusinessLifecycle.Generation;
+    RuntimeRareGuestParticipationState.Reset();
+    var participationRevision = RuntimeRareGuestParticipationState.BeginBusiness(
+        businessGeneration,
+        new[] { 91 });
+    var rareIdentity = new RuntimeRareGuestParticipationOrderIdentity(
+        businessGeneration,
+        "R-901",
+        901,
+        91);
+    participationRevision = RuntimeRareGuestParticipationState.ReconcileCurrentOrders(
+        businessGeneration,
+        participationRevision,
+        collectionComplete: true,
+        new[]
+        {
+            new RuntimeRareGuestParticipationOrderObservation(rareIdentity, Binding: null),
+        });
+    participationRevision = RuntimeRareGuestParticipationState.MutateParticipation(
+        businessGeneration,
+        participationRevision,
+        RuntimeRareGuestParticipationAction.EnableTail,
+        RuntimeRareGuestParticipationTargetScope.Guest,
+        rareIdentity.GuestId,
+        new[] { rareIdentity });
+
+    RuntimeUiTargetSnapshot CreateTarget(
+        RuntimeUiTargetKind kind,
+        string traceId,
+        string orderKey,
+        long lifecycle,
+        int guestId,
+        int recipeId,
+        int ingredientId,
+        int beverageId)
+    {
+        return new RuntimeUiTargetSnapshot(
+            kind,
+            kind == RuntimeUiTargetKind.Rare
+                ? RuntimeTargetHighlightColor.DefaultRare
+                : RuntimeTargetHighlightColor.DefaultNormal,
+            listPinningEnabled: true,
+            recipeVariantEnabled: true,
+            cookerHighlightEnabled: false,
+            seatHighlightEnabled: false,
+            orderHighlightEnabled: false,
+            traceId,
+            orderKey,
+            lifecycle,
+            guestId,
+            deskCode: kind == RuntimeUiTargetKind.Rare ? 0 : 1,
+            recipeId,
+            ingredientIds: new[] { ingredientId },
+            extraIngredientIds: Array.Empty<int>(),
+            beverageId,
+            cookerTypeId: -1,
+            targetRevision: $"ordinary-pause-under-authority-fence-{kind}");
+    }
+
+    var rare = CreateTarget(
+        RuntimeUiTargetKind.Rare,
+        rareIdentity.TraceId,
+        "",
+        rareIdentity.OrderLifecycleSequence,
+        rareIdentity.GuestId,
+        971,
+        972,
+        973);
+    var normal = CreateTarget(
+        RuntimeUiTargetKind.Normal,
+        "N-902",
+        "ptr:386",
+        902,
+        -1,
+        981,
+        982,
+        983);
+    RuntimeUiPinningService.UpdateTargets(businessGeneration, new[] { rare, normal });
+    var originalTarget = RuntimeUiPinningService.ReadTargetSet();
+    var retireCount = RuntimeTargetRecipeVariantService.ShutdownRetireCount;
+    var cookingPanel = new CookingSelectionPanelProbe();
+    var storagePanel = new StoragePanelProbe();
+    try
+    {
+        cookingPanel.OnPanelOpen();
+        storagePanel.OnPanelOpen();
+        var cookingRefreshCount = CookingSelectionPanelProbe.RecipeRefreshCount;
+        var storageRefreshCount = StoragePanelProbe.RefreshCount;
+
+        RunOnWorkerThread(() => RuntimeUiPinningService.ClearTargetsForAuthorityTransition(
+            businessGeneration,
+            "test admitted fence before ordinary participation pause"));
+        var admittedFence = RuntimeUiPinningService.ReadTargetSet();
+        AssertTrue(
+            ReferenceEquals(originalTarget, RuntimeUiPinningService.ReadSurfaceRefreshTargetSet()),
+            "The admitted authority fence did not hold the exact original presentation.");
+        AssertContains(RuntimeUiPinningService.Status, "refresh:0",
+            "The admitted authority fence scheduled a presentation replay before participation changed.");
+
+        var removed = false;
+        RunOnWorkerThread(() =>
+        {
+            participationRevision = RuntimeRareGuestParticipationState.MutateParticipation(
+                businessGeneration,
+                participationRevision,
+                RuntimeRareGuestParticipationAction.Pause,
+                RuntimeRareGuestParticipationTargetScope.Guest,
+                rareIdentity.GuestId,
+                new[] { rareIdentity });
+            removed = RuntimeUiPinningService.RemoveRareTargetIfMatches(
+                businessGeneration,
+                rareIdentity.TraceId,
+                rareIdentity.OrderLifecycleSequence,
+                rareIdentity.GuestId,
+                "test ordinary pause after authority fence");
+        });
+        AssertTrue(removed,
+            "An ordinary participation pause could not filter the exact deferred authority presentation.");
+        AssertFalse(RuntimeRareGuestParticipationState.Snapshot.Orders.Single().Participating,
+            "The ordinary participation mutation did not pause the exact lifecycle.");
+
+        var filteredFence = RuntimeUiPinningService.ReadTargetSet();
+        var filteredPresentation = RuntimeUiPinningService.ReadSurfaceRefreshTargetSet();
+        AssertEqual(0, filteredFence.Targets.Count,
+            "Ordinary pause under an authority fence restored an operational target.");
+        AssertEqual(1, filteredPresentation.Targets.Count,
+            "Ordinary pause did not preserve exactly the independent normal presentation.");
+        AssertEqual(RuntimeUiTargetKind.Normal, filteredPresentation.Targets[0].Kind,
+            "Ordinary pause retained the rare deferred presentation instead of the normal target.");
+        AssertEqual(admittedFence.Generation + 1, filteredPresentation.Generation,
+            "Ordinary pause did not reserve a unique filtered presentation generation.");
+        AssertEqual(filteredPresentation.Generation + 1, filteredFence.Generation,
+            "Ordinary pause did not publish a later empty operational fence generation.");
+        AssertEqual(RuntimeUiTargetKinds.None, filteredPresentation.GetRecipeClaims(rare.RecipeId),
+            "Ordinary pause retained the rare recipe claim in deferred presentation.");
+        AssertEqual(RuntimeUiTargetKinds.Normal, filteredPresentation.GetRecipeClaims(normal.RecipeId),
+            "Ordinary pause removed the independent normal recipe claim.");
+        AssertContains(RuntimeUiPinningService.Status, "authority-fence-participation-paused",
+            "Ordinary pause under authority fence did not expose its transition diagnostic.");
+        AssertFalse(
+            RuntimeUiPinningService.IsSurfaceRefreshTargetCurrentOrDeferred(originalTarget),
+            "The unfiltered authority presentation remained current after ordinary pause.");
+        AssertFalse(
+            RuntimeUiPinningService.TryAcquireTargetPublicationLease(filteredPresentation, out _),
+            "The filtered deferred presentation authorized an operational native action.");
+        AssertEqual(retireCount, RuntimeTargetRecipeVariantService.ShutdownRetireCount,
+            "Ordinary pause retired pending recipe transactions while filtering presentation.");
+        AssertEqual(cookingRefreshCount, CookingSelectionPanelProbe.RecipeRefreshCount,
+            "Off-main ordinary pause directly refreshed the cooking panel.");
+        AssertEqual(storageRefreshCount, StoragePanelProbe.RefreshCount,
+            "Off-main ordinary pause directly refreshed the storage panel.");
+
+        RuntimeUiPinningService.Tick();
+        AssertEqual(cookingRefreshCount + 1, CookingSelectionPanelProbe.RecipeRefreshCount,
+            "The main-thread Tick did not remove the paused rare cooking-page claims exactly once.");
+        AssertEqual(storageRefreshCount + 1, StoragePanelProbe.RefreshCount,
+            "The main-thread Tick did not remove the paused rare storage-page claims exactly once.");
+        RuntimeUiPinningService.Tick();
+        AssertEqual(cookingRefreshCount + 1, CookingSelectionPanelProbe.RecipeRefreshCount,
+            "The ordinary-pause cooking presentation refresh replayed.");
+        AssertEqual(storageRefreshCount + 1, StoragePanelProbe.RefreshCount,
+            "The ordinary-pause storage presentation refresh replayed.");
+
+        var repeatedRemoval = true;
+        RunOnWorkerThread(() => repeatedRemoval = RuntimeUiPinningService.RemoveRareTargetIfMatches(
+            businessGeneration,
+            rareIdentity.TraceId,
+            rareIdentity.OrderLifecycleSequence,
+            rareIdentity.GuestId,
+            "test repeated ordinary pause"));
+        AssertFalse(repeatedRemoval, "Repeated exact pause removal mutated an already-filtered presentation.");
+        AssertTrue(ReferenceEquals(filteredFence, RuntimeUiPinningService.ReadTargetSet()),
+            "Repeated exact pause removal advanced the operational fence generation.");
+        RuntimeUiPinningService.Tick();
+        AssertEqual(cookingRefreshCount + 1, CookingSelectionPanelProbe.RecipeRefreshCount,
+            "Repeated exact pause removal re-armed the cooking refresh marker.");
+        AssertEqual(storageRefreshCount + 1, StoragePanelProbe.RefreshCount,
+            "Repeated exact pause removal re-armed the storage refresh marker.");
+
+        RuntimeUiPinningService.UpdateTargets(businessGeneration, new[] { normal });
+        AssertContains(RuntimeUiPinningService.Status, "authorityPanelFence=none",
+            "A complete post-pause target publication did not close the authority fence.");
+    }
+    finally
+    {
+        cookingPanel.OnPanelClose();
+        storagePanel.OnPanelDestroyed();
+    }
+}
+
+static void VerifyAuthorityFilteringSkipsIrrelevantPanelRefresh()
+{
+    CookingSelectionPanelProbe.ResetRefreshProbe();
+    StoragePanelProbe.ResetRefreshProbe();
+    var businessGeneration = RuntimeNightBusinessLifecycle.Generation;
+    RuntimeRareGuestParticipationState.Reset();
+    var participationRevision = RuntimeRareGuestParticipationState.BeginBusiness(
+        businessGeneration,
+        new[] { 81 });
+    var rareIdentity = new RuntimeRareGuestParticipationOrderIdentity(
+        businessGeneration,
+        "R-801",
+        801,
+        81);
+    participationRevision = RuntimeRareGuestParticipationState.ReconcileCurrentOrders(
+        businessGeneration,
+        participationRevision,
+        collectionComplete: true,
+        new[]
+        {
+            new RuntimeRareGuestParticipationOrderObservation(rareIdentity, Binding: null),
+        });
+    participationRevision = RuntimeRareGuestParticipationState.MutateParticipation(
+        businessGeneration,
+        participationRevision,
+        RuntimeRareGuestParticipationAction.EnableTail,
+        RuntimeRareGuestParticipationTargetScope.Guest,
+        rareIdentity.GuestId,
+        new[] { rareIdentity });
+
+    var rareHighlightOnly = new RuntimeUiTargetSnapshot(
+        RuntimeUiTargetKind.Rare,
+        RuntimeTargetHighlightColor.DefaultRare,
+        listPinningEnabled: false,
+        recipeVariantEnabled: false,
+        cookerHighlightEnabled: true,
+        seatHighlightEnabled: false,
+        orderHighlightEnabled: false,
+        orderTraceId: rareIdentity.TraceId,
+        orderKey: "",
+        orderLifecycleSequence: rareIdentity.OrderLifecycleSequence,
+        guestId: rareIdentity.GuestId,
+        deskCode: 0,
+        recipeId: -1,
+        ingredientIds: Array.Empty<int>(),
+        extraIngredientIds: Array.Empty<int>(),
+        beverageId: -1,
+        cookerTypeId: 18,
+        targetRevision: "authority-filter-highlight-only-rare");
+    var normalListTarget = new RuntimeUiTargetSnapshot(
+        RuntimeUiTargetKind.Normal,
+        RuntimeTargetHighlightColor.DefaultNormal,
+        listPinningEnabled: true,
+        recipeVariantEnabled: false,
+        cookerHighlightEnabled: false,
+        seatHighlightEnabled: false,
+        orderHighlightEnabled: false,
+        orderTraceId: "N-802",
+        orderKey: "ptr:322",
+        orderLifecycleSequence: 802,
+        guestId: -1,
+        deskCode: 2,
+        recipeId: 881,
+        ingredientIds: new[] { 882 },
+        extraIngredientIds: Array.Empty<int>(),
+        beverageId: 883,
+        cookerTypeId: -1,
+        targetRevision: "authority-filter-independent-normal-list");
+    RuntimeUiPinningService.UpdateTargets(
+        businessGeneration,
+        new[] { rareHighlightOnly, normalListTarget });
+
+    var originalTarget = RuntimeUiPinningService.ReadTargetSet();
+    var cookingPanel = new CookingSelectionPanelProbe();
+    var storagePanel = new StoragePanelProbe();
+    try
+    {
+        cookingPanel.OnPanelOpen();
+        storagePanel.OnPanelOpen();
+        var cookingRefreshCount = CookingSelectionPanelProbe.RecipeRefreshCount;
+        var storageRefreshCount = StoragePanelProbe.RefreshCount;
+
+        RunOnWorkerThread(() => RuntimeUiPinningService.ClearTargetsForAuthorityTransition(
+            businessGeneration,
+            "test admitted fence before highlight-only ordinary pause"));
+
+        var admittedFence = RuntimeUiPinningService.ReadTargetSet();
+        AssertTrue(
+            ReferenceEquals(originalTarget, RuntimeUiPinningService.ReadSurfaceRefreshTargetSet()),
+            "The admitted highlight-only rare presentation was filtered before ordinary pause.");
+        AssertContains(RuntimeUiPinningService.Status, "refresh:0",
+            "The admitted highlight-only fence armed a panel refresh.");
+
+        var removed = false;
+        RunOnWorkerThread(() =>
+        {
+            participationRevision = RuntimeRareGuestParticipationState.MutateParticipation(
+                businessGeneration,
+                participationRevision,
+                RuntimeRareGuestParticipationAction.Pause,
+                RuntimeRareGuestParticipationTargetScope.Guest,
+                rareIdentity.GuestId,
+                new[] { rareIdentity });
+            removed = RuntimeUiPinningService.RemoveRareTargetIfMatches(
+                businessGeneration,
+                rareIdentity.TraceId,
+                rareIdentity.OrderLifecycleSequence,
+                rareIdentity.GuestId,
+                "test ordinary pause of highlight-only rare target");
+        });
+        AssertTrue(removed,
+            "Ordinary pause could not filter a highlight-only rare deferred presentation.");
+
+        var operationalFence = RuntimeUiPinningService.ReadTargetSet();
+        var filteredPresentation = RuntimeUiPinningService.ReadSurfaceRefreshTargetSet();
+        AssertEqual(0, operationalFence.Targets.Count,
+            "Highlight-only rare filtering retained an operational target during the fence.");
+        AssertEqual(1, filteredPresentation.Targets.Count,
+            "Highlight-only rare filtering did not retain exactly the independent normal presentation.");
+        AssertEqual(RuntimeUiTargetKind.Normal, filteredPresentation.Targets[0].Kind,
+            "Highlight-only rare filtering retained the paused rare presentation.");
+        AssertEqual(admittedFence.Generation + 1, filteredPresentation.Generation,
+            "Highlight-only rare filtering did not reserve a unique presentation generation.");
+        AssertEqual(filteredPresentation.Generation + 1, operationalFence.Generation,
+            "Highlight-only rare filtering did not publish a later operational fence.");
+        AssertContains(RuntimeUiPinningService.Status, "authority-fence-participation-paused",
+            "Highlight-only ordinary pause was not visible in authority diagnostics.");
+        AssertContains(RuntimeUiPinningService.Status, "refresh:0",
+            "A filtered rare target without list or variant claims armed a panel refresh.");
+
+        RuntimeUiPinningService.Tick();
+        RuntimeUiPinningService.Tick();
+        AssertEqual(cookingRefreshCount, CookingSelectionPanelProbe.RecipeRefreshCount,
+            "Filtering a highlight-only rare target replayed an unchanged cooking presentation.");
+        AssertEqual(storageRefreshCount, StoragePanelProbe.RefreshCount,
+            "Filtering a highlight-only rare target replayed an unchanged storage presentation.");
+    }
+    finally
+    {
         cookingPanel.OnPanelClose();
         storagePanel.OnPanelDestroyed();
     }
@@ -2886,6 +3599,7 @@ static void VerifyExactRecipeVariantRowHighlighting()
             orderTraceId: isRare ? "R-141" : "N-141",
             orderKey: isRare ? "" : "ptr:8d",
             orderLifecycleSequence: isRare ? 141 : 142,
+            guestId: isRare ? 141 : -1,
             deskCode: isRare ? 0 : 1,
             recipeId,
             ingredientIds: new[] { 142 },
@@ -3279,6 +3993,7 @@ static string PublishRareTarget(
                 orderHighlightEnabled ? orderTraceId : "R-1",
                 orderKey: "",
                 orderLifecycleSequence: 1,
+                guestId: 1,
                 deskCode >= 0 ? deskCode : 0,
                 recipeId,
                 ingredients,

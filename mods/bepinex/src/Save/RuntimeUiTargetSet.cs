@@ -41,6 +41,7 @@ internal sealed class RuntimeUiTargetSnapshot
         string orderTraceId,
         string orderKey,
         long orderLifecycleSequence,
+        int guestId,
         int deskCode,
         int recipeId,
         IEnumerable<int> ingredientIds,
@@ -110,6 +111,16 @@ internal sealed class RuntimeUiTargetSnapshot
         {
             throw new ArgumentOutOfRangeException(nameof(orderLifecycleSequence), "Order lifecycle sequence must be positive.");
         }
+        if (kind == RuntimeUiTargetKind.Rare && guestId < -1)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(guestId),
+                "A rare UI target guest id must be -1 when legacy automatic participation has no canonical id, or a non-negative canonical id.");
+        }
+        if (kind == RuntimeUiTargetKind.Normal && guestId != -1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(guestId), "A normal UI target must carry canonical guest id -1.");
+        }
         if (deskCode < 0)
         {
             throw new ArgumentOutOfRangeException(nameof(deskCode), "Desk code must be non-negative.");
@@ -134,6 +145,7 @@ internal sealed class RuntimeUiTargetSnapshot
         OrderTraceId = orderTraceId;
         OrderKey = orderKey;
         OrderLifecycleSequence = orderLifecycleSequence;
+        GuestId = guestId;
         DeskCode = deskCode;
         RecipeId = recipeId;
         BeverageId = beverageId;
@@ -169,6 +181,8 @@ internal sealed class RuntimeUiTargetSnapshot
 
     public long OrderLifecycleSequence { get; }
 
+    public int GuestId { get; }
+
     public int DeskCode { get; }
 
     public int RecipeId { get; }
@@ -201,6 +215,7 @@ internal sealed class RuntimeUiTargetSnapshot
             && string.Equals(OrderTraceId, other.OrderTraceId, StringComparison.Ordinal)
             && string.Equals(OrderKey, other.OrderKey, StringComparison.Ordinal)
             && OrderLifecycleSequence == other.OrderLifecycleSequence
+            && GuestId == other.GuestId
             && DeskCode == other.DeskCode
             && RecipeId == other.RecipeId
             && BeverageId == other.BeverageId

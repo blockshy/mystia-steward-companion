@@ -49,6 +49,7 @@ internal sealed class LocalApiServer : IDisposable
         "TraceId",
         "OrderKey",
         "OrderLifecycleSequence",
+        "GuestId",
         "DeskCode",
         "RecipeId",
         "IngredientIds",
@@ -203,6 +204,7 @@ internal sealed class LocalApiServer : IDisposable
         _customRecipeStore = customRecipeStore;
         _deviceAuthorityStore = deviceAuthorityStore;
         RuntimeAutomationControlState.Reset("本地 API 正在等待主设备注册和自动化控制权。");
+        RuntimeRareGuestParticipationState.Reset();
     }
 
     public IPAddress BindAddress { get; }
@@ -701,8 +703,12 @@ internal sealed class LocalApiServer : IDisposable
                         }
                         WriteResponse(stream, 200, "OK", BuildOrderActionJson(query, _completeNormalOrder, normalEpoch));
                         break;
-                    case "/orders/rare/dismiss":
-                        WriteResponse(stream, 200, "OK", BuildRareOrderDismissJson(query));
+                    case "/orders/rare/participation":
+                        WriteResponse(
+                            stream,
+                            200,
+                            "OK",
+                            ToJson(UpdateRareGuestParticipation(request, requestData)));
                         break;
                     case "/rare-guests/invite-all":
                         WriteResponse(
@@ -1067,6 +1073,9 @@ internal sealed class LocalApiServer : IDisposable
                 state.AuthorityRevision,
                 "automation-authority-unavailable",
                 "主设备已注册，正在等待其取得自动化控制权；已开始的料理保持暂停。");
+            RuntimeRareGuestParticipationState.ApplyManagedGuestIdsFromAuthority(
+                RuntimeAutomationControlState.SnapshotManagedRareGuestIds(),
+                resetManagedParticipation: false);
             return state;
         }
     }
@@ -1075,6 +1084,247 @@ internal sealed class LocalApiServer : IDisposable
     {
         var (clientId, _) = ReadRequiredClientIdentity(request);
         return _deviceAuthorityStore.Read(clientId, DateTime.UtcNow);
+    }
+
+    private LocalApiRareGuestParticipationMutationDto UpdateRareGuestParticipation(
+        string request,
+        HttpRequestData requestData)
+    {
+        var (clientId, _) = ReadRequiredClientIdentity(request);
+        var body = ReadJsonRequest<LocalApiRareGuestParticipationMutationRequest>(
+            requestData,
+            ValidateRareGuestParticipationMutationJson,
+            "expectedAuthorityRevision",
+            "expectedBusinessGeneration",
+            "expectedParticipationRevision",
+            "action",
+            "target");
+
+        lock (_authorityTransitionLock)
+        {
+            var nowUtc = DateTime.UtcNow;
+            var authorityRevision = 0L;
+            var authorityError = "";
+            var authorityAuthorized = body.ExpectedAuthorityRevision > 0
+                && TryAuthorizeRuntimeWriter(
+                    request,
+                    clientId,
+                    nowUtc,
+                    out authorityRevision,
+                    out authorityError);
+            if (!authorityAuthorized || authorityRevision != body.ExpectedAuthorityRevision)
+            {
+                throw new CompanionDeviceAuthorityException(
+                    409,
+                    string.IsNullOrWhiteSpace(authorityError)
+                        ? "设备配置权威版本已经变化，请刷新后重试。"
+                        : authorityError);
+            }
+
+            if (!RuntimeAutomationControlState.SnapshotRareGuestParticipationModuleEnabled())
+            {
+                throw new CompanionDeviceAuthorityException(
+                    409,
+                    "稀客调度模块已关闭，请先由主设备启用模块并等待生效配置同步。");
+            }
+
+            lock (_automationLeaseLock)
+            {
+                _automationCommandEpoch = checked(_automationCommandEpoch + 1);
+                try
+                {
+                    _advanceAutomationCommandEpoch(_automationCommandEpoch);
+                }
+                catch (Exception ex)
+                {
+                    throw new CompanionDeviceAuthorityException(
+                        503,
+                        $"无法建立稀客参与状态安全边界，未修改队列：{ex.GetBaseException().Message}");
+                }
+            }
+
+            var action = body.Action switch
+            {
+                "pause" => RuntimeRareGuestParticipationAction.Pause,
+                "enable-tail" => RuntimeRareGuestParticipationAction.EnableTail,
+                "enable-front" => RuntimeRareGuestParticipationAction.EnableFront,
+                _ => throw new CompanionDeviceAuthorityException(400, "稀客参与操作类型无效。"),
+            };
+            var targetScope = body.Target.Type switch
+            {
+                "guest" => RuntimeRareGuestParticipationTargetScope.Guest,
+                "order" => RuntimeRareGuestParticipationTargetScope.Order,
+                _ => throw new CompanionDeviceAuthorityException(400, "稀客参与目标范围无效。"),
+            };
+            IEnumerable<LocalApiRareGuestParticipationIdentityDto> expectedOrderDtos =
+                targetScope == RuntimeRareGuestParticipationTargetScope.Guest
+                    ? body.Target.ExpectedCurrentOrders
+                    : new[] { body.Target.Order! };
+            var expectedOrders = expectedOrderDtos
+                .Select(ToRareGuestParticipationIdentity)
+                .ToArray();
+            var guestId = targetScope == RuntimeRareGuestParticipationTargetScope.Guest
+                ? body.Target.GuestId
+                : expectedOrders[0].GuestId;
+            var activeUiTarget = "none";
+            var activeJobIds = Array.Empty<string>();
+            var suspendedActiveJobIds = Array.Empty<string>();
+            var protectedOrders = Array.Empty<RuntimeRareGuestParticipationOrderIdentity>();
+            var before = RuntimeRareGuestParticipationState.Snapshot;
+            if (action == RuntimeRareGuestParticipationAction.EnableFront)
+            {
+                try
+                {
+                    if (!before.IsActive
+                        || before.BusinessGeneration != body.ExpectedBusinessGeneration
+                        || before.Revision != body.ExpectedParticipationRevision)
+                    {
+                        throw new RuntimeRareGuestParticipationConflictException(
+                            "participation-snapshot-mismatch",
+                            "Rare-guest participation changed before active queue anchors were classified.",
+                            before.BusinessGeneration,
+                            before.Revision);
+                    }
+
+                    var currentParticipation = before.Orders.ToDictionary(order => order.Identity);
+                    var protectedSet = new HashSet<RuntimeRareGuestParticipationOrderIdentity>();
+                    var targetSet = RuntimeUiPinningService.ReadTargetSet();
+                    var rareUiTarget = targetSet.Targets.SingleOrDefault(target =>
+                        target.Kind == RuntimeUiTargetKind.Rare);
+                    if (rareUiTarget != null)
+                    {
+                        if (targetSet.SessionGeneration != body.ExpectedBusinessGeneration
+                            || rareUiTarget.GuestId < 0)
+                        {
+                            throw new InvalidOperationException(
+                                "Current rare UI target cannot provide an exact queue anchor.");
+                        }
+
+                        var identity = new RuntimeRareGuestParticipationOrderIdentity(
+                            targetSet.SessionGeneration,
+                            rareUiTarget.OrderTraceId,
+                            rareUiTarget.OrderLifecycleSequence,
+                            rareUiTarget.GuestId);
+                        if (!currentParticipation.TryGetValue(identity, out var uiParticipation)
+                            || !uiParticipation.Participating)
+                        {
+                            throw new InvalidOperationException(
+                                "Current rare UI target is not a participating exact lifecycle.");
+                        }
+                        protectedSet.Add(identity);
+                        activeUiTarget = FormatRareGuestParticipationIdentity(identity);
+                    }
+
+                    var activeJobCandidates = RuntimeOrderPreparationService
+                        .SnapshotActiveRareAutomationQueueCandidates(body.ExpectedBusinessGeneration);
+                    activeJobIds = activeJobCandidates.Select(candidate => candidate.JobId).ToArray();
+                    var suspendedJobIds = new List<string>();
+                    foreach (var candidate in activeJobCandidates)
+                    {
+                        if (!currentParticipation.TryGetValue(candidate.Identity, out var participation))
+                        {
+                            throw new InvalidOperationException(
+                                $"Cached-active rare cooking job {candidate.JobId} is not in the current participation set.");
+                        }
+                        if (!participation.Participating)
+                        {
+                            suspendedJobIds.Add(candidate.JobId);
+                            continue;
+                        }
+                        protectedSet.Add(candidate.Identity);
+                    }
+                    suspendedActiveJobIds = suspendedJobIds.ToArray();
+                    protectedOrders = protectedSet.ToArray();
+                }
+                catch (RuntimeRareGuestParticipationConflictException ex)
+                {
+                    _log.LogWarning(
+                        $"Rare participation front placement rejected: code={ex.Code}; "
+                        + $"expectedGeneration={body.ExpectedBusinessGeneration}; "
+                        + $"expectedRevision={body.ExpectedParticipationRevision}; "
+                        + $"cachedActiveJobs={FormatLoggedValues(activeJobIds)}; "
+                        + $"error={LimitDiagnosticText(ex.Message)}.");
+                    throw new CompanionDeviceAuthorityException(409, ex.Message);
+                }
+                catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+                {
+                    var failure = LimitDiagnosticText(ex.GetBaseException().Message);
+                    _log.LogWarning(
+                        $"Rare participation front placement rejected: code=active-anchor-invalid; "
+                        + $"expectedGeneration={body.ExpectedBusinessGeneration}; "
+                        + $"expectedRevision={body.ExpectedParticipationRevision}; "
+                        + $"cachedActiveJobs={FormatLoggedValues(activeJobIds)}; error={failure}.");
+                    throw new CompanionDeviceAuthorityException(
+                        409,
+                        $"无法确认当前高亮或自动化任务，未修改优先队列：{failure}");
+                }
+            }
+
+            try
+            {
+                RuntimeRareGuestParticipationState.MutateParticipation(
+                    body.ExpectedBusinessGeneration,
+                    body.ExpectedParticipationRevision,
+                    action,
+                    targetScope,
+                    guestId,
+                    expectedOrders,
+                    protectedOrders);
+            }
+            catch (RuntimeRareGuestParticipationConflictException ex)
+            {
+                if (action == RuntimeRareGuestParticipationAction.EnableFront)
+                {
+                    _log.LogWarning(
+                        $"Rare participation front placement rejected: code={ex.Code}; "
+                        + $"expectedGeneration={body.ExpectedBusinessGeneration}; "
+                        + $"expectedRevision={body.ExpectedParticipationRevision}; "
+                        + $"cachedActiveJobs={FormatLoggedValues(activeJobIds)}; "
+                        + $"suspendedActiveJobs={FormatLoggedValues(suspendedActiveJobIds)}; "
+                        + $"protected={FormatRareGuestParticipationQueuePositions(protectedOrders, before)}; "
+                        + $"error={LimitDiagnosticText(ex.Message)}.");
+                }
+                throw new CompanionDeviceAuthorityException(409, ex.Message);
+            }
+            catch (ArgumentException ex)
+            {
+                throw new CompanionDeviceAuthorityException(400, ex.Message);
+            }
+
+            var after = RuntimeRareGuestParticipationState.Snapshot;
+            if (action == RuntimeRareGuestParticipationAction.Pause)
+            {
+                foreach (var identity in expectedOrders)
+                {
+                    RuntimeUiPinningService.RemoveRareTargetIfMatches(
+                        identity.BusinessGeneration,
+                        identity.TraceId,
+                        identity.OrderLifecycleSequence,
+                        identity.GuestId,
+                        "rare guest participation paused");
+                }
+            }
+            _log.LogInfo(
+                $"Rare participation mutation: action={body.Action}; scope={body.Target.Type}; "
+                + $"guest={guestId}; revision={before.Revision}->{after.Revision}; "
+                + $"targets={FormatRareGuestParticipationIdentities(expectedOrders)}; "
+                + $"placements={FormatRareGuestParticipationPlacements(expectedOrders, before, after)}; "
+                + $"uiAnchor={activeUiTarget}; cachedActiveJobs={FormatLoggedValues(activeJobIds)}; "
+                + $"suspendedActiveJobs={FormatLoggedValues(suspendedActiveJobIds)}; "
+                + $"protected={FormatRareGuestParticipationQueuePositions(protectedOrders, before)}.");
+            return new LocalApiRareGuestParticipationMutationDto
+            {
+                Ok = true,
+                Changed = after.Revision != before.Revision,
+                Status = body.Action switch
+                {
+                    "pause" => "selected rare guest orders paused",
+                    "enable-tail" => "selected rare guest orders queued at tail",
+                    _ => "selected rare guest orders queued after active work",
+                },
+                Participation = LocalApiRareGuestParticipationSnapshot.From(after),
+            };
+        }
     }
 
     private CompanionDeviceAuthorityStateDto UpdateCompanionDeviceProfile(string request, HttpRequestData requestData)
@@ -1097,7 +1347,8 @@ internal sealed class LocalApiServer : IDisposable
                     state,
                     "automation-profile-changing",
                     "主设备生效配置正在切换；已开始的料理会保留在原厨具，配置应用并重新取得控制权后继续。",
-                    "primary companion functional profile changed");
+                    "primary companion functional profile changed",
+                    resetManagedParticipation: false);
             }
             return state;
         }
@@ -1120,7 +1371,8 @@ internal sealed class LocalApiServer : IDisposable
                     result.State,
                     "automation-primary-device-changing",
                     "主设备正在切换；已开始的料理会保留在原厨具，新主设备取得控制权后继续。",
-                    "primary companion device changed");
+                    "primary companion device changed",
+                    resetManagedParticipation: true);
             }
             return result.State;
         }
@@ -1171,7 +1423,8 @@ internal sealed class LocalApiServer : IDisposable
         CompanionDeviceAuthorityStateDto state,
         string reasonCode,
         string message,
-        string logReason)
+        string logReason,
+        bool resetManagedParticipation)
     {
         lock (_automationLeaseLock)
         {
@@ -1191,6 +1444,9 @@ internal sealed class LocalApiServer : IDisposable
                 _log.LogWarning($"Companion authority transition could not advance queued automation commands cleanly: {ex.GetBaseException().Message}");
             }
         }
+        RuntimeRareGuestParticipationState.ApplyManagedGuestIdsFromAuthority(
+            RuntimeAutomationControlState.SnapshotManagedRareGuestIds(),
+            resetManagedParticipation);
         RuntimeUiPinningService.ClearTargetsForAuthorityTransition(
             RuntimeNightBusinessLifecycle.Generation,
             logReason);
@@ -1198,6 +1454,14 @@ internal sealed class LocalApiServer : IDisposable
     }
 
     private static T ReadJsonRequest<T>(HttpRequestData request, params string[] expectedProperties)
+    {
+        return ReadJsonRequest<T>(request, validate: null, expectedProperties);
+    }
+
+    private static T ReadJsonRequest<T>(
+        HttpRequestData request,
+        Action<JsonElement>? validate,
+        params string[] expectedProperties)
     {
         var json = HttpRequestReader.ReadRequiredJsonBody(request);
         try
@@ -1220,6 +1484,8 @@ internal sealed class LocalApiServer : IDisposable
                 throw new CompanionDeviceAuthorityException(400, "JSON 请求字段与当前设备协议不一致。");
             }
 
+            validate?.Invoke(document.RootElement);
+
             return JsonSerializer.Deserialize<T>(json, JsonOptions)
                 ?? throw new CompanionDeviceAuthorityException(400, "JSON 请求体不能为空。");
         }
@@ -1231,6 +1497,174 @@ internal sealed class LocalApiServer : IDisposable
         {
             throw new CompanionDeviceAuthorityException(400, "JSON 请求体格式无效。");
         }
+    }
+
+    private static void ValidateRareGuestParticipationMutationJson(JsonElement request)
+    {
+        var action = request.GetProperty("action");
+        if (action.ValueKind != JsonValueKind.String
+            || action.GetString() is not ("pause" or "enable-tail" or "enable-front"))
+        {
+            throw new CompanionDeviceAuthorityException(
+                400,
+                "action 必须严格为 pause、enable-tail 或 enable-front。");
+        }
+
+        var target = request.GetProperty("target");
+        if (target.ValueKind != JsonValueKind.Object)
+        {
+            throw new CompanionDeviceAuthorityException(400, "target 必须是 JSON 对象。");
+        }
+        var targetType = target.TryGetProperty("type", out var typeElement)
+            && typeElement.ValueKind == JsonValueKind.String
+            ? typeElement.GetString()
+            : null;
+        JsonElement expectedOrders;
+        if (string.Equals(targetType, "guest", StringComparison.Ordinal))
+        {
+            ValidateExactJsonProperties(target, "type", "guestId", "expectedCurrentOrders");
+            expectedOrders = target.GetProperty("expectedCurrentOrders");
+            if (expectedOrders.ValueKind != JsonValueKind.Array
+                || expectedOrders.GetArrayLength() == 0
+                || expectedOrders.GetArrayLength() > RuntimeRareGuestParticipationState.MaximumCurrentOrders)
+            {
+                throw new CompanionDeviceAuthorityException(
+                    400,
+                    "guest target 的 expectedCurrentOrders 必须包含 1 至 512 个当前精确订单身份。");
+            }
+        }
+        else if (string.Equals(targetType, "order", StringComparison.Ordinal))
+        {
+            ValidateExactJsonProperties(target, "type", "order");
+            var order = target.GetProperty("order");
+            if (order.ValueKind != JsonValueKind.Object)
+            {
+                throw new CompanionDeviceAuthorityException(400, "order target 必须包含一个精确订单身份对象。");
+            }
+            using var singleOrder = JsonDocument.Parse($"[{order.GetRawText()}]");
+            expectedOrders = singleOrder.RootElement.Clone();
+        }
+        else
+        {
+            throw new CompanionDeviceAuthorityException(400, "target.type 必须严格为 guest 或 order。");
+        }
+
+        var expectedIdentityProperties = new HashSet<string>(
+            new[] { "businessGeneration", "traceId", "orderLifecycleSequence", "guestId" },
+            StringComparer.Ordinal);
+        foreach (var order in expectedOrders.EnumerateArray())
+        {
+            if (order.ValueKind != JsonValueKind.Object)
+            {
+                throw new CompanionDeviceAuthorityException(400, "当前订单身份必须是 JSON 对象。");
+            }
+            var actual = order.EnumerateObject().Select(property => property.Name).ToArray();
+            if (actual.Length != expectedIdentityProperties.Count
+                || actual.Distinct(StringComparer.Ordinal).Count() != actual.Length
+                || actual.Any(name => !expectedIdentityProperties.Contains(name)))
+            {
+                throw new CompanionDeviceAuthorityException(400, "当前订单身份字段与参与协议不一致。");
+            }
+        }
+    }
+
+    private static void ValidateExactJsonProperties(JsonElement value, params string[] expectedProperties)
+    {
+        var actual = value.EnumerateObject().Select(property => property.Name).ToArray();
+        if (actual.Length != expectedProperties.Length
+            || actual.Distinct(StringComparer.Ordinal).Count() != actual.Length
+            || actual.Any(name => !expectedProperties.Contains(name, StringComparer.Ordinal)))
+        {
+            throw new CompanionDeviceAuthorityException(400, "稀客参与目标字段与当前协议不一致。");
+        }
+    }
+
+    private static RuntimeRareGuestParticipationOrderIdentity ToRareGuestParticipationIdentity(
+        LocalApiRareGuestParticipationIdentityDto order)
+    {
+        return new RuntimeRareGuestParticipationOrderIdentity(
+            order.BusinessGeneration,
+            order.TraceId,
+            order.OrderLifecycleSequence,
+            order.GuestId);
+    }
+
+    private static string FormatRareGuestParticipationIdentities(
+        IReadOnlyList<RuntimeRareGuestParticipationOrderIdentity> identities)
+    {
+        const int maximumLoggedIdentities = 12;
+        var values = identities.Take(maximumLoggedIdentities)
+            .Select(FormatRareGuestParticipationIdentity)
+            .ToList();
+        if (identities.Count > maximumLoggedIdentities)
+        {
+            values.Add($"+{identities.Count - maximumLoggedIdentities}-more");
+        }
+        return values.Count == 0 ? "none" : string.Join(',', values);
+    }
+
+    private static string FormatRareGuestParticipationIdentity(
+        RuntimeRareGuestParticipationOrderIdentity identity)
+    {
+        return $"{identity.BusinessGeneration}/{identity.TraceId}/{identity.OrderLifecycleSequence}/{identity.GuestId}";
+    }
+
+    private static string FormatRareGuestParticipationPlacements(
+        IReadOnlyList<RuntimeRareGuestParticipationOrderIdentity> identities,
+        RuntimeRareGuestParticipationSnapshot before,
+        RuntimeRareGuestParticipationSnapshot after)
+    {
+        const int maximumLoggedIdentities = 12;
+        var values = identities.Take(maximumLoggedIdentities)
+            .Select(identity =>
+                $"{FormatRareGuestParticipationIdentity(identity)}:"
+                + $"{FormatRareGuestParticipationQueuePosition(before, identity)}"
+                + $"->{FormatRareGuestParticipationQueuePosition(after, identity)}")
+            .ToList();
+        if (identities.Count > maximumLoggedIdentities)
+        {
+            values.Add($"+{identities.Count - maximumLoggedIdentities}-more");
+        }
+        return values.Count == 0 ? "none" : string.Join(',', values);
+    }
+
+    private static string FormatRareGuestParticipationQueuePositions(
+        IReadOnlyList<RuntimeRareGuestParticipationOrderIdentity> identities,
+        RuntimeRareGuestParticipationSnapshot snapshot)
+    {
+        const int maximumLoggedIdentities = 12;
+        var values = identities.Take(maximumLoggedIdentities)
+            .Select(identity =>
+                $"{FormatRareGuestParticipationIdentity(identity)}:"
+                + FormatRareGuestParticipationQueuePosition(snapshot, identity))
+            .ToList();
+        if (identities.Count > maximumLoggedIdentities)
+        {
+            values.Add($"+{identities.Count - maximumLoggedIdentities}-more");
+        }
+        return values.Count == 0 ? "none" : string.Join(',', values);
+    }
+
+    private static string FormatRareGuestParticipationQueuePosition(
+        RuntimeRareGuestParticipationSnapshot snapshot,
+        RuntimeRareGuestParticipationOrderIdentity identity)
+    {
+        var order = snapshot.Orders.SingleOrDefault(candidate => candidate.Identity == identity);
+        if (order == null) return "missing";
+        return order.QueuePosition > 0
+            ? order.QueuePosition.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : "paused";
+    }
+
+    private static string FormatLoggedValues(IReadOnlyList<string> values)
+    {
+        const int maximumLoggedValues = 12;
+        var result = values.Take(maximumLoggedValues).ToList();
+        if (values.Count > maximumLoggedValues)
+        {
+            result.Add($"+{values.Count - maximumLoggedValues}-more");
+        }
+        return result.Count == 0 ? "none" : string.Join(',', result);
     }
 
     private static (string ClientId, string ClientLabel) ReadRequiredClientIdentity(string request)
@@ -1946,26 +2380,6 @@ internal sealed class LocalApiServer : IDisposable
         }
     }
 
-    private static string BuildRareOrderDismissJson(string query)
-    {
-        try
-        {
-            var removed = SpecialOrderRuntimeCapture.DismissOrder(
-                ReadIntQuery(query, "deskCode", -1),
-                ReadNullableIntQuery(query, "runtimeGuestId"),
-                ReadNullableIntQuery(query, "foodTagId"),
-                ReadNullableIntQuery(query, "beverageTagId"));
-            var status = removed > 0
-                ? $"已删除 {removed} 条稀客订单缓存。"
-                : "未找到匹配的稀客订单缓存。";
-            return ToJson(new LocalApiRareOrderDismissDto { Ok = true, Removed = removed, Status = status, Error = null });
-        }
-        catch (Exception ex)
-        {
-            return ToJson(new LocalApiRareOrderDismissDto { Ok = false, Removed = 0, Status = "", Error = ex.Message });
-        }
-    }
-
     private string UpdateUiPinningTargetsJson(string request, string query)
     {
         try
@@ -2005,8 +2419,9 @@ internal sealed class LocalApiServer : IDisposable
                     throw new FormatException("Two UI targets must be ordered rare then normal.");
                 }
 
-                var status = RuntimeUiPinningService.UpdateTargets(
-                    ReadRequiredPositiveLongQuery(query, "businessGeneration"),
+                var businessGeneration = ReadRequiredPositiveLongQuery(query, "businessGeneration");
+                var status = PublishUiPinningTargetsWithParticipationGate(
+                    businessGeneration,
                     targets);
                 return ToJson(new LocalApiStatusDto { Ok = true, Status = status, Error = null });
             }
@@ -2051,6 +2466,7 @@ internal sealed class LocalApiServer : IDisposable
             ReadStringQuery(query, $"{prefix}TraceId"),
             ReadStringQuery(query, $"{prefix}OrderKey"),
             ReadRequiredPositiveLongQuery(query, $"{prefix}OrderLifecycleSequence"),
+            ReadRequiredOptionalIdQuery(query, $"{prefix}GuestId"),
             ReadRequiredNonNegativeIntQuery(query, $"{prefix}DeskCode"),
             ReadRequiredOptionalIdQuery(query, $"{prefix}RecipeId"),
             ReadExactNonNegativeIntListQuery(query, $"{prefix}IngredientIds", 12),
@@ -2058,6 +2474,46 @@ internal sealed class LocalApiServer : IDisposable
             ReadRequiredOptionalIdQuery(query, $"{prefix}BeverageId"),
             ReadRequiredOptionalIdQuery(query, $"{prefix}CookerTypeId"),
             ReadStringQuery(query, $"{prefix}Revision"));
+    }
+
+    private static string PublishUiPinningTargetsWithParticipationGate(
+        long businessGeneration,
+        IReadOnlyList<RuntimeUiTargetSnapshot> targets)
+    {
+        var rareTarget = targets.FirstOrDefault(target => target.Kind == RuntimeUiTargetKind.Rare);
+        var managedGuestIds = RuntimeAutomationControlState.SnapshotManagedRareGuestIds();
+        if (rareTarget == null || managedGuestIds.Count == 0)
+        {
+            return RuntimeUiPinningService.UpdateTargets(businessGeneration, targets);
+        }
+
+        var identity = new RuntimeRareGuestParticipationOrderIdentity(
+            businessGeneration,
+            rareTarget.OrderTraceId,
+            rareTarget.OrderLifecycleSequence,
+            rareTarget.GuestId);
+        using var permit = RuntimeRareGuestParticipationState.AcquireAdmissionPermit(identity);
+        if (!permit.Allowed)
+        {
+            throw new InvalidOperationException(
+                $"Rare UI target rejected by participation state ({permit.Decision.ReasonCode}): {permit.Decision.Message}");
+        }
+
+        var participation = RuntimeRareGuestParticipationState.Snapshot;
+        var rostersAligned = participation.IsActive
+            && participation.BusinessGeneration == businessGeneration
+            && participation.ManagedGuestIds.Count == managedGuestIds.Count
+            && managedGuestIds.All(participation.ManagedGuestIds.Contains);
+        var configuredAsManaged = managedGuestIds.Contains(rareTarget.GuestId);
+        if (!rostersAligned
+            || permit.Decision.Order == null
+            || permit.Decision.Order.Managed != configuredAsManaged)
+        {
+            throw new InvalidOperationException(
+                "Rare UI target rejected because the primary profile and runtime participation roster are not aligned.");
+        }
+
+        return RuntimeUiPinningService.UpdateTargets(businessGeneration, targets);
     }
 
     private static void ValidateUiPinningTargetParameters(string query, int targetCount)
@@ -2311,7 +2767,7 @@ internal sealed class LocalApiServer : IDisposable
         headers.Append("Cache-Control: no-store\r\n");
         headers.Append("Access-Control-Allow-Origin: *\r\n");
         headers.Append("Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n");
-        headers.Append("Access-Control-Allow-Headers: Content-Type, X-Mystia-Steward-Companion-Token, X-Mystia-Steward-Companion-Client-Id, X-Mystia-Steward-Companion-Client-Label\r\n");
+        headers.Append("Access-Control-Allow-Headers: Content-Type, X-Mystia-Steward-Companion-Token, X-Mystia-Steward-Companion-Client-Id, X-Mystia-Steward-Companion-Client-Label, X-Mystia-Steward-Companion-Authority-Revision\r\n");
         headers.Append("Access-Control-Max-Age: 86400\r\n");
         headers.Append("Connection: close\r\n");
         headers.Append("\r\n");

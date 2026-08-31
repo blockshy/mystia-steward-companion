@@ -586,12 +586,6 @@ html::-webkit-scrollbar-thumb:hover,
   background-color: color-mix(in srgb, var(--companion-background-surface) 58%, transparent);
 }
 
-.steward-workbench-header {
-  border: 1px solid color-mix(in srgb, var(--border) 46%, transparent);
-  background-color: color-mix(in srgb, var(--companion-card-surface) 82%, transparent);
-  padding: 0.75rem;
-}
-
 .companion-shell {
   min-height: 100dvh;
 }
@@ -612,10 +606,6 @@ html::-webkit-scrollbar-thumb:hover,
   [data-companion-surface='workbench'] {
     font-size: calc(0.9375rem * var(--companion-font-scale));
   }
-}
-
-.steward-workbench-header h1 {
-  font-size: calc(1.45rem * var(--companion-font-scale));
 }
 
 .steward-button {
@@ -1072,6 +1062,11 @@ html::-webkit-scrollbar-thumb:hover,
   line-height: var(--steward-control-line-sm);
   white-space: nowrap;
   color: var(--foreground);
+}
+
+.steward-equal-tabs-list > .steward-tabs-trigger {
+  min-width: 0;
+  flex: 1 1 0;
 }
 
 .steward-tabs-trigger[data-active] {

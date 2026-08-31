@@ -66,6 +66,8 @@ internal sealed class StewardOverlayController
     private long _lastSpecialBusinessChangeVersion;
     private long _lastNightBusinessLifecycleVersion = long.MinValue;
     private long _lastNightBusinessAutomationGateVersion = long.MinValue;
+    private string _lastRareGuestParticipationStateSignature = "";
+    private string _lastRareGuestParticipationDiagnosticSignature = "";
     private string _runtimeSource = "";
     private string _activeSceneName = "";
     private string _status = "Not initialized.";
@@ -245,6 +247,7 @@ internal sealed class StewardOverlayController
     {
         if (_disposed || _config == null) return;
         ProcessNightBusinessLifecycleChange();
+        ProcessRareGuestParticipationStateChange();
         RefreshOnSceneChange();
         ProcessNightBusinessAutomationGateChange();
         RuntimeScheduledEventDiagnosticCapture.Tick(_mainThreadId);
@@ -285,6 +288,7 @@ internal sealed class StewardOverlayController
 
         if (lifecycle.IsActive)
         {
+            EnsureRareGuestParticipationBusiness(lifecycle);
             _nextAutoRefreshAt = 0f;
             _nextBusinessRefreshAt = 0f;
             _nextActiveBusinessSnapshotRefreshAt = 0f;
@@ -298,11 +302,39 @@ internal sealed class StewardOverlayController
             return;
         }
 
+        EndRareGuestParticipationBusiness(lifecycle);
         CancelPendingNightBusinessCommands(lifecycle);
         ClearNightBusinessControllerState(L(
             "夜间经营正在结束；已停止运行时读取和自动化。",
             "Night business is ending; runtime reads and automation have stopped."));
         MarkLocalApiSnapshotDirty(LocalApiSnapshotDirtyDomain.Scene | LocalApiSnapshotDirtyDomain.All, "night business closing", force: true);
+    }
+
+    private void ProcessRareGuestParticipationStateChange()
+    {
+        var state = RuntimeRareGuestParticipationState.Snapshot;
+        var signature = $"{state.IsActive}:{state.BusinessGeneration}:{state.Revision}";
+        if (string.Equals(signature, _lastRareGuestParticipationStateSignature, StringComparison.Ordinal)) return;
+
+        _lastRareGuestParticipationStateSignature = signature;
+        MarkLocalApiSnapshotDirty(
+            LocalApiSnapshotDirtyDomain.RareBusiness | LocalApiSnapshotDirtyDomain.Automation,
+            "rare guest participation changed",
+            force: true);
+    }
+
+    private static void EnsureRareGuestParticipationBusiness(NightBusinessLifecycleSnapshot lifecycle)
+    {
+        var state = RuntimeRareGuestParticipationState.Snapshot;
+        if (state.IsActive && state.BusinessGeneration == lifecycle.Generation) return;
+        RuntimeRareGuestParticipationState.BeginBusiness(
+            lifecycle.Generation,
+            RuntimeAutomationControlState.SnapshotManagedRareGuestIds());
+    }
+
+    private static void EndRareGuestParticipationBusiness(NightBusinessLifecycleSnapshot lifecycle)
+    {
+        RuntimeRareGuestParticipationState.EndBusinessIfCurrent(lifecycle.Generation);
     }
 
     private void CancelPendingNightBusinessCommands(NightBusinessLifecycleSnapshot lifecycle)
@@ -1048,6 +1080,9 @@ internal sealed class StewardOverlayController
                             mission.Phase == RuntimeMissionDiagnosticPhase.Ready),
                         RuntimeServeInWorkMissionDiagnosticCapture.Snapshot(),
                         specialBusiness));
+            var rareGuestParticipation = ReconcileRareGuestParticipation(
+                lifecycle,
+                publishedNightBusiness);
             var snapshot = new LocalApiSnapshot
             {
                 PluginVersion = MystiaStewardCompanionPlugin.PluginVersion,
@@ -1070,6 +1105,7 @@ internal sealed class StewardOverlayController
                 RuntimeSource = _runtimeSource,
                 RuntimeSceneReadinessStatus = RuntimeSceneReadinessCapture.Status,
                 RuntimeUiPinningStatus = RuntimeUiPinningService.Status,
+                RareGuestParticipation = LocalApiRareGuestParticipationSnapshot.From(rareGuestParticipation),
                 RecommendationState = Measure(
                     "snapshot.recommendationState",
                     () => publishedState == null ? null : RecommendationStateSnapshot.From(publishedState)),
@@ -1115,6 +1151,67 @@ internal sealed class StewardOverlayController
         {
             RecordPerformance("snapshot.publish", stopwatch.Elapsed);
         }
+    }
+
+    private RuntimeRareGuestParticipationSnapshot ReconcileRareGuestParticipation(
+        NightBusinessLifecycleSnapshot lifecycle,
+        NightBusinessContext? nightBusiness)
+    {
+        if (!lifecycle.IsActive || lifecycle.Generation <= 0)
+        {
+            return RuntimeRareGuestParticipationState.Snapshot;
+        }
+
+        try
+        {
+            EnsureRareGuestParticipationBusiness(lifecycle);
+            var state = RuntimeRareGuestParticipationState.Snapshot;
+            var managedGuestIds = RuntimeAutomationControlState.SnapshotManagedRareGuestIds();
+            if (!state.ManagedGuestIds.SequenceEqual(managedGuestIds))
+            {
+                RuntimeRareGuestParticipationState.ReplaceManagedGuestIds(
+                    lifecycle.Generation,
+                    state.Revision,
+                    managedGuestIds);
+                state = RuntimeRareGuestParticipationState.Snapshot;
+            }
+
+            var collectionComplete = nightBusiness != null
+                && string.IsNullOrWhiteSpace(nightBusiness.Error);
+            var observations = collectionComplete
+                ? nightBusiness!.Orders.Select(order =>
+                    new RuntimeRareGuestParticipationOrderObservation(
+                        new RuntimeRareGuestParticipationOrderIdentity(
+                            lifecycle.Generation,
+                            order.TraceId,
+                            order.OrderLifecycleSequence,
+                            order.GuestId ?? -1),
+                        Binding: null))
+                : null;
+            RuntimeRareGuestParticipationState.ReconcileCurrentOrders(
+                lifecycle.Generation,
+                state.Revision,
+                collectionComplete,
+                observations);
+            _lastRareGuestParticipationDiagnosticSignature = "";
+        }
+        catch (Exception ex) when (ex is ArgumentException
+                                   or OverflowException
+                                   or RuntimeRareGuestParticipationConflictException)
+        {
+            var diagnosticSignature = $"{lifecycle.Generation}:{ex.GetType().Name}:{ex.Message}";
+            if (!string.Equals(
+                    diagnosticSignature,
+                    _lastRareGuestParticipationDiagnosticSignature,
+                    StringComparison.Ordinal))
+            {
+                _lastRareGuestParticipationDiagnosticSignature = diagnosticSignature;
+                _log?.LogWarning(
+                    $"Rare-guest participation projection retained its previous complete state: {ex.Message}");
+            }
+        }
+
+        return RuntimeRareGuestParticipationState.Snapshot;
     }
 
     private void AppendLocalApiSnapshotDiagnostic(
@@ -1329,6 +1426,7 @@ internal sealed class StewardOverlayController
         AppendValue(builder, snapshot.RuntimeSource);
         AppendValue(builder, snapshot.RuntimeSceneReadinessStatus);
         AppendValue(builder, snapshot.RuntimeUiPinningStatus);
+        AppendRareGuestParticipation(builder, snapshot.RareGuestParticipation);
         AppendRecommendationSnapshot(builder, snapshot.RecommendationState);
         AppendNightBusiness(builder, snapshot.NightBusiness);
         AppendSpecialBusiness(builder, snapshot.SpecialBusiness);
@@ -1340,6 +1438,26 @@ internal sealed class StewardOverlayController
         AppendValue(builder, snapshot.RuntimeDataStatus);
         AppendValue(builder, snapshot.RuntimeDataSignature);
         return LocalApiSnapshotSignature.Compute(builder.ToString());
+    }
+
+    private static void AppendRareGuestParticipation(
+        StringBuilder builder,
+        LocalApiRareGuestParticipationSnapshot participation)
+    {
+        AppendValue(builder, participation.Active);
+        AppendValue(builder, participation.BusinessGeneration);
+        AppendValue(builder, participation.ParticipationRevision);
+        foreach (var guestId in participation.ManagedGuestIds) AppendValue(builder, guestId);
+        foreach (var entry in participation.Entries)
+        {
+            AppendValue(builder, entry.TraceId);
+            AppendValue(builder, entry.OrderLifecycleSequence);
+            AppendValue(builder, entry.GuestId);
+            AppendValue(builder, entry.Managed);
+            AppendValue(builder, entry.Participating);
+            AppendValue(builder, entry.ReasonCode);
+            AppendValue(builder, entry.QueuePosition);
+        }
     }
 
     private static void AppendAutomationRuntimeEvents(StringBuilder builder, IEnumerable<AutomationRuntimeEvent> events)
@@ -2794,7 +2912,18 @@ internal sealed class StewardOverlayController
         }
 
         var sessionGeneration = RuntimeNightBusinessLifecycle.Generation;
-        var result = RuntimeOrderPreparationService.Prepare(request);
+        var participationPermit = AcquireRareOrderParticipationAdmission(
+            request,
+            sessionGeneration,
+            out var participationBlocked);
+        if (participationBlocked != null) return participationBlocked;
+        OrderPreparationResult result;
+        using (participationPermit)
+        {
+            result = RuntimeOrderPreparationService.Prepare(
+                request,
+                requireRareParticipationBinding: participationPermit != null);
+        }
         if (!IsNightBusinessSessionCurrent(sessionGeneration)) return result;
         _status = result.Ok
             ? L("已准备下一笔稀客订单。", "Next rare-customer order prepared.")
@@ -2899,6 +3028,62 @@ internal sealed class StewardOverlayController
         return result;
     }
 
+    private static RuntimeRareGuestParticipationPermit? AcquireRareOrderParticipationAdmission(
+        OrderPreparationRequest request,
+        long businessGeneration,
+        out OrderPreparationResult? blocked)
+    {
+        blocked = null;
+        var managedGuestIds = RuntimeAutomationControlState.SnapshotManagedRareGuestIds();
+        if (managedGuestIds.Count == 0) return null;
+
+        var identity = new RuntimeRareGuestParticipationOrderIdentity(
+            businessGeneration,
+            request.TraceId,
+            request.OrderLifecycleSequence,
+            request.GuestId ?? -1);
+        var permit = RuntimeRareGuestParticipationState.AcquireAdmissionPermit(identity);
+        var participation = RuntimeRareGuestParticipationState.Snapshot;
+        var configuredAsManaged = request.GuestId.HasValue
+            && managedGuestIds.Contains(request.GuestId.Value);
+        var rostersAligned = participation.IsActive
+            && participation.BusinessGeneration == businessGeneration
+            && participation.ManagedGuestIds.Count == managedGuestIds.Count
+            && managedGuestIds.All(participation.ManagedGuestIds.Contains);
+        var configurationAligned = rostersAligned
+            && permit.Decision.Order != null
+            && permit.Decision.Order.Managed == configuredAsManaged;
+        if (permit.Allowed && configurationAligned) return permit;
+
+        var reasonCode = permit.Allowed
+            ? "participation-profile-not-aligned"
+            : permit.Decision.ReasonCode;
+        var message = permit.Allowed
+            ? "稀客参与状态尚未与当前主设备名单对齐，未执行任何游戏操作。"
+            : string.Equals(reasonCode, "order-paused", StringComparison.Ordinal)
+                ? "该稀客订单当前已暂停，不参与高亮、自动化或资源预约。"
+                : $"无法确认该稀客订单的精确参与许可，未执行任何游戏操作：{permit.Decision.Message}";
+        permit.Dispose();
+        blocked = BuildUnavailableOrderResult(request, message, reasonCode);
+        blocked.Automation.Outcome = "blocked";
+        blocked.Automation.Stage = "participation";
+        blocked.Automation.ReasonCode = reasonCode;
+        blocked.Automation.RetryAfterMs = 0;
+        if (blocked.Steps.Count > 0)
+        {
+            var step = blocked.Steps[0];
+            blocked.Steps[0] = new OrderPreparationStep
+            {
+                Code = step.Code,
+                Name = "稀客参与检查",
+                Ok = step.Ok,
+                Skipped = step.Skipped,
+                Message = step.Message,
+            };
+        }
+        return null;
+    }
+
     private OrderPreparationResult ApplyOrderCompletion(OrderPreparationRequest request)
     {
         if (!CanRunNightBusinessOrderAction(out var reason, out var reasonCode))
@@ -2907,7 +3092,18 @@ internal sealed class StewardOverlayController
         }
 
         var sessionGeneration = RuntimeNightBusinessLifecycle.Generation;
-        var result = RuntimeOrderPreparationService.CompleteFirst(request);
+        var participationPermit = AcquireRareOrderParticipationAdmission(
+            request,
+            sessionGeneration,
+            out var participationBlocked);
+        if (participationBlocked != null) return participationBlocked;
+        OrderPreparationResult result;
+        using (participationPermit)
+        {
+            result = RuntimeOrderPreparationService.CompleteFirst(
+                request,
+                requireRareParticipationBinding: participationPermit != null);
+        }
         if (!IsNightBusinessSessionCurrent(sessionGeneration)) return result;
         _status = result.Ok
             ? L("已完成当前第一笔稀客订单。", "First rare-customer order completed.")

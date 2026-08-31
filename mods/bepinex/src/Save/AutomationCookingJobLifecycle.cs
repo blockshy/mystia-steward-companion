@@ -38,6 +38,7 @@ internal enum AutomationCookingControllerLeaseReleaseReason
 {
     None,
     ManualHandoff,
+    OrderTerminatedBeforeDelivery,
     DeliveryCleanupCompleted,
     DeliveryCleanupTerminated,
 }

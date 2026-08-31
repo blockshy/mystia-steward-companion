@@ -29,6 +29,7 @@ const pages = [
   { value: 'service', topValue: 'service' },
   { value: 'missions', topValue: 'extensions', innerSelector: '[data-extension-tabs]', innerLabel: '任务列表' },
   { value: 'rare-invitations', topValue: 'extensions', innerSelector: '[data-extension-tabs]', innerLabel: '稀客邀请' },
+  { value: 'rare-participation', topValue: 'extensions', innerSelector: '[data-extension-tabs]', innerLabel: '稀客调度' },
   { value: 'inventory', topValue: 'extensions', innerSelector: '[data-extension-tabs]', innerLabel: '修改' },
   { value: 'logs', topValue: 'logs' },
   { value: 'settings', topValue: 'settings', innerSelector: '[data-settings-tabs]', innerLabel: '窗口' },
@@ -39,7 +40,7 @@ const pages = [
 const profiles = [
   { name: 'desktop-default', width: 1280, height: 900, scale: 100, allTabs: false },
   { name: 'minimum-small', width: 640, height: 520, scale: 90, allTabs: false, showDebugDetails: false },
-  { name: 'minimum-large', width: 640, height: 520, scale: 130, allTabs: true },
+  { name: 'minimum-large', width: 640, height: 520, scale: 130, allTabs: true, mousePassthrough: true },
   { name: 'mobile-default', width: 390, height: 844, scale: 100, allTabs: false },
   { name: 'mobile-large', width: 390, height: 844, scale: 130, allTabs: true },
 ];
@@ -61,13 +62,13 @@ try {
       fontScale: profile.scale,
       fontScaleStorageKey: storageKey,
       showDebugDetails: profile.showDebugDetails ?? true,
+      mousePassthrough: profile.mousePassthrough ?? false,
     });
     await page.goto(appUrl, { waitUntil: 'domcontentloaded' });
-    await page.getByText('Mod 工作台', { exact: true }).waitFor({ timeout: 10_000 });
+    await page.locator('[data-gamepad-tab-value="overview"]').first().waitFor({ timeout: 10_000 });
     await assertFontScale(page, profile);
     if (profile.width === 640) {
       await assertMinimumPrimaryTabsLayout(page, profile);
-      await assertMinimumHeaderToolbarLayout(page, profile);
     }
 
     const targetPages = profile.allTabs
@@ -77,10 +78,18 @@ try {
       const tab = pageView.value;
       await activatePage(page, pageView);
       await page.waitForTimeout(tab === 'logs' ? 500 : 200);
+      if (tab === 'service'
+        && profile.scale === 130
+        && (profile.width === 640 || profile.width === 390)) {
+        await auditExpandedServiceSummary(page, profile);
+      }
       await assertNoDocumentOverflow(page, profile, tab);
       await assertControlLayout(page, profile, tab);
       if (profile.width === 640 && tab !== 'logs') {
         await assertMinimumNestedTabsLayout(page, profile, tab);
+      }
+      if (profile.width === 390 && tab === 'overview') {
+        await assertMobileOverviewTabsLayout(page, profile);
       }
       if (tab === 'rare' || tab === 'service') {
         await assertEffectiveCustomRecipeHeaders(page, profile, tab);
@@ -116,11 +125,12 @@ try {
 
 console.log(`font scale Playwright audit passed; screenshots: ${outputDir}`);
 
-function seedLocalStorage({ endpoint, token, fontScale, fontScaleStorageKey, showDebugDetails }) {
+function seedLocalStorage({ endpoint, token, fontScale, fontScaleStorageKey, showDebugDetails, mousePassthrough }) {
   localStorage.setItem('mystia-steward-companion-mod-api-endpoint', endpoint);
   localStorage.setItem('mystia-steward-companion-mod-api-token', token);
   localStorage.setItem('mystia-steward-companion-client-id', 'font-scale-audit-device');
   localStorage.setItem('mystia-steward-companion-show-debug-details', showDebugDetails ? '1' : '0');
+  localStorage.setItem('mystia-steward-companion-mouse-passthrough', mousePassthrough ? '1' : '0');
   const seedMarker = 'mystia-steward-companion-font-scale-audit-seeded';
   if (!sessionStorage.getItem(seedMarker)) {
     localStorage.setItem(fontScaleStorageKey, String(fontScale));
@@ -204,31 +214,21 @@ async function assertMinimumPrimaryTabsLayout(page, profile) {
   assert.equal(result.noInternalOverflow, true, `${profile.name}: primary tabs overflow internally`);
 }
 
-async function assertMinimumHeaderToolbarLayout(page, profile) {
-  const result = await page.locator('.steward-workbench-header').evaluate((header) => {
-    const headerGrid = header.firstElementChild;
-    const toolbar = headerGrid?.children[1];
-    if (!(toolbar instanceof HTMLElement)) return { ok: false, reason: 'toolbar missing' };
-    const children = Array.from(toolbar.children).filter((node) => node instanceof HTMLElement);
-    const rects = children.map((child) => child.getBoundingClientRect());
+async function assertMobileOverviewTabsLayout(page, profile) {
+  const result = await page.locator('[data-overview-tabs="true"]').evaluate((list) => {
+    const triggers = Array.from(list.querySelectorAll(':scope > [data-slot="tabs-trigger"]'));
+    const rects = triggers.map((trigger) => trigger.getBoundingClientRect());
     return {
-      ok: rects.length === 4
-        && rects.every((rect) => Math.abs(rect.top - rects[0].top) <= 2)
-        && rects.slice(1).every((rect, index) => rect.left >= rects[index].right - 1)
-        && toolbar.scrollWidth <= toolbar.clientWidth + 1
-        && toolbar.scrollHeight <= toolbar.clientHeight + 1
-        && rects[0].width >= 136
-        && rects[1].width >= 112,
-      childCount: rects.length,
-      tops: rects.map((rect) => Math.round(rect.top)),
-      widths: rects.map((rect) => Math.round(rect.width)),
-      clientWidth: toolbar.clientWidth,
-      scrollWidth: toolbar.scrollWidth,
-      clientHeight: toolbar.clientHeight,
-      scrollHeight: toolbar.scrollHeight,
+      labels: triggers.map((trigger) => (trigger.textContent || '').trim()),
+      scrollable: list.getAttribute('data-scrollable-tabs') === 'true',
+      overflows: list.scrollWidth > list.clientWidth,
+      singleRow: rects.every((rect) => Math.abs(rect.top - rects[0].top) <= 2),
     };
   });
-  assert.equal(result.ok, true, `${profile.name}: minimum header toolbar layout ${JSON.stringify(result)}`);
+  assert.deepEqual(result.labels, ['连接', '状态', '库存', '操作'], `${profile.name}: overview tab order drifted`);
+  assert.equal(result.scrollable, true, `${profile.name}: overview tabs must opt in to horizontal scrolling`);
+  assert.equal(result.overflows, true, `${profile.name}: overview tabs must expose horizontal scrolling at 390px`);
+  assert.equal(result.singleRow, true, `${profile.name}: overview tabs must stay on one row`);
 }
 
 async function assertControlLayout(page, profile, tab) {
@@ -354,7 +354,9 @@ async function auditSettingsSections(page, profile) {
   for (const section of sections) {
     await page.getByRole('tab', { name: section.label, exact: true }).click();
     if (section.key === 'connection') await page.waitForTimeout(400);
-    if (section.key === 'updates') await page.getByRole('button', { name: '检查', exact: true }).waitFor();
+    if (section.key === 'updates') {
+      await page.locator('[data-gamepad-focus-key="settings:updates:check"]').waitFor();
+    }
     if (profile.width === 640 && (section.key === 'window' || section.key === 'recommendation')) {
       await assertMinimumSettingSegmentedControls(page, profile, section);
     }
@@ -414,6 +416,80 @@ async function assertMinimumSettingSegmentedControls(page, profile, section) {
   );
 }
 
+async function auditExpandedServiceSummary(page, profile) {
+  const trigger = page.locator('[data-service-summary-trigger="true"]:visible').first();
+  assert.equal(await trigger.count(), 1, `${profile.name}/service-summary: trigger missing`);
+  assert.equal(
+    await trigger.getAttribute('aria-expanded'),
+    'false',
+    `${profile.name}/service-summary: summary must be collapsed on entry`,
+  );
+
+  await trigger.scrollIntoViewIfNeeded();
+  await trigger.focus();
+  await trigger.press('Enter');
+  await page.waitForFunction(() => {
+    const summaryTrigger = document.querySelector('[data-service-summary-trigger="true"]');
+    const content = document.querySelector('[data-service-summary-content="true"]');
+    return summaryTrigger?.getAttribute('aria-expanded') === 'true'
+      && content instanceof HTMLElement
+      && content.getBoundingClientRect().width > 0
+      && content.getBoundingClientRect().height > 0;
+  }, null, { timeout: 2_000 });
+
+  const layout = await page.locator('[data-service-summary-content="true"]:visible').evaluate((content, viewportWidth) => {
+    const accordion = content.closest('[data-service-summary-accordion="true"]');
+    const grid = content.querySelector('[data-service-summary-grid="true"]');
+    if (!(accordion instanceof HTMLElement) || !(grid instanceof HTMLElement)) {
+      return { ok: false, reason: 'accordion or grid missing' };
+    }
+    const gridRect = grid.getBoundingClientRect();
+    const children = Array.from(grid.children).filter((child) => child instanceof HTMLElement);
+    const overflowingChildren = children
+      .filter((child) => child.scrollWidth > child.clientWidth + 1)
+      .map((child) => (child.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 80));
+    const columnCount = getComputedStyle(grid).gridTemplateColumns
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .length;
+    const expectedColumns = viewportWidth === 640 ? 3 : 1;
+    return {
+      ok: columnCount === expectedColumns
+        && accordion.scrollWidth <= accordion.clientWidth + 1
+        && content.scrollWidth <= content.clientWidth + 1
+        && grid.scrollWidth <= grid.clientWidth + 1
+        && overflowingChildren.length === 0
+        && children.every((child) => {
+          const rect = child.getBoundingClientRect();
+          return rect.left >= gridRect.left - 1 && rect.right <= gridRect.right + 1;
+        }),
+      columnCount,
+      expectedColumns,
+      accordionWidth: `${accordion.clientWidth}/${accordion.scrollWidth}`,
+      contentWidth: `${content.clientWidth}/${content.scrollWidth}`,
+      gridWidth: `${grid.clientWidth}/${grid.scrollWidth}`,
+      overflowingChildren,
+    };
+  }, profile.width);
+  assert.equal(
+    layout.ok,
+    true,
+    `${profile.name}/service-summary: expanded layout overflow ${JSON.stringify(layout)}`,
+  );
+  await assertNoDocumentOverflow(page, profile, 'service-summary-expanded');
+  await assertControlLayout(page, profile, 'service-summary-expanded');
+  await page.screenshot({
+    path: path.join(outputDir, `${profile.name}-service-summary-expanded.png`),
+    fullPage: true,
+  });
+
+  await trigger.press('Enter');
+  await page.waitForFunction(() => (
+    document.querySelector('[data-service-summary-trigger="true"]')?.getAttribute('aria-expanded') === 'false'
+  ), null, { timeout: 2_000 });
+}
+
 async function auditServiceFocusMode(page, profile) {
   await page.getByRole('button', { name: '稀客订单专注模式', exact: true }).click();
   const focusPage = page.locator('[data-service-focus-page="true"]');
@@ -421,7 +497,13 @@ async function auditServiceFocusMode(page, profile) {
   await focusPage.waitFor();
   assert.equal(await focusPage.getAttribute('aria-label'), '稀客订单专注模式');
   assert.equal(await focusPage.getByText('只显示当前稀客点单推荐。', { exact: true }).count(), 0);
-  const toolbarLayout = await toolbar.evaluate((element) => {
+  assert.equal(
+    await focusPage.locator('[data-mouse-passthrough-safety="true"]').count(),
+    profile.mousePassthrough ? 1 : 0,
+    `${profile.name}/service-focus: mouse-passthrough safety notice visibility drifted`,
+  );
+  const expectedToolbarChildCount = profile.mousePassthrough ? 5 : 4;
+  const toolbarLayout = await toolbar.evaluate((element, expectedChildCount) => {
     const toolbarRect = element.getBoundingClientRect();
     const children = Array.from(element.children).filter((node) => node instanceof HTMLElement);
     const rects = children.map((child) => child.getBoundingClientRect());
@@ -432,7 +514,7 @@ async function auditServiceFocusMode(page, profile) {
       rows.set(rowKey, Math.max(currentRight, rect.right));
     }
     return {
-      ok: children.length === 4
+      ok: children.length === expectedChildCount
         && element.scrollWidth <= element.clientWidth + 1
         && rects.every((rect) => rect.left >= toolbarRect.left - 1 && rect.right <= toolbarRect.right + 1)
         && Array.from(rows.values()).every((right) => Math.abs(right - toolbarRect.right) <= 2),
@@ -442,7 +524,7 @@ async function auditServiceFocusMode(page, profile) {
       clientWidth: element.clientWidth,
       scrollWidth: element.scrollWidth,
     };
-  });
+  }, expectedToolbarChildCount);
   assert.equal(toolbarLayout.ok, true, `${profile.name}/service-focus: toolbar layout ${JSON.stringify(toolbarLayout)}`);
   await assertNoDocumentOverflow(page, profile, 'service-focus');
   await assertControlLayout(page, profile, 'service-focus');
@@ -451,7 +533,7 @@ async function auditServiceFocusMode(page, profile) {
     fullPage: true,
   });
   await page.getByRole('button', { name: '退出专注模式', exact: true }).click();
-  await page.getByText('Mod 工作台', { exact: true }).waitFor();
+  await page.locator('[data-gamepad-tab-value="overview"]').first().waitFor();
 }
 
 async function verifySliderPersistenceAndReset(page) {
@@ -479,7 +561,7 @@ async function verifySliderPersistenceAndReset(page) {
   assert.equal(await page.evaluate((key) => localStorage.getItem(key), storageKey), '130');
 
   await page.reload({ waitUntil: 'domcontentloaded' });
-  await page.getByText('Mod 工作台', { exact: true }).waitFor();
+  await page.locator('[data-gamepad-tab-value="overview"]').first().waitFor();
   assert.equal(
     await page.evaluate(() => getComputedStyle(document.documentElement)
       .getPropertyValue('--companion-font-scale').trim()),
@@ -516,7 +598,7 @@ async function verifyNormalizationBoundaries(browser) {
       raw: testCase.raw,
     });
     await page.goto(appUrl, { waitUntil: 'domcontentloaded' });
-    await page.getByText('Mod 工作台', { exact: true }).waitFor({ timeout: 10_000 });
+    await page.locator('[data-gamepad-tab-value="overview"]').first().waitFor({ timeout: 10_000 });
     await page.waitForFunction(({ key, expected }) => (
       localStorage.getItem(key) === String(expected)
       && getComputedStyle(document.documentElement).getPropertyValue('--companion-font-scale').trim() === String(expected / 100)

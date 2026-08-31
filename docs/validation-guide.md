@@ -1,6 +1,6 @@
 # 验证指南
 
-更新日期：2026-08-19
+更新日期：2026-08-31
 
 本文档负责回答“改动后应运行哪些验证”。它只记录测试入口、选择规则和平台边界；每项测试的完整断言、
 fixtures 和禁止路径以 `tests/` 下的源码为权威，业务契约不在这里重复维护。
@@ -58,6 +58,7 @@ package scripts 是聚合入口；其当前子测试列表以 [`package.json`](.
 | 游戏界面目标发布 | `corepack pnpm audit:ui-pinning` |
 | 特殊经营前端与运行时集合 | `corepack pnpm audit:special-business` |
 | 稀客邀请 | `corepack pnpm audit:rare-guest-invitations`、`corepack pnpm audit:rare-guest-invitations:ui` |
+| 稀客参与名单、队列与 operational 投影 | `corepack pnpm audit:rare-order-participation`、`corepack pnpm audit:rare-order-participation:ui` |
 | 手柄输入与焦点 | `corepack pnpm audit:gamepad` |
 | BepInEx 控制台 UI | `corepack pnpm audit:logs:console` |
 | 任务列表与运行时投影 | `corepack pnpm audit:runtime-missions`、`corepack pnpm audit:runtime-missions:ui` |
@@ -148,7 +149,7 @@ dotnet run --project tests/bepinex-console-window/BepInExConsoleWindowSmoke.cspr
 dotnet run --project tests/runtime-reflection/RuntimeReflectionSmoke.csproj -c Release
 dotnet run --project tests/runtime-static-data-catalog/RuntimeStaticDataCatalogSmoke.csproj -c Release
 dotnet run --project tests/runtime-cooker-snapshot/RuntimeCookerSnapshotSmoke.csproj -c Release
-dotnet run --project tests/night-business-lifecycle/NightBusinessLifecycleSmoke.csproj -c Release
+corepack pnpm test:dotnet6 night-business-lifecycle
 dotnet run --project tests/night-business-automation-gate/NightBusinessAutomationGateSmoke.csproj -c Release
 ```
 
@@ -177,9 +178,11 @@ dotnet run --project tests/special-order-runtime-capture/SpecialOrderRuntimeCapt
 dotnet run --project tests/runtime-order-terminal-receipt/RuntimeOrderTerminalReceiptSmoke.csproj -c Release
 dotnet run --project tests/rare-order-identity-matching/RareOrderIdentityMatchingSmoke.csproj -c Release
 dotnet run --project tests/runtime-automation-control/RuntimeAutomationControlSmoke.csproj -c Release
+corepack pnpm test:dotnet6 runtime-rare-guest-participation
 dotnet run --project tests/automation-cooking-job/AutomationCookingJobSmoke.csproj -c Release
 dotnet run --project tests/rare-guest-invitation-readonly/RareGuestInvitationReadOnlySmoke.csproj -c Release
 corepack pnpm audit:automation
+corepack pnpm audit:rare-order-participation
 ```
 
 配置权威、总控或阶段开关影响 automation lease 时，再叠加本地 API 存储组和
@@ -223,14 +226,16 @@ corepack pnpm audit:gamepad
 
 ## 锁定 .NET 6 smoke 矩阵
 
-以下三个测试会安装真实 Harmony/MonoMod 动态补丁：
+前三个测试会安装真实 Harmony/MonoMod 动态补丁；后两个分别锁定纯托管 participation monitor/permit 和经营 lifecycle boundary 在产品目标运行时上的行为：
 
 - `tests/automation-cooking-job/`；
 - `tests/ui-pinning-runtime/`；
 - `tests/runtime-target-recipe-variant/`。
+- `tests/runtime-rare-guest-participation/`。
+- `tests/night-business-lifecycle/`。
 
 Linux .NET 10 CoreCLR 上的真实探针可能原生崩溃。统一使用仓库锁定的通用 .NET 6 SDK 容器入口；
-不带参数时执行全部三项 smoke：
+不带参数时执行全部五项 smoke：
 
 ```bash
 corepack pnpm test:dotnet6

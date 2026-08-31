@@ -3,6 +3,7 @@ import type {
   OrderRecommendation,
   RecommendationIssue,
 } from '@/companion/types';
+import type { RareOrderParticipationResolution } from '@/companion/domain/rare-order-participation';
 
 export interface OrderRecommendationPresentation {
   recommendations: OrderRecommendation[];
@@ -93,6 +94,41 @@ export function buildOrderRecommendationPresentation({
     updating,
     updateError: retainedAfterError && error && orders.length > 0 ? error : null,
   };
+}
+
+/**
+ * 把展示行绑定到同一份权威 participation resolution，并严格按公开队列位置排列。
+ *
+ * 特殊经营硬 lane 只改变 operational 选择，不改写玩家在稀客队列中建立的展示顺序；
+ * 非正位置、未对齐或暂停行一律不进入结果，也不由前端压缩或补造位置。
+ */
+export function buildParticipatingRareOrderPresentationRows<
+  T extends { order: NightBusinessOrder },
+>(
+  rows: readonly T[],
+  resolveParticipation: (
+    order: NightBusinessOrder,
+  ) => RareOrderParticipationResolution | null,
+): Array<T & { participation: RareOrderParticipationResolution }> {
+  return rows.flatMap((row, originalIndex) => {
+    const participation = resolveParticipation(row.order);
+    const queuePosition = participation?.queuePosition ?? null;
+    if (!participation?.configurationAligned
+      || !participation.operationallyParticipating
+      || !Number.isSafeInteger(queuePosition)
+      || queuePosition === null
+      || queuePosition <= 0) {
+      return [];
+    }
+    return [{
+      row: { ...row, participation },
+      queuePosition,
+      originalIndex,
+    }];
+  }).sort((left, right) => (
+    left.queuePosition - right.queuePosition
+    || left.originalIndex - right.originalIndex
+  )).map(({ row }) => row);
 }
 
 export function buildOrderDemandIdentity(order: NightBusinessOrder): string {

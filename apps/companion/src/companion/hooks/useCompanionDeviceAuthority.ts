@@ -11,7 +11,7 @@ import {
 } from '@/companion/api';
 import {
   SHARED_COMPANION_PREFERENCES_SCHEMA_VERSION,
-  normalizeSharedCompanionPreferences,
+  parseSharedCompanionPreferences,
   serializeSharedCompanionPreferences,
   type SharedCompanionPreferences,
 } from '@/companion/preferences';
@@ -90,17 +90,10 @@ export function useCompanionDeviceAuthority({
 
   const commitState = useCallback((next: CompanionDeviceAuthorityState, generation: number): boolean => {
     if (generationRef.current !== generation) return false;
-    validateAuthorityState(next);
-    const activeProfile = normalizeSharedCompanionPreferences(next.activeProfile);
-    const currentDeviceProfile = normalizeSharedCompanionPreferences(next.currentDeviceProfile);
-    const normalizedState: CompanionDeviceAuthorityState = {
-      ...next,
-      activeProfile,
-      currentDeviceProfile,
-    };
-    applySharedPreferencesRef.current(activeProfile);
-    stateRef.current = normalizedState;
-    setState(normalizedState);
+    const parsedState = parseAuthorityState(next);
+    applySharedPreferencesRef.current(parsedState.activeProfile);
+    stateRef.current = parsedState;
+    setState(parsedState);
     setError('');
     return true;
   }, []);
@@ -109,16 +102,17 @@ export function useCompanionDeviceAuthority({
     next: CompanionDeviceAuthorityState,
     generation: number,
   ): Promise<CompanionDeviceAuthorityState> => {
-    if (!next.pendingSyncId) return next;
-    applySharedPreferencesRef.current(normalizeSharedCompanionPreferences(next.currentDeviceProfile));
+    const parsedState = parseAuthorityState(next);
+    if (!parsedState.pendingSyncId) return parsedState;
+    applySharedPreferencesRef.current(parsedState.currentDeviceProfile);
     const acknowledged = await acknowledgeCompanionDeviceSync(
       endpoint,
       apiToken,
-      next.pendingSyncId,
-      next.currentDeviceProfileRevision,
-      next.currentDeviceProfileHash,
+      parsedState.pendingSyncId,
+      parsedState.currentDeviceProfileRevision,
+      parsedState.currentDeviceProfileHash,
     );
-    if (generationRef.current !== generation) return next;
+    if (generationRef.current !== generation) return parsedState;
     return acknowledged;
   }, [apiToken, endpoint]);
 
@@ -322,6 +316,15 @@ function validateAuthorityState(state: CompanionDeviceAuthorityState): void {
     || !state.devices.some((device) => device.isPrimary && device.deviceId === state.primaryDeviceId)) {
     throw new Error('Mod 返回的设备权威状态与当前伴随窗口协议不一致。');
   }
+}
+
+function parseAuthorityState(state: CompanionDeviceAuthorityState): CompanionDeviceAuthorityState {
+  validateAuthorityState(state);
+  return {
+    ...state,
+    activeProfile: parseSharedCompanionPreferences(state.activeProfile),
+    currentDeviceProfile: parseSharedCompanionPreferences(state.currentDeviceProfile),
+  };
 }
 
 function formatAuthorityError(cause: unknown): string {

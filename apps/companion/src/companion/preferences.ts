@@ -4,6 +4,7 @@ import {
   serializeRecommendationSortProfile,
   type RecommendationBudgetPolicy,
   type RecommendationExclusions,
+  type RecommendationObjectiveKey,
   type RecommendationSortProfile,
 } from '@/recommendation-engine';
 
@@ -26,6 +27,8 @@ const MOUSE_PASSTHROUGH_STORAGE_KEY = `${STORAGE_PREFIX}-mouse-passthrough`;
 const GAMEPAD_NAVIGATION_STORAGE_KEY = `${STORAGE_PREFIX}-gamepad-navigation`;
 const AUTOMATION_ENABLED_STORAGE_KEY = `${STORAGE_PREFIX}-automation-enabled`;
 const AUTO_RARE_ORDER_ENABLED_STORAGE_KEY = `${STORAGE_PREFIX}-auto-rare-order-enabled`;
+const RARE_GUEST_PARTICIPATION_MODULE_ENABLED_STORAGE_KEY = `${STORAGE_PREFIX}-rare-guest-participation-module-enabled`;
+const MANAGED_RARE_GUEST_IDS_STORAGE_KEY = `${STORAGE_PREFIX}-managed-rare-guest-ids`;
 const AUTO_NORMAL_ORDER_ENABLED_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-order-enabled`;
 const AUTO_NORMAL_TAKE_BEVERAGE_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-take-beverage`;
 const AUTO_NORMAL_START_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-start-cooking`;
@@ -87,6 +90,9 @@ export const DEFAULT_NORMAL_AUTO_ORDERS_PER_TICK = 3;
 export const MIN_AUTO_ORDER_CONCURRENCY = 1;
 export const MAX_RARE_AUTO_ORDER_CONCURRENCY = 4;
 export const MAX_NORMAL_AUTO_ORDER_CONCURRENCY = 6;
+export const MAX_MANAGED_RARE_GUEST_IDS = 512;
+export const MAX_MANAGED_RARE_GUEST_ID = 2_147_483_647;
+const MAX_RECOMMENDATION_EXCLUSION_IDS = 4096;
 export const DEFAULT_AUTO_STEP_RETRIES = 3;
 export const MIN_AUTO_STEP_RETRIES = 1;
 export const MAX_AUTO_STEP_RETRIES_LIMIT = 10;
@@ -122,6 +128,8 @@ export interface CompanionPreferences {
   gamepadNavigationEnabled: boolean;
   automationEnabled: boolean;
   autoRareOrderEnabled: boolean;
+  rareGuestParticipationModuleEnabled: boolean;
+  managedRareGuestIds: number[];
   autoNormalOrderEnabled: boolean;
   autoNormalTakeBeverage: boolean;
   autoNormalStartCooking: boolean;
@@ -171,6 +179,8 @@ export interface CompanionPreferences {
 export interface SharedCompanionPreferences {
   automationEnabled: boolean;
   autoRareOrderEnabled: boolean;
+  rareGuestParticipationModuleEnabled: boolean;
+  managedRareGuestIds: number[];
   autoNormalOrderEnabled: boolean;
   autoNormalTakeBeverage: boolean;
   autoNormalStartCooking: boolean;
@@ -211,7 +221,68 @@ export interface SharedCompanionPreferences {
   recommendationExclusions: RecommendationExclusions;
 }
 
-export const SHARED_COMPANION_PREFERENCES_SCHEMA_VERSION = 1;
+export const SHARED_COMPANION_PREFERENCES_SCHEMA_VERSION = 3;
+
+const SHARED_COMPANION_BOOLEAN_FIELDS = [
+  'automationEnabled',
+  'autoRareOrderEnabled',
+  'rareGuestParticipationModuleEnabled',
+  'autoNormalOrderEnabled',
+  'autoNormalTakeBeverage',
+  'autoNormalStartCooking',
+  'autoNormalDeliverFood',
+  'autoNormalCompleteOrder',
+  'autoNormalStopOnError',
+  'autoPrepCompleteOrder',
+  'autoPrepTakeBeverage',
+  'autoPrepStartCooking',
+  'autoPrepCollectCooking',
+  'autoPrepRecipeFavoritesOnly',
+  'autoPrepBeverageFavoritesOnly',
+  'autoPrepStopOnError',
+  'filterMissingCookers',
+  'missionRecipePriorityEnabled',
+  'pinFavoriteRecipeEnabled',
+  'pinFavoriteBeverageEnabled',
+  'rareGameUiPinningEnabled',
+  'normalGameUiPinningEnabled',
+  'rareRecipeVariantEnabled',
+  'normalRecipeVariantEnabled',
+  'rareCookerHighlightEnabled',
+  'normalCookerHighlightEnabled',
+  'rareSeatHighlightEnabled',
+  'normalSeatHighlightEnabled',
+  'rareOrderHighlightEnabled',
+  'normalOrderHighlightEnabled',
+] as const satisfies readonly (keyof SharedCompanionPreferences)[];
+
+const SHARED_COMPANION_PREFERENCE_FIELDS = [
+  ...SHARED_COMPANION_BOOLEAN_FIELDS,
+  'autoRareConcurrency',
+  'autoNormalConcurrency',
+  'autoMaxStepRetries',
+  'autoMaxRollbacks',
+  'rareTargetHighlightColor',
+  'normalTargetHighlightColor',
+  'serviceOrderSortMode',
+  'recommendationSortProfile',
+  'recommendationBudgetPolicy',
+  'recipeVariantLimitPerBase',
+  'recommendationExclusions',
+  'managedRareGuestIds',
+] as const satisfies readonly (keyof SharedCompanionPreferences)[];
+
+const RECOMMENDATION_OBJECTIVE_KEYS = [
+  'foodPreference',
+  'beveragePreference',
+  'negativeRisk',
+  'extraCount',
+  'resourcePressure',
+  'totalCost',
+  'profit',
+  'beverageStock',
+  'cookerAvailable',
+] as const satisfies readonly RecommendationObjectiveKey[];
 
 export function normalizeEditableQuantity(value: number) {
   if (!Number.isFinite(value)) return 0;
@@ -243,6 +314,11 @@ export function readStoredCompanionPreferences(): CompanionPreferences {
     gamepadNavigationEnabled: readStoredBoolean(GAMEPAD_NAVIGATION_STORAGE_KEY, true),
     automationEnabled: readStoredBoolean(AUTOMATION_ENABLED_STORAGE_KEY, false),
     autoRareOrderEnabled: readStoredBoolean(AUTO_RARE_ORDER_ENABLED_STORAGE_KEY, true),
+    rareGuestParticipationModuleEnabled: readStoredBoolean(
+      RARE_GUEST_PARTICIPATION_MODULE_ENABLED_STORAGE_KEY,
+      false,
+    ),
+    managedRareGuestIds: readStoredManagedRareGuestIds(),
     autoNormalOrderEnabled: readStoredBoolean(AUTO_NORMAL_ORDER_ENABLED_STORAGE_KEY, false),
     autoNormalTakeBeverage: readStoredBoolean(AUTO_NORMAL_TAKE_BEVERAGE_STORAGE_KEY, false),
     autoNormalStartCooking: readStoredBoolean(AUTO_NORMAL_START_COOKING_STORAGE_KEY, false),
@@ -320,6 +396,8 @@ export function normalizeCompanionPreferences(
     gamepadNavigationEnabled: Boolean(value.gamepadNavigationEnabled),
     automationEnabled: Boolean(value.automationEnabled),
     autoRareOrderEnabled: value.autoRareOrderEnabled !== false,
+    rareGuestParticipationModuleEnabled: Boolean(value.rareGuestParticipationModuleEnabled),
+    managedRareGuestIds: normalizeManagedRareGuestIds(value.managedRareGuestIds),
     autoNormalOrderEnabled: Boolean(value.autoNormalOrderEnabled),
     autoNormalTakeBeverage: autoNormalCompleteOrder && Boolean(value.autoNormalTakeBeverage),
     autoNormalStartCooking: Boolean(value.autoNormalStartCooking),
@@ -375,6 +453,8 @@ export function readSharedCompanionPreferences(
   return {
     automationEnabled: normalized.automationEnabled,
     autoRareOrderEnabled: normalized.autoRareOrderEnabled,
+    rareGuestParticipationModuleEnabled: normalized.rareGuestParticipationModuleEnabled,
+    managedRareGuestIds: normalized.managedRareGuestIds,
     autoNormalOrderEnabled: normalized.autoNormalOrderEnabled,
     autoNormalTakeBeverage: normalized.autoNormalTakeBeverage,
     autoNormalStartCooking: normalized.autoNormalStartCooking,
@@ -420,6 +500,117 @@ export function normalizeSharedCompanionPreferences(
   value: Partial<SharedCompanionPreferences>,
 ): SharedCompanionPreferences {
   return readSharedCompanionPreferences(normalizeCompanionPreferences(value));
+}
+
+/**
+ * 解析当前 wire schema 的完整共享配置。
+ *
+ * 这个边界不补默认值、不丢弃未知字段、不修正非规范数组，也不接受旧形状。
+ * localStorage 容错和用户编辑仍由 `normalizeCompanionPreferences` 处理。
+ */
+export function parseSharedCompanionPreferences(value: unknown): SharedCompanionPreferences {
+  const profile = requireExactWireRecord(
+    value,
+    SHARED_COMPANION_PREFERENCE_FIELDS,
+    '共享配置',
+  );
+  const parsed: SharedCompanionPreferences = {
+    automationEnabled: requireWireBoolean(profile, 'automationEnabled'),
+    autoRareOrderEnabled: requireWireBoolean(profile, 'autoRareOrderEnabled'),
+    rareGuestParticipationModuleEnabled: requireWireBoolean(
+      profile,
+      'rareGuestParticipationModuleEnabled',
+    ),
+    managedRareGuestIds: requireWireIdArray(
+      profile.managedRareGuestIds,
+      MAX_MANAGED_RARE_GUEST_IDS,
+      '受控稀客',
+    ),
+    autoNormalOrderEnabled: requireWireBoolean(profile, 'autoNormalOrderEnabled'),
+    autoNormalTakeBeverage: requireWireBoolean(profile, 'autoNormalTakeBeverage'),
+    autoNormalStartCooking: requireWireBoolean(profile, 'autoNormalStartCooking'),
+    autoNormalDeliverFood: requireWireBoolean(profile, 'autoNormalDeliverFood'),
+    autoNormalCompleteOrder: requireWireBoolean(profile, 'autoNormalCompleteOrder'),
+    autoNormalStopOnError: requireWireBoolean(profile, 'autoNormalStopOnError'),
+    autoPrepCompleteOrder: requireWireBoolean(profile, 'autoPrepCompleteOrder'),
+    autoPrepTakeBeverage: requireWireBoolean(profile, 'autoPrepTakeBeverage'),
+    autoPrepStartCooking: requireWireBoolean(profile, 'autoPrepStartCooking'),
+    autoPrepCollectCooking: requireWireBoolean(profile, 'autoPrepCollectCooking'),
+    autoPrepRecipeFavoritesOnly: requireWireBoolean(profile, 'autoPrepRecipeFavoritesOnly'),
+    autoPrepBeverageFavoritesOnly: requireWireBoolean(profile, 'autoPrepBeverageFavoritesOnly'),
+    autoPrepStopOnError: requireWireBoolean(profile, 'autoPrepStopOnError'),
+    autoRareConcurrency: requireWireInteger(
+      profile.autoRareConcurrency,
+      MIN_AUTO_ORDER_CONCURRENCY,
+      MAX_RARE_AUTO_ORDER_CONCURRENCY,
+      'autoRareConcurrency',
+    ),
+    autoNormalConcurrency: requireWireInteger(
+      profile.autoNormalConcurrency,
+      MIN_AUTO_ORDER_CONCURRENCY,
+      MAX_NORMAL_AUTO_ORDER_CONCURRENCY,
+      'autoNormalConcurrency',
+    ),
+    autoMaxStepRetries: requireWireInteger(
+      profile.autoMaxStepRetries,
+      MIN_AUTO_STEP_RETRIES,
+      MAX_AUTO_STEP_RETRIES_LIMIT,
+      'autoMaxStepRetries',
+    ),
+    autoMaxRollbacks: requireWireInteger(
+      profile.autoMaxRollbacks,
+      MIN_AUTO_ROLLBACKS,
+      MAX_AUTO_ROLLBACKS_LIMIT,
+      'autoMaxRollbacks',
+    ),
+    filterMissingCookers: requireWireBoolean(profile, 'filterMissingCookers'),
+    missionRecipePriorityEnabled: requireWireBoolean(profile, 'missionRecipePriorityEnabled'),
+    pinFavoriteRecipeEnabled: requireWireBoolean(profile, 'pinFavoriteRecipeEnabled'),
+    pinFavoriteBeverageEnabled: requireWireBoolean(profile, 'pinFavoriteBeverageEnabled'),
+    rareGameUiPinningEnabled: requireWireBoolean(profile, 'rareGameUiPinningEnabled'),
+    normalGameUiPinningEnabled: requireWireBoolean(profile, 'normalGameUiPinningEnabled'),
+    rareRecipeVariantEnabled: requireWireBoolean(profile, 'rareRecipeVariantEnabled'),
+    normalRecipeVariantEnabled: requireWireBoolean(profile, 'normalRecipeVariantEnabled'),
+    rareCookerHighlightEnabled: requireWireBoolean(profile, 'rareCookerHighlightEnabled'),
+    normalCookerHighlightEnabled: requireWireBoolean(profile, 'normalCookerHighlightEnabled'),
+    rareSeatHighlightEnabled: requireWireBoolean(profile, 'rareSeatHighlightEnabled'),
+    normalSeatHighlightEnabled: requireWireBoolean(profile, 'normalSeatHighlightEnabled'),
+    rareOrderHighlightEnabled: requireWireBoolean(profile, 'rareOrderHighlightEnabled'),
+    normalOrderHighlightEnabled: requireWireBoolean(profile, 'normalOrderHighlightEnabled'),
+    rareTargetHighlightColor: requireWireColor(profile.rareTargetHighlightColor, 'rareTargetHighlightColor'),
+    normalTargetHighlightColor: requireWireColor(
+      profile.normalTargetHighlightColor,
+      'normalTargetHighlightColor',
+    ),
+    serviceOrderSortMode: requireWireChoice(
+      profile.serviceOrderSortMode,
+      ['ordered', 'guest'] as const,
+      'serviceOrderSortMode',
+    ),
+    recommendationSortProfile: parseWireRecommendationSortProfile(profile.recommendationSortProfile),
+    recommendationBudgetPolicy: requireWireChoice(
+      profile.recommendationBudgetPolicy,
+      ['block', 'warn', 'ignore'] as const,
+      'recommendationBudgetPolicy',
+    ),
+    recipeVariantLimitPerBase: requireWireInteger(
+      profile.recipeVariantLimitPerBase,
+      MIN_RECIPE_VARIANT_LIMIT_PER_BASE,
+      MAX_RECIPE_VARIANT_LIMIT_PER_BASE,
+      'recipeVariantLimitPerBase',
+    ),
+    recommendationExclusions: parseWireRecommendationExclusions(profile.recommendationExclusions),
+  };
+
+  if (!parsed.autoNormalCompleteOrder
+    && (parsed.autoNormalTakeBeverage || parsed.autoNormalDeliverFood)) {
+    throw new Error('共享配置中的普客送餐子步骤要求启用完成订单。');
+  }
+  if (!parsed.autoPrepCompleteOrder
+    && (parsed.autoPrepTakeBeverage || parsed.autoPrepCollectCooking)) {
+    throw new Error('共享配置中的稀客送餐子步骤要求启用完成订单。');
+  }
+  return parsed;
 }
 
 export function applySharedCompanionPreferences(
@@ -511,6 +702,11 @@ export function persistCompanionPreferences(preferences: CompanionPreferences) {
   localStorage.setItem(GAMEPAD_NAVIGATION_STORAGE_KEY, normalized.gamepadNavigationEnabled ? '1' : '0');
   localStorage.setItem(AUTOMATION_ENABLED_STORAGE_KEY, normalized.automationEnabled ? '1' : '0');
   localStorage.setItem(AUTO_RARE_ORDER_ENABLED_STORAGE_KEY, normalized.autoRareOrderEnabled ? '1' : '0');
+  localStorage.setItem(
+    RARE_GUEST_PARTICIPATION_MODULE_ENABLED_STORAGE_KEY,
+    normalized.rareGuestParticipationModuleEnabled ? '1' : '0',
+  );
+  localStorage.setItem(MANAGED_RARE_GUEST_IDS_STORAGE_KEY, JSON.stringify(normalized.managedRareGuestIds));
   localStorage.setItem(AUTO_NORMAL_ORDER_ENABLED_STORAGE_KEY, normalized.autoNormalOrderEnabled ? '1' : '0');
   localStorage.setItem(AUTO_NORMAL_TAKE_BEVERAGE_STORAGE_KEY, normalized.autoNormalTakeBeverage ? '1' : '0');
   localStorage.setItem(AUTO_NORMAL_START_COOKING_STORAGE_KEY, normalized.autoNormalStartCooking ? '1' : '0');
@@ -652,6 +848,37 @@ function readStoredRecommendationExclusions(): RecommendationExclusions {
   });
 }
 
+function readStoredManagedRareGuestIds(): number[] {
+  const raw = localStorage.getItem(MANAGED_RARE_GUEST_IDS_STORAGE_KEY);
+  if (!raw) return [];
+
+  try {
+    return normalizeManagedRareGuestIds(JSON.parse(raw) as unknown);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 将受控稀客 ID 归一化为共享 profile 的规范数组。
+ */
+export function normalizeManagedRareGuestIds(value: unknown): number[] {
+  if (!Array.isArray(value)) return [];
+  const ids = new Set<number>();
+  for (const raw of value) {
+    if (typeof raw !== 'number'
+      || !Number.isInteger(raw)
+      || raw < 0
+      || raw > MAX_MANAGED_RARE_GUEST_ID) {
+      continue;
+    }
+    ids.add(raw);
+  }
+  return [...ids]
+    .sort((left, right) => left - right)
+    .slice(0, MAX_MANAGED_RARE_GUEST_IDS);
+}
+
 /**
  * 归一化推荐排除项，过滤非法 ID 并稳定排序。
  */
@@ -688,6 +915,154 @@ function normalizeStoredIds(value: unknown): number[] {
     ids.push(normalized);
   }
   return ids.sort((left, right) => left - right);
+}
+
+function parseWireRecommendationSortProfile(value: unknown): RecommendationSortProfile {
+  const profile = requireExactWireRecord(
+    value,
+    ['preset', 'objectives'] as const,
+    '推荐排序配置',
+  );
+  const preset = requireWireChoice(
+    profile.preset,
+    ['balanced', 'resources', 'profit', 'simple'] as const,
+    'recommendationSortProfile.preset',
+  );
+  if (!Array.isArray(profile.objectives)
+    || profile.objectives.length !== RECOMMENDATION_OBJECTIVE_KEYS.length) {
+    throw new Error('推荐排序目标必须完整包含当前 wire schema 的 9 项。');
+  }
+
+  const seen = new Set<RecommendationObjectiveKey>();
+  const objectives = profile.objectives.map((value, index) => {
+    const objective = requireExactWireRecord(
+      value,
+      ['key', 'enabled', 'weight', 'direction'] as const,
+      `推荐排序目标 ${index + 1}`,
+    );
+    const key = requireWireChoice(
+      objective.key,
+      RECOMMENDATION_OBJECTIVE_KEYS,
+      `recommendationSortProfile.objectives[${index}].key`,
+    );
+    if (seen.has(key)) throw new Error('推荐排序目标不得重复。');
+    seen.add(key);
+    return {
+      key,
+      enabled: requireWireBoolean(
+        objective,
+        'enabled',
+        `recommendationSortProfile.objectives[${index}].enabled`,
+      ),
+      weight: requireWireInteger(
+        objective.weight,
+        0,
+        100,
+        `recommendationSortProfile.objectives[${index}].weight`,
+      ),
+      direction: requireWireChoice(
+        objective.direction,
+        ['asc', 'desc'] as const,
+        `recommendationSortProfile.objectives[${index}].direction`,
+      ),
+    };
+  });
+  return { preset, objectives };
+}
+
+function parseWireRecommendationExclusions(value: unknown): RecommendationExclusions {
+  const exclusions = requireExactWireRecord(
+    value,
+    ['excludedIngredientIds', 'excludedBeverageIds'] as const,
+    '推荐排除项',
+  );
+  return {
+    excludedIngredientIds: requireWireIdArray(
+      exclusions.excludedIngredientIds,
+      MAX_RECOMMENDATION_EXCLUSION_IDS,
+      '排除食材',
+    ),
+    excludedBeverageIds: requireWireIdArray(
+      exclusions.excludedBeverageIds,
+      MAX_RECOMMENDATION_EXCLUSION_IDS,
+      '排除酒水',
+    ),
+  };
+}
+
+function requireExactWireRecord(
+  value: unknown,
+  expectedFields: readonly string[],
+  label: string,
+): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${label}必须是对象。`);
+  }
+  const record = value as Record<string, unknown>;
+  const actualFields = Object.keys(record);
+  const expected = new Set(expectedFields);
+  if (actualFields.length !== expected.size || actualFields.some((field) => !expected.has(field))) {
+    throw new Error(`${label}字段与当前 wire schema 不一致。`);
+  }
+  return record;
+}
+
+function requireWireBoolean(
+  record: Record<string, unknown>,
+  field: string,
+  label = field,
+): boolean {
+  const value = record[field];
+  if (typeof value !== 'boolean') throw new Error(`共享配置字段 ${label} 必须是布尔值。`);
+  return value;
+}
+
+function requireWireInteger(value: unknown, min: number, max: number, label: string): number {
+  if (typeof value !== 'number'
+    || !Number.isInteger(value)
+    || value < min
+    || value > max) {
+    throw new Error(`共享配置字段 ${label} 超出当前 wire schema 允许范围。`);
+  }
+  return value;
+}
+
+function requireWireChoice<const Choices extends readonly string[]>(
+  value: unknown,
+  choices: Choices,
+  label: string,
+): Choices[number] {
+  if (typeof value !== 'string' || !(choices as readonly string[]).includes(value)) {
+    throw new Error(`共享配置字段 ${label} 不是当前 wire schema 允许的枚举值。`);
+  }
+  return value as Choices[number];
+}
+
+function requireWireColor(value: unknown, label: string): string {
+  if (typeof value !== 'string' || !/^#[0-9A-F]{6}$/.test(value)) {
+    throw new Error(`共享配置字段 ${label} 必须是规范的 #RRGGBB 颜色。`);
+  }
+  return value;
+}
+
+function requireWireIdArray(value: unknown, maxCount: number, label: string): number[] {
+  if (!Array.isArray(value) || value.length > maxCount) {
+    throw new Error(`${label} ID 列表格式或数量与当前 wire schema 不一致。`);
+  }
+  const ids: number[] = [];
+  let previous = -1;
+  for (const id of value) {
+    if (typeof id !== 'number'
+      || !Number.isInteger(id)
+      || id < 0
+      || id > MAX_MANAGED_RARE_GUEST_ID
+      || id <= previous) {
+      throw new Error(`${label} ID 必须是严格递增的非负 32 位整数。`);
+    }
+    ids.push(id);
+    previous = id;
+  }
+  return ids;
 }
 
 export function clampInteger(value: number, min: number, max: number, fallback: number) {
