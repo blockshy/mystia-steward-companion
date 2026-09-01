@@ -1,5 +1,5 @@
 import { IconRefresh } from '@tabler/icons-react';
-import { Button, Card, CardContent, InfoLine, Input, SwitchField } from '@/components/ui-kit';
+import { Button, Card, CardContent, Input, SwitchField } from '@/components/ui-kit';
 import { composeClassNames } from '@/components/ui/style';
 import { formatRetryDelay, formatTime } from '@/companion/formatters';
 import { CONNECTION_RETRY_DELAYS_MS } from '@/companion/hooks/useCompanionConnection';
@@ -14,11 +14,13 @@ function formatPluginVersion(pluginVersion: string | undefined): string {
 }
 
 function StatusMetric({
+  metric,
   label,
   value,
   detail,
   tone,
 }: {
+  metric: 'connection' | 'runtime' | 'business';
   label: string;
   value: string;
   detail: string;
@@ -31,12 +33,42 @@ function StatusMetric({
       : 'text-foreground';
 
   return (
-    <div className="min-w-0 border-t border-border/45 px-3 py-2 first:border-t-0 min-[640px]:border-l min-[640px]:border-t-0 min-[640px]:first:border-l-0">
+    <div
+      className="min-w-0 border-t border-border/45 px-3 py-2 first:border-t-0 min-[640px]:border-l min-[640px]:border-t-0 min-[640px]:first:border-l-0"
+      data-overview-connection-status-metric={metric}
+    >
       <div className="text-xs text-muted-foreground">{label}</div>
-      <div className={composeClassNames('mt-0.5 truncate text-sm font-semibold', toneClass)} title={value}>
+      <div className={composeClassNames('mt-0.5 min-w-0 break-words text-sm font-semibold', toneClass)} title={value}>
         {value}
       </div>
-      <div className="mt-0.5 truncate text-xs text-muted-foreground" title={detail}>{detail}</div>
+      <div className="mt-0.5 min-w-0 break-words text-xs leading-snug text-muted-foreground" title={detail}>
+        {detail}
+      </div>
+    </div>
+  );
+}
+
+function ConnectionMetadata({
+  label,
+  value,
+  breakAll = false,
+}: {
+  label: string;
+  value: string;
+  breakAll?: boolean;
+}) {
+  return (
+    <div className="min-w-0">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div
+        className={composeClassNames(
+          'mt-0.5 min-w-0 font-mono text-xs leading-snug',
+          breakAll ? 'break-all' : 'break-words',
+        )}
+        title={value}
+      >
+        {value}
+      </div>
     </div>
   );
 }
@@ -95,10 +127,41 @@ export function OverviewConnectionPanel({
     : snapshot ? 'good' : 'neutral';
 
   return (
-    <div className="space-y-4" data-overview-connection-panel="true">
-      <Card>
-        <CardContent className="space-y-4 p-4">
-          <div className={`${MINIMUM_MULTICOLUMN_GRID_CLASS} grid gap-3 min-[640px]:grid-cols-[minmax(0,1fr)_minmax(10rem,0.6fr)]`}>
+    <div className="space-y-3" data-overview-connection-panel="true">
+      <section
+        aria-label="连接与游戏状态"
+        className={`${MINIMUM_MULTICOLUMN_GRID_CLASS} grid grid-cols-1 overflow-hidden border border-border/45 steward-background-surface-45 min-[640px]:grid-cols-3`}
+        data-overview-connection-summary="true"
+      >
+        <StatusMetric
+          metric="connection"
+          label="连接状态"
+          value={connectionValue}
+          detail={connectionDetail}
+          tone={connectionTone}
+        />
+        <StatusMetric
+          metric="runtime"
+          label="游戏运行态"
+          value={snapshot?.runtimeLoaded ? '已加载' : '未加载'}
+          detail={snapshot?.activeSceneName || snapshot?.status || '暂无快照'}
+          tone={snapshot?.runtimeLoaded ? 'good' : 'neutral'}
+        />
+        <StatusMetric
+          metric="business"
+          label="经营数据"
+          value={`${night?.activeRareGuests.length ?? 0} 稀客 / ${night?.orders.length ?? 0} 点单`}
+          detail={night?.place || night?.placeLabel || '无经营场景'}
+          tone={(night?.orders.length ?? 0) > 0 ? 'good' : 'neutral'}
+        />
+      </section>
+
+      <Card size="sm" role="region" aria-label="连接配置" data-overview-connection-configuration="true">
+        <CardContent className="space-y-3">
+          <div
+            className={`${MINIMUM_MULTICOLUMN_GRID_CLASS} grid gap-3 min-[640px]:grid-cols-[minmax(0,1fr)_minmax(10rem,0.6fr)]`}
+            data-overview-connection-fields="true"
+          >
             <label className="grid min-w-0 gap-1 text-sm" htmlFor="overview-connection-endpoint">
               <span className="text-muted-foreground">API 地址（IP / 端口）</span>
               <Input
@@ -138,65 +201,49 @@ export function OverviewConnectionPanel({
           </div>
 
           <div
-            className="flex min-w-0 flex-wrap items-center gap-2"
-            data-gamepad-axis="x"
-            data-overview-connection-controls="true"
+            className={`${MINIMUM_MULTICOLUMN_GRID_CLASS} grid min-w-0 gap-3 min-[640px]:grid-cols-[auto_minmax(0,1fr)] min-[640px]:items-end`}
+            data-overview-connection-footer="true"
           >
-            <SwitchField
-              label="连接"
-              checked={!connectionPaused}
-              onCheckedChange={(checked) => {
-                if (checked) {
-                  onApplyEndpointConnection();
-                } else {
-                  onPauseConnection();
-                }
-              }}
-              className="h-8 shrink-0 steward-inline-panel px-2.5"
-              data-gamepad-focus-key="overview:connection:toggle"
-            />
-            <Button
-              size="sm"
-              onClick={onRefresh}
-              disabled={loading || !apiToken}
-              className="shrink-0"
-              data-gamepad-focus-key="overview:connection:refresh"
+            <div
+              className="flex min-w-0 flex-wrap items-center gap-2"
+              data-gamepad-axis="x"
+              data-overview-connection-controls="true"
             >
-              <IconRefresh className={loading ? 'size-4 animate-spin' : 'size-4'} />
-              刷新
-            </Button>
-          </div>
+              <SwitchField
+                label="连接"
+                checked={!connectionPaused}
+                onCheckedChange={(checked) => {
+                  if (checked) {
+                    onApplyEndpointConnection();
+                  } else {
+                    onPauseConnection();
+                  }
+                }}
+                className="h-8 shrink-0 steward-inline-panel px-2.5"
+                data-gamepad-focus-key="overview:connection:toggle"
+              />
+              <Button
+                size="sm"
+                onClick={onRefresh}
+                disabled={loading || !apiToken}
+                className="shrink-0"
+                data-gamepad-focus-key="overview:connection:refresh"
+              >
+                <IconRefresh className={loading ? 'size-4 animate-spin' : 'size-4'} />
+                刷新
+              </Button>
+            </div>
 
-          <div className="grid gap-2 text-sm min-[640px]:grid-cols-2">
-            <InfoLine label="Mod 插件版本" value={formatPluginVersion(snapshot?.pluginVersion)} mono />
-            <InfoLine label="当前连接地址" value={normalizedEndpoint} mono />
+            <div
+              className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-3"
+              data-overview-connection-metadata="true"
+            >
+              <ConnectionMetadata label="Mod 插件版本" value={formatPluginVersion(snapshot?.pluginVersion)} />
+              <ConnectionMetadata label="当前连接地址" value={normalizedEndpoint} breakAll />
+            </div>
           </div>
         </CardContent>
       </Card>
-
-      <div
-        className={`${MINIMUM_MULTICOLUMN_GRID_CLASS} grid grid-cols-1 overflow-hidden border border-border/45 steward-background-surface-45 min-[640px]:grid-cols-3`}
-        data-overview-connection-summary="true"
-      >
-        <StatusMetric
-          label="连接状态"
-          value={connectionValue}
-          detail={connectionDetail}
-          tone={connectionTone}
-        />
-        <StatusMetric
-          label="游戏运行态"
-          value={snapshot?.runtimeLoaded ? '已加载' : '未加载'}
-          detail={snapshot?.activeSceneName || snapshot?.status || '暂无快照'}
-          tone={snapshot?.runtimeLoaded ? 'good' : 'neutral'}
-        />
-        <StatusMetric
-          label="经营数据"
-          value={`${night?.activeRareGuests.length ?? 0} 稀客 / ${night?.orders.length ?? 0} 点单`}
-          detail={night?.place || night?.placeLabel || '无经营场景'}
-          tone={(night?.orders.length ?? 0) > 0 ? 'good' : 'neutral'}
-        />
-      </div>
     </div>
   );
 }

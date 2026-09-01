@@ -16,11 +16,13 @@ const vite = await createServer({
 let domain;
 let queueModule;
 let extensionModule;
+let extensionControlModule;
 try {
-  [domain, queueModule, extensionModule] = await Promise.all([
+  [domain, queueModule, extensionModule, extensionControlModule] = await Promise.all([
     vite.ssrLoadModule('/src/companion/domain/rare-order-participation.ts'),
     vite.ssrLoadModule('/src/companion/pages/service/RareOrderParticipationPanel.tsx'),
     vite.ssrLoadModule('/src/companion/pages/ModRareGuestParticipationPanel.tsx'),
+    vite.ssrLoadModule('/src/companion/domain/extension-module-control.ts'),
   ]);
 } finally {
   await vite.close();
@@ -38,6 +40,7 @@ const {
 } = domain;
 const { RareOrderParticipationPanel } = queueModule;
 const { ModRareGuestParticipationPanel } = extensionModule;
+const { resolvePrimaryExtensionModuleControl } = extensionControlModule;
 
 const unmanagedOrder = order({
   traceId: 'R-1',
@@ -492,7 +495,6 @@ const queueMarkup = renderToStaticMarkup(React.createElement(
   MantineProvider,
   null,
   React.createElement(RareOrderParticipationPanel, {
-    moduleEnabled: true,
     orders,
     collectionComplete: true,
     managedGuestIds: [10, 20],
@@ -505,8 +507,6 @@ const queueMarkup = renderToStaticMarkup(React.createElement(
   }),
 ));
 for (const expectedText of [
-  '暂停会从经营中稀客推荐隐藏订单',
-  '已开锅任务按安全边界保留并等待恢复',
   '已暂停',
   '队列 #2',
   '任务料理优先',
@@ -517,17 +517,70 @@ for (const expectedText of [
 ]) {
   assert.ok(queueMarkup.includes(expectedText), `Queue panel is missing reviewed text: ${expectedText}`);
 }
+assert.ok(queueMarkup.includes('data-list-panel-header-only="true"'));
+assert.ok(!queueMarkup.includes('队列说明'));
+assert.ok(!queueMarkup.includes('data-rare-order-participation-disclosure'));
+assert.ok(!queueMarkup.includes('data-rare-order-participation-read-only'));
+assert.ok(!queueMarkup.includes('只读'));
+assert.ok(!queueMarkup.includes(
+  '已暂停：仅在稀客队列和诊断中保留；不显示经营推荐，也不参与高亮、新自动化或资源预约。已开锅任务等待恢复。',
+));
 assert.ok(queueMarkup.includes('service:rare-participation:guest:10:enable-front'));
 assert.ok(queueMarkup.includes('service:rare-participation:guest:10:enable-tail'));
 assert.ok(queueMarkup.includes('service:rare-participation:guest:10:pause'));
 assert.ok(queueMarkup.includes('service:rare-participation:order:R-2:2:enable-front'));
 assert.ok(queueMarkup.includes('service:rare-participation:order:R-3:3:pause'));
 
+const readOnlyQueueMarkup = renderToStaticMarkup(React.createElement(
+  MantineProvider,
+  null,
+  React.createElement(RareOrderParticipationPanel, {
+    orders,
+    collectionComplete: true,
+    managedGuestIds: [10, 20],
+    snapshot,
+    businessGeneration: 7,
+    businessActive: true,
+    readOnly: true,
+    onMutateGuest: () => undefined,
+    onMutateOrder: () => undefined,
+  }),
+));
+assert.ok(!readOnlyQueueMarkup.includes('data-rare-order-participation-read-only'));
+assert.ok(!readOnlyQueueMarkup.includes('只读'));
+assert.ok(readOnlyQueueMarkup.includes('data-list-panel-header-only="true"'));
+const readOnlyActionTags = readOnlyQueueMarkup.match(
+  /<button\b[^>]*data-rare-order-participation-action="true"[^>]*>/g,
+) ?? [];
+assert.ok(readOnlyActionTags.length > 0, 'Read-only queue must still render its mutation actions.');
+assert.ok(
+  readOnlyActionTags.every((tag) => tag.includes('disabled=""') && tag.includes('data-disabled="true"')),
+  'Read-only queue must keep every guest/order mutation action disabled.',
+);
+
+const errorQueueMarkup = renderToStaticMarkup(React.createElement(
+  MantineProvider,
+  null,
+  React.createElement(RareOrderParticipationPanel, {
+    orders,
+    collectionComplete: true,
+    managedGuestIds: [10, 20],
+    snapshot,
+    businessGeneration: 7,
+    businessActive: true,
+    readOnly: false,
+    error: '模拟队列错误',
+    onMutateGuest: () => undefined,
+    onMutateOrder: () => undefined,
+  }),
+));
+assert.ok(errorQueueMarkup.includes('role="alert"'));
+assert.ok(errorQueueMarkup.includes('模拟队列错误'));
+
 const unavailableQueueMarkup = renderToStaticMarkup(React.createElement(
   MantineProvider,
   null,
   React.createElement(RareOrderParticipationPanel, {
-    moduleEnabled: true,
     orders: ordersWithIncomplete,
     collectionComplete: true,
     managedGuestIds: [10, 20],
@@ -541,39 +594,22 @@ const unavailableQueueMarkup = renderToStaticMarkup(React.createElement(
 ));
 assert.ok(unavailableQueueMarkup.includes('状态不可用'));
 assert.ok(unavailableQueueMarkup.includes('为避免部分授权，本组暂不可操作'));
-
-const disabledQueueMarkup = renderToStaticMarkup(React.createElement(
-  MantineProvider,
-  null,
-  React.createElement(RareOrderParticipationPanel, {
-    moduleEnabled: false,
-    orders,
-    collectionComplete: true,
-    managedGuestIds: [10],
-    snapshot,
-    businessGeneration: 7,
-    businessActive: true,
-    readOnly: true,
-    onMutateGuest: () => undefined,
-    onMutateOrder: () => undefined,
-    onOpenModule: () => undefined,
-  }),
-));
-assert.ok(disabledQueueMarkup.includes('稀客调度模块已停用'));
-assert.ok(disabledQueueMarkup.includes('扩展功能 → 稀客调度'));
-assert.ok(!disabledQueueMarkup.includes('service:rare-participation:guest:10:enable-front'));
+assert.ok(unavailableQueueMarkup.includes('订单缺少 trace、lifecycle 或原始身份标量，已拒绝猜测。'));
 
 const extensionMarkup = renderToStaticMarkup(React.createElement(
   MantineProvider,
   null,
   React.createElement(ModRareGuestParticipationPanel, {
-    moduleEnabled: true,
-    moduleToggleDisabled: true,
+    control: resolvePrimaryExtensionModuleControl({
+      enabled: true,
+      connected: true,
+      authorityReady: true,
+      currentDeviceIsPrimary: false,
+      secondaryReadOnlyReason: '副设备只读',
+    }),
     customers: [customer(10, '受控稀客'), customer(20, '可添加稀客')],
     managedGuestIds: [10],
     currentOrders: orders,
-    readOnly: true,
-    readOnlyReason: '副设备只读',
     onModuleEnabledChange: () => undefined,
     onManagedGuestIdsChange: () => undefined,
   }),
@@ -587,6 +623,7 @@ for (const expectedText of [
   assert.ok(extensionMarkup.includes(expectedText), `Extension panel is missing reviewed text: ${expectedText}`);
 }
 assert.ok(extensionMarkup.includes('启用稀客调度模块'));
+assert.ok(extensionMarkup.includes('placeholder="输入姓名、ID或地区"'));
 assert.ok(extensionMarkup.includes('data-gamepad-focus-key="extensions:rare-participation:guest:10:remove"'));
 assert.match(extensionMarkup, /<button[^>]*data-disabled="true"[^>]*extensions:rare-participation:guest:10:remove/);
 

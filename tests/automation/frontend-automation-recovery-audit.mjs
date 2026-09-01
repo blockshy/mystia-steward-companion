@@ -841,12 +841,49 @@ async function assertStageAndControlContracts() {
     'The workbench still carries the deleted cancellation request or ACK state machine.');
   assert.equal(automationMachine.includes('AutomationCancellation'), false,
     'The frontend state machine still exposes targeted job deletion helpers.');
-  const preferenceUpdate = workbench.slice(
-    workbench.indexOf('const updateCompanionPreferences = useCallback('),
-    workbench.indexOf('useEffect(() => {', workbench.indexOf('const updateCompanionPreferences = useCallback(')),
+  const localPreferenceCommandStart = workbench.indexOf(
+    'const updateLocalCompanionPreferences = useCallback(',
   );
-  assert.equal(preferenceUpdate.includes('cancel'), false,
-    'A preference edit must not delete active cooking jobs from local state.');
+  const sharedPreferenceCommandStart = workbench.indexOf(
+    'const updateSharedCompanionPreferences = useCallback(',
+    localPreferenceCommandStart,
+  );
+  const preferenceCommandsEnd = workbench.indexOf(
+    'useEffect(() => {',
+    sharedPreferenceCommandStart,
+  );
+  assert.ok(
+    localPreferenceCommandStart >= 0
+      && sharedPreferenceCommandStart > localPreferenceCommandStart
+      && preferenceCommandsEnd > sharedPreferenceCommandStart,
+    'The typed local/shared preference command boundaries must remain explicit and ordered.',
+  );
+  const localPreferenceCommand = workbench.slice(
+    localPreferenceCommandStart,
+    sharedPreferenceCommandStart,
+  );
+  const sharedPreferenceCommand = workbench.slice(
+    sharedPreferenceCommandStart,
+    preferenceCommandsEnd,
+  );
+  assert.ok(
+    localPreferenceCommand.includes('Partial<LocalCompanionPreferences>'),
+    'The local preference command must retain its local-only type boundary.',
+  );
+  assert.ok(
+    sharedPreferenceCommand.includes('Partial<SharedCompanionPreferences>'),
+    'The shared preference command must retain its authoritative-profile type boundary.',
+  );
+  for (const [label, command] of [
+    ['local', localPreferenceCommand],
+    ['shared', sharedPreferenceCommand],
+  ]) {
+    assert.equal(
+      command.includes('cancel'),
+      false,
+      `A ${label} preference edit must not delete active cooking jobs from local state.`,
+    );
+  }
   assert.ok(workbench.includes('function buildAutomationControlSignature(')
     && workbench.includes('preferences.autoPrepCollectCooking')
     && workbench.includes('preferences.autoPrepCompleteOrder')

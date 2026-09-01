@@ -27,6 +27,7 @@ const finalVisibleRareOrders = [
   { guestName: '露米娅', queuePosition: 1 },
   { guestName: '米斯蒂娅', queuePosition: 2 },
 ];
+const removedPausedOrderDescription = '已暂停：仅在稀客队列和诊断中保留；不显示经营推荐，也不参与高亮、新自动化或资源预约。已开锅任务等待恢复。';
 
 const mock = startService('mock API', [path.resolve('scripts/mock-local-api.mjs')], {
   MOCK_API_PORT: String(apiPort),
@@ -101,9 +102,14 @@ try {
     fullPage: true,
   });
   await enableParticipationModule(primary.page);
+  await assertQueueSelectionResetAcrossModuleToggle(primary.page);
 
   for (const [index, viewport] of viewports.entries()) {
     await primary.page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await primary.page.evaluate(({ prefix, scale }) => {
+      localStorage.setItem(`${prefix}-font-scale-percent`, String(scale * 100));
+      document.documentElement.style.setProperty('--companion-font-scale', String(scale));
+    }, { prefix: storagePrefix, scale: viewport.name === 'narrow' ? 1.3 : 1 });
     await assertExtensionRoster(primary.page, viewport.name, false);
     await primary.page.screenshot({
       path: path.join(outputDir, `${index + 1}-${viewport.name}-extension.png`),
@@ -133,13 +139,14 @@ try {
 
   const secondary = await openClient(browser, {
     deviceId: 'rare-participation-secondary-0002',
-    width: 640,
-    height: 800,
+    width: 390,
+    height: 844,
+    fontScale: 130,
   });
   secondaryContext = secondary.context;
   await assertExtensionRoster(secondary.page, 'secondary', true);
   const secondaryExtension = secondary.page.locator('[data-rare-guest-participation-module="true"]');
-  await secondaryExtension.getByText(/稀客调度仅可在主设备修改/).first().waitFor({ timeout: 12_000 });
+  await secondaryExtension.getByText(/此模块只能在主设备修改/).first().waitFor({ timeout: 12_000 });
   assert.equal(
     await secondaryExtension.locator('[data-gamepad-focus-key="extensions:rare-participation:module-toggle"]').isDisabled(),
     true,
@@ -152,9 +159,8 @@ try {
 
   await openServiceQueue(secondary.page);
   const secondaryQueue = secondary.page.locator('[data-rare-order-participation-panel="true"]');
-  await secondaryQueue.getByText('当前设备不是主设备，可查看队列但不能修改参与状态。', { exact: true })
-    .waitFor({ timeout: 12_000 });
   await waitForManagedGroups(secondary.page);
+  await assertQueueHeader(secondary.page, '从设备稀客队列');
   await assertAllDisabled(
     participationMutationButtons(secondaryQueue),
     '从设备稀客队列的全部状态操作',
@@ -164,14 +170,18 @@ try {
     path: path.join(outputDir, '4-secondary-read-only-queue.png'),
     fullPage: true,
   });
+  await assertSecondaryQueueSelectionResetAcrossPrimaryModuleToggle(
+    primary.page,
+    secondary.page,
+  );
 
   console.log('PASS: rare-order participation extension module and service queue UI audit completed.');
-  console.log('- 模块默认关闭，关闭态不投影队列且保持稀客原有参与流程');
+  console.log('- 模块默认关闭时不生成稀客队列 Tab，关闭后确定性切回稀客且重开不恢复旧队列选择');
   console.log('- 1280/640/390 扩展名单搜索、受控状态、移出确认与取消焦点返回通过');
   console.log('- 经营中稀客/稀客队列/普客三 Tab 与横向溢出检查通过');
   console.log('- 默认暂停、订单级优先启用、稀客级非抢占优先、单订单暂停、队尾重启与全局 mutation busy 锁通过');
   console.log('- 普通稀客页与专注模式按权威队列同步隐藏、显示和排序；失败 mutation 不改变可见集合');
-  console.log('- 从设备模块开关、扩展名单与稀客队列只读检查通过');
+  console.log('- 从设备模块开关、扩展名单、队列操作禁用与主设备远程关闭/重开收敛检查通过');
   console.log(`Artifacts: ${outputDir}`);
 } finally {
   pendingMutationGate?.release();
@@ -191,30 +201,117 @@ async function assertDefaultModuleDisabled(page) {
   await module.getByText(/稀客调度模块已停用.*已保存 2 名稀客/).waitFor({ timeout: 12_000 });
   assert.equal(await module.locator('[data-rare-guest-participation-roster="true"]').count(), 0);
 
-  await openServiceQueue(page);
-  const queue = page.locator('[data-rare-order-participation-panel="true"]');
-  await queue.getByText(/稀客调度模块已停用/).waitFor({ timeout: 12_000 });
-  assert.equal(await queue.getAttribute('data-module-enabled'), 'false');
-  assert.equal(
-    await queue.locator('[data-gamepad-focus-key^="service:rare-participation:guest:"]').count(),
-    0,
-    '模块关闭时不应展示参与状态操作',
-  );
+  await openServiceRecommendations(page);
+  await assertQueueTabUnavailable(page, '默认关闭');
   await assertRareRecommendationViews(page, defaultVisibleRareOrders, '模块关闭旁路');
 }
 
 async function enableParticipationModule(page) {
+  await setParticipationModuleEnabled(page, true);
+}
+
+async function disableParticipationModule(page) {
+  await setParticipationModuleEnabled(page, false);
+}
+
+async function setParticipationModuleEnabled(page, enabled) {
   await openExtensionSection(page, '稀客调度');
   const module = page.locator('[data-rare-guest-participation-module="true"]');
   const toggle = module.locator('[data-gamepad-focus-key="extensions:rare-participation:module-toggle"]');
-  await toggle.click();
-  await page.waitForFunction(() => {
+  if ((await toggle.isChecked()) !== enabled) await toggle.click();
+  await page.waitForFunction((expected) => {
     const element = document.querySelector(
       '[data-gamepad-focus-key="extensions:rare-participation:module-toggle"]',
     );
-    return element instanceof HTMLInputElement && element.checked;
-  }, null, { timeout: 5_000 });
-  await module.locator('[data-rare-guest-participation-roster="true"]').waitFor({ timeout: 12_000 });
+    return element instanceof HTMLInputElement && element.checked === expected;
+  }, enabled, { timeout: 5_000 });
+  await module.locator('[data-rare-guest-participation-roster="true"]').waitFor({
+    state: enabled ? 'visible' : 'detached',
+    timeout: 12_000,
+  });
+}
+
+async function assertQueueSelectionResetAcrossModuleToggle(page) {
+  await openServiceQueue(page);
+  assert.equal(
+    await page.locator('[data-service-order-tab-trigger="rare-queue"]').getAttribute('aria-selected'),
+    'true',
+    '动态关闭前应先选中稀客队列',
+  );
+
+  try {
+    await disableParticipationModule(page);
+    await openServiceRecommendations(page);
+    await assertQueueTabUnavailable(page, '从稀客队列关闭模块');
+  } finally {
+    await enableParticipationModule(page);
+  }
+  await openServiceRecommendations(page);
+  const queueTrigger = page.locator('[data-service-order-tab-trigger="rare-queue"]');
+  await queueTrigger.waitFor({ state: 'visible', timeout: 12_000 });
+  assert.equal(
+    await page.locator('[data-service-order-tab="rare-queue"]').count(),
+    1,
+    '重新开启模块后应重新生成稀客队列内容',
+  );
+  assert.equal(
+    await queueTrigger.getAttribute('aria-selected'),
+    'false',
+    '重新开启模块后不应恢复旧稀客队列选择',
+  );
+  await assertRareTabActive(page, '重新开启模块');
+}
+
+async function assertSecondaryQueueSelectionResetAcrossPrimaryModuleToggle(primaryPage, secondaryPage) {
+  assert.equal(
+    await secondaryPage.locator('[data-service-order-tab-trigger="rare-queue"]').getAttribute('aria-selected'),
+    'true',
+    '主设备远程关闭前从设备应仍停留在稀客队列',
+  );
+
+  try {
+    await disableParticipationModule(primaryPage);
+    await assertQueueTabUnavailable(secondaryPage, '主设备远程关闭后的从设备');
+  } finally {
+    await enableParticipationModule(primaryPage);
+  }
+
+  const secondaryQueueTrigger = secondaryPage.locator(
+    '[data-service-order-tab-trigger="rare-queue"]',
+  );
+  await secondaryQueueTrigger.waitFor({ state: 'visible', timeout: 12_000 });
+  await secondaryPage.waitForFunction(() => (
+    document.querySelectorAll('[data-service-order-tab="rare-queue"]').length === 1
+  ), null, { timeout: 12_000 });
+  assert.equal(
+    await secondaryQueueTrigger.getAttribute('aria-selected'),
+    'false',
+    '主设备重新开启模块后，从设备不应恢复旧稀客队列选择',
+  );
+  await assertRareTabActive(secondaryPage, '主设备重新开启后的从设备');
+}
+
+async function assertQueueTabUnavailable(page, label) {
+  await page.waitForFunction(() => (
+    !document.querySelector('[data-service-order-tab-trigger="rare-queue"]')
+      && !document.querySelector('[data-service-order-tab="rare-queue"]')
+      && !document.querySelector('[data-rare-order-participation-panel="true"]')
+  ), null, { timeout: 12_000 });
+  assert.equal(
+    await page.locator('[data-service-order-tab-trigger]').count(),
+    2,
+    `${label}时经营推荐应只保留稀客和普客两个 Tab`,
+  );
+  assert.equal(await page.locator('[data-service-order-tab-trigger="normal"]').count(), 1);
+  await assertRareTabActive(page, label);
+}
+
+async function assertRareTabActive(page, label) {
+  const rareTrigger = page.locator('[data-service-order-tab-trigger="rare"]');
+  await rareTrigger.waitFor({ state: 'visible', timeout: 12_000 });
+  assert.equal(await rareTrigger.getAttribute('aria-selected'), 'true', `${label}时应选中稀客 Tab`);
+  await page.locator('[data-service-order-tab="rare"]').waitFor({ state: 'visible', timeout: 12_000 });
+  await page.locator('[data-service-order-collection="rare"]').waitFor({ state: 'visible', timeout: 12_000 });
 }
 
 async function assertExtensionRoster(page, profileName, readOnly) {
@@ -229,7 +326,7 @@ async function assertExtensionRoster(page, profileName, readOnly) {
   await root.getByRole('heading', { name: '已受控 (2)', exact: true }).waitFor({ timeout: 12_000 });
   await managed1001.getByText('当前 1 笔', { exact: true }).waitFor({ timeout: 12_000 });
 
-  const search = root.getByPlaceholder('输入姓名、ID、地区或 DLC', { exact: true });
+  const search = root.getByPlaceholder('输入姓名、ID或地区', { exact: true });
   assert.equal(await search.isDisabled(), false, `${profileName}: 稀客搜索不应禁用`);
   await search.fill('米斯蒂娅');
   await managed1001.waitFor({ state: 'visible' });
@@ -273,6 +370,66 @@ async function assertServiceTabs(page, profileName) {
   const panel = page.locator('[data-rare-order-participation-panel="true"]');
   await panel.waitFor({ state: 'visible' });
   await panel.getByRole('heading', { name: '稀客参与队列', exact: true }).waitFor();
+  await waitForManagedGroups(page);
+  await assertQueueHeader(page, `${profileName} 稀客队列`);
+}
+
+async function assertQueueHeader(page, label) {
+  const panel = page.locator('[data-rare-order-participation-panel="true"]');
+  const summaryPanel = panel.locator('.steward-list-panel').first();
+  const header = summaryPanel.locator('.steward-panel-header');
+  await header.waitFor({ state: 'visible', timeout: 12_000 });
+  assert.equal(
+    await panel.locator('[data-rare-order-participation-disclosure]').count(),
+    0,
+    `${label}不应保留队列说明 disclosure`,
+  );
+  assert.equal(
+    await panel.getByText('队列说明', { exact: true }).count(),
+    0,
+    `${label}不应显示队列说明`,
+  );
+  assert.equal(
+    await summaryPanel.locator('[data-list-panel-content="true"]').count(),
+    0,
+    `${label}无错误时不应保留空内容区`,
+  );
+  assert.equal(
+    await header.locator('[data-rare-order-participation-read-only="true"]').count(),
+    0,
+    `${label}不应显示只读提示`,
+  );
+  assert.equal(
+    await panel.getByText(removedPausedOrderDescription, { exact: true }).count(),
+    0,
+    `${label}不应显示已移除的暂停订单长描述`,
+  );
+  const headerLayout = await summaryPanel.evaluate((element) => {
+    const headerElement = element.querySelector('.steward-panel-header');
+    if (!(headerElement instanceof HTMLElement)) return { ok: false, reason: 'header missing' };
+    const panelRect = element.getBoundingClientRect();
+    const headerRect = headerElement.getBoundingClientRect();
+    const action = headerElement.lastElementChild;
+    const actionRect = action instanceof HTMLElement ? action.getBoundingClientRect() : null;
+    return {
+      ok: headerElement.dataset.listPanelHeaderOnly === 'true'
+        && Number.parseFloat(getComputedStyle(headerElement).borderBottomWidth) === 0
+        && element.scrollWidth <= element.clientWidth + 1
+        && headerElement.scrollWidth <= headerElement.clientWidth + 1
+        && headerRect.left >= panelRect.left - 1
+        && headerRect.right <= panelRect.right + 1
+        && (!actionRect || (actionRect.left >= headerRect.left - 1 && actionRect.right <= headerRect.right + 1)),
+      headerOnly: headerElement.dataset.listPanelHeaderOnly,
+      borderBottomWidth: getComputedStyle(headerElement).borderBottomWidth,
+      panelSize: `${element.clientWidth}/${element.scrollWidth}`,
+      headerSize: `${headerElement.clientWidth}/${headerElement.scrollWidth}`,
+    };
+  });
+  assert.equal(
+    headerLayout.ok,
+    true,
+    `${label}标题区布局不稳定：${JSON.stringify(headerLayout)}`,
+  );
 }
 
 async function assertPrimaryParticipationLifecycle(page) {
@@ -352,6 +509,18 @@ async function assertPrimaryParticipationLifecycle(page) {
     ));
     return buttons.length === 8 && buttons.every((button) => button instanceof HTMLButtonElement && button.disabled);
   }, null, { timeout: 3_000 });
+  assert.equal(await panel.getAttribute('data-busy'), 'true', '参与状态 mutation 期间应标记队列 busy');
+  const participationStatus = page.locator('[data-rare-order-participation-status="true"]');
+  assert.equal(
+    await participationStatus.textContent(),
+    '稀客参与队列更新中。',
+    '参与状态 mutation 期间应播报更新状态',
+  );
+  assert.equal(
+    await participationStatus.evaluate((element) => element.closest('[aria-busy="true"]') === null),
+    true,
+    '参与状态 live region 不应位于 aria-busy 子树内，以免更新播报被延迟',
+  );
   assert.equal(await allMutationActions.count(), 8, '两组及两笔订单应存在八个参与状态按钮');
   gate.release();
   group1001 = await waitForGuestState(page, 1001, 'paused');
@@ -379,6 +548,17 @@ async function assertPrimaryParticipationLifecycle(page) {
   )).every((button) => button instanceof HTMLButtonElement && button.disabled), null, { timeout: 3_000 });
   failure.release();
   await panel.getByRole('alert').getByText(failure.error, { exact: true }).waitFor({ timeout: 5_000 });
+  const errorHeader = panel.locator('.steward-list-panel').first().locator('.steward-panel-header');
+  assert.equal(await errorHeader.getAttribute('data-list-panel-header-only'), null, '错误态不应标记为纯标题卡');
+  assert.ok(
+    Number.parseFloat(await errorHeader.evaluate((element) => getComputedStyle(element).borderBottomWidth)) > 0,
+    '错误态应恢复标题与内容区分隔线',
+  );
+  assert.equal(
+    await panel.locator('.steward-list-panel').first().locator('[data-list-panel-content="true"]').count(),
+    1,
+    '队列错误应按需打开标题卡内容区',
+  );
   group1001 = await waitForGuestState(page, 1001, 'paused');
   await assertFocusedGamepadKey(
     page,
@@ -422,21 +602,21 @@ async function openExtensionSection(page, label) {
 }
 
 async function openServiceQueue(page) {
-  const topTab = page.locator('[data-gamepad-tab-value="service"]').first();
-  await topTab.scrollIntoViewIfNeeded();
-  await topTab.click();
-  const serviceViewControl = page.locator('[data-slot="segmented-control"]').filter({ hasText: '推荐' }).first();
-  await serviceViewControl.locator('label').filter({ hasText: /^推荐$/ }).click();
+  await openServiceRecommendations(page);
   await page.locator('[data-service-order-tab-trigger="rare-queue"]').click();
   await page.locator('[data-rare-order-participation-panel="true"]').waitFor({ state: 'visible', timeout: 10_000 });
 }
 
-async function openRareRecommendations(page) {
+async function openServiceRecommendations(page) {
   const topTab = page.locator('[data-gamepad-tab-value="service"]').first();
   await topTab.scrollIntoViewIfNeeded();
   await topTab.click();
   const serviceViewControl = page.locator('[data-slot="segmented-control"]').filter({ hasText: '推荐' }).first();
   await serviceViewControl.locator('label').filter({ hasText: /^推荐$/ }).click();
+}
+
+async function openRareRecommendations(page) {
+  await openServiceRecommendations(page);
   await page.locator('[data-service-order-tab-trigger="rare"]').click();
   await page.locator('[data-service-order-tab="rare"]').waitFor({ state: 'visible', timeout: 10_000 });
   await page.locator('[data-service-order-collection="rare"]').waitFor({ state: 'visible', timeout: 10_000 });
@@ -459,7 +639,7 @@ async function assertRareRecommendationViews(
   }
 
   const regularTab = page.locator('[data-service-order-tab="rare"]');
-  await regularTab.getByRole('button', { name: '稀客订单专注模式', exact: true }).click();
+  await regularTab.getByRole('button', { name: '专注模式', exact: true }).click();
   await page.locator('[data-service-focus-page="true"]').waitFor({ state: 'visible', timeout: 10_000 });
   const focusRows = await waitForRareRecommendationRows(page, 'rare-focus', expected, `${label}专注模式`);
   assert.deepEqual(focusRows, regularRows, `${label}：普通稀客页与专注模式的集合或顺序不一致`);
@@ -511,13 +691,14 @@ async function waitForRareRecommendationRows(page, mode, expected, label) {
   return rows;
 }
 
-async function openClient(currentBrowser, { deviceId, width, height }) {
+async function openClient(currentBrowser, { deviceId, width, height, fontScale = 100 }) {
   const context = await currentBrowser.newContext({ viewport: { width, height } });
   await context.addInitScript(seedClientStorage, {
     endpoint: apiUrl,
     token: apiToken,
     prefix: storagePrefix,
     deviceId,
+    fontScale,
   });
   const page = await context.newPage();
   await page.goto(appUrl, { waitUntil: 'domcontentloaded' });
@@ -525,13 +706,14 @@ async function openClient(currentBrowser, { deviceId, width, height }) {
   return { context, page };
 }
 
-function seedClientStorage({ endpoint, token, prefix, deviceId }) {
+function seedClientStorage({ endpoint, token, prefix, deviceId, fontScale }) {
   localStorage.setItem(`${prefix}-mod-api-endpoint`, endpoint);
   localStorage.setItem(`${prefix}-mod-api-token`, token);
   localStorage.setItem(`${prefix}-client-id`, deviceId);
   localStorage.setItem(`${prefix}-managed-rare-guest-ids`, JSON.stringify([1001, 1002]));
   localStorage.setItem(`${prefix}-rare-order-highlight`, '1');
   localStorage.setItem(`${prefix}-show-debug-details`, '1');
+  localStorage.setItem(`${prefix}-font-scale-percent`, String(fontScale));
 }
 
 function managedRow(root, guestId, selected) {

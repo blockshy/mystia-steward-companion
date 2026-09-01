@@ -11,7 +11,7 @@ export function ServiceOrderCollectionPanel({
   count,
   state,
   hasRows,
-  action,
+  toolbar,
   notice,
   children,
   compact = false,
@@ -20,7 +20,7 @@ export function ServiceOrderCollectionPanel({
   count: number;
   state: ServiceOrderCollectionState;
   hasRows: boolean;
-  action?: ReactNode;
+  toolbar?: ReactNode;
   notice?: ReactNode;
   children: ReactNode;
   compact?: boolean;
@@ -32,8 +32,7 @@ export function ServiceOrderCollectionPanel({
   const panelAction = (
     <div className="flex flex-wrap items-center justify-end gap-2">
       {statusBadge}
-      <Badge variant="secondary">{visibleCount} 笔</Badge>
-      {action}
+      <Badge variant="secondary" data-service-order-count-badge="true">{visibleCount} 笔</Badge>
     </div>
   );
   const gamepadScrollKey = mode === 'rare-focus'
@@ -54,6 +53,7 @@ export function ServiceOrderCollectionPanel({
     <ListPanel
       title="当前订单方案"
       action={panelAction}
+      toolbar={toolbar}
       className={fillAvailableHeight ? 'min-h-0 flex-1' : undefined}
       gamepadScrollKey={gamepadScrollKey}
       gamepadScrollLabel={gamepadScrollLabel}

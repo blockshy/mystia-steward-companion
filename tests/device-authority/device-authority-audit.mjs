@@ -302,7 +302,16 @@ async function verifyFrontendSharedProfileBoundaries() {
       normalizeManagedRareGuestIds,
       normalizeSharedCompanionPreferences,
       parseSharedCompanionPreferences,
+      serializeSharedCompanionPreferences,
     } = await vite.ssrLoadModule('/src/companion/preferences.ts');
+    const {
+      resolveLocalExtensionModuleControl,
+      resolvePrimaryExtensionModuleControl,
+    } = await vite.ssrLoadModule('/src/companion/domain/extension-module-control.ts');
+    const {
+      capturePrimaryProfileTransactionBase,
+      resolvePrimaryProfileObservation,
+    } = await vite.ssrLoadModule('/src/companion/domain/primary-profile-transaction.ts');
     assert.deepEqual(normalizeManagedRareGuestIds([9, 3, 9, 0]), [0, 3, 9]);
     assert.deepEqual(normalizeManagedRareGuestIds('3'), []);
     const bounded = normalizeManagedRareGuestIds([
@@ -400,16 +409,198 @@ async function verifyFrontendSharedProfileBoundaries() {
       false,
       'Local preference normalization must remain tolerant and defaulted.',
     );
+
+    assert.deepEqual(
+      pickModuleControl(resolveLocalExtensionModuleControl({ enabled: true, connected: false })),
+      {
+        scope: 'local-client',
+        status: 'disconnected',
+        enabled: true,
+        writable: true,
+        pending: false,
+        scopeLabel: '当前设备',
+      },
+      'A disconnected local module must remain writable without claiming a runtime mutation.',
+    );
+    assert.deepEqual(
+      pickModuleControl(resolveLocalExtensionModuleControl({
+        enabled: true,
+        connected: true,
+        operationInFlight: true,
+      })),
+      {
+        scope: 'local-client',
+        status: 'operation-in-flight',
+        enabled: true,
+        writable: false,
+        pending: true,
+        scopeLabel: '当前设备',
+      },
+      'An accepted local-module write must remain locked until its outcome is known.',
+    );
+
+    const primaryCases = [
+      ['disconnected', {
+        enabled: true,
+        connected: false,
+        authorityReady: false,
+        currentDeviceIsPrimary: false,
+      }],
+      ['saving', {
+        enabled: true,
+        connected: true,
+        authorityReady: false,
+        currentDeviceIsPrimary: false,
+        profileUpdatePending: true,
+      }],
+      ['waiting-authority', {
+        enabled: true,
+        connected: true,
+        authorityReady: false,
+        currentDeviceIsPrimary: false,
+      }],
+      ['secondary-read-only', {
+        enabled: true,
+        connected: true,
+        authorityReady: true,
+        currentDeviceIsPrimary: false,
+        primaryDeviceLabel: '主窗口',
+      }],
+      ['operation-in-flight', {
+        enabled: true,
+        connected: true,
+        authorityReady: true,
+        currentDeviceIsPrimary: true,
+        operationInFlight: true,
+      }],
+      ['authority-busy', {
+        enabled: true,
+        connected: true,
+        authorityReady: true,
+        currentDeviceIsPrimary: true,
+        authorityBusy: true,
+      }],
+      ['writable', {
+        enabled: true,
+        connected: true,
+        authorityReady: true,
+        currentDeviceIsPrimary: true,
+      }],
+    ];
+    for (const [expectedStatus, input] of primaryCases) {
+      const control = resolvePrimaryExtensionModuleControl(input);
+      assert.equal(control.scope, 'primary-profile');
+      assert.equal(control.scopeLabel, '主设备共享');
+      assert.equal(control.status, expectedStatus);
+      assert.equal(control.writable, expectedStatus === 'writable');
+      assert.equal(
+        control.pending,
+        ['saving', 'operation-in-flight', 'authority-busy'].includes(expectedStatus),
+      );
+    }
+
+    const baselineProfile = buildSharedProfile({
+      automationEnabled: false,
+      pinFavoriteRecipeEnabled: false,
+    });
+    const desiredProfile = buildSharedProfile({
+      automationEnabled: false,
+      pinFavoriteRecipeEnabled: true,
+    });
+    const baselineState = buildFrontendAuthorityState(baselineProfile);
+    const transactionBase = capturePrimaryProfileTransactionBase(baselineState);
+    const desiredSignature = serializeSharedCompanionPreferences(desiredProfile);
+    assert.deepEqual(
+      resolvePrimaryProfileObservation(
+        transactionBase,
+        desiredSignature,
+        { ...baselineState, stateRevision: baselineState.stateRevision + 5 },
+      ),
+      { action: 'retain-draft', reason: 'same-authority-baseline' },
+      'State-only device metadata changes must not cancel a profile draft.',
+    );
+    assert.deepEqual(
+      resolvePrimaryProfileObservation(transactionBase, desiredSignature, {
+        ...baselineState,
+        authorityRevision: baselineState.authorityRevision + 1,
+        stateRevision: baselineState.stateRevision + 1,
+        activeProfileRevision: baselineState.activeProfileRevision + 1,
+        activeProfileHash: 'desired-profile-hash',
+        activeProfile: desiredProfile,
+        currentDeviceProfileRevision: baselineState.currentDeviceProfileRevision + 1,
+        currentDeviceProfileHash: 'desired-profile-hash',
+        currentDeviceProfile: desiredProfile,
+      }),
+      { action: 'confirm-draft', reason: 'desired-profile-committed' },
+      'Only the exact next CAS point carrying the desired full profile may confirm the draft.',
+    );
+
+    for (const [label, observation, expectedReason] of [
+      ['registry', { ...baselineState, registryId: 'other-registry-id' }, 'authority-changed'],
+      ['current device', { ...baselineState, currentDeviceId: 'other-current-device' }, 'authority-changed'],
+      ['primary device', {
+        ...baselineState,
+        primaryDeviceId: 'other-primary-device',
+        currentDeviceIsPrimary: false,
+      }, 'authority-changed'],
+      ['authority revision', {
+        ...baselineState,
+        authorityRevision: baselineState.authorityRevision + 2,
+      }, 'authority-changed'],
+      ['active profile revision', {
+        ...baselineState,
+        activeProfileRevision: baselineState.activeProfileRevision + 1,
+      }, 'profile-conflict'],
+      ['active profile hash', {
+        ...baselineState,
+        activeProfileHash: 'other-active-profile-hash',
+      }, 'profile-conflict'],
+      ['current profile revision', {
+        ...baselineState,
+        currentDeviceProfileRevision: baselineState.currentDeviceProfileRevision + 1,
+      }, 'profile-conflict'],
+      ['current profile hash', {
+        ...baselineState,
+        currentDeviceProfileHash: 'other-current-profile-hash',
+      }, 'profile-conflict'],
+      ['profile content', {
+        ...baselineState,
+        activeProfile: desiredProfile,
+      }, 'profile-conflict'],
+    ]) {
+      assert.deepEqual(
+        resolvePrimaryProfileObservation(transactionBase, desiredSignature, observation),
+        { action: 'rollback-draft', reason: expectedReason },
+        `${label} drift must roll back instead of rebasing the profile draft.`,
+      );
+    }
+    assert.throws(
+      () => capturePrimaryProfileTransactionBase({
+        ...baselineState,
+        currentDeviceIsPrimary: false,
+        primaryDeviceId: 'other-primary-device',
+      }),
+      /基线未对齐/,
+      'A secondary device must not create a primary-profile transaction.',
+    );
   } finally {
     await vite.close();
   }
 }
 
 async function verifySharedProfileContract() {
-  const [typescriptSource, csharpSource, authorityHookSource] = await Promise.all([
+  const [
+    typescriptSource,
+    csharpSource,
+    authorityHookSource,
+    workbenchSource,
+    settingsSource,
+  ] = await Promise.all([
     readFile('apps/companion/src/companion/preferences.ts', 'utf8'),
     readFile('mods/bepinex/src/LocalApi/CompanionDeviceAuthorityStore.cs', 'utf8'),
     readFile('apps/companion/src/companion/hooks/useCompanionDeviceAuthority.ts', 'utf8'),
+    readFile('apps/companion/src/companion/ModWorkbench.tsx', 'utf8'),
+    readFile('apps/companion/src/companion/pages/ModSettingsPanel.tsx', 'utf8'),
   ]);
   const interfaceBody = requireBlock(
     typescriptSource,
@@ -435,7 +626,7 @@ async function verifySharedProfileContract() {
     'Device-authority audit fixture no longer covers the complete shared profile.',
   );
   assert.ok(
-    authorityHookSource.includes('const parsedState = parseAuthorityState(next);'),
+    /const\s+parsedState\s*=\s*parseAuthorityState\(next\);/.test(authorityHookSource),
     'Device authority must strictly parse profiles before commit and pending-sync application.',
   );
   assert.ok(
@@ -446,9 +637,104 @@ async function verifySharedProfileContract() {
     'Both active and current wire profiles must use the strict v3 parser.',
   );
   assert.ok(
-    !authorityHookSource.includes('normalizeSharedCompanionPreferences'),
-    'Device-authority wire reads must not fall back to tolerant local normalization.',
+    authorityHookSource.includes('profileUpdatePending: boolean;')
+      && authorityHookSource.includes('profileTransactionPhase: PrimaryProfileTransactionPhase | null;')
+      && authorityHookSource.includes('const profileUpdatePending = profileTransactionPhase !== null;')
+      && authorityHookSource.includes('stagePrimaryProfile: (profile: Partial<SharedCompanionPreferences>)'),
+    'The authority controller must own an explicit staged full-profile transaction.',
   );
+  assert.ok(
+    workbenchSource.includes('const updateLocalCompanionPreferences = useCallback')
+      && workbenchSource.includes('const updateSharedCompanionPreferences = useCallback')
+      && workbenchSource.includes('stagePrimaryProfile(next);')
+      && !workbenchSource.includes("companionDeviceAuthority.busy !== 'profile'"),
+    'Local and shared preference commands must remain split, with the hook as the only shared mutation boundary.',
+  );
+  assert.ok(
+    authorityHookSource.includes('capturePrimaryProfileTransactionBase(current)')
+      && authorityHookSource.includes('resolvePrimaryProfileObservation(')
+      && authorityHookSource.includes('transaction.base.authorityRevision')
+      && authorityHookSource.includes('transaction.base.currentDeviceProfileRevision')
+      && !authorityHookSource.includes('const sharedSignature = useMemo('),
+    'Profile writes must use one frozen CAS baseline instead of an implicit shared-signature effect.',
+  );
+  assert.ok(
+    authorityHookSource.includes('generationConnectionKeyRef.current === renderConnectionKeyRef.current')
+      && authorityHookSource.includes('if (!isActive() || !isAuthorityGenerationCurrent(generation)) return false;')
+      && authorityHookSource.indexOf('if (!isActive() || !isAuthorityGenerationCurrent(generation)) return false;')
+        < authorityHookSource.indexOf('applySharedPreferencesRef.current(parsedState.currentDeviceProfile)'),
+    'A stale connection generation must be rejected before pending-sync apply/ACK side effects.',
+  );
+  assert.ok(
+    authorityHookSource.includes('const authorityWriteOutcomeRef = useRef<AuthorityWriteOutcome | null>(null);')
+      && authorityHookSource.includes('const beginAuthorityWriteOutcome = useCallback')
+      && authorityHookSource.includes('const finishAuthorityWriteOutcome = useCallback')
+      && authorityHookSource.includes('const waitForAuthorityWriteOutcomes = useCallback')
+      && authorityHookSource.includes('await waitForAuthorityWriteOutcomes();')
+      && authorityHookSource.indexOf('await waitForAuthorityWriteOutcomes();')
+        < authorityHookSource.indexOf('const next = await registerCompanionDevice('),
+    'A new connection generation must wait for every outcome-unknown authority write before registering.',
+  );
+  assert.ok(
+    authorityHookSource.includes('const pendingSyncApplicationRef = useRef<PendingSyncApplication | null>(null);')
+      && authorityHookSource.includes('const [pendingSyncApplying, setPendingSyncApplying] = useState(false);')
+      && authorityHookSource.includes('function buildPendingSyncKey(')
+      && authorityHookSource.includes('return runningSync.result;')
+      && authorityHookSource.includes('&& !state.pendingSyncId')
+      && authorityHookSource.includes('&& !pendingSyncApplying'),
+    'Pending sync must be keyed single-flight and close ready/profile/runtime writer gates until ACK settles.',
+  );
+  assert.ok(
+    authorityHookSource.includes('const authorityOperationRef = useRef<AuthorityOperation | null>(null);')
+      && authorityHookSource.includes('const acquireAuthorityOperation = useCallback')
+      && authorityHookSource.includes('const releaseAuthorityOperation = useCallback')
+      && authorityHookSource.includes("const operation = acquireAuthorityOperation(kind, true);")
+      && authorityHookSource.includes("const operation = acquireAuthorityOperation('refresh', false);")
+      && authorityHookSource.includes('authorityOperationRef.current = operation;'),
+    'Device mutations and refreshes must acquire one synchronous generation-owned command slot.',
+  );
+  assert.ok(
+    !workbenchSource.includes('const updateCompanionPreferences = useCallback')
+      && settingsSource.includes('onLocalPreferenceChange: (next: Partial<LocalCompanionPreferences>)')
+      && settingsSource.includes('onSharedPreferenceChange: (next: Partial<SharedCompanionPreferences>)'),
+    'The removed untyped preference mutation path must not remain in the settings composition root.',
+  );
+}
+
+function pickModuleControl(control) {
+  const {
+    scope,
+    status,
+    enabled,
+    writable,
+    pending,
+    scopeLabel,
+  } = control;
+  return { scope, status, enabled, writable, pending, scopeLabel };
+}
+
+function buildFrontendAuthorityState(profile) {
+  const deviceId = 'frontend-primary-device-0001';
+  return {
+    ok: true,
+    protocolVersion: 1,
+    profileSchemaVersion: 3,
+    registryId: 'frontend-authority-registry-0001',
+    authorityRevision: 7,
+    stateRevision: 11,
+    primaryDeviceId: deviceId,
+    currentDeviceId: deviceId,
+    currentDeviceIsPrimary: true,
+    activeProfileRevision: 3,
+    activeProfileHash: 'baseline-profile-hash',
+    activeProfile: structuredClone(profile),
+    currentDeviceProfileRevision: 3,
+    currentDeviceProfileHash: 'baseline-profile-hash',
+    currentDeviceProfile: structuredClone(profile),
+    pendingSyncId: null,
+    devices: [],
+    error: null,
+  };
 }
 
 function requireBlock(source, pattern, label) {

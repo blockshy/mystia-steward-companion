@@ -5,6 +5,9 @@ import {
   getRareGuestInvitationTransientRetryDelayMs,
   RARE_GUEST_INVITATION_TRANSIENT_RETRY_DELAYS_MS,
 } from '../../apps/companion/src/companion/rare-guest-invitation-refresh.ts';
+import {
+  resolveLocalExtensionModuleControl,
+} from '../../apps/companion/src/companion/domain/extension-module-control.ts';
 
 const baseSnapshot = {
   runtimeLoaded: true,
@@ -82,6 +85,26 @@ assert.equal(getRareGuestInvitationTransientRetryDelayMs(-1), null);
 assert.equal(getRareGuestInvitationTransientRetryDelayMs(4), null);
 assert.equal(getRareGuestInvitationTransientRetryDelayMs(1.5), null);
 
+const connectedInvitationModule = resolveLocalExtensionModuleControl({
+  enabled: true,
+  connected: true,
+});
+assert.equal(connectedInvitationModule.scope, 'local-client');
+assert.equal(connectedInvitationModule.scopeLabel, '当前设备');
+assert.equal(connectedInvitationModule.status, 'writable');
+assert.equal(connectedInvitationModule.writable, true);
+const pendingInvitationModule = resolveLocalExtensionModuleControl({
+  enabled: true,
+  connected: true,
+  operationInFlight: true,
+  operationReason: '正在等待邀请结果。',
+});
+assert.equal(pendingInvitationModule.scope, 'local-client');
+assert.equal(pendingInvitationModule.status, 'operation-in-flight');
+assert.equal(pendingInvitationModule.writable, false);
+assert.equal(pendingInvitationModule.pending, true);
+assert.equal(pendingInvitationModule.reason, '正在等待邀请结果。');
+
 const root = new URL('../../', import.meta.url);
 const [
   apiSource,
@@ -91,6 +114,7 @@ const [
   mockSource,
   storageSource,
   moduleControlSource,
+  extensionModuleControlSource,
 ] = await Promise.all([
   readFile(new URL('apps/companion/src/companion/api.ts', root), 'utf8'),
   readFile(new URL('apps/companion/src/companion/hooks/useRareGuestInvitations.ts', root), 'utf8'),
@@ -99,6 +123,7 @@ const [
   readFile(new URL('scripts/mock-local-api.mjs', root), 'utf8'),
   readFile(new URL('apps/companion/src/companion/storage.ts', root), 'utf8'),
   readFile(new URL('apps/companion/src/companion/pages/ModuleControlPanel.tsx', root), 'utf8'),
+  readFile(new URL('apps/companion/src/companion/domain/extension-module-control.ts', root), 'utf8'),
 ]);
 
 const listApi = sourceSlice(
@@ -162,6 +187,7 @@ assert.ok(workbenchSource.includes('enabled: rareGuestInvitationModuleEnabled'))
 assert.ok(workbenchSource.includes('visible: rareGuestInvitationVisible'));
 assert.ok(workbenchSource.includes('readStoredRareGuestInvitationModuleEnabled'));
 assert.ok(workbenchSource.includes('persistRareGuestInvitationModuleEnabled(enabled)'));
+assert.ok(workbenchSource.includes('connected={companionConnected}'));
 assert.ok(workbenchSource.includes('runtimeDaySceneReady={snapshot?.runtimeDaySceneReady ?? false}'));
 assert.ok(workbenchSource.includes('invitationContextReady={rareGuestInvitationContextReady}'));
 assert.ok(workbenchSource.includes('data-gamepad-tab-value="extensions"'));
@@ -178,6 +204,9 @@ assert.ok(panelSource.includes('const key = entry.id >= 0'));
 assert.ok(panelSource.includes('label="启用稀客邀请模块"'));
 assert.ok(panelSource.includes('稀客邀请模块已停用'));
 assert.ok(panelSource.includes('rareGuestInvitationModuleToggleDisabled'));
+assert.ok(panelSource.includes('resolveLocalExtensionModuleControl'));
+assert.ok(panelSource.includes('operationInFlight: rareGuestInvitationModuleToggleDisabled'));
+assert.ok(panelSource.includes('control={moduleControl}'));
 assert.ok(panelSource.includes('const sourceEntries = inviteAllResult?.candidates ?? [];'));
 assert.ok(panelSource.includes('...inviteAllResult.existingInvited,'));
 assert.ok(panelSource.includes('const batchEligibleEntries = availableEntries'));
@@ -204,6 +233,15 @@ assert.match(
 );
 assert.ok(moduleControlSource.includes('data-gamepad-focus-key={focusKey}'));
 assert.ok(moduleControlSource.includes('data-feature-module={moduleId}'));
+assert.ok(moduleControlSource.includes('control: ExtensionModuleControlModel'));
+assert.ok(moduleControlSource.includes('checked={control.enabled}'));
+assert.ok(moduleControlSource.includes('disabled={!control.writable}'));
+assert.ok(moduleControlSource.includes('data-module-scope={control.scope}'));
+assert.ok(moduleControlSource.includes('data-module-status={control.status}'));
+assert.ok(moduleControlSource.includes('data-module-writable={control.writable'));
+assert.ok(moduleControlSource.includes('{control.scopeLabel}'));
+assert.ok(extensionModuleControlSource.includes("scope: 'local-client'"));
+assert.ok(extensionModuleControlSource.includes("const LOCAL_SCOPE_LABEL = '当前设备'"));
 assert.ok(mockSource.includes("invitation(10, '雾雨魔理沙'"));
 assert.ok(mockSource.includes("'DLC1_Marisa'"));
 assert.ok(mockSource.includes('existingInvited,'));

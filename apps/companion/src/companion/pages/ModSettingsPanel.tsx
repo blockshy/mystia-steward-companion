@@ -26,6 +26,8 @@ import {
   normalizeRecipeVariantLimitPerBase,
   normalizeTargetHighlightColor,
   type CompanionPreferences,
+  type LocalCompanionPreferences,
+  type SharedCompanionPreferences,
 } from '@/companion/preferences';
 import type {
   LocalApiConnectionConfig,
@@ -70,7 +72,8 @@ export function ModSettingsPanel({
   settingsTab,
   updateManager,
   deviceAuthority,
-  onPreferenceChange,
+  onLocalPreferenceChange,
+  onSharedPreferenceChange,
   onConnectionConfigApplied,
   onSettingsTabChange,
   onThemeModeChange,
@@ -87,7 +90,8 @@ export function ModSettingsPanel({
   settingsTab: SettingsTab;
   updateManager: UpdateManager;
   deviceAuthority: CompanionDeviceAuthorityController;
-  onPreferenceChange: (next: Partial<CompanionPreferences>) => void;
+  onLocalPreferenceChange: (next: Partial<LocalCompanionPreferences>) => void;
+  onSharedPreferenceChange: (next: Partial<SharedCompanionPreferences>) => void;
   onConnectionConfigApplied: (endpoint: string, apiToken: string) => void;
   onSettingsTabChange: (tab: SettingsTab) => void;
   onThemeModeChange: (mode: ThemeMode) => void;
@@ -126,64 +130,73 @@ export function ModSettingsPanel({
   const primaryDeviceCandidate = deviceAuthority.state?.devices.find(
     (device) => device.deviceId === primaryDeviceCandidateId,
   ) ?? null;
-  const sharedSettingsDisabled = !deviceAuthority.ready || !deviceAuthority.currentDeviceIsPrimary;
+  const sharedSettingsDisabled = !deviceAuthority.profileEditWritable;
+  const sharedSettingsDisabledReason = deviceAuthority.profileTransactionPhase === 'posting'
+    ? '主设备共享配置正在保存；Mod 确认前暂停继续编辑。'
+    : deviceAuthority.profileTransactionPhase === 'reconciling'
+      ? '共享配置写入结果尚未确定；重新读取 Mod 权威状态前保持只读。'
+      : !deviceAuthority.ready
+    ? '正在确认共享功能配置的主设备；确认前保持只读。'
+    : !deviceAuthority.currentDeviceIsPrimary
+      ? `共享功能配置由主设备“${primaryDevice?.label || '其他设备'}”管理；切换到主设备后才能修改。`
+      : '设备配置操作正在进行；完成前共享功能设置保持只读。';
 
   useEffect(() => {
     setDeviceLabelDraft(currentDevice?.label ?? '');
   }, [currentDevice?.deviceId, currentDevice?.label]);
 
   const updateExclusions = useCallback((next: Partial<CompanionPreferences['recommendationExclusions']>) => {
-    onPreferenceChange({
+    onSharedPreferenceChange({
       recommendationExclusions: {
         ...preferences.recommendationExclusions,
         ...next,
       },
     });
-  }, [onPreferenceChange, preferences.recommendationExclusions]);
+  }, [onSharedPreferenceChange, preferences.recommendationExclusions]);
 
   const setRareBeverageDelivery = useCallback((enabled: boolean) => {
-    onPreferenceChange(enabled
+    onSharedPreferenceChange(enabled
       ? { autoPrepTakeBeverage: true, autoPrepCompleteOrder: true }
       : { autoPrepTakeBeverage: false });
-  }, [onPreferenceChange]);
+  }, [onSharedPreferenceChange]);
 
   const setRareFoodDelivery = useCallback((enabled: boolean) => {
-    onPreferenceChange(enabled
+    onSharedPreferenceChange(enabled
       ? { autoPrepCollectCooking: true, autoPrepCompleteOrder: true }
       : { autoPrepCollectCooking: false });
-  }, [onPreferenceChange]);
+  }, [onSharedPreferenceChange]);
 
   const setRareOrderCompletion = useCallback((enabled: boolean) => {
-    onPreferenceChange(enabled
+    onSharedPreferenceChange(enabled
       ? { autoPrepCompleteOrder: true }
       : {
           autoPrepCompleteOrder: false,
           autoPrepTakeBeverage: false,
           autoPrepCollectCooking: false,
         });
-  }, [onPreferenceChange]);
+  }, [onSharedPreferenceChange]);
 
   const setNormalBeverageDelivery = useCallback((enabled: boolean) => {
-    onPreferenceChange(enabled
+    onSharedPreferenceChange(enabled
       ? { autoNormalTakeBeverage: true, autoNormalCompleteOrder: true }
       : { autoNormalTakeBeverage: false });
-  }, [onPreferenceChange]);
+  }, [onSharedPreferenceChange]);
 
   const setNormalFoodDelivery = useCallback((enabled: boolean) => {
-    onPreferenceChange(enabled
+    onSharedPreferenceChange(enabled
       ? { autoNormalDeliverFood: true, autoNormalCompleteOrder: true }
       : { autoNormalDeliverFood: false });
-  }, [onPreferenceChange]);
+  }, [onSharedPreferenceChange]);
 
   const setNormalOrderCompletion = useCallback((enabled: boolean) => {
-    onPreferenceChange(enabled
+    onSharedPreferenceChange(enabled
       ? { autoNormalCompleteOrder: true }
       : {
           autoNormalCompleteOrder: false,
           autoNormalTakeBeverage: false,
           autoNormalDeliverFood: false,
         });
-  }, [onPreferenceChange]);
+  }, [onSharedPreferenceChange]);
 
   const applyConnectionConfigState = useCallback((nextConfig: LocalApiConnectionConfig) => {
     setConnectionConfig(nextConfig);
@@ -354,11 +367,11 @@ export function ModSettingsPanel({
             <div className="space-y-4">
               <BackgroundOpacitySlider
                 value={preferences.backgroundOpacity}
-                onChange={(backgroundOpacity) => onPreferenceChange({ backgroundOpacity })}
+                onChange={(backgroundOpacity) => onLocalPreferenceChange({ backgroundOpacity })}
               />
               <ContentOpacitySlider
                 value={preferences.contentOpacity}
-                onChange={(contentOpacity) => onPreferenceChange({ contentOpacity })}
+                onChange={(contentOpacity) => onLocalPreferenceChange({ contentOpacity })}
               />
               {supportsDesktopWindowControls ? (
                 <>
@@ -371,25 +384,25 @@ export function ModSettingsPanel({
                       { value: 'hide', label: '隐藏窗口' },
                       { value: 'keep-visible', label: '保持悬浮' },
                     ]}
-                    onChange={(focusSwitchBehavior) => onPreferenceChange({ focusSwitchBehavior })}
+                    onChange={(focusSwitchBehavior) => onLocalPreferenceChange({ focusSwitchBehavior })}
                   />
                   <FocusSwitchCooldownInput
                     value={preferences.focusSwitchCooldownMs}
-                    onChange={(focusSwitchCooldownMs) => onPreferenceChange({ focusSwitchCooldownMs })}
+                    onChange={(focusSwitchCooldownMs) => onLocalPreferenceChange({ focusSwitchCooldownMs })}
                   />
                   <SwitchControl
                     label="始终置顶"
                     helpId="window-always-on-top"
                     description="让伴随窗口保持在普通窗口和无边框游戏上方。独占全屏仍可能覆盖伴随窗口。"
                     checked={preferences.alwaysOnTop}
-                    onCheckedChange={(alwaysOnTop) => onPreferenceChange({ alwaysOnTop })}
+                    onCheckedChange={(alwaysOnTop) => onLocalPreferenceChange({ alwaysOnTop })}
                   />
                   <SwitchControl
                     label="鼠标穿透锁定"
                     helpId="window-mouse-passthrough"
                     description="开启后伴随窗口会忽略鼠标点击，点击会落到下方游戏或其他窗口；按 F10、F8、RS Click 或使用托盘菜单可恢复操作。"
                     checked={preferences.mousePassthroughEnabled}
-                    onCheckedChange={(mousePassthroughEnabled) => onPreferenceChange({ mousePassthroughEnabled })}
+                    onCheckedChange={(mousePassthroughEnabled) => onLocalPreferenceChange({ mousePassthroughEnabled })}
                   />
                 </>
               ) : (
@@ -418,7 +431,7 @@ export function ModSettingsPanel({
                 <div className="min-w-0 flex-1">
                   <FontScaleSlider
                     value={preferences.fontScalePercent}
-                    onChange={(fontScalePercent) => onPreferenceChange({ fontScalePercent })}
+                    onChange={(fontScalePercent) => onLocalPreferenceChange({ fontScalePercent })}
                   />
                 </div>
                 <Button
@@ -428,7 +441,7 @@ export function ModSettingsPanel({
                   aria-label="恢复默认字体大小"
                   title="恢复默认字体大小"
                   disabled={preferences.fontScalePercent === DEFAULT_FONT_SCALE_PERCENT}
-                  onClick={() => onPreferenceChange({ fontScalePercent: DEFAULT_FONT_SCALE_PERCENT })}
+                  onClick={() => onLocalPreferenceChange({ fontScalePercent: DEFAULT_FONT_SCALE_PERCENT })}
                 >
                   <IconRefresh size={14} aria-hidden="true" />
                 </Button>
@@ -438,14 +451,14 @@ export function ModSettingsPanel({
                 helpId="window-gamepad-navigation"
                 description="控制伴随窗口内的方向、确认、返回、切页、滚动和收藏操作。关闭后，F8 与 RS Click 的窗口焦点切换仍然有效。"
                 checked={preferences.gamepadNavigationEnabled}
-                onCheckedChange={(gamepadNavigationEnabled) => onPreferenceChange({ gamepadNavigationEnabled })}
+                onCheckedChange={(gamepadNavigationEnabled) => onLocalPreferenceChange({ gamepadNavigationEnabled })}
               />
               <SwitchControl
                 label="显示调试信息"
                 helpId="window-debug-details"
                 description="开启后显示日志页、扫描状态、运行时来源、性能耗时和订单内部来源。普通使用建议保持关闭。"
                 checked={preferences.showDebugDetails}
-                onCheckedChange={(showDebugDetails) => onPreferenceChange({ showDebugDetails })}
+                onCheckedChange={(showDebugDetails) => onLocalPreferenceChange({ showDebugDetails })}
               />
             </div>
           </ListPanel>
@@ -786,7 +799,7 @@ export function ModSettingsPanel({
           checked={serviceFocusCompact}
           onCheckedChange={onServiceFocusCompactChange}
         />
-        {sharedSettingsDisabled && <SharedSettingsAuthorityNotice primaryLabel={primaryDevice?.label ?? ''} />}
+        {sharedSettingsDisabled && <SharedSettingsAuthorityNotice reason={sharedSettingsDisabledReason} />}
         <fieldset disabled={sharedSettingsDisabled} className="m-0 min-w-0 border-0 p-0 disabled:opacity-65">
         <div className={DENSE_TWO_COLUMN_GRID}>
           <ListPanel title="推荐设置">
@@ -800,7 +813,7 @@ export function ModSettingsPanel({
                   { value: 'ordered', label: '点单顺序' },
                   { value: 'guest', label: '稀客分组' },
                 ]}
-                onChange={(serviceOrderSortMode) => onPreferenceChange({ serviceOrderSortMode })}
+                onChange={(serviceOrderSortMode) => onSharedPreferenceChange({ serviceOrderSortMode })}
               />
               <SettingSegmentedControl
                 label="预算处理"
@@ -812,21 +825,21 @@ export function ModSettingsPanel({
                   { value: 'warn', label: '仅提示' },
                   { value: 'ignore', label: '忽略预算' },
                 ]}
-                onChange={(recommendationBudgetPolicy) => onPreferenceChange({ recommendationBudgetPolicy })}
+                onChange={(recommendationBudgetPolicy) => onSharedPreferenceChange({ recommendationBudgetPolicy })}
               />
               <SwitchControl
                 label="排除缺失厨具"
                 helpId="recommendation-filter-missing-cookers"
                 description="进入经营场景并读取到完整厨具快照后，推荐列表会隐藏当前已摆放厨具无法制作的料理。厨具快照不完整时不会使用部分数据猜测。"
                 checked={preferences.filterMissingCookers}
-                onCheckedChange={(filterMissingCookers) => onPreferenceChange({ filterMissingCookers })}
+                onCheckedChange={(filterMissingCookers) => onSharedPreferenceChange({ filterMissingCookers })}
               />
               <SwitchControl
                 label="任务料理置顶"
                 helpId="recommendation-mission-recipe-priority"
                 description="已追踪任务的目标料理通过库存、预算、厨具和酒水点单条件后置顶；若启用相应自动化，收藏限定也必须满足。任务料理可以跳过本次普通料理点单 Tag，游戏内列表仍由游戏界面置顶推荐开关单独控制。"
                 checked={preferences.missionRecipePriorityEnabled}
-                onCheckedChange={(missionRecipePriorityEnabled) => onPreferenceChange({
+                onCheckedChange={(missionRecipePriorityEnabled) => onSharedPreferenceChange({
                   missionRecipePriorityEnabled,
                 })}
               />
@@ -835,14 +848,14 @@ export function ModSettingsPanel({
                 helpId="recommendation-pin-favorite-recipe"
                 description="收藏料理只有在解锁、库存、预算和厨具等硬条件通过后才会排到其他普通料理前面，只影响料理排序。"
                 checked={preferences.pinFavoriteRecipeEnabled}
-                onCheckedChange={(pinFavoriteRecipeEnabled) => onPreferenceChange({ pinFavoriteRecipeEnabled })}
+                onCheckedChange={(pinFavoriteRecipeEnabled) => onSharedPreferenceChange({ pinFavoriteRecipeEnabled })}
               />
               <SwitchControl
                 label="收藏酒水置顶"
                 helpId="recommendation-pin-favorite-beverage"
                 description="收藏酒水只有在库存、预算和点单等硬条件通过后才会排到其他普通酒水前面，只影响酒水排序。"
                 checked={preferences.pinFavoriteBeverageEnabled}
-                onCheckedChange={(pinFavoriteBeverageEnabled) => onPreferenceChange({ pinFavoriteBeverageEnabled })}
+                onCheckedChange={(pinFavoriteBeverageEnabled) => onSharedPreferenceChange({ pinFavoriteBeverageEnabled })}
               />
               <SettingHelpField
                 id="recommendation-recipe-variant-limit"
@@ -860,7 +873,7 @@ export function ModSettingsPanel({
                       min={MIN_RECIPE_VARIANT_LIMIT_PER_BASE}
                       max={MAX_RECIPE_VARIANT_LIMIT_PER_BASE}
                       value={preferences.recipeVariantLimitPerBase}
-                      onValueChange={(recipeVariantLimitPerBase) => onPreferenceChange({
+                      onValueChange={(recipeVariantLimitPerBase) => onSharedPreferenceChange({
                         recipeVariantLimitPerBase: normalizeRecipeVariantLimitPerBase(recipeVariantLimitPerBase),
                       })}
                       className="h-8 w-16"
@@ -953,7 +966,7 @@ export function ModSettingsPanel({
             <RecommendationSortProfileControl
               profile={preferences.recommendationSortProfile}
               filterMissingCookers={preferences.filterMissingCookers}
-              onChange={(recommendationSortProfile) => onPreferenceChange({ recommendationSortProfile })}
+              onChange={(recommendationSortProfile) => onSharedPreferenceChange({ recommendationSortProfile })}
             />
           </ListPanel>
         </div>
@@ -978,7 +991,7 @@ export function ModSettingsPanel({
           </div>
         </div>
 
-        {sharedSettingsDisabled && <SharedSettingsAuthorityNotice primaryLabel={primaryDevice?.label ?? ''} />}
+        {sharedSettingsDisabled && <SharedSettingsAuthorityNotice reason={sharedSettingsDisabledReason} />}
         <fieldset disabled={sharedSettingsDisabled} className="m-0 min-w-0 border-0 p-0 disabled:opacity-65">
         <div className={DENSE_TWO_COLUMN_GRID}>
           <ListPanel title="自动化总控">
@@ -988,7 +1001,7 @@ export function ModSettingsPanel({
                 helpId="automation-enabled"
                 description="关闭后会停止新动作并使排队命令失效；已开锅任务继续由游戏制作，后续送达或评价停在当前安全边界，重新开启后可继续。玩家在暂停期间取走或替换成品时改为手动交接。教学经营会保留开关设置但暂停全部自动化动作。"
                 checked={preferences.automationEnabled}
-                onCheckedChange={(automationEnabled) => onPreferenceChange({ automationEnabled })}
+                onCheckedChange={(automationEnabled) => onSharedPreferenceChange({ automationEnabled })}
               />
               <div className="grid grid-cols-1 gap-4 min-[960px]:grid-cols-2">
                 <AutomationSliderField
@@ -998,7 +1011,7 @@ export function ModSettingsPanel({
                   value={preferences.autoRareConcurrency}
                   min={MIN_AUTO_ORDER_CONCURRENCY}
                   max={MAX_RARE_AUTO_ORDER_CONCURRENCY}
-                  onChange={(autoRareConcurrency) => onPreferenceChange({ autoRareConcurrency })}
+                  onChange={(autoRareConcurrency) => onSharedPreferenceChange({ autoRareConcurrency })}
                 />
                 <AutomationSliderField
                   label="普客并发"
@@ -1007,7 +1020,7 @@ export function ModSettingsPanel({
                   value={preferences.autoNormalConcurrency}
                   min={MIN_AUTO_ORDER_CONCURRENCY}
                   max={MAX_NORMAL_AUTO_ORDER_CONCURRENCY}
-                  onChange={(autoNormalConcurrency) => onPreferenceChange({ autoNormalConcurrency })}
+                  onChange={(autoNormalConcurrency) => onSharedPreferenceChange({ autoNormalConcurrency })}
                 />
                 <AutomationSliderField
                   label="最大重试"
@@ -1016,7 +1029,7 @@ export function ModSettingsPanel({
                   value={preferences.autoMaxStepRetries}
                   min={MIN_AUTO_STEP_RETRIES}
                   max={MAX_AUTO_STEP_RETRIES_LIMIT}
-                  onChange={(autoMaxStepRetries) => onPreferenceChange({ autoMaxStepRetries })}
+                  onChange={(autoMaxStepRetries) => onSharedPreferenceChange({ autoMaxStepRetries })}
                 />
                 <AutomationSliderField
                   label="最大回退"
@@ -1025,7 +1038,7 @@ export function ModSettingsPanel({
                   value={preferences.autoMaxRollbacks}
                   min={MIN_AUTO_ROLLBACKS}
                   max={MAX_AUTO_ROLLBACKS_LIMIT}
-                  onChange={(autoMaxRollbacks) => onPreferenceChange({ autoMaxRollbacks })}
+                  onChange={(autoMaxRollbacks) => onSharedPreferenceChange({ autoMaxRollbacks })}
                 />
               </div>
             </div>
@@ -1040,7 +1053,7 @@ export function ModSettingsPanel({
                   helpId="recommendation-rare-game-ui-pinning"
                   description="打开游戏的料理或酒水选择界面时，把当前稀客目标的推荐材料、料理和酒水排到前面并显示稀客目标色。此功能不修改库存。"
                   checked={preferences.rareGameUiPinningEnabled}
-                  onCheckedChange={(rareGameUiPinningEnabled) => onPreferenceChange({ rareGameUiPinningEnabled })}
+                  onCheckedChange={(rareGameUiPinningEnabled) => onSharedPreferenceChange({ rareGameUiPinningEnabled })}
                 />
                 <div className="border-l pl-3">
                   <SwitchControl
@@ -1050,7 +1063,7 @@ export function ModSettingsPanel({
                     checked={preferences.rareRecipeVariantEnabled}
                     disabled={!preferences.rareGameUiPinningEnabled}
                     status={!preferences.rareGameUiPinningEnabled ? '需先开启稀客游戏界面置顶推荐' : undefined}
-                    onCheckedChange={(rareRecipeVariantEnabled) => onPreferenceChange({ rareRecipeVariantEnabled })}
+                    onCheckedChange={(rareRecipeVariantEnabled) => onSharedPreferenceChange({ rareRecipeVariantEnabled })}
                   />
                 </div>
                 <SwitchControl
@@ -1058,28 +1071,28 @@ export function ModSettingsPanel({
                   helpId="recommendation-rare-cooker-highlight"
                   description="高亮当前稀客主方案需要的已摆放厨具。此功能只改变可见提示，不自动操作厨具。"
                   checked={preferences.rareCookerHighlightEnabled}
-                  onCheckedChange={(rareCookerHighlightEnabled) => onPreferenceChange({ rareCookerHighlightEnabled })}
+                  onCheckedChange={(rareCookerHighlightEnabled) => onSharedPreferenceChange({ rareCookerHighlightEnabled })}
                 />
                 <SwitchControl
                   label="稀客目标桌位高亮"
                   helpId="recommendation-rare-seat-highlight"
                   description="高亮当前稀客目标的桌位；不影响玩家原生选中效果，也不操作顾客。"
                   checked={preferences.rareSeatHighlightEnabled}
-                  onCheckedChange={(rareSeatHighlightEnabled) => onPreferenceChange({ rareSeatHighlightEnabled })}
+                  onCheckedChange={(rareSeatHighlightEnabled) => onSharedPreferenceChange({ rareSeatHighlightEnabled })}
                 />
                 <SwitchControl
                   label="稀客目标订单高亮"
                   helpId="recommendation-rare-order-highlight"
                   description="高亮游戏左下 HUD 稀客订单卡片和投掷送达面板中的稀客目标订单；不切换游戏原生焦点。"
                   checked={preferences.rareOrderHighlightEnabled}
-                  onCheckedChange={(rareOrderHighlightEnabled) => onPreferenceChange({ rareOrderHighlightEnabled })}
+                  onCheckedChange={(rareOrderHighlightEnabled) => onSharedPreferenceChange({ rareOrderHighlightEnabled })}
                 />
                 <TargetHighlightColorField
                   kindLabel="稀客"
                   helpId="recommendation-rare-highlight-color"
                   value={preferences.rareTargetHighlightColor}
                   defaultValue={DEFAULT_RARE_TARGET_HIGHLIGHT_COLOR}
-                  onChange={(rareTargetHighlightColor) => onPreferenceChange({ rareTargetHighlightColor })}
+                  onChange={(rareTargetHighlightColor) => onSharedPreferenceChange({ rareTargetHighlightColor })}
                 />
               </div>
               <div className="space-y-4 border-l pl-3">
@@ -1089,7 +1102,7 @@ export function ModSettingsPanel({
                   helpId="recommendation-normal-game-ui-pinning"
                   description="打开游戏的料理或酒水选择界面时，把当前普客目标的推荐材料、料理和酒水排到前面并显示普客目标色。此功能不修改库存。"
                   checked={preferences.normalGameUiPinningEnabled}
-                  onCheckedChange={(normalGameUiPinningEnabled) => onPreferenceChange({ normalGameUiPinningEnabled })}
+                  onCheckedChange={(normalGameUiPinningEnabled) => onSharedPreferenceChange({ normalGameUiPinningEnabled })}
                 />
                 <div className="border-l pl-3">
                   <SwitchControl
@@ -1099,7 +1112,7 @@ export function ModSettingsPanel({
                     checked={preferences.normalRecipeVariantEnabled}
                     disabled={!preferences.normalGameUiPinningEnabled}
                     status={!preferences.normalGameUiPinningEnabled ? '需先开启普客游戏界面置顶推荐' : undefined}
-                    onCheckedChange={(normalRecipeVariantEnabled) => onPreferenceChange({ normalRecipeVariantEnabled })}
+                    onCheckedChange={(normalRecipeVariantEnabled) => onSharedPreferenceChange({ normalRecipeVariantEnabled })}
                   />
                 </div>
                 <SwitchControl
@@ -1107,28 +1120,28 @@ export function ModSettingsPanel({
                   helpId="recommendation-normal-cooker-highlight"
                   description="高亮当前普客主方案需要的已摆放厨具。此功能只改变可见提示，不自动操作厨具。"
                   checked={preferences.normalCookerHighlightEnabled}
-                  onCheckedChange={(normalCookerHighlightEnabled) => onPreferenceChange({ normalCookerHighlightEnabled })}
+                  onCheckedChange={(normalCookerHighlightEnabled) => onSharedPreferenceChange({ normalCookerHighlightEnabled })}
                 />
                 <SwitchControl
                   label="普客目标桌位高亮"
                   helpId="recommendation-normal-seat-highlight"
                   description="高亮当前普客目标的桌位；不影响玩家原生选中效果，也不操作顾客。"
                   checked={preferences.normalSeatHighlightEnabled}
-                  onCheckedChange={(normalSeatHighlightEnabled) => onPreferenceChange({ normalSeatHighlightEnabled })}
+                  onCheckedChange={(normalSeatHighlightEnabled) => onSharedPreferenceChange({ normalSeatHighlightEnabled })}
                 />
                 <SwitchControl
                   label="普客目标订单高亮"
                   helpId="recommendation-normal-order-highlight"
                   description="高亮游戏左下 HUD 普客订单卡片和投掷送达面板中的普客目标订单；不切换游戏原生焦点。"
                   checked={preferences.normalOrderHighlightEnabled}
-                  onCheckedChange={(normalOrderHighlightEnabled) => onPreferenceChange({ normalOrderHighlightEnabled })}
+                  onCheckedChange={(normalOrderHighlightEnabled) => onSharedPreferenceChange({ normalOrderHighlightEnabled })}
                 />
                 <TargetHighlightColorField
                   kindLabel="普客"
                   helpId="recommendation-normal-highlight-color"
                   value={preferences.normalTargetHighlightColor}
                   defaultValue={DEFAULT_NORMAL_TARGET_HIGHLIGHT_COLOR}
-                  onChange={(normalTargetHighlightColor) => onPreferenceChange({ normalTargetHighlightColor })}
+                  onChange={(normalTargetHighlightColor) => onSharedPreferenceChange({ normalTargetHighlightColor })}
                 />
               </div>
             </div>
@@ -1143,7 +1156,7 @@ export function ModSettingsPanel({
                 helpId="automation-rare-enabled"
                 description="单独控制稀客订单是否进入自动化调度。关闭后保留各阶段设置并停止新处理；已开锅任务停在下一安全副作用边界，重新开启后继续。"
                 checked={preferences.autoRareOrderEnabled}
-                onCheckedChange={(autoRareOrderEnabled) => onPreferenceChange({ autoRareOrderEnabled })}
+                onCheckedChange={(autoRareOrderEnabled) => onSharedPreferenceChange({ autoRareOrderEnabled })}
               />
               <SwitchControl
                 label="自动送达酒水"
@@ -1159,7 +1172,7 @@ export function ModSettingsPanel({
                 description="为稀客订单选择厨具、投入推荐料理及加料并自动完成 QTE。未开启自动送达料理时，成品会留给玩家自行取出和送达。"
                 checked={preferences.autoPrepStartCooking}
                 disabled={!preferences.autoRareOrderEnabled}
-                onCheckedChange={(autoPrepStartCooking) => onPreferenceChange({ autoPrepStartCooking })}
+                onCheckedChange={(autoPrepStartCooking) => onSharedPreferenceChange({ autoPrepStartCooking })}
               />
               <SwitchControl
                 label="自动送达料理"
@@ -1183,7 +1196,7 @@ export function ModSettingsPanel({
                 description="稀客自动化步骤失败时暂停对应订单，等待手动重试、重置或安全栅栏确认。关闭后仍受最大重试和最大回退次数限制。"
                 checked={preferences.autoPrepStopOnError}
                 disabled={!preferences.autoRareOrderEnabled}
-                onCheckedChange={(autoPrepStopOnError) => onPreferenceChange({ autoPrepStopOnError })}
+                onCheckedChange={(autoPrepStopOnError) => onSharedPreferenceChange({ autoPrepStopOnError })}
               />
               <div className="border-t pt-4">
                 <div className="mb-3 text-sm font-medium text-foreground">稀客限定</div>
@@ -1194,7 +1207,7 @@ export function ModSettingsPanel({
                     description="稀客自动化只选择已收藏的料理。收藏中没有满足订单、库存和厨具硬门禁的料理时，该订单不会开始制作。"
                     checked={preferences.autoPrepRecipeFavoritesOnly}
                     disabled={!preferences.autoRareOrderEnabled}
-                    onCheckedChange={(autoPrepRecipeFavoritesOnly) => onPreferenceChange({ autoPrepRecipeFavoritesOnly })}
+                    onCheckedChange={(autoPrepRecipeFavoritesOnly) => onSharedPreferenceChange({ autoPrepRecipeFavoritesOnly })}
                   />
                   <SwitchControl
                     label="只处理收藏酒水"
@@ -1202,7 +1215,7 @@ export function ModSettingsPanel({
                     description="稀客自动化只选择已收藏的酒水。收藏中没有满足点单与库存硬门禁的酒水时，该订单不会自动送达酒水。"
                     checked={preferences.autoPrepBeverageFavoritesOnly}
                     disabled={!preferences.autoRareOrderEnabled}
-                    onCheckedChange={(autoPrepBeverageFavoritesOnly) => onPreferenceChange({ autoPrepBeverageFavoritesOnly })}
+                    onCheckedChange={(autoPrepBeverageFavoritesOnly) => onSharedPreferenceChange({ autoPrepBeverageFavoritesOnly })}
                   />
                 </div>
               </div>
@@ -1216,7 +1229,7 @@ export function ModSettingsPanel({
                 helpId="automation-normal-enabled"
                 description="单独控制普客订单是否进入自动化调度。关闭后保留各阶段设置并停止新处理；已开锅任务停在下一安全副作用边界，重新开启后继续。"
                 checked={preferences.autoNormalOrderEnabled}
-                onCheckedChange={(autoNormalOrderEnabled) => onPreferenceChange({ autoNormalOrderEnabled })}
+                onCheckedChange={(autoNormalOrderEnabled) => onSharedPreferenceChange({ autoNormalOrderEnabled })}
               />
               <SwitchControl
                 label="自动送达酒水"
@@ -1232,7 +1245,7 @@ export function ModSettingsPanel({
                 description="为普客订单选择厨具、投入指定料理并自动完成 QTE。未开启自动送达料理时，成品会留给玩家自行取出和送达。"
                 checked={preferences.autoNormalStartCooking}
                 disabled={!preferences.autoNormalOrderEnabled}
-                onCheckedChange={(autoNormalStartCooking) => onPreferenceChange({ autoNormalStartCooking })}
+                onCheckedChange={(autoNormalStartCooking) => onSharedPreferenceChange({ autoNormalStartCooking })}
               />
               <SwitchControl
                 label="自动送达料理"
@@ -1256,7 +1269,7 @@ export function ModSettingsPanel({
                 description="普客自动化步骤失败时暂停对应订单，等待手动重试、重置或安全栅栏确认。关闭后仍受最大重试和最大回退次数限制。"
                 checked={preferences.autoNormalStopOnError}
                 disabled={!preferences.autoNormalOrderEnabled}
-                onCheckedChange={(autoNormalStopOnError) => onPreferenceChange({ autoNormalStopOnError })}
+                onCheckedChange={(autoNormalStopOnError) => onSharedPreferenceChange({ autoNormalStopOnError })}
               />
             </div>
           </ListPanel>
@@ -1360,12 +1373,10 @@ export function ModSettingsPanel({
   );
 }
 
-function SharedSettingsAuthorityNotice({ primaryLabel }: { primaryLabel: string }) {
+function SharedSettingsAuthorityNotice({ reason }: { reason: string }) {
   return (
     <div className="border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
-      {primaryLabel
-        ? `共享功能配置由主设备“${primaryLabel}”管理；切换到主设备后才能修改。`
-        : '正在确认共享功能配置的主设备；确认前保持只读。'}
+      {reason}
     </div>
   );
 }

@@ -5,20 +5,17 @@ import {
   countCurrentRareOrdersByGuestId,
   updateManagedRareGuestIds,
 } from '@/companion/domain/rare-order-participation';
+import type { ExtensionModuleControlModel } from '@/companion/domain/extension-module-control';
 import { ModuleControlPanel } from '@/companion/pages/ModuleControlPanel';
 import type { NightBusinessOrder } from '@/companion/types';
 import { Badge, Button, Dialog, EmptyRow, EmptyState, Input, ListPanel } from '@/components/ui-kit';
 import type { RareCustomerCatalogItem } from '@/lib/catalog-types';
 
 export interface ModRareGuestParticipationPanelProps {
-  moduleEnabled: boolean;
-  moduleToggleDisabled: boolean;
+  control: ExtensionModuleControlModel;
   customers: readonly Pick<RareCustomerCatalogItem, 'id' | 'name' | 'places' | 'dlc'>[];
   managedGuestIds: readonly number[];
   currentOrders: readonly NightBusinessOrder[];
-  readOnly: boolean;
-  readOnlyReason?: string;
-  busy?: boolean;
   error?: string | null;
   onModuleEnabledChange: (enabled: boolean) => void;
   onManagedGuestIdsChange: (nextGuestIds: readonly number[]) => void;
@@ -30,14 +27,10 @@ export interface ModRareGuestParticipationPanelProps {
  * 模块开关和名单始终来自主设备共享配置。关闭模块只停用运行时调度，不删除已经保存的名单。
  */
 export function ModRareGuestParticipationPanel({
-  moduleEnabled,
-  moduleToggleDisabled,
+  control,
   customers,
   managedGuestIds,
   currentOrders,
-  readOnly,
-  readOnlyReason,
-  busy = false,
   error,
   onModuleEnabledChange,
   onManagedGuestIdsChange,
@@ -47,13 +40,8 @@ export function ModRareGuestParticipationPanel({
       <ModuleControlPanel
         moduleId="rare-guest-participation"
         label="启用稀客调度模块"
-        description={readOnly
-          ? readOnlyReason || '当前设备不是主设备，可查看但不能修改稀客调度配置。'
-          : busy
-            ? '共享配置正在提交；完成前不能切换模块。'
-            : '开启后，保存名单内的当前稀客订单默认暂停，并可在经营中手动启用；关闭时保留名单，所有稀客恢复自动参与。'}
-        enabled={moduleEnabled}
-        disabled={moduleToggleDisabled}
+        description="开启后，保存名单内的当前稀客订单默认暂停，并可在经营中手动启用；关闭时保留名单，所有稀客恢复自动参与。"
+        control={control}
         focusKey="extensions:rare-participation:module-toggle"
         onEnabledChange={onModuleEnabledChange}
       />
@@ -64,7 +52,7 @@ export function ModRareGuestParticipationPanel({
         </div>
       )}
 
-      {!moduleEnabled ? (
+      {!control.enabled ? (
         <EmptyState
           text={`稀客调度模块已停用。已保存 ${managedGuestIds.length} 名稀客；启用模块后名单才会影响高亮和自动化。`}
         />
@@ -73,9 +61,7 @@ export function ModRareGuestParticipationPanel({
           customers={customers}
           managedGuestIds={managedGuestIds}
           currentOrders={currentOrders}
-          readOnly={readOnly}
-          readOnlyReason={readOnlyReason}
-          busy={busy}
+          control={control}
           onManagedGuestIdsChange={onManagedGuestIdsChange}
         />
       )}
@@ -84,15 +70,13 @@ export function ModRareGuestParticipationPanel({
 }
 
 function RareGuestRosterPanel({
+  control,
   customers,
   managedGuestIds,
   currentOrders,
-  readOnly,
-  readOnlyReason,
-  busy = false,
   onManagedGuestIdsChange,
-}: Omit<ModRareGuestParticipationPanelProps,
-  'moduleEnabled' | 'moduleToggleDisabled' | 'error' | 'onModuleEnabledChange'>) {
+}: Pick<ModRareGuestParticipationPanelProps,
+  'control' | 'customers' | 'managedGuestIds' | 'currentOrders' | 'onManagedGuestIdsChange'>) {
   const [query, setQuery] = useState('');
   const [pendingRemovalGuestId, setPendingRemovalGuestId] = useState<number | null>(null);
   const sections = useMemo(
@@ -113,7 +97,8 @@ function RareGuestRosterPanel({
   const pendingRemovalOrderCount = pendingRemovalGuestId === null
     ? 0
     : currentOrderCounts.get(pendingRemovalGuestId) ?? 0;
-  const disabled = readOnly || busy;
+  const disabled = !control.writable;
+  const busy = control.pending;
 
   const changeRoster = (guestId: number, managed: boolean) => {
     if (disabled) return;
@@ -140,16 +125,16 @@ function RareGuestRosterPanel({
               名单内稀客的每一笔新订单都默认暂停，只有在“经营中 · 稀客队列”手动启用后才参与
               高亮、自动化和资源预约。未入名单的稀客保持原有行为。
             </p>
-            {readOnly && (
+            {!control.writable && (
               <div className="border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
-                {readOnlyReason || '当前设备不是主设备，可查看但不能修改受控名单。'}
+                {control.reason || '当前稀客调度配置只读。'}
               </div>
             )}
             <label className="block space-y-1.5 text-sm">
               <span className="text-muted-foreground">搜索稀客</span>
               <Input
                 value={query}
-                placeholder="输入姓名、ID、地区或 DLC"
+                placeholder="输入姓名、ID或地区"
                 data-gamepad-focus-key="extensions:rare-participation:search"
                 onChange={(event) => setQuery(event.currentTarget.value)}
               />

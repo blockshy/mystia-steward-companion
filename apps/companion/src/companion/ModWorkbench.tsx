@@ -139,6 +139,7 @@ import {
   serializePrimaryExecutionPlanPolicy,
 } from '@/companion/domain/primary-execution-plan';
 import { buildOrderRecommendationPresentation } from '@/companion/domain/order-recommendation-presentation';
+import { resolvePrimaryExtensionModuleControl } from '@/companion/domain/extension-module-control';
 import { sortNormalOrders } from '@/companion/domain/sorting';
 import {
   applySpecialFoodTargetWirePolicy,
@@ -163,6 +164,7 @@ import {
   readStoredCompanionPreferences,
   readSharedCompanionPreferences,
   type CompanionPreferences,
+  type LocalCompanionPreferences,
   type SharedCompanionPreferences,
   type FocusSwitchBehavior,
 } from '@/companion/preferences';
@@ -1961,8 +1963,19 @@ export function ModWorkbench() {
     sharedPreferences: sharedCompanionPreferences,
     applySharedPreferences: applyAuthoritativeSharedPreferences,
   });
+  const primaryProfileDraft = companionDeviceAuthority.profileDraft;
+  const stagePrimaryProfile = companionDeviceAuthority.stagePrimaryProfile;
+  const editableCompanionPreferences = useMemo(
+    () => primaryProfileDraft
+      ? applySharedCompanionPreferences(
+        companionPreferences,
+        primaryProfileDraft,
+      )
+      : companionPreferences,
+    [companionPreferences, primaryProfileDraft],
+  );
 
-  const updateCompanionPreferences = useCallback((next: Partial<CompanionPreferences>) => {
+  const updateLocalCompanionPreferences = useCallback((next: Partial<LocalCompanionPreferences>) => {
     const current = companionPreferencesRef.current;
     let normalized = normalizeCompanionPreferences({ ...current, ...next });
     if (companionConnected && !companionDeviceAuthority.currentDeviceIsPrimary) {
@@ -1978,6 +1991,12 @@ export function ModWorkbench() {
     companionDeviceAuthority.currentDeviceIsPrimary,
     companionDeviceAuthority.state?.activeProfile,
   ]);
+
+  const updateSharedCompanionPreferences = useCallback((
+    next: Partial<SharedCompanionPreferences>,
+  ) => {
+    stagePrimaryProfile(next);
+  }, [stagePrimaryProfile]);
 
   useEffect(() => {
     if (!companionPreferences.showDebugDetails && tab === 'logs') {
@@ -2070,9 +2089,27 @@ export function ModWorkbench() {
     refreshAuthority: companionDeviceAuthority.refresh,
     onMutationBoundary: markRareParticipationMutationBoundary,
   });
+  const effectiveServiceRecommendationTab: ServiceRecommendationTab =
+    !rareOrderParticipation.moduleEnabled && serviceRecommendationTab === 'rare-queue'
+      ? 'rare'
+      : serviceRecommendationTab;
+  useEffect(() => {
+    if (rareOrderParticipation.moduleEnabled) return;
+    setServiceRecommendationTab((current) => current === 'rare-queue' ? 'rare' : current);
+  }, [rareOrderParticipation.moduleEnabled]);
   useEffect(() => {
     rareParticipationMutationBusyRef.current = rareOrderParticipation.busyMutationKey !== null;
   }, [rareOrderParticipation.busyMutationKey]);
+  const rareGuestParticipationModuleControl = resolvePrimaryExtensionModuleControl({
+    enabled: editableCompanionPreferences.rareGuestParticipationModuleEnabled,
+    connected: companionConnected,
+    authorityReady: companionDeviceAuthority.ready,
+    currentDeviceIsPrimary: companionDeviceAuthority.currentDeviceIsPrimary,
+    primaryDeviceLabel: companionDeviceAuthority.state?.devices.find((device) => device.isPrimary)?.label,
+    profileUpdatePending: companionDeviceAuthority.profileUpdatePending,
+    authorityBusy: companionDeviceAuthority.busy !== null,
+    operationInFlight: rareOrderParticipation.busyMutationKey !== null,
+  });
   const detectedPlace = normalizePlace(night?.place);
   const selectedPlace = manualPlace ?? detectedPlace;
   const effectiveRuntimeData = cachedRuntimeData;
@@ -2364,7 +2401,7 @@ export function ModWorkbench() {
   );
   const visibleTabs = companionPreferences.showDebugDetails ? MOD_TABS : BASIC_MOD_TABS;
   const serviceRecommendationsVisible = tab === 'service' && serviceView === 'recommendations';
-  const includeNormalOrderDetails = serviceRecommendationsVisible && serviceRecommendationTab === 'normal';
+  const includeNormalOrderDetails = serviceRecommendationsVisible && effectiveServiceRecommendationTab === 'normal';
   const normalOrdersRequireSpecialExecutionTarget = (snapshot?.normalBusiness?.orders ?? []).some(
     (order) => requiresSpecialBusinessNormalExecutionTarget(
       snapshot?.specialBusiness,
@@ -5216,7 +5253,7 @@ export function ModWorkbench() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'F10') return;
       event.preventDefault();
-      updateCompanionPreferences({
+      updateLocalCompanionPreferences({
         mousePassthroughEnabled: !companionPreferences.mousePassthroughEnabled,
       });
     };
@@ -5225,7 +5262,7 @@ export function ModWorkbench() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [
     companionPreferences.mousePassthroughEnabled,
-    updateCompanionPreferences,
+    updateLocalCompanionPreferences,
   ]);
 
   const handleAutomationDisabled = useCallback(() => {
@@ -5614,7 +5651,7 @@ export function ModWorkbench() {
               onEnterFocusMode={() => setServiceFocusMode(true)}
               normalBusiness={snapshot?.normalBusiness ?? null}
               serviceView={serviceView}
-              serviceRecommendationTab={serviceRecommendationTab}
+              serviceRecommendationTab={effectiveServiceRecommendationTab}
               operationalRecommendations={operationalOrderRecommendations}
               rareParticipationModuleEnabled={rareOrderParticipation.moduleEnabled}
               managedRareGuestIds={companionPreferences.managedRareGuestIds}
@@ -5624,7 +5661,6 @@ export function ModWorkbench() {
               rareParticipationEnabled={rareOrderParticipation.participationActive}
               rareParticipationReady={rareOrderParticipation.projectionReady}
               rareParticipationReadOnly={rareOrderParticipation.readOnly}
-              rareParticipationReadOnlyReason={rareOrderParticipation.readOnlyReason}
               rareParticipationBusyMutationKey={rareOrderParticipation.busyMutationKey}
               rareParticipationError={rareOrderParticipation.error}
               resolveRareOrderParticipation={rareOrderParticipation.resolveOrder}
@@ -5635,10 +5671,6 @@ export function ModWorkbench() {
               }}
               onMutateRareOrder={(order, action) => {
                 void rareOrderParticipation.mutateOrder(order, action);
-              }}
-              onOpenRareParticipationModule={() => {
-                setExtensionTab('rare-participation');
-                setTab('extensions');
               }}
               showDebugDetails={companionPreferences.showDebugDetails}
             />
@@ -5692,6 +5724,7 @@ export function ModWorkbench() {
               <TabsContent value="rare-invitations" className="space-y-4">
                 {extensionTab === 'rare-invitations' && (
                   <ModRareGuestInvitationsPanel
+                    connected={companionConnected}
                     runtimeLoaded={snapshot?.runtimeLoaded ?? false}
                     runtimeDaySceneReady={snapshot?.runtimeDaySceneReady ?? false}
                     rareGuestInvitationModuleEnabled={rareGuestInvitationModuleEnabled}
@@ -5722,34 +5755,17 @@ export function ModWorkbench() {
               <TabsContent value="rare-participation" className="space-y-4">
                 {extensionTab === 'rare-participation' && (
                   <ModRareGuestParticipationPanel
-                    moduleEnabled={companionPreferences.rareGuestParticipationModuleEnabled}
-                    moduleToggleDisabled={
-                      !companionDeviceAuthority.ready
-                      || !companionDeviceAuthority.currentDeviceIsPrimary
-                      || companionDeviceAuthority.busy !== null
-                      || rareOrderParticipation.busyMutationKey !== null
-                    }
+                    control={rareGuestParticipationModuleControl}
                     customers={recommendationData.rareCustomers}
-                    managedGuestIds={companionPreferences.managedRareGuestIds}
+                    managedGuestIds={editableCompanionPreferences.managedRareGuestIds}
                     currentOrders={night?.orders ?? []}
-                    readOnly={
-                      !companionDeviceAuthority.ready
-                      || !companionDeviceAuthority.currentDeviceIsPrimary
-                    }
-                    readOnlyReason={companionDeviceAuthority.ready
-                      ? `当前由“${companionDeviceAuthority.state?.devices.find((device) => device.isPrimary)?.label || '其他设备'}”提供生效配置；稀客调度仅可在主设备修改。`
-                      : '正在确认主设备和生效配置；确认前稀客调度只读。'}
-                    busy={
-                      companionDeviceAuthority.busy !== null
-                      || rareOrderParticipation.busyMutationKey !== null
-                    }
                     error={companionDeviceAuthority.error || rareOrderParticipation.error}
                     onModuleEnabledChange={(rareGuestParticipationModuleEnabled) => {
                       if (rareOrderParticipation.busyMutationKey !== null) return;
-                      updateCompanionPreferences({ rareGuestParticipationModuleEnabled });
+                      updateSharedCompanionPreferences({ rareGuestParticipationModuleEnabled });
                     }}
                     onManagedGuestIdsChange={(managedRareGuestIds) => {
-                      updateCompanionPreferences({ managedRareGuestIds: [...managedRareGuestIds] });
+                      updateSharedCompanionPreferences({ managedRareGuestIds: [...managedRareGuestIds] });
                     }}
                   />
                 )}
@@ -5784,7 +5800,7 @@ export function ModWorkbench() {
             <ModSettingsPanel
               endpoint={normalizedEndpoint}
               apiToken={apiToken}
-              preferences={companionPreferences}
+              preferences={editableCompanionPreferences}
               data={recommendationData}
               runtimeSets={runtimeSets}
               themeMode={themeMode}
@@ -5792,7 +5808,8 @@ export function ModWorkbench() {
               settingsTab={settingsTab}
               updateManager={updateManager}
               deviceAuthority={companionDeviceAuthority}
-              onPreferenceChange={updateCompanionPreferences}
+              onLocalPreferenceChange={updateLocalCompanionPreferences}
+              onSharedPreferenceChange={updateSharedCompanionPreferences}
               onConnectionConfigApplied={applyConnectionDetails}
               onSettingsTabChange={setSettingsTab}
               onThemeModeChange={setThemeMode}

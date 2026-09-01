@@ -22,6 +22,9 @@ const {
   MAX_MISSION_SCENE_COUNT,
   MAX_MISSION_SCENE_NAME_LENGTH,
 } = await import('../../apps/companion/src/companion/mission-presentation.ts');
+const {
+  resolveLocalExtensionModuleControl,
+} = await import('../../apps/companion/src/companion/domain/extension-module-control.ts');
 
 const signature = 'a'.repeat(64);
 const fullResponse = {
@@ -249,6 +252,30 @@ assert.equal(getTrackedMissionTransientRetryDelayMs(-1), null);
 assert.equal(getTrackedMissionTransientRetryDelayMs(4), null);
 assert.equal(getTrackedMissionTransientRetryDelayMs(1.5), null);
 
+assert.deepEqual(
+  resolveLocalExtensionModuleControl({ enabled: false, connected: true }),
+  {
+    scope: 'local-client',
+    status: 'writable',
+    enabled: false,
+    writable: true,
+    pending: false,
+    scopeLabel: '当前设备',
+    statusLabel: '可修改',
+    reason: '',
+  },
+  'The connected task-list module must remain an explicitly local writable preference.',
+);
+const disconnectedTaskModule = resolveLocalExtensionModuleControl({
+  enabled: true,
+  connected: false,
+});
+assert.equal(disconnectedTaskModule.scope, 'local-client');
+assert.equal(disconnectedTaskModule.status, 'disconnected');
+assert.equal(disconnectedTaskModule.writable, true);
+assert.equal(disconnectedTaskModule.pending, false);
+assert.match(disconnectedTaskModule.reason, /预先设置.*保存在当前设备/);
+
 const root = new URL('../../', import.meta.url);
 const [
   apiSource,
@@ -261,6 +288,7 @@ const [
   presentationParserSource,
   storageSource,
   moduleControlSource,
+  extensionModuleControlSource,
 ] = await Promise.all([
   readFile(new URL('apps/companion/src/companion/api.ts', root), 'utf8'),
   readFile(new URL('apps/companion/src/companion/hooks/useTrackedMissions.ts', root), 'utf8'),
@@ -272,6 +300,7 @@ const [
   readFile(new URL('apps/companion/src/companion/mission-presentation.ts', root), 'utf8'),
   readFile(new URL('apps/companion/src/companion/storage.ts', root), 'utf8'),
   readFile(new URL('apps/companion/src/companion/pages/ModuleControlPanel.tsx', root), 'utf8'),
+  readFile(new URL('apps/companion/src/companion/domain/extension-module-control.ts', root), 'utf8'),
 ]);
 
 const apiFunction = sourceSlice(
@@ -332,6 +361,8 @@ assert.doesNotMatch(panelSource, /<TabsTrigger value="tasks"|<TabsTrigger value=
 assert.ok(panelSource.includes('label="启用任务列表模块"'));
 assert.ok(panelSource.includes('任务列表模块已停用'));
 assert.ok(panelSource.includes('missionListModuleEnabled'));
+assert.ok(panelSource.includes('resolveLocalExtensionModuleControl'));
+assert.ok(panelSource.includes('control={moduleControl}'));
 assert.ok(panelSource.includes('data-gamepad-focus-key="missions:refresh"'));
 assert.ok(panelSource.includes('gamepadScrollKey="missions"'));
 assert.ok(panelSource.includes('data-mission-status-tabs="true"'));
@@ -360,6 +391,15 @@ assert.match(
   /readStoredMissionListModuleEnabled\(\): boolean \{\s+return readStoredBoolean\(MISSION_LIST_MODULE_ENABLED_STORAGE_KEY, false\);/,
 );
 assert.ok(moduleControlSource.includes('data-gamepad-focus-key={focusKey}'));
+assert.ok(moduleControlSource.includes('control: ExtensionModuleControlModel'));
+assert.ok(moduleControlSource.includes('checked={control.enabled}'));
+assert.ok(moduleControlSource.includes('disabled={!control.writable}'));
+assert.ok(moduleControlSource.includes('data-module-scope={control.scope}'));
+assert.ok(moduleControlSource.includes('data-module-status={control.status}'));
+assert.ok(moduleControlSource.includes('data-module-writable={control.writable'));
+assert.ok(moduleControlSource.includes('{control.scopeLabel}'));
+assert.ok(extensionModuleControlSource.includes("scope: 'local-client'"));
+assert.ok(extensionModuleControlSource.includes("const LOCAL_SCOPE_LABEL = '当前设备'"));
 
 const postBranch = sourceSlice(
   mockSource,

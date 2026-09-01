@@ -480,11 +480,7 @@ function resolveRareOrderParticipation(
     operationallyParticipating: authorityAligned && entry.participating,
     exactIdentity,
     queuePosition: entry.participating ? entry.queuePosition : null,
-    reason: authorityAligned
-      ? entryState === 'paused'
-        ? '已暂停：仅在稀客队列和诊断中保留；不显示经营推荐，也不参与高亮、新自动化或资源预约。已开锅任务等待恢复。'
-        : ''
-      : '受控名单与 Mod 权威快照尚未对齐。',
+    reason: authorityAligned ? '' : '受控名单与 Mod 权威快照尚未对齐。',
   };
 }
 

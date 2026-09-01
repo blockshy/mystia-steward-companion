@@ -189,7 +189,12 @@ try {
   await page.waitForTimeout(500);
   assert.equal(requests.length, 0, 'The default-off task module issued a tracked mission request.');
   assert.equal(availableRequests.length, 0, 'The default-off task module issued an available mission request.');
+  const moduleControl = page.locator('[data-feature-module="task-list"]');
   const moduleToggle = page.locator('[data-gamepad-focus-key="missions:module-toggle"]');
+  await moduleControl.getByText('当前设备', { exact: true }).waitFor({ timeout: 10_000 });
+  assert.equal(await moduleControl.getAttribute('data-module-scope'), 'local-client');
+  assert.equal(await moduleControl.getAttribute('data-module-status'), 'writable');
+  assert.equal(await moduleControl.getAttribute('data-module-writable'), 'true');
   assert.equal(await moduleToggle.isChecked(), false, 'The task module did not default to disabled.');
   await moduleToggle.click();
   assert.equal(

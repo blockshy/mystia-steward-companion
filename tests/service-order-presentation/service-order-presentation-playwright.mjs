@@ -9,6 +9,7 @@ const API_URL = process.env.MYSTIA_API_URL || 'http://127.0.0.1:32145';
 const API_TOKEN = process.env.MYSTIA_API_TOKEN || 'mock-token';
 const OUTPUT_DIR = process.env.SERVICE_ORDER_AUDIT_OUTPUT_DIR || '/tmp/mystia-companion-service-order-audit';
 const STORAGE_PREFIX = 'mystia-steward-companion';
+const chromiumExecutablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH?.trim();
 const viewports = [
   { name: 'desktop', width: 1280, height: 900 },
   { name: 'minimum', width: 640, height: 760 },
@@ -37,7 +38,10 @@ emptySnapshot.normalBusiness = {
 emptySnapshot.snapshotSignature = 'service-order-presentation-empty';
 
 await mkdir(OUTPUT_DIR, { recursive: true });
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({
+  headless: true,
+  ...(chromiumExecutablePath ? { executablePath: chromiumExecutablePath } : {}),
+});
 
 try {
   for (const viewport of viewports) {
@@ -64,10 +68,11 @@ async function auditPopulatedOrders(browserInstance, viewport) {
     assert.equal(rare.hasScrollFade, false, `${viewport.name} 稀客订单区域不应显示底部渐隐。`);
     assert.equal(rare.clippedBadgeCount, 0, `${viewport.name} 稀客卡片存在被裁切的徽标。`);
     assert.equal(
-      await page.getByRole('button', { name: '稀客订单专注模式', exact: true }).count(),
+      await page.getByRole('button', { name: '专注模式', exact: true }).count(),
       1,
       `${viewport.name} 稀客页必须保留专注模式控制。`,
     );
+    await assertRecommendationToolbarLayout(page, viewport);
     assert.equal(rare.scrollKey, 'service:recommendations', `${viewport.name} 稀客页滚动标识发生变化。`);
     await assertNoHorizontalOverflow(page, viewport.name, 'populated rare');
     await page.screenshot({
@@ -164,7 +169,7 @@ async function openWorkbench(browserInstance, viewport, interceptedSnapshot = nu
     });
   }
   await page.goto(APP_URL, { waitUntil: 'domcontentloaded' });
-  await page.waitForFunction(() => document.body.innerText.includes('1.0.5'), null, { timeout: 10000 });
+  await page.locator('[data-gamepad-tab-value="service"]').first().waitFor({ timeout: 10_000 });
   return page;
 }
 
@@ -241,5 +246,86 @@ async function assertNoHorizontalOverflow(page, viewportName, state) {
   assert.ok(
     overflow.collections.every((value) => value <= 1),
     `${viewportName} ${state} 订单区域横向溢出：${overflow.collections.join('/')}。`,
+  );
+}
+
+async function assertRecommendationToolbarLayout(page, viewport) {
+  const toolbar = page.locator('[data-service-recommendation-toolbar="true"]:visible');
+  await toolbar.waitFor({ state: 'visible', timeout: 10_000 });
+  const layout = await toolbar.evaluate((element) => {
+    const panel = element.closest('.steward-list-panel');
+    const panelToolbar = element.closest('[data-list-panel-toolbar="true"]');
+    const header = panel?.querySelector('.steward-panel-header');
+    const heading = header?.querySelector('h2');
+    const countBadge = header?.querySelector('[data-service-order-count-badge="true"]');
+    const recipe = element.querySelector('[data-service-recommendation-limit="recipe"]');
+    const beverage = element.querySelector('[data-service-recommendation-limit="beverage"]');
+    const focusButton = element.querySelector('[data-gamepad-focus-key="service:focus:enter"]');
+    if (!(panel instanceof HTMLElement)
+      || !(panelToolbar instanceof HTMLElement)
+      || !(header instanceof HTMLElement)
+      || !(heading instanceof HTMLElement)
+      || !(countBadge instanceof HTMLElement)
+      || !(recipe instanceof HTMLElement)
+      || !(beverage instanceof HTMLElement)
+      || !(focusButton instanceof HTMLElement)) {
+      return { ok: false, reason: '推荐工具栏或标题状态缺失' };
+    }
+
+    const toolbarRect = element.getBoundingClientRect();
+    const panelToolbarRect = panelToolbar.getBoundingClientRect();
+    const headerRect = header.getBoundingClientRect();
+    const headingRect = heading.getBoundingClientRect();
+    const countRect = countBadge.getBoundingClientRect();
+    const recipeRect = recipe.getBoundingClientRect();
+    const beverageRect = beverage.getBoundingClientRect();
+    const buttonRect = focusButton.getBoundingClientRect();
+    const center = (rect) => (rect.top + rect.bottom) / 2;
+    const roundRect = (rect) => ({
+      left: Math.round(rect.left),
+      top: Math.round(rect.top),
+      right: Math.round(rect.right),
+      bottom: Math.round(rect.bottom),
+    });
+    const contained = [recipeRect, beverageRect, buttonRect].every((rect) => (
+      rect.left >= toolbarRect.left - 1 && rect.right <= toolbarRect.right + 1
+    ));
+    const singleRowGeometry = Math.abs(center(recipeRect) - center(beverageRect)) <= 2
+      && Math.abs(center(beverageRect) - center(buttonRect)) <= 2
+      && recipeRect.right <= beverageRect.left + 1
+      && beverageRect.right <= buttonRect.left + 1;
+    const compactInputs = recipe.querySelector('[data-focus-limit-density="compact"]') !== null
+      && beverage.querySelector('[data-focus-limit-density="compact"]') !== null;
+    const headerClean = Math.abs(center(headingRect) - center(countRect)) <= 2
+      && headingRect.left >= headerRect.left - 1
+      && countRect.right <= headerRect.right + 1;
+
+    return {
+      ok: contained
+        && headerClean
+        && element.scrollWidth <= element.clientWidth + 1
+        && panelToolbar.scrollWidth <= panelToolbar.clientWidth + 1
+        && focusButton.scrollWidth <= focusButton.clientWidth + 1
+        && panelToolbarRect.top >= headerRect.bottom - 1
+        && singleRowGeometry
+        && compactInputs,
+      headerClean,
+      contained,
+      singleRowGeometry,
+      compactInputs,
+      toolbarSize: `${element.clientWidth}/${element.scrollWidth}`,
+      panelToolbarSize: `${panelToolbar.clientWidth}/${panelToolbar.scrollWidth}`,
+      rects: {
+        recipe: roundRect(recipeRect),
+        beverage: roundRect(beverageRect),
+        button: roundRect(buttonRect),
+      },
+    };
+  });
+
+  assert.equal(
+    layout.ok,
+    true,
+    `${viewport.name} 稀客推荐工具栏布局不稳定：${JSON.stringify(layout)}。`,
   );
 }

@@ -30,7 +30,7 @@ Unity 主线程队列。
 | --- | --- |
 | 概览 | 连接、状态、库存、操作四个二级页签；客户端 endpoint/Token 与连接摘要只在连接页展示 |
 | 推荐料理 | 普客、稀客、自定义推荐料理、收藏管理四个二级页签 |
-| 经营中 | 默认收起的经营概况、参与订单推荐、可按稀客或单订单操作的稀客队列与自动化运行状态 |
+| 经营中 | 默认收起的经营概况、参与订单推荐、稀客调度开启后可按稀客或单订单操作的稀客队列，以及自动化运行状态 |
 | 扩展功能 | 任务列表、稀客邀请、稀客调度、修改四个二级页签 |
 | 设置 | 窗口、连接、推荐、实验性功能、更新、帮助六个二级页签；连接页负责 Mod listener、LAN 与设备权威 |
 | 日志 | 仅在“显示调试详情”开启时出现 |
@@ -41,6 +41,9 @@ Worker、计时器或全局输入作用域。
 经营中顶部“经营概况”是页面内临时展开状态：首次进入时默认收起，展开后显示经营场景、推荐数据、自动化、
 特殊经营、已摆放厨具和目标厨具六项；离开经营中导致页面卸载，再次进入时恢复默认收起，不写入设备偏好或
 共享 profile。
+
+`经营中 -> 推荐 -> 稀客队列` 是稀客调度模块的条件页签：模块关闭时不渲染该页签和管理页，模块开启后才显示。
+页签可见不等于当前设备可写；非主设备、连接或权威状态未就绪、订单集合不完整以及参与快照未对齐时仍保持只读。
 
 工作台不保留全局连接表头。API 地址、Token、连接启停、刷新和连接/运行态/经营摘要集中在
 `概览 -> 连接`；其他一级页面不重复占用这块空间。桌面端鼠标穿透开启时是唯一例外：顶层保留一条紧凑的
@@ -60,16 +63,28 @@ Worker、计时器或全局输入作用域。
 - `apps/companion/src/companion/storage.ts`：不属于共享 profile 的本地页面状态。
 
 跨设备生效的推荐、稀客调度模块开关与受控名单、自动化和游戏界面辅助配置由“主设备”权威模型管理；纯显示偏好仍属于当前窗口。
+扩展模块统一使用 `domain/extension-module-control.ts` 归约配置作用域和控制状态，并由
+`ModuleControlPanel.tsx` 展示“当前设备”或“主设备共享”。任务列表、稀客邀请只控制当前窗口的读取或动作入口，
+断线时可以预设；稀客调度会改变共享运行配置，只有连接并确认当前设备为主设备后才可写。共享偏好写命令必须在
+权威 hook 的唯一 `stagePrimaryProfile` 边界提交。该边界冻结 registry/device/primary、authority revision 与
+profile revision/hash 基线；debounce 和已发送 POST 期间的连续输入只更新完整草稿，前一笔确认后才以新基线串行提交下一笔。
+poll、refresh 和 POST 响应使用同一事务归约：同基线旧观测不得覆盖草稿，只有 exact next CAS 且 profile 全量相符才确认；
+任一连接代际或权威基线变化都明确回滚，不做隐式 rebase。未确认草稿只用于设置页展示，不进入运行时配置或本地权威缓存；
+已经发出的设备权威写请求由 hook 记录 transport 屏障，切换连接代际后必须等待旧请求响应或客户端超时再重新 register；
+服务端 CAS 继续拒绝同一旧基线的竞争写入，后续权威观察负责收敛超时后的生效状态。
+设备 mutation 通过同步获取的操作令牌串行执行；pending-sync 按 generation、同步 ID 和 profile revision/hash 单飞，在应用与 ACK
+期间不暴露运行时 writer。以上边界不建立离线待同步或最后写入覆盖路径。
 页面不得把浏览器内的临时状态当成游戏运行时已经接受的状态。远端结果需要结合连接修订、请求代际或
 内容签名拒绝迟到响应。
 
-经营中稀客队列必须同时提供 guest scope 和 order scope：前者回显该 guest 完整当前 exact lifecycle 集合做
-全量 CAS，后者只提交一笔 exact identity。两种 scope 都使用 `pause`、`enable-tail`、`enable-front` 三种明确
-action；已参与订单不能通过启用按钮重排。队列展示只接受 Mod 发布的连续 `queuePosition`，前端不自行维护
-序号或推测优先插入位置。
+模块开启后显示的经营中稀客队列必须同时提供 guest scope 和 order scope：前者回显该 guest 完整当前
+exact lifecycle 集合做全量 CAS，后者只提交一笔 exact identity。两种 scope 都使用 `pause`、`enable-tail`、
+`enable-front` 三种明确 action；已参与订单不能通过启用按钮重排。队列展示只接受 Mod 发布的连续
+`queuePosition`，前端不自行维护序号或推测优先插入位置。
 
-稀客队列管理页保留暂停订单，以便执行启用动作；订单捕获和 Worker 推荐事实也不因暂停删除。模块开启且有效
-名单非空时，“经营中 -> 推荐 -> 稀客”和稀客订单专注模式只展示参与订单，并按权威 `queuePosition` 排列；
+模块开启时，稀客队列管理页保留暂停订单，以便执行启用动作；模块关闭时该页签不挂载。订单捕获和 Worker
+推荐事实不因暂停删除。模块开启且有效名单非空时，“经营中 -> 推荐 -> 稀客”和稀客订单专注模式只展示
+参与订单，并按权威 `queuePosition` 排列；
 暂停订单从这两个展示入口隐藏，启用后按新位置恢复。模块关闭或有效名单为空时旁路 participation 投影，两个
 入口沿用原有集合与排序。
 
@@ -109,6 +124,9 @@ F8 和 RS Click 的窗口聚焦切换属于 Tauri 桌面能力，不受“手柄
 
 - 页面组合：`apps/companion/src/companion/ModWorkbench.tsx`
 - 概览连接页：`apps/companion/src/companion/pages/overview/OverviewConnectionPanel.tsx`
+- 扩展模块控制状态：`apps/companion/src/companion/domain/extension-module-control.ts`
+- 主设备 profile 草稿事务：`apps/companion/src/companion/domain/primary-profile-transaction.ts`
+- 扩展模块统一外壳：`apps/companion/src/companion/pages/ModuleControlPanel.tsx`
 - 稀客调度扩展模块：`apps/companion/src/companion/pages/ModRareGuestParticipationPanel.tsx`
 - 经营中稀客队列：`apps/companion/src/companion/pages/service/RareOrderParticipationPanel.tsx`
 - 设置页：`apps/companion/src/companion/pages/ModSettingsPanel.tsx`

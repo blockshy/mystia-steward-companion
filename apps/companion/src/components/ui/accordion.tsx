@@ -33,12 +33,17 @@ function AccordionItem({ className, ...props }: React.ComponentProps<typeof Mant
 function AccordionTrigger({
   className,
   children,
+  density = 'default',
   ...props
-}: React.ComponentProps<typeof MantineAccordion.Control> & { children: ReactNode }) {
+}: React.ComponentProps<typeof MantineAccordion.Control> & {
+  children: ReactNode;
+  density?: 'default' | 'compact';
+}) {
   return (
     <MantineAccordion.Control
       data-slot="accordion-trigger"
       data-gamepad-control="accordion-trigger"
+      data-ui-density={density}
       className={composeClassNames('steward-accordion-trigger', className)}
       {...props}
     >

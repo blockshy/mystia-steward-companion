@@ -20,6 +20,7 @@ import type {
   TrackedMissionEntry,
   TrackedMissionsResponse,
 } from '@/companion/types';
+import { resolveLocalExtensionModuleControl } from '@/companion/domain/extension-module-control';
 import { ModuleControlPanel } from '@/companion/pages/ModuleControlPanel';
 import { DENSE_THREE_COLUMN_GRID } from '@/companion/pages/shared-constants';
 
@@ -102,6 +103,10 @@ export function ModMissionListPanel({
     : statusView === 'available'
       ? availableResult !== null
       : trackedResult !== null;
+  const moduleControl = resolveLocalExtensionModuleControl({
+    enabled,
+    connected,
+  });
 
   return (
     <div className="space-y-4">
@@ -109,7 +114,7 @@ export function ModMissionListPanel({
         moduleId="task-list"
         label="启用任务列表模块"
         description="开启后才会读取并轮询可接取任务与当前活动任务；关闭不会影响任务料理置顶等共享的被动任务能力。"
-        enabled={enabled}
+        control={moduleControl}
         focusKey="missions:module-toggle"
         onEnabledChange={onEnabledChange}
       />

@@ -121,7 +121,8 @@ export async function readCompanionDevices(
 export async function updatePrimaryCompanionProfile(
   endpoint: string,
   apiToken: string,
-  state: CompanionDeviceAuthorityState,
+  expectedAuthorityRevision: number,
+  expectedProfileRevision: number,
   profile: SharedCompanionPreferences,
 ): Promise<CompanionDeviceAuthorityState> {
   return writeLocalApiJsonWithTimeout<CompanionDeviceAuthorityState>(
@@ -133,8 +134,8 @@ export async function updatePrimaryCompanionProfile(
       body: {
         protocolVersion: COMPANION_DEVICE_PROTOCOL_VERSION,
         profileSchemaVersion: SHARED_COMPANION_PREFERENCES_SCHEMA_VERSION,
-        expectedAuthorityRevision: state.authorityRevision,
-        expectedProfileRevision: state.currentDeviceProfileRevision,
+        expectedAuthorityRevision,
+        expectedProfileRevision,
         profile: normalizeSharedCompanionPreferences(profile),
       },
     },

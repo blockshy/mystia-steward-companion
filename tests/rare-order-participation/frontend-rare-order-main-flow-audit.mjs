@@ -36,7 +36,8 @@ for (const contract of [
   'operationalRecommendations={operationalOrderRecommendations}',
   'rareParticipationModuleEnabled={rareOrderParticipation.moduleEnabled}',
   'collectionComplete: rareOrderCollectionComplete,',
-  "setExtensionTab('rare-participation')",
+  'const effectiveServiceRecommendationTab: ServiceRecommendationTab =',
+  'serviceRecommendationTab={effectiveServiceRecommendationTab}',
   '<ModRareGuestParticipationPanel',
 ]) {
   assert.ok(workbenchSource.includes(contract), `ModWorkbench is missing rare participation wiring: ${contract}`);
@@ -60,6 +61,11 @@ assert.match(
   workbenchSource,
   /const runAutoFirstOrder = useCallback[\s\S]+rareParticipationMutationBusyRef\.current[\s\S]+const runAutoNormalOrder = useCallback[\s\S]+rareParticipationMutationBusyRef\.current/,
   'Rare and normal automation entry points must both remain closed while a participation mutation is in flight.',
+);
+assert.match(
+  workbenchSource,
+  /const effectiveServiceRecommendationTab:[\s\S]+!rareOrderParticipation\.moduleEnabled\s*&&\s*serviceRecommendationTab === 'rare-queue'[\s\S]+\? 'rare'[\s\S]+setServiceRecommendationTab\(\(current\) => current === 'rare-queue' \? 'rare' : current\)/,
+  'A disabled rare scheduling module must synchronously normalize the effective queue tab and persisted tab state to rare.',
 );
 
 for (const contract of [
@@ -109,7 +115,6 @@ for (const contract of [
   "export type ServiceRecommendationTab = 'rare' | 'rare-queue' | 'normal'",
   'data-service-order-tab="rare-queue"',
   '<RareOrderParticipationPanel',
-  'moduleEnabled={rareParticipationModuleEnabled}',
   'busyMutationKey={rareParticipationBusyMutationKey}',
   'onMutateGuest={onMutateRareGuestOrders}',
   'onMutateOrder={onMutateRareOrder}',
@@ -120,6 +125,20 @@ for (const contract of [
 ]) {
   assert.ok(serviceSource.includes(contract), `Service queue/recommendation wiring is missing: ${contract}`);
 }
+assert.match(
+  serviceSource,
+  /\{rareParticipationModuleEnabled && \(\s*<TabsTrigger[\s\S]+?value="rare-queue"/,
+  'The rare queue tab trigger must only render while the module is enabled.',
+);
+assert.match(
+  serviceSource,
+  /\{rareParticipationModuleEnabled && \(\s*<TabsContent value="rare-queue"/,
+  'The rare queue tab content must only render while the module is enabled.',
+);
+assert.ok(
+  serviceSource.includes("rareParticipationModuleEnabled && value === 'rare-queue'"),
+  'A disabled module must reject rare-queue tab selection events.',
+);
 for (const contract of [
   '<ModuleControlPanel',
   'moduleId="rare-guest-participation"',
@@ -135,8 +154,25 @@ assert.ok(queueSource.includes('busyMutationKey !== null'));
 assert.ok(queueSource.includes("'enable-front'"));
 assert.ok(queueSource.includes("'enable-tail'"));
 assert.ok(queueSource.includes('onMutateOrder'));
-assert.ok(queueSource.includes('稀客调度模块已停用'));
-assert.ok(queueSource.includes('暂停会从经营中稀客推荐隐藏订单'));
+assert.ok(queueSource.includes('const groupMutationDisabled = readOnly || busyMutationKey !== null'));
+assert.ok(queueSource.includes('const actionDisabled = readOnly || busyMutationKey !== null || !identity'));
+assert.ok(queueSource.includes('children={error'));
+assert.ok(!queueSource.includes('moduleEnabled'));
+assert.ok(!queueSource.includes('readOnlyReason'));
+assert.ok(!queueSource.includes('onOpenModule'));
+assert.ok(!queueSource.includes('data-rare-order-participation-read-only'));
+assert.ok(!queueSource.includes('只读'));
+assert.ok(!queueSource.includes('稀客调度模块已停用'));
+assert.ok(!queueSource.includes('队列说明'));
+assert.ok(!queueSource.includes('data-rare-order-participation-disclosure'));
+assert.ok(!queueSource.includes('暂停会从经营中稀客推荐隐藏订单'));
+assert.ok(!queueSource.includes('已开锅任务按安全边界保留并等待恢复'));
+assert.ok(
+  !domainSource.includes('已暂停：仅在稀客队列和诊断中保留；不显示经营推荐，也不参与高亮、新自动化或资源预约。已开锅任务等待恢复。'),
+  'The removed per-order paused description must not remain in the participation domain.',
+);
+assert.ok(extensionSource.includes('placeholder="输入姓名、ID或地区"'));
+assert.ok(!extensionSource.includes('placeholder="输入姓名、ID、地区或 DLC"'));
 assert.ok(!cardSource.includes('参与已暂停'));
 assert.ok(!cardSource.includes('推荐保留'));
 assert.ok(!cardSource.includes('参与状态不可用'));

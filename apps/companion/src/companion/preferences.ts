@@ -221,6 +221,12 @@ export interface SharedCompanionPreferences {
   recommendationExclusions: RecommendationExclusions;
 }
 
+/** 只保存在当前伴随窗口、不进入主设备共享 profile 的偏好。 */
+export type LocalCompanionPreferences = Omit<
+  CompanionPreferences,
+  keyof SharedCompanionPreferences
+>;
+
 export const SHARED_COMPANION_PREFERENCES_SCHEMA_VERSION = 3;
 
 const SHARED_COMPANION_BOOLEAN_FIELDS = [

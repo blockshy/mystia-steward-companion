@@ -11,6 +11,7 @@ import {
   SegmentedControl,
 } from '@/components/ui-kit';
 import { ModuleControlPanel } from '@/companion/pages/ModuleControlPanel';
+import { resolveLocalExtensionModuleControl } from '@/companion/domain/extension-module-control';
 import { RuntimeUnavailable } from '@/companion/pages/shared';
 import { DENSE_FOUR_COLUMN_GRID } from '@/companion/pages/shared-constants';
 import { toggleNumberInList } from '@/companion/storage';
@@ -21,6 +22,7 @@ import type {
 } from '@/companion/types';
 
 export interface ModRareGuestInvitationsPanelProps {
+  connected: boolean;
   runtimeLoaded: boolean;
   runtimeDaySceneReady: boolean;
   rareGuestInvitationModuleEnabled: boolean;
@@ -62,6 +64,7 @@ interface RareGuestInvitationPanelProps {
 }
 
 export function ModRareGuestInvitationsPanel({
+  connected,
   runtimeLoaded,
   runtimeDaySceneReady,
   rareGuestInvitationModuleEnabled,
@@ -82,16 +85,20 @@ export function ModRareGuestInvitationsPanel({
   onInviteAllRareGuests,
   onInviteRareGuest,
 }: ModRareGuestInvitationsPanelProps) {
+  const moduleControl = resolveLocalExtensionModuleControl({
+    enabled: rareGuestInvitationModuleEnabled,
+    connected,
+    operationInFlight: rareGuestInvitationModuleToggleDisabled,
+    operationReason: '邀请写入已经提交，需等待 Mod 返回确定结果后才能切换模块。',
+  });
+
   return (
     <div className="space-y-4">
       <ModuleControlPanel
         moduleId="rare-guest-invitations"
         label="启用稀客邀请模块"
-        description={rareGuestInvitationModuleToggleDisabled
-          ? '邀请写入已经提交，需等待 Mod 返回确定结果后才能关闭模块。'
-          : '开启后才会读取日间稀客候选并开放单独或批量邀请；关闭时不会发起邀请读取或写入。'}
-        enabled={rareGuestInvitationModuleEnabled}
-        disabled={rareGuestInvitationModuleToggleDisabled}
+        description="开启后才会读取日间稀客候选并开放单独或批量邀请；关闭时不会发起邀请读取或写入。"
+        control={moduleControl}
         focusKey="rare-invitations:module-toggle"
         onEnabledChange={onRareGuestInvitationModuleEnabledChange}
       />

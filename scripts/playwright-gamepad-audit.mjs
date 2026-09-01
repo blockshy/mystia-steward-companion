@@ -889,21 +889,81 @@ async function auditInnerTabs(page) {
   await expectFocusedInnerTab(page, '库存', '概览页“状态”按右键应聚焦“库存”二级 Tab');
 
   await activateTopTab(page, 'service');
+  const hiddenServiceQueueTabs = page.locator('[data-service-order-tab-trigger="rare-queue"]');
+  if (await hiddenServiceQueueTabs.count()) {
+    issues.push('稀客调度模块默认关闭时，“经营中”仍显示“稀客队列”二级 Tab。');
+  }
   await focusInnerTab(page, '稀客');
   const serviceTabBefore = await readActiveElementDebug(page);
   runtimeDiagnostics.push(`经营中二级 Tab 右移前：${formatElementDebug(serviceTabBefore)}`);
   await pressButton(page, BUTTON_DPAD_RIGHT, { holdMs: 70 });
-  const serviceQueueTab = await readActiveElementDebug(page);
-  runtimeDiagnostics.push(`经营中二级 Tab 首次右移后：${formatElementDebug(serviceQueueTab)}`);
-  if (!serviceQueueTab.innerTab || serviceQueueTab.text !== '稀客队列') {
+  const serviceNormalTab = await readActiveElementDebug(page);
+  runtimeDiagnostics.push(`经营中二级 Tab 右移后：${formatElementDebug(serviceNormalTab)}`);
+  if (!serviceNormalTab.innerTab || serviceNormalTab.text !== '普客') {
     issues.push([
-      '经营中页“稀客”按右键应聚焦“稀客队列”二级 Tab。',
+      '稀客调度模块关闭时，经营中页“稀客”按右键应直接聚焦“普客”二级 Tab。',
       `操作前 ${formatElementDebug(serviceTabBefore)}；`,
-      `操作后 ${formatElementDebug(serviceQueueTab)}。`,
+      `操作后 ${formatElementDebug(serviceNormalTab)}。`,
     ].join(''));
   }
-  await pressButton(page, BUTTON_DPAD_RIGHT, { holdMs: 70 });
-  await expectFocusedInnerTab(page, '普客', '经营中页“稀客队列”按右键应聚焦“普客”二级 Tab');
+
+  await activateExtensionTab(page, '稀客调度');
+  const participationToggle = page.locator(
+    '[data-gamepad-focus-key="extensions:rare-participation:module-toggle"]:visible',
+  ).first();
+  let participationToggleReady = false;
+  if (!(await participationToggle.count())) {
+    issues.push('稀客调度页未找到可由手柄操作的模块开关。');
+  } else {
+    try {
+      await page.waitForFunction(() => {
+        const element = document.querySelector(
+          '[data-gamepad-focus-key="extensions:rare-participation:module-toggle"]',
+        );
+        return element instanceof HTMLInputElement && !element.disabled && !element.checked;
+      }, null, { timeout: 3_000 });
+      participationToggleReady = true;
+    } catch {
+      issues.push('稀客调度模块开关未以默认关闭且可写的状态就绪。');
+    }
+  }
+
+  if (participationToggleReady) {
+    await participationToggle.focus();
+    await pressButton(page, BUTTON_A, { holdMs: 70 });
+    const moduleEnabled = await page.waitForFunction(() => {
+      const element = document.querySelector(
+        '[data-gamepad-focus-key="extensions:rare-participation:module-toggle"]',
+      );
+      return element instanceof HTMLInputElement && element.checked;
+    }, null, { timeout: 3_000 }).then(() => true).catch(() => false);
+    if (!moduleEnabled) {
+      issues.push('稀客调度模块开关按 A 后未开启。');
+    } else {
+      await activateTopTab(page, 'service');
+      const serviceQueueTrigger = page.locator('[data-service-order-tab-trigger="rare-queue"]:visible');
+      if (!(await serviceQueueTrigger.count())) {
+        issues.push('稀客调度模块开启后，“经营中”未显示“稀客队列”二级 Tab。');
+      } else {
+        await focusInnerTab(page, '稀客');
+        await pressButton(page, BUTTON_DPAD_RIGHT, { holdMs: 70 });
+        await expectFocusedInnerTab(page, '稀客队列', '稀客调度开启时，“稀客”按右键应聚焦“稀客队列”二级 Tab');
+        await pressButton(page, BUTTON_DPAD_RIGHT, { holdMs: 70 });
+        await expectFocusedInnerTab(page, '普客', '稀客调度开启时，“稀客队列”按右键应聚焦“普客”二级 Tab');
+      }
+
+      await activateExtensionTab(page, '稀客调度');
+      await participationToggle.focus();
+      await pressButton(page, BUTTON_A, { holdMs: 70 });
+      const moduleDisabled = await page.waitForFunction(() => {
+        const element = document.querySelector(
+          '[data-gamepad-focus-key="extensions:rare-participation:module-toggle"]',
+        );
+        return element instanceof HTMLInputElement && !element.checked;
+      }, null, { timeout: 3_000 }).then(() => true).catch(() => false);
+      if (!moduleDisabled) issues.push('稀客调度模块开关第二次按 A 后未恢复关闭状态。');
+    }
+  }
 
   await activateRecommendationTab(page, '普客');
   const recommendationTabs = page.locator('[data-recommendation-tabs]');

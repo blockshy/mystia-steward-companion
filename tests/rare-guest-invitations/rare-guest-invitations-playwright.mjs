@@ -170,13 +170,18 @@ try {
   }, { apiUrl: API_URL, apiToken: API_TOKEN, storagePrefix: STORAGE_PREFIX });
 
   await page.goto(APP_URL, { waitUntil: 'domcontentloaded' });
-  await page.waitForFunction(() => document.body.innerText.includes('1.0.5'), null, { timeout: 10_000 });
+  await page.locator('[data-gamepad-tab-value="extensions"]').first().waitFor({ timeout: 10_000 });
   await activateInvitationPanel();
   await page.getByText('稀客邀请模块已停用。手动开启总控后才会读取候选或执行邀请。', { exact: true })
     .waitFor({ timeout: 10_000 });
   await page.waitForTimeout(500);
   assert.equal(listRequests.length, 0, 'The default-off invitation module issued a candidate read.');
+  const moduleControl = page.locator('[data-feature-module="rare-guest-invitations"]');
   const moduleToggle = page.locator('[data-gamepad-focus-key="rare-invitations:module-toggle"]');
+  await moduleControl.getByText('当前设备', { exact: true }).waitFor({ timeout: 10_000 });
+  assert.equal(await moduleControl.getAttribute('data-module-scope'), 'local-client');
+  assert.equal(await moduleControl.getAttribute('data-module-status'), 'writable');
+  assert.equal(await moduleControl.getAttribute('data-module-writable'), 'true');
   assert.equal(await moduleToggle.isChecked(), false, 'The invitation module did not default to disabled.');
   await moduleToggle.click();
   assert.equal(
@@ -236,6 +241,9 @@ try {
   await mappedGuestRow.getByRole('button', { name: '邀请', exact: true }).click();
   await waitFor(() => singleInviteRequests.length === 1, 10_000);
   assert.equal(await moduleToggle.isDisabled(), true, 'The module toggle remained enabled during an in-flight invitation write.');
+  assert.equal(await moduleControl.getAttribute('data-module-status'), 'operation-in-flight');
+  assert.equal(await moduleControl.getAttribute('data-module-writable'), 'false');
+  await moduleControl.getByText('操作处理中', { exact: true }).waitFor();
   assert.deepEqual(singleInviteRequests[0], {
     method: 'POST',
     guestId: '10',
@@ -255,6 +263,8 @@ try {
   releaseSingleInviteResponse = null;
   await page.getByText('mock mapped invitation write checked', { exact: true }).waitFor();
   assert.equal(await moduleToggle.isDisabled(), false, 'The module toggle did not recover after the write completed.');
+  assert.equal(await moduleControl.getAttribute('data-module-status'), 'writable');
+  assert.equal(await moduleControl.getAttribute('data-module-writable'), 'true');
 
   await page.locator('[data-gamepad-focus-key="rare-invitations:refresh"]').click();
   await waitForListRequestCount(4);

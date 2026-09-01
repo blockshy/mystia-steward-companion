@@ -55,7 +55,6 @@ export interface RareOrderParticipationController {
   resolutionIndex: RareOrderParticipationResolutionIndex | null;
   projectionReady: boolean;
   readOnly: boolean;
-  readOnlyReason: string;
   busyMutationKey: string | null;
   error: string;
   resolveOrder: (order: NightBusinessOrder) => RareOrderParticipationResolution | null;
@@ -346,7 +345,6 @@ export function useRareOrderParticipation({
     resolutionIndex,
     projectionReady,
     readOnly,
-    readOnlyReason,
     busyMutationKey,
     error,
     resolveOrder,

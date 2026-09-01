@@ -5,6 +5,7 @@ import { RecommendationItem, RecommendationMetaBadge, RecommendationTagPills } f
 import { CustomerCoverageBadges } from '@/components/recommendation/CustomerCoverageBadges';
 import { TagPill, TagPillGroup } from '@/components/recommendation/TagPillGroup';
 import { Badge, Button, EmptyRow, EmptyState, NumberInput, SegmentedControl, SettingHelpField, SliderField, SwitchField } from '@/components/ui-kit';
+import { composeClassNames } from '@/components/ui/style';
 import { INVENTORY_SORT_OPTIONS, type InventorySortMode } from '@/companion/domain/inventory-sorting';
 import { formatIngredientNamesWithQty, formatIngredientWithQty, formatQtySuffix } from '@/companion/formatters';
 import {
@@ -40,6 +41,8 @@ import type {
 import {
   type LowStockEntry,
 } from '@/companion/pages/shared-constants';
+
+type InlineControlDensity = 'default' | 'compact';
 
 export function LowStockColumn({
   title,
@@ -96,6 +99,7 @@ export function SwitchControl({
   helpId,
   description,
   status,
+  density = 'default',
 }: {
   label: string;
   checked: boolean;
@@ -105,6 +109,7 @@ export function SwitchControl({
   helpId?: string;
   description?: ReactNode;
   status?: ReactNode;
+  density?: InlineControlDensity;
 }) {
   if (helpId && description) {
     return (
@@ -125,6 +130,7 @@ export function SwitchControl({
                 disabled={disabled}
                 title={title}
                 aria-describedby={descriptionId}
+                data-switch-control-density={density}
               />
               {helpTrigger}
             </div>
@@ -136,7 +142,14 @@ export function SwitchControl({
   }
 
   return (
-    <SwitchField label={label} checked={checked} onCheckedChange={onCheckedChange} disabled={disabled} title={title} />
+    <SwitchField
+      label={label}
+      checked={checked}
+      onCheckedChange={onCheckedChange}
+      disabled={disabled}
+      title={title}
+      data-switch-control-density={density}
+    />
   );
 }
 
@@ -144,20 +157,28 @@ export function FocusLimitInput({
   label,
   value,
   onChange,
+  density = 'default',
 }: {
   label: string;
   value: number;
   onChange: (value: number) => void;
+  density?: InlineControlDensity;
 }) {
   return (
-    <label className="flex items-center gap-1.5 text-sm">
+    <label
+      className={composeClassNames(
+        'flex items-center text-sm',
+        density === 'compact' ? 'gap-1' : 'gap-1.5',
+      )}
+      data-focus-limit-density={density}
+    >
       <span className="whitespace-nowrap text-muted-foreground">{label}</span>
       <NumberInput
         min={1}
         max={MAX_FOCUS_RECOMMENDATION_ROWS}
         value={value}
         onValueChange={(nextValue) => onChange(normalizeFocusRecommendationLimit(nextValue))}
-        className="h-8 w-16"
+        className={density === 'compact' ? 'h-8 w-14' : 'h-8 w-16'}
       />
     </label>
   );

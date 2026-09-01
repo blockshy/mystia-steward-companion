@@ -231,6 +231,7 @@ async function auditPage(page, viewport, tab) {
   }
 
   await auditServiceSummaryAccordion(page, viewport, tab);
+  await auditOverviewConnectionLayout(page, viewport, tab);
   await auditMinimumViewportLayout(page, viewport, tab);
   await auditMissionRecipePriorityMarker(page, viewport, tab);
   await auditServiceDiagnosticsPlacement(page, viewport, tab);
@@ -552,7 +553,6 @@ async function auditMinimumViewportLayout(page, viewport, tab) {
 
   if (tab.value === 'overview') {
     await auditMinimumShellGutter(page, viewport, tab);
-    await auditMinimumOverviewConnectionLayout(page, viewport, tab);
     await auditMinimumPrimaryTabsLayout(page, viewport, tab);
   }
 
@@ -733,96 +733,172 @@ async function auditMinimumShellGutter(page, viewport, tab) {
   }
 }
 
-async function auditMinimumOverviewConnectionLayout(page, viewport, tab) {
-  const result = await page.evaluate(() => {
+async function auditOverviewConnectionLayout(page, viewport, tab) {
+  if (tab.value !== 'overview') return;
+
+  const result = await page.evaluate((minimumViewport) => {
     const panel = document.querySelector('[data-overview-connection-panel="true"]');
+    const configuration = document.querySelector('[data-overview-connection-configuration="true"]');
+    const fields = document.querySelector('[data-overview-connection-fields="true"]');
     const endpoint = document.querySelector('[data-overview-connection-endpoint="true"]');
     const token = document.querySelector('[data-overview-connection-token="true"]');
+    const footer = document.querySelector('[data-overview-connection-footer="true"]');
     const controls = document.querySelector('[data-overview-connection-controls="true"]');
+    const metadata = document.querySelector('[data-overview-connection-metadata="true"]');
     const summary = document.querySelector('[data-overview-connection-summary="true"]');
     if (!(panel instanceof HTMLElement)
+      || !(configuration instanceof HTMLElement)
+      || !(fields instanceof HTMLElement)
       || !(endpoint instanceof HTMLElement)
       || !(token instanceof HTMLElement)
+      || !(footer instanceof HTMLElement)
       || !(controls instanceof HTMLElement)
+      || !(metadata instanceof HTMLElement)
       || !(summary instanceof HTMLElement)) {
       return { ok: false, reason: '未找到概览连接子页布局检查目标。' };
     }
 
+    const fieldChildren = Array.from(fields.children).filter((node) => node instanceof HTMLElement);
+    const footerChildren = Array.from(footer.children).filter((node) => node instanceof HTMLElement);
     const controlChildren = Array.from(controls.children).filter((node) => node instanceof HTMLElement);
+    const metadataChildren = Array.from(metadata.children).filter((node) => node instanceof HTMLElement);
     const summaryChildren = Array.from(summary.children).filter((node) => node instanceof HTMLElement);
-    if (controlChildren.length !== 2 || summaryChildren.length !== 3) {
-      return { ok: false, reason: '概览连接控制项或状态摘要项目数量不符合预期。' };
+    const itemCounts = {
+      fields: fieldChildren.length,
+      footer: footerChildren.length,
+      controls: controlChildren.length,
+      metadata: metadataChildren.length,
+      summary: summaryChildren.length,
+    };
+    if (itemCounts.fields !== 2
+      || itemCounts.footer !== 2
+      || itemCounts.controls !== 2
+      || itemCounts.metadata !== 2
+      || itemCounts.summary !== 3) {
+      return { ok: false, reason: `概览连接布局项目数量不符合预期：${JSON.stringify(itemCounts)}。` };
     }
 
     const panelRect = panel.getBoundingClientRect();
+    const configurationRect = configuration.getBoundingClientRect();
+    const fieldsRect = fields.getBoundingClientRect();
+    const footerRect = footer.getBoundingClientRect();
+    const controlsRect = controls.getBoundingClientRect();
+    const metadataRect = metadata.getBoundingClientRect();
+    const summaryRect = summary.getBoundingClientRect();
+    const fieldRects = fieldChildren.map((node) => node.getBoundingClientRect());
     const inputRects = [endpoint, token].map((node) => node.getBoundingClientRect());
+    const footerRects = footerChildren.map((node) => node.getBoundingClientRect());
     const controlRects = controlChildren.map((node) => node.getBoundingClientRect());
+    const metadataRects = metadataChildren.map((node) => node.getBoundingClientRect());
     const summaryRects = summaryChildren.map((node) => node.getBoundingClientRect());
     const viewportWidth = document.documentElement.clientWidth;
-    const inputsSameRow = inputRects.every((rect) => (
-      Math.abs(rect.top - inputRects[0].top) <= 2
-      && Math.abs(rect.bottom - inputRects[0].bottom) <= 2
+    const sameRow = (rects, tolerance = 2) => rects.every((rect) => (
+      Math.abs(rect.top - rects[0].top) <= tolerance
+      && Math.abs(rect.bottom - rects[0].bottom) <= tolerance
     ));
-    const inputsOrdered = inputRects[1].left >= inputRects[0].right - 1;
-    const controlsOrdered = controlRects.slice(1).every((rect, index) => (
-      rect.left >= controlRects[index].right - 1
+    const bottomAligned = (rects, tolerance = 3) => rects.every((rect) => (
+      Math.abs(rect.bottom - rects[0].bottom) <= tolerance
     ));
-    const controlsContained = controls.scrollWidth <= controls.clientWidth + 1
-      && controls.scrollHeight <= controls.clientHeight + 1;
-    const summarySameRow = summaryRects.every((rect) => (
-      Math.abs(rect.top - summaryRects[0].top) <= 2
-      && Math.abs(rect.bottom - summaryRects[0].bottom) <= 2
+    const ordered = (rects) => rects.slice(1).every((rect, index) => (
+      rect.left >= rects[index].right - 1
     ));
-    const summaryOrdered = summaryRects.slice(1).every((rect, index) => (
-      rect.left >= summaryRects[index].right - 1
-    ));
-    const summaryColumnCount = getComputedStyle(summary).gridTemplateColumns.trim().split(/\s+/).filter(Boolean).length;
-    const summaryContained = summary.scrollWidth <= summary.clientWidth + 1
-      && summary.scrollHeight <= summary.clientHeight + 1;
-    const containedRects = [...inputRects, ...controlRects, ...summaryRects];
-    const contained = containedRects.every((rect) => (
-      rect.left >= panelRect.left - 1
-      && rect.right <= panelRect.right + 1
+    const columnCount = (element) => getComputedStyle(element).gridTemplateColumns
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .length;
+    const columns = {
+      summary: columnCount(summary),
+      fields: columnCount(fields),
+      footer: columnCount(footer),
+      metadata: columnCount(metadata),
+    };
+    const summaryFirst = Boolean(
+      summary.compareDocumentPosition(configuration) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ) && summaryRect.bottom <= configurationRect.top + 1;
+    const statusOrder = summaryChildren.map((node) => node.dataset.overviewConnectionStatusMetric || '');
+    const rows = {
+      fields: sameRow(fieldRects) && sameRow(inputRects),
+      footer: bottomAligned(footerRects),
+      controls: sameRow(controlRects),
+      metadata: sameRow(metadataRects),
+      summary: sameRow(summaryRects),
+    };
+    const horizontalOrder = {
+      fields: ordered(fieldRects),
+      inputs: ordered(inputRects),
+      footer: ordered(footerRects),
+      controls: ordered(controlRects),
+      metadata: ordered(metadataRects),
+      summary: ordered(summaryRects),
+    };
+    const groups = [panel, configuration, fields, footer, controls, metadata, summary];
+    const groupsContained = groups.every((group) => group.scrollWidth <= group.clientWidth + 1);
+    const childContainment = [
+      [panelRect, summaryRect],
+      [panelRect, configurationRect],
+      [configurationRect, fieldsRect],
+      [configurationRect, footerRect],
+      [fieldsRect, ...fieldRects, ...inputRects],
+      [footerRect, ...footerRects],
+      [controlsRect, ...controlRects],
+      [metadataRect, ...metadataRects],
+      [summaryRect, ...summaryRects],
+    ].every(([parentRect, ...childRects]) => childRects.every((rect) => (
+      rect.left >= parentRect.left - 1
+      && rect.right <= parentRect.right + 1
       && rect.left >= -1
       && rect.right <= viewportWidth + 1
-    ));
-    const usable = inputRects.every((rect) => rect.width >= 150 && rect.height >= 24)
+    )));
+    const aria = {
+      summary: summary.getAttribute('aria-label'),
+      configuration: configuration.getAttribute('aria-label'),
+      configurationRole: configuration.getAttribute('role'),
+    };
+    const minimumUsable = !minimumViewport || (
+      inputRects.every((rect) => rect.width >= 150 && rect.height >= 24)
       && controlRects.every((rect) => rect.width >= 32 && rect.height >= 24)
-      && summaryRects.every((rect) => rect.width >= 150 && rect.height >= 24);
+      && summaryRects.every((rect) => rect.width >= 150 && rect.height >= 24)
+    );
 
     return {
-      ok: inputsSameRow
-        && inputsOrdered
-        && controlsOrdered
-        && controlsContained
-        && summarySameRow
-        && summaryOrdered
-        && summaryColumnCount === 3
-        && summaryContained
-        && contained
-        && usable,
-      inputsSameRow,
-      inputsOrdered,
-      controlsOrdered,
-      controlsContained,
-      summarySameRow,
-      summaryOrdered,
-      summaryColumnCount,
-      summaryContained,
-      contained,
-      usable,
+      ok: summaryFirst
+        && statusOrder.join('|') === 'connection|runtime|business'
+        && columns.summary === 3
+        && columns.fields === 2
+        && columns.footer === 2
+        && columns.metadata === 2
+        && Object.values(rows).every(Boolean)
+        && Object.values(horizontalOrder).every(Boolean)
+        && groupsContained
+        && childContainment
+        && aria.summary === '连接与游戏状态'
+        && aria.configuration === '连接配置'
+        && aria.configurationRole === 'region'
+        && minimumUsable,
+      summaryFirst,
+      statusOrder,
+      columns,
+      rows,
+      horizontalOrder,
+      groupsContained,
+      childContainment,
+      aria,
+      minimumUsable,
       inputWidths: inputRects.map((rect) => Math.round(rect.width)),
       controlWidths: controlRects.map((rect) => Math.round(rect.width)),
+      footerWidths: footerRects.map((rect) => Math.round(rect.width)),
+      metadataWidths: metadataRects.map((rect) => Math.round(rect.width)),
       summaryWidths: summaryRects.map((rect) => Math.round(rect.width)),
     };
-  });
+  }, viewport.name === 'minimum');
 
   if (!result.ok) {
     issues.push({
       viewport: viewport.name,
       tab: tab.label,
       component: 'OverviewConnectionLayout',
-      message: result.reason || `最小宽度概览连接布局异常：inputsSameRow=${result.inputsSameRow}，inputsOrdered=${result.inputsOrdered}，controlsOrdered=${result.controlsOrdered}，controlsContained=${result.controlsContained}，summarySameRow=${result.summarySameRow}，summaryOrdered=${result.summaryOrdered}，summaryColumns=${result.summaryColumnCount}，summaryContained=${result.summaryContained}，contained=${result.contained}，usable=${result.usable}，inputWidths=${result.inputWidths?.join('/')}，controlWidths=${result.controlWidths?.join('/')}，summaryWidths=${result.summaryWidths?.join('/')}`,
+      message: result.reason || `概览连接布局异常：summaryFirst=${result.summaryFirst}，statusOrder=${result.statusOrder?.join('/')}，columns=${JSON.stringify(result.columns)}，rows=${JSON.stringify(result.rows)}，horizontalOrder=${JSON.stringify(result.horizontalOrder)}，groupsContained=${result.groupsContained}，childContainment=${result.childContainment}，aria=${JSON.stringify(result.aria)}，minimumUsable=${result.minimumUsable}，inputWidths=${result.inputWidths?.join('/')}，controlWidths=${result.controlWidths?.join('/')}，footerWidths=${result.footerWidths?.join('/')}，metadataWidths=${result.metadataWidths?.join('/')}，summaryWidths=${result.summaryWidths?.join('/')}`,
     });
   }
 }

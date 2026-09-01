@@ -85,6 +85,13 @@ try {
     ...(chromiumExecutablePath ? { executablePath: chromiumExecutablePath } : {}),
   });
 
+  const offlineClient = await openOfflineClient(browser);
+  clients.push(offlineClient);
+  await assertOfflineExtensionModuleOwnership(offlineClient);
+  await offlineClient.context.close();
+  offlineClient.closed = true;
+  checkpoints.push('断线时本设备模块可预设，主设备共享模块保持只读且不产生 API 请求');
+
   const clientA = await openClient(browser, devices.a);
   clients.push(clientA);
   await openConnection(clientA.page);
@@ -104,8 +111,11 @@ try {
   state = await waitForState(devices.a, (next) => next.devices.length === 3);
   await refreshAll([clientA.page, clientB.page, clientC.page], 3);
   await assertInitialThreeClientState(clientA.page, clientB.page, clientC.page, state);
+  await assertConnectedExtensionModuleOwnership(clientA.page, true);
+  await assertConnectedExtensionModuleOwnership(clientB.page, false, devices.a.label);
+  await assertSameTickDeviceMutationSingleFlight(clientA.page);
   await screenshot(clientA.page, '01-three-clients-online.png');
-  checkpoints.push('A/B/C 三个独立 Web 页面同时在线且只认 A 为主设备');
+  checkpoints.push('A/B/C 三个独立 Web 页面同时在线且只认 A 为主设备；同 tick 重复设备 mutation 只发送一次');
 
   await Promise.all([
     openSettingsSection(clientA.page, '推荐'),
@@ -116,8 +126,12 @@ try {
   await assertSwitch(clientB.page, 'recommendation-pin-favorite-recipe', false, true);
   await assertSwitch(clientC.page, 'recommendation-pin-favorite-recipe', false, true);
 
-  await setSwitch(clientA.page, 'recommendation-pin-favorite-recipe', true);
-  state = await waitForState(devices.a, (next) => next.activeProfile.pinFavoriteRecipeEnabled === true);
+  const profileDraftResult = await assertPrimaryProfileDraftTransaction(clientA.page);
+  assert.equal(profileDraftResult.requestCount, 2);
+  state = await waitForState(devices.a, (next) => (
+    next.activeProfile.pinFavoriteRecipeEnabled === true
+      && next.activeProfile.missionRecipePriorityEnabled === false
+  ));
   await refreshAll([clientB.page, clientC.page]);
   await Promise.all([
     openSettingsSection(clientB.page, '推荐'),
@@ -125,9 +139,16 @@ try {
   ]);
   await assertSwitch(clientB.page, 'recommendation-pin-favorite-recipe', true, true);
   await assertSwitch(clientC.page, 'recommendation-pin-favorite-recipe', true, true);
+  await assertSwitch(clientB.page, 'recommendation-mission-recipe-priority', false, true);
+  await assertSwitch(clientC.page, 'recommendation-mission-recipe-priority', false, true);
   await assertStoredBoolean(clientB.page, 'pin-favorite-recipe', true);
   await assertStoredBoolean(clientC.page, 'pin-favorite-recipe', true);
-  checkpoints.push('A 修改共享配置后，B/C 只读 UI 与 localStorage 均应用 A 的生效配置');
+  checkpoints.push('A 的草稿经过 debounce 旧 poll 与延迟 POST，写入期后续编辑以两次严格串行 CAS 生效，B/C 只读 UI 与 localStorage 均应用最终配置');
+
+  state = await assertCrossGenerationProfileBarrier(clientA.page);
+  assert.equal(state.activeProfile.missionRecipePriorityEnabled, true);
+  await refreshAll([clientB.page, clientC.page]);
+  checkpoints.push('A 的在途 profile POST 跨断开/重连保持 transport 门禁，响应后由新 generation 重新注册并采用服务端权威配置');
 
   await openConnection(clientB.page);
   await clickDeviceAction(clientB.page, devices.b.id, '同步配置');
@@ -139,16 +160,11 @@ try {
   });
   checkpoints.push('B 执行“同步配置”并完成 pending sync ACK');
 
-  await openConnection(clientA.page);
-  await refreshDevices(clientA.page);
-  await clickDeviceAction(clientA.page, devices.b.id, '设为主设备');
-  await assertPrimaryDialog(clientA.page, { expectWarning: false, screenshotName: '02-synced-transfer-dialog.png' });
-  await confirmPrimaryDialog(clientA.page);
-  state = await waitForState(devices.a, (next) => next.primaryDeviceId === devices.b.id);
+  state = await assertPendingSyncSingleFlightAndWriterGate(clientA.page, clientB.page);
   await refreshAll([clientA.page, clientB.page, clientC.page], 3);
   assert.match((await postAutomationLease(devices.a, state.authorityRevision)).error, /不是主设备/);
   assert.equal((await postAutomationLease(devices.b, state.authorityRevision)).ok, true);
-  checkpoints.push('A -> B 转移后，旧主设备 A 的运行时写入被拒绝，B 获得执行权');
+  checkpoints.push('A -> B 转移后，A 的 pending-sync ACK 单飞且等待期 writer 保持关闭；旧主设备写入被拒绝，B 获得执行权');
 
   await openSettingsSection(clientB.page, '推荐');
   await setSwitch(clientB.page, 'recommendation-pin-favorite-beverage', true);
@@ -287,8 +303,28 @@ async function openClient(currentBrowser, device) {
   });
   const page = await context.newPage();
   await page.goto(appUrl, { waitUntil: 'domcontentloaded' });
-  await page.waitForFunction(() => document.body.innerText.includes('1.0.5'), null, { timeout: 12_000 });
+  await page.locator('[data-gamepad-tab-value="overview"]').first().waitFor({ timeout: 12_000 });
   return { context, page, device, closed: false };
+}
+
+async function openOfflineClient(currentBrowser) {
+  const context = await currentBrowser.newContext({ viewport: { width: 640, height: 760 } });
+  await context.addInitScript(({ apiUrl: endpoint, prefix }) => {
+    localStorage.setItem(`${prefix}-mod-api-endpoint`, endpoint);
+    localStorage.removeItem(`${prefix}-mod-api-token`);
+    localStorage.setItem(`${prefix}-client-id`, 'device-authority-offline-0001');
+    localStorage.setItem(`${prefix}-mission-list-module-enabled`, '0');
+    localStorage.setItem(`${prefix}-rare-guest-invitation-module-enabled`, '0');
+    localStorage.setItem(`${prefix}-rare-guest-participation-module-enabled`, '0');
+  }, { apiUrl, prefix: storagePrefix });
+  const page = await context.newPage();
+  const apiRequests = [];
+  page.on('request', (request) => {
+    if (request.url().startsWith(apiUrl)) apiRequests.push(`${request.method()} ${request.url()}`);
+  });
+  await page.goto(appUrl, { waitUntil: 'domcontentloaded' });
+  await page.locator('[data-gamepad-tab-value="extensions"]').first().waitFor({ timeout: 10_000 });
+  return { context, page, device: null, apiRequests, closed: false };
 }
 
 function seedClientStorage({ apiUrl: endpoint, apiToken: token, storagePrefix: prefix, deviceId, profile }) {
@@ -309,12 +345,104 @@ async function openConnection(page) {
   await page.locator('[data-device-authority-content]').waitFor({ state: 'visible', timeout: 5_000 });
 }
 
+async function setOverviewConnectionEnabled(page, enabled) {
+  await page.locator('[data-gamepad-tab-value="overview"]').first().click();
+  await page.locator('[data-overview-tabs]').getByRole('tab', { name: '连接', exact: true }).click();
+  const field = page.locator('[data-gamepad-focus-key="overview:connection:toggle"]');
+  const input = field.locator('input[type="checkbox"]');
+  await input.waitFor({ state: 'visible', timeout: 5_000 });
+  if ((await input.isChecked()) !== enabled) await field.click();
+  await page.waitForFunction(({ selector, expected }) => {
+    const element = document.querySelector(selector);
+    return element instanceof HTMLInputElement && element.checked === expected;
+  }, {
+    selector: '[data-gamepad-focus-key="overview:connection:toggle"] input[type="checkbox"]',
+    expected: enabled,
+  }, { timeout: 5_000 });
+}
+
 async function openSettingsSection(page, label) {
   const topTab = page.locator('[data-gamepad-tab-value="settings"]').first();
   await topTab.click();
   const trigger = page.locator('[data-settings-tabs]').getByRole('tab', { name: label, exact: true });
   await trigger.click();
   await page.waitForTimeout(80);
+}
+
+async function openExtensionSection(page, label) {
+  await page.locator('[data-gamepad-tab-value="extensions"]').first().click();
+  await page.locator('[data-extension-tabs]').getByRole('tab', { name: label, exact: true }).click();
+  await page.waitForTimeout(80);
+}
+
+async function assertOfflineExtensionModuleOwnership(client) {
+  const { page } = client;
+  for (const module of [
+    {
+      tab: '任务列表',
+      id: 'task-list',
+      focusKey: 'missions:module-toggle',
+      storageKey: `${storagePrefix}-mission-list-module-enabled`,
+    },
+    {
+      tab: '稀客邀请',
+      id: 'rare-guest-invitations',
+      focusKey: 'rare-invitations:module-toggle',
+      storageKey: `${storagePrefix}-rare-guest-invitation-module-enabled`,
+    },
+  ]) {
+    await openExtensionSection(page, module.tab);
+    const panel = page.locator(`[data-feature-module="${module.id}"]`);
+    await panel.waitFor({ state: 'visible', timeout: 5_000 });
+    assert.equal(await panel.getAttribute('data-module-scope'), 'local-client');
+    assert.equal(await panel.getAttribute('data-module-status'), 'disconnected');
+    assert.equal(await panel.getAttribute('data-module-writable'), 'true');
+    await waitForText(panel, '当前设备');
+    const toggle = panel.locator(`[data-gamepad-focus-key="${module.focusKey}"]`);
+    assert.equal(await toggle.isDisabled(), false, `${module.id} must remain writable offline`);
+    await toggle.click();
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), module.storageKey), '1');
+  }
+
+  await openExtensionSection(page, '稀客调度');
+  const sharedPanel = page.locator('[data-feature-module="rare-guest-participation"]');
+  await sharedPanel.waitFor({ state: 'visible', timeout: 5_000 });
+  assert.equal(await sharedPanel.getAttribute('data-module-scope'), 'primary-profile');
+  assert.equal(await sharedPanel.getAttribute('data-module-status'), 'disconnected');
+  assert.equal(await sharedPanel.getAttribute('data-module-writable'), 'false');
+  await waitForText(sharedPanel, '主设备共享');
+  await waitForText(sharedPanel, '无法确认主设备和生效配置');
+  const sharedToggle = sharedPanel.locator(
+    '[data-gamepad-focus-key="extensions:rare-participation:module-toggle"]',
+  );
+  assert.equal(await sharedToggle.isDisabled(), true);
+  assert.equal(
+    await page.evaluate((key) => localStorage.getItem(key),
+      `${storagePrefix}-rare-guest-participation-module-enabled`),
+    '0',
+  );
+  assert.deepEqual(client.apiRequests, [], `Offline module toggles issued API requests: ${client.apiRequests.join(', ')}`);
+}
+
+async function assertConnectedExtensionModuleOwnership(page, primary, primaryLabel = '') {
+  for (const [tab, id] of [
+    ['任务列表', 'task-list'],
+    ['稀客邀请', 'rare-guest-invitations'],
+  ]) {
+    await openExtensionSection(page, tab);
+    const panel = page.locator(`[data-feature-module="${id}"]`);
+    await panel.waitFor({ state: 'visible', timeout: 5_000 });
+    assert.equal(await panel.getAttribute('data-module-scope'), 'local-client');
+    assert.equal(await panel.getAttribute('data-module-writable'), 'true');
+  }
+
+  await openExtensionSection(page, '稀客调度');
+  const sharedPanel = page.locator('[data-feature-module="rare-guest-participation"]');
+  await sharedPanel.waitFor({ state: 'visible', timeout: 5_000 });
+  assert.equal(await sharedPanel.getAttribute('data-module-scope'), 'primary-profile');
+  assert.equal(await sharedPanel.getAttribute('data-module-status'), primary ? 'writable' : 'secondary-read-only');
+  assert.equal(await sharedPanel.getAttribute('data-module-writable'), primary ? 'true' : 'false');
+  if (!primary) await waitForText(sharedPanel, `当前由“${primaryLabel}”提供生效配置`);
 }
 
 async function refreshAll(pages, expectedRows = null) {
@@ -337,6 +465,15 @@ async function waitForEnabled(locator) {
   await locator.page().waitForFunction((element) => !element.disabled, await locator.elementHandle(), {
     timeout: 5_000,
   });
+}
+
+async function waitForDisabled(locator) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if (await locator.isDisabled()) return;
+    await locator.page().waitForTimeout(50);
+  }
+  throw new Error(`Control did not become disabled: ${await locator.evaluate((element) => element.outerHTML)}`);
 }
 
 async function waitForDeviceRows(page, count) {
@@ -363,6 +500,349 @@ async function assertInitialThreeClientState(pageA, pageB, pageC, state) {
   await waitForText(pageA.locator('[data-device-authority-content]'), '生效配置版本 #1');
   await waitForText(pageB.locator('[data-device-authority-content]'), '本设备的共享功能设置为只读');
   await waitForText(pageC.locator('[data-device-authority-content]'), '本设备的共享功能设置为只读');
+}
+
+async function assertSameTickDeviceMutationSingleFlight(page) {
+  const renameUrl = `${apiUrl}/devices/rename`;
+  const renameStarted = createDeferredSignal();
+  const releaseRename = createDeferredSignal();
+  let renameRequestCount = 0;
+  const renameRoute = async (route) => {
+    renameRequestCount += 1;
+    renameStarted.resolve();
+    await releaseRename.promise;
+    await route.continue();
+  };
+
+  await openConnection(page);
+  const before = await readState(devices.a);
+  const labelInput = page.getByLabel('当前设备名称', { exact: true });
+  const originalLabel = await labelInput.inputValue();
+  const nextLabel = `${originalLabel} · 单飞`;
+  assert.ok(nextLabel.length <= 48);
+  await labelInput.fill(nextLabel);
+  const saveButton = page.getByRole('button', { name: '保存名称', exact: true });
+  await waitForEnabled(saveButton);
+  await page.route(renameUrl, renameRoute);
+  try {
+    await saveButton.evaluate((button) => {
+      button.click();
+      button.click();
+    });
+    await waitForSignal(renameStarted, 'same-tick device rename mutation', 3_000);
+    await page.waitForTimeout(100);
+    assert.equal(
+      renameRequestCount,
+      1,
+      'Two device mutations dispatched in the same browser tick must share one synchronous command gate.',
+    );
+    releaseRename.resolve();
+    const after = await waitForState(devices.a, (next) => (
+      next.devices.find((device) => device.deviceId === devices.a.id)?.label === nextLabel
+    ));
+    assert.equal(
+      after.stateRevision,
+      before.stateRevision + 1,
+      'The mock state revision independently proves that the duplicate rename was not committed.',
+    );
+  } finally {
+    releaseRename.resolve();
+    await page.unroute(renameUrl, renameRoute);
+  }
+}
+
+async function assertCrossGenerationProfileBarrier(page) {
+  const profileUrl = `${apiUrl}/devices/profile`;
+  const registerUrl = `${apiUrl}/devices/register`;
+  const profilePostStarted = createDeferredSignal();
+  const releaseProfilePost = createDeferredSignal();
+  const registerStarted = createDeferredSignal();
+  let profileRequestCount = 0;
+  let registerRequestCount = 0;
+  const profileRoute = async (route) => {
+    profileRequestCount += 1;
+    profilePostStarted.resolve();
+    await releaseProfilePost.promise;
+    await route.continue();
+  };
+  const registerRoute = async (route) => {
+    registerRequestCount += 1;
+    registerStarted.resolve();
+    await route.continue();
+  };
+
+  await openSettingsSection(page, '推荐');
+  await assertSwitch(page, 'recommendation-mission-recipe-priority', false, false);
+  await page.route(profileUrl, profileRoute);
+  await page.route(registerUrl, registerRoute);
+  try {
+    await setSwitch(page, 'recommendation-mission-recipe-priority', true);
+    await waitForSignal(profilePostStarted, 'cross-generation primary profile POST', 3_000);
+    assert.equal(profileRequestCount, 1);
+
+    await setOverviewConnectionEnabled(page, false);
+    await waitForText(
+      page.locator('[data-overview-connection-status-metric="connection"]'),
+      '已停止',
+    );
+    await setOverviewConnectionEnabled(page, true);
+    await waitForText(
+      page.locator('[data-overview-connection-status-metric="connection"]'),
+      '已连接',
+    );
+
+    await openSettingsSection(page, '推荐');
+    const sharedSwitch = page.locator(
+      '[data-setting-help-id="recommendation-mission-recipe-priority"] input[type="checkbox"]',
+    );
+    await waitForDisabled(sharedSwitch);
+    assert.equal(
+      registerRequestCount,
+      0,
+      'A new connection generation must not register against a baseline that an older profile POST can still change.',
+    );
+    assert.equal(profileRequestCount, 1, 'The in-flight transport barrier must reject another profile write.');
+    assert.equal(
+      await page.evaluate((key) => localStorage.getItem(key), `${storagePrefix}-mission-recipe-priority`),
+      '0',
+      'An in-flight profile must not enter the authoritative local cache.',
+    );
+
+    releaseProfilePost.resolve();
+    await waitForSignal(registerStarted, 'post-barrier device re-registration', 5_000);
+    const state = await waitForState(devices.a, (next) => (
+      next.currentDeviceIsPrimary
+        && next.activeProfile.missionRecipePriorityEnabled === true
+        && next.pendingSyncId === null
+    ));
+    await openSettingsSection(page, '推荐');
+    await page.waitForFunction(() => {
+      const input = document.querySelector(
+        '[data-setting-help-id="recommendation-mission-recipe-priority"] input[type="checkbox"]',
+      );
+      return input instanceof HTMLInputElement
+        && input.checked
+        && !input.disabled
+        && localStorage.getItem('mystia-steward-companion-mission-recipe-priority') === '1';
+    }, null, { timeout: 5_000 });
+    assert.equal(registerRequestCount, 1, 'The settled profile outcome must trigger one fresh registration.');
+    return state;
+  } finally {
+    releaseProfilePost.resolve();
+    await page.unroute(profileUrl, profileRoute);
+    await page.unroute(registerUrl, registerRoute);
+  }
+}
+
+async function assertPendingSyncSingleFlightAndWriterGate(pageA, pageB) {
+  const devicesUrl = `${apiUrl}/devices`;
+  const syncAckUrl = `${apiUrl}/devices/sync-ack`;
+  const stalePrimaryState = await readState(devices.a);
+  assert.equal(stalePrimaryState.currentDeviceIsPrimary, true);
+  const firstDeviceReadCaptured = createDeferredSignal();
+  const secondDeviceReadCaptured = createDeferredSignal();
+  const releaseDeviceReads = createDeferredSignal();
+  const syncAckStarted = createDeferredSignal();
+  const releaseSyncAck = createDeferredSignal();
+  let deviceReadCount = 0;
+  let syncAckRequestCount = 0;
+  const runtimeWriterRequests = [];
+  const recordRuntimeWriterRequest = (request) => {
+    if (request.method() !== 'POST') return;
+    if ([
+      `${apiUrl}/automation/lease/acquire`,
+      `${apiUrl}/automation/lease/release`,
+    ].includes(request.url())) {
+      runtimeWriterRequests.push(request.url());
+    }
+  };
+  const devicesRoute = async (route) => {
+    deviceReadCount += 1;
+    if (deviceReadCount === 1) firstDeviceReadCaptured.resolve();
+    if (deviceReadCount === 2) secondDeviceReadCaptured.resolve();
+    await releaseDeviceReads.promise;
+    await route.continue();
+  };
+  const syncAckRoute = async (route) => {
+    syncAckRequestCount += 1;
+    syncAckStarted.resolve();
+    await releaseSyncAck.promise;
+    await route.continue();
+  };
+
+  await pageA.route(devicesUrl, devicesRoute);
+  await pageA.route(syncAckUrl, syncAckRoute);
+  try {
+    await waitForSignal(firstDeviceReadCaptured, 'automatic device-authority poll', 8_000);
+    await openConnection(pageA);
+    const refreshButton = pageA.getByRole('button', { name: '刷新设备', exact: true });
+    await waitForEnabled(refreshButton);
+    await refreshButton.click();
+    await waitForSignal(secondDeviceReadCaptured, 'manual device-authority refresh', 3_000);
+    assert.equal(deviceReadCount, 2, 'The ACK race requires exactly two pending authority observations.');
+
+    await openConnection(pageB);
+    await refreshDevices(pageB);
+    await clickDeviceAction(pageB, devices.b.id, '设为主设备');
+    await assertPrimaryDialog(pageB, {
+      expectWarning: false,
+      screenshotName: '02-synced-transfer-dialog.png',
+    });
+    await confirmPrimaryDialog(pageB);
+    let state = await waitForState(devices.b, (next) => next.primaryDeviceId === devices.b.id);
+
+    state = await postDeviceProfile(devices.b, state, {
+      ...state.activeProfile,
+      automationEnabled: true,
+    });
+    await postDeviceSync(devices.b, state.authorityRevision, devices.a.id);
+    await waitForState(devices.a, (next) => Boolean(next.pendingSyncId));
+    pageA.on('request', recordRuntimeWriterRequest);
+    releaseDeviceReads.resolve();
+    await waitForSignal(syncAckStarted, 'pending-sync acknowledgement', 3_000);
+    await pageA.waitForTimeout(100);
+    assert.equal(
+      syncAckRequestCount,
+      1,
+      'Concurrent observations of one pending sync must share one acknowledgement request.',
+    );
+
+    await openSettingsSection(pageA, '推荐');
+    await waitForDisabled(pageA.locator(
+      '[data-setting-help-id="recommendation-pin-favorite-recipe"] input[type="checkbox"]',
+    ));
+    await pageA.evaluate(() => new Promise((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+    }));
+    assert.deepEqual(
+      runtimeWriterRequests,
+      [],
+      'A pending-sync profile must not drive stale-primary runtime lease acquire/release requests.',
+    );
+    releaseSyncAck.resolve();
+    state = await waitForState(devices.a, (next) => (
+      next.primaryDeviceId === devices.b.id && next.pendingSyncId === null
+    ));
+    return state;
+  } finally {
+    pageA.off('request', recordRuntimeWriterRequest);
+    releaseDeviceReads.resolve();
+    releaseSyncAck.resolve();
+    await pageA.unroute(devicesUrl, devicesRoute);
+    await pageA.unroute(syncAckUrl, syncAckRoute);
+  }
+}
+
+async function assertPrimaryProfileDraftTransaction(page) {
+  const stalePollCaptured = createDeferredSignal();
+  const releaseStalePoll = createDeferredSignal();
+  const profilePostStarted = createDeferredSignal();
+  const secondProfilePostStarted = createDeferredSignal();
+  const releaseProfilePost = createDeferredSignal();
+  const profileBodies = [];
+  let stalePollHandled = false;
+  let firstProfilePost = true;
+  const devicesUrl = `${apiUrl}/devices`;
+  const profileUrl = `${apiUrl}/devices/profile`;
+
+  const devicesRoute = async (route) => {
+    if (stalePollHandled) {
+      await route.continue();
+      return;
+    }
+    stalePollHandled = true;
+    const staleResponse = await route.fetch();
+    stalePollCaptured.resolve();
+    await releaseStalePoll.promise;
+    await route.fulfill({ response: staleResponse });
+  };
+  const profileRoute = async (route) => {
+    profileBodies.push(JSON.parse(route.request().postData() || '{}'));
+    if (firstProfilePost) {
+      firstProfilePost = false;
+      profilePostStarted.resolve();
+      await releaseProfilePost.promise;
+    } else if (profileBodies.length === 2) {
+      secondProfilePostStarted.resolve();
+    }
+    await route.continue();
+  };
+
+  await page.route(devicesUrl, devicesRoute);
+  await page.route(profileUrl, profileRoute);
+  try {
+    await waitForSignal(stalePollCaptured, 'automatic stale device poll', 8_000);
+    await setSwitch(page, 'recommendation-pin-favorite-recipe', true);
+    await Promise.all([
+      assertSwitch(page, 'recommendation-pin-favorite-recipe', true, false),
+      assertSwitch(page, 'recommendation-mission-recipe-priority', true, false),
+    ]);
+
+    releaseStalePoll.resolve();
+    await waitForSignal(profilePostStarted, 'delayed primary profile POST', 3_000);
+    await Promise.all([
+      assertSwitch(page, 'recommendation-pin-favorite-recipe', true, false),
+      assertSwitch(page, 'recommendation-mission-recipe-priority', true, false),
+    ]);
+    await setSwitch(page, 'recommendation-mission-recipe-priority', false);
+    assert.equal(
+      await page.evaluate((key) => localStorage.getItem(key), `${storagePrefix}-pin-favorite-recipe`),
+      '0',
+      'An unconfirmed profile draft must not replace the last authoritative local cache.',
+    );
+    assert.equal(profileBodies.length, 1, 'The first frozen draft must issue one profile POST.');
+    assert.equal(profileBodies[0].profile.pinFavoriteRecipeEnabled, true);
+    assert.equal(profileBodies[0].profile.missionRecipePriorityEnabled, true);
+
+    releaseProfilePost.resolve();
+    await waitForSignal(secondProfilePostStarted, 'queued primary profile POST', 5_000);
+    assert.equal(profileBodies.length, 2, 'A posting-phase edit must use one subsequent CAS write.');
+    assert.equal(profileBodies[1].profile.pinFavoriteRecipeEnabled, true);
+    assert.equal(profileBodies[1].profile.missionRecipePriorityEnabled, false);
+    await page.waitForFunction(() => {
+      const recipe = document.querySelector(
+        '[data-setting-help-id="recommendation-pin-favorite-recipe"] input[type="checkbox"]',
+      );
+      const mission = document.querySelector(
+        '[data-setting-help-id="recommendation-mission-recipe-priority"] input[type="checkbox"]',
+      );
+      return recipe instanceof HTMLInputElement
+        && mission instanceof HTMLInputElement
+        && recipe.checked
+        && !mission.checked
+        && !recipe.disabled
+        && !mission.disabled
+        && localStorage.getItem('mystia-steward-companion-pin-favorite-recipe') === '1'
+        && localStorage.getItem('mystia-steward-companion-mission-recipe-priority') === '0';
+    }, null, { timeout: 5_000 });
+    assert.equal(profileBodies.length, 2, 'The stale poll must not add a third profile POST.');
+    return { requestCount: profileBodies.length };
+  } finally {
+    releaseStalePoll.resolve();
+    releaseProfilePost.resolve();
+    await page.unroute(devicesUrl, devicesRoute);
+    await page.unroute(profileUrl, profileRoute);
+  }
+}
+
+function createDeferredSignal() {
+  let resolve;
+  const promise = new Promise((next) => { resolve = next; });
+  return { promise, resolve };
+}
+
+async function waitForSignal(signal, label, timeoutMs) {
+  let timeoutId;
+  try {
+    await Promise.race([
+      signal.promise,
+      new Promise((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(`Timed out waiting for ${label}.`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 async function assertSwitch(page, helpId, checked, disabled) {
@@ -482,6 +962,44 @@ async function postAutomationLease(device, authorityRevision) {
   });
   const payload = await response.json();
   if (!response.ok) throw new Error(`POST /automation/lease/acquire HTTP ${response.status}: ${JSON.stringify(payload)}`);
+  return payload;
+}
+
+async function postDeviceSync(device, authorityRevision, targetDeviceId) {
+  const response = await fetch(`${apiUrl}/devices/sync`, {
+    method: 'POST',
+    headers: {
+      ...requestHeaders(device, 0),
+      'Content-Type': 'application/json; charset=utf-8',
+    },
+    body: JSON.stringify({
+      protocolVersion: 1,
+      expectedAuthorityRevision: authorityRevision,
+      deviceId: targetDeviceId,
+    }),
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(`POST /devices/sync HTTP ${response.status}: ${JSON.stringify(payload)}`);
+  return payload;
+}
+
+async function postDeviceProfile(device, state, profile) {
+  const response = await fetch(`${apiUrl}/devices/profile`, {
+    method: 'POST',
+    headers: {
+      ...requestHeaders(device, 0),
+      'Content-Type': 'application/json; charset=utf-8',
+    },
+    body: JSON.stringify({
+      protocolVersion: 1,
+      profileSchemaVersion: 3,
+      expectedAuthorityRevision: state.authorityRevision,
+      expectedProfileRevision: state.currentDeviceProfileRevision,
+      profile,
+    }),
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(`POST /devices/profile HTTP ${response.status}: ${JSON.stringify(payload)}`);
   return payload;
 }
 

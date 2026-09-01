@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import type { ReactNode } from 'react';
+import { IconX } from '@tabler/icons-react';
 import {
   Accordion,
   AccordionContent,
@@ -214,19 +215,24 @@ function ServiceSummaryAccordion({
 }) {
   const scene = detectedPlace ?? night?.placeLabel ?? '无经营场景';
   const recommendationStatus = runtime ? '已就绪' : '暂不可用';
+  const collapsedSummary = `${scene} · 推荐：${recommendationStatus} · 自动化：${automationStatus}`;
 
   return (
     <Accordion data-service-summary-accordion="true">
       <AccordionItem value="service-summary">
         <AccordionTrigger
+          density="compact"
           data-service-summary-trigger="true"
           data-gamepad-clickable="true"
           data-gamepad-focus-key="service:summary:toggle"
         >
-          <span className="flex min-w-0 flex-col items-start gap-0.5 text-left">
-            <span className="font-medium">经营概况</span>
-            <span className="text-xs font-normal text-muted-foreground">
-              {scene} · 推荐：{recommendationStatus} · 自动化：{automationStatus}
+          <span className="flex min-w-0 items-center gap-2 text-left">
+            <span className="shrink-0 font-medium">经营概况</span>
+            <span
+              className="min-w-0 truncate text-xs font-normal text-muted-foreground"
+              title={collapsedSummary}
+            >
+              {collapsedSummary}
             </span>
           </span>
         </AccordionTrigger>
@@ -362,7 +368,6 @@ export function ModServicePanel({
   rareParticipationEnabled,
   rareParticipationReady,
   rareParticipationReadOnly,
-  rareParticipationReadOnlyReason,
   rareParticipationBusyMutationKey,
   rareParticipationError,
   resolveRareOrderParticipation,
@@ -377,7 +382,6 @@ export function ModServicePanel({
   onAcknowledgeAutomationBarrier,
   onMutateRareGuestOrders,
   onMutateRareOrder,
-  onOpenRareParticipationModule,
   onEnterFocusMode,
   onServiceViewChange,
   onServiceRecommendationTabChange,
@@ -438,7 +442,6 @@ export function ModServicePanel({
   rareParticipationEnabled: boolean;
   rareParticipationReady: boolean;
   rareParticipationReadOnly: boolean;
-  rareParticipationReadOnlyReason: string;
   rareParticipationBusyMutationKey: string | null;
   rareParticipationError: string;
   resolveRareOrderParticipation: (order: NightBusinessOrder) => RareOrderParticipationResolution | null;
@@ -460,7 +463,6 @@ export function ModServicePanel({
     order: RareOrderExactIdentity,
     action: RareGuestParticipationMutationAction,
   ) => void;
-  onOpenRareParticipationModule: () => void;
   onEnterFocusMode: () => void;
   onServiceViewChange: (value: ServicePanelView) => void;
   onServiceRecommendationTabChange: (value: ServiceRecommendationTab) => void;
@@ -567,7 +569,9 @@ export function ModServicePanel({
       <Tabs
         value={serviceRecommendationTab}
         onValueChange={(value) => {
-          if (value === 'rare' || value === 'rare-queue' || value === 'normal') {
+          if (value === 'rare'
+            || value === 'normal'
+            || (rareParticipationModuleEnabled && value === 'rare-queue')) {
             onServiceRecommendationTabChange(value);
           }
         }}
@@ -577,13 +581,15 @@ export function ModServicePanel({
           <TabsTrigger value="rare" className={MOD_TAB_TRIGGER_CLASS} data-service-order-tab-trigger="rare">
             稀客
           </TabsTrigger>
-          <TabsTrigger
-            value="rare-queue"
-            className={MOD_TAB_TRIGGER_CLASS}
-            data-service-order-tab-trigger="rare-queue"
-          >
-            稀客队列
-          </TabsTrigger>
+          {rareParticipationModuleEnabled && (
+            <TabsTrigger
+              value="rare-queue"
+              className={MOD_TAB_TRIGGER_CLASS}
+              data-service-order-tab-trigger="rare-queue"
+            >
+              稀客队列
+            </TabsTrigger>
+          )}
           <TabsTrigger value="normal" className={MOD_TAB_TRIGGER_CLASS} data-service-order-tab-trigger="normal">
             普客
           </TabsTrigger>
@@ -608,7 +614,7 @@ export function ModServicePanel({
             participationEnabled={rareParticipationEnabled}
             participationReady={rareParticipationReady}
             resolveRareOrderParticipation={resolveRareOrderParticipation}
-            action={(
+            toolbar={(
               <ServiceRecommendationHeaderActions
                 recipeLimit={recipeLimit}
                 beverageLimit={beverageLimit}
@@ -624,24 +630,23 @@ export function ModServicePanel({
           />
         </TabsContent>
 
-        <TabsContent value="rare-queue" className="space-y-4" data-service-order-tab="rare-queue">
-          <RareOrderParticipationPanel
-            moduleEnabled={rareParticipationModuleEnabled}
-            orders={night?.orders ?? []}
-            managedGuestIds={managedRareGuestIds}
-            snapshot={rareGuestParticipationSnapshot}
-            businessGeneration={rareParticipationBusinessGeneration}
-            collectionComplete={rareParticipationCollectionComplete}
-            businessActive={nightBusinessActive}
-            readOnly={rareParticipationReadOnly}
-            readOnlyReason={rareParticipationReadOnlyReason}
-            busyMutationKey={rareParticipationBusyMutationKey}
-            error={rareParticipationError}
-            onMutateGuest={onMutateRareGuestOrders}
-            onMutateOrder={onMutateRareOrder}
-            onOpenModule={onOpenRareParticipationModule}
-          />
-        </TabsContent>
+        {rareParticipationModuleEnabled && (
+          <TabsContent value="rare-queue" className="space-y-4" data-service-order-tab="rare-queue">
+            <RareOrderParticipationPanel
+              orders={night?.orders ?? []}
+              managedGuestIds={managedRareGuestIds}
+              snapshot={rareGuestParticipationSnapshot}
+              businessGeneration={rareParticipationBusinessGeneration}
+              collectionComplete={rareParticipationCollectionComplete}
+              businessActive={nightBusinessActive}
+              readOnly={rareParticipationReadOnly}
+              busyMutationKey={rareParticipationBusyMutationKey}
+              error={rareParticipationError}
+              onMutateGuest={onMutateRareGuestOrders}
+              onMutateOrder={onMutateRareOrder}
+            />
+          </TabsContent>
+        )}
 
         <TabsContent value="normal" className="space-y-4" data-service-order-tab="normal">
           <ServiceOrderCollectionPanel
@@ -828,11 +833,34 @@ function ServiceRecommendationHeaderActions({
   onEnterFocusMode: () => void;
 }) {
   return (
-    <div className="flex flex-wrap items-center justify-end gap-2">
-      <FocusLimitInput label="料理" value={recipeLimit} onChange={onRecipeLimitChange} />
-      <FocusLimitInput label="酒水" value={beverageLimit} onChange={onBeverageLimitChange} />
-      <Button size="sm" data-gamepad-focus-key="service:focus:enter" onClick={onEnterFocusMode}>
-        稀客订单专注模式
+    <div
+      className="flex min-w-0 flex-nowrap items-center justify-end gap-2"
+      role="group"
+      aria-label="稀客推荐显示控制"
+      data-service-recommendation-toolbar="true"
+    >
+      <div className="min-w-0" data-service-recommendation-limit="recipe">
+        <FocusLimitInput
+          label="料理"
+          value={recipeLimit}
+          onChange={onRecipeLimitChange}
+          density="compact"
+        />
+      </div>
+      <div className="min-w-0" data-service-recommendation-limit="beverage">
+        <FocusLimitInput
+          label="酒水"
+          value={beverageLimit}
+          onChange={onBeverageLimitChange}
+          density="compact"
+        />
+      </div>
+      <Button
+        size="sm"
+        data-gamepad-focus-key="service:focus:enter"
+        onClick={onEnterFocusMode}
+      >
+        专注模式
       </Button>
     </div>
   );
@@ -904,26 +932,45 @@ export function ServiceFocusPage({
       data-service-focus-page="true"
     >
       <div
-        className="flex w-full shrink-0 flex-wrap items-center justify-end gap-3"
+        className="w-full shrink-0 space-y-2"
         data-service-focus-toolbar="true"
       >
-        {safetyNotice}
-        <SwitchControl
-          label="精简模式"
-          checked={compact}
-          onCheckedChange={onCompactChange}
-        />
-        <FocusLimitInput
-          label="料理"
-          value={recipeLimit}
-          onChange={onRecipeLimitChange}
-        />
-        <FocusLimitInput
-          label="酒水"
-          value={beverageLimit}
-          onChange={onBeverageLimitChange}
-        />
-        <Button size="sm" data-gamepad-focus-key="service-focus:exit" onClick={onExit}>退出专注模式</Button>
+        {safetyNotice && <div className="flex justify-end">{safetyNotice}</div>}
+        <div
+          className="flex min-w-0 flex-nowrap items-center justify-end gap-2"
+          role="group"
+          aria-label="专注模式显示控制"
+          data-service-focus-controls="true"
+        >
+          <SwitchControl
+            label="精简模式"
+            checked={compact}
+            onCheckedChange={onCompactChange}
+            density="compact"
+          />
+          <FocusLimitInput
+            label="料理"
+            value={recipeLimit}
+            onChange={onRecipeLimitChange}
+            density="compact"
+          />
+          <FocusLimitInput
+            label="酒水"
+            value={beverageLimit}
+            onChange={onBeverageLimitChange}
+            density="compact"
+          />
+          <Button
+            type="button"
+            size="icon-sm"
+            aria-label="退出专注模式"
+            title="退出专注模式"
+            data-gamepad-focus-key="service-focus:exit"
+            onClick={onExit}
+          >
+            <IconX size={14} aria-hidden="true" />
+          </Button>
+        </div>
       </div>
 
       <RareOrderRecommendationList
@@ -973,7 +1020,7 @@ function RareOrderRecommendationList({
   participationEnabled = false,
   participationReady = true,
   resolveRareOrderParticipation,
-  action,
+  toolbar,
   compact = false,
   fillAvailableHeight = false,
   recipeLimit = MAX_RECOMMENDATION_ROWS,
@@ -1000,7 +1047,7 @@ function RareOrderRecommendationList({
   resolveRareOrderParticipation?: (
     order: NightBusinessOrder,
   ) => RareOrderParticipationResolution | null;
-  action?: ReactNode;
+  toolbar?: ReactNode;
   compact?: boolean;
   fillAvailableHeight?: boolean;
   recipeLimit?: number;
@@ -1053,7 +1100,7 @@ function RareOrderRecommendationList({
       count={rows.length}
       state={collectionState}
       hasRows={rows.length > 0}
-      action={action}
+      toolbar={toolbar}
       compact={compact}
       notice={favoriteError
         ? (

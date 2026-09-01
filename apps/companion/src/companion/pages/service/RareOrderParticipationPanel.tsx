@@ -11,10 +11,15 @@ import type {
   NightBusinessOrder,
   RareGuestParticipationMutationAction,
 } from '@/companion/types';
-import { Badge, Button, EmptyRow, EmptyState, ListPanel } from '@/components/ui-kit';
+import {
+  Badge,
+  Button,
+  EmptyRow,
+  EmptyState,
+  ListPanel,
+} from '@/components/ui-kit';
 
 export interface RareOrderParticipationPanelProps {
-  moduleEnabled: boolean;
   orders: readonly NightBusinessOrder[];
   managedGuestIds: readonly number[];
   snapshot: RareOrderParticipationSnapshotView | null;
@@ -22,7 +27,6 @@ export interface RareOrderParticipationPanelProps {
   collectionComplete: boolean;
   businessActive: boolean;
   readOnly: boolean;
-  readOnlyReason?: string;
   busyMutationKey?: string | null;
   error?: string | null;
   onMutateGuest: (
@@ -34,7 +38,6 @@ export interface RareOrderParticipationPanelProps {
     order: RareOrderExactIdentity,
     action: RareGuestParticipationMutationAction,
   ) => void;
-  onOpenModule?: () => void;
 }
 
 /**
@@ -44,7 +47,6 @@ export interface RareOrderParticipationPanelProps {
  * 下一次快照中仍默认暂停，不会被过去的稀客级点击意外授权。
  */
 export function RareOrderParticipationPanel({
-  moduleEnabled,
   orders,
   managedGuestIds,
   snapshot,
@@ -52,27 +54,23 @@ export function RareOrderParticipationPanel({
   collectionComplete,
   businessActive,
   readOnly,
-  readOnlyReason,
   busyMutationKey = null,
   error,
   onMutateGuest,
   onMutateOrder,
-  onOpenModule,
 }: RareOrderParticipationPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const previousBusyMutationKeyRef = useRef<string | null>(busyMutationKey);
   const pendingFocusScopeRef = useRef<string | null>(null);
   const groups = useMemo(
-    () => moduleEnabled
-      ? buildManagedRareOrderGroups({
-          orders,
-          collectionComplete,
-          managedGuestIds,
-          businessGeneration,
-          snapshot,
-        })
-      : [],
-    [businessGeneration, collectionComplete, managedGuestIds, moduleEnabled, orders, snapshot],
+    () => buildManagedRareOrderGroups({
+      orders,
+      collectionComplete,
+      managedGuestIds,
+      businessGeneration,
+      snapshot,
+    }),
+    [businessGeneration, collectionComplete, managedGuestIds, orders, snapshot],
   );
   const managedCount = useMemo(
     () => new Set(managedGuestIds.filter((guestId) => Number.isSafeInteger(guestId) && guestId >= 0)).size,
@@ -86,7 +84,6 @@ export function RareOrderParticipationPanel({
     (count, group) => count + group.rows.filter((row) => row.state === 'queued').length,
     0,
   );
-
   useEffect(() => {
     const wasBusy = previousBusyMutationKeyRef.current !== null;
     previousBusyMutationKeyRef.current = busyMutationKey;
@@ -121,74 +118,39 @@ export function RareOrderParticipationPanel({
       ref={panelRef}
       className="space-y-4"
       data-rare-order-participation-panel="true"
-      data-module-enabled={moduleEnabled ? 'true' : 'false'}
-      aria-busy={busyMutationKey !== null}
+      data-busy={busyMutationKey !== null ? 'true' : 'false'}
     >
       <ListPanel
         title="稀客参与队列"
         action={(
           <div className="flex flex-wrap items-center justify-end gap-1.5">
-            {moduleEnabled && <Badge variant="outline">暂停 {pausedCount}</Badge>}
-            {moduleEnabled && <Badge variant="secondary">已启用 {queuedCount}</Badge>}
-            {onOpenModule && (
-              <Button
-                type="button"
-                size="xs"
-                variant="outline"
-                data-gamepad-focus-key="service:rare-participation:open-module"
-                onClick={onOpenModule}
-              >
-                打开稀客调度
-              </Button>
-            )}
+            <Badge variant="outline">暂停 {pausedCount}</Badge>
+            <Badge variant="secondary">已启用 {queuedCount}</Badge>
           </div>
         )}
-      >
-        <div className="space-y-3">
-          <p className="text-sm text-muted-foreground">
-            {moduleEnabled
-              ? '暂停会从经营中稀客推荐隐藏订单，移除订单高亮，并停止新的自动化、资源预约和后续副作用；订单仍在本队列和诊断中保留。已进入的同步动作会完成，已开锅任务按安全边界保留并等待恢复。优先启用会排到当前高亮和已开始自动化的订单之后。'
-              : '模块关闭时不使用参与队列；所有稀客继续按原有高亮和自动化流程参与经营。'}
-          </p>
-          {moduleEnabled && readOnly && (
-            <div className="border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
-              {readOnlyReason || '当前设备不是主设备，可查看队列但不能更改参与状态。'}
-            </div>
-          )}
-          {error && (
-            <div
-              className="border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
-              role="alert"
-            >
-              {error}
-            </div>
-          )}
-          <div className="sr-only" aria-live="polite">
-            {busyMutationKey ? '稀客参与队列更新中。' : ''}
-          </div>
-          {moduleEnabled && snapshot && (
-            <div className="flex flex-wrap gap-1.5 text-xs text-muted-foreground">
-              <Badge variant="outline">经营世代 {snapshot.businessGeneration}</Badge>
-              <Badge variant="outline">参与版本 {snapshot.participationRevision}</Badge>
-            </div>
-          )}
-        </div>
-      </ListPanel>
+        children={error
+          ? (
+              <div
+                className="border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+                role="alert"
+              >
+                {error}
+              </div>
+            )
+          : undefined}
+      />
 
-      {!moduleEnabled && (
-        <EmptyState text="稀客调度模块已停用。请到“扩展功能 → 稀客调度”手动开启。" />
-      )}
-      {moduleEnabled && !businessActive && (
+      {!businessActive && (
         <EmptyState text="当前未进入夜间经营，开始经营后这里会显示受控稀客订单。" />
       )}
-      {moduleEnabled && businessActive && managedCount === 0 && (
+      {businessActive && managedCount === 0 && (
         <EmptyState text="受控稀客名单为空。请先在“扩展功能 → 稀客调度”中添加稀客。" />
       )}
-      {moduleEnabled && businessActive && managedCount > 0 && groups.length === 0 && (
+      {businessActive && managedCount > 0 && groups.length === 0 && (
         <EmptyState text="当前订单中没有受控名单内的稀客。" />
       )}
 
-      {moduleEnabled && businessActive && groups.map((group) => {
+      {businessActive && groups.map((group) => {
         const frontKey = buildRareOrderParticipationMutationKey('enable-front', {
           type: 'guest',
           guestId: group.guestId,
@@ -287,6 +249,14 @@ export function RareOrderParticipationPanel({
           </ListPanel>
         );
       })}
+      <div
+        className="sr-only"
+        role="status"
+        aria-live="polite"
+        data-rare-order-participation-status="true"
+      >
+        {busyMutationKey ? '稀客参与队列更新中。' : ''}
+      </div>
     </div>
   );
 }
@@ -351,7 +321,9 @@ function ParticipationOrderRow({
           {row.state === 'unavailable' && <Badge variant="destructive">状态不可用</Badge>}
         </div>
       </div>
-      {row.reason && <div className="mt-1 text-xs text-muted-foreground">{row.reason}</div>}
+      {row.state === 'unavailable' && row.reason && (
+        <div className="mt-1 text-xs text-muted-foreground">{row.reason}</div>
+      )}
       {identity && (
         <div className="mt-1 truncate font-mono text-[0.7rem] text-muted-foreground" title={identity.traceId}>
           trace {identity.traceId}

@@ -81,6 +81,7 @@ try {
       if (tab === 'service'
         && profile.scale === 130
         && (profile.width === 640 || profile.width === 390)) {
+        await auditServiceRecommendationToolbar(page, profile);
         await auditExpandedServiceSummary(page, profile);
       }
       await assertNoDocumentOverflow(page, profile, tab);
@@ -424,6 +425,7 @@ async function auditExpandedServiceSummary(page, profile) {
     'false',
     `${profile.name}/service-summary: summary must be collapsed on entry`,
   );
+  await auditCompactCollapsedServiceSummary(trigger, profile);
 
   await trigger.scrollIntoViewIfNeeded();
   await trigger.focus();
@@ -485,15 +487,186 @@ async function auditExpandedServiceSummary(page, profile) {
   });
 
   await trigger.press('Enter');
-  await page.waitForFunction(() => (
-    document.querySelector('[data-service-summary-trigger="true"]')?.getAttribute('aria-expanded') === 'false'
-  ), null, { timeout: 2_000 });
+  await page.waitForFunction(() => {
+    const summaryTrigger = document.querySelector('[data-service-summary-trigger="true"]');
+    const content = document.querySelector('[data-service-summary-content="true"]');
+    const contentVisible = content instanceof HTMLElement
+      && content.getBoundingClientRect().width > 0
+      && content.getBoundingClientRect().height > 0
+      && getComputedStyle(content).visibility !== 'hidden';
+    return summaryTrigger?.getAttribute('aria-expanded') === 'false' && !contentVisible;
+  }, null, { timeout: 2_000 });
+}
+
+async function auditServiceRecommendationToolbar(page, profile) {
+  await page.locator('[data-service-order-tab-trigger="rare"]').click();
+  const toolbar = page.locator('[data-service-recommendation-toolbar="true"]:visible');
+  await toolbar.waitFor({ state: 'visible', timeout: 10_000 });
+  const layout = await toolbar.evaluate((element) => {
+    const panelToolbar = element.closest('[data-list-panel-toolbar="true"]');
+    const panel = element.closest('.steward-list-panel');
+    const header = panel?.querySelector('.steward-panel-header');
+    const heading = header?.querySelector('h2');
+    const countBadge = header?.querySelector('[data-service-order-count-badge="true"]');
+    const recipe = element.querySelector('[data-service-recommendation-limit="recipe"]');
+    const beverage = element.querySelector('[data-service-recommendation-limit="beverage"]');
+    const button = element.querySelector('[data-gamepad-focus-key="service:focus:enter"]');
+    if (!(panelToolbar instanceof HTMLElement)
+      || !(header instanceof HTMLElement)
+      || !(heading instanceof HTMLElement)
+      || !(countBadge instanceof HTMLElement)
+      || !(recipe instanceof HTMLElement)
+      || !(beverage instanceof HTMLElement)
+      || !(button instanceof HTMLElement)) {
+      return { ok: false, reason: 'toolbar elements missing' };
+    }
+
+    const toolbarRect = element.getBoundingClientRect();
+    const headerRect = header.getBoundingClientRect();
+    const headingRect = heading.getBoundingClientRect();
+    const countRect = countBadge.getBoundingClientRect();
+    const recipeRect = recipe.getBoundingClientRect();
+    const beverageRect = beverage.getBoundingClientRect();
+    const buttonRect = button.getBoundingClientRect();
+    const center = (rect) => (rect.top + rect.bottom) / 2;
+    const contained = [recipeRect, beverageRect, buttonRect].every((rect) => (
+      rect.left >= toolbarRect.left - 1 && rect.right <= toolbarRect.right + 1
+    ));
+    const headerClean = Math.abs(center(headingRect) - center(countRect)) <= 2
+      && headingRect.left >= headerRect.left - 1
+      && countRect.right <= headerRect.right + 1;
+    const singleRowGeometry = Math.abs(center(recipeRect) - center(beverageRect)) <= 2
+      && Math.abs(center(beverageRect) - center(buttonRect)) <= 2
+      && recipeRect.right <= beverageRect.left + 1
+      && beverageRect.right <= buttonRect.left + 1;
+    const compactInputs = recipe.querySelector('[data-focus-limit-density="compact"]') !== null
+      && beverage.querySelector('[data-focus-limit-density="compact"]') !== null;
+
+    return {
+      ok: contained
+        && headerClean
+        && element.scrollWidth <= element.clientWidth + 1
+        && panelToolbar.scrollWidth <= panelToolbar.clientWidth + 1
+        && button.scrollWidth <= button.clientWidth + 1
+        && singleRowGeometry
+        && compactInputs,
+      contained,
+      headerClean,
+      singleRowGeometry,
+      compactInputs,
+      toolbarSize: `${element.clientWidth}/${element.scrollWidth}`,
+      panelToolbarSize: `${panelToolbar.clientWidth}/${panelToolbar.scrollWidth}`,
+      buttonSize: `${button.clientWidth}/${button.scrollWidth}`,
+      rects: [recipeRect, beverageRect, buttonRect].map((rect) => ({
+        left: Math.round(rect.left),
+        top: Math.round(rect.top),
+        right: Math.round(rect.right),
+        bottom: Math.round(rect.bottom),
+      })),
+    };
+  });
+  assert.equal(
+    layout.ok,
+    true,
+    `${profile.name}/service-recommendation-toolbar: ${JSON.stringify(layout)}`,
+  );
+  await assertNoDocumentOverflow(page, profile, 'service-recommendation-toolbar');
+  await assertControlLayout(page, profile, 'service-recommendation-toolbar');
+}
+
+async function auditCompactCollapsedServiceSummary(trigger, profile) {
+  const layout = await trigger.evaluate((element) => {
+    const label = element.querySelector('.mantine-Accordion-label');
+    const row = label?.firstElementChild;
+    if (!(label instanceof HTMLElement) || !(row instanceof HTMLElement)) {
+      return { ok: false, reason: 'accordion label or compact row missing' };
+    }
+
+    const rowChildren = Array.from(row.children).filter((child) => child instanceof HTMLElement);
+    const title = rowChildren.find((child) => child.textContent?.trim() === '经营概况');
+    const summary = rowChildren.find((child) => child.hasAttribute('title'));
+    if (!(title instanceof HTMLElement) || !(summary instanceof HTMLElement)) {
+      return { ok: false, reason: 'compact title or summary missing' };
+    }
+
+    const triggerStyle = getComputedStyle(element);
+    const summaryStyle = getComputedStyle(summary);
+    const triggerRect = element.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    const titleRect = title.getBoundingClientRect();
+    const summaryRect = summary.getBoundingClientRect();
+    const summaryLineHeight = Number.parseFloat(summaryStyle.lineHeight);
+    const expectedMinimumHeightProbe = document.createElement('div');
+    expectedMinimumHeightProbe.style.cssText = [
+      'position:absolute',
+      'visibility:hidden',
+      'pointer-events:none',
+      'height:var(--steward-control-height-md)',
+    ].join(';');
+    document.body.append(expectedMinimumHeightProbe);
+    const expectedMinimumHeight = expectedMinimumHeightProbe.getBoundingClientRect().height;
+    expectedMinimumHeightProbe.remove();
+
+    const sameVisualLine = Math.abs(
+      (titleRect.top + titleRect.bottom) / 2 - (summaryRect.top + summaryRect.bottom) / 2,
+    ) <= 2;
+    const summaryUsesSingleLineEllipsis = summaryStyle.whiteSpace === 'nowrap'
+      && summaryStyle.overflowX === 'hidden'
+      && summaryStyle.textOverflow === 'ellipsis'
+      && Number.isFinite(summaryLineHeight)
+      && summaryRect.height <= summaryLineHeight + 1;
+    const contained = titleRect.left >= rowRect.left - 1
+      && summaryRect.right <= rowRect.right + 1
+      && titleRect.top >= rowRect.top - 1
+      && titleRect.bottom <= rowRect.bottom + 1
+      && summaryRect.top >= rowRect.top - 1
+      && summaryRect.bottom <= rowRect.bottom + 1;
+    const noContainerOverflow = element.scrollWidth <= element.clientWidth + 1
+      && label.scrollWidth <= label.clientWidth + 1
+      && row.scrollWidth <= row.clientWidth + 1
+      && element.scrollHeight <= element.clientHeight + 1;
+    const minimumHeight = Number.parseFloat(triggerStyle.minHeight);
+    const minimumClickTarget = expectedMinimumHeight > 0
+      && Number.isFinite(minimumHeight)
+      && Math.abs(minimumHeight - expectedMinimumHeight) <= 1
+      && triggerRect.height >= expectedMinimumHeight - 1
+      && triggerStyle.maxHeight === 'none';
+
+    return {
+      ok: element.getAttribute('data-ui-density') === 'compact'
+        && sameVisualLine
+        && summaryUsesSingleLineEllipsis
+        && contained
+        && noContainerOverflow
+        && minimumClickTarget,
+      density: element.getAttribute('data-ui-density'),
+      sameVisualLine,
+      summaryUsesSingleLineEllipsis,
+      summaryActuallyTruncated: summary.scrollWidth > summary.clientWidth + 1,
+      contained,
+      noContainerOverflow,
+      triggerSize: `${Math.round(triggerRect.width)}x${Math.round(triggerRect.height)}`,
+      triggerScrollSize: `${element.clientWidth}/${element.scrollWidth} x ${element.clientHeight}/${element.scrollHeight}`,
+      rowWidth: `${row.clientWidth}/${row.scrollWidth}`,
+      summaryWidth: `${summary.clientWidth}/${summary.scrollWidth}`,
+      minimumHeight,
+      expectedMinimumHeight,
+      maxHeight: triggerStyle.maxHeight,
+    };
+  });
+
+  assert.equal(
+    layout.ok,
+    true,
+    `${profile.name}/service-summary: compact collapsed layout ${JSON.stringify(layout)}`,
+  );
 }
 
 async function auditServiceFocusMode(page, profile) {
-  await page.getByRole('button', { name: '稀客订单专注模式', exact: true }).click();
+  await page.getByRole('button', { name: '专注模式', exact: true }).click();
   const focusPage = page.locator('[data-service-focus-page="true"]');
   const toolbar = focusPage.locator('[data-service-focus-toolbar="true"]');
+  const controls = focusPage.locator('[data-service-focus-controls="true"]');
   await focusPage.waitFor();
   assert.equal(await focusPage.getAttribute('aria-label'), '稀客订单专注模式');
   assert.equal(await focusPage.getByText('只显示当前稀客点单推荐。', { exact: true }).count(), 0);
@@ -502,29 +675,89 @@ async function auditServiceFocusMode(page, profile) {
     profile.mousePassthrough ? 1 : 0,
     `${profile.name}/service-focus: mouse-passthrough safety notice visibility drifted`,
   );
-  const expectedToolbarChildCount = profile.mousePassthrough ? 5 : 4;
-  const toolbarLayout = await toolbar.evaluate((element, expectedChildCount) => {
-    const toolbarRect = element.getBoundingClientRect();
+  assert.equal(await controls.getAttribute('aria-label'), '专注模式显示控制');
+  assert.equal(
+    await controls.getByRole('button', { name: '退出专注模式', exact: true }).count(),
+    1,
+    `${profile.name}/service-focus: icon exit accessible name drifted`,
+  );
+  assert.equal(
+    await toolbar.locator(':scope > *').count(),
+    profile.mousePassthrough ? 2 : 1,
+    `${profile.name}/service-focus: safety notice must remain separate from the one-line controls`,
+  );
+  const toolbarLayout = await controls.evaluate((element) => {
+    const controlsRect = element.getBoundingClientRect();
     const children = Array.from(element.children).filter((node) => node instanceof HTMLElement);
     const rects = children.map((child) => child.getBoundingClientRect());
-    const rows = new Map();
-    for (const rect of rects) {
-      const rowKey = Math.round((rect.top + rect.bottom) / 2);
-      const currentRight = rows.get(rowKey) ?? Number.NEGATIVE_INFINITY;
-      rows.set(rowKey, Math.max(currentRight, rect.right));
-    }
+    const center = (rect) => (rect.top + rect.bottom) / 2;
+    const exitButton = children.at(-1);
+    const exitRect = exitButton?.getBoundingClientRect();
+    const exitIcon = exitButton?.querySelector('svg');
+    const compactSwitch = children[0];
+    const compactSwitchStyle = compactSwitch ? getComputedStyle(compactSwitch) : null;
+    const compactSwitchLabel = compactSwitch?.querySelector(':scope > span');
+    const compactSwitchLabelStyle = compactSwitchLabel ? getComputedStyle(compactSwitchLabel) : null;
+    const compactSwitchLabelRect = compactSwitchLabel?.getBoundingClientRect();
+    const compactSwitchLabelLineHeight = Number.parseFloat(compactSwitchLabelStyle?.lineHeight ?? '');
+    const sameRow = rects.every((rect) => Math.abs(center(rect) - center(rects[0])) <= 2);
+    const ordered = rects.slice(1).every((rect, index) => rect.left >= rects[index].right - 1);
+    const contained = rects.every((rect) => rect.left >= controlsRect.left - 1
+      && rect.right <= controlsRect.right + 1
+      && rect.top >= controlsRect.top - 1
+      && rect.bottom <= controlsRect.bottom + 1);
     return {
-      ok: children.length === expectedChildCount
+      ok: children.length === 4
+        && sameRow
+        && ordered
+        && contained
         && element.scrollWidth <= element.clientWidth + 1
-        && rects.every((rect) => rect.left >= toolbarRect.left - 1 && rect.right <= toolbarRect.right + 1)
-        && Array.from(rows.values()).every((right) => Math.abs(right - toolbarRect.right) <= 2),
+        && element.scrollHeight <= element.clientHeight + 1
+        && children[0]?.getAttribute('data-switch-control-density') === 'compact'
+        && children[1]?.getAttribute('data-focus-limit-density') === 'compact'
+        && children[2]?.getAttribute('data-focus-limit-density') === 'compact'
+        && Number.parseFloat(compactSwitchStyle?.columnGap ?? '') === 6
+        && Number.parseFloat(compactSwitchStyle?.paddingLeft ?? '') === 0
+        && Number.parseFloat(compactSwitchStyle?.paddingRight ?? '') === 0
+        && compactSwitchLabelStyle?.whiteSpace === 'nowrap'
+        && compactSwitchLabelRect !== undefined
+        && Number.isFinite(compactSwitchLabelLineHeight)
+        && compactSwitchLabelRect.height <= compactSwitchLabelLineHeight + 1
+        && compactSwitchLabel.scrollHeight <= compactSwitchLabel.clientHeight + 1
+        && exitButton?.getAttribute('data-ui-size') === 'icon-sm'
+        && exitButton.getAttribute('aria-label') === '退出专注模式'
+        && exitButton.getAttribute('title') === '退出专注模式'
+        && exitButton.textContent?.trim() === ''
+        && exitIcon?.getAttribute('aria-hidden') === 'true'
+        && exitRect !== undefined
+        && Math.abs(exitRect.width - exitRect.height) <= 2
+        && exitRect.width >= 31,
       childCount: children.length,
-      rowRights: Array.from(rows.values()).map((right) => Math.round(right)),
-      toolbarRight: Math.round(toolbarRect.right),
+      sameRow,
+      ordered,
+      contained,
       clientWidth: element.clientWidth,
       scrollWidth: element.scrollWidth,
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+      exitSize: exitRect ? `${Math.round(exitRect.width)}x${Math.round(exitRect.height)}` : null,
+      compactSwitch: compactSwitchStyle && compactSwitchLabelStyle && compactSwitchLabelRect
+        ? {
+            gap: compactSwitchStyle.columnGap,
+            padding: `${compactSwitchStyle.paddingLeft}/${compactSwitchStyle.paddingRight}`,
+            labelWhiteSpace: compactSwitchLabelStyle.whiteSpace,
+            labelSize: `${Math.round(compactSwitchLabelRect.width)}x${Math.round(compactSwitchLabelRect.height)}`,
+            labelLineHeight: compactSwitchLabelStyle.lineHeight,
+          }
+        : null,
+      rects: rects.map((rect) => ({
+        left: Math.round(rect.left),
+        top: Math.round(rect.top),
+        right: Math.round(rect.right),
+        bottom: Math.round(rect.bottom),
+      })),
     };
-  }, expectedToolbarChildCount);
+  });
   assert.equal(toolbarLayout.ok, true, `${profile.name}/service-focus: toolbar layout ${JSON.stringify(toolbarLayout)}`);
   await assertNoDocumentOverflow(page, profile, 'service-focus');
   await assertControlLayout(page, profile, 'service-focus');
