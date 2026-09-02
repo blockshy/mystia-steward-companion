@@ -1662,7 +1662,12 @@ export function ModWorkbench() {
     toggleBeverageFavorite,
     removeRecipeFavoriteById,
     removeBeverageFavoriteById,
-  } = useFavorites({ apiToken, connectionPaused, normalizedEndpoint });
+  } = useFavorites({
+    apiToken,
+    connected: companionConnected,
+    connectionRevision,
+    normalizedEndpoint,
+  });
   const {
     customRecipes,
     customRecipeError,

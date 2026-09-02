@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 
 import {
   filterFavoriteManagementEntries,
@@ -101,4 +102,39 @@ const groups = groupFavoriteManagementEntries(entries);
 assert.equal(groups.length, 3, '收藏没有按稀客形成稳定分组');
 assert.equal(groups.find((group) => group.customerId === 2)?.entries.length, 2, '同一稀客的料理与酒水没有归入同组');
 
-console.log('PASS: favorite management resolves, filters and groups recipe/beverage favorites while retaining missing catalog entries.');
+const [favoritesHookSource, apiSource, workbenchSource] = await Promise.all([
+  readFile('apps/companion/src/companion/hooks/useFavorites.ts', 'utf8'),
+  readFile('apps/companion/src/companion/api.ts', 'utf8'),
+  readFile('apps/companion/src/companion/ModWorkbench.tsx', 'utf8'),
+]);
+assert.match(favoritesHookSource, /connected: boolean;/, '收藏读取没有绑定已确认的连接状态');
+assert.doesNotMatch(favoritesHookSource, /connectionPaused/, '收藏 Hook 仍保留旧的暂停状态门禁');
+assert.match(favoritesHookSource, /favoriteReadError/, '收藏读取错误与写入错误没有拆分');
+assert.match(favoritesHookSource, /favoriteMutationError/, '收藏写入错误与读取错误没有拆分');
+assert.match(
+  favoritesHookSource,
+  /mutationBusyRef\.current \|\| refreshAbortControllerRef\.current/,
+  '收藏读取入口没有同步避让正在执行的收藏写入',
+);
+assert.match(
+  favoritesHookSource,
+  /activeMutationGenerationRef\.current === mutationGeneration/,
+  '连接代际变化会在收藏写请求实际结束前释放单写者屏障',
+);
+assert.match(
+  favoritesHookSource,
+  /getConnectionRetryDelayMs\(favoriteRefreshFailureCount\)/,
+  '收藏读取失败没有使用统一有界退避重试',
+);
+assert.match(
+  apiSource,
+  /readFavorites[\s\S]*?tauriTimeoutMs: options\.timeoutMs/,
+  '收藏读取超时没有同步传给 Tauri 原生代理',
+);
+assert.match(
+  workbenchSource,
+  /useFavorites\(\{[\s\S]*?connected: companionConnected,[\s\S]*?connectionRevision/,
+  '收藏请求没有绑定主快照确认后的连接代际',
+);
+
+console.log('PASS: favorite management and retry lifecycle keep scoped, recoverable favorite state.');

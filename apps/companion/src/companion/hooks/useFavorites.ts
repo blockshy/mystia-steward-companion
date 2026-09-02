@@ -14,6 +14,7 @@ import {
   normalizeFavoriteData,
   recipeFavoriteKey,
 } from '@/companion/domain/favorites';
+import { getConnectionRetryDelayMs } from '@/companion/connection-recovery';
 import type {
   FavoriteData,
   FavoriteMutationResponse,
@@ -23,71 +24,131 @@ import type {
 
 interface UseFavoritesOptions {
   apiToken: string;
-  connectionPaused: boolean;
+  connected: boolean;
+  connectionRevision: number;
   normalizedEndpoint: string;
 }
 
-export function useFavorites({ apiToken, connectionPaused, normalizedEndpoint }: UseFavoritesOptions) {
+const FAVORITE_READ_TIMEOUT_MS = 2800;
+
+export function useFavorites({
+  apiToken,
+  connected,
+  connectionRevision,
+  normalizedEndpoint,
+}: UseFavoritesOptions) {
   const [favorites, setFavorites] = useState<FavoriteData>(() => emptyFavoriteData());
-  const [favoriteError, setFavoriteError] = useState('');
+  const [favoriteReadError, setFavoriteReadError] = useState('');
+  const [favoriteMutationError, setFavoriteMutationError] = useState('');
   const [favoriteBusyKey, setFavoriteBusyKey] = useState('');
   const [favoriteRefreshing, setFavoriteRefreshing] = useState(false);
+  const [favoriteRefreshFailureCount, setFavoriteRefreshFailureCount] = useState(0);
+  const [favoriteRefreshRequired, setFavoriteRefreshRequired] = useState(true);
   const mutationBusyRef = useRef(false);
   const mutationGenerationRef = useRef(0);
+  const activeMutationGenerationRef = useRef<number | null>(null);
   const refreshGenerationRef = useRef(0);
-  const connectionIdentity = `${normalizedEndpoint}\n${apiToken}\n${connectionPaused ? 'paused' : 'active'}`;
+  const refreshAbortControllerRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
+  const resourceIdentity = `${normalizedEndpoint}\n${apiToken}`;
+  const connectionIdentity = `${resourceIdentity}\n${connectionRevision}`;
   const connectionIdentityRef = useRef(connectionIdentity);
+  const previousResourceIdentityRef = useRef(resourceIdentity);
   connectionIdentityRef.current = connectionIdentity;
 
+  useEffect(() => {
+    const resourceIdentityChanged = previousResourceIdentityRef.current !== resourceIdentity;
+    previousResourceIdentityRef.current = resourceIdentity;
+    mutationGenerationRef.current += 1;
+    refreshGenerationRef.current += 1;
+    refreshAbortControllerRef.current?.abort();
+    refreshAbortControllerRef.current = null;
+    setFavoriteRefreshing(false);
+    setFavoriteRefreshRequired(true);
+    if (resourceIdentityChanged || !apiToken) {
+      setFavorites(emptyFavoriteData());
+      setFavoriteReadError('');
+      setFavoriteMutationError('');
+      setFavoriteRefreshFailureCount(0);
+    }
+  }, [apiToken, connectionIdentity, resourceIdentity]);
+
+  useEffect(() => {
+    if (connected) return;
+    refreshGenerationRef.current += 1;
+    refreshAbortControllerRef.current?.abort();
+    refreshAbortControllerRef.current = null;
+    setFavoriteRefreshing(false);
+    setFavoriteRefreshRequired(true);
+  }, [connected]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      mutationGenerationRef.current += 1;
+      refreshGenerationRef.current += 1;
+      refreshAbortControllerRef.current?.abort();
+      refreshAbortControllerRef.current = null;
+    };
+  }, []);
+
   const refreshFavorites = useCallback(async () => {
+    if (!apiToken || !connected || mutationBusyRef.current || refreshAbortControllerRef.current) return;
+
     const refreshGeneration = ++refreshGenerationRef.current;
     const requestConnectionIdentity = connectionIdentityRef.current;
-    if (!apiToken) {
-      setFavorites(emptyFavoriteData());
-      setFavoriteRefreshing(false);
-      return;
-    }
-    if (connectionPaused) {
-      setFavoriteRefreshing(false);
-      return;
-    }
-
     const abortController = new AbortController();
-    const timeoutId = window.setTimeout(() => abortController.abort(), 2800);
+    refreshAbortControllerRef.current = abortController;
+    const timeoutId = window.setTimeout(() => abortController.abort(), FAVORITE_READ_TIMEOUT_MS);
+    setFavoriteRefreshRequired(false);
     setFavoriteRefreshing(true);
 
     try {
-      const data = await readFavorites(normalizedEndpoint, apiToken, abortController.signal);
+      const data = await readFavorites(normalizedEndpoint, apiToken, {
+        signal: abortController.signal,
+        timeoutMs: FAVORITE_READ_TIMEOUT_MS,
+      });
       if (refreshGeneration !== refreshGenerationRef.current
         || requestConnectionIdentity !== connectionIdentityRef.current) return;
       setFavorites(normalizeFavoriteData(data));
-      setFavoriteError('');
+      setFavoriteReadError('');
+      setFavoriteRefreshFailureCount(0);
+      setFavoriteRefreshRequired(false);
     } catch (err) {
       if (refreshGeneration !== refreshGenerationRef.current
         || requestConnectionIdentity !== connectionIdentityRef.current) return;
-      setFavoriteError(err instanceof Error ? err.message : String(err));
+      setFavoriteReadError(err instanceof Error ? err.message : String(err));
+      setFavoriteRefreshFailureCount((current) => current + 1);
     } finally {
       window.clearTimeout(timeoutId);
+      if (refreshAbortControllerRef.current === abortController) {
+        refreshAbortControllerRef.current = null;
+      }
       if (refreshGeneration === refreshGenerationRef.current
         && requestConnectionIdentity === connectionIdentityRef.current) {
         setFavoriteRefreshing(false);
       }
     }
-  }, [apiToken, connectionPaused, normalizedEndpoint]);
+  }, [apiToken, connected, normalizedEndpoint]);
 
   const runFavoriteMutation = useCallback(async (
     busyKey: string,
     errorMessage: string,
     mutation: () => Promise<FavoriteMutationResponse>,
   ) => {
-    if (!apiToken || connectionPaused || mutationBusyRef.current) return false;
+    if (!apiToken || !connected || mutationBusyRef.current) return false;
     mutationBusyRef.current = true;
     const mutationGeneration = ++mutationGenerationRef.current;
+    activeMutationGenerationRef.current = mutationGeneration;
     const requestConnectionIdentity = connectionIdentityRef.current;
     refreshGenerationRef.current += 1;
+    if (refreshAbortControllerRef.current) setFavoriteRefreshRequired(true);
+    refreshAbortControllerRef.current?.abort();
+    refreshAbortControllerRef.current = null;
     setFavoriteRefreshing(false);
     setFavoriteBusyKey(busyKey);
-    setFavoriteError('');
+    setFavoriteMutationError('');
 
     try {
       const response = await mutation();
@@ -95,21 +156,25 @@ export function useFavorites({ apiToken, connectionPaused, normalizedEndpoint }:
         || requestConnectionIdentity !== connectionIdentityRef.current) return false;
       if (!response.ok) throw new Error(response.error || errorMessage);
       setFavorites(normalizeFavoriteData(response.favorites));
+      setFavoriteReadError('');
+      setFavoriteMutationError('');
+      setFavoriteRefreshFailureCount(0);
+      setFavoriteRefreshRequired(false);
       return true;
     } catch (err) {
       if (mutationGeneration === mutationGenerationRef.current
         && requestConnectionIdentity === connectionIdentityRef.current) {
-        setFavoriteError(err instanceof Error ? err.message : String(err));
+        setFavoriteMutationError(err instanceof Error ? err.message : String(err));
       }
       return false;
     } finally {
-      if (mutationGeneration === mutationGenerationRef.current
-        && requestConnectionIdentity === connectionIdentityRef.current) {
+      if (activeMutationGenerationRef.current === mutationGeneration) {
+        activeMutationGenerationRef.current = null;
         mutationBusyRef.current = false;
-        setFavoriteBusyKey('');
+        if (mountedRef.current) setFavoriteBusyKey('');
       }
     }
-  }, [apiToken, connectionPaused]);
+  }, [apiToken, connected]);
 
   const toggleRecipeFavorite = useCallback<ToggleRecipeFavorite>(async (customer, foodTag, recipe) => {
     if (!apiToken || !foodTag) return;
@@ -156,16 +221,40 @@ export function useFavorites({ apiToken, connectionPaused, normalizedEndpoint }:
   }, [apiToken, normalizedEndpoint, runFavoriteMutation]);
 
   useEffect(() => {
-    mutationGenerationRef.current += 1;
-    refreshGenerationRef.current += 1;
-    mutationBusyRef.current = false;
-    setFavoriteBusyKey('');
-    setFavoriteRefreshing(false);
-  }, [connectionIdentity]);
+    if (!apiToken || !connected || favoriteBusyKey || !favoriteRefreshRequired) return;
+    void refreshFavorites();
+  }, [
+    apiToken,
+    connected,
+    connectionIdentity,
+    favoriteBusyKey,
+    favoriteRefreshRequired,
+    refreshFavorites,
+  ]);
 
   useEffect(() => {
-    void refreshFavorites();
-  }, [refreshFavorites]);
+    if (!apiToken
+      || !connected
+      || !favoriteReadError
+      || favoriteRefreshing
+      || favoriteBusyKey
+      || favoriteRefreshFailureCount < 1) return;
+    const timer = window.setTimeout(() => {
+      void refreshFavorites();
+    }, getConnectionRetryDelayMs(favoriteRefreshFailureCount));
+    return () => window.clearTimeout(timer);
+  }, [
+    apiToken,
+    connected,
+    favoriteBusyKey,
+    favoriteReadError,
+    favoriteRefreshFailureCount,
+    favoriteRefreshing,
+    refreshFavorites,
+  ]);
+
+  const favoriteError = favoriteMutationError
+    || (favoriteReadError ? `收藏数据同步失败：${favoriteReadError}` : '');
 
   return {
     favorites,

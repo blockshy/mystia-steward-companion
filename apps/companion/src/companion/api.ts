@@ -816,8 +816,15 @@ export async function completeFirstNormalOrder(
   );
 }
 
-export async function readFavorites(endpoint: string, apiToken: string, signal: AbortSignal): Promise<FavoriteData> {
-  return readLocalApiJson<FavoriteData>(endpoint, apiToken, '/favorites', signal);
+export async function readFavorites(
+  endpoint: string,
+  apiToken: string,
+  options: { signal: AbortSignal; timeoutMs: number },
+): Promise<FavoriteData> {
+  return readLocalApiJson<FavoriteData>(endpoint, apiToken, '/favorites', {
+    signal: options.signal,
+    tauriTimeoutMs: options.timeoutMs,
+  });
 }
 
 export async function readCustomRecipes(endpoint: string, apiToken: string, signal: AbortSignal): Promise<CustomRecipeData> {
