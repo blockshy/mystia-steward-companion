@@ -70,9 +70,9 @@ export interface RareOrderParticipationController {
 }
 
 /**
- * 绑定主设备 authority、经营代际和 participation revision 的稀客参与控制器。
+ * 绑定主设备状态、本场经营编号和调度状态版本的稀客队列控制器。
  *
- * POST 成功响应只作为更高 revision 的权威覆盖层，不做乐观推断；连接、主控、经营或
+ * POST 成功响应只在状态版本更新时覆盖当前结果，不提前假定成功；连接、控制窗口、经营或
  * 原始 revision 改变会中止旧请求，晚到响应不能回写当前会话。
  */
 export function useRareOrderParticipation({
@@ -178,7 +178,7 @@ export function useRareOrderParticipation({
     orders,
     collectionComplete,
   });
-  // mutation 期间继续发布上一个权威投影，使 Mod 能把当前高亮订单作为 non-preemptive
+  // 修改期间继续发布上一个已确认状态，使 Mod 能把当前高亮订单作为非抢占式
   // front anchor；新自动化命令由工作台的 busy mutation gate 单独阻止。
   const projectionReady = !participationActive || snapshotAligned;
   const readOnly = !moduleEnabled
@@ -205,7 +205,7 @@ export function useRareOrderParticipation({
               : !collectionComplete
                 ? '当前稀客订单集合读取不完整，已暂停参与状态操作。'
                 : participationActive && !snapshotAligned
-                  ? 'Mod 权威参与快照尚未与当前经营和受控名单对齐。'
+                  ? 'Mod 返回的稀客调度状态尚未与本场经营和调度名单同步一致。'
                   : '';
 
   const resolveOrder = useCallback((order: NightBusinessOrder) => {
@@ -236,7 +236,7 @@ export function useRareOrderParticipation({
       );
       if (!currentTargets
         || !sameExactTargetSet(currentTargets, requestedTarget.expectedCurrentOrders)) {
-        setError('当前稀客订单集合已变化，请等待快照刷新后重试。');
+        setError('当前稀客订单已经变化，请等待状态刷新后重试。');
         await Promise.allSettled([refreshSnapshot(), refreshAuthority()]);
         return;
       }
@@ -252,7 +252,7 @@ export function useRareOrderParticipation({
         businessGeneration,
       );
       if (!currentOrder) {
-        setError('当前订单 lifecycle 已变化，请等待快照刷新后重试。');
+        setError('所选订单已经变化，请等待状态刷新后重试。');
         await Promise.allSettled([refreshSnapshot(), refreshAuthority()]);
         return;
       }
@@ -290,7 +290,7 @@ export function useRareOrderParticipation({
           orders,
           collectionComplete,
         })) {
-        throw new Error('Mod 返回的稀客参与状态未与当前权威边界对齐。');
+        throw new Error('Mod 返回的稀客调度状态未与本场经营、调度名单和当前订单同步一致。');
       }
       setOverlay({ bindingKey, snapshot: response.participation });
       await Promise.allSettled([refreshSnapshot()]);

@@ -69,7 +69,7 @@ export function selectWackyNormalExecutionTarget({
 }: SpecialBusinessNormalTargetArgs): SpecialBusinessNormalTargetSelection {
   if (!specialBusiness?.active) return emptySelection();
   if (!runtime || data.source !== 'runtime') {
-    return { target: null, message: '特殊经营自动化等待运行时推荐数据后再选择普客执行目标。' };
+    return { target: null, message: '特殊经营自动化等待读取游戏推荐数据后再选择普客目标。' };
   }
 
   return selectWackyNormalTarget(order, specialBusiness, runtime, preferences, data, rejectedRecipeKeys);
@@ -142,7 +142,7 @@ function selectWackyNormalTarget(
     return {
       target: null,
       message: targetTags.length > 0
-        ? `当前怪诞料理目标 Tag 为 ${targetTags.join('、')}，没有可制作且未被实机判定失败的普客替代料理。`
+        ? `当前怪诞料理目标标签为 ${targetTags.join('、')}，没有可制作且未被游戏判定失败的普客替代料理。`
         : '当前没有可用于怪诞料理大赛高评价的普客替代料理/酒水组合。',
     };
   }
@@ -152,8 +152,8 @@ function selectWackyNormalTarget(
     return {
       target: null,
       message: targetTags.length > 0
-        ? `怪诞料理大赛当前目标 Tag 为 ${targetTags.join('、')}，但普客没有同时满足目标 Tag 且命中至少 ${WACKY_PHASE_ONE_MIN_MATCH_COUNT} 个喜好 Tag 的稳定高评价组合。`
-        : `怪诞料理大赛第一阶段需要至少 ${WACKY_PHASE_ONE_MIN_MATCH_COUNT} 个喜好 Tag 命中，当前普客没有稳定高评价组合。`,
+        ? `怪诞料理大赛当前目标标签为 ${targetTags.join('、')}，但普客没有同时满足目标标签且命中至少 ${WACKY_PHASE_ONE_MIN_MATCH_COUNT} 个喜好标签的稳定高评价组合。`
+        : `怪诞料理大赛第一阶段需要至少命中 ${WACKY_PHASE_ONE_MIN_MATCH_COUNT} 个喜好标签，当前普客没有稳定高评价组合。`,
     };
   }
 
@@ -163,8 +163,8 @@ function selectWackyNormalTarget(
       best.food,
       best.beverage,
       targetTags.length > 0
-        ? `怪诞目标 Tag：${targetTags.join('、')}，高评价命中 ${matchCount} 个喜好 Tag`
-        : `怪诞高评价命中 ${matchCount} 个喜好 Tag`,
+        ? `怪诞目标标签：${targetTags.join('、')}，高评价命中 ${matchCount} 个喜好标签`
+        : `怪诞高评价命中 ${matchCount} 个喜好标签`,
       { specialTargetFoodTags: targetTags },
     ),
     message: '',
@@ -188,7 +188,7 @@ function selectWackyKoishiBossNormalTarget(
     return {
       target: null,
       message: [
-        '怪诞料理三阶段古明地恋本体需要先读取场上揭示的正面料理 Tag 和酒水 Tag，暂不自动提交，避免继续触发差评。',
+        '怪诞料理第三阶段需要先读取场上古明地恋本体揭示的正面料理标签和酒水标签，暂不自动提交，以免继续触发差评。',
         `已读取：正面料理 ${foodPreferenceTags.length ? foodPreferenceTags.join('、') : '无'}；厌恶料理 ${foodHateTags.length ? foodHateTags.join('、') : '无'}；酒水 ${beveragePreferenceTags.length ? beveragePreferenceTags.join('、') : '无'}。`,
       ].join('\n'),
     };
@@ -228,7 +228,7 @@ function selectWackyKoishiBossNormalTarget(
       order,
       best.food,
       best.beverage,
-      `古明地恋本体：命中正面料理 ${best.food.matchedPositiveTags.join('、')}，酒水 ${best.beverage.matchedTags.join('、')}，避开厌恶 Tag${foodHateTags.length ? ` ${foodHateTags.join('、')}` : ''}`,
+      `古明地恋本体：命中正面料理 ${best.food.matchedPositiveTags.join('、')}，酒水 ${best.beverage.matchedTags.join('、')}，避开厌恶标签${foodHateTags.length ? ` ${foodHateTags.join('、')}` : ''}`,
     ),
     message: '',
   };
@@ -365,7 +365,7 @@ function selectWackyExactNormalTarget(
   });
 
   if (!best) {
-    const targetText = targetTags.length > 0 ? `并满足当前怪诞 Tag ${targetTags.join('、')}` : '';
+    const targetText = targetTags.length > 0 ? `并满足当前怪诞标签 ${targetTags.join('、')}` : '';
     return {
       target: null,
       message: `怪诞料理大赛需要按原订单制作 ${originalRecipe.name} / ${originalBeverage.name}${targetText}，当前没有安全的高评价加料方案。`,
@@ -376,7 +376,7 @@ function selectWackyExactNormalTarget(
     const matchCount = best.food.matchedPositiveTags.length + best.beverage.matchedTags.length;
     return {
       target: null,
-      message: `怪诞料理大赛需要原订单最高评价，${originalRecipe.name} / ${originalBeverage.name} 当前仅命中 ${matchCount} 个喜好 Tag，等待更安全的订单或目标刷新。`,
+      message: `怪诞料理大赛需要原订单达到最高评价，${originalRecipe.name} / ${originalBeverage.name} 当前仅命中 ${matchCount} 个喜好标签，等待更合适的订单或目标刷新。`,
     };
   }
 
@@ -387,8 +387,8 @@ function selectWackyExactNormalTarget(
       best.food,
       best.beverage,
       targetTags.length > 0
-        ? `怪诞高评价：保持原订单，目标 Tag ${targetTags.join('、')}，命中 ${matchCount} 个喜好 Tag`
-        : `怪诞高评价：保持原订单，命中 ${matchCount} 个喜好 Tag`,
+        ? `怪诞高评价：保持原订单，目标标签 ${targetTags.join('、')}，命中 ${matchCount} 个喜好标签`
+        : `怪诞高评价：保持原订单，命中 ${matchCount} 个喜好标签`,
       { specialTargetFoodTags: targetTags },
     ),
     message: '',

@@ -324,8 +324,8 @@ export function useCompanionDeviceAuthority({
         publishError('');
       } else {
         publishError(decision.reason === 'authority-changed'
-          ? '共享配置修改已取消：设备权威在保存期间发生变化，已恢复当前主设备配置。'
-          : '共享配置修改未在原权威基线上确认，已恢复 Mod 返回的生效配置。');
+          ? '共享配置修改已取消：主设备配置在保存期间发生变化，已恢复当前生效配置。'
+          : '共享配置修改未能基于保存前的配置版本完成，已恢复 Mod 返回的生效配置。');
       }
       return true;
     }
@@ -425,7 +425,7 @@ export function useCompanionDeviceAuthority({
           sharedPreferencesRef.current = parsedState.currentDeviceProfile;
           applySharedPreferencesRef.current(parsedState.currentDeviceProfile);
           const writeOutcome = beginAuthorityWriteOutcome(generation);
-          if (!writeOutcome) throw new Error('设备同步确认等待其他权威写入结束。');
+          if (!writeOutcome) throw new Error('设备同步确认正在等待其他共享配置保存完成。');
           let acknowledged: CompanionDeviceAuthorityState;
           try {
             acknowledged = await acknowledgeCompanionDeviceSync(
@@ -508,7 +508,7 @@ export function useCompanionDeviceAuthority({
     const writeOutcome = beginAuthorityWriteOutcome(transaction.connectionGeneration);
     if (!writeOutcome) {
       publishProfileTransaction({ ...transaction, phase: 'reconciling' });
-      publishError('共享配置保存等待其他设备权威写入结束，请刷新后重试。');
+      publishError('另一台设备正在保存共享配置，请刷新后重试。');
       return;
     }
     publishProfileTransaction(postingTransaction);
@@ -761,17 +761,17 @@ export function useCompanionDeviceAuthority({
     mutation: (current: CompanionDeviceAuthorityState) => Promise<CompanionDeviceAuthorityState>,
   ) => {
     const operation = acquireAuthorityOperation(kind, true);
-    if (!operation) throw new Error('设备权威状态尚未就绪。');
+    if (!operation) throw new Error('主设备状态尚未就绪。');
     const generation = operation.generation;
     const current = stateRef.current;
     if (!current) {
       releaseAuthorityOperation(operation);
-      throw new Error('设备权威状态尚未就绪。');
+      throw new Error('主设备状态尚未就绪。');
     }
     publishError('');
     try {
       const writeOutcome = beginAuthorityWriteOutcome(generation);
-      if (!writeOutcome) throw new Error('设备权威写入正在执行，请稍后重试。');
+      if (!writeOutcome) throw new Error('共享配置正在保存，请稍后重试。');
       let next: CompanionDeviceAuthorityState;
       try {
         next = await mutation(current);
@@ -888,7 +888,7 @@ function validateAuthorityState(state: CompanionDeviceAuthorityState): void {
     || state.currentDeviceId.length < 16
     || !state.devices.some((device) => device.isCurrent && device.deviceId === state.currentDeviceId)
     || !state.devices.some((device) => device.isPrimary && device.deviceId === state.primaryDeviceId)) {
-    throw new Error('Mod 返回的设备权威状态与当前伴随窗口协议不一致。');
+    throw new Error('Mod 返回的主设备状态与当前伴随窗口使用的协议不一致。');
   }
 }
 

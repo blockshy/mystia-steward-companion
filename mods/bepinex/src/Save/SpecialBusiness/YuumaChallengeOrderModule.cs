@@ -21,7 +21,7 @@ internal sealed class YuumaChallengeOrderModule : ISpecialBusinessOrderModule
             var blocked = SpecialBusinessModuleRegistry.Blocked(
                 SpecialBusinessOrderRoles.YuumaUnverified,
                 "血池地狱订单",
-                $"血池地狱订单身份无法精确确认，已阻止自动化接管：{identity.Reason}");
+                $"无法确认血池地狱订单与当前客人是否一致，已暂停自动化。详细原因：{identity.Reason}");
             SpecialBusinessDiagnostics.AppendYuumaOrderClassification(
                 challengeType,
                 blocked,

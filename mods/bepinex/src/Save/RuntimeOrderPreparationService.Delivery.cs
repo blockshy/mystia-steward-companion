@@ -79,7 +79,7 @@ internal static partial class RuntimeOrderPreparationService
         if (!TryReadOrderServedItem(runtimeOrder.Order, kind, out var existingServedItem, out var existingDiagnostic))
         {
             return NotCommittedDelivery(
-                $"无法送达 {itemName}：无法确认订单当前最终送达字段，本轮未执行送达副作用。{existingDiagnostic}");
+                $"无法送达 {itemName}：无法确认订单当前的已送达状态，本轮未执行送达操作。详细原因：{existingDiagnostic}");
         }
 
         if (existingServedItem != null)
@@ -87,11 +87,11 @@ internal static partial class RuntimeOrderPreparationService
             return CompareObjectIdentity(existingServedItem, sellable) switch
             {
                 RuntimeObjectIdentityComparison.Same =>
-                    CommittedDelivery($"{itemName} 已存在于订单最终送达字段，本次未重复调用 setter。"),
+                    CommittedDelivery($"{itemName} 已经存在于订单最终已送达状态，本次不重复调用游戏写入方法。"),
                 RuntimeObjectIdentityComparison.Different =>
-                    NotCommittedDelivery($"无法送达 {itemName}：订单最终送达字段已有其他对象。"),
+                    NotCommittedDelivery($"无法送达 {itemName}：订单最终已送达状态中已有其他游戏对象。"),
                 _ => NotCommittedDelivery(
-                    $"无法送达 {itemName}：订单最终送达对象身份不可确认，本轮未执行送达副作用。"),
+                    $"无法送达 {itemName}：无法确认订单最终已送达对象的标识，本轮未执行送达操作。"),
             };
         }
 
@@ -108,13 +108,13 @@ internal static partial class RuntimeOrderPreparationService
         if (!TryReadOrderInAirItem(runtimeOrder.Order, kind, out var existingInAirItem, out var inAirDiagnostic))
         {
             return NotCommittedDelivery(
-                $"无法送达 {itemName}：无法确认订单待送达字段，本轮未执行送达副作用。{inAirDiagnostic}");
+                $"无法送达 {itemName}：无法确认订单当前正在送达的项目，本轮未执行送达操作。详细原因：{inAirDiagnostic}");
         }
 
         if (existingInAirItem != null
             && CompareObjectIdentity(existingInAirItem, sellable) != RuntimeObjectIdentityComparison.Same)
         {
-            return NotCommittedDelivery($"无法送达 {itemName}：订单待送达字段已有其他对象，拒绝覆盖。");
+            return NotCommittedDelivery($"无法送达 {itemName}：订单已有其他项目正在送达，不会覆盖它。");
         }
 
         if (existingInAirItem == null)
@@ -132,11 +132,12 @@ internal static partial class RuntimeOrderPreparationService
             {
                 return UncertainDelivery(
                     kind,
-                    $"{itemName} 的待送达 setter 执行期间夜间经营会话已结束，已停止后续订单对象访问。");
+                    $"更新 {itemName} 的待送达状态时本场经营已经结束，已停止后续操作且不再访问订单对象。");
             }
             if (!inAirSetterAttempted)
             {
-                return NotCommittedDelivery($"无法送达 {itemName}：{inAirSetterDiagnostic}");
+                return NotCommittedDelivery(
+                    $"无法送达 {itemName}：游戏未能开始送达流程。详细原因：{inAirSetterDiagnostic}");
             }
             if (!TryReadOrderInAirItem(
                     runtimeOrder.Order,
@@ -146,7 +147,7 @@ internal static partial class RuntimeOrderPreparationService
             {
                 return UncertainDelivery(
                     kind,
-                    $"{itemName} 的待送达 setter 已执行，但无法确认字段状态，已禁止重复写入。{writtenInAirDiagnostic}");
+                    $"{itemName} 的送达操作已经开始，但无法确认当前状态，已禁止重复送达。详细原因：{writtenInAirDiagnostic}");
             }
 
             if (writtenInAirItem == null)
@@ -154,8 +155,8 @@ internal static partial class RuntimeOrderPreparationService
                 return UncertainDelivery(
                     kind,
                     inAirSetterReturned
-                        ? $"{itemName} 的待送达 setter 已执行，但字段仍为空，无法确认回调副作用，已禁止重试。"
-                        : $"{itemName} 的待送达 setter 已进入后发生异常且字段为空，无法确认回调副作用，已禁止重试。{inAirSetterDiagnostic}");
+                        ? $"{itemName} 的待送达写入已经执行，但游戏状态仍为空，无法确认游戏回调产生的写入，已禁止重试。"
+                        : $"{itemName} 的待送达写入开始后发生异常，且游戏状态仍为空，无法确认游戏回调产生的写入，已禁止重试。详细原因：{inAirSetterDiagnostic}");
             }
 
             var writtenIdentity = CompareObjectIdentity(writtenInAirItem, sellable);
@@ -163,14 +164,14 @@ internal static partial class RuntimeOrderPreparationService
             {
                 return UncertainDelivery(
                     kind,
-                    $"{itemName} 的待送达 setter 已执行，但写入对象身份无法确认，已禁止重复写入。");
+                    $"{itemName} 的送达操作已经开始，但无法确认写入对象与待送达项目是否为同一游戏对象，已禁止重复送达。");
             }
 
             if (writtenIdentity == RuntimeObjectIdentityComparison.Different)
             {
                 return UncertainDelivery(
                     kind,
-                    $"{itemName} 的待送达 setter 已执行，但字段变为其他对象，无法确认副作用边界，已禁止重试。");
+                    $"{itemName} 的送达操作已经开始，但游戏记录了其他对象，无法确认游戏写操作的影响范围，已禁止重试。");
             }
         }
 
@@ -203,7 +204,8 @@ internal static partial class RuntimeOrderPreparationService
                 {
                     return UncertainDelivery(
                         kind,
-                        $"无法送达 {itemName}：{visualMessage}；待送达字段清理状态无法确认，已禁止重试。{clearDiagnostic}");
+                        $"无法送达 {itemName}：桌面显示更新失败，且无法确认送达状态是否已清理，已禁止重试。"
+                        + $"详细原因：visual={visualMessage}; clear={clearDiagnostic}");
                 }
 
                 return NotCommittedDelivery($"无法送达 {itemName}：{visualMessage}");
@@ -225,7 +227,8 @@ internal static partial class RuntimeOrderPreparationService
             {
                 return UncertainDelivery(
                     kind,
-                    $"无法送达 {itemName}：最终提交前无法确认待送达字段已清空，已禁止继续。{clearBeforeCommitDiagnostic}");
+                    $"无法送达 {itemName}：最终提交前无法确认旧的送达状态已经清理，已禁止继续。"
+                    + $"详细原因：{clearBeforeCommitDiagnostic}");
             }
 
             var setterName = kind == RuntimeDeliveryItemKind.Food ? "set_ServFood" : "set_ServBeverage";
@@ -239,7 +242,7 @@ internal static partial class RuntimeOrderPreparationService
             {
                 return UncertainDelivery(
                     kind,
-                    $"{itemName} 的订单 setter 执行期间夜间经营会话已结束，已停止后续订单对象访问。");
+                    $"提交 {itemName} 时本场经营已经结束，已停止后续操作且不再访问订单对象。");
             }
             if (!finalSetterAttempted)
             {
@@ -250,7 +253,8 @@ internal static partial class RuntimeOrderPreparationService
                         kind,
                         $"{itemName} 的桌面显示回收期间夜间经营会话已结束，已停止后续订单对象访问。");
                 }
-                return NotCommittedDelivery($"无法送达 {itemName}：{setterDiagnostic}");
+                return NotCommittedDelivery(
+                    $"无法送达 {itemName}：游戏未接受送达操作。详细原因：{setterDiagnostic}");
             }
 
             // IDA: both OrderBase setters write servFood/servBeverage before invoking the visual callback.
@@ -258,7 +262,7 @@ internal static partial class RuntimeOrderPreparationService
             if (!TryReadOrderServedItem(runtimeOrder.Order, kind, out var servedItem, out var servedDiagnostic))
             {
                 return UncertainDelivery(kind,
-                    $"{itemName} 的订单 setter 已执行，但无法确认最终字段，已禁止重复送达。{servedDiagnostic}");
+                    $"{itemName} 的送达操作已经执行，但无法确认最终结果，已禁止重复送达。详细原因：{servedDiagnostic}");
             }
 
             var servedIdentity = servedItem == null
@@ -274,8 +278,8 @@ internal static partial class RuntimeOrderPreparationService
             {
                 return UncertainDelivery(kind,
                     servedIdentity == RuntimeObjectIdentityComparison.Unknown
-                        ? $"{itemName} 的订单 setter 已执行，但最终对象身份无法确认，已禁止重复送达。"
-                        : $"{itemName} 的订单 setter 已执行，但最终字段为其他对象，无法确认副作用边界，已禁止重复送达。");
+                        ? $"{itemName} 的送达操作已经执行，但无法确认最终对象与送达项目是否为同一游戏对象，已禁止重复送达。"
+                        : $"{itemName} 的送达操作已经执行，但最终状态记录了其他对象，无法确认游戏写操作的影响范围，已禁止重复送达。");
             }
 
             TryUpdateGuestTableVisual(tableDisplayer, kind, null, out _);
@@ -288,8 +292,8 @@ internal static partial class RuntimeOrderPreparationService
             return UncertainDelivery(
                 kind,
                 setterReturned
-                    ? $"{itemName} 的订单 setter 已执行，但最终字段仍为空，无法确认回调副作用，已禁止重复送达。"
-                    : $"{itemName} 的订单 setter 已进入后发生异常且最终字段为空，无法确认回调副作用，已禁止重复送达。{setterDiagnostic}");
+                    ? $"{itemName} 的订单写入已经执行，但最终状态仍为空，无法确认游戏回调产生的写入，已禁止重复送达。"
+                    : $"{itemName} 的订单写入开始后发生异常，且最终状态仍为空，无法确认游戏回调产生的写入，已禁止重复送达。详细原因：{setterDiagnostic}");
         }
         catch (Exception ex)
         {
@@ -310,8 +314,10 @@ internal static partial class RuntimeOrderPreparationService
             return finalSetterAttempted
                 ? UncertainDelivery(
                     kind,
-                    $"{itemName} 的订单 setter 已开始执行，但发生未分类异常且无法确认最终字段；已禁止重复送达。{ex.GetBaseException().Message}")
-                : NotCommittedDelivery($"无法送达 {itemName}：{ex.GetBaseException().Message}");
+                    $"{itemName} 的送达操作已经开始，但发生异常且无法确认最终结果；已禁止重复送达。"
+                    + $"详细原因：{ex.GetBaseException().Message}")
+                : NotCommittedDelivery(
+                    $"无法送达 {itemName}：游戏送达操作发生异常。详细原因：{ex.GetBaseException().Message}");
         }
     }
 
@@ -459,7 +465,7 @@ internal static partial class RuntimeOrderPreparationService
     }
 
     /// <summary>
-    /// 在订单未满足时恢复顾客耐心，等价于原生上菜面板的 onRecoverPatient 闭包。
+    /// 在订单未满足时恢复顾客耐心，等价于原生上菜面板的 onRecoverPatient 回调。
     /// </summary>
     /// <remarks>
     /// 原游戏在一轮上菜后若订单仍未满足，会按成功提交的料理/酒水数量恢复耐心，每项固定 15。
@@ -685,7 +691,7 @@ internal static partial class RuntimeOrderPreparationService
                     false,
                     false,
                     false,
-                    "瑞灵特殊经营订单角色、评价闭包或已送达料理加料在评价前无法精确复核；"
+                    "瑞灵特殊经营订单角色、评价回调或已送达料理加料在评价前无法精确复核；"
                     + "未调用评价入口："
                     + mizuchiEvaluationDiagnostic,
                     OrderPreparationStepCodes.MizuchiContractMismatch);
@@ -698,7 +704,7 @@ internal static partial class RuntimeOrderPreparationService
                 false,
                 false,
                 false,
-                "血池地狱订单只能由精确料理锅次结算事务触发评价。",
+                "血池地狱订单只能由锁定当前料理锅次的专用结算流程触发评价。",
                 OrderPreparationStepCodes.CookingPending);
         }
 
@@ -812,7 +818,7 @@ internal static partial class RuntimeOrderPreparationService
                 runtimeOrder,
                 "blocked-native-evaluate-entry",
                 diagnostic);
-            return new(false, false, false, $"怪诞料理三阶段古明地恋本体订单缺少可执行原生评价条件：{diagnostic}");
+            return new(false, false, false, $"怪诞料理三阶段古明地恋本体订单缺少调用游戏评价流程所需的条件。详细原因：{diagnostic}");
         }
 
         var evaluation = TryEvaluateRuntimeOrderIfReady(
@@ -917,7 +923,7 @@ internal static partial class RuntimeOrderPreparationService
                 false,
                 false,
                 false,
-                $"{orderLabel}缺少精确订单、控制器或管理器，无法调用游戏评价流程。",
+                $"{orderLabel}的订单对象、客人控制器或客人管理器信息不完整，无法调用游戏评价流程。",
                 OrderPreparationStepCodes.OrderEvaluationStateUnreadable);
         }
 
@@ -932,7 +938,7 @@ internal static partial class RuntimeOrderPreparationService
                 false,
                 false,
                 false,
-                $"{orderLabel}的活动生命周期无法精确绑定，未调用游戏评价流程：{bindingDiagnostic}",
+                $"{orderLabel}已经变化或信息不完整，未调用游戏评价流程。详细原因：{bindingDiagnostic}",
                 OrderPreparationStepCodes.OrderEvaluationStateUnreadable);
         }
 
@@ -1029,7 +1035,7 @@ internal static partial class RuntimeOrderPreparationService
                 false,
                 false,
                 false,
-                $"无法严格读取 {orderLabel} 的 HasEvaluated，已在调用游戏评价流程前停止：{beforeDiagnostic}",
+                $"无法确认{orderLabel}是否已经评价，已在调用游戏评价流程前停止。详细原因：{beforeDiagnostic}",
                 OrderPreparationStepCodes.OrderEvaluationStateUnreadable);
         }
 
@@ -1052,12 +1058,13 @@ internal static partial class RuntimeOrderPreparationService
                     false,
                     false,
                     false,
-                    $"{orderLabel}的评价调用已正常返回，但未收到同生命周期的原生 Evaluated 回执"
-                    + $"（{receiptDiagnostic}）。原方法可能被其他 Harmony 前缀跳过；为避免重复结算，已禁止自动重试，请人工确认订单状态。",
+                    $"{orderLabel}的评价操作已返回，但游戏没有确认评价完成；"
+                    + "游戏评价方法可能被其他 Harmony 前置补丁跳过。"
+                    + $"为避免重复评价，已停止自动重试，请人工确认订单状态。详细原因：{receiptDiagnostic}",
                     OrderPreparationStepCodes.OrderEvaluationCommitUncertain);
             }
 
-            return new(true, true, false, $"已调用游戏评价流程并确认精确终态回执，完成{orderLabel}。");
+            return new(true, true, false, $"游戏已确认评价完成，{orderLabel}处理完毕。");
         }
         catch (Exception ex)
         {
@@ -1072,8 +1079,8 @@ internal static partial class RuntimeOrderPreparationService
                     true,
                     true,
                     false,
-                    $"{orderLabel} 的评价调用后半段发生异常，但同生命周期 Evaluated 回执已确认提交；"
-                    + $"不会重复调用。异常：{ex.GetBaseException().Message}");
+                    $"{orderLabel}的评价后续处理发生异常，但游戏已经确认评价完成，不会重复调用。"
+                    + $"详细原因：receipt={receiptDiagnostic}; exception={ex.GetBaseException().Message}");
             }
 
             if (!IsNightBusinessGenerationActive(sessionGeneration))
@@ -1085,8 +1092,9 @@ internal static partial class RuntimeOrderPreparationService
                 false,
                 false,
                 false,
-                $"{orderLabel} 的评价调用已开始但发生异常，且无法确认精确终态"
-                + $"（receipt={receiptDiagnostic}）。为避免重复结算，已禁止自动重试，请人工确认订单状态：{ex.GetBaseException().Message}",
+                $"{orderLabel}的评价操作已经开始但发生异常，且无法确认最终结果；"
+                + $"为避免重复评价，已停止自动重试，请人工确认订单状态。详细原因："
+                + $"receipt={receiptDiagnostic}; exception={ex.GetBaseException().Message}",
                 OrderPreparationStepCodes.OrderEvaluationCommitUncertain);
         }
     }
@@ -1191,7 +1199,7 @@ internal static partial class RuntimeOrderPreparationService
         try
         {
             // 该 helper 依赖运行时赋值的 BGGetter；未初始化时会返回 null。
-            // 原生上菜面板的桌面显示直接读取 sellable.Text.Visual，因此这里只作为兜底。
+            // 原生上菜面板的桌面显示直接读取 sellable.Text.Visual，因此这里只作为无法读取时的备用值。
             sprite = InvokeStatic(SellablePropertyHelperTypeName, "GetSellabeBGSprite", new object?[] { sellable });
             if (sprite != null)
             {

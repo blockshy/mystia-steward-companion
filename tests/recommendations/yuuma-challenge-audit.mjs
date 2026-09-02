@@ -210,7 +210,7 @@ const unverifiedRule = buildSpecialBusinessOrderRule(
   specialBusiness,
   'yuuma-order-unverified',
 );
-assert.match(unverifiedRule.blockingReason, /角色身份尚未确认/);
+assert.match(unverifiedRule.blockingReason, /尚未确认订单对应的角色/);
 assert.equal(unverifiedRule.foodTarget.enforcement, 'none');
 
 for (const [context, role] of [
@@ -382,7 +382,7 @@ const beverageOnlyReconciliation = reconcileRareRecipeTargetForSpecialBusiness(
   1100,
 );
 assert.equal(beverageOnlyReconciliation.state.recipeTarget, null,
-  '只送酒时不应要求或锁存料理动作目标。');
+  '只送酒时不应要求或固定料理动作目标。');
 assert.equal(
   beverageOnlyReconciliation.specialTargetPolicy.specialTargetSignature,
   'Story_BloodPondHell|yuuma|generation:7|match:all|food:目标乙,目标甲',
@@ -472,7 +472,7 @@ const oneTargetUnavailable = buildRareRecommendation({
   },
 });
 assert.equal(oneTargetUnavailable.executionPlans.length, 0);
-assert.match(oneTargetUnavailable.blockedMessages.join('\n'), /同时满足目标 Tag|目标乙/);
+assert.match(oneTargetUnavailable.blockedMessages.join('\n'), /同时满足目标标签|目标乙/);
 
 const incompleteTarget = buildRareRecommendation({
   specialBusinessOverrides: { foodTargetTags: ['目标甲'] },
@@ -490,7 +490,7 @@ const unverifiedKnownIdentity = buildRareRecommendation({
   orderOverrides: { specialBusinessRole: 'yuuma-order-unverified' },
 });
 assert.equal(unverifiedKnownIdentity.executionPlans.length, 0);
-assert.match(unverifiedKnownIdentity.blockedMessages.join('\n'), /角色身份尚未确认/);
+assert.match(unverifiedKnownIdentity.blockedMessages.join('\n'), /尚未确认订单对应的角色/);
 const unverifiedMissingIdentity = buildRecommendations({
   orderOverrides: {
     guestId: null,
@@ -593,13 +593,13 @@ const controlledProgressionSelection = selectSpecialBusinessNormalExecutionTarge
   data,
 });
 assert.ok(controlledProgressionSelection.target,
-  'A buildable original order must remain executable when only the all-Tag challenge bonus is impossible.');
+  '原订单可制作、但无法满足全部挑战标签时，必须保留可执行的低收益推进方案。');
 assert.equal(controlledProgressionSelection.target.allowYuumaControlledProgression, true);
 assert.deepEqual(controlledProgressionSelection.target.extraIngredientIds, [targetAIngredient.id],
-  'Controlled progression must still maximize reachable target Tags with the same special-target demand.');
+  '低收益推进仍须在相同特殊目标要求下尽量命中可达标签。');
 assert.deepEqual(controlledProgressionSelection.target.specialTargetFoodTags, ['目标甲', '目标乙'],
-  'Controlled progression must retain the complete active target policy for runtime revision checks.');
-assert.match(controlledProgressionSelection.target.reason, /受控推进方案/);
+  '低收益推进必须保留完整的当前目标策略，以便按修订号检查。');
+assert.match(controlledProgressionSelection.target.reason, /低收益推进方案/);
 assert.match(controlledProgressionSelection.target.reason, /较低伤害并增加狂暴/);
 assert.equal(controlledProgressionSelection.message, '');
 
@@ -785,8 +785,8 @@ const missingRuntimeIdentitySelection = selectSpecialBusinessNormalExecutionTarg
 assert.equal(missingRuntimeIdentitySelection.target, null);
 assert.match(
   missingRuntimeIdentitySelection.message,
-  /runtimeGuestId=1003.*missing/,
-  'A normalized catalog guestId must not substitute for the verified runtime order identity.',
+  /游戏内角色信息不完整.*角色 #1003.*未读取/,
+  '目录中的规范稀客编号不得替代订单中已确认的游戏角色编号。',
 );
 const blockedNormalSignature = buildNormalOrderAutomationSignature([normalOrder]);
 assert.notEqual(
@@ -828,8 +828,8 @@ const missingProfileSelection = selectSpecialBusinessNormalExecutionTarget({
 assert.equal(missingProfileSelection.target, null);
 assert.match(
   missingProfileSelection.message,
-  /characterId=1003.*完整料理、酒水喜好档案/,
-  'Yuuma target planning must fail closed instead of using the place-filtered rare-customer catalog or recipe tags.',
+  /游戏角色 #1003.*完整料理和酒水喜好数据/,
+  '血池地狱缺少完整角色档案时必须停止处理，不能改用按地点筛选的稀客目录或配方标签。',
 );
 const unverifiedNormalSelection = selectSpecialBusinessNormalExecutionTarget({
   order: {
@@ -843,7 +843,7 @@ const unverifiedNormalSelection = selectSpecialBusinessNormalExecutionTarget({
   data,
 });
 assert.equal(unverifiedNormalSelection.target, null);
-assert.match(unverifiedNormalSelection.message, /角色身份尚未确认/);
+assert.match(unverifiedNormalSelection.message, /尚未确认订单对应的角色/);
 const ordinaryNormalSelection = selectSpecialBusinessNormalExecutionTarget({
   order: {
     ...normalOrder,
@@ -970,9 +970,9 @@ function assertControlledOriginalOrder(variant, message) {
   assert.equal(
     target.specialTargetFoodTags.every((tag) => target.foodTags.includes(tag)),
     false,
-    'A controlled target must not be misclassified as a strict all-Tag plan.',
+    '低收益推进目标不得被误判为严格命中全部标签的方案。',
   );
-  assert.match(target.reason, /受控推进方案/);
+  assert.match(target.reason, /低收益推进方案/);
 }
 
 async function assertSourceContracts() {

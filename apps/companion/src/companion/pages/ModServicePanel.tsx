@@ -766,10 +766,10 @@ export function ModServicePanel({
                       </div>
                       <div className="mt-1 flex flex-wrap gap-1.5">
                         <Badge variant="outline">
-                          料理 {order.foodTag || '无'} ({order.foodTagId ?? 'missing'})
+                          料理 {order.foodTag || '无'} ({order.foodTagId ?? '未读取'})
                         </Badge>
                         <Badge variant="outline">
-                          酒水 {order.beverageTag || '无'} ({order.beverageTagId ?? 'missing'})
+                          酒水 {order.beverageTag || '无'} ({order.beverageTagId ?? '未读取'})
                         </Badge>
                         <OrderTraceBadge traceId={order.traceId} />
                         {order.specialBusinessRoleLabel && (
@@ -809,7 +809,7 @@ export function ModServicePanel({
               <InfoLine label="性能耗时" value={formatPerformanceMs(performanceMs)} mono />
               <InfoLine label="前端推荐耗时" value={formatPerformanceMs(orderRecommendationPerformanceMs)} mono />
               <InfoLine label="界面置顶" value={uiPinningStatus || '暂无'} />
-              <InfoLine label="自动化门禁" value={automationRuntimeStatus || '暂无'} mono />
+              <InfoLine label="自动化可用状态" value={automationRuntimeStatus || '暂无'} mono />
               <InfoLine label="普客来源" value={normalBusiness?.source || normalBusiness?.error || '暂无'} />
             </div>
           </ListPanel>
@@ -1376,7 +1376,7 @@ function RareAutoPrepStatus({
                 {showDebugDetails && (
                   <InfoLine
                     label="计数"
-                    value={`重试 ${diagnostic.retryCount}/${preferences.autoMaxStepRetries} · 回退 ${diagnostic.rollbackCount}/${preferences.autoMaxRollbacks}`}
+                    value={`重试 ${diagnostic.retryCount}/${preferences.autoMaxStepRetries} · 重新制作 ${diagnostic.rollbackCount}/${preferences.autoMaxRollbacks}`}
                   />
                 )}
               </div>
@@ -1507,10 +1507,10 @@ function NormalAutoPrepStatus({
                   <>
                     <InfoLine
                       label="计数"
-                      value={`重试 ${diagnostic.retryCount}/${preferences.autoMaxStepRetries} · 回退 ${diagnostic.rollbackCount}/${preferences.autoMaxRollbacks}`}
+                      value={`重试 ${diagnostic.retryCount}/${preferences.autoMaxStepRetries} · 重新制作 ${diagnostic.rollbackCount}/${preferences.autoMaxRollbacks}`}
                     />
                     <InfoLine label="来源" value={diagnostic.source || '未知'} />
-                    <InfoLine label="Key" value={diagnostic.orderKey} mono />
+                    <InfoLine label="内部标识" value={diagnostic.orderKey} mono />
                   </>
                 )}
               </div>

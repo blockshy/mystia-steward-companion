@@ -148,7 +148,7 @@ try {
   state = await assertCrossGenerationProfileBarrier(clientA.page);
   assert.equal(state.activeProfile.missionRecipePriorityEnabled, true);
   await refreshAll([clientB.page, clientC.page]);
-  checkpoints.push('A 的在途 profile POST 跨断开/重连保持 transport 门禁，响应后由新 generation 重新注册并采用服务端权威配置');
+  checkpoints.push('A 正在处理的配置 POST 跨断开/重连保持传输阻断，响应后按新连接轮次重新注册并采用服务端生效配置');
 
   await openConnection(clientB.page);
   await clickDeviceAction(clientB.page, devices.b.id, '同步配置');
@@ -158,7 +158,7 @@ try {
     const device = next.devices.find((item) => item.deviceId === devices.b.id);
     return Boolean(device && !device.syncPending && device.profileHash === next.activeProfileHash);
   });
-  checkpoints.push('B 执行“同步配置”并完成 pending sync ACK');
+  checkpoints.push('B 执行“同步配置”并完成待处理同步确认');
 
   state = await assertPendingSyncSingleFlightAndWriterGate(clientA.page, clientB.page);
   await refreshAll([clientA.page, clientB.page, clientC.page], 3);

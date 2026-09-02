@@ -83,16 +83,16 @@ export function parseTrackedMissionsApiResponse(value: unknown): TrackedMissions
   }
 
   if (runtimeAvailable && generation < 1) {
-    throw new Error('任务运行时可用时 generation 必须为正数。');
+    throw new Error('任务数据可用时任务轮次必须为正数。');
   }
   if (runtimeAvailable && (!ok || status !== 'ready')) {
-    throw new Error('任务运行时可用时必须返回 ok=true 和 ready 状态。');
+    throw new Error('任务数据可用时必须返回成功和就绪状态。');
   }
   if (!runtimeAvailable && status === 'ready') {
-    throw new Error('任务运行时不可用时不得返回 ready 状态。');
+    throw new Error('任务数据不可用时不得返回就绪状态。');
   }
   if ((!ok || !runtimeAvailable) && missions.length > 0) {
-    throw new Error('任务运行时不可用时不得返回任务列表。');
+    throw new Error('任务数据不可用时不得返回任务列表。');
   }
 
   const error = response.error;
@@ -161,7 +161,7 @@ export function getTrackedMissionsResponseError(response: TrackedMissionsRespons
     case 'loading':
       return '正在校验存档任务状态。';
     case 'runtime-unavailable':
-      return '当前游戏运行时暂时不能安全读取任务。';
+      return '当前暂时无法从游戏中可靠读取任务。';
     case 'mission-data-incomplete':
       return '任务定义或进度数据不完整，本次读取已停止。';
     default:

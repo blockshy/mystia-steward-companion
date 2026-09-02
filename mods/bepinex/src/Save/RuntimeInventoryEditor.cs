@@ -26,7 +26,7 @@ public static class RuntimeInventoryEditor
                 PreviousQuantity = currentQuantity,
                 Quantity = currentQuantity,
                 Changed = false,
-                Error = "This inventory item is infinite or not editable.",
+                Error = "该库存项目为无限数量或不可修改。",
             };
         }
 
@@ -57,7 +57,7 @@ public static class RuntimeInventoryEditor
             Changed = nextQuantity != currentQuantity,
             Error = nextQuantity == targetQuantity
                 ? null
-                : $"Native inventory operation returned quantity {nextQuantity} instead of {targetQuantity}.",
+                : $"游戏返回的库存数量为 {nextQuantity}，与目标数量 {targetQuantity} 不一致。",
         };
     }
 
@@ -67,7 +67,7 @@ public static class RuntimeInventoryEditor
         {
             "ingredient" or "ingredients" or "material" or "materials" => "ingredient",
             "beverage" or "beverages" or "drink" or "drinks" => "beverage",
-            _ => throw new ArgumentException("Inventory type must be ingredient or beverage.", nameof(itemType)),
+            _ => throw new ArgumentException("库存类型必须是食材或酒水。", nameof(itemType)),
         };
     }
 

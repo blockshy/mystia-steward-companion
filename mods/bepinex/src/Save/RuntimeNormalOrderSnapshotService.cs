@@ -92,7 +92,7 @@ public sealed class RuntimeNormalOrderSnapshotService
         }
 
         source.Add("normalOrderMode=visibleFailClosed");
-        errors.Add("普客订单生命周期 Hook 尚未完整就绪，当前仅显示 HUD 订单且禁止自动化。");
+        errors.Add("普客订单状态 Hook 尚未完整就绪，当前仅显示 HUD 订单且禁止自动化。");
         return BuildContext(visibleOrders, source, errors);
     }
 
@@ -226,7 +226,7 @@ public sealed class RuntimeNormalOrderSnapshotService
             CanAutomate = orderLifecycleSequence > 0 && orders.Any(order => order.CanAutomate),
             ActionBlockReason = orderLifecycleSequence > 0
                 ? ResolveActionBlockReason(orders)
-                : "订单活动生命周期身份缺失或冲突，暂不执行自动化。",
+                : "无法确认订单对应的本场经营记录，暂不执行自动化。",
             FirstSeenAtUtc = first.FirstSeenAtUtc,
             Source = string.Join("/", orders.Select(order => order.Source).Where(source => !string.IsNullOrWhiteSpace(source)).Distinct(StringComparer.Ordinal)),
         };
@@ -457,7 +457,7 @@ public sealed class RuntimeNormalOrderSnapshotService
                     ? "订单仍在 HUD 中，但未读取到可执行客人控制器。"
                     : lifecycleAvailable
                         ? ""
-                        : "订单缺少活动生命周期身份，暂不执行自动化。",
+                        : "无法确认订单对应的本场经营记录，暂不执行自动化。",
             Source = source,
         };
     }

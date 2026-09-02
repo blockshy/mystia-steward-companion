@@ -63,7 +63,7 @@ internal static partial class RuntimeOrderPreparationService
     {
         if (!IsYuumaBossTarget(job.Target))
         {
-            return (false, "非血池地狱订单不会进入专用结算事务。", OrderPreparationStepCodes.CookingPending);
+            return (false, "非血池地狱订单不会进入专用结算流程。", OrderPreparationStepCodes.CookingPending);
         }
 
         if (!TryCaptureActiveNightBusinessGeneration(out var businessGeneration)
@@ -82,7 +82,7 @@ internal static partial class RuntimeOrderPreparationService
 
         if (job.YuumaSettlementTracker.Stage == YuumaSettlementTransactionStage.Uncertain)
         {
-            return BlockUncertainYuumaSettlement(job, "结算事务此前已进入不确定状态。", Array.Empty<string>(), Array.Empty<string>());
+            return BlockUncertainYuumaSettlement(job, "结算流程此前已有步骤的结果无法确认。", Array.Empty<string>(), Array.Empty<string>());
         }
 
         if (job.YuumaSettlementTracker.Stage != YuumaSettlementTransactionStage.Ready)
@@ -90,14 +90,16 @@ internal static partial class RuntimeOrderPreparationService
             job.YuumaSettlementTracker.MarkUncertain();
             return BlockUncertainYuumaSettlement(
                 job,
-                $"结算事务停留在不可重放阶段 {job.YuumaSettlementTracker.Stage}。",
+                $"结算流程停留在无法再次执行的阶段 {job.YuumaSettlementTracker.Stage}。",
                 Array.Empty<string>(),
                 Array.Empty<string>());
         }
 
         if (!TryValidateCurrentYuumaFoodTarget(job, out var targetDiagnostic))
         {
-            return ContinueOrBlockAutomationDelivery(job, targetDiagnostic);
+            return ContinueOrBlockAutomationDelivery(
+                job,
+                $"血池地狱料理目标暂不可用，本轮等待目标状态恢复。详细原因：{targetDiagnostic}");
         }
 
         var request = BuildOrderRequestFromCookingJob(job);
@@ -111,7 +113,9 @@ internal static partial class RuntimeOrderPreparationService
                 out var settlementContext,
                 out var validationDiagnostic))
         {
-            return ContinueOrBlockAutomationDelivery(job, validationDiagnostic);
+            return ContinueOrBlockAutomationDelivery(
+                job,
+                $"无法确认血池地狱订单的当前状态，本轮等待游戏状态稳定。详细原因：{validationDiagnostic}");
         }
 
         if (!TryPreflightYuumaSettlement(
@@ -124,7 +128,9 @@ internal static partial class RuntimeOrderPreparationService
                 out var extractionContext,
                 out var preflightDiagnostic))
         {
-            return ContinueOrBlockAutomationDelivery(job, preflightDiagnostic);
+            return ContinueOrBlockAutomationDelivery(
+                job,
+                $"血池地狱订单暂时无法自动结算，本轮等待游戏状态稳定。详细原因：{preflightDiagnostic}");
         }
 
         if (!TryValidateYuumaCookerBeforeFoodCommit(
@@ -135,7 +141,7 @@ internal static partial class RuntimeOrderPreparationService
         {
             return ContinueOrBlockAutomationDelivery(
                 job,
-                $"料理最终提交前厨具身份无法严格确认：{preCommitCookerDiagnostic}");
+                $"送达前无法确认料理所在的厨具，本轮等待厨具状态稳定。详细原因：{preCommitCookerDiagnostic}");
         }
 
         if (!job.YuumaSettlementTracker.TryBeginFoodCommit())
@@ -143,7 +149,7 @@ internal static partial class RuntimeOrderPreparationService
             job.YuumaSettlementTracker.MarkUncertain();
             return BlockUncertainYuumaSettlement(
                 job,
-                "无法唯一锁定料理送达事务。",
+                "无法确认本次料理送达只会执行一次。",
                 targetTags,
                 actualTags);
         }
@@ -154,7 +160,7 @@ internal static partial class RuntimeOrderPreparationService
 
             if (!job.YuumaSettlementTracker.MarkFoodCommitted())
             {
-                throw new InvalidOperationException("料理送达完成后事务状态无法推进。");
+                throw new InvalidOperationException("料理送达完成后，处理状态无法继续更新。");
             }
 
             if (!TryValidateCurrentYuumaFoodTarget(job, out var committedTargetDiagnostic))
@@ -189,7 +195,7 @@ internal static partial class RuntimeOrderPreparationService
 
             if (!job.YuumaSettlementTracker.MarkCleanupCommitted())
             {
-                throw new InvalidOperationException("厨具清理完成后事务状态无法推进。");
+                throw new InvalidOperationException("厨具清理完成后，处理状态无法继续更新。");
             }
 
             if (!TryValidateCurrentYuumaFoodTarget(job, out var evaluationTargetDiagnostic))
@@ -222,7 +228,7 @@ internal static partial class RuntimeOrderPreparationService
 
             if (!job.YuumaSettlementTracker.MarkEvaluationCommitted())
             {
-                throw new InvalidOperationException("订单评价返回后事务状态无法推进。");
+                throw new InvalidOperationException("订单评价返回后，处理状态无法继续更新。");
             }
 
             if (!job.YuumaSettlementTracker.TryBeginBookkeeping())
@@ -237,7 +243,7 @@ internal static partial class RuntimeOrderPreparationService
 
             if (!job.YuumaSettlementTracker.MarkBookkeepingCommitted())
             {
-                throw new InvalidOperationException("送达状态通知完成后事务状态无法推进。");
+                throw new InvalidOperationException("送达状态更新完成后，处理状态无法继续更新。");
             }
 
             var actualFoodId = job.Target.FoodId;
@@ -247,12 +253,12 @@ internal static partial class RuntimeOrderPreparationService
                     : "standard";
             var controlledProgression = job.AllowYuumaControlledProgression;
             var progressionMessage = controlledProgression
-                ? "本订单按受控推进执行：仍精确使用原订单料理和酒水，但不承诺成品满足当前双 Tag；伤害与狂暴由游戏原生规则结算。"
+                ? "本订单使用低收益推进方案：仍严格使用原订单料理和酒水，但成品不保证满足当前双标签；伤害与狂暴由游戏规则结算。"
                 : "";
-            var message = $"{job.Target.FoodName} 已送达血池地狱订单，并按订单原生路由完成评价与状态通知。"
+            var message = $"{job.Target.FoodName} 已送达血池地狱订单，并完成游戏评价与状态更新。"
                 + resetDiagnostic
                 + extractionDiagnostic
-                + $"评价路由={evaluationRoute}。"
+                + $"评价路径={evaluationRoute}。"
                 + progressionMessage;
             AppendSpecialFoodTargetCookingJobDiagnostic(
                 controlledProgression
@@ -305,14 +311,14 @@ internal static partial class RuntimeOrderPreparationService
         var targetPolicy = target.SpecialFoodTargetPolicy;
         if (targetPolicy == null)
         {
-            return (false, "血池地狱酒水目标缺少经营代际与规范策略。", "");
+            return (false, "血池地狱酒水订单缺少本场经营编号或规范化目标规则。", "");
         }
 
         if (!TryValidateCurrentYuumaTarget(target, out var currentTargetDiagnostic))
         {
             return (
                 false,
-                $"血池地狱酒水目标已失效，本轮未执行副作用：{currentTargetDiagnostic}",
+                $"血池地狱酒水目标已变化，本轮未执行游戏写操作。详细原因：{currentTargetDiagnostic}",
                 OrderPreparationStepCodes.CookingPending);
         }
 
@@ -325,7 +331,7 @@ internal static partial class RuntimeOrderPreparationService
         {
             return (
                 false,
-                $"血池地狱专用结算查询无法取得完整订单，本轮未送达酒水：{runtimeOrder.Diagnostic}",
+                $"无法找到当前血池地狱订单，本轮未送达酒水。详细原因：{runtimeOrder.Diagnostic}",
                 "");
         }
 
@@ -337,7 +343,7 @@ internal static partial class RuntimeOrderPreparationService
         {
             return (
                 false,
-                $"血池地狱酒水订单身份无法严格确认：{settlementContextDiagnostic}",
+                $"无法确认血池地狱酒水订单与当前客人是否一致，本轮未送达。详细原因：{settlementContextDiagnostic}",
                 "");
         }
 
@@ -349,14 +355,17 @@ internal static partial class RuntimeOrderPreparationService
                 out var beverageInAir,
                 out var deliveryStateDiagnostic))
         {
-            return (false, $"无法精确读取血池地狱订单状态：{deliveryStateDiagnostic}", "");
+            return (
+                false,
+                $"无法读取血池地狱订单状态，本轮未送达酒水。详细原因：{deliveryStateDiagnostic}",
+                "");
         }
 
         if (beverageInAir != null)
         {
             return (
                 false,
-                "血池地狱订单已有酒水正在由游戏原生流程送达；等待该流程结束后再处理。",
+                "血池地狱订单已有酒水正在由游戏流程送达；等待该流程结束后再处理。",
                 OrderPreparationStepCodes.CookingPending);
         }
 
@@ -370,7 +379,7 @@ internal static partial class RuntimeOrderPreparationService
             {
                 return (
                     false,
-                    $"血池地狱订单已有酒水，但它不满足当前原订单：{existingBeverageDiagnostic}",
+                    $"血池地狱订单已有酒水，但与当前原订单不一致。详细原因：{existingBeverageDiagnostic}",
                     "");
             }
 
@@ -399,7 +408,7 @@ internal static partial class RuntimeOrderPreparationService
         var sellable = InvokeStatic(DataBaseCoreTypeName, "AsNewBeverage", new object?[] { beverageId });
         if (sellable == null || !IsSellable(sellable, sellableType: 1, id: beverageId))
         {
-            return (false, $"无法创建并确认酒水对象：{beverageName} #{beverageId}。", "");
+            return (false, $"暂时无法创建并确认酒水 {beverageName}（ID {beverageId}），本轮未送达。", "");
         }
 
         if (!TryValidateYuumaDeliveredItemAgainstOriginalOrder(
@@ -408,7 +417,10 @@ internal static partial class RuntimeOrderPreparationService
                 RuntimeDeliveryItemKind.Beverage,
                 out var orderIdentityDiagnostic))
         {
-            return (false, orderIdentityDiagnostic, "");
+            return (
+                false,
+                $"{beverageName} 与当前原订单不一致，本轮未送达。详细原因：{orderIdentityDiagnostic}",
+                "");
         }
 
         if (!TryReadYuumaBeverageCostPolicy(
@@ -416,7 +428,7 @@ internal static partial class RuntimeOrderPreparationService
                 out var extraCostBeverages,
                 out var costPolicyDiagnostic))
         {
-            return (false, costPolicyDiagnostic, "");
+            return (false, $"无法确认当前酒水消耗规则，本轮未送达。详细原因：{costPolicyDiagnostic}", "");
         }
 
         var requiredQuantity = isFreeBeverage ? 1 : extraCostBeverages;
@@ -435,7 +447,7 @@ internal static partial class RuntimeOrderPreparationService
                 out _,
                 out var setterDiagnostic))
         {
-            return (false, $"血池地狱酒水送达预检失败：{setterDiagnostic}", "");
+            return (false, $"血池地狱酒水暂时无法送达，请等待游戏状态稳定。详细原因：{setterDiagnostic}", "");
         }
 
         if (!TryCreateYuumaBookkeepingContext(
@@ -445,14 +457,14 @@ internal static partial class RuntimeOrderPreparationService
                 out _,
                 out var preflightDiagnostic))
         {
-            return (false, $"血池地狱酒水送达预检失败：{preflightDiagnostic}", "");
+            return (false, $"血池地狱酒水暂时无法送达，请等待游戏状态稳定。详细原因：{preflightDiagnostic}", "");
         }
 
         if (!TryCreateYuumaBeverageStorageContext(
                 out var storageContext,
                 out var storageDiagnostic))
         {
-            return (false, $"血池地狱酒水送达预检失败：{storageDiagnostic}", "");
+            return (false, $"血池地狱酒水暂时无法送达，请等待游戏状态稳定。详细原因：{storageDiagnostic}", "");
         }
 
         try
@@ -465,7 +477,8 @@ internal static partial class RuntimeOrderPreparationService
             {
                 return (
                     false,
-                    $"{beverageName} 的基础库存已扣除，但特殊目标无法继续确认：{deductedTargetDiagnostic}",
+                    $"{beverageName} 的库存已经扣除，但后续结果无法确认；自动化已停止并等待人工确认。"
+                    + $"详细原因：{deductedTargetDiagnostic}",
                     OrderPreparationStepCodes.BeverageDeliveryCommitUncertain);
             }
 
@@ -479,7 +492,8 @@ internal static partial class RuntimeOrderPreparationService
             {
                 return (
                     false,
-                    $"{beverageName} 的基础库存已扣除，但无法重新确认同一未提交订单：{deductedReacquireDiagnostic}",
+                    $"{beverageName} 的库存已经扣除，但无法继续确认当前订单；自动化已停止并等待人工确认。"
+                    + $"详细原因：{deductedReacquireDiagnostic}",
                     OrderPreparationStepCodes.BeverageDeliveryCommitUncertain);
             }
 
@@ -492,7 +506,8 @@ internal static partial class RuntimeOrderPreparationService
             {
                 return (
                     false,
-                    $"{beverageName} 的基础库存已扣除，但 fresh 订单 setter 无法确认：{freshSetterDiagnostic}",
+                    $"{beverageName} 的库存已经扣除，但送达条件无法继续确认；自动化已停止并等待人工确认。"
+                    + $"详细原因：{freshSetterDiagnostic}",
                     OrderPreparationStepCodes.BeverageDeliveryCommitUncertain);
             }
 
@@ -502,7 +517,8 @@ internal static partial class RuntimeOrderPreparationService
             {
                 return (
                     false,
-                    $"{beverageName} 的库存与最终 setter 已执行，但特殊目标无法继续确认：{committedTargetDiagnostic}",
+                    $"{beverageName} 的库存和送达写入已经执行，但最终结果无法确认；自动化已停止并等待人工确认。"
+                    + $"详细原因：{committedTargetDiagnostic}",
                     OrderPreparationStepCodes.BeverageDeliveryCommitUncertain);
             }
 
@@ -516,7 +532,8 @@ internal static partial class RuntimeOrderPreparationService
             {
                 return (
                     false,
-                    $"{beverageName} 的基础库存和最终 setter 已执行，但无法重新确认同一订单：{committedReacquireDiagnostic}",
+                    $"{beverageName} 的库存和送达写入已经执行，但无法继续确认当前订单；自动化已停止并等待人工确认。"
+                    + $"详细原因：{committedReacquireDiagnostic}",
                     OrderPreparationStepCodes.BeverageDeliveryCommitUncertain);
             }
 
@@ -527,7 +544,8 @@ internal static partial class RuntimeOrderPreparationService
             {
                 return (
                     false,
-                    $"{beverageName} 已送达，但无法严格完成原生部分送达耐心恢复：{patientRecoveryMessage}",
+                    $"{beverageName} 已送达，但无法确认订单耐心恢复结果；自动化已停止并等待人工确认。"
+                    + $"详细原因：{patientRecoveryMessage}",
                     OrderPreparationStepCodes.BeverageDeliveryCommitUncertain);
             }
 
@@ -535,7 +553,8 @@ internal static partial class RuntimeOrderPreparationService
             {
                 return (
                     false,
-                    $"{beverageName} 已送达并处理耐心恢复，但特殊目标无法继续确认：{recoveredTargetDiagnostic}",
+                    $"{beverageName} 已送达并处理订单耐心，但后续结果无法确认；自动化已停止并等待人工确认。"
+                    + $"详细原因：{recoveredTargetDiagnostic}",
                     OrderPreparationStepCodes.BeverageDeliveryCommitUncertain);
             }
 
@@ -549,7 +568,8 @@ internal static partial class RuntimeOrderPreparationService
             {
                 return (
                     false,
-                    $"{beverageName} 已送达并处理耐心恢复，但无法重新确认同一订单：{recoveredReacquireDiagnostic}",
+                    $"{beverageName} 已送达并处理订单耐心，但无法继续确认当前订单；自动化已停止并等待人工确认。"
+                    + $"详细原因：{recoveredReacquireDiagnostic}",
                     OrderPreparationStepCodes.BeverageDeliveryCommitUncertain);
             }
 
@@ -563,7 +583,8 @@ internal static partial class RuntimeOrderPreparationService
             {
                 return (
                     false,
-                    $"{beverageName} 的库存调整与最终 setter 已执行，但特殊目标无法继续确认：{adjustedTargetDiagnostic}",
+                    $"{beverageName} 的库存调整和送达写入已经执行，但后续结果无法确认；自动化已停止并等待人工确认。"
+                    + $"详细原因：{adjustedTargetDiagnostic}",
                     OrderPreparationStepCodes.BeverageDeliveryCommitUncertain);
             }
 
@@ -577,7 +598,8 @@ internal static partial class RuntimeOrderPreparationService
             {
                 return (
                     false,
-                    $"{beverageName} 的库存调整与最终 setter 已执行，但无法重新确认同一订单：{adjustedReacquireDiagnostic}",
+                    $"{beverageName} 的库存调整和送达写入已经执行，但无法继续确认当前订单；自动化已停止并等待人工确认。"
+                    + $"详细原因：{adjustedReacquireDiagnostic}",
                     OrderPreparationStepCodes.BeverageDeliveryCommitUncertain);
             }
 
@@ -590,7 +612,8 @@ internal static partial class RuntimeOrderPreparationService
             {
                 return (
                     false,
-                    $"{beverageName} 已送达，但 fresh 原生送达状态上下文无法确认：{freshBookkeepingDiagnostic}",
+                    $"{beverageName} 已送达，但无法确认游戏状态更新条件；自动化已停止并等待人工确认。"
+                    + $"详细原因：{freshBookkeepingDiagnostic}",
                     OrderPreparationStepCodes.BeverageDeliveryCommitUncertain);
             }
 
@@ -598,7 +621,8 @@ internal static partial class RuntimeOrderPreparationService
             {
                 return (
                     false,
-                    $"{beverageName} 已送达，但原生送达状态通知无法确认：{bookkeepingDiagnostic}",
+                    $"{beverageName} 已送达，但无法确认游戏状态更新结果；自动化已停止并等待人工确认。"
+                    + $"详细原因：{bookkeepingDiagnostic}",
                     OrderPreparationStepCodes.BeverageDeliveryCommitUncertain);
             }
 
@@ -607,7 +631,7 @@ internal static partial class RuntimeOrderPreparationService
                 : $"库存剩余 {Math.Max(0, currentQuantity - (isFreeBeverage ? 0 : extraCostBeverages))}";
             return (
                 true,
-                $"{beverageName} 已送达{orderLabel}，并完成血池地狱酒水消耗、部分送达耐心恢复与状态通知（{quantityText}）。"
+                $"{beverageName} 已送达{orderLabel}，并完成酒水消耗、订单耐心恢复与状态更新（{quantityText}）。"
                 + (string.IsNullOrWhiteSpace(patientRecoveryMessage) ? "" : patientRecoveryMessage),
                 "");
         }
@@ -615,7 +639,8 @@ internal static partial class RuntimeOrderPreparationService
         {
             return (
                 false,
-                $"{beverageName} 的血池地狱送达事务已开始，但结果无法确认：{ex.GetBaseException().Message}",
+                $"{beverageName} 的送达已经开始，但最终结果无法确认；自动化已停止并等待人工确认。"
+                + $"详细原因：{ex.GetBaseException().Message}",
                 OrderPreparationStepCodes.BeverageDeliveryCommitUncertain);
         }
     }
@@ -692,7 +717,7 @@ internal static partial class RuntimeOrderPreparationService
 
         if (beverageInAir != null)
         {
-            diagnostic = "血池地狱订单仍有酒水正在由游戏原生流程送达，料理不能成为最终自动结算项。";
+            diagnostic = "血池地狱订单仍有酒水正在由游戏流程送达，料理不能成为最终自动结算项。";
             return false;
         }
 
@@ -734,14 +759,14 @@ internal static partial class RuntimeOrderPreparationService
 
         if (!IsNightBusinessGenerationActive(businessGeneration))
         {
-            diagnostic = "血池地狱订单所属经营代际已失效。";
+            diagnostic = "血池地狱订单所属的本场经营编号已失效。";
             return false;
         }
 
         if (!TryReadNativeObjectPointer(runtimeOrder.Order, out var orderPointer)
             || !TryReadNativeObjectPointer(runtimeOrder.Controller, out var controllerPointer))
         {
-            diagnostic = "血池地狱订单或控制器缺少精确原生身份。";
+            diagnostic = "血池地狱订单或控制器缺少明确的游戏对象标识。";
             return false;
         }
 
@@ -750,7 +775,7 @@ internal static partial class RuntimeOrderPreparationService
             || identity.OrderGuestId != SpecialBusinessGuestIds.YuumaBoss
             || identity.ControllerGuestId != SpecialBusinessGuestIds.YuumaBoss)
         {
-            diagnostic = $"血池地狱订单身份复核失败：{identity.Reason}";
+            diagnostic = $"血池地狱订单与客人信息复核失败：{identity.Reason}";
             return false;
         }
 
@@ -797,7 +822,7 @@ internal static partial class RuntimeOrderPreparationService
             || !TryReadNativeObjectPointer(runtimeOrder.Controller, out var controllerPointer)
             || controllerPointer != context.ControllerPointer)
         {
-            diagnostic = "重新取得的订单或控制器不是送达前锁定的同一原生对象。";
+            diagnostic = "重新取得的订单或控制器不是送达前锁定的同一游戏对象。";
             return false;
         }
 
@@ -814,7 +839,7 @@ internal static partial class RuntimeOrderPreparationService
             && (runtimeOrder.ManualEvaluationCallback == null
                 || !ReferenceEquals(runtimeOrder.ManualEvaluationCallback, context.ManualEvaluationCallback)))
         {
-            diagnostic = "重新取得的手动订单没有绑定同一原生评价回调。";
+            diagnostic = "重新取得的手动订单没有绑定同一游戏评价回调。";
             return false;
         }
 
@@ -832,7 +857,7 @@ internal static partial class RuntimeOrderPreparationService
 
         if (foodInAir != null || beverageInAir != null)
         {
-            diagnostic = "重新取得的订单仍有料理或酒水处于游戏原生送达流程。";
+            diagnostic = "重新取得的订单仍有料理或酒水处于游戏送达流程。";
             return false;
         }
 
@@ -862,7 +887,7 @@ internal static partial class RuntimeOrderPreparationService
             || identity.OrderGuestId != SpecialBusinessGuestIds.YuumaBoss
             || identity.ControllerGuestId != SpecialBusinessGuestIds.YuumaBoss)
         {
-            diagnostic = $"重新取得的血池地狱订单身份无效：{identity.Reason}";
+            diagnostic = $"重新取得的血池地狱订单与客人信息无效：{identity.Reason}";
             return false;
         }
 
@@ -906,7 +931,7 @@ internal static partial class RuntimeOrderPreparationService
         if (expectedPolicy == null
             || !IsNightBusinessGenerationActive(expectedPolicy.BusinessGeneration))
         {
-            diagnostic = "经营代际已失效或目标缺少规范策略。";
+            diagnostic = "本场经营编号已失效或目标信息不完整。";
             return false;
         }
 
@@ -916,7 +941,7 @@ internal static partial class RuntimeOrderPreparationService
             || currentPolicy == null
             || currentRevision <= 0)
         {
-            diagnostic = "当前双 Tag 策略或 revision 暂不可读。";
+            diagnostic = "当前双标签目标或目标版本暂不可读。";
             return false;
         }
 
@@ -924,7 +949,7 @@ internal static partial class RuntimeOrderPreparationService
             || !expectedPolicy.HasSameIdentity(currentPolicy)
             || target.SpecialFoodTargetRevision != currentRevision)
         {
-            diagnostic = $"当前双 Tag 策略或 revision 已变化（请求={target.SpecialFoodTargetRevision}; 当前={currentRevision}）。";
+            diagnostic = $"当前双标签目标或目标版本已变化（请求={target.SpecialFoodTargetRevision}; 当前={currentRevision}）。";
             return false;
         }
 
@@ -950,7 +975,7 @@ internal static partial class RuntimeOrderPreparationService
             || !TryReadNativeObjectPointer(runtimeOrder.Controller, out var controllerPointer)
             || controllerPointer != context.ControllerPointer)
         {
-            diagnostic = "重新取得的酒水订单或控制器不是提交前锁定的同一原生对象。";
+            diagnostic = "重新取得的酒水订单或控制器不是提交前锁定的同一游戏对象。";
             return false;
         }
 
@@ -971,7 +996,7 @@ internal static partial class RuntimeOrderPreparationService
             || identity.OrderGuestId != SpecialBusinessGuestIds.YuumaBoss
             || identity.ControllerGuestId != SpecialBusinessGuestIds.YuumaBoss)
         {
-            diagnostic = $"重新取得的血池地狱酒水订单身份无效：{identity.Reason}";
+            diagnostic = $"重新取得的血池地狱酒水订单与客人信息无效：{identity.Reason}";
             return false;
         }
 
@@ -989,7 +1014,7 @@ internal static partial class RuntimeOrderPreparationService
 
         if (beverageInAir != null)
         {
-            diagnostic = "酒水事务期间出现游戏原生待送达酒水，不能继续执行后续副作用。";
+            diagnostic = "酒水处理期间出现游戏待送达酒水，不能继续执行后续游戏写操作。";
             return false;
         }
 
@@ -1354,7 +1379,7 @@ internal static partial class RuntimeOrderPreparationService
                     out var bindingDiagnostic))
             {
                 diagnostic = "厨具可用性通知执行前无法从当前物理目录重新取得同一厨具，"
-                    + $"不会进入原生出锅事务（{bindingFailure}）：{bindingDiagnostic}";
+                    + $"不会进入游戏出锅流程（{bindingFailure}）：{bindingDiagnostic}";
                 return false;
             }
 
@@ -1383,17 +1408,17 @@ internal static partial class RuntimeOrderPreparationService
 
             if (!context.ExtractionMethod.DeclaringType!.IsInstanceOfType(cookerBinding.Controller))
             {
-                diagnostic = "重新取得的厨具类型与 preflight 的 AfterPlayerExtract 声明类型不一致。";
+                diagnostic = "重新取得的厨具类型与预先检查的 AfterPlayerExtract 声明类型不一致。";
                 return false;
             }
 
             context.ExtractionMethod.Invoke(cookerBinding.Controller, null);
-            diagnostic = "厨具可用性通知与出锅回调已正常返回；后续将复核经营代际和同一订单。";
+            diagnostic = "厨具可用性通知与出锅回调已正常返回；后续将复核本场经营编号和同一订单。";
             return true;
         }
         catch (Exception ex)
         {
-            diagnostic = $"厨具出锅事务已经开始，但原生回调结果无法确认：{ex.GetBaseException().Message}";
+            diagnostic = $"厨具出锅流程已经开始，但游戏回调结果无法确认：{ex.GetBaseException().Message}";
             return false;
         }
     }
@@ -1601,19 +1626,19 @@ internal static partial class RuntimeOrderPreparationService
             : target.BeverageTagId;
         if (!expectedTagId.HasValue)
         {
-            diagnostic = "血池地狱稀客订单缺少原始 Tag ID。";
+            diagnostic = "血池地狱稀客订单缺少原始标签 ID。";
             return false;
         }
 
         if (!TryReadExactSellableTagIds(item, out var tagIds, out var tagDiagnostic))
         {
-            diagnostic = $"无法读取实际送达项目的原始 Tag：{tagDiagnostic}";
+            diagnostic = $"无法读取实际送达项目的原始标签：{tagDiagnostic}";
             return false;
         }
 
         if (!tagIds.Contains(expectedTagId.Value))
         {
-            diagnostic = $"实际送达项目不包含原订单要求的 Tag #{expectedTagId.Value}。";
+            diagnostic = $"实际送达项目不包含原订单要求的标签 #{expectedTagId.Value}。";
             return false;
         }
 
@@ -1643,7 +1668,7 @@ internal static partial class RuntimeOrderPreparationService
         {
             if (il2CppTags.Length > 256)
             {
-                diagnostic = $"Tag 数量 {il2CppTags.Length} 超出上限";
+                diagnostic = $"标签数量 {il2CppTags.Length} 超出上限";
                 return false;
             }
 
@@ -1840,8 +1865,8 @@ internal static partial class RuntimeOrderPreparationService
         IReadOnlyList<string> targetTags,
         IReadOnlyList<string> actualTags)
     {
-        var message = $"{job.RecipeName} 的血池地狱最终事务已经开始，但送达、评价或状态通知结果无法完整确认；"
-            + $"为避免重复评价，自动化已停止并等待人工 ACK。{detail}";
+        var message = $"{job.RecipeName} 的血池地狱最终处理已经开始，但送达、评价或状态通知结果无法完整确认；"
+            + $"为避免重复评价，自动化已停止并等待人工确认。详细原因：{detail}";
         RecordAutomationRuntimeEvent(
             OrderPreparationStepCodes.OrderEvaluationCommitUncertain,
             job,

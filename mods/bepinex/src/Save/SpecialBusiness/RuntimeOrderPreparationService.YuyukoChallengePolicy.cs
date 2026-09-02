@@ -192,13 +192,13 @@ internal static partial class RuntimeOrderPreparationService
             if (runtimeOrder.Manager == null)
             {
                 return new(false, false, false,
-                    $"客人管理器不可用，无法检查{orderLabel}是否已满足。诊断：{runtimeOrder.Diagnostic}");
+                    $"游戏客人信息暂不可用，无法检查{orderLabel}是否已满足。详细原因：{runtimeOrder.Diagnostic}");
             }
 
             if (runtimeOrder.Order == null)
             {
                 return new(false, false, false,
-                    $"当前精确匹配的{orderLabel}对象不可用，无法进入幽幽子评价流程。诊断：{runtimeOrder.Diagnostic}");
+                    $"当前{orderLabel}暂不可用，无法进入幽幽子评价流程。详细原因：{runtimeOrder.Diagnostic}");
             }
 
             var deliveryOrderFullfilledValue = TryInvokeInstanceValue(runtimeOrder.Order, "get_IsFullfilled")
@@ -206,7 +206,7 @@ internal static partial class RuntimeOrderPreparationService
             if (deliveryOrderFullfilledValue == null)
             {
                 return new(false, false, false,
-                    $"无法读取当前精确匹配的{orderLabel}满足状态，已停止幽幽子评价。诊断：{runtimeOrder.Diagnostic}");
+                    $"无法确认{orderLabel}是否已经送齐料理和酒水，已停止幽幽子评价。详细原因：{runtimeOrder.Diagnostic}");
             }
 
             var deliveryOrderFullfilled = ReadBool(deliveryOrderFullfilledValue);
@@ -253,7 +253,7 @@ internal static partial class RuntimeOrderPreparationService
                 false,
                 false,
                 false,
-                "幽幽子评价前重新取得的订单与 cooking job 锁定 lifecycle 不一致，已停止原生评价："
+                "幽幽子评价前订单已经变化，已停止游戏评价。详细原因："
                 + evaluationBindingDiagnostic,
                 OrderPreparationStepCodes.OrderEvaluationStateUnreadable);
         }
@@ -290,8 +290,8 @@ internal static partial class RuntimeOrderPreparationService
                 false,
                 false,
                 false,
-                "幽幽子三阶段普客订单执行目标未满足原订单料理/酒水，已暂停自动提交，避免触发原生差评。"
-                + $"诊断：{normalOrderTargetDiagnostic}。请提供 aggregate-mod.log。",
+                "幽幽子三阶段普客订单的料理或酒水与原订单不一致，已暂停自动提交以避免差评。"
+                + $"详细原因：{normalOrderTargetDiagnostic}。如需反馈，请附上 aggregate-mod.log。",
                 OrderPreparationStepCodes.OrderEvaluationTargetMismatch);
         }
         else
@@ -362,13 +362,13 @@ internal static partial class RuntimeOrderPreparationService
         if (runtimeOrder.Manager == null)
         {
             return new(false, false, false,
-                $"客人管理器不可用，无法调用游戏评价流程。诊断：{runtimeOrder.Diagnostic}");
+                $"游戏客人信息暂不可用，无法调用评价流程。详细原因：{runtimeOrder.Diagnostic}");
         }
 
         if (runtimeOrder.Order == null)
         {
             return new(false, false, false,
-                $"未找到与当前原始身份一致的幽幽子订单，无法调用游戏评价流程。诊断：{runtimeOrder.Diagnostic}");
+                $"未找到当前幽幽子订单，无法调用游戏评价流程。详细原因：{runtimeOrder.Diagnostic}");
         }
 
         var isFullfilled = ReadBool(InvokeInstance(runtimeOrder.Order, "get_IsFullfilled", Array.Empty<object?>()));
@@ -389,7 +389,7 @@ internal static partial class RuntimeOrderPreparationService
                 return new(true, false, true, "幽幽子三阶段清理订单已满足，但暂未读取到客人控制器，等待下一轮触发评价。");
             }
 
-            return new(false, false, false, "已匹配幽幽子三阶段清理订单，但未找到对应客人控制器，无法确认原生评价回调。");
+            return new(false, false, false, "已找到幽幽子三阶段清理订单，但未找到对应客人控制器，无法确认游戏评价回调。");
         }
 
         var evaluationReadable = TryReadRuntimeOrderEvaluated(
@@ -404,7 +404,7 @@ internal static partial class RuntimeOrderPreparationService
         if (!evaluationReadable)
         {
             return new(false, false, false,
-                $"无法严格读取 {orderLabel} 的 HasEvaluated，已停止幽幽子评价：{evaluatedDiagnostic}",
+                $"无法确认{orderLabel}是否已经评价，已停止幽幽子评价。详细原因：{evaluatedDiagnostic}",
                 OrderPreparationStepCodes.OrderEvaluationStateUnreadable);
         }
 
@@ -425,8 +425,8 @@ internal static partial class RuntimeOrderPreparationService
                 false,
                 false,
                 false,
-                "幽幽子三阶段清理订单已送齐，但送达成品与请求目标不一致，已暂停自动提交，避免触发原生差评。"
-                + $"诊断：{targetDiagnostic}。请提供 aggregate-mod.log。",
+                "幽幽子三阶段清理订单已送齐，但成品与目标不一致，已暂停自动提交以避免差评。"
+                + $"详细原因：{targetDiagnostic}。如需反馈，请附上 aggregate-mod.log。",
                 OrderPreparationStepCodes.OrderEvaluationTargetMismatch);
         }
 
@@ -447,8 +447,8 @@ internal static partial class RuntimeOrderPreparationService
                     false,
                     false,
                     false,
-                    "剧情版幽幽子三阶段清理订单已送齐，但未确认当前 live 订单具备原生手动评价回调链路，已暂停自动提交。"
-                    + $"诊断：{storyDiagnostic}; {targetDiagnostic}。请提供 aggregate-mod.log。");
+                    "剧情版幽幽子三阶段清理订单已送齐，但当前无法确认游戏手动评价条件，已暂停自动提交。"
+                    + $"详细原因：{storyDiagnostic}; {targetDiagnostic}。如需反馈，请附上 aggregate-mod.log。");
             }
 
             var manualEvaluation = TryInvokeRuntimeOrderEvaluationOnce(
@@ -460,7 +460,8 @@ internal static partial class RuntimeOrderPreparationService
             return manualEvaluation.Ok && manualEvaluation.Completed && !manualEvaluation.Skipped
                 ? manualEvaluation with
                 {
-                    Message = $"已按幽幽子三阶段清理模式调用剧情版手动评价流程完成{orderLabel}，该订单不承诺推进进度。诊断：{targetDiagnostic}。",
+                    Message = $"已按幽幽子三阶段清理模式完成{orderLabel}的剧情版手动评价；该订单不保证推进进度。"
+                        + $"详细原因：{targetDiagnostic}。",
                 }
                 : manualEvaluation;
         }
@@ -483,8 +484,8 @@ internal static partial class RuntimeOrderPreparationService
                     false,
                     false,
                     false,
-                    "重修版幽幽子三阶段清理订单已送齐，但当前订单的原生评价入口无法严格确认，已暂停自动提交。"
-                    + $"诊断：{retakeDiagnostic}; {targetDiagnostic}。请提供 aggregate-mod.log。");
+                    "重修版幽幽子三阶段清理订单已送齐，但当前无法确认游戏评价条件，已暂停自动提交。"
+                    + $"详细原因：{retakeDiagnostic}; {targetDiagnostic}。如需反馈，请附上 aggregate-mod.log。");
             }
 
             var evaluation = evaluationRoute == YuyukoRetakePhase3EvaluationRoute.ManualBoss
@@ -502,7 +503,8 @@ internal static partial class RuntimeOrderPreparationService
             return evaluation.Ok && evaluation.Completed && !evaluation.Skipped
                 ? evaluation with
                 {
-                    Message = $"已按幽幽子三阶段清理模式和逐订单路由 {evaluationRoute} 调用唯一原生评价入口完成{orderLabel}，该订单不承诺推进进度。{evaluation.Message} 诊断：{retakeDiagnostic}; {targetDiagnostic}。",
+                    Message = $"已按幽幽子三阶段清理模式和逐订单评价路径 {evaluationRoute} 完成{orderLabel}的游戏评价；"
+                        + $"该订单不保证推进进度。{evaluation.Message} 详细原因：{retakeDiagnostic}; {targetDiagnostic}。",
                 }
                 : evaluation;
         }
@@ -527,13 +529,13 @@ internal static partial class RuntimeOrderPreparationService
         if (runtimeOrder.Manager == null)
         {
             return new(false, false, false,
-                $"客人管理器不可用，无法调用游戏手动评价流程。诊断：{runtimeOrder.Diagnostic}");
+                $"游戏客人信息暂不可用，无法调用手动评价流程。详细原因：{runtimeOrder.Diagnostic}");
         }
 
         if (runtimeOrder.Order == null)
         {
             return new(false, false, false,
-                $"未找到与当前原始身份一致的幽幽子订单，无法调用游戏手动评价流程。诊断：{runtimeOrder.Diagnostic}");
+                $"未找到当前幽幽子订单，无法调用游戏手动评价流程。详细原因：{runtimeOrder.Diagnostic}");
         }
 
         var isFullfilled = ReadBool(InvokeInstance(runtimeOrder.Order, "get_IsFullfilled", Array.Empty<object?>()));
@@ -549,7 +551,7 @@ internal static partial class RuntimeOrderPreparationService
 
         if (runtimeOrder.Controller == null)
         {
-            return new(false, false, false, "已匹配幽幽子三阶段订单，但未找到对应客人控制器，无法确认手动评价回调链路。");
+            return new(false, false, false, "已找到幽幽子三阶段订单，但未找到对应客人控制器，无法确认游戏手动评价回调。");
         }
 
         var evaluationReadable = TryReadRuntimeOrderEvaluated(
@@ -564,7 +566,7 @@ internal static partial class RuntimeOrderPreparationService
         if (!evaluationReadable)
         {
             return new(false, false, false,
-                $"无法严格读取 {orderLabel} 的 HasEvaluated，已停止幽幽子手动评价：{evaluatedDiagnostic}",
+                $"无法确认{orderLabel}是否已经评价，已停止幽幽子手动评价。详细原因：{evaluatedDiagnostic}",
                 OrderPreparationStepCodes.OrderEvaluationStateUnreadable);
         }
 
@@ -587,8 +589,8 @@ internal static partial class RuntimeOrderPreparationService
                 false,
                 false,
                 false,
-                "剧情版幽幽子三阶段订单已送齐，但未确认当前 live 订单具备原生手动评价回调链路，已暂停自动提交，避免订单被消耗但进度不涨。"
-                + $"诊断：{progressDiagnostic}。请手动提交一笔能涨进度的订单后提供 aggregate-mod.log。");
+                "剧情版幽幽子三阶段订单已送齐，但当前无法确认游戏手动评价条件，已暂停自动提交以避免订单被消耗却不增加进度。"
+                + $"详细原因：{progressDiagnostic}。请先手动提交一笔能够增加进度的订单；如需反馈，请附上 aggregate-mod.log。");
         }
 
         var evaluation = TryInvokeRuntimeOrderEvaluationOnce(
@@ -598,7 +600,7 @@ internal static partial class RuntimeOrderPreparationService
             orderLabel,
             sessionGeneration);
         return evaluation.Ok && evaluation.Completed && !evaluation.Skipped
-            ? evaluation with { Message = $"已确认剧情版幽幽子三阶段手动进度回调并调用游戏手动评价流程完成{orderLabel}。" }
+            ? evaluation with { Message = $"已确认剧情版幽幽子三阶段手动进度回调，并通过游戏手动评价流程完成{orderLabel}。" }
             : evaluation;
     }
 
@@ -617,13 +619,13 @@ internal static partial class RuntimeOrderPreparationService
         if (runtimeOrder.Manager == null)
         {
             return new(false, false, false,
-                $"客人管理器不可用，无法调用游戏评价流程。诊断：{runtimeOrder.Diagnostic}");
+                $"游戏客人信息暂不可用，无法调用评价流程。详细原因：{runtimeOrder.Diagnostic}");
         }
 
         if (runtimeOrder.Order == null)
         {
             return new(false, false, false,
-                $"未找到与当前原始身份一致的幽幽子订单，无法调用游戏评价流程。诊断：{runtimeOrder.Diagnostic}");
+                $"未找到当前幽幽子订单，无法调用游戏评价流程。详细原因：{runtimeOrder.Diagnostic}");
         }
 
         var isFullfilled = ReadBool(InvokeInstance(runtimeOrder.Order, "get_IsFullfilled", Array.Empty<object?>()));
@@ -644,7 +646,7 @@ internal static partial class RuntimeOrderPreparationService
                 return new(true, false, true, "重修版幽幽子订单已满足，但暂未读取到客人控制器，等待下一轮触发评价。");
             }
 
-            return new(false, false, false, "已匹配重修版幽幽子三阶段订单，但未找到对应客人控制器，无法确认原生进度回调。");
+            return new(false, false, false, "已找到重修版幽幽子三阶段订单，但未找到对应客人控制器，无法确认游戏进度回调。");
         }
 
         var evaluationReadable = TryReadRuntimeOrderEvaluated(
@@ -659,7 +661,7 @@ internal static partial class RuntimeOrderPreparationService
         if (!evaluationReadable)
         {
             return new(false, false, false,
-                $"无法严格读取 {orderLabel} 的 HasEvaluated，已停止幽幽子评价：{evaluatedDiagnostic}",
+                $"无法确认{orderLabel}是否已经评价，已停止幽幽子评价。详细原因：{evaluatedDiagnostic}",
                 OrderPreparationStepCodes.OrderEvaluationStateUnreadable);
         }
 
@@ -683,8 +685,8 @@ internal static partial class RuntimeOrderPreparationService
                 false,
                 false,
                 false,
-                "重修版幽幽子三阶段订单已送齐，但送达目标不精确，已暂停自动提交，避免错误消耗订单。"
-                + $"诊断：{targetDiagnostic}。请提供 aggregate-mod.log。",
+                "重修版幽幽子三阶段订单已送齐，但成品与目标不一致，已暂停自动提交以避免错误消耗订单。"
+                + $"详细原因：{targetDiagnostic}。如需反馈，请附上 aggregate-mod.log。",
                 OrderPreparationStepCodes.OrderEvaluationTargetMismatch);
         }
 
@@ -698,8 +700,8 @@ internal static partial class RuntimeOrderPreparationService
                 false,
                 false,
                 false,
-                "重修版幽幽子三阶段订单已送齐，但当前订单的原生评价入口无法严格确认，已暂停自动提交。"
-                + $"诊断：{routeDiagnostic}; {targetDiagnostic}。请提供 aggregate-mod.log。");
+                "重修版幽幽子三阶段订单已送齐，但当前无法确认游戏评价条件，已暂停自动提交。"
+                + $"详细原因：{routeDiagnostic}; {targetDiagnostic}。如需反馈，请附上 aggregate-mod.log。");
         }
 
         if (!IsNightBusinessGenerationActive(sessionGeneration))
@@ -722,7 +724,8 @@ internal static partial class RuntimeOrderPreparationService
         return evaluation.Ok && evaluation.Completed && !evaluation.Skipped
             ? evaluation with
             {
-                Message = $"已按重修版幽幽子三阶段逐订单路由 {evaluationRoute} 调用唯一原生评价入口完成{orderLabel}。{evaluation.Message} 诊断：{routeDiagnostic}",
+                Message = $"已按重修版幽幽子三阶段逐订单评价路径 {evaluationRoute} 完成{orderLabel}的游戏评价。"
+                    + $"{evaluation.Message} 详细原因：{routeDiagnostic}",
             }
             : evaluation;
     }

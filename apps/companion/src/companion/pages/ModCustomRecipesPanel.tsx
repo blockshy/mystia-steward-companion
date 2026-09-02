@@ -149,7 +149,7 @@ export function ModCustomRecipesPanel({
   );
   const foodTagOptions = useMemo(
     () => [
-      { value: CUSTOM_RECIPE_ALL_FOOD_TAG_VALUE, label: '全部点单料理 Tag' },
+      { value: CUSTOM_RECIPE_ALL_FOOD_TAG_VALUE, label: '全部点单料理标签' },
       ...(selectedCustomer?.positiveTags ?? [])
         .filter(isOrderableRareFoodTag)
         .map((tag) => ({ value: tag, label: tag })),
@@ -187,7 +187,7 @@ export function ModCustomRecipesPanel({
   };
 
   if (!runtimeSets) {
-    return <EmptyState text="尚未读取到游戏实时数据。自定义推荐料理需要已解锁料理和材料快照。" />;
+    return <EmptyState text="尚未读取到游戏实时数据。自定义推荐料理需要已解锁料理和当前材料信息。" />;
   }
 
   return (
@@ -232,7 +232,7 @@ export function ModCustomRecipesPanel({
                 }))}
               />
             </LabeledControl>
-            <LabeledControl label="点单料理 Tag">
+            <LabeledControl label="点单料理标签">
               <SelectBox
                 value={form.foodTagValue}
                 options={foodTagOptions}

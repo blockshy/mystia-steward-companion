@@ -134,7 +134,7 @@ export function ModSettingsPanel({
   const sharedSettingsDisabledReason = deviceAuthority.profileTransactionPhase === 'posting'
     ? '主设备共享配置正在保存；Mod 确认前暂停继续编辑。'
     : deviceAuthority.profileTransactionPhase === 'reconciling'
-      ? '共享配置写入结果尚未确定；重新读取 Mod 权威状态前保持只读。'
+      ? '共享配置保存结果尚未确定；重新读取 Mod 当前状态前保持只读。'
       : !deviceAuthority.ready
     ? '正在确认共享功能配置的主设备；确认前保持只读。'
     : !deviceAuthority.currentDeviceIsPrimary
@@ -456,7 +456,7 @@ export function ModSettingsPanel({
               <SwitchControl
                 label="显示调试信息"
                 helpId="window-debug-details"
-                description="开启后显示日志页、扫描状态、运行时来源、性能耗时和订单内部来源。普通使用建议保持关闭。"
+                description="开启后显示日志页、扫描状态、游戏数据来源、性能耗时和订单内部来源。普通使用建议保持关闭。"
                 checked={preferences.showDebugDetails}
                 onCheckedChange={(showDebugDetails) => onLocalPreferenceChange({ showDebugDetails })}
               />
@@ -830,14 +830,14 @@ export function ModSettingsPanel({
               <SwitchControl
                 label="排除缺失厨具"
                 helpId="recommendation-filter-missing-cookers"
-                description="进入经营场景并读取到完整厨具快照后，推荐列表会隐藏当前已摆放厨具无法制作的料理。厨具快照不完整时不会使用部分数据猜测。"
+                description="进入经营场景并读取到完整厨具状态后，推荐列表会隐藏当前已摆放厨具无法制作的料理。厨具信息不完整时不会使用部分数据猜测。"
                 checked={preferences.filterMissingCookers}
                 onCheckedChange={(filterMissingCookers) => onSharedPreferenceChange({ filterMissingCookers })}
               />
               <SwitchControl
                 label="任务料理置顶"
                 helpId="recommendation-mission-recipe-priority"
-                description="已追踪任务的目标料理通过库存、预算、厨具和酒水点单条件后置顶；若启用相应自动化，收藏限定也必须满足。任务料理可以跳过本次普通料理点单 Tag，游戏内列表仍由游戏界面置顶推荐开关单独控制。"
+                description="已追踪任务的目标料理通过库存、预算、厨具和酒水点单条件后置顶；若启用相应自动化，收藏限定也必须满足。任务料理可以跳过本次普通料理点单标签，游戏内列表仍由游戏界面置顶推荐开关单独控制。"
                 checked={preferences.missionRecipePriorityEnabled}
                 onCheckedChange={(missionRecipePriorityEnabled) => onSharedPreferenceChange({
                   missionRecipePriorityEnabled,
@@ -906,7 +906,7 @@ export function ModSettingsPanel({
                     <MultiSelectBox
                       value={preferences.recommendationExclusions.excludedIngredientIds.map(String)}
                       options={ingredientOptions}
-                      placeholder={ingredientOptions.length > 0 ? '选择不参与推荐的材料' : '暂无运行时材料数据'}
+                      placeholder={ingredientOptions.length > 0 ? '选择不参与推荐的材料' : '暂无游戏材料数据'}
                       disabled={ingredientOptions.length === 0}
                       aria-describedby={descriptionId}
                       onValueChange={(values) => updateExclusions({ excludedIngredientIds: parseSelectedIds(values) })}
@@ -938,7 +938,7 @@ export function ModSettingsPanel({
                     <MultiSelectBox
                       value={preferences.recommendationExclusions.excludedBeverageIds.map(String)}
                       options={beverageOptions}
-                      placeholder={beverageOptions.length > 0 ? '选择不参与推荐的酒水' : '暂无运行时酒水数据'}
+                      placeholder={beverageOptions.length > 0 ? '选择不参与推荐的酒水' : '暂无游戏酒水数据'}
                       disabled={beverageOptions.length === 0}
                       aria-describedby={descriptionId}
                       onValueChange={(values) => updateExclusions({ excludedBeverageIds: parseSelectedIds(values) })}
@@ -985,7 +985,7 @@ export function ModSettingsPanel({
             <div className="min-w-0">
               <div className="text-sm font-semibold text-foreground">实验性功能风险提示</div>
               <div className="text-xs leading-relaxed text-muted-foreground">
-                自动化和加料料理选项会改变游戏运行时状态，存在一定风险。
+                自动化和加料料理选项会直接改变游戏状态，存在一定风险。
               </div>
             </div>
           </div>
@@ -999,7 +999,7 @@ export function ModSettingsPanel({
               <SwitchControl
                 label="启用自动化（实验性）"
                 helpId="automation-enabled"
-                description="关闭后会停止新动作并使排队命令失效；已开锅任务继续由游戏制作，后续送达或评价停在当前安全边界，重新开启后可继续。玩家在暂停期间取走或替换成品时改为手动交接。教学经营会保留开关设置但暂停全部自动化动作。"
+                description="关闭后会停止新动作并使排队命令失效；已开锅任务继续由游戏制作，后续送达或评价会停在尚未执行的步骤，重新开启后可继续。玩家在暂停期间取走或替换成品时改为手动交接。教学经营会保留开关设置但暂停全部自动化动作。"
                 checked={preferences.automationEnabled}
                 onCheckedChange={(automationEnabled) => onSharedPreferenceChange({ automationEnabled })}
               />
@@ -1025,16 +1025,16 @@ export function ModSettingsPanel({
                 <AutomationSliderField
                   label="最大重试"
                   helpId="automation-max-step-retries"
-                  description={`同一订单阶段执行失败时允许自动重试的最大次数，范围 ${MIN_AUTO_STEP_RETRIES} - ${MAX_AUTO_STEP_RETRIES_LIMIT}。达到上限后会暂停该订单，避免无限重复副作用。`}
+                  description={`同一订单阶段执行失败时允许自动重试的最大次数，范围 ${MIN_AUTO_STEP_RETRIES} - ${MAX_AUTO_STEP_RETRIES_LIMIT}。达到上限后会暂停该订单，避免重复执行游戏操作。`}
                   value={preferences.autoMaxStepRetries}
                   min={MIN_AUTO_STEP_RETRIES}
                   max={MAX_AUTO_STEP_RETRIES_LIMIT}
                   onChange={(autoMaxStepRetries) => onSharedPreferenceChange({ autoMaxStepRetries })}
                 />
                 <AutomationSliderField
-                  label="最大回退"
+                  label="最大重新制作"
                   helpId="automation-max-rollbacks"
-                  description={`同一执行目标因玩家操作、成品不符或运行时事实变化而重新制作的最大次数，范围 ${MIN_AUTO_ROLLBACKS} - ${MAX_AUTO_ROLLBACKS_LIMIT}。特殊经营目标真正轮换后使用新的回退预算。`}
+                  description={`同一料理目标因玩家操作、成品不符或游戏状态变化而重新制作的最大次数，范围 ${MIN_AUTO_ROLLBACKS} - ${MAX_AUTO_ROLLBACKS_LIMIT}。特殊经营目标真正变化后会重新计算次数。`}
                   value={preferences.autoMaxRollbacks}
                   min={MIN_AUTO_ROLLBACKS}
                   max={MAX_AUTO_ROLLBACKS_LIMIT}
@@ -1076,14 +1076,14 @@ export function ModSettingsPanel({
                 <SwitchControl
                   label="稀客目标桌位高亮"
                   helpId="recommendation-rare-seat-highlight"
-                  description="高亮当前稀客目标的桌位；不影响玩家原生选中效果，也不操作顾客。"
+                  description="高亮当前稀客目标的桌位；不影响游戏自身的选中效果，也不操作顾客。"
                   checked={preferences.rareSeatHighlightEnabled}
                   onCheckedChange={(rareSeatHighlightEnabled) => onSharedPreferenceChange({ rareSeatHighlightEnabled })}
                 />
                 <SwitchControl
                   label="稀客目标订单高亮"
                   helpId="recommendation-rare-order-highlight"
-                  description="高亮游戏左下 HUD 稀客订单卡片和投掷送达面板中的稀客目标订单；不切换游戏原生焦点。"
+                  description="高亮游戏左下 HUD 稀客订单卡片和投掷送达面板中的稀客目标订单；不切换游戏自身焦点。"
                   checked={preferences.rareOrderHighlightEnabled}
                   onCheckedChange={(rareOrderHighlightEnabled) => onSharedPreferenceChange({ rareOrderHighlightEnabled })}
                 />
@@ -1125,14 +1125,14 @@ export function ModSettingsPanel({
                 <SwitchControl
                   label="普客目标桌位高亮"
                   helpId="recommendation-normal-seat-highlight"
-                  description="高亮当前普客目标的桌位；不影响玩家原生选中效果，也不操作顾客。"
+                  description="高亮当前普客目标的桌位；不影响游戏自身的选中效果，也不操作顾客。"
                   checked={preferences.normalSeatHighlightEnabled}
                   onCheckedChange={(normalSeatHighlightEnabled) => onSharedPreferenceChange({ normalSeatHighlightEnabled })}
                 />
                 <SwitchControl
                   label="普客目标订单高亮"
                   helpId="recommendation-normal-order-highlight"
-                  description="高亮游戏左下 HUD 普客订单卡片和投掷送达面板中的普客目标订单；不切换游戏原生焦点。"
+                  description="高亮游戏左下 HUD 普客订单卡片和投掷送达面板中的普客目标订单；不切换游戏自身焦点。"
                   checked={preferences.normalOrderHighlightEnabled}
                   onCheckedChange={(normalOrderHighlightEnabled) => onSharedPreferenceChange({ normalOrderHighlightEnabled })}
                 />
@@ -1154,14 +1154,14 @@ export function ModSettingsPanel({
               <SwitchControl
                 label="启用稀客处理"
                 helpId="automation-rare-enabled"
-                description="单独控制稀客订单是否进入自动化调度。关闭后保留各阶段设置并停止新处理；已开锅任务停在下一安全副作用边界，重新开启后继续。"
+                description="单独控制稀客订单是否进入自动化调度。关闭后保留各阶段设置并停止新处理；已经开锅的任务会在可以安全停止的位置暂停，重新开启后继续。"
                 checked={preferences.autoRareOrderEnabled}
                 onCheckedChange={(autoRareOrderEnabled) => onSharedPreferenceChange({ autoRareOrderEnabled })}
               />
               <SwitchControl
                 label="自动送达酒水"
                 helpId="automation-rare-take-beverage"
-                description="为稀客订单选择并直接送达推荐酒水。开启时会同时开启自动完成订单，避免酒水和料理均已送达后订单失去原生完成入口。"
+                description="为稀客订单选择并直接送达推荐酒水。开启时会同时开启自动完成订单，避免酒水和料理均已送达后无法通过游戏自身流程完成订单。"
                 checked={preferences.autoPrepTakeBeverage}
                 disabled={!preferences.autoRareOrderEnabled}
                 onCheckedChange={setRareBeverageDelivery}
@@ -1193,7 +1193,7 @@ export function ModSettingsPanel({
               <SwitchControl
                 label="出错时暂停"
                 helpId="automation-rare-stop-on-error"
-                description="稀客自动化步骤失败时暂停对应订单，等待手动重试、重置或安全栅栏确认。关闭后仍受最大重试和最大回退次数限制。"
+                description="稀客自动化步骤失败时暂停对应订单，等待手动重试、重置或人工确认。关闭后仍受最大重试和最大重新制作次数限制。"
                 checked={preferences.autoPrepStopOnError}
                 disabled={!preferences.autoRareOrderEnabled}
                 onCheckedChange={(autoPrepStopOnError) => onSharedPreferenceChange({ autoPrepStopOnError })}
@@ -1204,7 +1204,7 @@ export function ModSettingsPanel({
                   <SwitchControl
                     label="只处理收藏料理"
                     helpId="automation-rare-recipe-favorites-only"
-                    description="稀客自动化只选择已收藏的料理。收藏中没有满足订单、库存和厨具硬门禁的料理时，该订单不会开始制作。"
+                    description="稀客自动化只选择已收藏的料理。收藏中没有满足订单、库存和厨具条件的料理时，该订单不会开始制作。"
                     checked={preferences.autoPrepRecipeFavoritesOnly}
                     disabled={!preferences.autoRareOrderEnabled}
                     onCheckedChange={(autoPrepRecipeFavoritesOnly) => onSharedPreferenceChange({ autoPrepRecipeFavoritesOnly })}
@@ -1212,7 +1212,7 @@ export function ModSettingsPanel({
                   <SwitchControl
                     label="只处理收藏酒水"
                     helpId="automation-rare-beverage-favorites-only"
-                    description="稀客自动化只选择已收藏的酒水。收藏中没有满足点单与库存硬门禁的酒水时，该订单不会自动送达酒水。"
+                    description="稀客自动化只选择已收藏的酒水。收藏中没有满足点单与库存条件的酒水时，该订单不会自动送达酒水。"
                     checked={preferences.autoPrepBeverageFavoritesOnly}
                     disabled={!preferences.autoRareOrderEnabled}
                     onCheckedChange={(autoPrepBeverageFavoritesOnly) => onSharedPreferenceChange({ autoPrepBeverageFavoritesOnly })}
@@ -1227,14 +1227,14 @@ export function ModSettingsPanel({
               <SwitchControl
                 label="启用普客处理"
                 helpId="automation-normal-enabled"
-                description="单独控制普客订单是否进入自动化调度。关闭后保留各阶段设置并停止新处理；已开锅任务停在下一安全副作用边界，重新开启后继续。"
+                description="单独控制普客订单是否进入自动化调度。关闭后保留各阶段设置并停止新处理；已经开锅的任务会在可以安全停止的位置暂停，重新开启后继续。"
                 checked={preferences.autoNormalOrderEnabled}
                 onCheckedChange={(autoNormalOrderEnabled) => onSharedPreferenceChange({ autoNormalOrderEnabled })}
               />
               <SwitchControl
                 label="自动送达酒水"
                 helpId="automation-normal-take-beverage"
-                description="为普客订单选择并直接送达指定酒水。开启时会同时开启自动完成订单，避免酒水和料理均已送达后订单失去原生完成入口。"
+                description="为普客订单选择并直接送达指定酒水。开启时会同时开启自动完成订单，避免酒水和料理均已送达后无法通过游戏自身流程完成订单。"
                 checked={preferences.autoNormalTakeBeverage}
                 disabled={!preferences.autoNormalOrderEnabled}
                 onCheckedChange={setNormalBeverageDelivery}
@@ -1266,7 +1266,7 @@ export function ModSettingsPanel({
               <SwitchControl
                 label="出错时暂停"
                 helpId="automation-normal-stop-on-error"
-                description="普客自动化步骤失败时暂停对应订单，等待手动重试、重置或安全栅栏确认。关闭后仍受最大重试和最大回退次数限制。"
+                description="普客自动化步骤失败时暂停对应订单，等待手动重试、重置或人工确认。关闭后仍受最大重试和最大重新制作次数限制。"
                 checked={preferences.autoNormalStopOnError}
                 disabled={!preferences.autoNormalOrderEnabled}
                 onCheckedChange={(autoNormalStopOnError) => onSharedPreferenceChange({ autoNormalStopOnError })}
@@ -1428,7 +1428,7 @@ function RecommendationSortProfileControl({
           const disabledByHardFilter = definition.key === 'cookerAvailable' && filterMissingCookers;
           const controlDisabled = disabledByHardFilter;
           const description = disabledByHardFilter
-            ? <>{definition.description} 当前已由“排除缺失厨具”硬过滤接管，此软排序项不参与结果。</>
+            ? <>{definition.description} 当前已由“排除缺失厨具”的强制筛选接管，此排序偏好不参与结果。</>
             : definition.description;
 
           return (
@@ -1459,7 +1459,7 @@ function RecommendationSortProfileControl({
                       </span>
                     </div>
                     {disabledByHardFilter && (
-                      <div className="text-xs text-muted-foreground">硬过滤已接管</div>
+                      <div className="text-xs text-muted-foreground">已由强制筛选接管</div>
                     )}
                     <Slider
                       value={rule.weight}
@@ -1599,7 +1599,7 @@ function formatLanEndpointDetail(endpoint: LocalApiConnectionConfig['lanEndpoint
   const details = [interfaceLabel];
   if (endpoint.interfaceName && interfaceType && endpoint.interfaceName !== interfaceType) details.push(interfaceType);
   if (endpoint.hasGateway) details.push('默认网关');
-  if (endpoint.linkLocal) details.push('链路本地');
+  if (endpoint.linkLocal) details.push('路由器不转发此地址');
   return details.join(' · ');
 }
 

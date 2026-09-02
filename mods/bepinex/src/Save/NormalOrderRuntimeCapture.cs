@@ -54,7 +54,7 @@ public static class NormalOrderRuntimeCapture
     private static string _lastParseFailure = "";
 
     /// <summary>
-    /// 捕获记录变更版本号，供主线程刷新快照时做轻量变更检测。
+    /// 捕获记录变更版本号，供主线程刷新数据时做轻量变更检测。
     /// </summary>
     public static long ChangeVersion
     {
@@ -68,7 +68,7 @@ public static class NormalOrderRuntimeCapture
     }
 
     /// <summary>
-    /// 返回当前 Hook 安装和最近捕获状态，用于快照来源诊断。
+    /// 返回当前 Hook 安装和最近捕获状态，用于数据来源诊断。
     /// </summary>
     public static string Status
     {
@@ -97,7 +97,7 @@ public static class NormalOrderRuntimeCapture
     }
 
     /// <summary>
-    /// 尝试安装普通订单生命周期 Hook。
+    /// 尝试安装普通订单状态 Hook。
     /// </summary>
     /// <param name="log">BepInEx 日志源，用于记录安装成功或等待游戏类型加载。</param>
     public static void Attach(ManualLogSource log)
@@ -107,7 +107,7 @@ public static class NormalOrderRuntimeCapture
     }
 
     /// <summary>
-    /// 重置延迟重试时间，让下一次快照读取可以立刻重新尝试安装 Hook。
+    /// 重置延迟重试时间，让下一次数据读取可以立刻重新尝试安装 Hook。
     /// </summary>
     public static void ResetAttachRetryDelay()
     {
@@ -118,7 +118,7 @@ public static class NormalOrderRuntimeCapture
     }
 
     /// <summary>
-    /// 返回最近捕获且仍在保留窗口内的普客订单绑定快照。
+    /// 返回最近捕获且仍在保留窗口内的普客订单绑定记录。
     /// </summary>
     /// <param name="maxAge">最后一次捕获后允许保留的最长时间。</param>
     /// <returns>按首次捕获时间排序的捕获记录副本。</returns>
@@ -1232,8 +1232,8 @@ public static class NormalOrderRuntimeCapture
 /// 一条从游戏运行时捕获到的普通客人订单绑定。
 /// </summary>
 /// <remarks>
-/// 运行时对象引用只在 Mod 内部用于重新定位可执行订单，不会序列化给前端。
-/// <c>ManualOrder</c> 表示最近一次读取的瞬时属性，手动评价绑定字段则保存精确 setter 在该活动订单生命周期内建立的不可变证据。
+/// 游戏对象引用只在 Mod 内部用于重新定位可执行订单，不会序列化给前端。
+/// <c>ManualOrder</c> 表示最近一次读取的瞬时属性，手动评价绑定字段则保存该订单有效期内精确 setter 建立的不可变证据。
 /// </remarks>
 public sealed record CapturedRuntimeNormalOrder(
     string RuntimeKey,

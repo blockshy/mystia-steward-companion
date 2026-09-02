@@ -382,7 +382,7 @@ assert.ok(panelSource.includes('相关场景'));
 assert.doesNotMatch(panelSource, /data-mission-status-group/);
 assert.doesNotMatch(panelSource, /可在游戏内对应角色处接取/);
 assert.match(panelSource, /可接取/);
-assert.ok(panelSource.includes('任务进度尚未完成原生校验'));
+assert.ok(panelSource.includes('游戏尚未确认任务进度'));
 assert.doesNotMatch(panelSource, /待刷新|等待游戏自然刷新任务进度/);
 assert.ok(panelSource.includes('mission.conditionStates.map'));
 assert.ok(storageSource.includes("`${STORAGE_PREFIX}-mission-list-module-enabled`"));
@@ -413,8 +413,8 @@ assert.match(mockSource, /knownSignature/);
 assert.match(mockSource, /unchanged: true/);
 
 console.log(
-  'PASS: tracked missions use a default-off persisted module gate, strict GET protocol, '
-  + 'bounded request lifecycle, signature polling, canonical task navigation, and fail-closed response parsing.',
+  'PASS：已追踪任务使用默认关闭的持久化模块开关、严格 GET 协议、'
+  + '有界请求流程、签名轮询、规范任务导航和严格的失败响应解析。',
 );
 
 function mission(label, title, status, conditionStates, completedConditionCount) {

@@ -71,8 +71,8 @@ export interface RecommendationStateSnapshot {
 /**
  * 当前夜间经营场景中已摆放厨具的运行时快照。
  *
- * typeIds/typeNames 描述物理厨具类型；couldOpen 是游戏 getter 事实，
- * automationAvailable 是经过完整运行时分类后的瞬时自动化容量事实。
+ * typeIds/typeNames 描述物理厨具类型；couldOpen 是游戏 getter 返回的当前状态，
+ * automationAvailable 是经过完整游戏状态分类后的即时自动化容量。
  */
 export interface PlacedCookerSnapshot {
   controllerIndex: number;
@@ -166,7 +166,7 @@ export interface NightBusinessContext {
   error: string | null;
 }
 
-/** Mod 权威维护的单个稀客订单参与状态。 */
+/** Mod 维护的单个稀客订单调度状态。 */
 export interface RareGuestParticipationEntry {
   traceId: string;
   orderLifecycleSequence: number;
@@ -177,7 +177,7 @@ export interface RareGuestParticipationEntry {
   queuePosition: number | null;
 }
 
-/** `/snapshot` 中随经营代际发布的完整稀客参与队列。 */
+/** `/snapshot` 中随经营轮次发布的完整稀客队列。 */
 export interface RareGuestParticipationSnapshot {
   active: boolean;
   businessGeneration: number;
@@ -186,7 +186,7 @@ export interface RareGuestParticipationSnapshot {
   entries: RareGuestParticipationEntry[];
 }
 
-/** 参与 mutation 中回显的一个精确订单 lifecycle identity。 */
+/** 调度修改响应中回显的一笔订单实例标识。 */
 export interface RareGuestParticipationOrderIdentity {
   businessGeneration: number;
   traceId: string;
@@ -219,7 +219,7 @@ export interface RareGuestParticipationMutationRequest {
   target: RareGuestParticipationMutationTarget;
 }
 
-/** `/orders/rare/participation` 成功后返回的最新 Mod 权威队列。 */
+/** `/orders/rare/participation` 成功后返回的最新 Mod 稀客队列。 */
 export interface RareGuestParticipationMutationResponse {
   ok: boolean;
   changed: boolean;
@@ -229,7 +229,7 @@ export interface RareGuestParticipationMutationResponse {
 }
 
 /**
- * 特殊经营挑战上下文。该快照用于提示，并把明确的目标 Tag 或等级评分规则注入推荐排序。
+ * 特殊经营挑战上下文。该状态用于提示，并把明确的目标标签或等级评分规则注入推荐排序。
  */
 export interface SpecialBusinessContext {
   active: boolean;

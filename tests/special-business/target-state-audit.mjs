@@ -393,7 +393,7 @@ assert.match(
 );
 assert.match(
   yuumaModule,
-  /SpecialBusinessOrderRoles\.YuumaUnverified[\s\S]*已阻止自动化接管/,
+  /SpecialBusinessOrderRoles\.YuumaUnverified[\s\S]*已暂停自动化/,
 );
 
 for (const requiredDiagnosticContract of [
@@ -429,10 +429,10 @@ for (const forbiddenSideEffectCall of [
 
 assert.match(ruleRegistry, /SpecialBusinessChallengeTypes\.BloodPondHell\] = BloodPondHell\(\)/);
 const bloodPondRule = methodBody(ruleRegistry, 'BloodPondHell');
-assert.match(bloodPondRule, /同时命中两个目标 Tag/);
-assert.match(bloodPondRule, /BOSS 身份、经营代际、原订单、双 Tag 目标、实际成品和实时订单均严格复核/);
+assert.match(bloodPondRule, /同时命中两个目标标签/);
+assert.match(bloodPondRule, /订单与客人均确认为 BOSS，且本场经营编号、原订单、双标签目标、实际成品和实时订单均严格复核/);
 assert.match(bloodPondRule, /酒水先送达/);
-assert.match(bloodPondRule, /料理送达与订单完成均开启时按订单原生路由精确结算/);
+assert.match(bloodPondRule, /料理送达与订单完成均开启时按游戏原有流程精确结算/);
 assert.match(bloodPondRule, /否则保留成品等待玩家处理/);
 assert.doesNotMatch(bloodPondRule, /固定进入手动交接|通用评价|EvaluateOrder/);
 

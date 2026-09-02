@@ -108,7 +108,7 @@ const [favoritesHookSource, apiSource, workbenchSource] = await Promise.all([
   readFile('apps/companion/src/companion/ModWorkbench.tsx', 'utf8'),
 ]);
 assert.match(favoritesHookSource, /connected: boolean;/, '收藏读取没有绑定已确认的连接状态');
-assert.doesNotMatch(favoritesHookSource, /connectionPaused/, '收藏 Hook 仍保留旧的暂停状态门禁');
+assert.doesNotMatch(favoritesHookSource, /connectionPaused/, '收藏 Hook 仍保留旧的暂停状态检查');
 assert.match(favoritesHookSource, /favoriteReadError/, '收藏读取错误与写入错误没有拆分');
 assert.match(favoritesHookSource, /favoriteMutationError/, '收藏写入错误与读取错误没有拆分');
 assert.match(
@@ -119,7 +119,7 @@ assert.match(
 assert.match(
   favoritesHookSource,
   /activeMutationGenerationRef\.current === mutationGeneration/,
-  '连接代际变化会在收藏写请求实际结束前释放单写者屏障',
+  '连接轮次变化会在收藏写请求实际结束前释放单写入锁',
 );
 assert.match(
   favoritesHookSource,
@@ -134,7 +134,7 @@ assert.match(
 assert.match(
   workbenchSource,
   /useFavorites\(\{[\s\S]*?connected: companionConnected,[\s\S]*?connectionRevision/,
-  '收藏请求没有绑定主快照确认后的连接代际',
+  '收藏请求没有绑定主快照确认后的连接轮次',
 );
 
 console.log('PASS: favorite management and retry lifecycle keep scoped, recoverable favorite state.');

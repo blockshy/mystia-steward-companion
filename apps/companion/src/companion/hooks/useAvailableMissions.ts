@@ -186,7 +186,7 @@ export function useAvailableMissions({
     }
     if (response.missionGeneration !== missionGeneration) {
       clearResult();
-      setError('可接取任务响应与当前任务代际不一致，已拒绝旧结果。');
+      setError('可接取任务响应与当前任务轮次不一致，已忽略旧结果。');
       setLoading(false);
       clearRefreshTimer();
       return;

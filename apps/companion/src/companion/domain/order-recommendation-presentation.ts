@@ -26,9 +26,9 @@ interface BuildOrderRecommendationPresentationOptions {
 }
 
 /**
- * 将 Worker 的最后一次成功结果投影到当前订单快照。
+ * 将后台计算最后一次成功的结果映射到当前订单快照。
  *
- * 该结果只供展示。自动化、置顶和高亮必须继续消费 Worker 的原始 current 结果。
+ * 该结果只供展示。自动化、置顶和高亮必须继续使用后台计算的原始当前结果。
  */
 export function buildOrderRecommendationPresentation({
   orders,
@@ -97,9 +97,9 @@ export function buildOrderRecommendationPresentation({
 }
 
 /**
- * 把展示行绑定到同一份权威 participation resolution，并严格按公开队列位置排列。
+ * 把展示行绑定到同一份已确认调度结果，并严格按公开队列位置排列。
  *
- * 特殊经营硬 lane 只改变 operational 选择，不改写玩家在稀客队列中建立的展示顺序；
+ * 特殊经营强制优先组只改变实际执行选择，不改写玩家在稀客队列中建立的展示顺序；
  * 非正位置、未对齐或暂停行一律不进入结果，也不由前端压缩或补造位置。
  */
 export function buildParticipatingRareOrderPresentationRows<

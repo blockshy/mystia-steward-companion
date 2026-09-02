@@ -1,15 +1,15 @@
 # 伴随窗口界面
 
-更新日期：2026-09-01
+更新日期：2026-09-02
 
 本文说明伴随窗口的页面职责、交互边界与维护入口。整体进程、数据流和平台关系见
-[架构说明](architecture.md)；本地 API 的认证、设备配置权威与接口约束见
+[架构说明](architecture.md)；本地 API 的认证、主设备与共享配置约束见
 [本地 API](local-api.md)。
 
 ## 职责边界
 
-伴随窗口负责把 Mod 发布的只读运行时状态、推荐结果和受控操作组织成可操作界面。它不直接读取
-Unity 对象，也不在浏览器线程中执行游戏动作。所有游戏运行时写操作都必须经过本地 API 和 Mod 的
+伴随窗口负责把 Mod 发布的只读游戏状态、推荐结果和可用操作组织成界面。它不直接读取
+Unity 对象，也不在浏览器线程中执行游戏动作。所有游戏写操作都必须经过本地 API 和 Mod 的
 Unity 主线程队列。
 
 以下专题由独立文档维护，本文不重复其业务规则：
@@ -20,7 +20,7 @@ Unity 主线程队列。
 - 版本检测、下载和独立更新程序：[更新系统](update-system.md)
 - 日志、控制台和诊断包：[可观测性](observability.md)
 - 自动化命令和暂停/恢复语义：[自动化运行时](automation-runtime.md)
-- 受控稀客名单、参与队列和写入 CAS：[稀客订单参与队列](rare-order-participation.md)
+- 稀客调度名单、订单队列和写入前状态检查（CAS）：[稀客调度与订单队列](rare-order-participation.md)
 
 ## 页面结构
 
@@ -28,11 +28,11 @@ Unity 主线程队列。
 
 | 一级页签 | 内容边界 |
 | --- | --- |
-| 概览 | 连接、状态、库存、操作四个二级页签；客户端 endpoint/Token 与连接摘要只在连接页展示 |
+| 概览 | 连接、状态、库存、操作四个二级页签；客户端 API 地址、Token 与连接摘要只在连接页展示 |
 | 推荐料理 | 普客、稀客、自定义推荐料理、收藏管理四个二级页签 |
 | 经营中 | 默认收起的经营概况、参与订单推荐、稀客调度开启后可按稀客或单订单操作的稀客队列，以及自动化运行状态 |
 | 扩展功能 | 任务列表、稀客邀请、稀客调度、修改四个二级页签 |
-| 设置 | 窗口、连接、推荐、实验性功能、更新、帮助六个二级页签；连接页负责 Mod listener、LAN 与设备权威 |
+| 设置 | 窗口、连接、推荐、实验性功能、更新、帮助六个二级页签；连接页负责 Mod 监听器、LAN、主设备与共享配置 |
 | 日志 | 仅在“显示调试详情”开启时出现 |
 
 较重的页面只在对应页签真正激活时挂载。新增页面时应继续遵守这一点，避免隐藏页面保留轮询、
@@ -40,10 +40,10 @@ Worker、计时器或全局输入作用域。
 
 经营中顶部“经营概况”是页面内临时展开状态：首次进入时默认收起，展开后显示经营场景、推荐数据、自动化、
 特殊经营、已摆放厨具和目标厨具六项；离开经营中导致页面卸载，再次进入时恢复默认收起，不写入设备偏好或
-共享 profile。
+共享配置。
 
 `经营中 -> 推荐 -> 稀客队列` 是稀客调度模块的条件页签：模块关闭时不渲染该页签和管理页，模块开启后才显示。
-页签可见不等于当前设备可写；非主设备、连接或权威状态未就绪、订单集合不完整以及参与快照未对齐时仍保持只读。
+页签可见不等于当前设备可写；当前设备不是主设备、连接或共享配置尚未就绪、订单集合不完整，或队列状态与订单不一致时仍保持只读。
 
 工作台不保留全局连接表头。API 地址、Token、连接启停、刷新和连接/运行态/经营摘要集中在
 `概览 -> 连接`；其他一级页面不重复占用这块空间。桌面端鼠标穿透开启时是唯一例外：顶层保留一条紧凑的
@@ -60,33 +60,32 @@ Worker、计时器或全局输入作用域。
 - `apps/companion/src/companion/workers/`：高成本计算的 Worker 协议与调度。
 - `apps/companion/src/components/ui/`：项目统一的基础控件封装。
 - `apps/companion/src/companion/preferences.ts`：当前设备的界面和功能偏好归一化。
-- `apps/companion/src/companion/storage.ts`：不属于共享 profile 的本地页面状态。
+- `apps/companion/src/companion/storage.ts`：不属于共享配置的本地页面状态。
 
-跨设备生效的推荐、稀客调度模块开关与受控名单、自动化和游戏界面辅助配置由“主设备”权威模型管理；纯显示偏好仍属于当前窗口。
-扩展模块统一使用 `domain/extension-module-control.ts` 归约配置作用域和控制状态，并由
+跨设备生效的推荐、稀客调度模块开关与调度名单、自动化和游戏界面辅助配置统一由“主设备”管理；纯显示偏好仍属于当前窗口。
+扩展模块统一使用 `domain/extension-module-control.ts` 汇总配置作用域和控制状态，并由
 `ModuleControlPanel.tsx` 展示“当前设备”或“主设备共享”。任务列表、稀客邀请只控制当前窗口的读取或动作入口，
 断线时可以预设；稀客调度会改变共享运行配置，只有连接并确认当前设备为主设备后才可写。共享偏好写命令必须在
-权威 hook 的唯一 `stagePrimaryProfile` 边界提交。该边界冻结 registry/device/primary、authority revision 与
-profile revision/hash 基线；debounce 和已发送 POST 期间的连续输入只更新完整草稿，前一笔确认后才以新基线串行提交下一笔。
-poll、refresh 和 POST 响应使用同一事务归约：同基线旧观测不得覆盖草稿，只有 exact next CAS 且 profile 全量相符才确认；
-任一连接代际或权威基线变化都明确回滚，不做隐式 rebase。未确认草稿只用于设置页展示，不进入运行时配置或本地权威缓存；
-已经发出的设备权威写请求由 hook 记录 transport 屏障，切换连接代际后必须等待旧请求响应或客户端超时再重新 register；
-服务端 CAS 继续拒绝同一旧基线的竞争写入，后续权威观察负责收敛超时后的生效状态。
-设备 mutation 通过同步获取的操作令牌串行执行；pending-sync 按 generation、同步 ID 和 profile revision/hash 单飞，在应用与 ACK
-期间不暴露运行时 writer。以上边界不建立离线待同步或最后写入覆盖路径。
-页面不得把浏览器内的临时状态当成游戏运行时已经接受的状态。远端结果需要结合连接修订、请求代际或
+共享配置 Hook 的唯一 `stagePrimaryProfile` 边界提交。该边界固定设备注册表、当前设备、主设备、`authorityRevision` 与
+配置的修订号和哈希基准；防抖等待和已发送 POST 期间的连续输入只更新完整草稿，前一笔确认后才按新的确认版本串行提交下一笔。
+轮询、刷新和 POST 响应使用同一事务状态合并规则：旧版本读数不得覆盖草稿，只有下一修订号精确匹配且完整配置相符才确认；
+连接轮次或已确认配置版本发生变化时明确撤销草稿，不做隐式变基。未确认草稿只用于设置页展示，不进入游戏配置或本地生效缓存；
+已经发出的设备配置写请求由 Hook 记录为正在处理，切换连接轮次后必须等待旧请求响应或客户端超时再重新注册；
+服务端写入前状态检查继续拒绝基于同一旧版本的竞争写入，后续读取负责把超时后的显示状态同步到当前生效配置。
+设备变更请求通过同步取得的操作令牌串行执行；待确认同步按连接轮次、同步 ID、配置修订号和哈希限制为至多一个正在处理的请求，在应用与确认
+期间不开放游戏写操作。以上边界不建立离线待同步或最后写入覆盖路径。
+页面不得把浏览器内的临时状态当成游戏运行时已经接受的状态。远端结果需要结合连接修订号、请求轮次或
 内容签名拒绝迟到响应。
 
-模块开启后显示的经营中稀客队列必须同时提供 guest scope 和 order scope：前者回显该 guest 完整当前
-exact lifecycle 集合做全量 CAS，后者只提交一笔 exact identity。两种 scope 都使用 `pause`、`enable-tail`、
-`enable-front` 三种明确 action；已参与订单不能通过启用按钮重排。队列展示只接受 Mod 发布的连续
+模块开启后显示的经营中稀客队列必须同时提供稀客级和单订单级操作：前者回传该稀客当前的完整订单实例集合并做全量状态检查，
+后者只提交一笔精确订单标识。两种范围都使用 `pause`、`enable-tail`、`enable-front` 三种明确操作；已参与订单不能通过启用按钮重排。队列展示只接受 Mod 发布的连续
 `queuePosition`，前端不自行维护序号或推测优先插入位置。
 
 模块开启时，稀客队列管理页保留暂停订单，以便执行启用动作；模块关闭时该页签不挂载。订单捕获和 Worker
-推荐事实不因暂停删除。模块开启且有效名单非空时，“经营中 -> 推荐 -> 稀客”和稀客订单专注模式只展示
-参与订单，并按权威 `queuePosition` 排列；
-暂停订单从这两个展示入口隐藏，启用后按新位置恢复。模块关闭或有效名单为空时旁路 participation 投影，两个
-入口沿用原有集合与排序。
+推荐结果不因暂停删除。模块开启且生效名单非空时，“经营中 -> 推荐 -> 稀客”和稀客订单专注模式只展示
+已启用订单，并按 Mod 返回的 `queuePosition` 排列；
+暂停订单从这两个展示入口隐藏，启用后按新位置恢复。模块关闭或生效名单为空时，两个入口跳过稀客调度筛选，
+沿用原有集合与排序。
 
 ## 视觉与响应式约束
 
@@ -100,10 +99,10 @@ exact lifecycle 集合做全量 CAS，后者只提交一笔 exact identity。两
 - “经营中”的经营概况默认收起；展开后的六项摘要和全局三项摘要在 640 px 仍保持三列。
 - 列表行允许内容换行或内部滚动，不应通过隐藏关键状态来换取固定高度。
 - 背景透明度、内容透明度和字体缩放是互相独立的显示设置；字体缩放通过根级 CSS 变量传播。
-- 确认对话框必须使用项目提供的实色 surface，不能依赖页面背景提供可读性。
+- 确认对话框必须使用项目提供的实色表面，不能依赖页面背景提供可读性。
 
-解释设置含义时使用统一的帮助字段和 portal tooltip；当前值、错误和阻塞原因仍需直接可见，不能只放在
-tooltip 中。仅供诊断的内部 ID、原始状态和耗时受“显示调试详情”控制。
+解释设置含义时使用统一的帮助字段和浮层提示；当前值、错误和阻塞原因仍需直接可见，不能只放在
+提示浮层中。仅供诊断的内部 ID、原始状态和耗时受“显示调试详情”控制。
 
 ## 键盘、鼠标与手柄
 
@@ -111,10 +110,10 @@ tooltip 中。仅供诊断的内部 ID、原始状态和耗时受“显示调试
 
 - `apps/companion/src/companion/gamepad/gamepad-input-engine.ts` 负责标准手柄状态、重复节奏和语义动作。
 - `apps/companion/src/companion/gamepad/gamepad-focus-manager.ts` 与
-  `use-gamepad-navigation.ts` 负责焦点、页签、列表滚动和 modal scope。
+  `use-gamepad-navigation.ts` 负责焦点、页签、列表滚动和对话框焦点范围。
 
-可交互元素应使用既有的 `data-gamepad-*` 契约，并提供稳定、唯一的 focus key。对话框打开后必须限制在
-modal scope；关闭后恢复合理焦点。浏览器原生点击、键盘操作与手柄动作应共享同一业务 handler，不能维护
+可交互元素应使用既有的 `data-gamepad-*` 契约，并提供稳定、唯一的焦点键。对话框打开后必须限制在
+对话框焦点范围；关闭后恢复合理焦点。浏览器点击、键盘操作与手柄动作应共享同一业务处理函数，不能维护
 两套结果不同的路径。
 
 F8 和 RS Click 的窗口聚焦切换属于 Tauri 桌面能力，不受“手柄导航”开关影响。Android 端只提供页面和
@@ -125,7 +124,7 @@ F8 和 RS Click 的窗口聚焦切换属于 Tauri 桌面能力，不受“手柄
 - 页面组合：`apps/companion/src/companion/ModWorkbench.tsx`
 - 概览连接页：`apps/companion/src/companion/pages/overview/OverviewConnectionPanel.tsx`
 - 扩展模块控制状态：`apps/companion/src/companion/domain/extension-module-control.ts`
-- 主设备 profile 草稿事务：`apps/companion/src/companion/domain/primary-profile-transaction.ts`
+- 主设备配置草稿事务：`apps/companion/src/companion/domain/primary-profile-transaction.ts`
 - 扩展模块统一外壳：`apps/companion/src/companion/pages/ModuleControlPanel.tsx`
 - 稀客调度扩展模块：`apps/companion/src/companion/pages/ModRareGuestParticipationPanel.tsx`
 - 经营中稀客队列：`apps/companion/src/companion/pages/service/RareOrderParticipationPanel.tsx`
@@ -134,7 +133,7 @@ F8 和 RS Click 的窗口聚焦切换属于 Tauri 桌面能力，不受“手柄
 - 主题与布局：`apps/companion/src/index.css`
 - 帮助内容：`apps/companion/src/data/help-content.json`
 - 桌面窗口：`apps/companion/src-tauri/src/app.rs`
-- 本地开发与 mock： [本地开发](local-development.md)
+- 本地开发与模拟服务： [本地开发](local-development.md)
 - Android 调试： [Android 开发](android-development.md)
 
 ## 验证

@@ -22,7 +22,7 @@ export interface SpecialBusinessFoodTargetPolicy {
 }
 
 /**
- * 稀客点单需求：料理与酒水都以 Tag 形式表达，推荐引擎需要寻找可满足 Tag 的候选。
+ * 稀客点单需求：料理与酒水都以标签形式表达，推荐引擎需要寻找可满足标签的候选。
  */
 export interface RareTagOrderDemand {
   type: 'rare-tag-order';
@@ -131,7 +131,7 @@ export interface ConditionResult {
 }
 
 /**
- * 经过 Tag 优先级压制后的料理 Tag 集合。
+ * 经过标签优先级压制后的料理标签集合。
  */
 export interface ResolvedTags {
   activeTags: string[];
@@ -246,7 +246,7 @@ export interface BeverageCandidate {
 /**
  * 稀客料理候选前置过滤的只读诊断。
  *
- * 配方资格计数使用轻量 Tag 可达性检查；生成候选计数直接消费正式候选结果，
+ * 配方资格计数使用轻量标签可达性检查；生成候选计数直接使用正式候选结果，
  * 不为诊断重新执行组合搜索，也不参与正式候选选择。
  */
 export interface RareFoodCandidateSearchDiagnostic {
@@ -274,7 +274,7 @@ export interface RareBeverageCandidateSearchDiagnostic {
 /**
  * 稀客推荐方案分桶。
  *
- * `preference` 代表喜好备选兜底方案，已并入主推荐列表而不是单独维护一套旧机制。
+ * `preference` 代表喜好备选方案，已并入主推荐列表而不是单独维护一套旧机制。
  */
 export type RecommendationBucket = 'complete' | 'tradeoff' | 'preference' | 'blocked';
 

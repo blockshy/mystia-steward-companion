@@ -242,7 +242,7 @@ internal static partial class RuntimeOrderPreparationService
                 {
                     Ok = false,
                     Sequence = sequence,
-                    Error = "未找到对应的未确认自动化安全栅栏；不会解除订单阻断。",
+                    Error = "未找到对应的待确认事件，订单仍保持暂停。",
                 };
             }
 
@@ -254,7 +254,7 @@ internal static partial class RuntimeOrderPreparationService
                 Sequence = sequence,
                 AcknowledgedCount = acknowledgement.Sequences.Count,
                 AcknowledgedSequences = acknowledgement.Sequences,
-                Status = $"已确认并解除 {acknowledgement.Sequences.Count} 个同订单自动化安全栅栏。",
+                Status = $"已确认并解除同一订单的 {acknowledgement.Sequences.Count} 个待确认事件。",
             };
         }
     }
@@ -266,9 +266,9 @@ internal static partial class RuntimeOrderPreparationService
     /// <returns>分步骤记录执行结果；失败时包含可展示给 UI 的错误原因。</returns>
     /// <remarks>
     /// 该方法主要执行“准备”动作：按场景边界送达酒水、开始料理并登记出锅处理。
-    /// 一般订单若由本次酒水送达变为已满足，会在返回前沿精确订单路由触发评价；
-    /// 其余订单由 <see cref="CompleteFirst(OrderPreparationRequest, bool)"/> 或出锅事务在满足后触发评价；
-    /// 血池地狱订单在对应开关均启用时进入精确的专用原生结算事务，否则交由玩家处理。
+    /// 一般订单若由本次酒水送达变为已满足，会在返回前对当前匹配的订单触发评价；
+    /// 其余订单由 <see cref="CompleteFirst(OrderPreparationRequest, bool)"/> 或出锅后续流程在满足后触发评价；
+    /// 血池地狱订单在对应开关均启用时进入锁定当前料理锅次的专用结算流程，否则交由玩家处理。
     /// </remarks>
     public static OrderPreparationResult Prepare(
         OrderPreparationRequest request,
@@ -365,7 +365,7 @@ internal static partial class RuntimeOrderPreparationService
                 AddFailure(
                     result,
                     stepName,
-                    "无法绑定当前订单的精确生命周期，已在执行任何游戏副作用前停止："
+                    "当前订单已经变化或信息不完整，无法安全继续；未修改游戏状态。详细原因："
                     + orderBindingDiagnostic);
                 return false;
             }
@@ -447,7 +447,7 @@ internal static partial class RuntimeOrderPreparationService
                         AddSkipped(
                             result,
                             "自动送达酒水",
-                            "血池地狱订单已有料理或料理正在由游戏送达；酒水将成为最终送达项，需由玩家在游戏内手动送达并走原生结算流程。",
+                            "血池地狱订单已有料理或料理正在由游戏送达；酒水将成为最终送达项，需由玩家在游戏内手动送达，再由游戏完成结算。",
                             OrderPreparationStepCodes.CookingPending);
                     }
                     else
@@ -682,7 +682,7 @@ internal static partial class RuntimeOrderPreparationService
     /// <param name="request">前端锁定的订单和推荐目标，必须与当前运行时订单匹配。</param>
     /// <returns>上菜、送达和评价调用的步骤结果。</returns>
     /// <remarks>
-    /// 普通稀客订单由准备链路补送缺失酒水并在游戏判定订单已满足后调用评价入口；
+    /// 普通稀客订单由准备流程补送缺失酒水，并在游戏判定订单已满足后调用评价入口；
     /// 血池地狱仅由精确 cooking job 事务执行最终送达与订单专属评价。
     /// </remarks>
     public static OrderPreparationResult CompleteFirst(
@@ -748,7 +748,7 @@ internal static partial class RuntimeOrderPreparationService
         if (runtimeOrder.Order == null || runtimeOrder.Controller == null || runtimeOrder.Manager == null)
         {
             var diagnostic = string.IsNullOrWhiteSpace(runtimeOrder.Diagnostic) ? "" : $"（{runtimeOrder.Diagnostic}）";
-            AddFailure(result, "匹配运行时订单", $"未找到当前第一笔稀客订单对象，可能订单已完成、客人已离场或经营状态刚刷新。{diagnostic}");
+            AddFailure(result, "匹配游戏订单", $"未找到当前第一笔稀客订单，可能订单已完成、客人已离场或经营状态刚刷新。{diagnostic}");
             return Finish(result);
         }
 
@@ -761,8 +761,8 @@ internal static partial class RuntimeOrderPreparationService
         {
             AddFailure(
                 result,
-                "绑定运行时订单",
-                "无法绑定当前订单的精确生命周期，已在执行任何游戏副作用前停止："
+                "确认游戏订单",
+                "当前订单已经变化或信息不完整，无法安全继续；未修改游戏状态。详细原因："
                 + orderBindingDiagnostic);
             return Finish(result);
         }
@@ -774,7 +774,7 @@ internal static partial class RuntimeOrderPreparationService
 
         result.Steps.Add(new OrderPreparationStep
         {
-            Name = "匹配运行时订单",
+            Name = "匹配游戏订单",
             Ok = true,
             Message = $"已匹配桌 {request.DeskCode + 1} · {request.GuestName} 的订单对象。",
         });
@@ -839,7 +839,7 @@ internal static partial class RuntimeOrderPreparationService
             AddSkipped(
                 result,
                 "送达料理",
-                "订单料理正在通过游戏原生流程送达，本次不重复处理。",
+                "该订单的料理正在由游戏送达，本次不重复处理。",
                 OrderPreparationStepCodes.CookingPending);
         }
         else
@@ -865,7 +865,7 @@ internal static partial class RuntimeOrderPreparationService
         }
         else if (!request.AutoTakeBeverage)
         {
-            AddSkipped(result, "送达酒水", "自动送达酒水未开启，等待玩家处理或后续订单事实刷新。");
+            AddSkipped(result, "送达酒水", "自动送达酒水未开启，等待玩家处理或订单状态刷新。");
         }
         else if (request.BeverageId < 0)
         {
@@ -877,7 +877,7 @@ internal static partial class RuntimeOrderPreparationService
             AddSkipped(
                 result,
                 "送达酒水",
-                "血池地狱订单已有料理或料理正在由游戏送达；酒水将成为最终送达项，需由玩家在游戏内手动送达并走原生结算流程。",
+                "血池地狱订单已有料理或料理正在由游戏送达；酒水将成为最终送达项，需由玩家在游戏内手动送达，再由游戏完成结算。",
                 OrderPreparationStepCodes.CookingPending);
         }
         else
@@ -989,7 +989,7 @@ internal static partial class RuntimeOrderPreparationService
             AddSkipped(
                 result,
                 "触发上菜评价",
-                "血池地狱最终评价只由已锁定料理锅次的精确事务触发；当前没有可结算锅次，等待自动化或玩家原生送达。",
+                "血池地狱最终评价只由已锁定料理锅次的专用结算流程触发；当前没有可结算锅次，等待自动化或玩家手动送达。",
                 OrderPreparationStepCodes.CookingPending);
             return Finish(result);
         }
@@ -1009,7 +1009,7 @@ internal static partial class RuntimeOrderPreparationService
     /// <param name="request">前端锁定的普客订单、目标料理和酒水。</param>
     /// <returns>普客酒水、料理制作、场景允许的送达和评价分步骤结果。</returns>
     /// <remarks>
-    /// 一般普客酒水和料理走统一直接送达提交；血池地狱 BOSS 使用独立的精确结算事务。
+    /// 一般普客酒水和料理走统一直接送达流程；血池地狱 BOSS 使用锁定当前料理锅次的专用结算流程。
     /// 料理若尚未出锅，会登记待处理任务并由后续轮询处理。
     /// </remarks>
     public static OrderPreparationResult CompleteNormalFirst(OrderPreparationRequest request)
@@ -1105,8 +1105,8 @@ internal static partial class RuntimeOrderPreparationService
         {
             AddFailure(
                 result,
-                "绑定普客订单",
-                "无法绑定当前普客订单的精确生命周期，已在执行任何游戏副作用前停止："
+                "确认普客订单",
+                "当前普客订单已经变化或信息不完整，无法安全继续；未修改游戏状态。详细原因："
                 + initialOrderBindingDiagnostic);
             return Finish(result);
         }
@@ -1127,7 +1127,7 @@ internal static partial class RuntimeOrderPreparationService
             AddFailure(
                 result,
                 "校验幽幽子三阶段普客目标",
-                "幽幽子三阶段普客订单执行目标未满足原订单料理/酒水，已停止自动送达和评价，避免触发原生差评。"
+                "幽幽子三阶段普客订单执行目标未满足原订单料理/酒水，已停止自动送达和评价，避免触发游戏差评。"
                 + $"诊断：{yuyukoNormalTargetDiagnostic}。");
             return Finish(result);
         }
@@ -1156,8 +1156,8 @@ internal static partial class RuntimeOrderPreparationService
                 AddFailure(
                     result,
                     "读取普客订单",
-                    "无法精确确认血池地狱订单当前料理、待送达料理与酒水状态，"
-                    + $"本轮未执行自动化副作用：{deliveryStateDiagnostic}");
+                    "无法确认血池地狱订单当前的料理和酒水状态，本轮未修改游戏状态。详细原因："
+                    + deliveryStateDiagnostic);
                 return Finish(result);
             }
         }
@@ -1170,7 +1170,10 @@ internal static partial class RuntimeOrderPreparationService
                     out var servedBeverageDiagnostic))
             {
                 result.Automation.Stage = "beverage";
-                AddFailure(result, "读取普客订单", $"无法确认订单最终酒水字段，本轮未执行自动化副作用：{servedBeverageDiagnostic}");
+                AddFailure(
+                    result,
+                    "读取普客订单",
+                    $"无法确认订单当前的酒水状态，本轮未修改游戏状态。详细原因：{servedBeverageDiagnostic}");
                 return Finish(result);
             }
 
@@ -1181,7 +1184,10 @@ internal static partial class RuntimeOrderPreparationService
                     out var servedFoodDiagnostic))
             {
                 result.Automation.Stage = "cooking-start";
-                AddFailure(result, "读取普客订单", $"无法确认订单最终料理字段，本轮未执行自动化副作用：{servedFoodDiagnostic}");
+                AddFailure(
+                    result,
+                    "读取普客订单",
+                    $"无法确认订单当前的料理状态，本轮未修改游戏状态。详细原因：{servedFoodDiagnostic}");
                 return Finish(result);
             }
         }
@@ -1219,7 +1225,7 @@ internal static partial class RuntimeOrderPreparationService
                 AddSkipped(
                     result,
                     "普客送达酒水",
-                    "血池地狱订单已有料理或料理正在由游戏送达；为保持最终项目的原生事务顺序，本轮不自动补送酒水。",
+                    "血池地狱订单已有料理或料理正在由游戏送达；为保持游戏处理最终送达项目的顺序，本轮不自动补送酒水。",
                     OrderPreparationStepCodes.CookingPending);
             }
             else if (result.ServedBeverage)
@@ -1242,7 +1248,7 @@ internal static partial class RuntimeOrderPreparationService
                     AddFailure(
                         result,
                         "普客送达酒水",
-                        $"无法确认订单待送达酒水字段，本轮未执行自动化副作用：{pendingBeverageDiagnostic}");
+                        $"无法确认订单正在送达的酒水，本轮未修改游戏状态。详细原因：{pendingBeverageDiagnostic}");
                     return Finish(result);
                 }
 
@@ -1251,7 +1257,7 @@ internal static partial class RuntimeOrderPreparationService
                     AddSkipped(
                         result,
                         "普客送达酒水",
-                        "血池地狱订单已有酒水处于游戏原生送达流程；等待其完成后再继续，不接管该对象或重复扣减库存。",
+                        "血池地狱订单已有酒水正在由游戏送达；等待其完成后再继续，不接管该对象或重复扣减库存。",
                         OrderPreparationStepCodes.CookingPending);
                     return Finish(result);
                 }
@@ -1373,7 +1379,7 @@ internal static partial class RuntimeOrderPreparationService
                 "普客料理",
                 foodAlreadyServed
                     ? "该订单已经送达料理，不再自动处理。"
-                    : "该订单料理正在通过游戏原生流程送达，本次不重复处理。",
+                    : "该订单的料理正在由游戏送达，本次不重复处理。",
                 foodAlreadyServed ? "" : OrderPreparationStepCodes.CookingPending);
         }
         else if (expectedFoodId < 0)
@@ -1394,7 +1400,7 @@ internal static partial class RuntimeOrderPreparationService
                 AddFailure(
                     result,
                     "普客料理",
-                    $"无法确认订单待送达料理字段，本轮未执行自动化副作用：{pendingFoodDiagnostic}");
+                    $"无法确认订单正在送达的料理，本轮未修改游戏状态。详细原因：{pendingFoodDiagnostic}");
                 return Finish(result);
             }
 
@@ -1407,7 +1413,7 @@ internal static partial class RuntimeOrderPreparationService
                         AddSkipped(
                             result,
                             "普客送达料理",
-                            $"目标料理 {request.RecipeName} 已处于订单待送达状态；等待血池地狱精确结算事务接管或原生送达完成。",
+                            $"目标料理 {request.RecipeName} 已处于订单待送达状态；等待血池地狱专用结算流程处理，或由游戏完成送达。",
                             OrderPreparationStepCodes.CookingPending);
                         return Finish(result);
                     }
@@ -1545,7 +1551,7 @@ internal static partial class RuntimeOrderPreparationService
                         AddFailure(
                             result,
                             "普客开始料理",
-                            "无法在扣除材料前绑定精确订单/控制器终态回执身份，已取消开锅："
+                            "扣除材料前无法确认订单、客人控制器与最终状态记录对应同一当前订单，已取消开锅且未修改游戏状态。详细原因："
                             + orderBindingDiagnostic);
                         return Finish(result);
                     }
@@ -1663,7 +1669,7 @@ internal static partial class RuntimeOrderPreparationService
             AddSkipped(
                 result,
                 "触发普客评价",
-                "血池地狱订单只由料理锅次的精确结算事务评价；当前没有已完成的结算事务时等待下一轮。",
+                "血池地狱订单只由对应料理锅次的专用结算流程评价；当前没有已完成的结算流程时等待下一轮。",
                 OrderPreparationStepCodes.CookingPending);
         }
         else if (autoCompleteOrder && RequiresNativeWackyKoishiBossEvaluationEntry(request))
@@ -1707,7 +1713,7 @@ internal static partial class RuntimeOrderPreparationService
     /// <returns>本轮产生的用户可见自动化消息。</returns>
     /// <remarks>
     /// 该方法由 Overlay 的 Update 循环调用，必须保持轻量且容忍游戏对象临时不可用。
-    /// job 的锅次、成品可读性、制作进展和送达等待均有明确边界，终态只释放 Mod 所有权。
+    /// 自动料理任务的锅次、成品可读性、制作进展和送达等待均有明确边界，结束时只停止 Mod 对任务的控制。
     /// </remarks>
     public static AutomationCookingProcessResult ProcessAutomationCookingJobs(bool timeoutEligible = true)
     {
@@ -1745,7 +1751,8 @@ internal static partial class RuntimeOrderPreparationService
                 }
                 catch (Exception ex)
                 {
-                    var message = $"{job.RecipeName} 自动料理任务发生未处理异常，已释放 Mod 所有权并保留厨具当前状态：{ex.GetBaseException().Message}";
+                    var message = $"{job.RecipeName} 自动料理任务发生异常；Mod 已停止控制该任务，并保留厨具当前状态。"
+                        + $"详细原因：{ex.GetBaseException().Message}";
                     RecordAutomationRuntimeEvent(
                         OrderPreparationStepCodes.CookingResultUnreadable,
                         job,
@@ -1826,7 +1833,7 @@ internal static partial class RuntimeOrderPreparationService
         }
 
         return new AutomationCookingProcessResult(
-            new[] { $"当前为教学经营，自动化已暂停；已释放 {released} 个自动料理任务的 Mod 所有权，厨具和成品保持原状。" },
+            new[] { $"当前为教学经营，自动化已暂停；Mod 已停止控制 {released} 个自动料理任务，厨具和成品保持原状。" },
             true);
     }
 
@@ -1886,7 +1893,7 @@ internal static partial class RuntimeOrderPreparationService
     }
 
     /// <summary>
-    /// 在明确的运行时生命周期终点释放全部自动料理 job 的 Mod 所有权。
+    /// 在明确的游戏经营结束点停止 Mod 对全部自动料理任务的控制。
     /// </summary>
     /// <returns>被释放的 job 数量。</returns>
     public static int ClearAutomationCookingJobs(string reasonCode)
@@ -1900,7 +1907,7 @@ internal static partial class RuntimeOrderPreparationService
                 RecordAutomationRuntimeEvent(
                     OrderPreparationStepCodes.CookingCancelled,
                     job,
-                    $"{job.RecipeName} 自动料理任务已随运行时生命周期结束；厨具和成品保持原状。",
+                    $"{job.RecipeName} 自动料理任务已随本场经营结束；厨具和成品保持原状。",
                     outcome: "cancelled",
                     reasonCode: reasonCode,
                     terminal: true);
@@ -1966,7 +1973,7 @@ internal static partial class RuntimeOrderPreparationService
         var lifecycleInvalid = request.OrderLifecycleSequence <= 0;
         if (lifecycleInvalid)
         {
-            error = "订单请求缺少正的活动生命周期序列；未执行任何游戏副作用。";
+            error = "订单请求缺少大于 0 的当前订单序号；未修改游戏状态。";
         }
         else if (AutomationOrderConfigurationPolicy.TryValidate(
                 actionKind,
@@ -2001,7 +2008,7 @@ internal static partial class RuntimeOrderPreparationService
             Code = lifecycleInvalid
                 ? OrderPreparationStepCodes.OrderLifecycleMismatch
                 : OrderPreparationStepCodes.AutomationConfigurationInvalid,
-            Name = lifecycleInvalid ? "校验订单生命周期" : "校验自动化配置",
+            Name = lifecycleInvalid ? "确认当前订单" : "校验自动化配置",
             Ok = false,
             Message = error,
         });
@@ -2022,7 +2029,7 @@ internal static partial class RuntimeOrderPreparationService
         var message = $"{BuildAutomationGateMessage(automationGate)}（检查点：{checkpoint}）";
         AddFailure(
             result,
-            "自动化运行时检查",
+            "自动化状态检查",
             message,
             reasonCode);
         result.Error = message;
@@ -2038,7 +2045,7 @@ internal static partial class RuntimeOrderPreparationService
             RuntimeNightBusinessAutomationGate.TutorialStateUnavailableReason =>
                 $"暂时无法严格确认教学状态（会话 {automationGate.Generation}），自动化保持暂停，未执行后续游戏操作。",
             _ =>
-                $"夜间经营运行时不可用（阶段 {RuntimeNightBusinessLifecycle.Snapshot.Phase}，会话 {automationGate.Generation}），未执行后续游戏操作。",
+                $"夜间经营状态不可用（阶段 {RuntimeNightBusinessLifecycle.Snapshot.Phase}，会话 {automationGate.Generation}），未执行后续游戏操作。",
         };
     }
 
@@ -2412,8 +2419,9 @@ internal static partial class RuntimeOrderPreparationService
         result.Automation.Stage = barrier.Stage;
         AddFailure(
             result,
-            "自动化安全栅栏",
-            $"该订单仍有未人工确认的游戏副作用（事件 #{barrier.Sequence}）：{barrier.Message} 请检查游戏状态并在伴随窗口点击“确认已处理”；Mod 确认 ACK 前不会再次执行该订单。",
+            "待确认的游戏操作",
+            $"该订单有一项游戏操作的结果尚未确认（事件 #{barrier.Sequence}）：{barrier.Message} "
+            + "请检查游戏状态并在伴随窗口点击“确认已处理”；确认前 Mod 不会再次处理该订单。",
             barrier.Code);
         return true;
     }
@@ -2434,7 +2442,7 @@ internal static partial class RuntimeOrderPreparationService
         if (!target.OrderBinding.HasValue)
         {
             throw new InvalidOperationException(
-                "Automation safety barriers require an exact runtime order lifecycle binding.");
+                "创建待确认事件需要明确的本场经营订单绑定。");
         }
 
         var token = target.OrderBinding.Value;
@@ -2448,7 +2456,7 @@ internal static partial class RuntimeOrderPreparationService
             || token.LifecycleSequence <= 0)
         {
             throw new InvalidOperationException(
-                "Automation safety barrier target carries an invalid runtime order lifecycle binding.");
+                "待确认事件包含无效的本场经营订单绑定。");
         }
 
         return AutomationSafetyBarrierRegistry.BuildOrderLifecycleTargetIdentity(
@@ -2491,7 +2499,7 @@ internal static partial class RuntimeOrderPreparationService
                 ? "business-lifecycle-ended"
                 : string.IsNullOrWhiteSpace(reasonCode) ? code : reasonCode;
             var effectiveMessage = requestsSafetyBarrier && !canRegisterSafetyBarrier
-                ? message + " 当前经营生命周期已结束；仅保留有界诊断，不创建人工确认栅栏。"
+                ? message + " 本场经营已经结束；仅保留数量受限的诊断记录，不再创建待确认事件。"
                 : message;
 
             AutomationRuntimeEventSequence++;
@@ -2630,7 +2638,7 @@ internal static partial class RuntimeOrderPreparationService
     }
 
     /// <summary>
-    /// 将步骤列表归约为订单准备结果。
+    /// 根据步骤列表生成订单准备结果。
     /// </summary>
     /// <remarks>
     /// “选择订单”和“匹配订单”只代表定位成功，不算作真正准备行为；这样 UI 可以区分“已执行自动化”

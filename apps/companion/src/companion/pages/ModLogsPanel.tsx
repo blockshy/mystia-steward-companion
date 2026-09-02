@@ -436,7 +436,7 @@ export function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToke
               className="h-8 w-20"
             />
           </label>
-          <InfoLine label="写入范围" value="BepInEx / 自动化 / 经营诊断 / 运行时数据" />
+          <InfoLine label="写入范围" value="BepInEx / 自动化 / 经营诊断 / 游戏数据" />
           <InfoLine label="总日志目录" value={aggregateDirectory || '未知'} mono />
           <InfoLine label="总日志文件" value={aggregatePath || '未知'} mono />
           <InfoLine label="最近诊断包" value={diagnosticPackage?.path || '未导出'} mono />

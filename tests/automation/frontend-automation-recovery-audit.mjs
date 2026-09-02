@@ -291,7 +291,7 @@ const manualRetryState = {
   rollbackTargetRevision: 4,
   lastRuntimeEventSequence: 37,
   lastProgressAtMs: 4200,
-  detailMessage: '已确认的订单事实必须保留。',
+  detailMessage: '已确认的订单状态必须保留。',
 };
 const rollbackLimitRetry = reduceAutomationManualRetry(
   manualRetryState,
@@ -311,7 +311,7 @@ assert.deepEqual(rollbackLimitRetry.state, {
   retryCount: 0,
   retryStage: '',
   nextAttemptAtMs: 0,
-  lastError: '已手动重试，自动回退计数已从 2 重开为 0，等待下一轮自动化继续。',
+  lastError: '已手动重试，自动重新制作次数已从 2 重置为 0，等待下一轮自动化继续。',
 }, 'A deliberate retry after the rollback limit must open a new bounded budget without rebuilding order state.');
 assert.equal(rollbackLimitRetry.state.rollbackTargetSignature, 'target-a');
 assert.equal(rollbackLimitRetry.state.rollbackTargetRevision, 4);
@@ -321,7 +321,7 @@ assert.equal(rollbackLimitRetry.state.beverageHandled, true);
 assert.equal(rollbackLimitRetry.state.orderKey, 'normal:desk-3:guest-5');
 assert.equal(rollbackLimitRetry.state.cookingJobId, 'job-17');
 assert.equal(rollbackLimitRetry.state.lastProgressAtMs, 4200);
-assert.equal(rollbackLimitRetry.state.detailMessage, '已确认的订单事实必须保留。');
+assert.equal(rollbackLimitRetry.state.detailMessage, '已确认的订单状态必须保留。');
 assert.equal(rollbackLimitRetry.state.foodDelivered, true);
 assert.equal(rollbackLimitRetry.state.completed, false);
 assert.deepEqual(rollbackLimitRetry.state.executionTarget, { foodId: 23, recipeId: 17 });
@@ -768,7 +768,7 @@ async function assertStageAndControlContracts() {
   assert.ok(cooking.includes('invalidResultDiagnostic = $"Result 读取失败：{readDiagnostic}"'), 'A failed cooker Result read must not be classified as a confirmed null result.');
   assert.ok(orderMatching.includes('RuntimeObjectIdentityComparison.Unknown'), 'Side-effect identity checks must preserve an unknown state.');
   assert.equal(orderMatching.includes('return ReadObjectPointer(left) == ReadObjectPointer(right);'), false, 'Side-effect identity must not use the managed-hash pointer fallback.');
-  assert.ok(directDelivery.includes('StoredFoods[{index}] 与目标成品的原生身份无法确认'), 'StoreFood commit proof must reject unknown object identity.');
+  assert.ok(directDelivery.includes('无法确认 StoredFoods[{index}] 与目标成品是否为同一游戏对象'), 'StoreFood commit proof must reject unknown object identity.');
   const resetIndex = directDelivery.indexOf('job.FoodDeliveryCleanupTracker.Complete();');
   const extractIndex = directDelivery.indexOf('CompleteCookerExtractionAfterReset(job);', resetIndex);
   assert.ok(resetIndex >= 0 && extractIndex > resetIndex, 'Special-cooker extraction callbacks must run only after the old generation is strictly reset.');

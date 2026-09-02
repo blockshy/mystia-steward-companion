@@ -98,7 +98,7 @@ export function SpecialBusinessOrderList({
           </div>
           <div className="mt-1 flex flex-wrap gap-1.5">
             <Badge variant="secondary">{order.roleLabel}</Badge>
-            <Badge variant="outline">{order.kind === 'rare' ? '稀客链路' : '普客链路'}</Badge>
+            <Badge variant="outline">{order.kind === 'rare' ? '稀客订单' : '普客订单'}</Badge>
             <Badge variant="outline">{order.foodText}</Badge>
             <Badge variant="outline">{order.beverageText}</Badge>
             <OrderTraceBadge traceId={order.traceId} />
@@ -198,14 +198,14 @@ function formatSpecialBusinessTargets(context: SpecialBusinessContext): string {
     ? `符卡 ${context.currentSpellCount ?? '?'}/${context.targetSpellCount ?? '?'}`
     : '';
   const targetTagTime = typeof context.targetTagTimeProgress === 'number'
-    ? `Tag 剩余 ${Math.max(0, Math.round(context.targetTagTimeProgress * 100))}%`
+    ? `标签剩余 ${Math.max(0, Math.round(context.targetTagTimeProgress * 100))}%`
     : '';
   const targetTime = typeof context.targetTimeProgress === 'number'
     ? `阶段剩余 ${Math.max(0, Math.round(context.targetTimeProgress * 100))}%`
     : '';
   const parts = [
-    context.foodTargetTags.length > 0 ? `料理 Tag ${context.foodTargetTags.join('、')}` : '',
-    context.beverageTargetTags.length > 0 ? `酒水 Tag ${context.beverageTargetTags.join('、')}` : '',
+    context.foodTargetTags.length > 0 ? `料理标签 ${context.foodTargetTags.join('、')}` : '',
+    context.beverageTargetTags.length > 0 ? `酒水标签 ${context.beverageTargetTags.join('、')}` : '',
     typeof context.targetFund === 'number' ? `目标营业额 ${context.targetFund}¥` : '',
     targetTagTime,
     targetTime,

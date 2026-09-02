@@ -106,7 +106,7 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
     });
     if (!resolution.changed) return;
 
-    // 启动参数或控制端口确实切换连接身份时，旧请求和旧快照才失效。
+    // 启动参数或控制端口确实切换连接信息时，旧请求和旧快照才失效。
     resetConnection(resolution.identity.endpoint, resolution.identity.apiToken);
   }, [resetConnection]);
 
@@ -161,7 +161,7 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
         .then((runtimeData) => {
           if (runtimeDataRequestIdRef.current !== requestId) return;
           if (!runtimeData.isComplete) {
-            throw new Error(runtimeData.status || '运行时目录尚未完整加载。');
+            throw new Error(runtimeData.status || '游戏数据目录尚未完整加载。');
           }
           cachedRuntimeDataSignatureRef.current = runtimeDataSignature;
           setCachedRuntimeData(runtimeData);
@@ -174,7 +174,7 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
           setCachedRuntimeData((current) => updateUnavailableRuntimeData(
             current,
             sourceSnapshot.runtimeDataSource || sourceSnapshot.runtimeSource || '',
-            runtimeDataStatus || sourceSnapshot.runtimeDataStatus || '运行时目录读取失败，等待下一轮重试。',
+            runtimeDataStatus || sourceSnapshot.runtimeDataStatus || '游戏数据目录读取失败，等待下一轮重试。',
           ));
         })
         .finally(() => {
@@ -187,7 +187,7 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
     }
 
     if (!sourceSnapshot.runtimeDataComplete && !cachedRuntimeDataSignatureRef.current) {
-      const status = sourceSnapshot.runtimeDataStatus || sourceSnapshot.status || '等待游戏运行时数据';
+      const status = sourceSnapshot.runtimeDataStatus || sourceSnapshot.status || '等待游戏实时数据';
       setCachedRuntimeData((current) => updateUnavailableRuntimeData(
         current,
         sourceSnapshot.runtimeDataSource || sourceSnapshot.runtimeSource || '',
@@ -245,7 +245,7 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
       if (data.recommendationState) {
         const cookerSnapshotError = validateRecommendationCookerSnapshot(data.recommendationState);
         if (cookerSnapshotError) {
-          throw new Error(`游戏快照中的厨具字段不完整：${cookerSnapshotError}`);
+          throw new Error(`游戏返回的厨具信息不完整：${cookerSnapshotError}`);
         }
       }
       const nextSnapshotSignature = data.snapshotSignature ?? '';
@@ -282,7 +282,7 @@ export function useCompanionConnection(snapshotRefreshIntervalMs: number) {
     connectionPausedRef.current = false;
     setConnectionPaused(false);
     setConnectionFailureCount(0);
-    setError('正在验证游戏快照。');
+    setError('正在验证游戏数据。');
     setManualRefreshing(false);
     setConnectionRevision((current) => current + 1);
     void refresh();

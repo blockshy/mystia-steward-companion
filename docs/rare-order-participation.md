@@ -1,146 +1,143 @@
-# 稀客订单参与队列
+# 稀客调度与订单队列
 
 更新日期：2026-09-02
 
-本文定义“受控稀客名单”和经营中参与队列的唯一运行时契约。订单强身份与终态见
-[订单捕获与生命周期](runtime-order-lifecycle.md)，副作用事务见[自动化运行时](automation-runtime.md)，
-高亮资源所有权见[游戏 UI 集成](game-ui-integration.md)，传输与主设备权威见[本地 API](local-api.md)。
+本文定义“稀客调度名单”和经营中订单队列的唯一运行时契约。订单标识与最终状态见
+[订单捕获与生命周期](runtime-order-lifecycle.md)，会改变游戏状态的事务见[自动化运行时](automation-runtime.md)，
+高亮资源管理见[游戏 UI 集成](game-ui-integration.md)，传输、主设备与共享配置见[本地 API](local-api.md)。
 
 ## 模块与名单语义
 
-共享 profile schema v3 使用严格布尔值 `rareGuestParticipationModuleEnabled` 控制独立模块，并用
+共享配置结构 v3 使用严格布尔值 `rareGuestParticipationModuleEnabled` 控制独立模块，并用
 `managedRareGuestIds` 保存“需要玩家在经营中手动调度的稀客”。模块默认关闭；配置名单不是允许出现或
 允许推荐的白名单：
 
-- 模块关闭时保留配置名单，但 Mod 暴露给参与状态的有效名单为空，前端不显示
+- 模块关闭时保留配置名单，但 Mod 用于调度的生效名单为空，前端不显示
   “经营中 -> 推荐 -> 稀客队列”页签；所有稀客完全保持原有推荐、自动化和游戏 UI 目标选择行为。
-- 模块开启时前端显示“稀客队列”页签；配置名单为空时同样不增加参与门禁，管理页显示对应空状态。
+- 模块开启时前端显示“稀客队列”页签；配置名单为空时同样不增加调度条件，管理页显示对应空状态。
 - 未入名单的稀客订单继续自动参与。
-- 名单内每个新出现的 exact order lifecycle 默认暂停；过去启用过同一稀客，不会授权其后续新 lifecycle。
-- 暂停订单仍保留在订单捕获、Worker 推荐事实、稀客队列管理页和诊断集合中；它只从 operational 消费者、
+- 名单内每个新出现的订单实例默认暂停；过去启用过同一稀客，不会自动启用其后续新订单。
+- 暂停订单仍保留在订单捕获、Worker 推荐结果、稀客队列管理页和诊断集合中；它只从实际使用订单的功能、
   “经营中 -> 推荐 -> 稀客”和稀客订单专注模式排除。
-- 将稀客移出名单时，其当前订单恢复自动参与；名单发生变化会推进自动化 command epoch。
+- 将稀客移出名单时，其当前订单恢复自动参与；名单发生变化会推进自动化命令轮次。
 
 从关闭切换到开启时，“稀客队列”页签开始显示，当前配置名单成为有效名单，名单内已有订单立即按默认暂停纳入
-调度。从开启切换到关闭时，页签隐藏、有效名单变为空，当前受控订单恢复自动参与并排到队尾；配置名单本身不被
-清空。持久化 schema 与迁移规则只在[本地 API](local-api.md#设备配置权威)维护。
+调度。从开启切换到关闭时，页签隐藏、生效名单变为空，当前由名单调度的订单恢复自动参与并排到队尾；配置名单本身不被
+清空。持久化 schema 与迁移规则只在[本地 API](local-api.md#主设备与共享配置)维护。
 
-名单只保存 canonical non-negative `guestId`，严格升序、去重且最多 512 项。名称、桌位、运行时 guest ID、Tag、显示文本和托管 hash 都不能替代 canonical ID。
+名单只保存规范的非负 `guestId`，严格升序、去重且最多 512 项。名称、桌位、当前角色 ID（`runtimeGuestId`）、标签、显示文本和托管哈希都不能替代该规范 ID。
 
-## 权威状态与身份
+## 状态与订单标识
 
-`RuntimeRareGuestParticipationState` 是当前经营代际的唯一参与状态。公开订单身份由以下四个标量组成：
+`RuntimeRareGuestParticipationState` 是当前经营轮次中唯一生效的队列状态。公开订单标识由以下四个值组成：
 
 ```text
-business generation
-+ R-* trace
-+ order lifecycle sequence
-+ canonical guestId
+businessGeneration
++ R-* 追踪编号
++ orderLifecycleSequence
++ guestId
 ```
 
-公开身份用于 snapshot、mutation、前端队列以及尚未进入原生事务的准入。料理或送达事务解析到原生订单后，再为同一公开身份单向补强 `RuntimeOrderBindingToken`；已经绑定的 identity 或 token 不能替换、转移或在 ABA 后复用。跨帧状态只保留这些托管标量，不保存活的 IL2CPP wrapper。
+公开订单标识用于状态快照、变更请求、前端队列，以及尚未进入游戏事务的执行条件检查。料理或送达事务解析到游戏订单后，再为同一标识单向补充 `RuntimeOrderBindingToken`；已经绑定的订单标识或令牌不能替换、转移，也不能在 ABA 后复用。跨帧状态只保留这些托管值，不保存仍与游戏对象关联的 IL2CPP wrapper。
 
-已绑定料理 job 的参与身份和名单对齐必须从 exact `OrderBinding.BusinessGeneration` 取得经营代次。cooker ownership generation 只标识当前厨具内容的所有权锅次，不属于订单公开身份，也不能用于参与状态或经营代次比较。
+已绑定料理任务的订单标识和名单匹配必须从 `OrderBinding.BusinessGeneration` 精确取得经营轮次。厨具内容轮次只标识当前厨具内容属于哪一锅，不属于公开订单标识，也不能用于比较队列状态或经营轮次。
 
-一次完整订单读取最多投影 512 个当前 lifecycle，并在一个经营代际内保留最多 4096 个已见 identity tombstone。完整、无错误的 `NightBusinessContext` 才能退休缺失订单；读取错误或部分集合保留上一份权威状态，不把空集合猜成经营现场已清空。
+一次完整订单读取最多生成 512 个当前订单实例，并在一个经营轮次内保留最多 4096 个用于防止重复使用的已见标识记录。只有完整且无错误的 `NightBusinessContext` 才能结束已经消失的订单；读取错误或只取得部分集合时保留上一份已确认状态，不能把空集合解释成经营现场已经清空。
 
 ## 队列规则
 
-参与状态保存为一份按 exact identity 排列的显式队列；快照为每笔参与订单派生连续正整数
-`queuePosition`，暂停的受控订单使用 `null`：
+队列状态保存一份按精确订单标识排列的显式队列；状态快照为每笔已启用订单生成连续正整数
+`queuePosition`，名单内暂停订单使用 `null`：
 
-- 未受控的新订单在首次完整观测时自动追加到队尾。
-- `enable-tail` 只把目标中尚未参与的订单按首次观测顺序连续追加到队尾。
-- `pause` 从队列移除目标中正在参与的订单，剩余订单保持原相对次序并重新派生连续位置。
-- 对已经参与的订单再次执行任一启用动作都是 no-op；不能借此改变它与其他已参与订单的相对次序。
-- 稀客级 mutation 原子处理该稀客完整当前 exact lifecycle 集合，但启用动作只插入其中暂停的订单；
-  单订单 mutation 只处理一个 exact lifecycle。
+- 不在调度名单中的新订单在首次完整读取时自动追加到队尾。
+- `enable-tail` 只把目标中尚未启用的订单按首次观测顺序连续追加到队尾。
+- `pause` 从队列移除目标中已经启用的订单，剩余订单保持原相对次序并重新生成连续位置。
+- 对已经启用的订单再次执行任一启用动作都不产生变化；不能借此改变它与其他已启用订单的相对次序。
+- 稀客级变更把该稀客当前的全部订单作为一个完整集合处理，但启用动作只插入其中暂停的订单；
+  单订单变更只处理一个订单实例。
 
 `enable-front` 不是抢占当前队首，而是“排到当前工作之后”：
 
-1. 服务端先固定请求所指向的完整 participation snapshot 与 revision，再在同一权威转换临界区取得当前
-   高亮所用的 rare UI target，并在 automation cooking-job 锁内取得所有缓存为 `ControlState == active` 的稀客料理
-   job 候选；客户端不提交或推测这些身份。
-2. 当前 rare UI target 只有在同一快照中仍是 current、exact 且 `Participating` 时才成为保护项；没有
-   rare target 是合法状态，但 target 已暂停、过期或身份不完整时整次 mutation 冲突。
-3. 缓存 active 的料理 job 还不是保护项。服务端释放 cooking-job 锁后，按同一 participation snapshot
-   分类：current 且 `Participating` 的 exact lifecycle 才受保护；current 但已暂停的候选表示 job 缓存尚未
-   观察到暂停，必须排除并写入有界诊断；候选缺失、身份/绑定未知、重复、代际不匹配或 revision 漂移均
-   fail closed，不把不确定项静默忽略。
-4. 有效 UI target 与 job 身份按 exact identity 合并；同一订单同时出现时只保留一个保护项。成功日志以
-   有界列表记录缓存 active、因暂停排除的 job、最终保护项及插入位置；拒绝日志有界记录失败原因。
-5. 新启用订单插到现有队列中最靠后的保护项之后；没有任何保护项时才插入位置 1。
+1. 服务端先固定请求对应的完整队列快照和修订号，再在同一状态转换临界区取得当前高亮使用的稀客 UI 目标，
+   并在自动料理任务锁内取得所有缓存为活动状态（`ControlState == active`）的稀客料理任务候选；客户端不提交或推测这些订单标识。
+2. 当前稀客 UI 目标只有在同一快照中仍属于当前订单、精确匹配且状态为 `Participating` 时，才成为新订单必须排在其后的现有工作。
+   没有稀客目标是合法状态；目标已经暂停、过期或标识不完整时，整次变更以冲突失败。
+3. 缓存为活动状态的料理任务还需要再次确认。服务端释放料理任务锁后，按同一队列快照分类：只有当前且
+   `Participating` 的订单实例需要保持在新订单之前；当前但已暂停的候选表示任务缓存尚未观察到暂停，必须排除并写入有界诊断。
+   候选缺失、订单标识或绑定未知、重复、经营轮次不匹配，或修订号在分类期间发生变化时，都拒绝整次变更，不能静默忽略不确定项。
+4. 有效 UI 目标与料理任务按精确订单标识合并；同一订单同时出现时只保留一项。成功日志以限制数量的列表记录缓存为活动状态的任务、
+   因暂停排除的任务、最终需要保持在前的订单及插入位置；拒绝日志有界记录失败原因。
+5. 新启用订单插到现有队列中最后一项当前工作之后；没有当前工作时才插入位置 1。
 6. 现有队列的完整相对次序始终保留。多个新启用订单按首次观测顺序形成连续区段，不会打断当前
    UI 目标或任何已经开始的稀客料理任务。
 
-特殊经营中已经验证的硬安全 lane 先于 `queuePosition`；其余跨订单 operational 顺序以
-`queuePosition` 为准。同一队首暂时缺材料或厨具时，不阻塞后续可执行订单。订单捕获和 Worker 推荐事实
-与参与队列分离，不能把队列位置写回 `firstSeenAtUtc`、改变候选或重新定义 primary plan；经营中参与展示
-则只投影具有有效 `queuePosition` 的订单，并按该位置排列。
+特殊经营中已经验证的强制安全优先级先于 `queuePosition`；其余跨订单执行顺序以
+`queuePosition` 为准。同一队首暂时缺材料或厨具时，不阻塞后续可执行订单。订单捕获和 Worker 推荐结果
+与调度队列分离，不能把队列位置写回 `firstSeenAtUtc`、改变候选或重新定义主方案；经营中的订单展示
+只包含具有有效 `queuePosition` 的订单，并按该位置排列。
 
 该队列只属于 Companion/Mod。实现不修改游戏的 `AllOrdersData`、Stack、HUD 列表或其他原生订单集合，也不按游戏 UI 位置模拟重排。
 
-## Mutation 与主设备权威
+## 队列写入与主设备
 
-唯一写入口是 `POST /orders/rare/participation`，且只有模块开启时接受 mutation。调用方必须是当前主设备，并同时在 authority header 和严格 JSON body 中携带同一正数 authority revision。请求还必须包含：
+唯一写入口是 `POST /orders/rare/participation`，且只有模块开启时接受变更请求。调用方必须是当前主设备，并同时在配置版本请求头和严格 JSON 请求体中携带相同的正数 `authorityRevision`。请求还必须包含：
 
-- expected business generation；
-- expected participation revision；
+- 预期经营轮次 `expectedBusinessGeneration`；
+- 预期队列修订号 `expectedParticipationRevision`；
 - `action`：`pause`、`enable-tail` 或 `enable-front`；
-- `target.type == guest` 时的 canonical `guestId` 和该 guest 完整当前 `expectedCurrentOrders` identity 集合；或者
-- `target.type == order` 时的一笔完整 exact order identity。
+- `target.type == guest` 时的规范 `guestId` 和该稀客当前完整的 `expectedCurrentOrders` 订单标识集合；或者
+- `target.type == order` 时的一笔完整且精确的订单标识。
 
-guest target 在 participation monitor 内执行全量集合 CAS；新增、终止或身份变化都会使整次写入以冲突失败，
-不允许部分授权。order target 必须精确命中一笔当前、受控 lifecycle，不通过 guest 名称、桌位或位置推断。
-通过主设备检查后，后端先推进 automation command epoch，再为 `enable-front` 采集服务端权威保护集合并提交
-参与状态。即使后续 CAS 或保护项校验冲突，旧排队命令也已经被安全作废。客户端不提交保护集合，也不能用
+稀客目标在队列状态锁内对完整集合执行状态比较后写入（CAS）；订单新增、结束或标识变化都会使整次写入以冲突失败，
+不允许只处理其中一部分。订单目标必须精确命中一笔当前、位于调度名单内的订单，不能通过稀客名称、桌位或位置推断。
+通过主设备检查后，后端先推进自动化命令轮次，再为 `enable-front` 采集服务端确认的当前工作集合并提交
+队列状态。即使后续状态比较或当前工作检查冲突，旧排队命令也已经作废。客户端不提交该集合，也不能用
 旧 UI 状态自行计算插入位置。
 
-主设备切换会撤销有效名单内所有当前人工授权并恢复默认暂停。普通 profile 更新按新旧有效名单差异处理：模块开启或新加入名单时，当前 lifecycle 暂停；模块关闭或移出名单时，当前 lifecycle 自动排尾。模块关闭期间只修改配置名单不会改变有效名单。经营结束由 lifecycle owner 按 exact generation 在状态锁内原子退休，不使用先读 revision 再关闭的 TOCTOU 路径。
+主设备切换会撤销生效名单内所有当前人工启用状态并恢复默认暂停。普通共享配置更新按新旧生效名单差异处理：模块开启或新加入名单时，当前订单实例暂停；模块关闭或移出名单时，当前订单实例自动排尾。模块关闭期间只修改配置名单不会改变生效名单。经营结束时，由订单实例管理方按精确经营轮次在状态锁内完成清理，不使用先读修订号再关闭的 TOCTOU 路径。
 
 规范契约不包含 `/orders/rare/dismiss`、前端删除按钮或捕获层弱匹配；暂停与启用不能通过删除捕获记录实现。
 
-## 自动化与游戏 UI 门禁
+## 自动化与游戏 UI 执行条件
 
-模块关闭或有效名单为空时不增加 participation 门禁。有效名单非空时，所有稀客 operational 路径都必须取得与当前 profile 对齐的许可：
+模块关闭或生效名单为空时不增加调度检查。生效名单非空时，所有会实际使用稀客订单的路径都必须取得与当前共享配置一致的许可：
 
-- 排队的准备/完成命令在进入运行时服务前取得 public-identity admission permit。
-- 订单解析成功后，把 exact native binding 补强到同一 lifecycle。
-- 已开锅 job 在送达、评价和特殊经营结算等后续不可逆边界取得 bound side-effect permit，并在许可持有期间复核 active terminal-receipt lifecycle。
-- Mod 尚未提交送达时若 exact native binding 已收到 Evaluated/Removed terminal receipt，必须先于 control/participation gate 和任何 wrapper 读取退休 job、释放逻辑厨具预约并保留现场；陈旧 lifecycle receipt 不得命中，也不得送达、评价、入箱或复位。
-- 游戏 UI target 明确携带 canonical `guestId`；服务端在发布前按 generation、trace、lifecycle、guestId 复核 admission，不按桌位或名称反查。
-- 普通暂停成功后精确移除对应 rare target，同时保留 normal target；operational target 与各高亮服务立即同步，已打开的料理/酒水列表由下一次 Unity 主线程 Tick 清除旧置顶、高亮和加料行。
+- 排队的准备/完成命令在进入游戏服务前，根据公开订单标识取得执行许可。
+- 订单解析成功后，把精确的游戏订单绑定补充到同一订单实例。
+- 已开锅任务在送达、评价和特殊经营结算等后续不可逆步骤取得已绑定订单的游戏写入许可，并在许可持有期间复核当前有效的最终状态记录。
+- Mod 尚未提交送达时，如果精确的游戏订单绑定已经收到 `Evaluated` 或 `Removed` 最终状态记录，必须先于控制权、调度检查和任何 wrapper 读取结束任务、释放逻辑厨具预约并保留现场；旧订单实例的记录不得命中，也不得触发送达、评价、入箱或复位。
+- 游戏 UI 目标明确携带规范 `guestId`；服务端在发布前按经营轮次、跟踪标识、订单实例序号和 `guestId` 复核执行条件，不按桌位或名称反查。
+- 普通暂停成功后精确移除对应稀客目标，同时保留普客目标；执行目标与各高亮服务立即同步，已打开的料理/酒水列表由下一次 Unity 主线程 Tick 清除旧置顶、高亮和加料行。
 
-暂停先推进 command epoch。尚未开始的命令取消；已经进入 permit 的同步原生动作完整结束后，暂停 mutation 才能提交。已经开锅的 job 不退款、不清锅、不重复开锅，暂停期间停止自动收取、送达与评价，恢复后从下一安全步骤继续且不消耗暂停时长的有效超时预算。
+暂停先推进命令轮次。尚未开始的命令取消；已经取得执行许可的同步游戏动作完整结束后，暂停变更才能提交。已经开锅的任务不退款、不清锅、不重复开锅，暂停期间停止自动收取、送达与评价，恢复后从下一项尚未提交的步骤继续，且不消耗暂停时长的有效超时预算。
 
-后端门禁是最终权威。前端即使因旧快照短暂尝试发布 target 或发送动作，服务端仍必须拒绝 paused、stale generation、identity 缺失、profile/state 不一致或 inactive lifecycle。
+后端执行条件是最终判断依据。前端即使因旧快照短暂尝试发布目标或发送动作，服务端仍必须拒绝暂停、经营轮次已过期、订单标识缺失、共享配置与队列状态不一致或订单实例不再活动的请求。
 
-profile 或主设备 authority 切换还有独立的空 operational fence。后端应用新有效名单后，在 participation permit 与 target publication 临界区内过滤原 presentation target：只保留仍被许可且 exact identity 未变化的 rare target，normal target 始终独立保留；被暂停的 rare claims 使用唯一中间 generation，空 fence 使用下一 generation。Unity 主线程只刷新一次过滤投影，不清页面登记，也不退休、退款或重放未决 recipe transaction。
+共享配置或主设备状态切换时还会发布独立的空执行目标，用于隔离旧配置。后端应用新的生效名单后，在队列许可与目标发布临界区内过滤原展示目标：只保留仍被许可且订单标识未变化的稀客目标，普客目标始终独立保留；被暂停的稀客目标使用唯一中间轮次，空目标使用下一轮次。Unity 主线程只刷新一次过滤结果，不清页面登记，也不结束、退款或重复执行尚未确认的配方事务。
 
-## 前端投影
+## 前端数据集合
 
 前端领域层明确区分以下集合：
 
-- capture / Worker recommendation facts：保留全部当前稀客订单及其已计算推荐；暂停不删除订单事实、
-  Worker 输入、结果或 primary plan。
-- management：模块开启时保留受控稀客的全部当前 exact lifecycle，在条件显示的“稀客队列”中显示已启用、
+- 订单捕获与 Worker 推荐结果：保留全部当前稀客订单及其已计算推荐；暂停不删除订单状态、
+  Worker 输入、结果或主方案。
+- 队列管理集合：模块开启时保留调度名单内稀客的全部当前订单实例，在条件显示的“稀客队列”中显示已启用、
   已暂停或状态不可用，供玩家恢复暂停订单。
-- participating presentation：只包含 Mod 权威快照中正在参与且具有有效正 `queuePosition` 的订单；
+- 已启用展示集合：只包含 Mod 当前队列状态中已经启用且具有有效正数 `queuePosition` 的订单；
   “经营中 -> 推荐 -> 稀客”和稀客订单专注模式使用这一集合并严格按 `queuePosition` 显示。
-- operational：消费与 participating presentation 相同的权威参与身份和位置，再执行各自的安全门禁。
+- 执行集合：使用与已启用展示集合相同的订单标识和位置，再执行各功能自己的安全检查。
 
 顶层“扩展功能 -> 稀客调度”负责模块开关和配置名单；模块关闭时“经营中 -> 推荐”不显示“稀客队列”页签，
 模块开启后该页签才出现并只管理当前订单。
-经营中队列按 canonical guestId 分组，每组提供全部优先启用、全部队尾启用和暂停全部；每笔订单也提供
-优先启用、队尾启用或暂停。稀客级按钮必须回传该组完整当前 exact lifecycle 集合，单笔按钮只回传一笔
-exact identity。
+经营中队列按规范 `guestId` 分组，每组提供全部优先启用、全部队尾启用和暂停全部；每笔订单也提供
+优先启用、队尾启用或暂停。稀客级按钮必须回传该组当前的完整订单实例集合，单笔按钮只回传一笔
+精确订单标识。
 
-模块开启且有效名单非空时，前端只接受与当前完整、无错误订单集合全局精确对齐的一份 participation
-snapshot；任一 malformed、duplicate、missing/extra identity、非法 revision 或非连续/重复队列位置都会使
-整个 participation projection 不可用，参与展示和所有 operational 消费停止，而不是只禁用单组。模块关闭或
-有效名单为空时，不建立 participation 展示或执行门禁：“经营中 -> 推荐 -> 稀客”、专注模式和 operational
-消费者全部沿用原有集合与排序。主设备可以修改模块、名单和当前参与状态，非主设备只读；409 冲突必须刷新后
-由用户重试，不做乐观合并或 last-write-wins。
+模块开启且生效名单非空时，前端只接受与当前完整、无错误订单集合精确一致的一份队列快照；任何格式错误、重复、
+订单标识缺失或多余、非法修订号，以及非连续或重复的队列位置，都会使整个队列状态不可用。参与展示和所有执行功能
+必须同时停止，不能只禁用单个稀客分组。模块关闭或生效名单为空时，不建立调度展示或执行检查：“经营中 -> 推荐 -> 稀客”、
+专注模式和所有使用订单的功能全部沿用原有集合与排序。主设备可以修改模块、名单和当前队列状态，非主设备只读；409 冲突必须刷新后
+由用户重试，不做乐观合并或最后写入覆盖。
 
 ## 验证
 
@@ -154,10 +151,10 @@ corepack pnpm test:dotnet6 night-business-lifecycle
 corepack pnpm audit:ui-pinning
 ```
 
-涉及 C# 门禁还需锁定 SDK 的 Mod Release 构建；涉及前端还需 lint + build。参与状态、订单、自动化或游戏
-UI ownership 的自动测试不能替代锁定游戏/BepInEx 实机 smoke。实机至少覆盖模块默认关闭、关闭时保留非空
-配置名单且全部稀客保持原有展示和正常自动送达、开启后两名受控稀客默认暂停、暂停订单从稀客推荐与专注模式
-隐藏但仍保留捕获/Worker 推荐事实和队列管理入口、同 guest 多订单的单笔/整组操作、同 guest 新 lifecycle、
-队尾启用、启用后按 `queuePosition` 恢复展示、无保护项优先启用、仅 UI target、单个/多个活动料理任务保护、
+涉及 C# 执行条件还需使用锁定 SDK 完成 Mod Release 构建；涉及前端还需 lint + build。队列状态、订单、自动化或游戏
+UI 资源管理的自动测试不能替代锁定游戏/BepInEx 实机 smoke。实机至少覆盖模块默认关闭、关闭时保留非空
+配置名单且全部稀客保持原有展示和正常自动送达、开启后两名名单内稀客默认暂停、暂停订单从稀客推荐与专注模式
+隐藏但仍保留捕获、Worker 推荐结果和队列管理入口、同一稀客多订单的单笔/整组操作、同一稀客新订单实例、
+队尾启用、启用后按 `queuePosition` 恢复展示、没有当前工作时优先启用、仅有 UI 目标、单个或多个活动料理任务需要保持在前、
 已启用订单再次点击不重排、暂停旧高亮、开锅前后暂停、恢复不重复执行、主设备切换和有效空名单回归，并保存
-完整日志与订单 trace。
+完整日志与订单追踪编号。

@@ -64,7 +64,7 @@ export function isYuyukoPhaseThreeContext(
  * 估算幽幽子第三阶段普通形态订单的原生评价。
  *
  * 剧情版回调只读取料理和酒水等级和；重修版分身先取得 Normal，
- * 再只用实际生效的料理修饰 Tag 按幽幽子偏好逐项增减评价。
+ * 再只用实际生效的料理修饰标签按幽幽子偏好逐项增减评价。
  */
 export function evaluateYuyukoNormalOrderPair(
   challengeType: string,
@@ -293,7 +293,7 @@ function buildYuyukoProgressBlockDetails(
   } else {
     if (!food.meetsRequiredFood) details.push(`料理未满足点单 ${plan.demand.requiredFoodTag || '未知'}`);
     if (evaluation.negativeTags.length > 0) {
-      details.push(`包含当前稀客厌恶 Tag ${evaluation.negativeTags.join('、')}`);
+      details.push(`包含当前稀客厌恶标签 ${evaluation.negativeTags.join('、')}`);
     }
   }
 
@@ -372,7 +372,7 @@ function buildYuyukoReasonCore(
     `额外喜好 ${evaluation.extraPreferenceScore}${preferenceTags.length > 0 ? `（${preferenceTags.join('、')}）` : ''}`,
     evaluation.negativeTags.length > 0
       ? `当前稀客厌恶 ${evaluation.negativeTags.join('、')}`
-      : '无当前稀客厌恶 Tag',
+      : '无当前稀客厌恶标签',
   ].join('，');
 }
 

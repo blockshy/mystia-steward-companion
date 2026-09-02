@@ -719,7 +719,7 @@ async function auditDialogBackAndReturnFocus(page) {
 
   const trigger = page.locator('[data-gamepad-focus-key="settings:connection:reset-token"]:visible').first();
   if (!(await trigger.count()) || await trigger.isDisabled()) {
-    issues.push('连接设置页的“重置 Token”按钮不可用，无法验证 Dialog 手柄生命周期。');
+    issues.push('连接设置页的“重置 Token”按钮不可用，无法验证对话框的手柄操作流程。');
     return;
   }
 
@@ -1027,10 +1027,10 @@ async function auditPlaceToolbarAndRareSelectors(page) {
 
   await focusVisibleLocator(page, 'input[aria-label="稀客"]');
   await pressButton(page, BUTTON_DPAD_RIGHT, { holdMs: 70 });
-  await expectFocusedText(page, /点单料理 Tag/, '稀客页“稀客”下拉框按右键应聚焦“点单料理 Tag”');
+  await expectFocusedText(page, /点单料理标签/, '稀客页“稀客”下拉框按右键应聚焦“点单料理标签”');
 
   await pressButton(page, BUTTON_DPAD_RIGHT, { holdMs: 70 });
-  await expectFocusedText(page, /点单酒水 Tag/, '稀客页“点单料理 Tag”按右键应聚焦“点单酒水 Tag”');
+  await expectFocusedText(page, /点单酒水标签/, '稀客页“点单料理标签”按右键应聚焦“点单酒水标签”');
 
   await activateRecommendationTab(page, '普客');
   await focusVisibleLocator(page, 'input[placeholder="选择地区"]');

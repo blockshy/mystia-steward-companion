@@ -99,9 +99,9 @@ internal sealed class LocalApiServer : IDisposable
     private long _automationCommandEpoch;
     private bool _running;
     private bool _lanSettingsApplied;
-    private string _snapshotJson = "{\"runtimeLoaded\":false,\"status\":\"Snapshot is not ready.\"}";
+    private string _snapshotJson = "{\"runtimeLoaded\":false,\"status\":\"游戏当前状态尚未就绪。\"}";
     private string _snapshotSignature = "";
-    private string _runtimeDataJson = "{\"isComplete\":false,\"status\":\"Runtime data is not ready.\"}";
+    private string _runtimeDataJson = "{\"isComplete\":false,\"status\":\"游戏实时数据尚未就绪。\"}";
     private string _lastSnapshotRequestDiagnosticSignature = "";
     private string _lastAutomationDecisionDiagnosticSignature = "";
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -364,7 +364,7 @@ internal sealed class LocalApiServer : IDisposable
             }
             catch (Exception ex)
             {
-                _lanError = ex.Message;
+                _lanError = $"无法在 {candidate.Address}:{Port} 启动局域网监听。详细原因：{ex.Message}";
                 _log.LogWarning($"Local API LAN listener failed on {candidate.Address}:{Port}: {ex.Message}");
             }
         }
@@ -372,7 +372,7 @@ internal sealed class LocalApiServer : IDisposable
         var started = GetActiveLanCandidates();
         if (started.Count == 0)
         {
-            if (string.IsNullOrWhiteSpace(_lanError)) _lanError = "LAN listener failed on all private IPv4 addresses.";
+            if (string.IsNullOrWhiteSpace(_lanError)) _lanError = "无法在检测到的任何私有 IPv4 地址上启动局域网监听。";
             _log.LogWarning($"Local API LAN listener was not started: {_lanError}");
             return;
         }
@@ -529,7 +529,7 @@ internal sealed class LocalApiServer : IDisposable
     /// </summary>
     /// <param name="client">由监听线程接收到的 TCP 客户端。</param>
     /// <remarks>
-    /// 协议支持简单的 GET/POST；设备权威端点使用有界 JSON 请求体，其余既有端点继续使用查询参数。
+    /// 协议支持简单的 GET/POST；设备配置端点使用有界 JSON 请求体，其余既有端点继续使用查询参数。
     /// Tauri 伴随窗口通过 Header 传入 Token；浏览器开发模式同样走回环地址和 Token，避免把游戏运行时操作暴露给任意网页。
     /// </remarks>
     private void HandleClient(TcpClient client)
@@ -543,7 +543,7 @@ internal sealed class LocalApiServer : IDisposable
             var remoteEndPoint = client.Client.RemoteEndPoint as IPEndPoint;
             if (!IsClientAddressAllowed(remoteEndPoint))
             {
-                WriteResponse(stream, 403, "Forbidden", ToJson(new LocalApiErrorDto { Error = "forbidden client address" }));
+                WriteResponse(stream, 403, "Forbidden", ToJson(new LocalApiErrorDto { Error = "该客户端地址不允许访问本地 API。" }));
                 return;
             }
 
@@ -553,7 +553,7 @@ internal sealed class LocalApiServer : IDisposable
             var parts = firstLine.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             if (parts.Length < 2)
             {
-                WriteResponse(stream, 400, "Bad Request", ToJson(new LocalApiErrorDto { Error = "bad request" }));
+                WriteResponse(stream, 400, "Bad Request", ToJson(new LocalApiErrorDto { Error = "请求格式无效。" }));
                 return;
             }
 
@@ -569,13 +569,13 @@ internal sealed class LocalApiServer : IDisposable
             var isPost = string.Equals(method, "POST", StringComparison.OrdinalIgnoreCase);
             if (!isGet && !isPost)
             {
-                WriteResponse(stream, 405, "Method Not Allowed", ToJson(new LocalApiErrorDto { Error = "method not allowed" }));
+                WriteResponse(stream, 405, "Method Not Allowed", ToJson(new LocalApiErrorDto { Error = "该请求方法不受支持。" }));
                 return;
             }
 
             if (RequiresAuthorization(path) && !IsAuthorized(request))
             {
-                WriteResponse(stream, 401, "Unauthorized", ToJson(new LocalApiErrorDto { Error = "unauthorized" }));
+                WriteResponse(stream, 401, "Unauthorized", ToJson(new LocalApiErrorDto { Error = "本地 API 验证失败。" }));
                 return;
             }
 
@@ -618,7 +618,7 @@ internal sealed class LocalApiServer : IDisposable
                     case "/local-api/config":
                         if (!isLoopbackClient)
                         {
-                            WriteResponse(stream, 403, "Forbidden", ToJson(new LocalApiErrorDto { Error = "local configuration is only allowed from the game PC" }));
+                            WriteResponse(stream, 403, "Forbidden", ToJson(new LocalApiErrorDto { Error = "只能在运行游戏的电脑上修改本地连接设置。" }));
                             break;
                         }
                         var updatedConfig = _updateConnectionConfig(new LocalApiConnectionConfigUpdate
@@ -631,7 +631,7 @@ internal sealed class LocalApiServer : IDisposable
                     case "/local-api/token/regenerate":
                         if (!isLoopbackClient)
                         {
-                            WriteResponse(stream, 403, "Forbidden", ToJson(new LocalApiErrorDto { Error = "token regeneration is only allowed from the game PC" }));
+                            WriteResponse(stream, 403, "Forbidden", ToJson(new LocalApiErrorDto { Error = "只能在运行游戏的电脑上重新生成 Token。" }));
                             break;
                         }
                         var regeneratedConfig = _regenerateLocalApiToken();
@@ -665,7 +665,7 @@ internal sealed class LocalApiServer : IDisposable
                     case "/logs/console":
                         if (!isLoopbackClient)
                         {
-                            WriteResponse(stream, 403, "Forbidden", ToJson(new LocalApiErrorDto { Error = "BepInEx console control is only allowed from the game PC" }));
+                            WriteResponse(stream, 403, "Forbidden", ToJson(new LocalApiErrorDto { Error = "只能在运行游戏的电脑上控制 BepInEx 控制台。" }));
                             break;
                         }
                         WriteResponse(stream, 200, "OK", BuildBepInExConsoleActionJson(query));
@@ -763,7 +763,7 @@ internal sealed class LocalApiServer : IDisposable
                             ReadStringQuery(query, "direction")));
                         break;
                     default:
-                        WriteResponse(stream, 404, "Not Found", ToJson(new LocalApiErrorDto { Error = "not found" }));
+                        WriteResponse(stream, 404, "Not Found", ToJson(new LocalApiErrorDto { Error = "未找到请求的本地 API 接口。" }));
                         break;
                 }
                 return;
@@ -777,7 +777,7 @@ internal sealed class LocalApiServer : IDisposable
                 case "/local-api/config":
                     if (!isLoopbackClient)
                     {
-                        WriteResponse(stream, 403, "Forbidden", ToJson(new LocalApiErrorDto { Error = "local configuration is only available on the game PC" }));
+                        WriteResponse(stream, 403, "Forbidden", ToJson(new LocalApiErrorDto { Error = "只能在运行游戏的电脑上读取本地连接设置。" }));
                         break;
                     }
                     WriteResponse(stream, 200, "OK", ToJson(_getConnectionConfig()));
@@ -820,7 +820,7 @@ internal sealed class LocalApiServer : IDisposable
                                 ReadStringQuery(query, "levels"))));
                     break;
                 default:
-                    WriteResponse(stream, 404, "Not Found", ToJson(new LocalApiErrorDto { Error = "not found" }));
+                    WriteResponse(stream, 404, "Not Found", ToJson(new LocalApiErrorDto { Error = "未找到请求的本地 API 接口。" }));
                     break;
             }
         }
@@ -835,7 +835,7 @@ internal sealed class LocalApiServer : IDisposable
         catch (Exception ex)
         {
             _log.LogWarning($"Local API request failed: {ex.Message}");
-            TryWriteErrorResponse(stream, 500, "Internal Server Error", "internal server error");
+            TryWriteErrorResponse(stream, 500, "Internal Server Error", "本地 API 处理请求时发生内部错误，请导出诊断包后反馈。");
         }
         finally
         {
@@ -1117,7 +1117,7 @@ internal sealed class LocalApiServer : IDisposable
                 throw new CompanionDeviceAuthorityException(
                     409,
                     string.IsNullOrWhiteSpace(authorityError)
-                        ? "设备配置权威版本已经变化，请刷新后重试。"
+                        ? "生效配置版本已经变化，请刷新后重试。"
                         : authorityError);
             }
 
@@ -1139,7 +1139,7 @@ internal sealed class LocalApiServer : IDisposable
                 {
                     throw new CompanionDeviceAuthorityException(
                         503,
-                        $"无法建立稀客参与状态安全边界，未修改队列：{ex.GetBaseException().Message}");
+                        $"暂时无法安全修改稀客队列，请稍后重试；队列未发生变化。详细原因：{ex.GetBaseException().Message}");
                 }
             }
 
@@ -1181,7 +1181,7 @@ internal sealed class LocalApiServer : IDisposable
                     {
                         throw new RuntimeRareGuestParticipationConflictException(
                             "participation-snapshot-mismatch",
-                            "Rare-guest participation changed before active queue anchors were classified.",
+                            "识别当前队列位置前，稀客参与状态已经变化。",
                             before.BusinessGeneration,
                             before.Revision);
                     }
@@ -1197,7 +1197,7 @@ internal sealed class LocalApiServer : IDisposable
                             || rareUiTarget.GuestId < 0)
                         {
                             throw new InvalidOperationException(
-                                "Current rare UI target cannot provide an exact queue anchor.");
+                                "当前稀客高亮目标无法提供明确的队列位置。");
                         }
 
                         var identity = new RuntimeRareGuestParticipationOrderIdentity(
@@ -1209,7 +1209,7 @@ internal sealed class LocalApiServer : IDisposable
                             || !uiParticipation.Participating)
                         {
                             throw new InvalidOperationException(
-                                "Current rare UI target is not a participating exact lifecycle.");
+                                "当前稀客高亮目标不属于已启用的明确订单记录。");
                         }
                         protectedSet.Add(identity);
                         activeUiTarget = FormatRareGuestParticipationIdentity(identity);
@@ -1244,7 +1244,7 @@ internal sealed class LocalApiServer : IDisposable
                         + $"expectedRevision={body.ExpectedParticipationRevision}; "
                         + $"cachedActiveJobs={FormatLoggedValues(activeJobIds)}; "
                         + $"error={LimitDiagnosticText(ex.Message)}.");
-                    throw new CompanionDeviceAuthorityException(409, ex.Message);
+                    throw new CompanionDeviceAuthorityException(409, $"稀客队列已发生变化，请刷新后重试；优先队列未发生变化。详细原因：{ex.Message}");
                 }
                 catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
                 {
@@ -1256,7 +1256,7 @@ internal sealed class LocalApiServer : IDisposable
                         + $"cachedActiveJobs={FormatLoggedValues(activeJobIds)}; error={failure}.");
                     throw new CompanionDeviceAuthorityException(
                         409,
-                        $"无法确认当前高亮或自动化任务，未修改优先队列：{failure}");
+                        $"暂时无法确认当前正在处理的订单，请刷新后重试；优先队列未发生变化。详细原因：{failure}");
                 }
             }
 
@@ -1284,11 +1284,11 @@ internal sealed class LocalApiServer : IDisposable
                         + $"protected={FormatRareGuestParticipationQueuePositions(protectedOrders, before)}; "
                         + $"error={LimitDiagnosticText(ex.Message)}.");
                 }
-                throw new CompanionDeviceAuthorityException(409, ex.Message);
+                throw new CompanionDeviceAuthorityException(409, $"稀客队列已发生变化，请刷新后重试；本次操作未生效。详细原因：{ex.Message}");
             }
             catch (ArgumentException ex)
             {
-                throw new CompanionDeviceAuthorityException(400, ex.Message);
+                throw new CompanionDeviceAuthorityException(400, $"稀客队列操作参数无效，请刷新后重试。详细原因：{ex.Message}");
             }
 
             var after = RuntimeRareGuestParticipationState.Snapshot;
@@ -1318,9 +1318,9 @@ internal sealed class LocalApiServer : IDisposable
                 Changed = after.Revision != before.Revision,
                 Status = body.Action switch
                 {
-                    "pause" => "selected rare guest orders paused",
-                    "enable-tail" => "selected rare guest orders queued at tail",
-                    _ => "selected rare guest orders queued after active work",
+                    "pause" => "已暂停所选稀客订单。",
+                    "enable-tail" => "已将所选稀客订单排到队尾。",
+                    _ => "已将所选稀客订单排到当前任务之后。",
                 },
                 Participation = LocalApiRareGuestParticipationSnapshot.From(after),
             };
@@ -1530,7 +1530,7 @@ internal sealed class LocalApiServer : IDisposable
             {
                 throw new CompanionDeviceAuthorityException(
                     400,
-                    "guest target 的 expectedCurrentOrders 必须包含 1 至 512 个当前精确订单身份。");
+                    "guest 类型 target 的 expectedCurrentOrders 必须包含 1 至 512 个当前明确订单标识。");
             }
         }
         else if (string.Equals(targetType, "order", StringComparison.Ordinal))
@@ -1539,7 +1539,7 @@ internal sealed class LocalApiServer : IDisposable
             var order = target.GetProperty("order");
             if (order.ValueKind != JsonValueKind.Object)
             {
-                throw new CompanionDeviceAuthorityException(400, "order target 必须包含一个精确订单身份对象。");
+                throw new CompanionDeviceAuthorityException(400, "order 类型 target 必须包含一个明确订单标识对象。");
             }
             using var singleOrder = JsonDocument.Parse($"[{order.GetRawText()}]");
             expectedOrders = singleOrder.RootElement.Clone();
@@ -1556,14 +1556,14 @@ internal sealed class LocalApiServer : IDisposable
         {
             if (order.ValueKind != JsonValueKind.Object)
             {
-                throw new CompanionDeviceAuthorityException(400, "当前订单身份必须是 JSON 对象。");
+                throw new CompanionDeviceAuthorityException(400, "订单标识必须是 JSON 对象。");
             }
             var actual = order.EnumerateObject().Select(property => property.Name).ToArray();
             if (actual.Length != expectedIdentityProperties.Count
                 || actual.Distinct(StringComparer.Ordinal).Count() != actual.Length
                 || actual.Any(name => !expectedIdentityProperties.Contains(name)))
             {
-                throw new CompanionDeviceAuthorityException(400, "当前订单身份字段与参与协议不一致。");
+                throw new CompanionDeviceAuthorityException(400, "订单标识字段与稀客队列请求格式不一致。");
             }
         }
     }
@@ -1841,7 +1841,7 @@ internal sealed class LocalApiServer : IDisposable
             {
                 Ok = false,
                 Sequence = sequence,
-                Error = "automation barrier sequence must be a positive integer",
+                Error = "待确认事件编号必须是正整数。",
             };
         }
 
@@ -1874,8 +1874,8 @@ internal sealed class LocalApiServer : IDisposable
                         Ok = false,
                         Sequence = sequence,
                         Error = _automationLease == null
-                            ? "自动化控制权已失效，不能确认安全栅栏。"
-                            : $"自动化当前由 {_automationLease.ClientLabel} 控制，本窗口不能确认其安全栅栏。",
+                            ? "自动化控制权已失效，不能确认该事件。"
+                            : $"自动化当前由 {_automationLease.ClientLabel} 控制，本窗口不能确认该事件。",
                     };
                 }
 
@@ -1980,18 +1980,13 @@ internal sealed class LocalApiServer : IDisposable
             return ToJson(new LocalApiStatusDto
             {
                 Ok = true,
-                Status = "automation decision diagnostic appended",
+                Status = "已记录自动化决策诊断。",
                 Error = null,
             });
         }
         catch (Exception ex)
         {
-            return ToJson(new LocalApiStatusDto
-            {
-                Ok = false,
-                Status = "",
-                Error = ex.Message,
-            });
+            return ToJson(new LocalApiStatusDto { Ok = false, Status = "", Error = $"记录自动化决策诊断失败。详细原因：{ex.Message}" });
         }
     }
 
@@ -2076,8 +2071,8 @@ internal sealed class LocalApiServer : IDisposable
                     ? "automation-authority-revision-changed"
                     : "automation-lease-expired",
                 revisionChanged
-                    ? "主设备配置权威已经变化；已开始的料理会保留在原厨具，新权威取得控制权后继续。"
-                    : "主设备自动化租约已过期；已开始的料理会保留在原厨具，续约成功后继续。");
+                    ? "主设备的生效配置已经变化；已开始的料理会保留在原厨具，当前主设备重新取得控制权后继续。"
+                    : "主设备的自动化控制权已过期；已开始的料理会保留在原厨具，重新取得控制权后继续。");
         }
     }
 
@@ -2114,7 +2109,7 @@ internal sealed class LocalApiServer : IDisposable
                 Active = current.BepInExConsoleActive,
                 Visible = current.BepInExConsoleVisible,
                 Status = current.BepInExConsoleStatus,
-                Error = "invalid BepInEx console visibility",
+                Error = "BepInEx 控制台显示设置无效。",
             });
         }
 
@@ -2140,7 +2135,7 @@ internal sealed class LocalApiServer : IDisposable
         }
         catch (Exception ex)
         {
-            return ToJson(new LocalApiDirectoryActionDto { Ok = false, Directory = "", Error = ex.Message });
+            return ToJson(new LocalApiDirectoryActionDto { Ok = false, Directory = "", Error = $"无法打开日志目录。详细原因：{ex.Message}" });
         }
     }
 
@@ -2218,7 +2213,7 @@ internal sealed class LocalApiServer : IDisposable
                 Path = "",
                 Directory = "",
                 Files = Array.Empty<string>(),
-                Error = ex.Message,
+                Error = $"导出诊断包失败。详细原因：{ex.Message}",
             });
         }
     }
@@ -2229,7 +2224,7 @@ internal sealed class LocalApiServer : IDisposable
         if (!int.TryParse(ReadStringQuery(query, "id"), out var itemId)
             || !int.TryParse(ReadStringQuery(query, "qty"), out var quantity))
         {
-            return ToJson(new LocalApiErrorDto { Error = "invalid inventory edit parameters" });
+            return ToJson(new LocalApiErrorDto { Error = "库存修改参数无效。" });
         }
 
         try
@@ -2250,7 +2245,7 @@ internal sealed class LocalApiServer : IDisposable
         }
         catch (Exception ex)
         {
-            return ToJson(new LocalApiErrorDto { Error = ex.Message });
+            return ToJson(new LocalApiErrorDto { Error = $"库存修改失败。详细原因：{ex.Message}" });
         }
     }
 
@@ -2260,7 +2255,7 @@ internal sealed class LocalApiServer : IDisposable
         var itemIds = ReadIntListQuery(query, "ids");
         if (!int.TryParse(ReadStringQuery(query, "qty"), out var quantity) || itemIds.Count == 0)
         {
-            return ToJson(new LocalApiErrorDto { Error = "invalid inventory bulk edit parameters" });
+            return ToJson(new LocalApiErrorDto { Error = "批量库存修改参数无效。" });
         }
 
         RuntimeInventoryBulkEditResult result;
@@ -2270,7 +2265,7 @@ internal sealed class LocalApiServer : IDisposable
         }
         catch (Exception ex)
         {
-            return ToJson(new LocalApiErrorDto { Error = ex.Message });
+            return ToJson(new LocalApiErrorDto { Error = $"批量库存修改失败。详细原因：{ex.Message}" });
         }
 
         return ToJson(new LocalApiInventoryBulkEditDto
@@ -2356,7 +2351,7 @@ internal sealed class LocalApiServer : IDisposable
             {
                 Ok = false,
                 Prepared = false,
-                Error = ex.Message,
+                Error = $"订单操作未完成。详细原因：{ex.Message}",
             });
         }
     }
@@ -2375,7 +2370,7 @@ internal sealed class LocalApiServer : IDisposable
                 Ok = false,
                 RuntimeAvailable = false,
                 Status = "稀客邀请失败。",
-                Error = ex.Message,
+                Error = $"稀客邀请未完成。详细原因：{ex.Message}",
             });
         }
     }
@@ -2403,7 +2398,7 @@ internal sealed class LocalApiServer : IDisposable
                     || ReadStringQuery(query, "targetCount") is not ("0" or "1" or "2")
                     || !int.TryParse(ReadStringQuery(query, "targetCount"), out var targetCount))
                 {
-                    throw new FormatException("targetCount must be exactly 0, 1, or 2.");
+                    throw new FormatException("targetCount 必须严格为 0、1 或 2。");
                 }
 
                 var targets = new List<RuntimeUiTargetSnapshot>(targetCount);
@@ -2416,7 +2411,7 @@ internal sealed class LocalApiServer : IDisposable
                     && (targets[0].Kind != RuntimeUiTargetKind.Rare
                         || targets[1].Kind != RuntimeUiTargetKind.Normal))
                 {
-                    throw new FormatException("Two UI targets must be ordered rare then normal.");
+                    throw new FormatException("两个高亮目标必须依次为稀客和普客。");
                 }
 
                 var businessGeneration = ReadRequiredPositiveLongQuery(query, "businessGeneration");
@@ -2428,7 +2423,7 @@ internal sealed class LocalApiServer : IDisposable
         }
         catch (Exception ex)
         {
-            return ToJson(new LocalApiStatusDto { Ok = false, Status = "", Error = ex.Message });
+            return ToJson(new LocalApiStatusDto { Ok = false, Status = "", Error = $"更新经营中高亮目标失败，请刷新后重试。详细原因：{ex.Message}" });
         }
     }
 
@@ -2439,7 +2434,7 @@ internal sealed class LocalApiServer : IDisposable
         var missing = requiredKeys.FirstOrDefault(key => !HasQueryParameter(query, key));
         if (missing != null)
         {
-            throw new FormatException($"Missing required UI target parameter {missing}.");
+            throw new FormatException($"缺少必需的高亮目标参数 {missing}。");
         }
 
         var kindValue = ReadStringQuery(query, $"{prefix}Kind");
@@ -2447,12 +2442,12 @@ internal sealed class LocalApiServer : IDisposable
         {
             "rare" => RuntimeUiTargetKind.Rare,
             "normal" => RuntimeUiTargetKind.Normal,
-            _ => throw new FormatException($"{prefix}Kind must be exactly rare or normal."),
+            _ => throw new FormatException($"{prefix}Kind 必须严格为 rare 或 normal。"),
         };
         var colorValue = ReadStringQuery(query, $"{prefix}Color");
         if (!RuntimeTargetHighlightColor.TryParseExactHex(colorValue, out var color))
         {
-            throw new FormatException($"{prefix}Color must be exactly six uppercase hexadecimal RGB digits.");
+            throw new FormatException($"{prefix}Color 必须严格为六位大写十六进制 RGB 数字。");
         }
 
         return new RuntimeUiTargetSnapshot(
@@ -2496,7 +2491,7 @@ internal sealed class LocalApiServer : IDisposable
         if (!permit.Allowed)
         {
             throw new InvalidOperationException(
-                $"Rare UI target rejected by participation state ({permit.Decision.ReasonCode}): {permit.Decision.Message}");
+                $"稀客参与状态拒绝了当前高亮目标（{permit.Decision.ReasonCode}）：{permit.Decision.Message}");
         }
 
         var participation = RuntimeRareGuestParticipationState.Snapshot;
@@ -2510,7 +2505,7 @@ internal sealed class LocalApiServer : IDisposable
             || permit.Decision.Order.Managed != configuredAsManaged)
         {
             throw new InvalidOperationException(
-                "Rare UI target rejected because the primary profile and runtime participation roster are not aligned.");
+                "主设备调度名单与当前稀客参与名单尚未一致，已拒绝稀客高亮目标。");
         }
 
         return RuntimeUiPinningService.UpdateTargets(businessGeneration, targets);
@@ -2530,7 +2525,7 @@ internal sealed class LocalApiServer : IDisposable
             }
             if (!name.StartsWith("target", StringComparison.Ordinal))
             {
-                throw new FormatException($"Unexpected UI target parameter {name}.");
+                throw new FormatException($"高亮目标包含未预期的参数 {name}。");
             }
 
             var digitStart = "target".Length;
@@ -2543,18 +2538,18 @@ internal sealed class LocalApiServer : IDisposable
                     System.Globalization.CultureInfo.InvariantCulture,
                     out var index))
             {
-                throw new FormatException($"Invalid indexed UI target parameter {name}.");
+                throw new FormatException($"高亮目标索引参数 {name} 无效。");
             }
 
             var suffix = name[digitEnd..];
             if (!UiPinningTargetFieldSuffixes.Contains(suffix, StringComparer.Ordinal)
                 || !string.Equals(name, $"target{index}{suffix}", StringComparison.Ordinal))
             {
-                throw new FormatException($"Invalid indexed UI target parameter {name}.");
+                throw new FormatException($"高亮目标索引参数 {name} 无效。");
             }
             if (index >= targetCount)
             {
-                throw new FormatException($"UI target parameter {name} exceeds targetCount {targetCount}.");
+                throw new FormatException($"高亮目标参数 {name} 超出 targetCount={targetCount} 的范围。");
             }
         }
     }
@@ -2564,7 +2559,7 @@ internal sealed class LocalApiServer : IDisposable
         if (!int.TryParse(ReadStringQuery(query, "customerId"), out var customerId)
             || !int.TryParse(ReadStringQuery(query, "recipeId"), out var recipeId))
         {
-            return "{\"ok\":false,\"favorites\":{\"version\":1,\"recipes\":[],\"beverages\":[]},\"error\":\"invalid favorite recipe parameters\"}";
+            return "{\"ok\":false,\"favorites\":{\"version\":1,\"recipes\":[],\"beverages\":[]},\"error\":\"收藏料理参数无效。\"}";
         }
 
         try
@@ -2578,7 +2573,7 @@ internal sealed class LocalApiServer : IDisposable
         }
         catch (Exception ex)
         {
-            return ToJson(new LocalApiFavoriteMutationDto { Ok = false, Error = ex.Message });
+            return ToJson(new LocalApiFavoriteMutationDto { Ok = false, Error = $"添加收藏料理失败。详细原因：{ex.Message}" });
         }
     }
 
@@ -2587,7 +2582,7 @@ internal sealed class LocalApiServer : IDisposable
         if (!int.TryParse(ReadStringQuery(query, "customerId"), out var customerId)
             || !int.TryParse(ReadStringQuery(query, "beverageId"), out var beverageId))
         {
-            return "{\"ok\":false,\"favorites\":{\"version\":1,\"recipes\":[],\"beverages\":[]},\"error\":\"invalid favorite beverage parameters\"}";
+            return "{\"ok\":false,\"favorites\":{\"version\":1,\"recipes\":[],\"beverages\":[]},\"error\":\"收藏酒水参数无效。\"}";
         }
 
         try
@@ -2600,7 +2595,7 @@ internal sealed class LocalApiServer : IDisposable
         }
         catch (Exception ex)
         {
-            return ToJson(new LocalApiFavoriteMutationDto { Ok = false, Error = ex.Message });
+            return ToJson(new LocalApiFavoriteMutationDto { Ok = false, Error = $"添加收藏酒水失败。详细原因：{ex.Message}" });
         }
     }
 
@@ -2609,7 +2604,7 @@ internal sealed class LocalApiServer : IDisposable
         if (!int.TryParse(ReadStringQuery(query, "customerId"), out var customerId)
             || !int.TryParse(ReadStringQuery(query, "foodId"), out var foodId))
         {
-            return ToJson(new LocalApiCustomRecipeMutationDto { Ok = false, Error = "invalid custom recipe parameters" });
+            return ToJson(new LocalApiCustomRecipeMutationDto { Ok = false, Error = "自定义料理参数无效。" });
         }
 
         try
@@ -2631,7 +2626,7 @@ internal sealed class LocalApiServer : IDisposable
         }
         catch (Exception ex)
         {
-            return ToJson(new LocalApiCustomRecipeMutationDto { Ok = false, Error = ex.Message });
+            return ToJson(new LocalApiCustomRecipeMutationDto { Ok = false, Error = $"保存自定义料理失败。详细原因：{ex.Message}" });
         }
     }
 
@@ -2639,7 +2634,7 @@ internal sealed class LocalApiServer : IDisposable
     {
         var enabled = ReadBoolQuery(query, "enabled");
         return enabled == null
-            ? ToJson(new LocalApiCustomRecipeMutationDto { Ok = false, Error = "invalid custom recipe enabled setting" })
+            ? ToJson(new LocalApiCustomRecipeMutationDto { Ok = false, Error = "自定义料理启用设置无效。" })
             : _customRecipeStore.SetEnabled(enabled.Value);
     }
 
@@ -2671,7 +2666,7 @@ internal sealed class LocalApiServer : IDisposable
             || (selection.Kind == CustomRecipeSelectionKind.Recipe && selection.FoodId < 0)
             || (selection.Kind == CustomRecipeSelectionKind.Entry && string.IsNullOrWhiteSpace(selection.Id)))
         {
-            return ToJson(new LocalApiCustomRecipeMutationDto { Ok = false, Error = "invalid custom recipe selection" });
+            return ToJson(new LocalApiCustomRecipeMutationDto { Ok = false, Error = "自定义料理选择范围无效。" });
         }
 
         var enabled = ReadBoolQuery(query, "enabled");
@@ -2679,7 +2674,7 @@ internal sealed class LocalApiServer : IDisposable
         if ((HasQueryParameter(query, "enabled") && enabled == null)
             || (HasQueryParameter(query, "pinToTop") && pinToTop == null))
         {
-            return ToJson(new LocalApiCustomRecipeMutationDto { Ok = false, Error = "invalid custom recipe flags" });
+            return ToJson(new LocalApiCustomRecipeMutationDto { Ok = false, Error = "自定义料理状态设置无效。" });
         }
 
         return _customRecipeStore.UpdateFlags(
@@ -3100,14 +3095,14 @@ internal sealed class LocalApiServer : IDisposable
     {
         if (!HasQueryParameter(query, key))
         {
-            throw new FormatException($"Missing required UI target parameter {key}.");
+            throw new FormatException($"缺少必需的高亮目标参数 {key}。");
         }
 
         return ReadStringQuery(query, key) switch
         {
             "true" => true,
             "false" => false,
-            _ => throw new FormatException($"{key} must be exactly true or false."),
+            _ => throw new FormatException($"{key} 必须严格为 true 或 false。"),
         };
     }
 
@@ -3121,7 +3116,7 @@ internal sealed class LocalApiServer : IDisposable
                 out var value)
             || value <= 0)
         {
-            throw new FormatException($"{key} must be a positive 64-bit ASCII decimal integer.");
+            throw new FormatException($"{key} 必须是大于 0 的 64 位 ASCII 十进制整数。");
         }
         return value;
     }
@@ -3135,7 +3130,7 @@ internal sealed class LocalApiServer : IDisposable
                 System.Globalization.CultureInfo.InvariantCulture,
                 out var value))
         {
-            throw new FormatException($"{key} must be a non-negative 32-bit ASCII decimal integer.");
+            throw new FormatException($"{key} 必须是非负的 32 位 ASCII 十进制整数。");
         }
         return value;
     }
@@ -3144,7 +3139,7 @@ internal sealed class LocalApiServer : IDisposable
     {
         if (!HasQueryParameter(query, key))
         {
-            throw new FormatException($"Missing required UI target parameter {key}.");
+            throw new FormatException($"缺少必需的高亮目标参数 {key}。");
         }
 
         var raw = ReadStringQuery(query, key);
@@ -3155,13 +3150,13 @@ internal sealed class LocalApiServer : IDisposable
     {
         if (!HasQueryParameter(query, key))
         {
-            throw new FormatException($"Missing required UI target parameter {key}.");
+            throw new FormatException($"缺少必需的高亮目标参数 {key}。");
         }
 
         var raw = ReadStringQuery(query, key);
         if (raw.Length == 0 || raw.Any(character => character is < '0' or > '9'))
         {
-            throw new FormatException($"{key} must contain ASCII decimal digits only.");
+            throw new FormatException($"{key} 只能包含 ASCII 十进制数字。");
         }
         return raw;
     }

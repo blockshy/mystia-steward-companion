@@ -147,7 +147,7 @@ assert.match(
     specialBusiness,
     'mizuchi-trial-unverified-order',
   ).blockingReason,
-  /身份尚未确认/,
+  /尚未确认订单是否为附身目标/,
 );
 assert.match(
   buildSpecialBusinessOrderRule(specialBusiness, 'unknown-role').blockingReason,
@@ -184,7 +184,7 @@ assert.match(
     storySpecialBusiness,
     'mizuchi-story-unverified-order',
   ).blockingReason,
-  /身份尚未确认/,
+  /尚未确认订单是否为附身目标/,
 );
 assert.match(
   buildSpecialBusinessOrderRule(
@@ -199,7 +199,7 @@ assert.match(
     { ...specialBusiness, requiredExtraIngredientIds: [5002] },
     'mizuchi-trial-possessed-order',
   ).blockingReason,
-  /上下文不一致/,
+  /订单信息不一致/,
   'The base-scene ingredient must not be accepted by a trial.',
 );
 assert.match(
@@ -207,7 +207,7 @@ assert.match(
     { ...storySpecialBusiness, requiredExtraIngredientIds: [5005] },
     'mizuchi-story-possessed-order',
   ).blockingReason,
-  /上下文不一致/,
+  /订单信息不一致/,
   'The trial ingredient must not be accepted by Story Mizuchi.',
 );
 assert.equal(

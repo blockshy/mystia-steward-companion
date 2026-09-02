@@ -178,7 +178,7 @@ internal sealed class NightBusinessReflectionProvider
             sourceStats.Add($"RuntimeCaptureStatus={SpecialOrderRuntimeCapture.Status}");
             sourceStats.Add($"UiPinning={RuntimeUiPinningService.Status}");
             sourceStats.Add("ReflectionFallback=disabled");
-            errors.Add("稀客订单生命周期 Hook 尚未完整就绪，本轮读取已停止。");
+            errors.Add("稀客订单状态 Hook 尚未完整就绪，本轮读取已停止。");
         }
 
         var activeOrders = Measure("deduplicate.orders", () => DeduplicateOrders(orders));
@@ -604,7 +604,7 @@ internal sealed class NightBusinessReflectionProvider
                 ? classification.AutomationBlockReason
                 : lifecycleAvailable
                     ? ""
-                    : "订单缺少活动生命周期身份，暂不执行自动化。",
+                    : "无法确认订单对应的本场经营记录，暂不执行自动化。",
             FoodTagId = foodTagId,
             FoodTag = foodTag,
             BeverageTagId = beverageTagId,

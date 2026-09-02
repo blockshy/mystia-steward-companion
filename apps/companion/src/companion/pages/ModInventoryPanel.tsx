@@ -128,7 +128,7 @@ export function ModInventoryPanel({
           <div className="min-w-0">
             <div className="font-semibold">库存数量修改</div>
             <div className="mt-1 text-xs text-muted-foreground">
-              修改会写入当前游戏运行时库存；请在游戏内保存后再退出。经营中修改可能会和实时消耗同时发生。
+              修改会直接写入游戏当前库存；请在游戏内保存后再退出。经营中修改可能会和实时消耗同时发生。
             </div>
           </div>
           <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 max-[719px]:justify-start" data-gamepad-axis="x">

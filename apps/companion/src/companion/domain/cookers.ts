@@ -62,7 +62,7 @@ export function buildRuntimeSets(
 }
 
 /**
- * 构造推荐硬过滤使用的厨具集合。
+ * 构造推荐强制筛选使用的厨具集合。
  *
  * 用户关闭“排除缺失厨具”时，未摆放类型继续由设置放行；完整快照中已摆放但
  * 存在不可安全读取的锁定条目时，只保留开放控制器能够证明的类型；快照不可用时不保留部分容量。
@@ -89,29 +89,29 @@ export function buildRecommendationCookerNameSet(
 }
 
 export function validateRecommendationCookerSnapshot(runtime: RecommendationStateSnapshot): string {
-  if (!Array.isArray(runtime.placedCookerTypeIds)) return 'placedCookerTypeIds 不是数组';
-  if (!Array.isArray(runtime.placedCookers)) return 'placedCookers 不是数组';
-  if (typeof runtime.placedCookerSnapshotComplete !== 'boolean') return 'placedCookerSnapshotComplete 不是布尔值';
-  if (!isSnapshotCount(runtime.placedCookerControllerCount)) return 'placedCookerControllerCount 不是非负整数';
+  if (!Array.isArray(runtime.placedCookerTypeIds)) return '厨具类型编号列表格式错误';
+  if (!Array.isArray(runtime.placedCookers)) return '已摆放厨具列表格式错误';
+  if (typeof runtime.placedCookerSnapshotComplete !== 'boolean') return '厨具信息完整标记格式错误';
+  if (!isSnapshotCount(runtime.placedCookerControllerCount)) return '厨具控制器总数必须是非负整数';
   if (!isSnapshotCount(runtime.placedCookerEmptyControllerCount)) {
-    return 'placedCookerEmptyControllerCount 不是非负整数';
+    return '空置厨具位数量必须是非负整数';
   }
   if (!isSnapshotCount(runtime.placedCookerLockedControllerCount)) {
-    return 'placedCookerLockedControllerCount 不是非负整数';
+    return '锁定厨具数量必须是非负整数';
   }
-  if (!isSnapshotCount(runtime.placedCookerReadFailureCount)) return 'placedCookerReadFailureCount 不是非负整数';
-  if (typeof runtime.placedCookerStatus !== 'string') return 'placedCookerStatus 不是字符串';
+  if (!isSnapshotCount(runtime.placedCookerReadFailureCount)) return '厨具读取失败数量必须是非负整数';
+  if (typeof runtime.placedCookerStatus !== 'string') return '厨具读取状态格式错误';
   if (runtime.placedCookerEmptyControllerCount
     + runtime.placedCookerLockedControllerCount
     + runtime.placedCookerReadFailureCount
     > runtime.placedCookerControllerCount) {
-    return '空位、锁定与读取失败数量大于 controllerCount';
+    return '空位、锁定与读取失败数量之和大于厨具控制器总数';
   }
   if (runtime.placedCookers.length
     + runtime.placedCookerEmptyControllerCount
     + runtime.placedCookerLockedControllerCount
     + runtime.placedCookerReadFailureCount !== runtime.placedCookerControllerCount) {
-    return 'placedCookers 数量与 controllerCount/emptyControllerCount/lockedControllerCount/readFailureCount 不一致';
+    return '已摆放、空位、锁定与读取失败数量之和与厨具控制器总数不一致';
   }
   if (runtime.placedCookerSnapshotComplete
     && (runtime.placedCookerReadFailureCount !== 0
@@ -119,19 +119,19 @@ export function validateRecommendationCookerSnapshot(runtime: RecommendationStat
         + runtime.placedCookerEmptyControllerCount
         + runtime.placedCookerLockedControllerCount
         !== runtime.placedCookerControllerCount)) {
-    return '完整厨具快照包含读取失败或缺失控制器';
+    return '完整厨具信息中存在读取失败或缺少控制器的项目';
   }
   if (!runtime.placedCookerSnapshotComplete
     && (runtime.placedCookers.length !== 0
       || runtime.placedCookerTypeIds.length !== 0
       || runtime.placedCookerEmptyControllerCount !== 0)) {
-    return '不可用厨具快照包含部分控制器、空位或类型';
+    return '不可用厨具信息中仍包含部分控制器、空位或类型';
   }
 
   const placedTypeIds = new Set<number>();
   for (const typeId of runtime.placedCookerTypeIds) {
-    if (!isCookerTypeId(typeId)) return 'placedCookerTypeIds 包含非法厨具类型';
-    if (placedTypeIds.has(typeId)) return 'placedCookerTypeIds 包含重复厨具类型';
+    if (!isCookerTypeId(typeId)) return '厨具类型编号列表包含无效编号';
+    if (placedTypeIds.has(typeId)) return '厨具类型编号列表包含重复编号';
     placedTypeIds.add(typeId);
   }
 
@@ -143,41 +143,41 @@ export function validateRecommendationCookerSnapshot(runtime: RecommendationStat
     if (!Number.isInteger(cooker.controllerIndex)
       || cooker.controllerIndex < 0
       || cooker.controllerIndex >= runtime.placedCookerControllerCount) {
-      return 'placedCookers 包含非法 controllerIndex';
+      return `已摆放厨具包含无效控制器编号：${String(cooker.controllerIndex)}`;
     }
     if (seenControllerIndexes.has(cooker.controllerIndex)) {
-      return 'placedCookers 包含重复 controllerIndex';
+      return `已摆放厨具包含重复控制器编号：${cooker.controllerIndex}`;
     }
     seenControllerIndexes.add(cooker.controllerIndex);
     if (!isGridPosition(cooker.gridPosition)) {
-      return `controller ${cooker.controllerIndex} 的 gridPosition 非法`;
+      return `厨具控制器 #${cooker.controllerIndex} 的摆放位置格式错误`;
     }
     const gridKey = buildGridPositionKey(cooker.gridPosition);
     if (seenGridPositions.has(gridKey)) {
-      return 'placedCookers 包含重复 gridPosition';
+      return '已摆放厨具包含重复的摆放位置';
     }
     seenGridPositions.add(gridKey);
     if (!isControllerIdentity(cooker.controllerIdentity)) {
-      return `controller ${cooker.controllerIndex} 的 controllerIdentity 非法`;
+      return `厨具控制器 #${cooker.controllerIndex} 的对象标识无效`;
     }
     if (seenControllerIdentities.has(cooker.controllerIdentity)) {
-      return 'placedCookers 包含重复 controllerIdentity';
+      return '已摆放厨具包含重复的对象标识';
     }
     seenControllerIdentities.add(cooker.controllerIdentity);
     if (!Array.isArray(cooker.typeIds)
       || cooker.typeIds.length === 0
       || cooker.typeIds.some((typeId) => !isCookerTypeId(typeId))
       || new Set(cooker.typeIds).size !== cooker.typeIds.length) {
-      return `controller ${cooker.controllerIndex} 的 typeIds 非法`;
+      return `厨具控制器 #${cooker.controllerIndex} 的类型编号列表无效`;
     }
     if (!Array.isArray(cooker.typeNames) || cooker.typeNames.some((name) => typeof name !== 'string')) {
-      return `controller ${cooker.controllerIndex} 的 typeNames 非法`;
+      return `厨具控制器 #${cooker.controllerIndex} 的类型名称列表格式错误`;
     }
     const expectedTypeNames = cooker.typeIds.map((typeId) => COOKER_TYPE_NAME_BY_ID.get(typeId) ?? '');
     if (cooker.typeNames.length !== expectedTypeNames.length
       || cooker.typeNames.some((name, index) => name !== expectedTypeNames[index])
       || cooker.name !== expectedTypeNames.join('/')) {
-      return `controller ${cooker.controllerIndex} 的厨具名称与 typeIds 不一致`;
+      return `厨具控制器 #${cooker.controllerIndex} 的名称与类型编号不一致`;
     }
     if (typeof cooker.name !== 'string'
       || typeof cooker.challengeLocked !== 'boolean'
@@ -185,22 +185,22 @@ export function validateRecommendationCookerSnapshot(runtime: RecommendationStat
       || typeof cooker.automationAvailable !== 'boolean'
       || typeof cooker.automationAvailabilityDiagnostic !== 'string'
       || typeof cooker.source !== 'string') {
-      return `controller ${cooker.controllerIndex} 的基础字段非法`;
+      return `厨具控制器 #${cooker.controllerIndex} 的名称、状态或数据来源格式错误`;
     }
     if (!isAutomationAvailability(cooker.automationAvailability)) {
-      return `controller ${cooker.controllerIndex} 的 automationAvailability 非法`;
+      return `厨具控制器 #${cooker.controllerIndex} 的自动化可用分类无效`;
     }
     if (cooker.challengeLocked !== false || cooker.couldOpen !== true) {
-      return `controller ${cooker.controllerIndex} 已锁定或不可开，不应进入 placedCookers`;
+      return `厨具控制器 #${cooker.controllerIndex} 已锁定或不可打开，不应出现在已摆放厨具列表中`;
     }
     if (cooker.automationAvailable !== (cooker.automationAvailability !== 'Unavailable')) {
-      return `controller ${cooker.controllerIndex} 的自动化可用状态不一致`;
+      return `厨具控制器 #${cooker.controllerIndex} 的自动化可用状态不一致`;
     }
     for (const typeId of cooker.typeIds) projectedTypeIds.add(typeId);
   }
 
   if (!setsEqual(placedTypeIds, projectedTypeIds)) {
-    return 'placedCookerTypeIds 与控制器类型投影不一致';
+    return '汇总的厨具类型编号与各控制器的类型编号不一致';
   }
   return '';
 }
@@ -208,7 +208,7 @@ export function validateRecommendationCookerSnapshot(runtime: RecommendationStat
 /**
  * 构建当前可供自动化预约的控制器槽位。
  *
- * 物理已摆放类型由 buildRuntimeSets 独立投影；这里仅接受后端完整分类后明确标记为
+ * 物理已摆放类型由 buildRuntimeSets 独立映射；这里仅接受后端完整分类后明确标记为
  * automationAvailable 的控制器。来源或锁定状态任一不完整时整轮不提供容量。
  */
 export function buildAutomationCookerPool(

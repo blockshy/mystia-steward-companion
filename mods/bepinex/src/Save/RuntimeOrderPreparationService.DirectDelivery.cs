@@ -63,7 +63,7 @@ internal static partial class RuntimeOrderPreparationService
         {
             return (
                 false,
-                "瑞灵特殊经营订单角色或评价闭包在酒水送达前已漂移，未调用订单 setter："
+                "瑞灵特殊经营的订单角色或评价回调在送达酒水前已经变化，本轮未送达酒水。详细原因："
                 + mizuchiBeverageDiagnostic,
                 OrderPreparationStepCodes.MizuchiContractMismatch);
         }
@@ -92,7 +92,8 @@ internal static partial class RuntimeOrderPreparationService
             {
                 return (
                     false,
-                    $"{beverageName} 已确认送达{orderLabel}，但库存扣减结果无法确认；为避免重复扣库，自动化已停止：{ex.GetBaseException().Message}",
+                    $"{beverageName} 已确认送达{orderLabel}，但库存扣减结果无法确认；为避免重复扣减，自动化已停止，请检查游戏状态。"
+                    + $"详细原因：{ex.GetBaseException().Message}",
                     OrderPreparationStepCodes.BeverageDeliveryCommitUncertain);
             }
         }
@@ -169,7 +170,8 @@ internal static partial class RuntimeOrderPreparationService
 
         if (!IsAutomationCookingJobOwned(job, out var ownershipDiagnostic))
         {
-            var ownershipMessage = $"{job.RecipeName} 自动料理任务在送达前检测到厨具已开始新一锅，旧任务已退出且不会操作当前成品。{ownershipDiagnostic}";
+            var ownershipMessage = $"{job.RecipeName} 自动料理任务在送达前检测到厨具已开始新一锅，旧任务已退出且不会操作当前成品。"
+                + $"详细原因：{ownershipDiagnostic}";
             RecordAutomationRuntimeEvent(
                 OrderPreparationStepCodes.CookingControllerReused,
                 job,
@@ -189,7 +191,7 @@ internal static partial class RuntimeOrderPreparationService
         {
             return ContinueOrBlockAutomationDelivery(
                 job,
-                $"成品身份在送达前无法安全复核，本轮未执行送达、入箱或厨具复位：{cookedFoodIdentityDiagnostic}");
+                $"送达前无法确认当前成品，本轮未执行送达、入箱或厨具复位。详细原因：{cookedFoodIdentityDiagnostic}");
         }
 
         if (target.FoodId < 0)
@@ -273,19 +275,19 @@ internal static partial class RuntimeOrderPreparationService
             return ContinueOrBlockAutomationDelivery(
                 job,
                 $"{job.RecipeName} 已完成，但当前特殊料理目标暂不可用；"
-                + $"开锅目标 revision={originalTargetRevision} "
+                + $"开始制作时的目标版本为 {originalTargetRevision} "
                 + $"{FormatSpecialFoodTargetForMessage(originalTargetSignature, originalTargetTags)}。"
-                + "本轮未送达、入箱或复位厨具，等待权威目标恢复。");
+                + "本轮未送达、入箱或复位厨具，等待目标状态恢复。");
         }
 
         if (specialTargetChanged)
         {
             var actualFoodId = ReadSellableId(cookedFood);
             var actualTagsForSignature = ReadFoodTagNames(cookedFood).ToArray();
-            var signatureMessage = $"{job.RecipeName} 已完成，但特殊料理目标已变化："
-                + $"开锅时 revision={originalTargetRevision} "
+            var signatureMessage = $"{job.RecipeName} 已完成，但特殊料理目标已经变化："
+                + $"开始制作时的目标版本为 {originalTargetRevision} "
                 + $"{FormatSpecialFoodTargetForMessage(originalTargetSignature, originalTargetTags)}，"
-                + $"当前 revision={currentTargetRevision} "
+                + $"当前目标版本为 {currentTargetRevision} "
                 + $"{FormatSpecialFoodTargetForMessage(currentTargetSignature, currentTargetTags)}";
             AppendSpecialFoodTargetCookingJobDiagnostic(
                 "special-target-signature-changed",
@@ -337,8 +339,8 @@ internal static partial class RuntimeOrderPreparationService
                 : OrderPreparationStepCodes.CookingMismatchStored;
             var diagnosticPrefix = unreadableTags ? "cooked-food-tags-unreadable" : "cooked-food-tag-mismatch";
             var tagMessage = unreadableTags
-                ? $"{job.RecipeName} 已完成，但无法读取成品 Tag，不能确认满足当前特殊料理目标 Tag（{string.Join("、", targetTags)}）"
-                : $"{job.RecipeName} 已完成，但成品 Tag（{string.Join("、", actualTags)}）不满足当前特殊料理目标 {target.SpecialFoodTargetPolicy?.MatchModeValue}（{string.Join("、", targetTags)}）";
+                ? $"{job.RecipeName} 已完成，但无法读取成品标签，不能确认它满足当前特殊料理目标标签（{string.Join("、", targetTags)}）"
+                : $"{job.RecipeName} 已完成，但成品标签（{string.Join("、", actualTags)}）不满足当前特殊料理目标 {target.SpecialFoodTargetPolicy?.MatchModeValue}（{string.Join("、", targetTags)}）";
             AppendSpecialFoodTargetCookingJobDiagnostic(
                 diagnosticPrefix,
                 job,
@@ -348,7 +350,7 @@ internal static partial class RuntimeOrderPreparationService
                 actualTags,
                 tagMessage);
             var nextAction = unreadableTags
-                ? "已放入保温箱并暂停该订单自动化，请检查运行时 Tag 读取后再继续。"
+                ? "已放入保温箱并暂停该订单自动化，请检查游戏标签读取后再继续。"
                 : "已放入保温箱并释放该自动料理任务，将在下一轮重新推荐并重试。";
             var tagCompletion = new AutomationWarmerCompletion(
                 resultCode,
@@ -441,7 +443,7 @@ internal static partial class RuntimeOrderPreparationService
                 job,
                 cookedFood,
                 AutomationDeliveryFailureKind.MissingOrder,
-                "fresh order/controller 与开锅前 exact identity 不一致，禁止向后继或并发订单送达："
+                "当前订单与开始制作时已经不同，为避免送错订单，本轮不会送达。详细原因："
                 + $"{bindingDiagnostic}；{runtimeOrder.Diagnostic}");
         }
 
@@ -471,8 +473,8 @@ internal static partial class RuntimeOrderPreparationService
             {
                 return ContinueOrBlockAutomationDelivery(
                     job,
-                    "无法精确确认血池地狱订单当前料理、待送达料理与酒水状态，"
-                    + $"本轮未进入手动交接：{yuumaDeliveryStateDiagnostic}");
+                    "无法确认血池地狱订单当前的料理和酒水状态，本轮未进入手动交接。详细原因："
+                    + yuumaDeliveryStateDiagnostic);
             }
 
             var activeOrderFood = yuumaServedFood ?? yuumaFoodInAir;
@@ -489,15 +491,15 @@ internal static partial class RuntimeOrderPreparationService
                 {
                     return ContinueOrBlockAutomationDelivery(
                         job,
-                        "血池地狱订单已有料理或料理正在送达，但无法确认是否为本 job 成品；"
+                        "血池地狱订单已有料理或料理正在送达，但无法确认是否为本次自动料理的成品；"
                         + "本轮未进入手动交接、入箱或复位厨具。");
                 }
 
                 if (activeFoodIdentity == RuntimeObjectIdentityComparison.Same)
                 {
                     var deliveryStartedMessage =
-                        $"{job.RecipeName} 的成品已进入游戏原生订单送达流程；"
-                        + "旧 cooking job 已释放，Mod 未送达、入箱或复位厨具。";
+                        $"{job.RecipeName} 的成品已进入游戏自身的订单送达流程；"
+                        + "旧自动料理任务已结束，Mod 未送达、入箱或复位厨具。";
                     RecordAutomationRuntimeEvent(
                         OrderPreparationStepCodes.CookingOwnershipLost,
                         job,
@@ -528,7 +530,7 @@ internal static partial class RuntimeOrderPreparationService
         {
             return ContinueOrBlockAutomationDelivery(
                 job,
-                $"无法确认目标订单的 ServFood，当前不执行送达或入保温箱：{servedFoodDiagnostic}");
+                $"无法确认目标订单当前的料理状态，本轮不执行送达或移入保温箱。详细原因：{servedFoodDiagnostic}");
         }
 
         var servedFoodIdentity = servedFood == null
@@ -543,7 +545,7 @@ internal static partial class RuntimeOrderPreparationService
 
             if (!job.FoodDeliveryCleanupTracker.TryBeginCommit())
             {
-                return BlockUncertainFoodDelivery(job, "同一成品已在订单中，但 job 无法锁定提交状态。");
+                return BlockUncertainFoodDelivery(job, "同一成品已在订单中，但自动料理任务无法确认提交状态。");
             }
 
             job.FoodDeliveryCleanupTracker.ResolveCommit(AutomationCommitResolution.Committed);
@@ -567,7 +569,7 @@ internal static partial class RuntimeOrderPreparationService
         {
             return BlockUncertainFoodDelivery(
                 job,
-                "订单已有料理，但无法确认它是否为本 job 成品；未重复送达、写入保温箱或清理厨具。");
+                "订单已有料理，但无法确认它是否为本次自动料理的成品；未重复送达、写入保温箱或清理厨具。");
         }
 
         if (servedFood != null)
@@ -586,14 +588,14 @@ internal static partial class RuntimeOrderPreparationService
         {
             return ContinueOrBlockAutomationDelivery(
                 job,
-                $"无法确认订单待送达料理，本轮未执行送达副作用：{pendingFoodDiagnostic}");
+                $"无法确认订单正在送达的料理，本轮未执行送达操作。详细原因：{pendingFoodDiagnostic}");
         }
 
         if (pendingFood != null && !IsSameObject(pendingFood, cookedFood))
         {
             return ContinueOrBlockAutomationDelivery(
                 job,
-                "订单已有其他待送达料理；即使料理 ID 相同也不会覆盖非本 job 的对象。");
+                "订单已有其他正在送达的料理；即使料理 ID 相同，也不会覆盖不属于本次自动料理的成品。");
         }
 
         if (IsWackyKoishiBossTarget(target))
@@ -832,7 +834,7 @@ internal static partial class RuntimeOrderPreparationService
         {
             return ContinueOrBlockAutomationDelivery(
                 job,
-                "血池地狱料理必须继续由专用结算事务处理，通用直送事务不会接管评价。");
+                "血池地狱料理必须继续由专用结算流程处理，通用送达流程不会评价该订单。");
         }
 
         var cleanup = TryCompleteCommittedFoodDeliveryCleanup(job);
@@ -923,7 +925,7 @@ internal static partial class RuntimeOrderPreparationService
         {
             return ContinueOrCloseCommittedFoodDeliveryEvaluation(
                 job,
-                "cooking job 缺少开锅前锁定的 exact order/controller receipt identity。",
+                "自动料理任务缺少开始制作前确认的订单、控制器和最终状态记录标识。",
                 OrderPreparationStepCodes.OrderEvaluationStateUnreadable,
                 out message,
                 out code);
@@ -936,17 +938,17 @@ internal static partial class RuntimeOrderPreparationService
             if (terminalReceipt.Disposition == RuntimeOrderTerminalDisposition.Evaluated)
             {
                 job.FoodDeliveryEvaluationState = AutomationFoodDeliveryEvaluationState.Completed;
-                job.FoodDeliveryEvaluationMessage = "已收到同 generation/order/controller 的原生评价终态回执"
-                    + $"（source={terminalReceipt.Source}; sequence={terminalReceipt.Sequence}），"
-                    + "不会重新读取订单 wrapper 或重复评价。";
+                job.FoodDeliveryEvaluationMessage = "游戏已确认本场经营编号、订单和客人控制器均匹配的评价结果"
+                    + $"（来源={terminalReceipt.Source}; 编号={terminalReceipt.Sequence}），"
+                    + "不会重新读取订单或重复评价。";
                 job.FoodDeliveryEvaluationCode = OrderPreparationStepCodes.FoodDelivered;
             }
             else
             {
                 job.FoodDeliveryEvaluationState = AutomationFoodDeliveryEvaluationState.OrderTerminated;
-                job.FoodDeliveryEvaluationMessage = "已收到同 generation/order/controller 的原生订单终止回执"
-                    + $"（source={terminalReceipt.Source}; sequence={terminalReceipt.Sequence}）；"
-                    + "订单已不再可评价，旧 cooking receipt 将退休且不会猜测为评价成功。";
+                job.FoodDeliveryEvaluationMessage = "游戏已确认本场经营编号、订单和客人控制器均匹配的订单结束结果"
+                    + $"（来源={terminalReceipt.Source}; 编号={terminalReceipt.Sequence}）；"
+                    + "该订单已无法评价，自动料理记录也已结束，不会将它误判为评价成功。";
                 job.FoodDeliveryEvaluationCode = OrderPreparationStepCodes.OrderTerminatedBeforeEvaluation;
             }
 
@@ -980,7 +982,7 @@ internal static partial class RuntimeOrderPreparationService
         {
             return ContinueOrCloseCommittedFoodDeliveryEvaluation(
                 job,
-                $"精确重取目标订单时发生异常：{ex.GetBaseException().Message}。",
+                $"重新读取目标订单时发生异常：{ex.GetBaseException().Message}。",
                 OrderPreparationStepCodes.CookingPending,
                 out message,
                 out code);
@@ -1004,7 +1006,7 @@ internal static partial class RuntimeOrderPreparationService
         {
             return ContinueOrCloseCommittedFoodDeliveryEvaluation(
                 job,
-                $"fresh order/controller 与开锅前 exact identity 不一致，禁止读取满足状态或触发评价：{bindingDiagnostic}。",
+                $"当前订单或客人控制器与开始制作时已经不同，已停止读取订单状态或执行评价：{bindingDiagnostic}。",
                 OrderPreparationStepCodes.OrderEvaluationStateUnreadable,
                 out message,
                 out code);
@@ -1038,7 +1040,7 @@ internal static partial class RuntimeOrderPreparationService
         if (!ReadBool(fulfilledValue))
         {
             job.FoodDeliveryEvaluationState = AutomationFoodDeliveryEvaluationState.NotRequired;
-            job.FoodDeliveryEvaluationMessage = "订单在本次料理送达后尚未同时满足料理和酒水，本 cooking job 不触发评价。";
+            job.FoodDeliveryEvaluationMessage = "订单在本次料理送达后尚未同时满足料理和酒水，本次自动料理不触发评价。";
             message = job.FoodDeliveryEvaluationMessage;
             return true;
         }
@@ -1079,7 +1081,7 @@ internal static partial class RuntimeOrderPreparationService
             {
                 return ContinueOrCloseCommittedFoodDeliveryEvaluation(
                     job,
-                    $"精确评价路由尚不可提交：{evaluation.Message}。",
+                    $"游戏订单评价暂时无法提交：{evaluation.Message}。",
                     string.IsNullOrWhiteSpace(evaluation.Code)
                         ? OrderPreparationStepCodes.CookingPending
                         : evaluation.Code,
@@ -1098,7 +1100,7 @@ internal static partial class RuntimeOrderPreparationService
         {
             return ContinueOrCloseCommittedFoodDeliveryEvaluation(
                 job,
-                $"订单已满足，但精确评价路由尚未完成提交：{evaluation.Message}。",
+                $"订单已满足，但游戏订单评价尚未完成提交：{evaluation.Message}。",
                 string.IsNullOrWhiteSpace(evaluation.Code)
                     ? OrderPreparationStepCodes.CookingPending
                     : evaluation.Code,
@@ -1130,8 +1132,8 @@ internal static partial class RuntimeOrderPreparationService
         var tracker = job.FoodDeliveryEvaluationCloseoutTracker;
         if (!tracker.RecordFailure(observedAtUtc, eligible: true))
         {
-            message = $"{detail}评价回执将在精确身份边界内有限重试"
-                + $"（{tracker.AttemptCount}/{tracker.MaxAttempts}；"
+            message = $"{detail}正在等待游戏确认订单评价结果"
+                + $"（尝试 {tracker.AttemptCount}/{tracker.MaxAttempts}；"
                 + $"有效等待 {tracker.EffectiveElapsed.TotalSeconds:F1}s/"
                 + $"{tracker.MaxEffectiveDuration.TotalSeconds:F0}s）。";
             code = transientCode;
@@ -1139,10 +1141,10 @@ internal static partial class RuntimeOrderPreparationService
         }
 
         code = OrderPreparationStepCodes.OrderEvaluationCloseoutUnresolved;
-        message = $"{job.Target.FoodName} 已确认送达且 controller lease 已释放，但在有界窗口内"
-            + "既未取得可安全评价的精确订单，也未收到同 generation/order/controller 的原生终态回执；"
-            + "该评价回执已退休，不会猜测评价成功或重放送达/评价。"
-            + $"最后诊断：{detail}尝试={tracker.AttemptCount}；"
+        message = $"{job.Target.FoodName} 已确认送达且 Mod 已停止控制厨具，但在等待时间内无法确认订单评价结果；"
+            + "既未找到可安全评价的同一订单，也未收到本场经营编号、订单和客人控制器均匹配的游戏最终状态记录；"
+            + "该评价记录已经结束，自动化不会把它误判为评价成功，也不会重复送达或评价，请人工确认游戏状态。"
+            + $"最后一次详细原因：{detail}尝试次数={tracker.AttemptCount}；"
             + $"有效等待={tracker.EffectiveElapsed.TotalSeconds:F1}s。";
         job.FoodDeliveryEvaluationState = AutomationFoodDeliveryEvaluationState.CloseoutUnresolved;
         job.FoodDeliveryEvaluationMessage = message;
@@ -1220,7 +1222,7 @@ internal static partial class RuntimeOrderPreparationService
                 out var bindingDiagnostic))
         {
             return "厨具已复位，但可用性通知执行前无法从当前物理目录重新取得同一厨具，"
-                + $"不会进入原生出锅事务（{bindingFailure}）：{bindingDiagnostic}。";
+                + $"不会进入游戏的出锅后续流程（{bindingFailure}）：{bindingDiagnostic}。";
         }
 
         try
@@ -1259,7 +1261,7 @@ internal static partial class RuntimeOrderPreparationService
                 .ToArray();
             if (extractionMethods.Length != 1)
             {
-                parts.Add("厨具出锅回调与 BepInEx 783 精确形态不一致，本 job 不会尝试调用。");
+                parts.Add("厨具出锅回调与 BepInEx #783 的接口形态不一致，本次自动料理不会尝试调用。");
                 return string.Concat(parts);
             }
 
@@ -1277,8 +1279,8 @@ internal static partial class RuntimeOrderPreparationService
         AutomationCookingJob job,
         string detail)
     {
-        var message = $"{job.RecipeName} 已确认送达订单且不会重复送达，但同一锅次厨具无法严格复位；"
-            + $"厨具清理已停止并保留现场，锁存的订单评价意图仍会在不访问该厨具的边界继续确认。{detail}";
+        var message = $"{job.RecipeName} 已确认送达订单且不会重复送达，但本次制作使用的厨具无法复位；"
+            + $"厨具清理已停止并保留现场，Mod 仍会在不操作该厨具的情况下确认订单评价结果。详细原因：{detail}";
         job.FoodDeliveryCleanupTerminal = true;
         job.FoodDeliveryCleanupMessage = message;
         job.FoodDeliveryCleanupTerminalCode = OrderPreparationStepCodes.CookingDeliveryCleanupBlocked;
@@ -1331,7 +1333,8 @@ internal static partial class RuntimeOrderPreparationService
         AutomationCookingJob job,
         string detail)
     {
-        var message = $"{job.RecipeName} 的订单送达提交状态无法确认；为避免重复送达或误清厨具，自动料理任务已停止并保留现场。{detail}";
+        var message = $"{job.RecipeName} 的订单送达结果无法确认；为避免重复送达或误清厨具，自动料理任务已停止并保留现场，请人工检查游戏状态。"
+            + $"详细原因：{detail}";
         RecordAutomationRuntimeEvent(
             OrderPreparationStepCodes.CookingDeliveryCommitUncertain,
             job,
@@ -1365,7 +1368,8 @@ internal static partial class RuntimeOrderPreparationService
 
         if (job.DeliveryTimeoutClock.Elapsed >= CookingDeliveryTimeout)
         {
-            var blockedMessage = $"{job.RecipeName} 自动送达达到有界重试上限：{message} 成品保留在厨具中，Mod 已释放所有权。";
+            var blockedMessage = $"{job.RecipeName} 的自动送达重试次数已用完：{message} "
+                + "成品保留在厨具中，Mod 已停止控制该任务。";
             RecordAutomationRuntimeEvent(
                 OrderPreparationStepCodes.CookingDeliveryBlocked,
                 job,
@@ -1550,7 +1554,7 @@ internal static partial class RuntimeOrderPreparationService
     private static string FormatSpecialFoodTargetForMessage(string signature, IReadOnlyList<string> tags)
     {
         if (string.IsNullOrWhiteSpace(signature)) return "无有效特殊料理目标";
-        return tags.Count == 0 ? signature : $"{signature}（Tag {string.Join("、", tags)}）";
+        return tags.Count == 0 ? signature : $"{signature}（标签：{string.Join("、", tags)}）";
     }
 
     private static IEnumerable<string> ReadFoodTagNames(object cookedFood)
@@ -1616,7 +1620,7 @@ internal static partial class RuntimeOrderPreparationService
         {
             if (!IsAutomationCookingJobOwned(job, out var ownershipDiagnostic))
             {
-                message = $"厨具锅次所有权已变化，拒绝操作当前成品。{ownershipDiagnostic}";
+                message = $"Mod 已不再控制本次制作使用的厨具，不会操作当前成品。详细原因：{ownershipDiagnostic}";
                 return false;
             }
 
@@ -1641,7 +1645,7 @@ internal static partial class RuntimeOrderPreparationService
                 if (!TryInspectStoredFoodIdentity(configure, cookedFood, out var alreadyStored, out var beforeDiagnostic))
                 {
                     job.WarmerResetTracker.ResolveCommit(AutomationCommitResolution.NotCommitted);
-                    message = $"调用 StoreFood 前无法读取 StoredFoods，本轮未执行任何保温箱或厨具副作用，将在有界送达时钟内重试：{beforeDiagnostic}";
+                    message = $"写入保温箱前无法读取当前保温箱状态，本轮未操作保温箱或厨具，将在剩余等待时间内重试。详细原因：{beforeDiagnostic}";
                     return false;
                 }
 
@@ -1687,7 +1691,7 @@ internal static partial class RuntimeOrderPreparationService
                     else
                     {
                         job.WarmerResetTracker.ResolveCommit(AutomationCommitResolution.Uncertain);
-                        message = $"{storeDiagnostic}；StoreFood 已实际进入原生方法。即使 StoredFoods 当前不含同一成品对象，也无法证明 Add、界面、伙伴或额外回调均未发生，已禁止再次调用 StoreFood 或清理厨具。";
+                        message = $"{storeDiagnostic}；已经开始调用游戏的 StoreFood 方法。即使 StoredFoods 当前不含同一成品对象，也无法证明 Add、界面、伙伴或额外回调均未发生，已禁止再次调用 StoreFood 或清理厨具。";
                         return false;
                     }
                 }
@@ -1768,7 +1772,7 @@ internal static partial class RuntimeOrderPreparationService
         string detail)
     {
         var completion = job.WarmerCompletion
-            ?? throw new InvalidOperationException("Warmer completion context is missing after StoreFood committed.");
+            ?? throw new InvalidOperationException("料理写入保温箱后缺少完成状态信息。");
         var postResetMessage = CompleteCookerExtractionAfterReset(job);
         var message = $"{completion.MessagePrefix}{detail}{postResetMessage}";
         if (!string.IsNullOrWhiteSpace(completion.DiagnosticEvent))
@@ -1866,8 +1870,8 @@ internal static partial class RuntimeOrderPreparationService
         if (methods.Length != 1)
         {
             diagnostic = methods.Length == 0
-                ? "未找到精确 StoreFood(Sellable, int) 方法"
-                : $"发现 {methods.Length} 个 StoreFood(Sellable, int) 方法，无法确定唯一原生入口";
+                ? "未找到符合 StoreFood(Sellable, int) 签名的方法"
+                : $"发现 {methods.Length} 个符合 StoreFood(Sellable, int) 签名的方法，无法确定唯一调用目标";
             return false;
         }
 
@@ -1932,7 +1936,7 @@ internal static partial class RuntimeOrderPreparationService
 
                 if (identity == RuntimeObjectIdentityComparison.Unknown)
                 {
-                    diagnostic = $"StoredFoods[{index}] 与目标成品的原生身份无法确认";
+                    diagnostic = $"无法确认 StoredFoods[{index}] 与目标成品是否为同一游戏对象";
                     return false;
                 }
             }
@@ -2014,7 +2018,7 @@ internal static partial class RuntimeOrderPreparationService
 
             if (!TryCreateIdleCookPhaseValue(cookController, out var phaseValue))
             {
-                message = "无法解析 CookController.Phase 的运行时类型，厨具复位未确认。";
+                message = "无法确定 CookController.Phase 的实际类型，厨具复位未确认。";
                 return false;
             }
 

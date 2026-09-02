@@ -1,14 +1,14 @@
 # Addressables 标签映射提取手册
 
-更新日期：2026-08-19
+更新日期：2026-09-02
 
-本文只说明从游戏 Addressables 恢复料理、酒水和规则 Tag 映射的操作步骤。Tag 的业务语义见
+本文只说明从游戏 Addressables 恢复料理、酒水和规则标签（Tag）映射的操作步骤。标签的业务语义见
 [料理机制知识库](tmi-cooking-mechanics-knowledge-base.md)，运行时读取和发布见
-[运行时 Provider](runtime-provider.md)。
+[游戏数据提供器](runtime-provider.md)。
 
 ## 1. 目标
 
-本手册用于从游戏本体资源中恢复权威的 tag id -> 名称映射，避免依赖手工猜测或标签显示顺序。
+本手册用于从游戏本体资源中恢复经过游戏数据确认的标签 ID -> 名称映射，避免依赖手工猜测或标签显示顺序。
 
 优先目标：
 
@@ -16,7 +16,7 @@
 - 酒水标签：`BeverageTagProfile.asset` + 对应语言文本
 - 标签规则：`FoodTagRuleProfile.asset`
 
-## 2. 权威数据源
+## 2. 游戏数据来源
 
 优先级从高到低：
 
@@ -92,15 +92,15 @@
 对于料理标签：
 
 - `FoodTagProfile.asset`
-  - 读取 `indexes` 数组，得到真实 tag id 顺序
+  - 读取 `indexes` 数组，得到真实标签 ID 顺序
 - 中文 `FoodTagsLang.txt`
   - 读取 `id\ttag` 表，得到中文显示名
 
-将两者结合后，即可恢复权威 id -> tag 映射。
+将两者结合后，即可恢复以游戏资源为依据的 ID -> 标签映射。
 
 ## 4. 已核实结论（料理标签）
 
-当前仓库已验证以下关键事实：
+当前仓库已验证以下关键结论：
 
 - `FoodTagProfile.asset` 位于核心 bundle `core_07e01badce0c3466a71d003dd46efa15.bundle`
 - 中文 `FoodTagsLang.txt` 位于核心 bundle `core_d588e1cad1b8b9b47f46af2be495e6c3.bundle`
@@ -121,8 +121,8 @@
 当映射被重新核实后，必须同步检查：
 
 - `mods/bepinex/src/Save/` 中的运行时解析逻辑和诊断输出
-- [料理机制知识库](tmi-cooking-mechanics-knowledge-base.md)中的 Tag 身份或机制结论
-- [运行时 Provider](runtime-provider.md)中的映射来源边界
+- [料理机制知识库](tmi-cooking-mechanics-knowledge-base.md)中的标签标识或机制结论
+- [游戏数据提供器](runtime-provider.md)中的映射来源边界
 
 只有用户安装或操作发生变化时才修改用户 README；资源文件名、解码流程或内部映射变化不进入用户文档。
 
@@ -130,7 +130,7 @@
 
 - 不要把 key 字节流里的字符串出现顺序当成真正的 key index。
 - 不要把 `m_EntryDataString` 的第 5 个字段误认为 `internalId` 索引。
-- 不要在未核实映射前重新启用数字 tag 自动识别。
+- 不要在未核实映射前重新启用数字标签自动识别。
 - 不要直接对全部 bundle 做盲目全文搜索，优先使用 catalog 反查依赖。
 
 ## 7. 建议输出格式
@@ -138,6 +138,6 @@
 当需要把提取结果回填到仓库时，优先输出为结构化 JSON：
 
 - key：数字 id（字符串形式）
-- value：当前仓库使用的标准中文 tag 名称
+- value：当前仓库使用的标准中文标签名称
 
 若游戏文本与仓库内部命名不一致，应在解析层做别名归一化，不要硬改原始映射。

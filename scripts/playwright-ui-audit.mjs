@@ -371,7 +371,7 @@ async function auditDeviceAuthorityLayout(page, viewport, tab) {
       viewport: viewport.name,
       tab: tab.label,
       component: 'DeviceAuthority',
-      message: `设备权威列表缺失或溢出：${JSON.stringify(result)}`,
+      message: `设备列表缺失或溢出：${JSON.stringify(result)}`,
     });
   }
   if (viewport.name !== 'desktop') return;

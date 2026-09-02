@@ -779,7 +779,7 @@ assert.ok(
 );
 assert.match(
   directFoodDelivery,
-  /if \(!specialTargetComparisonAvailable\)[\s\S]*本轮未送达、入箱或复位厨具，等待权威目标恢复。[\s\S]*if \(specialTargetChanged\)/,
+  /if \(!specialTargetComparisonAvailable\)[\s\S]*本轮未送达、入箱或复位厨具，等待目标状态恢复。[\s\S]*if \(specialTargetChanged\)/,
   'An unavailable special target must wait without being treated as a confirmed target rotation.',
 );
 assert.match(
@@ -1880,7 +1880,7 @@ assert.match(
 );
 assert.match(
   requestedTargetValidation,
-  /request\.SpecialTargetRevision != 0[\s\S]*非血池地狱特殊料理目标不能携带 target revision/,
+  /request\.SpecialTargetRevision != 0[\s\S]*当前特殊经营订单携带了不适用的目标版本/,
   'Ordinary and Yuyuko paths must remain isolated from the Yuuma revision protocol.',
 );
 const currentTargetValidation = methodSource(
@@ -1894,7 +1894,7 @@ assert.match(
 );
 assert.match(
   currentTargetValidation,
-  /target\.SpecialFoodTargetRevision != 0[\s\S]*非血池地狱自动料理目标不能携带 target revision/,
+  /target\.SpecialFoodTargetRevision != 0[\s\S]*当前自动料理任务携带了不适用的目标版本/,
   'Non-Yuuma cooking targets must keep revision zero.',
 );
 const revisionCapture = methodSource(
@@ -2402,7 +2402,7 @@ assert.ok(
 );
 assert.match(
   cookerStart.slice(finalCookerRevalidationIndex, setCookIndex),
-  /BlockCookingStartUnowned\([\s\S]*Mod 未调用 SetCook/,
+  /BlockCookingStartUnowned\([\s\S]*Mod 未写入厨具/,
   'Post-deduction reservation drift must stop before SetCook behind an authoritative safety barrier.',
 );
 const immediateOwnershipIndex = cookerStart.indexOf(
@@ -2683,7 +2683,7 @@ assert.match(
 );
 assert.match(
   cooking,
-  /if \(controllerState\.IsEmptyDesk\)[\s\S]*已变为空厨具位[\s\S]*等待最新快照重新调度/,
+  /if \(controllerState\.IsEmptyDesk\)[\s\S]*已变为空厨具位[\s\S]*等待厨具状态刷新后重新安排/,
   'An action-time reservation that became an empty desk must wait without selecting another controller.',
 );
 assert.match(

@@ -49,7 +49,7 @@ export const DEFAULT_RECOMMENDATION_DATA: RecommendationDataSet = {
   beverageTagIdMap: {},
   tagPriorityRules: [],
   source: 'unavailable',
-  status: '等待游戏运行时数据',
+  status: '等待游戏数据',
 };
 
 export interface RuntimeDataCatalogSnapshot {
@@ -99,7 +99,7 @@ export function buildRecommendationDataSet(
   ) {
     return {
       ...DEFAULT_RECOMMENDATION_DATA,
-      status: runtimeData.status || runtimeData.source || '运行时数据不完整',
+      status: runtimeData.status || runtimeData.source || '游戏数据不完整',
     };
   }
 
@@ -114,7 +114,7 @@ export function buildRecommendationDataSet(
     beverageTagIdMap: normalizeStringRecord(runtimeData.beverageTagIdMap),
     tagPriorityRules: normalizeRuntimeTagPriorityRules(runtimeData.tagPriorityRules),
     source: 'runtime',
-    status: runtimeData.status || runtimeData.source || 'game runtime',
+    status: runtimeData.status || runtimeData.source || '游戏数据已就绪',
   };
 }
 

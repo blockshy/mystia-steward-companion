@@ -48,7 +48,7 @@ export function selectYuumaNormalExecutionTarget({
   if (role === YUUMA_UNVERIFIED_ROLE) {
     return {
       target: null,
-      message: `${challengeLabel}订单角色身份尚未确认，自动化目标已暂停。`,
+      message: `${challengeLabel}尚未确认订单对应的角色，自动化目标已暂停。`,
     };
   }
   if (role !== YUUMA_BOSS_ROLE) return emptySelection();
@@ -56,19 +56,19 @@ export function selectYuumaNormalExecutionTarget({
   if (order.runtimeGuestId !== YUUMA_CHARACTER_ID) {
     return {
       target: null,
-      message: `${challengeLabel}订单运行时角色身份不完整：需要 runtimeGuestId=${YUUMA_CHARACTER_ID}，当前为 ${order.runtimeGuestId ?? 'missing'}。`,
+      message: `${challengeLabel}的游戏内角色信息不完整：需要角色 #${YUUMA_CHARACTER_ID}，当前为 ${order.runtimeGuestId ?? '未读取'}。`,
     };
   }
 
   const rule = buildYuumaChallengeOrderRule(specialBusiness, order.specialBusinessRole);
   if (rule.blockingReason) return { target: null, message: rule.blockingReason };
   if (!runtime || data.source !== 'runtime') {
-    return { target: null, message: `${challengeLabel}等待完整运行时推荐数据后再计算料理目标。` };
+    return { target: null, message: `${challengeLabel}等待读取完整游戏推荐数据后再计算料理目标。` };
   }
 
   const context = buildNormalTargetRuntimeContext(runtime, preferences, data);
   if (!context) {
-    return { target: null, message: `${challengeLabel}缺少完整库存、厨具或菜单运行时数据，暂不计算料理目标。` };
+    return { target: null, message: `${challengeLabel}缺少完整的库存、厨具或菜单数据，暂不计算料理目标。` };
   }
   const originalRecipe = findOrderRecipe(order, data);
   if (!originalRecipe) {
@@ -83,7 +83,7 @@ export function selectYuumaNormalExecutionTarget({
   if (!customer) {
     return {
       target: null,
-      message: `${challengeLabel}缺少运行时 characterId=${YUUMA_CHARACTER_ID} 的完整料理、酒水喜好档案，暂不计算料理目标。`,
+      message: `${challengeLabel}缺少游戏角色 #${YUUMA_CHARACTER_ID} 的完整料理和酒水喜好数据，暂不计算料理目标。`,
     };
   }
 
@@ -113,7 +113,7 @@ export function selectYuumaNormalExecutionTarget({
         order,
         strictBest.food,
         strictBest.beverage,
-        `保持原订单料理与酒水，并同时满足${challengeLabel}目标 Tag：${rule.foodTarget.tags.join('、')}`,
+        `保持原订单料理与酒水，并同时满足${challengeLabel}目标标签：${rule.foodTarget.tags.join('、')}`,
         { specialTargetFoodTags: rule.foodTarget.tags },
       ),
       message: '',
@@ -144,14 +144,14 @@ export function selectYuumaNormalExecutionTarget({
 
   const matchedTags = controlledBest.food.matchedSpecialFoodTargetTags;
   const matchText = matchedTags.length > 0
-    ? `仅命中 ${matchedTags.length}/${rule.foodTarget.tags.length} 个目标 Tag：${matchedTags.join('、')}`
-    : `未命中当前目标 Tag：${rule.foodTarget.tags.join('、')}`;
+    ? `仅命中 ${matchedTags.length}/${rule.foodTarget.tags.length} 个目标标签：${matchedTags.join('、')}`
+    : `未命中当前目标标签：${rule.foodTarget.tags.join('、')}`;
   return {
     target: buildExecutionTarget(
       order,
       controlledBest.food,
       controlledBest.beverage,
-      `保持原订单料理与酒水；当前无法同时满足${challengeLabel}目标 Tag，改用受控推进方案（${matchText}）。该方案会交由游戏原生低收益结算，可能造成较低伤害并增加狂暴。`,
+      `保持原订单料理与酒水；当前无法同时满足${challengeLabel}目标标签，改用低收益推进方案（${matchText}）。该方案会交由游戏按低收益结算，可能造成较低伤害并增加狂暴。`,
       {
         allowYuumaControlledProgression: true,
         specialTargetFoodTags: rule.foodTarget.tags,
@@ -177,7 +177,7 @@ function buildYuumaHardBlockMessage({
   targetTags: readonly string[];
 }): string {
   if (!context.availableRecipeIds.has(originalRecipe.id)) {
-    return `${challengeLabel}原订单料理 ${originalRecipe.name} 尚未解锁，不能生成受控推进方案。`;
+    return `${challengeLabel}原订单料理 ${originalRecipe.name} 尚未解锁，不能生成低收益推进方案。`;
   }
 
   const ingredientsByName = new Map(data.ingredients.map((ingredient) => [ingredient.name, ingredient]));
@@ -193,17 +193,17 @@ function buildYuumaHardBlockMessage({
   }
 
   if (context.hasCookerSnapshot && !context.placedCookerNames.has(originalRecipe.cooker)) {
-    return `${challengeLabel}原订单料理 ${originalRecipe.name} 所需厨具 ${originalRecipe.cooker || '未知'} 当前不可用，不能生成受控推进方案。`;
+    return `${challengeLabel}原订单料理 ${originalRecipe.name} 所需厨具 ${originalRecipe.cooker || '未知'} 当前不可用，不能生成低收益推进方案。`;
   }
 
   if (!context.availableBeverageIds.has(originalBeverage.id)) {
-    return `${challengeLabel}原订单酒水 ${originalBeverage.name} 当前不可用，不能生成受控推进方案。`;
+    return `${challengeLabel}原订单酒水 ${originalBeverage.name} 当前不可用，不能生成低收益推进方案。`;
   }
   if (context.excludedBeverageIds.has(originalBeverage.id)) {
-    return `${challengeLabel}原订单酒水 ${originalBeverage.name} 已被排除，不能生成受控推进方案。`;
+    return `${challengeLabel}原订单酒水 ${originalBeverage.name} 已被排除，不能生成低收益推进方案。`;
   }
 
-  return `${challengeLabel}原订单 ${originalRecipe.name} / ${originalBeverage.name} 没有通过料理、酒水与厨具硬门禁的受控推进方案；当前目标 Tag：${targetTags.join('、')}。`;
+  return `${challengeLabel}原订单 ${originalRecipe.name} / ${originalBeverage.name} 没有同时满足料理、酒水与厨具条件的低收益推进方案；当前目标标签：${targetTags.join('、')}。`;
 }
 
 function scoreYuumaFood(candidate: FoodCandidate): number {

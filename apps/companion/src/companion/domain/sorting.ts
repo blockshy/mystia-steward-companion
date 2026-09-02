@@ -6,7 +6,7 @@ import type {
   SpecialBusinessContext,
 } from '@/companion/types';
 
-/** Mod 参与投影中供 operational 消费者使用的最小排序状态。 */
+/** Mod 调度状态中供实际执行功能使用的最小排序信息。 */
 export interface NightOrderOperationalParticipation {
   operationallyParticipating: boolean;
   queuePosition: number | null;
@@ -45,7 +45,7 @@ export function sortNightOrderRows<T extends { order: NightBusinessOrder }>(
 /**
  * 过滤并排序可以进入高亮、自动化或资源预约的稀客订单。
  *
- * 顺序契约为：特殊经营已验证的硬优先 lane，其次是 Mod 权威分配的连续队列位置，
+ * 顺序规则为：特殊经营已验证的强制优先组，其次是 Mod 分配的连续队列位置，
  * 最后才是现有的时间/稀客分组稳定顺序。缺失正队列位置的行即使声称参与也会
  * fail-closed，不由前端补造顺序。
  */

@@ -365,12 +365,12 @@ function getNormalAutomationTargetSelection(
     && specialBusiness.challengeTypeAvailable !== true
     ? specialBusiness.error?.trim() || '特殊经营类型暂时无法读取，自动化已暂停该订单。'
     : requiresSpecialTarget && businessGeneration <= 0
-    ? '特殊经营料理执行目标缺少有效经营代际，自动化已暂停该订单。'
+    ? '特殊经营料理目标缺少本场经营编号，自动化已暂停该订单。'
     : requiresSpecialTarget
       && rule.foodTarget.enforcement === 'require'
       && rule.foodTarget.tags.length > 0
       && !targetPolicy.specialTargetSignature
-      ? '特殊经营料理目标缺少有效经营代际或目标身份，自动化已暂停该订单。'
+      ? '特殊经营料理目标缺少本场经营编号或目标标识，自动化已暂停该订单。'
       : '';
   if (policyError) {
     return {
@@ -406,7 +406,7 @@ function getNormalAutomationTargetSelection(
     };
   }
   if (!requiresRecipeTarget) {
-    const missingTargetMessage = '特殊经营料理执行目标未在执行前锁存，自动化已暂停该订单。';
+    const missingTargetMessage = '特殊经营料理目标未在执行前固定，自动化已暂停该订单。';
     return {
       orderKey,
       target: null,
@@ -1213,7 +1213,7 @@ function enforceAutomationRollbackLimit<T extends AutoFirstOrderState | NormalAu
   now: number,
 ): T {
   if (state.paused || state.rollbackCount <= 0 || state.rollbackCount < maxRollbacks) return state;
-  const limitMessage = `自动回退已达到上限 ${state.rollbackCount}/${maxRollbacks}，已暂停该订单。`;
+  const limitMessage = `自动重新制作次数已达到上限 ${state.rollbackCount}/${maxRollbacks}，已暂停该订单。`;
   return {
     ...state,
     paused: true,
@@ -1387,7 +1387,7 @@ function resetRareOrderStateAfterRuntimeMismatch(
     rollbackCount: rollback.rollbackCount,
     nextAttemptAtMs: now + 500,
     lastError: rollback.action === 'deferred'
-      ? `${event.message || '特殊经营料理目标暂时不可用或已变化。'} 已保留旧目标回退预算，等待新的非空目标身份后再确认轮换。`
+      ? `${event.message || '特殊经营料理目标暂时不可用或已变化。'} 已保留旧目标的重新制作计数，等待读取到新的目标标识后再确认变化。`
       : event.message || '非目标成品已放入保温箱，重新制作目标料理。',
     lastRuntimeEventSequence: event.sequence,
     pausedStage: '',
@@ -1537,7 +1537,7 @@ function resetNormalOrderStateAfterRuntimeMismatch(
     rollbackCount: rollback.rollbackCount,
     nextAttemptAtMs: now + 500,
     lastError: rollback.action === 'deferred'
-      ? `${event.message || '特殊经营料理目标暂时不可用或已变化。'} 已保留旧目标回退预算，等待新的非空目标身份后再确认轮换。`
+      ? `${event.message || '特殊经营料理目标暂时不可用或已变化。'} 已保留旧目标的重新制作计数，等待读取到新的目标标识后再确认变化。`
       : event.message || '非目标成品已放入保温箱，重新制作目标料理。',
     lastRuntimeEventSequence: event.sequence,
     pausedStage: '',
@@ -1562,7 +1562,7 @@ function pauseRareOrderStateAfterRuntimeFailure(
     retryCount: 0,
     retryStage: '',
     nextAttemptAtMs: 0,
-    lastError: event.message || '运行时无法安全确认自动化副作用，已暂停该订单。',
+    lastError: event.message || '无法确认自动化对游戏状态的影响，已暂停该订单。',
     lastRuntimeEventSequence: event.sequence,
     pausedStage: manualResolutionRequired ? resolveAutomationEventStage(event) : state.step,
     pauseReasonCode: event.reasonCode || event.code,
@@ -1592,7 +1592,7 @@ function pauseNormalOrderStateAfterRuntimeFailure(
     retryCount: 0,
     retryStage: '',
     nextAttemptAtMs: 0,
-    lastError: event.message || '运行时无法安全确认自动化副作用，已暂停该订单。',
+    lastError: event.message || '无法确认自动化对游戏状态的影响，已暂停该订单。',
     lastRuntimeEventSequence: event.sequence,
     pausedStage: manualResolutionRequired ? resolveAutomationEventStage(event) : state.step,
     pauseReasonCode: event.reasonCode || event.code,
@@ -2396,7 +2396,7 @@ export function ModWorkbench() {
         targetKind: event.targetKind,
         title: `${event.targetKind === 'normal' ? '普客' : '稀客'} · ${event.guestName || '未知客人'}${event.deskCode >= 0 ? ` · 桌 ${formatDesk(event.deskCode)}` : ''}`,
         code: event.reasonCode || event.code,
-        message: event.message || 'Mod 无法确认自动化副作用，请检查游戏现场。',
+        message: event.message || 'Mod 无法确认自动化操作的结果，请检查游戏当前状态。',
         error: automationBarrierAckErrors[event.sequence] ?? '',
       }));
   }, [automationBarrierAckErrors, snapshot?.automationEvents]);
@@ -3082,7 +3082,7 @@ export function ModWorkbench() {
     if (rollback.action === 'deferred') return;
     if (!connectionReadyForActions || !apiToken) return;
     const eventName = 'automation-rollback-budget-consumed';
-    const message = `同一料理执行目标发生可恢复中断，回退预算 ${previousRollbackCount} -> ${nextRollbackCount}。`;
+    const message = `同一料理目标发生可恢复中断，重新制作计数 ${previousRollbackCount} → ${nextRollbackCount}。`;
     const specialBusiness = snapshot?.specialBusiness ?? null;
     const orderLine = [
       `sequence=${event.sequence}`,
@@ -3171,7 +3171,7 @@ export function ModWorkbench() {
   }) => {
     if (!connectionReadyForActions || !apiToken) return;
     const eventName = 'automation-rollback-budget-retired';
-    const message = `特殊经营料理目标已轮换，旧目标回退预算 ${input.previousRollbackCount} 已退休，新目标从 0 开始。`;
+    const message = `特殊经营料理目标已经变化，旧目标的重新制作计数为 ${input.previousRollbackCount}，新目标从 0 开始。`;
     const specialBusiness = snapshot?.specialBusiness ?? null;
     const orderLine = [
       `targetKind=${input.targetKind}`,
@@ -3262,7 +3262,7 @@ export function ModWorkbench() {
       rareOrderStatesRef.current.set(orderKey, {
         ...emptyAutoFirstOrderState(orderKey, now),
         lastRuntimeEventSequence: state.lastRuntimeEventSequence,
-        lastError: '安全栅栏已由其他自动化控制窗口确认，等待下一轮重新判断。',
+        lastError: '这项待人工确认状态已由其他自动化控制窗口处理，等待下一轮重新判断。',
       });
       rareChanged = true;
     }
@@ -3275,7 +3275,7 @@ export function ModWorkbench() {
       normalOrderStatesRef.current.set(orderKey, {
         ...emptyNormalAutoOrderState(orderKey, now),
         lastRuntimeEventSequence: state.lastRuntimeEventSequence,
-        lastError: '安全栅栏已由其他自动化控制窗口确认，等待下一轮重新判断。',
+        lastError: '这项待人工确认状态已由其他自动化控制窗口处理，等待下一轮重新判断。',
       });
       normalChanged = true;
     }
@@ -3283,12 +3283,12 @@ export function ModWorkbench() {
     if (rareChanged) {
       lastAutoFirstOrderAtRef.current = 0;
       refreshRareOrderDiagnostics(now);
-      publishAutoPrepMessage('自动化\n检测到安全栅栏已由其他控制窗口确认，本地稀客订单状态已重新同步。');
+      publishAutoPrepMessage('自动化\n检测到待人工确认状态已由其他控制窗口处理，本地稀客订单状态已重新同步。');
     }
     if (normalChanged) {
       lastAutoNormalOrderAtRef.current = 0;
       refreshNormalOrderDiagnostics(snapshot?.normalBusiness?.orders ?? [], now);
-      publishNormalOrderMessage('普客自动化\n检测到安全栅栏已由其他控制窗口确认，本地订单状态已重新同步。');
+      publishNormalOrderMessage('普客自动化\n检测到待人工确认状态已由其他控制窗口处理，本地订单状态已重新同步。');
     }
   }, [
     automationSessionId,
@@ -3444,14 +3444,14 @@ export function ModWorkbench() {
     if (rareChanged) {
       refreshRareOrderDiagnostics(now);
       publishAutoPrepMessage(rarePaused
-        ? '自动化\n料理任务已进入阻塞终态，当前订单自动化已暂停；请展开诊断，并按订单提示重试或确认已处理。'
-        : '自动化\n料理任务被外部操作中断，下一轮将依据订单事实重新调度。');
+        ? '自动化\n料理任务需要人工处理，当前订单自动化已暂停；请展开诊断，并按订单提示重试或确认已处理。'
+        : '自动化\n料理任务被外部操作中断，下一轮将根据当前订单状态重新调度。');
     }
     if (normalChanged) {
       refreshNormalOrderDiagnostics(normalOrders, now);
       publishNormalOrderMessage(normalPaused
-        ? '普客自动化\n料理任务已进入阻塞终态，当前订单自动化已暂停；请展开诊断，并按订单提示重试或确认已处理。'
-        : '普客自动化\n料理任务被外部操作中断，下一轮将依据订单事实重新调度。');
+        ? '普客自动化\n料理任务需要人工处理，当前订单自动化已暂停；请展开诊断，并按订单提示重试或确认已处理。'
+        : '普客自动化\n料理任务被外部操作中断，下一轮将根据当前订单状态重新调度。');
     }
   }, [
     companionPreferences.autoMaxRollbacks,
@@ -3504,13 +3504,13 @@ export function ModWorkbench() {
     );
     if (!transition.resumed) {
       if (!state.manualResolutionRequired) return;
-      publishAutoPrepMessage('自动化\n该订单存在无法自动确认的游戏副作用，请检查游戏状态后点击“确认已处理”。');
+      publishAutoPrepMessage('自动化\n该订单的游戏操作结果无法自动确认，请检查游戏状态后点击“确认已处理”。');
       return;
     }
     rareOrderStatesRef.current.set(orderKey, transition.state);
     lastAutoFirstOrderAtRef.current = 0;
     publishAutoPrepMessage(transition.rollbackBudgetReset
-      ? '自动化\n已重新启用该稀客订单，并重新开放一轮自动回退额度。'
+      ? '自动化\n已重新启用该稀客订单，并重置自动重新制作次数。'
       : '自动化\n已重新启用该稀客订单，下一轮会继续处理。');
     refreshRareOrderDiagnostics(now);
   }, [publishAutoPrepMessage, refreshRareOrderDiagnostics]);
@@ -3521,13 +3521,13 @@ export function ModWorkbench() {
   ): Promise<AutomationSafetyBarrierAckResponse> => {
     const sessionId = automationStateSessionIdRef.current;
     if (sequence <= 0) {
-      return automationBarrierAckFailure(sequence, '该订单没有可确认的安全栅栏 sequence。');
+      return automationBarrierAckFailure(sequence, '该订单没有可供确认的事件编号。');
     }
     if (!sessionId || !automationLeaseOwnedRef.current) {
-      return automationBarrierAckFailure(sequence, '当前未持有本游戏实例的自动化控制权，不能确认安全栅栏。');
+      return automationBarrierAckFailure(sequence, '当前未持有本游戏实例的自动化控制权，不能确认处理结果。');
     }
     if (automationBarrierAckRef.current) {
-      return automationBarrierAckFailure(sequence, '另一笔安全栅栏确认正在处理中，请稍后重试。');
+      return automationBarrierAckFailure(sequence, '另一项人工确认正在处理中，请稍后重试。');
     }
 
     const entry: AutomationBarrierAckEntry = { key: busyKey, sessionId, sequence };
@@ -3547,17 +3547,17 @@ export function ModWorkbench() {
         companionDeviceAuthority.authorityRevision,
       );
       if (automationStateSessionIdRef.current !== sessionId) {
-        return automationBarrierAckFailure(sequence, '游戏自动化实例已切换，旧 sequence 的确认结果已作废。');
+        return automationBarrierAckFailure(sequence, '游戏自动化实例已切换，旧事件的确认结果已作废。');
       }
       if (!response.ok) {
-        return automationBarrierAckFailure(sequence, response.error || 'Mod 未确认安全栅栏 ACK。');
+        return automationBarrierAckFailure(sequence, response.error || 'Mod 未确认这项处理结果。');
       }
       if (response.sequence !== sequence || response.acknowledgedCount <= 0) {
-        return automationBarrierAckFailure(sequence, 'Mod 返回的安全栅栏 ACK 与当前 sequence 不一致。');
+        return automationBarrierAckFailure(sequence, 'Mod 返回的确认结果与当前事件编号不一致。');
       }
       if (!response.acknowledgedSequences.includes(sequence)
         || response.acknowledgedSequences.length !== response.acknowledgedCount) {
-        return automationBarrierAckFailure(sequence, 'Mod 返回的安全栅栏 ACK 序号集合无效。');
+        return automationBarrierAckFailure(sequence, 'Mod 返回的已确认事件编号无效。');
       }
       return response;
     } catch (err) {
@@ -3633,7 +3633,7 @@ export function ModWorkbench() {
           ...current,
           lastError: errorMessage,
         }, updatedAt, errorMessage));
-        publishAutoPrepMessage(`自动化\n${errorMessage}；安全栅栏仍保持。`);
+        publishAutoPrepMessage(`自动化\n${errorMessage}；该订单仍需人工确认。`);
         refreshRareOrderDiagnostics(updatedAt);
         return;
       }
@@ -3647,7 +3647,7 @@ export function ModWorkbench() {
         refreshNormalOrderDiagnostics(snapshot?.normalBusiness?.orders ?? [], updatedAt);
       }
       if (!acknowledged.has(current.lastRuntimeEventSequence)) {
-        const errorMessage = `事件 #${sequence} 已确认，但检测到更新的安全栅栏 #${current.lastRuntimeEventSequence}，不会解除当前阻断。`;
+        const errorMessage = `事件 #${sequence} 已确认，但检测到较新的待确认事件 #${current.lastRuntimeEventSequence}，当前订单仍保持暂停。`;
         const latest = rareOrderStatesRef.current.get(orderKey) ?? current;
         rareOrderStatesRef.current.set(orderKey, withAutomationDetail({
           ...latest,
@@ -3658,7 +3658,7 @@ export function ModWorkbench() {
         return;
       }
       lastAutoFirstOrderAtRef.current = 0;
-      publishAutoPrepMessage(`自动化\n${response.status || '安全栅栏已确认，下一轮会按游戏当前事实重新判断。'}`);
+      publishAutoPrepMessage(`自动化\n${response.status || '处理结果已确认，下一轮会根据当前游戏状态重新判断。'}`);
       refreshRareOrderDiagnostics(updatedAt);
       scheduleAutomationRefresh();
     })();
@@ -3683,7 +3683,7 @@ export function ModWorkbench() {
     );
     if (!transition.resumed) {
       if (!state.manualResolutionRequired) return;
-      publishNormalOrderMessage('普客自动化\n该订单存在无法自动确认的游戏副作用，请检查游戏状态后点击“确认已处理”。');
+      publishNormalOrderMessage('普客自动化\n该订单的游戏操作结果无法自动确认，请检查游戏状态后点击“确认已处理”。');
       return;
     }
     normalOrderStatesRef.current.set(orderKey, transition.state);
@@ -3691,7 +3691,7 @@ export function ModWorkbench() {
     const orders = snapshot?.normalBusiness?.orders ?? [];
     refreshNormalOrderDiagnostics(orders, now);
     publishNormalOrderMessage(transition.rollbackBudgetReset
-      ? '普客自动化\n已重新启用该普客订单，并重新开放一轮自动回退额度。'
+      ? '普客自动化\n已重新启用该普客订单，并重置自动重新制作次数。'
       : '普客自动化\n已重新启用该普客订单，下一轮会继续处理。');
   }, [publishNormalOrderMessage, refreshNormalOrderDiagnostics, snapshot?.normalBusiness?.orders]);
 
@@ -3703,7 +3703,7 @@ export function ModWorkbench() {
       lastAutoNormalOrderAtRef.current = 0;
       const orders = snapshot?.normalBusiness?.orders ?? [];
       refreshNormalOrderDiagnostics(orders, now);
-      publishNormalOrderMessage('普客自动化\n已重置该普客订单状态，下一轮会按游戏当前订单事实重新判断。');
+      publishNormalOrderMessage('普客自动化\n已重置该普客订单状态，下一轮会根据当前游戏订单状态重新判断。');
       return;
     }
 
@@ -3720,7 +3720,7 @@ export function ModWorkbench() {
           ...current,
           lastError: errorMessage,
         }, updatedAt, errorMessage));
-        publishNormalOrderMessage(`普客自动化\n${errorMessage}；安全栅栏仍保持。`);
+        publishNormalOrderMessage(`普客自动化\n${errorMessage}；该订单仍需人工确认。`);
         refreshNormalOrderDiagnostics(orders, updatedAt);
         return;
       }
@@ -3732,7 +3732,7 @@ export function ModWorkbench() {
       );
       if (cleared.rareChanged) refreshRareOrderDiagnostics(updatedAt);
       if (!acknowledged.has(current.lastRuntimeEventSequence)) {
-        const errorMessage = `事件 #${sequence} 已确认，但检测到更新的安全栅栏 #${current.lastRuntimeEventSequence}，不会解除当前阻断。`;
+        const errorMessage = `事件 #${sequence} 已确认，但检测到较新的待确认事件 #${current.lastRuntimeEventSequence}，当前订单仍保持暂停。`;
         const latest = normalOrderStatesRef.current.get(orderKey) ?? current;
         normalOrderStatesRef.current.set(orderKey, withAutomationDetail({
           ...latest,
@@ -3744,7 +3744,7 @@ export function ModWorkbench() {
       }
 
       lastAutoNormalOrderAtRef.current = 0;
-      publishNormalOrderMessage(`普客自动化\n${response.status || '安全栅栏已确认，下一轮会按游戏当前订单事实重新判断。'}`);
+      publishNormalOrderMessage(`普客自动化\n${response.status || '处理结果已确认，下一轮会根据当前游戏订单状态重新判断。'}`);
       refreshNormalOrderDiagnostics(orders, updatedAt);
       scheduleAutomationRefresh();
     })();
@@ -3763,7 +3763,7 @@ export function ModWorkbench() {
       const response = await requestAutomationBarrierAck(`barrier:${sequence}`, sequence);
       const updatedAt = Date.now();
       if (!response.ok) {
-        const errorMessage = response.error || 'Mod 未确认安全栅栏 ACK。';
+        const errorMessage = response.error || 'Mod 未确认这项处理结果。';
         setAutomationBarrierAckErrors((current) => ({ ...current, [sequence]: errorMessage }));
         publishAutoPrepMessage(`自动化\n确认事件 #${sequence} 失败：${errorMessage}`);
         return;
@@ -3774,7 +3774,7 @@ export function ModWorkbench() {
       lastAutoNormalOrderAtRef.current = 0;
       refreshRareOrderDiagnostics(updatedAt);
       refreshNormalOrderDiagnostics(snapshot?.normalBusiness?.orders ?? [], updatedAt);
-      publishAutoPrepMessage(`自动化\n${response.status || `事件 #${sequence} 的安全栅栏已确认。`}`);
+      publishAutoPrepMessage(`自动化\n${response.status || `事件 #${sequence} 的处理结果已确认。`}`);
       scheduleAutomationRefresh();
     })();
   }, [
@@ -3844,7 +3844,7 @@ export function ModWorkbench() {
     if (candidateResult.selections.length === 0) {
       publishRareAutomationDecisionDiagnostic('rare-candidate-empty', candidateResult, candidateResult.message, selectionPreferences);
       if ((snapshot?.automationCookingJobs ?? []).some((job) => job.targetKind === 'rare')) {
-        publishAutoPrepMessage(`自动化\n${candidateResult.message}\nMod 中仍有活动料理任务，已保留订单状态并等待快照恢复。`);
+        publishAutoPrepMessage(`自动化\n${candidateResult.message}\nMod 中仍有活动料理任务，已保留订单状态并等待游戏状态更新。`);
         return;
       }
       const activeOrderKeys = new Set(
@@ -4011,8 +4011,8 @@ export function ModWorkbench() {
             targetReconciliationMessage,
             formatAutomationState(currentState, companionPreferences),
             currentState.manualResolutionRequired
-              ? '游戏副作用无法自动确认；请核对料理、托盘、保温箱和订单后点击“确认已处理”。'
-              : '稀客自动化已暂停该订单，订单事实变化或手动重试后会继续。',
+              ? '游戏操作结果无法自动确认；请核对料理、托盘、保温箱和订单后点击“确认已处理”。'
+              : '稀客自动化已暂停该订单，订单状态变化或手动重试后会继续。',
           ));
           updatedOrderDetailCount += 1;
           continue;
@@ -4050,7 +4050,7 @@ export function ModWorkbench() {
         );
         if (shouldPrepareFood && rejectedRecipeKey && effectiveSpecialBusinessRejectedRecipeKeys.includes(rejectedRecipeKey)) {
           shouldPrepareFood = false;
-          cookingDeferralNote = '当前目标 Tag 下该料理加料组合已被实机判定不匹配，等待推荐刷新或目标 Tag 更新后再制作。';
+          cookingDeferralNote = '当前目标标签下，该料理加料组合已被游戏判定不匹配，等待推荐刷新或目标标签更新后再制作。';
         }
         const specialBusinessCookingDeferral = getWackyRareCookingDeferral(
           snapshot?.specialBusiness,
@@ -4196,8 +4196,8 @@ export function ModWorkbench() {
               preflightMessage,
               formatAutomationState(currentState, companionPreferences),
               currentState.manualResolutionRequired
-                ? '游戏副作用无法自动确认；请核对料理、托盘、保温箱和订单后点击“确认已处理”。'
-                : '稀客自动化已暂停该订单，订单事实变化或手动重试后会继续。',
+                ? '游戏操作结果无法自动确认；请核对料理、托盘、保温箱和订单后点击“确认已处理”。'
+                : '稀客自动化已暂停该订单，订单状态变化或手动重试后会继续。',
             ));
             updatedOrderDetailCount += 1;
             continue;
@@ -4437,8 +4437,8 @@ export function ModWorkbench() {
 
         const suffix = finalState.paused
           ? finalState.manualResolutionRequired
-            ? '游戏副作用无法自动确认；请核对料理、托盘、保温箱和订单后点击“确认已处理”。'
-            : '稀客自动化已暂停该订单，订单事实变化或手动重试后会继续。'
+            ? '游戏操作结果无法自动确认；请核对料理、托盘、保温箱和订单后点击“确认已处理”。'
+            : '稀客自动化已暂停该订单，订单状态变化或手动重试后会继续。'
           : transientFailure
             ? '当前条件暂不可执行，将继续等待并自动重试。'
             : '';
@@ -4775,7 +4775,7 @@ export function ModWorkbench() {
         const exactReservation = toCookerControllerReservation(reservation);
         if (exactReservation == null) {
           schedulerMessages.push(
-            `${cookingDecision.label}\n等待厨具 ${cookingDecision.cooker?.label || '未知'}：本轮未取得精确控制器预约。`,
+            `${cookingDecision.label}\n等待厨具 ${cookingDecision.cooker?.label || '未知'}：本轮未取得明确的厨具预约。`,
           );
           continue;
         }
@@ -5102,8 +5102,8 @@ export function ModWorkbench() {
 
         const suffix = normalizedNextState.paused
           ? normalizedNextState.manualResolutionRequired
-            ? '游戏副作用无法自动确认；请核对料理、托盘、保温箱和订单后点击“确认已处理”。'
-            : '普客自动化已暂停该订单，订单事实变化或手动重试后会继续。'
+            ? '游戏操作结果无法自动确认；请核对料理、托盘、保温箱和订单后点击“确认已处理”。'
+            : '普客自动化已暂停该订单，订单状态变化或手动重试后会继续。'
           : transientFailure
             ? '当前条件暂不可执行，将继续等待并自动重试。'
             : '';

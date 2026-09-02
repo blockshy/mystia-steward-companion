@@ -96,13 +96,13 @@ export function parseAvailableMissionsApiResponse(value: unknown): AvailableMiss
 
   if (runtimeAvailable
       && (!ok || status !== 'ready' || missionGeneration < 1 || sourceRevision < 1)) {
-    throw new Error('可接取任务运行时可用时必须返回有效代际和 ready 状态。');
+    throw new Error('可接取任务数据可用时必须返回有效任务轮次、数据版本和就绪状态。');
   }
   if (!runtimeAvailable && status === 'ready') {
-    throw new Error('可接取任务运行时不可用时不得返回 ready 状态。');
+    throw new Error('可接取任务数据不可用时不得返回就绪状态。');
   }
   if ((!ok || !runtimeAvailable) && missions.length > 0) {
-    throw new Error('可接取任务运行时不可用时不得返回任务列表。');
+    throw new Error('可接取任务数据不可用时不得返回任务列表。');
   }
 
   const error = response.error;
@@ -149,9 +149,9 @@ export function getAvailableMissionsResponseError(response: AvailableMissionsRes
     case 'loading':
       return '正在校验可接取任务。';
     case 'runtime-unavailable':
-      return '当前游戏运行时暂时不能安全读取可接取任务。';
+      return '当前暂时无法从游戏中可靠读取可接取任务。';
     case 'mission-data-incomplete':
-      return '任务定义或运行时数据不完整，本次可接取任务读取已停止。';
+      return '任务定义或游戏数据不完整，本次可接取任务读取已停止。';
     default:
       return response.error?.trim() || response.status || '读取可接取任务失败。';
   }

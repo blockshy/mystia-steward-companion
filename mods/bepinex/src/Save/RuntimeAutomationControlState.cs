@@ -214,7 +214,7 @@ internal static class RuntimeAutomationControlState
         {
             return SuspendAuthority(
                 "automation-profile-unavailable",
-                "尚未取得主设备的生效自动化配置；已开始的料理会保留在原厨具，等待权威配置就绪。",
+                "尚未取得主设备的生效自动化配置；已开始的料理会保留在原厨具，配置就绪后继续。",
                 deliveryConfigured: false,
                 completionConfigured: false);
         }
@@ -249,7 +249,7 @@ internal static class RuntimeAutomationControlState
         {
             return SuspendAuthority(
                 "automation-lease-expired",
-                "主设备自动化租约已过期；已开始的料理会保留在原厨具，续约成功后继续。",
+                "主设备的自动化控制权已过期；已开始的料理会保留在原厨具，重新取得控制权后继续。",
                 deliveryConfigured,
                 completionConfigured);
         }

@@ -122,7 +122,7 @@ try {
     await assertRareRecommendationViews(
       primary.page,
       finalVisibleRareOrders,
-      `${viewport.name} 最终参与队列`,
+      `${viewport.name} 最终稀客队列`,
       { checkOverflow: true },
     );
     await openServiceQueue(primary.page);
@@ -176,12 +176,12 @@ try {
   );
 
   console.log('PASS: rare-order participation extension module and service queue UI audit completed.');
-  console.log('- 模块默认关闭时不生成稀客队列 Tab，关闭后确定性切回稀客且重开不恢复旧队列选择');
-  console.log('- 1280/640/390 扩展名单搜索、受控状态、移出确认与取消焦点返回通过');
-  console.log('- 经营中稀客/稀客队列/普客三 Tab 与横向溢出检查通过');
-  console.log('- 默认暂停、订单级优先启用、稀客级非抢占优先、单订单暂停、队尾重启与全局 mutation busy 锁通过');
-  console.log('- 普通稀客页与专注模式按权威队列同步隐藏、显示和排序；失败 mutation 不改变可见集合');
-  console.log('- 从设备模块开关、扩展名单、队列操作禁用与主设备远程关闭/重开收敛检查通过');
+  console.log('- 模块默认关闭时不生成稀客队列页签，关闭后稳定切回稀客页且重开不恢复旧队列选择');
+  console.log('- 1280/640/390 扩展名单搜索、调度状态、移出确认与取消焦点返回通过');
+  console.log('- 经营中稀客/稀客队列/普客三个页签与横向溢出检查通过');
+  console.log('- 默认暂停、订单级优先启用、稀客级非抢占优先、单订单暂停、队尾重启与所有修改按钮忙碌状态通过');
+  console.log('- 普通稀客页与专注模式按 Mod 稀客队列同步隐藏、显示和排序；失败的修改操作不改变可见集合');
+  console.log('- 从设备模块开关、扩展名单、队列操作禁用与主设备远程关闭/重开一致性检查通过');
   console.log(`Artifacts: ${outputDir}`);
 } finally {
   pendingMutationGate?.release();
@@ -203,7 +203,7 @@ async function assertDefaultModuleDisabled(page) {
 
   await openServiceRecommendations(page);
   await assertQueueTabUnavailable(page, '默认关闭');
-  await assertRareRecommendationViews(page, defaultVisibleRareOrders, '模块关闭旁路');
+  await assertRareRecommendationViews(page, defaultVisibleRareOrders, '模块关闭时的原有流程');
 }
 
 async function enableParticipationModule(page) {
@@ -323,7 +323,7 @@ async function assertExtensionRoster(page, profileName, readOnly) {
   const managed1002 = managedRow(root, 1002, true);
   await managed1001.waitFor({ state: 'visible', timeout: 12_000 });
   await managed1002.waitFor({ state: 'visible', timeout: 12_000 });
-  await root.getByRole('heading', { name: '已受控 (2)', exact: true }).waitFor({ timeout: 12_000 });
+  await root.getByRole('heading', { name: '已加入名单 (2)', exact: true }).waitFor({ timeout: 12_000 });
   await managed1001.getByText('当前 1 笔', { exact: true }).waitFor({ timeout: 12_000 });
 
   const search = root.getByPlaceholder('输入姓名、ID或地区', { exact: true });
@@ -331,10 +331,10 @@ async function assertExtensionRoster(page, profileName, readOnly) {
   await search.fill('米斯蒂娅');
   await managed1001.waitFor({ state: 'visible' });
   await managed1002.waitFor({ state: 'detached' });
-  await root.getByRole('heading', { name: '已受控 (1)', exact: true }).waitFor();
+  await root.getByRole('heading', { name: '已加入名单 (1)', exact: true }).waitFor();
   await search.fill('');
   await managed1002.waitFor({ state: 'visible' });
-  await root.getByRole('heading', { name: '已受控 (2)', exact: true }).waitFor();
+  await root.getByRole('heading', { name: '已加入名单 (2)', exact: true }).waitFor();
 
   if (!readOnly) await assertRemovalCancelReturnsFocus(page, root);
   await assertNoHorizontalOverflow(page, '[data-rare-guest-participation-module="true"]', `${profileName} 稀客调度`);
@@ -344,7 +344,7 @@ async function assertRemovalCancelReturnsFocus(page, root) {
   const returnKey = 'extensions:rare-participation:guest:1001:remove';
   const removeButton = root.locator(`[data-gamepad-focus-key="${returnKey}"]`);
   await removeButton.click();
-  const dialog = page.getByRole('dialog').filter({ hasText: '移出受控稀客' });
+  const dialog = page.getByRole('dialog').filter({ hasText: '移出调度名单' });
   await dialog.waitFor({ state: 'visible' });
   assert.match(await dialog.innerText(), /米斯蒂娅.*当前还有 1 笔订单/s, '移出确认未说明当前订单影响');
   await dialog.getByRole('button', { name: '取消', exact: true }).click();
@@ -362,14 +362,14 @@ async function assertServiceTabs(page, profileName) {
   ]);
   for (const [kind, label] of expectedTabs) {
     const trigger = page.locator(`[data-service-order-tab-trigger="${kind}"]`);
-    assert.equal((await trigger.innerText()).trim(), label, `${profileName}: ${kind} Tab 文案不正确`);
+    assert.equal((await trigger.innerText()).trim(), label, `${profileName}: ${kind} 页签文案不正确`);
     await trigger.click();
     await page.locator(`[data-service-order-tab="${kind}"]`).waitFor({ state: 'visible', timeout: 10_000 });
   }
   await page.locator('[data-service-order-tab-trigger="rare-queue"]').click();
   const panel = page.locator('[data-rare-order-participation-panel="true"]');
   await panel.waitFor({ state: 'visible' });
-  await panel.getByRole('heading', { name: '稀客参与队列', exact: true }).waitFor();
+  await panel.getByRole('heading', { name: '稀客队列', exact: true }).waitFor();
   await waitForManagedGroups(page);
   await assertQueueHeader(page, `${profileName} 稀客队列`);
 }
@@ -437,12 +437,12 @@ async function assertPrimaryParticipationLifecycle(page) {
   assert.equal(
     await page.locator('[data-rare-order-participation-state="paused"]').count(),
     2,
-    '受控稀客的两笔当前订单都应默认暂停',
+    '调度名单内稀客的两笔当前订单都应默认暂停',
   );
   assert.equal(
     await page.locator('[data-rare-order-participation-state="queued"]').count(),
     0,
-    '受控稀客订单不应在手动启用前进入参与队列',
+    '调度名单内稀客的订单不应在手动启用前进入稀客队列',
   );
   await assertRareRecommendationViews(page, [], '默认暂停');
   await openServiceQueue(page);
@@ -509,19 +509,19 @@ async function assertPrimaryParticipationLifecycle(page) {
     ));
     return buttons.length === 8 && buttons.every((button) => button instanceof HTMLButtonElement && button.disabled);
   }, null, { timeout: 3_000 });
-  assert.equal(await panel.getAttribute('data-busy'), 'true', '参与状态 mutation 期间应标记队列 busy');
+  assert.equal(await panel.getAttribute('data-busy'), 'true', '稀客队列修改期间应标记为忙碌');
   const participationStatus = page.locator('[data-rare-order-participation-status="true"]');
   assert.equal(
     await participationStatus.textContent(),
-    '稀客参与队列更新中。',
-    '参与状态 mutation 期间应播报更新状态',
+    '稀客队列更新中。',
+    '稀客队列修改期间应播报更新状态',
   );
   assert.equal(
     await participationStatus.evaluate((element) => element.closest('[aria-busy="true"]') === null),
     true,
-    '参与状态 live region 不应位于 aria-busy 子树内，以免更新播报被延迟',
+    '状态播报区域不应位于 `aria-busy` 子树内，以免更新播报被延迟',
   );
-  assert.equal(await allMutationActions.count(), 8, '两组及两笔订单应存在八个参与状态按钮');
+  assert.equal(await allMutationActions.count(), 8, '两组及两笔订单应存在八个队列状态按钮');
   gate.release();
   group1001 = await waitForGuestState(page, 1001, 'paused');
   assert.doesNotMatch(await group1001.innerText(), /队列 #/, '暂停后不应保留有效队列位置');

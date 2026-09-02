@@ -5,7 +5,7 @@ using HarmonyLib;
 namespace MystiaStewardCompanion.Save;
 
 /// <summary>
-/// 捕获游戏运行时产生的稀客订单，并为本地 API 和自动上菜流程提供可复用的订单快照。
+/// 捕获游戏中产生的稀客订单，并为本地 API 和自动上菜流程提供可复用的订单记录。
 /// </summary>
 /// <remarks>
 /// 游戏没有稳定的“当前稀客订单列表”公开接口，因此这里通过 Harmony 监听订单与控制器的绑定、清理和状态更新等关键点。
@@ -67,7 +67,7 @@ public static class SpecialOrderRuntimeCapture
     private static string _lastOrderShape = "";
 
     /// <summary>
-    /// 捕获结果的变更版本号，供快照轮询方判断稀客订单是否需要重新发布。
+    /// 捕获结果的变更版本号，供轮询方判断稀客订单是否需要重新发布。
     /// </summary>
     public static long ChangeVersion
     {
@@ -120,7 +120,7 @@ public static class SpecialOrderRuntimeCapture
     }
 
     /// <summary>
-    /// 重置延迟重试时间，让下一次快照读取可以立刻尝试重新安装 Hook。
+    /// 重置延迟重试时间，让下一次数据读取可以立刻尝试重新安装 Hook。
     /// </summary>
     public static void ResetAttachRetryDelay()
     {
@@ -131,12 +131,12 @@ public static class SpecialOrderRuntimeCapture
     }
 
     /// <summary>
-    /// 返回最近捕获到且未过期的稀客订单快照。
+    /// 返回最近捕获到且未过期的稀客订单记录。
     /// </summary>
     /// <param name="maxAge">订单最后一次被捕获后允许保留的最长时间。</param>
     /// <returns>按首次捕获时间排序的订单副本，调用方可以安全枚举。</returns>
     /// <remarks>
-    /// 读取快照时会顺带触发一次非强制 Attach。这样可以覆盖玩家进入经营场景后游戏类型才加载完成的情况，
+    /// 读取数据时会顺带触发一次非强制 Attach。这样可以覆盖玩家进入经营场景后游戏类型才加载完成的情况，
     /// 但通过重试间隔避免每轮本地 API 轮询都反复扫描 AppDomain。
     /// </remarks>
     public static IReadOnlyList<CapturedRuntimeSpecialOrder> Snapshot(TimeSpan maxAge)
@@ -198,11 +198,11 @@ public static class SpecialOrderRuntimeCapture
     }
 
     /// <summary>
-    /// 安装所有已知稀客订单生命周期 Hook。
+    /// 安装所有已知稀客订单状态 Hook。
     /// </summary>
     /// <remarks>
     /// 不同 DLC、普通订单和稀客手动订单会走不同游戏入口。这里允许缺失入口后续重试安装，
-    /// 但只有全部权威创建与退出入口在经营开始前就绪时，捕获结果才会进入业务链路。
+    /// 但只有全部必要的创建与退出入口在经营开始前就绪时，捕获结果才会进入后续处理。
     /// </remarks>
     private static void TryAttach(ManualLogSource? log, bool force)
     {
@@ -1121,8 +1121,8 @@ public static class SpecialOrderRuntimeCapture
     /// 合并一条新捕获的订单记录。
     /// </summary>
     /// <remarks>
-    /// 同一 lifecycle 只允许合并状态和精确手动回调证据。原始 Tag 是创建时即完整的
-    /// 不可变身份；同 lifecycle 内发生漂移时整条绑定失效，不能选取任一观测继续运行。
+    /// 同一订单记录只允许合并状态和精确手动回调证据。原始标签是创建时即完整的
+    /// 不可变标识；同一订单记录内发生冲突时整条绑定失效，不能选取任一观测继续运行。
     /// </remarks>
     private static void AddOrder(CapturedRuntimeSpecialOrder? order)
     {
@@ -1175,14 +1175,14 @@ public static class SpecialOrderRuntimeCapture
     /// 处理订单状态 observer：只在送达完成时刷新并保留捕获记录。
     /// </summary>
     /// <remarks>
-    /// 游戏状态 observer 不是权威终态边界，不能移除 capture 或结束 lifecycle。`IsFullfilled`
+    /// 游戏状态 observer 不是判断订单结束的唯一依据，不能移除 capture 或结束订单记录。`IsFullfilled`
     /// 仍需进入评价阶段，因此不能把料理和酒水均已送达当作订单移除。
     /// </remarks>
     private static void UpdateOrderStatus(CapturedRuntimeSpecialOrder? order, object? context)
     {
         if (order == null) return;
 
-        // Raw Tag identity is immutable for one native lifecycle. This check must precede the
+        // 同一游戏订单记录的原始标签标识不可变。必须先完成此检查，
         // delivery-context and fulfilled filters: either observer may be the first place where
         // corrupt identity drift becomes visible, even though no business-status update follows.
         if (TryQuarantineRawTagIdentityConflict(order, "status-observer")) return;
@@ -1221,7 +1221,7 @@ public static class SpecialOrderRuntimeCapture
     }
 
     /// <summary>
-    /// Quarantines one lifecycle when an observer reports different immutable raw Tag identity.
+    /// 当 observer 报告了不同的不可变原始标签标识时，隔离对应订单记录。
     /// </summary>
     private static bool TryQuarantineRawTagIdentityConflict(
         CapturedRuntimeSpecialOrder incoming,
@@ -1295,7 +1295,7 @@ public static class SpecialOrderRuntimeCapture
     }
 
     /// <summary>
-    /// 从运行时订单对象和可选控制器中解析稀客、桌号与原始 signed Tag ID。
+    /// 从游戏订单对象和可选控制器中解析稀客、桌号与原始 signed 标签 ID。
     /// </summary>
     /// <param name="order">游戏订单对象，可能是 IL2CPP 基类或具体 SpecialOrder。</param>
     /// <param name="source">触发解析的 Hook 名称，用于诊断。</param>
@@ -1423,7 +1423,7 @@ public static class SpecialOrderRuntimeCapture
     /// 判断两个捕获记录是否指向同一个原生订单。
     /// </summary>
     /// <remarks>
-    /// 捕获创建已经强制要求原生指针；指针缺失时必须拒绝，不能按桌号或稀客身份重绑。
+    /// 捕获创建已经强制要求原生指针；指针缺失时必须拒绝，不能按桌号或稀客信息重绑。
     /// </remarks>
     private static bool IsSameOrderSlot(CapturedRuntimeSpecialOrder left, CapturedRuntimeSpecialOrder right)
     {
@@ -1448,7 +1448,7 @@ public static class SpecialOrderRuntimeCapture
     /// 合并两次 Hook 捕获到的同一订单信息。
     /// </summary>
     /// <remarks>
-    /// 两个 raw Tag ID 已在创建边界强制完整；后续只合并同一 lifecycle 的状态与回调证据。
+    /// 两个 raw 标签 ID 已在创建边界强制完整；后续只合并同一订单记录的状态与回调证据。
     /// </remarks>
     private static CapturedRuntimeSpecialOrder MergeCapturedOrder(
         CapturedRuntimeSpecialOrder incoming,
@@ -1595,7 +1595,7 @@ public static class SpecialOrderRuntimeCapture
     /// </summary>
     /// <remarks>
     /// Il2CppInterop 暴露的对象在不同版本或反编译形态下可能出现 <c>m_</c>、下划线和 backing field 等命名。
-    /// 统一在这里收敛字段候选，避免业务解析逻辑里散落多套反射访问。
+    /// 统一在这里管理字段候选，避免业务解析逻辑里散落多套反射访问。
     /// </remarks>
     private static object? GetMemberValue(object? instance, string name)
     {
@@ -1844,8 +1844,8 @@ public static class SpecialOrderRuntimeCapture
 /// 一条从游戏运行时捕获到的稀客订单。
 /// </summary>
 /// <remarks>
-/// 原始请求 Tag ID 用于订单身份匹配；运行时对象引用仅在 Mod 内部用于再次定位订单，不会序列化给前端。
-/// <c>ManualOrder</c> 表示最近一次读取的瞬时属性，手动评价绑定字段则保存精确 setter 在该活动订单生命周期内建立的不可变证据。
+/// 原始请求标签 ID 用于订单匹配；游戏对象引用仅在 Mod 内部用于再次定位订单，不会序列化给前端。
+/// <c>ManualOrder</c> 表示最近一次读取的瞬时属性，手动评价绑定字段则保存该订单有效期内精确 setter 建立的不可变证据。
 /// </remarks>
 public sealed record CapturedRuntimeSpecialOrder(
     int DeskCode,

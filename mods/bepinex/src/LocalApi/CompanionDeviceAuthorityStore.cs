@@ -8,7 +8,7 @@ using BepInEx.Logging;
 namespace MystiaStewardCompanion.LocalApi;
 
 /// <summary>
-/// 持久保存伴随设备及唯一生效的功能配置权威。
+/// 持久保存伴随设备及唯一生效的功能配置。
 /// </summary>
 /// <remarks>
 /// 设备本地的窗口、连接和页面偏好不进入此存储。所有 mutation 都先构建新状态并原子落盘，
@@ -443,13 +443,13 @@ internal sealed class CompanionDeviceAuthorityStore
             if (_data == null)
             {
                 error = string.IsNullOrWhiteSpace(_loadError)
-                    ? "伴随设备权威尚未初始化，请先完成设备注册。"
+                    ? "伴随设备状态尚未初始化，请先完成设备注册。"
                     : _loadError;
                 return false;
             }
             if (!_data.Devices.Any(device => string.Equals(device.DeviceId, clientId, StringComparison.Ordinal)))
             {
-                error = "当前伴随设备尚未注册，不能修改游戏运行时状态。";
+                error = "当前伴随设备尚未注册，不能修改游戏状态。";
                 return false;
             }
             if (!string.Equals(_data.PrimaryDeviceId, clientId, StringComparison.Ordinal))
@@ -459,7 +459,7 @@ internal sealed class CompanionDeviceAuthorityStore
             }
             if (expectedAuthorityRevision <= 0 || expectedAuthorityRevision != _data.AuthorityRevision)
             {
-                error = "配置权威版本已经变化，请刷新设备状态后重试。";
+                error = "生效配置版本已经变化，请刷新设备状态后重试。";
                 return false;
             }
 
@@ -539,7 +539,7 @@ internal sealed class CompanionDeviceAuthorityStore
                 and not PreviousStoreSchemaVersion
                 and not StoreSchemaVersion)
         {
-            throw new InvalidDataException("Device authority store version is missing or unsupported.");
+            throw new InvalidDataException("设备配置存储缺少版本，或版本不受支持。");
         }
         RequireExactStoredProperties(root, StoredDataFieldsV1ToV3, "Device authority store");
         RequireStoredString(root, "registryId", "Device authority store");
@@ -550,7 +550,7 @@ internal sealed class CompanionDeviceAuthorityStore
         var devices = root.GetProperty("devices");
         if (devices.ValueKind != JsonValueKind.Array)
         {
-            throw new InvalidDataException("Device authority store field 'devices' must be an array.");
+            throw new InvalidDataException("设备配置存储字段 'devices' 必须是数组。");
         }
 
         foreach (var device in devices.EnumerateArray())
@@ -573,7 +573,7 @@ internal sealed class CompanionDeviceAuthorityStore
             if (device.GetProperty("profile").ValueKind != JsonValueKind.Object)
             {
                 throw new InvalidDataException(
-                    "Stored companion device field 'profile' must be an object.");
+                    "已保存伴随设备的 'profile' 字段必须是对象。");
             }
             RequireStoredDateTime(device, "createdAtUtc", "Stored companion device");
             RequireStoredDateTime(device, "updatedAtUtc", "Stored companion device");
@@ -587,14 +587,14 @@ internal sealed class CompanionDeviceAuthorityStore
     {
         if (value.ValueKind != JsonValueKind.Object)
         {
-            throw new InvalidDataException($"{label} must be a JSON object.");
+            throw new InvalidDataException($"{label} 必须是 JSON 对象。");
         }
         var actual = value.EnumerateObject().Select(property => property.Name).ToArray();
         if (actual.Length != expected.Count
             || actual.Distinct(StringComparer.Ordinal).Count() != actual.Length
             || actual.Any(name => !expected.Contains(name)))
         {
-            throw new InvalidDataException($"{label} fields do not match its exact schema.");
+            throw new InvalidDataException($"{label} 的字段与规定格式不完全一致。");
         }
     }
 
@@ -602,7 +602,7 @@ internal sealed class CompanionDeviceAuthorityStore
     {
         if (value.GetProperty(name).ValueKind != JsonValueKind.String)
         {
-            throw new InvalidDataException($"{label} field '{name}' must be a string.");
+            throw new InvalidDataException($"{label} 的字段 '{name}' 必须是字符串。");
         }
     }
 
@@ -610,7 +610,7 @@ internal sealed class CompanionDeviceAuthorityStore
     {
         if (!value.GetProperty(name).TryGetInt64(out _))
         {
-            throw new InvalidDataException($"{label} field '{name}' must be an Int64.");
+            throw new InvalidDataException($"{label} 的字段 '{name}' 必须是 Int64。");
         }
     }
 
@@ -619,7 +619,7 @@ internal sealed class CompanionDeviceAuthorityStore
         var property = value.GetProperty(name);
         if (property.ValueKind != JsonValueKind.String || !property.TryGetDateTime(out _))
         {
-            throw new InvalidDataException($"{label} field '{name}' must be a JSON date-time string.");
+            throw new InvalidDataException($"{label} 的字段 '{name}' 必须是 JSON 日期时间字符串。");
         }
     }
 
@@ -684,7 +684,7 @@ internal sealed class CompanionDeviceAuthorityStore
     {
         return _data ?? throw new CompanionDeviceAuthorityException(
             503,
-            string.IsNullOrWhiteSpace(_loadError) ? "设备配置权威不可用。" : _loadError);
+            string.IsNullOrWhiteSpace(_loadError) ? "设备配置状态不可用。" : _loadError);
     }
 
     private static CompanionDeviceRecord RequireRegisteredDevice(DeviceAuthorityData data, string deviceId)
@@ -706,7 +706,7 @@ internal sealed class CompanionDeviceAuthorityStore
     {
         if (expected <= 0 || expected != data.AuthorityRevision)
         {
-            throw Conflict("配置权威版本已经变化，请刷新设备状态后重试。");
+            throw Conflict("生效配置版本已经变化，请刷新设备状态后重试。");
         }
     }
 
@@ -785,7 +785,7 @@ internal sealed class CompanionDeviceAuthorityStore
         {
             ValidateIdArray(
                 profile.GetProperty("managedRareGuestIds"),
-                "受控稀客",
+                "调度名单内稀客",
                 MaxManagedRareGuestIds);
         }
         ValidatePreferenceDependencies(profile);
@@ -1005,7 +1005,7 @@ internal sealed class CompanionDeviceAuthorityStore
     private static DeviceAuthorityData CloneData(DeviceAuthorityData data)
     {
         return JsonSerializer.Deserialize<DeviceAuthorityData>(JsonSerializer.Serialize(data, JsonOptions), JsonOptions)
-            ?? throw new InvalidDataException("Failed to clone companion device authority state.");
+            ?? throw new InvalidDataException("复制伴随设备配置状态失败。");
     }
 
     private static DeviceAuthorityData MigrateToCurrentData(DeviceAuthorityData source)
@@ -1054,34 +1054,34 @@ internal sealed class CompanionDeviceAuthorityStore
         int expectedStoreSchemaVersion,
         Func<JsonElement, JsonElement> validateProfile)
     {
-        if (data.Version != expectedStoreSchemaVersion) throw new InvalidDataException($"Unsupported device authority schema version: {data.Version}.");
+        if (data.Version != expectedStoreSchemaVersion) throw new InvalidDataException($"设备配置格式版本不受支持：{data.Version}。");
         if (data.RegistryId.Length != 32 || data.RegistryId.Any(character => !Uri.IsHexDigit(character)))
         {
-            throw new InvalidDataException("Device registry ID is invalid.");
+            throw new InvalidDataException("设备登记 ID 无效。");
         }
         data.Devices ??= new List<CompanionDeviceRecord>();
-        if (data.Devices.Count > MaxDevices) throw new InvalidDataException("Too many companion devices are stored.");
-        if (data.StateRevision < 0 || data.AuthorityRevision < 0) throw new InvalidDataException("Device authority revisions are invalid.");
+        if (data.Devices.Count > MaxDevices) throw new InvalidDataException("保存的伴随设备数量超过上限。");
+        if (data.StateRevision < 0 || data.AuthorityRevision < 0) throw new InvalidDataException("设备配置状态版本无效。");
         if (data.Devices.Count == 0)
         {
             if (!string.IsNullOrEmpty(data.PrimaryDeviceId) || data.AuthorityRevision != 0)
             {
-                throw new InvalidDataException("Empty device registry has a primary device.");
+                throw new InvalidDataException("设备登记表为空，但仍指定了主设备。");
             }
             return;
         }
         if (data.Devices.Select(device => device.DeviceId).Distinct(StringComparer.Ordinal).Count() != data.Devices.Count)
         {
-            throw new InvalidDataException("Duplicate device IDs are stored.");
+            throw new InvalidDataException("保存的设备 ID 存在重复项。");
         }
         if (data.Devices.Count(device => string.Equals(device.DeviceId, data.PrimaryDeviceId, StringComparison.Ordinal)) != 1
             || data.AuthorityRevision <= 0)
         {
-            throw new InvalidDataException("Device authority primary identity is invalid.");
+            throw new InvalidDataException("设备配置中的主设备标识无效。");
         }
         foreach (var device in data.Devices)
         {
-            if (!IsValidDeviceId(device.DeviceId)) throw new InvalidDataException("Stored device ID is invalid.");
+            if (!IsValidDeviceId(device.DeviceId)) throw new InvalidDataException("保存的设备 ID 无效。");
             _ = NormalizeLabel(device.Label);
             _ = NormalizePlatform(device.Platform);
             _ = NormalizeMetadata(device.AppVersion, 32, "appVersion");
@@ -1089,22 +1089,22 @@ internal sealed class CompanionDeviceAuthorityStore
                 || device.AppliedProfileRevision <= 0
                 || device.AppliedProfileRevision > device.ProfileRevision)
             {
-                throw new InvalidDataException("Stored device profile revision is invalid.");
+                throw new InvalidDataException("保存的设备配置版本无效。");
             }
             var profile = validateProfile(device.Profile);
             if (!string.Equals(device.ProfileHash, ComputeProfileHash(profile), StringComparison.Ordinal))
             {
-                throw new InvalidDataException("Stored device profile hash is invalid.");
+                throw new InvalidDataException("保存的设备配置摘要无效。");
             }
             if (!string.IsNullOrWhiteSpace(device.PendingSyncId)
                 && (device.PendingSyncId.Length != 32 || device.PendingSyncId.Any(character => !Uri.IsHexDigit(character))))
             {
-                throw new InvalidDataException("Stored pending sync ID is invalid.");
+                throw new InvalidDataException("保存的待同步 ID 无效。");
             }
             if (string.IsNullOrWhiteSpace(device.PendingSyncId)
                 && device.AppliedProfileRevision != device.ProfileRevision)
             {
-                throw new InvalidDataException("Stored device has an unacknowledged profile without a sync ID.");
+                throw new InvalidDataException("保存的设备存在尚未确认的配置，但缺少同步 ID。");
             }
         }
     }

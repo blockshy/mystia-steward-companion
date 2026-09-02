@@ -1,7 +1,7 @@
 import type { NormalBusinessOrder } from '@/companion/types';
 
 /**
- * 由后端原生订单身份和进程内生命周期构建普客自动化状态键。
+ * 由后端游戏订单标识和进程内订单序号构建普客自动化状态键。
  * 原生 trace/orderKey 仍单独用于运行时对象匹配，本键不得回传给 Mod。
  */
 export function buildNormalLifecycleAutoOrderKey(

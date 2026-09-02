@@ -1,6 +1,6 @@
 # 本地开发与构建
 
-更新日期：2026-08-19
+更新日期：2026-09-02
 
 本文档只说明日常本地开发环境、构建入口和开发服务。测试选择见
 [验证指南](validation-guide.md)，Android 专用环境见
@@ -10,7 +10,7 @@
 ## 工具链基线
 
 根目录 [`toolchain.lock.json`](../toolchain.lock.json) 是本地与 CI 共用的唯一版本来源。文档中的版本仅帮助安装；
-升级时先修改锁文件及其校验逻辑，不使用系统中的 `stable`、`latest` 或较新预装版本作为回退。
+升级时先修改锁文件及其校验逻辑，不改用系统中的 `stable`、`latest` 或较新预装版本。
 
 | 工具 | 锁定版本 | 用途 |
 | --- | --- | --- |
@@ -55,7 +55,7 @@ corepack pnpm toolchain:check
 也不执行全局 `corepack enable`。
 
 Mod 的目标框架是 `net6.0`，产品构建仍使用锁定的 .NET SDK `10.0.110`。唯一的通用 .NET 6 smoke
-入口覆盖三项真实 Harmony/MonoMod 动态补丁探针，以及 participation permit 和经营 lifecycle 两项纯托管 smoke；入口和限制见
+入口覆盖三项真实 Harmony/MonoMod 动态补丁探针，以及稀客队列执行许可和经营生命周期两项纯托管 smoke；入口和限制见
 [验证指南](validation-guide.md#锁定-net-6-smoke-矩阵)。
 
 ## BepInEx 构建引用
@@ -70,8 +70,8 @@ Mod 的目标框架是 `net6.0`，产品构建仍使用锁定的 .NET SDK `10.0.
 corepack pnpm references:verify
 ```
 
-不要从当前游戏目录、另一版 BepInEx 或旧 interop 临时拼接 DLL。恢复器会拒绝 bundle 内缺项、多项、
-子目录和符号链接；恢复器与 preflight 都会拒绝正式文件的大小或哈希漂移，不会联网寻找替代版本。
+不要从当前游戏目录、另一版 BepInEx 或旧 interop 临时拼接 DLL。恢复器会拒绝引用包内缺项、多项、
+子目录和符号链接；恢复器与预检都会拒绝大小或哈希不一致的正式文件，不会联网寻找替代版本。
 
 ## 常规开发入口
 
@@ -118,7 +118,7 @@ bash mods/bepinex/tools/preflight.sh
 
 Mod 开发目录与运行时入口见
 [`mods/bepinex/README.dev.md`](../mods/bepinex/README.dev.md)，运行时数据读取边界见
-[运行时 Provider](runtime-provider.md)。
+[游戏数据提供器](runtime-provider.md)。
 
 ## Windows 完整本地构建
 
@@ -129,7 +129,7 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 ```
 
 脚本依次验证锁定工具链与 References、安装冻结依赖、构建前端和 Tauri、构建 Mod，再事务式生成本地安装资产。
-该操作不会创建 Git tag 或 GitHub Release。
+该操作不会创建 Git 标签或 GitHub Release。
 
 常用的定向参数：
 
@@ -167,14 +167,14 @@ corepack pnpm artifacts:clean -- --dry-run
 corepack pnpm artifacts:clean
 ```
 
-清理以完整 profile、target triple、Gradle build 目录或 .NET 项目为单位，并拒绝白名单外路径和符号链接。
+清理以完整构建配置、目标平台组合、Gradle 构建目录或 .NET 项目为单位，并拒绝白名单外路径和符号链接。
 `mods/bepinex/dist`、`References`、`temp`、`node_modules`、Playwright 数据与签名材料不在自动清理范围。
 
-不要在 Cargo、Gradle、Vite 或 dotnet 仍运行时执行 prune/clean。首次清理后需要完整重编译属于预期。
+不要在 Cargo、Gradle、Vite 或 dotnet 仍运行时执行清理。首次清理后需要完整重编译属于预期。
 构建脚本可用 `-BuildCacheLimitGiB`、`-BuildCacheTargetGiB` 调整高低水位；
 `-SkipBuildCacheCleanup` 仅用于定位问题。
 
-## Mock API 与浏览器预览
+## 模拟 API 与浏览器预览
 
 不启动游戏时，可用稳定 mock 数据开发伴随窗口。
 
@@ -209,7 +209,7 @@ corepack pnpm preview -- --host 127.0.0.1 --port 4173
 ```
 
 浏览器/Vite 开发模式会直接访问 mock API；打包后的桌面和 Android 应用通过 Tauri
-`request_local_api` 原生命令访问 Mod。不要通过放宽 CSP 或加入 WebView direct-fetch 回退来掩盖原生代理错误。
+`request_local_api` 原生命令访问 Mod。不要通过放宽 CSP 或加入 WebView 直接请求的备用路径来掩盖原生代理错误。
 
 Playwright 环境变量、浏览器安装和按功能选择的巡检命令见
 [验证指南](validation-guide.md#playwright-巡检)。
@@ -222,5 +222,5 @@ Playwright 环境变量、浏览器安装和按功能选择的巡检命令见
   真实游戏行为仍需对应平台验证。
 - 游戏运行时结构的判断以锁定反编译资料为依据，流程见
   [IL2CPP 源码与 IDA 分析工作流](il2cpp-analysis-workflow.md)。
-- 日常构建不改变版本、不创建 tag，也不发布资产；预览版和正式版操作统一见
+- 日常构建不改变版本、不创建 Git 标签，也不发布产物；预览版和正式版操作统一见
 [发布流程](local-release.md)。

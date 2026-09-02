@@ -54,12 +54,12 @@ internal static partial class RuntimeOrderPreparationService
     /// <param name="recipeId">目标配方 ID。</param>
     /// <param name="recipeName">用于用户提示和自动化日志的料理名称。</param>
     /// <param name="extraIngredientIds">推荐算法选择的额外加料材料 ID。</param>
-    /// <param name="cookerControllerIndex">前端根据同轮运行时快照预约的精确厨具控制器索引。</param>
-    /// <param name="cookerControllerIdentity">同一快照中的厨具控制器原生身份。</param>
-    /// <param name="cookerGridX">同一快照中的厨具网格 X 坐标。</param>
-    /// <param name="cookerGridY">同一快照中的厨具网格 Y 坐标。</param>
-    /// <param name="cookerGridZ">同一快照中的厨具网格 Z 坐标。</param>
-    /// <param name="collectionTarget">开锅前已经绑定精确订单生命周期的直接送达或人工交接目标。</param>
+    /// <param name="cookerControllerIndex">前端根据同次游戏数据预约的精确厨具控制器索引。</param>
+    /// <param name="cookerControllerIdentity">同一份数据中的厨具控制器原生标识。</param>
+    /// <param name="cookerGridX">同一份数据中的厨具网格 X 坐标。</param>
+    /// <param name="cookerGridY">同一份数据中的厨具网格 Y 坐标。</param>
+    /// <param name="cookerGridZ">同一份数据中的厨具网格 Z 坐标。</param>
+    /// <param name="collectionTarget">开锅前已绑定精确订单记录的直接送达或人工交接目标。</param>
     /// <returns>开火结果以及原生 QTE 处理状态。</returns>
     /// <remarks>
     /// 此方法会扣除材料库存、写入厨具控制器、触发游戏开火回调，并始终登记精确锅次 job 防止响应丢失后重复开锅。
@@ -93,7 +93,7 @@ internal static partial class RuntimeOrderPreparationService
         if (!target.OrderBinding.HasValue)
         {
             return CookingStartResult.Failed(
-                "自动料理目标缺少开锅前锁定的 exact order/controller receipt identity；未扣除材料或写入厨具。");
+                "自动料理目标缺少开锅前确认的订单、控制器和最终状态记录标识；未扣除材料或写入厨具。");
         }
 
         if (TryFindAutomationCookingJob(
@@ -115,7 +115,7 @@ internal static partial class RuntimeOrderPreparationService
                 out yuumaTopologyLease,
                 out var topologyLeaseDiagnostic))
         {
-            var message = "血池地狱厨具拓扑暂不可完整确认，自动化不会扣料或开锅："
+            var message = "暂时无法确认血池地狱的厨具状态，自动化不会扣料或开锅，将在状态恢复后重试。详细原因："
                 + topologyLeaseDiagnostic;
             AppendAutomationLog("start-waiting", collectionTarget, $"{recipeName}: {message}");
             return CookingStartResult.WaitForCooker(message);
@@ -130,8 +130,8 @@ internal static partial class RuntimeOrderPreparationService
                 out var cookerReservation,
                 out var reservationError))
         {
-            var message = $"本次开锅请求缺少完整的厨具预约身份，自动化将等待最新快照重新调度"
-                + $"（{reservationError}）。";
+            var message = "本次开锅请求缺少完整的厨具信息，自动化将在厨具状态刷新后重新安排。详细原因："
+                + reservationError;
             AppendAutomationLog("start-waiting", collectionTarget, $"{recipeName}: {message}");
             return CookingStartResult.WaitForCooker(message);
         }
@@ -193,23 +193,23 @@ internal static partial class RuntimeOrderPreparationService
                 collectionTarget,
                 $"{recipeName}: Mizuchi trial Modifier validation failed before ingredient deduction: {mizuchiModifierDiagnostic}");
             return CookingStartResult.Failed(
-                "瑞灵特殊经营成品加料无法在扣除材料前精确确认，已取消开锅："
+                "扣除材料前无法确认瑞灵特殊经营所需的成品加料，已取消开锅。详细原因："
                 + mizuchiModifierDiagnostic);
         }
 
         if (!RuntimeCookingGenerationTracker.EnsureAttached())
         {
-            return CookingStartResult.Failed($"自动料理锅次追踪不可用，已在扣除材料前取消开火：{RuntimeCookingGenerationTracker.Status}");
+            return CookingStartResult.Failed($"自动料理的制作记录不可用，已在扣除材料前取消开火。详细原因：{RuntimeCookingGenerationTracker.Status}");
         }
 
         if (!TryReadNativeObjectPointer(cookController, out var controllerPointer))
         {
-            return CookingStartResult.Failed("无法读取厨具原生身份，已在扣除材料前取消自动开火。");
+            return CookingStartResult.Failed("无法读取所选厨具的游戏对象标识，已在扣除材料前取消自动开火。");
         }
 
         if (!TryReadNativeObjectPointer(recipe, out var recipePointer))
         {
-            return CookingStartResult.Failed("无法读取配方原生身份，已在扣除材料前取消自动开火。");
+            return CookingStartResult.Failed("无法读取所选配方的游戏对象标识，已在扣除材料前取消自动开火。");
         }
 
         if (!TryRevalidateCookerBeforeStart(
@@ -253,7 +253,7 @@ internal static partial class RuntimeOrderPreparationService
                 yuumaTopologyLease,
                 out var preDeductionTopologyDiagnostic))
         {
-            var message = "血池地狱厨具拓扑在扣料前发生变化，自动化将等待新快照重新规划："
+            var message = "扣除材料前检测到血池地狱的厨具状态发生变化，自动化将在状态刷新后重新安排。详细原因："
                 + preDeductionTopologyDiagnostic;
             AppendAutomationLog("start-waiting", collectionTarget, $"{recipeName}: {message}");
             return CookingStartResult.WaitForCooker(message);
@@ -269,7 +269,7 @@ internal static partial class RuntimeOrderPreparationService
                 collectionTarget,
                 $"{recipeName}: order lifecycle changed before ingredient deduction: {preDeductionOrderDiagnostic}");
             return CookingStartResult.Failed(
-                "目标订单 lifecycle 在扣除材料前已结束或被替换，已取消开锅："
+                "目标订单在扣除材料前已经结束或被替换，已取消开锅。详细原因："
                 + preDeductionOrderDiagnostic);
         }
 
@@ -288,7 +288,7 @@ internal static partial class RuntimeOrderPreparationService
                 AppendAutomationLog("start-unowned", collectionTarget, $"{recipeName}: ingredient deduction became uncertain: {message}");
                 return BlockCookingStartUnowned(
                     target,
-                    $"扣除料理材料时游戏入口执行异常，当前库存结果无法安全确认；为避免重复扣料，自动化已暂停：{message}");
+                    $"扣除料理材料时游戏发生异常，当前库存结果无法确认；为避免重复扣料，自动化已暂停，请检查游戏状态。详细原因：{message}");
             }
         }
 
@@ -307,8 +307,8 @@ internal static partial class RuntimeOrderPreparationService
                 + finalCookerValidationMessage);
             return BlockCookingStartUnowned(
                 target,
-                "材料已扣除，但精确预约的厨具身份、位置或挑战锁定状态在开火前发生变化；"
-                + "Mod 未调用 SetCook，自动化已暂停以避免重复扣料："
+                "材料已扣除，但预约厨具的游戏对象标识、位置或挑战锁定状态在开始制作前发生变化；"
+                + "Mod 未写入厨具，自动化已暂停以避免重复扣料。详细原因："
                 + finalCookerValidationMessage);
         }
 
@@ -323,8 +323,8 @@ internal static partial class RuntimeOrderPreparationService
                 $"{recipeName}: topology changed after ingredient deduction: {preSetCookTopologyDiagnostic}");
             return BlockCookingStartUnowned(
                 target,
-                "材料已扣除，但血池地狱厨具拓扑在 SetCook 前发生变化；"
-                + "Mod 未调用 SetCook，自动化已暂停以避免重复扣料："
+                "材料已扣除，但血池地狱的厨具状态在开始制作前发生变化；"
+                + "Mod 未写入厨具，自动化已暂停以避免重复扣料。详细原因："
                 + preSetCookTopologyDiagnostic);
         }
 
@@ -339,8 +339,8 @@ internal static partial class RuntimeOrderPreparationService
                 $"{recipeName}: order lifecycle changed after ingredient deduction: {preSetCookOrderDiagnostic}");
             return BlockCookingStartUnowned(
                 target,
-                "材料已扣除，但目标订单 lifecycle 在 SetCook 前已结束或被替换；"
-                + "Mod 未调用 SetCook，自动化已暂停以避免重复扣料："
+                "材料已扣除，但目标订单在开始制作前已经结束或被替换；"
+                + "Mod 未写入厨具，自动化已暂停以避免重复扣料。详细原因："
                 + preSetCookOrderDiagnostic);
         }
 
@@ -354,7 +354,7 @@ internal static partial class RuntimeOrderPreparationService
                 AppendAutomationLog("start-unowned", collectionTarget, $"{recipeName}: SetCook failed after material deduction: {message}; cooker={DescribeCookController(cookController)}");
                 return BlockCookingStartUnowned(
                     target,
-                    $"材料已扣除，但游戏开火入口执行异常；为避免重复扣料和重复开锅，自动化已暂停并保留厨具当前状态：{message}");
+                    $"材料已扣除，但游戏开始制作时发生异常；为避免重复扣料和重复开锅，自动化已暂停并保留厨具当前状态。详细原因：{message}");
         }
 
         if (!RuntimeCookingGenerationTracker.TryGetOwnershipSnapshot(
@@ -371,8 +371,8 @@ internal static partial class RuntimeOrderPreparationService
                 + $"cooker={DescribeCookController(cookController)}");
             return BlockCookingStartUnowned(
                 target,
-                $"料理已经写入厨具，但未能立即取得本次 SetCook 的安全所有权，"
-                + $"已交还玩家手动处理且不会自动操作该厨具：{ownershipDiagnostic}");
+                "料理已经写入厨具，但 Mod 无法确认是否仍能安全控制本次制作；"
+                + $"该厨具已交还玩家手动处理，Mod 不会继续操作它。详细原因：{ownershipDiagnostic}");
         }
 
         var qteResult = TryHandleCookingQte();
@@ -406,7 +406,7 @@ internal static partial class RuntimeOrderPreparationService
                     + $"contentRevision={ownershipSnapshot.ContentRevision}; cooker={DescribeCookController(cookController)}");
                 return BlockCookingStartUnowned(
                     target,
-                    $"料理已经写入厨具，但游戏倒计时入口执行异常；自动化已暂停并保留该厨具供玩家处理：{message}");
+                    $"料理已经写入厨具，但游戏启动制作倒计时时发生异常；自动化已暂停并保留该厨具供玩家处理。详细原因：{message}");
         }
 
         var cookSystem = RuntimeCookerReflection.GetCookSystemManager();
@@ -426,8 +426,8 @@ internal static partial class RuntimeOrderPreparationService
                 $"{recipeName}: topology changed during native start callbacks: {postStartTopologyDiagnostic}");
             return BlockCookingStartUnowned(
                 target,
-                "料理已经开火，但血池地狱厨具拓扑在原生开锅回调期间发生变化；"
-                + "自动化已停止且不会读取或操作原厨具："
+                "料理已经开始制作，但血池地狱的厨具状态在游戏回调期间发生变化；"
+                + "自动化已停止，不会继续读取或操作原厨具。详细原因："
                 + postStartTopologyDiagnostic);
         }
 
@@ -436,7 +436,7 @@ internal static partial class RuntimeOrderPreparationService
             AppendAutomationLog("start-failed", collectionTarget, $"{recipeName}: {startDiagnostic}; cooker={DescribeCookController(cookController)}");
             return BlockCookingStartUnowned(
                 target,
-                $"料理已经开火，但厨具状态无法安全验证；自动化已暂停并保留该厨具供玩家处理：{startDiagnostic}");
+                $"料理已经开始制作，但无法确认厨具状态；自动化已暂停并保留该厨具供玩家处理。详细原因：{startDiagnostic}");
         }
 
         if (!RuntimeCookingGenerationTracker.TryGetOwnershipSnapshot(
@@ -452,7 +452,7 @@ internal static partial class RuntimeOrderPreparationService
                 + $"current={validatedOwnershipDiagnostic}; cooker={DescribeCookController(cookController)}");
             return BlockCookingStartUnowned(
                 target,
-                $"料理开火回调期间厨具内容所有权已经变化，已交还玩家手动处理且不会自动操作该厨具："
+                "开始制作期间，Mod 对该厨具的控制状态已经变化；该厨具已交还玩家手动处理，Mod 不会继续操作它。详细原因："
                 + validatedOwnershipDiagnostic);
         }
 
@@ -480,7 +480,7 @@ internal static partial class RuntimeOrderPreparationService
                 + $"contentRevision={ownershipSnapshot.ContentRevision}; cooker={DescribeCookController(cookController)}");
             return BlockCookingStartUnowned(
                 target,
-                $"料理已经开火，但自动料理 job 登记失败；自动化已暂停并保留该厨具供玩家处理：{message}");
+                $"料理已经开始制作，但自动料理任务登记失败；自动化已暂停并保留该厨具供玩家处理。详细原因：{message}");
         }
 
         var extraText = extraIngredientIds.Count == 0 ? "不加料" : string.Join(",", extraIngredientIds);
@@ -580,7 +580,7 @@ internal static partial class RuntimeOrderPreparationService
     {
         var completed = TryCompleteCookingQte(out var completeMessage);
         return completed
-            ? CookingQteResult.Completed($"{completeMessage}；不会打开原生音游面板。")
+            ? CookingQteResult.Completed($"{completeMessage}；不会打开游戏内音游面板。")
             : CookingQteResult.Skip($"{completeMessage}；料理流程已继续。");
     }
 
@@ -622,17 +622,17 @@ internal static partial class RuntimeOrderPreparationService
             var manager = GetSingletonInstance(QteRewardManagerTypeName);
             if (manager == null)
             {
-                message = "自动完成原生 QTE 失败：QTE 奖励管理器不可用。";
+                message = "自动完成游戏内 QTE 失败：QTE 奖励管理器不可用。";
                 return false;
             }
 
             InvokeInstance(manager, "OnQTESucceeded", new object?[] { -1, true });
-            message = "已尝试自动完成原生 QTE 奖励结算。";
+            message = "已尝试自动完成游戏内 QTE 奖励结算。";
             return true;
         }
         catch (Exception ex)
         {
-            message = $"自动完成原生 QTE 失败：{ex.GetBaseException().Message}";
+            message = $"自动完成游戏内 QTE 失败：{ex.GetBaseException().Message}";
             return false;
         }
     }
@@ -641,8 +641,8 @@ internal static partial class RuntimeOrderPreparationService
     /// 登记一个等待出锅后直接送达的烹饪任务。
     /// </summary>
     /// <remarks>
-    /// 同一目标只保留一个回执；同一厨具只允许一个仍持有 controller lease 的 job。
-    /// 已释放 lease 的回执不再占用厨具，可与该厨具后续的新 job 并存。
+    /// 同一目标只保留一份结果记录；同一厨具只允许一个仍控制该厨具的自动料理任务。
+    /// 已结束控制的结果记录不再占用厨具，可与该厨具后续的新任务并存。
     /// </remarks>
     private static AutomationCookingJob RegisterAutomationCookingJob(
         object cookController,
@@ -813,7 +813,8 @@ internal static partial class RuntimeOrderPreparationService
                 }
                 catch (Exception ex)
                 {
-                    var message = $"{job.RecipeName} 自动料理任务发生未处理异常，已释放 Mod 所有权并保留厨具当前状态：{ex.GetBaseException().Message}";
+                    var message = $"{job.RecipeName} 自动料理任务发生异常；Mod 已停止控制该任务，并保留厨具当前状态。"
+                        + $"详细原因：{ex.GetBaseException().Message}";
                     RecordAutomationRuntimeEvent(
                         OrderPreparationStepCodes.CookingResultUnreadable,
                         job,
@@ -962,7 +963,7 @@ internal static partial class RuntimeOrderPreparationService
 
                 existingJob = job;
                 message = job.TransactionStage == "evaluation-receipt"
-                    ? $"目标料理 {job.Target.FoodName} 已送达并释放厨具，正在等待精确订单评价终态；不会重复开锅或送达。"
+                    ? $"目标料理 {job.Target.FoodName} 已送达并释放厨具，正在等待游戏确认订单评价结果；不会重复开锅或送达。"
                     : job.ManualHandoffExpired
                     ? $"同一订单仍有过期目标料理 {job.Target.FoodName} 等待玩家处理；"
                         + "当前目标不会重复开锅，其他订单不受影响。"
@@ -1323,13 +1324,13 @@ internal static partial class RuntimeOrderPreparationService
             return (
                 false,
                 changed
-                    ? $"{job.RecipeName} 的物理厨具快照暂不可完整复核，本轮不会读取成品、送达、入箱或复位厨具：{diagnostic}"
+                    ? $"{job.RecipeName} 的当前厨具状态暂时无法确认，本轮不会读取成品、送达、入箱或复位厨具。详细原因：{diagnostic}"
                     : "",
                 OrderPreparationStepCodes.CookingPending);
         }
 
         var message = $"{job.RecipeName} 的原厨具已被挑战锁定、移除、替换或进入其他锅次；"
-            + "旧自动料理任务已退出且不会访问旧厨具对象，将由当前物理厨具快照重新规划。"
+            + "旧自动料理任务已退出且不会访问原厨具，将根据当前厨具状态重新安排。详细原因："
             + diagnostic;
         RecordAutomationRuntimeEvent(
             OrderPreparationStepCodes.CookingOwnershipLost,
@@ -1385,7 +1386,7 @@ internal static partial class RuntimeOrderPreparationService
                 job.Tracker.Suspend(nowUtc);
                 return (
                     false,
-                    $"同一订单存在未确认安全事件 #{manualHandoffBarrier!.Sequence}，手动交接回执已暂停。",
+                    $"同一订单存在待确认事件 #{manualHandoffBarrier!.Sequence}，手动交接检查已暂停。",
                     OrderPreparationStepCodes.CookingPending);
             }
 
@@ -1467,7 +1468,7 @@ internal static partial class RuntimeOrderPreparationService
             job.Tracker.Suspend(nowUtc);
             return (
                 false,
-                $"同一订单存在未确认安全事件 #{activeBarrier!.Sequence}，料理 job 已暂停，不会送达、入箱或复位厨具。",
+                $"同一订单存在待确认事件 #{activeBarrier!.Sequence}，自动料理任务已暂停，不会送达、入箱或复位厨具。",
                 OrderPreparationStepCodes.CookingPending);
         }
 
@@ -1542,7 +1543,7 @@ internal static partial class RuntimeOrderPreparationService
                     $"{job.RecipeName} 自动料理任务检测到同一厨具已开始新一锅，旧任务已退出且不会操作新成品。"),
                 "cooking-ownership-lost" => (
                     OrderPreparationStepCodes.CookingOwnershipLost,
-                    $"{job.RecipeName} 的厨具成品已离开 Mod 所有的厨具内容或被外部替换；"
+                    $"{job.RecipeName} 的厨具成品已不再是 Mod 开始制作的成品，或已被外部替换；"
                     + "旧任务已释放，并将在订单仍未送达时重新准备。"),
                 "cooking-result-missing" => (
                     OrderPreparationStepCodes.CookingResultUnreadable,
@@ -1553,10 +1554,10 @@ internal static partial class RuntimeOrderPreparationService
                     $"{job.RecipeName} 的制作进度长时间未变化，无法确认锅次是否仍可安全推进；自动料理任务已停止并保留厨具当前状态，请人工确认。"),
                 "cooking-progress-regressed" => (
                     OrderPreparationStepCodes.CookingProgressRegressed,
-                    $"{job.RecipeName} 的厨具制作进度连续回退，无法确认当前锅次状态；自动料理任务已停止且保留厨具当前状态。"),
+                    $"{job.RecipeName} 的厨具制作进度连续倒退，无法确认当前制作状态；自动料理任务已停止且保留厨具当前状态。"),
                 _ => (
                     OrderPreparationStepCodes.CookingResultUnreadable,
-                    $"{job.RecipeName} 的厨具成品连续无法安全读取，自动料理任务已停止且保留厨具当前状态：{invalidResultDiagnostic}"),
+                    $"{job.RecipeName} 的厨具成品连续无法安全读取，自动料理任务已停止且保留厨具当前状态。详细原因：{invalidResultDiagnostic}"),
             };
             RecordAutomationRuntimeEvent(
                 code,
@@ -1603,9 +1604,9 @@ internal static partial class RuntimeOrderPreparationService
             DateTime observedAtUtc)
     {
         var code = OrderPreparationStepCodes.OrderTerminatedBeforeDelivery;
-        var message = $"{job.RecipeName} 的目标订单已在 Mod 送达前由游戏终结"
-            + $"（{terminalReceipt.Disposition}; source={terminalReceipt.Source}; sequence={terminalReceipt.Sequence}）；"
-            + "旧自动料理任务已退休并释放 Mod 厨具预约，锅内料理和厨具现场保持原状，"
+        var message = $"{job.RecipeName} 的目标订单已在 Mod 送达前由游戏结束"
+            + $"（结果={terminalReceipt.Disposition}; 来源={terminalReceipt.Source}; 编号={terminalReceipt.Sequence}）；"
+            + "旧自动料理任务已结束并释放厨具预约，锅内料理和厨具现场保持原状，"
             + "不会送达、评价、移入保温箱或复位厨具。";
         var leaseReleased = job.ControllerLease.Release(
             AutomationCookingControllerLeaseReleaseReason.OrderTerminatedBeforeDelivery,
@@ -1648,7 +1649,7 @@ internal static partial class RuntimeOrderPreparationService
         }
         return (
             false,
-            $"{job.RecipeName} 已进入手动交接；Mod 只保留同订单防重复开锅回执，不会送达、入箱或复位当前厨具。",
+            $"{job.RecipeName} 已进入手动交接；Mod 只保留该订单的防重复开锅记录，不会送达、入箱或复位当前厨具。",
             OrderPreparationStepCodes.CookingPending);
     }
 
@@ -1677,9 +1678,9 @@ internal static partial class RuntimeOrderPreparationService
                     job.Tracker.MarkManualHandoffExpired(observedAtUtc);
                     targetChangedMessage =
                         $"桌 {job.Target.DeskCode + 1} 的 {job.RecipeName} 已成为过期交接成品："
-                        + $"开锅目标 revision={originalRevision} "
+                        + $"开始制作时的目标版本为 {originalRevision} "
                         + $"{FormatSpecialFoodTargetForMessage(originalSignature, originalTags)}，"
-                        + $"当前目标 revision={currentRevision} "
+                        + $"当前目标版本为 {currentRevision} "
                         + $"{FormatSpecialFoodTargetForMessage(currentSignature, currentTags)}。"
                         + "同一订单在该成品处理完前不会重复开锅；请勿将它作为当前目标料理送达。"
                         + "Mod 未操作托盘、厨具或成品。";
@@ -1711,7 +1712,7 @@ internal static partial class RuntimeOrderPreparationService
                     return (false, targetChangedMessage, OrderPreparationStepCodes.CookingPending);
                 }
 
-                var missingMessage = $"{job.RecipeName} 的手动交接目标订单已连续不可见，防重复开锅回执已释放；Mod 未操作厨具或成品。";
+                var missingMessage = $"{job.RecipeName} 的手动交接目标订单已连续不可见，防重复开锅记录已清除；Mod 未操作厨具或成品。";
                 RecordAutomationRuntimeEvent(
                     OrderPreparationStepCodes.CookingManualHandoffCompleted,
                     job,
@@ -1750,16 +1751,16 @@ internal static partial class RuntimeOrderPreparationService
                 out var actualIdentity,
                 out _);
             var resolution = exactJobResult
-                ? "本 job 的精确成品"
+                ? "本次自动料理制作的成品"
                 : servedPointerReadable && actualIdentityReadable
                     ? actualIdentity.FoodId == job.Target.FoodId
-                        ? "同料理的其他原生对象"
-                        : $"其他料理（id={actualIdentity.FoodId}）"
-                    : "来源身份未知的最终料理";
+                        ? "同一料理的其他成品"
+                        : $"其他料理（ID {actualIdentity.FoodId}）"
+                    : "来源未知的已送达料理";
             var deliveredMessage =
-                $"桌 {job.Target.DeskCode + 1} 的目标订单已存在最终料理，手动交接槽已释放；"
-                + $"完成来源：{resolution}；expectedResult=0x{(long)job.CurrentResultPointer:X}; "
-                + $"actualResult={(servedPointerReadable ? $"0x{(long)servedPointer:X}" : "unavailable")}。"
+                $"桌 {job.Target.DeskCode + 1} 的目标订单已存在料理，手动交接状态已结束；"
+                + $"完成来源：{resolution}；预期成品=0x{(long)job.CurrentResultPointer:X}; "
+                + $"实际成品={(servedPointerReadable ? $"0x{(long)servedPointer:X}" : "不可用")}。"
                 + "Mod 未送达、评价、操作托盘、入箱或复位厨具。";
             var completionCode = exactJobResult
                 ? OrderPreparationStepCodes.CookingManualHandoffCompleted
@@ -1799,7 +1800,8 @@ internal static partial class RuntimeOrderPreparationService
             return (false, "", OrderPreparationStepCodes.CookingPending);
         }
 
-        var message = $"{job.RecipeName} 已进入手动交接，但连续无法确认目标订单料理状态；为避免重复扣料开锅，已停止 job 并保留服务端安全栅栏，请人工确认：{diagnostic}";
+        var message = $"{job.RecipeName} 已进入手动交接，但连续无法确认目标订单的料理状态；"
+            + $"为避免重复扣料开锅，自动料理任务已停止，并保留一项待确认事件，请人工检查游戏状态。详细原因：{diagnostic}";
         RecordAutomationRuntimeEvent(
             OrderPreparationStepCodes.CookingManualHandoffUnreadable,
             job,
@@ -1991,7 +1993,7 @@ internal static partial class RuntimeOrderPreparationService
     /// 创建能体现额外加料结果的料理对象。
     /// </summary>
     /// <remarks>
-    /// 推荐算法可能为满足 Tag 选择额外食材，必须通过游戏的 MatchedCookCombo 生成最终成品，
+    /// 推荐算法可能为满足标签选择额外食材，必须通过游戏的 MatchedCookCombo 生成最终成品，
     /// 否则 UI 推荐与游戏实际料理效果会不一致。
     /// </remarks>
     private static object? CreateCookResult(object recipe, IReadOnlyList<int> extraIngredientIds, object cooker)
@@ -2071,7 +2073,7 @@ internal static partial class RuntimeOrderPreparationService
                 out var reservationError))
         {
             return (false, true, null, null,
-                $"预约的厨具控制器已发生身份或位置漂移，自动化不会改选其他厨具，将等待最新快照重新调度"
+                $"预约的厨具已被替换或移动，自动化不会改选其他厨具，将等待厨具状态刷新后重新安排"
                 + $"（{reservationError}；{controllerStatus}；{lockedStatus}）。");
         }
 
@@ -2080,7 +2082,7 @@ internal static partial class RuntimeOrderPreparationService
             return (false, true, null, null,
                 $"预约的厨具控制器 #{reservation.ControllerIndex}/{reservation.ControllerIdentity} "
                 + $"在位置 {reservation.GridPosition} 已被挑战机制锁定，"
-                + "自动化不会读取该控制器，将等待最新快照重新调度"
+                + "自动化不会读取该厨具，将等待厨具状态刷新后重新安排"
                 + $"（{controllerStatus}；{lockedStatus}）。");
         }
 
@@ -2092,7 +2094,7 @@ internal static partial class RuntimeOrderPreparationService
         {
             return (false, true, null, null,
                 $"预约的厨具控制器 #{reservation.ControllerIndex}/{reservation.ControllerIdentity} "
-                + "状态无法完整读取，自动化将等待最新快照重新调度"
+                + "状态无法完整读取，自动化将等待厨具状态刷新后重新安排"
                 + $"（{stateStatus}；{controllerStatus}；{lockedStatus}）。");
         }
 
@@ -2103,7 +2105,7 @@ internal static partial class RuntimeOrderPreparationService
         {
             return (false, true, null, null,
                 $"预约的厨具控制器 #{reservation.ControllerIndex}/{reservation.ControllerIdentity} "
-                + $"在位置 {reservation.GridPosition} 的 LockedCookers 与 CouldCookerOpen 结果互相矛盾，"
+                + $"在位置 {reservation.GridPosition} 的挑战锁定状态与厨具可用状态互相矛盾，"
                 + "自动化将等待同一轮完整状态恢复"
                 + $"（{stateStatus}；{controllerStatus}；{lockedStatus}）。");
         }
@@ -2113,7 +2115,7 @@ internal static partial class RuntimeOrderPreparationService
             return (false, true, null, null,
                 $"预约的厨具控制器 #{reservation.ControllerIndex}/{reservation.ControllerIdentity} "
                 + $"在位置 {reservation.GridPosition} 已变为空厨具位，"
-                + "自动化不会改选其他厨具，将等待最新快照重新调度"
+                + "自动化不会改选其他厨具，将等待厨具状态刷新后重新安排"
                 + $"（{stateStatus}；{controllerStatus}；{lockedStatus}）。");
         }
 
@@ -2123,7 +2125,7 @@ internal static partial class RuntimeOrderPreparationService
             return (false, true, null, null,
                 $"预约的厨具控制器 #{reservation.ControllerIndex}/{reservation.ControllerIdentity} "
                 + "已不再支持配方厨具类型 "
-                + $"{cookerTypeName}（{recipeCookerType}），自动化不会改选其他厨具，将等待最新快照重新调度"
+                + $"{cookerTypeName}（{recipeCookerType}），自动化不会改选其他厨具，将等待厨具状态刷新后重新安排"
                 + $"（{stateStatus}；{controllerStatus}；{lockedStatus}）。");
         }
 
@@ -2132,7 +2134,7 @@ internal static partial class RuntimeOrderPreparationService
             return (false, true, null, null,
                 $"预约的厨具控制器 #{reservation.ControllerIndex}/{reservation.ControllerIdentity} "
                 + "已被另一个 Mod 自动料理任务预约，"
-                + "自动化不会改选其他厨具，将等待最新快照重新调度"
+                + "自动化不会改选其他厨具，将等待厨具状态刷新后重新安排"
                 + $"（{reservationDiagnostic}）。");
         }
 
@@ -2145,7 +2147,7 @@ internal static partial class RuntimeOrderPreparationService
             return (false, true, null, null,
                 $"预约的厨具控制器 #{reservation.ControllerIndex}/{reservation.ControllerIdentity} "
                 + "已不再可用于自动开锅，"
-                + "自动化不会改选其他厨具，将等待最新快照重新调度"
+                + "自动化不会改选其他厨具，将等待厨具状态刷新后重新安排"
                 + $"（{stateStatus}；{startAvailabilityDiagnostic}；{controllerStatus}；{lockedStatus}）。");
         }
 
@@ -2186,14 +2188,14 @@ internal static partial class RuntimeOrderPreparationService
         if (!IsSameObject(cookController, current.CookController))
         {
             waiting = true;
-            message = "精确预约的厨具控制器原生对象已发生变化，自动化不会改选其他厨具。";
+            message = "预约的厨具已被游戏替换，自动化不会改选其他厨具。";
             return false;
         }
 
         if (!IsSameObject(selectedCooker, current.ControllerState.Cooker))
         {
             waiting = true;
-            message = "精确预约的厨具控制器已经换绑到其他厨具，自动化不会改选其他厨具。";
+            message = "预约位置当前对应另一台厨具，自动化不会改选其他厨具。";
             return false;
         }
 

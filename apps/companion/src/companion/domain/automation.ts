@@ -125,7 +125,7 @@ export interface OrderPreparationCandidateResult {
   message: string;
 }
 
-/** 已由参与领域层投影的稀客自动化候选行。 */
+/** 已由调度领域层筛选的稀客自动化候选行。 */
 export interface OperationalOrderRecommendation {
   recommendation: OrderRecommendation;
   participation: NightOrderOperationalParticipation;
@@ -157,7 +157,7 @@ export function getWackyRecipeCookingDeferral(
   if (target.enforcement !== 'require' || target.tags.length === 0) return '';
 
   if (!matchesSpecialBusinessFoodTarget(recipeTags, target)) {
-    return `当前怪诞料理目标 Tag 为 ${target.tags.join('、')}，${recipeName || '目标料理'} 不含该 Tag，等待目标刷新后再开锅。`;
+    return `当前怪诞料理目标标签为 ${target.tags.join('、')}，${recipeName || '目标料理'} 不含该标签，等待目标刷新后再开锅。`;
   }
 
   return getWackyTargetTagCountdownDeferral(specialBusiness);
@@ -245,7 +245,7 @@ export function reconcileRareRecipeTargetForSpecialBusiness(
     || '特殊经营';
   const targetRequirement = target.match === 'all' ? '同时满足' : '命中';
   if (!signature) {
-    const message = `${challengeLabel}的特殊料理目标缺少有效经营代际或目标身份，自动化已暂停该料理目标。`;
+    const message = `${challengeLabel}的特殊料理目标缺少本场经营编号或目标标识，自动化已暂停该料理目标。`;
     return {
       state: {
         ...state,
@@ -364,11 +364,11 @@ export function reconcileRareRecipeTargetForSpecialBusiness(
             ? targetState.rollbackCount + 1
             : targetState.rollbackCount,
         lastError: changedTarget
-          ? `${challengeLabel}目标 Tag 为 ${targetTags.join('、')}，已切换到${targetRequirement}目标的推荐料理 ${recommendedTarget.recipeName}。`
+          ? `${challengeLabel}目标标签为 ${targetTags.join('、')}，已切换到${targetRequirement}目标的推荐料理 ${recommendedTarget.recipeName}。`
           : '',
       },
       message: changedTarget
-        ? `${challengeLabel}目标 Tag 为 ${targetTags.join('、')}，${reason}，已切换到 ${recommendedTarget.recipeName}。`
+        ? `${challengeLabel}目标标签为 ${targetTags.join('、')}，${reason}，已切换到 ${recommendedTarget.recipeName}。`
         : '',
       specialTargetPolicy: policy,
       policyError: '',
@@ -406,9 +406,9 @@ export function reconcileRareRecipeTargetForSpecialBusiness(
         : currentTarget
           ? targetState.rollbackCount + 1
           : targetState.rollbackCount,
-      lastError: `${challengeLabel}目标 Tag 为 ${targetTags.join('、')}，当前没有可执行且${targetRequirement}目标的推荐料理。`,
+      lastError: `${challengeLabel}目标标签为 ${targetTags.join('、')}，当前没有可执行且${targetRequirement}目标的推荐料理。`,
     },
-    message: `${challengeLabel}目标 Tag 为 ${targetTags.join('、')}，当前没有可执行且${targetRequirement}目标的推荐料理。`,
+    message: `${challengeLabel}目标标签为 ${targetTags.join('、')}，当前没有可执行且${targetRequirement}目标的推荐料理。`,
     specialTargetPolicy: policy,
     policyError: '',
     rollbackTargetRotated: specialTargetRotated,
@@ -694,7 +694,7 @@ export function buildAutomationResourceOverview({
 /**
  * 将普客自动化本地状态与最新 Mod 快照同步。
  *
- * 快照是最终事实来源：如果游戏已经显示送达、可评价或已评价，就推进本地状态并重置重试计数。
+ * Mod 返回的当前状态是最终判断依据：如果游戏已经显示送达、可评价或已评价，就推进本地状态并重置重试计数。
  */
 export function syncNormalOrderStateWithSnapshot(
   order: NormalBusinessOrder,
@@ -874,7 +874,7 @@ export function reserveRareCookerSlot(
 /**
  * 从当前稀客订单推荐中选择可执行的自动化候选。
  *
- * 选择时会结合收藏限定、已锁定目标和推荐兜底方案，返回全部可执行项以及跳过原因。
+ * 选择时会结合收藏限定、已固定目标和推荐备选方案，返回全部可执行项以及跳过原因。
  * 并发上限只能在读取当前厨具容量后应用，避免排序靠前但厨具锁定的订单阻塞其他厨具类型。
  */
 export function selectOrderPreparationCandidates(
@@ -893,9 +893,9 @@ export function selectOrderPreparationCandidates(
 }
 
 /**
- * 从 Mod 权威参与队列中选择稀客自动化候选。
+ * 从 Mod 当前稀客队列中选择自动化候选。
  *
- * 调用方必须显式传入推荐与参与投影的对应关系；该函数不会按姓名、桌位或 Tag
+ * 调用方必须显式传入推荐与调度状态的对应关系；该函数不会按姓名、桌位或标签
  * 重新匹配。暂停、状态缺失和队列序号无效的行在计划/收藏选择前已被排除。
  */
 export function selectOperationalOrderPreparationCandidates(
@@ -940,16 +940,16 @@ function selectOrderPreparationCandidatesFromRows(
     const label = formatRareAutomationPrefix(item);
     const missingIdentityFields = [
       item.order.deskCode < 0 ? '桌位' : '',
-      item.order.runtimeGuestId == null ? '运行时稀客 ID' : '',
-      item.order.foodTagId == null ? '料理 Tag ID' : '',
-      item.order.beverageTagId == null ? '酒水 Tag ID' : '',
+      item.order.runtimeGuestId == null ? '游戏内稀客 ID' : '',
+      item.order.foodTagId == null ? '料理标签 ID' : '',
+      item.order.beverageTagId == null ? '酒水标签 ID' : '',
     ].filter(Boolean);
     if (missingIdentityFields.length > 0) {
       const skip = buildOrderPreparationSkip(
         item,
         label,
         'runtime-identity-missing',
-        `运行时订单身份不完整（缺少${missingIdentityFields.join('、')}），自动化不会使用展示文本推测目标。`,
+        `游戏内订单标识不完整（缺少${missingIdentityFields.join('、')}），自动化不会根据显示名称推测目标。`,
       );
       skips.push(skip);
       messages.push(skip.message);
@@ -1136,7 +1136,7 @@ export function hasNormalOrderActionEnabled(preferences: CompanionPreferences): 
 /**
  * 构建稀客自动化状态键。
  *
- * 可执行订单以原生 trace 与 lifecycle sequence 建键；不可执行行只保留隔离的展示键。
+ * 可执行订单以游戏 trace 和 orderLifecycleSequence 建键；不可执行行只保留隔离的展示键。
  */
 export function buildAutoOrderKey(item: OrderRecommendation): string {
   const order = item.order;
@@ -1464,7 +1464,7 @@ function buildCookerReservationFailure(
   if (compatibleSlots.length === 0) {
     const incompleteNote = pool.snapshotComplete
       ? ''
-      : '；当前厨具快照不完整，未知控制器不会计入容量';
+      : '；当前厨具信息不完整，无法确认的厨具不会计入容量';
     return {
       ok: false,
       message: `等待厨具 ${cooker.label}：当前已确认自动化容量为 0${incompleteNote}。`,

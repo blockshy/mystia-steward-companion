@@ -98,7 +98,7 @@ export function buildYuyukoPositiveSpellPlanReason(plan: RareOrderRecommendation
     `额外喜好 ${evaluation.extraPreferenceScore}${preferenceTags.length > 0 ? `（${preferenceTags.join('、')}）` : ''}`,
     evaluation.negativeTags.length > 0
       ? `当前稀客厌恶 ${evaluation.negativeTags.join('、')}`
-      : '无当前稀客厌恶 Tag',
+      : '无当前稀客厌恶标签',
   ].join('，');
 }
 
@@ -175,7 +175,7 @@ function buildYuyukoPositiveSpellBlockReason(plan: RareOrderRecommendationPlan):
   } else {
     if (!food.meetsRequiredFood) details.push(`料理未满足点单 ${plan.demand.requiredFoodTag || '未知'}`);
     if (evaluation.negativeTags.length > 0) {
-      details.push(`包含当前稀客厌恶 Tag ${evaluation.negativeTags.join('、')}`);
+      details.push(`包含当前稀客厌恶标签 ${evaluation.negativeTags.join('、')}`);
     }
   }
 
@@ -189,7 +189,7 @@ function buildYuyukoPositiveSpellBlockReason(plan: RareOrderRecommendationPlan):
     && evaluation.baseDemandScore === 2
     && evaluation.extraPreferenceScore < YUYUKO_POSITIVE_SPELL_MIN_EXTRA_PREFERENCE_MATCHES) {
     details.push(
-      `除点单 Tag 外仅命中 ${evaluation.extraPreferenceScore} 个当前稀客喜好`
+      `除点单标签外仅命中 ${evaluation.extraPreferenceScore} 个当前稀客喜好`
       + `，触发正面符卡需要至少 ${YUYUKO_POSITIVE_SPELL_MIN_EXTRA_PREFERENCE_MATCHES} 个`,
     );
   }

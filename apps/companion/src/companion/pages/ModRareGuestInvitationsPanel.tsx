@@ -242,7 +242,7 @@ function RareGuestInvitationPanel({
               data-rare-invitation-result-status="true"
             >
               <Badge variant={inviteAllResult.ok ? 'secondary' : 'outline'}>
-                {invitationRuntimeReady ? '读取已就绪' : '等待运行时'}
+                {invitationRuntimeReady ? '读取已就绪' : '等待游戏数据'}
               </Badge>
               <span className="min-w-0 flex-1 break-words text-muted-foreground">
                 {inviteAllResult.status || (inviteAllResult.ok ? '候选读取完成' : '候选读取失败')}

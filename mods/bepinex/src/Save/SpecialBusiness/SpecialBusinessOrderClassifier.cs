@@ -9,7 +9,7 @@ internal static class SpecialBusinessOrderClassifier
             return SpecialBusinessModuleRegistry.Blocked(
                 SpecialBusinessOrderRoles.ContextUnavailable,
                 "特殊经营状态待确认",
-                $"游戏特殊经营类型暂时无法读取，已阻止自动化接管：{error}");
+                $"暂时无法读取游戏的特殊经营类型，已暂停自动化。详细原因：{error}");
         }
 
         if (!SpecialBusinessModuleRegistry.IsActiveChallenge(challengeType))

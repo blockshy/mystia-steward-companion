@@ -14,7 +14,7 @@ using UnityEngine.SceneManagement;
 namespace MystiaStewardCompanion.Ui;
 
 /// <summary>
-/// Mod 运行时主控制器，负责在 Unity 主线程中刷新游戏数据、处理本地 API 请求并发布伴随窗口快照。
+/// Mod 主控制器，负责在 Unity 主线程中刷新游戏数据、处理本地 API 请求并发布伴随窗口数据。
 /// </summary>
 /// <remarks>
 /// 本地 API 的 HTTP 处理运行在后台线程，但 IL2CPP/Unity 对象只能安全地在 Unity 主线程访问。
@@ -24,7 +24,7 @@ internal sealed class StewardOverlayController
 {
     // 稀客订单 Hook 可能在同一帧连续触发多次，短暂防抖可减少重复读取夜间经营对象。
     private const float SpecialOrderRefreshDebounceSeconds = 0.2f;
-    // 本地 API 快照序列化成本较高，限制最短发布时间避免每帧刷新造成卡顿。
+    // 本地 API 数据序列化成本较高，限制最短发布时间避免每帧刷新造成卡顿。
     private const float LocalApiSnapshotPublishMinIntervalSeconds = 0.35f;
     private const float RuntimeDataCatalogRetrySeconds = 5f;
     private const float PerformanceSnapshotMaxAgeSeconds = 12f;
@@ -70,7 +70,7 @@ internal sealed class StewardOverlayController
     private string _lastRareGuestParticipationDiagnosticSignature = "";
     private string _runtimeSource = "";
     private string _activeSceneName = "";
-    private string _status = "Not initialized.";
+    private string _status = "Mod 尚未初始化。";
     private string _lastRuntimeErrorMessage = "";
     private string _lastAvailableMissionLogSignature = "";
     private string _runtimeStateSignature = "";
@@ -241,7 +241,7 @@ internal sealed class StewardOverlayController
     /// Unity 每帧更新入口。
     /// </summary>
     /// <remarks>
-    /// 执行顺序很重要：先处理场景变化和待办队列，再刷新订单/运行时快照，最后按节流策略发布到本地 API。
+    /// 执行顺序很重要：先处理场景变化和待办队列，再刷新订单和游戏数据，最后按节流策略发布到本地 API。
     /// </remarks>
     public void Update()
     {
@@ -305,7 +305,7 @@ internal sealed class StewardOverlayController
         EndRareGuestParticipationBusiness(lifecycle);
         CancelPendingNightBusinessCommands(lifecycle);
         ClearNightBusinessControllerState(L(
-            "夜间经营正在结束；已停止运行时读取和自动化。",
+            "夜间经营正在结束；已停止读取游戏数据和运行自动化。",
             "Night business is ending; runtime reads and automation have stopped."));
         MarkLocalApiSnapshotDirty(LocalApiSnapshotDirtyDomain.Scene | LocalApiSnapshotDirtyDomain.All, "night business closing", force: true);
     }
@@ -340,7 +340,7 @@ internal sealed class StewardOverlayController
     private void CancelPendingNightBusinessCommands(NightBusinessLifecycleSnapshot lifecycle)
     {
         var cancellation = new OperationCanceledException(
-            $"Night-business session {lifecycle.Generation} entered {lifecycle.Phase}.");
+            $"夜间经营状态已经变化：本场经营编号={lifecycle.Generation}；阶段={lifecycle.Phase}。");
         CancelPendingMainThreadCommands(_pendingInventoryEdits, _inventoryEditLock, cancellation);
         CancelPendingMainThreadCommands(_pendingInventoryBulkEdits, _inventoryEditLock, cancellation);
         _automationCommandFence.RunExclusive(_ =>
@@ -374,7 +374,7 @@ internal sealed class StewardOverlayController
             var releasedJobs = RuntimeOrderPreparationService.ClearAutomationCookingJobs(
                 RuntimeNightBusinessAutomationGate.TutorialActiveReason);
             _status = releasedJobs > 0
-                ? $"当前为教学经营，自动化已暂停；已释放 {releasedJobs} 个自动料理任务的 Mod 所有权。"
+                ? $"当前为教学经营，自动化已暂停；Mod 已停止控制 {releasedJobs} 个自动料理任务。"
                 : "当前为教学经营，自动化已暂停。";
         }
         else if (string.Equals(
@@ -456,7 +456,7 @@ internal sealed class StewardOverlayController
         CancelPendingMainThreadCommands(
             _pendingAvailableMissionReads,
             _availableMissionReadLock,
-            new OperationCanceledException("Scene changed before the available-mission read started."));
+            new OperationCanceledException("可接取任务开始读取前，游戏场景已经变化。"));
         if (IsNonGameplayScene(sceneName) || IsNightBusinessScene(sceneName))
         {
             RuntimeSceneReadinessCapture.ClearForSceneChange(sceneName);
@@ -485,8 +485,8 @@ internal sealed class StewardOverlayController
         if (IsNonGameplayScene(sceneName))
         {
             ClearLoadedRuntime(L(
-                "当前游戏运行时数据不可用：当前处于非游戏内页面。",
-                "Live game runtime data unavailable: this is not an in-game page."));
+                "当前游戏数据不可用：当前处于非游戏内页面。",
+                "Live game data unavailable: this is not an in-game page."));
             MarkLocalApiSnapshotDirty(LocalApiSnapshotDirtyDomain.Scene, "entered non-game scene", force: true);
             return;
         }
@@ -498,7 +498,7 @@ internal sealed class StewardOverlayController
     }
 
     /// <summary>
-    /// 响应运行时场景就绪探针变化，使未完成的目录读取立即重试并清理动态快照缓存。
+    /// 响应游戏场景就绪状态变化，使未完成的目录读取立即重试并清理动态数据缓存。
     /// </summary>
     private void RefreshOnRuntimeSceneReadinessChange()
     {
@@ -682,7 +682,7 @@ internal sealed class StewardOverlayController
         if (!ShouldGateNightBusinessRuntime()) return;
         var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
         throw new InvalidOperationException(
-            $"Night-business runtime is unavailable: phase={lifecycle.Phase}, generation={lifecycle.Generation}.");
+            $"当前夜间经营状态不可用：阶段={lifecycle.Phase}；本场经营编号={lifecycle.Generation}。");
     }
 
     private static void CancelPendingMainThreadCommands<TCommand>(
@@ -712,7 +712,7 @@ internal sealed class StewardOverlayController
         try
         {
             _repository = DataRepository.Empty();
-            _runtimeDataCatalog = RuntimeDataCatalog.Empty("waiting for live game runtime data");
+            _runtimeDataCatalog = RuntimeDataCatalog.Empty("等待游戏数据");
             _runtimeMappedGuestSnapshot = null;
             _runtimeStaticDataSnapshot = null;
             _state = null;
@@ -728,8 +728,8 @@ internal sealed class StewardOverlayController
             _runtimeStateSignature = "";
             _lastRuntimeReadUtc = DateTime.MinValue;
             _status = L(
-                "等待游戏运行时数据；当前页面需要运行时数据就绪。",
-                "Waiting for live game runtime data; this page requires runtime data to be ready.");
+                "等待游戏数据；当前页面需要读取游戏中的料理、库存和客人信息。",
+                "Waiting for game data; this page needs recipe, inventory, and customer data from the game.");
         }
         catch (Exception ex)
         {
@@ -743,8 +743,8 @@ internal sealed class StewardOverlayController
     /// </summary>
     /// <param name="manual">是否由用户手动触发刷新，用于决定状态提示和日志强度。</param>
     /// <remarks>
-    /// 本方法读取库存、解锁料理、流行 Tag、厨具和日间状态，并将配置覆盖项应用到推荐状态。
-    /// 读取失败时不会清空已加载状态，除非当前场景明确不再允许使用旧运行时数据。
+    /// 本方法读取库存、解锁料理、流行标签、厨具和日间状态，并将配置覆盖项应用到推荐状态。
+    /// 读取失败时不会清空已加载状态，除非当前场景明确不再允许使用旧游戏数据。
     /// </remarks>
     private void RefreshRuntimeState(bool manual)
     {
@@ -817,7 +817,7 @@ internal sealed class StewardOverlayController
 
             ClearLoadedRuntime(manual
                 ? L($"无法读取游戏实时数据：{RuntimeReasonZh(runtimeReason)}", $"Cannot read live game data: {runtimeReason}")
-                : L("当前游戏运行时数据不可用。进入游戏后会自动读取实时数据。", "Live game runtime data is unavailable. It will be detected after entering the game."));
+                : L("当前游戏数据不可用。进入游戏后会自动读取实时数据。", "Live game data is unavailable. It will be detected after entering the game."));
         }
         catch (InvalidOperationException ex) when (string.Equals(
                    ex.Message,
@@ -825,7 +825,7 @@ internal sealed class StewardOverlayController
                    StringComparison.Ordinal))
         {
             _status = L(
-                "基础运行时数据暂不可用；经营中页会继续读取稀客和点单。",
+                "基础游戏数据暂不可用；经营中页会继续读取稀客和点单。",
                 "Base runtime data is temporarily unavailable; Service will keep reading rare customers and orders.");
             if (!_runtimeLoaded) _state = null;
             _runtimeSource = "";
@@ -1957,7 +1957,7 @@ internal sealed class StewardOverlayController
         _runtimeSource = "";
         _lastRuntimeReadUtc = DateTime.MinValue;
         _status = L(
-            $"游戏运行时目录尚未就绪：{RuntimeReasonZh(result.Status)}。Mod 将自动重试。",
+            $"游戏数据目录尚未就绪：{RuntimeReasonZh(result.Status)}。Mod 将自动重试。",
             $"Game runtime catalog is not ready: {result.Status}. The Mod will retry automatically.");
 
         if (!result.Attempted
@@ -1986,7 +1986,7 @@ internal sealed class StewardOverlayController
         reason = "";
         if (!HasRuntimeBasicsLoaded())
         {
-            reason = "游戏运行时数据尚未读取完成，请稍后再试。";
+            reason = "游戏数据尚未读取完成，请稍后再试。";
             return false;
         }
 
@@ -2069,7 +2069,7 @@ internal sealed class StewardOverlayController
     /// 读取或刷新普客订单快照。
     /// </summary>
     /// <remarks>
-    /// 普客 HUD 订单可能早于稀客经营上下文稳定出现，因此这里只以夜间经营场景为读取门禁。
+    /// 普客 HUD 订单可能早于稀客经营上下文稳定出现，因此这里只以夜间经营场景作为读取条件。
     /// 订单是否可执行仍由 <see cref="RuntimeNormalOrderSnapshotService"/> 合并 live 订单和捕获控制器后判断。
     /// </remarks>
     private NormalBusinessContext? RefreshNormalBusinessContext(bool force)
@@ -2139,7 +2139,7 @@ internal sealed class StewardOverlayController
             return new LocalApiConnectionConfigDto
             {
                 Ok = false,
-                Error = "configuration is not available",
+                Error = "Mod 配置当前不可用。",
             };
         }
 
@@ -2156,7 +2156,7 @@ internal sealed class StewardOverlayController
             return new LocalApiConnectionConfigDto
             {
                 Ok = false,
-                Error = "configuration is not available",
+                Error = "Mod 配置当前不可用。",
             };
         }
 
@@ -2246,7 +2246,7 @@ internal sealed class StewardOverlayController
         var directory = Path.GetDirectoryName(path);
         if (string.IsNullOrWhiteSpace(directory))
         {
-            throw new InvalidOperationException("Log directory is not available.");
+            throw new InvalidOperationException("日志目录当前不可用。");
         }
 
         Directory.CreateDirectory(directory);
@@ -2281,14 +2281,14 @@ internal sealed class StewardOverlayController
             ThrowIfNightBusinessRuntimeUnavailable();
             if (_pendingInventoryEdits.Count >= MaxPendingMainThreadCommandsPerQueue)
             {
-                throw new InvalidOperationException("Inventory edit queue is full. Retry after the game resumes processing frames.");
+                throw new InvalidOperationException("库存修改请求过多，请等待游戏恢复运行后重试。");
             }
             _pendingInventoryEdits.Enqueue(pending);
         }
 
         return pending.WaitForResult(
             TimeSpan.FromSeconds(2.5),
-            "Inventory edit timed out before the Unity main thread started it.");
+            "库存修改在 Unity 主线程开始处理前超时。");
     }
 
     /// <summary>
@@ -2317,14 +2317,14 @@ internal sealed class StewardOverlayController
             ThrowIfNightBusinessRuntimeUnavailable();
             if (_pendingInventoryBulkEdits.Count >= MaxPendingMainThreadCommandsPerQueue)
             {
-                throw new InvalidOperationException("Inventory bulk edit queue is full. Retry after the game resumes processing frames.");
+                throw new InvalidOperationException("批量库存修改请求过多，请等待游戏恢复运行后重试。");
             }
             _pendingInventoryBulkEdits.Enqueue(pending);
         }
 
         return pending.WaitForResult(
             TimeSpan.FromSeconds(6),
-            "Inventory bulk edit timed out before the Unity main thread started it.");
+            "批量库存修改在 Unity 主线程开始处理前超时。");
     }
 
     private OrderPreparationResult PrepareOrderFromLocalApi(OrderPreparationRequest request)
@@ -2367,7 +2367,7 @@ internal sealed class StewardOverlayController
                 var command = _pendingOrderPreparations.Dequeue();
                 if (command.AutomationEpoch < nextEpoch)
                 {
-                    if (command.Cancel(new OperationCanceledException("Automation command was superseded by an ownership cancellation.")))
+                    if (command.Cancel(new OperationCanceledException("自动化控制权已经变化，本次操作已取消。")))
                     {
                         cancelled++;
                     }
@@ -2405,14 +2405,14 @@ internal sealed class StewardOverlayController
             if (_pendingAvailableMissionReads.Count >= MaxPendingMainThreadCommandsPerQueue)
             {
                 throw new InvalidOperationException(
-                    "Available mission read queue is full. Retry after the game resumes processing frames.");
+                    "可接取任务读取请求过多，请等待游戏恢复运行后重试。");
             }
             _pendingAvailableMissionReads.Enqueue(pending);
         }
 
         return pending.WaitForResult(
             TimeSpan.FromSeconds(3.5),
-            "Available mission read timed out before the Unity main thread started it.");
+            "可接取任务在 Unity 主线程开始读取前超时。");
     }
 
     private RuntimeAvailableMissionSnapshot CaptureAvailableMissions()
@@ -2776,7 +2776,7 @@ internal sealed class StewardOverlayController
     {
         if (ShouldGateNightBusinessRuntime())
         {
-            const string reason = "夜间经营会话正在初始化或结束，当前不接受运行时请求。";
+            const string reason = "夜间经营正在初始化或结束，当前不接受新的操作请求。";
             return new RareGuestInvitationResult
             {
                 Ok = false,
@@ -2810,14 +2810,14 @@ internal sealed class StewardOverlayController
             ThrowIfDisposed();
             if (_pendingRareGuestInvitations.Count >= MaxPendingMainThreadCommandsPerQueue)
             {
-                throw new InvalidOperationException("Rare guest invitation queue is full. Retry after the game resumes processing frames.");
+                throw new InvalidOperationException("稀客邀请请求过多，请等待游戏恢复运行后重试。");
             }
             _pendingRareGuestInvitations.Enqueue(pending);
         }
 
         return pending.WaitForResult(
             TimeSpan.FromSeconds(3.5),
-            "Rare guest invitation timed out before the Unity main thread started it.");
+            "稀客邀请在 Unity 主线程开始处理前超时。");
     }
 
     /// <summary>
@@ -2855,7 +2855,7 @@ internal sealed class StewardOverlayController
                 }
                 if (_pendingOrderPreparations.Count >= MaxPendingMainThreadCommandsPerQueue)
                 {
-                    throw new InvalidOperationException("Order action queue is full. Retry after the game resumes processing frames.");
+                    throw new InvalidOperationException("订单操作请求过多，请等待游戏恢复运行后重试。");
                 }
                 _pendingOrderPreparations.Enqueue(pending);
                 return true;
@@ -2872,7 +2872,7 @@ internal sealed class StewardOverlayController
 
             return pending.WaitForResult(
                 TimeSpan.FromSeconds(3.5),
-                "Order action timed out before the Unity main thread started it.");
+                "订单操作在 Unity 主线程开始处理前超时。");
         }
 
         return _automationCommandFence.RunExclusive(currentEpoch =>
@@ -2894,7 +2894,7 @@ internal sealed class StewardOverlayController
 
     private static OrderPreparationResult BuildSupersededOrderResult(OrderPreparationRequest request)
     {
-        var result = BuildUnavailableOrderResult(request, "该自动化命令已被更新的配置或控制权代际作废，未执行任何游戏操作。");
+        var result = BuildUnavailableOrderResult(request, "配置或自动化控制权已经变化，本次操作已取消，未修改游戏状态。");
         result.Automation.Outcome = "cancelled";
         result.Automation.Stage = "command";
         result.Automation.ReasonCode = "automation-command-superseded";
@@ -3059,10 +3059,10 @@ internal sealed class StewardOverlayController
             ? "participation-profile-not-aligned"
             : permit.Decision.ReasonCode;
         var message = permit.Allowed
-            ? "稀客参与状态尚未与当前主设备名单对齐，未执行任何游戏操作。"
+            ? "稀客队列仍在同步主设备的调度名单，未修改游戏状态。"
             : string.Equals(reasonCode, "order-paused", StringComparison.Ordinal)
                 ? "该稀客订单当前已暂停，不参与高亮、自动化或资源预约。"
-                : $"无法确认该稀客订单的精确参与许可，未执行任何游戏操作：{permit.Decision.Message}";
+                : $"暂时无法确认该稀客订单是否已启用，未修改游戏状态：{permit.Decision.Message}";
         permit.Dispose();
         blocked = BuildUnavailableOrderResult(request, message, reasonCode);
         blocked.Automation.Outcome = "blocked";
@@ -3153,7 +3153,7 @@ internal sealed class StewardOverlayController
                 if (pending == null) return 0;
                 if (pending.AutomationEpoch != currentEpoch)
                 {
-                    pending.Cancel(new OperationCanceledException("Automation command was superseded before main-thread execution."));
+                    pending.Cancel(new OperationCanceledException("自动化操作在主线程执行前已被更新的请求取代。"));
                     return 1;
                 }
                 if (!pending.TryBegin()) return 1;
@@ -3598,7 +3598,7 @@ internal sealed class StewardOverlayController
     /// 取得经营页可用的推荐状态。
     /// </summary>
     /// <remarks>
-    /// 若基础运行时状态暂不可读但夜间订单存在，则构造一次全可用兜底状态，保证订单推荐仍可显示候选。
+    /// 若基础运行时状态暂不可读但夜间订单存在，则构造一次仅供推荐使用的全可用状态，保证订单推荐仍可显示候选。
     /// </remarks>
     private RecommendationState GetBusinessRecommendationState()
     {
@@ -3773,8 +3773,8 @@ internal sealed class StewardOverlayController
         if (IsNonGameplayScene(sceneName))
         {
             reason = L(
-                "当前游戏运行时数据不可用：当前处于非游戏内页面。",
-                "Live game runtime data unavailable: this is not an in-game page.");
+                "当前游戏数据不可用：当前处于非游戏内页面。",
+                "Live game data unavailable: this is not an in-game page.");
             return false;
         }
 
@@ -3793,7 +3793,7 @@ internal sealed class StewardOverlayController
             if (RuntimeNightBusinessLifecycle.IsActive) return true;
 
             reason = L(
-                "夜间经营运行时尚未就绪或正在结束；暂不读取游戏对象。",
+                "夜间经营数据尚未就绪或正在结束；暂不读取游戏对象。",
                 "Night-business runtime is not ready or is closing; game objects are not read.");
             return false;
         }
@@ -3801,7 +3801,7 @@ internal sealed class StewardOverlayController
         if (!IsDaySceneRuntimeScene(sceneName))
         {
             reason = L(
-                "等待日间场景运行态初始化完成；暂不读取游戏运行态。",
+                "等待日间场景初始化完成；暂不读取游戏数据。",
                 "Waiting for day-scene runtime data before reading live runtime state.");
             return false;
         }
@@ -3809,7 +3809,7 @@ internal sealed class StewardOverlayController
         if (!IsDayScenePanelReady())
         {
             reason = L(
-                "日间场景正在初始化；暂不读取游戏运行态。",
+                "日间场景正在初始化；暂不读取游戏数据。",
                 "Day scene is initializing; live runtime state is not read yet.");
             return false;
         }
@@ -3977,7 +3977,7 @@ internal sealed class StewardOverlayController
     private string FormatSourceDescription(string source)
     {
         return source == "Game runtime live data"
-            ? L("游戏实时运行时数据", "Game runtime live data")
+            ? L("游戏实时数据", "Live game data")
             : source;
     }
 
@@ -3989,7 +3989,7 @@ internal sealed class StewardOverlayController
             "RunTimePlayerData type is not loaded." => "RunTimePlayerData 类型尚未加载。",
             "RunTimeStorage live-data methods are not available." => "RunTimeStorage 实时数据方法不可用。",
             "RunTimePlayerData live-data methods are not available." => "RunTimePlayerData 实时数据方法不可用。",
-            "Game runtime data is empty; game progress may not be loaded." => "游戏运行时基础数据为空，可能处于夜间经营或进度尚未完全加载。",
+            "Game runtime data is empty; game progress may not be loaded." => "游戏基础数据为空，可能处于夜间经营或进度尚未完全加载。",
             _ => reason,
         };
     }

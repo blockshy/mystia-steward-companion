@@ -164,7 +164,7 @@ const recipes = [
   recipe(201, 1201, '豆腐味噌', ['黄瓜', '蘑菇'], ['家常', '素', '清淡'], '煮锅', 26),
   recipe(202, 1202, '蜂蜜蛋糕', ['鸡蛋', '蜂蜜'], ['甜', '适合拍照', '招牌'], '料理台', 38),
   recipe(203, 1203, '烤鲑鱼', ['鲑鱼', '辣椒'], ['水产', '鲜', '清淡'], '烧烤架', 42),
-  // 五种基础材料不留加料槽；作为任务目标时，明确无法补出 Mock 订单的“甜”Tag，且命中米斯蒂娅的“肉”厌恶。
+  // 五种基础材料不留加料槽；作为任务目标时，明确无法补出 Mock 订单的“甜”标签，且命中米斯蒂娅的“肉”厌恶。
   recipe(204, 1204, '牛肉火锅', ['牛肉', '辣椒', '蘑菇', '黄瓜', '鲑鱼'], ['肉', '灼热', '力量涌现', '昂贵'], '煮锅', 62),
   recipe(205, 1205, '蘑菇拼盘', ['蘑菇', '黄瓜'], ['菌类', '家常', '鲜'], '蒸锅', 31),
   recipe(206, 1206, '月光团子', ['月光草', '蜂蜜'], ['梦幻', '甜', '高级'], '料理台', 78),
@@ -421,13 +421,13 @@ const automationSafetyBarriers = new Map([
     ...mockAutomationBarrierTarget,
     sequence: 9000,
     code: 'cooking-manual-handoff-unreadable',
-    message: 'mock 无法确认手动接管后的托盘状态，请核对游戏现场。',
+    message: '模拟服务无法确认手动接管后的托盘状态，请核对游戏现场。',
   }],
   [9001, {
     ...mockAutomationBarrierTarget,
     sequence: 9001,
     code: 'order-evaluation-commit-uncertain',
-    message: 'mock 无法确认订单评价是否提交，请核对游戏现场。',
+    message: '模拟服务无法确认订单评价是否提交，请核对游戏现场。',
   }],
 ]);
 
@@ -1232,7 +1232,7 @@ function buildInvitationResponse(path, params) {
     invitation(1002, '露米娅', true, 3, '当前场景满足羁绊条件', true),
     invitation(1003, '慧音', false, 5, '非当前场景，但全部场景可邀请', true),
     invitation(1004, '莉格露', true, 2, '当前场景满足羁绊条件', true),
-    invitation(10, '雾雨魔理沙', false, 5, '映射身份使用原生角色 ID', true, 'DLC1_Marisa'),
+    invitation(10, '雾雨魔理沙', false, 5, '使用游戏角色 ID 完成映射', true, 'DLC1_Marisa'),
     invitation(
       1005,
       '茨木华扇（用于验证较长的候选名称可以自然换行）',
@@ -1244,7 +1244,7 @@ function buildInvitationResponse(path, params) {
       'low-kizuna',
       ['妖怪兽道', '这个较长的地点名称用于验证候选地点可以完整换行'],
     ),
-    invitation(1006, '爱丽丝', false, 4, '当前资料中没有可用的原生邀请对话。', false, 'Alice', 'missing-dialog'),
+    invitation(1006, '爱丽丝', false, 4, '当前资料中没有可用的游戏内邀请对话。', false, 'Alice', 'missing-dialog'),
   ];
   const candidates = scope === 'all' ? allCandidates : allCandidates.filter((entry) => entry.isCurrentScene);
   const available = candidates.filter((entry) => entry.canInvite);
@@ -2042,14 +2042,14 @@ function requireMockIdentity(request) {
 function requireMockDevice(request) {
   const identity = requireMockIdentity(request);
   const device = mockDeviceAuthority.devices.get(identity.clientId);
-  if (!device) throw mockHttpError(409, 'mock companion device is not registered');
+  if (!device) throw mockHttpError(409, '模拟设备尚未注册。');
   device.lastSeenAtUtc = nowIso();
   return device;
 }
 
 function requireMockCas(body) {
   if (body?.protocolVersion !== 1 || body.expectedAuthorityRevision !== mockDeviceAuthority.authorityRevision) {
-    throw mockHttpError(409, 'mock configuration authority changed');
+    throw mockHttpError(409, '模拟服务的生效配置版本已经变化。');
   }
 }
 
@@ -2057,7 +2057,7 @@ function authorizeMockRuntimeWriter(request) {
   const device = requireMockDevice(request);
   const authorityRevision = Number(request.headers['x-mystia-steward-companion-authority-revision'] || 0);
   if (device.deviceId !== mockDeviceAuthority.primaryDeviceId) return { ok: false, authorityRevision, error: '当前设备不是主设备。' };
-  if (authorityRevision !== mockDeviceAuthority.authorityRevision) return { ok: false, authorityRevision, error: '配置权威版本已经变化。' };
+  if (authorityRevision !== mockDeviceAuthority.authorityRevision) return { ok: false, authorityRevision, error: '生效配置版本已经变化。' };
   return { ok: true, authorityRevision, device, error: null };
 }
 
@@ -2065,22 +2065,22 @@ function mutateMockRareGuestParticipation(request, body) {
   validateMockRareGuestParticipationMutation(body);
   const authority = authorizeMockRuntimeWriter(request);
   if (!authority.ok || authority.authorityRevision !== body.expectedAuthorityRevision) {
-    throw mockHttpError(409, authority.error || '设备配置权威版本已经变化，请刷新后重试。');
+    throw mockHttpError(409, authority.error || '生效配置版本已经变化，请刷新后重试。');
   }
   if (authority.device.profile.rareGuestParticipationModuleEnabled !== true) {
-    throw mockHttpError(409, 'Rare-guest participation module is disabled in the active profile.');
+    throw mockHttpError(409, '生效配置中的稀客调度模块已关闭。');
   }
 
-  // 与 Mod 一致：主设备校验成功后先建立 automation safety fence，再检查运行时 CAS。
+  // 与 Mod 一致：主设备校验成功后先建立自动化安全检查点，再确认当前状态仍与请求一致。
   automationCommandEpoch += 1;
   if (!mockRareGuestParticipation.active) {
-    throw mockHttpError(409, 'Rare-guest participation has no active business generation.');
+    throw mockHttpError(409, '当前没有可用的经营轮次，无法修改稀客队列。');
   }
   if (body.expectedBusinessGeneration !== mockRareGuestParticipation.businessGeneration) {
-    throw mockHttpError(409, 'Rare-guest participation business generation changed.');
+    throw mockHttpError(409, '本场经营编号已经变化，请刷新后重试。');
   }
   if (body.expectedParticipationRevision !== mockRareGuestParticipation.participationRevision) {
-    throw mockHttpError(409, 'Rare-guest participation revision changed.');
+    throw mockHttpError(409, '稀客队列状态已经变化，请刷新后重试。');
   }
   const expectedOrders = body.target.type === 'guest'
     ? body.target.expectedCurrentOrders
@@ -2414,8 +2414,8 @@ function buildMockRareGuestProtectedQueueKeys(expectedParticipationRevision) {
       if (!currentEntry.managed) {
         throw mockHttpError(409, `mock active rare cooking job ${job.jobId} has ambiguous participation`);
       }
-      // Participation is authoritative: cached active control cannot make an explicitly paused
-      // lifecycle operational. Exclude that stale job without weakening unknown identity failures.
+      // 参与状态以当前队列为准：缓存中的活动控制不能让明确暂停的订单继续执行。
+      // 忽略这项过期任务，同时仍把订单标识不明视为错误。
       continue;
     }
     result.add(identityKey);
@@ -2776,8 +2776,8 @@ function pruneAutomationLease() {
     automationControlBlock = {
       reasonCode: revisionChanged ? 'automation-authority-revision-changed' : 'automation-lease-expired',
       message: revisionChanged
-        ? '主设备配置权威已经变化；已开始的料理保持暂停。'
-        : '主设备自动化租约已过期；已开始的料理保持暂停。',
+        ? '主设备的生效配置版本已经变化；已开始的料理保持暂停。'
+        : '主设备的自动化控制已过期；已开始的料理保持暂停。',
     };
     refreshMockAutomationCookingJobControls();
   }

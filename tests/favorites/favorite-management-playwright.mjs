@@ -209,7 +209,7 @@ try {
   await page.getByRole('tab', { name: '经营中', exact: true }).click();
   await Promise.race([
     snapshotRecoveryStarted,
-    new Promise((_, reject) => setTimeout(() => reject(new Error('主快照失败后没有进入受控恢复请求')), 10_000)),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('主快照失败后没有发起恢复请求')), 10_000)),
   ]);
   await page.evaluate(() => new Promise((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(resolve));
@@ -225,7 +225,7 @@ try {
   releaseSnapshotRecovery();
   await waitFor(() => favoriteReadRequests === 4, 5_000, '主快照恢复后没有重新读取收藏');
   await page.getByText(FAVORITE_WRITE_RACE_ERROR, { exact: true }).waitFor({ state: 'detached', timeout: 10_000 });
-  assert(!snapshotRecoveryWatchdogTriggered, '主快照恢复测试超过受控 gate 时限');
+  assert(!snapshotRecoveryWatchdogTriggered, '主快照恢复测试超过预设等待时限');
 
   await page.getByRole('tab', { name: '推荐料理', exact: true }).click();
   await page.getByRole('tab', { name: '收藏管理', exact: true }).click();
@@ -251,14 +251,14 @@ try {
   failNextFavoriteRead = true;
   await page.getByRole('button', { name: '刷新', exact: true }).click();
   await page.getByText(FAVORITE_WRITE_RACE_ERROR, { exact: true }).waitFor({ timeout: 10_000 });
-  assert(favoriteReadRequests === 5, '写入竞态前的手动收藏刷新没有进入预期失败代际');
+  assert(favoriteReadRequests === 5, '写入竞态前的手动收藏刷新没有进入预期失败轮次');
 
   holdNextMutation = true;
   const recipeRemove = page.getByRole('button', { name: '取消收藏料理 蜂蜜蛋糕', exact: true });
   await recipeRemove.click();
   await Promise.race([
     mutationStarted,
-    new Promise((_, reject) => setTimeout(() => reject(new Error('没有观测到受控料理取消收藏请求')), 2_000)),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('没有观测到预期的料理取消收藏请求')), 2_000)),
   ]);
   const allRemoveButtons = page.getByRole('button', { name: /^取消收藏/ });
   const removeButtonCount = await allRemoveButtons.count();
@@ -271,15 +271,15 @@ try {
   await waitFor(
     () => fullSnapshotRequests > fullSnapshotsBeforeConnectionReset,
     2_000,
-    '相同地址重新连接没有创建新的连接代际',
+    '相同地址重新连接没有创建新的连接轮次',
   );
   await waitFor(() => Date.now() - mutationStartedAt >= 2100, 2_500, '没有跨过收藏读取退避触发点');
-  assert(activeMutations === 1, '连接代际切换提前释放了仍在途的收藏写屏障');
+  assert(activeMutations === 1, '连接轮次切换提前释放了仍在处理中的收藏写入锁');
   assert(favoriteReadRequests === 5, '收藏退避或新连接刷新在写请求结束前并发读取了旧集合');
   releaseMutation();
-  await waitFor(() => activeMutations === 0, 2_000, '受控收藏写请求没有结束');
-  await waitFor(() => favoriteReadRequests === 6, 5_000, '在途旧写结束后没有读取当前连接代际的收藏');
-  assert(!mutationWatchdogTriggered, '收藏写屏障测试超过受控 gate 时限');
+  await waitFor(() => activeMutations === 0, 2_000, '预期的收藏写请求没有结束');
+  await waitFor(() => favoriteReadRequests === 6, 5_000, '处理中的旧写请求结束后没有读取当前连接轮次的收藏');
+  assert(!mutationWatchdogTriggered, '收藏写入锁测试超过预设等待时限');
   await page.getByRole('tab', { name: '推荐料理', exact: true }).click();
   await page.getByRole('tab', { name: '收藏管理', exact: true }).click();
   await page.locator('[data-favorite-management="true"]').waitFor();
@@ -299,7 +299,7 @@ try {
   await page.setViewportSize({ width: 390, height: 760 });
   await page.screenshot({ path: `${OUTPUT_DIR}/android-favorite-management.png`, fullPage: true });
   await assertNoHorizontalOverflow('390px');
-  assert(favoriteReadRequests === 6, '收藏写入完成后出现了多余读取或遗漏了当前代际重读');
+  assert(favoriteReadRequests === 6, '收藏写入完成后出现了多余读取或遗漏了当前连接轮次重读');
 
   console.log('收藏管理定向巡检通过：');
   console.log('- 模拟收藏连接超时期间经营订单保留，自动重试成功后旧提示清除');

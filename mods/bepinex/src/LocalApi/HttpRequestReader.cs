@@ -24,13 +24,13 @@ internal static class HttpRequestReader
                 throw new HttpRequestReadException(
                     431,
                     "Request Header Fields Too Large",
-                    "request headers too large");
+                    "请求头超过大小限制。");
             }
 
             var count = stream.Read(buffer, total, Math.Min(buffer.Length - total, maxHeaderBytes - total));
             if (count <= 0)
             {
-                throw new HttpRequestReadException(400, "Bad Request", "incomplete request headers");
+                throw new HttpRequestReadException(400, "Bad Request", "请求头不完整。");
             }
 
             total += count;
@@ -41,7 +41,7 @@ internal static class HttpRequestReader
         var contentLength = ReadContentLength(header);
         if (contentLength > maxBodyBytes)
         {
-            throw new HttpRequestReadException(413, "Payload Too Large", "request body too large");
+            throw new HttpRequestReadException(413, "Payload Too Large", "请求内容超过大小限制。");
         }
 
         var requestLength = checked(headerEnd + contentLength);
@@ -50,14 +50,14 @@ internal static class HttpRequestReader
             var count = stream.Read(buffer, total, requestLength - total);
             if (count <= 0)
             {
-                throw new HttpRequestReadException(400, "Bad Request", "incomplete request body");
+                throw new HttpRequestReadException(400, "Bad Request", "请求内容不完整。");
             }
             total += count;
         }
 
         if (total > requestLength)
         {
-            throw new HttpRequestReadException(400, "Bad Request", "unexpected bytes after request body");
+            throw new HttpRequestReadException(400, "Bad Request", "请求内容后包含多余数据。");
         }
 
         var body = contentLength == 0
@@ -71,7 +71,7 @@ internal static class HttpRequestReader
         ArgumentNullException.ThrowIfNull(request);
         if (request.Body.Length == 0)
         {
-            throw new HttpRequestReadException(400, "Bad Request", "JSON request body is required");
+            throw new HttpRequestReadException(400, "Bad Request", "请求必须包含 JSON 内容。");
         }
 
         try
@@ -80,7 +80,7 @@ internal static class HttpRequestReader
         }
         catch (DecoderFallbackException)
         {
-            throw new HttpRequestReadException(400, "Bad Request", "request body must be valid UTF-8 JSON");
+            throw new HttpRequestReadException(400, "Bad Request", "请求内容必须是有效的 UTF-8 JSON。");
         }
     }
 
@@ -96,12 +96,12 @@ internal static class HttpRequestReader
             var value = rawLine[(separator + 1)..].Trim();
             if (string.Equals(name, "Transfer-Encoding", StringComparison.OrdinalIgnoreCase))
             {
-                throw new HttpRequestReadException(400, "Bad Request", "transfer encoding is not supported");
+                throw new HttpRequestReadException(400, "Bad Request", "不支持该传输编码。");
             }
             if (!string.Equals(name, "Content-Length", StringComparison.OrdinalIgnoreCase)) continue;
             if (contentLengthValue != null)
             {
-                throw new HttpRequestReadException(400, "Bad Request", "duplicate content length");
+                throw new HttpRequestReadException(400, "Bad Request", "请求包含重复的内容长度。");
             }
             contentLengthValue = value;
         }
@@ -111,7 +111,7 @@ internal static class HttpRequestReader
             || contentLengthValue.Any(character => character is < '0' or > '9')
             || !int.TryParse(contentLengthValue, out var contentLength))
         {
-            throw new HttpRequestReadException(400, "Bad Request", "invalid content length");
+            throw new HttpRequestReadException(400, "Bad Request", "请求内容长度无效。");
         }
         return contentLength;
     }

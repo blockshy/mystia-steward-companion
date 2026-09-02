@@ -123,7 +123,7 @@ export function ModFavoritesPanel({
             value={query}
             className="min-w-52 flex-1 min-[720px]:max-w-sm"
             aria-label="搜索收藏"
-            placeholder="搜索稀客、料理/酒水、Tag、加料或 ID"
+            placeholder="搜索稀客、料理/酒水、标签、加料或 ID"
             disabled={entries.length === 0}
             onChange={(event) => setQuery(event.currentTarget.value)}
           />

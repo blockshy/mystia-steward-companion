@@ -18,7 +18,7 @@ import type {
 /**
  * 普客覆盖推荐所需的运行时上下文。
  *
- * 该上下文只关心“当前能做什么”和流行 Tag，不处理稀客订单、预算和库存排序。
+ * 该上下文只关心“当前能做什么”和流行标签，不处理稀客订单、预算和库存排序。
  */
 export interface NormalCoverageRuntimeContext {
   availableRecipeIds: Set<number>;
@@ -179,7 +179,7 @@ function calculateBaseIngredientCost(
 }
 
 /**
- * 统计某个候选能命中的普客偏好 Tag。
+ * 统计某个候选能命中的普客偏好标签。
  */
 function buildCustomerCoverage(
   customers: NormalCustomerCatalogItem[],

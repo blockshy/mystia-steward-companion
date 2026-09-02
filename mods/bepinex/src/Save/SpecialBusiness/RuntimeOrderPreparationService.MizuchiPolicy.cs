@@ -330,8 +330,8 @@ internal static partial class RuntimeOrderPreparationService
         string checkpoint,
         string detail)
     {
-        var message = $"{job.RecipeName} 在瑞灵特殊经营 {checkpoint} 复核中检测到订单角色、评价闭包或成品加料已漂移；"
-            + $"未继续送达、入箱或复位厨具，现场已保留并等待人工确认。{detail}";
+        var message = $"{job.RecipeName} 在瑞灵特殊经营 {checkpoint} 复核中检测到订单角色、评价回调或成品加料已变化；"
+            + $"未继续送达、入箱或复位厨具，现场已保留并等待人工确认。详细原因：{detail}";
         job.ControllerLease.Release(
             AutomationCookingControllerLeaseReleaseReason.DeliveryCleanupTerminated,
             DateTime.UtcNow);

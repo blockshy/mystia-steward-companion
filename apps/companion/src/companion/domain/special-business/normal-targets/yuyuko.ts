@@ -68,12 +68,12 @@ export function selectYuyukoNormalExecutionTarget({
   if (!specialBusiness?.active || !isPhaseThreeContext(specialBusiness.phase)) return emptySelection();
   if (!YUYUKO_CHALLENGE_TYPES.has(specialBusiness.challengeType)) return emptySelection();
   if (!runtime || data.source !== 'runtime') {
-    return { target: null, message: '幽幽子第三阶段等待运行时推荐数据后再选择高评价执行目标。' };
+    return { target: null, message: '幽幽子第三阶段等待读取游戏推荐数据后再选择高评价目标。' };
   }
 
   const context = buildNormalTargetRuntimeContext(runtime, preferences, data);
   if (!context) {
-    return { target: null, message: '幽幽子第三阶段缺少完整库存、厨具或菜单运行时数据，暂不选择自动化执行目标。' };
+    return { target: null, message: '幽幽子第三阶段缺少完整的库存、厨具或菜单数据，暂不选择自动化目标。' };
   }
 
   return selectStrictOriginalOrderExecutionTarget({
@@ -98,7 +98,7 @@ function selectStrictOriginalOrderExecutionTarget({
   if (challengeType === RETAKE_YUYUKO_CHALLENGE_TYPE && !modifierPreferences) {
     return {
       target: null,
-      message: `幽幽子重修第三阶段缺少运行时 characterId=${YUYUKO_CHARACTER_ID} 的料理喜好/厌恶档案，暂不处理分身精确订单。`,
+      message: `幽幽子重修第三阶段缺少游戏角色 #${YUYUKO_CHARACTER_ID} 的料理喜好和厌恶数据，暂不处理分身订单。`,
     };
   }
 
@@ -292,7 +292,7 @@ function buildYuyukoNormalOrderSearchCustomer(
   const baseTags = new Set(recipeBaseTags);
   return {
     id: YUYUKO_CHARACTER_ID,
-    name: '幽幽子第三阶段精确订单',
+    name: '幽幽子第三阶段当前订单',
     description: '',
     dlc: 0,
     places: [],
@@ -389,8 +389,8 @@ function buildYuyukoNormalTargetReason(
   return [
     `幽幽子重修三阶段${executionMode === 'progress' ? '执行' : '清理'}方案：预计 ${evaluationText}`,
     actionText,
-    '原生普通评价基准 Normal',
-    formatYuyukoModifierTags('生效修饰 Tag', evaluation.effectiveModifierTags),
+    '游戏普通评价基准：Normal',
+    formatYuyukoModifierTags('生效修饰标签', evaluation.effectiveModifierTags),
     formatYuyukoModifierTags('喜好修饰', evaluation.positiveModifierTags),
     formatYuyukoModifierTags('厌恶修饰', evaluation.negativeModifierTags),
   ].join('，');
@@ -486,15 +486,15 @@ function buildYuyukoNormalBlockMessage({
       modifierPreferences,
     );
     if (evaluation.negativeModifierTags.length > 0) {
-      details.push(`生效料理修饰包含幽幽子厌恶 Tag ${evaluation.negativeModifierTags.join('、')}`);
+      details.push(`生效料理修饰包含幽幽子厌恶标签 ${evaluation.negativeModifierTags.join('、')}`);
     }
 
     if (evaluation.evaluationScore < YUYUKO_GOOD_EVALUATION_SCORE) {
       const evaluationEvidence = evaluation.mode === 'story-level-sum'
         ? `料理 Lv.${food.recipe.level}，酒水 Lv.${beverage.beverage.level}，等级合计 ${evaluation.levelSum}`
         : [
-            '原生普通评价基准 Normal',
-            formatYuyukoModifierTags('生效修饰 Tag', evaluation.effectiveModifierTags),
+            '游戏普通评价基准：Normal',
+            formatYuyukoModifierTags('生效修饰标签', evaluation.effectiveModifierTags),
             formatYuyukoModifierTags('喜好修饰', evaluation.positiveModifierTags),
             formatYuyukoModifierTags('厌恶修饰', evaluation.negativeModifierTags),
           ].join('，');

@@ -191,10 +191,10 @@ export function ModRarePanel({
               </div>
 
               <div>
-                <div className="mb-1 text-xs text-muted-foreground">点单料理 Tag</div>
+                <div className="mb-1 text-xs text-muted-foreground">点单料理标签</div>
                 <SelectBox
                   value={foodTag}
-                  aria-label="点单料理 Tag"
+                  aria-label="点单料理标签"
                   searchable
                   className="w-full"
                   options={selectedFoodTags.map((tag) => ({ value: tag, label: tag }))}
@@ -203,10 +203,10 @@ export function ModRarePanel({
               </div>
 
               <div>
-                <div className="mb-1 text-xs text-muted-foreground">点单酒水 Tag</div>
+                <div className="mb-1 text-xs text-muted-foreground">点单酒水标签</div>
                 <SelectBox
                   value={beverageTag}
-                  aria-label="点单酒水 Tag"
+                  aria-label="点单酒水标签"
                   searchable
                   className="w-full"
                   options={selectedBeverageTags.map((tag) => ({ value: tag, label: tag }))}

@@ -1,6 +1,6 @@
 # IL2CPP 源码与 IDA 分析工作流
 
-更新日期：2026-08-19
+更新日期：2026-09-02
 
 本文只负责分析资料生成、证据层级、锁定分析工具和已确认的失效路径；产品构建与测试命令见
 [本地开发与构建](local-development.md)和[验证指南](validation-guide.md)。
@@ -60,7 +60,7 @@
     toolchain/
 ```
 
-`backup/` 仅用于历史核对，不向 `new/` 建立符号链接、复制别名或读取 fallback。游戏更新时在空的
+`backup/` 仅用于历史核对，不向 `new/` 建立符号链接、复制别名或用作备用输入。游戏更新时在空的
 候选目录重新生成，验证后将旧 `new/` 移入 `backup/`，再把候选目录原子改名为 `new/`。
 
 ## 锁定工具链
@@ -99,7 +99,7 @@ sed -n '1,240p' /huyu/data/disk/mystia-steward-companion/new-next/comparison-rep
 ```
 
 只有输入哈希、关键 RVA、interop 形态、函数体覆盖率和日志都通过后，才把当前 `new/` 移入一个明确的
-`backup/` 版本目录，并将 `new-next/` 改名为 `new/`。不要叠加两代输出，也不要在脚本中添加旧目录回退。
+`backup/` 版本目录，并将 `new-next/` 改名为 `new/`。不要叠加两代输出，也不要在脚本中添加旧目录备用路径。
 
 ## 正确使用三层资料
 
@@ -113,10 +113,10 @@ BepInEx #783 interop C# 用来确认运行时反射实际看到的 wrapper。例
 - `NPC.possibleDestinations` 是 `Il2CppReferenceArray<Destination>`；
 - `SchedulerNode.Character.characterIdentity` 是公开字段。
 
-IDA 用来确认 Native 控制流、调用关系、副作用和异常顺序。`functions.csv` 的 `body_path` 是唯一入口：
+IDA 用来确认 Native 控制流、调用关系、游戏状态写入和异常顺序。`functions.csv` 的 `body_path` 是唯一入口：
 Hex-Rays 成功时指向分片 `pseudocode/`，失败时指向 `disassembly/`。不能把伪代码局部变量名反推为
 interop 成员形态。函数索引的 `size` 是全部 IDA chunks 的总大小，`chunk_count` 明确记录非连续 tail
-chunks；反汇编 fallback 也逐 chunk 输出边界，不能只导出主区间。如果 IDA 的某条指令文本含无效
+分块；备用反汇编也逐块输出边界，不能只导出主区间。如果 IDA 的某条指令文本含无效
 Unicode，该行保留地址和原始机器码并明确标注，降级行数写入 `export_stats.json`；不得因文本解码失败
 丢弃整个函数体。
 
@@ -142,11 +142,11 @@ ILSpy 10.1.1 对少数 Il2CppInterop 复杂泛型程序集无法生成项目 C#�
 - IDA 自动分析、65 MiB 类型头导入和全量 Hex-Rays 导出耗时较长；进程异常退出时保留日志和候选数据库，
   重新生成必须使用新的空目录。导出器每 1,000 个函数清理 Hex-Rays/Python 缓存，避免全量导出因缓存
   线性增长而耗尽内存；不得删除这一批次边界。导入完成后保存前和导出枚举前都必须等待 IDA
-  auto-analysis 收敛，否则函数集合会受数据库打开次数影响。导出完成后再次等待并核对完整函数地址集合；
+  auto-analysis 完成，否则函数集合会受数据库打开次数影响。导出完成后再次等待并核对完整函数地址集合；
   即使总数相同，只要有地址增删也按整轮失败处理，不发布已落后于数据库的函数索引。
 - `ScriptingAssemblies.json` 中的程序集数会大于 DummyDll 数。只有 metadata 中含实际类型的程序集才生成
   DummyDll，不能用空项目补齐数量。
-- Il2CppInterop DLL 的文件哈希包含生成期身份，不应单凭 DLL SHA-256 判断 wrapper 语义变化；应比较明确
+- Il2CppInterop DLL 的文件哈希包含生成过程信息，不应单凭 DLL SHA-256 判断 wrapper 语义变化；应比较明确
   类型/成员形态并重新构建 Mod 与专项 smoke。
 - 分析结论进入代码后，按[验证指南](validation-guide.md)运行受影响的构建、smoke/audit 和游戏实测；
   分析生成成功本身不证明产品行为正确。

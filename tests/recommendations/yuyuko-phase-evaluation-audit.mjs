@@ -113,7 +113,7 @@ const retakePhaseThreeRule = buildSpecialBusinessOrderRule(
   'yuyuko-boss-order',
 );
 assert.equal(retakePhaseThreeRule.yuyukoProgressEvaluationMode, 'retake-tag-order',
-  '重修版幽幽子三阶段必须由 registry 映射到标准 Tag 点单评价。');
+  '重修版幽幽子第三阶段必须由规则表映射到标准标签点单评价。');
 assert.equal(
   buildSpecialBusinessOrderRule(yuyukoRuleContext, 'ordinary-order')
     .yuyukoProgressEvaluationMode,
@@ -131,17 +131,17 @@ assert.equal(
 assert.equal(
   requiresSpecialBusinessNormalExecutionTarget(null, null),
   false,
-  '普通经营不得进入特殊料理执行目标链路。',
+  '普通经营不得进入特殊料理执行目标流程。',
 );
 assert.equal(
   requiresSpecialBusinessNormalExecutionTarget(yuyukoRuleContext, 'ordinary-order'),
   false,
-  '未被幽幽子模块认领的订单角色不得进入特殊料理执行目标链路。',
+  '未被幽幽子模块认领的订单角色不得进入特殊料理执行目标流程。',
 );
 assert.equal(
   requiresSpecialBusinessNormalExecutionTarget(yuyukoRuleContext, 'yuyuko-boss-order'),
   true,
-  '幽幽子第三阶段明确认领的订单角色必须进入特殊料理执行目标链路。',
+  '幽幽子第三阶段明确认领的订单角色必须进入特殊料理执行目标流程。',
 );
 assert.equal(
   requiresSpecialBusinessNormalExecutionTarget(
@@ -149,7 +149,7 @@ assert.equal(
     'yuyuko-boss-order',
   ),
   false,
-  '幽幽子一、二阶段不得被第三阶段普客执行目标门禁误拦截。',
+  '幽幽子一、二阶段不得被第三阶段普客执行目标检查误拦截。',
 );
 assert.equal(
   requiresSpecialBusinessNormalExecutionTarget(
@@ -165,7 +165,7 @@ assert.equal(
     'ordinary-order',
   ),
   true,
-  '活动特殊经营身份不可读时必须 fail-closed，不能退回普通经营路径。',
+  '活动特殊经营标识不可读时必须停止相关功能，不能转回普通经营路径。',
 );
 assert.equal(
   requiresSpecialBusinessNormalExecutionTarget(
@@ -173,7 +173,7 @@ assert.equal(
     'ordinary-order',
   ),
   true,
-  '未适配的活动特殊经营必须进入阻断链路，不能退回普通经营路径。',
+  '未适配的活动特殊经营必须停止处理，不能退回普通经营路径。',
 );
 assert.match(
   selectSpecialBusinessNormalExecutionTarget({
@@ -223,7 +223,7 @@ const executionTargetFixture = {
   foodTags: ['家常'],
   expectedFoodModifierTags: ['大份'],
   beverageTags: ['直饮'],
-  reason: '测试锁存目标',
+  reason: '测试固定目标',
 };
 const emptyExecutionState = emptyNormalAutoOrderState('normal:test', 100);
 const lockedExecutionState = lockNormalOrderExecutionTarget(
@@ -232,18 +232,18 @@ const lockedExecutionState = lockNormalOrderExecutionTarget(
   17,
 );
 assert.equal(lockedExecutionState.executionTarget, executionTargetFixture,
-  '开锅前必须原子锁存完整普客执行目标。');
+  '开锅前必须一次性固定完整普客执行目标。');
 assert.equal(lockedExecutionState.executionTargetBusinessGeneration, 17,
-  '锁存目标必须绑定当前经营代际。');
+  '固定目标必须绑定本场经营编号。');
 assert.equal(
   getCurrentNormalOrderExecutionTarget(lockedExecutionState, 17, '', 0),
   executionTargetFixture,
-  '同经营代际且同特殊目标签名时必须复用锁存目标。',
+  '本场经营编号和特殊目标签名都相同时必须复用固定目标。',
 );
 assert.equal(
   getCurrentNormalOrderExecutionTarget(lockedExecutionState, 18, '', 0),
   null,
-  '经营代际变化后不得复用旧执行目标。',
+  '本场经营编号变化后不得复用旧执行目标。',
 );
 assert.equal(
   getCurrentNormalOrderExecutionTarget(lockedExecutionState, 17, 'rotated-target', 0),
@@ -268,13 +268,13 @@ const revisionedExecutionState = lockNormalOrderExecutionTarget(
 assert.equal(
   getCurrentNormalOrderExecutionTarget(revisionedExecutionState, 17, 'canonical-target-a', 6),
   null,
-  'A -> B -> A 的规范签名恢复后，旧 revision 的锁存目标仍必须失效。',
+  'A → B → A 的规范签名恢复后，旧修订号对应的固定目标仍必须失效。',
 );
 const clearedExecutionState = clearNormalOrderExecutionTarget(lockedExecutionState);
 assert.equal(clearedExecutionState.executionTarget, null,
-  '明确退休执行目标时必须清除目标内容。');
+  '明确清除执行目标时必须清除目标内容。');
 assert.equal(clearedExecutionState.executionTargetBusinessGeneration, 0,
-  '明确退休执行目标时必须同时清除经营代际。');
+  '明确清除执行目标时必须同时清除本场经营编号。');
 
 const phaseTwoPair = {
   food: buildFood({
@@ -296,11 +296,11 @@ const phaseTwoEvaluation = evaluateYuyukoPositiveSpellPair(
 assert.equal(phaseTwoEvaluation.canTriggerPositiveSpell, true,
   '二阶段应允许当前客人不厌恶的“小巧”组合触发正面符卡。');
 assert.equal(phaseTwoEvaluation.baseDemandScore, 2,
-  '料理与酒水的点单 Tag 应只计入基础满足度。');
+  '料理与酒水的点单标签应只计入基础满足度。');
 assert.equal(phaseTwoEvaluation.extraPreferenceScore, 2,
-  '排除点单 Tag 后的两个额外喜好应达到正面符卡阈值。');
+  '排除点单标签后的两个额外喜好应达到正面符卡阈值。');
 assert.deepEqual(phaseTwoEvaluation.negativeTags, [],
-  '幽幽子三阶段的全局厌恶 Tag 不应泄漏到二阶段。');
+  '幽幽子第三阶段的全局厌恶标签不应影响第二阶段。');
 
 const orderedTagsOnly = evaluateYuyukoPositiveSpellPair(
   buildFood({
@@ -315,9 +315,9 @@ const orderedTagsOnly = evaluateYuyukoPositiveSpellPair(
 );
 assert.equal(orderedTagsOnly.baseDemandScore, 2);
 assert.equal(orderedTagsOnly.extraPreferenceScore, 0,
-  '料理和酒水点单 Tag 不能同时充当额外喜好重复计分。');
+  '料理和酒水点单标签不能同时充当额外喜好重复计分。');
 assert.equal(orderedTagsOnly.canTriggerPositiveSpell, false,
-  '仅满足点单 Tag 不足以触发二阶段正面符卡。');
+  '仅满足点单标签不足以触发第二阶段正面符卡。');
 
 const currentGuestHate = evaluateYuyukoPositiveSpellPair(
   buildFood({
@@ -329,7 +329,7 @@ const currentGuestHate = evaluateYuyukoPositiveSpellPair(
   demand,
 );
 assert.equal(currentGuestHate.canTriggerPositiveSpell, false,
-  '当前客人的真实厌恶 Tag 必须阻止二阶段执行。');
+  '当前客人的真实厌恶标签必须阻止第二阶段执行。');
 assert.deepEqual(currentGuestHate.negativeTags, ['小巧']);
 
 const orderedTagExcludedFromHateMatching = evaluateYuyukoPositiveSpellPair(
@@ -342,7 +342,7 @@ const orderedTagExcludedFromHateMatching = evaluateYuyukoPositiveSpellPair(
   demand,
 );
 assert.equal(orderedTagExcludedFromHateMatching.canTriggerPositiveSpell, true,
-  '原生评价会在额外厌恶匹配前排除料理点单 Tag。');
+  '游戏评价会在额外厌恶匹配前排除料理点单标签。');
 assert.deepEqual(orderedTagExcludedFromHateMatching.negativeTags, []);
 
 assert.equal(phaseTwoPair.food.recipe.level + phaseTwoPair.beverage.beverage.level, 2);
@@ -373,7 +373,7 @@ assert.equal(highLevelRetakeEvaluation.levelSum, 9);
 assert.equal(highLevelRetakeEvaluation.baseDemandScore, 2);
 assert.equal(highLevelRetakeEvaluation.extraPreferenceScore, 0);
 assert.equal(highLevelRetakeEvaluation.evaluationScore, 2,
-  '重修版 SpecialOrder 即使等级合计很高，仅满足点单 Tag 时也只能获得 Normal。');
+  '重修版 SpecialOrder 即使等级合计很高，仅满足点单标签时也只能获得 Normal。');
 assert.equal(highLevelRetakeEvaluation.canProgress, false,
   '重修版 SpecialOrder 不得用等级合计把仅满足点单的组合误判为可推进。');
 assert.equal(isYuyukoProgressPlan(highLevelTagOnlyPlan, 'retake-tag-order'), false);
@@ -406,9 +406,9 @@ const lowLevelRetakeEvaluation = evaluateYuyukoRareOrderPair(
 );
 assert.equal(lowLevelRetakeEvaluation.levelSum, 2);
 assert.equal(lowLevelRetakeEvaluation.evaluationScore, 3,
-  '重修版 SpecialOrder 应按完整上菜 Tag 的点单和额外喜好得到 Good。');
+  '重修版 SpecialOrder 应按完整上菜标签的点单和额外喜好得到 Good。');
 assert.equal(lowLevelRetakeEvaluation.canProgress, true,
-  '低等级组合只要完整 Tag 评价达到 Good，重修版也必须允许推进。');
+  '低等级组合只要完整标签评价达到 Good，重修版也必须允许推进。');
 assert.equal(isYuyukoProgressPlan(lowLevelLikedPlan, 'retake-tag-order'), true);
 
 const requestedHateRetakeFood = buildFood({
@@ -428,11 +428,11 @@ const requestedHateRetakeEvaluation = evaluateYuyukoRareOrderPair(
   demand,
 );
 assert.deepEqual(requestedHateRetakeEvaluation.negativeTags, [],
-  '重修版必须在厌恶匹配中排除料理点单 Tag 本身。');
+  '重修版必须在厌恶匹配中排除料理点单标签本身。');
 assert.deepEqual(requestedHateRetakeEvaluation.foodExtraPreferenceTags, ['肉']);
 assert.equal(requestedHateRetakeEvaluation.evaluationScore, 3);
 assert.equal(requestedHateRetakeEvaluation.canProgress, true,
-  '料理点单 Tag 同时属于当前稀客厌恶时，额外喜好仍应使组合达到 Good。');
+  '料理点单标签同时属于当前稀客厌恶时，额外喜好仍应使组合达到 Good。');
 assert.equal(isYuyukoProgressPlan(requestedHateRetakePlan, 'retake-tag-order'), true);
 
 const hatedRetakeFood = buildFood({
@@ -450,7 +450,7 @@ const hatedRetakeEvaluation = evaluateYuyukoRareOrderPair(
 assert.deepEqual(hatedRetakeEvaluation.negativeTags, ['小巧']);
 assert.equal(hatedRetakeEvaluation.evaluationScore, 1);
 assert.equal(hatedRetakeEvaluation.canProgress, false,
-  '重修版 SpecialOrder 的完整上菜 Tag 命中厌恶时必须阻断推进。');
+  '重修版 SpecialOrder 的完整上菜标签命中厌恶时必须阻止推进。');
 
 const highLevelStoryEvaluation = evaluateYuyukoRareOrderPair(
   'story-level-sum',
@@ -469,12 +469,12 @@ const lowLevelStoryEvaluation = evaluateYuyukoRareOrderPair(
 );
 assert.equal(lowLevelStoryEvaluation.evaluationScore, 2);
 assert.equal(lowLevelStoryEvaluation.canProgress, false,
-  '重修版的额外喜好 Tag 不得泄漏到剧情版等级评价。');
+  '重修版的额外喜好标签不得影响剧情版等级评价。');
 
 const retakeSortedPlans = [highLevelTagOnlyPlan, lowLevelLikedPlan]
   .sort((left, right) => compareYuyukoPlans(left, right, 'retake-tag-order'));
 assert.equal(retakeSortedPlans[0], lowLevelLikedPlan,
-  '重修版排序必须优先低等级但完整 Tag 达到 Good 的方案。');
+  '重修版排序必须优先低等级但完整标签达到 Good 的方案。');
 const storySortedPlans = [lowLevelLikedPlan, highLevelTagOnlyPlan]
   .sort((left, right) => compareYuyukoPlans(left, right, 'story-level-sum'));
 assert.equal(storySortedPlans[0], highLevelTagOnlyPlan,
@@ -548,7 +548,7 @@ const retakeRepeatedBaseHateEvaluation = evaluateYuyukoNormalOrderPair(
   yuyukoModifierPreferences,
 );
 assert.equal(retakeRepeatedBaseHateEvaluation.evaluationScore, 2,
-  '额外材料重复原配方已有厌恶 Tag 时，原生 addedTags 不会重复计入该 Tag。');
+  '额外材料重复原配方已有厌恶标签时，游戏 addedTags 不会重复计入该标签。');
 assert.deepEqual(retakeRepeatedBaseHateEvaluation.effectiveModifierTags, ['煮锅']);
 assert.deepEqual(retakeRepeatedBaseHateEvaluation.positiveModifierTags, []);
 assert.deepEqual(retakeRepeatedBaseHateEvaluation.negativeModifierTags, []);
@@ -566,7 +566,7 @@ const retakeRepeatedBaseLikeEvaluation = evaluateYuyukoNormalOrderPair(
   yuyukoModifierPreferences,
 );
 assert.equal(retakeRepeatedBaseLikeEvaluation.evaluationScore, 2,
-  '额外材料重复原配方已有喜好 Tag 时，不得虚构 Good 评价。');
+  '额外材料重复原配方已有喜好标签时，不得虚构 Good 评价。');
 assert.deepEqual(retakeRepeatedBaseLikeEvaluation.effectiveModifierTags, ['煮锅']);
 assert.deepEqual(retakeRepeatedBaseLikeEvaluation.positiveModifierTags, []);
 
@@ -583,7 +583,7 @@ const retakeNewHatedExtraEvaluation = evaluateYuyukoNormalOrderPair(
   yuyukoModifierPreferences,
 );
 assert.equal(retakeNewHatedExtraEvaluation.evaluationScore, 1,
-  '额外材料实际新增厌恶 Tag 时必须降为差评并阻止自动化推进。');
+  '额外材料实际新增厌恶标签时必须降为差评并阻止自动化推进。');
 assert.deepEqual(retakeNewHatedExtraEvaluation.effectiveModifierTags, ['煮锅', '清淡']);
 assert.deepEqual(retakeNewHatedExtraEvaluation.positiveModifierTags, []);
 assert.deepEqual(retakeNewHatedExtraEvaluation.negativeModifierTags, ['清淡']);
@@ -616,11 +616,11 @@ function assertYuyukoRetakeBaseCandidateSurvivesBeamTruncation() {
   assert.ok(selection.target,
     '重修版精确订单必须在通用 beam 截断后仍保留可执行的无加料原菜。');
   assert.equal(selection.target.executionMode, 'refresh',
-    '所有加料只重复基础喜好 Tag 时，应退回无加料 Normal 清单。');
+    '所有加料只重复基础喜好标签时，应返回无加料 Normal 清单。');
   assert.deepEqual(selection.target.extraIngredientIds, [],
     '安全清单必须选择显式合并的无加料候选，不能被前 16 个加料状态替代。');
   assert.deepEqual(selection.target.expectedFoodModifierTags, ['煮锅'],
-    '清理目标必须发布与原生 GetTagDiff addedTags 一致的预期修饰 Tag。');
+    '清理目标必须发布与游戏 GetTagDiff addedTags 一致的预期修饰标签。');
 }
 
 function assertYuyukoRetakeSearchIgnoresRepeatedBasePreferenceTags() {
@@ -630,12 +630,12 @@ function assertYuyukoRetakeSearchIgnoresRepeatedBasePreferenceTags() {
     }),
   );
   assert.ok(selection.target,
-    '大量重复基础喜好加料不能挤掉真正新增喜好 Tag 的候选。');
+    '大量重复基础喜好加料不能挤掉真正新增喜好标签的候选。');
   assert.equal(selection.target.executionMode, 'progress');
   assert.ok(selection.target.extraIngredientIds.includes(999),
-    '推进目标必须包含真正新增“大份”喜好 Tag 的加料。');
+    '推进目标必须包含真正新增“大份”喜好标签的加料。');
   assert.deepEqual(selection.target.expectedFoodModifierTags, ['煮锅', '大份'],
-    '推进目标必须发布相对原配方新增的精确 modifier Tag。');
+    '推进目标必须发布相对原配方新增的具体 modifier 标签。');
 }
 
 function assertYuyukoStoryDoesNotRequireRuntimeYuyukoProfile() {
@@ -643,7 +643,7 @@ function assertYuyukoStoryDoesNotRequireRuntimeYuyukoProfile() {
     buildYuyukoNormalSelectionArgs('Story_Yuyuko', false),
   );
   assert.ok(selection.target,
-    '剧情版第三阶段只按精确订单等级和评价，不应依赖 characterId=23 档案。');
+    '剧情版第三阶段只按具体订单等级和评价，不应依赖角色编号 23 的档案。');
   assert.equal(selection.target.executionMode, 'progress');
   assert.deepEqual(selection.target.extraIngredientIds, [],
     '剧情版加料不会改变等级和，候选生成必须固定为无加料原菜。');
@@ -693,18 +693,18 @@ function assertRuntimeYuyukoProfileProjection() {
   assert.equal(runtimeData.source, 'runtime',
     '完整运行时快照必须成功构造推荐数据集。');
   assert.deepEqual(runtimeData.rareCustomers.map((customer) => customer.id), [40],
-    '无日间地点的基础 characterId=23 不能污染常规可推荐稀客集合。');
+    '无日间地点的基础角色编号 23 不能影响常规可推荐稀客集合。');
   assert.ok(runtimeData.rareCustomerProfiles.some((profile) => profile.id === 23),
-    '评价档案必须保留无日间地点的基础 characterId=23。');
+    '评价档案必须保留无日间地点的基础角色编号 23。');
 
   const selection = selectYuyukoNormalExecutionTarget({
     ...selectionArgs,
     data: runtimeData,
   });
   assert.ok(selection.target,
-    '幽幽子重修第三阶段必须能从真实运行时规范化结果读取 characterId=23 档案并生成目标。');
-  assert.doesNotMatch(selection.message, /characterId=23/,
-    '存在基础评价档案时不得再报告 characterId=23 缺失。');
+    '幽幽子重修第三阶段必须能从真实游戏数据整理结果中读取角色编号 23 的档案并生成目标。');
+  assert.doesNotMatch(selection.message, /游戏角色 #23/,
+    '存在基础评价档案时不得再报告游戏角色 #23 缺失。');
 
   const capturedRareOrder = {
     traceId: 'R-0018',
@@ -768,7 +768,7 @@ function assertRuntimeYuyukoProfileProjection() {
   assert.equal(ordinaryMappedResult.recommendationIssues.length, 0,
     '同场景普通 mapped 40 订单仍应使用普通地点目录。');
   assert.equal(ordinaryMappedResult.recommendations[0]?.customer.id, 40,
-    '特殊经营档案解析不得改变非特殊角色的普通目录身份。');
+    '特殊经营档案解析不得改变非特殊角色在普通目录中的标识。');
 
   const dataWithoutBaseProfile = buildRecommendationDataSet({
     ...runtimeSnapshot,
@@ -779,9 +779,9 @@ function assertRuntimeYuyukoProfileProjection() {
     data: dataWithoutBaseProfile,
   });
   assert.equal(blockedSelection.target, null,
-    '只有 mapped guest 而没有 canonical characterId=23 档案时必须 fail-closed。');
-  assert.match(blockedSelection.message, /characterId=23/,
-    '缺少 canonical 档案时必须保留可诊断的精确身份错误。');
+    '只有已映射稀客而没有规范角色编号 23 档案时必须停止处理。');
+  assert.match(blockedSelection.message, /游戏角色 #23/,
+    '缺少规范档案时必须保留可诊断的具体角色标识错误。');
   const blockedServiceResult = buildOrderRecommendations(
     [capturedRareOrder],
     selectionArgs.runtime,
@@ -825,7 +825,7 @@ function assertRuntimeYuyukoProfileProjection() {
   };
   const cacheProbeBlocked = selectSpecialBusinessNormalExecutionTarget(cacheProbeArgs);
   assert.equal(cacheProbeBlocked.target, null,
-    '缓存代际用例必须先保存缺少 canonical 档案的阻塞结果。');
+    '缓存版本用例必须先保存缺少规范档案的阻塞结果。');
   const cacheProbeRecovered = selectSpecialBusinessNormalExecutionTarget({
     ...cacheProbeArgs,
     data: runtimeData,
@@ -970,7 +970,7 @@ function assertServiceRecommendationModeRouting() {
     customerPositiveTags: ['下酒'],
   });
   assert.ok(storyHighLevel.executionPlans.length > 0,
-    '服务链路必须让剧情版三阶段按等级合计接受高等级组合。');
+    '服务流程必须让剧情版三阶段按等级合计接受高等级组合。');
 
   const retakeHighLevel = buildYuyukoRareServiceRecommendation({
     challengeType: 'Challenge_Yuyuko',
@@ -980,7 +980,7 @@ function assertServiceRecommendationModeRouting() {
     customerPositiveTags: ['下酒'],
   });
   assert.equal(retakeHighLevel.executionPlans.length, 0,
-    '服务链路不得让重修版三阶段沿用剧情版等级合计规则。');
+    '服务流程不得让重修版三阶段沿用剧情版等级合计规则。');
   assert.equal(retakeHighLevel.customer.id, 23,
     '特殊经营必须按 canonical guestId 从完整评价档案读取幽幽子，不得按同名回退到 mapped 40。');
   assert.deepEqual(retakeHighLevel.customer.places, [],
@@ -995,11 +995,11 @@ function assertServiceRecommendationModeRouting() {
     customerNegativeTags: ['下酒'],
   });
   assert.ok(retakeRequestedHate.executionPlans.length > 0,
-    '服务候选过滤必须排除与点单 Tag 重合的厌恶，并保留可达 Good 的重修组合。');
+    '服务候选过滤必须排除与点单标签重合的厌恶，并保留可达 Good 的重修组合。');
   assert.deepEqual(
     retakeRequestedHate.executionPlans[0].food?.matchedNegativeTags,
     ['下酒'],
-    '集成用例必须证明候选原始厌恶中确实包含料理点单 Tag。',
+    '集成用例必须证明候选原始厌恶中确实包含料理点单标签。',
   );
   assert.equal(
     evaluateYuyukoRareOrderPair(
@@ -1009,7 +1009,7 @@ function assertServiceRecommendationModeRouting() {
       retakeRequestedHate.executionPlans[0].demand,
     ).canProgress,
     true,
-    '服务发布的主执行计划必须按重修 Tag 模式达到 Good。',
+    '服务发布的主执行计划必须按重修标签模式达到 Good。',
   );
 
   const storyLowLevel = buildYuyukoRareServiceRecommendation({
@@ -1021,7 +1021,7 @@ function assertServiceRecommendationModeRouting() {
     customerNegativeTags: ['下酒'],
   });
   assert.equal(storyLowLevel.executionPlans.length, 0,
-    '服务链路不得让重修版额外喜好评价泄漏到剧情版三阶段。');
+    '服务流程不得让重修版额外喜好评价泄漏到剧情版三阶段。');
 }
 
 function buildYuyukoRareServiceRecommendation({
@@ -1067,7 +1067,7 @@ function buildYuyukoRareServiceRecommendation({
     }).recipe,
     id: 201,
     recipeId: 301,
-    name: '稀客服务链路测试料理',
+    name: '稀客服务流程测试料理',
   };
   const beverage = {
     ...buildBeverage({
@@ -1076,7 +1076,7 @@ function buildYuyukoRareServiceRecommendation({
       matchedTags: ['直饮'],
     }).beverage,
     id: 401,
-    name: '稀客服务链路测试酒水',
+    name: '稀客服务流程测试酒水',
   };
   const data = {
     recipes: [recipe],
@@ -1296,12 +1296,12 @@ async function assertSourceContracts() {
   for (const cacheName of ['orders', 'foodCandidates', 'beverageCandidates']) {
     assert.ok(
       workerDataResolver.includes(`recommendationCaches.${cacheName}.clear()`),
-      `Worker 数据代际变化时必须清空 ${cacheName} 缓存。`,
+      `Worker 数据版本变化时必须清空 ${cacheName} 缓存。`,
     );
   }
   assert.ok(
     workerDataResolver.includes('cachedDataSignature !== payload.dataSignature'),
-    'Worker 候选缓存必须按完整推荐数据签名切换代际。',
+    'Worker 候选缓存必须按完整推荐数据签名切换版本。',
   );
   assert.equal(recommendationSources.includes('preferYuyukoSafeEvaluation'), false,
     '已移除的跨阶段安全评价标记不得残留。');
@@ -1348,7 +1348,7 @@ async function assertSourceContracts() {
   assert.ok(rareOrderEvaluation.includes("mode === 'retake-tag-order'")
     && rareOrderEvaluation.includes('evaluateYuyukoTagOrderPair(food, beverage, demand)')
     && rareOrderEvaluation.includes('tagEvaluation.negativeTags.length === 0'),
-  '重修版稀客订单必须改用完整 Tag 点单评价并显式拒绝厌恶。');
+  '重修版稀客订单必须改用完整标签点单评价并明确拒绝厌恶。');
   const progressPlan = functionSlice(
     yuyukoChallenge,
     'isYuyukoProgressPlan',
@@ -1381,9 +1381,9 @@ async function assertSourceContracts() {
   assert.ok(normalTargetSelection.includes("executionMode: 'refresh'"),
     '原订单无满意评价修正时必须明确进入 Normal 清理模式。');
   assert.ok(normalTargetSelection.includes('expectedFoodModifierTags: evaluation.effectiveModifierTags'),
-    '推进与清理目标必须携带同一评价器输出的预期 modifier Tag。');
+    '推进与清理目标必须携带同一评价器输出的预期 modifier 标签。');
   assert.equal(normalTargetSelection.includes('firstTag('), false,
-    '精确订单候选不得再使用任意首个幽幽子喜好伪造 Tag 点单。');
+    '具体订单候选不得再使用任意首个幽幽子喜好猜测标签点单。');
   const refreshEvaluation = functionSlice(
     yuyukoNormalTarget,
     'isYuyukoRefreshEvaluationPair',
@@ -1416,7 +1416,7 @@ async function assertSourceContracts() {
   );
   assert.ok(effectiveModifierTags.includes('new Set(food.recipe.positiveTags)')
     && effectiveModifierTags.includes("filter((tag) => !baseTags.has(tag))"),
-  '重修 modifier 必须严格排除原配方基础 Tag，匹配原生 Tags.Except(RawTags)。');
+  '重修 modifier 必须完整排除原配方基础标签，匹配游戏 Tags.Except(RawTags)。');
   const searchCustomer = functionSlice(
     yuyukoNormalTarget,
     'buildYuyukoNormalOrderSearchCustomer',
@@ -1425,7 +1425,7 @@ async function assertSourceContracts() {
   assert.ok(searchCustomer.includes('positiveTags:')
     && searchCustomer.includes('negativeTags:')
     && searchCustomer.match(/filter\(\(tag\) => !baseTags\.has\(tag\)\)/g)?.length === 2,
-  '重修 beam 搜索的喜好和厌恶都必须排除原配方基础 Tag。');
+  '重修 beam 搜索的喜好和厌恶都必须排除原配方基础标签。');
 
   const retakeProgressValidation = sourceSlice(
     yuyukoRuntimePolicy,
@@ -1461,9 +1461,9 @@ async function assertSourceContracts() {
     && specialOrderServedContract.includes('request.FoodTagId')
     && specialOrderServedContract.includes('request.BeverageTagId')
     && specialOrderServedContract.match(/TryReadYuyukoSellableTagIds\(/g)?.length === 2,
-  '重修版 SpecialOrder 必须校验加料 ID 及料理、酒水完整 Tags 中的原始点单 Tag。');
+  '重修版 SpecialOrder 必须校验加料 ID 及料理、酒水完整 Tags 中的原始点单标签。');
   assert.equal(specialOrderServedContract.includes('ExpectedFoodModifierTags'), false,
-    'SpecialOrder 不得消费只属于 NormalOrder 的预期 modifier Tag。');
+    'SpecialOrder 不得使用只属于 NormalOrder 的预期 modifier 标签。');
   assert.equal(specialOrderServedContract.includes('"RawTags"'), false,
     'SpecialOrder 不得使用 Tags.Except(RawTags) 的普通形态评价模型。');
   assert.equal(specialOrderServedContract.includes('ReadSellableLevel('), false,
@@ -1471,7 +1471,7 @@ async function assertSourceContracts() {
   assert.match(
     specialOrderServedContract,
     /return\s+foodTagMatched\s*&&\s*beverageTagMatched\s*;/,
-    'SpecialOrder 的两个请求 Tag 匹配结果必须参与契约返回值。',
+    'SpecialOrder 的两个请求标签匹配结果必须参与契约返回值。',
   );
 
   const normalOrderServedContract = sourceSlice(
@@ -1483,7 +1483,7 @@ async function assertSourceContracts() {
     && normalOrderServedContract.includes('request.ExpectedFoodModifierTags')
     && normalOrderServedContract.includes('TryReadYuyukoNormalOrderFoodModifierTags(')
     && normalOrderServedContract.includes('actualModifierTags.SequenceEqual(expectedModifierTags)'),
-  'NormalOrder 必须继续严格校验实际加料与前端锁存的 modifier Tag。');
+  '`NormalOrder` 必须继续严格校验实际加料与前端固定的调整标签。');
   const sharedExtraIngredientContract = sourceSlice(
     foodModifierValidation,
     'private static bool TryValidateServedFoodExtraIngredients(',
@@ -1517,7 +1517,7 @@ async function assertSourceContracts() {
 
   assert.ok(companionApi.includes('expectedFoodModifierTags: executionTarget ? executionTarget.expectedFoodModifierTags.join')
     && orderRecommendationWorker.includes("item.target?.expectedFoodModifierTags.join(',')"),
-  '预期 modifier Tag 必须进入 API 请求和 Worker 结果签名。');
+  '预期 modifier 标签必须进入 API 请求和后台计算结果标识。');
   const rareOrderApi = functionSlice(
     companionApi,
     'rareOrderAction',
@@ -1527,10 +1527,10 @@ async function assertSourceContracts() {
     '稀客 SpecialOrder 请求不得发送只属于 NormalOrder 的 expectedFoodModifierTags。');
   assert.ok(orderPreparationModels.includes('ExpectedFoodModifierTags')
     && localApiServer.includes('ExpectedFoodModifierTags = ReadStringListQuery(query, "expectedFoodModifierTags")'),
-  '本地 API 必须将预期 modifier Tag 解析为显式请求字段。');
+  '本地 API 必须将预期调整标签解析为明确的请求字段。');
   assert.ok(runtimeOrderPreparationService.includes('ExpectedFoodModifierTags = SpecialFoodTargetPolicy.NormalizeTags')
     && runtimeOrderDirectDelivery.includes('ExpectedFoodModifierTags = target.ExpectedFoodModifierTags'),
-  '异步 cooking target 必须持久化并在送达后重建预期 modifier Tag。');
+  '异步料理目标必须持久化，并在送达后重建预期调整标签。');
 
   assert.ok(automationState.includes('executionTarget: NormalOrderExecutionTarget | null')
     && automationState.includes('executionTargetBusinessGeneration: number')
@@ -1539,7 +1539,7 @@ async function assertSourceContracts() {
     && automationState.includes('getCurrentNormalOrderExecutionTarget(')
     && automationState.includes('target.specialTargetSignature === specialTargetSignature')
     && automationState.includes('target.specialTargetRevision === specialTargetRevision'),
-  '普客自动化状态必须显式锁存完整执行目标及其经营代际，并以目标签名和独立 revision 提供有效性判定和清理入口。');
+  '普客自动化状态必须明确固定完整执行目标及其本场经营编号，并以目标签名和独立修订号提供有效性判断和清理入口。');
   const normalTargetSelectionContract = sourceSlice(
     workbench,
     'function getNormalAutomationTargetSelection(',
@@ -1548,10 +1548,10 @@ async function assertSourceContracts() {
   assert.ok(normalTargetSelectionContract.includes('if (!requiresSpecialTarget)')
     && normalTargetSelectionContract.indexOf('if (currentExecutionTarget)')
       < normalTargetSelectionContract.indexOf('if (!requiresRecipeTarget)')
-    && normalTargetSelectionContract.includes('const missingTargetMessage = \'特殊经营料理执行目标未在执行前锁存，自动化已暂停该订单。\'')
+    && normalTargetSelectionContract.includes('const missingTargetMessage = \'特殊经营料理目标未在执行前固定，自动化已暂停该订单。\'')
     && normalTargetSelectionContract.includes('policyError: missingTargetMessage')
     && workbench.includes('const normalOrdersRequireSpecialExecutionTarget = (snapshot?.normalBusiness?.orders ?? []).some('),
-  '普通订单不得进入特殊目标门禁；特殊经营已锁存目标必须优先透传，缺失时酒水与评价阶段也必须 fail-closed。');
+  '普通订单不得进入特殊目标检查；特殊经营已固定目标必须优先传递，缺失时酒水与评价阶段也必须停止相关功能。');
   assert.ok(workbench.includes('getCurrentNormalOrderExecutionTarget(')
     && workbench.includes('target: applySpecialFoodTargetWirePolicy(currentExecutionTarget, targetPolicy)')
     && workbench.includes('currentState = lockNormalOrderExecutionTarget(')
@@ -1559,20 +1559,20 @@ async function assertSourceContracts() {
       < workbench.lastIndexOf('completeFirstNormalOrder(')
     && workbench.includes('clearNormalOrderExecutionTarget(currentState)')
     && workbench.includes('executionTargetBusinessGeneration: 0'),
-  '执行目标必须在开锅副作用前按经营代际锁存，送达和评价阶段复用，明确重置时同时释放目标与代际。');
+  '执行目标必须在开锅写操作前按本场经营编号固定，送达和评价阶段复用，明确重置时同时释放目标与经营编号。');
   assert.ok(workbench.includes('function retainNormalAutomationExecutionStates')
     && workbench.includes('!state.executionTarget && !state.cookingJobId')
     && workbench.includes('job.targetKind === \'normal\' && job.jobId === state.cookingJobId')
     && workbench.includes('!state?.manualResolutionRequired && !hasActiveCookingJob')
     && (workbench.match(/retainNormalAutomationExecutionStates\(normalOrderStatesRef\.current\)/g)?.length ?? 0) >= 3,
-  '局部关闭普客自动化或处理阶段时必须保留已确认目标和活动 cooking job。');
+  '局部关闭普客自动化或处理阶段时必须保留已确认目标和活动料理任务。');
   assert.ok(automationDomain.includes('requiresSpecialBusinessNormalExecutionTarget(')
     && automationDomain.includes('const specialTargetPolicy = buildSpecialFoodTargetWirePolicy(')
     && automationDomain.includes('const currentExecutionTarget = getCurrentNormalOrderExecutionTarget(')
     && automationDomain.includes('specialTargetPolicy.specialTargetSignature')
     && automationDomain.includes('specialTargetPolicy.specialTargetRevision')
     && automationDomain.includes('applySpecialFoodTargetWirePolicy(currentExecutionTarget, specialTargetPolicy)'),
-  '厨具容量估算必须只为模块认领的订单复用同经营代际、同特殊目标签名和 revision 的锁存目标。');
+  '厨具容量估算必须只为模块认领的订单复用本场经营编号、特殊目标签名和修订号都相同的固定目标。');
 
   const storyTargetValidation = sourceSlice(
     yuyukoRuntimePolicy,

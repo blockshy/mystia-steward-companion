@@ -125,7 +125,7 @@ export function buildRareOrderPlans({
 /**
  * 从已筛选的料理/酒水候选构造完整推荐方案。
  *
- * 该入口供经营中订单复用已算好的候选，保证收藏、自定义料理置顶和兜底候选走同一套组合排序。
+ * 该入口供经营中订单复用已算好的候选，保证收藏、自定义料理置顶和其他备选项使用同一套组合排序。
  */
 export function buildRareOrderPlansFromCandidates({
   data,
@@ -177,7 +177,7 @@ export function sortRareOrderPlans(
 /**
  * 构建稀客料理候选。
  *
- * 基础配方必须已解锁、材料可用且满足厨具硬过滤；额外食材通过有限宽度搜索补齐点单 Tag 和稀客偏好。
+ * 基础配方必须已解锁、材料可用且通过厨具强制筛选；额外食材通过有限宽度搜索补齐点单标签和稀客偏好。
  * 游戏限制料理最多五种材料，因此重复基础材料会按配方原始长度占用槽位。
  */
 export function buildRareFoodCandidates(
@@ -328,7 +328,7 @@ function canRecipeReachRequiredTagWithoutSearch(
 /**
  * 构建稀客酒水候选。
  *
- * 酒水没有“加料”搜索，只根据已解锁、排除列表、点单 Tag、稀客偏好和库存压力生成排序信号。
+ * 酒水没有“加料”搜索，只根据已解锁、排除列表、点单标签、稀客偏好和库存压力生成排序信息。
  */
 export function buildRareBeverageCandidates(
   data: RecommendationDataSet,
@@ -624,8 +624,8 @@ function getAvailableExtraIngredientSlots(
 /**
  * 缩小额外食材搜索池。
  *
- * 全量材料组合会迅速膨胀；这里仅保留能满足点单 Tag、稀客正向偏好，或能压制负面 Tag 的食材。
- * 禁用/排除材料和与配方冲突的禁忌 Tag 已在进入搜索前过滤。
+ * 全量材料组合会迅速膨胀；这里仅保留能满足点单标签、稀客正向偏好，或能压制负面标签的食材。
+ * 禁用、排除材料和与配方冲突的禁忌标签已在进入搜索前过滤。
  */
 function buildRelevantIngredientPool({
   recipe,
@@ -804,12 +804,12 @@ function buildFoodConditionResults(
       target: 'food',
       status: state.meetsSpecialFoodTarget ? 'pass' : 'fail',
       severity: 'hard',
-      label: '特殊目标 Tag',
+      label: '特殊目标标签',
       detail: state.meetsSpecialFoodTarget
-        ? `${requiresAll ? '同时满足' : '满足'}特殊目标 Tag ${state.matchedSpecialFoodTargetTags.join('、')}`
+        ? `${requiresAll ? '同时满足' : '满足'}特殊目标标签 ${state.matchedSpecialFoodTargetTags.join('、')}`
         : specialTargetTags.length === 0
-          ? '特殊目标 Tag 尚未完整读取'
-          : `${requiresAll ? '未同时满足' : '未满足'}特殊目标 Tag ${missingTags.join('、')}`,
+          ? '特殊目标标签尚未完整读取'
+          : `${requiresAll ? '未同时满足' : '未满足'}特殊目标标签 ${missingTags.join('、')}`,
     });
   }
 
@@ -1035,9 +1035,9 @@ function keepBestStatesBySpecialTargetReachability(
   demand: RareTagOrderDemand,
   context: RecommendationRuntimeContext,
 ): IngredientSearchState[] {
-  // 血池地狱固定为双 Tag。原始 Tag 随加料单调累积；较强 Tag 一旦压制目标，后续加料无法撤销；
+  // 血池地狱固定为双标签。原始标签随加料单调累积；较强标签一旦压制目标，后续加料无法撤销；
   // 因此同一深度为 matched/reachable/blocked 的每种组合保留一个代表，就能保留所有可达分支。
-  // 双 Tag 最多产生 3^2 个分桶，低于每层和最终候选上限。
+  // 双标签最多产生 3^2 个分组，低于每层和最终候选上限。
   const sorted = [...new Map(states.map((state) => [stateKey(state), state])).values()]
     .sort(compareIngredientStates);
   const representatives = new Map<string, IngredientSearchState>();
@@ -1136,7 +1136,7 @@ function compareRarePlans(
   sortContext: RecommendationPlanSortContext,
   ranges: Map<RecommendationObjectiveKey, ObjectiveRange>,
 ): number {
-  // 强制置顶和方案分桶属于硬优先级，必须先于权重分数，避免收藏或自定义料理置顶被权重冲掉。
+  // 强制置顶和方案分组具有明确的最高优先级，必须先于权重分数，避免收藏或自定义料理置顶被权重冲掉。
   const pinDiff = getPlanPinRank(right, sortContext) - getPlanPinRank(left, sortContext);
   if (pinDiff !== 0) return pinDiff;
   const customOrderDiff = comparePinnedCustomPlanOrder(left, right);

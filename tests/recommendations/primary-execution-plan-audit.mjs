@@ -166,7 +166,7 @@ assert.equal(getPrimaryExecutionPlan(exactRecipeFirst), exactMissionRecipe,
 
 for (const [description, validMissionPlan] of [
   ['food order Tag mismatch', buildPlan(7, 109, 701, { meetsRequiredFood: false })],
-  ['rare-guest negative Tag', buildPlan(7, 111, 701, { matchedNegativeTags: ['厌恶'] })],
+  ['稀客厌恶标签', buildPlan(7, 111, 701, { matchedNegativeTags: ['厌恶'] })],
 ]) {
   const ordinaryPlan = buildPlan(8, 112, 702);
   const result = normalizePrimaryExecutionPlans(

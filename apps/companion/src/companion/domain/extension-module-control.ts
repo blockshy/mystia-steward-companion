@@ -174,7 +174,7 @@ export function resolvePrimaryExtensionModuleControl({
       writable: false,
       pending: true,
       reason: operationReason
-        ?? '相关运行时操作正在提交；取得确定结果前不能切换模块。',
+        ?? '相关游戏操作正在提交；取得确定结果前不能切换模块。',
     });
   }
 
@@ -228,7 +228,7 @@ function getExtensionModuleStatusLabel(status: ExtensionModuleControlStatus): st
     case 'disconnected':
       return '未连接';
     case 'waiting-authority':
-      return '等待权威状态';
+      return '正在确认主设备状态';
     case 'secondary-read-only':
       return '只读';
     case 'saving':

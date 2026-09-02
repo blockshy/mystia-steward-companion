@@ -384,8 +384,8 @@ async function auditTargetHighlightColors(page) {
   const normalInput = normalField.locator('input[aria-label="普客高亮色十六进制值"]');
   const storageKey = 'mystia-steward-companion-rare-target-highlight-color';
 
-  assert.equal(await rareInput.inputValue(), '#FFDB2E', '稀客高亮默认色漂移');
-  assert.equal(await normalInput.inputValue(), '#5FACD3', '普客高亮默认色漂移');
+  assert.equal(await rareInput.inputValue(), '#FFDB2E', '稀客高亮默认色被意外修改');
+  assert.equal(await normalInput.inputValue(), '#5FACD3', '普客高亮默认色被意外修改');
 
   await rareInput.fill('#123456');
   await rareInput.press('Escape');
@@ -552,7 +552,7 @@ async function assertExperimentalPanelGroups(page) {
   assert.equal(await riskNotice.isVisible(), true, '实验性功能风险提示条必须可见');
   assert.match(
     await riskNotice.innerText(),
-    /自动化和加料料理选项会改变游戏运行时状态，存在一定风险。/,
+    /自动化和加料料理选项会直接改变游戏状态，存在一定风险。/,
     '实验性功能风险提示内容不完整',
   );
   const groups = await page.locator(`${selectors.field}:visible`).evaluateAll((fields) => fields.map((field) => ({

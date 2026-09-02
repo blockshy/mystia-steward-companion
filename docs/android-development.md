@@ -1,6 +1,6 @@
 # Android 本地开发
 
-更新日期：2026-08-25
+更新日期：2026-09-02
 
 本文档只说明 Android 伴随窗口的本地环境、构建、签名、产物和故障排查。通用 Node/Rust 环境与
 Mock API 见[本地开发与构建](local-development.md)，测试选择见[验证指南](validation-guide.md)，
@@ -12,7 +12,7 @@ Android 版用于可信局域网内的 B 设备，通过 A 设备上运行的游
 可执行文件的转换产物，也不包含托盘、置顶、鼠标穿透、桌面单实例、游戏窗口聚焦和游戏关闭时自动退出等能力。
 
 桌面与 Android 正式构建均通过 Tauri Rust `request_local_api` 命令使用原生 TCP 访问 Mod。只有浏览器/Vite
-开发模式直接访问 mock API；不得为 Android 增加 WebView direct-fetch 回退或放宽 CSP 来绕过代理错误。
+开发模式直接访问 mock API；不得为 Android 增加 WebView 直接请求的备用路径或放宽 CSP 来绕过代理错误。
 
 ## 锁定工具链
 
@@ -30,8 +30,8 @@ Android 版用于可信局域网内的 B 设备，通过 A 设备上运行的游
 | Rust / Cargo | `1.97.1` |
 | Rust targets | `aarch64-linux-android`、`armv7-linux-androideabi` |
 
-NDK 的 SDK 目录名与包内 revision 是两个需要同时满足的值。不要把 beta1 的 package revision 改写为目录名，
-也不要用其他 r30 包作为回退。Gradle distribution 的 SHA-256 同样由锁文件固定。
+NDK 的 SDK 目录名与包内修订号是两个需要同时满足的值。不要把 beta1 的包修订号改写为目录名，
+也不要改用其他 r30 包。Gradle distribution 的 SHA-256 同样由锁文件固定。
 
 ## 环境准备
 
@@ -64,10 +64,10 @@ node scripts/check-build-toolchain.mjs android
 上述 Java 输出必须同时显示 `java.runtime.version = 21.0.12.1+1...`、
 `java.vendor = Eclipse Adoptium`，且 `java.home` 与 `JAVA_HOME` 解析到同一目录。机器上可以安装其他
 JDK，但不要让当前构建终端的 `JAVA_HOME` 指向 Oracle JDK 或 Android Studio JBR。版本末尾的第四段
-`.1` 是 Java 版本的 patch component，不得截断为 `21.0.12`。
+`.1` 是 Java 版本的补丁部分，不得截断为 `21.0.12`。
 
 `toolchain.lock.json` 还以 `jdkReleaseSemver = 21.0.12+101.0.LTS` 固定同一 Adoptium Release 的 CI
-解析坐标。该值来自 Adoptium 的 `version_data.semver`，只供发布 workflow 精确下载使用，不是本地
+解析坐标。该值来自 Adoptium 的 `version_data.semver`，只供发布工作流精确下载使用，不是本地
 `java -version` 应显示的另一套 JDK 版本。
 
 标准项目命令还会要求由 Corepack 调用锁定 pnpm：
@@ -91,14 +91,14 @@ corepack pnpm tauri:android:dev
 # 普通 Android 构建
 corepack pnpm tauri:android:build
 
-# release、按 ABI 拆分，未签名
+# 发布构建、按 ABI 拆分，未签名
 corepack pnpm tauri:android:apk
 
-# release、按 ABI 拆分、签名、验签并复制 canonical 资产
+# 发布构建、按 ABI 拆分、签名、验签并复制规范资产
 corepack pnpm tauri:android:apk:signed
 ```
 
-前三项入口先运行 Android profile 的工具链检查并治理过期构建缓存。`apk` 明确传入
+前三项入口先运行 Android 配置的工具链检查并治理过期构建缓存。`apk` 明确传入
 `--split-per-abi --target aarch64 armv7`，不得用单一 universal APK 代替正式双 ABI 产物。
 
 Windows、Mod 与 Android 一次构建可使用：
@@ -107,9 +107,9 @@ Windows、Mod 与 Android 一次构建可使用：
 pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1 -BuildAndroidApk
 ```
 
-该命令仅构建本地资产，不创建 tag 或 GitHub Release。正式稳定版工作流见
+该命令仅构建本地产物，不创建 Git 标签或 GitHub Release。正式稳定版工作流见
 [发布流程](local-release.md)。传入 `-BuildAndroidApk` 时，脚本会在前端、桌面窗口和 Mod 编译前完成
-Android 工具链预检；签名 APK 子流程仍会在自身副作用前重新验证同一工具链。
+Android 工具链预检；签名 APK 子流程仍会在写入产物前重新验证同一工具链。
 
 ## 未签名产物
 
@@ -155,7 +155,7 @@ storeFile=C:/Users/Administrator/.android/mystia-steward-companion-release.jks
 
 keystore、密码、`keystore.properties`、Gradle 缓存、JNI `.so` 与构建输出均不得提交、写入诊断包或日志。
 
-### 签名身份与元数据
+### 签名标识与元数据
 
 签名脚本要求最终 APK 的证书 SHA-256 等于：
 
@@ -170,7 +170,7 @@ keystore、密码、`keystore.properties`、Gradle 缓存、JNI `.so` 与构建�
 - `versionName` 与当前项目版本完整一致；
 - `versionCode` 是唯一合法十进制值；
 - 每个 APK 只包含其目标 ABI；
-- 输出目录不存在额外的 release signed APK。
+- 输出目录不存在额外的已签名发布版 APK。
 
 Android `versionCode` 使用 Tauri v2 规则 `major * 1_000_000 + minor * 1_000 + patch`。
 `X.Y.Z-preview.N` 与同一核心稳定版共享 code；minor 或 patch 大于 `999`、code 为 `0` 或超过
@@ -187,17 +187,17 @@ mods/bepinex/dist/mystia-steward-companion-android-armeabi-v7a.apk
 
 签名构建会在该 Android 进程内设置 `CARGO_PROFILE_RELEASE_STRIP=symbols`、
 `CARGO_PROFILE_RELEASE_LTO=thin` 和 `CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1`。这些优化不会写入桌面 Cargo
-release profile。APK 是独立下载资产，不写入 Mod 的 `update-manifest.json`，也不参与 Mod 自动更新。
+发布配置。APK 是独立下载资产，不写入 Mod 的 `update-manifest.json`，也不参与 Mod 自动更新。
 
 ## 设备验证
 
 本地构建完成后，至少在目标 Android 版本和一台真实设备上检查：
 
-1. A 设备启动游戏和 Mod，LAN listener 使用预期端口与 token；
-2. B 设备从连接页成功建立连接，错误 token 和不可达地址能明确失败；
+1. A 设备启动游戏和 Mod，局域网监听器使用预期端口与 Token；
+2. B 设备从连接页成功建立连接，错误 Token 和不可达地址能明确失败；
 3. 手机竖屏、手机横屏及可用的大屏/平板布局无裁切；
 4. 锁屏、切后台、恢复前台和 Wi-Fi 短暂断开后能重新连接；
-5. 主设备切换、配置同步和 automation lease 不会让非主设备取得写入权；
+5. 主设备切换、配置同步和自动化控制权不会让非主设备取得写入权；
 6. 安装升级后数据与配置仍保留，包版本和 ABI 与预期一致。
 
 没有真机时，在验证记录中明确写“仅构建、签名和包元数据通过”，不能用模拟器或桌面浏览器替代真机结论。
@@ -211,21 +211,21 @@ release profile。APK 是独立下载资产，不写入 Mod 的 `update-manifest
 - 先读取 `toolchain.lock.json`，不要根据 Android Studio 的推荐版本升级；
 - 确认 `JAVA_HOME\bin\java.exe`、`rustc`、`cargo`、SDK 和 NDK 与环境变量一致；
 - 检查 `NDK_HOME/source.properties` 的 `Pkg.Revision` 是 `30.0.14904198-beta1`；
-- 删除或修正指向其他目录的 Android SDK/NDK 别名，而不是增加检测回退。
+- 删除或修正指向其他目录的 Android SDK/NDK 别名，不要增加备用检测路径。
 
 ### JDK vendor 报告 Oracle Corporation
 
 这表示当前 `JAVA_HOME` 指向 Oracle JDK，而不是锁定的 Eclipse Temurin。即使 Java 主版本和补丁号同为
 `21.0.12.1`，工具链检查仍会在 Gradle 启动前停止。将 `JAVA_HOME` 改为实际的 Temurin `21.0.12.1` 根目录，
-重新运行上方 Java properties 命令和 Android profile 检查；不要放宽 vendor 校验或增加 Oracle fallback。
+重新运行上方 Java 属性命令和 Android 配置检查；不要放宽发行方校验或增加 Oracle 备用路径。
 
-### 缺少 Rust Android target
+### 缺少 Rust Android 编译目标
 
 ```bash
 rustup target add aarch64-linux-android armv7-linux-androideabi --toolchain 1.97.1
 ```
 
-添加后重新运行 Android profile 检查。不要让默认 Rust toolchain 的 target 掩盖锁定 toolchain 缺项。
+添加后重新运行 Android 配置检查。不要让默认 Rust 工具链的编译目标掩盖锁定工具链缺项。
 
 ### Windows 报告不同盘符
 
@@ -247,14 +247,14 @@ Set-Location ..\..\..\..\..
 - `apksigner` / `aapt2` 错误：确认 Build Tools `35.0.0` 完整安装，不借用其他版本；
 - 密码错误：直接修正本机私有文件，不把值打印到终端历史或构建日志。
 
-### 证书或 APK 身份不匹配
+### 证书或 APK 标识不匹配
 
-证书指纹不匹配表示用了错误的 key；application ID、版本或 ABI 不匹配表示配置或构建输出发生漂移。
+证书指纹不匹配表示使用了错误的密钥；application ID、版本或 ABI 不匹配表示配置和构建输出已经不一致。
 这些错误必须修正来源后重新构建，不能跳过验签、改名复制 APK 或降低检查强度。
 
 ### 只有桌面检查通过，Android 编译失败
 
-`cargo check` 的桌面目标不能证明 Android target 可编译。检查是否把桌面专用 Tauri 类型、Win32 API 或 feature
+`cargo check` 的桌面目标不能证明 Android 编译目标可用。检查是否把桌面专用 Tauri 类型、Win32 API 或功能
 无条件带入移动端；在明确的平台模块边界修正 `cfg` 和依赖，不保留运行时探测或空实现兼容层。
 
 ### 磁盘空间持续增长

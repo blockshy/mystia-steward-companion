@@ -509,7 +509,7 @@ export function normalizeSharedCompanionPreferences(
 }
 
 /**
- * 解析当前 wire schema 的完整共享配置。
+ * 解析当前 JSON 协议格式下的完整共享配置。
  *
  * 这个边界不补默认值、不丢弃未知字段、不修正非规范数组，也不接受旧形状。
  * localStorage 容错和用户编辑仍由 `normalizeCompanionPreferences` 处理。
@@ -530,7 +530,7 @@ export function parseSharedCompanionPreferences(value: unknown): SharedCompanion
     managedRareGuestIds: requireWireIdArray(
       profile.managedRareGuestIds,
       MAX_MANAGED_RARE_GUEST_IDS,
-      '受控稀客',
+      '调度名单内稀客',
     ),
     autoNormalOrderEnabled: requireWireBoolean(profile, 'autoNormalOrderEnabled'),
     autoNormalTakeBeverage: requireWireBoolean(profile, 'autoNormalTakeBeverage'),
@@ -866,7 +866,7 @@ function readStoredManagedRareGuestIds(): number[] {
 }
 
 /**
- * 将受控稀客 ID 归一化为共享 profile 的规范数组。
+ * 将调度名单内稀客 ID 规范化为共享配置数组。
  */
 export function normalizeManagedRareGuestIds(value: unknown): number[] {
   if (!Array.isArray(value)) return [];
@@ -936,7 +936,7 @@ function parseWireRecommendationSortProfile(value: unknown): RecommendationSortP
   );
   if (!Array.isArray(profile.objectives)
     || profile.objectives.length !== RECOMMENDATION_OBJECTIVE_KEYS.length) {
-    throw new Error('推荐排序目标必须完整包含当前 wire schema 的 9 项。');
+    throw new Error('推荐排序配置必须完整包含当前版本要求的 9 项。');
   }
 
   const seen = new Set<RecommendationObjectiveKey>();
@@ -1008,7 +1008,7 @@ function requireExactWireRecord(
   const actualFields = Object.keys(record);
   const expected = new Set(expectedFields);
   if (actualFields.length !== expected.size || actualFields.some((field) => !expected.has(field))) {
-    throw new Error(`${label}字段与当前 wire schema 不一致。`);
+    throw new Error(`${label}字段与当前配置格式不一致。`);
   }
   return record;
 }
@@ -1019,7 +1019,7 @@ function requireWireBoolean(
   label = field,
 ): boolean {
   const value = record[field];
-  if (typeof value !== 'boolean') throw new Error(`共享配置字段 ${label} 必须是布尔值。`);
+  if (typeof value !== 'boolean') throw new Error(`共享配置字段 ${label} 只能为开启或关闭。`);
   return value;
 }
 
@@ -1028,7 +1028,7 @@ function requireWireInteger(value: unknown, min: number, max: number, label: str
     || !Number.isInteger(value)
     || value < min
     || value > max) {
-    throw new Error(`共享配置字段 ${label} 超出当前 wire schema 允许范围。`);
+    throw new Error(`共享配置字段 ${label} 超出当前配置允许范围。`);
   }
   return value;
 }
@@ -1039,21 +1039,21 @@ function requireWireChoice<const Choices extends readonly string[]>(
   label: string,
 ): Choices[number] {
   if (typeof value !== 'string' || !(choices as readonly string[]).includes(value)) {
-    throw new Error(`共享配置字段 ${label} 不是当前 wire schema 允许的枚举值。`);
+    throw new Error(`共享配置字段 ${label} 不是当前版本支持的选项。`);
   }
   return value as Choices[number];
 }
 
 function requireWireColor(value: unknown, label: string): string {
   if (typeof value !== 'string' || !/^#[0-9A-F]{6}$/.test(value)) {
-    throw new Error(`共享配置字段 ${label} 必须是规范的 #RRGGBB 颜色。`);
+    throw new Error(`共享配置字段 ${label} 必须是 #RRGGBB 格式的颜色。`);
   }
   return value;
 }
 
 function requireWireIdArray(value: unknown, maxCount: number, label: string): number[] {
   if (!Array.isArray(value) || value.length > maxCount) {
-    throw new Error(`${label} ID 列表格式或数量与当前 wire schema 不一致。`);
+    throw new Error(`${label} ID 列表格式或数量与当前配置要求不一致。`);
   }
   const ids: number[] = [];
   let previous = -1;
@@ -1063,7 +1063,7 @@ function requireWireIdArray(value: unknown, maxCount: number, label: string): nu
       || id < 0
       || id > MAX_MANAGED_RARE_GUEST_ID
       || id <= previous) {
-      throw new Error(`${label} ID 必须是严格递增的非负 32 位整数。`);
+      throw new Error(`${label} ID 必须是 0 至 ${MAX_MANAGED_RARE_GUEST_ID} 的整数，并按从小到大排列且不能重复。`);
     }
     ids.push(id);
     previous = id;

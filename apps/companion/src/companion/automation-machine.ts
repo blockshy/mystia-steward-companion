@@ -198,7 +198,7 @@ export function reduceAutomationManualRetry<T extends AutomationManualRetryState
       retryStage: '',
       nextAttemptAtMs: 0,
       lastError: rollbackBudgetReset
-        ? `已手动重试，自动回退计数已从 ${state.rollbackCount} 重开为 0，等待下一轮自动化继续。`
+        ? `已手动重试，自动重新制作次数已从 ${state.rollbackCount} 重置为 0，等待下一轮自动化继续。`
         : '已手动重试，等待下一轮自动化继续。',
     },
     resumed: true,

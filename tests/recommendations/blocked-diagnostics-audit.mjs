@@ -142,7 +142,7 @@ assert.equal(
   missingCooker.blockedDiagnostic?.counts.foodRecipeEligibility
     .requiredTagReachableBaseIngredientsReady > 0,
   true,
-  '缺厨具前必须已经存在满足 Tag 且基础材料可用的候选。',
+  '缺厨具前必须已经存在满足标签且基础材料可用的候选。',
 );
 assert.equal(
   missingCooker.blockedDiagnostic?.counts.foodRecipeEligibility.requiredTagReachableCookerReady,
@@ -537,12 +537,12 @@ async function assertSourceContracts() {
     '料理首次清零必须复用候选搜索诊断入口。');
   assert.ok(
     service.includes('preferences.filterMissingCookers || hasRuntimeUnavailableCookers'),
-    '完整快照确认的运行时锁锅必须独立于缺失厨具设置进入硬过滤。',
+    '完整游戏状态确认的锁锅必须独立于缺失厨具设置进入强制筛选。',
   );
   assert.ok(
     service.includes("requiredFoodTag.trim()")
       && service.includes(": '当前订单'"),
-    '运行时锁锅诊断不得为缺少点单 Tag 的订单生成空 Tag 文案。',
+    '游戏锁锅诊断不得为缺少点单标签的订单生成空标签文案。',
   );
   assert.ok(automation.includes("item.blockedDiagnostic?.message ?? '没有可用的推荐料理。'"),
     '自动化无料理目标时应优先显示结构化首个清零原因。');

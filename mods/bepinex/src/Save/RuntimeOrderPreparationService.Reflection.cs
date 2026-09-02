@@ -35,7 +35,7 @@ internal static partial class RuntimeOrderPreparationService
     /// 读取 IL2CPP/Unity 对象的稳定指针。
     /// </summary>
     /// <remarks>
-    /// 指针用于运行时对象去重和短期回执匹配；无法读取原生指针时退回托管对象 hash，保证诊断和缓存仍可工作。
+    /// 指针用于游戏对象去重和短期结果匹配；无法读取原生指针时使用托管对象 hash，保证诊断和缓存仍可工作。
     /// </remarks>
     private static nint ReadObjectPointer(object target)
     {
@@ -216,7 +216,7 @@ internal static partial class RuntimeOrderPreparationService
     /// 写入对象字段或属性。
     /// </summary>
     /// <remarks>
-    /// 仅用于订单字段、厨具状态等运行时自动化入口。调用方必须先确认写入符合游戏当前生命周期。
+    /// 仅用于订单字段、厨具状态等游戏自动化入口。调用方必须先确认写入符合当前经营状态。
     /// </remarks>
     private static bool WriteMember(object target, string name, object? value)
     {

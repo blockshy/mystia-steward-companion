@@ -43,8 +43,8 @@ export interface RareOrderParticipationPanelProps {
 /**
  * “经营中 · 稀客队列”独立 Tab 内容。
  *
- * 分组按 canonical guestId 展示，但操作参数是当前快照中的全部 exact lifecycle。新订单在
- * 下一次快照中仍默认暂停，不会被过去的稀客级点击意外授权。
+ * 分组按规范的 guestId 展示，但操作参数是当前状态中的全部订单实例。新订单在
+ * 下一次状态更新中仍默认暂停，不会被过去的稀客级点击意外启用。
  */
 export function RareOrderParticipationPanel({
   orders,
@@ -121,7 +121,7 @@ export function RareOrderParticipationPanel({
       data-busy={busyMutationKey !== null ? 'true' : 'false'}
     >
       <ListPanel
-        title="稀客参与队列"
+        title="稀客队列"
         action={(
           <div className="flex flex-wrap items-center justify-end gap-1.5">
             <Badge variant="outline">暂停 {pausedCount}</Badge>
@@ -141,13 +141,13 @@ export function RareOrderParticipationPanel({
       />
 
       {!businessActive && (
-        <EmptyState text="当前未进入夜间经营，开始经营后这里会显示受控稀客订单。" />
+        <EmptyState text="当前未进入夜间经营，开始经营后这里会显示调度名单内的稀客订单。" />
       )}
       {businessActive && managedCount === 0 && (
-        <EmptyState text="受控稀客名单为空。请先在“扩展功能 → 稀客调度”中添加稀客。" />
+        <EmptyState text="稀客调度名单为空。请先在“扩展功能 → 稀客调度”中添加稀客。" />
       )}
       {businessActive && managedCount > 0 && groups.length === 0 && (
-        <EmptyState text="当前订单中没有受控名单内的稀客。" />
+        <EmptyState text="当前订单中没有调度名单内的稀客。" />
       )}
 
       {businessActive && groups.map((group) => {
@@ -228,10 +228,10 @@ export function RareOrderParticipationPanel({
               </div>
             )}
             gamepadScrollKey={`service:rare-participation:guest:${group.guestId}:orders`}
-            gamepadScrollLabel={`${group.guestName}受控订单`}
+            gamepadScrollLabel={`${group.guestName}的调度订单`}
           >
             {group.hasUnavailableRows && (
-              <EmptyRow text="存在缺少精确身份或未与 Mod 权威快照对齐的订单；为避免部分授权，本组暂不可操作。" />
+              <EmptyRow text="部分订单信息尚未完整同步，本组暂不可操作。" />
             )}
             <div className="space-y-2">
               {group.rows.map((row) => (
@@ -255,7 +255,7 @@ export function RareOrderParticipationPanel({
         aria-live="polite"
         data-rare-order-participation-status="true"
       >
-        {busyMutationKey ? '稀客参与队列更新中。' : ''}
+        {busyMutationKey ? '稀客队列更新中。' : ''}
       </div>
     </div>
   );
@@ -290,7 +290,7 @@ function ParticipationOrderRow({
     ? buildRareOrderParticipationMutationKey('pause', { type: 'order', order: identity })
     : '';
   const actionDisabled = readOnly || busyMutationKey !== null || !identity;
-  const orderLabel = `${guestName}桌 ${formatDesk(row.order.deskCode)} 的 lifecycle ${row.order.orderLifecycleSequence}`;
+  const orderLabel = `${guestName}桌 ${formatDesk(row.order.deskCode)} 的订单 ${row.order.orderLifecycleSequence}`;
   const focusScope = `order:${row.key}`;
   return (
     <div
@@ -300,10 +300,10 @@ function ParticipationOrderRow({
     >
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
-          <div className="font-medium">桌 {formatDesk(row.order.deskCode)} · lifecycle {row.order.orderLifecycleSequence}</div>
+          <div className="font-medium">桌 {formatDesk(row.order.deskCode)} · 订单 #{row.order.orderLifecycleSequence}</div>
           <div className="mt-1 flex flex-wrap gap-1.5">
-            <Badge variant="outline">料理 {row.order.foodTag || '无'} ({row.order.foodTagId ?? 'missing'})</Badge>
-            <Badge variant="outline">酒水 {row.order.beverageTag || '无'} ({row.order.beverageTagId ?? 'missing'})</Badge>
+            <Badge variant="outline">料理 {row.order.foodTag || '无'} ({row.order.foodTagId ?? '未读取'})</Badge>
+            <Badge variant="outline">酒水 {row.order.beverageTag || '无'} ({row.order.beverageTagId ?? '未读取'})</Badge>
             {row.order.missionRecipePriority && <Badge variant="secondary">任务料理优先</Badge>}
             {row.order.specialBusinessRoleLabel && (
               <Badge variant="secondary">{row.order.specialBusinessRoleLabel}</Badge>
@@ -326,7 +326,7 @@ function ParticipationOrderRow({
       )}
       {identity && (
         <div className="mt-1 truncate font-mono text-[0.7rem] text-muted-foreground" title={identity.traceId}>
-          trace {identity.traceId}
+          日志编号 {identity.traceId}
         </div>
       )}
       {identity && row.state !== 'unavailable' && (

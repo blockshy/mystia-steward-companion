@@ -397,7 +397,7 @@ export function formatAutomationState(
     `状态 ${getAutomationStepLabel(state.step)}`,
     state.stepStartedAtMs > 0 ? `${resolveAutomationStepSeconds(state.stepStartedAtMs, now)}秒` : '',
     state.retryCount > 0 ? `重试 ${state.retryCount}/${maxStepRetries}` : '',
-    state.rollbackCount > 0 ? `回退 ${state.rollbackCount}/${maxRollbacks}` : '',
+    state.rollbackCount > 0 ? `重新制作 ${state.rollbackCount}/${maxRollbacks}` : '',
     state.manualResolutionRequired ? '需要确认已处理' : '',
     state.lastError ? `最近 ${state.lastError}` : '',
   ].filter(Boolean);

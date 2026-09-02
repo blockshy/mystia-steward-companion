@@ -1,18 +1,18 @@
 # 验证指南
 
-更新日期：2026-08-31
+更新日期：2026-09-02
 
 本文档负责回答“改动后应运行哪些验证”。它只记录测试入口、选择规则和平台边界；每项测试的完整断言、
-fixtures 和禁止路径以 `tests/` 下的源码为权威，业务契约不在这里重复维护。
+fixtures 和禁止路径以 `tests/` 下的源码为准，业务契约不在这里重复维护。
 
 环境安装与日常启动见[本地开发与构建](local-development.md)，Android 专项见
-[Android 开发](android-development.md)，发布前门禁见[发布流程](local-release.md)。
+[Android 开发](android-development.md)，发布前检查见[发布流程](local-release.md)。
 
 ## 基本原则
 
 1. 先运行 `corepack pnpm toolchain:check`，确认测试使用锁定工具链；
 2. 先做受影响模块的编译和静态检查，再运行该模块的 smoke/audit；
-3. 修改跨边界协议时同时验证生产者和消费者，例如 C# API、Tauri proxy 与 React UI；
+3. 修改跨边界协议时同时验证数据提供方和使用方，例如 C# API、Tauri 代理与 React UI；
 4. UI 自动化通过不替代至少一次人工视觉巡检，运行时 smoke 通过也不替代游戏实测；
 5. Windows、Android 和真实游戏行为只能在对应平台确认，Linux 结果不得扩大解释；
 6. 测试失败时修复实现或更新经过确认的规范断言，不添加兼容分支来绕过失败。
@@ -50,18 +50,18 @@ package scripts 是聚合入口；其当前子测试列表以 [`package.json`](.
 | 料理与酒水收藏 | `corepack pnpm audit:favorites` |
 | 自动化前端恢复与运行时动作审计 | `corepack pnpm audit:automation` |
 | 连接恢复 | `corepack pnpm audit:connection-recovery` |
-| 主设备与配置权威 | `corepack pnpm audit:device-authority`、`corepack pnpm audit:device-authority:ui` |
+| 主设备与生效配置 | `corepack pnpm audit:device-authority`、`corepack pnpm audit:device-authority:ui` |
 | 字号与缩放 | `corepack pnpm audit:font-scale` |
 | 设置与帮助 | `corepack pnpm audit:settings-help` |
 | 订单状态与展示 | `corepack pnpm audit:service-orders` |
-| 更新协议的前端投影 | `corepack pnpm audit:updates`、`corepack pnpm audit:updates:ui` |
+| 更新协议的前端视图 | `corepack pnpm audit:updates`、`corepack pnpm audit:updates:ui` |
 | 游戏界面目标发布 | `corepack pnpm audit:ui-pinning` |
 | 特殊经营前端与运行时集合 | `corepack pnpm audit:special-business` |
 | 稀客邀请 | `corepack pnpm audit:rare-guest-invitations`、`corepack pnpm audit:rare-guest-invitations:ui` |
-| 稀客参与名单、队列与 operational 投影 | `corepack pnpm audit:rare-order-participation`、`corepack pnpm audit:rare-order-participation:ui` |
+| 稀客调度名单、队列与执行视图 | `corepack pnpm audit:rare-order-participation`、`corepack pnpm audit:rare-order-participation:ui` |
 | 手柄输入与焦点 | `corepack pnpm audit:gamepad` |
 | BepInEx 控制台 UI | `corepack pnpm audit:logs:console` |
-| 任务列表与运行时投影 | `corepack pnpm audit:runtime-missions`、`corepack pnpm audit:runtime-missions:ui` |
+| 任务列表与运行时视图 | `corepack pnpm audit:runtime-missions`、`corepack pnpm audit:runtime-missions:ui` |
 
 含 Playwright 的聚合命令需要下文的 mock/preview 环境。纯源码 audit 通常会自行启动所需 fixture；失败输出与
 对应测试文件说明优先于本表的简述。
@@ -74,7 +74,7 @@ package scripts 是聚合入口；其当前子测试列表以 [`package.json`](.
 corepack pnpm exec playwright install chromium
 ```
 
-先按[本地开发与构建](local-development.md#mock-api-与浏览器预览)启动 mock API 和 Vite preview，
+先按[本地开发与构建](local-development.md#模拟-api-与浏览器预览)启动 mock API 和 Vite preview，
 再在另一个终端设置统一地址：
 
 ```bash
@@ -140,7 +140,7 @@ dotnet run --project tests/aggregate-mod-log-lifecycle/AggregateModLogLifecycleS
 dotnet run --project tests/bepinex-console-window/BepInExConsoleWindowSmoke.csproj -c Release
 ```
 
-连接设备权威或 profile 写入同时运行前端 `audit:device-authority` 与 UI 巡检；更新协议同时运行
+修改主设备状态或共享配置写入时，同时运行前端 `audit:device-authority` 与 UI 巡检；更新协议同时运行
 `audit:updates` 和 `audit:updates:ui`。
 
 ### 运行时反射、静态数据与经营生命周期
@@ -153,7 +153,7 @@ corepack pnpm test:dotnet6 night-business-lifecycle
 dotnet run --project tests/night-business-automation-gate/NightBusinessAutomationGateSmoke.csproj -c Release
 ```
 
-修改反射 helper、BepInEx 版本锁定、厨具枚举或经营 generation 时，应先运行本组，再运行依赖这些基础的
+修改反射辅助函数、BepInEx 版本锁定、厨具枚举或经营轮次时，应先运行本组，再运行依赖这些基础的
 订单、任务或自动化组。
 
 ### 任务系统
@@ -185,7 +185,7 @@ corepack pnpm audit:automation
 corepack pnpm audit:rare-order-participation
 ```
 
-配置权威、总控或阶段开关影响 automation lease 时，再叠加本地 API 存储组和
+主设备配置、总控或阶段开关影响自动化控制权时，再叠加本地 API 存储组和
 `audit:device-authority` / `audit:connection-recovery`。
 
 ### 游戏 UI 集成
@@ -199,10 +199,10 @@ dotnet run --project tests/runtime-throw-delivery-order-highlight/RuntimeThrowDe
 corepack pnpm audit:ui-pinning
 ```
 
-这些 smoke 只验证 Mod-owned 状态、身份和生命周期契约，仍需在锁定游戏/BepInEx 环境实测制作页、酒水页、
+这些 smoke 只验证 Mod 自有状态、订单标识和生命周期契约，仍需在锁定游戏/BepInEx 环境实测制作页、酒水页、
 HUD 订单、桌位和投掷送达面板。
 
-修改 target recipe variant 服务或专项测试后，避免同秒增量时间戳造成假绿，强制执行：
+修改目标加料料理服务或专项测试后，为避免同秒增量时间戳导致测试误报通过，强制执行：
 
 ```bash
 dotnet build tests/runtime-target-recipe-variant/RuntimeTargetRecipeVariantSmoke.csproj -c Release -t:Rebuild
@@ -226,7 +226,7 @@ corepack pnpm audit:gamepad
 
 ## 锁定 .NET 6 smoke 矩阵
 
-前三个测试会安装真实 Harmony/MonoMod 动态补丁；后两个分别锁定纯托管 participation monitor/permit 和经营 lifecycle boundary 在产品目标运行时上的行为：
+前三个测试会安装真实 Harmony/MonoMod 动态补丁；后两个分别固定纯托管稀客队列状态/执行许可和经营生命周期边界在产品目标框架上的行为：
 
 - `tests/automation-cooking-job/`；
 - `tests/ui-pinning-runtime/`；
@@ -281,7 +281,7 @@ corepack pnpm tauri:android:apk:signed
 
 ## 游戏运行时实测
 
-涉及反射、Harmony Hook、订单、任务、自动化或游戏 UI 时，在 smoke 后使用锁定的游戏 build、BepInEx #783
+涉及反射、Harmony Hook、订单、任务、自动化或游戏 UI 时，在 smoke 后使用锁定的游戏版本、BepInEx #783
 和正式 References 交叉验证。反编译资料的取得、可引用证据和禁止猜测路径见
 [IL2CPP 源码与 IDA 分析工作流](il2cpp-analysis-workflow.md)。
 
@@ -289,12 +289,12 @@ corepack pnpm tauri:android:apk:signed
 
 - 游戏、BepInEx、Mod 版本和同时启用的其他 Mod；
 - 新存档/旧存档、场景、经营类型和复现步骤；
-- 预期与实际行为、订单或 trace identity；
+- 预期与实际行为、订单或跟踪标识；
 - `ModLog` 日志和诊断包的时间范围；
 - 是否发生切换主设备、断线、开关变更、面板保持打开或跨经营；
 - 验证通过的正常路径，以及至少一个关闭/失败/重连路径。
 
-不能取得关键运行时资料时保持 fail-closed，并把缺少的证据记入开发记录；不要以名称匹配、场景扫描、
+不能取得关键游戏资料时停止相关功能，并把缺少的证据记入开发记录；不要以名称匹配、场景扫描、
 宽泛反射或旧路径兼容代替验证。
 
 ## 提交前检查

@@ -50,7 +50,7 @@ export function buildMizuchiOrderRule(
   if (contract.orderKind === 'unverified') {
     return {
       ...emptySpecialBusinessOrderRule(),
-      blockingReason: `${challengeLabel}订单附身身份尚未确认，推荐与自动化已暂停。`,
+      blockingReason: `${challengeLabel}尚未确认订单是否为附身目标，推荐与自动化已暂停。`,
     };
   }
 
@@ -59,7 +59,7 @@ export function buildMizuchiOrderRule(
       ...emptySpecialBusinessOrderRule(),
       forbiddenExtraIngredientIds: [contract.targetIngredientId],
       requiresBaseOrderMatch: true,
-      reason: `${challengeLabel}普通订单需要满足原始料理与酒水 Tag，且不得把${contract.targetIngredientName}作为额外材料。`,
+      reason: `${challengeLabel}普通订单需要满足原始料理与酒水标签，且不得把${contract.targetIngredientName}作为额外材料。`,
     };
   }
 
@@ -74,10 +74,10 @@ export function buildMizuchiOrderRule(
     forbiddenExtraIngredientIds: [],
     blockingReason: requirementReady
       ? ''
-      : `${challengeLabel}附身订单需要精确读取额外材料 ${contract.targetIngredientId}，当前上下文不一致。`,
+      : `${challengeLabel}附身订单需要完整读取额外材料 #${contract.targetIngredientId}，当前订单信息不一致。`,
     requiresBaseOrderMatch: true,
     reason: requirementReady
-      ? `${challengeLabel}附身订单需要满足原始料理与酒水 Tag，并把${contract.targetIngredientName}作为额外材料加入料理。`
+      ? `${challengeLabel}附身订单需要满足原始料理与酒水标签，并把${contract.targetIngredientName}作为额外材料加入料理。`
       : `${challengeLabel}附身订单的额外材料要求尚未确认。`,
   };
 }

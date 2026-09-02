@@ -4,9 +4,9 @@ import { buildDynamicFoodTags } from '@/recommendation-engine/dynamic-food-tags'
 import type { ResolvedTags } from '@/recommendation-engine/types';
 
 /**
- * 项目内已验证的基础 Tag 压制规则。
+ * 项目内已验证的基础标签压制规则。
  *
- * 当前运行时目录不投影复杂 Tag 规则容器，推荐引擎使用这组规则保持结果稳定。
+ * 当前游戏数据不提供复杂标签规则容器，推荐引擎使用这组规则保持结果稳定。
  */
 export const PROJECT_VERIFIED_TAG_PRIORITY_RULES: RuntimeTagPriorityRule[] = [
   { id: 1, tagIds: [], tags: ['肉', '素'] },
@@ -17,9 +17,9 @@ export const PROJECT_VERIFIED_TAG_PRIORITY_RULES: RuntimeTagPriorityRule[] = [
 ];
 
 /**
- * 按游戏 Tag 优先级规则过滤互斥 Tag。
+ * 按游戏标签优先级规则过滤互斥标签。
  *
- * 同一条规则中靠前的 Tag 会保留，后续命中的 Tag 会进入 suppressedTags，供 UI 解释为什么该 Tag 未生效。
+ * 同一条规则中靠前的标签会保留，后续命中的标签会进入 suppressedTags，供 UI 解释为什么该标签未生效。
  */
 export function resolveTagPriority(
   rawTags: string[],
@@ -47,9 +47,9 @@ export function resolveTagPriority(
 }
 
 /**
- * 解析料理最终生效的 Tag。
+ * 解析料理最终生效的标签。
  *
- * 结果包含配方基础正面 Tag、动态 Tag、额外食材 Tag，以及流行喜爱/流行厌恶等运行时派生 Tag。
+ * 结果包含配方基础正面标签、动态标签、额外食材标签，以及流行喜爱、流行厌恶等根据当前游戏状态得到的标签。
  */
 export function resolveFoodTags({
   recipe,
@@ -84,9 +84,9 @@ export function resolveFoodTags({
 }
 
 /**
- * 查找哪些高优先级 Tag 可以压制目标 Tag。
+ * 查找哪些高优先级标签可以压制目标标签。
  *
- * 用于稀客加料搜索：当候选含有稀客厌恶 Tag 时，搜索可通过更高优先级 Tag 将其压制。
+ * 用于稀客加料搜索：当候选含有稀客厌恶标签时，搜索可通过更高优先级标签将其压制。
  */
 export function findTagsThatCanSuppress(
   activeTags: string[],
@@ -109,7 +109,7 @@ export function findTagsThatCanSuppress(
 }
 
 /**
- * 判断某个额外食材是否会直接带来配方负面 Tag。
+ * 判断某个额外食材是否会直接带来配方负面标签。
  */
 export function hasForbiddenIngredientTag(
   ingredient: IngredientCatalogItem,

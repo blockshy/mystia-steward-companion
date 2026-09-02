@@ -49,7 +49,7 @@ export function buildWackyCookingCompetitionOrderRule(
       yuyukoProgressEvaluationMode: 'none',
       reason: shieldBroken
         ? '怪诞料理三阶段古明地恋本体已破防，需要先满足原订单料理和酒水要求，再按破防期预计伤害优先选择。'
-        : '怪诞料理三阶段古明地恋本体需要按场上揭示的正面/厌恶/酒水 Tag 选择高评价组合。',
+        : '怪诞料理第三阶段需要按场上古明地恋本体揭示的正面、厌恶和酒水标签选择高评价组合。',
     };
   }
 
@@ -74,7 +74,7 @@ export function buildWackyCookingCompetitionOrderRule(
     preferYuyukoPositiveSpell: false,
     yuyukoProgressEvaluationMode: 'none',
     reason: requiresTarget
-      ? `怪诞料理目标 Tag：${targetTags.join('、')}${preferHighEvaluation ? '，需要满足原订单并获得最高评价' : ''}`
+      ? `怪诞料理目标标签：${targetTags.join('、')}${preferHighEvaluation ? '，需要满足原订单并获得最高评价' : ''}`
       : preferHighEvaluation
         ? '怪诞料理需要满足原订单并获得最高评价。'
         : '',
@@ -89,7 +89,7 @@ export function getWackyTargetTagCountdownDeferral(
     : null;
   if (progress == null || progress >= WACKY_TARGET_TAG_COOKING_MIN_PROGRESS) return '';
 
-  return `怪诞料理 Tag 倒计时剩余约 ${Math.max(0, Math.round(progress * 100))}%，等待刷新后再开锅，避免出锅时目标 Tag 已变化。`;
+  return `怪诞料理标签倒计时剩余约 ${Math.max(0, Math.round(progress * 100))}%，等待刷新后再开锅，避免出锅时目标标签已经变化。`;
 }
 
 export function isWackyKoishiBossFullFeedContext(

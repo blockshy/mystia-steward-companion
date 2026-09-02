@@ -47,7 +47,7 @@ export interface GameUiTargetSourceOrderState {
   terminal: boolean;
 }
 
-/** 已显式绑定 Mod 参与投影的稀客游戏 UI 候选。 */
+/** 已明确关联 Mod 调度状态的稀客游戏 UI 候选。 */
 export interface OperationalRareGameUiRecommendation {
   recommendation: OrderRecommendation;
   participation: NightOrderOperationalParticipation;
@@ -86,9 +86,9 @@ export function buildRareGameUiTarget(
 }
 
 /**
- * 仅从 Mod 权威参与队列选择稀客置顶/高亮目标。
+ * 仅从 Mod 当前稀客队列选择置顶和高亮目标。
  *
- * 跨订单任务料理不会跳过新队列序号；特殊经营的硬安全 lane 仍在队列序号之前。
+ * 跨订单任务料理不会跳过新队列序号；特殊经营的强制安全优先组仍在队列序号之前。
  */
 export function buildRareGameUiTargetFromParticipationQueue(
   rows: readonly OperationalRareGameUiRecommendation[],

@@ -143,8 +143,8 @@ function RareGuestRosterPanel({
         </ListPanel>
 
         <RosterSection
-          title={`已受控 (${sections.managed.length})`}
-          emptyText={query ? '没有匹配的已受控稀客。' : '当前名单为空，所有稀客保持原有行为。'}
+          title={`已加入名单 (${sections.managed.length})`}
+          emptyText={query ? '没有匹配的名单内稀客。' : '当前名单为空，所有稀客保持原有行为。'}
           rows={sections.managed}
           currentOrderCounts={currentOrderCounts}
           disabled={disabled}
@@ -156,7 +156,7 @@ function RareGuestRosterPanel({
 
         <RosterSection
           title={`可添加 (${sections.available.length})`}
-          emptyText={query ? '没有匹配的可添加稀客。' : '当前运行时稀客目录为空。'}
+          emptyText={query ? '没有匹配的可添加稀客。' : '当前游戏稀客目录为空。'}
           rows={sections.available}
           currentOrderCounts={currentOrderCounts}
           disabled={disabled}
@@ -174,14 +174,14 @@ function RareGuestRosterPanel({
         returnFocusKey={pendingRemovalGuestId === null
           ? 'extensions:rare-participation:search'
           : `extensions:rare-participation:guest:${pendingRemovalGuestId}:remove`}
-        title="移出受控稀客"
+        title="移出调度名单"
       >
         <div className="space-y-3 text-muted-foreground">
           <p>
             “{pendingRemoval?.name ?? ''}”当前还有 {pendingRemovalOrderCount} 笔订单。移出名单后，这些订单将由 Mod
-            自动加入参与队列末尾，并恢复高亮和自动化资格。
+            自动加入稀客队列末尾，并恢复高亮和自动化资格。
           </p>
-          <p className="text-xs">已开始且不可回滚的游戏动作仍由 Mod 在下一个安全边界处理。</p>
+          <p className="text-xs">已经开始且无法撤销的游戏操作仍会由 Mod 处理到下一个可安全停止的位置。</p>
         </div>
         <div className="flex justify-end gap-2" data-gamepad-axis="x">
           <Button

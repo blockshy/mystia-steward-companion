@@ -1086,7 +1086,7 @@ internal static class RuntimeSpecialBusinessContextService
             SwitchTargetContextLocked(rawChallengeType, kind);
             _foodTargetTags = normalized;
             _targetFund = null;
-            _targetLabel = "目标料理 Tag";
+            _targetLabel = "目标料理标签";
             _targetTagTimeProgress = null;
             _lastTargetUpdatedUtc = DateTime.UtcNow;
             _lastAction = $"{kind} food tags={string.Join(",", normalized)}";
@@ -1125,7 +1125,7 @@ internal static class RuntimeSpecialBusinessContextService
 
             _foodTargetTags = complete ? normalized : Array.Empty<string>();
             _targetFund = null;
-            _targetLabel = "目标料理 Tag";
+            _targetLabel = "目标料理标签";
             _targetTagTimeProgress = null;
             _lastTargetUpdatedUtc = DateTime.UtcNow;
             _lastAction = $"yuuma food tags={string.Join(",", _foodTargetTags)}; complete={complete}; effect={useEffect}; revision={_yuumaFoodTargetRevision}";

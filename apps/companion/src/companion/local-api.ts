@@ -218,7 +218,7 @@ function parseIpv4Octets(address: string): [number, number, number, number] | nu
 function translateNativeLocalApiError(error: unknown): Error {
   const rawMessage = error instanceof Error ? error.message : String(error);
   if (!rawMessage.startsWith(NATIVE_LOCAL_API_ERROR_PREFIX)) {
-    return new Error(`本地 API 原生代理调用失败：${rawMessage}`);
+    return new Error(`本地 API 连接代理调用失败：${rawMessage}`);
   }
 
   const encoded = rawMessage.slice(NATIVE_LOCAL_API_ERROR_PREFIX.length);
@@ -261,9 +261,9 @@ function nativeLocalApiErrorMessage(code: NativeLocalApiErrorCode, detail = ''):
     case 'invalid-response':
       return '本地 API 返回了无效响应。请确认伴随窗口与 Mod 来自同一版本。';
     case 'internal-error':
-      return '本地 API 原生代理运行失败。请重新启动伴随窗口。';
+      return '本地 API 连接代理运行失败。请重新启动伴随窗口。';
     default:
-      return `本地 API 原生代理返回了未知错误${detail ? `：${detail}` : '。'}`;
+      return `本地 API 连接代理返回了未知错误${detail ? `：${detail}` : '。'}`;
   }
 }
 

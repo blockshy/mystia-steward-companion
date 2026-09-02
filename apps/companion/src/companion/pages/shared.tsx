@@ -576,7 +576,7 @@ export function EffectiveCustomRecipesDetails({
         data-gamepad-focus-key={gamepadScrollKey}
         tabIndex={-1}
       >
-        {entries.length === 0 && <EmptyRow text="当前稀客和点单料理 Tag 没有生效的自定义配方" />}
+        {entries.length === 0 && <EmptyRow text="当前稀客和点单料理标签没有生效的自定义配方" />}
         {entries.map((entry) => {
           const recipe = dataIndexes.recipeByFoodId.get(entry.foodId);
           const extras = entry.extraIngredientIds.length === 0

@@ -52,12 +52,12 @@ assert(
     && /normalOrderHighlightEnabled:\s*readStoredBoolean\([^,]+,\s*false\)/.test(preferencesSource),
   '两类目标订单高亮必须分别默认关闭',
 );
-assert(preferencesSource.includes("DEFAULT_RARE_TARGET_HIGHLIGHT_COLOR = '#FFDB2E'"), '稀客高亮默认色漂移');
-assert(preferencesSource.includes("DEFAULT_NORMAL_TARGET_HIGHLIGHT_COLOR = '#5FACD3'"), '普客高亮默认色漂移');
+assert(preferencesSource.includes("DEFAULT_RARE_TARGET_HIGHLIGHT_COLOR = '#FFDB2E'"), '稀客高亮默认色被意外修改');
+assert(preferencesSource.includes("DEFAULT_NORMAL_TARGET_HIGHLIGHT_COLOR = '#5FACD3'"), '普客高亮默认色被意外修改');
 assert(/\^#\[0-9A-Fa-f\]\{6\}\$/.test(preferencesSource), '高亮颜色未严格限制为 #RRGGBB');
 assert(
   /if \(event\.key === 'Escape'\) \{\s*event\.preventDefault\(\);\s*setDraft\(null\);\s*\}/.test(settingsSource),
-  '高亮色 Escape 必须只撤销草稿，不能 blur 后提交旧闭包值',
+  '高亮色 Escape 必须只撤销草稿，不能在失焦后提交过期值',
 );
 const gameUiAssistSwitchLabels = [
   '稀客游戏界面置顶推荐',
@@ -81,13 +81,13 @@ assert(
 );
 assert(
   settingsSource.includes('data-experimental-risk-notice="true"')
-    && settingsSource.includes('自动化和加料料理选项会改变游戏运行时状态，存在一定风险。'),
+    && settingsSource.includes('自动化和加料料理选项会直接改变游戏状态，存在一定风险。'),
   '实验性功能页面必须集中显示风险提示',
 );
 assert(
   settingsSource.includes('稀客目标料理含加料时，在制作页面显示独立选项。选择后只加入该方案的加料，并按游戏规则扣除材料；基础料理保持原配方，选项使用稀客目标色。')
     && settingsSource.includes('普客目标料理含加料时，在制作页面显示独立选项。选择后只加入该方案的加料，并按游戏规则扣除材料；基础料理保持原配方，选项使用普客目标色。'),
-  '设置页没有完整说明两类独立加料选项、目标方案和基础料理原生语义',
+  '设置页没有完整说明两类独立加料选项、目标方案和基础料理保持原配方的行为',
 );
 assert(
   helpContentSource.includes('制作页面会在基础料理后显示独立选项')
@@ -96,16 +96,17 @@ assert(
     && helpContentSource.includes('相同基础料理和相同加料方案只显示一个共享选项')
     && helpContentSource.includes('修改后会同时影响列表、加料料理选项、厨具、桌位、左下订单卡片和投掷送达面板')
     && helpContentSource.includes('无加料目标使用基础料理，并按所属订单颜色高亮；含加料目标只高亮自己的加料选项')
-    && helpContentSource.includes('加料选项只在目标订单、制作页面、配方和材料库存能够精确对应时执行')
+    && helpContentSource.includes('加料选项只在目标订单、制作页面、配方和材料库存能够明确对应时执行')
     && helpContentSource.includes('信息不完整时会停止本次操作，不会改用基础料理或其他目标方案')
-    && helpContentSource.includes('目标变化触发的制作页刷新会依次重建食材分类、料理数据、当前可见食材行和料理行，不会重建已选材料区或出锅区')
-    && helpContentSource.includes('旧食材置顶、高亮和旧加料行都会从已打开页面移除')
-    && helpContentSource.includes('实际提交新料理且游戏正常返回后，只有退旧材料和装入新配方都已确认')
-    && helpContentSource.includes('手动关闭正常返回时仍由游戏退料')
-    && helpContentSource.includes('Target recipe variant switch-armed')
-    && helpContentSource.includes('Target recipe variant switch-rejected')
-    && helpContentSource.includes('Mod 不会猜测退款或重放材料操作'),
-  '帮助页没有完整说明置顶前置、独立加料行、原生换菜收据和失败关闭边界',
+    && helpContentSource.includes('目标变化时，制作页会刷新食材分类、料理数据以及当前显示的食材和料理')
+    && helpContentSource.includes('旧的食材置顶、高亮和加料项会从已打开页面移除')
+    && helpContentSource.includes('实际提交新料理且游戏正常返回后，只有退回旧材料和装入新配方都已确认')
+    && helpContentSource.includes('正常关闭制作页时仍由游戏退料')
+    && helpContentSource.includes('以 Target recipe variant switch- 开头')
+    && helpContentSource.includes('switch-receipt 只记录材料更换步骤')
+    && helpContentSource.includes('switch-rejected 表示结果无法确认')
+    && helpContentSource.includes('Mod 不会猜测材料是否已退还，也不会重复执行结果无法确认的材料操作'),
+  '帮助页没有完整说明置顶前置、独立加料项、游戏换菜结果和失败关闭条件',
 );
 assert(
   !settingsSource.includes('加料料理选项诊断')
@@ -127,28 +128,28 @@ const targetApiSource = apiSource.slice(
 assert(!targetApiSource.includes('enabled: String(enabled)'), '旧集合级置顶开关仍进入 wire');
 assert(!targetApiSource.includes('highlightEnabled: String(highlightEnabled)'), '旧集合级厨具开关仍进入 wire');
 assert(!targetApiSource.includes('extraIngredientFillEnabled'), '旧集合级自动加料字段仍进入 wire');
-assert(targetApiSource.includes('params.set(`${prefix}ListPinningEnabled`'), '目标级列表置顶开关未进入 wire');
-assert(targetApiSource.includes('params.set(`${prefix}RecipeVariantEnabled`'), '目标级加料料理选项开关未进入 wire');
-assert(targetApiSource.includes('params.set(`${prefix}GuestId`, String(target.guestId))'), 'canonical guestId 未进入目标 wire');
-assert(apiSource.includes('params.set(`${prefix}Color`, target.color.slice(1))'), '颜色没有进入目标 wire');
+assert(targetApiSource.includes('params.set(`${prefix}ListPinningEnabled`'), '目标级列表置顶开关未进入请求参数');
+assert(targetApiSource.includes('params.set(`${prefix}RecipeVariantEnabled`'), '目标级加料料理选项开关未进入请求参数');
+assert(targetApiSource.includes('params.set(`${prefix}GuestId`, String(target.guestId))'), '规范稀客 ID 未进入目标请求');
+assert(apiSource.includes('params.set(`${prefix}Color`, target.color.slice(1))'), '颜色没有进入目标请求');
 const revisionSource = targetsSource.slice(
   targetsSource.indexOf('function buildTargetRevision'),
   targetsSource.indexOf('function resolveNormalRecipe'),
 );
-assert(!revisionSource.includes('target.color'), '视觉颜色错误混入业务 targetRevision');
-assert(!revisionSource.includes('target.features'), '视觉功能开关错误混入业务 targetRevision');
-assert(revisionSource.includes('target.guestId'), 'canonical guestId 没有参与目标 revision');
+assert(!revisionSource.includes('target.color'), '视觉颜色错误混入业务目标修订号');
+assert(!revisionSource.includes('target.features'), '视觉功能开关错误混入业务目标修订号');
+assert(revisionSource.includes('target.guestId'), '规范稀客 ID 没有参与目标修订号');
 assert(
   targetsSource.includes('requireCanonicalGuestId && !hasCanonicalRareGuestId(order)')
     && /Number\.isSafeInteger\(order\.guestId\)[\s\S]*order\.guestId! >= 0/.test(targetsSource),
-  '参与队列稀客目标没有 fail-closed 校验 canonical guestId',
+  '稀客队列目标没有在规范稀客 ID 缺失时停止处理',
 );
 assert(
   publisherSource.includes('for (const kind of TARGET_KINDS)')
     && publisherSource.includes('failed: Record<GameUiTargetKind, boolean>')
     && publisherSource.includes('else if (lane.isCurrent && !lane.pending)')
     && publisherSource.includes('state.failed[kind] = false'),
-  '稀客与普客没有独立维护 current/error/reconcile 边界',
+  '稀客与普客没有独立维护当前状态、错误和重新同步边界',
 );
 assert(
   publisherSource.includes('state.contextClearPending = true')
@@ -219,7 +220,7 @@ try {
       }
       const apiResponse = await route.fetch();
       const snapshot = await apiResponse.json();
-      assert(!snapshot.unchanged && snapshot.nightBusiness?.orders?.[0], '连接身份巡检需要完整 Mock 快照');
+      assert(!snapshot.unchanged && snapshot.nightBusiness?.orders?.[0], '连接信息巡检需要完整 Mock 快照');
       snapshot.snapshotSignature = `${snapshot.snapshotSignature}|ui-pinning-stale-audit`;
       mutatedSnapshot = snapshot;
       if (mutatedSnapshotAt === 0) mutatedSnapshotAt = Date.now();
@@ -270,8 +271,8 @@ try {
   assert(acceptedRetry.rawParams.target1CookerHighlightEnabled === 'true', '定向巡检未独立启用普客目标厨具高亮');
   assert(acceptedRetry.rawParams.target1SeatHighlightEnabled === 'true', '定向巡检未独立启用普客目标桌位高亮');
   assert(acceptedRetry.rawParams.target1OrderHighlightEnabled === 'true', '定向巡检未独立启用普客目标订单高亮');
-  assert(acceptedRetry.rawParams.target0Color === 'FFDB2E', '稀客默认颜色 wire 漂移');
-  assert(acceptedRetry.rawParams.target1Color === '5FACD3', '普客默认颜色 wire 漂移');
+  assert(acceptedRetry.rawParams.target0Color === 'FFDB2E', '稀客默认颜色参数被意外修改');
+  assert(acceptedRetry.rawParams.target1Color === '5FACD3', '普客默认颜色参数被意外修改');
   assert(acceptedRetry.params.targetRevision, '稀客目标缺少稳定订单/执行计划 revision');
   assert(acceptedRetry.params.orderTraceId === 'R-0001', '稀客目标缺少精确订单 trace');
   assert(acceptedRetry.rawParams.target1TraceId === 'N-0001', '普客目标缺少 exact N trace');
@@ -360,7 +361,7 @@ try {
     2_800,
     '仅连接 revision 变化时未先发布空目标隔离旧连接目标',
   );
-  await waitFor(() => mutatedSnapshotAt > 0, 5_000, '应用连接身份后未获取新快照');
+  await waitFor(() => mutatedSnapshotAt > 0, 5_000, '应用连接信息后未获取新快照');
   await new Promise((resolve) => setTimeout(resolve, 1000));
   assert(
     targetRequests.filter(hasRecipeTarget).length === identityTargetCount,
@@ -370,7 +371,7 @@ try {
     await waitFor(
       () => targetRequests.filter(hasRecipeTarget).length > identityTargetCount,
       8_000,
-      '同 endpoint/token 的新连接身份未在 Worker 结果就绪后重发目标',
+      '同 endpoint/token 的新连接信息未在 Worker 结果就绪后重发目标',
     );
   } catch (error) {
     console.error(`定向巡检请求记录：${JSON.stringify(targetRequests)}`);
@@ -382,7 +383,7 @@ try {
   assert(identityRequest.at - mutatedSnapshotAt >= 1900, '推荐 Worker 结果就绪前发布了目标');
   assert(
     sameTarget(acceptedRetry, identityRequest),
-    `新连接身份未重发当前目标：before=${JSON.stringify(acceptedRetry.params)}, after=${JSON.stringify(identityRequest.params)}`,
+    `新连接信息未重发当前目标：before=${JSON.stringify(acceptedRetry.params)}, after=${JSON.stringify(identityRequest.params)}`,
   );
 
   await page.evaluate(() => {
@@ -637,7 +638,7 @@ try {
   );
   const coalescedRequests = targetRequests.slice(coalescingStartCount);
   const finalCoalescedRequest = coalescedRequests.findLast((entry) => hasRecipeTarget(entry));
-  assert(isEnabledClearTarget(coalescedRequests[0]), '配置权威变化前未先清空旧游戏界面目标');
+  assert(isEnabledClearTarget(coalescedRequests[0]), '生效配置变化时未先清空旧游戏界面目标');
   assert(finalCoalescedRequest?.params.listPinningEnabled === 'true', '延迟请求完成后未补发最新稀客置顶开关');
   assert(finalCoalescedRequest?.params.recipeVariantEnabled === 'true', '重新开启稀客置顶后未恢复稀客加料料理选项');
   assert(finalCoalescedRequest?.params.cookerHighlightEnabled === 'true', '最新目标错误关闭了稀客厨具高亮');
@@ -658,7 +659,7 @@ try {
       return received > 0 && received === dispatched;
     }),
     5_000,
-    'pending 巡检的 Worker 响应未完成派发',
+    '计算中状态巡检的 Worker 响应未完成派发',
   );
 
   await page.evaluate(() => {
@@ -672,41 +673,41 @@ try {
   await waitFor(
     () => mutatedSnapshotServeCount > errorMutationServeCount,
     5_000,
-    '未获取用于 Worker error 巡检的新快照',
+    '未获取用于 Worker 错误巡检的新快照',
   );
   await waitFor(
     () => targetRequests.slice(errorStartCount).some(isEnabledClearTarget),
     5_000,
-    '推荐 Worker error 后未清空 Mod 旧目标',
+    '推荐 Worker 出错后未清空 Mod 旧目标',
   );
   const errorClearRequest = targetRequests.slice(errorStartCount).find(isEnabledClearTarget);
-  assert(errorClearRequest?.rawParams.targetCount === '1', '稀客 Worker error 错误清空了普客槽');
-  assert(errorClearRequest?.rawParams.target0Kind === 'normal', '稀客 Worker error 后未独立保留普客目标');
-  assert(errorClearRequest?.rawParams.target0Color === '5FACD3', '独立保留的普客目标颜色漂移');
+  assert(errorClearRequest?.rawParams.targetCount === '1', '稀客 Worker 出错时错误清空了普客槽');
+  assert(errorClearRequest?.rawParams.target0Kind === 'normal', '稀客 Worker 出错后未独立保留普客目标');
+  assert(errorClearRequest?.rawParams.target0Color === '5FACD3', '独立保留的普客目标颜色意外变化');
   const heldRecoveryMutationServeCount = mutatedSnapshotServeCount;
   mutateSnapshot('mock-ui-pinning-held-recovery-audit');
   await waitFor(
     () => mutatedSnapshotServeCount > heldRecoveryMutationServeCount,
     5_000,
-    '未获取用于暂存 Worker error 恢复响应的新快照',
+    '未获取用于暂存 Worker 错误恢复响应的新快照',
   );
   await waitFor(
     async () => page.evaluate(() => window.__uiPinningWorkerHeldResponses.length > 0),
     3_000,
-    'Worker error 后没有暂存自动排队的成功响应',
+    'Worker 出错后没有暂存自动排队的成功响应',
   );
   const errorFlagStartCount = targetRequests.length;
   await pinningSwitchLabel.click();
   await waitFor(
     () => targetRequests.slice(errorFlagStartCount).some(isEnabledClearTarget),
     3_000,
-    '共享设置改变配置权威后未清空旧游戏界面目标',
+    '共享设置改变生效配置后未清空旧游戏界面目标',
   );
   const authorityClearRequest = targetRequests.slice(errorFlagStartCount).find(isEnabledClearTarget);
   assert(authorityClearRequest?.rawParams.targetCount === '0',
-    '配置权威变化时未以空双槽清理旧主设备发布的目标');
+    '生效配置变化时未以空双槽清理旧主设备发布的目标');
   assert(await page.getByRole('switch', { name: '稀客游戏界面置顶推荐' }).isChecked() === false,
-    'Worker error 期间关闭稀客置顶后偏好状态未保留');
+    'Worker 出错期间关闭稀客置顶后偏好状态未保留');
 
   const recoverySuccessCount = await page.evaluate(() =>
     window.__uiPinningWorkerEvents.filter((event) => event.deliveredOk === true).length);
@@ -728,11 +729,11 @@ try {
       && entry.params.cookerHighlightEnabled === 'true'
       && Number(entry.params.recipeId) >= 0),
     5_000,
-    'Worker 成功恢复后未携带最新稀客功能设置解除空目标锁存',
+    '后台计算恢复后未携带最新稀客功能设置解除空目标固定状态',
   );
 
   const policyBaselineTarget = targetRequests.filter(hasRecipeTarget).at(-1);
-  assert(policyBaselineTarget, '缺少用于特殊经营策略 revision 巡检的基线目标');
+  assert(policyBaselineTarget, '缺少用于特殊经营策略版本检查的参照目标');
   await page.evaluate(() => {
     window.__uiPinningWorkerDelayMs = 3200;
     window.__uiPinningWorkerHoldSuccess = true;
@@ -851,12 +852,12 @@ try {
   await waitFor(
     () => mutatedSnapshotServeCount > identityMutationServeCount,
     5_000,
-    '未获取源订单身份变化快照',
+    '未获取源订单标识变化快照',
   );
   await waitFor(
     () => targetRequests.slice(identityStartCount).some(isHighlightOnlyClearTarget),
     2_800,
-    '源订单不可变身份变化后未立即清空旧目标',
+    '源订单的不可变标识变化后未立即清空旧目标',
   );
   await page.evaluate(() => {
     window.__uiPinningWorkerDelayMs = 0;
@@ -868,17 +869,17 @@ try {
     `- ID 契约：foodId=${selectedRecipe.id}, recipeId=${selectedRecipe.recipeId}`,
     `- 失败重试：${acceptedRetry.at - rejectedRequest.at}ms`,
     `- 短暂断线：快照恢复后保留成功签名，目标 POST 仍为 ${acceptedTargetCount} 次`,
-    `- 连接 revision：先发布空目标隔离旧连接，${identityRequest.at - mutatedSnapshotAt}ms 后重发同一 wire 目标`,
-    '- 发布身份：可见目标不变但 targetRevision 变化时重新 POST，隔离连续订单事务',
-    '- 无关订单变化：A 的源身份与未送达组件有效时不清空目标',
-    '- 组件归约：料理送达保留酒水，酒水送达保留料理与厨具',
+    `- 连接修订号：先发布空目标隔离旧连接，${identityRequest.at - mutatedSnapshotAt}ms 后重发同一目标请求`,
+    '- 发布标识：可见目标不变但目标修订号变化时重新 POST，隔离连续订单事务',
+    '- 无关订单变化：A 的源订单标识与未送达组件有效时不清空目标',
+    '- 组件状态合并：料理送达保留酒水，酒水送达保留料理与厨具',
     `- 订单完成空窗：${completionClearRequest.at - completionStartedAt}ms 内清空 A 目标，迟到结果未复活`,
-    '- 后续订单切换：B 订单就绪后发布新目标，普通 Worker pending 保留有效目标',
-    `- 单写者合并：最大并发 ${maxActiveTargetRequests}，延迟请求后补发最新 flags`,
-    `- Worker error 清理：recipeId=${errorClearRequest.params.recipeId}, beverageId=${errorClearRequest.params.beverageId}`,
-    '- Worker error 恢复：新成功 revision 后恢复当前厨具目标',
-    `- 策略 revision：${policyClearRequest.at - policyStartedAt}ms 内清空，迟到旧结果未恢复，新 current 恢复`,
-    '- 源订单边界：重复和不可变身份变化立即清空，唯一身份恢复后重新发布',
+    '- 后续订单切换：B 订单就绪后发布新目标，普通 Worker 计算中时保留有效目标',
+    `- 单写者合并：最大并发 ${maxActiveTargetRequests}，延迟请求后补发最新功能开关`,
+    `- Worker 错误清理：recipeId=${errorClearRequest.params.recipeId}, beverageId=${errorClearRequest.params.beverageId}`,
+    '- Worker 错误恢复：新的成功修订号生效后恢复当前厨具目标',
+    `- 策略修订号：${policyClearRequest.at - policyStartedAt}ms 内清空，迟到旧结果未恢复，新的当前结果已恢复`,
+    '- 源订单边界：重复订单和固定标识变化时立即清空，恢复唯一订单后重新发布',
   ].join('\n'));
 } finally {
   await page.close();
@@ -1126,7 +1127,7 @@ function restoreUniqueSourceOrder() {
 }
 
 function mutateCurrentSourceIdentity() {
-  assert(mutatedSnapshot?.nightBusiness?.orders?.length === 1, '源订单身份巡检要求唯一活动订单');
+  assert(mutatedSnapshot?.nightBusiness?.orders?.length === 1, '源订单标识巡检要求唯一活动订单');
   const [order] = mutatedSnapshot.nightBusiness.orders;
   order.firstSeenAtUtc = new Date(Date.parse(order.firstSeenAtUtc) + 5000).toISOString();
   mutatedSnapshot.snapshotSignature = `${mutatedSnapshot.snapshotSignature}|source-order-identity-changed`;

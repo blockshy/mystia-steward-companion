@@ -151,14 +151,14 @@ const missingEmptyCountRuntime = buildRuntime();
 delete missingEmptyCountRuntime.placedCookerEmptyControllerCount;
 assert.match(
   validateRecommendationCookerSnapshot(missingEmptyCountRuntime),
-  /placedCookerEmptyControllerCount/,
+  /空置厨具位数量/,
   'The new exact empty-controller wire field must be required.',
 );
 assert.match(
   validateRecommendationCookerSnapshot(buildRuntime({
     placedCookerEmptyControllerCount: -1,
   })),
-  /placedCookerEmptyControllerCount/,
+  /空置厨具位数量/,
   'A negative exact empty-controller count must be rejected.',
 );
 
@@ -166,14 +166,14 @@ const missingLockedCountRuntime = buildRuntime();
 delete missingLockedCountRuntime.placedCookerLockedControllerCount;
 assert.match(
   validateRecommendationCookerSnapshot(missingLockedCountRuntime),
-  /placedCookerLockedControllerCount/,
+  /锁定厨具数量/,
   'The exact locked-controller wire field must be required.',
 );
 assert.match(
   validateRecommendationCookerSnapshot(buildRuntime({
     placedCookerLockedControllerCount: -1,
   })),
-  /placedCookerLockedControllerCount/,
+  /锁定厨具数量/,
   'A negative exact locked-controller count must be rejected.',
 );
 
@@ -223,7 +223,7 @@ assert.match(
     placedCookerControllerCount: 3,
     placedCookerEmptyControllerCount: 1,
   })),
-  /emptyControllerCount/,
+  /已摆放、空位、锁定与读取失败数量/,
   'A controller total that is not closed by placed, empty, and failed counts must be rejected.',
 );
 
@@ -248,7 +248,7 @@ assert.match(
     placedCookerTypeIds: [2],
     placedCookerControllerCount: 1,
   })),
-  /controllerIndex/,
+  /无效控制器编号：2/,
 );
 assert.match(
   validateRecommendationCookerSnapshot(buildRuntime({
@@ -256,7 +256,7 @@ assert.match(
     placedCookerTypeIds: [],
     placedCookerControllerCount: 1,
   })),
-  /typeIds/,
+  /类型编号列表无效/,
 );
 assert.match(
   validateRecommendationCookerSnapshot(buildRuntime({
@@ -266,7 +266,7 @@ assert.match(
     placedCookerTypeIds: [1],
     placedCookerControllerCount: 1,
   })),
-  /厨具名称与 typeIds 不一致/,
+  /名称与类型编号不一致/,
   'Display names must not create cooker capabilities that contradict the exact type IDs.',
 );
 assert.match(
@@ -286,7 +286,7 @@ assert.match(
     placedCookerTypeIds: [2],
     placedCookerControllerCount: 1,
   })),
-  /已锁定或不可开/,
+  /已锁定或不可打开/,
 );
 assert.match(
   validateRecommendationCookerSnapshot(buildRuntime({
@@ -296,7 +296,7 @@ assert.match(
     placedCookerTypeIds: [2],
     placedCookerControllerCount: 1,
   })),
-  /controllerIdentity/,
+  /厨具控制器 #0 的对象标识无效/,
   'Missing native controller identity must reject the wire snapshot.',
 );
 assert.match(
@@ -307,7 +307,7 @@ assert.match(
     placedCookerTypeIds: [2],
     placedCookerControllerCount: 1,
   })),
-  /controllerIdentity/,
+  /厨具控制器 #0 的对象标识无效/,
   'The zero native controller identity must reject the wire snapshot.',
 );
 assert.match(
@@ -319,7 +319,7 @@ assert.match(
     placedCookerTypeIds: [2],
     placedCookerControllerCount: 2,
   })),
-  /重复 gridPosition/,
+  /重复的摆放位置/,
   'Duplicate dictionary positions must reject the wire snapshot.',
 );
 assert.match(
@@ -330,7 +330,7 @@ assert.match(
     placedCookerTypeIds: [2],
     placedCookerControllerCount: 1,
   })),
-  /已锁定或不可开/,
+  /已锁定或不可打开/,
   'A challenge-locked controller must never be published in placedCookers.',
 );
 
@@ -819,7 +819,7 @@ async function assertSourceContracts() {
   );
   assert.match(
     cookerStart.slice(finalValidation, setCook),
-    /BlockCookingStartUnowned\([\s\S]*Mod 未调用 SetCook/,
+    /BlockCookingStartUnowned\([\s\S]*Mod 未写入厨具/,
     'Reservation drift after material deduction must stop before SetCook and enter an authoritative safety barrier.',
   );
   assert.equal(

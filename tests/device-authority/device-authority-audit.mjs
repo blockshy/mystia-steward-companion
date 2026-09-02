@@ -164,13 +164,13 @@ try {
   assert.equal(
     hashCurrentSharedProfileV3(updatedProfile),
     UPDATED_PROFILE_V3_SHA256,
-    'The updated current-v3 fixture changed without refreshing its canonical hash golden.',
+    '当前 v3 固定样例已变化，但对应的规范哈希预期值未更新。',
   );
   assert.equal(updated.activeProfileHash, UPDATED_PROFILE_V3_SHA256);
 
   const stalePrimaryLease = await postWithoutBody('/automation/lease/acquire', windows, 1);
   assert.equal(stalePrimaryLease.ok, false);
-  assert.match(stalePrimaryLease.error, /权威版本/);
+  assert.match(stalePrimaryLease.error, /配置版本/);
   const currentPrimaryLease = await postWithoutBody(
     '/automation/lease/acquire',
     windows,
@@ -349,12 +349,12 @@ async function verifyFrontendSharedProfileBoundaries() {
     delete v2ProfileMasqueradingAsV3.rareGuestParticipationModuleEnabled;
     assert.throws(
       () => parseSharedCompanionPreferences(v2ProfileMasqueradingAsV3),
-      /wire schema/,
+      /字段与当前配置格式不一致/,
       'A v2 profile shape must not be completed with the v3 module default.',
     );
     assert.throws(
       () => parseSharedCompanionPreferences({ ...validProfile, unexpectedField: false }),
-      /wire schema/,
+      /字段与当前配置格式不一致/,
       'Unknown wire fields must be rejected instead of discarded.',
     );
     assert.throws(
@@ -362,7 +362,7 @@ async function verifyFrontendSharedProfileBoundaries() {
         ...validProfile,
         rareGuestParticipationModuleEnabled: 'false',
       }),
-      /rareGuestParticipationModuleEnabled.*布尔值/,
+      /rareGuestParticipationModuleEnabled.*只能为开启或关闭/,
       'The module flag must not use truthy local-preference coercion on the wire.',
     );
 
@@ -399,7 +399,7 @@ async function verifyFrontendSharedProfileBoundaries() {
 
     const nestedExtraField = structuredClone(validProfile);
     nestedExtraField.recommendationSortProfile.objectives[0].legacyWeight = 10;
-    assert.throws(() => parseSharedCompanionPreferences(nestedExtraField), /wire schema/);
+    assert.throws(() => parseSharedCompanionPreferences(nestedExtraField), /字段与当前配置格式不一致/);
     const duplicateObjective = structuredClone(validProfile);
     duplicateObjective.recommendationSortProfile.objectives[1].key = 'foodPreference';
     assert.throws(() => parseSharedCompanionPreferences(duplicateObjective), /不得重复/);
@@ -580,7 +580,7 @@ async function verifyFrontendSharedProfileBoundaries() {
         currentDeviceIsPrimary: false,
         primaryDeviceId: 'other-primary-device',
       }),
-      /基线未对齐/,
+      /保存前的主设备共享配置版本不一致/,
       'A secondary device must not create a primary-profile transaction.',
     );
   } finally {

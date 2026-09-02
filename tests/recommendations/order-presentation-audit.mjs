@@ -66,14 +66,14 @@ const presentation = buildOrderRecommendationPresentation({
 });
 assert.equal(presentation.recommendations.length, 1);
 assert.equal(presentation.recommendations[0].order, currentOrder,
-  '观测时间、来源和显示标签变化应复用推荐内容并投影最新订单对象。');
+  '观测时间、来源和显示标签变化应复用推荐内容并关联最新订单对象。');
 assert.deepEqual(presentation.pendingOrders.map((order) => order.traceId), ['R-0002'],
   '新订单应只有自己的局部计算状态。');
 assert.equal(presentation.updating, true);
 assert.equal(
   buildOrderDemandIdentity(baseOrder),
   buildOrderDemandIdentity(currentOrder),
-  '观测字段不得进入展示语义身份。',
+  '观测字段不得进入推荐内容标识。',
 );
 
 const pausedPresentationOrder = buildOrder({
@@ -96,14 +96,14 @@ const participatingPresentationRows = buildParticipatingRareOrderPresentationRow
 assert.deepEqual(
   participatingPresentationRows.map((row) => `${row.kind}:${row.order.traceId}`),
   ['issue:R-0002', 'recommendation:R-0001'],
-  '稀客 recommendation/issue/pending 三类展示行必须统一隐藏暂停项并严格按权威 queuePosition 排列。',
+  '稀客推荐、问题和计算中三类展示行必须统一隐藏暂停项，并严格按 Mod 返回的队列位置排列。',
 );
 assert.deepEqual(
   buildParticipatingRareOrderPresentationRows([
     { kind: 'recommendation', order: currentOrder },
   ], () => participationResolution('queued', 0, true)),
   [],
-  '非正 queuePosition 不得由展示层补造或回退到普通排序。',
+  '非正数队列位置不得由展示层补造或改用普通排序。',
 );
 assert.deepEqual(
   buildRareOrderRecommendationCollectionState({
@@ -120,7 +120,7 @@ assert.deepEqual(
     emptyLabel: '推荐更新失败',
     updating: false,
   },
-  '新参与订单没有可保留展示行时，Worker 错误不得被误报为参与队列为空。',
+  '新启用订单没有可保留展示行时，Worker 错误不得被误报为稀客队列为空。',
 );
 assert.equal(
   buildRareOrderRecommendationCollectionState({
@@ -131,7 +131,7 @@ assert.equal(
     pending: false,
   }).kind,
   'updating',
-  'participation 未对齐时必须优先显示同步门禁，不得泄漏旧 Worker 状态。',
+  '稀客队列状态未对齐时必须优先显示同步状态，不得显示旧 Worker 状态。',
 );
 
 const servedOrder = { ...currentOrder, hasServedFood: true };
@@ -230,7 +230,7 @@ const missingTagPresentation = buildOrderRecommendationPresentation({
 });
 assert.equal(missingTagPresentation.recommendations.length, 0);
 assert.deepEqual(missingTagPresentation.pendingOrders, [changedMissingTagText],
-  '原始 Tag ID 缺失时，精确需求文本变化必须使旧结果失效。');
+  '原始标签 ID 缺失时，具体需求文本变化必须使旧结果失效。');
 
 const changedInformationalTagText = {
   ...baseOrder,
@@ -240,7 +240,7 @@ const changedInformationalTagText = {
 assert.equal(
   buildOrderDemandIdentity(baseOrder),
   buildOrderDemandIdentity(changedInformationalTagText),
-  '原始 Tag ID 存在时，显示文本不得重复参与需求身份。',
+  '原始标签 ID 存在时，显示文本不得重复参与需求标识。',
 );
 
 const retainedAfterError = buildOrderRecommendationPresentation({
@@ -333,7 +333,7 @@ assert.notEqual(
     ...bloodPond,
     foodTargetTags: ['目标甲', '目标丙'],
   }),
-  '血池地狱双 Tag 变化必须触发重新计算。',
+  '血池地狱双标签变化必须触发重新计算。',
 );
 assert.notEqual(
   buildSpecialBusinessRecommendationSignature(bloodPond),
@@ -341,7 +341,7 @@ assert.notEqual(
     ...bloodPond,
     yuumaFoodTargetRevision: bloodPond.yuumaFoodTargetRevision + 2,
   }),
-  '血池地狱 A -> B -> A 即使 Tag 恢复，也必须由运行时 revision 触发重新计算。',
+  '血池地狱 A → B → A 即使标签恢复，也必须由游戏状态版本触发重新计算。',
 );
 
 const yuumaPolicy = buildSpecialFoodTargetWirePolicy(
@@ -392,7 +392,7 @@ assert.deepEqual(
     specialTargetMatchMode: '',
     specialTargetSignature: '',
   },
-  '怪诞料理三阶段古明地恋规则没有动态料理目标，不得从全局 Tag 伪造策略。',
+  '怪诞料理第三阶段的古明地恋规则没有动态料理目标，不得根据全局标签猜测策略。',
 );
 assert.equal(
   buildSpecialFoodTargetWirePolicy(bloodPond, 'yuuma-boss-order', 0).specialTargetSignature,
@@ -406,7 +406,7 @@ assert.equal(
     7,
   ).specialTargetSignature,
   '',
-  '血池地狱缺少正 revision 时必须 fail closed，不能回退到仅 Tag 身份。',
+  '血池地狱缺少有效状态版本时必须停止处理，不能仅根据标签标识继续。',
 );
 const returnedYuumaPolicy = buildSpecialFoodTargetWirePolicy(
   { ...bloodPond, yuumaFoodTargetRevision: bloodPond.yuumaFoodTargetRevision + 2 },
@@ -414,7 +414,7 @@ const returnedYuumaPolicy = buildSpecialFoodTargetWirePolicy(
   7,
 );
 assert.equal(returnedYuumaPolicy.specialTargetSignature, yuumaPolicy.specialTargetSignature,
-  '运行时 revision 不得拼入游戏规范 target signature。');
+  '当前游戏状态的修订号不得拼入规范目标签名。');
 assert.notEqual(returnedYuumaPolicy.specialTargetRevision, yuumaPolicy.specialTargetRevision);
 
 await assertSourceContracts();
@@ -555,7 +555,7 @@ async function assertSourceContracts() {
     );
   }
   assert.match(worker, /item\.target\?\.specialTargetRevision \?\? ''/,
-    'Worker 结果身份必须携带独立 revision，避免 A -> B -> A 复用旧结果。');
+    'Worker 结果标识必须携带独立修订号，避免 A -> B -> A 复用旧结果。');
   assert.equal(
     (api.match(/specialTargetRevision: String\(specialTargetPolicy\.specialTargetRevision\)/g) ?? []).length,
     2,

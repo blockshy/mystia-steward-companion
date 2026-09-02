@@ -58,7 +58,7 @@ const pausedOrder = order({
   deskCode: 1,
   guestId: 10,
   runtimeGuestId: 110,
-  guestName: '受控稀客',
+  guestName: '名单内稀客',
   foodTagId: 11,
   beverageTagId: 12,
 });
@@ -68,7 +68,7 @@ const queuedOrder = order({
   deskCode: 2,
   guestId: 10,
   runtimeGuestId: 110,
-  guestName: '受控稀客',
+  guestName: '名单内稀客',
   foodTagId: 13,
   beverageTagId: 14,
   missionRecipePriority: {
@@ -88,7 +88,7 @@ const incompleteOrder = order({
   deskCode: 3,
   guestId: 20,
   runtimeGuestId: 120,
-  guestName: '身份不完整稀客',
+  guestName: '标识不完整稀客',
   foodTagId: 15,
   beverageTagId: 16,
 });
@@ -110,7 +110,7 @@ const projection = buildRareOrderParticipationProjection({
 assert.deepEqual(
   projection.operationalOrders.map((candidate) => candidate.traceId),
   ['R-1', 'R-3'],
-  '只有 Mod 权威认定自动参与或已入队的订单可进入运行时消费者。',
+  '只有 Mod 确认自动参与或已入队的订单可进入后续处理。',
 );
 
 const groups = buildManagedRareOrderGroups({
@@ -129,7 +129,7 @@ assert.equal(groups[0].allCurrentTargets.length, 2);
 assert.deepEqual(
   groups[0].allCurrentTargets.map((identity) => identity.traceId).sort(),
   ['R-2', 'R-3'],
-  'mixed paused/queued lifecycle 的两个按钮都必须回显完整当前集合。',
+  '同时包含暂停和排队状态的订单组，其两个操作按钮都必须回传完整的当前订单集合。',
 );
 assert.equal(groups[0].pausedTargets[0].traceId, 'R-2');
 assert.equal(groups[0].queuedTargets[0].orderLifecycleSequence, 3);
@@ -144,7 +144,7 @@ assert.equal(incompleteGroups.every((group) => group.hasUnavailableRows), true);
 assert.equal(
   incompleteGroups.every((group) => group.allCurrentTargets.length === 0),
   true,
-  '一个 malformed/缺失 lifecycle 必须使整份当前订单集合不可操作，不能只禁用坏行。',
+  '任一格式错误或缺少订单序号的记录都必须使整份当前订单集合不可操作，不能只禁用问题行。',
 );
 
 assert.equal(
@@ -156,13 +156,13 @@ assert.equal(
     foodTagId: 999,
     beverageTagId: 998,
   }, 7)),
-  '桌位、runtime guest 和 Tag 观测值不得扩大或改写公开 lifecycle identity。',
+  '桌位、游戏内稀客和标签等观测值不得扩大或改写公开的订单实例标识。',
 );
 assert.equal(buildRareOrderExactIdentity(incompleteOrder, 7), null);
 assert.equal(
   buildRareOrderExactIdentity({ ...unmanagedOrder, traceId: ' R-1' }, 7),
   null,
-  '带空白的 trace 不得 trim 后冒充 canonical exact identity。',
+  '`traceId` 两侧有空白时不得自动去除空白并当作有效订单标识。',
 );
 assert.equal(buildRareOrderExactIdentity({ ...unmanagedOrder, traceId: 'R-1 ' }, 7), null);
 assert.equal(buildRareOrderExactIdentity({ ...unmanagedOrder, traceId: 'order-1' }, 7), null);
@@ -183,7 +183,7 @@ assert.equal(newLifecycleGroups[0].rows.find((row) => row.order === sameGuestNew
 assert.deepEqual(
   newLifecycleGroups[0].pausedTargets,
   [],
-  '过去的稀客级授权不得自动授权后续新 lifecycle。',
+  '过去的稀客级操作不得自动启用后续新订单实例。',
 );
 assert.deepEqual(newLifecycleGroups[0].allCurrentTargets, []);
 
@@ -199,7 +199,7 @@ assert.equal(
     snapshot: explicitNewLifecycleSnapshot,
   })[0].rows[0].state,
   'paused',
-  '同一稀客的新 lifecycle 必须由 Mod 显式投影为默认暂停。',
+  '同一稀客的新订单实例必须由 Mod 明确发布为默认暂停。',
 );
 
 const requeuedSnapshot = participationSnapshot([
@@ -245,7 +245,7 @@ assert.deepEqual(nonCanonicalEntryProjection.operationalOrders, []);
 assert.equal(
   nonCanonicalEntryProjection.resolutions[0].displayState,
   'unavailable',
-  'Mod entry 的非 canonical trace 不得 trim 后绑定订单。',
+  'Mod 返回项中的非规范 `traceId` 不得自动去除空白后绑定订单。',
 );
 
 const staleRosterProjection = buildRareOrderParticipationProjection({
@@ -260,7 +260,7 @@ const staleRosterProjection = buildRareOrderParticipationProjection({
 assert.deepEqual(
   staleRosterProjection.operationalOrders,
   [],
-  'profile 名单与 participation 快照未对齐时即使 entry 正在参与也必须 fail-closed。',
+  '共享配置名单与稀客队列状态未对齐时，即使条目标记为已启用也必须停止后续处理。',
 );
 
 const noAuthorityProjection = buildRareOrderParticipationProjection({
@@ -273,7 +273,7 @@ const noAuthorityProjection = buildRareOrderParticipationProjection({
 assert.deepEqual(
   noAuthorityProjection.operationalOrders,
   [],
-  '非空名单下 participation 快照缺失时，所有稀客运行时消费者都必须 fail-closed。',
+  '非空名单下缺少稀客队列状态时，所有后续稀客处理都必须停止。',
 );
 const zeroRevisionSnapshot = {
   ...participationSnapshot([
@@ -290,7 +290,7 @@ assert.deepEqual(
     snapshot: zeroRevisionSnapshot,
   }).operationalOrders,
   [],
-  'active participation 快照的 revision 必须为正数，零值不得进入运行时消费者。',
+  '活动稀客队列状态的修订号必须为正数，零值不得进入后续处理。',
 );
 assert.equal(
   isRareOrderParticipationSnapshotAligned({
@@ -301,7 +301,7 @@ assert.equal(
     collectionComplete: true,
   }),
   false,
-  '零 participation revision 不得授权写请求。',
+  '零值稀客队列修订号不得允许写请求。',
 );
 const mismatchedRosterProjection = buildRareOrderParticipationProjection({
   orders: [unmanagedOrder, queuedOrder],
@@ -316,7 +316,7 @@ const mismatchedRosterProjection = buildRareOrderParticipationProjection({
 assert.deepEqual(
   mismatchedRosterProjection.operationalOrders,
   [],
-  'profile 与 snapshot 的完整受控名单不一致时，不得仅按单条 entry 放行未受控订单。',
+  '共享配置与快照中的完整调度名单不一致时，不得仅按单条记录放行名单外订单。',
 );
 
 const malformedMixedSnapshot = participationSnapshot([
@@ -351,7 +351,7 @@ assert.deepEqual(
     snapshot: duplicateQueueSnapshot,
   }).operationalOrders,
   [],
-  '不同 lifecycle 不得共享 queuePosition 后回退到前端稳定排序。',
+  '不同订单实例不得共享 `queuePosition` 后改用前端稳定排序。',
 );
 
 for (const [label, candidateOrders, candidateSnapshot] of [
@@ -436,7 +436,7 @@ for (const [label, invalidQueuePosition] of [
       },
     }).operationalOrders,
     [],
-    `${label} queuePosition 不得授权运行时消费者。`,
+    `${label}队列位置不得允许后续处理。`,
   );
 }
 
@@ -452,7 +452,7 @@ for (const invalidRoster of [[-1], [10, 10], [10.5]]) {
       ], []),
     }).operationalOrders,
     [],
-    '非空但非法的 profile roster 不得被静默过滤成空名单旧路径。',
+    '非空但非法的共享配置名单不得被静默过滤成空名单路径。',
   );
 }
 assert.deepEqual(
@@ -474,12 +474,12 @@ assert.deepEqual(
     { ...incompleteOrder, guestId: null },
     { ...unmanagedOrder, traceId: ' R-1', guestId: null },
   ],
-  '空名单必须硬旁路参与投影，即使快照存在、guestId/trace 缺失也保持现有行为。',
+  '空名单必须直接保持原有行为，即使稀客队列状态存在或缺少稀客 ID/跟踪标识。',
 );
 
 const roster = buildRareGuestRosterSections({
   customers: [
-    customer(10, '受控稀客'),
+    customer(10, '调度名单内稀客'),
     customer(20, '可添加稀客'),
   ],
   managedGuestIds: [999, 10, 10],
@@ -593,8 +593,8 @@ const unavailableQueueMarkup = renderToStaticMarkup(React.createElement(
   }),
 ));
 assert.ok(unavailableQueueMarkup.includes('状态不可用'));
-assert.ok(unavailableQueueMarkup.includes('为避免部分授权，本组暂不可操作'));
-assert.ok(unavailableQueueMarkup.includes('订单缺少 trace、lifecycle 或原始身份标量，已拒绝猜测。'));
+assert.ok(unavailableQueueMarkup.includes('部分订单信息尚未完整同步，本组暂不可操作'));
+assert.ok(unavailableQueueMarkup.includes('订单缺少追踪编号、订单序号或稀客编号，无法确认具体订单。'));
 
 const extensionMarkup = renderToStaticMarkup(React.createElement(
   MantineProvider,
@@ -607,7 +607,7 @@ const extensionMarkup = renderToStaticMarkup(React.createElement(
       currentDeviceIsPrimary: false,
       secondaryReadOnlyReason: '副设备只读',
     }),
-    customers: [customer(10, '受控稀客'), customer(20, '可添加稀客')],
+    customers: [customer(10, '名单内稀客'), customer(20, '可添加稀客')],
     managedGuestIds: [10],
     currentOrders: orders,
     onModuleEnabledChange: () => undefined,

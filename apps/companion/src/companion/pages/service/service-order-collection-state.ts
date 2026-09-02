@@ -13,10 +13,10 @@ export type ServiceOrderCollectionState =
     };
 
 /**
- * 归约稀客推荐集合的页面状态。
+ * 汇总稀客推荐集合的页面状态。
  *
- * participation 尚未对齐时优先隐藏所有行；对齐后，真实推荐错误必须先于“参与队列为空”，
- * 避免新增或刚启用的订单在 retained result 不匹配时把 Worker 失败误报为空队列。
+ * 稀客调度状态尚未同步一致时优先隐藏所有行；同步后，真实推荐错误必须先于“稀客队列为空”，
+ * 避免新增或刚启用的订单在保留结果不匹配时把后台计算失败误报为空队列。
  */
 export function buildRareOrderRecommendationCollectionState({
   participationEnabled,
@@ -34,7 +34,7 @@ export function buildRareOrderRecommendationCollectionState({
   if (participationEnabled && !participationReady) {
     return {
       kind: 'updating',
-      message: '稀客调度权威状态正在同步，当前稀客推荐暂不显示。',
+      message: '稀客调度状态正在同步，当前稀客推荐暂不显示。',
       label: '调度同步中',
     };
   }
@@ -50,7 +50,7 @@ export function buildRareOrderRecommendationCollectionState({
   if (participationEnabled && rowCount === 0) {
     return {
       kind: 'empty',
-      message: '当前参与队列暂无已启用订单；请到“稀客队列”启用需要处理的订单。',
+      message: '当前稀客队列暂无已启用订单；请到“稀客队列”启用需要处理的订单。',
     };
   }
   if (pending) return { kind: 'updating', message: '推荐计算中' };

@@ -16,7 +16,7 @@ internal static partial class RuntimeOrderPreparationService
         if (request.AllowYuumaControlledProgression
             && (requestKind != CookingCollectionTargetKind.NormalOrder || !IsYuumaBossRequest(request)))
         {
-            error = "血池地狱受控推进只允许精确的 Yuuma BOSS 普客订单。";
+            error = "血池地狱低收益推进方案只适用于已确认的 BOSS 普客订单。";
             return false;
         }
 
@@ -26,7 +26,7 @@ internal static partial class RuntimeOrderPreparationService
         {
             if (!requiresActivePolicy) return true;
 
-            error = "当前特殊经营订单要求完整的特殊料理目标策略，但请求未携带 challenge、owner、generation、revision、Tag、matchMode 和 signature。";
+            error = "当前特殊经营订单缺少完整的料理目标信息：特殊经营类型、目标归属、本场经营编号、目标版本、标签、匹配方式或目标签名不完整，请等待推荐刷新。";
             return false;
         }
 
@@ -41,7 +41,7 @@ internal static partial class RuntimeOrderPreparationService
                 out var parseError)
             || policy == null)
         {
-            error = $"特殊料理目标策略无效：{parseError}";
+            error = $"特殊料理目标信息无效：{parseError}";
             return false;
         }
 
@@ -61,7 +61,7 @@ internal static partial class RuntimeOrderPreparationService
 
             if (request.SpecialTargetRevision <= 0)
             {
-                error = "血池地狱特殊料理目标请求缺少正 revision。";
+                error = "血池地狱料理目标缺少有效版本，请等待推荐刷新。";
                 return false;
             }
 
@@ -71,15 +71,16 @@ internal static partial class RuntimeOrderPreparationService
                 || activeYuumaPolicy == null
                 || activeYuumaRevision <= 0)
             {
-                error = "当前游戏运行时没有完整且属于本经营代际的血池地狱目标策略与 revision。";
+                error = "当前游戏没有本场经营所需的完整血池地狱目标信息或有效目标版本。";
                 return false;
             }
 
             if (!policy.HasSameIdentity(activeYuumaPolicy)
                 || request.SpecialTargetRevision != activeYuumaRevision)
             {
-                error = $"血池地狱特殊料理目标已经变化：请求={DescribeSpecialFoodTargetPolicy(policy)}; revision={request.SpecialTargetRevision}；"
-                    + $"当前={DescribeSpecialFoodTargetPolicy(activeYuumaPolicy)}; revision={activeYuumaRevision}。";
+                error = $"血池地狱料理目标已经变化，请等待推荐刷新。详细原因：请求={DescribeSpecialFoodTargetPolicy(policy)}; "
+                    + $"目标版本={request.SpecialTargetRevision}；当前={DescribeSpecialFoodTargetPolicy(activeYuumaPolicy)}; "
+                    + $"目标版本={activeYuumaRevision}。";
                 return false;
             }
 
@@ -94,20 +95,21 @@ internal static partial class RuntimeOrderPreparationService
 
         if (request.SpecialTargetRevision != 0)
         {
-            error = "非血池地狱特殊料理目标不能携带 target revision。";
+            error = "当前特殊经营订单携带了不适用的目标版本。";
             return false;
         }
 
         if (!RuntimeSpecialBusinessContextService.TryGetActiveSpecialFoodTargetPolicy(out var activePolicy)
             || activePolicy == null)
         {
-            error = "当前游戏运行时没有完整且属于本经营代际的特殊料理目标策略。";
+            error = "当前游戏没有本场经营所需的完整料理目标信息。";
             return false;
         }
 
         if (!policy.HasSameIdentity(activePolicy))
         {
-            error = $"特殊料理目标策略已经变化：请求={DescribeSpecialFoodTargetPolicy(policy)}；当前={DescribeSpecialFoodTargetPolicy(activePolicy)}。";
+            error = $"特殊料理目标已经变化，请等待推荐刷新。详细原因：请求={DescribeSpecialFoodTargetPolicy(policy)}；"
+                + $"当前={DescribeSpecialFoodTargetPolicy(activePolicy)}。";
             return false;
         }
 
@@ -127,7 +129,8 @@ internal static partial class RuntimeOrderPreparationService
                 return true;
             }
 
-            error = $"血池地狱特殊料理目标只允许精确角色 {SpecialBusinessOrderRoles.YuumaBoss}，实际角色为 {specialBusinessRole}。";
+            error = $"血池地狱料理目标只适用于已确认的 BOSS 订单；要求角色={SpecialBusinessOrderRoles.YuumaBoss}，"
+                + $"当前角色={specialBusinessRole}。";
             return false;
         }
 
@@ -140,7 +143,7 @@ internal static partial class RuntimeOrderPreparationService
             return true;
         }
 
-        error = $"特殊料理目标与订单角色不匹配：challenge={policy.ChallengeType}; role={specialBusinessRole}。";
+        error = $"特殊料理目标与当前订单不匹配：特殊经营类型={policy.ChallengeType}; 订单角色={specialBusinessRole}。";
         return false;
     }
 
@@ -158,7 +161,7 @@ internal static partial class RuntimeOrderPreparationService
         {
             if (target.SpecialFoodTargetRevision <= 0)
             {
-                error = "自动料理目标缺少正的血池地狱 target revision。";
+                error = "自动料理任务缺少有效的血池地狱目标版本。";
                 return false;
             }
 
@@ -168,15 +171,16 @@ internal static partial class RuntimeOrderPreparationService
                 || currentPolicy == null
                 || currentRevision <= 0)
             {
-                error = "当前游戏运行时不再提供完整的血池地狱目标策略与 revision。";
+                error = "当前游戏不再提供完整的血池地狱目标信息或有效目标版本。";
                 return false;
             }
 
             if (!expectedPolicy.HasSameIdentity(currentPolicy)
                 || target.SpecialFoodTargetRevision != currentRevision)
             {
-                error = $"血池地狱特殊料理目标已经变化：开锅={DescribeSpecialFoodTargetPolicy(expectedPolicy)}; revision={target.SpecialFoodTargetRevision}；"
-                    + $"当前={DescribeSpecialFoodTargetPolicy(currentPolicy)}; revision={currentRevision}。";
+                error = $"血池地狱料理目标在开锅后发生变化：开锅时={DescribeSpecialFoodTargetPolicy(expectedPolicy)}; "
+                    + $"目标版本={target.SpecialFoodTargetRevision}；当前={DescribeSpecialFoodTargetPolicy(currentPolicy)}; "
+                    + $"目标版本={currentRevision}。";
                 return false;
             }
 
@@ -191,20 +195,21 @@ internal static partial class RuntimeOrderPreparationService
 
         if (target.SpecialFoodTargetRevision != 0)
         {
-            error = "非血池地狱自动料理目标不能携带 target revision。";
+            error = "当前自动料理任务携带了不适用的目标版本。";
             return false;
         }
 
         if (!RuntimeSpecialBusinessContextService.TryGetActiveSpecialFoodTargetPolicy(out currentPolicy)
             || currentPolicy == null)
         {
-            error = "当前游戏运行时不再提供特殊料理目标策略。";
+            error = "当前游戏不再提供完整的特殊料理目标信息。";
             return false;
         }
 
         if (!expectedPolicy.HasSameIdentity(currentPolicy))
         {
-            error = $"特殊料理目标策略已经变化：开锅={DescribeSpecialFoodTargetPolicy(expectedPolicy)}；当前={DescribeSpecialFoodTargetPolicy(currentPolicy)}。";
+            error = $"特殊料理目标在开锅后发生变化：开锅时={DescribeSpecialFoodTargetPolicy(expectedPolicy)}；"
+                + $"当前={DescribeSpecialFoodTargetPolicy(currentPolicy)}。";
             return false;
         }
 
@@ -223,20 +228,20 @@ internal static partial class RuntimeOrderPreparationService
         var expectedPolicy = target.SpecialFoodTargetPolicy;
         if (expectedPolicy == null)
         {
-            error = "自动料理目标缺少完整的血池地狱双 Tag policy，已在开锅副作用前停止。";
+            error = "自动料理任务缺少完整的血池地狱双标签目标，已在执行游戏写操作前停止。";
             return false;
         }
 
         if (!IsValidYuumaFoodTargetPolicy(expectedPolicy, out var expectedPolicyError))
         {
-            error = $"{expectedPolicyError} 已在开锅副作用前停止。";
+            error = $"{expectedPolicyError} 已在执行游戏写操作前停止。";
             return false;
         }
 
         var expectedRevision = target.SpecialFoodTargetRevision;
         if (expectedRevision <= 0)
         {
-            error = "自动料理目标缺少正的血池地狱 target revision，已在开锅副作用前停止。";
+            error = "自动料理任务缺少有效的血池地狱目标版本，已在执行游戏写操作前停止。";
             return false;
         }
 
@@ -246,14 +251,14 @@ internal static partial class RuntimeOrderPreparationService
             || currentPolicy == null
             || currentRevision <= 0)
         {
-            error = "当前血池地狱目标 revision 尚不可用，已在开锅副作用前停止。";
+            error = "当前血池地狱目标版本尚不可用，已在执行游戏写操作前停止。";
             return false;
         }
 
         if (!expectedPolicy.HasSameIdentity(currentPolicy)
             || expectedRevision != currentRevision)
         {
-            error = "当前血池地狱目标已变化，已在开锅副作用前停止并等待重新推荐。";
+            error = "当前血池地狱目标已变化，已在执行游戏写操作前停止并等待重新推荐。";
             return false;
         }
 
@@ -331,7 +336,8 @@ internal static partial class RuntimeOrderPreparationService
             || policy.MatchMode != SpecialFoodTargetMatchMode.All
             || policy.FoodTags.Count != 2)
         {
-            error = $"血池地狱 BOSS 自动化要求精确挑战、owner=yuuma、All 和两个完整目标 Tag；实际={DescribeSpecialFoodTargetPolicy(policy)}。";
+            error = $"血池地狱 BOSS 自动化需要正确的特殊经营类型、目标归属、全部匹配方式和两个完整目标标签；"
+                + $"当前={DescribeSpecialFoodTargetPolicy(policy)}。";
             return false;
         }
 
@@ -349,7 +355,7 @@ internal static partial class RuntimeOrderPreparationService
             || !IsYuumaBossRequest(request)
             || !IsValidYuumaFoodTargetPolicy(policy, out _))
         {
-            error = "血池地狱受控推进只允许携带完整当前目标策略的 Yuuma BOSS 普客订单。";
+            error = "血池地狱低收益推进方案只适用于目标信息完整的 BOSS 普客订单。";
             return false;
         }
 
@@ -358,13 +364,13 @@ internal static partial class RuntimeOrderPreparationService
             || request.FoodId != request.MatchFoodId
             || request.BeverageId != request.MatchBeverageId)
         {
-            error = "血池地狱受控推进必须精确使用原订单料理和酒水，不能替换订单项目。";
+            error = "血池地狱低收益推进方案必须使用原订单料理和酒水，不能替换订单项目。";
             return false;
         }
 
         if (!request.PredictedFoodTagsProvided)
         {
-            error = "血池地狱受控推进请求未显式携带完整预测 Tag 列表。";
+            error = "血池地狱低收益推进方案缺少完整的预计料理标签。";
             return false;
         }
 
@@ -372,7 +378,7 @@ internal static partial class RuntimeOrderPreparationService
             request.PredictedFoodTags.Select(tag => FoodTags.NormalizeName(tag) ?? tag));
         if (policy.Matches(normalizedPredictedTags))
         {
-            error = "血池地狱请求的预测 Tag 已满足当前双 Tag，不能标记为受控推进。";
+            error = "预计料理标签已满足当前双标签，无需使用低收益推进方案。";
             return false;
         }
 
@@ -426,7 +432,7 @@ internal static partial class RuntimeOrderPreparationService
             return true;
         }
 
-        message = $"{target.FoodName} 的预测 Tag（{string.Join("、", normalizedPredictedTags)}）不满足当前特殊目标 "
+        message = $"{target.FoodName} 的预计标签（{string.Join("、", normalizedPredictedTags)}）不满足当前特殊目标 "
             + $"{policy.MatchModeValue}（{string.Join("、", policy.FoodTags)}）。";
         return false;
     }

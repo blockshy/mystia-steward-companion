@@ -77,7 +77,7 @@ try {
           contentSignature: signatures.availableUnavailable,
           availableCount: 0,
           missions: [],
-          error: 'test-runtime-not-ready',
+          error: '测试：可接取任务数据尚未就绪',
         }),
       });
       return;
@@ -133,7 +133,7 @@ try {
           trackingCount: 0,
           fulfilledCount: 0,
           missions: [],
-          error: 'test-tracked-runtime-not-ready',
+          error: '测试：已追踪任务数据尚未就绪',
         }),
       });
       return;
@@ -325,7 +325,7 @@ try {
   await selectMissionStatus('tracking');
   trackedUnavailable = true;
   await refresh.click();
-  await page.getByText('已追踪任务：test-tracked-runtime-not-ready', { exact: true })
+  await page.getByText('已追踪任务：测试：已追踪任务数据尚未就绪', { exact: true })
     .waitFor({ timeout: 5_000 });
   assert.equal(
     await page.getByText('当前没有进行中任务。', { exact: true }).count(),
@@ -334,7 +334,7 @@ try {
   );
   trackedUnavailable = false;
   await refresh.click();
-  await page.getByText('已追踪任务：test-tracked-runtime-not-ready', { exact: true })
+  await page.getByText('已追踪任务：测试：已追踪任务数据尚未就绪', { exact: true })
     .waitFor({ state: 'hidden', timeout: 5_000 });
   await selectMissionStatus('all');
   await page.getByText('切回后的当前任务', { exact: true }).waitFor({ timeout: 5_000 });

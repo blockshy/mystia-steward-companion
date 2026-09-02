@@ -5,17 +5,17 @@ import type {
 import type { RareCustomerCatalogItem } from '@/lib/catalog-types';
 
 /**
- * Mod 投影的稀客订单参与状态。
+ * Mod 返回的稀客订单参与状态。
  *
- * `automatic` 表示订单未受人工名单控制且正常参与；`queued` 表示受控订单已手动
- * 启用；`paused` 表示它只在调度队列和诊断中保留，不进入经营推荐或运行时副作用。
+ * `automatic` 表示订单未加入调度名单且正常参与；`queued` 表示名单内订单已手动
+ * 启用；`paused` 表示它只在稀客队列和诊断中保留，不进入经营推荐，也不会触发新的游戏操作。
  */
 export type RareOrderParticipationState = 'automatic' | 'paused' | 'queued';
 
 /**
- * 跨快照和写请求传递的精确订单身份。
+ * 在状态读取和写请求间传递的订单实例标识。
  *
- * 桌位、Tag 和 runtime guest 只是展示/观测值，不是公开 lifecycle identity 的一部分。
+ * 桌位、标签和游戏内稀客信息只用于展示和诊断，不属于公开的订单实例标识。
  */
 export interface RareOrderExactIdentity {
   businessGeneration: number;
@@ -24,7 +24,7 @@ export interface RareOrderExactIdentity {
   guestId: number;
 }
 
-/** Mod 快照中单个 exact lifecycle 的受控投影。 */
+/** Mod 当前状态中单笔订单的调度结果。 */
 export interface RareOrderParticipationEntryView
   extends Omit<RareOrderExactIdentity, 'businessGeneration'> {
   managed: boolean;
@@ -34,9 +34,9 @@ export interface RareOrderParticipationEntryView
 }
 
 /**
- * 前端领域层所需的最小 Mod 权威快照。
+ * 前端领域层所需的最小 Mod 当前状态。
  *
- * 具体 Local API DTO 可以直接满足该结构，也可由 hook 做一次显式适配；组件不自建另一份
+ * 具体 Local API DTO 可以直接满足该结构，也可由 hook 做一次明确适配；组件不自建另一份
  * 参与状态。
  */
 export interface RareOrderParticipationSnapshotView {
@@ -62,7 +62,7 @@ export interface RareOrderParticipationResolution {
 }
 
 export interface RareOrderParticipationProjection {
-  /** 可交给经营推荐、高亮、自动化和资源预约等参与消费者的订单。 */
+  /** 可交给经营推荐、高亮、自动化和资源预约等功能使用的订单。 */
   operationalOrders: readonly NightBusinessOrder[];
   resolutions: readonly RareOrderParticipationResolution[];
 }
@@ -120,8 +120,8 @@ const EMPTY_ENTRY_INDEX: ParticipationEntryIndex = {
 const EXACT_RARE_TRACE_PATTERN = /^R-[0-9]{1,16}$/;
 
 /**
- * 从订单快照构造可用于 mutation 的精确身份。任一标量缺失都返回 null，不使用
- * 名称、桌位或 Tag 组合做弱匹配。
+ * 从当前订单构造可用于修改请求的订单实例标识。任一关键字段缺失都返回 null，不使用
+ * 名称、桌位或标签组合做模糊匹配。
  */
 export function buildRareOrderExactIdentity(
   order: NightBusinessOrder,
@@ -144,7 +144,7 @@ export function buildRareOrderExactIdentity(
   };
 }
 
-/** JSON tuple 避免 trace 中的分隔符与其他 identity 标量产生键冲突。 */
+/** JSON 元组避免 trace 中的分隔符与其他标识字段产生键冲突。 */
 export function buildRareOrderExactIdentityKey(identity: RareOrderExactIdentity): string {
   return JSON.stringify([
     identity.businessGeneration,
@@ -154,7 +154,7 @@ export function buildRareOrderExactIdentityKey(identity: RareOrderExactIdentity)
   ]);
 }
 
-/** UI 与 mutation hook 共用的稳定 busy key；只含 canonical scope/action/identity 标量。 */
+/** UI 与修改 hook 共用的稳定忙碌键；只含规范的范围、操作和标识字段。 */
 export function buildRareOrderParticipationMutationKey(
   action: RareGuestParticipationMutationAction,
   target:
@@ -167,8 +167,8 @@ export function buildRareOrderParticipationMutationKey(
 }
 
 /**
- * 一次生成严格参与集合和逐订单解析结果。订单捕获与 Worker 计算仍保留全部订单，
- * 经营推荐和运行时消费者只使用这里的参与集合。
+ * 一次生成完整参与集合和逐订单解析结果。订单捕获与后台计算仍保留全部订单，
+ * 经营推荐和游戏自动化等功能只使用这里的参与集合。
  */
 export function buildRareOrderParticipationProjection({
   orders,
@@ -220,7 +220,7 @@ export function buildRareOrderParticipationProjection({
   };
 }
 
-/** 为 Worker 返回的推荐行建立 exact lifecycle lookup；重复 identity 一律不绑定。 */
+/** 为后台计算返回的推荐行建立订单实例索引；重复标识一律不关联。 */
 export function buildRareOrderParticipationResolutionIndex(
   resolutions: readonly RareOrderParticipationResolution[],
 ): RareOrderParticipationResolutionIndex {
@@ -239,7 +239,7 @@ export function buildRareOrderParticipationResolutionIndex(
   return { byExactIdentityKey, ambiguousExactIdentityKeys };
 }
 
-/** 只用 canonical exact identity 把任意推荐/展示订单绑定回参与投影。 */
+/** 只用规范的订单实例标识把任意推荐或展示订单绑定回调度状态。 */
 export function findRareOrderParticipationResolution(
   order: NightBusinessOrder,
   businessGeneration: number,
@@ -253,7 +253,7 @@ export function findRareOrderParticipationResolution(
 }
 
 /**
- * 按稀客分组当前名单内订单。分组操作仍返回每个 exact lifecycle，后端不需要重新
+ * 按稀客分组当前名单内订单。分组操作仍返回每笔订单的实例标识，后端不需要重新
  * 根据 guest 名称或桌位查找。
  */
 export function buildManagedRareOrderGroups({
@@ -298,7 +298,7 @@ export function buildManagedRareOrderGroups({
       state,
       queuePosition: state === 'queued' ? index.queuePositions.get(exactKey) ?? null : null,
       reason: state === 'unavailable'
-        ? resolution.reason || '订单精确参与状态不可用。'
+        ? resolution.reason || '订单调度状态不可用。'
         : resolution.reason,
     };
     const existing = groups.get(order.guestId);
@@ -342,7 +342,7 @@ export function buildManagedRareOrderGroups({
     .sort(compareManagedRareOrderGroups);
 }
 
-/** 生成设置页的已受控/可添加两个稳定分组，并保留目录已不存在的已存储 ID。 */
+/** 生成设置页的已加入名单/可添加两个稳定分组，并保留目录已不存在的已存储 ID。 */
 export function buildRareGuestRosterSections({
   customers,
   managedGuestIds,
@@ -392,7 +392,7 @@ export function buildRareGuestRosterSections({
   };
 }
 
-/** 受控名单是受控 props；该函数只产生下一个规范值，不在组件内做乐观持久化。 */
+/** 调度名单由上层组件控制；该函数只产生下一个规范值，不在组件内提前保存。 */
 export function updateManagedRareGuestIds(
   current: readonly number[],
   guestId: number,
@@ -405,7 +405,7 @@ export function updateManagedRareGuestIds(
   return [...next].sort((left, right) => left - right);
 }
 
-/** 设置页删除确认所需的当前订单数；仅使用 canonical guestId。 */
+/** 设置页删除确认所需的当前订单数；仅使用规范的 guestId。 */
 export function countCurrentRareOrdersByGuestId(
   orders: readonly NightBusinessOrder[],
 ): ReadonlyMap<number, number> {
@@ -434,7 +434,7 @@ function resolveRareOrderParticipation(
       operationallyParticipating: false,
       exactIdentity: null,
       queuePosition: null,
-      reason: '订单缺少 trace、lifecycle 或原始身份标量，已拒绝猜测。',
+      reason: '订单缺少追踪编号、订单序号或稀客编号，无法确认具体订单。',
     };
   }
 
@@ -449,8 +449,8 @@ function resolveRareOrderParticipation(
       exactIdentity,
       queuePosition: null,
       reason: index.snapshotAvailable
-        ? 'Mod 权威快照未投影该 exact lifecycle。'
-        : 'Mod 权威参与快照尚不可用。',
+        ? 'Mod 当前调度状态中没有这笔订单。'
+        : 'Mod 当前调度状态尚不可用。',
     };
   }
 
@@ -464,7 +464,7 @@ function resolveRareOrderParticipation(
       operationallyParticipating: false,
       exactIdentity,
       queuePosition: null,
-      reason: 'Mod 投影的参与状态或队列位置无效。',
+      reason: 'Mod 返回的调度状态或队列位置无效。',
     };
   }
 
@@ -480,7 +480,7 @@ function resolveRareOrderParticipation(
     operationallyParticipating: authorityAligned && entry.participating,
     exactIdentity,
     queuePosition: entry.participating ? entry.queuePosition : null,
-    reason: authorityAligned ? '' : '受控名单与 Mod 权威快照尚未对齐。',
+    reason: authorityAligned ? '' : '调度名单与 Mod 当前状态尚未同步一致。',
   };
 }
 
@@ -549,7 +549,7 @@ function buildParticipationEntryIndex(
   };
 }
 
-/** 供 mutation 响应覆盖层复用的完整权威边界校验。 */
+/** 供修改响应复用的完整状态一致性检查。 */
 export function isRareOrderParticipationSnapshotAligned({
   snapshot,
   businessGeneration,

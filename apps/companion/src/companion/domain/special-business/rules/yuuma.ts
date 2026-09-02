@@ -27,7 +27,7 @@ export function buildYuumaChallengeOrderRule(
     const challengeLabel = specialBusiness.displayName.trim() || specialBusiness.challengeType;
     return {
       ...emptySpecialBusinessOrderRule(),
-      blockingReason: `${challengeLabel}订单角色身份尚未确认，推荐已暂停。`,
+      blockingReason: `${challengeLabel}尚未确认订单对应的角色，推荐已暂停。`,
     };
   }
   if (normalizedRole !== YUUMA_BOSS_ROLE) return emptySpecialBusinessOrderRule();
@@ -45,7 +45,7 @@ export function buildYuumaChallengeOrderRule(
     forbiddenExtraIngredientIds: [],
     blockingReason: targetReady
       ? ''
-      : `${challengeLabel}需要同时读取 ${YUUMA_TARGET_TAG_COUNT} 个料理目标 Tag，当前读取到 ${targetTags.length} 个。`,
+      : `${challengeLabel}需要同时读取 ${YUUMA_TARGET_TAG_COUNT} 个料理目标标签，当前读取到 ${targetTags.length} 个。`,
     requiresBaseOrderMatch: true,
     requiresHighEvaluation: false,
     highEvaluationMinPreferenceMatches: 0,
@@ -55,8 +55,8 @@ export function buildYuumaChallengeOrderRule(
     preferYuyukoPositiveSpell: false,
     yuyukoProgressEvaluationMode: 'none',
     reason: targetReady
-      ? `${challengeLabel}要求原订单成立，并同时满足目标 Tag：${targetTags.join('、')}`
-      : `${challengeLabel}目标 Tag 尚未完整读取。`,
+      ? `${challengeLabel}要求原订单成立，并同时满足目标标签：${targetTags.join('、')}`
+      : `${challengeLabel}目标标签尚未完整读取。`,
   };
 }
 

@@ -231,7 +231,7 @@ export function useOrderRecommendations(
     };
 
     worker.onerror = (event) => {
-      const message = event.message || '推荐计算 Worker 运行失败。';
+      const message = event.message || '后台推荐计算失败。';
       activeRequestIdRef.current = null;
       activeRequestRef.current = null;
       queuedRequestRef.current = null;
@@ -289,14 +289,14 @@ export function useOrderRecommendations(
     const worker = workerRef.current;
     if (!worker) {
       scheduleCurrentState(() => ({
-        ...buildFailureResult(payload, '推荐计算 Worker 尚未初始化。'),
+        ...buildFailureResult(payload, '后台推荐计算尚未初始化。'),
         pending: false,
         isCurrent: true,
         sourceSignature: inputSignature,
         resultContextSignature: contextSignature,
         successRevision: successRevisionRef.current,
         retainedAfterError: false,
-        error: '推荐计算 Worker 尚未初始化。',
+        error: '后台推荐计算尚未初始化。',
       }));
       return;
     }

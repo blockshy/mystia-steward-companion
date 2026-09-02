@@ -142,9 +142,9 @@ export function OverviewConnectionPanel({
         />
         <StatusMetric
           metric="runtime"
-          label="游戏运行态"
+          label="游戏状态"
           value={snapshot?.runtimeLoaded ? '已加载' : '未加载'}
-          detail={snapshot?.activeSceneName || snapshot?.status || '暂无快照'}
+          detail={snapshot?.activeSceneName || (snapshot ? '已收到游戏数据' : '暂无游戏数据')}
           tone={snapshot?.runtimeLoaded ? 'good' : 'neutral'}
         />
         <StatusMetric

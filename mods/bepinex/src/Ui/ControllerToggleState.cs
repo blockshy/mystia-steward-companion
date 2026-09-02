@@ -1,7 +1,7 @@
 namespace MystiaStewardCompanion.Ui;
 
 /// <summary>
-/// 将手柄按下边沿锁存到物理释放，避免一次长按重复切换窗口。
+/// 在手柄按下后记住状态，直到按键释放，避免一次长按重复切换窗口。
 /// </summary>
 internal sealed class ControllerToggleState
 {

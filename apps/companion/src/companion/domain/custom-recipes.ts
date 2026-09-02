@@ -322,7 +322,7 @@ function buildCustomFoodConditionResults({
       severity: 'info',
       label: '自定义配方',
       detail: entry.foodTag === null
-        ? '该自定义配方适用于该稀客的所有点单料理 Tag。'
+        ? '该自定义配方适用于该稀客的所有点单料理标签。'
         : `该自定义配方绑定点单料理 ${entry.foodTag}。`,
     },
     {
@@ -346,12 +346,12 @@ function buildCustomFoodConditionResults({
       target: 'food',
       status: meetsSpecialFoodTarget ? 'pass' : 'fail',
       severity: 'hard',
-      label: '特殊目标 Tag',
+      label: '特殊目标标签',
       detail: meetsSpecialFoodTarget
-        ? `${requiresAll ? '同时满足' : '满足'}特殊目标 Tag ${matchedSpecialFoodTargetTags.join('、')}`
+        ? `${requiresAll ? '同时满足' : '满足'}特殊目标标签 ${matchedSpecialFoodTargetTags.join('、')}`
         : specialTargetTags.length === 0
-          ? '特殊目标 Tag 尚未完整读取'
-          : `${requiresAll ? '未同时满足' : '未满足'}特殊目标 Tag ${missingTags.join('、')}`,
+          ? '特殊目标标签尚未完整读取'
+          : `${requiresAll ? '未同时满足' : '未满足'}特殊目标标签 ${missingTags.join('、')}`,
     });
   }
 

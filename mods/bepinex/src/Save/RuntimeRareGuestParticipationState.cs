@@ -663,7 +663,7 @@ internal static class RuntimeRareGuestParticipationState
                 {
                     decision = DenyPermit(
                         "invalid-order-binding",
-                        "Rare-order native binding does not match the admitted public lifecycle identity.");
+                        "稀客订单的游戏对象绑定与已接收的本场经营订单标识不一致，暂不参与自动化。");
                 }
                 return false;
             }
@@ -677,7 +677,7 @@ internal static class RuntimeRareGuestParticipationState
             {
                 decision = DenyPermit(
                     "order-binding-mismatch",
-                    "Rare-order public lifecycle or native binding is already owned by a different exact identity.");
+                    "该稀客订单标识或游戏对象绑定已属于另一个明确订单，暂不参与自动化。");
                 return false;
             }
 
@@ -692,7 +692,7 @@ internal static class RuntimeRareGuestParticipationState
                 true,
                 "participating",
                 "participation-allowed",
-                "Rare-order lifecycle is admitted by the current participation queue.",
+                "该稀客订单已启用。",
                 _businessGeneration,
                 _revision,
                 ToSnapshotLocked(state));
@@ -751,38 +751,39 @@ internal static class RuntimeRareGuestParticipationState
         {
             return DenyPermit(
                 "invalid-order-identity",
-                "Rare-order participation identity is incomplete or malformed.");
+                "稀客订单参与标识不完整或格式无效，暂不参与自动化。");
         }
         if (requireBinding
             && (!requiredBinding.HasValue || !IsValidBinding(identity, requiredBinding.Value)))
         {
             return DenyPermit(
                 "invalid-order-binding",
-                "Rare-order native binding does not match the requested public lifecycle identity.");
+                "稀客订单的游戏对象绑定与请求中的本场经营订单标识不一致，暂不参与自动化。");
         }
         if (!_isActive)
         {
             return DenyPermit(
                 "business-inactive",
-                "Rare-guest participation has no active business generation.");
+                "当前没有有效经营轮次对应的稀客队列。");
         }
         if (identity.BusinessGeneration != _businessGeneration)
         {
             return DenyPermit(
                 "business-generation-mismatch",
-                $"Rare-order generation {identity.BusinessGeneration} does not match current generation {_businessGeneration}.");
+                $"该订单属于其他经营轮次，暂不参与自动化：订单经营编号={identity.BusinessGeneration}；"
+                + $"当前经营编号={_businessGeneration}。");
         }
         if (!_orders.TryGetValue(identity, out var state))
         {
             return DenyPermit(
                 "current-order-not-found",
-                $"Rare-order lifecycle {Format(identity)} is not in the current authoritative set.");
+                $"该订单不在本场经营的唯一有效订单集合中，暂不参与自动化：{Format(identity)}。");
         }
         if (!_participationQueue.Contains(identity))
         {
             return DenyPermit(
                 "order-paused",
-                $"Rare-order lifecycle {Format(identity)} is paused.");
+                $"该稀客订单已暂停：{Format(identity)}。");
         }
 
         if (requireBinding)
@@ -791,13 +792,13 @@ internal static class RuntimeRareGuestParticipationState
             {
                 return DenyPermit(
                     "order-binding-unavailable",
-                    $"Rare-order lifecycle {Format(identity)} has no enriched native binding.");
+                    $"该稀客订单还没有确认的游戏对象绑定，暂不参与自动化：{Format(identity)}。");
             }
             if (state.Binding.Value != requiredBinding.GetValueOrDefault())
             {
                 return DenyPermit(
                     "order-binding-mismatch",
-                    $"Rare-order lifecycle {Format(identity)} does not own the requested native binding.");
+                    $"该稀客订单不拥有本次请求的游戏对象绑定，暂不参与自动化：{Format(identity)}。");
             }
         }
 
@@ -805,7 +806,7 @@ internal static class RuntimeRareGuestParticipationState
             true,
             "participating",
             "participation-allowed",
-            "Rare-order lifecycle is admitted by the current participation queue.",
+            "该稀客订单已启用。",
             _businessGeneration,
             _revision,
             ToSnapshotLocked(state));
@@ -924,17 +925,17 @@ internal static class RuntimeRareGuestParticipationState
         {
             throw new ArgumentOutOfRangeException(
                 nameof(managedGuestIds),
-                $"At most {MaximumManagedGuestIds} rare guest ids may be managed.");
+                $"最多只能管理 {MaximumManagedGuestIds} 个稀客 ID。");
         }
         if (values.Any(value => value < 0))
         {
-            throw new ArgumentException("Managed rare guest ids must be non-negative.", nameof(managedGuestIds));
+            throw new ArgumentException("参与管理的稀客 ID 必须是非负整数。", nameof(managedGuestIds));
         }
 
         var result = new HashSet<int>(values);
         if (result.Count != values.Length)
         {
-            throw new ArgumentException("Managed rare guest ids must be unique.", nameof(managedGuestIds));
+            throw new ArgumentException("参与管理的稀客 ID 不能重复。", nameof(managedGuestIds));
         }
         return result;
     }
@@ -951,7 +952,7 @@ internal static class RuntimeRareGuestParticipationState
         {
             throw new ArgumentOutOfRangeException(
                 nameof(currentOrders),
-                $"At most {MaximumCurrentOrders} current rare-order lifecycles may be published.");
+                $"最多只能发布 {MaximumCurrentOrders} 条当前稀客订单记录。");
         }
 
         var identities = new HashSet<RuntimeRareGuestParticipationOrderIdentity>();
@@ -963,17 +964,17 @@ internal static class RuntimeRareGuestParticipationState
             if (value.Identity.BusinessGeneration != businessGeneration)
             {
                 throw new ArgumentException(
-                    "Every current rare-order identity must match the published business generation.",
+                    "每个当前稀客订单标识都必须与发布的本场经营编号一致。",
                     nameof(currentOrders));
             }
             if (!identities.Add(value.Identity))
             {
-                throw new ArgumentException("Current rare-order identities must be unique.", nameof(currentOrders));
+                throw new ArgumentException("当前稀客订单标识不能重复。", nameof(currentOrders));
             }
             if (!publicKeys.Add(ToPublicLifecycleKey(value.Identity)))
             {
                 throw new ArgumentException(
-                    "One public trace/lifecycle pair cannot identify multiple canonical guests.",
+                    "同一公开追踪标识和订单序号不能对应多个规范稀客。",
                     nameof(currentOrders));
             }
             if (!value.Binding.HasValue) continue;
@@ -981,7 +982,7 @@ internal static class RuntimeRareGuestParticipationState
             if (!bindings.Add(value.Binding.Value))
             {
                 throw new ArgumentException(
-                    "One native order binding cannot identify multiple public rare-order lifecycles.",
+                    "同一游戏订单绑定不能对应多个公开稀客订单记录。",
                     nameof(currentOrders));
             }
         }
@@ -1001,7 +1002,7 @@ internal static class RuntimeRareGuestParticipationState
         if (values.Length == 0)
         {
             throw new ArgumentException(
-                "At least one expected target rare-order lifecycle is required.",
+                "至少需要一个预期目标稀客订单标识。",
                 nameof(expectedTargetOrders));
         }
         if (values.Length > MaximumCurrentOrders)
@@ -1012,7 +1013,7 @@ internal static class RuntimeRareGuestParticipationState
             && values.Length != 1)
         {
             throw new ArgumentException(
-                "Order-scoped participation mutations require exactly one lifecycle identity.",
+                "按订单修改参与状态时必须且只能提供一个订单标识。",
                 nameof(expectedTargetOrders));
         }
 
@@ -1023,19 +1024,19 @@ internal static class RuntimeRareGuestParticipationState
             if (value.BusinessGeneration != businessGeneration)
             {
                 throw new ArgumentException(
-                    "Every expected target identity must match the requested business generation.",
+                    "每个预期目标订单标识都必须与请求的本场经营编号一致。",
                     nameof(expectedTargetOrders));
             }
             if (value.GuestId != guestId)
             {
                 throw new ArgumentException(
-                    "Every expected target identity must belong to the requested canonical guest id.",
+                    "每个预期目标订单标识都必须属于请求中的规范稀客 ID。",
                     nameof(expectedTargetOrders));
             }
             if (!identities.Add(value))
             {
                 throw new ArgumentException(
-                    "Expected target identities must be unique.",
+                    "预期目标订单标识不能重复。",
                     nameof(expectedTargetOrders));
             }
         }
@@ -1060,13 +1061,13 @@ internal static class RuntimeRareGuestParticipationState
             if (value.BusinessGeneration != businessGeneration)
             {
                 throw new ArgumentException(
-                    "Every protected rare-order identity must match the requested business generation.",
+                    "每个受保护稀客订单标识都必须与请求的本场经营编号一致。",
                     nameof(protectedOrders));
             }
             if (!identities.Add(value))
             {
                 throw new ArgumentException(
-                    "Protected rare-order identities must be unique.",
+                    "受保护稀客订单标识不能重复。",
                     nameof(protectedOrders));
             }
         }
@@ -1086,7 +1087,7 @@ internal static class RuntimeRareGuestParticipationState
             {
                 throw Conflict(
                     "exact-identity-conflict",
-                    $"Public rare-order lifecycle {identity.TraceId}/{identity.OrderLifecycleSequence} changed canonical guest identity.");
+                    $"公开稀客订单 {identity.TraceId}/{identity.OrderLifecycleSequence} 对应的规范稀客标识已经变化。");
             }
             if (observation.Binding.HasValue
                 && _knownBindingOwners.TryGetValue(observation.Binding.Value, out var bindingOwner)
@@ -1094,7 +1095,7 @@ internal static class RuntimeRareGuestParticipationState
             {
                 throw Conflict(
                     "exact-identity-conflict",
-                    $"Native rare-order binding moved from {Format(bindingOwner)} to {Format(identity)}.");
+                    $"游戏稀客订单绑定已经从 {Format(bindingOwner)} 转移到 {Format(identity)}。");
             }
 
             if (_knownBindingsByIdentity.TryGetValue(identity, out var existingBinding)
@@ -1103,7 +1104,7 @@ internal static class RuntimeRareGuestParticipationState
             {
                 throw Conflict(
                     "exact-identity-conflict",
-                    $"Rare-order lifecycle {Format(identity)} changed its exact native binding.");
+                    $"稀客订单 {Format(identity)} 对应的明确游戏对象绑定已经变化。");
             }
             if (publicOwnerKnown
                 && publicOwner == identity
@@ -1111,7 +1112,7 @@ internal static class RuntimeRareGuestParticipationState
             {
                 throw Conflict(
                     "retired-lifecycle-reappeared",
-                    $"Retired rare-order lifecycle {Format(identity)} cannot re-enter the current authoritative set.");
+                    $"已经结束的稀客订单 {Format(identity)} 不能重新进入本场经营的唯一有效订单集合。");
             }
         }
     }
@@ -1135,7 +1136,7 @@ internal static class RuntimeRareGuestParticipationState
         {
             throw Conflict(
                 "participation-revision-mismatch",
-                $"Participation revision {expectedRevision} does not match current revision {_revision}.");
+                $"请求的稀客参与版本 {expectedRevision} 与当前版本 {_revision} 不一致。");
         }
     }
 
@@ -1143,13 +1144,13 @@ internal static class RuntimeRareGuestParticipationState
     {
         if (!_isActive)
         {
-            throw Conflict("business-inactive", "Rare-guest participation has no active business generation.");
+            throw Conflict("business-inactive", "稀客队列当前没有有效的经营轮次。");
         }
         if (businessGeneration != _businessGeneration)
         {
             throw Conflict(
                 "business-generation-mismatch",
-                $"Business generation {businessGeneration} does not match current generation {_businessGeneration}.");
+                $"请求的本场经营编号 {businessGeneration} 与当前编号 {_businessGeneration} 不一致。");
         }
     }
 
@@ -1174,7 +1175,7 @@ internal static class RuntimeRareGuestParticipationState
         if (!IsValidIdentity(identity))
         {
             throw new ArgumentException(
-                "Rare-order identity requires a positive business generation/lifecycle, an exact R-trace, and a non-negative canonical guest id.",
+                "稀客订单标识需要大于 0 的本场经营编号和订单序号、明确的 R-trace，以及非负的规范稀客 ID。",
                 parameterName);
         }
     }
@@ -1195,7 +1196,7 @@ internal static class RuntimeRareGuestParticipationState
         if (!IsValidBinding(identity, binding))
         {
             throw new ArgumentException(
-                "Native rare-order binding must be Special and exactly match the public business generation and lifecycle.",
+                "游戏稀客订单绑定必须属于 Special 类型，并与公开的本场经营编号和订单序号完全一致。",
                 parameterName);
         }
     }

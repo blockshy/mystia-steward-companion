@@ -4,8 +4,8 @@
 
 ## 目录
 
-- `src/Core/`：领域模型、运行时目录仓库、稀客身份和原子文件基础设施。
-- `src/LocalApi/`：listener、请求解析、DTO、设备配置权威和本地 JSON 存储。
+- `src/Core/`：领域模型、运行时目录仓库、稀客标识和事务文件基础设施。
+- `src/LocalApi/`：HTTP 监听器、请求解析、DTO、主设备配置和本地 JSON 存储。
 - `src/Plugin/`：BepInEx 插件入口、配置、控制台和伴随进程生命周期。
 - `src/Save/`：游戏运行时读取、订单捕获、自动化、任务和特殊经营服务。
 - `src/Ui/`：Unity 主线程命令、自动化控制器和游戏内 UI 接入。
@@ -40,7 +40,7 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\preflight.ps1
 pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 ```
 
-这些命令只构建本地产物，不创建 tag 或 GitHub Release。Android 开发环境和签名见 [Android 开发](../../docs/android-development.md)，正式/预览发布只按[发布流程](../../docs/local-release.md)执行。
+这些命令只构建本地产物，不创建 Git 标签或 GitHub Release。Android 开发环境和签名见 [Android 开发](../../docs/android-development.md)，正式/预览发布只按[发布流程](../../docs/local-release.md)执行。
 
 ## 专题入口
 
@@ -50,11 +50,11 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 | 命名、编码和 fail-closed 规则 | [开发约定](../../docs/development-conventions.md) |
 | 工具链、依赖、构建和缓存 | [本地开发与构建](../../docs/local-development.md) |
 | 按改动选择测试 | [验证指南](../../docs/validation-guide.md) |
-| 静态目录、玩家状态与快照 | [运行时数据 Provider](../../docs/runtime-provider.md) |
-| 普客/稀客捕获与终态回执 | [订单捕获与生命周期](../../docs/runtime-order-lifecycle.md) |
-| 受控稀客名单、参与队列与门禁 | [稀客订单参与队列](../../docs/rare-order-participation.md) |
-| 租约、CookingJob 与暂停恢复 | [自动化运行时](../../docs/automation-runtime.md) |
-| listener、鉴权、路由与设备权威 | [本地 API](../../docs/local-api.md) |
+| 静态目录、玩家状态与快照 | [游戏数据提供器](../../docs/runtime-provider.md) |
+| 普客/稀客捕获与最终状态记录 | [订单捕获与生命周期](../../docs/runtime-order-lifecycle.md) |
+| 稀客调度名单、订单队列与执行条件 | [稀客调度与订单队列](../../docs/rare-order-participation.md) |
+| 厨具占用、`CookingJob` 与暂停恢复 | [自动化运行时](../../docs/automation-runtime.md) |
+| HTTP 监听器、鉴权、路由与主设备配置 | [本地 API](../../docs/local-api.md) |
 | 置顶、变体与游戏内高亮 | [游戏 UI 集成](../../docs/game-ui-integration.md) |
 | 任务运行时 | [任务系统](../../docs/missions.md) |
 | 特殊挑战 | [特殊经营实现](../../docs/special-business-implementation.md)与[验证](../../docs/special-business-validation.md) |
@@ -63,21 +63,21 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 
 ## 游戏运行时分析
 
-涉及游戏类型、字段、集合、Hook 或副作用边界时，不凭名称或旧日志猜测。按 [IL2CPP / IDA 分析工作流](../../docs/il2cpp-analysis-workflow.md)依次核对：
+涉及游戏类型、字段、集合、Hook 或游戏写操作边界时，不凭名称或旧日志猜测。按 [IL2CPP / IDA 分析工作流](../../docs/il2cpp-analysis-workflow.md)依次核对：
 
 1. 当前游戏 metadata C#；
 2. 锁定 BepInEx #783 interop；
 3. IDA/Hex-Rays 原生执行路径；
 4. 实机日志和专项 smoke。
 
-分析输出位于仓库外，不提交反编译产物。旧分析只用于历史比较，不建立兼容 fallback。
+分析输出位于仓库外，不提交反编译产物。旧分析只用于历史比较，不建立兼容备用路径。
 
 ## 运行时开发规则
 
-- Mod 不读取 `.memory` 存档作为业务来源；游戏事实来自当前运行时对象和受控的只读存档诊断。
+- Mod 不读取 `.memory` 存档作为业务来源；游戏状态来自当前内存对象，存档只用于明确的只读诊断。
 - Unity 对象只在主线程访问；API worker 只读不可变缓存或排队命令。
-- 读取不完整、identity 不唯一、Hook 未完整就绪或原生 mutation 结果不确定时 fail-closed。
-- 普客/稀客业务以精确运行时捕获为权威。HUD 空窗或读取失败不能过滤捕获，也不能通过启动扫描补建执行所有权。
+- 读取不完整、对象标识不唯一、Hook 未完整就绪或原生写操作结果不确定时，必须停止相关功能。
+- 普客/稀客业务只使用精确捕获的当前订单。HUD 空窗或读取失败不能过滤捕获，也不能通过启动扫描补建执行所有权。
 - 不恢复旧 Hook、旧路由、旧存储 schema、备用视觉或按名称/路径/位置猜测的逻辑。
 
 具体约束只在上表对应专题维护，不再复制到本入口。
@@ -85,9 +85,9 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 ## 调试顺序
 
 1. 构建失败先运行 `corepack pnpm toolchain:check` 和 `corepack pnpm references:verify`。
-2. 游戏状态不可用时先看伴随窗口状态与诊断包，再根据领域查看相应总日志 section。
-3. 本地 API 问题先验证 `http://127.0.0.1:32145/health`；LAN 问题再检查私网 endpoint、防火墙、AP 隔离和 Token。
-4. 运行时字段或 Hook 漂移时先重新生成分析资料，再修改 provider；不要增加第二套反射来源。
+2. 游戏状态不可用时先看伴随窗口状态与诊断包，再根据领域查看总日志中的对应部分。
+3. 本地 API 问题先验证 `http://127.0.0.1:32145/health`；LAN 问题再检查私网地址、防火墙、AP 隔离和 Token。
+4. 运行时字段或 Hook 发生变化时先重新生成分析资料，再修改 Provider；不要增加第二套反射来源。
 5. 修复后先跑最窄专项 smoke/audit，再按[验证指南](../../docs/validation-guide.md)补充仓库级检查。
 
 ## 已知边界

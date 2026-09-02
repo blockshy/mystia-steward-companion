@@ -16,7 +16,7 @@ internal static class RuntimeRareGuestInvitationWriteGuard
         var expectedMapLabel = expectation.MapLabel?.Trim() ?? "";
         if (expectation.DaySceneGeneration < 1 || expectedMapLabel.Length == 0)
         {
-            reason = "邀请请求缺少有效的日间场景身份，请刷新候选后重试。";
+            reason = "邀请请求缺少有效的日间场景信息，请刷新候选后重试。";
             return false;
         }
 

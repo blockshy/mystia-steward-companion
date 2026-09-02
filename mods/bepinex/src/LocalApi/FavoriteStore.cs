@@ -152,7 +152,7 @@ internal sealed class FavoriteStore
         catch (Exception ex)
         {
             _log.LogError($"Failed to load favorites from '{_path}': {ex.Message}");
-            throw new InvalidDataException("The favorites file could not be read. The original file was not changed.", ex);
+            throw new InvalidDataException("无法读取收藏文件，原文件未被修改。", ex);
         }
     }
 

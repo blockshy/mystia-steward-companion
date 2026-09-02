@@ -114,14 +114,17 @@ export function ModOverviewPanel({
             <CardContent className={`${DENSE_TWO_COLUMN_GRID_TIGHT} p-4 text-sm`}>
               <InfoLine label="数据来源" value="游戏实时 API，不读取 .memory 存档" />
               <InfoLine label="场景" value={snapshot?.activeSceneName || '未知'} />
-              <InfoLine label="运行时状态" value={snapshot?.status || '暂无快照'} />
-              {showDebugDetails && <InfoLine label="运行时来源" value={snapshot?.runtimeSource || '未知'} />}
+              <InfoLine
+                label="游戏状态"
+                value={!snapshot ? '暂无游戏数据' : snapshot.runtimeLoaded ? '游戏数据已加载' : '等待游戏数据加载'}
+              />
+              {showDebugDetails && <InfoLine label="游戏数据来源" value={snapshot?.runtimeSource || '未知'} />}
               {showDebugDetails && <InfoLine label="场景就绪" value={snapshot?.runtimeSceneReadinessStatus || '暂无'} mono />}
-              {showDebugDetails && <InfoLine label="经营生命周期" value={snapshot?.runtimeNightBusinessLifecycleStatus || '暂无'} mono />}
-              {showDebugDetails && <InfoLine label="自动化门禁" value={snapshot?.runtimeNightBusinessAutomationStatus || '暂无'} mono />}
+              {showDebugDetails && <InfoLine label="本场经营状态" value={snapshot?.runtimeNightBusinessLifecycleStatus || '暂无'} mono />}
+              {showDebugDetails && <InfoLine label="自动化可用状态" value={snapshot?.runtimeNightBusinessAutomationStatus || '暂无'} mono />}
               <InfoLine
                 label="推荐数据"
-                value={data.source === 'runtime' ? `游戏运行时 (${data.status})` : `等待游戏运行时数据 (${data.status})`}
+                value={data.source === 'runtime' ? '游戏实时数据已就绪' : '等待游戏实时数据'}
               />
               {showDebugDetails && <InfoLine label="性能耗时" value={formatPerformanceMs(snapshot?.performanceMs)} mono />}
             </CardContent>

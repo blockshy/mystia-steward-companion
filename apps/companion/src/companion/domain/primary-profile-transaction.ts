@@ -36,7 +36,7 @@ export function capturePrimaryProfileTransactionBase(
     || state.currentDeviceProfileRevision !== state.activeProfileRevision
     || state.currentDeviceProfileHash !== state.activeProfileHash
     || currentDeviceProfileSignature !== activeProfileSignature) {
-    throw new Error('主设备共享配置基线未对齐，无法开始修改。');
+    throw new Error('保存前的主设备共享配置版本不一致，无法开始修改。');
   }
 
   return {

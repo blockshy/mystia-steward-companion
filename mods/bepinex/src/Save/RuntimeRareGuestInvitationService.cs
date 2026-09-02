@@ -297,7 +297,7 @@ internal static class RuntimeRareGuestInvitationService
         if (!RuntimeSceneReadinessCapture.CanReadDaySceneRuntime())
         {
             return InvitationContext.Failed(
-                Fail("日间场景运行时尚未稳定。请等待场景加载完成后再试。"));
+                Fail("日间场景尚未就绪。请等待场景加载完成后再试。"));
         }
 
         var dataBaseCharacterType = RuntimeReflectionUtility.FindType(DataBaseCharacterTypeName);
@@ -314,7 +314,7 @@ internal static class RuntimeRareGuestInvitationService
             || specialGuestRunTimeDataType == null)
         {
             return InvitationContext.Failed(
-                Fail("游戏原生羁绊邀请系统尚未初始化。请在读取存档后的日间场景再试。"));
+                Fail("游戏的羁绊邀请功能尚未就绪。请在读取存档后的日间场景再试。"));
         }
 
         var currentMap = ReadCurrentDaySceneMapInfo();
@@ -336,14 +336,14 @@ internal static class RuntimeRareGuestInvitationService
         if (repository == null)
         {
             return InvitationContext.Failed(
-                Fail("运行时稀客目录尚未初始化。请等待存档数据读取完成后再试。"));
+                Fail("稀客数据尚未就绪。请等待存档数据读取完成后再试。"));
         }
 
         var mappedGuestSnapshot = new RuntimeMappedGuestCatalog(repository).Snapshot();
         if (!mappedGuestSnapshot.IsComplete)
         {
             return InvitationContext.Failed(
-                Fail($"运行时稀客身份目录不可用：{mappedGuestSnapshot.Status}"));
+                Fail($"无法读取稀客标识数据。详细原因：{mappedGuestSnapshot.Status}"));
         }
 
         var allNpcs = ReadRequiredStaticDictionaryProperty(
@@ -543,7 +543,7 @@ internal static class RuntimeRareGuestInvitationService
                 result,
                 candidate,
                 "failed",
-                "原生记录邀请失败",
+                "游戏未记录本次邀请",
                 candidate.KizunaLevel);
             return;
         }
@@ -552,7 +552,7 @@ internal static class RuntimeRareGuestInvitationService
             candidate,
             "invited",
             false,
-            $"已按原生羁绊邀请条件加入今晚名单（羁绊 {candidate.KizunaLevel}）",
+            $"已按游戏的羁绊邀请条件加入今晚名单（羁绊 {candidate.KizunaLevel}）",
             candidate.KizunaLevel);
         result.Candidates.Add(invitedEntry);
         result.Invited.Add(invitedEntry);
@@ -1365,7 +1365,7 @@ internal static class RuntimeRareGuestInvitationService
     {
         if (!RuntimeSceneReadinessCapture.CanReadDaySceneRuntime())
         {
-            reason = "日间场景运行时已离开就绪状态，本次邀请未执行。";
+            reason = "日间场景已不再处于就绪状态，本次邀请未执行。";
             return false;
         }
 
@@ -1457,7 +1457,7 @@ internal static class RuntimeRareGuestInvitationService
     {
         var sourceLabel = source == "current-day-scene-keyed" ? "当前日间场景" : "全部日间场景";
         if (result.Invited.Count > 0) return $"{sourceLabel}已邀请 {result.Invited.Count} 位稀客。";
-        if (result.UsableCount > 0) return $"{sourceLabel}没有新的可写入邀请，原生记录可能失败。";
+        if (result.UsableCount > 0) return $"{sourceLabel}没有新增邀请记录，请查看候选项原因。";
         if (result.ExistingControlledCount > 0) return $"{sourceLabel}中的可邀请稀客今晚均已邀请。";
         return $"{sourceLabel}没有新的可邀请稀客。";
     }

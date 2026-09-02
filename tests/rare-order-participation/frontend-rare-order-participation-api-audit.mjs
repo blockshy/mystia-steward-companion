@@ -353,7 +353,7 @@ try {
     },
   );
   assert.equal(disabledMutation.status, 409);
-  assert.match((await disabledMutation.json()).error, /module is disabled/u);
+  assert.match((await disabledMutation.json()).error, /稀客调度模块已关闭/u);
 
   const secondary = {
     clientId: '44444444-4444-4444-4444-444444444444',

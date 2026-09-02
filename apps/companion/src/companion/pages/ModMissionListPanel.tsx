@@ -144,7 +144,7 @@ export function ModMissionListPanel({
             {showDebugDetails && (availableResult || trackedResult) && (
               <div className={DENSE_THREE_COLUMN_GRID}>
                 <InfoLine
-                  label="任务代际"
+                  label="任务轮次"
                   value={availableResult?.missionGeneration ?? trackedResult?.generation ?? 0}
                   mono
                 />
@@ -310,7 +310,7 @@ function TrackedMissionRow({
     ? mission.conditionCount > 0
       ? `${completedCount}/${mission.conditionCount} 项条件已完成`
       : '任务状态已验证'
-    : '任务进度尚未完成原生校验';
+    : '游戏尚未确认任务进度';
 
   return (
     <div

@@ -123,13 +123,13 @@ internal sealed class CustomRecipeStore
             var data = Load();
             if (enabled == null && pinToTop == null)
             {
-                return BuildMutationJson(false, data, "no custom recipe flags specified");
+                return BuildMutationJson(false, data, "请至少指定一项要修改的自定义料理状态。");
             }
 
             var entries = SelectEntries(data, selection);
             if (entries.Count == 0)
             {
-                return BuildMutationJson(false, data, "custom recipe selection matched no entries");
+                return BuildMutationJson(false, data, "没有找到符合条件的自定义料理。");
             }
 
             var now = DateTime.UtcNow;
@@ -169,7 +169,7 @@ internal sealed class CustomRecipeStore
             var entry = data.Recipes.FirstOrDefault(item => string.Equals(item.Id, id, StringComparison.Ordinal));
             if (entry == null)
             {
-                return BuildMutationJson(false, data, "custom recipe not found");
+                return BuildMutationJson(false, data, "未找到该自定义料理。");
             }
 
             var ordered = data.Recipes
@@ -180,13 +180,13 @@ internal sealed class CustomRecipeStore
             var index = ordered.FindIndex(entry => string.Equals(entry.Id, id, StringComparison.Ordinal));
             if (index < 0)
             {
-                return BuildMutationJson(false, data, "custom recipe not found");
+                return BuildMutationJson(false, data, "未找到该自定义料理。");
             }
 
             var offset = string.Equals(direction, "up", StringComparison.OrdinalIgnoreCase)
                 ? -1
                 : string.Equals(direction, "down", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
-            if (offset == 0) return BuildMutationJson(false, data, "invalid custom recipe move direction");
+            if (offset == 0) return BuildMutationJson(false, data, "自定义料理移动方向无效。");
 
             var targetIndex = index + offset;
             if (targetIndex < 0 || targetIndex >= ordered.Count) return BuildMutationJson(true, data, null);
@@ -212,7 +212,7 @@ internal sealed class CustomRecipeStore
         catch (Exception ex)
         {
             _log.LogError($"Failed to load custom recipes from '{_path}': {ex.Message}");
-            throw new InvalidDataException("The custom recipes file could not be read. The original file was not changed.", ex);
+            throw new InvalidDataException("无法读取自定义料理文件，原文件未被修改。", ex);
         }
     }
 

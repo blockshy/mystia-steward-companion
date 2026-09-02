@@ -72,7 +72,7 @@ function resolveRecommendationData(
     return cachedData;
   }
 
-  throw new Error('推荐数据集尚未初始化，等待下一轮快照。');
+  throw new Error('推荐数据尚未初始化，等待下一次游戏数据更新。');
 }
 
 function buildNormalPageRecommendations(payload: NormalPageRecommendationPayload) {

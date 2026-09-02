@@ -560,10 +560,10 @@ export async function inviteAvailableRareGuest(
 }
 
 /**
- * 原子暂停、队尾启用或非抢占式优先启用一个 exact lifecycle / 稀客完整当前订单集合。
+ * 一次性暂停、队尾启用或非抢占式优先启用一笔订单或某位稀客的完整当前订单集合。
  *
- * authority revision 同时写入严格 JSON body 和主设备 authority header；订单 identity
- * 逐字段重新投影，避免调用方对象上的额外展示字段泄漏到严格协议。
+ * 主设备状态版本同时写入严格 JSON body 和对应 header；订单标识
+ * 逐字段重新构造，避免调用方对象上的额外展示字段泄漏到严格协议。
  */
 export async function updateRareGuestParticipation(
   endpoint: string,
@@ -1045,7 +1045,7 @@ function buildRareOrderExecutionReason(
   const details = [
     item.order.specialBusinessRole ? `特殊经营角色 ${item.order.specialBusinessRole}` : '',
     planReason,
-    recipeTarget?.foodTags.length ? `预测料理 Tag ${recipeTarget.foodTags.join('、')}` : '',
+    recipeTarget?.foodTags.length ? `预测料理标签 ${recipeTarget.foodTags.join('、')}` : '',
     beverageTarget ? `目标酒水 ${beverageTarget.beverageName || `#${beverageTarget.beverageId}`}` : '',
   ].filter(Boolean);
   return details.join('；');

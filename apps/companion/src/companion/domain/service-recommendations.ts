@@ -155,7 +155,7 @@ export function buildOrderRecommendations(
   if (!runtime) {
     return {
       recommendations: [],
-      recommendationIssues: sortedOrders.map((order) => ({ order, message: '运行时推荐数据暂不可用。' })),
+      recommendationIssues: sortedOrders.map((order) => ({ order, message: '游戏推荐数据暂不可用。' })),
     };
   }
 
@@ -186,7 +186,7 @@ export function buildOrderRecommendations(
       continue;
     }
     if (!foodTag || !beverageTag) {
-      recommendationIssues.push({ order, message: '该点单缺少料理 Tag 或酒水 Tag。' });
+      recommendationIssues.push({ order, message: '该点单缺少料理标签或酒水标签。' });
       continue;
     }
 
@@ -874,8 +874,8 @@ function buildSpecialBusinessBlockedMessages(
   const messages: string[] = [];
   if (rule.foodTarget.enforcement === 'require') {
     messages.push(rule.foodTarget.match === 'all'
-      ? `特殊经营要求料理同时满足目标 Tag：${rule.foodTarget.tags.join('、')}。`
-      : `特殊经营要求料理满足以下任一目标 Tag：${rule.foodTarget.tags.join('、')}。`);
+      ? `特殊经营要求料理同时满足目标标签：${rule.foodTarget.tags.join('、')}。`
+      : `特殊经营要求料理满足以下任一目标标签：${rule.foodTarget.tags.join('、')}。`);
   }
   if (rule.requiredExtraIngredientIds.length > 0) {
     messages.push(`特殊经营要求料理额外加入材料：${rule.requiredExtraIngredientIds
@@ -891,7 +891,7 @@ function buildSpecialBusinessBlockedMessages(
     messages.push('特殊经营要求先满足原订单料理和酒水。');
   }
   if (rule.requiresHighEvaluation) {
-    messages.push(`特殊经营要求最高评价，当前组合至少需要 ${rule.highEvaluationMinPreferenceMatches} 个喜好命中且不能包含厌恶 Tag。`);
+    messages.push(`特殊经营要求最高评价，当前组合至少需要命中 ${rule.highEvaluationMinPreferenceMatches} 个喜好标签且不能包含厌恶标签。`);
   }
   return messages;
 }
@@ -1487,21 +1487,21 @@ function selectRecommendationBlockedReason({
       return {
         code: 'food-tag-not-supported',
         firstEmptyStage: 'food-tag-reachability',
-        message: `当前配方目录在现有加料上限与 Tag 规则下无法构成料理点单 Tag「${demand.requiredFoodTag}」。`,
+        message: `当前配方目录在现有加料上限与标签规则下无法构成料理点单标签「${demand.requiredFoodTag}」。`,
       };
     }
     if (foodRecipes.requiredTagReachableUnlocked === 0) {
       return {
         code: 'food-recipe-locked',
         firstEmptyStage: 'food-recipe-unlocked',
-        message: `能满足料理点单 Tag「${demand.requiredFoodTag}」的配方尚未解锁。`,
+        message: `能满足料理点单标签「${demand.requiredFoodTag}」的配方尚未解锁。`,
       };
     }
     if (foodRecipes.requiredTagReachableBaseIngredientsReady === 0) {
       return {
         code: 'food-base-ingredient-missing',
         firstEmptyStage: 'food-base-ingredients',
-        message: `满足料理点单 Tag「${demand.requiredFoodTag}」的已解锁配方缺少基础材料`
+        message: `满足料理点单标签「${demand.requiredFoodTag}」的已解锁配方缺少基础材料`
           + `${formatDiagnosticNameList(missingIngredientNames)}。`,
       };
     }
@@ -1516,7 +1516,7 @@ function selectRecommendationBlockedReason({
       return {
         code: 'food-cooker-missing',
         firstEmptyStage: 'food-cooker',
-        message: `满足料理点单 Tag「${demand.requiredFoodTag}」的配方缺少可用厨具`
+        message: `满足料理点单标签「${demand.requiredFoodTag}」的配方缺少可用厨具`
           + `${formatDiagnosticNameList(missingCookerNames)}；当前摆放`
           + `${formatDiagnosticNameList(placedCookerNames, '无')}。`,
       };
@@ -1525,7 +1525,7 @@ function selectRecommendationBlockedReason({
       return {
         code: 'food-required-tag-not-generated',
         firstEmptyStage: 'food-candidate-generation',
-        message: `满足料理点单 Tag「${demand.requiredFoodTag}」的配方已具备运行资格，`
+        message: `满足料理点单标签「${demand.requiredFoodTag}」的配方已经满足执行条件，`
           + '但当前可用加料未生成对应料理候选。',
       };
     }
@@ -1545,7 +1545,7 @@ function selectRecommendationBlockedReason({
     return {
       code: 'food-cooker-missing',
       firstEmptyStage: 'food-cooker',
-      message: `满足料理点单 Tag「${demand.requiredFoodTag}」的配方缺少可用厨具`
+      message: `满足料理点单标签「${demand.requiredFoodTag}」的配方缺少可用厨具`
         + `${formatDiagnosticNameList(missingCookerNames)}；当前摆放`
         + `${formatDiagnosticNameList(placedCookerNames, '无')}。`,
     };
@@ -1556,7 +1556,7 @@ function selectRecommendationBlockedReason({
     return {
       code: 'food-negative-tag',
       firstEmptyStage: 'food-negative-safe',
-      message: '满足原订单的料理候选均包含当前稀客厌恶 Tag，已停止自动执行。',
+      message: '满足原订单的料理候选均包含当前稀客厌恶标签，已停止自动执行。',
     };
   }
   if (foodCandidates.specialRuleMatched === 0) {
@@ -1586,7 +1586,7 @@ function selectRecommendationBlockedReason({
       return {
         code: 'beverage-tag-mismatch',
         firstEmptyStage: 'beverage-required-tag',
-        message: `当前可用酒水无法满足酒水点单 Tag「${demand.requiredBeverageTag}」。`,
+        message: `当前可用酒水无法满足酒水点单标签「${demand.requiredBeverageTag}」。`,
       };
     }
     return {
@@ -1636,7 +1636,7 @@ function buildRuntimeUnavailableCookerReason(
   usableCookerNames: string[],
 ): Pick<RecommendationBlockedDiagnostic, 'code' | 'firstEmptyStage' | 'message'> {
   const orderLabel = requiredFoodTag.trim()
-    ? `料理点单 Tag「${requiredFoodTag}」`
+    ? `料理点单标签「${requiredFoodTag}」`
     : '当前订单';
   return {
     code: 'food-cooker-runtime-unavailable',

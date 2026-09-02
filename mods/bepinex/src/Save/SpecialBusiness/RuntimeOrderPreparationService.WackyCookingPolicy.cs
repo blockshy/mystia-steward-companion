@@ -302,7 +302,7 @@ internal static partial class RuntimeOrderPreparationService
             if (!RecentWackyRejectedRecipeKeys.Contains(key, StringComparer.Ordinal)) return false;
         }
 
-        message = $"当前怪诞料理目标 Tag（{string.Join("、", targetTags)}）下，{target.FoodName} 的当前配方/加料组合已被实机判定不匹配，等待推荐刷新或目标 Tag 更新后再开锅。";
+        message = $"当前怪诞料理目标标签（{string.Join("、", targetTags)}）下，{target.FoodName} 的当前配方/加料组合已被实机判定不匹配，等待推荐刷新或目标标签更新后再开锅。";
         AppendAutomationLog("wacky-rejected-skip", target, message);
         return true;
     }

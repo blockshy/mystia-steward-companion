@@ -31,7 +31,7 @@ internal sealed class MizuchiOrderModule : ISpecialBusinessOrderModule
                     ? SpecialBusinessOrderRoles.MizuchiStoryUnverified
                     : SpecialBusinessOrderRoles.MizuchiTrialUnverified,
                 isStory ? "寻找瑞灵踪迹订单待确认" : "月都试炼订单待确认",
-                $"{(isStory ? "寻找瑞灵踪迹" : "月都试炼")}订单身份无法精确确认，已阻止自动化接管：{identity.Reason}");
+                $"无法确认{(isStory ? "寻找瑞灵踪迹" : "月都试炼")}订单与当前客人是否一致，已暂停自动化。详细原因：{identity.Reason}");
             SpecialBusinessDiagnostics.AppendMizuchiOrderClassification(
                 challengeType,
                 blocked,

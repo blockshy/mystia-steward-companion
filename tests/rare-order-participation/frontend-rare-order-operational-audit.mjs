@@ -117,7 +117,7 @@ assert.deepEqual(
   ['R-20', 'R-21', 'R-50', 'R-100', 'R-1'],
   '自动化候选入口必须复用 operational 队列顺序。',
 );
-assert.deepEqual(automationResult.skips, [], '暂停行应在自动化身份/计划检查前被排除。');
+assert.deepEqual(automationResult.skips, [], '暂停行应在自动化订单标识和方案检查前被排除。');
 
 const indexes = {
   ingredientByName: new Map([['基础材料', { id: 11 }]]),
@@ -220,7 +220,7 @@ const legacyMissingGuestTarget = buildRareGameUiTarget(
 assert.equal(
   legacyMissingGuestTarget?.guestId,
   -1,
-  '空名单 legacy selector 必须保留旧的弱 guestId 快照，并显式发送 unknown sentinel。',
+  '空名单选择器必须保留当前不完整的稀客 ID 状态，并明确发送未知值。',
 );
 assert.equal(
   buildRareGameUiTargetFromParticipationQueue(
@@ -231,7 +231,7 @@ assert.equal(
     indexes,
   ),
   null,
-  '非空参与队列不得接纳 canonical guestId 缺失的 UI target。',
+  '非空稀客队列不得接纳缺少规范稀客 ID 的游戏界面目标。',
 );
 
 const root = new URL('../../', import.meta.url);
