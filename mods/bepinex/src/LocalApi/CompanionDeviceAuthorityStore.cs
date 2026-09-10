@@ -17,10 +17,8 @@ namespace MystiaStewardCompanion.LocalApi;
 internal sealed class CompanionDeviceAuthorityStore
 {
     public const int ProtocolVersion = 1;
-    public const int ProfileSchemaVersion = 3;
-    private const int LegacyStoreSchemaVersion = 1;
-    private const int PreviousStoreSchemaVersion = 2;
-    private const int StoreSchemaVersion = 3;
+    public const int ProfileSchemaVersion = 4;
+    private const int StoreSchemaVersion = 4;
     private const int MaxDevices = 32;
     private const int MaxManagedRareGuestIds = 512;
     private static readonly TimeSpan OnlineTtl = TimeSpan.FromSeconds(20);
@@ -90,7 +88,13 @@ internal sealed class CompanionDeviceAuthorityStore
     private static readonly HashSet<string> ProfileFieldsV3 = new(
         ProfileFieldsV2.Concat(new[] { "rareGuestParticipationModuleEnabled" }),
         StringComparer.Ordinal);
-    private static readonly HashSet<string> StoredDataFieldsV1ToV3 = new(
+    private static readonly HashSet<string> ProfileBooleanFieldsV4 = new(
+        ProfileBooleanFieldsV3,
+        StringComparer.Ordinal);
+    private static readonly HashSet<string> ProfileFieldsV4 = new(
+        ProfileFieldsV3,
+        StringComparer.Ordinal);
+    private static readonly HashSet<string> StoredDataFieldsV1ToV4 = new(
         new[]
         {
             "version",
@@ -101,7 +105,7 @@ internal sealed class CompanionDeviceAuthorityStore
             "devices",
         },
         StringComparer.Ordinal);
-    private static readonly HashSet<string> StoredDeviceFieldsV1ToV3 = new(
+    private static readonly HashSet<string> StoredDeviceFieldsV1ToV4 = new(
         new[]
         {
             "deviceId",
@@ -117,7 +121,7 @@ internal sealed class CompanionDeviceAuthorityStore
             "updatedAtUtc",
         },
         StringComparer.Ordinal);
-    private static readonly HashSet<string> ObjectiveKeys = new(StringComparer.Ordinal)
+    private static readonly HashSet<string> ObjectiveKeysV1ToV3 = new(StringComparer.Ordinal)
     {
         "foodPreference",
         "beveragePreference",
@@ -128,6 +132,17 @@ internal sealed class CompanionDeviceAuthorityStore
         "profit",
         "beverageStock",
         "cookerAvailable",
+    };
+    private static readonly HashSet<string> ObjectiveKeysV4 = new(StringComparer.Ordinal)
+    {
+        "foodPreference",
+        "beveragePreference",
+        "negativeRisk",
+        "extraCount",
+        "resourcePressure",
+        "totalCost",
+        "profit",
+        "beverageStock",
     };
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -491,16 +506,9 @@ internal sealed class CompanionDeviceAuthorityStore
                 var data = JsonSerializer.Deserialize<DeviceAuthorityData>(json, JsonOptions)
                     ?? throw new InvalidDataException(
                         $"JSON file '{_path}' contains a null device authority document.");
-                if (data.Version == LegacyStoreSchemaVersion)
+                if (data.Version != StoreSchemaVersion)
                 {
-                    ValidateStoredData(data, LegacyStoreSchemaVersion, ValidateAndCloneLegacyProfile);
-                    data = MigrateToCurrentData(data);
-                    ValidateStoredData(data);
-                    JsonFileStore.Save(_path, data, JsonOptions);
-                }
-                else if (data.Version == PreviousStoreSchemaVersion)
-                {
-                    ValidateStoredData(data, PreviousStoreSchemaVersion, ValidateAndClonePreviousProfile);
+                    ValidateStoredData(data, data.Version, profile => ValidateAndCloneHistoricalProfile(profile, data.Version));
                     data = MigrateToCurrentData(data);
                     ValidateStoredData(data);
                     JsonFileStore.Save(_path, data, JsonOptions);
@@ -535,13 +543,11 @@ internal sealed class CompanionDeviceAuthorityStore
         if (root.ValueKind != JsonValueKind.Object
             || !root.TryGetProperty("version", out var versionProperty)
             || !versionProperty.TryGetInt32(out var version)
-            || version is not LegacyStoreSchemaVersion
-                and not PreviousStoreSchemaVersion
-                and not StoreSchemaVersion)
+            || version is not 1 and not 2 and not 3 and not StoreSchemaVersion)
         {
             throw new InvalidDataException("设备配置存储缺少版本，或版本不受支持。");
         }
-        RequireExactStoredProperties(root, StoredDataFieldsV1ToV3, "Device authority store");
+        RequireExactStoredProperties(root, StoredDataFieldsV1ToV4, "Device authority store");
         RequireStoredString(root, "registryId", "Device authority store");
         RequireStoredInt64(root, "authorityRevision", "Device authority store");
         RequireStoredInt64(root, "stateRevision", "Device authority store");
@@ -555,7 +561,7 @@ internal sealed class CompanionDeviceAuthorityStore
 
         foreach (var device in devices.EnumerateArray())
         {
-            RequireExactStoredProperties(device, StoredDeviceFieldsV1ToV3, "Stored companion device");
+            RequireExactStoredProperties(device, StoredDeviceFieldsV1ToV4, "Stored companion device");
             foreach (var name in new[]
                      {
                          "deviceId",
@@ -731,33 +737,28 @@ internal sealed class CompanionDeviceAuthorityStore
     {
         return ValidateAndCloneProfile(
             profile,
-            ProfileFieldsV3,
-            ProfileBooleanFieldsV3,
+            ProfileFieldsV4,
+            ProfileBooleanFieldsV4,
+            ObjectiveKeysV4,
             requireManagedRareGuestIds: true);
     }
 
-    private static JsonElement ValidateAndClonePreviousProfile(JsonElement profile)
+    private static JsonElement ValidateAndCloneHistoricalProfile(JsonElement profile, int version)
     {
-        return ValidateAndCloneProfile(
-            profile,
-            ProfileFieldsV2,
-            ProfileBooleanFieldsV2,
-            requireManagedRareGuestIds: true);
-    }
-
-    private static JsonElement ValidateAndCloneLegacyProfile(JsonElement profile)
-    {
-        return ValidateAndCloneProfile(
-            profile,
-            ProfileFieldsV1,
-            ProfileBooleanFieldsV1,
-            requireManagedRareGuestIds: false);
+        return version switch
+        {
+            1 => ValidateAndCloneProfile(profile, ProfileFieldsV1, ProfileBooleanFieldsV1, ObjectiveKeysV1ToV3, requireManagedRareGuestIds: false),
+            2 => ValidateAndCloneProfile(profile, ProfileFieldsV2, ProfileBooleanFieldsV2, ObjectiveKeysV1ToV3, requireManagedRareGuestIds: true),
+            3 => ValidateAndCloneProfile(profile, ProfileFieldsV3, ProfileBooleanFieldsV3, ObjectiveKeysV1ToV3, requireManagedRareGuestIds: true),
+            _ => throw new InvalidDataException($"设备配置格式版本不受支持：{version}。"),
+        };
     }
 
     private static JsonElement ValidateAndCloneProfile(
         JsonElement profile,
         HashSet<string> expectedFields,
         HashSet<string> booleanFields,
+        HashSet<string> objectiveKeys,
         bool requireManagedRareGuestIds)
     {
         if (profile.ValueKind != JsonValueKind.Object)
@@ -779,7 +780,7 @@ internal sealed class CompanionDeviceAuthorityStore
         RequireStringChoice(profile, "recommendationBudgetPolicy", "block", "warn", "ignore");
         RequireColor(profile, "rareTargetHighlightColor");
         RequireColor(profile, "normalTargetHighlightColor");
-        ValidateSortProfile(profile.GetProperty("recommendationSortProfile"));
+        ValidateSortProfile(profile.GetProperty("recommendationSortProfile"), objectiveKeys);
         ValidateExclusions(profile.GetProperty("recommendationExclusions"));
         if (requireManagedRareGuestIds)
         {
@@ -792,7 +793,7 @@ internal sealed class CompanionDeviceAuthorityStore
         return profile.Clone();
     }
 
-    private static void ValidateSortProfile(JsonElement value)
+    private static void ValidateSortProfile(JsonElement value, HashSet<string> objectiveKeys)
     {
         if (value.ValueKind != JsonValueKind.Object)
         {
@@ -801,9 +802,9 @@ internal sealed class CompanionDeviceAuthorityStore
         RequireExactProperties(value, new HashSet<string>(new[] { "preset", "objectives" }, StringComparer.Ordinal), "推荐排序配置");
         RequireStringChoice(value, "preset", "balanced", "resources", "profit", "simple");
         var objectives = value.GetProperty("objectives");
-        if (objectives.ValueKind != JsonValueKind.Array || objectives.GetArrayLength() != ObjectiveKeys.Count)
+        if (objectives.ValueKind != JsonValueKind.Array || objectives.GetArrayLength() != objectiveKeys.Count)
         {
-            throw new CompanionDeviceAuthorityException(400, "推荐排序目标必须包含当前版本定义的全部 9 项。");
+            throw new CompanionDeviceAuthorityException(400, $"推荐排序目标必须包含该版本定义的全部 {objectiveKeys.Count} 项。");
         }
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var objective in objectives.EnumerateArray())
@@ -817,7 +818,7 @@ internal sealed class CompanionDeviceAuthorityStore
                 new HashSet<string>(new[] { "key", "enabled", "weight", "direction" }, StringComparer.Ordinal),
                 "推荐排序目标");
             var key = RequireString(objective, "key");
-            if (!ObjectiveKeys.Contains(key) || !seen.Add(key))
+            if (!objectiveKeys.Contains(key) || !seen.Add(key))
             {
                 throw new CompanionDeviceAuthorityException(400, "推荐排序目标包含未知项或重复项。");
             }
@@ -1014,29 +1015,41 @@ internal sealed class CompanionDeviceAuthorityStore
         migrated.Version = StoreSchemaVersion;
         foreach (var device in migrated.Devices)
         {
-            device.Profile = UpgradeProfileToCurrent(device.Profile);
+            device.Profile = UpgradeProfileToCurrent(device.Profile, source.Version);
             device.ProfileHash = ComputeProfileHash(device.Profile);
         }
         return migrated;
     }
 
-    private static JsonElement UpgradeProfileToCurrent(JsonElement previousProfile)
+    private static JsonElement UpgradeProfileToCurrent(JsonElement previousProfile, int sourceVersion)
     {
-        var hasManagedRareGuestIds = previousProfile.TryGetProperty("managedRareGuestIds", out _);
         using var stream = new MemoryStream();
         using (var writer = new Utf8JsonWriter(stream))
         {
             writer.WriteStartObject();
             foreach (var property in previousProfile.EnumerateObject())
             {
-                property.WriteTo(writer);
+                if (property.Name != "recommendationSortProfile")
+                {
+                    property.WriteTo(writer);
+                    continue;
+                }
+                writer.WriteStartObject(property.Name);
+                writer.WriteString("preset", property.Value.GetProperty("preset").GetString());
+                writer.WriteStartArray("objectives");
+                foreach (var objective in property.Value.GetProperty("objectives").EnumerateArray())
+                {
+                    if (objective.GetProperty("key").GetString() != "cookerAvailable") objective.WriteTo(writer);
+                }
+                writer.WriteEndArray();
+                writer.WriteEndObject();
             }
-            if (!hasManagedRareGuestIds)
+            if (sourceVersion == 1)
             {
                 writer.WriteStartArray("managedRareGuestIds");
                 writer.WriteEndArray();
             }
-            writer.WriteBoolean("rareGuestParticipationModuleEnabled", false);
+            if (sourceVersion <= 2) writer.WriteBoolean("rareGuestParticipationModuleEnabled", false);
             writer.WriteEndObject();
         }
 

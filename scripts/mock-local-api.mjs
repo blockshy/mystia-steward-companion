@@ -110,7 +110,6 @@ const MOCK_SHARED_PROFILE_OBJECTIVE_KEYS = Object.freeze([
   'totalCost',
   'profit',
   'beverageStock',
-  'cookerAvailable',
 ]);
 
 const host = process.env.MOCK_API_HOST || DEFAULT_HOST;
@@ -1852,7 +1851,7 @@ async function readJsonBody(request) {
 
 function registerMockDevice(request, body) {
   const identity = requireMockIdentity(request);
-  if (body?.protocolVersion !== 1 || body?.profileSchemaVersion !== 3) {
+  if (body?.protocolVersion !== 1 || body?.profileSchemaVersion !== 4) {
     throw mockHttpError(409, 'unsupported mock device protocol');
   }
   validateMockSharedProfile(body.profile);
@@ -1891,7 +1890,7 @@ function registerMockDevice(request, body) {
 function updateMockDeviceProfile(request, body) {
   const current = requireMockDevice(request);
   requireMockCas(body);
-  if (body?.profileSchemaVersion !== 3) throw mockHttpError(409, 'unsupported mock profile schema');
+  if (body?.profileSchemaVersion !== 4) throw mockHttpError(409, 'unsupported mock profile schema');
   validateMockSharedProfile(body.profile);
   if (current.deviceId !== mockDeviceAuthority.primaryDeviceId) throw mockHttpError(403, 'only the primary mock device can update the active profile');
   if (body.expectedProfileRevision !== current.profileRevision) throw mockHttpError(409, 'mock profile revision changed');
@@ -1999,7 +1998,7 @@ function buildMockDeviceAuthorityState(current) {
   return {
     ok: true,
     protocolVersion: 1,
-    profileSchemaVersion: 3,
+    profileSchemaVersion: 4,
     registryId: mockDeviceAuthority.registryId,
     authorityRevision: mockDeviceAuthority.authorityRevision,
     stateRevision: mockDeviceAuthority.stateRevision,

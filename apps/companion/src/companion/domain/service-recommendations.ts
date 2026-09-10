@@ -2040,8 +2040,6 @@ function getFoodCandidateObjectiveValue(
       return food.baseCost + food.extraCost;
     case 'profit':
       return food.recipe.price - food.baseCost - food.extraCost;
-    case 'cookerAvailable':
-      return food.cookerAvailable ? 1 : 0;
     case 'beveragePreference':
     case 'beverageStock':
       return 0;
@@ -2064,7 +2062,6 @@ function getBeverageCandidateObjectiveValue(
     case 'extraCount':
     case 'resourcePressure':
     case 'totalCost':
-    case 'cookerAvailable':
       return 0;
   }
 }

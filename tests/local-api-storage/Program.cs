@@ -21,6 +21,7 @@ try
     VerifyFutureSchemasArePreserved(root, log);
     VerifyCompanionDeviceAuthorityV1Migration(root, log);
     VerifyCompanionDeviceAuthorityV2Migration(root, log);
+    VerifyCompanionDeviceAuthorityV3Migration(root, log);
     VerifyCompanionDeviceAuthorityExactStoredShape(root, log);
     VerifyCompanionDeviceAuthority(root, log);
     VerifyManagedRareGuestProfileValidation(root, log);
@@ -58,7 +59,7 @@ static void VerifyCompanionDeviceAuthority(string root, ManualLogSource log)
         now);
     AssertEqual(true, primary.CurrentDeviceIsPrimary, "The first registered device did not become primary.");
     AssertEqual(1L, primary.AuthorityRevision, "Initial authority revision is invalid.");
-    AssertEqual(3, primary.ProfileSchemaVersion, "The device authority did not expose shared profile schema v3.");
+    AssertEqual(4, primary.ProfileSchemaVersion, "The device authority did not expose shared profile schema v4.");
     AssertEqual(true, primary.ActiveProfile.GetProperty("rareGuestParticipationModuleEnabled").GetBoolean(), "The enabled rare-guest participation module did not round-trip.");
     AssertEqual(1, primary.Devices.Count, "Initial device registry count is invalid.");
 
@@ -84,7 +85,7 @@ static void VerifyCompanionDeviceAuthority(string root, ManualLogSource log)
             new CompanionDeviceProfileUpdateRequest
             {
                 ProtocolVersion = 1,
-                ProfileSchemaVersion = 3,
+                ProfileSchemaVersion = 4,
                 ExpectedAuthorityRevision = secondary.AuthorityRevision,
                 ExpectedProfileRevision = secondary.CurrentDeviceProfileRevision,
                 Profile = secondaryProfile,
@@ -96,7 +97,7 @@ static void VerifyCompanionDeviceAuthority(string root, ManualLogSource log)
         new CompanionDeviceProfileUpdateRequest
         {
             ProtocolVersion = 1,
-            ProfileSchemaVersion = 3,
+            ProfileSchemaVersion = 4,
             ExpectedAuthorityRevision = secondary.AuthorityRevision,
             ExpectedProfileRevision = primary.CurrentDeviceProfileRevision,
             Profile = primaryProfile,
@@ -116,7 +117,7 @@ static void VerifyCompanionDeviceAuthority(string root, ManualLogSource log)
         new CompanionDeviceProfileUpdateRequest
         {
             ProtocolVersion = 1,
-            ProfileSchemaVersion = 3,
+            ProfileSchemaVersion = 4,
             ExpectedAuthorityRevision = secondary.AuthorityRevision,
             ExpectedProfileRevision = primary.CurrentDeviceProfileRevision,
             Profile = updatedProfile,
@@ -136,7 +137,7 @@ static void VerifyCompanionDeviceAuthority(string root, ManualLogSource log)
             new CompanionDeviceProfileUpdateRequest
             {
                 ProtocolVersion = 1,
-                ProfileSchemaVersion = 3,
+                ProfileSchemaVersion = 4,
                 ExpectedAuthorityRevision = secondary.AuthorityRevision,
                 ExpectedProfileRevision = primary.CurrentDeviceProfileRevision,
                 Profile = primaryProfile,
@@ -242,12 +243,14 @@ static void VerifyCompanionDeviceAuthorityV1Migration(string root, ManualLogSour
         true,
         2,
         includeManagedRareGuestIds: false,
-        includeRareGuestParticipationModuleEnabled: false);
+        includeRareGuestParticipationModuleEnabled: false,
+        includeRetiredCookerObjective: true);
     var secondaryProfile = BuildSharedProfile(
         false,
         3,
         includeManagedRareGuestIds: false,
-        includeRareGuestParticipationModuleEnabled: false);
+        includeRareGuestParticipationModuleEnabled: false,
+        includeRetiredCookerObjective: true);
     var primaryLegacyHash = ComputeCanonicalProfileHash(primaryProfile);
     var secondaryLegacyHash = ComputeCanonicalProfileHash(secondaryProfile);
     var legacy = new DeviceAuthorityData
@@ -293,7 +296,7 @@ static void VerifyCompanionDeviceAuthorityV1Migration(string root, ManualLogSour
     var store = new CompanionDeviceAuthorityStore(path, log);
     var primary = store.Read(primaryId, now);
     var secondary = store.Read(secondaryId, now);
-    AssertEqual(3, primary.ProfileSchemaVersion, "A legacy device store did not migrate to profile schema v3.");
+    AssertEqual(4, primary.ProfileSchemaVersion, "A legacy device store did not migrate to profile schema v4.");
     AssertEqual(7L, primary.AuthorityRevision, "Migration changed authority revision.");
     AssertEqual(11L, primary.StateRevision, "Migration changed state revision.");
     AssertEqual(4L, primary.CurrentDeviceProfileRevision, "Migration changed the primary profile revision.");
@@ -303,14 +306,14 @@ static void VerifyCompanionDeviceAuthorityV1Migration(string root, ManualLogSour
         2L,
         secondary.Devices.Single(device => device.IsCurrent).AppliedProfileRevision,
         "Migration changed the applied pending profile revision.");
-    AssertEqual(0, primary.ActiveProfile.GetProperty("managedRareGuestIds").GetArrayLength(), "Migration did not add the empty v3 managed list.");
+    AssertEqual(0, primary.ActiveProfile.GetProperty("managedRareGuestIds").GetArrayLength(), "Migration did not add the empty managed list.");
     AssertEqual(false, primary.ActiveProfile.GetProperty("rareGuestParticipationModuleEnabled").GetBoolean(), "A v1 profile did not migrate with rare-guest participation disabled.");
     AssertTrue(primary.ActiveProfileHash != primaryLegacyHash, "Migration did not recompute the primary canonical profile hash.");
     AssertTrue(secondary.CurrentDeviceProfileHash != secondaryLegacyHash, "Migration did not recompute the pending canonical profile hash.");
 
     using (var migratedDocument = JsonDocument.Parse(File.ReadAllText(path, Encoding.UTF8)))
     {
-        AssertEqual(3, migratedDocument.RootElement.GetProperty("version").GetInt32(), "Migrated store schema was not persisted as v3.");
+        AssertEqual(4, migratedDocument.RootElement.GetProperty("version").GetInt32(), "Migrated store schema was not persisted as v4.");
         foreach (var device in migratedDocument.RootElement.GetProperty("devices").EnumerateArray())
         {
             AssertEqual(0, device.GetProperty("profile").GetProperty("managedRareGuestIds").GetArrayLength(), "A migrated profile omitted the managed list.");
@@ -321,7 +324,7 @@ static void VerifyCompanionDeviceAuthorityV1Migration(string root, ManualLogSour
     var migratedBytes = File.ReadAllBytes(path);
     var reloaded = new CompanionDeviceAuthorityStore(path, log);
     _ = reloaded.Read(primaryId, now.AddSeconds(1));
-    AssertTrue(migratedBytes.SequenceEqual(File.ReadAllBytes(path)), "A second v3 load rewrote the migrated store.");
+    AssertTrue(migratedBytes.SequenceEqual(File.ReadAllBytes(path)), "A second v4 load rewrote the migrated store.");
     ExpectAuthorityError(
         409,
         () => reloaded.AcknowledgeSync(
@@ -345,7 +348,7 @@ static void VerifyCompanionDeviceAuthorityV1Migration(string root, ManualLogSour
             ProfileHash = refreshed.CurrentDeviceProfileHash,
         },
         now.AddSeconds(4));
-    AssertEqual(null, acknowledged.PendingSyncId, "A migrated pending sync could not be acknowledged with its v3 hash.");
+    AssertEqual(null, acknowledged.PendingSyncId, "A migrated pending sync could not be acknowledged with its v4 hash.");
 }
 
 static void VerifyCompanionDeviceAuthorityV2Migration(string root, ManualLogSource log)
@@ -357,7 +360,8 @@ static void VerifyCompanionDeviceAuthorityV2Migration(string root, ManualLogSour
         automationEnabled: true,
         rareConcurrency: 2,
         managedRareGuestIds: new[] { 4, 9 },
-        includeRareGuestParticipationModuleEnabled: false);
+        includeRareGuestParticipationModuleEnabled: false,
+        includeRetiredCookerObjective: true);
     var previousHash = ComputeCanonicalProfileHash(previousProfile);
     var previous = new DeviceAuthorityData
     {
@@ -387,7 +391,7 @@ static void VerifyCompanionDeviceAuthorityV2Migration(string root, ManualLogSour
 
     var store = new CompanionDeviceAuthorityStore(path, log);
     var state = store.Read(deviceId, now);
-    AssertEqual(3, state.ProfileSchemaVersion, "A v2 device store did not migrate to profile schema v3.");
+    AssertEqual(4, state.ProfileSchemaVersion, "A v2 device store did not migrate to profile schema v4.");
     AssertEqual(5L, state.AuthorityRevision, "The v2 migration changed authority revision.");
     AssertEqual(8L, state.StateRevision, "The v2 migration changed state revision.");
     AssertEqual(3L, state.CurrentDeviceProfileRevision, "The v2 migration changed profile revision.");
@@ -403,11 +407,87 @@ static void VerifyCompanionDeviceAuthorityV2Migration(string root, ManualLogSour
 
     using (var migratedDocument = JsonDocument.Parse(File.ReadAllText(path, Encoding.UTF8)))
     {
-        AssertEqual(3, migratedDocument.RootElement.GetProperty("version").GetInt32(), "The v2 store was not persisted as v3.");
+        AssertEqual(4, migratedDocument.RootElement.GetProperty("version").GetInt32(), "The v2 store was not persisted as v4.");
     }
     var migratedBytes = File.ReadAllBytes(path);
     _ = new CompanionDeviceAuthorityStore(path, log).Read(deviceId, now.AddSeconds(1));
-    AssertTrue(migratedBytes.SequenceEqual(File.ReadAllBytes(path)), "A second v3 load rewrote the migrated v2 store.");
+    AssertTrue(migratedBytes.SequenceEqual(File.ReadAllBytes(path)), "A second v4 load rewrote the migrated v2 store.");
+}
+
+static void VerifyCompanionDeviceAuthorityV3Migration(string root, ManualLogSource log)
+{
+    var path = Path.Combine(root, "companion-devices-v3.json");
+    var previous = JsonNode.Parse(BuildStoredAuthorityFixture(3))!.AsObject();
+    var firstDevice = FirstStoredDevice(previous);
+    var firstId = firstDevice["deviceId"]!.GetValue<string>();
+    var objectives = StoredObjectives(previous);
+    for (var index = 0; index < objectives.Count; index++)
+    {
+        objectives[index]!["weight"] = index % 2 == 0 ? 0 : 100;
+        objectives[index]!["enabled"] = index % 3 != 0;
+        objectives[index]!["direction"] = index % 2 == 0 ? "asc" : "desc";
+    }
+    firstDevice["profile"]!["recommendationSortProfile"]!["preset"] = "profit";
+    firstDevice["profileHash"] = ComputeCanonicalProfileHash(JsonSerializer.SerializeToElement(firstDevice["profile"]));
+    var secondDevice = JsonNode.Parse(firstDevice.ToJsonString())!.AsObject();
+    const string secondId = "88888888-8888-8888-8888-888888888888";
+    const string pendingId = "dddddddddddddddddddddddddddddddd";
+    secondDevice["deviceId"] = secondId;
+    secondDevice["platform"] = "android";
+    secondDevice["profileRevision"] = 2;
+    secondDevice["appliedProfileRevision"] = 1;
+    secondDevice["pendingSyncId"] = pendingId;
+    previous["devices"]!.AsArray().Add(secondDevice);
+    var oldHash = secondDevice["profileHash"]!.GetValue<string>();
+    var expected = JsonNode.Parse(previous.ToJsonString())!.AsObject();
+    expected["version"] = 4;
+    foreach (var item in expected["devices"]!.AsArray())
+    {
+        var device = item!.AsObject();
+        var rules = device["profile"]!["recommendationSortProfile"]!["objectives"]!.AsArray();
+        rules.Remove(rules.Single(rule => rule!["key"]!.GetValue<string>() == "cookerAvailable"));
+        device["profileHash"] = ComputeCanonicalProfileHash(JsonSerializer.SerializeToElement(device["profile"]));
+    }
+    File.WriteAllText(path, previous.ToJsonString(DeviceAuthorityJsonOptions()), new UTF8Encoding(false));
+    var store = new CompanionDeviceAuthorityStore(path, log);
+    var state = store.Read(firstId, DateTime.UtcNow);
+    AssertEqual(4, state.ProfileSchemaVersion, "The v3 store did not migrate to current profile v4.");
+    AssertEqual(true, state.ActiveProfile.GetProperty("rareGuestParticipationModuleEnabled").GetBoolean(), "The v3 migration reset the participation module flag.");
+    AssertEqual(8, state.ActiveProfile.GetProperty("recommendationSortProfile").GetProperty("objectives").GetArrayLength(), "The retired cooker objective remained in the v4 profile.");
+    using var actual = JsonDocument.Parse(File.ReadAllText(path, Encoding.UTF8));
+    AssertEqual(
+        ComputeCanonicalProfileHash(JsonSerializer.SerializeToElement(expected)),
+        ComputeCanonicalProfileHash(actual.RootElement),
+        "The v3 migration changed data beyond the store version, retired objective and canonical hashes.");
+    var migratedBytes = File.ReadAllBytes(path);
+    var reloaded = new CompanionDeviceAuthorityStore(path, log);
+    _ = reloaded.Read(firstId, DateTime.UtcNow);
+    AssertTrue(migratedBytes.SequenceEqual(File.ReadAllBytes(path)), "A second v4 load rewrote the migrated v3 store.");
+    ExpectAuthorityError(409, () => reloaded.AcknowledgeSync(secondId, new CompanionDeviceSyncAckRequest
+    {
+        ProtocolVersion = 1,
+        SyncId = pendingId,
+        ProfileRevision = 2,
+        ProfileHash = oldHash,
+    }, DateTime.UtcNow));
+    var refreshed = reloaded.Read(secondId, DateTime.UtcNow);
+    var acknowledged = reloaded.AcknowledgeSync(secondId, new CompanionDeviceSyncAckRequest
+    {
+        ProtocolVersion = 1,
+        SyncId = pendingId,
+        ProfileRevision = refreshed.CurrentDeviceProfileRevision,
+        ProfileHash = refreshed.CurrentDeviceProfileHash,
+    }, DateTime.UtcNow);
+    AssertEqual(null, acknowledged.PendingSyncId, "The v3 pending sync could not acknowledge the v4 hash.");
+
+    var retiredWireProfile = JsonSerializer.SerializeToElement(firstDevice["profile"]);
+    ExpectAuthorityError(400, () => new CompanionDeviceAuthorityStore(Path.Combine(root, "retired-objective-wire.json"), log)
+        .Register(firstId, "Retired objective", RegisterRequest("browser", retiredWireProfile), DateTime.UtcNow));
+}
+
+static JsonArray StoredObjectives(JsonObject document)
+{
+    return FirstStoredDevice(document)["profile"]!["recommendationSortProfile"]!["objectives"]!.AsArray();
 }
 
 static void VerifyCompanionDeviceAuthorityExactStoredShape(string root, ManualLogSource log)
@@ -420,9 +500,15 @@ static void VerifyCompanionDeviceAuthorityExactStoredShape(string root, ManualLo
         ("device-unknown", document => FirstStoredDevice(document)["unexpected"] = true),
         ("device-missing", document => FirstStoredDevice(document).Remove("label")),
         ("device-null", document => FirstStoredDevice(document)["profile"] = null),
+        ("objective-missing", document => StoredObjectives(document).RemoveAt(0)),
+        ("objective-duplicate", document => StoredObjectives(document)[1] = JsonNode.Parse(StoredObjectives(document)[0]!.ToJsonString())),
+        ("objective-unknown", document => StoredObjectives(document)[0]!["key"] = "unknownObjective"),
+        ("objective-enabled-type", document => StoredObjectives(document)[0]!["enabled"] = "true"),
+        ("objective-weight-range", document => StoredObjectives(document)[0]!["weight"] = 101),
+        ("objective-direction", document => StoredObjectives(document)[0]!["direction"] = "sideways"),
     };
 
-    foreach (var version in new[] { 1, 2, 3 })
+    foreach (var version in new[] { 1, 2, 3, 4 })
     {
         foreach (var (name, apply) in corruptions)
         {
@@ -430,6 +516,11 @@ static void VerifyCompanionDeviceAuthorityExactStoredShape(string root, ManualLo
             var document = JsonNode.Parse(BuildStoredAuthorityFixture(version))?.AsObject()
                 ?? throw new InvalidOperationException("The stored authority fixture is not an object.");
             apply(document);
+            if (name.StartsWith("objective-", StringComparison.Ordinal))
+            {
+                var device = FirstStoredDevice(document);
+                device["profileHash"] = ComputeCanonicalProfileHash(JsonSerializer.SerializeToElement(device["profile"]));
+            }
             var content = document.ToJsonString(DeviceAuthorityJsonOptions());
             File.WriteAllText(path, content, new UTF8Encoding(false));
 
@@ -464,13 +555,21 @@ static string BuildStoredAuthorityFixture(int version)
             true,
             2,
             includeManagedRareGuestIds: false,
-            includeRareGuestParticipationModuleEnabled: false),
+            includeRareGuestParticipationModuleEnabled: false,
+            includeRetiredCookerObjective: true),
         2 => BuildSharedProfile(
             true,
             2,
             managedRareGuestIds: new[] { 4, 9 },
-            includeRareGuestParticipationModuleEnabled: false),
+            includeRareGuestParticipationModuleEnabled: false,
+            includeRetiredCookerObjective: true),
         3 => BuildSharedProfile(
+            true,
+            2,
+            managedRareGuestIds: new[] { 4, 9 },
+            rareGuestParticipationModuleEnabled: true,
+            includeRetiredCookerObjective: true),
+        4 => BuildSharedProfile(
             true,
             2,
             managedRareGuestIds: new[] { 4, 9 },
@@ -516,7 +615,7 @@ static void VerifyManagedRareGuestProfileValidation(string root, ManualLogSource
     var registered = store.Register(deviceId, "Valid", RegisterRequest("browser", valid), now);
     AssertEqual(512, registered.ActiveProfile.GetProperty("managedRareGuestIds").GetArrayLength(), "The exact 512-entry managed-list boundary did not round-trip.");
 
-    foreach (var staleSchemaVersion in new[] { 1, 2 })
+    foreach (var staleSchemaVersion in new[] { 1, 2, 3 })
     {
         ExpectAuthorityError(
             409,
@@ -560,7 +659,7 @@ static void VerifyManagedRareGuestProfileValidation(string root, ManualLogSource
                 new CompanionDeviceProfileUpdateRequest
                 {
                     ProtocolVersion = 1,
-                    ProfileSchemaVersion = 3,
+                    ProfileSchemaVersion = 4,
                     ExpectedAuthorityRevision = registered.AuthorityRevision,
                     ExpectedProfileRevision = registered.CurrentDeviceProfileRevision,
                     Profile = invalidProfile,
@@ -589,7 +688,8 @@ static void VerifyCorruptDeviceAuthorityIsPreserved(string root, ManualLogSource
         true,
         2,
         includeManagedRareGuestIds: false,
-        includeRareGuestParticipationModuleEnabled: false);
+        includeRareGuestParticipationModuleEnabled: false,
+        includeRetiredCookerObjective: true);
     var legacy = new DeviceAuthorityData
     {
         Version = 1,
@@ -632,7 +732,7 @@ static CompanionDeviceRegisterRequest RegisterRequest(string platform, JsonEleme
     return new CompanionDeviceRegisterRequest
     {
         ProtocolVersion = 1,
-        ProfileSchemaVersion = 3,
+        ProfileSchemaVersion = 4,
         Platform = platform,
         AppVersion = "1.2.0",
         Profile = profile,
@@ -645,7 +745,8 @@ static JsonElement BuildSharedProfile(
     IReadOnlyList<int>? managedRareGuestIds = null,
     bool includeManagedRareGuestIds = true,
     bool includeRareGuestParticipationModuleEnabled = true,
-    bool rareGuestParticipationModuleEnabled = false)
+    bool rareGuestParticipationModuleEnabled = false,
+    bool includeRetiredCookerObjective = false)
 {
     var booleanFields = new[]
     {
@@ -681,8 +782,9 @@ static JsonElement BuildSharedProfile(
     var objectiveKeys = new[]
     {
         "foodPreference", "beveragePreference", "negativeRisk", "extraCount", "resourcePressure",
-        "totalCost", "profit", "beverageStock", "cookerAvailable",
+        "totalCost", "profit", "beverageStock",
     };
+    if (includeRetiredCookerObjective) objectiveKeys = objectiveKeys.Append("cookerAvailable").ToArray();
     profile["recommendationSortProfile"] = new Dictionary<string, object?>
     {
         ["preset"] = "balanced",
@@ -1049,7 +1151,7 @@ static void VerifyFutureSchemasArePreserved(string root, ManualLogSource log)
     {
         (
             "companion-devices-future.json",
-            "{\"version\":4,\"registryId\":\"0123456789abcdef0123456789abcdef\",\"authorityRevision\":0,\"stateRevision\":0,\"primaryDeviceId\":\"\",\"devices\":[]}"),
+            "{\"version\":5,\"registryId\":\"0123456789abcdef0123456789abcdef\",\"authorityRevision\":0,\"stateRevision\":0,\"primaryDeviceId\":\"\",\"devices\":[]}"),
         (
             "companion-devices-missing-version.json",
             "{\"registryId\":\"0123456789abcdef0123456789abcdef\",\"authorityRevision\":0,\"stateRevision\":0,\"primaryDeviceId\":\"\",\"devices\":[]}"),

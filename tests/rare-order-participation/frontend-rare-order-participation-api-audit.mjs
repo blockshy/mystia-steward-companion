@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 
 import { createServer } from 'vite';
 
-import { buildCurrentSharedProfileV3 } from '../device-authority/current-v3-profile-fixture.mjs';
+import { buildCurrentSharedProfileV4 } from '../device-authority/current-v4-profile-fixture.mjs';
 
 const port = 38_000 + (process.pid % 1_000);
 const endpoint = `http://127.0.0.1:${port}`;
@@ -38,10 +38,10 @@ try {
 
   const registration = await postJson('/devices/register', 0, {
     protocolVersion: 1,
-    profileSchemaVersion: 3,
+    profileSchemaVersion: 4,
     platform: 'browser',
     appVersion: 'participation-audit',
-    profile: buildCurrentSharedProfileV3({
+    profile: buildCurrentSharedProfileV4({
       automationEnabled: true,
       autoPrepCompleteOrder: true,
       autoPrepStartCooking: true,
@@ -299,10 +299,10 @@ try {
 
   const updatedProfile = await postJson('/devices/profile', 0, {
     protocolVersion: 1,
-    profileSchemaVersion: 3,
+    profileSchemaVersion: 4,
     expectedAuthorityRevision: registration.authorityRevision,
     expectedProfileRevision: registration.currentDeviceProfileRevision,
-    profile: buildCurrentSharedProfileV3({
+    profile: buildCurrentSharedProfileV4({
       rareGuestParticipationModuleEnabled: true,
       managedRareGuestIds: [1002],
     }),
@@ -319,10 +319,10 @@ try {
 
   const disabledProfile = await postJson('/devices/profile', 0, {
     protocolVersion: 1,
-    profileSchemaVersion: 3,
+    profileSchemaVersion: 4,
     expectedAuthorityRevision: updatedProfile.authorityRevision,
     expectedProfileRevision: updatedProfile.currentDeviceProfileRevision,
-    profile: buildCurrentSharedProfileV3({
+    profile: buildCurrentSharedProfileV4({
       rareGuestParticipationModuleEnabled: false,
       managedRareGuestIds: [1002],
     }),
@@ -361,10 +361,10 @@ try {
   };
   const secondaryRegistration = await postJson('/devices/register', 0, {
     protocolVersion: 1,
-    profileSchemaVersion: 3,
+    profileSchemaVersion: 4,
     platform: 'android',
     appVersion: 'participation-audit',
-    profile: buildCurrentSharedProfileV3({
+    profile: buildCurrentSharedProfileV4({
       rareGuestParticipationModuleEnabled: true,
       managedRareGuestIds: [1001],
     }),

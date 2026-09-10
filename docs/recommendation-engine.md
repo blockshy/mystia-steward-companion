@@ -54,6 +54,9 @@
 5. 在硬约束之后应用任务、收藏、自定义料理和用户排序权重。
 6. 将结果稳定排序，并把第一项确认为唯一主执行方案。
 
+可配置的 8 项权重为料理偏好、酒水偏好、厌恶风险、加料数量、食材压力、总成本、收益和酒水库存。
+厨具可用性由候选条件与缺失厨具过滤设置处理，不作为排序权重；硬失败的料理不能进入展示行或执行方案。
+
 任何“优先”都不能绕过硬约束。诊断模式复用同一候选处理流程，只在最终方案为空时解释最先阻断的原因；它不应
 另外维护一套宽松算法，否则界面解释会与实际行为分叉。
 
@@ -133,7 +136,8 @@ corepack pnpm audit:recommendations
 
 ```bash
 corepack pnpm audit:custom-recipes
-dotnet run --project tests/local-api-storage/LocalApiStorageSmoke.csproj -c Release
+dotnet build tests/local-api-storage/LocalApiStorageSmoke.csproj -c Release
+corepack pnpm test:dotnet6 local-api-storage
 ```
 
 涉及前端展示时追加 `corepack pnpm audit:ui`；涉及自动化或游戏内 UI 时运行对应专题测试。完整验证分层见

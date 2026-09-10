@@ -275,7 +275,6 @@ function buildCustomFoodCandidate(
     baseCost,
     extraCost,
     resourcePressure: calculateResourcePressure(extraIngredients, context.ownedIngredientQty),
-    cookerAvailable,
     conditionResults: buildCustomFoodConditionResults({
       recipe,
       entry,

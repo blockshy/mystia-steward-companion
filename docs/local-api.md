@@ -109,8 +109,9 @@ expectedAuthorityRevision
 
 `CompanionDeviceAuthorityStore` 是共享功能配置的唯一生效来源；窗口主题、字体、连接地址等本地 UI 偏好不进入共享配置。
 
-- 当前线上配置结构与 `companion-devices.json` 存储结构均为 v3。配置必须包含严格布尔值 `rareGuestParticipationModuleEnabled` 和规范 `managedRareGuestIds`。
-- 存储格式 v1/v2 只在加载时执行一次不可分割的迁移并立即写回 v3：v1 增加空名单，v2 保留已有名单，两者都把模块设为关闭。迁移前必须由固定的版本描述完整校验存储外层对象、设备记录和配置；未知、缺失、`null` 或额外字段均拒绝加载，损坏或未知版本不写回。
+- 当前线上配置结构与 `companion-devices.json` 存储结构均为 v4。配置必须包含严格布尔值 `rareGuestParticipationModuleEnabled`、规范 `managedRareGuestIds` 和完整的 8 项推荐排序目标；线上请求只接受当前版本。
+- 存储格式 v1/v2/v3 只在加载时执行一次不可分割的转换并立即写回 v4：严格校验旧版本全部 9 项排序目标后删除 `cookerAvailable`，其余目标的顺序、启用状态、方向和权重原样保留。v1 增加空名单，v2 保留已有名单，两者把模块设为关闭；v3 保留已有模块开关和名单。设备标识、主设备、权限、各修订号和待同步 ID 保持不变，配置哈希重新计算，待同步确认必须使用新哈希。
+- 转换前由固定版本描述完整校验存储外层对象、设备记录、配置和旧哈希；未知、缺失、重复、`null` 或额外字段均拒绝加载，损坏或未知版本不写回。当前 v4 不接受已删除的排序目标。
 - 第一个成功注册的设备成为初始主设备，不因离线自动转移。
 - 只有当前主设备能通过 `expectedAuthorityRevision + expectedProfileRevision` 更新生效配置。
 - 设置主设备、同步、忘记设备等操作使用 `expectedAuthorityRevision` 做状态比较后写入（CAS）；冲突必须刷新后重试，不做最后写入覆盖。
@@ -172,7 +173,8 @@ expectedAuthorityRevision
 dotnet run --project tests/local-api-listener-lifecycle/LocalApiListenerLifecycleSmoke.csproj -c Release
 dotnet run --project tests/local-api-client-handlers/LocalApiClientHandlersSmoke.csproj -c Release
 dotnet run --project tests/local-api-method-matrix/LocalApiMethodMatrixSmoke.csproj -c Release
-dotnet run --project tests/local-api-storage/LocalApiStorageSmoke.csproj -c Release
+dotnet build tests/local-api-storage/LocalApiStorageSmoke.csproj -c Release
+corepack pnpm test:dotnet6 local-api-storage
 dotnet run --project tests/main-thread-command/MainThreadCommandSmoke.csproj -c Release
 dotnet run --project tests/snapshot-signature/SnapshotSignatureSmoke.csproj -c Release
 ```

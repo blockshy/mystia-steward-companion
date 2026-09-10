@@ -227,7 +227,7 @@ export type LocalCompanionPreferences = Omit<
   keyof SharedCompanionPreferences
 >;
 
-export const SHARED_COMPANION_PREFERENCES_SCHEMA_VERSION = 3;
+export const SHARED_COMPANION_PREFERENCES_SCHEMA_VERSION = 4;
 
 const SHARED_COMPANION_BOOLEAN_FIELDS = [
   'automationEnabled',
@@ -287,7 +287,6 @@ const RECOMMENDATION_OBJECTIVE_KEYS = [
   'totalCost',
   'profit',
   'beverageStock',
-  'cookerAvailable',
 ] as const satisfies readonly RecommendationObjectiveKey[];
 
 export function normalizeEditableQuantity(value: number) {
@@ -936,7 +935,7 @@ function parseWireRecommendationSortProfile(value: unknown): RecommendationSortP
   );
   if (!Array.isArray(profile.objectives)
     || profile.objectives.length !== RECOMMENDATION_OBJECTIVE_KEYS.length) {
-    throw new Error('推荐排序配置必须完整包含当前版本要求的 9 项。');
+    throw new Error('推荐排序配置必须完整包含当前版本要求的 8 项。');
   }
 
   const seen = new Set<RecommendationObjectiveKey>();

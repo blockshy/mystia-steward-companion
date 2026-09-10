@@ -17,8 +17,7 @@ export type RecommendationObjectiveKey =
   | 'resourcePressure'
   | 'totalCost'
   | 'profit'
-  | 'beverageStock'
-  | 'cookerAvailable';
+  | 'beverageStock';
 
 /**
  * 用户可调整的单个排序目标定义。
@@ -128,12 +127,6 @@ export const RECOMMENDATION_OBJECTIVE_DEFINITIONS: RecommendationObjectiveDefini
     description: '已有库存更多的酒水靠前。',
     direction: 'desc',
   },
-  {
-    key: 'cookerAvailable',
-    label: '当前厨具可做',
-    description: '厨具可用的料理方案靠前。',
-    direction: 'desc',
-  },
 ];
 
 export const DEFAULT_RECOMMENDATION_SORT_PROFILE = buildRecommendationSortProfile('balanced');
@@ -236,7 +229,6 @@ function getPresetWeight(
       totalCost: 30,
       profit: 35,
       beverageStock: 35,
-      cookerAvailable: 60,
     },
     resources: {
       foodPreference: 55,
@@ -247,7 +239,6 @@ function getPresetWeight(
       totalCost: 70,
       profit: 20,
       beverageStock: 80,
-      cookerAvailable: 60,
     },
     profit: {
       foodPreference: 60,
@@ -258,7 +249,6 @@ function getPresetWeight(
       totalCost: 25,
       profit: 100,
       beverageStock: 25,
-      cookerAvailable: 50,
     },
     simple: {
       foodPreference: 50,
@@ -269,7 +259,6 @@ function getPresetWeight(
       totalCost: 45,
       profit: 25,
       beverageStock: 40,
-      cookerAvailable: 70,
     },
   };
 

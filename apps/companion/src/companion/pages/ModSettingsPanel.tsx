@@ -965,7 +965,6 @@ export function ModSettingsPanel({
           <ListPanel title="推荐权重">
             <RecommendationSortProfileControl
               profile={preferences.recommendationSortProfile}
-              filterMissingCookers={preferences.filterMissingCookers}
               onChange={(recommendationSortProfile) => onSharedPreferenceChange({ recommendationSortProfile })}
             />
           </ListPanel>
@@ -1383,11 +1382,9 @@ function SharedSettingsAuthorityNotice({ reason }: { reason: string }) {
 
 function RecommendationSortProfileControl({
   profile,
-  filterMissingCookers,
   onChange,
 }: {
   profile: RecommendationSortProfile;
-  filterMissingCookers: boolean;
   onChange: (profile: RecommendationSortProfile) => void;
 }) {
   const updateObjective = (
@@ -1425,19 +1422,13 @@ function RecommendationSortProfileControl({
         {RECOMMENDATION_OBJECTIVE_DEFINITIONS.map((definition) => {
           const rule = profile.objectives.find((item) => item.key === definition.key);
           if (!rule) return null;
-          const disabledByHardFilter = definition.key === 'cookerAvailable' && filterMissingCookers;
-          const controlDisabled = disabledByHardFilter;
-          const description = disabledByHardFilter
-            ? <>{definition.description} 当前已由“排除缺失厨具”的强制筛选接管，此排序偏好不参与结果。</>
-            : definition.description;
 
           return (
             <SettingHelpField
               key={definition.key}
               id={`recommendation-weight-${definition.key}`}
               label={definition.label}
-              description={description}
-              disabledControl={controlDisabled}
+              description={definition.description}
             >
               {({ helpTrigger, descriptionId }) => (
                 <div className="steward-data-row p-2">
@@ -1447,26 +1438,22 @@ function RecommendationSortProfileControl({
                         <SwitchField
                           label={definition.label}
                           checked={rule.enabled}
-                          disabled={controlDisabled}
                           onCheckedChange={(enabled) => updateObjective(definition.key, { enabled })}
                           className="min-w-0 flex-1"
                           aria-describedby={descriptionId}
                         />
                         {helpTrigger}
                       </div>
-                      <span className={rule.enabled && !controlDisabled ? 'shrink-0 text-right text-sm tabular-nums' : 'shrink-0 text-right text-sm tabular-nums text-muted-foreground'}>
+                      <span className={rule.enabled ? 'shrink-0 text-right text-sm tabular-nums' : 'shrink-0 text-right text-sm tabular-nums text-muted-foreground'}>
                         {rule.weight}
                       </span>
                     </div>
-                    {disabledByHardFilter && (
-                      <div className="text-xs text-muted-foreground">已由强制筛选接管</div>
-                    )}
                     <Slider
                       value={rule.weight}
                       min={0}
                       max={100}
                       step={5}
-                      disabled={!rule.enabled || controlDisabled}
+                      disabled={!rule.enabled}
                       aria-label={`${definition.label}权重`}
                       aria-describedby={descriptionId}
                       className="min-w-0"

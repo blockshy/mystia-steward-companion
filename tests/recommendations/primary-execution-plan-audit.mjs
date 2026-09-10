@@ -633,7 +633,6 @@ function buildRareTargetPlan(foodId, beverageId, recipeId) {
       baseCost: 1,
       extraCost: 1,
       resourcePressure: 0,
-      cookerAvailable: true,
     },
     beverage: {
       ...plan.beverage,

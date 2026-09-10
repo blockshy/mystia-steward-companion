@@ -4,9 +4,9 @@ import { readFile } from 'node:fs/promises';
 import { createServer } from 'vite';
 
 import {
-  buildCurrentSharedProfileV3 as buildSharedProfile,
-  hashCurrentSharedProfileV3,
-} from './current-v3-profile-fixture.mjs';
+  buildCurrentSharedProfileV4 as buildSharedProfile,
+  hashCurrentSharedProfileV4,
+} from './current-v4-profile-fixture.mjs';
 
 const port = 35_000 + (process.pid % 1_000);
 const endpoint = `http://127.0.0.1:${port}`;
@@ -21,8 +21,8 @@ server.stderr.on('data', (chunk) => { serverOutput += chunk.toString(); });
 
 const windows = identity('11111111-1111-1111-1111-111111111111', 'Windows companion');
 const android = identity('22222222-2222-2222-2222-222222222222', 'Android companion');
-const WINDOWS_PROFILE_V3_SHA256 = '9ea1c1f88b600dd853763bf48a18cfc594b8c7de025ea2e045f2032e2cb0cfc5';
-const UPDATED_PROFILE_V3_SHA256 = '7e07975be90ec571d71264170a72fed80995ea56bd8633ed76ebe60dd7b96d50';
+const WINDOWS_PROFILE_V4_SHA256 = '82e6246f5e056212f98a2d17843ae9b3d568b1a85cbbc0b7b1bc4d321448488e';
+const UPDATED_PROFILE_V4_SHA256 = 'e6fcc8e0f7c4b89d12b4fc834fb144b2a4687800361d19ab17df933a900f5124';
 
 try {
   await verifySharedProfileContract();
@@ -31,19 +31,30 @@ try {
   const windowsProfile = buildSharedProfile({ automationEnabled: true, autoRareConcurrency: 2 });
   const androidProfile = buildSharedProfile({ automationEnabled: false, autoRareConcurrency: 3 });
 
-  const rejectedPreviousWireSchema = await rawPost('/devices/register', windows, {
-    protocolVersion: 1,
-    profileSchemaVersion: 2,
-    platform: 'windows',
-    appVersion: '1.2.0',
-    profile: windowsProfile,
-  });
-  assert.equal(rejectedPreviousWireSchema.status, 409);
+  for (const profileSchemaVersion of [1, 2, 3, 5]) {
+    const rejectedSchema = await rawPost('/devices/register', windows, {
+      protocolVersion: 1,
+      profileSchemaVersion,
+      platform: 'windows',
+      appVersion: '1.2.0',
+      profile: windowsProfile,
+    });
+    assert.equal(rejectedSchema.status, 409);
+  }
 
   const missingFieldProfile = structuredClone(windowsProfile);
   delete missingFieldProfile.rareGuestParticipationModuleEnabled;
   const invalidCurrentProfiles = [
     ['missing field', missingFieldProfile],
+    ['retired cooker objective', {
+      ...windowsProfile,
+      recommendationSortProfile: {
+        ...windowsProfile.recommendationSortProfile,
+        objectives: [...windowsProfile.recommendationSortProfile.objectives, {
+          key: 'cookerAvailable', enabled: true, weight: 50, direction: 'desc',
+        }],
+      },
+    }],
     ['unexpected field', { ...windowsProfile, unexpectedField: true }],
     ['non-boolean field', { ...windowsProfile, automationEnabled: 'true' }],
     ['out-of-range integer', { ...windowsProfile, autoRareConcurrency: 5 }],
@@ -80,17 +91,17 @@ try {
   for (const [label, profile] of invalidCurrentProfiles) {
     const rejected = await rawPost('/devices/register', windows, {
       protocolVersion: 1,
-      profileSchemaVersion: 3,
+      profileSchemaVersion: 4,
       platform: 'windows',
       appVersion: '1.2.0',
       profile,
     });
-    assert.equal(rejected.status, 400, `Mock accepted a current v3 profile with ${label}.`);
+    assert.equal(rejected.status, 400, `Mock accepted a current v4 profile with ${label}.`);
   }
 
   const first = await postJson('/devices/register', windows, {
     protocolVersion: 1,
-    profileSchemaVersion: 3,
+    profileSchemaVersion: 4,
     platform: 'windows',
     appVersion: '1.2.0',
     profile: windowsProfile,
@@ -99,16 +110,16 @@ try {
   assert.equal(first.authorityRevision, 1);
   assert.equal(first.devices.length, 1);
   assert.equal(
-    hashCurrentSharedProfileV3(windowsProfile),
-    WINDOWS_PROFILE_V3_SHA256,
-    'The exact current-v3 fixture changed without refreshing its canonical hash golden.',
+    hashCurrentSharedProfileV4(windowsProfile),
+    WINDOWS_PROFILE_V4_SHA256,
+    'The exact current-v4 fixture changed without refreshing its canonical hash golden.',
   );
-  assert.equal(first.activeProfileHash, WINDOWS_PROFILE_V3_SHA256);
+  assert.equal(first.activeProfileHash, WINDOWS_PROFILE_V4_SHA256);
   assert.equal(first.currentDeviceProfileHash, first.activeProfileHash);
 
   const second = await postJson('/devices/register', android, {
     protocolVersion: 1,
-    profileSchemaVersion: 3,
+    profileSchemaVersion: 4,
     platform: 'android',
     appVersion: '1.2.0',
     profile: androidProfile,
@@ -119,7 +130,7 @@ try {
 
   const forbiddenProfileWrite = await rawPost('/devices/profile', android, {
     protocolVersion: 1,
-    profileSchemaVersion: 3,
+    profileSchemaVersion: 4,
     expectedAuthorityRevision: second.authorityRevision,
     expectedProfileRevision: second.currentDeviceProfileRevision,
     profile: androidProfile,
@@ -136,7 +147,7 @@ try {
 
   const rejectedNonCanonicalProfile = await rawPost('/devices/profile', windows, {
     protocolVersion: 1,
-    profileSchemaVersion: 3,
+    profileSchemaVersion: 4,
     expectedAuthorityRevision: second.authorityRevision,
     expectedProfileRevision: first.currentDeviceProfileRevision,
     profile: buildSharedProfile({ managedRareGuestIds: [8, 3] }),
@@ -152,7 +163,7 @@ try {
   });
   const updated = await postJson('/devices/profile', windows, {
     protocolVersion: 1,
-    profileSchemaVersion: 3,
+    profileSchemaVersion: 4,
     expectedAuthorityRevision: first.authorityRevision,
     expectedProfileRevision: first.currentDeviceProfileRevision,
     profile: updatedProfile,
@@ -162,11 +173,11 @@ try {
   assert.equal(updated.activeProfile.rareGuestParticipationModuleEnabled, true);
   assert.deepEqual(updated.activeProfile.managedRareGuestIds, [3, 8]);
   assert.equal(
-    hashCurrentSharedProfileV3(updatedProfile),
-    UPDATED_PROFILE_V3_SHA256,
-    '当前 v3 固定样例已变化，但对应的规范哈希预期值未更新。',
+    hashCurrentSharedProfileV4(updatedProfile),
+    UPDATED_PROFILE_V4_SHA256,
+    '当前 v4 固定样例已变化，但对应的规范哈希预期值未更新。',
   );
-  assert.equal(updated.activeProfileHash, UPDATED_PROFILE_V3_SHA256);
+  assert.equal(updated.activeProfileHash, UPDATED_PROFILE_V4_SHA256);
 
   const stalePrimaryLease = await postWithoutBody('/automation/lease/acquire', windows, 1);
   assert.equal(stalePrimaryLease.ok, false);
@@ -342,15 +353,15 @@ async function verifyFrontendSharedProfileBoundaries() {
     assert.deepEqual(
       parseSharedCompanionPreferences(validProfile),
       validProfile,
-      'A complete canonical v3 profile must pass strict wire parsing unchanged.',
+      'A complete canonical v4 profile must pass strict wire parsing unchanged.',
     );
 
-    const v2ProfileMasqueradingAsV3 = structuredClone(validProfile);
-    delete v2ProfileMasqueradingAsV3.rareGuestParticipationModuleEnabled;
+    const v2ProfileMasqueradingAsV4 = structuredClone(validProfile);
+    delete v2ProfileMasqueradingAsV4.rareGuestParticipationModuleEnabled;
     assert.throws(
-      () => parseSharedCompanionPreferences(v2ProfileMasqueradingAsV3),
+      () => parseSharedCompanionPreferences(v2ProfileMasqueradingAsV4),
       /字段与当前配置格式不一致/,
-      'A v2 profile shape must not be completed with the v3 module default.',
+      'A v2 profile shape must not be completed with the v4 module default.',
     );
     assert.throws(
       () => parseSharedCompanionPreferences({ ...validProfile, unexpectedField: false }),
@@ -403,6 +414,26 @@ async function verifyFrontendSharedProfileBoundaries() {
     const duplicateObjective = structuredClone(validProfile);
     duplicateObjective.recommendationSortProfile.objectives[1].key = 'foodPreference';
     assert.throws(() => parseSharedCompanionPreferences(duplicateObjective), /不得重复/);
+
+    const retiredObjectiveProfile = structuredClone(validProfile);
+    retiredObjectiveProfile.recommendationSortProfile.objectives.push({
+      key: 'cookerAvailable', enabled: true, weight: 100, direction: 'asc',
+    });
+    assert.throws(() => parseSharedCompanionPreferences(retiredObjectiveProfile), /8 项/);
+    const retiredObjectiveAtCurrentLength = structuredClone(validProfile);
+    retiredObjectiveAtCurrentLength.recommendationSortProfile.objectives[0].key = 'cookerAvailable';
+    assert.throws(() => parseSharedCompanionPreferences(retiredObjectiveAtCurrentLength), /key/);
+    const tunedLegacyLocalProfile = structuredClone(retiredObjectiveProfile);
+    tunedLegacyLocalProfile.recommendationSortProfile.objectives[0] = {
+      key: 'foodPreference', enabled: false, weight: 37, direction: 'asc',
+    };
+    const cleanedLocalProfile = normalizeSharedCompanionPreferences(tunedLegacyLocalProfile);
+    assert.deepEqual(
+      cleanedLocalProfile.recommendationSortProfile.objectives,
+      tunedLegacyLocalProfile.recommendationSortProfile.objectives.filter(rule => rule.key !== 'cookerAvailable'),
+      'Local preferences must drop the retired objective while preserving all eight user rules.',
+    );
+    assert.deepEqual(parseSharedCompanionPreferences(cleanedLocalProfile), cleanedLocalProfile);
 
     assert.equal(
       normalizeSharedCompanionPreferences({}).rareGuestParticipationModuleEnabled,
@@ -634,7 +665,7 @@ async function verifySharedProfileContract() {
       && authorityHookSource.includes(
         'currentDeviceProfile: parseSharedCompanionPreferences(state.currentDeviceProfile)',
       ),
-    'Both active and current wire profiles must use the strict v3 parser.',
+    'Both active and current wire profiles must use the strict v4 parser.',
   );
   assert.ok(
     authorityHookSource.includes('profileUpdatePending: boolean;')
@@ -718,7 +749,7 @@ function buildFrontendAuthorityState(profile) {
   return {
     ok: true,
     protocolVersion: 1,
-    profileSchemaVersion: 3,
+    profileSchemaVersion: 4,
     registryId: 'frontend-authority-registry-0001',
     authorityRevision: 7,
     stateRevision: 11,

@@ -992,7 +992,7 @@ async function postDeviceProfile(device, state, profile) {
     },
     body: JSON.stringify({
       protocolVersion: 1,
-      profileSchemaVersion: 3,
+      profileSchemaVersion: 4,
       expectedAuthorityRevision: state.authorityRevision,
       expectedProfileRevision: state.currentDeviceProfileRevision,
       profile,

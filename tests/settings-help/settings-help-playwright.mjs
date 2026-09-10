@@ -61,7 +61,6 @@ const expectedHelpIdsBySection = new Map([
     'recommendation-weight-totalCost',
     'recommendation-weight-profit',
     'recommendation-weight-beverageStock',
-    'recommendation-weight-cookerAvailable',
   ]],
   ['实验性功能', [
     'recommendation-rare-game-ui-pinning',

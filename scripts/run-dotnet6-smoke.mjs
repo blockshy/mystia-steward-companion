@@ -20,6 +20,9 @@ if (!/^mcr\.microsoft\.com\/dotnet\/sdk@sha256:[a-f0-9]{64}$/u.test(
 }
 
 const smokeTests = new Map([
+  ['local-api-storage', [
+    'dotnet run --project tests/local-api-storage/LocalApiStorageSmoke.csproj -c Release --no-build',
+  ]],
   ['automation-cooking-job', [
     'dotnet run --project tests/automation-cooking-job/AutomationCookingJobSmoke.csproj -c Release',
   ]],

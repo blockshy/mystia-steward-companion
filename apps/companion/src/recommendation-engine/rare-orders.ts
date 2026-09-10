@@ -770,7 +770,6 @@ function buildFoodCandidate(
     baseCost,
     extraCost: state.extraCost,
     resourcePressure: state.resourcePressure,
-    cookerAvailable,
     conditionResults,
   };
 }
@@ -1179,7 +1178,6 @@ function buildObjectiveRanges(
     'totalCost',
     'profit',
     'beverageStock',
-    'cookerAvailable',
   ];
 
   for (const key of keys) {
@@ -1245,8 +1243,6 @@ function getPlanObjectiveValue(
         + (beverage?.beverage.price ?? 0);
     case 'beverageStock':
       return beverage ? inventoryQuantityRankValue(beverage.ownedQuantity) : 0;
-    case 'cookerAvailable':
-      return food?.cookerAvailable ? 1 : 0;
   }
 }
 

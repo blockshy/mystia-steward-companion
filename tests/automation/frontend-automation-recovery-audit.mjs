@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { once } from 'node:events';
-import { buildCurrentSharedProfileV3 } from '../device-authority/current-v3-profile-fixture.mjs';
+import { buildCurrentSharedProfileV4 } from '../device-authority/current-v4-profile-fixture.mjs';
 import {
   assertAutomationDirectDeliveryCompletionInvariant,
   canAdvanceAutomationRuntimeEventSequence,
@@ -1120,7 +1120,7 @@ async function assertStageAndControlContracts() {
 }
 
 async function assertMockProtocol() {
-  const port = 32157;
+  const port = Number(process.env.AUTOMATION_AUDIT_PORT ?? 32157);
   const child = spawn(
     process.execPath,
     [new URL('scripts/mock-local-api.mjs', root).pathname],
@@ -1143,7 +1143,7 @@ async function assertMockProtocol() {
       'x-mystia-steward-companion-client-id': 'automation-audit',
       'x-mystia-steward-companion-client-label': 'Automation Audit',
     };
-    const enabledProfile = buildCurrentSharedProfileV3({
+    const enabledProfile = buildCurrentSharedProfileV4({
       automationEnabled: true,
       autoRareOrderEnabled: true,
       rareGuestParticipationModuleEnabled: false,
@@ -1159,7 +1159,7 @@ async function assertMockProtocol() {
       headers: { ...headers, 'content-type': 'application/json; charset=utf-8' },
       body: JSON.stringify({
         protocolVersion: 1,
-        profileSchemaVersion: 3,
+        profileSchemaVersion: 4,
         platform: 'browser',
         appVersion: '1.2.0',
         profile: enabledProfile,
@@ -1290,7 +1290,7 @@ async function assertMockProtocol() {
       headers,
       {
         protocolVersion: 1,
-        profileSchemaVersion: 3,
+        profileSchemaVersion: 4,
         expectedAuthorityRevision: registration.authorityRevision,
         expectedProfileRevision: registration.activeProfileRevision,
         profile: deliveryDisabledProfile,
@@ -1316,7 +1316,7 @@ async function assertMockProtocol() {
       headers,
       {
         protocolVersion: 1,
-        profileSchemaVersion: 3,
+        profileSchemaVersion: 4,
         expectedAuthorityRevision: disabledAuthority.authorityRevision,
         expectedProfileRevision: disabledAuthority.activeProfileRevision,
         profile: enabledProfile,
@@ -1340,7 +1340,7 @@ async function assertMockProtocol() {
       nextHeaders,
       {
         protocolVersion: 1,
-        profileSchemaVersion: 3,
+        profileSchemaVersion: 4,
         platform: 'browser',
         appVersion: '1.2.0',
         profile: enabledProfile,

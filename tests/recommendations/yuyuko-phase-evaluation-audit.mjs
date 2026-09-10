@@ -1183,7 +1183,6 @@ function buildFood({
     baseCost: 10,
     extraCost: 0,
     resourcePressure: 0,
-    cookerAvailable: true,
     conditionResults: [],
   };
 }

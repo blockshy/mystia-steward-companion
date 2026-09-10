@@ -227,7 +227,6 @@ export interface FoodCandidate {
   baseCost: number;
   extraCost: number;
   resourcePressure: number;
-  cookerAvailable: boolean;
   conditionResults: ConditionResult[];
 }
 

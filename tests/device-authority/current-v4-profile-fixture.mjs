@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-export function buildCurrentSharedProfileV3(overrides = {}) {
+export function buildCurrentSharedProfileV4(overrides = {}) {
   const profile = {
     automationEnabled: false,
     autoRareOrderEnabled: true,
@@ -51,7 +51,6 @@ export function buildCurrentSharedProfileV3(overrides = {}) {
         objective('totalCost', 'asc'),
         objective('profit', 'desc'),
         objective('beverageStock', 'desc'),
-        objective('cookerAvailable', 'desc'),
       ],
     },
     recommendationBudgetPolicy: 'block',
@@ -64,7 +63,7 @@ export function buildCurrentSharedProfileV3(overrides = {}) {
   return { ...profile, ...overrides };
 }
 
-export function hashCurrentSharedProfileV3(profile) {
+export function hashCurrentSharedProfileV4(profile) {
   return createHash('sha256').update(canonicalJson(profile)).digest('hex');
 }
 
